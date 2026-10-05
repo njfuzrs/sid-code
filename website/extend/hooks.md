@@ -114,6 +114,8 @@ bash 的 `ls` 被 hook 拦截了。根据工具使用原则，列目录本来就
 
 只有 `2` 是阻断。写成 `exit 1` 是常见错误——那会被当成「hook 自己出错了」，工具照样执行。
 
+想输出结构化 JSON（`decision` / `hookSpecificOutput` 等）就写到 **stdout**。stderr 里的内容只当文本，即使恰好是 JSON 也不会被解析。`exit 2` 一律阻断，stdout 的 JSON 写了 `"decision": "allow"` 也翻不过来。
+
 ## 场景二：改完文件自动做点什么
 
 `post_tool_use` 在工具成功返回后触发，**不能阻断**，适合格式化、打日志、发通知：
@@ -186,7 +188,8 @@ hook 命令能直接读这些（另外完整的事件载荷 JSON 会从 **stdin*
 | 变量 | 内容 | 哪些事件有 |
 | --- | --- | --- |
 | `SID_CODE_HOOK_EVENT` | 事件名 | 全部 |
-| `SID_CODE_PROJECT_DIR` | 项目目录 | 全部（命令里写 `$SID_CODE_PROJECT_DIR` 会被展开） |
+| `SID_CODE_PROJECT_DIR` | 项目目录 | 全部 |
+| `SID_CODE_CWD` | 当前工作目录（与 `SID_CODE_PROJECT_DIR` 同值） | 全部 |
 | `SID_CODE_SESSION_ID` | 会话 ID | 全部 |
 | `SID_CODE_TOOL_NAME` | 工具名 | 工具类事件 |
 | `SID_CODE_TOOL_INPUT` | 工具入参 JSON | 工具类事件 |
@@ -199,7 +202,7 @@ hook 命令能直接读这些（另外完整的事件载荷 JSON 会从 **stdin*
 | `SID_CODE_AGENT_ID` | 子代理 ID | 子代理类事件 |
 | `SID_CODE_AGENT_TYPE` | 子代理类型 | 子代理类事件 |
 
-另外命令字符串里写 `$SID_CODE_CWD` 会被展开成当前工作目录。它只做字符串展开，不会作为环境变量传给子进程。
+命令串会原样交给 `sh -c`，sid-code 不做任何字符串替换，`$SID_CODE_PROJECT_DIR` 这类变量由 shell 从环境变量展开。所以按 shell 的正常规则写：要展开就用双引号（`"$SID_CODE_PROJECT_DIR"`），单引号里不会展开。目录名里有 `$(...)`、反引号、空格也安全，hook 拿到的就是原始路径。
 
 ## 除了跑命令，还有四种 hook 类型
 

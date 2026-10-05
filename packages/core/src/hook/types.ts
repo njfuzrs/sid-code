@@ -860,7 +860,10 @@ export function createHookOutput(
   data: Partial<HookOutput>,
 ): DefaultHookOutput {
   switch (eventName) {
+    // H3：PermissionRequest 与 PreToolUse 同为工具类决策事件（输入都有 tool_name + tool_input），
+    // 必须认同一套 permissionDecision 协议。原先落到 default 拿父类，`permissionDecision:"deny"` 不算阻塞。
     case HookEventName.PreToolUse:
+    case HookEventName.PermissionRequest:
       return new PreToolUseHookOutput(data);
     case HookEventName.AfterAgent:
       return new AfterAgentHookOutput(data);

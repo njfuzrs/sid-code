@@ -569,19 +569,10 @@ export class HookEventHandler {
         return emptyResult();
       }
 
-      // ★ 快速路径：全部是 runtime hook → 直接执行，跳过 aggregator 开销
-      const userHooks = plan.hookConfigs.filter((h) => h.type !== "runtime");
-      if (userHooks.length === 0) {
-        for (let i = 0; i < plan.hookConfigs.length; i++) {
-          const config = plan.hookConfigs[i];
-          if (config.type === "runtime") {
-            await config.action(input);
-            // runtime hook 无 success 概念，执行即视为成功 → 回标 once
-            this.markOnceExecuted(plan, i);
-          }
-        }
-        return emptyResult();
-      }
+      // H6/H7：曾有一条「全部是 runtime hook 就直接 await action(input)」的快速路径，号称跳过 aggregator 开销。
+      // 它实际跳过的是 runner.executeRuntimeHook 的整条管线：返回值（含 deny）被丢、timeout 不读、
+      // AbortSignal 不传、异常不隔离、耗时不记——而结论还取决于同事件上有没有别的非 runtime hook。
+      // 省下的只是一次对象构造，所以删掉，runtime hook 与其他类型走同一条路。别加回来。
 
       // 2. 执行 hook（根据计划决定串行/并行）
       const results = plan.sequential

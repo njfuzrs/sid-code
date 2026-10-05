@@ -5,12 +5,8 @@
 
 import {
   HookEventName,
-  DefaultHookOutput,
-  PreToolUseHookOutput,
+  type DefaultHookOutput,
   createHookOutput,
-  AfterAgentHookOutput,
-  BeforeModelHookOutput,
-  AfterModelHookOutput,
   type HookOutput,
   type HookExecutionResult,
   type AggregatedHookResult,
@@ -65,6 +61,10 @@ export class HookAggregator {
       case HookEventName.PreCompact:
       // 同上：注释写「可 block」。当前 team.ts 不消费它的结论，但接上消费方的那天不该再踩一次
       case HookEventName.TeammateIdle:
+      // H2：PermissionRequest 是权限三路竞速里 hook 那一路，承载的就是拒绝。
+      // 原先落在 default 的 mergeSimple（last-wins），后一个 hook 的 allow 能把前一个的 deny 整个盖掉
+      // ——reason 里还留着「拒绝」，结论却是放行。与 PreToolUse 同一语义：任一 deny 即拦。
+      case HookEventName.PermissionRequest:
         return this.mergeWithOrDecision(outputs, eventName);
 
       // G4：SessionStart/SubagentStart/Setup 忽略 exit2 阻塞（对齐 CC hooksConfigManager）——
@@ -241,20 +241,13 @@ export class HookAggregator {
     return merged;
   }
 
-  /** 创建事件专属的 HookOutput 子类 */
+  /**
+   * 创建事件专属的 HookOutput 子类。
+   * H3：直接复用 createHookOutput——原先这里抄了一份事件→子类映射，与合并时判阻塞用的那份
+   * 各自维护，PermissionRequest 在两处都漏了。只留一份，判阻塞与最终结论才不会分叉。
+   */
   private createSpecificOutput(output: HookOutput, eventName: HookEventName): DefaultHookOutput {
-    switch (eventName) {
-      case HookEventName.PreToolUse:
-        return new PreToolUseHookOutput(output);
-      case HookEventName.AfterAgent:
-        return new AfterAgentHookOutput(output);
-      case HookEventName.BeforeModel:
-        return new BeforeModelHookOutput(output);
-      case HookEventName.AfterModel:
-        return new AfterModelHookOutput(output);
-      default:
-        return new DefaultHookOutput(output);
-    }
+    return createHookOutput(eventName, output);
   }
 
   /** 从 hookSpecificOutput 中提取 additionalContext */
