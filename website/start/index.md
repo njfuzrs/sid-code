@@ -60,7 +60,7 @@ description: 一句话定位、它能替你做什么的具体例子，以及和 
 
 ## 和 Claude Code 的关系
 
-如果你用过 Claude Code（下称 cc）：**功能面是对标它做的**，
+如果你用过 Claude Code（下称 cc）：它有的主要能力面这里都有，
 agentic loop、工具调用、权限门控、Hook、Skill、MCP 都有对应实现，
 配置与用法的对应关系见[从 Claude Code 迁移](/team/migrate)。
 
@@ -70,7 +70,7 @@ agentic loop、工具调用、权限门控、Hook、Skill、MCP 都有对应实�
 
 | 差异 | cc 的约束 | sid-code |
 | --- | --- | --- |
-| **多 provider 可插拔** | 协议层只认 Anthropic Messages，换模型要靠第三方兼容端点 | Anthropic / OpenAI / Ollama 三族协议，公司网关、Azure、本地离线模型都能接 |
+| **多 provider 可插拔** | 协议层只认 Anthropic Messages，换模型要靠第三方兼容端点 | Anthropic / OpenAI / Ollama 三族（OpenAI 族含 Chat Completions 与 Responses 两种），公司网关、各家兼容端点、本地离线模型都能接 |
 | **功能自主可定制** | 扩展点开放（Hook / Skill / 子代理 / MCP / 插件），但主循环、上下文工程、工具实现闭源不可改 | 每一层都能按自己的场景改：工具、Hook 事件、权限粒度、循环检测策略 |
 | **贴合企业环境** | 通用产品，不会为某家企业的内网基建做适配 | 内部网关计费、MCP、团队默认配置分发都面向企业内网设计 |
 | **数据自主** | 轨迹、账本留在 Anthropic 侧 | 轨迹、评测、成本账本全部留在自己的基础设施里 |
