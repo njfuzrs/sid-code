@@ -88,6 +88,18 @@ export function sanitizeHeaders(
   return result;
 }
 
+/**
+ * H5：loopback 放行（对齐 CC ssrfGuard：本机通知服务 / 本地调试端点是 url hook 的正常用法，
+ * 而 SSRF 要防的是「借本进程去够内网与云元数据」）。isBlockedAddress 本身仍把 127/8 判为私有，
+ * 放行只发生在 ssrfGuardedFetch 这一层。
+ */
+function isLoopbackAddress(ip: string): boolean {
+  let v = ip.toLowerCase().trim();
+  if (v.startsWith("[") && v.endsWith("]")) v = v.slice(1, -1);
+  if (v.startsWith("::ffff:")) v = v.slice(7);
+  return v === "::1" || v.startsWith("127.");
+}
+
 /** DNS 错误码：表示「域名无对应记录」，此类失败放行无 SSRF 风险（后续 fetch 必然同样解析失败） */
 const NO_RECORD_DNS_CODES = new Set(["ENOTFOUND", "ENODATA", "NOTFOUND"]);
 
@@ -98,7 +110,11 @@ export async function ssrfGuardedFetch(
   const parsed = new URL(url);
 
   // Layer 1: IP 字面量直接验证
-  if (isIPAddress(parsed.hostname) && isBlockedAddress(parsed.hostname)) {
+  if (
+    isIPAddress(parsed.hostname) &&
+    !isLoopbackAddress(parsed.hostname) &&
+    isBlockedAddress(parsed.hostname)
+  ) {
     throw new Error(`SSRF 防护：${parsed.hostname} 是私有地址`);
   }
 
@@ -109,7 +125,7 @@ export async function ssrfGuardedFetch(
   //   2) 解析异常按类型 fail-close：仅当「域名确无记录」(ENOTFOUND/ENODATA) 时放行
   //      （fetch 必然同样解析失败，无 SSRF 风险），其余无法判定目标安全性的异常一律抛错拦截，
   //      不再静默 fail-open。
-  if (!isIPAddress(parsed.hostname)) {
+  if (!isIPAddress(parsed.hostname) && parsed.hostname !== "localhost") {
     const settled = await Promise.allSettled([
       resolve4(parsed.hostname),
       resolve6(parsed.hostname),
@@ -137,7 +153,7 @@ export async function ssrfGuardedFetch(
 
     // 命中任一私有地址即拦截
     for (const ip of resolvedIPs) {
-      if (ip && isBlockedAddress(ip)) {
+      if (ip && !isLoopbackAddress(ip) && isBlockedAddress(ip)) {
         throw new Error(`SSRF 防护：${parsed.hostname} 解析到私有地址 ${ip}`);
       }
     }
