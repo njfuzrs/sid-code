@@ -222,6 +222,30 @@ token 存在 `~/.sid-code/mcp-oauth.json`，权限 `0600`。access token 过期�
 `authServerMetadataUrl`（必须是 `https://`）。
 :::
 
+## 公司后端提供的远程 server（`auth: "sid-backend"`）
+
+公司后端自己提供的远程 MCP（例如飞书文档 `feishu-docs`）不用配 token。写上
+`"auth": "sid-backend"`，sid-code 就会用 `sid-code auth login` 拿到的设备凭据去连：
+
+```json
+{
+  "mcpServers": {
+    "feishu-docs": {
+      "transport": "http",
+      "url": "https://www.sid-code.cc/traj/api/v1/ctl/feishu/mcp",
+      "auth": "sid-backend"
+    }
+  }
+}
+```
+
+- 凭据**每次请求现取**，不写进配置文件。重新登录续期后不用重启。
+- **只发往 `backend.url` 的同一个 origin**（协议 + 主机 + 端口完全一致）。
+  `url` 指向别的地址时直接拒绝连接并在 `/mcp` 里显示原因，不会「不带凭据照连」。
+  这是给插件用的：插件写一句 `auth: "sid-backend"` 加一个外部地址，也拿不到你的凭据。
+- 没配 `backend.url`，或者本机还没登录，连接同样会被拒绝，按提示执行 `sid-code auth login`。
+- 只支持 `http` / `http-json` / `sse`。配置里自己写的 `Authorization` 头会被忽略。
+
 ## 四层作用域与优先级
 
 | scope | 位置 | 谁能看到 |
