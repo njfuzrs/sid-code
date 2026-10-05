@@ -9,8 +9,9 @@
  * SDK 先响应 → 取消 Hook（abort signal）。
  *
  * 对齐 Claude Code StructuredIO.createCanUseTool() 的竞速设计（spec §5.2）。
- * 注意：sid-code 的 HookDecision 为 "allow" | "deny" | "block"，
- * 没有 shouldAutoApprove()，这里用 decision === "allow" 表示 Hook 主动放行。
+ * 「Hook 主动放行」只认显式表态（H4）：顶层 `decision:"allow"/"approve"`（isApproveDecision），
+ * 或 `hookSpecificOutput.permissionDecision:"allow"`。纯审计 hook（exit 0 无 JSON）与
+ * exit 1 告警 hook 没有任何权限意见，必须落到宿主 can_use_tool，不能凭空变成 allow。
  */
 
 import type { StructuredIO } from "./structured-io.ts";
@@ -144,8 +145,10 @@ async function executePermissionHook(
     const out = result.finalOutput;
     if (!out) return null;
     if (out.isBlockingDecision()) return "deny";
-    if (out.decision === "allow") return "allow";
-    return null; // Hook 未做决定，交给 SDK 宿主
+    if (out.isApproveDecision() || out.hookSpecificOutput?.["permissionDecision"] === "allow") {
+      return "allow";
+    }
+    return null; // Hook 未做决定（含纯审计 / 告警 hook），交给 SDK 宿主
   } catch {
     return null;
   }

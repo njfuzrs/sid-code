@@ -15,6 +15,7 @@ import type {
   HookConfig as LegacyHookConfig,
 } from "../config/config.ts";
 import { getLogger } from "../debug/logger.ts";
+import { ALL_HOOK_HANDLER_TYPES } from "./handler-types.ts";
 
 /** 注册表条目 */
 export interface HookRegistryEntry {
@@ -374,7 +375,7 @@ export class HookRegistry {
   /** 验证 hook 配置 */
   private validateHookConfig(config: HookConfig, eventName: HookEventName): boolean {
     const log = getLogger();
-    if (!config.type || !["command", "url", "runtime", "prompt", "agent"].includes(config.type)) {
+    if (!config.type || !(ALL_HOOK_HANDLER_TYPES as readonly string[]).includes(config.type)) {
       log.warn("HOOK", `无效的 hook 类型: ${config.type} (事件: ${eventName})`);
       return false;
     }

@@ -11,6 +11,7 @@ import { getSidHome, sidPaths } from "./paths.ts";
 import { parseToolSearchEnv } from "../tool/tool-search-auto.ts";
 import type { NetworkTimeoutSettings, PerModelStreamTimeouts } from "./network-profile.ts";
 import type { LanguagePref } from "./prompt-lang.ts";
+import type { UserHookHandlerType } from "../hook/handler-types.ts";
 
 /**
  * 团队默认配置模板（scripts/team-defaults.template.json）里 apiKey 的占位符值。
@@ -68,7 +69,7 @@ export interface MCPOAuthConfig {
 
 /** Hook 配置（支持 command / url / prompt / agent 四种类型） */
 export interface HookConfig {
-  type?: "command" | "url" | "prompt" | "agent"; // 钩子类型，默认 command
+  type?: UserHookHandlerType; // 钩子类型，默认 command（取值见 hook/handler-types.ts）
   event?: string; // 旧格式兼容：事件名
   command?: string; // command 类型：shell 命令
   url?: string; // url 类型：HTTP 地址
