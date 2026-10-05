@@ -54,7 +54,7 @@ description: 交互模式里可用的全部斜杠命令。
 | `/goal` | 目标驱动持续执行：设定完成条件，AI 在达成前不停止 | — | `<完成条件> \| status \| pause \| resume \| edit <新条件> \| turns <n> \| budget <tokens> \| clear` |
 | `/help` | 显示帮助信息 | `/h` `/?` | — |
 | `/hooks` | 管理 Hook (list/enable/disable/enable-all/disable-all，-p 持久化) | — | `[list\|enable\|disable\|enable-all\|disable-all] [name] [-p]` |
-| `/ide` | IDE 集成管理 | — | `[status\|connect\|disconnect\|install]` |
+| `/ide` | IDE 集成管理 | — | `[status\|connect\|disconnect]` |
 | `/init` | 分析代码库并生成 CLAUDE.md（--dirs-only 仅初始化 .sid-code/ 目录） | — | — |
 | `/insights` | 生成会话分析报告（模型/成本/token/工具/异常概览） | `/analyze` | `[session-id\|latest]` |
 | `/keybindings` | 查看键位绑定 / 创建 keybindings.json 模板 | `/keys` | `[init]` |

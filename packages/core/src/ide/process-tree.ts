@@ -40,7 +40,7 @@ export type ProcessTableRunner = () => Promise<string>;
 /**
  * 可识别的 IDE 种类。
  *
- * 只列我们的扩展安装路径覆盖得到的三种（见 extension-install.ts 的 InstallableIDE）——
+ * 只列 VS Code 一族三种——
  * JetBrains 一族 CC 能识别，但 sid-code 既没有对应扩展也装不上，
  * 识别出来只能给出一条我们兑现不了的「去装扩展」提示，所以刻意不列。
  */
