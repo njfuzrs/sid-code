@@ -205,11 +205,9 @@ describe("H29 BeforeModel / AfterModel：阻塞与停机一票否决，字段替
     expect(blockable).toEqual(
       expect.arrayContaining(["PreToolUse", "BeforeModel", "AfterModel", "Stop", "PreCompact"]),
     );
-    // PermissionRequest 是 H2，单独修；这里先登记豁免，修 H2 时删掉这一行
-    const KNOWN_GAPS = new Set(["PermissionRequest"]);
+    // H2 已修：PermissionRequest 不再豁免（豁免集合删掉，别再加回来）
     const violators: string[] = [];
     for (const name of blockable) {
-      if (KNOWN_GAPS.has(name)) continue;
       const ev = HookEventName[name as keyof typeof HookEventName];
       const outs: HookOutput[] = [{ decision: "deny" }, { decision: "allow" }];
       for (const order of [outs, [...outs].reverse()]) {

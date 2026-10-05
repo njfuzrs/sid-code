@@ -460,9 +460,10 @@ export class LazyJsonInput {
 > 所以"没有 hook 时的开销"必须接近零——否则你为一个"用户大概率没配"的功能，
 > 向所有用户收了税。
 
-同一条原则的另外两个体现（都在 §5.4 和 §9.6 展开）：
-🔬 **runtime hook 快速路径**（全是内部函数式 hook 时跳过整个聚合器，`event-handler.ts:564`），
-以及 📄 CC 的 `hasHookForEvent()` 布隆过滤器式快速检查。
+同一条原则的另一个体现（§5.4 展开）：
+📄 CC 的 `hasHookForEvent()` 布隆过滤器式快速检查。
+🔬 本仓曾有一条「全是 runtime hook 就跳过聚合器」的快速路径，后来**删掉了**——
+它省下的开销远小于它丢掉的东西，§5.4 有完整的反面教材。
 
 ### 2.5 本章自检
 
@@ -1065,17 +1066,29 @@ bash 特有语法（`[[ ]]`、数组、`==`）会直接报语法错。
 🔬 本仓源码注释里就记着一次因此在 CI 暴露的问题（§5.3 那个超时 bug 就是在
 「CI（ubuntu，/bin/sh → dash）真跑时」才现形的）。
 
-**细节二：命令里的 `$SID_CODE_PROJECT_DIR` 会被预先展开。**
-🔬 `runner.ts:602`：
+**细节二：命令里的 `$SID_CODE_PROJECT_DIR` 由 shell 从环境变量展开，sid 不碰命令串。**
+
+🔬 本仓曾经在进 shell **之前**对命令串做字符串替换：
 
 ```typescript
+// 已删除（9-27 缺陷文档 H14）
 .replace(/\$SID_CODE_PROJECT_DIR/g, input.cwd)
 .replace(/\$SID_CODE_CWD/g, input.cwd)
 ```
 
-这是在**进 shell 之前**做的字符串替换。为什么要做两遍（既注入环境变量又做字符串替换）？
-因为有些场景变量展开不了——比如你的命令是 `$SID_CODE_PROJECT_DIR/scripts/check.sh`，
-写成脚本路径时 shell 会展开；但如果它出现在单引号里就不会。预先替换保证了两种写法都工作。
+初衷是「单引号里的变量 shell 不展开，预先替换让两种写法都工作」。
+但这等于**把 cwd 当代码拼进 shell 串**：目录名是 `a$(touch PWNED)b` 时，
+`echo "dir=$SID_CODE_PROJECT_DIR"` 会真的执行 `touch`——**用户加双引号也挡不住**，
+因为替换发生在 shell 解析引号之前。
+
+而这两个值本来就作为环境变量注入了。环境变量的值**不会被 shell 二次解析**，
+`$SID_CODE_PROJECT_DIR` 在 `sh -c` 里天然就会展开成原始路径。
+所以修法不是「给 cwd 加转义」，而是**删掉替换**：命令串原样交给 `sh`，
+`SID_CODE_CWD` 补进环境变量保持兼容。代价是单引号里的 `'$SID_CODE_PROJECT_DIR'` 不再展开——
+这是 shell 的正常语义，想展开就用双引号。
+
+> **教学点**：往 shell 命令串里拼任何运行期的值，都是在造注入。
+> 要传值，走环境变量或 stdin，让 shell 自己展开。
 
 **细节三：⚠️ 配置形状写错会被静默丢弃。**
 🔬 这是本仓官网文档标为 `danger` 的第一条，值得完整引用：
@@ -1197,30 +1210,33 @@ agent 内部自己也需要在这些时刻挂回调——比如：
 就是每次工具调用 fork 一个进程——完全不可接受。
 所以内部回调走 `runtime`：**就是一个进程内的 TS 函数调用**，成本是微秒级。
 
-🔬 而且还有一条专门的快速路径（`event-handler.ts:564`）：
-
-```typescript
-// ★ 快速路径：全部是 runtime hook → 直接执行，跳过 aggregator 开销
-```
-
-也就是说：当某个事件匹配到的 hook **全都是内部 runtime hook** 时
-（这是最常见的情况——用户没配 hook，但内部埋点在），
-直接顺序调用这些函数，**跳过整个结果聚合器**（不用 JSON 序列化、
-不用合并决策、不用发进度消息）。
-
-📄 CC 有完全对应的优化，而且给了实测数字：
+📄 CC 对内部回调做了专门的快速路径，而且给了实测数字：
 
 > 内部回调快速路径：`6.01µs → ~1.8µs per PostToolUse hit (-70%)`
 
 还有一个 44 倍的：📄 当所有匹配的 hook 都是内部回调时跳过去重流程（"44x faster"）。
 
-**这个设计的教学价值**：它展示了一个通用模式——
+🔬 本仓**曾经**也有一条：
 
-> **当一个通用机制同时服务"内部高频调用"和"用户低频配置"时，
-> 必须给内部路径开一条不经过通用管道的快车道。**
->
-> 否则你为了支持"用户可能配 hook"这个可能性，
-> 向每一次内部埋点都收了 JSON 序列化 + 结果聚合的税。
+```typescript
+// ★ 快速路径：全部是 runtime hook → 直接执行，跳过 aggregator 开销（已删除）
+await config.action(input);
+return emptyResult();
+```
+
+它是一个反面教材。它绕过的不只是聚合器，而是整个 `runner.executeRuntimeHook`——
+于是**返回值（含 deny）被丢、`timeout` 不读、`AbortSignal` 不传、异常不隔离、耗时不记**
+（9-27 缺陷文档 H6–H9）。更糟的是结论**取决于无关变量**：
+同一个返回 deny 的 runtime hook，旁边多配一个 `command: true`，就走回正常管线、拒绝又生效了。
+而它省下的只是一次对象构造。所以删掉了，runtime hook 与其他类型走同一条路。
+
+**这个设计的教学价值**：
+
+> **快车道只能省开销，不能省语义。**
+> 给内部高频路径开快车道没问题，但它必须与正路**结论相同**——
+> 超时、取消、异常隔离、决策传达，一样都不能少。
+> 判据不是「快车道更快」，而是「两条路给同一个输入，结论一致」。
+> 做不到这一点，宁可只留一条路。
 
 ### 5.5 `prompt` 与 `agent`：用 LLM 做判断，以及它们的真实差别
 
@@ -1305,15 +1321,19 @@ agent hook 启动一个子代理，子代理会调工具，调工具会触发 `P
 🔬 本仓 `HookConfig.tools` 字段注释：「agent 类型：子代理可用工具白名单」——
 是白名单而不是黑名单，这是对的方向：**默认最小权限，要什么显式加**。
 
-🔬 还有一个失败语义值得看：真子代理执行失败时的选择是**放行**：
+🔬 还有一个失败语义值得看：真子代理执行失败时的选择是**不拦**：
 
 ```typescript
 } catch (error) {
   // 真子代理失败：不阻断主流程（放行），记录告警
   log.warn("HOOK", `Agent Hook 子代理执行失败: ${error}`);
-  return { ..., output: { decision: "allow" } };
+  // H4：验证通过 = 不拦，不是主动批准；不写 decision，免得被 SDK 桥当成放行
+  return { ..., output: {} };
 }
 ```
+
+注意 `output` 是空对象而不是 `{ decision: "allow" }`：「我没意见」与「我批准」是两回事，
+写成 allow 曾让 SDK 宿主的 `can_use_tool` 被整条跳过（9-27 缺陷文档 H4）。
 
 这和 §4.5 那个 `if` 条件解析失败选择放行是同一个判断：
 **验证器自己坏了，不该把整个 agent 卡死。** 但注意这个选择的代价——
@@ -1383,17 +1403,27 @@ agent hook 启动一个子代理，子代理会调工具，调工具会触发 `P
 └────────────────────────────────────────────────────────┘
 ```
 
-🔬 **优先级：JSON 赢。** 源码注释写得很清楚（`runner.ts:parseCommandOutput`）：
+🔬 **两条通道怎么合并**（`runner.ts:parseCommandOutput`，对齐 CC）：
 
 ```typescript
-// JSON 输出优先（无论退出码）：结构化 decision 覆盖退出码语义。
-// stdout 优先解析（CC 约定 JSON 走 stdout），stdout 非 JSON 时再尝试 stderr。
-const jsonOutput = this.parseJsonOutput(stdoutText) ?? this.parseJsonOutput(stderrText);
+// 只从 stdout 解析 JSON，stderr 从不当 JSON
+const jsonOutput = this.parseJsonOutput(stdoutText);
+// exit 2 一律阻塞，JSON 改不了；JSON 的其余字段照常保留
+if (exitCode === EXIT_BLOCKING) {
+  return { ...jsonOutput, decision: "deny", reason: jsonReason || stderrText || ... };
+}
 if (jsonOutput) return jsonOutput;
 ```
 
-也就是说：**如果你的 stdout 是合法 JSON，退出码就不重要了**。
-反过来，如果 stdout 不是 JSON，才按退出码判断。
+两条规则：
+
+- **`exit 2` 一律阻塞**。stdout 是不是 JSON、JSON 里写没写 `allow`，都翻不了它。
+- **只有 stdout 的 JSON 算数**。stderr 只承载给人/模型看的文本。
+
+⚠️ 本仓以前是「JSON 无条件优先，stdout 不是 JSON 再去解析 stderr」，两个方向都出过错
+（9-27 缺陷文档 H15 / H16）：stdout 恰好输出一段 JSON 审计日志，`exit 2` 的阻塞就被丢了；
+子命令往 stderr 吐了一段带 `decision` 的 JSON 日志（pino / tsc / jq 都会），
+`exit 0` 的 hook 就凭空造出一个 deny。**问题不在哪条通道优先，而在「JSON 存在即优先」本身。**
 
 这个设计的好处是**渐进式**：简单场景写 `exit 2` 就够，
 复杂场景（要改参数、要注入上下文）再升级到 JSON，**不用一开始就学 JSON schema**。
@@ -1471,7 +1501,8 @@ shell 返回 127（找不到命令）。正确的行为是"告警：你的 hook 
   return { decision: "deny", reason: stderrText || stdoutText || `Hook 退出码 ${exitCode}` };
 } else {
   // 其余非零（1/3/…）：非阻塞告警。stderr 展示给用户，继续执行（不 deny，对齐 CC）
-  return { decision: "allow", systemMessage: stderrText ? `警告: ${stderrText}` : ... };
+  // H4：不写 decision——「hook 自己出错了」不等于「我批准这次调用」
+  return { systemMessage: stderrText ? `警告: ${stderrText}` : ... };
 }
 ```
 
@@ -1607,9 +1638,9 @@ isApproveDecision(): boolean {
 ### 6.7 本章自检
 
 1. 我的 hook 输出了 JSON，同时 `exit 2`，最终以哪个为准？
-   （答：🔬 JSON。源码明确「JSON 输出优先（无论退出码）」。
-   所以 JSON 里写 `decision: "allow"` + `exit 2` → 放行。这容易写混，
-   建议只用一套。）
+   （答：🔬 看退出码。`exit 2` 一律阻塞，JSON 里写 `decision: "allow"` 也翻不了；
+   JSON 的其余字段（`systemMessage` / `hookSpecificOutput`）照常生效。
+   非 2 的退出码下，stdout 的 JSON 才是结论。stderr 里的 JSON 永远不算数。）
 2. 为什么阻断码是 2？
    （答：因为 1 是 Unix 最常见的意外失败码（grep 没匹配、test 为假都是 1）。
    用 1 做阻断会让"hook 自己小毛病"变成"拦住整个 agent"。2 必须刻意写出来，
@@ -2056,10 +2087,14 @@ hook B：在 command 前面加上 `timeout 30 `
 
 | 策略 | 用于哪些事件 | 规则 |
 |---|---|---|
-| **OR 决策** | `PreToolUse` / `PostToolUse` / `PostToolUseFailure` / `UserPromptSubmit` / `AfterAgent` | **任一 deny → 整体 deny**，消息拼接 |
+| **OR 决策** | `PreToolUse` / `PermissionRequest` / `PostToolUse` / `PostToolUseFailure` / `UserPromptSubmit` / `AfterAgent` / `Stop` / `PreCompact` / `TeammateIdle` | **任一 deny → 整体 deny**，消息拼接 |
 | **OR 决策 + 忽略阻塞** | `SessionStart` / `SubagentStart` / `Setup` | 同上，但 block 降级为告警文本 |
-| **字段替换** | `BeforeModel` / `AfterModel` | **后者覆盖前者** |
-| 简单合并 | 其余 | 拼接 |
+| **字段替换** | `BeforeModel` / `AfterModel` | 改写字段**后者覆盖前者**，但阻塞与停机仍一票否决 |
+| 简单合并 | 其余（不可 block 的事件） | 拼接 |
+
+⚠️ 这张表以前更短：`PermissionRequest` / `Stop` / `PreCompact` 都落在「简单合并」（last-wins），
+后一个 hook 的 allow 能盖掉前一个的 deny（9-27 缺陷文档 H2 / H29）。
+现在有一条结构性测试遍历事件枚举：**凡注释写「可 block」的事件，deny + allow 两个顺序都必须阻塞**。
 
 **为什么权限类事件用 OR（任一 deny 即 deny）？**
 
@@ -3234,7 +3269,7 @@ AfterModel： 每轮 LLM 响应收全后  → 可 block（丢弃响应并结束�
 
 **① 热路径原则**：hook 挂在每次工具调用、每轮 LLM 请求上。
 **没有 hook 时的开销必须接近零**——懒序列化（§2.4）、
-内部埋点走 `runtime` 快车道（§5.4）。
+内部埋点走进程内的 `runtime` hook（§5.4，微秒级，且与其他类型走同一条管线）。
 否则你为一个"用户大概率没配"的功能向所有用户收税。
 
 **② 失败方向原则**：每一个可能失败的点，都要问
@@ -3448,7 +3483,7 @@ tail -f /tmp/hook-proof.log     # 另开一个终端，跑一次真实任务
 □ 事件的 exit 2 语义**逐事件**定义了吗？（四档，不能一刀切）     → §3.3
 □ matcher 是"精确优先、正则兜底"吗？（不是无条件正则）           → §4.3
 □ 去重键包含**身份**（来源根目录）吗？                           → §4.6
-□ 没有 hook 时的开销接近零吗？（懒序列化 + 内部快车道）           → §2.4 / §5.4
+□ 没有 hook 时的开销接近零吗？（懒序列化 + 进程内 runtime hook）   → §2.4 / §5.4
 □ 超时路径**不读管道**吗？（否则超时保护形同失效）               → §5.3
 □ PreToolUse 在权限检查**之前**吗？主循环和子代理**一致**吗？     → §7.2
 □ hook 的 allow 越不过 deny / 危险命令吗？被拦时**打日志**了吗？  → §7.3
