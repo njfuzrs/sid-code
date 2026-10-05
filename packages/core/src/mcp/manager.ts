@@ -20,6 +20,8 @@ import {
   WebSocketTransport,
 } from "./transport.ts";
 import { buildMcpToolName } from "./normalization.ts";
+import { logToolInvoked } from "../analytics/events.ts";
+import { mcpPluginOrigin } from "../analytics/plugin-attribution.ts";
 import { expandEnvVars } from "./env-expansion.ts";
 import { enforceMcpOutputTokenLimit, IMAGE_TOKEN_ESTIMATE } from "./mcp-output-limit.ts";
 import { getMcpTimeout } from "./mcp-timeout.ts";
@@ -124,6 +126,12 @@ class MCPToolAdapter implements Tool {
   }
 
   async execute(input: unknown, signal?: AbortSignal): Promise<ToolResult> {
+    // 漏斗 10 · 插件：市场插件按调用计数。发点放在适配器自身而非各执行器 ——
+    // 主循环 / 进程内子代理 / spawn 子代理 / forked agent 最终都走这里，单一汇聚点不会漏计也不会重计。
+    // 用的是**原始** serverName（配置 key `plugin:<plugin>:<server>`）与原始 def.name，
+    // 不从 buildMcpToolName 规范化后的 `mcp__...` 反推（`:`→`_` + 长度截断，有歧义）。
+    // 是否真发由市场注册表决定，用户自配 MCP / 本地插件查不到即不发。
+    logToolInvoked(this.name(), mcpPluginOrigin(this.serverName, this.def.name));
     try {
       const result = await this.client.callTool(
         this.def.name,
