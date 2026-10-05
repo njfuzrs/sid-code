@@ -39,6 +39,7 @@ import {
   isTransientErrorCode,
 } from "@sid-code/core/llm/error-messages.ts";
 import { SessionState } from "@sid-code/core/session/state.ts";
+import { createSubAgentUsageSink } from "@sid-code/core/agent/usage-sink.ts";
 import { SessionStore } from "@sid-code/core/session/store.ts";
 import { generateSessionId } from "@sid-code/core/session/id.ts";
 import {
@@ -1445,23 +1446,8 @@ export class App {
 
   /** 注入子代理 usage 归集 sink（P0-1）。遍历工具注册表，给所有带 setUsageSink 的工具接线。 */
   private wireSubAgentUsageSink(): void {
-    const sink = (result: import("@sid-code/core/agent/sub-agent.ts").SubAgentResult): void => {
-      const usage = result.usage;
-      if (!usage) return;
-      // 子代理可能用不同 subAgentModel，按其实际 model 分别计费；缺省回退主模型。
-      const model = result.model || this.config.model;
-      const provider =
-        result.provider || SessionState.inferProvider(model, this.config.availableModels);
-      // 端点必须与主循环同口径（loop.ts 的 updateUsage 传了 config.baseURL）：
-      // 计价按 (model, endpoint) 复合键精确匹配，缺 baseURL 会让子代理落进
-      // 空 key 桶（"官方默认端点"），于是主/子两条路径对**同一个模型**取到不同价格桶，
-      // 同一会话内的费用口径自相矛盾。按子代理实际模型在 availableModels 里的
-      // 配置取端点，缺省回退主模型端点（与 resolveEffortCap 同款派生）。
-      const mc = this.config.availableModels?.find((m) => m.name === model);
-      const baseURL = mc?.baseURL ?? this.config.baseURL;
-      // 子代理无独立 API 耗时归集口径，durationMs 计 0（费用/ token 才是归集重点）。
-      this.sessionState.updateUsage(model, usage, 0, provider, baseURL);
-    };
+    // 实现下沉到 core（usage-sink.ts），让会话级回放测试跑的是生产这份而不是复制品。
+    const sink = createSubAgentUsageSink(this.sessionState, this.config);
     // P2-2：workflow 的 token 预算按「共享池」计——主循环 + 全部子代理已累计的输出 token。
     // 读的就是上面这个 sink 回写的 SessionState，所以必须和 sink 一起注入：
     // 只注入 sink 不注入读口，预算门看到的仍是「本 run 独立预算」，主循环花掉的不算数。
