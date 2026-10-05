@@ -42,21 +42,37 @@ function describeServer(name: string, cfg: MCPServerConfig): string {
   return `${name}  [${transport}]  ${target}`;
 }
 
+/**
+ * 待审批项提示行。待审批的项目级 server 不进生效列表（fail-closed），
+ * 只看 list 的人会以为 `mcp add` 失败了——所以在列表末尾点名去 `mcp pending` 看。
+ * 依赖 loadAllServers() 已跑过 loadConfig（它会登记待审批快照）。
+ */
+async function pendingHint(): Promise<string | null> {
+  const { getPendingApprovalServers } = await import("@sid-code/core/mcp/approval.ts");
+  const { names } = getPendingApprovalServers();
+  if (names.length === 0) return null;
+  return `另有 ${names.length} 个项目级 MCP 服务器待审批（未加载），见 \`sid-code mcp pending\`。`;
+}
+
 async function cmdList(asJson: boolean): Promise<void> {
   const servers = await loadAllServers();
   const names = Object.keys(servers);
   if (asJson) {
+    // JSON 输出保持原形状（脚本在消费），待审批项走 `mcp pending --json`
     console.log(JSON.stringify(servers, null, 2));
     return;
   }
+  const hint = await pendingHint();
   if (names.length === 0) {
     console.log("未配置任何 MCP 服务器。用 `sid-code mcp add <name> <command|url>` 添加。");
+    if (hint) console.log(hint);
     return;
   }
   console.log(`已配置的 MCP 服务器（共 ${names.length} 个）:\n`);
   for (const name of names) {
     console.log(`  ${describeServer(name, servers[name])}`);
   }
+  if (hint) console.log(`\n${hint}`);
 }
 
 async function cmdGet(name: string, asJson: boolean): Promise<void> {

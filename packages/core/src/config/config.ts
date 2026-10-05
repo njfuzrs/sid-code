@@ -1587,8 +1587,9 @@ async function loadLocalMcpJson(): Promise<Record<string, MCPServerConfig>> {
 /**
  * 读企业 managed-settings.json 的 identity 段（first-exists-wins）。
  * 损坏 / 缺失 / 非对象一律当没配——身份通道 fail-open。
- * 不走 getSettings()：那条链的 policySettings 仍指向 /etc/sid-code/policy.json，
- * 跟规划写的 managed-settings.json 不是同一份文件。
+ * 直接按 sidPaths.managedPolicyCandidates 逐个读原始 JSON，不走 getSettings()：
+ * identity 段要在 settings 链之外独立 fail-open（损坏只告警、按文件跳过），
+ * 且不需要 drop-in 合并。两者读的是同一条候选链（policy.json / policy.yaml 已废弃不读）。
  */
 function pickIdentityString(
   rec: Record<string, unknown>,
@@ -1603,7 +1604,7 @@ function pickIdentityString(
 }
 
 function loadManagedIdentity(): IdentityConfig | undefined {
-  // 顺序跟 sidPaths.managedPolicyCandidates 走：/etc 系统管控优先，用户级回退。
+  // 顺序跟 sidPaths.managedPolicyCandidates 走：平台系统级优先，用户级回退。
   // 测试把 SID_CONFIG_DIR 指到 tmpdir 时走第二条；本机没有 /etc 文件则跳过。
   for (const p of sidPaths.managedPolicyCandidates()) {
     if (!existsSync(p)) continue;
@@ -2129,7 +2130,7 @@ export async function ensureConfigDir(): Promise<string> {
  * 本函数不再自行解析任何文件，全部委托给 RuleLoader（单一事实源）。各源与优先级
  * 由 RuleLoader 统一负责（低→高）：
  *   session → command → cliArg → userSettings → projectSettings → localSettings → flagSettings → policySettings
- * 其中企业策略从 managedPolicyCandidates()（/etc/sid-code/managed-settings.json
+ * 其中企业策略从 managedPolicyCandidates()（平台系统级 managed-settings.json
  * + ~/.sid-code/managed-settings.json）加载——历史上冲突的 /etc/sid-code/policy.json
  * 与 policy.yaml 两个路径已废弃，不再读取。
  *

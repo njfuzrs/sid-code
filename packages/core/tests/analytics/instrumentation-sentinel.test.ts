@@ -114,6 +114,7 @@ const FACADE_EMITTERS = [
  * **豁免是会自我失效的**：下方有一条断言要求豁免项此刻确实零调用 ——
  * 接线 PR 合入后它立刻变红，逼着把这一行删掉，而不是让豁免悄悄留成永久后门。
  */
+// logPluginInstalled 的豁免已随插件市场客户端 PR 删除：调用点在 cli/src/plugin/market-operations.ts
 const PENDING_WIRING: Record<string, string> = {};
 
 describe("埋点接线哨兵：事件名双向对账", () => {

@@ -65,7 +65,7 @@ settings.json 的全部可配字段、类型与默认值。
 | `fastMode` | boolean | — | Fast Mode 开关（/fast 持久化端，settings.json fastMode）。缺省 = false。 语义：偏好更快的输出端点/服务档位。… |
 | `git` | object | — | Git 集成配置（commit / PR 归因）（子键见[下文](#key-git)） |
 | `goal` | object | — | /goal 目标驱动持续执行配置（评估模型、轮次上限、卡住检测等；未配置的项走内置默认值）（子键见[下文](#key-goal)） |
-| `hooks` | object | — | Hooks（按事件分组） |
+| `hooks` | object | — | Hooks（按事件分组）。每条 hook 的 timeout 单位是秒（command / url / agent 默认 60，prompt 默认 30），写 5000 是 83 分钟不是 5 秒 |
 | `ide` | object | — | IDE 集成配置（自动连接、发现超时、写盘前 diff 预览）（子键见[下文](#key-ide)） |
 | `identity` | object | — | 身份注入段。userId / orgId / teamId 由装机脚本或 managed settings 写入； deviceId 不在这里配（本机持久 UUID）。 未配置时所有功能照常——身份通道 fail-open。（子键见[下文](#key-identity)） |
 | `includeCoAuthoredBy` | boolean | — | commit 是否加 Co-Authored-By。缺省 true（保持既有行为）。 比 git.commitAttribution.enabled 更粗：false 直接关掉默认归因，不需要写整段 git 配置。 |

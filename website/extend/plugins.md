@@ -67,9 +67,10 @@ sid-code --plugin-dir /tmp/my-plugin
 | 物化层 | 插件的实际文件 | `~/.sid-code/plugins/<name>/` |
 | 活跃层 | 运行时生效的命令 / Skill / Agent / Hook / MCP | 内存 |
 
-设计上插件**通过协议暴露能力，不注入代码**——组件都是 Markdown 或 JSON，
-没有可执行插件代码被 load 进进程。这也是为什么插件比"插件 API"安全：
-它能声明一个 Hook 去跑命令，但不能直接在 sid-code 进程里执行任意逻辑。
+插件不在 sid-code 进程里加载代码，组件都是 Markdown 或 JSON。
+但它带的 Hook 和 MCP server 会**以你的身份执行命令**：Hook 能跑任意 shell（比如下面示例里的
+`${PLUGIN_ROOT}/scripts/format.sh`），stdio 类型的 MCP server 能启动任意进程，两者都能读写你的整个家目录，
+权限和你手写的 Hook 一样大。**只装可信来源的插件。**
 
 ## plugin.json 字段
 
@@ -134,6 +135,9 @@ commands/env/staging.md    → /my-plugin:env:staging
 | 会话级 | `--plugin-dir <路径>` | `name@inline` |
 
 同名时优先级：**inline > 已安装 > 内置**。
+
+目前只支持从本地目录安装，没有插件市场，也不能从 git URL 安装。
+团队分发靠把插件目录放进仓库或共享盘，再 `/plugin install <路径>` 或 `--plugin-dir <路径>`。
 
 inline 排最高是给调试用的：改插件时不用先卸载已安装的版本，
 直接 `--plugin-dir` 指向工作副本就覆盖掉了。
@@ -213,12 +217,29 @@ sid-code --bridge wss://relay.example.com/session/abc --bridge-token <token>
   不是自动放行。这是 Bridge 和 `--dangerously-skip-permissions` 的本质区别。
 - **一次只跑一轮**。远程消息在上一轮没结束时排队串行消费，和交互模式的单轮语义一致。
 - **消息去重**。按 UUID 去重（有界环形缓冲），网络重传不会导致同一条消息执行两遍。
-- 只支持 `ws://` 和 `wss://`，别的协议直接报错：
+- 只认 `ws://` 和 `wss://`，别的协议直接报错：
   `不支持的 Bridge 传输协议: xxx（当前仅支持 ws:// / wss://）`
+
+### 准入：连上之前先过本机这一关
+
+远端拿到的是这台机器的执行权，而权限确认又是转发给远端自己批的，所以 `--bridge`
+在建立连接之前有一道本机准入（`packages/core/src/bridge/admission.ts`），按顺序判：
+
+1. **企业策略可以整体关掉 Bridge**：远程下发的 `bridgeEnabled: false` 或本机 settings 的
+   `bridge.enabled: false` 都会直接拒绝（远程的 false 盖过本机配置）：
+   `企业策略已禁用 Bridge 远程控制（settings 中 bridge.enabled = false）`
+2. **明文 `ws://` 默认拒绝**，要显式加 `--bridge-insecure` 才放行：
+   `拒绝明文 Bridge 连接: ws://…  改用 wss:// ，或确认风险后显式加 --bridge-insecure。`
+3. **首次连某个地址要当面确认**。终端会列出这个地址和风险提示，确认后记住，下次不再问。
+   记的是端点本身，URL 里的 query（常带 token）会被剥掉，不会落盘。
+4. **没有终端可问时 fail-closed**：首次连接却处在非交互环境（比如脚本里），直接拒绝，
+   要先在交互式终端里跑一次完成确认。
+
+每次准入拒绝都会记一条防线触发事件，可以在轨迹里统计。
 
 ::: danger Bridge 等于把这台机器的执行权交出去
 远端能让它读文件、改代码、跑命令——权限确认虽然转发到远端，但**确认的人不是你**。
-生产上务必：用 `wss://`（不要 `ws://` 明文）、带 `--bridge-token`、
+默认就只接受 `wss://`，`ws://` 要显式 `--bridge-insecure`；另外务必带 `--bridge-token`、
 中继服务器自己可控。不要连不明来源的中继。
 :::
 
@@ -246,8 +267,9 @@ sid-code --bridge wss://relay.example.com/session/abc --bridge-token <token>
 
 ### 插件能带 MCP server 吗
 
-能，`mcpServers` 字段写内联对象或指向文件。插件带的 server 会打上插件作用域标记，
-参与正常的 MCP 优先级合并——见 [MCP](/extend/mcp#四层作用域与优先级)。
+能，`mcpServers` 字段写内联对象或指向文件。插件带的 server 名字会带 `plugin:<插件名>:` 前缀，
+不会和你自己的配置撞名；但它不参与签名去重，和你自己配的是同一个 server 时会连两次。
+企业 `mcpPolicy` 对它照样生效——见 [MCP](/extend/mcp#四层作用域与优先级)。
 
 ### 插件里的 Skill 和自己写的 Skill 有区别吗
 

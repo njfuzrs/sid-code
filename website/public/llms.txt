@@ -1,6 +1,6 @@
 # sid-code
 
-> 跑在终端的 coding agent —— 多 provider 可插拔、功能自主、数据自主。
+> 长在企业研发环境里的 coding agent —— 你能改、能量、能审、数据不出门的 agent 底座。
 
 本文件是给大模型读的全站索引（共 109 页）。
 `/ref/` 下的参考页由 `scripts/docs-gen-reference.ts` 从源码生成，与实现同源。
@@ -13,7 +13,7 @@
 ## 开始
 
 - [sid-code 是什么](/start/): 一句话定位、它能替你做什么的具体例子，以及和 Claude Code 的关系与差异。
-- [配置 LLM Provider](/start/configure): anthropic / openai / ollama 三族协议各一份可直接粘的 settings.json，含 base_url 的 /v1 两族相反规则。
+- [配置 LLM Provider](/start/configure): anthropic / openai / ollama 三族各一份可直接粘的 settings.json（openai 族含 Chat Completions 与 Responses 两种），含 base_url 的 /v1 两族相反规则。
 - [跑通第一个任务](/start/first-task): 一个真实小任务的全过程：改一个函数并跑测试，逐屏解说。
 - [安装](/start/install): 一条 curl 命令装好 sid-code，以及 PATH / 权限 / 架构识别三类常见失败的处理。
 - [接下来读什么](/start/next): 按你的目标给出四条阅读路径，每条带一句为什么。
@@ -35,7 +35,7 @@
 - [成本与用量](/use/cost): 单次任务花了多少、prompt cache 命中率怎么看、怎么把成本降下来、怎么设花费上限。
 - [交互模式与键位](/use/interactive): 常用键位、和弦、中断与排队输入的行为。
 - [记忆与 CLAUDE.md](/use/memory): 项目指令、个人记忆、团队记忆三层的作用范围与优先级。
-- [权限与人工确认](/use/permissions): 八种权限模式怎么选、allow/deny/ask 规则怎么写，以及哪些操作任何模式都拦不住。
+- [权限与人工确认](/use/permissions): 八种权限模式怎么选、allow/deny/ask 规则怎么写，以及 --dangerously-skip-permissions 到底跳过了哪些层。
 - [Plan Mode 与 Todo](/use/plan-mode): 先规划后动手的用法，以及 todo 清单在长任务里的作用。
 - [会话管理](/use/sessions): 会话持久化、恢复（-c）、checkpoint 与回滚。
 - [排障](/use/troubleshooting): 真实踩过的坑：症状 → 原因 → 解法。

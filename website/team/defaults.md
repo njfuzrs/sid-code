@@ -20,16 +20,17 @@ description: 用 team-defaults.json 给全团队统一 provider 与默认配置�
 ## 快速上手
 
 配置文件就是一份普通的 `settings.json`。以仓库里的模板 `scripts/team-defaults.template.json`
-为起点改（网关地址已是占位符，换成你自己的）：
+为起点改（网关地址已是占位符，换成你自己的）。下面是节选，模型清单只留了两族各一个：
 
 ```json
 {
-  "model": "deepseek-v4-pro",
-  "fallbackModel": "deepseek-v4-flash",
+  "model": "ali-deepseek-v4-pro",
+  "fallbackModel": "ali-deepseek-v4-flash",
   "fallbackSwitchMode": "ask",
+  "autoUpdate": "auto",
   "availableModels": [
     {
-      "name": "deepseek-v4-pro",
+      "name": "ali-deepseek-v4-pro",
       "provider": "openai",
       "baseURL": "https://your-gateway.example.com/v1",
       "apiKey": "__YOUR_API_KEY__"
@@ -44,16 +45,16 @@ description: 用 team-defaults.json 给全团队统一 provider 与默认配置�
   "language": "zh",
   "permissionMode": "default",
   "subAgentModels": {
-    "default": "deepseek-v4-flash",
-    "task": "deepseek-v4-pro",
-    "verify": "deepseek-v4-pro"
+    "default": "ali-deepseek-v4-flash",
+    "task": "ali-deepseek-v4-pro",
+    "verify": "ali-deepseek-v4-pro"
   },
   "quota": { "costLimit": 100 },
   "effortLevel": "max"
 }
 ```
 
-上面是节选。完整模板里还有一段 `"trace": { "enabled": true }`——只开本地轨迹采集，
+完整模板有 9 个模型，另外还有一段 `"trace": { "enabled": true }`——只开本地轨迹采集，
 **不含任何上传配置**：按这份模板分发，轨迹只留在每个人自己的机器上。团队要集中收轨迹，
 在 `trace.upload` 里填你们自己的地址与 token，见[轨迹采集与可观测](/team/observability)。
 
@@ -73,7 +74,7 @@ description: 用 team-defaults.json 给全团队统一 provider 与默认配置�
 ✓ team-defaults.json 已更新
 ```
 
-这个参数**只做上传，不打版本号、不构建二进制**（`scripts/release.sh:196-206` 上传完直接
+这个参数**只做上传，不打版本号、不构建二进制**（`scripts/release.sh` 上传完直接
 `exit 0`）。所以随时能单独更新团队配置，不影响发版节奏。
 
 ## 两条分发路径
@@ -87,7 +88,7 @@ description: 用 team-defaults.json 给全团队统一 provider 与默认配置�
 
 ### 首次安装：纯拷贝，绝不覆盖
 
-安装脚本的逻辑（`scripts/install-template.sh:302-313`）：
+安装脚本的逻辑（`scripts/install-template.sh`）：
 
 ```bash
 if [ -f "$SETTINGS_PATH" ]; then
@@ -108,7 +109,7 @@ fi
 `sid-code update` 只替换二进制、不碰 `settings.json`。这意味着早期安装的用户
 永远拿不到后来新增的团队默认字段（`subAgentModels` / `search` / `trace` / `quota` 这些）。
 
-补这个断层的是启动时的一次数据迁移（`src/migrations/backfill-team-defaults.ts`）。
+补这个断层的是启动时的一次数据迁移（`packages/core/src/migrations/backfill-team-defaults.ts`）。
 真跑一次看效果——先造一份只有三个键的用户配置：
 
 ```json
@@ -126,7 +127,7 @@ fi
 
 ```text
 已补全团队默认配置字段（未覆盖任何已有配置）: fallbackModel, fallbackSwitchMode,
-language, permissionMode, allowedTools, disallowedTools, hooks, mcpServers,
+autoUpdate, language, permissionMode, allowedTools, disallowedTools, hooks, mcpServers,
 subAgentModels, costLimit, search, disabledSkills, trustProjectExtensions,
 allowedDirectories, blockedDirectories, trace, effortLevel
 ```
@@ -143,7 +144,7 @@ allowedDirectories, blockedDirectories, trace, effortLevel
 
 ## "缺失"的判定：只看顶层键是否存在
 
-判定标准就一句：**顶层 key 是否 `in` 用户对象**（`src/config/settings/settings.ts:391-397`）。
+判定标准就一句：**顶层 key 是否 `in` 用户对象**（`packages/core/src/config/settings/settings.ts`）。
 由此推出几条不太直觉但很重要的行为：
 
 - 写成 `"quota": {}`、`"allowedTools": []` 都算**已表态**，不会被补。
@@ -172,7 +173,7 @@ allowedDirectories, blockedDirectories, trace, effortLevel
 ### 单一事实源
 
 模板 `scripts/team-defaults.template.json` 被直接 `import` 进二进制
-（`src/migrations/backfill-team-defaults.ts:20`，Bun `--compile` 会内联 JSON），
+（`packages/core/src/migrations/backfill-team-defaults.ts`，Bun `--compile` 会内联 JSON），
 与安装脚本从服务器拉的那份同源。这样"首装拷贝的"和"升级补全的"不会漂移成两份。
 
 ::: warning 一个必须知道的推论
@@ -204,12 +205,12 @@ ls -l ~/.sid-code/settings.json
 
 ### 常规发版会不会把仓库里的占位模板推上去覆盖真实配置
 
-不会。`team-defaults.json` 被刻意排除在常规发布流程外（`scripts/release.sh:55-56`），
+不会。`team-defaults.json` 被刻意排除在常规发布流程外（`scripts/release.sh`），
 只能通过 `--upload-team-defaults` 显式单独推送。理由正是防止把
 `__YOUR_API_KEY__` 这样的占位模板覆盖掉服务器上的真实配置。
 
 同理，服务器端的旧版本清理只删形如 `<path>/<x.y.z>/` 的版本目录，
-`install.sh` / `latest.txt` / `team-defaults.json` 不受影响（`scripts/release.sh:460`）。
+`install.sh` / `latest.txt` / `team-defaults.json` 不受影响（`scripts/release.sh`）。
 
 ### 团队配置里能不能直接放真实 API key
 
