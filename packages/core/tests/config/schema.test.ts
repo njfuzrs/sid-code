@@ -383,6 +383,28 @@ describe("Config Validation", () => {
       expect(result.warnings.some((w) => w.path === "quota.budgetRules[0].action")).toBe(true);
     });
 
+    test("action: downgrade 合法但未实现，生成「等同 alert」警告（B39）", () => {
+      const mk = (action: "alert" | "downgrade" | "block") =>
+        validateConfig({
+          ...baseConfig,
+          quota: {
+            budgetRules: [
+              { id: "r1", name: "rule1", period: "daily" as const, limit_usd: 10, action },
+            ],
+          },
+        });
+      const w = mk("downgrade").warnings.find((x) => x.path === "quota.budgetRules[0].action");
+      expect(w?.message).toContain("等同 alert");
+      expect(w?.message).not.toContain("无效值");
+      // alert / block 不应触发这条
+      expect(mk("alert").warnings.some((x) => x.path === "quota.budgetRules[0].action")).toBe(
+        false,
+      );
+      expect(mk("block").warnings.some((x) => x.path === "quota.budgetRules[0].action")).toBe(
+        false,
+      );
+    });
+
     test("重复的 rule id 生成警告", () => {
       const config = {
         ...baseConfig,
