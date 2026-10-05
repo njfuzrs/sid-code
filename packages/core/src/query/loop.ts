@@ -122,8 +122,22 @@ import {
   buildTodoGateExhaustedMessage,
   buildTodoGateForgotMarkMessage,
   buildUnansweredEndTurnMessage,
+  buildTodoBlockedHandoffMessage,
   countUnfinished,
+  blockedTodos,
+  blockedSignature,
+  refreshTodoGateBudget,
+  TODO_GATE_BUDGET_KEY,
+  type TodoGateBudget,
 } from "./todo-reminder.ts";
+import {
+  TODO_REWORK_KEY,
+  createTodoReworkState,
+  recordTodoWrite,
+  recordFileEditForRework,
+  drainTodoReworkReminder,
+  type TodoReworkState,
+} from "./todo-rework.ts";
 import {
   getTodoReminderTurnCounts,
   shouldInjectTodoReminder,
@@ -488,6 +502,30 @@ function getMeasuredProgress(sessionState: SessionState): MeasuredProgressState 
   return s;
 }
 
+/** 取本会话的「标完成后又返工」检测状态（会话级，理由同 getMeasuredProgress）。 */
+function getTodoReworkState(sessionState: SessionState): TodoReworkState {
+  let s = sessionState.get(TODO_REWORK_KEY) as TodoReworkState | undefined;
+  if (!s) {
+    s = createTodoReworkState();
+    sessionState.set(TODO_REWORK_KEY, s);
+  }
+  return s;
+}
+
+/**
+ * 取 end_turn 兜底的会话级续命预算，并按清单**真实推进**（completed 数 / 总项数）刷新。
+ * 只改措辞的 todo_write、新的一条用户消息，都不再让预算回满——见 TODO_GATE_BUDGET_KEY 注释。
+ */
+function getTodoGateBudget(
+  sessionState: SessionState,
+  todos: import("../tool/todo-write.ts").TodoItem[],
+): TodoGateBudget {
+  const prev = sessionState.get(TODO_GATE_BUDGET_KEY) as TodoGateBudget | undefined;
+  const next = refreshTodoGateBudget(prev, todos);
+  if (next !== prev) sessionState.set(TODO_GATE_BUDGET_KEY, next);
+  return next;
+}
+
 function emitNagInjectedEvent(
   deps: QueryDeps,
   sessionId: string,
@@ -552,7 +590,10 @@ function emitTodoProgressEvent(
     writeVersion: number;
     total: number;
     completed: number;
+    /** 模型可推进的未完成项（pending + in_progress），**不含 blocked** */
     unfinished: number;
+    /** 等待用户 / 外部条件的项（2026-10-06 新增；老事件无此字段） */
+    blocked: number;
   },
 ): void {
   if (!deps.traceAppendEvent) return;
@@ -1297,6 +1338,28 @@ export async function* queryLoop(loopConfig: QueryLoopConfig): AsyncGenerator<Qu
         }
       }
 
+      // 「标了 completed 又返工」提醒（todo-rework.ts）：上一轮工具执行时登记、这里消费。
+      // 走 reminder 通道而不是写进 tool_result——命中在执行完之后才判定，且不该污染工具输出。
+      {
+        const reworkReminder = drainTodoReworkReminder(getTodoReworkState(sessionState));
+        if (reworkReminder) {
+          reminderParts.push(reworkReminder);
+          log.info("QUERY_LOOP", "清单返工提醒：已完成项对应的文件被再次修改");
+          if (deps.traceAppendEvent) {
+            try {
+              deps.traceAppendEvent({
+                event: "TodoReworkDetected",
+                session_id: sessionState.sessionId,
+                timestamp: new Date().toISOString(),
+                data: { ...turnMetrics(state, sessionState, promptSeq) },
+              });
+            } catch {
+              /* trace 写入失败不阻断主循环 */
+            }
+          }
+        }
+      }
+
       // P0-2：todo 每隔 N 轮回注完整清单（对标 claude-code attachments.ts）。
       // 根因 1 修复——todo 写完即沉没、只喂 TUI、从不回注 LLM，弱模型靠工作记忆追踪必然遗漏。
       // 触发条件：有未完成项 + 距上次 todo_write ≥ TURNS_SINCE_WRITE 轮 **且** 距上次回注
@@ -1353,7 +1416,10 @@ export async function* queryLoop(loopConfig: QueryLoopConfig): AsyncGenerator<Qu
               total: todoFactState.todos.length,
               completed: todoFactState.todos.filter((t) => t.status === "completed").length,
               unfinished: countUnfinished(todoFactState.todos),
+              blocked: blockedTodos(todoFactState.todos).length,
             });
+            // 返工检测：把上次写入以来落盘的文件归到本次新完成的项上（见 todo-rework.ts）
+            recordTodoWrite(getTodoReworkState(sessionState), todoFactState.todos);
           }
         }
         if (todoState && todoState.todos.length > 0 && countUnfinished(todoState.todos) > 0) {
@@ -1365,14 +1431,12 @@ export async function* queryLoop(loopConfig: QueryLoopConfig): AsyncGenerator<Qu
             // 有进展 → 刷新 end_turn todo gate 预算：同一条用户消息内模型完成部分项后，
             // gate 不该继续消耗上一段停滞攒下的续命额度。
             state.progressNagCount = 0;
-            state.todoGateRetryCount = 0;
+            // end_turn gate 预算**不在这里**复位：writeVersion 变化不等于清单有推进
+            // （只改措辞也会 +1）。预算改挂 SessionState、按完成数复位，见 getTodoGateBudget。
             // P1-4 item 2：模型确实更新了清单 = 记账催促奏效了 → 清零条件封顶预算，
             // 让它在下一段"有进展但又忘记记账"时还能再催。不清零的话一个长会话里
             // 只要早期催满 2 次，后面就永久哑火。
             sessionState.set(TODO_BOOKKEEPING_NAG_COUNT_KEY, 0);
-            // 误判自愈：writeVersion 变化 = 模型确实推进了清单 = 属"真没做完后继续干"的良性路径，
-            // 清零"有产出却不翻状态位"计数（该计数只统计连续的 B 类：交付了却忘标记）。
-            state.todoGateProductiveNoUpdateCount = 0;
           } else {
             // ─── 2026-08-01 修复 1：改为无状态消息扫描（对标 attachments.ts:3212-3291）───
             //
@@ -3829,8 +3893,8 @@ export async function* queryLoop(loopConfig: QueryLoopConfig): AsyncGenerator<Qu
             continue;
           }
 
-          // P2-3：验证真正跑过且全部通过 → 清零续命预算，与 todoGateRetryCount 在
-          // writeVersion 变化时复位同一取向。不清零的话，同一条用户消息里前面失败 3 次，
+          // P2-3：验证真正跑过且全部通过 → 清零续命预算，与 todo gate 预算在
+          // 清单完成数变化时复位同一取向。不清零的话，同一条用户消息里前面失败 3 次，
           // 后面每一轮 end_turn 都被当成"预算已耗尽"，即使模型已经修好也不再验证。
           // 只认 `passed`（真跑过且全通过），不认 `!shouldContinue && !forceStop`——
           // 后者把「耗尽仍失败」和「hook 抛异常」也算进去，那会让预算永远回满。
@@ -3915,23 +3979,20 @@ export async function* queryLoop(loopConfig: QueryLoopConfig): AsyncGenerator<Qu
         if (deps.getTodoState) {
           const todoState = deps.getTodoState();
           const unfinished = todoState ? countUnfinished(todoState.todos) : 0;
-          if (todoState && unfinished > 0) {
+          // 预算挂 SessionState、按完成数复位（2026-10-06）：旧实现挂 LoopState，
+          // 每条用户消息归零 + 每次 todo_write（哪怕只改措辞）归零，同一份停滞清单可被无限次拦截。
+          const budget = todoState ? getTodoGateBudget(sessionState, todoState.todos) : null;
+          if (todoState && budget && unfinished > 0) {
             // 误判自愈信号：本轮"有实质产出"（写了一段实质文字，如输出了完整报告）却试图收尾。
-            // 关键前提——本 gate 只在 `isEndTurnLike && !hasPendingToolUse` 分支到达，即本轮
-            // **没有任何工具调用**，因此 todo_write 本轮必然没执行、writeVersion 不可能变化。
-            // 于是"有产出却不翻状态位"= producedSubstantialText 即可，无需再判 writeVersion。
-            // 逐次累计；若某轮模型改走 todo_write（有工具调用）则不会到这里，且下一轮 P0-2 复位
-            // 逻辑会在 writeVersion 变化时把本计数清零（良性路径不会误触发忘标记判定）。
+            // 本 gate 只在 `isEndTurnLike && !hasPendingToolUse` 分支到达，即本轮没有工具调用，
+            // todo_write 本轮必然没执行，于是"有产出却不翻状态位"= producedSubstantialText。
+            // 计数与续命预算同一复位口径（完成数变化才清零）。
             const producedSubstantialText =
               responseText.trim().length >= TODO_GATE_PRODUCTIVE_TEXT_MIN;
-            if (producedSubstantialText) {
-              state.todoGateProductiveNoUpdateCount =
-                (state.todoGateProductiveNoUpdateCount ?? 0) + 1;
-            }
+            if (producedSubstantialText) budget.productiveNoUpdate += 1;
 
-            const retries = state.todoGateRetryCount ?? 0;
-            if (retries < MAX_TODO_GATE_RETRIES) {
-              state.todoGateRetryCount = retries + 1;
+            if (budget.retries < MAX_TODO_GATE_RETRIES) {
+              budget.retries += 1;
               ctxMgr.addMessage({
                 role: "user",
                 content: [
@@ -3946,44 +4007,66 @@ export async function* queryLoop(loopConfig: QueryLoopConfig): AsyncGenerator<Qu
               });
               log.info(
                 "QUERY_LOOP",
-                `P0-3：end_turn 拦截——仍有 ${unfinished} 项未完成，软续命 ${state.todoGateRetryCount}/${MAX_TODO_GATE_RETRIES}`,
+                `P0-3：end_turn 拦截——仍有 ${unfinished} 项未完成，软续命 ${budget.retries}/${MAX_TODO_GATE_RETRIES}`,
               );
               yield {
                 kind: "system",
                 level: "info",
                 // P2-1：中性措辞，避免"检测到…未完成"的报错感——这是正常的完成度兜底推进，非错误。
-                text: `清单还有 ${unfinished} 项待完成，继续推进 (${state.todoGateRetryCount}/${MAX_TODO_GATE_RETRIES})`,
+                text: `清单还有 ${unfinished} 项待完成，继续推进 (${budget.retries}/${MAX_TODO_GATE_RETRIES})`,
               };
               setTransition(state, { type: "todo_gate_retry" }, deps, sessionState.sessionId);
               continue;
             }
 
-            // 续命耗尽。区分两种外部观测相同、本质不同的收尾：
-            const forgotMark =
-              (state.todoGateProductiveNoUpdateCount ?? 0) >= TODO_GATE_FORGOT_MARK_THRESHOLD;
-            if (forgotMark) {
-              // B) 极可能"忘标记"：每次续命模型都在实质应答却始终不翻状态位。抛"未完成"是假警报，
-              // 反而误导用户以为交付物有缺失。改为中性收尾（warn 日志保留，供排查门禁误判率）。
-              log.warn(
+            // 续命耗尽。同一清单状态下只呈现一次——之后的 end_turn 直接放行：
+            // 此前每条新用户消息都会再弹一次同样的红字，用户读到的是"又没做完"，
+            // 而实际是"同一份清单、什么都没变"。
+            if (!budget.exhaustedNotified) {
+              budget.exhaustedNotified = true;
+              // 区分两种外部观测相同、本质不同的收尾：
+              const forgotMark = budget.productiveNoUpdate >= TODO_GATE_FORGOT_MARK_THRESHOLD;
+              if (forgotMark) {
+                // B) 极可能"忘标记"：每次续命模型都在实质应答却始终不翻状态位。抛"未完成"是假警报，
+                // 反而误导用户以为交付物有缺失。改为中性收尾（warn 日志保留，供排查门禁误判率）。
+                log.warn(
+                  "QUERY_LOOP",
+                  `P0-3：续命耗尽且判定为"忘标记"（连续 ${budget.productiveNoUpdate} 次有产出却未翻状态位），` +
+                    `抑制假警报，中性收尾；仍有 ${unfinished} 项未勾选`,
+                );
+                yield {
+                  kind: "system",
+                  level: "info",
+                  text: buildTodoGateForgotMarkMessage(),
+                };
+              } else {
+                // A) 真没做完：放行但如实呈现未完成项，不假装完成。
+                log.warn(
+                  "QUERY_LOOP",
+                  `P0-3：完成度续命已达上限 ${MAX_TODO_GATE_RETRIES}，放行但仍有 ${unfinished} 项未完成`,
+                );
+                yield {
+                  kind: "system",
+                  level: "warning",
+                  text: buildTodoGateExhaustedMessage(todoState.todos),
+                };
+              }
+            }
+          } else if (todoState && blockedTodos(todoState.todos).length > 0) {
+            // 只剩 blocked（模型可推进项为 0）：**不拦截**——下一步主语是用户，再催模型只会
+            // 产出同义重复（会话 20261005-233851-9b91e1b7 的 7 次）。给用户一条中性说明，
+            // 同一批 blocked 项只说一次（签名去重，挂会话级预算上，跨用户消息有效）。
+            const sig = blockedSignature(todoState.todos);
+            if (budget && budget.handoffSignature !== sig) {
+              budget.handoffSignature = sig;
+              log.info(
                 "QUERY_LOOP",
-                `P0-3：续命耗尽且判定为"忘标记"（连续 ${state.todoGateProductiveNoUpdateCount} 次有产出却未翻状态位），` +
-                  `抑制假警报，中性收尾；仍有 ${unfinished} 项未勾选`,
+                `P0-3：end_turn 放行——剩余 ${blockedTodos(todoState.todos).length} 项 blocked（等待用户/外部）`,
               );
               yield {
                 kind: "system",
                 level: "info",
-                text: buildTodoGateForgotMarkMessage(),
-              };
-            } else {
-              // A) 真没做完：放行但如实呈现未完成项，不假装完成。
-              log.warn(
-                "QUERY_LOOP",
-                `P0-3：完成度续命已达上限 ${MAX_TODO_GATE_RETRIES}，放行但仍有 ${unfinished} 项未完成`,
-              );
-              yield {
-                kind: "system",
-                level: "warning",
-                text: buildTodoGateExhaustedMessage(todoState.todos),
+                text: buildTodoBlockedHandoffMessage(todoState.todos),
               };
             }
           }
@@ -4056,7 +4139,7 @@ export async function* queryLoop(loopConfig: QueryLoopConfig): AsyncGenerator<Qu
             );
           } else if (ledger && (state.hypothesisGateRetryCount ?? 0) > 0) {
             // P2-3：登记表**已结清**（无 unsettled、无"确认后被打脸"）→ 清零续命预算，
-            // 与 todoGateRetryCount 在 writeVersion 变化时复位同一取向。
+            // 与 todo gate 预算在清单完成数变化时复位同一取向。
             //
             // 不清零的实测形态：全 refuted 时 cap=1，用掉这一次之后计数永久停在 1；
             // 后面模型登记了新的 unsettled 假设，`retries < MAX` 从此恒假，门禁**直接放行**
@@ -4828,6 +4911,15 @@ export async function* queryLoop(loopConfig: QueryLoopConfig): AsyncGenerator<Qu
             if (FILE_MUTATING_TOOLS.has(b.name)) {
               recordFileChange(measuredProgress, (b.input as any)?.file_path);
               recordFileChange(measuredProgress, (b.input as any)?.notebook_path);
+              // 返工检测：只认执行成功的落盘（失败的 edit 没改磁盘，不算返工也不算进展）
+              const r = resultMap.get(b.id);
+              const failed = !!(r && r.type === "tool_result" && (r as any).is_error);
+              if (!failed) {
+                const rework = getTodoReworkState(sessionState);
+                const current = deps.getTodoState?.()?.todos ?? null;
+                recordFileEditForRework(rework, (b.input as any)?.file_path, current);
+                recordFileEditForRework(rework, (b.input as any)?.notebook_path, current);
+              }
             } else if (b.name === "bash" && typeof cmd === "string") {
               recordScalarObservation(measuredProgress, cmd, readOutput());
             }

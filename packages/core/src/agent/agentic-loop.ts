@@ -58,6 +58,7 @@ import {
   buildTodoReminder,
   buildTodoGateMessage,
   countUnfinished,
+  countCompleted,
   TODO_REMINDER_CONFIG,
   MAX_TODO_GATE_RETRIES,
 } from "../query/todo-reminder.ts";
@@ -381,6 +382,9 @@ async function runAgentLoopInner(
   let lastTodoReminderTurn = 0;
   // end_turn 完成度门禁的软续命次数（上限与主循环共用 MAX_TODO_GATE_RETRIES）
   let todoGateRetryCount = 0;
+  // 续命预算的复位基线：completed 项数。只改措辞的 todo_write 不复位（与主循环同一口径，
+  // 见 todo-reminder.ts countCompleted 注释），完成数增长才复位。
+  let todoGateCompletedBaseline = -1;
   // B5-4（缺口 D）：重试计数写进 `retryStats` holder（跨轮次累计，由 runAgentLoop
   // 在所有出口统一回填）。累计而非每轮重置——用户问的是"这个子代理一共重试了多少次"，
   // 而"第 3 轮重试了 2 次"这种粒度已经在遥测（type=retry + agentId）里了。
@@ -996,8 +1000,17 @@ async function runAgentLoopInner(
       //     主循环有真实转录背书，子代理侧没有同等证据，先不抄一个未经校准的阈值。
       //   - 续命上限与主循环共用 MAX_TODO_GATE_RETRIES，耗尽即放行（不阻断父代理），
       //     放行时留一条 warn，让「子代理收尾但清单未尽」在日志里可查。
+      //   - blocked 项不拦（countUnfinished 不含 blocked）：子代理同样可能卡在需要用户的条件上，
+      //     此时再催只会让它空转。
       const todosAtEnd = readSubAgentTodos(tools);
       const unfinishedAtEnd = todosAtEnd ? countUnfinished(todosAtEnd) : 0;
+      if (todosAtEnd) {
+        const completedNow = countCompleted(todosAtEnd);
+        if (completedNow !== todoGateCompletedBaseline) {
+          todoGateCompletedBaseline = completedNow;
+          todoGateRetryCount = 0;
+        }
+      }
       if (todosAtEnd && unfinishedAtEnd > 0) {
         if (todoGateRetryCount < MAX_TODO_GATE_RETRIES) {
           todoGateRetryCount++;

@@ -93,6 +93,11 @@ export const PLAN_REVIEW = BULLET;
 export const TODO_PENDING = "○";
 export const TODO_IN_PROGRESS = "◐";
 export const TODO_COMPLETED = "●";
+/**
+ * 等待用户 / 外部条件（blocked）：虚线空心圆。仍在同一圆形字形族内，
+ * 用"虚"表达"不是没开始，是卡在别人那儿"，不新增色相（L1 元原则 1）。
+ */
+export const TODO_BLOCKED = "◌";
 
 /**
  * 选择题字形：靠「形状」区分选择语义——圆圈=单选(radio)、方框=多选(checkbox)，

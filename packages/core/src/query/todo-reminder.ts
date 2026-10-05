@@ -76,17 +76,54 @@ export function buildUnansweredEndTurnMessage(): string {
 
 /** 状态文案（与 claude-code messages.ts 的 `[status] content` 渲染对齐） */
 function statusLabel(s: string): string {
-  return s === "completed" ? "completed" : s === "in_progress" ? "in_progress" : "pending";
+  return s === "completed"
+    ? "completed"
+    : s === "in_progress"
+      ? "in_progress"
+      : s === "blocked"
+        ? "blocked"
+        : "pending";
 }
 
-/** 未完成（pending + in_progress）项 */
+/**
+ * **模型可推进**的未完成项（pending + in_progress）。
+ *
+ * ⚠️ 刻意**不含 blocked**：blocked 的下一步主语是用户（输入密码 / 执行命令 / 提供信息），
+ * 模型再被催也推进不了。本函数是 end_turn 兜底、todo 回注、work-log、子代理门禁共用的
+ * "还有没有活"判据——把 blocked 算进来，等于在"模型正确地停下来等用户"时也拦它，
+ * 会话 20261005-233851-9b91e1b7 的 7 次同义重复就是这么来的。
+ * 需要"清单还剩几项没勾"（含 blocked）的展示口径时，用 `outstandingTodos`。
+ */
 export function unfinishedTodos(todos: TodoItem[]): TodoItem[] {
   return todos.filter((t) => t.status === "pending" || t.status === "in_progress");
 }
 
-/** 未完成项数量 */
+/** 模型可推进的未完成项数量（不含 blocked，见 unfinishedTodos） */
 export function countUnfinished(todos: TodoItem[]): number {
   return unfinishedTodos(todos).length;
+}
+
+/** 等待用户 / 外部条件的项（blocked） */
+export function blockedTodos(todos: TodoItem[]): TodoItem[] {
+  return todos.filter((t) => t.status === "blocked");
+}
+
+/** 清单里所有尚未勾掉的项（pending + in_progress + blocked），展示 / 落盘口径 */
+export function outstandingTodos(todos: TodoItem[]): TodoItem[] {
+  return todos.filter((t) => t.status !== "completed");
+}
+
+/**
+ * 清单的**真实推进量**：completed 项数。
+ *
+ * end_turn 兜底的续命预算以它为复位依据，而**不是** writeVersion。理由是实测的：
+ * writeVersion 每次 todo_write 都 +1，哪怕只是改了措辞、状态一个没动——会话
+ * 20261005-233851-9b91e1b7 第 4 次写入只给剩余 3 项加了「需 sudo」备注（completed 仍 2/5），
+ * 却把续命预算清零，同一条用户消息里兜底触发了 4 次（上限 3）。
+ * "模型确实推进了清单"的唯一可信信号是完成数增长。
+ */
+export function countCompleted(todos: TodoItem[]): number {
+  return todos.filter((t) => t.status === "completed").length;
 }
 
 /** 把 todo 渲染成带序号 + 状态标签的多行文本 */
@@ -101,10 +138,15 @@ function renderTodoLines(todos: TodoItem[]): string {
  */
 export function buildTodoReminder(todos: TodoItem[]): string {
   const unfinished = countUnfinished(todos);
+  const blocked = blockedTodos(todos).length;
+  const blockedNote =
+    blocked > 0
+      ? `\n另有 ${blocked} 项为 blocked（等待用户/外部条件），你不需要也无法推进它们，不要为它们空转重试。`
+      : "";
   return `<system-reminder>
 这是你当前的任务清单（请勿向用户提及本提醒）：
 ${renderTodoLines(todos)}
-仍有 ${unfinished} 项未完成。请继续推进，不要遗漏；完成每一项后立即用 todo_write 更新状态。
+仍有 ${unfinished} 项未完成。请继续推进，不要遗漏；完成每一项后立即用 todo_write 更新状态。${blockedNote}
 注意：如果某项其实**已经做完**（代码已改、验证已过），只是忘了标记，请直接用 todo_write 把它标为 completed，然后如实收尾——不要为了凑"未完成"去臆造用户没要求的新工作，也不要假设已交付的产物存在故障再去排查。
 </system-reminder>`;
 }
@@ -134,6 +176,7 @@ ${renderTodoLines(pending)}
 请对照实际进展判断，二选一：
 1. 若这些项**尚未真正做完**：继续完成，不要提前收尾；完成每一项后用 todo_write 标记 completed。
 2. 若这些项**其实已经做完**（代码已改、构建/测试已过），只是忘了标记：直接用 todo_write 标为 completed 并如实收尾。**切勿**为了让清单"看起来还有活"而去臆造用户没要求的新工作，或假设已交付的产物有故障再去排查——现状描述不等于 bug 报告，没有用户新反馈就不要脑补故障。
+3. 若某项**卡在你无法自行完成的外部条件上**（需要用户输入密码 / 在自己终端执行命令 / 提供信息）：用 todo_write 把它标为 blocked，在回复里说清用户要做什么，然后收尾——不要谎报 completed，也不要反复重试。
 如果某项确实无法完成，请明确说明原因（而不是默默跳过或谎报完成）。${noRestate}
 </system-reminder>`;
 }
@@ -145,4 +188,77 @@ ${renderTodoLines(pending)}
 export function buildTodoGateExhaustedMessage(todos: TodoItem[]): string {
   const pending = unfinishedTodos(todos);
   return `⚠️ 仍有 ${pending.length} 项任务未完成（已达自动续推上限 ${MAX_TODO_GATE_RETRIES} 次）：\n${renderTodoLines(pending)}`;
+}
+
+/**
+ * end_turn 时清单里只剩 blocked（无 pending / in_progress）——不拦截、不续命，
+ * 只给用户一条中性说明：这些项在等你，不是 agent 没做完。
+ *
+ * 为什么不是红字警告：此刻 agent 已经做完它能做的一切，下一步主语是用户。
+ * 用"⚠️ 仍有 N 项任务未完成"会把"在等你执行命令"误读成"agent 交付不完整"。
+ */
+export function buildTodoBlockedHandoffMessage(todos: TodoItem[]): string {
+  const blocked = blockedTodos(todos);
+  return `清单中有 ${blocked.length} 项在等你操作（agent 无法自行完成）：\n${renderTodoLines(blocked)}\n完成后回复我即可继续。`;
+}
+
+/**
+ * SessionState 键名：end_turn 兜底的续命预算（跨用户消息持久）。
+ *
+ * 为什么挂 SessionState 而不是 LoopState（2026-10-06 修复）：LoopState 每条用户消息重建，
+ * 旧实现的 `todoGateRetryCount` 因此每条新消息归零。会话 20261005-233851-9b91e1b7 里用户只问了
+ * 一句「请你告诉我该执行什么命令即可」，清单状态与上一条消息末尾**完全相同**（2/5，剩余 3 项都在
+ * 等 sudo），兜底却又从 0 开始拦满 3 次，外加一条红字警告。"这份清单在当前状态下已经催过几次"
+ * 是会话级事实，与 LAST_TODO_WRITE_VERSION_KEY 同因上移。
+ */
+export const TODO_GATE_BUDGET_KEY = "todoGateBudget";
+
+/** end_turn 兜底的会话级续命预算。 */
+export interface TodoGateBudget {
+  /** 当前清单状态下已软续命的次数（上限 MAX_TODO_GATE_RETRIES） */
+  retries: number;
+  /**
+   * 续命期间"有实质产出却没推进清单"的累计次数（P0-3 误判自愈判据，原 LoopState 字段）。
+   * 与 retries 同一复位口径：完成数变化才清零。
+   */
+  productiveNoUpdate: number;
+  /** 预算基线：上次复位时的 completed 项数 */
+  completed: number;
+  /** 预算基线：上次复位时的清单总项数 */
+  total: number;
+  /** 本基线下"续命耗尽"提示是否已呈现过（同一状态只说一次，不每轮重复红字） */
+  exhaustedNotified: boolean;
+  /** 上次呈现"等你操作"说明时的 blocked 项签名（签名不变就不重复说） */
+  handoffSignature?: string;
+}
+
+/**
+ * 按清单**真实推进**刷新续命预算：completed 数或总项数变了才复位，否则沿用旧预算。
+ *
+ * 复位判据刻意不用 writeVersion——只改措辞的 todo_write 也会让它 +1（见 countCompleted 注释）。
+ * 总项数变化通常意味着换了一份新清单（用户提了新任务），此时旧预算不该延续；
+ * completed 减少是"把已完成项改回 in_progress 返工"，同样是清单的真实变化。
+ */
+export function refreshTodoGateBudget(
+  prev: TodoGateBudget | undefined,
+  todos: TodoItem[],
+): TodoGateBudget {
+  const completed = countCompleted(todos);
+  const total = todos.length;
+  if (prev && prev.completed === completed && prev.total === total) return prev;
+  return {
+    retries: 0,
+    productiveNoUpdate: 0,
+    completed,
+    total,
+    exhaustedNotified: false,
+    handoffSignature: prev?.handoffSignature,
+  };
+}
+
+/** blocked 项签名：用于"等你操作"说明的去重（同一批 blocked 项只说一次）。 */
+export function blockedSignature(todos: TodoItem[]): string {
+  return blockedTodos(todos)
+    .map((t) => t.content)
+    .join("\u0000");
 }

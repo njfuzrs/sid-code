@@ -31,6 +31,12 @@ export interface ProgressSnapshot {
   pending: string[];
   /** 当前进行中的项（恰好一个时填充） */
   inProgress: string | null;
+  /**
+   * 等待用户 / 外部条件的项（blocked，2026-10-06 新增）。**不计入 pending**：
+   * pending 是"模型还要推进的"，blocked 的下一步主语是用户。混在一起会让 work-log 回注
+   * 在模型已无可推进项时仍催它"继续推进待办"。可选字段，老快照无此字段视为空。
+   */
+  blocked?: string[];
   /** 关键决策 / 备注（可选，调用方追加） */
   notes: string[];
   /**
@@ -80,11 +86,13 @@ export function snapshotFromTodos(
     .filter((t) => t.status === "pending" || t.status === "in_progress")
     .map((t) => t.content);
   const inProgressItem = todos.find((t) => t.status === "in_progress");
+  const blocked = todos.filter((t) => t.status === "blocked").map((t) => t.content);
   return {
     sessionId,
     completed,
     pending,
     inProgress: inProgressItem ? inProgressItem.content : null,
+    ...(blocked.length > 0 ? { blocked } : {}),
     notes,
     ...(measured ? { measured } : {}),
   };
@@ -100,7 +108,11 @@ export function renderProgressMarkdown(snap: ProgressSnapshot): string {
   // `N 已完成 / M 待办`，在"改了 7 个文件但一项都没标"时渲染成 `0 已完成 / 7 待办`，
   // 落盘文件本身就成了假证据——而这个文件是跨会话续做时的唯一进度来源
   // （app.ts 的 loadProgressMarkdown），假信号会一路传染到下一个会话。
-  lines.push(`清单标记：${snap.completed.length} 已完成 / ${snap.pending.length} 待办`);
+  const blockedItems = snap.blocked ?? [];
+  lines.push(
+    `清单标记：${snap.completed.length} 已完成 / ${snap.pending.length} 待办` +
+      (blockedItems.length > 0 ? ` / ${blockedItems.length} 等待用户` : ""),
+  );
   if (measuredLines.length > 0) {
     lines.push("");
     lines.push("## 实测进展（真实副作用，不依赖清单标记）");
@@ -124,6 +136,11 @@ export function renderProgressMarkdown(snap: ProgressSnapshot): string {
     snap.pending.forEach((p) =>
       lines.push(`- [ ] ${p}${p === snap.inProgress ? "  ← 进行中" : ""}`),
     );
+  if (blockedItems.length > 0) {
+    lines.push("");
+    lines.push("## 等待用户 / 外部条件");
+    blockedItems.forEach((b) => lines.push(`- [ ] ${b}`));
+  }
   if (snap.notes.length > 0) {
     lines.push("");
     lines.push("## 关键决策 / 备注");
@@ -199,6 +216,11 @@ export function buildProgressReminder(snap: ProgressSnapshot): string | null {
   }
   lines.push(`- 仍待办 ${snap.pending.length} 项：${snap.pending.join("；")}`);
   if (snap.inProgress) lines.push(`- 当前进行中：${snap.inProgress}`);
+  if (snap.blocked && snap.blocked.length > 0) {
+    lines.push(
+      `- 等待用户/外部条件 ${snap.blocked.length} 项（你无法推进，不要为它们空转）：${snap.blocked.join("；")}`,
+    );
+  }
   if (measuredLines.length > 0) {
     // 点破"两个数字为什么对不上"，否则模型会把 0 与实测进展的矛盾当成"上下文错乱/消息被截断"
     // （reminder-throttle.ts 顶部记录的同一类幻觉），进而空转去核对而不是继续干活。
