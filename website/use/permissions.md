@@ -184,7 +184,7 @@ allow: ["Bash(*)"] + ask: ["Bash(rm *)"]
 | 4 | projectSettings | `<项目>/.sid-code/settings.json` | 团队共享，提交 git |
 | 5 | localSettings | `<项目>/.sid-code/settings.local.json` | 你在这个项目里的私货，gitignore |
 | 6 | flagSettings | `--settings <文件或内联 JSON>` 里的 `permissions` | 脚本 / CI 注入一套规则 |
-| 7（最高） | policySettings | 企业策略 `managed-settings.json` | 公司管控，用户改不掉 |
+| 7（最高） | policySettings | 企业策略 `managed-settings.json` | 公司管控；部署在系统级时用户改不掉，放在用户级时用户能删 |
 
 注意 CLI 参数（cliArg）的优先级**低于**你的用户级配置，`--settings` 注入的才高于磁盘上的三份文件。
 
