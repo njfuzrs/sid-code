@@ -1,5 +1,5 @@
 /**
- * 引擎级场景 E1–E7（B9 / T3.2，设计文档阶段 3 出口）。
+ * 引擎级场景 E1–E10（B9 / T3.2 起，设计文档阶段 3 出口；E8–E10 是 T3.3 的 R7 / R8 / R10）。
  *
  * 和 S1–S14 同一个测试台、同一套 xterm 判定，区别是**只用 Box / Text**，不挂 CLI 组件：
  * 阶段 3 时新底座还没有 Static / Ansi / alt-screen，S 场景跑不起来（见设计文档阶段 3 的 review 修正）。
@@ -7,7 +7,7 @@
  */
 import React, { useSyncExternalStore } from "react";
 import { Box, Text } from "../../../src/ui/render-port/components.ts";
-import { render } from "../../../src/ui/render-port/runtime.ts";
+import { getRenderInstance, render } from "../../../src/ui/render-port/runtime.ts";
 import { enableFrameThrottle } from "../../../src/ui/render-port/testing.ts";
 import type { Scenario, ScenarioCtx } from "./scenarios.tsx";
 
@@ -249,6 +249,98 @@ export const ENGINE_SCENARIOS: Record<string, Scenario> = {
       ctx.resize(40, ctx.rows);
       await ctx.settle();
       ctx.step("窄 40");
+      inst.unmount();
+    },
+  },
+  E8: {
+    covers: ["R7"],
+    async run(ctx) {
+      // resize 合并 + 视口变矮 / 变高：同 tick 连发 resize 只出 leading + trailing；变矮 full reset，变高照常 diff
+      const lines = store(L(4));
+      function App() {
+        return (
+          <Box flexDirection="column" width="100%">
+            <Box justifyContent="space-between">
+              <Text>左</Text>
+              <Text>右</Text>
+            </Box>
+            <Lines lines={lines.use()} />
+          </Box>
+        );
+      }
+      const inst = await mount(ctx, <App />);
+      ctx.step("初始");
+      ctx.resize(50, ctx.rows);
+      ctx.resize(60, ctx.rows);
+      ctx.resize(70, ctx.rows);
+      await ctx.settle();
+      ctx.step("同 tick 三次变宽");
+      ctx.resize(70, ctx.rows);
+      await ctx.settle();
+      ctx.step("尺寸不变的 resize");
+      ctx.resize(70, ctx.rows - 6);
+      await ctx.settle();
+      ctx.step("变矮");
+      ctx.resize(70, ctx.rows + 4);
+      await ctx.settle();
+      ctx.step("变高");
+      lines.set(L(4, (i) => (i === 3 ? "改了" : `行 ${i}`)));
+      await ctx.settle();
+      ctx.step("变高后改行");
+      lines.set(L(ctx.rows + 8));
+      await ctx.settle();
+      ctx.resize(70, ctx.rows - 4);
+      await ctx.settle();
+      ctx.step("溢出态变矮");
+      inst.unmount();
+    },
+  },
+
+  E9: {
+    covers: ["R8"],
+    async run(ctx) {
+      // 主屏 forceRedraw：外部写入污染后擦可视区重画；之后的提交照常增量
+      const v = store("需要重绘的内容");
+      function App() {
+        return <Lines lines={[v.use(), "第二行"]} />;
+      }
+      const inst = await mount(ctx, <App />);
+      ctx.step("初始");
+      process.stdout.write("\x1b[1;1H污染");
+      ctx.step("被外部写入污染");
+      getRenderInstance()?.forceRedraw();
+      await ctx.settle();
+      ctx.step("forceRedraw 后");
+      v.set("重绘后改了");
+      await ctx.settle();
+      ctx.step("之后照常增量");
+      ctx.resize(60, ctx.rows);
+      getRenderInstance()?.forceRedraw();
+      await ctx.settle();
+      ctx.step("resize 与 forceRedraw 同 tick");
+      inst.unmount();
+    },
+  },
+
+  E10: {
+    covers: ["R10"],
+    async run(ctx) {
+      // 主屏 SIGCONT：不写字节，下一帧从光标处接着按首帧口径写（前面没变的行省成换行）
+      const v = store(L(4));
+      function App() {
+        return <Lines lines={v.use()} />;
+      }
+      const inst = await mount(ctx, <App />);
+      ctx.step("初始");
+      process.emit("SIGCONT" as NodeJS.Signals);
+      await ctx.settle();
+      ctx.step("SIGCONT 后不写");
+      v.set(L(5, (i) => (i === 2 ? "改了" : `行 ${i}`)));
+      await ctx.settle();
+      ctx.step("SIGCONT 后第一帧");
+      v.set(L(5, (i) => (i === 4 ? "再改" : i === 2 ? "改了" : `行 ${i}`)));
+      await ctx.settle();
+      ctx.step("之后照常增量");
       inst.unmount();
     },
   },

@@ -16,7 +16,14 @@ import {hideCursorEscape, showCursorEscape} from './cursor-helpers.js';
 import {type CursorPosition} from './log-update.js';
 import {bsu, esu, shouldSynchronize} from './write-synchronized.js';
 import instances from './instances.js';
-import {diffMainScreen, eraseMainScreen, type FrameFlicker} from './frame/main-screen.js';
+import {
+	diffMainScreen,
+	eraseMainScreen,
+	redrawAfterSuspend,
+	resetMainScreen,
+	type FrameDiff,
+	type FrameFlicker,
+} from './frame/main-screen.js';
 import {FrameScheduler} from './frame/scheduler.js';
 import {FRAME_INTERVAL_MS} from './frame/schedule.js';
 import {ClockContext, createClock, type Clock} from './clock.js';
@@ -145,6 +152,12 @@ const getWritableStreamState = (stdout: MaybeWritableStream) => {
 		hasWritableState,
 	};
 };
+
+/** 擦可视区并回原点（不清 scrollback）：forceRedraw 与 SIGCONT 重进 alt-screen 用 */
+const eraseScreenHome = '\u001B[2J\u001B[H';
+/** 鼠标跟踪全套（按下 / 拖动 / 任意移动 / SGR 编码 / alt-screen 滚轮转方向键），与旧底座同序 */
+const enableMouseTracking =
+	'\u001B[?1000h\u001B[?1002h\u001B[?1003h\u001B[?1006h\u001B[?1007h';
 
 const settleThrottle = (
 	throttled: unknown,
@@ -287,6 +300,22 @@ export default class Ink {
 	private restoreConsole?: () => void;
 	private readonly unsubscribeResize?: () => void;
 	private readonly scheduler?: FrameScheduler;
+	/**
+	 * sid-code（B9 / T3.3，契约 R7）：resize 事件单独一条调度，测试环境也不同步出帧（见 FrameScheduler 的 alwaysThrottle）。
+	 * 同一 tick 连来多次 resize → leading + trailing 两帧；尺寸与上一次 resize 事件相同的事件直接丢掉。
+	 */
+	private readonly resizeScheduler: FrameScheduler;
+	private lastResizeSize: {columns: number; rows: number};
+	/** 上一帧出帧时的视口：R7 的「宽度变了 / 变矮了 → full reset」比的是它，不是上一帧的屏幕 */
+	private frameViewport: {columns: number; rows: number} | undefined;
+	/** 下一帧强制 full reset 的原因（离开 alt-screen 之后，主屏的旧帧已经不可信） */
+	private pendingResetReason: FrameFlicker['reason'] | undefined;
+	/** `<AlternateScreen>` 挂载状态（端口 setAltScreenActive，R10）；alt-screen 的出帧本身归 T6.1 */
+	/** SIGCONT 作废的那一帧：下一帧按 `redrawAfterSuspend` 写（R10）；resize / forceRedraw 帧不走它 */
+	private suspendedScreen: Screen | undefined;
+	private altScreenActive = false;
+	private altScreenMouseTracking = false;
+	private readonly unsubscribeSigcont?: () => void;
 	private kittyProtocolEnabled = false;
 	private kittyFlags: KittyFlagName[] | undefined;
 	private cancelKittyDetection?: () => void;
@@ -350,6 +379,10 @@ export default class Ink {
 		this.lastOutputToRender = '';
 		this.lastOutputHeight = 0;
 		this.lastTerminalWidth = getWindowSize(this.options.stdout).columns;
+		this.lastResizeSize = getWindowSize(this.options.stdout);
+		this.frameViewport = undefined;
+		this.pendingResetReason = undefined;
+		this.resizeScheduler = new FrameScheduler(this.renderAfterResize, true);
 
 		// This variable is used only in debug mode to store full static output
 		// so that it's rerendered every time, not just new static parts, like in non-debug mode
@@ -392,6 +425,12 @@ export default class Ink {
 			this.unsubscribeResize = () => {
 				options.stdout.off('resize', this.resized);
 			};
+
+			// sid-code（B9 / T3.3，契约 R10）：只在交互模式挂（非 TTY 不挂，L5）
+			process.on('SIGCONT', this.handleSigcont);
+			this.unsubscribeSigcont = () => {
+				process.off('SIGCONT', this.handleSigcont);
+			};
 		}
 
 		this.initKittyKeyboard();
@@ -406,16 +445,97 @@ export default class Ink {
 		void this.exitPromise.catch(noop);
 	}
 
+	/**
+	 * sid-code（B9 / T3.3，契约 R7）：resize 事件不当场出帧，交给 resizeScheduler 合并。
+	 * 尺寸和上一次 resize 事件一样就忽略（不出帧）；要不要 full reset 在出帧时比视口决定（renderInteractiveFrame）。
+	 */
 	resized = () => {
-		const currentWidth = getWindowSize(this.options.stdout).columns;
+		const size = getWindowSize(this.options.stdout);
+		if (
+			size.columns === this.lastResizeSize.columns &&
+			size.rows === this.lastResizeSize.rows
+		) {
+			return;
+		}
 
-		// sid-code（B9 / T3.2）：宽度变化由帧 diff 判 full reset（原因 resize），这里不再先擦屏。
-		// 连续 resize 合并、视口变矮等归 T3.3。
+		this.lastResizeSize = size;
+		// 布局当场按新宽度重算，出帧延后：同 tick 里先到的提交 / forceRedraw 帧就已经是新宽度，
+		// resize 帧随后 diff 为空、不再写第二次 full reset（与旧底座一致）
+		this.calculateLayout();
+		this.resizeScheduler.request();
+	};
+
+	private readonly renderAfterResize = (): void => {
+		if (this.isUnmounted || this.isUnmounting || this.isSuspended) {
+			return;
+		}
+
+		this.suspendedScreen = undefined;
 		this.calculateLayout();
 		dom.emitLayoutListeners(this.rootNode);
 		this.onRender();
+		this.lastTerminalWidth = getWindowSize(this.options.stdout).columns;
+	};
 
-		this.lastTerminalWidth = currentWidth;
+	/**
+	 * sid-code（B9 / T3.3，契约 R8）：擦可视区（`2J H`，不清 scrollback、不进同步输出包裹）后当场按首帧画一遍。
+	 * 前一帧作废，但「上一帧出帧时的视口」不作废：视口同时变了，这一帧照样按 R7 full reset。
+	 * 已排队的帧照常出（diff 为空，不写字节）。非 TTY 什么都不做。
+	 */
+	forceRedraw(): void {
+		if (
+			!this.interactive ||
+			this.options.debug ||
+			this.isUnmounted ||
+			this.isUnmounting ||
+			this.isSuspended
+		) {
+			return;
+		}
+
+		this.options.stdout.write(eraseScreenHome);
+		this.previousScreen = undefined;
+		this.suspendedScreen = undefined;
+		this.onRender();
+	}
+
+	/**
+	 * 端口 RenderInstance.setAltScreenActive：`<AlternateScreen>` 挂载 / 卸载时调用，本身不写字节。
+	 * 离开 alt-screen 后主屏的旧帧不可信，下一帧 full reset（原因 resize，与旧底座一致）。
+	 */
+	setAltScreenActive(active: boolean, mouseTracking = false): void {
+		if (this.altScreenActive && !active) {
+			this.pendingResetReason = 'resize';
+		}
+
+		this.altScreenActive = active;
+		this.altScreenMouseTracking = active && mouseTracking;
+	}
+
+	/**
+	 * sid-code（B9 / T3.3，契约 R10）：进程被 SIGSTOP / Ctrl+Z 挂起后恢复。期间别的程序可能动过屏幕，前一帧作废，
+	 * 但**不当场出帧**（主屏一个字节都不写），等下一次提交按首帧画。
+	 * alt-screen 下终端多半已经回到主屏：重进 alt、擦屏，开过鼠标跟踪的重新打开。
+	 */
+	private readonly handleSigcont = (): void => {
+		if (this.isUnmounted || this.isUnmounting) {
+			return;
+		}
+
+		// alt-screen 的出帧（绝对定位）归 T6.1；这里只有主屏才按 redrawAfterSuspend 接着写
+		if (!this.altScreenActive) {
+			this.suspendedScreen ??= this.previousScreen;
+		}
+
+		this.previousScreen = undefined;
+		if (this.altScreenActive) {
+			this.writeBestEffort(
+				this.options.stdout,
+				ansiEscapes.enterAlternativeScreen +
+					eraseScreenHome +
+					(this.altScreenMouseTracking ? enableMouseTracking : ''),
+			);
+		}
 	};
 
 	resolveExitPromise: (result?: unknown) => void = () => {};
@@ -730,6 +850,8 @@ export default class Ink {
 		// flush so the final frame is emitted; otherwise cancel to avoid delayed callbacks.
 		const hadPendingFrame = this.scheduler?.pending ?? false;
 		settleThrottle(this.scheduler, canWriteToStdout);
+		// resize 帧不补：最后一帧下面马上画（shouldRenderFinalFrame），排队的 resize 帧只会多出一次 full reset
+		this.resizeScheduler.cancel();
 
 		if (canWriteToStdout) {
 			// If throttling is enabled and there is already a pending render, flushing above
@@ -764,6 +886,8 @@ export default class Ink {
 			if (typeof this.unsubscribeResize === 'function') {
 				this.unsubscribeResize();
 			}
+
+			this.unsubscribeSigcont?.();
 
 			// Cancel any in-progress auto-detection before checking protocol state
 			if (this.cancelKittyDetection) {
@@ -1058,12 +1182,11 @@ export default class Ink {
 			return;
 		}
 
-		const viewportRows = getWindowSize(this.options.stdout).rows;
 		let bytes: string;
 		const flickers: FrameFlicker[] = [];
 
 		if (staticOutput === '') {
-			const diff = diffMainScreen(this.previousScreen, screen, viewportRows);
+			const diff = this.diffFrame(screen);
 			bytes = diff.bytes;
 			if (diff.flicker) {
 				flickers.push(diff.flicker);
@@ -1077,6 +1200,7 @@ export default class Ink {
 		}
 
 		this.previousScreen = screen;
+		this.frameViewport = getWindowSize(this.options.stdout);
 		this.lastOutput = output;
 		this.lastOutputToRender = output + '\n';
 		this.lastOutputHeight = outputHeight;
@@ -1095,6 +1219,35 @@ export default class Ink {
 			durationMs: performance.now() - startTime,
 			flickers,
 		});
+	}
+
+	/**
+	 * sid-code（B9 / T3.3，契约 R7）：视口相对上一帧出帧时**变窄 / 变宽 / 变矮** → full reset（原因 resize），
+	 * 不论前一帧是否存在、是否为空；只变高不 reset，照常 diff。其余交给帧 diff（R3–R6）。
+	 */
+	private diffFrame(screen: Screen): FrameDiff {
+		const viewport = getWindowSize(this.options.stdout);
+		const previous = this.frameViewport;
+		const forced = this.pendingResetReason;
+		this.pendingResetReason = undefined;
+		if (
+			forced ||
+			(previous &&
+				(viewport.columns !== previous.columns || viewport.rows < previous.rows))
+		) {
+			return resetMainScreen(screen, viewport.rows, forced ?? 'resize');
+		}
+
+		const suspended = this.suspendedScreen;
+		this.suspendedScreen = undefined;
+		if (suspended && !this.previousScreen) {
+			const bytes = redrawAfterSuspend(suspended, screen);
+			if (bytes !== undefined) {
+				return {bytes};
+			}
+		}
+
+		return diffMainScreen(this.previousScreen, screen, viewport.rows);
 	}
 
 	private initKittyKeyboard(): void {

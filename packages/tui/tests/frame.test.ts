@@ -1,5 +1,5 @@
 /**
- * 帧间增量对拍旧底座（B9 / T3.2，契约 R1 / R3–R6 / R12）。
+ * 帧间增量对拍旧底座（B9 / T3.2–T3.3，契约 R1 / R3–R8 / R10 / R12）。
  *
  * 向量由 `bun run tui:frame-vectors` 从旧底座 TTY 路径逐帧生成并入库；这里用新底座跑同一串帧，
  * 每帧写出的字节与 full reset 原因必须一致。只读向量与语料，不 import 旧底座。
@@ -11,6 +11,7 @@ import { FRAME_CORPUS } from "./fixtures/frame-corpus.ts";
 import { driveFrames } from "./fixtures/frame-drive.tsx";
 import { Box, render, Text } from "../src/index.ts";
 import { Screen } from "../src/screen/index.ts";
+import instances from "../src/instances.ts";
 import { diffMainScreen } from "../src/frame/main-screen.ts";
 
 const engine = {
@@ -18,6 +19,7 @@ const engine = {
   Box: Box as never,
   Text: Text as never,
   renderSync: render as never,
+  instanceOf: (stdout: NodeJS.WriteStream) => instances.get(stdout),
 };
 
 describe("帧 diff 对拍旧底座（frame-vectors.json）", () => {

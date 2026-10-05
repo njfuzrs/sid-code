@@ -1,11 +1,20 @@
 /**
  * 帧间增量对拍语料（B9 / T3.2，契约 R1 / R3–R6 / R12）。
  *
- * 纯数据：每条是一串帧，每帧是若干行 `<Text>` 内容（一列 Box 排开），或一次 `{resize: [cols, rows]}`。
+ * 纯数据：每条是一串帧，每帧是若干行 `<Text>` 内容（一列 Box 排开），或 resize / forceRedraw / SIGCONT（见 FrameStep）。
  * 生成器（scripts/tui-frame-vectors.ts）在旧底座 TTY 路径上逐帧提交，记下每帧写出的字节与 onFrame 的 full reset 原因；
  * 测试（tests/frame.test.ts）在新底座上跑同一串帧，逐帧比较。这个文件不 import 任何底座。
  */
-export type FrameStep = string[] | { resize: [number, number] };
+/**
+ * 一帧：若干行内容；或一次（同 tick 内可多次的）resize；或调用实例 forceRedraw；或进程收到 SIGCONT。
+ * 后三种不提交新内容（T3.3：R7 / R8 / R10）。
+ */
+export type FrameStep =
+  | string[]
+  | { resize: [number, number] }
+  | { resizes: Array<[number, number]> }
+  | { forceRedraw: true; then?: string[]; resizeFirst?: [number, number] }
+  | { sigcont: true };
 
 export type FrameCase = {
   name: string;
@@ -30,6 +39,7 @@ export const FRAME_CORPUS: FrameCase[] = [
   { name: "内容不变不写", frames: [["a"], ["a"]] },
   { name: "空帧到有内容", rows: 10, frames: [[], L(2)] },
   { name: "变成空帧", rows: 10, frames: [L(3), []] },
+  { name: "1 行 / 2 行变成空帧", rows: 10, frames: [L(1), [], L(2), []] },
   { name: "改末行", rows: 10, frames: [L(3), at(3, [2])] },
   { name: "不相邻两行改", rows: 10, frames: [L(6), at(6, [1, 4])] },
   { name: "相邻两行改", rows: 10, frames: [L(4), at(4, [1, 2])] },
@@ -109,9 +119,91 @@ export const FRAME_CORPUS: FrameCase[] = [
   { name: "收缩 15→10 与 15→11（视口 10）", rows: 10, frames: [L(15), L(10), L(15), L(11)] },
   { name: "收缩 16→6（视口 10）", rows: 10, frames: [L(16), L(6)] },
 
-  // —— 宽度变化（R7 的帧层部分；resize 事件合并归 T3.3）——
+  // —— 宽度变化（R7 的帧层部分）——
   { name: "变宽", frames: [["ab"], { resize: [30, 6] }, ["ab"]] },
   { name: "变窄", frames: [["ab", "cd"], { resize: [10, 6] }, ["ab", "cd"]] },
+
+  // —— resize 事件（R7，T3.3）：合并、变矮 / 变高、尺寸不变 ——
+  { name: "尺寸不变的 resize 不出帧", frames: [["ab"], { resize: [20, 6] }] },
+  {
+    name: "同 tick 两次 resize 回到原尺寸",
+    frames: [
+      ["ab"],
+      {
+        resizes: [
+          [15, 6],
+          [20, 6],
+        ],
+      },
+    ],
+  },
+  {
+    name: "同 tick 三次变宽",
+    frames: [
+      ["ab"],
+      {
+        resizes: [
+          [22, 6],
+          [24, 6],
+          [26, 6],
+        ],
+      },
+    ],
+  },
+  {
+    name: "变矮 full reset 变高不 reset",
+    rows: 8,
+    frames: [L(3), { resize: [20, 6] }, { resize: [20, 4] }, { resize: [20, 9] }, at(3, [2])],
+  },
+  { name: "溢出态变矮再变宽", rows: 6, frames: [L(9), { resize: [20, 4] }, { resize: [24, 4] }] },
+  { name: "空帧变宽也 reset", frames: [[], { resize: [18, 6] }, ["a"]] },
+  { name: "变矮后再改行", rows: 8, frames: [L(4), { resize: [20, 5] }, at(4, [3])] },
+
+  // —— forceRedraw（R8，T3.3）——
+  { name: "forceRedraw 后照常增量", frames: [L(2), { forceRedraw: true }, at(2, [1])] },
+  { name: "forceRedraw 同 tick 再提交", frames: [L(2), { forceRedraw: true, then: at(2, [0]) }] },
+  { name: "forceRedraw 空帧", frames: [[], { forceRedraw: true }] },
+  {
+    name: "溢出态 forceRedraw 后改末行",
+    rows: 6,
+    frames: [L(9), { forceRedraw: true }, at(9, [8])],
+  },
+  {
+    name: "resize 与 forceRedraw 同 tick",
+    frames: [L(2), { forceRedraw: true, resizeFirst: [18, 6] }],
+  },
+  {
+    name: "变矮与 forceRedraw 同 tick",
+    frames: [L(2), { forceRedraw: true, resizeFirst: [20, 4] }],
+  },
+  {
+    name: "变矮后 forceRedraw",
+    rows: 8,
+    frames: [L(2), { resize: [20, 5] }, { forceRedraw: true }],
+  },
+
+  // —— 主屏 SIGCONT（R10，T3.3）：不写字节，下一帧从光标处接着写，前面没变的行省成换行 ——
+  { name: "SIGCONT 后同内容", rows: 10, frames: [L(4), { sigcont: true }, L(4)] },
+  { name: "SIGCONT 后改中间行", rows: 10, frames: [L(4), { sigcont: true }, at(4, [1])] },
+  { name: "SIGCONT 后改首行", rows: 10, frames: [L(4), { sigcont: true }, at(4, [0])] },
+  { name: "SIGCONT 后增长", rows: 10, frames: [L(2), { sigcont: true }, L(4)] },
+  { name: "SIGCONT 后收缩", rows: 10, frames: [L(4), { sigcont: true }, L(2)] },
+  { name: "SIGCONT 后溢出态改末行", rows: 5, frames: [L(8), { sigcont: true }, at(8, [7])] },
+  {
+    name: "SIGCONT 后变矮",
+    rows: 8,
+    frames: [L(2), { sigcont: true }, { resize: [20, 4] }, at(2, [0])],
+  },
+  {
+    name: "SIGCONT 后 forceRedraw",
+    rows: 8,
+    frames: [L(2), { sigcont: true }, { forceRedraw: true }],
+  },
+  {
+    name: "SIGCONT 后第二帧照常 diff",
+    rows: 8,
+    frames: [L(2), { sigcont: true }, L(2), at(2, [1])],
+  },
 
   // —— 非 TTY（R12）——
   { name: "非 TTY 逐帧整帧", tty: false, frames: [[], ["a"], ["a"], [], ["b", ""], ["a", "c"]] },

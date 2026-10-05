@@ -21,12 +21,14 @@ type Engine = {
     rerender: (node: ReactNS.ReactElement) => void;
     unmount: () => void;
   };
+  /** 按 stdout 取渲染实例（forceRedraw 步骤用）；生成器注入端口 getRenderInstance，测试注入新底座 instances */
+  instanceOf: (stdout: NodeJS.WriteStream) => { forceRedraw(): void } | undefined;
 };
 
 const tick = (ms = 20) => new Promise((r) => setTimeout(r, ms));
 
 export async function driveFrames(engine: Engine, c: FrameCase): Promise<FrameRecord[]> {
-  const { React, Box, Text, renderSync } = engine;
+  const { React, Box, Text, renderSync, instanceOf } = engine;
   const tree = (lines: string[]) =>
     React.createElement(
       Box,
@@ -74,12 +76,24 @@ export async function driveFrames(engine: Engine, c: FrameCase): Promise<FrameRe
   await tick();
   const out = [take()];
   for (const f of rest) {
-    if (!Array.isArray(f)) {
-      stdout.columns = f.resize[0];
-      stdout.rows = f.resize[1];
-      stdout.emit("resize");
-    } else {
+    if (Array.isArray(f)) {
       inst.rerender(tree(f));
+    } else if ("sigcont" in f) {
+      process.emit("SIGCONT" as NodeJS.Signals);
+    } else if ("forceRedraw" in f) {
+      if (f.resizeFirst) {
+        [stdout.columns, stdout.rows] = f.resizeFirst;
+        stdout.emit("resize");
+      }
+      instanceOf(stdout as unknown as NodeJS.WriteStream)!.forceRedraw();
+      if (f.then) inst.rerender(tree(f.then));
+    } else {
+      // 同一 tick 内连发（R7 合并）
+      for (const [cols, rows] of "resize" in f ? [f.resize] : f.resizes) {
+        stdout.columns = cols;
+        stdout.rows = rows;
+        stdout.emit("resize");
+      }
     }
     await tick();
     out.push(take());

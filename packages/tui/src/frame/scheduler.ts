@@ -5,7 +5,9 @@
  * - 第一次请求排进 microtask（同一 tick 内的同步提交合并）→ leading 帧；
  * - leading 帧之后开一个 16ms 窗口；从 leading 排队起到窗口结束，只要又来过请求，窗口结束时补**一个** trailing 帧，
  *   并开下一个窗口。所以同一 tick 里连提交 5 次 = leading 1 帧 + trailing 1 帧；
- * - 测试环境（`framesAreSynchronous()`）每次请求同步出帧。
+ * - 测试环境（`framesAreSynchronous()`）每次请求同步出帧；
+ * - `alwaysThrottle`：测试环境也走 microtask + 16ms 窗口。resize 事件用它（R7，B9 / T3.3）：旧底座的 resize 合并
+ *   与提交出帧是两回事，测试环境下提交同步出帧，resize 照样排进 microtask、同 tick 多次只出 leading + trailing。
  *
  * 提供 `flush` / `cancel`，ink.tsx 卸载、挂起、等待刷新时按 lodash throttle 的口径调用。
  */
@@ -18,10 +20,13 @@ export class FrameScheduler {
 	// microtask 无法取消：flush / cancel 之后旧的 microtask 靠代号失效
 	private generation = 0;
 
-	constructor(private readonly run: () => void) {}
+	constructor(
+		private readonly run: () => void,
+		private readonly alwaysThrottle = false,
+	) {}
 
 	request(): void {
-		if (framesAreSynchronous()) {
+		if (!this.alwaysThrottle && framesAreSynchronous()) {
 			this.run();
 			return;
 		}

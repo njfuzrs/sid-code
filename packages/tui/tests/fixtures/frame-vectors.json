@@ -59,6 +59,24 @@
       "flickers": []
     }
   ],
+  "1 行 / 2 行变成空帧": [
+    {
+      "bytes": "\u001b[?2026h0\r\n\u001b[?2026l\u001b[?25l",
+      "flickers": []
+    },
+    {
+      "bytes": "\u001b[?2026h\r\u001b[1A                    \r\u001b[?2026l",
+      "flickers": []
+    },
+    {
+      "bytes": "\u001b[?2026h0\r\n1\r\n\u001b[?2026l",
+      "flickers": []
+    },
+    {
+      "bytes": "\u001b[?2026h\u001b[2K\u001b[1A\u001b[2K\u001b[G\u001b[1A                    \r\u001b[1B                    \r\u001b[1A\u001b[?2026l",
+      "flickers": []
+    }
+  ],
   "改末行": [
     {
       "bytes": "\u001b[?2026h0\r\n1\r\n2\r\n\u001b[?2026l\u001b[?25l",
@@ -690,6 +708,316 @@
     },
     {
       "bytes": "",
+      "flickers": []
+    }
+  ],
+  "尺寸不变的 resize 不出帧": [
+    {
+      "bytes": "\u001b[?2026hab\r\n\u001b[?2026l\u001b[?25l",
+      "flickers": []
+    },
+    {
+      "bytes": "",
+      "flickers": []
+    }
+  ],
+  "同 tick 两次 resize 回到原尺寸": [
+    {
+      "bytes": "\u001b[?2026hab\r\n\u001b[?2026l\u001b[?25l",
+      "flickers": []
+    },
+    {
+      "bytes": "",
+      "flickers": []
+    }
+  ],
+  "同 tick 三次变宽": [
+    {
+      "bytes": "\u001b[?2026hab\r\n\u001b[?2026l\u001b[?25l",
+      "flickers": []
+    },
+    {
+      "bytes": "\u001b[?2026h\u001b[2J\u001b[3J\u001b[Hab\r\n\u001b[?2026l",
+      "flickers": ["resize"]
+    }
+  ],
+  "变矮 full reset 变高不 reset": [
+    {
+      "bytes": "\u001b[?2026h0\r\n1\r\n2\r\n\u001b[?2026l\u001b[?25l",
+      "flickers": []
+    },
+    {
+      "bytes": "\u001b[?2026h\u001b[2J\u001b[3J\u001b[H0\r\n1\r\n2\r\n\u001b[?2026l",
+      "flickers": ["resize"]
+    },
+    {
+      "bytes": "\u001b[?2026h\u001b[2J\u001b[3J\u001b[H0\r\n1\r\n2\r\n\u001b[?2026l",
+      "flickers": ["resize"]
+    },
+    {
+      "bytes": "",
+      "flickers": []
+    },
+    {
+      "bytes": "\u001b[?2026h\r\u001b[1AX\r\n\u001b[?2026l",
+      "flickers": []
+    }
+  ],
+  "溢出态变矮再变宽": [
+    {
+      "bytes": "\u001b[?2026h0\r\n1\r\n2\r\n3\r\n4\r\n5\r\n6\r\n7\r\n8\r\n\u001b[?2026l\u001b[?25l",
+      "flickers": []
+    },
+    {
+      "bytes": "\u001b[?2026h\u001b[2J\u001b[3J\u001b[H0\r\n1\r\n2\r\n3\r\n4\r\n5\r\n6\r\n7\r\n8\r\n\u001b[?2026l",
+      "flickers": ["resize"]
+    },
+    {
+      "bytes": "\u001b[?2026h\u001b[2J\u001b[3J\u001b[H0\r\n1\r\n2\r\n3\r\n4\r\n5\r\n6\r\n7\r\n8\r\n\u001b[?2026l",
+      "flickers": ["resize"]
+    }
+  ],
+  "空帧变宽也 reset": [
+    {
+      "bytes": "\u001b[?25l",
+      "flickers": []
+    },
+    {
+      "bytes": "\u001b[?2026h\u001b[2J\u001b[3J\u001b[H\u001b[?2026l",
+      "flickers": ["resize"]
+    },
+    {
+      "bytes": "\u001b[?2026ha\r\n\u001b[?2026l",
+      "flickers": []
+    }
+  ],
+  "变矮后再改行": [
+    {
+      "bytes": "\u001b[?2026h0\r\n1\r\n2\r\n3\r\n\u001b[?2026l\u001b[?25l",
+      "flickers": []
+    },
+    {
+      "bytes": "\u001b[?2026h\u001b[2J\u001b[3J\u001b[H0\r\n1\r\n2\r\n3\r\n\u001b[?2026l",
+      "flickers": ["resize"]
+    },
+    {
+      "bytes": "\u001b[?2026h\r\u001b[1AX\r\n\u001b[?2026l",
+      "flickers": []
+    }
+  ],
+  "forceRedraw 后照常增量": [
+    {
+      "bytes": "\u001b[?2026h0\r\n1\r\n\u001b[?2026l\u001b[?25l",
+      "flickers": []
+    },
+    {
+      "bytes": "\u001b[2J\u001b[H\u001b[?2026h0\r\n1\r\n\u001b[?2026l",
+      "flickers": []
+    },
+    {
+      "bytes": "\u001b[?2026h\r\u001b[1AX\r\n\u001b[?2026l",
+      "flickers": []
+    }
+  ],
+  "forceRedraw 同 tick 再提交": [
+    {
+      "bytes": "\u001b[?2026h0\r\n1\r\n\u001b[?2026l\u001b[?25l",
+      "flickers": []
+    },
+    {
+      "bytes": "\u001b[2J\u001b[H\u001b[?2026h0\r\n1\r\n\u001b[?2026l\u001b[?2026h\r\u001b[2AX\r\n\n\u001b[?2026l",
+      "flickers": []
+    }
+  ],
+  "forceRedraw 空帧": [
+    {
+      "bytes": "\u001b[?25l",
+      "flickers": []
+    },
+    {
+      "bytes": "\u001b[2J\u001b[H",
+      "flickers": []
+    }
+  ],
+  "溢出态 forceRedraw 后改末行": [
+    {
+      "bytes": "\u001b[?2026h0\r\n1\r\n2\r\n3\r\n4\r\n5\r\n6\r\n7\r\n8\r\n\u001b[?2026l\u001b[?25l",
+      "flickers": []
+    },
+    {
+      "bytes": "\u001b[2J\u001b[H\u001b[?2026h0\r\n1\r\n2\r\n3\r\n4\r\n5\r\n6\r\n7\r\n8\r\n\u001b[?2026l",
+      "flickers": []
+    },
+    {
+      "bytes": "\u001b[?2026h\r\u001b[1AX\r\n\u001b[?2026l",
+      "flickers": []
+    }
+  ],
+  "resize 与 forceRedraw 同 tick": [
+    {
+      "bytes": "\u001b[?2026h0\r\n1\r\n\u001b[?2026l\u001b[?25l",
+      "flickers": []
+    },
+    {
+      "bytes": "\u001b[2J\u001b[H\u001b[?2026h\u001b[2J\u001b[3J\u001b[H0\r\n1\r\n\u001b[?2026l",
+      "flickers": ["resize"]
+    }
+  ],
+  "变矮与 forceRedraw 同 tick": [
+    {
+      "bytes": "\u001b[?2026h0\r\n1\r\n\u001b[?2026l\u001b[?25l",
+      "flickers": []
+    },
+    {
+      "bytes": "\u001b[2J\u001b[H\u001b[?2026h\u001b[2J\u001b[3J\u001b[H0\r\n1\r\n\u001b[?2026l",
+      "flickers": ["resize"]
+    }
+  ],
+  "变矮后 forceRedraw": [
+    {
+      "bytes": "\u001b[?2026h0\r\n1\r\n\u001b[?2026l\u001b[?25l",
+      "flickers": []
+    },
+    {
+      "bytes": "\u001b[?2026h\u001b[2J\u001b[3J\u001b[H0\r\n1\r\n\u001b[?2026l",
+      "flickers": ["resize"]
+    },
+    {
+      "bytes": "\u001b[2J\u001b[H\u001b[?2026h0\r\n1\r\n\u001b[?2026l",
+      "flickers": []
+    }
+  ],
+  "SIGCONT 后同内容": [
+    {
+      "bytes": "\u001b[?2026h0\r\n1\r\n2\r\n3\r\n\u001b[?2026l\u001b[?25l",
+      "flickers": []
+    },
+    {
+      "bytes": "",
+      "flickers": []
+    },
+    {
+      "bytes": "\u001b[?2026h\r\n\r\n\r\n\r\n\u001b[?2026l",
+      "flickers": []
+    }
+  ],
+  "SIGCONT 后改中间行": [
+    {
+      "bytes": "\u001b[?2026h0\r\n1\r\n2\r\n3\r\n\u001b[?2026l\u001b[?25l",
+      "flickers": []
+    },
+    {
+      "bytes": "",
+      "flickers": []
+    },
+    {
+      "bytes": "\u001b[?2026h\r\nX\r\n2\r\n3\r\n\u001b[?2026l",
+      "flickers": []
+    }
+  ],
+  "SIGCONT 后改首行": [
+    {
+      "bytes": "\u001b[?2026h0\r\n1\r\n2\r\n3\r\n\u001b[?2026l\u001b[?25l",
+      "flickers": []
+    },
+    {
+      "bytes": "",
+      "flickers": []
+    },
+    {
+      "bytes": "\u001b[?2026hX\r\n1\r\n2\r\n3\r\n\u001b[?2026l",
+      "flickers": []
+    }
+  ],
+  "SIGCONT 后增长": [
+    {
+      "bytes": "\u001b[?2026h0\r\n1\r\n\u001b[?2026l\u001b[?25l",
+      "flickers": []
+    },
+    {
+      "bytes": "",
+      "flickers": []
+    },
+    {
+      "bytes": "\u001b[?2026h\r\n\r\n2\r\n3\r\n\u001b[?2026l",
+      "flickers": []
+    }
+  ],
+  "SIGCONT 后收缩": [
+    {
+      "bytes": "\u001b[?2026h0\r\n1\r\n2\r\n3\r\n\u001b[?2026l\u001b[?25l",
+      "flickers": []
+    },
+    {
+      "bytes": "",
+      "flickers": []
+    },
+    {
+      "bytes": "\u001b[?2026h0\r\n1\r\n\u001b[?2026l",
+      "flickers": []
+    }
+  ],
+  "SIGCONT 后溢出态改末行": [
+    {
+      "bytes": "\u001b[?2026h0\r\n1\r\n2\r\n3\r\n4\r\n5\r\n6\r\n7\r\n\u001b[?2026l\u001b[?25l",
+      "flickers": []
+    },
+    {
+      "bytes": "",
+      "flickers": []
+    },
+    {
+      "bytes": "\u001b[?2026h\r\n\r\n\r\n\r\n\r\n\r\n\r\nX\r\n\u001b[?2026l",
+      "flickers": []
+    }
+  ],
+  "SIGCONT 后变矮": [
+    {
+      "bytes": "\u001b[?2026h0\r\n1\r\n\u001b[?2026l\u001b[?25l",
+      "flickers": []
+    },
+    {
+      "bytes": "",
+      "flickers": []
+    },
+    {
+      "bytes": "\u001b[?2026h\u001b[2J\u001b[3J\u001b[H0\r\n1\r\n\u001b[?2026l",
+      "flickers": ["resize"]
+    },
+    {
+      "bytes": "\u001b[?2026h\r\u001b[2AX\r\n\n\u001b[?2026l",
+      "flickers": []
+    }
+  ],
+  "SIGCONT 后 forceRedraw": [
+    {
+      "bytes": "\u001b[?2026h0\r\n1\r\n\u001b[?2026l\u001b[?25l",
+      "flickers": []
+    },
+    {
+      "bytes": "",
+      "flickers": []
+    },
+    {
+      "bytes": "\u001b[2J\u001b[H\u001b[?2026h0\r\n1\r\n\u001b[?2026l",
+      "flickers": []
+    }
+  ],
+  "SIGCONT 后第二帧照常 diff": [
+    {
+      "bytes": "\u001b[?2026h0\r\n1\r\n\u001b[?2026l\u001b[?25l",
+      "flickers": []
+    },
+    {
+      "bytes": "",
+      "flickers": []
+    },
+    {
+      "bytes": "\u001b[?2026h\r\n\r\n\u001b[?2026l",
+      "flickers": []
+    },
+    {
+      "bytes": "\u001b[?2026h\r\u001b[1AX\r\n\u001b[?2026l",
       "flickers": []
     }
   ],

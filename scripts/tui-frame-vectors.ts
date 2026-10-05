@@ -1,6 +1,6 @@
 #!/usr/bin/env bun
 /**
- * 从旧底座生成帧间增量的测试向量（B9 / T3.2，契约 R1 / R3–R6 / R12）。
+ * 从旧底座生成帧间增量的测试向量（B9 / T3.2–T3.3，契约 R1 / R3–R8 / R10 / R12）。
  *
  * 语料在 packages/tui/tests/fixtures/frame-corpus.ts（纯数据），驱动在 frame-drive.tsx（不 import 底座）。
  * 这里把端口的 legacy 实现注入驱动，逐帧记下 TTY 路径写出的字节与 onFrame 的 full reset 原因。
@@ -23,8 +23,9 @@ const { FRAME_CORPUS } = await import(${JSON.stringify(join(ROOT, "packages/tui/
 const { driveFrames } = await import(${JSON.stringify(join(ROOT, "packages/tui/tests/fixtures/frame-drive.tsx"))});
 const { Box, Text } = await import(${JSON.stringify(join(ROOT, "packages/cli/src/ui/render-port/components.ts"))});
 const { renderSync } = await import(${JSON.stringify(join(ROOT, "packages/cli/src/ui/render-port/testing.ts"))});
+const { getRenderInstance: instanceOf } = await import(${JSON.stringify(join(ROOT, "packages/cli/src/ui/render-port/runtime.ts"))});
 const out = {};
-for (const c of FRAME_CORPUS) out[c.name] = await driveFrames({ React, Box, Text, renderSync }, c);
+for (const c of FRAME_CORPUS) out[c.name] = await driveFrames({ React, Box, Text, renderSync, instanceOf }, c);
 process.stdout.write(JSON.stringify(out));
 process.exit(0);
 `;

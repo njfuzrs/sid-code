@@ -16,7 +16,7 @@
  *   再用整行宽的空格把 p - n 行盖一遍（`\r` + `CUD 1` 逐行），最后回到第 n 行；
  *   有变化的行在擦除之后、空格之前写，竖向移动以第 n 行为基准；
  * - **full reset**（`ESC[2J ESC[3J ESC[H` + 整帧重画）在下面三种情况发生：
- *   ① 宽度变了（R7 的帧层部分；resize 事件合并等归 T3.3）；
+ *   ① 宽度变了（R7 的帧层部分；视口变矮与 resize 事件合并在 ink.tsx，见 `resetMainScreen`）；
  *   ② 有变化的行已经滚出视口：行号 y < p - H + 1（R5，原因 offscreen）；
  *   ③ 收缩时 p - n > H - 1（新的底部落在视口之上），或前一帧已占满视口（p ≥ H）而新帧 n ≤ H（R6）。
  */
@@ -66,6 +66,22 @@ function firstChangedColumn(previous: Screen, next: Screen, y: number): number {
 	return -1;
 }
 
+/**
+ * full reset：清屏 + 清 scrollback + 回原点，再按首帧口径画整帧。
+ * R7（B9 / T3.3）的视口变化判定在 ink.tsx 出帧时做（它要比较的是上一帧出帧时的视口，不是上一帧的屏幕），
+ * 判定成立就直接用这里，与前一帧是否存在、是否为空无关（旧底座空帧变宽也照样清屏）。
+ */
+export function resetMainScreen(
+	next: Screen,
+	viewportRows: number,
+	reason: FrameFlicker['reason'],
+): FrameDiff {
+	return {
+		bytes: CLEAR_TERMINAL + rows(next, 0, next.height),
+		flicker: {desiredHeight: next.height, availableHeight: viewportRows, reason},
+	};
+}
+
 export function diffMainScreen(
 	previous: Screen | undefined,
 	next: Screen,
@@ -77,10 +93,8 @@ export function diffMainScreen(
 	}
 
 	const p = previous.height;
-	const fullReset = (reason: FrameFlicker['reason']): FrameDiff => ({
-		bytes: CLEAR_TERMINAL + rows(next, 0, n),
-		flicker: {desiredHeight: n, availableHeight: viewportRows, reason},
-	});
+	const fullReset = (reason: FrameFlicker['reason']): FrameDiff =>
+		resetMainScreen(next, viewportRows, reason);
 
 	if (previous.width !== next.width) {
 		return fullReset('resize');
@@ -114,7 +128,8 @@ export function diffMainScreen(
 	// 竖向移动的基准行：收缩时擦完底部光标在第 n 行，否则在第 p 行
 	let cursorRow = p;
 	if (shrinking) {
-		out += ansiEscapes.eraseLines(p - n) + cursorUp(1);
+		// 1 行收缩到空帧：旧底座只回行首再上移，不擦行（擦除由下面的空格覆盖完成）。B9 / T3.3 对拍补上
+		out += (p === 1 && n === 0 ? '\r' : ansiEscapes.eraseLines(p - n)) + cursorUp(1);
 		cursorRow = n;
 	}
 
@@ -146,6 +161,28 @@ export function diffMainScreen(
 
 	out += rows(next, p, n);
 	return {bytes: out};
+}
+
+/**
+ * SIGCONT 之后的第一帧（B9 / T3.3，契约 R10 主屏部分）：前一帧已作废（别的程序可能动过屏幕），
+ * 但旧底座并不清屏，而是**从光标处按首帧口径往下写**，只是把「前面没变的行」省成一个 `\r\n`：
+ * 第一个变化行之前（只看两帧都有的行）每行写 `\r\n`，从第一个变化行起逐行写整行。
+ * 只在新帧不比前一帧矮、宽度相同时适用；否则调用方按首帧整帧画。规则来自黑盒对拍。
+ */
+export function redrawAfterSuspend(stale: Screen, next: Screen): string | undefined {
+	if (next.height < stale.height || next.width !== stale.width) {
+		return undefined;
+	}
+
+	let first = stale.height;
+	for (let y = 0; y < stale.height; y++) {
+		if (firstChangedColumn(stale, next, y) >= 0) {
+			first = y;
+			break;
+		}
+	}
+
+	return '\r\n'.repeat(first) + rows(next, first, next.height);
 }
 
 /**

@@ -45,3 +45,8 @@ diff -r /tmp/ink-v711/src packages/tui/src   # 导入提交上应无输出
 | T3.1 | `src/renderer.ts`、`src/render-to-string.ts` | 渲染结果多带一个 `screen`；新增 `renderToScreen()` | 对拍测试与 T3.2 的 diff 都要拿屏幕缓冲 | R3 |
 | T3.1 | `src/sanitize-ansi.ts` | 带冒号子参数的 SGR（`ESC[4:3m`）整条丢弃 | ansi-tokenize 不认识，会把 `[4:3m` 当可见字符落格；旧底座丢弃 | R3 |
 | T3.1 | `src/dom.ts` | 文本测量：换行后仍比可用宽度宽的行，按 `ceil(行宽 / 可用宽)` 计行数 | 宽字符被挤到 1 列、VS16 宽字符压在行尾时，旧底座的布局高度就是这样算的（多出来的是空行） | T4 |
+| T3.3 | `src/ink.tsx`（resize） | resize 事件不当场出帧：尺寸与上一次事件相同就丢掉；否则当场重算布局，出帧交给一条独立的 `FrameScheduler(…, alwaysThrottle)`，同 tick 多次只出 leading + trailing（测试环境也一样）；相对**上一帧出帧时的视口**变宽 / 变窄 / 变矮 → full reset（原因 resize，空帧也算），只变高照常 diff；卸载时丢掉排队的 resize 帧 | 上游 resize 当场擦屏重画、不合并；旧底座的口径来自黑盒对拍（`frame-vectors.json` 的 resize 条目、E8） | R7 |
+| T3.3 | `src/ink.tsx`（`forceRedraw`，新增） | 写 `2J H`（不清 scrollback、不进同步包裹），前一帧作废，当场按首帧画；保留「上一帧出帧时的视口」，同 tick 的 resize 照样判 full reset；非 TTY / debug / 挂起 / 卸载中不做 | 上游没有；CLI 的 Ctrl+L 走端口 `RenderInstance.forceRedraw` | R8、X7 |
+| T3.3 | `src/ink.tsx`（SIGCONT、`setAltScreenActive`，新增） | 交互模式挂 `SIGCONT`、卸载摘掉；主屏：前一帧作废但不写字节，下一帧走 `redrawAfterSuspend`；`<AlternateScreen>` 挂着时写 `?1049h 2J H`，开过鼠标的补 `?1000/1002/1003/1006/1007h`。`setAltScreenActive` 只记状态，离开 alt 后下一帧 full reset。alt-screen 的出帧本身（绝对定位）归 T6.1 | 上游没有 SIGCONT 处理 | R10 |
+| T3.3 | `src/frame/main-screen.ts` | 新增 `resetMainScreen`（R7 判定在 ink.tsx）、`redrawAfterSuspend`（SIGCONT 后第一帧：第一个变化行之前每行只写 `\r\n`，之后按首帧写整行；新帧变矮或宽度变了就退回首帧整帧）；1 行收缩到空帧时用 `\r` 代替 `eraseLines(1)` | 对拍旧底座逐帧字节 | R7、R10、R3 |
+| T3.3 | `src/frame/scheduler.ts` | 构造参数 `alwaysThrottle`：测试环境也走 microtask + 16ms 窗口 | 旧底座的 resize 合并不受测试环境同步出帧影响 | R7、R13 |

@@ -1,5 +1,5 @@
 /**
- * 引擎级场景 E1–E7 双底座差分（B9 / T3.2，设计文档阶段 3 出口）。
+ * 引擎级场景 E1–E10 双底座差分（B9 / T3.2–T3.3，设计文档阶段 3 出口）。
  *
  * 每个场景在 legacy 与 next 上各跑一遍，用 S 场景同一套判定（compareToBaseline）以 legacy 为基线比较：
  * 网格、scrollback、光标、模式逐项一致，full reset 次数与字节数不超过 legacy 的 1.1 倍。
@@ -16,7 +16,7 @@ const run = async (name: string, renderer: "legacy" | "next") => {
   return { ...s, steps: s.steps.filter((st) => st.label !== EXIT_LABEL) };
 };
 
-describe("引擎级场景 E1–E7（legacy ↔ next）", () => {
+describe("引擎级场景 E1–E10（legacy ↔ next）", () => {
   for (const name of Object.keys(ENGINE_SCENARIOS)) {
     test(`${name} ${ENGINE_SCENARIOS[name]!.covers.join(" ")}`, async () => {
       const [legacy, next] = await Promise.all([run(name, "legacy"), run(name, "next")]);
