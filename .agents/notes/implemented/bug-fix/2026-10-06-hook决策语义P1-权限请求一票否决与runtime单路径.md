@@ -13,6 +13,7 @@ Date: 2026-10-06
 - **H6 / H7**（`hook/event-handler.ts`）：删掉「全是 runtime hook 就直接 `await action(input)`」的快速路径，runtime hook 一律走 `runner.executeRuntimeHook`。返回值（含 deny）、timeout、AbortSignal、异常隔离、耗时随之恢复（H8 / H9 同源，顺带修掉）。
 - **H14**（`hook/runner.ts`）：删掉 `expandCommand`，命令串原样交给 `sh -c`。`$SID_CODE_PROJECT_DIR` 本来就在环境变量里；`$SID_CODE_CWD` 原先只靠字符串替换提供，补进环境变量，写法兼容。
 - **H16**（`hook/runner.ts`）：只从 stdout 解析 JSON，stderr 从不当 JSON（对齐 CC）。stderr 仍作 exit 2 的阻塞理由和其余非零的告警文本。
+- **文档同步**：`website/extend/hooks.md`（`$SID_CODE_CWD` 原写「只做字符串展开、不传给子进程」，现在是环境变量；补 stdout-only JSON 与 exit 2 规则）与 `website/blog/sc-11-hooks.md`（字符串替换、runtime 快速路径、JSON 优先 + stderr 兜底、合并策略表、agent hook 失败写 allow 五处旧代码片段改为现状，旧做法保留为反面教材并注明缺陷编号）。
 
 ## 放弃了什么（以及为什么不选）
 
@@ -26,4 +27,5 @@ Date: 2026-10-06
 - 新增 `packages/core/tests/hook/hook-p1-permreq-runtime-exit.test.ts`；P0 测试里 H2 的 `KNOWN_GAPS` 豁免删除，结构性「可 block 事件一票否决」断言现在也覆盖 PermissionRequest。`bun test ./packages/core/tests/hook/` 161 pass / 0 fail。
 - 变异自证（逐条把修复改回去再跑两个测试文件）：H2 回退 4 fail、H3 回退 3 fail、H16 回退 3 fail、H14 回退 2 fail、H6/H7 回退（加回快速路径）5 fail。
 - 9-27 复现脚本指向本分支代码重跑：场景 5 `isBlockingDecision = true | decision = deny`；场景 6 `ctor = PreToolUseHookOutput`；runtime 场景 A 产生 finalOutput、场景 C 实际耗时 57ms（原 603ms）；H14 `PWNED 文件是否被创建 = false`；H15-H18 场景【4】`output={}`。
+- 文档：`bun run website:build` rc=0（死链检测通过），`docs:gen-reference --check` 通过；`grep expandCommand\|parseJsonOutput(stderrText)` 在两份文档里零命中。
 - 删掉快速路径影响内部 runtime hook，补跑 trace / telemetry / debug / query / sdk / permission 测试目录：2679 pass / 0 fail。`make build` rc=0，`will always be undefined` 0 处。
