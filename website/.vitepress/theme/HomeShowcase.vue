@@ -42,14 +42,14 @@
  *     2026-08-10 教训：工具数从 "60+" 改成 44 时只改了首页，README 漏改，
  *     两份对外文档不一致挂了两周多。改这里时把几处一起 grep 一遍。
  *   2026-09-30 换口径：旧值「20 万+ 行 / 8000+ 单测」是静态扫描口径，与简历
- *   （`bun test` 实际执行数 + 全仓自研行数）对不上，访客对照两边会以为有一边在造假。
+ *   （`bun test` 实际执行数 + 全仓代码行数）对不上，访客对照两边会以为有一边在造假。
  *   现在四个数全部取自同一个取数脚本的同一次运行：
  *     docs-research 仓 scripts/resume-metrics.ts（`--coverage`，约 4 分钟）
  *
- *     自研代码行数  50.8 万：生产 + 渲染底座 fork + 测试 + 工程脚本，扣掉 _vendor/ 纯第三方
- *                   （2026-09-29 实测 507,914 行，其中测试 197,130 行）
- *     单测          `bun test` 实际执行数，含动态生成用例（2026-09-29 实测 12,875，0 失败）
- *     引擎行覆盖率  packages/core/src 的行覆盖（2026-09-29 实测 84.7% = 74,209 / 87,603）
+ *     代码行数      52.5 万：生产 + 渲染底座 fork + 测试 + 工程脚本，扣掉 _vendor/ 纯第三方
+ *                   （2026-10-04 实测 524,786 行，其中测试 206,413 行；HEAD=f1581f76）
+ *     单测          `bun test` 实际执行数，含动态生成用例（2026-10-04 实测 13,398，0 失败）
+ *     引擎行覆盖率  packages/core/src 的行覆盖（2026-10-04 实测 86.3% = 77,768 / 90,119）
  *                   ⚠ 只报引擎层；CLI/TUI 与渲染层覆盖率明显更低，是有意取舍，别换成全仓口径
  *     内置工具数    sid-code --dump-tools 数组长度（44，与 ref/tools.md 同源）
  *   Hook 事件数从能力条撤下：枚举 32 类里有一部分是预留、尚未接线，
@@ -75,9 +75,9 @@ interface Stat {
   decimals?: number;
 }
 const STATS: Stat[] = [
-  { value: 50.8, suffix: "万", label: "行自研 TypeScript（含测试）", decimals: 1 },
-  { value: 12875, suffix: "", label: "个单测，全绿才合入" },
-  { value: 84.7, suffix: "%", label: "Agent 引擎行覆盖率", decimals: 1 },
+  { value: 52.5, suffix: "万", label: "行 TypeScript（含测试）", decimals: 1 },
+  { value: 13398, suffix: "", label: "个单测，全绿才合入" },
+  { value: 86.3, suffix: "%", label: "Agent 引擎行覆盖率", decimals: 1 },
   { value: 44, suffix: "", label: "个内置工具" },
 ];
 
@@ -124,7 +124,7 @@ const FEATURES: Card[] = [
   {
     title: "企业级",
     lead: "装上就接得上你公司已有的那套东西。",
-    desc: "内部网关计费口径、企业 SSO、MCP、团队默认配置分发，面向企业内网设计，不用先改造企业来适配工具。",
+    desc: "内部网关计费口径、飞书身份登录、MCP、团队默认配置分发，面向企业内网设计，不用先改造企业来适配工具。",
     link: "/team/defaults",
     linkText: "团队部署",
     paths: ["M3 21h18", "M5 21V7l7-4 7 4v14", "M9.5 21v-5h5v5"],
@@ -234,7 +234,7 @@ const STEPS = [
   {
     n: "02",
     title: "配模型",
-    desc: "sid-code 不带模型。Anthropic / OpenAI / Ollama 三族协议各有一份可直接粘的配置。",
+    desc: "sid-code 不带模型。Anthropic / OpenAI / Ollama 三族（OpenAI 族含 Chat Completions 与 Responses 两种），各有一份可直接粘的配置。",
     link: "/start/configure",
     linkText: "配置 LLM Provider",
   },
