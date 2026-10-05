@@ -13,7 +13,8 @@ description: 企业侧能强制约束哪些行为、哪些约束用户绕不过�
 
 ## 快速上手
 
-企业策略文件放在 `~/.sid-code/managed-settings.json`，权限建议 `600`：
+企业策略文件放在**系统级**路径（按平台，见下一节），由 root / MDM 拥有，权限建议 `600`。
+以 Linux 为例：
 
 ```json
 {
@@ -25,8 +26,23 @@ description: 企业侧能强制约束哪些行为、哪些约束用户绕不过�
 ```
 
 ```bash
-chmod 600 ~/.sid-code/managed-settings.json
+sudo install -m 600 -o root managed-settings.json /etc/sid-code/managed-settings.json
 ```
+
+个人试用可以先放 `~/.sid-code/managed-settings.json`，效果相同，只是用户自己能删（见[能力边界](#能力边界-如实说)）。
+
+也可以不分发文件，由企业后端远程下发同样形状的策略。客户端只需配一个后端地址并登录一次：
+
+```json
+{ "backend": { "url": "https://<your-backend>" } }
+```
+
+```bash
+sid-code auth login              # 用企业身份登录，拿到设备凭据
+sid-code auth status --verify    # 确认凭据有效、通道连通
+```
+
+之后每次启动会拉取 `GET <backend.url>/api/v1/ctl/policy`，细节见下文[能力边界](#能力边界-如实说)第 3 条。
 
 验证第二条真的生效——用户显式要求跳过权限时直接退出：
 
@@ -36,40 +52,44 @@ $ sid-code -p "..." --dangerously-skip-permissions
 --dangerously-skip-permissions / --permission-mode always-allow 不可用。
 ```
 
-这是 fail-fast 而不是静默降级（`src/cli.ts:898-904`），因为静默降级会让用户
+这是 fail-fast 而不是静默降级（`packages/cli/src/cli.ts`），因为静默降级会让用户
 以为自己在 bypass 模式下、实际每步都在弹确认，反而困惑。
 
-## 策略文件路径：一个必须知道的分裂
+## 策略文件放哪
 
-这里有个坑，配错了策略就完全不生效。**两类策略读的路径不一样**：
+所有消费方（settings 加载链的 `policySettings` 层、模式管控开关、权限规则、身份段）
+共用同一条候选链，**系统级优先，取第一个存在的**（`packages/core/src/config/paths.ts` 的
+`managedPolicyCandidates`）：
 
-| 策略内容 | 读取路径 | 证据 |
+| 平台 | 系统级（优先） | 用户级（回退） |
 | --- | --- | --- |
-| `permissions.{allow,deny,ask}` 权限规则 | `/etc/sid-code/managed-settings.json` → `~/.sid-code/managed-settings.json`（取第一个存在的） | `src/permission/rule-loader.ts:105-135` |
-| `disableBypassPermissionsMode`、`disabledModes`、`strictPluginOnlyCustomization`、`disableAllHooks`、`policyLimits` | **只有** `~/.sid-code/managed-settings.json` | `src/config/policy.ts:65` |
+| Linux | `/etc/sid-code/managed-settings.json` | `~/.sid-code/managed-settings.json` |
+| macOS | `/Library/Application Support/SidCode/managed-settings.json` | `~/.sid-code/managed-settings.json` |
+| Windows | `%PROGRAMDATA%\SidCode\managed-settings.json` | `~/.sid-code/managed-settings.json` |
 
-也就是说：**放在 `/etc/sid-code/managed-settings.json` 里的模式管控开关不会生效**，
-只有权限规则会。要下发完整策略，写 `~/.sid-code/managed-settings.json`（可两处都放）。
+- **系统级文件存在时，用户级那份被忽略**。所以管理员部署了系统级文件，用户删改自己家目录里的那份不影响管控。
+- macOS 不读 `/etc/sid-code/`，放那里等于没放。
+- 想按团队拆分多份策略，用系统级目录下的 drop-in：`managed-settings.d/*.json`，
+  按文件名字母序合并、后者覆盖前者，以主文件为基座叠加（`packages/core/src/config/settings/constants.ts`）。
+  drop-in 只认系统级目录，`~/.sid-code/managed-settings.d/` 不读。
 
-::: warning 另一个历史遗留路径不要用
-`/etc/sid-code/policy.json` 也会被 settings 加载链读到，但**它的字段进不了运行时 `Config`**——
-`loadConfig()` 只读 `~/.sid-code/settings.json` 和 `app.json`（`src/config/config.ts:1007-1017`）。
-在那个文件里写 `permissionMode` / `allowedDirectories` 等于没写。
-`src/config/paths.ts:90` 的注释已把它标为废弃路径。**用 `managed-settings.json`。**
+::: warning 历史路径已废弃
+`/etc/sid-code/policy.json` 与 `policy.yaml` 已废弃，不再读取。**用 `managed-settings.json`。**
 :::
 
-策略文件权限不是 `600` 时**只告警不阻塞**（`rule-loader.ts:113-120`、`policy.ts:70-78`），
-所以别指望它替你做防篡改——真要防，靠文件系统权限本身（root 拥有、普通用户不可写）。
+策略文件权限不是 `600` 时**只告警不阻塞**（`rule-loader.ts`、`policy.ts`），
+所以别指望它替你做防篡改——真要防，靠文件系统权限本身（root 拥有、普通用户不可写），
+也就是部署到系统级路径。
 
 ## 权限规则：为什么企业的 deny 绕不过去
 
 企业策略是**优先级最高的可信规则源**（`policySettings`，优先级 7，
-`src/permission/types.ts:101-112`）。它有两层保障：
+`packages/core/src/permission/types.ts`）。它有两层保障：
 
-1. **deny 恒压 allow**：权限检查第 1 步就查 deny（`src/permission/checker.ts:570-576`），
-   allow 规则排在第 8 步（`checker.ts:693-700`）。下层怎么 allow 都翻不过来。
+1. **deny 恒压 allow**：权限检查第 1 步就查 deny（`packages/core/src/permission/checker.ts`），
+   allow 规则排在第 8 步（`checker.ts`）。下层怎么 allow 都翻不过来。
 2. **企业 allow 不被剥离**：`policySettings` 是可信源，它的 allow 规则不走
-   "危险自我授权剥离"（`rule-loader.ts:99-102`）。管理员有权自我授权，项目配置没有。
+   "危险自我授权剥离"（`rule-loader.ts`）。管理员有权自我授权，项目配置没有。
 
 实测一遍。企业策略 deny 掉 `Bash(curl *)` 和 `Read(//etc/**)`，
 同时用户侧给到最宽的授权（`always-allow` 模式 + 用户级 `allow: ["Bash(*)", "Read(*)"]`）：
@@ -87,7 +107,7 @@ $ sid-code -p "..." --dangerously-skip-permissions
 ## 静态防护层：与权限模式无关的那几层
 
 有几层检查排在所有 allow 规则和宽松模式**之前**，所以配置放宽不影响它们
-（顺序见 `src/permission/checker.ts:559-753`）：
+（顺序见 `packages/core/src/permission/checker.ts`）：
 
 | 顺序 | 层 | 拦什么 | 可否用户确认放行 |
 | --- | --- | --- | --- |
@@ -99,8 +119,8 @@ $ sid-code -p "..." --dangerously-skip-permissions
 
 ### 危险命令分三级
 
-`critical` 级**命中即硬拒、不给确认机会**（`checker.ts:1060-1067`，注释写的是
-"绝不交给 LLM"）。几个真实模式（`checker.ts:48-88`）：
+`critical` 级**命中即硬拒、不给确认机会**（`checker.ts`，注释写的是
+"绝不交给 LLM"）。几个真实模式（`checker.ts`）：
 
 - `rm -rf /` 递归删根
 - `curl ... | sh` 下载后管道执行（含 `wget` / `python` / `perl` / `ruby` 变体）
@@ -111,17 +131,17 @@ $ sid-code -p "..." --dangerously-skip-permissions
 `high` / `medium` 级是**需要用户确认**而不是硬拒：`sudo`、`chmod -R 777`、
 反引号/`$()` 命令替换、读 SSH 私钥、`git reset --hard`、`git push --force` 等。
 
-git 类操作**刻意全部不用 critical**（`src/permission/git-danger-patterns.ts:39-40`）：
+git 类操作**刻意全部不用 critical**（`packages/core/src/permission/git-danger-patterns.ts`）：
 force push 到 main 也属于用户的正当能力，靠 high + UI 标红 + 默认聚焦"拒绝"来防误触，
 而不是一刀切禁掉。
 
 危险命令检测会拆复合命令逐条查，并对 git 做选项归一化后再查一遍，
-防 `git -c core.pager=cat reset --hard` 这种绕法（`checker.ts:1332-1342`）。
+防 `git -c core.pager=cat reset --hard` 这种绕法（`checker.ts`）。
 
 ### 路径校验
 
 `blockedDirectories` 和 `allowedDirectories` 是**硬拒绝**，不给确认
-（`src/permission/path-validator.ts:205-229`）：
+（`packages/core/src/permission/path-validator.ts`）：
 
 ```json
 {
@@ -170,7 +190,7 @@ UNC 远程共享、敏感文件 `.env` / `*.pem` / `id_rsa` / `.ssh/` / `.aws/co
 五个字段里四个被剥掉，`permissions` 里的 `Bash(*)` / `Bash(sudo *)` 也被剔除，
 只剩无害的 `Read(*)`；企业 deny 完整保留。
 
-**第一道防线**是不可信字段名单（`src/config/settings/security.ts:32-41`，共 8 项）：
+**第一道防线**是不可信字段名单（`packages/core/src/config/settings/security.ts`，共 8 项）：
 
 | 字段 | 为什么项目级不能设 |
 | --- | --- |
@@ -185,7 +205,7 @@ UNC 远程共享、敏感文件 `.env` / `*.pem` / `id_rsa` / `.ssh/` / `.aws/co
 
 （`blockedDirectories` 不在名单里——项目级收紧是安全的，不构成提权。）
 
-**第二道防线**是危险自我授权 allow 规则剥离（`src/permission/rule-loader.ts:46-55`）：
+**第二道防线**是危险自我授权 allow 规则剥离（`packages/core/src/permission/rule-loader.ts`）：
 `Bash(*)`、裸 `*`、`Bash(*rm*)`、`Bash(*sudo*)`、`Bash(*curl*)`、`Write|Edit(*)` 等 8 类模式，
 **只剥 allow，deny / ask 一律保留**（收紧永远允许）。
 
@@ -199,7 +219,7 @@ UNC 远程共享、敏感文件 `.env` / `*.pem` / `id_rsa` / `.ssh/` / `.aws/co
 | `policyLimits` | 策略限额 | ✅ 注入生效 |
 
 `--setting-sources` 甩不掉企业策略：`policySettings` 和 `flagSettings` 会被强制加回
-（`src/config/settings/settings.ts:89-90`）。
+（`packages/core/src/config/settings/settings.ts`）。
 
 ### plugin-only：锁定扩展来源
 
@@ -211,51 +231,58 @@ UNC 远程共享、敏感文件 `.env` / `*.pem` / `id_rsa` / `.ssh/` / `.aws/co
 ```
 
 `true` 表示锁全部。门控作用在用户级、项目级、以及 `--add-dir` 授权目录三层
-（`src/extension/loader.ts:110,124,171`）——`--add-dir` 不是策略绕过口。
+（`packages/core/src/extension/loader.ts`）——`--add-dir` 不是策略绕过口。
 
 企业分发的扩展放 `/etc/sid-code/<type>/` 或 `~/.sid-code/managed/<type>/`
-（`src/config/paths.ts:149-152`），这一层最后扫描、优先级最高，覆盖同名的 user / project 扩展，
+（`packages/core/src/config/paths.ts`），这一层最后扫描、优先级最高，覆盖同名的 user / project 扩展，
 且不走项目信任确认。
 
 ### 审计日志
 
 权限决策写 `~/.sid-code/logs/permissions-audit.log`，超过 10MB 自动轮转
-（`src/permission/audit.ts:13,21,33`）。每条记录时间戳、工具名、资源、决策、原因。
+（`packages/core/src/permission/audit.ts`）。每条记录时间戳、工具名、资源、决策、原因。
 
 即使是 `--dangerously-skip-permissions` 放行的操作也会留一条
-`reason: "skipPermissions"` 的记录（`checker.ts:770-777`）——绕过检查不等于绕过审计。
+`reason: "skipPermissions"` 的记录（`checker.ts`）——绕过检查不等于绕过审计。
 
 ## 能力边界（如实说）
 
 这几条是当前**做不到**的，别按"已经管住了"来规划：
 
 **1. `--dangerously-skip-permissions` 确实绕过全部静态防护层。**
-`check()` 在进入检查链之前就早退放行（`checker.ts:768-779`）。实测在企业
+`check()` 在进入检查链之前就早退放行（`checker.ts`）。实测在企业
 deny 了 `Bash(curl *)` 的前提下，加这个参数后 `curl` 和 `rm -rf /` 都直接放行。
 唯一的对策就是 `disableBypassPermissionsMode: "disable"`——**这条不配，上面所有约束都有一个总开关**。
 
 （对比：`--yes` 不走这条早退路径，仍然完整检查危险命令。）
 
-**2. 策略文件在用户家目录，用户自己可写。**
-`~/.sid-code/managed-settings.json` 归用户所有，普通用户能改能删。要真正强制，
-得靠 MDM 或系统级权限把文件锁成 root-only——但注意模式管控开关只读用户家目录那份
-（见前文路径分裂），这里存在实现层面的张力。**目前这套更适合"团队约定 + 防误操作"，
-不适合"防内部对抗"。**
+**2. 只部署了用户级那份时，用户自己能删。**
+`~/.sid-code/managed-settings.json` 归用户所有，普通用户能改能删。要强制，就部署系统级路径
+并由 root / MDM 拥有——系统级文件存在时用户级那份直接被忽略，删了也不影响。
+只发用户级那份的部署，适合"团队约定 + 防误操作"，不适合"防内部对抗"。
 
 **3. 远程策略随 `backend.url` 自动生效。** 配了企业后端地址（`backend.url` 或
 `SID_CODE_BACKEND_URL`）并执行过 `sid-code auth login` 后，启动时会拉取
 `GET <backend.url>/api/v1/ctl/policy`，不需要再单独配策略地址。拉取失败时按 fail-open 处理，
 有未过期的缓存就用缓存。用 `sid-code auth status --verify` 确认这条通道是否真的连通。
-旧的 `SID_CODE_POLICY_ENDPOINT` 已弃用，只在没配 `backend.url` 时生效。
+旧的 `SID_CODE_POLICY_ENDPOINT` 已弃用，只在没配 `backend.url` 时生效；两者都配且地址不同时以
+`backend.url` 为准并告警（`packages/core/src/identity/endpoints.ts`）。
+
+如实的边界：远程策略**只在启动时拉一次，不轮询**，管理员改了策略要等用户下次启动才生效
+（`packages/core/src/config/policy.ts` 的 `RemotePolicyLoader`）。非权威响应（超时 / 5xx / 401）时，
+缓存只在「地址一致、上次权威响应是 200、未超过 10 分钟」三条同时满足才用，
+避免已撤销的 deny 靠缓存续命。
 
 **4. `SID_CODE_DISABLE_POLICY_SKILLS=1` 能关掉 managed 层扩展**
-（`src/extension/loader.ts:184`）。这是个**本地环境变量**——企业下发的 managed skill
+（`packages/core/src/extension/loader.ts`）。这是个**本地环境变量**——企业下发的 managed skill
 可被任何本地用户一个 env 关掉。它是运维逃生阀，不是企业侧强制手段。
 
-**5. safetyCheck 的 `classifierApprovable` 字段目前无运行时消费者**
-（`checker.ts:117-119` 的注释明确记着这点）。24 条受保护路径一律只是"需确认"，
-标着 `false` 的那 13 条（`.git/hooks/`、`.sid-code/skills/`、各类 settings 文件等）
-并没有更强的拦截行为。这个字段是为未来的分类器自动审批做前置加固，现在只是语义标记。
+**5. auto 模式下，最敏感的受保护路径分类器不能放行。**
+safetyCheck 的 21 条受保护路径（`packages/core/src/permission/safety-protected-paths.ts`）里，
+`classifierApprovable: false` 的 12 条（`.git/hooks/`、`.husky/`、`.sid-code/` 与 `.claude/` 下的
+commands / agents / skills / settings 文件）以及危险命令，auto 分类器的结果直接丢弃、必须人工确认
+（`packages/core/src/permission/checker.ts` 的 `classifierMayApprove`）。这一条是已经管住的，
+列在这里是为了说清边界：其余 9 条（`.git/`、`.bashrc`、`.ssh/` 等）分类器判定安全时可以放行。
 
 ## 常见问题
 
@@ -264,22 +291,24 @@ deny 了 `Bash(curl *)` 的前提下，加这个参数后 `curl` 和 `rm -rf /` 
 按顺序查：
 
 ```bash
-# 1. 路径对不对（模式管控开关只认这个路径）
-ls -l ~/.sid-code/managed-settings.json
+# 1. 路径对不对、谁拥有（按平台看系统级路径；系统级存在时用户级那份不读）
+ls -l /etc/sid-code/managed-settings.json                              # Linux
+ls -l "/Library/Application Support/SidCode/managed-settings.json"     # macOS
+ls -l ~/.sid-code/managed-settings.json                                # 用户级回退
 
 # 2. JSON 能不能解析（解析失败只 warn 不报错，容易漏）
-python3 -m json.tool ~/.sid-code/managed-settings.json
+python3 -m json.tool /etc/sid-code/managed-settings.json
 
 # 3. 加载日志
 sid-code -p "ok" 2>&1 | grep -i "POLICY\|RULE_LOADER"
 ```
 
-最常见的两个原因：把模式管控开关写进了 `/etc/sid-code/managed-settings.json`（不读），
-或者写进了 `/etc/sid-code/policy.json`（废弃路径）。
+最常见的三个原因：macOS 上放进了 `/etc/sid-code/`（macOS 不读）；改的是用户级那份，
+但系统级文件也存在（用户级被忽略）；写进了已废弃的 `policy.json`。
 
 ### 企业 deny 和用户 deny 是什么关系
 
-累加。Settings 层字符串数组是**拼接 + 去重**语义（`src/config/settings/merge.ts:27-35`），
+累加。Settings 层字符串数组是**拼接 + 去重**语义（`packages/core/src/config/settings/merge.ts`），
 没人能通过覆盖删掉别人的 deny。规则层同理——deny 只会越来越多。
 
 ### 想让某个工具全公司禁用

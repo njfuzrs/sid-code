@@ -20,8 +20,9 @@ settings.json 里的 hook 对象必须是**平铺**的——`matcher` / `command
 { "matcher": "edit|write", "hooks": [{ "type": "command", "command": "..." }] }   // ✗ 不生效
 ```
 
-写成嵌套的 `{matcher, hooks:[...]}` 会被**静默丢弃**（加载时不报错、不打日志，
-只有跑 `/doctor` 或看 settings 校验才会看到「command 类型的 Hook 必须指定 command 字段」）。
+写成嵌套的 `{matcher, hooks:[...]}` 会被**跳过**：加载时打一条 warn
+（`… 的 hook 用了嵌套形状 {matcher, hooks:[...]}，settings.json 需要平铺形状（把 type/command 提到与 matcher 同级）——本条已跳过，不会触发`），
+但不开 `-d` 时很容易看漏。
 这是最难自查的一种错：配置看着没问题，hook 就是不触发。
 
 事件名两种写法都认：`pre_tool_use` 与 `PreToolUse` 等价（内部会归一化）。
@@ -29,14 +30,14 @@ settings.json 里的 hook 对象必须是**平铺**的——`matcher` / `command
 
 <!--
   ⚠ 这个框曾经还写着「写 PascalCase 会被配置校验器判为未知事件名」——那条已经不成立。
-  当时 src/config/schema.ts 的 VALID_HOOK_EVENTS 是一份手写的 12 条 snake_case 清单，
+  当时 packages/core/src/config/schema.ts 的 VALID_HOOK_EVENTS 是一份手写的 12 条 snake_case 清单，
   而 registry 的 resolveEventName 对 PascalCase 和 snake_case 都认，于是用户按参考页
   （从 HookEventName 枚举生成，全 PascalCase）写完，hook 能正常触发却收到一条
   「未知的事件名」告警。2026-08-03 已把该清单改成从枚举 + LEGACY_EVENT_MAP 派生，
   假告警消除。别再把「PascalCase 不合法」写回来。
 
   嵌套形状不生效这条**是真的**，实测过：settings.json 走的是
-  app.ts:836 → registry.initializeFromLegacy（认平铺），
+  packages/cli/src/app.ts → registry.initializeFromLegacy（认平铺），
   而认嵌套的 initializeFromNew 在生产里没有任何调用方。
   注意 agent frontmatter 里的 hooks 用的是嵌套形状，两者不通用，别互相照抄。
 -->
@@ -190,11 +191,15 @@ hook 命令能直接读这些（另外完整的事件载荷 JSON 会从 **stdin*
 | `SID_CODE_TOOL_NAME` | 工具名 | 工具类事件 |
 | `SID_CODE_TOOL_INPUT` | 工具入参 JSON | 工具类事件 |
 | `SID_CODE_TOOL_OUTPUT` | 工具返回 JSON | `post_tool_use` |
-| `SID_CODE_TOOL_IS_ERROR` | 是否失败 | `post_tool_use_failure` |
+| `SID_CODE_TOOL_IS_ERROR` | 是否失败 | `post_tool_use` / `post_tool_use_failure` |
+| `SID_CODE_TOOL_USE_ID` | 本次工具调用的 ID | 工具类事件 |
 | `SID_CODE_USER_INPUT` | 用户原始输入 | `user_prompt_submit` |
 | `SID_CODE_MODEL` | 模型名 | 模型类事件 |
 | `SID_CODE_STOP_REASON` | 停止原因 | `after_model` |
+| `SID_CODE_AGENT_ID` | 子代理 ID | 子代理类事件 |
 | `SID_CODE_AGENT_TYPE` | 子代理类型 | 子代理类事件 |
+
+另外命令字符串里写 `$SID_CODE_CWD` 会被展开成当前工作目录。它只做字符串展开，不会作为环境变量传给子进程。
 
 ## 除了跑命令，还有四种 hook 类型
 
@@ -209,7 +214,7 @@ hook 命令能直接读这些（另外完整的事件载荷 JSON 会从 **stdin*
 
 `prompt` 和 `agent` 会真的调模型，**要花钱也要花时间**，别挂在高频事件上。
 
-其他常用字段：`timeout`（毫秒）、`async`（后台跑不阻塞）、`env`（额外环境变量）、
+其他常用字段：`timeout`（**秒**，默认 60；`prompt` 类型默认 30。写 `5000` 是 83 分钟，不是 5 秒）、`async`（后台跑不阻塞）、`env`（额外环境变量）、
 `name`（给 hook 起名，便于 `/hooks` 面板管理）。
 
 ## 管理与调试
@@ -241,7 +246,7 @@ echo '{}' | sh -c '你的 command'
 
 ### 配了但完全没反应
 
-按顺序查这四个：
+按顺序查这三个：
 
 <!--
   ⚠ 第 1 条曾是「事件名写成 PascalCase 了」——已删，那不是失效原因（两种写法运行时等价）。

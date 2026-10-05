@@ -1380,7 +1380,7 @@ function collectSitePages(): SitePage[] {
 
 function renderLlmsTxt(pages: SitePage[]): string {
   let out = `# sid-code\n\n`;
-  out += `> 跑在终端的 coding agent —— 多 provider 可插拔、功能自主、数据自主。\n\n`;
+  out += `> 长在企业研发环境里的 coding agent —— 你能改、能量、能审、数据不出门的 agent 底座。\n\n`;
   out += `本文件是给大模型读的全站索引（共 ${pages.length} 页）。\n`;
   out += `\`/ref/\` 下的参考页由 \`scripts/docs-gen-reference.ts\` 从源码生成，与实现同源。\n\n`;
 

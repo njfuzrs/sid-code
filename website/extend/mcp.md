@@ -24,20 +24,44 @@ sid-code mcp add fs npx -y @modelcontextprotocol/server-filesystem /tmp
 MCP 服务器 "fs" 已添加到 project 配置（stdio）。重启会话后生效。
 ```
 
-查一下：
+默认写进项目级 `.mcp.json`。项目级 server 来自仓库（等于别人的配置），**未批准前不加载**，
+所以这时 `mcp list` 里还看不到它，末尾会提示去看待审批列表：
 
 ```bash
 sid-code mcp list
 ```
 
 ```text
-已配置的 MCP 服务器（共 2 个）:
-
-  internal-api  [http]  https://mcp.example.com/mcp
-  fs  [stdio]  npx -y @modelcontextprotocol/server-filesystem /tmp
+未配置任何 MCP 服务器。用 `sid-code mcp add <name> <command|url>` 添加。
+另有 1 个项目级 MCP 服务器待审批（未加载），见 `sid-code mcp pending`。
 ```
 
-看单个的完整配置：
+```bash
+sid-code mcp pending
+```
+
+```text
+待审批的项目级 MCP 服务器（共 1 个，当前**未加载**）:
+
+  fs
+
+项目: /path/to/your/repo
+批准: sid-code mcp approve <name>   （或 --all 批准全部）
+拒绝: sid-code mcp reject <name>
+批准后需重启会话才会连接。
+```
+
+批准它：
+
+```bash
+sid-code mcp approve fs
+```
+
+```text
+已批准 1 个 MCP 服务器: fs。重启会话后连接。
+```
+
+这之后 `mcp list` / `mcp get` 才能看到它：
 
 ```bash
 sid-code mcp get fs
@@ -53,13 +77,18 @@ fs  [stdio]  npx -y @modelcontextprotocol/server-filesystem /tmp
     "@modelcontextprotocol/server-filesystem",
     "/tmp"
   ],
-  "_pendingApproval": true,
   "scope": "project"
 }
 ```
 
-::: tip `_pendingApproval` 是什么
-项目级 MCP server（`.mcp.json`）来自仓库，第一次用要你在会话里批准。
+::: tip 项目级 server 未批准前不加载
+项目级 MCP server（`.mcp.json`）来自仓库，从没批准或拒绝过的一律**不加载**（fail-closed），
+`mcp list` / `mcp get` 也看不到它，只出现在 `mcp pending` 里。批准有两条路：
+
+- CLI：`sid-code mcp approve <name>`（或 `--all` 批准全部待审批项），`sid-code mcp reject <name> | --all` 拒绝
+- 会话里：`/mcp` 面板
+
+拒绝后不再询问；指名 approve / reject 可以随时改判已经批准或拒绝过的 server。
 批准记录存在 `~/.sid-code/state/mcp-approvals.json`，按 `项目路径:server 名` 记账，
 所以同一个 server 在不同项目里要分别批准。用户级配置不需要批准。
 :::
@@ -148,11 +177,11 @@ fs  [stdio]  npx -y @modelcontextprotocol/server-filesystem /tmp
 三个只有读过源码才知道的坑：
 
 - **`env` 的值不做 `${VAR}` 展开**，只有 `command` / `args` / `url` / `headers` 会展开
-  （见 `packages/core/src/mcp/env-expansion.ts` 的 `expandEnvVars`）。上面例子里
+  （见 `packages/core/src/mcp/env-expansion.ts` 的 `expandConfigEnvVars`）。上面例子里
   `TAVILY_API_KEY` 直接写死是因为它展开不了，真实使用时建议按下一条处理。
 - **推荐做法是删掉 `env` 块，改在 shell 里 `export TAVILY_API_KEY=...`**——stdio
-  子进程会继承父进程的全部环境变量（`packages/core/src/mcp/transport.ts:62`
-  的 `{ ...process.env, ...env }`），照样能拿到，不用把 key 落进配置文件。
+  子进程会继承父进程的全部环境变量（`packages/core/src/mcp/transport.ts`
+  里的 `{ ...process.env, ...env }`），照样能拿到，不用把 key 落进配置文件。
 - **远程服务器的凭据用 `headers` 里的 `${VAR}`**，因为 `headers` 会展开——不必把
   token 明文写进 `.mcp.json` 或落到磁盘上。
 
@@ -199,7 +228,7 @@ token 存在 `~/.sid-code/mcp-oauth.json`，权限 `0600`。access token 过期�
 | --- | --- | --- |
 | `dynamic` | 运行时注入（IDE 集成等） | 当前会话 |
 | `user` | `~/.sid-code/settings.json` | 你的所有项目 |
-| `local` | 本地实验配置 | 当前项目，不进 git |
+| `local` | `~/.sid-code/projects/<项目路径 hash>/mcp.local.json`（只能手写，`mcp add --scope` 只接受 user / project） | 当前项目，不进 git |
 | `project` | `<项目>/.mcp.json` | 团队共享 |
 
 同名或**同签名**（相同 `command`+`args`，或相同 `url`）时，优先级：
@@ -213,6 +242,15 @@ dynamic > user > local > project
 
 签名去重的意义：同一个 server 在用户级和项目级各配了一份（名字还不一样），
 不会连两次——按签名认出是同一个，只保留高优先级那份。
+
+上面四层合并完之后，还有两个来源会叠上去：
+
+- **插件带的 MCP server**：名字带 `plugin:<插件名>:` 前缀，不会和你自己的配置撞名；
+  但它不参与上面的签名去重，和你自己配的是同一个 server 时会连两次
+- **`--mcp-config`**（见下一节）：同名时优先级**最高**，盖过上面所有来源；
+  加 `--strict-mcp-config` 时只剩它
+
+企业 `mcpPolicy` 对这些来源全部生效，见下方[企业管控](#企业管控)。
 
 ## 会话级注入：`--mcp-config`
 
@@ -237,6 +275,46 @@ sid-code --mcp-config /tmp/extra-mcp.json --strict-mcp-config -p "..."
 ```
 
 `--mcp-config` 可以重复给多次，也接受内联 JSON 而不只是文件路径。
+
+## 企业管控
+
+MCP server 能以你的身份跑进程、访问内网，所以企业侧有三道管控：
+
+**① `mcpPolicy` 黑白名单。** 在 settings.json（或企业下发的 managed 配置）里写：
+
+```json
+{
+  "mcpPolicy": {
+    "deniedServers": [{ "url": "https://*.untrusted.example.com/*" }],
+    "allowedServers": [
+      { "name": "internal-api" },
+      { "command": ["npx", "-y", "@modelcontextprotocol/server-filesystem", "/tmp"] },
+      { "url": "https://*.corp.example.com/*" }
+    ]
+  }
+}
+```
+
+每一条可以按 `name`、完整 `command`（含参数的数组）或 `url`（支持 `*` 通配，按整串匹配，所以要连协议一起写）匹配。
+判定顺序是先 deny（命中即否决）再 allow（配了 allow 名单就必须命中其中一条），都没配则放行。
+匹配用的是 `${VAR}` 展开**之后**的值，写成模板绕不过去。
+
+**② 企业策略整体禁用 MCP。** 企业策略的 `policyLimits` 里把 `mcp` 设为不允许，
+启动时所有已配置的 server 都会被清空，日志：
+
+```text
+MCP 已被企业策略禁用，忽略 N 个已配置的服务器
+```
+
+它只关 MCP 服务器，不会连带关掉 IDE 集成。
+
+**③ 连接前最后一道闸。** `mcpPolicy` 不只在配置合并时过滤，每次真正建立连接之前还会再过一遍
+（`packages/core/src/mcp/manager.ts`）。所以插件带的 server、`--mcp-config` 注入的 server、
+IDE 运行时注册的 server 这些不经过合并层的来源，同样逃不过它。被拦时日志：
+
+```text
+策略过滤: xxx 被 mcpPolicy 拒绝，不建立连接
+```
 
 ## MCP 工具的名字
 
@@ -370,8 +448,9 @@ sid-code -p "用 context7 查 Bun.serve 的 idleTimeout 默认值" \
 三件事按顺序查：
 
 1. **重启了吗** —— `mcp add` 的输出明确写了「重启会话后生效」，不热加载
-2. **项目级批准了吗** —— `mcp get` 看到 `"_pendingApproval": true` 说明还没批准
-3. **server 起来了吗** —— 开 `-d` 看 `[MCP] 连接服务器: xxx` 后面有没有报错
+2. **项目级批准了吗** —— `sid-code mcp pending` 里还列着它，就是还没批准（未批准的不加载）
+3. **server 起来了吗** —— 开 `-d` 看 `[MCP] 连接服务器: xxx` 后面有没有报错；
+   如果看到 `被 mcpPolicy 拒绝`，是企业策略拦了，见[企业管控](#企业管控)
 
 ### 删一个 server
 
@@ -383,7 +462,7 @@ sid-code mcp remove fs
 MCP 服务器 "fs" 已移除。重启会话后生效。
 ```
 
-删不存在的会明确告诉你（注意：退出码仍是 0，脚本里别只看退出码）：
+删不存在的会明确告诉你，退出码是 1，脚本里可以直接靠退出码判断：
 
 ```text
 错误: MCP 服务器 "nope" 不存在于配置中。

@@ -718,6 +718,14 @@ export function validateConfig(config: Config): ValidationResult {
             path: `${prefix}.action`,
             message: `无效值 "${rule.action}"，有效值为 ${Array.from(VALID_BUDGET_ACTIONS).join("/")}`,
           });
+        } else if (rule.action === "downgrade") {
+          // B39：downgrade 是合法值但没有实现——主循环只判 action === "block"（query/loop.ts），
+          // 没有降级分支，超限时只告警。配了零报错 = 「配了不生效」，所以这里点名。
+          // 不从合法值里删：删了会让已配的用户启动报「无效值」，比现在更糟。
+          warnings.push({
+            path: `${prefix}.action`,
+            message: `"downgrade" 当前未实现，行为等同 alert（超限只告警，不切换模型）`,
+          });
         }
 
         // 关键检查：budget-tracker.ts 用字符串精确匹配用量事件的 model 字段，

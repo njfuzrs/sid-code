@@ -376,7 +376,7 @@ if [ "$CHANNEL" = "beta" ]; then
     echo ""
 fi
 echo "  现在可以运行："
-echo "    sc                   # 启动（推荐，跳过权限确认）"
+echo "    sc                   # 启动（跳过全部权限检查，熟手用）"
 echo "    sid-code             # 启动（需逐条确认权限）"
 echo "    sid-code --version   # 确认版本"
 echo "    sid-code update      # 以后升级到最新版本"

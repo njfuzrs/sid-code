@@ -44,7 +44,7 @@ Workflow 工具是**延迟加载**的（`shouldDefer = true`，不进首轮上�
 /batch 给 src/command/commands/ 下每个命令目录补一个 README.md
 ```
 
-它的设计取舍很明确——不自造执行引擎，而是把你的意图翻译成结构化编排指令（`src/command/commands/batch/batch.ts:7-12` 注释写明了：已有 Workflow 工具 + worktree 基建，自造 batch 引擎会重复且更弱）。模型收到后会：
+它的设计取舍很明确——不自造执行引擎，而是把你的意图翻译成结构化编排指令（`packages/cli/src/command/commands/batch/batch.ts` 注释写明了：已有 Workflow 工具 + worktree 基建，自造 batch 引擎会重复且更弱）。模型收到后会：
 
 1. 先探查得到确定的工作清单（逐个命令目录）
 2. 用 Workflow 工具做 fan-out 编排（`pipeline` 逐目录推进）
@@ -58,7 +58,7 @@ Workflow 工具是**延迟加载**的（`shouldDefer = true`，不进首轮上�
 /workflows wf_a3f2  # 看某个 run 的详情
 ```
 
-`/workflows`（别名 `/wf`）是**查看入口**，不做 resume——resume 完全由 Workflow 工具的 `resume_from_run_id` 参数提供（`src/command/commands/workflows/index.ts:9-22`）。
+`/workflows`（别名 `/wf`）是**查看入口**，不做 resume——resume 完全由 Workflow 工具的 `resume_from_run_id` 参数提供（`packages/cli/src/command/commands/workflows/index.ts`）。
 
 无参列出所有 run（运行中优先、按开始时间倒序）；带 runId 看详情，含各 `agent()` 调用的结果预览——快照读自 `~/.sid-code/workflows/journals/<runId>.jsonl`。
 
@@ -66,7 +66,7 @@ Workflow 工具是**延迟加载**的（`shouldDefer = true`，不进首轮上�
 
 ### 两个原语：pipeline 与 parallel
 
-这是写脚本时的核心选择。**默认用 `pipeline`**——无屏障逐项推进墙钟更短（`src/tool/workflow.ts:169` 的 usageGuide 明确写了这条）。
+这是写脚本时的核心选择。**默认用 `pipeline`**——无屏障逐项推进墙钟更短（`packages/core/src/tool/workflow.ts` 的 usageGuide 明确写了这条）。
 
 | 维度 | `pipeline(items, ...stages)` | `parallel(thunks)` |
 | --- | --- | --- |
@@ -81,11 +81,11 @@ Workflow 工具是**延迟加载**的（`shouldDefer = true`，不进首轮上�
 
 ### agent() 的选项
 
-`agent(prompt, opts?)` 开一个子代理格子，选项控制怎么跑（`src/workflow/types.ts:31-43`、`src/workflow/sub-agent-runner.ts`）：
+`agent(prompt, opts?)` 开一个子代理格子，选项控制怎么跑（`packages/core/src/workflow/types.ts`、`packages/core/src/workflow/sub-agent-runner.ts`）：
 
 | 选项 | 作用 |
 | --- | --- |
-| `schema` | 强制结构化输出，`agent()` 返回已校验对象（`src/workflow/json-schema-validator.ts` 零依赖自研校验） |
+| `schema` | 强制结构化输出，`agent()` 返回已校验对象（`packages/core/src/workflow/json-schema-validator.ts` 零依赖自研校验） |
 | `label` | 覆盖显示标签（展示用，不影响缓存键） |
 | `phase` | 显式归到某进度组——防 `pipeline`/`parallel` 内 `phase()` 全局态竞态 |
 | `model` | 覆盖模型；省略 = 继承主循环模型 |
@@ -106,7 +106,7 @@ Workflow 工具是**延迟加载**的（`shouldDefer = true`，不进首轮上�
 3. 用 `{ script_path: "<path>", resume_from_run_id: "<runId>" }` 重跑
 4. 未改动的 `agent()` 调用直接返回缓存，只重跑改动及其之后的
 
-缓存键是 `callIndex`（全局自增序号）+ `fingerprint`（prompt + opts 的 sha256 前 16 位 hex，`src/workflow/journal.ts:36-52`）。指纹只纳入影响结果的字段（`prompt`/`schema`/`model`/`effort`/`agentType`/`isolation`），排除展示用的 `label`/`phase`。
+缓存键是 `callIndex`（全局自增序号）+ `fingerprint`（prompt + opts 的 sha256 前 16 位 hex，`packages/core/src/workflow/journal.ts`）。指纹只纳入影响结果的字段（`prompt`/`schema`/`model`/`effort`/`agentType`/`isolation`），排除展示用的 `label`/`phase`。
 
 **为什么不是纯 prompt hash**：避免「两个不同调用点但 prompt 恰好相同」串台（journal 注释点名这是 cc #63102 的 bug）。callIndex 区分调用点、fingerprint 区分脚本是否改过——脚本改了某格的 prompt，指纹变，触发重跑；没改的格子指纹不变，直接命中缓存。
 
@@ -114,17 +114,17 @@ journal 落盘在 `~/.sid-code/workflows/journals/<runId>.jsonl`，append-only�
 
 ### 确定性守卫：为什么禁 `Date.now()` 和 `Math.random()`
 
-脚本跑在 `node:vm` 隔离的沙箱里（`src/workflow/sandbox.ts`），有两个硬限制：
+脚本跑在 `node:vm` 隔离的沙箱里（`packages/core/src/workflow/sandbox.ts`），有两个硬限制：
 
-- **`Date.now()` 被禁**——抛 `"[workflow] Date.now() 被禁(非确定性,破坏 resume)"`（`sandbox.ts:64-68`）。需要时间戳时从 `args` 传进来。
-- **`Math.random()` 被禁**——抛 `"[workflow] Math.random() 被禁(非确定性,破坏 resume)"`（`sandbox.ts:86-89`）。
-- **无参 `new Date()` 被禁**，但 `new Date(ts)`（带参）和 `Date.parse`/`Date.UTC` 放行——它们是确定性的纯函数（`sandbox.ts:55-70`）。
+- **`Date.now()` 被禁**——抛 `"[workflow] Date.now() 被禁(非确定性,破坏 resume)"`（`sandbox.ts`）。需要时间戳时从 `args` 传进来。
+- **`Math.random()` 被禁**——抛 `"[workflow] Math.random() 被禁(非确定性,破坏 resume)"`（`sandbox.ts`）。
+- **无参 `new Date()` 被禁**，但 `new Date(ts)`（带参）和 `Date.parse`/`Date.UTC` 放行——它们是确定性的纯函数（`sandbox.ts`）。
 
-原因直指 resume 语义：journal 按 `callIndex + fingerprint` 缓存 agent 结果。如果脚本里用了 `Date.now()` 或 `Math.random()`，同一 prompt 每次跑出不同结果，缓存命中但结果不一致——resume 就坏了。**确定性是可重放的前提**（`sandbox.ts:12-14` 注释）。
+原因直指 resume 语义：journal 按 `callIndex + fingerprint` 缓存 agent 结果。如果脚本里用了 `Date.now()` 或 `Math.random()`，同一 prompt 每次跑出不同结果，缓存命中但结果不一致——resume 就坏了。**确定性是可重放的前提**（`sandbox.ts` 注释）。
 
 ## 一个完整脚本长什么样
 
-脚本格式硬性要求（`src/tool/workflow.ts:55-56`）：
+脚本格式硬性要求（`packages/core/src/tool/workflow.ts`）：
 
 - 必须以 `export const meta = { name, description }` 纯字面量开头（不能是变量引用）
 - `meta.phases` 可选，是**对象数组**、每项含字符串 `title`：`phases: [{ title: "探查" }]`（写成字符串数组会被拒）
@@ -191,7 +191,7 @@ return summary;
 /batch <任务>  →  submit_prompt  →  模型调 workflow 工具  →  注册 local_workflow task  →  /workflows 可查
 ```
 
-`/batch` 把任务转成结构化编排指令引导模型，实际执行由 Workflow 工具完成（`src/command/commands/batch/batch.ts:18-53`）。`/workflows` 是查看入口。三者各管一段。
+`/batch` 把任务转成结构化编排指令引导模型，实际执行由 Workflow 工具完成（`packages/cli/src/command/commands/batch/batch.ts`）。`/workflows` 是查看入口。三者各管一段。
 
 ### 为什么要用 Workflow 而不是直接派一堆子代理
 

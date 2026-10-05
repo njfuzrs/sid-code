@@ -392,9 +392,10 @@ SID_CODE_MAX_SESSION_DURATION_MS=7200000 sid-code -p "..."   # 2 小时
 
 ### 退出码可靠吗
 
-不完全。有些错误路径会打印中文错误信息但退出码仍是 0（比如
-`sid-code mcp remove` 删不存在的 server）。脚本里别只看 `$?`，
-关键判断建议解析 `stream-json` 的 `result.is_error` 字段。
+子命令的报错路径会以非 0 退出（比如 `sid-code mcp remove` 删不存在的 server 退出码是 1），
+脚本里可以靠 `$?` 判断。但 `$?` 只能告诉你「成没成」，`-p` 跑完一轮时更多信息在结果里：
+解析 `stream-json` / `json` 输出里 `result` 的 `is_error`、`subtype`，能区分是模型报错、
+超出轮次还是正常结束，比只看 `$?` 信息更多。
 
 ### `-p` 和交互模式的行为差异
 
