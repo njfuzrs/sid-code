@@ -1,0 +1,186 @@
+{
+  "description": "Anthropic 族：读文件→grep→子代理调研→编辑→再读→收尾，6 主轮含 1 次子代理（2 轮）",
+  "family": "anthropic-messages",
+  "model": "claude-sonnet-4-5",
+  "prompt": "把 config.ts 里的超时从 30s 改成 60s，并确认没有别处硬编码",
+  "turns": [
+    {
+      "agent": "main",
+      "response": {
+        "content": [
+          {
+            "type": "text",
+            "text": "先看文件。"
+          },
+          {
+            "type": "tool_use",
+            "id": "toolu_01",
+            "name": "read",
+            "input": {
+              "path": "src/config.ts"
+            }
+          }
+        ],
+        "stop_reason": "tool_use"
+      },
+      "usage": {
+        "input_tokens": 1200,
+        "output_tokens": 40,
+        "cache_creation_input_tokens": 8000
+      }
+    },
+    {
+      "agent": "main",
+      "response": {
+        "content": [
+          {
+            "type": "tool_use",
+            "id": "toolu_02",
+            "name": "grep",
+            "input": {
+              "pattern": "30000"
+            }
+          }
+        ],
+        "stop_reason": "tool_use"
+      },
+      "usage": {
+        "input_tokens": 300,
+        "output_tokens": 30,
+        "cache_read_input_tokens": 8000,
+        "cache_creation_input_tokens": 900
+      }
+    },
+    {
+      "agent": "main",
+      "response": {
+        "content": [
+          {
+            "type": "text",
+            "text": "让子代理查一下调用方。"
+          },
+          {
+            "type": "tool_use",
+            "id": "toolu_03",
+            "name": "sub_agent",
+            "input": {
+              "type": "explore",
+              "description": "查超时调用方",
+              "prompt": "列出所有读取 config.timeout 的位置"
+            }
+          }
+        ],
+        "stop_reason": "tool_use"
+      },
+      "usage": {
+        "input_tokens": 250,
+        "output_tokens": 60,
+        "cache_read_input_tokens": 8900,
+        "cache_creation_input_tokens": 400
+      }
+    },
+    {
+      "agent": "sub",
+      "response": {
+        "content": [
+          {
+            "type": "tool_use",
+            "id": "toolu_s1",
+            "name": "grep",
+            "input": {
+              "pattern": "config.timeout"
+            }
+          }
+        ],
+        "stop_reason": "tool_use"
+      },
+      "usage": {
+        "input_tokens": 2000,
+        "output_tokens": 25,
+        "cache_creation_input_tokens": 1500
+      }
+    },
+    {
+      "agent": "sub",
+      "response": {
+        "content": [
+          {
+            "type": "text",
+            "text": "共 2 处：src/a.ts、src/b.ts，均读取配置，无硬编码。"
+          }
+        ],
+        "stop_reason": "end_turn"
+      },
+      "usage": {
+        "input_tokens": 180,
+        "output_tokens": 50,
+        "cache_read_input_tokens": 1500,
+        "cache_creation_input_tokens": 200
+      }
+    },
+    {
+      "agent": "main",
+      "response": {
+        "content": [
+          {
+            "type": "tool_use",
+            "id": "toolu_04",
+            "name": "edit",
+            "input": {
+              "path": "src/config.ts",
+              "old": "30000",
+              "new": "60000"
+            }
+          }
+        ],
+        "stop_reason": "tool_use"
+      },
+      "usage": {
+        "input_tokens": 400,
+        "output_tokens": 45,
+        "cache_read_input_tokens": 9300,
+        "cache_creation_input_tokens": 500
+      }
+    },
+    {
+      "agent": "main",
+      "response": {
+        "content": [
+          {
+            "type": "tool_use",
+            "id": "toolu_05",
+            "name": "read",
+            "input": {
+              "path": "src/config.ts"
+            }
+          }
+        ],
+        "stop_reason": "tool_use"
+      },
+      "usage": {
+        "input_tokens": 150,
+        "output_tokens": 30,
+        "cache_read_input_tokens": 9800,
+        "cache_creation_input_tokens": 300
+      }
+    },
+    {
+      "agent": "main",
+      "response": {
+        "content": [
+          {
+            "type": "text",
+            "text": "已改为 60s，调用方均读配置，无硬编码。"
+          }
+        ],
+        "stop_reason": "end_turn"
+      },
+      "usage": {
+        "input_tokens": 200,
+        "output_tokens": 35,
+        "cache_read_input_tokens": 10100,
+        "cache_creation_input_tokens": 250
+      }
+    }
+  ]
+}
