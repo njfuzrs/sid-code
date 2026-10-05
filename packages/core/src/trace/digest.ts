@@ -359,8 +359,15 @@ export interface TodoDigestStats {
   total: number;
   /** 会话终态已完成项数 */
   completed: number;
-  /** 会话终态未完成项数（> 0 说明收尾时仍有没做完/没标记的项） */
+  /** 会话终态未完成项数（模型可推进的 pending + in_progress；> 0 说明收尾时仍有没做完/没标记的项） */
   unfinished: number;
+  /**
+   * 会话终态等待用户 / 外部条件的项数（blocked，2026-10-06 起埋点；老事件无字段计 0）。
+   * 与 unfinished 分开：blocked 收尾是正当的"交给用户"，不该与"没做完"混在一个数里。
+   */
+  blocked: number;
+  /** 「标完成后又返工」提醒次数（`TodoReworkDetected`）——提前打勾的直接计数，越低越好 */
+  reworks: number;
   /**
    * 实时性比值 = advances / total。方案验收线 ≥ 0.5。
    * total 为 0（从未建过清单）时为 undefined —— 不是 0，二者含义不同：
@@ -2356,7 +2363,13 @@ export function renderHuman(d: Digest, opts: RenderOptions = {}): string {
       c("bold", "todo 实时性:") +
         " " +
         c(ratioColor, `推进 ${t.advances} 次 / ${t.total} 项  ${ratioText}`) +
-        (t.total > 0 ? c("gray", `  终态: ${t.completed} 完成 / ${t.unfinished} 未完成`) : ""),
+        (t.total > 0
+          ? c(
+              "gray",
+              `  终态: ${t.completed} 完成 / ${t.unfinished} 未完成` +
+                (t.blocked > 0 ? ` / ${t.blocked} 等待用户` : ""),
+            )
+          : ""),
     );
     if (ratio !== undefined && ratio < 0.5) {
       // 点破而不只是标黄：这条线是缺陷本体的判据，读者需要知道该怎么读它。
@@ -2378,6 +2391,13 @@ export function renderHuman(d: Digest, opts: RenderOptions = {}): string {
     if (t.remindersAfterCompact > 0) nagBits.push(`其中压缩旁路 ${t.remindersAfterCompact} 次`);
     if (t.maxTurnsSinceWrite != null) nagBits.push(`最长停滞 ${t.maxTurnsSinceWrite} 轮未碰清单`);
     L.push(c("gray", "  L2 回注: ") + nagBits.join(c("gray", " / ")));
+    // 提前打勾的直接计数：标了 completed 之后又改了同一批文件。
+    if (t.reworks > 0) {
+      L.push(
+        c("yellow", `  ⚠ 已完成项被返工 ${t.reworks} 次`) +
+          c("gray", "（标 completed 后又修改了它对应的文件，清单曾把未改好的工作显示为已完成）"),
+      );
+    }
     // gate 触发次数越低越好：它高 = 实时化没生效、还在靠收尾硬拦（方案明确要它退回兜底位）。
     if (t.gateRetries > 0) {
       const gateColor: Color = t.gateRetries >= 3 ? "red" : "yellow";
@@ -3155,6 +3175,8 @@ export function aggregateTodoStats(
   const total = lastAdvance ? num(lastAdvance.total) : 0;
   const completed = lastAdvance ? num(lastAdvance.completed) : 0;
   const unfinished = lastAdvance ? num(lastAdvance.unfinished) : 0;
+  const blocked = lastAdvance ? num(lastAdvance.blocked) : 0;
+  const reworks = events.filter((e) => e.event === "TodoReworkDetected").length;
 
   // 相邻推进间隔：按 absoluteTurn 差。缺 absoluteTurn 的老事件跳过，不用 turn 兜底——
   // turn 每条用户消息回绕（会算出负数间隔），混算比不算更糟。
@@ -3177,6 +3199,8 @@ export function aggregateTodoStats(
     total,
     completed,
     unfinished,
+    blocked,
+    reworks,
     // total=0 时留 undefined：见接口注释，"没建清单"与"建了没推进"必须可区分
     advanceRatio: total > 0 ? advanced.length / total : undefined,
     advanceGaps,
