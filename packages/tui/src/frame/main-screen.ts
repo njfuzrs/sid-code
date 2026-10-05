@@ -21,7 +21,7 @@
  *   ③ 收缩时 p - n > H - 1（新的底部落在视口之上），或前一帧已占满视口（p ≥ H）而新帧 n ≤ H（R6）。
  */
 import ansiEscapes from 'ansi-escapes';
-import {cellEquals, serializeRow, serializeRowDiff} from '../screen/serialize.js';
+import {serializeRow, serializeRowDiff} from '../screen/serialize.js';
 import {type Screen} from '../screen/screen.js';
 
 const ESC = '\u001B';
@@ -54,11 +54,16 @@ function rows(screen: Screen, from: number, to: number): string {
 	return out;
 }
 
-/** 第 y 行第一个变化的单元（宽字符的 spacer 跟着左半格走，不单独算）；没变化返回 -1。 */
+/**
+ * 第 y 行第一个变化的单元（宽字符的 spacer 跟着左半格走，不单独算）；没变化返回 -1。
+ * 四个平铺数组直接比（B9 / T3.4）：每帧要扫两帧共有的全部行，函数调用开销随历史长度线性涨。
+ */
 function firstChangedColumn(previous: Screen, next: Screen, y: number): number {
 	const base = next.index(0, y);
-	for (let x = 0; x < next.width; x++) {
-		if (!cellEquals(previous, next, base + x)) {
+	const {chars: ac, widths: aw, styles: as, links: al} = previous;
+	const {chars: bc, widths: bw, styles: bs, links: bl} = next;
+	for (let x = 0, i = base; x < next.width; x++, i++) {
+		if (ac[i] !== bc[i] || as[i] !== bs[i] || aw[i] !== bw[i] || al[i] !== bl[i]) {
 			return x;
 		}
 	}

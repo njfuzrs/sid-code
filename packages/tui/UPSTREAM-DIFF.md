@@ -50,3 +50,8 @@ diff -r /tmp/ink-v711/src packages/tui/src   # 导入提交上应无输出
 | T3.3 | `src/ink.tsx`（SIGCONT、`setAltScreenActive`，新增） | 交互模式挂 `SIGCONT`、卸载摘掉；主屏：前一帧作废但不写字节，下一帧走 `redrawAfterSuspend`；`<AlternateScreen>` 挂着时写 `?1049h 2J H`，开过鼠标的补 `?1000/1002/1003/1006/1007h`。`setAltScreenActive` 只记状态，离开 alt 后下一帧 full reset。alt-screen 的出帧本身（绝对定位）归 T6.1 | 上游没有 SIGCONT 处理 | R10 |
 | T3.3 | `src/frame/main-screen.ts` | 新增 `resetMainScreen`（R7 判定在 ink.tsx）、`redrawAfterSuspend`（SIGCONT 后第一帧：第一个变化行之前每行只写 `\r\n`，之后按首帧写整行；新帧变矮或宽度变了就退回首帧整帧）；1 行收缩到空帧时用 `\r` 代替 `eraseLines(1)` | 对拍旧底座逐帧字节 | R7、R10、R3 |
 | T3.3 | `src/frame/scheduler.ts` | 构造参数 `alwaysThrottle`：测试环境也走 microtask + 16ms 窗口 | 旧底座的 resize 合并不受测试环境同步出帧影响 | R7、R13 |
+| T3.4 | `src/dom.ts`、`src/reconciler.ts` | 节点新增 `renderDirty` / `renderCache`；文本、子节点增删、样式、属性、transform、显隐的每个变更入口把节点及全部祖先标脏 | 节点级输出缓存的失效信号 | P3 |
+| T3.4 | `src/render-node-to-output.ts`、`src/output.ts` | 节点级输出缓存：子树没标脏、横坐标 / 尺寸 / 外层 transformer / skipStatic 都没变时，回放上次的输出操作（按纵向位移平移），不再遍历子树、不读 yoga；`Output` 新增 `mark` / `since` / `replay` | 历史越长、每帧全树遍历越贵（P3）；横坐标要比，因为 `\t` 对齐屏幕绝对列 | P3 |
+| T3.4 | `src/screen/screen.ts`、`src/screen/serialize.ts`、`src/frame/main-screen.ts` | 单元字形簇改存整数 id（`Uint32Array`，进程级驻留表，0 = 空格、1 = spacer），`charAt` 取字符串；帧 diff 的行比较直接比四个平铺数组 | 整屏分配从逐格字符串数组变成一次清零；diff 去掉每格函数调用 | P3 |
+| T3.4 | `src/renderer.ts`、`src/ink.tsx` | TTY 交互帧不生成纯文本 `output`（只有 debug / 非 TTY / 读屏路径要） | 交互路径只比屏幕缓冲，纯文本是整屏再序列化一遍，没人读 | P3 |
+| T3.4 | `src/hooks/use-animation-frame.ts` | 离屏暂停：渲染时按上一次提交的布局判断 ref 盒是否在主屏视口内（帧的最后 H - 1 行），不在就不订阅时钟 | 旧底座行为（黑盒扫描 105 组位置得出），滚进 scrollback 的动画不再每 tick 重渲出帧 | P5 |

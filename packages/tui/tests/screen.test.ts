@@ -102,7 +102,7 @@ describe("Screen 单元规则（T4：不留孤立 spacer）", () => {
     s.writeLine(0, 0, "\x1b[44m中文\x1b[49m");
     s.writeLine(1, 0, "X");
     expect(s.styles[0]).toBe(0);
-    expect(s.chars[0]).toBe(" ");
+    expect(s.charAt(0)).toBe(" ");
     expect(serializeRow(s, 0)).toBe("\x1b[1CX\x1b[44m文\x1b[49m");
   });
 });

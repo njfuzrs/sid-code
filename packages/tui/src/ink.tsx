@@ -611,9 +611,13 @@ export default class Ink {
 		}
 
 		const startTime = performance.now();
+		// sid-code（B9 / T3.4，契约 P3）：TTY 交互帧只比屏幕缓冲，纯文本只有 debug / 非 TTY / 读屏路径要
+		const needsText =
+			this.options.debug || !this.interactive || this.isScreenReaderEnabled;
 		const {output, outputHeight, staticOutput, screen} = render(
 			this.rootNode,
 			this.isScreenReaderEnabled,
+			needsText,
 		);
 
 		this.options.onRender?.({renderTime: performance.now() - startTime});

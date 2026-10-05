@@ -8,6 +8,11 @@ import {type OutputTransformer} from './render-node-to-output.js';
 
 type InkNode = {
 	parentNode: DOMElement | undefined;
+	/**
+	 * sid-code（B9 / T3.4，契约 P3）：自上次输出以来，这个节点或它的子树有没有改过（文本、子节点、样式、属性、
+	 * transform、显隐）。改动一律向上标到根；干净的子树复用上一帧的输出操作（见 render-node-to-output.ts）。
+	 */
+	renderDirty?: boolean;
 	yogaNode?: YogaNode;
 	internal_static?: boolean;
 	style: Styles;
@@ -66,6 +71,8 @@ export type DOMElement = {
 	staticNode?: DOMElement;
 	// Tracks the previous commit's `staticNode` so the reconciler can detect identity changes (mount, unmount, key-driven remount) and reset `fullStaticOutput`.
 	previousStaticNode?: DOMElement;
+	/** sid-code（B9 / T3.4）：上一次输出这个子树时的操作与判定条件，见 render-node-to-output.ts */
+	renderCache?: unknown;
 	onComputeLayout?: () => void;
 	onRender?: () => void;
 	onImmediateRender?: () => void;
@@ -100,6 +107,7 @@ export const createNode = (nodeName: ElementNames): DOMElement => {
 		yogaNode: nodeName === 'ink-virtual-text' ? undefined : Yoga.Node.create(),
 		// eslint-disable-next-line @typescript-eslint/naming-convention
 		internal_accessibility: {},
+		renderDirty: true,
 	};
 
 	if (nodeName === 'ink-text') {
@@ -107,6 +115,13 @@ export const createNode = (nodeName: ElementNames): DOMElement => {
 	}
 
 	return node;
+};
+
+/** 节点及其全部祖先标脏。不在中途停：被 `display: none` 跳过的子树可能留着脏标记而祖先已清，提前停会漏标。 */
+export const markRenderDirty = (node?: DOMNode): void => {
+	for (let cur: DOMNode | undefined = node; cur; cur = cur.parentNode) {
+		cur.renderDirty = true;
+	}
 };
 
 export const appendChildNode = (
@@ -119,6 +134,7 @@ export const appendChildNode = (
 
 	childNode.parentNode = node;
 	node.childNodes.push(childNode);
+	markRenderDirty(node);
 
 	if (childNode.yogaNode) {
 		node.yogaNode?.insertChild(
@@ -142,6 +158,7 @@ export const insertBeforeNode = (
 	}
 
 	newChildNode.parentNode = node;
+	markRenderDirty(node);
 
 	const index = node.childNodes.indexOf(beforeChildNode);
 	if (index >= 0) {
@@ -174,6 +191,7 @@ export const removeChildNode = (
 	}
 
 	removeNode.parentNode = undefined;
+	markRenderDirty(node);
 
 	const index = node.childNodes.indexOf(removeNode);
 	if (index >= 0) {
@@ -190,6 +208,7 @@ export const setAttribute = (
 	key: string,
 	value: DOMNodeAttribute,
 ): void => {
+	markRenderDirty(node);
 	if (key === 'internal_accessibility') {
 		node.internal_accessibility = value as DOMElement['internal_accessibility'];
 		return;
@@ -201,6 +220,7 @@ export const setAttribute = (
 export const setStyle = (node: DOMNode, style?: Styles): void => {
 	// Rendering code assumes style is always an object.
 	node.style = style ?? {};
+	markRenderDirty(node);
 };
 
 export const createTextNode = (text: string): TextNode => {
@@ -277,6 +297,7 @@ export const setTextNodeValue = (node: TextNode, text: string): void => {
 
 	node.nodeValue = text;
 	markNodeAsDirty(node);
+	markRenderDirty(node);
 };
 
 export const addLayoutListener = (

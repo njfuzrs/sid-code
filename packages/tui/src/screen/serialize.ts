@@ -95,7 +95,7 @@ function serializeCells(
 			continue;
 		}
 
-		const value = screen.chars[i]!;
+		const value = screen.charAt(i);
 		const cellLink = screen.links[i]!;
 		const cellStyle = screen.styles[i]!;
 		const compensate = needsWidthCompensation(value, w);
@@ -184,7 +184,7 @@ export function screenToString(screen: Screen): string {
 
 			out += stylePool.transition(style, screen.styles[i]!);
 			style = screen.styles[i]!;
-			out += screen.chars[i];
+			out += screen.charAt(i);
 		}
 
 		out += stylePool.transition(style, 0);

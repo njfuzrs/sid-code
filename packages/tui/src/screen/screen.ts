@@ -39,7 +39,31 @@ export const enum CellWidth {
 
 const TAB_STOP = 8;
 
-type Run = {value: string; width: number; style: number; link: number};
+type Run = {value: string; char: number; width: number; style: number; link: number};
+
+/**
+ * 字形簇 → 整数 id（B9 / T3.4，契约 P3）。单元里存 id 而不是字符串：整屏是平铺的 `Uint32Array`，
+ * 分配是一次 memset、帧 diff 比整数。id 只是字符串驻留，与样式无关，所以进程级共享一张表即可。
+ * 0 号恒为空格（默认空白），1 号恒为空串（宽字符的 spacer）。
+ */
+const charTable: string[] = [' ', ''];
+const charIds = new Map<string, number>([
+	[' ', 0],
+	['', 1],
+]);
+
+export function internChar(value: string): number {
+	let id = charIds.get(value);
+	if (id === undefined) {
+		id = charTable.length;
+		charTable.push(value);
+		charIds.set(value, id);
+	}
+
+	return id;
+}
+
+const SPACER_CHAR = 1;
 
 /** 一行 ANSI 文本 → 字形簇序列（带样式 / 链接 id）。同一行文本反复出现（每帧都写），结果缓存。 */
 const runCache = new Map<string, Run[]>();
@@ -79,6 +103,7 @@ function toRuns(line: string, styles: StylePool, links: HyperlinkPool): Run[] {
 
 		runs.push({
 			value: char.value,
+			char: internChar(char.value),
 			width: char.value === '\t' ? -1 : stringWidth(char.value),
 			style: lastStyle,
 			link: lastLink,
@@ -99,8 +124,8 @@ function toRuns(line: string, styles: StylePool, links: HyperlinkPool): Run[] {
 export class Screen {
 	readonly width: number;
 	readonly height: number;
-	/** 每个单元的字形簇；spacer 为空串 */
-	readonly chars: string[];
+	/** 每个单元的字形簇 id（`internChar`）；0 = 空格，spacer 为空串的 id。取字符串用 `charAt` */
+	readonly chars: Uint32Array;
 	readonly widths: Uint8Array;
 	readonly styles: Uint32Array;
 	readonly links: Uint32Array;
@@ -115,7 +140,7 @@ export class Screen {
 		this.width = Math.max(0, Math.floor(width));
 		this.height = Math.max(0, Math.floor(height));
 		const size = this.width * this.height;
-		this.chars = Array.from({length: size}, () => ' ');
+		this.chars = new Uint32Array(size);
 		this.widths = new Uint8Array(size).fill(CellWidth.Narrow);
 		this.styles = new Uint32Array(size);
 		this.links = new Uint32Array(size);
@@ -125,6 +150,11 @@ export class Screen {
 
 	index(x: number, y: number): number {
 		return y * this.width + x;
+	}
+
+	/** 单元的字形簇字符串（spacer 为空串） */
+	charAt(index: number): string {
+		return charTable[this.chars[index]!]!;
 	}
 
 	/**
@@ -164,7 +194,7 @@ export class Screen {
 				break;
 			}
 
-			this.put(col, y, run.value, run.width, run.style, run.link);
+			this.putId(col, y, run.char, run.width, run.style, run.link);
 			col += run.width;
 		}
 
@@ -176,6 +206,17 @@ export class Screen {
 		x: number,
 		y: number,
 		value: string,
+		width: number,
+		style: number,
+		link: number,
+	): void {
+		this.putId(x, y, internChar(value), width, style, link);
+	}
+
+	private putId(
+		x: number,
+		y: number,
+		char: number,
 		width: number,
 		style: number,
 		link: number,
@@ -196,12 +237,12 @@ export class Screen {
 			this.clear(last + 1);
 		}
 
-		this.chars[start] = value;
+		this.chars[start] = char;
 		this.widths[start] = w === 2 ? CellWidth.Wide : CellWidth.Narrow;
 		this.styles[start] = style;
 		this.links[start] = link;
 		if (w === 2) {
-			this.chars[start + 1] = '';
+			this.chars[start + 1] = SPACER_CHAR;
 			this.widths[start + 1] = CellWidth.Spacer;
 			this.styles[start + 1] = style;
 			this.links[start + 1] = link;
@@ -209,7 +250,7 @@ export class Screen {
 	}
 
 	private clear(index: number): void {
-		this.chars[index] = ' ';
+		this.chars[index] = 0;
 		this.widths[index] = CellWidth.Narrow;
 		this.styles[index] = 0;
 		this.links[index] = 0;
@@ -218,7 +259,7 @@ export class Screen {
 	/** 是否「默认空白」：空格、无样式、无链接。序列化时用光标前移跳过，不写字节。 */
 	isBlank(index: number): boolean {
 		return (
-			this.chars[index] === ' ' &&
+			this.chars[index] === 0 &&
 			this.styles[index] === 0 &&
 			this.links[index] === 0
 		);

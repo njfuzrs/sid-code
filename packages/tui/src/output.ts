@@ -18,7 +18,7 @@ type Options = {
 	height: number;
 };
 
-type Operation = WriteOperation | ClipOperation | UnclipOperation;
+export type Operation = WriteOperation | ClipOperation | UnclipOperation;
 
 type WriteOperation = {
 	type: 'write';
@@ -119,6 +119,46 @@ export default class Output {
 		this.operations.push({
 			type: 'unclip',
 		});
+	}
+
+	/**
+	 * sid-code（B9 / T3.4，契约 P3）：脏区缓存用的三个操作。`mark` 记下当前位置，`since` 取出之后追加的操作，
+	 * `replay` 把一段缓存的操作原样追加，纵向平移 `dy` 行（横向不平移：tab 对齐的是屏幕绝对列）。
+	 */
+	mark(): number {
+		return this.operations.length;
+	}
+
+	since(mark: number): Operation[] {
+		return this.operations.slice(mark);
+	}
+
+	replay(operations: readonly Operation[], dy: number): void {
+		if (dy === 0) {
+			for (const operation of operations) {
+				this.operations.push(operation);
+			}
+
+			return;
+		}
+
+		for (const operation of operations) {
+			if (operation.type === 'write') {
+				this.operations.push({...operation, y: operation.y + dy});
+			} else if (operation.type === 'clip') {
+				const {clip} = operation;
+				this.operations.push({
+					type: 'clip',
+					clip: {
+						...clip,
+						y1: clip.y1 === undefined ? undefined : clip.y1 + dy,
+						y2: clip.y2 === undefined ? undefined : clip.y2 + dy,
+					},
+				});
+			} else {
+				this.operations.push(operation);
+			}
+		}
 	}
 
 	get(screen: Screen = this.getScreen()): {output: string; height: number} {

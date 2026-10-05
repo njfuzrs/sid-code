@@ -16,7 +16,15 @@ type Result = {
 	screen?: Screen;
 };
 
-const renderer = (node: DOMElement, isScreenReaderEnabled: boolean): Result => {
+/**
+ * sid-code（B9 / T3.4，契约 P3）：`withText = false` 时不生成纯文本 `output`（返回空串）。
+ * TTY 交互路径只比屏幕缓冲，纯文本是整屏再走一遍序列化，历史越长越贵，却没人读。
+ */
+const renderer = (
+	node: DOMElement,
+	isScreenReaderEnabled: boolean,
+	withText = true,
+): Result => {
 	if (node.yogaNode) {
 		if (isScreenReaderEnabled) {
 			const output = renderNodeToScreenReaderOutput(node, {
@@ -63,7 +71,9 @@ const renderer = (node: DOMElement, isScreenReaderEnabled: boolean): Result => {
 		}
 
 		const screen = output.getScreen();
-		const {output: generatedOutput, height: outputHeight} = output.get(screen);
+		const {output: generatedOutput, height: outputHeight} = withText
+			? output.get(screen)
+			: {output: '', height: output.height};
 
 		return {
 			output: generatedOutput,

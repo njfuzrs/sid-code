@@ -17,6 +17,7 @@ import {
 	setTextNodeValue,
 	createNode,
 	setAttribute,
+	markRenderDirty,
 	type DOMNodeAttribute,
 	type TextNode,
 	type ElementNames,
@@ -268,9 +269,11 @@ export default createReconciler<
 	getPublicInstance: instance => instance,
 	hideInstance(node) {
 		node.yogaNode?.setDisplay(Yoga.DISPLAY_NONE);
+		markRenderDirty(node);
 	},
 	unhideInstance(node) {
 		node.yogaNode?.setDisplay(Yoga.DISPLAY_FLEX);
+		markRenderDirty(node);
 	},
 	appendInitialChild: appendChildNode,
 	appendChild: appendChildNode,
@@ -338,16 +341,22 @@ export default createReconciler<
 
 				if (key === 'internal_transform') {
 					node.internal_transform = value as OutputTransformer;
+					markRenderDirty(node);
 					continue;
 				}
 
 				if (key === 'internal_static') {
 					node.internal_static = true;
+					markRenderDirty(node);
 					continue;
 				}
 
 				setAttribute(node, key, value as DOMNodeAttribute);
 			}
+		}
+
+		if (style) {
+			markRenderDirty(node);
 		}
 
 		if (style && node.yogaNode) {

@@ -9,6 +9,33 @@ import renderBorder from './render-border.js';
 import renderBackground from './render-background.js';
 import {type DOMElement} from './dom.js';
 import type Output from './output.js';
+import {type Operation} from './output.js';
+
+/**
+ * sid-code（B9 / T3.4，契约 P3）：节点级输出缓存。一个子树自上次输出以来没改过（`renderDirty` 为假），
+ * 且横坐标、尺寸、外层 transformer、是否跳过 Static 都没变，它产生的输出操作就和上次一样，只是可能整体
+ * 上下挪了（上面插了一行）。这时直接回放上次的操作，不再遍历子树、不再读 yoga 布局。
+ *
+ * 为什么尺寸相同就够：子树内部的布局只取决于这个节点的内框尺寸和子树自身的样式 / 内容，后两者一改就会标脏。
+ * 横坐标必须相同，因为 `\t` 对齐的是屏幕绝对列。
+ */
+type RenderCache = {
+	x: number;
+	y: number;
+	width: number;
+	height: number;
+	skipStaticElements: boolean;
+	transformers: OutputTransformer[];
+	operations: Operation[];
+};
+
+/** 观测用（测试 P3 断言「每帧只走脏的子树」）：自进程启动以来真正遍历（未命中缓存）的节点数 */
+export const renderStats = {walked: 0};
+
+const sameTransformers = (
+	a: OutputTransformer[],
+	b: OutputTransformer[],
+): boolean => a.length === b.length && a.every((t, i) => t === b[i]);
 
 // If parent container is `<Box>`, text nodes will be treated as separate nodes in
 // the tree and will have their own coordinates in the layout.
@@ -123,12 +150,56 @@ const renderNodeToOutput = (
 
 	if (yogaNode) {
 		if (yogaNode.getDisplay() === Yoga.DISPLAY_NONE) {
+			node.renderCache = undefined;
 			return;
 		}
 
 		// Left and top positions in Yoga are relative to their parent node
 		const x = offsetX + yogaNode.getComputedLeft();
 		const y = offsetY + yogaNode.getComputedTop();
+		const width = yogaNode.getComputedWidth();
+		const height = yogaNode.getComputedHeight();
+
+		const cache = node.renderCache as RenderCache | undefined;
+		if (
+			!node.renderDirty &&
+			cache &&
+			cache.x === x &&
+			cache.width === width &&
+			cache.height === height &&
+			cache.skipStaticElements === skipStaticElements &&
+			sameTransformers(cache.transformers, transformers)
+		) {
+			output.replay(cache.operations, y - cache.y);
+			return;
+		}
+
+		const mark = output.mark();
+		renderStats.walked++;
+		renderLaidOutNode(node, output, x, y, transformers, skipStaticElements);
+		node.renderCache = {
+			x,
+			y,
+			width,
+			height,
+			skipStaticElements,
+			transformers,
+			operations: output.since(mark),
+		} satisfies RenderCache;
+		node.renderDirty = false;
+	}
+};
+
+const renderLaidOutNode = (
+	node: DOMElement,
+	output: Output,
+	x: number,
+	y: number,
+	transformers: OutputTransformer[],
+	skipStaticElements: boolean,
+): void => {
+	const yogaNode = node.yogaNode!;
+	{
 
 		// Transformers are functions that transform final text output of each component
 		// See Output class for logic that applies transformers
