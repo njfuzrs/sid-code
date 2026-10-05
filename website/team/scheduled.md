@@ -15,7 +15,7 @@ sid-code 的定时体系由两个正交的问题组成，三种都已实现：
 
 durable 是**数据**，daemon 是**驱动者**，两者是组合关系：durable 任务会话开着时由会话触发，
 会话关了由 daemon 触发；两者都不在，任务只是躺在盘上，到点不会执行。
-**云端 Routines 不做**——没有云端基建（对照 Claude Code 的云端 Routines / Dispatch，sid-code 只做了本地这条）。
+**云端 Routines 不做**——没有云端基建，只做本地这条链路。
 
 读完这页你能做到：知道三种模式什么时候用哪个、durable 任务怎么跨会话不死、
 daemon 怎么装成系统服务、GitHub PR 怎么自动触发 code review。
@@ -28,7 +28,7 @@ daemon 怎么装成系统服务、GitHub PR 怎么自动触发 code review。
 /loop 每 5 分钟检查一次 CI 有没有过
 ```
 
-`/loop` 是用户入口（`src/command/commands/loop/loop.ts`），它会把你的意图翻译成
+`/loop` 是用户入口（`packages/cli/src/command/commands/loop/loop.ts`），它会把你的意图翻译成
 底层操作——固定间隔转成 cron 表达式建任务，或者引导模型用 `schedule_wakeup` 自适应轮询。
 
 ::: tip `/loop` 和 `/goal` 不一样
@@ -45,7 +45,7 @@ daemon 怎么装成系统服务、GitHub PR 怎么自动触发 code review。
 帮我建一个每天 9 点跑的定时任务：检查依赖有没有新版本，durable
 ```
 
-模型会调 `cron_create` 工具（`src/tool/cron-create.ts`），参数：
+模型会调 `cron_create` 工具（`packages/core/src/tool/cron-create.ts`），参数：
 
 | 参数 | 作用 |
 | --- | --- |
@@ -57,7 +57,7 @@ daemon 怎么装成系统服务、GitHub PR 怎么自动触发 code review。
 
 durable 任务写盘到 `<项目>/.sid-code/scheduled_tasks.json`，同时在
 `~/.sid-code/state/durable-projects.json` 登记这个项目，让 daemon 能发现它
-（都在 `Scheduler.addDurableTask` 里，`src/cron/scheduler.ts`）。写盘失败工具会如实报错，
+（都在 `Scheduler.addDurableTask` 里，`packages/core/src/cron/scheduler.ts`）。写盘失败工具会如实报错，
 不会回「已创建」。成功时工具结果里会写明**到点由谁触发**：
 
 ```text
@@ -73,16 +73,16 @@ cron: 12 14 03 10 *
 任务文件在项目目录里，可能随 `git pull` 进来，也可能被项目里任何脚本改写。所以创建时会把任务内容
 （prompt、cron、工作目录、`allowedTools`）的指纹记进 `~/.sid-code/state/durable-task-grants.json`，
 驱动者触发前比对：**不是本机建的、或建完被改过的任务一律不执行**，只在日志里告警一次
-（`src/cron/durable-grants.ts`）。确认无误的话，在该项目里 `cron_delete` 后重新创建。
+（`packages/core/src/cron/durable-grants.ts`）。确认无误的话，在该项目里 `cron_delete` 后重新创建。
 :::
 
 ### cron 表达式格式
 
-5 字段：分 时 日 月 周。支持的语法（`src/cron/parser.ts:20-64`）：
+5 字段：分 时 日 月 周。支持的语法（`packages/core/src/cron/parser.ts`）：
 
 - `*` 任意值；`N` 具体值；`a-b` 范围；`a,b,c` 列表；`*/N` 步进
 - 周字段 0–6（0=周日），7 也接受
-- 日和周是**"或"语义**——任一匹配即触发（`parser.ts:134-135`）
+- 日和周是**"或"语义**——任一匹配即触发（`parser.ts`）
 - 确定性抖动：基于 taskId 哈希，最多偏移周期的 10%（上限 15 分钟），避免一堆任务整点同时触发
 
 ### 一次性提醒 vs 固定重复 vs 自适应轮询
@@ -95,13 +95,13 @@ cron: 12 14 03 10 *
 | 固定间隔重复 | `cron_create(recurring:true)`，循环 cron，7 天后过期 | "每 5 分钟查一次 CI" |
 | 自适应轮询 | `schedule_wakeup(delaySeconds)`，模型自选下次延迟 [60,3600]s，目标达成后停止 | "等 CI 过了告诉我" |
 
-`schedule_wakeup`（`src/tool/schedule-wakeup.ts:91-108`）用绝对触发时刻 `fireAt`，
+`schedule_wakeup`（`packages/core/src/tool/schedule-wakeup.ts`）用绝对触发时刻 `fireAt`，
 一次性。模型每轮检查后自己决定下次多久再来——CI 还没过就 5 分钟后，快了就 1 分钟后，
 过了就不再安排。**不会无限轮询**——目标达成即停。
 
 ### `/cron` 斜杠命令：管理面板
 
-查看和删除定时任务用 `/cron`（别名 `/schedule`，`src/command/advanced.ts:150`）：
+查看和删除定时任务用 `/cron`（别名 `/schedule`，`packages/cli/src/command/advanced.ts`）：
 
 ```text
 /cron              # 列出所有任务
@@ -133,7 +133,7 @@ sid-code daemon restart   # stop + 1s 等待 + start
 sid-code daemon logs      # 看 ~/.sid-code/logs/daemon.log
 ```
 
-`start` / `restart` 的选项（`src/command/daemon-args.ts`）：
+`start` / `restart` 的选项（`packages/cli/src/command/daemon-args.ts`）：
 
 | 选项 | 作用 |
 | --- | --- |
@@ -146,12 +146,12 @@ sid-code daemon logs      # 看 ~/.sid-code/logs/daemon.log
 
 | 步骤 | 说明 | 证据 |
 | --- | --- | --- |
-| 抢单例锁 | `~/.sid-code/state/daemon.lock`，同机器只跑一个 daemon | `src/daemon/daemon.ts:84`、`src/daemon/lock.ts` |
-| 注册会话 | `/ps` 能看到 daemon 在跑 | `daemon.ts:94-100` |
-| 启动调度器 | `daemonMode: true`，**每 60 秒**检查一次到点任务 | `daemon.ts:105-114`，默认 `checkIntervalMs = 60_000` |
+| 抢单例锁 | `~/.sid-code/state/daemon.lock`，同机器只跑一个 daemon | `packages/core/src/daemon/daemon.ts`、`packages/core/src/daemon/lock.ts` |
+| 注册会话 | `/ps` 能看到 daemon 在跑 | `daemon.ts` |
+| 启动调度器 | `daemonMode: true`，**每 60 秒**检查一次到点任务 | `daemon.ts`，默认 `checkIntervalMs = 60_000` |
 | 可选 webhook | 配了 `SID_CODE_WEBHOOK_SECRET` 才监听；`--webhook` 显式开但没 secret 时不启动（所有请求都会 401） | `daemon.ts` 的 `maybeStartWebhook` |
-| 保活心跳 | 每 60s 空转 timer | `daemon.ts:124-126` |
-| 信号处理 | SIGINT/SIGTERM 优雅停机 | `daemon.ts:120` |
+| 保活心跳 | 每 60s 空转 timer | `daemon.ts` |
+| 信号处理 | SIGINT/SIGTERM 优雅停机 | `daemon.ts` |
 
 ### 跨项目发现 durable 任务
 
@@ -165,10 +165,10 @@ daemon 运行期间新建 / 删除的任务，下一轮就生效，不用重启 
 **谁能写**和**谁来触发**是分开的：
 
 - **写**：任何会话都能创建 / 删除 durable 任务，不管它是不是驱动者。写盘是
-  「文件互斥 → 读最新磁盘 → 改 → 原子写」（`src/cron/durable-store.ts`），
+  「文件互斥 → 读最新磁盘 → 改 → 原子写」（`packages/core/src/cron/durable-store.ts`），
   多个会话和 daemon 同时写也不会互相吞任务
 - **触发**：同一项目只有一个驱动者。daemon 在场时是 daemon；否则是抢到**项目级调度锁**
-  （`<项目>/.sid-code/scheduled_tasks.lock`，`src/cron/lock.ts`）的那个交互会话。
+  （`<项目>/.sid-code/scheduled_tasks.lock`，`packages/core/src/cron/lock.ts`）的那个交互会话。
   驱动者身份**每轮重新判定**：daemon 起来，会话下一轮让出；daemon 停了，会话下一轮接回
 - **认领**：触发前先在磁盘上认领（比对 `lastFiredAt`，一次性任务认领即删除）。
   交接窗口里两边都认为任务到期，也只有一方能触发
@@ -179,25 +179,25 @@ daemon 运行期间新建 / 删除的任务，下一轮就生效，不用重启 
 ### catch-up：只补最近一次
 
 daemon 睡了几天醒来，错过的任务怎么补？**只补最近一次**，不补全部历史
-（`src/cron/parser.ts:186-187` 注释明确："日任务睡 6 天醒来只补 1 次——丢弃更早的所有错过时刻"）：
+（`packages/core/src/cron/parser.ts` 注释明确："日任务睡 6 天醒来只补 1 次——丢弃更早的所有错过时刻"）：
 
-- `recurring` durable 任务：`computeLatestMissedRun(lastFiredAt, now)` 取最后一个触发点补一次（`scheduler.ts:346-351`）
-- 一次性 `fireAt` 任务：错过即触发（`scheduler.ts:337-341`）
-- 一次性 cron 任务：唯一触发时刻已过则补一次后自删（`scheduler.ts:352-359`）
+- `recurring` durable 任务：`computeLatestMissedRun(lastFiredAt, now)` 取最后一个触发点补一次（`scheduler.ts`）
+- 一次性 `fireAt` 任务：错过即触发（`scheduler.ts`）
+- 一次性 cron 任务：唯一触发时刻已过则补一次后自删（`scheduler.ts`）
 
 这是刻意的——补全部历史会产生一大堆过期任务堆积，且语义不明（6 天前的"检查依赖"现在跑还有意义吗）。
 
 ### 装成系统服务
 
-不想每次开机手动 `daemon start`，装成系统服务（`src/daemon/service.ts`）：
+不想每次开机手动 `daemon start`，装成系统服务（`packages/core/src/daemon/service.ts`）：
 
 ```bash
 sid-code daemon install     # macOS=launchd / Linux=systemd
 sid-code daemon uninstall
 ```
 
-- macOS：装一个 LaunchAgent（`service.ts:96-116`）
-- Linux：装一个 systemd user service（`service.ts:163-180`）
+- macOS：装一个 LaunchAgent（`service.ts`）
+- Linux：装一个 systemd user service（`service.ts`）
 
 装完开机自启，彻底无人值守。
 
@@ -212,14 +212,14 @@ export SID_CODE_WEBHOOK_SECRET=your-hmac-secret
 sid-code daemon start
 ```
 
-webhook server（`src/daemon/server.ts`）默认监听 `127.0.0.1:3847`：
+webhook server（`packages/core/src/daemon/server.ts`）默认监听 `127.0.0.1:3847`：
 
-- `POST /webhook/github` —— 解析 PR event，验签 `x-hub-signature-256`（HMAC-SHA256，`server.ts:26-30`）
+- `POST /webhook/github` —— 解析 PR event，验签 `x-hub-signature-256`（HMAC-SHA256，`server.ts`）
 - `GET /health` —— 健康检查
 
 ::: warning 不配 secret 不监听
 没有 `SID_CODE_WEBHOOK_SECRET` 且未显式开启时，daemon **不会**启动 webhook server
-（`daemon.ts:204-231` 的 `maybeStartWebhook`）。这是安全默认——别让一个没鉴权的端口
+（`daemon.ts` 的 `maybeStartWebhook`）。这是安全默认——别让一个没鉴权的端口
 能触发任意任务执行。
 :::
 
@@ -228,14 +228,14 @@ webhook server（`src/daemon/server.ts`）默认监听 `127.0.0.1:3847`：
 签名不对（含缺失）返回 401，签名对但 body 不是 JSON 返回 400，非 `pull_request` 事件忽略，
 `opened` / `synchronize` / `reopened` 之外的 action 忽略，并发满了返回 429，接受返回 202。
 
-PR 事件进来后（`src/daemon/worker.ts` 的 `handlePR`）：
+PR 事件进来后（`packages/core/src/daemon/worker.ts` 的 `handlePR`）：
 
 1. 克隆 PR 分支到 `~/.sid-code/state/daemon-workspaces/` 下的临时目录（`--filter=blob:none`：
    完整提交历史、按需取文件。不能用浅克隆，否则下一步找不到 merge-base）
 2. fetch base 分支，取 `git diff origin/<base>...HEAD`（只含 PR 自己的改动）
 3. fork `sid-code -p` 跑 code review（无头模式），跑完删掉临时目录
 
-执行的子进程由 `headless-executor`（`src/daemon/headless-executor.ts`）fork，
+执行的子进程由 `headless-executor`（`packages/core/src/daemon/headless-executor.ts`）fork，
 默认只读权限（没有白名单时 `--permission-mode plan`，有则 `--allowed-tools`），
 超时机制是 SIGTERM → 5s 宽限 → SIGKILL。
 
@@ -263,13 +263,13 @@ webhook 触发的任务在本机跑真实命令。配置前确认：
 
 ### 无头执行器
 
-定时任务和 webhook 触发的任务都跑在无头模式（`src/daemon/headless-executor.ts`）：
+定时任务和 webhook 触发的任务都跑在无头模式（`packages/core/src/daemon/headless-executor.ts`）：
 
 - fork `sid-code -p --output-format json` 子进程，prompt 经 **stdin** 传入（webhook 的 prompt
   里嵌了整个 PR diff，走 argv 会撞上系统参数长度上限）
 - 无头模式下日志一律走 stderr，stdout 只有结果 JSON，落盘的 job 输出就是模型的最终答复
 - 注入环境变量 `SID_DAEMON_JOB`（jobId）和 `SID_DAEMON_SOURCE`（`"schedule"` 或 `"webhook"`），任务内部能据此判断自己是不是被 daemon 触发的
-- 结果落盘到 `StorageAdapter` 留审计（`headless-executor.ts:77-96`）
+- 结果落盘到 `StorageAdapter` 留审计（`headless-executor.ts`）
 
 ### 相关环境变量
 

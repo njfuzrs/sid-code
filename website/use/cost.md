@@ -116,7 +116,7 @@ sid-code 会替你判断并在 `/cost` 里标注，就是那行括号里的提�
 用 `/cache`——它读的是跨会话的用量账本，不是内存里的当前会话。
 
 数据存在 `~/.sid-code/usage-ledger.jsonl`（append-only，每会话一行汇总，
-`src/telemetry/usage-ledger.ts`）。所以即使会话关了、机器重启了，历史还在。
+`packages/core/src/telemetry/usage-ledger.ts`）。所以即使会话关了、机器重启了，历史还在。
 
 ### 默认输出：长期命中率与省钱趋势
 
@@ -134,7 +134,7 @@ sid-code 会替你判断并在 `/cost` 里标注，就是那行括号里的提�
 | --- | --- |
 | `--period day\|week\|month` | 聚合粒度，默认 `day`。`week` 用 ISO 周键、`month` 用年月键 |
 | `--model <name>` | 按模型名过滤（精确或前缀匹配） |
-| `--breaks` | 显示最近 20 条缓存中断记录 + 健康度建议（`src/api/cache-detection.ts` 的 `getCacheHealthAdvice()`） |
+| `--breaks` | 显示最近 20 条缓存中断记录 + 健康度建议（`packages/core/src/api/cache-detection.ts` 的 `getCacheHealthAdvice()`） |
 | `--history` | 跨会话缓存中断遥测历史聚合，从 `~/.sid-code/cache-breaks.jsonl` 读，按归因类型计数 |
 | `--prune <N>` | 滚动裁剪账本，只保留最近 N 行（账本太大时用） |
 
@@ -143,17 +143,19 @@ sid-code 会替你判断并在 `/cost` 里标注，就是那行括号里的提�
 这是 `/cache` 最该单独说一节的能力。**缓存命中率从 90% 掉到 70%，不是 `/cost` 能看出来的——
 你得知道它为什么掉了、什么时候掉的**。`--breaks` 就是干这个的。
 
-检测机制（`src/api/cache-detection.ts` 的 `CacheBreakDetector`）：每轮请求前快照缓存关键状态
+检测机制（`packages/core/src/api/cache-detection.ts` 的 `CacheBreakDetector`）：每轮请求前快照缓存关键状态
 （system prompt hash / 工具 schema hash / 模型 / cache control / beta headers / 消息数 /
 工具顺序），响应后比较 `cache_read_tokens` 变化。**下降 > 5% 且绝对值 > 2000 tokens**
-才算一次中断（`cache-detection.ts:115-116`）——避免正常波动报假警。
+才算一次中断（`cache-detection.ts` 的 `DROP_PERCENT_THRESHOLD` / `DROP_TOKENS_THRESHOLD`）——避免正常波动报假警。
 
-15+ 种归因维度：模型变化、system prompt 变化、工具增删改、工具顺序变化、缓存策略变化、
-beta headers 变化、消息数量骤减（compact 导致）、TTL 过期、重试关联……
+10 类归因：模型变化（`model`）、system prompt 变化（`system_prompt`）、工具增删改
+（`tools`）、工具顺序变化（`tool_order`）、缓存策略变化（`cache_policy`）、beta headers 变化
+（`beta_headers`）、消息数量骤减即 compact 导致（`compact`）、TTL 过期（`ttl_expiry`）、
+本地前缀断裂（`prefix_break`）、服务端波动（`server_fluctuation`）。
 
 `--history` 把这些中断落盘到 `~/.sid-code/cache-breaks.jsonl`（append-only），长期聚合，
 告诉你"最近哪种归因最频繁"。子代理的缓存中断**独立计**——`MultiSourceCacheDetector`
-按 agentId 维护独立基线（`cache-detection.ts:299-362`），不会把子代理的正常波动算进主会话。
+按 agentId 维护独立基线（`cache-detection.ts` 的 `MultiSourceCacheDetector`），不会把子代理的正常波动算进主会话。
 
 实测这些归因跑出来长什么样、以及为什么"本地前缀 hash 变没变"是最关键的那个判据，
 见 [Prompt Cache](/blog/prompt-cache) 的归因分布一节——绝大多数真实中断都是
@@ -176,8 +178,8 @@ beta headers 变化、消息数量骤减（compact 导致）、TTL 过期、重�
 /insights 20260728-004217-cc55cf0d   # 分析指定会话
 ```
 
-别名 `/analyze`。纯本地执行，不调模型（`src/command/commands/insights/insights.ts`），
-复用 `trace/digest.ts` 的 `renderHuman()` 渲染。产出结构（与
+别名 `/analyze`。纯本地执行，不调模型（`packages/cli/src/command/commands/insights/insights.ts`），
+复用 `packages/core/src/trace/digest.ts` 的 `renderHuman()` 渲染。产出结构（与
 [轨迹采集与可观测](/team/observability) 里 `trace-digest` 同源）：
 
 ```text
@@ -279,7 +281,7 @@ $0.0025 / 0.002  →  [exceeded] 成本已超出配额，自动停止
 `/fast` 切换的是 fastMode 偏好——"优先用更快的输出端点/服务档位"。
 **如实说明：当前网关未提供对等 fast 能力，开启暂无实际加速效果。**
 这是预留开关，等网关支持后无需改命令即可生效
-（`src/command/commands/fast/fast.ts`，透传到 `src/llm/fallback.ts:212` 的
+（`packages/cli/src/command/commands/fast/fast.ts`，透传到 `packages/core/src/llm/fallback.ts` 的
 `fastMode` 字段，fallback 层标注为「预留，暂未启用」）。
 
 ```text
@@ -301,9 +303,7 @@ Fast Mode: off
 `/fast` 等网关就绪后才真正生效。无效参数会提示 `用法: /fast [on|off] [-p]`。
 
 ::: tip 为什么不删掉这个预留命令
-按项目约定（CLAUDE.md「做了但没接线也要说」），**如实写"预留"比不写好**。
-用户看到 `/fast` 在命令列表里，打了会明确告知"当前无实际加速"——
-比让它消失、等网关支持了再突然出现更诚实。
+打了会明确告知"当前无实际加速"，比让命令消失、等网关支持后再突然出现更清楚。
 :::
 
 ## 常见问题
@@ -336,7 +336,7 @@ grep -A3 '"quota"' ~/.sid-code/settings.json
 
 ### 想看跨会话的成本趋势
 
-`/insights` 看聚合视图，`/trace --health` 看 provider 维度的成功率与延迟。
+`/cache` 看跨会话命中率与成本趋势（`--period week` 按周聚合），`/trace --health` 看 provider 维度的成功率与延迟。
 团队维度的采集见[轨迹采集与可观测](/team/observability)。
 
 ### 这些数字能证明"AI 提效了"吗

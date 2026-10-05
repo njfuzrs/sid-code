@@ -63,7 +63,8 @@ sid-code 的 harness 整套开源可改，这是它和闭源产品结构上的�
 #### agentic loop
 
 **定义**：一轮完整的「你输入 → 模型流式输出 → 需要动手时调用工具 → 把工具结果喂回模型
-→ 继续下一轮」的循环。模型返回 `end_turn` 才结束，返回 `tool_use` 就继续转。
+→ 继续下一轮」的循环。模型返回 `tool_use` 就继续转；模型声明 `end_turn` 后，harness 还要过一遍
+收尾检查（见[主循环博客](/blog/main-loop)），确认没漏活才真正结束。
 
 **你什么时候碰到它**：你在终端里看到的每一条「读了哪个文件、跑了什么命令、改了哪几行」，
 都是这个循环的一步。它是 sid-code 与「代码补全」的根本区别——补全给你一段文本，
@@ -90,7 +91,7 @@ agentic loop 自己去验证结果对不对。
 #### provider
 
 **定义**：LLM 服务提供方 + 它的协议族。sid-code 支持三族：`anthropic`、`openai`
-（含全部 OpenAI 兼容网关：DeepSeek、GLM、Grok、公司网关、Azure）、`ollama`（本地）。
+（含 Chat Completions 与 Responses 两种接口，以及 OpenAI 兼容网关：DeepSeek、GLM、Grok、公司网关）、`ollama`（本地）。
 
 **你什么时候碰到它**：配置的第一步就是选 provider。**两族的 `base_url` 规则相反**——
 anthropic 族不带 `/v1`，openai 族要带，配错会 404 或者拿到一个 HTTP 200 的 HTML 错误页。
@@ -141,8 +142,8 @@ anthropic 族不带 `/v1`，openai 族要带，配错会 404 或者拿到一个 
 #### microcompact（微压缩）
 
 **定义**：比压缩更轻的一档——不调 LLM，只清理旧的**工具结果**内容。
-按工具类型区分：`read`/`bash`/`grep` 这类输出可以重新执行拿回来的直接清空；
-`edit`/`write` 这类有副作用、输出不可复现的保留一段摘要。
+按工具类型区分：可以重新执行拿回来的工具输出（`read`/`bash`/`grep` 一类）直接清空；
+有副作用、输出不可复现的（`edit`/`write` 一类）保留开头一小段。
 
 **你什么时候碰到它**：它是自动发生的，一般你不会注意到。
 知道它存在的价值在于理解「为什么上下文降下去了但对话历史还完整」。
@@ -192,11 +193,13 @@ o-series 没有 `max`。这种情况**命令会接受你的选择并明确告诉
 #### 权限模式
 
 **定义**：一组预设档位，决定「哪些操作要问你、哪些直接放行、哪些直接拒绝」。
-共八档，从最保守的 `default`（除只读外逐个问）到最宽的
-`dangerously-skip-permissions`。<kbd>Shift+Tab</kbd> 在会话里循环切换。
+共八档，从只读一侧的 `deny-write` / `plan` 到最宽的 `dangerously-skip-permissions`；
+`default` 是除只读外逐个问。<kbd>Shift+Tab</kbd> 只在 `default` / `acceptEdits` / `auto` /
+`always-allow` 这几个常用档之间轮转（`always-allow` 要求启动时开了 `--dangerously-skip-permissions`），
+`plan` 走 `/plan`。
 
 **你什么时候碰到它**：这是绝大多数人用完第一天就想改的东西——默认档每一步都问，很烦。
-日常最顺手的是 `acceptEdits`（文件读写自动放行，bash 仍要问）。
+日常最顺手的是 `acceptEdits`（文件读写自动放行，及工作目录内的少数文件类 bash 命令；其余 bash 仍要问）。
 
 **相关**：[权限与人工确认](/use/permissions)
 
@@ -235,8 +238,7 @@ sid-code 里它的具体形态就是权限确认框、Plan Mode 的方案审批�
 #### CLAUDE.md
 
 **定义**：项目/用户级的约定文件，内容进系统提示词，每个会话自动带上。
-七层合并（managed → user → userRulesDir → project → subdir → rulesDir → local），
-越靠后优先级越高。
+从企业 managed 到 `CLAUDE.local.md` 多层合并，越靠后优先级越高；完整层级与路径见[记忆与 CLAUDE.md](/use/memory)。
 
 **你什么时候碰到它**：想让它懂你这个项目的规矩时——这是性价比最高的扩展手段，
 写一个文件就生效。反面是它每次请求都带，写一百行没人遵守的规则等于每次都为它付费。
@@ -257,7 +259,8 @@ sid-code 里它的具体形态就是权限确认框、Plan Mode 的方案审批�
 #### Skill
 
 **定义**：打包成目录的一套专业能力（一个 `SKILL.md` 加可选脚本），
-按需被调用，不占常驻上下文。8 个内置 Skill，也可以自己写。
+按需被调用，不占常驻上下文。内置的有两类：8 个目录型 Skill，和 8 个编译进二进制的命令型 Skill
+（`/commit`、`/review`、`/simplify` 等），也可以自己写。
 
 **你什么时候碰到它**：想把一套重复流程（代码评审清单、事故复盘步骤、发布流程）
 固化下来时。它比 Hook 轻——Hook 是自动触发，Skill 是被调用。
@@ -270,7 +273,7 @@ sid-code 里它的具体形态就是权限确认框、Plan Mode 的方案审批�
 LLM 请求前后、压缩前后、会话起止、子代理起止…），部分事件可以**阻断**后续动作。
 
 **你什么时候碰到它**：想做「提交前必须跑 lint」「拦掉某类危险命令」「编辑后自动格式化」
-这类自动化时。注意配置文件里的事件名必须写 **snake_case 且平铺**，写 PascalCase 会被校验器拒。
+这类自动化时。事件名写 PascalCase 或 snake_case 都认（本站统一用 snake_case）；配置必须**平铺**，嵌套形状会被跳过。
 
 **相关**：[Hook 指南](/extend/hooks)（怎么用） · [Hook 事件](/ref/hooks)（字段表）
 
@@ -370,8 +373,8 @@ sid-code 默认会 symlink `node_modules`（比 git 原生行为激进），
 **定义**：主模型重试耗尽后切到备用模型。三种策略：`ask`（问你，生产默认）/
 `auto`（自动切）/ `off`（不降级，直接报错）。
 
-**你什么时候碰到它**：主模型限流或网关抖动时。备用模型必须在 `availableModels` 里，
-否则配置校验会拦下来。
+**你什么时候碰到它**：主模型限流或网关抖动时。配了 `availableModels` 而备用模型不在里面时，
+启动会告警（不拦启动），降级不会生效；切换时可能报模型不可用。
 
 **相关**：[settings.json 字段](/ref/settings)（`fallbackModel` / `fallbackSwitchMode`）
 
@@ -388,8 +391,8 @@ sid-code 默认会 symlink `node_modules`（比 git 原生行为激进），
 
 #### team-defaults（团队默认配置）
 
-**定义**：一份发给团队所有人的默认 settings 模板。语义是**纯拷贝、且只在
-`settings.json` 不存在时写入**——绝不覆盖别人已有的配置。
+**定义**：一份发给团队所有人的默认 settings 模板。首装时整份拷贝；升级时只补用户没有的顶层键，
+**绝不覆盖已有值**，详见[团队默认配置分发](/team/defaults)。
 
 **你什么时候碰到它**：在团队里推开 sid-code 时，让新同事装完即可用，不用手配 provider。
 
