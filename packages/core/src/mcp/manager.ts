@@ -23,6 +23,7 @@ import { buildMcpToolName } from "./normalization.ts";
 import { logToolInvoked } from "../analytics/events.ts";
 import { mcpPluginOrigin } from "../analytics/plugin-attribution.ts";
 import { expandEnvVars } from "./env-expansion.ts";
+import { buildSidBackendHeaders, SID_BACKEND_AUTH } from "./backend-auth.ts";
 import { enforceMcpOutputTokenLimit, IMAGE_TOKEN_ESTIMATE } from "./mcp-output-limit.ts";
 import { getMcpTimeout } from "./mcp-timeout.ts";
 import { getLogger } from "../debug/logger.ts";
@@ -495,7 +496,7 @@ export class MCPManager {
     }
 
     // IDE 动态注册场景：authToken 注入为 Authorization 头（对标 Claude Code sse-ide/ws-ide）
-    const headers: Record<string, string> | undefined =
+    let headers: Record<string, string> | undefined =
       oauthHeader || config.authToken || config.headers
         ? {
             ...config.headers,
@@ -503,6 +504,17 @@ export class MCPManager {
             ...oauthHeader, // OAuth token 优先级最高
           }
         : undefined;
+
+    // auth:"sid-backend"：设备凭据只发往 backend.url 同 origin（外泄防线，见 backend-auth.ts）。
+    // 它与 oauth / authToken 互斥：后两者写进 Authorization 的值会被这里覆盖。
+    if (config.auth === SID_BACKEND_AUTH) {
+      if (config.transport === "stdio" || !config.url) {
+        throw new Error(`MCP 服务器 ${name} 的 auth:"sid-backend" 需要远程传输与 url`);
+      }
+      headers = buildSidBackendHeaders(name, expandEnvVars(config.url).expanded, config.headers);
+    } else if (config.auth !== undefined) {
+      throw new Error(`MCP 服务器 ${name} 的 auth 值不受支持：${String(config.auth)}`);
+    }
 
     if (config.transport === "stdio") {
       if (!config.command) {

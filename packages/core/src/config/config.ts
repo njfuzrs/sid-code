@@ -49,6 +49,8 @@ export interface MCPServerConfig {
   scope?: "user" | "project" | "local" | "dynamic"; // 配置来源标记
   // ─── OAuth 2.1 接入（远程 MCP：Linear / Sentry / claude.ai 等，对标 Claude Code auth.ts） ───
   oauth?: MCPOAuthConfig; // 启用/配置 OAuth；为对象（含空对象 {}）即视为启用
+  // ─── 企业后端远程 MCP（P4）：用设备凭据鉴权，仅当 url 与 backend.url 同 origin 才注入 ───
+  auth?: "sid-backend";
 }
 
 /** MCP OAuth 配置（远程 HTTP/SSE 服务器） */
