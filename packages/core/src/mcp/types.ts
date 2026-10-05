@@ -143,6 +143,7 @@ export interface ScopedMcpServerConfig {
   retries?: number;
   includeTools?: string[];
   excludeTools?: string[];
+  auth?: "sid-backend";
   scope: ConfigScope;
 }
 

@@ -258,6 +258,21 @@ export function validateConfig(config: Config): ValidationResult {
           });
         }
       }
+
+      // auth 只认 sid-backend；写错（如 "sid_backend"）若静默忽略，就会变成不带凭据去连后端
+      if (serverConfig.auth !== undefined && serverConfig.auth !== "sid-backend") {
+        errors.push({
+          path: `${prefix}.auth`,
+          message: '无效值，目前只支持 "sid-backend"',
+          value: serverConfig.auth,
+        });
+      } else if (serverConfig.auth === "sid-backend" && serverConfig.transport === "stdio") {
+        errors.push({
+          path: `${prefix}.auth`,
+          message: 'auth:"sid-backend" 只用于远程传输（http / http-json / sse）',
+          value: serverConfig.auth,
+        });
+      }
     }
   }
 

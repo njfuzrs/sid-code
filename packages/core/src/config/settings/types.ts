@@ -76,6 +76,7 @@ const MCPServerSchema = lazySchema(() =>
       retries: z.number().nonnegative().optional(),
       includeTools: z.array(z.string()).optional(),
       excludeTools: z.array(z.string()).optional(),
+      auth: z.literal("sid-backend").optional(),
     })
     .passthrough(),
 );
