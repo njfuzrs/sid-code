@@ -12,9 +12,9 @@ description: 给会话、给团队设花费上限；四级预警、按周期的�
 到"按天限额、超了直接停、按模型分别限额"。
 
 ::: tip 先说一句
-配额是**客户端护栏**，不是网关强制。它拦的是 sid-code 自己发起的请求，
-用户改自己的 `settings.json` 就能放宽。真正不可绕过的额度控制要做在网关侧。
-这页讲的是前者——它能挡住绝大多数"跑飞了没人管"的情况。
+本地配额是**客户端护栏**：它拦的是 sid-code 自己发起的请求，
+用户改自己的 `settings.json` 就能放宽，计数也只在本进程内。它能挡住绝大多数"跑飞了没人管"的情况。
+跨会话、按团队 / 组织汇总的额度见下文[远程预算](#远程预算-团队-组织级)。
 :::
 
 ## 快速上手
@@ -43,7 +43,7 @@ sid-code -p "重构这个模块" --max-budget-usd 1.0
 
 上限和当前花费一样显示到小数点后 4 位，所以不到 1 分钱的上限也能看清。
 
-"自动停止"的语义是：当前这一轮 agentic loop 就地终止（`src/query/loop.ts:1613-1617`
+"自动停止"的语义是：当前这一轮 agentic loop 就地终止（`packages/core/src/query/loop.ts`
 发一条 terminal 系统消息后 `return`），不是整个进程退出。交互模式下你还能继续对话——
 但下一次请求算完成本又会撞上限。
 
@@ -71,7 +71,7 @@ export function resolveEffectiveCostLimit(quotaCostLimit, topLevelCostLimit): nu
 交互模式与 `-p` 走的是同一个值。
 
 统计口径值得点一句：配额检查用的是 `getEffectiveTotalCostUSD()`
-（`src/query/loop.ts:1612`），**包含标题生成 / 记忆抽取 / 摘要这些影子调用**的花费。
+（`packages/core/src/query/loop.ts`），**包含标题生成 / 记忆抽取 / 摘要这些影子调用**的花费。
 不然辅助调用烧钱就不受限了。
 
 ### 四级预警
@@ -86,7 +86,7 @@ export function resolveEffectiveCostLimit(quotaCostLimit, topLevelCostLimit): nu
 | ≥ 100% | `exceeded` | **终止本轮** |
 
 **只在级别升级时告警一次**（同一函数里的 `lastAlertLevel` 判断），不会每轮重复刷同一档。
-`/clear` 会重置告警级别（`src/app.ts:1613`），所以清空上下文后又会从 info 档开始提醒。
+`/clear` 会重置告警级别（`packages/cli/src/app.ts`），所以清空上下文后又会从 info 档开始提醒。
 
 ### RPM / TPM 的实际状态
 
@@ -101,7 +101,7 @@ RPM = Requests Per Minute（每分钟请求数），TPM = Tokens Per Minute（�
 
 `budgetRules` 比 `costLimit` 多三个维度：周期、模型范围、超限动作。
 
-```json
+```jsonc
 {
   "quota": {
     "budgetRules": [
@@ -117,7 +117,7 @@ RPM = Requests Per Minute（每分钟请求数），TPM = Tokens Per Minute（�
         "name": "贵模型单独限额",
         "period": "daily",
         "limit_usd": 3,
-        "scope": { "model": "claude-sonnet-5" },
+        "scope": { "model": "claude-sonnet-5" },   // 换成你 availableModels 里的名字
         "thresholds": { "warning": 0.6, "critical": 0.9, "exceeded": 1.0 },
         "action": "alert"
       }
@@ -145,22 +145,39 @@ RPM = Requests Per Minute（每分钟请求数），TPM = Tokens Per Minute（�
 ```
 
 ::: warning action 三档里只有两档真的不一样
-`block` 会终止本轮（`src/query/loop.ts:1588-1596`）。
+`block` 会终止本轮（`packages/core/src/query/loop.ts`）。
 `alert` 只发告警。而 **`downgrade` 目前的实际行为等同于 `alert`**——
 主循环只判 `action === "block"`，没有"降级到便宜模型"的实现分支。
+配了 `downgrade` 启动时会有一条提示点名这件事（见下文[配置校验](#配置校验会帮你抓错)）。
 想按预算自动降级，现在的可行替代是配 [`subAgentModels` 分级](/extend/subagents)
 把子代理压到便宜档。
 :::
 
 ### 周期是进程内的，重启即清零
 
-计数存在内存 Map 里（`src/telemetry/metrics/budget-tracker.ts:54`），
+计数存在内存 Map 里（`packages/core/src/telemetry/metrics/budget-tracker.ts`），
 周期 key 由当前时间算出（`daily` = `2026-07-27` 这样的字符串）。**没有持久化**。
 
 推论很重要：`period: "daily"` 的语义是**"本进程内、今天这个日期键下的累计"**，
 不是"这台机器今天一共花了多少"。重启 sid-code 就归零，多个并行会话各算各的。
-真正的跨会话日额度统计要靠[轨迹数据](/team/observability)在事后聚合，
-或者做在网关侧。
+跨会话的额度用下一节的远程预算；事后复盘花费用[轨迹数据](/team/observability)聚合。
+
+## 远程预算（团队 / 组织级）
+
+客户端已实现远程预算（`packages/core/src/telemetry/remote-budget.ts`）：额度由企业后端下发、
+用量由服务端跨会话汇总，本地改 `settings.json` 放不宽它。
+
+- **取址**：配了 `backend.url` 并 `sid-code auth login` 后自动生效，地址是
+  `GET <backend.url>/api/v1/ctl/budget`，不需要单独配。旧的 `SID_CODE_BUDGET_ENDPOINT`
+  已弃用，只在没配 `backend.url` 时生效。
+- **何时拉取**：启动时拉一次；之后每次本会话用量上报到账本成功，最多每 30 秒刷新一次。
+- **用量口径**：服务端返回 `used_usd`（按周期汇总的已用额），客户端加上本会话尚未计入的部分做估计，
+  已上报过的本会话花费不重复计。
+- **两档动作**：`alert` 只告警；`block` 终止本轮，与本地 `costLimit` 超限同一种停法。
+- **与本地配额的关系**：两条都查，先到先停，数字不合并。
+- **fail-open**：没登录、401 / 5xx / 超时、明文非本地地址，一律当没配远程预算，本地 `costLimit` 照常生效。
+
+服务端额度怎么设、按什么维度汇总，由企业后端决定，不在本页范围。
 
 ## 配置校验会帮你抓错
 
@@ -189,10 +206,16 @@ RPM = Requests Per Minute（每分钟请求数），TPM = Tokens Per Minute（�
   请同步更新这里的引用
 ```
 
-最后那条尤其值得留意：`scope.model` 是**字符串精确匹配**用量事件的模型名
-（`budget-tracker.ts:162`）。改过 `availableModels` 里的模型名而忘了同步这里，
+`action` 写成合法但未实现的 `downgrade` 时，提示是另一句：
+
+```text
+⚠ quota.budgetRules[0].action: "downgrade" 当前未实现，行为等同 alert（超限只告警，不切换模型）
+```
+
+`scope.model` 那条尤其值得留意：`scope.model` 是**字符串精确匹配**用量事件的模型名
+（`budget-tracker.ts`）。改过 `availableModels` 里的模型名而忘了同步这里，
 预算规则就永久静默失效——你以为设了限额，其实从来没生效过。校验器专门为这个场景加了检查
-（`src/config/schema.ts:497-500` 的注释把它定性为"财务/安全相关的真实风险"）。
+（`packages/core/src/config/schema.ts` 的注释把它定性为"财务/安全相关的真实风险"）。
 
 注意这些都是**警告不是错误**，启动照常继续。所以团队推配置时值得跑一次
 `sid-code -p "ok"` 看有没有 `⚠ quota.` 开头的行。
@@ -202,10 +225,10 @@ RPM = Requests Per Minute（每分钟请求数），TPM = Tokens Per Minute（�
 ### 团队怎么统一设上限
 
 放进[团队默认配置](/team/defaults)的 `quota` 段。但记住这是**默认值不是强制值**——
-用户改自己的 `~/.sid-code/settings.json` 就能改掉。
+用户改自己的 `~/.sid-code/settings.json` 就能改掉。要用户改不掉的跨会话额度，用[远程预算](#远程预算-团队-组织级)。
 
 配置来源里 `quota` 是嵌套对象，合并时递归展开，`budgetRules` 作为对象数组是
-**拼接**语义（`src/config/settings/merge.ts:25`）——用户加自己的规则不会覆盖团队的规则，
+**拼接**语义（`packages/core/src/config/settings/merge.ts`）——用户加自己的规则不会覆盖团队的规则，
 两边的规则同时生效。这对配额来说方向是对的：多一条规则只会更严不会更松。
 
 ### 想知道现在花了多少

@@ -12,7 +12,8 @@ description: 每次会话落盘了什么、能回答什么问题、怎么用一�
 
 ::: tip 为什么这件事是地基
 轨迹是"更快、更省"这两个方向唯一的度量来源。没有它，"这次改动省了多少 token"
-就只能靠感觉。缓存命中率从 0 提到 83% 这类结论，全部是从这些文件里算出来的。
+就只能靠感觉。比如 deepseek 前缀断裂修复后缓存命中率 0 → 46.6% → 83.2%（见[博客](/blog/sc-21-provider#_8-7-一个真实的从-0-到-83-的修复)），
+全部是从这些文件里算出来的。
 :::
 
 ## 快速上手
@@ -25,55 +26,62 @@ description: 每次会话落盘了什么、能回答什么问题、怎么用一�
 
 它会即时显示当前会话的 **Span 树 + Metric 汇总**（内存数据）。前提是开了 `telemetry.enabled`（默认关，
 开法见下文[开启完整遥测](#开启完整遥测与-perfetto-导出)），没开时它只提示「遥测未启用」。
-想看更早的会话，用下面这条命令读落盘轨迹：
 
-想知道刚才那次会话到底发生了什么，一条命令：
+想知道刚才（或更早）那次会话到底发生了什么，用一条命令读落盘轨迹：
 
 ```bash
 bun scripts/trace-digest.ts <session-id>
 ```
 
-session id 在会话摘要里（形如 `20260728-004217-cc55cf0d`），或者直接取最新一个：
+session id 在会话摘要里（形如 `20261002-213607-09e2f678`），或者直接取最新一个：
 
 ```bash
 ls -1t ~/.sid-code/trajectories/sessions | head -1
 ```
 
-真实输出（节选）：
+真实输出（节选，一个撞了轮次上限的会话）：
 
 ```text
-━━━ session 20260728-004217-cc55cf0d  [error] ━━━
-  模型 ali-deepseek-v4-pro   API 3 次   步骤 5   耗时 16.5s   成本 $0.0276   tok 77855↑/458↓
-  cwd /private/tmp/lspdemo
+━━━ session 20261002-213607-09e2f678  [max_turns] ━━━
+  模型 glm-5.2   API 5 次   步骤 9   耗时 44.3s   成本 $0.1112   tok 252742↑/908↓
 
 用户意图:
-  1. 分析 /tmp/lspdemo/calc.ts，给出语言与顶层函数个数。
+  1. 分析 /tmp/b26e2e/calc.ts，给出语言与顶层函数个数。
 
 L0 事实层 (1) — 机器可验证,带出处,不含判断:
-  [高] exit_status_error: exit_status = "error"
-        ⊢ 出处: .../session.traj @metadata.exit_status = error
-        → 看: messages.json (验尸快照,看 attribution) + raw.jsonl 末行
+  [中] exit_status_max_turns: exit_status = "max_turns"（轮次预算耗尽，非用户中断）
+        ⊢ 出处: .../session.traj @metadata.exit_status = max_turns
+        → 看: 工具序列（看它这些轮次花在哪 —— 撞顶本身不说明题难）
 
-L1 假设层 (1) — 待验证,先消解证伪条件再采信:
-  [高] hypothesis_runtime_abend: 假设:会话因运行时异常而非正常 end_turn 终止。
-        ⚖ 证伪条件: 若 messages.json.attribution 显示是用户主动中断 / 配额耗尽等
-          可预期原因,则推翻"运行时异常终止"。
+L1 假设层 (0) — 待验证,先消解证伪条件再采信:
+  (无)
 
-工具序列 (2 次调用):
-  · read file_path=/tmp/lspdemo/calc.ts
-  · StructuredOutput {functionCount,language}
+工具序列 (4 次调用):
+  · read file_path=/tmp/b26e2e/calc.ts
+  · StructuredOutput {language,functionCount}
+  · read file_path=/tmp/b26e2e/calc.ts
+  · StructuredOutput {language,functionCount}
+
+崩溃归因 (messages.json):
+  {"abnormal":true,"reason":"exit","exit_status":"max_turns","api_calls":5,"last_tool":"StructuredOutput",...}
 
 Provider 健康:
-  openai       请求:3 成功率:100% 整轮均耗:5.4s TTFT(首内容)P50=1.9s 生成P50=3.1s
+  openai       请求:5 成功率:100% 整轮均耗:4.9s TTFT(首内容)P50=5.3s 生成P50=1.2s
+               └ TTFT 命中:3.1s(n=3) 未命中:5.3s(n=2)  提速 2.2s
+               └ glm-5.2 n=5 TTFT P50=5.3s TTFB P50=5.3s 缓冲 1%
 ```
 
 值得注意的是这个工具的输出结构：**L0 事实层带出处、L1 假设层带证伪条件**。
-它不会直接告诉你"结论是 X"，而是给出可验证的事实 + 待验证的假设 + 推翻假设的条件。
-上面这例就很典型：`exit_status = error` 是事实，但假设层同时给了证伪路径——
-实际查 `messages.json` 会看到 `abnormal: false` / `exit=end_turn`，
-说明这个 `error` 状态与真实的异常终止并不等价。
+它不直接告诉你"结论是 X"，而是给出可验证的事实 + 待验证的假设 + 推翻假设的条件。
+用法是三步：先信 L0（每条都能顺着出处回到源字段复核）；L1 里的每条假设，先按它给的证伪条件去查，
+推翻不了才采信；最后用工具序列和归因核对。
 
-`TTFT(首内容)P50=1.9s` 这行是延迟优化的直接依据。TTFT 计的是**首个任意内容 chunk**（含 thinking / tool_use），
+上面这例 L0 只给了一条事实「撞了轮次上限」，并且直接提示别把它读成"题太难"——
+看工具序列就清楚：`read` → `StructuredOutput` 这对动作做了两遍，轮次花在了重复提交上，
+`messages.json` 的归因（`exit_status=max_turns`、`last_tool=StructuredOutput`）与之一致。
+这里没有假设要验证，所以 L1 是空的；有异常终止时，假设和它的证伪条件会出现在那一层。
+
+`TTFT(首内容)P50=5.3s` 这行是延迟优化的直接依据。TTFT 计的是**首个任意内容 chunk**（含 thinking / tool_use），
 不是首字节（TTFB）——首字节受网关缓冲策略影响，跨路由不可比。
 
 ## 落盘了什么
@@ -105,7 +113,7 @@ Provider 健康:
 
 `raw.jsonl` 通常是最大的那个文件（这例 115K），因为它存全量报文。
 
-`events.jsonl` 的事件类型分布（同一会话的实际统计）：
+`events.jsonl` 的事件类型分布（某个简单会话的实际统计）：
 
 ```text
 StreamPhase: 16      BeforeModel: 3       GatewayPricingSync: 3
@@ -203,7 +211,7 @@ grep -A4 '"upload"' ~/.sid-code/settings.json   # 没有输出 = 不上传
 
 ### 开关与字段
 
-开关是**独立**的，别混为一谈：
+下表各项彼此**独立**，别混为一谈：
 
 | 字段 | 控制什么 | 默认 |
 | --- | --- | --- |
@@ -281,15 +289,15 @@ done
 /telemetry
 ```
 
-别名 `/tele`。它显示当前会话的 **Span 树 + Metric 汇总**（`src/command/builtins.ts:1162`）：
+别名 `/tele`。它显示当前会话的 **Span 树 + Metric 汇总**（`packages/cli/src/command/builtins.ts`）：
 
 - **总览**：LLM 调用轮数、Token 消耗（输入/输出）、费用、缓存节省、TTFT 平均、工具调用次数
 - **调用时间线**：构建 Span 树递归渲染（扁平 span 列表按 `parentSpanId` 建父子关系，
-  `builtins.ts:1281-1301`），每行显示 kind 中文标签、时长、模型名、TTFT、Token、费用（chat）
+  `builtins.ts`），每行显示 kind 中文标签、时长、模型名、TTFT、Token、费用（chat）
   或工具名、时长（tool）
 - **其他指标**：按 name 分组的 metric（sum/count/max/last）
 
-它**不接受参数**——参数名以下划线开头表示未使用（`builtins.ts:1167`）。遥测未启用时
+它**不接受参数**——参数名以下划线开头表示未使用（`builtins.ts`）。遥测未启用时
 提示你去开，无数据时提示无数据。
 
 ### `/telemetry` 与轨迹落盘的关系
@@ -330,7 +338,7 @@ done
 }
 ```
 
-字段（`src/config/config.ts:935-944`、`schema.ts:702-713`）：
+字段（`packages/core/src/config/config.ts`、`schema.ts`）：
 
 | 字段 | 作用 | 默认 |
 | --- | --- | --- |
@@ -354,7 +362,7 @@ done
 }
 ```
 
-协议是 **OTLP/HTTP + JSON**（`src/telemetry/exporters/otlp.ts`，零依赖），端点与认证读 OTel 标准环境变量：
+协议是 **OTLP/HTTP + JSON**（`packages/core/src/telemetry/exporters/otlp.ts`，零依赖），端点与认证读 OTel 标准环境变量：
 
 | 环境变量 | 作用 | 默认 |
 | --- | --- | --- |
@@ -460,11 +468,11 @@ tar xzf otelcol-contrib_0.162.0_darwin_arm64.tar.gz
 | `sidcode.agent.turns` | Histogram | `{turn}` |
 
 prompt 与工具输出原文**默认不导出**。内容级 tracing 是独立开关（`SID_CODE_CONTENT_TRACING=1` 等四道闸门，见
-`src/telemetry/content-tracing.ts`），企业要求「不落原文」时保持默认即可。
+`packages/core/src/telemetry/content-tracing.ts`），企业要求「不落原文」时保持默认即可。
 
 ### 导出 Perfetto trace
 
-想把会话的调用时间线用可视化工具打开，设环境变量 `SID_CODE_PERFETTO_TRACE`（`src/telemetry/perfetto.ts:34`）：
+想把会话的调用时间线用可视化工具打开，设环境变量 `SID_CODE_PERFETTO_TRACE`（`packages/core/src/telemetry/perfetto.ts`）：
 
 ```bash
 export SID_CODE_PERFETTO_TRACE=1          # 启用，落盘到默认文件名
@@ -472,7 +480,7 @@ export SID_CODE_PERFETTO_TRACE=1          # 启用，落盘到默认文件名
 export SID_CODE_PERFETTO_TRACE=/tmp/my-trace.json
 ```
 
-会话结束时（`TelemetryBus.shutdown()`，`bus.ts:262-270`）自动落盘一个 Perfetto
+会话结束时（`TelemetryBus.shutdown()`，`bus.ts`）自动落盘一个 Perfetto
 Trace Event 格式的 JSON（`{ traceEvents: [{ name, cat, ph: "X", ts, dur, pid, tid, args }] }`）。
 每种 span kind 映射到不同 tid（invoke_agent/chat/execute_tool/blocked_on_user/hook_execution），
 在时间轴上分层显示。
