@@ -19,7 +19,11 @@ const todoWriteSchema = lazySchema(() =>
         z.object({
           content: z.string().describe("任务描述（祈使形式），如 '新增 crash-marker.ts'"),
           active_form: z.string().describe("进行时形式，如 '正在新增 crash-marker.ts'"),
-          status: z.enum(["pending", "in_progress", "completed"]).describe("任务状态"),
+          status: z
+            .enum(["pending", "in_progress", "completed", "blocked"])
+            .describe(
+              '任务状态。blocked = 卡在你无法自行完成的外部条件上（需用户输入密码/执行命令/提供信息、等外部系统），不是"还没做"',
+            ),
         }),
       )
       .describe("完整的 todo 列表（全量替换）"),
@@ -31,12 +35,32 @@ export interface TodoItem {
   content: string;
   /** 进行时形式，如 "正在新增 crash-marker.ts" */
   activeForm: string;
-  /** 任务状态 */
-  status: "pending" | "in_progress" | "completed";
+  /**
+   * 任务状态。
+   *
+   * `blocked`（2026-10-06 新增）：卡在 agent **无法自行完成**的外部条件上——典型是需要用户
+   * 输入 sudo 密码、在自己终端执行命令、提供凭据、等外部系统。它不是"未开始"也不是"进行中"：
+   * 下一步动作的主语是用户，不是模型。
+   *
+   * 缺了这一态的实测后果（会话 20261005-233851-9b91e1b7）：5 项里后 3 项都要 sudo，模型只能把
+   * 它们挂在 pending/in_progress；end_turn 兜底只数"未完成项"，分不清"偷懒收尾"与"在等用户"，
+   * 于是每次模型正确地停下来等用户都被拦一次，7 次续推产出 7 段同义重复，最后还弹红字警告。
+   */
+  status: "pending" | "in_progress" | "completed" | "blocked";
 }
 
+/** 全部状态值（schema / 校验 / 持久化清洗共用，避免三处各写一份漂移） */
+export const TODO_STATUSES = ["pending", "in_progress", "completed", "blocked"] as const;
+
 function formatTodoItem(t: TodoItem, idx: number): string {
-  const icon = t.status === "completed" ? "✅" : t.status === "in_progress" ? "🔄" : "⬜";
+  const icon =
+    t.status === "completed"
+      ? "✅"
+      : t.status === "in_progress"
+        ? "🔄"
+        : t.status === "blocked"
+          ? "⏸"
+          : "⬜";
   return `  ${icon} ${idx + 1}. ${t.content}`;
 }
 
@@ -119,6 +143,18 @@ function buildForwardDirective(todos: TodoItem[]): string | null {
     return `请继续用 todo_write **实时**流转状态：每完成一项立即标记 completed，不要攒到最后一起标记。`;
   }
 
+  const blocked = todos.filter((t) => t.status === "blocked");
+  if (blocked.length > 0) {
+    // 剩下的全是 blocked：模型这边已无可推进的项，正确动作是把卡点和用户要做的事说清楚后收尾，
+    // 而不是继续找事做。这句必须明说"可以收尾"——否则弱模型会把剩余项读成"还有活"去空转
+    // （本缺陷现场：反复 `sudo -n true`、去查"用户是不是已经偷偷执行过了"）。
+    return (
+      `你这边已没有可推进的项；剩余 ${blocked.length} 项为 blocked（等待用户/外部条件）。` +
+      `把用户需要做的事（命令、所需信息）说清楚后即可收尾，不要为了推进 blocked 项去空转重试。` +
+      `用户完成后，再把对应项改回 in_progress 继续。`
+    );
+  }
+
   return `请继续用 todo_write 追踪进度；若清单已全部推进完毕，如实收尾即可。`;
 }
 
@@ -137,10 +173,12 @@ function formatTodoDiff(oldTodos: TodoItem[], newTodos: TodoItem[]): string {
   const completed = newTodos.filter((t) => t.status === "completed").length;
   const inProgress = newTodos.filter((t) => t.status === "in_progress").length;
   const pending = newTodos.filter((t) => t.status === "pending").length;
+  const blocked = newTodos.filter((t) => t.status === "blocked").length;
   lines.push(
     `\n进度: ${completed}/${newTodos.length} 已完成` +
       (inProgress > 0 ? `, ${inProgress} 进行中` : "") +
-      (pending > 0 ? `, ${pending} 待开始` : ""),
+      (pending > 0 ? `, ${pending} 待开始` : "") +
+      (blocked > 0 ? `, ${blocked} 等待用户/外部` : ""),
   );
 
   // L1：前向推进指令（每次调用必达）
@@ -150,7 +188,7 @@ function formatTodoDiff(oldTodos: TodoItem[], newTodos: TodoItem[]): string {
   return lines.join("\n");
 }
 
-const VALID_STATUSES = new Set(["pending", "in_progress", "completed"]);
+const VALID_STATUSES: ReadonlySet<string> = new Set(TODO_STATUSES);
 
 /**
  * 从持久化快照里挑出合法 todo 项（脏项跳过，不抛错）。
@@ -168,7 +206,11 @@ function sanitizeTodoSnapshot(raw: unknown[]): TodoItem[] {
     if (typeof t.content !== "string" || !t.content.trim()) continue;
     if (typeof t.activeForm !== "string" || !t.activeForm.trim()) continue;
     if (typeof t.status !== "string" || !VALID_STATUSES.has(t.status)) continue;
-    out.push({ content: t.content, activeForm: t.activeForm, status: t.status });
+    out.push({
+      content: t.content,
+      activeForm: t.activeForm,
+      status: t.status as TodoItem["status"],
+    });
   }
   return out;
 }
@@ -370,6 +412,19 @@ print("Hello World")
 - pending: 尚未开始
 - in_progress: 正在进行（**理想情况下同时只保留一个**）
 - completed: 已完成
+- blocked: 卡在**你无法自行完成**的外部条件上——需要用户输入密码 / 在自己终端执行命令 / 提供信息、
+  或等外部系统。下一步动作的主语是用户而不是你。
+
+## blocked 怎么用（重要）
+- 只在**真的做不了**时用：例如需要 sudo 密码而工具没有 tty、需要用户登录某个系统、需要用户提供凭据。
+  "还没做""有点难""要等一会儿"都不是 blocked。
+- 标 blocked 时，在 content 里写清卡在哪（如「…—— 需 sudo，等用户在终端执行」），
+  并在回复里把用户要做的事（具体命令、所需信息）交代清楚。
+- 剩下的项全是 blocked 时，**直接收尾**等用户，不要反复重试同一个被阻塞的动作。
+- 用户完成之后，把对应项改回 in_progress 继续推进、验证，再标 completed。
+- 把一件"部分你能做、部分要用户做"的事拆成两项：你能做的那部分照常推进到 completed，
+  只把要用户做的部分标 blocked——不要让一项同时装着"已做完的部分"和"做不了的部分"，
+  那样它只能永远挂在 in_progress，清单会显得比实际落后。
 
 ## 任务管理规则
 - **任何时刻都应保持至少一项 in_progress**（清单未全部完成时）—— 没有"当前项"就没有实时进度，
@@ -389,8 +444,9 @@ print("Hello World")
 
 ## 任务完成要求
 - 只有完全完成才能标记 completed
-- 遇到错误、阻塞或无法完成 → 保持 in_progress
-- 被阻塞时 → 创建新任务描述需要解决的问题
+- 遇到你自己还能继续排查的错误 → 保持 in_progress
+- 被你无法自行解除的外部条件阻塞（需用户操作 / 外部系统）→ 标 blocked，并说明需要用户做什么
+- 标了 completed 之后发现还要返工 → 先把它改回 in_progress 再改，别把返工挂在下一项名下
 - 绝对不能在没有完全完成时标记 completed：测试失败、实现不完整、遇到未解决错误、找不到需要的文件或依赖
 
 如有疑问，使用此工具。主动管理任务展示你的细致度，确保完成所有需求。`;
@@ -549,7 +605,7 @@ print("Hello World")
       }
       if (!VALID_STATUSES.has(t.status as string)) {
         return {
-          output: `第 ${i + 1} 个 todo 项的 status 无效: "${t.status}"。有效值: pending, in_progress, completed`,
+          output: `第 ${i + 1} 个 todo 项的 status 无效: "${t.status}"。有效值: ${TODO_STATUSES.join(", ")}`,
           isError: true,
         };
       }
@@ -603,9 +659,13 @@ print("Hello World")
         statusAdvisories.push(
           `提示：当前有 ${inProgressCount} 个 in_progress。清单已按你提交的内容保存，但建议同一时刻只保留 1 个 in_progress、其余置 pending——这样进度展示更清晰，也更容易发现自己是否在并行摊开太多任务。`,
         );
-      } else if (inProgressCount === 0 && todos.length > 0) {
+      } else if (inProgressCount === 0 && todos.some((t) => t.status === "pending")) {
         // 点名下一项（而非泛泛说"把下一项置为 in_progress"）：弱模型对具体指令的执行率
         // 显著高于泛化提醒，与 buildForwardDirective 的分流同源、可共用同一锚点。
+        //
+        // 守卫是"还有 pending"而不是"清单非空"：剩下的只有 completed + blocked 时，
+        // 模型这边已无可推进项，再催"把下一项置为 in_progress"就是在催它推进一个
+        // 它做不了的 blocked 项——正是本次要消掉的那类空转。
         const nextPending = todos.find((t) => t.status === "pending");
         const named = nextPending ? `（建议是「${nextPending.content}」）` : "";
         statusAdvisories.push(
