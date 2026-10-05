@@ -35,7 +35,7 @@
 - [成本与用量](/use/cost): 单次任务花了多少、prompt cache 命中率怎么看、怎么把成本降下来、怎么设花费上限。
 - [交互模式与键位](/use/interactive): 常用键位、和弦、中断与排队输入的行为。
 - [记忆与 CLAUDE.md](/use/memory): 项目指令、个人记忆、团队记忆三层的作用范围与优先级。
-- [权限与人工确认](/use/permissions): 八种权限模式怎么选、allow/deny/ask 规则怎么写，以及哪些操作任何模式都拦不住。
+- [权限与人工确认](/use/permissions): 八种权限模式怎么选、allow/deny/ask 规则怎么写，以及 --dangerously-skip-permissions 到底跳过了哪些层。
 - [Plan Mode 与 Todo](/use/plan-mode): 先规划后动手的用法，以及 todo 清单在长任务里的作用。
 - [会话管理](/use/sessions): 会话持久化、恢复（-c）、checkpoint 与回滚。
 - [排障](/use/troubleshooting): 真实踩过的坑：症状 → 原因 → 解法。
