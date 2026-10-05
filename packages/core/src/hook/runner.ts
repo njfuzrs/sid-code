@@ -234,14 +234,18 @@ export class HookRunner {
       ...this.sanitizeEnvironment(process.env as Record<string, string>),
       SID_CODE_HOOK_EVENT: eventName,
       SID_CODE_PROJECT_DIR: input.cwd,
+      // H14：$SID_CODE_CWD 原先只靠对命令串做字符串替换提供，删掉替换后改由环境变量提供，写法不变
+      SID_CODE_CWD: input.cwd,
       ...hookConfig.env,
     };
 
     // 注入事件专属环境变量
     this.injectEventEnvVars(env, input);
 
-    // 展开命令中的变量
-    const command = this.expandCommand(hookConfig.command, input);
+    // H14：命令串原样交给 sh，不做任何字符串替换。$SID_CODE_PROJECT_DIR / $SID_CODE_CWD 由 sh
+    // 从上面的环境变量展开——环境变量的值不会被二次解析。原先把 cwd 裸拼进命令串，目录名里的
+    // `$(...)` / 反引号会被 sh 当代码执行，用户加双引号也挡不住（替换发生在引号解析之前）。
+    const command = hookConfig.command;
 
     const lazyInput = new LazyJsonInput(input);
 
@@ -493,10 +497,12 @@ export class HookRunner {
 
   /** 解析 command hook 输出（退出码语义：0=成功, 1=警告, 2+=阻塞） */
   private parseCommandOutput(stdout: string, stderr: string, exitCode: number): HookOutput {
-    // stdout 优先解析（CC 约定 JSON 走 stdout），stdout 非 JSON 时再尝试 stderr。
+    // H16：只从 stdout 解析 JSON，stderr 从不当 JSON（对齐 CC）。原先 stdout 非 JSON 时兜底解析 stderr，
+    // exit 0 的 hook 只因子命令（pino 日志 / tsc 诊断 / jq 错误对象）往 stderr 吐了一段带 decision 的 JSON，
+    // 就凭空造出一个 deny。stderr 只承载人读的文本：exit 2 的阻塞理由、其余非零的告警。
     const stdoutText = stdout.trim();
     const stderrText = stderr.trim();
-    const jsonOutput = this.parseJsonOutput(stdoutText) ?? this.parseJsonOutput(stderrText);
+    const jsonOutput = this.parseJsonOutput(stdoutText);
 
     // H15：exit 2 一律阻塞，JSON 改不了（对齐 CC）。原先「JSON 无条件优先」让一个照文档写的
     // hook —— stdout 输出结构化审计日志、stderr 写理由、exit 2 —— 只因 stdout 恰好是 JSON
@@ -606,13 +612,6 @@ export class HookRunner {
     if ("agent_type" in input) {
       env.SID_CODE_AGENT_TYPE = (input as any).agent_type;
     }
-  }
-
-  /** 展开命令中的变量 */
-  private expandCommand(command: string, input: HookInput): string {
-    return command
-      .replace(/\$SID_CODE_PROJECT_DIR/g, input.cwd)
-      .replace(/\$SID_CODE_CWD/g, input.cwd);
   }
 
   /** 串行链式传递：将 hook 输出应用到下一个 hook 的输入 */
