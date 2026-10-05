@@ -1,8 +1,6 @@
 import process from 'node:process';
 import React, {type ReactNode} from 'react';
-import {throttle, type DebouncedFunc} from 'es-toolkit/compat';
 import ansiEscapes from 'ansi-escapes';
-import isInCi from 'is-in-ci';
 import autoBind from 'auto-bind';
 import signalExit from 'signal-exit';
 import patchConsole from 'patch-console';
@@ -15,9 +13,15 @@ import reconciler from './reconciler.js';
 import render from './renderer.js';
 import * as dom from './dom.js';
 import {hideCursorEscape, showCursorEscape} from './cursor-helpers.js';
-import logUpdate, {type LogUpdate, type CursorPosition} from './log-update.js';
+import {type CursorPosition} from './log-update.js';
 import {bsu, esu, shouldSynchronize} from './write-synchronized.js';
 import instances from './instances.js';
+import {diffMainScreen, eraseMainScreen, type FrameFlicker} from './frame/main-screen.js';
+import {FrameScheduler} from './frame/scheduler.js';
+import {FRAME_INTERVAL_MS} from './frame/schedule.js';
+import {ClockContext, createClock, type Clock} from './clock.js';
+import {type Screen} from './screen/screen.js';
+import {serializeScreen} from './screen/serialize.js';
 import App from './components/App.js';
 import {type TerminalSuspension} from './components/AppContext.js';
 import {accessibilityContext as AccessibilityContext} from './components/AccessibilityContext.js';
@@ -115,54 +119,6 @@ const stripKittyQueryResponsesAndTrailingPartial = (
 	return keptBytes;
 };
 
-// Windows consoles scroll the buffer when the bottom-right cell is written,
-// unlike xterm-like terminals which defer the wrap. That extra scroll
-// desynchronizes the incremental erase used for frames that exactly fill the
-// viewport, leaving stale copies of previous frames behind (#969). Keep the
-// pre-7.0 behavior of fully clearing between fullscreen frames there.
-const isWindowsConsole = process.platform === 'win32';
-
-const shouldClearTerminalForFrame = ({
-	isTty,
-	viewportRows,
-	previousOutputHeight,
-	nextOutputHeight,
-	isUnmounting,
-}: {
-	isTty: boolean;
-	viewportRows: number;
-	previousOutputHeight: number;
-	nextOutputHeight: number;
-	isUnmounting: boolean;
-}): boolean => {
-	if (!isTty) {
-		return false;
-	}
-
-	const hadPreviousFrame = previousOutputHeight > 0;
-	const wasFullscreen = previousOutputHeight >= viewportRows;
-	const wasOverflowing = previousOutputHeight > viewportRows;
-	const isOverflowing = nextOutputHeight > viewportRows;
-	const isFullscreen = nextOutputHeight >= viewportRows;
-	const isLeavingFullscreen = wasFullscreen && nextOutputHeight < viewportRows;
-	const shouldClearOnUnmount = isUnmounting && wasFullscreen;
-
-	if (isWindowsConsole && (wasFullscreen || isFullscreen)) {
-		return true;
-	}
-
-	return (
-		// Overflowing frames still need full clear fallback.
-		wasOverflowing ||
-		(isOverflowing && hadPreviousFrame) ||
-		// Clear when shrinking from fullscreen to non-fullscreen output.
-		isLeavingFullscreen ||
-		// Preserve legacy unmount behavior for fullscreen frames: final teardown
-		// render should clear once to avoid leaving a scrolled viewport state.
-		shouldClearOnUnmount
-	);
-};
-
 const isErrorInput = (value: unknown): value is Error => {
 	return (
 		value instanceof Error ||
@@ -216,6 +172,12 @@ const settleThrottle = (
 /**
 Performance metrics for a render operation.
 */
+/** sid-code（B9 / T3.2）：一次出帧的观测。`flickers` 非空 = 这一帧做了 full reset（R5 / R6 / R7）。 */
+export type FrameEvent = {
+	durationMs: number;
+	flickers: FrameFlicker[];
+};
+
 export type RenderMetrics = {
 	/**
 	Time spent rendering in milliseconds.
@@ -231,6 +193,8 @@ export type Options = {
 	exitOnCtrlC: boolean;
 	patchConsole: boolean;
 	onRender?: (metrics: RenderMetrics) => void;
+	/** sid-code（B9 / T3.2）：每次真正出帧后回调（端口 `onFrame`），含 full reset 记录 */
+	onFrame?: (event: FrameEvent) => void;
 	isScreenReaderEnabled?: boolean;
 	waitUntilExit?: () => Promise<unknown>;
 	maxFps?: number;
@@ -294,10 +258,11 @@ export default class Ink {
 	readonly isConcurrent: boolean;
 
 	private readonly options: Options;
-	private readonly log: LogUpdate;
 	private cursorPosition: CursorPosition | undefined;
-	private readonly throttledLog:
-		LogUpdate | DebouncedFunc<(output: string) => void>;
+	/** sid-code（B9 / T3.2）：上一帧的屏幕缓冲，帧 diff 的基准；undefined = 下一帧按首帧整帧画 */
+	private previousScreen: Screen | undefined;
+	private cursorHidden = false;
+	private readonly clock: Clock;
 
 	private readonly isScreenReaderEnabled: boolean;
 	private readonly interactive: boolean;
@@ -321,8 +286,7 @@ export default class Ink {
 	private beforeExitHandler?: () => void;
 	private restoreConsole?: () => void;
 	private readonly unsubscribeResize?: () => void;
-	private readonly throttledOnRender?: DebouncedFunc<() => void>;
-	private hasPendingThrottledRender = false;
+	private readonly scheduler?: FrameScheduler;
 	private kittyProtocolEnabled = false;
 	private kittyFlags: KittyFlagName[] | undefined;
 	private cancelKittyDetection?: () => void;
@@ -352,59 +316,27 @@ export default class Ink {
 
 		this.alternateScreen = false;
 
+		// sid-code（B9 / T3.2，契约 R2 / R13）：出帧调度换成 FrameScheduler（microtask 合并 + 16ms 窗口；
+		// 测试环境同步出帧）。上游的 maxFps / lodash throttle 两级节流不再使用。
 		const unthrottled = options.debug || this.isScreenReaderEnabled;
-		const maxFps = options.maxFps ?? 30;
-		// Treat non-positive maxFps as an internal fallback case, not a supported
-		// "disable throttling" mode. Keep animation scheduling on a normal cadence
-		// so future changes don't accidentally reintroduce zero-delay loops.
-		const renderThrottleMs =
-			maxFps > 0 ? Math.max(1, Math.ceil(1000 / maxFps)) : 0;
-		this.renderThrottleMs = unthrottled ? 0 : renderThrottleMs;
+		this.renderThrottleMs = unthrottled ? 0 : FRAME_INTERVAL_MS;
 
 		if (unthrottled) {
 			this.rootNode.onRender = this.onRender;
-			this.throttledOnRender = undefined;
 		} else {
-			const throttled = throttle(this.onRender, renderThrottleMs, {
-				leading: true,
-				trailing: true,
-			});
+			const scheduler = new FrameScheduler(this.onRender);
 			this.rootNode.onRender = () => {
-				this.hasPendingThrottledRender = true;
-				throttled();
+				scheduler.request();
 			};
 
-			this.throttledOnRender = throttled;
+			this.scheduler = scheduler;
 		}
 
 		this.rootNode.onImmediateRender = this.onRender;
 		this.rootNode.onStaticChange = this.handleStaticChange;
-		this.log = logUpdate.create(options.stdout, {
-			incremental: options.incrementalRendering,
-		});
 		this.cursorPosition = undefined;
-		this.throttledLog = unthrottled
-			? this.log
-			: throttle(
-					(output: string) => {
-						const shouldWrite = this.log.willRender(output);
-						const sync = this.shouldSync();
-						if (sync && shouldWrite) {
-							this.options.stdout.write(bsu);
-						}
-
-						this.log(output);
-
-						if (sync && shouldWrite) {
-							this.options.stdout.write(esu);
-						}
-					},
-					undefined,
-					{
-						leading: true,
-						trailing: true,
-					},
-				);
+		this.previousScreen = undefined;
+		this.clock = createClock();
 
 		// Ignore last render after unmounting a tree to prevent empty output before exit
 		this.isUnmounted = false;
@@ -477,13 +409,8 @@ export default class Ink {
 	resized = () => {
 		const currentWidth = getWindowSize(this.options.stdout).columns;
 
-		if (currentWidth < this.lastTerminalWidth) {
-			// We clear the screen when decreasing terminal width to prevent duplicate overlapping re-renders.
-			this.log.clear();
-			this.lastOutput = '';
-			this.lastOutputToRender = '';
-		}
-
+		// sid-code（B9 / T3.2）：宽度变化由帧 diff 判 full reset（原因 resize），这里不再先擦屏。
+		// 连续 resize 合并、视口变矮等归 T3.3。
 		this.calculateLayout();
 		dom.emitLayoutListeners(this.rootNode);
 		this.onRender();
@@ -509,20 +436,19 @@ export default class Ink {
 		this.unmount();
 	};
 
+	// sid-code（B9 / T3.2）：上游 useCursor 的光标定位随 log-update 一起退出帧输出路径。
+	// CLI 不用 useCursor（SURFACE.md 无此符号），这里只记下位置；真要接入时在 frame/ 里补，别回到 log-update。
 	setCursorPosition = (position: CursorPosition | undefined): void => {
 		this.cursorPosition = position;
-		this.log.setCursorPosition(position);
 	};
 
+	/** 外部写入之后按首帧口径重画当前帧（光标停在帧底下一行）。 */
 	restoreLastOutput = (): void => {
-		if (!this.interactive) {
+		if (!this.interactive || !this.previousScreen) {
 			return;
 		}
 
-		// Clear() resets log-update's cursor state, so replay the latest cursor intent
-		// before restoring output after external stdout/stderr writes.
-		this.log.setCursorPosition(this.cursorPosition);
-		this.log(this.lastOutputToRender || this.lastOutput + '\n');
+		this.options.stdout.write(serializeScreen(this.previousScreen));
 	};
 
 	calculateLayout = () => {
@@ -543,8 +469,6 @@ export default class Ink {
 	};
 
 	onRender: () => void = () => {
-		this.hasPendingThrottledRender = false;
-
 		if (this.isUnmounted) {
 			return;
 		}
@@ -567,7 +491,7 @@ export default class Ink {
 		}
 
 		const startTime = performance.now();
-		const {output, outputHeight, staticOutput} = render(
+		const {output, outputHeight, staticOutput, screen} = render(
 			this.rootNode,
 			this.isScreenReaderEnabled,
 		);
@@ -594,9 +518,19 @@ export default class Ink {
 				this.options.stdout.write(staticOutput);
 			}
 
+			// sid-code（B9 / T3.2，契约 R12）：非 TTY 每帧写整帧（同步输出包裹，无增量），空帧不写。
+			// 上游是攒到卸载时才写最后一帧；测试 shim 的 lastFrame / frames 依赖逐帧写。
+			if (output !== '') {
+				this.options.stdout.write(bsu + output + esu);
+			}
+
 			this.lastOutput = output;
 			this.lastOutputToRender = output + '\n';
 			this.lastOutputHeight = outputHeight;
+			this.options.onFrame?.({
+				durationMs: performance.now() - startTime,
+				flickers: [],
+			});
 			return;
 		}
 
@@ -660,9 +594,11 @@ export default class Ink {
 		}
 
 		this.renderInteractiveFrame(
+			screen,
 			output,
 			outputHeight,
 			hasStaticOutput ? staticOutput : '',
+			startTime,
 		);
 	};
 
@@ -671,6 +607,7 @@ export default class Ink {
 			<AccessibilityContext.Provider
 				value={{isScreenReaderEnabled: this.isScreenReaderEnabled}}
 			>
+				<ClockContext.Provider value={this.clock}>
 				<App
 					stdin={this.options.stdin}
 					stdout={this.options.stdout}
@@ -688,6 +625,7 @@ export default class Ink {
 				>
 					{node}
 				</App>
+				</ClockContext.Provider>
 			</AccessibilityContext.Provider>
 		);
 
@@ -728,7 +666,7 @@ export default class Ink {
 			this.options.stdout.write(bsu);
 		}
 
-		this.log.clear();
+		this.options.stdout.write(eraseMainScreen(this.previousScreen));
 		this.options.stdout.write(data);
 		this.restoreLastOutput();
 
@@ -763,7 +701,7 @@ export default class Ink {
 			this.options.stdout.write(bsu);
 		}
 
-		this.log.clear();
+		this.options.stdout.write(eraseMainScreen(this.previousScreen));
 		this.options.stderr.write(data);
 		this.restoreLastOutput();
 
@@ -790,15 +728,16 @@ export default class Ink {
 
 		// Clear any pending throttled render timer on unmount. When stdout is writable,
 		// flush so the final frame is emitted; otherwise cancel to avoid delayed callbacks.
-		settleThrottle(this.throttledOnRender, canWriteToStdout);
+		const hadPendingFrame = this.scheduler?.pending ?? false;
+		settleThrottle(this.scheduler, canWriteToStdout);
 
 		if (canWriteToStdout) {
 			// If throttling is enabled and there is already a pending render, flushing above
 			// is sufficient. Also avoid calling onRender() again when static output already
 			// exists, as that can duplicate <Static> children output on exit (see issue #397).
 			const shouldRenderFinalFrame =
-				!this.throttledOnRender ||
-				(!this.hasPendingThrottledRender && this.fullStaticOutput === '');
+				!this.scheduler ||
+				(!hadPendingFrame && this.fullStaticOutput === '');
 
 			if (shouldRenderFinalFrame) {
 				this.calculateLayout();
@@ -812,9 +751,7 @@ export default class Ink {
 
 		this.unsubscribeExit();
 
-		// Flush any pending throttled log writes if possible, otherwise cancel to
-		// prevent delayed callbacks from writing to a closed stream.
-		settleThrottle(this.throttledLog, canWriteToStdout);
+		this.clock.stop();
 		if (typeof this.restoreConsole === 'function') {
 			// Once unmount starts, Ink stops trying to manage teardown-time
 			// console output. Restoring the native console before React cleanup keeps
@@ -853,16 +790,14 @@ export default class Ink {
 					this.alternateScreen = false;
 				}
 
+				// sid-code（B9 / T3.2）：非 TTY 每帧已经写过整帧（R12），卸载只补一个换行；
+				// TTY 卸载时恢复光标（同步输出包裹，与旧底座同字节）
 				if (!this.interactive) {
-					// Non-interactive environments don't handle erasing ansi escapes well.
-					// In debug mode, each render already writes to stdout, so only a trailing
-					// newline is needed. In non-debug mode, write the last frame now (it was
-					// deferred during rendering).
-					this.options.stdout.write(
-						this.options.debug ? '\n' : this.lastOutput + '\n',
-					);
+					this.options.stdout.write(this.options.debug ? '\n' : bsu + '\n' + esu);
 				} else if (!this.options.debug) {
-					this.log.done();
+					this.options.stdout.write(bsu + showCursorEscape + esu);
+					this.cursorHidden = false;
+					this.previousScreen = undefined;
 				}
 			}
 
@@ -961,8 +896,7 @@ export default class Ink {
 		const {canWriteToStdout, hasWritableState} = getWritableStreamState(stdout);
 
 		// Flush pending throttled render/log timers so their output is included in this wait.
-		settleThrottle(this.throttledOnRender, canWriteToStdout);
-		settleThrottle(this.throttledLog, canWriteToStdout);
+		settleThrottle(this.scheduler, canWriteToStdout);
 
 		if (canWriteToStdout && hasWritableState) {
 			await new Promise<void>(resolve => {
@@ -977,11 +911,10 @@ export default class Ink {
 	}
 
 	clear(): void {
+		// sid-code（B9 / T3.2）：擦掉当前帧；下一帧按首帧整帧画
 		if (this.interactive && !this.options.debug) {
-			this.log.clear();
-			// Sync lastOutput so that unmount's final onRender
-			// sees it as unchanged and log-update skips it
-			this.log.sync(this.lastOutputToRender || this.lastOutput + '\n');
+			this.options.stdout.write(eraseMainScreen(this.previousScreen));
+			this.previousScreen = undefined;
 		}
 	}
 
@@ -1050,7 +983,8 @@ export default class Ink {
 	}
 
 	private resolveInteractiveOption(interactive: boolean | undefined): boolean {
-		return interactive ?? (!isInCi && Boolean(this.options.stdout.isTTY));
+		// sid-code（B9 / T3.2，契约 L5）：只看 stdout.isTTY，不看 CI 环境变量
+		return interactive ?? Boolean(this.options.stdout.isTTY);
 	}
 
 	private resolveAlternateScreenOption(
@@ -1107,71 +1041,60 @@ export default class Ink {
 		return this.nextRenderCommit.promise;
 	}
 
+	/**
+	 * sid-code（B9 / T3.2，契约 R1 / R3–R6）：TTY 帧输出走 cell 级帧 diff（frame/main-screen.ts），
+	 * 取代上游 log-update 的整行字符串比较与 `shouldClearTerminalForFrame`。
+	 * 每帧一次 write，包在 DEC 2026 同步输出里；没有变化的帧一个字节都不写。
+	 * 首帧之后单独写一次隐藏光标（与旧底座同字节）。
+	 */
 	private renderInteractiveFrame(
+		screen: Screen | undefined,
 		output: string,
 		outputHeight: number,
 		staticOutput: string,
+		startTime: number,
 	): void {
-		const hasStaticOutput = staticOutput !== '';
-		const isTty = this.options.stdout.isTTY;
-
-		// Detect fullscreen: output fills or exceeds terminal height.
-		// Only apply when writing to a real TTY — piped output always gets trailing newlines.
-		const viewportRows = isTty ? getWindowSize(this.options.stdout).rows : 24;
-		const isFullscreen = isTty && outputHeight >= viewportRows;
-		const outputToRender = isFullscreen ? output : output + '\n';
-
-		const shouldClearTerminal = shouldClearTerminalForFrame({
-			isTty,
-			viewportRows,
-			previousOutputHeight: this.lastOutputHeight,
-			nextOutputHeight: outputHeight,
-			isUnmounting: this.isUnmounting,
-		});
-
-		if (shouldClearTerminal) {
-			const sync = this.shouldSync();
-			if (sync) {
-				this.options.stdout.write(bsu);
-			}
-
-			this.options.stdout.write(
-				ansiEscapes.clearTerminal + this.fullStaticOutput + outputToRender,
-			);
-			this.lastOutput = output;
-			this.lastOutputToRender = outputToRender;
-			this.lastOutputHeight = outputHeight;
-			this.log.sync(outputToRender);
-
-			if (sync) {
-				this.options.stdout.write(esu);
-			}
-
+		if (!screen) {
 			return;
 		}
 
-		// To ensure static output is cleanly rendered before main output, clear main output first
-		if (hasStaticOutput) {
-			const sync = this.shouldSync();
-			if (sync) {
-				this.options.stdout.write(bsu);
-			}
+		const viewportRows = getWindowSize(this.options.stdout).rows;
+		let bytes: string;
+		const flickers: FrameFlicker[] = [];
 
-			this.log.clear();
-			this.options.stdout.write(staticOutput);
-			this.log(outputToRender);
-
-			if (sync) {
-				this.options.stdout.write(esu);
+		if (staticOutput === '') {
+			const diff = diffMainScreen(this.previousScreen, screen, viewportRows);
+			bytes = diff.bytes;
+			if (diff.flicker) {
+				flickers.push(diff.flicker);
 			}
-		} else if (output !== this.lastOutput || this.log.isCursorDirty()) {
-			// ThrottledLog manages its own bsu/esu at actual write time
-			this.throttledLog(outputToRender);
+		} else {
+			// 上游 <Static> 的新增项：擦掉动态区、写静态输出、整帧重画动态区（端口的 Static 是 T4.2，不走这里）
+			bytes =
+				eraseMainScreen(this.previousScreen) +
+				staticOutput +
+				serializeScreen(screen);
 		}
 
+		this.previousScreen = screen;
 		this.lastOutput = output;
-		this.lastOutputToRender = outputToRender;
+		this.lastOutputToRender = output + '\n';
 		this.lastOutputHeight = outputHeight;
+
+		if (bytes !== '') {
+			this.options.stdout.write(bsu + bytes + esu);
+		}
+
+		if (!this.cursorHidden) {
+			this.options.stdout.write(hideCursorEscape);
+			this.cursorHidden = true;
+		}
+
+		// 没有变化的帧也回调（与旧底座一致：onFrame 计的是提交后的出帧次数，不是写入次数）
+		this.options.onFrame?.({
+			durationMs: performance.now() - startTime,
+			flickers,
+		});
 	}
 
 	private initKittyKeyboard(): void {
@@ -1285,14 +1208,16 @@ export default class Ink {
 			const {canWriteToStdout} = getWritableStreamState(stdout);
 
 			// Flush any pending render/log so the child starts from a settled screen.
-			settleThrottle(this.throttledOnRender, canWriteToStdout);
-			settleThrottle(this.throttledLog, canWriteToStdout);
+			settleThrottle(this.scheduler, canWriteToStdout);
 
 			if (canWriteToStdout) {
 				// Erase Ink's current frame, then show the cursor and re-arm the hide.
 				// The forced redraw on resume hides the cursor again.
-				this.log.clear();
-				this.log.done();
+				this.options.stdout.write(
+					eraseMainScreen(this.previousScreen) + showCursorEscape,
+				);
+				this.previousScreen = undefined;
+				this.cursorHidden = false;
 
 				if (this.kittyProtocolEnabled) {
 					this.writeBestEffort(this.options.stdout, '\u001B[<u');
@@ -1363,7 +1288,7 @@ export default class Ink {
 		this.lastOutput = '';
 		this.lastOutputToRender = '';
 		this.lastOutputHeight = 0;
-		this.log.reset();
+		this.previousScreen = undefined;
 
 		try {
 			this.calculateLayout();

@@ -8,8 +8,10 @@ export {
 	stylePool,
 } from './pools.js';
 export {
+	cellEquals,
 	needsWidthCompensation,
 	screenToString,
 	serializeRow,
+	serializeRowDiff,
 	serializeScreen,
 } from './serialize.js';

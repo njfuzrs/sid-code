@@ -13,9 +13,11 @@
 import { writeSync } from "node:fs";
 import { PassThrough } from "node:stream";
 import { SCENARIOS, type ScenarioCtx } from "./scenarios.tsx";
+import { ENGINE_SCENARIOS } from "./engine-scenarios.tsx";
 
 const name = process.argv[2]!;
-const scenario = SCENARIOS[name];
+// S* 是 App 级场景（基线文件），E* 是引擎级场景（T3.2，两套底座当场比较）
+const scenario = SCENARIOS[name] ?? ENGINE_SCENARIOS[name];
 const cols = Number(process.env.BENCH_COLS ?? 80);
 const rows = Number(process.env.BENCH_ROWS ?? 24);
 

@@ -37,6 +37,43 @@ export function serializeRow(
 	from = 0,
 	to: number = screen.width,
 ): string {
+	return serializeCells(screen, y, from, to, i => screen.isBlank(i));
+}
+
+/**
+ * 帧间增量（B9 / T3.2，契约 R3）：假设光标在 `from` 列、当前无样式无链接，只写与 `previous` 不同的单元。
+ *
+ * 和 `serializeRow` 同一套写法，区别只在「哪些单元可以跳过」：首帧跳过默认空白，增量帧跳过**没变**的单元。
+ * 所以变成默认空白的单元照样写一个空格（旧内容要盖掉），没变的非空白单元用 `CSI n C` 跳过、样式不关。
+ * 两帧宽度必须相同（宽度变了走 full reset，见 frame/main-screen.ts）。
+ */
+export function serializeRowDiff(
+	previous: Screen,
+	screen: Screen,
+	y: number,
+	from = 0,
+	to: number = screen.width,
+): string {
+	return serializeCells(screen, y, from, to, i => cellEquals(previous, screen, i));
+}
+
+/** 两帧同一下标的单元是否完全相同（字形簇 + 列宽 + 样式 + 链接）。要求两帧共用同一对池。 */
+export function cellEquals(a: Screen, b: Screen, i: number): boolean {
+	return (
+		a.chars[i] === b.chars[i] &&
+		a.widths[i] === b.widths[i] &&
+		a.styles[i] === b.styles[i] &&
+		a.links[i] === b.links[i]
+	);
+}
+
+function serializeCells(
+	screen: Screen,
+	y: number,
+	from: number,
+	to: number,
+	skipCell: (index: number) => boolean,
+): string {
 	const {stylePool, hyperlinkPool} = screen;
 	let out = '';
 	let style = 0;
@@ -52,8 +89,9 @@ export function serializeRow(
 			continue;
 		}
 
-		if (screen.isBlank(i)) {
-			skip++;
+		if (skipCell(i)) {
+			// 跳过的是没变的宽字符时光标要前移两格（spacer 不单独计数）；首帧跳过的默认空白都是窄的
+			skip += w === CellWidth.Wide ? 2 : 1;
 			continue;
 		}
 
