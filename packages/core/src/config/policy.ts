@@ -76,10 +76,6 @@ export interface PolicySettings {
 /** 策略加载器接口（可扩展） */
 export interface PolicyLoader {
   load(): Promise<PolicySettings | null>;
-  /** 是否支持后台轮询 */
-  supportsPolling: boolean;
-  /** 轮询间隔（毫秒） */
-  pollingInterval?: number;
 }
 
 /**
@@ -111,8 +107,6 @@ export function getLastPolicyLoad(): PolicyLoadMeta | null {
 
 /** 本地文件策略加载器 */
 export class ManagedFileLoader implements PolicyLoader {
-  supportsPolling = false;
-
   async load(): Promise<PolicySettings | null> {
     const log = getLogger();
     // D6/D7：走与 settings 链、rule-loader 相同的候选链（系统级优先）。此前只读
@@ -162,12 +156,11 @@ export class ManagedFileLoader implements PolicyLoader {
  * - 明文非本地地址由 resolveEndpoint 统一拒绝并告警，这里拿到的就是 null
  * - 200 + 空对象 `{source:"remote"}` 才是「远程明确下发了什么都不禁」（会盖掉本地）
  *
- * `supportsPolling` 保持 true，但 PolicyManager 本里程碑不轮询——生效延迟 = 下次重启。
+ * 只在启动时拉一次、不轮询——生效延迟 = 下次重启。此前留过 supportsPolling /
+ * pollingInterval（1 小时）两个字段，全仓无调用方，读起来像「每小时刷新」，B40 删除。
+ * 真要做轮询时再连同调度与缓存失效一起设计，不要只把字段加回来。
  */
 export class RemotePolicyLoader implements PolicyLoader {
-  supportsPolling = true;
-  pollingInterval = 60 * 60 * 1000; // 1 小时；本里程碑没有任何调用方 setInterval
-
   async load(): Promise<PolicySettings | null> {
     const log = getLogger();
     const endpoint = resolveEndpoint("policy")?.url;
