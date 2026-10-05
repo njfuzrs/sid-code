@@ -16,7 +16,12 @@
  *   - P3-1 args 参数用通用说明，不塞 argumentHint（argument-hint 只给用户 slash 补全）
  */
 
-import type { LegacyTool as Tool, LegacyToolResult as ToolResult } from "../tool/types.ts";
+import type {
+  LegacyTool as Tool,
+  LegacyToolResult as ToolResult,
+  PermissionResult,
+  ToolUseContext,
+} from "../tool/types.ts";
 import type { ProviderRegistry } from "../llm/registry.ts";
 import type { Registry as ToolRegistry } from "../tool/registry.ts";
 import type { HookSystem } from "../hook/system.ts";
@@ -153,6 +158,28 @@ export class SkillMetaTool implements Tool {
     // 元工具是否只读取决于被调用的 skill——保守起见声明为非只读（skill 可能 write/edit/bash）。
     // 具体 skill 的写能力由其 allowedTools + 子代理内权限判定把控。
     return false;
+  }
+
+  /**
+   * 工具级权限意见：Skill 调用本身默认放行（checker Step 5.5）。
+   *
+   * 为什么放行：调用 Skill 只是「加载一份指令」，真正的副作用都落在它触发的后续动作上，
+   * 而那些动作各自仍过权限——
+   *   - activate：指令注入主对话，后续工具调用逐个走主 checker；
+   *   - delegate：子代理用 dontAsk 语义的 subChecker，写操作无 allow 规则即拒；
+   *   - 内联 !`cmd`：按 bash 过 subChecker（processPrompt 的 authorizeShell，fail-closed）；
+   *   - 敏感属性（allowed-tools / hooks / shell / agent …）：execute 里 authorizeSkill → ask，
+   *     -p 下无确认通道照旧拒绝——这一层**刻意不放宽**。
+   * 此前不实现本方法 → 落到 Step 14 默认 ask → -p 下 Skill 工具本身被拒，
+   * 模型绕开 skill 自己干，用户只能靠 `--allowed-tools Skill` 预授权才能跑任何 skill。
+   *
+   * 为什么不进 READ_ONLY_TOOLS：那张表在 plan 模式下也直接放行，而 delegate 子代理的
+   * subChecker 把 permissionMode 改写成 dontAsk、丢了 plan 约束。走 Step 5.5 的 allow
+   * 不越过 plan / deny-write，也排在 deny 规则、disallowedTools、ask 规则之后，
+   * 用户配的 `deny: ["Skill"]` / `ask: ["Skill"]` 仍然生效。
+   */
+  async checkPermissions(_input: unknown, _context: ToolUseContext): Promise<PermissionResult> {
+    return { behavior: "allow" };
   }
 
   /**

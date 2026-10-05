@@ -97,7 +97,7 @@ sid-code 不会主动去扫端口找 IDE。连接靠一个 **lockfile 协议**�
 /ide disconnect   断开连接
 ```
 
-（`/ide install` 子命令也在，但它安装的扩展尚未发布，现在执行会失败。）
+（早期版本有个 `/ide install` 子命令，它要安装的扩展不会发布，已移除。）
 
 `/ide`（无参）等同 `/ide status`，输出长这样：
 

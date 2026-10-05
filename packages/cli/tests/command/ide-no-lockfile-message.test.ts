@@ -1,8 +1,11 @@
 /**
  * /ide 在一个 lockfile 都没有时的提示。
  *
- * 两条文案的下一步完全不同：IDE 开着但扩展没装，该指向 /ide install；
+ * 两条文案的下一步完全不同：IDE 开着但没有 lockfile，点名该 IDE 并说明需要扩展；
  * 什么都没检测到，只能说「未发现」。
+ *
+ * /ide install 已撤掉（扩展本体不做，执行必然失败），所以两条文案都**不许**再指向它——
+ * 下面的断言反向锁住这一点，防止提示回潮成一条兑现不了的下一步。
  *
  * 文案函数故意不导出。命令体系门禁（scripts/command-system-gate.ts 的 G1）
  * 把「零生产调用的导出」算死代码，而它的唯一消费者就在同一个文件里，
@@ -13,10 +16,10 @@
  * 同批跑会盖掉 packages/core/tests/ide/ 里对真实检测的测试。
  *
  * 所以分成两半锁：
- *   - 行为：真实跑 /ide，无 lockfile 时返回的消息一定指向 /ide install，
+ *   - 行为：真实跑 /ide，无 lockfile 时返回的消息不含 /ide install，
  *     且必然是两条文案之一。走哪条取决于这台机器上有没有 IDE 进程，
  *     测试环境决定不了，所以不断言具体哪条。
- *   - 拼接：点名那条把检测结果原样拼进文案、并指向 /ide install，
+ *   - 拼接：点名那条把检测结果原样拼进文案，
  *     检测为空时退回「未发现」。这些是源码里的字面量，改了这里就红。
  */
 
@@ -50,13 +53,14 @@ afterEach(() => {
 });
 
 describe("/ide 没有 lockfile 时的提示", () => {
-  test("无 lockfile 时的消息指向 /ide install，且是两条文案之一", async () => {
+  test("无 lockfile 时的消息不指向已撤掉的 /ide install，且是两条文案之一", async () => {
     const ctx = { mcpManager: {} } as unknown as AppContext;
     const result = await new IDECommand().execute("status", ctx);
 
     expect(result.kind).toBe("message");
     if (result.kind !== "message") return;
-    expect(result.message).toContain("/ide install");
+    expect(result.message).not.toContain("/ide install");
+    expect(result.message).toContain("lockfile");
     const namedBranch = result.message.includes("正在运行");
     const genericBranch = result.message.includes("未发现可用 IDE");
     expect(namedBranch || genericBranch).toBe(true);
@@ -64,12 +68,22 @@ describe("/ide 没有 lockfile 时的提示", () => {
     expect(namedBranch && genericBranch).toBe(false);
   });
 
-  test("点名文案拼进检测结果并指向安装，检测为空时退回「未发现」", () => {
+  test("点名文案拼进检测结果，检测为空时退回「未发现」，源码里不再有 install 子命令", () => {
     const source = readFileSync(IDE_COMMAND_SOURCE, "utf-8");
     // 名字来自检测结果的拼接，而不是写死的某个 IDE
     expect(source).toContain("running.join(");
     expect(source).toContain("正在运行，但没有发现 sid-code 扩展");
-    expect(source).toContain("使用 /ide install 安装扩展");
+    expect(source).not.toContain("/ide install");
+    expect(source).not.toContain("IDEInstallCommand");
     expect(source).toContain("未发现可用 IDE");
+  });
+});
+
+describe("/ide 子命令集合", () => {
+  test("install 已撤掉，其余三个保留", () => {
+    const cmd = new IDECommand();
+    const names = cmd.subCommands().map((c) => c.name());
+    expect(names).toEqual(["status", "connect", "disconnect"]);
+    expect(cmd.argumentHint()).not.toContain("install");
   });
 });
