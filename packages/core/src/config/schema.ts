@@ -4,6 +4,7 @@
  */
 
 import type { Config } from "./config.ts";
+import { USER_HOOK_HANDLER_TYPES, isUserHookHandlerType } from "../hook/handler-types.ts";
 import { getActiveAgentTypes } from "../agent/agent-definition.ts";
 import { normalizeBaseURL } from "../llm/endpoint-key.ts";
 // compat 的合法键清单只在 model-compat.ts 维护一份：校验侧与归一化侧共用同一个源，
@@ -258,6 +259,21 @@ export function validateConfig(config: Config): ValidationResult {
           });
         }
       }
+
+      // auth 只认 sid-backend；写错（如 "sid_backend"）若静默忽略，就会变成不带凭据去连后端
+      if (serverConfig.auth !== undefined && serverConfig.auth !== "sid-backend") {
+        errors.push({
+          path: `${prefix}.auth`,
+          message: '无效值，目前只支持 "sid-backend"',
+          value: serverConfig.auth,
+        });
+      } else if (serverConfig.auth === "sid-backend" && serverConfig.transport === "stdio") {
+        errors.push({
+          path: `${prefix}.auth`,
+          message: 'auth:"sid-backend" 只用于远程传输（http / http-json / sse）',
+          value: serverConfig.auth,
+        });
+      }
     }
   }
 
@@ -284,11 +300,10 @@ export function validateConfig(config: Config): ValidationResult {
         const prefix = `hooks.${eventName}[${index}]`;
 
         // 验证 type（G5：新增 prompt/agent 两种 LLM 层 hook）
-        const VALID_HOOK_TYPES = ["command", "url", "prompt", "agent"];
-        if (hook.type && !VALID_HOOK_TYPES.includes(hook.type)) {
+        if (hook.type && !isUserHookHandlerType(hook.type)) {
           errors.push({
             path: `${prefix}.type`,
-            message: `无效值 "${hook.type}"，有效值为 ${VALID_HOOK_TYPES.join("/")}`,
+            message: `无效值 "${hook.type}"，有效值为 ${USER_HOOK_HANDLER_TYPES.join("/")}`,
             value: hook.type,
           });
         }

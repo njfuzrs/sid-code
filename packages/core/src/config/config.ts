@@ -11,6 +11,7 @@ import { getSidHome, sidPaths } from "./paths.ts";
 import { parseToolSearchEnv } from "../tool/tool-search-auto.ts";
 import type { NetworkTimeoutSettings, PerModelStreamTimeouts } from "./network-profile.ts";
 import type { LanguagePref } from "./prompt-lang.ts";
+import type { UserHookHandlerType } from "../hook/handler-types.ts";
 
 /**
  * 团队默认配置模板（scripts/team-defaults.template.json）里 apiKey 的占位符值。
@@ -48,6 +49,8 @@ export interface MCPServerConfig {
   scope?: "user" | "project" | "local" | "dynamic"; // 配置来源标记
   // ─── OAuth 2.1 接入（远程 MCP：Linear / Sentry / claude.ai 等，对标 Claude Code auth.ts） ───
   oauth?: MCPOAuthConfig; // 启用/配置 OAuth；为对象（含空对象 {}）即视为启用
+  // ─── 企业后端远程 MCP（P4）：用设备凭据鉴权，仅当 url 与 backend.url 同 origin 才注入 ───
+  auth?: "sid-backend";
 }
 
 /** MCP OAuth 配置（远程 HTTP/SSE 服务器） */
@@ -66,7 +69,7 @@ export interface MCPOAuthConfig {
 
 /** Hook 配置（支持 command / url / prompt / agent 四种类型） */
 export interface HookConfig {
-  type?: "command" | "url" | "prompt" | "agent"; // 钩子类型，默认 command
+  type?: UserHookHandlerType; // 钩子类型，默认 command（取值见 hook/handler-types.ts）
   event?: string; // 旧格式兼容：事件名
   command?: string; // command 类型：shell 命令
   url?: string; // url 类型：HTTP 地址
