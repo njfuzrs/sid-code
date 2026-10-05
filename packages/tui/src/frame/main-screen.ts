@@ -10,6 +10,7 @@
  * 规则全部来自黑盒对拍旧底座的 TTY 字节（向量见 tests/fixtures/frame-vectors.json）：
  * - **只比两帧都有的行**（前 min(p, n) 行），逐单元比较；一行里第一个变化的单元前用
  *   `\r` + `CUF(x)` + 竖向移动（`CUU` / `CUD`）定位，然后只写变化的单元（`serializeRowDiff`）；
+ *   各变化段共用一支笔：段间移光标不关样式 / 链接，最后一段之后才收笔（收缩时在回到第 n 行之后）；
  *   最后一个变化行之后用 `\r\n` + `\n`×k 回到底部。没有任何变化 → 一个字节都不写；
  * - **纯增长**（R4）：新增的行按首帧口径逐行追加，旧行自然进 scrollback；
  * - **收缩**（不触发 full reset 时）：`eraseLines(p - n)` 擦掉底部，`CUU 1` 回到第 n 行，
@@ -21,7 +22,7 @@
  *   ③ 收缩时 p - n > H - 1（新的底部落在视口之上），或前一帧已占满视口（p ≥ H）而新帧 n ≤ H（R6）。
  */
 import ansiEscapes from 'ansi-escapes';
-import {serializeRow, serializeRowDiff} from '../screen/serialize.js';
+import {closePen, type Pen, serializeRow, serializeRowDiff} from '../screen/serialize.js';
 import {type Screen} from '../screen/screen.js';
 
 const ESC = '\u001B';
@@ -138,16 +139,19 @@ export function diffMainScreen(
 		cursorRow = n;
 	}
 
+	// 一支笔跨所有变化段（B9 / T4.2）：段与段之间只移光标，样式和链接不关，最后一段写完才收笔
+	const pen: Pen = {style: 0, link: 0};
 	for (const {y, x} of changed) {
 		out += '\r' + cursorForward(x);
 		out += y < cursorRow ? cursorUp(cursorRow - y) : cursorDown(y - cursorRow);
-		out += serializeRowDiff(previous, next, y, x);
+		out += serializeRowDiff(previous, next, y, x, undefined, pen);
 		cursorRow = y;
 	}
 
 	if (shrinking) {
 		if (changed.length > 0) {
-			out += '\r' + cursorDown(n - cursorRow);
+			// 收缩：光标回到第 n 行之后才收笔，再用空格盖掉多出的行
+			out += '\r' + cursorDown(n - cursorRow) + closePen(next, pen);
 		}
 
 		const blank = ' '.repeat(previous.width);
@@ -161,7 +165,7 @@ export function diffMainScreen(
 	}
 
 	if (changed.length > 0) {
-		out += '\r\n' + '\n'.repeat(p - cursorRow - 1);
+		out += closePen(next, pen) + '\r\n' + '\n'.repeat(p - cursorRow - 1);
 	}
 
 	out += rows(next, p, n);

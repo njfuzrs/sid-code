@@ -32,6 +32,7 @@ export class StylePool {
 	private readonly table: AnsiCode[][] = [[]];
 	private readonly lookup = new Map<string, number>();
 	private readonly transitions = new Map<number, string>();
+	private readonly spaceInvisible = new Map<number, boolean>();
 
 	/** 已归并的 SGR 码列表 → id。空列表恒为 0。 */
 	intern(codes: AnsiCode[]): number {
@@ -69,6 +70,29 @@ export class StylePool {
 		}
 
 		return seq;
+	}
+
+	/**
+	 * 这个样式下的空格看起来是否和默认空白一样（B9 / T4.2，对拍旧底座得出）：
+	 * 只有背景色（40–48、100–107）、反显 7、下划线 4、删除线 9、上划线 53 和原样留在样式里的链接码
+	 * 会让空格「可见」；前景色、粗体、暗、斜体、闪烁、隐藏、双下划线 21、下划线颜色 58 等都不会。
+	 */
+	isSpaceInvisible(id: number): boolean {
+		let known = this.spaceInvisible.get(id);
+		if (known === undefined) {
+			known = this.codesOf(id).every(code => {
+				const m = /^\x1b\[(\d+)/.exec(code.code);
+				if (!m) {
+					return false;
+				}
+
+				const p = Number(m[1]);
+				return !(p === 4 || p === 7 || p === 9 || p === 53 || (p >= 40 && p <= 48) || (p >= 100 && p <= 107));
+			});
+			this.spaceInvisible.set(id, known);
+		}
+
+		return known;
 	}
 
 	get size(): number {

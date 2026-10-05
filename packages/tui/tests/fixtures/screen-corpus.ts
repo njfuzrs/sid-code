@@ -411,6 +411,57 @@ export const SCREEN_CORPUS: CorpusCase[] = [
     name: "Box overflowX hidden",
     node: row(box({ width: 3, overflowX: "hidden" }, box({ flexShrink: 0 }, "abcdef")), "|"),
   },
+
+  // —— T4.2：「看不见的空格」按默认空白跳过（S3 差分抓出来的，只在屏幕 ≥ 2 行时发生）——
+  // 单行屏幕照写空格（已有「hex 颜色」等单行条目钉住），这里全部用两行
+  { name: "前景色里的空格跳过", node: col(text({ color: "ansi:green" }, "a b"), "t") },
+  { name: "前景色里连续空格合并跳过", node: col(text({ color: "ansi:green" }, "a   b"), "t") },
+  { name: "前景色行首空格：第一个照写", node: col(text({ color: "ansi:green" }, "   a"), "t") },
+  { name: "前景色行尾空格丢掉", node: col(text({ color: "ansi:green" }, "a  "), "t") },
+  { name: "前景色空格后接默认样式", node: col(row(text({ color: "ansi:green" }, "a "), "b"), "t") },
+  {
+    name: "前景色空格在默认空白之后",
+    node: col(row("x ", text({ color: "ansi:green" }, "  a")), "t"),
+  },
+  { name: "末行的前景色空格也跳过", node: col("t", text({ color: "ansi:green" }, "a b")) },
+  {
+    name: "粗体 / 斜体 / 暗里的空格跳过",
+    node: col(
+      text({ bold: true }, "a b"),
+      text({ italic: true }, "c d"),
+      text({ dim: true }, "e f"),
+    ),
+  },
+  {
+    name: "256 色 / 真彩前景里的空格跳过",
+    node: col(`${E}[38;5;100ma b${E}[39m`, `${E}[38;2;1;2;3mc d${E}[39m`),
+  },
+  {
+    name: "闪烁 / 隐藏 / 双下划线里的空格跳过",
+    node: col(`${E}[5ma b${E}[25m`, `${E}[8mc d${E}[28m`, `${E}[21me f${E}[24m`),
+  },
+  { name: "下划线里的空格照写", node: col(text({ underline: true }, "a b"), "t") },
+  { name: "反显里的空格照写", node: col(text({ inverse: true }, "a b"), "t") },
+  { name: "删除线里的空格照写", node: col(text({ strikethrough: true }, "a b"), "t") },
+  {
+    name: "背景色里的空格照写",
+    node: col(text({ backgroundColor: "ansi:red" }, "a b"), `${E}[48;5;100mc d${E}[49m`),
+  },
+  { name: "上划线里的空格照写", node: col(`${E}[53ma b${E}[55m`, "t") },
+  {
+    name: "前景加背景的空格照写",
+    node: col(text({ color: "ansi:green", backgroundColor: "ansi:red" }, "a b"), "t"),
+  },
+  { name: "空格换样式时照写", node: col(`${E}[32ma${E}[31m b${E}[39m`, "t") },
+  {
+    name: "粗体空格夹在前景色里",
+    node: col(text({ color: "ansi:green" }, "a", text({ bold: true }, " "), "b"), "t"),
+  },
+  { name: "链接里的空格照写", node: col(link("http://a", "a b"), "t") },
+  {
+    name: "前景色 Box 留白里的空格",
+    node: col(box({ paddingLeft: 2 }, text({ color: "ansi:green" }, "  a b")), "t"),
+  },
 ];
 
 /** bidi 只在需要软件重排的终端上生效（模块加载时判定），单独一组环境跑。 */

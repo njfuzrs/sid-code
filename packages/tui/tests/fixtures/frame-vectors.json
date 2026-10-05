@@ -275,6 +275,116 @@
       "flickers": []
     }
   ],
+  "两行同色都改": [
+    {
+      "bytes": "\u001b[?2026h\u001b[32mab\u001b[39m\r\n\u001b[32mcd\u001b[39m\r\nt\r\n\u001b[?2026l\u001b[?25l",
+      "flickers": []
+    },
+    {
+      "bytes": "\u001b[?2026h\r\u001b[3A\u001b[32mx\r\u001b[1By\u001b[39m\r\n\n\u001b[?2026l",
+      "flickers": []
+    }
+  ],
+  "两行异色都改": [
+    {
+      "bytes": "\u001b[?2026h\u001b[32mab\u001b[39m\r\n\u001b[31mcd\u001b[39m\r\nt\r\n\u001b[?2026l\u001b[?25l",
+      "flickers": []
+    },
+    {
+      "bytes": "\u001b[?2026h\r\u001b[3A\u001b[32mx\r\u001b[1B\u001b[31my\u001b[39m\r\n\n\u001b[?2026l",
+      "flickers": []
+    }
+  ],
+  "有色行改完接默认样式行": [
+    {
+      "bytes": "\u001b[?2026h\u001b[32mab\u001b[39m\r\ncd\r\nt\r\n\u001b[?2026l\u001b[?25l",
+      "flickers": []
+    },
+    {
+      "bytes": "\u001b[?2026h\r\u001b[3A\u001b[32mx\r\u001b[1B\u001b[39my\r\n\n\u001b[?2026l",
+      "flickers": []
+    }
+  ],
+  "改有色行后回到底部": [
+    {
+      "bytes": "\u001b[?2026h\u001b[32mab\u001b[39m\r\nt\r\n\u001b[?2026l\u001b[?25l",
+      "flickers": []
+    },
+    {
+      "bytes": "\u001b[?2026h\r\u001b[2A\u001b[32mx\r\u001b[1B\u001b[39mu\r\n\u001b[?2026l",
+      "flickers": []
+    }
+  ],
+  "收缩时改有色行": [
+    {
+      "bytes": "\u001b[?2026h\u001b[32mab\u001b[39m\r\nt\r\n\u001b[?2026l\u001b[?25l",
+      "flickers": []
+    },
+    {
+      "bytes": "\u001b[?2026h\u001b[2K\u001b[G\u001b[1A\r\u001b[1A\u001b[32mx\r\u001b[1B\u001b[39m                    \r\u001b[?2026l",
+      "flickers": []
+    }
+  ],
+  "收缩到一行时改有色行带空格": [
+    {
+      "bytes": "\u001b[?2026h\u001b[32ma\u001b[1Cb\u001b[39m\r\nt\r\n\u001b[?2026l\u001b[?25l",
+      "flickers": []
+    },
+    {
+      "bytes": "\u001b[?2026h\u001b[2K\u001b[G\u001b[1A\r\u001b[1A\u001b[32mc\u001b[1Cd\r\u001b[1B\u001b[39m                    \r\u001b[?2026l",
+      "flickers": []
+    }
+  ],
+  "两行同链接都改": [
+    {
+      "bytes": "\u001b[?2026h\u001b]8;id=1wtdrbj;http://a\u0007ab\u001b]8;;\u0007\r\n\u001b]8;id=1wtdrbj;http://a\u0007cd\u001b]8;;\u0007\r\nt\r\n\u001b[?2026l\u001b[?25l",
+      "flickers": []
+    },
+    {
+      "bytes": "\u001b[?2026h\r\u001b[3A\u001b]8;id=1wtdrbj;http://a\u0007x\r\u001b[1By\u001b]8;;\u0007\r\n\n\u001b[?2026l",
+      "flickers": []
+    }
+  ],
+  "有色空格：首帧跳过、改动照写": [
+    {
+      "bytes": "\u001b[?2026h\u001b[32mabcd\u001b[39m\r\nt\r\n\u001b[?2026l\u001b[?25l",
+      "flickers": []
+    },
+    {
+      "bytes": "\u001b[?2026h\r\u001b[1C\u001b[2A\u001b[32m  \u001b[39m\r\n\n\u001b[?2026l",
+      "flickers": []
+    }
+  ],
+  "有色空格：追加的新行跳过": [
+    {
+      "bytes": "\u001b[?2026h\u001b[32mq\u001b[39m\r\n\u001b[?2026l\u001b[?25l",
+      "flickers": []
+    },
+    {
+      "bytes": "\u001b[?2026h\r\u001b[1A\u001b[32ma b\u001b[39m\r\n\u001b[32mc\u001b[1Cd\u001b[39m\r\n\u001b[?2026l",
+      "flickers": []
+    }
+  ],
+  "有色空格：单行首帧照写、增长后跳过": [
+    {
+      "bytes": "\u001b[?2026h\u001b[32ma b\u001b[39m\r\n\u001b[?2026l\u001b[?25l",
+      "flickers": []
+    },
+    {
+      "bytes": "\u001b[?2026h\u001b[32mc\u001b[1Cd\u001b[39m\r\n\u001b[?2026l",
+      "flickers": []
+    }
+  ],
+  "有色空格：full reset 时跳过": [
+    {
+      "bytes": "\u001b[?2026h\u001b[32ma\u001b[39m\r\n1\r\n2\r\n3\r\n4\r\n\u001b[?2026l\u001b[?25l",
+      "flickers": []
+    },
+    {
+      "bytes": "\u001b[?2026h\u001b[2J\u001b[3J\u001b[H\u001b[32ma\u001b[1Cb\u001b[39m\r\n1\r\n2\r\n3\r\n4\r\n\u001b[?2026l",
+      "flickers": ["offscreen"]
+    }
+  ],
   "纯增长越过视口": [
     {
       "bytes": "\u001b[?2026h0\r\n1\r\n2\r\n\u001b[?2026l\u001b[?25l",

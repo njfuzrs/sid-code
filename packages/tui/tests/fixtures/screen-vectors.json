@@ -190,7 +190,27 @@
         "Box flexGrow": "\u001b[44ma      \u001b[49mb\r\n",
         "Box 边框只留左边": "\u001b[32m│\u001b[1C\u001b[39mx\r\n",
         "Box 边框加背景": "╭───╮\r\n│\u001b[44ma  \u001b[49m│\r\n╰───╯\r\n",
-        "Box overflowX hidden": "abc|\r\ndef\r\n"
+        "Box overflowX hidden": "abc|\r\ndef\r\n",
+        "前景色里的空格跳过": "\u001b[32ma\u001b[1Cb\u001b[39m\r\nt\r\n",
+        "前景色里连续空格合并跳过": "\u001b[32ma\u001b[3Cb\u001b[39m\r\nt\r\n",
+        "前景色行首空格：第一个照写": "\u001b[32m \u001b[2Ca\u001b[39m\r\nt\r\n",
+        "前景色行尾空格丢掉": "\u001b[32ma\u001b[39m\r\nt\r\n",
+        "前景色空格后接默认样式": "\u001b[32ma\u001b[1C\u001b[39mb\r\nt\r\n",
+        "前景色空格在默认空白之后": "x\u001b[1C\u001b[32m \u001b[1Ca\u001b[39m\r\nt\r\n",
+        "末行的前景色空格也跳过": "t\r\n\u001b[32ma\u001b[1Cb\u001b[39m\r\n",
+        "粗体 / 斜体 / 暗里的空格跳过": "\u001b[1ma\u001b[1Cb\u001b[22m\r\n\u001b[3mc\u001b[1Cd\u001b[23m\r\n\u001b[2me\u001b[1Cf\u001b[22m\r\n",
+        "256 色 / 真彩前景里的空格跳过": "\u001b[38;5;100ma\u001b[1Cb\u001b[39m\r\n\u001b[38;2;1;2;3mc\u001b[1Cd\u001b[39m\r\n",
+        "闪烁 / 隐藏 / 双下划线里的空格跳过": "\u001b[5ma\u001b[1Cb\u001b[0m\r\n\u001b[8mc\u001b[1Cd\u001b[28m\r\n\u001b[21me\u001b[1Cf\u001b[0m\r\n",
+        "下划线里的空格照写": "\u001b[4ma b\u001b[24m\r\nt\r\n",
+        "反显里的空格照写": "\u001b[7ma b\u001b[27m\r\nt\r\n",
+        "删除线里的空格照写": "\u001b[9ma b\u001b[29m\r\nt\r\n",
+        "背景色里的空格照写": "\u001b[41ma b\u001b[49m\r\n\u001b[48;5;100mc d\u001b[49m\r\n",
+        "上划线里的空格照写": "\u001b[53ma b\u001b[55m\r\nt\r\n",
+        "前景加背景的空格照写": "\u001b[41m\u001b[32ma b\u001b[39m\u001b[49m\r\nt\r\n",
+        "空格换样式时照写": "\u001b[32ma\u001b[31m b\u001b[39m\r\nt\r\n",
+        "粗体空格夹在前景色里": "\u001b[32ma\u001b[1m \u001b[22mb\u001b[39m\r\nt\r\n",
+        "链接里的空格照写": "\u001b]8;id=1wtdrbj;http://a\u0007a b\u001b]8;;\u0007\r\nt\r\n",
+        "前景色 Box 留白里的空格": "\u001b[2C\u001b[32m \u001b[1Ca\u001b[1Cb\u001b[39m\r\nt\r\n"
       }
     },
     "bidi": {

@@ -34,7 +34,7 @@
 | R8 | `forceRedraw`：主屏重绘并标记前帧作废；alt-screen 重置帧缓存 | `ink.tsx:1038` | `packages/cli/tests/render-port/term-bench/scenarios.tsx` S9: { |
 | R9 | 宽字符宽度补偿：终端对某些宽字符算宽不一致时补光标位置 | `log-update.ts:583`、`log-update.ts:648` | `packages/cli/tests/render-port/term-bench/scenarios.tsx` S4: { |
 | R10 | SIGCONT 恢复：alt-screen 下内容视为过期，整屏重绘并重新打开鼠标跟踪 | `ink.tsx:218` | `packages/cli/tests/render-port/contracts-runtime.test.tsx` R10: |
-| R11 | **已完成区（现名 `Static`）的项可以原地重渲**：items 引用不变时 memo 跳过；项内容变了照常 reconcile。不是上游 ink 的 print-once `<Static>`（D-3 定案 A） | `_vendor/Static.tsx:21-30`、CLI `packages/cli/src/ui/components/MainScreenLayout.tsx:49-50` | `packages/cli/tests/render-port/static-reconcile.test.tsx` R11: |
+| R11 | **已完成区（端口名 `Static`，next 上是 `History`）的项可以原地重渲**：memo 浅比较 `items` / `children` / `style` 三个引用，都不变时跳过，任一变了整块重渲；项内容变了照常 reconcile。不是上游 ink 的 print-once `<Static>`（D-3 定案 A） | `_vendor/Static.tsx:21-30`、CLI `packages/cli/src/ui/components/MainScreenLayout.tsx:49-50` | `packages/cli/tests/render-port/static-reconcile.test.tsx` R11: |
 | R12 | 非 TTY 输出（`stdout.isTTY` 为假）每帧写整帧，不做增量 diff | `ink.tsx:288` | `packages/cli/tests/render-port/static-reconcile.test.tsx` R12: |
 | R13 | 测试环境默认**每次提交同步出帧**（不节流），`lastFrame()` 在 rerender 之后立即可读；只有测帧调度的用例经端口 `enableFrameThrottle()` 打开真实调度（R2） | `reconciler.ts:292`、`ink.tsx:329` | `packages/cli/tests/render-port/render-instance.test.tsx` R13: |
 

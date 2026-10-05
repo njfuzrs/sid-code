@@ -7,6 +7,9 @@
  * 规则（黑盒对拍旧底座，向量见 tests/fixtures/screen-vectors.json）：
  * - 默认空白单元不写，攒起来在下一个要写的单元前用一次 `CSI n C` 跳过；样式和链接**保持不动**
  *   （所以两个粗体字之间隔着普通空格时，粗体不关再开）。行尾的默认空白直接丢掉；
+ * - 整行输出时（首帧 / 追加 / full reset，且屏幕至少 2 行），样式和当前画笔相同、而该样式下空格看不出来
+ *   （`StylePool.isSpaceInvisible`：前景色、粗体、斜体等）的空格也按默认空白跳过；行首第一个这样的空格
+ *   因为要先切样式，照写。增量帧里变化的单元一律照写（要盖掉旧内容）。B9 / T4.2 对拍补上；
  * - 切换顺序：先链接、后 SGR；行尾先关 SGR、后关链接。链接从 A 换到 B 时直接打开 B，不先关 A；
  * - SGR 切换 = 样式池的 `transition`（ansi-tokenize `diffAnsiCodes` 口径）；
  * - 宽度补偿（R9）：含 U+FE0F 的宽字形簇（`❤️`、`1️⃣`、`🏳️‍🌈`…）终端之间对它算 1 格还是 2 格不一致。
@@ -37,8 +40,18 @@ export function serializeRow(
 	from = 0,
 	to: number = screen.width,
 ): string {
-	return serializeCells(screen, y, from, to, i => screen.isBlank(i));
+	return serializeCells(screen, y, from, to, i => screen.isBlank(i), {
+		style: 0,
+		link: 0,
+		skipInvisibleSpaces: screen.height >= 2,
+	});
 }
+
+/**
+ * 画笔状态：当前已打开的样式 id 与链接 id。帧 diff 跨多个变化段共用一支笔（B9 / T4.2）：
+ * 旧底座在两个变化段之间只移光标、不关样式，下一段同样式就不再重开。
+ */
+export type Pen = {style: number; link: number};
 
 /**
  * 帧间增量（B9 / T3.2，契约 R3）：假设光标在 `from` 列、当前无样式无链接，只写与 `previous` 不同的单元。
@@ -53,8 +66,36 @@ export function serializeRowDiff(
 	y: number,
 	from = 0,
 	to: number = screen.width,
+	pen?: Pen,
 ): string {
-	return serializeCells(screen, y, from, to, i => cellEquals(previous, screen, i));
+	const state = {style: pen?.style ?? 0, link: pen?.link ?? 0, skipInvisibleSpaces: false};
+	const out = serializeCells(
+		screen,
+		y,
+		from,
+		to,
+		i => cellEquals(previous, screen, i),
+		state,
+		pen === undefined,
+	);
+	if (pen) {
+		pen.style = state.style;
+		pen.link = state.link;
+	}
+
+	return out;
+}
+
+/** 把画笔收回默认状态：先关 SGR、后关链接（与行尾收尾同一顺序）。 */
+export function closePen(screen: Screen, pen: Pen): string {
+	let out = screen.stylePool.transition(pen.style, 0);
+	if (pen.link !== 0) {
+		out += screen.hyperlinkPool.close(terminator);
+	}
+
+	pen.style = 0;
+	pen.link = 0;
+	return out;
 }
 
 /** 两帧同一下标的单元是否完全相同（字形簇 + 列宽 + 样式 + 链接）。要求两帧共用同一对池。 */
@@ -73,11 +114,12 @@ function serializeCells(
 	from: number,
 	to: number,
 	skipCell: (index: number) => boolean,
+	state: Pen & {skipInvisibleSpaces: boolean},
+	close = true,
 ): string {
 	const {stylePool, hyperlinkPool} = screen;
 	let out = '';
-	let style = 0;
-	let link = 0;
+	let {style, link} = state;
 	let skip = 0;
 	// 宽度补偿的收尾 CHA：下一个写出的是另一个补偿字符（它自己以 CHA 开头）时省掉，其余情况先补上
 	let pendingColumn = '';
@@ -95,9 +137,23 @@ function serializeCells(
 			continue;
 		}
 
-		const value = screen.charAt(i);
 		const cellLink = screen.links[i]!;
 		const cellStyle = screen.styles[i]!;
+		// 「看不见的空格」（B9 / T4.2）：样式和画笔相同、且这种样式下空格与默认空白一样，就当空白跳过
+		if (
+			state.skipInvisibleSpaces &&
+			screen.chars[i] === 0 &&
+			cellStyle === style &&
+			cellStyle !== 0 &&
+			cellLink === 0 &&
+			link === 0 &&
+			stylePool.isSpaceInvisible(cellStyle)
+		) {
+			skip++;
+			continue;
+		}
+
+		const value = screen.charAt(i);
 		const compensate = needsWidthCompensation(value, w);
 		if (
 			pendingColumn &&
@@ -133,11 +189,18 @@ function serializeCells(
 	}
 
 	out += pendingColumn;
-	out += stylePool.transition(style, 0);
-	if (link !== 0) {
-		out += hyperlinkPool.close(terminator);
+	if (close) {
+		out += stylePool.transition(style, 0);
+		if (link !== 0) {
+			out += hyperlinkPool.close(terminator);
+		}
+
+		style = 0;
+		link = 0;
 	}
 
+	state.style = style;
+	state.link = link;
 	return out;
 }
 

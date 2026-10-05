@@ -84,7 +84,9 @@ describe("next 骨架：未实现的符号用时就抛", () => {
     );
     expect(() => new measure.ResizeObserver(() => {})).toThrow(/ResizeObserver 尚未实现/);
     const comps = await import("../../src/ui/render-port/next/components.ts");
-    expect(() => (comps.Static as unknown as () => unknown)()).toThrow(/Static 尚未实现（T4\.2）/);
+    expect(() => (comps.AlternateScreen as unknown as () => unknown)()).toThrow(
+      /AlternateScreen 尚未实现（T6\.1）/,
+    );
   });
 
   test("next 的 Box / Text / Ansi / RawAnsi 来自 @sid-code/tui，不是 legacy", async () => {
@@ -96,6 +98,16 @@ describe("next 骨架：未实现的符号用时就抛", () => {
     expect(src).toMatch(/export \{ Ansi, Box, RawAnsi, Text \} from "@sid-code\/tui";/);
     for (const k of ["Box", "Text", "Ansi", "RawAnsi"] as const)
       expect(next[k]).not.toBe(legacy[k]);
+  });
+
+  test("next 的 Static 是新写的 History，不是上游 print-once 的 <Static>（D-3 定案 A，T4.2）", async () => {
+    const next = await import("../../src/ui/render-port/next/components.ts");
+    const legacy = await import("../../src/ui/render-port/legacy/components.ts");
+    const src = readFileSync(join(PORT_DIR, "next/components.ts"), "utf8");
+    expect(src).toMatch(/export \{ History as Static \} from "@sid-code\/tui";/);
+    // 不允许不改名地把上游 Static 直接导出（`{ Static }` / `{ X, Static }`）；`History as Static` 才对
+    expect(src).not.toMatch(/export \{(?:[^}]*,)? *Static\b/);
+    expect(next.Static).not.toBe(legacy.Static);
   });
 });
 

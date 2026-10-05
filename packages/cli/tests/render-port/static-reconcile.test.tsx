@@ -80,6 +80,62 @@ describe("R11 Static 项可原地重渲", () => {
   });
 });
 
+describe("R11 memo 口径（浅比较 items / children / style）", () => {
+  test("R11: 三者引用都不变时不重渲任何项；任一引用变了全部重渲（T4.2 对拍 legacy）", async () => {
+    let calls = 0;
+    const items = ["a", "b"];
+    const fn = (x: string) => {
+      calls++;
+      return <Text key={x}>{x}</Text>;
+    };
+    const st = { paddingLeft: 1 };
+    function L({
+      it,
+      tail,
+      style,
+      f,
+    }: {
+      it: string[];
+      tail: string;
+      style?: object;
+      f?: typeof fn;
+    }) {
+      return (
+        <Box flexDirection="column">
+          <Static items={it} style={style as never}>
+            {f ?? fn}
+          </Static>
+          <Text>{tail}</Text>
+        </Box>
+      );
+    }
+    const seen: number[] = [];
+    const r = render(<L it={items} tail="1" />);
+    await tick();
+    seen.push(calls);
+    r.rerender(<L it={items} tail="2" />); // 只有动态区变
+    await tick();
+    seen.push(calls);
+    r.rerender(<L it={[...items]} tail="3" />); // 新数组、同内容
+    await tick();
+    seen.push(calls);
+    r.rerender(<L it={items} tail="4" style={st} />); // style 变
+    await tick();
+    seen.push(calls);
+    r.rerender(<L it={items} tail="5" style={st} />); // style 同一引用
+    await tick();
+    seen.push(calls);
+    r.rerender(
+      <L it={items} tail="6" style={st} f={(x: string) => (calls++, (<Text key={x}>{x}</Text>))} />,
+    );
+    await tick();
+    seen.push(calls);
+    expect(seen).toEqual([2, 2, 4, 6, 6, 8]);
+    expect(frame(r)).toBe(" a\n b\n6");
+    r.unmount();
+  });
+});
+
 describe("R12 非 TTY 整帧输出", () => {
   test("R12: 每次提交后最新一帧包含全部可见内容（不是只含变化的行）", async () => {
     const items: Item[] = [{ id: "a", status: "done" }];
