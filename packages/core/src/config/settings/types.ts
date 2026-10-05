@@ -55,6 +55,10 @@ const HookEntrySchema = lazySchema(() =>
       timeout: z.number().positive().optional(),
       blocking: z.boolean().optional(),
       matcher: z.string().optional(),
+      // H22：command 类型额外环境变量（原先 passthrough 保住了它，却在 registry 转换时被丢）
+      env: z.record(z.string()).optional(),
+      // H23：该事件命中的 hook 整体串行（原先 registry 硬编码 false，写了也不生效）
+      sequential: z.boolean().optional(),
     })
     .passthrough()
     .superRefine((entry, ctx) => {

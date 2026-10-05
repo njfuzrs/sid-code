@@ -160,7 +160,7 @@ describe("H6/H7 runtime hook 与其他类型走同一条执行管线", () => {
       {
         type: "runtime",
         name: "slow",
-        timeout: 50,
+        timeoutMs: 50, // H10：runtime 的 timeout 已统一为秒，亚秒级走 timeoutMs
         action: async (_input: unknown, opts?: { signal: AbortSignal }) => {
           signal = opts?.signal;
           await new Promise((r) => setTimeout(r, 600));

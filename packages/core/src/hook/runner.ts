@@ -15,6 +15,7 @@ import {
   type HookInput,
   type HookOutput,
   type HookExecutionResult,
+  resolveHookTimeoutMs,
 } from "./types.ts";
 import { getLogger } from "../debug/logger.ts";
 import { sanitizeStrings } from "../llm/sanitize-unicode.ts";
@@ -22,9 +23,6 @@ import { recordSideCall } from "../trace/side-call-sink.ts";
 import { SIDE_CALL_NO_THINK } from "../llm/side-call-timeout.ts";
 import { SIDE_CALL_TIMEOUT_REASON } from "../llm/errors.ts";
 import { ssrfGuardedFetch } from "./ssrf-guard.ts";
-
-/** 默认超时 60 秒 */
-const DEFAULT_TIMEOUT = 60_000;
 
 /** 延迟 JSON 序列化：只在需要时序列化一次 */
 export class LazyJsonInput {
@@ -316,7 +314,7 @@ export class HookRunner {
       };
     }
 
-    const timeout = (hookConfig.timeout ?? DEFAULT_TIMEOUT / 1000) * 1000;
+    const timeout = resolveHookTimeoutMs(hookConfig);
 
     // 构建环境变量（清理敏感信息）
     const env: Record<string, string> = {
@@ -479,7 +477,7 @@ export class HookRunner {
       };
     }
 
-    const timeout = (hookConfig.timeout ?? DEFAULT_TIMEOUT / 1000) * 1000;
+    const timeout = resolveHookTimeoutMs(hookConfig);
     const method = hookConfig.method || "POST";
 
     const controller = new AbortController();
@@ -547,7 +545,7 @@ export class HookRunner {
     input: HookInput,
     startTime: number,
   ): Promise<HookExecutionResult> {
-    const timeout = hookConfig.timeout ?? DEFAULT_TIMEOUT;
+    const timeout = resolveHookTimeoutMs(hookConfig);
     const controller = new AbortController();
     let timeoutHandle: ReturnType<typeof setTimeout> | undefined;
 
@@ -824,7 +822,7 @@ export class HookRunner {
     startTime: number,
   ): Promise<HookExecutionResult> {
     const log = getLogger();
-    const timeout = (hookConfig.timeout ?? 30) * 1000;
+    const timeout = resolveHookTimeoutMs(hookConfig);
 
     try {
       const jsonInput = JSON.stringify(input);
@@ -906,7 +904,7 @@ export class HookRunner {
     startTime: number,
   ): Promise<HookExecutionResult> {
     const log = getLogger();
-    const timeout = (hookConfig.timeout ?? 60) * 1000;
+    const timeout = resolveHookTimeoutMs(hookConfig);
 
     const jsonInput = JSON.stringify(input);
     const processedPrompt = hookConfig.prompt.replace(/\$ARGUMENTS/g, jsonInput);

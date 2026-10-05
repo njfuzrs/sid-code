@@ -410,7 +410,9 @@ export class HookEventHandler {
       tool_input: toolInput,
       permission_mode: permissionMode,
     };
-    return this.executeHooks(HookEventName.PermissionRequest, input);
+    // H21 同源：PermissionRequest 有 tool_input，`if` / 工具名 matcher 在它上面本该可用（types.ts 的
+    // HookDefinition.if 文档列了它），但原先不传 context，配了 if 的 PermissionRequest hook 永不命中。
+    return this.executeHooks(HookEventName.PermissionRequest, input, { toolName, toolInput });
   }
 
   /** PermissionDenied 事件 */
