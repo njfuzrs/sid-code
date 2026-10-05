@@ -31,6 +31,7 @@ import { asVerified } from "./types.ts";
 import { sanitizeToolName, safeFileExtension, mcpToolDetailsForAnalytics } from "./sanitize.ts";
 import type { DefenseLayer, DefenseOutcome } from "../telemetry/metrics/defense-metrics.ts";
 import { recordPermissionDecision } from "../permission/decision-telemetry.ts";
+import { getPluginMarketplace, type PluginToolOrigin } from "./plugin-attribution.ts";
 
 // ─────────────────────────────────────────────────────────────
 // 事件名单一事实源
@@ -74,6 +75,10 @@ export const EVENT_NAMES = {
   GUARDRAIL_TRIGGERED: "guardrail_triggered",
   // ── 漏斗 9 · 上下文组装：每轮真实用了多少、压缩档位（M4）──
   CONTEXT_ASSEMBLED: "context_assembled",
+
+  // ── 漏斗 10 · 插件：哪个市场插件被谁用了几次 ──
+  TOOL_INVOKED: "tool_invoked",
+  PLUGIN_INSTALLED: "plugin_installed",
 } as const;
 
 export type EventName = (typeof EVENT_NAMES)[keyof typeof EVENT_NAMES];
@@ -831,6 +836,71 @@ export function logContextAssembled(opts: {
     blocking: opts.blocking,
     calibrated: opts.calibrated,
     tool_count: opts.toolCount,
+  });
+}
+
+// ─────────────────────────────────────────────────────────────
+// 漏斗 10 · 插件：哪个市场插件被谁用了几次
+// ─────────────────────────────────────────────────────────────
+//
+// 为什么这两条事件的插件名 / 工具名**不加 `_PROTECTED_` 前缀**（与漏斗 1 的硬约束 1 不同）：
+// 只对「从企业市场安装的插件」发（plugin-attribution.ts 的注册表是唯一判据），
+// 这些插件名、市场名、MCP 工具名、skill 名都是**管理员上架时登记、审核过的**公开目录项，
+// 不是用户私有的服务名。用户自己配的 MCP、本地目录插件、`--plugin-dir`、内置插件
+// 一律查不到注册表 ⇒ 不发，所以私有名字不会经这条路出去。
+// 反过来，若加了 `_PROTECTED_`，HTTP 后端默认 stripProtected=true 会剥掉，
+// 「按插件聚合调用次数」又回到取不到数据的原点 —— 那正是新开这条事件的理由。
+
+/**
+ * 一次市场插件工具调用（成功或失败都算，每次调用一条）。
+ *
+ * 发点在**工具自身的 execute 里**（MCPToolAdapter / SkillMetaTool），不在各执行器：
+ * 主循环、进程内子代理、spawn 子代理、forked agent 四条路最终都调 `tool.execute`，
+ * 在工具里发天然只有一个汇聚点，不会因为某条执行器漏接或两层都接而少计 / 重计。
+ *
+ * 只出插件名 / 市场名 / 组件类型 / 插件内工具名 / 脱敏工具名，**不带任何参数内容**。
+ * 不是市场插件时静默不发。
+ */
+export function logToolInvoked(toolName: string, origin: PluginToolOrigin | undefined): void {
+  if (!origin) return;
+  const marketplace = getPluginMarketplace(origin.pluginName);
+  if (!marketplace) return;
+  emit(EVENT_NAMES.TOOL_INVOKED, {
+    plugin_name: v(origin.pluginName),
+    plugin_marketplace: v(marketplace),
+    plugin_component: v(origin.component),
+    plugin_tool: v(origin.pluginTool),
+    tool_name: v(sanitizeToolName(toolName)),
+  });
+}
+
+/**
+ * 市场插件安装 / 更新完成。调用点在 cli 的市场安装流程（插件市场客户端 PR 接线）。
+ * 字段不加 `_PROTECTED_` 的理由同 tool_invoked（见本节顶部）。
+ */
+export function logPluginInstalled(opts: {
+  pluginName: string;
+  marketplace: string;
+  version: string;
+  action: "install" | "update";
+  components: {
+    skills: number;
+    commands: number;
+    agents: number;
+    hooks: number;
+    mcpServers: number;
+  };
+}): void {
+  emit(EVENT_NAMES.PLUGIN_INSTALLED, {
+    plugin_name: v(opts.pluginName),
+    plugin_marketplace: v(opts.marketplace),
+    plugin_version: v(opts.version),
+    install_action: v(opts.action),
+    component_skills: opts.components.skills,
+    component_commands: opts.components.commands,
+    component_agents: opts.components.agents,
+    component_hooks: opts.components.hooks,
+    component_mcp_servers: opts.components.mcpServers,
   });
 }
 

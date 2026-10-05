@@ -38,6 +38,8 @@ import {
   newSkillHookScope,
 } from "./executor.ts";
 import { processSkillPrompt } from "./prompt-processor.ts";
+import { logToolInvoked } from "../analytics/events.ts";
+import { skillPluginOrigin } from "../analytics/plugin-attribution.ts";
 import { z } from "zod/v4";
 
 /** 元工具名（对齐 CC 的 SKILL_TOOL_NAME='Skill'） */
@@ -235,6 +237,12 @@ export class SkillMetaTool implements Tool {
         return { output: `权限未授予：Skill "${skill.name}" 需确认但未获批准。`, isError: true };
       }
     }
+
+    // 漏斗 10 · 插件：权限通过、即将真正执行时计一次（之后成功或失败都已算数）。
+    // 放在授权之后：被拒 / 未授予是「没用上」，不该进「被用了几次」。
+    // 归因取 skill **定义**（loadedFrom=plugin + 定义上的 `<plugin>:<skill>` 名），
+    // 不取模型输入 —— getSkill 不区分大小写，输入名不一定等于登记名。
+    logToolInvoked(SKILL_TOOL_NAME, skillPluginOrigin(skill));
 
     // ── P0-2：授权通过后注册生命周期 hooks（MCP 来源已在内部拒绝）──
     // 模型路径 skill 走 delegate 子代理执行。子代理有独立 hookSystem 时，hooks 应注册到子代理侧；
