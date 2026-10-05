@@ -493,28 +493,40 @@ export class HookRunner {
 
   /** 解析 command hook 输出（退出码语义：0=成功, 1=警告, 2+=阻塞） */
   private parseCommandOutput(stdout: string, stderr: string, exitCode: number): HookOutput {
-    // JSON 输出优先（无论退出码）：结构化 decision 覆盖退出码语义。
     // stdout 优先解析（CC 约定 JSON 走 stdout），stdout 非 JSON 时再尝试 stderr。
     const stdoutText = stdout.trim();
     const stderrText = stderr.trim();
     const jsonOutput = this.parseJsonOutput(stdoutText) ?? this.parseJsonOutput(stderrText);
+
+    // H15：exit 2 一律阻塞，JSON 改不了（对齐 CC）。原先「JSON 无条件优先」让一个照文档写的
+    // hook —— stdout 输出结构化审计日志、stderr 写理由、exit 2 —— 只因 stdout 恰好是 JSON
+    // 就丢掉阻塞。JSON 里的其余字段（systemMessage / hookSpecificOutput 等）照常保留。
+    if (exitCode === EXIT_BLOCKING) {
+      const jsonReason = typeof jsonOutput?.reason === "string" ? jsonOutput.reason : undefined;
+      return {
+        ...jsonOutput,
+        decision: jsonOutput?.decision === "block" ? "block" : "deny",
+        // 阻塞原因优先取 JSON 的 reason，否则取 stderr；stdout 已被当 JSON 吃掉时不再拿它当理由
+        reason:
+          jsonReason ||
+          stderrText ||
+          (jsonOutput ? undefined : stdoutText) ||
+          `Hook 退出码 ${exitCode}`,
+      };
+    }
+
     if (jsonOutput) return jsonOutput;
 
     // 非 JSON：按 CC 退出码语义转换（仅 2 阻塞，其余非零非阻塞告警）。
+    // H4：这两支都**不写 decision**。exit 0 的含义是「hook 自己跑成功了」，不是「我批准这次调用」；
+    // 写成 allow 会被 SDK 桥读成主动放行，纯审计 hook 就绕过了宿主 can_use_tool。
     if (exitCode === EXIT_SUCCESS) {
       // 0：成功。stdout 作为 systemMessage（透明反馈，某些事件如 UserPromptSubmit/SessionStart
       // 会把它注入上下文；由事件层决定，这里只承载文本）。
-      return { decision: "allow", systemMessage: stdoutText || undefined };
-    } else if (exitCode === EXIT_BLOCKING) {
-      // 2：阻塞。stderr 优先反馈给模型（CC 约定 exit 2 的原因写在 stderr）。
-      return { decision: "deny", reason: stderrText || stdoutText || `Hook 退出码 ${exitCode}` };
-    } else {
-      // 其余非零（1/3/…）：非阻塞告警。stderr 展示给用户，继续执行（不 deny，对齐 CC）。
-      return {
-        decision: "allow",
-        systemMessage: stderrText ? `警告: ${stderrText}` : stdoutText || undefined,
-      };
+      return { systemMessage: stdoutText || undefined };
     }
+    // 其余非零（1/3/…）：非阻塞告警。stderr 展示给用户，继续执行（不 deny，对齐 CC）。
+    return { systemMessage: stderrText ? `警告: ${stderrText}` : stdoutText || undefined };
   }
 
   /** 尝试解析 JSON 输出 */
@@ -736,7 +748,8 @@ export class HookRunner {
           hookConfig,
           eventName,
           success: true,
-          output: { decision: "allow" },
+          // H4：验证通过 = 不拦，不是主动批准；不写 decision，免得被 SDK 桥当成放行
+          output: {},
           duration: Date.now() - startTime,
         };
       } finally {
@@ -748,7 +761,8 @@ export class HookRunner {
         hookConfig,
         eventName,
         success: true,
-        output: { decision: "allow" },
+        // H4：执行失败放行 = 不拦，不是主动批准
+        output: {},
         duration: Date.now() - startTime,
       };
     }
@@ -801,7 +815,8 @@ export class HookRunner {
           hookConfig,
           eventName,
           success: true,
-          output: { decision: "allow" },
+          // H4：验证通过 = 不拦，不是主动批准；不写 decision，免得被 SDK 桥当成放行
+          output: {},
           duration: Date.now() - startTime,
         };
       } catch (error) {
@@ -811,7 +826,8 @@ export class HookRunner {
           hookConfig,
           eventName,
           success: true,
-          output: { decision: "allow" },
+          // H4：验证通过 = 不拦，不是主动批准；不写 decision，免得被 SDK 桥当成放行
+          output: {},
           duration: Date.now() - startTime,
         };
       } finally {
@@ -869,7 +885,8 @@ export class HookRunner {
           hookConfig,
           eventName,
           success: true,
-          output: { decision: "allow" },
+          // H4：验证通过 = 不拦，不是主动批准；不写 decision，免得被 SDK 桥当成放行
+          output: {},
           duration: Date.now() - startTime,
         };
       } finally {
@@ -881,7 +898,8 @@ export class HookRunner {
         hookConfig,
         eventName,
         success: true,
-        output: { decision: "allow" },
+        // H4：执行失败放行 = 不拦，不是主动批准
+        output: {},
         duration: Date.now() - startTime,
       };
     }

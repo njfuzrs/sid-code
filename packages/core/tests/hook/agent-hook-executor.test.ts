@@ -43,12 +43,13 @@ describe("G6 agent hook 真子代理执行器", () => {
     expect(result.output?.hookSpecificOutput?.additionalContext).toBe("子代理调查记录");
   });
 
-  test("注入的执行器 ok:true → allow", async () => {
+  test("注入的执行器 ok:true → 不拦（且不冒充主动批准，H4）", async () => {
     const runner = new HookRunner();
     runner.setAgentHookExecutor(async () => ({ ok: true }));
     const config: AgentHookConfig = { type: "agent", prompt: "验证" };
     const result = await runner.executeHook(config, HookEventName.PostToolUse, baseInput());
-    expect(result.output?.decision).toBe("allow");
+    // 验证通过 = 没意见；写成 allow 会被 SDK 桥当成「主动放行」跳过宿主
+    expect(result.output?.decision).toBeUndefined();
   });
 
   test("执行器抛错不阻断（放行）", async () => {
@@ -59,7 +60,7 @@ describe("G6 agent hook 真子代理执行器", () => {
     const config: AgentHookConfig = { type: "agent", prompt: "验证" };
     const result = await runner.executeHook(config, HookEventName.PostToolUse, baseInput());
     expect(result.success).toBe(true);
-    expect(result.output?.decision).toBe("allow");
+    expect(result.output?.decision).toBeUndefined();
   });
 
   test("$ARGUMENTS 展开为完整 JSON 输入", async () => {

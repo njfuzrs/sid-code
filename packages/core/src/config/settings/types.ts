@@ -13,6 +13,7 @@
  */
 
 import { z } from "zod/v3";
+import { USER_HOOK_HANDLER_TYPES, isUserHookHandlerType } from "../../hook/handler-types.ts";
 
 /** 延迟求值包装器——避免模块加载阶段的 CPU 开销 */
 export function lazySchema<T extends z.ZodType>(factory: () => T): () => T {
@@ -39,7 +40,10 @@ const PermissionsSchema = lazySchema(() =>
 const HookEntrySchema = lazySchema(() =>
   z
     .object({
-      type: z.enum(["command", "url"]).optional(),
+      // H24：类型合法性不在字段上判，而在下面的 superRefine 里判到「整条 hook」上——
+      // 字段级 issue 只会让 removeInvalidValues 摘掉 `type` 这一个键，剩下的条目按缺省
+      // type=command 继续注册（`{type:"nonsense", command:"x"}` 会被当 command 跑）。
+      type: z.string().optional(),
       event: z.string().optional(),
       command: z.string().optional(),
       url: z.string().optional(),
@@ -50,7 +54,17 @@ const HookEntrySchema = lazySchema(() =>
       blocking: z.boolean().optional(),
       matcher: z.string().optional(),
     })
-    .passthrough(),
+    .passthrough()
+    .superRefine((entry, ctx) => {
+      if (entry.type !== undefined && !isUserHookHandlerType(entry.type)) {
+        ctx.addIssue({
+          code: z.ZodIssueCode.custom,
+          // path 留空 = 指向整条 hook：只丢这一条，同文件的 permissions.deny 等照常生效
+          path: [],
+          message: `无效的 hook 类型 "${entry.type}"，有效值为 ${USER_HOOK_HANDLER_TYPES.join(" / ")}，本条 hook 已跳过`,
+        });
+      }
+    }),
 );
 
 /**
