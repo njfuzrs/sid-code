@@ -4,6 +4,7 @@
  */
 
 import type { Config } from "./config.ts";
+import { USER_HOOK_HANDLER_TYPES, isUserHookHandlerType } from "../hook/handler-types.ts";
 import { getActiveAgentTypes } from "../agent/agent-definition.ts";
 import { normalizeBaseURL } from "../llm/endpoint-key.ts";
 // compat 的合法键清单只在 model-compat.ts 维护一份：校验侧与归一化侧共用同一个源，
@@ -284,11 +285,10 @@ export function validateConfig(config: Config): ValidationResult {
         const prefix = `hooks.${eventName}[${index}]`;
 
         // 验证 type（G5：新增 prompt/agent 两种 LLM 层 hook）
-        const VALID_HOOK_TYPES = ["command", "url", "prompt", "agent"];
-        if (hook.type && !VALID_HOOK_TYPES.includes(hook.type)) {
+        if (hook.type && !isUserHookHandlerType(hook.type)) {
           errors.push({
             path: `${prefix}.type`,
-            message: `无效值 "${hook.type}"，有效值为 ${VALID_HOOK_TYPES.join("/")}`,
+            message: `无效值 "${hook.type}"，有效值为 ${USER_HOOK_HANDLER_TYPES.join("/")}`,
             value: hook.type,
           });
         }

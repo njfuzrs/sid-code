@@ -99,6 +99,7 @@ describe("createSDKCanUseTool — Hook 竞速", () => {
       firePreToolUseEvent: async () => ({
         finalOutput: {
           isBlockingDecision: () => false,
+          isApproveDecision: () => true,
           decision: "allow",
         },
       }),
@@ -114,6 +115,7 @@ describe("createSDKCanUseTool — Hook 竞速", () => {
       firePreToolUseEvent: async () => ({
         finalOutput: {
           isBlockingDecision: () => false,
+          isApproveDecision: () => false,
           decision: undefined,
         },
       }),
