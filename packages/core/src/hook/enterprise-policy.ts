@@ -15,6 +15,15 @@ export interface EnterprisePolicy {
   maxHookTimeout?: number;
 }
 
+/**
+ * H28：内部 runtime hook——type=runtime 只能由内部代码 registerHook 注册（settings / 插件 schema
+ * 都配不出这个类型），承载轨迹采集 / 遥测探针 / 会话指标。disableAllHooks 不关它们。
+ */
+export function isInternalRuntimeHook(entry: { config: HookConfig } | HookConfig): boolean {
+  const config = "config" in entry ? entry.config : entry;
+  return config.type === "runtime";
+}
+
 export class EnterprisePolicyGate {
   private policy: EnterprisePolicy;
 
@@ -27,7 +36,8 @@ export class EnterprisePolicyGate {
   }
 
   isHookAllowed(config: HookConfig): boolean {
-    if (this.policy.disableAllHooks) return false;
+    // H28：disableAllHooks 的本意是「不许跑任意脚本」，不是关掉内部可观测性（见 isInternalRuntimeHook）
+    if (this.policy.disableAllHooks && !isInternalRuntimeHook(config)) return false;
 
     if (this.policy.allowManagedHooksOnly) {
       if (config.source !== ConfigSource.Runtime && config.source !== ConfigSource.Project) {

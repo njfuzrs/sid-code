@@ -21,6 +21,7 @@ import { sanitizeStrings } from "../llm/sanitize-unicode.ts";
 import { recordSideCall } from "../trace/side-call-sink.ts";
 import { SIDE_CALL_NO_THINK } from "../llm/side-call-timeout.ts";
 import { SIDE_CALL_TIMEOUT_REASON } from "../llm/errors.ts";
+import { ssrfGuardedFetch } from "./ssrf-guard.ts";
 
 /** 默认超时 60 秒 */
 const DEFAULT_TIMEOUT = 60_000;
@@ -55,7 +56,95 @@ const SENSITIVE_ENV_PATTERNS = [
   /password/i,
   /credential/i,
   /auth/i,
+  // H13：原先只有 `api[_-]?key` 没有裸 key，PRIVATE_KEY / SSH_KEY / SIGNING_KEY 全部漏网。
+  // 按「_ 分隔的整段」匹配，避免误伤 KEYBOARD / MONKEY 这类无害名字。
+  /(^|[_-])(private|ssh|signing|access|secret)?[_-]?key($|[_-])/i,
+  // H13：缩写形态的密钥名（OPENAI_SK、GH_PAT）——同样按整段匹配
+  /(^|[_-])(sk|pat)($|[_-])/i,
+  /cookie/i,
+  // H13：网关端点不是凭据，但是企业内网拓扑，第三方 hook 脚本不该拿到
+  /[_-](base[_-]?url|endpoint)$/i,
 ];
+
+/**
+ * H13：值形态兜底。key 命名习惯没有上界（SK / PAT / DSN / SEED…），黑名单永远补不完；
+ * 已知凭据的「值」格式反而是有限的。命中任一前缀就脱敏，无论 key 叫什么。
+ */
+const SENSITIVE_ENV_VALUE_PATTERNS = [
+  /^sk-[A-Za-z0-9_-]{6,}/, // OpenAI / Anthropic / DeepSeek 等
+  /^(ghp|gho|ghs|ghu|ghr)_[A-Za-z0-9]{16,}/, // GitHub token
+  /^github_pat_[A-Za-z0-9_]{16,}/,
+  /^glpat-[A-Za-z0-9_-]{16,}/, // GitLab PAT
+  /^xox[abprs]-[A-Za-z0-9-]{10,}/, // Slack
+  /^(AKIA|ASIA)[0-9A-Z]{16}$/, // AWS access key id
+  /-----BEGIN [A-Z ]*PRIVATE KEY-----/,
+  /^eyJ[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}\./, // JWT
+];
+
+/**
+ * H17：HookOutput 的已知字段。parseJsonOutput 原先把任何对象（含数组）都当 HookOutput，
+ * `{"decission":"deny"}` 这类拼写错误被接受成「一个没有任何决策的合法输出」，零反馈。
+ */
+const KNOWN_HOOK_OUTPUT_FIELDS = new Set([
+  "continue",
+  "stopReason",
+  "suppressOutput",
+  "systemMessage",
+  "decision",
+  "reason",
+  "hookSpecificOutput",
+]);
+const KNOWN_HOOK_SPECIFIC_FIELDS = new Set([
+  "hookEventName", // CC 协议要求带上，我们不消费但不该告警
+  "additionalContext",
+  "clearContext",
+  "tailToolCallRequest",
+  "updatedInput",
+  "tool_input",
+  "permissionDecision",
+  "permissionDecisionReason",
+  "llm_request",
+  "llm_response",
+]);
+const KNOWN_DECISIONS = new Set(["allow", "approve", "deny", "block"]);
+
+/** H17：形状告警按「来源 + 问题」去重——挂在 PostToolUse 上的 hook 一次任务跑几十次，每次都 warn 会刷屏 */
+const reportedShapeIssues = new Set<string>();
+function warnShapeOnce(source: string, message: string): void {
+  const key = `${source}\u0000${message}`;
+  if (reportedShapeIssues.has(key)) return;
+  if (reportedShapeIssues.size > 500) reportedShapeIssues.clear();
+  reportedShapeIssues.add(key);
+  getLogger().warn("HOOK", message);
+}
+
+/**
+ * H17：列出一个已解析的 hook JSON 输出里的形状问题（未知字段、非法 decision）。
+ * 只告警不丢弃：未知字段可能是新协议字段，丢掉会让向前兼容变成静默失效的另一种形态。
+ */
+export function describeHookOutputShapeIssues(output: Record<string, unknown>): string[] {
+  const issues: string[] = [];
+  for (const key of Object.keys(output)) {
+    if (!KNOWN_HOOK_OUTPUT_FIELDS.has(key)) issues.push(`未知字段 "${key}"`);
+  }
+  if (output.decision !== undefined && !KNOWN_DECISIONS.has(output.decision as string)) {
+    issues.push(
+      `decision 取值 ${JSON.stringify(output.decision)} 不在 allow/approve/deny/block 内`,
+    );
+  }
+  const specific = output.hookSpecificOutput;
+  if (specific !== undefined) {
+    if (!specific || typeof specific !== "object" || Array.isArray(specific)) {
+      issues.push("hookSpecificOutput 不是对象");
+    } else {
+      for (const key of Object.keys(specific)) {
+        if (!KNOWN_HOOK_SPECIFIC_FIELDS.has(key))
+          issues.push(`未知字段 "hookSpecificOutput.${key}"`);
+      }
+    }
+  }
+  return issues;
+}
 
 /**
  * G6：agent hook 的真子代理执行器（由 app 层注入，携带 ProviderRegistry + 工具注册表）。
@@ -289,10 +378,11 @@ export class HookRunner {
         try {
           const exitCode = await proc.exited;
           const stderr = await new Response(proc.stderr).text();
-          // 仅 asyncRewake=true 且 exit 2 才回灌（markCompleted 内部据 exitCode===2 入 rewake 队列）
-          registry.markCompleted(asyncId, supportsRewake ? (exitCode ?? 0) : 0, stderr);
+          // 仅 asyncRewake=true 且 exit 2 才回灌。H18：真实退出码照记——原先非 rewake 时硬传 0，
+          // 「后台 hook 失败了没有」在数据上无法回答；回灌与否改由 rewake 参数单独决定。
+          registry.markCompleted(asyncId, exitCode ?? 0, stderr, supportsRewake);
         } catch (e) {
-          registry.markCompleted(asyncId, 0, String(e));
+          registry.markCompleted(asyncId, 0, String(e), false);
         } finally {
           clearTimeout(bgTimeoutId);
         }
@@ -350,7 +440,12 @@ export class HookRunner {
       const duration = Date.now() - startTime;
 
       // 解析输出
-      const output = this.parseCommandOutput(stdout, stderr, exitCode ?? 0);
+      const output = this.parseCommandOutput(
+        stdout,
+        stderr,
+        exitCode ?? 0,
+        `command:${hookConfig.name ?? command.slice(0, 60)}`,
+      );
 
       return {
         hookConfig,
@@ -391,7 +486,10 @@ export class HookRunner {
     const timeoutId = setTimeout(() => controller.abort(), timeout);
 
     try {
-      const response = await fetch(hookConfig.url, {
+      // H5：原先是裸 fetch，ssrf-guard.ts 整个模块零调用，allowedEnvVars 写了也没效果。
+      // 现在 url hook 一律经它：私有/元数据地址拦截（loopback 放行，见该文件注释）、
+      // header 里的 $VAR 只插值 allowedEnvVars 白名单、CRLF 清理。
+      const response = await ssrfGuardedFetch(hookConfig.url, {
         method,
         headers: {
           "Content-Type": "application/json",
@@ -399,6 +497,7 @@ export class HookRunner {
         },
         body: JSON.stringify(sanitizeStrings(input)),
         signal: controller.signal,
+        allowedEnvVars: hookConfig.allowedEnvVars,
       });
 
       const text = await response.text();
@@ -415,7 +514,7 @@ export class HookRunner {
         };
       }
 
-      const output = this.parseJsonOutput(text);
+      const output = this.parseJsonOutput(text, `url:${hookConfig.name ?? hookConfig.url}`);
       return {
         hookConfig,
         eventName,
@@ -496,13 +595,18 @@ export class HookRunner {
   // ============================================================
 
   /** 解析 command hook 输出（退出码语义：0=成功, 1=警告, 2+=阻塞） */
-  private parseCommandOutput(stdout: string, stderr: string, exitCode: number): HookOutput {
+  private parseCommandOutput(
+    stdout: string,
+    stderr: string,
+    exitCode: number,
+    source = "command",
+  ): HookOutput {
     // H16：只从 stdout 解析 JSON，stderr 从不当 JSON（对齐 CC）。原先 stdout 非 JSON 时兜底解析 stderr，
     // exit 0 的 hook 只因子命令（pino 日志 / tsc 诊断 / jq 错误对象）往 stderr 吐了一段带 decision 的 JSON，
     // 就凭空造出一个 deny。stderr 只承载人读的文本：exit 2 的阻塞理由、其余非零的告警。
     const stdoutText = stdout.trim();
     const stderrText = stderr.trim();
-    const jsonOutput = this.parseJsonOutput(stdoutText);
+    const jsonOutput = this.parseJsonOutput(stdoutText, source);
 
     // H15：exit 2 一律阻塞，JSON 改不了（对齐 CC）。原先「JSON 无条件优先」让一个照文档写的
     // hook —— stdout 输出结构化审计日志、stderr 写理由、exit 2 —— 只因 stdout 恰好是 JSON
@@ -535,24 +639,46 @@ export class HookRunner {
     return { systemMessage: stderrText ? `警告: ${stderrText}` : stdoutText || undefined };
   }
 
-  /** 尝试解析 JSON 输出 */
-  private parseJsonOutput(text: string): HookOutput | undefined {
+  /**
+   * 尝试解析 JSON 输出。
+   * @param shapeCheckSource 传了就按 HookOutput 协议校验形状并告警（command/url hook）；
+   *   prompt/agent hook 的 `{ok, reason}` 是另一套协议，不传。
+   */
+  private parseJsonOutput(text: string, shapeCheckSource?: string): HookOutput | undefined {
     const trimmed = text.trim();
     if (!trimmed) return undefined;
 
+    let parsed: unknown;
     try {
-      let parsed = JSON.parse(trimmed);
+      parsed = JSON.parse(trimmed);
       // 双重 JSON 字符串
       if (typeof parsed === "string") {
         parsed = JSON.parse(parsed);
       }
-      if (parsed && typeof parsed === "object") {
-        return parsed as HookOutput;
-      }
     } catch {
-      // 非 JSON
+      return undefined; // 非 JSON
     }
-    return undefined;
+    // H17：数组不是 HookOutput。原先 `typeof [] === "object"` 让 [1,2,3] 也被当成「hook 表达了意见」
+    if (Array.isArray(parsed)) {
+      if (shapeCheckSource) {
+        warnShapeOnce(
+          shapeCheckSource,
+          `hook 输出是 JSON 数组，不是 HookOutput 对象，已按普通文本处理 (${shapeCheckSource})`,
+        );
+      }
+      return undefined;
+    }
+    if (!parsed || typeof parsed !== "object") return undefined;
+    if (shapeCheckSource) {
+      const issues = describeHookOutputShapeIssues(parsed as Record<string, unknown>);
+      if (issues.length > 0) {
+        warnShapeOnce(
+          shapeCheckSource,
+          `hook 输出形状可疑 (${shapeCheckSource})：${issues.join("；")}——这些字段不会生效`,
+        );
+      }
+    }
+    return parsed as HookOutput;
   }
 
   // ============================================================
@@ -564,7 +690,9 @@ export class HookRunner {
     const result: Record<string, string> = {};
     for (const [key, value] of Object.entries(env)) {
       if (value === undefined) continue;
-      const isSensitive = SENSITIVE_ENV_PATTERNS.some((p) => p.test(key));
+      const isSensitive =
+        SENSITIVE_ENV_PATTERNS.some((p) => p.test(key)) ||
+        SENSITIVE_ENV_VALUE_PATTERNS.some((p) => p.test(value));
       if (!isSensitive) {
         result[key] = value;
       }
