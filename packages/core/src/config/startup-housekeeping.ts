@@ -6,7 +6,7 @@
  * 2. cleanupLegacyToolResults() —— 清理修复前老代码遗留的 tool-results 污染目录
  * 3. ensureRuntimeFilesGitignored() —— 把项目 .sid-code/ 下的运行时文件注册进全局 gitignore
  * 4. 按"清理水位线"节流触发过期数据清理 —— 避免每次启动都扫全盘。水位线内含：
- *    trajectories 旧 session / tool-outputs / tmp masked-outputs，
+ *    trajectories 旧 session / tool-outputs / tmp masked-outputs / tmp pasted-images（粘贴截图），
  *    以及孤儿 shell 快照、孤儿 task 输出、过期 checkpoints（后三项见下方"为什么需要兜底"）
  *
  * 项目 .sid-code/ 的 gitignore 策略（对标 claude-code，详见 lock.ts 文件头注）：
@@ -225,6 +225,8 @@ export function runStartupHousekeeping(
     const outputsCleaned = cleanupStaleToolOutputs();
     // 6. 清理 /tmp 下过期的 masked-outputs 临时文件
     const maskedCleaned = cleanupStaleMaskedOutputs();
+    // 6b. 清理 /tmp 下过期的粘贴截图（截图可能含敏感内容，不能无限期留在共享 /tmp）
+    const pastedCleaned = cleanupStalePastedImages(now);
     // 7-9. 孤儿运行时数据兜底回收（各模块自己的清理只挂在正常路径上，见文件头注释）
     const snapshotsCleaned = cleanupOrphanedShellSnapshots(now);
     const taskOutputsCleaned = cleanupOrphanedTaskOutputs(now);
@@ -242,6 +244,9 @@ export function runStartupHousekeeping(
     }
     if (maskedCleaned > 0) {
       getLogger().info("CLEANUP", `启动清理：移除 ${maskedCleaned} 个过期遮罩输出文件`);
+    }
+    if (pastedCleaned > 0) {
+      getLogger().info("CLEANUP", `启动清理：移除 ${pastedCleaned} 个过期粘贴截图`);
     }
     if (snapshotsCleaned > 0) {
       getLogger().info("CLEANUP", `启动清理：回收 ${snapshotsCleaned} 个孤儿 shell 快照`);
@@ -449,6 +454,45 @@ function cleanupStaleMaskedOutputs(): number {
     // temp dir 不存在或无权限，跳过
   }
   return totalCleaned;
+}
+
+/** 粘贴截图的保留期：7 天（与 masked-outputs / tool-outputs 同口径） */
+const PASTED_IMAGE_MAX_AGE_MS = 7 * 24 * 3600_000;
+
+/**
+ * 清理 /tmp 下过期的粘贴截图（`{sidTemp}/pasted-images/`）。
+ *
+ * 写入方是 `packages/cli/src/ui/utils/clipboard-image.ts`：每次粘贴截图生成一个临时 PNG，
+ * 之后再没有任何代码删它。系统重启会清 /tmp，但长期不关机的开发机上它们会一直留着 ——
+ * 而截图常含敏感内容（内部页面、token、聊天记录），这比 masked-outputs 更不该无限期留存。
+ *
+ * 判据与 masked-outputs 一致：按 mtime 超 7 天删。不看「是否还被会话引用」：
+ * 截图在粘贴当轮就已读进消息（base64），磁盘文件只是中转，7 天后不可能还有人要读它。
+ * 只删目录下的普通文件、不递归；目录本身留着（下次粘贴会 mkdir，留着零成本）。
+ *
+ * @returns 删除的文件数
+ */
+function cleanupStalePastedImages(now: number): number {
+  let cleaned = 0;
+  try {
+    const dir = join(getSidTempDir(), "pasted-images");
+    if (!existsSync(dir)) return 0;
+    for (const entry of readdirSync(dir, { withFileTypes: true })) {
+      if (!entry.isFile()) continue;
+      const filePath = join(dir, entry.name);
+      try {
+        if (now - statSync(filePath).mtimeMs > PASTED_IMAGE_MAX_AGE_MS) {
+          rmSync(filePath, { force: true });
+          cleaned++;
+        }
+      } catch {
+        /* 单文件失败跳过 */
+      }
+    }
+  } catch {
+    // temp dir 不存在或无权限，跳过
+  }
+  return cleaned;
 }
 
 /**
