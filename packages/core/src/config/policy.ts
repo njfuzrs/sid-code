@@ -11,7 +11,12 @@ import { applyDeviceAuth, getUsableCredentialToken, RELOGIN_HINT } from "../iden
 import { resolveEndpoint } from "../identity/endpoints.ts";
 import { setModePolicy } from "../permission/mode-policy.ts";
 import { resolveManagedPolicyFile, sidPaths } from "./paths.ts";
-import { setPluginOnlyPolicy, type CustomizationSurface } from "./plugin-only-policy.ts";
+import {
+  setKnownMarketplacesPolicy,
+  setPluginOnlyPolicy,
+  type CustomizationSurface,
+  type KnownMarketplace,
+} from "./plugin-only-policy.ts";
 import { setBridgePolicy } from "../bridge/bridge-policy.ts";
 import { setPolicyLimits } from "./policy-limits.ts";
 import { setRemotePolicyPermissions } from "./remote-policy-state.ts";
@@ -65,6 +70,12 @@ export interface PolicySettings {
   strictPluginOnlyCustomization?:
     | boolean
     | import("./plugin-only-policy.ts").CustomizationSurface[];
+  /**
+   * 只允许从这些企业市场安装 / 加载插件（P5，对齐 CC strictKnownMarketplaces 的形状）。
+   * 省略 = 不限制；数组 = 白名单（空数组 = 除内置外禁用全部插件）。
+   * 下发后本地目录安装与 --plugin-dir 一律拒绝。判定见 plugin-only-policy.ts 的 evaluatePluginOrigin。
+   */
+  strictKnownMarketplaces?: KnownMarketplace[];
   /**
    * 远程关掉 Bridge。省略 / undefined = 未配置 = 不关。
    * false 覆盖本机 settings.json 的 bridge.enabled。true 只是显式允许，
@@ -226,6 +237,7 @@ const ALLOWED_REMOTE_KEYS = new Set([
   "disabledModes",
   "disableBypassPermissionsMode",
   "strictPluginOnlyCustomization",
+  "strictKnownMarketplaces",
   "bridgeEnabled",
 ]);
 
@@ -329,6 +341,8 @@ export function sanitizeRemotePolicy(raw: unknown): PolicySettings | null {
   }
   const pluginOnly = sanitizePluginOnly(input.strictPluginOnlyCustomization);
   if (pluginOnly !== undefined) out.strictPluginOnlyCustomization = pluginOnly;
+  const known = sanitizeKnownMarketplaces(input.strictKnownMarketplaces);
+  if (known !== undefined) out.strictKnownMarketplaces = known;
   if (typeof input.bridgeEnabled === "boolean") {
     out.bridgeEnabled = input.bridgeEnabled;
   }
@@ -347,6 +361,23 @@ function asStringArray(value: unknown): string[] | undefined {
   if (!Array.isArray(value)) return undefined;
   const out = value.filter((v): v is string => typeof v === "string");
   return out;
+}
+
+/**
+ * 数组 → 只保留 `{source:"url", url:string}` 形状的项（地址合法性由 setKnownMarketplacesPolicy
+ * 再校验一次并告警）。非数组 = 未下发。**坏条目不会让整份白名单变成未下发**。
+ */
+function sanitizeKnownMarketplaces(value: unknown): KnownMarketplace[] | undefined {
+  if (!Array.isArray(value)) return undefined;
+  return value
+    .filter(
+      (v): v is KnownMarketplace =>
+        !!v &&
+        typeof v === "object" &&
+        (v as Record<string, unknown>).source === "url" &&
+        typeof (v as Record<string, unknown>).url === "string",
+    )
+    .map((v) => ({ source: "url" as const, url: v.url }));
 }
 
 function sanitizePluginOnly(value: unknown): boolean | CustomizationSurface[] | undefined {
@@ -686,6 +717,8 @@ export function applyLoadedPolicy(policy: PolicySettings | null, meta?: PolicyLo
     setPluginOnlyPolicy(policy.strictPluginOnlyCustomization);
     setModePolicy(policy.disabledModes, policy.disableBypassPermissionsMode);
   }
+  // 与 bridge 同理：null 也要拨回，否则上次下发的白名单会留在进程里
+  setKnownMarketplacesPolicy(policy?.strictKnownMarketplaces);
   emitPolicyEnforced(policy, meta);
 }
 
