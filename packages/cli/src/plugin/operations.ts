@@ -25,6 +25,7 @@ import { clearAllPluginCaches } from "./caches.ts";
 import { resolveDependencyClosure, findReverseDependents } from "./dependency.ts";
 import { loadAllPlugins } from "./loader.ts";
 import type { PluginError } from "./types.ts";
+import { evaluatePluginOrigin } from "@sid-code/core/config/plugin-only-policy.ts";
 
 /** 操作结果 */
 export type OperationResult = { ok: true; message: string } | { ok: false; error: string };
@@ -45,6 +46,11 @@ export async function installPlugin(
 ): Promise<OperationResult> {
   const log = getLogger();
   const absSource = resolve(sourcePath);
+
+  // 企业策略锁定时本地目录安装一律拒绝（P5）。在落盘之前拒，而不是装好了再在加载时拦 ——
+  // 后者会让 installed.json 里躺着一条永远加载不了的记录。
+  const decision = evaluatePluginOrigin({ kind: "local" });
+  if (!decision.allowed) return { ok: false, error: decision.reason };
 
   if (!existsSync(absSource)) {
     return { ok: false, error: `插件目录不存在: ${absSource}` };

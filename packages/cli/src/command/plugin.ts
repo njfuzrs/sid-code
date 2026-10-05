@@ -2,7 +2,10 @@
  * 插件管理命令
  *   /plugin list                  - 列出所有插件（启用/禁用/错误）
  *   /plugin info <name>           - 查看插件详情
- *   /plugin install <path>        - 从本地目录安装插件
+ *   /plugin market [关键词]        - 浏览企业插件市场（P5）
+ *   /plugin install <name>@<市场>  - 从企业市场安装（下载 → sha256 校验 → 安全解包）
+ *   /plugin install <path>        - 从本地目录安装插件（企业策略锁定时拒绝）
+ *   /plugin update [name]         - 按市场 index 更新市场插件
  *   /plugin uninstall <name>      - 卸载插件（--delete 删文件，--force 忽略依赖）
  *   /plugin enable <name>         - 启用插件
  *   /plugin disable <name>        - 禁用插件（--force 忽略反向依赖）
@@ -21,6 +24,12 @@ import {
   formatPluginError,
   parsePluginId,
 } from "../plugin/index.ts";
+import {
+  installFromMarket,
+  isMarketSpec,
+  listMarket,
+  updateFromMarket,
+} from "../plugin/market-operations.ts";
 
 /** 解析 flag 与位置参数 */
 function parseArgs(args: string): { positionals: string[]; flags: Set<string> } {
@@ -46,7 +55,7 @@ export class PluginCommand implements Command {
     return "插件管理";
   }
   argumentHint() {
-    return "[list|info|install|uninstall|enable|disable] [插件名]";
+    return "[list|market|info|install|update|uninstall|enable|disable] [插件名]";
   }
 
   async execute(args: string, ctx: AppContext): Promise<CommandResult> {
@@ -59,6 +68,12 @@ export class PluginCommand implements Command {
         return this.list();
       case "info":
         return this.info(positionals[1]);
+      case "market":
+      case "search":
+        return this.wrap(listMarket(positionals.slice(1).join(" ")));
+      case "update":
+      case "upgrade":
+        return this.wrap(updateFromMarket(positionals[1]), true);
       case "install":
       case "add":
         return this.install(positionals[1], flags);
@@ -73,7 +88,7 @@ export class PluginCommand implements Command {
       default:
         return {
           kind: "error",
-          message: `未知子命令: ${sub}\n用法: /plugin list|info|install|uninstall|enable|disable`,
+          message: `未知子命令: ${sub}\n用法: /plugin list|market|info|install|update|uninstall|enable|disable`,
         };
     }
   }
@@ -138,9 +153,25 @@ export class PluginCommand implements Command {
     return { kind: "message", message: lines.join("\n") };
   }
 
+  private async wrap(
+    p: Promise<{ ok: true; message: string } | { ok: false; error: string }>,
+    reloadHint = false,
+  ): Promise<CommandResult> {
+    const r = await p;
+    if (!r.ok) return { kind: "error", message: r.error };
+    return {
+      kind: "message",
+      message: reloadHint ? `${r.message}\n提示: 运行 /reload-plugins 使其生效` : r.message,
+    };
+  }
+
   private async install(path: string | undefined, flags: Set<string>): Promise<CommandResult> {
     if (!path)
-      return { kind: "error", message: "用法: /plugin install <本地目录路径> [--no-copy]" };
+      return {
+        kind: "error",
+        message: "用法: /plugin install <name>@<市场> | <本地目录路径> [--no-copy]",
+      };
+    if (isMarketSpec(path)) return this.wrap(installFromMarket(path), true);
     const result = await installPlugin(path, { copy: !flags.has("no-copy") });
     return result.ok
       ? { kind: "message", message: `${result.message}\n提示: 运行 /reload-plugins 使其生效` }
