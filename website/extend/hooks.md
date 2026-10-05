@@ -217,8 +217,16 @@ hook 命令能直接读这些（另外完整的事件载荷 JSON 会从 **stdin*
 
 `prompt` 和 `agent` 会真的调模型，**要花钱也要花时间**，别挂在高频事件上。
 
-其他常用字段：`timeout`（**秒**，默认 60；`prompt` 类型默认 30。写 `5000` 是 83 分钟，不是 5 秒）、`async`（后台跑不阻塞）、`env`（额外环境变量）、
+其他常用字段：`timeout`（**秒**，默认 60；`prompt` 类型默认 30。写 `5000` 是 83 分钟，不是 5 秒）、`async`（后台跑不阻塞。**代价是放弃决策权**：挂在 `pre_tool_use` 这类可拦截事件上，exit 2 / deny 都赶不上本轮决策，加载时会打 warn）、`env`（额外环境变量）、
 `name`（给 hook 起名，便于 `/hooks` 面板管理）。
+
+`url` 类型的请求经 SSRF 防护：内网与云元数据地址（`10.*`、`192.168.*`、`169.254.*` 等）会被拦，本机 `127.0.0.1` / `localhost` 放行。
+`headers` 里的 `$VAR` 只会替换 `allowedEnvVars` 里列出的变量，其余替换成空串：
+
+```json
+{ "type": "url", "url": "https://hooks.example.com/audit",
+  "headers": { "Authorization": "Bearer $AUDIT_TOKEN" }, "allowedEnvVars": ["AUDIT_TOKEN"] }
+```
 
 ## 管理与调试
 

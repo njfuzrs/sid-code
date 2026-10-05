@@ -33,14 +33,18 @@ export class AsyncHookRegistry {
     return id;
   }
 
-  markCompleted(id: string, exitCode: number, stderr?: string): void {
+  /**
+   * @param rewake 是否允许 exit 2 回灌。H18：原先调用方靠「非 rewake 时传 0」来关回灌，
+   *   真实退出码因此被抹掉；现在两件事分开传。缺省 true 保持旧调用方语义。
+   */
+  markCompleted(id: string, exitCode: number, stderr?: string, rewake = true): void {
     const entry = this.pending.get(id);
     if (!entry) return;
     entry.completed = true;
     entry.exitCode = exitCode;
     entry.stderr = stderr;
 
-    if (exitCode === 2 && stderr) {
+    if (rewake && exitCode === 2 && stderr) {
       this.rewakeQueue.push({
         hookId: id,
         hookName: entry.hookName,

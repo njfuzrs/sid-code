@@ -49,6 +49,8 @@ const HookEntrySchema = lazySchema(() =>
       url: z.string().optional(),
       method: z.string().optional(),
       headers: z.record(z.string()).optional(),
+      // url 类型：headers 里允许插值的 $VAR 白名单，未列出的插值为空串（H5）
+      allowedEnvVars: z.array(z.string()).optional(),
       // 单位：秒（runner 里乘 1000），不是毫秒
       timeout: z.number().positive().optional(),
       blocking: z.boolean().optional(),

@@ -75,6 +75,7 @@ export interface HookConfig {
   url?: string; // url 类型：HTTP 地址
   method?: string; // url 类型：HTTP 方法，默认 POST
   headers?: Record<string, string>; // url 类型：HTTP 头
+  allowedEnvVars?: string[]; // url 类型：headers 里允许插值的 $VAR 白名单（H5，未列出的插值为空串）
   timeout?: number; // 超时（秒），默认 30
   blocking?: boolean; // 是否阻塞，默认 false
   async?: boolean; // G7：command 类型后台异步执行，不阻塞主循环

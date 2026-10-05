@@ -11,6 +11,7 @@ import {
   type HookExecutionResult,
   type AggregatedHookResult,
 } from "./types.ts";
+import { getLogger } from "../debug/logger.ts";
 
 export class HookAggregator {
   /** 聚合多个 hook 执行结果 */
@@ -30,6 +31,8 @@ export class HookAggregator {
       ? this.createSpecificOutput(mergedOutput, eventName)
       : undefined;
 
+    if (finalOutput) this.warnOnConflictingInputRewrites(results, eventName, finalOutput);
+
     return {
       success: errors.length === 0,
       finalOutput,
@@ -40,6 +43,35 @@ export class HookAggregator {
   }
 
   // ---- 私有方法 ----
+
+  /**
+   * H26：多个 hook 都改写了工具参数时，后写的整体覆盖先写的（hookSpecificOutput 浅合并）。
+   * 两份改写在语义上无法自动合并（「加 --dry-run」与「换成别的命令」不可同时满足），
+   * 所以不改合并规则，只让冲突可见：点名谁在竞争、最终采纳了谁。值相同不算冲突。
+   */
+  private warnOnConflictingInputRewrites(
+    results: HookExecutionResult[],
+    eventName: HookEventName,
+    finalOutput: DefaultHookOutput,
+  ): void {
+    const writers: Array<{ name: string; json: string }> = [];
+    for (const r of results) {
+      const so = r.output?.hookSpecificOutput;
+      if (!so) continue;
+      const value = so["updatedInput"] ?? so["tool_input"];
+      if (!value || typeof value !== "object") continue;
+      writers.push({ name: hookDisplayName(r), json: JSON.stringify(value) });
+    }
+    if (writers.length < 2 || new Set(writers.map((w) => w.json)).size < 2) return;
+    const fso = finalOutput.hookSpecificOutput ?? {};
+    const adopted = JSON.stringify(fso["updatedInput"] ?? fso["tool_input"] ?? null);
+    const winner = writers.filter((w) => w.json === adopted).pop()?.name ?? "未知";
+    getLogger().warn(
+      "HOOK",
+      `[${eventName}] ${writers.length} 个 hook 同时改写了工具参数且内容不同：` +
+        `${writers.map((w) => w.name).join("、")}；最终采纳 ${winner}，其余改写被覆盖`,
+    );
+  }
 
   /** 根据事件类型选择合并策略 */
   private mergeOutputs(outputs: HookOutput[], eventName: HookEventName): HookOutput | undefined {
@@ -258,4 +290,12 @@ export class HookAggregator {
       contexts.push(specific["additionalContext"]);
     }
   }
+}
+
+function hookDisplayName(r: HookExecutionResult): string {
+  const c = r.hookConfig;
+  if (c.name) return c.name;
+  if (c.type === "command") return c.command.slice(0, 60);
+  if (c.type === "url") return c.url;
+  return c.type;
 }

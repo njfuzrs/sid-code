@@ -1279,7 +1279,14 @@ export class PermissionChecker implements Checker {
 
     // 会话记忆快速路径（空 key 不命中：写工具 / 无 path 的 grep / 无 url 的 web_fetch）
     const memKey = this.getMemoryKey(req);
-    if (memKey && this.sessionMemory.has(memKey)) {
+    // H25：会话记忆的 allow 不能吃掉 hook 的 ask 升级。hook 的价值在于看得到规则看不到的东西
+    // （文件内容、时间、外部状态），「同一资源第 2 次访问时 hook 改主意」是它的正常用法。
+    // 只对 allow 记忆让路：deny 记忆照常早退（hook allow 不能越过用户明确拒绝）；skipPermissions 在上面已早退，不受影响。
+    const memoryYieldsToHookAsk =
+      options?.hookPermissionDecision === "ask" &&
+      !!memKey &&
+      this.sessionMemory.get(memKey) === true;
+    if (memKey && this.sessionMemory.has(memKey) && !memoryYieldsToHookAsk) {
       const allowed = this.sessionMemory.get(memKey)!;
       log.info(
         "PERMISSION",
