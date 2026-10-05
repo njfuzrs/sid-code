@@ -45,6 +45,7 @@ const HookEntrySchema = lazySchema(() =>
       url: z.string().optional(),
       method: z.string().optional(),
       headers: z.record(z.string()).optional(),
+      // 单位：秒（runner 里乘 1000），不是毫秒
       timeout: z.number().positive().optional(),
       blocking: z.boolean().optional(),
       matcher: z.string().optional(),
@@ -373,7 +374,7 @@ export const SettingsSchema = lazySchema(
         // 环境变量
         env: z.record(z.string()).optional(),
 
-        // Hooks（按事件分组）
+        // Hooks（按事件分组）。每条 hook 的 timeout 单位是秒（command / url / agent 默认 60，prompt 默认 30），写 5000 是 83 分钟不是 5 秒
         hooks: z.record(z.array(HookEntrySchema())).optional(),
 
         // MCP 服务器
