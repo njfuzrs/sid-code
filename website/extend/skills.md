@@ -36,11 +36,12 @@ EOF
 然后让它干活：
 
 ```bash
-sid-code -p "用 changelog-entry skill 生成一条变更记录" --allowed-tools Skill
+sid-code -p "用 changelog-entry skill 生成一条变更记录"
 ```
 
-`-p` 下调用 Skill 工具本身需要确认，无头模式没有确认通道，所以要用 `--allowed-tools Skill` 预先放行；
-不加的话会被拒，模型会绕开 skill 自己手写一条。
+调用 Skill 工具本身不需要确认，`-p` 下不用加 `--allowed-tools Skill`：加载一份 skill 只是把指令交给模型，
+它接下来调的每个工具仍各自过权限（`packages/core/src/skill/meta-tool.ts` 的 `checkPermissions`）。
+想在 `-p` 下禁止调用 skill，配 `permissions.deny: ["Skill"]` 或 `--disallowed-tools Skill`。
 
 实测输出（仓库最近一条提交是 `fix: 修正 add 函数的边界条件`，已开 `trust_project_extensions`）：
 
@@ -65,7 +66,7 @@ sid-code -p "用 changelog-entry skill 生成一条变更记录" --allowed-tools
 ::: warning 示例里刻意没写 `allowed-tools`
 `allowed-tools`、`shell`、`agent`、`hooks`、`max-turns`、`timeout-mins`、`effort` 属于**敏感属性**：
 skill 声明了其中任何一个，执行前都要再确认一次（`packages/core/src/skill/permission.ts`）。
-交互模式会弹窗问你；`-p` 下没有确认通道，**即使加了 `--allowed-tools Skill` 也会被拒绝**。
+交互模式会弹窗问你；`-p` 下没有确认通道，会被拒绝（`--allowed-tools Skill` 也放行不了这一层，要放行得配 `permissions.allow: ["Skill(<名字>)"]`）。
 实测把上面的示例加回 `allowed-tools: bash, read` 再跑同一条命令，模型回复「changelog-entry skill
 没跑起来，这次调用的权限没批」。activate 模式的 skill 跑在当前对话里，用的是主会话的工具，
 本来就不需要声明它。
