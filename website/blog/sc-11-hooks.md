@@ -2722,6 +2722,10 @@ grep '"hook_event_name"' ~/.sid-code/sessions/<最近会话>/events.jsonl | \
 
 ### 10.3 ⚠️ 一个我在写这章时发现的真实死接线：SSRF 防护没接线
 
+> **2026-10-06 更新**：已接线（H5）。url hook 现在一律经 `ssrfGuardedFetch`：私有 / 云元数据地址拦截
+> （loopback 放行，对齐 CC）、headers 里的 `$VAR` 只插值 `allowedEnvVars` 白名单、CRLF 清理；
+> settings / 插件两个转换器也补上了 `allowedEnvVars` 的转发。下面保留原文作为「死接线长什么样」的现场记录。
+
 这一节是本文最"新鲜"的一个发现，也是 §9 那套方法论的一次现场演练。
 
 **先看这个模块有多完整。** 🔬 `packages/core/src/hook/ssrf-guard.ts`（160 行）
@@ -2874,6 +2878,11 @@ const env: Record<string, string> = {
   （里面常带密码：`postgres://user:pass@host/db`）、`NPM_CONFIG_//registry:_authToken`
   这种奇形怪状的
 
+> **2026-10-06 更新**（H13）：补了裸 `key` 段（`PRIVATE_KEY` / `SSH_KEY`）、`SK` / `PAT` 缩写、`cookie`、
+> `*_BASE_URL` / `*_ENDPOINT`（内网拓扑），并加了一层**值形态兜底**——值以 `sk-` / `ghp_` / `glpat-` /
+> `AKIA` / `-----BEGIN … PRIVATE KEY-----` / JWT 开头的变量无论叫什么都脱敏。key 命名没有上界，凭据的值格式反而有限。
+> `DATABASE_URL` 这类「值里嵌密码」的仍拦不住，下面这句结论不变。
+
 **所以它是"降低泄漏面"而不是"消除泄漏"。** 认清一道防线的实际边界，
 比相信它是完整的更有用——这条同样适用于上面 §10.3 那个案例的反面：
 `sanitizeEnvironment` 接线了，但它不是万能的。
@@ -2932,6 +2941,10 @@ if (config.command.includes(blocked)) return false;
 > 它能挡住不小心配错的 hook，挡不住刻意绕过的人。
 > 真正的边界是 `disableAllHooks` / `allowManagedHooksOnly` 这两个——
 > **它们是白名单式的，不依赖枚举坏东西。**
+>
+> （2026-10-06，H28：`disableAllHooks` 关的是用户可配置的 hook——command / url / prompt / agent。
+> 内部 `runtime` hook 是轨迹采集、遥测、会话指标的载体，配置里写不出这个类型，不受它影响；
+> 生效时会打一条日志说明屏蔽了几个、保留了几个。）
 
 这是安全设计里的一条通则：**黑名单要枚举无穷的坏，白名单只需枚举有限的好。**
 凡是能用白名单表达的地方，用黑名单就是选了一条注定漏的路。
@@ -2971,7 +2984,7 @@ if (config.command.includes(blocked)) return false;
 | **改参可见性** | 模型**无感知** | 注入 `hookModifiedNotice` | sid-code 更优，见 §11.5 |
 | **可观测性** | 无遥测字段 | hook 输入带 `duration_ms`/`cost_usd`/`ttft_ms`/`provider` | sid-code 更优 |
 | **信任门** | ✅ `shouldSkipHookDueToTrust()` | ⚠️ hook 目录内未搜到（§10.2） | **CC 更优** |
-| **SSRF 防护** | ✅ 有，且接线 | ⚠️ 模块完整但**无调用方**（§10.3） | **CC 更优** |
+| **SSRF 防护** | ✅ 有，且接线 | ✅ 2026-10-06 已接线（§10.3；原为模块完整但无调用方） | 持平 |
 | **竞速路数** | 4 路（+ Channel：Telegram/iMessage） | 3 路 | CC 覆盖更多入口 |
 | **grace period** | 200ms + 聚焦 3s / 非聚焦 1s 的 ✓ 动画 | 200ms | CC 的 UX 更细 |
 | **企业策略** | `managedOnly` 模式 | `EnterprisePolicyGate`（6 个开关） | sid-code 粒度更细 |

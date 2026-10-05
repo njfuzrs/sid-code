@@ -16,6 +16,22 @@ import type {
 } from "../config/config.ts";
 import { getLogger } from "../debug/logger.ts";
 import { ALL_HOOK_HANDLER_TYPES } from "./handler-types.ts";
+import { isInternalRuntimeHook } from "./enterprise-policy.ts";
+
+/**
+ * H18：声明「可 block」的事件（与 types.ts 枚举注释一致，aggregator 对它们走一票否决）。
+ * async hook 挂在这些事件上会静默失去阻塞能力，配置期要告警。
+ */
+const BLOCKING_EVENTS: ReadonlySet<HookEventName> = new Set([
+  HookEventName.PreToolUse,
+  HookEventName.UserPromptSubmit,
+  HookEventName.BeforeModel,
+  HookEventName.AfterModel,
+  HookEventName.PreCompact,
+  HookEventName.Stop,
+  HookEventName.PermissionRequest,
+  HookEventName.TeammateIdle,
+]);
 
 /** 注册表条目 */
 export interface HookRegistryEntry {
@@ -190,7 +206,17 @@ export class HookRegistry {
 
     // G5：用户级 settings.json 的 disableAllHooks。与企业策略的同名字段是两个来源，
     // 任一为 true 即全禁用。放在企业门控之前：用户显式关了就不必再逐条问企业策略。
-    if (userDisabledAllHooks()) return [];
+    // H28：「全部」只指用户可配置的 hook（command/url/prompt/agent）。type=runtime 只能由内部代码
+    // 注册（settings / 插件都配不出来），承载的是轨迹采集、遥测探针、会话指标——原先一起被关，
+    // 越是管得严的企业越拿不到自己的度量数据，而「采集停了」与「没人用」在数据上不可区分。
+    if (userDisabledAllHooks()) {
+      const kept = entries.filter(isInternalRuntimeHook);
+      this.reportDisableAllHooks("用户 settings.json", entries.length - kept.length, kept.length);
+      entries = kept;
+    } else if (this.policyGate?.isDisabled) {
+      const kept = entries.filter(isInternalRuntimeHook).length;
+      this.reportDisableAllHooks("企业策略", entries.length - kept, kept);
+    }
 
     // G13：企业策略门控——disableAllHooks / allowManagedHooksOnly / blockedCommands 等。
     // 门控读取 config.source，故过滤前把 entry.source 回填到 config.source（entry 与 config 分别存 source）。
@@ -299,6 +325,18 @@ export class HookRegistry {
     return removed;
   }
 
+  /** H28：disableAllHooks 生效时说清影响范围（每个来源只报一次，避免每次派发刷屏） */
+  private disableAllReported = new Set<string>();
+  private reportDisableAllHooks(origin: string, disabled: number, keptInternal: number): void {
+    if (this.disableAllReported.has(origin)) return;
+    this.disableAllReported.add(origin);
+    getLogger().info(
+      "HOOK",
+      `disableAllHooks 已生效（来源：${origin}）：本事件屏蔽 ${disabled} 个用户可配置 hook，` +
+        `保留 ${keptInternal} 个内部 runtime hook（轨迹 / 遥测 / 会话指标，不受此开关影响）`,
+    );
+  }
+
   /** 获取 hook 名称 */
   getHookName(entry: HookRegistryEntry): string {
     const cfg = entry.config;
@@ -334,6 +372,8 @@ export class HookRegistry {
         url: legacy.url,
         method: legacy.method,
         headers: legacy.headers,
+        // H5：原先这里不转发，allowedEnvVars 写了也到不了 ssrfGuardedFetch
+        allowedEnvVars: legacy.allowedEnvVars,
         timeout: legacy.timeout,
       };
     }
@@ -398,6 +438,16 @@ export class HookRegistry {
     if (config.type === "agent" && !config.prompt) {
       log.warn("HOOK", `agent hook 缺少 prompt 字段 (事件: ${eventName})`);
       return false;
+    }
+    // H18：async 的定义就是不等结果，所以它的 exit 2 / deny 永远赶不上本轮决策。这是设计，
+    // 但用户的心智是「async 只是不占时间」，实际语义是「放弃这个 hook 的一切决策权」——要说出来。
+    // 只告警不拒绝：后台跑审计 / 通知是 async 的正当用法。
+    if (config.type === "command" && config.async === true && BLOCKING_EVENTS.has(eventName)) {
+      log.warn(
+        "HOOK",
+        `${eventName} 上的 async hook（${config.name ?? config.command.slice(0, 40)}）不能阻塞：` +
+          `后台执行的结果赶不上本轮决策，exit 2 / deny 都不会生效。要拦截请去掉 async`,
+      );
     }
     return true;
   }

@@ -233,6 +233,8 @@ export class HookSystem {
         url: legacy.url,
         method: legacy.method,
         headers: legacy.headers,
+        // H5：原先这里不转发，allowedEnvVars 写了也到不了 ssrfGuardedFetch
+        allowedEnvVars: legacy.allowedEnvVars,
         timeout: legacy.timeout,
       };
     }
