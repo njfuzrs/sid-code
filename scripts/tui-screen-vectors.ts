@@ -24,7 +24,7 @@ const CHILD = `
 import React from "react";
 import { PassThrough } from "node:stream";
 const { CORPUS_ENVS, buildTree } = await import(${JSON.stringify(join(ROOT, "packages/tui/tests/fixtures/screen-corpus.ts"))});
-const { Box, Text } = await import(${JSON.stringify(join(ROOT, "packages/cli/src/ui/render-port/components.ts"))});
+const { Box, Text, Ansi, RawAnsi } = await import(${JSON.stringify(join(ROOT, "packages/cli/src/ui/render-port/components.ts"))});
 const { renderSync } = await import(${JSON.stringify(join(ROOT, "packages/cli/src/ui/render-port/testing.ts"))});
 const out = {};
 for (const c of CORPUS_ENVS[process.env.GROUP].cases) {
@@ -34,7 +34,7 @@ for (const c of CORPUS_ENVS[process.env.GROUP].cases) {
   stdout.on("data", (d) => { buf += d.toString(); });
   const stdin = new PassThrough();
   Object.assign(stdin, { isTTY: true, isRaw: false, setRawMode() { return stdin; }, ref: () => stdin, unref: () => stdin });
-  const inst = renderSync(buildTree(React, Box, Text, c.node), { stdout, stdin, patchConsole: false, exitOnCtrlC: false });
+  const inst = renderSync(buildTree(React, { Box, Text, Ansi, RawAnsi }, c.node), { stdout, stdin, patchConsole: false, exitOnCtrlC: false });
   await new Promise((r) => setTimeout(r, 40));
   // 首帧：第一个同步输出块的内容
   const m = /\\x1b\\[\\?2026h([\\s\\S]*?)\\x1b\\[\\?2026l/.exec(buf);

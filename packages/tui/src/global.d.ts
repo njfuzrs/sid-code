@@ -30,6 +30,8 @@ declare namespace Ink {
 
 		// eslint-disable-next-line @typescript-eslint/naming-convention
 		internal_transform?: (children: string, index: number) => string;
+		// sid-code（B9 / T4.1）：RawAnsi 的终端就绪行，渲染时不换行不截断
+		internal_raw?: boolean;
 		internal_accessibility?: DOMElement['internal_accessibility'];
 	};
 }

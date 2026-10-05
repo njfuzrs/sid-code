@@ -56,7 +56,7 @@
 | T2 | `wrap` / `truncate` / `truncate-end` / `truncate-middle` 的精确输出（省略号位置、CJK 不劈半） | `styles.ts:52`、`wrap-text.ts:56` | `packages/cli/tests/render-port/contracts-layout-text.test.tsx` T2: |
 | T3 | RTL 混排按 bidi 重排后输出（只在需要的终端上做） | `bidi.ts:33`、`output.ts:627` | `packages/cli/tests/render-port/term-bench/scenarios.tsx` S4: { |
 | T4 | 宽字符被布局挤到只剩 1 列时，不留下孤立的 spacer 单元 | `screen.ts:267`、`screen.ts:303` | `packages/cli/tests/render-port/term-bench/scenarios.tsx` S4: { |
-| T5 | `Ansi` 解析 ANSI 文本为带样式的文本节点；`RawAnsi` 接收已按列宽换行的终端就绪行，单个叶子节点直写，不二次解析 | `Ansi.tsx:32`、`components/RawAnsi.tsx:28` | `packages/cli/tests/render-port/contracts-layout-text.test.tsx` T5: |
+| T5 | `Ansi` 解析 ANSI 文本为带样式的文本节点（按 `<Text>` 的叠加顺序重编码，暗压粗体，OSC 8 只在终端支持时保留且不保留原 id）；`RawAnsi` 接收已按列宽换行的终端就绪行，单个固定尺寸叶子节点直写，不换行不截断。字节级对拍见 `packages/tui/tests/fixtures/screen-vectors.json` 的 `Ansi *` / `RawAnsi *` 条目（T4.1） | `Ansi.tsx:32`、`components/RawAnsi.tsx:28` | `packages/cli/tests/render-port/contracts-layout-text.test.tsx` T5: |
 | T6 | styled-chars 五个函数（`toStyledCharacters` / `styledCharsWidth` / `wrapStyledChars` / `wordBreakStyledChars` / `widestLineFromStyledChars`）的输入输出 | `_vendor/styled-chars.ts:69` | `packages/cli/tests/render-port/term-bench/scenarios.tsx` S5: { |
 
 ## I 输入

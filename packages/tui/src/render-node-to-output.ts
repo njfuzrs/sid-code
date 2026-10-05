@@ -216,7 +216,8 @@ const renderLaidOutNode = (
 				const currentWidth = widestLine(text);
 				const maxWidth = getMaxWidth(yogaNode);
 
-				if (currentWidth > maxWidth) {
+				// sid-code（B9 / T4.1）：RawAnsi 的内容已按列宽换好行，不再换行 / 截断（契约 T5）
+				if (currentWidth > maxWidth && !node.attributes['internal_raw']) {
 					const textWrap = node.style.textWrap ?? 'wrap';
 					text = wrapText(text, maxWidth, textWrap);
 				}

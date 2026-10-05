@@ -55,3 +55,7 @@ diff -r /tmp/ink-v711/src packages/tui/src   # 导入提交上应无输出
 | T3.4 | `src/screen/screen.ts`、`src/screen/serialize.ts`、`src/frame/main-screen.ts` | 单元字形簇改存整数 id（`Uint32Array`，进程级驻留表，0 = 空格、1 = spacer），`charAt` 取字符串；帧 diff 的行比较直接比四个平铺数组 | 整屏分配从逐格字符串数组变成一次清零；diff 去掉每格函数调用 | P3 |
 | T3.4 | `src/renderer.ts`、`src/ink.tsx` | TTY 交互帧不生成纯文本 `output`（只有 debug / 非 TTY / 读屏路径要） | 交互路径只比屏幕缓冲，纯文本是整屏再序列化一遍，没人读 | P3 |
 | T3.4 | `src/hooks/use-animation-frame.ts` | 离屏暂停：渲染时按上一次提交的布局判断 ref 盒是否在主屏视口内（帧的最后 H - 1 行），不在就不订阅时钟 | 旧底座行为（黑盒扫描 105 组位置得出），滚进 scrollback 的动画不再每 tick 重渲出帧 | P5 |
+| T4.1 | `src/components/Text.tsx` | 样式叠加改走 `applyTextStyles`（inverse → strikethrough → underline → italic → bold → dim → 前景 → 背景）；新增 `dim` prop；`dimColor` 只留名字不出 SGR；嵌套 `<Text>` 经 context 继承外层样式，内层把合并后的整套样式重新编码 | 对拍旧底座首帧字节：叠加顺序决定字节；旧底座 `<Text dimColor>` 不出 SGR；`<Text inverse>a<Text underline>b` 里 b 的关闭顺序只有「内层重编整套样式」才对得上 | L1、T5 |
+| T4.1 | `src/components/Ansi.tsx`（新增） | 解析 ANSI 为片段再按 Text 的叠加顺序重编码：认 0–9 / 21–29 / 30–49 / 90–107 / 38·48 扩展色（含冒号形式与 `4:n`），其余码丢弃；参数不够的 38 / 48 只跳过本身；`22` 同时关粗体与暗；暗开着时粗体不出 SGR；`dimColor` 整段变暗；OSC 8 在终端支持时统一写成 `OSC 8 ;; url BEL`（原 id / 参数不保留），不支持时丢掉；`ESC[0m` 不关链接 | CLI 的 Markdown / 预览渲染依赖；上游没有等价物 | T5 |
+| T4.1 | `src/components/RawAnsi.tsx`（新增）、`src/render-node-to-output.ts`、`src/global.d.ts` | `RawAnsi`：一个 `ink-text` 叶子，尺寸固定为 `width × lines.length`、不伸缩，带 `internal_raw` 标记，渲染时不换行不截断；`lines` 为空不渲染 | DiffRenderer 的终端就绪行直写；对拍得出行比 `width` 宽时照写、被后面的兄弟盖住 | T5 |
+| T4.1 | `src/index.ts` | 导出 `Ansi` / `RawAnsi` | 端口 next 接上 | T5 |

@@ -87,15 +87,15 @@ describe("next 骨架：未实现的符号用时就抛", () => {
     expect(() => (comps.Static as unknown as () => unknown)()).toThrow(/Static 尚未实现（T4\.2）/);
   });
 
-  test("next 的 Box / Text 来自 @sid-code/tui，不是 legacy", async () => {
+  test("next 的 Box / Text / Ansi / RawAnsi 来自 @sid-code/tui，不是 legacy", async () => {
     const next = await import("../../src/ui/render-port/next/components.ts");
     const legacy = await import("../../src/ui/render-port/legacy/components.ts");
     // 测试也只能经端口拿底座（lint:boundary 的 render-port 规则），所以不直接 import @sid-code/tui，
     // 改为核对 next/components.ts 的来源声明 + 与 legacy 不是同一个对象
     const src = readFileSync(join(PORT_DIR, "next/components.ts"), "utf8");
-    expect(src).toMatch(/export \{ Box, Text \} from "@sid-code\/tui";/);
-    expect(next.Box).not.toBe(legacy.Box);
-    expect(next.Text).not.toBe(legacy.Text);
+    expect(src).toMatch(/export \{ Ansi, Box, RawAnsi, Text \} from "@sid-code\/tui";/);
+    for (const k of ["Box", "Text", "Ansi", "RawAnsi"] as const)
+      expect(next[k]).not.toBe(legacy[k]);
   });
 });
 
