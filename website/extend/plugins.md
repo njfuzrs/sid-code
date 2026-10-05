@@ -154,7 +154,10 @@ sid-code --plugin-dir /tmp/plugin-a --plugin-dir /tmp/plugin-b
 | --- | --- |
 | `/plugin list` | 列出所有插件（启用 / 禁用 / 错误） |
 | `/plugin info <name>` | 看详情 |
-| `/plugin install <path>` | 从本地目录安装 |
+| `/plugin market [关键词]` | 浏览企业插件市场（需配置 `backend.url` 并 `sid-code auth login`） |
+| `/plugin install <name>@company` | 从企业市场安装：下载 → sha256 校验 → 安全解包 |
+| `/plugin update [name]` | 按市场目录更新市场插件，新包校验失败时保留旧版本 |
+| `/plugin install <path>` | 从本地目录安装（企业策略锁定时拒绝） |
 | `/plugin uninstall <name>` | 卸载（`--delete` 删文件，`--force` 忽略依赖） |
 | `/plugin enable <name>` | 启用 |
 | `/plugin disable <name>` | 禁用（`--force` 忽略反向依赖） |
@@ -162,6 +165,35 @@ sid-code --plugin-dir /tmp/plugin-a --plugin-dir /tmp/plugin-b
 
 `/plugins` 是 `/plugin` 的别名。依赖检查是双向的：卸载被依赖的插件会被拦下，
 要强行来加 `--force`。
+
+## 企业插件市场
+
+市场地址由 `backend.url` 推出（`<backend.url>/api/v1/ctl/marketplace/index`），请求带设备凭据。
+目录拉不到（网络错 / 5xx）时用上次缓存展示，已装插件照常加载；401 不退回缓存，
+凭据被吊销后目录与下载一起失效。
+
+安装时客户端会再做一遍服务端已经做过的检查：sha256 必须与目录登记的一致，
+包里不能有符号链接、硬链接、设备文件、`..` 或绝对路径，`plugin.json` 的名字和版本
+必须与目录一致，组件路径必须是包内相对路径。任何一条不过，整包拒绝，插件目录不留残留。
+
+### 锁定后只认市场来源
+
+企业策略里任一项生效，插件来源就会被锁定：
+
+- `strictPluginOnlyCustomization`（锁了任意一个面）
+- `strictKnownMarketplaces: [{ "source": "url", "url": "https://.../ctl/marketplace/index" }]`
+
+锁定后：
+
+| 来源 | 结果 |
+| --- | --- |
+| 内置插件 | 照常 |
+| 企业市场插件 | 有白名单时 index 地址必须在白名单内；没有白名单时必须是本机 `backend.url` 那个市场 |
+| 本地目录安装 / `--plugin-dir` | 拒绝安装，已装的不加载 |
+
+`strictKnownMarketplaces: []` 表示除内置插件外全部禁用。市场插件加载前会复核目录指纹，
+装好后被改过内容（比如往里加了 `hooks.json`）的插件不会加载，需要 `/plugin update` 或重装。
+这一层防的是误装和未审计的插件被顺手加载，挡不住有本机写权限、又存心伪造 `installed.json` 的人。
 
 ## Bridge：远程控制
 

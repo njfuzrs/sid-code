@@ -78,6 +78,8 @@ export interface LoadedPlugin {
   enabled: boolean;
   /** 是否为内置插件 */
   isBuiltin: boolean;
+  /** 企业市场名（从市场安装且通过来源校验时才有）。tool_invoked 归因只认它 */
+  marketplace?: string;
 
   /** 组件路径（延迟加载入口，绝对路径） */
   commandsPaths: string[];
@@ -111,6 +113,7 @@ export type PluginError =
   | { type: "path-not-found"; source: string; path: string; component: PluginComponent }
   | { type: "duplicate-name"; source: string; existingSource: string }
   | { type: "trust-rejected"; source: string; path: string }
+  | { type: "policy-blocked"; source: string; reason: string }
   | { type: "generic-error"; source: string; error: string };
 
 /** 插件加载结果 */
@@ -129,13 +132,37 @@ export interface InstalledPluginEntry {
   /** ISO 时间戳 */
   installedAt: string;
   enabled: boolean;
+  /**
+   * 企业市场来源（P5）。有它 = 从市场装的；没有 = 本地目录装的。
+   * strictKnownMarketplaces / strictPluginOnlyCustomization 锁定时，只有带它且 indexUrl
+   * 在白名单内的条目才会被加载（见 loader.ts 与 config/plugin-only-policy.ts）。
+   *
+   * ⚠️ 能力边界：这是**本机文件**里的记录。锁定时 loader 会复核 `treeHash`，能拦住
+   * 「装好的市场插件被改了内容（如往 hooks.json 加命令）」与「目录被整个换掉」；
+   * 但拦不住有本机写权限、又刻意照算法伪造 installed.json 的人 —— 客户端侧的锁本质上
+   * 防的是误装与未审计插件被顺手加载，不是对抗本机管理员。强约束在服务端（下载归因 /
+   * 调用事件都按设备凭据落人）。
+   */
+  market?: InstalledMarketInfo;
+}
+
+/** installed.json 里市场插件的来源记录 */
+export interface InstalledMarketInfo {
+  /** 市场名（index 里的 name，缺省 "company"），也是插件标识符 `name@<market>` 的后缀 */
+  name: string;
+  /** 市场 index 的完整地址 */
+  indexUrl: string;
+  /** 制品 sha256（安装时校验过的那个值） */
+  sha256: string;
+  /** 解包后插件目录的内容指纹，加载时复核，防止手改 installed.json 把本地目录冒充成市场插件 */
+  treeHash: string;
 }
 
 // ============================================================
 // 企业策略与 Marketplace（预留接口，第一阶段不实现）
 // ============================================================
 
-/** Marketplace 来源配置（预留） */
+/** Marketplace 来源配置。`url` 已实现（market.ts），其余仍为预留 */
 export interface MarketplaceSource {
   source: "github" | "git" | "npm" | "url" | "directory";
   repo?: string; // github 简写
@@ -181,6 +208,8 @@ export function formatPluginError(err: PluginError): string {
       return `[${err.source}] 插件名重复（已存在来源: ${err.existingSource}）`;
     case "trust-rejected":
       return `[${err.source}] 信任被拒绝: ${err.path}`;
+    case "policy-blocked":
+      return `[${err.source}] 企业策略拒绝加载: ${err.reason}`;
     case "generic-error":
       return `[${err.source}] ${err.error}`;
   }

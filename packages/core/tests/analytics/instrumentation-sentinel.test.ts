@@ -114,10 +114,8 @@ const FACADE_EMITTERS = [
  * **豁免是会自我失效的**：下方有一条断言要求豁免项此刻确实零调用 ——
  * 接线 PR 合入后它立刻变红，逼着把这一行删掉，而不是让豁免悄悄留成永久后门。
  */
-const PENDING_WIRING: Record<string, string> = {
-  // 调用点在插件市场客户端 PR 接线（cli 的 /plugin install|update 流程）
-  logPluginInstalled: "调用点在插件市场客户端 PR 接线",
-};
+// logPluginInstalled 的豁免已随插件市场客户端 PR 删除：调用点在 cli/src/plugin/market-operations.ts
+const PENDING_WIRING: Record<string, string> = {};
 
 describe("埋点接线哨兵：事件名双向对账", () => {
   test("EVENT_NAMES 里每个事件名都有对应的门面 emit 函数（无孤立常量）", () => {
