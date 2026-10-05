@@ -173,7 +173,7 @@ pnpm install           # 独立安装
   原稿只说了「你命名的不碰」「锁住的跳过」两条，读者最担心的那件事
   （临时 worktree 里我还没提交的改动会不会一起没了）反而没答案——
   而列表里恰好有个「✎未提交」标记，说明工具知道这个状态，更让人悬着。
-  四条保护与宽限期都以 src/worktree/cleanup.ts 与 manager.countChanges 为准。
+  四条保护与宽限期都以 packages/core/src/worktree/cleanup.ts 与 manager.countChanges 为准。
 -->
 
 **有未提交内容的不会被删。** 临时 worktree 要同时满足四个条件才会被清掉：
@@ -203,7 +203,7 @@ worktree 隔离有实际开销（创建 + 磁盘），所以只在 agent 真的�
 ### 从 PR 继续工作：`--from-pr`
 
 不是每次都从主干切 worktree——有时你想**接着一个已存在的 PR 往下做**。
-`--from-pr <number>` 从 PR 恢复会话上下文（`src/session/from-pr.ts`，对齐 claude-code）：
+`--from-pr <number>` 从 PR 恢复会话上下文（`packages/core/src/session/from-pr.ts`）：
 
 ```bash
 sid-code --from-pr 42
@@ -262,11 +262,11 @@ sid-code --from-pr 42 --worktree=pr-42-fix
 | PR 描述末尾 | `🤖 Generated with sid-code` | `git.prAttribution` |
 
 commit 归因与正文之间空一行（vim `Co-Authored-By` 惯例）。这两条是**独立可配**的——
-关掉 commit 归因不影响 PR 归因，反之亦然（`src/tool/git-attribution.ts`）。
+关掉 commit 归因不影响 PR 归因，反之亦然（`packages/core/src/tool/git-attribution.ts`）。
 
 ### 怎么配 / 怎么关
 
-settings.json 的 `git` 字段（`src/config/config.ts:659-672`）：
+settings.json 的 `git` 字段（`packages/core/src/config/config.ts` 的 `GitConfig`）：
 
 ```json
 {
@@ -305,11 +305,15 @@ settings.json 的 `git` 字段（`src/config/config.ts:659-672`）：
 
 - `/commit`、`/commit-push-pr`、`/pr-workflow`、`/pr` 这些 skill 的 prompt 里会动态注入归因指令，
   模型写 commit/PR 时按指令追加——这是主路径
-- worktree 内若装了 `prepare-commit-msg` hook（`worktree.commitAttribution: true`），
-  你手动 `git commit` 也会触发
+- worktree 内若装上了 `prepare-commit-msg` hook（`worktree.commitAttribution: true`，
+  且 hooks 目录是该 worktree 私有的，见下），你手动 `git commit` 也会触发
 
 所以**非 worktree 的普通仓库里，你绕过 sid-code 手动 `git commit` 不会带归因**。
-想让 worktree 里的裸 commit 也带归因，要把上面的 `worktree.commitAttribution` 设 `true`。
+想让 worktree 里的裸 commit 也带归因，要把上面的 `worktree.commitAttribution` 设 `true`——
+但默认情况下这个开关**通常不会真的装上 hook**：git 的 hooks 目录默认由主仓与全部 worktree 共享，
+装进去会改变主仓的每一次提交，所以 sid-code 检测到共享目录就不装、只告警一次。这是刻意的。
+真要装，需要你自己开 `extensions.worktreeConfig` 并给该 worktree 设 per-worktree 的
+`core.hooksPath`。归因的主通道始终是上面 commit 类 skill 的注入。
 
 ### worktree 的 `commitAttribution` 和全局 `git.commitAttribution` 什么关系
 
@@ -317,16 +321,20 @@ settings.json 的 `git` 字段（`src/config/config.ts:659-672`）：
 
 | 开关 | 位置 | 默认 | 管什么 |
 | --- | --- | --- | --- |
-| `worktree.commitAttribution` | `worktree` 段 | `false` | **是否装** prepare-commit-msg hook（布尔值） |
+| `worktree.commitAttribution` | `worktree` 段 | `false` | **是否尝试装** prepare-commit-msg hook（布尔值；hooks 目录共享时不装） |
 | `git.commitAttribution.enabled` | `git` 段 | `true` | **归因文本**是否启用（装了 hook 后写什么内容） |
 
-关系链（`src/worktree/manager.ts:499-501`）：
+关系链（`packages/core/src/worktree/manager.ts`）：
 
 ```text
-worktree.commitAttribution: true  → 装 prepare-commit-msg hook
-  └─ hook 内读 git.commitAttribution
-       ├─ enabled: false → 跳过（hook 装了但不写内容）
-       └─ enabled: true  → 写 text（或默认值）进 commit message
+worktree.commitAttribution: true
+  └─ hooks 目录是本 worktree 私有的吗？
+       ├─ 否（默认：主仓共享）→ 不装，只告警
+       ├─ 是，但 hook 文件已存在 → 不覆盖，跳过
+       └─ 是 → 装 prepare-commit-msg hook
+            └─ hook 内读 git.commitAttribution
+                 ├─ enabled: false → 跳过（hook 装了但不写内容）
+                 └─ enabled: true  → 写 text（或默认值）进 commit message
 ```
 
 所以：
