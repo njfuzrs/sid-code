@@ -29,14 +29,15 @@ export type BackendChannel =
   | "usage"
   | "upload"
   | "health"
-  | "bridge";
+  | "bridge"
+  | "marketplace";
 
 /** API 前缀。服务端所有路由都在同一个 FastAPI 应用的这个前缀下（agent-backend main.py）。 */
 export const BACKEND_API_PREFIX = "/api/v1";
 
 /**
  * 通道 → (方法, 路径)。路径**不含** `/api/v1` 前缀。
- * `auth` / `upload` / `bridge` 是前缀型通道，调用方再拼子路径（见 `backendUrl()`）；
+ * `auth` / `upload` / `bridge` / `marketplace` 是前缀型通道，调用方再拼子路径（见 `backendUrl()`）；
  * 契约快照里登记的是它们实际会打到的具体路由（`BACKEND_ROUTE_CONTRACT`）。
  */
 export const BACKEND_PATHS: Readonly<Record<BackendChannel, string>> = {
@@ -50,6 +51,8 @@ export const BACKEND_PATHS: Readonly<Record<BackendChannel, string>> = {
   upload: "/upload",
   health: "/health",
   bridge: "/ctl/bridge",
+  // 前缀型：index 与 artifacts/<name>/<version>（P5，agent-backend marketplace/router/serve.py）
+  marketplace: "/ctl/marketplace",
 };
 
 /**
@@ -69,6 +72,8 @@ export const BACKEND_ROUTE_CONTRACT: ReadonlyArray<{ method: "GET" | "POST"; pat
   { method: "POST", path: `${BACKEND_API_PREFIX}/usage/ledger` },
   { method: "POST", path: `${BACKEND_API_PREFIX}/upload/session-file` },
   { method: "GET", path: `${BACKEND_API_PREFIX}/health` },
+  { method: "GET", path: `${BACKEND_API_PREFIX}/ctl/marketplace/index` },
+  { method: "GET", path: `${BACKEND_API_PREFIX}/ctl/marketplace/artifacts/{name}/{version}` },
 ];
 
 export type EndpointSource = BackendUrlSource | "legacy-env" | "legacy-settings";

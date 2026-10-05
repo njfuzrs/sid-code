@@ -66,7 +66,7 @@ description: 交互模式里可用的全部斜杠命令。
 | `/model` | 显示或切换模型（主模型 / fallback / 子代理，-p 持久化） | `/m` | `[name\|fallback <name>\|sub <type> <name>] [-p]` |
 | `/permissions` | 查看当前权限规则和模式 | `/perms` | — |
 | `/plan` | 进入计划模式（先规划后执行） | — | — |
-| `/plugin` | 插件管理 | `/plugins` | `[list\|info\|install\|uninstall\|enable\|disable] [插件名]` |
+| `/plugin` | 插件管理 | `/plugins` | `[list\|market\|info\|install\|update\|uninstall\|enable\|disable] [插件名]` |
 | `/ps` | 列出后台任务和活跃会话 | `/tasks` | — |
 | `/reload-plugins` | 重新加载所有插件组件（命令/Skills/Hooks/MCP） | `/reload-plugin` | — |
 | `/rename` | 重命名当前会话（无参则据上下文自动生成名字） | — | `[新名字]` |

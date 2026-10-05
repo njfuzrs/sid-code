@@ -44,6 +44,14 @@
     {
       "method": "GET",
       "path": "/api/v1/health"
+    },
+    {
+      "method": "GET",
+      "path": "/api/v1/ctl/marketplace/index"
+    },
+    {
+      "method": "GET",
+      "path": "/api/v1/ctl/marketplace/artifacts/{name}/{version}"
     }
   ]
 }
