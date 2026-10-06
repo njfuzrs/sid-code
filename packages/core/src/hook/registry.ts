@@ -3,11 +3,14 @@
  * 多源加载（runtime/project/user/global）、验证、优先级排序、启用/禁用管理
  */
 
-import { HookEventName, ConfigSource, LEGACY_EVENT_MAP, type HookConfig } from "./types.ts";
-import type {
-  HooksConfig as LegacyHooksConfig,
-  HookConfig as LegacyHookConfig,
-} from "../config/config.ts";
+import { HookEventName, ConfigSource, type HookConfig } from "./types.ts";
+import type { HooksConfig as LegacyHooksConfig } from "../config/config.ts";
+import {
+  normalizeHooksConfig,
+  formatHookDiagnostic,
+  type HookDiagnostic,
+  type NormalizeContext,
+} from "./config-normalize.ts";
 import { getLogger } from "../debug/logger.ts";
 import { ALL_HOOK_HANDLER_TYPES } from "./handler-types.ts";
 import { isInternalRuntimeHook } from "./enterprise-policy.ts";
@@ -70,70 +73,72 @@ export class HookRegistry {
     this.policyGate = gate;
   }
 
-  /** 从旧格式配置初始化（向后兼容） */
-  initializeFromLegacy(legacyHooks: LegacyHooksConfig): void {
-    const log = getLogger();
-    // 保留已有的 runtime hook
-    const runtimeEntries = this.entries.filter((e) => e.source === ConfigSource.Runtime);
-    this.entries = [...runtimeEntries];
+  /**
+   * 从一份 hooks 配置初始化（settings 链、测试用）。保留已注册的 runtime / plugin hook。
+   *
+   * 形状解析全部委托给 config-normalize.ts（HC3：唯一转换器）。原先这里有自己的
+   * convertLegacyHook，只认平铺形状，CC 嵌套形状整条跳过。
+   * @returns 归一化诊断（调用方负责把它们送到启动横幅）
+   */
+  initializeFromLegacy(
+    legacyHooks: LegacyHooksConfig,
+    source: ConfigSource = ConfigSource.User,
+  ): HookDiagnostic[] {
+    return this.initializeFromSources([{ hooks: legacyHooks, source }]);
+  }
+
+  /**
+   * HC1：按来源分层初始化。各层**按事件追加**、不互相替换（与 CC 一致），每条带真实 source。
+   * 只清掉配置文件来源的旧条目：runtime（内部 / skill）与 plugin（replacePluginHooks 管）不动。
+   */
+  initializeFromSources(
+    layers: Array<{ hooks: unknown; source: ConfigSource; ctx?: NormalizeContext }>,
+  ): HookDiagnostic[] {
+    this.entries = this.entries.filter(
+      (e) => e.source === ConfigSource.Runtime || e.source === ConfigSource.Plugin,
+    );
     this.rebuildEventIndex();
-
-    for (const [eventKey, hookList] of Object.entries(legacyHooks)) {
-      if (!hookList || !Array.isArray(hookList) || hookList.length === 0) continue;
-
-      // 解析事件名（支持旧 snake_case 和新 PascalCase）
-      const eventName = this.resolveEventName(eventKey);
-      if (!eventName) {
-        log.warn("HOOK", `无效的事件名: "${eventKey}"，跳过`);
-        continue;
-      }
-
-      for (const legacyHook of hookList) {
-        const config = this.convertLegacyHook(legacyHook);
-        if (!config) {
-          // 这里曾经是裸 `continue`，形状写错的 hook 被**静默丢弃**：加载不报错、不打日志，
-          // 配置看着没问题、hook 就是不触发，是最难自查的一类错。
-          // 最常见的错法是照抄 agent frontmatter 的嵌套形状 `{matcher, hooks:[{...}]}`
-          // ——settings.json 走的是平铺形状（matcher/command 与 type 同级），
-          // 嵌套时同级 command 缺失，convertLegacyHook 返回 null。
-          // 所以这条日志必须点名缺了哪个字段，并在嵌套形状时直接说破。
-          const type = (legacyHook as { type?: string })?.type || "command";
-          const missing =
-            type === "url" ? "url" : type === "prompt" || type === "agent" ? "prompt" : "command";
-          const looksNested =
-            legacyHook &&
-            typeof legacyHook === "object" &&
-            Array.isArray((legacyHook as { hooks?: unknown }).hooks);
-          log.warn(
-            "HOOK",
-            looksNested
-              ? `${eventKey} 的 hook 用了嵌套形状 {matcher, hooks:[...]}，settings.json 需要平铺形状` +
-                  `（把 type/command 提到与 matcher 同级）——本条已跳过，不会触发`
-              : `${eventKey} 的 hook 缺少 "${missing}" 字段（type=${type}），已跳过，不会触发`,
-          );
-          continue;
-        }
-
-        if (!this.validateHookConfig(config, eventName)) continue;
-
-        this.warnOnUnusableIf(eventName, legacyHook.if);
-        this.entries.push({
-          config,
-          // ⚠️ settings 链合并后的 hook 一律标 User（项目级 / 用户级在 config 层已合并，来源信息到不了这里）。
-          // H27：将来若要在此区分 Project，别忘了 Project 不是「企业管理」——见 enterprise-policy.ts。
-          source: ConfigSource.User,
-          eventName,
-          matcher: legacyHook.matcher,
-          if: legacyHook.if,
-          // H23：原先硬编码 false，用户写 sequential:true 不生效（串行能力只在一条零调用的「新格式」初始化路径里，已删）
-          sequential: legacyHook.sequential === true,
-          enabled: true,
-        });
-        this.incrementEventIndex(eventName);
-      }
+    const diagnostics: HookDiagnostic[] = [];
+    for (const layer of layers) {
+      diagnostics.push(...this.addNormalized(layer.hooks, layer.source, layer.ctx));
     }
+    for (const d of diagnostics) {
+      getLogger()[d.level === "error" ? "warn" : "debug"]("HOOK", formatHookDiagnostic(d));
+    }
+    getLogger().debug("HOOK", `注册表初始化完成，共 ${this.entries.length} 个 hook`);
+    return diagnostics;
+  }
 
-    log.debug("HOOK", `注册表初始化完成，共 ${this.entries.length} 个 hook`);
+  /**
+   * 归一化一份 hooks 配置并注册到指定来源（插件 / skill / agent / settings 共用）。
+   * @returns 归一化诊断
+   */
+  addNormalized(
+    raw: unknown,
+    source: ConfigSource,
+    ctx?: NormalizeContext,
+    meta?: { skillName?: string; hookScope?: string },
+  ): HookDiagnostic[] {
+    const { entries, diagnostics } = normalizeHooksConfig(raw, source, ctx);
+    for (const n of entries) {
+      if (!this.validateHookConfig(n.config, n.eventName)) continue;
+      this.warnOnUnusableIf(n.eventName, n.if);
+      this.entries.push({
+        config: n.config,
+        source,
+        eventName: n.eventName,
+        matcher: n.matcher,
+        if: n.if,
+        // H23：sequential 透传（原先硬编码 false）
+        sequential: n.sequential === true,
+        enabled: true,
+        ...(meta?.skillName ? { skillName: meta.skillName } : {}),
+        ...(meta?.hookScope ? { hookScope: meta.hookScope } : {}),
+        ...(n.once ? { once: true, executed: false } : {}),
+      });
+      this.incrementEventIndex(n.eventName);
+    }
+    return diagnostics;
   }
 
   /**
@@ -336,71 +341,6 @@ export class HookRegistry {
 
   // ---- 私有方法 ----
 
-  /** 解析事件名（支持旧 snake_case 和新 PascalCase） */
-  private resolveEventName(name: string): HookEventName | null {
-    // 直接匹配 PascalCase
-    const values = Object.values(HookEventName);
-    if (values.includes(name as HookEventName)) {
-      return name as HookEventName;
-    }
-    // 旧 snake_case 映射
-    if (name in LEGACY_EVENT_MAP) {
-      return LEGACY_EVENT_MAP[name];
-    }
-    return null;
-  }
-
-  /** 将旧格式 HookConfig 转换为新格式 */
-  private convertLegacyHook(legacy: LegacyHookConfig): HookConfig | null {
-    const type = legacy.type || "command";
-    if (type === "url") {
-      if (!legacy.url) return null;
-      return {
-        type: "url",
-        url: legacy.url,
-        method: legacy.method,
-        headers: legacy.headers,
-        // H5：原先这里不转发，allowedEnvVars 写了也到不了 ssrfGuardedFetch
-        allowedEnvVars: legacy.allowedEnvVars,
-        timeout: legacy.timeout,
-      };
-    }
-    // G5：prompt 类型（LLM 单轮验证）
-    if (type === "prompt") {
-      if (!legacy.prompt) return null;
-      return {
-        type: "prompt",
-        name: legacy.name,
-        prompt: legacy.prompt,
-        model: legacy.model,
-        timeout: legacy.timeout,
-      };
-    }
-    // G5：agent 类型（多轮子代理验证）
-    if (type === "agent") {
-      if (!legacy.prompt) return null;
-      return {
-        type: "agent",
-        name: legacy.name,
-        prompt: legacy.prompt,
-        model: legacy.model,
-        tools: legacy.tools,
-        timeout: legacy.timeout,
-      };
-    }
-    // command
-    if (!legacy.command) return null;
-    return {
-      type: "command",
-      name: legacy.name,
-      command: legacy.command,
-      timeout: legacy.timeout,
-      env: legacy.env, // H22：原先不搬运，settings 里写了 env 子进程读不到
-      async: legacy.async, // G7：后台异步执行
-      asyncRewake: legacy.asyncRewake, // G7：exit 2 回灌唤醒
-    };
-  }
-
   /** 验证 hook 配置 */
   private validateHookConfig(config: HookConfig, eventName: HookEventName): boolean {
     const log = getLogger();
@@ -448,6 +388,8 @@ export class HookRegistry {
         return 0;
       case ConfigSource.Managed:
         return 0;
+      case ConfigSource.Local:
+        return 1;
       case ConfigSource.Project:
         return 1;
       case ConfigSource.User:

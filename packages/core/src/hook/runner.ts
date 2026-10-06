@@ -323,6 +323,9 @@ export class HookRunner {
       SID_CODE_PROJECT_DIR: input.cwd,
       // H14：$SID_CODE_CWD 原先只靠对命令串做字符串替换提供，删掉替换后改由环境变量提供，写法不变
       SID_CODE_CWD: input.cwd,
+      // 来源决定的路径变量（插件根 / skill 目录 …）：shell 形式由 sh 从环境展开 ${CLAUDE_PLUGIN_ROOT} 等，
+      // 不再往命令串里替换路径（H14 同型）。用户 env 在后，可覆盖。
+      ...hookConfig.pathVars,
       ...hookConfig.env,
     };
 

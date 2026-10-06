@@ -632,6 +632,16 @@ export interface Config {
   };
 
   /**
+   * HC1：按来源收集的 hooks 层（managed / user / project / local），由 loadConfig 填。
+   * App 用它按真实来源注册 hook；信任门只给不可信层打 skippedByTrust，不再清空整个 hooks。
+   * 缺省（测试 / SDK 直接构造 Config）时回落到 `hooks` 字段、按用户级注册。仅运行时携带。
+   */
+  _hookLayers?: import("./hook-layers.ts").HookLayer[];
+
+  /** Q2：`--trust-workspace` / SDK `trustWorkspace`——仅本会话信任工作区，不持久化 */
+  trustWorkspace?: boolean;
+
+  /**
    * 首次启动引导标记：TUI 模式下检测到"完全未配置模型/API Key"时置 true。
    * loadConfig 遇此情形不再 throw（避免首启崩溃），而是放行进 TUI，由
    * OnboardingDialog 引导用户配置。headless 模式（print）恒 false —— 无头
@@ -1869,6 +1879,23 @@ export async function loadConfig(cliArgs: Partial<Config> = {}): Promise<Config>
     await recordUnknownSettingKeys(config);
   } catch {
     /* 诊断收集失败不影响启动 */
+  }
+
+  // HC1：按来源收集 hooks 层。用户层的诊断已由 validateConfig(config.hooks) 出过，
+  // 这里只补项目 / 本地 / 托管层的诊断，带来源文件（§三.9：每条被跳过的 hook 都要说清在哪个文件）。
+  try {
+    const { collectHookLayers } = await import("./hook-layers.ts");
+    const { normalizeHooksConfig } = await import("../hook/config-normalize.ts");
+    const layers = collectHookLayers();
+    config._hookLayers = layers;
+    for (const layer of layers) {
+      if (layer.source === "user") continue;
+      const { diagnostics } = normalizeHooksConfig(layer.hooks, layer.source as never);
+      for (const d of diagnostics)
+        recordStartupWarning(config, `${layer.file}#${d.path}`, d.message);
+    }
+  } catch (e) {
+    getLogger().debug("CONFIG", `收集 hooks 层失败（回落到用户级 hooks）: ${e}`);
   }
 
   // baseURL 覆盖提示放在诊断赋值之后：赋值是整体替换，放前面会被盖掉。

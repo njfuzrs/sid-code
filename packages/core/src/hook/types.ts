@@ -121,7 +121,13 @@ export const LEGACY_EVENT_MAP: Record<string, HookEventName> = {
 /** 配置来源（优先级从高到低） */
 export enum ConfigSource {
   Runtime = "runtime",
+  /** 仓库内 `.sid-code/settings.json`——随 git clone 而来，过信任门 */
   Project = "project",
+  /**
+   * HC1：`.sid-code/settings.local.json`。未被 git 追踪 = 本机私有，与用户级同等可信；
+   * 被追踪 = 随仓库分发，与 Project 一样过信任门（判据见 TrustManager.untrustedSettingsFiles）。
+   */
+  Local = "local",
   User = "user",
   Global = "global",
   /** 插件提供的 hook（可被 replacePluginHooks 原子替换） */
@@ -166,10 +172,24 @@ export interface CommandHookConfig {
   type: "command";
   name?: string;
   command: string;
+  /**
+   * CC exec 形式：有 args 时不经 shell，`[command, ...args]` 直接 spawn，路径占位符
+   * （`${CLAUDE_PROJECT_DIR}` / `${CLAUDE_PLUGIN_ROOT}` …）在 command 与每个 arg 上做纯字符串替换。
+   * 省略 = shell 形式（`sh -c command`，变量由 shell 从环境变量展开）。
+   */
+  args?: string[];
   timeout?: number;
   env?: Record<string, string>;
+  /**
+   * 来源相关的路径变量（插件根 / 插件数据目录 / skill 目录），由归一化层填。
+   * runner 把它们导出为环境变量（shell 形式靠 shell 展开），exec 形式另做字符串替换。
+   * 与 env 分开存：env 是用户写的，pathVars 是来源决定的，/hooks 面板展示时要区分。
+   */
+  pathVars?: Record<string, string>;
   async?: boolean;
   asyncRewake?: boolean;
+  /** CC：hook 运行时显示的提示文案（sid 当前只透传、记日志） */
+  statusMessage?: string;
   source?: ConfigSource;
 }
 
@@ -182,6 +202,7 @@ export interface UrlHookConfig {
   headers?: Record<string, string>;
   timeout?: number;
   allowedEnvVars?: string[];
+  statusMessage?: string;
   source?: ConfigSource;
 }
 
@@ -192,6 +213,7 @@ export interface PromptHookConfig {
   prompt: string;
   model?: string;
   timeout?: number;
+  statusMessage?: string;
   source?: ConfigSource;
 }
 
@@ -203,6 +225,7 @@ export interface AgentHookConfig {
   model?: string;
   timeout?: number;
   tools?: string[];
+  statusMessage?: string;
   source?: ConfigSource;
 }
 

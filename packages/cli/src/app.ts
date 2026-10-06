@@ -69,6 +69,7 @@ import { resetBetaHeaders } from "@sid-code/core/api/beta-header-latch.ts";
 import { resetCircuitBreaker } from "@sid-code/core/query/auto-compact.ts";
 import { clearQueue as clearMessageQueue } from "@sid-code/core/query/message-queue-manager.ts";
 import { HookSystem } from "@sid-code/core/hook/system.ts";
+import { ConfigSource } from "@sid-code/core/hook/types.ts";
 import { pickHookPolicy } from "@sid-code/core/hook/enterprise-policy.ts";
 import {
   SDKQueryEngine,
@@ -1143,7 +1144,38 @@ export class App {
 
     // 初始化 Hook 系统
     this.hookSystem = new HookSystem();
-    this.hookSystem.initializeFromLegacy(this.config.hooks);
+    // HC1 / HC2：按真实来源分层注册（managed → user → project → local，按事件追加）。
+    // 被信任门打了 skippedByTrust 的层不注册——只摘随仓库分发的那几层，用户级照常。
+    // 用户层取 _hookLayers 里的原始 JSON 而不是 config.hooks：后者经 resolveEnvVars 展开过 ${VAR}，
+    // `${CLAUDE_PROJECT_DIR}` 会在 sid 进程里被提前展开（见 config/hook-layers.ts 头注释）。
+    {
+      const layers = this.config._hookLayers;
+      const hasUserLayer = layers?.some((l) => l.source === "user") ?? false;
+      const sourceOf: Record<string, ConfigSource> = {
+        managed: ConfigSource.Managed,
+        user: ConfigSource.User,
+        project: ConfigSource.Project,
+        local: ConfigSource.Local,
+      };
+      const regLayers: Array<{
+        hooks: unknown;
+        source: ConfigSource;
+        ctx?: { pathPrefix: string };
+      }> = [];
+      for (const l of layers ?? []) {
+        if (l.skippedByTrust) continue;
+        regLayers.push({
+          hooks: l.hooks,
+          source: sourceOf[l.source]!,
+          ctx: { pathPrefix: `${l.file}#hooks` },
+        });
+      }
+      // 测试 / SDK 直接构造 Config（没有 _hookLayers）或 CLI 注入的 hooks：按用户级注册
+      if (!hasUserLayer && Object.keys(this.config.hooks ?? {}).length > 0) {
+        regLayers.unshift({ hooks: this.config.hooks, source: ConfigSource.User });
+      }
+      this.hookSystem.initializeFromSources(regLayers);
+    }
     this.hookSystem.setSessionId(sessionId);
     this.hookSystem.setCwd(process.cwd());
     // 恢复 settings.json disabledHooks（/hooks disable -p 持久化端）。
