@@ -6,6 +6,7 @@
 import type { JsonRpcRequest, JsonRpcResponse } from "./types.ts";
 import { spawn, type Subprocess } from "bun";
 import { sanitizeStrings } from "../llm/sanitize-unicode.ts";
+import { getLogger } from "../debug/logger.ts";
 
 /** JSON-RPC 通知（无 id） */
 export interface JsonRpcNotification {
@@ -32,6 +33,38 @@ export interface Transport {
   close(): void;
 }
 
+/**
+ * 服务器发起请求的统一分派（D10/D12）：有 onRequest 就把结果回传，没有就回 -32601。
+ * 原先每个传输各写一份，WebSocket 与进程内两份干脆漏写——对端发了带 id 的请求永远等不到应答。
+ * 新传输一律走这里，别再各写一份。
+ */
+function dispatchServerRequest(
+  onRequest: ((request: JsonRpcRequest) => Promise<JsonRpcResponse>) | undefined,
+  request: JsonRpcRequest,
+  respond: (response: JsonRpcResponse) => void,
+): void {
+  if (!onRequest) {
+    respond({
+      jsonrpc: "2.0",
+      id: request.id,
+      error: { code: -32601, message: `方法未找到: ${request.method}` },
+    });
+    return;
+  }
+  onRequest(request)
+    .then(respond)
+    .catch((err) => {
+      respond({
+        jsonrpc: "2.0",
+        id: request.id,
+        error: { code: -32603, message: `内部错误: ${err?.message ?? err}` },
+      });
+    });
+}
+
+/** stdio 子进程 stderr 只保留尾部这么多字符，供排查（D7：drain 必须有上限，否则把死锁换成 OOM） */
+const STDERR_TAIL_MAX = 8192;
+
 /** Stdio 传输 - 通过子进程的 stdin/stdout 通信 */
 export class StdioTransport implements Transport {
   // 三路都显式声明为 "pipe"：不带泛型的 Subprocess 会把 stdin/stdout 退化成
@@ -51,6 +84,8 @@ export class StdioTransport implements Transport {
   private buffer = "";
   private closed = false;
   private timeout: number;
+  /** stderr 尾部（环形截断到 STDERR_TAIL_MAX），子进程诊断信息的唯一留存处 */
+  private stderrBuf = "";
   onNotification?: (notification: JsonRpcNotification) => void;
   onRequest?: (request: JsonRpcRequest) => Promise<JsonRpcResponse>;
   onClose?: () => void;
@@ -86,6 +121,34 @@ export class StdioTransport implements Transport {
 
     // 读取 stdout 响应
     this.readLoop();
+    // D7：stderr 必须持续排空。不读的话管道缓冲（典型 64KB）写满后 Server 的下一次
+    // console.error 会阻塞主线程，于是 JSON-RPC 响应全部超时——Server 越守规矩把日志
+    // 写 stderr、写得越详细，越容易挂。读出的内容转 debug 日志并只留尾部。
+    this.drainStderr();
+  }
+
+  /** 子进程 stderr 的尾部内容（最多 STDERR_TAIL_MAX 字符） */
+  get stderrTail(): string {
+    return this.stderrBuf;
+  }
+
+  private async drainStderr(): Promise<void> {
+    const reader = this.proc.stderr.getReader();
+    const decoder = new TextDecoder();
+    try {
+      // 不看 this.closed：close() 之后子进程可能还在写，照样要读到 EOF，否则它退出前会卡在写上
+      while (true) {
+        const { done, value } = await reader.read();
+        if (done) break;
+        const text = decoder.decode(value, { stream: true });
+        this.stderrBuf = (this.stderrBuf + text).slice(-STDERR_TAIL_MAX);
+        getLogger().debug("MCP", `stdio stderr: ${text.slice(0, 2000)}`);
+      }
+    } catch {
+      // 进程已关闭
+    } finally {
+      reader.releaseLock();
+    }
   }
 
   private async readLoop(): Promise<void> {
@@ -157,23 +220,7 @@ export class StdioTransport implements Transport {
         // 写回失败（进程已退出等），忽略
       }
     };
-    if (!this.onRequest) {
-      respond({
-        jsonrpc: "2.0",
-        id: request.id,
-        error: { code: -32601, message: `方法未找到: ${request.method}` },
-      });
-      return;
-    }
-    this.onRequest(request)
-      .then(respond)
-      .catch((err) => {
-        respond({
-          jsonrpc: "2.0",
-          id: request.id,
-          error: { code: -32603, message: `内部错误: ${err?.message ?? err}` },
-        });
-      });
+    dispatchServerRequest(this.onRequest, request, respond);
   }
 
   async send(request: JsonRpcRequest, signal?: AbortSignal): Promise<JsonRpcResponse> {
@@ -183,8 +230,12 @@ export class StdioTransport implements Transport {
 
     return new Promise((resolve, reject) => {
       // 外部取消信号:监听器 + 其清理函数一并登记,任何 settle 路径都能移除监听器。
+      // D8：超时 timer 也归 cleanup 管。原先成功路径从不 clearTimeout，每次调用留一个
+      // 活 timer 30s，closeAll() 之后 event loop 还要被它拖住最多 30s。
       let onAbort: (() => void) | undefined;
+      let timer: ReturnType<typeof setTimeout> | undefined;
       const cleanup = () => {
+        if (timer !== undefined) clearTimeout(timer);
         if (signal && onAbort) signal.removeEventListener("abort", onAbort);
       };
       this.pendingRequests.set(request.id, { resolve, reject, cleanup });
@@ -198,6 +249,7 @@ export class StdioTransport implements Transport {
         onAbort = () => {
           if (this.pendingRequests.has(request.id)) {
             this.pendingRequests.delete(request.id);
+            cleanup();
             reject(new Error("用户取消"));
           }
         };
@@ -209,7 +261,7 @@ export class StdioTransport implements Transport {
       this.proc.stdin.flush();
 
       // 超时
-      setTimeout(() => {
+      timer = setTimeout(() => {
         const pending = this.pendingRequests.get(request.id);
         if (pending) {
           this.pendingRequests.delete(request.id);
@@ -302,6 +354,9 @@ export class HTTPTransport implements Transport {
   private url: string;
   private headers: Record<string, string>;
   private timeout: number;
+  private closed = false;
+  /** close() 时 abort，用来中止在途请求（D11） */
+  private closeController = new AbortController();
   onNotification?: (notification: JsonRpcNotification) => void;
 
   constructor(url: string, headers?: Record<string, string>, timeout?: number) {
@@ -311,9 +366,12 @@ export class HTTPTransport implements Transport {
   }
 
   async send(request: JsonRpcRequest, signal?: AbortSignal): Promise<JsonRpcResponse> {
-    const signals: AbortSignal[] = [AbortSignal.timeout(this.timeout)];
+    if (this.closed) {
+      throw new Error("传输已关闭");
+    }
+    const signals: AbortSignal[] = [AbortSignal.timeout(this.timeout), this.closeController.signal];
     if (signal) signals.push(signal);
-    const combinedSignal = signals.length === 1 ? signals[0] : AbortSignal.any(signals);
+    const combinedSignal = AbortSignal.any(signals);
 
     const response = await fetch(this.url, {
       method: "POST",
@@ -333,7 +391,10 @@ export class HTTPTransport implements Transport {
   }
 
   close(): void {
-    // HTTP 传输无需关闭
+    // D11：原先是空实现，disconnect() 之后仍持有 client 的调用方（如重试中的请求）
+    // 还能继续对已断开的 Server 发请求。现在与其它传输一致：拒绝后续请求、中止在途请求。
+    this.closed = true;
+    this.closeController.abort(new Error("传输已关闭"));
   }
 }
 
@@ -480,23 +541,7 @@ export class StreamableHTTPTransport implements Transport {
         /* 回传失败忽略 */
       });
     };
-    if (!this.onRequest) {
-      respond({
-        jsonrpc: "2.0",
-        id: request.id,
-        error: { code: -32601, message: `方法未找到: ${request.method}` },
-      });
-      return;
-    }
-    this.onRequest(request)
-      .then(respond)
-      .catch((err) => {
-        respond({
-          jsonrpc: "2.0",
-          id: request.id,
-          error: { code: -32603, message: `内部错误: ${err?.message ?? err}` },
-        });
-      });
+    dispatchServerRequest(this.onRequest, request, respond);
   }
 
   sendNotification(notification: JsonRpcNotification): void {
@@ -545,6 +590,10 @@ export class SSETransport implements Transport {
     this.timeout = timeout ?? 30000;
     // 启动 SSE 连接
     this.connectPromise = this.connectSSE();
+    // D9：只有 send() 会 await 它。「构造后还没 send 就 close」（manager 连接超时清理恰好
+    // 走这条）下 reject 无人接，成了 unhandledRejection。挂一个兜底 handler 只为标记已处理，
+    // 真正的错误仍由 send() 里的 await 抛出——别把这行改成 this.connectPromise = ...catch()。
+    this.connectPromise.catch(() => {});
   }
 
   private async connectSSE(): Promise<void> {
@@ -596,6 +645,7 @@ export class SSETransport implements Transport {
         this.closed = true;
         // SSE 流意外断开，通知上层
         for (const [, pending] of this.pendingRequests) {
+          pending.cleanup?.();
           pending.reject(new Error("SSE 连接断开"));
         }
         this.pendingRequests.clear();
@@ -657,23 +707,7 @@ export class SSETransport implements Transport {
         /* 回传失败忽略 */
       });
     };
-    if (!this.onRequest) {
-      respond({
-        jsonrpc: "2.0",
-        id: request.id,
-        error: { code: -32601, message: `方法未找到: ${request.method}` },
-      });
-      return;
-    }
-    this.onRequest(request)
-      .then(respond)
-      .catch((err) => {
-        respond({
-          jsonrpc: "2.0",
-          id: request.id,
-          error: { code: -32603, message: `内部错误: ${err?.message ?? err}` },
-        });
-      });
+    dispatchServerRequest(this.onRequest, request, respond);
   }
 
   async send(request: JsonRpcRequest, signal?: AbortSignal): Promise<JsonRpcResponse> {
@@ -688,8 +722,11 @@ export class SSETransport implements Transport {
 
     return new Promise((resolve, reject) => {
       // 外部取消信号:监听器 + 其清理函数一并登记,任何 settle 路径都能移除监听器。
+      // D8：超时 timer 同样由 cleanup 清掉。
       let onAbort: (() => void) | undefined;
+      let timer: ReturnType<typeof setTimeout> | undefined;
       const cleanup = () => {
+        if (timer !== undefined) clearTimeout(timer);
         if (signal && onAbort) signal.removeEventListener("abort", onAbort);
       };
       this.pendingRequests.set(request.id, { resolve, reject, cleanup });
@@ -703,6 +740,7 @@ export class SSETransport implements Transport {
         onAbort = () => {
           if (this.pendingRequests.has(request.id)) {
             this.pendingRequests.delete(request.id);
+            cleanup();
             reject(new Error("用户取消"));
           }
         };
@@ -732,7 +770,7 @@ export class SSETransport implements Transport {
       });
 
       // 超时
-      setTimeout(() => {
+      timer = setTimeout(() => {
         const pending = this.pendingRequests.get(request.id);
         if (pending) {
           this.pendingRequests.delete(request.id);
@@ -775,18 +813,22 @@ export class WebSocketTransport implements Transport {
     {
       resolve: (resp: JsonRpcResponse) => void;
       reject: (err: Error) => void;
+      cleanup?: () => void;
     }
   >();
   private closed = false;
   private timeout: number;
   private connectPromise: Promise<void>;
   onNotification?: (notification: JsonRpcNotification) => void;
+  onRequest?: (request: JsonRpcRequest) => Promise<JsonRpcResponse>;
   onClose?: () => void;
 
   constructor(url: string, headers?: Record<string, string>, timeout?: number) {
     this.timeout = timeout ?? 30000;
     this.ws = new WebSocket(url, { headers } as any);
     this.connectPromise = this.waitForOpen();
+    // D9：同 SSETransport，兜底标记已处理，错误仍由 send() 的 await 抛出
+    this.connectPromise.catch(() => {});
     this.setupListeners();
   }
 
@@ -809,10 +851,26 @@ export class WebSocketTransport implements Transport {
           return;
         }
 
+        // D10：含 id + method 的是服务器发起的请求。原先这里没有这一支，请求被当响应查
+        // pendingRequests 查不到就静默丢弃——而 client 照样向服务器声明了 elicitation/roots
+        // 能力，于是对端永久等待。
+        if (msg.jsonrpc === "2.0" && "id" in msg && msg.method) {
+          dispatchServerRequest(this.onRequest, msg as JsonRpcRequest, (response) => {
+            if (this.closed) return;
+            try {
+              this.ws.send(JSON.stringify(sanitizeStrings(response)));
+            } catch {
+              // 连接已断，忽略
+            }
+          });
+          return;
+        }
+
         const response = msg as JsonRpcResponse;
         const pending = this.pendingRequests.get(response.id);
         if (pending) {
           this.pendingRequests.delete(response.id);
+          pending.cleanup?.();
           pending.resolve(response);
         }
       } catch {}
@@ -822,6 +880,7 @@ export class WebSocketTransport implements Transport {
       if (!this.closed) {
         this.closed = true;
         for (const [, p] of this.pendingRequests) {
+          p.cleanup?.();
           p.reject(new Error("WebSocket 连接断开"));
         }
         this.pendingRequests.clear();
@@ -835,29 +894,37 @@ export class WebSocketTransport implements Transport {
     await this.connectPromise;
 
     return new Promise((resolve, reject) => {
-      this.pendingRequests.set(request.id, { resolve, reject });
+      // D8：timer 与 abort 监听器统一由 cleanup 清理（同 Stdio/SSE）
+      let onAbort: (() => void) | undefined;
+      let timer: ReturnType<typeof setTimeout> | undefined;
+      const cleanup = () => {
+        if (timer !== undefined) clearTimeout(timer);
+        if (signal && onAbort) signal.removeEventListener("abort", onAbort);
+      };
+      this.pendingRequests.set(request.id, { resolve, reject, cleanup });
 
-      if (signal?.aborted) {
-        this.pendingRequests.delete(request.id);
-        reject(new Error("用户取消"));
-        return;
-      }
-      signal?.addEventListener(
-        "abort",
-        () => {
+      if (signal) {
+        if (signal.aborted) {
+          this.pendingRequests.delete(request.id);
+          reject(new Error("用户取消"));
+          return;
+        }
+        onAbort = () => {
           if (this.pendingRequests.has(request.id)) {
             this.pendingRequests.delete(request.id);
+            cleanup();
             reject(new Error("用户取消"));
           }
-        },
-        { once: true },
-      );
+        };
+        signal.addEventListener("abort", onAbort, { once: true });
+      }
 
       this.ws.send(JSON.stringify(sanitizeStrings(request)));
 
-      setTimeout(() => {
+      timer = setTimeout(() => {
         if (this.pendingRequests.has(request.id)) {
           this.pendingRequests.delete(request.id);
+          cleanup();
           reject(new Error(`WebSocket 请求超时: ${request.method}`));
         }
       }, this.timeout);
@@ -872,6 +939,7 @@ export class WebSocketTransport implements Transport {
     this.closed = true;
     this.ws.close();
     for (const [, p] of this.pendingRequests) {
+      p.cleanup?.();
       p.reject(new Error("传输已关闭"));
     }
     this.pendingRequests.clear();
@@ -890,6 +958,7 @@ class InProcessTransportImpl implements Transport {
   >();
   private closed = false;
   onNotification?: (notification: JsonRpcNotification) => void;
+  onRequest?: (request: JsonRpcRequest) => Promise<JsonRpcResponse>;
   onClose?: () => void;
 
   _setPeer(peer: InProcessTransportImpl): void {
@@ -939,12 +1008,23 @@ class InProcessTransportImpl implements Transport {
       this.onNotification?.(msg as JsonRpcNotification);
       return;
     }
+
+    // D12：有 id 且无 result/error = 对端发起的请求。原先走到这里直接掉地，连 -32601 都不回。
+    if (this.closed) return;
+    dispatchServerRequest(this.onRequest, msg as JsonRpcRequest, (response) => {
+      if (this.closed) return;
+      queueMicrotask(() => {
+        this.peer?.handleIncoming(response);
+      });
+    });
   }
 
   sendNotification(notification: JsonRpcNotification): void {
     if (this.closed || !this.peer) return;
+    // D12：走对端的 handleIncoming 而不是直接调 peer.onNotification，与 send() 同一条路由，
+    // 将来在 handleIncoming 里加的逻辑才会对通知生效。
     queueMicrotask(() => {
-      this.peer?.onNotification?.(notification);
+      this.peer?.handleIncoming(notification);
     });
   }
 
