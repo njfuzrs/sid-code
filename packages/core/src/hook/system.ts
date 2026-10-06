@@ -394,7 +394,7 @@ export class HookSystem {
   /** StopFailure 事件 */
   async fireStopFailureEvent(
     error: string,
-    errorType: "api_error" | "rate_limit" | "context_overflow" | "abort" | "unknown",
+    errorType: import("./types.ts").StopFailureInput["error_type"],
   ): Promise<AggregatedHookResult> {
     return this.eventHandler.fireStopFailureEvent(error, errorType);
   }
@@ -451,9 +451,10 @@ export class HookSystem {
   /** ConfigChange 事件 */
   async fireConfigChangeEvent(
     changedKeys: string[],
-    source: "file" | "command" | "env",
+    source: import("./types.ts").ConfigChangeInput["source"],
+    filePath?: string,
   ): Promise<AggregatedHookResult> {
-    return this.eventHandler.fireConfigChangeEvent(changedKeys, source);
+    return this.eventHandler.fireConfigChangeEvent(changedKeys, source, filePath);
   }
 
   /** FileChanged 事件 */
@@ -508,15 +509,62 @@ export class HookSystem {
   async fireElicitationEvent(
     message: string,
     requestedSchema?: Record<string, unknown>,
+    serverName?: string,
   ): Promise<AggregatedHookResult> {
-    return this.eventHandler.fireElicitationEvent(message, requestedSchema);
+    return this.eventHandler.fireElicitationEvent(message, requestedSchema, serverName);
   }
 
   /** G11：ElicitationResult 事件——Elicitation 的用户响应结果 */
   async fireElicitationResultEvent(
     action: "accept" | "decline" | "cancel",
     content?: Record<string, unknown>,
+    serverName?: string,
   ): Promise<AggregatedHookResult> {
-    return this.eventHandler.fireElicitationResultEvent(action, content);
+    return this.eventHandler.fireElicitationResultEvent(action, content, serverName);
+  }
+
+  /** PostToolBatch 事件 */
+  async firePostToolBatchEvent(
+    toolCalls: Array<{ tool_name: string; tool_use_id: string; is_error: boolean }>,
+  ): Promise<AggregatedHookResult> {
+    return this.eventHandler.firePostToolBatchEvent(toolCalls);
+  }
+
+  /** PreModelSwitch 事件（拆成两个方法名：参考页按 fire<Event>Event 调用点判定是否接线） */
+  async firePreModelSwitchEvent(
+    fromModel: string,
+    toModel: string,
+    trigger: import("./types.ts").ModelSwitchInput["trigger"],
+    reason?: string,
+  ): Promise<AggregatedHookResult> {
+    return this.eventHandler.fireModelSwitchEvent("pre", fromModel, toModel, trigger, reason);
+  }
+
+  /** PostModelSwitch 事件（含降级链自动切换） */
+  async firePostModelSwitchEvent(
+    fromModel: string,
+    toModel: string,
+    trigger: import("./types.ts").ModelSwitchInput["trigger"],
+    reason?: string,
+  ): Promise<AggregatedHookResult> {
+    return this.eventHandler.fireModelSwitchEvent("post", fromModel, toModel, trigger, reason);
+  }
+
+  /** UserPromptExpansion 事件 */
+  async fireUserPromptExpansionEvent(
+    commandName: string,
+    originalPrompt: string,
+    expandedPrompt: string,
+  ): Promise<AggregatedHookResult> {
+    return this.eventHandler.fireUserPromptExpansionEvent(
+      commandName,
+      originalPrompt,
+      expandedPrompt,
+    );
+  }
+
+  /** DirectoryAdded 事件 */
+  async fireDirectoryAddedEvent(directory: string): Promise<AggregatedHookResult> {
+    return this.eventHandler.fireDirectoryAddedEvent(directory);
   }
 }

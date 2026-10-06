@@ -285,7 +285,31 @@ export class CommandExecutor {
     }
 
     try {
-      const prompt = await cmd.getPromptForCommand(args, this.ctx);
+      let prompt = await cmd.getPromptForCommand(args, this.ctx);
+
+      // Q6：UserPromptExpansion——命令 / skill 展开成 prompt 之后、提交之前（matcher：命令名）。
+      // 与 CC 一致：exit 2 / decision:"block" 拦下本次提交；additionalContext 追加在展开结果后。
+      if (this.ctx.hookSystem) {
+        const original = args.trim() ? `/${cmd.name} ${args.trim()}` : `/${cmd.name}`;
+        try {
+          const r = await this.ctx.hookSystem.fireUserPromptExpansionEvent(
+            cmd.name,
+            original,
+            prompt,
+          );
+          const out = r.finalOutput;
+          if (out?.isBlockingDecision() || out?.shouldStopExecution()) {
+            return {
+              type: "error",
+              message: `UserPromptExpansion hook 拦截了 /${cmd.name}：${out.getEffectiveReason()}`,
+            };
+          }
+          const extra = out?.getAdditionalContext();
+          if (extra) prompt = `${prompt}\n\n<system-reminder>\n${extra}\n</system-reminder>`;
+        } catch (e: any) {
+          getLogger().error("HOOK", `user_prompt_expansion hook 失败（忽略）: ${e?.message ?? e}`);
+        }
+      }
 
       if (cmd.context === "fork") {
         return await this.executeFork(cmd, prompt);

@@ -21,6 +21,8 @@ import {
   collectToolResultIdsFromBlocks,
 } from "../agent/tool-result-guard.ts";
 import { stripInternalFields } from "../tool/internal-fields.ts";
+import { getCwd } from "../bootstrap/state.ts";
+import { fireToolSideEvents } from "./tool-side-events.ts";
 import { resolveResultDisplayMode } from "../tool/result-display-mode.ts";
 import type { ToolUseContext } from "../tool/types.ts";
 import { partitionToolCalls, getMaxToolConcurrency } from "./tool-orchestration.ts";
@@ -862,6 +864,13 @@ export async function executeTools(
     deps.discoverJitContext(toolBlocks.map((t) => t.block));
   }
 
+  // Q6：PostToolBatch——本批工具全部收尾、结果回灌模型之前（仅通知，不 await）
+  firePostToolBatch(
+    deps,
+    toolBlocks.map((t) => t.block),
+    results,
+  );
+
   return { results, followup, durations };
 }
 
@@ -1437,12 +1446,22 @@ export async function executeSingleTool(
       ? (event: import("../tool/types.ts").ToolProgressData) =>
           deps.onToolProgress!(block.name, block.id, event)
       : undefined;
+    const cwdBefore = getCwd();
     const result = await tool.execute(
       effectiveInput,
       signalOverride ?? deps.getAbortSignal(),
       progressCallback,
     );
     const elapsed = Date.now() - startTime;
+    // HC24：CwdChanged / TaskCreated / TaskCompleted（fire-and-forget，见 query/tool-side-events.ts）
+    fireToolSideEvents(
+      deps.hookSystem,
+      block.name,
+      effectiveInput as Record<string, unknown>,
+      result,
+      cwdBefore,
+      getCwd(),
+    );
 
     deps.sessionState.addToolDuration(elapsed);
 
@@ -1786,4 +1805,34 @@ export function hookFeedbackText(
 function isAbortLike(err: unknown): boolean {
   const e = err as { name?: string } | undefined;
   return e?.name === "AbortError";
+}
+
+/** Q6：PostToolBatch。is_error 取自最终 tool_result（含权限拒绝 / 校验失败的兜底结果） */
+function firePostToolBatch(
+  deps: ToolExecutorDeps,
+  blocks: ToolUseBlock[],
+  results: ContentBlock[],
+): void {
+  const fire = deps.hookSystem?.firePostToolBatchEvent;
+  if (!fire || blocks.length === 0) return;
+  const errById = new Map<string, boolean>();
+  for (const r of results) {
+    if (r.type === "tool_result") errById.set(r.tool_use_id, r.is_error === true);
+  }
+  try {
+    void fire
+      .call(
+        deps.hookSystem,
+        blocks.map((b) => ({
+          tool_name: b.name,
+          tool_use_id: b.id,
+          is_error: errById.get(b.id) ?? false,
+        })),
+      )
+      ?.catch?.((e: any) =>
+        getLogger().error("HOOK", `post_tool_batch hook 失败: ${e?.message ?? e}`),
+      );
+  } catch (e: any) {
+    getLogger().error("HOOK", `post_tool_batch 触发异常（忽略）: ${e?.message ?? e}`);
+  }
 }

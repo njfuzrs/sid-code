@@ -57,7 +57,10 @@ import { BudgetTracker } from "@sid-code/core/telemetry/metrics/budget-tracker.t
 import type { BudgetRule } from "@sid-code/core/telemetry/metrics/budget-tracker.ts";
 import type { BudgetRuleConfig } from "@sid-code/core/config/config.ts";
 import { loadAllCLAUDEmd, watchCLAUDEmd, unwatchCLAUDEmd } from "@sid-code/core/config/rules.ts";
-import { cleanup as cleanupSettingsWatcher } from "@sid-code/core/config/settings/change-detector.ts";
+import {
+  cleanup as cleanupSettingsWatcher,
+  settingsChanged,
+} from "@sid-code/core/config/settings/change-detector.ts";
 import { stopAppConfigWatcher } from "@sid-code/core/config/app-config.ts";
 import type { ProjectRules } from "@sid-code/core/config/rules.ts";
 import { clearPromptCache } from "@sid-code/core/config/system-prompt.ts";
@@ -1189,6 +1192,8 @@ export class App {
     // 恢复 settings.json disabledHooks（/hooks disable -p 持久化端）。
     // 插件 hook 在 loadPluginHooks 后才注册，故那里会再应用一次（见下方 loadPluginHooks 调用点）。
     this.hookSystem.applyDisabledHooks(this.config.disabledHooks);
+    // HC24：ConfigChange / Elicitation 接线（原为「预留」：fire 方法在、调用点为零）
+    this.wireConfigAndElicitationHooks();
 
     // G13：应用企业策略 Hook 门控。必须复用 cli 已经 await 过的那一次 load
     // （loadEnterprisePolicyOnce），禁止再 new PolicyManager().load() 打第二次网。
@@ -1570,6 +1575,39 @@ export class App {
   /** 注入 HookSystem 到 spawn-agent 类工具（根因修复）。遍历工具注册表，给所有带
    *  setHookSystem 的工具（SubAgentTool / WorkflowTool）回填 hookSystem，使其内部 spawn 的
    *  子代理能触发 Subagent 生命周期 hook 与工具级 execute_tool span。 */
+  /** 退订 settings 变更（ConfigChange hook），在两个清理出口调用 */
+  private offConfigChangeHook?: () => void;
+
+  /**
+   * HC24：ConfigChange 与 Elicitation / ElicitationResult 接线。
+   *
+   * ConfigChange 订阅 change-detector 的 fanOut（外部改 settings 文件、缓存已刷新之后）；
+   * source 换成 CC 的 matcher 值（user_settings / project_settings …）。内部写入在
+   * change-detector 里已被 consumeInternalWrite 过滤掉，不会因 /model 之类自己写盘而误触发。
+   * Elicitation 走 MCPManager 注入的发射端，避免 mcp → hook 反向依赖。
+   */
+  private wireConfigAndElicitationHooks(): void {
+    const ccSource: Record<
+      string,
+      "user_settings" | "project_settings" | "local_settings" | "policy_settings"
+    > = {
+      userSettings: "user_settings",
+      projectSettings: "project_settings",
+      localSettings: "local_settings",
+      policySettings: "policy_settings",
+    };
+    const onChange = (source: string, path?: string) => {
+      const mapped = ccSource[source];
+      if (!mapped) return;
+      this.hookSystem
+        .fireConfigChangeEvent([], mapped, path)
+        .catch((e) => getLogger().error("HOOK", `config_change hook 失败: ${e?.message ?? e}`));
+    };
+    settingsChanged.on("change", onChange);
+    this.offConfigChangeHook = () => settingsChanged.off("change", onChange);
+    if (this.mcpManager) this.mcpManager.elicitationHooks = this.hookSystem;
+  }
+
   private wireToolHookSystem(): void {
     for (const tool of this.toolRegistry.all()) {
       const maybe = tool as { setHookSystem?: (h: HookSystem) => void };
@@ -1992,6 +2030,25 @@ export class App {
         /* availability 未就绪不阻断切换 */
       }
     }
+    // Q6：PreModelSwitch / PostModelSwitch。本函数是 /model、降级链、CLAUDE.md `# Model`
+    // 三条路径的汇合点，挂在这里一处即覆盖三者（含降级链自动切换——Q6 细则 2）。
+    // 本函数是同步的（/model 命令同步返回），PreModelSwitch 因此只通知、不能拒绝切换（刻意偏离 CC）。
+    const fromModel = this.config.model;
+    const switchTrigger: "manual" | "fallback" | "config" = !opts?.reason
+      ? "manual"
+      : opts.reason.includes("降级")
+        ? "fallback"
+        : "config";
+    const fireSwitch = (phase: "pre" | "post") => {
+      if (fromModel === model) return;
+      const hs = this.hookSystem;
+      if (!hs) return;
+      (phase === "pre"
+        ? hs.firePreModelSwitchEvent(fromModel, model, switchTrigger, opts?.reason)
+        : hs.firePostModelSwitchEvent(fromModel, model, switchTrigger, opts?.reason)
+      ).catch((e) => log.error("HOOK", `model_switch hook 失败: ${e?.message ?? e}`));
+    };
+    fireSwitch("pre");
     this.config.model = model;
     const { resolveCurrentModelConfig } = require("@sid-code/core/config/config.ts");
     resolveCurrentModelConfig(this.config);
@@ -2013,6 +2070,7 @@ export class App {
       /* 窗口解析失败不影响切换，沿用旧窗口 */
     }
     this.tuiStateUpdater?.({ model });
+    fireSwitch("post");
     // 事件元数据同步：_ctx_model / _ctx_provider 是 primeMetadata 在会话初始化时一次性
     // 缓存的，运行时切模型不刷新则此后所有事件都带着旧模型名上报——归因直接错到另一个
     // 模型头上（切模型往往正是为了对比两个模型，这恰好是最需要归因准确的场景）。
@@ -6930,6 +6988,7 @@ export class App {
     // 清理
     unwatchCLAUDEmd();
     cleanupSettingsWatcher();
+    this.offConfigChangeHook?.();
     stopAppConfigWatcher();
     this.mcpManager?.closeAll();
 
@@ -7990,6 +8049,16 @@ export class App {
           return;
         }
         if (signal) signal.addEventListener("abort", onAbort, { once: true });
+        // HC24：Notification（matcher：permission_prompt，对齐 CC）。仅通知、不等待，不影响弹窗。
+        this.hookSystem
+          ?.fireNotificationEvent(
+            "permission_prompt",
+            `sid-code 需要你确认是否允许使用 ${toolName}`,
+            {
+              tool_name: toolName,
+            },
+          )
+          .catch((e) => log.error("HOOK", `notification hook 失败: ${e?.message ?? e}`));
         updateState({
           permissionRequest: {
             toolName,
@@ -9523,6 +9592,7 @@ export class App {
     }
     unwatchCLAUDEmd();
     cleanupSettingsWatcher();
+    this.offConfigChangeHook?.();
     stopAppConfigWatcher();
     this.mcpManager?.closeAll();
 

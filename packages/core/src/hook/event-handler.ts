@@ -36,6 +36,11 @@ import {
   type TeammateIdleInput,
   type ElicitationInput,
   type ElicitationResultInput,
+  type ElicitationServerField,
+  type PostToolBatchInput,
+  type ModelSwitchInput,
+  type UserPromptExpansionInput,
+  type DirectoryAddedInput,
   type AggregatedHookResult,
   type HookExecutionPlan,
   type HookConfig,
@@ -406,7 +411,8 @@ export class HookEventHandler {
       message,
       details,
     };
-    return this.executeHooks(HookEventName.Notification, input);
+    // matcher 按 notification_type（对齐 CC：permission_prompt / idle_prompt …）
+    return this.executeHooks(HookEventName.Notification, input, { trigger: notificationType });
   }
 
   /** Stop 事件：模型 end_turn 后执行检查 */
@@ -433,7 +439,7 @@ export class HookEventHandler {
       error,
       error_type: errorType,
     };
-    return this.executeHooks(HookEventName.StopFailure, input);
+    return this.executeHooks(HookEventName.StopFailure, input, { trigger: errorType });
   }
 
   /** PostCompact 事件：上下文压缩后 */
@@ -506,13 +512,15 @@ export class HookEventHandler {
   async fireConfigChangeEvent(
     changedKeys: string[],
     source: ConfigChangeInput["source"],
+    filePath?: string,
   ): Promise<AggregatedHookResult> {
     const input: ConfigChangeInput = {
       ...this.createBaseInput(HookEventName.ConfigChange),
       changed_keys: changedKeys,
       source,
+      file_path: filePath,
     };
-    return this.executeHooks(HookEventName.ConfigChange, input);
+    return this.executeHooks(HookEventName.ConfigChange, input, { trigger: source });
   }
 
   /** FileChanged 事件 */
@@ -600,26 +608,93 @@ export class HookEventHandler {
   async fireElicitationEvent(
     message: string,
     requestedSchema?: Record<string, unknown>,
+    serverName?: string,
   ): Promise<AggregatedHookResult> {
-    const input: ElicitationInput = {
+    const input: ElicitationInput & ElicitationServerField = {
       ...this.createBaseInput(HookEventName.Elicitation),
       message,
       requestedSchema,
+      mcp_server_name: serverName,
     };
-    return this.executeHooks(HookEventName.Elicitation, input);
+    return this.executeHooks(
+      HookEventName.Elicitation,
+      input,
+      serverName ? { trigger: serverName } : undefined,
+    );
   }
 
   /** G11：ElicitationResult 事件——Elicitation 的用户响应结果 */
   async fireElicitationResultEvent(
     action: ElicitationResultInput["action"],
     content?: Record<string, unknown>,
+    serverName?: string,
   ): Promise<AggregatedHookResult> {
-    const input: ElicitationResultInput = {
+    const input: ElicitationResultInput & ElicitationServerField = {
       ...this.createBaseInput(HookEventName.ElicitationResult),
       action,
       content,
+      mcp_server_name: serverName,
     };
-    return this.executeHooks(HookEventName.ElicitationResult, input);
+    return this.executeHooks(
+      HookEventName.ElicitationResult,
+      input,
+      serverName ? { trigger: serverName } : undefined,
+    );
+  }
+
+  /** PostToolBatch：一批工具全部执行完、结果回灌模型之前 */
+  async firePostToolBatchEvent(
+    toolCalls: PostToolBatchInput["tool_calls"],
+  ): Promise<AggregatedHookResult> {
+    const input: PostToolBatchInput = {
+      ...this.createBaseInput(HookEventName.PostToolBatch),
+      tool_calls: toolCalls,
+    };
+    return this.executeHooks(HookEventName.PostToolBatch, input);
+  }
+
+  /** PreModelSwitch / PostModelSwitch（matcher 按 trigger：manual / fallback） */
+  async fireModelSwitchEvent(
+    phase: "pre" | "post",
+    fromModel: string,
+    toModel: string,
+    trigger: ModelSwitchInput["trigger"],
+    reason?: string,
+  ): Promise<AggregatedHookResult> {
+    const eventName =
+      phase === "pre" ? HookEventName.PreModelSwitch : HookEventName.PostModelSwitch;
+    const input: ModelSwitchInput = {
+      ...this.createBaseInput(eventName),
+      from_model: fromModel,
+      to_model: toModel,
+      trigger,
+      reason,
+    };
+    return this.executeHooks(eventName, input, { trigger });
+  }
+
+  /** UserPromptExpansion：斜杠命令 / skill 展开后（matcher 按命令名） */
+  async fireUserPromptExpansionEvent(
+    commandName: string,
+    originalPrompt: string,
+    expandedPrompt: string,
+  ): Promise<AggregatedHookResult> {
+    const input: UserPromptExpansionInput = {
+      ...this.createBaseInput(HookEventName.UserPromptExpansion),
+      command_name: commandName,
+      original_prompt: originalPrompt,
+      expanded_prompt: expandedPrompt,
+    };
+    return this.executeHooks(HookEventName.UserPromptExpansion, input, { trigger: commandName });
+  }
+
+  /** DirectoryAdded：/add-dir 加入会话白名单之后 */
+  async fireDirectoryAddedEvent(directory: string): Promise<AggregatedHookResult> {
+    const input: DirectoryAddedInput = {
+      ...this.createBaseInput(HookEventName.DirectoryAdded),
+      directory,
+    };
+    return this.executeHooks(HookEventName.DirectoryAdded, input);
   }
 
   // ============================================================

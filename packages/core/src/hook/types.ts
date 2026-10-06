@@ -49,11 +49,11 @@ export enum HookEventName {
   SubagentStart = "SubagentStart",
   /** 子代理任务结束后触发（finally）。不可 block，fire-and-forget。 */
   SubagentStop = "SubagentStop",
-  /** 预留：有 fire 方法但无调用点，配了不会被触发。 */
+  /** TUI 发出通知时触发（matcher：permission_prompt / idle_prompt 等，对齐 CC）。仅通知。 */
   Notification = "Notification",
   /** 助手回答收尾、准备停止时触发。可 block（注入错误并重试修复）。 */
   Stop = "Stop",
-  /** 预留：有 fire 方法但无调用点，配了不会被触发。 */
+  /** 轮次因 API 错误终止时触发（matcher：error_type）。仅通知。 */
   StopFailure = "StopFailure",
   /** 预留：有 fire 方法但无调用点，配了不会被触发。 */
   Setup = "Setup",
@@ -61,15 +61,15 @@ export enum HookEventName {
   PermissionRequest = "PermissionRequest",
   /** 权限拒绝后触发（主循环弹窗被拒 / 超时 / 规则直拒，子代理规则直拒 / 自动拒），仅通知、不可改判。 */
   PermissionDenied = "PermissionDenied",
-  /** 预留：有 fire 方法但无调用点，配了不会被触发。 */
+  /** settings 文件被外部修改、缓存刷新后触发（matcher：来源 user / project / local …）。仅通知。 */
   ConfigChange = "ConfigChange",
   /** 预留：有 fire 方法但无调用点，配了不会被触发。 */
   FileChanged = "FileChanged",
-  /** 预留：有 fire 方法但无调用点，配了不会被触发。 */
+  /** bash `cd` 改变工作目录后触发。仅通知。 */
   CwdChanged = "CwdChanged",
-  /** 预留：有 fire 方法但无调用点，配了不会被触发。 */
+  /** task_create 创建任务成功后触发。仅通知（sid 暂不支持 exit 2 回滚创建）。 */
   TaskCreated = "TaskCreated",
-  /** 预留：有 fire 方法但无调用点，配了不会被触发。 */
+  /** task_update 把任务置为 completed 后触发。仅通知。 */
   TaskCompleted = "TaskCompleted",
   /** 权限检查开始（spec 17 §6.1.3，用于 blocked_on_user span） */
   BeforePermissionCheck = "BeforePermissionCheck",
@@ -83,10 +83,20 @@ export enum HookEventName {
   InstructionsLoaded = "InstructionsLoaded",
   /** G11：团队代理空闲（可 block，用于团队协作场景） */
   TeammateIdle = "TeammateIdle",
-  /** G11：hook 反向向用户提问的协议（action: accept/decline/cancel），需配套 UI，先占位 */
+  /** MCP server 发来 elicitation 请求、弹给用户之前触发（matcher：server 名）。仅通知。 */
   Elicitation = "Elicitation",
-  /** G11：Elicitation 的用户响应结果 */
+  /** 用户回复 MCP elicitation 之后触发（matcher：server 名）。仅通知。 */
   ElicitationResult = "ElicitationResult",
+  /** 一批工具（含并行）全部执行完、结果回灌模型之前触发。仅通知。 */
+  PostToolBatch = "PostToolBatch",
+  /** 切换模型之前触发（matcher：trigger = manual / fallback / config）。仅通知（sid 切换路径同步，不支持拒绝）。 */
+  PreModelSwitch = "PreModelSwitch",
+  /** 模型切换之后触发，含降级链自动切换（matcher：trigger = manual / fallback / config）。仅通知。 */
+  PostModelSwitch = "PostModelSwitch",
+  /** 斜杠命令 / skill 展开成 prompt 之后、提交之前触发（matcher：命令名）。stdout 进上下文。 */
+  UserPromptExpansion = "UserPromptExpansion",
+  /** /add-dir 把目录加入会话白名单之后触发。仅通知。 */
+  DirectoryAdded = "DirectoryAdded",
 }
 
 /** 旧 snake_case → 新 PascalCase 映射（向后兼容） */
@@ -116,6 +126,11 @@ export const LEGACY_EVENT_MAP: Record<string, HookEventName> = {
   teammate_idle: HookEventName.TeammateIdle,
   elicitation: HookEventName.Elicitation,
   elicitation_result: HookEventName.ElicitationResult,
+  post_tool_batch: HookEventName.PostToolBatch,
+  pre_model_switch: HookEventName.PreModelSwitch,
+  post_model_switch: HookEventName.PostModelSwitch,
+  user_prompt_expansion: HookEventName.UserPromptExpansion,
+  directory_added: HookEventName.DirectoryAdded,
 };
 
 /** 配置来源（优先级从高到低） */
@@ -656,7 +671,21 @@ export interface StopInput extends HookInput {
 /** StopFailure 事件输入（API 错误导致的非正常结束） */
 export interface StopFailureInput extends HookInput {
   error: string;
-  error_type: "api_error" | "rate_limit" | "context_overflow" | "abort" | "unknown";
+  /** 取值对齐 CC 的 StopFailure matcher（rate_limit / authentication_failed / billing_error /
+   *  invalid_request / server_error / max_output_tokens / unknown），另保留 sid 原有的
+   *  api_error / context_overflow / abort / timeout */
+  error_type:
+    | "rate_limit"
+    | "authentication_failed"
+    | "billing_error"
+    | "invalid_request"
+    | "server_error"
+    | "max_output_tokens"
+    | "timeout"
+    | "api_error"
+    | "context_overflow"
+    | "abort"
+    | "unknown";
 }
 
 /** PostCompact 输入 */
@@ -693,7 +722,18 @@ export interface PermissionDeniedInput extends HookInput {
 /** ConfigChange 输入 */
 export interface ConfigChangeInput extends HookInput {
   changed_keys: string[];
-  source: "file" | "command" | "env";
+  /** 对齐 CC 的 ConfigChange matcher：user_settings / project_settings / local_settings /
+   *  policy_settings；旧值 file / command / env 保留兼容 */
+  source:
+    | "user_settings"
+    | "project_settings"
+    | "local_settings"
+    | "policy_settings"
+    | "file"
+    | "command"
+    | "env";
+  /** 变更的文件路径（文件来源时有） */
+  file_path?: string;
 }
 
 /** FileChanged 输入 */
@@ -749,6 +789,42 @@ export interface ElicitationInput extends HookInput {
 }
 
 /** G11：ElicitationResult 输入——Elicitation 的用户响应结果 */
+/** Elicitation / ElicitationResult 共有：发起请求的 MCP server（matcher 按它匹配） */
+export interface ElicitationServerField {
+  mcp_server_name?: string;
+}
+
+/** PostToolBatch 输入 */
+export interface PostToolBatchInput extends HookInput {
+  /** 本批每个工具的结果摘要（tool_name 为内部名，外部 handler 不做换名——它是数组） */
+  tool_calls: Array<{ tool_name: string; tool_use_id: string; is_error: boolean }>;
+}
+
+/** PreModelSwitch / PostModelSwitch 输入 */
+export interface ModelSwitchInput extends HookInput {
+  from_model: string;
+  to_model: string;
+  /** manual = /model；fallback = 降级链自动切换；config = CLAUDE.md `# Model` 等配置驱动 */
+  trigger: "manual" | "fallback" | "config";
+  /** fallback 时的降级原因 */
+  reason?: string;
+}
+
+/** UserPromptExpansion 输入 */
+export interface UserPromptExpansionInput extends HookInput {
+  /** 触发展开的命令名（不带 /） */
+  command_name: string;
+  /** 用户原始输入（如 `/commit -m x`） */
+  original_prompt: string;
+  /** 展开后的 prompt */
+  expanded_prompt: string;
+}
+
+/** DirectoryAdded 输入 */
+export interface DirectoryAddedInput extends HookInput {
+  directory: string;
+}
+
 export interface ElicitationResultInput extends HookInput {
   /** 用户动作 */
   action: "accept" | "decline" | "cancel";
