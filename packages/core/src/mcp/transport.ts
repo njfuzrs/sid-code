@@ -34,6 +34,103 @@ export interface Transport {
 }
 
 /**
+ * 带「送达语义」的传输层错误（D15 / D27）。
+ *
+ * 重试是否安全取决于**请求有没有可能已经到达服务器**：超时、断流时服务器可能已经执行了，
+ * 对 `tools/call` 这类非幂等请求重发就是重复执行（建了两个 issue、发了两条消息）。
+ * 所以传输层只在**确定没送达**时打 `notDelivered`：传输已关闭（请求根本没写出去）、
+ * 连接建立失败（POST 还没发）、HTTP 429（服务器明确拒收）。其余错误一律视为「可能已执行」。
+ *
+ * `retryAfterMs` 来自 429 / 503 的 `Retry-After` 头，供重试与重连退避尊重对端节奏。
+ */
+export class McpTransportError extends Error {
+  readonly notDelivered: boolean;
+  /** 重试也不会好（传输已关闭）：重试层直接放弃，别白等退避 */
+  readonly terminal: boolean;
+  readonly retryAfterMs?: number;
+  readonly status?: number;
+  constructor(
+    message: string,
+    opts: {
+      notDelivered?: boolean;
+      terminal?: boolean;
+      retryAfterMs?: number;
+      status?: number;
+    } = {},
+  ) {
+    super(message);
+    this.name = "McpTransportError";
+    this.notDelivered = opts.notDelivered ?? false;
+    this.terminal = opts.terminal ?? false;
+    this.retryAfterMs = opts.retryAfterMs;
+    this.status = opts.status;
+  }
+}
+
+/** 重试无意义（传输已关闭） */
+export function isTerminalTransportError(err: unknown): boolean {
+  return err instanceof McpTransportError && err.terminal;
+}
+
+/** 请求确定没有到达服务器（重发不会造成重复执行） */
+export function isNotDeliveredError(err: unknown): boolean {
+  return err instanceof McpTransportError && err.notDelivered;
+}
+
+/** 对端要求的最短重试等待（ms），没有则 undefined */
+export function getRetryAfterMs(err: unknown): number | undefined {
+  return err instanceof McpTransportError ? err.retryAfterMs : undefined;
+}
+
+/** Retry-After 上限：超过 1 小时的值按异常处理，不采信 */
+const MAX_RETRY_AFTER_MS = 3_600_000;
+
+/** 解析 Retry-After（秒数或 HTTP-date，RFC 9110 §10.2.3） */
+export function parseRetryAfterHeader(value: string | null, now = Date.now()): number | undefined {
+  if (!value) return undefined;
+  const v = value.trim();
+  if (!v) return undefined;
+  let ms: number;
+  if (/^\d+$/.test(v)) {
+    ms = Number(v) * 1000;
+  } else {
+    const at = Date.parse(v);
+    if (Number.isNaN(at)) return undefined;
+    ms = Math.max(0, at - now);
+  }
+  return ms <= MAX_RETRY_AFTER_MS ? ms : undefined;
+}
+
+/** 非 2xx 响应 → McpTransportError。429 = 服务器明确拒收，确定未执行 */
+function httpStatusError(prefix: string, response: Response): McpTransportError {
+  return new McpTransportError(`${prefix}: ${response.status}`, {
+    status: response.status,
+    notDelivered: response.status === 429,
+    retryAfterMs:
+      response.status === 429 || response.status === 503
+        ? parseRetryAfterHeader(response.headers.get("retry-after"))
+        : undefined,
+  });
+}
+
+/** 已关闭传输上的 send：请求根本没写出去 */
+function closedError(): McpTransportError {
+  return new McpTransportError("传输已关闭", { notDelivered: true, terminal: true });
+}
+
+/** 连接建立失败：后续请求一个字节都没发出去 */
+function connectFailedError(err: unknown): McpTransportError {
+  if (err instanceof McpTransportError) {
+    return new McpTransportError(err.message, {
+      notDelivered: true,
+      retryAfterMs: err.retryAfterMs,
+      status: err.status,
+    });
+  }
+  return new McpTransportError((err as Error)?.message ?? String(err), { notDelivered: true });
+}
+
+/**
  * 服务器发起请求的统一分派（D10/D12）：有 onRequest 就把结果回传，没有就回 -32601。
  * 原先每个传输各写一份，WebSocket 与进程内两份干脆漏写——对端发了带 id 的请求永远等不到应答。
  * 新传输一律走这里，别再各写一份。
@@ -225,7 +322,7 @@ export class StdioTransport implements Transport {
 
   async send(request: JsonRpcRequest, signal?: AbortSignal): Promise<JsonRpcResponse> {
     if (this.closed) {
-      throw new Error("传输已关闭");
+      throw closedError();
     }
 
     return new Promise((resolve, reject) => {
@@ -367,7 +464,7 @@ export class HTTPTransport implements Transport {
 
   async send(request: JsonRpcRequest, signal?: AbortSignal): Promise<JsonRpcResponse> {
     if (this.closed) {
-      throw new Error("传输已关闭");
+      throw closedError();
     }
     const signals: AbortSignal[] = [AbortSignal.timeout(this.timeout), this.closeController.signal];
     if (signal) signals.push(signal);
@@ -384,7 +481,7 @@ export class HTTPTransport implements Transport {
     });
 
     if (!response.ok) {
-      throw new Error(`MCP HTTP 错误: ${response.status}`);
+      throw httpStatusError("MCP HTTP 错误", response);
     }
 
     return (await response.json()) as JsonRpcResponse;
@@ -444,7 +541,7 @@ export class StreamableHTTPTransport implements Transport {
 
   async send(request: JsonRpcRequest, signal?: AbortSignal): Promise<JsonRpcResponse> {
     if (this.closed) {
-      throw new Error("传输已关闭");
+      throw closedError();
     }
 
     const signals: AbortSignal[] = [AbortSignal.timeout(this.timeout)];
@@ -463,7 +560,7 @@ export class StreamableHTTPTransport implements Transport {
     if (newSession) this.sessionId = newSession;
 
     if (!response.ok) {
-      throw new Error(`MCP Streamable HTTP 错误: ${response.status}`);
+      throw httpStatusError("MCP Streamable HTTP 错误", response);
     }
 
     const contentType = (response.headers.get("content-type") || "").toLowerCase();
@@ -609,7 +706,7 @@ export class SSETransport implements Transport {
     });
 
     if (!response.ok) {
-      throw new Error(`MCP SSE 连接失败: ${response.status}`);
+      throw httpStatusError("MCP SSE 连接失败", response);
     }
 
     if (!response.body) {
@@ -712,11 +809,13 @@ export class SSETransport implements Transport {
 
   async send(request: JsonRpcRequest, signal?: AbortSignal): Promise<JsonRpcResponse> {
     if (this.closed) {
-      throw new Error("传输已关闭");
+      throw closedError();
     }
 
-    // 等待 SSE 连接建立
-    await this.connectPromise;
+    // 等待 SSE 连接建立（失败 = POST 还没发，确定未送达）
+    await this.connectPromise.catch((err) => {
+      throw connectFailedError(err);
+    });
 
     const endpoint = this.postEndpoint || this.url;
 
@@ -890,8 +989,10 @@ export class WebSocketTransport implements Transport {
   }
 
   async send(request: JsonRpcRequest, signal?: AbortSignal): Promise<JsonRpcResponse> {
-    if (this.closed) throw new Error("传输已关闭");
-    await this.connectPromise;
+    if (this.closed) throw closedError();
+    await this.connectPromise.catch((err) => {
+      throw connectFailedError(err);
+    });
 
     return new Promise((resolve, reject) => {
       // D8：timer 与 abort 监听器统一由 cleanup 清理（同 Stdio/SSE）
@@ -966,7 +1067,7 @@ class InProcessTransportImpl implements Transport {
   }
 
   async send(request: JsonRpcRequest, signal?: AbortSignal): Promise<JsonRpcResponse> {
-    if (this.closed || !this.peer) throw new Error("传输已关闭");
+    if (this.closed || !this.peer) throw closedError();
 
     return new Promise((resolve, reject) => {
       this.pendingRequests.set(request.id, { resolve, reject });

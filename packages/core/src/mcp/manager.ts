@@ -22,10 +22,12 @@ import {
 import { buildMcpToolName } from "./normalization.ts";
 import { logToolInvoked } from "../analytics/events.ts";
 import { mcpPluginOrigin } from "../analytics/plugin-attribution.ts";
-import { expandEnvVars } from "./env-expansion.ts";
+import { expandConfigEnvVars } from "./env-expansion.ts";
 import { buildSidBackendHeaders, SID_BACKEND_AUTH } from "./backend-auth.ts";
 import { enforceMcpOutputTokenLimit, IMAGE_TOKEN_ESTIMATE } from "./mcp-output-limit.ts";
-import { getMcpTimeout } from "./mcp-timeout.ts";
+import { getMcpTimeout, getMcpToolTimeout } from "./mcp-timeout.ts";
+import { getRetryAfterMs } from "./transport.ts";
+import { computeBackoffMs } from "../config/network-profile.ts";
 import { getLogger } from "../debug/logger.ts";
 import { join } from "path";
 import { ensureSidTempDir } from "@sid-code/shared/utils/temp-dir.ts";
@@ -39,6 +41,12 @@ import {
 /** 重连配置 */
 const MAX_RECONNECT_ATTEMPTS = 5;
 const RECONNECT_BASE_DELAY = 1000; // ms
+/**
+ * 重连退避上限（D27）。原公式 base × 2^(n-1) 没有 cap：MAX=5 时最大 16s 尚可，
+ * 但常量一旦调大就失控（MAX=10 → 第 10 次 512s）。与 client.ts 的请求重试同用
+ * computeBackoffMs、同一个 30s 上限。
+ */
+const RECONNECT_MAX_DELAY = 30_000; // ms
 /**
  * 熔断 half-open 探测间隔（D23）：耗尽重连次数进入 FAILED 后，按此周期再试探一次，
  * 成功即回 CONNECTED 并清零计数。没有这一步，一次 ~31s 的网络中断就会让 server
@@ -55,8 +63,16 @@ const MAX_RESULT_SIZE = 100_000;
 const LOCAL_BATCH_SIZE = 3;
 /** 远程连接并发上限 */
 const REMOTE_BATCH_SIZE = 20;
-/** Server instructions 截断上限 */
-const MAX_INSTRUCTIONS_LENGTH = 2048;
+/**
+ * Server instructions 截断上限——**唯一**一道 instructions 长度防线（D29）。
+ *
+ * 单个 server 的 instructions 可能几千字（如 MasterGo DSL 工作流），全量注入既吃 token 又
+ * 增加模型元认知外泄概率（2026-07-30 轨迹 20260730-135709 实测 glm-5.2 把注入内容"说"了出来）。
+ * 注入点 `query/loop.ts` 原先还有一道 4000 的二次截断，但 block 最长 = 2048 + 截断标记 +
+ * `## <server>\n`，要 server 名超过 1900 字才会触发——是死代码，且会让人以为「这里放宽了，
+ * loop 那边还有一道兜着」。已删除，要调上限只改这里。
+ */
+export const MAX_INSTRUCTIONS_LENGTH = 2048;
 
 /** 服务器状态信息 */
 export interface MCPServerStatusInfo {
@@ -95,11 +111,19 @@ class MCPToolAdapter implements Tool {
   private client: MCPClient;
   private def: MCPToolDefinition;
   private serverName: string;
+  /** 整个工具调用的总超时（D14，含全部重试），由 getMcpToolTimeout 决定 */
+  private toolTimeoutMs: number;
 
-  constructor(client: MCPClient, def: MCPToolDefinition, serverName: string) {
+  constructor(
+    client: MCPClient,
+    def: MCPToolDefinition,
+    serverName: string,
+    toolTimeoutMs: number,
+  ) {
     this.client = client;
     this.def = def;
     this.serverName = serverName;
+    this.toolTimeoutMs = toolTimeoutMs;
   }
 
   name(): string {
@@ -126,6 +150,26 @@ class MCPToolAdapter implements Tool {
     return this.def.annotations?.readOnlyHint ?? false;
   }
 
+  /**
+   * D16：Server 声明 `destructiveHint: true` → 权限层把它的确认当安全类确认，
+   * yesMode / auto 分类器 / hook allow 都不能静默放行（见 permission/checker.ts Step 14）。
+   * 缺省 false 与协议默认值（未声明 = 可能有破坏性）方向相反，但这里只做**收紧**：
+   * 没声明的工具照旧走默认 ask，不因缺省值被放宽。
+   */
+  isDestructive(): boolean {
+    return this.def.annotations?.destructiveHint === true;
+  }
+
+  /** D16：Server 声明的「会与外部世界交互」，透传给权限确认文案 */
+  isOpenWorld(): boolean {
+    return this.def.annotations?.openWorldHint === true;
+  }
+
+  /** D15 / D16：只有 Server 显式声明幂等的工具才允许在「可能已执行」的错误上重试 */
+  isIdempotent(): boolean {
+    return this.def.annotations?.idempotentHint === true;
+  }
+
   async execute(input: unknown, signal?: AbortSignal): Promise<ToolResult> {
     // 漏斗 10 · 插件：市场插件按调用计数。发点放在适配器自身而非各执行器 ——
     // 主循环 / 进程内子代理 / spawn 子代理 / forked agent 最终都走这里，单一汇聚点不会漏计也不会重计。
@@ -134,11 +178,7 @@ class MCPToolAdapter implements Tool {
     // 是否真发由市场注册表决定，用户自配 MCP / 本地插件查不到即不发。
     logToolInvoked(this.name(), mcpPluginOrigin(this.serverName, this.def.name));
     try {
-      const result = await this.client.callTool(
-        this.def.name,
-        input as Record<string, unknown>,
-        signal,
-      );
+      const result = await this.callWithToolTimeout(input as Record<string, unknown>, signal);
 
       let text = result.content
         .filter((c) => c.type === "text" && c.text)
@@ -181,6 +221,35 @@ class MCPToolAdapter implements Tool {
       };
     }
   }
+
+  /**
+   * D14：工具调用的外层总超时。必须**包住重试**——每次请求的 transport 超时（getMcpTimeout，30s）
+   * 是内层；没有这一层时一次 tools/call 的真实上限是「30s × 重试次数 + 退避」的涌现值，
+   * `SID_CODE_MCP_TOOL_TIMEOUT` 写进了官网却没有读取者。超时后 abort 内层请求，不留孤儿。
+   */
+  private async callWithToolTimeout(args: Record<string, unknown>, signal?: AbortSignal) {
+    const ctl = new AbortController();
+    const onOuterAbort = () => ctl.abort();
+    if (signal) {
+      if (signal.aborted) ctl.abort();
+      else signal.addEventListener("abort", onOuterAbort, { once: true });
+    }
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    try {
+      return await Promise.race([
+        this.client.callTool(this.def.name, args, ctl.signal, { idempotent: this.isIdempotent() }),
+        new Promise<never>((_, reject) => {
+          timer = setTimeout(() => {
+            ctl.abort();
+            reject(new Error(`工具调用超时 (${this.toolTimeoutMs}ms)`));
+          }, this.toolTimeoutMs);
+        }),
+      ]);
+    } finally {
+      if (timer !== undefined) clearTimeout(timer);
+      signal?.removeEventListener("abort", onOuterAbort);
+    }
+  }
 }
 
 /** 工具过滤：根据 includeTools/excludeTools 配置过滤工具列表 */
@@ -194,11 +263,20 @@ function filterTools(tools: MCPToolDefinition[], config: MCPServerConfig): MCPTo
   return tools;
 }
 
-/** 简易 pMap：并发控制的 Promise.all */
-async function pMap<T, R>(
+/**
+ * 简易 pMap：并发控制的 Promise.all，结果按输入顺序写回（工具顺序稳定，见 R5）。
+ *
+ * D27：单项抛错不会拖垮整批。旧实现里 fn 一抛，该 worker 放弃它后面的全部项、
+ * Promise.all 立即 reject、其它 worker 已完成的结果全部丢失——「10 个 server 里 1 个抛错，
+ * 另外 9 个的连接结果全丢」。现在每项的异常交给 onError 换成兜底值，其余项照常完成。
+ *
+ * @internal 导出仅供测试
+ */
+export async function pMap<T, R>(
   items: T[],
   fn: (item: T) => Promise<R>,
   concurrency: number,
+  onError: (item: T, err: unknown) => R,
 ): Promise<R[]> {
   const results: R[] = new Array(items.length);
   let index = 0;
@@ -206,7 +284,11 @@ async function pMap<T, R>(
   async function worker(): Promise<void> {
     while (index < items.length) {
       const i = index++;
-      results[i] = await fn(items[i]);
+      try {
+        results[i] = await fn(items[i]);
+      } catch (err) {
+        results[i] = onError(items[i], err);
+      }
     }
   }
 
@@ -316,44 +398,28 @@ export class MCPManager {
     const connectOne = async ([name, config]: [string, MCPServerConfig]): Promise<Tool[]> => {
       this.serverConfigs.set(name, config);
       this.setStatus(name, MCPConnectionStatus.CONNECTING);
-      const connectTimeout = getMcpTimeout(config.timeout);
-      // 连接超时孤儿清理：超时时 abort，让 doConnect 主动 close 传输层
-      // （kill stdio 子进程 / abort HTTP·SSE 连接），避免 connect 变孤儿后子进程泄漏。
-      const connectCtl = new AbortController();
-      let connectTimer: ReturnType<typeof setTimeout> | null = null;
       try {
         log.debug("MCP", `连接服务器: ${name}`, config);
-        const tools = await Promise.race([
-          this.connect(name, config, connectCtl.signal),
-          new Promise<never>(
-            (_, reject) =>
-              (connectTimer = setTimeout(() => {
-                connectCtl.abort();
-                reject(new Error(`连接超时 (${connectTimeout}ms)`));
-              }, connectTimeout)),
-          ),
-        ]);
+        const tools = await this.connectWithTimeout(name, config);
         this.setStatus(name, MCPConnectionStatus.CONNECTED);
         log.info("MCP", `${name} 连接成功，注册 ${tools.length} 个工具`);
         return tools;
       } catch (err: any) {
-        if (!connectCtl.signal.aborted) connectCtl.abort();
-        const client = this.clients.get(name);
-        if (client) {
-          client.close();
-          this.clients.delete(name);
-        }
+        this.dropClient(name);
         log.error("MCP", `连接 ${name} 失败`, { error: err.message, stack: err.stack });
         this.setStatus(name, MCPConnectionStatus.FAILED, err.message);
         return [];
-      } finally {
-        if (connectTimer !== null) clearTimeout(connectTimer);
       }
     };
 
+    const onConnectError = ([name]: [string, MCPServerConfig], err: unknown): Tool[] => {
+      log.error("MCP", `连接 ${name} 异常: ${(err as Error)?.message ?? err}`);
+      return [];
+    };
+
     const [localResults, remoteResults] = await Promise.all([
-      pMap(local, connectOne, LOCAL_BATCH_SIZE),
-      pMap(remote, connectOne, REMOTE_BATCH_SIZE),
+      pMap(local, connectOne, LOCAL_BATCH_SIZE, onConnectError),
+      pMap(remote, connectOne, REMOTE_BATCH_SIZE, onConnectError),
     ]);
 
     for (const tools of [...localResults, ...remoteResults]) {
@@ -384,6 +450,52 @@ export class MCPManager {
         return await this.doConnect(name, config, signal);
       }
       throw err;
+    }
+  }
+
+  /**
+   * 带总超时的连接（D24）。connectAll / addServer / 断线重连 / half-open 探测四条路径共用。
+   *
+   * `connect` 内部每个 JSON-RPC 请求有 transport 级超时，但「connect 整体」
+   * （initialize + listTools + listResources + listPrompts 串行）没有总闸。原先只有
+   * connectAll 与 addServer 各自内联了一份 Promise.race，重连循环是裸 await——
+   * 一个「TCP 连上但不回 initialize」的半死 server 会永久冻结重连链，状态停在 RECONNECTING，
+   * 而 RECONNECTING 又挡掉后续断线事件。
+   *
+   * 超时时 abort：让 doConnect 主动 close 传输层（kill stdio 子进程 / abort HTTP·SSE），
+   * 避免 connect 变孤儿后子进程泄漏。失败时调用方负责 dropClient。
+   */
+  private async connectWithTimeout(name: string, config: MCPServerConfig): Promise<Tool[]> {
+    const connectTimeout = getMcpTimeout(config.timeout);
+    const connectCtl = new AbortController();
+    let connectTimer: ReturnType<typeof setTimeout> | null = null;
+    try {
+      return await Promise.race([
+        this.connect(name, config, connectCtl.signal),
+        new Promise<never>(
+          (_, reject) =>
+            (connectTimer = setTimeout(() => {
+              connectCtl.abort();
+              reject(new Error(`连接超时 (${connectTimeout}ms)`));
+            }, connectTimeout)),
+        ),
+      ]);
+    } catch (err) {
+      if (!connectCtl.signal.aborted) connectCtl.abort();
+      throw err;
+    } finally {
+      if (connectTimer !== null) clearTimeout(connectTimer);
+    }
+  }
+
+  /** 关闭并移除指定 server 的 client（失败 / 断线清理共用） */
+  private dropClient(name: string): void {
+    const client = this.clients.get(name);
+    if (client) {
+      try {
+        client.close();
+      } catch {}
+      this.clients.delete(name);
     }
   }
 
@@ -453,7 +565,7 @@ export class MCPManager {
 
       // 发现工具（带过滤）
       const toolDefs = filterTools(await client.listTools(), config);
-      const tools = toolDefs.map((def) => new MCPToolAdapter(client, def, name));
+      const tools = this.adaptTools(client, toolDefs, name);
       state.toolCount = tools.length;
 
       // 发现资源
@@ -470,6 +582,12 @@ export class MCPManager {
     } finally {
       if (signal) signal.removeEventListener("abort", onAbort);
     }
+  }
+
+  /** MCP 工具定义 → 内部 Tool（D14：工具调用总超时在此注入） */
+  private adaptTools(client: MCPClient, defs: MCPToolDefinition[], name: string): Tool[] {
+    const toolTimeoutMs = getMcpToolTimeout();
+    return defs.map((def) => new MCPToolAdapter(client, def, name, toolTimeoutMs));
   }
 
   /** 判断错误是否为「未授权」（401 / NeedsAuthorizationError） */
@@ -508,7 +626,17 @@ export class MCPManager {
   }
 
   /** 创建传输层 */
-  private async createTransport(name: string, config: MCPServerConfig) {
+  private async createTransport(name: string, rawConfig: MCPServerConfig) {
+    // D4：command / args / url / headers / env 统一展开（与 policy 过闸、签名去重同一入口）。
+    // 原先只展开了 command / args / url，headers 与 env 里的 `${TOKEN}` 原样发出去 → 远端 401。
+    // 展开结果只用于本次建连，serverConfigs 里仍存模板原文（重连时按最新环境重新展开）。
+    const { config, missing } = expandConfigEnvVars(rawConfig);
+    if (missing.length > 0) {
+      getLogger().warn(
+        "MCP",
+        `${name} 配置引用了未设置的环境变量: ${[...new Set(missing)].join(", ")}`,
+      );
+    }
     const timeout = getMcpTimeout(config.timeout);
 
     // OAuth 服务器：注入 access token 为 Authorization 头（优先于静态 authToken）
@@ -541,7 +669,7 @@ export class MCPManager {
       if (config.transport === "stdio" || !config.url) {
         throw new Error(`MCP 服务器 ${name} 的 auth:"sid-backend" 需要远程传输与 url`);
       }
-      headers = buildSidBackendHeaders(name, expandEnvVars(config.url).expanded, config.headers);
+      headers = buildSidBackendHeaders(name, config.url, config.headers);
     } else if (config.auth !== undefined) {
       throw new Error(`MCP 服务器 ${name} 的 auth 值不受支持：${String(config.auth)}`);
     }
@@ -550,35 +678,32 @@ export class MCPManager {
       if (!config.command) {
         throw new Error(`MCP 服务器 ${name} 缺少 command 配置`);
       }
-      // 环境变量展开 command 和 args
-      const { expanded: cmd } = expandEnvVars(config.command);
-      const args = config.args?.map((a) => expandEnvVars(a).expanded) ?? [];
-      return new StdioTransport(cmd, args, config.env, timeout);
+      return new StdioTransport(config.command, config.args ?? [], config.env, timeout);
     } else if (config.transport === "http") {
       // G4：http 默认走 Streamable HTTP（对齐 CC 与 2025-03-26 规范）
       if (!config.url) {
         throw new Error(`MCP 服务器 ${name} 缺少 url 配置`);
       }
-      const { expanded: url } = expandEnvVars(config.url);
+      const url = config.url;
       return new StreamableHTTPTransport(url, headers, timeout);
     } else if (config.transport === "http-json") {
       // 旧单 JSON HTTP 传输（兼容保留，仅在服务器不支持 Streamable 时显式指定）
       if (!config.url) {
         throw new Error(`MCP 服务器 ${name} 缺少 url 配置`);
       }
-      const { expanded: url } = expandEnvVars(config.url);
+      const url = config.url;
       return new HTTPTransport(url, headers, timeout);
     } else if (config.transport === "sse") {
       if (!config.url) {
         throw new Error(`MCP 服务器 ${name} 缺少 url 配置`);
       }
-      const { expanded: url } = expandEnvVars(config.url);
+      const url = config.url;
       return new SSETransport(url, headers, timeout);
     } else if (config.transport === "ws") {
       if (!config.url) {
         throw new Error(`MCP 服务器 ${name} 缺少 url 配置`);
       }
-      const { expanded: url } = expandEnvVars(config.url);
+      const url = config.url;
       return new WebSocketTransport(url, headers, timeout);
     } else {
       throw new Error(`MCP 服务器 ${name} 不支持的传输方式: ${config.transport}`);
@@ -596,7 +721,7 @@ export class MCPManager {
     log.info("MCP", `${name} 工具列表变更，刷新中...`);
     try {
       const toolDefs = filterTools(await client.listTools(), config);
-      const tools = toolDefs.map((def) => new MCPToolAdapter(client, def, name));
+      const tools = this.adaptTools(client, toolDefs, name);
       this.getState(name).toolCount = tools.length;
       this.onToolsRefresh?.(name, tools);
       log.info("MCP", `${name} 工具列表已刷新，共 ${tools.length} 个工具`);
@@ -730,13 +855,14 @@ export class MCPManager {
     state.reconnectAttempts = 0;
 
     // 清理旧 client
-    const oldClient = this.clients.get(name);
-    if (oldClient) {
-      try {
-        oldClient.close();
-      } catch {}
-      this.clients.delete(name);
-    }
+    this.dropClient(name);
+
+    // D25：断线即下掉该 server 的工具，重连成功再注册。
+    // 不摘的话模型会继续调用一个已断开的 server——adapter 里捕获的是已 close 的旧 client，
+    // 拿到的是 isError:true 的「业务错误」，模型以为参数不对、换参数重试，原地空转；
+    // stdio 直接 FAILED 时更是整个会话余生都挂着、每轮烧 token。
+    // 代价是击穿 prompt cache（工具列表变了）——正确性优先，与 §7.9 同一取舍。
+    this.onToolsRefresh?.(name, []);
 
     // stdio: 不自动重连（子进程崩溃通常是配置错误）
     if (config.transport === "stdio") {
@@ -749,12 +875,10 @@ export class MCPManager {
     log.warn("MCP", `${name} 连接断开，开始重连...`);
     this.setStatus(name, MCPConnectionStatus.RECONNECTING);
 
+    let retryAfterMs: number | undefined;
     while (state.reconnectAttempts < MAX_RECONNECT_ATTEMPTS) {
       state.reconnectAttempts++;
-      const delay =
-        this.reconnectBaseDelayMs *
-        Math.pow(2, state.reconnectAttempts - 1) *
-        (0.7 + Math.random() * 0.6);
+      const delay = this.reconnectDelayMs(state.reconnectAttempts, retryAfterMs);
       log.info(
         "MCP",
         `${name} 第 ${state.reconnectAttempts}/${MAX_RECONNECT_ATTEMPTS} 次重连，等待 ${Math.round(delay)}ms`,
@@ -764,7 +888,12 @@ export class MCPManager {
       if (this.serverConfigs.get(name) !== config || this.shutDown) return;
 
       try {
-        const tools = await this.connect(name, config);
+        // D24：套总超时。裸 await 时一次挂死的 connect 会永久冻结这条重连链
+        const tools = await this.connectWithTimeout(name, config);
+        if (this.serverConfigs.get(name) !== config || this.shutDown) {
+          this.dropClient(name);
+          return;
+        }
         state.reconnectAttempts = 0;
         this.setStatus(name, MCPConnectionStatus.CONNECTED);
         log.info("MCP", `${name} 重连成功，注册 ${tools.length} 个工具`);
@@ -772,19 +901,27 @@ export class MCPManager {
         return;
       } catch (err: any) {
         log.warn("MCP", `${name} 重连失败: ${err.message}`);
-        const client = this.clients.get(name);
-        if (client) {
-          try {
-            client.close();
-          } catch {}
-          this.clients.delete(name);
-        }
+        retryAfterMs = getRetryAfterMs(err);
+        this.dropClient(name);
       }
     }
 
     log.error("MCP", `${name} 超过最大重连次数 (${MAX_RECONNECT_ATTEMPTS})，标记为失败`);
     this.setStatus(name, MCPConnectionStatus.FAILED, "超过最大重连次数");
     this.scheduleHalfOpenProbe(name, config);
+  }
+
+  /**
+   * 第 n 次（从 1 起）重连前的等待（D27）。
+   *
+   * 与 client.ts 的请求重试同用 computeBackoffMs（指数 + 抖动 + 上限），不再就地写一份无上限的
+   * `base × 2^(n-1)`。对端上一次给了 Retry-After（429 / 503）就至少等那么久——按自己的节奏
+   * 打一个正在限流的远程 server，会被企业网关判成滥用。Retry-After 本身不受 cap 约束
+   * （那是对端的明确要求），只受 parseRetryAfterHeader 的 1 小时合理性上限。
+   */
+  reconnectDelayMs(attempt: number, retryAfterMs?: number): number {
+    const backoff = computeBackoffMs(attempt - 1, this.reconnectBaseDelayMs, RECONNECT_MAX_DELAY);
+    return Math.max(backoff, retryAfterMs ?? 0);
   }
 
   /**
@@ -800,7 +937,8 @@ export class MCPManager {
       if (state.status !== MCPConnectionStatus.FAILED) return;
       const log = getLogger();
       try {
-        const tools = await this.connect(name, config);
+        // D24：探测同样套总超时，否则一次挂死的探测会让 half-open 永远停在这一轮
+        const tools = await this.connectWithTimeout(name, config);
         if (this.serverConfigs.get(name) !== config) {
           this.clients.get(name)?.close();
           return;
@@ -811,13 +949,7 @@ export class MCPManager {
         this.onToolsRefresh?.(name, tools);
       } catch (err: any) {
         log.debug("MCP", `${name} half-open 探测失败: ${err?.message ?? err}`);
-        const client = this.clients.get(name);
-        if (client) {
-          try {
-            client.close();
-          } catch {}
-          this.clients.delete(name);
-        }
+        this.dropClient(name);
         if (this.serverConfigs.get(name) === config) this.scheduleHalfOpenProbe(name, config);
       }
     }, this.halfOpenProbeIntervalMs);
@@ -1003,38 +1135,17 @@ export class MCPManager {
     this.serverConfigs.set(name, config);
     this.setStatus(name, MCPConnectionStatus.CONNECTING);
 
-    const connectTimeout = getMcpTimeout(config.timeout);
-    const connectCtl = new AbortController();
-    let connectTimer: ReturnType<typeof setTimeout> | null = null;
     try {
-      const tools = await Promise.race([
-        this.connect(name, config, connectCtl.signal),
-        new Promise<never>(
-          (_, reject) =>
-            (connectTimer = setTimeout(() => {
-              connectCtl.abort();
-              reject(new Error(`连接超时 (${connectTimeout}ms)`));
-            }, connectTimeout)),
-        ),
-      ]);
+      const tools = await this.connectWithTimeout(name, config);
       this.setStatus(name, MCPConnectionStatus.CONNECTED);
       log.info("MCP", `动态注册 ${name} 成功，注册 ${tools.length} 个工具`);
       this.onToolsRefresh?.(name, tools);
       return tools;
     } catch (err: any) {
-      if (!connectCtl.signal.aborted) connectCtl.abort();
       this.setStatus(name, MCPConnectionStatus.FAILED, err.message);
-      const client = this.clients.get(name);
-      if (client) {
-        try {
-          client.close();
-        } catch {}
-        this.clients.delete(name);
-      }
+      this.dropClient(name);
       log.error("MCP", `动态注册 ${name} 失败: ${err.message}`);
       return [];
-    } finally {
-      if (connectTimer !== null) clearTimeout(connectTimer);
     }
   }
 

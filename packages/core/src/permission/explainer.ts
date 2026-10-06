@@ -66,6 +66,9 @@ export function explainDecisionReason(reason: PermissionDecisionReason): string 
     case "dangerousCommand":
       return `危险命令检测命中（严重级 ${reason.severity}）：${reason.pattern}`;
 
+    case "destructiveTool":
+      return `工具声明了破坏性操作，必须人工确认：${reason.tool}${reason.openWorld ? "（会与外部系统交互）" : ""}`;
+
     case "pathValidation":
       return `路径校验拦截：${reason.reason}`;
 
