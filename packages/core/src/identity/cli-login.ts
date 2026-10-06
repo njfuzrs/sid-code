@@ -230,6 +230,8 @@ export async function performCliLogin(
       code = await server.waitForCode(cliState, deps.timeoutMs ?? LOGIN_TIMEOUT_MS, deps.signal);
     } catch (err) {
       const msg = (err as Error).message;
+      // D22 之后 state 不匹配的回调不再立即终结等待（防伪造请求打掉真回调），
+      // 而是在超时报错里带上「收到过 N 次 state 不匹配」。所以这条判断必须在「超时」之前。
       if (msg.includes("state 不匹配")) {
         throw new CliLoginError(
           "回调的 state 与本次登录不一致，已拒绝（可能是别人构造的登录链接）。请重新登录。",

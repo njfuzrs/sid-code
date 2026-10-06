@@ -36,6 +36,7 @@ import {
   getValidAccessToken,
   performOAuthFlow,
   NeedsAuthorizationError,
+  redactOAuthUrl,
 } from "./oauth.ts";
 
 /** 重连配置 */
@@ -309,6 +310,12 @@ function truncateInstructions(raw: string | undefined): string | undefined {
 export class MCPManager {
   private clients = new Map<string, MCPClient>();
   private serverConfigs = new Map<string, MCPServerConfig>();
+  /**
+   * D21：enabled:false 的 server。单独存放而不进 serverConfigs——后者是「受管连接」集合，
+   * 重连 / 探测 / listOAuthServers / closeAll 都遍历它，混进去就得在每处补一个跳过判断。
+   * 这里只服务于 getStatus 的展示。
+   */
+  private disabledConfigs = new Map<string, MCPServerConfig>();
   private serverStates = new Map<string, ServerState>();
   /** 工具变更时的回调（供外部刷新工具列表） */
   onToolsRefresh?: (serverName: string, tools: Tool[]) => void;
@@ -381,6 +388,11 @@ export class MCPManager {
     const allTools: Tool[] = [];
 
     const enabled = Object.entries(servers).filter(([, config]) => config.enabled !== false);
+    // D21：禁用的 server 原先在这里被 filter 掉后就从面板里消失了（getStatus 只遍历
+    // serverConfigs），DISABLED 枚举全仓零写入。现在登记下来，面板显示「已禁用」。
+    for (const [name, config] of Object.entries(servers)) {
+      if (config.enabled === false) this.disabledConfigs.set(name, config);
+    }
     const skipped = Object.keys(servers).length - enabled.length;
     if (skipped > 0) {
       log.info("MCP", `跳过 ${skipped} 个已禁用的 MCP 服务器`);
@@ -407,7 +419,7 @@ export class MCPManager {
       } catch (err: any) {
         this.dropClient(name);
         log.error("MCP", `连接 ${name} 失败`, { error: err.message, stack: err.stack });
-        this.setStatus(name, MCPConnectionStatus.FAILED, err.message);
+        this.setStatus(name, this.failureStatus(config, err), err.message);
         return [];
       }
     };
@@ -590,6 +602,17 @@ export class MCPManager {
     return defs.map((def) => new MCPToolAdapter(client, def, name, toolTimeoutMs));
   }
 
+  /**
+   * 连接失败时该落哪个状态（D21）。OAuth server 的「未授权」类失败（含交互授权超时 /
+   * 取消，runOAuthFlow 统一包成 NeedsAuthorizationError）→ NEEDS_AUTH，其余 → FAILED。
+   */
+  private failureStatus(config: MCPServerConfig, err: unknown): MCPConnectionStatus {
+    if (isOAuthEnabled(config) && config.transport !== "stdio" && this.isAuthError(err)) {
+      return MCPConnectionStatus.NEEDS_AUTH;
+    }
+    return MCPConnectionStatus.FAILED;
+  }
+
   /** 判断错误是否为「未授权」（401 / NeedsAuthorizationError） */
   private isAuthError(err: unknown): boolean {
     if (err instanceof NeedsAuthorizationError) return true;
@@ -616,11 +639,34 @@ export class MCPManager {
   /** 执行交互式 OAuth 授权流程（展示/打开授权 URL，等待用户完成） */
   private async runOAuthFlow(name: string, config: MCPServerConfig): Promise<void> {
     const log = getLogger();
+    try {
+      await this.performOAuthFlowWithUi(name, config, log);
+    } catch (err) {
+      // D21：授权没走完（超时 / 取消 / 授权服务器拒绝）对用户而言都是「仍待授权」，
+      // 统一成 NeedsAuthorizationError，让 failureStatus 落 NEEDS_AUTH 而不是 FAILED。
+      if (err instanceof NeedsAuthorizationError) throw err;
+      const wrapped = new NeedsAuthorizationError(name);
+      wrapped.message = `${wrapped.message}：${(err as Error)?.message ?? String(err)}`;
+      throw wrapped;
+    }
+  }
+
+  private async performOAuthFlowWithUi(
+    name: string,
+    config: MCPServerConfig,
+    log: ReturnType<typeof getLogger>,
+  ): Promise<void> {
     await performOAuthFlow(name, config, (url) => {
       if (this.onOAuthAuthorizationUrl) {
         this.onOAuthAuthorizationUrl(name, url);
       } else {
-        log.info("MCP", `请在浏览器打开以下 URL 完成 ${name} 的 OAuth 授权:\n${url}`);
+        // D18：无 UI 回调时只能走日志，而日志会进聚合 / 错误上报 / issue 附件——
+        // 这里绝不能出现 state 原值。代价是日志里的链接不可点；交互入口应当注入
+        // onOAuthAuthorizationUrl（cli.ts 已直出 stderr，那条展示原文）。
+        log.warn(
+          "MCP",
+          `${name} 需要 OAuth 授权，但未注册授权 URL 展示回调（链接已脱敏）: ${redactOAuthUrl(url)}`,
+        );
       }
     });
   }
@@ -1061,6 +1107,19 @@ export class MCPManager {
       });
     }
 
+    // D21：禁用的 server 也列出来（受管连接里同名的已经在上面，不重复）
+    for (const [name, config] of this.disabledConfigs) {
+      if (this.serverConfigs.has(name)) continue;
+      statuses.push({
+        name,
+        status: MCPConnectionStatus.DISABLED,
+        toolCount: 0,
+        resourceCount: 0,
+        promptCount: 0,
+        transport: config.transport,
+      });
+    }
+
     return statuses;
   }
 
@@ -1132,6 +1191,7 @@ export class MCPManager {
       this.disconnect(name);
     }
 
+    this.disabledConfigs.delete(name);
     this.serverConfigs.set(name, config);
     this.setStatus(name, MCPConnectionStatus.CONNECTING);
 
@@ -1142,7 +1202,7 @@ export class MCPManager {
       this.onToolsRefresh?.(name, tools);
       return tools;
     } catch (err: any) {
-      this.setStatus(name, MCPConnectionStatus.FAILED, err.message);
+      this.setStatus(name, this.failureStatus(config, err), err.message);
       this.dropClient(name);
       log.error("MCP", `动态注册 ${name} 失败: ${err.message}`);
       return [];
@@ -1220,8 +1280,13 @@ export class MCPManager {
     this.disconnect(name);
     this.serverConfigs.set(name, config);
 
-    // 跑授权流程
-    await this.runOAuthFlow(name, config);
+    // 跑授权流程（失败时状态落 NEEDS_AUTH，面板上仍能再点一次「OAuth 授权」）
+    try {
+      await this.runOAuthFlow(name, config);
+    } catch (err: any) {
+      this.setStatus(name, MCPConnectionStatus.NEEDS_AUTH, err.message);
+      throw err;
+    }
 
     // 重连并刷新工具（传入超时 signal，防止 doConnect 变孤儿）
     this.setStatus(name, MCPConnectionStatus.CONNECTING);
