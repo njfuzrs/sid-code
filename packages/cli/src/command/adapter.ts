@@ -224,14 +224,29 @@ export async function adaptUnifiedToLegacy(uc: UnifiedCommand): Promise<LegacyCo
 }
 
 /**
+ * legacy 命令可透传的门控字段（D12 第一步）。
+ *
+ * legacy `Command` 接口本身没有这些字段的容器，于是适配产物上它们恒为 undefined：
+ * `/allow` 流式中不能插队、补全回车无参直接执行报用法错……给一个 `@deprecated` 的接口
+ * 扩容五个可选方法与「最终删除它」的方向相反，所以门控由调用方按名字表传入
+ * （见 loaders.ts 的 `LEGACY_BUILTIN_GATES`）。
+ */
+export type LegacyCommandGates = Pick<
+  UnifiedCommand,
+  "immediate" | "isHidden" | "userInvocable" | "requiresArgs" | "whenToUse"
+>;
+
+/**
  * 将旧式 Command 接口适配为新的 UnifiedCommand（LocalCommand 变体）
  * 子命令递归适配
  */
 export function adaptLegacyCommand(
   cmd: LegacyCommand,
   source: CommandSource = "builtin",
+  gates?: LegacyCommandGates,
 ): UnifiedCommand {
   return {
+    ...gates,
     type: "local",
     name: cmd.name(),
     aliases: cmd.aliases(),

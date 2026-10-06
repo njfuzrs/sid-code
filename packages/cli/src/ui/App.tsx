@@ -1051,7 +1051,11 @@ function TUIAppInner({ initialState, callbacks, bridge, alternateBuffer }: AppPr
   // 底层分发：真正把一条输入送到 App 业务层（Shell / 斜杠命令 / 普通输入）。
   // 被 handleSubmit（直送）与消息队列（接续）共用。
   const dispatchInput = useCallback(
-    async (text: string) => {
+    async (raw: string) => {
+      // D3：与 canRunDuringStreaming / parseSlashCommand 同口径先 trim。修复前这里不 trim、
+      // 闸门 trim：" /model opus" 被闸门判为可插队直送，到这里却按普通对话发给模型。
+      // 今天 text-buffer 的 submit 已 trim 挡住了，但队列接续 / 程序化提交不保证经过它。
+      const text = raw.trim();
       log.info("UI:INPUT", `dispatchInput: "${text.slice(0, 100)}"`);
       const shellCommand = parseShellInput(text);
       if (shellCommand) {

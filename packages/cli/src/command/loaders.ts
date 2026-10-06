@@ -9,7 +9,7 @@
  */
 
 import type { UnifiedCommand, CommandSource } from "./types.ts";
-import { adaptLegacyCommand } from "./adapter.ts";
+import { adaptLegacyCommand, type LegacyCommandGates } from "./adapter.ts";
 import { skillToCommand } from "@sid-code/core/skill/command-adapter.ts";
 import type { ScanOptions } from "@sid-code/core/extension/types.ts";
 import { getLogger } from "@sid-code/core/debug/logger.ts";
@@ -75,6 +75,31 @@ export async function loadSkillCommands(
 }
 
 /**
+ * 未迁移内置命令的门控字段表（D12 第一步，过渡手段）。
+ *
+ * ⚠️ 随对应命令迁到 commands/ 一起删掉对应条目；全部迁完时整张表删除。
+ * 迁移顺序建议按「门控缺失有多痛」排：allow / deny 排最前。
+ *
+ * 只收录逐条核过语义的命令，判据：
+ * - `immediate`：延迟执行会让它失去价值，且**不碰模型正在读写的消息列表**。
+ *   `/cost` `/stats` 纯只读；`/theme` 只改渲染；`/allow` `/deny` 改权限规则 ——
+ *   模型撞上权限询问时用户正需要立刻加规则，排队到本轮结束等于没用。
+ *   刻意**不**标 `/language`：它会重建系统提示词，与正在进行的这一轮请求交错。
+ * - `requiresArgs`：无参时 execute 直接返回用法错误。`/allow` `/deny` 是；
+ *   `/add-dir` **不是**（无参 = 列出白名单，文档初稿把它列进来是误判）。
+ *
+ * 刻意不导出（命令体系门禁 G1 数零生产调用的导出）；测试按名字写死期望值，
+ * 不复用这张表 —— 复用的话「表里漏了字段」与「适配器没透传」会一起变绿。
+ */
+const LEGACY_BUILTIN_GATES: Readonly<Record<string, LegacyCommandGates>> = {
+  cost: { immediate: true },
+  stats: { immediate: true },
+  theme: { immediate: true },
+  allow: { immediate: true, requiresArgs: true },
+  deny: { immediate: true, requiresArgs: true },
+};
+
+/**
  * 加载内置命令
  *
  * 渐进式迁移：已迁移到 commands/ 目录的命令直接以 UnifiedCommand 返回，
@@ -103,7 +128,7 @@ export async function loadBuiltinCommands(): Promise<UnifiedCommand[]> {
     .all()
     // 已迁移的不再用 legacy 版本（避免重复，且新版本优先）
     .filter((cmd) => !migratedNames.has(cmd.name()))
-    .map((cmd) => adaptLegacyCommand(cmd, "builtin"));
+    .map((cmd) => adaptLegacyCommand(cmd, "builtin", LEGACY_BUILTIN_GATES[cmd.name()]));
 
   return [...migrated, ...legacyAdapted];
 }
