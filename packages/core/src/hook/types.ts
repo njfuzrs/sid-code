@@ -126,6 +126,12 @@ export enum ConfigSource {
   Global = "global",
   /** 插件提供的 hook（可被 replacePluginHooks 原子替换） */
   Plugin = "plugin",
+  /**
+   * H27：来自企业 managed-settings（系统级托管配置）的 hook——allowManagedHooksOnly 唯一该放行的用户态来源。
+   * 原先没有这个值，`Project`（仓库内 `.sid-code/settings.json`，随 git clone 而来、任何有 push 权限的人都能改）
+   * 被拿来充数放行。⚠️ 目前尚无代码路径产生 Managed 源：开启 allowManagedHooksOnly 后只剩内部 runtime hook。
+   */
+  Managed = "managed",
 }
 
 /** Hook 实现类型 */
@@ -205,7 +211,10 @@ export interface RuntimeHookConfig {
   type: "runtime";
   name: string;
   action: (input: HookInput, options?: { signal: AbortSignal }) => Promise<HookOutput | void>;
+  /** 超时（秒），与其他四种类型同单位。H10：原先 runtime 这一个字段按毫秒解释，同一个 1 差 1000 倍 */
   timeout?: number;
+  /** 亚秒级超时（毫秒），内部代码专用，优先于 timeout。单位写进字段名，不再靠注释约定 */
+  timeoutMs?: number;
   source?: ConfigSource;
 }
 
@@ -216,27 +225,35 @@ export type HookConfig =
   | PromptHookConfig
   | AgentHookConfig;
 
-/** Hook 定义（配置文件中的一组 hook，带 matcher） */
-export interface HookDefinition {
-  matcher?: string;
-  /**
-   * G10：在 matcher（工具名）之上的细粒度 tool_input 条件（权限规则语法）。
-   * 例：`Bash(git *)` 仅当命令匹配 git 开头才触发；`Read(*.ts)` 仅当读 .ts 文件才触发。
-   * 仅 PreToolUse/PostToolUse/PostToolUseFailure/PermissionRequest 事件支持（有 tool_input）。
-   */
-  if?: string;
-  sequential?: boolean;
-  hooks: HookConfig[];
+/**
+ * H10：`timeout` 字段的单位与缺省值的唯一事实源。五种类型统一按**秒**解释，缺省 prompt 30s、其余 60s。
+ * runner 的五个执行分支与企业策略的 maxHookTimeout 判定都调它——原先五处各写一遍换算，
+ * runtime 那处漏乘 1000，日志里各自的「超时 (1s)」「超时 (1ms)」都对，单看任何一条都看不出不一致。
+ */
+export function resolveHookTimeoutMs(hook: HookConfig): number {
+  if (hook.type === "runtime" && typeof hook.timeoutMs === "number") return hook.timeoutMs;
+  const seconds = hook.timeout ?? (hook.type === "prompt" ? 30 : 60);
+  return seconds * 1000;
 }
 
-/** 新格式配置：按事件名分组 */
-export type NewHooksConfig = Partial<Record<HookEventName, HookDefinition[]>>;
-
-/** 生成 hook 唯一 key（用于去重） */
+/**
+ * 生成 hook 内容 key（用于去重）。
+ *
+ * H19：这是**内容**去重，刻意不含 matcher / if——同一条命令经两个都命中的 matcher（或 if）进来，
+ * 本次事件只跑一次，这是语义而不是 bug。正确性依赖「planner 先按 matcher / if 过滤、再去重」
+ * 的顺序：过滤掉的条目不参与去重，所以「A 的 if 不命中、B 的 if 命中」时留下的一定是 B。
+ * 这个顺序由 tests/hook/hook-p3-*.test.ts 锁住，改 planner 时别把去重挪到过滤之前。
+ *
+ * 但 key 必须覆盖**执行内容**：prompt / agent 原先只用 `rt:${name}`，两个未命名的 prompt hook
+ * key 相同、后一个被静默丢弃——内容不同却被当成同一个 hook。
+ */
 export function getHookKey(hook: HookConfig): string {
   const name = hook.name || "";
   if (hook.type === "command") return `cmd:${name}:${hook.command}`;
   if (hook.type === "url") return `url:${name}:${hook.url}`;
+  if (hook.type === "prompt" || hook.type === "agent") {
+    return `${hook.type}:${name}:${hook.model ?? ""}:${hook.prompt}`;
+  }
   return `rt:${name}`;
 }
 

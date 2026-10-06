@@ -17,7 +17,6 @@ import type {
 } from "../config/config.ts";
 import type {
   HookConfig,
-  NewHooksConfig,
   AggregatedHookResult,
   SessionStartInput,
   SessionEndInput,
@@ -90,16 +89,11 @@ export class HookSystem {
     this.registry.setPolicyGate(gate);
   }
 
-  /** 从新格式配置初始化 */
-  initializeFromNew(newHooks: NewHooksConfig, source: ConfigSource = "user" as ConfigSource): void {
-    this.registry.initializeFromNew(newHooks, source);
-  }
-
   /** 编程式注册 hook */
   registerHook(
     config: HookConfig,
     eventName: HookEventName,
-    options?: { matcher?: string; sequential?: boolean; source?: ConfigSource },
+    options?: { matcher?: string; if?: string; sequential?: boolean; source?: ConfigSource },
   ): void {
     this.registry.registerHook(config, eventName, options);
   }
@@ -214,6 +208,8 @@ export class HookSystem {
           this.registry.registerHook(config, eventName, {
             matcher: legacyHook.matcher,
             if: legacyHook.if,
+            // H23：与 settings 路径同口径，插件写 sequential:true 也要生效
+            sequential: legacyHook.sequential === true,
             source: ConfigSource.Plugin,
           });
         } catch {
@@ -266,6 +262,7 @@ export class HookSystem {
       name: legacy.name,
       command: legacy.command,
       timeout: legacy.timeout,
+      env: legacy.env, // H22：原先两个转换器都不搬运，用户写了 env 子进程读不到
       async: legacy.async, // G7：后台异步执行
       asyncRewake: legacy.asyncRewake, // G7：exit 2 回灌唤醒
     };

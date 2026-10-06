@@ -50,8 +50,20 @@ export interface PolicySettings {
   allowManagedPermissionRulesOnly?: boolean;
   /** G13：禁用所有 Hook（企业管控最强档，任何来源的 hook 都不执行） */
   disableAllHooks?: boolean;
-  /** G13：只允许企业管理的 Hook（Runtime/Project 来源），屏蔽 User/Plugin/Global 来源的 hook */
+  /** G13：只允许企业管理的 Hook（Runtime/Managed 来源），屏蔽 User/Project/Plugin/Global 来源的 hook（H27：Project 随 git clone 而来，不算企业管理） */
   allowManagedHooksOnly?: boolean;
+  /**
+   * H12：以下四个 hook 门控字段原先只在 EnterprisePolicy 类型里有、app 层从不传入——配了零效果零报错。
+   * 现在经 app.ts 接到 EnterprisePolicyGate。⚠️ 只从本地 managed-settings.json 生效：远程策略的键是
+   * 与服务端 extra=forbid 对齐的闭集（ALLOWED_REMOTE_KEYS），服务端没加之前客户端单方面放行没有意义。
+   */
+  allowedHookSources?: import("../hook/types.ts").ConfigSource[];
+  /** 命令黑名单（命令词边界匹配，`/re/` 为正则）。误用防呆，不是安全边界 */
+  blockedCommands?: string[];
+  /** URL 黑名单（子串匹配） */
+  blockedUrls?: string[];
+  /** 单个 hook 最大超时（秒）；未写 timeout 的 hook 按实际缺省值判 */
+  maxHookTimeout?: number;
   /** 禁用的权限模式（通用：禁用任意模式，接进 cyclePermissionMode 与 CLI 校验） */
   disabledModes?: string[];
   /**

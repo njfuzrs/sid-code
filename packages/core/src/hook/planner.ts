@@ -74,9 +74,10 @@ export class HookPlanner {
       return this.matchesToolName(matcher, context.toolName);
     }
 
-    // 生命周期事件：精确匹配 trigger
+    // 生命周期事件：精确匹配 trigger。H20：与工具名同样支持 `a|b` 管道列表——原先走裸 `===`，
+    // `startup|resume` 静默永不命中，而同一个 matcher 字段在工具事件上是支持管道的。
     if (context.trigger) {
-      return matcher === context.trigger;
+      return matcher.split("|").some((m) => m.trim() === context.trigger);
     }
 
     return true;
