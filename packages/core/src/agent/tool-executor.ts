@@ -15,6 +15,7 @@
  * 与 query/tool-executor.ts 主循环口径一致（含 duration_ms、blocking 决策、输入修改）。
  */
 
+import type { ToolFailureKind } from "../hook/types.ts";
 import type { ContentBlock } from "../llm/types.ts";
 import type { Registry as ToolRegistry } from "../tool/registry.ts";
 import { isAbortError } from "../llm/errors.ts";
@@ -231,6 +232,8 @@ function firePostToolUseFailure(
   toolInput?: Record<string, unknown>,
   /** 调度器视角墙钟耗时；缺它则失败工具的 span 无耗时属性（见主循环同名 helper 注释） */
   durationMs?: number,
+  /** Q7：validation / hook_blocked 只送 runtime hook（见主循环同名 helper） */
+  kind: ToolFailureKind = "exception",
 ): void {
   if (!hookSystem) return;
   const log = getLogger();
@@ -241,7 +244,7 @@ function firePostToolUseFailure(
         (toolInput ?? block.input) as Record<string, unknown>,
         reason,
         block.id,
-        durationMs !== undefined ? { duration_ms: durationMs } : undefined,
+        { ...(durationMs !== undefined ? { duration_ms: durationMs } : {}), failure_kind: kind },
       )
       ?.catch?.((e: any) =>
         log.error("SUBAGENT:HOOK", `post_tool_use_failure hook 失败: ${e?.message ?? e}`),
@@ -265,12 +268,13 @@ function firePermissionDenied(
   toolInput: Record<string, unknown> | undefined,
   reason: string,
   source: "rule" | "auto",
+  toolUseId?: string,
 ): void {
   if (!hookSystem) return;
   const log = getLogger();
   try {
     void hookSystem
-      .firePermissionDeniedEvent?.(toolName, toolInput ?? {}, reason, source)
+      .firePermissionDeniedEvent?.(toolName, toolInput ?? {}, reason, source, toolUseId)
       ?.catch?.((e: any) =>
         log.error("SUBAGENT:HOOK", `permission_denied hook 失败: ${e?.message ?? e}`),
       );
@@ -331,6 +335,7 @@ async function executeSingleTool(
           `Hook 阻止执行: ${interp.blockReason ?? "无原因"}`,
           effectiveInput,
           Date.now() - toolStartedAt,
+          "hook_blocked",
         );
         // 漏斗 1：hook 阻止是一次真实调度失败（主循环同口径）。权限拒绝不在这里——
         // 那条走漏斗 2。call + failure 成对，避免分母只有 failure 没有 call。
@@ -397,15 +402,9 @@ async function executeSingleTool(
         effectiveInput,
         reason,
         decision.decisionReason?.type === "rule" ? "rule" : "auto",
+        block.id,
       );
-      // Pre/Post 配对：权限拒绝也要补 Failure 收尾。
-      firePostToolUseFailure(
-        hookSystem,
-        block,
-        `权限拒绝: ${reason}`,
-        effectiveInput,
-        Date.now() - toolStartedAt,
-      );
+      // Q7：权限拒绝只 fire PermissionDenied（对齐 CC），span 由 runtime 消费者按它关闭。
       return {
         type: "tool_result",
         tool_use_id: block.id,
@@ -449,15 +448,9 @@ async function executeSingleTool(
         effectiveInput,
         "未配置权限检查器，写类操作默认拒绝（fail-closed）",
         "auto",
+        block.id,
       );
-      // Pre/Post 配对：fail-closed 拒绝同样要补 Failure 收尾。
-      firePostToolUseFailure(
-        hookSystem,
-        block,
-        "权限拒绝: 未配置权限检查器，写类操作默认拒绝（fail-closed）",
-        effectiveInput,
-        Date.now() - toolStartedAt,
-      );
+      // Q7：同上，fail-closed 拒绝只 fire PermissionDenied。
       return {
         type: "tool_result",
         tool_use_id: block.id,
@@ -489,6 +482,7 @@ async function executeSingleTool(
       validation.message,
       effectiveInput,
       Date.now() - toolStartedAt,
+      "validation",
     );
     logToolFailure(block.name, {
       kind: "invalid_input",
@@ -551,16 +545,23 @@ async function executeSingleTool(
 
     // post_tool_use hook（驱动 execute_tool span，带真实 duration_ms）
     if (hookSystem) {
-      hookSystem
-        .firePostToolUseEvent(
-          block.name,
-          effectiveInput,
-          { output: truncated, isError: result.isError },
-          result.isError,
-          block.id,
-          { duration_ms: elapsed },
-        )
-        .catch((e: any) => log.error("SUBAGENT:HOOK", `post_tool_use hook 失败: ${e.message}`));
+      hookSystem;
+      // Q7：工具返回 isError → 只 fire PostToolUseFailure（对齐 CC）；成功才 fire PostToolUse
+      const fired = result.isError
+        ? hookSystem.firePostToolUseFailureEvent(block.name, effectiveInput, truncated, block.id, {
+            duration_ms: elapsed,
+            failure_kind: "tool_error",
+            tool_output: truncated,
+          })
+        : hookSystem.firePostToolUseEvent(
+            block.name,
+            effectiveInput,
+            { output: truncated, isError: false },
+            false,
+            block.id,
+            { duration_ms: elapsed },
+          );
+      fired.catch((e: any) => log.error("SUBAGENT:HOOK", `post_tool_use hook 失败: ${e.message}`));
     }
 
     if (result.isError) {
@@ -602,7 +603,7 @@ async function executeSingleTool(
           block.id,
           // 抛异常路径用纯执行耗时（与成功路径 duration_ms 同口径）：
           // 慢工具卡很久才抛，正是要看的那个数。
-          { duration_ms: elapsed },
+          { failure_kind: "exception", duration_ms: elapsed },
         )
         .catch((e: any) =>
           log.error("SUBAGENT:HOOK", `post_tool_use_failure hook 失败: ${e.message}`),

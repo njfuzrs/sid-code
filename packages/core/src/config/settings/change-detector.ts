@@ -17,7 +17,7 @@ import { consumeInternalWrite } from "./internal-writes.ts";
 import type { SettingSource } from "./constants.ts";
 import { getLogger } from "../../debug/logger.ts";
 
-/** 变更事件发射器。事件名 'change'，回调参数为 SettingSource。 */
+/** 变更事件发射器。事件名 'change'，回调参数为 (SettingSource, 文件路径?)。 */
 export const settingsChanged = new EventEmitter();
 
 const FILE_STABILITY_THRESHOLD_MS = 1000; // 等待文件写入稳定
@@ -78,7 +78,7 @@ function handleChange(path: string, source: SettingSource): void {
         pendingDeletions.delete(path);
       }
 
-      fanOut(source);
+      fanOut(source, path);
     }, FILE_STABILITY_THRESHOLD_MS),
   );
 }
@@ -93,16 +93,17 @@ function handlePossibleDeletion(path: string, source: SettingSource): void {
       pendingDeletions.delete(path);
       // 宽限期过后仍未重建 → 真正的删除/重建
       if (consumeInternalWrite(path, INTERNAL_WRITE_WINDOW_MS)) return;
-      fanOut(source);
+      fanOut(source, path);
     }, DELETION_GRACE_MS),
   );
 }
 
 /** fanOut：单生产者模式——先清缓存，再通知订阅者 */
-function fanOut(source: SettingSource): void {
+function fanOut(source: SettingSource, path?: string): void {
   resetSettingsCache();
   getLogger().info("SETTINGS", `检测到 ${source} 变更，缓存已刷新`);
-  settingsChanged.emit("change", source);
+  // 第二参数 path 供 ConfigChange hook 的 file_path（HC24）；老订阅者只读第一参数，不受影响
+  settingsChanged.emit("change", source, path);
 }
 
 /** 清理所有监听器与定时器 */

@@ -229,15 +229,31 @@ describe("参考页生成器 · 抽样断言（读对了没有，不只是读到
     // 它们一度在表里显示成「会触发 ✓」。
     for (const unwired of [
       "setup",
-      "config_change",
       "file_changed",
-      "task_created",
       "BeforePermissionCheck",
       "AfterHookExecution",
-      "elicitation",
     ]) {
       expect(fires.get(unwired), `hooks 表缺 ${unwired}`).toBeDefined();
       expect(fires.get(unwired), `${unwired} 未标注为未接线`).toBe("✗");
+    }
+
+    // Hook 对齐 CC 批 5b（HC24 / Q6）接上的事件：反向锁住，防止调用点被删后参考页仍显示 ✓ 却没人发现
+    for (const wired of [
+      "config_change",
+      "task_created",
+      "task_completed",
+      "cwd_changed",
+      "stop_failure",
+      "notification",
+      "elicitation",
+      "elicitation_result",
+      "post_tool_batch",
+      "pre_model_switch",
+      "post_model_switch",
+      "user_prompt_expansion",
+      "directory_added",
+    ]) {
+      expect(fires.get(wired), `${wired} 应标注为已接线`).toBe("✓");
     }
   });
 

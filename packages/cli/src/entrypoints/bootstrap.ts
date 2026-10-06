@@ -121,6 +121,14 @@ async function main(): Promise<void> {
     return;
   }
 
+  // 快速路径 8.5: hooks 子命令 — 无头列出实际注册的 hook 与被跳过的条目（自检，不启动 App）
+  if (args[0] === "hooks") {
+    profileCheckpoint("bootstrap_route_resolved");
+    const { handleHooksCommand } = await import("../command/hooks-cli.ts");
+    await handleHooksCommand(args.slice(1));
+    return;
+  }
+
   // 快速路径 9: mcp 子命令（缺口 A-3）— 无头管理 MCP 服务器配置（list/get/add/remove），不启动 App
   if (args[0] === "mcp") {
     profileCheckpoint("bootstrap_route_resolved");

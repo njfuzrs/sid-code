@@ -20,6 +20,7 @@ import type {
   BeforeModelInput,
   AfterModelInput,
   PostToolUseInput,
+  PermissionDeniedInput,
   SessionStartInput,
   SessionEndInput,
   PermissionCheckInput,
@@ -102,6 +103,9 @@ export class TelemetryHookProbe {
       // 失败率统计也不计入。排查时表现为"模型报错了但轨迹里查不到这次工具调用"
       // （会话 20260803-135816-8c8619e7 的 ask_user_question 校验失败即如此）。
       HookEventName.PostToolUseFailure,
+      // Q7：权限拒绝不再 fire PostToolUseFailure，execute_tool span 改由 PermissionDenied 产出
+      //（status=denied，不计工具失败）
+      HookEventName.PermissionDenied,
       HookEventName.SessionEnd,
       // spec 17 §6.1.3 增强追踪树：权限等待 + Hook 执行 span
       HookEventName.BeforePermissionCheck,
@@ -145,6 +149,9 @@ export class TelemetryHookProbe {
       // handlePostToolUse 已按 is_error 分流（success 属性 + recordError），无需另写分支。
       case HookEventName.PostToolUseFailure:
         this.handlePostToolUse(input as PostToolUseInput);
+        break;
+      case HookEventName.PermissionDenied:
+        this.handlePermissionDenied(input as PermissionDeniedInput);
         break;
       case HookEventName.SessionEnd:
         this.handleSessionEnd(input as SessionEndInput);
@@ -336,6 +343,22 @@ export class TelemetryHookProbe {
       toolSpan.recordError(new Error(JSON.stringify(input.tool_response).slice(0, 200)));
     }
     toolSpan.end();
+  }
+
+  /**
+   * Q7：权限拒绝的 execute_tool span。工具没跑，耗时为 0；`sidcode.tool.status=denied` 与
+   * success=false 一起标，聚合「工具失败率」时按 status 排除，拒绝另见权限决策（B11）。
+   */
+  private handlePermissionDenied(input: PermissionDeniedInput): void {
+    const span = this.bus.startSpan("execute_tool", `execute_tool ${input.tool_name}`, {
+      [ATTR.OPERATION_NAME]: "execute_tool",
+      [ATTR.TOOL_NAME]: input.tool_name,
+      [ATTR.TOOL_CALL_ID]: input.tool_use_id ?? "",
+      [ATTR.SUCCESS]: false,
+      "sidcode.tool.status": "denied",
+      "sidcode.permission.denial_source": input.denial_source,
+    });
+    span.end();
   }
 
   // ---- spec 17 §6.1.3：权限等待 / Hook 执行 span ----

@@ -65,11 +65,12 @@ describe("H10 timeout 五种类型同单位（秒）", () => {
       { type: "prompt", prompt: "p", timeout: 1 },
       { type: "agent", prompt: "p", timeout: 1 },
     ];
-    expect(cfgs.map(resolveHookTimeoutMs)).toEqual([1000, 1000, 1000, 1000, 1000]);
+    expect(cfgs.map((c) => resolveHookTimeoutMs(c))).toEqual([1000, 1000, 1000, 1000, 1000]);
   });
 
-  test("缺省值：prompt 30s、其余 60s；runtime 的 timeoutMs 优先", () => {
-    expect(resolveHookTimeoutMs({ type: "command", command: "x" })).toBe(60_000);
+  test("缺省值（Q5 对齐 CC）：command/url 600s、prompt 30s、agent 60s；runtime 的 timeoutMs 优先", () => {
+    expect(resolveHookTimeoutMs({ type: "command", command: "x" })).toBe(600_000);
+    expect(resolveHookTimeoutMs({ type: "url", url: "http://x" })).toBe(600_000);
     expect(resolveHookTimeoutMs({ type: "prompt", prompt: "p" })).toBe(30_000);
     expect(resolveHookTimeoutMs({ type: "agent", prompt: "p" })).toBe(60_000);
     expect(
@@ -101,7 +102,7 @@ describe("H10 timeout 五种类型同单位（秒）", () => {
 
   test("结构性：runner 里不再手写 timeout 换算（五处都走 resolveHookTimeoutMs）", () => {
     const src = readFileSync(join(HOOK_SRC, "runner.ts"), "utf8");
-    expect(src.match(/resolveHookTimeoutMs\(hookConfig\)/g)?.length).toBe(5);
+    expect(src.match(/resolveHookTimeoutMs\(hookConfig, eventName\)/g)?.length).toBe(5);
     expect(src).not.toMatch(/hookConfig\.timeout\s*\?\?/);
   });
 });
@@ -137,9 +138,9 @@ describe("H12 企业策略口径", () => {
     expect(gate.isHookAllowed(cmd(11))).toBe(false);
   });
 
-  test("未写 timeout 的 hook 按实际缺省 60s 判（不再 fail-open）", () => {
-    expect(new EnterprisePolicyGate({ maxHookTimeout: 10 }).isHookAllowed(cmd())).toBe(false);
-    expect(new EnterprisePolicyGate({ maxHookTimeout: 60 }).isHookAllowed(cmd())).toBe(true);
+  test("未写 timeout 的 hook 按实际缺省 600s 判（不再 fail-open）", () => {
+    expect(new EnterprisePolicyGate({ maxHookTimeout: 60 }).isHookAllowed(cmd())).toBe(false);
+    expect(new EnterprisePolicyGate({ maxHookTimeout: 600 }).isHookAllowed(cmd())).toBe(true);
     // prompt 缺省 30s
     expect(
       new EnterprisePolicyGate({ maxHookTimeout: 30 }).isHookAllowed({

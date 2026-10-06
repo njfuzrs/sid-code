@@ -18,11 +18,11 @@ sid-code 的全部命令行参数与子命令。
 
 <!-- AUTO-GEN:START 由 scripts/docs-gen-reference.ts 生成，勿手工编辑 -->
 
-> 共 **67** 个参数条目、**6** 个子命令。
+> 共 **68** 个参数条目、**6** 个子命令。
 > 描述取自 `sid-code --help`，并与 `packages/cli/src/cli.ts` 的 `parseArgs` 声明
-> （**参数能不能用的唯一权威**，共 66 个 flag）交叉对账：
+> （**参数能不能用的唯一权威**，共 67 个 flag）交叉对账：
 > "能用但没写"和"写了但不能用"两类缺陷都会让对账测试失败。
-> 两个数不相等是口径不同、不是对账没对平：条目按帮助文本的行计，64 条各对应 1 个顶层 flag；3 条不对应顶层声明（`-r, --resume [值]`、`--no-session-persistence`、`--build-info [--json]`：取反式或快速路径入口）；2 个声明了但刻意不写进帮助（`--dump-tools`、`--session-persistence`）。
+> 两个数不相等是口径不同、不是对账没对平：条目按帮助文本的行计，65 条各对应 1 个顶层 flag；3 条不对应顶层声明（`-r, --resume [值]`、`--no-session-persistence`、`--build-info [--json]`：取反式或快速路径入口）；2 个声明了但刻意不写进帮助（`--dump-tools`、`--session-persistence`）。
 
 ## 子命令
 
@@ -95,6 +95,7 @@ status 逐条列出企业通道；--verify 对每条发一次不写数据的探�
 | `--permission-mode <mode>` | 权限模式 (default/always-allow/deny-write/acceptEdits/plan/dontAsk/auto/dangerously-skip-permissions；manual 为 default 的别名) |
 | `--dangerously-skip-permissions` | 跳过所有权限检查（仅限沙箱环境） |
 | `-y, --yes` | 自动批准需确认的操作（危险命令仍拦截；跳过全部检查用 --dangerously-skip-permissions） |
+| `--trust-workspace` | 仅本会话信任当前工作区（项目级 hooks / MCP 照常加载，不写入信任记录） |
 | `--allowed-tools <list>` | 工具白名单（逗号分隔，如 "read,grep,bash"） |
 | `--disallowed-tools <list>` | 工具黑名单（逗号分隔） |
 | `--allow-tool <rule>` | 追加允许规则（规则语法，如 "Bash(git status)"；可重复或逗号分隔） |

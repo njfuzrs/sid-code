@@ -40,7 +40,8 @@ import {
 } from "@sid-code/core/llm/error-messages.ts";
 import { SessionState } from "@sid-code/core/session/state.ts";
 import { createSubAgentUsageSink } from "@sid-code/core/agent/usage-sink.ts";
-import { SessionStore } from "@sid-code/core/session/store.ts";
+import { SessionStore, currentProjectSessionDir } from "@sid-code/core/session/store.ts";
+import { extractHookContext } from "@sid-code/core/hook/context-inject.ts";
 import { generateSessionId } from "@sid-code/core/session/id.ts";
 import {
   stashPendingInput,
@@ -56,7 +57,10 @@ import { BudgetTracker } from "@sid-code/core/telemetry/metrics/budget-tracker.t
 import type { BudgetRule } from "@sid-code/core/telemetry/metrics/budget-tracker.ts";
 import type { BudgetRuleConfig } from "@sid-code/core/config/config.ts";
 import { loadAllCLAUDEmd, watchCLAUDEmd, unwatchCLAUDEmd } from "@sid-code/core/config/rules.ts";
-import { cleanup as cleanupSettingsWatcher } from "@sid-code/core/config/settings/change-detector.ts";
+import {
+  cleanup as cleanupSettingsWatcher,
+  settingsChanged,
+} from "@sid-code/core/config/settings/change-detector.ts";
 import { stopAppConfigWatcher } from "@sid-code/core/config/app-config.ts";
 import type { ProjectRules } from "@sid-code/core/config/rules.ts";
 import { clearPromptCache } from "@sid-code/core/config/system-prompt.ts";
@@ -69,6 +73,7 @@ import { resetBetaHeaders } from "@sid-code/core/api/beta-header-latch.ts";
 import { resetCircuitBreaker } from "@sid-code/core/query/auto-compact.ts";
 import { clearQueue as clearMessageQueue } from "@sid-code/core/query/message-queue-manager.ts";
 import { HookSystem } from "@sid-code/core/hook/system.ts";
+import { ConfigSource } from "@sid-code/core/hook/types.ts";
 import { pickHookPolicy } from "@sid-code/core/hook/enterprise-policy.ts";
 import {
   SDKQueryEngine,
@@ -1143,12 +1148,52 @@ export class App {
 
     // 初始化 Hook 系统
     this.hookSystem = new HookSystem();
-    this.hookSystem.initializeFromLegacy(this.config.hooks);
+    // HC1 / HC2：按真实来源分层注册（managed → user → project → local，按事件追加）。
+    // 被信任门打了 skippedByTrust 的层不注册——只摘随仓库分发的那几层，用户级照常。
+    // 用户层取 _hookLayers 里的原始 JSON 而不是 config.hooks：后者经 resolveEnvVars 展开过 ${VAR}，
+    // `${CLAUDE_PROJECT_DIR}` 会在 sid 进程里被提前展开（见 config/hook-layers.ts 头注释）。
+    {
+      const layers = this.config._hookLayers;
+      const hasUserLayer = layers?.some((l) => l.source === "user") ?? false;
+      const sourceOf: Record<string, ConfigSource> = {
+        managed: ConfigSource.Managed,
+        user: ConfigSource.User,
+        project: ConfigSource.Project,
+        local: ConfigSource.Local,
+      };
+      const regLayers: Array<{
+        hooks: unknown;
+        source: ConfigSource;
+        ctx?: { pathPrefix: string };
+      }> = [];
+      for (const l of layers ?? []) {
+        if (l.skippedByTrust) continue;
+        regLayers.push({
+          hooks: l.hooks,
+          source: sourceOf[l.source]!,
+          ctx: { pathPrefix: `${l.file}#hooks` },
+        });
+      }
+      // 测试 / SDK 直接构造 Config（没有 _hookLayers）或 CLI 注入的 hooks：按用户级注册
+      if (!hasUserLayer && Object.keys(this.config.hooks ?? {}).length > 0) {
+        regLayers.unshift({ hooks: this.config.hooks, source: ConfigSource.User });
+      }
+      this.hookSystem.initializeFromSources(regLayers);
+    }
     this.hookSystem.setSessionId(sessionId);
     this.hookSystem.setCwd(process.cwd());
+    // HC14：CLAUDE_PROJECT_DIR = 会话启动时的项目根，之后 bash cd / 进 worktree 都不变（与 CC 一致）
+    this.hookSystem.setProjectDir(process.cwd());
+    // HC11：stdin permission_mode / transcript_path。取值函数而非快照——模式运行时会被改写。
+    this.hookSystem.setPermissionModeProvider(() => this.config.permissionMode);
+    this.hookSystem.setTranscriptPathProvider((id) =>
+      join(currentProjectSessionDir(), `${id}.jsonl`),
+    );
     // 恢复 settings.json disabledHooks（/hooks disable -p 持久化端）。
     // 插件 hook 在 loadPluginHooks 后才注册，故那里会再应用一次（见下方 loadPluginHooks 调用点）。
     this.hookSystem.applyDisabledHooks(this.config.disabledHooks);
+    // HC24：ConfigChange / Elicitation 接线（原为「预留」：fire 方法在、调用点为零）
+    this.wireConfigAndElicitationHooks();
 
     // G13：应用企业策略 Hook 门控。必须复用 cli 已经 await 过的那一次 load
     // （loadEnterprisePolicyOnce），禁止再 new PolicyManager().load() 打第二次网。
@@ -1530,6 +1575,39 @@ export class App {
   /** 注入 HookSystem 到 spawn-agent 类工具（根因修复）。遍历工具注册表，给所有带
    *  setHookSystem 的工具（SubAgentTool / WorkflowTool）回填 hookSystem，使其内部 spawn 的
    *  子代理能触发 Subagent 生命周期 hook 与工具级 execute_tool span。 */
+  /** 退订 settings 变更（ConfigChange hook），在两个清理出口调用 */
+  private offConfigChangeHook?: () => void;
+
+  /**
+   * HC24：ConfigChange 与 Elicitation / ElicitationResult 接线。
+   *
+   * ConfigChange 订阅 change-detector 的 fanOut（外部改 settings 文件、缓存已刷新之后）；
+   * source 换成 CC 的 matcher 值（user_settings / project_settings …）。内部写入在
+   * change-detector 里已被 consumeInternalWrite 过滤掉，不会因 /model 之类自己写盘而误触发。
+   * Elicitation 走 MCPManager 注入的发射端，避免 mcp → hook 反向依赖。
+   */
+  private wireConfigAndElicitationHooks(): void {
+    const ccSource: Record<
+      string,
+      "user_settings" | "project_settings" | "local_settings" | "policy_settings"
+    > = {
+      userSettings: "user_settings",
+      projectSettings: "project_settings",
+      localSettings: "local_settings",
+      policySettings: "policy_settings",
+    };
+    const onChange = (source: string, path?: string) => {
+      const mapped = ccSource[source];
+      if (!mapped) return;
+      this.hookSystem
+        .fireConfigChangeEvent([], mapped, path)
+        .catch((e) => getLogger().error("HOOK", `config_change hook 失败: ${e?.message ?? e}`));
+    };
+    settingsChanged.on("change", onChange);
+    this.offConfigChangeHook = () => settingsChanged.off("change", onChange);
+    if (this.mcpManager) this.mcpManager.elicitationHooks = this.hookSystem;
+  }
+
   private wireToolHookSystem(): void {
     for (const tool of this.toolRegistry.all()) {
       const maybe = tool as { setHookSystem?: (h: HookSystem) => void };
@@ -1952,6 +2030,25 @@ export class App {
         /* availability 未就绪不阻断切换 */
       }
     }
+    // Q6：PreModelSwitch / PostModelSwitch。本函数是 /model、降级链、CLAUDE.md `# Model`
+    // 三条路径的汇合点，挂在这里一处即覆盖三者（含降级链自动切换——Q6 细则 2）。
+    // 本函数是同步的（/model 命令同步返回），PreModelSwitch 因此只通知、不能拒绝切换（刻意偏离 CC）。
+    const fromModel = this.config.model;
+    const switchTrigger: "manual" | "fallback" | "config" = !opts?.reason
+      ? "manual"
+      : opts.reason.includes("降级")
+        ? "fallback"
+        : "config";
+    const fireSwitch = (phase: "pre" | "post") => {
+      if (fromModel === model) return;
+      const hs = this.hookSystem;
+      if (!hs) return;
+      (phase === "pre"
+        ? hs.firePreModelSwitchEvent(fromModel, model, switchTrigger, opts?.reason)
+        : hs.firePostModelSwitchEvent(fromModel, model, switchTrigger, opts?.reason)
+      ).catch((e) => log.error("HOOK", `model_switch hook 失败: ${e?.message ?? e}`));
+    };
+    fireSwitch("pre");
     this.config.model = model;
     const { resolveCurrentModelConfig } = require("@sid-code/core/config/config.ts");
     resolveCurrentModelConfig(this.config);
@@ -1973,6 +2070,7 @@ export class App {
       /* 窗口解析失败不影响切换，沿用旧窗口 */
     }
     this.tuiStateUpdater?.({ model });
+    fireSwitch("post");
     // 事件元数据同步：_ctx_model / _ctx_provider 是 primeMetadata 在会话初始化时一次性
     // 缓存的，运行时切模型不刷新则此后所有事件都带着旧模型名上报——归因直接错到另一个
     // 模型头上（切模型往往正是为了对比两个模型，这恰好是最需要归因准确的场景）。
@@ -3518,12 +3616,22 @@ export class App {
     // 使 trajectory 元数据能反查到 SessionStore 的 sessions/{旧id}.jsonl。
     // ⚠️ 必须保持在 initTelemetrySystem **之后**（见上面那段时序不变量），
     // 且必须在 initTraceCollector 之后——两个消费者一前一后夹住这行。
-    this.hookSystem
-      .fireSessionStartEvent(this.resumedSessionId ? "resume" : "startup", {
-        model: this.config.model,
-        resumedFrom: this.resumedSessionId ?? undefined,
-      })
-      .catch((err) => log.error("HOOK", `session_start hook 失败: ${err.message}`));
+    //
+    // HC16 / Q5：改为 await。原先 fire-and-forget，返回值整个丢弃——hook 的 stdout / additionalContext
+    // 永远进不了模型上下文。现在结果存进 queryEngine，在第一条用户消息后作为独立 <system-reminder> 注入。
+    // 代价是启动同步等 hook：缺省超时因此是 30s 而不是 CC 的 600s（resolveHookTimeoutMs）。
+    try {
+      const startResult = await this.hookSystem.fireSessionStartEvent(
+        this.resumedSessionId ? "resume" : "startup",
+        {
+          model: this.config.model,
+          resumedFrom: this.resumedSessionId ?? undefined,
+        },
+      );
+      this.queryEngine.setPendingSessionStartContext(extractHookContext(startResult));
+    } catch (err: any) {
+      log.error("HOOK", `session_start hook 失败: ${err?.message ?? err}`);
+    }
 
     // 信号兜底：SIGINT / SIGTERM 时强制落地 SessionEnd（reason=abort），避免 trajectory 残留 unknown
     // 这是 25% session 卡在 exit_status=unknown 的另一个根因——promptfoo timeout 时 SIGTERM 杀进程
@@ -6880,6 +6988,7 @@ export class App {
     // 清理
     unwatchCLAUDEmd();
     cleanupSettingsWatcher();
+    this.offConfigChangeHook?.();
     stopAppConfigWatcher();
     this.mcpManager?.closeAll();
 
@@ -7940,6 +8049,16 @@ export class App {
           return;
         }
         if (signal) signal.addEventListener("abort", onAbort, { once: true });
+        // HC24：Notification（matcher：permission_prompt，对齐 CC）。仅通知、不等待，不影响弹窗。
+        this.hookSystem
+          ?.fireNotificationEvent(
+            "permission_prompt",
+            `sid-code 需要你确认是否允许使用 ${toolName}`,
+            {
+              tool_name: toolName,
+            },
+          )
+          .catch((e) => log.error("HOOK", `notification hook 失败: ${e?.message ?? e}`));
         updateState({
           permissionRequest: {
             toolName,
@@ -9473,6 +9592,7 @@ export class App {
     }
     unwatchCLAUDEmd();
     cleanupSettingsWatcher();
+    this.offConfigChangeHook?.();
     stopAppConfigWatcher();
     this.mcpManager?.closeAll();
 

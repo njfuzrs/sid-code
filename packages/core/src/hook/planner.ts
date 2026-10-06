@@ -4,6 +4,7 @@
  */
 
 import type { HookRegistry, HookRegistryEntry } from "./registry.ts";
+import { toInternalToolName, toCcToolName } from "../tool/tool-name-aliases.ts";
 import { getHookKey, type HookExecutionPlan, type HookEventName } from "./types.ts";
 import { getLogger } from "../debug/logger.ts";
 
@@ -74,10 +75,9 @@ export class HookPlanner {
       return this.matchesToolName(matcher, context.toolName);
     }
 
-    // 生命周期事件：精确匹配 trigger。H20：与工具名同样支持 `a|b` 管道列表——原先走裸 `===`，
-    // `startup|resume` 静默永不命中，而同一个 matcher 字段在工具事件上是支持管道的。
+    // 生命周期事件：与工具事件同一套三档（H20 / HC10），只是不过工具名别名表
     if (context.trigger) {
-      return matcher.split("|").some((m) => m.trim() === context.trigger);
+      return matchesPattern(matcher, [context.trigger]);
     }
 
     return true;
@@ -109,47 +109,20 @@ export class HookPlanner {
   }
 
   /**
-   * 匹配工具名（对齐 CC utils/hooks.ts matchesPattern 三档语义）
+   * 匹配工具名（对齐 CC matchesPattern 三档语义 + 工具名别名，HC8）
    *
-   * 历史 bug：旧实现对任意 matcher 都走 `new RegExp(matcher).test(toolName)` 且不锚定，
-   * 导致 `matcher:"Edit"` 会误命中 `NotebookEdit`/`MultiEdit`（正则子串匹配）。用户写 "Edit"
-   * 意图只 hook Edit 工具，结果格式化/拦截/审计 hook 在意料外的工具上触发——静默行为错误。
+   * 历史 bug：旧实现对任意 matcher 都走不锚定的 `new RegExp(matcher)`，`matcher:"Edit"` 误命中
+   * `NotebookEdit`；后来改成三档，但精确档只认 `[a-zA-Z0-9_|]` 且区分大小写，于是 CC 写法
+   * `matcher:"Bash"` 永远不命中内部名 `bash`，`"Edit, Write"` 落进正则档也不命中。
    *
-   * CC 三档（精确匹配优先，正则是兜底）：
-   *   1. `''` / `'*'` → 全部匹配（此分支已在 matchesContext 上游拦截，这里冗余兜底）。
-   *   2. 纯 `[a-zA-Z0-9_|]` → 精确匹配：含 `|` 按管道拆成精确列表逐个 `===`；否则单值 `===`。
-   *   3. 含其他字符（`.` `*` `(` `[` 等）→ 才当正则，**大小写敏感**（无 i flag），非法正则记日志返回 false。
+   * 现在：精确档每个 token 先过别名表归一到内部名再比较（`Bash` / `bash` 都命中 `bash`）；
+   * 正则档对内部名与 CC 名各测一次，任一命中即算（`Edit|Write.*` 这类 CC 正则照样能用）。
    */
   private matchesToolName(matcher: string, toolName: string): boolean {
-    // 兼容旧格式 /pattern/ 包裹 → 强制正则（保留我们既有的显式正则语法）
-    if (matcher.startsWith("/") && matcher.endsWith("/") && matcher.length > 2) {
-      const pattern = matcher.slice(1, -1);
-      try {
-        return new RegExp(pattern).test(toolName);
-      } catch (e) {
-        getLogger().warn("HOOK", `非法 matcher 正则 "${matcher}": ${e}`);
-        return false;
-      }
-    }
-
-    // 第 1 档：空 / 通配符 → 全部匹配（上游已处理，这里兜底）
-    if (matcher === "" || matcher === "*") return true;
-
-    // 第 2 档：纯 [a-zA-Z0-9_|] → 精确匹配（含 | 走管道分隔精确列表）
-    if (/^[a-zA-Z0-9_|]+$/.test(matcher)) {
-      if (matcher.includes("|")) {
-        return matcher.split("|").some((name) => name === toolName);
-      }
-      return matcher === toolName;
-    }
-
-    // 第 3 档：含正则元字符 → 当正则（大小写敏感），非法正则记日志返回 false
-    try {
-      return new RegExp(matcher).test(toolName);
-    } catch (e) {
-      getLogger().warn("HOOK", `非法 matcher 正则 "${matcher}": ${e}`);
-      return false;
-    }
+    const internal = toInternalToolName(toolName);
+    const cc = toCcToolName(internal);
+    const candidates = cc ? [internal, cc] : [internal];
+    return matchesPattern(matcher, candidates, toInternalToolName);
   }
 
   /** 去重（相同 key 的 hook 只保留第一个） */
@@ -166,5 +139,48 @@ export class HookPlanner {
     }
 
     return result;
+  }
+}
+
+/** CC 精确档字符集：字母、数字、`_`、`-`、空格、`,`、`|` */
+const EXACT_MATCHER_RE = /^[A-Za-z0-9_\-\s,|]+$/;
+
+/**
+ * CC 三档 matcher：
+ *   1. `''` / `'*'` → 全部匹配；
+ *   2. 纯精确档字符 → 按 `|` 或 `,` 拆成精确列表（去空格），任一 token 等于任一候选即命中；
+ *   3. 其他 → 正则（大小写敏感，不锚定，与 CC 一致），对每个候选各测一次；非法正则记日志返回 false。
+ * 兼容 sid 旧语法 `/pattern/`：强制正则。
+ * `normalize` 只作用于精确档的 token（工具事件传别名归一，生命周期事件不传）。
+ */
+export function matchesPattern(
+  matcher: string,
+  candidates: string[],
+  normalize: (s: string) => string = (s) => s,
+): boolean {
+  const m = matcher.trim();
+  if (m === "" || m === "*") return true;
+
+  let regexSrc: string | undefined;
+  if (m.startsWith("/") && m.endsWith("/") && m.length > 2) {
+    regexSrc = m.slice(1, -1);
+  } else if (EXACT_MATCHER_RE.test(m)) {
+    const tokens = m
+      .split(/[|,]/)
+      .map((t) => t.trim())
+      .filter(Boolean)
+      .map(normalize);
+    const normCandidates = candidates.map(normalize);
+    return tokens.some((t) => normCandidates.includes(t));
+  } else {
+    regexSrc = m;
+  }
+
+  try {
+    const re = new RegExp(regexSrc);
+    return candidates.some((c) => re.test(c));
+  } catch (e) {
+    getLogger().warn("HOOK", `非法 matcher 正则 "${matcher}": ${e}`);
+    return false;
   }
 }
