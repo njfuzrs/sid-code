@@ -6,13 +6,23 @@
 /** Span 状态 */
 export type SpanStatus = "ok" | "error" | "unset";
 
-/** Span 类型——对应 OTel GenAI 的 operation.name */
+/**
+ * Span 类型——对应 OTel GenAI 的 operation.name
+ *
+ * ⚠️ **声明 5 类、生产只产出 3 类**（chat / execute_tool / invoke_agent）。
+ * `blocked_on_user` 与 `hook_execution` 依赖的 4 个 hook 事件
+ * （Before/AfterPermissionCheck、Before/AfterHookExecution）全仓**没有 fire 方法、
+ * 没有 fire 点**，所以这两类 span 当前恒不产生（预留）。消费方不要据此做「等人耗时剥离」——
+ * 工具确认等待目前仍混在 execute_tool 的时长里。接线后请同步删掉这里与
+ * hook-probe.ts、hook/types.ts、perfetto.ts 的「预留」标注
+ * （门禁：tests/telemetry/observability-p0-regression.test.ts）。
+ */
 export type SpanKind =
-  | "invoke_agent" // Agent 调用（顶层）
+  | "invoke_agent" // Agent 调用（顶层 + 子代理）
   | "chat" // LLM 推理调用
   | "execute_tool" // 工具执行
-  | "blocked_on_user" // 等待用户权限确认（spec 17 §6.1.3）
-  | "hook_execution"; // Hook 执行（spec 17 §6.1.3）
+  | "blocked_on_user" // 预留：恒不产生（依赖的权限检查事件无 fire 点）
+  | "hook_execution"; // 预留：恒不产生（依赖的 Hook 执行事件无 fire 点）
 
 /** 属性值类型——OTel 兼容 */
 export type AttributeValue = string | number | boolean | string[] | number[];
