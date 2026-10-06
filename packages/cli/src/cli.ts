@@ -260,6 +260,8 @@ function parseCLIArgs(): CLIArgs {
         "permission-mode": { type: "string" },
         "dangerously-skip-permissions": { type: "boolean" },
         yes: { type: "boolean", short: "y" },
+        // Q2：仅本会话信任当前工作区（项目级 hooks / MCP 照常加载），不写入信任记录
+        "trust-workspace": { type: "boolean" },
         // 缺口 C1 §5.3：预授权工具白名单（守护进程无头 job 注入；逗号分隔）
         "allowed-tools": { type: "string" },
         "disallowed-tools": { type: "string" },
@@ -614,6 +616,7 @@ function parseCLIArgs(): CLIArgs {
     permissionMode: values["permission-mode"],
     skipPermissions: values["dangerously-skip-permissions"],
     yesMode: values.yes,
+    trustWorkspace: values["trust-workspace"],
     // 缺口 C1 §5.3：逗号分隔 → string[]（守护进程无头 job 预授权白名单）
     allowedTools: values["allowed-tools"]
       ? String(values["allowed-tools"])
@@ -1190,7 +1193,8 @@ export async function main(): Promise<void> {
     // 现在改为 fail-closed：未信任 → **当场从 config 里 strip 掉危险配置**，再把快照
     // 交给 TUI 弹对话框。用户确认信任后持久化，下次启动 isTrusted() 为真即完整加载。
     // 拒绝 → 本会话就是被 strip 后的降级配置在跑，不是"标记一下但照常加载"。
-    if (!config.skipPermissions && !config.yesMode) {
+    // Q2：--trust-workspace = 本会话信任工作区（不持久化），与 skip-permissions / yes 一样整段跳过门控。
+    if (!config.skipPermissions && !config.yesMode && !config.trustWorkspace) {
       try {
         const { TrustManager, setPendingTrust, setWorkspaceUntrusted } =
           await import("@sid-code/core/permission/trust.ts");
@@ -1203,13 +1207,22 @@ export async function main(): Promise<void> {
           setWorkspaceUntrusted(true);
           // fail-closed：先摘掉危险配置，无论后续是否有 UI 来问
           const stripped: string[] = [];
+          let skippedHookCount = 0;
           for (const item of dangerousItems) {
             // hooks / mcpServers 是**非可选**字段（默认 {}，见 config.ts:319-320、795-796），
             // 所以清空成 {} 而不是 delete——delete 会让下游 `Object.keys(config.hooks)`
             // 这类无防护访问炸在 undefined 上。env 是可选字段，delete 安全。
-            if (item.type === "hooks" && Object.keys(config.hooks ?? {}).length > 0) {
-              config.hooks = {};
-              stripped.push("hooks");
+            // HC2：只摘「随仓库分发」的层（项目级 + 被 git 追踪的 local），**不再 config.hooks = {}**
+            // ——config.hooks 只承载用户级 hooks，原先一刀切会把用户自己的 hooks 一起清空。
+            if (item.type === "hooks") {
+              for (const layer of config._hookLayers ?? []) {
+                if (layer.untrusted && !layer.skippedByTrust) {
+                  layer.skippedByTrust = true;
+                  skippedHookCount += Object.values(layer.hooks).flat().length;
+                }
+              }
+              if (skippedHookCount > 0)
+                stripped.push(`项目级 hooks ${skippedHookCount} 条（用户级照常）`);
             } else if (
               item.type === "mcp_servers" &&
               Object.keys(config.mcpServers ?? {}).length > 0
@@ -1239,6 +1252,12 @@ export async function main(): Promise<void> {
             // 非交互（-p / maxTurns）：无处可问，保持 strip 后的降级配置继续跑。
             // 这才真正兑现了原注释声称的"危险配置不会被加载"。
             log.warn("TRUST", "非交互模式：不询问信任，危险配置保持未加载");
+            // Q2：点名放行开关。原提示「已跳过 hooks」会被读成「全部 hooks 都没跑」
+            if (skippedHookCount > 0) {
+              console.error(
+                `未信任工作区：已跳过项目级 hooks ${skippedHookCount} 条（用户级照常）。确认可信可加 --trust-workspace`,
+              );
+            }
           }
         }
       } catch (err: any) {

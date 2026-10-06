@@ -7,7 +7,7 @@ import type { ContentBlock, ToolUseBlock } from "../llm/types.ts";
 import type { LegacyTool as Tool } from "../tool/types.ts";
 import type { Checker, PermissionRequest } from "../permission/types.ts";
 import type { HookSystem } from "../hook/system.ts";
-import type { AggregatedHookResult } from "../hook/types.ts";
+import type { AggregatedHookResult, ToolFailureKind } from "../hook/types.ts";
 import { PreToolUseHookOutput } from "../hook/types.ts";
 import type { SessionState } from "../session/state.ts";
 import type { Config } from "../config/config.ts";
@@ -21,6 +21,8 @@ import {
   collectToolResultIdsFromBlocks,
 } from "../agent/tool-result-guard.ts";
 import { stripInternalFields } from "../tool/internal-fields.ts";
+import { getCwd } from "../bootstrap/state.ts";
+import { fireToolSideEvents } from "./tool-side-events.ts";
 import { resolveResultDisplayMode } from "../tool/result-display-mode.ts";
 import type { ToolUseContext } from "../tool/types.ts";
 import { partitionToolCalls, getMaxToolConcurrency } from "./tool-orchestration.ts";
@@ -862,6 +864,13 @@ export async function executeTools(
     deps.discoverJitContext(toolBlocks.map((t) => t.block));
   }
 
+  // Q6：PostToolBatch——本批工具全部收尾、结果回灌模型之前（仅通知，不 await）
+  firePostToolBatch(
+    deps,
+    toolBlocks.map((t) => t.block),
+    results,
+  );
+
   return { results, followup, durations };
 }
 
@@ -905,6 +914,8 @@ function firePermissionDenied(
   toolInput: unknown,
   reason: string,
   source: "user" | "rule" | "hook" | "auto",
+  /** Q7：runtime 消费者靠它关闭 execute_tool span（拒绝不再 fire PostToolUseFailure） */
+  toolUseId?: string,
 ): void {
   try {
     const fired = deps.hookSystem?.firePermissionDeniedEvent?.(
@@ -912,6 +923,7 @@ function firePermissionDenied(
       (toolInput ?? {}) as Record<string, unknown>,
       reason,
       source,
+      toolUseId,
     );
     void fired?.catch?.((e: any) =>
       getLogger().error("HOOK", `permission_denied hook 失败: ${e?.message ?? e}`),
@@ -935,6 +947,11 @@ function firePostToolUseFailure(
    * 无法区分"秒拒"与"等用户确认等了 30s 才拒"（权限拒绝尤其常见）。
    */
   durationMs?: number,
+  /**
+   * Q7：失败成因。validation / hook_blocked 在 CC 里不触发 PostToolUseFailure，
+   * 这里只送 runtime hook（execute_tool span 与轨迹收尾），用户 hook 收不到。
+   */
+  kind: ToolFailureKind = "exception",
 ): void {
   const log = getLogger();
   try {
@@ -945,7 +962,7 @@ function firePostToolUseFailure(
       (toolInput ?? block.input) as Record<string, unknown>,
       reason,
       block.id,
-      durationMs !== undefined ? { duration_ms: durationMs } : undefined,
+      { ...(durationMs !== undefined ? { duration_ms: durationMs } : {}), failure_kind: kind },
     );
     // 不 await：与既有调用点同策略，hook 耗时不进工具关键路径。
     void fired?.catch?.((e: any) =>
@@ -1014,6 +1031,7 @@ export async function resolveToolPermission(
           `Hook 阻止执行: ${interp.blockReason ?? "无原因"}`,
           observableInput,
           Date.now() - permStartedAt,
+          "hook_blocked",
         );
         return {
           type: "tool_result",
@@ -1200,10 +1218,10 @@ export async function resolveToolPermission(
         observableInput,
         result.decision.reason ?? denyContent,
         result.source === "user" ? "user" : result.source === "hook" ? "hook" : "auto",
+        block.id,
       );
-      // Pre/Post 配对：PreToolUse 已在本函数开头 fire，权限拒绝也必须补 Failure 收尾。
-      // 耗时含「等用户确认」的墙钟——ask 路径可达数十秒，正是要看的那个数。
-      firePostToolUseFailure(deps, block, denyContent, observableInput, Date.now() - permStartedAt);
+      // Q7：权限拒绝只 fire PermissionDenied（对齐 CC），不再补 PostToolUseFailure。
+      // execute_tool span 由 runtime 消费者订阅 PermissionDenied 关闭（status=denied，不计工具失败）。
       return {
         type: "tool_result",
         tool_use_id: block.id,
@@ -1252,15 +1270,9 @@ export async function resolveToolPermission(
     observableInput,
     explanation,
     decision.decisionReason?.type === "rule" ? "rule" : "auto",
+    block.id,
   );
-  // Pre/Post 配对：同上，直接拒绝（无需确认）也要补 Failure 收尾。
-  firePostToolUseFailure(
-    deps,
-    block,
-    `权限拒绝: ${explanation}`,
-    observableInput,
-    Date.now() - permStartedAt,
-  );
+  // Q7：同上，规则直拒只 fire PermissionDenied。
   return {
     type: "tool_result",
     tool_use_id: block.id,
@@ -1336,6 +1348,7 @@ export async function executeSingleTool(
       `Hook 阻止执行: ${reason}`,
       undefined,
       Date.now() - toolStartedAt,
+      "hook_blocked",
     );
     logToolFailure(block.name, {
       kind: "hook_blocked",
@@ -1398,6 +1411,7 @@ export async function executeSingleTool(
       validation.message,
       effectiveInput,
       Date.now() - toolStartedAt,
+      "validation",
     );
     // 这条正是事故现场（见上方注释）：ask_user_question 校验失败在 events.jsonl 里
     // 只有 Pre 没有 Post，使「模型漏字段」这类高频真实失败在失败率统计里彻底隐身。
@@ -1432,12 +1446,22 @@ export async function executeSingleTool(
       ? (event: import("../tool/types.ts").ToolProgressData) =>
           deps.onToolProgress!(block.name, block.id, event)
       : undefined;
+    const cwdBefore = getCwd();
     const result = await tool.execute(
       effectiveInput,
       signalOverride ?? deps.getAbortSignal(),
       progressCallback,
     );
     const elapsed = Date.now() - startTime;
+    // HC24：CwdChanged / TaskCreated / TaskCompleted（fire-and-forget，见 query/tool-side-events.ts）
+    fireToolSideEvents(
+      deps.hookSystem,
+      block.name,
+      effectiveInput as Record<string, unknown>,
+      result,
+      cwdBefore,
+      getCwd(),
+    );
 
     deps.sessionState.addToolDuration(elapsed);
 
@@ -1474,20 +1498,43 @@ export async function executeSingleTool(
     // post_tool_use hook
     // GAP-11：MCP 工具先用**原始输出**跑 hook（脱敏/审计场景需原文），内置工具用截断后输出。
     const hookOutput = isMcpTool ? result.output : normalizedOutput;
-    const postResult = await deps.hookSystem.firePostToolUseEvent(
-      block.name,
-      block.input as Record<string, unknown>,
-      { output: hookOutput, isError: result.isError },
-      result.isError,
-      block.id,
-      { duration_ms: elapsed, harness_context: telemetryMeta as any },
-    );
+    // Q7：工具执行了但返回 isError → 只 fire PostToolUseFailure（对齐 CC）；成功才 fire PostToolUse。
+    // 两条都 await，PostToolUse 的 additionalContext / 反馈与 Failure 的反馈走同一套回灌。
+    const postResult = result.isError
+      ? await deps.hookSystem.firePostToolUseFailureEvent(
+          block.name,
+          block.input as Record<string, unknown>,
+          typeof hookOutput === "string" ? hookOutput : String(hookOutput ?? ""),
+          block.id,
+          {
+            duration_ms: elapsed,
+            harness_context: telemetryMeta as any,
+            failure_kind: "tool_error",
+            tool_output: hookOutput,
+          },
+        )
+      : await deps.hookSystem.firePostToolUseEvent(
+          block.name,
+          block.input as Record<string, unknown>,
+          { output: hookOutput, isError: false },
+          false,
+          block.id,
+          { duration_ms: elapsed, harness_context: telemetryMeta as any },
+        );
 
     let finalOutput = normalizedOutput;
     const additionalCtx = postResult.finalOutput?.getAdditionalContext();
     if (additionalCtx) {
       log.info("HOOK", `PostToolUse hook 追加上下文到 ${block.name} 结果`);
       finalOutput = normalizedOutput + "\n\n[Hook 附加上下文]\n" + additionalCtx;
+    }
+    // HC18：PostToolUse 的 exit 2（stderr）/ decision:"block"（reason）回灌模型（对齐 CC）。
+    // 工具已经执行，不撤回；只是让模型看到「lint 没过」这类反馈。原先只取 additionalContext，
+    // 按 CC 写的格式检查 hook 跑了、模型却回答「没有报错或额外提示」。
+    const postFeedback = hookFeedbackText(postResult);
+    if (postFeedback) {
+      log.info("HOOK", `PostToolUse hook 反馈回灌到 ${block.name} 结果`);
+      finalOutput = finalOutput + "\n\n[Hook 反馈]\n" + postFeedback;
     }
 
     // 连续编辑失败计数提醒（借鉴 edit-guard，用现成的 PostToolUse 回注通道落地）：
@@ -1594,23 +1641,31 @@ export async function executeSingleTool(
       errorCode: structuredErrorCode(err),
     });
 
-    deps.hookSystem
-      .firePostToolUseFailureEvent(
+    // §三.7 第 4 条：PostToolUseFailure 改为 await，才能把 hook 反馈回灌给模型。
+    // elapsed 已在上面算好，hook 耗时不计入工具耗时（计入 hook 自己的耗时）。
+    let failureFeedback: string | undefined;
+    try {
+      const failResult = await deps.hookSystem?.firePostToolUseFailureEvent?.(
         block.name,
         block.input as Record<string, unknown>,
         err.message,
         block.id,
         // elapsed = 纯执行耗时（与成功路径 addToolDuration 同口径）。
         // 慢工具超时失败恰是最需要耗时的场景：区分"秒失败"与"卡 30s 才失败"。
-        { duration_ms: elapsed },
-      )
-      .catch((e: any) => log.error("HOOK", `post_tool_use_failure hook 失败: ${e.message}`));
+        { duration_ms: elapsed, is_interrupt: isAbortLike(err), failure_kind: "exception" },
+      );
+      failureFeedback = hookFeedbackText(failResult);
+    } catch (e: any) {
+      log.error("HOOK", `post_tool_use_failure hook 失败: ${e?.message ?? e}`);
+    }
 
     return {
       block: {
         type: "tool_result",
         tool_use_id: block.id,
-        content: `工具执行异常: ${err.message}`,
+        content:
+          `工具执行异常: ${err.message}` +
+          (failureFeedback ? `\n\n[Hook 反馈]\n${failureFeedback}` : ""),
         is_error: true,
       },
       elapsedMs: Date.now() - toolStartedAt,
@@ -1730,4 +1785,54 @@ async function notifyLSPFileChange(input: Record<string, unknown>): Promise<void
   if (!filePath) return;
   const { syncFileToLSP } = await import("../lsp/manager.ts");
   await syncFileToLSP(filePath);
+}
+
+/**
+ * HC18：从 PostToolUse / PostToolUseFailure 的聚合结果里取要回灌模型的反馈。
+ * exit 2 在 runner 里已变成 decision:"deny" + reason(stderr)；JSON decision:"block" 带 reason。
+ * 两者都走 isBlockingDecision + getEffectiveReason，不另立判据。
+ */
+export function hookFeedbackText(
+  result: import("../hook/types.ts").AggregatedHookResult | undefined,
+): string | undefined {
+  const out = result?.finalOutput;
+  if (!out?.isBlockingDecision()) return undefined;
+  const reason = out.getEffectiveReason();
+  return reason && reason.trim() ? reason : undefined;
+}
+
+/** 用户中断导致的失败（CC is_interrupt） */
+function isAbortLike(err: unknown): boolean {
+  const e = err as { name?: string } | undefined;
+  return e?.name === "AbortError";
+}
+
+/** Q6：PostToolBatch。is_error 取自最终 tool_result（含权限拒绝 / 校验失败的兜底结果） */
+function firePostToolBatch(
+  deps: ToolExecutorDeps,
+  blocks: ToolUseBlock[],
+  results: ContentBlock[],
+): void {
+  const fire = deps.hookSystem?.firePostToolBatchEvent;
+  if (!fire || blocks.length === 0) return;
+  const errById = new Map<string, boolean>();
+  for (const r of results) {
+    if (r.type === "tool_result") errById.set(r.tool_use_id, r.is_error === true);
+  }
+  try {
+    void fire
+      .call(
+        deps.hookSystem,
+        blocks.map((b) => ({
+          tool_name: b.name,
+          tool_use_id: b.id,
+          is_error: errById.get(b.id) ?? false,
+        })),
+      )
+      ?.catch?.((e: any) =>
+        getLogger().error("HOOK", `post_tool_batch hook 失败: ${e?.message ?? e}`),
+      );
+  } catch (e: any) {
+    getLogger().error("HOOK", `post_tool_batch 触发异常（忽略）: ${e?.message ?? e}`);
+  }
 }

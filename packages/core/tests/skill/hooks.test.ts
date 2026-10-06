@@ -49,13 +49,15 @@ describe("registerSkillHooks", () => {
     expect(countFor(sys, HookEventName.PostToolUse)).toBe(2);
   });
 
-  test("${SKILL_DIR} 在命令中被替换", () => {
+  test("${SKILL_DIR} 不往命令串里替换，改由路径变量（环境变量）提供", () => {
+    // HC3 / H14：路径不进 shell 串（目录名含 $(...) 会被 sh 执行），由 runner 导出同名环境变量
     const sys = new HookSystem();
     registerSkillHooks(sys, "ts-lint", config, "/tmp/ts-lint");
-    const hooks = sys.getAllHooks();
-    const cmds = hooks.map((h) => (h.config.type === "command" ? h.config.command : "")).join("|");
-    expect(cmds).toContain("/tmp/ts-lint/x");
-    expect(cmds).not.toContain("${SKILL_DIR}");
+    const entry = sys.getAllHooks().find((h) => h.skillName === "ts-lint")!;
+    expect(entry.config.type).toBe("command");
+    if (entry.config.type !== "command") return;
+    expect(entry.config.command).toContain("${SKILL_DIR}");
+    expect(entry.config.pathVars?.SKILL_DIR).toBe("/tmp/ts-lint");
   });
 
   test("CC 变量写法 ${CLAUDE_SKILL_DIR} / ${CLAUDE_PLUGIN_ROOT} 也被替换", () => {
@@ -76,14 +78,11 @@ describe("registerSkillHooks", () => {
       },
       "/tmp/cc-skill",
     );
-    const cmds = sys
-      .getAllHooks()
-      .map((h) => (h.config.type === "command" ? h.config.command : ""))
-      .join("|");
-    expect(cmds).toContain("/tmp/cc-skill/a.sh");
-    expect(cmds).toContain("/tmp/cc-skill/b.sh");
-    expect(cmds).not.toContain("${CLAUDE_SKILL_DIR}");
-    expect(cmds).not.toContain("${CLAUDE_PLUGIN_ROOT}");
+    for (const h of sys.getAllHooks()) {
+      if (h.config.type !== "command") continue;
+      expect(h.config.pathVars?.CLAUDE_SKILL_DIR).toBe("/tmp/cc-skill");
+      expect(h.config.pathVars?.CLAUDE_PLUGIN_ROOT).toBe("/tmp/cc-skill");
+    }
   });
 
   test("skillRoot 注入为 hook 子进程环境变量（对齐 CC CLAUDE_PLUGIN_ROOT）", () => {
@@ -91,7 +90,8 @@ describe("registerSkillHooks", () => {
     registerSkillHooks(sys, "ts-lint", config, "/tmp/ts-lint");
     const entry = sys.getAllHooks().find((h) => h.skillName === "ts-lint");
     expect(entry).toBeDefined();
-    const env = entry!.config.type === "command" ? entry!.config.env : undefined;
+    const cfg = entry!.config.type === "command" ? entry!.config : undefined;
+    const env = { ...cfg?.pathVars, ...cfg?.env };
     expect(env?.CLAUDE_PLUGIN_ROOT).toBe("/tmp/ts-lint");
     expect(env?.CLAUDE_SKILL_DIR).toBe("/tmp/ts-lint");
     expect(env?.SID_CODE_SKILL_DIR).toBe("/tmp/ts-lint");

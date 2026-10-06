@@ -36,8 +36,17 @@ import {
   type TeammateIdleInput,
   type ElicitationInput,
   type ElicitationResultInput,
+  type ElicitationServerField,
+  type PostToolBatchInput,
+  type ModelSwitchInput,
+  type UserPromptExpansionInput,
+  type DirectoryAddedInput,
   type AggregatedHookResult,
   type HookExecutionPlan,
+  type HookConfig,
+  type ToolFailureKind,
+  resolveHookTimeoutMs,
+  sessionEndBudgetMs,
 } from "./types.ts";
 import { getLogger } from "../debug/logger.ts";
 import { getRawVersion } from "@sid-code/shared/version.ts";
@@ -70,6 +79,15 @@ export class HookEventHandler {
   private sessionId: string;
   private cwd: string;
   private permissionMode: string = "";
+  /**
+   * HC11：权限模式 / 对话记录路径的取值函数（app 层注入）。用 getter 不用 setter：
+   * 权限模式在 app 里至少 4 处被改写（plan 进出、Shift+Tab、CLAUDE.md 规则），
+   * setter 漏接一处就是 stdin 里一个过期值——原先 setPermissionMode 生产零调用，字段恒缺失。
+   */
+  private permissionModeProvider?: () => string | undefined;
+  private transcriptPathProvider?: (sessionId: string) => string | undefined;
+  /** HC11：本轮 prompt_id，每次 UserPromptSubmit 换新 */
+  private promptId?: string;
   /**
    * registry 引用，仅用于 once hook 回标（executeHooks 里按 plan.entries 下标标记已执行）。
    * 可选：老调用点不传时 once 语义退化为「不失效」，与历史行为一致，不会报错。
@@ -116,6 +134,15 @@ export class HookEventHandler {
   /** 设置当前权限模式 */
   setPermissionMode(mode: string): void {
     this.permissionMode = mode;
+  }
+
+  setPermissionModeProvider(fn: (() => string | undefined) | undefined): void {
+    this.permissionModeProvider = fn;
+  }
+
+  /** 会话对话记录路径按当前 sessionId 算（/clear 换会话后跟着变） */
+  setTranscriptPathProvider(fn: ((sessionId: string) => string | undefined) | undefined): void {
+    this.transcriptPathProvider = fn;
   }
 
   // ============================================================
@@ -184,23 +211,45 @@ export class HookEventHandler {
     options?: {
       duration_ms?: number;
       harness_context?: import("./types.ts").HarnessHookContext;
+      is_interrupt?: boolean;
+      /** Q7：缺省 exception。validation / hook_blocked 只送 runtime hook */
+      failure_kind?: ToolFailureKind;
+      /** tool_error 时工具的原始输出（tool_response.output） */
+      tool_output?: unknown;
     },
   ): Promise<AggregatedHookResult> {
+    const kind = options?.failure_kind ?? "exception";
     const input: PostToolUseInput = {
       ...this.createBaseInput(HookEventName.PostToolUseFailure),
       tool_name: toolName,
       tool_input: toolInput,
-      tool_response: { error },
+      tool_response:
+        options?.tool_output !== undefined ? { error, output: options.tool_output } : { error },
+      sid_failure_kind: kind,
       is_error: true,
+      // HC12：CC 的顶层字段（tool_response.error 保留，存量 sid 脚本照常）
+      error,
+      is_interrupt: options?.is_interrupt ?? false,
       tool_use_id: toolUseId,
       duration_ms: options?.duration_ms,
       harness_context: options?.harness_context,
     };
-    return this.executeHooks(HookEventName.PostToolUseFailure, input, { toolName, toolInput });
+    // Q7：CC 只在「工具执行了但失败」时触发 PostToolUseFailure。校验失败 / PreToolUse 阻止
+    // 在 CC 里不触发它，但 sid 的 runtime 消费者（execute_tool span、轨迹）要靠它收尾，
+    // 所以只送 runtime hook——用户 hook 看到的触发语义与 CC 一致。
+    const runtimeOnly = kind === "validation" || kind === "hook_blocked";
+    return this.executeHooks(
+      HookEventName.PostToolUseFailure,
+      input,
+      { toolName, toolInput },
+      { runtimeOnly },
+    );
   }
 
   /** UserPromptSubmit 事件 */
   async fireUserPromptSubmitEvent(prompt: string): Promise<AggregatedHookResult> {
+    // 新一轮：换 prompt_id，本轮之后的所有事件共用它
+    this.promptId = crypto.randomUUID();
     const input: UserPromptSubmitInput = {
       ...this.createBaseInput(HookEventName.UserPromptSubmit),
       prompt,
@@ -362,14 +411,20 @@ export class HookEventHandler {
       message,
       details,
     };
-    return this.executeHooks(HookEventName.Notification, input);
+    // matcher 按 notification_type（对齐 CC：permission_prompt / idle_prompt …）
+    return this.executeHooks(HookEventName.Notification, input, { trigger: notificationType });
   }
 
   /** Stop 事件：模型 end_turn 后执行检查 */
-  async fireStopEvent(assistantResponse: string): Promise<AggregatedHookResult> {
+  async fireStopEvent(
+    assistantResponse: string,
+    stopHookActive: boolean = false,
+  ): Promise<AggregatedHookResult> {
     const input: StopInput = {
       ...this.createBaseInput(HookEventName.Stop),
       assistant_response: assistantResponse,
+      last_assistant_message: assistantResponse,
+      stop_hook_active: stopHookActive,
     };
     return this.executeHooks(HookEventName.Stop, input);
   }
@@ -384,7 +439,7 @@ export class HookEventHandler {
       error,
       error_type: errorType,
     };
-    return this.executeHooks(HookEventName.StopFailure, input);
+    return this.executeHooks(HookEventName.StopFailure, input, { trigger: errorType });
   }
 
   /** PostCompact 事件：上下文压缩后 */
@@ -440,9 +495,11 @@ export class HookEventHandler {
     toolInput: Record<string, unknown>,
     denialReason: string,
     denialSource: PermissionDeniedInput["denial_source"],
+    toolUseId?: string,
   ): Promise<AggregatedHookResult> {
     const input: PermissionDeniedInput = {
       ...this.createBaseInput(HookEventName.PermissionDenied),
+      tool_use_id: toolUseId,
       tool_name: toolName,
       tool_input: toolInput,
       denial_reason: denialReason,
@@ -455,13 +512,15 @@ export class HookEventHandler {
   async fireConfigChangeEvent(
     changedKeys: string[],
     source: ConfigChangeInput["source"],
+    filePath?: string,
   ): Promise<AggregatedHookResult> {
     const input: ConfigChangeInput = {
       ...this.createBaseInput(HookEventName.ConfigChange),
       changed_keys: changedKeys,
       source,
+      file_path: filePath,
     };
-    return this.executeHooks(HookEventName.ConfigChange, input);
+    return this.executeHooks(HookEventName.ConfigChange, input, { trigger: source });
   }
 
   /** FileChanged 事件 */
@@ -549,26 +608,93 @@ export class HookEventHandler {
   async fireElicitationEvent(
     message: string,
     requestedSchema?: Record<string, unknown>,
+    serverName?: string,
   ): Promise<AggregatedHookResult> {
-    const input: ElicitationInput = {
+    const input: ElicitationInput & ElicitationServerField = {
       ...this.createBaseInput(HookEventName.Elicitation),
       message,
       requestedSchema,
+      mcp_server_name: serverName,
     };
-    return this.executeHooks(HookEventName.Elicitation, input);
+    return this.executeHooks(
+      HookEventName.Elicitation,
+      input,
+      serverName ? { trigger: serverName } : undefined,
+    );
   }
 
   /** G11：ElicitationResult 事件——Elicitation 的用户响应结果 */
   async fireElicitationResultEvent(
     action: ElicitationResultInput["action"],
     content?: Record<string, unknown>,
+    serverName?: string,
   ): Promise<AggregatedHookResult> {
-    const input: ElicitationResultInput = {
+    const input: ElicitationResultInput & ElicitationServerField = {
       ...this.createBaseInput(HookEventName.ElicitationResult),
       action,
       content,
+      mcp_server_name: serverName,
     };
-    return this.executeHooks(HookEventName.ElicitationResult, input);
+    return this.executeHooks(
+      HookEventName.ElicitationResult,
+      input,
+      serverName ? { trigger: serverName } : undefined,
+    );
+  }
+
+  /** PostToolBatch：一批工具全部执行完、结果回灌模型之前 */
+  async firePostToolBatchEvent(
+    toolCalls: PostToolBatchInput["tool_calls"],
+  ): Promise<AggregatedHookResult> {
+    const input: PostToolBatchInput = {
+      ...this.createBaseInput(HookEventName.PostToolBatch),
+      tool_calls: toolCalls,
+    };
+    return this.executeHooks(HookEventName.PostToolBatch, input);
+  }
+
+  /** PreModelSwitch / PostModelSwitch（matcher 按 trigger：manual / fallback） */
+  async fireModelSwitchEvent(
+    phase: "pre" | "post",
+    fromModel: string,
+    toModel: string,
+    trigger: ModelSwitchInput["trigger"],
+    reason?: string,
+  ): Promise<AggregatedHookResult> {
+    const eventName =
+      phase === "pre" ? HookEventName.PreModelSwitch : HookEventName.PostModelSwitch;
+    const input: ModelSwitchInput = {
+      ...this.createBaseInput(eventName),
+      from_model: fromModel,
+      to_model: toModel,
+      trigger,
+      reason,
+    };
+    return this.executeHooks(eventName, input, { trigger });
+  }
+
+  /** UserPromptExpansion：斜杠命令 / skill 展开后（matcher 按命令名） */
+  async fireUserPromptExpansionEvent(
+    commandName: string,
+    originalPrompt: string,
+    expandedPrompt: string,
+  ): Promise<AggregatedHookResult> {
+    const input: UserPromptExpansionInput = {
+      ...this.createBaseInput(HookEventName.UserPromptExpansion),
+      command_name: commandName,
+      original_prompt: originalPrompt,
+      expanded_prompt: expandedPrompt,
+    };
+    return this.executeHooks(HookEventName.UserPromptExpansion, input, { trigger: commandName });
+  }
+
+  /** DirectoryAdded：/add-dir 加入会话白名单之后 */
+  async fireDirectoryAddedEvent(directory: string): Promise<AggregatedHookResult> {
+    const input: DirectoryAddedInput = {
+      ...this.createBaseInput(HookEventName.DirectoryAdded),
+      directory,
+    };
+    return this.executeHooks(HookEventName.DirectoryAdded, input);
   }
 
   // ============================================================
@@ -580,12 +706,14 @@ export class HookEventHandler {
     eventName: HookEventName,
     input: HookInput,
     context?: HookEventContext,
+    opts?: { runtimeOnly?: boolean },
   ): Promise<AggregatedHookResult> {
     const log = getLogger();
 
     try {
       // 1. 创建执行计划
-      const plan = this.planner.createExecutionPlan(eventName, context);
+      let plan = this.planner.createExecutionPlan(eventName, context);
+      if (plan && opts?.runtimeOnly) plan = keepRuntimeOnly(plan);
       if (!plan || plan.hookConfigs.length === 0) {
         return emptyResult();
       }
@@ -596,9 +724,15 @@ export class HookEventHandler {
       // 省下的只是一次对象构造，所以删掉，runtime hook 与其他类型走同一条路。别加回来。
 
       // 2. 执行 hook（根据计划决定串行/并行）
+      // HC20：SessionEnd 所有用户 hook 共享一个预算（缺省 1.5s，显式 timeout 可提高，上限 60s），
+      // 与 CC 一致——退出路径上不能让一个慢 hook 把关窗口卡住。runtime（轨迹 / 遥测落盘）不受此限。
+      const configs =
+        eventName === HookEventName.SessionEnd
+          ? applySessionEndBudget(plan.hookConfigs)
+          : plan.hookConfigs;
       const results = plan.sequential
-        ? await this.runner.executeHooksSequential(plan.hookConfigs, eventName, input)
-        : await this.runner.executeHooksParallel(plan.hookConfigs, eventName, input);
+        ? await this.runner.executeHooksSequential(configs, eventName, input)
+        : await this.runner.executeHooksParallel(configs, eventName, input);
 
       // 2.5 once hook 回标：执行成功的一次性 hook 标记为已执行，后续计划不再纳入。
       // 对齐 CC registerSkillHooks 的 onHookSuccess → removeSessionHook（只在成功后移除，
@@ -642,12 +776,16 @@ export class HookEventHandler {
   /** 构建基础输入 */
   private createBaseInput(eventName: HookEventName): HookInput {
     const ident = getIdentity();
+    const mode = this.permissionModeProvider?.() ?? this.permissionMode;
     return {
       session_id: this.sessionId,
       cwd: this.cwd,
       hook_event_name: eventName,
       timestamp: new Date().toISOString(),
-      permission_mode: this.permissionMode || undefined,
+      permission_mode: toCcPermissionMode(mode),
+      sid_permission_mode: mode || undefined,
+      transcript_path: this.sessionId ? this.transcriptPathProvider?.(this.sessionId) : undefined,
+      prompt_id: this.promptId,
       device_id: ident.deviceId,
       user_id: ident.userId,
       org_id: ident.orgId,
@@ -680,4 +818,43 @@ export class HookEventHandler {
       );
     }
   }
+}
+
+/**
+ * sid 权限模式 → CC permission_mode 取值（HC11）。
+ * always-allow / dangerously-skip-permissions → bypassPermissions；manual / deny-write → default；
+ * 其余同名原样。未设置时返回 undefined（字段被 JSON 丢掉，与之前一致）。
+ */
+export function toCcPermissionMode(mode: string | undefined): string | undefined {
+  if (!mode) return undefined;
+  switch (mode) {
+    case "always-allow":
+    case "dangerously-skip-permissions":
+      return "bypassPermissions";
+    case "manual":
+    case "deny-write":
+      return "default";
+    default:
+      return mode;
+  }
+}
+
+/** SessionEnd 共享预算：把每条用户 hook 的超时压到预算内（runtime 不动） */
+export function applySessionEndBudget(configs: HookConfig[]): HookConfig[] {
+  const budgetMs = sessionEndBudgetMs(configs);
+  return configs.map((c) => {
+    if (c.type === "runtime") return c;
+    const own = resolveHookTimeoutMs(c, HookEventName.SessionEnd);
+    return own <= budgetMs ? c : ({ ...c, timeout: budgetMs / 1000 } as HookConfig);
+  });
+}
+
+/** Q7：只保留 runtime hook（entries 与 hookConfigs 下标对齐，一起过滤） */
+function keepRuntimeOnly(plan: HookExecutionPlan): HookExecutionPlan {
+  const idx = plan.hookConfigs.map((c, i) => (c.type === "runtime" ? i : -1)).filter((i) => i >= 0);
+  return {
+    ...plan,
+    hookConfigs: idx.map((i) => plan.hookConfigs[i]!),
+    entries: plan.entries ? idx.map((i) => plan.entries![i]!) : undefined,
+  };
 }

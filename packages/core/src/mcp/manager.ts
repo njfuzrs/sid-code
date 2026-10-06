@@ -336,6 +336,22 @@ export class MCPManager {
    */
   elicitationHandler?: import("./elicitation.ts").ElicitationHandler;
   /**
+   * HC24：Elicitation / ElicitationResult hook 的发射端。由 App 层注入 hookSystem；
+   * 不直接持有 HookSystem 类型，避免 mcp → hook 的反向依赖。fire-and-forget，不影响回复。
+   */
+  elicitationHooks?: {
+    fireElicitationEvent(
+      message: string,
+      requestedSchema?: Record<string, unknown>,
+      serverName?: string,
+    ): Promise<unknown>;
+    fireElicitationResultEvent(
+      action: "accept" | "decline" | "cancel",
+      content?: Record<string, unknown>,
+      serverName?: string,
+    ): Promise<unknown>;
+  };
+  /**
    * 企业 MCP 策略（D13）：denylist / allowlist。
    *
    * 放在 manager 而不是 config 合并层，因为 manager 是**所有**连接路径的必经点：
@@ -517,7 +533,21 @@ export class MCPManager {
       client.onRequestMethod("elicitation/create", async (params: unknown) => {
         const { defaultElicitationHandler } = await import("./elicitation.ts");
         const handler = this.elicitationHandler ?? defaultElicitationHandler;
-        const result = await handler(name, params as any);
+        const p = params as any;
+        const hooks = this.elicitationHooks;
+        const swallow = (e: unknown) =>
+          getLogger().error("HOOK", `elicitation hook 失败: ${(e as Error)?.message ?? e}`);
+        hooks
+          ?.fireElicitationEvent(String(p?.message ?? ""), p?.requestedSchema, name)
+          .catch(swallow);
+        const result = await handler(name, p);
+        hooks
+          ?.fireElicitationResultEvent(
+            result.action,
+            (result as { content?: Record<string, unknown> }).content,
+            name,
+          )
+          .catch(swallow);
         return result;
       });
 

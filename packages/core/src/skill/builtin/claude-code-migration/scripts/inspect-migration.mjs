@@ -13,7 +13,7 @@
  * - CLAUDE.md / .claude/rules / CLAUDE.local.md：sid-code 原生读取 .claude 位置，
  *   归入 compatibleInPlace（只报告，不迁移）。
  * - MCP：sid-code 要求 transport 字段，需从 Claude 的 type 推导。
- * - hooks：sid-code 是扁平结构，需从 Claude 的两层(matcher 分组)结构展开。
+ * - hooks：格式与 Claude Code 一致，原样复制；只需处理 .claude/ 下的脚本路径。
  * - plugins（enabledPlugins/extraKnownMarketplaces）：sid-code 无对应字段，只报告。
  * - 状态文件避开 ~/.sid-code/state/migrations.json（内核迁移水位线，绝不触碰）。
  */
@@ -541,23 +541,23 @@ function analyzeMcpServers(plan, sourcePath, sourceScope, target, servers, optio
   }
 }
 
-/** 展开 Claude 两层 hooks 结构，统计内层 hook 条数与不支持字段 */
+/**
+ * 统计 Claude hooks 段：sid-code 格式与 CC 一致，原样复制，这里只数条目、找需要人工处理的点。
+ * - scriptPaths：命令里引用的 .claude/ 路径（只需决定保留原路径还是复制后改路径）
+ * - manualReview：调用 claude CLI 或使用 sid-code 不导出的 CLAUDE_* 变量
+ * - notExecuted：sid-code 识别但不执行的 handler 类型（mcp_tool）
+ */
 function analyzeHooksShape(value) {
-  const SID_HOOK_FIELDS = new Set([
-    "type",
-    "event",
-    "command",
-    "url",
-    "method",
-    "headers",
-    "timeout",
-    "blocking",
-    "matcher",
+  const EXPORTED_CLAUDE_VARS = new Set([
+    "CLAUDE_PROJECT_DIR",
+    "CLAUDE_PLUGIN_ROOT",
+    "CLAUDE_PLUGIN_DATA",
   ]);
   let events = 0;
-  let flatEntries = 0;
-  const unsupportedFields = new Set();
-  let claudeTokenHits = 0;
+  let handlers = 0;
+  let scriptPaths = 0;
+  let manualReview = 0;
+  const notExecuted = new Set();
   if (value && typeof value === "object" && !Array.isArray(value)) {
     for (const groups of Object.values(value)) {
       events++;
@@ -566,20 +566,21 @@ function analyzeHooksShape(value) {
         const inner = Array.isArray(group?.hooks) ? group.hooks : [group];
         for (const h of inner) {
           if (!h || typeof h !== "object") continue;
-          flatEntries++;
-          for (const k of Object.keys(h)) {
-            if (k === "hooks") continue;
-            if (!SID_HOOK_FIELDS.has(k)) unsupportedFields.add(k);
-          }
+          handlers++;
+          if (h.type === "mcp_tool") notExecuted.add("mcp_tool");
           const cmd = typeof h.command === "string" ? h.command : "";
-          if (/\bCLAUDE_[A-Z_]+/.test(cmd) || /\bclaude\b/.test(cmd) || cmd.includes("/.claude/")) {
-            claudeTokenHits++;
+          if (cmd.includes(".claude/")) scriptPaths++;
+          const vars = cmd.match(/\bCLAUDE_[A-Z_]+/g) ?? [];
+          // 只认作为命令出现的 claude（行首 / 分隔符之后），`.claude/hooks/x.sh` 这类路径不算
+          const callsClaudeCli = /(^|[\s;&|(`])claude(\s|$)/.test(cmd);
+          if (callsClaudeCli || vars.some((v) => !EXPORTED_CLAUDE_VARS.has(v))) {
+            manualReview++;
           }
         }
       }
     }
   }
-  return { events, flatEntries, unsupportedFields: [...unsupportedFields], claudeTokenHits };
+  return { events, handlers, scriptPaths, manualReview, notExecuted: [...notExecuted] };
 }
 
 function analyzeSettings(
@@ -657,16 +658,16 @@ function analyzeSettings(
       addSettingsField("hooks", settingsTarget, {
         reason: "hooks 会执行命令；需要用户确认执行风险",
         transform:
-          `必做结构转换：Claude 两层(matcher 分组+内层 hooks) -> sid-code 扁平 HookEntry。` +
-          `本源共 ${shape.events} 个事件、展开后约 ${shape.flatEntries} 条 HookEntry。` +
-          `token 替换：$CLAUDE_PROJECT_DIR -> $SID_CODE_PROJECT_DIR（其余原样）。`,
+          `原样复制（格式与 Claude Code 一致，不做结构转换、不替换 CLAUDE_* 变量）。` +
+          `本源共 ${shape.events} 个事件、${shape.handlers} 个 handler。` +
+          (shape.scriptPaths
+            ? `${shape.scriptPaths} 条命令引用 .claude/ 下的脚本：保留原路径，或复制到 .sid-code/hooks/ 并只改路径。`
+            : ""),
         hookShape: shape,
-        ...(shape.unsupportedFields.length
-          ? { unsupportedHookFields: shape.unsupportedFields }
-          : {}),
-        ...(shape.claudeTokenHits
+        ...(shape.notExecuted.length ? { unsupportedHookFields: shape.notExecuted } : {}),
+        ...(shape.manualReview
           ? {
-              warning: `检测到 ${shape.claudeTokenHits} 条 hook 命令含 CLAUDE_*/claude/.claude 引用，转换后仍需人工核对`,
+              warning: `检测到 ${shape.manualReview} 条 hook 命令调用 claude CLI 或使用 sid-code 不导出的 CLAUDE_* 变量，需人工核对`,
             }
           : {}),
       });
@@ -1088,7 +1089,7 @@ function renderMarkdown(plan) {
       if (x.transform) text += `\n  ${x.transform}`;
       if (x.envKeys) text += `\n  env keys: ${x.envKeys.join(", ")}`;
       if (x.unsupportedHookFields)
-        text += `\n  不支持的 hook 字段: ${x.unsupportedHookFields.join(", ")}`;
+        text += `\n  识别但不执行的 hook 类型: ${x.unsupportedHookFields.join(", ")}`;
       if (x.warning) text += `\n  ⚠️ ${x.warning}`;
       if (x.note) text += `\n  说明: ${x.note}`;
       if (x.existingTargets)
@@ -1144,7 +1145,7 @@ function renderMarkdown(plan) {
   );
   lines.push("- permissions、hooks、MCP secrets/env/headers、env 字段以及所有冲突必须单独确认。");
   lines.push(
-    "- MCP 迁移必须展示每个 server 推导出的 transport 值；hooks 迁移必须展示结构转换后的 sid-code 形态。",
+    "- MCP 迁移必须展示每个 server 推导出的 transport 值；hooks 原样复制，只需确认脚本路径的处理方式。",
   );
   lines.push("");
   lines.push("## 模型配置提醒");

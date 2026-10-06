@@ -409,8 +409,8 @@ function renderHookEvents(events: HookEvent[]): string {
   out += `> 其中 **${fireable}** 类当前有真实触发点。\n`;
   out += `>\n`;
   out += `> **第一列就是你写进 \`settings.json\` 的键名。** 两种写法运行时等价\n`;
-  out += `> （\`pre_tool_use\` 与 \`PreToolUse\` 都认，内部会归一化），本表优先给 snake_case——\n`;
-  out += `> 与[配置 Hook](/extend/hooks) 的示例保持一致，少一处需要读者自己换算的地方。\n`;
+  out += `> （\`pre_tool_use\` 与 \`PreToolUse\` 都认，内部会归一化），本表第一列给 snake_case，\n`;
+  out += `> 第三列是 PascalCase（与 Claude Code 同名，[Hook 指南](/extend/hooks)的示例用这种）。\n`;
   const pascalOnly = events.filter((e) => e.configName === e.name);
   if (pascalOnly.length) {
     out += `> 第一列是 PascalCase、枚举名列为 — 的 ${pascalOnly.length} 个事件**没有 snake_case 别名**，\n`;
