@@ -12,6 +12,7 @@ import { minimatch } from "minimatch";
 import type { PermissionRule, PermissionRequest, Decision } from "./types.ts";
 import { matchShellRulePattern } from "./shell-rule-matching.ts";
 import { matchPathRule, type PathRuleContext } from "./path-rule-matching.ts";
+import { toInternalToolName } from "../tool/tool-name-aliases.ts";
 
 /** 文件路径类工具（走 matchPathRule 做前缀解析）。含 notebook_edit：路径字段是 notebook_path。 */
 const FILE_PATH_TOOLS = new Set(["read", "write", "edit", "notebook_edit", "grep", "read_many"]);
@@ -23,23 +24,12 @@ function isReadFamilyRule(ruleTool: string, reqTool: string): boolean {
 }
 
 /**
- * 规则名归一：把 CC 风格的规则名映射到 sid 内部工具名。
- * - Agent ↔ sub_agent
- * - WebFetch ↔ web_fetch
- * - WebSearch ↔ web_search
- * 大小写不敏感。
+ * 规则名归一：把 CC 风格的规则名映射到 sid 内部工具名（大小写不敏感）。
+ * 别名表唯一事实源在 tool/tool-name-aliases.ts，与 hook matcher 共用（HC8）。
+ * 表外名字一律转小写（沿用旧口径：规则名历来大小写不敏感）。
  */
-const RULE_NAME_ALIASES: Record<string, string> = {
-  agent: "sub_agent",
-  webfetch: "web_fetch",
-  websearch: "web_search",
-  notebookedit: "notebook_edit",
-};
-
-/** 把规则里的工具名归一到内部工具名（小写） */
 function normalizeRuleToolName(toolName: string): string {
-  const lower = toolName.toLowerCase();
-  return RULE_NAME_ALIASES[lower] ?? lower;
+  return toInternalToolName(toolName).toLowerCase();
 }
 
 /**

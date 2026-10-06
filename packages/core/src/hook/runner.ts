@@ -23,15 +23,32 @@ import { recordSideCall } from "../trace/side-call-sink.ts";
 import { SIDE_CALL_NO_THINK } from "../llm/side-call-timeout.ts";
 import { SIDE_CALL_TIMEOUT_REASON } from "../llm/errors.ts";
 import { ssrfGuardedFetch } from "./ssrf-guard.ts";
+import { toCcToolName } from "../tool/tool-name-aliases.ts";
 
-/** 延迟 JSON 序列化：只在需要时序列化一次 */
+/**
+ * 发给外部 handler（command stdin / http body / prompt·agent 的 $ARGUMENTS）的载荷（Q1 裁决）。
+ *
+ * `tool_name` 换成 CC 名并附 `sid_tool_name`，CC 脚本 `jq -r .tool_name == "Bash"` 零修改可用（HC9）。
+ * 只在序列化这一步改，不动 HookInput 本身：collector / hook-probe / session-metrics 三个 runtime
+ * 消费者拿 tool_name 做统计键，在对象上改名会让轨迹工具名在发版前后断成两段（北极星铁律 3）。
+ * sid 独有工具与 MCP 工具没有 CC 名，原样发内部名、不加 sid_tool_name。
+ */
+export function toExternalHookPayload(input: HookInput): HookInput {
+  const toolName = (input as { tool_name?: unknown }).tool_name;
+  if (typeof toolName !== "string") return input;
+  const cc = toCcToolName(toolName);
+  if (!cc) return input;
+  return { ...input, tool_name: cc, sid_tool_name: toolName } as HookInput;
+}
+
+/** 延迟 JSON 序列化：只在需要时序列化一次（外部载荷形状，见 toExternalHookPayload） */
 export class LazyJsonInput {
   private _json: string | undefined;
   constructor(private input: HookInput) {}
 
   get json(): string {
     if (this._json === undefined) {
-      this._json = JSON.stringify(this.input);
+      this._json = JSON.stringify(toExternalHookPayload(this.input));
     }
     return this._json;
   }
@@ -496,7 +513,7 @@ export class HookRunner {
           "Content-Type": "application/json",
           ...(hookConfig.headers || {}),
         },
-        body: JSON.stringify(sanitizeStrings(input)),
+        body: JSON.stringify(sanitizeStrings(toExternalHookPayload(input))),
         signal: controller.signal,
         allowedEnvVars: hookConfig.allowedEnvVars,
       });
@@ -828,7 +845,7 @@ export class HookRunner {
     const timeout = resolveHookTimeoutMs(hookConfig);
 
     try {
-      const jsonInput = JSON.stringify(input);
+      const jsonInput = JSON.stringify(toExternalHookPayload(input));
       const processedPrompt = hookConfig.prompt.replace(/\$ARGUMENTS/g, jsonInput);
 
       // 动态导入避免循环依赖
@@ -909,7 +926,7 @@ export class HookRunner {
     const log = getLogger();
     const timeout = resolveHookTimeoutMs(hookConfig);
 
-    const jsonInput = JSON.stringify(input);
+    const jsonInput = JSON.stringify(toExternalHookPayload(input));
     const processedPrompt = hookConfig.prompt.replace(/\$ARGUMENTS/g, jsonInput);
 
     // G6：优先走注入的真子代理执行器（可多轮、可用 read/grep/glob 等工具验证）。

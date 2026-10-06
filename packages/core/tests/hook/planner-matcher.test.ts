@@ -37,7 +37,8 @@ describe("Hook matcher 三档语义（G8）", () => {
 
   test("Bash 精确匹配", () => {
     expect(matches("Bash", "Bash")).toBe(true);
-    expect(matches("Bash", "bash")).toBe(false); // 大小写敏感
+    // HC8：精确档过别名表，CC 名 Bash 命中内部名 bash（旧行为是大小写敏感不命中）
+    expect(matches("Bash", "bash")).toBe(true);
     expect(matches("Bash", "BashOutput")).toBe(false);
   });
 
