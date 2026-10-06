@@ -5,6 +5,7 @@
  */
 
 import type { Transport, JsonRpcNotification } from "./transport.ts";
+import { isNotDeliveredError, isTerminalTransportError, getRetryAfterMs } from "./transport.ts";
 import { computeBackoffMs } from "../config/network-profile.ts";
 import type {
   JsonRpcRequest,
@@ -316,22 +317,34 @@ export class MCPClient {
     return result.tools || [];
   }
 
-  /** 调用工具 */
+  /**
+   * 调用工具。
+   *
+   * D15：`tools/call` 不再无条件重试。超时 / 断流时服务器**可能已经执行了**，重发就是重复执行
+   * 非幂等操作（建 issue、发消息、下单）。只在两种情况下重试：
+   *   - 传输层确定请求没送达（`isNotDeliveredError`：连接没建起来、429 拒收）；
+   *   - 调用方声明工具幂等（`idempotent`，来自 Server 的 `idempotentHint: true`）。
+   * 不声明 = 不重试（fail-safe）。`idempotentHint` 是 Server 自声明的 hint，不能当安全保证，
+   * 但这里是拿它做**收紧**的反面（声明了才放宽重试），方向与「拿 readOnlyHint 放行」相反。
+   */
   async callTool(
     name: string,
     args: Record<string, unknown>,
     signal?: AbortSignal,
+    opts?: { idempotent?: boolean },
   ): Promise<CallToolResult> {
     if (!this.initialized) {
       await this.initialize();
     }
 
+    const idempotent = opts?.idempotent === true;
     const response = await this.sendWithRetry(
       this.makeRequest("tools/call", {
         name,
         arguments: args,
       }),
       signal,
+      idempotent ? undefined : isNotDeliveredError,
     );
 
     if (response.error) {
@@ -436,10 +449,16 @@ export class MCPClient {
     this.transport.close();
   }
 
-  /** 带重试的发送：指数退避 + ±30% 随机抖动 */
+  /**
+   * 带重试的发送：指数退避 + 抖动，且不短于对端 `Retry-After`（D27）。
+   *
+   * @param shouldRetry 判定某个错误能否重发。缺省 = 一律重试，只给天然幂等的请求
+   *   （initialize / *list / resources/read / prompts/get）用；`tools/call` 必须显式传（D15）。
+   */
   private async sendWithRetry(
     request: JsonRpcRequest,
     signal?: AbortSignal,
+    shouldRetry: (err: unknown) => boolean = () => true,
   ): Promise<JsonRpcResponse> {
     let lastError: Error | null = null;
 
@@ -457,10 +476,16 @@ export class MCPClient {
           throw new Error("用户取消");
         }
         lastError = err;
+        // 传输已关闭：重试也不会好；不可重发的错误（D15）：直接抛，别重复执行
+        if (isTerminalTransportError(err) || !shouldRetry(err)) throw err;
         if (attempt < this.retries) {
           // 配置-5：退避改用 network-profile 的 computeBackoffMs（与 loop/fallback 层同一实现，
           // 指数退避 + jitter），不再就地 `1000 * 2^attempt`。基数 1s、上限 30s 保持原有量级。
-          const delay = computeBackoffMs(attempt, 1_000, 30_000);
+          // D27：对端给了 Retry-After（429 / 503）就至少等那么久，按自己的节奏打会被判滥用。
+          const delay = Math.max(
+            computeBackoffMs(attempt, 1_000, 30_000),
+            getRetryAfterMs(err) ?? 0,
+          );
           await new Promise((resolve) => setTimeout(resolve, delay));
         }
       }

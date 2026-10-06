@@ -11,6 +11,8 @@ export type PermissionDecisionReason =
   | { type: "mode"; mode: string }
   | { type: "safetyCheck"; reason: string; classifierApprovable: boolean }
   | { type: "dangerousCommand"; pattern: string; severity: string }
+  /** D16：工具自报破坏性（MCP `destructiveHint: true`），确认不可被 yesMode / auto / hook 静默放行 */
+  | { type: "destructiveTool"; tool: string; openWorld?: boolean }
   | { type: "pathValidation"; reason: string }
   | { type: "sessionMemory" }
   | { type: "denialTracking"; consecutiveDenials: number; totalDenials: number }

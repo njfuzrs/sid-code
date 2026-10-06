@@ -293,6 +293,7 @@ export type PermissionDenyReasonType =
   | "mode"
   | "safetyCheck"
   | "dangerousCommand"
+  | "destructiveTool"
   | "pathValidation"
   | "sessionMemory"
   | "denialTracking"

@@ -201,7 +201,7 @@ function extractMemoryResource(req: PermissionRequest): string {
  */
 function isSafetyConfirmation(reason: PermissionDecisionReason | undefined): boolean {
   const t = reason?.type;
-  return t === "dangerousCommand" || t === "safetyCheck";
+  return t === "dangerousCommand" || t === "safetyCheck" || t === "destructiveTool";
 }
 
 /**
@@ -211,7 +211,7 @@ function isSafetyConfirmation(reason: PermissionDecisionReason | undefined): boo
  */
 function classifierMayApprove(reason: PermissionDecisionReason | undefined): boolean {
   if (!reason) return true;
-  if (reason.type === "dangerousCommand") return false;
+  if (reason.type === "dangerousCommand" || reason.type === "destructiveTool") return false;
   if (reason.type === "safetyCheck") return reason.classifierApprovable === true;
   return true;
 }
@@ -1233,6 +1233,22 @@ export class PermissionChecker implements Checker {
         allowed: false,
         reason: "deny-write 模式下不允许写操作",
         decisionReason: { type: "mode", mode: "deny-write" },
+      };
+    }
+
+    // Step 13.5（D16）：工具自报破坏性（MCP destructiveHint: true）→ 安全类确认。
+    // 与普通 ask 的区别只在下游：yesMode / auto 分类器 / PreToolUse hook allow 都不能放行它
+    // （isSafetyConfirmation）。用户显式 allow 规则、always-allow、预授权在上面已经生效，不受影响——
+    // 那是用户自己的明确决定；这里只吸收「Server 主动警告我会删东西」这条原先被丢弃的信息。
+    // hint 是 Server 自声明，只用于收紧，绝不用于放行。
+    if (tool?.isDestructive?.(req.input)) {
+      const openWorld = (tool as { isOpenWorld?: () => boolean }).isOpenWorld?.() === true;
+      log.info("PERMISSION", `${req.toolName} → 需确认(工具声明 destructive)`);
+      return {
+        allowed: false,
+        needsConfirmation: true,
+        reason: `工具 "${req.toolName}" 声明了破坏性操作，需要用户确认`,
+        decisionReason: { type: "destructiveTool", tool: req.toolName, openWorld },
       };
     }
 
