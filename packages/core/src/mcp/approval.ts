@@ -118,14 +118,34 @@ export function getPendingApprovalServers(): { names: string[]; projectPath: str
  * 批准一个待审批 server 并从快照中移除。
  * 返回 true 表示确实批准了（名字在快照里）。
  *
- * 注意：批准只写持久化状态，**不热连接** —— MCP connectAll 在 cli.ts 启动早期
- * 就跑完了，运行中没有"补连一个 server"的入口。调用方需提示用户重启生效。
+ * D17：本函数只写持久化状态、不建连——它在 core 的审批层，不持有 MCPManager。
+ * 运行中热连接的入口是存在的（`MCPManager.addServer`），会话内的调用方应当用
+ * {@link approveAndConnectPendingServer}；`sid-code mcp approve` 这类独立子进程
+ * 没有 manager，只能提示「下次启动生效」。（旧注释说「运行中没有补连入口」，不成立。）
  */
 export function approvePendingServer(serverName: string): boolean {
   if (!(serverName in pendingApproval)) return false;
   approveProjectServer(serverName, pendingApprovalProject);
   delete pendingApproval[serverName];
   return true;
+}
+
+/**
+ * 会话内批准并立即连接（D17）。`connect` 通常是 `mcpManager.addServer.bind(mcpManager)`，
+ * 它自己过 mcpPolicy 闸、带总超时、成功后经 onToolsRefresh 把工具注册进 registry。
+ *
+ * 返回 null 表示名字不在待审批快照里；否则返回连上后注册的工具数（连接失败为 0，
+ * 批准状态已落盘，下次启动仍会尝试）。
+ */
+export async function approveAndConnectPendingServer<T>(
+  serverName: string,
+  connect: (name: string, config: never) => Promise<T[]>,
+): Promise<number | null> {
+  const config = pendingApproval[serverName];
+  if (config === undefined) return null;
+  approvePendingServer(serverName);
+  const tools = await connect(serverName, config as never);
+  return tools.length;
 }
 
 /** 拒绝一个待审批 server 并从快照中移除（后续启动直接跳过，不再询问）。 */

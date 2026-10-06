@@ -72,6 +72,8 @@ function getStatusIcon(status: MCPConnectionStatus | string): { icon: string; co
       return { icon: TODO_PENDING, color: theme.text.secondary };
     case "disabled":
       return { icon: TODO_PENDING, color: theme.text.secondary };
+    case "needs_auth":
+      return { icon: WARNING_MARK, color: theme.status.warning };
     default:
       return { icon: WARNING_MARK, color: theme.status.warning };
   }
@@ -83,6 +85,7 @@ function getStatusText(server: MCPServerStatusInfo): string {
     connecting: "连接中",
     reconnecting: `重连中 (${server.reconnectAttempts ?? 0}/5)`,
     failed: "连接失败",
+    needs_auth: "待授权",
     disabled: "已禁用",
     disconnected: "未连接",
   };
