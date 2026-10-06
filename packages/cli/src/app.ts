@@ -69,6 +69,7 @@ import { resetBetaHeaders } from "@sid-code/core/api/beta-header-latch.ts";
 import { resetCircuitBreaker } from "@sid-code/core/query/auto-compact.ts";
 import { clearQueue as clearMessageQueue } from "@sid-code/core/query/message-queue-manager.ts";
 import { HookSystem } from "@sid-code/core/hook/system.ts";
+import { pickHookPolicy } from "@sid-code/core/hook/enterprise-policy.ts";
 import {
   SDKQueryEngine,
   type SDKQueryEngineDriver,
@@ -1155,14 +1156,15 @@ export class App {
       try {
         const { PolicyManager } = await import("@sid-code/core/config/policy.ts");
         const policy = await new PolicyManager().load();
-        if (policy && (policy.disableAllHooks || policy.allowManagedHooksOnly)) {
-          this.hookSystem.applyEnterprisePolicy({
-            disableAllHooks: policy.disableAllHooks,
-            allowManagedHooksOnly: policy.allowManagedHooksOnly,
-          });
+        // H12：原先只传两个字段，另外四个（allowedHookSources / blockedCommands / blockedUrls /
+        // maxHookTimeout）实现在、调用链断在这里——grep applyEnterprisePolicy 会命中，看起来是接好的。
+        // 字段清单与 EnterprisePolicy 逐字段对齐，由 tests/hook/hook-p3-*.test.ts 机械比对。
+        const hookPolicy = pickHookPolicy(policy);
+        if (hookPolicy) {
+          this.hookSystem.applyEnterprisePolicy(hookPolicy);
           getLogger().info(
             "HOOK",
-            `企业策略 Hook 门控已应用（disableAllHooks=${!!policy.disableAllHooks}, allowManagedHooksOnly=${!!policy.allowManagedHooksOnly}）`,
+            `企业策略 Hook 门控已应用（${Object.keys(hookPolicy).join(", ")}）`,
           );
         }
       } catch (e) {

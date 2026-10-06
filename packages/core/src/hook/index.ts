@@ -10,14 +10,11 @@ export { HookAggregator } from "./aggregator.ts";
 export { HookEventHandler } from "./event-handler.ts";
 export { AsyncHookRegistry } from "./async-registry.ts";
 export { isBlockedAddress, sanitizeHeaders, ssrfGuardedFetch } from "./ssrf-guard.ts";
-export { SessionHookManager } from "./session-hooks.ts";
 export { EnterprisePolicyGate } from "./enterprise-policy.ts";
 
 export type {
   HookEventName,
   HookConfig,
-  HookDefinition,
-  NewHooksConfig,
   ConfigSource,
   HookInput,
   HookOutput,
@@ -54,6 +51,7 @@ export {
   HookType,
   LEGACY_EVENT_MAP,
   getHookKey,
+  resolveHookTimeoutMs,
 } from "./types.ts";
 
 export type { HookEventContext } from "./planner.ts";

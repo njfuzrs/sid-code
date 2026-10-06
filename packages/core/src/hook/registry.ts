@@ -3,13 +3,7 @@
  * 多源加载（runtime/project/user/global）、验证、优先级排序、启用/禁用管理
  */
 
-import {
-  HookEventName,
-  ConfigSource,
-  LEGACY_EVENT_MAP,
-  type HookConfig,
-  type NewHooksConfig,
-} from "./types.ts";
+import { HookEventName, ConfigSource, LEGACY_EVENT_MAP, type HookConfig } from "./types.ts";
 import type {
   HooksConfig as LegacyHooksConfig,
   HookConfig as LegacyHookConfig,
@@ -31,6 +25,14 @@ const BLOCKING_EVENTS: ReadonlySet<HookEventName> = new Set([
   HookEventName.Stop,
   HookEventName.PermissionRequest,
   HookEventName.TeammateIdle,
+]);
+
+/** H21：有 tool_input 的事件——`if` 条件只在这些事件上能被判定（与 HookDefinition.if 文档一致） */
+const TOOL_INPUT_EVENTS: ReadonlySet<HookEventName> = new Set([
+  HookEventName.PreToolUse,
+  HookEventName.PostToolUse,
+  HookEventName.PostToolUseFailure,
+  HookEventName.PermissionRequest,
 ]);
 
 /** 注册表条目 */
@@ -114,13 +116,17 @@ export class HookRegistry {
 
         if (!this.validateHookConfig(config, eventName)) continue;
 
+        this.warnOnUnusableIf(eventName, legacyHook.if);
         this.entries.push({
           config,
+          // ⚠️ settings 链合并后的 hook 一律标 User（项目级 / 用户级在 config 层已合并，来源信息到不了这里）。
+          // H27：将来若要在此区分 Project，别忘了 Project 不是「企业管理」——见 enterprise-policy.ts。
           source: ConfigSource.User,
           eventName,
           matcher: legacyHook.matcher,
           if: legacyHook.if,
-          sequential: false,
+          // H23：原先硬编码 false，用户写 sequential:true 不生效（串行能力只在一条零调用的「新格式」初始化路径里，已删）
+          sequential: legacyHook.sequential === true,
           enabled: true,
         });
         this.incrementEventIndex(eventName);
@@ -130,41 +136,17 @@ export class HookRegistry {
     log.debug("HOOK", `注册表初始化完成，共 ${this.entries.length} 个 hook`);
   }
 
-  /** 从新格式配置初始化 */
-  initializeFromNew(newHooks: NewHooksConfig, source: ConfigSource = ConfigSource.User): void {
-    const log = getLogger();
-
-    for (const [eventName, definitions] of Object.entries(newHooks)) {
-      if (!definitions || !Array.isArray(definitions)) continue;
-
-      const resolvedEvent = this.resolveEventName(eventName);
-      if (!resolvedEvent) {
-        log.warn("HOOK", `无效的事件名: "${eventName}"，跳过`);
-        continue;
-      }
-
-      for (const def of definitions) {
-        if (!def || typeof def !== "object" || !Array.isArray(def.hooks)) {
-          log.warn("HOOK", `无效的 hook 定义: ${JSON.stringify(def)?.slice(0, 100)}`);
-          continue;
-        }
-
-        for (const hookConfig of def.hooks) {
-          if (!this.validateHookConfig(hookConfig, resolvedEvent)) continue;
-
-          hookConfig.source = source;
-          this.entries.push({
-            config: hookConfig,
-            source,
-            eventName: resolvedEvent,
-            matcher: def.matcher,
-            if: def.if,
-            sequential: def.sequential,
-            enabled: true,
-          });
-          this.incrementEventIndex(resolvedEvent);
-        }
-      }
+  /**
+   * H21：`if` 依赖 tool_input，配在非工具事件上永远不命中（planner 判不命中是对的，不该在无法判定时放行）。
+   * 告警放在注册期而不是触发期：触发期打会每轮刷屏。语法错在触发期已有 warn，「用错事件」原先没有任何提示。
+   */
+  private warnOnUnusableIf(eventName: HookEventName, ifCond?: string): void {
+    if (ifCond?.trim() && !TOOL_INPUT_EVENTS.has(eventName)) {
+      getLogger().warn(
+        "HOOK",
+        `${eventName} 上的 hook 配了 if 条件 "${ifCond}"，但该事件没有 tool_input，if 永远不命中——` +
+          `本条 hook 不会触发。if 只在 ${[...TOOL_INPUT_EVENTS].join(" / ")} 上生效`,
+      );
     }
   }
 
@@ -179,6 +161,7 @@ export class HookRegistry {
     if (!this.validateHookConfig(config, eventName)) {
       throw new Error(`无效的 hook 配置: ${eventName} from ${source}`);
     }
+    this.warnOnUnusableIf(eventName, options?.if);
 
     this.entries.push({
       config,
@@ -235,6 +218,11 @@ export class HookRegistry {
   /**
    * 注册 Skill 声明的会话级 hook（Task 7）
    * source 固定为 Runtime，附带 skillName / once 元数据。
+   *
+   * H11：会话隔离靠**实例边界**，不靠 sessionId——每个 App 构造一个 HookSystem（cli/app.ts），
+   * 声明了 hooks 的子代理用 buildAgentHookSystem 另起一个实例。所以 entry 里刻意不存 sessionId。
+   * 曾有一个按 sessionId 分桶的 SessionHookManager 承担同一职责，零调用，已删除；
+   * 若将来同一个 HookSystem 要同时服务多个会话，要把 sessionId 补到这里，而不是再写一个管理器。
    */
   registerSessionHook(
     config: HookConfig,
@@ -407,6 +395,7 @@ export class HookRegistry {
       name: legacy.name,
       command: legacy.command,
       timeout: legacy.timeout,
+      env: legacy.env, // H22：原先不搬运，settings 里写了 env 子进程读不到
       async: legacy.async, // G7：后台异步执行
       asyncRewake: legacy.asyncRewake, // G7：exit 2 回灌唤醒
     };
@@ -456,6 +445,8 @@ export class HookRegistry {
   private getSourcePriority(source: ConfigSource): number {
     switch (source) {
       case ConfigSource.Runtime:
+        return 0;
+      case ConfigSource.Managed:
         return 0;
       case ConfigSource.Project:
         return 1;

@@ -69,6 +69,10 @@ settings.json 里的 hook 对象必须是**平铺**的——`matcher` / `command
 
 `matcher` 是工具名的正则，`edit|write` 匹配这两个工具。不写 `matcher` 就是该事件全部触发。
 
+生命周期事件（`session_start` 等）的 `matcher` 匹配的是触发来源，同样可以用 `|` 列多个：`"startup|resume"`。
+
+`if` 字段用权限规则语法做更细的过滤（如 `"if": "Bash(git *)"`），只在 `pre_tool_use` / `post_tool_use` / `post_tool_use_failure` / `permission_request` 上有效。配在别的事件上永远不会触发，加载时会打 warn。
+
 ## 场景一：拦住不该跑的命令
 
 用 `pre_tool_use` + **退出码 2**。这是唯一的阻断信号：
@@ -217,8 +221,8 @@ hook 命令能直接读这些（另外完整的事件载荷 JSON 会从 **stdin*
 
 `prompt` 和 `agent` 会真的调模型，**要花钱也要花时间**，别挂在高频事件上。
 
-其他常用字段：`timeout`（**秒**，默认 60；`prompt` 类型默认 30。写 `5000` 是 83 分钟，不是 5 秒）、`async`（后台跑不阻塞。**代价是放弃决策权**：挂在 `pre_tool_use` 这类可拦截事件上，exit 2 / deny 都赶不上本轮决策，加载时会打 warn）、`env`（额外环境变量）、
-`name`（给 hook 起名，便于 `/hooks` 面板管理）。
+其他常用字段：`timeout`（**秒**，默认 60；`prompt` 类型默认 30。写 `5000` 是 83 分钟，不是 5 秒）、`async`（后台跑不阻塞。**代价是放弃决策权**：挂在 `pre_tool_use` 这类可拦截事件上，exit 2 / deny 都赶不上本轮决策，加载时会打 warn）、`env`（额外环境变量，只对 `command` 生效）、
+`sequential`（`true` 时该事件这一批 hook 按顺序串行，默认并行）、`name`（给 hook 起名，便于 `/hooks` 面板管理）。
 
 `url` 类型的请求经 SSRF 防护：内网与云元数据地址（`10.*`、`192.168.*`、`169.254.*` 等）会被拦，本机 `127.0.0.1` / `localhost` 放行。
 `headers` 里的 `$VAR` 只会替换 `allowedEnvVars` 里列出的变量，其余替换成空串：
