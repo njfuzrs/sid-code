@@ -15,6 +15,7 @@ import type { Config } from "../config/config.ts";
 import type { SendParams } from "../llm/types.ts";
 import { normalizeCacheUsage } from "../llm/types.ts";
 import type { HookSystem } from "../hook/system.ts";
+import { fireStopFailure } from "./stop-failure.ts";
 import type { QuotaManager } from "../llm/quota.ts";
 import type { TokenMeter } from "../telemetry/metrics/token-meter.ts";
 import type { BudgetTracker } from "../telemetry/metrics/budget-tracker.ts";
@@ -2961,6 +2962,8 @@ export async function* queryLoop(loopConfig: QueryLoopConfig): AsyncGenerator<Qu
             model: config.model,
           });
           log.error("QUERY_LOOP", `流式超时重试耗尽`);
+          // HC24：API 错误（超时重试耗尽）结束本轮
+          fireStopFailure(hookSystem, err, "timeout");
 
           // 重试耗尽：yield 用户可见的错误提示，含配置逃生通道
           yield {
@@ -3084,6 +3087,10 @@ export async function* queryLoop(loopConfig: QueryLoopConfig): AsyncGenerator<Qu
         // 见上面的超时分支）、要么在此 throw——没有任何路径会"降级"出一个假的 response
         // 对象混进正常流程，这正是下面 isEndTurnLike 白名单判断天然不会被 API 错误触发的
         // 另一半保证。
+        // HC24：API 错误结束本轮 → StopFailure（用户中断不算 API 失败）
+        if (!isAbortError(err) && !turnAbortController.signal.aborted) {
+          fireStopFailure(hookSystem, err);
+        }
         throw err;
       }
       const apiDuration = perfHandle.end({ model: config.model });

@@ -1577,6 +1577,8 @@ export class SubAgent {
           this.hookSystem
             .firePostToolUseFailureEvent(name, effectiveInput, validation.message, undefined, {
               duration_ms: Date.now() - startTime,
+              // Q7：校验失败在 CC 里不触发 Failure，只送 runtime hook
+              failure_kind: "validation",
             })
             .catch((e: any) =>
               log.error("SUBAGENT:HOOK", `post_tool_use_failure hook 失败: ${e.message}`),
@@ -1605,16 +1607,30 @@ export class SubAgent {
       );
       // post_tool_use hook（驱动 execute_tool span）
       if (this.hookSystem) {
-        this.hookSystem
-          .firePostToolUseEvent(
-            name,
-            effectiveInput,
-            { output: truncated, isError: result.isError ?? false },
-            result.isError ?? false,
-            undefined,
-            { duration_ms: elapsed },
-          )
-          .catch((e: any) => log.error("SUBAGENT:HOOK", `post_tool_use hook 失败: ${e.message}`));
+        // Q7：工具返回 isError → 只 fire PostToolUseFailure（对齐 CC）；成功才 fire PostToolUse
+        const fired = result.isError
+          ? this.hookSystem.firePostToolUseFailureEvent(
+              name,
+              effectiveInput,
+              truncated,
+              undefined,
+              {
+                duration_ms: elapsed,
+                failure_kind: "tool_error",
+                tool_output: truncated,
+              },
+            )
+          : this.hookSystem.firePostToolUseEvent(
+              name,
+              effectiveInput,
+              { output: truncated, isError: false },
+              false,
+              undefined,
+              { duration_ms: elapsed },
+            );
+        fired.catch((e: any) =>
+          log.error("SUBAGENT:HOOK", `post_tool_use hook 失败: ${e.message}`),
+        );
       }
       if (result.isError) {
         logToolFailure(name, {
@@ -1640,7 +1656,7 @@ export class SubAgent {
             err.message,
             undefined,
             // 与上方成功路径 duration_ms 同口径（纯执行耗时）
-            { duration_ms: elapsed },
+            { duration_ms: elapsed, failure_kind: "exception" },
           )
           .catch((e: any) =>
             log.error("SUBAGENT:HOOK", `post_tool_use_failure hook 失败: ${e.message}`),

@@ -4,14 +4,14 @@
  */
 
 import type { Config } from "./config.ts";
-import { USER_HOOK_HANDLER_TYPES, isUserHookHandlerType } from "../hook/handler-types.ts";
 import { getActiveAgentTypes } from "../agent/agent-definition.ts";
 import { normalizeBaseURL } from "../llm/endpoint-key.ts";
 // compat 的合法键清单只在 model-compat.ts 维护一份：校验侧与归一化侧共用同一个源，
 // 否则加一个位就要改两处，漏改的那处会静默放过（或误报）用户的合法配置。
 import { MODEL_COMPAT_KEYS, COMPAT_KEY_ALIASES, COMPAT_KEY_SET } from "../llm/model-compat.ts";
-// VALID_HOOK_EVENTS 从这两个事实源派生，见其定义处的注释（手写清单会漂移出假告警）。
-import { HookEventName, LEGACY_EVENT_MAP } from "../hook/types.ts";
+// hooks 校验委托给 hook 层唯一归一化器：事件名 / 形状 / handler 类型的判据只在那里维护一份。
+import { ConfigSource } from "../hook/types.ts";
+import { normalizeHooksConfig } from "../hook/config-normalize.ts";
 import {
   MCPTransportEnum,
   BudgetPeriodEnum,
@@ -73,28 +73,6 @@ export const PERMISSION_MODES = [
 // 导出成元组是给参考页生成器自省用的（B34 / D115）：ref/settings.md 的取值列直接读它，
 // 不再抄注释里的「N 种模式」——那句注释曾停在 6 种，而这里已经是 9 种。
 const VALID_PERMISSION_MODES = new Set<string>(PERMISSION_MODES);
-
-/**
- * 有效的 Hook 事件名：**从 hook 层的事实源派生**，不再手写清单。
- *
- * 为什么必须派生：这里曾是一份手写的 12 条 snake_case 清单，而 registry 真正认的是
- * `HookEventName` 枚举（32 个成员）+ `LEGACY_EVENT_MAP`（25 条 snake_case 别名）两者的并集
- * ——`resolveEventName()` 对两种写法都返回有效事件。两边一漂移就产生**假告警**：
- * 用户按 `ref/hooks.md`（从枚举生成的权威参考页）写 `"PreToolUse"`，hook 实际能正常触发，
- * 却会收到一条 `未知的事件名 "PreToolUse"` 的警告，然后去怀疑自己配错了。
- * 反过来，枚举里新增事件时也不会有人记得回来同步这份清单。
- *
- * 校验的语义是「这个名字 registry 认不认」，而 registry 认什么由 hook 层定义，
- * 所以这里唯一正确的做法是引用它，而不是抄它。
- *
- * 注意：能通过校验 ≠ 该事件有调用点会触发。枚举里有一批标注「预留：有 fire 方法但无调用点」
- * 的事件，配了不会被触发——那是 `ref/hooks.md` 的「会不会触发」列要回答的问题，
- * 与本校验（名字合不合法）是两个独立维度，别混为一谈。
- */
-const VALID_HOOK_EVENTS = new Set<string>([
-  ...Object.values(HookEventName),
-  ...Object.keys(LEGACY_EVENT_MAP),
-]);
 
 /** 有效的子代理类型：从活跃 agent registry 派生（含 built-in + custom + plugin）。
  *  额外允许 "default"：subAgentModels 的兜底键，作用于所有未单独指定的类型。
@@ -277,76 +255,14 @@ export function validateConfig(config: Config): ValidationResult {
     }
   }
 
-  // 验证 hooks
-  if (config.hooks && typeof config.hooks === "object") {
-    for (const [eventName, hookList] of Object.entries(config.hooks)) {
-      if (!VALID_HOOK_EVENTS.has(eventName)) {
-        warnings.push({
-          path: `hooks.${eventName}`,
-          message: `未知的事件名 "${eventName}"，有效值为 ${Array.from(VALID_HOOK_EVENTS).join(", ")}`,
-        });
-      }
-
-      if (!Array.isArray(hookList)) {
-        errors.push({
-          path: `hooks.${eventName}`,
-          message: "Hook 配置必须是数组",
-          value: hookList,
-        });
-        continue;
-      }
-
-      hookList.forEach((hook, index) => {
-        const prefix = `hooks.${eventName}[${index}]`;
-
-        // 验证 type（G5：新增 prompt/agent 两种 LLM 层 hook）
-        if (hook.type && !isUserHookHandlerType(hook.type)) {
-          errors.push({
-            path: `${prefix}.type`,
-            message: `无效值 "${hook.type}"，有效值为 ${USER_HOOK_HANDLER_TYPES.join("/")}`,
-            value: hook.type,
-          });
-        }
-
-        // command 类型必须有 command 字段
-        const hookType = hook.type || "command";
-        if (hookType === "command" && !hook.command) {
-          errors.push({
-            path: `${prefix}.command`,
-            message: "command 类型的 Hook 必须指定 command 字段",
-            value: hook.command,
-          });
-        }
-
-        // url 类型必须有 url 字段
-        if (hookType === "url" && !hook.url) {
-          errors.push({
-            path: `${prefix}.url`,
-            message: "url 类型的 Hook 必须指定 url 字段",
-            value: hook.url,
-          });
-        }
-
-        // prompt / agent 类型必须有 prompt 字段
-        if ((hookType === "prompt" || hookType === "agent") && !hook.prompt) {
-          errors.push({
-            path: `${prefix}.prompt`,
-            message: `${hookType} 类型的 Hook 必须指定 prompt 字段`,
-            value: hook.prompt,
-          });
-        }
-
-        // 验证 timeout
-        if (hook.timeout !== undefined) {
-          if (typeof hook.timeout !== "number" || hook.timeout <= 0) {
-            errors.push({
-              path: `${prefix}.timeout`,
-              message: "timeout 必须是正数",
-              value: hook.timeout,
-            });
-          }
-        }
-      });
+  // 验证 hooks：委托给 hook 层唯一归一化器（HC3）。原先这里有一套手写校验，
+  // 只认平铺形状，CC 嵌套形状 `{matcher, hooks:[...]}` 被判「必须指定 command」——
+  // 两套逻辑漂移过一次（手写事件名清单出过假告警），这次直接删掉手写的那套。
+  if (config.hooks !== undefined && config.hooks !== null) {
+    const { diagnostics } = normalizeHooksConfig(config.hooks, ConfigSource.User);
+    for (const d of diagnostics) {
+      if (d.level === "error") errors.push({ path: d.path, message: d.message, value: undefined });
+      else warnings.push({ path: d.path, message: d.message });
     }
   }
 

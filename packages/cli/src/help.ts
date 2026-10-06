@@ -23,6 +23,7 @@ LLM 配置:
   --permission-mode <mode>    权限模式 (default/always-allow/deny-write/acceptEdits/plan/dontAsk/auto/dangerously-skip-permissions；manual 为 default 的别名)
   --dangerously-skip-permissions  跳过所有权限检查（仅限沙箱环境）
   -y, --yes                   自动批准需确认的操作（危险命令仍拦截；跳过全部检查用 --dangerously-skip-permissions）
+  --trust-workspace           仅本会话信任当前工作区（项目级 hooks / MCP 照常加载，不写入信任记录）
   --allowed-tools <list>      工具白名单（逗号分隔，如 "read,grep,bash"）
   --disallowed-tools <list>   工具黑名单（逗号分隔）
   --allow-tool <rule>         追加允许规则（规则语法，如 "Bash(git status)"；可重复或逗号分隔）

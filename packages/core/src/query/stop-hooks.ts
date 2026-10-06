@@ -83,7 +83,11 @@ export async function* handleStopHooks(
   );
 
   try {
-    const stopResult = await hookSystem.fireStopEvent(responseText);
+    const stopResult = await hookSystem.fireStopEvent(
+      responseText,
+      // HC12：CC stop_hook_active——本次 end_turn 是否由之前的 Stop hook 回炉引起
+      stopHookRetryCount > 0,
+    );
     const allOutputs = stopResult.allOutputs ?? [];
 
     // P1-1：continue===false 优先于 decision:block。两者同时出现时，

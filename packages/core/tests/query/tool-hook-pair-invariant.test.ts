@@ -37,6 +37,8 @@ interface HookLog {
   pre: string[];
   post: string[];
   postFailure: Array<{ id: string; error: string; durationMs?: number }>;
+  /** Q7：权限拒绝只 fire PermissionDenied（对齐 CC），它也算 Pre 的配对收尾 */
+  denied: string[];
 }
 
 function makeTool(opts: { name: string; behavior?: "ok" | "throw"; zodSchema?: unknown }) {
@@ -98,6 +100,16 @@ function makeDeps(
         hookLog.post.push(toolUseId ?? toolName);
         return { finalOutput: undefined };
       },
+      firePermissionDeniedEvent: async (
+        toolName: string,
+        _input: unknown,
+        _reason: string,
+        _source: string,
+        toolUseId?: string,
+      ) => {
+        hookLog.denied.push(toolUseId ?? toolName);
+        return { finalOutput: undefined };
+      },
       firePostToolUseFailureEvent: async (
         toolName: string,
         _input: unknown,
@@ -142,12 +154,12 @@ async function flushAsyncHooks(): Promise<void> {
 }
 
 function emptyLog(): HookLog {
-  return { pre: [], post: [], postFailure: [] };
+  return { pre: [], post: [], postFailure: [], denied: [] };
 }
 
 /** 断言核心不变量：每个 fire 过 Pre 的工具，都要有恰好一个 Post* 收尾 */
 function expectPaired(hookLog: HookLog, label: string) {
-  const postTotal = hookLog.post.length + hookLog.postFailure.length;
+  const postTotal = hookLog.post.length + hookLog.postFailure.length + hookLog.denied.length;
   expect(
     postTotal,
     `${label}：Pre 触发 ${hookLog.pre.length} 次但 Post* 只有 ${postTotal} 次 —— ` +
@@ -194,7 +206,7 @@ describe("Pre/Post hook 配对不变量", () => {
     expect(hookLog.postFailure[0].error).toContain("question");
   });
 
-  test("权限拒绝必须 fire Post*", async () => {
+  test("权限拒绝必须有配对收尾（Q7：PermissionDenied）", async () => {
     const tools = [makeTool({ name: "bash" })];
     const hookLog = emptyLog();
 
@@ -208,7 +220,9 @@ describe("Pre/Post hook 配对不变量", () => {
     expect(r?.is_error, "应命中权限拒绝分支").toBe(true);
 
     expectPaired(hookLog, "权限拒绝");
-    expect(hookLog.postFailure).toHaveLength(1);
+    // Q7：对齐 CC，权限拒绝只 fire PermissionDenied，不再 fire PostToolUseFailure
+    expect(hookLog.denied).toEqual(["t2"]);
+    expect(hookLog.postFailure).toHaveLength(0);
   });
 
   test("PreToolUse hook 阻止必须 fire Post*", async () => {
@@ -276,8 +290,9 @@ describe("Pre/Post hook 配对不变量", () => {
 
     expect(hookLog.pre.length, "4 个工具都应 fire 过 Pre").toBe(4);
     expectPaired(hookLog, "混合批次");
-    // 1 成功 + 3 失败
+    // 1 成功 + 2 失败（校验 / 异常）+ 1 权限拒绝（Q7：走 PermissionDenied）
     expect(hookLog.post).toHaveLength(1);
-    expect(hookLog.postFailure).toHaveLength(3);
+    expect(hookLog.postFailure).toHaveLength(2);
+    expect(hookLog.denied).toHaveLength(1);
   });
 });

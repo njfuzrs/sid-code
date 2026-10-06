@@ -10,11 +10,9 @@ import { HookAggregator } from "./aggregator.ts";
 import { HookEventHandler } from "./event-handler.ts";
 import { AsyncHookRegistry, type RewakeNotification } from "./async-registry.ts";
 import { EnterprisePolicyGate, type EnterprisePolicy } from "./enterprise-policy.ts";
-import { HookEventName, ConfigSource, LEGACY_EVENT_MAP } from "./types.ts";
-import type {
-  HooksConfig as LegacyHooksConfig,
-  HookConfig as LegacyHookConfig,
-} from "../config/config.ts";
+import { HookEventName, ConfigSource } from "./types.ts";
+import type { HooksConfig as LegacyHooksConfig } from "../config/config.ts";
+import type { HookDiagnostic, NormalizeContext } from "./config-normalize.ts";
 import type {
   HookConfig,
   AggregatedHookResult,
@@ -70,9 +68,29 @@ export class HookSystem {
     this.asyncRegistry.cleanup();
   }
 
-  /** 从旧格式配置初始化（向后兼容） */
-  initializeFromLegacy(legacyHooks: LegacyHooksConfig): void {
-    this.registry.initializeFromLegacy(legacyHooks);
+  /** 从一份 hooks 配置初始化（默认按用户级来源）。返回归一化诊断 */
+  initializeFromLegacy(
+    legacyHooks: LegacyHooksConfig,
+    source: ConfigSource = ConfigSource.User,
+  ): HookDiagnostic[] {
+    return this.registry.initializeFromLegacy(legacyHooks, source);
+  }
+
+  /** HC1：按来源分层初始化（user / project / local / managed 各自带 source，按事件追加） */
+  initializeFromSources(
+    layers: Array<{ hooks: unknown; source: ConfigSource; ctx?: NormalizeContext }>,
+  ): HookDiagnostic[] {
+    return this.registry.initializeFromSources(layers);
+  }
+
+  /** 归一化并注册一份 hooks 配置（skill / agent frontmatter 用） */
+  addNormalizedHooks(
+    raw: unknown,
+    source: ConfigSource,
+    ctx?: NormalizeContext,
+    meta?: { skillName?: string; hookScope?: string },
+  ): HookDiagnostic[] {
+    return this.registry.addNormalized(raw, source, ctx, meta);
   }
 
   /**
@@ -138,9 +156,24 @@ export class HookSystem {
     this.runner.setAgentHookExecutor(executor);
   }
 
-  /** 设置当前权限模式 */
+  /** 设置当前权限模式（app 层在初始化与每次切换处调用，HC11） */
   setPermissionMode(mode: string): void {
     this.eventHandler.setPermissionMode(mode);
+  }
+
+  /** 权限模式取值函数（stdin permission_mode，HC11）；优先于 setPermissionMode */
+  setPermissionModeProvider(fn: (() => string | undefined) | undefined): void {
+    this.eventHandler.setPermissionModeProvider(fn);
+  }
+
+  /** 会话对话记录路径取值函数（stdin transcript_path，HC11） */
+  setTranscriptPathProvider(fn: ((sessionId: string) => string | undefined) | undefined): void {
+    this.eventHandler.setTranscriptPathProvider(fn);
+  }
+
+  /** 设置会话启动时的项目根（CLAUDE_PROJECT_DIR，不随 cd 变，HC14） */
+  setProjectDir(dir: string): void {
+    this.runner.setProjectDir(dir);
   }
 
   /** 启用/禁用指定 hook */
@@ -191,89 +224,28 @@ export class HookSystem {
    *
    * @param pluginHooks 按事件名分组的插件 hook 列表（config 层 HooksConfig 格式）
    */
-  replacePluginHooks(pluginHooks: LegacyHooksConfig): void {
+  replacePluginHooks(
+    pluginHooks:
+      | LegacyHooksConfig
+      | Array<{ hooks: unknown; pluginRoot?: string; pluginData?: string; name?: string }>,
+  ): HookDiagnostic[] {
     // 1. 清除所有 source === Plugin 的已注册 hook
     this.registry.removeBySource(ConfigSource.Plugin);
 
-    // 2. 注册新的插件 hooks
-    for (const [eventKey, hooks] of Object.entries(pluginHooks)) {
-      if (!Array.isArray(hooks)) continue;
-      const eventName = this.resolveEventName(eventKey);
-      if (!eventName) continue;
-
-      for (const legacyHook of hooks) {
-        const config = this.convertPluginHook(legacyHook);
-        if (!config) continue;
-        try {
-          this.registry.registerHook(config, eventName, {
-            matcher: legacyHook.matcher,
-            if: legacyHook.if,
-            // H23：与 settings 路径同口径，插件写 sequential:true 也要生效
-            sequential: legacyHook.sequential === true,
-            source: ConfigSource.Plugin,
-          });
-        } catch {
-          // 单个 hook 配置无效不影响其他 hook（错误已由 registry 内部记录）
-        }
-      }
+    // 2. 注册新的插件 hooks——经唯一归一化层（HC3）。每个插件带自己的根目录：
+    //    路径变量由 runner 导出为环境变量，不再往命令串里拼路径（原 loadPluginHooks 的字符串替换，H14 同型）。
+    const layers = Array.isArray(pluginHooks) ? pluginHooks : [{ hooks: pluginHooks }];
+    const diagnostics: HookDiagnostic[] = [];
+    for (const layer of layers) {
+      diagnostics.push(
+        ...this.registry.addNormalized(layer.hooks, ConfigSource.Plugin, {
+          pathPrefix: layer.name ? `plugin:${layer.name}.hooks` : "plugin.hooks",
+          pluginRoot: layer.pluginRoot,
+          pluginData: layer.pluginData,
+        }),
+      );
     }
-  }
-
-  /** 将 config 层 HookConfig 转为 hook 注册表的 HookConfig（command / url 两类） */
-  private convertPluginHook(legacy: LegacyHookConfig): HookConfig | null {
-    const type = legacy.type || "command";
-    if (type === "url") {
-      if (!legacy.url) return null;
-      return {
-        type: "url",
-        url: legacy.url,
-        method: legacy.method,
-        headers: legacy.headers,
-        // H5：原先这里不转发，allowedEnvVars 写了也到不了 ssrfGuardedFetch
-        allowedEnvVars: legacy.allowedEnvVars,
-        timeout: legacy.timeout,
-      };
-    }
-    // G5：prompt / agent 类型（与 registry.convertLegacyHook 保持一致）
-    if (type === "prompt") {
-      if (!legacy.prompt) return null;
-      return {
-        type: "prompt",
-        name: legacy.name,
-        prompt: legacy.prompt,
-        model: legacy.model,
-        timeout: legacy.timeout,
-      };
-    }
-    if (type === "agent") {
-      if (!legacy.prompt) return null;
-      return {
-        type: "agent",
-        name: legacy.name,
-        prompt: legacy.prompt,
-        model: legacy.model,
-        tools: legacy.tools,
-        timeout: legacy.timeout,
-      };
-    }
-    if (!legacy.command) return null;
-    return {
-      type: "command",
-      name: legacy.name,
-      command: legacy.command,
-      timeout: legacy.timeout,
-      env: legacy.env, // H22：原先两个转换器都不搬运，用户写了 env 子进程读不到
-      async: legacy.async, // G7：后台异步执行
-      asyncRewake: legacy.asyncRewake, // G7：exit 2 回灌唤醒
-    };
-  }
-
-  /** 解析事件名（支持 snake_case 和 PascalCase），委托给 registry 同款逻辑 */
-  private resolveEventName(name: string): HookEventName | null {
-    const values = Object.values(HookEventName) as string[];
-    if (values.includes(name)) return name as HookEventName;
-    const legacy = (LEGACY_EVENT_MAP as Record<string, HookEventName>)[name];
-    return legacy ?? null;
+    return diagnostics;
   }
 
   // ============================================================
@@ -320,6 +292,9 @@ export class HookSystem {
     options?: {
       duration_ms?: number;
       harness_context?: import("./types.ts").HarnessHookContext;
+      is_interrupt?: boolean;
+      failure_kind?: import("./types.ts").ToolFailureKind;
+      tool_output?: unknown;
     },
   ): Promise<AggregatedHookResult> {
     return this.eventHandler.firePostToolUseFailureEvent(
@@ -409,14 +384,17 @@ export class HookSystem {
   }
 
   /** Stop 事件：模型 end_turn 后执行检查 */
-  async fireStopEvent(assistantResponse: string): Promise<AggregatedHookResult> {
-    return this.eventHandler.fireStopEvent(assistantResponse);
+  async fireStopEvent(
+    assistantResponse: string,
+    stopHookActive: boolean = false,
+  ): Promise<AggregatedHookResult> {
+    return this.eventHandler.fireStopEvent(assistantResponse, stopHookActive);
   }
 
   /** StopFailure 事件 */
   async fireStopFailureEvent(
     error: string,
-    errorType: "api_error" | "rate_limit" | "context_overflow" | "abort" | "unknown",
+    errorType: import("./types.ts").StopFailureInput["error_type"],
   ): Promise<AggregatedHookResult> {
     return this.eventHandler.fireStopFailureEvent(error, errorType);
   }
@@ -459,21 +437,24 @@ export class HookSystem {
     toolInput: Record<string, unknown>,
     denialReason: string,
     denialSource: "user" | "rule" | "hook" | "auto",
+    toolUseId?: string,
   ): Promise<AggregatedHookResult> {
     return this.eventHandler.firePermissionDeniedEvent(
       toolName,
       toolInput,
       denialReason,
       denialSource,
+      toolUseId,
     );
   }
 
   /** ConfigChange 事件 */
   async fireConfigChangeEvent(
     changedKeys: string[],
-    source: "file" | "command" | "env",
+    source: import("./types.ts").ConfigChangeInput["source"],
+    filePath?: string,
   ): Promise<AggregatedHookResult> {
-    return this.eventHandler.fireConfigChangeEvent(changedKeys, source);
+    return this.eventHandler.fireConfigChangeEvent(changedKeys, source, filePath);
   }
 
   /** FileChanged 事件 */
@@ -528,15 +509,62 @@ export class HookSystem {
   async fireElicitationEvent(
     message: string,
     requestedSchema?: Record<string, unknown>,
+    serverName?: string,
   ): Promise<AggregatedHookResult> {
-    return this.eventHandler.fireElicitationEvent(message, requestedSchema);
+    return this.eventHandler.fireElicitationEvent(message, requestedSchema, serverName);
   }
 
   /** G11：ElicitationResult 事件——Elicitation 的用户响应结果 */
   async fireElicitationResultEvent(
     action: "accept" | "decline" | "cancel",
     content?: Record<string, unknown>,
+    serverName?: string,
   ): Promise<AggregatedHookResult> {
-    return this.eventHandler.fireElicitationResultEvent(action, content);
+    return this.eventHandler.fireElicitationResultEvent(action, content, serverName);
+  }
+
+  /** PostToolBatch 事件 */
+  async firePostToolBatchEvent(
+    toolCalls: Array<{ tool_name: string; tool_use_id: string; is_error: boolean }>,
+  ): Promise<AggregatedHookResult> {
+    return this.eventHandler.firePostToolBatchEvent(toolCalls);
+  }
+
+  /** PreModelSwitch 事件（拆成两个方法名：参考页按 fire<Event>Event 调用点判定是否接线） */
+  async firePreModelSwitchEvent(
+    fromModel: string,
+    toModel: string,
+    trigger: import("./types.ts").ModelSwitchInput["trigger"],
+    reason?: string,
+  ): Promise<AggregatedHookResult> {
+    return this.eventHandler.fireModelSwitchEvent("pre", fromModel, toModel, trigger, reason);
+  }
+
+  /** PostModelSwitch 事件（含降级链自动切换） */
+  async firePostModelSwitchEvent(
+    fromModel: string,
+    toModel: string,
+    trigger: import("./types.ts").ModelSwitchInput["trigger"],
+    reason?: string,
+  ): Promise<AggregatedHookResult> {
+    return this.eventHandler.fireModelSwitchEvent("post", fromModel, toModel, trigger, reason);
+  }
+
+  /** UserPromptExpansion 事件 */
+  async fireUserPromptExpansionEvent(
+    commandName: string,
+    originalPrompt: string,
+    expandedPrompt: string,
+  ): Promise<AggregatedHookResult> {
+    return this.eventHandler.fireUserPromptExpansionEvent(
+      commandName,
+      originalPrompt,
+      expandedPrompt,
+    );
+  }
+
+  /** DirectoryAdded 事件 */
+  async fireDirectoryAddedEvent(directory: string): Promise<AggregatedHookResult> {
+    return this.eventHandler.fireDirectoryAddedEvent(directory);
   }
 }

@@ -23,15 +23,83 @@ import { recordSideCall } from "../trace/side-call-sink.ts";
 import { SIDE_CALL_NO_THINK } from "../llm/side-call-timeout.ts";
 import { SIDE_CALL_TIMEOUT_REASON } from "../llm/errors.ts";
 import { ssrfGuardedFetch } from "./ssrf-guard.ts";
+import { toCcToolName } from "../tool/tool-name-aliases.ts";
 
-/** 延迟 JSON 序列化：只在需要时序列化一次 */
+/**
+ * 发给外部 handler（command stdin / http body / prompt·agent 的 $ARGUMENTS）的载荷（Q1 裁决）。
+ *
+ * `tool_name` 换成 CC 名并附 `sid_tool_name`，CC 脚本 `jq -r .tool_name == "Bash"` 零修改可用（HC9）。
+ * 只在序列化这一步改，不动 HookInput 本身：collector / hook-probe / session-metrics 三个 runtime
+ * 消费者拿 tool_name 做统计键，在对象上改名会让轨迹工具名在发版前后断成两段（北极星铁律 3）。
+ * sid 独有工具与 MCP 工具没有 CC 名，原样发内部名、不加 sid_tool_name。
+ */
+export function toExternalHookPayload(input: HookInput): HookInput {
+  const toolName = (input as { tool_name?: unknown }).tool_name;
+  if (typeof toolName !== "string") return input;
+  const cc = toCcToolName(toolName);
+  if (!cc) return input;
+  return { ...input, tool_name: cc, sid_tool_name: toolName } as HookInput;
+}
+
+/**
+ * HC16：这些事件 exit 0 的纯文本 stdout 作为上下文给模型（对齐 CC）。
+ * 原先它进 systemMessage，而引擎只读 additionalContext——用户照 CC 文档写的
+ * `echo "当前分支: $(git branch --show-current)"` 跑了、模型却永远看不到。
+ */
+const CONTEXT_STDOUT_EVENTS: ReadonlySet<string> = new Set([
+  HookEventName.SessionStart,
+  HookEventName.UserPromptSubmit,
+]);
+
+/** exit 0 + 非 JSON stdout + 上下文类事件 → 搬到 hookSpecificOutput.additionalContext */
+export function promotePlainStdoutToContext(
+  output: HookOutput,
+  eventName: string,
+  exitCode: number,
+  stdout: string,
+): HookOutput {
+  if (exitCode !== EXIT_SUCCESS || !CONTEXT_STDOUT_EVENTS.has(eventName)) return output;
+  const text = stdout.trim();
+  // JSON 输出（以 { 开头）由 hook 自己决定字段，不搬
+  if (!text || text.startsWith("{")) return output;
+  if (output.hookSpecificOutput && "additionalContext" in output.hookSpecificOutput) return output;
+  return {
+    ...output,
+    systemMessage: undefined,
+    hookSpecificOutput: { ...(output.hookSpecificOutput ?? {}), additionalContext: text },
+  };
+}
+
+/** exec 形式允许替换的路径占位符（只认这几个，任意 $VAR 不替换——那是 shell 的活） */
+const EXEC_PLACEHOLDER_VARS = [
+  "CLAUDE_PROJECT_DIR",
+  "CLAUDE_PLUGIN_ROOT",
+  "CLAUDE_PLUGIN_DATA",
+  "SID_CODE_PROJECT_DIR",
+  "SID_CODE_PLUGIN_ROOT",
+  "SID_CODE_PLUGIN_DATA",
+  "SID_CODE_CWD",
+  "PLUGIN_ROOT",
+  "SKILL_DIR",
+] as const;
+
+/** exec 形式：把 `${VAR}` / `$VAR`（白名单内）替换成 env 里的值；env 没有的保持原样 */
+export function expandPathPlaceholders(part: string, env: Record<string, string>): string {
+  return part.replace(/\$\{([A-Z_]+)\}|\$([A-Z_]+)\b/g, (whole, braced, bare) => {
+    const name = (braced ?? bare) as string;
+    if (!(EXEC_PLACEHOLDER_VARS as readonly string[]).includes(name)) return whole;
+    return env[name] ?? whole;
+  });
+}
+
+/** 延迟 JSON 序列化：只在需要时序列化一次（外部载荷形状，见 toExternalHookPayload） */
 export class LazyJsonInput {
   private _json: string | undefined;
   constructor(private input: HookInput) {}
 
   get json(): string {
     if (this._json === undefined) {
-      this._json = JSON.stringify(this.input);
+      this._json = JSON.stringify(toExternalHookPayload(this.input));
     }
     return this._json;
   }
@@ -158,6 +226,17 @@ export type AgentHookExecutor = (params: {
 }) => Promise<{ ok: boolean; reason?: string; transcript?: string }>;
 
 export class HookRunner {
+  /**
+   * 会话启动时的项目根（HC14 / Q3）：导出为 CLAUDE_PROJECT_DIR / SID_CODE_PROJECT_DIR。
+   * 与 CC 一致，**不随 bash `cd` / worktree 变化**——原先取 input.cwd，cd 之后就变了，
+   * `${CLAUDE_PROJECT_DIR}/.sid-code/hooks/x.sh` 这类脚本路径会跟着漂。随 cd 变的是 SID_CODE_CWD。
+   */
+  private projectDir: string = process.cwd();
+
+  setProjectDir(dir: string): void {
+    this.projectDir = dir;
+  }
+
   /** G6：注入的真子代理执行器（app 层设置）。 */
   private agentHookExecutor?: AgentHookExecutor;
 
@@ -314,15 +393,20 @@ export class HookRunner {
       };
     }
 
-    const timeout = resolveHookTimeoutMs(hookConfig);
+    const timeout = resolveHookTimeoutMs(hookConfig, eventName);
 
     // 构建环境变量（清理敏感信息）
     const env: Record<string, string> = {
       ...this.sanitizeEnvironment(process.env as Record<string, string>),
       SID_CODE_HOOK_EVENT: eventName,
-      SID_CODE_PROJECT_DIR: input.cwd,
+      SID_CODE_PROJECT_DIR: this.projectDir,
+      // Q3：只导出 sid 真正支持语义的三个 CLAUDE_* 变量（另两个 PLUGIN_* 由 pathVars 按来源提供）
+      CLAUDE_PROJECT_DIR: this.projectDir,
       // H14：$SID_CODE_CWD 原先只靠对命令串做字符串替换提供，删掉替换后改由环境变量提供，写法不变
       SID_CODE_CWD: input.cwd,
+      // 来源决定的路径变量（插件根 / skill 目录 …）：shell 形式由 sh 从环境展开 ${CLAUDE_PLUGIN_ROOT} 等，
+      // 不再往命令串里替换路径（H14 同型）。用户 env 在后，可覆盖。
+      ...hookConfig.pathVars,
       ...hookConfig.env,
     };
 
@@ -336,8 +420,14 @@ export class HookRunner {
 
     const lazyInput = new LazyJsonInput(input);
 
+    // §三.5 exec 形式：有 args 时不经 shell，`[command, ...args]` 直接 spawn。没有 shell 会再解析，
+    // 所以路径占位符在这里做纯字符串替换（与 CC 一致），值不会被当代码执行。
+    const cmd = hookConfig.args
+      ? [command, ...hookConfig.args].map((part) => expandPathPlaceholders(part, env))
+      : ["sh", "-c", command];
+
     const proc = spawn({
-      cmd: ["sh", "-c", command],
+      cmd,
       env,
       cwd: input.cwd,
       stdin: "pipe",
@@ -438,11 +528,16 @@ export class HookRunner {
       const duration = Date.now() - startTime;
 
       // 解析输出
-      const output = this.parseCommandOutput(
-        stdout,
-        stderr,
+      const output = promotePlainStdoutToContext(
+        this.parseCommandOutput(
+          stdout,
+          stderr,
+          exitCode ?? 0,
+          `command:${hookConfig.name ?? command.slice(0, 60)}`,
+        ),
+        eventName,
         exitCode ?? 0,
-        `command:${hookConfig.name ?? command.slice(0, 60)}`,
+        stdout,
       );
 
       return {
@@ -477,7 +572,7 @@ export class HookRunner {
       };
     }
 
-    const timeout = resolveHookTimeoutMs(hookConfig);
+    const timeout = resolveHookTimeoutMs(hookConfig, eventName);
     const method = hookConfig.method || "POST";
 
     const controller = new AbortController();
@@ -493,7 +588,7 @@ export class HookRunner {
           "Content-Type": "application/json",
           ...(hookConfig.headers || {}),
         },
-        body: JSON.stringify(sanitizeStrings(input)),
+        body: JSON.stringify(sanitizeStrings(toExternalHookPayload(input))),
         signal: controller.signal,
         allowedEnvVars: hookConfig.allowedEnvVars,
       });
@@ -545,7 +640,7 @@ export class HookRunner {
     input: HookInput,
     startTime: number,
   ): Promise<HookExecutionResult> {
-    const timeout = resolveHookTimeoutMs(hookConfig);
+    const timeout = resolveHookTimeoutMs(hookConfig, eventName);
     const controller = new AbortController();
     let timeoutHandle: ReturnType<typeof setTimeout> | undefined;
 
@@ -822,10 +917,10 @@ export class HookRunner {
     startTime: number,
   ): Promise<HookExecutionResult> {
     const log = getLogger();
-    const timeout = resolveHookTimeoutMs(hookConfig);
+    const timeout = resolveHookTimeoutMs(hookConfig, eventName);
 
     try {
-      const jsonInput = JSON.stringify(input);
+      const jsonInput = JSON.stringify(toExternalHookPayload(input));
       const processedPrompt = hookConfig.prompt.replace(/\$ARGUMENTS/g, jsonInput);
 
       // 动态导入避免循环依赖
@@ -904,9 +999,9 @@ export class HookRunner {
     startTime: number,
   ): Promise<HookExecutionResult> {
     const log = getLogger();
-    const timeout = resolveHookTimeoutMs(hookConfig);
+    const timeout = resolveHookTimeoutMs(hookConfig, eventName);
 
-    const jsonInput = JSON.stringify(input);
+    const jsonInput = JSON.stringify(toExternalHookPayload(input));
     const processedPrompt = hookConfig.prompt.replace(/\$ARGUMENTS/g, jsonInput);
 
     // G6：优先走注入的真子代理执行器（可多轮、可用 read/grep/glob 等工具验证）。
