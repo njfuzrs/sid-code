@@ -5,7 +5,7 @@
 
 import type { MCPServerConfig } from "../config/config.ts";
 import type { McpPolicy, McpPolicyEntry, ScopedMcpServerConfig } from "./types.ts";
-import { expandEnvVars } from "./env-expansion.ts";
+import { expandConfigEnvVars } from "./env-expansion.ts";
 
 /**
  * 匹配 URL 通配符（支持 *.example.com/*）
@@ -86,16 +86,9 @@ export function isMcpServerAllowed(
   return true;
 }
 
-/** 按 createTransport 的同一规则展开参与策略匹配的字段（副本，不改原配置） */
+/** 按 createTransport 的同一规则展开参与策略匹配的字段（副本，不改原配置；D4 收成单一入口） */
 function expandForPolicy(
   config: MCPServerConfig | ScopedMcpServerConfig,
 ): MCPServerConfig | ScopedMcpServerConfig {
-  return {
-    ...config,
-    ...(config.command !== undefined ? { command: expandEnvVars(config.command).expanded } : {}),
-    ...(config.args !== undefined
-      ? { args: config.args.map((a) => expandEnvVars(a).expanded) }
-      : {}),
-    ...(config.url !== undefined ? { url: expandEnvVars(config.url).expanded } : {}),
-  };
+  return expandConfigEnvVars(config).config;
 }

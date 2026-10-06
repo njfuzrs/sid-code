@@ -6,19 +6,29 @@
 import type { MCPServerConfig } from "../config/config.ts";
 import type { ConfigScope, ScopedMcpServerConfig, McpPolicy } from "./types.ts";
 import { isMcpServerAllowed } from "./policy.ts";
+import { expandConfigEnvVars } from "./env-expansion.ts";
 import { getLogger } from "../debug/logger.ts";
 
 /**
- * 基于签名去重：相同 command+args 或相同 url 视为同一 Server
+ * 基于签名去重：相同 command+args 或相同 (transport, url) 视为同一 Server。
+ *
+ * D3 两个方向相反的缺陷，同在这一个函数里，必须一起修：
+ * - **漏去重**：原先拿未展开的模板串比，`${SAME}` 与展开后的字面 URL 签名不同，
+ *   同一个 Server 被连两遍（两套工具定义进上下文、stdio 还多 spawn 一个子进程）。
+ *   现在先走与建连 / 策略过闸同一个展开入口（expandConfigEnvVars）再比真值。
+ * - **误去重**：原 URL 分支只看 url，`http` 与 `sse` 指向同一 URL 会被当成重复删掉一个。
+ *   两者协议语义不同（Streamable HTTP vs 旧 SSE 端点），签名里必须带 transport。
+ *   stdio 分支本来就带了 transport 维度，这里补齐成对称。
  */
 export function getMcpServerSignature(
   config: MCPServerConfig | ScopedMcpServerConfig,
 ): string | null {
-  if (config.transport === "stdio" && config.command) {
-    return `stdio:${JSON.stringify([config.command, ...(config.args || [])])}`;
+  const real = expandConfigEnvVars(config).config;
+  if (real.transport === "stdio" && real.command) {
+    return `stdio:${JSON.stringify([real.command, ...(real.args || [])])}`;
   }
-  if (config.url) {
-    return `url:${config.url}`;
+  if (real.url) {
+    return `${real.transport}:${real.url}`;
   }
   return null;
 }

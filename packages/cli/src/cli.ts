@@ -2181,6 +2181,9 @@ export async function main(): Promise<void> {
       for (const key of Object.keys(allMcpServers)) delete allMcpServers[key];
     }
     let mcpManager: import("@sid-code/core/mcp/manager.ts").MCPManager | undefined;
+    // D30：MCP prompt 变更的转发目标。unifiedRegistry 创建前到达的通知记成 pending，建好后补发一次。
+    let notifyMcpPromptsChanged: (() => void) | undefined;
+    let mcpPromptsChangedPending = false;
 
     // IDE 自动连接需要 mcpManager（IDE 作为动态 MCP server 接入），
     // 因此即使没有配置 MCP 服务器，只要 IDE 自动连接生效也创建 manager
@@ -2223,6 +2226,15 @@ export async function main(): Promise<void> {
         for (const tool of tools) toolRegistry.register(tool);
         // 动态刷新（IDE/重连）换了工具集，清 paramText 缓存避免陈旧参数文本。
         toolRegistry.invalidateParamTextCache();
+      };
+
+      // P1-2 / D30：prompt / 连接态变更 → 广播命令集合变更，让补全列表跟上。
+      // 必须在 connectAll **之前**挂：connectAll 是 fire-and-forget，下面到 unifiedRegistry 创建
+      // 之间有十几处 await，早连上的 stdio server 广播时回调还是 undefined，通知被静默丢掉。
+      // 此时 unifiedRegistry 还没建，先转发到一个占位，建好后再接上（见下方 flush）。
+      mcpManager.onPromptsChanged = () => {
+        if (notifyMcpPromptsChanged) notifyMcpPromptsChanged();
+        else mcpPromptsChangedPending = true;
       };
 
       // G3 接线：注入 Elicitation 处理器（服务器请求额外信息时用终端交互处理）。
@@ -2500,8 +2512,11 @@ export async function main(): Promise<void> {
     // MCP prompt 不进 cwd 缓存（getCommands 每次现场构建），所以这里不需要清缓存，
     // 只需把"变了"这件事转发出去；订阅方在 app.ts 里重新 loadCommandList。
     // 覆盖 UI 调用点覆盖不到的那部分：心跳失败自动重连、子进程退出、退避重连成功。
-    if (mcpManager) {
-      mcpManager.onPromptsChanged = () => unifiedRegistry.notifyExternalChange();
+    // D30：回调本身在 connectAll 之前就挂上了（见上），这里只接上转发目标并补发窗口期的通知。
+    notifyMcpPromptsChanged = () => unifiedRegistry.notifyExternalChange();
+    if (mcpPromptsChangedPending) {
+      mcpPromptsChangedPending = false;
+      notifyMcpPromptsChanged();
     }
 
     // 预加载插件命令快照（custom/skill/builtin 由 getCommands 按 cwd 懒加载并缓存）

@@ -303,6 +303,11 @@ export interface LegacyTool extends ToolCapabilityFields {
   readOnly?(): boolean;
   isConcurrencySafe?(input: unknown): boolean;
   /**
+   * 是否破坏性操作（D16）。true → 权限层把确认当安全类确认，yesMode / auto / hook allow
+   * 不能静默放行。生产实现目前只有 MCP 工具（来自 Server 的 `destructiveHint`）。
+   */
+  isDestructive?(input?: unknown): boolean;
+  /**
    * 当前环境是否可用。registry 发 schema 时会问它：false / 抛错都不进
    * `definitions()` / `activeDefinitions()`。未实现 = 可用（绝大多数工具）。
    * 生产覆盖目前只有 LSPTool。
