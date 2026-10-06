@@ -38,6 +38,9 @@ import {
   type ElicitationResultInput,
   type AggregatedHookResult,
   type HookExecutionPlan,
+  type HookConfig,
+  resolveHookTimeoutMs,
+  sessionEndBudgetMs,
 } from "./types.ts";
 import { getLogger } from "../debug/logger.ts";
 import { getRawVersion } from "@sid-code/shared/version.ts";
@@ -70,6 +73,15 @@ export class HookEventHandler {
   private sessionId: string;
   private cwd: string;
   private permissionMode: string = "";
+  /**
+   * HC11：权限模式 / 对话记录路径的取值函数（app 层注入）。用 getter 不用 setter：
+   * 权限模式在 app 里至少 4 处被改写（plan 进出、Shift+Tab、CLAUDE.md 规则），
+   * setter 漏接一处就是 stdin 里一个过期值——原先 setPermissionMode 生产零调用，字段恒缺失。
+   */
+  private permissionModeProvider?: () => string | undefined;
+  private transcriptPathProvider?: (sessionId: string) => string | undefined;
+  /** HC11：本轮 prompt_id，每次 UserPromptSubmit 换新 */
+  private promptId?: string;
   /**
    * registry 引用，仅用于 once hook 回标（executeHooks 里按 plan.entries 下标标记已执行）。
    * 可选：老调用点不传时 once 语义退化为「不失效」，与历史行为一致，不会报错。
@@ -116,6 +128,15 @@ export class HookEventHandler {
   /** 设置当前权限模式 */
   setPermissionMode(mode: string): void {
     this.permissionMode = mode;
+  }
+
+  setPermissionModeProvider(fn: (() => string | undefined) | undefined): void {
+    this.permissionModeProvider = fn;
+  }
+
+  /** 会话对话记录路径按当前 sessionId 算（/clear 换会话后跟着变） */
+  setTranscriptPathProvider(fn: ((sessionId: string) => string | undefined) | undefined): void {
+    this.transcriptPathProvider = fn;
   }
 
   // ============================================================
@@ -184,6 +205,7 @@ export class HookEventHandler {
     options?: {
       duration_ms?: number;
       harness_context?: import("./types.ts").HarnessHookContext;
+      is_interrupt?: boolean;
     },
   ): Promise<AggregatedHookResult> {
     const input: PostToolUseInput = {
@@ -192,6 +214,9 @@ export class HookEventHandler {
       tool_input: toolInput,
       tool_response: { error },
       is_error: true,
+      // HC12：CC 的顶层字段（tool_response.error 保留，存量 sid 脚本照常）
+      error,
+      is_interrupt: options?.is_interrupt ?? false,
       tool_use_id: toolUseId,
       duration_ms: options?.duration_ms,
       harness_context: options?.harness_context,
@@ -201,6 +226,8 @@ export class HookEventHandler {
 
   /** UserPromptSubmit 事件 */
   async fireUserPromptSubmitEvent(prompt: string): Promise<AggregatedHookResult> {
+    // 新一轮：换 prompt_id，本轮之后的所有事件共用它
+    this.promptId = crypto.randomUUID();
     const input: UserPromptSubmitInput = {
       ...this.createBaseInput(HookEventName.UserPromptSubmit),
       prompt,
@@ -366,10 +393,15 @@ export class HookEventHandler {
   }
 
   /** Stop 事件：模型 end_turn 后执行检查 */
-  async fireStopEvent(assistantResponse: string): Promise<AggregatedHookResult> {
+  async fireStopEvent(
+    assistantResponse: string,
+    stopHookActive: boolean = false,
+  ): Promise<AggregatedHookResult> {
     const input: StopInput = {
       ...this.createBaseInput(HookEventName.Stop),
       assistant_response: assistantResponse,
+      last_assistant_message: assistantResponse,
+      stop_hook_active: stopHookActive,
     };
     return this.executeHooks(HookEventName.Stop, input);
   }
@@ -596,9 +628,15 @@ export class HookEventHandler {
       // 省下的只是一次对象构造，所以删掉，runtime hook 与其他类型走同一条路。别加回来。
 
       // 2. 执行 hook（根据计划决定串行/并行）
+      // HC20：SessionEnd 所有用户 hook 共享一个预算（缺省 1.5s，显式 timeout 可提高，上限 60s），
+      // 与 CC 一致——退出路径上不能让一个慢 hook 把关窗口卡住。runtime（轨迹 / 遥测落盘）不受此限。
+      const configs =
+        eventName === HookEventName.SessionEnd
+          ? applySessionEndBudget(plan.hookConfigs)
+          : plan.hookConfigs;
       const results = plan.sequential
-        ? await this.runner.executeHooksSequential(plan.hookConfigs, eventName, input)
-        : await this.runner.executeHooksParallel(plan.hookConfigs, eventName, input);
+        ? await this.runner.executeHooksSequential(configs, eventName, input)
+        : await this.runner.executeHooksParallel(configs, eventName, input);
 
       // 2.5 once hook 回标：执行成功的一次性 hook 标记为已执行，后续计划不再纳入。
       // 对齐 CC registerSkillHooks 的 onHookSuccess → removeSessionHook（只在成功后移除，
@@ -642,12 +680,16 @@ export class HookEventHandler {
   /** 构建基础输入 */
   private createBaseInput(eventName: HookEventName): HookInput {
     const ident = getIdentity();
+    const mode = this.permissionModeProvider?.() ?? this.permissionMode;
     return {
       session_id: this.sessionId,
       cwd: this.cwd,
       hook_event_name: eventName,
       timestamp: new Date().toISOString(),
-      permission_mode: this.permissionMode || undefined,
+      permission_mode: toCcPermissionMode(mode),
+      sid_permission_mode: mode || undefined,
+      transcript_path: this.sessionId ? this.transcriptPathProvider?.(this.sessionId) : undefined,
+      prompt_id: this.promptId,
       device_id: ident.deviceId,
       user_id: ident.userId,
       org_id: ident.orgId,
@@ -680,4 +722,33 @@ export class HookEventHandler {
       );
     }
   }
+}
+
+/**
+ * sid 权限模式 → CC permission_mode 取值（HC11）。
+ * always-allow / dangerously-skip-permissions → bypassPermissions；manual / deny-write → default；
+ * 其余同名原样。未设置时返回 undefined（字段被 JSON 丢掉，与之前一致）。
+ */
+export function toCcPermissionMode(mode: string | undefined): string | undefined {
+  if (!mode) return undefined;
+  switch (mode) {
+    case "always-allow":
+    case "dangerously-skip-permissions":
+      return "bypassPermissions";
+    case "manual":
+    case "deny-write":
+      return "default";
+    default:
+      return mode;
+  }
+}
+
+/** SessionEnd 共享预算：把每条用户 hook 的超时压到预算内（runtime 不动） */
+export function applySessionEndBudget(configs: HookConfig[]): HookConfig[] {
+  const budgetMs = sessionEndBudgetMs(configs);
+  return configs.map((c) => {
+    if (c.type === "runtime") return c;
+    const own = resolveHookTimeoutMs(c, HookEventName.SessionEnd);
+    return own <= budgetMs ? c : ({ ...c, timeout: budgetMs / 1000 } as HookConfig);
+  });
 }

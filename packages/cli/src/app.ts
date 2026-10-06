@@ -40,7 +40,7 @@ import {
 } from "@sid-code/core/llm/error-messages.ts";
 import { SessionState } from "@sid-code/core/session/state.ts";
 import { createSubAgentUsageSink } from "@sid-code/core/agent/usage-sink.ts";
-import { SessionStore } from "@sid-code/core/session/store.ts";
+import { SessionStore, currentProjectSessionDir } from "@sid-code/core/session/store.ts";
 import { generateSessionId } from "@sid-code/core/session/id.ts";
 import {
   stashPendingInput,
@@ -1178,6 +1178,13 @@ export class App {
     }
     this.hookSystem.setSessionId(sessionId);
     this.hookSystem.setCwd(process.cwd());
+    // HC14：CLAUDE_PROJECT_DIR = 会话启动时的项目根，之后 bash cd / 进 worktree 都不变（与 CC 一致）
+    this.hookSystem.setProjectDir(process.cwd());
+    // HC11：stdin permission_mode / transcript_path。取值函数而非快照——模式运行时会被改写。
+    this.hookSystem.setPermissionModeProvider(() => this.config.permissionMode);
+    this.hookSystem.setTranscriptPathProvider((id) =>
+      join(currentProjectSessionDir(), `${id}.jsonl`),
+    );
     // 恢复 settings.json disabledHooks（/hooks disable -p 持久化端）。
     // 插件 hook 在 loadPluginHooks 后才注册，故那里会再应用一次（见下方 loadPluginHooks 调用点）。
     this.hookSystem.applyDisabledHooks(this.config.disabledHooks);

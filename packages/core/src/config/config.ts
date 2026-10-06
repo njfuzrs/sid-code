@@ -76,7 +76,7 @@ export interface HookConfig {
   method?: string; // url 类型：HTTP 方法，默认 POST
   headers?: Record<string, string>; // url 类型：HTTP 头
   allowedEnvVars?: string[]; // url 类型：headers 里允许插值的 $VAR 白名单（H5，未列出的插值为空串）
-  timeout?: number; // 超时（秒）。缺省 command / url / agent 60，prompt 30（H10：单一事实源 hook/types.ts resolveHookTimeoutMs）
+  timeout?: number; // 超时（秒）。缺省 command / url 600（UserPromptSubmit / SessionStart 上 30）、prompt 30、agent 60（单一事实源 hook/types.ts resolveHookTimeoutMs）
   blocking?: boolean; // 是否阻塞，默认 false
   env?: Record<string, string>; // H22：command 类型额外环境变量（合并在脱敏后的进程 env 之上）
   sequential?: boolean; // H23：true 时该事件这一批命中的 hook 整体串行执行（默认并行）

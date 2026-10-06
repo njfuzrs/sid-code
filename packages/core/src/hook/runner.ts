@@ -41,6 +41,28 @@ export function toExternalHookPayload(input: HookInput): HookInput {
   return { ...input, tool_name: cc, sid_tool_name: toolName } as HookInput;
 }
 
+/** exec 形式允许替换的路径占位符（只认这几个，任意 $VAR 不替换——那是 shell 的活） */
+const EXEC_PLACEHOLDER_VARS = [
+  "CLAUDE_PROJECT_DIR",
+  "CLAUDE_PLUGIN_ROOT",
+  "CLAUDE_PLUGIN_DATA",
+  "SID_CODE_PROJECT_DIR",
+  "SID_CODE_PLUGIN_ROOT",
+  "SID_CODE_PLUGIN_DATA",
+  "SID_CODE_CWD",
+  "PLUGIN_ROOT",
+  "SKILL_DIR",
+] as const;
+
+/** exec 形式：把 `${VAR}` / `$VAR`（白名单内）替换成 env 里的值；env 没有的保持原样 */
+export function expandPathPlaceholders(part: string, env: Record<string, string>): string {
+  return part.replace(/\$\{([A-Z_]+)\}|\$([A-Z_]+)\b/g, (whole, braced, bare) => {
+    const name = (braced ?? bare) as string;
+    if (!(EXEC_PLACEHOLDER_VARS as readonly string[]).includes(name)) return whole;
+    return env[name] ?? whole;
+  });
+}
+
 /** 延迟 JSON 序列化：只在需要时序列化一次（外部载荷形状，见 toExternalHookPayload） */
 export class LazyJsonInput {
   private _json: string | undefined;
@@ -175,6 +197,17 @@ export type AgentHookExecutor = (params: {
 }) => Promise<{ ok: boolean; reason?: string; transcript?: string }>;
 
 export class HookRunner {
+  /**
+   * 会话启动时的项目根（HC14 / Q3）：导出为 CLAUDE_PROJECT_DIR / SID_CODE_PROJECT_DIR。
+   * 与 CC 一致，**不随 bash `cd` / worktree 变化**——原先取 input.cwd，cd 之后就变了，
+   * `${CLAUDE_PROJECT_DIR}/.sid-code/hooks/x.sh` 这类脚本路径会跟着漂。随 cd 变的是 SID_CODE_CWD。
+   */
+  private projectDir: string = process.cwd();
+
+  setProjectDir(dir: string): void {
+    this.projectDir = dir;
+  }
+
   /** G6：注入的真子代理执行器（app 层设置）。 */
   private agentHookExecutor?: AgentHookExecutor;
 
@@ -331,13 +364,15 @@ export class HookRunner {
       };
     }
 
-    const timeout = resolveHookTimeoutMs(hookConfig);
+    const timeout = resolveHookTimeoutMs(hookConfig, eventName);
 
     // 构建环境变量（清理敏感信息）
     const env: Record<string, string> = {
       ...this.sanitizeEnvironment(process.env as Record<string, string>),
       SID_CODE_HOOK_EVENT: eventName,
-      SID_CODE_PROJECT_DIR: input.cwd,
+      SID_CODE_PROJECT_DIR: this.projectDir,
+      // Q3：只导出 sid 真正支持语义的三个 CLAUDE_* 变量（另两个 PLUGIN_* 由 pathVars 按来源提供）
+      CLAUDE_PROJECT_DIR: this.projectDir,
       // H14：$SID_CODE_CWD 原先只靠对命令串做字符串替换提供，删掉替换后改由环境变量提供，写法不变
       SID_CODE_CWD: input.cwd,
       // 来源决定的路径变量（插件根 / skill 目录 …）：shell 形式由 sh 从环境展开 ${CLAUDE_PLUGIN_ROOT} 等，
@@ -356,8 +391,14 @@ export class HookRunner {
 
     const lazyInput = new LazyJsonInput(input);
 
+    // §三.5 exec 形式：有 args 时不经 shell，`[command, ...args]` 直接 spawn。没有 shell 会再解析，
+    // 所以路径占位符在这里做纯字符串替换（与 CC 一致），值不会被当代码执行。
+    const cmd = hookConfig.args
+      ? [command, ...hookConfig.args].map((part) => expandPathPlaceholders(part, env))
+      : ["sh", "-c", command];
+
     const proc = spawn({
-      cmd: ["sh", "-c", command],
+      cmd,
       env,
       cwd: input.cwd,
       stdin: "pipe",
@@ -497,7 +538,7 @@ export class HookRunner {
       };
     }
 
-    const timeout = resolveHookTimeoutMs(hookConfig);
+    const timeout = resolveHookTimeoutMs(hookConfig, eventName);
     const method = hookConfig.method || "POST";
 
     const controller = new AbortController();
@@ -565,7 +606,7 @@ export class HookRunner {
     input: HookInput,
     startTime: number,
   ): Promise<HookExecutionResult> {
-    const timeout = resolveHookTimeoutMs(hookConfig);
+    const timeout = resolveHookTimeoutMs(hookConfig, eventName);
     const controller = new AbortController();
     let timeoutHandle: ReturnType<typeof setTimeout> | undefined;
 
@@ -842,7 +883,7 @@ export class HookRunner {
     startTime: number,
   ): Promise<HookExecutionResult> {
     const log = getLogger();
-    const timeout = resolveHookTimeoutMs(hookConfig);
+    const timeout = resolveHookTimeoutMs(hookConfig, eventName);
 
     try {
       const jsonInput = JSON.stringify(toExternalHookPayload(input));
@@ -924,7 +965,7 @@ export class HookRunner {
     startTime: number,
   ): Promise<HookExecutionResult> {
     const log = getLogger();
-    const timeout = resolveHookTimeoutMs(hookConfig);
+    const timeout = resolveHookTimeoutMs(hookConfig, eventName);
 
     const jsonInput = JSON.stringify(toExternalHookPayload(input));
     const processedPrompt = hookConfig.prompt.replace(/\$ARGUMENTS/g, jsonInput);

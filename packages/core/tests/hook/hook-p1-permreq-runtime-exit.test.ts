@@ -220,6 +220,9 @@ describe("H14 cwd 不再被拼进 shell 命令串", () => {
   const runIn = async (dirName: string, command: string) => {
     const dir = join(root, dirName);
     mkdirSync(dir, { recursive: true });
+    // HC14：SID_CODE_PROJECT_DIR 改取会话启动时的项目根（不再是 input.cwd）。注入面没变——
+    // 项目根同样可能是一个带 $(...) 的目录名——所以把项目根也设成这个目录，断言照旧有效。
+    runner.setProjectDir(dir);
     const r = await runner.executeHook(
       { type: "command", name: "x", command } as any,
       HookEventName.PostToolUse,

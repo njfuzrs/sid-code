@@ -156,9 +156,24 @@ export class HookSystem {
     this.runner.setAgentHookExecutor(executor);
   }
 
-  /** 设置当前权限模式 */
+  /** 设置当前权限模式（app 层在初始化与每次切换处调用，HC11） */
   setPermissionMode(mode: string): void {
     this.eventHandler.setPermissionMode(mode);
+  }
+
+  /** 权限模式取值函数（stdin permission_mode，HC11）；优先于 setPermissionMode */
+  setPermissionModeProvider(fn: (() => string | undefined) | undefined): void {
+    this.eventHandler.setPermissionModeProvider(fn);
+  }
+
+  /** 会话对话记录路径取值函数（stdin transcript_path，HC11） */
+  setTranscriptPathProvider(fn: ((sessionId: string) => string | undefined) | undefined): void {
+    this.eventHandler.setTranscriptPathProvider(fn);
+  }
+
+  /** 设置会话启动时的项目根（CLAUDE_PROJECT_DIR，不随 cd 变，HC14） */
+  setProjectDir(dir: string): void {
+    this.runner.setProjectDir(dir);
   }
 
   /** 启用/禁用指定 hook */
@@ -277,6 +292,7 @@ export class HookSystem {
     options?: {
       duration_ms?: number;
       harness_context?: import("./types.ts").HarnessHookContext;
+      is_interrupt?: boolean;
     },
   ): Promise<AggregatedHookResult> {
     return this.eventHandler.firePostToolUseFailureEvent(
@@ -366,8 +382,11 @@ export class HookSystem {
   }
 
   /** Stop 事件：模型 end_turn 后执行检查 */
-  async fireStopEvent(assistantResponse: string): Promise<AggregatedHookResult> {
-    return this.eventHandler.fireStopEvent(assistantResponse);
+  async fireStopEvent(
+    assistantResponse: string,
+    stopHookActive: boolean = false,
+  ): Promise<AggregatedHookResult> {
+    return this.eventHandler.fireStopEvent(assistantResponse, stopHookActive);
   }
 
   /** StopFailure 事件 */

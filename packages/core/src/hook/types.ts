@@ -249,14 +249,47 @@ export type HookConfig =
   | AgentHookConfig;
 
 /**
- * H10：`timeout` 字段的单位与缺省值的唯一事实源。五种类型统一按**秒**解释，缺省 prompt 30s、其余 60s。
+ * H10：`timeout` 字段的单位与缺省值的唯一事实源。五种类型统一按**秒**解释。
  * runner 的五个执行分支与企业策略的 maxHookTimeout 判定都调它——原先五处各写一遍换算，
  * runtime 那处漏乘 1000，日志里各自的「超时 (1s)」「超时 (1ms)」都对，单看任何一条都看不出不一致。
+ *
+ * 缺省值按 Q5 裁决对齐 CC（HC20）：command / url(http) 600s、prompt 30s、agent 60s；
+ * UserPromptSubmit 上的 command / url 30s；SessionStart 上的 command / url 30s（偏离 CC：
+ * SessionStart 在第一轮之前同步等待，挂住的 hook 让启动卡 10 分钟会被当成 sid 卡死）。
+ * 不传 eventName（企业策略判定）时按事件无关的缺省值算——它比的是「这条 hook 最多能跑多久」。
+ * 用户显式写的 timeout 一律优先。SessionEnd 的共享预算不在这里，见 SESSION_END_BUDGET_MS。
  */
-export function resolveHookTimeoutMs(hook: HookConfig): number {
+export function resolveHookTimeoutMs(hook: HookConfig, eventName?: string): number {
   if (hook.type === "runtime" && typeof hook.timeoutMs === "number") return hook.timeoutMs;
-  const seconds = hook.timeout ?? (hook.type === "prompt" ? 30 : 60);
-  return seconds * 1000;
+  if (typeof hook.timeout === "number") return hook.timeout * 1000;
+  return defaultHookTimeoutSeconds(hook.type, eventName) * 1000;
+}
+
+/** 缺省超时（秒），见 resolveHookTimeoutMs 注释 */
+export function defaultHookTimeoutSeconds(type: HookConfig["type"], eventName?: string): number {
+  if (type === "prompt") return 30;
+  if (type === "agent") return 60;
+  if (type === "runtime") return 60;
+  if (eventName === HookEventName.UserPromptSubmit || eventName === HookEventName.SessionStart) {
+    return 30;
+  }
+  return 600;
+}
+
+/**
+ * SessionEnd 所有 hook 共享的时间预算（对齐 CC）：缺省 1.5s；某条 hook 显式配了更长的 timeout 时
+ * 预算提高到它的值，上限 60s。退出路径上不能让一个慢 hook 把关窗口卡住。
+ */
+export const SESSION_END_BUDGET_MS = { default: 1500, max: 60_000 } as const;
+
+export function sessionEndBudgetMs(hooks: HookConfig[]): number {
+  let budget: number = SESSION_END_BUDGET_MS.default;
+  for (const h of hooks) {
+    if (h.type !== "runtime" && typeof h.timeout === "number") {
+      budget = Math.max(budget, h.timeout * 1000);
+    }
+  }
+  return Math.min(budget, SESSION_END_BUDGET_MS.max);
 }
 
 /**
@@ -290,8 +323,16 @@ export interface HookInput {
   cwd: string;
   hook_event_name: string;
   timestamp: string;
-  /** 当前权限模式（与 claude-trace collector.py 对齐） */
+  /**
+   * 当前权限模式，取 CC 的取值（HC11）：default / acceptEdits / plan / dontAsk / auto / bypassPermissions。
+   * sid 原值另放 sid_permission_mode（always-allow 与 deny-write 在 CC 里没有对应）。
+   */
   permission_mode?: string;
+  sid_permission_mode?: string;
+  /** 会话对话记录文件（sid 的会话 jsonl），对齐 CC transcript_path */
+  transcript_path?: string;
+  /** 每次用户提交生成一个 UUID，同一轮里的所有事件共用（对齐 CC prompt_id） */
+  prompt_id?: string;
   /** M1 本机持久 deviceId。四方落盘共用，未配置 identity 时仍有值。 */
   device_id?: string;
   user_id?: string;
@@ -313,6 +354,10 @@ export interface PostToolUseInput extends HookInput {
   tool_input: Record<string, unknown>;
   tool_response: Record<string, unknown>;
   is_error?: boolean;
+  /** PostToolUseFailure：顶层错误信息（CC 字段，HC12；tool_response.error 保留） */
+  error?: string;
+  /** PostToolUseFailure：是否因用户中断而失败（CC 字段） */
+  is_interrupt?: boolean;
   /** 与 PreToolUse 中的 tool_use_id 对应 */
   tool_use_id?: string;
 
@@ -591,8 +636,12 @@ export interface HookExecutionInput extends HookInput {
 
 /** Stop 事件输入（模型 end_turn 后执行检查） */
 export interface StopInput extends HookInput {
-  /** 模型最后一次回复的文本 */
+  /** 模型最后一次回复的文本（sid 旧字段名，保留） */
   assistant_response: string;
+  /** 同上，CC 字段名（HC12） */
+  last_assistant_message: string;
+  /** 本次 Stop 是否由之前的 Stop hook 回炉引起（CC 字段，HC12）：hook 据此避免无限回炉 */
+  stop_hook_active: boolean;
 }
 
 /** StopFailure 事件输入（API 错误导致的非正常结束） */
