@@ -1489,6 +1489,14 @@ export async function executeSingleTool(
       log.info("HOOK", `PostToolUse hook 追加上下文到 ${block.name} 结果`);
       finalOutput = normalizedOutput + "\n\n[Hook 附加上下文]\n" + additionalCtx;
     }
+    // HC18：PostToolUse 的 exit 2（stderr）/ decision:"block"（reason）回灌模型（对齐 CC）。
+    // 工具已经执行，不撤回；只是让模型看到「lint 没过」这类反馈。原先只取 additionalContext，
+    // 按 CC 写的格式检查 hook 跑了、模型却回答「没有报错或额外提示」。
+    const postFeedback = hookFeedbackText(postResult);
+    if (postFeedback) {
+      log.info("HOOK", `PostToolUse hook 反馈回灌到 ${block.name} 结果`);
+      finalOutput = finalOutput + "\n\n[Hook 反馈]\n" + postFeedback;
+    }
 
     // 连续编辑失败计数提醒（借鉴 edit-guard，用现成的 PostToolUse 回注通道落地）：
     // 弱模型对同一文件反复 edit/write 失败时，追加一条分型的、可执行的下一步建议，
@@ -1594,23 +1602,31 @@ export async function executeSingleTool(
       errorCode: structuredErrorCode(err),
     });
 
-    deps.hookSystem
-      .firePostToolUseFailureEvent(
+    // §三.7 第 4 条：PostToolUseFailure 改为 await，才能把 hook 反馈回灌给模型。
+    // elapsed 已在上面算好，hook 耗时不计入工具耗时（计入 hook 自己的耗时）。
+    let failureFeedback: string | undefined;
+    try {
+      const failResult = await deps.hookSystem?.firePostToolUseFailureEvent?.(
         block.name,
         block.input as Record<string, unknown>,
         err.message,
         block.id,
         // elapsed = 纯执行耗时（与成功路径 addToolDuration 同口径）。
         // 慢工具超时失败恰是最需要耗时的场景：区分"秒失败"与"卡 30s 才失败"。
-        { duration_ms: elapsed },
-      )
-      .catch((e: any) => log.error("HOOK", `post_tool_use_failure hook 失败: ${e.message}`));
+        { duration_ms: elapsed, is_interrupt: isAbortLike(err) },
+      );
+      failureFeedback = hookFeedbackText(failResult);
+    } catch (e: any) {
+      log.error("HOOK", `post_tool_use_failure hook 失败: ${e?.message ?? e}`);
+    }
 
     return {
       block: {
         type: "tool_result",
         tool_use_id: block.id,
-        content: `工具执行异常: ${err.message}`,
+        content:
+          `工具执行异常: ${err.message}` +
+          (failureFeedback ? `\n\n[Hook 反馈]\n${failureFeedback}` : ""),
         is_error: true,
       },
       elapsedMs: Date.now() - toolStartedAt,
@@ -1730,4 +1746,24 @@ async function notifyLSPFileChange(input: Record<string, unknown>): Promise<void
   if (!filePath) return;
   const { syncFileToLSP } = await import("../lsp/manager.ts");
   await syncFileToLSP(filePath);
+}
+
+/**
+ * HC18：从 PostToolUse / PostToolUseFailure 的聚合结果里取要回灌模型的反馈。
+ * exit 2 在 runner 里已变成 decision:"deny" + reason(stderr)；JSON decision:"block" 带 reason。
+ * 两者都走 isBlockingDecision + getEffectiveReason，不另立判据。
+ */
+export function hookFeedbackText(
+  result: import("../hook/types.ts").AggregatedHookResult | undefined,
+): string | undefined {
+  const out = result?.finalOutput;
+  if (!out?.isBlockingDecision()) return undefined;
+  const reason = out.getEffectiveReason();
+  return reason && reason.trim() ? reason : undefined;
+}
+
+/** 用户中断导致的失败（CC is_interrupt） */
+function isAbortLike(err: unknown): boolean {
+  const e = err as { name?: string } | undefined;
+  return e?.name === "AbortError";
 }

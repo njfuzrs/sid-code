@@ -41,6 +41,7 @@ import {
 import { SessionState } from "@sid-code/core/session/state.ts";
 import { createSubAgentUsageSink } from "@sid-code/core/agent/usage-sink.ts";
 import { SessionStore, currentProjectSessionDir } from "@sid-code/core/session/store.ts";
+import { extractHookContext } from "@sid-code/core/hook/context-inject.ts";
 import { generateSessionId } from "@sid-code/core/session/id.ts";
 import {
   stashPendingInput,
@@ -3557,12 +3558,22 @@ export class App {
     // 使 trajectory 元数据能反查到 SessionStore 的 sessions/{旧id}.jsonl。
     // ⚠️ 必须保持在 initTelemetrySystem **之后**（见上面那段时序不变量），
     // 且必须在 initTraceCollector 之后——两个消费者一前一后夹住这行。
-    this.hookSystem
-      .fireSessionStartEvent(this.resumedSessionId ? "resume" : "startup", {
-        model: this.config.model,
-        resumedFrom: this.resumedSessionId ?? undefined,
-      })
-      .catch((err) => log.error("HOOK", `session_start hook 失败: ${err.message}`));
+    //
+    // HC16 / Q5：改为 await。原先 fire-and-forget，返回值整个丢弃——hook 的 stdout / additionalContext
+    // 永远进不了模型上下文。现在结果存进 queryEngine，在第一条用户消息后作为独立 <system-reminder> 注入。
+    // 代价是启动同步等 hook：缺省超时因此是 30s 而不是 CC 的 600s（resolveHookTimeoutMs）。
+    try {
+      const startResult = await this.hookSystem.fireSessionStartEvent(
+        this.resumedSessionId ? "resume" : "startup",
+        {
+          model: this.config.model,
+          resumedFrom: this.resumedSessionId ?? undefined,
+        },
+      );
+      this.queryEngine.setPendingSessionStartContext(extractHookContext(startResult));
+    } catch (err: any) {
+      log.error("HOOK", `session_start hook 失败: ${err?.message ?? err}`);
+    }
 
     // 信号兜底：SIGINT / SIGTERM 时强制落地 SessionEnd（reason=abort），避免 trajectory 残留 unknown
     // 这是 25% session 卡在 exit_status=unknown 的另一个根因——promptfoo timeout 时 SIGTERM 杀进程

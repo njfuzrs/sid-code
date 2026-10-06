@@ -41,6 +41,35 @@ export function toExternalHookPayload(input: HookInput): HookInput {
   return { ...input, tool_name: cc, sid_tool_name: toolName } as HookInput;
 }
 
+/**
+ * HC16：这些事件 exit 0 的纯文本 stdout 作为上下文给模型（对齐 CC）。
+ * 原先它进 systemMessage，而引擎只读 additionalContext——用户照 CC 文档写的
+ * `echo "当前分支: $(git branch --show-current)"` 跑了、模型却永远看不到。
+ */
+const CONTEXT_STDOUT_EVENTS: ReadonlySet<string> = new Set([
+  HookEventName.SessionStart,
+  HookEventName.UserPromptSubmit,
+]);
+
+/** exit 0 + 非 JSON stdout + 上下文类事件 → 搬到 hookSpecificOutput.additionalContext */
+export function promotePlainStdoutToContext(
+  output: HookOutput,
+  eventName: string,
+  exitCode: number,
+  stdout: string,
+): HookOutput {
+  if (exitCode !== EXIT_SUCCESS || !CONTEXT_STDOUT_EVENTS.has(eventName)) return output;
+  const text = stdout.trim();
+  // JSON 输出（以 { 开头）由 hook 自己决定字段，不搬
+  if (!text || text.startsWith("{")) return output;
+  if (output.hookSpecificOutput && "additionalContext" in output.hookSpecificOutput) return output;
+  return {
+    ...output,
+    systemMessage: undefined,
+    hookSpecificOutput: { ...(output.hookSpecificOutput ?? {}), additionalContext: text },
+  };
+}
+
 /** exec 形式允许替换的路径占位符（只认这几个，任意 $VAR 不替换——那是 shell 的活） */
 const EXEC_PLACEHOLDER_VARS = [
   "CLAUDE_PROJECT_DIR",
@@ -499,11 +528,16 @@ export class HookRunner {
       const duration = Date.now() - startTime;
 
       // 解析输出
-      const output = this.parseCommandOutput(
-        stdout,
-        stderr,
+      const output = promotePlainStdoutToContext(
+        this.parseCommandOutput(
+          stdout,
+          stderr,
+          exitCode ?? 0,
+          `command:${hookConfig.name ?? command.slice(0, 60)}`,
+        ),
+        eventName,
         exitCode ?? 0,
-        `command:${hookConfig.name ?? command.slice(0, 60)}`,
+        stdout,
       );
 
       return {

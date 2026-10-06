@@ -24,6 +24,9 @@ import { ThinkingManager } from "../llm/thinking.ts";
 import { SessionState } from "../session/state.ts";
 import { getLogger, getSessionMetrics } from "../debug/index.ts";
 import { queryLoop } from "./loop.ts";
+import { extractHookContext, formatHookContextReminder } from "../hook/context-inject.ts";
+import { currentProjectSessionDir } from "../session/store.ts";
+import { join } from "node:path";
 import { isAbortError, LLMStreamError } from "../llm/errors.ts";
 import { codeFromStructured } from "../llm/error-messages.ts";
 import type { QueryDeps, QueryEngineEvent } from "./types.ts";
@@ -169,8 +172,28 @@ export class QueryEngine {
   private extractMemories: import("../memory/extract/extractor.ts").ExtractMemoriesHandle | null =
     null;
 
+  /** HC16：SessionStart hook 的上下文，等第一条用户消息时注入（一次性） */
+  private pendingSessionStartContext: string | null = null;
+
   constructor(deps: QueryEngineDeps) {
     this.deps = deps;
+  }
+
+  /** app 层 await SessionStart 后调用；多次调用追加 */
+  setPendingSessionStartContext(text: string | undefined): void {
+    if (!text) return;
+    this.pendingSessionStartContext = this.pendingSessionStartContext
+      ? `${this.pendingSessionStartContext}\n${text}`
+      : text;
+  }
+
+  /** 超长 hook 上下文转存目录：~/.sid-code/sessions/<project>/<sessionId>/hook-context */
+  private hookOverflowDir(): string | undefined {
+    try {
+      return join(currentProjectSessionDir(), this.deps.sessionState.sessionId, "hook-context");
+    } catch {
+      return undefined;
+    }
   }
 
   /** 更新 Provider（模型切换时调用） */
@@ -239,7 +262,19 @@ export class QueryEngine {
     this.deps.fallback.getAvailability().resetTurn();
 
     // ─── user_prompt_submit hook ───
-    let finalInput = userInput;
+    const finalInput = userInput;
+    // HC16：SessionStart 的上下文在第一条用户消息注入（app 层 await 后存进来），只用一次
+    const hookReminders: string[] = [];
+    if (this.pendingSessionStartContext) {
+      hookReminders.push(
+        formatHookContextReminder(
+          "SessionStart",
+          this.pendingSessionStartContext,
+          this.hookOverflowDir(),
+        ),
+      );
+      this.pendingSessionStartContext = null;
+    }
     if (hookSystem) {
       const hookResult = await hookSystem.fireUserPromptSubmitEvent(userInput);
       if (hookResult.finalOutput?.isBlockingDecision()) {
@@ -258,10 +293,18 @@ export class QueryEngine {
         yield { kind: "hook_blocked", reason: hookResult.finalOutput.getEffectiveReason() };
         return;
       }
-      const additionalCtx = hookResult.finalOutput?.getAdditionalContext();
+      // HC17：hook 上下文**不拼进用户原文**，作为独立 <system-reminder> 块挂在用户消息之后
+      // （见 hook/context-inject.ts）。原先拼接后再 parseThinkingHint，hook 输出里的
+      // think hard 会触发思考档位，模型也把 hook 内容当成用户说的话。
+      const additionalCtx = extractHookContext(hookResult);
       if (additionalCtx) {
-        log.info("HOOK", `用户输入被 hook 追加上下文`);
-        finalInput = userInput + "\n\n" + additionalCtx;
+        log.info(
+          "HOOK",
+          `UserPromptSubmit hook 追加上下文（独立块，${additionalCtx.length} 字符）`,
+        );
+        hookReminders.push(
+          formatHookContextReminder("UserPromptSubmit", additionalCtx, this.hookOverflowDir()),
+        );
       }
     }
 
@@ -279,7 +322,11 @@ export class QueryEngine {
     // 持久化失败绝不能阻断主流程，故 try/catch 吞掉异常。
     const userMessage = {
       role: "user" as const,
-      content: [{ type: "text" as const, text: cleanedInput }],
+      content: [
+        { type: "text" as const, text: cleanedInput },
+        // hook 上下文：每段一个独立 text block（history-adapter 按 <system-reminder> 前缀隐藏）
+        ...hookReminders.map((text) => ({ type: "text" as const, text })),
+      ],
       // 斜杠命令展开：打来源标记，history-adapter 据此把这条 user 消息渲染为
       // 「命令历史项」（只显示 /commit 触发命令），而非把整段展开提示词当 `> ...`
       // 用户输入泄漏到屏幕。标记只影响展示，不影响喂给 LLM 的内容。
