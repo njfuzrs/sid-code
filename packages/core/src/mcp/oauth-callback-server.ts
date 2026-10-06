@@ -112,6 +112,8 @@ export async function startCallbackServer(configuredPort?: number): Promise<Call
     | undefined;
   let server: Server | null = null;
   let closed = false;
+  /** 本次等待期间被忽略的 state 不匹配回调数（超时报错时带上，便于调用方归因） */
+  let stateMismatches = 0;
 
   const close = () => {
     if (closed) return;
@@ -155,6 +157,7 @@ export async function startCallbackServer(configuredPort?: number): Promise<Call
     // 授权服务器的 error 回调同样带 state（RFC 6749 §4.1.2.1），也必须先过这一关，
     // 否则伪造一个 ?error=x 就能打断流程。
     if (state !== current.expectedState) {
+      stateMismatches++;
       getLogger().warn("MCP", "OAuth 回调 state 不匹配，已忽略该请求，继续等待真实回调");
       reply(
         res,
@@ -257,7 +260,18 @@ export async function startCallbackServer(configuredPort?: number): Promise<Call
           },
         };
 
-        timer = setTimeout(() => fail(new Error("等待 OAuth 授权超时")), timeoutMs);
+        stateMismatches = 0;
+        timer = setTimeout(
+          () =>
+            fail(
+              new Error(
+                stateMismatches > 0
+                  ? `等待 OAuth 授权超时（期间收到 ${stateMismatches} 次 state 不匹配的回调，已忽略）`
+                  : "等待 OAuth 授权超时",
+              ),
+            ),
+          timeoutMs,
+        );
         (timer as any).unref?.();
 
         if (signal) {

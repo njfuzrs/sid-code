@@ -6,7 +6,7 @@ Date: 2026-10-06
 
 ## 决定了什么
 
-- **D20 / D22 回调服务器**（`oauth-callback-server.ts`）：state 校验挪进请求处理，必须在回复浏览器之前完成。state 对不上（包括缺失、重复参数）时回 400 失败页，**不结算、不关服务器**，继续等真回调。授权服务器的 error 回调也得带对 state 才会终结流程，否则本机任意进程发一个 `?error=x` 就能打断授权。`code` 与 `state` 不再用 `\x00` 拼进一个字符串传递。
+- **D20 / D22 回调服务器**（`oauth-callback-server.ts`）：state 校验挪进请求处理，必须在回复浏览器之前完成。state 对不上（包括缺失、重复参数）时回 400 失败页，**不结算、不关服务器**，继续等真回调；超时报错里会带上「期间收到 N 次 state 不匹配」。`sid-code auth login`（`identity/cli-login.ts` 复用同一个回调服务器）仍据此归因为 `state_mismatch`，只是从「立即报」变成了「超时后报」。授权服务器的 error 回调也得带对 state 才会终结流程，否则本机任意进程发一个 `?error=x` 就能打断授权。`code` 与 `state` 不再用 `\x00` 拼进一个字符串传递。
 - **D19 RFC 9207**：`waitForCode` 增加 `issuer` 参数，期望值取发现阶段的 `metadata.issuer`。回调带了 `iss` 就必须逐字相等。元数据声明 `authorization_response_iss_parameter_supported` 时，缺 `iss` 也判失败。
 - **D18 脱敏**：新增 `redactOAuthUrl()`（state / code / code_challenge / code_verifier / secret / token 打成 `[REDACTED]`）。manager 在没有 UI 回调时走日志分支，这条分支改用脱敏 URL，级别从 info 升到 warn，免得 WARN 级 logger 把它吞掉。cli.ts 直出 stderr 的那条（#147）保持原文，链接仍可点击。
 - **D21 状态**：新增 `NEEDS_AUTH`。OAuth server 授权没走完（超时、取消、发现失败）统一包成 `NeedsAuthorizationError`，状态落在 NEEDS_AUTH，不落 FAILED。half-open 探测只探 FAILED，所以不会定时再弹授权。`enabled:false` 的 server 登记进 `disabledConfigs`，`getStatus` 里显示 `disabled`，但不进 `serverConfigs`（重连、探测、closeAll 都遍历它，混进去就得每处加跳过判断）。`/mcp list`、面板、`/doctor` 都补上了「待授权」文案。
@@ -26,5 +26,5 @@ Date: 2026-10-06
 
 - 新增 `packages/core/tests/mcp/oauth-elicitation-b3.test.ts`，22 条全过；`oauth-callback-server.test.ts` 里两条旧断言按新语义改写（state 错 → 失败页 + 继续等；error 回调需带 state），`manager.test.ts` 里「disabled 不出现」改为「disabled 出现且状态为 disabled」。
 - **变异自证**：去掉 state 校验 → D20/D22 三条变红；去掉 iss 比对 → D19 变红；把日志分支改回 `${url}`、或在 elicitation.ts 加回 `console.log(`，对应源码判据变红。
-- `bun run affected-tests:run`（`./packages/cli/` + `./packages/core/tests/mcp/`）1885 pass / 0 fail；`make build` 自检通过；oxlint、`lint:boundary` 全绿；`docs:gen-reference` 已重新生成（`/mcp` 参数提示多了 `approve`）。
+- 全量 `bun test` 13768 pass / 0 fail（首次 CI 抓到 `cli-login.test.ts` 依赖旧的「state 错立即终结」语义、以及全量跑时 logger 控制台输出混进 stdout 捕获，均已修）；`make build` 自检通过；oxlint、`lint:boundary` 全绿；`docs:gen-reference` 已重新生成（`/mcp` 参数提示多了 `approve`）。
 - **没验证的**：没有对真实 OAuth 授权服务器（带 RFC 9207 的 AS）跑端到端，只用了本地 mock 回调；TUI 下真实 MCP server 发起 elicitation 时的对话框只验证到了「走提问桥」这一层，没做 TUI 端到端驱动；`/mcp approve` 热连接只单测了 `approveAndConnectPendingServer`，命令本身没有起会话实跑。

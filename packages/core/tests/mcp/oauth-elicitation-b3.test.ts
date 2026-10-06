@@ -98,6 +98,13 @@ describe("D20/D22 回调服务器 state 校验", () => {
     expect(await p).toBe("a\u0000b");
   });
 
+  test("期间有 state 不匹配回调时，超时报错带上该信息", async () => {
+    const h = await startServer();
+    const p = h.waitForCode("good", 300);
+    await fetch(`${h.redirectUri}?code=X&state=bad`);
+    await expect(p).rejects.toThrow(/1 次 state 不匹配/);
+  });
+
   test("state 正确的 error 回调仍终结流程", async () => {
     const h = await startServer();
     const p = h.waitForCode("s", 5000);
@@ -195,7 +202,13 @@ describe("D21 连接状态", () => {
 // ─── D26 / D28：elicitation 不再假装 accept、不写 stdout ───
 
 describe("D26/D28 elicitation handler", () => {
+  // 判据是「handler 自己不写 stdout」。logger 的控制台输出不算：无头模式下 cli 把它配成
+  // consoleToStderr，这里照同一配置来（全量跑时别的用例可能打开了 logger 控制台输出）。
   const captureStdout = async (fn: () => Promise<unknown>) => {
+    const { getLogger } = await import("@sid-code/core/debug/logger.ts");
+    const lgOpts = (getLogger() as any).options as { consoleToStderr?: boolean };
+    const prevToStderr = lgOpts.consoleToStderr;
+    lgOpts.consoleToStderr = true;
     const orig = process.stdout.write.bind(process.stdout);
     const origLog = console.log;
     let out = "";
@@ -211,6 +224,7 @@ describe("D26/D28 elicitation handler", () => {
     } finally {
       (process.stdout as any).write = orig;
       console.log = origLog;
+      lgOpts.consoleToStderr = prevToStderr;
     }
   };
 
