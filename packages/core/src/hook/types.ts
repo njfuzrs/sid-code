@@ -27,7 +27,7 @@ export enum HookEventName {
   PreToolUse = "PreToolUse",
   /** 工具执行成功返回结果后触发。不可 block，仅可注入附加上下文。 */
   PostToolUse = "PostToolUse",
-  /** 工具执行抛异常后触发。不可 block，fire-and-forget 不等待结果。 */
+  /** 工具执行了但失败（返回错误或抛异常）后触发；权限拒绝走 PermissionDenied，不触发本事件。不可 block。 */
   PostToolUseFailure = "PostToolUseFailure",
   /** 用户输入提交后、入上下文前触发。可 block（原 prompt 不入上下文）。 */
   UserPromptSubmit = "UserPromptSubmit",

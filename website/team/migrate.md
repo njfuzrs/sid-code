@@ -6,10 +6,11 @@ description: 哪些配置不用动就能用、哪些必须改结构、以及用�
 # 从 Claude Code 迁移
 
 好消息是大部分东西不用迁：sid-code 会直接读 `~/.claude/` 下的一批文件。
-坏消息是 `hooks` 的结构不兼容：CC 的嵌套写法会被跳过。启动时有告警，
-但不开 `-d` 容易看漏——这是整个迁移里最值得先看一眼的地方。
+`hooks` 段的格式也与 CC 一致了：嵌套写法、PascalCase 事件名、CC 工具名（`Bash` / `Edit|Write`）、
+`${CLAUDE_PROJECT_DIR}` 都能原样用，只需要把它**放到 sid-code 的配置文件里**——
+sid-code 不读 `~/.claude/settings.json` 与 `.claude/settings.json`。
 
-这页先说什么不用动，再说什么必须改，最后给一个半自动的迁移办法。
+这页先说什么不用动，再说什么要搬或要改，最后给一个半自动的迁移办法。
 
 ## 快速上手
 
@@ -57,61 +58,53 @@ sid-code 兼容读取 `~/.claude/` 与项目 `.claude/`，同名时以 `.sid-cod
 
 ## 必须改的部分
 
-### hooks：结构不兼容，嵌套写法会被跳过
+### hooks：格式不用改，要换个文件放
 
-这是最大的差异。CC 是两层结构（`matcher` 分组包裹一个 `hooks` 数组），
-sid-code 是**平铺条目**：`type` / `command` / `matcher` 在同一层。
-事件名两种写法都认：PascalCase（CC 写法，如 `PreToolUse`）与 snake_case（`pre_tool_use`）运行时等价。
-
-把 CC 的配置原样搬过来：
+把 CC `settings.json` 里的 `hooks` 段**原样**复制到 `~/.sid-code/settings.json`（用户级）
+或 `<项目>/.sid-code/settings.json`（项目级）即可，下面这份 CC 配置不改一个字就能用：
 
 ```json
 {
   "hooks": {
     "PreToolUse": [
-      { "matcher": "Bash", "hooks": [{ "type": "command", "command": "echo x" }] }
+      {
+        "matcher": "Bash",
+        "hooks": [{ "type": "command", "command": "\"$CLAUDE_PROJECT_DIR\"/.claude/hooks/block-rm.sh" }]
+      }
     ]
   }
 }
 ```
 
-配置校验会报：
+能直接用的部分（源码见 `packages/core/src/hook/config-normalize.ts`、`packages/core/src/tool/tool-name-aliases.ts`）：
 
-```text
-✗ hooks.PreToolUse[0].command: command 类型的 Hook 必须指定 command 字段
+- **嵌套形状** `{matcher, hooks:[...]}`：推荐写法，与 CC 一致。sid-code 早期的平铺写法也永久兼容
+- **事件名**：PascalCase（`PreToolUse`）与 snake_case（`pre_tool_use`）等价
+- **工具名**：`matcher` 写 CC 名（`Bash`、`Edit|Write`）或 sid 内部名（`bash`、`edit|write`）都认；
+  hook 从 stdin 收到的 `tool_name` 是 CC 名，另带 `sid_tool_name` 给需要内部名的脚本
+- **`CLAUDE_PROJECT_DIR` / `CLAUDE_PLUGIN_ROOT` / `CLAUDE_PLUGIN_DATA`**：作为环境变量导出，
+  `CLAUDE_PROJECT_DIR` 固定为会话启动时的项目根（`bash cd` 之后也不变）
+- **输出语义**：exit 2 阻断、stdout JSON 的 `decision` / `hookSpecificOutput`、
+  `SessionStart` / `UserPromptSubmit` 的纯文本 stdout 进上下文，都按 CC 文档的描述生效
+
+要你动手的只有两件事：
+
+1. **脚本路径**：`.claude/hooks/x.sh` 这类脚本要么一起复制到 `.sid-code/hooks/` 并改路径，要么保留原路径不动
+   （sid-code 只是不读 CC 的 **settings**，脚本放在哪里都能执行）
+2. **项目级 hooks 要信任工作区**：未信任的工作区里项目级 hooks 会被跳过、用户级照常；
+   `-p` / SDK 下没有信任弹窗，用 `--trust-workspace` 本会话放行。这一点与 CC 不同，是刻意的
+
+::: tip 迁移完先确认 hook 真的注册上了
+```bash
+sid-code hooks list --json     # 实际注册表：事件、来源、matcher、handler
 ```
-
-加载 hook 时还会点名嵌套形状（`packages/core/src/hook/registry.ts`）：
-
-```text
-PreToolUse 的 hook 用了嵌套形状 {matcher, hooks:[...]}，settings.json 需要平铺形状（把 type/command 提到与 matcher 同级）——本条已跳过，不会触发
-```
-
-事件名没问题，问题只在 `{matcher, hooks:[]}` 这层包裹。转换后的正确写法（实测加载无告警、hook 正常触发）：
-
-```json
-{
-  "hooks": {
-    "pre_tool_use": [
-      { "type": "command", "matcher": "bash", "command": "echo x >&2" }
-    ]
-  }
-}
-```
-
-转换规则就两条：
-
-1. 拆掉 `{matcher, hooks:[...]}` 这层包裹，把内层每条提到外层数组
-2. `matcher` 作为**同级字段**保留在每条上（工具名用小写，如 `bash` 而非 `Bash`）
-
-事件名不用改，与 CC 同名。全部 32 类（其中 18 类当前有真实触发点）见[Hook 事件参考](/ref/hooks)。
-
-::: tip 迁移完先验证 hook 真的在跑
-配置校验只对**结构**报错，不保证 hook 逻辑生效。让 hook 往 stderr 写一句
-（`echo sentinel >&2`），跑一个会触发它的任务，看有没有那句话。
-`session_start` 是个例外——它是 fire-and-forget，**无法注入上下文**，
-详见[Hook](/extend/hooks)。
+被跳过的条目（未信任工作区、内部事件、字段非法）会单独列出并给出原因。
+确认注册后，再跑一个会触发它的任务看行为。
 :::
+
+sid-code 有、CC 没有的事件只有 `AfterAgent` / `BeforeModel` / `AfterModel` 三个；
+其余事件与 CC 同名。哪些事件当前会触发、刻意与 CC 不同的地方，见[Hook 指南](/extend/hooks#与-claude-code-的差异)
+与[Hook 事件参考](/ref/hooks)。
 
 ### MCP：`type` 要改成 `transport`
 
@@ -193,7 +186,7 @@ CC 的 `model` / `ANTHROPIC_BASE_URL` / `ANTHROPIC_AUTH_TOKEN` 这套跟 sid-cod
 - **成本可见**：`/cost` 直接看这次会话花了多少、缓存命中率多少（[成本与用量](/use/cost)）
 - **子代理按类型分级用便宜模型**：零配置下 explore / plan / summarize 已自动降档
   （[子代理](/extend/subagents)）
-- **32 类 Hook 事件**，见[Hook 事件参考](/ref/hooks)
+- **主循环级 Hook 事件** `AfterAgent` / `BeforeModel` / `AfterModel`，见[Hook 事件参考](/ref/hooks)
 - **轨迹落盘可聚合**：[轨迹采集与可观测](/team/observability)
 - **配额与预算规则**：[配额与成本控制](/team/quota)
 
@@ -232,13 +225,13 @@ sid-code -p "ok"         # 有没有 ⚠ / ✗ 开头的配置校验告警
 
 第三条最容易被忽略：配置校验的告警是**非致命**的，启动照常继续。
 所以一定要看一眼输出里有没有 `⚠ hooks.` 或 `⚠ quota.` 这类行——
-它们意味着某段配置静默失效了。
+它们意味着某段配置没有生效。hooks 另有 `sid-code hooks list` 可以直接看注册结果。
 
 ## 相关
 
 - [配置 LLM Provider](/start/configure) —— `/v1` 两族规则，迁移后必读
-- [Hook](/extend/hooks) —— 转换后的 hook 怎么写、三个实跑场景
-- [Hook 事件参考](/ref/hooks) —— 全部 32 类事件的 schema
+- [Hook](/extend/hooks) —— hook 怎么写、与 CC 的差异表
+- [Hook 事件参考](/ref/hooks) —— 全部事件与是否会触发
 - [权限系统](/use/permissions) —— 规则语法逐条语义
 - [记忆与规则](/use/memory) —— CLAUDE.md 七层合并链
 - [企业 policy 与安全边界](/team/policy) —— 项目级提权过滤为什么会剥掉你的字段

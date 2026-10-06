@@ -22,8 +22,8 @@ description: 全部 Hook 事件的配置键名、是否会触发与触发时机�
 > 其中 **31** 类当前有真实触发点。
 >
 > **第一列就是你写进 `settings.json` 的键名。** 两种写法运行时等价
-> （`pre_tool_use` 与 `PreToolUse` 都认，内部会归一化），本表优先给 snake_case——
-> 与[配置 Hook](/extend/hooks) 的示例保持一致，少一处需要读者自己换算的地方。
+> （`pre_tool_use` 与 `PreToolUse` 都认，内部会归一化），本表第一列给 snake_case，
+> 第三列是 PascalCase（与 Claude Code 同名，[Hook 指南](/extend/hooks)的示例用这种）。
 > 第一列是 PascalCase、枚举名列为 — 的 7 个事件**没有 snake_case 别名**，
 > 配置里只能写这一种（不是漏写）。
 >
@@ -35,7 +35,7 @@ description: 全部 Hook 事件的配置键名、是否会触发与触发时机�
 |---|---|---|---|
 | `pre_tool_use` | ✓ | `PreToolUse` | 工具执行前、权限检查之前触发。可 block（返回 deny 则工具不执行）。 |
 | `post_tool_use` | ✓ | `PostToolUse` | 工具执行成功返回结果后触发。不可 block，仅可注入附加上下文。 |
-| `post_tool_use_failure` | ✓ | `PostToolUseFailure` | 工具执行抛异常后触发。不可 block，fire-and-forget 不等待结果。 |
+| `post_tool_use_failure` | ✓ | `PostToolUseFailure` | 工具执行了但失败（返回错误或抛异常）后触发；权限拒绝走 PermissionDenied，不触发本事件。不可 block。 |
 | `user_prompt_submit` | ✓ | `UserPromptSubmit` | 用户输入提交后、入上下文前触发。可 block（原 prompt 不入上下文）。 |
 | `AfterAgent` | ✓ | — | 模型 end_turn 且无待执行工具后触发。不可 block，仅可请求清除上下文。 |
 | `BeforeModel` | ✓ | — | 每轮 LLM 请求发出前触发。可 block（阻止本次请求并结束循环）。 |
