@@ -3204,7 +3204,7 @@ export async function* queryLoop(loopConfig: QueryLoopConfig): AsyncGenerator<Qu
       }
 
       const cacheSavingsUSD = loopConfig.tokenMeter
-        ? loopConfig.tokenMeter.calculateCacheSavings(config.model, response.usage)
+        ? loopConfig.tokenMeter.calculateCacheSavings(config.model, response.usage, config.provider)
         : 0;
 
       if (loopConfig.quotaManager) {

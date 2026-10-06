@@ -35,10 +35,12 @@ export class SpanHandle {
     private _kind: SpanKind,
     initialAttributes?: Attributes,
     startTime?: number,
+    /** true = 不进 traceContext 栈（并发 span，见 TelemetryBus.startSpan 的 detached） */
+    private readonly detached = false,
   ) {
     this._startTime = startTime ?? Date.now();
     if (initialAttributes) this._attributes = { ...initialAttributes };
-    traceContext.pushSpan(spanId);
+    if (!detached) traceContext.pushSpan(spanId);
     bus.markActive(spanId, this._startTime);
   }
 
@@ -99,7 +101,8 @@ export class SpanHandle {
       error: this._error,
     };
 
-    this.traceContext.popSpan();
+    // 按 id 移除而非 popSpan()：结束的不一定是栈顶（缺陷 2，见 context.ts 类注释）
+    if (!this.detached) this.traceContext.removeSpan(this.spanId);
     this.bus.markEnded(this.spanId);
     this.bus.enqueueSpan(spanData);
   }
@@ -202,12 +205,15 @@ export class TelemetryBus {
    *
    * `opts.startTime`（Unix 毫秒）用于**事后补建**的 span：观测点只在操作结束后才拿得到
    * 数据时（如 PostToolUse 才知道工具跑了多久），按真实起点回填，瀑布图上的长度才是真的。
+   *
+   * `opts.parentSpanId` + `opts.detached`：给**可能并发**的 span 用（子代理 invoke_agent）。
+   * 显式指定 parent、不进栈 —— 进栈的话并发成员会互相成为对方的 parent（缺陷 2）。
    */
   startSpan(
     kind: SpanKind,
     name: string,
     attributes?: Attributes,
-    opts?: { startTime?: number },
+    opts?: { startTime?: number; parentSpanId?: string; detached?: boolean },
   ): SpanHandle {
     const ctx = this.traceContext;
     if (!ctx) {
@@ -217,7 +223,7 @@ export class TelemetryBus {
     }
 
     const spanId = generateSpanId();
-    const parentSpanId = ctx.currentSpanId;
+    const parentSpanId = opts?.parentSpanId ?? ctx.currentSpanId;
     // 回填的起点不得早于父 span 的起点：duration 的计时基准与父 span 不同源
     // （如工具耗时可能把父 span 开始前的排队也算进去），越界会让子 span 在瀑布图上
     // 画到父的左边，被后端判成时间错位。
@@ -226,7 +232,17 @@ export class TelemetryBus {
       const parentStart = this.activeStartTimes.get(parentSpanId);
       if (parentStart !== undefined && startTime < parentStart) startTime = parentStart;
     }
-    return new SpanHandle(this, ctx, spanId, parentSpanId, name, kind, attributes, startTime);
+    return new SpanHandle(
+      this,
+      ctx,
+      spanId,
+      parentSpanId,
+      name,
+      kind,
+      attributes,
+      startTime,
+      opts?.detached ?? false,
+    );
   }
 
   /** 记录 Metric 数据点 */

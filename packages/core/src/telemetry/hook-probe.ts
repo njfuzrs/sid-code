@@ -9,6 +9,7 @@ import type { HookSystem } from "../hook/system.ts";
 import type { TelemetryBus } from "./bus.ts";
 import type { SpanHandle } from "./bus.ts";
 import type { TokenMeter } from "./metrics/token-meter.ts";
+import { currentSpanScope } from "./span-scope.ts";
 import type { Attributes } from "./types.ts";
 import { ATTR } from "./types.ts";
 import { normalizeCacheUsage } from "../llm/types.ts";
@@ -38,9 +39,16 @@ export type SpanEnricher = (
   input: HookInput,
 ) => Record<string, unknown>;
 
+/** 主循环的 chat span key（子代理用各自的 agentId） */
+const MAIN_SCOPE = "__main__";
+
 export class TelemetryHookProbe {
   private agentSpan: SpanHandle | undefined;
-  private llmSpan: SpanHandle | undefined;
+  /**
+   * 进行中的 chat span：key = 子代理 agentId（主循环为 MAIN_SCOPE）。
+   * 曾是单个字段：并发子代理的 BeforeModel 会互相覆盖（缺陷 2），覆盖掉的那个永不 end（缺陷 3）。
+   */
+  private llmSpans = new Map<string, SpanHandle>();
   private turns = 0;
 
   /** blocked_on_user span 暂存：key = tool_use_id || tool_name */
@@ -107,7 +115,10 @@ export class TelemetryHookProbe {
       //（status=denied，不计工具失败）
       HookEventName.PermissionDenied,
       HookEventName.SessionEnd,
-      // spec 17 §6.1.3 增强追踪树：权限等待 + Hook 执行 span
+      // spec 17 §6.1.3 增强追踪树：权限等待 + Hook 执行 span。
+      // ⚠️ 预留：这 4 个事件全仓无 fire 点，订阅了也恒不触发，blocked_on_user /
+      // hook_execution 两类 span 当前不产生（见 types.ts SpanKind 注释）。保留订阅是为了
+      // 接线时不用再改这里；别把「已订阅」读成「已接线」。
       HookEventName.BeforePermissionCheck,
       HookEventName.AfterPermissionCheck,
       HookEventName.BeforeHookExecution,
@@ -177,6 +188,22 @@ export class TelemetryHookProbe {
     }
   }
 
+  /**
+   * 当前异步链所在子代理的 span 作为 parent（缺陷 2）。
+   *
+   * 在子代理作用域里（span-scope.ts）：显式挂到该子代理的 invoke_agent 下且不进共享栈 ——
+   * 并发子代理各走各的链，互不可见。主循环里返回 undefined，沿用 TraceContext 栈（串行）。
+   */
+  private scopedParent(): { parentSpanId: string; detached: true } | undefined {
+    const scope = currentSpanScope();
+    const span = scope ? this.subagentSpans.get(scope) : undefined;
+    return span ? { parentSpanId: span.spanId, detached: true } : undefined;
+  }
+
+  private llmKey(): string {
+    return currentSpanScope() ?? MAIN_SCOPE;
+  }
+
   private handleSessionStart(input: SessionStartInput): void {
     // 创建顶层 invoke_agent span。
     // 名字按 OTel GenAI 约定取 `invoke_agent {gen_ai.agent.name}`（曾用模型名：
@@ -238,19 +265,30 @@ export class TelemetryHookProbe {
   }
 
   private handleBeforeModel(input: BeforeModelInput): void {
+    // 缺陷 3：上一轮的 chat span 还没 end ⇒ 那一轮的 AfterModel 没 fire（流中途抛异常 / abort）。
+    // 不收掉的话它永不入队，且 spanId 永久留在 traceContext 栈里，此后所有 span 都挂在
+    // 这个盘上不存在的幽灵 parent 下。
+    const key = this.llmKey();
+    this.abandonLlmSpan(key, "after_model_not_fired");
     this.turns++;
-    this.llmSpan = this.bus.startSpan("chat", `chat ${input.llm_request.model}`, {
-      [ATTR.OPERATION_NAME]: "chat",
-      [ATTR.PROVIDER_NAME]: this.config.provider,
-      [ATTR.REQUEST_MODEL]: input.llm_request.model,
-      [ATTR.TURN_NUMBER]: this.turns,
-      ...(this.collectEnrichedAttributes("chat", input) as Attributes),
-    });
+    const llmSpan = this.bus.startSpan(
+      "chat",
+      `chat ${input.llm_request.model}`,
+      {
+        [ATTR.OPERATION_NAME]: "chat",
+        [ATTR.PROVIDER_NAME]: this.config.provider,
+        [ATTR.REQUEST_MODEL]: input.llm_request.model,
+        [ATTR.TURN_NUMBER]: this.turns,
+        ...(this.collectEnrichedAttributes("chat", input) as Attributes),
+      },
+      this.scopedParent(),
+    );
+    this.llmSpans.set(key, llmSpan);
 
     // 内容级 tracing（P1-5）：默认关闭，四道闸门见 content-tracing.ts。
     // 挂在这里而不是 loop.ts：BeforeModel 载荷已经带齐 system / tools / raw_messages，
     // 无需为了采内容去改 LLM 调用链——采集器不该侵入被采集的链路。
-    addRequestContent(this.llmSpan, {
+    addRequestContent(llmSpan, {
       system: input.llm_request.system,
       tools: input.llm_request.tools,
       messages: input.llm_request.raw_messages ?? input.llm_request.messages,
@@ -258,23 +296,50 @@ export class TelemetryHookProbe {
   }
 
   private handleAfterModel(input: AfterModelInput): void {
+    const key = this.llmKey();
+    const llmSpan = this.llmSpans.get(key);
     // 内容级 tracing（P1-5）放在 usage 守卫**之前**：下面那句 `if (!usage) return`
     // 会在「响应没带 usage」时提前退出，而那恰恰是最需要看内容的场景之一
     // （截断响应 / provider 异常返回往往就是没 usage）。放在守卫后面等于
     // 「越是出问题的那一轮，越采不到内容」。
-    if (this.llmSpan) {
-      addResponseContent(this.llmSpan, {
+    if (llmSpan) {
+      addResponseContent(llmSpan, {
         text: input.llm_response.text,
         thinkingBlocks: input.llm_response.thinking_blocks,
       });
     }
 
+    // 缺陷 3（20260927 可观测性审计）：end() 是入队的唯一时机，必须在 finally 里。
+    // 曾经 `if (!usage) return` 直接跳过 end()：那一轮 span 永不落盘、spanId 永久留在栈上，
+    // 而「响应没带 usage」正是截断 / 异常响应的典型形态 —— 越该看的那一轮越看不到。
+    try {
+      this.recordAfterModel(input, llmSpan);
+    } finally {
+      if (llmSpan) {
+        if (!input.llm_response.usage) llmSpan.setAttribute("sidcode.usage.missing", true);
+        llmSpan.end();
+        this.llmSpans.delete(key);
+      }
+    }
+  }
+
+  /** 收掉一个没等到 AfterModel 的 chat span：标 error 后入队，不让它悬空 */
+  private abandonLlmSpan(key: string, reason: string): void {
+    const span = this.llmSpans.get(key);
+    if (!span) return;
+    span.setAttribute("sidcode.span.abandoned", reason);
+    span.recordError(new Error(`chat span 未收到 AfterModel（${reason}）`));
+    span.end();
+    this.llmSpans.delete(key);
+  }
+
+  private recordAfterModel(input: AfterModelInput, llmSpan: SpanHandle | undefined): void {
     const usage = input.llm_response.usage;
     if (!usage) return;
 
     // TTFT：如果载荷中有 ttft_ms，记录为 span event
-    if (input.llm_response.ttft_ms !== undefined && this.llmSpan) {
-      this.llmSpan.addEvent("gen_ai.first_token", {
+    if (input.llm_response.ttft_ms !== undefined && llmSpan) {
+      llmSpan.addEvent("gen_ai.first_token", {
         ttft_ms: input.llm_response.ttft_ms,
       });
     }
@@ -291,22 +356,21 @@ export class TelemetryHookProbe {
           cacheCreationInputTokens: usage.cacheCreationInputTokens,
           reasoningTokens: usage.reasoningTokens,
         },
-        costUSD: input.llm_response.cost_usd ?? 0,
+        // 缺省时由 TokenMeter 按 model 定价算（不再 `?? 0`：0 会被当成真实成本）
+        costUSD: input.llm_response.cost_usd,
         sessionId: this.config.sessionId,
       });
     }
 
-    // 结束 chat span，附加属性
+    // 附加属性；end() 由 handleAfterModel 的 finally 负责
     const enriched = this.collectEnrichedAttributes("chat", input);
-    this.llmSpan?.setAttributes({
+    llmSpan?.setAttributes({
       ...usageAttributes(usage, this.config.provider),
       [ATTR.FINISH_REASONS]: input.llm_response.stop_reason ?? "unknown",
       [ATTR.COST_USD]: input.llm_response.cost_usd ?? 0,
       [ATTR.CACHE_SAVINGS_USD]: input.llm_response.cache_savings_usd ?? 0,
       ...(enriched as Attributes),
     });
-    this.llmSpan?.end();
-    this.llmSpan = undefined;
   }
 
   private handlePostToolUse(input: PostToolUseInput): void {
@@ -327,7 +391,7 @@ export class TelemetryHookProbe {
         [ATTR.SUCCESS]: !input.is_error,
         ...(enriched as Attributes),
       },
-      { startTime: Date.now() - toolDuration },
+      { startTime: Date.now() - toolDuration, ...this.scopedParent() },
     );
     // 如果有真实耗时，记录为属性
     if (input.duration_ms !== undefined) {
@@ -350,18 +414,23 @@ export class TelemetryHookProbe {
    * success=false 一起标，聚合「工具失败率」时按 status 排除，拒绝另见权限决策（B11）。
    */
   private handlePermissionDenied(input: PermissionDeniedInput): void {
-    const span = this.bus.startSpan("execute_tool", `execute_tool ${input.tool_name}`, {
-      [ATTR.OPERATION_NAME]: "execute_tool",
-      [ATTR.TOOL_NAME]: input.tool_name,
-      [ATTR.TOOL_CALL_ID]: input.tool_use_id ?? "",
-      [ATTR.SUCCESS]: false,
-      "sidcode.tool.status": "denied",
-      "sidcode.permission.denial_source": input.denial_source,
-    });
+    const span = this.bus.startSpan(
+      "execute_tool",
+      `execute_tool ${input.tool_name}`,
+      {
+        [ATTR.OPERATION_NAME]: "execute_tool",
+        [ATTR.TOOL_NAME]: input.tool_name,
+        [ATTR.TOOL_CALL_ID]: input.tool_use_id ?? "",
+        [ATTR.SUCCESS]: false,
+        "sidcode.tool.status": "denied",
+        "sidcode.permission.denial_source": input.denial_source,
+      },
+      this.scopedParent(),
+    );
     span.end();
   }
 
-  // ---- spec 17 §6.1.3：权限等待 / Hook 执行 span ----
+  // ---- spec 17 §6.1.3：权限等待 / Hook 执行 span（预留：依赖事件无 fire 点，当前恒不执行）----
 
   private permissionKey(input: PermissionCheckInput): string {
     return input.tool_use_id || input.tool_name;
@@ -409,16 +478,27 @@ export class TelemetryHookProbe {
 
   private handleSubagentStart(input: SubagentStartInput): void {
     const model = input.model ?? this.config.model;
-    const span = this.bus.startSpan("invoke_agent", `invoke_agent ${input.agent_type}`, {
-      [ATTR.OPERATION_NAME]: "invoke_agent",
-      [ATTR.AGENT_NAME]: `subagent:${input.agent_type}`,
-      [ATTR.CONVERSATION_ID]: this.config.sessionId,
-      [ATTR.REQUEST_MODEL]: model,
-      ...(input.provider ? { [ATTR.PROVIDER_NAME]: input.provider } : {}),
-      "sidcode.subagent.id": input.agent_id,
-      "sidcode.subagent.type": input.agent_type,
-      ...(this.collectEnrichedAttributes("invoke_agent", input) as Attributes),
-    });
+    const span = this.bus.startSpan(
+      "invoke_agent",
+      `invoke_agent ${input.agent_type}`,
+      {
+        [ATTR.OPERATION_NAME]: "invoke_agent",
+        [ATTR.AGENT_NAME]: `subagent:${input.agent_type}`,
+        [ATTR.CONVERSATION_ID]: this.config.sessionId,
+        [ATTR.REQUEST_MODEL]: model,
+        ...(input.provider ? { [ATTR.PROVIDER_NAME]: input.provider } : {}),
+        "sidcode.subagent.id": input.agent_id,
+        "sidcode.subagent.type": input.agent_type,
+        ...(this.collectEnrichedAttributes("invoke_agent", input) as Attributes),
+      },
+      {
+        // 缺陷 2：子代理可并发（swarm team 的 Promise.all），不能走共享栈取 parent ——
+        // 否则并发成员互为父子、先结束的弹掉别人的 id。parent 取「发起方所在作用域」：
+        // 主循环发起 → 会话根；子代理里再派 → 那个子代理（SubagentStart 在子代理作用域
+        // **之外**、发起方作用域之内 fire，见 sub-agent.ts）。不进共享栈。
+        ...(this.scopedParent() ?? { parentSpanId: this.agentSpan?.spanId, detached: true }),
+      },
+    );
     this.subagentSpans.set(input.agent_id, span);
   }
 
@@ -438,7 +518,9 @@ export class TelemetryHookProbe {
           cacheReadInputTokens: usage.cacheReadInputTokens,
           cacheCreationInputTokens: usage.cacheCreationInputTokens,
         },
-        costUSD: 0, // 子代理无独立 cost 字段，TokenMeter 内部按 model 定价回算
+        // 缺陷 32（P0）：子代理载荷无 cost 字段，**不传** costUSD，由 TokenMeter 按 model 定价算。
+        // 曾传 `costUSD: 0` 并注释「TokenMeter 内部回算」—— 它当时不回算，于是成本 metric 恒 0、
+        // cache_savings 等于全价。回算现在由 token-meter.ts 的 costUSD 缺省分支保证（有单测）。
         sessionId: this.config.sessionId,
       });
     }
@@ -459,6 +541,8 @@ export class TelemetryHookProbe {
   }
 
   private handleSessionEnd(input: SessionEndInput): void {
+    // 缺陷 3：最后一轮 AfterModel 没 fire 的话，chat span 在这里收掉，必须早于根 span end
+    for (const key of [...this.llmSpans.keys()]) this.abandonLlmSpan(key, "session_end");
     const stats = input.stats;
     if (this.agentSpan && stats) {
       this.agentSpan.setAttributes({

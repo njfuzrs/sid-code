@@ -160,10 +160,7 @@ describe("内容级 tracing · 经真实 Hook 路径接线", () => {
       { model: "claude-sonnet-4", messages: [{ role: "user", content: "hi" }] },
       { text: "被截断的半句回答", stop_reason: undefined }, // 无 usage
     );
-    // chat span 没被 end（usage 守卫提前返回），靠 SessionEnd 之后再 flush 拿不到它，
-    // 所以这里直接断言：内容事件已经挂在那个未结束的 span 上。
-    // 用 sweep 的方式取——结束 agent span 会带出 trace，但 chat span 需要显式结束。
-    // 改为验证「不抛异常且后续 span 正常」，并在下一轮确认 hash 已被记住（说明内容确实处理过）。
+    // 缺陷 3 修复后，无 usage 的这一轮 chat span 也会 end 入队（不再悬空），可直接断言。
     await hookSystem.fireBeforeModelEvent({
       model: "claude-sonnet-4",
       messages: [{ role: "user", content: "hi" }],
@@ -175,11 +172,15 @@ describe("内容级 tracing · 经真实 Hook 路径接线", () => {
     );
     await bus.flush();
 
-    // 第二轮的 chat span 里不该再有 system_prompt 全文（第一轮已发过 → 证明第一轮真的采了）
-    const chat = spans.find((s) => s.kind === "chat")!;
-    expect(chat.events.map((e) => e.name)).not.toContain("content.system_prompt");
-    // 但第二轮的响应内容照常采到
-    expect(chat.events.map((e) => e.name)).toContain("content.model_output");
+    const chats = spans.filter((s) => s.kind === "chat");
+    expect(chats).toHaveLength(2);
+    // 第一轮（无 usage）：span 照样落盘，内容照样采到，并标了 usage 缺失
+    expect(chats[0]!.events.map((e) => e.name)).toContain("content.system_prompt");
+    expect(chats[0]!.events.map((e) => e.name)).toContain("content.model_output");
+    expect(chats[0]!.attributes["sidcode.usage.missing"]).toBe(true);
+    // 第二轮不该再有 system_prompt 全文（第一轮已发过），但响应内容照常采到
+    expect(chats[1]!.events.map((e) => e.name)).not.toContain("content.system_prompt");
+    expect(chats[1]!.events.map((e) => e.name)).toContain("content.model_output");
   });
 
   test("默认（不配环境变量）走真实 Hook 路径也不产生任何内容事件", async () => {

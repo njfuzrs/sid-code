@@ -55,6 +55,7 @@
  * 显示 PASS。这条门禁抓的是它声称要抓的东西，不是自我感觉。
  */
 
+import { runInSpanScope } from "../../src/telemetry/span-scope.ts";
 import { describe, test, expect, beforeEach, afterEach } from "bun:test";
 import { mkdtempSync, rmSync } from "node:fs";
 import { join } from "node:path";
@@ -228,7 +229,8 @@ async function runSession(probe: TelemetryHookProbe, model: string): Promise<voi
     model,
     provider: "anthropic",
   });
-  await fireTurn(hookSystem, model);
+  // 生产路径里子代理执行体跑在 span 作用域内（sub-agent.ts 的 runInSpanScope），这里同构
+  await runInSpanScope("agent-1", () => fireTurn(hookSystem, model));
   await hookSystem.fireSubagentStopEvent({
     agent_id: "agent-1",
     agent_type: "explore",
