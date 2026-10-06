@@ -42,25 +42,27 @@ describe("oauth-callback-server", () => {
     expect(code).toBe("AUTH_CODE_XYZ");
   });
 
-  test("state 不匹配时拒绝", async () => {
+  test("state 不匹配：回失败页、不结算，继续等真实回调（D20/D22）", async () => {
     const { startCallbackServer } = await import("@sid-code/core/mcp/oauth-callback-server.ts");
     handle = await startCallbackServer();
 
     const codePromise = handle.waitForCode("expected-state", 5000);
 
-    // 不 await fetch——server close 后 fetch 可能挂起；只要触发请求即可
-    fetch(`${handle.redirectUri}?code=CODE&state=wrong-state`).catch(() => {});
+    const bad = await fetch(`${handle.redirectUri}?code=CODE&state=wrong-state`);
+    expect(bad.status).toBe(400);
+    expect(await bad.text()).not.toContain("授权成功");
 
-    await expect(codePromise).rejects.toThrow("state 不匹配");
+    await fetch(`${handle.redirectUri}?code=REAL&state=expected-state`);
+    expect(await codePromise).toBe("REAL");
   });
 
-  test("授权服务器返回错误时拒绝", async () => {
+  test("授权服务器返回错误时拒绝（error 回调同样要带对的 state）", async () => {
     const { startCallbackServer } = await import("@sid-code/core/mcp/oauth-callback-server.ts");
     handle = await startCallbackServer();
 
     const codePromise = handle.waitForCode("s", 5000);
 
-    fetch(`${handle.redirectUri}?error=access_denied&error_description=User+denied`).catch(
+    fetch(`${handle.redirectUri}?error=access_denied&error_description=User+denied&state=s`).catch(
       () => {},
     );
 

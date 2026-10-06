@@ -47,6 +47,8 @@ export interface AuthServerMetadata {
   code_challenge_methods_supported?: string[];
   token_endpoint_auth_methods_supported?: string[];
   grant_types_supported?: string[];
+  /** RFC 9207 §3：授权服务器声明授权响应必带 iss */
+  authorization_response_iss_parameter_supported?: boolean;
 }
 
 /** 受保护资源元数据（RFC 9728 子集） */
@@ -77,6 +79,42 @@ export class NeedsAuthorizationError extends Error {
   constructor(public readonly serverName: string) {
     super(`MCP 服务器 ${serverName} 需要 OAuth 授权`);
     this.name = "NeedsAuthorizationError";
+  }
+}
+
+// ─── 日志脱敏（D18）───
+
+/**
+ * OAuth URL 里不能进日志的参数。`state` 是 CSRF 令牌（泄露即防护失效）；
+ * `code` / `code_verifier` 换得到 token；`code_challenge` 本身可公开，但一并脱敏，
+ * 省得以后有人按「哪个能打哪个不能打」逐个判断。
+ */
+const SENSITIVE_OAUTH_PARAMS = [
+  "state",
+  "nonce",
+  "code",
+  "code_challenge",
+  "code_verifier",
+  "client_secret",
+  "refresh_token",
+  "access_token",
+] as const;
+
+/**
+ * 把 OAuth URL 的敏感查询参数替换成 `[REDACTED]`，**只用于日志**。
+ * 展示给用户点击的 URL 必须是原文（脱敏后的链接打不开）。
+ * 解析失败（不是合法 URL）时退化为整串正则替换，宁可多遮不可漏遮。
+ */
+export function redactOAuthUrl(url: string): string {
+  try {
+    const u = new URL(url);
+    for (const key of SENSITIVE_OAUTH_PARAMS) {
+      if (u.searchParams.has(key)) u.searchParams.set(key, "[REDACTED]");
+    }
+    return u.toString();
+  } catch {
+    const re = new RegExp(`([?&](?:${SENSITIVE_OAUTH_PARAMS.join("|")})=)[^&#\\s]*`, "g");
+    return url.replace(re, "$1[REDACTED]");
   }
 }
 
@@ -451,7 +489,12 @@ export async function performOAuthFlow(
     onAuthorizationUrl(authUrl.toString());
 
     // 4. 等待回调拿授权码（带 CSRF state 校验 + 超时 + abort）
-    const code = await callback.waitForCode(state, AUTH_FLOW_TIMEOUT_MS, signal);
+    // D19：RFC 9207 iss 校验。期望值就是发现阶段拿到的 metadata.issuer；
+    // 元数据声明了 authorization_response_iss_parameter_supported 时，缺 iss 也判失败。
+    const code = await callback.waitForCode(state, AUTH_FLOW_TIMEOUT_MS, signal, {
+      expectedIss: metadata.issuer,
+      issRequired: metadata.authorization_response_iss_parameter_supported === true,
+    });
 
     // 5. PKCE 换 token
     const tokens = await exchangeCodeForTokens(

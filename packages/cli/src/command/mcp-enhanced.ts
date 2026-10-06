@@ -37,7 +37,7 @@ export class MCPEnhancedCommand implements Command {
     return "MCP 服务器管理（无参打开交互面板）";
   }
   argumentHint() {
-    return "[list|add|remove|enable|disable|test|authenticate|prompts|prompt|resources] [参数]";
+    return "[list|add|remove|enable|disable|test|authenticate|approve|prompts|prompt|resources] [参数]";
   }
 
   subCommands(): Command[] {
@@ -49,6 +49,7 @@ export class MCPEnhancedCommand implements Command {
       new MCPDisableCommand(),
       new MCPTestCommand(),
       new MCPAuthenticateCommand(),
+      new MCPApproveCommand(),
       new MCPPromptsCommand(),
       new MCPPromptRunCommand(),
       new MCPResourcesCommand(),
@@ -99,6 +100,7 @@ class MCPListCommand implements Command {
           connecting: "… 连接中",
           reconnecting: "↻ 重连中",
           failed: "✗ 连接失败",
+          needs_auth: "! 待授权",
           disabled: "○ 已禁用",
           disconnected: "✗ 未连接",
         }[s.status] || s.status;
@@ -489,6 +491,10 @@ class MCPTestCommand implements Command {
       lines.push(`错误: ${server.error}`);
     }
 
+    if (server.status === "needs_auth") {
+      lines.push(`提示: 运行 /mcp authenticate ${name} 完成 OAuth 授权`);
+    }
+
     if (server.reconnectAttempts) {
       lines.push(`重连次数: ${server.reconnectAttempts}/5`);
     }
@@ -543,6 +549,60 @@ class MCPAuthenticateCommand implements Command {
     } catch (err: any) {
       return { kind: "error", message: `授权失败: ${err.message}` };
     }
+  }
+}
+
+/**
+ * /mcp approve - 会话内批准项目 .mcp.json 里待审批的 server 并立即连接（D17）。
+ *
+ * 原先唯一的审批入口是 `sid-code mcp approve`（独立子进程，手上没有 manager），
+ * 只能落盘后让用户重启。会话内有 manager，就直接 addServer 热连接。
+ */
+class MCPApproveCommand implements Command {
+  name() {
+    return "approve";
+  }
+  aliases() {
+    return [];
+  }
+  description() {
+    return "批准项目 .mcp.json 中待审批的 MCP 服务器并立即连接";
+  }
+
+  async execute(args: string, ctx: AppContext): Promise<CommandResult> {
+    const name = new ArgParser(args).get(0);
+    const approval = await import("@sid-code/core/mcp/approval.ts");
+    const { names } = approval.getPendingApprovalServers();
+
+    if (!name) {
+      return {
+        kind: "message",
+        message:
+          names.length === 0
+            ? "没有待审批的项目级 MCP 服务器"
+            : `用法: /mcp approve <name>\n待审批: ${names.join(", ")}`,
+      };
+    }
+    if (!names.includes(name)) {
+      return { kind: "error", message: `"${name}" 不在待审批列表中` };
+    }
+    if (!ctx.mcpManager) {
+      // 本会话没有任何 MCP server 时 manager 不会创建：只能落盘，下次启动连接
+      approval.approvePendingServer(name);
+      return { kind: "message", message: `已批准 "${name}"，重启会话后连接` };
+    }
+    const mgr = ctx.mcpManager;
+    const count = await approval.approveAndConnectPendingServer(name, (n, c) =>
+      mgr.addServer(n, c),
+    );
+    const status = mgr.getStatus().find((s) => s.name === name);
+    if (status?.status === "connected") {
+      return { kind: "message", message: `已批准并连接 "${name}"，注册了 ${count} 个工具` };
+    }
+    return {
+      kind: "message",
+      message: `已批准 "${name}"，但连接未成功${status?.error ? `：${status.error}` : ""}（下次启动会再试）`,
+    };
   }
 }
 

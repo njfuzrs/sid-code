@@ -2256,8 +2256,10 @@ export async function main(): Promise<void> {
         else mcpPromptsChangedPending = true;
       };
 
-      // G3 接线：注入 Elicitation 处理器（服务器请求额外信息时用终端交互处理）。
-      // App 就绪后可用 UI 版覆盖（见 App）；此处提供 CLI 版兜底，避免默认 cancel 一切。
+      // G3 / D28：注入 Elicitation 处理器。它不区分模式，而是走 ask-user-question-bridge：
+      // TUI 模式 app.ts 会注入提问处理器 → 弹对话框，用户的选择如实回传；
+      // 无头模式无处理器 → decline，且不写 stdout。（旧注释说「App 就绪后用 UI 版覆盖」，
+      // 那个覆盖从来不存在，见 D28。）
       {
         const { cliElicitationHandler } = await import("@sid-code/core/mcp/elicitation.ts");
         mcpManager.elicitationHandler = cliElicitationHandler;
