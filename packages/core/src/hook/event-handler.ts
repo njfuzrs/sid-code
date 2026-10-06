@@ -75,6 +75,17 @@ export class HookEventHandler {
    * 可选：老调用点不传时 once 语义退化为「不失效」，与历史行为一致，不会报错。
    */
   private readonly registry?: HookRegistry;
+  /**
+   * 已派发过 SessionEnd 的会话 ID（防重入，2026-10-06）。
+   *
+   * 一个会话只该有一个终态。实测会话 20261005-234012-b45f9ea6：关终端 → SIGHUP 处理器派发
+   * SessionEnd(abort)；22ms 后卸载 TUI 往已死的终端写 → EIO → uncaughtException →
+   * emergencySessionEnd 再派发 SessionEnd(error)。events.jsonl 里两条 SessionEnd，
+   * 后一条把 `.traj` 的 exit_status 从 abort 覆盖成 error——用户关窗口被记成了运行时崩溃。
+   * 第一条才是因，后面的都是退出过程的连带后果，故**先到者为准**。
+   * 按 sessionId 记而不是一个布尔：/clear 换新会话（setSessionId）后新会话仍须能正常收尾。
+   */
+  private readonly sessionEndFired = new Set<string>();
 
   constructor(
     planner: HookPlanner,
@@ -273,6 +284,14 @@ export class HookEventHandler {
       app_version?: string;
     },
   ): Promise<AggregatedHookResult> {
+    if (this.sessionEndFired.has(this.sessionId)) {
+      getLogger().warn(
+        "HOOK",
+        `SessionEnd 已派发过，忽略重复派发（reason=${reason}）——会话终态以首次为准`,
+      );
+      return emptyResult();
+    }
+    this.sessionEndFired.add(this.sessionId);
     const input: SessionEndInput = {
       ...this.createBaseInput(HookEventName.SessionEnd),
       reason,
