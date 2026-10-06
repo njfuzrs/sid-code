@@ -121,11 +121,22 @@ process.stdin.on("data", (c) => {
 // 变异自证：去掉任一传输 send() 里 cleanup 中的 clearTimeout → 活跃 timer 数随调用线性增长，变红。
 
 /** 在 globalThis 上包一层 setTimeout/clearTimeout，统计「已创建且未触发、未清除」的 timer */
-function trackTimers() {
+/**
+ * 只统计 delay === `onlyMs` 的 timer（即传输的请求超时 timer）。
+ *
+ * 不按 delay 过滤时，替换的是**进程级** setTimeout：全量 `bun test` 下其它测试文件遗留的
+ * 异步尾巴（日志 flush、未关的 socket / 子进程回调……）在窗口内建的 timer 也会被计入，
+ * macOS CI 上偶发 `Expected: 0, Received: 1`（main 上 stdio / ws 两条都红过）。
+ * 传输超时用的是构造时传入的 30000，测试窗口内别处不会恰好建这个时长的 timer。
+ */
+const TRANSPORT_TIMEOUT_MS = 30000;
+
+function trackTimers(onlyMs: number = TRANSPORT_TIMEOUT_MS) {
   const origSet = globalThis.setTimeout;
   const origClear = globalThis.clearTimeout;
   const active = new Set<unknown>();
   (globalThis as any).setTimeout = (fn: (...a: any[]) => void, ms?: number, ...rest: any[]) => {
+    if (ms !== onlyMs) return origSet(fn, ms, ...rest);
     const h = origSet(
       (...a: any[]) => {
         active.delete(h);
@@ -157,7 +168,7 @@ describe("D8 超时 timer 在响应后被清理", () => {
       f,
       `let b="";process.stdin.on("data",c=>{b+=c;const ls=b.split("\\n");b=ls.pop()||"";for(const l of ls){let m;try{m=JSON.parse(l)}catch{continue}process.stdout.write(JSON.stringify({jsonrpc:"2.0",id:m.id,result:{}})+"\\n")}})`,
     );
-    const t = new StdioTransport(process.execPath, [f], undefined, 30000);
+    const t = new StdioTransport(process.execPath, [f], undefined, TRANSPORT_TIMEOUT_MS);
     cleanups.push(() => t.close());
     await t.send({ jsonrpc: "2.0", id: 0, method: "ping" }); // 预热，排除启动期噪声
 
@@ -184,7 +195,11 @@ describe("D8 超时 timer 在响应后被清理", () => {
         },
       },
     });
-    const t = new WebSocketTransport(`ws://127.0.0.1:${server.port}`, undefined, 30000);
+    const t = new WebSocketTransport(
+      `ws://127.0.0.1:${server.port}`,
+      undefined,
+      TRANSPORT_TIMEOUT_MS,
+    );
     cleanups.push(
       () => t.close(),
       () => server.stop(true),
@@ -205,7 +220,7 @@ describe("D8 超时 timer 在响应后被清理", () => {
     cleanups.push(() => rmSync(dir, { recursive: true, force: true }));
     const f = join(dir, "mute.cjs");
     writeFileSync(f, `process.stdin.on("data",()=>{});setInterval(()=>{},1000)`);
-    const t = new StdioTransport(process.execPath, [f], undefined, 30000);
+    const t = new StdioTransport(process.execPath, [f], undefined, TRANSPORT_TIMEOUT_MS);
     const tracker = trackTimers();
     cleanups.push(tracker.restore);
     const p = t.send({ jsonrpc: "2.0", id: 1, method: "ping" }).catch((e) => e);
