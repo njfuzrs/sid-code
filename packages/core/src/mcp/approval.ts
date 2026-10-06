@@ -11,7 +11,20 @@ export type ApprovalStatus = "approved" | "rejected" | "pending";
 interface ApprovalStore {
   approved: string[];
   rejected: string[];
-  approveAll?: boolean;
+  /**
+   * 「该项目下全部 .mcp.json server 自动批准」的项目路径清单（D17-3）。
+   *
+   * 必须按项目，不能是一个全局布尔：项目级 server 要审批，是因为 .mcp.json 可能被
+   * 恶意仓库注入；全局开关在项目 A 里图省事打开一次，之后 clone 的任何仓库都会被
+   * 无提示加载 —— 等于把这条防线整个关掉。
+   */
+  approveAllProjects?: string[];
+  /**
+   * 旧版全局开关，**只读不认**：老文件里残留的 `approveAll: true` 一律忽略（fail-closed），
+   * 不迁移成「对所有项目生效」—— 那就是要修掉的语义本身；也无法反推当初是在哪个项目开的。
+   * 下次写盘时被删除。
+   */
+  approveAll?: unknown;
 }
 
 /** 审批记录路径：~/.sid-code/state/mcp-approvals.json */
@@ -29,6 +42,8 @@ function loadApprovals(): ApprovalStore {
 }
 
 function saveApprovals(store: ApprovalStore): void {
+  // 旧版全局 approveAll 不再生效，写盘时顺手清掉，避免读文件的人误以为它还开着
+  delete store.approveAll;
   const dir = sidPaths.state();
   if (!existsSync(dir)) {
     mkdirSync(dir, { recursive: true });
@@ -45,7 +60,7 @@ export function getProjectServerApproval(serverName: string, projectPath: string
 
   if (approvals.rejected?.includes(key)) return "rejected";
   if (approvals.approved?.includes(key)) return "approved";
-  if (approvals.approveAll) return "approved";
+  if (approvals.approveAllProjects?.includes(projectPath)) return "approved";
   return "pending";
 }
 
@@ -76,11 +91,14 @@ export function rejectProjectServer(serverName: string, projectPath: string): vo
 }
 
 /**
- * 设置全局批准所有项目 Server
+ * 设置「该项目下全部项目级 Server 自动批准」。**只作用于 projectPath 这一个项目**（D17-3），
+ * 其它项目的 .mcp.json 仍逐个审批。显式 rejected 的 server 优先于本开关。
  */
-export function setApproveAll(value: boolean): void {
+export function setApproveAll(value: boolean, projectPath: string): void {
   const approvals = loadApprovals();
-  approvals.approveAll = value;
+  const list = (approvals.approveAllProjects ?? []).filter((p) => p !== projectPath);
+  if (value) list.push(projectPath);
+  approvals.approveAllProjects = list;
   saveApprovals(approvals);
 }
 

@@ -1088,8 +1088,11 @@ class InProcessTransportImpl implements Transport {
         { once: true },
       );
 
+      // D12-3：与其它传输同口径清理孤立 surrogate。进程内不走 wire 不会 400，
+      // 但对端可能把内容原样转发给模型 API，那时会被拒。
+      const clean = sanitizeStrings(request) as JsonRpcRequest;
       queueMicrotask(() => {
-        this.peer?.handleIncoming(request);
+        this.peer?.handleIncoming(clean);
       });
     });
   }
@@ -1114,8 +1117,9 @@ class InProcessTransportImpl implements Transport {
     if (this.closed) return;
     dispatchServerRequest(this.onRequest, msg as JsonRpcRequest, (response) => {
       if (this.closed) return;
+      const clean = sanitizeStrings(response) as JsonRpcResponse;
       queueMicrotask(() => {
-        this.peer?.handleIncoming(response);
+        this.peer?.handleIncoming(clean);
       });
     });
   }
@@ -1124,13 +1128,37 @@ class InProcessTransportImpl implements Transport {
     if (this.closed || !this.peer) return;
     // D12：走对端的 handleIncoming 而不是直接调 peer.onNotification，与 send() 同一条路由，
     // 将来在 handleIncoming 里加的逻辑才会对通知生效。
+    const clean = sanitizeStrings(notification) as JsonRpcNotification;
     queueMicrotask(() => {
-      this.peer?.handleIncoming(notification);
+      this.peer?.handleIncoming(clean);
     });
   }
 
+  /**
+   * 主动关闭本端。自己不触发 onClose（D1：onClose 只表示「意外断开」，
+   * 主动 close 回调它会被 MCPClient 当成断线去重连），但要告诉对端（D12-4）——
+   * 对端看到的就是「连接被另一头断了」，与 stdio 子进程退出、socket 被远端关同一语义。
+   * 原先只 reject 自己的 pending，另一头永远认为连接是好的，pending 永远挂着。
+   */
   close(): void {
+    if (this.closed) return;
     this.closed = true;
+    this.rejectPending();
+    const peer = this.peer;
+    this.peer = undefined;
+    peer?._peerClosed();
+  }
+
+  /** 对端主动关闭：本端进入关闭态、清 pending、触发 onClose（意外断开语义）。 */
+  _peerClosed(): void {
+    if (this.closed) return;
+    this.closed = true;
+    this.peer = undefined;
+    this.rejectPending();
+    this.onClose?.();
+  }
+
+  private rejectPending(): void {
     for (const [, p] of this.pendingRequests) {
       p.reject(new Error("传输已关闭"));
     }
