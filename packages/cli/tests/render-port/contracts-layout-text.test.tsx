@@ -1,5 +1,5 @@
 /**
- * 契约 L1 / L4 / T1 / T2 / T5 / O4（B9 / T0.5）：布局、测量、文本宽度与截断、ANSI 组件、超链接判定。
+ * 契约 L1 / L3 / L4 / T1 / T2 / T5 / O4（B9 / T0.5，L3 与 L4 的细则 T4.3 补）：布局、裁剪与滚动、测量、文本宽度与截断、ANSI 组件、超链接判定。
  *
  * 期望值全部是 2026-10-03 在 legacy 上实测的输出。走 testing shim（非 TTY 整帧），
  * 比的是可视文本，不比字节 —— 新底座换了光标策略也不该让这里红。
@@ -8,7 +8,11 @@ import { describe, expect, test } from "bun:test";
 import React, { useEffect, useRef, useState } from "react";
 import stripAnsi from "strip-ansi";
 import { Ansi, Box, RawAnsi, Text } from "@sid-code/cli/ui/render-port/components.ts";
-import { measureElement, ResizeObserver } from "@sid-code/cli/ui/render-port/measure.ts";
+import {
+  getBoundingBox,
+  measureElement,
+  ResizeObserver,
+} from "@sid-code/cli/ui/render-port/measure.ts";
 import { supportsHyperlinks } from "@sid-code/cli/ui/render-port/termio.ts";
 import { render } from "@sid-code/cli/ui/render-port/testing.ts";
 import { stringWidth } from "@sid-code/cli/ui/render-port/text.ts";
@@ -321,6 +325,301 @@ describe("L4 ResizeObserver / measureElement", () => {
     await tick(60); // 尺寸不变的轮询不回调
     r.unmount();
     expect(log).toEqual(["m:5x1", "ro:5x1", "ro:5x3", "--"]);
+  });
+});
+
+// —— L3：overflowY="scroll"（T4.3，期望值 2026-10-06 在 legacy 上实测）——
+// 只画第一个子节点（内容盒）的子项；内容盒不是 Box 就什么都不画；内容盒自己的背景 / 边框 / 裁剪不画；
+// 子项按「在内容盒里的位置」与视口 [0, 内框高) 求交，有交集就整项画，不看内容盒的偏移（滚动位置恒按 0 剔除）
+const rowsOf = (n: number, p = "r") =>
+  Array.from({ length: n }, (_, i) => (
+    <Text key={i}>
+      {p}
+      {i}
+    </Text>
+  ));
+const content = (props: Record<string, unknown>, ...kids: React.ReactNode[]) => (
+  <Box key="c" flexShrink={0} flexDirection="column" {...props}>
+    {kids}
+  </Box>
+);
+const scroll = (props: Record<string, unknown>, ...kids: React.ReactNode[]) => (
+  <Box flexDirection="column">
+    <Text>H</Text>
+    <Box overflowY="scroll" flexDirection="column" height={3} {...props}>
+      {kids}
+    </Box>
+    <Text>F</Text>
+  </Box>
+);
+const SCROLL_CASES: [string, React.ReactElement, string[]][] = [
+  ["内容盒内的项按视口裁剪", scroll({}, content({}, rowsOf(6))), ["H", "r0", "r1", "r2", "F"]],
+  [
+    "只画第一个子节点",
+    scroll({}, content({}, rowsOf(2, "a")), content({}, rowsOf(2, "b"))),
+    ["H", "a0", "a1", "", "F"],
+  ],
+  ["第一个子节点是 Text：什么都不画", scroll({}, <Text key="t">TT</Text>), ["H", "", "", "", "F"]],
+  [
+    "负 marginTop：滚上去的行被裁掉，底部留空",
+    scroll({}, content({ marginTop: -1 }, rowsOf(5))),
+    ["H", "r1", "r2", "", "F"],
+  ],
+  [
+    "负 marginTop 超过视口：全部剔除",
+    scroll({}, content({ marginTop: -3 }, rowsOf(6))),
+    ["H", "", "", "", "F"],
+  ],
+  ["正 marginTop", scroll({}, content({ marginTop: 1 }, rowsOf(4))), ["H", "", "r0", "r1", "F"]],
+  [
+    "VirtualizedList 形状：上 spacer + 项 + 下 spacer",
+    scroll(
+      { height: 5 },
+      content(
+        {},
+        <Box key="s" height={2} flexShrink={0} />,
+        rowsOf(3),
+        <Box key="e" height={4} flexShrink={0} />,
+      ),
+    ),
+    ["H", "", "", "r0", "r1", "r2", "F"],
+  ],
+  [
+    "跨越视口底边的项整项画、再被裁剪",
+    scroll(
+      {},
+      content({}, <Box key="s" height={2} flexShrink={0} />, content({ key: "g" }, rowsOf(3, "g"))),
+    ),
+    ["H", "", "", "g0", "F"],
+  ],
+  [
+    "项不递归剔除（孙辈超出视口照画，交给裁剪）",
+    scroll({ height: 4, paddingBottom: 1 }, content({}, content({ key: "g" }, rowsOf(4, "g")))),
+    ["H", "g0", "g1", "g2", "g3", "F"],
+  ],
+  [
+    "视口扣掉 padding",
+    scroll({ height: 4, paddingBottom: 1 }, content({}, rowsOf(6))),
+    ["H", "r0", "r1", "r2", "", "F"],
+  ],
+  [
+    "内容盒的边框不画、只占位",
+    scroll({ height: 4 }, content({ borderStyle: "single", width: 5 }, rowsOf(4))),
+    ["H", "", " r0", " r1", " r2", "F"],
+  ],
+  [
+    "内容盒的 overflowX hidden 不生效",
+    scroll(
+      { width: 8 },
+      content(
+        { width: 3, overflowX: "hidden" },
+        <Box key="w" flexShrink={0} width={6}>
+          <Text>abcdef</Text>
+        </Box>,
+      ),
+    ),
+    ["H", "abcdef", "", "", "F"],
+  ],
+  [
+    "滚动盒的 overflowX hidden 照常裁剪",
+    scroll(
+      { width: 3, overflowX: "hidden" },
+      content(
+        {},
+        <Box key="w" flexShrink={0} width={6}>
+          <Text>abcdef</Text>
+        </Box>,
+      ),
+    ),
+    ["H", "abc", "", "", "F"],
+  ],
+  [
+    "滚动盒自己的边框照画",
+    scroll({ height: 5, borderStyle: "single", width: 6 }, content({ marginTop: -1 }, rowsOf(6))),
+    ["H", "┌────┐", "│r1  │", "│r2  │", "│    │", "└────┘", "F"],
+  ],
+];
+
+describe("L3 overflow 裁剪与 overflowY scroll", () => {
+  for (const [name, el, want] of SCROLL_CASES) {
+    test(`L3: ${name}`, async () => {
+      expect(await lines(el)).toEqual(want);
+    });
+  }
+
+  test("L3: 单轴取值优先于 overflow；scroll 在本轴上等于 hidden", async () => {
+    const wide = (props: Record<string, unknown>) => (
+      <Box flexDirection="column">
+        <Box width={3} height={2} flexDirection="column" {...props}>
+          <Box flexShrink={0} width={6} flexDirection="column">
+            <Text>abcdef</Text>
+            <Text>ghijkl</Text>
+            <Text>mnopqr</Text>
+          </Box>
+        </Box>
+        <Text>F</Text>
+      </Box>
+    );
+    expect(await lines(wide({ overflow: "scroll" }))).toEqual(["abc", "ghi", "F"]);
+    expect(await lines(wide({ overflowY: "scroll" }))).toEqual(["abcdef", "ghijkl", "F"]);
+    expect(await lines(wide({ overflowX: "scroll" }))).toEqual(["abc", "ghi", "Fno"]);
+    expect(await lines(wide({ overflow: "hidden", overflowY: "visible" }))).toEqual([
+      "abc",
+      "ghi",
+      "Fno",
+    ]);
+  });
+});
+
+describe("L4 getBoundingBox / ResizeObserver 细则", () => {
+  test("L4: getBoundingBox 是布局树绝对坐标（累加父链 left/top，含负 margin 与 absolute），空参数与已移除节点得 null", async () => {
+    const refs: Record<string, Parameters<typeof getBoundingBox>[0]> = {};
+    const at = (k: string) => (x: Parameters<typeof getBoundingBox>[0]) => {
+      if (x) refs[k] = x;
+    };
+    let hide: (v: boolean) => void = () => {};
+    function C() {
+      const [shown, set] = useState(true);
+      hide = (v) => set(!v);
+      return (
+        <Box flexDirection="column" paddingLeft={1}>
+          <Text>head</Text>
+          <Box
+            ref={at("scroll")}
+            overflowY="scroll"
+            height={3}
+            flexDirection="column"
+            borderStyle="single"
+            width={10}
+          >
+            <Box ref={at("content")} flexShrink={0} flexDirection="column" marginTop={-2}>
+              <Box ref={at("row1")}>
+                <Text>r</Text>
+              </Box>
+            </Box>
+          </Box>
+          <Box ref={at("abs")} position="absolute" marginLeft={7} marginTop={1}>
+            <Text>A</Text>
+          </Box>
+          {shown && (
+            <Box ref={at("pct")} width="50%">
+              <Text>P</Text>
+            </Box>
+          )}
+        </Box>
+      );
+    }
+    const r = render(<C />, { columns: 20, rows: 10 });
+    await tick(20);
+    const got = Object.fromEntries(Object.entries(refs).map(([k, v]) => [k, getBoundingBox(v)]));
+    expect(got).toEqual({
+      scroll: { x: 1, y: 1, width: 10, height: 3 },
+      content: { x: 2, y: 0, width: 8, height: 1 },
+      row1: { x: 2, y: 0, width: 8, height: 1 },
+      abs: { x: 8, y: 1, width: 1, height: 1 },
+      pct: { x: 1, y: 4, width: 10, height: 1 },
+    });
+    expect(getBoundingBox(null as never)).toBeNull();
+    const pct = refs.pct!;
+    hide(true);
+    await tick(20);
+    expect(getBoundingBox(pct)).toBeNull();
+    expect(measureElement(pct)).toEqual({ width: 0, height: 0 });
+    r.unmount();
+  });
+
+  test("L4: ResizeObserver 时序：observe 后微任务里报一次；之后只比宽高；同一轮变化合成一次回调；移除报 0×0", async () => {
+    const log: string[] = [];
+    let setN: (n: number) => void = () => {};
+    let setMove: (n: number) => void = () => {};
+    let setShowB: (v: boolean) => void = () => {};
+    const refs: Record<string, Parameters<typeof measureElement>[0]> = {};
+    function C() {
+      const [n, sn] = useState(1);
+      const [move, sm] = useState(0);
+      const [showB, sb] = useState(true);
+      setN = sn;
+      setMove = sm;
+      setShowB = sb;
+      return (
+        <Box flexDirection="column">
+          <Box height={move} />
+          <Box ref={(x) => void (x && (refs.a = x))} flexDirection="column" marginLeft={move}>
+            {Array.from({ length: n }, (_, i) => (
+              <Text key={i}>{i}</Text>
+            ))}
+          </Box>
+          {showB && (
+            <Box ref={(x) => void (x && (refs.b = x))} flexDirection="column" width={4}>
+              {Array.from({ length: n }, (_, i) => (
+                <Text key={i}>{i}</Text>
+              ))}
+            </Box>
+          )}
+        </Box>
+      );
+    }
+    const r = render(<C />, { columns: 10, rows: 10 });
+    await tick(20);
+    const name = (t: unknown) => (t === refs.a ? "a" : t === refs.b ? "b" : "?");
+    const ro = new ResizeObserver((es) => {
+      log.push(
+        es.map((e) => `${name(e.target)}:${e.contentRect.width}x${e.contentRect.height}`).join(","),
+      );
+    });
+    ro.observe(refs.a!);
+    ro.observe(refs.b!);
+    ro.observe(refs.a!); // 重复 observe 不再报
+    queueMicrotask(() => log.push("micro"));
+    await tick(40);
+    log.push("--n=2");
+    setN(2);
+    await tick(60);
+    log.push("--move");
+    setMove(2); // a 宽 10 → 8，高不变；只挪位置的部分不回调
+    await tick(60);
+    log.push("--hide b");
+    const b = refs.b!;
+    setShowB(false);
+    await tick(60);
+    expect(name(b)).toBe("b");
+    ro.disconnect();
+    log.push("--disconnect");
+    setN(3);
+    await tick(60);
+    r.unmount();
+    expect(log).toEqual([
+      "a:10x1",
+      "b:4x1",
+      "micro",
+      "--n=2",
+      "a:10x2,b:4x2",
+      "--move",
+      "a:8x2",
+      "--hide b",
+      "b:0x0",
+      "--disconnect",
+    ]);
+  });
+
+  test("L4: 同一 tick 里 observe 又 unobserve：不报；参数为空时 observe 抛 TypeError", async () => {
+    const log: string[] = [];
+    let node: Parameters<typeof measureElement>[0] | undefined;
+    const r = render(
+      <Box ref={(x) => void (x && (node = x))}>
+        <Text>a</Text>
+      </Box>,
+      { columns: 10, rows: 5 },
+    );
+    await tick(20);
+    const ro = new ResizeObserver(() => log.push("cb"));
+    ro.observe(node!);
+    ro.unobserve(node!);
+    await tick(40);
+    expect(log).toEqual([]);
+    expect(() => ro.observe(null as never)).toThrow(TypeError);
+    ro.disconnect();
+    r.unmount();
   });
 });
 

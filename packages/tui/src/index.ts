@@ -47,6 +47,13 @@ export {default as useBoxMetrics} from './hooks/use-box-metrics.js';
 export type {CursorPosition} from './log-update.js';
 export {default as measureElement} from './measure-element.js';
 export type {ElementMetrics} from './measure-element.js';
+export {getBoundingBox, ResizeObserver} from './measure/index.js';
+export type {
+	BoundingBox,
+	ContentRect,
+	ResizeObserverCallback,
+	ResizeObserverEntry,
+} from './measure/index.js';
 export type {DOMElement} from './dom.js';
 export {kittyFlags, kittyModifiers} from './kitty-keyboard.js';
 export type {KittyKeyboardOptions, KittyFlagName} from './kitty-keyboard.js';

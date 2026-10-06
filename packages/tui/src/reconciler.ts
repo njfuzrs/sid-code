@@ -22,6 +22,7 @@ import {
 	type TextNode,
 	type ElementNames,
 	type DOMElement,
+	type DOMNode,
 } from './dom.js';
 import applyStyles, {type Styles} from './styles.js';
 import {type OutputTransformer} from './render-node-to-output.js';
@@ -82,6 +83,18 @@ const diff = (before: AnyObject, after: AnyObject): AnyObject | undefined => {
 const cleanupYogaNode = (node?: YogaNode): void => {
 	node?.unsetMeasureFunc();
 	node?.freeRecursive();
+};
+
+// sid-code（B9 / T4.3，契约 L4）：yoga 释放后把整棵子树的 `yogaNode` 置空。否则组件还握着的 ref
+// （ResizeObserver 的观察目标、getBoundingBox 的参数）会去读已释放的 WASM 节点；
+// 置空后 measureElement 得 0×0、getBoundingBox 得 null，与旧底座的黑盒结果一致。
+const forgetYogaNodes = (node: DOMNode): void => {
+	node.yogaNode = undefined;
+	if ('childNodes' in node) {
+		for (const child of node.childNodes) {
+			forgetYogaNodes(child);
+		}
+	}
 };
 
 type Props = Record<string, unknown>;
@@ -307,6 +320,7 @@ export default createReconciler<
 	removeChildFromContainer(node, removeNode) {
 		removeChildNode(node, removeNode);
 		cleanupYogaNode(removeNode.yogaNode);
+		forgetYogaNodes(removeNode);
 
 		// Only clear staticNode if it still points at the removed node. On key-driven remounts, `createInstance` already registered the new node before this removal fires.
 		if (
@@ -373,6 +387,7 @@ export default createReconciler<
 	removeChild(node, removeNode) {
 		removeChildNode(node, removeNode);
 		cleanupYogaNode(removeNode.yogaNode);
+		forgetYogaNodes(removeNode);
 
 		// Same guard as removeChildFromContainer: only clear if this is still the active static node.
 		if (

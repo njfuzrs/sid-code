@@ -6,12 +6,17 @@
  * 包在端口 `Static`（next 上是 History）里，按 MainScreenLayout 的结构排开：历史区 + 动态区。
  * 和 E* 一样不入基线，legacy 与 next 当场比较（component.test.ts）。
  */
-import React, { useSyncExternalStore } from "react";
+import React, { createRef, useSyncExternalStore } from "react";
 import { Box, Static, Text } from "../../../src/ui/render-port/components.ts";
 import { render } from "../../../src/ui/render-port/runtime.ts";
 import { SettingsProvider } from "../../../src/ui/contexts/SettingsContext.tsx";
 import { UIStateProvider } from "../../../src/ui/contexts/UIStateContext.tsx";
 import { HistoryItemDisplay } from "../../../src/ui/components/HistoryItemDisplay.tsx";
+import {
+  SCROLL_TO_ITEM_END,
+  VirtualizedList,
+  type VirtualizedListRef,
+} from "../../../src/ui/components/VirtualizedList.tsx";
 import { ToolCallStatus, type HistoryItem } from "../../../src/ui/types.ts";
 import type { Scenario, ScenarioCtx } from "./scenarios.tsx";
 
@@ -157,6 +162,78 @@ export const COMPONENT_SCENARIOS: Record<string, Scenario> = {
       tail.set("完成");
       await ctx.settle();
       ctx.step("屏外项完成");
+      inst.unmount();
+    },
+  },
+
+  C3: {
+    covers: ["L3", "L4"],
+    async run(ctx) {
+      // 真实 VirtualizedList（T4.3）：容器 / 项高度靠 ResizeObserver 测，滚动位置靠 spacer 与 overflowY="scroll" 表达。
+      // 主屏上跑（alt-screen 归 T6.1），项高 1 / 2 行交替，测量值回灌后才稳定。
+      // ⚠️ 实测 legacy 在主屏上滚动不改变可见行（scrollBy / scrollTo 前后网格相同，且从「项 1」起画），
+      // 所以滚动几步只证明 next 同样如此；真正让画面变化的是最后一步换数据。滚动语义的修正归 T6.x（VirtualizedList 实际只在 alt-screen 用）
+      const ref = createRef<VirtualizedListRef<number>>();
+      const data = store(Array.from({ length: 40 }, (_, i) => i));
+      const copy = store(false);
+      const H = 8;
+      function App() {
+        const items = data.use();
+        const copyMode = copy.use();
+        return (
+          <Box flexDirection="column" width={ctx.cols}>
+            <Text>标题</Text>
+            <Box flexDirection="column" height={H}>
+              <VirtualizedList
+                ref={ref}
+                data={items}
+                keyExtractor={(n) => `k${n}`}
+                estimatedItemHeight={() => 1}
+                initialScrollIndex={SCROLL_TO_ITEM_END}
+                initialScrollOffsetInIndex={SCROLL_TO_ITEM_END}
+                copyModeEnabled={copyMode}
+                renderItem={({ item }) => (
+                  <Box flexDirection="column">
+                    <Text>项 {item}</Text>
+                    {item % 2 === 1 && <Text> 第二行 {item}</Text>}
+                  </Box>
+                )}
+              />
+            </Box>
+            <Text inverse> 状态栏 </Text>
+          </Box>
+        );
+      }
+      const inst = await render(<App />, {
+        stdout: process.stdout,
+        stdin: ctx.stdin,
+        stderr: process.stderr,
+        patchConsole: false,
+        exitOnCtrlC: false,
+        onFrame: ctx.onFrame,
+      });
+      await ctx.settle(250);
+      ctx.step("粘底（测量回灌后）");
+      ref.current!.scrollBy(-5);
+      await ctx.settle(250);
+      ctx.step("上滚 5 行");
+      ref.current!.scrollTo(0);
+      await ctx.settle(250);
+      ctx.step("回到顶部");
+      data.set([...data.get(), 40, 41, 42]);
+      await ctx.settle(250);
+      ctx.step("追加 3 项（不粘底不跟随）");
+      copy.set(true);
+      await ctx.settle(250);
+      ctx.step("Copy Mode（marginTop 表达）");
+      copy.set(false);
+      ref.current!.scrollToEnd();
+      await ctx.settle(250);
+      ctx.step("回到底部");
+      // 换一批数据：项高（1 / 2 行）整体错位，容器内每一行都要重测、重画
+      data.set(Array.from({ length: 30 }, (_, i) => 100 + i * 2));
+      await ctx.settle(250);
+      ctx.step("整批换数据（项高全变）");
       inst.unmount();
     },
   },

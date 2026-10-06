@@ -372,21 +372,22 @@ export type Styles = {
 
 	@default 'visible'
 	*/
-	readonly overflow?: 'visible' | 'hidden';
+	// sid-code（B9 / T4.3，契约 L3）：加 `scroll`，语义见 render-node-to-output.ts 的 renderScrollContent
+	readonly overflow?: 'visible' | 'hidden' | 'scroll';
 
 	/**
 	Behavior for an element's overflow in the horizontal direction.
 
 	@default 'visible'
 	*/
-	readonly overflowX?: 'visible' | 'hidden';
+	readonly overflowX?: 'visible' | 'hidden' | 'scroll';
 
 	/**
 	Behavior for an element's overflow in the vertical direction.
 
 	@default 'visible'
 	*/
-	readonly overflowY?: 'visible' | 'hidden';
+	readonly overflowY?: 'visible' | 'hidden' | 'scroll';
 
 	/**
 	Background color for the element.

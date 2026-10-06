@@ -44,8 +44,8 @@
 | --- | --- | --- | --- |
 | L1 | Flexbox 语义与 yoga 一致，覆盖 `SURFACE.md` §2 列出的全部 props | `styles.ts`、`layout/` | `packages/cli/tests/render-port/contracts-layout-text.test.tsx` L1: |
 | L2 | 布局缓存命中后子节点仍按新宽度重新定位（flex-end / center 反复 resize 不漂移） | `layout/`（纯 TS yoga 移植） | `packages/tui-renderer/tests/ink/yoga-layout-cache-positions.test.ts` yoga 多槽布局缓存不得跳过子节点定位 |
-| L3 | `overflow: hidden` 裁剪子内容；`overflowY: scroll` 只裁剪，不提供 scrollTop —— CLI 靠上下 spacer 与负 `marginTop` 表达滚动位置 | `render-node-to-output.ts:626-628`、CLI `packages/cli/src/ui/components/VirtualizedList.tsx:8-19` | `packages/cli/tests/render-port/term-bench/scenarios.tsx` S7: { |
-| L4 | `ResizeObserver` 轮询式触发：首帧回调拿到的高度可能为 0，之后尺寸变化才回调；`measureElement` 返回最近一次布局的宽高 | `_vendor/resize-observer.ts:39`、`_vendor/resize-observer.ts:91`、`measure-element.ts:18` | `packages/cli/tests/render-port/contracts-layout-text.test.tsx` L4: |
+| L3 | `overflow: hidden` 裁剪子内容；单轴取值优先于 `overflow`，`scroll` 在本轴上等同 `hidden`。纵向 `scroll` 只画第一个子节点（内容盒）的子项：按「在内容盒里的位置」与视口 `[0, 内框高)` 求交，有交集就整项画；内容盒自身的背景 / 边框 / 裁剪不画；不提供 scrollTop，剔除恒按滚动位置 0 —— CLI 靠上下 spacer 与负 `marginTop` 表达滚动位置（T4.3 黑盒对拍） | `render-node-to-output.ts:626-628`、CLI `packages/cli/src/ui/components/VirtualizedList.tsx:8-19` | `packages/cli/tests/render-port/contracts-layout-text.test.tsx` L3: |
+| L4 | `ResizeObserver` 轮询式：`observe` 后微任务里单独报一次当前尺寸，之后每 16ms 只比宽高、同一轮的变化合成一次回调，节点移除报 0×0，定时器 unref；`measureElement` 返回最近一次布局的宽高（已移除节点 0×0）；`getBoundingBox` 是布局树绝对坐标（累加父链，含负 margin），空参数 / 已移除节点得 `null` | `_vendor/resize-observer.ts:39`、`_vendor/resize-observer.ts:91`、`measure-element.ts:18` | `packages/cli/tests/render-port/contracts-layout-text.test.tsx` L4: |
 | L5 | 交互判定只看 `stdout.isTTY`，不看 `CI` 环境变量（上游 ink 7 会看 `is-in-ci`，新底座必须关掉或在此写明行为变化） | `ink.tsx:288` | `packages/cli/tests/render-port/contracts-runtime.test.tsx` L5: |
 
 ## T 文本

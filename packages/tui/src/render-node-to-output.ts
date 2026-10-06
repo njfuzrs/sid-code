@@ -232,14 +232,17 @@ const renderLaidOutNode = (
 
 		let clipped = false;
 
+		// sid-code（B9 / T4.3，契约 L3）：单轴取值优先于 `overflow`（`overflow="hidden" overflowY="visible"` 纵向不裁剪），
+		// `scroll` 在本轴上与 `hidden` 一样裁剪；纵向 `scroll` 另走 renderScrollContent
+		const overflowX = node.style.overflowX ?? node.style.overflow;
+		const overflowY = node.style.overflowY ?? node.style.overflow;
+
 		if (node.nodeName === 'ink-box') {
 			renderBackground(x, y, node, output);
 			renderBorder(x, y, node, output);
 
-			const clipHorizontally =
-				node.style.overflowX === 'hidden' || node.style.overflow === 'hidden';
-			const clipVertically =
-				node.style.overflowY === 'hidden' || node.style.overflow === 'hidden';
+			const clipHorizontally = overflowX === 'hidden' || overflowX === 'scroll';
+			const clipVertically = overflowY === 'hidden' || overflowY === 'scroll';
 
 			if (clipHorizontally || clipVertically) {
 				const x1 = clipHorizontally
@@ -267,7 +270,9 @@ const renderLaidOutNode = (
 			}
 		}
 
-		if (node.nodeName === 'ink-root' || node.nodeName === 'ink-box') {
+		if (node.nodeName === 'ink-box' && overflowY === 'scroll') {
+			renderScrollContent(node, output, x, y, newTransformers, skipStaticElements);
+		} else if (node.nodeName === 'ink-root' || node.nodeName === 'ink-box') {
 			for (const childNode of node.childNodes) {
 				renderNodeToOutput(childNode as DOMElement, output, {
 					offsetX: x,
@@ -276,12 +281,81 @@ const renderLaidOutNode = (
 					skipStaticElements,
 				});
 			}
+		}
 
-			if (clipped) {
-				output.unclip();
-			}
+		if (clipped) {
+			output.unclip();
 		}
 	}
+};
+
+/**
+ * sid-code（B9 / T4.3，契约 L3）：纵向 `overflow: scroll` 的内容。规则来自黑盒对拍旧底座，没有读旧代码。
+ *
+ * 只画**第一个子节点**（「内容盒」）的子项，所以首子是 Text 时什么都不画。内容盒自己的背景、边框、裁剪都不画，
+ * 只当坐标原点用；它的每个子节点按「在内容盒里的纵向位置」和视口高度（滚动盒高度减去上下 padding 与边框）
+ * 比较，与 `[0, 视口高)` 有交集才画，画就整个画（只受滚动盒自己的裁剪）。
+ *
+ * 判定故意不看内容盒在滚动盒里的偏移：CLI（VirtualizedList）用上下 spacer 和内容盒的负 `marginTop`
+ * 表达滚动位置，旧底座始终按「滚动位置为 0」剔除，负 `marginTop` 滚上去的行由裁剪挡掉，
+ * 底部因此会空出与偏移等高的行。这是对拍出的现行行为，照搬。
+ */
+const renderScrollContent = (
+	node: DOMElement,
+	output: Output,
+	x: number,
+	y: number,
+	transformers: OutputTransformer[],
+	skipStaticElements: boolean,
+): void => {
+	const content = node.childNodes[0] as DOMElement | undefined;
+	const contentYoga = content?.yogaNode;
+	// 首子是 Text 时它的子节点是没有 yoga 节点的文本，下面的循环自然一个都不画，不用单独判断
+	if (
+		!content ||
+		!contentYoga ||
+		contentYoga.getDisplay() === Yoga.DISPLAY_NONE ||
+		(skipStaticElements && content.internal_static)
+	) {
+		return;
+	}
+
+	const yogaNode = node.yogaNode!;
+	const viewport =
+		yogaNode.getComputedHeight() -
+		yogaNode.getComputedPadding(Yoga.EDGE_TOP) -
+		yogaNode.getComputedPadding(Yoga.EDGE_BOTTOM) -
+		yogaNode.getComputedBorder(Yoga.EDGE_TOP) -
+		yogaNode.getComputedBorder(Yoga.EDGE_BOTTOM);
+	const contentX = x + contentYoga.getComputedLeft();
+	const contentY = y + contentYoga.getComputedTop();
+	const contentTransformers =
+		typeof content.internal_transform === 'function'
+			? [content.internal_transform, ...transformers]
+			: transformers;
+
+	for (const child of content.childNodes) {
+		const childYoga = (child as DOMElement).yogaNode;
+		if (!childYoga) {
+			continue;
+		}
+
+		const top = childYoga.getComputedTop();
+		if (top + childYoga.getComputedHeight() <= 0 || top >= viewport) {
+			continue;
+		}
+
+		renderNodeToOutput(child as DOMElement, output, {
+			offsetX: contentX,
+			offsetY: contentY,
+			transformers: contentTransformers,
+			skipStaticElements,
+		});
+	}
+
+	// 内容盒不走 renderNodeToOutput，自己的缓存永远不用；清掉脏标记，免得它一直挂着
+	content.renderCache = undefined;
+	content.renderDirty = false;
 };
 
 export default renderNodeToOutput;

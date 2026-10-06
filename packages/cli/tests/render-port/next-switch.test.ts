@@ -77,12 +77,13 @@ describe("legacy / next 导出同一组符号", () => {
 
 describe("next 骨架：未实现的符号用时就抛", () => {
   test("函数 / 值 / 组件三种占位都抛 NotImplementedError，并带任务号", async () => {
-    // 样本刻意挑阶段 2（T2.x 纯工具）之后才实现的符号，免得每做完一个工具任务这里就要换样本
-    const measure = await import("../../src/ui/render-port/next/measure.ts");
-    expect(() => (measure.measureElement as () => unknown)()).toThrow(
-      /measureElement 尚未实现（T4\.3）/,
-    );
-    expect(() => new measure.ResizeObserver(() => {})).toThrow(/ResizeObserver 尚未实现/);
+    // 样本挑阶段 5 之后才实现的符号；T4.3 实现了最后一个值占位（ResizeObserver），值占位改为直接测 helper
+    const runtime = await import("../../src/ui/render-port/next/runtime.ts");
+    expect(() => (runtime.drainStdin as () => unknown)()).toThrow(/drainStdin 尚未实现（T5\.1）/);
+    const { notImplementedValue } =
+      await import("../../src/ui/render-port/next/not-implemented.ts");
+    const Value = notImplementedValue("Sample", "T9.9") as unknown as new () => unknown;
+    expect(() => new Value()).toThrow(/Sample 尚未实现（T9\.9）/);
     const comps = await import("../../src/ui/render-port/next/components.ts");
     expect(() => (comps.AlternateScreen as unknown as () => unknown)()).toThrow(
       /AlternateScreen 尚未实现（T6\.1）/,
