@@ -21,6 +21,7 @@ import type {
   Attributes,
   AttributeValue,
 } from "../types.ts";
+import { isTelemetryDisabled } from "../../analytics/privacy-level.ts";
 
 /** OTLP 默认端点（与 OTel SDK 一致） */
 const DEFAULT_OTLP_ENDPOINT = "http://localhost:4318";
@@ -202,12 +203,13 @@ export class OtlpTelemetryExporter implements TelemetryExporter {
   }
 
   async exportSpans(spans: SpanData[]): Promise<void> {
-    if (spans.length === 0) return;
+    // 缺陷 21 纵深：门控加在「出网」这个动作上，而不只靠注册处记得判（隐私级别可在注册后才注入）
+    if (spans.length === 0 || isTelemetryDisabled()) return;
     await this.post(this.tracesEndpoint, this.buildTracesPayload(spans));
   }
 
   async exportMetrics(metrics: MetricPoint[]): Promise<void> {
-    if (metrics.length === 0) return;
+    if (metrics.length === 0 || isTelemetryDisabled()) return;
     await this.post(this.metricsEndpoint, this.buildMetricsPayload(metrics));
   }
 

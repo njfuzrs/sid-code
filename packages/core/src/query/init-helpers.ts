@@ -153,12 +153,19 @@ export async function initTelemetrySystem(
 
   try {
     const { initTelemetry, getTelemetryBus } = await import("../telemetry/index.ts");
+    // 缺陷 21：OTLP 导出器在 initTelemetry 里按隐私级别决定注册与否，配置文件的
+    // privacy_level 必须在此之前注入（initAnalyticsSink 在后面才注入；trace 关闭时
+    // initTraceCollector 也不会提前注入）。与后面那次注入同值，幂等。
+    if (config.analytics?.privacyLevel) {
+      const { setConfiguredPrivacyLevel } = await import("../analytics/privacy-level.ts");
+      setConfiguredPrivacyLevel(config.analytics.privacyLevel);
+    }
     const telemetryConfig = config.telemetry;
     if (telemetryConfig?.enabled) {
       initTelemetry(telemetryConfig);
       const { TokenMeter } = await import("../telemetry/metrics/token-meter.ts");
-      result.tokenMeter = new TokenMeter(getTelemetryBus(), (model, usage) =>
-        sessionState.calculateCost(model, usage),
+      result.tokenMeter = new TokenMeter(getTelemetryBus(), (model, usage, provider) =>
+        sessionState.calculateCost(model, usage, provider),
       );
       log.info(
         "TELEMETRY",
@@ -287,7 +294,7 @@ export async function initAnalyticsSink(config: Config, sessionId: string): Prom
       setKillswitchHook,
       setMetadataHook,
     } = await import("../analytics/sink.ts");
-    const { setConfiguredPrivacyLevel, shouldLoadRemoteConfig } =
+    const { setConfiguredPrivacyLevel, shouldLoadRemoteConfig, isTelemetryDisabled } =
       await import("../analytics/privacy-level.ts");
 
     // 1. 配置文件中的隐私级别覆盖
@@ -356,8 +363,14 @@ export async function initAnalyticsSink(config: Config, sessionId: string): Prom
     // 内置后端 `sid-backend`：配了 backend.url 就自动注册，发往 POST /events。
     // 它不出现在 analytics.backends[] 里，也不能被它覆盖——backends[] 只用来对接第三方
     // collector。以前只认 backends[]，配了 backend.url 并登录的机器事件照样只写本地。
+    //
+    // 缺陷 35（P0）：远程**上报**后端的注册判据是 !isTelemetryDisabled()，不是
+    // shouldLoadRemoteConfig()。后者回答「能否**拉**远程配置」（下行，essential-traffic 才禁），
+    // 被借来门控「能否**推**数据」（上行，no-telemetry 就该禁）。借错的后果是 no-telemetry 下
+    // 后端照样注册、recoverFromDisk 把上个会话的旧事件 POST 出去。disk-cache 里另有一道同判据的闸。
+    const allowRemoteReport = !isTelemetryDisabled();
     let builtinEventsUrl: string | undefined;
-    if (shouldLoadRemoteConfig()) {
+    if (allowRemoteReport) {
       const { resolveEndpoint } = await import("../identity/endpoints.ts");
       builtinEventsUrl = resolveEndpoint("events")?.url;
       if (builtinEventsUrl) {
@@ -384,7 +397,7 @@ export async function initAnalyticsSink(config: Config, sessionId: string): Prom
       }
     }
 
-    if (analyticsCfg?.backends && shouldLoadRemoteConfig()) {
+    if (analyticsCfg?.backends && allowRemoteReport) {
       for (const backendCfg of analyticsCfg.backends) {
         if (backendCfg.type !== "http" && backendCfg.type !== "otlp") continue;
         if (isDuplicateOfBuiltin(backendCfg, builtinEventsUrl)) {

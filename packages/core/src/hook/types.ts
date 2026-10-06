@@ -71,13 +71,13 @@ export enum HookEventName {
   TaskCreated = "TaskCreated",
   /** task_update 把任务置为 completed 后触发。仅通知。 */
   TaskCompleted = "TaskCompleted",
-  /** 权限检查开始（spec 17 §6.1.3，用于 blocked_on_user span） */
+  /** 预留（内部事件）：无 fire 方法也无调用点，恒不触发；用户配置会被跳过。原计划供 blocked_on_user span。 */
   BeforePermissionCheck = "BeforePermissionCheck",
-  /** 权限检查结束 */
+  /** 预留（内部事件）：无 fire 方法也无调用点，恒不触发；用户配置会被跳过。 */
   AfterPermissionCheck = "AfterPermissionCheck",
-  /** Hook 执行开始（用于 hook_execution span） */
+  /** 预留（内部事件）：无 fire 方法也无调用点，恒不触发；用户配置会被跳过。原计划供 hook_execution span。 */
   BeforeHookExecution = "BeforeHookExecution",
-  /** Hook 执行结束 */
+  /** 预留（内部事件）：无 fire 方法也无调用点，恒不触发；用户配置会被跳过。 */
   AfterHookExecution = "AfterHookExecution",
   /** G11：指令加载到上下文（CLAUDE.md / rules 加载后触发） */
   InstructionsLoaded = "InstructionsLoaded",

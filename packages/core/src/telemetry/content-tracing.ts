@@ -185,15 +185,36 @@ function shortHash(content: string): string {
  * 先脱敏则无论截在哪里，留下的都是已经打过码的文本。
  */
 function prepare(raw: string): { content: string; truncated: boolean; originalBytes: number } {
-  let masked = raw;
-  try {
-    const { maskSensitiveData } = require("../permission/sensitive.ts");
-    masked = maskSensitiveData(raw);
-  } catch {
-    // 脱敏模块不可用时**不外发内容**：宁可少一条诊断数据，不可裸传凭证。
+  const masked = maskOrNull(raw);
+  // 脱敏模块不可用时**不外发内容**：宁可少一条诊断数据，不可裸传凭证。
+  if (masked === null) {
     return { content: "[脱敏模块不可用，内容已丢弃]", truncated: false, originalBytes: 0 };
   }
   return truncateToBytes(masked);
+}
+
+/** 只脱敏不截断；脱敏模块不可用时返回 null（调用方据此不外发） */
+function maskOrNull(raw: string): string | null {
+  try {
+    const { maskSensitiveData } = require("../permission/sensitive.ts");
+    return maskSensitiveData(raw);
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * span **属性**上的 preview 与字节数。
+ *
+ * 缺陷 28（P0，20260927 可观测性审计）：两个 `_preview` 属性曾直接 `slice(0,500)` 原文，
+ * 绕过了第 4 道闸门 —— 而属性与 event 走同一条 OTLP 外发通道，隐私等级完全相同。
+ * 顺序同 prepare()：**先脱敏再截**，否则横跨第 500 个字符的凭证会半截裸传。
+ * 字节数同样按脱敏后算，与 event 上的 `content_bytes`（prepare 的 originalBytes）同口径。
+ */
+function maskedPreview(raw: string): { preview: string; bytes: number } {
+  const masked = maskOrNull(raw);
+  if (masked === null) return { preview: "[脱敏模块不可用，内容已丢弃]", bytes: 0 };
+  return { preview: masked.slice(0, PREVIEW_CHARS), bytes: encoder.encode(masked).length };
 }
 
 /** 安全序列化——循环引用等异常一律降级为占位符，绝不抛到调用方 */
@@ -259,10 +280,11 @@ export function addRequestContent(
     const system = safeStringify(payload.system);
     if (system) {
       const { hash } = emitOnce(span, "content.system_prompt", system);
+      const { preview, bytes } = maskedPreview(system);
       span.setAttributes({
         "sidcode.content.system_prompt_hash": hash,
-        "sidcode.content.system_prompt_preview": system.slice(0, PREVIEW_CHARS),
-        "sidcode.content.system_prompt_bytes": encoder.encode(system).length,
+        "sidcode.content.system_prompt_preview": preview,
+        "sidcode.content.system_prompt_bytes": bytes,
       });
     }
 
@@ -343,7 +365,7 @@ export function addResponseContent(
         ...(truncated ? { content_truncated: true } : {}),
       });
       span.setAttributes({
-        "sidcode.content.output_preview": payload.text.slice(0, PREVIEW_CHARS),
+        "sidcode.content.output_preview": maskedPreview(payload.text).preview,
         "sidcode.content.output_bytes": originalBytes,
       });
     }

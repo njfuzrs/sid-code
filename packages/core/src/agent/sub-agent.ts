@@ -75,6 +75,7 @@ import { fileURLToPath } from "url";
 import { existsSync } from "fs";
 import { withAgentCwd } from "../bootstrap/cwd-context.ts";
 import { withIncrementedDepth } from "./depth-context.ts";
+import { runInSpanScope } from "../telemetry/span-scope.ts";
 
 /** spawn 子进程时定位 headless.ts 入口的绝对路径。
  *  编译二进制中 import.meta.url 指向 /$bunfs/root/...（虚拟路径），此时 headless.ts
@@ -756,19 +757,24 @@ export class SubAgent {
       // canSpawnSubAgent 读到的就是自己那一层的深度，据此裁决放行/拒绝。
       // spawn 模式是独立子进程（ALS 不跨进程），但子进程内也从 depth 0 起算——
       // 其 sub_agent 工具在子进程里同样受 canSpawnSubAgent 约束，故仍不会无限套娃。
-      result = await withIncrementedDepth(async () => {
-        if (this.shouldUseSpawn() && !task.cwd) {
-          try {
-            const spawned = await this.executeSpawned(task, signal, taskId);
-            log.info("SUBAGENT", `[${task.type}] spawn 模式完成`);
-            return spawned;
-          } catch (err: any) {
-            log.warn("SUBAGENT", `spawn 模式失败，回退到进程内模式: ${err.message}`);
-            return await this.executeInner(task, signal, taskId);
+      // 缺陷 2：执行体包进 span 作用域（ALS），其中 fire 的 BeforeModel/PostToolUse 等
+      // 产生的 span 挂到本子代理的 invoke_agent 下。SubagentStart/Stop 刻意在作用域**之外**
+      // fire：它们属于发起方（父 span 取发起方的作用域）。
+      result = await runInSpanScope(agentId, () =>
+        withIncrementedDepth(async () => {
+          if (this.shouldUseSpawn() && !task.cwd) {
+            try {
+              const spawned = await this.executeSpawned(task, signal, taskId);
+              log.info("SUBAGENT", `[${task.type}] spawn 模式完成`);
+              return spawned;
+            } catch (err: any) {
+              log.warn("SUBAGENT", `spawn 模式失败，回退到进程内模式: ${err.message}`);
+              return await this.executeInner(task, signal, taskId);
+            }
           }
-        }
-        return await runInner();
-      });
+          return await runInner();
+        }),
+      );
 
       // 前台子代理（runSync，非 _isAsync）：结果已由 tool.ts runSync 作为 tool_result 返回并
       // 渲染成工具卡片，此处不再发 <task-notification>（否则双投递，见根治方案 §5.1）。
@@ -835,30 +841,37 @@ export class SubAgent {
     const log = getLogger();
 
     let result: SubAgentResult;
+    const customAgentId = `subagent-custom-${Date.now()}`;
     try {
       // SubagentStart hook（description 取自 userPrompt 首段，便于轨迹排查识别派活意图）
       this.hookSystem
-        ?.fireSubagentStartEvent(`subagent-custom-${Date.now()}`, "custom", undefined, {
+        ?.fireSubagentStartEvent(customAgentId, "custom", undefined, {
           description: task.userPrompt?.slice(0, 120),
         })
         .catch((err) => log.error("HOOK", `subagent_start hook 失败: ${err.message}`));
 
-      // 尝试 spawn 模式
-      if (this.shouldUseSpawn()) {
-        try {
-          result = await this.executeSpawnedCustom(task, signal);
-          log.info("SUBAGENT", `[custom] spawn 模式完成`);
-        } catch (err: any) {
-          log.warn("SUBAGENT", `spawn 模式失败，回退到进程内模式: ${err.message}`);
-          result = await this.executeCustomInner(task, signal);
+      // 缺陷 2：同 execute()，执行体进 span 作用域，内部 span 挂到本子代理下
+      result = await runInSpanScope(customAgentId, async () => {
+        // 尝试 spawn 模式
+        if (this.shouldUseSpawn()) {
+          try {
+            const spawned = await this.executeSpawnedCustom(task, signal);
+            log.info("SUBAGENT", `[custom] spawn 模式完成`);
+            return spawned;
+          } catch (err: any) {
+            log.warn("SUBAGENT", `spawn 模式失败，回退到进程内模式: ${err.message}`);
+            return await this.executeCustomInner(task, signal);
+          }
         }
-      } else {
-        result = await this.executeCustomInner(task, signal);
-      }
+        return await this.executeCustomInner(task, signal);
+      });
     } finally {
-      // subagent_stop hook（非阻塞）
+      // subagent_stop hook（非阻塞）。带 agent_id：曾不带，探针按 id 配对不上，
+      // custom 子代理的 invoke_agent span 永不 end（与缺陷 3 同形）。
       this.hookSystem
         ?.fireSubagentStopEvent({
+          agent_id: customAgentId,
+          agent_type: "custom",
           toolName: "subagent:custom",
         })
         .catch((err) => log.error("HOOK", `subagent_stop hook 失败: ${err.message}`));
