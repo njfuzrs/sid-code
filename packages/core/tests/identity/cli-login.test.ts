@@ -218,12 +218,13 @@ describe("performCliLogin 全流程", () => {
     }
   });
 
-  test("回调 state 不匹配 → state_mismatch，不调 exchange、不落盘", async () => {
+  test("回调 state 不匹配 → 等到超时后报 state_mismatch，不调 exchange、不落盘", async () => {
+    // D22：错 state 的回调被忽略、服务器继续等真回调；超时时按「收到过不匹配回调」归因
     const fb = fakeBackend({ tamperState: true });
     const err = await performCliLogin(BACKEND, {
       openBrowser: fb.openBrowser,
       fetchImpl: fb.fetchImpl,
-      timeoutMs: 5000,
+      timeoutMs: 500,
     }).catch((e) => e);
     expect(err).toBeInstanceOf(CliLoginError);
     expect(err.reason).toBe("state_mismatch");

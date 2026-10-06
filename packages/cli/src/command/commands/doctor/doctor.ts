@@ -278,6 +278,10 @@ function checkMCP(ctx: CommandContext): CheckItem[] {
         status = "ok";
         stateText = "已禁用";
         break;
+      case "needs_auth":
+        status = "warn";
+        stateText = `待授权（运行 /mcp authenticate ${s.name}）`;
+        break;
       case "failed":
         status = "fail";
         stateText = `连接失败${s.error ? `（${s.error}）` : ""}`;
