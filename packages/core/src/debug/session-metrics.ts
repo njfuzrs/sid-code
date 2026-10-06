@@ -305,6 +305,23 @@ export class SessionMetricsCollector {
       { source: "runtime" as any },
     );
 
+    // Q7：工具执行了但失败改由 PostToolUseFailure 送达，补订阅，否则摘要的失败数归零。
+    // 只数 tool_error / exception——与切换前「PostToolUse 带 is_error」口径一致
+    //（切换前校验失败 / hook 阻止 / 权限拒绝都不走 PostToolUse，这里同样不数）。
+    hookSystem.registerHook(
+      {
+        type: "runtime",
+        name: "session-metrics-post-tool-failure",
+        action: async (input: HookInput) => {
+          const f = input as PostToolUseInput;
+          if (f.sid_failure_kind !== "tool_error" && f.sid_failure_kind !== "exception") return;
+          this.recordToolCall(f.tool_name, f.duration_ms ?? 0, false);
+        },
+      },
+      HookEventName.PostToolUseFailure,
+      { source: "runtime" as any },
+    );
+
     // BeforeModel → 记录轮次
     hookSystem.registerHook(
       {

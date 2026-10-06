@@ -39,6 +39,7 @@ import {
   type AggregatedHookResult,
   type HookExecutionPlan,
   type HookConfig,
+  type ToolFailureKind,
   resolveHookTimeoutMs,
   sessionEndBudgetMs,
 } from "./types.ts";
@@ -206,13 +207,20 @@ export class HookEventHandler {
       duration_ms?: number;
       harness_context?: import("./types.ts").HarnessHookContext;
       is_interrupt?: boolean;
+      /** Q7：缺省 exception。validation / hook_blocked 只送 runtime hook */
+      failure_kind?: ToolFailureKind;
+      /** tool_error 时工具的原始输出（tool_response.output） */
+      tool_output?: unknown;
     },
   ): Promise<AggregatedHookResult> {
+    const kind = options?.failure_kind ?? "exception";
     const input: PostToolUseInput = {
       ...this.createBaseInput(HookEventName.PostToolUseFailure),
       tool_name: toolName,
       tool_input: toolInput,
-      tool_response: { error },
+      tool_response:
+        options?.tool_output !== undefined ? { error, output: options.tool_output } : { error },
+      sid_failure_kind: kind,
       is_error: true,
       // HC12：CC 的顶层字段（tool_response.error 保留，存量 sid 脚本照常）
       error,
@@ -221,7 +229,16 @@ export class HookEventHandler {
       duration_ms: options?.duration_ms,
       harness_context: options?.harness_context,
     };
-    return this.executeHooks(HookEventName.PostToolUseFailure, input, { toolName, toolInput });
+    // Q7：CC 只在「工具执行了但失败」时触发 PostToolUseFailure。校验失败 / PreToolUse 阻止
+    // 在 CC 里不触发它，但 sid 的 runtime 消费者（execute_tool span、轨迹）要靠它收尾，
+    // 所以只送 runtime hook——用户 hook 看到的触发语义与 CC 一致。
+    const runtimeOnly = kind === "validation" || kind === "hook_blocked";
+    return this.executeHooks(
+      HookEventName.PostToolUseFailure,
+      input,
+      { toolName, toolInput },
+      { runtimeOnly },
+    );
   }
 
   /** UserPromptSubmit 事件 */
@@ -472,9 +489,11 @@ export class HookEventHandler {
     toolInput: Record<string, unknown>,
     denialReason: string,
     denialSource: PermissionDeniedInput["denial_source"],
+    toolUseId?: string,
   ): Promise<AggregatedHookResult> {
     const input: PermissionDeniedInput = {
       ...this.createBaseInput(HookEventName.PermissionDenied),
+      tool_use_id: toolUseId,
       tool_name: toolName,
       tool_input: toolInput,
       denial_reason: denialReason,
@@ -612,12 +631,14 @@ export class HookEventHandler {
     eventName: HookEventName,
     input: HookInput,
     context?: HookEventContext,
+    opts?: { runtimeOnly?: boolean },
   ): Promise<AggregatedHookResult> {
     const log = getLogger();
 
     try {
       // 1. 创建执行计划
-      const plan = this.planner.createExecutionPlan(eventName, context);
+      let plan = this.planner.createExecutionPlan(eventName, context);
+      if (plan && opts?.runtimeOnly) plan = keepRuntimeOnly(plan);
       if (!plan || plan.hookConfigs.length === 0) {
         return emptyResult();
       }
@@ -751,4 +772,14 @@ export function applySessionEndBudget(configs: HookConfig[]): HookConfig[] {
     const own = resolveHookTimeoutMs(c, HookEventName.SessionEnd);
     return own <= budgetMs ? c : ({ ...c, timeout: budgetMs / 1000 } as HookConfig);
   });
+}
+
+/** Q7：只保留 runtime hook（entries 与 hookConfigs 下标对齐，一起过滤） */
+function keepRuntimeOnly(plan: HookExecutionPlan): HookExecutionPlan {
+  const idx = plan.hookConfigs.map((c, i) => (c.type === "runtime" ? i : -1)).filter((i) => i >= 0);
+  return {
+    ...plan,
+    hookConfigs: idx.map((i) => plan.hookConfigs[i]!),
+    entries: plan.entries ? idx.map((i) => plan.entries![i]!) : undefined,
+  };
 }

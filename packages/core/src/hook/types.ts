@@ -348,6 +348,9 @@ export interface PreToolUseInput extends HookInput {
   tool_use_id?: string;
 }
 
+/** Q7：工具失败成因 */
+export type ToolFailureKind = "tool_error" | "exception" | "validation" | "hook_blocked";
+
 /** PostToolUse 输入 */
 export interface PostToolUseInput extends HookInput {
   tool_name: string;
@@ -358,6 +361,12 @@ export interface PostToolUseInput extends HookInput {
   error?: string;
   /** PostToolUseFailure：是否因用户中断而失败（CC 字段） */
   is_interrupt?: boolean;
+  /**
+   * Q7：sid 内部字段，失败成因。只有 tool_error / exception 会送到用户 hook（CC 语义）；
+   * validation / hook_blocked 只送 runtime hook（关 execute_tool span 用，见 event-handler）。
+   * 内部消费者据此保持切换前的口径（session-metrics 只数 tool_error，与原先「PostToolUse 带 is_error」等价）。
+   */
+  sid_failure_kind?: ToolFailureKind;
   /** 与 PreToolUse 中的 tool_use_id 对应 */
   tool_use_id?: string;
 
@@ -673,6 +682,8 @@ export interface PermissionRequestInput extends HookInput {
 
 /** PermissionDenied 输入 */
 export interface PermissionDeniedInput extends HookInput {
+  /** Q7：供 runtime 消费者关闭对应的 execute_tool span */
+  tool_use_id?: string;
   tool_name: string;
   tool_input: Record<string, unknown>;
   denial_reason: string;

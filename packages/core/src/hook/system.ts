@@ -293,6 +293,8 @@ export class HookSystem {
       duration_ms?: number;
       harness_context?: import("./types.ts").HarnessHookContext;
       is_interrupt?: boolean;
+      failure_kind?: import("./types.ts").ToolFailureKind;
+      tool_output?: unknown;
     },
   ): Promise<AggregatedHookResult> {
     return this.eventHandler.firePostToolUseFailureEvent(
@@ -435,12 +437,14 @@ export class HookSystem {
     toolInput: Record<string, unknown>,
     denialReason: string,
     denialSource: "user" | "rule" | "hook" | "auto",
+    toolUseId?: string,
   ): Promise<AggregatedHookResult> {
     return this.eventHandler.firePermissionDeniedEvent(
       toolName,
       toolInput,
       denialReason,
       denialSource,
+      toolUseId,
     );
   }
 

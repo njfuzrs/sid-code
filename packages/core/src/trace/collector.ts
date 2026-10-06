@@ -33,6 +33,7 @@ import {
   type PreCompactInput,
   type SubagentStartInput,
   type UserPromptSubmitInput,
+  type PermissionDeniedInput,
 } from "../hook/types.ts";
 import type { HookSystem } from "../hook/system.ts";
 import { getRawVersion } from "@sid-code/shared/version.ts";
@@ -685,6 +686,8 @@ export class TraceCollector {
       HookEventName.PreToolUse,
       HookEventName.PostToolUse,
       HookEventName.PostToolUseFailure,
+      // Q7：权限拒绝不再 fire PostToolUseFailure，改由 PermissionDenied 给 PreToolUse 配对收尾
+      HookEventName.PermissionDenied,
       HookEventName.UserPromptSubmit,
       HookEventName.PreCompact,
       HookEventName.SubagentStart,
@@ -728,7 +731,17 @@ export class TraceCollector {
           this.handlePostToolUse(input as PostToolUseInput);
           break;
         case HookEventName.PostToolUseFailure:
-          this.handlePostToolUseFailure(input as PostToolUseInput);
+          // Q7：「工具执行了但返回 isError」切换前走 PostToolUse(is_error:true)，现在走 Failure。
+          // 落盘口径保持不变——仍按 PostToolUse 记（files_edited / B12 首次编辑成功率 /
+          // 工具耗时累计都依赖它），离线脚本与 digest 的工具失败率分子不变。
+          if ((input as PostToolUseInput).sid_failure_kind === "tool_error") {
+            this.handlePostToolUse(input as PostToolUseInput);
+          } else {
+            this.handlePostToolUseFailure(input as PostToolUseInput);
+          }
+          break;
+        case HookEventName.PermissionDenied:
+          this.handlePermissionDenied(input as PermissionDeniedInput);
           break;
         case HookEventName.UserPromptSubmit:
           this.handleUserPromptSubmit(input as UserPromptSubmitInput);
@@ -1660,6 +1673,29 @@ export class TraceCollector {
       "AUDIT:TOOL",
       `✗ ${input.tool_name} id=${input.tool_use_id ?? "?"} (PostToolUseFailure)`,
     );
+  }
+
+  // ─── PermissionDenied（Q7）───
+
+  /**
+   * 权限拒绝给 PreToolUse 配对收尾。切换前它以 PostToolUseFailure(is_error:true) 落盘，
+   * 于是「工具失败率」的分子含权限拒绝；现在单独记 PermissionDenied，**不计入工具失败**。
+   * 这是有意的口径变化（发版说明须写明），拒绝本身仍由 B11 的权限决策观察者记录。
+   */
+  private handlePermissionDenied(input: PermissionDeniedInput): void {
+    if (!this.initialized) return;
+    this.metadata.tools_used.add(input.tool_name);
+    this.appendHookEvent({
+      event: HookEventName.PermissionDenied,
+      session_id: this.metadata.session_id,
+      timestamp: input.timestamp,
+      cwd: input.cwd,
+      data: {
+        tool_name: input.tool_name,
+        tool_use_id: input.tool_use_id,
+        denial_source: input.denial_source,
+      },
+    });
   }
 
   // ─── UserPromptSubmit ───

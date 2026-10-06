@@ -7,7 +7,7 @@ import type { ContentBlock, ToolUseBlock } from "../llm/types.ts";
 import type { LegacyTool as Tool } from "../tool/types.ts";
 import type { Checker, PermissionRequest } from "../permission/types.ts";
 import type { HookSystem } from "../hook/system.ts";
-import type { AggregatedHookResult } from "../hook/types.ts";
+import type { AggregatedHookResult, ToolFailureKind } from "../hook/types.ts";
 import { PreToolUseHookOutput } from "../hook/types.ts";
 import type { SessionState } from "../session/state.ts";
 import type { Config } from "../config/config.ts";
@@ -905,6 +905,8 @@ function firePermissionDenied(
   toolInput: unknown,
   reason: string,
   source: "user" | "rule" | "hook" | "auto",
+  /** Q7：runtime 消费者靠它关闭 execute_tool span（拒绝不再 fire PostToolUseFailure） */
+  toolUseId?: string,
 ): void {
   try {
     const fired = deps.hookSystem?.firePermissionDeniedEvent?.(
@@ -912,6 +914,7 @@ function firePermissionDenied(
       (toolInput ?? {}) as Record<string, unknown>,
       reason,
       source,
+      toolUseId,
     );
     void fired?.catch?.((e: any) =>
       getLogger().error("HOOK", `permission_denied hook 失败: ${e?.message ?? e}`),
@@ -935,6 +938,11 @@ function firePostToolUseFailure(
    * 无法区分"秒拒"与"等用户确认等了 30s 才拒"（权限拒绝尤其常见）。
    */
   durationMs?: number,
+  /**
+   * Q7：失败成因。validation / hook_blocked 在 CC 里不触发 PostToolUseFailure，
+   * 这里只送 runtime hook（execute_tool span 与轨迹收尾），用户 hook 收不到。
+   */
+  kind: ToolFailureKind = "exception",
 ): void {
   const log = getLogger();
   try {
@@ -945,7 +953,7 @@ function firePostToolUseFailure(
       (toolInput ?? block.input) as Record<string, unknown>,
       reason,
       block.id,
-      durationMs !== undefined ? { duration_ms: durationMs } : undefined,
+      { ...(durationMs !== undefined ? { duration_ms: durationMs } : {}), failure_kind: kind },
     );
     // 不 await：与既有调用点同策略，hook 耗时不进工具关键路径。
     void fired?.catch?.((e: any) =>
@@ -1014,6 +1022,7 @@ export async function resolveToolPermission(
           `Hook 阻止执行: ${interp.blockReason ?? "无原因"}`,
           observableInput,
           Date.now() - permStartedAt,
+          "hook_blocked",
         );
         return {
           type: "tool_result",
@@ -1200,10 +1209,10 @@ export async function resolveToolPermission(
         observableInput,
         result.decision.reason ?? denyContent,
         result.source === "user" ? "user" : result.source === "hook" ? "hook" : "auto",
+        block.id,
       );
-      // Pre/Post 配对：PreToolUse 已在本函数开头 fire，权限拒绝也必须补 Failure 收尾。
-      // 耗时含「等用户确认」的墙钟——ask 路径可达数十秒，正是要看的那个数。
-      firePostToolUseFailure(deps, block, denyContent, observableInput, Date.now() - permStartedAt);
+      // Q7：权限拒绝只 fire PermissionDenied（对齐 CC），不再补 PostToolUseFailure。
+      // execute_tool span 由 runtime 消费者订阅 PermissionDenied 关闭（status=denied，不计工具失败）。
       return {
         type: "tool_result",
         tool_use_id: block.id,
@@ -1252,15 +1261,9 @@ export async function resolveToolPermission(
     observableInput,
     explanation,
     decision.decisionReason?.type === "rule" ? "rule" : "auto",
+    block.id,
   );
-  // Pre/Post 配对：同上，直接拒绝（无需确认）也要补 Failure 收尾。
-  firePostToolUseFailure(
-    deps,
-    block,
-    `权限拒绝: ${explanation}`,
-    observableInput,
-    Date.now() - permStartedAt,
-  );
+  // Q7：同上，规则直拒只 fire PermissionDenied。
   return {
     type: "tool_result",
     tool_use_id: block.id,
@@ -1336,6 +1339,7 @@ export async function executeSingleTool(
       `Hook 阻止执行: ${reason}`,
       undefined,
       Date.now() - toolStartedAt,
+      "hook_blocked",
     );
     logToolFailure(block.name, {
       kind: "hook_blocked",
@@ -1398,6 +1402,7 @@ export async function executeSingleTool(
       validation.message,
       effectiveInput,
       Date.now() - toolStartedAt,
+      "validation",
     );
     // 这条正是事故现场（见上方注释）：ask_user_question 校验失败在 events.jsonl 里
     // 只有 Pre 没有 Post，使「模型漏字段」这类高频真实失败在失败率统计里彻底隐身。
@@ -1474,14 +1479,29 @@ export async function executeSingleTool(
     // post_tool_use hook
     // GAP-11：MCP 工具先用**原始输出**跑 hook（脱敏/审计场景需原文），内置工具用截断后输出。
     const hookOutput = isMcpTool ? result.output : normalizedOutput;
-    const postResult = await deps.hookSystem.firePostToolUseEvent(
-      block.name,
-      block.input as Record<string, unknown>,
-      { output: hookOutput, isError: result.isError },
-      result.isError,
-      block.id,
-      { duration_ms: elapsed, harness_context: telemetryMeta as any },
-    );
+    // Q7：工具执行了但返回 isError → 只 fire PostToolUseFailure（对齐 CC）；成功才 fire PostToolUse。
+    // 两条都 await，PostToolUse 的 additionalContext / 反馈与 Failure 的反馈走同一套回灌。
+    const postResult = result.isError
+      ? await deps.hookSystem.firePostToolUseFailureEvent(
+          block.name,
+          block.input as Record<string, unknown>,
+          typeof hookOutput === "string" ? hookOutput : String(hookOutput ?? ""),
+          block.id,
+          {
+            duration_ms: elapsed,
+            harness_context: telemetryMeta as any,
+            failure_kind: "tool_error",
+            tool_output: hookOutput,
+          },
+        )
+      : await deps.hookSystem.firePostToolUseEvent(
+          block.name,
+          block.input as Record<string, unknown>,
+          { output: hookOutput, isError: false },
+          false,
+          block.id,
+          { duration_ms: elapsed, harness_context: telemetryMeta as any },
+        );
 
     let finalOutput = normalizedOutput;
     const additionalCtx = postResult.finalOutput?.getAdditionalContext();
@@ -1613,7 +1633,7 @@ export async function executeSingleTool(
         block.id,
         // elapsed = 纯执行耗时（与成功路径 addToolDuration 同口径）。
         // 慢工具超时失败恰是最需要耗时的场景：区分"秒失败"与"卡 30s 才失败"。
-        { duration_ms: elapsed, is_interrupt: isAbortLike(err) },
+        { duration_ms: elapsed, is_interrupt: isAbortLike(err), failure_kind: "exception" },
       );
       failureFeedback = hookFeedbackText(failResult);
     } catch (e: any) {
