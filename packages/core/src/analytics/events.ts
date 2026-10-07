@@ -105,6 +105,10 @@ function v(s: string): VerifiedNotCodeOrFilepaths {
  *   - `_PROTECTED_mcp_*`：真实 server / tool 名，仅特权后端可见
  *
  * 业务侧拿不到「不脱敏地记一个工具名」的接口，这是刻意的。
+ *
+ * @internal 导出**仅供测试**直接断言脱敏规则（`instrumentation-privacy.test.ts`）。
+ * 生产代码一律走 `logXxx` 门面：自己 import 它拼字段就绕过了 `instrumentation-sentinel`
+ * 的 logEvent 强制脱敏门禁（缺陷 34）；`tests/analytics/field-builders-test-only.test.ts` 拦这个。
  */
 export function toolNameFields(toolName: string): EventMetadata {
   const fields: EventMetadata = {
@@ -125,6 +129,8 @@ export function toolNameFields(toolName: string): EventMetadata {
  *
  * 路径含用户目录结构（`/Users/<name>/work/<client>/…`），本身就是 PII。
  * 缺陷清单 P1-6 点明：补埋点时不接这层，等于「把工具名和路径裸传出去」。
+ *
+ * @internal 导出仅供测试，生产走 `logXxx` 门面（同 {@link toolNameFields}，缺陷 34）。
  */
 export function filePathFields(filePath: string | undefined): EventMetadata {
   if (typeof filePath !== "string" || filePath.length === 0) return {};

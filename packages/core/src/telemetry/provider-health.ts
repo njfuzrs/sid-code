@@ -21,6 +21,7 @@ import {
   formatModelLatencyLine,
   type ModelLatencyStats,
 } from "../trace/latency-by-model.ts";
+import { createProviderResolver } from "../trace/provider-resolver.ts";
 // P1-8 门控：privacy-level 零依赖、无副作用，同步 import 不引入导入链污染。
 import { isEssentialTrafficOnly } from "../analytics/privacy-level.ts";
 
@@ -186,17 +187,7 @@ export function aggregateProviderHealth(options: {
 
   // P0-1（排查报告 Bug A）：first_content 只带 model 不带 provider，先扫一遍 AfterModelRaw
   // 建立 model→provider 映射，供 TTFT 归因。与 digest.aggregateProviderStats 同口径。
-  const modelToProvider = new Map<string, string>();
-  for (const e of events) {
-    if (e.event === "AfterModelRaw" && e.data) {
-      const prov = (e.data.provider as string) || "";
-      const model = (e.data.model as string) || "";
-      if (prov && model && !modelToProvider.has(model)) modelToProvider.set(model, prov);
-    }
-  }
-  const resolveProvider = (model: string): string =>
-    modelToProvider.get(model) ||
-    (model.includes("claude") ? "anthropic" : model ? "openai" : "unknown");
+  const resolveProvider = createProviderResolver(events);
 
   for (const e of events) {
     if (e.event === "AfterModelRaw" && e.data) {
@@ -248,11 +239,9 @@ export function aggregateProviderHealth(options: {
     if (e.event === "TimeoutFired" && e.data) {
       const layer = (e.data.layer as string) || "unknown";
       const model = (e.data.model as string) || "";
-      const prov = model.includes("deepseek")
-        ? "openai"
-        : model.includes("claude")
-          ? "anthropic"
-          : "unknown";
+      // 缺陷 37：与 first_content 同一个 resolver。曾另起「只认 deepseek/claude」一套，
+      // 其余模型的超时落进无分母的 unknown 桶 ⇒ successRate 兜底 1，告警永不触发。
+      const prov = model ? resolveProvider(model) : "unknown";
       if (filterProvider && prov !== filterProvider) continue;
       const acc = ensure(prov);
       acc.timeoutsByLayer[layer] = (acc.timeoutsByLayer[layer] || 0) + 1;
@@ -263,7 +252,7 @@ export function aggregateProviderHealth(options: {
   // P2-3：遍历完再配对（completed 可能后到，边遍历边配会漏掉一半）
   const buckets = bucketer.finalize();
 
-  // P1（§0.1b）：TTFT/TTFB 按 model 分组。复用上面已建的 modelToProvider 映射，
+  // P1（§0.1b）：TTFT/TTFB 按 model 分组。复用上面的共享 resolver，
   // 与 digest.aggregateProviderStats 逐字同款调用 —— 同一份 events.jsonl 在
   // `/trace` 与 `/trace --health` 两个入口必须得出同一个结论。
   //
