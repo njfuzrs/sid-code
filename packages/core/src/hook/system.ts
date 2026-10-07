@@ -11,6 +11,7 @@ import { HookEventHandler } from "./event-handler.ts";
 import { AsyncHookRegistry, type RewakeNotification } from "./async-registry.ts";
 import { EnterprisePolicyGate, type EnterprisePolicy } from "./enterprise-policy.ts";
 import { HookEventName, ConfigSource } from "./types.ts";
+import { extractHookContext } from "./context-inject.ts";
 import type { HooksConfig as LegacyHooksConfig } from "../config/config.ts";
 import type { HookDiagnostic, NormalizeContext } from "./config-normalize.ts";
 import type {
@@ -31,6 +32,8 @@ export class HookSystem {
   private readonly eventHandler: HookEventHandler;
   /** G7：异步 hook 注册表（后台执行 + asyncRewake 回灌） */
   private readonly asyncRegistry: AsyncHookRegistry;
+  /** clear / compact 后重发 SessionStart 得到的上下文，待下一条用户消息注入 */
+  private pendingSessionContext: string[] = [];
 
   constructor() {
     this.registry = new HookRegistry();
@@ -66,14 +69,6 @@ export class HookSystem {
   /** G7：清理已完成的异步 hook 条目（会话结束或定期调用）。 */
   cleanupAsyncHooks(): void {
     this.asyncRegistry.cleanup();
-  }
-
-  /** 从一份 hooks 配置初始化（默认按用户级来源）。返回归一化诊断 */
-  initializeFromLegacy(
-    legacyHooks: LegacyHooksConfig,
-    source: ConfigSource = ConfigSource.User,
-  ): HookDiagnostic[] {
-    return this.registry.initializeFromLegacy(legacyHooks, source);
   }
 
   /** HC1：按来源分层初始化（user / project / local / managed 各自带 source，按事件追加） */
@@ -149,6 +144,15 @@ export class HookSystem {
   /** 设置工作目录 */
   setCwd(cwd: string): void {
     this.eventHandler.setCwd(cwd);
+  }
+
+  /**
+   * 订阅 hook 开始 / 结束（statusMessage 的显示出口，对齐 CC「hook 运行时显示的自定义 spinner 消息」）。
+   * core 不知道有没有 TUI：由 cli 层订阅并决定显示方式，headless 不订阅即零开销。
+   * @returns 取消订阅
+   */
+  onHookLifecycle(listener: import("./runner.ts").HookLifecycleListener): () => void {
+    return this.runner.addLifecycleListener(listener);
   }
 
   /** G6：注入 agent hook 的真子代理执行器（由 app 层携带工具注册表设置）。 */
@@ -340,9 +344,36 @@ export class HookSystem {
       resumedFrom?: string;
       /** P0-1：一般不传，由 event-handler 填真实版本号；仅测试/回放需显式覆盖 */
       app_version?: string;
+      /** clear / compact 的二次 SessionStart：只跑用户 hook，不送 runtime */
+      userOnly?: boolean;
     },
   ): Promise<AggregatedHookResult> {
     return this.eventHandler.fireSessionStartEvent(source, options);
+  }
+
+  /**
+   * HC12 / HC16：/clear 与压缩之后重发 SessionStart（source=clear / compact，对齐 CC），
+   * 让「SessionStart 注入项目上下文」的 hook 在上下文被清空 / 压掉之后重新注入。
+   *
+   * 只跑用户 hook（userOnly）：collector / hook-probe 把 SessionStart 当开新轨迹。
+   * 返回的上下文暂存在这里，由 QueryEngine 在下一条用户消息时取走（takePendingSessionContext）——
+   * 放在 HookSystem 而不是让三条压缩路径各自去找 engine：压缩收尾模块不持有 engine，
+   * 而 hookSystem 是三条路径（auto / manual / reactive·collapse）都已经传进来的唯一依赖。
+   */
+  async fireSessionRestartEvent(source: "clear" | "compact", model?: string): Promise<void> {
+    // /clear 之后，clear 之前还没用掉的上下文属于已被清空的对话，丢弃
+    if (source === "clear") this.pendingSessionContext = [];
+    const result = await this.eventHandler.fireSessionStartEvent(source, { model, userOnly: true });
+    const text = extractHookContext(result);
+    if (text) this.pendingSessionContext.push(text);
+  }
+
+  /** 取走 clear / compact 后待注入的 SessionStart 上下文（取一次即清空） */
+  takePendingSessionContext(): string | undefined {
+    if (this.pendingSessionContext.length === 0) return undefined;
+    const text = this.pendingSessionContext.join("\n");
+    this.pendingSessionContext = [];
+    return text;
   }
 
   async fireSessionEndEvent(

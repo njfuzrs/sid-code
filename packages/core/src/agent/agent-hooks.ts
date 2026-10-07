@@ -20,6 +20,7 @@
 import { getLogger } from "../debug/logger.ts";
 import { HookSystem } from "../hook/system.ts";
 import { ConfigSource } from "../hook/types.ts";
+import { reportRuntimeHookDiagnostics } from "../hook/diagnostic-sink.ts";
 
 /**
  * 把 agent frontmatter 声明的 hooks 注册进给定 HookSystem。
@@ -44,6 +45,8 @@ export function registerAgentHooks(
   for (const d of diagnostics) {
     log.warn("AGENT", `Agent ${agentType} 的 hook 已跳过 ${d.path}: ${d.message}`);
   }
+  // spawn 时才注册，启动横幅已过：走运行期出口（隔离 HookSystem 上挂不了监听，见 diagnostic-sink.ts）
+  reportRuntimeHookDiagnostics(`Agent ${agentType}`, diagnostics);
   const count = hookSystem.getAllHooks().length - before;
   if (count > 0) log.info("AGENT", `Agent ${agentType} 注册了 ${count} 个专属 hook`);
   return count;

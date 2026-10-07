@@ -97,6 +97,9 @@ export class HookAggregator {
       // 原先落在 default 的 mergeSimple（last-wins），后一个 hook 的 allow 能把前一个的 deny 整个盖掉
       // ——reason 里还留着「拒绝」，结论却是放行。与 PreToolUse 同一语义：任一 deny 即拦。
       case HookEventName.PermissionRequest:
+      // HC24：ConfigChange 现在可 block（回退变更）。落在 mergeSimple 的话，后一个 hook 的 allow
+      // 能冲掉前一个的 block——审计 hook 拦住的变更被另一条无关 hook 悄悄放行。
+      case HookEventName.ConfigChange:
         return this.mergeWithOrDecision(outputs, eventName);
 
       // G4：SessionStart/SubagentStart/Setup 忽略 exit2 阻塞（对齐 CC hooksConfigManager）——

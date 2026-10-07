@@ -290,17 +290,27 @@ describe("H21 if 配在非工具事件上：注册期告警", () => {
   test("SessionStart + if → warn；PreToolUse + if → 不 warn", async () => {
     const reg = new HookRegistry();
     const bad = await warnings(() =>
-      reg.initializeFromLegacy({
-        session_start: [{ command: "echo s", if: "Bash(git *)" }],
-      } as any),
+      reg.initializeFromSources([
+        {
+          hooks: {
+            session_start: [{ command: "echo s", if: "Bash(git *)" }],
+          } as any,
+          source: ConfigSource.User,
+        },
+      ]),
     );
     expect(bad.msgs.some((m) => m.includes("if 永远不命中"))).toBe(true);
 
     const reg2 = new HookRegistry();
     const ok = await warnings(() =>
-      reg2.initializeFromLegacy({
-        pre_tool_use: [{ command: "echo s", if: "Bash(git *)" }],
-      } as any),
+      reg2.initializeFromSources([
+        {
+          hooks: {
+            pre_tool_use: [{ command: "echo s", if: "Bash(git *)" }],
+          } as any,
+          source: ConfigSource.User,
+        },
+      ]),
     );
     expect(ok.msgs.some((m) => m.includes("if 永远不命中"))).toBe(false);
   });
@@ -331,23 +341,33 @@ describe("H21 if 配在非工具事件上：注册期告警", () => {
 describe("H22 env / H23 sequential 从用户配置一路到执行", () => {
   test("settings 写 env → 子进程读得到；不写 → 读不到", async () => {
     const sys = new HookSystem();
-    sys.initializeFromLegacy({
-      pre_tool_use: [
-        {
-          command: 'printf \'{"reason":"%s"}\' "$H22_FLAG"',
-          env: { H22_FLAG: "on" },
-        },
-      ],
-    } as any);
+    sys.initializeFromSources([
+      {
+        hooks: {
+          pre_tool_use: [
+            {
+              command: 'printf \'{"reason":"%s"}\' "$H22_FLAG"',
+              env: { H22_FLAG: "on" },
+            },
+          ],
+        } as any,
+        source: ConfigSource.User,
+      },
+    ]);
     const entry = sys.getHooksForEvent(HookEventName.PreToolUse)[0]!;
     expect(entry.config.type === "command" && entry.config.env).toEqual({ H22_FLAG: "on" });
     const r = await sys.firePreToolUseEvent("bash", {});
     expect(JSON.stringify(r.allOutputs)).toContain("on");
 
     const sys2 = new HookSystem();
-    sys2.initializeFromLegacy({
-      pre_tool_use: [{ command: 'printf \'{"reason":"[%s]"}\' "$H22_FLAG"' }],
-    } as any);
+    sys2.initializeFromSources([
+      {
+        hooks: {
+          pre_tool_use: [{ command: 'printf \'{"reason":"[%s]"}\' "$H22_FLAG"' }],
+        } as any,
+        source: ConfigSource.User,
+      },
+    ]);
     const r2 = await sys2.firePreToolUseEvent("bash", {});
     expect(JSON.stringify(r2.allOutputs)).toContain("[]");
   });
@@ -364,18 +384,37 @@ describe("H22 env / H23 sequential 从用户配置一路到执行", () => {
 
   test("settings 写 sequential:true → plan 串行；不写 → 并行", () => {
     const reg = new HookRegistry();
-    reg.initializeFromLegacy({
-      stop: [{ command: "echo a", sequential: true }, { command: "echo b" }],
-    } as any);
+    reg.initializeFromSources([
+      {
+        hooks: {
+          stop: [{ command: "echo a", sequential: true }, { command: "echo b" }],
+        } as any,
+        source: ConfigSource.User,
+      },
+    ]);
     expect(plan(reg, HookEventName.Stop)?.sequential).toBe(true);
     const reg2 = new HookRegistry();
-    reg2.initializeFromLegacy({ stop: [{ command: "echo a" }, { command: "echo b" }] } as any);
+    reg2.initializeFromSources([
+      {
+        hooks: { stop: [{ command: "echo a" }, { command: "echo b" }] } as any,
+        source: ConfigSource.User,
+      },
+    ]);
     expect(plan(reg2, HookEventName.Stop)?.sequential).toBe(false);
   });
 
   test("零调用的「新格式」路径已删", () => {
     expect(readFileSync(join(HOOK_SRC, "registry.ts"), "utf8")).not.toContain("initializeFromNew");
     expect(readFileSync(join(HOOK_SRC, "system.ts"), "utf8")).not.toContain("initializeFromNew");
+  });
+
+  // §三.9 残留：initializeFromLegacy 生产零调用，只是 initializeFromSources 的单层薄包装。
+  // 留着它等于留第二个入口，下次有人照着它的「默认 User 来源」写调用点，来源就又丢了。
+  test("零调用的 initializeFromLegacy 已删", () => {
+    expect(readFileSync(join(HOOK_SRC, "registry.ts"), "utf8")).not.toContain(
+      "initializeFromLegacy",
+    );
+    expect(readFileSync(join(HOOK_SRC, "system.ts"), "utf8")).not.toContain("initializeFromLegacy");
   });
 });
 

@@ -4,7 +4,6 @@
  */
 
 import { HookEventName, ConfigSource, type HookConfig } from "./types.ts";
-import type { HooksConfig as LegacyHooksConfig } from "../config/config.ts";
 import {
   normalizeHooksConfig,
   formatHookDiagnostic,
@@ -71,20 +70,6 @@ export class HookRegistry {
   /** G13：注入企业策略门控（disableAllHooks / allowManagedHooksOnly 等）。 */
   setPolicyGate(gate: import("./enterprise-policy.ts").EnterprisePolicyGate | undefined): void {
     this.policyGate = gate;
-  }
-
-  /**
-   * 从一份 hooks 配置初始化（settings 链、测试用）。保留已注册的 runtime / plugin hook。
-   *
-   * 形状解析全部委托给 config-normalize.ts（HC3：唯一转换器）。原先这里有自己的
-   * convertLegacyHook，只认平铺形状，CC 嵌套形状整条跳过。
-   * @returns 归一化诊断（调用方负责把它们送到启动横幅）
-   */
-  initializeFromLegacy(
-    legacyHooks: LegacyHooksConfig,
-    source: ConfigSource = ConfigSource.User,
-  ): HookDiagnostic[] {
-    return this.initializeFromSources([{ hooks: legacyHooks, source }]);
   }
 
   /**

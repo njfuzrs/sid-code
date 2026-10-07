@@ -275,6 +275,13 @@ export class QueryEngine {
       );
       this.pendingSessionStartContext = null;
     }
+    // HC12：/clear 与压缩后重发的 SessionStart（source=clear / compact）上下文，同样只用一次
+    const restartCtx = hookSystem?.takePendingSessionContext?.();
+    if (restartCtx) {
+      hookReminders.push(
+        formatHookContextReminder("SessionStart", restartCtx, this.hookOverflowDir()),
+      );
+    }
     if (hookSystem) {
       const hookResult = await hookSystem.fireUserPromptSubmitEvent(userInput);
       if (hookResult.finalOutput?.isBlockingDecision()) {
