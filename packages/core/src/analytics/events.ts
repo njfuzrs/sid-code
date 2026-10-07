@@ -302,8 +302,14 @@ export type PermissionDenyReasonType =
 /**
  * 权限批准。needsPrompt 区分「弹过窗才批」与「规则直接放行」。
  *
- * `context` 缺省为 `"main"`：本函数在补 context 之前只有主循环在调，
- * 缺省值取主循环使得既有调用点语义不变（而不是多出一桶 `undefined`）。
+ * `context` **必填**（缺陷 5）：原先缺省为 `"main"`，于是子代理 / forked 路径补调用点时
+ * 漏传 context 会被静默归进 main 桶 ——「漏传」与「确实是 main」在数据里长得一模一样。
+ * 必填让漏传在类型层就报出来。
+ *
+ * ⚠️ allow 与 deny 必须覆盖**同一组**执行路径：拒绝率 = deny / (allow + deny)，
+ * 原先 deny 覆盖 main/subagent/forked 三路而 allow 只有 main，子代理里 10 allow + 2 deny
+ * 在盘上算出拒绝率 100%，偏向「看起来更不安全」并诱导放宽规则。
+ * 门禁在 `tests/analytics/instrumentation-sentinel.test.ts`「权限漏斗分子分母同口径」。
  */
 export function logPermissionAllow(
   toolName: string,
@@ -311,7 +317,7 @@ export function logPermissionAllow(
     source: PermissionSource;
     needsPrompt: boolean;
     durationMs?: number;
-    context?: PermissionContext;
+    context: PermissionContext;
     /**
      * B11：放行的成因（rule / mode / sessionMemory …）。只进本地轨迹，**不进遥测**：
      * 遥测侧 permission_allow 的字段集维持原样，避免改动外发 schema。
@@ -323,7 +329,7 @@ export function logPermissionAllow(
     ...toolNameFields(toolName),
     source: v(opts.source),
     needed_prompt: opts.needsPrompt,
-    execution_context: v(opts.context ?? "main"),
+    execution_context: v(opts.context),
     ...(opts.durationMs !== undefined ? { duration_ms: opts.durationMs } : {}),
   });
   // B11：同一个出口落进本地轨迹。挂在门面里而非各调用点 —— 见 decision-telemetry.ts 头注释。
@@ -334,7 +340,7 @@ export function logPermissionAllow(
     prompted: opts.needsPrompt,
     source: opts.source,
     ...(opts.reasonType ? { reasonType: opts.reasonType } : {}),
-    context: opts.context ?? "main",
+    context: opts.context,
     ...(opts.durationMs !== undefined ? { durationMs: opts.durationMs } : {}),
   });
 }
@@ -364,7 +370,8 @@ export function logPermissionDeny(
     source: PermissionSource;
     needsPrompt: boolean;
     durationMs?: number;
-    context?: PermissionContext;
+    /** 必填，理由同 logPermissionAllow 的 context（缺陷 5） */
+    context: PermissionContext;
     reasonType?: PermissionDenyReasonType;
   },
 ): void {
@@ -372,7 +379,7 @@ export function logPermissionDeny(
     ...toolNameFields(toolName),
     source: v(opts.source),
     needed_prompt: opts.needsPrompt,
-    execution_context: v(opts.context ?? "main"),
+    execution_context: v(opts.context),
     ...(opts.reasonType ? { reason_type: v(opts.reasonType) } : {}),
     ...(opts.durationMs !== undefined ? { duration_ms: opts.durationMs } : {}),
   });
@@ -382,7 +389,7 @@ export function logPermissionDeny(
     prompted: opts.needsPrompt,
     source: opts.source,
     ...(opts.reasonType ? { reasonType: opts.reasonType } : {}),
-    context: opts.context ?? "main",
+    context: opts.context,
     ...(opts.durationMs !== undefined ? { durationMs: opts.durationMs } : {}),
   });
 }
@@ -765,8 +772,11 @@ export function logGuardrailTriggered(opts: {
 /**
  * 工具执行成功：60s 内同一 tool 的未决护栏记一条 suspected_false_positive。
  * 挂在 logToolSuccess 里，主循环 / 子代理 / forked 三条路径一处覆盖。
+ *
+ * 刻意**不 export**（缺陷 6）：唯一调用方是本文件的 logToolSuccess，外部零调用（含测试）。
+ * 导出会让人以为「别的模块该在某个时机调它」，而那样会与 logToolSuccess 里的那次重复计数。
  */
-export function noteGuardrailToolSuccess(toolName: string): void {
+function noteGuardrailToolSuccess(toolName: string): void {
   if (!toolName) return;
   const now = Date.now();
   for (const entry of pendingGuardrails) {

@@ -180,6 +180,23 @@ export const ATTR = {
   TOOL_RESULT_SIZE: "sidcode.tool.result_size_bytes",
   TOOL_FILE_PATH: "sidcode.tool.file_path",
   TOOL_COMMAND: "sidcode.tool.command",
+  /**
+   * 缺陷 8：chat span 的首内容延迟（毫秒）。原先只写成 span event `gen_ai.first_token`，
+   * 而 `/telemetry` 读的是这个属性名 ⇒ 属性零生产者、TTFT 行永不显示。现在两处都写。
+   */
+  TTFT_MS: "sidcode.ttft_ms",
+  /**
+   * 缺陷 11：invoke_agent（会话根 / 子代理）上的用量走**这组**属性，不再借用
+   * `gen_ai.usage.*`。OTel 语义里 `gen_ai.usage.input_tokens` 是「这一次 LLM 调用」的输入，
+   * 贴到一次 agent 调用上，外部后端按标准语义 sum 时会把会话级值与每轮值混在一起。
+   *
+   * 口径固定为 **flow**（逐次调用累加，provider 原始 input 口径，与 `total_cumulative_prompt_tokens`
+   * 同源），与 `sidcode.total_cost_usd` 可比；**不放末次 stock** —— 同名属性两种口径正是缺陷 11。
+   */
+  AGENT_CUMULATIVE_INPUT_TOKENS: "sidcode.agent.cumulative_input_tokens",
+  AGENT_OUTPUT_TOKENS: "sidcode.agent.output_tokens",
+  AGENT_CUMULATIVE_CACHE_READ_TOKENS: "sidcode.agent.cumulative_cache_read_tokens",
+  AGENT_CUMULATIVE_CACHE_WRITE_TOKENS: "sidcode.agent.cumulative_cache_write_tokens",
   // 成本归因
   COST_USD: "sidcode.cost.usd",
   CACHE_SAVINGS_USD: "sidcode.cost.cache_savings_usd",

@@ -24,7 +24,7 @@ import { SIDE_CALL_NO_THINK } from "../llm/side-call-timeout.ts";
 import { streamWithResilience } from "../llm/resilient-stream.ts";
 import type { ModelAvailabilityService } from "../llm/availability.ts";
 // 漏斗 2 · 权限：走门面而非直调 logEvent（门面强制脱敏工具名）。
-import { logPermissionDeny } from "../analytics/events.ts";
+import { logPermissionAllow, logPermissionDeny } from "../analytics/events.ts";
 import { FileReadTracker } from "../tool/file-read-tracker.ts";
 import { createStatefulTools } from "../tool/stateful-tools.ts";
 
@@ -353,6 +353,13 @@ export async function runForkedAgent(
           });
           continue;
         }
+        // 缺陷 5：allow 与 deny 同口径（reasonType 同样固定 "other"，理由见上方 deny 注释）。
+        logPermissionAllow(tu.name, {
+          source: "other",
+          needsPrompt: false,
+          context: "forked",
+          reasonType: "other",
+        });
         const tool = statefulMap.get(tu.name) ?? mainContext.toolRegistry.get(tu.name);
         if (!tool) {
           results.push({

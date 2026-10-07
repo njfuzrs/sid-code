@@ -684,6 +684,18 @@ export interface SessionLevelMetrics {
    * 那正是"HITL 没被触发过"的诚实表达，不是缺数据。
    */
   e2e_hitl_n: number;
+  /**
+   * 缺陷 7：等人确认的墙钟（来自 events.jsonl 的 `PermissionDecision`，`prompted=true`
+   * 且带 `duration_ms` 的那些）。`had_hitl` 只是一轮一个布尔，只能整轮剔除；
+   * 这里给的是「减掉那一段」所需的时长，否则工具耗时 p99 量的是人的犹豫。
+   *
+   * 次数与有时长的样本数分开给：弹窗后被 abort 的决策可能不带 duration_ms，
+   * 混成一个 n 会让 total 看起来比真实的少而无从察觉。
+   */
+  hitl_prompts: number;
+  hitl_wait_n: number;
+  hitl_wait_total_ms: number;
+  hitl_wait_p95_ms?: number;
   /** 是否触发过四环防线（hypothesis_register / hypothesis_challenge / verify 子代理） */
   defenseTriggered: boolean;
   /** P2-14：session.traj 是否损坏（1/56 实测损坏率此前完全不可见） */
@@ -2266,6 +2278,18 @@ export function renderHuman(d: Digest, opts: RenderOptions = {}): string {
           c("gray", " —— 评估 agent 自身速度时应排除这些样本"),
       );
     }
+    // 缺陷 7：给出「减掉那一段」所需的时长，而不只是「整轮剔除」的计数
+    if (m.hitl_prompts > 0) {
+      L.push(
+        c("gray", `  等人确认: ${m.hitl_prompts} 次，`) +
+          c(
+            "gray",
+            m.hitl_wait_n > 0
+              ? `计时 ${m.hitl_wait_n} 次共 ${s(m.hitl_wait_total_ms)} P95=${s(m.hitl_wait_p95_ms)}`
+              : "均无计时（弹窗后被中断）",
+          ),
+      );
+    }
     // 口径自证：端到端必然 ≥ 首字节。违反说明两个口径的基准点不一致——
     // 这个不变量比数值本身更值得断言（TTFT 曾因基准不重设而虚高到反超端到端）。
     if (m.ttft_p50 !== undefined && m.e2e_p50 !== undefined && m.e2e_p50 < m.ttft_p50) {
@@ -2759,6 +2783,8 @@ export function aggregateSessionMetrics(
   const ttfts: number[] = [];
   const e2es: number[] = [];
   let hitlSamples = 0;
+  let hitlPrompts = 0;
+  const hitlWaits: number[] = [];
   let defenseTriggered = false;
   let compactions = 0;
 
@@ -2796,9 +2822,18 @@ export function aggregateSessionMetrics(
       }
     }
 
+    // 缺陷 7：HITL 等待时长。只认 prompted=true —— 规则直放/直拒的 duration 是鉴权开销，
+    // 不是人在想，混进来会把「人的犹豫」稀释成毫秒级。
+    if (e.event === "PermissionDecision" && e.data.prompted === true) {
+      hitlPrompts++;
+      const ms = e.data.duration_ms;
+      if (typeof ms === "number" && ms >= 0) hitlWaits.push(ms);
+    }
+
     if (e.event === "PreCompact") compactions++;
   }
 
+  const sortedHitl = [...hitlWaits].sort((a, b) => a - b);
   const sortedTtfts = [...ttfts].sort((a, b) => a - b);
   const sortedE2es = [...e2es].sort((a, b) => a - b);
 
@@ -2812,6 +2847,10 @@ export function aggregateSessionMetrics(
     e2e_p99: percentile(sortedE2es, 0.99),
     e2e_n: sortedE2es.length,
     e2e_hitl_n: hitlSamples,
+    hitl_prompts: hitlPrompts,
+    hitl_wait_n: sortedHitl.length,
+    hitl_wait_total_ms: sortedHitl.reduce((a, b) => a + b, 0),
+    hitl_wait_p95_ms: percentile(sortedHitl, 0.95),
     defenseTriggered,
     trajCorrupt: opts.trajCorrupt,
     compactions,

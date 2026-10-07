@@ -45,6 +45,7 @@ import { resolveResultDisplayMode } from "../tool/result-display-mode.ts";
 // 在 `permission_deny` 上完全隐身。走门面而非直调 logEvent —— 门面强制脱敏工具名
 // （MCP 工具名含用户私有服务名），业务侧拿不到裸传接口。
 import {
+  logPermissionAllow,
   logPermissionDeny,
   logToolCall,
   logToolSuccess,
@@ -540,6 +541,15 @@ async function executeSingleTool(
         is_error: true,
       };
     }
+    // 缺陷 5：allow 与 deny 必须覆盖同一组路径，否则子代理的拒绝率 = deny/(0+deny) 恒 100%。
+    // needsPrompt:false：子代理没有弹窗通道，能走到这里的都是规则/模式直接放行。
+    logPermissionAllow(block.name, {
+      source: "rule",
+      needsPrompt: false,
+      durationMs: Date.now() - toolStartedAt,
+      context: "subagent",
+      reasonType: decision.decisionReason?.type,
+    });
   } else {
     // B0（分级 fail-closed）：未配置权限检查器时，只读工具放行，写类工具直接拒绝。
     //
@@ -586,6 +596,15 @@ async function executeSingleTool(
         is_error: true,
       };
     }
+    // 缺陷 5：fail-closed 放过的只读工具也是一次 allow。source:"other" 与上面的拒绝同理 ——
+    // 没有规则参与，是缺检查器时的兜底档。
+    logPermissionAllow(block.name, {
+      source: "other",
+      needsPrompt: false,
+      durationMs: Date.now() - toolStartedAt,
+      context: "subagent",
+      reasonType: "other",
+    });
   }
 
   // 漏斗 1 · 工具：权限通过之后才记 call。权限拒绝走漏斗 2（logPermissionDeny），
