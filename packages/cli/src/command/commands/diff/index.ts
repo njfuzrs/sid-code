@@ -8,7 +8,6 @@ const diffCmd: UnifiedCommand = {
   argumentHint: "[--staged|--cached]",
   source: "builtin",
   userInvocable: true,
-  disableModelInvocation: true,
   immediate: true,
   load: () => import("./diff.ts").then((m) => m.default),
 };

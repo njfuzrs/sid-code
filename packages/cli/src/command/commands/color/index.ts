@@ -15,7 +15,6 @@ const color: UnifiedCommand = {
   argumentHint: "[#hex|reset] [-p]",
   source: "builtin",
   userInvocable: true,
-  disableModelInvocation: true,
   immediate: true,
   load: () => import("./color.ts").then((m) => m.default),
 };

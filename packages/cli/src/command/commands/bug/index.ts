@@ -14,7 +14,6 @@ const bug: UnifiedCommand = {
   argumentHint: "[问题简述]",
   source: "builtin",
   userInvocable: true,
-  disableModelInvocation: true,
   immediate: true,
   load: () => import("./bug.ts").then((m) => m.default),
 };

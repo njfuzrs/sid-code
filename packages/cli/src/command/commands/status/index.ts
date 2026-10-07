@@ -16,7 +16,6 @@ const status: UnifiedCommand = {
   description: "显示会话状态概览（模型/目录/token/provider/skills）",
   source: "builtin",
   userInvocable: true,
-  disableModelInvocation: true,
   immediate: true,
   load: () => import("./status.ts").then((m) => m.default),
 };
