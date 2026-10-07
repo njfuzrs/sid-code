@@ -225,6 +225,18 @@ export type AgentHookExecutor = (params: {
   signal: AbortSignal;
 }) => Promise<{ ok: boolean; reason?: string; transcript?: string }>;
 
+/** hook 开始 / 结束事件（UI 用 statusMessage 显示「正在跑哪个 hook」） */
+export interface HookLifecycleEvent {
+  phase: "start" | "end";
+  /** start 与 end 配对用 */
+  runId: string;
+  hookConfig: HookConfig;
+  eventName: HookEventName;
+}
+export type HookLifecycleListener = (ev: HookLifecycleEvent) => void;
+
+let hookRunSeq = 0;
+
 export class HookRunner {
   /**
    * 会话启动时的项目根（HC14 / Q3）：导出为 CLAUDE_PROJECT_DIR / SID_CODE_PROJECT_DIR。
@@ -253,8 +265,50 @@ export class HookRunner {
     this.asyncRegistry = registry;
   }
 
+  /**
+   * hook 生命周期监听（statusMessage 的消费端，由 HookSystem.onHookLifecycle 注册）。
+   * 挂在 executeHook 而不是 executeHooksParallel/Sequential 的 onHookStart 参数上：
+   * 后者调用点有好几条（并行 / 串行 / SessionEnd 预算串行 / streaming），漏传一条就是一类事件
+   * 永远不显示；executeHook 是所有路径的唯一咽喉。
+   */
+  private lifecycleListeners = new Set<HookLifecycleListener>();
+
+  addLifecycleListener(fn: HookLifecycleListener): () => void {
+    this.lifecycleListeners.add(fn);
+    return () => this.lifecycleListeners.delete(fn);
+  }
+
+  private emitLifecycle(ev: HookLifecycleEvent): void {
+    for (const fn of this.lifecycleListeners) {
+      // 监听方（UI）出错不能让 hook 结论跟着变——吞掉，只记日志
+      try {
+        fn(ev);
+      } catch (e) {
+        getLogger().debug("HOOK", `hook 生命周期监听异常: ${e}`);
+      }
+    }
+  }
+
   /** 执行单个 hook */
   async executeHook(
+    hookConfig: HookConfig,
+    eventName: HookEventName,
+    input: HookInput,
+  ): Promise<HookExecutionResult> {
+    if (this.lifecycleListeners.size === 0) {
+      return this.executeHookInner(hookConfig, eventName, input);
+    }
+    // 每次执行一个独立 id：同一 hook 可能并发跑（两次并行工具调用），按 config 去配对会串
+    const runId = `hook-run-${++hookRunSeq}`;
+    this.emitLifecycle({ phase: "start", runId, hookConfig, eventName });
+    try {
+      return await this.executeHookInner(hookConfig, eventName, input);
+    } finally {
+      this.emitLifecycle({ phase: "end", runId, hookConfig, eventName });
+    }
+  }
+
+  private async executeHookInner(
     hookConfig: HookConfig,
     eventName: HookEventName,
     input: HookInput,
@@ -451,17 +505,22 @@ export class HookRunner {
       const registry = this.asyncRegistry;
       const supportsRewake = hookConfig.asyncRewake === true;
 
-      // 后台等待进程结束 + 双阶段超时杀进程；结果写回 asyncRegistry（不 await）
-      const bgTimeoutId = setTimeout(() => {
-        proc.kill("SIGTERM");
-        setTimeout(() => {
-          try {
-            proc.kill("SIGKILL");
-          } catch {
-            /* 进程可能已退出 */
-          }
-        }, 5000);
-      }, timeout);
+      // 后台等待进程结束；结果写回 asyncRegistry（不 await）。
+      // Q5-3：纯 async 不强制 timeout（对齐 CC hooks.md「异步 hook 在后台运行后不强制执行 timeout」）——
+      // 后台跑测试 / 上传这类长任务本来就是 async 的用途，600s 强杀会让它们静默半途而废。
+      // asyncRewake 仍强制：它的结果要回灌下一轮，不设上限就可能永远挂着一个待回灌项（CC 同样如此）。
+      const bgTimeoutId = supportsRewake
+        ? setTimeout(() => {
+            proc.kill("SIGTERM");
+            setTimeout(() => {
+              try {
+                proc.kill("SIGKILL");
+              } catch {
+                /* 进程可能已退出 */
+              }
+            }, 5000);
+          }, timeout)
+        : undefined;
       void (async () => {
         try {
           const exitCode = await proc.exited;
@@ -472,7 +531,7 @@ export class HookRunner {
         } catch (e) {
           registry.markCompleted(asyncId, 0, String(e), false);
         } finally {
-          clearTimeout(bgTimeoutId);
+          if (bgTimeoutId) clearTimeout(bgTimeoutId);
         }
       })();
 
@@ -596,17 +655,31 @@ export class HookRunner {
       const text = await response.text();
       const duration = Date.now() - startTime;
 
+      // HC19：非 2xx 是**非阻塞错误**，执行继续（对齐 CC hooks.md「HTTP 响应处理」）。
+      // 原先直接判 deny：webhook 服务一抖（502 / 限流 429），所有工具调用全部被拦，
+      // 而 CC 明文规定 HTTP hook 不能仅靠状态码阻止，要阻止须返回 2xx + JSON 决策字段。
       if (!response.ok) {
+        const msg = `${hookConfig.name ?? hookConfig.url} hook error: HTTP ${response.status}${text ? ` ${text.slice(0, 200)}` : ""}`;
+        getLogger().warn("HOOK", msg);
         return {
           hookConfig,
           eventName,
           success: false,
-          output: { decision: "deny", reason: `HTTP ${response.status}: ${text.slice(0, 200)}` },
+          output: { systemMessage: msg },
           stdout: text,
+          error: new Error(msg),
           duration,
         };
       }
 
+      // 2xx：空体 = 成功；JSON 对象体按 HookOutput 解析；其他体（纯文本）是非阻塞错误、不进上下文（CC 同）
+      const trimmedBody = text.trim();
+      if (trimmedBody && !trimmedBody.startsWith("{")) {
+        getLogger().warn(
+          "HOOK",
+          `${hookConfig.name ?? hookConfig.url} hook error: 2xx 响应体不是 JSON 对象，已忽略`,
+        );
+      }
       const output = this.parseJsonOutput(text, `url:${hookConfig.name ?? hookConfig.url}`);
       return {
         hookConfig,
@@ -729,7 +802,10 @@ export class HookRunner {
       return { systemMessage: stdoutText || undefined };
     }
     // 其余非零（1/3/…）：非阻塞告警。stderr 展示给用户，继续执行（不 deny，对齐 CC）。
-    return { systemMessage: stderrText ? `警告: ${stderrText}` : stdoutText || undefined };
+    // 文案对齐 CC「<name> hook error: …」，让照 CC 文档排错的人能对上号
+    return {
+      systemMessage: stderrText ? `${source} hook error: ${stderrText}` : stdoutText || undefined,
+    };
   }
 
   /**
@@ -749,6 +825,14 @@ export class HookRunner {
         parsed = JSON.parse(parsed);
       }
     } catch {
+      // HC19：看起来是 JSON（{ 开头 } 结尾）却解析失败 → CC 报非阻塞错误，而不是静默当纯文本。
+      // 静默的后果：hook 作者少写一个引号，决策字段整体失效，却没有任何地方告诉他。
+      if (shapeCheckSource && trimmed.startsWith("{") && trimmed.endsWith("}")) {
+        warnShapeOnce(
+          shapeCheckSource,
+          `${shapeCheckSource} hook error: stdout 形如 JSON 但解析失败，决策字段不会生效，已按普通文本处理`,
+        );
+      }
       return undefined; // 非 JSON
     }
     // H17：数组不是 HookOutput。原先 `typeof [] === "object"` 让 [1,2,3] 也被当成「hook 表达了意见」
@@ -783,6 +867,10 @@ export class HookRunner {
     const result: Record<string, string> = {};
     for (const [key, value] of Object.entries(env)) {
       if (value === undefined) continue;
+      // Q3：父进程里的 CLAUDE_* 一律不透传（sid 跑在 CC 里时会带 CLAUDE_ENV_FILE / CLAUDE_CODE_* 等）。
+      // 透传等于替 sid 宣称支持这些语义——CC 脚本读到 CLAUDE_ENV_FILE 就会往一个 sid 永远不读的文件里写。
+      // sid 支持的那几个（CLAUDE_PROJECT_DIR / CLAUDE_PLUGIN_* / skill 的 CLAUDE_SKILL_DIR）由调用方之后显式设置。
+      if (key.startsWith("CLAUDE_")) continue;
       const isSensitive =
         SENSITIVE_ENV_PATTERNS.some((p) => p.test(key)) ||
         SENSITIVE_ENV_VALUE_PATTERNS.some((p) => p.test(value));

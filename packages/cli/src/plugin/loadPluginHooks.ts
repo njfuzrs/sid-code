@@ -17,6 +17,7 @@ import { memoize } from "@sid-code/shared/utils/memoize.ts";
 import { getSidHome } from "@sid-code/core/config/paths.ts";
 import type { HookSystem } from "@sid-code/core/hook/system.ts";
 import type { HooksConfig } from "@sid-code/core/config/config.ts";
+import type { HookDiagnostic } from "@sid-code/core/hook/config-normalize.ts";
 import { registerPluginCache } from "./caches.ts";
 import { loadAllPluginsCacheOnly } from "./loader.ts";
 import type { LoadedPlugin } from "./types.ts";
@@ -48,30 +49,35 @@ export function collectPluginHooks(plugin: LoadedPlugin): PluginHookLayer | null
 }
 
 /**
- * 加载所有插件的 Hooks 并原子注册到 HookSystem。
+ * 加载所有插件的 Hooks 并原子注册到 HookSystem，返回归一化诊断。
  * memoize 的是"已加载"状态——重复调用不会重复注册（除非 clear 后再调）。
  *
  * 注意：memoize key 不含 hookSystem 参数（单 slot），同一进程内 hookSystem 固定。
  */
-export const loadPluginHooks = memoize(async (hookSystem: HookSystem): Promise<void> => {
-  const { enabled } = await loadAllPluginsCacheOnly();
+export const loadPluginHooks = memoize(
+  async (hookSystem: HookSystem): Promise<HookDiagnostic[]> => {
+    const { enabled } = await loadAllPluginsCacheOnly();
 
-  const layers: PluginHookLayer[] = [];
-  for (const plugin of enabled) {
-    const layer = collectPluginHooks(plugin);
-    if (layer) layers.push(layer);
-  }
+    const layers: PluginHookLayer[] = [];
+    for (const plugin of enabled) {
+      const layer = collectPluginHooks(plugin);
+      if (layer) layers.push(layer);
+    }
 
-  // 原子交换
-  const diagnostics = hookSystem.replacePluginHooks(layers);
-  for (const d of diagnostics) {
-    getLogger().warn("PLUGIN", `插件 hook 已跳过 ${d.path}: ${d.message}`);
-  }
+    // 原子交换
+    const diagnostics = hookSystem.replacePluginHooks(layers);
+    for (const d of diagnostics) {
+      getLogger().warn("PLUGIN", `插件 hook 已跳过 ${d.path}: ${d.message}`);
+    }
 
-  const total = hookSystem.getAllHooks().filter((h) => h.source === "plugin").length;
-  if (total > 0) {
-    getLogger().info("PLUGIN", `注册了 ${total} 个插件 hook`);
-  }
-});
+    const total = hookSystem.getAllHooks().filter((h) => h.source === "plugin").length;
+    if (total > 0) {
+      getLogger().info("PLUGIN", `注册了 ${total} 个插件 hook`);
+    }
+    // 返回诊断给调用方：启动期由 app 送进启动横幅 / -p stderr（与项目层诊断同一出口），
+    // 原先只进 logger.warn，TUI 接管终端后用户看不到，写错的插件 hook 静默不跑。
+    return diagnostics;
+  },
+);
 
 registerPluginCache(loadPluginHooks.clear);

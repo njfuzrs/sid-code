@@ -56,16 +56,30 @@ export const SECURITY_SENSITIVE_FIELDS = new Set<string>([
 
 /**
  * 过滤项目级配置中的安全敏感字段。
- * 返回新对象，不修改入参。
+ * 返回新对象，不修改入参（深拷贝：嵌套对象也不与入参共享引用）。
+ *
+ * 清单条目支持点分路径（如 `"webFetch.isolate"`），按路径逐层删除（D11）。
+ * 此前只按顶层键 `in` 匹配：把任一敏感开关重构进嵌套对象，这道防线会静默失效而现有
+ * 测试仍全绿。现在两头都锁住了——这里能删嵌套路径；`security-fields-shape.test.ts`
+ * 断言清单里每一条都能在 SettingsSchema 上解析到真实字段，字段挪了位置测试立刻红。
  */
 export function filterProjectSettings(settings: SettingsJson): SettingsJson {
-  const filtered: Record<string, unknown> = { ...settings };
+  const filtered = structuredClone(settings) as Record<string, unknown>;
   for (const field of SECURITY_SENSITIVE_FIELDS) {
-    if (field in filtered) {
-      delete filtered[field];
-    }
+    deletePath(filtered, field.split("."));
   }
   return filtered as SettingsJson;
+}
+
+/** 按路径删除嵌套键；中途遇到非对象即停（该路径不存在，无可删） */
+function deletePath(obj: Record<string, unknown>, segments: string[]): void {
+  let cur: unknown = obj;
+  for (let i = 0; i < segments.length - 1; i++) {
+    if (!cur || typeof cur !== "object" || Array.isArray(cur)) return;
+    cur = (cur as Record<string, unknown>)[segments[i]!];
+  }
+  if (!cur || typeof cur !== "object" || Array.isArray(cur)) return;
+  delete (cur as Record<string, unknown>)[segments[segments.length - 1]!];
 }
 
 /**

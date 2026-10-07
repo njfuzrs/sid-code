@@ -20,7 +20,20 @@
 
 import { HookEventName, LEGACY_EVENT_MAP, type HookConfig } from "./types.ts";
 import { ConfigSource } from "./types.ts";
-import { isUserHookHandlerType, UNSUPPORTED_HOOK_HANDLER_TYPES } from "./handler-types.ts";
+import {
+  isUserHookHandlerType,
+  UNSUPPORTED_HOOK_HANDLER_TYPES,
+  USER_HOOK_HANDLER_TYPES,
+} from "./handler-types.ts";
+
+/**
+ * 报错文案里列出的「有效值」：从唯一事实源派生，去掉识别但不执行的类型（mcp_tool）。
+ * 原先手写 `command / http / url / prompt / agent`，handler-types.ts 加类型时这里不会跟着变，
+ * 用户照着报错去改，改成的值可能恰恰是新加的、文案里却没有的那个。
+ */
+const EXECUTABLE_HANDLER_TYPES_TEXT = USER_HOOK_HANDLER_TYPES.filter(
+  (t) => !UNSUPPORTED_HOOK_HANDLER_TYPES.has(t),
+).join(" / ");
 
 /** 一条诊断：必须说清原因与改法 */
 export interface HookDiagnostic {
@@ -147,7 +160,7 @@ function convertHandler(
       message:
         rawType === "runtime"
           ? `type "runtime" 只能由内部代码注册，配置文件里不可用，本条已跳过`
-          : `无效的 hook 类型 ${JSON.stringify(rawType)}，有效值为 command / http / url / prompt / agent，本条已跳过`,
+          : `无效的 hook 类型 ${JSON.stringify(rawType)}，有效值为 ${EXECUTABLE_HANDLER_TYPES_TEXT}，本条已跳过`,
       source,
     });
     return null;

@@ -12,7 +12,7 @@
 import { watch, type FSWatcher } from "fs";
 import { dirname, basename } from "path";
 import { EventEmitter } from "events";
-import { resetSettingsCache } from "./cache.ts";
+import { getCachedSource, resetSettingsCache } from "./cache.ts";
 import { consumeInternalWrite } from "./internal-writes.ts";
 import type { SettingSource } from "./constants.ts";
 import { getLogger } from "../../debug/logger.ts";
@@ -100,10 +100,13 @@ function handlePossibleDeletion(path: string, source: SettingSource): void {
 
 /** fanOut：单生产者模式——先清缓存，再通知订阅者 */
 function fanOut(source: SettingSource, path?: string): void {
+  // HC24：清缓存前先留一份该来源的旧值，供 ConfigChange hook 算 changed_keys、
+  // 以及 hook 拦截（decision:block）时把缓存回退到旧值。没缓存过（undefined）就没有可回退的基线。
+  const previous = getCachedSource(source);
   resetSettingsCache();
   getLogger().info("SETTINGS", `检测到 ${source} 变更，缓存已刷新`);
-  // 第二参数 path 供 ConfigChange hook 的 file_path（HC24）；老订阅者只读第一参数，不受影响
-  settingsChanged.emit("change", source, path);
+  // 第二参数 path 供 ConfigChange hook 的 file_path；第三参数是旧值快照。老订阅者只读第一参数，不受影响
+  settingsChanged.emit("change", source, path, previous);
 }
 
 /** 清理所有监听器与定时器 */

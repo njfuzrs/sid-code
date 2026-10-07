@@ -13,7 +13,7 @@ import { tmpdir } from "os";
 import { HookAggregator } from "@sid-code/core/hook/aggregator.ts";
 import { HookRunner } from "@sid-code/core/hook/runner.ts";
 import { HookRegistry } from "@sid-code/core/hook/registry.ts";
-import { HookEventName, type HookOutput } from "@sid-code/core/hook/types.ts";
+import { ConfigSource, HookEventName, type HookOutput } from "@sid-code/core/hook/types.ts";
 import {
   USER_HOOK_HANDLER_TYPES,
   ALL_HOOK_HANDLER_TYPES,
@@ -126,7 +126,12 @@ describe("H24 hook 类型不再让 settings.json 连带丢掉 permissions.deny",
 
   test("registry 对 prompt 型 hook 实际注册（不是只过了校验）", () => {
     const reg = new HookRegistry();
-    reg.initializeFromLegacy({ PreToolUse: [{ type: "prompt", prompt: "危险吗？" }] } as any);
+    reg.initializeFromSources([
+      {
+        hooks: { PreToolUse: [{ type: "prompt", prompt: "危险吗？" }] } as any,
+        source: ConfigSource.User,
+      },
+    ]);
     expect(reg.getHooksForEvent(HookEventName.PreToolUse).map((e) => e.config.type)).toEqual([
       "prompt",
     ]);

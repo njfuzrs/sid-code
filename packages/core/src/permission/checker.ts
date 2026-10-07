@@ -396,6 +396,15 @@ export class PermissionChecker implements Checker {
   }
 
   /**
+   * D4：settings 文件被外部改动后重载文件来源的权限规则（运行期规则保留）。
+   * 由 app 层订阅 settingsChanged 调用；调用方还要重新下发子代理 checker（它们是快照）。
+   */
+  async reloadSettingsRules(): Promise<void> {
+    await this.ruleLoader.reloadFileSources();
+    this.rules = this.ruleLoader.toPermissionRule();
+  }
+
+  /**
    * W22：为跑在某个 worktree 里的子代理派生一份 checker：规则全部继承自本实例，
    * 只有 project / local 两个来源换成那个 worktree 自己的 `.sid-code/`。
    * 不改本实例（主会话、其它子代理共享它）。

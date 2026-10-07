@@ -69,9 +69,13 @@ Hook 是「在固定时机自动跑一段你自己的命令」。三类典型用
   "hooks": {
     "PreToolUse": [
       {
-        "type": "command",
         "matcher": "Bash",
-        "command": "if echo \"$SID_CODE_TOOL_INPUT\" | grep -q 'git push'; then echo '本仓库禁止直接 git push，请走 PR' >&2; exit 2; fi"
+        "hooks": [
+          {
+            "type": "command",
+            "command": "if echo \"$SID_CODE_TOOL_INPUT\" | grep -q 'git push'; then echo '本仓库禁止直接 git push，请走 PR' >&2; exit 2; fi"
+          }
+        ]
       }
     ]
   }
@@ -170,6 +174,9 @@ bash 的 `ls` 被 hook 拦截了。根据工具使用原则，列目录本来就
 
 `SessionStart` 会在第一轮之前**同步等待**，缺省超时 30 秒（CC 是 600 秒，见下方差异表）——别在这里跑慢命令。
 
+与 CC 一致，`SessionStart` 在 `/clear` 之后（`source` 为 `clear`）和上下文压缩之后（`source` 为 `compact`）**会再触发一次**，
+输出在下一条消息前重新注入——清空或压缩会把启动时注入的内容一起丢掉。只想在启动时跑，就把 `matcher` 写成 `"startup|resume"`。
+
 ::: warning 其他事件的纯文本 stdout 不进上下文
 除这两个事件外，exit 0 的纯文本 stdout 只作为提示信息展示给你看，模型看不到。
 要给模型看，用 JSON 的 `hookSpecificOutput.additionalContext`（`PostToolUse` 等支持），
@@ -215,7 +222,7 @@ hook 命令能直接读这些（另外完整的事件载荷 JSON 会从 **stdin*
 
 `prompt` 和 `agent` 会真的调模型，**要花钱也要花时间**，别挂在高频事件上。
 
-其他常用字段：`timeout`（**秒**。缺省值与 CC 相同：`command` / `url` 600、`prompt` 30、`agent` 60；`UserPromptSubmit` 与 `SessionStart` 上的 `command` / `url` 是 30。写 `5000` 是 83 分钟，不是 5 秒）、`async`（后台跑不阻塞。**代价是放弃决策权**：挂在 `PreToolUse` 这类可拦截事件上，exit 2 / deny 都赶不上本轮决策，加载时会打 warn）、`env`（额外环境变量，只对 `command` 生效）、
+其他常用字段：`timeout`（**秒**。缺省值与 CC 相同：`command` / `url` 600、`prompt` 30、`agent` 60；`UserPromptSubmit` 与 `SessionStart` 上的 `command` / `url` 是 30。写 `5000` 是 83 分钟，不是 5 秒）、`async`（后台跑不阻塞，**不受 `timeout` 限制**；`asyncRewake` 仍受限。**代价是放弃决策权**：挂在 `PreToolUse` 这类可拦截事件上，exit 2 / deny 都赶不上本轮决策，加载时会打 warn）、`env`（额外环境变量，只对 `command` 生效）、
 `sequential`（`true` 时该事件这一批 hook 按顺序串行，默认并行）、`name`（给 hook 起名，便于 `/hooks` 面板管理）。
 
 `url` 类型的请求经 SSRF 防护：内网与云元数据地址（`10.*`、`192.168.*`、`169.254.*` 等）会被拦，本机 `127.0.0.1` / `localhost` 放行。
@@ -259,7 +266,7 @@ echo '{}' | sh -c '你的 command'
 
 1. **没注册上**——跑 `sid-code hooks list`。被跳过的条目会单独列出并给出原因，
    最常见的是「未信任工作区，已跳过」：项目级 hooks 只在信任过的工作区加载，
-   `-p` / SDK 下用 `--trust-workspace` 本会话放行
+   `-p` 下用 `--trust-workspace` 本会话放行（SDK 宿主 spawn 时把这个参数加进命令行）
 2. **配错了文件**——sid-code 读 `~/.sid-code/settings.json`、`<项目>/.sid-code/settings.json`、
    `<项目>/.sid-code/settings.local.json`，**不读** CC 的 `~/.claude/settings.json` 与 `.claude/settings.json`
 3. **`matcher` 没匹配上**——先把 `matcher` 整个删掉试，能触发就是它的问题。
@@ -300,10 +307,13 @@ echo '{}' | sh -c '你的 command'
 | `-p` / SDK 下的项目级 hooks | 视为已信任 | 未信任不加载，`--trust-workspace` 本会话放行 | 更安全：项目级 hooks 随仓库分发，等于执行仓库里的任意命令 |
 | `--dangerously-skip-permissions` | — | 跳过信任门，项目级 hooks 加载 | 该模式本就允许任意命令 |
 | `SessionStart` 缺省超时 | 600 秒 | 30 秒 | 第一轮之前同步等待，挂住的 hook 会让启动看起来卡死 |
-| 导出的 `CLAUDE_*` 变量 | 全套 | 仅 `CLAUDE_PROJECT_DIR` / `CLAUDE_PLUGIN_ROOT` / `CLAUDE_PLUGIN_DATA` | 不导出 sid-code 里没有对应语义的变量 |
+| 导出的 `CLAUDE_*` 变量 | 全套 | 仅 `CLAUDE_PROJECT_DIR` / `CLAUDE_PLUGIN_ROOT` / `CLAUDE_PLUGIN_DATA`（skill 来源另有 `CLAUDE_SKILL_DIR`）；父进程里的其他 `CLAUDE_*`（如 `CLAUDE_ENV_FILE`）不透传 | 不导出 sid-code 里没有对应语义的变量 |
 | stdin `tool_name` | CC 名 | CC 名，另带 `sid_tool_name`；sid 独有工具与 MCP 工具发内部名 | 内部轨迹口径不变 |
 | `PreModelSwitch` | 可拒绝切换 | 仅通知 | 切换路径是同步的 |
 | `TaskCreated` | exit 2 回滚创建 | 仅通知 | 任务已落盘后才触发 |
+| `ConfigChange` 的 block | 拒绝变更生效 | 回退内存中的设置，磁盘文件不改；`policy_settings` 不可 block（与 CC 同） | 不替用户改写他刚保存的文件 |
+| `shell` 字段 | `bash` / `powershell` | 只认 `bash` / `sh`，`powershell` 告警后按 `sh` 执行 | 目前只支持 POSIX shell |
+| `CLAUDE_SKILL_DIR` | skill 内可用 | skill 来源的 hook 额外导出 | 与 skill 正文的 `${CLAUDE_SKILL_DIR}` 同语义 |
 | `Notification` 的 matcher | `permission_prompt` / `idle_prompt` 等 | 目前只发 `permission_prompt` | sid-code 没有空闲提醒 |
 | 独有事件 | — | `AfterAgent` / `BeforeModel` / `AfterModel` | 主循环可观测与拦截 |
 | 独有 stdin 字段 | — | `timestamp`、`device_id` / `user_id` / `org_id` / `team_id`、`harness_context`、`SubagentStop` 的 `usage` / `turns` / `model` | 企业身份与可观测 |

@@ -31,9 +31,14 @@ describe("HookSystem.replacePluginHooks - 插件 Hook 原子替换", () => {
   test("不影响 user/project 来源的 hooks", () => {
     const sys = new HookSystem();
     // 通过 legacy 配置注册 user hook
-    sys.initializeFromLegacy({
-      PreToolUse: [{ type: "command", command: "echo user" }],
-    });
+    sys.initializeFromSources([
+      {
+        hooks: {
+          PreToolUse: [{ type: "command", command: "echo user" }],
+        },
+        source: ConfigSource.User,
+      },
+    ]);
     const userBefore = sys.getAllHooks().filter((h) => h.source !== ConfigSource.Plugin).length;
 
     sys.replacePluginHooks({ PreToolUse: [{ type: "command", command: "echo plugin" }] });
