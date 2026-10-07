@@ -2294,6 +2294,8 @@ export async function main(): Promise<void> {
               const { discoverMcpSkills } = await import("@sid-code/core/mcp/skill-discovery.ts");
               const mcpSkills = await discoverMcpSkills(mgrForSkills);
               if (mcpSkills.length > 0) {
+                // 声明了 paths 的 MCP skill 先过条件门，再进 manager（顺序见 gateLateConditionalSkills）
+                skillActivationCoordinator.gateLateConditionalSkills(mcpSkills);
                 skillManager.addPluginSkills(mcpSkills); // 复用 precedence 追加 + 热重载重放登记
                 for (const skill of mcpSkills) {
                   if (skill.userInvocable !== false) {
