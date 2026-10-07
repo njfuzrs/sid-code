@@ -125,6 +125,14 @@ export const TTFT_BUCKET_BOUNDS_S = [
  */
 export const TURNS_BUCKET_BOUNDS = [1, 2, 3, 5, 8, 13, 20, 30, 50] as const;
 
+/**
+ * HITL 确认耗时直方图的桶边界（秒）。
+ *
+ * 低端 0.5s 区分「秒批」（用户就盯着屏幕）与「回来才批」；尾部到 300s =
+ * 权限确认的默认超时，超时样本恰好是等得最久的那类，必须有自己的桶而不是溢出。
+ */
+export const HITL_WAIT_BUCKET_BOUNDS_S = [0.5, 1, 2, 5, 10, 20, 30, 60, 120, 300] as const;
+
 /** 导出器接口——所有后端实现此接口 */
 export interface TelemetryExporter {
   name: string;

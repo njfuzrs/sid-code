@@ -30,7 +30,7 @@
  */
 
 import { getTelemetryBus } from "../index.ts";
-import { TTFT_BUCKET_BOUNDS_S, TURNS_BUCKET_BOUNDS } from "../types.ts";
+import { HITL_WAIT_BUCKET_BOUNDS_S, TTFT_BUCKET_BOUNDS_S, TURNS_BUCKET_BOUNDS } from "../types.ts";
 import type { Attributes } from "../types.ts";
 
 /**
@@ -122,6 +122,51 @@ export function recordTurnsHistogram(
       attributes,
       type: "histogram",
       buckets: { bounds: [...TURNS_BUCKET_BOUNDS] },
+    });
+  } catch {
+    /* 可观测性不影响正常流程 */
+  }
+}
+
+/** HITL 确认耗时分布的 metric 名，单位秒 */
+export const HITL_WAIT_METRIC = "sidcode.permission.hitl_wait";
+
+/**
+ * 记录一次 HITL 确认耗时（缺陷 27，20260927 可观测性审计）。
+ *
+ * 「更安全 ↔ 更快」这个 trade-off 的计价器有两半：介入率（`had_hitl`，已有）与
+ * **确认耗时**（此前 metric 通道零埋点 —— `recordHitlPrompt` 只计次不计时）。
+ * trace 层的 `PermissionDecision.duration_ms` 只落本地 events.jsonl，外部后端拿不到分布。
+ *
+ * 只在**确实弹过窗**的路径上调（主循环 ask 分支），所以分母天然是「弹窗次数」，
+ * 与 `had_hitl` 同口径（子代理 / forked 物理上不能弹窗，见缺陷文档 §19.2）。
+ *
+ * @param waitMs  从弹窗到三路竞争出结果的墙钟（含批准 / 拒绝 / 超时 / abort）
+ * @param outcome 受控值：allow / deny
+ * @param source  谁赢了三路竞争（user / hook / classifier / timeout …）
+ */
+export function recordHitlWaitHistogram(
+  waitMs: number,
+  toolName: string,
+  outcome: "allow" | "deny",
+  source: string,
+): void {
+  try {
+    if (!Number.isFinite(waitMs) || waitMs < 0) return;
+    // 工具名走同一条脱敏规则：metric 属性同样随 OTLP 外发（缺陷 22 的同族约束）
+    const tool = toolName.startsWith("mcp__") ? "mcp_tool" : toolName;
+    getTelemetryBus().recordMetric({
+      name: HITL_WAIT_METRIC,
+      value: waitMs / 1000,
+      unit: "s",
+      timestamp: Date.now(),
+      attributes: {
+        "gen_ai.tool.name": tool,
+        "sidcode.permission.outcome": outcome,
+        "sidcode.permission.source": source,
+      },
+      type: "histogram",
+      buckets: { bounds: [...HITL_WAIT_BUCKET_BOUNDS_S] },
     });
   } catch {
     /* 可观测性不影响正常流程 */

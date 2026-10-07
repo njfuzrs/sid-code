@@ -138,6 +138,13 @@ const DEFAULT_CONFIG: TelemetryConfig = {
   maxQueueSize: 2048,
 };
 
+/**
+ * shutdown 排空的总时限。必须**短于** graceful-shutdown 的 flush 阶段硬超时
+ * （`TELEMETRY_FLUSH_TIMEOUT_MS = 500`）：取更长的值时外层先超时、进程退出，
+ * 下面那条「丢弃 N 条」的 warn 永远打不出来 —— 又回到零信号。
+ */
+const SHUTDOWN_DRAIN_BUDGET_MS = 450;
+
 /** 会话内 span/metric 历史上限（防止长会话内存膨胀） */
 const MAX_HISTORY_SPANS = 500;
 const MAX_HISTORY_METRICS = 2000;
@@ -150,6 +157,8 @@ export class TelemetryBus {
   /** 活跃 span 句柄（缺陷 17：/telemetry 要画出尚未 end 的根 span） */
   private activeHandles = new Map<string, SpanHandle>();
   private metricQueue: MetricPoint[] = [];
+  /** 达阈值触发的后台 flush（fire-and-forget），shutdown 前必须等它们落地（缺陷 29） */
+  private inFlight = new Set<Promise<void>>();
   private exporters: TelemetryExporter[] = [];
   private flushTimer?: ReturnType<typeof setInterval>;
   private config: TelemetryConfig;
@@ -204,7 +213,7 @@ export class TelemetryBus {
     // 防重复:已有定时器时先清理,避免重复 start() 泄漏 setInterval(LEAK-5)
     if (this.flushTimer) clearInterval(this.flushTimer);
     this.flushTimer = setInterval(() => {
-      this.flush().catch(() => {});
+      this.track(this.flush());
     }, this.config.flushIntervalMs);
     // 关闭交由统一的 graceful-shutdown 流程驱动(spec 17 §3.4):
     // 不再在此自行注册 SIGINT/SIGTERM,避免与 app.ts 的信号处理器、
@@ -293,7 +302,7 @@ export class TelemetryBus {
     }
     this.metricQueue.push(point);
     if (this.metricQueue.length >= this.config.batchSize) {
-      this.flushMetrics().catch(() => {});
+      this.track(this.flushMetrics());
     }
   }
 
@@ -328,7 +337,7 @@ export class TelemetryBus {
     }
     this.spanQueue.push(span);
     if (this.spanQueue.length >= this.config.batchSize) {
-      this.flushSpans().catch(() => {});
+      this.track(this.flushSpans());
     }
   }
 
@@ -363,13 +372,57 @@ export class TelemetryBus {
     );
   }
 
-  /** 关闭总线，刷新剩余数据 */
+  /**
+   * 关闭时等**所有在途导出**落地，再排空残余队列（缺陷 29，20260927 可观测性审计）。
+   *
+   * 审计原文的判定（「shutdown 只 flush 一个 batch ⇒ 最多丢 1536 条」）**复核不成立**：
+   * enqueueSpan / recordMetric 在队列达 batchSize 时**同步** splice 走一批，队列长度恒
+   * < batchSize（实测默认配置下峰值 511），单次 flush 必然排空队列。
+   *
+   * 真实的丢失在旁边：那些达阈值触发的 flush 是 fire-and-forget，shutdown 原先只 await
+   * 自己那一批 —— 导出器慢时，前面几批还在路上，exporter.shutdown() 与进程退出就把它们
+   * 截掉了。丢的是**整批**，且同样只有 debug 级信号。所以这里先等 inFlight 全部落地。
+   *
+   * 总时限防导出器卡死拖住退出；超时后剩余量打 warn（不再是零信号）。
+   */
+  async drain(budgetMs: number = SHUTDOWN_DRAIN_BUDGET_MS): Promise<void> {
+    const deadline = Date.now() + budgetMs;
+    // 循环而非一次：等待期间可能又有 end() 入队触发新的在途批次
+    while (this.inFlight.size > 0 || this.spanQueue.length > 0 || this.metricQueue.length > 0) {
+      const remaining = deadline - Date.now();
+      if (remaining <= 0) break;
+      let timer: ReturnType<typeof setTimeout> | undefined;
+      const timedOut = await Promise.race([
+        Promise.allSettled([...this.inFlight, this.flush()]).then(() => false),
+        new Promise<boolean>((r) => {
+          timer = setTimeout(() => r(true), remaining);
+        }),
+      ]);
+      if (timer) clearTimeout(timer);
+      if (timedOut) break;
+    }
+    if (this.inFlight.size > 0 || this.spanQueue.length > 0 || this.metricQueue.length > 0) {
+      getLogger().warn(
+        "TELEMETRY",
+        `关闭时导出超时（${budgetMs}ms）：${this.inFlight.size} 批仍在途，` +
+          `队列残留 ${this.spanQueue.length} 条 span / ${this.metricQueue.length} 条 metric`,
+      );
+    }
+  }
+
+  /** 登记一次后台 flush，供 drain 等待（见 drain 注释） */
+  private track(p: Promise<void>): void {
+    this.inFlight.add(p);
+    p.catch(() => {}).finally(() => this.inFlight.delete(p));
+  }
+
+  /** 关闭总线，排空剩余数据 */
   async shutdown(): Promise<void> {
     if (this.flushTimer) {
       clearInterval(this.flushTimer);
       this.flushTimer = undefined;
     }
-    await this.flush();
+    await this.drain();
 
     // Perfetto 追踪输出（spec 17 §6.2）：SID_CODE_PERFETTO_TRACE 启用时落盘
     try {

@@ -423,8 +423,24 @@ export function addToolContent(
   }
 }
 
+/**
+ * span 上的**错误摘要**：先脱敏、再按 UTF-8 字节截断（缺陷 23，20260927 可观测性审计）。
+ *
+ * `recordError` 无条件执行、不受内容级 tracing 的开关约束，所以它写进 span 的任何文本
+ * 都必须过第 4 道闸门 —— 否则「内容级 tracing 没开」的用户以为 span 上没有内容，
+ * 失败路径上却有工具返回值（bash stderr、绝对路径、回显的 API key）随 OTLP 外发。
+ * 脱敏模块不可用时只留占位，不回退原文。截断按字节而非 UTF-16 码元，与本文件其余口径一致。
+ */
+export function maskedErrorSummary(raw: string, maxBytes: number = 200): string {
+  const masked = maskOrNull(raw);
+  if (masked === null) return "[脱敏模块不可用，错误详情已丢弃]";
+  const bytes = encoder.encode(masked);
+  if (bytes.length <= maxBytes) return masked;
+  return decoder.decode(bytes.slice(0, maxBytes)).replace(/\uFFFD+$/, "");
+}
+
 /** 复用埋点门面的工具名脱敏规则，拿不到时退化为「只保留是否 MCP」这一位信息 */
-function sanitizedToolName(name: string): string {
+export function sanitizedToolName(name: string): string {
   try {
     const { sanitizeToolName } = require("../analytics/sanitize.ts");
     return sanitizeToolName(name);
