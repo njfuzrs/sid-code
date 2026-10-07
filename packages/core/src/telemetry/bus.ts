@@ -255,6 +255,13 @@ export class TelemetryBus {
       this.metricHistory.splice(0, this.metricHistory.length - MAX_HISTORY_METRICS);
     }
 
+    // 队列溢出：与 enqueueSpan 同口径丢最旧 10%（缺陷 4）。
+    // flushMetrics 不 await，导出器卡在不可达端点的 TCP 超时期间 push 不受限，
+    // 原先 maxQueueSize 只管 spanQueue，名字读起来管两个队列、实际只管一个。
+    if (this.metricQueue.length >= this.config.maxQueueSize) {
+      const evictCount = Math.ceil(this.config.maxQueueSize * 0.1);
+      this.metricQueue.splice(0, evictCount);
+    }
     this.metricQueue.push(point);
     if (this.metricQueue.length >= this.config.batchSize) {
       this.flushMetrics().catch(() => {});

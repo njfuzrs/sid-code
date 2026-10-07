@@ -1646,6 +1646,14 @@ export class SubAgent {
         );
         return { content: `权限拒绝: ${reason}`, is_error: true };
       }
+      // 缺陷 5：与 deny 同路径同口径记 allow，否则这条分支的拒绝率分母缺项。
+      const { logPermissionAllow } = await import("../analytics/events.ts");
+      logPermissionAllow(name, {
+        source: "rule",
+        needsPrompt: false,
+        context: "subagent",
+        reasonType: decision.decisionReason?.type,
+      });
     }
 
     // 漏斗 1：权限通过之后才记 call。拒绝走上方漏斗 2，不混进 tool_failure。

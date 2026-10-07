@@ -337,11 +337,13 @@ export class TelemetryHookProbe {
     const usage = input.llm_response.usage;
     if (!usage) return;
 
-    // TTFT：如果载荷中有 ttft_ms，记录为 span event
+    // TTFT：event 给瀑布图看时刻，属性给聚合方读数（缺陷 8：原先只有 event，
+    // `/telemetry` 读属性 ⇒ 恒 undefined、那一行静默消失）
     if (input.llm_response.ttft_ms !== undefined && llmSpan) {
       llmSpan.addEvent("gen_ai.first_token", {
         ttft_ms: input.llm_response.ttft_ms,
       });
+      llmSpan.setAttribute(ATTR.TTFT_MS, input.llm_response.ttft_ms);
     }
 
     // 记录到 TokenMeter
@@ -531,7 +533,9 @@ export class TelemetryHookProbe {
     if (span) {
       span.setAttributes({
         [ATTR.SUCCESS]: input.success ?? true,
-        ...(usage ? usageAttributes(usage, input.provider ?? this.config.provider) : {}),
+        // 缺陷 11：子代理 usage 是 accumulateUsage 的逐次累加（flow），走 agent 级属性，
+        // 不借 gen_ai.usage.*（那是单次 LLM 调用的语义）
+        ...(usage ? agentUsageAttributes(usage) : {}),
         ...(input.turns !== undefined ? { [ATTR.TOTAL_TURNS]: input.turns } : {}),
         ...(input.duration_ms !== undefined
           ? { "sidcode.subagent.duration_ms": input.duration_ms }
@@ -551,8 +555,14 @@ export class TelemetryHookProbe {
       this.agentSpan.setAttributes({
         [ATTR.TOTAL_TURNS]: this.turns,
         [ATTR.TOTAL_COST_USD]: stats.total_cost_usd ?? 0,
-        [ATTR.INPUT_TOKENS]: stats.total_tokens_sent ?? 0,
-        [ATTR.OUTPUT_TOKENS]: stats.total_tokens_received ?? 0,
+        // 缺陷 11：原先写 `INPUT_TOKENS: total_tokens_sent`（末次 stock）—— 同名属性在 chat 上
+        // 是单轮值、在这里是会话末次值，消费方无法区分，且两者都不是 flow。
+        ...agentUsageAttributes({
+          inputTokens: stats.total_cumulative_prompt_tokens,
+          outputTokens: stats.total_tokens_received,
+          cacheReadInputTokens: stats.total_cache_read_tokens,
+          cacheCreationInputTokens: stats.total_cache_creation_tokens,
+        }),
         ...(this.collectEnrichedAttributes("invoke_agent", input) as Attributes),
       });
     }
@@ -572,6 +582,26 @@ export class TelemetryHookProbe {
       this.pendingRootSessionId = undefined;
     }
   }
+}
+
+/**
+ * 缺陷 11：invoke_agent 的累计用量 → `sidcode.agent.*`（flow）。
+ * 缺字段就不落，**不兜 0**：0 会被读成「这个 agent 没花 token」。
+ */
+export function agentUsageAttributes(usage: {
+  inputTokens?: number;
+  outputTokens?: number;
+  cacheReadInputTokens?: number;
+  cacheCreationInputTokens?: number;
+}): Attributes {
+  const out: Attributes = {};
+  if (usage.inputTokens !== undefined) out[ATTR.AGENT_CUMULATIVE_INPUT_TOKENS] = usage.inputTokens;
+  if (usage.outputTokens !== undefined) out[ATTR.AGENT_OUTPUT_TOKENS] = usage.outputTokens;
+  if (usage.cacheReadInputTokens !== undefined)
+    out[ATTR.AGENT_CUMULATIVE_CACHE_READ_TOKENS] = usage.cacheReadInputTokens;
+  if (usage.cacheCreationInputTokens !== undefined)
+    out[ATTR.AGENT_CUMULATIVE_CACHE_WRITE_TOKENS] = usage.cacheCreationInputTokens;
+  return out;
 }
 
 /**

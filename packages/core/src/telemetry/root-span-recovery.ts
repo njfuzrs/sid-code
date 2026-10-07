@@ -366,8 +366,9 @@ export function rebuildRootSpanFromEvents(
     ...(model ? { [ATTR.REQUEST_MODEL]: model } : {}),
     [ATTR.TOTAL_TURNS]: material?.turns ?? 0,
     [ATTR.TOTAL_COST_USD]: cost,
-    [ATTR.INPUT_TOKENS]: inputTokens,
-    [ATTR.OUTPUT_TOKENS]: outputTokens,
+    // 缺陷 11：与运行时根 span 同一组 agent 级 flow 属性（不借 gen_ai.usage.*）
+    [ATTR.AGENT_CUMULATIVE_INPUT_TOKENS]: inputTokens,
+    [ATTR.AGENT_OUTPUT_TOKENS]: outputTokens,
     "sidcode.session.exit_status": exitStatus,
     // 三个自描述属性：消费方必须能区分「运行时落的根」与「事后重建的根」，
     // 否则拿重建值去算「会话时长分位」会把归因错到别处（endTime 语义不同）。

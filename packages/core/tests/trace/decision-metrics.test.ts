@@ -91,7 +91,12 @@ describe("B11 · 门面转发（logPermission* ⇔ 进轨迹，结构保证）",
   test("logPermissionAllow / logPermissionDeny 都会转发到观察者，字段齐全", () => {
     const got: PermissionDecisionEvent[] = [];
     setPermissionDecisionObserver((e) => got.push(e));
-    logPermissionAllow("read", { source: "rule", needsPrompt: false, reasonType: "rule" });
+    logPermissionAllow("read", {
+      source: "rule",
+      needsPrompt: false,
+      context: "main",
+      reasonType: "rule",
+    });
     logPermissionDeny("bash", {
       source: "user",
       needsPrompt: true,
@@ -200,11 +205,17 @@ describe("B11 + B12 · collector 端到端落 session-index 与 events.jsonl", (
     await oneModelRound(hooks);
 
     // 走生产入口（门面），不直接调观察者 —— 证明接线而不是证明观察者能被调
-    logPermissionAllow("edit", { source: "rule", needsPrompt: false, reasonType: "rule" });
+    logPermissionAllow("edit", {
+      source: "rule",
+      needsPrompt: false,
+      context: "main",
+      reasonType: "rule",
+    });
     logPermissionDeny("bash", {
       source: "user",
       needsPrompt: true,
       durationMs: 2500,
+      context: "main",
       reasonType: "rule",
     });
 
@@ -244,7 +255,7 @@ describe("B11 + B12 · collector 端到端落 session-index 与 events.jsonl", (
     hooks.setSessionId("sess-a");
     await hooks.fireSessionStartEvent("startup", { model: "claude-test" });
     await oneModelRound(hooks);
-    logPermissionAllow("read", { source: "rule", needsPrompt: false });
+    logPermissionAllow("read", { source: "rule", needsPrompt: false, context: "main" });
     await hooks.firePostToolUseEvent("edit", { file_path: "/x.ts" }, {}, false);
     await hooks.fireSessionEndEvent("exit");
 
