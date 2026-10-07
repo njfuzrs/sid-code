@@ -74,7 +74,7 @@ import { dirname, join, sep } from "path";
 import { fileURLToPath } from "url";
 import { existsSync } from "fs";
 import { withAgentCwd } from "../bootstrap/cwd-context.ts";
-import { withIncrementedDepth } from "./depth-context.ts";
+import { withIncrementedDepth, getAgentDepth, AGENT_DEPTH_ENV } from "./depth-context.ts";
 import { runInSpanScope } from "../telemetry/span-scope.ts";
 import {
   runWithHookAgent,
@@ -807,8 +807,8 @@ export class SubAgent {
 
       // P3-1：把整个子代理执行体包进「深度 +1」上下文。子代理内部若再调 sub_agent，
       // canSpawnSubAgent 读到的就是自己那一层的深度，据此裁决放行/拒绝。
-      // spawn 模式是独立子进程（ALS 不跨进程），但子进程内也从 depth 0 起算——
-      // 其 sub_agent 工具在子进程里同样受 canSpawnSubAgent 约束，故仍不会无限套娃。
+      // spawn 模式是独立子进程（ALS 不跨进程）：spawn 时经 AGENT_DEPTH_ENV 把本层深度
+      // 传过去，子进程以它为起点（多代理 F8）。以前子进程从 0 起算，每跨一次进程上限归零。
       // 缺陷 2：执行体包进 span 作用域（ALS），其中 fire 的 BeforeModel/PostToolUse 等
       // 产生的 span 挂到本子代理的 invoke_agent 下。SubagentStart/Stop 刻意在作用域**之外**
       // fire：它们属于发起方（父 span 取发起方的作用域）。
@@ -1239,7 +1239,9 @@ export class SubAgent {
       stdout: "pipe",
       stderr: "inherit",
       cwd: process.cwd(),
-      env: { ...process.env },
+      // F8：把本子代理的深度带进子进程（此处已在 withIncrementedDepth 内，getAgentDepth()
+      // 即子代理自身深度），否则子进程从 0 起算，嵌套上限每跨一次进程就失效。
+      env: { ...process.env, [AGENT_DEPTH_ENV]: String(getAgentDepth()) },
     });
 
     // 发送 init 消息
