@@ -7,7 +7,6 @@ const debug: UnifiedCommand = {
   description: "调试信息：上传当前轨迹快照、显示诊断数据、复制 Session ID",
   source: "builtin",
   userInvocable: true,
-  disableModelInvocation: true,
   immediate: true,
   load: () => import("./debug.ts").then((m) => m.default),
 };

@@ -8,7 +8,6 @@ const exportCmd: UnifiedCommand = {
   argumentHint: "[clipboard|file|<path>] [json|md]",
   source: "builtin",
   userInvocable: true,
-  disableModelInvocation: true,
   immediate: true,
   load: () => import("./export.ts").then((m) => m.default),
 };

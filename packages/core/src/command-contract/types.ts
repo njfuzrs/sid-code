@@ -254,7 +254,9 @@ export interface CommandBase {
   name: string; // 命令名（唯一标识，如 "compact"）
   aliases?: string[]; // 别名（如 ["q"] 对应 /exit）
   description: string; // 描述（显示在补全列表和 /help 中）
-  argumentHint?: string; // 参数提示（如 "session-id"）
+  argumentHint?: string; // 参数提示（如 "session-id"）：行内补全列表（命令名后 dim）+ /commands 面板。
+  // 链路：UnifiedCommand → app.ts loadCommandList → TUIState.commands → rankCommandInfos → SuggestionsDisplay，
+  // 任一跳漏搬即静默失效（D10），反漂移断言见 cli/tests/command/argument-hint-chain.test.tsx
 
   // === 可见性控制 ===
   isEnabled?: () => boolean; // 运行时条件门控（feature flag 等）
@@ -262,7 +264,10 @@ export interface CommandBase {
 
   // === 调用控制 ===
   userInvocable?: boolean; // 用户能否通过 /name 调用（false = 仅模型可用）
-  disableModelInvocation?: boolean; // 模型能否通过 SkillTool 调用
+  // 模型能否通过 SkillTool 调用。⚠️ 仅 Skill 来源生效（skill/manager.ts、skill/meta-tool.ts 消费）：
+  // 内置命令没有任何模型调用路径（BUILTIN_COMMANDS 只进用户侧补全/执行），在内置命令上声明它
+  // 不改变任何行为，不要声明（D11：曾有 26 处照抄的空声明，已删）。
+  disableModelInvocation?: boolean;
   immediate?: boolean; // 是否绕过队列立即执行（模型运行时可用）
   requiresArgs?: boolean; // 无参数就无法工作（如 /btw）。true = 补全列表回车仅回填等待输入；
   // 默认 false = 补全列表回车直接执行（无参开对话框/显示状态的命令）

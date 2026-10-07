@@ -15,7 +15,6 @@ const keybindings: UnifiedCommand = {
   argumentHint: "[init]",
   source: "builtin",
   userInvocable: true,
-  disableModelInvocation: true,
   immediate: true,
   load: () => import("./keybindings.ts").then((m) => m.default),
 };

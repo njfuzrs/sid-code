@@ -15,7 +15,6 @@ const claudeApi: UnifiedCommand = {
   argumentHint: "[messages|streaming|all]",
   source: "builtin",
   userInvocable: true,
-  disableModelInvocation: true,
   immediate: true,
   load: () => import("./claude-api.ts").then((m) => m.default),
 };

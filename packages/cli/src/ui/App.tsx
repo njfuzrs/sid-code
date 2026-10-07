@@ -433,6 +433,8 @@ export interface TUIState {
     aliases: string[];
     description: string;
     requiresArgs?: boolean;
+    /** 参数提示（D10）：补全列表在命令名后 dim 显示 */
+    argumentHint?: string;
     immediate?: boolean;
     type?: string;
   }>;
