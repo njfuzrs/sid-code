@@ -32,7 +32,11 @@ import {
   makeFetchAbsoluteTimeoutSignal,
 } from "../trace/stream-observer.ts";
 import { guardOutgoingMessages } from "./protocol-sentinel.ts";
-import { recordBilledRequest, nextFetchId } from "./billing-sink.ts";
+import {
+  recordBilledRequest,
+  recordNonStreamingBilledRequest,
+  nextFetchId,
+} from "./billing-sink.ts";
 import { splitSSELines, parseSSEField, isDoneSentinel } from "./sse-line.ts";
 import { createStreamLifecycle, LIFECYCLE_PRESETS } from "./stream-lifecycle.ts";
 import type { StreamTelemetrySignal } from "./types.ts";
@@ -1815,132 +1819,157 @@ export class OpenAIProvider implements Provider {
     const log = getLogger();
     log.debug("LLM:OPENAI", "非流式请求", { model: requestBody.model });
 
-    const response = await fetch(`${this.baseURL}/chat/completions`, {
-      method: "POST",
-      headers: {
-        "Content-Type": "application/json",
-        Authorization: `Bearer ${this.apiKey}`,
-      },
-      body: JSON.stringify(sanitizeStrings(requestBody)),
-      signal,
-      // B1-b：非流式路径同样消费 keep-alive 开关——它是流式失败后的降级路径，
-      // 若这里仍复用死 socket，降级会跟着一起失败。
-      ...getKeepAliveFetchOptions(),
-    });
+    // 缺陷 15：非流式同样收口计费（见 recordNonStreamingBilledRequest）。
+    // 只在拿到 2xx 后记：与 digest 恒等式的分子「2xx HttpConnected」同口径。
+    const billingFetchId = nextFetchId();
+    let billedUsage: Usage | undefined;
+    let billable = false;
+    try {
+      const response = await fetch(`${this.baseURL}/chat/completions`, {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          Authorization: `Bearer ${this.apiKey}`,
+        },
+        body: JSON.stringify(sanitizeStrings(requestBody)),
+        signal,
+        // B1-b：非流式路径同样消费 keep-alive 开关——它是流式失败后的降级路径，
+        // 若这里仍复用死 socket，降级会跟着一起失败。
+        ...getKeepAliveFetchOptions(),
+      });
 
-    // G8：非流式路径同样提取 rate-limit header
-    updateRateLimitStatus(response.headers);
+      // G8：非流式路径同样提取 rate-limit header
+      updateRateLimitStatus(response.headers);
 
-    if (!response.ok) {
-      const errText = await response.text();
-      const err = new Error(`OpenAI API 错误: ${response.status} ${errText}`);
-      // 挂上状态码：能力自愈的结构判据看 HTTP 码而非措辞（网关可能只回 "400 Bad Request"）。
-      // 用 statusCode + status 两个名字，兼容 errors.ts::extractHTTPStatus 的两种读法。
-      (err as any).statusCode = response.status;
-      (err as any).status = response.status;
-      throw err;
-    }
+      if (!response.ok) {
+        const errText = await response.text();
+        const err = new Error(`OpenAI API 错误: ${response.status} ${errText}`);
+        // 挂上状态码：能力自愈的结构判据看 HTTP 码而非措辞（网关可能只回 "400 Bad Request"）。
+        // 用 statusCode + status 两个名字，兼容 errors.ts::extractHTTPStatus 的两种读法。
+        (err as any).statusCode = response.status;
+        (err as any).status = response.status;
+        throw err;
+      }
+      billable = true;
+      emitHttpConnected(currentSseDumpContext().turnIndex, {
+        status: response.status,
+        content_type: response.headers.get?.("content-type") ?? undefined,
+        model: params.model || this._model,
+      });
 
-    const data: any = await response.json();
-    const choice = data.choices?.[0];
-    const msg = choice?.message ?? {};
-    const content: ContentBlock[] = [];
+      const data: any = await response.json();
+      const choice = data.choices?.[0];
+      const msg = choice?.message ?? {};
+      const content: ContentBlock[] = [];
 
-    // §2.3：DeepSeek reasoning_content（思考链）。非流式路径此前完全忽略此字段——
-    // 不仅 TUI 丢失思考过程，更关键的是下一轮回放该 assistant 消息时缺 reasoning_content，
-    // 与流式路径行为不一致。这里对齐 stream-processor：思考块放在文本块**之前**入 content
-    //（思考先于答复），并在 _meta 保存原文供 convertMessages 下轮回传。
-    const reasoningContent: string =
-      typeof msg.reasoning_content === "string" ? msg.reasoning_content : "";
-    if (reasoningContent.length > 0) {
-      content.push({ type: "thinking", thinking: reasoningContent });
-    }
+      // §2.3：DeepSeek reasoning_content（思考链）。非流式路径此前完全忽略此字段——
+      // 不仅 TUI 丢失思考过程，更关键的是下一轮回放该 assistant 消息时缺 reasoning_content，
+      // 与流式路径行为不一致。这里对齐 stream-processor：思考块放在文本块**之前**入 content
+      //（思考先于答复），并在 _meta 保存原文供 convertMessages 下轮回传。
+      const reasoningContent: string =
+        typeof msg.reasoning_content === "string" ? msg.reasoning_content : "";
+      if (reasoningContent.length > 0) {
+        content.push({ type: "thinking", thinking: reasoningContent });
+      }
 
-    if (typeof msg.content === "string" && msg.content.length > 0) {
-      // 部分 OpenAI 兼容模型（GPT-5.4 等）以内联 <think>...</think> 标签返回思考过程，
-      // 而非通过结构化 reasoning_content 字段。若不提取，标签会作为普通文本泄漏到 TUI。
-      // 仅在尚未从 reasoning_content 提取到思考块时才尝试（避免重复）。
-      if (reasoningContent.length === 0) {
-        const extracted = extractInlineThinkTags(msg.content);
-        if (extracted.thinking) {
-          content.push({ type: "thinking", thinking: extracted.thinking });
-        }
-        // <internal_en> 归位：中文铁律模式的提示词允许模型把英文技术思考包进该标签
-        // （见 system-prompt.ts 思考语言疏导段）。标签只是给模型的书写协议，不该泄漏到
-        // 正文——与 <think> 同样处理成 thinking 块，思考区照常可见、正文保持纯中文。
-        const en = extractInternalEnTags(extracted.text);
-        if (en.thinking) {
-          content.push({ type: "thinking", thinking: en.thinking });
-        }
-        if (en.text) {
-          content.push({ type: "text", text: en.text });
-        }
-      } else {
-        // reasoning_content 已提供思考链，但正文里仍可能带 <internal_en>（两条通道不互斥）。
-        const en = extractInternalEnTags(msg.content);
-        if (en.thinking) {
-          content.push({ type: "thinking", thinking: en.thinking });
-        }
-        if (en.text) {
-          content.push({ type: "text", text: en.text });
+      if (typeof msg.content === "string" && msg.content.length > 0) {
+        // 部分 OpenAI 兼容模型（GPT-5.4 等）以内联 <think>...</think> 标签返回思考过程，
+        // 而非通过结构化 reasoning_content 字段。若不提取，标签会作为普通文本泄漏到 TUI。
+        // 仅在尚未从 reasoning_content 提取到思考块时才尝试（避免重复）。
+        if (reasoningContent.length === 0) {
+          const extracted = extractInlineThinkTags(msg.content);
+          if (extracted.thinking) {
+            content.push({ type: "thinking", thinking: extracted.thinking });
+          }
+          // <internal_en> 归位：中文铁律模式的提示词允许模型把英文技术思考包进该标签
+          // （见 system-prompt.ts 思考语言疏导段）。标签只是给模型的书写协议，不该泄漏到
+          // 正文——与 <think> 同样处理成 thinking 块，思考区照常可见、正文保持纯中文。
+          const en = extractInternalEnTags(extracted.text);
+          if (en.thinking) {
+            content.push({ type: "thinking", thinking: en.thinking });
+          }
+          if (en.text) {
+            content.push({ type: "text", text: en.text });
+          }
+        } else {
+          // reasoning_content 已提供思考链，但正文里仍可能带 <internal_en>（两条通道不互斥）。
+          const en = extractInternalEnTags(msg.content);
+          if (en.thinking) {
+            content.push({ type: "thinking", thinking: en.thinking });
+          }
+          if (en.text) {
+            content.push({ type: "text", text: en.text });
+          }
         }
       }
-    }
-    if (Array.isArray(msg.tool_calls)) {
-      for (const tc of msg.tool_calls) {
-        let input: unknown = {};
-        try {
-          input = tc.function?.arguments ? JSON.parse(tc.function.arguments) : {};
-        } catch {
-          input = {};
+      if (Array.isArray(msg.tool_calls)) {
+        for (const tc of msg.tool_calls) {
+          let input: unknown = {};
+          try {
+            input = tc.function?.arguments ? JSON.parse(tc.function.arguments) : {};
+          } catch {
+            input = {};
+          }
+          content.push({
+            type: "tool_use",
+            id: tc.id || "",
+            name: tc.function?.name || "",
+            input,
+          });
         }
-        content.push({
-          type: "tool_use",
-          id: tc.id || "",
-          name: tc.function?.name || "",
-          input,
-        });
       }
-    }
 
-    const finishReason = choice?.finish_reason;
-    const stopReason = OpenAIProvider.mapFinishReason(finishReason);
+      const finishReason = choice?.finish_reason;
+      const stopReason = OpenAIProvider.mapFinishReason(finishReason);
 
-    // §4.4：DeepSeek 特有 insufficient_system_resource（deepseek-api.md:2094-2096）。
-    // 非流式路径同样须视为可重试——抛错让上层（stream-handler 降级路径 / warmup 等）经
-    // classifyError 归为 overloaded 触发重试，而非返回一个静默截断的 end_turn 式响应。
-    if (finishReason === "insufficient_system_resource") {
-      throw new Error("DeepSeek insufficient_system_resource（推理系统资源不足，可重试）");
-    }
+      // §4.4：DeepSeek 特有 insufficient_system_resource（deepseek-api.md:2094-2096）。
+      // 非流式路径同样须视为可重试——抛错让上层（stream-handler 降级路径 / warmup 等）经
+      // classifyError 归为 overloaded 触发重试，而非返回一个静默截断的 end_turn 式响应。
+      if (finishReason === "insufficient_system_resource") {
+        throw new Error("DeepSeek insufficient_system_resource（推理系统资源不足，可重试）");
+      }
 
-    // §2.1：内容审查拒绝。模型触发安全策略时返回 `refusal`（拒绝理由）而非 `content`。
-    // 此前完全未解析——若 refusal 非空而 content 为空，会得到无任何块的空响应，
-    // 表现为"模型莫名没回复"。这里在正文均空时把 refusal 文本兜底为 text 块，
-    // 至少让用户/上层看到拒绝原因，并标注来源。
-    if (content.length === 0 && typeof msg.refusal === "string" && msg.refusal.length > 0) {
-      content.push({ type: "text", text: `[模型拒绝] ${msg.refusal}` });
-      getLogger().warn("LLM:OPENAI", `模型返回 refusal: ${msg.refusal.slice(0, 200)}`);
-    }
+      // §2.1：内容审查拒绝。模型触发安全策略时返回 `refusal`（拒绝理由）而非 `content`。
+      // 此前完全未解析——若 refusal 非空而 content 为空，会得到无任何块的空响应，
+      // 表现为"模型莫名没回复"。这里在正文均空时把 refusal 文本兜底为 text 块，
+      // 至少让用户/上层看到拒绝原因，并标注来源。
+      if (content.length === 0 && typeof msg.refusal === "string" && msg.refusal.length > 0) {
+        content.push({ type: "text", text: `[模型拒绝] ${msg.refusal}` });
+        getLogger().warn("LLM:OPENAI", `模型返回 refusal: ${msg.refusal.slice(0, 200)}`);
+      }
 
-    // 缓存命中数：见 extractOpenAICacheHit 的字段兜底说明（流式/非流式单一事实源）。
-    const cacheHit = extractOpenAICacheHit(data.usage);
-    // 缺口分析二类：推理 token 单独计数（completion_tokens 子集，不叠加 output）。
-    const reasoning = extractOpenAIReasoningTokens(data.usage);
+      // 缓存命中数：见 extractOpenAICacheHit 的字段兜底说明（流式/非流式单一事实源）。
+      const cacheHit = extractOpenAICacheHit(data.usage);
+      // 缺口分析二类：推理 token 单独计数（completion_tokens 子集，不叠加 output）。
+      const reasoning = extractOpenAIReasoningTokens(data.usage);
 
-    return {
-      role: "assistant",
-      content,
-      stopReason,
-      usage: {
+      const usage: Usage = {
         inputTokens: data.usage?.prompt_tokens ?? 0,
         outputTokens: data.usage?.completion_tokens ?? 0,
         ...(cacheHit > 0 ? { cacheReadInputTokens: cacheHit } : {}),
         ...(reasoning > 0 ? { reasoningTokens: reasoning } : {}),
-      },
-      // §2.3：reasoning_content 存入 _meta，供 convertMessages 下轮按需回传
-      //（与流式路径 stream-processor 的 response._meta 同源）。
-      ...(reasoningContent.length > 0 ? { _meta: { reasoning_content: reasoningContent } } : {}),
-    };
+      };
+      if (data.usage) billedUsage = usage;
+      return {
+        role: "assistant",
+        content,
+        stopReason,
+        usage,
+        // §2.3：reasoning_content 存入 _meta，供 convertMessages 下轮按需回传
+        //（与流式路径 stream-processor 的 response._meta 同源）。
+        ...(reasoningContent.length > 0 ? { _meta: { reasoning_content: reasoningContent } } : {}),
+      };
+    } finally {
+      if (billable) {
+        recordNonStreamingBilledRequest({
+          fetchId: billingFetchId,
+          model: params.model ?? effectiveModel,
+          provider: this.name(),
+          baseURL: this.baseURL,
+          usage: billedUsage,
+        });
+      }
+    }
   }
 
   /**
@@ -1968,45 +1997,68 @@ export class OpenAIProvider implements Provider {
       toolCount: requestBody.tools?.length ?? 0,
     });
 
-    const response = await fetch(`${this.baseURL}/responses`, {
-      method: "POST",
-      headers: {
-        "Content-Type": "application/json",
-        Authorization: `Bearer ${this.apiKey}`,
-      },
-      body: JSON.stringify(sanitizeStrings(requestBody)),
-      signal,
-      // 与 Chat 非流式路径同口径：降级路径若复用死 socket，降级会跟着一起失败。
-      ...getKeepAliveFetchOptions(),
-    });
+    // 缺陷 15：与 Chat 非流式同口径收口计费
+    const billingFetchId = nextFetchId();
+    let billedUsage: Usage | undefined;
+    let billable = false;
+    try {
+      const response = await fetch(`${this.baseURL}/responses`, {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          Authorization: `Bearer ${this.apiKey}`,
+        },
+        body: JSON.stringify(sanitizeStrings(requestBody)),
+        signal,
+        // 与 Chat 非流式路径同口径：降级路径若复用死 socket，降级会跟着一起失败。
+        ...getKeepAliveFetchOptions(),
+      });
 
-    // G8：与 Chat 路径一致地提取 rate-limit header
-    updateRateLimitStatus(response.headers);
+      // G8：与 Chat 路径一致地提取 rate-limit header
+      updateRateLimitStatus(response.headers);
 
-    if (!response.ok) {
-      const errText = await response.text();
-      const err = new Error(`OpenAI Responses API 错误: ${response.status} ${errText}`);
-      // 挂状态码：能力自愈的结构判据看 HTTP 码而非措辞（见 sendMessageNonStreaming）
-      (err as any).statusCode = response.status;
-      (err as any).status = response.status;
-      throw err;
+      if (!response.ok) {
+        const errText = await response.text();
+        const err = new Error(`OpenAI Responses API 错误: ${response.status} ${errText}`);
+        // 挂状态码：能力自愈的结构判据看 HTTP 码而非措辞（见 sendMessageNonStreaming）
+        (err as any).statusCode = response.status;
+        (err as any).status = response.status;
+        throw err;
+      }
+      billable = true;
+      emitHttpConnected(currentSseDumpContext().turnIndex, {
+        status: response.status,
+        content_type: response.headers.get?.("content-type") ?? undefined,
+        model: params.model || this._model,
+      });
+
+      const body = (await response.json()) as ResponsesNonStreamingBody;
+
+      // 顺带把 Responses 的失败态转成异常，让上层 classifyError 决定是否重试；
+      // 否则 status=failed 会被当成一个内容为空的正常回合（静默截断）。
+      if (body.status === "failed") {
+        throw new Error(`OpenAI Responses API 返回 failed: ${body.error?.message ?? "未知原因"}`);
+      }
+
+      const parsed = parseResponsesBody(body);
+      if ((body as any).usage) billedUsage = parsed.usage;
+      return {
+        role: "assistant",
+        content: parsed.content as ContentBlock[],
+        stopReason: parsed.stopReason,
+        usage: parsed.usage,
+      };
+    } finally {
+      if (billable) {
+        recordNonStreamingBilledRequest({
+          fetchId: billingFetchId,
+          model: params.model ?? effectiveModel,
+          provider: this.name(),
+          baseURL: this.baseURL,
+          usage: billedUsage,
+        });
+      }
     }
-
-    const body = (await response.json()) as ResponsesNonStreamingBody;
-
-    // 顺带把 Responses 的失败态转成异常，让上层 classifyError 决定是否重试；
-    // 否则 status=failed 会被当成一个内容为空的正常回合（静默截断）。
-    if (body.status === "failed") {
-      throw new Error(`OpenAI Responses API 返回 failed: ${body.error?.message ?? "未知原因"}`);
-    }
-
-    const parsed = parseResponsesBody(body);
-    return {
-      role: "assistant",
-      content: parsed.content as ContentBlock[],
-      stopReason: parsed.stopReason,
-      usage: parsed.usage,
-    };
   }
 
   /**

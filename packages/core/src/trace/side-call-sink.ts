@@ -28,6 +28,11 @@ export interface SideCallRecord {
   error?: string;
   /** T13.2：是否超时 */
   timedOut?: boolean;
+  /**
+   * 缺陷 16：调用成功但 provider 没返 usage —— token 记 0，但这次调用**发生过、花了钱**。
+   * 与「真的 0 token」区分开，否则两者在统计上塌缩成同一个值。
+   */
+  usageMissing?: boolean;
 }
 
 export interface SideCallStats {
@@ -45,6 +50,8 @@ export interface SideCallStats {
   /** T13.4：失败统计 */
   failed: number;
   timedOut: number;
+  /** 缺陷 16：成功但无 usage 的调用数（成本未知，不是 0） */
+  usageMissing: number;
   byLabel: Record<string, { success: number; failed: number }>;
 }
 
@@ -140,6 +147,7 @@ export function getSideStats(): SideCallStats {
   let tokensReceived = 0;
   let failed = 0;
   let timedOut = 0;
+  let usageMissing = 0;
   const byLabel: Record<string, { success: number; failed: number }> = {};
   const details: SideCallStats["details"] = [];
 
@@ -159,6 +167,7 @@ export function getSideStats(): SideCallStats {
       failed++;
       if (c.timedOut) timedOut++;
     }
+    if (c.usageMissing) usageMissing++;
     if (!byLabel[c.label]) byLabel[c.label] = { success: 0, failed: 0 };
     if (c.success) byLabel[c.label].success++;
     else byLabel[c.label].failed++;
@@ -172,6 +181,7 @@ export function getSideStats(): SideCallStats {
     details,
     failed,
     timedOut,
+    usageMissing,
     byLabel,
   };
 }

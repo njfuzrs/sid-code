@@ -29,7 +29,7 @@
 import type { Provider } from "../llm/provider.ts";
 import type { Message, ContentBlock } from "../llm/types.ts";
 import { getLogger } from "../debug/logger.ts";
-import { recordSideCall } from "../trace/side-call-sink.ts";
+import { sendNonStreamingSideCall } from "../llm/side-call-nonstreaming.ts";
 import { SIDE_CALL_NO_THINK, withSideCallDeadline } from "../llm/side-call-timeout.ts";
 
 /** 提炼调用硬超时：25s。网页正文可能很长，比分类器（8s）宽松，但不能拖死主循环。 */
@@ -162,18 +162,11 @@ export class WebFetchExtractor {
 
           // 优先非流式（提炼结果整体使用，无需增量渲染）
           if (typeof this.provider!.sendMessageNonStreaming === "function") {
-            const resp = await this.provider!.sendMessageNonStreaming(sendParams, mergedSignal);
-            if (resp.usage) {
-              recordSideCall({
-                label: "web-fetch-extract",
-                model: this.model,
-                inputTokens: resp.usage.inputTokens ?? 0,
-                outputTokens: resp.usage.outputTokens ?? 0,
-                cacheReadTokens: (resp.usage as any).cacheReadInputTokens ?? 0,
-                cacheCreationTokens: (resp.usage as any).cacheCreationInputTokens ?? 0,
-                durationMs: Date.now() - startedAt,
-              });
-            }
+            // 缺陷 15–16：入账收口在 sendNonStreamingSideCall（无 usage 也记一次调用）
+            const resp = await sendNonStreamingSideCall(this.provider!, sendParams, mergedSignal, {
+              querySource: "web_fetch_extract",
+              label: "web-fetch-extract",
+            });
             return resp.content
               .filter(
                 (b: ContentBlock): b is ContentBlock & { type: "text"; text: string } =>

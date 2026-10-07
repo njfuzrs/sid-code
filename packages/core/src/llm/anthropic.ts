@@ -33,7 +33,11 @@ import {
   cacheDimsFor,
 } from "../trace/stream-observer.ts";
 import { currentSseDumpContext } from "./sse-chunk-dumper.ts";
-import { recordBilledRequest, nextFetchId } from "./billing-sink.ts";
+import {
+  recordBilledRequest,
+  recordNonStreamingBilledRequest,
+  nextFetchId,
+} from "./billing-sink.ts";
 import { normalizeToolInput } from "./normalize-tool-input.ts";
 import { pickWireModel } from "./wire-model.ts";
 import {
@@ -911,47 +915,68 @@ export class AnthropicProvider implements Provider {
       maxTokens: params.maxTokens,
     });
 
-    const message = await this.client.messages.create(
-      {
-        model: wireModel,
-        max_tokens: params.maxTokens,
-        messages: messages as any,
-        system: system as any,
-        tools: tools as any,
-        stream: false,
-        // OPT-2: 透传 tool_choice（与流式路径一致）
-        ...buildToolChoiceParam(params),
-        // 与流式路径一致：Extended Thinking（adaptive/manual 双模式）
-        ...(params.thinking?.enabled && buildThinkingParam(params)),
-        ...(params.outputConfig && {
-          output_config: { effort: params.outputConfig.effort },
-        }),
-        // G2: cache_edits（同流式路径门控）
-        ...(params.cacheEdits &&
-          params.cacheEdits.length > 0 &&
-          !process.env.SID_DISABLE_CACHE_EDITS && {
-            cache_edits: params.cacheEdits,
+    // 缺陷 15：非流式同样收口计费（见 recordNonStreamingBilledRequest）。
+    // SDK 对非 2xx 直接抛错，所以 create resolve 即「拿到 2xx」。
+    const billingFetchId = nextFetchId();
+    let billedUsage: Usage | undefined;
+    let billable = false;
+    try {
+      const message = await this.client.messages.create(
+        {
+          model: wireModel,
+          max_tokens: params.maxTokens,
+          messages: messages as any,
+          system: system as any,
+          tools: tools as any,
+          stream: false,
+          // OPT-2: 透传 tool_choice（与流式路径一致）
+          ...buildToolChoiceParam(params),
+          // 与流式路径一致：Extended Thinking（adaptive/manual 双模式）
+          ...(params.thinking?.enabled && buildThinkingParam(params)),
+          ...(params.outputConfig && {
+            output_config: { effort: params.outputConfig.effort },
           }),
-      },
-      signal ? { signal } : undefined,
-    );
+          // G2: cache_edits（同流式路径门控）
+          ...(params.cacheEdits &&
+            params.cacheEdits.length > 0 &&
+            !process.env.SID_DISABLE_CACHE_EDITS && {
+              cache_edits: params.cacheEdits,
+            }),
+        },
+        signal ? { signal } : undefined,
+      );
+      billable = true;
+      emitHttpConnected(currentSseDumpContext().turnIndex, { status: 200, model: this._model });
 
-    const content: ContentBlock[] = [];
-    for (const block of (message as any).content ?? []) {
-      const converted = this.convertContentBlock(block);
-      // 跳过被忽略的空块（未知类型）
-      if (converted.type === "text" && converted.text === "" && block.type !== "text") {
-        continue;
+      const content: ContentBlock[] = [];
+      for (const block of (message as any).content ?? []) {
+        const converted = this.convertContentBlock(block);
+        // 跳过被忽略的空块（未知类型）
+        if (converted.type === "text" && converted.text === "" && block.type !== "text") {
+          continue;
+        }
+        content.push(converted);
       }
-      content.push(converted);
-    }
 
-    return {
-      role: "assistant",
-      content,
-      stopReason: (message as any).stop_reason ?? null,
-      usage: this.convertUsage((message as any).usage),
-    };
+      const usage = this.convertUsage((message as any).usage);
+      if ((message as any).usage) billedUsage = usage;
+      return {
+        role: "assistant",
+        content,
+        stopReason: (message as any).stop_reason ?? null,
+        usage,
+      };
+    } finally {
+      if (billable) {
+        recordNonStreamingBilledRequest({
+          fetchId: billingFetchId,
+          model: params.model ?? this._model,
+          provider: this.name(),
+          baseURL: this.client.baseURL,
+          usage: billedUsage,
+        });
+      }
+    }
   }
 
   private convertUsage(usage: any): Usage {

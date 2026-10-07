@@ -57,6 +57,7 @@
 import type { Usage } from "./types.ts";
 import { resolvePricing, priceTierAt } from "../api/cost-tracker.ts";
 import { emitBilledRequest } from "../trace/stream-observer.ts";
+import { currentSseDumpContext } from "./sse-chunk-dumper.ts";
 
 /** 一次真实计费请求（= 一次 fetch，无论成功失败、无论谁发起的） */
 export interface BilledRequest {
@@ -155,6 +156,14 @@ export const BILLING_SELF_REPORTED_LABELS: ReadonlySet<string> = new Set([
   "compact", // auto-compact.ts / context-collapse.ts / partial-compact.ts 共用此 querySource
   "hook_agent", // hook/runner.ts
   "goal_eval", // goal/evaluator.ts
+  // 缺陷 15：直调 sendMessageNonStreaming 的影子调用点。它们自己 recordSideCall
+  // （见 recordNonStreamingSideCall），provider 非流式收口发的事件只作恒等式核对与归因。
+  // 门禁：tests/llm/billing-self-reported-labels.test.ts 的非流式那一条。
+  "cache_warmup", // session/warmup.ts
+  "tool_classifier", // permission/tool-classifier.ts
+  "bash_classifier", // permission/bash-classifier.ts
+  "web_fetch_extract", // tool/web-fetch-extract.ts
+  "title_generation", // cli/app.ts
 ]);
 
 /**
@@ -311,4 +320,48 @@ let fetchSeq = 0;
 export function nextFetchId(): string {
   fetchSeq += 1;
   return `f${fetchSeq}-${Date.now()}`;
+}
+
+/**
+ * 非流式请求的计费收口（缺陷 15，20260927 可观测性审计）。
+ *
+ * 流式路径把 `recordBilledRequest` 挂在 provider 的 finally 里；非流式的
+ * `sendMessageNonStreaming` 此前**一处都没有** —— 文件头那句「所有调用链都必然经过那里」
+ * 只在流式上成立。更隐蔽的是恒等式 `HttpConnected == BilledRequest`：非流式两边都不数，
+ * 于是它在这条路径上恒为 `0 == 0`，漏多少钱都 PASS（假门禁）。
+ *
+ * 调用约定（与流式同口径，恒等式才能逐条对上）：
+ * - provider 收到 **2xx 响应头**后调 `emitHttpConnected` 一次；
+ * - 在同一个 try 的 finally 里调本函数一次 —— 读 body 失败 / abort 也要记：
+ *   厂商按收到的 prompt 计费，与客户端是否读完 body 无关。
+ * - `usage` 缺失时记 0 token，事件仍落盘：「这次 fetch 花了钱但不知道多少」
+ *   必须可见（`BilledRequest.input_tokens == 0` 即信号），不能因为没 usage 就不存在。
+ *
+ * 身份取 ALS（`currentSseDumpContext`）：包了 `withRequestContext` 的影子调用点
+ * 带 callerLabel，消费侧按 `BILLING_SELF_REPORTED_LABELS` 跳过（它们自己 recordSideCall）。
+ */
+export function recordNonStreamingBilledRequest(req: {
+  fetchId: string;
+  model: string;
+  provider: string;
+  baseURL?: string;
+  usage: Usage | undefined;
+}): void {
+  try {
+    const bctx = currentSseDumpContext();
+    recordBilledRequest({
+      fetchId: req.fetchId,
+      model: req.model,
+      provider: req.provider,
+      baseURL: req.baseURL,
+      usage: req.usage ?? { inputTokens: 0, outputTokens: 0 },
+      index: bctx.turnIndex,
+      agentId: bctx.agentId,
+      callerLabel: bctx.callerLabel,
+      atMs: Date.now(),
+      accounted: !bctx.agentId && !bctx.callerLabel,
+    });
+  } catch {
+    /* 计费上报绝不影响请求 */
+  }
 }
