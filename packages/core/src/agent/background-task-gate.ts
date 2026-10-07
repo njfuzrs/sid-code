@@ -18,12 +18,20 @@
  * 各自加锁是**已经做过**的事，而它恰恰是失效的那一层：两把独立的锁在语义上根本
  * 表达不出"后台任务全局最多跑一个"。所以闸门必须是**跨任务共享的单一队列**。
  *
- * ## 语义：串行 + 丢弃，不是排队堆积
+ * ## 语义：串行 + 按 label 待补一笔（深度 1，不堆积）
  *
- * - 同一时刻只有一个后台任务在跑（`inFlight` 非空即拒）。
- * - 被拒的任务**直接丢弃**，不排队 —— 后台提取是"锦上添花"，下一个 end_turn 还会再来；
- *   排队只会把并发问题换成"队列越积越长，最后一次性烧掉一串十万 token 请求"。
- * - 返回值 `true` = 真的跑了，`false` = 被闸门拒了。调用方据此记日志/度量。
+ * - 同一时刻只有一个后台任务在跑（`inFlight` 非空即不并发）。
+ * - 来的任务与在跑的**同 label** → 直接丢弃：它自己已经在跑，下一个 end_turn 还会再来。
+ * - 来的任务与在跑的**不同 label** → 记一笔待补（每个 label 至多一笔，新的覆盖旧的），
+ *   当前任务结束时在 `finally` 里串行放行下一笔。
+ * - 返回值 `true` = 当场启动，`false` = 没有当场启动（被丢弃或记为待补）。
+ *
+ * ⚠️ 为什么不是原来的「不同 label 也丢弃」（F3，2026-10-07）：唯一调用点
+ * `query/loop.ts` 在**同一条同步路径上紧挨着**提交 `session-memory-update` 与
+ * `memory-extract`，第一条刚把 `inFlight` 置上，第二条必然被拒 —— 「被拒的下一个
+ * end_turn 还会再来」在这里不成立，记忆提取每次都排在后面、触发率恒为 0。
+ * 待补深度按 label 封顶为 1，所以积压上限 = label 数（当前 2），
+ * 不会退化成「攒一串十万 token 请求一次性烧掉」—— 那才是丢弃语义当初要防的东西。
  *
  * ## 刻意不做的事
  *
@@ -38,6 +46,12 @@
  */
 
 import { getLogger } from "../debug/logger.ts";
+import { registerShutdownHook } from "@sid-code/shared/utils/graceful-shutdown.ts";
+
+/**
+ * 退出收尾等待上限。gracefulShutdown 的 failsafe 是 5s，留出余量给后面的 flush 钩子。
+ */
+const SHUTDOWN_DRAIN_TIMEOUT_MS = 4_000;
 
 /** 当前在跑的后台任务（null = 空闲）。模块级单例：闸门必须跨任务共享才有意义。 */
 let inFlight: Promise<void> | null = null;
@@ -45,13 +59,24 @@ let inFlight: Promise<void> | null = null;
 let inFlightLabel: string | null = null;
 /** 被闸门拒掉的次数（度量用：闸门到底有没有在起作用） */
 let rejectedCount = 0;
-/** 真正放行的次数 */
+/** 真正放行的次数（含待补转放行） */
 let admittedCount = 0;
+/** 被记为待补的次数 */
+let deferredCount = 0;
+/**
+ * 待补任务：label → task。Map 保持插入顺序，放行时先进先出。
+ * 每个 label 至多一笔（覆盖写），所以积压上限 = label 数。
+ */
+const pending = new Map<string, () => Promise<void>>();
 
 /** 闸门统计快照（供测试与诊断读取） */
 export interface BackgroundGateStats {
   admitted: number;
   rejected: number;
+  /** 被记为待补的次数（之后可能放行，也可能在退出时被 drain 丢弃） */
+  deferred: number;
+  /** 当前挂着的待补 label */
+  pendingLabels: string[];
   busy: boolean;
   busyLabel: string | null;
 }
@@ -67,13 +92,31 @@ export interface BackgroundGateStats {
  */
 export function runBackgroundTask(label: string, task: () => Promise<void>): boolean {
   if (inFlight) {
-    rejectedCount++;
+    if (label === inFlightLabel) {
+      rejectedCount++;
+      getLogger().debug("BG_GATE", `后台任务 ${label} 已在跑，本次丢弃`);
+      return false;
+    }
+    deferredCount++;
+    // 覆盖写而非追加：同 label 只留最新一笔，积压封顶。
+    pending.delete(label);
+    pending.set(label, task);
     getLogger().debug(
       "BG_GATE",
-      `后台任务 ${label} 被单飞闸门拒绝（${inFlightLabel} 仍在跑），本次丢弃`,
+      `后台任务 ${label} 记为待补（${inFlightLabel} 仍在跑），前一个结束后串行放行`,
     );
     return false;
   }
+  start(label, task);
+  return true;
+}
+
+function start(label: string, task: () => Promise<void>): void {
+  // F3：退出路径此前没有任何人 await 在跑的后台 fork（drainBackgroundTasks 生产零调用）。
+  // 在首次放行时注册；按 name 去重，反复调用不堆积。
+  registerShutdownHook("background-task-gate", "pre-flush", () =>
+    drainBackgroundTasks(SHUTDOWN_DRAIN_TIMEOUT_MS),
+  );
   admittedCount++;
   inFlightLabel = label;
   // 用一个已 settle 的 Promise 起链，保证 task() 的同步抛出也被收敛进链里
@@ -89,15 +132,24 @@ export function runBackgroundTask(label: string, task: () => Promise<void>): boo
     .finally(() => {
       inFlight = null;
       inFlightLabel = null;
+      const next = pending.entries().next();
+      if (!next.done) {
+        const [nextLabel, nextTask] = next.value;
+        pending.delete(nextLabel);
+        start(nextLabel, nextTask);
+      }
     });
-  return true;
 }
 
 /**
- * 等待当前在跑的后台任务结束（会话收尾时用，避免进程退出时截断写盘）。
+ * 会话收尾：丢弃全部待补任务，等待当前在跑的那一个结束（避免进程退出时截断写盘）。
  * 超时后直接返回（不抛）—— 后台任务不值得阻塞退出。
+ *
+ * 待补任务**不在退出时启动**：一个刚发出的十万 token 级 fork 在几秒内就会被进程退出
+ * 掐断，只白烧钱、什么也写不进去。
  */
 export async function drainBackgroundTasks(timeoutMs = 15_000): Promise<void> {
+  pending.clear();
   const current = inFlight;
   if (!current) return;
   let timer: ReturnType<typeof setTimeout> | undefined;
@@ -116,6 +168,8 @@ export function getBackgroundGateStats(): BackgroundGateStats {
   return {
     admitted: admittedCount,
     rejected: rejectedCount,
+    deferred: deferredCount,
+    pendingLabels: [...pending.keys()],
     busy: inFlight !== null,
     busyLabel: inFlightLabel,
   };
@@ -132,4 +186,6 @@ export function resetBackgroundTaskGate(): void {
   inFlightLabel = null;
   rejectedCount = 0;
   admittedCount = 0;
+  deferredCount = 0;
+  pending.clear();
 }

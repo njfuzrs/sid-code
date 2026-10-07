@@ -133,6 +133,9 @@ function startSession(): Session {
         ...process.env,
         SID_CODE_DISABLE_PROJECT_RULES: "1",
         SID_CONFIG_DIR: configDir,
+        // 假服务按到达顺序 shift 脚本回复，只能服务主循环。end_turn 后的记忆提取 fork
+        // 也打同一个端点，会抢走下一轮的脚本回复（F3 之前它被单飞闸门恒丢，从没发过请求）。
+        SID_CODE_AUTO_MEMORY: "0",
         // 本机系统代理会拦 loopback，假服务必须直连
         NO_PROXY: "127.0.0.1,localhost",
         no_proxy: "127.0.0.1,localhost",

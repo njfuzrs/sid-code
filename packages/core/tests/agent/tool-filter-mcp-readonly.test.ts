@@ -134,6 +134,39 @@ describe("tool-filter MCP 只读子代理放行收紧", () => {
     expect(mcpTools.length).toBeGreaterThan(0);
   });
 
+  test("F7：自定义 agent 声明 tools 白名单时，未写名的 MCP 工具被裁掉", () => {
+    const result = filterToolsForAgent(pool, {
+      isBuiltIn: false,
+      tools: ["read", "grep"],
+    });
+    expect(names(result).filter((n) => n.startsWith("mcp__"))).toEqual([]);
+  });
+
+  test("F7：后台自定义 agent 同样收不进未声明的 MCP", () => {
+    const result = filterToolsForAgent(pool, {
+      isBuiltIn: false,
+      tools: ["read", "grep"],
+      isAsync: true,
+    });
+    expect(names(result).filter((n) => n.startsWith("mcp__"))).toEqual([]);
+  });
+
+  test("F7：自定义 agent 在 tools 里写了 MCP 全名则放行（唯一放行口）", () => {
+    const result = filterToolsForAgent(pool, {
+      isBuiltIn: false,
+      tools: ["read", "mcp__tavily__tavily_search"],
+      isAsync: true,
+    });
+    expect(names(result).filter((n) => n.startsWith("mcp__"))).toEqual([
+      "mcp__tavily__tavily_search",
+    ]);
+  });
+
+  test('F7：自定义 agent tools=["*"] 仍放行全部 MCP（用户显式授权全部）', () => {
+    const result = filterToolsForAgent(pool, { isBuiltIn: false, tools: ["*"] });
+    expect(names(result)).toContain("mcp__playwright__browser_navigate");
+  });
+
   test("D8：explore / task / general-purpose 都放行 tool_search（延迟加载调度器）", () => {
     for (const builtInType of ["explore", "task", "general-purpose"] as const) {
       const result = filterToolsForAgent(pool, {

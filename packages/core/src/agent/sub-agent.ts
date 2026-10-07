@@ -208,8 +208,10 @@ export interface SubAgentTask {
    *  GPT-5.6 族 xhigh 原样透传，DeepSeek/GLM/o-series/Grok 由各族 applier 钳制。 */
   effort?: "low" | "medium" | "high" | "xhigh" | "max";
   /** Fork 模式：从主对话继承的初始消息序列（由 buildForkMessages 构建）。
-   *  存在时子代理不从空上下文起步，而是接续这段父对话历史（prompt cache 友好），
-   *  适合"接着主对话往下深钻某个分支"的子任务。对标 cc forkSubagent。 */
+   *  存在时子代理不从空上下文起步，而是接续父对话的**尾部若干条**（含已配对的工具往返），
+   *  适合"接着主对话往下深钻某个分支"的子任务。
+   *  ⚠️ 不是 cc forkSubagent 的字节级继承：system prompt / 工具池按子代理类型重建，
+   *  不承诺命中父级 prompt cache（见 fork.ts 文件头）。 */
   forkMessages?: { role: string; content: ContentBlock[] }[];
   /** P1-3：额外消息拉取回调（swarm 团队成员用）。每轮开始时调用，返回的字符串作为
    *  user 消息注入子代理上下文——team.ts 用它把成员 mailbox 里的未读消息（来自 leader/peer）
@@ -230,7 +232,8 @@ export interface SubAgentTask {
 /** P2-2：计算子代理默认 maxTurns（未显式指定 task.maxTurns 时）。
  *
  *  - fork 任务（task.forkMessages 非空，继承主对话上下文）：200，对齐 CC fork 子代理——
- *    继承完整父对话意味着任务复杂度约等于继续该对话，200 是"几乎不会触发，只防真正
+ *    fork 任务是「接着主对话往下钻」，复杂度按续写对话估而非按窄范围子任务估
+ *    （注意继承的只是尾部若干条，不是完整父对话），200 是"几乎不会触发，只防真正
  *    无限循环"的安全阀。
  *  - 常规任务（explore/task/verify 等独立窄范围任务）：30——比旧值 10 宽松，覆盖真实
  *    存在的"复杂子任务被过早截断"场景，但不直接照搬 200：这类任务上下文独立、范围
@@ -1883,7 +1886,7 @@ export class SubAgent {
       ctxMgr.setSystemPrompt(systemPrompt);
 
       // 添加任务提示。Fork 模式：先把继承自主对话的消息序列灌入上下文
-      // （buildForkMessages 已保证以 user 开头、无悬空 tool 块），让子代理接续父对话；
+      // （buildForkMessages 已保证以 user 开头、只保留已配对的 tool 块），让子代理接续父对话；
       // 末条已是 fork 子任务提示，故不再额外追加 task.prompt。
       if (task.forkMessages && task.forkMessages.length > 0) {
         for (const msg of task.forkMessages) {
