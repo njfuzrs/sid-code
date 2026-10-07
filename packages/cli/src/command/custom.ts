@@ -35,6 +35,7 @@ function extractDescription(body: string): string {
 /**
  * P2-2：自定义命令 frontmatter 高级字段（对齐 claude-code）。
  * - argumentHint：补全时显示的参数提示（frontmatter key: argument-hint）。
+ *   adapter 取 argumentHint() 进 UnifiedCommand，再经 app.ts loadCommandList 透传到行内补全（D10）。
  * - allowedTools：限定 prompt 执行时可用工具集，非空则走 fork 子代理隔离执行。
  * - model：指定该命令用哪个模型执行（仅 fork 路径生效）。
  */
@@ -358,7 +359,7 @@ export class CustomCommand implements Command {
   description(): string {
     return this._description || `自定义命令: ${this._name}`;
   }
-  // P2-2：frontmatter argument-hint 透出到补全（adapter 会取 argumentHint()）。
+  // P2-2：frontmatter argument-hint 透出到补全（adapter 取 argumentHint()；空串在 loadCommandList 归一为 undefined）。
   argumentHint(): string {
     return this._options.argumentHint ?? "";
   }

@@ -2514,14 +2514,7 @@ export class App {
    * 无新注册表时回退旧 Registry.all()。
    */
   private async loadCommandList(): Promise<
-    Array<{
-      name: string;
-      aliases: string[];
-      description: string;
-      requiresArgs?: boolean;
-      immediate?: boolean;
-      type?: string;
-    }>
+    import("./command/completion-list.ts").CompletionCommandEntry[]
   > {
     // P1-8 --disable-slash-commands：禁用时补全列表为空（配合 onSlashCommand 门控，彻底关闭斜杠命令）。
     if (this.config.disableSlashCommands) return [];
@@ -2533,26 +2526,8 @@ export class App {
           process.cwd(),
           buildMcpPromptCommands(this.mcpManager),
         );
-        return (
-          cmds
-            // 隐藏命令不进补全列表
-            .filter((c) => !c.isHidden)
-            // 仅用户可调用的进补全（userInvocable 默认 true）
-            .filter((c) => c.userInvocable !== false)
-            .map((c) => ({
-              name: c.name,
-              aliases: c.aliases ?? [],
-              description: c.description,
-              requiresArgs: c.requiresArgs,
-              // P0-1/P0-2：immediate 与 type 透传给 UI，让「流式中是否允许插队」这个
-              // 判断能在提交那一刻做出来。此前 27 条命令声明 immediate、0 处读取，
-              // 于是 /compact 等会改写消息历史的命令也一律直送，与流式写入构成
-              // 读-改-写竞争。判据必须落在 UI 提交路径上（App.tsx handleSubmit），
-              // 那里是唯一能决定「直送还是入队」的地方。
-              immediate: c.immediate,
-              type: c.type,
-            }))
-        );
+        const { toCompletionEntries } = await import("./command/completion-list.ts");
+        return toCompletionEntries(cmds);
       } catch (err: any) {
         getLogger().warn("APP", `统一注册表加载命令列表失败，回退旧 Registry: ${err?.message}`);
       }
@@ -2561,6 +2536,7 @@ export class App {
       name: cmd.name(),
       aliases: cmd.aliases(),
       description: cmd.description(),
+      argumentHint: cmd.argumentHint?.() || undefined,
     }));
   }
 
