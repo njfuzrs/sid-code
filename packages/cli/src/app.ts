@@ -131,6 +131,7 @@ import {
   getPeakRatio,
   type BilledRequest,
 } from "@sid-code/core/llm/billing-sink.ts";
+import { sendNonStreamingSideCall } from "@sid-code/core/llm/side-call-nonstreaming.ts";
 import {
   buildJitEventData,
   emitJitEvent,
@@ -7549,7 +7550,9 @@ export class App {
             "title-generation",
             TITLE_TIMEOUT_MS,
             (signal) =>
-              this.provider.sendMessageNonStreaming!(
+              // 缺陷 15–16：入账收口在 sendNonStreamingSideCall（无 usage 也记一次调用）
+              sendNonStreamingSideCall(
+                this.provider,
                 {
                   model: this.config.model,
                   system: SESSION_TITLE_PROMPT,
@@ -7564,21 +7567,10 @@ export class App {
                   thinking: { enabled: false, budgetTokens: 0 },
                 },
                 signal,
+                { querySource: "title_generation", label: "title-generation" },
               ),
             // 不与主对话的 abortController 关联——后台任务独立。
           );
-          // 记录辅助调用用量
-          if (resp.usage) {
-            recordSideCall({
-              label: "title-generation",
-              model: this.config.model,
-              inputTokens: resp.usage.inputTokens ?? 0,
-              outputTokens: resp.usage.outputTokens ?? 0,
-              cacheReadTokens: (resp.usage as any).cacheReadInputTokens ?? 0,
-              cacheCreationTokens: (resp.usage as any).cacheCreationInputTokens ?? 0,
-              durationMs: 0,
-            });
-          }
           const raw = resp.content
             .filter((b): b is import("@sid-code/core/llm/types.ts").TextBlock => b.type === "text")
             .map((b) => b.text)

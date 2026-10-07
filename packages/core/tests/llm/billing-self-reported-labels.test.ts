@@ -129,3 +129,47 @@ describe("双记防线：自报成本且走漏斗的链必须在白名单里", (
     expect(shouldChargeBilledRequest({ ...base, accounted: false })).toBe(true);
   });
 });
+
+/**
+ * 缺陷 16 防复发：llm/ 之外直调 `sendMessageNonStreaming` 的调用点必须走
+ * `sendNonStreamingSideCall`（它无条件 recordSideCall + 挂 caller 身份）。
+ * 五份手写 `if (resp.usage) recordSideCall` 就是这个门禁要拦的形态。
+ */
+describe("非流式影子调用必须走 sendNonStreamingSideCall", () => {
+  /** 主循环路径：钱经 AfterModelRaw 入账，不是影子调用 */
+  const ALLOW = new Set(["packages/core/src/api/stream-handler.ts"]);
+
+  test("llm/ 之外无直调（白名单除外）", () => {
+    const files = SRC_ROOTS.flatMap((r) => walk(r));
+    const offenders: string[] = [];
+    let scanned = 0;
+    for (const f of files) {
+      const rel = f.replace(/.*\/packages\//, "packages/");
+      if (rel.includes("/src/llm/")) continue;
+      const src = readFileSync(f, "utf-8");
+      // 有 `.sendMessageNonStreaming(` 或 `!(` 的调用，排除 typeof 探测
+      const calls = src.match(/\.sendMessageNonStreaming!?\(/g) ?? [];
+      if (calls.length === 0) continue;
+      scanned++;
+      if (!ALLOW.has(rel)) offenders.push(rel);
+    }
+    // 扫描器自证：白名单那一处必须被扫到，否则正则失效后恒绿
+    expect(scanned).toBeGreaterThanOrEqual(1);
+    expect(offenders).toEqual([]);
+  });
+
+  test("非流式影子调用点的 querySource 都在白名单（消费侧不二次加钱）", () => {
+    const files = SRC_ROOTS.flatMap((r) => walk(r));
+    let n = 0;
+    for (const f of files) {
+      const src = readFileSync(f, "utf-8");
+      if (!src.includes("sendNonStreamingSideCall(")) continue;
+      if (f.endsWith("side-call-nonstreaming.ts")) continue;
+      for (const label of querySources(src)) {
+        n++;
+        expect(BILLING_SELF_REPORTED_LABELS.has(label)).toBe(true);
+      }
+    }
+    expect(n).toBeGreaterThanOrEqual(5);
+  });
+});
