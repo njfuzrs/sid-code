@@ -99,6 +99,8 @@
     "packages/tui/tests/fixtures/text-vectors.json",
     //   screen-vectors.json  ← scripts/tui-screen-vectors.ts（B9 / T3.1，从旧底座首帧生成，带 --check）
     "packages/tui/tests/fixtures/screen-vectors.json",
+    //   input-vectors.json  ← scripts/tui-input-vectors.ts（B9 / T5.1，从旧底座键位回调生成，带 --check）
+    "packages/tui/tests/fixtures/input-vectors.json",
 
     // 快照由测试生成（当前为 0 个，先立规则免得将来有人踩）。
     "**/*.snap",

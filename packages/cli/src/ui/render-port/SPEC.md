@@ -71,6 +71,7 @@
 | I4 | 终端模式的开关归属见下方「I4 模式归属表」：每个模式谁开、谁关、关的时机 | 见表 | `packages/cli/tests/render-port/term-bench/scenarios.tsx` S8: { |
 | I5 | `drainStdin`：fd 保持 blocking，循环 `read()` 直到返回 null，丢弃读到的字节 | `ink.tsx:1947` | `packages/cli/tests/render-port/contracts-runtime.test.tsx` I5: |
 | I6 | `exitOnCtrlC: false` 时底座不处理 Ctrl+C，交给 `useInput` 回调 | `root.ts:31`、`hooks/use-input.ts` | `packages/cli/tests/render-port/contracts-runtime.test.tsx` I6: |
+| I8 | 键位解析：同一串 stdin 字节（C0 / meta / CSI 修饰位 / `~` 键 / SS3 / rxvt / kitty CSI u / modifyOtherKeys / SGR 与 X10 鼠标 / focus / bracketed paste / 多事件同块 / 跨块与 ESC 冲刷），`useInput` 收到的 `(input, key)` 序列与旧底座逐条一致，key 的字段集合也算在内。语料 `packages/tui/tests/fixtures/input-corpus.ts`，向量 `input-vectors.json` 由 `bun run tui:input-vectors` 从旧底座生成。⚠️ T5.1b 完成前测试是按前缀的棘轮（不一致数只降不升），不是严格相等 | `parse-keypress.ts`、`hooks/use-input.ts` | `packages/tui/tests/input.test.ts` I8: |
 
 ### I4 模式归属表
 
