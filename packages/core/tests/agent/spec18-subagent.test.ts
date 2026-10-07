@@ -86,4 +86,59 @@ describe("Fork 消息构建", () => {
       }
     }
   });
+
+  it("F1：已配对的 tool_use / tool_result 原样保留（文件正文不丢）", () => {
+    const parent = [
+      { role: "user", content: [{ type: "text", text: "修登录" } as any] },
+      {
+        role: "assistant",
+        content: [
+          { type: "text", text: "我先看 validate" } as any,
+          { type: "tool_use", id: "r1", name: "read", input: { file_path: "a.ts" } } as any,
+        ],
+      },
+      {
+        role: "user",
+        content: [{ type: "tool_result", tool_use_id: "r1", content: "第42行空指针" } as any],
+      },
+      { role: "assistant", content: [{ type: "text", text: "问题在 42 行" } as any] },
+    ];
+    const forked = buildForkMessages(parent, "修掉空指针", 6);
+    const blocks = forked.flatMap((m) => m.content as any[]);
+    expect(blocks.some((b) => b.type === "tool_use" && b.id === "r1")).toBe(true);
+    expect(blocks.some((b) => b.type === "tool_result" && b.content === "第42行空指针")).toBe(true);
+  });
+
+  it("F1：截尾留下的悬空块被删，配对关系在结果里依然成立", () => {
+    const parent = [
+      // 首条 user 里的 tool_result 对应的 tool_use 已被截掉 → 悬空
+      {
+        role: "user",
+        content: [
+          { type: "tool_result", tool_use_id: "gone", content: "x" } as any,
+          { type: "text", text: "继续" } as any,
+        ],
+      },
+      {
+        role: "assistant",
+        content: [
+          { type: "thinking", thinking: "t", signature: "s" } as any,
+          { type: "tool_use", id: "last", name: "grep", input: {} } as any, // 末条无结果 → 悬空
+        ],
+      },
+    ];
+    const forked = buildForkMessages(parent, "任务", 6);
+    const blocks = forked.flatMap((m) => m.content as any[]);
+    expect(blocks.some((b) => b.type === "tool_result")).toBe(false);
+    expect(blocks.some((b) => b.type === "tool_use")).toBe(false);
+    expect(blocks.some((b) => b.type === "thinking")).toBe(false);
+    // 每个保留的 tool_use 都必须在紧随的 user 消息里有结果（协议不变量）
+    for (let i = 0; i < forked.length; i++) {
+      for (const b of forked[i]!.content as any[]) {
+        if (b.type !== "tool_use") continue;
+        const next = (forked[i + 1]?.content ?? []) as any[];
+        expect(next.some((r) => r.type === "tool_result" && r.tool_use_id === b.id)).toBe(true);
+      }
+    }
+  });
 });

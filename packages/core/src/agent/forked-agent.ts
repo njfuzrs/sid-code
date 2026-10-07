@@ -25,6 +25,8 @@ import { streamWithResilience } from "../llm/resilient-stream.ts";
 import type { ModelAvailabilityService } from "../llm/availability.ts";
 // 漏斗 2 · 权限：走门面而非直调 logEvent（门面强制脱敏工具名）。
 import { logPermissionDeny } from "../analytics/events.ts";
+import { FileReadTracker } from "../tool/file-read-tracker.ts";
+import { createStatefulTools } from "../tool/stateful-tools.ts";
 
 /** 工具权限控制函数 */
 export type CanUseToolFn = (
@@ -55,7 +57,8 @@ export interface ForkedAgentContext {
    * 调用方应传入 `createStatefulTools(new FileReadTracker())` 构造的独立工具实例，
    * 让 forked agent 用自己的 tracker，不污染主代理缓存。对标 cc `cloneFileStateCache`。
    * 工具执行时优先查这里，找不到再 fallback 到 toolRegistry（无 tracker 状态的工具）。
-   * 未提供时退回旧行为（共享主注册表实例），保持向后兼容。
+   * 未提供时 `runForkedAgent` 自建一份独立 tracker 的有状态工具（F5，2026-10-07）——
+   * 缺省值曾是「共享主注册表实例」，即缺省就踩上面那条护栏绕过。
    */
   statefulTools?: LegacyTool[];
 }
@@ -241,9 +244,15 @@ export async function runForkedAgent(
 
   // FileReadTracker 隔离：注入的有状态工具按名建索引，工具执行时优先查这里，
   // 找不到再 fallback 到主注册表（grep/glob/ls/bash 等无 tracker 状态，复用无害）。
-  // 未注入时此 Map 为空，所有工具都走 fallback——退回共享主注册表的旧行为。
+  // 未注入时自建独立 tracker（F5）：缺省不得共享主代理 tracker。只替换主注册表里
+  // 确实有的那几个名字 —— 工具定义取自主注册表，不能让 fork 调到一个没声明给模型的工具。
   const statefulMap = new Map<string, LegacyTool>();
-  for (const t of mainContext.statefulTools ?? []) {
+  const stateful =
+    mainContext.statefulTools ??
+    createStatefulTools(new FileReadTracker()).filter((t) =>
+      mainContext.toolRegistry.get(t.name()),
+    );
+  for (const t of stateful) {
     statefulMap.set(t.name(), t);
   }
 

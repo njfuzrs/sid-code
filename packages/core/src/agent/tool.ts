@@ -287,7 +287,7 @@ export class SubAgentTool implements Tool {
 
   /**
    * 注入主对话上下文提供者（fork 模式用）。主会话构造后调用，
-   * 让 fork 子代理能继承主对话最近的消息历史（prompt cache 友好）。
+   * 让 fork 子代理能继承主对话尾部的消息历史（含已配对的工具往返）。
    */
   setMainContextProvider(
     provider: () => { role: string; content: import("../llm/types.ts").ContentBlock[] }[],
@@ -663,7 +663,7 @@ ${typeLines}
         subAgent.setParentSessionId(this.parentSessionId);
       }
 
-      // Fork 模式：继承主对话上下文（prompt cache 友好）
+      // Fork 模式：继承主对话尾部上下文（含已配对的工具往返，不承诺缓存对齐）
       let forkMessages:
         | { role: string; content: import("../llm/types.ts").ContentBlock[] }[]
         | undefined;

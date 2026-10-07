@@ -4419,8 +4419,9 @@ export async function* queryLoop(loopConfig: QueryLoopConfig): AsyncGenerator<Qu
         // 不能各自裸 fire-and-forget。它们各自内部的 `pending` 互斥只防"同一个任务重入"，
         // 完全不防"两个不同任务并发" —— 实测 `TurnComplete(end_turn)` 之后两个 fork
         // 交替发了 7 次十万 token 级请求、跑了 44 秒，用户为一个已答完的任务多付约 ¥2.3。
-        // 闸门语义是**串行 + 丢弃**（不排队）：被拒的提取下一个 end_turn 还会再来，
-        // 排队只会把并发换成"攒一串请求一次性烧掉"。详见 background-task-gate.ts 文件头。
+        // 闸门语义是**串行 + 按 label 待补一笔**：两条紧挨着提交，第二条记为待补、
+        // 等第一条跑完再放行（F3：旧的「丢弃」语义让第二条恒被拒）。待补每个 label
+        // 至多一笔，不会攒成一串请求。详见 background-task-gate.ts 文件头。
         //
         // 仍不 await：await 会把用户可感知的收尾延迟拉长到实测 44s（方案 §5.1 B3 已否决）。
         if (deps.updateSessionMemory) {

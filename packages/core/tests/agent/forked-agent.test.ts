@@ -242,7 +242,7 @@ describe("runForkedAgent", () => {
     expect(mainCalled).toBe(false); // 主注册表实例未被污染调用
   });
 
-  test("缺口 A：未注入 statefulTools 时回退主注册表（向后兼容）", async () => {
+  test("F5：未注入 statefulTools 时自建独立 tracker，不回退主注册表的 read 实例", async () => {
     const provider = mockProvider([
       [
         {
@@ -303,7 +303,8 @@ describe("runForkedAgent", () => {
       querySource: "test",
     });
 
-    expect(mainCalled).toBe(true); // 回退到主注册表
+    // 缺省曾是「共享主注册表实例」——fork 的读取会写进主代理 tracker、绕过先读后写。
+    expect(mainCalled).toBe(false);
   });
 });
 

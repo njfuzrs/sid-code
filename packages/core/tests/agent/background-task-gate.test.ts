@@ -38,18 +38,63 @@ describe("background-task-gate", () => {
     });
 
     expect(admittedA).toBe(true);
-    expect(admittedB).toBe(false); // 被闸门拒了
+    expect(admittedB).toBe(false); // 没有当场启动（记为待补）
+    expect(getBackgroundGateStats().pendingLabels).toEqual(["memory-extract"]);
     expect(sawConcurrent).toBe(false);
 
     release();
+    await new Promise((r) => setTimeout(r, 5));
     await drainBackgroundTasks();
-    expect(getBackgroundGateStats().rejected).toBe(1);
-    expect(getBackgroundGateStats().admitted).toBe(1);
+    expect(sawConcurrent).toBe(false); // B 在 A 结束之后才跑
+    expect(getBackgroundGateStats().deferred).toBe(1);
+    expect(getBackgroundGateStats().admitted).toBe(2);
   });
 
-  test("语义是丢弃而非排队：被拒的任务不会在前一个跑完后自动补跑", async () => {
-    // 排队会把并发问题换成"攒一串十万 token 请求一次性烧掉"，
-    // 所以刻意选丢弃。这条测试把这个决策钉住，防止有人"顺手改成队列"。
+  test("F3：同一次 end_turn 紧挨着提交的两个不同任务，两个都会跑（串行）", async () => {
+    // 复现 query/loop.ts 唯一调用点的真实形态：两条同步语句紧挨着提交。
+    // 旧语义下第二条恒被丢弃，记忆提取触发率恒为 0。
+    const order: string[] = [];
+    runBackgroundTask("session-memory-update", async () => {
+      order.push("sm:start");
+      await new Promise((r) => setTimeout(r, 10));
+      order.push("sm:end");
+    });
+    runBackgroundTask("memory-extract", async () => {
+      order.push("extract");
+    });
+    await new Promise((r) => setTimeout(r, 40));
+    expect(order).toEqual(["sm:start", "sm:end", "extract"]);
+  });
+
+  test("F3：待补按 label 封顶为 1，不堆积", async () => {
+    let release!: () => void;
+    const blocker = new Promise<void>((r) => (release = r));
+    let bRan = 0;
+    runBackgroundTask("a", () => blocker);
+    for (let i = 0; i < 5; i++) {
+      runBackgroundTask("b", async () => {
+        bRan++;
+      });
+    }
+    expect(getBackgroundGateStats().pendingLabels).toEqual(["b"]);
+    release();
+    await new Promise((r) => setTimeout(r, 5));
+    expect(bRan).toBe(1);
+  });
+
+  test("与在跑任务同 label 的直接丢弃（它自己已经在跑）", async () => {
+    let release!: () => void;
+    const blocker = new Promise<void>((r) => (release = r));
+    runBackgroundTask("a", () => blocker);
+    expect(runBackgroundTask("a", async () => {})).toBe(false);
+    expect(getBackgroundGateStats().rejected).toBe(1);
+    expect(getBackgroundGateStats().pendingLabels).toEqual([]);
+    release();
+    await drainBackgroundTasks();
+  });
+
+  test("退出时 drain 丢弃待补任务，不在退出时新起一个 fork", async () => {
+    // 刚发出的十万 token 级 fork 会被进程退出掐断，只白烧钱。
     let bRan = 0;
     let release!: () => void;
     const blocker = new Promise<void>((r) => (release = r));
@@ -108,5 +153,22 @@ describe("background-task-gate", () => {
     const t0 = Date.now();
     await drainBackgroundTasks(30);
     expect(Date.now() - t0).toBeLessThan(500);
+  });
+});
+
+describe("background-task-gate 退出收尾（F3）", () => {
+  test("首次放行即注册 pre-flush 关闭钩子，runShutdownSequence 会等在跑的任务", async () => {
+    const gs = await import("@sid-code/shared/utils/graceful-shutdown.ts");
+    gs.__resetCleanupForTest();
+    resetBackgroundTaskGate();
+    let done = false;
+    runBackgroundTask("session-memory-update", async () => {
+      await new Promise((r) => setTimeout(r, 30));
+      done = true;
+    });
+    expect(gs.getShutdownHookNames()).toContain("background-task-gate");
+    await gs.runShutdownSequence();
+    expect(done).toBe(true);
+    gs.__resetCleanupForTest();
   });
 });
