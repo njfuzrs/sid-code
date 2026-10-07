@@ -66,3 +66,39 @@ describe("/telemetry 总览", () => {
     expect(await run()).toContain("首内容延迟 (TTFT): 无样本");
   });
 });
+
+describe("/telemetry 调用时间线（缺陷 17 / 18 / 19）", () => {
+  test("缺陷 17：会话进行中根 span 未 end，也能画成树而非平铺孤立根", async () => {
+    bus = initTelemetry({ enabled: true, exporters: [] });
+    const root = bus.startSpan("invoke_agent", "invoke_agent sid-code");
+    chat(bus, "m", 1, 1);
+    chat(bus, "m", 2, 2);
+    const out = await run();
+    expect(out).toContain("#1 Agent");
+    expect(out).toContain("⋯进行中");
+    // 两个 chat 挂在根下，不是 #2 / #3 根
+    expect(out).not.toContain("#2 ");
+    expect(out).not.toContain("孤儿");
+    root.end();
+  });
+
+  test("缺陷 18：父不在本批的孤儿与真根区分，并汇总计数", async () => {
+    bus = initTelemetry({ enabled: true, exporters: [] });
+    const root = bus.startSpan("invoke_agent", "agent");
+    chat(bus, "m", 1, 1);
+    root.end();
+    // 父 span 不在本批（模拟被截断 / 跨进程）
+    bus.startSpan("chat", "chat lost", {}, { parentSpanId: "gone", detached: true }).end();
+    const out = await run();
+    expect(out).toContain("#1 Agent");
+    expect(out).toMatch(/#2 LLM 调用.*⊘孤儿/);
+    expect(out).toContain("1 个孤儿节点");
+  });
+
+  test("缺陷 19：history 截断后明说截断条数", async () => {
+    bus = initTelemetry({ enabled: true, exporters: [], maxQueueSize: 10_000 });
+    for (let i = 0; i < 505; i++) chat(bus, "m", 1, 1);
+    const out = await run();
+    expect(out).toContain("历史已截断 5 条");
+  });
+});

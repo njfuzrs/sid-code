@@ -1412,11 +1412,26 @@ export class TelemetryCommand implements Command {
     }
 
     // === 调用时间线 ===
-    if (spans.length > 0) {
+    // 缺陷 17：根 span 只在 SessionEnd 才 end，只读 history 时它必然缺席 ⇒ 补上进行中的快照
+    const active = bus.getActiveSpans();
+    if (spans.length > 0 || active.length > 0) {
       lines.push("", "调用时间线:");
-      const tree = buildSpanTree(spans);
-      for (let i = 0; i < tree.length; i++) {
-        renderSpanNode(tree[i], lines, "  ", ATTR, i + 1);
+      const { roots, orphanCount } = buildSpanTree(
+        [...spans, ...active],
+        new Set(active.map((x) => x.spanId)),
+      );
+      for (let i = 0; i < roots.length; i++) {
+        renderSpanNode(roots[i], lines, "  ", ATTR, i + 1);
+      }
+      // 缺陷 18 / 19：孤儿与截断必须明说，否则用户看到的是一份「看起来完整」的时间线
+      const evicted = bus.getEvictedSpanCount();
+      if (evicted > 0) {
+        lines.push(
+          `  ⚠ 历史已截断 ${fmtNum(evicted)} 条最旧 span（上限 500），其子节点可能显示为孤儿`,
+        );
+      }
+      if (orphanCount > 0) {
+        lines.push(`  ⚠ ${orphanCount} 个孤儿节点（父 span 不在本批数据中，标 ⊘）`);
       }
     }
 
@@ -1463,38 +1478,68 @@ const METRIC_LABELS: Record<string, string> = {
 interface SpanTreeNode {
   span: import("@sid-code/core/telemetry/types.ts").SpanData;
   children: SpanTreeNode[];
+  /** 缺陷 18：有 parentSpanId 但父不在本批 —— 与真根（parentSpanId 为空）区分 */
+  orphan: boolean;
+  /** 缺陷 17：尚未 end 的快照节点 */
+  inProgress: boolean;
 }
 
-/** 将扁平 span 列表构建为树 */
+/**
+ * 将扁平 span 列表构建为树。
+ *
+ * 「父不在本批」与「本就是根」曾合并进同一个 else 分支，渲染上不可区分（缺陷 18）。
+ * 现在两者都进 roots，但孤儿打 `orphan` 标记并单独计数。
+ */
 function buildSpanTree(
   spans: readonly import("@sid-code/core/telemetry/types.ts").SpanData[],
-): SpanTreeNode[] {
+  activeIds?: ReadonlySet<string>,
+): { roots: SpanTreeNode[]; orphanCount: number } {
   const nodeMap = new Map<string, SpanTreeNode>();
   const roots: SpanTreeNode[] = [];
+  let orphanCount = 0;
 
-  // 创建所有节点
+  // 创建所有节点（同 id 后者覆盖前者：活跃快照与已完成 span 不会同时存在，防御性去重）
   for (const span of spans) {
-    nodeMap.set(span.spanId, { span, children: [] });
+    nodeMap.set(span.spanId, {
+      span,
+      children: [],
+      orphan: false,
+      inProgress: activeIds?.has(span.spanId) ?? false,
+    });
   }
 
   // 建立父子关系
-  for (const span of spans) {
-    const node = nodeMap.get(span.spanId)!;
-    if (span.parentSpanId && nodeMap.has(span.parentSpanId)) {
-      nodeMap.get(span.parentSpanId)!.children.push(node);
+  for (const node of nodeMap.values()) {
+    const { parentSpanId } = node.span;
+    if (parentSpanId && nodeMap.has(parentSpanId)) {
+      nodeMap.get(parentSpanId)!.children.push(node);
     } else {
+      if (parentSpanId) {
+        node.orphan = true;
+        orphanCount++;
+      }
       roots.push(node);
     }
   }
 
-  return roots;
+  // 按起点排序（快照追加在末尾，不排序时根会被画到最后）
+  const byStart = (a: SpanTreeNode, b: SpanTreeNode) => a.span.startTime - b.span.startTime;
+  roots.sort(byStart);
+  for (const n of nodeMap.values()) n.children.sort(byStart);
+
+  return { roots, orphanCount };
 }
 
-/** Span kind → 中文标签 */
-const SPAN_KIND_LABELS: Record<string, string> = {
+/**
+ * Span kind → 中文标签。缺陷 18：曾只覆盖 3 类，另 2 类落 fallback 显示英文原名。
+ * 类型写成 `Record<SpanKind, string>`：SpanKind 新增成员而这里漏加，typecheck 直接红。
+ */
+const SPAN_KIND_LABELS: Record<import("@sid-code/core/telemetry/types.ts").SpanKind, string> = {
   invoke_agent: "Agent",
   chat: "LLM 调用",
   execute_tool: "工具",
+  blocked_on_user: "等待确认",
+  hook_execution: "Hook",
 };
 
 /** 递归渲染 span 树节点 */
@@ -1507,7 +1552,10 @@ function renderSpanNode(
 ): void {
   const s = node.span;
   const dur = fmtDuration(s.durationMs);
-  const statusMark = s.status === "error" ? " ✗" : "";
+  const statusMark =
+    (s.status === "error" ? " ✗" : "") +
+    (node.inProgress ? " ⋯进行中" : "") +
+    (node.orphan ? " ⊘孤儿" : "");
   const kindLabel = SPAN_KIND_LABELS[s.kind] || s.kind;
   const indexStr = index !== undefined ? `#${index} ` : "";
 

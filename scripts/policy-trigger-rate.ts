@@ -26,6 +26,7 @@
 import { existsSync, readFileSync, statSync } from "node:fs";
 import { join } from "node:path";
 import { sidPaths } from "@sid-code/core/config/paths.ts";
+import { listJsonlGenerations } from "@sid-code/core/telemetry/exporters/jsonl.ts";
 import { resolvePaths, listSessions, type SessionRef } from "@sid-code/core/trace/digest.ts";
 
 export const KNOWN_FLAGS = new Set(["--json", "--limit", "--all"]);
@@ -309,7 +310,13 @@ export function computePolicyTriggerRate(opts: {
     eventsMetric.sawAnyMetric = eventsMetric.sawAnyMetric || ev.sawAnyMetric;
     eventsMetric.blocked += ev.blocked;
   }
-  const tel = scanMetricsJsonl(join(sidPaths.telemetry(), "metrics.jsonl"));
+  // 缺陷 20：读全部轮转代，只读固定名会在轮转后静默少数据
+  const tel = { sawAnyMetric: false, blocked: 0 };
+  for (const f of listJsonlGenerations(sidPaths.telemetry(), "metrics")) {
+    const r = scanMetricsJsonl(f);
+    tel.sawAnyMetric = tel.sawAnyMetric || r.sawAnyMetric;
+    tel.blocked += r.blocked;
+  }
   const sawB = eventsMetric.sawAnyMetric || tel.sawAnyMetric;
   const blocked = eventsMetric.blocked + tel.blocked;
 

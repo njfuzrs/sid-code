@@ -41,7 +41,7 @@ export class SpanHandle {
     this._startTime = startTime ?? Date.now();
     if (initialAttributes) this._attributes = { ...initialAttributes };
     if (!detached) traceContext.pushSpan(spanId);
-    bus.markActive(spanId, this._startTime);
+    bus.markActive(spanId, this._startTime, this);
   }
 
   /** 已经过的毫秒数（用于计算 TTFT 等） */
@@ -76,6 +76,27 @@ export class SpanHandle {
       this._error = { type: "Error", message: String(err) };
     }
     return this;
+  }
+
+  /**
+   * 未结束 span 的只读快照（缺陷 17）：`endTime` 取 `now`，`status` 保持 `unset`。
+   * 只供 `/telemetry` 这类会话内读路径画「进行中」节点，**不进导出队列**。
+   */
+  snapshot(now = Date.now()): SpanData {
+    return {
+      traceId: this.traceContext.traceId,
+      spanId: this.spanId,
+      parentSpanId: this.parentSpanId,
+      name: this._name,
+      kind: this._kind,
+      status: this._status,
+      startTime: this._startTime,
+      endTime: now,
+      durationMs: now - this._startTime,
+      attributes: { ...this._attributes },
+      events: [...this._events],
+      error: this._error,
+    };
   }
 
   /** 结束 Span 并提交到总线 */
@@ -126,6 +147,8 @@ export class TelemetryBus {
   private spanQueue: SpanData[] = [];
   /** 活跃 span 的起点（spanId → Unix ms），供回填起点时钳到父 span 之内 */
   private activeStartTimes = new Map<string, number>();
+  /** 活跃 span 句柄（缺陷 17：/telemetry 要画出尚未 end 的根 span） */
+  private activeHandles = new Map<string, SpanHandle>();
   private metricQueue: MetricPoint[] = [];
   private exporters: TelemetryExporter[] = [];
   private flushTimer?: ReturnType<typeof setInterval>;
@@ -137,6 +160,12 @@ export class TelemetryBus {
   private spanHistory: SpanData[] = [];
   /** 会话内已记录的 metric 历史（供 /telemetry 命令查询） */
   private metricHistory: MetricPoint[] = [];
+  /**
+   * 因 MAX_HISTORY_SPANS 被挤出 history 的 span 累计数（缺陷 19）。
+   * 截断丢最旧的，而最旧的常是父节点 ⇒ 子 span 变孤儿；不对外表达就是一份
+   * 「看起来完整」的时间线。消费方据此明说「已截断 N 条」。
+   */
+  private evictedHistorySpans = 0;
 
   constructor(config?: Partial<TelemetryConfig>) {
     // ⚠️ 双保险：对象展开时**显式存在的 undefined 键**会覆盖掉 DEFAULT_CONFIG 的值，
@@ -269,13 +298,15 @@ export class TelemetryBus {
   }
 
   /** @internal 由 SpanHandle 构造时调用 */
-  markActive(spanId: string, startTime: number): void {
+  markActive(spanId: string, startTime: number, handle?: SpanHandle): void {
     this.activeStartTimes.set(spanId, startTime);
+    if (handle) this.activeHandles.set(spanId, handle);
   }
 
   /** @internal 由 SpanHandle.end() 调用 */
   markEnded(spanId: string): void {
     this.activeStartTimes.delete(spanId);
+    this.activeHandles.delete(spanId);
   }
 
   /** 将完成的 Span 加入队列（由 SpanHandle.end() 调用） */
@@ -285,7 +316,9 @@ export class TelemetryBus {
     // 保留到历史（供 /telemetry 命令查询）
     this.spanHistory.push(span);
     if (this.spanHistory.length > MAX_HISTORY_SPANS) {
-      this.spanHistory.splice(0, this.spanHistory.length - MAX_HISTORY_SPANS);
+      const over = this.spanHistory.length - MAX_HISTORY_SPANS;
+      this.spanHistory.splice(0, over);
+      this.evictedHistorySpans += over;
     }
 
     // 队列溢出：丢弃最旧的 10%
@@ -355,6 +388,23 @@ export class TelemetryBus {
   /** 获取会话内所有已完成的 span（供 /telemetry 命令使用） */
   getCompletedSpans(): readonly SpanData[] {
     return this.spanHistory;
+  }
+
+  /**
+   * 获取尚未 end 的 span 快照（缺陷 17）。
+   *
+   * 根 span（invoke_agent）只在 SessionEnd 才 end，而 `/telemetry` 只能在会话中执行 ——
+   * 只读 history 时根**必然**缺席，整棵树退化成平铺的孤立根。快照不进导出队列。
+   */
+  getActiveSpans(): SpanData[] {
+    if (!this.config.enabled) return [];
+    const now = Date.now();
+    return [...this.activeHandles.values()].map((h) => h.snapshot(now));
+  }
+
+  /** history 因上限被挤掉的 span 累计数（缺陷 19） */
+  getEvictedSpanCount(): number {
+    return this.evictedHistorySpans;
   }
 
   /** 获取会话内所有已记录的 metric（供 /telemetry 命令使用） */
