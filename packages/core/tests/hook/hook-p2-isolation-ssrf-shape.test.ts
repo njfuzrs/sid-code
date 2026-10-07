@@ -232,10 +232,15 @@ describe("H18 async hook 挂在可阻塞事件上要告警，后台退出码照�
     expect(b.msgs.filter((m) => m.includes("不能阻塞"))).toEqual([]);
   });
 
-  test("settings 路径（initializeFromLegacy）同样告警", async () => {
+  test("settings 路径（initializeFromSources）同样告警", async () => {
     const reg = new HookRegistry();
     const { msgs } = await warnings(() =>
-      reg.initializeFromLegacy({ PreToolUse: [{ command: "exit 2", async: true }] } as any),
+      reg.initializeFromSources([
+        {
+          hooks: { PreToolUse: [{ command: "exit 2", async: true }] } as any,
+          source: ConfigSource.User,
+        },
+      ]),
     );
     expect(msgs.some((m) => m.includes("不能阻塞"))).toBe(true);
   });
@@ -305,16 +310,21 @@ describe("H5 url hook 走 SSRF 防护（经用户配置的真实路径）", () =
 
     test("反面：loopback 放行；headers 只插值 allowedEnvVars 白名单（经 settings 转换器）", async () => {
       const reg = new HookRegistry();
-      reg.initializeFromLegacy({
-        PreToolUse: [
-          {
-            type: "url",
-            url: `http://127.0.0.1:${server.port}/hook`,
-            headers: { "X-A": "Bearer $H5_ALLOWED_TOKEN", "X-B": "v=$H5_OTHER_SECRET_ISH" },
-            allowedEnvVars: ["H5_ALLOWED_TOKEN"],
-          },
-        ],
-      } as any);
+      reg.initializeFromSources([
+        {
+          hooks: {
+            PreToolUse: [
+              {
+                type: "url",
+                url: `http://127.0.0.1:${server.port}/hook`,
+                headers: { "X-A": "Bearer $H5_ALLOWED_TOKEN", "X-B": "v=$H5_OTHER_SECRET_ISH" },
+                allowedEnvVars: ["H5_ALLOWED_TOKEN"],
+              },
+            ],
+          } as any,
+          source: ConfigSource.User,
+        },
+      ]);
       const h = new HookEventHandler(
         new HookPlanner(reg),
         new HookRunner(),

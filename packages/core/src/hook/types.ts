@@ -37,7 +37,7 @@ export enum HookEventName {
   BeforeModel = "BeforeModel",
   /** 每轮 LLM 响应收全后触发。可 block（丢弃响应并结束循环）。 */
   AfterModel = "AfterModel",
-  /** 会话启动或 resume 时触发。不可 block（block 降级为告警）。 */
+  /** 会话启动 / resume / `/clear` 之后 / 压缩之后触发（matcher：source = startup / resume / clear / compact）。stdout 进上下文，不可 block。 */
   SessionStart = "SessionStart",
   /** 会话退出前触发（exit / error / abort）。不可 block，超时即放弃。 */
   SessionEnd = "SessionEnd",
@@ -49,21 +49,21 @@ export enum HookEventName {
   SubagentStart = "SubagentStart",
   /** 子代理任务结束后触发（finally）。不可 block，fire-and-forget。 */
   SubagentStop = "SubagentStop",
-  /** TUI 发出通知时触发（matcher：permission_prompt / idle_prompt 等，对齐 CC）。仅通知。 */
+  /** TUI 等待权限确认时触发（matcher：permission_prompt；sid 没有空闲提醒，不发 idle_prompt）。仅通知。 */
   Notification = "Notification",
   /** 助手回答收尾、准备停止时触发。可 block（注入错误并重试修复）。 */
   Stop = "Stop",
   /** 轮次因 API 错误终止时触发（matcher：error_type）。仅通知。 */
   StopFailure = "StopFailure",
-  /** 预留：有 fire 方法但无调用点，配了不会被触发。 */
+  /** 刻意不做：sid 没有 `--init` / `--maintenance`，此事件恒不触发。 */
   Setup = "Setup",
   /** 权限需用户确认时触发，与分类器、用户弹窗并行竞争、先到先决。可 block（返回 deny 则拒绝该工具）。 */
   PermissionRequest = "PermissionRequest",
   /** 权限拒绝后触发（主循环弹窗被拒 / 超时 / 规则直拒，子代理规则直拒 / 自动拒），仅通知、不可改判。 */
   PermissionDenied = "PermissionDenied",
-  /** settings 文件被外部修改、缓存刷新后触发（matcher：来源 user / project / local …）。仅通知。 */
+  /** settings 文件被外部修改后触发（matcher：user_settings / project_settings / local_settings / policy_settings）。可 block（回退到变更前的设置，policy_settings 除外）。 */
   ConfigChange = "ConfigChange",
-  /** 预留：有 fire 方法但无调用点，配了不会被触发。 */
+  /** 刻意不做：sid 没有监视任意文件的机制，此事件恒不触发。 */
   FileChanged = "FileChanged",
   /** bash `cd` 改变工作目录后触发。仅通知。 */
   CwdChanged = "CwdChanged",
@@ -203,7 +203,7 @@ export interface CommandHookConfig {
   pathVars?: Record<string, string>;
   async?: boolean;
   asyncRewake?: boolean;
-  /** CC：hook 运行时显示的提示文案（sid 当前只透传、记日志） */
+  /** CC：hook 运行时显示的提示文案（TUI 经 HookSystem.onHookLifecycle 显示在状态行） */
   statusMessage?: string;
   source?: ConfigSource;
 }
@@ -355,8 +355,24 @@ export interface HookInput {
   team_id?: string;
 }
 
+/**
+ * CC 规定：工具事件在子代理里触发时带 agent_id / agent_type（主循环不带）。
+ * 不放进 HookInput 基础字段：基础字段由 createBaseInput 统一组装、与「在哪条执行链上」无关，
+ * 而这两个字段恰恰只由执行链决定，由各工具事件 fire 方法按调用方传入的 agent 条件展开。
+ */
+export interface HookAgentFields {
+  agent_id?: string;
+  agent_type?: string;
+}
+
+/** 子代理执行链身份（工具事件 fire 方法的可选入参，见 HookAgentFields） */
+export interface HookAgentRef {
+  agent_id: string;
+  agent_type: string;
+}
+
 /** PreToolUse 输入 */
-export interface PreToolUseInput extends HookInput {
+export interface PreToolUseInput extends HookInput, HookAgentFields {
   tool_name: string;
   tool_input: Record<string, unknown>;
   /** LLM 分配的工具调用 ID，用于关联 action↔observation */
@@ -367,7 +383,7 @@ export interface PreToolUseInput extends HookInput {
 export type ToolFailureKind = "tool_error" | "exception" | "validation" | "hook_blocked";
 
 /** PostToolUse 输入 */
-export interface PostToolUseInput extends HookInput {
+export interface PostToolUseInput extends HookInput, HookAgentFields {
   tool_name: string;
   tool_input: Record<string, unknown>;
   tool_response: Record<string, unknown>;
@@ -535,7 +551,12 @@ export interface AfterModelInput extends HookInput {
 
 /** SessionStart 输入 */
 export interface SessionStartInput extends HookInput {
-  source: "startup" | "resume" | "clear";
+  /**
+   * 对齐 CC：startup / resume / clear（/clear 之后）/ compact（压缩之后）。
+   * clear / compact 两次只发给用户 hook（userOnly），runtime 消费者（collector / hook-probe）
+   * 把 SessionStart 当「开新轨迹 / 新 invoke_agent span」，再收一次会把同一会话劈成两段。
+   */
+  source: "startup" | "resume" | "clear" | "compact";
   /** 当前使用的模型 */
   model?: string;
   /** system prompt 的 MD5 hash */
@@ -633,6 +654,10 @@ export interface SubagentStopInput extends HookInput {
   };
   /** 子代理执行耗时（毫秒） */
   duration_ms?: number;
+  /** 子代理最后一条 assistant 文本（CC 字段）。拿不到（如中途异常、spawn 无结果退出）时缺省 */
+  last_assistant_message?: string;
+  /** 子代理 sidechain 对话记录 jsonl 路径（CC 字段）。sidechain 未启用 / 未落盘时缺省 */
+  agent_transcript_path?: string;
   /** 兼容旧调用：允许携带任意附加字段（如 toolName） */
   [key: string]: unknown;
 }
@@ -710,7 +735,7 @@ export interface PermissionRequestInput extends HookInput {
 }
 
 /** PermissionDenied 输入 */
-export interface PermissionDeniedInput extends HookInput {
+export interface PermissionDeniedInput extends HookInput, HookAgentFields {
   /** Q7：供 runtime 消费者关闭对应的 execute_tool span */
   tool_use_id?: string;
   tool_name: string;
@@ -743,19 +768,19 @@ export interface FileChangedInput extends HookInput {
 }
 
 /** CwdChanged 输入 */
-export interface CwdChangedInput extends HookInput {
+export interface CwdChangedInput extends HookInput, HookAgentFields {
   old_cwd: string;
   new_cwd: string;
 }
 
 /** TaskCreated 输入 */
-export interface TaskCreatedInput extends HookInput {
+export interface TaskCreatedInput extends HookInput, HookAgentFields {
   task_id: string;
   task_description: string;
 }
 
 /** TaskCompleted 输入 */
-export interface TaskCompletedInput extends HookInput {
+export interface TaskCompletedInput extends HookInput, HookAgentFields {
   task_id: string;
   task_description: string;
   success: boolean;

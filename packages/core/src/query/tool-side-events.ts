@@ -10,6 +10,7 @@
  */
 
 import type { HookSystem } from "../hook/system.ts";
+import type { HookAgentRef } from "../hook/types.ts";
 import { getLogger } from "../debug/logger.ts";
 
 export function fireToolSideEvents(
@@ -19,15 +20,22 @@ export function fireToolSideEvents(
   result: { output?: string; isError?: boolean },
   cwdBefore: string,
   cwdAfter: string,
+  /**
+   * 子代理执行链身份。子代理两条执行路径也调本函数（原先只有主循环调，
+   * 子代理里 cd / task_create 不发事件）；带上它，hook 才分得清是谁 cd 的。
+   */
+  agent?: HookAgentRef,
 ): void {
   if (!hookSystem) return;
   const log = getLogger();
+  // 主循环不传 agent → opts 为 undefined，fire 调用形态与改动前一致
+  const opts = agent ? { agent } : undefined;
   const swallow = (event: string) => (e: unknown) =>
     log.error("HOOK", `${event} hook 失败: ${(e as Error)?.message ?? e}`);
 
   // CwdChanged：bash 的 `cd` 由 bash 工具 setCwd 落地，这里只比对前后
   if (cwdBefore !== cwdAfter) {
-    hookSystem.fireCwdChangedEvent(cwdBefore, cwdAfter).catch(swallow("cwd_changed"));
+    hookSystem.fireCwdChangedEvent(cwdBefore, cwdAfter, opts).catch(swallow("cwd_changed"));
   }
 
   if (result.isError || (toolName !== "task_create" && toolName !== "task_update")) return;
@@ -37,13 +45,13 @@ export function fireToolSideEvents(
   if (toolName === "task_create") {
     const desc =
       typeof toolInput.description === "string" ? toolInput.description : (parsed.subject ?? "");
-    hookSystem.fireTaskCreatedEvent(parsed.id, desc).catch(swallow("task_created"));
+    hookSystem.fireTaskCreatedEvent(parsed.id, desc, opts).catch(swallow("task_created"));
     return;
   }
   // task_update：只有本次调用把状态置为 completed 才算完成（重复置 completed 也 fire，与 CC 一致）
   if (toolInput.status === "completed" && parsed.status === "completed") {
     hookSystem
-      .fireTaskCompletedEvent(parsed.id, parsed.subject ?? "", true)
+      .fireTaskCompletedEvent(parsed.id, parsed.subject ?? "", true, undefined, opts)
       .catch(swallow("task_completed"));
   }
 }

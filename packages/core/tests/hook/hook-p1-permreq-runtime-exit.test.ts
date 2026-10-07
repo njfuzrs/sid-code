@@ -289,7 +289,7 @@ describe("H16 stderr 从不当 JSON 解析", () => {
   test("exit 1 + stderr 是 JSON ⇒ 仍是非阻塞告警，stderr 文本照常展示", async () => {
     const out = await run(`echo '{"decision":"deny"}' >&2; exit 1`);
     expect(out.isBlockingDecision()).toBe(false);
-    expect(out.systemMessage).toContain("警告");
+    expect(out.systemMessage).toContain("hook error");
   });
 
   test("反面：stdout 的 deny JSON 照常生效（别把 JSON 通道整个关掉）", async () => {

@@ -317,6 +317,8 @@ interface HookEvent {
   configName: string;
   /** 枚举注释标了「预留」= 有 fire 方法但无调用点，配了不会触发 */
   reserved: boolean;
+  /** 内部事件（INTERNAL_HOOK_EVENTS）：用户配置会被归一化层跳过并告警，不是「等接线」 */
+  internal: boolean;
   description: string;
 }
 
@@ -341,12 +343,15 @@ async function loadHookEvents(): Promise<HookEvent[]> {
     "HookEventName",
   );
   const wired = await loadWiredHookEvents();
+  const normalize = await import(join(ROOT, "packages/core/src/hook/config-normalize.ts"));
+  const internalSet = normalize.INTERNAL_HOOK_EVENTS as ReadonlySet<string>;
   return Object.keys(enumObj).map((k) => {
     const description = comments.get(k) ?? "";
     return {
       name: k,
       configName: toSnake.get(enumObj[k]) ?? k,
       reserved: !wired.has(k),
+      internal: internalSet.has(enumObj[k]!),
       description,
     };
   });
@@ -417,17 +422,21 @@ function renderHookEvents(events: HookEvent[]): string {
     out += `> 配置里只能写这一种（不是漏写）。\n`;
   }
   out += `>\n`;
-  out += `> 「会触发」列标 ✗ 的事件枚举已定义但**当前无调用点，配了不会被调用**——\n`;
-  out += `> 这是实现现状，不是文档遗漏。它与「名字合不合法」是两个独立维度：\n`;
-  out += `> 这些名字都能通过配置校验，只是不会有东西来触发它们。\n\n`;
+  out += `> 「会触发」列标 ✗ 的事件**配了不会被调用**，分两种，触发时机列写明是哪一种：\n`;
+  out += `> 「内部事件」写进配置会被跳过并在启动时告警；「刻意不做」能通过配置校验，\n`;
+  out += `> 但 sid 没有对应场景，恒不触发（原因见 [Hook 指南](/extend/hooks)的刻意偏离表）。\n\n`;
   out += `| 配置里写 | 会触发 | 枚举名（源码内部） | 触发时机 |\n|---|---|---|---|\n`;
   for (const e of events) {
     const fires = e.reserved ? "✗" : "✓";
     // 预留事件的说明文字统一是那句「预留：有 fire 方法但无调用点」，已由「会触发」列表达，
     // 正文里再重复一遍纯占宽度，所以剥掉。
-    const desc = e.reserved
-      ? "（枚举已定义，等接线）"
-      : clipSentences(sanitizeDescription(e.description), 160);
+    // 内部事件与「刻意不做」是两回事：前者写进配置会被跳过并告警，后者合法但恒不触发。
+    // 原先统一写「等接线」，让人以为两者都只是还没做完。
+    const desc = e.internal
+      ? "（内部事件，不支持用户配置；写进配置会被跳过并告警）"
+      : e.reserved
+        ? clipSentences(sanitizeDescription(e.description), 160) || "（刻意不做，恒不触发）"
+        : clipSentences(sanitizeDescription(e.description), 160);
     const enumCol = e.configName === e.name ? "—" : `\`${cell(e.name)}\``;
     out += `| \`${cell(e.configName)}\` | ${fires} | ${enumCol} | ${desc} |\n`;
   }
