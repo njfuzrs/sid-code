@@ -419,7 +419,17 @@ export interface FallbackConfig {
 /** 回退事件监听器 */
 export interface FallbackListener {
   onRetry?: (attempt: number, error: string, delayMs: number) => void;
-  onFallback?: (reason: string, fallbackModel: string) => void;
+  /**
+   * @param info.fromModel 失败的主模型
+   * @param info.viaDecision 目标由 onFallbackDecision 钩子决定（ask 模式）。钩子侧已经把目标提升为主模型
+   *   并发过 Pre/PostModelSwitch；为 false 时（auto 模式，含子代理 / 后台调用传入的 switchMode:"auto"）
+   *   只是当次调用换了模型，监听方要自己补发 PostModelSwitch（Q6 细则 2）。
+   */
+  onFallback?: (
+    reason: string,
+    fallbackModel: string,
+    info?: { fromModel: string; viaDecision: boolean },
+  ) => void;
   /** 后台 529 被丢弃时的回调 */
   on529Dropped?: (querySource: string) => void;
   /** max_tokens 自动调整时的回调 */
@@ -2004,6 +2014,7 @@ export class ModelFallback {
     // ── 决定切换目标：ask 走钩子，auto 走 config.fallbackModel ──
     let targetModel: string | undefined;
     let targetProvider: Provider | undefined;
+    const viaDecision = mode === "ask" && !!this.config.onFallbackDecision;
 
     if (mode === "ask" && this.config.onFallbackDecision) {
       let decision: FallbackDecision;
@@ -2071,7 +2082,10 @@ export class ModelFallback {
     if (ctx) ctx.hasFallenBack = true;
     this.lastCallFellBack = true;
     log.warn("FALLBACK", `切换到 fallback 模型: ${targetModel}`);
-    this.listener?.onFallback?.("主模型失败", targetModel);
+    this.listener?.onFallback?.("主模型失败", targetModel, {
+      fromModel: params.model,
+      viaDecision,
+    });
     // B4：agentId 从 ctx.perCall 取（tryFallback 无 perCall 局部变量）。
     // ctx 缺省时（防御性，仅未来新增路径漏传 ctx）退化为不带身份，与旧行为一致。
     this.emitTelemetry(

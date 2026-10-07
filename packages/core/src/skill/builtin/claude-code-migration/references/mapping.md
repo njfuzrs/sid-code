@@ -121,7 +121,7 @@ sid-code 支持的 MCP server 字段：
 | 字段 | 迁移策略 |
 |---|---|
 | `permissions.allow` / `deny` / `ask` | 必须确认。结构同名兼容，展示目标 scope 和访问边界影响后再保留值。sid-code 的 `permissions.defaultMode` 若源没有则不补。 |
-| `hooks` | 必须确认（执行风险）。**必做结构转换**，见下方 Hooks 节。 |
+| `hooks` | 必须确认（执行风险）。格式与 CC 一致，**原样复制**、不做结构转换，见下方 Hooks 节。 |
 | `outputStyle` | 必须确认。只有对应 style 文件已在 sid-code 目标位置存在后，才设置 active style。 |
 | `mcpServers` | 按 MCP 规则处理（含 `type→transport`）。 |
 | `env` | 敏感项，必须逐条确认。sid-code **有**顶层 `env` 字段（不同于 Qoder），可迁移，但：① 值多为 secret（如 `*_API_KEY`、`*_AUTH_TOKEN`），只展示 key 名不打印值；② Claude 专属 env（`ANTHROPIC_BASE_URL`、`ANTHROPIC_AUTH_TOKEN`、`CLAUDE_CODE_MAX_OUTPUT_TOKENS`、`ANTHROPIC_MAX_TOKENS`、`API_TIMEOUT_MS` 等）语义与 sid-code 的 provider/model 配置不同，**默认只报告**，让用户决定是否改写为 sid-code 的 `baseURL`/`anthropicKey`/`maxTokens` 等原生字段，而非原样搬运 env。 |

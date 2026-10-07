@@ -9,13 +9,13 @@ import { HookRunner } from "@sid-code/core/hook/runner.ts";
 import { HookRegistry } from "@sid-code/core/hook/registry.ts";
 import { HookPlanner } from "@sid-code/core/hook/planner.ts";
 import { HookAggregator } from "@sid-code/core/hook/aggregator.ts";
-import { HookEventName } from "@sid-code/core/hook/types.ts";
+import { ConfigSource, HookEventName } from "@sid-code/core/hook/types.ts";
 import type { HooksConfig } from "@sid-code/core/config/config.ts";
 
 /** 辅助：从旧格式配置创建 HookSystem */
 function createSystem(legacyHooks: HooksConfig): HookSystem {
   const sys = new HookSystem();
-  sys.initializeFromLegacy(legacyHooks);
+  sys.initializeFromSources([{ hooks: legacyHooks, source: ConfigSource.User }]);
   sys.setSessionId("test-session");
   sys.setCwd(process.cwd());
   return sys;
@@ -425,28 +425,43 @@ describe("HookRunner（单元）", () => {
 describe("HookRegistry", () => {
   test("从旧格式加载", () => {
     const registry = new HookRegistry();
-    registry.initializeFromLegacy({
-      pre_tool_use: [{ command: "echo test" }],
-      session_start: [{ command: "echo start" }],
-    });
+    registry.initializeFromSources([
+      {
+        hooks: {
+          pre_tool_use: [{ command: "echo test" }],
+          session_start: [{ command: "echo start" }],
+        },
+        source: ConfigSource.User,
+      },
+    ]);
     const hooks = registry.getAllHooks();
     expect(hooks.length).toBe(2);
   });
 
   test("旧 snake_case 事件名映射到新 PascalCase", () => {
     const registry = new HookRegistry();
-    registry.initializeFromLegacy({
-      pre_tool_use: [{ command: "echo test" }],
-    });
+    registry.initializeFromSources([
+      {
+        hooks: {
+          pre_tool_use: [{ command: "echo test" }],
+        },
+        source: ConfigSource.User,
+      },
+    ]);
     const hooks = registry.getHooksForEvent(HookEventName.PreToolUse);
     expect(hooks.length).toBe(1);
   });
 
   test("无效事件名被跳过", () => {
     const registry = new HookRegistry();
-    registry.initializeFromLegacy({
-      invalid_event: [{ command: "echo test" }],
-    } as any);
+    registry.initializeFromSources([
+      {
+        hooks: {
+          invalid_event: [{ command: "echo test" }],
+        } as any,
+        source: ConfigSource.User,
+      },
+    ]);
     expect(registry.getAllHooks().length).toBe(0);
   });
 
@@ -454,9 +469,14 @@ describe("HookRegistry", () => {
 
   test("G5：prompt 类型从旧格式配置加载", () => {
     const registry = new HookRegistry();
-    registry.initializeFromLegacy({
-      pre_tool_use: [{ type: "prompt", prompt: "这个命令安全吗？", model: "gpt-4o-mini" }],
-    } as any);
+    registry.initializeFromSources([
+      {
+        hooks: {
+          pre_tool_use: [{ type: "prompt", prompt: "这个命令安全吗？", model: "gpt-4o-mini" }],
+        } as any,
+        source: ConfigSource.User,
+      },
+    ]);
     const hooks = registry.getHooksForEvent(HookEventName.PreToolUse);
     expect(hooks.length).toBe(1);
     expect(hooks[0].config.type).toBe("prompt");
@@ -465,9 +485,14 @@ describe("HookRegistry", () => {
 
   test("G5：agent 类型从旧格式配置加载（含 tools）", () => {
     const registry = new HookRegistry();
-    registry.initializeFromLegacy({
-      pre_tool_use: [{ type: "agent", prompt: "审查改动", tools: ["read", "grep"] }],
-    } as any);
+    registry.initializeFromSources([
+      {
+        hooks: {
+          pre_tool_use: [{ type: "agent", prompt: "审查改动", tools: ["read", "grep"] }],
+        } as any,
+        source: ConfigSource.User,
+      },
+    ]);
     const hooks = registry.getHooksForEvent(HookEventName.PreToolUse);
     expect(hooks.length).toBe(1);
     expect(hooks[0].config.type).toBe("agent");
@@ -476,17 +501,27 @@ describe("HookRegistry", () => {
 
   test("G5：prompt 类型缺 prompt 字段被跳过", () => {
     const registry = new HookRegistry();
-    registry.initializeFromLegacy({
-      pre_tool_use: [{ type: "prompt" }],
-    } as any);
+    registry.initializeFromSources([
+      {
+        hooks: {
+          pre_tool_use: [{ type: "prompt" }],
+        } as any,
+        source: ConfigSource.User,
+      },
+    ]);
     expect(registry.getAllHooks().length).toBe(0);
   });
 
   test("启用/禁用 hook", () => {
     const registry = new HookRegistry();
-    registry.initializeFromLegacy({
-      pre_tool_use: [{ command: "echo test" }],
-    });
+    registry.initializeFromSources([
+      {
+        hooks: {
+          pre_tool_use: [{ command: "echo test" }],
+        },
+        source: ConfigSource.User,
+      },
+    ]);
     expect(registry.getHooksForEvent(HookEventName.PreToolUse).length).toBe(1);
 
     registry.setHookEnabled("echo test", false);
@@ -619,12 +654,17 @@ describe("HookPlanner", () => {
 
   test("matcher 过滤", () => {
     const registry = new HookRegistry();
-    registry.initializeFromLegacy({
-      pre_tool_use: [
-        { command: "echo a", matcher: "bash" },
-        { command: "echo b", matcher: "write" },
-      ],
-    });
+    registry.initializeFromSources([
+      {
+        hooks: {
+          pre_tool_use: [
+            { command: "echo a", matcher: "bash" },
+            { command: "echo b", matcher: "write" },
+          ],
+        },
+        source: ConfigSource.User,
+      },
+    ]);
     const planner = new HookPlanner(registry);
     const plan = planner.createExecutionPlan(HookEventName.PreToolUse, { toolName: "bash" });
     expect(plan?.hookConfigs.length).toBe(1);
@@ -632,9 +672,14 @@ describe("HookPlanner", () => {
 
   test("去重", () => {
     const registry = new HookRegistry();
-    registry.initializeFromLegacy({
-      pre_tool_use: [{ command: "echo same" }, { command: "echo same" }],
-    });
+    registry.initializeFromSources([
+      {
+        hooks: {
+          pre_tool_use: [{ command: "echo same" }, { command: "echo same" }],
+        },
+        source: ConfigSource.User,
+      },
+    ]);
     const planner = new HookPlanner(registry);
     const plan = planner.createExecutionPlan(HookEventName.PreToolUse);
     expect(plan?.hookConfigs.length).toBe(1);

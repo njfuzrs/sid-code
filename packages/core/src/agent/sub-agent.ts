@@ -76,6 +76,20 @@ import { existsSync } from "fs";
 import { withAgentCwd } from "../bootstrap/cwd-context.ts";
 import { withIncrementedDepth } from "./depth-context.ts";
 import { runInSpanScope } from "../telemetry/span-scope.ts";
+import {
+  runWithHookAgent,
+  currentHookAgentScope,
+  hookAgentOptions,
+  type SubAgentHookScope,
+} from "./hook-agent-context.ts";
+import {
+  firePermissionDenied,
+  firePostToolUseFailure,
+  runPostToolHooks,
+  runToolExceptionHook,
+} from "./tool-executor.ts";
+import { fireToolSideEvents } from "../query/tool-side-events.ts";
+import { getCwd } from "../bootstrap/state.ts";
 
 /** spawn 子进程时定位 headless.ts 入口的绝对路径。
  *  编译二进制中 import.meta.url 指向 /$bunfs/root/...（虚拟路径），此时 headless.ts
@@ -111,6 +125,32 @@ const HEADLESS_AVAILABLE = existsSync(HEADLESS_ENTRY);
  * 且同一进程内不会重复。跨进程重复无所谓 —— 快照 Map 是进程内状态。
  */
 let _customAgentSeq = 0;
+
+/**
+ * 记下子代理最后一条非空 assistant 文本（SubagentStop.last_assistant_message）。
+ * 取「最后一条非空」而不是 extractFinalText 的结论文本：CC 字段语义就是最后一条消息原文，
+ * 而 extractFinalText 会跳过「像思考」的短文本、结构化输出还会被 JSON 替换。
+ */
+function recordLastAssistantMessage(text: string | undefined): void {
+  const scope = currentHookAgentScope();
+  if (scope && text && text.trim()) scope.lastAssistantMessage = text;
+}
+
+/**
+ * SubagentStop 的两个 CC 字段。transcript 路径只在文件真的落了盘时才报：
+ * sidechain 写失败只 warn 不抛，报一个不存在的路径会让 hook 脚本读文件时 ENOENT。
+ */
+function subagentStopCcFields(scope: SubAgentHookScope): {
+  last_assistant_message?: string;
+  agent_transcript_path?: string;
+} {
+  return {
+    ...(scope.lastAssistantMessage ? { last_assistant_message: scope.lastAssistantMessage } : {}),
+    ...(scope.transcriptPath && existsSync(scope.transcriptPath)
+      ? { agent_transcript_path: scope.transcriptPath }
+      : {}),
+  };
+}
 
 /**
  * 子代理类型（已废弃硬编码枚举，改为开放字符串）。
@@ -661,9 +701,15 @@ export class SubAgent {
    * 缺父会话 id 或 agentId 时返回 undefined，调用方经可选链安全跳过。
    */
   private openSidechain(agentId: string | undefined): SidechainWriter | undefined {
-    return this.parentSessionId && agentId
-      ? new SidechainWriter(this.parentSessionId, agentId)
-      : undefined;
+    const writer =
+      this.parentSessionId && agentId
+        ? new SidechainWriter(this.parentSessionId, agentId)
+        : undefined;
+    // SubagentStop.agent_transcript_path（CC 字段）：路径只有这里知道，三条路径都经这个入口，
+    // 在此登记一次即全覆盖。是否真落了盘由 fire 处 existsSync 判（写入失败只 warn 不抛）。
+    const scope = currentHookAgentScope();
+    if (writer && scope) scope.transcriptPath = writer.getFilePath();
+    return writer;
   }
 
   private deriveSubAgentSessionId(taskKey?: string): string {
@@ -715,6 +761,9 @@ export class SubAgent {
     // 稳定 agentId：贯穿 start → stop，让遥测能把一个子代理的 start/stop 配对成同一 span。
     const agentId = `subagent-${task.type}-${taskId}`;
     const startedAt = Date.now();
+    // HC23：子代理执行链的 hook 作用域。agent_id 与 SubagentStart/Stop 同一个值，
+    // hook 才能把「子代理里的工具事件」与「哪个子代理」配上对。
+    const hookScope: SubAgentHookScope = { agent: { agent_id: agentId, agent_type: task.type } };
 
     // P1-2：团队成员注册为 kind="teammate" 的活跃会话，/ps 才能看到团队运行态。
     // 身份从 ALS 取（team.ts 的 withTeamMember 注入），不靠调用方自报。
@@ -761,19 +810,21 @@ export class SubAgent {
       // 产生的 span 挂到本子代理的 invoke_agent 下。SubagentStart/Stop 刻意在作用域**之外**
       // fire：它们属于发起方（父 span 取发起方的作用域）。
       result = await runInSpanScope(agentId, () =>
-        withIncrementedDepth(async () => {
-          if (this.shouldUseSpawn() && !task.cwd) {
-            try {
-              const spawned = await this.executeSpawned(task, signal, taskId);
-              log.info("SUBAGENT", `[${task.type}] spawn 模式完成`);
-              return spawned;
-            } catch (err: any) {
-              log.warn("SUBAGENT", `spawn 模式失败，回退到进程内模式: ${err.message}`);
-              return await this.executeInner(task, signal, taskId);
+        runWithHookAgent(hookScope, () =>
+          withIncrementedDepth(async () => {
+            if (this.shouldUseSpawn() && !task.cwd) {
+              try {
+                const spawned = await this.executeSpawned(task, signal, taskId);
+                log.info("SUBAGENT", `[${task.type}] spawn 模式完成`);
+                return spawned;
+              } catch (err: any) {
+                log.warn("SUBAGENT", `spawn 模式失败，回退到进程内模式: ${err.message}`);
+                return await this.executeInner(task, signal, taskId);
+              }
             }
-          }
-          return await runInner();
-        }),
+            return await runInner();
+          }),
+        ),
       );
 
       // 前台子代理（runSync，非 _isAsync）：结果已由 tool.ts runSync 作为 tool_result 返回并
@@ -821,6 +872,7 @@ export class SubAgent {
           tool_use_count: r?.toolUseCount,
           usage: r?.usage,
           duration_ms: Date.now() - startedAt,
+          ...subagentStopCcFields(hookScope),
         })
         .catch((err) => log.error("HOOK", `subagent_stop hook 失败: ${err.message}`));
 
@@ -842,6 +894,9 @@ export class SubAgent {
 
     let result: SubAgentResult;
     const customAgentId = `subagent-custom-${Date.now()}`;
+    const hookScope: SubAgentHookScope = {
+      agent: { agent_id: customAgentId, agent_type: "custom" },
+    };
     try {
       // SubagentStart hook（description 取自 userPrompt 首段，便于轨迹排查识别派活意图）
       this.hookSystem
@@ -851,20 +906,22 @@ export class SubAgent {
         .catch((err) => log.error("HOOK", `subagent_start hook 失败: ${err.message}`));
 
       // 缺陷 2：同 execute()，执行体进 span 作用域，内部 span 挂到本子代理下
-      result = await runInSpanScope(customAgentId, async () => {
-        // 尝试 spawn 模式
-        if (this.shouldUseSpawn()) {
-          try {
-            const spawned = await this.executeSpawnedCustom(task, signal);
-            log.info("SUBAGENT", `[custom] spawn 模式完成`);
-            return spawned;
-          } catch (err: any) {
-            log.warn("SUBAGENT", `spawn 模式失败，回退到进程内模式: ${err.message}`);
-            return await this.executeCustomInner(task, signal);
+      result = await runInSpanScope(customAgentId, () =>
+        runWithHookAgent(hookScope, async () => {
+          // 尝试 spawn 模式
+          if (this.shouldUseSpawn()) {
+            try {
+              const spawned = await this.executeSpawnedCustom(task, signal);
+              log.info("SUBAGENT", `[custom] spawn 模式完成`);
+              return spawned;
+            } catch (err: any) {
+              log.warn("SUBAGENT", `spawn 模式失败，回退到进程内模式: ${err.message}`);
+              return await this.executeCustomInner(task, signal);
+            }
           }
-        }
-        return await this.executeCustomInner(task, signal);
-      });
+          return await this.executeCustomInner(task, signal);
+        }),
+      );
     } finally {
       // subagent_stop hook（非阻塞）。带 agent_id：曾不带，探针按 id 配对不上，
       // custom 子代理的 invoke_agent span 永不 end（与缺陷 3 同形）。
@@ -873,6 +930,7 @@ export class SubAgent {
           agent_id: customAgentId,
           agent_type: "custom",
           toolName: "subagent:custom",
+          ...subagentStopCcFields(hookScope),
         })
         .catch((err) => log.error("HOOK", `subagent_stop hook 失败: ${err.message}`));
     }
@@ -1460,6 +1518,8 @@ export class SubAgent {
 
       if (result.output) {
         sidechainAppend("assistant", [{ type: "text", text: result.output }], result.turns);
+        // spawn 路径的 LLM 循环在子进程里，父进程唯一能拿到的 assistant 文本就是最终 output
+        recordLastAssistantMessage(result.output);
       }
       sidechainStatus = result.success ? "completed" : "failed";
       return result;
@@ -1503,12 +1563,29 @@ export class SubAgent {
     let hookPermissionDecision: "allow" | "ask" | undefined;
     if (this.hookSystem) {
       try {
-        const pre = await this.hookSystem.firePreToolUseEvent(name, input, undefined);
+        // tool_use_id 与 agent 都要带：spawn 路径原先传 undefined，hook 侧 Pre/Post 配不上对
+        const pre = await this.hookSystem.firePreToolUseEvent(
+          name,
+          input,
+          toolUseId,
+          hookAgentOptions(),
+        );
         // G3：与主循环/进程内子代理共享同一 PreToolUse 解读
         const { interpretPreToolUse } = await import("../query/tool-executor.ts");
         const interp = interpretPreToolUse(pre, input);
         if (interp.blocked) {
           log.info("SUBAGENT:HOOK", `工具 ${name} 被 hook 阻止: ${interp.blockReason}`);
+          // Pre/Post 配对：与进程内 executeSingleTool / 主循环同口径补 Failure 收尾。
+          // hook_blocked 只送 runtime hook（CC 不对 PreToolUse 拦截触发 Failure），
+          // 但 execute_tool span 靠它关闭——原先这里不补，spawn 路径被拦的工具 span 悬空。
+          firePostToolUseFailure(
+            this.hookSystem,
+            { name, id: toolUseId ?? "spawn", input },
+            `Hook 阻止执行: ${interp.blockReason ?? "无原因"}`,
+            input,
+            Date.now() - toolStartedAt,
+            "hook_blocked",
+          );
           // 漏斗 1：hook 阻止是一次真实调度失败（与进程内 executeSingleTool / 主循环同口径）。
           // 权限拒绝不在这里——那条走漏斗 2。call + failure 成对。
           const hookFilePath =
@@ -1551,22 +1628,17 @@ export class SubAgent {
           context: "subagent",
           reasonType: decision.decisionReason?.type,
         });
-        // B33：spawn 路径同样 fire PermissionDenied（与进程内 `agent/tool-executor.ts` 同口径）。
-        // fire-and-forget：通知类 hook 不得拖慢拒绝回传。
-        try {
-          void this.hookSystem
-            ?.firePermissionDeniedEvent?.(
-              name,
-              (effectiveInput ?? {}) as Record<string, unknown>,
-              reason,
-              decision.decisionReason?.type === "rule" ? "rule" : "auto",
-            )
-            ?.catch?.((e: any) =>
-              log.error("SUBAGENT:HOOK", `permission_denied hook 失败: ${e?.message ?? e}`),
-            );
-        } catch (e: any) {
-          log.error("SUBAGENT:HOOK", `permission_denied 触发异常（忽略）: ${e?.message ?? e}`);
-        }
+        // B33：spawn 路径同样 fire PermissionDenied，直接复用进程内那个 helper（同口径、同吞错）。
+        // 必须带 tool_use_id：Q7 后权限拒绝只 fire PermissionDenied，runtime 消费者按它关
+        // execute_tool span——原先这里不传，spawn 路径被拒工具的 span 无从配对。
+        firePermissionDenied(
+          this.hookSystem,
+          name,
+          (effectiveInput ?? {}) as Record<string, unknown>,
+          reason,
+          decision.decisionReason?.type === "rule" ? "rule" : "auto",
+          toolUseId,
+        );
         return { content: `权限拒绝: ${reason}`, is_error: true };
       }
     }
@@ -1586,17 +1658,15 @@ export class SubAgent {
         // 与主循环/子代理 tool-executor 同源：校验失败也要 fire Failure 收尾，
         // 否则这条路径的失败（模型漏 required 字段，最高频的真实失败）
         // 既不进 hook 链也不产 execute_tool span，在 trace 里完全隐身。
-        if (this.hookSystem) {
-          this.hookSystem
-            .firePostToolUseFailureEvent(name, effectiveInput, validation.message, undefined, {
-              duration_ms: Date.now() - startTime,
-              // Q7：校验失败在 CC 里不触发 Failure，只送 runtime hook
-              failure_kind: "validation",
-            })
-            .catch((e: any) =>
-              log.error("SUBAGENT:HOOK", `post_tool_use_failure hook 失败: ${e.message}`),
-            );
-        }
+        // Q7：校验失败在 CC 里不触发 Failure，只送 runtime hook
+        firePostToolUseFailure(
+          this.hookSystem,
+          { name, id: toolUseId ?? "spawn", input: effectiveInput },
+          validation.message,
+          effectiveInput,
+          Date.now() - startTime,
+          "validation",
+        );
         logToolFailure(name, {
           kind: "invalid_input",
           durationMs: Date.now() - startTime,
@@ -1605,11 +1675,23 @@ export class SubAgent {
         return { content: validation.message, is_error: true };
       }
       // 注入 _agentId 标记，防止子代理调用 enter_plan_mode 形成套娃
+      const cwdBefore = getCwd();
       const result = await tool.execute(
         { ...(validation.data as Record<string, unknown>), _agentId: "sub-agent" },
         signal,
       );
       const elapsed = Date.now() - startTime;
+      // HC24（spawn 路径）：工具在父进程执行，cwd 变化落在父进程（task.cwd 子代理不走 spawn，
+      // 见 execute() 的 M4 注释），所以 getCwd 前后对比就是真实的会话级目录变化。
+      fireToolSideEvents(
+        this.hookSystem,
+        name,
+        validation.data as Record<string, unknown>,
+        result,
+        cwdBefore,
+        getCwd(),
+        hookAgentOptions()?.agent,
+      );
       // D9：spawn 路径工具在父进程执行，同样走 processToolResult，不要只截断丢掉原文。
       const truncated = processToolResult(
         name,
@@ -1618,33 +1700,15 @@ export class SubAgent {
         sessionId ?? this.deriveSubAgentSessionId(),
         tool.maxResultSizeChars,
       );
-      // post_tool_use hook（驱动 execute_tool span）
-      if (this.hookSystem) {
-        // Q7：工具返回 isError → 只 fire PostToolUseFailure（对齐 CC）；成功才 fire PostToolUse
-        const fired = result.isError
-          ? this.hookSystem.firePostToolUseFailureEvent(
-              name,
-              effectiveInput,
-              truncated,
-              undefined,
-              {
-                duration_ms: elapsed,
-                failure_kind: "tool_error",
-                tool_output: truncated,
-              },
-            )
-          : this.hookSystem.firePostToolUseEvent(
-              name,
-              effectiveInput,
-              { output: truncated, isError: false },
-              false,
-              undefined,
-              { duration_ms: elapsed },
-            );
-        fired.catch((e: any) =>
-          log.error("SUBAGENT:HOOK", `post_tool_use hook 失败: ${e.message}`),
-        );
-      }
+      // post_tool_use hook（驱动 execute_tool span）；与进程内路径共用 await + 反馈回灌
+      const withHookFeedback = await runPostToolHooks(this.hookSystem, {
+        toolName: name,
+        toolInput: effectiveInput,
+        toolUseId,
+        output: truncated,
+        isError: !!result.isError,
+        durationMs: elapsed,
+      });
       if (result.isError) {
         logToolFailure(name, {
           kind: "tool_error",
@@ -1658,29 +1722,29 @@ export class SubAgent {
           filePath: efFilePath,
         });
       }
-      return { content: truncated, is_error: result.isError ?? false };
+      return { content: withHookFeedback, is_error: result.isError ?? false };
     } catch (err: any) {
       const elapsed = Date.now() - startTime;
-      if (this.hookSystem) {
-        this.hookSystem
-          .firePostToolUseFailureEvent(
-            name,
-            effectiveInput,
-            err.message,
-            undefined,
-            // 与上方成功路径 duration_ms 同口径（纯执行耗时）
-            { duration_ms: elapsed, failure_kind: "exception" },
-          )
-          .catch((e: any) =>
-            log.error("SUBAGENT:HOOK", `post_tool_use_failure hook 失败: ${e.message}`),
-          );
-      }
+      // 与上方成功路径 duration_ms 同口径（纯执行耗时）；is_interrupt 按真实 abort 判
+      const failureFeedback = await runToolExceptionHook(this.hookSystem, {
+        toolName: name,
+        toolInput: effectiveInput,
+        toolUseId,
+        error: err,
+        durationMs: elapsed,
+        signal,
+      });
       logToolFailure(name, {
         kind: isAbortError(err) ? "aborted" : "exception",
         durationMs: elapsed,
         filePath: efFilePath,
       });
-      return { content: `工具执行异常: ${err.message}`, is_error: true };
+      return {
+        content:
+          `工具执行异常: ${err.message}` +
+          (failureFeedback ? `\n\n[Hook 反馈]\n${failureFeedback}` : ""),
+        is_error: true,
+      };
     }
   }
 
@@ -1958,6 +2022,7 @@ export class SubAgent {
         },
         onTurnEnd: (info) => {
           lastTextOutput = info.textOutput || lastTextOutput;
+          recordLastAssistantMessage(info.textOutput);
           // 真实进度直接取 runAgentLoop 累计值（token 来自 totalUsage，非伪造估算）
           toolUseCount = info.toolUseCount;
           tokenCount = info.tokenCount;
@@ -2371,6 +2436,7 @@ export class SubAgent {
         sendParamsExtra: customSendParamsExtra,
         onTurnEnd: (info) => {
           lastTextOutput = info.textOutput || lastTextOutput;
+          recordLastAssistantMessage(info.textOutput);
           toolUseCount += info.tools.length;
           // P0-1(b)(c)：与内置路径同口径地喂残卷 + 吞吐样本。
           try {

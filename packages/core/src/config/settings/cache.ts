@@ -93,3 +93,28 @@ export function resetSettingsCache(): void {
   perSourceCache.clear();
   parseFileCache.clear();
 }
+
+/**
+ * HC24：ConfigChange hook 拦截变更时，把单来源缓存回退到变更前的快照。
+ * 会话级合并缓存一并失效，下次 getSettings 用回退后的单来源值重新合并——
+ * 不回退 L1 的话合并结果仍是磁盘上的新值，拦截形同虚设。
+ * 只作用于内存：磁盘文件保持用户写入的新内容，下次外部修改（或重启）会重新判定。
+ */
+export function restoreSourceSnapshot(source: SettingSource, snapshot: ParsedSettings): void {
+  perSourceCache.set(source, snapshot);
+  sessionSettingsCache = null;
+}
+
+/**
+ * 两份设置之间顶层键的差异（新增 / 删除 / 值变化），供 ConfigChange 的 changed_keys。
+ * 只比顶层：CC 的 changed_keys 也是字段级粒度，深比较到叶子对 matcher 没有用处。
+ */
+export function diffTopLevelKeys(
+  before: Record<string, unknown> | null | undefined,
+  after: Record<string, unknown> | null | undefined,
+): string[] {
+  const a = before ?? {};
+  const b = after ?? {};
+  const keys = new Set([...Object.keys(a), ...Object.keys(b)]);
+  return [...keys].filter((k) => JSON.stringify(a[k]) !== JSON.stringify(b[k])).sort();
+}

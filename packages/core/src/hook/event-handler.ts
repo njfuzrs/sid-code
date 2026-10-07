@@ -43,8 +43,10 @@ import {
   type DirectoryAddedInput,
   type AggregatedHookResult,
   type HookExecutionPlan,
+  type HookExecutionResult,
   type HookConfig,
   type ToolFailureKind,
+  type HookAgentRef,
   resolveHookTimeoutMs,
   sessionEndBudgetMs,
 } from "./types.ts";
@@ -154,9 +156,12 @@ export class HookEventHandler {
     toolName: string,
     toolInput: Record<string, unknown>,
     toolUseId?: string,
+    /** 子代理执行链身份：有则带 agent_id / agent_type（CC 语义，见 types.ts HookAgentFields） */
+    options?: { agent?: HookAgentRef },
   ): Promise<AggregatedHookResult> {
     const input: PreToolUseInput = {
       ...this.createBaseInput(HookEventName.PreToolUse),
+      ...agentFields(options?.agent),
       tool_name: toolName,
       tool_input: toolInput,
       tool_use_id: toolUseId,
@@ -176,10 +181,12 @@ export class HookEventHandler {
       edit_meta?: import("./types.ts").HarnessEditMeta;
       verify_triggered?: boolean;
       harness_context?: import("./types.ts").HarnessHookContext;
+      agent?: HookAgentRef;
     },
   ): Promise<AggregatedHookResult> {
     const input: PostToolUseInput = {
       ...this.createBaseInput(HookEventName.PostToolUse),
+      ...agentFields(options?.agent),
       tool_name: toolName,
       tool_input: toolInput,
       tool_response: toolResponse,
@@ -216,11 +223,13 @@ export class HookEventHandler {
       failure_kind?: ToolFailureKind;
       /** tool_error 时工具的原始输出（tool_response.output） */
       tool_output?: unknown;
+      agent?: HookAgentRef;
     },
   ): Promise<AggregatedHookResult> {
     const kind = options?.failure_kind ?? "exception";
     const input: PostToolUseInput = {
       ...this.createBaseInput(HookEventName.PostToolUseFailure),
+      ...agentFields(options?.agent),
       tool_name: toolName,
       tool_input: toolInput,
       tool_response:
@@ -308,6 +317,8 @@ export class HookEventHandler {
       resumedFrom?: string;
       /** P0-1：一般不传，由本函数填真值；仅测试与回放需要显式覆盖 */
       app_version?: string;
+      /** 只跑用户 hook、不送 runtime（clear / compact 的二次 SessionStart 用，见 SessionStartInput.source） */
+      userOnly?: boolean;
     },
   ): Promise<AggregatedHookResult> {
     const input: SessionStartInput = {
@@ -319,7 +330,12 @@ export class HookEventHandler {
       // P0-1：飞轮维度。四方向第 3 级都是 release-over-release 曲线，版本是唯一分组键。
       app_version: options?.app_version ?? appVersion(),
     };
-    return this.executeHooks(HookEventName.SessionStart, input, { trigger: source });
+    return this.executeHooks(
+      HookEventName.SessionStart,
+      input,
+      { trigger: source },
+      options?.userOnly ? { userOnly: true } : undefined,
+    );
   }
 
   /** SessionEnd 事件 */
@@ -496,9 +512,11 @@ export class HookEventHandler {
     denialReason: string,
     denialSource: PermissionDeniedInput["denial_source"],
     toolUseId?: string,
+    options?: { agent?: HookAgentRef },
   ): Promise<AggregatedHookResult> {
     const input: PermissionDeniedInput = {
       ...this.createBaseInput(HookEventName.PermissionDenied),
+      ...agentFields(options?.agent),
       tool_use_id: toolUseId,
       tool_name: toolName,
       tool_input: toolInput,
@@ -537,9 +555,14 @@ export class HookEventHandler {
   }
 
   /** CwdChanged 事件 */
-  async fireCwdChangedEvent(oldCwd: string, newCwd: string): Promise<AggregatedHookResult> {
+  async fireCwdChangedEvent(
+    oldCwd: string,
+    newCwd: string,
+    options?: { agent?: HookAgentRef },
+  ): Promise<AggregatedHookResult> {
     const input: CwdChangedInput = {
       ...this.createBaseInput(HookEventName.CwdChanged),
+      ...agentFields(options?.agent),
       old_cwd: oldCwd,
       new_cwd: newCwd,
     };
@@ -550,9 +573,11 @@ export class HookEventHandler {
   async fireTaskCreatedEvent(
     taskId: string,
     taskDescription: string,
+    options?: { agent?: HookAgentRef },
   ): Promise<AggregatedHookResult> {
     const input: TaskCreatedInput = {
       ...this.createBaseInput(HookEventName.TaskCreated),
+      ...agentFields(options?.agent),
       task_id: taskId,
       task_description: taskDescription,
     };
@@ -565,9 +590,11 @@ export class HookEventHandler {
     taskDescription: string,
     success: boolean,
     result?: string,
+    options?: { agent?: HookAgentRef },
   ): Promise<AggregatedHookResult> {
     const input: TaskCompletedInput = {
       ...this.createBaseInput(HookEventName.TaskCompleted),
+      ...agentFields(options?.agent),
       task_id: taskId,
       task_description: taskDescription,
       success,
@@ -706,7 +733,7 @@ export class HookEventHandler {
     eventName: HookEventName,
     input: HookInput,
     context?: HookEventContext,
-    opts?: { runtimeOnly?: boolean },
+    opts?: { runtimeOnly?: boolean; userOnly?: boolean },
   ): Promise<AggregatedHookResult> {
     const log = getLogger();
 
@@ -714,6 +741,7 @@ export class HookEventHandler {
       // 1. 创建执行计划
       let plan = this.planner.createExecutionPlan(eventName, context);
       if (plan && opts?.runtimeOnly) plan = keepRuntimeOnly(plan);
+      if (plan && opts?.userOnly) plan = keepUserOnly(plan);
       if (!plan || plan.hookConfigs.length === 0) {
         return emptyResult();
       }
@@ -726,12 +754,12 @@ export class HookEventHandler {
       // 2. 执行 hook（根据计划决定串行/并行）
       // HC20：SessionEnd 所有用户 hook 共享一个预算（缺省 1.5s，显式 timeout 可提高，上限 60s），
       // 与 CC 一致——退出路径上不能让一个慢 hook 把关窗口卡住。runtime（轨迹 / 遥测落盘）不受此限。
-      const configs =
-        eventName === HookEventName.SessionEnd
-          ? applySessionEndBudget(plan.hookConfigs)
-          : plan.hookConfigs;
+      const isSessionEnd = eventName === HookEventName.SessionEnd;
+      const configs = isSessionEnd ? applySessionEndBudget(plan.hookConfigs) : plan.hookConfigs;
       const results = plan.sequential
-        ? await this.runner.executeHooksSequential(configs, eventName, input)
+        ? isSessionEnd
+          ? await this.runSessionEndSequential(configs, input)
+          : await this.runner.executeHooksSequential(configs, eventName, input)
         : await this.runner.executeHooksParallel(configs, eventName, input);
 
       // 2.5 once hook 回标：执行成功的一次性 hook 标记为已执行，后续计划不再纳入。
@@ -771,6 +799,43 @@ export class HookEventHandler {
       "HOOK",
       `一次性 hook 已执行，后续不再触发: ${entry.eventName}${entry.skillName ? ` (skill:${entry.skillName})` : ""}`,
     );
+  }
+
+  /**
+   * HC20：SessionEnd 顺序执行时按**剩余**预算逐条压超时，预算是全体用户 hook 共享的一笔。
+   * 并行时每条压到预算内就等于总预算（同时起跑同时截止），所以只有串行需要这层扣减——
+   * 原先串行也只做逐条截断，3 条 hook 各 1.5s 累计 4.5s，退出路径被拖长到预算的 3 倍。
+   * runtime（轨迹 / 遥测落盘）不受预算限制、也不消耗预算：它们丢了就是数据丢失。
+   */
+  private async runSessionEndSequential(
+    configs: HookConfig[],
+    input: HookInput,
+  ): Promise<HookExecutionResult[]> {
+    const deadline = Date.now() + sessionEndBudgetMs(configs);
+    const results: HookExecutionResult[] = [];
+    for (const c of configs) {
+      if (c.type === "runtime") {
+        results.push(await this.runner.executeHook(c, HookEventName.SessionEnd, input));
+        continue;
+      }
+      const remainingMs = deadline - Date.now();
+      if (remainingMs <= 0) {
+        const err = new Error("SessionEnd hook 共享预算已用尽，本条未执行");
+        getLogger().warn("HOOK", `${c.name ?? c.type}: ${err.message}`);
+        results.push({
+          hookConfig: c,
+          eventName: HookEventName.SessionEnd,
+          success: false,
+          duration: 0,
+          error: err,
+        });
+        continue;
+      }
+      const own = resolveHookTimeoutMs(c, HookEventName.SessionEnd);
+      const capped = own <= remainingMs ? c : ({ ...c, timeout: remainingMs / 1000 } as HookConfig);
+      results.push(await this.runner.executeHook(capped, HookEventName.SessionEnd, input));
+    }
+    return results;
   }
 
   /** 构建基础输入 */
@@ -850,8 +915,26 @@ export function applySessionEndBudget(configs: HookConfig[]): HookConfig[] {
 }
 
 /** Q7：只保留 runtime hook（entries 与 hookConfigs 下标对齐，一起过滤） */
+/**
+ * 子代理执行链身份 → 工具事件输入字段。主循环（agent 缺省）返回空对象，**不**写出
+ * `agent_id: undefined`：runner 按 `"agent_id" in input` 设 SID_CODE_AGENT_ID，
+ * 显式 undefined 会让主循环工具事件也带上一个空的 agent 环境变量。
+ */
+function agentFields(agent: HookAgentRef | undefined): { agent_id?: string; agent_type?: string } {
+  return agent ? { agent_id: agent.agent_id, agent_type: agent.agent_type } : {};
+}
+
 function keepRuntimeOnly(plan: HookExecutionPlan): HookExecutionPlan {
-  const idx = plan.hookConfigs.map((c, i) => (c.type === "runtime" ? i : -1)).filter((i) => i >= 0);
+  return filterPlan(plan, (c) => c.type === "runtime");
+}
+
+/** HC12：只保留用户 hook（clear / compact 的 SessionStart 不送 runtime） */
+function keepUserOnly(plan: HookExecutionPlan): HookExecutionPlan {
+  return filterPlan(plan, (c) => c.type !== "runtime");
+}
+
+function filterPlan(plan: HookExecutionPlan, keep: (c: HookConfig) => boolean): HookExecutionPlan {
+  const idx = plan.hookConfigs.map((c, i) => (keep(c) ? i : -1)).filter((i) => i >= 0);
   return {
     ...plan,
     hookConfigs: idx.map((i) => plan.hookConfigs[i]!),
