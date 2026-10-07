@@ -14,51 +14,74 @@ import type { SkillDefinition } from "./types.ts";
 export type SkillPermissionDecision = "allow" | "deny" | "ask";
 
 /**
- * 安全属性白名单：只有这些属性的 Skill 可以自动放行。
- * 带有白名单之外属性（hooks / allowedTools 等敏感能力）的 Skill 默认需审批。
+ * SkillDefinition 每个字段的安全分级（单一事实源）。
+ *
+ * P2-2：用 `Record<keyof SkillDefinition, ...>` 而不是两张手写列表——SkillDefinition 新增字段
+ * 却没在这里分类时，类型检查直接报缺键；另有 tests/skill/p2-skill-defects.test.ts 从 types.ts
+ * 源码抽字段名比对这张表（CI 不跑 tsc，不能只靠类型）。此前「白名单 19 + 敏感 7 = 26」是巧合，
+ * 没有任何机制保证新字段被分类。
  */
-export const SAFE_SKILL_PROPERTIES = new Set<keyof SkillDefinition>([
-  "name",
-  "description",
-  "source",
-  "loadedFrom",
-  "whenToUse",
-  "argumentHint",
-  "model",
-  "context",
-  "mode",
-  "paths",
-  "userInvocable",
-  "disableModelInvocation",
-  "skillRoot",
-  "filePath",
-  "prompt",
-  "disabled",
-  "isBuiltin",
-  "version",
-  "argumentNames",
-]);
+const SKILL_PROPERTY_CLASS: Record<keyof SkillDefinition, "safe" | "sensitive"> = {
+  name: "safe",
+  description: "safe",
+  source: "safe",
+  loadedFrom: "safe",
+  whenToUse: "safe",
+  argumentHint: "safe",
+  model: "safe",
+  context: "safe",
+  mode: "safe",
+  paths: "safe",
+  userInvocable: "safe",
+  disableModelInvocation: "safe",
+  skillRoot: "safe",
+  filePath: "safe",
+  prompt: "safe",
+  disabled: "safe",
+  isBuiltin: "safe",
+  version: "safe",
+  argumentNames: "safe",
+  hooks: "sensitive",
+  allowedTools: "sensitive",
+  shell: "sensitive",
+  agent: "sensitive",
+  maxTurns: "sensitive",
+  timeoutMins: "sensitive",
+  effort: "sensitive",
+};
 
-/** 敏感属性：出现即视为"非纯安全"，需审批 */
-const SENSITIVE_PROPERTIES: Array<keyof SkillDefinition> = [
-  "hooks",
-  "allowedTools",
-  "shell",
-  "agent",
-  "maxTurns",
-  "timeoutMins",
-  "effort",
-];
+/** 字段分级表（只读视图，供门禁测试比对 types.ts） */
+export const SKILL_PROPERTY_CLASSIFICATION: Readonly<Record<string, "safe" | "sensitive">> =
+  SKILL_PROPERTY_CLASS;
+
+/**
+ * 安全属性白名单：只有这些属性的 Skill 可以自动放行。
+ * 带有白名单之外属性（hooks / allowedTools 等敏感能力，或任何未分类的属性）的 Skill 默认需审批。
+ */
+export const SAFE_SKILL_PROPERTIES: ReadonlySet<string> = new Set(
+  Object.keys(SKILL_PROPERTY_CLASS).filter(
+    (k) => SKILL_PROPERTY_CLASS[k as keyof SkillDefinition] === "safe",
+  ),
+);
+
+/** 值是否「没有提供能力」：缺省 / null / 空数组 视同未声明 */
+function isEmptyValue(value: unknown): boolean {
+  if (value === undefined || value === null) return true;
+  if (Array.isArray(value) && value.length === 0) return true;
+  return false;
+}
 
 /**
  * 检查 Skill 是否只含安全属性
- * 任意敏感属性有有效值 → false（需审批）
+ *
+ * P2-2：遍历 skill **自身的全部属性**、按白名单判定，而不是只遍历敏感表——
+ * 后者对任何未登记的新属性默认放行，与文件头承诺的「未来新增属性默认需审批」方向相反。
+ * 现在任一非白名单属性有有效值 → false（需审批）。
  */
 export function skillHasOnlySafeProperties(skill: SkillDefinition): boolean {
-  for (const key of SENSITIVE_PROPERTIES) {
-    const value = skill[key];
-    if (value === undefined || value === null) continue;
-    if (Array.isArray(value) && value.length === 0) continue;
+  for (const [key, value] of Object.entries(skill)) {
+    if (SAFE_SKILL_PROPERTIES.has(key)) continue;
+    if (isEmptyValue(value)) continue;
     return false;
   }
   return true;
