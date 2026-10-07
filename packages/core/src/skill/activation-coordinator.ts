@@ -136,6 +136,22 @@ export class SkillActivationCoordinator {
   }
 
   /**
+   * 把「启动后才出现」的 skill（如 MCP 发现的）中声明了 paths 的那部分过同一道条件门。
+   *
+   * P2-1：MCP discovery 开始解析 `paths` 之后，迟到 skill 不经 init()，若不在这里 gate，
+   * 就会重现 P0-6（条件 skill 被直接推进 listing、isGated 按名直调拦截失效）。
+   * 必须在 manager.addPluginSkills **之前**调用；之后 enqueueListingForNewSkills 会按 isGated 跳过它们。
+   *
+   * @returns 被 gate 的条件 skill 名
+   */
+  gateLateConditionalSkills(skills: SkillDefinition[]): string[] {
+    const unconditional = this.conditional.separate(skills);
+    const gatedNames = skills.filter((s) => !unconditional.includes(s)).map((s) => s.name);
+    this.manager.gateSkills(gatedNames);
+    return gatedNames;
+  }
+
+  /**
    * P2-4：登记「启动后才出现」的 skill（如 MCP 连接完成后发现的 skill），
    * 走 listing 增量注入路径。
    *

@@ -8,6 +8,7 @@
 
 import { getLogger } from "../debug/logger.ts";
 import { parseFrontmatter } from "../extension/frontmatter.ts";
+import { parseSkillFrontmatterFields } from "../skill/loader.ts";
 import type { SkillDefinition } from "../skill/types.ts";
 
 /** skill:// 资源 URI 前缀 */
@@ -22,19 +23,6 @@ export interface McpResourceProvider {
   }>;
   /** 读取指定服务器的资源内容 */
   readResource(serverName: string, uri: string): Promise<string>;
-}
-
-/** 解析 allowed-tools（逗号分隔字符串或数组） */
-function parseAllowedTools(raw: unknown): string[] | undefined {
-  if (typeof raw === "string") {
-    const list = raw
-      .split(",")
-      .map((s) => s.trim())
-      .filter(Boolean);
-    return list.length > 0 ? list : undefined;
-  }
-  if (Array.isArray(raw)) return raw.map(String);
-  return undefined;
 }
 
 /**
@@ -71,24 +59,31 @@ export async function discoverMcpSkills(provider: McpResourceProvider): Promise<
         continue;
       }
 
-      const rawContext = fm.context as string;
-      const context: "inline" | "fork" = rawContext === "fork" ? "fork" : "inline";
+      if (fm.disabled === true) {
+        log.debug("MCP", `跳过已禁用的 MCP Skill: ${name}`);
+        continue;
+      }
+
+      // P2-1：字段映射复用 loader 的单一事实源，不再并列维护一份（此前漏了 paths / mode /
+      // maxTurns / timeoutMins / effort / agent / argumentNames 等 14 个字段）。
+      const fields = parseSkillFrontmatterFields(fm);
 
       skills.push({
+        ...fields,
+        // MCP 历史默认 inline（未声明 context / mode 时）；声明了则以单一事实源推导为准。
+        context: fields.context ?? "inline",
+        // 刻意剔除的安全字段：executor 拒绝 MCP 注册 hooks、prompt-processor 禁 MCP 内联 shell，
+        // 解析了也用不上，显式置空少一层风险面。
+        hooks: undefined,
+        shell: undefined,
         name,
         description,
-        whenToUse: (fm["when-to-use"] as string) ?? (fm.whenToUse as string),
-        allowedTools: parseAllowedTools(fm["allowed-tools"] ?? fm["allowedTools"]),
-        model: fm.model as string,
-        context,
         prompt: body,
         source: "mcp",
         loadedFrom: "mcp",
         filePath: resource.uri,
         // MCP Skill 没有本地目录，skillRoot 留空
-        userInvocable: fm["user-invocable"] === false ? false : true,
-        disableModelInvocation:
-          fm["disable-model-invocation"] === true || fm["disableModelInvocation"] === true,
+        skillRoot: undefined,
       });
     } catch (err) {
       const msg = err instanceof Error ? err.message : String(err);
