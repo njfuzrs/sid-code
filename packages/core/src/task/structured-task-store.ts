@@ -279,6 +279,38 @@ export function serializeTeamTasks(teamName: string): StructuredTask[] {
 }
 
 /**
+ * 多代理 F6：把磁盘快照**按任务**合并进内存态（跨进程同步用，与 restoreTeamTasks 的整体替换不同）。
+ *
+ * 判据是逐任务的 `updatedAt`：磁盘版本更新（或内存里没有）才覆盖，本进程更新过的任务保留。
+ * 以前每个进程拿自己的整份快照整文件覆盖，后写进程把先写进程的认领 / 完成全部抹掉。
+ * 原地改字段而不替换对象：调用方可能还持有任务引用（如认领返回值）。
+ * 撞上非本团队的同 ID 任务时跳过——不能把主会话 TODO 改成团队任务。
+ */
+export function mergeTeamTasksFromSnapshot(teamName: string, snapshot: StructuredTask[]): void {
+  for (const t of snapshot) {
+    if (!t || typeof t.id !== "string" || typeof t.subject !== "string") continue;
+    const cur = tasks.get(t.id);
+    if (cur && !belongsToTeam(cur, teamName)) continue;
+    if (cur && (cur.updatedAt ?? 0) >= (t.updatedAt ?? 0)) continue;
+    const next: StructuredTask = {
+      ...t,
+      blocks: Array.isArray(t.blocks) ? [...t.blocks] : [],
+      blockedBy: Array.isArray(t.blockedBy) ? [...t.blockedBy] : [],
+      metadata: { ...(t.metadata ?? {}), team: teamName },
+    };
+    if (cur) {
+      delete cur.owner;
+      delete cur.activeForm;
+      Object.assign(cur, next);
+    } else {
+      tasks.set(t.id, next);
+    }
+    const n = Number(t.id);
+    if (Number.isFinite(n) && n > idCounter) idCounter = n;
+  }
+}
+
+/**
  * 把某团队分区的快照恢复进内存态（只替换该团队的任务，不动主会话/其他团队）。
  *
  * ID 冲突处理：快照里的 ID 可能与当前内存态已有的**其他**任务（主会话 TODO / 另一团队）

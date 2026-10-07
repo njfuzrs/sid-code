@@ -27,6 +27,7 @@ import {
 import { Manager as ContextManager } from "../context/manager.ts";
 import { Registry as ToolRegistry } from "../tool/registry.ts";
 import { resolveToolSearchEnabled } from "../tool/tool-search-auto.ts";
+import { snapshotMcpToolNames, withholdLateMcpTools } from "../tool/late-mcp-freeze.ts";
 import { stripReadEfficiencyHint } from "../tool/read.ts";
 import { STRUCTURED_OUTPUT_TOOL_NAME } from "../tool/structured-output-tool.ts";
 import { TOKEN_THRESHOLDS } from "../context/auto-compact.ts";
@@ -799,6 +800,13 @@ export async function* queryLoop(loopConfig: QueryLoopConfig): AsyncGenerator<Qu
     });
   })();
 
+  // F2：延迟加载关闭时，本次 loop 只发开始时已在的 MCP 工具，晚到的等下一条用户消息。
+  // 开启时 MCP 工具本就走 deferred 池，不需要冻结（冻了反而挡住 tool_search 的激活）。
+  const mcpToolsAtLoopStart = toolSearchEnabled
+    ? undefined
+    : snapshotMcpToolNames(toolRegistry.definitions());
+  let lateMcpWithheldLogged = false;
+
   // 回填定档结果给 registry，供 tool-executor 的「schema 未发送」补救判定使用
   // （模型盲调未激活的延迟工具、传了畸形参数时，追加"先 tool_search 激活"引导）。
   // 定档只算一次（循环外），与 toolSearchEnabled 局部变量同源，不会会话内漂移。
@@ -1166,12 +1174,23 @@ export async function* queryLoop(loopConfig: QueryLoopConfig): AsyncGenerator<Qu
       const cleanedMessages = ctxMgr.getCleanedMessages();
       // 工具延迟加载开启时，首轮只发非延迟工具（activeDefinitions），延迟工具由模型经
       // tool_search 按需激活后才进上下文；关闭时发全量（definitions），行为与历史一致。
-      const toolDefs =
+      let toolDefs =
         toolCount > 0
           ? toolSearchEnabled
             ? toolRegistry.activeDefinitions()
             : toolRegistry.definitions()
           : undefined;
+      if (toolDefs && mcpToolsAtLoopStart) {
+        const held = withholdLateMcpTools(toolDefs, mcpToolsAtLoopStart);
+        toolDefs = held.defs;
+        if (held.withheld.length > 0 && !lateMcpWithheldLogged) {
+          lateMcpWithheldLogged = true;
+          log.info(
+            "TOOL_SEARCH",
+            `本次任务中途新连上 ${held.withheld.length} 个 MCP 工具，下一条用户消息起可见（保工具区前缀缓存）`,
+          );
+        }
+      }
       log.llmRequest(
         config.provider,
         config.model,

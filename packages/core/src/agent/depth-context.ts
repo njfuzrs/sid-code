@@ -48,9 +48,22 @@ export function resolveMaxDepth(
   return Math.min(n, MAX_AGENT_DEPTH);
 }
 
-/** 当前嵌套深度（主代理上下文=0）。 */
+/** 跨进程传递深度的环境变量（多代理 F8）。
+ *  ALS 不跨进程：spawn 子进程里 getAgentDepth() 原本从 0 起算，`depth === 0` 无条件放行，
+ *  每跨一次进程深度上限就归零。父进程 spawn 时把**子代理自己的深度**写进这个变量，
+ *  子进程把它当作 ALS 缺省值——锚点挂在进程元数据上，不靠扫描消息历史（会被压缩改写）。 */
+export const AGENT_DEPTH_ENV = "SID_AGENT_DEPTH";
+
+/** 解析进程级基础深度（非法/缺省为 0）。 */
+export function resolveBaseDepth(raw: string | undefined = process.env[AGENT_DEPTH_ENV]): number {
+  if (raw === undefined || raw === "") return 0;
+  const n = Number.parseInt(raw, 10);
+  return Number.isFinite(n) && n > 0 ? n : 0;
+}
+
+/** 当前嵌套深度（主代理上下文=0；spawn 子进程内以父进程传入的深度为起点）。 */
 export function getAgentDepth(): number {
-  return depthStorage.getStore() ?? 0;
+  return depthStorage.getStore() ?? resolveBaseDepth();
 }
 
 /** 在深度 +1 的上下文里运行 fn（子代理执行体包在这里面）。 */

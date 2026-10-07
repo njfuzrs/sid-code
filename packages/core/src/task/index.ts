@@ -50,6 +50,7 @@ export {
   flushTaskOutput,
   getTaskOutputDelta,
   getTaskOutputTail,
+  getTaskOutputSize,
   evictTaskOutput,
 } from "./disk-output.ts";
 
