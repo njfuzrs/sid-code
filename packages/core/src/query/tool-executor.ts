@@ -28,6 +28,7 @@ import type { ToolUseContext } from "../tool/types.ts";
 import { partitionToolCalls, getMaxToolConcurrency } from "./tool-orchestration.ts";
 import { recordEditOutcome } from "./edit-failure-tracker.ts";
 import { recordHitlPrompt } from "./turn-complete.ts";
+import { recordHitlWaitHistogram } from "../telemetry/metrics/latency-histograms.ts";
 import { detectSensitiveData } from "../permission/sensitive.ts";
 // P0-1 漏斗 1/2：工具与权限埋点。必须走 analytics/events.ts 门面，不直接调 logEvent——
 // 门面强制脱敏工具名与文件路径，业务侧拿不到裸传接口（见该文件顶部的三条硬约束）。
@@ -1089,6 +1090,8 @@ export async function resolveToolPermission(
     // 无论用户最终批准、拒绝，还是超时/被 abort 掉。按"用户作答"记会漏掉后两类，
     // 而超时那类恰好是等得最久的（默认 300s），漏掉等于专门漏掉最慢样本。
     recordHitlPrompt(deps.sessionState);
+    // 缺陷 27：确认耗时从弹窗这一刻起算（同上：超时 / abort 样本最慢，不能漏）
+    const hitlStartedAt = Date.now();
 
     // 三路竞争：hook / classifier / 用户交互
     const { resolvePermission } = await import("../permission/async-decision.ts");
@@ -1187,6 +1190,13 @@ export async function resolveToolPermission(
         },
         gracePeriodMs: 200,
       },
+    );
+
+    recordHitlWaitHistogram(
+      Date.now() - hitlStartedAt,
+      block.name,
+      result.decision.allowed ? "allow" : "deny",
+      normalizePermissionSource(result.source),
     );
 
     if (!result.decision.allowed) {

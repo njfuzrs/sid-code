@@ -179,15 +179,20 @@ export function shouldChargeBilledRequest(req: BilledRequest): boolean {
 }
 
 const observers = new Set<BillingObserver>();
-/** 已见过的 fetchId（去重）。有界，见 MAX_SEEN。 */
-let seen = new Set<string>();
 /**
- * fetchId 去重集合上限。
+ * 已见过的 fetchId（去重），**双桶轮换**：`seen` 是当前桶，`seenPrev` 是上一桶。
  *
- * 超过即整体清空而不是 LRU 淘汰：这个集合防的是**同一条流在同一瞬间被 emit 两次**
- * （provider 的正常/异常路径都可能走到收口点），跨越几千次请求之后的重复不可能发生。
- * 无界增长在长会话里是真实泄漏（一次 fetch 一个字符串键）。
+ * 缺陷 25（20260927 可观测性审计）：原先满 MAX_SEEN 即整体清空，清空那一瞬间
+ * 前 4096 个 id **全体失保** —— 其中任何一条若还欠第二次 emit（openai 有
+ * `sendViaResponsesAPI` 与 `parseSSE` 两个收口点，长流 / 异常路径收尾可能隔着整条流），
+ * 就会被当新请求重复入账。错向是**高估**，正是本文件头注释点破的那个更隐蔽的方向。
+ *
+ * 双桶只多一个字段：当前桶满时降为上一桶、开新桶，查重同时看两桶 ⇒ 任何 fetchId
+ * 至少在其后 MAX_SEEN 次上报内必然被记住，内存上界 2 × MAX_SEEN。
  */
+let seen = new Set<string>();
+let seenPrev = new Set<string>();
+/** 单桶上限。无界增长在长会话里是真实泄漏（一次 fetch 一个字符串键），所以必须有界。 */
 const MAX_SEEN = 4096;
 
 /** 注册计费观察者。返回反注册函数。 */
@@ -204,8 +209,11 @@ export function addBillingObserver(fn: BillingObserver): () => void {
  */
 export function recordBilledRequest(req: BilledRequest): void {
   try {
-    if (!req.fetchId || seen.has(req.fetchId)) return;
-    if (seen.size >= MAX_SEEN) seen = new Set();
+    if (!req.fetchId || seen.has(req.fetchId) || seenPrev.has(req.fetchId)) return;
+    if (seen.size >= MAX_SEEN) {
+      seenPrev = seen;
+      seen = new Set();
+    }
     seen.add(req.fetchId);
     // 时段观测在**去重之后**：同一条流被 emit 两次时不能把高峰数记两遍。
     // 放在观察者之前：它与"谁给这笔钱记账"无关，所有 fetch 都要数（见 recordPriceTier）。
@@ -296,17 +304,28 @@ export function getPeakRatio(): number | undefined {
   return peakCount / tieredCount;
 }
 
-/** 重置（会话切换 / 测试）。 */
-export function resetBillingSink(): void {
-  observers.clear();
-  seen = new Set();
+/**
+ * 只清时段计数（会话切换时调）—— 缺陷 24（20260927 可观测性审计）。
+ *
+ * `peakCount` / `tieredCount` 是模块级单例，而 `peakRatio` 是**比值**：同进程 `/clear`
+ * 或 resume 开新会话而不清零，新会话账本行写进的是「两个会话的 flow 之和」之比，
+ * 既不描述前会话也不描述后会话，且进程活得越久越贴近全生命周期均值（长驻 TUI 受害最重）。
+ * 生产调用点在 `trace/collector.ts` 的 handleSessionStart，与 `resetSideCallStats` 同一时机。
+ *
+ * 刻意**不动**观察者与去重集合：观察者由 app 构造期注册一次、跨会话复用，清了就断账；
+ * fetchId 全局唯一（`nextFetchId` 自增序号），跨会话不会撞，去重集合无需随会话清。
+ */
+export function resetPriceTierCounts(): void {
   peakCount = 0;
   tieredCount = 0;
 }
 
-/** 只清去重集合，保留观察者（跨会话复用同一批观察者时用）。 */
-export function clearBillingDedupe(): void {
+/** 全量重置（测试用）：观察者 + 去重集合 + 时段计数。 */
+export function resetBillingSink(): void {
+  observers.clear();
   seen = new Set();
+  seenPrev = new Set();
+  resetPriceTierCounts();
 }
 
 let fetchSeq = 0;

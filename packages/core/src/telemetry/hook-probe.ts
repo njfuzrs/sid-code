@@ -13,7 +13,13 @@ import { currentSpanScope } from "./span-scope.ts";
 import type { Attributes } from "./types.ts";
 import { ATTR } from "./types.ts";
 import { normalizeCacheUsage } from "../llm/types.ts";
-import { addRequestContent, addResponseContent, addToolContent } from "./content-tracing.ts";
+import {
+  addRequestContent,
+  addResponseContent,
+  addToolContent,
+  maskedErrorSummary,
+  sanitizedToolName,
+} from "./content-tracing.ts";
 import { clearPendingRootSpan, writePendingRootSpan } from "./root-span-recovery.ts";
 import { HookEventName } from "../hook/types.ts";
 import type {
@@ -383,12 +389,15 @@ export class TelemetryHookProbe {
     const enriched = this.collectEnrichedAttributes("execute_tool", input);
     const toolDuration =
       typeof input.duration_ms === "number" && input.duration_ms > 0 ? input.duration_ms : 0;
+    // 缺陷 22：span name 与 TOOL_NAME 一律走 sanitizeToolName（MCP → "mcp_tool"），
+    // 与 analytics 通道同一条规则。span 随 OTLP 外发，原名会带出用户私有 MCP 服务名。
+    const toolName = sanitizedToolName(input.tool_name);
     const toolSpan = this.bus.startSpan(
       "execute_tool",
-      `execute_tool ${input.tool_name}`,
+      `execute_tool ${toolName}`,
       {
         [ATTR.OPERATION_NAME]: "execute_tool",
-        [ATTR.TOOL_NAME]: input.tool_name,
+        [ATTR.TOOL_NAME]: toolName,
         [ATTR.TOOL_CALL_ID]: input.tool_use_id ?? "",
         [ATTR.SUCCESS]: !input.is_error,
         ...(enriched as Attributes),
@@ -406,7 +415,11 @@ export class TelemetryHookProbe {
       toolResponse: input.tool_response,
     });
     if (input.is_error) {
-      toolSpan.recordError(new Error(JSON.stringify(input.tool_response).slice(0, 200)));
+      // 缺陷 23：错误摘要过脱敏 + 按字节截断。recordError 不受内容级 tracing 开关约束，
+      // 原样写入等于给第 4 道闸门开了一条只在失败路径上生效的旁路。
+      toolSpan.recordError(
+        new Error(maskedErrorSummary(JSON.stringify(input.tool_response) ?? "")),
+      );
     }
     toolSpan.end();
   }
@@ -420,12 +433,13 @@ export class TelemetryHookProbe {
    * 要看拒绝另走权限决策（B11）或按 status 过滤。
    */
   private handlePermissionDenied(input: PermissionDeniedInput): void {
+    const toolName = sanitizedToolName(input.tool_name);
     const span = this.bus.startSpan(
       "execute_tool",
-      `execute_tool ${input.tool_name}`,
+      `execute_tool ${toolName}`,
       {
         [ATTR.OPERATION_NAME]: "execute_tool",
-        [ATTR.TOOL_NAME]: input.tool_name,
+        [ATTR.TOOL_NAME]: toolName,
         [ATTR.TOOL_CALL_ID]: input.tool_use_id ?? "",
         "sidcode.tool.status": "denied",
         "sidcode.permission.denial_source": input.denial_source,
@@ -442,9 +456,10 @@ export class TelemetryHookProbe {
   }
 
   private handleBeforePermissionCheck(input: PermissionCheckInput): void {
-    const span = this.bus.startSpan("blocked_on_user", `blocked_on_user ${input.tool_name}`, {
+    const toolName = sanitizedToolName(input.tool_name);
+    const span = this.bus.startSpan("blocked_on_user", `blocked_on_user ${toolName}`, {
       [ATTR.OPERATION_NAME]: "blocked_on_user",
-      [ATTR.TOOL_NAME]: input.tool_name,
+      [ATTR.TOOL_NAME]: toolName,
       ...(input.tool_use_id ? { [ATTR.TOOL_CALL_ID]: input.tool_use_id } : {}),
       ...(this.collectEnrichedAttributes("execute_tool", input) as Attributes),
     });
