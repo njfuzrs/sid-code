@@ -1118,9 +1118,18 @@ export class App {
             },
           });
         },
-        onFallback: (reason, model) => {
+        onFallback: (reason, model, info) => {
           const log = getLogger();
           log.warn("FALLBACK", `降级到 ${model}，原因: ${reason}`);
+          // Q6 细则 2：auto 模式（fallbackSwitchMode=auto、子代理 / 压缩等后台调用传 switchMode:"auto"）
+          // 不经 applyPrimaryModelSwitch——它只换当次调用、不改主模型——于是原先这条最常见的
+          // 自动降级对 PostModelSwitch 完全不可见。ask 模式由决策钩子提升主模型时已发过，这里不重复。
+          // trigger=fallback 与 applyPrimaryModelSwitch 的降级口径一致。
+          if (info && !info.viaDecision && info.fromModel !== model) {
+            this.hookSystem
+              ?.firePostModelSwitchEvent(info.fromModel, model, "fallback", reason)
+              .catch((e: any) => log.error("HOOK", `model_switch hook 失败: ${e?.message ?? e}`));
+          }
           // CM3：降级也作为一种重试状态展示（attempt 不适用，置 0）。
           this.tuiStateUpdater?.({
             retryStatus: {
@@ -1186,8 +1195,11 @@ export class App {
     this.hookSystem.setProjectDir(process.cwd());
     // HC11：stdin permission_mode / transcript_path。取值函数而非快照——模式运行时会被改写。
     this.hookSystem.setPermissionModeProvider(() => this.config.permissionMode);
-    this.hookSystem.setTranscriptPathProvider((id) =>
-      join(currentProjectSessionDir(), `${id}.jsonl`),
+    // resume 时 jsonl 续写的是**被恢复会话**的文件（见 doInit 的 resumeSession），不是本进程新 id。
+    // 原先按 hook 的 session_id（进程 id）拼路径，resume 后 transcript_path 指向一个不存在的文件。
+    // 用 getLogicalSessionId 取值：它与 SessionStore 实际写入的 jsonl 归属同口径；入参 id 不再使用。
+    this.hookSystem.setTranscriptPathProvider(() =>
+      join(currentProjectSessionDir(), `${this.getLogicalSessionId()}.jsonl`),
     );
     // 恢复 settings.json disabledHooks（/hooks disable -p 持久化端）。
     // 插件 hook 在 loadPluginHooks 后才注册，故那里会再应用一次（见下方 loadPluginHooks 调用点）。
@@ -1596,12 +1608,36 @@ export class App {
       localSettings: "local_settings",
       policySettings: "policy_settings",
     };
-    const onChange = (source: string, path?: string) => {
+    const onChange = async (
+      source: string,
+      path?: string,
+      previous?: import("@sid-code/core/config/settings/cache.ts").ParsedSettings,
+    ) => {
       const mapped = ccSource[source];
       if (!mapped) return;
-      this.hookSystem
-        .fireConfigChangeEvent([], mapped, path)
-        .catch((e) => getLogger().error("HOOK", `config_change hook 失败: ${e?.message ?? e}`));
+      try {
+        const { getSettingsForSource } = await import("@sid-code/core/config/settings/settings.ts");
+        const { diffTopLevelKeys, restoreSourceSnapshot } =
+          await import("@sid-code/core/config/settings/cache.ts");
+        const next = getSettingsForSource(source as any).settings as Record<string, unknown> | null;
+        // changed_keys：原先恒传 []。没有旧快照（该来源此前从未被读过）时无从比较，按新值全部键上报
+        const changedKeys = previous
+          ? diffTopLevelKeys(previous.settings as Record<string, unknown> | null, next)
+          : Object.keys(next ?? {}).sort();
+        const result = await this.hookSystem.fireConfigChangeEvent(changedKeys, mapped, path);
+        // CC：ConfigChange 可 block（拒绝变更生效），policy_settings 除外——托管策略不能被用户 hook 否决。
+        // 原先返回值被丢，hook 返回 block 也照样生效。回退的是内存缓存，磁盘文件不动（见 restoreSourceSnapshot）。
+        if (result.finalOutput?.isBlockingDecision() && mapped !== "policy_settings" && previous) {
+          restoreSourceSnapshot(source as any, previous);
+          const reason = result.finalOutput.getEffectiveReason();
+          getLogger().warn(
+            "HOOK",
+            `ConfigChange hook 拒绝了 ${mapped} 的变更，已回退到变更前的设置${reason ? `：${reason}` : ""}`,
+          );
+        }
+      } catch (e: any) {
+        getLogger().error("HOOK", `config_change hook 失败: ${e?.message ?? e}`);
+      }
     };
     settingsChanged.on("change", onChange);
     this.offConfigChangeHook = () => settingsChanged.off("change", onChange);
@@ -2616,6 +2652,14 @@ export class App {
         // 必须在 rebuildDisplay/系统提示词重建这一批里一起归零。
         this.jitContextMgr.reset();
         this.reportedJitFailures.clear();
+        // HC12 / HC16：/clear 之后重发 SessionStart(source=clear)，对齐 CC——
+        // 清空对话也清掉了启动时 hook 注入的上下文，不重发就只有第一段对话看得到它。
+        // fire-and-forget：/clear 是同步交互，不能被一个慢 hook 卡住；结果在下一条用户消息注入。
+        void this.hookSystem
+          .fireSessionRestartEvent("clear", this.config.model)
+          .catch((err: any) =>
+            log.debug("HOOK", `SessionStart(clear) 失败: ${err?.message ?? err}`),
+          );
         // 记账同步归零（JIT 分量已清，基线由后续重建的 onSectionTokens 重新报）
         this.refreshMemoryTokenAccounting();
         // 缓存检测状态重置：旧基线对新会话无效，不清会产生虚假中断检测
@@ -3058,7 +3102,22 @@ export class App {
     // 加载插件 Hooks（原子注册到 HookSystem，失败不阻塞启动）
     try {
       const { loadPluginHooks } = await import("./plugin/index.ts");
-      await loadPluginHooks(this.hookSystem);
+      const pluginHookDiags = await loadPluginHooks(this.hookSystem);
+      // §三.9：插件 hook 诊断与项目层同一出口。cli.ts 打 -p stderr 诊断在 init 之前，
+      // 此刻已经过了那一刻，所以 -p 直接写 stderr；交互模式记进启动横幅（runTUI 在 init 之后才取横幅）。
+      if (pluginHookDiags.length > 0) {
+        const { recordStartupWarning } = await import("@sid-code/core/config/config.ts");
+        for (const d of pluginHookDiags) {
+          if (this.config.print) console.error(`  ⚠ [提示] ${d.path}: ${d.message}`);
+          else recordStartupWarning(this.config, d.path, d.message);
+        }
+      }
+      // skill / agent 的 hooks 运行期才注册、横幅早过了；-p 下诊断走 stderr（TUI 在 runTUI 里另行注册）
+      if (this.config.print) {
+        const { setRuntimeHookDiagnosticSink } =
+          await import("@sid-code/core/hook/diagnostic-sink.ts");
+        setRuntimeHookDiagnosticSink((line) => console.error(`  ⚠ [提示] ${line}`));
+      }
       // 插件 hook 刚注册,重新应用 disabledHooks,让持久化的禁用状态覆盖插件 hook。
       this.hookSystem.applyDisabledHooks(this.config.disabledHooks);
     } catch (err: any) {
@@ -7626,6 +7685,26 @@ export class App {
       updateState({ statusMessage: joined });
     }
 
+    // CC hooks statusMessage：hook 跑起来时在状态行显示它声明的文案，结束即移除。
+    // 只在 runTUI 订阅——headless / SDK / bridge 不走这里，天然不显示（stdout 要留给结构化输出）。
+    // 用 runId 做 key 而不是 hook 名：同一 hook 可能被两次并行工具调用同时触发，按名字会一个结束就抹掉另一个。
+    this.hookSystem.onHookLifecycle((ev) => {
+      // runtime hook（轨迹 / 遥测）是内部实现，没有 statusMessage，也不该打扰用户
+      const text = ev.hookConfig.type === "runtime" ? undefined : ev.hookConfig.statusMessage;
+      if (!text) return;
+      const id = `hook_status:${ev.runId}`;
+      if (ev.phase === "start") addStatusMessage(id, text);
+      else removeStatusMessage(id);
+    });
+
+    // skill / agent 运行期注册 hook 的诊断：启动横幅已过，进状态行（transient，8s 后自清，
+    // 不 sticky——它描述的是配置文件的问题，不是本轮状态；完整列表仍可 `sid-code hooks list` 看）。
+    void import("@sid-code/core/hook/diagnostic-sink.ts").then(({ setRuntimeHookDiagnosticSink }) =>
+      setRuntimeHookDiagnosticSink((line) =>
+        addTransientStatusMessage("hook_diagnostic", `⚠ ${line}`, 8000),
+      ),
+    );
+
     /**
      * 上一轮遗留的 sticky 状态提示 key —— 新一轮开始时统一清掉。
      *
@@ -9241,6 +9320,12 @@ export class App {
             // 统一消息队列清空（缺口1 h2A）：会话级重置不应让排队输入/未出队通知跨会话残留。
             clearMessageQueue();
             this.announcedMcpServers.clear();
+            // HC12 / HC16：同上，/clear 后重发 SessionStart(source=clear)
+            void this.hookSystem
+              .fireSessionRestartEvent("clear", this.config.model)
+              .catch((err: any) =>
+                log.debug("HOOK", `SessionStart(clear) 失败: ${err?.message ?? err}`),
+              );
             lastSyncedCount = 0;
             historyIdCounter = 0;
             activeStatusMessages.clear();

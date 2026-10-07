@@ -16,6 +16,7 @@
 
 import { getLogger } from "../debug/logger.ts";
 import type { HookSystem } from "../hook/system.ts";
+import { reportRuntimeHookDiagnostics } from "../hook/diagnostic-sink.ts";
 import { ConfigSource, HookEventName, LEGACY_EVENT_MAP } from "../hook/types.ts";
 import type { SkillHooksConfig } from "./types.ts";
 
@@ -76,6 +77,8 @@ export function registerSkillHooks(
   for (const d of diagnostics) {
     log.warn("SKILL", `Skill ${skillName} 的 hook 已跳过 ${d.path}: ${d.message}`);
   }
+  // 运行期注册，启动横幅已过：走运行期出口让用户在终端里看得到（logger 只在 --debug 日志里）
+  reportRuntimeHookDiagnostics(`Skill ${skillName}`, diagnostics);
 
   const count = hookSystem.getAllHooks().length - before;
   if (count > 0) {

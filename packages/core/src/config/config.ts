@@ -638,7 +638,11 @@ export interface Config {
    */
   _hookLayers?: import("./hook-layers.ts").HookLayer[];
 
-  /** Q2：`--trust-workspace` / SDK `trustWorkspace`——仅本会话信任工作区，不持久化 */
+  /**
+   * Q2：`--trust-workspace`——仅本会话信任工作区，不持久化。
+   * SDK 宿主（Python SDK / IDE 插件）是 spawn 本 CLI 的，放行方式就是在命令行加这个参数；
+   * 刻意不放进 initialize 握手：信任门在启动期（cli.ts）就已决定加载哪些层，握手到达时为时已晚。
+   */
   trustWorkspace?: boolean;
 
   /**
@@ -1941,8 +1945,9 @@ export async function loadConfig(cliArgs: Partial<Config> = {}): Promise<Config>
  * stderr 分支，TUI 接管终端后这段输出消失，用户看不到。诊断列表是 TUI 启动横幅和
  * --print stderr 诊断的共同数据源，挂在这里两条路径都看得见。
  * 同 path 同 message 不重复追加，防 loadConfig 的两个分支都命中时记两次。
+ * 导出给 app.init 的插件 hook 诊断用：插件在 loadConfig 之后才加载，但仍早于 TUI 横幅渲染。
  */
-function recordStartupWarning(config: Config, path: string, message: string): void {
+export function recordStartupWarning(config: Config, path: string, message: string): void {
   const diag = (config._validationDiagnostics ??= { warnings: [], errors: [] });
   if (diag.warnings.some((w) => w.path === path && w.message === message)) return;
   diag.warnings.push({ path, message });

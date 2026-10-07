@@ -236,6 +236,16 @@ export async function runPostCompact(opts: PostCompactOptions): Promise<void> {
   } catch (err: any) {
     log.debug("HOOK", `PostCompact hook 执行异常（不影响压缩）: ${err?.message ?? err}`);
   }
+
+  // 7. HC12：压缩后重发 SessionStart(source=compact)，与 CC 一致。
+  // 压缩把 SessionStart 注入的上下文一起压进摘要（或直接丢掉），不重发的话
+  // 「启动时注入当前分支 / 项目约定」这类 hook 只在会话前半段有效。放在收尾模块里，
+  // auto / manual / reactive·collapse 三条压缩路径共用这一处，不会漏一条。
+  try {
+    await opts.hookSystem?.fireSessionRestartEvent("compact");
+  } catch (err: any) {
+    log.debug("HOOK", `SessionStart(compact) hook 执行异常（不影响压缩）: ${err?.message ?? err}`);
+  }
 }
 
 /**

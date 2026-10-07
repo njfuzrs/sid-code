@@ -410,8 +410,12 @@ export class TelemetryHookProbe {
   }
 
   /**
-   * Q7：权限拒绝的 execute_tool span。工具没跑，耗时为 0；`sidcode.tool.status=denied` 与
-   * success=false 一起标，聚合「工具失败率」时按 status 排除，拒绝另见权限决策（B11）。
+   * Q7：权限拒绝的 execute_tool span。工具没跑，耗时为 0，只标 `sidcode.tool.status=denied`。
+   *
+   * 刻意**不写** `sidcode.success`：原先标 success=false 并寄望「聚合时按 status 排除」，
+   * 但仓内没有任何聚合代码读 status——下游按 success 算失败率，拒绝就又混回分子里，
+   * Q7 切换语义省掉的那截曲线原样回来。不给 success，按 success 统计的口径天然不含拒绝；
+   * 要看拒绝另走权限决策（B11）或按 status 过滤。
    */
   private handlePermissionDenied(input: PermissionDeniedInput): void {
     const span = this.bus.startSpan(
@@ -421,7 +425,6 @@ export class TelemetryHookProbe {
         [ATTR.OPERATION_NAME]: "execute_tool",
         [ATTR.TOOL_NAME]: input.tool_name,
         [ATTR.TOOL_CALL_ID]: input.tool_use_id ?? "",
-        [ATTR.SUCCESS]: false,
         "sidcode.tool.status": "denied",
         "sidcode.permission.denial_source": input.denial_source,
       },

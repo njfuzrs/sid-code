@@ -316,6 +316,32 @@ describe("TelemetryHookProbe", () => {
   });
 
   /**
+   * Q7：权限拒绝的 span 已关闭、status=denied，且**不带** sidcode.success——
+   * 按 success 统计工具失败率的下游因此天然不把拒绝算进分子。
+   */
+  test("权限拒绝 span：status=denied、不计入工具失败（不带 success）", async () => {
+    const hookSystem = new HookSystem();
+    probe.registerHooks(hookSystem);
+
+    await hookSystem.fireSessionStartEvent("startup", { model: "claude-sonnet-4" });
+    await hookSystem.firePermissionDeniedEvent(
+      "bash",
+      { command: "rm -rf /" },
+      "规则拒绝",
+      "rule",
+      "tu-d1",
+    );
+    await hookSystem.fireSessionEndEvent("exit");
+    await bus.flush();
+
+    const toolSpan = spans.find((s) => s.kind === "execute_tool");
+    expect(toolSpan).toBeDefined();
+    expect(toolSpan!.attributes["sidcode.tool.status"]).toBe("denied");
+    expect(toolSpan!.attributes[ATTR.TOOL_CALL_ID]).toBe("tu-d1");
+    expect(ATTR.SUCCESS in toolSpan!.attributes).toBe(false);
+  });
+
+  /**
    * PostToolUseFailure 也必须产 execute_tool span。
    *
    * 此前 registerHooks 只订阅 PostToolUse，于是所有"工具没执行成功"的失败

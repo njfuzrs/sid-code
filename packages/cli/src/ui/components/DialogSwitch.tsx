@@ -295,7 +295,13 @@ export const DialogSwitch: React.FC<DialogSwitchProps> = ({
     );
   }
   if (activeDialog === "hooks" && callbacks.hookSystem) {
-    return <HooksDialog onClose={onDialogClose} hookSystem={callbacks.hookSystem} />;
+    return (
+      <HooksDialog
+        onClose={onDialogClose}
+        hookSystem={callbacks.hookSystem}
+        hookLayers={callbacks.config?._hookLayers}
+      />
+    );
   }
   if (activeDialog === "stats") {
     return (
