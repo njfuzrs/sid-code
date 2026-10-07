@@ -260,8 +260,10 @@ export class HookSystem {
     toolName: string,
     toolInput: Record<string, unknown>,
     toolUseId?: string,
+    /** 子代理执行链身份（agent_id / agent_type），主循环不传 */
+    options?: { agent?: import("./types.ts").HookAgentRef },
   ): Promise<AggregatedHookResult> {
-    return this.eventHandler.firePreToolUseEvent(toolName, toolInput, toolUseId);
+    return this.eventHandler.firePreToolUseEvent(toolName, toolInput, toolUseId, options);
   }
 
   async firePostToolUseEvent(
@@ -275,6 +277,7 @@ export class HookSystem {
       edit_meta?: import("./types.ts").HarnessEditMeta;
       verify_triggered?: boolean;
       harness_context?: import("./types.ts").HarnessHookContext;
+      agent?: import("./types.ts").HookAgentRef;
     },
   ): Promise<AggregatedHookResult> {
     return this.eventHandler.firePostToolUseEvent(
@@ -299,6 +302,7 @@ export class HookSystem {
       is_interrupt?: boolean;
       failure_kind?: import("./types.ts").ToolFailureKind;
       tool_output?: unknown;
+      agent?: import("./types.ts").HookAgentRef;
     },
   ): Promise<AggregatedHookResult> {
     return this.eventHandler.firePostToolUseFailureEvent(
@@ -469,6 +473,7 @@ export class HookSystem {
     denialReason: string,
     denialSource: "user" | "rule" | "hook" | "auto",
     toolUseId?: string,
+    options?: { agent?: import("./types.ts").HookAgentRef },
   ): Promise<AggregatedHookResult> {
     return this.eventHandler.firePermissionDeniedEvent(
       toolName,
@@ -476,6 +481,7 @@ export class HookSystem {
       denialReason,
       denialSource,
       toolUseId,
+      options,
     );
   }
 
@@ -497,16 +503,21 @@ export class HookSystem {
   }
 
   /** CwdChanged 事件 */
-  async fireCwdChangedEvent(oldCwd: string, newCwd: string): Promise<AggregatedHookResult> {
-    return this.eventHandler.fireCwdChangedEvent(oldCwd, newCwd);
+  async fireCwdChangedEvent(
+    oldCwd: string,
+    newCwd: string,
+    options?: { agent?: import("./types.ts").HookAgentRef },
+  ): Promise<AggregatedHookResult> {
+    return this.eventHandler.fireCwdChangedEvent(oldCwd, newCwd, options);
   }
 
   /** TaskCreated 事件 */
   async fireTaskCreatedEvent(
     taskId: string,
     taskDescription: string,
+    options?: { agent?: import("./types.ts").HookAgentRef },
   ): Promise<AggregatedHookResult> {
-    return this.eventHandler.fireTaskCreatedEvent(taskId, taskDescription);
+    return this.eventHandler.fireTaskCreatedEvent(taskId, taskDescription, options);
   }
 
   /** TaskCompleted 事件 */
@@ -515,8 +526,15 @@ export class HookSystem {
     taskDescription: string,
     success: boolean,
     result?: string,
+    options?: { agent?: import("./types.ts").HookAgentRef },
   ): Promise<AggregatedHookResult> {
-    return this.eventHandler.fireTaskCompletedEvent(taskId, taskDescription, success, result);
+    return this.eventHandler.fireTaskCompletedEvent(
+      taskId,
+      taskDescription,
+      success,
+      result,
+      options,
+    );
   }
 
   /** G11：InstructionsLoaded 事件——指令（CLAUDE.md / rules）加载到上下文时 */

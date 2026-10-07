@@ -46,6 +46,7 @@ import {
   type HookExecutionResult,
   type HookConfig,
   type ToolFailureKind,
+  type HookAgentRef,
   resolveHookTimeoutMs,
   sessionEndBudgetMs,
 } from "./types.ts";
@@ -155,9 +156,12 @@ export class HookEventHandler {
     toolName: string,
     toolInput: Record<string, unknown>,
     toolUseId?: string,
+    /** 子代理执行链身份：有则带 agent_id / agent_type（CC 语义，见 types.ts HookAgentFields） */
+    options?: { agent?: HookAgentRef },
   ): Promise<AggregatedHookResult> {
     const input: PreToolUseInput = {
       ...this.createBaseInput(HookEventName.PreToolUse),
+      ...agentFields(options?.agent),
       tool_name: toolName,
       tool_input: toolInput,
       tool_use_id: toolUseId,
@@ -177,10 +181,12 @@ export class HookEventHandler {
       edit_meta?: import("./types.ts").HarnessEditMeta;
       verify_triggered?: boolean;
       harness_context?: import("./types.ts").HarnessHookContext;
+      agent?: HookAgentRef;
     },
   ): Promise<AggregatedHookResult> {
     const input: PostToolUseInput = {
       ...this.createBaseInput(HookEventName.PostToolUse),
+      ...agentFields(options?.agent),
       tool_name: toolName,
       tool_input: toolInput,
       tool_response: toolResponse,
@@ -217,11 +223,13 @@ export class HookEventHandler {
       failure_kind?: ToolFailureKind;
       /** tool_error 时工具的原始输出（tool_response.output） */
       tool_output?: unknown;
+      agent?: HookAgentRef;
     },
   ): Promise<AggregatedHookResult> {
     const kind = options?.failure_kind ?? "exception";
     const input: PostToolUseInput = {
       ...this.createBaseInput(HookEventName.PostToolUseFailure),
+      ...agentFields(options?.agent),
       tool_name: toolName,
       tool_input: toolInput,
       tool_response:
@@ -504,9 +512,11 @@ export class HookEventHandler {
     denialReason: string,
     denialSource: PermissionDeniedInput["denial_source"],
     toolUseId?: string,
+    options?: { agent?: HookAgentRef },
   ): Promise<AggregatedHookResult> {
     const input: PermissionDeniedInput = {
       ...this.createBaseInput(HookEventName.PermissionDenied),
+      ...agentFields(options?.agent),
       tool_use_id: toolUseId,
       tool_name: toolName,
       tool_input: toolInput,
@@ -545,9 +555,14 @@ export class HookEventHandler {
   }
 
   /** CwdChanged 事件 */
-  async fireCwdChangedEvent(oldCwd: string, newCwd: string): Promise<AggregatedHookResult> {
+  async fireCwdChangedEvent(
+    oldCwd: string,
+    newCwd: string,
+    options?: { agent?: HookAgentRef },
+  ): Promise<AggregatedHookResult> {
     const input: CwdChangedInput = {
       ...this.createBaseInput(HookEventName.CwdChanged),
+      ...agentFields(options?.agent),
       old_cwd: oldCwd,
       new_cwd: newCwd,
     };
@@ -558,9 +573,11 @@ export class HookEventHandler {
   async fireTaskCreatedEvent(
     taskId: string,
     taskDescription: string,
+    options?: { agent?: HookAgentRef },
   ): Promise<AggregatedHookResult> {
     const input: TaskCreatedInput = {
       ...this.createBaseInput(HookEventName.TaskCreated),
+      ...agentFields(options?.agent),
       task_id: taskId,
       task_description: taskDescription,
     };
@@ -573,9 +590,11 @@ export class HookEventHandler {
     taskDescription: string,
     success: boolean,
     result?: string,
+    options?: { agent?: HookAgentRef },
   ): Promise<AggregatedHookResult> {
     const input: TaskCompletedInput = {
       ...this.createBaseInput(HookEventName.TaskCompleted),
+      ...agentFields(options?.agent),
       task_id: taskId,
       task_description: taskDescription,
       success,
@@ -896,6 +915,15 @@ export function applySessionEndBudget(configs: HookConfig[]): HookConfig[] {
 }
 
 /** Q7：只保留 runtime hook（entries 与 hookConfigs 下标对齐，一起过滤） */
+/**
+ * 子代理执行链身份 → 工具事件输入字段。主循环（agent 缺省）返回空对象，**不**写出
+ * `agent_id: undefined`：runner 按 `"agent_id" in input` 设 SID_CODE_AGENT_ID，
+ * 显式 undefined 会让主循环工具事件也带上一个空的 agent 环境变量。
+ */
+function agentFields(agent: HookAgentRef | undefined): { agent_id?: string; agent_type?: string } {
+  return agent ? { agent_id: agent.agent_id, agent_type: agent.agent_type } : {};
+}
+
 function keepRuntimeOnly(plan: HookExecutionPlan): HookExecutionPlan {
   return filterPlan(plan, (c) => c.type === "runtime");
 }

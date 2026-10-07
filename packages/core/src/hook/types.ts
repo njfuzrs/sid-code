@@ -355,8 +355,24 @@ export interface HookInput {
   team_id?: string;
 }
 
+/**
+ * CC 规定：工具事件在子代理里触发时带 agent_id / agent_type（主循环不带）。
+ * 不放进 HookInput 基础字段：基础字段由 createBaseInput 统一组装、与「在哪条执行链上」无关，
+ * 而这两个字段恰恰只由执行链决定，由各工具事件 fire 方法按调用方传入的 agent 条件展开。
+ */
+export interface HookAgentFields {
+  agent_id?: string;
+  agent_type?: string;
+}
+
+/** 子代理执行链身份（工具事件 fire 方法的可选入参，见 HookAgentFields） */
+export interface HookAgentRef {
+  agent_id: string;
+  agent_type: string;
+}
+
 /** PreToolUse 输入 */
-export interface PreToolUseInput extends HookInput {
+export interface PreToolUseInput extends HookInput, HookAgentFields {
   tool_name: string;
   tool_input: Record<string, unknown>;
   /** LLM 分配的工具调用 ID，用于关联 action↔observation */
@@ -367,7 +383,7 @@ export interface PreToolUseInput extends HookInput {
 export type ToolFailureKind = "tool_error" | "exception" | "validation" | "hook_blocked";
 
 /** PostToolUse 输入 */
-export interface PostToolUseInput extends HookInput {
+export interface PostToolUseInput extends HookInput, HookAgentFields {
   tool_name: string;
   tool_input: Record<string, unknown>;
   tool_response: Record<string, unknown>;
@@ -638,6 +654,10 @@ export interface SubagentStopInput extends HookInput {
   };
   /** 子代理执行耗时（毫秒） */
   duration_ms?: number;
+  /** 子代理最后一条 assistant 文本（CC 字段）。拿不到（如中途异常、spawn 无结果退出）时缺省 */
+  last_assistant_message?: string;
+  /** 子代理 sidechain 对话记录 jsonl 路径（CC 字段）。sidechain 未启用 / 未落盘时缺省 */
+  agent_transcript_path?: string;
   /** 兼容旧调用：允许携带任意附加字段（如 toolName） */
   [key: string]: unknown;
 }
@@ -715,7 +735,7 @@ export interface PermissionRequestInput extends HookInput {
 }
 
 /** PermissionDenied 输入 */
-export interface PermissionDeniedInput extends HookInput {
+export interface PermissionDeniedInput extends HookInput, HookAgentFields {
   /** Q7：供 runtime 消费者关闭对应的 execute_tool span */
   tool_use_id?: string;
   tool_name: string;
@@ -748,19 +768,19 @@ export interface FileChangedInput extends HookInput {
 }
 
 /** CwdChanged 输入 */
-export interface CwdChangedInput extends HookInput {
+export interface CwdChangedInput extends HookInput, HookAgentFields {
   old_cwd: string;
   new_cwd: string;
 }
 
 /** TaskCreated 输入 */
-export interface TaskCreatedInput extends HookInput {
+export interface TaskCreatedInput extends HookInput, HookAgentFields {
   task_id: string;
   task_description: string;
 }
 
 /** TaskCompleted 输入 */
-export interface TaskCompletedInput extends HookInput {
+export interface TaskCompletedInput extends HookInput, HookAgentFields {
   task_id: string;
   task_description: string;
   success: boolean;
