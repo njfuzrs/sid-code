@@ -24,7 +24,16 @@ import { SIDE_CALL_NO_THINK } from "../llm/side-call-timeout.ts";
 import { streamWithResilience } from "../llm/resilient-stream.ts";
 import type { ModelAvailabilityService } from "../llm/availability.ts";
 // 漏斗 2 · 权限：走门面而非直调 logEvent（门面强制脱敏工具名）。
-import { logPermissionAllow, logPermissionDeny } from "../analytics/events.ts";
+import {
+  logPermissionAllow,
+  logPermissionDeny,
+  logToolCall,
+  logToolFailure,
+  logToolSuccess,
+} from "../analytics/events.ts";
+import { getTelemetryBus } from "../telemetry/index.ts";
+import { ATTR } from "../telemetry/types.ts";
+import { maskedErrorSummary, sanitizedToolName } from "../telemetry/content-tracing.ts";
 import { FileReadTracker } from "../tool/file-read-tracker.ts";
 import { createStatefulTools } from "../tool/stateful-tools.ts";
 
@@ -33,6 +42,48 @@ export type CanUseToolFn = (
   toolName: string,
   input: unknown,
 ) => Promise<PermissionResult> | PermissionResult;
+
+/**
+ * forked 路径的 `execute_tool` span（缺陷 30，20260927 可观测性审计）。
+ *
+ * 主循环 / 子代理的 execute_tool span 由 hook-probe 订阅 PostToolUse 产生；forked
+ * **刻意不 fire 用户 hook**（调用方全是内部旁路：记忆抽取 / dream / session-memory /
+ * `/btw`，fire 出去会让用户的 PreToolUse 拦截与通知被内部 side-call 刷屏、甚至改写
+ * 内部工具参数，理由同上方 B33 对 PermissionDenied 的处理）。所以这里**直接**上总线
+ * 起 span，而不是借道 hook —— 观测要补，用户 hook 的语义面不扩。
+ *
+ * 与 hook-probe 同口径：工具名过 sanitizeToolName、错误摘要过脱敏、起点按耗时回填。
+ * detached：forked 常与主循环并发（后台记忆抽取），不能进 traceContext 栈（缺陷 2）。
+ * 全程 try/catch：可观测性绝不影响 forked 主流程。
+ */
+function recordForkedToolSpan(
+  toolName: string,
+  toolUseId: string,
+  querySource: string,
+  outcome: { durationMs: number; isError: boolean; error?: string },
+): void {
+  try {
+    const name = sanitizedToolName(toolName);
+    const span = getTelemetryBus().startSpan(
+      "execute_tool",
+      `execute_tool ${name}`,
+      {
+        [ATTR.OPERATION_NAME]: "execute_tool",
+        [ATTR.TOOL_NAME]: name,
+        [ATTR.TOOL_CALL_ID]: toolUseId,
+        [ATTR.SUCCESS]: !outcome.isError,
+        "sidcode.tool.duration_ms": outcome.durationMs,
+        "sidcode.execution_context": "forked",
+        "sidcode.forked.query_source": querySource,
+      },
+      { startTime: Date.now() - Math.max(0, outcome.durationMs), detached: true },
+    );
+    if (outcome.isError) span.recordError(new Error(maskedErrorSummary(outcome.error ?? "")));
+    span.end();
+  } catch {
+    /* 可观测性旁路 */
+  }
+}
 
 /** Forked Agent 主上下文（来自主对话） */
 export interface ForkedAgentContext {
@@ -361,7 +412,26 @@ export async function runForkedAgent(
           reasonType: "other",
         });
         const tool = statefulMap.get(tu.name) ?? mainContext.toolRegistry.get(tu.name);
+        // 缺陷 30：漏斗 1 · 工具在 forked 路径上补齐（与子代理同序：权限通过之后才记 call，
+        // 拒绝走漏斗 2 不进 tool_call）。filePath 取原始入参，与主循环 / 子代理同字段。
+        const forkedFilePath =
+          typeof (tu.input as Record<string, unknown> | undefined)?.file_path === "string"
+            ? ((tu.input as Record<string, unknown>).file_path as string)
+            : undefined;
+        const toolStartedAt = Date.now();
+        logToolCall(tu.name, forkedFilePath);
         if (!tool) {
+          // 工具不存在：模型点了未注册工具，按入参非法计（与 zod 校验失败同属「模型给错了」）
+          logToolFailure(tu.name, {
+            kind: "invalid_input",
+            durationMs: 0,
+            filePath: forkedFilePath,
+          });
+          recordForkedToolSpan(tu.name, tu.id, options.querySource, {
+            durationMs: 0,
+            isError: true,
+            error: `工具不存在: ${tu.name}`,
+          });
           results.push({
             type: "tool_result",
             tool_use_id: tu.id,
@@ -375,6 +445,16 @@ export async function runForkedAgent(
           // zod 运行时校验：用注入 _agentId 之前的原始 input 校验
           const validation = validateToolInput(tool, input);
           if (!validation.ok) {
+            logToolFailure(tu.name, {
+              kind: "invalid_input",
+              durationMs: Date.now() - toolStartedAt,
+              filePath: forkedFilePath,
+            });
+            recordForkedToolSpan(tu.name, tu.id, options.querySource, {
+              durationMs: Date.now() - toolStartedAt,
+              isError: true,
+              error: validation.message,
+            });
             results.push({
               type: "tool_result",
               tool_use_id: tu.id,
@@ -388,6 +468,25 @@ export async function runForkedAgent(
             { ...(validation.data as Record<string, unknown>), _agentId: "forked-agent" },
             signal,
           );
+          const elapsed = Date.now() - toolStartedAt;
+          if (res.isError) {
+            logToolFailure(tu.name, {
+              kind: "tool_error",
+              durationMs: elapsed,
+              filePath: forkedFilePath,
+            });
+          } else {
+            logToolSuccess(tu.name, {
+              durationMs: elapsed,
+              outputSize: res.output?.length ?? 0,
+              filePath: forkedFilePath,
+            });
+          }
+          recordForkedToolSpan(tu.name, tu.id, options.querySource, {
+            durationMs: elapsed,
+            isError: !!res.isError,
+            error: res.isError ? String(res.output ?? "") : undefined,
+          });
           results.push({
             type: "tool_result",
             tool_use_id: tu.id,
@@ -395,6 +494,18 @@ export async function runForkedAgent(
             is_error: res.isError,
           });
         } catch (err: any) {
+          const elapsed = Date.now() - toolStartedAt;
+          // 取消单独分型（同子代理）：它不是「工具不可靠」的证据，混进 exception 会污染失败率
+          logToolFailure(tu.name, {
+            kind: err?.name === "AbortError" ? "aborted" : "exception",
+            durationMs: elapsed,
+            filePath: forkedFilePath,
+          });
+          recordForkedToolSpan(tu.name, tu.id, options.querySource, {
+            durationMs: elapsed,
+            isError: true,
+            error: String(err?.message ?? err),
+          });
           results.push({
             type: "tool_result",
             tool_use_id: tu.id,

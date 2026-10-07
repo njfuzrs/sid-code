@@ -57,6 +57,7 @@ import { sidPaths } from "../config/paths.ts";
 import { estimateTextTokens } from "../context/token.ts";
 import type { Message, Usage } from "../llm/types.ts";
 import { normalizeCacheUsage } from "../llm/types.ts";
+import { resetPriceTierCounts } from "../llm/billing-sink.ts";
 import { TokenEstimator } from "../llm/token-estimator.ts";
 import { checkMessageHistoryIntegrity } from "../agent/message-invariants.ts";
 import { resetSideCallStats, getSideStats, setSideStatsObserver } from "./side-call-sink.ts";
@@ -780,6 +781,8 @@ export class TraceCollector {
 
     // 重置辅助调用统计（避免跨会话污染）
     resetSideCallStats();
+    // 缺陷 24：billing-sink 的时段计数同为模块级单例，不清零则 peakRatio 跨会话混算
+    resetPriceTierCounts();
     // B11 / B12 同理：同进程内 /clear 或 resume 开新会话，上个会话的决策与 edit 结论不能串过来
     this.permissionStats = emptyPermissionDecisionStats();
     this.editFirstTry.reset();
