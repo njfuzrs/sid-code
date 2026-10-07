@@ -1639,8 +1639,28 @@ export class App {
         getLogger().error("HOOK", `config_change hook 失败: ${e?.message ?? e}`);
       }
     };
+    // D4：权限规则跟随 settings 文件热更新。RuleLoader 启动时只 loadAll 一次，此前改了
+    // permissions.deny 要重启才生效——fanOut 清了缓存，但读进内存的规则没人刷新。
+    // 重载后重新下发子代理 checker（它们是 wire 那一刻的快照，同 W22）。
+    const onRulesChange = (source: string) => {
+      if (!ccSource[source]) return; // 只认文件型来源
+      const checker = this.permissionChecker as {
+        reloadSettingsRules?: () => Promise<void>;
+      } | null;
+      if (typeof checker?.reloadSettingsRules !== "function") return;
+      checker
+        .reloadSettingsRules()
+        .then(() => this.wireToolPermissionChecker())
+        .catch((e) =>
+          getLogger().error("PERMISSION", `settings 变更后重载权限规则失败: ${e?.message ?? e}`),
+        );
+    };
     settingsChanged.on("change", onChange);
-    this.offConfigChangeHook = () => settingsChanged.off("change", onChange);
+    settingsChanged.on("change", onRulesChange);
+    this.offConfigChangeHook = () => {
+      settingsChanged.off("change", onChange);
+      settingsChanged.off("change", onRulesChange);
+    };
     if (this.mcpManager) this.mcpManager.elicitationHooks = this.hookSystem;
   }
 

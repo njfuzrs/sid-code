@@ -144,6 +144,40 @@ export class RuleLoader {
   }
 
   /**
+   * D4：settings 文件被外部改动后，重载全部**文件型**来源（policy / user / project / local）。
+   *
+   * 此前 change-detector 的 settingsChanged 没有权限侧订阅者：RuleLoader 只在启动时
+   * loadAll 一次，用户改了 settings.json 里的 permissions.deny，运行中的会话照旧放行。
+   * 只清文件型来源：session / command（运行期 /allow、Always Allow）、cliArg、flagSettings
+   * 都是本进程内存给的，重读磁盘不该把它们抹掉。远程策略已注入时 policySettings 保持远程值
+   * （loadPolicyFile 内部按 policyRulesFromRemote 跳过，这里也不清）。
+   */
+  async reloadFileSources(): Promise<void> {
+    if (this.followsCwd) this.workspacePath = process.cwd();
+    if (!this.policyRulesFromRemote) this.sources.delete("policySettings");
+    this.sources.delete("userSettings");
+    this.sources.delete("projectSettings");
+    this.sources.delete("localSettings");
+    await Promise.all([
+      this.loadPolicyFile(),
+      this.loadSettingsFile("userSettings", sidPaths.settings()),
+      this.loadSettingsFile(
+        "projectSettings",
+        join(this.workspacePath, ".sid-code", "settings.json"),
+      ),
+      this.loadSettingsFile(
+        "localSettings",
+        join(this.workspacePath, ".sid-code", "settings.local.json"),
+      ),
+    ]);
+    this.invalidateCache();
+    getLogger().info(
+      "RULE_LOADER",
+      `settings 变更，文件来源规则已重载（${this.getAllRules().length} 条）`,
+    );
+  }
+
+  /**
    * 加载企业策略文件（P2-1）。first-exists-wins 遍历候选路径，取第一个存在的。
    *
    * 与普通 settings 的关键差异：
