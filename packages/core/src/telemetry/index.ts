@@ -43,6 +43,8 @@ import { TelemetryBus } from "./bus.ts";
 import { ConsoleExporter } from "./exporters/console.ts";
 import { JsonlExporter } from "./exporters/jsonl.ts";
 import { OtlpTelemetryExporter } from "./exporters/otlp.ts";
+import { isTelemetryDisabled } from "../analytics/privacy-level.ts";
+import { getLogger } from "../debug/logger.ts";
 import type { TelemetryConfig, TelemetryExporterConfig } from "./types.ts";
 import { registerShutdownHook } from "@sid-code/shared/utils/graceful-shutdown.ts";
 
@@ -90,6 +92,13 @@ export function initTelemetry(config: Partial<TelemetryConfig>): TelemetryBus {
  * —— 少改一处就会退化成「配了但被静默跳过」。
  */
 function createExporter(config: TelemetryExporterConfig) {
+  // 缺陷 21（P0，20260927 可观测性审计）：OTLP 是外发通道，必须受隐私级别约束。
+  // 曾只看 telemetry.enabled ⇒ 设了 SID_CODE_DISABLE_TELEMETRY=1 后 span/metric 照发。
+  // console / jsonl 是本地落盘，不出网，不受影响。exporter 内部还有一道同判据的闸（纵深）。
+  if (config.type === "otlp" && isTelemetryDisabled()) {
+    getLogger().info("TELEMETRY", "隐私级别禁用遥测，OTLP 导出器未注册");
+    return null;
+  }
   switch (config.type) {
     case "console":
       return new ConsoleExporter(config.options as any);

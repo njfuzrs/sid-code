@@ -25,6 +25,7 @@ const TID_MAP: Record<string, number> = {
   invoke_agent: 1,
   chat: 2,
   execute_tool: 3,
+  // 预留：这两类 span 当前恒不产生（见 types.ts SpanKind 注释），tid 4/5 的轨道恒空
   blocked_on_user: 4,
   hook_execution: 5,
 };

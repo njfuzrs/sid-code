@@ -874,8 +874,8 @@ export class App {
 
     // Token 计量器（依赖 telemetry bus，延迟到 init() 中创建）
     // 先用 null bus 创建，init() 中 telemetry 启用后会重建
-    this.tokenMeter = new TokenMeter(null, (model, usage) =>
-      this.sessionState.calculateCost(model, usage),
+    this.tokenMeter = new TokenMeter(null, (model, usage, provider) =>
+      this.sessionState.calculateCost(model, usage, provider),
     );
 
     // 预算追踪器（如果配置了 budgetRules）
@@ -9166,13 +9166,8 @@ export class App {
           permissionChecker: this.permissionChecker,
         };
 
-        // 记录命令使用频率（驱动补全排序的指数衰减统计）
-        try {
-          const { recordUsage } = await import("./command/usage-tracking.ts");
-          recordUsage(cmd);
-        } catch {
-          // 使用追踪失败不影响命令执行
-        }
+        // 使用频率记账在 CommandExecutor.dispatch 里（D1/D2）：只记查到且过闸的命令，
+        // 记 canonical name。不要在这里按原文 cmd 再记一次。
 
         // 新体系执行路径：CommandExecutor 分发 UnifiedCommand
         if (this.unifiedRegistry) {

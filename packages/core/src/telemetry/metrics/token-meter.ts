@@ -26,12 +26,20 @@ export interface TokenRecordParams {
   model: string;
   provider: string;
   usage: Usage;
-  costUSD: number;
+  /**
+   * 本次调用实际成本。**缺省（undefined）时由 TokenMeter 按 model 定价计算** ——
+   * 子代理载荷没有 cost 字段，曾传 0 进来，成本 metric 恒 0 而 savings 等于全价（缺陷 32）。
+   * 不要再传 0 表示「不知道」：0 会被当成真实成本。
+   */
+  costUSD?: number;
   sessionId?: string;
 }
 
-/** 成本计算函数签名（复用 SessionState.calculateCost） */
-export type CostCalculator = (model: string, usage: Usage) => number;
+/**
+ * 成本计算函数签名（复用 SessionState.calculateCost）。
+ * provider 必须透传：两族 usage 口径不同，按 model 名推断在网关别名下会猜错。
+ */
+export type CostCalculator = (model: string, usage: Usage, provider?: string) => number;
 
 export class TokenMeter {
   private usages: TokenUsageRecord[] = [];
@@ -43,16 +51,9 @@ export class TokenMeter {
 
   /** 记录一次 LLM 调用的 token 用量，返回 { costUSD, cacheSavingsUSD } */
   record(params: TokenRecordParams): { costUSD: number; cacheSavingsUSD: number } {
-    const { model, provider, usage, costUSD, sessionId } = params;
-
-    // 计算缓存节省：假设所有 cacheRead token 都按正常 input 价格计费时的差额
-    const noCacheUsage: Usage = {
-      inputTokens: usage.inputTokens,
-      outputTokens: usage.outputTokens,
-      // 不传缓存字段，让 calculateCost 按全价计算
-    };
-    const noCacheCost = this.calculateCost(model, noCacheUsage);
-    const cacheSavingsUSD = Math.max(0, noCacheCost - costUSD);
+    const { model, provider, usage, sessionId } = params;
+    const costUSD = params.costUSD ?? this.calculateCost(model, usage, provider);
+    const cacheSavingsUSD = this.savingsFor(model, usage, provider, costUSD);
 
     const record: TokenUsageRecord = {
       model,
@@ -180,13 +181,34 @@ export class TokenMeter {
       cacheReadInputTokens?: number;
       cacheCreationInputTokens?: number;
     },
+    provider?: string,
   ): number {
-    const noCacheUsage: Usage = {
-      inputTokens: usage.inputTokens,
-      outputTokens: usage.outputTokens,
-    };
-    const fullCost = this.calculateCost(model, noCacheUsage);
-    const actualCost = this.calculateCost(model, usage as Usage);
+    const actualCost = this.calculateCost(model, usage as Usage, provider);
+    return this.savingsFor(model, usage as Usage, provider, actualCost);
+  }
+
+  /**
+   * 缓存节省 = 全价假设 − 实际成本。全价假设 = **promptTotal** 全按未命中输入计价。
+   *
+   * 缺陷 12（P0，20260927 可观测性审计）：曾用「去掉缓存字段的同一份 usage」当全价假设。
+   * Anthropic 族的 inputTokens 本就是未命中余量（不含 hit/write），去掉缓存字段并不构造
+   * 「全价」，只构造「少发了 H+W 个 token」⇒ 差值必负、被 max(0,…) 钳成 0 ——
+   * 唯一真正靠显式缓存省钱的那一族，省钱 metric 恒为 0。口径与 SessionState.calculateSavings 一致。
+   * provider 缺省时按 model 名推断（claude* → anthropic），与 SessionState.inferProvider 的兜底同规则。
+   */
+  private savingsFor(
+    model: string,
+    usage: Usage,
+    provider: string | undefined,
+    actualCost: number,
+  ): number {
+    const prov = provider ?? (/claude/i.test(model) ? "anthropic" : "openai");
+    const norm = normalizeCacheUsage(usage, prov);
+    const fullCost = this.calculateCost(
+      model,
+      { inputTokens: norm.promptTotal, outputTokens: norm.outputTokens },
+      prov,
+    );
     return Math.max(0, fullCost - actualCost);
   }
 }
