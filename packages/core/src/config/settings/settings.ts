@@ -11,10 +11,16 @@
  * 唯一真相源为 settings.json，旧格式 config.yaml 已废弃，不再回退读取。
  */
 
-import { readFileSync, writeFileSync, existsSync, mkdirSync } from "fs";
+import { readFileSync, existsSync, mkdirSync } from "fs";
 import { dirname } from "path";
 import { resolveEnvVars } from "../env-interpolation.ts";
 import { markInternalWrite } from "./internal-writes.ts";
+import {
+  backupSettingsFile,
+  listSettingsBackups,
+  preserveCorruptedSettingsFile,
+} from "./backup.ts";
+import { writeAtomic } from "../app-config.ts";
 import { SETTING_SOURCES, getSettingsFilePath, type SettingSource } from "./constants.ts";
 import { SettingsSchema, type SettingsJson } from "./types.ts";
 import {
@@ -54,11 +60,17 @@ export interface SettingsWithErrors {
  */
 let flagSettings: SettingsJson | null = null;
 
-/** 注入 flagSettings（--settings CLI 参数）。注入后清空缓存以重新合并。 */
+/**
+ * 注入 flagSettings（--settings CLI 参数）。注入后清空 L1 合并缓存以重新合并。
+ *
+ * flagSettings **不走 L2/L3 缓存**：getSettingsForSource 在缓存检查之前就直接返回这个
+ * 模块变量。此前这里还顺手写了一条 L2 条目，但它永远不会被读到（D12），只会让读者
+ * 以为 flagSettings 参与三级缓存、会被 resetSettingsCache 失效——实际两者都不成立，
+ * 也不应成立（它是本进程显式注入的内存值，没有磁盘文件可以重读）。
+ */
 export function setFlagSettings(settings: SettingsJson | null): void {
   flagSettings = settings;
   setSessionCache(null);
-  setCachedSource("flagSettings", { settings, errors: [] });
 }
 
 /**
@@ -193,7 +205,7 @@ export function getSettingsForSource(
   source: SettingSource,
   workspacePath?: string,
 ): { settings: SettingsJson | null; errors: ValidationError[] } {
-  // flagSettings 来自内存，不读文件
+  // flagSettings 来自内存，不读文件，也不经 L2 缓存（见 setFlagSettings）
   if (source === "flagSettings") {
     return { settings: flagSettings, errors: [] };
   }
@@ -304,14 +316,37 @@ export function writeSettingsFile(
   const dir = dirname(path);
   if (!existsSync(dir)) mkdirSync(dir, { recursive: true });
 
+  backupSettingsFile(source, path);
   markInternalWrite(path); // 抑制自身写入触发的变更通知
-  writeFileSync(path, JSON.stringify(settings, null, 2), { mode: 0o600 });
+  writeAtomic(path, JSON.stringify(settings, null, 2)); // D9：原子写
 
   // 失效缓存，下次读取重新读盘（必须 clear 删键，不能 setCachedSource(source,null)——
   // 后者会被 getCachedSource 当"已缓存且无设置"命中，导致同会话内后续 read-then-patch
   // 从空对象起步、覆盖掉本次补丁写入的字段）。
   clearCachedSource(source);
   setSessionCache(null);
+}
+
+/**
+ * 损坏文件的报错文案：留档原文件，并给出可用的恢复路径（D9）。
+ * 此前只有一句「解析失败」，用户手里没有任何备份可恢复。
+ */
+function corruptedSettingsMessage(
+  action: string,
+  source: SettingSource,
+  path: string,
+  err: unknown,
+): string {
+  const preserved = preserveCorruptedSettingsFile(source, path);
+  const backups = listSettingsBackups(source, path);
+  const lines = [`settings 文件解析失败，${action}: ${path}\n${err}`];
+  if (preserved) lines.push(`损坏文件已留档: ${preserved}`);
+  lines.push(
+    backups.length > 0
+      ? `最近一次可用备份: ${backups[0]}（共 ${backups.length} 份，复制回原路径即可恢复）`
+      : "没有可用的写前备份，请手动修复该文件的 JSON 语法",
+  );
+  return lines.join("\n");
 }
 
 /**
@@ -348,7 +383,7 @@ export function patchSettingsFile(
       raw = JSON.parse(readFileSync(path, "utf-8"));
     } catch (err) {
       // 文件损坏时不要静默覆盖用户配置——直接抛出，让上层决定是否吞掉。
-      throw new Error(`settings 文件解析失败，已跳过补丁写入以免覆盖: ${err}`);
+      throw new Error(corruptedSettingsMessage("已跳过补丁写入以免覆盖", source, path, err));
     }
   }
 
@@ -358,8 +393,9 @@ export function patchSettingsFile(
   const dir = dirname(path);
   if (!existsSync(dir)) mkdirSync(dir, { recursive: true });
 
+  backupSettingsFile(source, path);
   markInternalWrite(path); // 抑制自身写入触发的变更通知
-  writeFileSync(path, JSON.stringify(raw, null, 2), { mode: 0o600 });
+  writeAtomic(path, JSON.stringify(raw, null, 2)); // D9：原子写
 
   // 失效缓存，下次读取重新读盘（必须 clear 删键，不能 setCachedSource(source,null)——
   // 后者会被 getCachedSource 当"已缓存且无设置"命中，导致同会话内后续 read-then-patch
@@ -405,7 +441,7 @@ export function mergeMissingTopLevelKeys(
     raw = JSON.parse(readFileSync(path, "utf-8"));
   } catch (err) {
     // 文件损坏时不要静默覆盖用户配置——直接抛出，让上层（迁移 runner）记录警告并跳过。
-    throw new Error(`settings 文件解析失败，已跳过默认配置补全以免覆盖: ${err}`);
+    throw new Error(corruptedSettingsMessage("已跳过默认配置补全以免覆盖", source, path, err));
   }
 
   const added: string[] = [];
@@ -421,8 +457,9 @@ export function mergeMissingTopLevelKeys(
   const dir = dirname(path);
   if (!existsSync(dir)) mkdirSync(dir, { recursive: true });
 
+  backupSettingsFile(source, path);
   markInternalWrite(path); // 抑制自身写入触发的变更通知
-  writeFileSync(path, JSON.stringify(raw, null, 2), { mode: 0o600 });
+  writeAtomic(path, JSON.stringify(raw, null, 2)); // D9：原子写
 
   // 失效缓存，下次读取重新读盘（必须 clear 删键，不能 setCachedSource(source,null)——
   // 后者会被 getCachedSource 当"已缓存且无设置"命中，导致同会话内后续 read-then-patch
