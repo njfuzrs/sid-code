@@ -21,6 +21,12 @@ import {
   countProductionReferences,
   findDeadExports,
   countLegacyBuiltins,
+  countFieldDeclarations,
+  countFieldConsumers,
+  findUnconsumedFields,
+  findChainBreaks,
+  collectG3Sources,
+  G3_COMPLETION_CHAIN,
 } from "../../scripts/command-system-gate.ts";
 
 const ROOT = join(import.meta.dir, "../..");
@@ -114,6 +120,96 @@ describe("变异自证：门禁必须真的能分辨死活", () => {
     // 门禁是棘轮（只禁新增），但基线不该比实测高——高出来的部分就是白送的额度
     expect(findDeadExports().length).toBeLessThanOrEqual(baseline.deadExports);
     expect(countLegacyBuiltins()).toBeLessThanOrEqual(baseline.legacyBuiltins);
+  });
+});
+
+describe("G3 声明-消费配对口径", () => {
+  const decl = [
+    { path: "commands/a/index.ts", source: "  immediate: true,\n  // whenToUse: 注释不算\n" },
+  ];
+
+  test("数声明，不数注释", () => {
+    expect(countFieldDeclarations("immediate", decl)).toBe(1);
+    expect(countFieldDeclarations("whenToUse", decl)).toBe(0);
+  });
+
+  test("纯透传 `field: x.field` 不算消费——搬得再勤也不改变行为", () => {
+    const passthrough = [{ path: "map.ts", source: "  immediate: c.immediate," }];
+    expect(countFieldConsumers("immediate", passthrough)).toBe(0);
+    const read = [{ path: "gate.ts", source: "return cmd.immediate === true;" }];
+    expect(countFieldConsumers("immediate", read)).toBe(1);
+  });
+
+  test("测试文件里的读取不算消费", () => {
+    expect(countFieldConsumers("immediate", [{ path: "x.test.ts", source: "c.immediate" }])).toBe(
+      0,
+    );
+  });
+
+  test("声明 > 0 且消费 = 0 → 违规；无声明的字段不报", () => {
+    const out = findUnconsumedFields(decl, [{ path: "map.ts", source: "immediate: c.immediate" }]);
+    expect(out).toEqual([{ field: "immediate", declared: 1, consumed: 0 }]);
+    expect(findUnconsumedFields(decl, [{ path: "g.ts", source: "if (c.immediate) {}" }])).toEqual(
+      [],
+    );
+  });
+
+  test("逐跳：只有类型声明、没有值层面读取的那一跳算断", () => {
+    const chain = { argumentHint: ["a.ts", "b.ts"] };
+    const files = [
+      { path: "a.ts", source: "argumentHint: c.argumentHint," },
+      { path: "b.ts", source: "  argumentHint?: string;" },
+    ];
+    expect(findChainBreaks(chain, files)).toEqual([{ field: "argumentHint", file: "b.ts" }]);
+  });
+});
+
+describe("G3 变异自证：回退 D10 / D11 的修复，门禁必须红", () => {
+  test("真实源码当前通过（排除「恒报违规」实现）", () => {
+    const g3 = collectG3Sources();
+    expect(g3.decl.length).toBeGreaterThan(20);
+    expect(findUnconsumedFields(g3.decl, g3.consumers)).toEqual([]);
+    expect(findChainBreaks(G3_COMPLETION_CHAIN, g3.chain)).toEqual([]);
+  });
+
+  test("D11 回退：给一条内置命令加回 disableModelInvocation → G3a 红", () => {
+    const g3 = collectG3Sources();
+    const decl = [
+      ...g3.decl,
+      { path: "commands/x/index.ts", source: "  disableModelInvocation: true," },
+    ];
+    expect(findUnconsumedFields(decl, g3.consumers).map((u) => u.field)).toContain(
+      "disableModelInvocation",
+    );
+  });
+
+  test("D10 回退：completion-list.ts 去掉 argumentHint 透传 → G3b 红", () => {
+    const g3 = collectG3Sources();
+    const chain = g3.chain.map((f) =>
+      f.path.endsWith("command/completion-list.ts")
+        ? { ...f, source: f.source.replace(/argumentHint: c\.argumentHint[^\n]*\n/, "") }
+        : f,
+    );
+    expect(chain.find((f) => f.path.endsWith("completion-list.ts"))?.source).not.toContain(
+      "c.argumentHint",
+    );
+    expect(findChainBreaks(G3_COMPLETION_CHAIN, chain)).toContainEqual({
+      field: "argumentHint",
+      file: "packages/cli/src/command/completion-list.ts",
+    });
+  });
+
+  test("D12 回退：InputArea 不读 requiresArgs → G3b 红", () => {
+    const g3 = collectG3Sources();
+    const chain = g3.chain.map((f) =>
+      f.path.endsWith("ui/InputArea.tsx")
+        ? { ...f, source: f.source.replaceAll(".requiresArgs", ".__gone") }
+        : f,
+    );
+    expect(findChainBreaks(G3_COMPLETION_CHAIN, chain)).toContainEqual({
+      field: "requiresArgs",
+      file: "packages/cli/src/ui/InputArea.tsx",
+    });
   });
 });
 

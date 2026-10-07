@@ -1,6 +1,6 @@
 #!/usr/bin/env bun
 /**
- * 命令体系两道机械门禁（P3）。
+ * 命令体系三道机械门禁（P3 + G3）。
  *
  * ## 为什么需要它
  *
@@ -34,6 +34,22 @@
  *
  * 渐进迁移最大的风险不是慢，是**边迁边往旧体系加新东西，永远迁不完**。
  * 所以这道门禁只有一句话：那个条数只允许减少。
+ *
+ * ### G3 —— 门控字段「声明-消费配对」+ 补全链路逐跳（硬门禁，无基线）
+ *
+ * G1 数的是**导出符号**有没有人调，看不见「字段声明了但没人读」：
+ * `disableModelInvocation` 曾在 26 个命令目录里声明、命令体系内 0 处读取（D11）；
+ * `argumentHint` 则是「有人读，但链路中段被丢」—— loadCommandList 的 .map() 漏搬，
+ * 行内补全永远拿不到它，而 `/commands` 面板那一处读取让字段级计数看起来是活的（D10）。
+ * 所以 G3 分两层：
+ *
+ *   - **G3a 配对**：对 UnifiedCommand 的每个门控字段，声明数 > 0 而消费数 = 0 → 违规。
+ *     消费只数 `x.field` 形态的读取，**不数 `field: x.field` 这种纯透传**——
+ *     透传搬得再勤也不改变任何行为，算进去就是 P0-2 `immediate` 的原始形态又被放行。
+ *   - **G3b 逐跳**：行内补全需要的字段，链路上每一跳文件都必须在代码（非注释）里出现它。
+ *     字段级配对拦不住「读了但半路丢了」，只有按跳检查才拦得住（§17.3 的诚实结论）。
+ *
+ * 不用棘轮：接入时实测违规为 0，硬卡没有存量要豁免。
  *
  * ## 用法
  *
@@ -185,6 +201,161 @@ export function countLegacyBuiltins(): number {
   return (src.match(/registry\.register/g) ?? []).length;
 }
 
+// ============================================================
+// G3：门控字段声明-消费配对 + 补全链路逐跳
+// ============================================================
+
+/** UnifiedCommand 的门控 / 展示字段（core/src/command-contract/types.ts CommandBase）。 */
+export const G3_GATE_FIELDS = [
+  "immediate",
+  "isHidden",
+  "userInvocable",
+  "requiresArgs",
+  "disableModelInvocation",
+  "whenToUse",
+  "argumentHint",
+] as const;
+
+/**
+ * 「消费 UnifiedCommand」的 UI / 宿主文件。不扫整个 ui/：SkillsDialog 读的是
+ * SkillDefinition 的同名字段（skill 侧确有模型调用路径），算进来会让内置命令上的
+ * 空声明被 skill 侧的读取「顶」成活的 —— D11 正是这么藏住的。
+ */
+const G3_UI_CONSUMERS = [
+  "packages/cli/src/app.ts",
+  "packages/cli/src/ui/App.tsx",
+  "packages/cli/src/ui/InputArea.tsx",
+  "packages/cli/src/ui/hooks/useSlashCompletion.ts",
+  "packages/cli/src/ui/components/SuggestionsDisplay.tsx",
+  "packages/cli/src/ui/components/CommandsDialog.tsx",
+];
+
+/**
+ * 行内补全链路（UnifiedCommand → 屏幕）的每一跳，按字段列。
+ * requiresArgs 决定回车回填，argumentHint 告诉用户该填什么——同一个交互的两半（§14.3）。
+ *
+ * 每一跳要求的是**值层面的读取**（`x.field`），类型声明 `field?: string;` 不算：
+ * 变异自证时实测过，只删 completion-list.ts 的透传、留着接口里的字段声明，
+ * 「文件里出现过该字段」这种判据照样绿——那正是 D10 的原始形态。
+ * TUIState（App.tsx）只是类型、不搬值，所以不在链上；它的缺失由 tsc 之外的
+ * 端到端断言（cli/tests/command/argument-hint-chain.test.tsx）兜。
+ */
+export const G3_COMPLETION_CHAIN: Readonly<Record<string, readonly string[]>> = {
+  requiresArgs: [
+    "packages/cli/src/command/completion-list.ts", // UnifiedCommand → TUIState.commands
+    "packages/cli/src/command/suggestions.ts", // RankableCommandInfo → RankedCommandSuggestion
+    "packages/cli/src/ui/hooks/useSlashCompletion.ts", // → Suggestion
+    "packages/cli/src/ui/InputArea.tsx", // 回车：回填还是执行
+  ],
+  argumentHint: [
+    "packages/cli/src/command/completion-list.ts",
+    "packages/cli/src/command/suggestions.ts",
+    "packages/cli/src/ui/hooks/useSlashCompletion.ts",
+    "packages/cli/src/ui/components/SuggestionsDisplay.tsx", // 渲染
+  ],
+};
+
+export interface SourceFile {
+  path: string;
+  source: string;
+}
+
+function codeLines(source: string): string[] {
+  return source.split("\n").filter((line) => {
+    const t = line.trim();
+    return !(t.startsWith("//") || t.startsWith("*") || t.startsWith("/*"));
+  });
+}
+
+/** 数字段的声明次数（`field:` 赋值，非注释行）。 */
+export function countFieldDeclarations(field: string, files: SourceFile[]): number {
+  const re = new RegExp(`\\b${field}\\s*:`, "g");
+  let n = 0;
+  for (const f of files) for (const line of codeLines(f.source)) n += (line.match(re) ?? []).length;
+  return n;
+}
+
+/** 数字段的消费次数：`x.field` 读取，排除 `field: x.field` 纯透传。 */
+export function countFieldConsumers(field: string, files: SourceFile[]): number {
+  const read = new RegExp(`\\.${field}\\b`);
+  const passthrough = new RegExp(`\\b${field}\\s*:\\s*[\\w$.]+\\.${field}\\b`);
+  let n = 0;
+  for (const f of files) {
+    if (f.path.includes(".test.")) continue;
+    for (const line of codeLines(f.source)) {
+      if (read.test(line) && !passthrough.test(line)) n++;
+    }
+  }
+  return n;
+}
+
+export interface UnconsumedField {
+  field: string;
+  declared: number;
+  consumed: number;
+}
+
+/** G3a：声明 > 0 且消费 = 0 的字段。 */
+export function findUnconsumedFields(
+  declFiles: SourceFile[],
+  consumerFiles: SourceFile[],
+): UnconsumedField[] {
+  const out: UnconsumedField[] = [];
+  for (const field of G3_GATE_FIELDS) {
+    const declared = countFieldDeclarations(field, declFiles);
+    if (declared === 0) continue;
+    const consumed = countFieldConsumers(field, consumerFiles);
+    if (consumed === 0) out.push({ field, declared, consumed });
+  }
+  return out;
+}
+
+export interface ChainBreak {
+  field: string;
+  file: string;
+}
+
+/** G3b：链路上没有值层面读取该字段（`x.field`，非注释代码）的那一跳。 */
+export function findChainBreaks(
+  chain: Readonly<Record<string, readonly string[]>>,
+  files: SourceFile[],
+): ChainBreak[] {
+  const byPath = new Map(files.map((f) => [f.path, f.source]));
+  const out: ChainBreak[] = [];
+  for (const [field, hops] of Object.entries(chain)) {
+    const re = new RegExp(`\\.${field}\\b`);
+    for (const hop of hops) {
+      const src = byPath.get(hop) ?? "";
+      if (!codeLines(src).some((l) => re.test(l))) out.push({ field, file: hop });
+    }
+  }
+  return out;
+}
+
+function readSource(path: string): SourceFile {
+  return { path, source: readFileSync(join(ROOT, path), "utf8") };
+}
+
+/** 收集 G3 的三组真实源码（测试里用它做变异自证）。 */
+export function collectG3Sources(): {
+  decl: SourceFile[];
+  consumers: SourceFile[];
+  chain: SourceFile[];
+} {
+  const commandFiles = listSourceFiles(COMMAND_DIR);
+  // 声明面：新体系命令定义 + legacy 门控表（loaders.ts 的 LEGACY_BUILTIN_GATES）
+  const decl = commandFiles
+    .filter((p) => /\/commands\/[^/]+\/index\.ts$/.test(p) || p.endsWith("command/loaders.ts"))
+    .map(readSource);
+  // 消费面：命令体系本身（不含命令定义与类型文件）+ 消费 UnifiedCommand 的 UI / 宿主
+  const consumers = [
+    ...commandFiles.filter((p) => !p.includes("/commands/") && !p.endsWith("/types.ts")),
+    ...G3_UI_CONSUMERS,
+  ].map(readSource);
+  const chain = [...new Set(Object.values(G3_COMPLETION_CHAIN).flat())].map(readSource);
+  return { decl, consumers, chain };
+}
+
 function main(): void {
   const args = process.argv.slice(2);
   const report = args.includes("--report");
@@ -197,6 +368,13 @@ function main(): void {
   console.log("命令体系门禁");
   console.log(`  G1 死导出（零生产调用）: ${dead.length}  基线 ${baseline.deadExports}`);
   console.log(`  G2 旧体系 registry.register: ${legacy}  基线 ${baseline.legacyBuiltins}`);
+  const g3 = collectG3Sources();
+  const unconsumed = findUnconsumedFields(g3.decl, g3.consumers);
+  const breaks = findChainBreaks(G3_COMPLETION_CHAIN, g3.chain);
+  console.log(`  G3a 门控字段声明无消费: ${unconsumed.length}  （硬门禁，须为 0）`);
+  console.log(`  G3b 补全链路断跳: ${breaks.length}  （硬门禁，须为 0）`);
+  for (const u of unconsumed) console.log(`    - ${u.field}：声明 ${u.declared} / 消费 0`);
+  for (const b of breaks) console.log(`    - ${b.field} 在 ${b.file} 断了`);
   if (dead.length > 0) {
     console.log("\n  死导出清单:");
     for (const d of dead) console.log(`    - ${d.symbol}  (${d.file})`);
@@ -237,8 +415,22 @@ function main(): void {
     );
     failed = true;
   }
+  if (unconsumed.length > 0) {
+    console.error(
+      `\n✗ G3a：${unconsumed.map((u) => u.field).join(", ")} 有声明、无消费。` +
+        `\n  字段写了不生效 = 教下一个人照抄一个假开关（D11）。要么接线，要么删掉声明。`,
+    );
+    failed = true;
+  }
+  if (breaks.length > 0) {
+    console.error(
+      `\n✗ G3b：补全链路断跳 —— ${breaks.map((b) => `${b.field}@${b.file}`).join(", ")}。` +
+        `\n  链路中段漏搬一个字段，前半段的注释会让人以为整条是通的（D10）。`,
+    );
+    failed = true;
+  }
   if (failed) process.exit(1);
-  console.log("\n✓ 两道门禁通过。");
+  console.log("\n✓ 三道门禁通过。");
 }
 
 if (import.meta.main) main();
