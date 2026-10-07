@@ -1,5 +1,5 @@
 /**
- * 契约 R2 / R10 / L5 / I1b / I1c / I5 / I6 / M5 / O5 / E3 / X4（B9 / T0.5）：运行期行为。
+ * 契约 R2 / R10 / L5 / I1b / I1c / I5 / I6 / I8 / M5 / O5 / E3 / X4（B9 / T0.5）：运行期行为。
  *
  * 这些契约都在 TTY 分支或进程级信号里，testing shim（非 TTY）覆盖不到，
  * 所以用 tty-streams.ts 的假 TTY 直接挂端口 renderSync。期望值是 2026-10-03 legacy 实测。
@@ -224,6 +224,66 @@ describe("I5 drainStdin", () => {
     drainStdin(s.stdin);
     expect(s.stdin.readableLength).toBe(5);
   });
+});
+
+describe("I8 useInput 运行期（键位解析之外）", () => {
+  test("I8: useInput 回调抛错 → 打 [ink:error]、不退出、readable 监听还在，后续输入照常送达", async () => {
+    const errs: string[] = [];
+    const err = spyOn(console, "error").mockImplementation((...a) => {
+      errs.push(String(a[0]));
+    });
+    const s = ttyStreams({ stdoutTTY: false });
+    const log: string[] = [];
+    function C() {
+      useInput((input) => {
+        log.push(input);
+        if (input === "x") throw new Error("boom");
+      });
+      return <Text>x</Text>;
+    }
+    const m = mountTTY(<C />, s);
+    let exited = false;
+    void m.inst.waitUntilExit().then(
+      () => (exited = true),
+      () => (exited = true),
+    );
+    await tick();
+    s.stdin.write("x");
+    await tick();
+    s.stdin.write("b");
+    await tick();
+    expect(log).toEqual(["x", "b"]);
+    expect(errs).toEqual(["[ink:error]"]);
+    expect(exited).toBe(false);
+    expect(s.stdin.listenerCount("readable")).toBe(1);
+    expect(s.stdin.isRaw).toBe(true);
+    err.mockRestore();
+    m.teardown();
+  });
+
+  // 单独的 ESC 等后续字节：40ms 内还没冲刷（后续 `[A` 到了就拼成方向键），60ms 时已冲刷成 Esc 键
+  for (const [gap, early, all] of [
+    [40, [], ["up"]],
+    [60, ["ESC"], ["ESC", "[A"]],
+  ] as const) {
+    test(`I8: 单独 ESC 后隔 ${gap}ms 再来 "[A" → ${JSON.stringify(all)}`, async () => {
+      const s = ttyStreams({ stdoutTTY: false });
+      const log: string[] = [];
+      function C() {
+        useInput((input, key) => log.push(key.escape ? "ESC" : key.upArrow ? "up" : input));
+        return <Text>x</Text>;
+      }
+      const m = mountTTY(<C />, s);
+      await tick();
+      s.stdin.write("\x1b");
+      await tick(gap);
+      expect(log).toEqual([...early]);
+      s.stdin.write("[A");
+      await tick(80);
+      expect(log).toEqual([...all]);
+      m.teardown();
+    });
+  }
 });
 
 describe("I6 exitOnCtrlC", () => {

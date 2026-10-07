@@ -4,7 +4,7 @@
  * 两种口径：
  * - **full**：key 对象逐字段比较（含值为 false 的字段）。字段集合本身是端口面，这是最终验收口径；
  * - **semantic**：只比 `input` 与值为真的字段。对齐过程中用它看「解析结果」差在哪，
- *   不让字段集合的差异（新底座多 `capsLock` / `hyper` / `numLock`、少 `fn` / `wheelUp` / `wheelDown`）把所有条目都染红。
+ *   字段集合的差异不会把所有条目都染红（T5.1b 对齐前新底座多 `capsLock` / `hyper` / `numLock`、少 `fn` / `wheelUp` / `wheelDown`）。
  */
 import type { InputCase } from "./input-corpus.ts";
 import type { InputEventRecord } from "./input-drive.tsx";

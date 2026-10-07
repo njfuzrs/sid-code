@@ -1,547 +1,304 @@
-// Copied from https://github.com/enquirer/enquirer/blob/36785f3399a41cd61e9d28d1eb9c2fcd73d69b4c/lib/keypress.js
-import {kittyModifiers} from './kitty-keyboard.js';
+// sid-code（B9 / T5.1b，契约 I8）：一个输入单元 → `useInput` 收到的 `(input, key)`。
+//
+// 上游这里是 enquirer 派生的解析器加 kitty 解析，key 的字段集合和取值都与旧底座不同。
+// 这里按契约 I8 重写：规则全部来自 `tests/fixtures/input-vectors.json`（旧底座黑盒向量）和
+// xterm ctlseqs / kitty keyboard protocol 公开文档，没有读旧底座代码（设计文档 D-5）。
+// 分词（一串 stdin 字节切成哪些单元）在 `input-parser.ts`。
 
-const textDecoder = new TextDecoder();
-
-const metaKeyCodeRe = /^(?:\x1b)([a-zA-Z0-9])$/;
-
-const fnKeyRe =
-	/^(?:\x1b+)(O|N|\[|\[\[)(?:(\d+)(?:;(\d+))?([~^$])|(?:1;)?(\d+)?([a-zA-Z]))/;
-
-const keyName: Record<string, string> = {
-	/* xterm/gnome ESC O letter */
-	OP: 'f1',
-	OQ: 'f2',
-	OR: 'f3',
-	OS: 'f4',
-	/* vt220-style ESC [ letter (e.g. Ctrl+F1 sends ESC [ 1 ; 5 P) */
-	'[P': 'f1',
-	'[Q': 'f2',
-	'[R': 'f3',
-	'[S': 'f4',
-	/* xterm/rxvt ESC [ number ~ */
-	'[11~': 'f1',
-	'[12~': 'f2',
-	'[13~': 'f3',
-	'[14~': 'f4',
-	/* from Cygwin and used in libuv */
-	'[[A': 'f1',
-	'[[B': 'f2',
-	'[[C': 'f3',
-	'[[D': 'f4',
-	'[[E': 'f5',
-	/* common */
-	'[15~': 'f5',
-	'[17~': 'f6',
-	'[18~': 'f7',
-	'[19~': 'f8',
-	'[20~': 'f9',
-	'[21~': 'f10',
-	'[23~': 'f11',
-	'[24~': 'f12',
-	/* xterm ESC [ letter */
-	'[A': 'up',
-	'[B': 'down',
-	'[C': 'right',
-	'[D': 'left',
-	'[E': 'clear',
-	'[F': 'end',
-	'[H': 'home',
-	/* xterm/gnome ESC O letter */
-	OA: 'up',
-	OB: 'down',
-	OC: 'right',
-	OD: 'left',
-	OE: 'clear',
-	OF: 'end',
-	OH: 'home',
-	/* xterm/rxvt ESC [ number ~ */
-	'[1~': 'home',
-	'[2~': 'insert',
-	'[3~': 'delete',
-	'[4~': 'end',
-	'[5~': 'pageup',
-	'[6~': 'pagedown',
-	/* putty */
-	'[[5~': 'pageup',
-	'[[6~': 'pagedown',
-	/* rxvt */
-	'[7~': 'home',
-	'[8~': 'end',
-	/* rxvt keys with modifiers */
-	'[a': 'up',
-	'[b': 'down',
-	'[c': 'right',
-	'[d': 'left',
-	'[e': 'clear',
-
-	'[2$': 'insert',
-	'[3$': 'delete',
-	'[5$': 'pageup',
-	'[6$': 'pagedown',
-	'[7$': 'home',
-	'[8$': 'end',
-
-	Oa: 'up',
-	Ob: 'down',
-	Oc: 'right',
-	Od: 'left',
-	Oe: 'clear',
-
-	'[2^': 'insert',
-	'[3^': 'delete',
-	'[5^': 'pageup',
-	'[6^': 'pagedown',
-	'[7^': 'home',
-	'[8^': 'end',
-	/* misc. */
-	'[Z': 'tab',
-};
-
-export const nonAlphanumericKeys = [...Object.values(keyName), 'backspace'];
-
-const isShiftKey = (code: string) => {
-	return [
-		'[a',
-		'[b',
-		'[c',
-		'[d',
-		'[e',
-		'[2$',
-		'[3$',
-		'[5$',
-		'[6$',
-		'[7$',
-		'[8$',
-		'[Z',
-	].includes(code);
-};
-
-const isCtrlKey = (code: string) => {
-	return [
-		'Oa',
-		'Ob',
-		'Oc',
-		'Od',
-		'Oe',
-		'[2^',
-		'[3^',
-		'[5^',
-		'[6^',
-		'[7^',
-		'[8^',
-	].includes(code);
-};
-
-type ParsedKey = {
-	name: string;
+// 字段集合 = 向量里 key 的字段（按字母序，与 input-vectors.json 一致）
+export type Key = {
+	backspace: boolean;
 	ctrl: boolean;
+	delete: boolean;
+	downArrow: boolean;
+	end: boolean;
+	escape: boolean;
+	fn: boolean;
+	home: boolean;
+	leftArrow: boolean;
 	meta: boolean;
+	pageDown: boolean;
+	pageUp: boolean;
+	return: boolean;
+	rightArrow: boolean;
 	shift: boolean;
-	sequence: string;
-	raw: string | undefined;
-	code?: string;
-	super?: boolean;
-	hyper?: boolean;
-	capsLock?: boolean;
-	numLock?: boolean;
-	eventType?: 'press' | 'repeat' | 'release';
-	isKittyProtocol?: boolean;
-	text?: string;
-	// Whether this key represents printable text input.
-	// When false, the key is a control/function/modifier key that should not
-	// produce text input (e.g., arrows, function keys, capslock, media keys).
-	// Only set by the kitty protocol parser.
-	isPrintable?: boolean;
+	super: boolean;
+	tab: boolean;
+	upArrow: boolean;
+	wheelDown: boolean;
+	wheelUp: boolean;
 };
 
-// Kitty keyboard protocol: CSI codepoint ; modifiers [: eventType] [; text-as-codepoints] u
-const kittyKeyRe = /^\x1b\[(\d+)(?:;(\d+)(?::(\d+))?(?:;([\d:]+))?)?u$/;
+type KeyName = Exclude<
+	keyof Key,
+	'ctrl' | 'shift' | 'meta' | 'super' | 'fn'
+>;
 
-// Kitty-enhanced special keys: CSI number ; modifiers : eventType {letter|~}
-// These are legacy CSI sequences enhanced with the :eventType field.
-// Examples: \x1b[1;1:1A (up arrow press), \x1b[3;1:3~ (delete release)
-const kittySpecialKeyRe = /^\x1b\[(\d+);(\d+):(\d+)([A-Za-z~])$/;
-
-// Letter-terminated special key names (CSI 1 ; mods letter)
-const kittySpecialLetterKeys: Record<string, string> = {
-	A: 'up',
-	B: 'down',
-	C: 'right',
-	D: 'left',
-	E: 'clear',
-	F: 'end',
-	H: 'home',
-	P: 'f1',
-	Q: 'f2',
-	R: 'f3',
-	S: 'f4',
+export type DecodedInput = {
+	readonly input: string;
+	readonly key: Key;
 };
 
-// Number-terminated special key names (CSI number ; mods ~)
-const kittySpecialNumberKeys: Record<number, string> = {
-	2: 'insert',
+const escape = '\u001B';
+
+export const emptyKey = (): Key => ({
+	backspace: false,
+	ctrl: false,
+	delete: false,
+	downArrow: false,
+	end: false,
+	escape: false,
+	fn: false,
+	home: false,
+	leftArrow: false,
+	meta: false,
+	pageDown: false,
+	pageUp: false,
+	return: false,
+	rightArrow: false,
+	shift: false,
+	super: false,
+	tab: false,
+	upArrow: false,
+	wheelDown: false,
+	wheelUp: false,
+});
+
+const make = (
+	input: string,
+	flags: Partial<Key> = {},
+	name?: KeyName,
+): DecodedInput => {
+	const key = {...emptyKey(), ...flags};
+	if (name) key[name] = true;
+	return {input, key};
+};
+
+// 修饰参数 = 1 + 位掩码（xterm 与 kitty 同口径）。只认 shift / alt / ctrl / super 四位，
+// alt 报成 meta；hyper / meta / capsLock / numLock 位忽略。参数 0 时掩码是 -1，四位全亮。
+const modifiers = (parameter: number): Partial<Key> => {
+	const bits = parameter - 1;
+	return {
+		shift: Boolean(bits & 1),
+		meta: Boolean(bits & 2),
+		ctrl: Boolean(bits & 4),
+		super: Boolean(bits & 8),
+	};
+};
+
+const merge = (a: Partial<Key>, b: Partial<Key>): Partial<Key> => {
+	const out: Partial<Key> = {...a};
+	for (const [k, v] of Object.entries(b) as Array<[keyof Key, boolean]>) {
+		if (v) out[k] = true;
+	}
+
+	return out;
+};
+
+/** 单字节 / 单字符 */
+const decodeCharacter = (s: string): DecodedInput => {
+	const code = s.codePointAt(0)!;
+	if (s.length === 1 && code < 0x20) {
+		if (s === '\r') return make('', {}, 'return');
+		if (s === '\t') return make('', {}, 'tab');
+		if (s === '\b') return make('', {}, 'backspace');
+		if (s === '\n') return make('\n');
+		if (s === escape) return make('', {meta: true}, 'escape');
+		if (code === 0) return make('`', {ctrl: true});
+		if (code === 0x1f) return make('_', {ctrl: true});
+		if (code >= 0x1c) return make(s);
+		return make(String.fromCharCode(code + 0x60), {ctrl: true});
+	}
+
+	if (s === '\u007F') return make('', {}, 'backspace');
+	return make(s, {shift: s.length === 1 && s >= 'A' && s <= 'Z'});
+};
+
+/** ESC + 一个字符（Alt 组合） */
+const decodeMeta = (c: string): DecodedInput | undefined => {
+	if (c === '\\') return undefined; // ST 单独到达：丢弃
+	if (c === '\b' || c === '\u007F') return make('', {meta: true}, 'backspace');
+	if (c.length === 1 && c < ' ') return make(c);
+	if (c === ' ' || (c >= '0' && c <= '9')) return make(c, {meta: true});
+	if (c === 'b') return make('', {meta: true}, 'leftArrow');
+	if (c === 'f') return make('', {meta: true}, 'rightArrow');
+	if (c >= 'a' && c <= 'z') return make(c, {meta: true});
+	if (c >= 'A' && c <= 'Z') return make(c, {meta: true, shift: true});
+	return make(c);
+};
+
+// CSI 数字 ~ 的键名（数字不在表里的照样出事件，只是不带键名）
+const tildeKeys: Record<number, KeyName> = {
+	1: 'home',
 	3: 'delete',
-	5: 'pageup',
-	6: 'pagedown',
+	4: 'end',
+	5: 'pageUp',
+	6: 'pageDown',
 	7: 'home',
 	8: 'end',
-	11: 'f1',
-	12: 'f2',
-	13: 'f3',
-	14: 'f4',
-	15: 'f5',
-	17: 'f6',
-	18: 'f7',
-	19: 'f8',
-	20: 'f9',
-	21: 'f10',
-	23: 'f11',
-	24: 'f12',
 };
 
-// Map of special codepoints to key names in kitty protocol
-const kittyCodepointNames: Record<number, string> = {
-	27: 'escape',
-	// 13 (return) and 32 (space) are handled before this lookup
-	// in parseKittyKeypress so they can be marked as printable.
-	9: 'tab',
-	127: 'backspace',
-	8: 'backspace',
-	57358: 'capslock',
-	57359: 'scrolllock',
-	57360: 'numlock',
-	57361: 'printscreen',
-	57362: 'pause',
-	57363: 'menu',
-	57376: 'f13',
-	57377: 'f14',
-	57378: 'f15',
-	57379: 'f16',
-	57380: 'f17',
-	57381: 'f18',
-	57382: 'f19',
-	57383: 'f20',
-	57384: 'f21',
-	57385: 'f22',
-	57386: 'f23',
-	57387: 'f24',
-	57388: 'f25',
-	57389: 'f26',
-	57390: 'f27',
-	57391: 'f28',
-	57392: 'f29',
-	57393: 'f30',
-	57394: 'f31',
-	57395: 'f32',
-	57396: 'f33',
-	57397: 'f34',
-	57398: 'f35',
-	57399: 'kp0',
-	57400: 'kp1',
-	57401: 'kp2',
-	57402: 'kp3',
-	57403: 'kp4',
-	57404: 'kp5',
-	57405: 'kp6',
-	57406: 'kp7',
-	57407: 'kp8',
-	57408: 'kp9',
-	57409: 'kpdecimal',
-	57410: 'kpdivide',
-	57411: 'kpmultiply',
-	57412: 'kpsubtract',
-	57413: 'kpadd',
-	57414: 'kpenter',
-	57415: 'kpequal',
-	57416: 'kpseparator',
-	57417: 'kpleft',
-	57418: 'kpright',
-	57419: 'kpup',
-	57420: 'kpdown',
-	57421: 'kppageup',
-	57422: 'kppagedown',
-	57423: 'kphome',
-	57424: 'kpend',
-	57425: 'kpinsert',
-	57426: 'kpdelete',
-	57427: 'kpbegin',
-	57428: 'mediaplay',
-	57429: 'mediapause',
-	57430: 'mediaplaypause',
-	57431: 'mediareverse',
-	57432: 'mediastop',
-	57433: 'mediafastforward',
-	57434: 'mediarewind',
-	57435: 'mediatracknext',
-	57436: 'mediatrackprevious',
-	57437: 'mediarecord',
-	57438: 'lowervolume',
-	57439: 'raisevolume',
-	57440: 'mutevolume',
-	57441: 'leftshift',
-	57442: 'leftcontrol',
-	57443: 'leftalt',
-	57444: 'leftsuper',
-	57445: 'lefthyper',
-	57446: 'leftmeta',
-	57447: 'rightshift',
-	57448: 'rightcontrol',
-	57449: 'rightalt',
-	57450: 'rightsuper',
-	57451: 'righthyper',
-	57452: 'rightmeta',
-	57453: 'isoLevel3Shift',
-	57454: 'isoLevel5Shift',
+// CSI [1;m] 字母 的键名与附带修饰；小写 a–e 是 rxvt 的 Shift+方向
+const letterKeys: Record<string, {name?: KeyName; flags?: Partial<Key>}> = {
+	A: {name: 'upArrow'},
+	B: {name: 'downArrow'},
+	C: {name: 'rightArrow'},
+	D: {name: 'leftArrow'},
+	H: {name: 'home'},
+	F: {name: 'end'},
+	Z: {name: 'tab', flags: {shift: true}},
+	a: {name: 'upArrow', flags: {shift: true}},
+	b: {name: 'downArrow', flags: {shift: true}},
+	c: {name: 'rightArrow', flags: {shift: true}},
+	d: {name: 'leftArrow', flags: {shift: true}},
+	e: {flags: {shift: true}},
 };
 
-// Valid Unicode codepoint range, excluding surrogates
-const isValidCodepoint = (cp: number): boolean =>
-	cp >= 0 && cp <= 0x10_ffff && !(cp >= 0xd8_00 && cp <= 0xdf_ff);
-
-const safeFromCodePoint = (cp: number): string =>
-	isValidCodepoint(cp) ? String.fromCodePoint(cp) : '?';
-
-type EventType = 'press' | 'repeat' | 'release';
-
-function resolveEventType(value: number): EventType {
-	if (value === 3) return 'release';
-	if (value === 2) return 'repeat';
-	return 'press';
-}
-
-function parseKittyModifiers(
-	modifiers: number,
-): Pick<
-	ParsedKey,
-	'ctrl' | 'shift' | 'meta' | 'super' | 'hyper' | 'capsLock' | 'numLock'
-> {
-	return {
-		ctrl: !!(modifiers & kittyModifiers.ctrl),
-		shift: !!(modifiers & kittyModifiers.shift),
-		meta: !!(modifiers & (kittyModifiers.meta | kittyModifiers.alt)),
-		super: !!(modifiers & kittyModifiers.super),
-		hyper: !!(modifiers & kittyModifiers.hyper),
-		capsLock: !!(modifiers & kittyModifiers.capsLock),
-		numLock: !!(modifiers & kittyModifiers.numLock),
-	};
-}
-
-const parseKittyKeypress = (s: string): ParsedKey | null => {
-	const match = kittyKeyRe.exec(s);
-	if (!match) return null;
-
-	const codepoint = parseInt(match[1]!, 10);
-	const modifiers = match[2] ? Math.max(0, parseInt(match[2], 10) - 1) : 0;
-	const eventType = match[3] ? parseInt(match[3], 10) : 1;
-	const textField = match[4];
-
-	// Bail on invalid primary codepoint
-	if (!isValidCodepoint(codepoint)) {
-		return null;
-	}
-
-	// Parse text-as-codepoints field (colon-separated Unicode codepoints)
-	let text: string | undefined;
-	if (textField) {
-		text = textField
-			.split(':')
-			.map(cp => safeFromCodePoint(parseInt(cp, 10)))
-			.join('');
-	}
-
-	// Determine key name from codepoint
-	let name: string;
-	let isPrintable: boolean;
-	if (codepoint === 32) {
-		name = 'space';
-		isPrintable = true;
-	} else if (codepoint === 13) {
-		name = 'return';
-		isPrintable = true;
-	} else if (kittyCodepointNames[codepoint]) {
-		name = kittyCodepointNames[codepoint]!;
-		isPrintable = false;
-	} else if (codepoint >= 1 && codepoint <= 26) {
-		// Ctrl+letter comes as codepoint 1-26
-		name = String.fromCodePoint(codepoint + 96); // 'a' is 97
-		isPrintable = false;
-	} else {
-		name = safeFromCodePoint(codepoint).toLowerCase();
-		isPrintable = true;
-	}
-
-	// Default text to the character from the codepoint when not explicitly
-	// provided by the protocol, so keys like space and return produce their
-	// expected text input (' ' and '\r' respectively).
-	if (isPrintable && !text) {
-		text = safeFromCodePoint(codepoint);
-	}
-
-	return {
-		name,
-		...parseKittyModifiers(modifiers),
-		eventType: resolveEventType(eventType),
-		sequence: s,
-		raw: s,
-		isKittyProtocol: true,
-		isPrintable,
-		text,
-	};
+// SS3 字母 → 键；j–y 是小键盘字符（final - 0x40）
+const ss3Keys: Record<string, {name?: KeyName; flags?: Partial<Key>}> = {
+	A: {name: 'upArrow'},
+	B: {name: 'downArrow'},
+	C: {name: 'rightArrow'},
+	D: {name: 'leftArrow'},
+	H: {name: 'home'},
+	F: {name: 'end'},
+	M: {name: 'return'},
+	a: {name: 'upArrow', flags: {ctrl: true}},
+	b: {name: 'downArrow', flags: {ctrl: true}},
+	c: {name: 'rightArrow', flags: {ctrl: true}},
+	d: {name: 'leftArrow', flags: {ctrl: true}},
+	e: {flags: {ctrl: true}},
 };
 
-// Parse kitty-enhanced special key sequences (arrow keys, function keys, etc.)
-// These use the legacy CSI format but with an added :eventType field.
-const parseKittySpecialKey = (s: string): ParsedKey | null => {
-	const match = kittySpecialKeyRe.exec(s);
-	if (!match) return null;
-
-	const number = parseInt(match[1]!, 10);
-	const modifiers = Math.max(0, parseInt(match[2]!, 10) - 1);
-	const eventType = parseInt(match[3]!, 10);
-	const terminator = match[4]!;
-
-	const name =
-		terminator === '~'
-			? kittySpecialNumberKeys[number]
-			: kittySpecialLetterKeys[terminator];
-
-	if (!name) return null;
-
-	return {
-		name,
-		...parseKittyModifiers(modifiers),
-		eventType: resolveEventType(eventType),
-		sequence: s,
-		raw: s,
-		isKittyProtocol: true,
-		isPrintable: false,
-	};
+// kitty 私有区里只有这些小键盘码位产生字符（57414 kpenter 当回车）
+const keypadText: Record<number, string> = {
+	57409: '.',
+	57410: '/',
+	57411: '*',
+	57412: '-',
+	57413: '+',
+	57415: '=',
 };
 
-const parseKeypress = (s: Uint8Array | string = ''): ParsedKey => {
-	let parts;
-
-	if (s instanceof Uint8Array) {
-		if (s[0]! > 127 && s[1] === undefined) {
-			(s[0] as unknown as number) -= 128;
-			s = '\x1b' + textDecoder.decode(s);
-		} else {
-			s = textDecoder.decode(s);
-		}
-	} else if (s !== undefined && typeof s !== 'string') {
-		s = String(s);
-	} else if (!s) {
-		s = '';
+/** kitty CSI u / xterm modifyOtherKeys：码位 + 修饰参数 */
+const decodeCodepoint = (codepoint: number, parameter: number): DecodedInput => {
+	const mods = modifiers(parameter);
+	const named = (name: KeyName, text: string) =>
+		make(mods.ctrl ? '' : text, mods, name);
+	if (codepoint === 9) return named('tab', 'tab');
+	if (codepoint === 13 || codepoint === 57414) return named('return', 'return');
+	if (codepoint === 127) return named('backspace', 'backspace');
+	if (codepoint === 27) return make('', {...mods, meta: true}, 'escape');
+	if (codepoint >= 32 && codepoint <= 126) {
+		return make(String.fromCharCode(codepoint).toLowerCase(), mods);
 	}
 
-	// Try kitty keyboard protocol parsers first
-	const kittyResult = parseKittyKeypress(s);
-	if (kittyResult) return kittyResult;
-
-	const kittySpecialResult = parseKittySpecialKey(s);
-	if (kittySpecialResult) return kittySpecialResult;
-
-	// If the input matched the kitty CSI-u pattern but was rejected (e.g.,
-	// invalid codepoint), return a safe empty keypress instead of falling
-	// through to legacy parsing which can produce unsafe states (undefined name)
-	if (kittyKeyRe.test(s)) {
-		return {
-			name: '',
-			ctrl: false,
-			meta: false,
-			shift: false,
-			sequence: s,
-			raw: s,
-			isKittyProtocol: true,
-			isPrintable: false,
-		};
+	if (codepoint >= 57399 && codepoint <= 57408) {
+		return make(String(codepoint - 57399), mods);
 	}
 
-	const key: ParsedKey = {
-		name: '',
-		ctrl: false,
-		meta: false,
-		shift: false,
-		sequence: s,
-		raw: s,
-	};
+	return make(keypadText[codepoint] ?? '', mods);
+};
 
-	key.sequence = key.sequence || s || key.name;
+const sgrMouseRe = /^\u001B\[<(\d+);\d+;\d+[Mm]$/;
+const csiTildeRe = /^\u001B\[(\d*)(?:;(\d+))?([~^$])$/;
+const csiLetterRe = /^\u001B\[(?:1;)?(\d+)?([A-Za-z])$/;
+const kittyRe = /^\u001B\[(\d+)(?:;(\d+))?u$/;
+const modifyOtherKeysRe = /^\u001B\[27;(\d+);(\d+)~$/;
+const ss3Re = /^\u001BO(\d*)(.)$/;
 
-	if (s === '\r' || s === '\x1b\r') {
-		// carriage return (or meta+return on macOS)
-		key.raw = undefined;
-		key.name = 'return';
-		key.meta = s.length === 2;
-	} else if (s === '\n') {
-		// enter, should have been called linefeed
-		key.name = 'enter';
-	} else if (s === '\t') {
-		// tab
-		key.name = 'tab';
-	} else if (s === '\b' || s === '\x1b\b') {
-		// backspace or ctrl+h
-		key.name = 'backspace';
-		key.meta = s.charAt(0) === '\x1b';
-	} else if (s === '\x7f' || s === '\x1b\x7f') {
-		// backspace
-		key.name = 'backspace';
-		key.meta = s.charAt(0) === '\x1b';
-	} else if (s === '\x1b' || s === '\x1b\x1b') {
-		// escape key
-		key.name = 'escape';
-		key.meta = s.length === 2;
-	} else if (s === ' ' || s === '\x1b ') {
-		key.name = 'space';
-		key.meta = s.length === 2;
-	} else if (s.length === 1 && s <= '\x1a') {
-		// ctrl+letter
-		key.name = String.fromCharCode(s.charCodeAt(0) + 'a'.charCodeAt(0) - 1);
-		key.ctrl = true;
-	} else if (s.length === 1 && s >= '0' && s <= '9') {
-		// number
-		key.name = 'number';
-	} else if (s.length === 1 && s >= 'a' && s <= 'z') {
-		// lowercase letter
-		key.name = s;
-	} else if (s.length === 1 && s >= 'A' && s <= 'Z') {
-		// shift+letter
-		key.name = s.toLowerCase();
-		key.shift = true;
-	} else if ((parts = metaKeyCodeRe.exec(s))) {
-		// meta+character key
-		key.name = parts[1]!.toLowerCase();
-		key.meta = true;
-		key.shift = /^[A-Z]$/.test(parts[1]!);
-	} else if ((parts = fnKeyRe.exec(s))) {
-		const segs = [...s];
+/** 鼠标按键字节：只有滚轮出事件（上 / 下），左右滚轮出空事件；其余按键由调用方决定丢弃还是出空事件 */
+const wheel = (button: number): DecodedInput | 'other' => {
+	if (!(button & 64)) return 'other';
+	if ((button & 3) === 0) return make('', {}, 'wheelUp');
+	if ((button & 3) === 1) return make('', {}, 'wheelDown');
+	return make('');
+};
 
-		if (segs[0] === '\u001b' && segs[1] === '\u001b') {
-			key.meta = true;
+/** CSI 序列（以 ESC [ 开头） */
+const decodeCsi = (s: string): DecodedInput | undefined => {
+	if (s === '\u001B[I' || s === '\u001B[O') return undefined; // 焦点报告
+
+	if (s.startsWith('\u001B[M')) {
+		// X10 鼠标：3 个字节不齐（被冲刷出来的半截）也出一个空事件
+		if (s.length < 6) return make('');
+		const decoded = wheel(s.charCodeAt(3) - 32);
+		return decoded === 'other' ? make('') : decoded;
+	}
+
+	let m = sgrMouseRe.exec(s);
+	if (m) {
+		const decoded = wheel(Number(m[1]));
+		return decoded === 'other' ? undefined : decoded;
+	}
+
+	m = modifyOtherKeysRe.exec(s);
+	if (m) return decodeCodepoint(Number(m[2]), Number(m[1]));
+
+	m = kittyRe.exec(s);
+	if (m) return decodeCodepoint(Number(m[1]), m[2] ? Number(m[2]) : 1);
+	// 带事件类型 / 关联文本 / 备用键的 CSI u：出空事件
+	if (s.endsWith('u') && /^\u001B\[[\d;:]+u$/.test(s)) return make('');
+
+	m = csiTildeRe.exec(s);
+	if (m) {
+		const name = tildeKeys[Number(m[1])];
+		let flags = modifiers(m[2] ? Number(m[2]) : 1);
+		if (m[3] === '$') flags = merge(flags, {shift: true});
+		if (m[3] === '^') flags = merge(flags, {ctrl: true});
+		return make('', flags, name);
+	}
+
+	m = csiLetterRe.exec(s);
+	if (m) {
+		const entry = letterKeys[m[2]!] ?? {};
+		const flags = merge(modifiers(m[1] ? Number(m[1]) : 1), entry.flags ?? {});
+		return make('', flags, entry.name);
+	}
+
+	return undefined;
+};
+
+/**
+把一个输入单元（`input-parser.ts` 切出来的）解成 `(input, key)`；返回 undefined 表示这个单元不出事件
+（焦点报告、非滚轮的 SGR 鼠标、单独的 ST）。
+*/
+const decodeKeypress = (s: string): DecodedInput | undefined => {
+	if (!s.startsWith(escape) || s.length === 1) return decodeCharacter(s);
+
+	if (s[1] === '[' && s.length > 2) {
+		const csi = decodeCsi(s);
+		if (csi !== undefined || /^\u001B\[(?:[IO]|<\d+;\d+;\d+[Mm])$/.test(s)) {
+			return csi;
 		}
 
-		// ansi escape sequence
-		// reassemble the key code leaving out leading \x1b's,
-		// the modifier key bitflag and any meaningless "1;" sequence
-		const code = [parts[1], parts[2], parts[4], parts[6]]
-			.filter(Boolean)
-			.join('');
-
-		const modifier = ((parts[3] || parts[5] || 1) as number) - 1;
-
-		// Parse the key modifier
-		key.ctrl = !!(modifier & 4);
-		key.meta = key.meta || !!(modifier & 10);
-		key.shift = !!(modifier & 1);
-		key.code = code;
-
-		key.name = keyName[code] ?? '';
-		key.shift = isShiftKey(code) || key.shift;
-		key.ctrl = isCtrlKey(code) || key.ctrl;
+		// 不认识的 CSI（含被冲刷出来的半截）：去掉 ESC 原样交出
+		return make(s.slice(1));
 	}
 
-	return key;
+	if (s[1] === 'O' && s.length > 2) {
+		const m = ss3Re.exec(s);
+		if (!m) return make(s.slice(1));
+		const final = m[2]!;
+		if (final >= 'j' && final <= 'y') {
+			return make(String.fromCharCode(final.charCodeAt(0) - 0x40));
+		}
+
+		const entry = ss3Keys[final] ?? {};
+		const flags = merge(m[1] ? modifiers(Number(m[1])) : {}, entry.flags ?? {});
+		return make('', flags, entry.name);
+	}
+
+	return decodeMeta(s.slice(1));
 };
 
-export default parseKeypress;
+/**
+不经按键解码的原样文本（一块里连续多个普通字符、bracketed paste 的内容）：
+只去掉一个前导 ESC，单个大写字母补 shift。
+*/
+export const rawInput = (text: string): DecodedInput => {
+	const input = text.startsWith(escape) ? text.slice(1) : text;
+	return make(input, {shift: input.length === 1 && input >= 'A' && input <= 'Z'});
+};
+
+export default decodeKeypress;

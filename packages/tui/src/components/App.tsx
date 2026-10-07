@@ -106,7 +106,8 @@ function App({
 	const inputParserRef = useRef(createInputParser());
 	const pendingInputFlushRef = useRef<NodeJS.Timeout | undefined>(undefined);
 	// Small delay to let chunked escape sequences complete before flushing as literal input.
-	const pendingInputFlushDelayMilliseconds = 20;
+	// sid-code（T5.1b，I8）：上游 20ms；旧底座在 40ms 与 60ms 之间冲刷，取 50ms
+	const pendingInputFlushDelayMilliseconds = 50;
 
 	const clearPendingInputFlush = useCallback((): void => {
 		if (!pendingInputFlushRef.current) {
@@ -262,10 +263,11 @@ function App({
 		[exitOnCtrlC, handleExit, isFocusEnabled],
 	);
 
+	// sid-code（B9 / T5.1b，契约 I8）：第二个参数为真时 `useInput` 不做按键解码、原样交出（多字符文本、粘贴内容）
 	const emitInput = useCallback(
-		(input: string): void => {
+		(input: string, raw = false): void => {
 			handleInput(input);
-			internal_eventEmitter.current.emit('input', input);
+			internal_eventEmitter.current.emit('input', input, raw);
 		},
 		[handleInput],
 	);
@@ -292,11 +294,13 @@ function App({
 			for (const event of inputEvents) {
 				if (typeof event === 'string') {
 					emitInput(event);
+				} else if ('text' in event) {
+					emitInput(event.text, true);
 				} else {
 					// Keep paste on a separate channel from `useInput` so key handlers
 					// don't need to branch on mixed key-vs-paste event shapes.
 					if (internal_eventEmitter.current.listenerCount('paste') === 0) {
-						emitInput(event.paste);
+						emitInput(event.paste, true);
 						continue;
 					}
 

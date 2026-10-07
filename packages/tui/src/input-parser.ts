@@ -1,8 +1,23 @@
+// sid-code（B9 / T5.1b，契约 I8）：把 stdin 字节切成输入单元。
+//
+// 与上游的差异（规则来自 `tests/fixtures/input-vectors.json`，见设计文档 D-5）：
+// - 一段连续的普通字符：单个码位按按键解码，多于一个整段原样交出（`ab`、`\r\n`、`a\x7f` 都是一个事件），
+//   上游会把 DEL / BS 拆成单独事件；
+// - CSI 按 ECMA-48 切：参数 / 中间字节之后第一个 0x40–0x7E 就是终止符（`ESC [ [` 就是一个完整序列），
+//   中途遇到 ESC 在 ESC 之前切断，遇到其它非法字节则吞到下一个 ESC 为止；
+// - `ESC [ M` 之后再取 3 个字节（X10 鼠标），不够就等；
+// - `ESC ESC`：第一个 ESC 单独成键，第二个重新开始解析；
+// - bracketed paste 的内容与多字符文本一样，原样交出（`{text}` / `{paste}`），不经按键解码。
+
 const escape = '\u001B';
 const pasteStart = '\u001B[200~';
 const pasteEnd = '\u001B[201~';
 
-export type InputEvent = string | {readonly paste: string};
+/** 字符串 = 交给按键解码的单元；`{text}` = 原样文本；`{paste}` = bracketed paste 内容 */
+export type InputEvent =
+	| string
+	| {readonly text: string}
+	| {readonly paste: string};
 
 type ParsedInput = {
 	readonly events: InputEvent[];
@@ -14,51 +29,44 @@ type ParsedSequence =
 			readonly sequence: string;
 			readonly nextIndex: number;
 	  }
-	| 'pending'
-	| undefined;
+	| 'pending';
 
-const isCsiParameterByte = (byte: number): boolean => {
-	return byte >= 0x30 && byte <= 0x3f;
-};
+const isCsiParameterByte = (byte: number): boolean =>
+	byte >= 0x30 && byte <= 0x3f;
 
-const isCsiIntermediateByte = (byte: number): boolean => {
-	return byte >= 0x20 && byte <= 0x2f;
-};
+const isCsiIntermediateByte = (byte: number): boolean =>
+	byte >= 0x20 && byte <= 0x2f;
 
-const isCsiFinalByte = (byte: number): boolean => {
-	return byte >= 0x40 && byte <= 0x7e;
+const isFinalByte = (byte: number): boolean => byte >= 0x40 && byte <= 0x7e;
+
+const untilNextEscape = (input: string, startIndex: number, from: number) => {
+	const end = input.indexOf(escape, from);
+	const nextIndex = end === -1 ? input.length : end;
+	return {sequence: input.slice(startIndex, nextIndex), nextIndex};
 };
 
 const parseCsiSequence = (
 	input: string,
 	startIndex: number,
-	prefixLength: number,
 ): ParsedSequence => {
-	const csiPayloadStart = startIndex + prefixLength + 1;
-	let index = csiPayloadStart;
-	for (; index < input.length; index++) {
-		const byte = input.codePointAt(index);
-		if (byte === undefined) {
-			return 'pending';
+	for (let index = startIndex + 2; index < input.length; index++) {
+		const byte = input.charCodeAt(index);
+		if (isCsiParameterByte(byte) || isCsiIntermediateByte(byte)) continue;
+
+		if (isFinalByte(byte)) {
+			const sequence = input.slice(startIndex, index + 1);
+			if (sequence !== '\u001B[M') return {sequence, nextIndex: index + 1};
+			// X10 鼠标：终止符后面紧跟按键 / 列 / 行三个字节
+			const nextIndex = index + 4;
+			if (nextIndex > input.length) return 'pending';
+			return {sequence: input.slice(startIndex, nextIndex), nextIndex};
 		}
 
-		if (isCsiParameterByte(byte) || isCsiIntermediateByte(byte)) {
-			continue;
+		if (input[index] === escape) {
+			return {sequence: input.slice(startIndex, index), nextIndex: index};
 		}
 
-		// Preserve legacy terminal function-key sequences like ESC[[A and ESC[[5~.
-		if (byte === 0x5b && index === csiPayloadStart) {
-			continue;
-		}
-
-		if (isCsiFinalByte(byte)) {
-			return {
-				sequence: input.slice(startIndex, index + 1),
-				nextIndex: index + 1,
-			};
-		}
-
-		return undefined;
+		return untilNextEscape(input, startIndex, index);
 	}
 
 	return 'pending';
@@ -67,134 +75,49 @@ const parseCsiSequence = (
 const parseSs3Sequence = (
 	input: string,
 	startIndex: number,
-	prefixLength: number,
-): ParsedSequence => {
-	const nextIndex = startIndex + prefixLength + 2;
-	if (nextIndex > input.length) {
-		return 'pending';
-	}
+): ParsedSequence | undefined => {
+	for (let index = startIndex + 2; index < input.length; index++) {
+		const byte = input.charCodeAt(index);
+		if (byte >= 0x30 && byte <= 0x39) continue;
+		if (isFinalByte(byte)) {
+			return {sequence: input.slice(startIndex, index + 1), nextIndex: index + 1};
+		}
 
-	const finalByte = input.codePointAt(nextIndex - 1);
-	if (finalByte === undefined || !isCsiFinalByte(finalByte)) {
 		return undefined;
 	}
 
-	return {
-		sequence: input.slice(startIndex, nextIndex),
-		nextIndex,
-	};
+	return 'pending';
 };
-
-const parseControlSequence = (
-	input: string,
-	startIndex: number,
-	prefixLength: number,
-): ParsedSequence => {
-	const sequenceType = input[startIndex + prefixLength];
-	if (sequenceType === undefined) {
-		return 'pending';
-	}
-
-	if (sequenceType === '[') {
-		return parseCsiSequence(input, startIndex, prefixLength);
-	}
-
-	if (sequenceType === 'O') {
-		return parseSs3Sequence(input, startIndex, prefixLength);
-	}
-
-	return undefined;
-};
-
-const parseEscapedCodePoint = (
-	input: string,
-	escapeIndex: number,
-): {
-	readonly sequence: string;
-	readonly nextIndex: number;
-} => {
-	const nextCodePoint = input.codePointAt(escapeIndex + 1);
-	const nextCodePointLength =
-		nextCodePoint !== undefined && nextCodePoint > 0xff_ff ? 2 : 1;
-	const nextIndex = escapeIndex + 1 + nextCodePointLength;
-
-	return {
-		sequence: input.slice(escapeIndex, nextIndex),
-		nextIndex,
-	};
-};
-
-type ParsedEscapeSequence =
-	| {
-			readonly sequence: string;
-			readonly nextIndex: number;
-	  }
-	| 'pending';
 
 const parseEscapeSequence = (
 	input: string,
 	escapeIndex: number,
-): ParsedEscapeSequence => {
-	if (escapeIndex === input.length - 1) {
-		return 'pending';
-	}
+): ParsedSequence => {
+	if (escapeIndex === input.length - 1) return 'pending';
 
 	const next = input[escapeIndex + 1]!;
 	if (next === escape) {
-		if (escapeIndex + 2 >= input.length) {
-			return 'pending';
-		}
-
-		const doubleEscapeSequence = parseControlSequence(input, escapeIndex, 2);
-		if (doubleEscapeSequence === 'pending') {
-			return 'pending';
-		}
-
-		if (doubleEscapeSequence) {
-			return doubleEscapeSequence;
-		}
-
-		return {
-			sequence: input.slice(escapeIndex, escapeIndex + 2),
-			nextIndex: escapeIndex + 2,
-		};
+		return {sequence: escape, nextIndex: escapeIndex + 1};
 	}
 
-	const controlSequence = parseControlSequence(input, escapeIndex, 1);
-	if (controlSequence === 'pending') {
-		return 'pending';
+	if (next === '[') return parseCsiSequence(input, escapeIndex);
+
+	if (next === 'O') {
+		const ss3 = parseSs3Sequence(input, escapeIndex);
+		if (ss3) return ss3;
 	}
 
-	if (controlSequence) {
-		return controlSequence;
-	}
-
-	return parseEscapedCodePoint(input, escapeIndex);
+	// ESC + 一个码位（Alt 组合）
+	const codePoint = input.codePointAt(escapeIndex + 1)!;
+	const nextIndex = escapeIndex + 1 + (codePoint > 0xff_ff ? 2 : 1);
+	return {sequence: input.slice(escapeIndex, nextIndex), nextIndex};
 };
 
-/**
-Split a chunk of non-escape text so that backspace bytes (`0x7F` and `0x08`) become individual events. When a user holds the backspace key, the terminal sends repeated bytes in a single stdin chunk. Without splitting, `parseKeypress` receives the multi-byte string and fails to recognize it as a key event, corrupting the input state.
-
-Other control characters like `\r` and `\t` are NOT split because they can legitimately appear inside pasted text.
-*/
-const splitBackspaceBytes = (text: string, events: InputEvent[]): void => {
-	let textSegmentStart = 0;
-
-	for (let index = 0; index < text.length; index++) {
-		const character = text[index]!;
-		if (character === '\u007F' || character === '\u0008') {
-			if (index > textSegmentStart) {
-				events.push(text.slice(textSegmentStart, index));
-			}
-
-			events.push(character);
-			textSegmentStart = index + 1;
-		}
-	}
-
-	if (textSegmentStart < text.length) {
-		events.push(text.slice(textSegmentStart));
-	}
+const pushText = (text: string, events: InputEvent[]): void => {
+	if (text.length === 0) return;
+	const codePoint = text.codePointAt(0)!;
+	const single = text.length === (codePoint > 0xff_ff ? 2 : 1);
+	events.push(single ? text : {text});
 };
 
 const parseKeypresses = (input: string): ParsedInput => {
@@ -208,16 +131,11 @@ const parseKeypresses = (input: string): ParsedInput => {
 	while (index < input.length) {
 		const escapeIndex = input.indexOf(escape, index);
 		if (escapeIndex === -1) {
-			splitBackspaceBytes(input.slice(index), events);
-			return {
-				events,
-				pending: '',
-			};
+			pushText(input.slice(index), events);
+			return {events, pending: ''};
 		}
 
-		if (escapeIndex > index) {
-			splitBackspaceBytes(input.slice(index, escapeIndex), events);
-		}
+		pushText(input.slice(index, escapeIndex), events);
 
 		const parsedEscapeSequence = parseEscapeSequence(input, escapeIndex);
 		if (parsedEscapeSequence === 'pending') {
@@ -240,10 +158,7 @@ const parseKeypresses = (input: string): ParsedInput => {
 		index = parsedEscapeSequence.nextIndex;
 	}
 
-	return {
-		events,
-		pending: '',
-	};
+	return {events, pending: ''};
 };
 
 export type InputParser = {
@@ -263,8 +178,7 @@ export const createInputParser = (): InputParser => {
 			return parsedInput.events;
 		},
 		hasPendingEscape() {
-			// Don't trigger the escape flush timer while assembling a paste start
-			// marker (`\u001B[200` and then `~`) or while waiting for paste end.
+			// 粘贴没结束（或开始标记还没收齐）时不冲刷：等结束标记，期间的输入都算粘贴内容
 			return (
 				pending.startsWith(escape) &&
 				!pending.startsWith(pasteStart) &&

@@ -1,7 +1,7 @@
 #!/usr/bin/env bun
 /**
  * 键位对拍的诊断（B9 / T5.1，契约 I8）：新底座跑语料，与 input-vectors.json 比，按名字前缀统计不一致数并列出明细。
- * 对齐键位解析（T5.1b）时用它挑下一批要改的前缀；`packages/tui/tests/input.test.ts` 的棘轮基线也从这里抄。
+ * T5.1b 起 `packages/tui/tests/input.test.ts` 要求两种口径都是 0；它红了，用这里看全部明细。
  *
  * 用法：
  *   bun run scripts/tui-input-diff.ts                 # 语义口径（只比 input 与为真的字段），打印分组计数 + 全部明细
