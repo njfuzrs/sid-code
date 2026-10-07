@@ -12,6 +12,8 @@ import React, {
 import cliCursor from 'cli-cursor';
 import {type CursorPosition} from '../log-update.js';
 import {createInputParser} from '../input-parser.js';
+import decodeKeypress, {rawInput} from '../parse-keypress.js';
+import {InputEvent} from '../input-event.js';
 import AppContext, {type SuspendTerminal} from './AppContext.js';
 import StdinContext from './StdinContext.js';
 import StdoutContext from './StdoutContext.js';
@@ -93,8 +95,9 @@ function App({
 	);
 	// Count how many components enabled raw mode to avoid disabling
 	// raw mode until all components don't need it anymore
+	// sid-code（B9 / T5.1c，契约 I9）：计数是普通整数，多余的 `setRawMode(false)` 会把它压成负数，
+	// 之后要补回同样多次 `true` 才会真正打开（与旧底座一致）
 	const rawModeEnabledCount = useRef(0);
-	const pendingDisableRawModeRef = useRef(false);
 	// Count how many components enabled bracketed paste mode
 	const bracketedPasteModeEnabledCount = useRef(0);
 	// eslint-disable-next-line @typescript-eslint/naming-convention
@@ -224,20 +227,24 @@ function App({
 		detachReadableListener();
 	}, [clearPendingInputFlush, detachReadableListener]);
 
-	const disableRawMode = useCallback((): void => {
-		pendingDisableRawModeRef.current = false;
+	// sid-code（T5.1c，I10）：计数归零时只关 raw mode、摘 readable，不清解析器状态也不取消待冲刷的 ESC ——
+	// 同一次提交里换了一个 `useInput` 组件时，切换前缓冲的半截转义仍会冲刷给新组件（旧底座如此）
+	const releaseRawMode = useCallback((): void => {
 		stdin.setRawMode(false);
 		stdin.unref();
+		detachReadableListener();
+	}, [stdin, detachReadableListener]);
+
+	// 退出 / 卸载：彻底放手，连解析器状态一起清掉
+	const disableRawMode = useCallback((): void => {
+		releaseRawMode();
 		rawModeEnabledCount.current = 0;
 		clearInputState();
-	}, [stdin, clearInputState]);
+	}, [releaseRawMode, clearInputState]);
 
 	const handleExit = useCallback(
 		(errorOrResult?: unknown): void => {
-			if (
-				isRawModeSupported &&
-				(rawModeEnabledCount.current > 0 || pendingDisableRawModeRef.current)
-			) {
+			if (isRawModeSupported && rawModeEnabledCount.current > 0) {
 				disableRawMode();
 			}
 
@@ -263,11 +270,22 @@ function App({
 		[exitOnCtrlC, handleExit, isFocusEnabled],
 	);
 
-	// sid-code（B9 / T5.1b，契约 I8）：第二个参数为真时 `useInput` 不做按键解码、原样交出（多字符文本、粘贴内容）
+	// sid-code（B9 / T5.1c，契约 I11）：解码在这里做一次，`input` 事件发的是 `InputEvent` 对象。
+	// `raw` 为真时不做按键解码、原样交出（多字符文本、粘贴内容，T5.1b / I8）。
+	// 逐个调监听者而不是 `emit`：某个监听者 `stopImmediatePropagation()` 后，后面的都不再收到
+	// Tab 焦点导航直接调，不挂在 emitter 上：旧底座的 emitter 上只有使用方自己挂的监听（I11 数过 listenerCount）
+	const tabNavigationRef = useRef<((event: InputEvent) => void) | undefined>(undefined);
 	const emitInput = useCallback(
-		(input: string, raw = false): void => {
+		(input: string, raw = false, isPasted = false): void => {
 			handleInput(input);
-			internal_eventEmitter.current.emit('input', input, raw);
+			const decoded = raw ? rawInput(input) : decodeKeypress(input);
+			if (!decoded) return;
+			const event = new InputEvent(input, decoded.input, decoded.key, isPasted);
+			tabNavigationRef.current?.(event);
+			for (const listener of internal_eventEmitter.current.listeners('input')) {
+				if (event._didStopImmediatePropagation) break;
+				(listener as (event: InputEvent) => void)(event);
+			}
 		},
 		[handleInput],
 	);
@@ -281,31 +299,46 @@ function App({
 				return;
 			}
 
-			emitInput(pendingEscape);
+			try {
+				emitInput(pendingEscape);
+			} catch (error) {
+				console.error('[ink:error]', error);
+			}
 		}, pendingInputFlushDelayMilliseconds);
 	}, [clearPendingInputFlush, emitInput]);
 
 	const handleReadable = useCallback((): void => {
 		clearPendingInputFlush();
-		let chunk;
-		// eslint-disable-next-line @typescript-eslint/no-restricted-types
-		while ((chunk = stdin.read() as string | null) !== null) {
-			const inputEvents = inputParserRef.current.push(chunk);
-			for (const event of inputEvents) {
-				if (typeof event === 'string') {
-					emitInput(event);
-				} else if ('text' in event) {
-					emitInput(event.text, true);
-				} else {
-					// Keep paste on a separate channel from `useInput` so key handlers
-					// don't need to branch on mixed key-vs-paste event shapes.
-					if (internal_eventEmitter.current.listenerCount('paste') === 0) {
-						emitInput(event.paste, true);
-						continue;
-					}
+		// sid-code（T5.1c，I1b / I8）：`useInput` 回调抛错会冒出 emit，同一块里剩下的事件（以及后面的监听者）
+		// 全部作废，只打 `[ink:error]`，不退出（旧底座实测：`x\x1b[Ab` 里 x 抛错，只有 x 被收到）
+		try {
+			let chunk;
+			// eslint-disable-next-line @typescript-eslint/no-restricted-types
+			while ((chunk = stdin.read() as string | null) !== null) {
+				const inputEvents = inputParserRef.current.push(chunk);
+				for (const event of inputEvents) {
+					if (typeof event === 'string') {
+						emitInput(event);
+					} else if ('text' in event) {
+						emitInput(event.text, true);
+					} else {
+						// Keep paste on a separate channel from `useInput` so key handlers
+						// don't need to branch on mixed key-vs-paste event shapes.
+						if (internal_eventEmitter.current.listenerCount('paste') === 0) {
+							emitInput(event.paste, true, true);
+							continue;
+						}
 
-					internal_eventEmitter.current.emit('paste', event.paste);
+						internal_eventEmitter.current.emit('paste', event.paste);
+					}
 				}
+			}
+		} catch (error) {
+			console.error('[ink:error]', error);
+			// Bun 下回调抛错后监听可能被摘掉，流从此卡死：还该挂着就重新挂上
+			const listener = readableListenerRef.current;
+			if (listener && !stdin.listeners('readable').includes(listener)) {
+				stdin.addListener('readable', listener);
 			}
 		}
 
@@ -341,52 +374,21 @@ function App({
 			stdin.setEncoding('utf8');
 
 			if (isEnabled) {
-				if (rawModeEnabledCount.current === 0) {
-					// A same-render component swap may have detached input handling while
-					// leaving terminal raw mode enabled until the queued disable runs.
-					const isRawModeAlreadyEnabled = pendingDisableRawModeRef.current;
-					pendingDisableRawModeRef.current = false;
-
-					if (!isRawModeAlreadyEnabled) {
-						stdin.ref();
-						stdin.setRawMode(true);
-					}
-
+				if (++rawModeEnabledCount.current === 1) {
+					stdin.ref();
+					stdin.setRawMode(true);
 					attachReadableListener();
 				}
 
-				rawModeEnabledCount.current++;
 				return;
 			}
 
-			if (rawModeEnabledCount.current === 0) {
-				return;
-			}
-
+			// 同步关（旧底座实测：调用返回时 raw mode 已关；同一提交换组件会出现一次关→开）
 			if (--rawModeEnabledCount.current === 0) {
-				// Stop owning input immediately so pending parser state cannot leak into
-				// a replacement `useInput` component mounted in the same React update.
-				clearInputState();
-
-				// Defer only the terminal raw-mode teardown so a same-render replacement
-				// can keep the process ref and raw mode active without a disable/enable cycle.
-				pendingDisableRawModeRef.current = true;
-				queueMicrotask(() => {
-					if (!pendingDisableRawModeRef.current) {
-						return;
-					}
-
-					disableRawMode();
-				});
+				releaseRawMode();
 			}
 		},
-		[
-			isRawModeSupported,
-			stdin,
-			attachReadableListener,
-			clearInputState,
-			disableRawMode,
-		],
+		[isRawModeSupported, stdin, attachReadableListener, releaseRawMode],
 	);
 
 	const handleSetBracketedPasteMode = useCallback(
@@ -554,7 +556,8 @@ function App({
 
 	// Handle tab navigation via effect that subscribes to input events
 	useEffect(() => {
-		const handleTabNavigation = (input: string): void => {
+		const handleTabNavigation = ({keypress}: InputEvent): void => {
+			const input = keypress.sequence;
 			if (!isFocusEnabled || focusablesCountRef.current === 0) return;
 
 			if (input === tab) {
@@ -566,11 +569,12 @@ function App({
 			}
 		};
 
-		internal_eventEmitter.current.on('input', handleTabNavigation);
-		const emitter = internal_eventEmitter.current;
+		tabNavigationRef.current = handleTabNavigation;
 
 		return () => {
-			emitter.off('input', handleTabNavigation);
+			if (tabNavigationRef.current === handleTabNavigation) {
+				tabNavigationRef.current = undefined;
+			}
 		};
 	}, [isFocusEnabled, focusNext, focusPrevious]);
 
@@ -689,11 +693,10 @@ function App({
 				cliCursor.show(stdout);
 			}
 
-			if (
-				isRawModeSupported &&
-				(rawModeEnabledCount.current > 0 || pendingDisableRawModeRef.current)
-			) {
+			if (isRawModeSupported && rawModeEnabledCount.current > 0) {
 				disableRawMode();
+			} else {
+				clearInputState();
 			}
 
 			if (bracketedPasteModeEnabledCount.current > 0) {
@@ -704,7 +707,7 @@ function App({
 				bracketedPasteModeEnabledCount.current = 0;
 			}
 		};
-	}, [stdout, isRawModeSupported, disableRawMode, interactive]);
+	}, [stdout, isRawModeSupported, disableRawMode, clearInputState, interactive]);
 
 	// Memoize context values to prevent unnecessary re-renders
 	const appContextValue = useMemo(

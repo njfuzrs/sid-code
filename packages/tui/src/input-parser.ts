@@ -107,6 +107,14 @@ const parseEscapeSequence = (
 		if (ss3) return ss3;
 	}
 
+	// sid-code（T5.1c，I8）：块尾的 `ESC` + 中间字节（0x20–0x2F，ECMA-48 nF 序列的开头）或 `ESC _`（APC）
+	// 先挂起、等冲刷超时再交出（旧底座实测：10ms 内不出，冲刷后才出）。
+	// `ESC P` / `ESC ]` 也挂起、冲刷时整个丢弃，那是终端回复残片，归 T5.2 的 I3
+	if (escapeIndex === input.length - 2) {
+		const byte = next.charCodeAt(0);
+		if ((byte >= 0x20 && byte <= 0x2f) || next === '_') return 'pending';
+	}
+
 	// ESC + 一个码位（Alt 组合）
 	const codePoint = input.codePointAt(escapeIndex + 1)!;
 	const nextIndex = escapeIndex + 1 + (codePoint > 0xff_ff ? 2 : 1);
