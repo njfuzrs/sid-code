@@ -6,7 +6,9 @@
 // 或 https://ui.perfetto.dev 中可视化。
 // 注意:适配实际 SpanData 字段(kind / durationMs),而非 spec 草案的 operationName / duration。
 
-import { writeFileSync } from "node:fs";
+import { mkdirSync, writeFileSync } from "node:fs";
+import { dirname, join } from "node:path";
+import { sidPaths } from "../config/paths.ts";
 import type { SpanData } from "./types.ts";
 
 interface PerfettoEvent {
@@ -55,22 +57,57 @@ export function spanToPerfettoEvent(span: SpanData): PerfettoEvent {
   };
 }
 
-/** 构建完整的 Perfetto trace 对象 */
-export function buildPerfettoTrace(spans: SpanData[]): { traceEvents: PerfettoEvent[] } {
-  return { traceEvents: spans.map(spanToPerfettoEvent) };
+/** Perfetto / Chrome trace 的 JSON Object 格式；`otherData` 是格式允许的自由元数据区 */
+export interface PerfettoTrace {
+  traceEvents: PerfettoEvent[];
+  otherData?: Record<string, unknown>;
+}
+
+/**
+ * 构建完整的 Perfetto trace 对象。
+ *
+ * `evictedSpans`：spanHistory 因 500 上限挤掉的条数（缺陷 38）。被挤掉的恰是最旧的
+ * `invoke_agent` 根，UI 里只剩互不相连的浮空条而文件完全合法 —— 所以截断必须写进文件本身，
+ * 读图的人才知道「这不是全貌」。
+ */
+export function buildPerfettoTrace(spans: SpanData[], evictedSpans = 0): PerfettoTrace {
+  const trace: PerfettoTrace = { traceEvents: spans.map(spanToPerfettoEvent) };
+  if (evictedSpans > 0) {
+    trace.otherData = {
+      sid_code_truncated: true,
+      sid_code_evicted_spans: evictedSpans,
+      note: `最早的 ${evictedSpans} 条 span（含根）已因会话内 history 上限被淘汰，嵌套关系不完整`,
+    };
+  }
+  return trace;
+}
+
+/**
+ * 默认落盘路径：`~/.sid-code/telemetry/perfetto/`。
+ *
+ * 缺陷 38：曾是相对路径 `sid-code-trace-<ts>.json`，即落在 `process.cwd()` —— 用户仓库根，
+ * 不在 .gitignore 里、文件名带时间戳只增不覆盖，开几次追踪 `git status` 就脏了。
+ * 本仓其余落盘一律走 sidPaths。显式给路径（`SID_CODE_PERFETTO_TRACE=<path>`）仍按用户意图写。
+ */
+export function defaultPerfettoPath(now = Date.now()): string {
+  return join(sidPaths.telemetry(), "perfetto", `sid-code-trace-${now}.json`);
 }
 
 /** 将所有 Span 写入 Perfetto 追踪文件 */
-export function writePerfettoTrace(spans: SpanData[], outputPath?: string): string | null {
+export function writePerfettoTrace(
+  spans: SpanData[],
+  outputPath?: string,
+  evictedSpans = 0,
+): string | null {
   if (spans.length === 0) return null;
-  const trace = buildPerfettoTrace(spans);
+  const trace = buildPerfettoTrace(spans, evictedSpans);
 
   const envPath = process.env.SID_CODE_PERFETTO_TRACE;
   // 环境变量为 "1" 时视为开关而非路径,使用默认文件名
-  const path =
-    outputPath ?? (envPath && envPath !== "1" ? envPath : `sid-code-trace-${Date.now()}.json`);
+  const path = outputPath ?? (envPath && envPath !== "1" ? envPath : defaultPerfettoPath());
 
   try {
+    mkdirSync(dirname(path), { recursive: true });
     writeFileSync(path, JSON.stringify(trace), "utf-8");
     return path;
   } catch {

@@ -436,3 +436,48 @@ describe("backfillTrajCost 的 trajCorrupt 结论（P2-14 崩溃会话认领）"
     expect(r.trajCorrupt).toBe(true);
   });
 });
+
+describe("缺陷 36：重算按事件时刻取价（分时段定价）", () => {
+  // 高峰窗口 01:00–04:00 UTC，空闲价 = 高峰价 × 0.5
+  const PEAK_MODELS = [
+    {
+      name: "peak-model",
+      provider: "openai",
+      pricing: {
+        input: 1,
+        output: 2,
+        cacheRead: 0,
+        cacheWrite: 0,
+        peakWindows: [{ startHour: 1, endHour: 4 }],
+        offPeakMultiplier: 0.5,
+      },
+    },
+  ];
+  const line = (ts: string | undefined) =>
+    JSON.stringify({
+      event: "AfterModelRaw",
+      session_id: "s",
+      ...(ts === undefined ? {} : { timestamp: ts }),
+      data: { index: 1, model: "peak-model", usage: { input_tokens: 1_000_000, output_tokens: 0 } },
+    });
+
+  test("同一笔用量，高峰时刻与空闲时刻重算出的成本恰差 2 倍", () => {
+    writeFileSync(join(sessionDir, "events.jsonl"), line("2026-06-29T02:00:00.000Z") + "\n");
+    const peak = recomputeCostFromEvents(sessionDir, PEAK_MODELS as any)!.totalCostUSD;
+    writeFileSync(join(sessionDir, "events.jsonl"), line("2026-06-29T12:00:00.000Z") + "\n");
+    const off = recomputeCostFromEvents(sessionDir, PEAK_MODELS as any)!.totalCostUSD;
+    // 变异自证：去掉 `at` 后两次都按"现在"取价，二者相等，本断言会红
+    expect(peak).toBeCloseTo(1, 6);
+    expect(off).toBeCloseTo(0.5, 6);
+  });
+
+  test("timestamp 缺失 / 非法时不抛，退回按当前时刻计价", () => {
+    writeFileSync(
+      join(sessionDir, "events.jsonl"),
+      line("not-a-date") + "\n" + line(undefined) + "\n",
+    );
+    const r = recomputeCostFromEvents(sessionDir, PEAK_MODELS as any)!;
+    expect(r.calls.length).toBe(2);
+    for (const c of r.calls) expect([0.5, 1]).toContain(Number(c.costUSD.toFixed(6)));
+  });
+});

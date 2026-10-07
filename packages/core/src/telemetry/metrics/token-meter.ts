@@ -89,6 +89,13 @@ export class TokenMeter {
       };
       // 规范：input_tokens SHOULD 含缓存命中与写入。Anthropic 的 input_tokens 是未命中余量、
       // OpenAI 族的 prompt_tokens 已含命中 —— 两族口径不同，统一走 normalizeCacheUsage 取 promptTotal。
+      //
+      // 缺陷 33（口径澄清，不改值）：这些点按 OTLP `DELTA + monotonic` 上报（exporters/otlp.ts）。
+      // input 点的单点值是「本次请求的完整输入」（含历史，对单次请求是 stock），
+      // 所以后端按 DELTA 求和得到的是**累计计费 prompt**（flow）——与 traj 的
+      // `total_cumulative_prompt_tokens` 同口径、与累计 cost 可比，**不是**「上下文多大」。
+      // 想看上下文占用请用 `context_usage_peak_*`，别拿这个 sum 当它（那才是 N² 误读）。
+      // 不改成 uncachedInputTokens：那会违反上面的规范要求，并让两族 input 口径重新分叉（#136 修过）。
       const norm = normalizeCacheUsage(usage, provider);
       const now = Date.now();
       const counters: Array<[string, number]> = [

@@ -42,6 +42,7 @@ import {
   formatModelLatencyLine,
   type ModelLatencyStats,
 } from "./latency-by-model.ts";
+import { createProviderResolver } from "./provider-resolver.ts";
 
 // ─────────────────────────── 路径 ───────────────────────────
 
@@ -2638,21 +2639,8 @@ export function aggregateProviderStats(
    */
   const bucketer = new TtftCacheBucketer();
 
-  // 按 model 名启发式推断 provider（映射兜底：first_content 无 provider、AfterModelRaw 未覆盖该 model 时用）
-  const inferProviderFromModel = (model: string): string =>
-    model.includes("claude") ? "anthropic" : model ? "openai" : "unknown";
-
-  // 第一遍：从 AfterModelRaw 建立 model→provider 映射（first_content 只带 model，需靠此归因）
-  const modelToProvider = new Map<string, string>();
-  for (const e of events) {
-    if (e.event === "AfterModelRaw" && e.data) {
-      const provider = (e.data.provider as string) || "";
-      const model = (e.data.model as string) || "";
-      if (provider && model && !modelToProvider.has(model)) modelToProvider.set(model, provider);
-    }
-  }
-  const resolveProvider = (model: string): string =>
-    modelToProvider.get(model) || inferProviderFromModel(model);
+  // first_content / TimeoutFired 只带 model：统一走共享 resolver（真值映射优先，缺陷 37）
+  const resolveProvider = createProviderResolver(events);
 
   // 第二遍：聚合各维度
   for (const e of events) {
@@ -2703,15 +2691,11 @@ export function aggregateProviderStats(
     // 从 TimeoutFired 事件补充超时计数
     if (e.event === "TimeoutFired" && e.data) {
       const model = (e.data.model as string) || "";
-      // TimeoutFired 没有 provider 字段，用 model 推断
+      // TimeoutFired 不带 provider 字段 ⇒ 必须走与 first_content 同一个 resolver。
+      // 曾另起「只认 deepseek/claude，其余 unknown」一套（缺陷 37）：unknown 桶无分母，
+      // glm/qwen/kimi 的超时从所有健康判据里消失，且真 provider 成功率虚高。
       if (model) {
-        const stats = ensure(
-          model.includes("deepseek")
-            ? "openai"
-            : model.includes("claude")
-              ? "anthropic"
-              : "unknown",
-        );
+        const stats = ensure(resolveProvider(model));
         stats.timedOut++;
       }
     }
@@ -2720,7 +2704,7 @@ export function aggregateProviderStats(
   // P2-3：遍历完再配对（completed 可能后到，边遍历边配会漏掉一半）
   const buckets = bucketer.finalize();
 
-  // P1（§0.1b）：TTFT/TTFB 按 model 分组。复用上面已建好的 modelToProvider 映射
+  // P1（§0.1b）：TTFT/TTFB 按 model 分组。复用上面的共享 resolver
   //（不在模块内自己再扫一遍 AfterModelRaw —— 两处各建一份映射必然漂移）。
   const latencyByModel = aggregateLatencyByModel(events, resolveProvider, percentile);
 
@@ -3258,8 +3242,30 @@ export function aggregateTodoStats(
  * `bg_task_get` 见 tool/task-get.ts、`task_list`/`task_get` 是结构化任务清单侧的
  * 两个同类）。**不要凭印象往里加名字**：多算一个就会让 pollRatio 虚高，
  * 而这个比值是"该不该看这次会话"的分诊主键。
+ *
+ * ⚠️ 缺陷 31：与 `agent/loop-detection.ts` 的 `CONDITIONALLY_EXEMPT_TOOLS` **刻意不同源**，
+ * 两者回答的问题不同：
+ * - 本集合：「这次调用算不算轮询」—— 离线统计，只看工具名，决定 `pollRatio` 的分子；
+ * - 条件豁免：「这次调用要不要放过循环检测」—— 运行时决策，按入参判。
+ * 已登记的差异见 {@link POLL_TOOLS_VS_CONDITIONAL_EXEMPT}：`task_output` 是取结果不是查状态，
+ * 不算轮询；`task_list`/`task_get`（结构化清单）算轮询，但不在条件豁免里（它们走 EXEMPT_TOOLS 无条件豁免）。
+ * 改任何一侧都要过 `tests/trace/poll-tools-alignment.test.ts`：差集必须等于这里登记的例外，
+ * 否则名单变一个元素，`pollRatio` 曲线就整体平移且没人知道。
  */
-const POLL_TOOLS = new Set(["bg_task_list", "bg_task_get", "task_list", "task_get"]);
+export const POLL_TOOLS: ReadonlySet<string> = new Set([
+  "bg_task_list",
+  "bg_task_get",
+  "task_list",
+  "task_get",
+]);
+
+/** POLL_TOOLS 与 CONDITIONALLY_EXEMPT_TOOLS 的**已登记**差异（缺陷 31 的对账门禁读它） */
+export const POLL_TOOLS_VS_CONDITIONAL_EXEMPT = {
+  /** 算轮询、但不在条件豁免里：结构化任务清单侧的查询工具 */
+  onlyInPoll: ["task_list", "task_get"],
+  /** 在条件豁免里、但不算轮询：取后台任务**结果**，不是查状态 */
+  onlyInConditionalExempt: ["task_output"],
+} as const;
 
 /** 编辑类工具名（editLatency 的触发工具）。核对自 tool/{edit,write,notebook-edit}.ts 的 name getter。 */
 const EDIT_TOOLS = new Set(["edit", "write", "notebook_edit"]);
