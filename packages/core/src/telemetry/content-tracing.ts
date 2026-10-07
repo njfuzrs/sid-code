@@ -36,6 +36,7 @@
 import { createHash } from "node:crypto";
 import type { SpanHandle } from "./bus.ts";
 import type { Attributes } from "./types.ts";
+import { sanitizeToolName } from "../analytics/sanitize.ts";
 
 // ─────────────────────────────────────────────────────────────
 // 常量
@@ -439,12 +440,14 @@ export function maskedErrorSummary(raw: string, maxBytes: number = 200): string 
   return decoder.decode(bytes.slice(0, maxBytes)).replace(/\uFFFD+$/, "");
 }
 
-/** 复用埋点门面的工具名脱敏规则，拿不到时退化为「只保留是否 MCP」这一位信息 */
+/**
+ * 复用埋点门面的工具名脱敏规则 —— 规则只在 `analytics/sanitize.ts` 一处。
+ *
+ * 缺陷 34：曾是 `require()` + catch 里手写一份 `mcp__ → mcp_tool` 的 fallback，即「绕过门面
+ * 自己拼」的第二份规则：sanitize 侧收紧规则时这里不会跟着变，span 通道脱敏静默降级。
+ * `sanitize.ts` 只依赖 `privacy.ts`（且是 type-only import），静态 import 没有导入链污染，
+ * 也就不需要"加载失败"这条分支。
+ */
 export function sanitizedToolName(name: string): string {
-  try {
-    const { sanitizeToolName } = require("../analytics/sanitize.ts");
-    return sanitizeToolName(name);
-  } catch {
-    return name.startsWith("mcp__") ? "mcp_tool" : name;
-  }
+  return sanitizeToolName(name);
 }

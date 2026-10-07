@@ -428,8 +428,17 @@ export class TelemetryBus {
     try {
       const { isPerfettoEnabled, writePerfettoTrace } = await import("./perfetto.ts");
       if (isPerfettoEnabled() && this.spanHistory.length > 0) {
-        const path = writePerfettoTrace(this.spanHistory);
-        if (path) getLogger().debug("TELEMETRY", `Perfetto 追踪已写入: ${path}`);
+        const path = writePerfettoTrace(this.spanHistory, undefined, this.evictedHistorySpans);
+        if (path) {
+          getLogger().debug("TELEMETRY", `Perfetto 追踪已写入: ${path}`);
+          // 缺陷 38：根被淘汰后图是一堆浮空条，文件却完全合法 —— 必须出声
+          if (this.evictedHistorySpans > 0) {
+            getLogger().warn(
+              "TELEMETRY",
+              `Perfetto 追踪不完整：最早的 ${this.evictedHistorySpans} 条 span（含根）已被 history 上限淘汰`,
+            );
+          }
+        }
       }
     } catch {
       // Perfetto 输出失败不影响关闭

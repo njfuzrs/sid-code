@@ -513,6 +513,9 @@ export const EXEMPT_TOOLS = new Set([
  * ⚠️ 改这个集合时必须同步 `EXEMPT_TOOLS` 与对应工具类的 `exemptFromLoopDetection` 字段
  * （见上方 EXEMPT_TOOLS 的 P2-3 说明与 `tests/agent/loop-detection-exemption-audit.test.ts`
  * 的双向对账）——本集合是 EXEMPT_TOOLS 的**子集**，不是平行名单。
+ *
+ * `trace/digest.ts` 的 `POLL_TOOLS`（离线统计「算不算轮询」）与本集合刻意不同源，
+ * 差异登记在 `POLL_TOOLS_VS_CONDITIONAL_EXEMPT`，由 `tests/trace/poll-tools-alignment.test.ts` 对账（缺陷 31）。
  */
 export const CONDITIONALLY_EXEMPT_TOOLS = new Set(["bg_task_list", "bg_task_get", "task_output"]);
 

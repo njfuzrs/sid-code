@@ -32,6 +32,7 @@
 import { getTelemetryBus } from "../index.ts";
 import { HITL_WAIT_BUCKET_BOUNDS_S, TTFT_BUCKET_BOUNDS_S, TURNS_BUCKET_BOUNDS } from "../types.ts";
 import type { Attributes } from "../types.ts";
+import { sanitizeToolName } from "../../analytics/sanitize.ts";
 
 /**
  * TTFT 分布的 metric 名 —— OTel GenAI 语义约定的客户端侧标准名，单位秒。
@@ -154,7 +155,8 @@ export function recordHitlWaitHistogram(
   try {
     if (!Number.isFinite(waitMs) || waitMs < 0) return;
     // 工具名走同一条脱敏规则：metric 属性同样随 OTLP 外发（缺陷 22 的同族约束）
-    const tool = toolName.startsWith("mcp__") ? "mcp_tool" : toolName;
+    // 缺陷 34：不再就地重写规则，统一走 analytics/sanitize.ts（sanitize 收紧时这里自动跟上）
+    const tool = sanitizeToolName(toolName);
     getTelemetryBus().recordMetric({
       name: HITL_WAIT_METRIC,
       value: waitMs / 1000,
