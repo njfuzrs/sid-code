@@ -13,7 +13,6 @@ const todos: UnifiedCommand = {
   description: "列出当前会话的待办清单（TodoWrite 维护）",
   source: "builtin",
   userInvocable: true,
-  disableModelInvocation: true,
   immediate: true,
   load: () => import("./todos.ts").then((m) => m.default),
 };

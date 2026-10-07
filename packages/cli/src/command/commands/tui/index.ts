@@ -15,7 +15,6 @@ const tui: UnifiedCommand = {
   argumentHint: "[on|off]",
   source: "builtin",
   userInvocable: true,
-  disableModelInvocation: true,
   immediate: true,
   load: () => import("./tui.ts").then((m) => m.default),
 };

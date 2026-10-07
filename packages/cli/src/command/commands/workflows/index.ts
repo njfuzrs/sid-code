@@ -14,7 +14,6 @@ const workflows: UnifiedCommand = {
   argumentHint: "[runId|taskId]",
   source: "builtin",
   userInvocable: true,
-  disableModelInvocation: true,
   immediate: true,
   load: () => import("./workflows.ts").then((m) => m.default),
 };

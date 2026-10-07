@@ -15,7 +15,6 @@ const terminalSetup: UnifiedCommand = {
   description: "为当前终端安装 Shift+Enter 换行键绑定（VSCode/Cursor/Windsurf 等）",
   source: "builtin",
   userInvocable: true,
-  disableModelInvocation: true,
   immediate: true,
   load: () => import("./terminal-setup.ts").then((m) => m.default),
 };
