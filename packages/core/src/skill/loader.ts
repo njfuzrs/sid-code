@@ -30,6 +30,99 @@ function parseStringList(raw: unknown): string[] | undefined {
 }
 
 /**
+ * frontmatter → SkillDefinition 的**来源无关**字段映射（单一事实源）。
+ *
+ * P2-1：此前 loader 与 MCP discovery（mcp/skill-discovery.ts）各写一份映射，新增 frontmatter
+ * 字段必然漏一处——paths / effort / agent / maxTurns / timeoutMins / mode / argumentNames 等
+ * 都是 loader 加了、MCP 没加，于是 MCP skill 的条件激活、资源上限、`mode: activate` 全部静默失效。
+ *
+ * 不含 name / description / prompt / source / loadedFrom / filePath / skillRoot：
+ * 这些由调用方按来源决定（名称清洗规则、MCP 无本地目录等）。
+ * 安全相关字段（hooks / shell）照常解析，**由调用方按来源剔除**——见 discoverMcpSkills。
+ */
+export function parseSkillFrontmatterFields(
+  fm: Record<string, unknown>,
+): Omit<
+  SkillDefinition,
+  "name" | "description" | "prompt" | "source" | "loadedFrom" | "filePath" | "skillRoot"
+> {
+  // 解析 allowed-tools（支持逗号分隔字符串或数组）
+  let allowedTools: string[] | undefined;
+  const rawTools = fm["allowed-tools"] ?? fm["allowedTools"] ?? fm["tools"];
+  if (typeof rawTools === "string") {
+    allowedTools = rawTools
+      .split(",")
+      .map((s) => s.trim())
+      .filter(Boolean);
+  } else if (Array.isArray(rawTools)) {
+    allowedTools = rawTools.map(String);
+  }
+
+  // 解析 mode 字段
+  const rawMode = fm.mode as string;
+  const mode: "activate" | "delegate" | undefined =
+    rawMode === "activate" || rawMode === "delegate" ? rawMode : undefined;
+
+  // 解析 context 字段（优先级高于 mode；未指定时由 mode 推导）
+  const rawContext = fm.context as string;
+  let context: "inline" | "fork" | undefined =
+    rawContext === "inline" || rawContext === "fork" ? rawContext : undefined;
+  if (!context && mode) {
+    context = mode === "activate" ? "inline" : "fork";
+  }
+
+  // 解析 maxTurns 和 timeoutMins
+  const maxTurns =
+    typeof fm["max-turns"] === "number"
+      ? fm["max-turns"]
+      : typeof fm["maxTurns"] === "number"
+        ? fm["maxTurns"]
+        : undefined;
+  const timeoutMins =
+    typeof fm["timeout-mins"] === "number"
+      ? fm["timeout-mins"]
+      : typeof fm["timeoutMins"] === "number"
+        ? fm["timeoutMins"]
+        : undefined;
+
+  // user-invocable（默认 true）
+  const rawUserInvocable = fm["user-invocable"] ?? fm["userInvocable"];
+  const userInvocable = rawUserInvocable === false ? false : true;
+
+  // 生命周期钩子
+  const hooks =
+    fm["hooks"] && typeof fm["hooks"] === "object" && !Array.isArray(fm["hooks"])
+      ? (fm["hooks"] as SkillDefinition["hooks"])
+      : undefined;
+
+  return {
+    allowedTools,
+    // P1-3 变量/字段兼容：CC 权威字段是 when_to_use（下划线，frontmatterParser.ts），
+    // sid 原生用 when-to-use/whenToUse。三写法兼容，避免从 CC 迁移的 skill 静默丢 whenToUse。
+    whenToUse:
+      (fm["when_to_use"] as string) ?? (fm["when-to-use"] as string) ?? (fm["whenToUse"] as string),
+    argumentHint: (fm["argument-hint"] as string) ?? (fm["argumentHint"] as string),
+    model: fm.model as string,
+    disableModelInvocation:
+      fm["disable-model-invocation"] === true || fm["disableModelInvocation"] === true,
+    mode,
+    context,
+    maxTurns,
+    timeoutMins,
+    userInvocable,
+    version: fm["version"] as string,
+    effort: fm["effort"] as string,
+    agent: fm["agent"] as string,
+    shell: fm["shell"] as string,
+    // 命名参数列表
+    argumentNames: parseStringList(fm["arguments"]),
+    // 条件激活路径模式
+    paths: parseStringList(fm["paths"]),
+    hooks,
+  };
+}
+
+/**
  * 最大 Skill 数量（失控保护上限，不是常规约束）。
  *
  * 原值 50 是「每个 skill 一个 skill__<name> 工具」时代的硬顶——工具定义数随 skill 线性
@@ -156,93 +249,20 @@ export class SkillLoader {
       return null;
     }
 
-    // 解析 allowed-tools（支持逗号分隔字符串或数组）
-    let allowedTools: string[] | undefined;
-    const rawTools = fm["allowed-tools"] ?? fm["allowedTools"] ?? fm["tools"];
-    if (typeof rawTools === "string") {
-      allowedTools = rawTools
-        .split(",")
-        .map((s) => s.trim())
-        .filter(Boolean);
-    } else if (Array.isArray(rawTools)) {
-      allowedTools = rawTools.map(String);
-    }
-
-    // 解析 mode 字段
-    const rawMode = fm.mode as string;
-    const mode: "activate" | "delegate" | undefined =
-      rawMode === "activate" || rawMode === "delegate" ? rawMode : undefined;
-
-    // 解析 context 字段（优先级高于 mode；未指定时由 mode 推导）
-    const rawContext = fm.context as string;
-    let context: "inline" | "fork" | undefined =
-      rawContext === "inline" || rawContext === "fork" ? rawContext : undefined;
-    if (!context && mode) {
-      context = mode === "activate" ? "inline" : "fork";
-    }
-
-    // 解析 maxTurns 和 timeoutMins
-    const maxTurns =
-      typeof fm["max-turns"] === "number"
-        ? fm["max-turns"]
-        : typeof fm["maxTurns"] === "number"
-          ? fm["maxTurns"]
-          : undefined;
-    const timeoutMins =
-      typeof fm["timeout-mins"] === "number"
-        ? fm["timeout-mins"]
-        : typeof fm["timeoutMins"] === "number"
-          ? fm["timeoutMins"]
-          : undefined;
-
-    // user-invocable（默认 true）
-    const rawUserInvocable = fm["user-invocable"] ?? fm["userInvocable"];
-    const userInvocable = rawUserInvocable === false ? false : true;
-
-    // 条件激活路径模式
-    const paths = parseStringList(fm["paths"]);
-    // 命名参数列表
-    const argumentNames = parseStringList(fm["arguments"]);
-    // 生命周期钩子
-    const hooks =
-      fm["hooks"] && typeof fm["hooks"] === "object" && !Array.isArray(fm["hooks"])
-        ? (fm["hooks"] as SkillDefinition["hooks"])
-        : undefined;
+    const fields = parseSkillFrontmatterFields(fm);
 
     const skillRoot = dirname(file.filePath);
 
     return {
+      ...fields,
       name: sanitizedName,
       description,
-      allowedTools,
-      // P1-3 变量/字段兼容：CC 权威字段是 when_to_use（下划线，frontmatterParser.ts），
-      // sid 原生用 when-to-use/whenToUse。三写法兼容，避免从 CC 迁移的 skill 静默丢 whenToUse。
-      whenToUse:
-        (fm["when_to_use"] as string) ??
-        (fm["when-to-use"] as string) ??
-        (fm["whenToUse"] as string),
-      argumentHint: (fm["argument-hint"] as string) ?? (fm["argumentHint"] as string),
-      model: fm.model as string,
-      disableModelInvocation:
-        fm["disable-model-invocation"] === true || fm["disableModelInvocation"] === true,
-      mode,
-      context,
-      maxTurns,
-      timeoutMins,
       prompt: file.body,
       source: file.source,
       loadedFrom:
         file.source === "builtin" ? "builtin" : file.source === "managed" ? "managed" : "skills",
       filePath: file.filePath,
       skillRoot,
-      userInvocable,
-      version: fm["version"] as string,
-      effort: fm["effort"] as string,
-      agent: fm["agent"] as string,
-      shell: fm["shell"] as string,
-      argumentNames,
-      paths,
-      hooks,
     };
   }
 
