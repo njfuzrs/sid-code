@@ -555,6 +555,33 @@ describe("aggregateSessionMetrics 口径", () => {
     expect(m.ttft_p50).toBeUndefined();
   });
 
+  test("缺陷 7：HITL 等待时长只取 prompted=true 的 PermissionDecision", async () => {
+    const { aggregateSessionMetrics } = await import("@sid-code/core/trace/digest.ts");
+    const pd = (data: Record<string, unknown>) => ({ event: "PermissionDecision", data });
+    const m = aggregateSessionMetrics(
+      [
+        // 规则直放：不是人在想，不计
+        pd({ outcome: "allow", prompted: false, duration_ms: 3 }),
+        pd({ outcome: "allow", prompted: true, duration_ms: 12000 }),
+        pd({ outcome: "deny", prompted: true, duration_ms: 30000 }),
+        // 弹窗后中断、无计时：计次数不计时长
+        pd({ outcome: "deny", prompted: true }),
+      ],
+      { trajCorrupt: false },
+    );
+    expect(m.hitl_prompts).toBe(3);
+    expect(m.hitl_wait_n).toBe(2);
+    expect(m.hitl_wait_total_ms).toBe(42000);
+    expect(m.hitl_wait_p95_ms).toBe(30000);
+  });
+
+  test("缺陷 7：无弹窗时次数 0、p95 undefined（不是 0）", async () => {
+    const { aggregateSessionMetrics } = await import("@sid-code/core/trace/digest.ts");
+    const m = aggregateSessionMetrics([], { trajCorrupt: false });
+    expect(m.hitl_prompts).toBe(0);
+    expect(m.hitl_wait_p95_ms).toBeUndefined();
+  });
+
   test("ttft_ms <= 0 的脏样本被剔除（与 provider 侧同款判据）", async () => {
     const { aggregateSessionMetrics } = await import("@sid-code/core/trace/digest.ts");
     const m = aggregateSessionMetrics(

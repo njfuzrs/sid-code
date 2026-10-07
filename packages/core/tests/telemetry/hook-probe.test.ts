@@ -408,7 +408,8 @@ describe("TelemetryHookProbe", () => {
     }
     await hookSystem.fireSessionEndEvent("exit", {
       total_cost_usd: 0.01,
-      total_tokens_sent: 200,
+      total_tokens_sent: 100,
+      total_cumulative_prompt_tokens: 200,
       total_tokens_received: 100,
     });
     await bus.flush();
@@ -417,8 +418,11 @@ describe("TelemetryHookProbe", () => {
     expect(agentSpan).toBeDefined();
     expect(agentSpan!.attributes[ATTR.TOTAL_TURNS]).toBe(2);
     expect(agentSpan!.attributes[ATTR.TOTAL_COST_USD]).toBe(0.01);
-    expect(agentSpan!.attributes[ATTR.INPUT_TOKENS]).toBe(200);
-    expect(agentSpan!.attributes[ATTR.OUTPUT_TOKENS]).toBe(100);
+    // 缺陷 11：取累计（flow）200，不是末次（stock）100；且不借 gen_ai.usage.*
+    expect(agentSpan!.attributes[ATTR.AGENT_CUMULATIVE_INPUT_TOKENS]).toBe(200);
+    expect(agentSpan!.attributes[ATTR.AGENT_OUTPUT_TOKENS]).toBe(100);
+    expect(ATTR.INPUT_TOKENS in agentSpan!.attributes).toBe(false);
+    expect(ATTR.OUTPUT_TOKENS in agentSpan!.attributes).toBe(false);
   });
 
   // ── TTFT ──
@@ -450,6 +454,8 @@ describe("TelemetryHookProbe", () => {
     const ttftEvent = chatSpan!.events.find((e) => e.name === "gen_ai.first_token");
     expect(ttftEvent).toBeDefined();
     expect(ttftEvent!.attributes?.ttft_ms).toBe(350);
+    // 缺陷 8：同时写成属性，/telemetry 读的是属性
+    expect(chatSpan!.attributes[ATTR.TTFT_MS]).toBe(350);
   });
 
   test("无 ttft_ms 时不记录 TTFT event", async () => {

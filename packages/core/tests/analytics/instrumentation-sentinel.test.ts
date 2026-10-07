@@ -193,6 +193,30 @@ describe("埋点接线哨兵：事件名双向对账", () => {
   });
 });
 
+describe("埋点接线哨兵：权限漏斗分子分母同口径（缺陷 5）", () => {
+  // 拒绝率 = deny / (allow + deny)。deny 覆盖了某条执行路径而 allow 没有，
+  // 那条路径的拒绝率就恒为 100%（分母缺项），偏向「看起来更不安全」。
+  // 判据按 context 字面量收集：每个 logPermissionDeny 用到的 context，
+  // 必须也有 logPermissionAllow 用到。
+  function contextsOf(fn: string): Set<string> {
+    const out = new Set<string>();
+    const re = new RegExp(`\\b${fn}\\([^;]*?context:\\s*"(\\w+)"`, "gs");
+    for (const { rel, text } of readAllSources()) {
+      if (rel === FACADE_REL) continue;
+      for (const m of text.matchAll(re)) out.add(m[1]!);
+    }
+    return out;
+  }
+
+  test("deny 覆盖的每条执行路径 allow 也覆盖", () => {
+    const deny = contextsOf("logPermissionDeny");
+    const allow = contextsOf("logPermissionAllow");
+    // 扫描面自证：三条路径都已知有 deny
+    expect([...deny].sort()).toEqual(["forked", "main", "subagent"]);
+    expect([...deny].filter((c) => !allow.has(c))).toEqual([]);
+  });
+});
+
 describe("埋点接线哨兵：密度下限", () => {
   test("门面调用点总数不低于 33（缺陷清单验收判据 1 的等价形态；M4 把阈值从 30 提到 33）", () => {
     const sources = readAllSources().filter(({ rel }) => rel !== FACADE_REL);

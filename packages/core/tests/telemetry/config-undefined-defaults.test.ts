@@ -159,6 +159,36 @@ describe("TelemetryBus：显式 undefined 不得击穿默认值", () => {
   });
 });
 
+describe("metricQueue 受 maxQueueSize 约束（可观测性缺陷 4）", () => {
+  test("metric 入队超过 maxQueueSize 时丢最旧，与 spanQueue 同口径", async () => {
+    const { exporter, metricBatches } = makeRecordingExporter();
+    const bus = new TelemetryBus({
+      enabled: true,
+      exporters: [],
+      batchSize: 100_000, // 避免中途自动 flush，只验驱逐
+      maxQueueSize: 100,
+    });
+    bus.addExporter(exporter);
+    for (let i = 0; i < 250; i++) {
+      bus.recordMetric({
+        name: "m",
+        type: "counter",
+        value: i,
+        attributes: {},
+        timestamp: Date.now(),
+      } as MetricPoint);
+    }
+    await bus.flush();
+    const flushed = metricBatches.flat();
+    // 修复前：无上限 ⇒ 250
+    expect(flushed.length).toBeLessThanOrEqual(100);
+    expect(flushed.length).toBeGreaterThan(0);
+    // 丢的是最旧的：最后一条必须还在
+    expect(flushed[flushed.length - 1]!.value).toBe(249);
+    await bus.shutdown();
+  });
+});
+
 describe("JsonlExporter：空批次不得写裸换行符", () => {
   test("exportSpans([]) 不产生任何字节", async () => {
     const dir = await mkdtemp(join(tmpdir(), "sid-telemetry-empty-"));

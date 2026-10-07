@@ -471,8 +471,10 @@ describe("据 events.jsonl 重建根 span", () => {
       },
       { sessionsRoot: join(testHome, "trajectories", "sessions") },
     );
-    expect(span.attributes[ATTR.INPUT_TOKENS]).toBe(3000);
-    expect(span.attributes[ATTR.OUTPUT_TOKENS]).toBe(600);
+    expect(span.attributes[ATTR.AGENT_CUMULATIVE_INPUT_TOKENS]).toBe(3000);
+    expect(span.attributes[ATTR.AGENT_OUTPUT_TOKENS]).toBe(600);
+    // 缺陷 11：invoke_agent 不再借用单次 LLM 调用语义的 gen_ai.usage.*
+    expect(ATTR.INPUT_TOKENS in span.attributes).toBe(false);
   });
 
   /**

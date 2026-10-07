@@ -1070,6 +1070,7 @@ export async function resolveToolPermission(
       source: "rule",
       needsPrompt: false,
       durationMs: Date.now() - permStartedAt,
+      context: "main",
       // B11：放行成因（rule / mode / sessionMemory …）。规则命中率的分子就是 reasonType="rule"。
       reasonType: decision.decisionReason?.type,
     });
@@ -1205,6 +1206,7 @@ export async function resolveToolPermission(
         source: normalizePermissionSource(result.source),
         needsPrompt: true,
         durationMs: Date.now() - permStartedAt,
+        context: "main",
         // 这一路的成因来自**弹窗前**那次 check（是它判定要确认的），
         // 不是三路竞争的结果 —— 拒绝动作由谁做在 source 里，为什么要问在这里。
         reasonType: decision.decisionReason?.type,
@@ -1236,6 +1238,7 @@ export async function resolveToolPermission(
       source: normalizePermissionSource(result.source),
       needsPrompt: true,
       durationMs: Date.now() - permStartedAt,
+      context: "main",
       // 与拒绝分支同口径：成因取弹窗前那次 check（"为什么要问"），不是谁批的。
       reasonType: decision.decisionReason?.type,
     });
@@ -1260,6 +1263,7 @@ export async function resolveToolPermission(
     source: "rule",
     needsPrompt: false,
     durationMs: Date.now() - permStartedAt,
+    context: "main",
     reasonType: decision.decisionReason?.type,
   });
   // B33：规则直拒同样 fire PermissionDenied。headless 把 ask 自动拒（reasonType="other"）
