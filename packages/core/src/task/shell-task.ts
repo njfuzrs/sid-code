@@ -8,7 +8,7 @@ import { openSync, closeSync } from "fs";
 import { platform } from "os";
 import { generateTaskId, type LocalShellTaskState, isTerminalStatus } from "./types.ts";
 import { registerTask, updateTask, getTask, graceDeadlineFor } from "./registry.ts";
-import { initTaskOutput, getTaskOutputTail } from "./disk-output.ts";
+import { initTaskOutput, getTaskOutputTail, getTaskOutputSize } from "./disk-output.ts";
 import { enqueueTaskNotification } from "./notification.ts";
 
 /** 获取平台 shell 配置 */
@@ -360,9 +360,32 @@ const PROMPT_PATTERNS = [
   /Are you sure/i,
 ];
 
+/** 停滞判据的一步（纯函数，便于单测）。
+ *  两个条件用**两个不同的量**：增长看文件字节数（单调），提示词看尾部文本。
+ *  以前两者共用 1024 字节尾部字符串的长度，文件超过 1024 后增长信号恒死，
+ *  判据退化成「尾部出现提示词就报」，正常输出中的长命令每 45s 被误报一次（多代理 F4）。 */
+export interface StallState {
+  lastSize: number;
+  lastGrowth: number;
+}
+
+export function stepStallCheck(
+  state: StallState,
+  size: number,
+  tail: string | null,
+  now: number,
+): { state: StallState; notify: boolean } {
+  if (size > state.lastSize) return { state: { lastSize: size, lastGrowth: now }, notify: false };
+  if (now - state.lastGrowth < STALL_THRESHOLD_MS) return { state, notify: false };
+  if (tail && PROMPT_PATTERNS.some((p) => p.test(tail))) {
+    // 重置锚点：仍卡着的话每个阈值周期提醒一次，而不是每 5s 一次
+    return { state: { lastSize: state.lastSize, lastGrowth: now }, notify: true };
+  }
+  return { state, notify: false };
+}
+
 function startStallWatchdog(taskId: string): void {
-  let lastSize = 0;
-  let lastGrowth = Date.now();
+  let state: StallState = { lastSize: 0, lastGrowth: Date.now() };
 
   const interval = setInterval(async () => {
     const task = getTask(taskId);
@@ -372,16 +395,14 @@ function startStallWatchdog(taskId: string): void {
     }
 
     try {
-      const tail = await getTaskOutputTail(taskId, 1024);
-      const currentSize = tail?.length ?? 0;
-      if (currentSize > lastSize) {
-        lastSize = currentSize;
-        lastGrowth = Date.now();
-        return;
-      }
-      if (Date.now() - lastGrowth < STALL_THRESHOLD_MS) return;
-
-      if (tail && PROMPT_PATTERNS.some((p) => p.test(tail))) {
+      const size = (await getTaskOutputSize(taskId)) ?? 0;
+      // 只有可能报警时才读尾部，避免每 5s 一次无谓 IO
+      const mayStall =
+        size <= state.lastSize && Date.now() - state.lastGrowth >= STALL_THRESHOLD_MS;
+      const tail = mayStall ? await getTaskOutputTail(taskId, 1024) : null;
+      const step = stepStallCheck(state, size, tail, Date.now());
+      state = step.state;
+      if (step.notify && tail) {
         const tailSnippet = tail.length > 200 ? `…${tail.slice(-200)}` : tail;
         enqueueTaskNotification(
           {
@@ -392,7 +413,6 @@ function startStallWatchdog(taskId: string): void {
           },
           "next",
         );
-        lastGrowth = Date.now();
       }
     } catch {
       /* ignore */

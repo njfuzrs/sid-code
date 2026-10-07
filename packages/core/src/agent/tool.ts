@@ -122,6 +122,21 @@ export function renderAgentTypeLines(): string {
  *    （success/agent_id/duration_ms），否则 `src/trace/digest.ts` 的子代理 section
  *    无法判定成败与串/并行，重演"全部 SUCCESS"类误判。
  */
+/** 只作用于「眼前这一轮」的中断 reason：不应传到后台子代理（多代理 F9）。
+ *  - user-cancel：用户 ESC；midturn-preempt：用户中途改向；
+ *  - sibling_bash_error：同批兄弟 Bash 失败的联动取消；race-settled：本轮孤儿清理。
+ *  其余（session-timeout、团队硬超时、未知 reason）一律转发：宁可多停，不留孤儿。 */
+const TURN_SCOPED_ABORT_REASONS: ReadonlySet<string> = new Set([
+  "user-cancel",
+  "midturn-preempt",
+  "sibling_bash_error",
+  "race-settled",
+]);
+
+export function shouldForwardAbortToBackground(reason: unknown): boolean {
+  return !(typeof reason === "string" && TURN_SCOPED_ABORT_REASONS.has(reason));
+}
+
 export class SubAgentTool implements Tool {
   private providerRegistry: ProviderRegistry;
   private toolRegistry: ToolRegistry;
@@ -757,9 +772,17 @@ ${typeLines}
     });
 
     // 合并外部 signal:保存 handler 引用,后台任务结束时摘除监听器(LEAK-4)
+    // 多代理 F9：只转发会话级中断，用户级取消（ESC 等）不转发——用户按 ESC 是想打断
+    // 眼前这一轮，不是杀掉之前扔到后台的任务。精确停一个走 task_stop。
     let abortForwardCleanup: (() => void) | undefined;
     if (signal) {
-      const onAbort = () => abortController.abort();
+      const onAbort = () => {
+        if (!shouldForwardAbortToBackground(signal.reason)) {
+          log.info("SUBAGENT", `后台子代理忽略用户级取消（reason=${String(signal.reason)}）`);
+          return;
+        }
+        abortController.abort(signal.reason);
+      };
       signal.addEventListener("abort", onAbort);
       abortForwardCleanup = () => signal.removeEventListener("abort", onAbort);
     }

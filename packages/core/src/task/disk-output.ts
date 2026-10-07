@@ -146,6 +146,19 @@ export async function getTaskOutputDelta(
   }
 }
 
+/** 输出文件当前字节数（停滞检测的增长信号）。
+ *  不能用 `getTaskOutputTail(...).length` 代替：尾部读取是定长窗口，文件一超过窗口
+ *  长度就恒定不变，增长信号当场死掉（多代理 F4）。字节数是单调的，才能当增长判据。 */
+export async function getTaskOutputSize(taskId: string): Promise<number | null> {
+  const output = outputs.get(taskId);
+  if (!output) return null;
+  try {
+    return (await stat(output.filePath)).size;
+  } catch {
+    return null;
+  }
+}
+
 /** 读取输出末尾（用于停滞检测） */
 export async function getTaskOutputTail(taskId: string, tailBytes = 1024): Promise<string | null> {
   const output = outputs.get(taskId);
