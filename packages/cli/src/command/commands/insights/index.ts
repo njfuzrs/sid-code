@@ -15,7 +15,6 @@ const insights: UnifiedCommand = {
   argumentHint: "[session-id|latest]",
   source: "builtin",
   userInvocable: true,
-  disableModelInvocation: true,
   immediate: true,
   load: () => import("./insights.ts").then((m) => m.default),
 };

@@ -14,7 +14,6 @@ const fork: UnifiedCommand = {
   description: "分叉当前会话为独立新会话（打印重启命令）",
   source: "builtin",
   userInvocable: true,
-  disableModelInvocation: true,
   immediate: true,
   load: () => import("./fork.ts").then((m) => m.default),
 };

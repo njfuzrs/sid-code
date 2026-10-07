@@ -16,7 +16,6 @@ const context: UnifiedCommand = {
   description: "上下文用量可视化（分类 token 拆解 + 距压缩阈值）",
   source: "builtin",
   userInvocable: true,
-  disableModelInvocation: true,
   immediate: true,
   load: () => import("./context.ts").then((m) => m.default),
 };

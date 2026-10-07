@@ -14,7 +14,6 @@ const copy: UnifiedCommand = {
   argumentHint: "[code]",
   source: "builtin",
   userInvocable: true,
-  disableModelInvocation: true,
   immediate: true,
   load: () => import("./copy.ts").then((m) => m.default),
 };

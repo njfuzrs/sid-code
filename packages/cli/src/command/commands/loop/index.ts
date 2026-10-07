@@ -17,7 +17,6 @@ const loop: UnifiedCommand = {
   argumentHint: "[间隔如 5m] <要重复的任务>",
   source: "builtin",
   userInvocable: true,
-  disableModelInvocation: true,
   load: () => import("./loop.ts").then((m) => m.default),
 };
 

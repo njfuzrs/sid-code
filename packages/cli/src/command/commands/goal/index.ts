@@ -8,7 +8,6 @@ const goal: UnifiedCommand = {
     "<完成条件> | status | pause | resume | edit <新条件> | turns <n> | budget <tokens> | clear",
   source: "builtin",
   userInvocable: true,
-  disableModelInvocation: true,
   immediate: true,
   load: () => import("./goal.ts").then((m) => m.default),
 };

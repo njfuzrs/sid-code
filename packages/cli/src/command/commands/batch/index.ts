@@ -16,7 +16,6 @@ const batch: UnifiedCommand = {
   argumentHint: "<要批量处理的任务>",
   source: "builtin",
   userInvocable: true,
-  disableModelInvocation: true,
   immediate: true,
   load: () => import("./batch.ts").then((m) => m.default),
 };

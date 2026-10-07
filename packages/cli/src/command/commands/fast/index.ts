@@ -16,7 +16,6 @@ const fast: UnifiedCommand = {
   argumentHint: "[on|off]",
   source: "builtin",
   userInvocable: true,
-  disableModelInvocation: true,
   immediate: true,
   load: () => import("./fast.ts").then((m) => m.default),
 };

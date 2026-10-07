@@ -14,7 +14,6 @@ const rename: UnifiedCommand = {
   argumentHint: "[新名字]",
   source: "builtin",
   userInvocable: true,
-  disableModelInvocation: true,
   immediate: true,
   load: () => import("./rename.ts").then((m) => m.default),
 };

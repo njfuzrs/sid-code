@@ -15,9 +15,8 @@ const btw: UnifiedCommand = {
   // 无参数（问题）就只能打印用法，故补全列表回车仅回填等待用户输入问题。
   requiresArgs: true,
   source: "builtin",
-  // 仅用户可调用——这是 UX 快捷入口，模型不应自行触发。
+  // 仅用户可调用（内置命令本就没有模型调用路径，见 CommandBase.disableModelInvocation 注释）。
   userInvocable: true,
-  disableModelInvocation: true,
   load: () => import("./btw.ts").then((m) => m.default),
 };
 

@@ -26,6 +26,8 @@ export interface Suggestion {
   tag?: string;
   /** 斜杠命令专用：该命令无参数就无法工作，补全列表回车仅回填等待输入而非直接执行 */
   requiresArgs?: boolean;
+  /** 斜杠命令专用：参数提示（如 "<repo> [pr]"），显示在 label 后 dim 色 */
+  argumentHint?: string;
 }
 
 interface SuggestionsDisplayProps {
@@ -78,6 +80,10 @@ export function SuggestionsDisplay({ suggestions, activeIndex, width }: Suggesti
               <Text color={labelColor} bold={isActive}>
                 {item.label}
               </Text>
+              {/* D10：参数提示与 tag 同样 dim 处理——「回填等你输入」的另一半是「告诉你输入什么」 */}
+              {item.argumentHint ? (
+                <Text color={theme.text.secondary}> {item.argumentHint}</Text>
+              ) : null}
             </Box>
             {/* 描述列：flexGrow 吃满剩余宽度，wrap 换行完整展示，不截断 */}
             {item.description ? (

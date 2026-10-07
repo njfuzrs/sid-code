@@ -21,6 +21,8 @@ export interface CommandInfo {
   description: string;
   /** 无参数就无法工作（如 /btw）——补全列表回车仅回填等待输入 */
   requiresArgs?: boolean;
+  /** 参数提示（如 "你的问题"），补全列表在命令名后 dim 显示 */
+  argumentHint?: string;
 }
 
 export interface UseSlashCompletionProps {
@@ -64,6 +66,7 @@ export function useSlashCompletion({
         icon: "›",
         tag: "命令",
         requiresArgs: r.requiresArgs,
+        argumentHint: r.argumentHint,
       })),
       target.replaceFrom,
     );
