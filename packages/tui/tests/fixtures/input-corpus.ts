@@ -6,7 +6,8 @@
  * `(input, key)` 序列；测试（tests/input.test.ts）在新底座上跑同一串，逐条比较。不 import 任何底座。
  *
  * 刻意不收的输入：
- * - `\x1a`（Ctrl+Z）：旧底座会给进程发 SIGSTOP 挂起（契约 I7，归 T5.1e），生成器进程会被停住；
+ * - `\x1a`（Ctrl+Z）：两套底座都会给进程发 SIGSTOP 挂起，生成器进程会被停住。它的行为是契约 I7，
+ *   在 `packages/cli/tests/render-port/stdin-suspend.test.tsx` 里 mock 掉 `process.kill` 单独对拍；
  * - `ESC ]` / `ESC P` / `ESC X` / `ESC ^` / `ESC _` 开头的串、`CSI ?…c` 等终端回复：属于 I3 的
  *   responseFragment 规则，归 T5.2。
  */

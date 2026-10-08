@@ -109,6 +109,7 @@ function App({
 	internal_eventEmitter.current.setMaxListeners(Infinity);
 	// Store the currently attached readable listener to avoid stale closure issues
 	const readableListenerRef = useRef<(() => void) | undefined>(undefined);
+	const attachReadableListenerRef = useRef<(() => void) | undefined>(undefined);
 	const inputParserRef = useRef(createInputParser());
 	const pendingInputFlushRef = useRef<NodeJS.Timeout | undefined>(undefined);
 	// Small delay to let chunked escape sequences complete before flushing as literal input.
@@ -283,11 +284,72 @@ function App({
 	// 逐个调监听者而不是 `emit`：某个监听者 `stopImmediatePropagation()` 后，后面的都不再收到
 	// Tab 焦点导航直接调，不挂在 emitter 上：旧底座的 emitter 上只有使用方自己挂的监听（I11 数过 listenerCount）
 	const tabNavigationRef = useRef<((event: InputEvent) => void) | undefined>(undefined);
+
+	// sid-code（B9 / T5.1e，契约 I7）：Ctrl+Z 挂起 / SIGCONT 恢复。规则全部来自旧底座黑盒探针（D-5）：
+	// - 只认解码后 `ctrl && input === 'z'` 的按键（`\x1a`、kitty / modifyOtherKeys 的 Ctrl+Z，叠加 shift / meta /
+	//   super 也算；release / repeat 事件、文本块、粘贴里的 `\x1a` 都不算），这个按键不交给任何监听者，同块其余事件照常；
+	// - 挂起：先写关模式序列（stdout 非 TTY 也写这 4 段），再关 raw mode、`unref`、摘 readable，TTY 再补光标与鼠标跟踪，
+	//   挂一次性 SIGCONT 监听后给自己发 SIGSTOP；计数不动（组件仍"持有" raw mode）；
+	// - 恢复：先 `ref` + 开 raw mode + 挂 readable（挂起期间缓冲的字节此时交出），再写重开序列；
+	// - 挂起期间卸载：不再碰 stdin，那条一次性监听留着、触发时什么都不做（旧底座 SIGCONT 监听数只 -1）。
+	// 终端探查（`>0q` / DA1）在旧底座的恢复路径上也会再发一次，那是 I2，归 T5.2。
+	const isSuspendedRef = useRef(false);
+	const isAppUnmountedRef = useRef(false);
+	const writeStdout = useCallback(
+		(data: string): void => {
+			try {
+				stdout.write(data);
+			} catch {}
+		},
+		[stdout],
+	);
+
+	const resumeFromSuspend = useCallback((): void => {
+		if (isAppUnmountedRef.current || !isSuspendedRef.current) {
+			return;
+		}
+
+		isSuspendedRef.current = false;
+		if (rawModeEnabledCount.current > 0) {
+			stdin.setEncoding('utf8');
+			stdin.ref();
+			stdin.setRawMode(true);
+			attachReadableListenerRef.current?.();
+		}
+
+		writeStdout('\u001B[?2004h\u001B[?1004h');
+		if (stdout.isTTY) {
+			writeStdout('\u001B[?25l\u001B[?1004h');
+		}
+	}, [stdin, stdout, writeStdout]);
+
+	const suspendProcess = useCallback((): void => {
+		writeStdout('\u001B[>4m\u001B[<u\u001B[?1004l\u001B[?2004l');
+		stdin.setRawMode(false);
+		stdin.unref();
+		detachReadableListener();
+		if (stdout.isTTY) {
+			writeStdout(
+				'\u001B[?25h\u001B[?1004l\u001B[?1007l\u001B[?1006l\u001B[?1003l\u001B[?1002l\u001B[?1000l',
+			);
+		}
+
+		isSuspendedRef.current = true;
+		// 必须在 SIGSTOP 之前挂：进程恢复时第一件事就是派发 SIGCONT
+		process.once('SIGCONT', resumeFromSuspend);
+		process.kill(process.pid, 'SIGSTOP');
+	}, [stdin, stdout, writeStdout, detachReadableListener, resumeFromSuspend]);
+
 	const emitInput = useCallback(
 		(input: string, raw = false, isPasted = false): void => {
 			handleInput(input);
 			const decoded = raw ? rawInput(input) : decodeKeypress(input);
 			if (!decoded) return;
+			if (!raw && decoded.key.ctrl && decoded.input === 'z') {
+				suspendProcess();
+				return;
+			}
+
 			const event = new InputEvent(input, decoded.input, decoded.key, isPasted);
 			tabNavigationRef.current?.(event);
 			for (const listener of internal_eventEmitter.current.listeners('input')) {
@@ -295,7 +357,7 @@ function App({
 				(listener as (event: InputEvent) => void)(event);
 			}
 		},
-		[handleInput],
+		[handleInput, suspendProcess],
 	);
 
 	const schedulePendingInputFlush = useCallback((): void => {
@@ -332,7 +394,10 @@ function App({
 			let chunk;
 			let isFirstChunk = true;
 			// eslint-disable-next-line @typescript-eslint/no-restricted-types
-			while ((chunk = stdin.read() as string | null) !== null) {
+			while (
+				!isSuspendedRef.current &&
+				(chunk = stdin.read() as string | null) !== null
+			) {
 				if (isFirstChunk) {
 					isFirstChunk = false;
 					noteStdinChunk();
@@ -379,6 +444,8 @@ function App({
 		readableListenerRef.current = handleReadable;
 		stdin.addListener('readable', handleReadable);
 	}, [stdin, handleReadable]);
+	// 恢复路径（I7）比 handleReadable 定义得早，经 ref 拿最新的挂接函数
+	attachReadableListenerRef.current = attachReadableListener;
 
 	const handleSetRawMode = useCallback(
 		(isEnabled: boolean): void => {
@@ -395,6 +462,13 @@ function App({
 			}
 
 			stdin.setEncoding('utf8');
+
+			// I7：挂起期间只记账不碰 stdin（旧底座实测：挂起时卸载，`setRawMode` / `unref` 一次都不调）；
+			// 恢复时按计数决定要不要重开
+			if (isSuspendedRef.current) {
+				rawModeEnabledCount.current += isEnabled ? 1 : -1;
+				return;
+			}
 
 			if (isEnabled) {
 				if (++rawModeEnabledCount.current === 1) {
@@ -716,7 +790,12 @@ function App({
 				cliCursor.show(stdout);
 			}
 
-			if (isRawModeSupported && rawModeEnabledCount.current > 0) {
+			isAppUnmountedRef.current = true;
+			if (isSuspendedRef.current) {
+				// I7：挂起时 raw mode 已关、已 unref，旧底座卸载时不再碰 stdin
+				rawModeEnabledCount.current = 0;
+				clearInputState();
+			} else if (isRawModeSupported && rawModeEnabledCount.current > 0) {
 				disableRawMode();
 			} else {
 				clearInputState();

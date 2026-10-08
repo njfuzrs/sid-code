@@ -75,3 +75,4 @@ diff -r /tmp/ink-v711/src packages/tui/src   # 导入提交上应无输出
 | T5.1d | `src/drain-stdin.ts`（新增） | `drainStdin`：非 TTY 不动；`read()` 到 null；原本不在 raw mode 的补一次 `setRawMode(true/false)`；全程吞错，不经 fd 直读 | 端口 `drainStdin` 的 next 实现；规则来自旧底座探针（D-5） | I5 |
 | T5.1d | `src/ink.tsx` | 新增 `detachForShutdown()`：置 `isUnmounted`、取消两条帧调度、drain、关 raw mode；不经 React 卸载、不写字节、不摘监听、不结算 exit promise | 端口 RenderInstance 的信号退出路径；旧底座探针 | X4 |
 | T5.1d | `src/components/App.tsx`、`src/ink.tsx` | `readable` 每轮第一块记时间戳，距上一块（或挂载）严格大于 5000ms 时回调 `onStdinResume`；Ink 只在 alt-screen 且开了鼠标跟踪时重写鼠标跟踪全套，不擦屏 | 外部程序可能关掉终端模式；旧底座探针 | I1c |
+| T5.1e | `src/components/App.tsx` | 解码后的 Ctrl+Z 不交给监听者：写关模式序列、关 raw mode + `unref` + 摘 `readable`、挂一次性 SIGCONT 后自发 SIGSTOP；SIGCONT 时按计数重开 raw mode 再写重开序列；挂起期间 `setRawMode` 只记账、卸载不碰 stdin，`readable` 循环在挂起后停读 | 旧底座探针：TTY / 非 TTY 两套字节、kitty / modifyOtherKeys 也认、release 与文本块不认、挂起时卸载零 stdin 调用 | I7 |
