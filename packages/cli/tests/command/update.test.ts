@@ -99,6 +99,46 @@ describe("sid-code update 子命令 - 行为契约", () => {
     expect(options.env.SID_CODE_VERSION).toBe("0.1.602");
   });
 
+  // ── T4：sid-code update 缺省沿用当前安装的通道 ──
+  async function runUpdate(installed: "stable" | "beta" | "dev", explicit?: string) {
+    const calls: unknown[][] = [];
+    const execute = (...args: unknown[]) => {
+      calls.push(args);
+      return Buffer.from("");
+    };
+    if (explicit === undefined) delete process.env.SID_CODE_CHANNEL;
+    else process.env.SID_CODE_CHANNEL = explicit;
+    const logs: string[] = [];
+    const originalLog = console.log;
+    console.log = (msg: string) => logs.push(String(msg));
+    try {
+      const { handleUpdateCommand } = await import("@sid-code/cli/command/update.ts");
+      await handleUpdateCommand([], execute as never, () => installed);
+    } finally {
+      console.log = originalLog;
+    }
+    const options = calls[0]?.[2] as { env: NodeJS.ProcessEnv };
+    return { env: options.env, logs: logs.join("\n") };
+  }
+
+  test("无变量 + 当前装的是 beta → 传 beta 并提示如何切回", async () => {
+    const { env, logs } = await runUpdate("beta");
+    expect(env.SID_CODE_CHANNEL).toBe("beta");
+    expect(logs).toContain("沿用当前通道 beta");
+    expect(logs).toContain("SID_CODE_CHANNEL=stable sid-code update");
+  });
+
+  test("显式 SID_CODE_CHANNEL=stable 覆盖 .channel=beta", async () => {
+    const { env, logs } = await runUpdate("beta", "stable");
+    expect(env.SID_CODE_CHANNEL).toBe("stable");
+    expect(logs).not.toContain("沿用当前通道");
+  });
+
+  test("stable / dev 安装无变量时不设通道（install.sh 缺省 stable，行为不变）", async () => {
+    expect((await runUpdate("stable")).env.SID_CODE_CHANNEL).toBeUndefined();
+    expect((await runUpdate("dev")).env.SID_CODE_CHANNEL).toBeUndefined();
+  });
+
   test("非法 --version、--list 和未知参数拒绝执行安装", async () => {
     const calls: unknown[][] = [];
     const execute = (...args: unknown[]) => {

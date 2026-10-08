@@ -5,6 +5,8 @@
 #   ./scripts/release.sh                        # 门禁(bun test)+bump 版本号+构建 4 目标并打包到 dist/release/
 #   ./scripts/release.sh --upload                # 打包后上传到服务器（发到 beta 通道，见下方「发布通道」）
 #   ./scripts/release.sh --promote <version>     # 把 stable 通道指向某个已上传版本（纯指针，不构建）
+#   ./scripts/release.sh --upload --beta-fix --beta-note "修复 xxx"
+#                                                # beta 修复号轻量发布：自动写最小 curated，不交互（见下方「一修一号」）
 #   ./scripts/release.sh --no-bump               # 复用当前版本号，不再 bump（上次已 bump 过、重跑时用）
 #   ./scripts/release.sh --skip-test             # 跳过发布前 bun test 门禁（不推荐，仅救急）
 #   ./scripts/release.sh --allow-dirty           # 允许工作区有未提交改动（默认拒绝，见下方门禁说明）
@@ -35,6 +37,19 @@
 # 两个指针指向的版本**，且窗口外的目录须 OSS 归档核对通过才删（B46 P3）。不加这层保护的话：beta 泡制期连发 5 版就会把 latest 指向的
 # 那版挤出保留窗口删掉 —— 而 latest.txt 还在指着它，形态是**所有稳定版用户装不上**
 # （404），且服务器上什么都不会报错。
+#
+# ─── beta 泡制期「一修一号」（2026-10-09，T1–T5）─────────────────────────────────
+#
+# beta 期发现 bug 时**不在原版本号里修**（同号换字节会让 install.sh 复用旧目录、归档拒写、
+# promote 说不清哪份字节被测过）—— 而是发下一个构建号，验收通过后 promote **最后那个号**。
+# 稳定版用户会跳号（0.1.606 → 0.1.609），所以配套：
+#   · `--beta-fix --beta-note "<一句话>"`：缺 curated 时自动写最小形态（betaOnly:true），
+#     不交互；**不跳过**任何门禁（全量测试 / 构建 / 冒烟 / 归档 / tag / bump PR）。
+#   · `--upload` 建的 GitHub Release 是 **pre-release**；`--promote` 才改成正式 + Latest。
+#   · `--promote` 把 (当前 latest, 目标] 区间的 curated 合并成稳定版说明
+#     （changelog/curated/stable/v<ver>.json），**交互确认**后才写 latest.txt；
+#     非交互环境直接拒绝（稳定版说明缺失不可接受，不降级放行）。区间只有一版 = 快车道，零变化。
+#   · 通道记录 `changelog/channel.json`（当前稳定版号）由 promote 更新，官网据此标「预发布」。
 #
 # 发布前门禁：默认先跑 `bun test` 全量单测，失败即中止（坏版本不会推到任何通道）。
 #   构建完成后还会对「当前平台」的产物做一次 --version 冒烟，挡住产物损坏/无法执行的情况。
@@ -248,6 +263,8 @@ NO_COMMIT=false
 DO_PROMOTE=false
 PROMOTE_VERSION=""
 DO_ARCHIVE_EXISTING=false
+BETA_FIX=false
+BETA_NOTE=""
 
 while [ $# -gt 0 ]; do
     case "$1" in
@@ -259,6 +276,12 @@ while [ $# -gt 0 ]; do
             shift 2
             ;;
         --no-bump) DO_BUMP=false; shift ;;
+        --beta-fix) BETA_FIX=true; shift ;;
+        --beta-note)
+            BETA_NOTE="${2:-}"
+            [ -n "$BETA_NOTE" ] || { echo "错误: --beta-note 需要传入一句话说明"; exit 1; }
+            shift 2
+            ;;
         --skip-test) DO_TEST=false; shift ;;
         --allow-dirty) ALLOW_DIRTY=true; shift ;;
         --no-commit) NO_COMMIT=true; shift ;;
@@ -280,6 +303,10 @@ while [ $# -gt 0 ]; do
         *) echo "未知参数: $1"; exit 1 ;;
     esac
 done
+
+if [ "$BETA_FIX" = true ] && [ "$DO_PROMOTE" = true ]; then
+    echo "错误: --beta-fix 与 --promote 不能同时使用（beta 修复号发到 beta，促升是另一步）"; exit 1
+fi
 
 info()  { echo "  $*"; }
 ok()    { echo "  ✅ $*"; }
@@ -413,6 +440,7 @@ warm_remote() { # <version>
 
 RELEASE_OK=false
 ROLLBACK_FILES=()      # 本次运行前是 clean、因此可安全 git checkout 恢复的文件
+BETA_NOTE_CREATED=""   # --beta-note 本次新建的 curated 文件（失败时删除）
 BUMP_APPLIED=false
 
 # 记录某个文件在"被本脚本修改之前"是否干净；只有干净的才登记进回滚清单。
@@ -476,6 +504,12 @@ on_exit() {
         else
             warn "自动回滚失败，请手动检查：${ROLLBACK_FILES[*]}"
         fi
+    fi
+
+    # --beta-note 自动生成的最小 curated 是本脚本**亲手新建**的文件，失败时删掉它，
+    # 免得重跑时被「已存在，拒绝覆盖」挡住（只删本次创建的那一个，不碰别的）
+    if [ -n "${BETA_NOTE_CREATED:-}" ] && [ -f "$BETA_NOTE_CREATED" ]; then
+        rm -f "$BETA_NOTE_CREATED" && info "已删除本次生成的 ${BETA_NOTE_CREATED#"$ROOT/"}"
     fi
 
     if [ "$BUMP_APPLIED" = true ]; then
@@ -634,6 +668,38 @@ echo __SHA_OK__"
     # 记录促升前的 latest，打进日志 —— 回滚时要用它，而出事时人不会记得上一版是几
     _prev_latest="$(run_ssh "${DEPLOY_SSH_USER}@${DEPLOY_SSH_HOST}" \
         "cat '${DEPLOY_PATH}/latest.txt' 2>/dev/null || true" 2>/dev/null | tr -d '[:space:]')"
+    _cur_beta="$(run_ssh "${DEPLOY_SSH_USER}@${DEPLOY_SSH_HOST}" \
+        "cat '${DEPLOY_PATH}/beta.txt' 2>/dev/null || true" 2>/dev/null | tr -d '[:space:]')"
+
+    # ⑤ 积压清单（T5，只读）：这次促升要带上哪几个 beta 号、各自修了什么
+    echo ""
+    bun run "$SCRIPT_DIR/changelog-stable.ts" backlog "${_prev_latest:--}" "${_cur_beta:--}" || true
+    echo ""
+
+    # ⑥ 稳定版说明（T1）：合并 (当前 latest, 目标] 区间的 curated。必须在写 latest.txt **之前**：
+    # 合并稿没被人确认就不许促升 —— 稳定版用户看到的说明缺了跳过版本，是不可逆的对外信息。
+    _merge_out="$(bun run "$SCRIPT_DIR/changelog-stable.ts" merge "${_prev_latest:--}" "$PROMOTE_VERSION" 2>&1)" \
+        || fail "稳定版说明合并失败，latest.txt 未改动：
+${_merge_out}"
+    STABLE_NOTES_MULTI=false
+    if grep -qx "__SINGLE__" <<<"$_merge_out"; then
+        ok "区间只有 v${PROMOTE_VERSION} 一个版本（快车道），稳定版说明即原 curated"
+    else
+        STABLE_NOTES_MULTI=true
+        printf '%s\n' "$_merge_out"
+        echo ""
+        if [ -t 0 ] && [ -e /dev/tty ]; then
+            printf "  稳定版说明合并稿如上，确认无误并继续促升？(y/N) "
+            read -r _ans </dev/tty || _ans=""
+            case "$_ans" in
+                y|Y|yes|YES) info "已确认合并稿" ;;
+                *) fail "已取消，latest.txt 未改动（可手改 curated 后重跑）" ;;
+            esac
+        else
+            # 与「缺 curated 降级 warn」刻意相反：这里放行的后果是稳定版说明缺失，不可接受
+            fail "非交互环境无法人工确认稳定版合并稿，拒绝促升（latest.txt 未改动）"
+        fi
+    fi
 
     # 写指针：本地生成再 scp，与 --upload 路径同一套写法（不用 ssh echo 重定向，
     # 那样引号层数一多就容易在远端 shell 里被吃掉）
@@ -645,6 +711,31 @@ echo __SHA_OK__"
 
     echo ""
     ok "稳定通道已指向 v${PROMOTE_VERSION}${_prev_latest:+（原为 v${_prev_latest}）}"
+
+    # ⑦ 落盘通道记录 + 稳定版说明 + 重建官网数据（全部是确定性本地操作，不调 LLM）
+    #    指针已写，这几步失败只 warn：稳定通道已经切过去了，回头补跑即可
+    _promote_files=(changelog/channel.json CHANGELOG.md website/.vitepress/data/changelog.json)
+    printf '{\n  "stable": "%s"\n}\n' "$PROMOTE_VERSION" > "$ROOT/changelog/channel.json"
+    if [ "$STABLE_NOTES_MULTI" = true ]; then
+        bun run "$SCRIPT_DIR/changelog-stable.ts" merge "${_prev_latest:--}" "$PROMOTE_VERSION" --write >/dev/null \
+            && _promote_files+=("changelog/curated/stable/v${PROMOTE_VERSION}.json") \
+            || warn "稳定版说明落盘失败：可手动 bun run scripts/changelog-stable.ts merge ${_prev_latest:--} ${PROMOTE_VERSION} --write"
+    fi
+    _pkg_ver="$(bun -e "console.log(require('$ROOT/package.json').version)" 2>/dev/null || echo "$PROMOTE_VERSION")"
+    (cd "$ROOT" && bun run scripts/generate-changelog.ts "$_pkg_ver") || warn "changelog 数据重建失败（不影响稳定通道）"
+    if (cd "$ROOT" && git add -- "${_promote_files[@]}" 2>/dev/null && ! git diff --cached --quiet); then
+        (cd "$ROOT" && git commit -q -m "chore(release): promote v${PROMOTE_VERSION}") \
+            && ok "已提交 promote v${PROMOTE_VERSION}（通道记录 + 稳定版说明），需走 PR 进 main 后跑 ./scripts/website-deploy.sh" \
+            || warn "promote 记录提交失败，请手动提交：${_promote_files[*]}"
+    fi
+
+    # ⑧ GitHub Release：目标版本改为正式 + Latest（区间内被跳过的号保持 pre-release）
+    if command -v gh >/dev/null 2>&1; then
+        bun run "$ROOT/scripts/github-release.ts" "$PROMOTE_VERSION" --promote \
+            || warn "GitHub Release 改正式失败（不影响稳定通道）：可手动补跑 bun run scripts/github-release.ts ${PROMOTE_VERSION} --promote"
+    else
+        warn "未装 gh CLI，跳过 Release 改正式（可稍后补跑 bun run scripts/github-release.ts ${PROMOTE_VERSION} --promote）"
+    fi
     echo ""
     echo "  验证："
     echo "    curl -fsSL ${PUBLIC_BASE_URL}/releases/sid-code/latest.txt"
@@ -816,7 +907,15 @@ TAG="v$VERSION"
 # 等于「想发个紧急修复必须先等模型写文案」。缺文案的后果是官网那一版显示
 # 「本版没有用户可见的变更」—— 不好，但不该拦住发布。
 _CURATED_FILE="changelog/curated/v${VERSION}.json"
-if [ ! -f "$ROOT/$_CURATED_FILE" ]; then
+if [ "$BETA_FIX" = true ] && [ ! -f "$ROOT/$_CURATED_FILE" ]; then
+    # beta 修复号（T3）：面向正式用户的文案在 promote 合并时才写，这里只要一句 beta-note。
+    # 刻意**不交互**、缺 --beta-note 直接失败：beta 修复本来就是要快、要可脚本化的那条路。
+    [ -n "$BETA_NOTE" ] || fail "--beta-fix 缺 curated 时必须带 --beta-note \"<一句话>\"（v${VERSION} 修了什么）"
+    bun run "$SCRIPT_DIR/changelog-stable.ts" beta-note "$VERSION" "$BETA_NOTE" >/dev/null \
+        || fail "生成 beta 修复号最小 curated 失败"
+    BETA_NOTE_CREATED="$ROOT/$_CURATED_FILE"
+    ok "已生成 beta 修复号最小文案：${_CURATED_FILE}（betaOnly，promote 合并时丢弃）"
+elif [ ! -f "$ROOT/$_CURATED_FILE" ]; then
     warn "缺少用户视角文案：$_CURATED_FILE"
     warn "官网 /changelog 的 v$VERSION 将显示「本版没有用户可见的变更」。"
     info "现在补（推荐，几分钟）："
@@ -1031,6 +1130,8 @@ RELEASE_COMMIT_FILES=(
     website/.vitepress/data/changelog.json
     packages/core/src/skill/builtin-embedded.generated.ts
 )
+# --beta-note 新建的最小 curated 跟 bump 一起进同一个提交（tag 打在它上面，文案与字节同源）
+[ -n "$BETA_NOTE_CREATED" ] && RELEASE_COMMIT_FILES+=("${BETA_NOTE_CREATED#"$ROOT/"}")
 
 if [ "$NO_COMMIT" = true ]; then
     warn "已跳过自动提交（--no-commit）：tag 将打在当前 HEAD 上，可能与 package.json 版本号错位"
@@ -1058,6 +1159,7 @@ else
         # 提交成功后这些文件已进入历史，回滚清单作废：再 checkout 会把发布提交的内容清掉
         ROLLBACK_FILES=()
         BUMP_APPLIED=false
+        BETA_NOTE_CREATED=""   # 已进 bump 提交，失败回滚不能再删它
         ok "已提交 bump ${TAG}（$(git rev-parse --short HEAD)）"
     fi
 fi
@@ -1356,7 +1458,9 @@ rm -f '${_ops_remote}'"
         # 一个没建成的 Release 页不该让发布流程判定为失败（手动补跑一行就行）。
         info "建 GitHub Release $TAG ..."
         if command -v gh >/dev/null 2>&1; then
+            # --prerelease：本次只进了 beta 通道（T2）。--promote 时才改成正式 + Latest
             bun run "$ROOT/scripts/github-release.ts" "$VERSION" --create \
+                --prerelease \
                 || warn "GitHub Release 创建失败（不阻断发布）：可手动补跑 bun run scripts/github-release.ts ${VERSION} --create"
         else
             warn "未装 gh CLI，跳过 GitHub Release（可稍后手动补跑 bun run scripts/github-release.ts ${VERSION} --create）"
@@ -1368,7 +1472,7 @@ rm -f '${_ops_remote}'"
     echo ""
     echo "  装 beta 版验收："
     echo "    curl -fsSL ${PUBLIC_BASE_URL}/releases/sid-code/install.sh | SID_CODE_CHANNEL=beta bash"
-    echo "    SID_CODE_CHANNEL=beta sid-code update    # 已装过 beta 的机器"
+    echo "    sid-code update    # 已装过 beta 的机器（自动沿用 beta 通道；自动更新同样跟随）"
     echo ""
     echo "  验收通过后促升到稳定通道（纯指针，不重新构建）："
     echo "    ./scripts/release.sh --promote ${VERSION}"

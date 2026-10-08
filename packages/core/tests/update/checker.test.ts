@@ -18,6 +18,18 @@ describe("checker", () => {
     expect(await fetchLatestVersion()).toBe("0.1.604");
   });
 
+  test("缺省读 latest.txt，beta 读 beta.txt（T4）", async () => {
+    const urls: string[] = [];
+    globalThis.fetch = (async (input: Parameters<typeof fetch>[0]) => {
+      urls.push(String(input));
+      return new Response("0.1.604\n", { status: 200 });
+    }) as unknown as typeof fetch;
+    await fetchLatestVersion();
+    await fetchLatestVersion("beta");
+    expect(urls[0]).toEndWith("/releases/sid-code/latest.txt");
+    expect(urls[1]).toEndWith("/releases/sid-code/beta.txt");
+  });
+
   test("HTTP 错误返回 null", async () => {
     globalThis.fetch = (async () =>
       new Response("not found", { status: 404 })) as unknown as typeof fetch;
@@ -33,7 +45,9 @@ describe("checker", () => {
 
   test("非法版本返回 null", async () => {
     globalThis.fetch = (async () =>
-      new Response("0.1.604-beta.1\n", { status: 200 })) as unknown as typeof fetch;
+      new Response("0.1.604-beta.1\n", {
+        status: 200,
+      })) as unknown as typeof fetch;
     expect(await fetchLatestVersion()).toBeNull();
   });
 

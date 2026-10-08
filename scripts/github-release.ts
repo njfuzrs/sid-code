@@ -5,6 +5,16 @@
  *   bun run scripts/github-release.ts 0.1.601            # 只打印正文到 stdout（干跑）
  *   bun run scripts/github-release.ts 0.1.601 --create    # 真建 Release（幂等：已存在则跳过）
  *   bun run scripts/github-release.ts 0.1.601 --create --force  # 已存在则覆盖正文
+ *   bun run scripts/github-release.ts 0.1.601 --create --prerelease  # beta 通道：建成 pre-release
+ *   bun run scripts/github-release.ts 0.1.601 --promote   # 促升：改成正式 + Latest，正文换成稳定版说明
+ *
+ * ── 通道标记（T2，2026-10-09）──
+ *   `--upload` 只把版本发到 beta 通道，但以前这里建的是**正式** Release
+ *   （v0.1.607 实测 `isPrerelease=false`），外部读者会以为它已经正式发布。
+ *   现在 `--upload` 带 `--prerelease`，正文顶部加一行「beta 预发布」；
+ *   `--promote` 才把**目标版本**改为正式 + Latest，正文换成合并了跳过版本的稳定版说明
+ *   （`changelog/curated/stable/v<ver>.json`，没有该文件即快车道，用原 curated）。
+ *   区间内被跳过的版本保持 pre-release 不动 —— 它们确实只在 beta 存在过。
  *
  * ── 为什么需要这个脚本（补的是一个真实缺口）──
  *   发布流程原本**从来没有**建 GitHub Release 这一步：`release.sh` 里 `gh release` 零命中，
@@ -39,6 +49,10 @@ import {
 import { stripUrls } from "./lib/changelog-text.ts";
 
 const CURATED_DIR = resolve(ROOT, "changelog/curated");
+const STABLE_DIR = resolve(CURATED_DIR, "stable");
+
+/** beta 预发布 Release 正文首行（契约测试锚这句话） */
+export const BETA_BANNER = "> beta 预发布，未进入稳定通道。";
 /** 与 release.sh / fetch-ripgrep.ts 同名同义，默认值也保持一致 */
 const PUBLIC_BASE_URL = process.env.PUBLIC_BASE_URL || "https://www.sid-code.cc";
 
@@ -50,8 +64,8 @@ const PUBLIC_BASE_URL = process.env.PUBLIC_BASE_URL || "https://www.sid-code.cc"
  * **什么都不建** —— 建一个正文为空的 Release 比不建更糟（用户看到一个空版本页，
  * 且没有任何信号说明它是残缺的）。
  */
-function loadCurated(version: string): CuratedEntry | null {
-  const p = resolve(CURATED_DIR, `v${version}.json`);
+function loadCurated(version: string, dir: string = CURATED_DIR): CuratedEntry | null {
+  const p = resolve(dir, `v${version}.json`);
   if (!existsSync(p)) {
     console.error(`  ❌ 缺 curated 文案：${p}`);
     console.error(`     先跑：bun run changelog:curate ${version}`);
@@ -82,14 +96,26 @@ function loadCurated(version: string): CuratedEntry | null {
  * 通路发到公网，而 agent 读 diff 时会看到内网地址与 IP，可能原样抄进文案。
  * 校验器（入库前拦）与这里（渲染期兜底）看似重复，但人工编辑 curated JSON 时不过校验器。
  */
-export function renderReleaseBody(entry: CuratedEntry): string {
+export function renderReleaseBody(
+  entry: CuratedEntry,
+  opts: { prerelease?: boolean; covers?: string[] } = {},
+): string {
   const out: string[] = [];
+
+  if (opts.prerelease) out.push(BETA_BANNER, "");
+  if (opts.covers && opts.covers.length > 1) {
+    const skipped = opts.covers.filter((v) => v !== entry.version).map((v) => `v${v}`);
+    out.push(`本次稳定版合并了 beta 期的 ${skipped.join("、")} 的变更。`, "");
+  }
+  if (entry.betaOnly && entry.betaNote) {
+    out.push(`beta 修复：${stripUrls(entry.betaNote)}`, "");
+  }
 
   if (entry.highlight) {
     out.push(`**${stripUrls(entry.highlight)}**`, "");
   }
 
-  if (!entry.userFacing) {
+  if (!entry.userFacing && !entry.betaOnly) {
     // userFacing:false 是一个**合法结论**（纯内部版本），不要为了填满而编内容。
     out.push("本版没有用户可见的变更（内部改进与维护）。", "");
   }
@@ -138,29 +164,11 @@ function releaseExists(tag: string): boolean {
   }
 }
 
-function main(): void {
-  const argv = process.argv.slice(2);
-  const version = argv.find((a) => /^\d+\.\d+\.\d+$/.test(a));
-  if (!version) {
-    console.error("用法: bun run scripts/github-release.ts <version> [--create] [--force]");
-    console.error("  不加 --create 只打印正文（干跑），不碰 GitHub。");
-    process.exit(1);
-  }
-  const create = argv.includes("--create");
-  const force = argv.includes("--force");
-  const tag = `v${version}`;
-
-  const entry = loadCurated(version);
-  if (!entry) process.exit(1);
-  const body = renderReleaseBody(entry);
-
-  if (!create) {
-    console.log(body);
-    return;
-  }
-
-  // tag 必须已存在于远端：Release 挂在 tag 上，tag 没推上去时 gh 会自己建一个
-  // 指向默认分支 HEAD 的 tag —— 那会让 Release 指向错误的提交，且不报错。
+/**
+ * tag 必须已存在于远端：Release 挂在 tag 上，tag 没推上去时 gh 会自己建一个
+ * 指向默认分支 HEAD 的 tag —— 那会让 Release 指向错误的提交，且不报错。
+ */
+function requireRemoteTag(tag: string): void {
   try {
     gh(["api", `repos/{owner}/{repo}/git/ref/tags/${tag}`, "--jq", ".ref"]);
   } catch {
@@ -170,6 +178,58 @@ function main(): void {
     );
     process.exit(1);
   }
+}
+
+function main(): void {
+  const argv = process.argv.slice(2);
+  const version = argv.find((a) => /^\d+\.\d+\.\d+$/.test(a));
+  if (!version) {
+    console.error(
+      "用法: bun run scripts/github-release.ts <version> [--create [--prerelease] [--force] | --promote]",
+    );
+    console.error("  不加 --create 只打印正文（干跑），不碰 GitHub。");
+    process.exit(1);
+  }
+  const create = argv.includes("--create");
+  const force = argv.includes("--force");
+  const prerelease = argv.includes("--prerelease");
+  const promote = argv.includes("--promote");
+  const tag = `v${version}`;
+
+  // 促升：正文优先取稳定版说明（多版本合并稿），没有即快车道，用原 curated
+  let entry: CuratedEntry | null = null;
+  let covers: string[] | undefined;
+  if (promote && existsSync(resolve(STABLE_DIR, `v${version}.json`))) {
+    entry = loadCurated(version, STABLE_DIR);
+    covers = (entry as (CuratedEntry & { covers?: string[] }) | null)?.covers;
+  } else {
+    entry = loadCurated(version);
+  }
+  if (!entry) process.exit(1);
+  const body = renderReleaseBody(entry, {
+    prerelease: prerelease && !promote,
+    covers,
+  });
+
+  if (promote) {
+    // 只作用于目标版本：被跳过的中间号保持 pre-release（它们确实只在 beta 存在过）
+    if (releaseExists(tag)) {
+      gh(["release", "edit", tag, "--prerelease=false", "--latest", "--notes", body]);
+      console.log(`  ✅ Release ${tag} 已改为正式版（Latest），正文换成稳定版说明`);
+    } else {
+      requireRemoteTag(tag);
+      gh(["release", "create", tag, "--title", tag, "--latest", "--notes", body]);
+      console.log(`  ✅ Release ${tag} 已按正式版创建（Latest）`);
+    }
+    return;
+  }
+
+  if (!create) {
+    console.log(body);
+    return;
+  }
+
+  requireRemoteTag(tag);
 
   if (releaseExists(tag)) {
     if (!force) {
@@ -177,13 +237,23 @@ function main(): void {
       console.log(`  ⏭  Release ${tag} 已存在，跳过（要覆盖正文加 --force）`);
       return;
     }
-    gh(["release", "edit", tag, "--notes", body]);
+    gh(["release", "edit", tag, "--notes", body, ...(prerelease ? ["--prerelease"] : [])]);
     console.log(`  ✅ Release ${tag} 正文已更新`);
     return;
   }
 
-  gh(["release", "create", tag, "--title", tag, "--notes", body]);
-  console.log(`  ✅ Release ${tag} 已创建`);
+  // beta 预发布：--latest=false 防止 GitHub 首页把一个 beta 号当「当前版本」展示
+  gh([
+    "release",
+    "create",
+    tag,
+    "--title",
+    tag,
+    "--notes",
+    body,
+    ...(prerelease ? ["--prerelease", "--latest=false"] : []),
+  ]);
+  console.log(`  ✅ Release ${tag} 已创建${prerelease ? "（pre-release）" : ""}`);
 }
 
 // 只在被直接执行时跑；被 import 时（单测 import renderReleaseBody）不能有副作用

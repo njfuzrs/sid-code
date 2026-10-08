@@ -40,7 +40,9 @@ function makeRelease(): FakeRelease {
   mkdirSync(versionDir, { recursive: true });
   const tarRoot = join(root, "payload", "sid-code");
   mkdirSync(tarRoot, { recursive: true });
-  writeFileSync(join(tarRoot, "sid-code"), "#!/bin/bash\necho new\n", { mode: 0o700 });
+  writeFileSync(join(tarRoot, "sid-code"), "#!/bin/bash\necho new\n", {
+    mode: 0o700,
+  });
   const tarball = join(
     versionDir,
     `sid-code-${version}-${process.platform}-${process.arch === "arm64" ? "arm64" : "x64"}.tar.gz`,
@@ -131,7 +133,10 @@ describe("自动更新离线安装链路", () => {
       expect(result.stdout).toContain("目标版本: v0.1.604（通道: stable）");
       expect(result.stdout).toContain("安装完成！v0.1.604");
     } finally {
-      rmSync(join(fixture.releaseDir, "0.1.604"), { recursive: true, force: true });
+      rmSync(join(fixture.releaseDir, "0.1.604"), {
+        recursive: true,
+        force: true,
+      });
       rmSync(fixture.home, { recursive: true, force: true });
     }
   });
@@ -141,7 +146,9 @@ describe("自动更新离线安装链路", () => {
     try {
       writeFileSync(join(fixture.releaseDir, "latest.txt"), "0.1.603\n");
       writeFileSync(join(fixture.releaseDir, "beta.txt"), "0.1.604\n");
-      const { result } = runInstall(fixture.releaseDir, fixture.home, { SID_CODE_CHANNEL: "beta" });
+      const { result } = runInstall(fixture.releaseDir, fixture.home, {
+        SID_CODE_CHANNEL: "beta",
+      });
       if (result.status !== 0) throw new Error(result.stderr || result.stdout);
       expect(result.status).toBe(0);
       expect(result.stdout).toContain("通道: beta");
@@ -161,7 +168,9 @@ describe("自动更新离线安装链路", () => {
     const fixture = makeRelease();
     try {
       const marker = join(fixture.home, ".local/share/sid-code/versions/0.1.604/.channel");
-      const beta = runInstall(fixture.releaseDir, fixture.home, { SID_CODE_CHANNEL: "beta" });
+      const beta = runInstall(fixture.releaseDir, fixture.home, {
+        SID_CODE_CHANNEL: "beta",
+      });
       if (beta.result.status !== 0) throw new Error(beta.result.stderr || beta.result.stdout);
       expect(readFileSync(marker, "utf8").trim()).toBe("beta");
 
@@ -175,10 +184,45 @@ describe("自动更新离线安装链路", () => {
     }
   });
 
+  // T4 端到端：beta 安装写下的 .channel 标记 → 二进制判定通道为 beta → 自动更新用这个通道
+  // 去跑 install.sh → install.sh 读 beta.txt（而不是 latest.txt）。链路任一环断开，
+  // beta 测试人员就会一直停在旧 beta 上测，而不会有任何报错。
+  test("beta 安装后自动更新沿用 beta 通道并读 beta.txt", async () => {
+    const fixture = makeRelease();
+    try {
+      writeFileSync(join(fixture.releaseDir, "latest.txt"), "0.1.603\n");
+      writeFileSync(join(fixture.releaseDir, "beta.txt"), "0.1.604\n");
+      const first = runInstall(fixture.releaseDir, fixture.home, {
+        SID_CODE_CHANNEL: "beta",
+      });
+      if (first.result.status !== 0) throw new Error(first.result.stderr || first.result.stdout);
+
+      const { resolveReleaseChannel } = await import(
+        join(ROOT, "packages/shared/src/release-channel.ts")
+      );
+      const versionDir = join(fixture.home, ".local/share/sid-code/versions/0.1.604");
+      const channel = resolveReleaseChannel("release", versionDir);
+      expect(channel).toBe("beta");
+
+      // 自动更新子进程的 env 就是 SID_CODE_CHANNEL=<channel>（installer.test.ts 已锁）
+      const again = runInstall(fixture.releaseDir, fixture.home, {
+        SID_CODE_CHANNEL: channel,
+      });
+      if (again.result.status !== 0) throw new Error(again.result.stderr || again.result.stdout);
+      expect(again.result.stdout).toContain("目标版本: v0.1.604（通道: beta）");
+    } finally {
+      rmSync(fixture.home, { recursive: true, force: true });
+      rmSync(fixture.releaseDir, { recursive: true, force: true });
+    }
+  });
+
   test("下载失败时保持旧入口不变", () => {
     const fixture = makeRelease();
     try {
-      rmSync(join(fixture.releaseDir, "0.1.604"), { recursive: true, force: true });
+      rmSync(join(fixture.releaseDir, "0.1.604"), {
+        recursive: true,
+        force: true,
+      });
       const { result, oldPath } = runInstall(fixture.releaseDir, fixture.home);
       expect(result.status).not.toBe(0);
       expect(readFileSync(oldPath, "utf8")).toContain("old");

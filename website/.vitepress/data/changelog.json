@@ -1,5 +1,5 @@
 {
-  "generatedAt": "2026-10-08",
+  "generatedAt": "2026-10-09",
   "currentVersion": "0.1.607",
   "totalVersions": 26,
   "totalItems": 322,
@@ -27,6 +27,10 @@
       "date": "2026-10-08",
       "highlight": "新增 sid-code auth login 飞书登录与企业插件市场",
       "userFacing": true,
+      "channel": "stable",
+      "mergedInto": null,
+      "covers": null,
+      "betaNote": null,
       "count": 44,
       "sections": [
         {
@@ -104,6 +108,10 @@
       "date": "2026-09-30",
       "highlight": "会话恢复不再丢历史，无头模式支持管道输入",
       "userFacing": true,
+      "channel": "stable",
+      "mergedInto": null,
+      "covers": null,
+      "betaNote": null,
       "count": 26,
       "sections": [
         {
@@ -163,6 +171,10 @@
       "date": "2026-09-23",
       "highlight": "长会话更稳，权限旁路堵住，状态栏显示调用次数",
       "userFacing": true,
+      "channel": "stable",
+      "mergedInto": null,
+      "covers": null,
+      "betaNote": null,
       "count": 22,
       "sections": [
         {
@@ -212,6 +224,10 @@
       "date": "2026-09-18",
       "highlight": "默认自动安装稳定版，下次启动生效",
       "userFacing": true,
+      "channel": "stable",
+      "mergedInto": null,
+      "covers": null,
+      "betaNote": null,
       "count": 22,
       "sections": [
         {
@@ -261,6 +277,10 @@
       "date": "2026-09-04",
       "highlight": null,
       "userFacing": false,
+      "channel": "stable",
+      "mergedInto": null,
+      "covers": null,
+      "betaNote": null,
       "count": 0,
       "sections": []
     },
@@ -269,6 +289,10 @@
       "date": "2026-09-03",
       "highlight": "/model 面板可直接对比各模型的定价与上下文窗口",
       "userFacing": true,
+      "channel": "stable",
+      "mergedInto": null,
+      "covers": null,
+      "betaNote": null,
       "count": 13,
       "sections": [
         {
@@ -309,6 +333,10 @@
       "date": "2026-08-21",
       "highlight": "安全防线收紧：凭证文件默认不可读，网页抓取先隔离提炼",
       "userFacing": true,
+      "channel": "stable",
+      "mergedInto": null,
+      "covers": null,
+      "betaNote": null,
       "count": 33,
       "sections": [
         {
@@ -375,6 +403,10 @@
       "date": "2026-08-06",
       "highlight": "同一模型可配多个渠道（如公司网关 + 官方端点）",
       "userFacing": true,
+      "channel": "stable",
+      "mergedInto": null,
+      "covers": null,
+      "betaNote": null,
       "count": 6,
       "sections": [
         {
@@ -408,6 +440,10 @@
       "date": "2026-08-04",
       "highlight": "重试或降级后不再出现残留的半截工具调用",
       "userFacing": true,
+      "channel": "stable",
+      "mergedInto": null,
+      "covers": null,
+      "betaNote": null,
       "count": 8,
       "sections": [
         {
@@ -437,6 +473,10 @@
       "date": "2026-08-03",
       "highlight": "子代理运行时工具卡片实时显示进度，不再黑盒等待",
       "userFacing": true,
+      "channel": "stable",
+      "mergedInto": null,
+      "covers": null,
+      "betaNote": null,
       "count": 16,
       "sections": [
         {
@@ -480,6 +520,10 @@
       "date": "2026-07-31",
       "highlight": "GPT-5.x 系列模型支持 /effort 推理强度切换",
       "userFacing": true,
+      "channel": "stable",
+      "mergedInto": null,
+      "covers": null,
+      "betaNote": null,
       "count": 3,
       "sections": [
         {
@@ -504,6 +548,10 @@
       "date": "2026-07-31",
       "highlight": "未知模型上下文窗口兜底从 128K 提升至 1M，避免过早截断",
       "userFacing": true,
+      "channel": "stable",
+      "mergedInto": null,
+      "covers": null,
+      "betaNote": null,
       "count": 5,
       "sections": [
         {
@@ -530,6 +578,10 @@
       "date": "2026-07-30",
       "highlight": "macOS 终端下鼠标滚轮/触控板无法滚动的问题已修复",
       "userFacing": true,
+      "channel": "stable",
+      "mergedInto": null,
+      "covers": null,
+      "betaNote": null,
       "count": 3,
       "sections": [
         {
@@ -554,6 +606,10 @@
       "date": "2026-07-30",
       "highlight": "修复审计日志无限膨胀，恢复关键审计轨迹",
       "userFacing": true,
+      "channel": "stable",
+      "mergedInto": null,
+      "covers": null,
+      "betaNote": null,
       "count": 7,
       "sections": [
         {
@@ -582,6 +638,10 @@
       "date": "2026-07-30",
       "highlight": "官网文档站上线，更新日志并入站内",
       "userFacing": true,
+      "channel": "stable",
+      "mergedInto": null,
+      "covers": null,
+      "betaNote": null,
       "count": 16,
       "sections": [
         {
@@ -625,6 +685,10 @@
       "date": "2026-07-23",
       "highlight": "新增大量斜杠命令和 Vim 模式，补齐与 Claude Code 的功能差距",
       "userFacing": true,
+      "channel": "stable",
+      "mergedInto": null,
+      "covers": null,
+      "betaNote": null,
       "count": 25,
       "sections": [
         {
@@ -683,6 +747,10 @@
       "date": "2026-07-17",
       "highlight": "`-r` 不带参数直接打开交互式会话选择器",
       "userFacing": true,
+      "channel": "stable",
+      "mergedInto": null,
+      "covers": null,
+      "betaNote": null,
       "count": 10,
       "sections": [
         {
@@ -720,6 +788,10 @@
       "date": "2026-07-16",
       "highlight": "bash 长命令执行时实时显示输出，不再焦虑「是不是卡死了」",
       "userFacing": true,
+      "channel": "stable",
+      "mergedInto": null,
+      "covers": null,
+      "betaNote": null,
       "count": 9,
       "sections": [
         {
@@ -756,6 +828,10 @@
       "date": "2026-07-15",
       "highlight": "Plan 审批对话框升级为多选项列表，支持批准、拒绝附意见、取消和自由输入",
       "userFacing": true,
+      "channel": "stable",
+      "mergedInto": null,
+      "covers": null,
+      "betaNote": null,
       "count": 6,
       "sections": [
         {
@@ -789,6 +865,10 @@
       "date": "2026-07-14",
       "highlight": "修复反复空转只读命令的死循环，连续空转自动提醒收敛或强制收尾",
       "userFacing": true,
+      "channel": "stable",
+      "mergedInto": null,
+      "covers": null,
+      "betaNote": null,
       "count": 7,
       "sections": [
         {
@@ -817,6 +897,10 @@
       "date": "2026-07-14",
       "highlight": "read 支持图片和 PDF，新增 /add-dir、/diff 等实用命令",
       "userFacing": true,
+      "channel": "stable",
+      "mergedInto": null,
+      "covers": null,
+      "betaNote": null,
       "count": 27,
       "sections": [
         {
@@ -871,6 +955,10 @@
       "date": "2026-07-10",
       "highlight": "新增 /goal turns 命令，可运行时调整轮次上限",
       "userFacing": true,
+      "channel": "stable",
+      "mergedInto": null,
+      "covers": null,
+      "betaNote": null,
       "count": 8,
       "sections": [
         {
@@ -906,6 +994,10 @@
       "date": "2026-07-10",
       "highlight": "安装体验优化：不再无谓提示 source，更新日志入口更清晰",
       "userFacing": true,
+      "channel": "stable",
+      "mergedInto": null,
+      "covers": null,
+      "betaNote": null,
       "count": 2,
       "sections": [
         {
@@ -923,6 +1015,10 @@
       "date": "2026-07-10",
       "highlight": "新增 /export 和 /debug 命令，对话导出与调试信息一键可得",
       "userFacing": true,
+      "channel": "stable",
+      "mergedInto": null,
+      "covers": null,
+      "betaNote": null,
       "count": 4,
       "sections": [
         {
@@ -948,6 +1044,10 @@
       "date": "2026-07-09",
       "highlight": null,
       "userFacing": false,
+      "channel": "stable",
+      "mergedInto": null,
+      "covers": null,
+      "betaNote": null,
       "count": 0,
       "sections": []
     },
@@ -956,6 +1056,10 @@
       "date": "2026-07-09",
       "highlight": "早期版本汇总",
       "userFacing": false,
+      "channel": "stable",
+      "mergedInto": null,
+      "covers": null,
+      "betaNote": null,
       "count": 0,
       "sections": []
     }
