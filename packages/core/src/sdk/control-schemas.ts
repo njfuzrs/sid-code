@@ -4,11 +4,15 @@
  * 控制协议是 SDK 宿主与 CLI 之间的双向 request-response 通道，
  * 与数据消息共用同一个 NDJSON 通道（单通道全序，避免跨通道时序问题）。
  *
- * 用途：
- * - initialize 握手（system_prompt / json_schema / max_turns 等）
- * - 权限请求竞速（can_use_tool ↔ Hook）
- * - 运行时控制（set_model / interrupt / get_context_usage）
- * - MCP 跨进程消息桥接（mcp_message）
+ * 当前实现状态（缺陷 3/4：注释曾把设计意图写成现状，以这里为准）：
+ * - 宿主 → CLI（headless-runner.handleControlRequest 应答，每条必回 control_response）：
+ *   - interrupt：中止当前轮
+ *   - set_model：切换主模型，下一轮生效
+ *   - get_context_usage：返回 used_tokens / max_tokens / percent_of_window
+ *   - initialize：握手，返回 supported_control_subtypes；其中 system_prompt / json_schema /
+ *     max_turns / max_budget_usd 只能在启动时经 CLI 参数设置，携带即回 error（不假装生效）
+ * - CLI → 宿主：can_use_tool（权限请求，permission-bridge）
+ * - mcp_message：schema 保留，mcp-bridge 尚未接线（另案）
  */
 
 import { z } from "zod/v3";
