@@ -193,3 +193,72 @@ describe("X5 外部编辑器 handoff（已在 <AlternateScreen> 里）", () => {
     );
   });
 });
+
+// T5.3c：I4 × X5。让渡期间 raw mode 计数变化时输入模式怎么开关（2026-10-09 对 legacy 黑盒探针，D-5）。
+// 结论：I4 的计数规则在让渡期间照常生效（0 → 1 当场开模式、发探查；归零当场关），不推迟到收回；
+// 收回时的 `{raw:true}` 只看收回那一刻有没有人持有，`?1004h` 与扩展键重申照 X5 无条件写。CLI 在这条路径上不写模式（T5.3b）。
+const ON_MODES = `{ref}{raw:true}${ESC}[?2004h${ESC}[?1004h`;
+const PROBE = `${ESC}[>0q${ESC}[c`;
+const OFF_MODES = `${ESC}[>4m${ESC}[<u${ESC}[?1004l${ESC}[?2004l{raw:false}{unref}`;
+const EXIT_MAIN = `${ESC}[2J${ESC}[H${ESC}[?1049l${ESC}[?25l`;
+const EXIT_ALT = `${ESC}[?1049h${ESC}[2J${ESC}[H${MOUSE_ON}${ESC}[?25l`;
+
+describe("I4 × X5 让渡期间 raw mode 计数变化", () => {
+  test("I4: 让渡中第一次有人要 raw mode → 当场开模式并探查；收回不再开 raw mode，只写 ?1004h；之后归零照常关", () => {
+    dual(
+      "mountDuring",
+      {
+        during: `EDITOR${ON_MODES}${PROBE}`,
+        exited: `${EXIT_MAIN}${BSU}during\r\n${ESU}${ESC}[?1004h`,
+        post: `${OFF_MODES}${BSU}\r${ESC}[1Apost  \r\n${ESU}`,
+      },
+      { FIXTURE_INPUT: "0" },
+    );
+    dual(
+      "mountDuring",
+      {
+        during: `EDITOR${ON_MODES}${ESC}[>1u${ESC}[>4;2m${PROBE}`,
+        exited: `${EXIT_MAIN}${BSU}during\r\n${ESU}${ESC}[?1004h${REASSERT_KEYS}`,
+      },
+      { ...KITTY, FIXTURE_INPUT: "0" },
+    );
+  });
+
+  test("I4: 让渡中计数归零 → 当场关模式；收回仍开 raw mode、写 ?1004h（不看计数）；之后 0 → 1 照常开", () => {
+    dual("unmountDuring", {
+      during: `EDITOR${OFF_MODES}`,
+      exited: `${EXIT_MAIN}{raw:true}${BSU}during\r\n${ESU}${ESC}[?1004h`,
+      post: `${BSU}\r${ESC}[1Apost  \r\n${ESU}${ON_MODES}${PROBE}`,
+    });
+    dual(
+      "unmountDuring",
+      { exited: `${EXIT_MAIN}{raw:true}${BSU}during\r\n${ESU}${ESC}[?1004h${REASSERT_KEYS}` },
+      KITTY,
+    );
+  });
+
+  test("I4: 让渡中归零再回到 1 → 一关一开都当场写；收回只开一次 raw mode", () => {
+    dual("remountDuring", {
+      during: `EDITOR${OFF_MODES}{remount}${ON_MODES}${PROBE}`,
+      exited: `${EXIT_MAIN}{raw:true}${BSU}during\r\n${ESU}${ESC}[?1004h`,
+      post: `${BSU}\r${ESC}[1Apost  \r\n${ESU}`,
+    });
+  });
+
+  test("I4: 已在 <AlternateScreen> 里，规则相同（收回走 alt 重进）", () => {
+    dual(
+      "altMountDuring",
+      {
+        during: `EDITOR${ON_MODES}${PROBE}`,
+        exited: `${EXIT_ALT}${ESC}[Hduring${ESC}[6;1H${ESC}[?1004h`,
+        post: `${OFF_MODES}${ESC}[Hpost  ${ESC}[6;1H`,
+      },
+      { FIXTURE_INPUT: "0" },
+    );
+    dual("altUnmountDuring", {
+      during: `EDITOR${OFF_MODES}`,
+      exited: `${EXIT_ALT}{raw:true}${ESC}[Hduring${ESC}[6;1H${ESC}[?1004h`,
+      post: `${ESC}[Hpost  ${ESC}[6;1H${ON_MODES}${PROBE}`,
+    });
+  });
+});

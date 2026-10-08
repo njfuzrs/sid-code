@@ -38,8 +38,8 @@ function In({ t }: { t: string }) {
 const name = process.argv[2]!;
 const inAlt = name.startsWith("alt");
 const withInput = process.env.FIXTURE_INPUT !== "0";
-const body = (t: string, extraLine = false) => {
-  const one = withInput ? <In t={t} /> : <Text>{t}</Text>;
+const body = (t: string, extraLine = false, input = withInput) => {
+  const one = input ? <In t={t} /> : <Text>{t}</Text>;
   const inner = extraLine ? (
     <>
       {one}
@@ -79,6 +79,18 @@ if (name === "exitOnly") {
   // 编辑器自己的输出
   process.stdout.write("EDITOR");
   if (name === "commit" || name === "shrink" || inAlt) inst.rerender(body("during"));
+  // raw mode 计数在让渡期间变化（I4 × X5，T5.3c）：mountDuring 起步不挂 useInput、让渡中挂上；
+  // unmountDuring 起步挂着、让渡中摘掉；remountDuring 摘掉再挂回
+  if (name === "mountDuring" || name.endsWith("MountDuring"))
+    inst.rerender(body("during", false, true));
+  if (name === "unmountDuring" || name.endsWith("UnmountDuring"))
+    inst.rerender(body("during", false, false));
+  if (name === "remountDuring") {
+    inst.rerender(body("during", false, false));
+    await settle();
+    log("{remount}");
+    inst.rerender(body("during", false, true));
+  }
   if (name === "resize" || name === "altResize") {
     out.columns = 30;
     process.stdout.emit("resize");
