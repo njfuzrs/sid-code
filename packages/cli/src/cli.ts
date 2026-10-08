@@ -23,7 +23,7 @@ import { isPolicyAllowed } from "@sid-code/core/config/policy-limits.ts";
 import { sidPaths } from "@sid-code/core/config/paths.ts";
 import { printHelp } from "./help.ts";
 import { runMigrations } from "@sid-code/core/migrations/runner.ts";
-import { getVersion } from "@sid-code/shared/version.ts";
+import { getVersionDisplay } from "@sid-code/shared/version.ts";
 import { isAbortError, isRuntimeTimeoutError } from "@sid-code/core/llm/errors.ts";
 import { EFFORT_LEVELS, isEffortLevel } from "@sid-code/core/llm/effort.ts";
 import {
@@ -399,7 +399,7 @@ function parseCLIArgs(): CLIArgs {
   }
 
   if (values.version) {
-    console.log(getVersion());
+    console.log(getVersionDisplay());
     process.exit(0);
   }
 

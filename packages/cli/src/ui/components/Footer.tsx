@@ -46,6 +46,7 @@ import { useCustomStatusLine } from "../statusline/useCustomStatusLine.ts";
 import { normalizeCacheUsage } from "@sid-code/core/llm/types.ts";
 import { SessionState } from "@sid-code/core/session/state.ts";
 import { formatLargeNumber } from "../utils/format-number.ts";
+import { getReleaseChannel } from "@sid-code/shared/release-channel.ts";
 
 // ── Footer 主组件 ──
 
@@ -75,6 +76,8 @@ interface FooterProps {
    * 终端列宽（响应式，随窗口 resize 变化）。用于窄终端下按优先级渐进隐藏区块，
    * 保证状态栏每行不折行。缺省时回退到 stdout.columns，仍可工作只是不随 resize 精确联动。
    */
+  /** 发布通道覆盖（仅测试注入；缺省读当前进程的真实通道） */
+  releaseChannel?: "stable" | "beta" | "dev";
   termWidth?: number;
 }
 
@@ -394,6 +397,21 @@ export const Footer = React.memo(function Footer(props: FooterProps) {
       gitStrParts.push(`${WORKTREE_MARK} ${data.worktree}`);
     }
     row2Segs.push({ key: "git", str: gitStrParts.join(" "), dropOrder: 1, nodes: <>{gitNodes}</> });
+  }
+  // 通道标签（永不丢弃）：首屏 Logo 滚走后，这里是唯一还看得见通道的地方。
+  // 测试人员截图报回归时，状态栏一眼就能看出是 beta 预发布还是 dev 本地构建；正式版不显示。
+  const channel = props.releaseChannel ?? getReleaseChannel();
+  if (channel !== "stable") {
+    row2Segs.push({
+      key: "channel",
+      str: channel,
+      dropOrder: -1,
+      nodes: (
+        <Text bold color={theme.status.warning} wrap="truncate-end">
+          {channel}
+        </Text>
+      ),
+    });
   }
   // 权限模式（永不丢弃）：default→暗灰降噪；危险态 ⚠ 前缀 + 语义色 + 粗体点睛。
   const permColor = data.permission.isDanger

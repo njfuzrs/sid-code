@@ -181,6 +181,26 @@ describe("TraceCollector", () => {
       const traj = JSON.parse(readFileSync(trajPath, "utf-8"));
       expect(traj.metadata.app_version).toBe("0.0.0-persist");
     });
+
+    // 版本号之外还要能说清「哪种构建、哪个 commit」：同一版本号下 beta / 正式版 / 本地 sc-dev
+    // 的字节可能不同。断言值与运行时真值一致（而非只断言存在），防写死常量。
+    test("通道与构建身份进 session.traj 的 metadata", async () => {
+      await fireSessionStart(hookSystem);
+      await fireModelRound(hookSystem);
+      await hookSystem.fireSessionEndEvent("exit");
+      const trajPath = join(testDir, "sessions", "sess-001", "session.traj");
+      const md = JSON.parse(readFileSync(trajPath, "utf-8")).metadata;
+      const { getReleaseChannel } = await import("@sid-code/shared/release-channel.ts");
+      const { getBuildInfo } = await import("@sid-code/shared/build-info.ts");
+      const info = getBuildInfo();
+      expect(md.release_channel).toBe(getReleaseChannel());
+      // 源码运行没有编进字节的身份 → dev；发布产物才可能是 stable/beta
+      expect(md.release_channel).toBe("dev");
+      expect(md.build_commit).toBe(info.commit);
+      expect(md.build_origin).toBe(info.origin);
+      expect(md.build_dirty).toBe(info.dirty);
+      expect(md.build_describe).toBe(info.describe);
+    });
   });
 
   describe("M1 身份与 ver 一次落到 traj", () => {
