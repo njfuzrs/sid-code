@@ -105,8 +105,8 @@
 
 | ID | 行为 | 来源 | 测试 |
 | --- | --- | --- | --- |
-| O1 | 标题先发 OSC 2 再发 OSC 0，内容去 ANSI；Windows 改写 `process.title` | `hooks/use-terminal-title.ts:22-37` | `packages/cli/tests/render-port/term-bench/scenarios.tsx` S14: { |
-| O2 | tab 状态点（`useTabStatus`）；`SID_DISABLE_TAB_STATUS` 关闭；卸载时清除 | `termio/osc.ts:448-455`、`ink.tsx:1758` | `packages/cli/tests/render-port/term-bench/scenarios.tsx` S14: { |
+| O1 | 标题先发 OSC 2 再发 OSC 0，内容去 ANSI（孤立 ESC / DCS 原样）、空串照写、`null` 不写、同值不重写；不经 tmux / screen 包裹；Windows 不写序列、改写 `process.title`；卸载不写 | `hooks/use-terminal-title.ts:22-37` | `packages/cli/tests/render-port/terminal-title-tab.test.tsx` O1: |
+| O2 | tab 状态点（`useTabStatus`，OSC 21337，按 tmux / screen 包裹）；`null` 写清除（之前没写过则不写）；`SID_DISABLE_TAB_STATUS` 非空即关闭、每次变化时读、关闭期间不记账；组件卸载不写，进程卸载时清除（X3） | `termio/osc.ts:448-455`、`ink.tsx:1758` | `packages/cli/tests/render-port/terminal-title-tab.test.tsx` O2: |
 | O3 | OSC 9;4 进度条；卸载时清除 | `useTerminalNotification.ts:18`、`ink.tsx:1756` | `packages/cli/tests/render-port/term-bench/scenarios.tsx` S14: { |
 | O4 | OSC 8 超链接只在 `supportsHyperlinks()` 为真时输出 | `supports-hyperlinks.ts:26` | `packages/cli/tests/render-port/contracts-layout-text.test.tsx` O4: |
 | O5 | 终端识别读取的环境变量全集见 `SURFACE.md` §3。`CLAUDE_CODE_*` 调试变量在新底座改名或删除（D125）；`CLAUDE_CODE_ACCESSIBILITY` 控制无障碍模式下隐藏光标，改名时保留功能 | `SURFACE.md` §3、`components/App.tsx:230`、`components/App.tsx:488` | `packages/cli/tests/render-port/contracts-runtime.test.tsx` O5: |

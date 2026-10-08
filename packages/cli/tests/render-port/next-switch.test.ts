@@ -78,13 +78,11 @@ describe("legacy / next 导出同一组符号", () => {
 describe("next 骨架：未实现的符号用时就抛", () => {
   test("函数 / 值 / 组件三种占位都抛 NotImplementedError，并带任务号", async () => {
     // 样本挑阶段 5 之后才实现的符号；T4.3 实现了最后一个值占位（ResizeObserver），值占位改为直接测 helper
-    // T5.1d 实现了 drainStdin，函数占位样本换成 T7.2 的 useTerminalTitle
-    const hooks = await import("../../src/ui/render-port/next/hooks.ts");
-    expect(() => (hooks.useTerminalTitle as () => unknown)()).toThrow(
-      /useTerminalTitle 尚未实现（T7\.2）/,
-    );
-    const { notImplementedValue } =
+    // T7.2a 实现了 useTerminalTitle，剩下的函数占位（setSuppressTerminalProbe）也在并行实现中，
+    // 函数占位样本与值占位一样改为直接测 helper，不再跟着实现进度换样本
+    const { notImplementedFn, notImplementedValue } =
       await import("../../src/ui/render-port/next/not-implemented.ts");
+    expect(() => notImplementedFn("SampleFn", "T9.9")()).toThrow(/SampleFn 尚未实现（T9\.9）/);
     const Value = notImplementedValue("Sample", "T9.9") as unknown as new () => unknown;
     expect(() => new Value()).toThrow(/Sample 尚未实现（T9\.9）/);
     const comps = await import("../../src/ui/render-port/next/components.ts");
