@@ -2,7 +2,7 @@
  * 契约 I7（B9 / T5.1e）：Ctrl+Z 挂起与 SIGCONT 恢复。两套底座都跑。
  *
  * 期望值全部是 2026-10-08 对拍 legacy 的黑盒探针实测（`_probe_z / z2 … z9`），没有读旧底座代码（设计文档 D-5）。
- * 旧底座在恢复路径上还会重发终端探查（`ESC[>0q` + DA1），那是 I2，归 T5.2，这里比较前先剥掉。
+ * 恢复路径上还会重发终端探查（`ESC[>0q` + DA1，契约 I2，见 `terminal-probe.test.tsx`），这里按原样比较、不剥。
  */
 import { afterEach, beforeEach, describe, expect, spyOn, test } from "bun:test";
 import React from "react";
@@ -21,7 +21,8 @@ const CONT_TTY = `${E}[?25l${E}[?1004h`;
 const MOUSE_ALL = `${E}[?1000h${E}[?1002h${E}[?1003h${E}[?1006h${E}[?1007h`;
 const REENTER_ALT = `${E}[?1049h${E}[2J${E}[H`;
 
-const stripProbe = (s: string) => s.replaceAll(`${E}[>0q${E}[c`, "");
+/** I2：恢复后 raw mode 计数仍 > 0 时重发的终端探查（setImmediate 推迟，`tick()` 之后已在流里） */
+const PROBE = `${E}[>0q${E}[c`;
 
 let kills: string[];
 let killSpy: ReturnType<typeof spyOn>;
@@ -75,7 +76,7 @@ function setup(opts: { tty?: boolean; alt?: boolean; mouse?: boolean } = {}) {
       calls.length = 0;
     },
     take() {
-      const o = stripProbe(s.out());
+      const o = s.out();
       s.clear();
       return o;
     },
@@ -104,7 +105,7 @@ describe("I7: Ctrl+Z 挂起与恢复", () => {
 
     t.calls.length = 0;
     await cont();
-    expect(t.take()).toBe(CONT_BASE + CONT_TTY);
+    expect(t.take()).toBe(CONT_BASE + CONT_TTY + PROBE);
     expect(t.calls).toEqual(["ref", "raw:true"]);
     expect(t.s.stdin.isRaw).toBe(true);
     expect(t.s.stdin.listenerCount("readable")).toBe(1);
@@ -120,7 +121,7 @@ describe("I7: Ctrl+Z 挂起与恢复", () => {
     expect(t.take()).toBe(STOP_BASE);
     expect(kills).toEqual(["SIGSTOP"]);
     await cont();
-    expect(t.take()).toBe(CONT_BASE);
+    expect(t.take()).toBe(CONT_BASE + PROBE);
     expect(t.s.stdin.isRaw).toBe(true);
     t.m.teardown();
   });
@@ -133,7 +134,7 @@ describe("I7: Ctrl+Z 挂起与恢复", () => {
       await tick();
       expect(t.take()).toBe(STOP_BASE + STOP_TTY);
       await cont();
-      expect(t.take()).toBe(REENTER_ALT + (mouse ? MOUSE_ALL : "") + CONT_BASE + CONT_TTY);
+      expect(t.take()).toBe(REENTER_ALT + (mouse ? MOUSE_ALL : "") + CONT_BASE + CONT_TTY + PROBE);
       t.m.teardown();
     }
   });
@@ -221,13 +222,13 @@ describe("I7: Ctrl+Z 挂起与恢复", () => {
     await tick();
     expect(t.take()).toBe("");
     expect(kills).toEqual(["SIGSTOP"]);
-    // 第一次 SIGCONT：恢复后立刻读到缓冲的第二个 Ctrl+Z，再挂起
+    // 第一次 SIGCONT：恢复后立刻读到缓冲的第二个 Ctrl+Z，再挂起；恢复时排下的探查在再次挂起之后才写出（排了就发）
     await cont();
-    expect(t.take()).toBe(CONT_BASE + CONT_TTY + STOP_BASE + STOP_TTY);
+    expect(t.take()).toBe(CONT_BASE + CONT_TTY + STOP_BASE + STOP_TTY + PROBE);
     expect(kills).toEqual(["SIGSTOP", "SIGSTOP"]);
     expect(t.s.stdin.isRaw).toBe(false);
     await cont();
-    expect(t.take()).toBe(CONT_BASE + CONT_TTY);
+    expect(t.take()).toBe(CONT_BASE + CONT_TTY + PROBE);
     expect(t.s.stdin.isRaw).toBe(true);
     t.m.teardown();
   });

@@ -14,6 +14,7 @@ import {type CursorPosition} from '../log-update.js';
 import {createInputParser} from '../input-parser.js';
 import decodeKeypress, {rawInput} from '../parse-keypress.js';
 import {InputEvent} from '../input-event.js';
+import {scheduleTerminalProbe} from '../terminal-probe.js';
 import AppContext, {type SuspendTerminal} from './AppContext.js';
 import StdinContext from './StdinContext.js';
 import StdoutContext from './StdoutContext.js';
@@ -292,7 +293,7 @@ function App({
 	//   挂一次性 SIGCONT 监听后给自己发 SIGSTOP；计数不动（组件仍"持有" raw mode）；
 	// - 恢复：先 `ref` + 开 raw mode + 挂 readable（挂起期间缓冲的字节此时交出），再写重开序列；
 	// - 挂起期间卸载：不再碰 stdin，那条一次性监听留着、触发时什么都不做（旧底座 SIGCONT 监听数只 -1）。
-	// 终端探查（`>0q` / DA1）在旧底座的恢复路径上也会再发一次，那是 I2，归 T5.2。
+	// 终端探查（`>0q` / DA1）在恢复路径上也会再发一次（I2，见 terminal-probe.ts）。
 	const isSuspendedRef = useRef(false);
 	const isAppUnmountedRef = useRef(false);
 	const writeStdout = useCallback(
@@ -320,6 +321,11 @@ function App({
 		writeStdout('\u001B[?2004h\u001B[?1004h');
 		if (stdout.isTTY) {
 			writeStdout('\u001B[?25l\u001B[?1004h');
+		}
+
+		// I2：恢复时计数仍 > 0 才重新探查（计数为 0 时旧底座不发）
+		if (rawModeEnabledCount.current > 0) {
+			scheduleTerminalProbe(stdout);
 		}
 	}, [stdin, stdout, writeStdout]);
 
@@ -479,6 +485,8 @@ function App({
 					stdin.ref();
 					stdin.setRawMode(true);
 					attachReadableListener();
+					// I2：每次 0 → 1 都探查一次（不只首次挂载）
+					scheduleTerminalProbe(stdout);
 				}
 
 				return;
@@ -489,7 +497,7 @@ function App({
 				releaseRawMode();
 			}
 		},
-		[isRawModeSupported, stdin, attachReadableListener, releaseRawMode],
+		[isRawModeSupported, stdin, stdout, attachReadableListener, releaseRawMode],
 	);
 
 	const handleSetBracketedPasteMode = useCallback(

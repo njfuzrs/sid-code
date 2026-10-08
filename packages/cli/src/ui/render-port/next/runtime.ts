@@ -1,10 +1,10 @@
-/** next 实现：渲染入口与实例。render 走上游 ink，其余待实现。 */
+/** next 实现：渲染入口与实例。render 走上游 ink。 */
 import type { ReactNode } from "react";
 import { render as upstreamRender, type RenderOptions } from "@sid-code/tui";
 import upstreamInstances from "@sid-code/tui/instances.ts";
 import upstreamDrainStdin from "@sid-code/tui/drain-stdin.ts";
+import { setSuppressTerminalProbe as nextSetSuppressTerminalProbe } from "@sid-code/tui/terminal-probe.ts";
 import type { RenderInstance } from "../runtime.ts";
-import { notImplementedFn } from "./not-implemented.ts";
 
 /**
  * 端口的 render 是 async（legacy 在首帧前让出一个微任务，见旧底座 root.ts 注释），上游是同步。
@@ -16,7 +16,7 @@ export async function render(node: ReactNode, options?: NodeJS.WriteStream | Ren
 }
 
 export const drainStdin: (stdin?: NodeJS.ReadStream) => void = upstreamDrainStdin;
-export const setSuppressTerminalProbe = notImplementedFn("setSuppressTerminalProbe", "T5.2");
+export const setSuppressTerminalProbe: (value: boolean) => void = nextSetSuppressTerminalProbe;
 
 /**
  * ⚠️ 直接返回上游 Ink 实例，**刻意不包一层 adapter**：上游 Ink 没有 RenderInstance 的 8 个方法，
