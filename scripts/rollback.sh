@@ -10,8 +10,8 @@
 # ─── 为什么需要这个脚本（这才是它的全部价值）────────────────────────────────────
 #
 # 回滚能力**在此之前就已经存在**：服务器上是 `<path>/<version>/` 版本目录 + 顶层一行
-# 指针文件，改一行文本就回滚了。历史版本目录默认全部保留（RELEASE_KEEP_VERSIONS=0，
-# 归档层接入前不清理；见 release.sh 该变量说明）。
+# 指针文件，改一行文本就回滚了。服务器只保留最近几个版本（热缓存，RELEASE_KEEP_VERSIONS），
+# 更老的在 OSS 归档里：回滚到它时本脚本先从归档回暖（B46 P3），再走同一套完整性检查。
 #
 # 缺的从来不是能力，是**这件事没有任何地方写下来**。出线上事故时，要靠现场读
 # release.sh（900+ 行）反推出"原来改 latest.txt 就行"，而那正是最不该做推理的时刻。
@@ -184,6 +184,23 @@ fi
 
 PLATFORMS="darwin-arm64 darwin-x64 linux-x64 linux-arm64"
 
+# ─── 回暖（B46 P3）：服务器没有该版本目录 → 从 OSS 归档拉回 + sha256 校验后原子落位 ───
+#
+# 必须与 release.sh 恢复热缓存清理同时上线：清理恢复后，回滚到一个刚被淘汰的版本
+# 会被下面的 __NO_DIR__ 直接拒绝 —— 等于回滚能力被清理削弱了。
+# 回暖失败不在这里 fail：归档里也没有时，下面的目录检查会给出原有的明确报错。
+_ops="/tmp/sid-archive-ops-$$.sh"
+if run_scp "$SCRIPT_DIR/archive-ops.sh" "${REMOTE}:${_ops}" >/dev/null 2>&1; then
+    _warm_out="$(run_ssh "$REMOTE" "bash '${_ops}' warm '${DEPLOY_PATH}' '${TARGET_VERSION}'; _rc=\$?; rm -f '${_ops}'; exit \$_rc" 2>&1)" || true
+    if grep -qx "__WARM_OK__ ${TARGET_VERSION}" <<<"$_warm_out"; then
+        ok "v${TARGET_VERSION} 已从 OSS 归档回暖到服务器（sha256 校验通过）"
+    elif ! grep -qx "__WARM_PRESENT__ ${TARGET_VERSION}" <<<"$_warm_out"; then
+        warn "从归档回暖 v${TARGET_VERSION} 失败：$(grep -v setlocale <<<"$_warm_out" | tail -n 1)"
+    fi
+else
+    warn "回暖脚本上传失败（继续走目录检查）"
+fi
+
 _check_cmd="set -e
 [ -d '${DEPLOY_PATH}/${TARGET_VERSION}' ] || { echo __NO_DIR__; exit 0; }
 cd '${DEPLOY_PATH}/${TARGET_VERSION}'
@@ -199,7 +216,7 @@ echo __COMPLETE__"
 _check_out="$(run_ssh "$REMOTE" "$_check_cmd" 2>&1)" || fail "无法检查 v${TARGET_VERSION}：${_check_out}"
 case "$_check_out" in
     *__NO_DIR__*)
-        fail "服务器上没有 v${TARGET_VERSION} 的版本目录 —— 它可能已被保留窗口清理掉（上面的清单里就是全部可选项）"
+        fail "服务器上没有 v${TARGET_VERSION} 的版本目录，OSS 归档里也拉不回来 —— 确认版本号（0.1.602 之前的版本没有归档）"
         ;;
     *__MISSING__*)
         fail "v${TARGET_VERSION} 产物不完整，拒绝回滚到它（缺：${_check_out#*__MISSING__}）"
