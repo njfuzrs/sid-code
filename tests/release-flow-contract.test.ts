@@ -802,3 +802,73 @@ describe("github-release.ts：通道标记正文（T2）", () => {
     expect(merged).toContain("v0.1.607、v0.1.608");
   });
 });
+
+/**
+ * T2 桩 gh：真跑 github-release.ts，记录它传给 gh 的参数。
+ * 源码断言只能证明「字符串在」，这条证明「实际调用时参数对」。
+ */
+describe("github-release.ts：桩 gh 记录参数（T2）", () => {
+  const { mkdtempSync, writeFileSync, rmSync } = require("node:fs") as typeof import("node:fs");
+  const { tmpdir } = require("node:os") as typeof import("node:os");
+  const { spawnSync } = require("node:child_process") as typeof import("node:child_process");
+
+  function runWithStubGh(args: string[], releaseExists: boolean): string[][] {
+    const dir = mkdtempSync(join(tmpdir(), "sid-stub-gh-"));
+    const log = join(dir, "calls.log");
+    writeFileSync(
+      join(dir, "gh"),
+      `#!/bin/bash
+printf '%s\\x1f' "$@" >> "${log}"; printf '\\x1e' >> "${log}"
+if [ "$1" = "release" ] && [ "$2" = "view" ]; then exit ${releaseExists ? 0 : 1}; fi
+exit 0
+`,
+      { mode: 0o755 },
+    );
+    try {
+      const r = spawnSync("bun", ["run", join(ROOT, "scripts/github-release.ts"), ...args], {
+        encoding: "utf8",
+        env: { ...process.env, PATH: `${dir}:${process.env.PATH}` },
+      });
+      expect(r.status).toBe(0);
+      // 记录分隔用 \x1e 而不是换行：Release 正文本身多行，按换行切会把参数截断
+      return readFileSync(log, "utf8")
+        .split("\x1e")
+        .filter((l) => l.length > 0)
+        .map((l) => l.split("\x1f").filter(Boolean));
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  }
+
+  test("--create --prerelease → gh release create 带 --prerelease --latest=false", () => {
+    const calls = runWithStubGh(["0.1.607", "--create", "--prerelease"], false);
+    const create = calls.find((c) => c[0] === "release" && c[1] === "create")!;
+    expect(create).toBeDefined();
+    expect(create[2]).toBe("v0.1.607");
+    expect(create).toContain("--prerelease");
+    expect(create).toContain("--latest=false");
+  });
+
+  test("--promote → 只 edit 目标 tag，--prerelease=false + --latest", () => {
+    const calls = runWithStubGh(["0.1.607", "--promote"], true);
+    const edits = calls.filter((c) => c[0] === "release" && c[1] === "edit");
+    expect(edits.length).toBe(1);
+    expect(edits[0]![2]).toBe("v0.1.607");
+    expect(edits[0]).toContain("--prerelease=false");
+    expect(edits[0]).toContain("--latest");
+  });
+});
+
+describe("积压清单只读（T5）", () => {
+  test("changelog-stable.ts 不触碰服务器、不调 LLM（backlog 只读本地 curated + 传入的指针）", () => {
+    const src = readFileSync(join(ROOT, "scripts/changelog-stable.ts"), "utf8");
+    expect(src).not.toMatch(/\bssh\b|\bscp\b|sshpass|fetch\(|spawn\(|execFileSync/);
+  });
+
+  test("rollback.sh 调 backlog 时只传读到的指针值，调用不在任何 run_ssh 内", () => {
+    const RB = readFileSync(join(ROOT, "scripts/rollback.sh"), "utf8");
+    const line = RB.split("\n").find((l) => l.includes('changelog-stable.ts" backlog'))!;
+    expect(line).toBeDefined();
+    expect(line).not.toMatch(/run_ssh|ssh /);
+  });
+});
