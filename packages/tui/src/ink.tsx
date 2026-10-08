@@ -37,6 +37,7 @@ import {disableMouseTracking, enableMouseTracking} from './terminal/modes.js';
 import {supportsSynchronizedOutput} from './terminal/sync-output.js';
 import App from './components/App.js';
 import drainStdin from './drain-stdin.js';
+import {patchStderr} from './stderr-guard.js';
 import {
 	clearSelection,
 	createSelectionState,
@@ -317,6 +318,8 @@ export default class Ink {
 	private exitResult: unknown;
 	private beforeExitHandler?: () => void;
 	private restoreConsole?: () => void;
+	/** sid-code（B9 / T7.1a，契约 E1）：裸 stderr 护栏的还原函数，卸载时调用 */
+	private restoreStderr?: () => void;
 	private readonly unsubscribeResize?: () => void;
 	private readonly scheduler?: FrameScheduler;
 	/**
@@ -451,6 +454,9 @@ export default class Ink {
 		if (options.patchConsole) {
 			this.patchConsole();
 		}
+
+		// sid-code（B9 / T7.1a，契约 E1）：与 patchConsole 解耦、无条件生效，见 stderr-guard.ts
+		this.restoreStderr = patchStderr();
 
 		if (this.interactive) {
 			options.stdout.on('resize', this.resized);
@@ -1004,6 +1010,10 @@ export default class Ink {
 			// streams, fullscreen frames, and alternate-screen teardown.
 			this.restoreConsole();
 		}
+
+		// sid-code（B9 / T7.1a，契约 E1）：React 清理之前还原，卸载期间 effect 清理函数写的 stderr 照常落地（旧底座如此）
+		this.restoreStderr?.();
+		this.restoreStderr = undefined;
 
 		const finishUnmount = (): void => {
 			if (typeof this.unsubscribeResize === 'function') {

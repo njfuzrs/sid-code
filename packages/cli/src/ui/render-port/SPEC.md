@@ -122,8 +122,8 @@ CLI 侧的写入点由 `cli-modes.test.tsx` 钉住：走生产入口 `createFull
 
 | ID | 行为 | 来源 | 测试 |
 | --- | --- | --- | --- |
-| E1 | `patchStderr` 与 `patchConsole` 解耦，前者无条件生效：吞掉裸 `process.stderr.write` → 进 debug 日志 → alt-screen 下强制全量重绘 | `ink.tsx:251-262` | `packages/cli/tests/render-port/term-bench/scenarios.tsx` S10: { |
-| E2 | 拦截路径有重入守卫：`logForDebugging → 写 stderr → 拦截` 不得无限递归 | `ink.tsx:1893` | `packages/cli/tests/render-port/term-bench/scenarios.tsx` S10: { |
+| E1 | 挂载时把全局 `process.stderr.write` 换成拦截器，**无条件**（与 TTY、`patchConsole`、`debug` 选项、stdout 是哪个流无关），不碰 `options.stderr`：吞掉字节、恒返回 `true`、回调同步无参调用；**不擦屏、不重绘**（alt 下也是，下一帧照常增量）。`SID_CODE_DEBUG` 在加载时恰为 `1` / `true` 才 `console.error("[ink] [stderr] " + 文本, {level:"warn"})`（字符串忽略 encoding，其余 UTF-8 解码）；非法 chunk 先调回调再抛 TypeError。卸载一开始（React 清理之前）只在仍是自己时还原 | `ink.tsx:251-262` | `packages/cli/tests/render-port/stderr-guard.test.tsx` E1: |
+| E2 | 拦截路径有重入守卫：日志路径里再写 stderr 直接交给原始 write，不递归、不再记日志；日志抛错时回调照调、错误上抛、守卫复位 | `ink.tsx:1893` | `packages/cli/tests/render-port/stderr-guard.test.tsx` E2: |
 | E3 | stdout EIO / EPIPE 不抛 uncaughtException（底座不处理，靠 CLI 在 render 之前注册的处理器） | CLI `packages/cli/src/ui/fullscreen.ts:55-57` | `packages/cli/tests/render-port/contracts-runtime.test.tsx` E3: |
 
 ## X 生命周期
