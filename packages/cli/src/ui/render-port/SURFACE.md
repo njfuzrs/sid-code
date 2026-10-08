@@ -7,7 +7,7 @@ B9 / T0.1 产物。新底座必须提供这里列出的全部符号与 props；r
 签名只由**集合**决定（符号 / props / 环境变量），计数是生成时快照，日常 UI 改动会让它漂移，不影响签名。
 
 - 消费底座的源码文件：**101** 个（`packages/cli/src`，不含 `ui/render-port/` 自身）
-- 直接 import 底座的测试文件：**26** 个（`packages/cli/tests`）
+- 直接 import 底座的测试文件：**46** 个（`packages/cli/tests`）
 - 符号：**44** 个；宿主组件 props：**51** 种；底座读取的环境变量：**38** 个
 
 ## 1. 符号（按引用文件数降序）
@@ -65,9 +65,9 @@ B9 / T0.1 产物。新底座必须提供这里列出的全部符号与 props；r
 
 | 组件.prop | 次数 | 文件数 | 字面量取值（次数） | 动态 |
 | --- | ---: | ---: | --- | ---: |
-| `Text.color` | 626 | 67 |  | 626 |
+| `Text.color` | 629 | 67 |  | 629 |
 | `Box.flexDirection` | 273 | 66 | `column` 229、`row` 42 | 2 |
-| `Box.marginTop` | 174 | 36 | `1` 156、`0` 14 | 4 |
+| `Box.marginTop` | 175 | 36 | `1` 157、`0` 14 | 4 |
 | `Text.bold` | 130 | 43 | `true` 111 | 19 |
 | `Box.width` | 88 | 39 | `2` 18、`100%` 7、`16` 2、`5` 2、`22` 1、`3` 1 | 57 |
 | `Box.paddingX` | 83 | 40 | `1` 79、`2` 3 | 1 |
@@ -119,48 +119,48 @@ B9 / T0.1 产物。新底座必须提供这里列出的全部符号与 props；r
 
 ## 3. 底座读取的环境变量
 
-新底座要逐个决定保留 / 改名 / 删除（D125：`CLAUDE_CODE_*` 改名，但 `CLAUDE_CODE_ACCESSIBILITY` 是功能开关，要保留功能）。
+新底座逐个决定保留 / 改名 / 删除（D125，T7.2c 定论）。改名的旧名留作别名，T9 删除旧底座时一并去掉。`CLAUDE_CODE_DISABLE_MOUSE` 只出现在旧底座的注释里，从来没有代码读它，所以不在表内。
 
-| 变量 | 读取位置（相对 tui-renderer/src） |
-| --- | --- |
-| `__CFBundleIdentifier` | `_vendor/env.ts` |
-| `ALACRITTY_LOG` | `_vendor/env.ts` |
-| `CLAUDE_CODE_ACCESSIBILITY` | `components/App.tsx` |
-| `CLAUDE_CODE_COMMIT_LOG` | `reconciler.ts` |
-| `CLAUDE_CODE_DEBUG_REPAINTS` | `reconciler.ts` |
-| `CLAUDE_CODE_TMUX_TRUECOLOR` | `colorize.ts` |
-| `ConEmuANSI` | `_vendor/env.ts`<br>`terminal.ts` |
-| `ConEmuPID` | `_vendor/env.ts`<br>`terminal.ts` |
-| `ConEmuTask` | `_vendor/env.ts`<br>`terminal.ts` |
-| `CURSOR_TRACE_ID` | `_vendor/env.ts` |
-| `GNOME_TERMINAL_SERVICE` | `_vendor/env.ts` |
-| `KITTY_WINDOW_ID` | `_vendor/env.ts`<br>`terminal.ts` |
-| `KONSOLE_VERSION` | `_vendor/env.ts` |
-| `LC_TERMINAL` | `supports-hyperlinks.ts`<br>`termio/osc.ts` |
-| `MSYSTEM` | `_vendor/env.ts`<br>`clearTerminal.ts` |
-| `NODE_ENV` | `reconciler.ts` |
-| `SESSIONNAME` | `_vendor/env.ts` |
-| `SID_CODE_DEBUG` | `_vendor/debug.ts` |
-| `SID_CODE_DISABLE_MOUSE_CLICKS` | `_vendor/fullscreen.ts` |
-| `SID_DISABLE_TAB_STATUS` | `termio/osc.ts` |
-| `SSH_CLIENT` | `_vendor/env.ts` |
-| `SSH_CONNECTION` | `_vendor/env.ts`<br>`termio/osc.ts` |
-| `SSH_TTY` | `_vendor/env.ts` |
-| `STY` | `_vendor/env.ts`<br>`termio/osc.ts` |
-| `TERM` | `_vendor/env.ts`<br>`supports-hyperlinks.ts`<br>`terminal.ts` |
-| `TERM_PROGRAM` | `_vendor/env.ts`<br>`bidi.ts`<br>`clearTerminal.ts`<br>`colorize.ts`<br>`components/App.tsx`<br>`render-node-to-output.ts`<br>`supports-hyperlinks.ts`<br>`terminal.ts` |
-| `TERM_PROGRAM_VERSION` | `clearTerminal.ts`<br>`terminal.ts` |
-| `TERMINAL_EMULATOR` | `_vendor/env.ts` |
-| `TERMINATOR_UUID` | `_vendor/env.ts` |
-| `TILIX_ID` | `_vendor/env.ts` |
-| `TMUX` | `_vendor/env.ts`<br>`colorize.ts`<br>`terminal.ts`<br>`termio/osc.ts` |
-| `VisualStudioVersion` | `_vendor/env.ts` |
-| `VSCODE_GIT_ASKPASS_MAIN` | `_vendor/env.ts` |
-| `VTE_VERSION` | `_vendor/env.ts`<br>`terminal.ts` |
-| `WSL_DISTRO_NAME` | `_vendor/env.ts` |
-| `WT_SESSION` | `_vendor/env.ts`<br>`bidi.ts`<br>`clearTerminal.ts`<br>`terminal.ts` |
-| `XTERM_VERSION` | `_vendor/env.ts` |
-| `ZED_TERM` | `terminal.ts` |
+| 变量 | 读取位置（相对 tui-renderer/src） | 新底座结论 |
+| --- | --- | --- |
+| `__CFBundleIdentifier` | `_vendor/env.ts` | 保留：`terminal/extended-keys.ts` |
+| `ALACRITTY_LOG` | `_vendor/env.ts` | 保留：`terminal/extended-keys.ts` |
+| `CLAUDE_CODE_ACCESSIBILITY` | `components/App.tsx` | **改名** `SID_CODE_ACCESSIBILITY`（`cursor-helpers.ts`），功能保留；旧名留作别名到 T9，新名设置了（含空串）以新名为准 |
+| `CLAUDE_CODE_COMMIT_LOG` | `reconciler.ts` | **删除**：旧底座的临时提交计时埋点（源码注释 temp debugging），next 没有对应插桩；帧耗时看 `bun run tui:bench` |
+| `CLAUDE_CODE_DEBUG_REPAINTS` | `reconciler.ts` | **删除**：只给 full reset 打日志；next 的 full reset 原因已经从 `onFrame` 的 `flickers[].reason` 暴露 |
+| `CLAUDE_CODE_TMUX_TRUECOLOR` | `colorize.ts` | **改名** `SID_CODE_TMUX_TRUECOLOR`（`colorize.ts`，T2.2 已做）；旧名留作别名到 T9 |
+| `ConEmuANSI` | `_vendor/env.ts`<br>`terminal.ts` | 保留：`terminal/extended-keys.ts` |
+| `ConEmuPID` | `_vendor/env.ts`<br>`terminal.ts` | 保留：`terminal/extended-keys.ts` |
+| `ConEmuTask` | `_vendor/env.ts`<br>`terminal.ts` | 保留：`terminal/extended-keys.ts` |
+| `CURSOR_TRACE_ID` | `_vendor/env.ts` | 保留：`terminal/extended-keys.ts` |
+| `GNOME_TERMINAL_SERVICE` | `_vendor/env.ts` | 保留：`terminal/extended-keys.ts` |
+| `KITTY_WINDOW_ID` | `_vendor/env.ts`<br>`terminal.ts` | 保留：`terminal/extended-keys.ts`、`osc.ts`、`sync-output.ts` |
+| `KONSOLE_VERSION` | `_vendor/env.ts` | 保留：`terminal/extended-keys.ts` |
+| `LC_TERMINAL` | `supports-hyperlinks.ts`<br>`termio/osc.ts` | 保留：`terminal/clipboard.ts`、`hyperlinks.ts` |
+| `MSYSTEM` | `_vendor/env.ts`<br>`clearTerminal.ts` | 保留：`terminal/extended-keys.ts`。旧底座 `clearTerminal.ts` 里的 win32 清屏分支 next 没有（见 `TERM_PROGRAM_VERSION`） |
+| `NODE_ENV` | `reconciler.ts` | 保留：`frame/schedule.ts`（R13） |
+| `SESSIONNAME` | `_vendor/env.ts` | **不读**：旧底座只拿它认 cygwin，cygwin 不在扩展键白名单里，认出来与认不出来的可观察行为相同 |
+| `SID_CODE_DEBUG` | `_vendor/debug.ts` | 保留（CLI 也读，见 help）。next 底座还不读：渲染层日志进 debug 输出归 T7.1a（E1） |
+| `SID_CODE_DISABLE_MOUSE_CLICKS` | `_vendor/fullscreen.ts` | 保留。next 底座还不读：点击处理随选区接入归 T6.2b（M1 已钉住它不改变底座写的字节） |
+| `SID_DISABLE_TAB_STATUS` | `termio/osc.ts` | 保留：`hooks/use-tab-status.ts`、`ink.tsx`（O2） |
+| `SSH_CLIENT` | `_vendor/env.ts` | 保留：`terminal/extended-keys.ts` |
+| `SSH_CONNECTION` | `_vendor/env.ts`<br>`termio/osc.ts` | 保留：`terminal/extended-keys.ts`、`clipboard.ts` |
+| `SSH_TTY` | `_vendor/env.ts` | 保留：`terminal/extended-keys.ts` |
+| `STY` | `_vendor/env.ts`<br>`termio/osc.ts` | 保留：`terminal/extended-keys.ts`、`osc.ts`、`clipboard.ts`、`sync-output.ts` |
+| `TERM` | `_vendor/env.ts`<br>`supports-hyperlinks.ts`<br>`terminal.ts` | 保留：`terminal/*` |
+| `TERM_PROGRAM` | `_vendor/env.ts`<br>`bidi.ts`<br>`clearTerminal.ts`<br>`colorize.ts`<br>`components/App.tsx`<br>`render-node-to-output.ts`<br>`supports-hyperlinks.ts`<br>`terminal.ts` | 保留：`colorize.ts`、`text/bidi.ts`、`terminal/*` |
+| `TERM_PROGRAM_VERSION` | `clearTerminal.ts`<br>`terminal.ts` | **不读**：旧底座用它判 OSC 9;4 是否可用（CLI 不发 OSC 9;4，T7.2b）和 win32 VS Code 的清屏序列。next 清屏固定 `2J 3J H`，win32 旧控制台差异未实现，T9 前评估 |
+| `TERMINAL_EMULATOR` | `_vendor/env.ts` | 保留：`terminal/extended-keys.ts` |
+| `TERMINATOR_UUID` | `_vendor/env.ts` | 保留：`terminal/extended-keys.ts` |
+| `TILIX_ID` | `_vendor/env.ts` | 保留：`terminal/extended-keys.ts` |
+| `TMUX` | `_vendor/env.ts`<br>`colorize.ts`<br>`terminal.ts`<br>`termio/osc.ts` | 保留：`colorize.ts`、`terminal/*` |
+| `VisualStudioVersion` | `_vendor/env.ts` | 保留：`terminal/extended-keys.ts` |
+| `VSCODE_GIT_ASKPASS_MAIN` | `_vendor/env.ts` | 保留：`terminal/extended-keys.ts` |
+| `VTE_VERSION` | `_vendor/env.ts`<br>`terminal.ts` | 保留：`terminal/extended-keys.ts`、`sync-output.ts` |
+| `WSL_DISTRO_NAME` | `_vendor/env.ts` | 保留：`terminal/extended-keys.ts` |
+| `WT_SESSION` | `_vendor/env.ts`<br>`bidi.ts`<br>`clearTerminal.ts`<br>`terminal.ts` | 保留：`terminal/extended-keys.ts`、`sync-output.ts`、`text/bidi.ts` |
+| `XTERM_VERSION` | `_vendor/env.ts` | 保留：`terminal/extended-keys.ts` |
+| `ZED_TERM` | `terminal.ts` | 保留：`terminal/sync-output.ts` |
 
 ## 4. CLI 绕过底座的 stdout 直写
 
@@ -184,8 +184,8 @@ B9 / T0.1 产物。新底座必须提供这里列出的全部符号与 props；r
 | `packages/cli/src/command/commands/copy/copy.ts:65` | 终端序列 | `if (oscSeq) process.stdout.write(oscSeq);` |
 | `packages/cli/src/command/commands/export/export.ts:155` | 终端序列 | `if (oscSeq) process.stdout.write(oscSeq);` |
 | `packages/cli/src/command/commands/debug/debug.ts:50` | 终端序列 | `if (oscSeq) process.stdout.write(oscSeq);` |
-| `packages/cli/src/app.ts:6880` | 普通输出 | `process.stdout.write(streamBuffer);` |
-| `packages/cli/src/cli.ts:2041` | 普通输出 | `if (process.stdout.write(json)) resolve();` |
+| `packages/cli/src/app.ts:7032` | 普通输出 | `process.stdout.write(streamBuffer);` |
+| `packages/cli/src/cli.ts:2061` | 普通输出 | `if (process.stdout.write(json)) resolve();` |
 | `packages/cli/src/command/daemon.ts:132` | 普通输出 | `process.stdout.write(readFileSync(path, "utf-8"));` |
 | `packages/cli/src/command/review.ts:261` | 普通输出 | `process.stdout.write(result.stdout);` |
 | `packages/cli/src/command/review.ts:266` | 普通输出 | `process.stdout.write(finalResponse);` |
@@ -193,12 +193,31 @@ B9 / T0.1 产物。新底座必须提供这里列出的全部符号与 props；r
 
 ## 5. 直接 import 底座的测试文件
 
+- `packages/cli/tests/command/argument-hint-chain.test.tsx`
+- `packages/cli/tests/render-port/_probe_a11y_z.test.tsx`
+- `packages/cli/tests/render-port/contracts-animation.test.tsx`
 - `packages/cli/tests/render-port/contracts-layout-text.test.tsx`
 - `packages/cli/tests/render-port/contracts-runtime.test.tsx`
+- `packages/cli/tests/render-port/fixtures/_probe_a11y.tsx`
+- `packages/cli/tests/render-port/fixtures/alt-screen-app.tsx`
+- `packages/cli/tests/render-port/fixtures/cli-modes-app.tsx`
+- `packages/cli/tests/render-port/fixtures/external-editor-app.tsx`
+- `packages/cli/tests/render-port/fixtures/next-minimal-app.tsx`
+- `packages/cli/tests/render-port/fixtures/osc-unmount-app.tsx`
+- `packages/cli/tests/render-port/fixtures/terminal-modes-app.tsx`
+- `packages/cli/tests/render-port/next-switch.test.ts`
 - `packages/cli/tests/render-port/render-instance.test.tsx`
 - `packages/cli/tests/render-port/static-reconcile.test.tsx`
 - `packages/cli/tests/render-port/stdin-dual-reader.test.tsx`
+- `packages/cli/tests/render-port/stdin-ownership.test.tsx`
+- `packages/cli/tests/render-port/stdin-response-fragment.test.tsx`
+- `packages/cli/tests/render-port/stdin-shutdown.test.tsx`
+- `packages/cli/tests/render-port/stdin-suspend.test.tsx`
+- `packages/cli/tests/render-port/term-bench/component-scenarios.tsx`
+- `packages/cli/tests/render-port/term-bench/engine-scenarios.tsx`
 - `packages/cli/tests/render-port/term-bench/scenarios.tsx`
+- `packages/cli/tests/render-port/terminal-probe.test.tsx`
+- `packages/cli/tests/render-port/terminal-title-tab.test.tsx`
 - `packages/cli/tests/render-port/tty-streams.ts`
 - `packages/cli/tests/ui/components/CoreRendering.test.tsx`
 - `packages/cli/tests/ui/components/HotkeyChoiceList.test.tsx`
@@ -207,6 +226,7 @@ B9 / T0.1 产物。新底座必须提供这里列出的全部符号与 props；r
 - `packages/cli/tests/ui/components/ShortcutsHelp.test.tsx`
 - `packages/cli/tests/ui/components/TodoPanel.test.tsx`
 - `packages/cli/tests/ui/components/footer-requests-column.test.tsx`
+- `packages/cli/tests/ui/components/hooks-dialog-skipped-by-trust.test.tsx`
 - `packages/cli/tests/ui/components/messages/CommandMessage.test.tsx`
 - `packages/cli/tests/ui/components/messages/ToolMessage-think.test.tsx`
 - `packages/cli/tests/ui/components/retry-status-shows-real-error.test.tsx`

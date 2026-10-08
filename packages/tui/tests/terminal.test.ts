@@ -5,6 +5,7 @@
  */
 import { describe, expect, test } from "bun:test";
 import { join } from "node:path";
+import { keepsNativeCursor } from "../src/cursor-helpers.ts";
 import {
   type CommandRunner,
   createSetClipboard,
@@ -203,5 +204,32 @@ describe("supportsHyperlinks", () => {
       expect(supportsHyperlinks({ stdoutSupported: false, env }), JSON.stringify(env)).toBe(true);
     for (const env of no)
       expect(supportsHyperlinks({ stdoutSupported: false, env }), JSON.stringify(env)).toBe(false);
+  });
+});
+
+describe("keepsNativeCursor（O5，D125 改名）", () => {
+  test("取值真值表与旧底座一致：非空且不是 0 / false / no（不分大小写）", () => {
+    for (const v of ["1", "true", "TRUE", "yes", "on", "abc", " "])
+      expect(keepsNativeCursor({ CLAUDE_CODE_ACCESSIBILITY: v })).toBe(true);
+    for (const v of ["", "0", "false", "False", "no", "NO"])
+      expect(keepsNativeCursor({ CLAUDE_CODE_ACCESSIBILITY: v })).toBe(false);
+    expect(keepsNativeCursor({})).toBe(false);
+  });
+
+  test("新名 SID_CODE_ACCESSIBILITY 与旧名等效；新名设置了（含空串）就以新名为准", () => {
+    expect(keepsNativeCursor({ SID_CODE_ACCESSIBILITY: "1" })).toBe(true);
+    expect(keepsNativeCursor({ SID_CODE_ACCESSIBILITY: "0", CLAUDE_CODE_ACCESSIBILITY: "1" })).toBe(
+      false,
+    );
+    expect(keepsNativeCursor({ SID_CODE_ACCESSIBILITY: "", CLAUDE_CODE_ACCESSIBILITY: "1" })).toBe(
+      false,
+    );
+    expect(keepsNativeCursor({ SID_CODE_ACCESSIBILITY: "1", CLAUDE_CODE_ACCESSIBILITY: "0" })).toBe(
+      true,
+    );
+  });
+
+  test("CLI 的 SID_ACCESSIBILITY（关动画）不是这个开关，旧底座也不认", () => {
+    expect(keepsNativeCursor({ SID_ACCESSIBILITY: "1" })).toBe(false);
   });
 });

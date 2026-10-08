@@ -12,7 +12,11 @@ import {getWindowSize} from './utils.js';
 import reconciler from './reconciler.js';
 import render from './renderer.js';
 import * as dom from './dom.js';
-import {hideCursorEscape, showCursorEscape} from './cursor-helpers.js';
+import {
+	hideCursorEscape,
+	keepsNativeCursor,
+	showCursorEscape,
+} from './cursor-helpers.js';
 import {type CursorPosition} from './log-update.js';
 import {bsu, esu, shouldSynchronize} from './write-synchronized.js';
 import instances from './instances.js';
@@ -1468,7 +1472,11 @@ export default class Ink {
 		}
 
 		if (!this.cursorHidden) {
-			this.options.stdout.write(hideCursorEscape);
+			// O5：无障碍模式下不隐藏（照样记为已处理，免得每帧都去读环境变量判断）
+			if (!keepsNativeCursor()) {
+				this.options.stdout.write(hideCursorEscape);
+			}
+
 			this.cursorHidden = true;
 		}
 
@@ -1515,7 +1523,11 @@ export default class Ink {
 		}
 
 		if (!this.cursorHidden) {
-			this.options.stdout.write(hideCursorEscape);
+			// O5：无障碍模式下不隐藏（照样记为已处理，免得每帧都去读环境变量判断）
+			if (!keepsNativeCursor()) {
+				this.options.stdout.write(hideCursorEscape);
+			}
+
 			this.cursorHidden = true;
 		}
 

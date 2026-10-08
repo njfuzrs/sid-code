@@ -122,6 +122,7 @@ describe("L5 交互判定只看 stdout.isTTY", () => {
   test("L5: CI=true 但 stdout 是 TTY → 仍按交互模式（隐藏光标、挂 SIGCONT）", async () => {
     setEnv("CI", "true");
     setEnv("CLAUDE_CODE_ACCESSIBILITY", undefined);
+    setEnv("SID_CODE_ACCESSIBILITY", undefined);
     const before = process.listenerCount("SIGCONT");
     const s = ttyStreams();
     const m = mountTTY(<Text>x</Text>, s);
@@ -355,23 +356,84 @@ describe("M5 选区背景色", () => {
   });
 });
 
-describe("O5 CLAUDE_CODE_ACCESSIBILITY", () => {
+describe("O5 无障碍模式保留原生光标（CLAUDE_CODE_ACCESSIBILITY）", () => {
+  // 2026-10-09 T7.2c 对 legacy 黑盒探针（D-5）：只压掉「首帧后隐藏」与「Ctrl+Z 恢复时隐藏」两处；
+  // 取值按 非空且不是 0 / false / no（不分大小写）判真。新名 SID_CODE_ACCESSIBILITY 只有 next 认，单测在 tui 包
+  // （tests/terminal.test.ts），这里只钉两套底座都认的旧名。
+  const mountWith = async (v: string | undefined) => {
+    setEnv("SID_CODE_ACCESSIBILITY", undefined);
+    setEnv("CLAUDE_CODE_ACCESSIBILITY", v);
+    const s = ttyStreams();
+    const m = mountTTY(<Text>x</Text>, s);
+    await tick();
+    const out = s.out();
+    m.teardown();
+    return out;
+  };
+
   test("O5: 无障碍模式下不隐藏光标（屏幕放大器要跟踪它）", async () => {
+    expect(await mountWith("1")).not.toContain(HIDE_CURSOR);
+  });
+
+  test("O5: 默认隐藏光标", async () => {
+    expect(await mountWith(undefined)).toContain(HIDE_CURSOR);
+  });
+
+  for (const v of ["1", "true", "TRUE", "yes", "on", "abc", " "]) {
+    test(`O5: 取值 ${JSON.stringify(v)} 算开（不隐藏）`, async () => {
+      expect(await mountWith(v)).not.toContain(HIDE_CURSOR);
+    });
+  }
+
+  for (const v of ["", "0", "false", "FALSE", "no", "NO"]) {
+    test(`O5: 取值 ${JSON.stringify(v)} 算关（照常隐藏）`, async () => {
+      expect(await mountWith(v)).toContain(HIDE_CURSOR);
+    });
+  }
+
+  test("O5: 之后的帧、resize、forceRedraw 都不补写隐藏光标", async () => {
+    setEnv("SID_CODE_ACCESSIBILITY", undefined);
     setEnv("CLAUDE_CODE_ACCESSIBILITY", "1");
     const s = ttyStreams();
     const m = mountTTY(<Text>x</Text>, s);
+    await tick();
+    m.inst.rerender(<Text>y</Text>);
+    await tick();
+    (s.stdout as unknown as { columns: number }).columns = 30;
+    s.stdout.emit("resize");
+    await tick();
+    m.ink.forceRedraw();
     await tick();
     expect(s.out()).not.toContain(HIDE_CURSOR);
     m.teardown();
   });
 
-  test("O5: 默认隐藏光标", async () => {
-    setEnv("CLAUDE_CODE_ACCESSIBILITY", undefined);
-    const s = ttyStreams();
-    const m = mountTTY(<Text>x</Text>, s);
-    await tick();
-    expect(s.out()).toContain(HIDE_CURSOR);
-    m.teardown();
+  test("O5: Ctrl+Z 挂起后 SIGCONT 恢复时也不隐藏（focus reporting 照开）", async () => {
+    const kill = spyOn(process, "kill").mockImplementation((() => true) as never);
+    try {
+      for (const [v, hides] of [
+        ["1", false],
+        [undefined, true],
+      ] as const) {
+        setEnv("SID_CODE_ACCESSIBILITY", undefined);
+        setEnv("CLAUDE_CODE_ACCESSIBILITY", v);
+        const s = ttyStreams();
+        const m = mountTTY(<Keys />, s);
+        await tick();
+        s.stdin.write("\x1a");
+        await tick();
+        s.clear();
+        process.emit("SIGCONT" as never);
+        await tick();
+        const out = s.out();
+        expect(out.includes(HIDE_CURSOR)).toBe(hides);
+        // 两次 ?1004h：一次随 raw mode 重开输入模式（I4），一次是恢复序列自己的（不能被前者顶替）
+        expect(out.split("\x1b[?1004h").length - 1).toBe(2);
+        m.teardown();
+      }
+    } finally {
+      kill.mockRestore();
+    }
   });
 });
 

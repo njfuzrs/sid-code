@@ -402,6 +402,62 @@ export function signature(s: Surface): string {
   return createHash("sha256").update(parts.join("\n")).digest("hex").slice(0, 16);
 }
 
+/**
+ * §3 每个环境变量在新底座上的结论（B9 / T7.2c，D125）。**键集合必须等于扫描出的集合**，
+ * `tests/scripts/tui-surface.test.ts` 双向校验：旧底座多读一个变量、或这里留着已不存在的变量，都会红。
+ * 写的是「next 上怎么处理」，读取位置相对 `packages/tui/src`。
+ */
+const NEXT = (files: string) => `保留：${files}`;
+export const ENV_DECISIONS: Record<string, string> = {
+  __CFBundleIdentifier: NEXT("`terminal/extended-keys.ts`"),
+  ALACRITTY_LOG: NEXT("`terminal/extended-keys.ts`"),
+  CLAUDE_CODE_ACCESSIBILITY:
+    "**改名** `SID_CODE_ACCESSIBILITY`（`cursor-helpers.ts`），功能保留；旧名留作别名到 T9，新名设置了（含空串）以新名为准",
+  CLAUDE_CODE_COMMIT_LOG:
+    "**删除**：旧底座的临时提交计时埋点（源码注释 temp debugging），next 没有对应插桩；帧耗时看 `bun run tui:bench`",
+  CLAUDE_CODE_DEBUG_REPAINTS:
+    "**删除**：只给 full reset 打日志；next 的 full reset 原因已经从 `onFrame` 的 `flickers[].reason` 暴露",
+  CLAUDE_CODE_TMUX_TRUECOLOR:
+    "**改名** `SID_CODE_TMUX_TRUECOLOR`（`colorize.ts`，T2.2 已做）；旧名留作别名到 T9",
+  ConEmuANSI: NEXT("`terminal/extended-keys.ts`"),
+  ConEmuPID: NEXT("`terminal/extended-keys.ts`"),
+  ConEmuTask: NEXT("`terminal/extended-keys.ts`"),
+  CURSOR_TRACE_ID: NEXT("`terminal/extended-keys.ts`"),
+  GNOME_TERMINAL_SERVICE: NEXT("`terminal/extended-keys.ts`"),
+  KITTY_WINDOW_ID: NEXT("`terminal/extended-keys.ts`、`osc.ts`、`sync-output.ts`"),
+  KONSOLE_VERSION: NEXT("`terminal/extended-keys.ts`"),
+  LC_TERMINAL: NEXT("`terminal/clipboard.ts`、`hyperlinks.ts`"),
+  MSYSTEM:
+    "保留：`terminal/extended-keys.ts`。旧底座 `clearTerminal.ts` 里的 win32 清屏分支 next 没有（见 `TERM_PROGRAM_VERSION`）",
+  NODE_ENV: NEXT("`frame/schedule.ts`（R13）"),
+  SESSIONNAME:
+    "**不读**：旧底座只拿它认 cygwin，cygwin 不在扩展键白名单里，认出来与认不出来的可观察行为相同",
+  SID_CODE_DEBUG:
+    "保留（CLI 也读，见 help）。next 底座还不读：渲染层日志进 debug 输出归 T7.1a（E1）",
+  SID_CODE_DISABLE_MOUSE_CLICKS:
+    "保留。next 底座还不读：点击处理随选区接入归 T6.2b（M1 已钉住它不改变底座写的字节）",
+  SID_DISABLE_TAB_STATUS: NEXT("`hooks/use-tab-status.ts`、`ink.tsx`（O2）"),
+  SSH_CLIENT: NEXT("`terminal/extended-keys.ts`"),
+  SSH_CONNECTION: NEXT("`terminal/extended-keys.ts`、`clipboard.ts`"),
+  SSH_TTY: NEXT("`terminal/extended-keys.ts`"),
+  STY: NEXT("`terminal/extended-keys.ts`、`osc.ts`、`clipboard.ts`、`sync-output.ts`"),
+  TERM: NEXT("`terminal/*`"),
+  TERM_PROGRAM: NEXT("`colorize.ts`、`text/bidi.ts`、`terminal/*`"),
+  TERM_PROGRAM_VERSION:
+    "**不读**：旧底座用它判 OSC 9;4 是否可用（CLI 不发 OSC 9;4，T7.2b）和 win32 VS Code 的清屏序列。next 清屏固定 `2J 3J H`，win32 旧控制台差异未实现，T9 前评估",
+  TERMINAL_EMULATOR: NEXT("`terminal/extended-keys.ts`"),
+  TERMINATOR_UUID: NEXT("`terminal/extended-keys.ts`"),
+  TILIX_ID: NEXT("`terminal/extended-keys.ts`"),
+  TMUX: NEXT("`colorize.ts`、`terminal/*`"),
+  VisualStudioVersion: NEXT("`terminal/extended-keys.ts`"),
+  VSCODE_GIT_ASKPASS_MAIN: NEXT("`terminal/extended-keys.ts`"),
+  VTE_VERSION: NEXT("`terminal/extended-keys.ts`、`sync-output.ts`"),
+  WSL_DISTRO_NAME: NEXT("`terminal/extended-keys.ts`"),
+  WT_SESSION: NEXT("`terminal/extended-keys.ts`、`sync-output.ts`、`text/bidi.ts`"),
+  XTERM_VERSION: NEXT("`terminal/extended-keys.ts`"),
+  ZED_TERM: NEXT("`terminal/sync-output.ts`"),
+};
+
 const SIG_RE = /<!-- surface-signature: ([0-9a-f]+) -->/;
 
 export function renderMarkdown(s: Surface): string {
@@ -468,17 +524,18 @@ export function renderMarkdown(s: Surface): string {
   L.push("## 3. 底座读取的环境变量");
   L.push("");
   L.push(
-    "新底座要逐个决定保留 / 改名 / 删除（D125：`CLAUDE_CODE_*` 改名，但 `CLAUDE_CODE_ACCESSIBILITY` 是功能开关，要保留功能）。",
+    "新底座逐个决定保留 / 改名 / 删除（D125，T7.2c 定论）。改名的旧名留作别名，T9 删除旧底座时一并去掉。" +
+      "`CLAUDE_CODE_DISABLE_MOUSE` 只出现在旧底座的注释里，从来没有代码读它，所以不在表内。",
   );
   L.push("");
-  L.push("| 变量 | 读取位置（相对 tui-renderer/src） |");
-  L.push("| --- | --- |");
+  L.push("| 变量 | 读取位置（相对 tui-renderer/src） | 新底座结论 |");
+  L.push("| --- | --- | --- |");
   for (const [name, files] of [...s.envVars.entries()].sort((a, b) => a[0].localeCompare(b[0]))) {
     L.push(
       `| \`${name}\` | ${[...files]
         .sort()
         .map((f) => `\`${f}\``)
-        .join("<br>")} |`,
+        .join("<br>")} | ${ENV_DECISIONS[name] ?? "⚠️ 未定"} |`,
     );
   }
   L.push("");

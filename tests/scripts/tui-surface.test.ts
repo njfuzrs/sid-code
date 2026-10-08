@@ -8,6 +8,7 @@ import { describe, expect, test } from "bun:test";
 import { readFileSync } from "node:fs";
 import {
   analyze,
+  ENV_DECISIONS,
   extractDirectWrites,
   extractEnvVars,
   extractJsxProps,
@@ -162,6 +163,15 @@ describe("真实仓库：清单与签名", () => {
   test("入库的 SURFACE.md 签名与源码一致（漂移就要重生成）", () => {
     const md = readFileSync(SURFACE_MD, "utf8");
     expect(md).toContain(`<!-- surface-signature: ${signature(surface)} -->`);
+  });
+
+  test("§3 每个环境变量都有新底座结论，且结论表里没有已不存在的变量（T7.2c）", () => {
+    const scanned = [...surface.envVars.keys()].sort();
+    expect(Object.keys(ENV_DECISIONS).sort()).toEqual(scanned);
+    expect(readFileSync(SURFACE_MD, "utf8")).not.toContain("⚠️ 未定");
+    // D125：CLAUDE_CODE_* 一个都不许写「保留」
+    for (const name of scanned.filter((n) => n.startsWith("CLAUDE_CODE_")))
+      expect(ENV_DECISIONS[name]).toMatch(/^\*\*(改名|删除)\*\*/);
   });
 
   test("变异自证：多一个符号 / 多一个 prop / 多一个环境变量，签名都会变", () => {

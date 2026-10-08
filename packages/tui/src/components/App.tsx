@@ -29,6 +29,7 @@ import FocusContext from './FocusContext.js';
 import AnimationContext from './AnimationContext.js';
 import CursorContext from './CursorContext.js';
 import ErrorBoundary from './ErrorBoundary.js';
+import {keepsNativeCursor} from '../cursor-helpers.js';
 
 const tab = '\t';
 const shiftTab = '\u001B[Z';
@@ -354,7 +355,12 @@ function App({
 		}
 
 		if (stdout.isTTY) {
-			writeModeSequences(['\u001B[?25l', '\u001B[?1004h']);
+			// O5：无障碍模式下恢复时也不隐藏光标（focus reporting 照开）
+			writeModeSequences(
+				keepsNativeCursor()
+					? ['\u001B[?1004h']
+					: ['\u001B[?25l', '\u001B[?1004h'],
+			);
 		}
 
 		// I2：恢复时计数仍 > 0 才重新探查（计数为 0 时旧底座不发）

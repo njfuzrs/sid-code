@@ -100,6 +100,16 @@ describe("X5 外部编辑器 handoff（主屏）", () => {
     });
   });
 
+  test("X5 × O5: 无障碍模式下收回终端照样隐藏光标（旧底座只在首帧与 Ctrl+Z 恢复时让步）", () => {
+    dual(
+      "commit",
+      {
+        exited: `${ESC}[2J${ESC}[H${ESC}[?1049l${ESC}[?25l{raw:true}${BSU}during\r\n${ESU}${ESC}[?1004h`,
+      },
+      { CLAUDE_CODE_ACCESSIBILITY: "1" },
+    );
+  });
+
   test("X5: 让渡期间的按键不丢，收回之后才交给 useInput", () => {
     dual("input", { during: "EDITOR", afterExit: "{input:q}" });
   });
