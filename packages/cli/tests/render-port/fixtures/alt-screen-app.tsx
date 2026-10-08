@@ -178,15 +178,16 @@ const CASES: Record<string, (r: (n: React.ReactNode) => Promise<Inst>) => Promis
     const inst = await r(
       <AlternateScreen>
         <Text bold>a b</Text>
-        <Text inverse>c d</Text>
+        <Text inverse>{"c  d"}</Text>
       </AlternateScreen>,
     );
     await settle();
     mark("enter");
     inst.rerender(
       <AlternateScreen>
-        <Text bold>a b</Text>
-        <Text inverse>c e</Text>
+        {/* 连续空格写成字符串表达式：JSX 文本里的会被格式化压成一个 */}
+        <Text bold>{"a   b"}</Text>
+        <Text inverse>{"c  e"}</Text>
       </AlternateScreen>,
     );
     await settle();
@@ -205,7 +206,7 @@ const CASES: Record<string, (r: (n: React.ReactNode) => Promise<Inst>) => Promis
     inst.rerender(
       <AlternateScreen>
         <Text>中文cd</Text>
-        <Text>x y</Text>
+        <Text>{"x  y"}</Text>
       </AlternateScreen>,
     );
     await settle();

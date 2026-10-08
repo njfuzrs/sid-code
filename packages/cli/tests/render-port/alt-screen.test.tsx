@@ -172,7 +172,14 @@ describe("R14 alt-screen 出帧（绝对定位）", () => {
         enter:
           ENTER_ALT +
           MOUSE_ON +
-          `${HOME}${ESC}[1ma b\r${ESC}[1B${ESC}[22m${ESC}[7mc d${ESC}[27m${ESC}[6;1H${HIDE}`,
+          `${HOME}${ESC}[1ma b\r${ESC}[1B${ESC}[22m${ESC}[7mc  d${ESC}[27m${ESC}[6;1H${HIDE}`,
+      },
+      { FORCE_COLOR: "3" },
+    );
+    dual(
+      "styled",
+      {
+        update: `${HOME}${ESC}[2C${ESC}[1m  b\r${ESC}[3C${ESC}[1B${ESC}[22m${ESC}[7me${ESC}[27m${ESC}[6;1H`,
       },
       { FORCE_COLOR: "3" },
     );

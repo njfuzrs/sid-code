@@ -20,7 +20,7 @@ Date: 2026-10-08
 
 ## 放弃了什么
 
-- **卸载段对齐**：卸载时恢复终端模式、清 OSC 9;4 / 21337 属于 X 组（T7.1b）和 O 组（T7.2），契约测试只比到 `unmount` 标记之前。S7 在 next 上只剩「卸载后」一段的 OSC 计数差异，原因相同。
+- **卸载段对齐**：卸载时恢复终端模式、清 OSC 9;4 / 21337 属于 X 组（T7.1b）和 O 组（T7.2），所以契约测试只比到 `unmount` 标记之前。
 - **S9 alt 半边（forceRedraw 在 alt 下）**、`enter/exitAlternateScreen`：归 T6.1b。
 - **S10（alt 下 stderr 护栏）**：归 T7.1a。
 
@@ -28,5 +28,6 @@ Date: 2026-10-08
 
 - `packages/cli/tests/render-port/alt-screen.test.tsx` 17 条（M1 ×8、R14 ×9）。每条先断言 legacy 等于写死的字节，再断言 next 与 legacy 逐段一致，两套底座都绿。`packages/tui/tests/sync-output.test.ts` 61 条。
 - 变异自证 10 处全红：关鼠标顺序、`mouseTracking` 默认值、视口高度约束、视口裁剪、视口变化擦屏、同步包裹按能力判定、resize 重开鼠标、SIGCONT 作废前帧、tmux 优先级、alt 出帧分支。改完都按 sha1 核对还原。
-- next 上 render-port 的失败集合与改动前逐条相同（18 条，都是归后续任务的项），通过数 240 → 257。legacy render-port + tui 918/918。
-- S7 在 next 上除「卸载后」一段外与基线一致，S1–S6 也只剩卸载段的差异。
+- rebase 到 `d7c63246`（含 T5.2b / T7.2b）后，next 上 render-port + tui 的结果是 981 pass / 10 fail。父提交上是 963 / 28，减少的 18 条就是本任务的 17 条契约加 S7。没有新增失败。剩下的 10 条：M5 ×2（T6.2b）、O5（T7.2c）、X7（缺 `enter/exitAlternateScreen` 等，T6.1b / T6.2 / T7.1）、S8（T6.1b / T5.3c）、S9（T6.1b）、S10（T7.1a）、S11（T5.3a）、S12（T7.1b）、S13（T6.2c）。legacy 991/991。
+- **S7 在 next 上与基线完全一致**。卸载段的 OSC 由 T7.2b 补齐。
+- 坑：oxfmt 会把 JSX 文本里的连续空格压成一个（`<Text>x  y</Text>` → `x y`），用例因此悄悄失去意义。fixture 里需要连续空格的地方一律写成 `{"x  y"}`。
