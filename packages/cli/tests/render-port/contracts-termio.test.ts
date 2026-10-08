@@ -8,7 +8,7 @@
  * 剪贴板用 PATH 前置的假命令（记录调用、按文件决定成败），不碰真实剪贴板。
  */
 import { afterAll, describe, expect, test } from "bun:test";
-import { chmodSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { chmodSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 
@@ -27,6 +27,20 @@ for (const cmd of ["pbcopy", "clip", "wl-copy", "xclip", "xsel", "tmux"]) {
   );
   chmodSync(p, 0o755);
 }
+// 预热：每个假命令先执行一次。新写出的可执行文件第一次执行有一次性开销（空载实测 ~300ms，
+// 满载时会越过下面探针里 400ms 的等待），而本机剪贴板那一路是「发出去不等」的——
+// 没预热时，矩阵第一条（「O6: 默认」）里先跑的 legacy 一侧会偶发漏记 pbcopy，看起来像两套底座不一致。
+// 这里同步付掉这笔开销，探针里的 400ms 只需要覆盖热启动（实测 6–14ms）。
+const warmLog = join(work, "warmup.log");
+for (const cmd of ["pbcopy", "clip", "wl-copy", "xclip", "xsel", "tmux"]) {
+  Bun.spawnSync([join(BIN, cmd)], {
+    stdin: new TextEncoder().encode("warm"),
+    env: { PATH: "/usr/bin:/bin", FAKE_LOG: warmLog, FAKE_FAIL: join(work, "warmup.fail") },
+  });
+}
+// 防空预热：六个假命令都真的跑过（否则这段预热静默失效，偶发失败会原样回来）
+const warmed = readFileSync(warmLog, "utf8").split("\n").filter(Boolean).length;
+if (warmed !== 6) throw new Error(`假命令预热只跑了 ${warmed}/6 个`);
 
 const PROBE = `
 if (process.env.PLAT) Object.defineProperty(process, "platform", { value: process.env.PLAT });
