@@ -7,9 +7,15 @@
  * - 最后一步之后的卸载 / 退出字节归到最后一张快照的指标里，
  *   所以「退出后终端模式恢复」看的是最后一步的 `modes` 之外，还要看 `total`。
  */
-import React, { useSyncExternalStore } from "react";
+import React, { useContext, useEffect, useSyncExternalStore } from "react";
 import { AlternateScreen, Box, Static, Text } from "../../../src/ui/render-port/components.ts";
-import { useTabStatus, useTerminalTitle } from "../../../src/ui/render-port/hooks.ts";
+import {
+  TerminalWriteContext,
+  useTabStatus,
+  useTerminalTitle,
+} from "../../../src/ui/render-port/hooks.ts";
+import { useTerminalIntegration } from "../../../src/ui/hooks/useTerminalIntegration.ts";
+import { StreamingState } from "../../../src/ui/types.ts";
 import { getRenderInstance, render } from "../../../src/ui/render-port/runtime.ts";
 import { MarkdownAnsi } from "../../../src/ui/components/MarkdownAnsi.tsx";
 import { SettingsProvider } from "../../../src/ui/contexts/SettingsContext.tsx";
@@ -501,11 +507,34 @@ export const SCENARIOS: Record<string, Scenario> = {
     covers: ["O1", "O2", "O3"],
     async run(ctx) {
       const title = store<string | null>("sid-code · 任务");
-      const tab = store<"busy" | "idle" | null>("busy");
+      const tab = store<"busy" | "idle" | "waiting" | null>("busy");
+      const streaming = store<StreamingState>(StreamingState.Responding);
+      const link = store<string>("");
+      // 经 TerminalWriteContext 直写的原始序列（OSC 9;4 进度），由场景从外部推
+      const raw = store<string | null>(null);
+      function Raw() {
+        const writeRaw = useContext(TerminalWriteContext);
+        const data = raw.use();
+        useEffect(() => {
+          if (data !== null) writeRaw?.(data);
+        }, [data, writeRaw]);
+        return null;
+      }
+      function Integration() {
+        // 真实 CLI hook：忙 → 闲时经 TerminalWriteContext 写 BEL + OSC 777 通知
+        useTerminalIntegration({ streamingState: streaming.use(), titleHint: "集成" });
+        return null;
+      }
       function App() {
         useTerminalTitle(title.use());
         useTabStatus(tab.use());
-        return <Text>OSC 场景</Text>;
+        const md = link.use();
+        return (
+          <Box flexDirection="column">
+            <Text>OSC 场景</Text>
+            {md ? <MarkdownAnsi text={md} terminalWidth={ctx.cols} /> : null}
+          </Box>
+        );
       }
       const inst = await mountWith(ctx, <App />);
       ctx.step("标题 + tab 忙");
@@ -513,6 +542,38 @@ export const SCENARIOS: Record<string, Scenario> = {
       tab.set("idle");
       await ctx.settle();
       ctx.step("标题去 ANSI + tab 空闲");
+      // OSC 9;4 进度：设 50% → 不确定 → 清除，全部经原始写入口
+      inst.rerender(
+        <SettingsProvider>
+          <App />
+          <Raw />
+          <Integration />
+        </SettingsProvider>,
+      );
+      await ctx.settle();
+      for (const seq of ["\x1b]9;4;1;50\x07", "\x1b]9;4;3;\x07", "\x1b]9;4;0;\x07"]) {
+        raw.set(seq);
+        await ctx.settle(30);
+      }
+      ctx.step("进度经原始写入口");
+      streaming.set(StreamingState.Idle);
+      await ctx.settle();
+      ctx.step("忙转闲通知（BEL + OSC 777）");
+      // OSC 8：supportsHyperlinks 每次调用时读环境，进程内切到 iTerm2 即生效
+      const saved = { p: process.env.TERM_PROGRAM, v: process.env.TERM_PROGRAM_VERSION };
+      process.env.TERM_PROGRAM = "iTerm.app";
+      process.env.TERM_PROGRAM_VERSION = "3.5.0";
+      link.set("见 [文档](https://example.com/doc)");
+      await ctx.settle();
+      process.env.TERM_PROGRAM = saved.p;
+      process.env.TERM_PROGRAM_VERSION = saved.v;
+      ctx.step("OSC 8 超链接");
+      // tmux 包裹：wrapForMultiplexer 每次调用时读 TMUX
+      process.env.TMUX = "/tmp/tmux-bench,1,0";
+      tab.set("waiting");
+      await ctx.settle();
+      process.env.TMUX = "";
+      ctx.step("tab 状态经 tmux 包裹");
       inst.unmount();
     },
   },

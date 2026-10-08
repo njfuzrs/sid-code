@@ -27,6 +27,9 @@ import {
 import {FrameScheduler} from './frame/scheduler.js';
 import {FRAME_INTERVAL_MS} from './frame/schedule.js';
 import {ClockContext, createClock, type Clock} from './clock.js';
+import TerminalWriteContext from './components/TerminalWriteContext.js';
+import {OSC} from './terminal/osc.js';
+import {isTabStatusDisabled, tabStatusSequence} from './hooks/use-tab-status.js';
 import {type Screen} from './screen/screen.js';
 import {serializeScreen} from './screen/serialize.js';
 import App from './components/App.js';
@@ -40,6 +43,8 @@ import {
 } from './kitty-keyboard.js';
 
 const noop = () => {};
+// OSC 9;4;0 清除进度条。旧底座这条固定 BEL 终止（kitty 下也不换 ST），对拍保持一致
+const clearProgressSequence = `\u001B]${OSC.ITERM2};4;0;\u0007`;
 const textEncoder = new TextEncoder();
 
 const yieldImmediate = async () =>
@@ -789,7 +794,9 @@ export default class Ink {
 					onRegisterInputControl={this.registerInputControl}
 					onStdinResume={this.handleStdinResume}
 				>
-					{node}
+					<TerminalWriteContext.Provider value={this.writeRaw}>
+						{node}
+					</TerminalWriteContext.Provider>
 				</App>
 				</ClockContext.Provider>
 			</AccessibilityContext.Provider>
@@ -968,6 +975,14 @@ export default class Ink {
 					this.options.stdout.write(bsu + showCursorEscape + esu);
 					this.cursorHidden = false;
 					this.previousScreen = undefined;
+					// sid-code（B9 / T7.2b，契约 O3 / O2）：退出时清进度条与 tab 状态点，免得残留在 tab 上。
+					// 对拍旧底座：只在 TTY 下写；进度清除固定用 BEL 终止、不包裹（kitty 下也是），
+					// tab 清除照常随终端终止并按 tmux / screen 包裹，`SID_DISABLE_TAB_STATUS` 非空时不写；
+					// 两条都与之前写没写过无关。与其余模式恢复的相对顺序归 X3（T7.1b）。
+					this.writeBestEffort(this.options.stdout, clearProgressSequence);
+					if (!isTabStatusDisabled()) {
+						this.writeBestEffort(this.options.stdout, tabStatusSequence(null));
+					}
 				}
 			}
 
@@ -1170,6 +1185,11 @@ export default class Ink {
 
 	private shouldSync(): boolean {
 		return shouldSynchronize(this.options.stdout, this.interactive);
+	}
+
+	// sid-code（B9 / T7.2b）：TerminalWriteContext 的值。autoBind 绑定后身份在实例生命周期内不变
+	private writeRaw(data: string): void {
+		this.options.stdout.write(data);
 	}
 
 	// Best-effort write: streams may already be destroyed during shutdown.
