@@ -25,8 +25,8 @@ async function main(): Promise<void> {
   // 快速路径 1: --version — 从 package.json 读取版本号
   if (args.length === 1 && (args[0] === "--version" || args[0] === "-v")) {
     profileCheckpoint("bootstrap_route_resolved");
-    const { getVersion } = await import("@sid-code/shared/version.ts");
-    console.log(getVersion());
+    const { getVersionDisplay } = await import("@sid-code/shared/version.ts");
+    console.log(getVersionDisplay());
     return;
   }
 

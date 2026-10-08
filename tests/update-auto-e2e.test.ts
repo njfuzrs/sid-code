@@ -146,6 +146,29 @@ describe("自动更新离线安装链路", () => {
       expect(result.status).toBe(0);
       expect(result.stdout).toContain("通道: beta");
       expect(result.stdout).toContain("目标版本: v0.1.604");
+      // 通道标记：二进制据此在 --version / TUI 显示「beta 预发布版」
+      const marker = join(fixture.home, ".local/share/sid-code/versions/0.1.604/.channel");
+      expect(readFileSync(marker, "utf8").trim()).toBe("beta");
+    } finally {
+      rmSync(fixture.home, { recursive: true, force: true });
+      rmSync(fixture.releaseDir, { recursive: true, force: true });
+    }
+  });
+
+  // promote 场景：同一版本目录先以 beta 装、再以 stable 装（目录被复用），标记必须翻回 stable，
+  // 否则 promote 后的稳定版用户会一直看到 beta 标。
+  test("同一版本先 beta 后 stable 安装，通道标记被覆盖为 stable", () => {
+    const fixture = makeRelease();
+    try {
+      const marker = join(fixture.home, ".local/share/sid-code/versions/0.1.604/.channel");
+      const beta = runInstall(fixture.releaseDir, fixture.home, { SID_CODE_CHANNEL: "beta" });
+      if (beta.result.status !== 0) throw new Error(beta.result.stderr || beta.result.stdout);
+      expect(readFileSync(marker, "utf8").trim()).toBe("beta");
+
+      const stable = runInstall(fixture.releaseDir, fixture.home);
+      if (stable.result.status !== 0) throw new Error(stable.result.stderr || stable.result.stdout);
+      expect(stable.result.stdout).toContain("直接复用");
+      expect(readFileSync(marker, "utf8").trim()).toBe("stable");
     } finally {
       rmSync(fixture.home, { recursive: true, force: true });
       rmSync(fixture.releaseDir, { recursive: true, force: true });
