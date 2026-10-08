@@ -298,6 +298,86 @@ done`;
   });
 });
 
+describe("B46 P0：RELEASE_KEEP_VERSIONS=0 是「不清理」，不是「全删」", () => {
+  // 归档层接入前，服务器版本目录是唯一原始字节（已因保留窗口永久丢过 20 个版本）。
+  // 坑：清理用 `tail -n +$((N+1))`，N=0 时等于 `tail -n +1` → 删光除指针外的全部版本。
+  // 所以 0 必须在拼清理命令之前短路，且默认值必须是 0。
+
+  // 从 release.sh 抠出**真实的**清理块（if … fi）执行，而不是手抄一份：
+  // 手抄副本证明的是副本对，不是脚本对（上面 A2 那条就有这个漂移风险）。
+  const BLOCK_START = '    if [ "$RELEASE_KEEP_VERSIONS" -eq 0 ]; then';
+  function cleanupBlock(): string {
+    const i = RELEASE_SH.indexOf(BLOCK_START);
+    expect(i).toBeGreaterThan(-1);
+    const j = RELEASE_SH.indexOf("\n    fi\n", i);
+    expect(j).toBeGreaterThan(i);
+    return RELEASE_SH.slice(i, j + "\n    fi\n".length);
+  }
+
+  function runCleanup(keep: string) {
+    const dir = mkdtempSync(join(tmpdir(), "sid-keep0-"));
+    const versions = ["0.1.701", "0.1.702", "0.1.703", "0.1.704"];
+    const base = Date.parse("2026-08-01T00:00:00Z");
+    versions.forEach((v, i) => {
+      mkdirSync(join(dir, v), { recursive: true });
+      const t = new Date(base + i * 86_400_000);
+      utimesSync(join(dir, v), t, t);
+    });
+    writeFileSync(join(dir, "latest.txt"), "0.1.704\n");
+    writeFileSync(join(dir, "beta.txt"), "0.1.704\n");
+    // run_ssh 桩：把远程命令在本地执行，DEPLOY_PATH 指向 tmpdir
+    const script = `set -euo pipefail
+info() { echo "  $*"; }
+warn() { echo "  WARN $*" >&2; }
+run_ssh() { bash -c "$2"; }
+DEPLOY_PATH='${dir}'
+DEPLOY_SSH_USER=u; DEPLOY_SSH_HOST=h
+RELEASE_KEEP_VERSIONS='${keep}'
+${cleanupBlock()}`;
+    const r = spawnSync("bash", ["-c", script], { encoding: "utf8" });
+    const left = versions.filter((v) => existsSync(join(dir, v)));
+    rmSync(dir, { recursive: true, force: true });
+    return { r, left };
+  }
+
+  test("默认值是 0", () => {
+    // 变异自证：改回 :-5 → 这条红
+    expect(RELEASE_SH).toContain('RELEASE_KEEP_VERSIONS="${RELEASE_KEEP_VERSIONS:-0}"');
+  });
+
+  test("真跑：N=0 一个版本目录都不删，并明说跳过", () => {
+    const { r, left } = runCleanup("0");
+    expect(r.status).toBe(0);
+    expect(left).toEqual(["0.1.701", "0.1.702", "0.1.703", "0.1.704"]);
+    expect(r.stdout).toContain("跳过清理");
+    expect(r.stdout).not.toContain("已删除旧版本");
+  });
+
+  test("对照：N=1 时同一段真实代码确实会删（证明上一条不是空跑假绿）", () => {
+    const { r, left } = runCleanup("1");
+    expect(r.status).toBe(0);
+    expect(left).toEqual(["0.1.704"]);
+    expect(r.stdout).toContain("已删除旧版本");
+  });
+
+  test("非整数配置值拒绝发布（否则 `[ -eq 0 ]` 报错会落进清理分支）", () => {
+    const i = RELEASE_SH.indexOf('case "$RELEASE_KEEP_VERSIONS" in');
+    expect(i).toBeGreaterThan(-1);
+    const guard = RELEASE_SH.slice(i, RELEASE_SH.indexOf("esac", i) + 4);
+    for (const bad of ["abc", "", "-1", "5x"]) {
+      const r = spawnSync("bash", ["-c", `RELEASE_KEEP_VERSIONS='${bad}'\n${guard}\necho PASSED`], {
+        encoding: "utf8",
+      });
+      expect(r.status).toBe(1);
+      expect(r.stdout).not.toContain("PASSED");
+    }
+    const ok = spawnSync("bash", ["-c", `RELEASE_KEEP_VERSIONS=0\n${guard}\necho PASSED`], {
+      encoding: "utf8",
+    });
+    expect(ok.stdout).toContain("PASSED");
+  });
+});
+
 describe("A3 rollback.sh：出事时能照着跑，且不做多余的事", () => {
   test("语法可解析（含 macOS 自带 bash 3.2）", () => {
     const r = spawnSync("/bin/bash", ["-n", join(ROOT, "scripts/rollback.sh")], {
