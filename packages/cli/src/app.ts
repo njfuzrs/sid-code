@@ -1052,8 +1052,8 @@ export class App {
         // B5-7：401 凭据刷新钩子（§5 新发现 3）
         //
         // 修的是一处错误归因：此前 401 是「用同一份旧凭据重试一次，再失败就
-        // markTerminal 拉黑模型」。而 terminal 是进程内**永久**态（availability.ts：
-        // 默认不可被自动流程恢复），于是一次凭据过期能让一个**健康**模型整场会话不可用。
+        // markTerminal 拉黑模型」。而当时 terminal 是进程内**永久**态（2026-10-08 已改为
+        // 有时效的嫌疑态），于是一次凭据过期能让一个**健康**模型整场会话不可用。
         //
         // ── 我们的"刷新"是什么，不是什么（诚实边界） ──
         //
@@ -2294,6 +2294,8 @@ export class App {
     reason: string;
     defaultFallbackModel?: string;
     signal?: AbortSignal;
+    canRetrySame?: boolean;
+    attempts?: number;
   }): Promise<FallbackDecision> {
     const log = getLogger();
     const { askUserQuestion, hasAskUserQuestionHandler } =
@@ -2330,9 +2332,8 @@ export class App {
     }
 
     // 构造选项：默认备用置顶（标注）+ 其它 availableModels（排除主模型与默认备用）+ 不切换。
-    // H2：对处于 terminal 拉黑态的模型在 description 追加标注，让用户知情——选中被拉黑的模型
-    // 会在切入时 force 清一次 terminal（见下方选中分支），给它一次干净机会；不置灰移除，避免
-    // 瞬时 401/400 误拉黑后用户彻底无法选回。
+    // H2：对处于嫌疑期（近期有调用在它身上放弃过）的模型在 description 追加标注，让用户知情——
+    // 选中它会在切入时清一次嫌疑（见下方选中分支）；不置灰移除，避免用户无法选回。
     const avail = (() => {
       try {
         return this.fallback?.getAvailability();
@@ -2341,8 +2342,17 @@ export class App {
       }
     })();
     const terminalNote = (name: string): string =>
-      avail?.isTerminal(name) ? "（曾被标记不可用，切入将重试）" : "";
+      avail?.isSuspect(name) ? "（近期请求失败，切入将重试）" : "";
     const options: { label: string; description?: string }[] = [];
+    // 2026-10-08 §4.4：「重试当前模型」置顶为默认项。网关把临时故障包成 401/400/404 已有实测，
+    // 此前弹窗只有「切换 / 不切换」，用户想再试一次只能终止后重发。漏斗侧限制每次调用最多 2 次。
+    const RETRY_SAME = `重试当前模型 ${ctx.failedModel}`;
+    if (ctx.canRetrySame) {
+      options.push({
+        label: RETRY_SAME,
+        description: `重新请求（全新重试预算${ctx.attempts !== undefined ? `，本次已重试 ${ctx.attempts} 次` : ""}）`,
+      });
+    }
     if (ctx.defaultFallbackModel && this.buildFallbackProvider(ctx.defaultFallbackModel)) {
       options.push({
         label: ctx.defaultFallbackModel,
@@ -2358,7 +2368,7 @@ export class App {
     const NO_SWITCH = "不切换，终止本轮";
     options.push({ label: NO_SWITCH, description: "保持当前状态，可稍后重发消息或用 /model 切换" });
 
-    const question = `主模型 ${ctx.failedModel} 请求失败（${ctx.reason}），是否切换到备用模型继续？`;
+    const question = `主模型 ${ctx.failedModel} 请求失败（${ctx.reason}），要重试、切换到备用模型，还是终止？`;
     let result;
     try {
       // 人机输入闸门：本弹窗阻塞等用户作答期间，通知看门狗（stream-processor 心跳 +
@@ -2394,6 +2404,10 @@ export class App {
 
     // answered：取用户选中的答案（answers 按"问题文本 → 答案"映射）。
     const answer = result.answers[question];
+    if (answer === RETRY_SAME && ctx.canRetrySame) {
+      log.info("FALLBACK", `用户选择重试当前模型 ${ctx.failedModel}`);
+      return { action: "retry_same" };
+    }
     if (!answer || answer === NO_SWITCH) {
       log.info("FALLBACK", "用户选择不切换，终止本轮");
       return { action: "abort" };

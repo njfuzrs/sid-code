@@ -315,6 +315,11 @@ describe("T9.1 流式中断 & 恢复", () => {
       const fallback = new ModelFallback({
         streamTimeoutMs: 100, // 100ms 超时（测试用极短值）
         maxRetries: 0,
+        // 2026-10-08 有意语义变更：maxRetries=0 不再意味着零重试 —— recovery-policy 的
+        // MIN_ATTEMPTS=2 下限让超时（transient）至少重试一次。旧测试没注入退避，
+        // 那次重试会按 NETWORK_DEFAULTS.retryBackoffBaseMs（5s）真睡，撞 bun 默认 5s 超时。
+        retryBackoffBaseMs: 0,
+        retryBackoffMaxMs: 0,
         availability: new ModelAvailabilityService(),
         onTelemetry: (e) => telemetryEvents.push(e),
       });

@@ -37,17 +37,31 @@
  * 也就是说修复前「限流能否重试」取决于**网关文案里恰好有没有那串数字** ——
  * 这不是漏了一个场景，是判据建在了错误的地方。
  *
+ * ── 2026-10-08 迁移说明 ──
+ *
+ * `classifyError` / `classifyStreamError` / `TerminalError` / `StreamLevelError` 已删除，
+ * 本文件改用 `normalizeThrown` / `normalizeStreamEvent` → `classifyFamily`。
+ * 原「Terminal」断言改为 family=auth_suspect / request_suspect；原「RetryableError(reason)」
+ * 改为 family=transient + 同 reason；原「无法分类（裸 Error）」改为
+ * transient + recognized=false（认不出的不再零重试，而是受同指纹 3 次封顶）。
+ *
  * fix_type: regression_guard
  */
 
+/** 抛出形态：带 status 的 Error → 归一化 → 唯一分类器 */
+function classifyThrown(message: string, status?: number): FamilyVerdict {
+  const err =
+    status !== undefined ? Object.assign(new Error(message), { status }) : new Error(message);
+  return classifyFamily(normalizeThrown(err));
+}
+
 import { describe, test, expect } from "bun:test";
 import {
-  classifyError,
-  classifyStreamError,
-  RetryableError,
-  StreamLevelError,
-  TerminalError,
-} from "@sid-code/core/llm/errors.ts";
+  classifyFamily,
+  normalizeStreamEvent,
+  normalizeThrown,
+  type FamilyVerdict,
+} from "@sid-code/core/llm/error-normalize.ts";
 import { inferErrorCode } from "@sid-code/core/llm/error-messages.ts";
 import { ModelFallback } from "@sid-code/core/llm/fallback.ts";
 import { ModelAvailabilityService } from "@sid-code/core/llm/availability.ts";
@@ -76,21 +90,20 @@ const GATEWAY_429_BODY = {
 // 第 1 层：分类器本身 —— statusCode 在场时必须压过文本匹配
 // ════════════════════════════════════════════════════════════════════════
 
-describe("classifyError：结构化 statusCode 是权威判据", () => {
+describe("classifyFamily：结构化 statusCode 是权威判据", () => {
   test("【核心回归】429 + 中文文案（无任何数字）→ 必须判可重试", () => {
-    const err = Object.assign(new Error(GATEWAY_429_BODY.error.message), { status: 429 });
-    const c = classifyError(err);
-    expect(c).toBeInstanceOf(RetryableError);
-    expect((c as RetryableError).reason).toBe("rate_limit");
+    const c = classifyThrown(GATEWAY_429_BODY.error.message, 429);
+    expect(c.family).toBe("transient");
+    expect(c.reason).toBe("rate_limit");
   });
 
   test("同一条中文文案不带 statusCode 也能认出来（词表，不再依赖状态码透传）", () => {
     // 这条以前是负向断言：记录「文本路径认不出中文，所以必须透传 statusCode」。
     // 2026-09-24 词表补进了「负载已饱和」，负向断言转红是修复生效的信号，不是回退。
     // statusCode 仍然是权威判据（见上一条），但不再是唯一判据。
-    const c = classifyError(new Error(GATEWAY_429_BODY.error.message));
-    expect(c).toBeInstanceOf(RetryableError);
-    expect((c as RetryableError).reason).toBe("rate_limit");
+    const c = classifyThrown(GATEWAY_429_BODY.error.message);
+    expect(c.family).toBe("transient");
+    expect(c.reason).toBe("rate_limit");
   });
 
   test("各类可重试状态码 + 无数字中文文案 → 全部按状态码判定", () => {
@@ -102,28 +115,29 @@ describe("classifyError：结构化 statusCode 是权威判据", () => {
       [529, "overloaded"],
     ] as const;
     for (const [status, reason] of cases) {
-      const c = classifyError(Object.assign(new Error("上游异常，请稍后再试"), { status }));
-      expect(c).toBeInstanceOf(RetryableError);
-      expect((c as RetryableError).reason).toBe(reason);
+      const c = classifyThrown("上游异常，请稍后再试", status);
+      expect(c.family).toBe("transient");
+      expect(c.reason).toBe(reason);
     }
   });
 
-  test("终端状态码不因本次改动被误判成可重试", () => {
+  test("嫌疑状态码不因本次改动被误判成 transient", () => {
     // 成对纪律：只钉"该重试的重试了"，把判据全放开也能变绿。
     // 403 与 402 都是 2026-09-24 补进分类表的：403 是 key 没权限 / 账号被禁用，
     // 402 是欠费，两者都不可自愈。此前这段注释把 403 排除在外，那是一道
     // 阻止修复的注释，不要再加回来。
+    // 2026-10-08：它们不再是 Terminal（单次判死），而是嫌疑族——走更小的族预算。
     const cases = [
-      [401, "auth_failed"],
-      [403, "auth_failed"],
-      [402, "quota_exhausted"],
-      [404, "model_not_found"],
-      [400, "invalid_request"],
+      [401, "auth_suspect", "auth_failed"],
+      [403, "auth_suspect", "auth_failed"],
+      [402, "request_suspect", "quota_exhausted"],
+      [404, "request_suspect", "model_not_found"],
+      [400, "request_suspect", "invalid_request"],
     ] as const;
-    for (const [status, reason] of cases) {
-      const c = classifyError(Object.assign(new Error("上游拒绝"), { status }));
-      expect(c).toBeInstanceOf(TerminalError);
-      expect((c as TerminalError).reason).toBe(reason);
+    for (const [status, family, reason] of cases) {
+      const c = classifyThrown("上游拒绝", status);
+      expect(c.family).toBe(family);
+      expect(c.reason).toBe(reason);
     }
   });
 });
@@ -165,8 +179,8 @@ function gateway429Stream(opts: { statusCode?: number; message?: string } = {}):
 function makeFallback(extra: Record<string, unknown> = {}) {
   return new ModelFallback({
     availability: new ModelAvailabilityService(),
-    retryBackoffBaseMs: 1,
-    retryBackoffMaxMs: 3,
+    retryBackoffBaseMs: 0,
+    retryBackoffMaxMs: 0,
     // 2 = 首次 + 2 次重试。取小值只为跑得快，不改变被测语义（"有没有进重试"）。
     maxRetries: 2,
     streamTimeoutMs: 30_000,
@@ -207,10 +221,21 @@ describe("fallback：流内 error 带 statusCode 即进重试（不依赖 stream
     expect(counts.stream).toBe(3);
   });
 
-  test("成对：终端状态码（401）不因本改动进重试", async () => {
+  test("成对：401 按 auth_suspect 族预算重试，不吃 transient 的预算", async () => {
+    // 2026-10-08 有意语义变更：I1 不再单次观测即判死。
+    // 原断言 calls===1（401 = Terminal 直接放弃）。现在 auth_suspect 最多 3 次尝试，
+    // 本用例 maxRetries=2 → 调用方上界也是 3，同指纹复现 3 次才放弃。
     const { provider, counts } = gateway429Stream({ statusCode: 401, message: "凭证无效" });
     await drain(makeFallback(), provider);
-    expect(counts.stream).toBe(1);
+    expect(counts.stream).toBe(3);
+  });
+
+  test("成对：400 按 request_suspect 族预算（2 次）放弃，少于 transient 的 3 次", async () => {
+    // 2026-10-08 有意语义变更：I1 不再单次观测即判死。成对纪律仍在——
+    // 嫌疑族必须比 transient 先放弃，否则「判据全放开」也能把上面几条跑绿。
+    const { provider, counts } = gateway429Stream({ statusCode: 400, message: "上游拒绝" });
+    await drain(makeFallback({ maxRetries: 5 }), provider);
+    expect(counts.stream).toBe(2);
   });
 
   test("同批数据里的对照形态：502 正文含数字，修复前后都该重试", async () => {
@@ -248,8 +273,8 @@ describe("provider 透传契约（防「修好一条协议、另一条照旧」�
     // OpenAI Chat Completions / OpenAI Responses）的共同指纹，且**只有** catch
     // 分支会打它。用它而不是用 `AUDIT:API`，是因为后者还会命中
     // `openai.ts` 的 Content-Type 分支 —— 那处是结构化的
-    // `type:"server_error", streamLevel:true`，走 classifyStreamError 而非
-    // classifyError，不在本契约的覆盖范围内。
+    // `type:"server_error", streamLevel:true`，靠 type 字段归类，
+    // 不在本契约的覆盖范围内。
     let checked = 0;
     for (const rel of SRC) {
       const src = readFileSync(join(root, rel), "utf8");
@@ -294,41 +319,42 @@ describe("provider 透传契约（防「修好一条协议、另一条照旧」�
 
 type Cell = { streamLevel: boolean; statusCode?: number; message: string };
 
-/** 把一格走成生产上 fallback.ts 会走的那条分类。 */
-function classifyCell(cell: Cell): { kind: "retry" | "terminal" | "unknown"; reason?: string } {
-  const classified = cell.streamLevel
-    ? classifyStreamError("anthropic", cell.message, undefined, cell.statusCode)
-    : classifyError(
-        cell.statusCode !== undefined
-          ? Object.assign(new Error(cell.message), { status: cell.statusCode })
-          : new Error(cell.message),
-      );
-  if (classified instanceof TerminalError) return { kind: "terminal", reason: classified.reason };
-  if (classified instanceof RetryableError) return { kind: "retry", reason: classified.reason };
-  return { kind: "unknown" };
+/**
+ * 把一格走成生产上 fallback.ts 会走的那条分类：流内 error 事件一律 normalizeStreamEvent，
+ * streamLevel 只是原样透传（已不参与决策）。
+ */
+function classifyCell(cell: Cell): { family: string; reason: string } {
+  const v = classifyFamily(
+    normalizeStreamEvent({
+      message: cell.message,
+      statusCode: cell.statusCode,
+      streamLevel: cell.streamLevel,
+    }),
+  );
+  return { family: v.family, reason: v.reason };
 }
 
 describe("四格：streamLevel × statusCode 的组合都按同一张表判", () => {
-  const grid: Array<[string, Cell, { kind: string; reason?: string }]> = [
+  const grid: Array<[string, Cell, { family: string; reason: string }]> = [
     [
       "带 streamLevel + 带 statusCode：503 无 overloaded 字样 → overloaded（D2）",
       { streamLevel: true, statusCode: 503, message: "Service Unavailable" },
-      { kind: "retry", reason: "overloaded" },
+      { family: "transient", reason: "overloaded" },
     ],
     [
       "带 streamLevel + 不带 statusCode：只有文案，走词表",
       { streamLevel: true, statusCode: undefined, message: "当前分组上游负载已饱和，请稍后再试" },
-      { kind: "retry", reason: "rate_limit" },
+      { family: "transient", reason: "rate_limit" },
     ],
     [
       "不带 streamLevel + 带 statusCode：429 中文 → rate_limit",
       { streamLevel: false, statusCode: 429, message: GATEWAY_429_BODY.error.message },
-      { kind: "retry", reason: "rate_limit" },
+      { family: "transient", reason: "rate_limit" },
     ],
     [
       "不带 streamLevel + 不带 statusCode：中文饱和文案 → rate_limit（D3）",
       { streamLevel: false, statusCode: undefined, message: GATEWAY_429_BODY.error.message },
-      { kind: "retry", reason: "rate_limit" },
+      { family: "transient", reason: "rate_limit" },
     ],
   ];
 
@@ -338,27 +364,26 @@ describe("四格：streamLevel × statusCode 的组合都按同一张表判", ()
     });
   }
 
-  test("带 streamLevel 的 400/404/402 是 Terminal，不是重试（D1）", () => {
-    // 这三格是本次的核心回归：修之前 classifyStreamError 把 statusCode 丢了，
-    // 三条全部兜底成 StreamLevelError("server_error")，各自重试 10 次。
+  test("带 streamLevel 的 400/404/402 是 request_suspect，不是 transient（D1）", () => {
+    // 核心回归：旧 classifyStreamError 曾把 statusCode 丢了，三条全部兜底成
+    // server_error 各自重试 10 次。判据不变：statusCode 在场必须压过兜底。
     const cases = [
       [400, "invalid_request"],
       [404, "model_not_found"],
       [402, "quota_exhausted"],
     ] as const;
     for (const [status, reason] of cases) {
-      const c = classifyStreamError("anthropic", "something broke", undefined, status);
-      expect(c).toBeInstanceOf(TerminalError);
-      expect(c).not.toBeInstanceOf(StreamLevelError);
-      expect((c as TerminalError).reason).toBe(reason);
+      const c = classifyCell({ streamLevel: true, statusCode: status, message: "something broke" });
+      expect(c).toEqual({ family: "request_suspect", reason });
     }
   });
 
-  test("D7：纯文本 Service Unavailable（无数字、无 overloaded）仍然不重试", () => {
-    // 认不出的保持 fail-fast。放开它，D1 描述的事故会从反方向发生。
-    const c = classifyError(new Error("Service Unavailable"));
-    expect(c).not.toBeInstanceOf(RetryableError);
-    expect(c).not.toBeInstanceOf(TerminalError);
+  test("D7：纯文本 Service Unavailable（无数字、无 overloaded）→ 未识别子集", () => {
+    // 2026-10-08 有意语义变更：旧断言「认不出 → fail-fast 不重试」。
+    // 现在认不出进 transient 未识别子集（recognized=false），由「同指纹 3 次封顶」约束，
+    // 而不是单次判死。判据保留：它**不能**被认成某个已识别 reason（如 overloaded）。
+    const c = classifyThrown("Service Unavailable");
+    expect(c).toEqual({ family: "transient", reason: "unrecognized", recognized: false });
   });
 });
 
@@ -382,28 +407,28 @@ describe('真实网关报文回放（不是手写的 new Error("503 Service Unav
     expect(classifyCell({ streamLevel: true, statusCode: 429, message }).reason).toBe("rate_limit");
   });
 
-  test("402 + 余额不足 → 终端，不重试", () => {
+  test("402 + 余额不足 → request_suspect / quota_exhausted", () => {
     const message = "当前分组余额不足，请充值后再试";
     for (const cell of [
       { streamLevel: true, statusCode: 402, message },
       { streamLevel: false, statusCode: 402, message },
       { streamLevel: false, message },
     ] as Cell[]) {
-      expect(classifyCell(cell)).toEqual({ kind: "terminal", reason: "quota_exhausted" });
+      expect(classifyCell(cell)).toEqual({ family: "request_suspect", reason: "quota_exhausted" });
     }
   });
 
-  test("400 + 任意 body → 不重试", () => {
+  test("400 + 任意 body（含 overloaded 字样）→ request_suspect，状态码压过文案", () => {
     const c = classifyCell({
       streamLevel: true,
       statusCode: 400,
       message: "anything at all, even overloaded",
     });
-    expect(c).toEqual({ kind: "terminal", reason: "invalid_request" });
+    expect(c).toEqual({ family: "request_suspect", reason: "invalid_request" });
   });
 });
 
-describe("词表不再分叉：classifyError 与 inferErrorCode 对同一批报文类别一致", () => {
+describe("词表不再分叉：classifyFamily 与 inferErrorCode 对同一批报文类别一致", () => {
   // 一个 overloaded、一个 rate_limit 算不一致。注释防不住这件事——
   // 两个文件的注释当时就在说同一件事，代码还是分叉了。
   const messages = [
@@ -442,11 +467,9 @@ describe("词表不再分叉：classifyError 与 inferErrorCode 对同一批报�
   for (const message of messages) {
     test(message.slice(0, 40), () => {
       const panel = inferErrorCode(message);
-      const classified = classifyError(new Error(message));
-      const retry =
-        classified instanceof TerminalError || classified instanceof RetryableError
-          ? classified.reason
-          : undefined;
+      const classified = classifyThrown(message);
+      // 未识别子集 = 旧的「无法分类」：重试侧不给出码
+      const retry: string | undefined = classified.recognized ? classified.reason : undefined;
       if (panel && RETRY_DECISION.has(panel)) {
         expect(retry).toBe(panel);
       } else {
@@ -458,26 +481,32 @@ describe("词表不再分叉：classifyError 与 inferErrorCode 对同一批报�
 
   test("英文词按词边界：capacities / merge conflict 不被误伤", () => {
     expect(inferErrorCode("the capacities are listed below")).toBeUndefined();
-    expect(classifyError(new Error("git merge conflict in foo.ts"))).not.toBeInstanceOf(
-      RetryableError,
-    );
+    expect(classifyThrown("git merge conflict in foo.ts").recognized).toBe(false);
   });
 
-  test("裸 network 不把散文故障拖进重试（network down 必须无法分类）", () => {
+  test("裸 network 不把散文故障认成 network_error（network down 必须落进未识别子集）", () => {
     // 2026-09-24 CI 回归：词表把面板侧的裸 `network` 子串原样搬进重试分类器，
     // `new Error("network down")` 从「无法分类 → 不重试」变成 RetryableError("network_error")。
     // compact 路径因此对一条确定性失败退避重试（maxRetries 2、基数 1s，约 3s），
     // compact-analytics.test.ts 把五条路径串在同一用例里的那条在 bun 默认 5s 超时处被掐断，
     // 超时后的事件泄漏又让下一个用例「期望 1 收到 2」。
     // 真网络故障不靠这个词：`.code` 走 getNetworkErrorCode，文案走 RETRYABLE_CONNECTION_MESSAGES。
+    // 2026-10-08 起「无法分类」= transient 未识别子集（同指纹 3 次封顶），判据仍是
+    // 它不能被认成已识别的 network_error。
     for (const prose of ["network down", "network partition between replicas"]) {
       expect(inferErrorCode(prose)).toBeUndefined();
-      const classified = classifyError(new Error(prose));
-      expect(classified).not.toBeInstanceOf(RetryableError);
-      expect(classified).not.toBeInstanceOf(TerminalError);
+      expect(classifyThrown(prose)).toEqual({
+        family: "transient",
+        reason: "unrecognized",
+        recognized: false,
+      });
     }
-    // 收窄不得误伤真故障：这两条仍然要重试
+    // 收窄不得误伤真故障：这两条仍然要认出来
     expect(inferErrorCode("Network error: ENOTFOUND api.example.com")).toBe("network_error");
-    expect(classifyError(new Error("network error"))).toBeInstanceOf(RetryableError);
+    expect(classifyThrown("network error")).toMatchObject({
+      family: "transient",
+      reason: "network_error",
+      recognized: true,
+    });
   });
 });

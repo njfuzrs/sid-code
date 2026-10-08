@@ -123,9 +123,9 @@ export interface AgentLoopConfig {
   /** GAP-07（子代理侧）：长跑工具中间进度回调。缺省时工具执行无进度上报（无副作用）。 */
   onToolProgress?: import("./tool-executor.ts").SubAgentToolProgress;
   /** H9：模型可用性服务（与主 fallback 引擎共享同一实例，来自 ProviderRegistry.availability）。
-   *  子代理遇 terminal 类错误（认证失败 / 模型不存在 / 内容策略）时 markTerminal，让拉黑状态跨
-   *  主路径/子代理/side-call 共享——避免同一坏模型下次子代理再选它撞一次。缺省时不做拉黑（兼容
-   *  无 registry 的旧测试）。 */
+   *  子代理对某模型用尽预算放弃时，漏斗 markSuspect（有时效的嫌疑态，默认 60s），让嫌疑跨
+   *  主路径/子代理/side-call 共享——嫌疑期内并行子代理只放一路半开探针，避免一起撞坏模型。
+   *  主线程不读嫌疑态（I4）。缺省时不做标记（兼容无 registry 的旧测试）。 */
   availability?: import("../llm/availability.ts").ModelAvailabilityService;
   /**
    * P2-1：JIT 上下文发现（子代理侧）。
@@ -651,8 +651,8 @@ async function runAgentLoopInner(
     // 现在只声明"我是谁 + 我能不能弹窗"，韧性能力由漏斗统一提供：
     //  ① querySource 按实际子代理类型传（内置 / 自定义），进遥测可归因到路径；
     //  ② switchMode 固定 auto —— 子代理无 TUI，ask 会挂死在等不到答案的 Promise 上；
-    //  ③ availability 注入共享实例，terminal 类错误跨路径拉黑（原 H9 的能力，
-    //     漏斗内部 markTerminal 已覆盖，不必在此另写一份）。
+    //  ③ availability 注入共享实例，放弃时的嫌疑态跨路径共享（原 H9 的能力，
+    //     漏斗内部 markSuspect 已覆盖，不必在此另写一份）。
     //
     // 三层超时的分工（不要合并，见 resilient-stream.ts 的 streamTimeoutMs 注释）：
     //   漏斗 streamTimeoutMs = **单次尝试的整体上限**（180s）→ 触发后**重试**；

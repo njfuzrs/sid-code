@@ -10,8 +10,11 @@
  *
  * 七项与门槛：
  *   B5-1 model_context_window_exceeded 补分支  → 见 tests/agent/（需 loop 夹具，在那侧钉）
- *   B5-2 classifyError 收纳截断类错误         → 附录 A1 四条 + 负向（代码 bug 仍不重试）
- *   B5-3 x-should-retry: false 可区分         → 三态 + 不越权覆盖更精确的 terminal 归因
+ *   B5-2 截断类错误归 network_error           → 附录 A1 四条 + 负向（代码 bug 归 local_fault）
+ *   B5-3 x-should-retry: false 可区分         → 三态 + 不越权覆盖更精确的错误族归因
+ *
+ * 2026-10-08 起 `classifyError` / `TerminalError` 已删除，B5-2/B5-3 改用
+ * `normalizeThrown` + `classifyFamily` + `decideRecovery` 表达同一组能力。
  *   B5-4 retryAttempts 透出                   → 见 tests/agent/
  *   B5-5 frontmatter timeout 钳制             → 见 tests/agent/
  *   B5-6 maxTokens 定性                       → 常量存在且 ≤ 注册表最小上限
@@ -21,12 +24,9 @@
  */
 
 import { describe, test, expect } from "bun:test";
-import {
-  classifyError,
-  parseXShouldRetry,
-  TerminalError,
-  RetryableError,
-} from "@sid-code/core/llm/errors.ts";
+import { parseXShouldRetry } from "@sid-code/core/llm/errors.ts";
+import { classifyFamily, normalizeThrown } from "@sid-code/core/llm/error-normalize.ts";
+import { decideRecovery, type RecoveryAction } from "@sid-code/core/llm/recovery-policy.ts";
 import { ModelFallback } from "@sid-code/core/llm/fallback.ts";
 import { ModelAvailabilityService } from "@sid-code/core/llm/availability.ts";
 import { ERROR_USER_MESSAGES } from "@sid-code/core/llm/error-messages.ts";
@@ -61,11 +61,33 @@ async function collect(gen: AsyncGenerator<StreamEvent>): Promise<StreamEvent[]>
 function fastConfig(extra: Record<string, unknown> = {}) {
   return {
     availability: new ModelAvailabilityService(),
-    retryBackoffBaseMs: 1,
-    retryBackoffMaxMs: 5,
+    retryBackoffBaseMs: 0,
+    retryBackoffMaxMs: 0,
     streamTimeoutMs: 5000,
     ...extra,
   };
+}
+
+/** 首次失败时的决策（空历史、充足预算、零退避）。只用来看「放不放弃、为什么」。 */
+function firstDecision(err: unknown): RecoveryAction {
+  return decideRecovery(
+    normalizeThrown(err),
+    {
+      attempts: [],
+      totalRetries: 0,
+      consecutive529: 0,
+      degradeTried: false,
+      startedAt: Date.now(),
+    },
+    {
+      callerMaxRetries: 5,
+      maxRetriesPerCall: 10,
+      persistent: false,
+      retry529: true,
+      backoffBaseMs: 0,
+      backoff: () => 0,
+    },
+  );
 }
 
 /** 构造带 status / headers 的错误（模拟 SDK 抛出的形状）。 */
@@ -80,11 +102,11 @@ function httpError(status: number, headers?: Record<string, string>, message?: s
 }
 
 // ══════════════════════════════════════════════════════════════════════
-// B5-2：classifyError 收纳截断类错误
+// B5-2：截断类错误归 network_error
 // ══════════════════════════════════════════════════════════════════════
 
 describe("B5-2 门槛：截断类错误归到 network_error（附录 A1）", () => {
-  // 附录 A1 的四条原始输入。改造前前两条落"裸 Error → 不重试"，
+  // 附录 A1 的原始输入。改造前前两条落"裸 Error → 不重试"，
   // 于是流被中途截断时子代理直接放弃，而这恰恰是最该重试的一类故障。
   test.each([
     "unexpected end of JSON input",
@@ -93,26 +115,33 @@ describe("B5-2 门槛：截断类错误归到 network_error（附录 A1）", () 
     "socket hang up",
     "terminated",
     "incomplete chunked encoding",
-  ])("%s → RetryableError/network_error", (message) => {
-    const r = classifyError(new Error(message));
-    expect(r).toBeInstanceOf(RetryableError);
-    expect((r as RetryableError).reason).toBe("network_error");
+  ])("%s → transient/network_error（已识别）", (message) => {
+    const v = classifyFamily(normalizeThrown(new Error(message)));
+    expect(v.family).toBe("transient");
+    expect(v.reason).toBe("network_error");
+    expect(v.recognized).toBe(true);
   });
 
-  // ── 负向门槛：**没有**顺手放宽成"裸 Error 也重试" ──
+  // ── 负向门槛：代码 bug 不得被当成网络错误打满退避 ──
   //
-  // 这条比正向更重要。旧方案的方向是"把子代理门槛放宽到与主路径一致"，
-  // 而主路径对裸 Error 也重试 —— 意味着一个 TypeError（我们自己的代码 bug）
-  // 会被重试满次、每次退避最长 120s。B5-2 刻意只收纳**明确是截断**的文案，
-  // 若哪天有人把这里改成"分类不出来就当网络错误"，本组断言会红。
+  // 2026-10-08 有意语义变更：旧断言是「TypeError / 无关 Error 不可重试」（零重试）。
+  // 现在没有零重试族：TypeError/ReferenceError 归 local_fault（不退避、2 次即放弃，快速暴露），
+  // 认不出的裸 Error 进 transient 未识别子集（同指纹 3 次封顶）。守的能力不变：
+  // 代码 bug 不会被识别成 network_error、不会按网络错误的退避节奏重试满次。
   test.each([
     ["TypeError", new TypeError("x is not a function")],
     ["ReferenceError", new ReferenceError("y is not defined")],
-    ["无关 Error", new Error("something entirely unrelated")],
-  ])("%s 仍不可重试（门槛未被放宽）", (_label, err) => {
-    const r = classifyError(err);
-    expect(r).not.toBeInstanceOf(RetryableError);
-    expect(r).not.toBeInstanceOf(TerminalError);
+  ])("%s → local_fault（不是 network_error）", (_label, err) => {
+    const v = classifyFamily(normalizeThrown(err));
+    expect(v.family).toBe("local_fault");
+    expect(v.reason).not.toBe("network_error");
+  });
+
+  test("无关 Error → transient 未识别子集（受同指纹封顶，不冒充已识别的网络错误）", () => {
+    const v = classifyFamily(normalizeThrown(new Error("something entirely unrelated")));
+    expect(v.family).toBe("transient");
+    expect(v.recognized).toBe(false);
+    expect(v.reason).not.toBe("network_error");
   });
 });
 
@@ -137,38 +166,39 @@ describe("B5-3 门槛：x-should-retry 三态可区分（§五之二 漏斗-3）
   });
 
   test("值畸形 → undefined（不臆测成拒绝）", () => {
-    // 判成 false 会让一个拼错的 header 值把可重试错误变成 terminal 拉黑，
+    // 判成 false 会让一个拼错的 header 值把可重试错误变成单次放弃，
     // 比忽略它更糟 —— 故意钉住"畸形值不表态"。
     expect(parseXShouldRetry(httpError(500, { "x-should-retry": "maybe" }))).toBeUndefined();
   });
 
-  test.each([
-    [500, "server_error"],
-    [529, "overloaded"],
-    [429, "rate_limit"],
-  ])("%i + false → TerminalError（改造前是 RetryableError/%s，会打满退避）", (status) => {
-    const r = classifyError(httpError(status, { "x-should-retry": "false" }));
-    expect(r).toBeInstanceOf(TerminalError);
-    expect((r as TerminalError).reason).toBe("server_declined_retry");
+  test.each([500, 529, 429])("%i + false → 首次即放弃（server_declined，I1-例外）", (status) => {
+    // 2026-10-08：TerminalError("server_declined_retry") 改为 decideRecovery 的 give_up/server_declined。
+    // 能力不变：服务端结构化拒绝重试时不打满退避。
+    const a = firstDecision(httpError(status, { "x-should-retry": "false" }));
+    expect(a.kind).toBe("give_up");
+    if (a.kind === "give_up") expect(a.evidence.reason).toBe("server_declined");
   });
 
-  test.each([500, 529, 429])("%i 无 header → 仍可重试（没有误伤正常重试路径）", (status) => {
-    expect(classifyError(httpError(status))).toBeInstanceOf(RetryableError);
+  test.each([500, 529, 429])("%i 无 header → 仍重试（没有误伤正常重试路径）", (status) => {
+    expect(firstDecision(httpError(status)).kind).toBe("retry");
   });
 
-  // ── 放置门槛：false 不得越权盖掉更精确的 terminal 归因 ──
+  // ── 放置门槛：false 不得越权盖掉更精确的归因 ──
   //
   // 401/404/400 给出的 auth_failed / model_not_found / invalid_request 是用户能照着
-  // 动手修的信息；若把 `=== false` 提到终端分支之前，它们会被统一糊成
-  // server_declined_retry —— 结论（不重试）没变，但归因精度掉了。本组钉住位置。
+  // 动手修的信息。false 只决定「放弃」，不得把错误族与细分原因糊成别的东西。
   test.each([
-    [401, "auth_failed"],
-    [404, "model_not_found"],
-    [400, "invalid_request"],
-  ] as const)("%i + false → 保留更精确的 reason=%s", (status, expectedReason) => {
-    const r = classifyError(httpError(status, { "x-should-retry": "false" }));
-    expect(r).toBeInstanceOf(TerminalError);
-    expect((r as TerminalError).reason).toBe(expectedReason);
+    [401, "auth_suspect", "auth_failed"],
+    [404, "request_suspect", "model_not_found"],
+    [400, "request_suspect", "invalid_request"],
+  ] as const)("%i + false → 保留 family=%s reason=%s", (status, family, reason) => {
+    const a = firstDecision(httpError(status, { "x-should-retry": "false" }));
+    expect(a.kind).toBe("give_up");
+    if (a.kind === "give_up") {
+      expect(a.evidence.reason).toBe("server_declined");
+      expect(a.evidence.family).toBe(family);
+      expect(a.verdict.reason).toBe(reason);
+    }
   });
 
   test("新 reason 有配套用户文案（不落到未知错误码的兜底）", () => {
@@ -253,8 +283,8 @@ describe("B5-7 门槛：401 凭据刷新钩子（§5 新发现 3）", () => {
 
     expect(state.calls).toBe(2);
     expect(events.some((e) => e.type === "message_stop")).toBe(true);
-    // 拉黑是错误归因（模型是好的、凭据过期了），且 terminal 是进程内永久态。
-    expect(availability.isAvailable("primary-model").available).toBe(true);
+    // 记嫌疑是错误归因（模型是好的、凭据过期了）：自愈的调用不留放弃证据。
+    expect(availability.isSuspect("primary-model")).toBe(false);
   });
 
   test("刷新失败 → 退化为旧凭据重试一次（行为与未接线时一致）", async () => {
@@ -263,8 +293,8 @@ describe("B5-7 门槛：401 凭据刷新钩子（§5 新发现 3）", () => {
 
     await collect(fallback.executeWithFallback(provider, BASE_PARAMS));
 
-    // 关键：返回 false 不等于"放弃"，仍走原有的 retry-once 语义。
-    // 若实现写成"刷新失败就直接 terminal"，401 会比改造前更容易拉黑模型。
+    // 关键：返回 false 不等于"放弃"，仍用旧凭据立即重试。
+    // 若实现写成"刷新失败就直接放弃"，401 会比改造前更容易丢掉整次调用。
     expect(state.calls).toBe(2);
   });
 
@@ -321,13 +351,16 @@ describe("B5-7 门槛：401 凭据刷新钩子（§5 新发现 3）", () => {
     expect(noHook?.authRefreshed).toBe(false);
   });
 
-  test("闸门保留：第二个 401 不再刷新（防无限刷新循环）", async () => {
-    // needsAuthRefresh 闸门必须保留 —— 删了会让 401 反复刷新。
+  test("同指纹 401 只在首次刷新（防无限刷新循环）", async () => {
+    // 2026-10-08：retry-once 闸门已删，401 同指纹最多 3 次；但凭据刷新只在 streak===1 时触发
+    // （recovery-policy.ts），后两次走退避而非再刷新。
     // 注意断言的是"刷新只发生一次"，而非"重试只发生一次"。
+    let calls = 0;
     let refreshCalls = 0;
     const provider: Provider = {
       name: () => "mock-provider",
       async *sendMessageStream(): AsyncIterable<StreamEvent> {
+        calls++;
         throw httpError(401, undefined, "401 Unauthorized");
       },
     };
@@ -352,5 +385,7 @@ describe("B5-7 门槛：401 凭据刷新钩子（§5 新发现 3）", () => {
     await collect(fallback.executeWithFallback(provider, BASE_PARAMS));
 
     expect(refreshCalls).toBe(1);
+    // 2026-10-08 有意语义变更：旧行为第 2 个 401 即 terminal（calls===2），现在同指纹 3 次后放弃。
+    expect(calls).toBe(3);
   });
 });
