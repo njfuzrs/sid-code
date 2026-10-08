@@ -69,7 +69,7 @@
 | I1c | stdin 静默超过 5s（严格大于，起点是挂载或上一块输入）后的第一块输入，先重新声明终端模式（外部程序可能改过）：只在 alt-screen 且开了鼠标跟踪时重写鼠标跟踪全套，不擦屏；扩展键开着时（主屏、alt 都）先整段重申 `<u >1u >4;2m`（I4）；非 TTY 不写（细节见 `stdin-shutdown.test.tsx`） | `components/App.tsx:68`、`components/App.tsx:396`、`ink.tsx:1109` | `packages/cli/tests/render-port/contracts-runtime.test.tsx` I1c: |
 | I2 | 终端探查：raw mode 引用计数每次 0 → 1、以及 Ctrl+Z 恢复时计数仍 > 0，各排一次探查，用 `setImmediate` 推迟，两次独立 `write`：`ESC[>0q`（XTVERSION）、`ESC[c`（DA1），写在首帧之后。stdout 非 TTY 也发；raw mode 不可用不发；计数 1 → 2 不发；排了就发（发出前卸载 / `detachForShutdown` / 又关掉 raw mode 都不取消）。回复由 I3 丢弃，不等回复、不超时重发、结果不交给任何人。`setSuppressTerminalProbe` 是进程级开关，**在排队时判定**：已排上的照发，抑制期间排的解除后也不补发（会话选择器这类短命实例挂载前置真、卸载后置假）（细节见 `terminal-probe.test.tsx`） | `terminal-probe.ts`、`components/App.tsx`（next） | `packages/cli/tests/render-port/terminal-probe.test.tsx` I2: |
 | I3 | 探查回复与回复残片不当按键：DCS（`ESC P`）/ OSC（`ESC ]`）吞到 BEL 或 `ESC \` 为止（中间的 ESC、换行、Ctrl+C 都算内容，C1 `0x9C` 不算终止符）整个丢弃；首个参数字节是 `?` / `>` 的完整 CSI 丢弃；单独的 ST 丢弃；以上几类没收齐就被冲刷时同样丢弃。不丢的：只到 `ESC` 一个字节就冲刷（成 Esc 键）、被 ESC / 控制符截断的私有 CSI、`CSI =`、APC（`ESC _`，同样的终止规则，但原样交出）、SOS / PM（按 meta 组合）。粘贴内容里的 DCS / OSC / APC 串先整体跳过再找结束标记 | `input-parser.ts`、`parse-keypress.ts`（next） | `packages/cli/tests/render-port/stdin-response-fragment.test.tsx` I3: |
-| I4 | 终端模式的开关归属见下方「I4 模式归属表」：每个模式谁开、谁关、关的时机。底座侧（T5.3a 对拍）：raw mode 计数 0 → 1 时在 `ref` + `setRawMode(true)` 之后写 `?2004h`、`?1004h`，扩展键开着再写 `>1u`、`>4;2m`，每段一次独立写入；计数归零时先写 `>4m <u ?1004l ?2004l`（扩展键开没开都写）再关 raw mode；stdout 非 TTY 也写。扩展键只看环境变量、模块加载时判定一次（规则见 `terminal/extended-keys.ts`，不看探查回复）。TTY 卸载时无条件再关一次（一次写入，相对顺序归 X3）；外部编辑器前后归 T5.3c（细节见 `terminal-modes.test.tsx`） | 见表 | `packages/cli/tests/render-port/terminal-modes.test.tsx` I4: |
+| I4 | 终端模式的开关归属见下方「I4 模式归属表」：每个模式谁开、谁关、关的时机。底座侧（T5.3a 对拍）：raw mode 计数 0 → 1 时在 `ref` + `setRawMode(true)` 之后写 `?2004h`、`?1004h`，扩展键开着再写 `>1u`、`>4;2m`，每段一次独立写入；计数归零时先写 `>4m <u ?1004l ?2004l`（扩展键开没开都写）再关 raw mode；stdout 非 TTY 也写。扩展键只看环境变量、模块加载时判定一次（规则见 `terminal/extended-keys.ts`，不看探查回复）。TTY 卸载时无条件再关一次（一次写入，相对顺序归 X3）；外部编辑器前后归 T5.3c（细节见 `terminal-modes.test.tsx`）。CLI 自己写的那几段（T5.3b）全部留在 CLI，结论与理由见归属表最后一列，测试 `cli-modes.test.tsx` | 见表 | `packages/cli/tests/render-port/terminal-modes.test.tsx` I4: |
 | I5 | `drainStdin`：非 TTY 不动；循环 `read()` 直到返回 null，丢弃读到的字节；原本不在 raw mode 的再 `setRawMode(true/false)` 走一遍，原本在的不碰；不经 fd 直读、任何一步抛错都吞掉（细节见 `stdin-shutdown.test.tsx`） | `ink.tsx:1947` | `packages/cli/tests/render-port/contracts-runtime.test.tsx` I5: |
 | I6 | `exitOnCtrlC: false` 时底座不处理 Ctrl+C，交给 `useInput` 回调 | `root.ts:31`、`hooks/use-input.ts` | `packages/cli/tests/render-port/contracts-runtime.test.tsx` I6: |
 | I7 | Ctrl+Z 挂起与恢复：解码后 `ctrl && input === 'z'` 的按键（`\x1a`、kitty / modifyOtherKeys 的 Ctrl+Z，叠加 shift / meta / super 也算；release / repeat、文本块、粘贴里的 `\x1a` 不算）不交给任何监听者，同块其余事件照常。挂起：写 `ESC[>4m ESC[<u ESC[?1004l ESC[?2004l`（stdout 非 TTY 也写），关 raw mode、`unref`、摘 `readable`，TTY 再写显示光标与关鼠标跟踪全套，挂一次性 SIGCONT 监听后 `kill(pid, 'SIGSTOP')`。恢复：alt-screen 先重进 alt 擦屏（开过鼠标跟踪的重开），`ref` + 开 raw mode + 挂 `readable`（挂起期间的缓冲字节此时交出），再同步写 `ESC[?2004h ESC[?1004h`（扩展键开着再加 `>1u >4;2m`；挂起期间计数降到 0 的不写，I4），TTY 再补 `ESC[?25l ESC[?1004h`。挂起期间卸载不碰 stdin（细节见 `stdin-suspend.test.tsx`；恢复时重发探查属 I2） | `components/App.tsx`、`ink.tsx` | `packages/cli/tests/render-port/stdin-suspend.test.tsx` I7: |
@@ -83,14 +83,19 @@
 同一组终端私有模式，旧底座和 CLI 各写一遍（设计文档 §1.5）。现在能工作是因为重复写入恰好无害。
 新底座不能少写、多写或改顺序，除非在这里改表并给出理由。
 
-| 模式 | 底座：开 | 底座：关 | CLI：开 | CLI：关 |
-| --- | --- | --- | --- | --- |
-| bracketed paste `?2004` | next `components/App.tsx:259`（`enableInputModes`，raw mode 0 → 1 时，`:525`）；`:348` Ctrl+Z 恢复且计数 > 0 时 | next `components/App.tsx:270` 计数归零时（`releaseRawMode`）；`:362` Ctrl+Z 挂起时；`ink.tsx:1006` TTY 卸载时再关一次 | `packages/cli/src/ui/utils/terminalCapabilityManager.ts:261` | 同文件 `:50`（退出清理） |
-| focus reporting `?1004` | 同上；另 `components/App.tsx:352` 恢复时 TTY 再补一次 | 同上 | — | — |
-| kitty 键盘 / modifyOtherKeys | 同上，`supportsExtendedKeys()`（`terminal/extended-keys.ts:114`）为真时追加；`ink.tsx:604` stdin 静默 > 5s 后整段重申（I1c） | 同上（扩展键开没开都关） | `terminalCapabilityManager.ts:254` / `:258` | 同文件 `:48` / `:49` |
-| 鼠标跟踪 `?1000/1002/1006` | `components/AlternateScreen.tsx:52`（进 alt-screen）；`ink.tsx:440` / `:1127` / `:1184`（resize、SIGCONT、自愈时重开） | `ink.tsx:1743` 卸载时无条件关 | `packages/cli/src/ui/contexts/MouseContext.tsx:45`（Copy Mode 切换） | 同文件 `:50` |
-| 自动换行 `?7` | — | — | `packages/cli/src/ui/fullscreen.ts:19`（关） | 同文件 `:24`（恢复） |
-| 光标显示 `?25` | — | `ink.tsx:1754` 卸载时显示 | — | — |
+| 模式 | 底座：开 | 底座：关 | CLI：开 | CLI：关 | CLI 侧结论（T5.3b） |
+| --- | --- | --- | --- | --- | --- |
+| bracketed paste `?2004` | next `components/App.tsx:259`（`enableInputModes`，raw mode 0 → 1 时，`:525`）；`:348` Ctrl+Z 恢复且计数 > 0 时 | next `components/App.tsx:270` 计数归零时（`releaseRawMode`）；`:362` Ctrl+Z 挂起时；`ink.tsx:1006` TTY 卸载时再关一次 | `packages/cli/src/ui/utils/terminalCapabilityManager.ts:261`（`enableSupportedModes`，`KeypressContext.tsx:684` 挂载时调用，写在底座 0 → 1 之前） | 不关。同文件 `:40` / `:50` 的 `cleanupTerminalOnExit` 只在 `detectCapabilities()` 里注册，而生产代码没有调用它（死代码） | **留 CLI**。与底座重复开一次，无害；关闭完全由底座负责（raw mode 归零 + 卸载再关一次） |
+| focus reporting `?1004` | 同上；另 `components/App.tsx:352` 恢复时 TTY 再补一次 | 同上 | — | — | 只归底座 |
+| kitty 键盘 / modifyOtherKeys | 同上，`supportsExtendedKeys()`（`terminal/extended-keys.ts:114`）为真时追加；`ink.tsx:604` stdin 静默 > 5s 后整段重申（I1c） | 同上（扩展键开没开都关） | `terminalCapabilityManager.ts:254` `>31u` / `:258` `>4;2m`，**生产中从不写**：开启条件 `kittySupported` / `modifyOtherKeysSupported` 只由 `detectCapabilities()` 置真 | 同 `?2004` 那格（死代码） | **留 CLI，实际不生效**。扩展键只由底座按环境变量开（I4）；T5.3a 担心的 `>31u` 与 `>1u` 叠栈在生产里不会发生 |
+| 鼠标跟踪 `?1000/1002/1006` | `components/AlternateScreen.tsx:52`（进 alt-screen）；`ink.tsx:440` / `:1127` / `:1184`（resize、SIGCONT、自愈时重开） | `ink.tsx:1743` 卸载时无条件关 | `packages/cli/src/ui/contexts/MouseContext.tsx:45`：`MouseProvider` 挂载（`:116`，仅 alt-screen）与 Copy Mode 退出（`App.tsx:779` / `:788`）。写的是 `1000/1002/1006/1007`，不含底座的 `1003` | 同文件 `:50`：Copy Mode 进入（`App.tsx:777`）与 `MouseProvider` 卸载（`:118`，在底座关模式之后） | **留 CLI**。Copy Mode 是 CLI 功能，底座不知道它；挂载时与底座重复开、卸载时重复关，都无害 |
+| 自动换行 `?7` | — | — | `packages/cli/src/ui/fullscreen.ts:19`（关，`:84` 仅 alt-screen，首帧之后） | 同文件 `:24`（恢复，`:105` 在 `waitUntilExit` 之后，是全程最后一笔模式写入） | **留 CLI**。只有 CLI 写，底座不碰 |
+| 光标显示 `?25` | — | `ink.tsx:1754` 卸载时显示 | — | — | 只归底座 |
+
+CLI 侧的写入点由 `cli-modes.test.tsx` 钉住：走生产入口 `createFullScreen` + 真实 `KeypressProvider` / `MouseProvider`，
+按调用栈把每次写入归给 CLI 或底座，两套底座逐条一致（卸载之后底座那段的相对顺序归 X3）。
+另有两处 CLI 直写不属于模式、也不在本表：`terminalCapabilityManager.ts:230` 的能力查询与 `:87` 的 OSC 11 背景色查询，
+前者随 `detectCapabilities()` 一起是死代码，后者的调用方 `TerminalContext.tsx` 的 `queryTerminalBackground` 也没有使用者。
 
 ## M 鼠标与选区（alt-screen）
 
