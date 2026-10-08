@@ -126,7 +126,9 @@
 #   DEPLOY_RG_PATH          服务器上预编译 ripgrep 二进制目录
 #                           （默认 /var/www/html/vendor-bin/ripgrep，与 releases 版本目录隔离，
 #                           不受旧版本清理逻辑影响；对应 fetch-ripgrep.ts 的下载根）
-#   RELEASE_KEEP_VERSIONS   服务器端保留的历史版本数（默认 5，上传后清理更旧的版本目录）
+#   RELEASE_KEEP_VERSIONS   服务器端保留的历史版本数（默认 0 = 不清理）。
+#                           归档层（OSS）与「已归档才删」门禁接入前，服务器是唯一原始字节，
+#                           设成 >0 会永久删除历史版本（已因此丢过 20 个版本）
 #
 #   凭据来源：脚本启动时自动 source scripts/deploy.env（不入库，见 deploy.env.example 模板）。
 #   环境变量优先级高于 deploy.env 文件（已导出的同名变量不会被文件覆盖）。
@@ -187,7 +189,12 @@ DEPLOY_SSH_USER="${DEPLOY_SSH_USER:-}"
 DEPLOY_SSH_PASSWORD="${DEPLOY_SSH_PASSWORD:-}"
 DEPLOY_PATH="${DEPLOY_PATH:-/var/www/html/releases/sid-code}"
 DEPLOY_RG_PATH="${DEPLOY_RG_PATH:-/var/www/html/vendor-bin/ripgrep}"
-RELEASE_KEEP_VERSIONS="${RELEASE_KEEP_VERSIONS:-5}"
+RELEASE_KEEP_VERSIONS="${RELEASE_KEEP_VERSIONS:-0}"
+# 非负整数校验：非数字会让下面的 `[ -eq 0 ]` 报错返回 2、落进清理分支，
+# 等于一个拼错的配置值触发删除。宁可拒绝发布。
+case "$RELEASE_KEEP_VERSIONS" in
+    ''|*[!0-9]*) echo "  ❌ RELEASE_KEEP_VERSIONS 必须是非负整数，当前为: $RELEASE_KEEP_VERSIONS" >&2; exit 1 ;;
+esac
 
 # ripgrep 版本号从 fetch-ripgrep.ts 的 DEFAULT_RG_VERSION 读取（唯一事实源，避免两处硬编码漂移）
 RG_VERSION="$(bun run "$SCRIPT_DIR/fetch-ripgrep.ts" --print-version)"
@@ -1180,11 +1187,19 @@ fi"
     # 单通道时代 latest 永远是最新的那个，不可能被自己的保留窗口挤掉。
     #
     # 判据取「两个指针文件的当前内容」而不是「最近 N 个」：指针是权威，mtime 不是。
-    info "清理服务器旧版本（保留最近 ${RELEASE_KEEP_VERSIONS} 个 + 两个通道指向的版本）..."
-    # 用普通双引号字符串构建远程命令（不用 heredoc-in-$()，规避 macOS bash 3.2 解析 bug）。
-    # 本地展开：DEPLOY_PATH / 保留数量；远程展开：$d 等（用 \$ 转义留给远端 shell）。
-    _keep_plus_one=$((RELEASE_KEEP_VERSIONS + 1))
-    CLEANUP_CMD="cd '${DEPLOY_PATH}' 2>/dev/null || exit 0
+    #
+    # ⚠️ RELEASE_KEEP_VERSIONS=0 的语义是「不清理」，必须在拼清理命令**之前**短路。
+    # 不能只把默认值改成 0：下面用的是 `tail -n +$((N+1))`，N=0 时等于 `tail -n +1`，
+    # 会删掉除两个指针以外的**全部**版本目录 —— 止血当场变成事故。
+    # 归档层（OSS）接入并有「已归档才删」门禁之前，服务器是唯一原始字节，一律不删。
+    if [ "$RELEASE_KEEP_VERSIONS" -eq 0 ]; then
+        info "RELEASE_KEEP_VERSIONS=0：归档门禁未接入，跳过清理（服务器版本目录全部保留）"
+    else
+        info "清理服务器旧版本（保留最近 ${RELEASE_KEEP_VERSIONS} 个 + 两个通道指向的版本）..."
+        # 用普通双引号字符串构建远程命令（不用 heredoc-in-$()，规避 macOS bash 3.2 解析 bug）。
+        # 本地展开：DEPLOY_PATH / 保留数量；远程展开：$d 等（用 \$ 转义留给远端 shell）。
+        _keep_plus_one=$((RELEASE_KEEP_VERSIONS + 1))
+        CLEANUP_CMD="cd '${DEPLOY_PATH}' 2>/dev/null || exit 0
 _pinned=\"\$(cat latest.txt 2>/dev/null | tr -d '[:space:]') \$(cat beta.txt 2>/dev/null | tr -d '[:space:]')\"
 ls -1dt */ 2>/dev/null | tail -n +${_keep_plus_one} | while IFS= read -r d; do
     d=\"\${d%/}\"
@@ -1197,7 +1212,8 @@ ls -1dt */ 2>/dev/null | tail -n +${_keep_plus_one} | while IFS= read -r d; do
     esac
     rm -rf -- \"\$d\" && echo \"  已删除旧版本 \$d\"
 done"
-    run_ssh "${DEPLOY_SSH_USER}@${DEPLOY_SSH_HOST}" "$CLEANUP_CMD" || warn "旧版本清理失败（不影响本次发布）"
+        run_ssh "${DEPLOY_SSH_USER}@${DEPLOY_SSH_HOST}" "$CLEANUP_CMD" || warn "旧版本清理失败（不影响本次发布）"
+    fi
 
     # ─── 上传成功后推送 tag ───
     # 推到 origin，让发布产物对应的 commit 在远端有确切 tag 标记。失败非致命：
