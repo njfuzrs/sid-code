@@ -85,20 +85,23 @@ describe("next 骨架：未实现的符号用时就抛", () => {
     expect(() => notImplementedFn("SampleFn", "T9.9")()).toThrow(/SampleFn 尚未实现（T9\.9）/);
     const Value = notImplementedValue("Sample", "T9.9") as unknown as new () => unknown;
     expect(() => new Value()).toThrow(/Sample 尚未实现（T9\.9）/);
-    const comps = await import("../../src/ui/render-port/next/components.ts");
-    expect(() => (comps.AlternateScreen as unknown as () => unknown)()).toThrow(
-      /AlternateScreen 尚未实现（T6\.1）/,
-    );
+    // T6.1a 实现了最后一个组件占位（AlternateScreen），组件占位改为直接测 helper
+    const { notImplementedComponent } =
+      await import("../../src/ui/render-port/next/not-implemented.ts");
+    const Comp = notImplementedComponent("SampleComp", "T9.9") as unknown as () => unknown;
+    expect(() => Comp()).toThrow(/SampleComp 尚未实现（T9\.9）/);
   });
 
-  test("next 的 Box / Text / Ansi / RawAnsi 来自 @sid-code/tui，不是 legacy", async () => {
+  test("next 的 Box / Text / Ansi / RawAnsi / AlternateScreen 来自 @sid-code/tui，不是 legacy", async () => {
     const next = await import("../../src/ui/render-port/next/components.ts");
     const legacy = await import("../../src/ui/render-port/legacy/components.ts");
     // 测试也只能经端口拿底座（lint:boundary 的 render-port 规则），所以不直接 import @sid-code/tui，
     // 改为核对 next/components.ts 的来源声明 + 与 legacy 不是同一个对象
     const src = readFileSync(join(PORT_DIR, "next/components.ts"), "utf8");
-    expect(src).toMatch(/export \{ Ansi, Box, RawAnsi, Text \} from "@sid-code\/tui";/);
-    for (const k of ["Box", "Text", "Ansi", "RawAnsi"] as const)
+    expect(src).toMatch(
+      /export \{ AlternateScreen, Ansi, Box, RawAnsi, Text \} from "@sid-code\/tui";/,
+    );
+    for (const k of ["Box", "Text", "Ansi", "RawAnsi", "AlternateScreen"] as const)
       expect(next[k]).not.toBe(legacy[k]);
   });
 

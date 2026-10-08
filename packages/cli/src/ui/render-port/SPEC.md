@@ -37,6 +37,7 @@
 | R11 | **已完成区（端口名 `Static`，next 上是 `History`）的项可以原地重渲**：memo 浅比较 `items` / `children` / `style` 三个引用，都不变时跳过，任一变了整块重渲；项内容变了照常 reconcile。不是上游 ink 的 print-once `<Static>`（D-3 定案 A） | `_vendor/Static.tsx:21-30`、CLI `packages/cli/src/ui/components/MainScreenLayout.tsx:49-50` | `packages/cli/tests/render-port/static-reconcile.test.tsx` R11: |
 | R12 | 非 TTY 输出（`stdout.isTTY` 为假）每帧写整帧，不做增量 diff | `ink.tsx:288` | `packages/cli/tests/render-port/static-reconcile.test.tsx` R12: |
 | R13 | 测试环境默认**每次提交同步出帧**（不节流），`lastFrame()` 在 rerender 之后立即可读；只有测帧调度的用例经端口 `enableFrameThrottle()` 打开真实调度（R2） | `reconciler.ts:292`、`ink.tsx:329` | `packages/cli/tests/render-port/render-instance.test.tsx` R13: |
+| R14 | alt-screen 出帧用绝对定位：每帧从 `ESC[H` 出发只写变化的单元，收尾 `ESC[{rows};1H`；只画视口内的行；没变化不写；视口任一维变了先 `ESC[2J` 整帧重画；进 alt / SIGCONT 后对空白整帧画；从不记 full reset。同步输出包裹按终端能力判定（tmux 内一律不包），主屏不受影响 | `ink.tsx:715`、`ink.tsx:938`、`terminal.ts:75` | `packages/cli/tests/render-port/alt-screen.test.tsx` R14: |
 
 ## L 布局
 
@@ -95,7 +96,7 @@
 
 | ID | 行为 | 来源 | 测试 |
 | --- | --- | --- | --- |
-| M1 | 鼠标跟踪随 alt-screen 进出开关；`SID_CODE_DISABLE_MOUSE_CLICKS` 为真时不响应点击 | `components/AlternateScreen.tsx:52`、`ink.tsx:1743`、`_vendor/fullscreen.ts:7` | `packages/cli/tests/render-port/term-bench/scenarios.tsx` S7: { |
+| M1 | 鼠标跟踪随 alt-screen 进出开关：挂载写 `?1049h 2J H` + 鼠标全套（`mouseTracking` 默认真），卸载逆序关鼠标再 `?1049l`；嵌套 / 并列各写各的、不计数；`mouseTracking` 变化等于退出再进入；alt 下 resize 先重开鼠标。`SID_CODE_DISABLE_MOUSE_CLICKS` 不改变底座写的字节（不响应点击由 CLI 侧决定）。字节逐段对拍见 `alt-screen.test.tsx` 的 `M1:` 用例 | `components/AlternateScreen.tsx:52`、`ink.tsx:1743`、`_vendor/fullscreen.ts:7` | `packages/cli/tests/render-port/term-bench/scenarios.tsx` S7: { |
 | M2 | 拖选、双击选词、三击选行；内容滚动时选区跟着移动 | `selection.ts:738` | `packages/cli/tests/render-port/term-bench/scenarios.tsx` S13: { |
 | M3 | 复制走 OSC52（`setClipboard`）；tmux / screen 下用 `wrapForMultiplexer` 包裹 | `termio/osc.ts:135`、`termio/osc.ts:35` | `packages/cli/tests/render-port/term-bench/scenarios.tsx` S13: { |
 | M4 | 超链接单元可命中并打开 | `squash-text-nodes.ts:21` | ⏳ T6.2 |

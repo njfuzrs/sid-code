@@ -32,6 +32,9 @@ import {OSC} from './terminal/osc.js';
 import {isTabStatusDisabled, tabStatusSequence} from './hooks/use-tab-status.js';
 import {type Screen} from './screen/screen.js';
 import {serializeScreen} from './screen/serialize.js';
+import {clipToViewport, diffAltScreen} from './frame/alt-screen.js';
+import {enableMouseTracking} from './terminal/modes.js';
+import {supportsSynchronizedOutput} from './terminal/sync-output.js';
 import App from './components/App.js';
 import drainStdin from './drain-stdin.js';
 import {type TerminalSuspension} from './components/AppContext.js';
@@ -161,9 +164,8 @@ const getWritableStreamState = (stdout: MaybeWritableStream) => {
 
 /** 擦可视区并回原点（不清 scrollback）：forceRedraw 与 SIGCONT 重进 alt-screen 用 */
 const eraseScreenHome = '\u001B[2J\u001B[H';
-/** 鼠标跟踪全套（按下 / 拖动 / 任意移动 / SGR 编码 / alt-screen 滚轮转方向键），与旧底座同序 */
-const enableMouseTracking =
-	'\u001B[?1000h\u001B[?1002h\u001B[?1003h\u001B[?1006h\u001B[?1007h';
+/** alt-screen 帧要不要包同步输出：模块加载时判定一次（R14） */
+const altScreenSync = supportsSynchronizedOutput();
 
 const settleThrottle = (
 	throttled: unknown,
@@ -316,11 +318,14 @@ export default class Ink {
 	private frameViewport: {columns: number; rows: number} | undefined;
 	/** 下一帧强制 full reset 的原因（离开 alt-screen 之后，主屏的旧帧已经不可信） */
 	private pendingResetReason: FrameFlicker['reason'] | undefined;
-	/** `<AlternateScreen>` 挂载状态（端口 setAltScreenActive，R10）；alt-screen 的出帧本身归 T6.1 */
+	/** `<AlternateScreen>` 挂载状态（端口 setAltScreenActive，R10）；为真时出帧走 renderAltScreenFrame（R14） */
 	/** SIGCONT 作废的那一帧：下一帧按 `redrawAfterSuspend` 写（R10）；resize / forceRedraw 帧不走它 */
 	private suspendedScreen: Screen | undefined;
 	private altScreenActive = false;
 	private altScreenMouseTracking = false;
+	/** alt-screen 的上一帧（已裁到视口）与它出帧时的视口；缺省 = 屏幕已是空白（R14） */
+	private altPreviousScreen: Screen | undefined;
+	private altViewport: {columns: number; rows: number} | undefined;
 	private readonly unsubscribeSigcont?: () => void;
 	private kittyProtocolEnabled = false;
 	private kittyFlags: KittyFlagName[] | undefined;
@@ -465,6 +470,11 @@ export default class Ink {
 		}
 
 		this.lastResizeSize = size;
+		// alt-screen 下 resize 当场重开鼠标跟踪（有的终端 resize 会复位鼠标模式）；出帧仍走调度（R14）
+		if (this.interactive && this.altScreenActive && this.altScreenMouseTracking) {
+			this.writeBestEffort(this.options.stdout, enableMouseTracking);
+		}
+
 		// 布局当场按新宽度重算，出帧延后：同 tick 里先到的提交 / forceRedraw 帧就已经是新宽度，
 		// resize 帧随后 diff 为空、不再写第二次 full reset（与旧底座一致）
 		this.calculateLayout();
@@ -514,6 +524,13 @@ export default class Ink {
 			this.pendingResetReason = 'resize';
 		}
 
+		// 刚进 alt：组件已经擦过屏，下一帧对空白整帧画；已在 alt 时再置一次不作废上一帧（与旧底座一致）
+		if (!this.altScreenActive && active) {
+			this.pendingResetReason = undefined;
+			this.altPreviousScreen = undefined;
+			this.altViewport = getWindowSize(this.options.stdout);
+		}
+
 		this.altScreenActive = active;
 		this.altScreenMouseTracking = active && mouseTracking;
 	}
@@ -528,12 +545,13 @@ export default class Ink {
 			return;
 		}
 
-		// alt-screen 的出帧（绝对定位）归 T6.1；这里只有主屏才按 redrawAfterSuspend 接着写
+		// alt-screen 下一帧对空白整帧画（R14，altPreviousScreen 作废）；只有主屏才按 redrawAfterSuspend 接着写
 		if (!this.altScreenActive) {
 			this.suspendedScreen ??= this.previousScreen;
 		}
 
 		this.previousScreen = undefined;
+		this.altPreviousScreen = undefined;
 		if (this.altScreenActive) {
 			this.writeBestEffort(
 				this.options.stdout,
@@ -1248,6 +1266,11 @@ export default class Ink {
 			return;
 		}
 
+		if (this.altScreenActive) {
+			this.renderAltScreenFrame(screen, output, outputHeight, startTime);
+			return;
+		}
+
 		let bytes: string;
 		const flickers: FrameFlicker[] = [];
 
@@ -1284,6 +1307,52 @@ export default class Ink {
 		this.options.onFrame?.({
 			durationMs: performance.now() - startTime,
 			flickers,
+		});
+	}
+
+	/**
+	 * sid-code（B9 / T6.1a，契约 R14）：alt-screen 出帧。绝对定位、只画视口内的行、视口变了先 `2J`；
+	 * 同步输出包裹看终端能力（`altScreenSync`），不像主屏那样一律包。从不记 full reset（onFrame 的 flickers 恒空）。
+	 */
+	private renderAltScreenFrame(
+		screen: Screen,
+		output: string,
+		outputHeight: number,
+		startTime: number,
+	): void {
+		const viewport = getWindowSize(this.options.stdout);
+		const next = clipToViewport(screen, viewport.rows);
+		const previous = this.altViewport;
+		const erase =
+			previous !== undefined &&
+			(previous.columns !== viewport.columns || previous.rows !== viewport.rows);
+		const bytes = diffAltScreen(
+			erase ? undefined : this.altPreviousScreen,
+			next,
+			viewport.rows,
+			erase,
+		);
+		this.altPreviousScreen = next;
+		this.altViewport = viewport;
+		// 主屏的帧记录在 alt 期间作废：离开 alt 后按 full reset 画（setAltScreenActive）
+		this.previousScreen = undefined;
+		this.frameViewport = viewport;
+		this.lastOutput = output;
+		this.lastOutputToRender = output + '\n';
+		this.lastOutputHeight = outputHeight;
+
+		if (bytes !== '') {
+			this.options.stdout.write(altScreenSync ? bsu + bytes + esu : bytes);
+		}
+
+		if (!this.cursorHidden) {
+			this.options.stdout.write(hideCursorEscape);
+			this.cursorHidden = true;
+		}
+
+		this.options.onFrame?.({
+			durationMs: performance.now() - startTime,
+			flickers: [],
 		});
 	}
 
