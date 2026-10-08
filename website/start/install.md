@@ -114,16 +114,21 @@ curl -fsSL https://www.sid-code.cc/releases/sid-code/install.sh | SID_CODE_CHANN
 两个通道装到的是**同一批产物**，promote 只是把稳定通道的指针挪过去 —— 也就是说
 你在 beta 期跑的二进制，与之后所有人拿到的是同一份字节，没有"再构建一次"这一步。
 
-::: warning 通道不会被记住
-通道靠环境变量决定，**不写进本地配置**。下次更新不带变量就会回到稳定版：
+::: tip 通道会跟着安装走
+装 beta 时安装脚本会在版本目录旁写一个通道标记，之后 `sid-code update` 和后台自动更新
+都**沿用 beta 通道**（读 `beta.txt`），beta 期发的修复号不用手动操作就能升上去：
 
 ```bash
-SID_CODE_CHANNEL=beta sid-code update    # 继续留在 beta
-sid-code update                          # 回到稳定版
+sid-code update                            # 沿用当前通道（beta 用户仍在 beta）
+SID_CODE_CHANNEL=stable sid-code update    # 退出 beta，回到稳定版
 ```
 :::
 
-想退回稳定版随时可以，装一次不带变量的即可，配置和会话都不受影响。
+beta 期发现问题时不会在原版本号里换字节，而是发下一个构建号；验收通过后促升最后那个号。
+所以稳定版的版本号可能跳号（比如 0.1.606 → 0.1.609），被跳过的中间号在
+[更新日志](/changelog)里标为「预发布」，它们的变更已合并进稳定版的说明。
+
+想退回稳定版随时可以，跑一次 `SID_CODE_CHANNEL=stable sid-code update` 即可，配置和会话都不受影响。
 
 ## 升级与卸载
 
@@ -131,7 +136,7 @@ sid-code update                          # 回到稳定版
 sid-code update    # 升级到最新版（不动 ~/.sid-code/ 里的配置和会话）
 ```
 
-日常启动还会按 `settings.autoUpdate` 后台检查稳定版（默认 `auto`，下次启动才切）。
+日常启动还会按 `settings.autoUpdate` 后台检查当前通道的新版本（默认 `auto`，下次启动才切）。
 三种模式、失败保护、回滚见[自动更新](/use/auto-update)。
 
 卸载没有专门命令，手工删三处即可：

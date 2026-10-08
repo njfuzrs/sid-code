@@ -65,6 +65,8 @@ import {
   COVERAGE_WARN_THRESHOLD,
   type CuratedEntry,
 } from "./lib/changelog-curated-schema.ts";
+import { betaOnlyViolation } from "./lib/changelog-stable.ts";
+import { readCurated, readStableNotes } from "./changelog-stable.ts";
 
 const CURATED_DIR = resolve(ROOT, "changelog/curated");
 const PROMPT_PATH = resolve(ROOT, "scripts/changelog-curate.prompt.md");
@@ -235,7 +237,11 @@ function runAgent(prompt: string, timeoutMs: number): Promise<SpawnResult> {
   ];
 
   return new Promise<SpawnResult>((res) => {
-    const proc = spawn("bun", args, { env, cwd: ROOT, stdio: ["ignore", "pipe", "pipe"] });
+    const proc = spawn("bun", args, {
+      env,
+      cwd: ROOT,
+      stdio: ["ignore", "pipe", "pipe"],
+    });
     let stdout = "";
     let stderr = "";
     const killTimer = setTimeout(() => proc.kill("SIGTERM"), timeoutMs);
@@ -289,18 +295,33 @@ interface VerifyResult {
 export function verifyCuratedFile(version: string, realHashes?: string[]): VerifyResult {
   const p = curatedPath(version);
   if (!existsSync(p)) {
-    return { ok: false, entry: null, errors: [`文件不存在：${p}`], warnings: [] };
+    return {
+      ok: false,
+      entry: null,
+      errors: [`文件不存在：${p}`],
+      warnings: [],
+    };
   }
   let raw: string;
   try {
     raw = readFileSync(p, "utf-8");
   } catch (err: any) {
-    return { ok: false, entry: null, errors: [`读取失败：${err?.message ?? err}`], warnings: [] };
+    return {
+      ok: false,
+      entry: null,
+      errors: [`读取失败：${err?.message ?? err}`],
+      warnings: [],
+    };
   }
   // 裸 NUL 字节：agent 落盘偶发产出，且它会让 grep 静默漏报整个文件
   // （packages/cli/src/app.ts 曾因此让全仓搜索查不到内容）。这里当场拦住，不让它进仓库。
   if (raw.includes("\0")) {
-    return { ok: false, entry: null, errors: ["文件含裸 NUL 字节（0x00）"], warnings: [] };
+    return {
+      ok: false,
+      entry: null,
+      errors: ["文件含裸 NUL 字节（0x00）"],
+      warnings: [],
+    };
   }
   let obj: unknown;
   try {
@@ -542,6 +563,16 @@ async function curateOne(version: string, opts: CurateOptions): Promise<boolean>
   return true;
 }
 
+/** 当前稳定版号（`changelog/channel.json`，`release.sh --promote` 写）；读不到返回 null */
+function readChannelStable(): string | null {
+  try {
+    const v = JSON.parse(readFileSync(resolve(ROOT, "changelog/channel.json"), "utf-8")).stable;
+    return typeof v === "string" && /^\d+\.\d+\.\d+$/.test(v) ? v : null;
+  } catch {
+    return null;
+  }
+}
+
 /** --check：不调 LLM，只校验已入库的全部 curated 文件（CI / 手改完自查用） */
 function checkAll(): number {
   if (!existsSync(CURATED_DIR)) {
@@ -575,6 +606,44 @@ function checkAll(): number {
       for (const w of vres.warnings) console.warn(`     · ${w}`);
     }
   }
+  // ── 一修一号（T1/T3）：稳定版说明形态 + betaOnly 反向约束 ──
+  const stableNotes = readStableNotes();
+  const stableNow = readChannelStable();
+  for (const f of files) {
+    const version = f.replace(/^v/, "").replace(/\.json$/, "");
+    const e = readCurated(version);
+    if (typeof e === "string") continue; // 上面已报
+    const v = betaOnlyViolation(e, stableNow, stableNotes);
+    if (v) {
+      bad++;
+      console.error(`  ❌ ${f}`);
+      console.error(`     · ${v}`);
+    }
+  }
+  const stableDirPath = resolve(CURATED_DIR, "stable");
+  if (existsSync(stableDirPath)) {
+    for (const f of readdirSync(stableDirPath).filter((x) => x.endsWith(".json"))) {
+      const version = f.replace(/^v/, "").replace(/\.json$/, "");
+      let obj: any;
+      try {
+        obj = JSON.parse(readFileSync(resolve(stableDirPath, f), "utf-8"));
+      } catch (err: any) {
+        bad++;
+        console.error(`  ❌ stable/${f} 解析失败：${err?.message ?? err}`);
+        continue;
+      }
+      const errs = validateCurated(obj, version);
+      if (!Array.isArray(obj?.covers) || obj.covers[obj.covers.length - 1] !== version) {
+        errs.push("covers 必须是数组且以目标版本自身结尾（升序）");
+      }
+      if (errs.length > 0) {
+        bad++;
+        console.error(`  ❌ stable/${f}`);
+        for (const e of errs) console.error(`     · ${e}`);
+      }
+    }
+  }
+
   if (bad === 0) {
     console.log(`  ✅ ${files.length} 个 curated 文件全部通过校验（${warned} 个有 warn）`);
   } else {

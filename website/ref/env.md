@@ -96,7 +96,7 @@ description: 全部可用环境变量及其作用。
 
 | 变量 | 说明 |
 |---|---|
-| `SID_CODE_CHANNEL` | 发布通道 stable\|beta（缺省 stable）；beta 是抢先版，通道不写进本地配置，每次 update 都要带 |
+| `SID_CODE_CHANNEL` | 发布通道 stable\|beta（缺省沿用当前安装的通道，未装 beta 即 stable）；显式设置可切换通道 |
 | `SID_CODE_RELEASE_HOST` | 发布服务器地址覆盖（缺省 https://www.sid-code.cc；裸 host 自动补 https） |
 | `SID_CODE_INSTALL_URL` | install.sh 完整 URL 覆盖（非标准路径时用） |
 

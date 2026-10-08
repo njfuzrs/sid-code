@@ -214,7 +214,7 @@ Worktree 隔离:
   SID_GREP_TIMEOUT_SECONDS      grep/glob 搜索超时秒数（缺省 20，WSL 下 60）
 
   安装与更新:
-  SID_CODE_CHANNEL              发布通道 stable|beta（缺省 stable）；beta 是抢先版，通道不写进本地配置，每次 update 都要带
+  SID_CODE_CHANNEL              发布通道 stable|beta（缺省沿用当前安装的通道，未装 beta 即 stable）；显式设置可切换通道
   SID_CODE_RELEASE_HOST         发布服务器地址覆盖（缺省 https://www.sid-code.cc；裸 host 自动补 https）
   SID_CODE_INSTALL_URL          install.sh 完整 URL 覆盖（非标准路径时用）
 

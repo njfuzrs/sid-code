@@ -4,7 +4,9 @@
  * 子进程跑 install.sh（完整下载+校验+冒烟+原子切换链路），输出重定向到 last-update.log
  * 子进程收尾时写 state.json（success/failed + 原因）+ pendingNotice + 释放锁
  *
- * ⚠️ env 净化：显式设 SID_CODE_CHANNEL="stable"（覆盖任何继承值），删除 SID_CODE_VERSION
+ * ⚠️ env 净化：显式设 SID_CODE_CHANNEL=<当前安装的通道>（覆盖任何继承值），删除 SID_CODE_VERSION
+ *   通道由调用方传入（`getReleaseChannel()`：stable / beta）。以前写死 stable，结果 beta 测试人员
+ *   的自动更新永远只看 latest.txt —— beta 修复号发了也自动升不上去，整条「一修一号」流程空转（T4）。
  * 注入 SID_CODE_AUTO_UPDATE=1（供日志排查，install.sh 不依赖）
  */
 
@@ -14,6 +16,7 @@ import { join } from "node:path";
 import { getSidHome } from "../config/paths.ts";
 import { INSTALL_URL } from "./config.ts";
 import { getLogger } from "../debug/logger.ts";
+import type { UpdateChannel } from "./checker.ts";
 
 const log = () => getLogger();
 
@@ -36,11 +39,13 @@ function getStatePath(): string {
  * @param targetVersion 目标版本号（latest.txt 内容）
  * @param currentVersion 当前版本号
  * @param lockDir 锁目录路径（子进程释放用）
+ * @param channel 安装通道（缺省 stable）；install.sh 据此读指针并重写 `.channel` 标记
  */
 export function spawnBackgroundInstall(
   targetVersion: string,
   currentVersion: string,
   lockDir: string,
+  channel: UpdateChannel = "stable",
 ): void {
   const logPath = getLogPath();
   const statePath = getStatePath();
@@ -89,9 +94,9 @@ mv -f "$tmp_state" "$state_path"
 rm -rf "$lock_dir"
 `;
 
-  // env 净化：显式设 SID_CODE_CHANNEL="stable"，删除 SID_CODE_VERSION
+  // env 净化：显式设通道（覆盖继承值，跟随当前安装的通道），删除 SID_CODE_VERSION
   const env: NodeJS.ProcessEnv = { ...process.env };
-  env.SID_CODE_CHANNEL = "stable"; // 显式覆盖，保证只更新 stable
+  env.SID_CODE_CHANNEL = channel;
   delete env.SID_CODE_VERSION; // 允许 install.sh 按 latest.txt 决定版本
   env.SID_CODE_AUTO_UPDATE = "1"; // 标记自动更新来源，供日志排查
 

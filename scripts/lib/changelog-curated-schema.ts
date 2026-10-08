@@ -90,6 +90,14 @@ export interface CuratedEntry {
   discarded?: string[];
   generatedBy?: string;
   reviewedBy?: string;
+  /**
+   * beta 修复号专用（T3，一修一号流程）：true = 这个版本号只为修 beta 期自己引入的问题而存在，
+   * 促升时合并稳定版说明（`changelog-stable.ts merge`）会**整份丢弃**它。
+   * 为 true 时必须 `userFacing:false` 且带 `betaNote`；highlight / sections / commits 可省。
+   */
+  betaOnly?: boolean;
+  /** beta 修复号的一句话说明（给 beta 测试人员看，不进稳定版说明） */
+  betaNote?: string;
 }
 
 /** 渲染用的 section（带 key，key 由 title 派生，不让人工在 JSON 里手写 key） */
@@ -114,11 +122,45 @@ const SEMVER_RE = /^\d+\.\d+\.\d+$/;
  * @param expectedVersion 文件名里的版本号。传了就比对 —— 错配会让文案挂到
  *   错误的版本名下，且**没有任何报错**（页面照旧渲染，只是内容对错了版本）。
  */
-export function validateCurated(obj: unknown, expectedVersion?: string): string[] {
+export function validateCurated(input: unknown, expectedVersion?: string): string[] {
   const errs: string[] = [];
 
-  if (!isPlainObject(obj)) {
+  if (!isPlainObject(input)) {
     return ["顶层必须是一个 JSON 对象"];
+  }
+  let obj: Record<string, unknown> = input;
+
+  // ── betaOnly / betaNote（T3 最小形态）──
+  // 最小形态只要求 version / userFacing:false / betaOnly:true / betaNote，其余字段可省：
+  // beta 修复号的读者是 beta 测试人员，面向正式用户的文案在 promote 合并时才写。
+  const betaOnly = obj.betaOnly;
+  if (betaOnly !== undefined && typeof betaOnly !== "boolean") {
+    errs.push(`betaOnly 若存在必须是布尔值，实际是 ${JSON.stringify(betaOnly)}`);
+  }
+  if (obj.betaNote !== undefined) {
+    const note = obj.betaNote;
+    if (typeof note !== "string" || note.trim().length === 0) {
+      errs.push("betaNote 若存在必须是非空字符串");
+    } else {
+      if (note.length > MAX_ITEM_LEN) {
+        errs.push(`betaNote 超长（${note.length} > ${MAX_ITEM_LEN} 字）`);
+      }
+      if (hasUrl(note)) {
+        errs.push(`betaNote 含 URL（${findUrls(note).join(", ")}）—— 这份文案会发布到公网`);
+      }
+    }
+  }
+  if (betaOnly === true) {
+    if (obj.userFacing !== false) {
+      errs.push(
+        "betaOnly 为 true 时 userFacing 必须是 false —— 有用户可见变更的版本不能在合并时被丢弃",
+      );
+    }
+    if (typeof obj.betaNote !== "string") {
+      errs.push("betaOnly 为 true 时必须带 betaNote（一句话说明这次 beta 修复了什么）");
+    }
+    // 最小形态：缺省字段按空值补齐后再走下面的通用校验，免得通用校验报「字段缺失」
+    obj = { highlight: null, sections: [], commits: [], ...obj };
   }
 
   // ── version ──

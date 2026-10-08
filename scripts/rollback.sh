@@ -162,6 +162,13 @@ else
 fi
 echo ""
 
+# 积压清单（T5，只读）：stable → beta 之间还没促升的 beta 号与各自摘要。
+# 数据来自本地 curated + 刚读到的两个指针，不触发任何服务器写操作。
+if command -v bun >/dev/null 2>&1; then
+    bun run "$SCRIPT_DIR/changelog-stable.ts" backlog "${CUR_STABLE:--}" "${CUR_BETA:--}" || true
+    echo ""
+fi
+
 # 不带版本号 = 只看现状（事故现场第一件事就是"现在指着哪一版、有哪些可回"）
 if [ -z "$TARGET_VERSION" ]; then
     echo "  回滚命令："
@@ -270,10 +277,13 @@ echo "    curl -fsSL ${PUBLIC_BASE_URL}/releases/sid-code/${POINTER}"
 echo ""
 echo "  ⚠️  已经装了坏版本的用户不会自动降级，需要各自再跑一次："
 if [ "$CHANNEL" = "beta" ]; then
-    echo "    SID_CODE_CHANNEL=beta sid-code update"
+    echo "    sid-code update    # beta 安装会自动沿用 beta 通道"
 else
     echo "    sid-code update"
 fi
 echo ""
 echo "  本次回滚**没有动 git**：本地版本号、tag、提交全部保持原样。"
+if [ "$CHANNEL" = "stable" ]; then
+    echo "  GitHub Release 标记也**没有改**（回滚是止血，不改历史记录）：v${CUR_POINTER_VALUE:-?} 仍显示为正式版。"
+fi
 echo "  修好问题后正常发下一版即可，不需要为回滚补任何提交。"

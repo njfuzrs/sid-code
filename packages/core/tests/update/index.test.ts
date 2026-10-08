@@ -16,6 +16,7 @@ function makeDeps(overrides: Partial<AutoUpdateDependencies> = {}) {
   };
   const deps: AutoUpdateDependencies = {
     getCurrentVersion: () => "0.1.603",
+    getChannel: () => "stable",
     getSettings: () => ({ settings: { autoUpdate: "auto" }, errors: [] }),
     fetchLatestVersion: async () => "0.1.604",
     readState: () => state,
@@ -92,6 +93,50 @@ describe("runAutoUpdateCheck", () => {
     await runAutoUpdateCheck(deps);
     expect(calls).toEqual(["notice:failed"]);
     expect(state.consecutiveFailures).toBe(0);
+  });
+
+  // ── T4：自动更新跟随当前安装的通道 ──
+  test("stable 通道读 latest 指针、子进程通道为 stable", async () => {
+    const seen: string[] = [];
+    const { deps } = makeDeps({
+      fetchLatestVersion: async (ch) => {
+        seen.push(`fetch:${ch}`);
+        return "0.1.604";
+      },
+      spawnInstall: (_t, _c, _l, ch) => {
+        seen.push(`install:${ch}`);
+      },
+    });
+    await runAutoUpdateCheck(deps);
+    expect(seen).toEqual(["fetch:stable", "install:stable"]);
+  });
+
+  test("beta 通道读 beta 指针、子进程通道为 beta（beta 修复号能自动升上去）", async () => {
+    const seen: string[] = [];
+    const { deps } = makeDeps({
+      getChannel: () => "beta",
+      fetchLatestVersion: async (ch) => {
+        seen.push(`fetch:${ch}`);
+        return "0.1.604";
+      },
+      spawnInstall: (_t, _c, _l, ch) => {
+        seen.push(`install:${ch}`);
+      },
+    });
+    await runAutoUpdateCheck(deps);
+    expect(seen).toEqual(["fetch:beta", "install:beta"]);
+  });
+
+  test("dev 本地开发版不发起检查", async () => {
+    const { calls, deps } = makeDeps({
+      getChannel: () => "dev",
+      fetchLatestVersion: async () => {
+        calls.push("fetch");
+        return "0.1.605";
+      },
+    });
+    await runAutoUpdateCheck(deps);
+    expect(calls).toEqual([]);
   });
 
   test("当前版本为 prerelease 时跳过", async () => {

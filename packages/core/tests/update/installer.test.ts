@@ -32,7 +32,10 @@ function waitForRemoved(path: string, timeoutMs = 5000): void {
   }
 }
 
-function runInstaller(exitCode: number): {
+function runInstaller(
+  exitCode: number,
+  channel?: "stable" | "beta",
+): {
   root: string;
   statePath: string;
   logPath: string;
@@ -57,7 +60,7 @@ exit ${exitCode}
 
   const runner = `
     const { spawnBackgroundInstall } = await import(${JSON.stringify(pathToFileURL(INSTALLER_MODULE).href)});
-    spawnBackgroundInstall("0.1.604", "0.1.603", ${JSON.stringify(join(configDir, "updates", "lock"))});
+    spawnBackgroundInstall("0.1.604", "0.1.603", ${JSON.stringify(join(configDir, "updates", "lock"))}${channel ? `, ${JSON.stringify(channel)}` : ""});
   `;
   const result = spawnSync("bun", ["--eval", runner], {
     encoding: "utf8",
@@ -97,6 +100,20 @@ describe("spawnBackgroundInstall", () => {
       expect(env).not.toContain("version=0.1.500");
     } finally {
       rmSync(result.root, { recursive: true, force: true });
+    }
+  });
+
+  // T4：继承的 env 是 beta，但调用方说 stable → 子进程必须是 stable（不被继承值带偏）；
+  // 调用方说 beta → 子进程是 beta（beta 用户的自动更新跟随 beta.txt）
+  test("子进程通道由调用方决定，覆盖继承的 SID_CODE_CHANNEL", () => {
+    const stable = runInstaller(0, "stable");
+    const beta = runInstaller(0, "beta");
+    try {
+      expect(readFileSync(stable.markerPath, "utf8")).toContain("channel=stable");
+      expect(readFileSync(beta.markerPath, "utf8")).toContain("channel=beta");
+    } finally {
+      rmSync(stable.root, { recursive: true, force: true });
+      rmSync(beta.root, { recursive: true, force: true });
     }
   });
 

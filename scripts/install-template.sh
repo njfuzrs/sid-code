@@ -375,8 +375,9 @@ echo ""
 # 不说的话，beta 用户下次 `sid-code update`（不带变量）会静默掉回 stable，
 # 而 §7 那条验收判据（"至少一次真实回归在 beta 期被发现"）依赖 beta 用户**持续**在 beta 上。
 if [ "$CHANNEL" = "beta" ]; then
-    echo "  🧪 当前通道: beta（抢先版）。后续更新需继续带上通道变量，否则会回到稳定版："
-    echo "    SID_CODE_CHANNEL=beta sid-code update"
+    echo "  🧪 当前通道: beta（抢先版）。之后 sid-code update 与自动更新都会沿用 beta 通道；"
+    echo "    切回稳定版：SID_CODE_CHANNEL=stable sid-code update"
+    echo "    （更早装的 beta 二进制还不会沿用通道，那一次升级仍要带 SID_CODE_CHANNEL=beta）"
     echo ""
     echo "  发现回归请回报 —— beta 期发现的问题不会流到稳定版，这正是这个通道存在的意义。"
     echo ""
