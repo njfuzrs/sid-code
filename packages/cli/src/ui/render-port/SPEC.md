@@ -31,7 +31,7 @@
 | R5 | 变化落在已进 scrollback 的行上 → full reset（原因 `offscreen`） | `frame.ts:98`、`log-update.ts:137` | `packages/cli/tests/render-port/term-bench/scenarios.tsx` S3: { |
 | R6 | 动态区从超出视口收缩回来 → full reset 恰好一次 | `frame.ts:102` | `packages/cli/tests/render-port/term-bench/scenarios.tsx` S2: { |
 | R7 | 视口变矮或变宽窄 → full reset（原因 `resize`）并重排；连续多次 resize 合并；**不发 `?1049h`**（iTerm2 会当清屏） | `log-update.ts:133-137`、`ink.tsx:229` | `packages/cli/tests/render-port/term-bench/scenarios.tsx` S6: { |
-| R8 | `forceRedraw`：主屏重绘并标记前帧作废；alt-screen 重置帧缓存 | `ink.tsx:1038` | `packages/cli/tests/render-port/term-bench/scenarios.tsx` S9: { |
+| R8 | `forceRedraw`：主屏重绘并标记前帧作废；alt-screen 擦屏后对空白整帧画（R14，前帧作废、视口记录保留） | `ink.tsx:1038` | `packages/cli/tests/render-port/term-bench/scenarios.tsx` S9: { |
 | R9 | 宽字符宽度补偿：终端对某些宽字符算宽不一致时补光标位置 | `log-update.ts:583`、`log-update.ts:648` | `packages/cli/tests/render-port/term-bench/scenarios.tsx` S4: { |
 | R10 | SIGCONT 恢复：alt-screen 下内容视为过期，整屏重绘并重新打开鼠标跟踪 | `ink.tsx:218` | `packages/cli/tests/render-port/contracts-runtime.test.tsx` R10: |
 | R11 | **已完成区（端口名 `Static`，next 上是 `History`）的项可以原地重渲**：memo 浅比较 `items` / `children` / `style` 三个引用，都不变时跳过，任一变了整块重渲；项内容变了照常 reconcile。不是上游 ink 的 print-once `<Static>`（D-3 定案 A） | `_vendor/Static.tsx:21-30`、CLI `packages/cli/src/ui/components/MainScreenLayout.tsx:49-50` | `packages/cli/tests/render-port/static-reconcile.test.tsx` R11: |
@@ -129,7 +129,7 @@
 | X2 | 经端口 `render` 拿到的 `unmount` **不透传参数**：`unmount(error)` 与 `unmount()` 一样，`waitUntilExit` 都 resolve（T0.4 S12 实测）。底座内部 `Ink.unmount(error)` 才会 reject，CLI 没有用到 | `root.ts:96-98`、`ink.tsx:1780-1784` | `packages/cli/tests/render-port/term-bench/scenarios.tsx` S12: { |
 | X3 | TTY 卸载时同步写 fd 1（**进程被信号结束、React 卸载来不及跑时的兜底**；正常卸载时 raw mode 释放已经先关过一遍键盘 / focus / bracketed paste，见 I4 表，所以这几项是重复写入），顺序固定：先退 alt-screen（若在其中）→ 关鼠标跟踪（无条件）→ drain stdin → 关 modifyOtherKeys 与 kitty 键盘 → 关 focus reporting → 关 bracketed paste → 显示光标 → 清 iTerm2 进度 → 清 tab 状态 | `ink.tsx:1734-1758` | `packages/cli/tests/render-port/term-bench/scenarios.tsx` S12: { |
 | X4 | `detachForShutdown`：标记已卸载、取消待发的节流渲染、drain stdin、退出 raw mode；不经 React 卸载，不写任何终端序列；不 `unref`、不摘 `readable` / SIGCONT / resize 监听、不结算 exit promise（细节见 `stdin-shutdown.test.tsx`） | `ink.tsx:1147-1165` | `packages/cli/tests/render-port/contracts-runtime.test.tsx` X4: |
-| X5 | `enterAlternateScreen` / `exitAlternateScreen`（外部编辑器前后）：退出后终端模式与进入前一致 | `ink.tsx:509`、`ink.tsx:546` | `packages/cli/tests/render-port/term-bench/scenarios.tsx` S8: { |
+| X5 | `enterAlternateScreen` / `exitAlternateScreen`（外部编辑器前后）：让出先关 raw mode（有人持有时；不 `unref`、不摘 readable，期间的按键收回后才交给 `useInput`），再写 `<u >4m` → 主屏 `?1049h` / 已在 `<AlternateScreen>` 里只关鼠标（开过才关）→ `?1004l` → `0m` → 显示光标 → `2J H`；让渡期间提交、resize、forceRedraw 不出帧不写字节（SIGCONT 的 alt 重进照旧）。收回：主屏 `2J H ?1049l` + 隐藏光标、alt 里 `?1049h 2J H` + 重开鼠标 + 隐藏光标 → 重开 raw mode → 当场出一帧（主屏按 R10 SIGCONT 口径、视口变了 full reset；alt 对空白整帧画）→ `?1004h` → 扩展键开着再重申 `<u >1u >4;2m`。没进过也照样执行 exit；重复调用每次整段再写；非 TTY 让出前先写当前帧、收回只写空的同步包裹。字节逐段对拍见 `external-editor.test.tsx` 的 `X5:` 用例 | `ink.tsx:509`、`ink.tsx:546` | `packages/cli/tests/render-port/external-editor.test.tsx` X5: |
 | X6 | 实例按 stdout 注册（`instances`），卸载时移除；同一 stdout 上前一个实例卸载后新实例能接手 | `root.ts:100`、`root.ts:147` | `packages/cli/tests/render-port/term-bench/scenarios.tsx` S11: { |
 | X7 | 端口 `getRenderInstance(stdout)` 返回的实例提供 `RENDER_INSTANCE_METHODS` 列出的全部方法（`RenderInstance` 类型）；CLI 与测试拿实例只走这一个入口 | CLI `packages/cli/src/ui/render-port/runtime.ts` | `packages/cli/tests/render-port/render-instance.test.tsx` X7: |
 

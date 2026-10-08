@@ -55,6 +55,8 @@ type Props = {
 	readonly onRegisterInputControl: (
 		pauseInput: () => void,
 		resumeInput: () => void,
+		pauseForHandoff?: () => void,
+		resumeFromHandoff?: () => void,
 	) => void;
 	/** stdin 静默超过阈值后的第一块输入（I1c）：由 Ink 决定要重申哪些终端模式 */
 	readonly onStdinResume?: () => void;
@@ -324,6 +326,9 @@ function App({
 	// 终端探查（`>0q` / DA1）在恢复路径上也会再发一次（I2，见 terminal-probe.ts）。
 	const isSuspendedRef = useRef(false);
 	const isAppUnmountedRef = useRef(false);
+	// sid-code（B9 / T6.1b，契约 X5）：外部编辑器占着终端。期间不读 stdin（字节留在流里，交还后再交出）
+	const isHandoffRef = useRef(false);
+	const handoffPausedRawRef = useRef(false);
 	const writeStdout = useCallback(
 		(data: string): void => {
 			try {
@@ -442,6 +447,7 @@ function App({
 			// eslint-disable-next-line @typescript-eslint/no-restricted-types
 			while (
 				!isSuspendedRef.current &&
+				!isHandoffRef.current &&
 				(chunk = stdin.read() as string | null) !== null
 			) {
 				if (isFirstChunk) {
@@ -621,9 +627,53 @@ function App({
 	// passive effect (parent and child), so a child that calls suspendTerminal()
 	// from its own effect always finds the input control already registered. A
 	// normal effect would run too late (child effects fire before the parent's).
+	// sid-code（B9 / T6.1b，契约 X5）：外部编辑器 handoff 的输入让渡。与 pauseInput 不同（旧底座黑盒探针，D-5）：
+	// 只关 raw mode，不 `unref`、不摘 readable、不清解析器、不写 bracketed paste；期间到达的输入不丢，交还后再交出。
+	// 计数为 0（没人要 raw mode）时什么都不做。重复让渡只关一次
+	const pauseForHandoff = useCallback((): void => {
+		isHandoffRef.current = true;
+		if (
+			!isRawModeSupported ||
+			handoffPausedRawRef.current ||
+			rawModeEnabledCount.current <= 0
+		) {
+			return;
+		}
+
+		handoffPausedRawRef.current = true;
+		stdin.setRawMode(false);
+	}, [isRawModeSupported, stdin]);
+
+	const resumeFromHandoff = useCallback((): void => {
+		isHandoffRef.current = false;
+		const resumed = handoffPausedRawRef.current;
+		handoffPausedRawRef.current = false;
+		if (resumed && !isAppUnmountedRef.current) {
+			stdin.setRawMode(true);
+		}
+
+		// 让渡期间缓冲的输入：异步交出（旧底座在 exitAlternateScreen 返回之后才送到 useInput）
+		setImmediate(() => {
+			if (!isAppUnmountedRef.current && readableListenerRef.current) {
+				readableListenerRef.current();
+			}
+		});
+	}, [stdin]);
+
 	useInsertionEffect(() => {
-		onRegisterInputControl(pauseInput, resumeInput);
-	}, [onRegisterInputControl, pauseInput, resumeInput]);
+		onRegisterInputControl(
+			pauseInput,
+			resumeInput,
+			pauseForHandoff,
+			resumeFromHandoff,
+		);
+	}, [
+		onRegisterInputControl,
+		pauseInput,
+		resumeInput,
+		pauseForHandoff,
+		resumeFromHandoff,
+	]);
 
 	// Focus navigation helpers
 	const findNextFocusable = useCallback(

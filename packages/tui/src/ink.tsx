@@ -33,7 +33,7 @@ import {isTabStatusDisabled, tabStatusSequence} from './hooks/use-tab-status.js'
 import {type Screen} from './screen/screen.js';
 import {serializeScreen} from './screen/serialize.js';
 import {clipToViewport, diffAltScreen} from './frame/alt-screen.js';
-import {enableMouseTracking} from './terminal/modes.js';
+import {disableMouseTracking, enableMouseTracking} from './terminal/modes.js';
 import {supportsSynchronizedOutput} from './terminal/sync-output.js';
 import App from './components/App.js';
 import drainStdin from './drain-stdin.js';
@@ -342,6 +342,10 @@ export default class Ink {
 	// mode and bracketed paste state.
 	private pauseInput?: () => void;
 	private resumeInput?: () => void;
+	private pauseForHandoff?: () => void;
+	private resumeFromHandoff?: () => void;
+	/** sid-code（B9 / T6.1b，契约 X5）：`enterAlternateScreen` 把终端让给了外部程序，`exitAlternateScreen` 收回 */
+	private isExternalHandoff = false;
 
 	constructor(options: Options) {
 		autoBind(this);
@@ -476,7 +480,12 @@ export default class Ink {
 
 		this.lastResizeSize = size;
 		// alt-screen 下 resize 当场重开鼠标跟踪（有的终端 resize 会复位鼠标模式）；出帧仍走调度（R14）
-		if (this.interactive && this.altScreenActive && this.altScreenMouseTracking) {
+		if (
+			this.interactive &&
+			!this.isSuspended &&
+			this.altScreenActive &&
+			this.altScreenMouseTracking
+		) {
 			this.writeBestEffort(this.options.stdout, enableMouseTracking);
 		}
 
@@ -517,6 +526,8 @@ export default class Ink {
 		this.options.stdout.write(eraseScreenHome);
 		this.previousScreen = undefined;
 		this.suspendedScreen = undefined;
+		// alt-screen 下擦屏后对空白整帧画（R14）：前一帧作废，视口记录保留
+		this.altPreviousScreen = undefined;
 		this.onRender();
 	}
 
@@ -1156,9 +1167,110 @@ export default class Ink {
 		});
 	}
 
-	registerInputControl(pauseInput: () => void, resumeInput: () => void): void {
+	registerInputControl(
+		pauseInput: () => void,
+		resumeInput: () => void,
+		pauseForHandoff?: () => void,
+		resumeFromHandoff?: () => void,
+	): void {
 		this.pauseInput = pauseInput;
 		this.resumeInput = resumeInput;
+		this.pauseForHandoff = pauseForHandoff;
+		this.resumeFromHandoff = resumeFromHandoff;
+	}
+
+	/**
+	 * sid-code（B9 / T6.1b，契约 X5）：外部编辑器之前调用，把终端让出去。规则全部来自旧底座黑盒探针（D-5）：
+	 * - 先关 raw mode（有人持有时；不 `unref`、不摘 readable，期间的输入交还后照样送到 `useInput`）；
+	 * - 再写一段：关扩展键（`<u >4m`，开没开都写）→ 主屏进 alt（`?1049h`）/ 已在 `<AlternateScreen>` 里只关鼠标跟踪
+	 *   （开过才关，不再写 `?1049h`）→ 关 focus reporting → SGR 复位 → 显示光标 → 擦屏回原点；
+	 * - 之后的提交、resize、forceRedraw 都不出帧也不写字节（SIGCONT 的 alt 重进照旧，R10）；
+	 * - stdout 非 TTY 也写同样的字节；重复调用每次都整段再写一遍。
+	 */
+	enterAlternateScreen(): void {
+		if (this.isUnmounted || this.isUnmounting) {
+			return;
+		}
+
+		// 非 TTY 每帧都是整帧：让出前先把当前帧写一遍（旧底座如此）
+		if (!this.interactive && !this.isSuspended) {
+			this.onRender();
+		}
+
+		this.pauseForHandoff?.();
+		this.isExternalHandoff = true;
+		this.isSuspended = true;
+		this.scheduler?.cancel();
+		this.resizeScheduler.cancel();
+		this.writeBestEffort(
+			this.options.stdout,
+			'\u001B[<u\u001B[>4m' +
+				(this.altScreenActive
+					? this.altScreenMouseTracking
+						? disableMouseTracking
+						: ''
+					: '\u001B[?1049h') +
+				'\u001B[?1004l\u001B[0m' +
+				showCursorEscape +
+				eraseScreenHome,
+		);
+		this.cursorHidden = false;
+	}
+
+	/**
+	 * sid-code（B9 / T6.1b，契约 X5）：外部程序退出后收回终端（没进过也照样执行）。旧底座黑盒探针得来的顺序：
+	 * - 主屏：擦屏回原点 → `?1049l` → 隐藏光标；`<AlternateScreen>` 里：重进 alt 擦屏（`?1049h 2J H`）→ 重开鼠标跟踪
+	 *   （开过的）→ 隐藏光标；
+	 * - 重开 raw mode（让渡时关过的才开）；
+	 * - 当场出一帧：主屏按 SIGCONT 后的口径（R10，`redrawAfterSuspend`），期间视口变过则 full reset（原因 resize）；
+	 *   alt 下对空白整帧画（R14）。帧里含让渡期间的提交。非 TTY 只写一对空的同步输出包裹；
+	 * - 开 focus reporting；扩展键开着时再重申扩展键（与有没有人持有 raw mode、在不在 alt 里无关）。
+	 */
+	exitAlternateScreen(): void {
+		if (this.isUnmounted || this.isUnmounting) {
+			return;
+		}
+
+		const {stdout} = this.options;
+		const alt = this.altScreenActive;
+		if (this.isExternalHandoff) {
+			this.isExternalHandoff = false;
+			this.isSuspended = false;
+		}
+
+		if (alt) {
+			this.writeBestEffort(
+				stdout,
+				ansiEscapes.enterAlternativeScreen +
+					eraseScreenHome +
+					(this.altScreenMouseTracking ? enableMouseTracking : '') +
+					hideCursorEscape,
+			);
+			// 刚擦过屏：对空白整帧画，期间视口变了也不再 `2J`
+			this.altPreviousScreen = undefined;
+			this.altViewport = getWindowSize(stdout);
+		} else {
+			this.writeBestEffort(
+				stdout,
+				eraseScreenHome + ansiEscapes.exitAlternativeScreen + hideCursorEscape,
+			);
+			this.suspendedScreen ??= this.previousScreen;
+			this.previousScreen = undefined;
+		}
+
+		this.cursorHidden = true;
+		this.resumeFromHandoff?.();
+		if (this.interactive && !this.options.debug) {
+			this.calculateLayout();
+			this.onRender();
+		} else {
+			this.writeBestEffort(stdout, bsu + esu);
+		}
+
+		this.writeBestEffort(stdout, '\u001B[?1004h');
+		if (supportsExtendedKeys()) {
+			this.writeBestEffort(stdout, reassertExtendedKeysSequence);
+		}
 	}
 
 	async suspendTerminal(callback: () => void | Promise<void>): Promise<void>;
