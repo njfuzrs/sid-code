@@ -85,9 +85,9 @@
 
 | 模式 | 底座：开 | 底座：关 | CLI：开 | CLI：关 |
 | --- | --- | --- | --- | --- |
-| bracketed paste `?2004` | next `components/App.tsx:259`（`enableInputModes`，raw mode 0 → 1 时，`:525`）；`:348` Ctrl+Z 恢复且计数 > 0 时 | next `components/App.tsx:270` 计数归零时（`releaseRawMode`）；`:362` Ctrl+Z 挂起时；`ink.tsx:988` TTY 卸载时再关一次 | `packages/cli/src/ui/utils/terminalCapabilityManager.ts:261` | 同文件 `:50`（退出清理） |
+| bracketed paste `?2004` | next `components/App.tsx:259`（`enableInputModes`，raw mode 0 → 1 时，`:525`）；`:348` Ctrl+Z 恢复且计数 > 0 时 | next `components/App.tsx:270` 计数归零时（`releaseRawMode`）；`:362` Ctrl+Z 挂起时；`ink.tsx:1006` TTY 卸载时再关一次 | `packages/cli/src/ui/utils/terminalCapabilityManager.ts:261` | 同文件 `:50`（退出清理） |
 | focus reporting `?1004` | 同上；另 `components/App.tsx:352` 恢复时 TTY 再补一次 | 同上 | — | — |
-| kitty 键盘 / modifyOtherKeys | 同上，`supportsExtendedKeys()`（`terminal/extended-keys.ts:114`）为真时追加；`ink.tsx:586` stdin 静默 > 5s 后整段重申（I1c） | 同上（扩展键开没开都关） | `terminalCapabilityManager.ts:254` / `:258` | 同文件 `:48` / `:49` |
+| kitty 键盘 / modifyOtherKeys | 同上，`supportsExtendedKeys()`（`terminal/extended-keys.ts:114`）为真时追加；`ink.tsx:604` stdin 静默 > 5s 后整段重申（I1c） | 同上（扩展键开没开都关） | `terminalCapabilityManager.ts:254` / `:258` | 同文件 `:48` / `:49` |
 | 鼠标跟踪 `?1000/1002/1006` | `components/AlternateScreen.tsx:52`（进 alt-screen）；`ink.tsx:440` / `:1127` / `:1184`（resize、SIGCONT、自愈时重开） | `ink.tsx:1743` 卸载时无条件关 | `packages/cli/src/ui/contexts/MouseContext.tsx:45`（Copy Mode 切换） | 同文件 `:50` |
 | 自动换行 `?7` | — | — | `packages/cli/src/ui/fullscreen.ts:19`（关） | 同文件 `:24`（恢复） |
 | 光标显示 `?25` | — | `ink.tsx:1754` 卸载时显示 | — | — |

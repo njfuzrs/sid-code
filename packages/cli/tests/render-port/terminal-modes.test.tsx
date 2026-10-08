@@ -10,7 +10,6 @@
  */
 import { describe, expect, test } from "bun:test";
 import { join, resolve } from "node:path";
-import { detectExtendedKeys } from "@sid-code/tui/terminal/extended-keys.ts";
 
 const ROOT = resolve(import.meta.dir, "../../../..");
 const FIXTURE = join(import.meta.dir, "fixtures/terminal-modes-app.tsx");
@@ -181,57 +180,23 @@ describe("I4: 卸载时再关一次", () => {
 });
 
 describe("I4: 扩展键判定（只看环境变量）", () => {
-  // 期望值是 legacy 子进程实测；纯函数这边逐条断言，两套底座各抽样跑子进程
+  // 期望值是 legacy 子进程实测；全量矩阵（纯函数逐条）在 `packages/tui/tests/extended-keys.test.ts`，
+  // 这里两套底座各跑子进程抽样，确认底座真的按判定结果写字节
   const MATRIX: [Record<string, string>, boolean][] = [
     [{}, false],
-    [{ TERM: "xterm-256color" }, false],
-    [{ TERM_PROGRAM: "iTerm.app" }, true],
-    [{ TERM_PROGRAM: "WezTerm" }, true],
-    [{ TERM_PROGRAM: "ghostty" }, true],
     [{ TERM_PROGRAM: "kitty" }, true],
-    [{ TERM_PROGRAM: "tmux" }, true],
-    [{ TERM_PROGRAM: "vscode" }, false],
-    [{ TERM_PROGRAM: "Apple_Terminal" }, false],
-    [{ TERM_PROGRAM: "Ghostty" }, false], // 大小写敏感
-    [{ TERM: "xterm-kitty" }, true],
-    [{ TERM: "foo-kitty-bar" }, true],
+    [{ TERM_PROGRAM: "Ghostty" }, false],
     [{ TERM: "xterm-ghostty" }, true],
-    [{ TERM: "xterm-ghostty-x" }, false],
-    [{ TERM: "tmux" }, true],
-    [{ TERM: "tmux-256color" }, false],
-    [{ TERM: "windows-terminal" }, true],
-    [{ KITTY_WINDOW_ID: "1" }, true],
-    [{ KITTY_WINDOW_ID: "" }, false], // 空串 = 没设
-    [{ WT_SESSION: "1" }, true],
-    [{ TMUX: "/tmp/x,1,0" }, true],
-    [{ STY: "1" }, false],
-    // TERM_PROGRAM 优先于 TERM 原值与 TMUX；TERM 的 kitty / ghostty 优先于 TERM_PROGRAM
+    [{ KITTY_WINDOW_ID: "" }, false],
     [{ TERM_PROGRAM: "vscode", TMUX: "/x" }, false],
-    [{ TERM_PROGRAM: "vscode", TERM: "xterm-kitty" }, true],
-    [{ TERM_PROGRAM: "Apple_Terminal", TERM: "xterm-ghostty" }, true],
-    // 非白名单终端的信号排在 KITTY_WINDOW_ID / WT_SESSION 之前，排在 TMUX 之后
-    [{ STY: "1", KITTY_WINDOW_ID: "1" }, false],
     [{ STY: "1", TMUX: "/x" }, true],
-    [{ TILIX_ID: "1", WT_SESSION: "1" }, false],
-    [{ TILIX_ID: "1", KITTY_WINDOW_ID: "1" }, true],
     [{ SSH_TTY: "1", WT_SESSION: "1" }, true],
-    [{ SSH_TTY: "1", TERM: "tmux" }, false],
-    // IDE 内置终端信号最优先
     [{ CURSOR_TRACE_ID: "1", TERM: "xterm-kitty" }, false],
-    [{ TERMINAL_EMULATOR: "JetBrains-JediTerm", TERM_PROGRAM: "kitty" }, false],
-    [{ VisualStudioVersion: "1", TERM_PROGRAM: "kitty" }, false],
-    [{ __CFBundleIdentifier: "com.jetbrains.goland", TERM_PROGRAM: "kitty" }, false],
-    [{ __CFBundleIdentifier: "com.microsoft.VSCode", TERM_PROGRAM: "kitty" }, true],
-    [{ VSCODE_GIT_ASKPASS_MAIN: "/a/cursor/b", TERM_PROGRAM: "kitty" }, false],
     [{ VSCODE_GIT_ASKPASS_MAIN: "/a/Cursor.app/b", TERM_PROGRAM: "kitty" }, true],
   ];
 
-  test("I4: 纯函数逐条", () => {
-    for (const [env, want] of MATRIX) expect([env, detectExtendedKeys(env)]).toEqual([env, want]);
-  });
-
   test("I4: 两套底座子进程抽样", () => {
-    for (const [env, want] of MATRIX.filter((_, i) => i % 4 === 0)) {
+    for (const [env, want] of MATRIX) {
       const expected = `${want ? ON_EXT : ON} <<mounted>> <<unmount>> ${OFF}`;
       expect([env, modes("legacy", "mount", env)]).toEqual([env, expected]);
       expect([env, modes("next", "mount", env)]).toEqual([env, expected]);
