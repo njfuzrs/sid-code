@@ -8,8 +8,11 @@
  * 刻意不收的输入：
  * - `\x1a`（Ctrl+Z）：两套底座都会给进程发 SIGSTOP 挂起，生成器进程会被停住。它的行为是契约 I7，
  *   在 `packages/cli/tests/render-port/stdin-suspend.test.tsx` 里 mock 掉 `process.kill` 单独对拍；
- * - `ESC ]` / `ESC P` / `ESC X` / `ESC ^` / `ESC _` 开头的串、`CSI ?…c` 等终端回复：属于 I3 的
- *   responseFragment 规则，归 T5.2。
+ *
+ * 终端回复（契约 I3，T5.2a）收在文件末尾的 `resp` 组：完整回复、分片（切在 1、2、中间、末字节，块间隔 10 / 80ms）、
+ * 冲刷后的残片、残片后紧跟按键，以及 APC / SOS / PM、粘贴里夹回复等边角。
+ * 刻意不收：非私有的 `CSI …$y`（如 `ESC [2026;2$y`），旧底座把它解成 shift，这是 I8 的 rxvt `$` 边角，不是回复残片，
+ * 新底座尚未对齐（2026-10-08 探针实测）。
  */
 
 export type InputCase = { name: string; chunks: Array<string | number> };
@@ -280,6 +283,123 @@ for (const s of [
 ]) {
   cases.push({ name: `pending ${JSON.stringify(s)}`, chunks: [s, 80, "z"] });
 }
+
+// —— 终端回复与残片（契约 I3，T5.2a）：名字统一以 `resp ` 开头 ——
+// 期望值由旧底座生成：完整的 DCS / OSC / 私有与次级 CSI 回复、冲刷出来的半截都不出事件；APC 原样交出
+const addResp = (name: string, chunks: Array<string | number>) =>
+  cases.push({ name: `resp ${name}`, chunks });
+// A. 旧底座 terminal-response-fragment.test.ts 的 10 条输入
+addResp("old xtversion 分片冲刷", [`${E}P>|xterm.js(6.1.0-beta.288)`, 80]);
+addResp("old ST 残尾+DA1", [`${E}\\${E}[?1;2c`]);
+addResp("old DA1 缺 c 冲刷", [`${E}[?1;2`, 80]);
+addResp("old OSC11 分片冲刷", [`${E}]11;rgb:1a1a/1b1b`, 80]);
+addResp("old 完整 xtversion", [`${E}P>|ghostty 1.2${E}\\`]);
+addResp("old 完整 DA1", [`${E}[?1;2c`]);
+addResp("old 方向键", [`${E}[A${E}[B${E}[C${E}[D`]);
+addResp("old 修饰键 home end del", [`${E}[1;5A${E}[3~${E}[H${E}[F`]);
+addResp("old 文本", ["hello world"]);
+addResp("old 单独 ESC", [E, 80]);
+// B. 完整回复 × 分片边界
+const RESPONSES: Record<string, string> = {
+  dcs: `${E}P>|xterm.js(6.1.0)${E}\\`,
+  dcsbel: `${E}P>|xterm.js(6.1.0)\x07`,
+  osc: `${E}]11;rgb:1a1a/1b1b/1c1c${E}\\`,
+  oscbel: `${E}]11;rgb:1a1a/1b1b/1c1c\x07`,
+  da1: `${E}[?62;22c`,
+  da2: `${E}[>0;276;0c`,
+  decrpm: `${E}[?2026;2$y`,
+  mok: `${E}[>4;2m`,
+  kittyq: `${E}[?31u`,
+  st: `${E}\\`,
+};
+for (const [k, s] of Object.entries(RESPONSES)) {
+  addResp(`full ${k}`, [s]);
+  addResp(`full ${k}+a`, [s + "a"]);
+  const cuts = [...new Set([1, 2, Math.floor(s.length / 2), s.length - 1])].filter(
+    (c) => c > 0 && c < s.length,
+  );
+  for (const c of cuts) {
+    addResp(`split ${k} @${c} gap10`, [s.slice(0, c), 10, s.slice(c)]);
+    addResp(`split ${k} @${c} gap80`, [s.slice(0, c), 80, s.slice(c)]);
+    addResp(`frag ${k} @${c} 冲刷`, [s.slice(0, c), 80]);
+    addResp(`frag ${k} @${c} 冲刷后 x`, [s.slice(0, c), 80, "x"]);
+    addResp(`frag ${k} @${c} 后紧跟方向键`, [s.slice(0, c) + `${E}[A`]);
+    addResp(`frag ${k} @${c} 后紧跟 a`, [s.slice(0, c) + "a", 80]);
+  }
+}
+// C. 边角
+for (const [n, s] of Object.entries({
+  apc: `${E}_abc${E}\\z`,
+  sos: `${E}Xabc${E}\\z`,
+  pm: `${E}^abc${E}\\z`,
+  "apc frag": `${E}_abc`,
+  "sos frag": `${E}Xabc`,
+  "pm frag": `${E}^abc`,
+  "?A": `${E}[?A`,
+  ">1~": `${E}[>1~`,
+  "?1;2A": `${E}[?1;2A`,
+  "=1c": `${E}[=1c`,
+  "= frag": `${E}[=1`,
+  "<frag": `${E}[<0;1`,
+  cpr: `${E}[12;5R`,
+  "st in text": `a${E}\\b`,
+  "dcs esc a": `${E}Pab${E}acd${E}\\z`,
+  "dcs esc [A": `${E}Pab${E}[Acd${E}\\z`,
+  "osc esc a": `${E}]ab${E}acd\x07z`,
+  "csi? ctrl": `${E}[?1\x01b`,
+  "csi? esc": `${E}[?${E}[A`,
+  "x dcs y": `x${E}P>|t${E}\\y`,
+  "osc c1st": `${E}]11;x\x9cz`,
+  "dcs c1st": `${E}Pab\x9cz`,
+  "csi> intermediate": `${E}[>1 q`,
+  "csi? ctrl tail": `${E}[?1\x01`,
+  "dcs nl": `${E}Pa\nb${E}\\z`,
+  "dcs ESC ESC \\": `${E}Pab${E}${E}\\z`,
+  "csi? space esc": `${E}[? ${E}[A`,
+})) {
+  addResp(`x ${n}`, [s, 80]);
+  addResp(`x ${n} +k`, [s, 80, "k"]);
+}
+addResp("x dcs 多次间隔", [`${E}Pab`, 30, "cd", 30, "ef", 80, "k"]);
+addResp("x dcs 多次间隔后 ST", [`${E}Pab`, 30, "cd", 30, `ef${E}\\k`]);
+addResp("x csi? 间隔", [`${E}[?1`, 30, ";2", 30, "c", 80, "k"]);
+addResp("x st 分片", [E, 10, "\\k"]);
+addResp("x da1 粘连两条", [`${E}[?1;2c${E}[?62c`, 80, "k"]);
+addResp("x dcs+da1", [`${E}P>|xterm.js(6.1.0)${E}\\${E}[?1;2c`, 80, "k"]);
+addResp("x dcs 切在 ESC 后 + DA1", [`${E}P>|x${E}`, 10, `\\${E}[?1;2c`, 80, "k"]);
+addResp("y apc bel", [`${E}_abc\x07z`, 80]);
+addResp("y apc esc a", [`${E}_ab${E}acd${E}\\z`, 80]);
+addResp("y apc split gap10", [`${E}_ab`, 10, `cd${E}\\z`, 80]);
+addResp("y apc split gap80", [`${E}_ab`, 80, `cd${E}\\z`, 80]);
+addResp("y apc empty", [`${E}_${E}\\z`, 80]);
+addResp("y apc +[A", [`${E}_ab${E}[A`, 80]);
+addResp("y apc @2 冲刷", [`${E}_`, 80, "k"]);
+addResp("y apc @2 +a", [`${E}_a`, 80, "k"]);
+addResp("y dcs@2 + st gap80", [`${E}P`, 80, `${E}\\k`]);
+addResp("y osc only bel", [`${E}]\x07k`]);
+addResp("y dcs only st", [`${E}P${E}\\k`]);
+addResp("y osc bel inside then st", [`${E}]a\x07b${E}\\k`]);
+addResp("y csi? final @", [`${E}[?@k`]);
+addResp("y csi> ~ then text", [`${E}[>0;1~ab`]);
+addResp("y csi? 1;2 cut esc esc", [`${E}[?1;2${E}${E}[A`, 80]);
+addResp("y csi> cut ctrl", [`${E}[>1\x01`, 80]);
+addResp("y csi? flush then k", [`${E}[?1;2`, 80, "k"]);
+addResp("y csi? M", [`${E}[?M  !k`]);
+addResp("y csi> M", [`${E}[>M abk`]);
+addResp("y csi ? at second param", [`${E}[1?ck`]);
+addResp("y csi 1;?", [`${E}[1;?ck`]);
+addResp("y csi> pending flush with intermediate", [`${E}[>1 `, 80, "k"]);
+addResp("y dcs paste inside", [`${E}Pa${E}[200~b${E}[201~c${E}\\k`, 80]);
+addResp("y text+dcs frag", [`ab${E}P>|x`, 80, "k"]);
+addResp("y meta P then", [`${E}P`, 10, "a", 80, "k"]);
+addResp("y osc @2 gap10 ctrl", [`${E}]`, 10, "\x03", 80, "k"]);
+addResp("y dcs 0x9c then st", [`${E}Pa\x9cb${E}\\k`]);
+addResp("y st split esc ST gap80", [`${E}P>|x${E}`, 80, "\\k"]);
+addResp("z paste dcs 后续", [`${E}[200~a${E}Pb${E}[201~k`, 80, "more", 80, `${E}\\z`, 80, "q"]);
+addResp("z paste dcs 后续2", [`${E}[200~a${E}Pb${E}\\c${E}[201~k`]);
+addResp("z paste osc", [`${E}[200~a${E}]b\x07c${E}[201~k`]);
+addResp("z paste csi?", [`${E}[200~a${E}[?1cb${E}[201~k`]);
+addResp("z paste apc", [`${E}[200~a${E}_b${E}[201~k`, 80, "q"]);
 
 export const INPUT_CORPUS: InputCase[] = cases;
 

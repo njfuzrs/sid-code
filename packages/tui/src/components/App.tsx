@@ -370,7 +370,11 @@ function App({
 			}
 
 			try {
-				emitInput(pendingEscape);
+				if (typeof pendingEscape === 'string') {
+					emitInput(pendingEscape);
+				} else if ('text' in pendingEscape) {
+					emitInput(pendingEscape.text, true);
+				}
 			} catch (error) {
 				console.error('[ink:error]', error);
 			}

@@ -8,6 +8,10 @@
 // - `ESC [ M` 之后再取 3 个字节（X10 鼠标），不够就等；
 // - `ESC ESC`：第一个 ESC 单独成键，第二个重新开始解析；
 // - bracketed paste 的内容与多字符文本一样，原样交出（`{text}` / `{paste}`），不经按键解码。
+// - 终端回复（T5.2a，契约 I3）：`ESC P`（DCS）/ `ESC ]`（OSC）吞到 BEL 或 `ESC \` 为止（中间的 ESC、
+//   换行、Ctrl+C 都算内容，C1 的 0x9C 不算终止符），整个丢弃；首个参数字节是 `?` / `>` 的完整 CSI 也丢弃。
+//   没收齐就挂起，冲刷时这几类半截同样丢弃。CSI 中途被 ESC / 非法字节切断的照旧原样交出。
+//   `ESC _`（APC）终止规则相同，但原样交出（`{text}`），不丢。
 
 const escape = '\u001B';
 const pasteStart = '\u001B[200~';
@@ -28,8 +32,17 @@ type ParsedSequence =
 	| {
 			readonly sequence: string;
 			readonly nextIndex: number;
+			/** `response` = 终端回复，丢弃；`text` = 原样文本（APC） */
+			readonly kind?: 'response' | 'text';
 	  }
 	| 'pending';
+
+const bel = '\u0007';
+const stringTerminator = '\u001B\\';
+
+/** 冲刷时整个丢弃的半截：DCS / OSC 串、私有 / 次级 CSI */
+const isResponseFragment = (pending: string): boolean =>
+	/^\u001B(?:[P\]]|\[[?>])/.test(pending);
 
 const isCsiParameterByte = (byte: number): boolean =>
 	byte >= 0x30 && byte <= 0x3f;
@@ -55,6 +68,11 @@ const parseCsiSequence = (
 
 		if (isFinalByte(byte)) {
 			const sequence = input.slice(startIndex, index + 1);
+			const first = input[startIndex + 2];
+			if (first === '?' || first === '>') {
+				return {sequence, nextIndex: index + 1, kind: 'response'};
+			}
+
 			if (sequence !== '\u001B[M') return {sequence, nextIndex: index + 1};
 			// X10 鼠标：终止符后面紧跟按键 / 列 / 行三个字节
 			const nextIndex = index + 4;
@@ -89,6 +107,23 @@ const parseSs3Sequence = (
 	return 'pending';
 };
 
+// DCS / OSC / APC：到 BEL 或 ST 为止，先到者为准
+const parseStringSequence = (
+	input: string,
+	startIndex: number,
+	kind: 'response' | 'text',
+): ParsedSequence => {
+	const from = startIndex + 2;
+	const belIndex = input.indexOf(bel, from);
+	const stIndex = input.indexOf(stringTerminator, from);
+	if (belIndex === -1 && stIndex === -1) return 'pending';
+	const nextIndex =
+		stIndex === -1 || (belIndex !== -1 && belIndex < stIndex)
+			? belIndex + 1
+			: stIndex + 2;
+	return {sequence: input.slice(startIndex, nextIndex), nextIndex, kind};
+};
+
 const parseEscapeSequence = (
 	input: string,
 	escapeIndex: number,
@@ -102,23 +137,42 @@ const parseEscapeSequence = (
 
 	if (next === '[') return parseCsiSequence(input, escapeIndex);
 
+	if (next === 'P' || next === ']') {
+		return parseStringSequence(input, escapeIndex, 'response');
+	}
+
+	if (next === '_') return parseStringSequence(input, escapeIndex, 'text');
+
 	if (next === 'O') {
 		const ss3 = parseSs3Sequence(input, escapeIndex);
 		if (ss3) return ss3;
 	}
 
-	// sid-code（T5.1c，I8）：块尾的 `ESC` + 中间字节（0x20–0x2F，ECMA-48 nF 序列的开头）或 `ESC _`（APC）
-	// 先挂起、等冲刷超时再交出（旧底座实测：10ms 内不出，冲刷后才出）。
-	// `ESC P` / `ESC ]` 也挂起、冲刷时整个丢弃，那是终端回复残片，归 T5.2 的 I3
+	// sid-code（T5.1c，I8）：块尾的 `ESC` + 中间字节（0x20–0x2F，ECMA-48 nF 序列的开头）
+	// 先挂起、等冲刷超时再交出（旧底座实测：10ms 内不出，冲刷后才出）
 	if (escapeIndex === input.length - 2) {
 		const byte = next.charCodeAt(0);
-		if ((byte >= 0x20 && byte <= 0x2f) || next === '_') return 'pending';
+		if (byte >= 0x20 && byte <= 0x2f) return 'pending';
 	}
 
 	// ESC + 一个码位（Alt 组合）
 	const codePoint = input.codePointAt(escapeIndex + 1)!;
 	const nextIndex = escapeIndex + 1 + (codePoint > 0xff_ff ? 2 : 1);
 	return {sequence: input.slice(escapeIndex, nextIndex), nextIndex};
+};
+
+// 粘贴内容里的 DCS / OSC / APC 串会把结束标记吞进去：先跳过整个串再找 `ESC [201~`（旧底座实测，I3）。
+// 串没收齐就当粘贴没结束
+const findPasteEnd = (input: string, from: number): number => {
+	let index = from;
+	for (;;) {
+		const endIndex = input.indexOf(pasteEnd, index);
+		const stringStart = input.slice(index).search(/\u001B[P\]_]/);
+		if (stringStart === -1 || index + stringStart > endIndex) return endIndex;
+		const parsed = parseStringSequence(input, index + stringStart, 'text');
+		if (parsed === 'pending') return -1;
+		index = parsed.nextIndex;
+	}
 };
 
 const pushText = (text: string, events: InputEvent[]): void => {
@@ -152,7 +206,7 @@ const parseKeypresses = (input: string): ParsedInput => {
 
 		if (parsedEscapeSequence.sequence === pasteStart) {
 			const afterStart = parsedEscapeSequence.nextIndex;
-			const endIndex = input.indexOf(pasteEnd, afterStart);
+			const endIndex = findPasteEnd(input, afterStart);
 			if (endIndex === -1) {
 				return pendingFrom(escapeIndex);
 			}
@@ -162,7 +216,12 @@ const parseKeypresses = (input: string): ParsedInput => {
 			continue;
 		}
 
-		events.push(parsedEscapeSequence.sequence);
+		if (parsedEscapeSequence.kind === 'text') {
+			events.push({text: parsedEscapeSequence.sequence});
+		} else if (parsedEscapeSequence.kind !== 'response') {
+			events.push(parsedEscapeSequence.sequence);
+		}
+
 		index = parsedEscapeSequence.nextIndex;
 	}
 
@@ -172,7 +231,8 @@ const parseKeypresses = (input: string): ParsedInput => {
 export type InputParser = {
 	push: (chunk: string) => InputEvent[];
 	hasPendingEscape: () => boolean;
-	flushPendingEscape: () => string | undefined;
+	/** 交出挂起的半截；终端回复残片（I3）清掉但不交出，返回 undefined */
+	flushPendingEscape: () => InputEvent | undefined;
 	reset: () => void;
 };
 
@@ -200,6 +260,8 @@ export const createInputParser = (): InputParser => {
 
 			const pendingEscape = pending;
 			pending = '';
+			if (isResponseFragment(pendingEscape)) return undefined;
+			if (pendingEscape.startsWith('\u001B_')) return {text: pendingEscape};
 			return pendingEscape;
 		},
 		reset() {
