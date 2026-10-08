@@ -2,6 +2,95 @@
 
 本文件由 scripts/generate-changelog.ts 自动生成，请勿手改。
 
+## v0.1.607 (2026-10-08)
+
+### 新功能
+- **release** · 热缓存清理恢复，OSS 归档核对通过才删，promote/rollback 自动回暖（B46 P3） (#201) `9e6b68fd`
+- **release** · 发布产物归档到 OSS，回读校验才算已归档（B46 P1） (#200) `db5dda95`
+- **mcp** · 新增 auth:"sid-backend"，设备凭据只发往 backend.url 同 origin (#173) `ed60a760`
+- **plugin** · 企业插件市场客户端（P5）与锁定后只认市场来源 (#169) `73b387f0`
+- **analytics** · 新增 tool_invoked 事件，按企业市场插件统计调用 (#168) `b8f1e40a`
+- **identity** · sid-code auth login 用飞书身份登录企业后端（P2 客户端） (#161) `cc2cd4c9`
+- **insights** · 计划对齐度（fidelity）接进 /insights（B17 / D49） (#141) `cd4889a1`
+- **sdk** · 双向流接通 can_use_tool 与 interrupt（B25/D90） (#153) `c48de6f6`
+- **trace** · 计费恒等式落到真实轨迹（B47） (#156) `cd9dea93`
+- **settings** · 未知键告警 + passthrough 入 schema（B32）；参考页可读性（B31） (#155) `6dff0f7d`
+- **hook** · B33 PermissionDenied 补齐子代理路径，其余预留事件定去留 (#151) `568417ed`
+- **telemetry** · OTLP 导出闭环——对齐 OTel GenAI 语义约定 + 官网接入文档（B41/B51/D139–D143） (#136) `aee9879c`
+- **trace** · 权限决策进轨迹（B11）+ 一次 edit 成功率（B12）+ 首页口径（D6） (#135) `8f3a671e`
+
+### 修复
+- **release** · RELEASE_KEEP_VERSIONS 默认 0 即不清理（B46 P0 止血） (#199) `e3f69782`
+- **telemetry** · 端到端核出两处口径——TTFT 取 first_content、cache_savings 单一事实源 (#196) `e01acb81`
+- **telemetry** · 可观测性缺陷 31/33/34/36/37/38——重算按事件时刻取价、provider 归因收口、Perfetto 落盘 (#195) `be39e0d5`
+- **telemetry** · 可观测性缺陷 22–27/29/30——span 脱敏、计费时段复位与去重窗口、TTFB 门禁、HITL 确认耗时、shutdown 在途批次、forked 工具埋点 (#194) `7645e130`
+- **telemetry** · 可观测性缺陷 13–20——非流式计费收口、/telemetry span 树会话内可读、JSONL 轮转口径 (#193) `e4352317`
+- **telemetry** · 可观测性缺陷 4–11——metric 队列上限、权限漏斗同口径、HITL 时长、/telemetry 与 invoke_agent token 口径 (#192) `e2633a04`
+- **agent** · 修复多代理五项 P2（F2/F4/F6/F8/F9） (#191) `846e76d1`
+- **agent** · 修复多代理四项 P1（fork / 后台闸门 / tracker / MCP 白名单） (#190) `934ef5ef`
+- **config** · 配置系统剩余四项——权限规则热更新、settings 原子写与备份、敏感字段过滤锁形状、flagSettings 死缓存（D4/D9/D11/D12） (#189) `4a5d6fc7`
+- **hook** · Hook 对齐 CC 残留回补（复核 #180 后的 20 项缺口） (#188) `2259a4ff`
+- **skill** · 修复 Skill 系统两项 P2（MCP 字段映射收敛 / 安全白名单 fail-safe） (#187) `dc47013b`
+- **command** · 批次3 argumentHint 接通补全、删死导出与空声明、新增 G3 门禁 (#186) `63d83f7a`
+- **mcp** · 进程内传输补 sanitize 与 close 通知对端，approveAll 按项目生效 (#185) `8e463c2f`
+- **telemetry** · 可观测性 P0×5 + span 树三条——外发隐私门控、计价口径、preview 脱敏、并发父子关系（缺陷 1/2/3/12/21/28/32/35） (#184) `764808b9`
+- **command** · 命令系统批次 2——记账口径、fork 降级、门控透传（D1/D2/D3/D8/D12/D13） (#183) `0b845040`
+- **mcp** · OAuth 回调/iss/脱敏/elicitation 交互（B3：D17–D22/D26/D28） (#182) `7eb3136f`
+- **mcp** · 连接生命周期与调用语义——重连有总超时、断线摘工具、非幂等调用不重放（D3/D4/D14–D16/D24/D25/D27/D29/D30） (#181) `9348f7b3`
+- **hook** · Hook 系统对齐 CC 格式与语义（批 1–6，HC1–HC45） (#180) `6cc999df`
+- **mcp** · 传输层健壮性——stderr 排空、超时 timer 清理、各传输统一应答服务器请求（D6–D12） (#179) `50a2ec53`
+- **hook** · timeout 统一为秒、env/sequential 接通、企业策略六字段接线、Project 不算企业管理（H10/H11/H12/H19–H23/H27） (#178) `17816678`
+- **todo** · 清单新增 blocked 态，兜底续推按真实推进计数，SessionEnd 只派发一次 (#177) `1714a570`
+- **hook** · SSRF 接线、输出形状校验、脱敏值兜底、disableAllHooks 保留内部 hook（H5/H8/H9/H13/H17/H18/H25/H26/H28） (#176) `ab424802`
+- **hook** · 权限请求一票否决、runtime 单路径、cwd 不拼命令串（H2/H3/H6/H7/H14/H16） (#175) `2e4237f9`
+- **hook** · 拒绝一票否决、沉默不等于批准、exit 2 一律阻塞（H24/H4/H1/H29/H15） (#172) `f1863075`
+- 无头模式 Skill 工具免预授权，撤掉必然失败的 /ide install (#171) `73822f90`
+- **housekeeping** · 粘贴截图 7 天自动清理，use 页按源码修正 (#164) `e12467b5`
+- **backend** · 七条企业通道取址统一到 backend.url (#162) `f1581f76`
+- **daemon** · B43 无人值守链路首次实测，修复 durable/daemon/webhook 共 10 处缺陷 (#160) `076f43ae`
+- **workflow** · 示例做成测试夹具 + schema 静默放行 + 两页文档修正（B19） (#139) `0b5f534a`
+- **quota** · 花费上限取更严的那个，并在交互模式接线（B18） (#140) `585e7087`
+- **extension** · 交互模式项目级扩展首次加载须确认（B20 / D63） (#142) `c52aac08`
+- **cli** · SID_CODE_DEBUG 接线到 --debug + help 环境变量反查消费者门禁（B27） (#145) `a85cc497`
+- **docs** · 参考页源头文案修正（B29） (#146) `0f5227fd`
+- **mcp** · 无头模式放行 tool_search + OAuth 授权 URL 直出（B21/B22） (#147) `c91f1e8e`
+- **review** · review 子命令改读嵌入 Skill，编译产物里可用（B24） (#149) `73386b92`
+- **config** · MCP transport 合法值从 Zod 枚举派生（B36） (#152) `fcd1a491`
+- **docs** · 参考页生成器清洗——权限模式自省、去内部编号、子键展开（B34） (#157) `08d75c7b`
+- **migrations** · 团队默认补全可重跑，迁移失败不推进水位线（B35） (#154) `4fdd49d7`
+- **docs** · 参考页门禁触发范围对齐生成器输入，叙述覆盖度改为阻断（B52） (#159) `7bbba621`
+- **trace** · auto_upload=false 与 privacy_level 接线，补全上传配置文档 (#158) `c9774978`
+- --json-schema 载荷写进 result + StructuredOutput 收尾 + 汇聚门白名单（B26） (#148) `5cc4158a`
+- **config** · 团队默认模板去掉默认轨迹上传，迁移 v6 收回老用户配置（B37） (#150) `84513bda`
+- **goal** · 评估者未配置时如实提示主模型自评（B16/D48） (#138) `bf47469d`
+- 修复官网文档错误 (#143) `ed4e1934`
+- **memory** · 记忆项目键改用 git common-dir 派生，同仓多 worktree 共享记忆（B14） (#137) `1db79019`
+- **skill** · 修复 Skill 系统七项 P1（预算封顶/总量上限/降级埋点/首轮判据/dir_path/hooks 作用域/吞异常） (#131) `e87192e9`
+- **mcp** · 修复 MCP 接入层五项 P0（D1/D2/D5/D13/D23） (#128) `aa7fb7f6`
+- **config** · 修复配置系统五项 P0（D1/D3/D6/D8/D10） (#130) `c51fcf29`
+- **command** · 修复命令系统批次 1 七项缺陷（D4/D5/D7/D9/D14/D15/D16） (#129) `bcdb0331`
+- **skill** · 修复 Skill 系统六项 P0（ask 规则/参数注入/模型路径管道/context/零工具/paths 门） (#127) `d249a344`
+- **session,checkpoint** · 修复会话持久化与检查点四项 P2（N8/N11/N12/N14） (#126) `30243b01`
+- **worktree,permission** · 修复 Worktree 隔离 W19–W27 九项缺陷 (#124) `7b74f820`
+- **worktree,permission** · 修复 Worktree 隔离 W11–W18 八项缺陷 (#123) `f0e99a46`
+- **llm** · openai parseSSE 按协议解析线格式（D1/D2/D3/D8） (#122) `4425a6fc`
+- **plan,permission** · 修复任务规划 P2-1/P2-2/P2-3/P3-1/P3-2 (#120) `f9ac4a43`
+- **worktree,permission** · 修复 Worktree 隔离 W6–W10 五项缺陷 (#118) `81d73c8d`
+
+### 文档
+- **changelog** · v0.1.607 用户视角变更说明 `1c3b83c9`
+- **blog** · main-loop 去掉「对齐 claude-code」，直接写不设轮次上限的理由 (#170) `d3e19155`
+- **extend** · extend 十页按源码现状整改，mcp list 补待审批提示 (#167) `168f9cec`
+- **team** · 六页按当前源码重写，补 downgrade 告警、删策略轮询死字段 (#166) `4e8f0537`
+- **website** · 权限、记忆、术语表三页按源码改写 (#165) `c376391c`
+- **website** · 首页与入门页对外口径整改（D1/D3/D8/D12/D14） (#163) `61c76f1f`
+- **command** · B30 定去留——/fast 与 Agent Teams 维持预留状态 (#144) `31ad54d4`
+- **website,readme** · 首页能力条与 README 现状表换成同源口径 (#125) `bea7bd1f`
+
+### 其他
+- **eval** · 会话级回放门禁——多轮前缀逐字节稳定 + 整会话计费恒等（评测接入 CI/CD P1） (#174) `013c4f5a`
+- **release** · v0.1.606 (#119) `4b0955dd`
+
 ## v0.1.606 (2026-09-30)
 
 ### 新功能
