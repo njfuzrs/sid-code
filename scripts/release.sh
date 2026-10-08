@@ -32,7 +32,7 @@
 # 东西"这个唯一价值当场消失。
 #
 # ⚠️ 旧版本清理（RELEASE_KEEP_VERSIONS）现在按 **mtime 保留最近 N 个之外，额外保护
-# 两个指针指向的版本**。不加这层保护的话：beta 泡制期连发 5 版就会把 latest 指向的
+# 两个指针指向的版本**，且窗口外的目录须 OSS 归档核对通过才删（B46 P3）。不加这层保护的话：beta 泡制期连发 5 版就会把 latest 指向的
 # 那版挤出保留窗口删掉 —— 而 latest.txt 还在指着它，形态是**所有稳定版用户装不上**
 # （404），且服务器上什么都不会报错。
 #
@@ -127,9 +127,10 @@
 #   DEPLOY_RG_PATH          服务器上预编译 ripgrep 二进制目录
 #                           （默认 /var/www/html/vendor-bin/ripgrep，与 releases 版本目录隔离，
 #                           不受旧版本清理逻辑影响；对应 fetch-ripgrep.ts 的下载根）
-#   RELEASE_KEEP_VERSIONS   服务器端保留的历史版本数（默认 0 = 不清理）。
-#                           归档层（OSS）与「已归档才删」门禁接入前，服务器是唯一原始字节，
-#                           设成 >0 会永久删除历史版本（已因此丢过 20 个版本）
+#   RELEASE_KEEP_VERSIONS   服务器端热缓存保留的版本数（默认 5；0 = 不清理）。
+#                           窗口外的目录**只有在 OSS 归档当场核对通过后**才删（B46 P3），
+#                           核对不过的保留并 warn。被删的版本仍可经 nginx 回源下载，
+#                           promote / rollback 到它时会自动从归档回暖
 #
 #   凭据来源：脚本启动时自动 source scripts/deploy.env（不入库，见 deploy.env.example 模板）。
 #   环境变量优先级高于 deploy.env 文件（已导出的同名变量不会被文件覆盖）。
@@ -190,7 +191,7 @@ DEPLOY_SSH_USER="${DEPLOY_SSH_USER:-}"
 DEPLOY_SSH_PASSWORD="${DEPLOY_SSH_PASSWORD:-}"
 DEPLOY_PATH="${DEPLOY_PATH:-/var/www/html/releases/sid-code}"
 DEPLOY_RG_PATH="${DEPLOY_RG_PATH:-/var/www/html/vendor-bin/ripgrep}"
-RELEASE_KEEP_VERSIONS="${RELEASE_KEEP_VERSIONS:-0}"
+RELEASE_KEEP_VERSIONS="${RELEASE_KEEP_VERSIONS:-5}"
 # 非负整数校验：非数字会让下面的 `[ -eq 0 ]` 报错返回 2、落进清理分支，
 # 等于一个拼错的配置值触发删除。宁可拒绝发布。
 case "$RELEASE_KEEP_VERSIONS" in
@@ -366,6 +367,28 @@ archive_remote() { # <version> <original|rebuilt>
     return 0
 }
 
+# 把 scripts/archive-ops.sh 放到服务器上，打印远端路径（verify / warm 都由它执行）
+upload_archive_ops() {
+    local remote="/tmp/sid-archive-ops-$$.sh"
+    run_scp "$SCRIPT_DIR/archive-ops.sh" "${DEPLOY_SSH_USER}@${DEPLOY_SSH_HOST}:${remote}" >/dev/null \
+        || return 1
+    echo "$remote"
+}
+
+# 回暖（B46 P3）：服务器没有该版本目录时从归档拉回 + sha256 校验后原子落位。
+# 指针只能指向热缓存里的版本 —— 不让稳定通道的流量靠 nginx 回源扛。
+# 返回 0 = 目录现在在服务器上（原本就在，或已回暖）。
+warm_remote() { # <version>
+    local ver="$1" ops out rc=0
+    ops="$(upload_archive_ops)" || { warn "回暖脚本上传失败"; return 1; }
+    out="$(run_ssh "${DEPLOY_SSH_USER}@${DEPLOY_SSH_HOST}" \
+        "ARCHIVE_PLATFORMS='${ARCHIVE_PLATFORMS}' bash '${ops}' warm '${DEPLOY_PATH}' '${ver}'; _rc=\$?; rm -f '${ops}'; exit \$_rc" 2>&1)" || rc=$?
+    printf '%s\n' "$out" | grep -v 'setlocale' | grep -v '^__WARM_' | sed 's/^/  /' || true
+    [ "$rc" -eq 0 ] || return 1
+    grep -Eqx "__WARM_(OK|PRESENT)__ ${ver}" <<<"$out" || return 1
+    return 0
+}
+
 # ─── 失败回滚（EXIT trap）───────────────────────────────────────────────────
 #
 # 为什么必须有：本脚本 `set -euo pipefail`，任何一步失败都是**立即裸退出**。而 bump-version
@@ -495,6 +518,10 @@ if [ "$DO_PROMOTE" = true ]; then
     echo ""
 
     _promote_remote_dir="${DEPLOY_PATH}/${PROMOTE_VERSION}"
+
+    # ⓪ 服务器没有就先从归档回暖（B46 P3）。热缓存清理恢复之后，promote 一个
+    # 已被淘汰的版本是合法操作；回暖失败（归档里也没有）才落到下面的 __NO_DIR__。
+    warm_remote "$PROMOTE_VERSION" || warn "从归档回暖 v${PROMOTE_VERSION} 失败（继续走目录检查）"
 
     # ① + ② 目录存在且产物齐全（按 TARGETS 的平台清单逐个点名，不数文件个数：
     # 数个数会被残留的 .part / 旧命名文件糊弄过去）
@@ -1274,13 +1301,21 @@ fi"
     # ⚠️ RELEASE_KEEP_VERSIONS=0 的语义是「不清理」，必须在拼清理命令**之前**短路。
     # 不能只把默认值改成 0：下面用的是 `tail -n +$((N+1))`，N=0 时等于 `tail -n +1`，
     # 会删掉除两个指针以外的**全部**版本目录 —— 止血当场变成事故。
-    # 归档层（OSS）接入并有「已归档才删」门禁之前，服务器是唯一原始字节，一律不删。
+    #
+    # B46 P3 之后服务器只是热缓存：窗口外的目录要 OSS 归档当场核对通过才删（见下），
+    # 被删的版本仍可经 nginx 回源下载，promote / rollback 到它时自动回暖。
     if [ "$RELEASE_KEEP_VERSIONS" -eq 0 ]; then
-        info "RELEASE_KEEP_VERSIONS=0：归档门禁未接入，跳过清理（服务器版本目录全部保留）"
+        info "RELEASE_KEEP_VERSIONS=0：跳过清理（服务器版本目录全部保留）"
+    elif ! _ops_remote="$(upload_archive_ops)"; then
+        warn "归档核对脚本上传失败：本次跳过清理（不删任何目录）"
     else
-        info "清理服务器旧版本（保留最近 ${RELEASE_KEEP_VERSIONS} 个 + 两个通道指向的版本）..."
+        info "清理服务器旧版本（保留最近 ${RELEASE_KEEP_VERSIONS} 个 + 两个通道指向的版本；其余须 OSS 归档核对通过才删）..."
         # 用普通双引号字符串构建远程命令（不用 heredoc-in-$()，规避 macOS bash 3.2 解析 bug）。
-        # 本地展开：DEPLOY_PATH / 保留数量；远程展开：$d 等（用 \$ 转义留给远端 shell）。
+        # 本地展开：DEPLOY_PATH / 保留数量 / 平台清单；远程展开：$d 等（用 \$ 转义留给远端 shell）。
+        #
+        # ⚠️ 删除前逐个目录问归档（archive-ops.sh verify），判据只认 `__ARCHIVED__ <ver>` 整行：
+        # ssh 断了、ossutil 报错、脚本没跑起来，输出里都不会有这一行 → 一律保留。
+        # 「核对不过就删」或「核对出错就跳过核对」都会把热缓存清理变回 P0 之前的永久删除。
         _keep_plus_one=$((RELEASE_KEEP_VERSIONS + 1))
         CLEANUP_CMD="cd '${DEPLOY_PATH}' 2>/dev/null || exit 0
 _pinned=\"\$(cat latest.txt 2>/dev/null | tr -d '[:space:]') \$(cat beta.txt 2>/dev/null | tr -d '[:space:]')\"
@@ -1293,8 +1328,11 @@ ls -1dt */ 2>/dev/null | tail -n +${_keep_plus_one} | while IFS= read -r d; do
     case \" \$_pinned \" in
         *\" \$d \"*) echo \"  保留 \${d}（通道指针指向它）\"; continue ;;
     esac
-    rm -rf -- \"\$d\" && echo \"  已删除旧版本 \$d\"
-done"
+    _v=\"\$(ARCHIVE_PLATFORMS='${ARCHIVE_PLATFORMS}' bash '${_ops_remote}' verify \"\$d\" \"\$d\" 2>&1 || true)\"
+    grep -qx \"__ARCHIVED__ \$d\" <<<\"\$_v\" || { echo \"  ⚠️  未归档，拒绝清理 \${d}：\$(tail -n 1 <<<\"\$_v\")\"; continue; }
+    rm -rf -- \"\$d\" && echo \"  已删除旧版本 \${d}（OSS 归档核对通过）\"
+done
+rm -f '${_ops_remote}'"
         run_ssh "${DEPLOY_SSH_USER}@${DEPLOY_SSH_HOST}" "$CLEANUP_CMD" || warn "旧版本清理失败（不影响本次发布）"
     fi
 

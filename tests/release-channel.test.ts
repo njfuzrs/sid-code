@@ -298,14 +298,19 @@ done`;
   });
 });
 
-describe("B46 P0：RELEASE_KEEP_VERSIONS=0 是「不清理」，不是「全删」", () => {
-  // 归档层接入前，服务器版本目录是唯一原始字节（已因保留窗口永久丢过 20 个版本）。
-  // 坑：清理用 `tail -n +$((N+1))`，N=0 时等于 `tail -n +1` → 删光除指针外的全部版本。
-  // 所以 0 必须在拼清理命令之前短路，且默认值必须是 0。
-
+describe("B46 P0/P3：热缓存清理——0 是「不清理」，>0 时只删 OSS 归档核对通过的目录", () => {
+  // P0：清理用 `tail -n +$((N+1))`，N=0 时等于 `tail -n +1` → 删光除指针外的全部版本。
+  // 所以 0 必须在拼清理命令之前短路。
+  // P3：默认恢复 5，但窗口外的每个目录删除前都要问一次归档（archive-ops.sh verify），
+  // 判据只认 `__ARCHIVED__ <ver>` 整行。
+  //
   // 从 release.sh 抠出**真实的**清理块（if … fi）执行，而不是手抄一份：
   // 手抄副本证明的是副本对，不是脚本对（上面 A2 那条就有这个漂移风险）。
+  // 远端的 archive-ops.sh 也是真脚本，只把 ossutil 换成 tests/fixtures/fake-ossutil.sh。
   const BLOCK_START = '    if [ "$RELEASE_KEEP_VERSIONS" -eq 0 ]; then';
+  const OPS_SH = join(ROOT, "scripts/archive-ops.sh");
+  const FAKE_OSS = join(ROOT, "tests/fixtures/fake-ossutil.sh");
+  const PLATFORMS = ["darwin-arm64", "linux-x64"];
   function cleanupBlock(): string {
     const i = RELEASE_SH.indexOf(BLOCK_START);
     expect(i).toBeGreaterThan(-1);
@@ -314,35 +319,81 @@ describe("B46 P0：RELEASE_KEEP_VERSIONS=0 是「不清理」，不是「全删�
     return RELEASE_SH.slice(i, j + "\n    fi\n".length);
   }
 
-  function runCleanup(keep: string) {
-    const dir = mkdtempSync(join(tmpdir(), "sid-keep0-"));
+  type Opts = {
+    /** 不放进归档的版本 */
+    unarchived?: string[];
+    /** 归档里 .sha256 内容被改过的版本 */
+    shaDiffers?: string[];
+    /** 归档里 tarball 大小不同的版本 */
+    sizeDiffers?: string[];
+    /** ossutil 调用整体失败 */
+    ossBroken?: boolean;
+    /** 归档核对脚本上传失败 */
+    uploadFails?: boolean;
+  };
+
+  function runCleanup(keep: string, o: Opts = {}) {
+    const root = mkdtempSync(join(tmpdir(), "sid-keep-"));
+    const dir = join(root, "srv");
+    const oss = join(root, "oss");
     const versions = ["0.1.701", "0.1.702", "0.1.703", "0.1.704"];
     const base = Date.parse("2026-08-01T00:00:00Z");
     versions.forEach((v, i) => {
-      mkdirSync(join(dir, v), { recursive: true });
+      const vd = join(dir, v);
+      mkdirSync(vd, { recursive: true });
+      const od = join(oss, "sid-code", v);
+      for (const p of PLATFORMS) {
+        const t = `sid-code-${v}-${p}.tar.gz`;
+        writeFileSync(join(vd, t), `tar ${v} ${p}`);
+        writeFileSync(join(vd, `${t}.sha256`), `deadbeef  ${t}\n`);
+        if (o.unarchived?.includes(v)) continue;
+        mkdirSync(od, { recursive: true });
+        writeFileSync(
+          join(od, t),
+          o.sizeDiffers?.includes(v) ? `tar ${v} ${p} x` : `tar ${v} ${p}`,
+        );
+        writeFileSync(
+          join(od, `${t}.sha256`),
+          o.shaDiffers?.includes(v) ? `cafebabe  ${t}\n` : `deadbeef  ${t}\n`,
+        );
+      }
       const t = new Date(base + i * 86_400_000);
-      utimesSync(join(dir, v), t, t);
+      utimesSync(vd, t, t);
     });
     writeFileSync(join(dir, "latest.txt"), "0.1.704\n");
     writeFileSync(join(dir, "beta.txt"), "0.1.704\n");
+    // 清理块最后会 rm 掉远端脚本，所以给它一份副本
+    const ops = join(root, "ops.sh");
+    writeFileSync(ops, readFileSync(OPS_SH));
     // run_ssh 桩：把远程命令在本地执行，DEPLOY_PATH 指向 tmpdir
     const script = `set -euo pipefail
 info() { echo "  $*"; }
-warn() { echo "  WARN $*" >&2; }
+warn() { echo "  WARN $*"; }
 run_ssh() { bash -c "$2"; }
+upload_archive_ops() { ${o.uploadFails ? "return 1" : `echo '${ops}'`}; }
 DEPLOY_PATH='${dir}'
 DEPLOY_SSH_USER=u; DEPLOY_SSH_HOST=h
+ARCHIVE_PLATFORMS='${PLATFORMS.join(" ")}'
 RELEASE_KEEP_VERSIONS='${keep}'
 ${cleanupBlock()}`;
-    const r = spawnSync("bash", ["-c", script], { encoding: "utf8" });
+    const r = spawnSync("bash", ["-c", script], {
+      encoding: "utf8",
+      env: {
+        ...process.env,
+        FAKE_OSS_ROOT: oss,
+        ARCHIVE_OSSUTIL: o.ossBroken ? "false" : `bash ${FAKE_OSS}`,
+        ARCHIVE_PREFIX: "oss://b/sid-code",
+      },
+    });
     const left = versions.filter((v) => existsSync(join(dir, v)));
-    rmSync(dir, { recursive: true, force: true });
-    return { r, left };
+    const opsLeft = existsSync(ops);
+    rmSync(root, { recursive: true, force: true });
+    return { r, left, opsLeft };
   }
 
-  test("默认值是 0", () => {
-    // 变异自证：改回 :-5 → 这条红
-    expect(RELEASE_SH).toContain('RELEASE_KEEP_VERSIONS="${RELEASE_KEEP_VERSIONS:-0}"');
+  test("默认值是 5（P3 门禁接入后恢复）", () => {
+    // 变异自证：改回 :-0 → 这条红
+    expect(RELEASE_SH).toContain('RELEASE_KEEP_VERSIONS="${RELEASE_KEEP_VERSIONS:-5}"');
   });
 
   test("真跑：N=0 一个版本目录都不删，并明说跳过", () => {
@@ -353,11 +404,46 @@ ${cleanupBlock()}`;
     expect(r.stdout).not.toContain("已删除旧版本");
   });
 
-  test("对照：N=1 时同一段真实代码确实会删（证明上一条不是空跑假绿）", () => {
-    const { r, left } = runCleanup("1");
+  test("对照：N=1 且全部已归档 → 窗口外的确实会删（证明下面几条不是空跑假绿）", () => {
+    const { r, left, opsLeft } = runCleanup("1");
     expect(r.status).toBe(0);
     expect(left).toEqual(["0.1.704"]);
-    expect(r.stdout).toContain("已删除旧版本");
+    expect(r.stdout).toContain("已删除旧版本 0.1.701（OSS 归档核对通过）");
+    expect(r.stdout).not.toContain("未归档");
+    // 远端核对脚本用完即删，不在服务器 /tmp 留残留
+    expect(opsLeft).toBe(false);
+  });
+
+  test("归档里没有的版本保留，并打印「未归档，拒绝清理」", () => {
+    const { r, left } = runCleanup("1", { unarchived: ["0.1.702"] });
+    expect(r.status).toBe(0);
+    expect(left).toEqual(["0.1.702", "0.1.704"]);
+    expect(r.stdout).toContain("未归档，拒绝清理 0.1.702");
+  });
+
+  test("归档的 .sha256 与服务器不同 → 保留", () => {
+    const { r, left } = runCleanup("1", { shaDiffers: ["0.1.701"] });
+    expect(left).toEqual(["0.1.701", "0.1.704"]);
+    expect(r.stdout).toMatch(/未归档，拒绝清理 0\.1\.701：.*\.sha256 与服务器内容不同/);
+  });
+
+  test("对象大小不一致 → 保留", () => {
+    const { r, left } = runCleanup("1", { sizeDiffers: ["0.1.703"] });
+    expect(left).toEqual(["0.1.703", "0.1.704"]);
+    expect(r.stdout).toMatch(/未归档，拒绝清理 0\.1\.703：.*大小不一致/);
+  });
+
+  test("ossutil 整体失败 → 一个都不删（核对出错 ≠ 核对通过）", () => {
+    const { r, left } = runCleanup("1", { ossBroken: true });
+    expect(r.status).toBe(0);
+    expect(left).toEqual(["0.1.701", "0.1.702", "0.1.703", "0.1.704"]);
+    expect(r.stdout).not.toContain("已删除旧版本");
+  });
+
+  test("核对脚本上传失败 → 跳过整次清理", () => {
+    const { r, left } = runCleanup("1", { uploadFails: true });
+    expect(left).toEqual(["0.1.701", "0.1.702", "0.1.703", "0.1.704"]);
+    expect(r.stdout).toContain("本次跳过清理");
   });
 
   test("非整数配置值拒绝发布（否则 `[ -eq 0 ]` 报错会落进清理分支）", () => {

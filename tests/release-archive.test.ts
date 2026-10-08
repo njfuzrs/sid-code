@@ -262,3 +262,130 @@ describe("release.sh 接线契约", () => {
     expect(RELEASE_SH.slice(i, j)).toMatch(/\[ "\$_have_bun" = "\$_want_bun" \] \\\n\s+\|\| fail/);
   });
 });
+
+describe("B46 P3 archive-ops.sh warm：服务器没有的版本从归档回暖", () => {
+  const OPS_SH = join(ROOT, "scripts/archive-ops.sh");
+  const runOps = (...args: string[]) =>
+    spawnSync("bash", [OPS_SH, ...args], {
+      encoding: "utf8",
+      env: {
+        ...process.env,
+        FAKE_OSS_ROOT: oss,
+        ARCHIVE_OSSUTIL: FAKE_OSS,
+        ARCHIVE_PREFIX: "oss://b/sid-code",
+        ARCHIVE_PLATFORMS: PLATFORMS.join(" "),
+      },
+    });
+  const srvRoot = () => join(dir, "srv");
+  const archiveThenEvict = () => {
+    expect(runArchive().status).toBe(0);
+    rmSync(srv, { recursive: true });
+  };
+
+  test("正向：拉回、sha256 校验、原子落位，不留暂存目录", () => {
+    archiveThenEvict();
+    const r = runOps("warm", srvRoot(), VER);
+    expect(r.stderr).toBe("");
+    expect(r.status).toBe(0);
+    expect(r.stdout.trim().split("\n").at(-1)).toBe(`__WARM_OK__ ${VER}`);
+    for (const p of PLATFORMS) {
+      expect(existsSync(join(srv, `sid-code-${VER}-${p}.tar.gz`))).toBe(true);
+    }
+    expect(readdirSync(srvRoot()).filter((n) => n.startsWith(".warm-"))).toEqual([]);
+  });
+
+  test("目录已在 → 不动它，报 PRESENT", () => {
+    const before = readdirSync(srv).sort();
+    const r = runOps("warm", srvRoot(), VER);
+    expect(r.status).toBe(0);
+    expect(r.stdout.trim()).toBe(`__WARM_PRESENT__ ${VER}`);
+    expect(readdirSync(srv).sort()).toEqual(before);
+  });
+
+  test("归档里没有 → 失败，服务器上不出现目录", () => {
+    rmSync(srv, { recursive: true });
+    const r = runOps("warm", srvRoot(), VER);
+    expect(r.status).not.toBe(0);
+    expect(r.stdout).not.toContain("__WARM_OK__");
+    expect(r.stderr).toContain("无法回暖");
+    expect(existsSync(srv)).toBe(false);
+  });
+
+  test("回读字节损坏 → 失败，不落位、不留暂存目录", () => {
+    archiveThenEvict();
+    const r = spawnSync("bash", [OPS_SH, "warm", srvRoot(), VER], {
+      encoding: "utf8",
+      env: {
+        ...process.env,
+        FAKE_OSS_ROOT: oss,
+        ARCHIVE_OSSUTIL: FAKE_OSS,
+        ARCHIVE_PREFIX: "oss://b/sid-code",
+        ARCHIVE_PLATFORMS: PLATFORMS.join(" "),
+        FAKE_OSS_CORRUPT: `sid-code-${VER}-linux-x64.tar.gz`,
+      },
+    });
+    expect(r.status).not.toBe(0);
+    expect(r.stderr).toContain("回暖 sha256 校验失败");
+    expect(existsSync(srv)).toBe(false);
+    expect(readdirSync(srvRoot()).filter((n) => n.startsWith(".warm-"))).toEqual([]);
+  });
+
+  test("verify：完整归档 → __ARCHIVED__；缺一个 tarball → __NOT_ARCHIVED__ 且退出 0", () => {
+    expect(runArchive().status).toBe(0);
+    const ok = runOps("verify", srv, VER);
+    expect(ok.status).toBe(0);
+    expect(ok.stdout.trim()).toBe(`__ARCHIVED__ ${VER}`);
+    // ls 前缀匹配陷阱：只删 tarball、留 .sha256，必须判「没归档」
+    rmSync(join(archived(), `sid-code-${VER}-linux-arm64.tar.gz`));
+    const no = runOps("verify", srv, VER);
+    expect(no.status).toBe(0);
+    expect(no.stdout).toMatch(
+      new RegExp(`^__NOT_ARCHIVED__ ${VER.replace(/\./g, "\\.")} 归档里没有`),
+    );
+  });
+});
+
+describe("B46 P3 回暖接线契约（与恢复清理同 PR 上线）", () => {
+  const ROLLBACK_SH = readFileSync(join(ROOT, "scripts/rollback.sh"), "utf8");
+
+  test("--promote：回暖在目录检查之前", () => {
+    const seg = RELEASE_SH.slice(RELEASE_SH.indexOf('if [ "$DO_PROMOTE" = true ]; then'));
+    const iWarm = seg.indexOf('warm_remote "$PROMOTE_VERSION"');
+    // 锚在代码行上，不锚注释：注释里也提到了 __NO_DIR__
+    const iCheck = seg.indexOf("echo __NO_DIR__");
+    expect(iWarm).toBeGreaterThan(-1);
+    expect(iCheck).toBeGreaterThan(iWarm);
+  });
+
+  test("rollback.sh：回暖在目录检查之前，成功判据是整行标记", () => {
+    const iWarm = ROLLBACK_SH.indexOf('archive-ops.sh" "${REMOTE}:');
+    const iCheck = ROLLBACK_SH.indexOf("_check_cmd=");
+    expect(iWarm).toBeGreaterThan(-1);
+    expect(iCheck).toBeGreaterThan(iWarm);
+    expect(ROLLBACK_SH).toContain('grep -qx "__WARM_OK__ ${TARGET_VERSION}"');
+  });
+
+  test("warm_remote 的成功判据是 __WARM_(OK|PRESENT)__ 行，不是 ssh 返回码", () => {
+    const fn = RELEASE_SH.slice(RELEASE_SH.indexOf("warm_remote() {"));
+    const body = fn.slice(0, fn.indexOf("\n}\n"));
+    expect(body).toMatch(/grep -Eqx "__WARM_\(OK\|PRESENT\)__ \$\{ver\}" <<<"\$out" \|\| return 1/);
+  });
+
+  test("清理只认 __ARCHIVED__ 整行（变异自证：去掉 -x 或改成判 NOT_ARCHIVED 都会红）", () => {
+    const seg = RELEASE_SH.slice(RELEASE_SH.indexOf("CLEANUP_CMD="));
+    expect(seg).toContain('grep -qx \\"__ARCHIVED__ \\$d\\"');
+    expect(seg.indexOf("__ARCHIVED__")).toBeLessThan(seg.indexOf("rm -rf --"));
+  });
+
+  test("回暖/核对链路不用 `… | grep -q`、不对 bucket 执行 rm", () => {
+    const ops = readFileSync(OPS_SH, "utf8");
+    const code = ops
+      .split("\n")
+      .filter((l) => !l.trim().startsWith("#"))
+      .join("\n");
+    expect(code).not.toMatch(/\|\s*grep\s+-[A-Za-z]*q/);
+    expect(code).not.toMatch(/\boss rm\b|ossutil\S*\s+rm\b/);
+  });
+
+  const OPS_SH = join(ROOT, "scripts/archive-ops.sh");
+});
