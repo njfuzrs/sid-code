@@ -2,6 +2,7 @@
 import type { ReactNode } from "react";
 import { render as upstreamRender, type RenderOptions } from "@sid-code/tui";
 import upstreamInstances from "@sid-code/tui/instances.ts";
+import upstreamDrainStdin from "@sid-code/tui/drain-stdin.ts";
 import type { RenderInstance } from "../runtime.ts";
 import { notImplementedFn } from "./not-implemented.ts";
 
@@ -14,7 +15,7 @@ export async function render(node: ReactNode, options?: NodeJS.WriteStream | Ren
   return upstreamRender(node, options);
 }
 
-export const drainStdin = notImplementedFn("drainStdin", "T5.1");
+export const drainStdin: (stdin?: NodeJS.ReadStream) => void = upstreamDrainStdin;
 export const setSuppressTerminalProbe = notImplementedFn("setSuppressTerminalProbe", "T5.2");
 
 /**

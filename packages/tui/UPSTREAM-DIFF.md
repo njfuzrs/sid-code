@@ -72,3 +72,6 @@ diff -r /tmp/ink-v711/src packages/tui/src   # 导入提交上应无输出
 | T5.1c | `src/hooks/use-input.ts` | raw mode 开关移到 layout effect（订阅仍在 passive effect）；解码挪到 App；回调抛错不再就地吞掉 | 旧底座：停用期间缓冲的字节在重新启用时被丢弃（readable 早于 handler 订阅） | I9 / I10 |
 | T5.1c | `src/input-event.ts`（新增） | `InputEvent`：自有字段 `_didStopImmediatePropagation / keypress / key / input`，原型上 `stopImmediatePropagation()`；`keypress` 只提供 `kind / ctrl / meta / shift / super / fn / sequence / raw / isPasted` | 旧底座 `internal_eventEmitter` 的事件形状 | I11 |
 | T5.1c | `src/input-parser.ts` | 块尾的 `ESC` + 中间字节（0x20–0x2F）或 `ESC _` 挂起等冲刷超时 | 旧底座：这类序列 10ms 内不出、冲刷后才出 | I8 |
+| T5.1d | `src/drain-stdin.ts`（新增） | `drainStdin`：非 TTY 不动；`read()` 到 null；原本不在 raw mode 的补一次 `setRawMode(true/false)`；全程吞错，不经 fd 直读 | 端口 `drainStdin` 的 next 实现；规则来自旧底座探针（D-5） | I5 |
+| T5.1d | `src/ink.tsx` | 新增 `detachForShutdown()`：置 `isUnmounted`、取消两条帧调度、drain、关 raw mode；不经 React 卸载、不写字节、不摘监听、不结算 exit promise | 端口 RenderInstance 的信号退出路径；旧底座探针 | X4 |
+| T5.1d | `src/components/App.tsx`、`src/ink.tsx` | `readable` 每轮第一块记时间戳，距上一块（或挂载）严格大于 5000ms 时回调 `onStdinResume`；Ink 只在 alt-screen 且开了鼠标跟踪时重写鼠标跟踪全套，不擦屏 | 外部程序可能关掉终端模式；旧底座探针 | I1c |

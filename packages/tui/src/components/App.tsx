@@ -49,6 +49,8 @@ type Props = {
 		pauseInput: () => void,
 		resumeInput: () => void,
 	) => void;
+	/** stdin 静默超过阈值后的第一块输入（I1c）：由 Ink 决定要重申哪些终端模式 */
+	readonly onStdinResume?: () => void;
 	readonly setCursorPosition: (position: CursorPosition | undefined) => void;
 	readonly interactive: boolean;
 	readonly renderThrottleMs: number;
@@ -74,6 +76,7 @@ function App({
 	onWaitUntilRenderFlush,
 	onSuspendTerminal,
 	onRegisterInputControl,
+	onStdinResume,
 	setCursorPosition,
 	interactive,
 	renderThrottleMs,
@@ -111,6 +114,11 @@ function App({
 	// Small delay to let chunked escape sequences complete before flushing as literal input.
 	// sid-code（T5.1b，I8）：上游 20ms；旧底座在 40ms 与 60ms 之间冲刷，取 50ms
 	const pendingInputFlushDelayMilliseconds = 50;
+	// sid-code（B9 / T5.1d，契约 I1c）：stdin 静默多久之后的第一块输入要先重申终端模式
+	// （期间可能有外部程序改过）。旧底座实测：严格大于 5000ms；起点是挂载时刻而不是打开 raw mode 的时刻；
+	// 读到的每一块都刷新时间戳，包括重新启用时被丢弃的那块
+	const stdinResumeThresholdMilliseconds = 5000;
+	const lastStdinChunkAtRef = useRef(Date.now());
 
 	const clearPendingInputFlush = useCallback((): void => {
 		if (!pendingInputFlushRef.current) {
@@ -307,14 +315,29 @@ function App({
 		}, pendingInputFlushDelayMilliseconds);
 	}, [clearPendingInputFlush, emitInput]);
 
+	const noteStdinChunk = useCallback((): void => {
+		const now = Date.now();
+		if (now - lastStdinChunkAtRef.current > stdinResumeThresholdMilliseconds) {
+			onStdinResume?.();
+		}
+
+		lastStdinChunkAtRef.current = now;
+	}, [onStdinResume]);
+
 	const handleReadable = useCallback((): void => {
 		clearPendingInputFlush();
 		// sid-code（T5.1c，I1b / I8）：`useInput` 回调抛错会冒出 emit，同一块里剩下的事件（以及后面的监听者）
 		// 全部作废，只打 `[ink:error]`，不退出（旧底座实测：`x\x1b[Ab` 里 x 抛错，只有 x 被收到）
 		try {
 			let chunk;
+			let isFirstChunk = true;
 			// eslint-disable-next-line @typescript-eslint/no-restricted-types
 			while ((chunk = stdin.read() as string | null) !== null) {
+				if (isFirstChunk) {
+					isFirstChunk = false;
+					noteStdinChunk();
+				}
+
 				const inputEvents = inputParserRef.current.push(chunk);
 				for (const event of inputEvents) {
 					if (typeof event === 'string') {
@@ -345,7 +368,7 @@ function App({
 		if (inputParserRef.current.hasPendingEscape()) {
 			schedulePendingInputFlush();
 		}
-	}, [stdin, emitInput, clearPendingInputFlush, schedulePendingInputFlush]);
+	}, [stdin, emitInput, clearPendingInputFlush, schedulePendingInputFlush, noteStdinChunk]);
 
 	const attachReadableListener = useCallback((): void => {
 		if (readableListenerRef.current) {

@@ -30,6 +30,7 @@ import {ClockContext, createClock, type Clock} from './clock.js';
 import {type Screen} from './screen/screen.js';
 import {serializeScreen} from './screen/serialize.js';
 import App from './components/App.js';
+import drainStdin from './drain-stdin.js';
 import {type TerminalSuspension} from './components/AppContext.js';
 import {accessibilityContext as AccessibilityContext} from './components/AccessibilityContext.js';
 import {
@@ -538,6 +539,46 @@ export default class Ink {
 		}
 	};
 
+	/**
+	 * sid-code（B9 / T5.1d，契约 X4）：信号退出路径（进程马上要退）。标记已卸载、取消排队的帧，
+	 * 把 stdin 缓冲读掉、退出 raw mode；不经 React 卸载，**不写任何终端序列**。
+	 *
+	 * 旧底座黑盒探针得来的边界（D-5）：先 drain 后关 raw mode；不 `unref`、不摘 `readable` 监听
+	 * （之后的输入照样送到 `useInput`）、不摘 SIGCONT / resize、不结算 exit promise；之后的提交不出帧，
+	 * `unmount()` 早退。所以这里刻意不走 App 的 `disableRawMode`（它会摘 readable、清计数）。
+	 */
+	detachForShutdown(): void {
+		this.isUnmounted = true;
+		this.scheduler?.cancel();
+		this.resizeScheduler.cancel();
+		const {stdin} = this.options;
+		drainStdin(stdin);
+		if (stdin.isTTY && stdin.isRaw) {
+			try {
+				stdin.setRawMode(false);
+			} catch {}
+		}
+	}
+
+	/**
+	 * sid-code（B9 / T5.1d，契约 I1c）：stdin 静默 > 5s 后的第一块输入。外部程序（tmux 切窗、锁屏恢复）可能
+	 * 关掉了鼠标跟踪，这里重新打开；**不擦屏、不重进 alt**（静默不是 alt-screen 丢失的强信号，那是 SIGCONT 的事）。
+	 * 旧底座实测只在 alt-screen 且开了鼠标跟踪时写字节，主屏 / 非 TTY 什么都不写。
+	 */
+	private readonly handleStdinResume = (): void => {
+		if (
+			!this.interactive ||
+			this.isUnmounted ||
+			this.isUnmounting ||
+			!this.altScreenActive ||
+			!this.altScreenMouseTracking
+		) {
+			return;
+		}
+
+		this.writeBestEffort(this.options.stdout, enableMouseTracking);
+	};
+
 	resolveExitPromise: (result?: unknown) => void = () => {};
 	rejectExitPromise: (reason?: Error) => void = () => {};
 	unsubscribeExit: () => void = () => {};
@@ -746,6 +787,7 @@ export default class Ink {
 					onWaitUntilRenderFlush={this.waitUntilRenderFlush}
 					onSuspendTerminal={this.suspendTerminal}
 					onRegisterInputControl={this.registerInputControl}
+					onStdinResume={this.handleStdinResume}
 				>
 					{node}
 				</App>
