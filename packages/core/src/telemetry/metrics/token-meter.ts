@@ -32,6 +32,15 @@ export interface TokenRecordParams {
    * 不要再传 0 表示「不知道」：0 会被当成真实成本。
    */
   costUSD?: number;
+  /**
+   * 本次调用的缓存节省。**调用方已有权威值时必须传**（主循环传 SessionState.calculateSavings
+   * 的结果，与 span 属性、/cost 同一个数）。缺省时才由 TokenMeter 自算（子代理路径没有这个值）。
+   *
+   * 曾经恒由 TokenMeter 自算：实际成本取调用方传入的 costUSD（带 baseURL 端点价），
+   * 全价假设却按不带 baseURL 的定价算 —— 减法两边口径不同，同一次调用 metric 与 span
+   * 给出两个数（2026-10-08 实测 0.0858 vs 0.0661）。
+   */
+  cacheSavingsUSD?: number;
   sessionId?: string;
 }
 
@@ -53,7 +62,8 @@ export class TokenMeter {
   record(params: TokenRecordParams): { costUSD: number; cacheSavingsUSD: number } {
     const { model, provider, usage, sessionId } = params;
     const costUSD = params.costUSD ?? this.calculateCost(model, usage, provider);
-    const cacheSavingsUSD = this.savingsFor(model, usage, provider, costUSD);
+    const cacheSavingsUSD =
+      params.cacheSavingsUSD ?? this.savingsFor(model, usage, provider, costUSD);
 
     const record: TokenUsageRecord = {
       model,
@@ -176,23 +186,9 @@ export class TokenMeter {
     return this.usages.length;
   }
 
-  /**
-   * 纯计算缓存节省金额，不记录数据
-   * 供 loop.ts 在 fireAfterModelEvent 前调用（Step 5 清理时使用）
-   */
-  calculateCacheSavings(
-    model: string,
-    usage: {
-      inputTokens: number;
-      outputTokens: number;
-      cacheReadInputTokens?: number;
-      cacheCreationInputTokens?: number;
-    },
-    provider?: string,
-  ): number {
-    const actualCost = this.calculateCost(model, usage as Usage, provider);
-    return this.savingsFor(model, usage as Usage, provider, actualCost);
-  }
+  // 曾有 `calculateCacheSavings()` 供 loop.ts 预算 span 属性，2026-10-08 删除：它不带 baseURL，
+  // 与 SessionState.calculateSavings（/cost 用的）是两套口径，主循环现直接用后者并透传给 record()。
+  // 留着它就是第二个事实源 —— 下一个人会顺手再用它。
 
   /**
    * 缓存节省 = 全价假设 − 实际成本。全价假设 = **promptTotal** 全按未命中输入计价。

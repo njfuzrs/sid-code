@@ -734,50 +734,6 @@ describe("TelemetryHookProbe", () => {
 });
 
 // ============================================================
-// TokenMeter.calculateCacheSavings
-// ============================================================
-describe("TokenMeter.calculateCacheSavings", () => {
-  test("无缓存时返回 0", () => {
-    const meter = new TokenMeter(null, (_model, usage) => {
-      // 简单定价：input $1/M, output $3/M
-      return (usage.inputTokens * 1 + usage.outputTokens * 3) / 1_000_000;
-    });
-
-    const savings = meter.calculateCacheSavings("test-model", {
-      inputTokens: 1000,
-      outputTokens: 500,
-    });
-    expect(savings).toBe(0);
-  });
-
-  test("有缓存时返回正确的节省金额", () => {
-    const meter = new TokenMeter(null, (_model, usage) => {
-      // 简单定价：input $10/M, output $30/M, cacheRead $1/M
-      const inputCost = (usage.inputTokens * 10) / 1_000_000;
-      const outputCost = (usage.outputTokens * 30) / 1_000_000;
-      const cacheReadCost = ((usage.cacheReadInputTokens ?? 0) * 1) / 1_000_000;
-      return inputCost + outputCost + cacheReadCost;
-    });
-
-    const savings = meter.calculateCacheSavings("test-model", {
-      inputTokens: 1000,
-      outputTokens: 500,
-      cacheReadInputTokens: 5000,
-    });
-    // noCacheCost = (1000*10 + 500*30) / 1M = 0.025
-    // actualCost  = (1000*10 + 500*30 + 5000*1) / 1M = 0.03
-    // savings = max(0, 0.025 - 0.03) = 0（这个定价模型下缓存反而更贵）
-    // 但实际上 calculateCacheSavings 用的是 noCacheUsage（不传缓存字段）
-    // noCacheCost = (1000*10 + 500*30) / 1M = 0.025
-    // actualCost  = (1000*10 + 500*30 + 5000*1) / 1M = 0.03
-    // 这里 noCacheUsage 不传 cacheRead，所以 noCacheCost 不含 cacheRead
-    // savings = max(0, 0.025 - 0.03) = 0
-    // 需要一个更合理的定价模型来测试
-    expect(savings).toBeGreaterThanOrEqual(0);
-  });
-});
-
-// ============================================================
 // TokenMeter → OTel GenAI Inference Token Metrics（B51 ①）
 // ============================================================
 describe("TokenMeter 按 GenAI 规范拆分 token metric", () => {

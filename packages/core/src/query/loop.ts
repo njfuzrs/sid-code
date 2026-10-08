@@ -53,6 +53,7 @@ import {
   getStreamSnapshot,
   clearStreamSnapshot,
   clearAllSnapshots,
+  takeFirstContentTtft,
 } from "../trace/stream-observer.ts";
 import { runBackgroundTask } from "../agent/background-task-gate.ts";
 import { getSleepLedger, describeSleep } from "@sid-code/shared/utils/sleep-detect.ts";
@@ -2450,8 +2451,11 @@ export async function* queryLoop(loopConfig: QueryLoopConfig): AsyncGenerator<Qu
 
       // ─── 处理流式响应 ───
       const perfHandle = getPerfTimer().start(`llm_request_${state.turnCount}`);
-      let ttftMs: number | undefined;
-      const ttftStart = performance.now();
+      // TTFT 不在这里自己计：曾用下方 processStream 的可视文本回调计时，纯 tool_use /
+      // thinking 轮恒 undefined（2026-10-08 端到端实测 3 轮只有 end_turn 那轮有值）。
+      // 改为取 lifecycle 层 first_content 的同一个值（首个任意内容 chunk、每次 fetch 单独计），
+      // 见 stream-observer.ts `_firstContentTtft`。这里先丢弃残留，保证 AfterModel 读到的只来自本轮。
+      takeFirstContentTtft(state.turnCount);
 
       let response: import("../llm/types.ts").AccumulatedResponse;
       // 本轮耗时基准与两类「非业务时长」扣除量。同 netTimeouts 声明在 try 之外，
@@ -2754,10 +2758,7 @@ export async function* queryLoop(loopConfig: QueryLoopConfig): AsyncGenerator<Qu
             deps.processStream(
               stream,
               (_text) => {
-                if (ttftMs === undefined) {
-                  ttftMs = performance.now() - ttftStart;
-                }
-                // 流式文本通过 QueryEngine 层的 onStreamText 回调桥接
+                // 流式文本通过 QueryEngine 层的 onStreamText 回调桥接；TTFT 见上方 takeFirstContentTtft
               },
               undefined,
               // Fix 3（同类路径根治）：把本轮 turn 级 controller 透传进 stream-processor，
@@ -3222,9 +3223,18 @@ export async function* queryLoop(loopConfig: QueryLoopConfig): AsyncGenerator<Qu
         /* 中断检测失败绝不影响主循环 */
       }
 
-      const cacheSavingsUSD = loopConfig.tokenMeter
-        ? loopConfig.tokenMeter.calculateCacheSavings(config.model, response.usage, config.provider)
-        : 0;
+      // 缓存节省：与 thisCost 走**同一个** SessionState（同 provider + 同 baseURL 端点价），
+      // 也与 /cost 累加的 stats.cacheSavingsUSD 同一个函数 —— 单一事实源。
+      // 曾经走 tokenMeter.calculateCacheSavings（不传 baseURL），而 metric 侧又拿带 baseURL 的
+      // thisCost 去减不带 baseURL 的全价，于是同一次调用 span 与 metric 给出两个数
+      // （2026-10-08 实测 0.0661 vs 0.0858），两个都不等于 /cost 显示的那个。
+      // 这个值同时经 AfterModel 透传给 TokenMeter.record，metric 不再自己另算。
+      const cacheSavingsUSD = sessionState.calculateSavings(
+        config.model,
+        response.usage,
+        config.provider,
+        config.baseURL,
+      );
 
       if (loopConfig.quotaManager) {
         loopConfig.quotaManager.recordRequest(
@@ -3441,7 +3451,8 @@ export async function* queryLoop(loopConfig: QueryLoopConfig): AsyncGenerator<Qu
             cost_usd: thisCost,
             api_duration_ms: apiDuration,
             cache_savings_usd: cacheSavingsUSD,
-            ttft_ms: ttftMs,
+            // 首个任意内容 chunk 的 TTFT（与 StreamPhase(first_content) 同值），纯 tool_use 轮也有
+            ttft_ms: takeFirstContentTtft(state.turnCount),
             provider: config.provider, // T12.3：Provider 维度标记
             base_url: config.baseURL, // 端点维度：区分同模型不同渠道，便于排查 + 重算精确计费
             // P2-6：取走 provider 侧暂存的网关请求标识（读一次即清，见 api/request-id.ts）。
@@ -5644,6 +5655,16 @@ export async function* queryLoop(loopConfig: QueryLoopConfig): AsyncGenerator<Qu
                 config.provider,
                 config.baseURL,
               ),
+              // 与主循环同一单一事实源（见主循环 cacheSavingsUSD 处注释）：不传则 TokenMeter
+              // 会退回自算，span 记 0、metric 记自算值 —— 又回到两套口径
+              cache_savings_usd: sessionState.calculateSavings(
+                config.model,
+                summaryResponse.usage,
+                config.provider,
+                config.baseURL,
+              ),
+              // 总结轮 index = turnCount + 1（与上方 setSseDumpContext 同口径）
+              ttft_ms: takeFirstContentTtft(state.turnCount + 1),
               provider: config.provider,
               base_url: config.baseURL,
               gateway_request_id: takeLastRequestId(),

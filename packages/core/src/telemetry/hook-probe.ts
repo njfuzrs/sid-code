@@ -366,6 +366,8 @@ export class TelemetryHookProbe {
         },
         // 缺省时由 TokenMeter 按 model 定价算（不再 `?? 0`：0 会被当成真实成本）
         costUSD: input.llm_response.cost_usd,
+        // 与下方 span 属性同一个值：metric 与 span 不得各算各的（2026-10-08 实测两数不等）
+        cacheSavingsUSD: input.llm_response.cache_savings_usd,
         sessionId: this.config.sessionId,
       });
     }

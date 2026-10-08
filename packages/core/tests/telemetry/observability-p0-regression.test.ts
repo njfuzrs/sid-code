@@ -260,11 +260,6 @@ describe("缺陷 12 / 32：TokenMeter 的成本与节省", () => {
     const full = (10_000 * 1 + 100 * 5) / 1_000_000;
     expect(cacheSavingsUSD).toBeCloseTo(full - actual, 12);
     expect(cacheSavingsUSD).toBeGreaterThan(0);
-    // calculateCacheSavings（loop.ts 在用）同口径
-    expect(meter.calculateCacheSavings("claude-sonnet-4", usage, "anthropic")).toBeCloseTo(
-      full - actual,
-      12,
-    );
   });
 
   test("缺陷 12：OpenAI 族口径不变（inputTokens 已含命中）", () => {
