@@ -13,6 +13,7 @@
  *   - 并发由 Scheduler 控制(cap = min(16, cores-2))
  */
 
+import { AsyncLocalStorage } from "node:async_hooks";
 import { Scheduler } from "./scheduler.ts";
 import { getLogger } from "../debug/logger.ts";
 import { Journal, computeFingerprint } from "./journal.ts";
@@ -119,6 +120,52 @@ export class BudgetExceededError extends Error {
   }
 }
 
+/**
+ * run 已被中止（ESC / task_stop / 外部 signal）后又发起 agent()。
+ * 单独的类型是为了让 parallel/pipeline 认出它并**穿透**，而不是吞成 null 让 workflow 显示 complete。
+ */
+export class WorkflowAbortedError extends Error {
+  constructor() {
+    super("[workflow] run 已被中止，不再发起新的 agent()。");
+    this.name = "WorkflowAbortedError";
+  }
+}
+
+/**
+ * 「整个 run 该停」的闸门类错误：预算耗尽 / runaway 上限 / 中止 / 严格 phase 对账失败。
+ * parallel/pipeline 只把**单项失败**落 null，这几类必须穿透到 execute() 的 catch——
+ * 否则闸门触发了却只表现为结果集少几项（缺陷文档 P1-2：绿着坏掉）。
+ */
+export function isRunFatalError(err: unknown): boolean {
+  return (
+    err instanceof BudgetExceededError ||
+    err instanceof AgentLimitError ||
+    err instanceof WorkflowAbortedError ||
+    err instanceof UndeclaredPhaseError
+  );
+}
+
+/**
+ * 调用作用域：resume 缓存键的结构性前缀 + 该作用域内的 phase 声明。
+ *
+ * 为什么不用全局自增的 callIndex 当缓存键（P0-3）：pipeline/parallel 下 agent() 的**调用时刻**
+ * 由上游真实耗时决定，全局序号编码的是完成顺序，不是脚本位置——两次 run 时序一变，
+ * 同 prompt 的并行分支就会互相拿到对方的缓存（cc #63102 的串台形态）。
+ * 作用域键 = 路径（parallel 第 i 个 thunk / pipeline 第 i 条 item 链 / 子 workflow）+
+ * 作用域内的顺序号。作用域内是顺序执行的，所以键只由脚本结构决定。
+ *
+ * phase 声明也挂在作用域上（P1-8）：并发的子 workflow 各在自己的作用域里，
+ * 不再争同一个实例字段。经 AsyncLocalStorage 传播（实测 Bun 下穿透 vm context 的 await 链）。
+ */
+interface CallScope {
+  /** 键前缀；根作用域为空串，保证纯串行脚本的键 "0","1",… 与老 journal 的 callIndex 一致 */
+  readonly prefix: string;
+  /** 作用域内下一个结构位置的序号（agent / parallel / pipeline / workflow 共用） */
+  next: number;
+  /** 该作用域对账用的 meta.phases（空集 = 不对账） */
+  readonly phases: ReadonlySet<string>;
+}
+
 /** 单 run agent 数超限错误 */
 export class AgentLimitError extends Error {
   constructor() {
@@ -139,8 +186,10 @@ export class WorkflowRuntime {
   private readonly progress?: ProgressSink;
   private readonly signal: AbortSignal;
   private readonly journal?: Journal;
-  /** meta.phases 声明的标题（空集 = 不对账） */
-  private declaredPhases: ReadonlySet<string>;
+  /** 根作用域（脚本顶层；也承载 meta.phases 声明） */
+  private readonly rootScope: CallScope;
+  /** 当前调用作用域（parallel/pipeline/子 workflow 内由它切换） */
+  private readonly scopeStore = new AsyncLocalStorage<CallScope>();
   /** 严格对账：未声明标题直接抛错 */
   private readonly strictPhases: boolean;
   /** 已经告警过的未声明标题（同一标题只告警一次，避免循环里刷屏） */
@@ -163,7 +212,7 @@ export class WorkflowRuntime {
     this.signal = opts.signal ?? new AbortController().signal;
     this.journal = opts.journal;
     this.args = opts.args;
-    this.declaredPhases = new Set(opts.declaredPhases ?? []);
+    this.rootScope = { prefix: "", next: 0, phases: new Set(opts.declaredPhases ?? []) };
     this.strictPhases = opts.strictPhases ?? false;
 
     const budgetTotal = opts.budgetTotal ?? null;
@@ -190,20 +239,40 @@ export class WorkflowRuntime {
     this.localSpent += tokens;
   }
 
+  /** 当前调用作用域（不在任何 parallel/pipeline/子 workflow 内时是根作用域） */
+  private get scope(): CallScope {
+    return this.scopeStore.getStore() ?? this.rootScope;
+  }
+
+  /** 在当前作用域内占一个结构位置，返回子作用域的键前缀 */
+  private childPrefix(kind: "p" | "l" | "w"): string {
+    const cur = this.scope;
+    return `${cur.prefix}${cur.next++}${kind}`;
+  }
+
   /**
-   * 临时换成另一份 phase 声明跑一段逻辑（内联子 workflow 用）。
+   * 换成另一份 phase 声明跑一段逻辑（内联子 workflow 用）。
    *
    * 子 workflow 复用父 runtime 的调度器/计数器/预算，但它的 phase() 该对它**自己**的
    * meta.phases 对账——沿用父的声明会把子脚本的合法 phase 全判成未声明。
-   * 跑完（含抛错）恢复原声明，父脚本后续的对账不受影响。
+   * 声明挂在新的调用作用域上而不是实例字段：并发跑的兄弟子 workflow 互不串台（P1-8），
+   * 子脚本的 agent() 也拿到独立的结构性缓存键前缀。
    */
   async withDeclaredPhases<T>(phases: readonly string[], fn: () => Promise<T>): Promise<T> {
-    const prev = this.declaredPhases;
-    this.declaredPhases = new Set(phases);
-    try {
-      return await fn();
-    } finally {
-      this.declaredPhases = prev;
+    const scope: CallScope = {
+      prefix: `${this.childPrefix("w")}/`,
+      next: 0,
+      phases: new Set(phases),
+    };
+    return this.scopeStore.run(scope, fn);
+  }
+
+  /** 闸门：中止 / 预算。agent() 入口查一次，取到调度槽位后再查一次（P0-4/P1-3）。 */
+  private checkGates(): void {
+    if (this.signal.aborted) throw new WorkflowAbortedError();
+    // 预算硬门:达上限即抛(对齐 cc:spent 达 total 后 agent() 抛错)
+    if (this.budget.total !== null && this.budget.remaining() <= 0) {
+      throw new BudgetExceededError(this.budget.total, this.budget.spent());
     }
   }
 
@@ -211,27 +280,25 @@ export class WorkflowRuntime {
 
   /** agent(prompt, opts?) */
   private agent = async (prompt: string, opts?: AgentOpts): Promise<unknown> => {
-    // 预算硬门:达上限即抛(对齐 cc:spent 达 total 后 agent() 抛错)
-    if (this.budget.total !== null && this.budget.remaining() <= 0) {
-      throw new BudgetExceededError(this.budget.total, this.budget.spent());
-    }
+    this.checkGates();
     // runaway 后备闸
     if (this.callCounter >= MAX_AGENTS_PER_RUN) {
       throw new AgentLimitError();
     }
     const callIndex = this.callCounter++;
+    const scope = this.scope;
+    const key = `${scope.prefix}${scope.next++}`;
     const phase = opts?.phase ?? this.currentPhase;
     const label = opts?.label ?? `agent#${callIndex}`;
     const ctx: AgentCallContext = { callIndex, phase, label, signal: this.signal };
 
-    // M5: resume —— 命中 journal 缓存直接返回(同序号 + 指纹一致)。
-    // 指纹不一致(脚本被改过)或未记录 → 真跑。注:callCounter 已自增,序号语义稳定。
+    // M5: resume —— 命中 journal 缓存直接返回(同结构键 + 指纹一致 + 未越过失效游标)。
     const fingerprint = computeFingerprint(prompt, opts as Record<string, unknown> | undefined);
     if (this.journal) {
-      const hit = this.journal.lookup(callIndex, fingerprint);
+      const hit = this.journal.lookup(key, fingerprint);
       if (hit) {
         this.progress?.onAgentStart?.(ctx);
-        this.progress?.onAgentEnd?.(ctx, hit.result !== null);
+        this.progress?.onAgentEnd?.(ctx, true);
         return hit.result;
       }
     }
@@ -239,18 +306,30 @@ export class WorkflowRuntime {
     this.progress?.onAgentStart?.(ctx);
     // 经调度器执行(背压);runner 抛错时这里也抛,由 parallel/pipeline 决定吞成 null
     try {
-      const result = await this.scheduler.run(() => this.runner.run(prompt, opts, ctx));
-      // M5: 真跑成功后追加 journal(失败不缓存,下次重跑)
-      this.journal?.record({ callIndex, fingerprint, result, label, phase });
+      const result = await this.scheduler.run(() => {
+        // P0-4：扇出时 N 个 agent() 的入口检查全发生在任何一个花钱之前，
+        // 所以取到槽位后必须再查一次——此时排在前面的 agent 的花费已经计入。
+        this.checkGates();
+        return this.runner.run(prompt, opts, ctx);
+      }, this.signal);
+      // 子代理被中止时通常返回 null 而不抛；不把它当「这一项算不出来」，让整个 run 失败
+      if (this.signal.aborted) throw new WorkflowAbortedError();
+      // M5: 只缓存成功结果。runner 的契约是「失败/被 skip → null」，null 一律不写盘，
+      // 否则一次 flake 会在 resume 时被永久回放（P0-1）。
+      if (result !== null) {
+        this.journal?.record({ callIndex, key, fingerprint, result, label, phase });
+      }
       this.progress?.onAgentEnd?.(ctx, result !== null);
       return result;
     } catch (err) {
       this.progress?.onAgentEnd?.(ctx, false);
+      // 中止引发的任何错误(调度队列 reject / 子代理抛 AbortError)统一换成可穿透的类型
+      if (this.signal.aborted && !isRunFatalError(err)) throw new WorkflowAbortedError();
       throw err;
     }
   };
 
-  /** parallel(thunks) — 屏障语义,抛错落 null,调用本身不 reject */
+  /** parallel(thunks) — 屏障语义,单项抛错落 null;闸门类错误(isRunFatalError)让调用本身 reject */
   private parallel = async (thunks: Array<() => Promise<unknown>>): Promise<unknown[]> => {
     if (!Array.isArray(thunks)) {
       throw new TypeError("[workflow] parallel(thunks) 的参数必须是数组(每项是 () => Promise)");
@@ -260,12 +339,20 @@ export class WorkflowRuntime {
         `[workflow] parallel 一次最多 ${MAX_ITEMS_PER_CALL} 项,收到 ${thunks.length} 项。请分批或用更粗的粒度。`,
       );
     }
-    // 每个 thunk 包成"抛错落 null";调度器已在 agent() 内部,这里只负责聚合
+    // 每个 thunk 包成"抛错落 null";调度器已在 agent() 内部,这里只负责聚合。
+    // 每个 thunk 跑在自己的作用域里，缓存键由下标决定而不是完成顺序（P0-3）。
+    // 闸门类错误（预算/上限/中止/严格对账）穿透，让整个调用 reject（P1-2）。
+    const base = this.childPrefix("p");
     return Promise.all(
-      thunks.map((thunk) =>
-        Promise.resolve()
-          .then(() => thunk())
-          .catch(() => null),
+      thunks.map((thunk, i) =>
+        this.scopeStore
+          .run({ prefix: `${base}${i}/`, next: 0, phases: this.scope.phases }, () =>
+            Promise.resolve().then(() => thunk()),
+          )
+          .catch((err) => {
+            if (isRunFatalError(err)) throw err;
+            return null;
+          }),
       ),
     );
   };
@@ -289,29 +376,40 @@ export class WorkflowRuntime {
         try {
           // 第一个 stage 收原始 item 作为 prevResult(对齐 cc:stage1 收 item)
           prev = await stages[s]!(prev, item, index);
-        } catch {
-          // 某 stage 抛错 → 该 item 落 null,跳过剩余 stage(其他 item 不受影响)
+        } catch (err) {
+          // 闸门类错误穿透(P1-2);其余 → 该 item 落 null,跳过剩余 stage(其他 item 不受影响)
+          if (isRunFatalError(err)) throw err;
           return null;
         }
       }
       return prev;
     };
-    return Promise.all(items.map((item, i) => runItemChain(item, i)));
+    // 每条 item 链一个作用域：链内 stage 顺序执行，键只取决于 (item 下标, 链内序号)（P0-3）
+    const base = this.childPrefix("l");
+    const phases = this.scope.phases;
+    return Promise.all(
+      items.map((item, i) =>
+        this.scopeStore.run({ prefix: `${base}${i}/`, next: 0, phases }, () =>
+          runItemChain(item, i),
+        ),
+      ),
+    );
   };
 
   /** phase(title) — 切换当前进度组。
    *  P2-4：有声明列表时对账。未声明的标题默认告警但照常分组（进度树对不上不该崩），
    *  严格模式（strictPhases）下抛 UndeclaredPhaseError 拒绝继续。 */
   private phase = (title: string): void => {
-    if (this.declaredPhases.size > 0 && !this.declaredPhases.has(title)) {
+    const declared = this.scope.phases;
+    if (declared.size > 0 && !declared.has(title)) {
       if (this.strictPhases) {
-        throw new UndeclaredPhaseError(title, [...this.declaredPhases]);
+        throw new UndeclaredPhaseError(title, [...declared]);
       }
       if (!this.warnedPhases.has(title)) {
         this.warnedPhases.add(title);
         getLogger().warn(
           "WORKFLOW",
-          `phase("${title}") 未在 meta.phases 中声明，已作为独立分组（声明: ${[...this.declaredPhases].join("、") || "无"}）`,
+          `phase("${title}") 未在 meta.phases 中声明，已作为独立分组（声明: ${[...declared].join("、") || "无"}）`,
         );
       }
     }
