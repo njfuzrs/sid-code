@@ -433,7 +433,7 @@ export const ENV_DECISIONS: Record<string, string> = {
   SESSIONNAME:
     "**不读**：旧底座只拿它认 cygwin，cygwin 不在扩展键白名单里，认出来与认不出来的可观察行为相同",
   SID_CODE_DEBUG:
-    "保留（CLI 也读，见 help）。next 底座还不读：渲染层日志进 debug 输出归 T7.1a（E1）",
+    "保留（CLI 也读，见 help）。next：`stderr-guard.ts` 加载时读，恰为 `1` / `true` 才把被吞的裸 stderr 记进 `console.error`（E1）",
   SID_CODE_DISABLE_MOUSE_CLICKS:
     "保留。next 底座还不读：点击处理随选区接入归 T6.2b（M1 已钉住它不改变底座写的字节）",
   SID_DISABLE_TAB_STATUS: NEXT("`hooks/use-tab-status.ts`、`ink.tsx`（O2）"),
