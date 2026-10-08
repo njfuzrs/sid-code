@@ -66,8 +66,58 @@ const SELECTOR_SYSTEM = `你是记忆选择器。给定当前查询和可用记�
 规则：
 - 最多选择 ${MEMORY_LIMITS.RECALL_MAX} 个
 - 只选真正相关的，宁缺毋滥；不相关时返回空数组
+- 若给出了「最近成功使用的工具」：不要选只讲这些工具用法 / API 说明的参考类记忆（模型正在顺利使用它们）；
+  但仍要选讲这些工具的坑、已知问题、注意事项的记忆
+- 若给出了「最近失败的工具」：优先选与这些工具相关的记忆（用法与坑都算）
 - 只返回 JSON，格式：{"selected": ["filename1.md", "filename2.md"]}
 - 不要输出任何其他文字`;
+
+/** 最近工具使用记录：名字 + 这次调用是否失败（缺陷 2：召回的第三个输入）。 */
+export interface RecentToolUse {
+  name: string;
+  failed: boolean;
+}
+
+/**
+ * 把最近工具使用整理成选择器 user 消息的一段（无记录时返回空串）。
+ *
+ * 同一工具既成功过又失败过，算「失败」—— 失败才需要推它的坑，宁可多推一条。
+ */
+export function formatRecentTools(recent: readonly RecentToolUse[] | undefined): string {
+  if (!recent || recent.length === 0) return "";
+  const failed = new Set<string>();
+  const ok = new Set<string>();
+  for (const t of recent) (t.failed ? failed : ok).add(t.name);
+  for (const n of failed) ok.delete(n);
+  const lines: string[] = [];
+  if (ok.size > 0) lines.push(`最近成功使用的工具: ${[...ok].join(", ")}`);
+  if (failed.size > 0) lines.push(`最近失败的工具: ${[...failed].join(", ")}`);
+  return lines.length > 0 ? `\n\n${lines.join("\n")}` : "";
+}
+
+/** 真 UTF-8 字节（不是 `.length`，中文 1 字符 = 3 字节）。 */
+function utf8Bytes(s: string): number {
+  return Buffer.byteLength(s, "utf8");
+}
+
+/**
+ * 按行边界把正文截到 `maxBytes` 以内（缺陷 4 单文件上限）。
+ * 截断时追加一行提示，指回磁盘上的完整文件。
+ */
+export function truncateRecallBody(body: string, maxBytes: number, filePath: string): string {
+  if (utf8Bytes(body) <= maxBytes) return body;
+  const note = `\n\n…（正文超过 ${maxBytes} 字节已截断，完整内容请 Read ${filePath}）`;
+  const budget = Math.max(0, maxBytes - utf8Bytes(note));
+  const out: string[] = [];
+  let used = 0;
+  for (const line of body.split("\n")) {
+    const cost = utf8Bytes(line) + 1;
+    if (used + cost > budget) break;
+    out.push(line);
+    used += cost;
+  }
+  return out.join("\n") + note;
+}
 
 /** 从 LLM 输出解析选中的文件名 */
 export function parseSelection(text: string, validFilenames: Set<string>): string[] {
@@ -93,8 +143,11 @@ export function parseSelection(text: string, validFilenames: Set<string>): strin
  * @param memoryDir    记忆目录
  * @param sideQuery    轻量 LLM 调用
  * @param opts.signal           中止信号
- * @param opts.recentTools      最近使用过的工具（其相关 reference 记忆会被排除，避免重复）
+ * @param opts.recentTools      最近的工具调用及成败。交给选择器：成功在用的工具不推它的
+ *                              用法参考，但仍推坑；失败的工具优先推（缺陷 2）
  * @param opts.alreadySurfaced  已经注入过的记忆文件名（避免多轮重复注入）
+ * @param opts.sessionBytesUsed 本会话（两次压缩之间）已注入的召回正文字节数；
+ *                              达到 `RECALL_SESSION_MAX_BYTES` 即不再召回（缺陷 4）
  */
 export async function findRelevantMemories(
   query: string,
@@ -102,12 +155,19 @@ export async function findRelevantMemories(
   sideQuery: SideQueryFn,
   opts?: {
     signal?: AbortSignal;
-    recentTools?: readonly string[];
+    recentTools?: readonly RecentToolUse[];
     alreadySurfaced?: ReadonlySet<string>;
+    sessionBytesUsed?: number;
   },
 ): Promise<RelevantMemory[]> {
   const log = getLogger();
   if (!existsSync(memoryDir)) return [];
+  // 会话累计预算用完即停 —— 连 sideQuery 都不发，省的是整次调用。
+  let remaining = MEMORY_LIMITS.RECALL_SESSION_MAX_BYTES - (opts?.sessionBytesUsed ?? 0);
+  if (remaining <= 0) {
+    log.debug("MEMORY", "记忆召回: 本会话累计预算已用完，跳过");
+    return [];
+  }
 
   const headers = await scanMemoryFiles(memoryDir, opts?.signal);
   if (headers.length === 0) return [];
@@ -124,7 +184,7 @@ export async function findRelevantMemories(
   try {
     const out = await sideQuery({
       system: SELECTOR_SYSTEM,
-      user: `Query: ${query}\n\nAvailable memories:\n${manifest}`,
+      user: `Query: ${query}\n\nAvailable memories:\n${manifest}${formatRecentTools(opts?.recentTools)}`,
       maxTokens: 256,
       signal: opts?.signal,
     });
@@ -156,9 +216,20 @@ export async function findRelevantMemories(
     if (!header) continue;
     try {
       const raw = await Bun.file(header.filePath).text();
-      const body = stripFrontmatter(raw);
+      const body = truncateRecallBody(
+        stripFrontmatter(raw),
+        MEMORY_LIMITS.RECALL_FILE_MAX_BYTES,
+        header.filePath,
+      );
       const warning = buildFreshnessWarning(header.mtimeMs);
       const content = warning ? `<system-reminder>${warning}</system-reminder>\n\n${body}` : body;
+      // 会话累计预算：放不下就停（不跳过去挑更小的 —— 选择器给的顺序就是相关度顺序）。
+      const cost = utf8Bytes(content);
+      if (cost > remaining) {
+        log.debug("MEMORY", `记忆召回: 会话累计预算不足，停在 ${filename}`);
+        break;
+      }
+      remaining -= cost;
       results.push({
         path: header.filePath,
         filename: header.filename,
