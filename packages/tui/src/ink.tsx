@@ -37,6 +37,11 @@ import {enableMouseTracking} from './terminal/modes.js';
 import {supportsSynchronizedOutput} from './terminal/sync-output.js';
 import App from './components/App.js';
 import drainStdin from './drain-stdin.js';
+import {
+	disableInputModesSequences,
+	reassertExtendedKeysSequence,
+	supportsExtendedKeys,
+} from './terminal/extended-keys.js';
 import {type TerminalSuspension} from './components/AppContext.js';
 import {accessibilityContext as AccessibilityContext} from './components/AccessibilityContext.js';
 import {
@@ -586,16 +591,20 @@ export default class Ink {
 	/**
 	 * sid-code（B9 / T5.1d，契约 I1c）：stdin 静默 > 5s 后的第一块输入。外部程序（tmux 切窗、锁屏恢复）可能
 	 * 关掉了鼠标跟踪，这里重新打开；**不擦屏、不重进 alt**（静默不是 alt-screen 丢失的强信号，那是 SIGCONT 的事）。
-	 * 旧底座实测只在 alt-screen 且开了鼠标跟踪时写字节，主屏 / 非 TTY 什么都不写。
+	 * 旧底座实测：鼠标跟踪只在 alt-screen 且开了跟踪时重写；扩展键开着时主屏也重申 kitty / modifyOtherKeys（I4）；
+	 * 非 TTY 什么都不写。
 	 */
 	private readonly handleStdinResume = (): void => {
-		if (
-			!this.interactive ||
-			this.isUnmounted ||
-			this.isUnmounting ||
-			!this.altScreenActive ||
-			!this.altScreenMouseTracking
-		) {
+		if (!this.interactive || this.isUnmounted || this.isUnmounting) {
+			return;
+		}
+
+		// sid-code（B9 / T5.3a，契约 I4）：扩展键开着时先整段重申（主屏 / alt 都写，一次写入），再按上面重开鼠标
+		if (supportsExtendedKeys()) {
+			this.writeBestEffort(this.options.stdout, reassertExtendedKeysSequence);
+		}
+
+		if (!this.altScreenActive || !this.altScreenMouseTracking) {
 			return;
 		}
 
@@ -990,6 +999,12 @@ export default class Ink {
 				if (!this.interactive) {
 					this.options.stdout.write(this.options.debug ? '\n' : bsu + '\n' + esu);
 				} else if (!this.options.debug) {
+					// sid-code（B9 / T5.3a，契约 I4）：TTY 卸载时把输入模式再关一次（一次写入），与 raw mode 用没用过无关。
+					// 旧底座实测在非 TTY 下不写；它与光标 / 鼠标 / 进度清除的相对顺序归 X3（T7.1b）
+					this.writeBestEffort(
+						this.options.stdout,
+						disableInputModesSequences.join(''),
+					);
 					this.options.stdout.write(bsu + showCursorEscape + esu);
 					this.cursorHidden = false;
 					this.previousScreen = undefined;

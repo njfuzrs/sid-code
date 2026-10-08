@@ -15,6 +15,12 @@ import {createInputParser} from '../input-parser.js';
 import decodeKeypress, {rawInput} from '../parse-keypress.js';
 import {InputEvent} from '../input-event.js';
 import {scheduleTerminalProbe} from '../terminal-probe.js';
+import {
+	disableInputModesSequences,
+	enableExtendedKeysSequences,
+	enableInputModesSequences,
+	supportsExtendedKeys,
+} from '../terminal/extended-keys.js';
 import AppContext, {type SuspendTerminal} from './AppContext.js';
 import StdinContext from './StdinContext.js';
 import StdoutContext from './StdoutContext.js';
@@ -237,13 +243,35 @@ function App({
 		detachReadableListener();
 	}, [clearPendingInputFlush, detachReadableListener]);
 
+	// sid-code（B9 / T5.3a，契约 I4）：输入相关的终端模式跟着 raw mode 计数开关，每段一次独立写入。
+	// 旧底座实测：stdout 非 TTY 也写；开在 `ref` + `setRawMode(true)` 之后，关在 `setRawMode(false)` 之前
+	const writeModeSequences = useCallback(
+		(sequences: readonly string[]): void => {
+			for (const sequence of sequences) {
+				try {
+					stdout.write(sequence);
+				} catch {}
+			}
+		},
+		[stdout],
+	);
+
+	const enableInputModes = useCallback((): void => {
+		writeModeSequences(enableInputModesSequences);
+		if (supportsExtendedKeys()) {
+			writeModeSequences(enableExtendedKeysSequences);
+		}
+	}, [writeModeSequences]);
+
 	// sid-code（T5.1c，I10）：计数归零时只关 raw mode、摘 readable，不清解析器状态也不取消待冲刷的 ESC ——
-	// 同一次提交里换了一个 `useInput` 组件时，切换前缓冲的半截转义仍会冲刷给新组件（旧底座如此）
+	// 同一次提交里换了一个 `useInput` 组件时，切换前缓冲的半截转义仍会冲刷给新组件（旧底座如此）。
+	// I4：先关模式（扩展键开没开都关）再关 raw mode
 	const releaseRawMode = useCallback((): void => {
+		writeModeSequences(disableInputModesSequences);
 		stdin.setRawMode(false);
 		stdin.unref();
 		detachReadableListener();
-	}, [stdin, detachReadableListener]);
+	}, [stdin, detachReadableListener, writeModeSequences]);
 
 	// 退出 / 卸载：彻底放手，连解析器状态一起清掉
 	const disableRawMode = useCallback((): void => {
@@ -311,26 +339,27 @@ function App({
 		}
 
 		isSuspendedRef.current = false;
+		// I4：输入模式只在计数仍 > 0 时重开（与 0 → 1 同一套，含扩展键）；挂起期间计数降到 0 的不写
 		if (rawModeEnabledCount.current > 0) {
 			stdin.setEncoding('utf8');
 			stdin.ref();
 			stdin.setRawMode(true);
 			attachReadableListenerRef.current?.();
+			enableInputModes();
 		}
 
-		writeStdout('\u001B[?2004h\u001B[?1004h');
 		if (stdout.isTTY) {
-			writeStdout('\u001B[?25l\u001B[?1004h');
+			writeModeSequences(['\u001B[?25l', '\u001B[?1004h']);
 		}
 
 		// I2：恢复时计数仍 > 0 才重新探查（计数为 0 时旧底座不发）
 		if (rawModeEnabledCount.current > 0) {
 			scheduleTerminalProbe(stdout);
 		}
-	}, [stdin, stdout, writeStdout]);
+	}, [stdin, stdout, enableInputModes, writeModeSequences]);
 
 	const suspendProcess = useCallback((): void => {
-		writeStdout('\u001B[>4m\u001B[<u\u001B[?1004l\u001B[?2004l');
+		writeModeSequences(disableInputModesSequences);
 		stdin.setRawMode(false);
 		stdin.unref();
 		detachReadableListener();
@@ -344,7 +373,14 @@ function App({
 		// 必须在 SIGSTOP 之前挂：进程恢复时第一件事就是派发 SIGCONT
 		process.once('SIGCONT', resumeFromSuspend);
 		process.kill(process.pid, 'SIGSTOP');
-	}, [stdin, stdout, writeStdout, detachReadableListener, resumeFromSuspend]);
+	}, [
+		stdin,
+		stdout,
+		writeStdout,
+		writeModeSequences,
+		detachReadableListener,
+		resumeFromSuspend,
+	]);
 
 	const emitInput = useCallback(
 		(input: string, raw = false, isPasted = false): void => {
@@ -485,6 +521,8 @@ function App({
 					stdin.ref();
 					stdin.setRawMode(true);
 					attachReadableListener();
+					// I4：bracketed paste / focus（扩展键按 supportsExtendedKeys），写在探查之前
+					enableInputModes();
 					// I2：每次 0 → 1 都探查一次（不只首次挂载）
 					scheduleTerminalProbe(stdout);
 				}
@@ -497,7 +535,14 @@ function App({
 				releaseRawMode();
 			}
 		},
-		[isRawModeSupported, stdin, stdout, attachReadableListener, releaseRawMode],
+		[
+			isRawModeSupported,
+			stdin,
+			stdout,
+			attachReadableListener,
+			releaseRawMode,
+			enableInputModes,
+		],
 	);
 
 	const handleSetBracketedPasteMode = useCallback(
