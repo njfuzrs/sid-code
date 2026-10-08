@@ -11,6 +11,7 @@
 #   ./scripts/release.sh --no-commit             # 不自动提交 bump（tag 会与版本号错位，仅特殊情况）
 #   ./scripts/release.sh --upload-team-defaults <file>  # 单独上传团队默认配置（不打版本号）
 #   ./scripts/release.sh --upload-ripgrep <dir> <version>  # 单独上传预编译 ripgrep 二进制（不打版本号）
+#   ./scripts/release.sh --archive-existing     # 把服务器上现存的版本目录逐个归档到 OSS（标 original，可重跑）
 #
 # ─── 发布通道（2026-08-24 接入，A2）────────────────────────────────────────────
 #
@@ -245,6 +246,7 @@ ALLOW_DIRTY=false
 NO_COMMIT=false
 DO_PROMOTE=false
 PROMOTE_VERSION=""
+DO_ARCHIVE_EXISTING=false
 
 while [ $# -gt 0 ]; do
     case "$1" in
@@ -259,6 +261,7 @@ while [ $# -gt 0 ]; do
         --skip-test) DO_TEST=false; shift ;;
         --allow-dirty) ALLOW_DIRTY=true; shift ;;
         --no-commit) NO_COMMIT=true; shift ;;
+        --archive-existing) DO_ARCHIVE_EXISTING=true; shift ;;
         --upload-team-defaults)
             DO_UPLOAD_TEAM_DEFAULTS=true
             TEAM_DEFAULTS_FILE="${2:-}"
@@ -335,6 +338,32 @@ run_scp() {
     else
         scp "${_SSH_OPTS[@]}" "$@"
     fi
+}
+
+# ─── 归档到 OSS（B46 P1）────────────────────────────────────────────────────
+#
+# 服务器版本目录只是热缓存，OSS（sid-code-releases，私有 + 版本控制 + 发布凭据无删除权）
+# 才是事实源。真正干活的是 scripts/archive-version.sh：scp 到服务器上执行，因为
+# OSS 只对 ECS 所在 VPC 开放、ossutil 凭据也只在 ECS 上。
+#
+# 成功判据只认脚本最后一行 `__ARCHIVE_OK__ <ver>` —— 它在**整目录回读 + sha256sum -c +
+# .sha256 逐字比对**之后才打印。ssh 返回 0 不够：ossutil cp 遇到已存在对象是 skip 且返回 0。
+ARCHIVE_PLATFORMS="$(for t in "${TARGETS[@]}"; do printf '%s ' "${t#*:}"; done)"
+ARCHIVE_PLATFORMS="${ARCHIVE_PLATFORMS% }"
+
+archive_remote() { # <version> <original|rebuilt>
+    local ver="$1" prov="$2" remote_script out rc=0
+    remote_script="/tmp/sid-archive-version-$$.sh"
+    run_scp "$SCRIPT_DIR/archive-version.sh" "${DEPLOY_SSH_USER}@${DEPLOY_SSH_HOST}:${remote_script}" \
+        || { warn "归档脚本上传失败"; return 1; }
+    # `|| rc=$?`：set -e 下裸 `out="$(失败命令)"` 会直接退出整个脚本，拿不到返回码
+    out="$(run_ssh "${DEPLOY_SSH_USER}@${DEPLOY_SSH_HOST}" \
+        "ARCHIVE_PLATFORMS='${ARCHIVE_PLATFORMS}' bash '${remote_script}' '${DEPLOY_PATH}/${ver}' '${ver}' '${prov}'; _rc=\$?; rm -f '${remote_script}'; exit \$_rc" 2>&1)" || rc=$?
+    printf '%s\n' "$out" | grep -v 'setlocale' | sed 's/^/  /' || true
+    [ "$rc" -eq 0 ] || return 1
+    # here-string 而非 `printf | grep -q`：后者在 pipefail 下会因 SIGPIPE 偶发判失败
+    grep -qx "__ARCHIVE_OK__ ${ver}" <<<"$out" || return 1
+    return 0
 }
 
 # ─── 失败回滚（EXIT trap）───────────────────────────────────────────────────
@@ -646,10 +675,54 @@ if [ "$DO_UPLOAD_RIPGREP" = true ]; then
     exit 0
 fi
 
+# ─── 把服务器上现存的版本目录逐个归档（B46 P1 第 4 步，可重跑）───
+#
+# 现存目录都是当年 --upload 的原始字节，所以一律标 original；身份字段（commit / built_at /
+# bun_version）由 archive-version.sh 从产物二进制里取，不取目录 mtime、也不取 tag。
+# 已归档过的对象会被跳过（不覆盖），所以重跑是安全的：只补缺、再整体回读校验一次。
+# 一个版本失败不中断其余版本，但最终返回码非 0。
+
+if [ "$DO_ARCHIVE_EXISTING" = true ]; then
+    require_ssh_user
+    echo ">>> 归档服务器现存版本目录到 OSS ..."
+    _existing="$(run_ssh "${DEPLOY_SSH_USER}@${DEPLOY_SSH_HOST}" \
+        "cd '${DEPLOY_PATH}' && for d in */; do d=\"\${d%/}\"; case \"\$d\" in [0-9]*.[0-9]*.[0-9]*) echo \"\$d\" ;; esac; done" 2>/dev/null \
+        | grep -E '^[0-9]+\.[0-9]+\.[0-9]+$' || true)"
+    [ -n "$_existing" ] || fail "服务器 ${DEPLOY_PATH} 下没有任何版本目录"
+    _ok_n=0; _bad=""
+    for _v in $_existing; do
+        echo ""
+        info "v${_v} ..."
+        if archive_remote "$_v" original; then
+            _ok_n=$((_ok_n + 1))
+        else
+            _bad="${_bad} ${_v}"
+        fi
+    done
+    echo ""
+    [ -z "$_bad" ] || fail "归档失败的版本:${_bad}（成功 ${_ok_n} 个；可直接重跑，已归档对象不会被覆盖）"
+    ok "全部 ${_ok_n} 个版本已归档并回读校验通过"
+    exit 0
+fi
+
 echo "=== sid-code 发布构建 ==="
 echo ""
 
 cd "$ROOT"
+
+# ─── bun 版本门禁：构建用的 bun 必须等于 .bun-version ───
+#
+# CI 早就用 bun-version-file 钉了 .bun-version，发布脚本却从没校验过，于是产物用的是
+# 「发布机恰好装了哪个 bun」。实测 0.1.602 是 Bun 1.3.14、0.1.606 是 1.4.2 编的，
+# 而 1.3.14 在本仓跑全量测试是坏的（CONTRIBUTING「环境准备」）。归档的 provenance
+# 要记的是「规定用哪个版本」，不一致就不发。
+
+_want_bun="$(tr -d '[:space:]' < "$ROOT/.bun-version" 2>/dev/null || true)"
+_have_bun="$(bun --version 2>/dev/null | tr -d '[:space:]')"
+[ -n "$_want_bun" ] || fail "读不到 $ROOT/.bun-version"
+[ "$_have_bun" = "$_want_bun" ] \
+    || fail "bun 版本不符：当前 ${_have_bun:-未安装}，.bun-version 要求 ${_want_bun}（bun upgrade 或用 bunx 切换后重跑）"
+ok "bun ${_have_bun}（= .bun-version）"
 
 # ─── 发布前门禁：全量单测（可 --skip-test 跳过）───
 
@@ -1157,6 +1230,16 @@ fi"
         fail "原子切换失败（服务器上的 v${VERSION} 保持切换前状态）"
     }
     ok "v${VERSION} 目录已完整就位"
+
+    # ─── 归档到 OSS + 回读校验（B46 P1）：没归档就不算发布 ───────────────────
+    #
+    # 放在**写任何指针之前**：失败就 fail，beta.txt / install.sh 都不动，用户侧看不到这个版本。
+    # 版本目录此时已经在服务器上了 —— 这是刻意的：归档脚本读的就是这份落地字节，
+    # 归档的 = 用户将来下载的。它留在服务器上无害（没有指针指向它），重跑带 --no-bump 即可。
+    echo ">>> 归档 v${VERSION} 到 OSS 并回读校验 ..."
+    archive_remote "$VERSION" original \
+        || fail "归档失败 —— 本次不算发布：beta.txt 与 install.sh 均未改动（v${VERSION} 目录已在服务器上，无指针指向它；修复后 --no-bump --upload 重跑）"
+    ok "v${VERSION} 已归档（回读 sha256 校验通过）"
 
     run_scp "$RELEASE_DIR/install.sh" "${DEPLOY_SSH_USER}@${DEPLOY_SSH_HOST}:${DEPLOY_PATH}/install.sh"
 
