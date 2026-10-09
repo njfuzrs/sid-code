@@ -22,8 +22,13 @@ import { listPastes } from "../pasted-contents.ts";
 const MAX_IN_MEMORY = 500;
 
 export interface UseInputHistoryStoreReturn {
-  /** 历史记录（最新在前，去重） */
+  /** 历史记录（最新在前，去重；跨项目，供 Ctrl+R 反向搜索） */
   history: string[];
+  /**
+   * 当前项目的历史（最新在前，去重），供 ↑/↓ 灌入 TextBuffer。
+   * 按目录隔离对齐 CC：在 A 项目里按 ↑ 不该翻出 B 项目的输入。只在挂载时读一次。
+   */
+  projectHistory: string[];
   /** 添加一条历史 */
   addEntry: (text: string) => void;
 }
@@ -47,6 +52,12 @@ export function useInputHistoryStore(): UseInputHistoryStoreReturn {
   const [history, setHistory] = useState<string[]>(() =>
     readHistoryDisplays({ limit: MAX_IN_MEMORY }),
   );
+  // 项目过滤是在倒读时逐行判定的，limit 计的是命中条数，不会因别的项目输入多而被挤空。
+  // project 取不到（""）时退化为全局，不让 ↑ 变成恒空。
+  const [projectHistory] = useState<string[]>(() => {
+    const project = safeProjectRoot();
+    return readHistoryDisplays({ limit: MAX_IN_MEMORY, project: project || undefined });
+  });
 
   const addEntry = useCallback((text: string) => {
     if (!text.trim()) return;
@@ -65,7 +76,7 @@ export function useInputHistoryStore(): UseInputHistoryStoreReturn {
     });
   }, []);
 
-  return { history, addEntry };
+  return { history, projectHistory, addEntry };
 }
 
 function safeProjectRoot(): string {

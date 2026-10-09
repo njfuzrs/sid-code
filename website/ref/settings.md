@@ -18,7 +18,7 @@ settings.json 的全部可配字段、类型与默认值。
 
 <!-- AUTO-GEN:START 由 scripts/docs-gen-reference.ts 生成，勿手工编辑 -->
 
-> 共 **79** 个顶层字段，全部由 `SettingsSchema` 声明（类型/枚举/约束经运行时自省导出）。
+> 共 **80** 个顶层字段，全部由 `SettingsSchema` 声明（类型/枚举/约束经运行时自省导出）。
 > 写了表里没有的顶层键（多半是拼错）不会报错退出，但启动时会提示「未知配置项」并给出最接近的字段名。
 
 配置文件位置：`~/.sid-code/settings.json`（用户级）、`.sid-code/settings.json`（项目级，优先）、
@@ -88,6 +88,7 @@ settings.json 的全部可配字段、类型与默认值。
 | `sandboxAutoAllowBash` | boolean | — | 沙箱启用时是否自动放行 bash（少弹窗），默认 **false**。 |
 | `sanitizeEnv` | boolean | — | 是否在 bash 工具执行时清理环境变量（默认 false） |
 | `search` | object | — | 搜索（子键见[下文](#key-search)） |
+| `searchTimeoutSeconds` | number | >0 | grep/glob 底层 ripgrep 的超时秒数。缺省 20（WSL 60）；优先于环境变量 SID_GREP_TIMEOUT_SECONDS。 |
 | `sessionRetention` | object | — | 会话自动清理配置（按保留时长 / 数量）（子键见[下文](#key-sessionretention)） |
 | `showLineNumbers` | boolean | — | 代码块是否显示行号（默认 true） |
 | `speculativeClassifier` | boolean | — | 分类器并行预启动（推测执行）。默认 false。 开启后：checker 的同步分类器**放行路径**下沉到 tool-executor 三路竞争，与 UI 弹窗并行， 分类器判定安全时提前跳过弹窗（省 1-2s）。… |
