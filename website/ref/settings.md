@@ -45,7 +45,7 @@ settings.json 的全部可配字段、类型与默认值。
 | `bridge` | object | — | Bridge 远程控制配置（D14 准入） |
 | `checkpoint` | object | — | 文件快照（checkpoint）配置：每文件快照数、总容量、过期天数等（子键见[下文](#key-checkpoint)） |
 | `classifierModel` | string | — | LLM 分类器使用的模型（默认复用主循环模型 config.model） |
-| `cleanupPeriodDays` | number | >0 | 会话轨迹清理周期（天）。缺省 30（与启动清理的内置默认值一致）。 |
+| `cleanupPeriodDays` | number | >0 | 旧字段：等价于 sessionRetention.maxAge（天）。两者都写时以 maxAge 为准 |
 | `conflictDetection` | boolean | — | 并发冲突检测开关（settings.json conflictDetection）。 默认 true（启用）——Edit/Write 前检查是否有其他会话也声明了同一文件。 设为 false 关闭冲突检测（单用户独占环境 / 不想被打扰）。 |
 | `conflictSeverity` | enum | `warn` / `block` / `off` | 并发冲突严重程度阈值（settings.json conflictSeverity）。 - "warn"（默认）：检测到冲突时弹框让用户选择（stop/skip/continue/worktree） - "block"：检测到冲突时直接阻止操作（不弹框，自动按 stop 处理）… |
 | `costLimit` | number | >0 | 单会话花费上限（美元） |
@@ -241,9 +241,10 @@ settings.json 的全部可配字段、类型与默认值。
 | 子键 | 类型 | 说明 |
 |---|---|---|
 | `enabled` | boolean | 是否启用自动清理（默认 true） |
-| `maxAge` | string | 最大保留时间（如 "30d"） |
-| `maxCount` | number | 最大保留数量 |
-| `minRetention` | string | 最小保留时间（防止误删，如 "1d"） |
+| `maxAge` | string | 最大保留时间（默认 "365d"；格式 数字+h/d/w/m） |
+| `maxCount` | number | 最大保留数量（默认不限；防盘满靠 maxTotalSize） |
+| `maxTotalSize` | string | 会话 + 轨迹总体积上限（默认 "10GB"），超出才从最旧的开始删 |
+| `minRetention` | string | 最小保留时间（防止误删，默认 "1d"） |
 
 ### `statusLine` {#key-statusline}
 

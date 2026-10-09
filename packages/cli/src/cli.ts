@@ -883,6 +883,27 @@ async function handleBrowseSessions(config: Config): Promise<void> {
   }
 }
 
+/**
+ * 一次性命令的统一出口：先恢复终端、等 stdout 排空，再显式退出。
+ *
+ * 为什么不能只 return：见 main() 里会话管理命令分支的注释（early-input 让 stdin
+ * 在交互终端下保持 resume，事件循环永不为空）。先等 drain 是因为管道下裸
+ * process.exit() 会截断尚未写出的输出。
+ */
+async function exitOneShot(code = 0): Promise<never> {
+  try {
+    if (process.stdin.isTTY && process.stdin.isRaw) process.stdin.setRawMode(false);
+    process.stdin.pause();
+  } catch {
+    /* stdin 可能已销毁 */
+  }
+  await new Promise<void>((resolve) => {
+    if (process.stdout.write("")) resolve();
+    else process.stdout.once("drain", () => resolve());
+  });
+  process.exit(code);
+}
+
 /** 处理清理会话命令 */
 async function handleCleanupSessions(config: Config): Promise<void> {
   const { cleanupExpiredSessions, getRetentionSettings } =
@@ -891,7 +912,14 @@ async function handleCleanupSessions(config: Config): Promise<void> {
   try {
     const retentionSettings = getRetentionSettings(config);
     console.log("开始清理过期会话...");
-    console.log(`配置: maxAge=${retentionSettings.maxAge}, maxCount=${retentionSettings.maxCount}`);
+    console.log(
+      `配置: enabled=${retentionSettings.enabled}, maxAge=${retentionSettings.maxAge}, ` +
+        `maxCount=${retentionSettings.maxCount ?? "不限"}, maxTotalSize=${retentionSettings.maxTotalSize}`,
+    );
+    if (!retentionSettings.enabled) {
+      console.log("自动清理已关闭（sessionRetention.enabled=false），不做任何删除。");
+      return;
+    }
 
     const result = await cleanupExpiredSessions(config, retentionSettings, config.sessionId);
 
@@ -1494,29 +1522,37 @@ export async function main(): Promise<void> {
     }
 
     // 处理会话管理命令（不需要 API Key）
+    //
+    // 这几条一次性命令**必须以 exitOneShot() 收尾，不能只 return**：走到这里时
+    // bootstrap 已启动 early-input（交互终端下 stdin 被 setRawMode(true) + resume()），
+    // 另有 settings 变更监听等活引用。只 return 会让事件循环永远不空 ——
+    // 实测 `--cleanup-sessions` 在真实 pty 下打印完结果就挂住，必须 Ctrl+C。
+    // 管道 / 非 TTY 下 early-input 不启动，所以只在终端里复现，测试里很难看见。
+    // 与下面 --dump-tools 同套路；`--list-sessions` / `--delete-session` 平时走
+    // bootstrap 快速路径不经过这里，参数组合不命中快速路径时才会落到这里。
     if (cliArgs["list-sessions"]) {
       const { handleListSessions } = await import("@sid-code/core/session/commands.ts");
       await handleListSessions();
-      return;
+      return exitOneShot();
     }
     if (cliArgs["browse-sessions"]) {
       await handleBrowseSessions(config);
-      return;
+      return exitOneShot();
     }
     if (cliArgs["delete-session"]) {
       const { handleDeleteSession } = await import("@sid-code/core/session/commands.ts");
       await handleDeleteSession(cliArgs["delete-session"]);
-      return;
+      return exitOneShot();
     }
     if (cliArgs["cleanup-sessions"]) {
       await handleCleanupSessions(config);
-      return;
+      return exitOneShot();
     }
 
     // 手动触发重试队列（补传之前失败的上传）
     if (cliArgs["upload-traces"]) {
       await handleUploadTraces(config);
-      return;
+      return exitOneShot();
     }
 
     // 验证 API Key。
@@ -2687,8 +2723,17 @@ export async function main(): Promise<void> {
       const protectedIds = resumedSessionIdForCleanup ? [resumedSessionIdForCleanup] : undefined;
       cleanupExpiredSessions(config, retentionSettings, config.sessionId, protectedIds)
         .then((result) => {
-          if (result.deleted > 0 && config.debug) {
+          if (result.deleted > 0) {
+            // 删用户数据必须让人看见：此前只在 --debug 下记一行日志，用户直到想 --resume
+            // 时才发现会话没了（Claude Code#64999 投诉的正是这种「静默删除」）。
+            // 提示里直接给出关掉/调大的位置，看见的人不用再去翻文档。
             getLogger().info("CLEANUP", `自动清理: 删除 ${result.deleted} 个过期会话`);
+            app.notifyStatus(
+              "session_cleanup",
+              `已按保留策略清理 ${result.deleted} 个旧会话（保留 ${retentionSettings.maxAge}；` +
+                `可在 settings.json 的 sessionRetention 调整或关闭）`,
+              10000,
+            );
           }
         })
         .catch((err: any) => {
