@@ -23,6 +23,13 @@ const ISOLATED = process.env.SID_SELECTION_CLICK_ISOLATED === "1";
 const CLICK_CASES = 8; // M4 点击 2 条 + 禁用取值 6 条
 const BSU = `${ESC}[?2026h`;
 const ESU = `${ESC}[?2026l`;
+/**
+ * 剥掉帧外层的 DEC 2026 同步包裹再比。alt-screen 帧包不包由终端能力在模块加载时定（契约 R14，
+ * `alt-screen.test.tsx` 覆盖），宿主是 VS Code / iTerm2 时包、CI runner 上不包。这里测的是选区字节，
+ * 不剥的话本机绿、CI 两套底座一起红（B9 / T8.2 首次跑 CI 时实测）。
+ */
+const frame = (out: string) =>
+  out.startsWith(BSU) && out.endsWith(ESU) ? out.slice(BSU.length, -ESU.length) : out;
 const press = (x: number, y = 1) => `${ESC}[<0;${x};${y}M`;
 const drag = (x: number, y = 1) => `${ESC}[<32;${x};${y}M`;
 const release = (x: number, y = 1) => `${ESC}[<0;${x};${y}m`;
@@ -91,14 +98,14 @@ describe("M5 选区高亮落帧", () => {
     await send(press(1));
     s.clear();
     await send(drag(10));
-    expect(s.out()).toBe(
-      `${BSU}${ESC}[H${ESC}[31m${ESC}[48;2;255;0;0mab${ESC}[39mcdef${ESC}[1m${ESC}[4mgh${ESC}[24m${ESC}[22mij${ESC}[49m${ESC}[10;1H${ESU}`,
+    expect(frame(s.out())).toBe(
+      `${ESC}[H${ESC}[31m${ESC}[48;2;255;0;0mab${ESC}[39mcdef${ESC}[1m${ESC}[4mgh${ESC}[24m${ESC}[22mij${ESC}[49m${ESC}[10;1H`,
     );
     // 选区缩小：退出选区的单元恢复原样式
     s.clear();
     await send(drag(3));
-    expect(s.out()).toBe(
-      `${BSU}${ESC}[H${ESC}[3C${ESC}[44md${ESC}[49m${ESC}[7mef${ESC}[27m${ESC}[1m${ESC}[4mgh${ESC}[24m${ESC}[22mij${ESC}[10;1H${ESU}`,
+    expect(frame(s.out())).toBe(
+      `${ESC}[H${ESC}[3C${ESC}[44md${ESC}[49m${ESC}[7mef${ESC}[27m${ESC}[1m${ESC}[4mgh${ESC}[24m${ESC}[22mij${ESC}[10;1H`,
     );
     m.teardown();
   });
@@ -112,9 +119,7 @@ describe("M5 选区高亮落帧", () => {
       s.clear();
       await send(drag(4));
       // 已经反显的 cd 涂完还是同一个样式，帧 diff 不写它
-      expect(s.out()).toBe(
-        `${BSU}${ESC}[H${ESC}[31m${ESC}[7mab${ESC}[27m${ESC}[39m${ESC}[10;1H${ESU}`,
-      );
+      expect(frame(s.out())).toBe(`${ESC}[H${ESC}[31m${ESC}[7mab${ESC}[27m${ESC}[39m${ESC}[10;1H`);
       m.teardown();
     }
   });
@@ -123,16 +128,16 @@ describe("M5 选区高亮落帧", () => {
     const { s, m, send } = await mountAlt(["ab"]);
     s.clear();
     await send(press(1), drag(3, 4));
-    expect(s.out()).toBe(
-      `${BSU}${ESC}[H${ESC}[7mab${" ".repeat(28)}\r${ESC}[1B${" ".repeat(30)}\r${ESC}[1B${" ".repeat(30)}\r${ESC}[1B   ${ESC}[27m${ESC}[10;1H${ESU}`,
+    expect(frame(s.out())).toBe(
+      `${ESC}[H${ESC}[7mab${" ".repeat(28)}\r${ESC}[1B${" ".repeat(30)}\r${ESC}[1B${" ".repeat(30)}\r${ESC}[1B   ${ESC}[27m${ESC}[10;1H`,
     );
     expect(m.ink.copySelectionNoClear()).toBe("ab\n\n\n");
     await tick(); // 复制的 OSC 52 是异步写的，等它落地再切段
     // 缩回来：伸到内容以下的高亮要盖掉，不残留
     s.clear();
     await send(drag(3, 2));
-    expect(s.out()).toBe(
-      `${BSU}${ESC}[H\r${ESC}[3C${ESC}[1B${" ".repeat(27)}\r${ESC}[1B${" ".repeat(30)}\r${ESC}[1B   ${ESC}[10;1H${ESU}`,
+    expect(frame(s.out())).toBe(
+      `${ESC}[H\r${ESC}[3C${ESC}[1B${" ".repeat(27)}\r${ESC}[1B${" ".repeat(30)}\r${ESC}[1B   ${ESC}[10;1H`,
     );
     m.teardown();
   });
@@ -149,7 +154,7 @@ describe("M5 选区高亮落帧", () => {
     expect(s.out()).toBe("");
     m.ink.clearTextSelection();
     await tick();
-    expect(s.out()).toBe(`${BSU}${ESC}[Hhello${ESC}[10;1H${ESU}`);
+    expect(frame(s.out())).toBe(`${ESC}[Hhello${ESC}[10;1H`);
     m.teardown();
   });
 
