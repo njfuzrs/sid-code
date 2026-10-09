@@ -102,3 +102,45 @@ describe("mcp list 待审批提示", () => {
     expect(r.stdout).not.toContain("待审批");
   }, 30_000);
 });
+
+/**
+ * M1 / M4：CLI 与 TUI 加载共用 loadProjectMcpServers —— 子目录下 `mcp pending` 也能看到
+ * 祖先目录 .mcp.json 声明的 server，且能在子目录里审批它（以前报「未在项目 .mcp.json 中声明」）。
+ * 变异自证：projectDeclaredServerNames 改回只读 cwd/.mcp.json → reject 那条红。
+ */
+describe("子目录下 CLI 与加载侧同口径（M1/M4）", () => {
+  test("子目录里 pending 能列出祖先 .mcp.json 的 server，并可直接 reject", async () => {
+    const sub = join(PROJECT_DIR, "pkg", "deep");
+    mkdirSync(sub, { recursive: true });
+    writeFileSync(
+      join(PROJECT_DIR, ".mcp.json"),
+      JSON.stringify({
+        mcpServers: {
+          fs: { transport: "stdio", command: "npx", args: ["-y", "x", "/tmp"] },
+          extra: { transport: "stdio", command: "npx", args: ["-y", "extra"] },
+        },
+      }),
+    );
+    const runIn = async (cwd: string, args: string[]) => {
+      const proc = Bun.spawn(["bun", BOOTSTRAP, ...args], {
+        cwd,
+        stdin: "ignore",
+        stdout: "pipe",
+        stderr: "pipe",
+        env: { ...process.env, SID_CODE_DISABLE_PROJECT_RULES: "1", SID_CONFIG_DIR: CONFIG_DIR },
+      });
+      const [stdout, code] = await Promise.all([new Response(proc.stdout).text(), proc.exited]);
+      return { stdout, code };
+    };
+    const p = await runIn(sub, ["mcp", "pending", "--json"]);
+    expect(p.code).toBe(0);
+    // tmpdir 不是 git 仓库 ⇒ 项目身份退回 cwd，fs 在子目录下也是 pending（CC 同语义）；
+    // 这里只关心「祖先 .mcp.json 的 server 在子目录可见」
+    expect(JSON.parse(p.stdout).pending).toContain("extra");
+    const r = await runIn(sub, ["mcp", "reject", "extra"]);
+    expect(r.code).toBe(0);
+    expect(r.stdout).toContain("已拒绝 1 个");
+    const after = await runIn(sub, ["mcp", "pending", "--json"]);
+    expect(JSON.parse(after.stdout).pending).not.toContain("extra");
+  }, 60_000);
+});

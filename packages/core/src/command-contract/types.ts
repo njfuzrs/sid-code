@@ -68,6 +68,8 @@ export type DialogType =
   | "context"
   | "rewind"
   | "claude-md-external-imports"
+  // M3：项目 .mcp.json 中待审批 MCP 服务器的启动审批框
+  | "mcp-approval"
   // SEC-AUDIT-2026-07-19 P1：首次打开含危险配置的代码库时的信任门控
   | "trust";
 
@@ -107,6 +109,8 @@ export interface UnifiedCommandRegistryContract {
   loadPlugins(): Promise<number>;
   /** 失效 skill 命令缓存（skill 变更后调用）。 */
   invalidateSkillCommands(): void;
+  /** 运行时更新生效的禁用 Skill 列表（/skills enable|disable 热生效用，W1）。 */
+  setDisabledSkills(names: string[]): void;
 }
 
 // ============================================================

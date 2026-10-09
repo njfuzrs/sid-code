@@ -51,7 +51,13 @@ async function pendingHint(): Promise<string | null> {
   const { getPendingApprovalServers } = await import("@sid-code/core/mcp/approval.ts");
   const { names } = getPendingApprovalServers();
   if (names.length === 0) return null;
-  return `另有 ${names.length} 个项目级 MCP 服务器待审批（未加载），见 \`sid-code mcp pending\`。`;
+  // M3：逐个列出并标明状态（对齐 CC `claude mcp list` 的 "⏸ Pending approval"），
+  // 只给一个计数时用户看不出是哪几个。
+  const lines = names.map((n) => `  ${n}  ⏸ 待审批（启动 sid-code 时审批）`);
+  return (
+    `另有 ${names.length} 个项目级 MCP 服务器待审批（未加载），见 \`sid-code mcp pending\`:\n` +
+    lines.join("\n")
+  );
 }
 
 async function cmdList(asJson: boolean): Promise<void> {
@@ -249,16 +255,14 @@ async function cmdPending(asJson: boolean): Promise<void> {
   );
 }
 
-/** 读取项目 .mcp.json 里声明的所有 server 名（不论审批状态）。 */
-function projectDeclaredServerNames(): string[] {
-  const mcpJsonPath = resolve(process.cwd(), ".mcp.json");
-  if (!existsSync(mcpJsonPath)) return [];
-  try {
-    const parsed = JSON.parse(readFileSync(mcpJsonPath, "utf-8"));
-    return Object.keys(parsed?.mcpServers ?? {});
-  } catch {
-    return [];
-  }
+/**
+ * 读取项目 .mcp.json 里声明的所有 server 名（不论审批状态）。
+ * M4：与加载侧共用 loadProjectMcpServers（cwd 向上逐级），否则子目录下 TUI 能看到的
+ * server，CLI 会报「未在项目 .mcp.json 中声明」。
+ */
+async function projectDeclaredServerNames(): Promise<string[]> {
+  const { loadProjectMcpServers } = await import("@sid-code/core/mcp/project-files.ts");
+  return Object.keys(loadProjectMcpServers(process.cwd()).servers);
 }
 
 /**
@@ -284,10 +288,10 @@ async function cmdApproveReject(args: string[], approve: boolean): Promise<void>
   await loadConfig({});
   const approval = await import("@sid-code/core/mcp/approval.ts");
   const { names: pendingNames, projectPath } = approval.getPendingApprovalServers();
-  const declared = projectDeclaredServerNames();
+  const declared = await projectDeclaredServerNames();
 
   if (declared.length === 0) {
-    console.log("当前目录没有 .mcp.json，或其中未声明任何 MCP 服务器。");
+    console.log("当前目录及其祖先目录没有 .mcp.json，或其中未声明任何 MCP 服务器。");
     return;
   }
 
@@ -298,7 +302,10 @@ async function cmdApproveReject(args: string[], approve: boolean): Promise<void>
     return;
   }
 
-  const cwd = projectPath || process.cwd();
+  // M4：审批 key 按项目身份（git root），并顺手清掉旧版按 cwd 记的 key
+  const { getMcpProjectRoot } = await import("@sid-code/core/mcp/project-files.ts");
+  const cwd = projectPath || (await getMcpProjectRoot(process.cwd()));
+  const legacy = process.cwd();
   const done: string[] = [];
   for (const t of targets) {
     if (!declared.includes(t)) {
@@ -307,8 +314,8 @@ async function cmdApproveReject(args: string[], approve: boolean): Promise<void>
     }
     // 直接写持久化状态（approveProjectServer/rejectProjectServer 是幂等的互斥写），
     // 再顺手把它从 pending 快照里摘掉（若在）。
-    if (approve) approval.approveProjectServer(t, cwd);
-    else approval.rejectProjectServer(t, cwd);
+    if (approve) approval.approveProjectServer(t, cwd, legacy);
+    else approval.rejectProjectServer(t, cwd, legacy);
     if (approve) approval.approvePendingServer(t);
     else approval.rejectPendingServer(t);
     done.push(t);

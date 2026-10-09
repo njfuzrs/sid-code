@@ -1780,6 +1780,22 @@ export class App {
    * 只重载主 checker 不重新 wire，子代理拿到的仍是旧目录的规则。
    */
   private wireWorkspaceRuleReload(): void {
+    // P9（对齐 CC EnterWorktree 清 CLAUDE.md 记忆缓存）：rules.ts 没有模块级缓存，
+    // 规则快照活在 this.currentProjectRules 里，只在启动 / 文件变化 / 导入审批时重载。
+    // 不在这里重载，切进 worktree 后系统提示词仍是旧目录的 CLAUDE.md / rules。
+    // 放在 permissionChecker 判空之前：两者无关，没有 checker 时规则也要跟着换。
+    const { onWorkspaceChange: onWsChange } = require("@sid-code/core/worktree/canonical.ts");
+    onWsChange(async (dir: string) => {
+      try {
+        const newRules = await loadAllCLAUDEmd(dir);
+        if (newRules) {
+          this.applyProjectRules(newRules);
+          await this.rebuildSystemPrompt();
+        }
+      } catch (err) {
+        getLogger().warn("APP", `切换工作区后重载项目规则失败: ${err}`);
+      }
+    });
     if (!this.permissionChecker) return;
     const checker = this.permissionChecker as {
       reloadWorkspaceRules?: (dir: string) => Promise<void>;
@@ -4230,6 +4246,56 @@ export class App {
    * 等于在 App 生命周期中段重跑构造逻辑，风险远大于让用户重启一次。这个取舍要点破，
    * 不能让用户点了"信任"却发现 hook 没生效还不知道为什么。
    */
+  /**
+   * M3：待审批的项目级 MCP server（来自 loadConfig 登记的快照）。
+   * 同步读：approval.ts 是 core 里的纯模块，cli.ts 启动阶段已经 import 过，这里直接 require 缓存。
+   */
+  listPendingMcpApprovals(): Array<{ name: string; target?: string }> {
+    try {
+      const approval =
+        require("@sid-code/core/mcp/approval.ts") as typeof import("@sid-code/core/mcp/approval.ts");
+      return approval.getPendingApprovalServers().names.map((name) => {
+        const cfg = approval.getPendingApprovalConfig(name) as
+          | { command?: string; args?: string[]; url?: string }
+          | undefined;
+        const target = cfg?.url ?? [cfg?.command, ...(cfg?.args ?? [])].filter(Boolean).join(" ");
+        return { name, target: target || undefined };
+      });
+    } catch {
+      return [];
+    }
+  }
+
+  /**
+   * M3：应用启动审批框的决定。批准走 approveAndConnectPendingServer 当场连接（有 manager 时），
+   * 结论都落到 approval.ts 的持久化存储；"skip" 不落盘，下次启动再问。
+   */
+  async applyMcpApprovalDecision(
+    name: string,
+    choice: "approve" | "approve-all" | "reject" | "skip",
+  ): Promise<void> {
+    const log = getLogger();
+    if (choice === "skip") return;
+    try {
+      const approval = await import("@sid-code/core/mcp/approval.ts");
+      const mgr = this.mcpManager;
+      const connect = mgr ? (n: string, c: never) => mgr.addServer(n, c) : undefined;
+      if (choice === "reject") {
+        approval.rejectPendingServer(name);
+      } else if (choice === "approve-all") {
+        const names = await approval.approveAllPendingServers(connect);
+        log.info("MCP", `已批准本项目全部待审批 MCP 服务器: ${names.join(", ")}`);
+      } else if (connect) {
+        await approval.approveAndConnectPendingServer(name, connect);
+      } else {
+        // 本会话没有 manager（没配任何 MCP 也没 IDE 自动连接）：只能落盘，下次启动连接
+        approval.approvePendingServer(name);
+      }
+    } catch (e) {
+      log.warn("MCP", `应用 MCP 审批决定失败 (${name}): ${(e as Error)?.message}`);
+    }
+  }
+
   async applyTrustDecision(trusted: boolean): Promise<void> {
     const log = getLogger();
     const itemCount = this.pendingTrustItems.length;
@@ -5590,11 +5656,13 @@ export class App {
         this.permissionChecker.rememberDecision(req, true);
       }
 
-      // ② 持久化到 project settings：下次会话仍生效
+      // ② 持久化到 local settings（git root 的 settings.local.json）：下次会话仍生效。
+      // P2：对齐 CC「Yes, and don't ask again」写 localSettings —— 此前写共享的
+      // settings.json，一个人的放行决定会随提交分发给全团队。
       const { persistRule } = await import("@sid-code/core/permission/rule-persistence.ts");
-      await persistRule("project", "allow", rule, process.cwd());
+      await persistRule("local", "allow", rule, process.cwd());
       this.statusNotifier?.("perm_persist", `已持久化允许规则: ${rule}`, 3000);
-      log.info("PERMISSION", `Bash always(持久) → 写入 project settings: ${rule}`);
+      log.info("PERMISSION", `Bash always(持久) → 写入 local settings: ${rule}`);
     } catch (err) {
       log.warn("PERMISSION", `持久化允许规则失败(降级为会话内): ${err}`);
       if (req && this.permissionChecker?.rememberDecision) {
@@ -7574,7 +7642,9 @@ export class App {
           ? ("trust" as const)
           : this.pendingExternalImportPaths.length > 0
             ? ("claude-md-external-imports" as const)
-            : null,
+            : this.listPendingMcpApprovals().length > 0
+              ? ("mcp-approval" as const)
+              : null,
       availableModels: this.config.availableModels.map((m) => ({
         name: m.name,
         // 供面板做族识别（别名带渠道前后缀时按 name 分组会掉进「其他」兜底）。
@@ -9684,6 +9754,11 @@ export class App {
       getPendingTrustItems: () => this.pendingTrustItems,
       onTrustDecision: async (trusted) => {
         await this.applyTrustDecision(trusted);
+      },
+      // M3：项目 .mcp.json 待审批 server 的启动审批框
+      getPendingMcpApprovals: () => this.listPendingMcpApprovals(),
+      onMcpApprovalDecision: async (name, choice) => {
+        await this.applyMcpApprovalDecision(name, choice);
       },
     };
 

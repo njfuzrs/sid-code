@@ -11,6 +11,7 @@ import { existsSync } from "fs";
 import { getLogger } from "../debug/logger.ts";
 import { sidPaths } from "../config/paths.ts";
 import { SECURITY_SENSITIVE_FIELDS, isUntrustedSettingsFile } from "../config/settings/security.ts";
+import { getLegacyLocalSettingsPath, getSettingsFilePath } from "../config/settings/constants.ts";
 import type {
   PermissionRuleSource,
   SourcedPermissionRule,
@@ -58,6 +59,17 @@ const DANGEROUS_SELF_AUTHORIZATION_PATTERNS: RegExp[] = [
  * 规则加载器
  * 管理多来源规则的加载、合并和运行时更新
  */
+/**
+ * P2：localSettings 的规则文件 = git root 的 settings.local.json（B2，与 settings 层同一口径，
+ * 见 config/settings/constants.ts 的 resolveLocalSettingsBase）+ 启动目录的旧位置（兼容读）。
+ * 旧位置在前：两份规则拼接，同一条规则出现两次不影响判定。
+ */
+function localSettingsPaths(workspacePath: string): string[] {
+  const current = getSettingsFilePath("localSettings", workspacePath)!;
+  const legacy = getLegacyLocalSettingsPath(workspacePath);
+  return legacy ? [legacy, current] : [current];
+}
+
 export class RuleLoader {
   /** 各来源的规则存储 */
   private sources = new Map<PermissionRuleSource, SourcedPermissionRule[]>();
@@ -102,10 +114,7 @@ export class RuleLoader {
         "projectSettings",
         join(this.workspacePath, ".sid-code", "settings.json"),
       ),
-      this.loadSettingsFile(
-        "localSettings",
-        join(this.workspacePath, ".sid-code", "settings.local.json"),
-      ),
+      this.loadSettingsFile("localSettings", localSettingsPaths(this.workspacePath)),
     ]);
 
     this.invalidateCache();
@@ -134,10 +143,7 @@ export class RuleLoader {
     this.clearSource("localSettings");
     await Promise.all([
       this.loadSettingsFile("projectSettings", join(workspacePath, ".sid-code", "settings.json")),
-      this.loadSettingsFile(
-        "localSettings",
-        join(workspacePath, ".sid-code", "settings.local.json"),
-      ),
+      this.loadSettingsFile("localSettings", localSettingsPaths(workspacePath)),
     ]);
     this.invalidateCache();
     getLogger().info("RULE_LOADER", `工作区规则已按 ${workspacePath} 重载`);
@@ -165,10 +171,7 @@ export class RuleLoader {
         "projectSettings",
         join(this.workspacePath, ".sid-code", "settings.json"),
       ),
-      this.loadSettingsFile(
-        "localSettings",
-        join(this.workspacePath, ".sid-code", "settings.local.json"),
-      ),
+      this.loadSettingsFile("localSettings", localSettingsPaths(this.workspacePath)),
     ]);
     this.invalidateCache();
     getLogger().info(
@@ -261,11 +264,34 @@ export class RuleLoader {
   /**
    * 从设置文件加载规则
    */
-  private async loadSettingsFile(source: PermissionRuleSource, filePath: string): Promise<void> {
+  private async loadSettingsFile(
+    source: PermissionRuleSource,
+    filePaths: string | string[],
+  ): Promise<void> {
+    // P2：localSettings 可能有两份（git root 新位置 + 启动目录旧位置），规则拼接后一起登记，
+    // 只登记一次 —— 逐份 sources.set 会让后读的那份把先读的整个覆盖掉。
+    const paths = Array.isArray(filePaths) ? filePaths : [filePaths];
+    const collected: SourcedPermissionRule[] = [];
+    let any = false;
+    for (const p of paths) {
+      const rules = await this.readSettingsRules(source, p);
+      if (rules) {
+        any = true;
+        collected.push(...rules);
+      }
+    }
+    if (any) this.sources.set(source, collected);
+  }
+
+  /** 读一份设置文件里的规则；文件不存在 / 无 permissions / 读失败返回 null */
+  private async readSettingsRules(
+    source: PermissionRuleSource,
+    filePath: string,
+  ): Promise<SourcedPermissionRule[] | null> {
     const log = getLogger();
 
     if (!existsSync(filePath)) {
-      return;
+      return null;
     }
 
     try {
@@ -288,7 +314,7 @@ export class RuleLoader {
       }
 
       if (!settings.permissions) {
-        return;
+        return null;
       }
 
       let rules = this.parsePermissions(settings.permissions, source);
@@ -298,10 +324,11 @@ export class RuleLoader {
         rules = this.filterUntrustedProjectRules(rules, filePath);
       }
 
-      this.sources.set(source, rules);
       log.info("RULE_LOADER", `${source}: ${filePath} → ${rules.length} 条规则`);
+      return rules;
     } catch (err: any) {
       log.warn("RULE_LOADER", `读取 ${filePath} 失败: ${err.message}`);
+      return null;
     }
   }
 
