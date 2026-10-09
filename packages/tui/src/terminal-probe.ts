@@ -31,3 +31,35 @@ export function scheduleTerminalProbe(stdout: NodeJS.WriteStream): void {
 		}
 	});
 }
+
+/**
+ * sid-code（B9 / T8.1a）：按探查回复认出 xterm.js（VS Code 集成终端，SSH 进去时 `TERM_PROGRAM` 不传）。
+ * 规则来自旧底座黑盒探针（D-5），唯一可见的效果是 alt-screen 里单击链接不由我们打开（M4，xterm.js 自己会开）：
+ * - 每个实例只认**自己收到的第一条** XTVERSION 回复（`DCS >| 名字 ST/BEL`），名字以 `xterm.js` 开头（区分大小写）才算；
+ * - 该实例收到**第一条** DA1 回复（`CSI ? … c`）时定案；DA1 先于 XTVERSION 到，这个实例就不再定案；
+ *   DA2（`CSI > … c`）、DECRPM、别的 DCS 不算；
+ * - 定案结果是**进程级**的，第一次定案后不再改，之后的实例怎么回复都不影响；没定案过就是「不是」。
+ */
+let terminalName: string | undefined;
+
+export function isXtermJsTerminal(): boolean {
+	return terminalName?.startsWith('xterm.js') ?? false;
+}
+
+export function createTerminalIdentityTracker(): (sequence: string) => void {
+	let first: string | undefined;
+	let done = false;
+	return (sequence) => {
+		if (done) return;
+		const xtversion = /^\u001BP>\|([^\u0007\u001B]*)/.exec(sequence);
+		if (xtversion) {
+			first ??= xtversion[1];
+			return;
+		}
+
+		if (/^\u001B\[\?[\d;]*c$/.test(sequence)) {
+			done = true;
+			if (first !== undefined) terminalName ??= first;
+		}
+	};
+}

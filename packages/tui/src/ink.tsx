@@ -59,6 +59,7 @@ import {
 	type SelectionState,
 } from './selection.js';
 import {applySelectionHighlight} from './selection-highlight.js';
+import {isXtermJsTerminal} from './terminal-probe.js';
 import {hyperlinkAt} from './hyperlink-at.js';
 import {setClipboard} from './terminal/clipboard.js';
 import {
@@ -600,7 +601,7 @@ export default class Ink {
 	 * - 只在 alt-screen 里处理；`SID_CODE_DISABLE_MOUSE_CLICKS` 为真时选区和链接点击都不响应。
 	 * - 选区变了当场重画（高亮），松开不复制（复制只在 `copySelectionNoClear` 时发生）。
 	 * - 没拖动的单击落在链接上：等 500ms（连击窗口）再调 `onHyperlinkClick`；期间的连击取消它，
-	 *   再单击另一个链接则只开后一个。`TERM_PROGRAM=vscode` 不开：xterm.js 自己会开，开两次。
+	 *   再单击另一个链接则只开后一个。`TERM_PROGRAM=vscode` 或探查认出 xterm.js（T8.1a）不开：xterm.js 自己会开，开两次。
 	 */
 	private readonly handleMouseSequence = (sequence: string): void => {
 		if (!this.altScreenActive || this.isUnmounted || mouseClicksDisabled()) {
@@ -637,7 +638,11 @@ export default class Ink {
 			!hasSelection(this.selection)
 		) {
 			const url = hyperlinkAt(screen, event.x, event.y);
-			if (url !== undefined && process.env['TERM_PROGRAM'] !== 'vscode') {
+			if (
+				url !== undefined &&
+				process.env['TERM_PROGRAM'] !== 'vscode' &&
+				!isXtermJsTerminal()
+			) {
 				this.cancelPendingHyperlink();
 				const timer = setTimeout(() => {
 					this.pendingHyperlinkTimer = undefined;

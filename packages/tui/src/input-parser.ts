@@ -182,7 +182,10 @@ const pushText = (text: string, events: InputEvent[]): void => {
 	events.push(single ? text : {text});
 };
 
-const parseKeypresses = (input: string): ParsedInput => {
+const parseKeypresses = (
+	input: string,
+	onResponse?: (sequence: string) => void,
+): ParsedInput => {
 	const events: InputEvent[] = [];
 	let index = 0;
 	const pendingFrom = (pendingStartIndex: number): ParsedInput => ({
@@ -218,7 +221,9 @@ const parseKeypresses = (input: string): ParsedInput => {
 
 		if (parsedEscapeSequence.kind === 'text') {
 			events.push({text: parsedEscapeSequence.sequence});
-		} else if (parsedEscapeSequence.kind !== 'response') {
+		} else if (parsedEscapeSequence.kind === 'response') {
+			onResponse?.(parsedEscapeSequence.sequence);
+		} else {
 			events.push(parsedEscapeSequence.sequence);
 		}
 
@@ -236,12 +241,18 @@ export type InputParser = {
 	reset: () => void;
 };
 
-export const createInputParser = (): InputParser => {
+/**
+ * `onResponse`（T8.1a）：完整收到的终端回复照样不进事件，但原样交给它（终端识别用，见 `terminal-probe.ts`）。
+ * 冲刷时丢弃的半截不交。
+ */
+export const createInputParser = (
+	onResponse?: (sequence: string) => void,
+): InputParser => {
 	let pending = '';
 
 	return {
 		push(chunk) {
-			const parsedInput = parseKeypresses(pending + chunk);
+			const parsedInput = parseKeypresses(pending + chunk, onResponse);
 			pending = parsedInput.pending;
 			return parsedInput.events;
 		},

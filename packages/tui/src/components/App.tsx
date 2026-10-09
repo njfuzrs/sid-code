@@ -14,7 +14,10 @@ import {type CursorPosition} from '../log-update.js';
 import {createInputParser} from '../input-parser.js';
 import decodeKeypress, {rawInput} from '../parse-keypress.js';
 import {InputEvent} from '../input-event.js';
-import {scheduleTerminalProbe} from '../terminal-probe.js';
+import {
+	createTerminalIdentityTracker,
+	scheduleTerminalProbe,
+} from '../terminal-probe.js';
 import {
 	disableInputModesSequences,
 	enableExtendedKeysSequences,
@@ -125,7 +128,9 @@ function App({
 	// Store the currently attached readable listener to avoid stale closure issues
 	const readableListenerRef = useRef<(() => void) | undefined>(undefined);
 	const attachReadableListenerRef = useRef<(() => void) | undefined>(undefined);
-	const inputParserRef = useRef(createInputParser());
+	const inputParserRef = useRef(
+		createInputParser(createTerminalIdentityTracker()),
+	);
 	const pendingInputFlushRef = useRef<NodeJS.Timeout | undefined>(undefined);
 	// Small delay to let chunked escape sequences complete before flushing as literal input.
 	// sid-code（T5.1b，I8）：上游 20ms；旧底座在 40ms 与 60ms 之间冲刷，取 50ms
