@@ -58,7 +58,9 @@ function makeShadowDate(): typeof Date {
       );
     }
     // @ts-expect-error 透传到真实 Date 构造
-    return new RealDate(...args);
+    const real = new RealDate(...args);
+    // 换成影子 prototype,堵 `new Date(0).constructor` 这条拿回真 Date 的路
+    return Object.setPrototypeOf(real, ShadowDate.prototype);
   } as unknown as typeof Date;
 
   ShadowDate.now = () => {
@@ -68,9 +70,24 @@ function makeShadowDate(): typeof Date {
   };
   ShadowDate.parse = RealDate.parse;
   ShadowDate.UTC = RealDate.UTC;
-  // 让 instanceof / 实例方法链正常工作(prototype 只读,用 defineProperty 赋值)
+  // 让 instanceof / 实例方法链正常工作,但**不能**直接挂 RealDate.prototype:
+  // 它的 constructor 指回真 Date,`Date.prototype.constructor.now()` 一句话就绕过守卫(P1-1)。
+  // 也不能用 Object.create(RealDate.prototype):getPrototypeOf 一步又回到真 prototype。
+  // 所以复制实例方法(含 Symbol.toPrimitive)到一个独立的 prototype,constructor 指回影子;
+  // 实例由真 Date 构造(保留内部槽,方法照常工作)后再换成这个 prototype。
+  const shadowProto = Object.create(Object.prototype) as Record<PropertyKey, unknown>;
+  for (const k of Reflect.ownKeys(RealDate.prototype)) {
+    if (k === "constructor") continue;
+    Object.defineProperty(shadowProto, k, Object.getOwnPropertyDescriptor(RealDate.prototype, k)!);
+  }
+  Object.defineProperty(shadowProto, "constructor", {
+    value: ShadowDate,
+    writable: true,
+    configurable: true,
+    enumerable: false,
+  });
   Object.defineProperty(ShadowDate, "prototype", {
-    value: RealDate.prototype,
+    value: shadowProto,
     writable: false,
   });
   return ShadowDate;

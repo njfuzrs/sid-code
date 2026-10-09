@@ -66,17 +66,30 @@ export class Scheduler {
     return this.waiters.length;
   }
 
-  /** 获取一个槽位(槽位满则进 FIFO 队列等待) */
-  private acquire(): Promise<void> {
+  /**
+   * 获取一个槽位(槽位满则进 FIFO 队列等待)。
+   * 传入 signal 时,排队期间 abort → 出队并 reject——否则 ESC / task_stop 之后
+   * 队列里的任务仍会被逐个放行执行(缺陷文档 P1-3)。
+   */
+  private acquire(signal?: AbortSignal): Promise<void> {
+    if (signal?.aborted) return Promise.reject(abortError(signal));
     if (this.active < this.cap) {
       this.active++;
       return Promise.resolve();
     }
-    return new Promise<void>((resolve) => {
-      this.waiters.push(() => {
+    return new Promise<void>((resolve, reject) => {
+      const grant = () => {
+        signal?.removeEventListener("abort", onAbort);
         this.active++;
         resolve();
-      });
+      };
+      const onAbort = () => {
+        const i = this.waiters.indexOf(grant);
+        if (i >= 0) this.waiters.splice(i, 1);
+        reject(abortError(signal!));
+      };
+      signal?.addEventListener("abort", onAbort, { once: true });
+      this.waiters.push(grant);
     });
   }
 
@@ -90,13 +103,19 @@ export class Scheduler {
   /**
    * 在并发约束下执行 thunk。
    * thunk 抛错会原样向上抛(由调用方决定吞掉成 null 还是传播),但槽位**一定**释放。
+   * signal 已中止或排队期间中止 → 不执行 thunk,直接 reject。
    */
-  async run<T>(thunk: () => Promise<T>): Promise<T> {
-    await this.acquire();
+  async run<T>(thunk: () => Promise<T>, signal?: AbortSignal): Promise<T> {
+    await this.acquire(signal);
     try {
       return await thunk();
     } finally {
       this.release();
     }
   }
+}
+
+function abortError(signal: AbortSignal): Error {
+  const reason: unknown = signal.reason;
+  return reason instanceof Error ? reason : new Error("[workflow] 调度队列已中止");
 }
