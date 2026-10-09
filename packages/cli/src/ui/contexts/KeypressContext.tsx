@@ -305,7 +305,11 @@ function bufferPaste(keypressHandler: KeypressHandler): KeypressHandler {
         buffer += key.sequence;
       }
 
-      if (buffer.length > 0) {
+      // 空 paste 也必须下发：终端对「剪贴板里只有图片」的典型信号就是一对空的
+      // paste-start/paste-end。此前这里 `buffer.length > 0` 才下发，InputArea 的
+      // 「空 paste → 读剪贴板图片」分支（P2-6）永远走不到，截图粘贴整条链路是死的。
+      // 超时（key === null）且无内容时不下发：那是不完整的序列，不是一次粘贴。
+      if (buffer.length > 0 || key !== null) {
         keypressHandler({
           name: "paste",
           shift: false,
