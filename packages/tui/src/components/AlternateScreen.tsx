@@ -41,7 +41,10 @@ export default function AlternateScreen({
 		ink?.setAltScreenActive(true, mouseTracking);
 		return () => {
 			ink?.setAltScreenActive(false);
-			write(stdout, (mouseTracking ? disableMouseTracking : '') + exitAltScreen);
+			const bytes = (mouseTracking ? disableMouseTracking : '') + exitAltScreen;
+			// sid-code（B9 / T7.1b，契约 X3）：实例卸载中，交给实例在 React 清理全部跑完后再写
+			// （旧底座黑盒探针：退 alt 排在 raw mode 释放那几条之后）；平时照旧当场写
+			if (!ink?.deferUntilUnmounted(bytes)) write(stdout, bytes);
 		};
 	}, [stdout, mouseTracking]);
 

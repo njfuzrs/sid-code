@@ -58,6 +58,8 @@ type Props = {
 		resumeInput: () => void,
 		pauseForHandoff?: () => void,
 		resumeFromHandoff?: () => void,
+		/** Ctrl+Z 挂起中（SIGSTOP 已发、SIGCONT 未到）：Ink 卸载兜底时据此不碰 stdin（X3 / I7） */
+		isStopped?: () => boolean,
 	) => void;
 	/** stdin 静默超过阈值后的第一块输入（I1c）：由 Ink 决定要重申哪些终端模式 */
 	readonly onStdinResume?: () => void;
@@ -670,12 +672,15 @@ function App({
 		});
 	}, [stdin]);
 
+	const isStopped = useCallback((): boolean => isSuspendedRef.current, []);
+
 	useInsertionEffect(() => {
 		onRegisterInputControl(
 			pauseInput,
 			resumeInput,
 			pauseForHandoff,
 			resumeFromHandoff,
+			isStopped,
 		);
 	}, [
 		onRegisterInputControl,
@@ -683,6 +688,7 @@ function App({
 		resumeInput,
 		pauseForHandoff,
 		resumeFromHandoff,
+		isStopped,
 	]);
 
 	// Focus navigation helpers

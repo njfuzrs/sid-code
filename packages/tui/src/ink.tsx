@@ -37,9 +37,14 @@ import {isTabStatusDisabled, tabStatusSequence} from './hooks/use-tab-status.js'
 import {type Screen} from './screen/screen.js';
 import {serializeScreen} from './screen/serialize.js';
 import {clipToViewport, diffAltScreen, padToViewport} from './frame/alt-screen.js';
-import {disableMouseTracking, enableMouseTracking} from './terminal/modes.js';
+import {
+	disableMouseTracking,
+	enableMouseTracking,
+	exitAltScreen,
+} from './terminal/modes.js';
 import {supportsSynchronizedOutput} from './terminal/sync-output.js';
 import App from './components/App.js';
+import {writeSync} from 'node:fs';
 import drainStdin from './drain-stdin.js';
 import {patchStderr} from './stderr-guard.js';
 import {
@@ -348,6 +353,8 @@ export default class Ink {
 	/** SIGCONT 作废的那一帧：下一帧按 `redrawAfterSuspend` 写（R10）；resize / forceRedraw 帧不走它 */
 	private suspendedScreen: Screen | undefined;
 	private altScreenActive = false;
+	/** 卸载期间 `deferUntilUnmounted` 收下的字节；undefined = 不在 React 清理阶段 */
+	private unmountDeferredWrites: string[] | undefined;
 	private altScreenMouseTracking = false;
 	/** alt-screen 的上一帧（已裁到视口）与它出帧时的视口；缺省 = 屏幕已是空白（R14） */
 	private altPreviousScreen: Screen | undefined;
@@ -378,6 +385,8 @@ export default class Ink {
 	private resumeInput?: () => void;
 	private pauseForHandoff?: () => void;
 	private resumeFromHandoff?: () => void;
+	/** App 的 Ctrl+Z 挂起状态（I7）；X3 兜底据此跳过 drain */
+	private isInputStopped?: () => boolean;
 	/** sid-code（B9 / T6.1b，契约 X5）：`enterAlternateScreen` 把终端让给了外部程序，`exitAlternateScreen` 收回 */
 	private isExternalHandoff = false;
 
@@ -679,6 +688,19 @@ export default class Ink {
 	 * 端口 RenderInstance.setAltScreenActive：`<AlternateScreen>` 挂载 / 卸载时调用，本身不写字节。
 	 * 离开 alt-screen 后主屏的旧帧不可信，下一帧 full reset（原因 resize，与旧底座一致）。
 	 */
+	/**
+	 * sid-code（B9 / T7.1b，契约 X3）：卸载进行中（React 清理阶段）时收下要写的字节、返回 true，
+	 * 由 `finishUnmount` 在清理全部跑完后按收下的顺序写出；不在卸载中返回 false，调用方自己当场写。
+	 */
+	deferUntilUnmounted(data: string): boolean {
+		if (!this.isUnmounting || this.unmountDeferredWrites === undefined) {
+			return false;
+		}
+
+		this.unmountDeferredWrites.push(data);
+		return true;
+	}
+
 	setAltScreenActive(active: boolean, mouseTracking = false): void {
 		if (this.altScreenActive && !active) {
 			this.pendingResetReason = 'resize';
@@ -1123,7 +1145,35 @@ export default class Ink {
 		this.restoreStderr?.();
 		this.restoreStderr = undefined;
 
+		// sid-code（B9 / T7.1b，契约 X3）：以下都在 React 清理**之前**写（旧底座黑盒探针：effect 清理里
+		// raw mode 释放写的 `?25h >4m <u ?1004l ?2004l` 排在它们后面，所以那几项是重复写入）。
+		// 非 TTY 每帧已经写过整帧（R12），卸载只补一个换行；TTY 先经 stdout 恢复光标（同步输出包裹），
+		// 再同步直写 fd 1 一段兜底序列（进程被信号结束、React 卸载来不及跑时也能把终端还原）。
+		if (canWriteToStdout) {
+			if (!this.interactive) {
+				this.options.stdout.write(this.options.debug ? '\n' : bsu + '\n' + esu);
+			} else if (!this.options.debug) {
+				// 最后一帧是空的（动态区已擦空，CLI 退出前那一帧就是）时不写（旧底座黑盒探针：empty / toempty 变体）
+				if (this.lastOutputHeight > 0) {
+					this.options.stdout.write(bsu + showCursorEscape + esu);
+				}
+
+				this.cursorHidden = false;
+				this.previousScreen = undefined;
+			}
+		}
+
+		if (this.interactive && !this.options.debug) {
+			this.writeExitFallback();
+		}
+
 		const finishUnmount = (): void => {
+			const deferred = this.unmountDeferredWrites ?? [];
+			this.unmountDeferredWrites = undefined;
+			for (const data of deferred) {
+				this.writeBestEffort(this.options.stdout, data);
+			}
+
 			if (typeof this.unsubscribeResize === 'function') {
 				this.unsubscribeResize();
 			}
@@ -1153,30 +1203,6 @@ export default class Ink {
 					);
 					this.writeBestEffort(this.options.stdout, showCursorEscape);
 					this.alternateScreen = false;
-				}
-
-				// sid-code（B9 / T3.2）：非 TTY 每帧已经写过整帧（R12），卸载只补一个换行；
-				// TTY 卸载时恢复光标（同步输出包裹，与旧底座同字节）
-				if (!this.interactive) {
-					this.options.stdout.write(this.options.debug ? '\n' : bsu + '\n' + esu);
-				} else if (!this.options.debug) {
-					// sid-code（B9 / T5.3a，契约 I4）：TTY 卸载时把输入模式再关一次（一次写入），与 raw mode 用没用过无关。
-					// 旧底座实测在非 TTY 下不写；它与光标 / 鼠标 / 进度清除的相对顺序归 X3（T7.1b）
-					this.writeBestEffort(
-						this.options.stdout,
-						disableInputModesSequences.join(''),
-					);
-					this.options.stdout.write(bsu + showCursorEscape + esu);
-					this.cursorHidden = false;
-					this.previousScreen = undefined;
-					// sid-code（B9 / T7.2b，契约 O3 / O2）：退出时清进度条与 tab 状态点，免得残留在 tab 上。
-					// 对拍旧底座：只在 TTY 下写；进度清除固定用 BEL 终止、不包裹（kitty 下也是），
-					// tab 清除照常随终端终止并按 tmux / screen 包裹，`SID_DISABLE_TAB_STATUS` 非空时不写；
-					// 两条都与之前写没写过无关。与其余模式恢复的相对顺序归 X3（T7.1b）。
-					this.writeBestEffort(this.options.stdout, clearProgressSequence);
-					if (!isTabStatusDisabled()) {
-						this.writeBestEffort(this.options.stdout, tabStatusSequence(null));
-					}
 				}
 			}
 
@@ -1212,6 +1238,8 @@ export default class Ink {
 				setImmediate(resolveOrReject);
 			}
 		};
+
+		this.unmountDeferredWrites = [];
 
 		const concurrentReconciler = reconciler as {
 			flushPassiveEffects?: () => boolean;
@@ -1322,7 +1350,9 @@ export default class Ink {
 		resumeInput: () => void,
 		pauseForHandoff?: () => void,
 		resumeFromHandoff?: () => void,
+		isStopped?: () => boolean,
 	): void {
+		this.isInputStopped = isStopped;
 		this.pauseInput = pauseInput;
 		this.resumeInput = resumeInput;
 		this.pauseForHandoff = pauseForHandoff;
@@ -1488,6 +1518,34 @@ export default class Ink {
 	}
 
 	// Best-effort write: streams may already be destroyed during shutdown.
+	/**
+	 * sid-code（B9 / T7.1b，契约 X3）：卸载兜底序列，**同步写 fd 1**（不经 `options.stdout`，与旧底座一致：
+	 * stdout 换成别的 TTY 流时这段仍落在 fd 1 上）。顺序与字节来自黑盒对拍：
+	 * 退 alt（`<AlternateScreen>` 挂着时）→ 关鼠标跟踪（无条件）→ drain stdin（挂起中不 drain）→ 关 modifyOtherKeys / kitty
+	 * → 关 focus → 关 bracketed paste → 显示光标 → 清 OSC 9;4 进度（BEL、不包裹）→ 清 tab 状态
+	 * （`SID_DISABLE_TAB_STATUS` 非空时不写）。fd 写失败吞掉：退出路径上不能再抛。
+	 */
+	private writeExitFallback(): void {
+		const head = (this.altScreenActive ? exitAltScreen : '') + disableMouseTracking;
+		const tail =
+			disableInputModesSequences.join('') +
+			showCursorEscape +
+			clearProgressSequence +
+			(isTabStatusDisabled() ? '' : tabStatusSequence(null));
+		try {
+			writeSync(1, head);
+		} catch {}
+
+		// 挂起中（终端已让给前台 shell）不碰 stdin（契约 I4 / I7，旧底座同）；字节照写
+		if (!this.isSuspended && !this.isInputStopped?.()) {
+			drainStdin(this.options.stdin);
+		}
+
+		try {
+			writeSync(1, tail);
+		} catch {}
+	}
+
 	private writeBestEffort(stream: NodeJS.WriteStream, data: string): void {
 		try {
 			stream.write(data);
