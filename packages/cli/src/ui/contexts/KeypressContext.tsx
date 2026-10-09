@@ -326,7 +326,7 @@ function bufferPaste(keypressHandler: KeypressHandler): KeypressHandler {
 
 // ── 原始数据 → 按键事件解析器 ──
 
-function createDataListener(keypressHandler: KeypressHandler) {
+export function createDataListener(keypressHandler: KeypressHandler) {
   const parser = emitKeys(keypressHandler);
   parser.next();
 
@@ -374,6 +374,36 @@ function* emitKeys(keypressHandler: KeypressHandler): Generator<void, void, stri
         ch = yield;
         sequence += ch;
       }
+    }
+
+    // 终端回复（DCS `ESC P … ST/BEL`，如 XTVERSION 回复 `ESC P >|xterm.js(…) ESC \\`）整段吞掉。
+    // 底座在每次 raw mode 0→1 时会发 `ESC[>0q` + `ESC[c` 探查（packages/tui/src/terminal-probe.ts），
+    // 底座自己的解析器认得回复，但这里直读 stdin 另起一套解析——不认 DCS 时 `ESC P` 被当成 Alt+P、
+    // 后面的 `>|xterm.js(6.1.0-beta.304)` 逐字进了输入框（`sid-code -r` 恢复后实测复现）。
+    // 判据是 `ESC P` 后面紧跟着还有字节：单独按 Alt+Shift+P 只有 `ESC P` 两字节，等 ESC_TIMEOUT 冲刷（""）后照常交出。
+    if (escaped && ch === "P") {
+      let next = yield;
+      if (next === "") {
+        keypressHandler({
+          name: "p",
+          shift: true,
+          alt: true,
+          ctrl: false,
+          cmd: false,
+          insertable: true, // 与改动前走字母分支时一致
+          sequence,
+        });
+        continue;
+      }
+      while (true) {
+        if (next === "" || next === "\u0007") break;
+        if (next === ESC) {
+          const afterEsc = yield;
+          if (afterEsc === "" || afterEsc === "\\") break;
+        }
+        next = yield;
+      }
+      continue;
     }
 
     if (escaped && (ch === "O" || ch === "[" || ch === "]")) {
@@ -431,6 +461,16 @@ function* emitKeys(keypressHandler: KeypressHandler): Generator<void, void, stri
           code += ch;
           ch = yield;
           sequence += ch;
+        }
+
+        // 私有前缀 CSI（`ESC[?…c` DA1、`ESC[>…c` DA2、`ESC[?…u` kitty 查询回复、`ESC[>4;…m` 等）
+        // 只会是终端对查询的回复，没有任何按键这样编码；吞到终止字节为止，不交出。
+        // 不吞的话 DA1 回复 `ESC[?1;2c` 会把 `1;2c` 漏进输入框。`<` 是 SGR 鼠标，下面单独处理。
+        if (ch === "?" || ch === ">" || ch === "=") {
+          while (ch !== "" && !(ch >= "@" && ch <= "~")) {
+            ch = yield;
+          }
+          continue;
         }
 
         const cmdStart = sequence.length - 1;
