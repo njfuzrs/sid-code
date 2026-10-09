@@ -67,6 +67,7 @@ export const EVENT_NAMES = {
   // ── 漏斗 6 · 记忆：写进去的记忆有没有被读到（P1-12）──
   MEMORY_INDEX_HEALTH: "memory_index_health",
   MEMORY_INJECT: "memory_inject",
+  MEMORY_READ: "memory_read",
   MEMORY_GUARD: "memory_guard",
 
   // ── 漏斗 7 · 企业策略：远程策略到底有没有在拦东西（M4）──
@@ -599,8 +600,9 @@ export function logError(opts: {
 //     **这一个指标就能自动发现 P0-1（重名遮蔽）、P1-6（子目录分裂）、
 //     P1-7①（配额少 2 条）、P1-10（写空残留）** —— 它们的共同表征都是
 //     「磁盘上有、索引里没有」。此前发现 P0-1 靠的是手工 `comm` 比对。
-//  2. `memory_inject` —— 每次注入的索引条目数（分母）与真被 Read 的条数（分子）。
-//     回答 §12.2「写进去了 ≠ 被召回过」。
+//  2. `memory_inject` —— 每次注入的索引条目数（分母）；分子是 `memory_read`
+//     （Read 工具成功读到记忆文件时发，见 tool/read.ts）。两者合起来回答
+//     §12.2「写进去了 ≠ 被召回过」。缺陷 10 之前分子只写在注释里、没有生产者。
 //  3. `memory_guard` —— 各道防线的触发次数。**恒 0 的曲线本身就是信号** ——
 //     P1-8（secret 闸门缺三条线）与 P1-9（scope 越权）之所以长期无人知情，
 //     正是因为没有这条线：防线不存在与防线从未被触发，在轨迹里长得一模一样。
@@ -646,6 +648,29 @@ export function logMemoryInject(opts: {
     index_entry_count: opts.indexEntryCount,
     ...(opts.tokens !== undefined ? { tokens: opts.tokens } : {}),
     ...(opts.agedEntryCount !== undefined ? { aged_entry_count: opts.agedEntryCount } : {}),
+  });
+}
+
+/**
+ * 记忆被 Read（缺陷 10：`memory_inject` 的**分子**）。
+ *
+ * `memory_inject` 只记「注入了几条指针」，分母单独存在时 `index_entry_count > 0`
+ * 会被读成「记忆系统在工作」，而它只说明「索引被塞进了 prompt」。这条事件补上
+ * 「模型真的打开了一个记忆文件」这一环。
+ *
+ * 口径写死：**一次成功的 Read 调用 = 1**，不按会话去重（去重在查询侧做，
+ * 原始事件保留重复读这个信号）；读 MEMORY.md 索引本身单独标 `is_index`，
+ * 不计入「读了一条记忆」。同漏斗纪律：不记路径、不记文件名、不记内容。
+ */
+export function logMemoryRead(opts: {
+  /** project / global / agent / team */
+  scope: string;
+  /** 读的是 MEMORY.md 索引本身而不是某条记忆 */
+  isIndex: boolean;
+}): void {
+  emit(EVENT_NAMES.MEMORY_READ, {
+    memory_scope: v(opts.scope),
+    is_index: opts.isIndex,
   });
 }
 

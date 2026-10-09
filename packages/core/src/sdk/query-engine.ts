@@ -25,10 +25,13 @@ export interface SDKQueryEngineConfig {
   cwd: string;
   sessionId: string;
   model: string;
-  maxTurns?: number;
-  maxBudgetUsd?: number;
-  systemPrompt?: string;
-  jsonSchema?: Record<string, unknown>;
+  // 缺陷 6：这里曾声明 maxTurns / maxBudgetUsd / systemPrompt / jsonSchema 四个字段，
+  // app.ts 认真传入、本类一次都不读——参数传进去、类型检查过、功能不存在。
+  // 它们的真实执行点都在内核：maxTurns / 花费上限由 queryLoop + QuotaManager 硬停
+  // （结果经 message-converter 映射成 error_max_turns / error_max_budget_usd），
+  // systemPrompt 进 buildSystemPrompt，jsonSchema 由 StructuredOutputTool 消费（B26）。
+  // 删掉而不是在这里再实现一遍：再加一层同谓词的上限只是第二个杀手，不是第二道防线。
+  // 嵌入方想设这些上限，配置 driver 背后的内核，而不是这个引擎。
   /** 是否转发 stream_event 增量（stream-json verbose 模式） */
   includeStreamEvents?: boolean;
   /** 可注入时钟（测试用），默认 Date.now */
@@ -71,6 +74,11 @@ export interface SDKQueryEngineDriver {
    * 返回 undefined = 没开 schema 或模型没交出合规输出，result 不写该字段。
    */
   getStructuredOutput?(): unknown;
+  /**
+   * 当前主模型。可选：宿主 `set_model` 换模型后，system/init 要报新模型而不是构造时那个
+   * （缺陷 4）。不实现则沿用 config.model。
+   */
+  getModel?(): string;
 }
 
 export class SDKQueryEngine {
@@ -112,7 +120,7 @@ export class SDKQueryEngine {
       subtype: "init",
       session_id: this.config.sessionId,
       tools: this.driver.listTools?.() ?? [],
-      model: this.config.model,
+      model: this.driver.getModel?.() ?? this.config.model,
       cwd: this.config.cwd,
     };
 
@@ -334,6 +342,34 @@ export class SDKQueryEngine {
       totalCostUsd: this.driver.getCostUsd(),
       now: this.now,
       uuid: this.uuid,
+    };
+  }
+
+  /**
+   * 缺陷 8：submitMessage 自身之外抛出的异常（driver 的 getUsage / getMessages 在收尾时抛、
+   * 消费链上的意外错误）由编排层兜住时，用它给这条输入补一条 result。
+   * 「每条 user 必有一条 result」是协议承诺——宿主靠 result 判这一轮结束。
+   */
+  errorResult(err: unknown): SDKResultMessage {
+    const message = err instanceof Error ? err.message : String(err);
+    const safe = <T>(f: () => T, fallback: T): T => {
+      try {
+        return f();
+      } catch {
+        return fallback;
+      }
+    };
+    return {
+      type: "result",
+      subtype: "error_during_execution",
+      errors: [message],
+      duration_ms: this.startTime ? this.now() - this.startTime : 0,
+      num_turns: this.turnCount,
+      num_turns_without_model_interaction: 0,
+      // 抛异常的可能正是这两个 getter，取不到就报 0，不能让补发 result 本身再抛
+      total_cost_usd: safe(() => this.driver.getCostUsd(), 0),
+      usage: safe(() => this.driver.getUsage(), { inputTokens: 0, outputTokens: 0 }),
+      session_id: this.config.sessionId,
     };
   }
 

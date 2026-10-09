@@ -252,6 +252,7 @@ Worktree 隔离:
   SID_CODE_WATCHDOG_HEADER_GRACE_MS  首字节余量（缺省 15000）
   SID_CODE_RESPONSE_HEADER_TIMEOUT_MS  响应头超时（缺省 300000）
   SID_CODE_MAX_SESSION_DURATION_MS  单次输入的连续执行总时长上限（缺省 0＝关闭）
+  SID_CODE_SDK_IDLE_TIMEOUT_MS  stream-json 模式 stdin 空闲上限，无轮在跑且无入站消息时结束（缺省 0＝关闭）
   SID_CODE_STDIN_TIMEOUT_MS     无头模式等待管道 stdin EOF 的上限（缺省 3000；到点用已收到的部分继续）
   SID_CODE_MAX_TIMEOUT_RETRIES  loop 层重试上限（缺省 10）
   SID_CODE_MAX_RETRIES_PER_CALL 单次调用内连接+流式重试的共享上界（缺省 12）

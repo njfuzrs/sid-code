@@ -111,4 +111,14 @@ export const MEMORY_LIMITS = {
   STORE_MAX_ENTRIES: 200,
   /** 单次召回最多返回的记忆数 */
   RECALL_MAX: 5,
+  /**
+   * 召回时单个记忆文件正文的注入上限（真 UTF-8 字节，缺陷 4）。
+   * 超出按行边界截断并附「完整内容请 Read <path>」—— 正文仍在磁盘，模型需要时自己读。
+   */
+  RECALL_FILE_MAX_BYTES: 4_096,
+  /**
+   * 整个会话（两次压缩之间）召回正文累计注入上限（缺陷 4）。用完即停，
+   * 压缩 / `/clear` 时与已注入集合一起归零 —— 压缩把旧注入清出上下文，账也要跟着清。
+   */
+  RECALL_SESSION_MAX_BYTES: 60_000,
 } as const;

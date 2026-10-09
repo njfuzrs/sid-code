@@ -88,6 +88,16 @@ export function shouldExtractSessionMemory(
     }
   }
 
+  // 缺陷 5：消息变少 ⇒ 中间发生过压缩 / `/clear`，基线必须跟着落下来。
+  // `lastSummarizedTokenCount` 只在更新成功时写，压缩路径不碰它；压缩后当前 token
+  // 骤降，`tokenGrowth` 变成负数，门闩要等会话涨回「压缩前全量 + 阈值」才放行 ——
+  // 而这段时间正是笔记被当作历史替代品常驻注入的时候，它却停更了。
+  // 在判定处收口而不是在每条压缩路径上重置：压缩入口有 auto / reactive / collapse /
+  // `/compact` / `/clear` 五条，漏接一条就是同一个 bug；「token 减少」这个信号五条都有。
+  if (currentTokenCount < state.lastSummarizedTokenCount) {
+    state.lastSummarizedTokenCount = currentTokenCount;
+  }
+
   // 阶段 2：Token 增长检查（硬性要求）
   const tokenGrowth = currentTokenCount - state.lastSummarizedTokenCount;
   if (tokenGrowth < config.minimumTokensBetweenUpdate) {

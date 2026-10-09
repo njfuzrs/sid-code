@@ -79,10 +79,13 @@ describe("接线：交互与 -p 共用同一个生效值", () => {
     if (firstRunPrint > 0) expect(idx).toBeLessThan(firstRunPrint);
   });
 
-  test("SDK 引擎上限与状态栏分母读的都是生效值，不回退去读 config.costLimit", () => {
+  test("SDK 路径与状态栏分母读的都是生效值，不回退去读 config.costLimit", () => {
     expect(app.includes("maxBudgetUsd: this.config.costLimit")).toBe(false);
     expect(app.includes("costLimit: this.config.costLimit ?? 0")).toBe(false);
-    expect(app.includes("maxBudgetUsd: this.effectiveCostLimit")).toBe(true);
+    // SDK 缺陷 6：SDKQueryEngine 从不读 maxBudgetUsd，该透传已删除；stream-json 的预算硬停
+    // 由 QuotaManager 执行（构造期 costLimit: effectiveCostLimit），不能再加回一个死参数。
+    expect(app.includes("maxBudgetUsd: this.effectiveCostLimit")).toBe(false);
+    expect(app.includes("costLimit: effectiveCostLimit")).toBe(true);
   });
 
   test("cli.ts 不再在交互模式告警并忽略 --max-budget-usd", () => {
