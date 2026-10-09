@@ -100,7 +100,7 @@ function makeCtxMgr() {
 
 /**
  * 一个「不记 429 冷却」的 availability：只让 markRateLimited 变成 no-op，
- * terminal 拉黑等其余能力保持原样（场景5 判 terminal 那条仍要用到）。
+ * 其余能力（嫌疑标记、探针等）保持原样。
  *
  * 为什么需要它：见 baseConfig 里 availability 那行的注释。共享冷却与本文件的被测
  * 对象无关，却按 500ms 地板 + 300ms 错峰把整份测试拖到 16.9s。
@@ -120,8 +120,11 @@ function baseConfig(provider: Provider, overrides: Record<string, unknown> = {})
     maxTurns: 5,
     signal: new AbortController().signal,
     loopDetector: new LoopDetector(),
-    // 退避基数压到 1ms，让测试跑得快（生产默认 5s 走 network-profile）
-    retryBackoffBaseMs: 1,
+    // 零退避，不许真睡（生产默认 5s 走 network-profile）。
+    // ⚠️ 必须是 0 而不是 1：recovery-policy 在 backoffBaseMs>0 时启用各族最小间隔
+    // （auth_suspect 1s/2s/8s、request_suspect 2s），1ms 基数照样会真睡秒级。
+    retryBackoffBaseMs: 0,
+    retryBackoffMaxMs: 0,
     // ⚠️ 只压 retryBackoffBaseMs 是**不够**的，这一条曾长期骗过所有人：上面那行注释
     // 写着"让测试跑得快"，而本文件实测 16.9s 全在等**共享冷却**——那是另一条路径，
     // retryBackoffBaseMs 压的只是指数退避那一项。机理：429 → markRateLimited 内部把
@@ -181,16 +184,19 @@ describe("R1 — 子代理限流重试（事故 20260730-183103-5e334145）", ()
     expect(result.errorMessage).toContain("429");
   });
 
-  test("场景4：maxStreamRetries=0 显式关闭重试 → 保持旧的立即失败语义", async () => {
+  test("场景4：maxStreamRetries=0 → 仍至少重试一次（MIN_ATTEMPTS 下限），之后失败", async () => {
     const { provider, calls } = makeProvider([() => rateLimitErrorStream()]);
 
     const result = await runAgentLoop(baseConfig(provider, { maxStreamRetries: 0 }));
 
-    expect(calls.length).toBe(1);
+    // 2026-10-08 有意语义变更：旧行为 maxStreamRetries=0 即零重试（calls===1）。
+    // 现在除 I1-例外外任何错误都不能单次观测即放弃，调用方预算下限为 2 次尝试。
+    // 守住的能力：调用方的小预算仍生效（不会放大到族预算或 maxRetriesPerCall）。
+    expect(calls.length).toBe(2);
     expect(result.success).toBe(false);
   });
 
-  test("场景5：terminal 错误（认证失败）不重试 —— 重试无意义且会放大故障", async () => {
+  test("场景5：认证失败（auth_suspect）同指纹 3 次后放弃 —— 不按调用方 5 次预算打满", async () => {
     const authFail = () =>
       (async function* (): AsyncIterable<StreamEvent> {
         yield {
@@ -206,8 +212,10 @@ describe("R1 — 子代理限流重试（事故 20260730-183103-5e334145）", ()
 
     const result = await runAgentLoop(baseConfig(provider, { maxStreamRetries: 5 }));
 
-    // 只调用 1 次：TerminalError 不进重试分支
-    expect(calls.length).toBe(1);
+    // 2026-10-08 有意语义变更：旧行为 401 判 TerminalError、零重试（calls===1）。
+    // 现在 401 归 auth_suspect，同指纹最多 3 次（min(族预算 3, 调用方 5+1)）。
+    // 守住的能力：认证故障不会被打满调用方的全部重试预算（放大故障）。
+    expect(calls.length).toBe(3);
     expect(result.success).toBe(false);
   });
 
@@ -250,7 +258,7 @@ describe("R1 — 子代理限流重试（事故 20260730-183103-5e334145）", ()
   });
 
   test("场景9：message 无关键词、判定全靠 error.type 的流内限流 → 必须仍重试", async () => {
-    // R1 初版的真实缺口：把流内 error 拍平成 new Error(message) 后用 classifyError 按
+    // R1 初版的真实缺口：把流内 error 拍平成 new Error(message) 后用（已删除的）classifyError 按
     // **文本**猜，而 OpenAI 族流内 error 的 message 常常没有任何关键词，判定完全依赖
     // error.type/code（openai.ts:1644-1646 明确注释了这点）。
     // 下面这条 message 里既没有 "429" 也没有 "rate_limit"：
@@ -282,7 +290,7 @@ describe("R1 — 子代理限流重试（事故 20260730-183103-5e334145）", ()
     expect(result.lastTextOutput).toContain("恢复成功");
   });
 
-  test("场景10：结构化 invalid_request（400）判 terminal → 不重试且不误当限流", async () => {
+  test("场景10：结构化 invalid_request（400）归 request_suspect → 2 次即放弃且不误当限流", async () => {
     // 反向保护：别为了「多重试」把本该立刻放弃的也重试。
     // message 同样无关键词，只有 type=invalid_request_error + 400。
     const invalidReq = () =>
@@ -305,8 +313,9 @@ describe("R1 — 子代理限流重试（事故 20260730-183103-5e334145）", ()
 
     const result = await runAgentLoop(baseConfig(provider, { maxStreamRetries: 5 }));
 
-    // terminal → 只调用 1 次
-    expect(calls.length).toBe(1);
+    // 2026-10-08 有意语义变更：旧行为 400 判 terminal、零重试（calls===1）。
+    // 现在 request_suspect 最多 2 次。守住的能力：不按调用方 5 次预算打满、不当限流退避。
+    expect(calls.length).toBe(2);
     expect(result.success).toBe(false);
   });
 

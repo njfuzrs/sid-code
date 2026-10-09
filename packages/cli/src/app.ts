@@ -331,6 +331,17 @@ export interface AppOptions {
 }
 
 /**
+ * 缺陷 7：stream-json 模式下 stdin 空闲上限（ms）。`SID_CODE_SDK_IDLE_TIMEOUT_MS`，
+ * 缺省 0 = 关闭。非法值（负数 / 非数字）按 0 处理，不让一个手误把会话秒杀。
+ */
+export function readSdkIdleTimeoutMs(env: NodeJS.ProcessEnv = process.env): number {
+  const raw = env.SID_CODE_SDK_IDLE_TIMEOUT_MS;
+  if (raw === undefined || raw.trim() === "") return 0;
+  const n = Number(raw);
+  return Number.isFinite(n) && n > 0 ? Math.floor(n) : 0;
+}
+
+/**
  * CM3/CM4：从重试错误文本推断重试种类，决定 TUI 提示语气与是否给升级建议。
  * - 限流(429 / rate limit / quota)→ rate_limit（CM4 附升级建议）
  * - 过载(529 / overloaded / 503)→ overloaded
@@ -542,6 +553,45 @@ export class App {
    * 与 announcedMcpServers 同模式：会话内一次即够，重复注入纯烧 token。
    */
   private surfacedRecalledMemories = new Set<string>();
+  /**
+   * 缺陷 4：本会话（两次压缩之间）已注入的召回正文字节数，喂 `RECALL_SESSION_MAX_BYTES`。
+   * 与 `surfacedRecalledMemories` 同生命周期，见 `resetRecallState`。
+   */
+  private recalledMemoryBytes = 0;
+
+  /**
+   * 缺陷 4：压缩 / `/clear` 之后召回状态必须归零。
+   *
+   * 已注入集合是挂在上下文**外面**的状态：压缩把那些注入从消息里清掉了，
+   * 集合却还记着「给过了」⇒ 这条记忆本会话再也不会注入，且没有任何告警。
+   * 原先压缩只 `clearPromptCache()`，清的是提示词缓存，不是这个集合。
+   */
+  private resetRecallState(): void {
+    this.surfacedRecalledMemories.clear();
+    this.recalledMemoryBytes = 0;
+  }
+
+  /**
+   * 缺陷 2：从当前消息里取最近 N 次工具调用及成败，作为召回的第三个输入。
+   * 成败以配对的 tool_result.is_error 为准；没配上结果的调用不计（还没执行完）。
+   */
+  private collectRecentToolUses(limit = 10): Array<{ name: string; failed: boolean }> {
+    const msgs = this.ctxMgr.getMessages() as Array<{ content?: unknown }>;
+    const names = new Map<string, string>();
+    const out: Array<{ name: string; failed: boolean }> = [];
+    for (const m of msgs) {
+      if (!Array.isArray(m.content)) continue;
+      for (const b of m.content as Array<Record<string, unknown>>) {
+        if (b?.type === "tool_use" && typeof b.id === "string" && typeof b.name === "string") {
+          names.set(b.id, b.name);
+        } else if (b?.type === "tool_result" && typeof b.tool_use_id === "string") {
+          const name = names.get(b.tool_use_id);
+          if (name) out.push({ name, failed: b.is_error === true });
+        }
+      }
+    }
+    return out.slice(-limit);
+  }
   /** 会话 ID（§4.1/§4.3 落盘目录用）。 */
   private sessionIdForCompact = "";
   /** 当前生效的项目规则（CLAUDE.md）内存缓存，供运行时重建系统提示词复用 */
@@ -1052,8 +1102,8 @@ export class App {
         // B5-7：401 凭据刷新钩子（§5 新发现 3）
         //
         // 修的是一处错误归因：此前 401 是「用同一份旧凭据重试一次，再失败就
-        // markTerminal 拉黑模型」。而 terminal 是进程内**永久**态（availability.ts：
-        // 默认不可被自动流程恢复），于是一次凭据过期能让一个**健康**模型整场会话不可用。
+        // markTerminal 拉黑模型」。而当时 terminal 是进程内**永久**态（2026-10-08 已改为
+        // 有时效的嫌疑态），于是一次凭据过期能让一个**健康**模型整场会话不可用。
         //
         // ── 我们的"刷新"是什么，不是什么（诚实边界） ──
         //
@@ -1412,9 +1462,16 @@ export class App {
           const recalled = await findRelevantMemories(query, memoryDir, sideQuery, {
             // 同一会话内已注入过的不再重复注入（多轮重复注入纯烧 token）
             alreadySurfaced: this.surfacedRecalledMemories,
+            // 缺陷 2：执行状态调制——成功在用的工具不推用法参考，失败的推坑
+            recentTools: this.collectRecentToolUses(),
+            // 缺陷 4：会话累计预算
+            sessionBytesUsed: this.recalledMemoryBytes,
           });
           if (recalled.length === 0) return null;
-          for (const m of recalled) this.surfacedRecalledMemories.add(m.filename);
+          for (const m of recalled) {
+            this.surfacedRecalledMemories.add(m.filename);
+            this.recalledMemoryBytes += Buffer.byteLength(m.content, "utf8");
+          }
 
           const { generateRecalledMemoryAttachment } =
             await import("@sid-code/core/config/attachments.ts");
@@ -2294,6 +2351,8 @@ export class App {
     reason: string;
     defaultFallbackModel?: string;
     signal?: AbortSignal;
+    canRetrySame?: boolean;
+    attempts?: number;
   }): Promise<FallbackDecision> {
     const log = getLogger();
     const { askUserQuestion, hasAskUserQuestionHandler } =
@@ -2330,9 +2389,8 @@ export class App {
     }
 
     // 构造选项：默认备用置顶（标注）+ 其它 availableModels（排除主模型与默认备用）+ 不切换。
-    // H2：对处于 terminal 拉黑态的模型在 description 追加标注，让用户知情——选中被拉黑的模型
-    // 会在切入时 force 清一次 terminal（见下方选中分支），给它一次干净机会；不置灰移除，避免
-    // 瞬时 401/400 误拉黑后用户彻底无法选回。
+    // H2：对处于嫌疑期（近期有调用在它身上放弃过）的模型在 description 追加标注，让用户知情——
+    // 选中它会在切入时清一次嫌疑（见下方选中分支）；不置灰移除，避免用户无法选回。
     const avail = (() => {
       try {
         return this.fallback?.getAvailability();
@@ -2341,8 +2399,17 @@ export class App {
       }
     })();
     const terminalNote = (name: string): string =>
-      avail?.isTerminal(name) ? "（曾被标记不可用，切入将重试）" : "";
+      avail?.isSuspect(name) ? "（近期请求失败，切入将重试）" : "";
     const options: { label: string; description?: string }[] = [];
+    // 2026-10-08 §4.4：「重试当前模型」置顶为默认项。网关把临时故障包成 401/400/404 已有实测，
+    // 此前弹窗只有「切换 / 不切换」，用户想再试一次只能终止后重发。漏斗侧限制每次调用最多 2 次。
+    const RETRY_SAME = `重试当前模型 ${ctx.failedModel}`;
+    if (ctx.canRetrySame) {
+      options.push({
+        label: RETRY_SAME,
+        description: `重新请求（全新重试预算${ctx.attempts !== undefined ? `，本次已重试 ${ctx.attempts} 次` : ""}）`,
+      });
+    }
     if (ctx.defaultFallbackModel && this.buildFallbackProvider(ctx.defaultFallbackModel)) {
       options.push({
         label: ctx.defaultFallbackModel,
@@ -2358,7 +2425,7 @@ export class App {
     const NO_SWITCH = "不切换，终止本轮";
     options.push({ label: NO_SWITCH, description: "保持当前状态，可稍后重发消息或用 /model 切换" });
 
-    const question = `主模型 ${ctx.failedModel} 请求失败（${ctx.reason}），是否切换到备用模型继续？`;
+    const question = `主模型 ${ctx.failedModel} 请求失败（${ctx.reason}），要重试、切换到备用模型，还是终止？`;
     let result;
     try {
       // 人机输入闸门：本弹窗阻塞等用户作答期间，通知看门狗（stream-processor 心跳 +
@@ -2394,6 +2461,10 @@ export class App {
 
     // answered：取用户选中的答案（answers 按"问题文本 → 答案"映射）。
     const answer = result.answers[question];
+    if (answer === RETRY_SAME && ctx.canRetrySame) {
+      log.info("FALLBACK", `用户选择重试当前模型 ${ctx.failedModel}`);
+      return { action: "retry_same" };
+    }
     if (!answer || answer === NO_SWITCH) {
       log.info("FALLBACK", "用户选择不切换，终止本轮");
       return { action: "abort" };
@@ -2643,6 +2714,7 @@ export class App {
         // 否则新一轮对话永远不再播报延迟工具列表（详见 resetReminderDedupKeys 注释）。
         this.sessionState.resetReminderDedupKeys();
         clearPromptCache();
+        this.resetRecallState();
         this.quotaManager?.resetAlertLevel();
         this.fallback.reset();
         this.resetTodoTool();
@@ -2760,6 +2832,8 @@ export class App {
         // 否则后续 syncDisplay 因 newCount<=0 被 early return 跳过，historyItems 永远停在旧快照。
         resetSyncState();
         rebuildDisplay();
+        // 缺陷 4：手动压缩同样把召回注入清出了上下文
+        this.resetRecallState();
         appendCommandOutput(commandInput, result.summary ?? null);
         break;
 
@@ -2956,6 +3030,8 @@ export class App {
     /** 可选：reactiveCompact 的 emergencyTruncate 兜底路径不一定给（见 QueryDeps 注释） */
     tokensBefore?: number;
   }): Promise<void> {
+    // 缺陷 4：reactive / collapse 同样替换了消息历史
+    this.resetRecallState();
     try {
       const { runPostCompact } = await import("@sid-code/core/query/compact/post-compact.ts");
       await runPostCompact({
@@ -3033,6 +3109,8 @@ export class App {
       } catch {
         /* 忽略 */
       }
+      // 缺陷 4：召回的已注入集合 / 累计字节随压缩归零（清 prompt cache 不清它们）
+      this.resetRecallState();
 
       // §9.5：压缩后重新注入仍在作用域内的 JIT 规则（CLAUDE.md）。
       // JIT 上下文被追加到系统提示词，但摘要后的消息历史不再提及这些规则，
@@ -7188,7 +7266,26 @@ export class App {
       // D1：stream-json 的 result 消息带上被拒清单。与 text/json 路径读的是同一份 tracking。
       getPermissionDenials: () => this.headlessPermissionDenials(),
       getStructuredOutput: () => this.capturedStructuredOutput(),
+      // 缺陷 4：set_model 之后 system/init 报新模型
+      getModel: () => this.config.model,
     };
+  }
+
+  /**
+   * 缺陷 4：宿主 `set_model`。与 `/model` 同一条切换路径（applyPrimaryModelSwitch），
+   * 同样先校验 availableModels——非法名抛错，错误文案原样回给宿主。不持久化。
+   */
+  private sdkSetModel(model: string): string {
+    const name = model.trim();
+    if (!name) throw new Error("set_model: model 不能为空");
+    const list = this.config.availableModels;
+    if (list.length > 0 && !list.some((m) => m.name === name)) {
+      throw new Error(
+        `模型 "${name}" 不在可用模型列表中（可用：${list.map((m) => m.name).join(", ")}）`,
+      );
+    }
+    this.applyPrimaryModelSwitch(name, { clearTerminal: true });
+    return this.config.model;
   }
 
   /** B26：StructuredOutput 校验通过的载荷；未开 --json-schema 或未捕获时为 undefined */
@@ -7231,12 +7328,9 @@ export class App {
         cwd: process.cwd(),
         sessionId: this.sessionState.sessionId,
         model: this.config.model,
-        maxTurns: this.config.maxTurns || undefined,
-        // P1-9：花费上限透传到 SDK 引擎（超限终止）。B18：与 QuotaManager 同一个数，
-        // 否则 quota.costLimit 更严时 SDK 侧的 error_max_budget_usd 报的是另一个上限。
-        maxBudgetUsd: this.effectiveCostLimit || undefined,
-        systemPrompt: this.config.systemPrompt || undefined,
-        jsonSchema: this.config.jsonSchema,
+        // 缺陷 6：maxTurns / 花费上限 / systemPrompt / jsonSchema 不再传给 SDK 引擎——
+        // 它从不读这四个字段。真实执行点：queryLoop + QuotaManager（effectiveCostLimit，
+        // 结果映射成 error_max_budget_usd）、buildSystemPrompt、StructuredOutputTool。
         // P2-2 --include-partial-messages：显式开启则转发 stream_event 部分增量；
         // verbose 模式亦隐含开启（与既有行为兼容）。
         includeStreamEvents: this.config.includePartialMessages || this.config.verbose,
@@ -7286,9 +7380,26 @@ export class App {
             this.abortController = new AbortController();
             current.abort("user-cancel");
           },
+          onSetModel: (model) => this.sdkSetModel(model),
+          onGetContextUsage: () => {
+            const u = this.ctxMgr.getContextUsageForDisplay(this.toolRegistry.size());
+            return {
+              used_tokens: u.used,
+              max_tokens: u.maxTokens,
+              percent_of_window: u.percentOfWindow,
+            };
+          },
         },
+        // 缺陷 7：stdin 空闲上限。默认 0（关闭）——与 maxSessionDurationMs 同一「保活优先」
+        // 取向：宿主两轮之间空闲多久是它的自由。CI / 批处理要兜底时显式开。
+        idleTimeoutMs: readSdkIdleTimeoutMs(),
       });
       budgetExceeded = outcome.budgetExceeded;
+      if (outcome.idleTimedOut) {
+        process.stderr.write(
+          `[runHeadlessSDK] stdin 空闲超过 ${Math.round(readSdkIdleTimeoutMs() / 1000)}s，已结束会话\n`,
+        );
+      }
     } catch (err: any) {
       runError = err instanceof Error ? err : new Error(String(err));
       aborted = runError.name === "AbortError" || /abort/i.test(runError.message ?? "");
@@ -9312,6 +9423,7 @@ export class App {
             // 同上：reminder 跨轮去重键必须随 /clear 归零（详见 resetReminderDedupKeys 注释）。
             this.sessionState.resetReminderDedupKeys();
             clearPromptCache();
+            this.resetRecallState();
             this.quotaManager?.resetAlertLevel();
             this.fallback.reset();
             this.resetTodoTool();

@@ -19,7 +19,7 @@ import { SUCCESS_MARK, ERROR_MARK, WARNING_MARK } from "../../../ui/constants/fi
 import { getSidHome, sidPaths } from "@sid-code/core/config/paths.ts";
 import { collectDiskUsage, formatBytes } from "@sid-code/core/config/disk-usage.ts";
 import { resolveRgCommand } from "@sid-code/core/tool/ripgrep.ts";
-import { getVersion } from "@sid-code/shared/version.ts";
+import { getVersionDisplay } from "@sid-code/shared/version.ts";
 
 /** 诊断项状态：ok=✔ / warn=⚠ / fail=✘ */
 type CheckStatus = "ok" | "warn" | "fail";
@@ -372,7 +372,7 @@ const mod: LocalCommandModule = {
     const items: CheckItem[] = [];
 
     // 版本（getVersion 返回形如 "sid-code v0.1.586 (TypeScript)"）
-    items.push({ status: "ok", label: "版本", detail: getVersion() });
+    items.push({ status: "ok", label: "版本", detail: getVersionDisplay() });
 
     // 运行时
     const bunVer =

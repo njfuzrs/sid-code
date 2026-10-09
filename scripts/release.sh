@@ -5,12 +5,15 @@
 #   ./scripts/release.sh                        # 门禁(bun test)+bump 版本号+构建 4 目标并打包到 dist/release/
 #   ./scripts/release.sh --upload                # 打包后上传到服务器（发到 beta 通道，见下方「发布通道」）
 #   ./scripts/release.sh --promote <version>     # 把 stable 通道指向某个已上传版本（纯指针，不构建）
+#   ./scripts/release.sh --upload --beta-fix --beta-note "修复 xxx"
+#                                                # beta 修复号轻量发布：自动写最小 curated，不交互（见下方「一修一号」）
 #   ./scripts/release.sh --no-bump               # 复用当前版本号，不再 bump（上次已 bump 过、重跑时用）
 #   ./scripts/release.sh --skip-test             # 跳过发布前 bun test 门禁（不推荐，仅救急）
 #   ./scripts/release.sh --allow-dirty           # 允许工作区有未提交改动（默认拒绝，见下方门禁说明）
 #   ./scripts/release.sh --no-commit             # 不自动提交 bump（tag 会与版本号错位，仅特殊情况）
 #   ./scripts/release.sh --upload-team-defaults <file>  # 单独上传团队默认配置（不打版本号）
 #   ./scripts/release.sh --upload-ripgrep <dir> <version>  # 单独上传预编译 ripgrep 二进制（不打版本号）
+#   ./scripts/release.sh --archive-existing     # 把服务器上现存的版本目录逐个归档到 OSS（标 original，可重跑）
 #
 # ─── 发布通道（2026-08-24 接入，A2）────────────────────────────────────────────
 #
@@ -31,9 +34,22 @@
 # 东西"这个唯一价值当场消失。
 #
 # ⚠️ 旧版本清理（RELEASE_KEEP_VERSIONS）现在按 **mtime 保留最近 N 个之外，额外保护
-# 两个指针指向的版本**。不加这层保护的话：beta 泡制期连发 5 版就会把 latest 指向的
+# 两个指针指向的版本**，且窗口外的目录须 OSS 归档核对通过才删（B46 P3）。不加这层保护的话：beta 泡制期连发 5 版就会把 latest 指向的
 # 那版挤出保留窗口删掉 —— 而 latest.txt 还在指着它，形态是**所有稳定版用户装不上**
 # （404），且服务器上什么都不会报错。
+#
+# ─── beta 泡制期「一修一号」（2026-10-09，T1–T5）─────────────────────────────────
+#
+# beta 期发现 bug 时**不在原版本号里修**（同号换字节会让 install.sh 复用旧目录、归档拒写、
+# promote 说不清哪份字节被测过）—— 而是发下一个构建号，验收通过后 promote **最后那个号**。
+# 稳定版用户会跳号（0.1.606 → 0.1.609），所以配套：
+#   · `--beta-fix --beta-note "<一句话>"`：缺 curated 时自动写最小形态（betaOnly:true），
+#     不交互；**不跳过**任何门禁（全量测试 / 构建 / 冒烟 / 归档 / tag / bump PR）。
+#   · `--upload` 建的 GitHub Release 是 **pre-release**；`--promote` 才改成正式 + Latest。
+#   · `--promote` 把 (当前 latest, 目标] 区间的 curated 合并成稳定版说明
+#     （changelog/curated/stable/v<ver>.json），**交互确认**后才写 latest.txt；
+#     非交互环境直接拒绝（稳定版说明缺失不可接受，不降级放行）。区间只有一版 = 快车道，零变化。
+#   · 通道记录 `changelog/channel.json`（当前稳定版号）由 promote 更新，官网据此标「预发布」。
 #
 # 发布前门禁：默认先跑 `bun test` 全量单测，失败即中止（坏版本不会推到任何通道）。
 #   构建完成后还会对「当前平台」的产物做一次 --version 冒烟，挡住产物损坏/无法执行的情况。
@@ -126,7 +142,10 @@
 #   DEPLOY_RG_PATH          服务器上预编译 ripgrep 二进制目录
 #                           （默认 /var/www/html/vendor-bin/ripgrep，与 releases 版本目录隔离，
 #                           不受旧版本清理逻辑影响；对应 fetch-ripgrep.ts 的下载根）
-#   RELEASE_KEEP_VERSIONS   服务器端保留的历史版本数（默认 5，上传后清理更旧的版本目录）
+#   RELEASE_KEEP_VERSIONS   服务器端热缓存保留的版本数（默认 5；0 = 不清理）。
+#                           窗口外的目录**只有在 OSS 归档当场核对通过后**才删（B46 P3），
+#                           核对不过的保留并 warn。被删的版本仍可经 nginx 回源下载，
+#                           promote / rollback 到它时会自动从归档回暖
 #
 #   凭据来源：脚本启动时自动 source scripts/deploy.env（不入库，见 deploy.env.example 模板）。
 #   环境变量优先级高于 deploy.env 文件（已导出的同名变量不会被文件覆盖）。
@@ -188,6 +207,11 @@ DEPLOY_SSH_PASSWORD="${DEPLOY_SSH_PASSWORD:-}"
 DEPLOY_PATH="${DEPLOY_PATH:-/var/www/html/releases/sid-code}"
 DEPLOY_RG_PATH="${DEPLOY_RG_PATH:-/var/www/html/vendor-bin/ripgrep}"
 RELEASE_KEEP_VERSIONS="${RELEASE_KEEP_VERSIONS:-5}"
+# 非负整数校验：非数字会让下面的 `[ -eq 0 ]` 报错返回 2、落进清理分支，
+# 等于一个拼错的配置值触发删除。宁可拒绝发布。
+case "$RELEASE_KEEP_VERSIONS" in
+    ''|*[!0-9]*) echo "  ❌ RELEASE_KEEP_VERSIONS 必须是非负整数，当前为: $RELEASE_KEEP_VERSIONS" >&2; exit 1 ;;
+esac
 
 # ripgrep 版本号从 fetch-ripgrep.ts 的 DEFAULT_RG_VERSION 读取（唯一事实源，避免两处硬编码漂移）
 RG_VERSION="$(bun run "$SCRIPT_DIR/fetch-ripgrep.ts" --print-version)"
@@ -238,6 +262,9 @@ ALLOW_DIRTY=false
 NO_COMMIT=false
 DO_PROMOTE=false
 PROMOTE_VERSION=""
+DO_ARCHIVE_EXISTING=false
+BETA_FIX=false
+BETA_NOTE=""
 
 while [ $# -gt 0 ]; do
     case "$1" in
@@ -249,9 +276,16 @@ while [ $# -gt 0 ]; do
             shift 2
             ;;
         --no-bump) DO_BUMP=false; shift ;;
+        --beta-fix) BETA_FIX=true; shift ;;
+        --beta-note)
+            BETA_NOTE="${2:-}"
+            [ -n "$BETA_NOTE" ] || { echo "错误: --beta-note 需要传入一句话说明"; exit 1; }
+            shift 2
+            ;;
         --skip-test) DO_TEST=false; shift ;;
         --allow-dirty) ALLOW_DIRTY=true; shift ;;
         --no-commit) NO_COMMIT=true; shift ;;
+        --archive-existing) DO_ARCHIVE_EXISTING=true; shift ;;
         --upload-team-defaults)
             DO_UPLOAD_TEAM_DEFAULTS=true
             TEAM_DEFAULTS_FILE="${2:-}"
@@ -269,6 +303,10 @@ while [ $# -gt 0 ]; do
         *) echo "未知参数: $1"; exit 1 ;;
     esac
 done
+
+if [ "$BETA_FIX" = true ] && [ "$DO_PROMOTE" = true ]; then
+    echo "错误: --beta-fix 与 --promote 不能同时使用（beta 修复号发到 beta，促升是另一步）"; exit 1
+fi
 
 info()  { echo "  $*"; }
 ok()    { echo "  ✅ $*"; }
@@ -330,6 +368,54 @@ run_scp() {
     fi
 }
 
+# ─── 归档到 OSS（B46 P1）────────────────────────────────────────────────────
+#
+# 服务器版本目录只是热缓存，OSS（sid-code-releases，私有 + 版本控制 + 发布凭据无删除权）
+# 才是事实源。真正干活的是 scripts/archive-version.sh：scp 到服务器上执行，因为
+# OSS 只对 ECS 所在 VPC 开放、ossutil 凭据也只在 ECS 上。
+#
+# 成功判据只认脚本最后一行 `__ARCHIVE_OK__ <ver>` —— 它在**整目录回读 + sha256sum -c +
+# .sha256 逐字比对**之后才打印。ssh 返回 0 不够：ossutil cp 遇到已存在对象是 skip 且返回 0。
+ARCHIVE_PLATFORMS="$(for t in "${TARGETS[@]}"; do printf '%s ' "${t#*:}"; done)"
+ARCHIVE_PLATFORMS="${ARCHIVE_PLATFORMS% }"
+
+archive_remote() { # <version> <original|rebuilt>
+    local ver="$1" prov="$2" remote_script out rc=0
+    remote_script="/tmp/sid-archive-version-$$.sh"
+    run_scp "$SCRIPT_DIR/archive-version.sh" "${DEPLOY_SSH_USER}@${DEPLOY_SSH_HOST}:${remote_script}" \
+        || { warn "归档脚本上传失败"; return 1; }
+    # `|| rc=$?`：set -e 下裸 `out="$(失败命令)"` 会直接退出整个脚本，拿不到返回码
+    out="$(run_ssh "${DEPLOY_SSH_USER}@${DEPLOY_SSH_HOST}" \
+        "ARCHIVE_PLATFORMS='${ARCHIVE_PLATFORMS}' bash '${remote_script}' '${DEPLOY_PATH}/${ver}' '${ver}' '${prov}'; _rc=\$?; rm -f '${remote_script}'; exit \$_rc" 2>&1)" || rc=$?
+    printf '%s\n' "$out" | grep -v 'setlocale' | sed 's/^/  /' || true
+    [ "$rc" -eq 0 ] || return 1
+    # here-string 而非 `printf | grep -q`：后者在 pipefail 下会因 SIGPIPE 偶发判失败
+    grep -qx "__ARCHIVE_OK__ ${ver}" <<<"$out" || return 1
+    return 0
+}
+
+# 把 scripts/archive-ops.sh 放到服务器上，打印远端路径（verify / warm 都由它执行）
+upload_archive_ops() {
+    local remote="/tmp/sid-archive-ops-$$.sh"
+    run_scp "$SCRIPT_DIR/archive-ops.sh" "${DEPLOY_SSH_USER}@${DEPLOY_SSH_HOST}:${remote}" >/dev/null \
+        || return 1
+    echo "$remote"
+}
+
+# 回暖（B46 P3）：服务器没有该版本目录时从归档拉回 + sha256 校验后原子落位。
+# 指针只能指向热缓存里的版本 —— 不让稳定通道的流量靠 nginx 回源扛。
+# 返回 0 = 目录现在在服务器上（原本就在，或已回暖）。
+warm_remote() { # <version>
+    local ver="$1" ops out rc=0
+    ops="$(upload_archive_ops)" || { warn "回暖脚本上传失败"; return 1; }
+    out="$(run_ssh "${DEPLOY_SSH_USER}@${DEPLOY_SSH_HOST}" \
+        "ARCHIVE_PLATFORMS='${ARCHIVE_PLATFORMS}' bash '${ops}' warm '${DEPLOY_PATH}' '${ver}'; _rc=\$?; rm -f '${ops}'; exit \$_rc" 2>&1)" || rc=$?
+    printf '%s\n' "$out" | grep -v 'setlocale' | grep -v '^__WARM_' | sed 's/^/  /' || true
+    [ "$rc" -eq 0 ] || return 1
+    grep -Eqx "__WARM_(OK|PRESENT)__ ${ver}" <<<"$out" || return 1
+    return 0
+}
+
 # ─── 失败回滚（EXIT trap）───────────────────────────────────────────────────
 #
 # 为什么必须有：本脚本 `set -euo pipefail`，任何一步失败都是**立即裸退出**。而 bump-version
@@ -354,6 +440,7 @@ run_scp() {
 
 RELEASE_OK=false
 ROLLBACK_FILES=()      # 本次运行前是 clean、因此可安全 git checkout 恢复的文件
+BETA_NOTE_CREATED=""   # --beta-note 本次新建的 curated 文件（失败时删除）
 BUMP_APPLIED=false
 
 # 记录某个文件在"被本脚本修改之前"是否干净；只有干净的才登记进回滚清单。
@@ -419,6 +506,12 @@ on_exit() {
         fi
     fi
 
+    # --beta-note 自动生成的最小 curated 是本脚本**亲手新建**的文件，失败时删掉它，
+    # 免得重跑时被「已存在，拒绝覆盖」挡住（只删本次创建的那一个，不碰别的）
+    if [ -n "${BETA_NOTE_CREATED:-}" ] && [ -f "$BETA_NOTE_CREATED" ]; then
+        rm -f "$BETA_NOTE_CREATED" && info "已删除本次生成的 ${BETA_NOTE_CREATED#"$ROOT/"}"
+    fi
+
     if [ "$BUMP_APPLIED" = true ]; then
         local now_ver
         now_ver="$(bun -e "console.log(require('./package.json').version)" 2>/dev/null || echo "?")"
@@ -459,6 +552,10 @@ if [ "$DO_PROMOTE" = true ]; then
     echo ""
 
     _promote_remote_dir="${DEPLOY_PATH}/${PROMOTE_VERSION}"
+
+    # ⓪ 服务器没有就先从归档回暖（B46 P3）。热缓存清理恢复之后，promote 一个
+    # 已被淘汰的版本是合法操作；回暖失败（归档里也没有）才落到下面的 __NO_DIR__。
+    warm_remote "$PROMOTE_VERSION" || warn "从归档回暖 v${PROMOTE_VERSION} 失败（继续走目录检查）"
 
     # ① + ② 目录存在且产物齐全（按 TARGETS 的平台清单逐个点名，不数文件个数：
     # 数个数会被残留的 .part / 旧命名文件糊弄过去）
@@ -571,6 +668,38 @@ echo __SHA_OK__"
     # 记录促升前的 latest，打进日志 —— 回滚时要用它，而出事时人不会记得上一版是几
     _prev_latest="$(run_ssh "${DEPLOY_SSH_USER}@${DEPLOY_SSH_HOST}" \
         "cat '${DEPLOY_PATH}/latest.txt' 2>/dev/null || true" 2>/dev/null | tr -d '[:space:]')"
+    _cur_beta="$(run_ssh "${DEPLOY_SSH_USER}@${DEPLOY_SSH_HOST}" \
+        "cat '${DEPLOY_PATH}/beta.txt' 2>/dev/null || true" 2>/dev/null | tr -d '[:space:]')"
+
+    # ⑤ 积压清单（T5，只读）：这次促升要带上哪几个 beta 号、各自修了什么
+    echo ""
+    bun run "$SCRIPT_DIR/changelog-stable.ts" backlog "${_prev_latest:--}" "${_cur_beta:--}" || true
+    echo ""
+
+    # ⑥ 稳定版说明（T1）：合并 (当前 latest, 目标] 区间的 curated。必须在写 latest.txt **之前**：
+    # 合并稿没被人确认就不许促升 —— 稳定版用户看到的说明缺了跳过版本，是不可逆的对外信息。
+    _merge_out="$(bun run "$SCRIPT_DIR/changelog-stable.ts" merge "${_prev_latest:--}" "$PROMOTE_VERSION" 2>&1)" \
+        || fail "稳定版说明合并失败，latest.txt 未改动：
+${_merge_out}"
+    STABLE_NOTES_MULTI=false
+    if grep -qx "__SINGLE__" <<<"$_merge_out"; then
+        ok "区间只有 v${PROMOTE_VERSION} 一个版本（快车道），稳定版说明即原 curated"
+    else
+        STABLE_NOTES_MULTI=true
+        printf '%s\n' "$_merge_out"
+        echo ""
+        if [ -t 0 ] && [ -e /dev/tty ]; then
+            printf "  稳定版说明合并稿如上，确认无误并继续促升？(y/N) "
+            read -r _ans </dev/tty || _ans=""
+            case "$_ans" in
+                y|Y|yes|YES) info "已确认合并稿" ;;
+                *) fail "已取消，latest.txt 未改动（可手改 curated 后重跑）" ;;
+            esac
+        else
+            # 与「缺 curated 降级 warn」刻意相反：这里放行的后果是稳定版说明缺失，不可接受
+            fail "非交互环境无法人工确认稳定版合并稿，拒绝促升（latest.txt 未改动）"
+        fi
+    fi
 
     # 写指针：本地生成再 scp，与 --upload 路径同一套写法（不用 ssh echo 重定向，
     # 那样引号层数一多就容易在远端 shell 里被吃掉）
@@ -582,6 +711,31 @@ echo __SHA_OK__"
 
     echo ""
     ok "稳定通道已指向 v${PROMOTE_VERSION}${_prev_latest:+（原为 v${_prev_latest}）}"
+
+    # ⑦ 落盘通道记录 + 稳定版说明 + 重建官网数据（全部是确定性本地操作，不调 LLM）
+    #    指针已写，这几步失败只 warn：稳定通道已经切过去了，回头补跑即可
+    _promote_files=(changelog/channel.json CHANGELOG.md website/.vitepress/data/changelog.json)
+    printf '{\n  "stable": "%s"\n}\n' "$PROMOTE_VERSION" > "$ROOT/changelog/channel.json"
+    if [ "$STABLE_NOTES_MULTI" = true ]; then
+        bun run "$SCRIPT_DIR/changelog-stable.ts" merge "${_prev_latest:--}" "$PROMOTE_VERSION" --write >/dev/null \
+            && _promote_files+=("changelog/curated/stable/v${PROMOTE_VERSION}.json") \
+            || warn "稳定版说明落盘失败：可手动 bun run scripts/changelog-stable.ts merge ${_prev_latest:--} ${PROMOTE_VERSION} --write"
+    fi
+    _pkg_ver="$(bun -e "console.log(require('$ROOT/package.json').version)" 2>/dev/null || echo "$PROMOTE_VERSION")"
+    (cd "$ROOT" && bun run scripts/generate-changelog.ts "$_pkg_ver") || warn "changelog 数据重建失败（不影响稳定通道）"
+    if (cd "$ROOT" && git add -- "${_promote_files[@]}" 2>/dev/null && ! git diff --cached --quiet); then
+        (cd "$ROOT" && git commit -q -m "chore(release): promote v${PROMOTE_VERSION}") \
+            && ok "已提交 promote v${PROMOTE_VERSION}（通道记录 + 稳定版说明），需走 PR 进 main 后跑 ./scripts/website-deploy.sh" \
+            || warn "promote 记录提交失败，请手动提交：${_promote_files[*]}"
+    fi
+
+    # ⑧ GitHub Release：目标版本改为正式 + Latest（区间内被跳过的号保持 pre-release）
+    if command -v gh >/dev/null 2>&1; then
+        bun run "$ROOT/scripts/github-release.ts" "$PROMOTE_VERSION" --promote \
+            || warn "GitHub Release 改正式失败（不影响稳定通道）：可手动补跑 bun run scripts/github-release.ts ${PROMOTE_VERSION} --promote"
+    else
+        warn "未装 gh CLI，跳过 Release 改正式（可稍后补跑 bun run scripts/github-release.ts ${PROMOTE_VERSION} --promote）"
+    fi
     echo ""
     echo "  验证："
     echo "    curl -fsSL ${PUBLIC_BASE_URL}/releases/sid-code/latest.txt"
@@ -639,10 +793,54 @@ if [ "$DO_UPLOAD_RIPGREP" = true ]; then
     exit 0
 fi
 
+# ─── 把服务器上现存的版本目录逐个归档（B46 P1 第 4 步，可重跑）───
+#
+# 现存目录都是当年 --upload 的原始字节，所以一律标 original；身份字段（commit / built_at /
+# bun_version）由 archive-version.sh 从产物二进制里取，不取目录 mtime、也不取 tag。
+# 已归档过的对象会被跳过（不覆盖），所以重跑是安全的：只补缺、再整体回读校验一次。
+# 一个版本失败不中断其余版本，但最终返回码非 0。
+
+if [ "$DO_ARCHIVE_EXISTING" = true ]; then
+    require_ssh_user
+    echo ">>> 归档服务器现存版本目录到 OSS ..."
+    _existing="$(run_ssh "${DEPLOY_SSH_USER}@${DEPLOY_SSH_HOST}" \
+        "cd '${DEPLOY_PATH}' && for d in */; do d=\"\${d%/}\"; case \"\$d\" in [0-9]*.[0-9]*.[0-9]*) echo \"\$d\" ;; esac; done" 2>/dev/null \
+        | grep -E '^[0-9]+\.[0-9]+\.[0-9]+$' || true)"
+    [ -n "$_existing" ] || fail "服务器 ${DEPLOY_PATH} 下没有任何版本目录"
+    _ok_n=0; _bad=""
+    for _v in $_existing; do
+        echo ""
+        info "v${_v} ..."
+        if archive_remote "$_v" original; then
+            _ok_n=$((_ok_n + 1))
+        else
+            _bad="${_bad} ${_v}"
+        fi
+    done
+    echo ""
+    [ -z "$_bad" ] || fail "归档失败的版本:${_bad}（成功 ${_ok_n} 个；可直接重跑，已归档对象不会被覆盖）"
+    ok "全部 ${_ok_n} 个版本已归档并回读校验通过"
+    exit 0
+fi
+
 echo "=== sid-code 发布构建 ==="
 echo ""
 
 cd "$ROOT"
+
+# ─── bun 版本门禁：构建用的 bun 必须等于 .bun-version ───
+#
+# CI 早就用 bun-version-file 钉了 .bun-version，发布脚本却从没校验过，于是产物用的是
+# 「发布机恰好装了哪个 bun」。实测 0.1.602 是 Bun 1.3.14、0.1.606 是 1.4.2 编的，
+# 而 1.3.14 在本仓跑全量测试是坏的（CONTRIBUTING「环境准备」）。归档的 provenance
+# 要记的是「规定用哪个版本」，不一致就不发。
+
+_want_bun="$(tr -d '[:space:]' < "$ROOT/.bun-version" 2>/dev/null || true)"
+_have_bun="$(bun --version 2>/dev/null | tr -d '[:space:]')"
+[ -n "$_want_bun" ] || fail "读不到 $ROOT/.bun-version"
+[ "$_have_bun" = "$_want_bun" ] \
+    || fail "bun 版本不符：当前 ${_have_bun:-未安装}，.bun-version 要求 ${_want_bun}（bun upgrade 或用 bunx 切换后重跑）"
+ok "bun ${_have_bun}（= .bun-version）"
 
 # ─── 发布前门禁：全量单测（可 --skip-test 跳过）───
 
@@ -709,7 +907,15 @@ TAG="v$VERSION"
 # 等于「想发个紧急修复必须先等模型写文案」。缺文案的后果是官网那一版显示
 # 「本版没有用户可见的变更」—— 不好，但不该拦住发布。
 _CURATED_FILE="changelog/curated/v${VERSION}.json"
-if [ ! -f "$ROOT/$_CURATED_FILE" ]; then
+if [ "$BETA_FIX" = true ] && [ ! -f "$ROOT/$_CURATED_FILE" ]; then
+    # beta 修复号（T3）：面向正式用户的文案在 promote 合并时才写，这里只要一句 beta-note。
+    # 刻意**不交互**、缺 --beta-note 直接失败：beta 修复本来就是要快、要可脚本化的那条路。
+    [ -n "$BETA_NOTE" ] || fail "--beta-fix 缺 curated 时必须带 --beta-note \"<一句话>\"（v${VERSION} 修了什么）"
+    bun run "$SCRIPT_DIR/changelog-stable.ts" beta-note "$VERSION" "$BETA_NOTE" >/dev/null \
+        || fail "生成 beta 修复号最小 curated 失败"
+    BETA_NOTE_CREATED="$ROOT/$_CURATED_FILE"
+    ok "已生成 beta 修复号最小文案：${_CURATED_FILE}（betaOnly，promote 合并时丢弃）"
+elif [ ! -f "$ROOT/$_CURATED_FILE" ]; then
     warn "缺少用户视角文案：$_CURATED_FILE"
     warn "官网 /changelog 的 v$VERSION 将显示「本版没有用户可见的变更」。"
     info "现在补（推荐，几分钟）："
@@ -924,6 +1130,8 @@ RELEASE_COMMIT_FILES=(
     website/.vitepress/data/changelog.json
     packages/core/src/skill/builtin-embedded.generated.ts
 )
+# --beta-note 新建的最小 curated 跟 bump 一起进同一个提交（tag 打在它上面，文案与字节同源）
+[ -n "$BETA_NOTE_CREATED" ] && RELEASE_COMMIT_FILES+=("${BETA_NOTE_CREATED#"$ROOT/"}")
 
 if [ "$NO_COMMIT" = true ]; then
     warn "已跳过自动提交（--no-commit）：tag 将打在当前 HEAD 上，可能与 package.json 版本号错位"
@@ -951,6 +1159,7 @@ else
         # 提交成功后这些文件已进入历史，回滚清单作废：再 checkout 会把发布提交的内容清掉
         ROLLBACK_FILES=()
         BUMP_APPLIED=false
+        BETA_NOTE_CREATED=""   # 已进 bump 提交，失败回滚不能再删它
         ok "已提交 bump ${TAG}（$(git rev-parse --short HEAD)）"
     fi
 fi
@@ -1151,6 +1360,16 @@ fi"
     }
     ok "v${VERSION} 目录已完整就位"
 
+    # ─── 归档到 OSS + 回读校验（B46 P1）：没归档就不算发布 ───────────────────
+    #
+    # 放在**写任何指针之前**：失败就 fail，beta.txt / install.sh 都不动，用户侧看不到这个版本。
+    # 版本目录此时已经在服务器上了 —— 这是刻意的：归档脚本读的就是这份落地字节，
+    # 归档的 = 用户将来下载的。它留在服务器上无害（没有指针指向它），重跑带 --no-bump 即可。
+    echo ">>> 归档 v${VERSION} 到 OSS 并回读校验 ..."
+    archive_remote "$VERSION" original \
+        || fail "归档失败 —— 本次不算发布：beta.txt 与 install.sh 均未改动（v${VERSION} 目录已在服务器上，无指针指向它；修复后 --no-bump --upload 重跑）"
+    ok "v${VERSION} 已归档（回读 sha256 校验通过）"
+
     run_scp "$RELEASE_DIR/install.sh" "${DEPLOY_SSH_USER}@${DEPLOY_SSH_HOST}:${DEPLOY_PATH}/install.sh"
 
     # 上传顶层 CHANGELOG.md（供用户通过链接查看版本变更）
@@ -1180,11 +1399,27 @@ fi"
     # 单通道时代 latest 永远是最新的那个，不可能被自己的保留窗口挤掉。
     #
     # 判据取「两个指针文件的当前内容」而不是「最近 N 个」：指针是权威，mtime 不是。
-    info "清理服务器旧版本（保留最近 ${RELEASE_KEEP_VERSIONS} 个 + 两个通道指向的版本）..."
-    # 用普通双引号字符串构建远程命令（不用 heredoc-in-$()，规避 macOS bash 3.2 解析 bug）。
-    # 本地展开：DEPLOY_PATH / 保留数量；远程展开：$d 等（用 \$ 转义留给远端 shell）。
-    _keep_plus_one=$((RELEASE_KEEP_VERSIONS + 1))
-    CLEANUP_CMD="cd '${DEPLOY_PATH}' 2>/dev/null || exit 0
+    #
+    # ⚠️ RELEASE_KEEP_VERSIONS=0 的语义是「不清理」，必须在拼清理命令**之前**短路。
+    # 不能只把默认值改成 0：下面用的是 `tail -n +$((N+1))`，N=0 时等于 `tail -n +1`，
+    # 会删掉除两个指针以外的**全部**版本目录 —— 止血当场变成事故。
+    #
+    # B46 P3 之后服务器只是热缓存：窗口外的目录要 OSS 归档当场核对通过才删（见下），
+    # 被删的版本仍可经 nginx 回源下载，promote / rollback 到它时自动回暖。
+    if [ "$RELEASE_KEEP_VERSIONS" -eq 0 ]; then
+        info "RELEASE_KEEP_VERSIONS=0：跳过清理（服务器版本目录全部保留）"
+    elif ! _ops_remote="$(upload_archive_ops)"; then
+        warn "归档核对脚本上传失败：本次跳过清理（不删任何目录）"
+    else
+        info "清理服务器旧版本（保留最近 ${RELEASE_KEEP_VERSIONS} 个 + 两个通道指向的版本；其余须 OSS 归档核对通过才删）..."
+        # 用普通双引号字符串构建远程命令（不用 heredoc-in-$()，规避 macOS bash 3.2 解析 bug）。
+        # 本地展开：DEPLOY_PATH / 保留数量 / 平台清单；远程展开：$d 等（用 \$ 转义留给远端 shell）。
+        #
+        # ⚠️ 删除前逐个目录问归档（archive-ops.sh verify），判据只认 `__ARCHIVED__ <ver>` 整行：
+        # ssh 断了、ossutil 报错、脚本没跑起来，输出里都不会有这一行 → 一律保留。
+        # 「核对不过就删」或「核对出错就跳过核对」都会把热缓存清理变回 P0 之前的永久删除。
+        _keep_plus_one=$((RELEASE_KEEP_VERSIONS + 1))
+        CLEANUP_CMD="cd '${DEPLOY_PATH}' 2>/dev/null || exit 0
 _pinned=\"\$(cat latest.txt 2>/dev/null | tr -d '[:space:]') \$(cat beta.txt 2>/dev/null | tr -d '[:space:]')\"
 ls -1dt */ 2>/dev/null | tail -n +${_keep_plus_one} | while IFS= read -r d; do
     d=\"\${d%/}\"
@@ -1195,9 +1430,13 @@ ls -1dt */ 2>/dev/null | tail -n +${_keep_plus_one} | while IFS= read -r d; do
     case \" \$_pinned \" in
         *\" \$d \"*) echo \"  保留 \${d}（通道指针指向它）\"; continue ;;
     esac
-    rm -rf -- \"\$d\" && echo \"  已删除旧版本 \$d\"
-done"
-    run_ssh "${DEPLOY_SSH_USER}@${DEPLOY_SSH_HOST}" "$CLEANUP_CMD" || warn "旧版本清理失败（不影响本次发布）"
+    _v=\"\$(ARCHIVE_PLATFORMS='${ARCHIVE_PLATFORMS}' bash '${_ops_remote}' verify \"\$d\" \"\$d\" 2>&1 || true)\"
+    grep -qx \"__ARCHIVED__ \$d\" <<<\"\$_v\" || { echo \"  ⚠️  未归档，拒绝清理 \${d}：\$(tail -n 1 <<<\"\$_v\")\"; continue; }
+    rm -rf -- \"\$d\" && echo \"  已删除旧版本 \${d}（OSS 归档核对通过）\"
+done
+rm -f '${_ops_remote}'"
+        run_ssh "${DEPLOY_SSH_USER}@${DEPLOY_SSH_HOST}" "$CLEANUP_CMD" || warn "旧版本清理失败（不影响本次发布）"
+    fi
 
     # ─── 上传成功后推送 tag ───
     # 推到 origin，让发布产物对应的 commit 在远端有确切 tag 标记。失败非致命：
@@ -1219,7 +1458,9 @@ done"
         # 一个没建成的 Release 页不该让发布流程判定为失败（手动补跑一行就行）。
         info "建 GitHub Release $TAG ..."
         if command -v gh >/dev/null 2>&1; then
+            # --prerelease：本次只进了 beta 通道（T2）。--promote 时才改成正式 + Latest
             bun run "$ROOT/scripts/github-release.ts" "$VERSION" --create \
+                --prerelease \
                 || warn "GitHub Release 创建失败（不阻断发布）：可手动补跑 bun run scripts/github-release.ts ${VERSION} --create"
         else
             warn "未装 gh CLI，跳过 GitHub Release（可稍后手动补跑 bun run scripts/github-release.ts ${VERSION} --create）"
@@ -1231,7 +1472,7 @@ done"
     echo ""
     echo "  装 beta 版验收："
     echo "    curl -fsSL ${PUBLIC_BASE_URL}/releases/sid-code/install.sh | SID_CODE_CHANNEL=beta bash"
-    echo "    SID_CODE_CHANNEL=beta sid-code update    # 已装过 beta 的机器"
+    echo "    sid-code update    # 已装过 beta 的机器（自动沿用 beta 通道；自动更新同样跟随）"
     echo ""
     echo "  验收通过后促升到稳定通道（纯指针，不重新构建）："
     echo "    ./scripts/release.sh --promote ${VERSION}"

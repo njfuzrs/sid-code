@@ -27,9 +27,9 @@
  */
 
 import { createHash } from "crypto";
-import { join } from "path";
+import { join, dirname } from "path";
 import { existsSync, mkdirSync } from "fs";
-import { readdir, stat, unlink, readFile, writeFile } from "fs/promises";
+import { stat, unlink, readFile, writeFile } from "fs/promises";
 import { getLogger } from "../../debug/logger.ts";
 import { scanForSecrets, type SecretMatch } from "./secret-scanner.ts";
 import { getTeamMemPath, resolveSharedTeamDir, type TeamMemoryOptions } from "./paths.ts";
@@ -106,20 +106,13 @@ async function readEntries(
   const out = new Map<string, MemEntry>();
   if (!existsSync(dir)) return out;
 
-  let names: string[];
-  try {
-    names = await readdir(dir);
-  } catch {
-    return out;
-  }
+  // 缺陷 9：枚举与索引侧共用 `listTeamMemoryFiles`（递归；跳过 MEMORY.md、archive/、
+  // 点文件、冲突副本）。旧实现平铺 `readdir`，子目录文件既不同步、也不进索引 ——
+  // 字节在本地，协作者看不到，本机模型也看不到。「进索引」与「参与同步」必须是同一批。
+  const { listTeamMemoryFiles } = await import("./store.ts");
+  const names = await listTeamMemoryFiles(dir);
 
   for (const filename of names) {
-    // 只同步 .md 记忆条目；跳过 MEMORY.md 索引（各端本地重建）、隐藏文件、冲突副本
-    if (!filename.endsWith(".md")) continue;
-    if (filename === "MEMORY.md") continue;
-    if (filename.startsWith(".")) continue;
-    if (filename.includes(".conflict-")) continue;
-
     const filePath = join(dir, filename);
     try {
       const st = await stat(filePath);
@@ -177,8 +170,11 @@ async function writeManifest(localDir: string, manifest: SyncManifest): Promise<
 
 /** 安全写入一个记忆文件（确保目录存在） */
 async function writeEntry(dir: string, key: string, content: string): Promise<void> {
-  if (!existsSync(dir)) mkdirSync(dir, { recursive: true });
-  await writeFile(join(dir, key), content, "utf8");
+  // key 现在可能带子目录（`sub/x.md`），建的是文件所在目录而不只是根
+  const target = join(dir, key);
+  const parent = dirname(target);
+  if (!existsSync(parent)) mkdirSync(parent, { recursive: true });
+  await writeFile(target, content, "utf8");
 }
 
 /** 删除一个记忆文件（不存在则忽略） */

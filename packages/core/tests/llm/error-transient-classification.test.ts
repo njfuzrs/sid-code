@@ -20,7 +20,7 @@ import {
   ERROR_USER_MESSAGES,
 } from "@sid-code/core/llm/error-messages.ts";
 import type {
-  TerminalReason,
+  SuspectReason as TerminalReason, // 2026-10-08 改名：不再判死，只选 suspect 族预算；面板常驻语义不变
   RetryableReason,
   StreamValidationReason,
 } from "@sid-code/core/llm/errors.ts";

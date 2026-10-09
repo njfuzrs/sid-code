@@ -274,12 +274,28 @@ describe("SubAgent 嵌套防护（已移除 static depth）", () => {
       }
     }
 
-    const agent = new SubAgent(new ErrorProvider(), "test-model", new Registry());
-    const result = await agent.execute({
-      type: "explore",
-      description: "异常测试",
-      prompt: "测试",
-    });
+    // 2026-10-08 有意语义变更：认不出的裸 Error 不再零重试，而是进 transient 未识别子集
+    // （同指纹 3 次封顶）。SubAgent 构造器不暴露退避参数，子代理漏斗回落到
+    // resolveLoopTimeouts —— 用 env 注入零退避，否则按默认 5s 基数真睡、撞 bun 5s 超时。
+    const prevBase = process.env.SID_CODE_RETRY_BACKOFF_BASE_MS;
+    const prevMax = process.env.SID_CODE_RETRY_BACKOFF_MAX_MS;
+    process.env.SID_CODE_RETRY_BACKOFF_BASE_MS = "0";
+    process.env.SID_CODE_RETRY_BACKOFF_MAX_MS = "0";
+    let result: Awaited<ReturnType<SubAgent["execute"]>>;
+    try {
+      const agent = new SubAgent(new ErrorProvider(), "test-model", new Registry());
+      result = await agent.execute({
+        type: "explore",
+        description: "异常测试",
+        prompt: "测试",
+      });
+    } finally {
+      // 存/恢复原值，不无条件 delete（CONTRIBUTING 测试约定第 1 条）
+      if (prevBase === undefined) delete process.env.SID_CODE_RETRY_BACKOFF_BASE_MS;
+      else process.env.SID_CODE_RETRY_BACKOFF_BASE_MS = prevBase;
+      if (prevMax === undefined) delete process.env.SID_CODE_RETRY_BACKOFF_MAX_MS;
+      else process.env.SID_CODE_RETRY_BACKOFF_MAX_MS = prevMax;
+    }
 
     // execute() 内部 runAgentLoop 消化了异常：success=false、输出含原始错误信息
     expect(result.success).toBe(false);

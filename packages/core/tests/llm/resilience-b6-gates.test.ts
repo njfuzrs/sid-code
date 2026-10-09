@@ -161,7 +161,9 @@ const textOf = (evts: StreamEvent[]) =>
 // 既有优势，改造中丢掉不会有任何报错，只会静默退回 CC 的语义。
 
 describe("S1：availability 拉黑层（子代理路径读写双向）", () => {
-  test("写：子代理撞 terminal 错误 → 模型被拉黑（跨路径可见）", async () => {
+  // 2026-10-08 有意语义变更：拉黑从「永久 terminal」改为「有时效的嫌疑态 + 半开探针」
+  // （设计 §4.3）。保留本组要守的能力：并行子代理不一起去撞同一个坏模型。
+  test("写：子代理对模型用尽预算放弃 → 模型进嫌疑态（跨路径可见）", async () => {
     const availability = new ModelAvailabilityService();
     const { fb } = fastFallback({ availability });
     const { provider } = makeProvider(
@@ -170,21 +172,35 @@ describe("S1：availability 拉黑层（子代理路径读写双向）", () => {
 
     await drain(fb, provider);
 
-    // 拉黑写在**共享**的 availability 上，故主循环/其他子代理都能看到。
-    expect(availability.isTerminal("m1")).toBe(true);
+    // 嫌疑写在**共享**的 availability 上，故其他子代理都能看到。
+    expect(availability.isSuspect("m1")).toBe(true);
   });
 
-  test("读：已拉黑的模型再被调用 → provider 完全不被触达（调用前预筛）", async () => {
+  test("读：嫌疑期内并行子代理只有一路真实发出（半开探针），其余不触达", async () => {
     const availability = new ModelAvailabilityService();
-    availability.markTerminal("m1", "先前已判定不可用");
+    availability.markSuspect("m1", "fp", "先前已放弃");
+    const { fb } = fastFallback({ availability });
+    const { provider, counts } = makeProvider(errStream("still down", "api_error", 500));
+
+    // 第一路是探针：真实发出（失败）；第二路在嫌疑期内（探针已占）不触达。
+    await drain(fb, provider, { agentId: "a1" });
+    const afterProbe = counts.stream;
+    expect(afterProbe).toBeGreaterThan(0);
+    await drain(fb, provider, { agentId: "a2" });
+    // 关键断言：不是"结果为空"，而是**一次网络请求都没发出去**。
+    expect(counts.stream).toBe(afterProbe);
+  });
+
+  test("读：探针成功 → 嫌疑清除，后续子代理照常发出", async () => {
+    const availability = new ModelAvailabilityService();
+    availability.markSuspect("m1", "fp", "先前已放弃");
     const { fb } = fastFallback({ availability });
     const { provider, counts } = makeProvider(okStream);
 
-    await drain(fb, provider);
-
-    // 关键断言：不是"结果为空"，而是**一次网络请求都没发出去**。
-    // 这正是这层的价值：已知不可用的模型不该再烧配额/时间。
-    expect(counts.stream).toBe(0);
+    await drain(fb, provider, { agentId: "a1" });
+    expect(availability.isSuspect("m1")).toBe(false);
+    await drain(fb, provider, { agentId: "a2" });
+    expect(counts.stream).toBe(2);
   });
 
   test("负向：健康模型不受影响（预筛不是一律拦）", async () => {
@@ -523,8 +539,11 @@ describe("S2：availability 上的共享限流冷却", () => {
     // 同一 agentId 两次 → 同一错峰槽位（slot*300 相等）。
     // 注：断言 slot 分量而非完整 delayMs，因 delayMs 含 wall-clock 敏感的 remainingMs，
     // 慢机器下两次跨毫秒边界会差 1ms 导致偶发失败（实现本身确定性，无 bug）。
-    const first = await slotsOf("agent-stable");
-    const second = await slotsOf("agent-stable");
+    // 2026-10-08：MIN_ATTEMPTS=2 起 maxRetries:0 也会重试一次（I1），事件条数随上一轮
+    // 残留冷却而变，故比的是**槽位集合**而非条数——本条要钉的只有「同一 agent 同一槽」。
+    const first = [...new Set(await slotsOf("agent-stable"))];
+    const second = [...new Set(await slotsOf("agent-stable"))];
+    expect(first.length).toBeGreaterThan(0);
     expect(first).toEqual(second);
   }, 30_000);
 

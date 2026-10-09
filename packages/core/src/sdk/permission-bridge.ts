@@ -114,14 +114,13 @@ export function createSDKCanUseTool(opts: PermissionBridgeOptions) {
     }
 
     if (winner.source === "sdk") {
-      // SDK 宿主先响应
-      structuredIO.trackResolvedToolUseId(toolUseId);
+      // SDK 宿主先响应。重复投递的响应不需要另做 tool_use_id 去重：
+      // handleControlResponse 结算后即删 pending，同 request_id 的第二条按孤儿丢弃（缺陷 5）。
       return winner.result.behavior;
     }
 
     // Hook 放弃决定（resolve null）→ 等待 SDK 宿主
     const sdkResult = await sdkPromise;
-    structuredIO.trackResolvedToolUseId(toolUseId);
     return sdkResult.behavior;
   }
 }

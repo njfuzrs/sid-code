@@ -15,12 +15,8 @@
  */
 
 import { describe, test, expect } from "bun:test";
-import {
-  classifyError,
-  isAbortError,
-  isRuntimeTimeoutError,
-  RetryableError,
-} from "@sid-code/core/llm/errors.ts";
+import { isAbortError, isRuntimeTimeoutError } from "@sid-code/core/llm/errors.ts";
+import { classifyFamily, normalizeThrown } from "@sid-code/core/llm/error-normalize.ts";
 
 /** 造一个与 runtime 同形的 TimeoutError（`AbortSignal.timeout` 抛的就是这个） */
 function makeTimeoutError(message = "The operation timed out."): DOMException {
@@ -28,10 +24,11 @@ function makeTimeoutError(message = "The operation timed out."): DOMException {
 }
 
 describe("PR7 — TimeoutError 纳入可重试", () => {
-  test("classifyError 归成 RetryableError，reason=timeout", () => {
-    const classified = classifyError(makeTimeoutError());
-    expect(classified).toBeInstanceOf(RetryableError);
-    expect((classified as RetryableError).reason).toBe("timeout");
+  test("classifyFamily 归成 transient，reason=timeout", () => {
+    const v = classifyFamily(normalizeThrown(makeTimeoutError()));
+    expect(v.family).toBe("transient");
+    expect(v.reason).toBe("timeout");
+    expect(v.recognized).toBe(true);
   });
 
   test("判据是 err.name，不是消息文本：换任意文案结论不变", () => {
@@ -39,9 +36,9 @@ describe("PR7 — TimeoutError 纳入可重试", () => {
     // 若实现退回文本匹配，第三条必然失败——那正是本用例要拦的回归
     // （memory: stream-timeout-misclassified-as-cancel-rootcause）。
     for (const msg of ["The operation timed out.", "操作超时", "zzz"]) {
-      const classified = classifyError(makeTimeoutError(msg));
-      expect(classified).toBeInstanceOf(RetryableError);
-      expect((classified as RetryableError).reason).toBe("timeout");
+      const v = classifyFamily(normalizeThrown(makeTimeoutError(msg)));
+      expect(v.family).toBe("transient");
+      expect(v.reason).toBe("timeout");
     }
   });
 

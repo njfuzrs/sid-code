@@ -44,7 +44,7 @@
  * 纯函数好处很直接——三条判定各自能被穷举单测，不必去构造一次真实的限流。
  */
 
-import type { RetryableReason, StreamValidationReason, TerminalReason } from "./errors.ts";
+import type { RetryableReason, StreamValidationReason, SuspectReason } from "./errors.ts";
 
 /**
  * 能写进冷却记录的成因。
@@ -59,15 +59,16 @@ export type CooldownCause = RetryableReason;
 /**
  * 探针失败时能拿到的错误归因。
  *
- * 这里必须是**全词表**（三个 union 全收）：判定 ③ 的输入来自 `classifyError`，
- * 而探针可以死在任何一类错误上——Terminal（401）、Retryable（又一次 429）、
- * StreamValidation（流是空的）都可能。`undefined` 代表"分类器也认不出来"
- * （`classifyError` 的契约是认不出就原样返回入参），这一格必须能表达，
- * 否则调用方会被迫编一个假 reason 塞进来。
+ * 这里必须是**全词表**：判定 ③ 的输入来自 `classifyFamily`（error-normalize.ts）的细分原因，
+ * 而探针可以死在任何一类错误上——认证嫌疑（401）、瞬时（又一次 429）、
+ * 校验失败（流是空的）、本地故障、认不出（`unrecognized`）都可能。`undefined` 保留给
+ * 拿不到归因的调用方，否则它们会被迫编一个假 reason 塞进来。
  */
 export type ProbeFailureReason =
   | RetryableReason
-  | TerminalReason
+  | SuspectReason
+  | "local_fault"
+  | "unrecognized"
   | StreamValidationReason
   | undefined;
 

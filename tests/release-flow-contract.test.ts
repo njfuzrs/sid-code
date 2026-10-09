@@ -707,3 +707,168 @@ describe("被 ./ 直接调用的脚本保住可执行位", () => {
     }
   });
 });
+
+/**
+ * beta 泡制期「一修一号」（2026-10-09，T1–T3）的结构契约。
+ * 形态与上面几组一致：断言结构性属性（参数、顺序、分支里有什么），不断言文案。
+ */
+describe("release.sh：一修一号（T1 促升合并 / T2 通道标记 / T3 beta 修复号）", () => {
+  const promoteSeg = RELEASE_SH.slice(
+    posOf('if [ "$DO_PROMOTE" = true ]; then'),
+    posOf("RELEASE_OK=true\n    exit 0"),
+  );
+
+  test("T2：--upload 建 Release 带 --prerelease（beta 期不冒充正式版）", () => {
+    expect(RELEASE_SH).toMatch(
+      /github-release\.ts["']?\s+"\$VERSION"\s+--create\s*\\\s*\n\s*--prerelease/,
+    );
+  });
+
+  test("T2：--promote 调 github-release.ts --promote，且只作用于目标版本", () => {
+    expect(promoteSeg).toMatch(/github-release\.ts["']?\s+"\$PROMOTE_VERSION"\s+--promote/);
+    const GH = readFileSync(join(ROOT, "scripts/github-release.ts"), "utf8");
+    expect(GH).toMatch(/"--prerelease=false",\s*"--latest"/);
+    // 只 edit 目标 tag：promote 分支里只出现一个 release edit
+    const ghPromote = GH.slice(GH.indexOf("if (promote) {"), GH.indexOf("if (!create) {"));
+    expect(ghPromote.match(/"release",\s*"edit"/g)?.length).toBe(1);
+  });
+
+  test("T2 变异自证：去掉 --prerelease 时上面的断言会红", () => {
+    const mutated = RELEASE_SH.replace(/--create\s*\\\s*\n\s*--prerelease \\/, "--create \\");
+    expect(mutated).not.toMatch(
+      /github-release\.ts["']?\s+"\$VERSION"\s+--create\s*\\\s*\n\s*--prerelease/,
+    );
+  });
+
+  test("T1：promote 合并稿在写 latest.txt **之前**，非交互直接拒绝", () => {
+    const mergePos = promoteSeg.indexOf('changelog-stable.ts" merge');
+    const writePos = promoteSeg.indexOf('DEPLOY_PATH}/latest.txt" \\');
+    expect(mergePos).toBeGreaterThan(0);
+    expect(writePos).toBeGreaterThan(mergePos);
+    const confirm = promoteSeg.slice(mergePos, writePos);
+    expect(confirm).toMatch(/\[ -t 0 \]/);
+    // 非交互分支是 fail，不是 warn 放行
+    expect(confirm).toMatch(/else\s*\n(\s*#.*\n)*\s*fail "非交互/);
+  });
+
+  test("T3：--beta-fix 路径不交互、缺 --beta-note 失败", () => {
+    const seg = RELEASE_SH.slice(
+      posOf('if [ "$BETA_FIX" = true ] && [ ! -f'),
+      posOf('elif [ ! -f "$ROOT/$_CURATED_FILE" ]'),
+    );
+    expect(seg.length).toBeGreaterThan(0);
+    expect(seg).not.toMatch(/read -r/);
+    expect(seg).toMatch(/\[ -n "\$BETA_NOTE" \] \|\| fail/);
+  });
+
+  test("T3：--beta-fix 不跳过任何门禁（测试 / 归档 / tag 无 BETA_FIX 分支）", () => {
+    // 「轻量」只削文案，不许变成「跳门禁」：门禁段里不允许出现 BETA_FIX 判断
+    const occurrences = [...RELEASE_SH.matchAll(/\$BETA_FIX/g)].map((m) => m.index!);
+    const gates = ['archive_remote "$VERSION" original', 'git tag -a "$TAG"', "bun test"];
+    for (const g of gates) {
+      expect(posOf(g)).toBeGreaterThan(0);
+    }
+    // 所有 BETA_FIX 引用都在 curated 前置检查之前（即不影响构建 / 测试 / 归档 / tag）
+    const curatedCheck = posOf('_CURATED_FILE="changelog/curated/v${VERSION}.json"');
+    expect(occurrences.every((i) => i < curatedCheck + 200)).toBe(true);
+  });
+
+  test("T3 变异自证：在 --beta-fix 下跳过归档会被上一条拦住", () => {
+    const mutated = RELEASE_SH.replace(
+      'archive_remote "$VERSION" original',
+      '[ "$BETA_FIX" = true ] || archive_remote "$VERSION" original',
+    );
+    const occ = [...mutated.matchAll(/\$BETA_FIX/g)].map((m) => m.index!);
+    const curatedCheck = mutated.indexOf('_CURATED_FILE="changelog/curated/v${VERSION}.json"');
+    expect(occ.every((i) => i < curatedCheck + 200)).toBe(false);
+  });
+});
+
+describe("github-release.ts：通道标记正文（T2）", () => {
+  test("pre-release 正文首行是 beta 横幅；促升合并稿注明跳过的版本", async () => {
+    const { renderReleaseBody, BETA_BANNER } = await import("../scripts/github-release.ts");
+    const e = {
+      version: "0.1.609",
+      highlight: null,
+      userFacing: true,
+      sections: [{ title: "新功能", items: ["A"] }],
+      commits: [],
+    };
+    expect(renderReleaseBody(e, { prerelease: true }).startsWith(BETA_BANNER)).toBe(true);
+    expect(renderReleaseBody(e).startsWith(BETA_BANNER)).toBe(false);
+    const merged = renderReleaseBody(e, {
+      covers: ["0.1.607", "0.1.608", "0.1.609"],
+    });
+    expect(merged).toContain("v0.1.607、v0.1.608");
+  });
+});
+
+/**
+ * T2 桩 gh：真跑 github-release.ts，记录它传给 gh 的参数。
+ * 源码断言只能证明「字符串在」，这条证明「实际调用时参数对」。
+ */
+describe("github-release.ts：桩 gh 记录参数（T2）", () => {
+  const { mkdtempSync, writeFileSync, rmSync } = require("node:fs") as typeof import("node:fs");
+  const { tmpdir } = require("node:os") as typeof import("node:os");
+  const { spawnSync } = require("node:child_process") as typeof import("node:child_process");
+
+  function runWithStubGh(args: string[], releaseExists: boolean): string[][] {
+    const dir = mkdtempSync(join(tmpdir(), "sid-stub-gh-"));
+    const log = join(dir, "calls.log");
+    writeFileSync(
+      join(dir, "gh"),
+      `#!/bin/bash
+printf '%s\\x1f' "$@" >> "${log}"; printf '\\x1e' >> "${log}"
+if [ "$1" = "release" ] && [ "$2" = "view" ]; then exit ${releaseExists ? 0 : 1}; fi
+exit 0
+`,
+      { mode: 0o755 },
+    );
+    try {
+      const r = spawnSync("bun", ["run", join(ROOT, "scripts/github-release.ts"), ...args], {
+        encoding: "utf8",
+        env: { ...process.env, PATH: `${dir}:${process.env.PATH}` },
+      });
+      expect(r.status).toBe(0);
+      // 记录分隔用 \x1e 而不是换行：Release 正文本身多行，按换行切会把参数截断
+      return readFileSync(log, "utf8")
+        .split("\x1e")
+        .filter((l) => l.length > 0)
+        .map((l) => l.split("\x1f").filter(Boolean));
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  }
+
+  test("--create --prerelease → gh release create 带 --prerelease --latest=false", () => {
+    const calls = runWithStubGh(["0.1.607", "--create", "--prerelease"], false);
+    const create = calls.find((c) => c[0] === "release" && c[1] === "create")!;
+    expect(create).toBeDefined();
+    expect(create[2]).toBe("v0.1.607");
+    expect(create).toContain("--prerelease");
+    expect(create).toContain("--latest=false");
+  });
+
+  test("--promote → 只 edit 目标 tag，--prerelease=false + --latest", () => {
+    const calls = runWithStubGh(["0.1.607", "--promote"], true);
+    const edits = calls.filter((c) => c[0] === "release" && c[1] === "edit");
+    expect(edits.length).toBe(1);
+    expect(edits[0]![2]).toBe("v0.1.607");
+    expect(edits[0]).toContain("--prerelease=false");
+    expect(edits[0]).toContain("--latest");
+  });
+});
+
+describe("积压清单只读（T5）", () => {
+  test("changelog-stable.ts 不触碰服务器、不调 LLM（backlog 只读本地 curated + 传入的指针）", () => {
+    const src = readFileSync(join(ROOT, "scripts/changelog-stable.ts"), "utf8");
+    expect(src).not.toMatch(/\bssh\b|\bscp\b|sshpass|fetch\(|spawn\(|execFileSync/);
+  });
+
+  test("rollback.sh 调 backlog 时只传读到的指针值，调用不在任何 run_ssh 内", () => {
+    const RB = readFileSync(join(ROOT, "scripts/rollback.sh"), "utf8");
+    const line = RB.split("\n").find((l) => l.includes('changelog-stable.ts" backlog'))!;
+    expect(line).toBeDefined();
+    expect(line).not.toMatch(/run_ssh|ssh /);
+  });
+});

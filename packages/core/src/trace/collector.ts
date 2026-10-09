@@ -37,6 +37,8 @@ import {
 } from "../hook/types.ts";
 import type { HookSystem } from "../hook/system.ts";
 import { getRawVersion } from "@sid-code/shared/version.ts";
+import { getReleaseChannel } from "@sid-code/shared/release-channel.ts";
+import { getBuildInfo } from "@sid-code/shared/build-info.ts";
 import { getIdentity, getGitSnapshot } from "../identity/index.ts";
 import { TraceWriter, type RawJsonlEntry, type HookEvent } from "./writer.ts";
 import { buildTrajectory, type RequestResponsePair, type TraceMetadata } from "./builder.ts";
@@ -198,6 +200,25 @@ function estimateMessagesTokens(rawMessages: unknown[], system?: unknown, tools?
 }
 
 // ─── 主类 ───
+
+/**
+ * 构建身份字段（通道 + 编进字节的 commit/origin/dirty/describe）。
+ * 读不到时整组省略而非写 "unknown" 占位以外的假值；任何异常都不能挡住会话初始化。
+ */
+function buildIdentityFields(): Record<string, string | boolean> {
+  try {
+    const info = getBuildInfo();
+    return {
+      release_channel: getReleaseChannel(),
+      build_commit: info.commit,
+      build_origin: info.origin,
+      build_dirty: info.dirty,
+      build_describe: info.describe,
+    };
+  } catch {
+    return {};
+  }
+}
 
 export class TraceCollector {
   private pairs: RequestResponsePair[] = [];
@@ -819,6 +840,9 @@ export class TraceCollector {
       // env 覆盖保持与 `analytics/metadata.ts:184` 同一口径（灰度/回放时手动打标）。
       app_version: input.app_version ?? process.env.SID_CODE_VERSION ?? getRawVersion(),
       ver: input.app_version ?? process.env.SID_CODE_VERSION ?? getRawVersion(),
+      // 版本号之外再记「哪种构建、哪个 commit」：同一版本号下 beta / 正式版 / 本地 sc-dev
+      // 的字节可能完全不同（make build 刻意不 bump），排查时只看 app_version 会归错因。
+      ...buildIdentityFields(),
       // M1：身份与 git 快照。hook input 优先（外部脚本 / 测试可覆盖），否则本机 getIdentity()。
       // 与事件 / 账本 / hook 共用同一份 deviceId，切片才守恒。
       device_id: input.device_id ?? ident.deviceId,
@@ -3002,6 +3026,17 @@ export class TraceCollector {
    */
   recordTurnError(input: { error: string; stack?: string; turn: number }): void {
     if (!this.initialized) return;
+    // §3.4：TurnError 同样是配对终点（看门狗注释里写的三者之一）。此前只有 handleAfterModel
+    // 清看门狗，于是一次 TurnError 结束的请求会在 PAIRING_TIMEOUT_MS 后被误报成
+    // ModelCallUnpaired（会话 20261008-173228-baeb949d，误把排查方向引到「请求 hang」）。
+    if (this.currentPair) {
+      const pairIndex = this.currentPair.index ?? this.resumedPairOffset + this.pairs.length + 1;
+      const pairingTimer = this.pendingModelCalls.get(pairIndex);
+      if (pairingTimer) {
+        clearTimeout(pairingTimer);
+        this.pendingModelCalls.delete(pairIndex);
+      }
+    }
     try {
       this.appendHookEvent({
         event: "TurnError",

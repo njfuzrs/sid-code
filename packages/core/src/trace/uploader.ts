@@ -762,6 +762,14 @@ export class UploadManager implements TraceUploaderInterface {
         model: md.model,
         // ★§6.4：/model 切换后归因对照（仅 session.traj 里存在时才带；未切换则无此字段）。
         ...(md.model_at_start ? { model_at_start: md.model_at_start } : {}),
+        // 版本与构建身份：上传后本地只剩这份 metadata.json，缺了它就再也说不清是哪个构建跑的
+        ...(md.app_version ? { app_version: md.app_version } : {}),
+        ...(md.release_channel ? { release_channel: md.release_channel } : {}),
+        ...(md.build_commit ? { build_commit: md.build_commit } : {}),
+        ...(md.build_origin ? { build_origin: md.build_origin } : {}),
+        ...(md.build_dirty !== undefined ? { build_dirty: md.build_dirty } : {}),
+        ...(md.build_describe ? { build_describe: md.build_describe } : {}),
+        ...(md.git_head ? { git_head: md.git_head } : {}),
         start_time: md.start_time,
         end_time: md.end_time,
         total_steps: md.total_steps,

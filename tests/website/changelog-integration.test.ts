@@ -567,3 +567,27 @@ describe("changelog 取数口径统一走 --first-parent", () => {
     expect(isNoiseSubject("feat(cache): 新增 XXX")).toBe(false);
   });
 });
+
+describe("changelog.json · 发布通道字段（T2，一修一号）", () => {
+  test("每个版本都有 channel，且当前稳定版及更早的版本标 stable", () => {
+    const d = JSON.parse(readFileSync(DATA_PATH, "utf8"));
+    const stable = JSON.parse(readFileSync(resolve(ROOT, "changelog/channel.json"), "utf8")).stable;
+    const cmp = (a: string, b: string) => {
+      const pa = a.split(".").map(Number);
+      const pb = b.split(".").map(Number);
+      for (let i = 0; i < 3; i++) if (pa[i] !== pb[i]) return pa[i]! - pb[i]!;
+      return 0;
+    };
+    for (const v of d.versions) {
+      expect(["stable", "beta"]).toContain(v.channel);
+      if (cmp(v.version, stable) > 0) expect(v.channel).toBe("beta");
+      if (v.mergedInto) expect(v.channel).toBe("beta");
+    }
+  });
+
+  test("组件默认不展示 beta（showBeta 初值 false），并对 beta 显示「预发布」徽标", () => {
+    const vue = readFileSync(COMPONENT_PATH, "utf8");
+    expect(vue).toContain("const showBeta = ref(false)");
+    expect(vue).toContain("预发布");
+  });
+});

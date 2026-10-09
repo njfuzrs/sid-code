@@ -5,7 +5,7 @@ description: 自动检测并安装新版本，支持 auto、notify、off 三种�
 
 # 自动更新
 
-默认情况下，sid-code 会在后台检查稳定版通道有没有新版本，发现了就下载安装，
+默认情况下，sid-code 会在后台检查当前安装的通道（稳定版或 beta）有没有新版本，发现了就下载安装，
 **下次启动才切过去**。正在跑的这次会话不会被替换。
 
 这页讲三件事：怎么选更新模式、怎么手动更新、失败了会怎样。
@@ -23,7 +23,7 @@ description: 自动检测并安装新版本，支持 auto、notify、off 三种�
 
 | 模式 | 行为 |
 | --- | --- |
-| `auto`（默认） | 后台静默下载并安装稳定版，下次启动生效 |
+| `auto`（默认） | 后台静默下载并安装当前通道的新版本，下次启动生效 |
 | `notify` | 发现新版本只提示，不下载。自己跑 `sid-code update` |
 | `off` | 完全不检查。仍可随时 `sid-code update` |
 
@@ -37,21 +37,23 @@ SID_CODE_AUTO_UPDATE=off sid-code
 手动更新（任何模式都能用）：
 
 ```bash
-sid-code update                         # 装最新稳定版
-SID_CODE_CHANNEL=beta sid-code update   # 装抢先版
+sid-code update                           # 沿用当前通道更新（beta 用户仍在 beta）
+SID_CODE_CHANNEL=beta sid-code update     # 加入抢先版
+SID_CODE_CHANNEL=stable sid-code update   # 退出抢先版，回到稳定版
 sid-code update --version <版本号>       # 装指定稳定版（回滚也走这条）
 ```
 
 ## 详细说明
 
-### 自动更新只走稳定版
+### 自动更新跟随当前安装的通道
 
-后台检查**只读**服务器的 `latest.txt`（稳定通道指针），安装子进程还会强制
-`SID_CODE_CHANNEL=stable`，把你环境里继承来的 `beta` 盖掉。
+后台检查读的是**当前安装的通道**的指针：稳定版读 `latest.txt`，beta 读 `beta.txt`
+（判据是安装时写在版本目录旁的通道标记）。安装子进程会显式设置同一个通道，
+把你环境里继承来的 `SID_CODE_CHANNEL` 盖掉。
 
-这是刻意的：自动装不该把一台机器从稳定版悄悄切到抢先版。
-想留在 beta，用手动更新并每次带上 `SID_CODE_CHANNEL=beta`——通道**不写进本地配置**，
-下次不带变量就会回到稳定版。完整通道语义见[安装 · 抢先版](/start/install)。
+所以自动更新永远不会把一台机器在两个通道之间悄悄切换：稳定版只升稳定版，
+beta 只升 beta（beta 期发的修复号也会自动装上）。`dev` 本地开发版不自动更新。
+切换通道要显式带 `SID_CODE_CHANNEL`。完整通道语义见[安装 · 抢先版](/start/install)。
 
 ### 检查频率
 

@@ -1,13 +1,21 @@
 /**
  * 错误分类体系测试
- * Task 1：classifyError() 对各种错误信息的分类准确性
+ * Task 1：错误分类准确性。
+ *
+ * 2026-10-08 迁移：`classifyError` / `TerminalError` 已删除，分类改走
+ * `normalizeThrown` → `classifyFamily`。原「TerminalError(reason)」断言改为
+ * auth_suspect / request_suspect + 同 reason；原「RetryableError(reason)」改为
+ * transient + 同 reason；原「无法分类返回原错误」改为 transient 未识别子集。
+ * 判据（词边界、statusCode 优先于文案、裸 not found 不判 model_not_found）全部保留。
  */
 
 import { describe, test, expect } from "bun:test";
 import {
-  classifyError,
-  TerminalError,
-  RetryableError,
+  classifyFamily,
+  normalizeThrown,
+  type FamilyVerdict,
+} from "@sid-code/core/llm/error-normalize.ts";
+import {
   StreamValidationError,
   getNetworkErrorCode,
   isAbortError,
@@ -21,125 +29,133 @@ import {
   is409Error,
 } from "@sid-code/core/llm/errors.ts";
 
-describe("classifyError", () => {
-  // === Terminal 错误 ===
-  describe("Terminal 错误", () => {
-    test("401 认证失败", () => {
-      const err = classifyError(new Error("HTTP 401 Unauthorized"));
-      expect(err).toBeInstanceOf(TerminalError);
-      expect((err as TerminalError).reason).toBe("auth_failed");
+/** 抛出形态 → 归一化 → 唯一分类器 */
+function cls(err: unknown): FamilyVerdict {
+  return classifyFamily(normalizeThrown(err));
+}
+function withCode(message: string, code: string): Error {
+  return Object.assign(new Error(message), { code });
+}
+function withStatus(message: string, status: number): Error {
+  return Object.assign(new Error(message), { status });
+}
+
+describe("classifyFamily（抛出形态）", () => {
+  // === 嫌疑族（原 Terminal 错误；2026-10-08 起不再单次判死，只决定走哪族预算）===
+  describe("嫌疑族（原 Terminal）", () => {
+    test("401 认证失败 → auth_suspect", () => {
+      expect(cls(new Error("HTTP 401 Unauthorized"))).toMatchObject({
+        family: "auth_suspect",
+        reason: "auth_failed",
+      });
     });
 
-    test("invalid api key", () => {
-      const err = classifyError(new Error("Invalid API Key provided"));
-      expect(err).toBeInstanceOf(TerminalError);
-      expect((err as TerminalError).reason).toBe("auth_failed");
+    test("invalid api key → auth_suspect，且标 realAuthFailure（只缩短退避）", () => {
+      expect(cls(new Error("Invalid API Key provided"))).toMatchObject({
+        family: "auth_suspect",
+        reason: "auth_failed",
+        realAuthFailure: true,
+      });
     });
 
-    test("authentication 失败", () => {
-      const err = classifyError(new Error("Authentication failed"));
-      expect(err).toBeInstanceOf(TerminalError);
-      expect((err as TerminalError).reason).toBe("auth_failed");
+    test("authentication 失败 → auth_suspect", () => {
+      expect(cls(new Error("Authentication failed"))).toMatchObject({
+        family: "auth_suspect",
+        reason: "auth_failed",
+      });
     });
 
-    test("404 模型不存在", () => {
-      const err = classifyError(new Error("404 model_not_found"));
-      expect(err).toBeInstanceOf(TerminalError);
-      expect((err as TerminalError).reason).toBe("model_not_found");
+    test("404 模型不存在 → request_suspect", () => {
+      expect(cls(new Error("404 model_not_found"))).toMatchObject({
+        family: "request_suspect",
+        reason: "model_not_found",
+      });
     });
 
-    test("明确的 model_not_found 结构化标记 → 终端错误", () => {
-      const err = classifyError(new Error("model_not_found: unknown model id"));
-      expect(err).toBeInstanceOf(TerminalError);
-      expect((err as TerminalError).reason).toBe("model_not_found");
+    test("明确的 model_not_found 结构化标记 → request_suspect", () => {
+      expect(cls(new Error("model_not_found: unknown model id"))).toMatchObject({
+        family: "request_suspect",
+        reason: "model_not_found",
+      });
     });
 
-    test('归因脱节修复：裸 "not found"（无 404 状态码、无 model_not_found 标记）不再判为终端 model_not_found', () => {
+    test('归因脱节修复：裸 "not found"（无 404 状态码、无 model_not_found 标记）不判为 model_not_found', () => {
       // 旧行为：`lowerMsg.includes("not found")` 把任何含 "not found" 的消息判成终端错误
-      // → 上游/网关临时返回 "upstream not found" / "no available channel ... not found"
-      // 等可重试 5xx 被误判、提前放弃重试。修复后这类消息不再命中 model_not_found。
-      const err = classifyError(new Error("upstream not found, please retry"));
-      expect((err as any).reason).not.toBe("model_not_found");
+      // → 上游/网关临时返回 "upstream not found" 等可重试 5xx 被误判、提前放弃重试。
+      const v = cls(new Error("upstream not found, please retry"));
+      expect(v.reason).not.toBe("model_not_found");
+      expect(v.family).toBe("transient");
     });
 
-    test("content_policy 拒绝", () => {
-      const err = classifyError(new Error("content_policy violation detected"));
-      expect(err).toBeInstanceOf(TerminalError);
-      expect((err as TerminalError).reason).toBe("content_policy");
+    test("content_policy 拒绝 → request_suspect", () => {
+      expect(cls(new Error("content_policy violation detected"))).toMatchObject({
+        family: "request_suspect",
+        reason: "content_policy",
+      });
     });
 
-    test("safety 拒绝", () => {
-      const err = classifyError(new Error("Safety filter triggered"));
-      expect(err).toBeInstanceOf(TerminalError);
-      expect((err as TerminalError).reason).toBe("content_policy");
+    test("safety 拒绝 → request_suspect / content_policy", () => {
+      expect(cls(new Error("Safety filter triggered"))).toMatchObject({
+        family: "request_suspect",
+        reason: "content_policy",
+      });
     });
 
-    test("400 无效请求", () => {
-      const err = classifyError(new Error("400 Bad Request: invalid_request"));
-      expect(err).toBeInstanceOf(TerminalError);
-      expect((err as TerminalError).reason).toBe("invalid_request");
+    test("400 无效请求 → request_suspect", () => {
+      expect(cls(new Error("400 Bad Request: invalid_request"))).toMatchObject({
+        family: "request_suspect",
+        reason: "invalid_request",
+      });
     });
   });
 
   // === 数字边界匹配（防子串误判回归）===
   describe("数字边界匹配（防止不透明 ID 里的数字子串误判状态码）", () => {
-    test('回归：Cloudflare 502 错误的 request id 恰好内嵌 "404" 子串，不应误判为终端错误（2026-07-13 生产事故）', () => {
-      // 事故复盘：claude-sonnet-5 连续 3 次遇到网关 502（"origin overloaded"），前两次
-      // request id 不含可疑数字串，被正确判为 RetryableError 并重试；第 3 次 request id
-      // "202607130613404387609908268d9d6yjWpBkX0" 里恰好包含 "404" 子串（"...1340438..."
-      // 中间），旧版 classifyError 用裸 `.includes("404")` 命中 → 误判为 TerminalError
-      // model_not_found → 重试提前放弃、直接切换到 fallback 模型（gpt-5.4），而此时真实
-      // 故障只是上游临时过载。数字边界匹配（前后不能是 0-9）能排除这种"被更长数字串
-      // 吞掉"的巧合命中，正确识别出消息里其实还有 "overloaded" 关键词。
+    test('回归：Cloudflare 502 错误的 request id 恰好内嵌 "404" 子串，不应误判为 model_not_found（2026-07-13 生产事故）', () => {
+      // 事故复盘：request id "202607130613404387609908268d9d6yjWpBkX0" 里恰好包含 "404"
+      // 子串，旧版用裸 `.includes("404")` 命中 → 误判 model_not_found → 提前切 fallback。
+      // 数字边界匹配（前后不能是 0-9）排除这种巧合命中，正确识别出 "overloaded"。
       const incidentMsg =
         '502 {"error":{"type":"bad_response_status_code","message":"The origin web server returned an invalid or incomplete response to Cloudflare. This typically indicates the origin is overloaded or misconfigured. (request id: 202607130613404387609908268d9d6yjWpBkX0)"},"type":"error"}';
-      const err = classifyError(new Error(incidentMsg));
-      expect(err).toBeInstanceOf(RetryableError);
-      expect((err as RetryableError).reason).not.toBe("model_not_found" as any);
+      const v = cls(new Error(incidentMsg));
+      expect(v.family).toBe("transient");
+      expect(v.recognized).toBe(true);
+      expect(v.reason).not.toBe("model_not_found");
     });
 
-    test('同类风险：request id 内嵌 "401"/"429"/"500" 数字串（前后被其它数字包夹）时，502 错误仍应正确分类为可重试', () => {
-      // 系统性验证：不只 "404"，任何状态码数字串都可能巧合出现在网关 request id /
-      // trace id 里。is401Error 等细粒度谓词与 classifyError 内联判断统一用数字边界
-      // 匹配后，这类巧合命中应被排除。注意：必须让目标数字串前后都紧邻其它数字
-      // （模拟真实 request id 的连续数字段），否则不构成"被更长数字串吞掉"的场景。
+    test('同类风险：request id 内嵌 "401"/"429"/"500" 数字串（前后被其它数字包夹）时，502 错误仍应正确分类为 transient', () => {
+      // 目标数字串前后都紧邻其它数字，模拟真实 request id 的连续数字段。
       const ids = [
-        "99940112200000000000000000000000", // 内嵌 "401"（"9994[01]122..."实际验证见下方精确构造）
+        "99940112200000000000000000000000",
         "88842912200000000000000000000000",
         "77750012200000000000000000000000",
       ];
       for (const id of ids) {
-        const msg = `502 Bad Gateway upstream overloaded (request id: ${id})`;
-        const err = classifyError(new Error(msg));
-        expect(err).toBeInstanceOf(RetryableError);
+        const v = cls(new Error(`502 Bad Gateway upstream overloaded (request id: ${id})`));
+        expect(v.family).toBe("transient");
+        expect(v.recognized).toBe(true);
       }
     });
 
     test("合法场景不受影响：数字边界匹配仍能识别真实状态码（前后为空格/标点）", () => {
-      expect((classifyError(new Error("HTTP 404 model not found")) as TerminalError).reason).toBe(
-        "model_not_found",
-      );
-      expect(
-        (classifyError(new Error("Error code=401: unauthorized")) as TerminalError).reason,
-      ).toBe("auth_failed");
-      expect((classifyError(new Error("(429) rate limited")) as RetryableError).reason).toBe(
-        "rate_limit",
-      );
+      expect(cls(new Error("HTTP 404 model not found")).reason).toBe("model_not_found");
+      expect(cls(new Error("Error code=401: unauthorized")).reason).toBe("auth_failed");
+      expect(cls(new Error("(429) rate limited"))).toMatchObject({
+        family: "transient",
+        reason: "rate_limit",
+      });
     });
 
-    test("结构化 status 字段优先于消息文本：status=502 时不被消息里巧合出现的、且数字边界合法的其它状态码数字误导", () => {
-      // "code 404" 本身数字边界合法（前后是空格/结尾），若无结构化 status，
-      // classifyError 会判成 model_not_found；这里验证 status=502 的权威性压过它。
-      const err = new Error("upstream failure, trace code 404") as any;
-      err.status = 502;
-      const classified = classifyError(err);
-      expect(classified).toBeInstanceOf(RetryableError);
-      expect((classified as RetryableError).reason).toBe("server_error");
+    test("结构化 status 字段优先于消息文本：status=502 时不被消息里数字边界合法的 404 误导", () => {
+      // "code 404" 本身数字边界合法，若无结构化 status 会判成 model_not_found；
+      // 这里验证 status=502 的权威性压过它。
+      expect(cls(withStatus("upstream failure, trace code 404", 502))).toMatchObject({
+        family: "transient",
+        reason: "server_error",
+      });
     });
 
     test("is401Error / is408Error / is409Error 对「前后均被数字包夹」的巧合子串不再误判", () => {
-      // "9940112" 中 "401" 前后都是数字（9,9,4 / 1,2,2...不构成边界），不应命中；
-      // 真实的 401/408/409（前后是空格/标点）仍应正确识别。
       const mk = (id: string) => new Error(`502 Bad Gateway (request id: ${id})`);
       expect(is401Error(mk("9994011220000"))).toBe(false); // "401" 前后均为数字
       expect(is408Error(mk("9994081220000"))).toBe(false); // "408" 前后均为数字
@@ -151,142 +167,69 @@ describe("classifyError", () => {
     });
   });
 
-  // === Retryable 错误 ===
-  describe("Retryable 错误", () => {
-    test("429 限流", () => {
-      const err = classifyError(new Error("429 Too Many Requests"));
-      expect(err).toBeInstanceOf(RetryableError);
-      expect((err as RetryableError).reason).toBe("rate_limit");
-    });
+  // === transient 已识别（原 Retryable 错误）===
+  describe("transient 已识别（原 Retryable）", () => {
+    const cases: Array<[string, string]> = [
+      ["429 Too Many Requests", "rate_limit"],
+      ["rate_limit_error: too many requests", "rate_limit"],
+      ["overloaded_error: server is busy", "overloaded"],
+      ["503 Service Unavailable", "overloaded"],
+      ["502 Bad Gateway", "server_error"],
+      ["500 Internal Server Error", "server_error"],
+      ["Request timeout after 30s", "timeout"],
+      ["connect ETIMEDOUT 1.2.3.4:443", "timeout"],
+    ];
+    for (const [message, reason] of cases) {
+      test(`${message} → transient / ${reason}`, () => {
+        expect(cls(new Error(message))).toEqual({
+          family: "transient",
+          reason,
+          recognized: true,
+        } as FamilyVerdict);
+      });
+    }
 
-    test("rate_limit 错误", () => {
-      const err = classifyError(new Error("rate_limit_error: too many requests"));
-      expect(err).toBeInstanceOf(RetryableError);
-      expect((err as RetryableError).reason).toBe("rate_limit");
-    });
-
-    test("429 带 retry-after 解析", () => {
-      const err = classifyError(new Error("429 rate_limit retry-after: 30"));
-      expect(err).toBeInstanceOf(RetryableError);
-      expect((err as RetryableError).reason).toBe("rate_limit");
-      expect((err as RetryableError).retryAfterMs).toBe(30000);
-    });
-
-    test("overloaded 过载", () => {
-      const err = classifyError(new Error("overloaded_error: server is busy"));
-      expect(err).toBeInstanceOf(RetryableError);
-      expect((err as RetryableError).reason).toBe("overloaded");
-    });
-
-    test("503 过载", () => {
-      const err = classifyError(new Error("503 Service Unavailable"));
-      expect(err).toBeInstanceOf(RetryableError);
-      expect((err as RetryableError).reason).toBe("overloaded");
-    });
-
-    test("502 服务端错误", () => {
-      const err = classifyError(new Error("502 Bad Gateway"));
-      expect(err).toBeInstanceOf(RetryableError);
-      expect((err as RetryableError).reason).toBe("server_error");
-    });
-
-    test("500 服务端错误", () => {
-      const err = classifyError(new Error("500 Internal Server Error"));
-      expect(err).toBeInstanceOf(RetryableError);
-      expect((err as RetryableError).reason).toBe("server_error");
-    });
-
-    test("timeout 超时", () => {
-      const err = classifyError(new Error("Request timeout after 30s"));
-      expect(err).toBeInstanceOf(RetryableError);
-      expect((err as RetryableError).reason).toBe("timeout");
-    });
-
-    test("ETIMEDOUT 超时", () => {
-      const err = classifyError(new Error("connect ETIMEDOUT 1.2.3.4:443"));
-      expect(err).toBeInstanceOf(RetryableError);
-      expect((err as RetryableError).reason).toBe("timeout");
+    test("429 带 retry-after 解析（落在 NormalizedLLMError.retryAfterMs）", () => {
+      const n = normalizeThrown(new Error("429 rate_limit retry-after: 30"));
+      expect(classifyFamily(n)).toMatchObject({ family: "transient", reason: "rate_limit" });
+      expect(n.retryAfterMs).toBe(30000);
     });
   });
 
   // === 网络错误码 ===
   describe("网络错误码", () => {
-    test("ECONNRESET", () => {
-      const rawErr = new Error("connection reset") as any;
-      rawErr.code = "ECONNRESET";
-      const err = classifyError(rawErr);
-      expect(err).toBeInstanceOf(RetryableError);
-      expect((err as RetryableError).reason).toBe("network_error");
-    });
-
-    test("ECONNREFUSED", () => {
-      const rawErr = new Error("connection refused") as any;
-      rawErr.code = "ECONNREFUSED";
-      const err = classifyError(rawErr);
-      expect(err).toBeInstanceOf(RetryableError);
-      expect((err as RetryableError).reason).toBe("network_error");
-    });
-
-    test("ENOTFOUND", () => {
-      const rawErr = new Error("DNS lookup failed") as any;
-      rawErr.code = "ENOTFOUND";
-      const err = classifyError(rawErr);
-      expect(err).toBeInstanceOf(RetryableError);
-      expect((err as RetryableError).reason).toBe("network_error");
-    });
-
-    test("EPIPE", () => {
-      const rawErr = new Error("broken pipe") as any;
-      rawErr.code = "EPIPE";
-      const err = classifyError(rawErr);
-      expect(err).toBeInstanceOf(RetryableError);
-      expect((err as RetryableError).reason).toBe("network_error");
-    });
-
-    test("EAI_AGAIN", () => {
-      const rawErr = new Error("DNS temporary failure") as any;
-      rawErr.code = "EAI_AGAIN";
-      const err = classifyError(rawErr);
-      expect(err).toBeInstanceOf(RetryableError);
-      expect((err as RetryableError).reason).toBe("network_error");
-    });
+    for (const code of ["ECONNRESET", "ECONNREFUSED", "ENOTFOUND", "EPIPE", "EAI_AGAIN"]) {
+      test(code, () => {
+        const n = normalizeThrown(withCode("fail", code));
+        expect(n.origin).toBe("network");
+        expect(classifyFamily(n)).toMatchObject({ family: "transient", reason: "network_error" });
+      });
+    }
   });
 
   // === 连接被关闭的消息文本兜底（无 .code 结构字段）===
   // 回归：2026-07 迁移 skill 崩溃复盘。网关在 [DONE] 后延迟关 socket，最终 RST 抛出
-  // 裸 Error "The socket connection was closed unexpectedly"，无 .code 字段，此前落到
-  // "无法分类"分支 → 不重试 → 静默降级。现应归为可重试 network_error。
+  // 裸 Error "The socket connection was closed unexpectedly"，无 .code 字段。
+  // 须归为已识别的 network_error（而不是未识别子集）。
   describe("连接被关闭（消息文本兜底）", () => {
-    test("Bun/undici socket connection was closed", () => {
-      const err = classifyError(
-        new Error(
-          "The socket connection was closed unexpectedly. For more information, pass `verbose: true` in the second argument to fetch()",
-        ),
-      );
-      expect(err).toBeInstanceOf(RetryableError);
-      expect((err as RetryableError).reason).toBe("network_error");
-    });
-
-    test("socket hang up", () => {
-      const err = classifyError(new Error("socket hang up"));
-      expect(err).toBeInstanceOf(RetryableError);
-      expect((err as RetryableError).reason).toBe("network_error");
-    });
-
-    test("other side closed", () => {
-      const err = classifyError(new Error("other side closed"));
-      expect(err).toBeInstanceOf(RetryableError);
-      expect((err as RetryableError).reason).toBe("network_error");
-    });
-
-    test("terminated（undici 流式中断）", () => {
-      const err = classifyError(new Error("terminated"));
-      expect(err).toBeInstanceOf(RetryableError);
-      expect((err as RetryableError).reason).toBe("network_error");
-    });
+    const messages = [
+      "The socket connection was closed unexpectedly. For more information, pass `verbose: true` in the second argument to fetch()",
+      "socket hang up",
+      "other side closed",
+      "terminated", // undici 流式中断
+    ];
+    for (const message of messages) {
+      test(message.slice(0, 40), () => {
+        expect(cls(new Error(message))).toMatchObject({
+          family: "transient",
+          reason: "network_error",
+          recognized: true,
+        });
+      });
+    }
 
     test("互斥性：socket 关闭错误不得被 isAbortError 误判为中断", () => {
-      // 关键：可重试网络故障 与 用户/超时中断 必须严格互斥，
+      // 可重试网络故障 与 用户/超时中断 必须严格互斥，
       // 否则 socket 错误若被当 abort 就会被静默吞掉、既不重试也不报错。
       const socketErr = new Error("The socket connection was closed unexpectedly");
       expect(isAbortError(socketErr)).toBe(false);
@@ -295,18 +238,32 @@ describe("classifyError", () => {
 
   // === 未知错误 ===
   describe("未知错误", () => {
-    test("无法分类的 Error 返回原始错误", () => {
+    test("认不出的 Error → transient 未识别子集（不再「无法分类 → 零重试」）", () => {
+      // 2026-10-08 有意语义变更：旧行为原样返回裸 Error（fallback 视为不可重试）。
+      // 现在认不出就进 transient 且 recognized=false，由同指纹 3 次封顶约束。
       const original = new Error("some random error");
-      const err = classifyError(original);
-      expect(err).toBe(original);
-      expect(err).not.toBeInstanceOf(TerminalError);
-      expect(err).not.toBeInstanceOf(RetryableError);
+      const n = normalizeThrown(original);
+      expect(n.raw).toBe(original);
+      expect(classifyFamily(n)).toEqual({
+        family: "transient",
+        reason: "unrecognized",
+        recognized: false,
+      });
     });
 
-    test("非 Error 对象转为 Error", () => {
-      const err = classifyError("string error");
-      expect(err).toBeInstanceOf(Error);
-      expect(err.message).toBe("string error");
+    test("非 Error 对象：message 取字符串本身", () => {
+      const n = normalizeThrown("string error");
+      expect(n.message).toBe("string error");
+      expect(classifyFamily(n).recognized).toBe(false);
+    });
+
+    test("本地 JS 异常（TypeError 且非网络失败）→ local_fault", () => {
+      // 新 API 才有的族：本地 bug 不该吃 transient 的预算。
+      expect(cls(new TypeError("Cannot read properties of undefined (reading 'x')"))).toEqual({
+        family: "local_fault",
+        reason: "local_fault",
+        recognized: true,
+      });
     });
   });
 });

@@ -1,6 +1,12 @@
 /**
  * 模型可用性服务
- * 三态健康管理（healthy/retry_once/terminal），避免反复请求已知不可用的模型
+ *
+ * 2026-10-08：健康态从「healthy / retry_once / terminal（进程内永久）」改为
+ * 「healthy / suspect（有时效的嫌疑态）」。旧 terminal 一次判死后跨轮永久拉黑，用户重发也
+ * 一个字节都不发（会话 20261008-173228-baeb949d）。现在：
+ *   - suspect 带 `until`（默认 60s），过期自动视为健康；
+ *   - 主线程（main_thread / headless）**不读** suspect，每次调用都真实发请求（I4）；
+ *   - 其余调用方在 suspect 期内按半开探针放行一路，复用 S2/S5 的探针配额语义。
  */
 
 import {
@@ -9,11 +15,28 @@ import {
   shouldUseTransientCooldownProbeSlot,
 } from "./cooldown-probe.ts";
 
-/** 模型健康状态 */
-type HealthState =
-  | { status: "healthy" }
-  | { status: "retry_once"; reason: string; consumed: boolean } // 本轮只允许重试一次
-  | { status: "terminal"; reason: string }; // 永久不可用
+/**
+ * 模型嫌疑态：某次调用在多次有间隔的尝试后放弃了这个模型。
+ *
+ * 只是**证据**，不是判决：它让并行子代理别一起去撞同一个刚坏掉的模型（S1），
+ * 但不拦主线程，且到期自动清除。
+ */
+interface SuspectState {
+  until: number;
+  fingerprint: string;
+  evidence: string;
+  /** 本嫌疑窗口内的半开探针是否已被某一路领走 */
+  probeTaken: boolean;
+}
+
+/** suspect 默认时长 */
+export const DEFAULT_SUSPECT_MS = 60_000;
+
+/**
+ * 不受 suspect 拦截的查询来源：单路串行、用户正在等它。
+ * 拦它不省任何并发撞击，只会制造「请求没发出去」。
+ */
+const SUSPECT_EXEMPT_SOURCES: ReadonlySet<string> = new Set(["main_thread", "headless"]);
 
 /** S2：共享限流冷却记录。 */
 interface RateLimitCooldown {
@@ -94,62 +117,87 @@ export const MAX_COOLDOWN_WAIT_MS = 30_000;
 export const MIN_COOLDOWN_MS = 500;
 
 export class ModelAvailabilityService {
-  private states = new Map<string, HealthState>();
-  /** S2：模型 → 共享限流冷却。与 `states` 分开存，因为语义正交：
-   *  `states` 答"这模型还能不能用"，本表答"现在该不该缓一缓再发"。 */
+  private suspects = new Map<string, SuspectState>();
+  /** S2：模型 → 共享限流冷却。与 `suspects` 分开存，因为语义正交：
+   *  `suspects` 答"最近有调用在它身上放弃过吗"，本表答"现在该不该缓一缓再发"。 */
   private cooldowns = new Map<string, RateLimitCooldown>();
 
-  /** 标记模型为永久不可用（认证失败、模型不存在） */
-  markTerminal(model: string, reason: string): void {
-    this.states.set(model, { status: "terminal", reason });
-  }
-
-  /** 标记模型为"本轮重试一次"（限流、过载） */
-  markRetryOnce(model: string, reason: string): void {
-    const current = this.states.get(model);
-    // terminal 状态不会被降级覆盖
-    if (current?.status === "terminal") return;
-    this.states.set(model, { status: "retry_once", reason, consumed: false });
+  /**
+   * 标记嫌疑：某次调用对该模型放弃了（证据见 `evidence`）。
+   *
+   * 续标（嫌疑期内又一次放弃，典型是半开探针失败）刷新 `until` 与证据，但**不发还探针**：
+   * 探针失败就该回到「等这一窗口过去」，否则串行的子代理每个都能领到一张新探针券，
+   * 一个接一个吃满重试预算去撞同一个坏模型——S1 的能力当场失效。
+   */
+  markSuspect(
+    model: string,
+    fingerprint: string,
+    evidence: string,
+    ttlMs = DEFAULT_SUSPECT_MS,
+  ): void {
+    const live = this.liveSuspect(model);
+    this.suspects.set(model, {
+      until: Date.now() + Math.max(0, ttlMs),
+      fingerprint,
+      evidence,
+      probeTaken: live?.probeTaken ?? false,
+    });
   }
 
   /**
-   * 标记模型恢复健康。
+   * 清除嫌疑。任何一次成功产出、`/model` 显式切入都会调它。
    *
-   * @param force 是否强制清除 terminal 态（默认 false）。
-   *   - false（默认）：保持旧语义，terminal 不可被自动流程恢复（避免一次瞬时成功就抹掉
-   *     "模型不存在/认证失败"这类硬故障判定）。
-   *   - true：强制清除，用于「用户显式切入该模型」「降级流确实产出内容」等携带明确正向信号的
-   *     场景。H2 死锁根治：terminal 是进程内永久态，而 terminal 模型开头 isAvailable 就被拦、
-   *     永远走不到主路径的 markHealthy 清除点 → 结构性死锁；用户 /model 切回被拉黑的模型也用不了。
-   *     给用户主动选择 / 成功产出一次干净机会，清除 terminal。
+   * 保留 `force` 参数只为兼容既有调用点：嫌疑态没有「自动流程不可清」的那一半了
+   * （旧 terminal 的 force 语义就是为绕开永久态而加的），现在一律清。
    */
-  markHealthy(model: string, force = false): void {
-    const current = this.states.get(model);
-    // terminal 状态默认不可恢复；仅在 force（用户显式切入 / 成功产出）时强制清除。
-    if (current?.status === "terminal" && !force) return;
-    this.states.delete(model);
+  markHealthy(model: string, _force = false): void {
+    this.suspects.delete(model);
   }
 
-  /** 查询模型是否处于 terminal（永久不可用）态。供切模型选项置灰/标注用（H2）。 */
-  isTerminal(model: string): boolean {
-    return this.states.get(model)?.status === "terminal";
+  private liveSuspect(model: string): SuspectState | undefined {
+    const s = this.suspects.get(model);
+    if (!s) return undefined;
+    if (Date.now() >= s.until) {
+      this.suspects.delete(model);
+      return undefined;
+    }
+    return s;
   }
 
-  /** 检查模型是否可用（消耗 retry_once 的一次机会） */
-  isAvailable(model: string): { available: boolean; reason?: string } {
-    const state = this.states.get(model);
-    if (!state || state.status === "healthy") {
+  /** 查询模型是否处于嫌疑期内。供切模型选项标注用（app.ts）。 */
+  isSuspect(model: string): boolean {
+    return this.liveSuspect(model) !== undefined;
+  }
+
+  /** 嫌疑详情（剩余时长与证据），供日志与文案 */
+  getSuspectInfo(model: string): { remainingMs: number; evidence: string } | undefined {
+    const s = this.liveSuspect(model);
+    return s ? { remainingMs: s.until - Date.now(), evidence: s.evidence } : undefined;
+  }
+
+  /**
+   * 本次调用能否对该模型发请求。
+   *
+   * @param querySource 调用方**显式**传入的来源（perCall）。主线程 / headless 永远放行。
+   * 其余来源在嫌疑期内只放一路半开探针，其余返回不可用（由调用方转 fallback）。
+   */
+  isAvailable(
+    model: string,
+    querySource?: string,
+  ): { available: boolean; reason?: string; probe?: boolean } {
+    if (querySource !== undefined && SUSPECT_EXEMPT_SOURCES.has(querySource)) {
       return { available: true };
     }
-    if (state.status === "terminal") {
-      return { available: false, reason: state.reason };
+    const s = this.liveSuspect(model);
+    if (!s) return { available: true };
+    if (!s.probeTaken) {
+      s.probeTaken = true;
+      return { available: true, probe: true };
     }
-    // retry_once：第一次允许，第二次拒绝
-    if (!state.consumed) {
-      state.consumed = true;
-      return { available: true };
-    }
-    return { available: false, reason: state.reason };
+    return {
+      available: false,
+      reason: `近期请求失败（${s.evidence}），${Math.ceil((s.until - Date.now()) / 1000)}s 内由一路探针验证`,
+    };
   }
 
   // ═══════════════════════════════════════════════════════════════════
@@ -313,21 +361,13 @@ export class ModelAvailabilityService {
     this.cooldowns.delete(model);
   }
 
-  /** 新一轮对话开始时重置 retry_once 的 consumed 标记 */
-  resetTurn(): void {
-    for (const state of this.states.values()) {
-      if (state.status === "retry_once") {
-        state.consumed = false;
-      }
-    }
-  }
-
   /** 从候选模型列表中选择第一个可用的 */
   selectFirstAvailable(
     models: string[],
+    querySource?: string,
   ): { model: string } | { unavailable: true; reason: string } {
     for (const model of models) {
-      const check = this.isAvailable(model);
+      const check = this.isAvailable(model, querySource);
       if (check.available) return { model };
     }
     return { unavailable: true, reason: "所有候选模型均不可用" };

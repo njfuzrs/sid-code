@@ -12,12 +12,27 @@
  */
 
 import { describe, test, expect } from "bun:test";
-import { ModelFallback, FOREGROUND_SOURCES } from "@sid-code/core/llm/fallback.ts";
+import {
+  ModelFallback as RealModelFallback,
+  FOREGROUND_SOURCES,
+} from "@sid-code/core/llm/fallback.ts";
 import { ModelAvailabilityService } from "@sid-code/core/llm/availability.ts";
 import { RequestAbortedError } from "@sid-code/core/llm/errors.ts";
 import type { Provider } from "@sid-code/core/llm/provider.ts";
 import type { SendParams, StreamEvent } from "@sid-code/core/llm/types.ts";
 import type { RetryTelemetryEvent } from "@sid-code/core/llm/retry-telemetry.ts";
+
+/**
+ * 2026-10-08：错误族预算（auth_suspect 3 次、request_suspect 2 次）让「认证失败 → fallback」
+ * 这类用例也会真实退避。本文件测的是漏斗的分支，不测退避时长，故缺省注入零退避
+ * （`retryBackoffBaseMs: 0` 同时关掉各族的最小间隔下限）；显式传了退避参数的用例照用自己的。
+ */
+class ModelFallback extends RealModelFallback {
+  constructor(...args: ConstructorParameters<typeof RealModelFallback>) {
+    const [cfg, listener] = args;
+    super({ retryBackoffBaseMs: 0, retryBackoffMaxMs: 0, ...cfg }, listener);
+  }
+}
 
 /** 创建一个成功的 Mock Provider */
 function successProvider(events?: StreamEvent[]): Provider {
@@ -77,8 +92,8 @@ describe("ModelFallback", () => {
     expect(events.some((e) => e.type === "message_stop")).toBe(true);
   });
 
-  // === Terminal 错误不重试 ===
-  test("Terminal 错误（认证失败）直接进入 fallback", async () => {
+  // === 认证类错误：观测证据制（2026-10-08 有意语义变更：不再单次观测即判死）===
+  test("认证失败持续复现 3 次（同指纹）后才放弃 → 进入 fallback，原模型进嫌疑态", async () => {
     const availability = new ModelAvailabilityService();
     const fallbackProv = successProvider();
     const fallback = new ModelFallback({
@@ -93,14 +108,16 @@ describe("ModelFallback", () => {
 
     // 应该有来自 fallback 的事件
     expect(events.some((e) => e.type === "message_stop")).toBe(true);
-    // 原模型应被标记为 terminal
-    expect(availability.isAvailable("test-model").available).toBe(false);
+    // 原模型进**有时效的**嫌疑态（不是永久 terminal）
+    expect(availability.isSuspect("test-model")).toBe(true);
   });
 
   // === 模型不可用时跳过直接 fallback ===
-  test("模型已标记 terminal 时直接使用 fallback", async () => {
+  test("嫌疑期内非主线程调用（探针已被占用）直接使用 fallback", async () => {
     const availability = new ModelAvailabilityService();
-    availability.markTerminal("test-model", "auth_failed");
+    availability.markSuspect("test-model", "fp", "auth_suspect ×3");
+    // 第一路半开探针已被别的子代理占用
+    expect(availability.isAvailable("test-model", "agent:builtin").probe).toBe(true);
 
     const fallbackProv = successProvider();
     let fallbackCalled = false;
@@ -118,9 +135,37 @@ describe("ModelFallback", () => {
       fallbackModel: "fallback-model",
     });
 
-    await collectEvents(fallback.executeWithFallback(successProvider(), defaultParams));
+    await collectEvents(
+      fallback.executeWithFallback(successProvider(), defaultParams, undefined, {
+        querySource: "agent:builtin",
+      }),
+    );
 
     expect(fallbackCalled).toBe(true);
+  });
+
+  test("I4：嫌疑期内主线程调用不受拦截，真实请求主模型", async () => {
+    const availability = new ModelAvailabilityService();
+    availability.markSuspect("test-model", "fp", "auth_suspect ×3");
+    availability.isAvailable("test-model", "agent:builtin"); // 探针被占
+    let primaryCalls = 0;
+    const primary: Provider = {
+      name: () => "mock",
+      async *sendMessageStream(p: SendParams): AsyncIterable<StreamEvent> {
+        primaryCalls++;
+        yield* successProvider().sendMessageStream(p);
+      },
+    };
+    const fallback = new ModelFallback({ availability });
+    const events = await collectEvents(
+      fallback.executeWithFallback(primary, defaultParams, undefined, {
+        querySource: "main_thread",
+      }),
+    );
+    expect(primaryCalls).toBe(1);
+    expect(events.some((e) => e.type === "message_stop")).toBe(true);
+    // 成功产出清除嫌疑
+    expect(availability.isSuspect("test-model")).toBe(false);
   });
 
   // === 无 fallback 时返回错误 ===
@@ -430,8 +475,8 @@ describe("ModelFallback 增强", () => {
 
     const events = await collectEvents(fallback.executeWithFallback(provider, defaultParams));
 
-    // 两次连接尝试（initial + refresh retry），然后进入 fallback
-    expect(callCount).toBe(2);
+    // auth_suspect 族：同指纹 3 次（首次立即重试 + 两次退避）才放弃，然后进入 fallback
+    expect(callCount).toBe(3);
     expect(events.some((e) => e.type === "message_stop")).toBe(true);
   });
 
@@ -1076,12 +1121,14 @@ describe("T6 — 流内错误提前检测（stream-level error）", () => {
     expect(attempts).toBe(1); // 未重试
   });
 
-  test("流内认证错误（terminal）不重试 → 进 fallback", async () => {
+  test("流内认证错误与 throw 形态同预算：重试 3 次后放弃 → 进 fallback", async () => {
     const availability = new ModelAvailabilityService();
+    let calls = 0;
     const failing: Provider = {
       name: () => "mock",
 
       async *sendMessageStream(): AsyncIterable<StreamEvent> {
+        calls++;
         yield {
           type: "error",
           error: { message: "凭证无效", type: "authentication_error", streamLevel: true },
@@ -1097,8 +1144,9 @@ describe("T6 — 流内错误提前检测（stream-level error）", () => {
     const events = await collectEvents(
       fallback.executeWithFallback(failing, { ...defaultParams, model: "anthropic:claude-x" }),
     );
-    // 认证错误归 Terminal：原模型标记不可用 + 走 fallback 成功收尾
-    expect(availability.isAvailable("anthropic:claude-x").available).toBe(false);
+    // 2026-10-08：认证错误不再单次判死（I1）；maxRetries=2 → 调用方预算 3 次与族预算 3 取 min
+    expect(calls).toBe(3);
+    expect(availability.isSuspect("anthropic:claude-x")).toBe(true);
     expect(events.some((e) => e.type === "message_stop")).toBe(true);
   });
 });

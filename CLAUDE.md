@@ -362,6 +362,9 @@ git merge-base --is-ancestor v<version> main && echo OK
 - **旧版本清理要豁免两个指针指向的版本**。beta 泡制期连发几版会把 stable 指向的那版
   挤出 `RELEASE_KEEP_VERSIONS=5` 窗口；删掉之后 latest.txt 还指着它 ——
   形态是**全部稳定版用户 404 装不上**，服务器端零报错。
+- **窗口外的目录要 OSS 归档当场核对通过才删**（B46 P3，`scripts/archive-ops.sh verify`）。
+  服务器只是热缓存，归档是唯一事实源；核对出错时跳过核对继续删 = 退回永久删除
+  （B46 之前已因此丢过 20 个版本）。promote / rollback 到已淘汰的版本会先从归档回暖。
 
 ⚠️ **回滚不会让已装坏版本的用户自动降级**，他们要各自再跑一次 `sid-code update`。
 `rollback.sh` 挡住的只是「还没更新的人不再踩坑」，这是它能做到的全部。

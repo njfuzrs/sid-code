@@ -1,5 +1,5 @@
 import type { LocalCommandModule, LocalCommandResult, CommandContext } from "../../types.ts";
-import { getVersion } from "@sid-code/shared/version.ts";
+import { getVersionDisplay } from "@sid-code/shared/version.ts";
 
 /**
  * /bug（别名 /feedback）命令实现（按需加载）。对齐 claude-code §4.5。
@@ -48,7 +48,7 @@ const mod: LocalCommandModule = {
     const report = [
       "## 环境信息",
       "",
-      `- 版本: ${getVersion()}`,
+      `- 版本: ${getVersionDisplay()}`,
       `- 平台: ${process.platform} ${process.arch}`,
       `- 运行时: Bun ${process.versions?.bun ?? "?"}`,
       `- 模型: ${ctx.config?.model ?? "未知"}`,

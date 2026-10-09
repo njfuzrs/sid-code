@@ -13,7 +13,20 @@
  * ⚠ 落盘隔离：hook-probe 的 SessionStart 会写根 span 标记，按 CONTRIBUTING 约定重定向。
  */
 
-import { describe, test, expect, beforeEach, afterEach } from "bun:test";
+import { describe, test, expect, beforeEach, afterEach, beforeAll, afterAll } from "bun:test";
+
+// 2026-10-08 有意语义变更（LLM 错误观测证据制，I1）：mock provider 的空响应 / 未识别异常
+// 不再 fail-fast，而是按 transient 预算重试。本文件测的是可观测性，不测退避，故把
+// 走 resolveLoopTimeouts 的一次性漏斗退避压成 0（env 优先级最高），文件结束后还原。
+let prevBackoffEnv: string | undefined;
+beforeAll(() => {
+  prevBackoffEnv = process.env.SID_CODE_RETRY_BACKOFF_BASE_MS;
+  process.env.SID_CODE_RETRY_BACKOFF_BASE_MS = "0";
+});
+afterAll(() => {
+  if (prevBackoffEnv === undefined) delete process.env.SID_CODE_RETRY_BACKOFF_BASE_MS;
+  else process.env.SID_CODE_RETRY_BACKOFF_BASE_MS = prevBackoffEnv;
+});
 import { mkdtempSync, readdirSync, readFileSync, rmSync, statSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";

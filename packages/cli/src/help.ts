@@ -214,7 +214,7 @@ Worktree 隔离:
   SID_GREP_TIMEOUT_SECONDS      grep/glob 搜索超时秒数（缺省 20，WSL 下 60）
 
   安装与更新:
-  SID_CODE_CHANNEL              发布通道 stable|beta（缺省 stable）；beta 是抢先版，通道不写进本地配置，每次 update 都要带
+  SID_CODE_CHANNEL              发布通道 stable|beta（缺省沿用当前安装的通道，未装 beta 即 stable）；显式设置可切换通道
   SID_CODE_RELEASE_HOST         发布服务器地址覆盖（缺省 https://www.sid-code.cc；裸 host 自动补 https）
   SID_CODE_INSTALL_URL          install.sh 完整 URL 覆盖（非标准路径时用）
 
@@ -252,6 +252,7 @@ Worktree 隔离:
   SID_CODE_WATCHDOG_HEADER_GRACE_MS  首字节余量（缺省 15000）
   SID_CODE_RESPONSE_HEADER_TIMEOUT_MS  响应头超时（缺省 300000）
   SID_CODE_MAX_SESSION_DURATION_MS  单次输入的连续执行总时长上限（缺省 0＝关闭）
+  SID_CODE_SDK_IDLE_TIMEOUT_MS  stream-json 模式 stdin 空闲上限，无轮在跑且无入站消息时结束（缺省 0＝关闭）
   SID_CODE_STDIN_TIMEOUT_MS     无头模式等待管道 stdin EOF 的上限（缺省 3000；到点用已收到的部分继续）
   SID_CODE_MAX_TIMEOUT_RETRIES  loop 层重试上限（缺省 10）
   SID_CODE_MAX_RETRIES_PER_CALL 单次调用内连接+流式重试的共享上界（缺省 12）
