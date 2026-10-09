@@ -9,7 +9,8 @@
  * 复制出的文本按真实行数带空行（`drag-ybig` 29 行、`drag-y0` 首行为空），只有高亮被屏幕裁掉。
  *
  * 选区是屏幕坐标，不跟内容：重渲染后同一位置换了内容，复制出的就是新内容（`scroll-down-1`、
- * `content-change`）。ScrollBox 滚动时的选区跟随不在端口能驱动的范围内，归 T6.2b / T6.2c。
+ * `content-change`）。旧底座另有 ScrollBox 滚动时的选区跟随，但 CLI 不用 ScrollBox、端口不提供
+ * scrollTop（L3），滚动靠 spacer / 负 marginTop 即普通重渲染，所以这条在端口表面上不存在（T6.2c 判定）。
  */
 import {CellWidth, type Screen} from './screen/screen.js';
 
