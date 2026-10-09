@@ -201,11 +201,16 @@ export function InputArea({
   const [shellModeActive, setShellModeActive] = useState(false);
 
   // 输入历史持久化
-  const { history: persistedHistory, addEntry: addHistoryEntry } = useInputHistoryStore();
+  const {
+    history: persistedHistory,
+    projectHistory,
+    addEntry: addHistoryEntry,
+  } = useInputHistoryStore();
 
-  // TextBuffer
+  // TextBuffer：↑/↓ 的历史从持久化的当前项目历史起步（以前恒为 []，关掉会话就翻不到）
   const tb = useTextBuffer({
     viewport: { height: MAX_INPUT_LINES, width: availableWidth - PROMPT.length },
+    initialHistory: projectHistory,
   });
 
   // Ctrl+D 二次确认退出（仅输入框为空时;非空时 Ctrl+D 仍是删除光标后字符）。

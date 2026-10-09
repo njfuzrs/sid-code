@@ -3,7 +3,8 @@ title: 博客
 description: sid-code 的机制解析与工程实测：一个机制为什么这么设计、实现里踩了哪些坑、实测数据是多少、当前边界在哪。带 file 级证据，不写"据说"。
 # 列表页本身不进全站索引：它的内容就是各文章的标题与摘要，索引它等于每篇文章
 # 在搜索结果里出现两次（一次列表页、一次文章页），点列表页那条还得再点一次才到正文。
-# 文章正文页照常进索引。执行方在 .vitepress/config.ts 的 search.options._render。
+# 文章正文页也不进全站索引（整个 blog/ 目录按前缀排除，见 .vitepress/search-scope.ts）。
+# 这一行 search: false 现在是冗余的，保留作显式声明。
 search: false
 # 页面主体是组件渲染的卡片列表，没有 h2/h3 章节，大纲栏会是空的
 outline: false

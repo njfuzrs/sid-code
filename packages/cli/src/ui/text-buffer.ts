@@ -451,7 +451,11 @@ function baseReducer(state: TextBufferState, action: Action): TextBufferState {
 
     case "reset": {
       const text = getText(state).trim();
-      const newHistory = text ? [text, ...state.history].slice(0, MAX_HISTORY) : state.history;
+      // 去重后置顶：与持久化侧 readHistoryDisplays 的「最新在前、去重」口径一致，
+      // 否则启动时灌进来的历史与本会话新提交的同一句会在 ↑ 里连按出现两次。
+      const newHistory = text
+        ? [text, ...state.history.filter((h) => h !== text)].slice(0, MAX_HISTORY)
+        : state.history;
       return {
         lines: [""],
         cursorRow: 0,
@@ -540,8 +544,8 @@ function baseReducer(state: TextBufferState, action: Action): TextBufferState {
  */
 export type TextBufferAction = Action;
 
-/** 构造一个空的 TextBufferState（供测试/外部初始化用）。 */
-export function createInitialState(text = ""): TextBufferState {
+/** 构造一个 TextBufferState（hook 挂载与测试共用同一入口，避免两份初始值漂移）。 */
+export function createInitialState(text = "", history: string[] = []): TextBufferState {
   const lines = text ? textToLines(text) : [""];
   const lastRow = lines.length - 1;
   return {
@@ -549,7 +553,7 @@ export function createInitialState(text = ""): TextBufferState {
     cursorRow: lastRow,
     cursorCol: lines[lastRow].length,
     preferredCol: null,
-    history: [],
+    history: history.slice(0, MAX_HISTORY),
     historyIndex: -1,
     savedInput: "",
     killRing: [],
@@ -636,22 +640,18 @@ export function getCursorVisualPosition(
 export interface UseTextBufferProps {
   viewport: Viewport;
   onChange?: (text: string) => void;
+  /**
+   * ↑/↓ 的初始历史（最新在前），只在挂载时读一次。
+   * 不传就是空——这正是以前 ↑/↓「关掉会话就什么都没了」的根因：history.jsonl 一直在写，
+   * 但 TextBuffer 的 history 恒从 [] 起步，只装得下本会话 reset 时推进去的几条。
+   */
+  initialHistory?: string[];
 }
 
 export function useTextBuffer(props: UseTextBufferProps) {
-  const [state, dispatch] = useReducer(textBufferReducer, {
-    lines: [""],
-    cursorRow: 0,
-    cursorCol: 0,
-    preferredCol: null,
-    history: [],
-    historyIndex: -1,
-    savedInput: "",
-    killRing: [],
-    killRingIndex: -1,
-    lastActionWasYank: false,
-    lastYankText: "",
-  });
+  const [state, dispatch] = useReducer(textBufferReducer, props.initialHistory, (history) =>
+    createInitialState("", history ?? []),
+  );
 
   const insert = useCallback((text: string) => {
     dispatch({ type: "insert", text });
