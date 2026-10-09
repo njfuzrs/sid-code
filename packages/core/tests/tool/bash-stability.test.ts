@@ -147,6 +147,55 @@ describe("缺口3: 退出码语义解释", () => {
     // 退出码 1 但语义非错误
     expect(result.isError).toBeFalsy();
   }, 10000);
+
+  // 2026-10-09 轨迹 20261009-135641-0083c051：`mdls ...; which exiftool tesseract`
+  // 前段成功、末段 which 没找到 → 整条被报成「命令执行失败（退出码 1）」
+  it("which 未找到（exit 1）不视为错误", () => {
+    const r = interpretExitCode("which exiftool tesseract", 1);
+    expect(r.isError).toBe(false);
+    expect(r.message).toBe("未找到命令");
+  });
+
+  it("; 串联末段为 which 时取 which 的语义（轨迹原命令）", () => {
+    const r = interpretExitCode(
+      'mdls -name kMDItemPixelWidth /tmp/a.jpg 2>&1; echo "=== exiftool ==="; which exiftool tesseract 2>&1',
+      1,
+    );
+    expect(r.isError).toBe(false);
+    expect(r.message).toBe("未找到命令");
+  });
+
+  it("type / command -v / command -V 未找到（exit 1）不视为错误", () => {
+    expect(interpretExitCode("type exiftool", 1).isError).toBe(false);
+    expect(interpretExitCode("command -v exiftool", 1).isError).toBe(false);
+    expect(interpretExitCode("command -V exiftool", 1).isError).toBe(false);
+  });
+
+  it("command 不带 -v 是执行，退出码属于被执行命令，exit 1 仍视为错误", () => {
+    // 变异自证：若把 command 整体归入 LOOKUP_SEMANTIC，这条会红
+    expect(interpretExitCode("command ls /nonexistent", 1).isError).toBe(true);
+  });
+
+  it("which 真错误（exit ≥2）仍视为错误", () => {
+    expect(interpretExitCode("which -Z foo", 2).isError).toBe(true);
+  });
+
+  it("ls 部分路径不存在（exit 1）仍视为错误——那是真的部分失败", () => {
+    const r = interpretExitCode("ls -la /a/exists.jpg /b/missing.jpg 2>&1", 1);
+    expect(r.isError).toBe(true);
+  });
+
+  it("集成: which 未找到经 execute 不标 isError 且附注语义", async () => {
+    if (process.platform === "win32") return;
+    const bash = new BashTool();
+    const result = await bash.execute({
+      command: "echo probe; which zzz_no_such_cmd_zzz",
+      description: "which 未找到测试",
+    });
+    expect(result.isError).toBeFalsy();
+    expect(result.output).not.toContain("命令执行失败");
+    expect(result.output).toContain("未找到命令");
+  }, 10000);
 });
 
 describe("缺口5: cwd 不存在给出友好错误", () => {
