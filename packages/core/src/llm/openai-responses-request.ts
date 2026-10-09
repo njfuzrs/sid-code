@@ -14,7 +14,13 @@
  */
 
 import type { SendParams, Message, ToolDefinition, ContentBlock } from "./types.ts";
-import { serializeToolResultContentForOpenAI } from "./openai-tool-result-content.ts";
+import {
+  serializeToolResultContentForOpenAI,
+  collectOpenAIImageMedia,
+  mediaBlockToDataURL,
+  toolImagesLeadText,
+} from "./openai-tool-result-content.ts";
+import { resolveVisionSupport } from "./vision-capability.ts";
 import { getToolSchemaDialect, sanitizeToolSchema } from "./dialect/catalog.ts";
 
 /**
@@ -54,7 +60,8 @@ export type ResponsesInputItem =
 /** Responses API content part */
 export type ResponsesContentPart =
   | { type: "input_text"; text: string }
-  | { type: "output_text"; text: string };
+  | { type: "output_text"; text: string }
+  | { type: "input_image"; image_url: string };
 
 /** Responses API 工具定义（扁平格式，不嵌套 function 字段） */
 export interface ResponsesToolDef {
@@ -117,10 +124,14 @@ function convertTools(tools: ToolDefinition[]): ResponsesToolDef[] {
  * 顺序保持与原 content 一致：文本片段按出现位置聚合，工具 item 就地插入，
  * 保证「文本 → 工具调用 → 文本」之类的交错顺序不被打乱。
  */
-function expandMessage(message: Message): ResponsesInputItem[] {
+function expandMessage(message: Message, visionEnabled: boolean): ResponsesInputItem[] {
   const items: ResponsesInputItem[] = [];
   // 待合并的文本部分缓冲区
   let textParts: ResponsesContentPart[] = [];
+  // 工具返回的图片：与 Chat Completions 路径同一处理（openai.ts convertMessages），
+  // 追加成本消息全部工具 item 之后的一条 user item，不塞进 function_call_output。
+  const toolImages: ResponsesContentPart[] = [];
+  const toolImageIds: string[] = [];
 
   // 将缓冲区中的文本刷成一个 role item
   const flushText = () => {
@@ -163,8 +174,15 @@ function expandMessage(message: Message): ResponsesInputItem[] {
         items.push({
           type: "function_call_output",
           call_id: block.tool_use_id,
-          output: serializeToolResultContentForOpenAI(block, "openai-responses"),
+          output: serializeToolResultContentForOpenAI(block, "openai-responses", { visionEnabled }),
         });
+        const imgs = collectOpenAIImageMedia(block, { visionEnabled });
+        if (imgs.length > 0) {
+          toolImageIds.push(block.tool_use_id);
+          for (const mb of imgs) {
+            toolImages.push({ type: "input_image", image_url: mediaBlockToDataURL(mb) });
+          }
+        }
         break;
       }
       case "thinking":
@@ -176,6 +194,12 @@ function expandMessage(message: Message): ResponsesInputItem[] {
 
   // 刷掉尾部残留文本
   flushText();
+  if (toolImages.length > 0) {
+    items.push({
+      role: "user",
+      content: [{ type: "input_text", text: toolImagesLeadText(toolImageIds) }, ...toolImages],
+    });
+  }
   return items;
 }
 
@@ -212,8 +236,10 @@ export function buildResponsesRequest(
 ): ResponsesAPIRequest {
   // 展开所有消息为扁平的 input item 序列
   const input: ResponsesInputItem[] = [];
+  // 图片是否随工具结果发出：按模型能力判定（vision-capability.ts），缺省不发。
+  const visionEnabled = resolveVisionSupport(effectiveModel, params.model) === true;
   for (const message of params.messages) {
-    input.push(...expandMessage(message));
+    input.push(...expandMessage(message, visionEnabled));
   }
 
   const request: ResponsesAPIRequest = {
