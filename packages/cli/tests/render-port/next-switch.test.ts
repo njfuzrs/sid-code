@@ -18,11 +18,11 @@ const MODULES = ["components", "hooks", "measure", "text", "termio", "runtime", 
 const FIXTURE = join(import.meta.dir, "fixtures", "next-minimal-app.tsx");
 
 describe("resolveRenderer", () => {
-  test("缺省与空串 → 默认 legacy", () => {
-    expect(DEFAULT_RENDERER).toBe("legacy");
-    expect(resolveRenderer(undefined)).toBe("legacy");
-    expect(resolveRenderer("")).toBe("legacy");
-    expect(resolveRenderer("  ")).toBe("legacy");
+  test("缺省与空串 → 默认 next（T8.2）", () => {
+    expect(DEFAULT_RENDERER).toBe("next");
+    expect(resolveRenderer(undefined)).toBe("next");
+    expect(resolveRenderer("")).toBe("next");
+    expect(resolveRenderer("  ")).toBe("next");
   });
 
   test("合法值大小写 / 空白不敏感", () => {
@@ -33,7 +33,7 @@ describe("resolveRenderer", () => {
 
   test("无法识别 → 回落默认值并告警一次，不抛", () => {
     const warns: string[] = [];
-    expect(resolveRenderer("nxet", (m) => warns.push(m))).toBe("legacy");
+    expect(resolveRenderer("nxet", (m) => warns.push(m))).toBe("next");
     expect(warns).toHaveLength(1);
     expect(warns[0]).toContain("nxet");
   });
@@ -132,10 +132,10 @@ describe("最小 App 在两个取值下都能启动并退出", () => {
   }
 
   for (const [value, expected] of [
-    [undefined, "legacy"],
+    [undefined, "next"],
     ["legacy", "legacy"],
     ["next", "next"],
-    ["bogus", "legacy"],
+    ["bogus", "next"],
   ] as const) {
     test(`SID_TUI_RENDERER=${value ?? "(未设置)"} → ${expected}`, () => {
       const r = runApp(value);

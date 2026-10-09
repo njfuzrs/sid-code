@@ -347,8 +347,8 @@ L1 视觉原子    字形、颜色、主题                          ← 最小�
    在 `legacy/<模块>.ts` 加 re-export，在 `next/<模块>.ts` 加实现或 `notImplemented*` 占位，再把名字加进切换层的解构导出；
    `next-switch.test.ts` 会核对两边导出同一组符号。最后跑 `bun run tui:surface` 重生成 `SURFACE.md` 并一起提交。
    这一步的意义是让「新底座也必须提供它」被看见。别为了绕开端口而在组件里直连底座。
-4. **`SID_TUI_RENDERER=legacy|next` 选底座**（默认 legacy，只在 `render-port/select.ts` 读一次）。next 目前是骨架，
-   未实现的能力一用就抛 `NotImplementedError`，信息里带负责的任务号，这是预期行为，不要往组件里加兜底。
+4. **`SID_TUI_RENDERER=legacy|next` 选底座**（T8.2 起默认 next，只在 `render-port/select.ts` 读一次）。legacy 保留作回退口到 T9。
+   next 若有未实现的能力，一用就抛 `NotImplementedError`，信息里带负责的任务号，这是预期行为，不要往组件里加兜底。
 
 当前已有、组件可以直接用的能力（都从端口取）：
 

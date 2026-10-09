@@ -9,8 +9,11 @@
 
 export type RendererImpl = "legacy" | "next";
 
-/** 默认 legacy，直到 T8.2 切默认值。 */
-export const DEFAULT_RENDERER: RendererImpl = "legacy";
+/**
+ * T8.2 起默认 next。legacy 保留到 T9 删除旧底座之前，作为 `SID_TUI_RENDERER=legacy` 回退口：
+ * 新底座出问题时用户改一个环境变量就能回到旧行为，不必降版本。
+ */
+export const DEFAULT_RENDERER: RendererImpl = "next";
 
 /**
  * 解析 `SID_TUI_RENDERER`。未设置 / 空串 → 默认值；无法识别的值也回落默认值，同时在 stderr 留一行。

@@ -8,7 +8,7 @@ CLI（`packages/cli/src` 与 `packages/cli/tests`）**只经这里**拿渲染底
 
 ```
 render-port/
-  select.ts            ← 唯一读 SID_TUI_RENDERER 的地方（legacy | next，默认 legacy，拼错回落并告警）
+  select.ts            ← 唯一读 SID_TUI_RENDERER 的地方（legacy | next，T8.2 起默认 next，拼错回落并告警）
   <模块>.ts            ← 切换层：按 RENDERER 用字面量动态 import legacy/ 或 next/，解构再导出
   legacy/<模块>.ts     ← 对 @sid-code/tui-renderer 的纯 re-export（T0.2 原样搬入，行为零变化）
   next/<模块>.ts       ← 新底座 @sid-code/tui；未实现的符号是 notImplemented* 占位，用时抛错并带任务号
