@@ -465,6 +465,8 @@ export const SettingsSchema = lazySchema(
 
         // respectGitignore：grep/glob 是否尊重 .gitignore。缺省 true（与 rg 默认行为一致）。
         respectGitignore: z.boolean().optional(),
+        // searchTimeoutSeconds：grep/glob 底层 ripgrep 的超时秒数。缺省 20（WSL 60）；优先于环境变量 SID_GREP_TIMEOUT_SECONDS。
+        searchTimeoutSeconds: z.number().positive().optional(),
         // disableAllHooks：一键禁用全部 hook（应急/调试）。与企业策略的同名字段是两个来源，
         // 任一为 true 即禁用。见 hook/registry.ts。
         disableAllHooks: z.boolean().optional(),

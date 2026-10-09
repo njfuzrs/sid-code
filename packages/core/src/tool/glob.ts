@@ -2,9 +2,15 @@
  * Glob 工具 - 文件名模式匹配
  * 基于 ripgrep 构建（--files --glob），按修改时间**降序**排列，最近编辑的在前面。
  *
- * ⚠️ 排序方向刻意偏离 CC：CC 用 `--sort=modified`（oldest-first），本工具用 `--sortr=modified`
+ * ⚠️ 排序方向刻意偏离 CC：CC 用 `--sort=modified`（oldest-first），本工具按 mtime 降序
  * （newest-first）。对 agent 而言"最近改过的文件优先"更实用（通常正是当前任务相关文件），
  * 故有意保留此差异，非 bug。参见 P2-6 审计结论。
+ *
+ * ⚠️ 排序在 JS 侧做，**不要**改回 rg 的 `--sort/--sortr=modified`（2026-10-10 实测）：
+ *   1. rg 一排序就退化成单线程遍历，`path=~` 下 27–32s vs 不排序 5s，稳定撞 20s 超时；
+ *   2. 排序要扫完才吐第一行，超时那一刻 stdout 为空 →「超时返回部分结果」整条失效，
+ *      明明已扫到目标文件，模型拿到的仍是一句报错（轨迹 20261009-135641-0083c051）。
+ *   命中通常只有几十条，逐个 stat 的成本可忽略。
  *
  * 架构说明（2026-07 重写 + 复审补全）：
  * 旧实现用纯 JS `glob` 库，存在多个缺口，现全部修复：
@@ -73,6 +79,22 @@ function noIgnore(): boolean {
     /* settings 未初始化时回退 env，不让 glob 因配置系统故障而失败 */
   }
   return envBool("SID_GLOB_NO_IGNORE", true);
+}
+
+/**
+ * 按 mtime 降序（最近编辑的在前），同 mtime 按路径字母序保证结果稳定。
+ * stat 失败（扫描后被删 / 无权限）排最后，不丢弃——宁可多显示也不吞结果。
+ */
+function sortByMtimeDesc(files: string[], cwd: string): string[] {
+  const withMtime = files.map((f) => {
+    try {
+      return { file: f, mtime: statSync(join(cwd, f)).mtimeMs };
+    } catch {
+      return { file: f, mtime: 0 };
+    }
+  });
+  withMtime.sort((a, b) => b.mtime - a.mtime || a.file.localeCompare(b.file));
+  return withMtime.map((f) => f.file);
 }
 
 /**
@@ -260,12 +282,10 @@ export class GlobTool implements Tool {
     } catch (err: any) {
       if (err instanceof RipgrepTimeoutError) {
         // 超时且有部分结果 → 返回部分结果 + 提示
-        if (err.partialResults.length > 0) {
-          const rel = err.partialResults
-            .slice(0, DEFAULT_RESULT_LIMIT)
-            .map((p) => (p.startsWith("./") ? p.slice(2) : p));
+        const { files } = this.finalize(err.partialResults, searchRoot);
+        if (files.length > 0) {
           return {
-            output: `${rel.join("\n")}\n\n（搜索超时，以上为部分结果。请收窄 pattern/path。）`,
+            output: `${files.join("\n")}\n\n（搜索超时，以上为部分结果，可能不完整。请收窄 pattern/path。）`,
           };
         }
         return { output: err.message, isError: true };
@@ -279,8 +299,8 @@ export class GlobTool implements Tool {
   }
 
   /**
-   * ripgrep 实现：rg --files --glob <pattern> --sortr=modified
-   * --files: 只列文件名不搜内容；--sortr=modified: 按修改时间降序（newest first，与旧实现一致）；
+   * ripgrep 实现：rg --files --glob <pattern>，排序在 finalize() 里做（见文件头注释）
+   * --files: 只列文件名不搜内容；
    * --hidden: 含隐藏文件（缺口#4）；--no-ignore: 不吞 gitignore 文件（缺口#8，对标 CC）；
    * 每个 ignore 转 --glob !<pat>。
    *
@@ -294,7 +314,8 @@ export class GlobTool implements Tool {
     ignores: string[],
     abortSignal: AbortSignal,
   ): Promise<{ files: string[]; truncated: boolean }> {
-    const args = ["--files", "--glob", pattern, "--sortr=modified"];
+    // 不传 --sort/--sortr：见文件头注释（排序退化单线程 + 超时丢部分结果）
+    const args = ["--files", "--glob", pattern];
     if (includeHidden()) args.push("--hidden");
     if (noIgnore()) args.push("--no-ignore");
     // 排除模式统一补 **/ 前缀，保证任意深度匹配（`!node_modules/**` 只排根级，
@@ -307,12 +328,20 @@ export class GlobTool implements Tool {
     // 搜索目录作 spawn cwd，target 传 "."（见上方注释）
     const lines = await ripGrep(args, ".", abortSignal, cwd);
     // rg 输出形如 "./src/a.ts"，去掉 "./" 前缀
-    let rel = lines.map((p) => (p.startsWith("./") ? p.slice(2) : p));
+    return this.finalize(lines, cwd);
+  }
+
+  /**
+   * rg 输出 → 最终结果：去 "./" 前缀 → deny 过滤 → mtime 降序 → 截断。
+   * 正常返回与超时部分结果共用这一条，保证两条路径的过滤 / 排序 / 上限一致
+   * （以前超时路径既不过滤 deny 规则也不排序，会把隐藏文件漏给模型）。
+   */
+  private finalize(lines: string[], cwd: string): { files: string[]; truncated: boolean } {
+    const rel = lines.map((p) => (p.startsWith("./") ? p.slice(2) : p));
     // G21：deny 规则隐藏——在截断之前过滤，避免被隐藏项占用结果配额
-    rel = this.filterHidden(rel, cwd);
-    // 截断到上限
-    const truncated = rel.length > DEFAULT_RESULT_LIMIT;
-    const files = rel.slice(0, DEFAULT_RESULT_LIMIT);
+    const visible = sortByMtimeDesc(this.filterHidden(rel, cwd), cwd);
+    const truncated = visible.length > DEFAULT_RESULT_LIMIT;
+    const files = visible.slice(0, DEFAULT_RESULT_LIMIT);
     return { files, truncated };
   }
 
@@ -353,23 +382,6 @@ export class GlobTool implements Tool {
       signal: abortSignal, // 缺口#7：接 signal，abort 时 glob 库抛 AbortError
     });
 
-    // 按修改时间降序排列（最近编辑的在前）
-    const withMtime = raw.map((f) => {
-      try {
-        return { file: f, mtime: statSync(join(cwd, f)).mtimeMs };
-      } catch {
-        return { file: f, mtime: 0 };
-      }
-    });
-    withMtime.sort((a, b) => b.mtime - a.mtime);
-
-    // G21：deny 规则隐藏——在截断之前过滤（同 ripgrep 路径）
-    const visible = this.filterHidden(
-      withMtime.map((f) => f.file),
-      cwd,
-    );
-    const truncated = visible.length > DEFAULT_RESULT_LIMIT;
-    const files = visible.slice(0, DEFAULT_RESULT_LIMIT);
-    return { files, truncated };
+    return this.finalize(raw, cwd);
   }
 }
