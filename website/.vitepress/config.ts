@@ -3,6 +3,7 @@ import { readFileSync } from "node:fs";
 import { resolve } from "node:path";
 import { tokenizeCJK } from "./tokenize";
 import { stripFrontmatter } from "./raw-markdown";
+import { isExcludedFromSearch } from "./search-scope";
 import { SERIES, loadBlogPosts } from "./blog-meta";
 import { CHANGELOG_SIDEBAR } from "./changelog-meta";
 import { writeFeed } from "./feed";
@@ -540,9 +541,11 @@ export default defineConfig({
          * 且不报任何错（静默失效）。删任一处前先读 tokenize.ts 顶部说明。
          */
         /**
-         * 把 frontmatter 标了 `search: false` 的页面从**全站**索引里摘出去。
+         * 把不属于「用户说明文档」的页面从**全站**索引里摘出去：
+         * 整个 /blog/ 目录 + frontmatter 标了 `search: false` 的单页。
+         * 判据与理由集中在 search-scope.ts。
          *
-         * 目前唯一使用者是 /changelog：它由 theme/Changelog.vue 从构建期 JSON 渲染，
+         * 以 /changelog 为例：它由 theme/Changelog.vue 从构建期 JSON 渲染，
          * 自带一个只搜版本变更的独立搜索框。若让几百条 commit 描述进全站索引，
          * 「搜 hook」「搜权限」这类正常查询会被一片版本噪音冲掉——两个搜索的
          * 目标读者不同，索引必须分开。
@@ -558,7 +561,8 @@ export default defineConfig({
          */
         _render(src, env, md) {
           const html = md.render(src, env);
-          if ((env as any)?.frontmatter?.search === false) return "";
+          if (isExcludedFromSearch((env as any)?.relativePath, (env as any)?.frontmatter))
+            return "";
           return html;
         },
         miniSearch: {

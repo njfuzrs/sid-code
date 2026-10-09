@@ -326,7 +326,8 @@ describe("容器页与全站搜索隔离", () => {
     const src = readFileSync(CONFIG_PATH, "utf8");
     const hook = src.slice(src.indexOf("_render(src, env, md)"));
     const renderAt = hook.indexOf("md.render(src, env)");
-    const checkAt = hook.indexOf("search === false");
+    // 判断已抽到 search-scope.ts 的 isExcludedFromSearch，它读的是渲染后回填的 frontmatter
+    const checkAt = hook.indexOf("isExcludedFromSearch(");
     expect(renderAt).toBeGreaterThan(-1);
     expect(checkAt).toBeGreaterThan(-1);
     expect(renderAt).toBeLessThan(checkAt);
