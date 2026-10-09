@@ -8,7 +8,7 @@
 
 import { test, expect, describe } from "bun:test";
 import React from "react";
-import { render } from "@sid-code/tui-renderer/_vendor/testing.tsx";
+import { render } from "@sid-code/cli/ui/render-port/testing.ts";
 import stripAnsi from "strip-ansi";
 import { Footer } from "@sid-code/cli/ui/components/Footer.tsx";
 import { ConfigProvider } from "@sid-code/cli/ui/contexts/ConfigContext.tsx";
