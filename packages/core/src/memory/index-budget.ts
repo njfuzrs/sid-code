@@ -64,7 +64,14 @@ export function utf8Bytes(s: string): number {
  * - `entryCount <= INDEX_MAX_ENTRIES`，且表头不占配额；
  * - 输出里每个条目行都是完整的 —— 不存在半行链接。
  */
-export function buildTruncatedIndex(entryLines: readonly string[]): {
+export function buildTruncatedIndex(
+  entryLines: readonly string[],
+  /**
+   * 表头（缺陷 9：团队索引用自己的标题 `# 团队共享记忆`）。必须从这里传，
+   * 不能在返回后替换首行 —— 替换会让表头字节不进预算，上限再次失守。
+   */
+  header: readonly string[] = INDEX_HEADER,
+): {
   content: string;
   entryCount: number;
   truncated: boolean;
@@ -72,14 +79,14 @@ export function buildTruncatedIndex(entryLines: readonly string[]): {
   const warnBytes = utf8Bytes(INDEX_TRUNCATION_NOTICE);
   const budget = MEMORY_LIMITS.INDEX_MAX_BYTES;
 
-  const lines: string[] = [...INDEX_HEADER];
+  const lines: string[] = [...header];
   // 表头 + 结尾换行先记账：预算约束的是**最终文件**，不是条目行的总和
-  let used = utf8Bytes(INDEX_HEADER.join("\n") + "\n");
+  let used = utf8Bytes(header.join("\n") + "\n");
   let truncated = false;
 
   for (const line of entryLines) {
     // ① 条数按条目算，表头不挤占
-    if (lines.length - INDEX_HEADER.length >= MEMORY_LIMITS.INDEX_MAX_ENTRIES) {
+    if (lines.length - header.length >= MEMORY_LIMITS.INDEX_MAX_ENTRIES) {
       truncated = true;
       break;
     }
@@ -95,5 +102,5 @@ export function buildTruncatedIndex(entryLines: readonly string[]): {
 
   let content = lines.join("\n") + "\n";
   if (truncated) content += INDEX_TRUNCATION_NOTICE;
-  return { content, entryCount: lines.length - INDEX_HEADER.length, truncated };
+  return { content, entryCount: lines.length - header.length, truncated };
 }

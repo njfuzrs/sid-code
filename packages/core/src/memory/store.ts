@@ -455,6 +455,9 @@ export class MemoryStore {
     scope: "global" | "project";
   }> = [];
 
+  /** 本次 load 中有空文件被归档的目录（缺陷 3：据此重建索引）。 */
+  private archivedDuringLoad = new Set<string>();
+
   constructor(
     projectRoot?: string,
     opts?: { projectMemoryDir?: string; globalMemoryDir?: string },
@@ -525,6 +528,7 @@ export class MemoryStore {
 
     // 重名清单按「本次加载」重算，否则重复 load 会把同一条重复计入
     this.shadowedFiles = [];
+    this.archivedDuringLoad.clear();
     await this.loadDir(this.globalDir, "global", this.globalEntries, this.globalFiles);
     if (this.projectDir) {
       await this.loadDir(this.projectDir, "project", this.projectEntries, this.projectFiles);
@@ -537,8 +541,10 @@ export class MemoryStore {
     // 改过名就必须重建索引：索引行里的链接是文件名，改名后旧索引整行都指向
     // 不存在的文件——那正是本次要修的「Read 报文件不存在」，不能自己再造一遍。
     // 放在 loaded=true 之后：writeIndex 依赖 loadDir 填好的 files 映射。
-    if (globalRenamed) await this.writeIndex(this.globalDir, this.globalEntries);
-    if ((projectRenamed || this.legacyWorktreeMerged) && this.projectDir) {
+    const globalArchived = this.archivedDuringLoad.has(this.globalDir);
+    const projectArchived = !!this.projectDir && this.archivedDuringLoad.has(this.projectDir);
+    if (globalRenamed || globalArchived) await this.writeIndex(this.globalDir, this.globalEntries);
+    if ((projectRenamed || projectArchived || this.legacyWorktreeMerged) && this.projectDir) {
       this.legacyWorktreeMerged = false;
       await this.writeIndex(this.projectDir, this.projectEntries);
     }
@@ -782,6 +788,9 @@ export class MemoryStore {
           // 这也让 prompt 里那句 prune 指令第一次真正生效，无需改动工具 schema。
           if (parseInfo.emptyBody) {
             const archived = await this.archiveMemoryFile(dir, filename);
+            // 缺陷 3：归档了就必须重建索引 —— 否则 MEMORY.md 里那行指针仍指向
+            // 一个已经搬走的文件（load 末尾据此 writeIndex）。
+            if (archived) this.archivedDuringLoad.add(dir);
             log.info(
               "MEMORY",
               archived
