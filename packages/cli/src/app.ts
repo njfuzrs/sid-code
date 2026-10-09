@@ -331,6 +331,17 @@ export interface AppOptions {
 }
 
 /**
+ * 缺陷 7：stream-json 模式下 stdin 空闲上限（ms）。`SID_CODE_SDK_IDLE_TIMEOUT_MS`，
+ * 缺省 0 = 关闭。非法值（负数 / 非数字）按 0 处理，不让一个手误把会话秒杀。
+ */
+export function readSdkIdleTimeoutMs(env: NodeJS.ProcessEnv = process.env): number {
+  const raw = env.SID_CODE_SDK_IDLE_TIMEOUT_MS;
+  if (raw === undefined || raw.trim() === "") return 0;
+  const n = Number(raw);
+  return Number.isFinite(n) && n > 0 ? Math.floor(n) : 0;
+}
+
+/**
  * CM3/CM4：从重试错误文本推断重试种类，决定 TUI 提示语气与是否给升级建议。
  * - 限流(429 / rate limit / quota)→ rate_limit（CM4 附升级建议）
  * - 过载(529 / overloaded / 503)→ overloaded
@@ -7241,7 +7252,26 @@ export class App {
       // D1：stream-json 的 result 消息带上被拒清单。与 text/json 路径读的是同一份 tracking。
       getPermissionDenials: () => this.headlessPermissionDenials(),
       getStructuredOutput: () => this.capturedStructuredOutput(),
+      // 缺陷 4：set_model 之后 system/init 报新模型
+      getModel: () => this.config.model,
     };
+  }
+
+  /**
+   * 缺陷 4：宿主 `set_model`。与 `/model` 同一条切换路径（applyPrimaryModelSwitch），
+   * 同样先校验 availableModels——非法名抛错，错误文案原样回给宿主。不持久化。
+   */
+  private sdkSetModel(model: string): string {
+    const name = model.trim();
+    if (!name) throw new Error("set_model: model 不能为空");
+    const list = this.config.availableModels;
+    if (list.length > 0 && !list.some((m) => m.name === name)) {
+      throw new Error(
+        `模型 "${name}" 不在可用模型列表中（可用：${list.map((m) => m.name).join(", ")}）`,
+      );
+    }
+    this.applyPrimaryModelSwitch(name, { clearTerminal: true });
+    return this.config.model;
   }
 
   /** B26：StructuredOutput 校验通过的载荷；未开 --json-schema 或未捕获时为 undefined */
@@ -7284,12 +7314,9 @@ export class App {
         cwd: process.cwd(),
         sessionId: this.sessionState.sessionId,
         model: this.config.model,
-        maxTurns: this.config.maxTurns || undefined,
-        // P1-9：花费上限透传到 SDK 引擎（超限终止）。B18：与 QuotaManager 同一个数，
-        // 否则 quota.costLimit 更严时 SDK 侧的 error_max_budget_usd 报的是另一个上限。
-        maxBudgetUsd: this.effectiveCostLimit || undefined,
-        systemPrompt: this.config.systemPrompt || undefined,
-        jsonSchema: this.config.jsonSchema,
+        // 缺陷 6：maxTurns / 花费上限 / systemPrompt / jsonSchema 不再传给 SDK 引擎——
+        // 它从不读这四个字段。真实执行点：queryLoop + QuotaManager（effectiveCostLimit，
+        // 结果映射成 error_max_budget_usd）、buildSystemPrompt、StructuredOutputTool。
         // P2-2 --include-partial-messages：显式开启则转发 stream_event 部分增量；
         // verbose 模式亦隐含开启（与既有行为兼容）。
         includeStreamEvents: this.config.includePartialMessages || this.config.verbose,
@@ -7339,9 +7366,26 @@ export class App {
             this.abortController = new AbortController();
             current.abort("user-cancel");
           },
+          onSetModel: (model) => this.sdkSetModel(model),
+          onGetContextUsage: () => {
+            const u = this.ctxMgr.getContextUsageForDisplay(this.toolRegistry.size());
+            return {
+              used_tokens: u.used,
+              max_tokens: u.maxTokens,
+              percent_of_window: u.percentOfWindow,
+            };
+          },
         },
+        // 缺陷 7：stdin 空闲上限。默认 0（关闭）——与 maxSessionDurationMs 同一「保活优先」
+        // 取向：宿主两轮之间空闲多久是它的自由。CI / 批处理要兜底时显式开。
+        idleTimeoutMs: readSdkIdleTimeoutMs(),
       });
       budgetExceeded = outcome.budgetExceeded;
+      if (outcome.idleTimedOut) {
+        process.stderr.write(
+          `[runHeadlessSDK] stdin 空闲超过 ${Math.round(readSdkIdleTimeoutMs() / 1000)}s，已结束会话\n`,
+        );
+      }
     } catch (err: any) {
       runError = err instanceof Error ? err : new Error(String(err));
       aborted = runError.name === "AbortError" || /abort/i.test(runError.message ?? "");

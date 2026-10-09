@@ -58,7 +58,8 @@ describe("createSDKCanUseTool — 无 Hook", () => {
     const canUseTool = createSDKCanUseTool({ structuredIO: io });
     const result = await canUseTool("Bash", { command: "ls" }, "t1");
     expect(result).toBe("allow");
-    expect(io.isResolvedToolUseId("t1")).toBe(true);
+    // 缺陷 5：去重靠「结算即删 pending」，不再有只写不读的 tool_use_id 集合
+    expect(io.pendingRequestCount()).toBe(0);
   });
 
   test("SDK 宿主 deny", async () => {
