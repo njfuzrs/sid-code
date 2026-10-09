@@ -155,6 +155,11 @@ export class HyperlinkPool {
 		return this.urls.length - 1;
 	}
 
+	/** id → url（0 或未知 id 为 undefined）。超链接点击命中用（B9 / T6.2b，M4） */
+	urlOf(id: number): string | undefined {
+		return id === 0 ? undefined : this.urls[id];
+	}
+
 	open(id: number, terminator: string): string {
 		const url = this.urls[id]!;
 		return `${LINK_PREFIX}id=${hyperlinkId(url)};${url}${terminator}`;

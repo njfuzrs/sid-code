@@ -36,18 +36,26 @@ import {OSC} from './terminal/osc.js';
 import {isTabStatusDisabled, tabStatusSequence} from './hooks/use-tab-status.js';
 import {type Screen} from './screen/screen.js';
 import {serializeScreen} from './screen/serialize.js';
-import {clipToViewport, diffAltScreen} from './frame/alt-screen.js';
+import {clipToViewport, diffAltScreen, padToViewport} from './frame/alt-screen.js';
 import {disableMouseTracking, enableMouseTracking} from './terminal/modes.js';
 import {supportsSynchronizedOutput} from './terminal/sync-output.js';
 import App from './components/App.js';
 import drainStdin from './drain-stdin.js';
 import {patchStderr} from './stderr-guard.js';
 import {
+	applySelectionEvent,
 	clearSelection,
 	createSelectionState,
+	decodeSelectionMouse,
+	hasSelection,
+	MULTI_CLICK_MS,
+	selectionHighlight,
 	selectionText,
 	type SelectionState,
 } from './selection.js';
+import {applySelectionHighlight} from './selection-highlight.js';
+import {hyperlinkAt} from './hyperlink-at.js';
+import {setClipboard} from './terminal/clipboard.js';
 import {
 	disableInputModesSequences,
 	reassertExtendedKeysSequence,
@@ -349,8 +357,14 @@ export default class Ink {
 	 * 高亮绘制、复制到剪贴板归 T6.2b；这里先提供端口实例的三个选区方法（契约 X7）。
 	 */
 	private readonly selection: SelectionState = createSelectionState();
-	/** 选区高亮背景色（M5）；undefined = 反色。T6.2b 绘制高亮时读它 */
+	/** 选区高亮背景色（M5）；undefined = 反色。下一帧起生效 */
 	private selectionBgColor: string | undefined;
+	/** alt-screen 上一帧**未涂高亮**的内容（已裁到视口）：选区取文本、超链接命中、重涂高亮都用它 */
+	private altContentScreen: Screen | undefined;
+	/** 单击超链接后延迟打开（M4）：等满连击窗口，期间来了双击就取消 */
+	private pendingHyperlinkTimer: ReturnType<typeof setTimeout> | undefined;
+	/** 单击 alt-screen 里的超链接时调用（M4）；由使用方设置，没设就不打开 */
+	onHyperlinkClick: ((url: string) => void) | undefined;
 	private readonly unsubscribeSigcont?: () => void;
 	private kittyProtocolEnabled = false;
 	private kittyFlags: KittyFlagName[] | undefined;
@@ -537,16 +551,104 @@ export default class Ink {
 
 	/** 端口 RenderInstance.copySelectionNoClear（M2）：当前选区的文本，不清选区；不在 alt-screen 时为空 */
 	copySelectionNoClear(): string {
-		if (!this.altPreviousScreen) {
+		if (!this.altContentScreen) {
 			return '';
 		}
 
-		return selectionText(this.selection, this.altPreviousScreen);
+		const text = selectionText(this.selection, this.altContentScreen);
+		// M3：同时复制到剪贴板。OSC 52 序列异步拿到后再写（tmux 下要等 load-buffer，旧底座同样是异步写）
+		if (text !== '') {
+			void setClipboard(text).then(sequence => {
+				if (!this.isUnmounted) {
+					this.writeBestEffort(this.options.stdout, sequence);
+				}
+			});
+		}
+
+		return text;
 	}
 
-	/** 端口 RenderInstance.clearTextSelection：清掉选区，保留连击计数（selection.ts） */
+	/** 端口 RenderInstance.clearTextSelection：清掉选区，保留连击计数（selection.ts）；有选区时当场重画 */
 	clearTextSelection(): void {
+		const had = hasSelection(this.selection);
 		clearSelection(this.selection);
+		if (had && this.altScreenActive) {
+			this.onRender();
+		}
+	}
+
+	/** 端口 RenderInstance.getHyperlinkAt（M4）：alt-screen 上一帧 (x, y) 处的 url；主屏恒为 undefined */
+	getHyperlinkAt(x: number, y: number): string | undefined {
+		if (!this.altScreenActive || !this.altContentScreen) {
+			return undefined;
+		}
+
+		return hyperlinkAt(this.altContentScreen, x, y);
+	}
+
+	/**
+	 * sid-code（B9 / T6.2b，契约 M2–M5）：App 交来的 SGR 鼠标序列。规则来自旧底座黑盒探针（D-5）：
+	 * - 只在 alt-screen 里处理；`SID_CODE_DISABLE_MOUSE_CLICKS` 为真时选区和链接点击都不响应。
+	 * - 选区变了当场重画（高亮），松开不复制（复制只在 `copySelectionNoClear` 时发生）。
+	 * - 没拖动的单击落在链接上：等 500ms（连击窗口）再调 `onHyperlinkClick`；期间的连击取消它，
+	 *   再单击另一个链接则只开后一个。`TERM_PROGRAM=vscode` 不开：xterm.js 自己会开，开两次。
+	 */
+	private readonly handleMouseSequence = (sequence: string): void => {
+		if (!this.altScreenActive || this.isUnmounted || mouseClicksDisabled()) {
+			return;
+		}
+
+		// 刚进 alt 还没出过帧：先当场画一帧（旧底座按下时同样先写整帧，探针 drag-legacy 的 press）
+		if (!this.altContentScreen && !this.isSuspended) {
+			this.onRender();
+		}
+
+		const screen = this.altContentScreen;
+		if (!screen) {
+			return;
+		}
+
+		const event = decodeSelectionMouse(sequence, performance.now());
+		if (!event) {
+			return;
+		}
+
+		const before = spanKey(this.selection, screen);
+		const wasPressed = this.selection.pressed;
+		applySelectionEvent(this.selection, screen, event);
+
+		if (event.action === 'press' && this.selection.clickCount >= 2) {
+			this.cancelPendingHyperlink();
+		}
+
+		if (
+			event.action === 'release' &&
+			wasPressed &&
+			this.selection.mode === 'char' &&
+			!hasSelection(this.selection)
+		) {
+			const url = hyperlinkAt(screen, event.x, event.y);
+			if (url !== undefined && process.env['TERM_PROGRAM'] !== 'vscode') {
+				this.cancelPendingHyperlink();
+				const timer = setTimeout(() => {
+					this.pendingHyperlinkTimer = undefined;
+					this.onHyperlinkClick?.(url);
+				}, MULTI_CLICK_MS);
+				timer.unref?.();
+				this.pendingHyperlinkTimer = timer;
+			}
+		}
+
+		if (spanKey(this.selection, screen) !== before) {
+			this.onRender();
+		}
+	};
+
+	private cancelPendingHyperlink(): void {
+		if (this.pendingHyperlinkTimer) {
+			clearTimeout(this.pendingHyperlinkTimer);
+			this.pendingHyperlinkTimer = undefined;
+		}
 	}
 
 	/**
@@ -873,6 +975,7 @@ export default class Ink {
 					onSuspendTerminal={this.suspendTerminal}
 					onRegisterInputControl={this.registerInputControl}
 					onStdinResume={this.handleStdinResume}
+					onMouseSequence={this.handleMouseSequence}
 				>
 					<TerminalWriteContext.Provider value={this.writeRaw}>
 						{node}
@@ -970,6 +1073,7 @@ export default class Ink {
 		}
 
 		this.isUnmounting = true;
+		this.cancelPendingHyperlink();
 
 		if (this.beforeExitHandler) {
 			process.off('beforeExit', this.beforeExitHandler);
@@ -1498,7 +1602,17 @@ export default class Ink {
 		startTime: number,
 	): void {
 		const viewport = getWindowSize(this.options.stdout);
-		const next = clipToViewport(screen, viewport.rows);
+		const content = clipToViewport(screen, viewport.rows);
+		// 补到视口高：选区按整个视口算（内容以下的空行也能选、也要涂，探针 m15），出帧也用补齐后的那一帧——
+		// 否则清掉一段伸到内容以下的高亮时，那几行不在新帧里、不会被盖掉，高亮残留在屏幕上（探针 m16）
+		const full = padToViewport(content, viewport.rows);
+		this.altContentScreen = full;
+		// M5：高亮涂在出帧用的副本上，内容帧保持干净（复制、链接命中、下一次重涂都要原样内容）
+		const next = applySelectionHighlight(
+			full,
+			selectionHighlight(this.selection, full),
+			this.selectionBgColor,
+		);
 		const previous = this.altViewport;
 		const erase =
 			previous !== undefined &&
@@ -1765,4 +1879,17 @@ export default class Ink {
 			await this.waitUntilRenderFlush();
 		} catch {}
 	}
+}
+
+/** `SID_CODE_DISABLE_MOUSE_CLICKS`：`1` / `true` / `yes` 为真（不分大小写），`0` / `false` / 空串为假（旧底座探针 m13） */
+function mouseClicksDisabled(): boolean {
+	const v = process.env['SID_CODE_DISABLE_MOUSE_CLICKS']?.trim().toLowerCase();
+	return v === '1' || v === 'true' || v === 'yes';
+}
+
+/** 高亮单元的指纹：选区事件前后比一下，变了才重画 */
+function spanKey(state: SelectionState, screen: Screen): string {
+	return selectionHighlight(state, screen)
+		.map(span => `${span.y}:${span.x0}-${span.x1}`)
+		.join(',');
 }

@@ -53,6 +53,28 @@ export function clipToViewport(screen: Screen, rows: number): Screen {
 	return clipped;
 }
 
+/**
+ * 把一帧补到视口高度（多出来的行是默认空白）；已经够高时原样返回。
+ * 选区用（B9 / T6.2b）：旧底座的 alt 屏幕恒为整个视口高，拖到内容以下的空行照样高亮（探针 m15 `below`）。
+ */
+export function padToViewport(screen: Screen, rows: number): Screen {
+	if (screen.height >= rows) {
+		return screen;
+	}
+
+	const padded = blankLike(new Screen(screen.width, rows, {
+		styles: screen.stylePool,
+		links: screen.hyperlinkPool,
+	}));
+	const size = screen.width * screen.height;
+	padded.chars.set(screen.chars.subarray(0, size));
+	padded.widths.set(screen.widths.subarray(0, size));
+	padded.styles.set(screen.styles.subarray(0, size));
+	padded.links.set(screen.links.subarray(0, size));
+	padded.wrapEnd.set(screen.wrapEnd);
+	return padded;
+}
+
 /** 同尺寸的全空白屏（前一帧缺省时的比较对象），与 next 共用样式池 / 链接池。 */
 function blankLike(next: Screen): Screen {
 	const blank = new Screen(next.width, next.height, {

@@ -141,7 +141,7 @@ B9 / T0.1 产物。新底座必须提供这里列出的全部符号与 props；r
 | `NODE_ENV` | `reconciler.ts` | 保留：`frame/schedule.ts`（R13） |
 | `SESSIONNAME` | `_vendor/env.ts` | **不读**：旧底座只拿它认 cygwin，cygwin 不在扩展键白名单里，认出来与认不出来的可观察行为相同 |
 | `SID_CODE_DEBUG` | `_vendor/debug.ts` | 保留（CLI 也读，见 help）。next：`stderr-guard.ts` 加载时读，恰为 `1` / `true` 才把被吞的裸 stderr 记进 `console.error`（E1） |
-| `SID_CODE_DISABLE_MOUSE_CLICKS` | `_vendor/fullscreen.ts` | 保留。next 底座还不读：点击处理随选区接入归 T6.2b（M1 已钉住它不改变底座写的字节） |
+| `SID_CODE_DISABLE_MOUSE_CLICKS` | `_vendor/fullscreen.ts` | 保留。next 底座读它（T6.2b，`ink.tsx` `mouseClicksDisabled`）：`1` / `true` / `yes` 为真时 alt-screen 里的选区与链接点击都不响应；不改变底座写的鼠标模式字节（M1） |
 | `SID_DISABLE_TAB_STATUS` | `termio/osc.ts` | 保留：`hooks/use-tab-status.ts`、`ink.tsx`（O2） |
 | `SSH_CLIENT` | `_vendor/env.ts` | 保留：`terminal/extended-keys.ts` |
 | `SSH_CONNECTION` | `_vendor/env.ts`<br>`termio/osc.ts` | 保留：`terminal/extended-keys.ts`、`clipboard.ts` |

@@ -61,6 +61,8 @@ type Props = {
 	) => void;
 	/** stdin 静默超过阈值后的第一块输入（I1c）：由 Ink 决定要重申哪些终端模式 */
 	readonly onStdinResume?: () => void;
+	/** SGR 鼠标序列（`ESC [ <`）原样交给 Ink：选区与超链接点击在那里处理（B9 / T6.2b，M2–M5） */
+	readonly onMouseSequence?: (sequence: string) => void;
 	readonly setCursorPosition: (position: CursorPosition | undefined) => void;
 	readonly interactive: boolean;
 	readonly renderThrottleMs: number;
@@ -87,6 +89,7 @@ function App({
 	onSuspendTerminal,
 	onRegisterInputControl,
 	onStdinResume,
+	onMouseSequence,
 	setCursorPosition,
 	interactive,
 	renderThrottleMs,
@@ -396,6 +399,7 @@ function App({
 	const emitInput = useCallback(
 		(input: string, raw = false, isPasted = false): void => {
 			handleInput(input);
+			if (!raw && input.startsWith('\u001B[<')) onMouseSequence?.(input);
 			const decoded = raw ? rawInput(input) : decodeKeypress(input);
 			if (!decoded) return;
 			if (!raw && decoded.key.ctrl && decoded.input === 'z') {
@@ -410,7 +414,7 @@ function App({
 				(listener as (event: InputEvent) => void)(event);
 			}
 		},
-		[handleInput, suspendProcess],
+		[handleInput, suspendProcess, onMouseSequence],
 	);
 
 	const schedulePendingInputFlush = useCallback((): void => {

@@ -30,6 +30,10 @@ export interface RenderInstance {
   /** 当前选区文本，不清选区（M2） */
   copySelectionNoClear(): string;
   clearTextSelection(): void;
+  /** alt-screen 上一帧 (x, y) 处的超链接：OSC 8 优先，其次行内纯文本 url；主屏恒为 undefined（M4） */
+  getHyperlinkAt(x: number, y: number): string | undefined;
+  /** 单击 alt-screen 里的超链接（不拖动、500ms 内无连击）时调用；使用方设置（M4） */
+  onHyperlinkClick: ((url: string) => void) | undefined;
   /** 信号退出路径：标记卸载、退出 raw mode，不写终端序列（X4） */
   detachForShutdown(): void;
 }
@@ -42,6 +46,7 @@ export const RENDER_INSTANCE_METHODS = [
   "setSelectionBgColor",
   "copySelectionNoClear",
   "clearTextSelection",
+  "getHyperlinkAt",
   "detachForShutdown",
 ] as const satisfies readonly (keyof RenderInstance)[];
 

@@ -103,9 +103,9 @@ CLI 侧的写入点由 `cli-modes.test.tsx` 钉住：走生产入口 `createFull
 | --- | --- | --- | --- |
 | M1 | 鼠标跟踪随 alt-screen 进出开关：挂载写 `?1049h 2J H` + 鼠标全套（`mouseTracking` 默认真），卸载逆序关鼠标再 `?1049l`；嵌套 / 并列各写各的、不计数；`mouseTracking` 变化等于退出再进入；alt 下 resize 先重开鼠标。`SID_CODE_DISABLE_MOUSE_CLICKS` 不改变底座写的字节（不响应点击由 CLI 侧决定）。字节逐段对拍见 `alt-screen.test.tsx` 的 `M1:` 用例 | `components/AlternateScreen.tsx:52`、`ink.tsx:1743`、`_vendor/fullscreen.ts:7` | `packages/cli/tests/render-port/term-bench/scenarios.tsx` S7: { |
 | M2 | 拖选、双击选词、三击选行；内容滚动时选区跟着移动 | `selection.ts:738` | `packages/cli/tests/render-port/term-bench/scenarios.tsx` S13: { |
-| M3 | 复制走 OSC52（`setClipboard`）；tmux / screen 下用 `wrapForMultiplexer` 包裹 | `termio/osc.ts:135`、`termio/osc.ts:35` | `packages/cli/tests/render-port/term-bench/scenarios.tsx` S13: { |
-| M4 | 超链接单元可命中并打开 | `squash-text-nodes.ts:21` | ⏳ T6.2 |
-| M5 | 选区高亮背景色可设置 | `ink.tsx:1361`、`screen.ts:222` | `packages/cli/tests/render-port/contracts-runtime.test.tsx` M5: |
+| M3 | 复制走 OSC52（`setClipboard`）；tmux / screen 下用 `wrapForMultiplexer` 包裹。`copySelectionNoClear` 同步返回文本、异步写一条 OSC 52；松开鼠标不复制；没有选区不写 | `termio/osc.ts:135`、`termio/osc.ts:35` | `packages/cli/tests/render-port/selection-runtime.test.tsx` M3: |
+| M4 | 超链接单元可命中并打开：`getHyperlinkAt` 先看 OSC 8、其次行内纯文本 url（只认 `http(s)://` / `file://`，去尾部标点与多余右括号）；没拖动的单击等满 500ms 连击窗口再调 `onHyperlinkClick`，连击取消、后一个链接顶掉前一个，`TERM_PROGRAM=vscode` 不开；`SID_CODE_DISABLE_MOUSE_CLICKS` 为真时选区与点击都不响应 | `squash-text-nodes.ts:21` | `packages/cli/tests/render-port/selection-runtime.test.tsx` M4: |
+| M5 | 选区高亮背景色可设置：设了色去掉原背景与反显再上选区背景，认不出 / 没设回退反显；内容以下的空行也能选、也涂；选区变化当场重画 | `ink.tsx:1361`、`screen.ts:222` | `packages/cli/tests/render-port/contracts-runtime.test.tsx` M5: |
 
 ## O 终端集成
 
