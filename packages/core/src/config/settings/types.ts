@@ -465,13 +465,15 @@ export const SettingsSchema = lazySchema(
 
         // respectGitignore：grep/glob 是否尊重 .gitignore。缺省 true（与 rg 默认行为一致）。
         respectGitignore: z.boolean().optional(),
+        // searchTimeoutSeconds：grep/glob 底层 ripgrep 的超时秒数。缺省 20（WSL 60）；优先于环境变量 SID_GREP_TIMEOUT_SECONDS。
+        searchTimeoutSeconds: z.number().positive().optional(),
         // disableAllHooks：一键禁用全部 hook（应急/调试）。与企业策略的同名字段是两个来源，
         // 任一为 true 即禁用。见 hook/registry.ts。
         disableAllHooks: z.boolean().optional(),
         // includeCoAuthoredBy：commit 是否加 Co-Authored-By。缺省 true（保持既有行为）。
         // 比 git.commitAttribution.enabled 更粗：false 直接关掉默认归因，不需要写整段 git 配置。
         includeCoAuthoredBy: z.boolean().optional(),
-        // cleanupPeriodDays：会话轨迹清理周期（天）。缺省 30（与启动清理的内置默认值一致）。
+        // cleanupPeriodDays：旧字段，等价于 sessionRetention.maxAge（天）；两者都写时以 maxAge 为准。缺省 365。
         cleanupPeriodDays: z.number().positive().optional(),
 
         // B32：以下 27 个字段此前只在 Config 接口声明、靠本 schema 的 .passthrough() 生效 ——

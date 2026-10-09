@@ -39,6 +39,12 @@ export type RegistryPricing = ModelPricing;
  * 抽成常量而不是在 4 处各写一遍：分时段政策是**厂商级**的，不是模型级的 ——
  * 写 4 遍等于给"下次政策调整只改对其中 3 处"留了个必然会踩的坑。
  * 官方公告口径为 UTC，见各条 pricing 的 `source`。
+ *
+ * ⚠ 口径差异（deepseek-api.md:134,2238）：官方高峰只算**北京时间周一至周五、
+ * 不含中国法定节假日**；周末与法定节假日全天都是空闲价。本常量（以及
+ * `cost-tracker.ts` 的时段判定）只按小时判，不看星期与节假日 —— 于是周末 / 节假日
+ * 落在这两段小时里的请求会被按高峰价计。偏差方向是**高估**（与「宁可高估触发预算守卫」
+ * 的取向一致），所以本次只记下口径差、不改计价逻辑；要精确就得引入节假日日历这一外部数据。
  */
 const DEEPSEEK_PEAK_WINDOWS = [
   // 北京时间 09:00–12:00 → UTC 01:00–04:00
@@ -126,6 +132,21 @@ export interface ModelRegistryEntry {
    */
   reasoningLanguageDrift?: boolean;
 
+  /**
+   * 是否接受图片输入（vision）。**按模型声明，不按 provider**：同一个 OpenAI 兼容
+   * provider 下，`deepseek-flash` 支持图片而 `deepseek-v4-pro` 不支持（deepseek-api.md:1831）。
+   *
+   * 此前能力挂在 provider 上（`OpenAIProvider.capabilities().vision` 写死 false），
+   * 于是支持图片的模型走 OpenAI 兼容路径时图片被一律降级成「你看不到」的文字说明——
+   * 用户看到的是「当前 provider 不支持图片回传」，真因是我们没发。
+   *
+   * - `true`：Read 读到的图片会以 `image_url` 内容块发给模型
+   * - 缺省 undefined（= false）：降级为文字说明（宁可让模型知道「看不到」，也不冒 400）
+   *
+   * 用户侧出口：`availableModels[].compat.supportsVision`（网关私有模型名匹配不到时用）。
+   */
+  supportsVision?: boolean;
+
   // ── 定价（可选，USD/百万 token） ──
   pricing?: RegistryPricing;
 }
@@ -134,6 +155,56 @@ const REGISTRY: Record<string, ModelRegistryEntry> = {
   // ══════════════════════════════════════════════════════════════════
   // Anthropic Claude
   // ══════════════════════════════════════════════════════════════════
+  // ── 5.5 / 5.1 一代（2026-10 核对，anthropic-api.md:966-1000）──────────
+  // ⚠ 文档自注：`claude-fable-5-1`、`claude-sonnet-5-5` 两个 ID 是按命名规则推断的
+  // （anthropic-api.md:960,966,968 带 `*`），`claude-opus-5-5` / `claude-haiku-5-5` 在正文
+  // 代码里真实出现过。推断 ID 若与线上不符，只是精确键 miss，不会借错别的模型的值。
+  //
+  // thinkingMode：Opus 5.5 / Sonnet 5.5 / Fable 5.1 传 `disabled` 均 400（anthropic-api.md:388-390），
+  // 所以标 always-on；Haiku 5.5 不在该矩阵里（只在 969 行写「自适应」），按 adaptive 处理。
+  //
+  // 窗口 1M / 输出 128k：anthropic-api.md:966-969。
+  "claude-opus-5-5": {
+    contextWindow: 1_000_000,
+    maxOutputTokens: 128_000,
+    supportsThinking: true,
+    protocolKind: "anthropic-native",
+    thinkingMode: "always-on",
+    // 输入/输出 anthropic-api.md:967；缓存 5m 写 $5 / 读 $0.20（anthropic-api.md:1000）
+    pricing: { input: 4, output: 20, cacheRead: 0.2, cacheWrite: 5 },
+  },
+  "claude-sonnet-5-5": {
+    contextWindow: 1_000_000,
+    maxOutputTokens: 128_000,
+    supportsThinking: true,
+    protocolKind: "anthropic-native",
+    thinkingMode: "always-on",
+    // 输入/输出 anthropic-api.md:968；缓存 5m 写 $2.50 / 读 $0.20（anthropic-api.md:1000）
+    pricing: { input: 2, output: 10, cacheRead: 0.2, cacheWrite: 2.5 },
+  },
+  // Haiku 5.5 按 prompt 长度分档计价（以 100K 为界，anthropic-api.md:972-980）：
+  // >100K 时输入/输出/缓存全部 ×5。本结构表达不了分档，这里存 ≤100K 档 ——
+  // 长 prompt 会被**低估 5 倍**，用它跑长会话时成本数字要打折看。
+  "claude-haiku-5-5": {
+    contextWindow: 1_000_000,
+    maxOutputTokens: 128_000,
+    supportsThinking: true,
+    protocolKind: "anthropic-native",
+    thinkingMode: "adaptive",
+    // 「输入只支持文本和图片」（anthropic-api.md:982）
+    supportsVision: true,
+    pricing: { input: 0.1, output: 0.5, cacheRead: 0.01, cacheWrite: 0.125 },
+  },
+  "claude-fable-5-1": {
+    contextWindow: 1_000_000,
+    maxOutputTokens: 128_000,
+    supportsThinking: true,
+    protocolKind: "anthropic-native",
+    thinkingMode: "always-on",
+    // 输入/输出 anthropic-api.md:966；5m 写 $12.50（anthropic-api.md:1000）。
+    // 文档没给 Fable 5.1 的缓存读价，故不写 cacheRead（调用方按 input×0.1 近似）。
+    pricing: { input: 10, output: 50, cacheWrite: 12.5 },
+  },
   "claude-fable-5": {
     contextWindow: 1_000_000,
     maxOutputTokens: 128_000,
@@ -174,6 +245,8 @@ const REGISTRY: Record<string, ModelRegistryEntry> = {
     thinkingMode: "adaptive",
     pricing: { input: 5, output: 25, cacheRead: 0.5, cacheWrite: 6.25 },
   },
+  // ⚠ 已退役（Anthropic 自营平台请求会失败，部分合作平台仍可用；文档未给日期）：
+  // anthropic-api.md:1008。条目保留：删掉后历史会话的成本估算会落到 FALLBACK 高估。
   "claude-opus-4-20250514": {
     contextWindow: 1_000_000,
     maxOutputTokens: 128_000,
@@ -196,6 +269,7 @@ const REGISTRY: Record<string, ModelRegistryEntry> = {
     protocolKind: "anthropic-native",
     pricing: { input: 3, output: 15, cacheRead: 0.3, cacheWrite: 3.75 },
   },
+  // ⚠ 已退役（同上，anthropic-api.md:1008）。保留理由同 claude-opus-4-20250514。
   "claude-sonnet-4-20250514": {
     contextWindow: 200_000,
     maxOutputTokens: 64_000,
@@ -224,6 +298,7 @@ const REGISTRY: Record<string, ModelRegistryEntry> = {
     protocolKind: "anthropic-native",
     pricing: { input: 0.25, output: 1.25, cacheRead: 0.025, cacheWrite: 0.3125 },
   },
+  // ⚠ 2025-10-28 已退役（anthropic-api.md:1013），替代 claude-sonnet-4-6。保留供历史会话计价。
   "claude-3-5-sonnet-20241022": {
     contextWindow: 200_000,
     maxOutputTokens: 8_192,
@@ -231,6 +306,7 @@ const REGISTRY: Record<string, ModelRegistryEntry> = {
     protocolKind: "anthropic-native",
     pricing: { input: 3, output: 15, cacheRead: 0.3, cacheWrite: 3.75 },
   },
+  // ⚠ 已退役（Haiku 3.5，anthropic-api.md:1008；文档未给日期）。保留供历史会话计价。
   "claude-3-5-haiku-20241022": {
     contextWindow: 200_000,
     maxOutputTokens: 8_192,
@@ -238,6 +314,7 @@ const REGISTRY: Record<string, ModelRegistryEntry> = {
     protocolKind: "anthropic-native",
     pricing: { input: 0.8, output: 4, cacheRead: 0.08, cacheWrite: 1 },
   },
+  // ⚠ 2026-01-05 已退役（anthropic-api.md:1014），替代 claude-opus-4-8。保留供历史会话计价。
   "claude-3-opus-20240229": {
     contextWindow: 200_000,
     maxOutputTokens: 4_096,
@@ -274,8 +351,11 @@ const REGISTRY: Record<string, ModelRegistryEntry> = {
     supportsThinking: true,
     requiresReasoningContentForToolCalls: true,
     reasoningLanguageDrift: true,
+    // 图像理解：**不支持**（deepseek-api.md:106,1831,2232）。显式 false 而不是缺省：
+    // Anthropic 路径只在 === false 时才不发图，缺省会让 /anthropic 端点照发图片吃 400。
+    supportsVision: false,
     pricing: {
-      // 高峰价，人民币（厂商计价币种，见 DEEPSEEK_CNY_TO_USD）
+      // 高峰价，人民币（deepseek-api.md:115,117,119；V4-Pro 计费不变，见 138 行）
       input: 9,
       output: 27,
       cacheRead: 0.3,
@@ -284,7 +364,7 @@ const REGISTRY: Record<string, ModelRegistryEntry> = {
       fxToUSD: DEEPSEEK_CNY_TO_USD,
       peakWindows: DEEPSEEK_PEAK_WINDOWS,
       offPeakMultiplier: 0.5,
-      asOf: "2026-08-21",
+      asOf: "2026-10-10",
       source: "https://api-docs.deepseek.com/quick_start/pricing",
     },
   },
@@ -294,17 +374,19 @@ const REGISTRY: Record<string, ModelRegistryEntry> = {
     supportsThinking: true,
     requiresReasoningContentForToolCalls: true,
     reasoningLanguageDrift: true,
+    // 图像理解：支持（deepseek-api.md:106,1831,2231）
+    supportsVision: true,
     pricing: {
-      // 高峰价，人民币（空闲价为其一半，由 offPeakMultiplier 派生）
-      input: 3,
-      output: 9,
-      cacheRead: 0.1,
+      // 高峰价，人民币（deepseek-api.md:115,117,119；空闲价为其一半，由 offPeakMultiplier 派生）
+      input: 2,
+      output: 8,
+      cacheRead: 0.04,
       cacheWrite: 0,
       currency: "CNY",
       fxToUSD: DEEPSEEK_CNY_TO_USD,
       peakWindows: DEEPSEEK_PEAK_WINDOWS,
       offPeakMultiplier: 0.5,
-      asOf: "2026-08-21",
+      asOf: "2026-10-10",
       source: "https://api-docs.deepseek.com/quick_start/pricing",
     },
   },
@@ -314,17 +396,19 @@ const REGISTRY: Record<string, ModelRegistryEntry> = {
     supportsThinking: true,
     requiresReasoningContentForToolCalls: true,
     reasoningLanguageDrift: true,
+    // 图像理解：支持（deepseek-api.md:106,1831,2231）
+    supportsVision: true,
     pricing: {
-      // 高峰价，人民币（空闲价为其一半，由 offPeakMultiplier 派生）
-      input: 3,
-      output: 9,
-      cacheRead: 0.1,
+      // 高峰价，人民币（deepseek-api.md:115,117,119；空闲价为其一半，由 offPeakMultiplier 派生）
+      input: 2,
+      output: 8,
+      cacheRead: 0.04,
       cacheWrite: 0,
       currency: "CNY",
       fxToUSD: DEEPSEEK_CNY_TO_USD,
       peakWindows: DEEPSEEK_PEAK_WINDOWS,
       offPeakMultiplier: 0.5,
-      asOf: "2026-08-21",
+      asOf: "2026-10-10",
       source: "https://api-docs.deepseek.com/quick_start/pricing",
     },
   },
@@ -337,8 +421,11 @@ const REGISTRY: Record<string, ModelRegistryEntry> = {
     // 与 `deepseek-v4-pro` 同一个模型、大小写不同的另一个键（注册表按精确名分开登记，
     // 见 lookupRegistryExact 注释）。**两条必须同步改** —— 只改一条的后果是
     // 用户按哪种写法配模型名，决定了他拿到新价还是旧价。
+    // 图像理解：**不支持**（deepseek-api.md:106,1831,2232）。显式 false 而不是缺省：
+    // Anthropic 路径只在 === false 时才不发图，缺省会让 /anthropic 端点照发图片吃 400。
+    supportsVision: false,
     pricing: {
-      // 高峰价，人民币（厂商计价币种，见 DEEPSEEK_CNY_TO_USD）
+      // 高峰价，人民币（deepseek-api.md:115,117,119；V4-Pro 计费不变，见 138 行）
       input: 9,
       output: 27,
       cacheRead: 0.3,
@@ -347,12 +434,71 @@ const REGISTRY: Record<string, ModelRegistryEntry> = {
       fxToUSD: DEEPSEEK_CNY_TO_USD,
       peakWindows: DEEPSEEK_PEAK_WINDOWS,
       offPeakMultiplier: 0.5,
-      asOf: "2026-08-21",
+      asOf: "2026-10-10",
       source: "https://api-docs.deepseek.com/quick_start/pricing",
     },
   },
-  // `deepseek-chat` / `deepseek-reasoner` 是**弃用别名**，现指向 V4-Flash 的
-  // 非思考 / 思考两种模式，因此计价随 V4-Flash（不是停留在它们自己的历史价）。
+  // ── V4.1-Flash（2026-09-10 发布并降价，deepseek-api.md:17,138）──────────
+  // 官方现行主名是 `deepseek-flash`（deepseek-api.md:53,56）；`deepseek-v4-flash` /
+  // `DeepSeek-V4-Flash` 已是路由到它的别名，按 Flash 价计费（deepseek-api.md:132,2233），
+  // 所以上面两条与这里同值。四条 Flash 键**必须同步改**，理由同 DeepSeek-V4-Pro 注释。
+  //
+  // 窗口 / 输出：文档写 1M（1048576）/ 384K（393216）（deepseek-api.md:98-99,2231）。
+  // 这里沿用既有 V4 条目的 1_000_000 / 384_000 取整口径，让同一模型的四个键数值一致，
+  // 且比文档精确值略保守（低估窗口 ≈4.6% 只会早压缩，不会撞 400）。
+  "deepseek-flash": {
+    contextWindow: 1_000_000,
+    maxOutputTokens: 384_000,
+    // 「支持非思考与思考模式（默认）」（deepseek-api.md:97）
+    supportsThinking: true,
+    requiresReasoningContentForToolCalls: true,
+    reasoningLanguageDrift: true,
+    // 图像理解：支持（deepseek-api.md:106,1831,2231）
+    supportsVision: true,
+    pricing: {
+      // 高峰价，人民币（deepseek-api.md:115,117,119；空闲价为其一半，由 offPeakMultiplier 派生）
+      input: 2,
+      output: 8,
+      cacheRead: 0.04,
+      cacheWrite: 0,
+      currency: "CNY",
+      fxToUSD: DEEPSEEK_CNY_TO_USD,
+      peakWindows: DEEPSEEK_PEAK_WINDOWS,
+      offPeakMultiplier: 0.5,
+      asOf: "2026-10-10",
+      source: "https://api-docs.deepseek.com/quick_start/pricing",
+    },
+  },
+  // `deepseek-v4-1-flash` **不是官方 ID**（官方枚举只有 deepseek-flash / deepseek-v4-pro，
+  // deepseek-api.md:2236），而是网关常用拼法：用户真实配置里是 `origin-deepseek-v4-1-flash`，
+  // 查找时剥掉 `origin-` 前缀后剩这个名字。没有这条时它精确 miss，模糊层又因
+  // `deepseek-v4-1-flash` 不以任何键为「变体后缀」开头而落空 → 计价落 FALLBACK、vision 判 false。
+  // 值与 deepseek-flash 完全相同（同一个底层模型 V4.1-Flash）。
+  "deepseek-v4-1-flash": {
+    contextWindow: 1_000_000,
+    maxOutputTokens: 384_000,
+    supportsThinking: true,
+    requiresReasoningContentForToolCalls: true,
+    reasoningLanguageDrift: true,
+    supportsVision: true,
+    pricing: {
+      // 高峰价，人民币（deepseek-api.md:115,117,119）
+      input: 2,
+      output: 8,
+      cacheRead: 0.04,
+      cacheWrite: 0,
+      currency: "CNY",
+      fxToUSD: DEEPSEEK_CNY_TO_USD,
+      peakWindows: DEEPSEEK_PEAK_WINDOWS,
+      offPeakMultiplier: 0.5,
+      asOf: "2026-10-10",
+      source: "https://api-docs.deepseek.com/quick_start/pricing",
+    },
+  },
+  // ⚠ `deepseek-chat` / `deepseek-reasoner` 已于 **2026-07-24 停用**，官方页面不再列出
+  // （deepseek-api.md:22,57,2236）。条目保留只为历史会话的成本估算不落 FALLBACK 高估；
+  // 价格刻意**停在停用前的 V4-Flash 价**（¥3/¥9/¥0.1，asOf 2026-08-21）——停用后不会再有
+  // 新调用按 09-10 的 Flash 降价计费，把它们改成新价反而会让历史账对不上。
   "deepseek-chat": {
     contextWindow: 1_000_000,
     maxOutputTokens: 384_000,
@@ -396,6 +542,52 @@ const REGISTRY: Record<string, ModelRegistryEntry> = {
   // ══════════════════════════════════════════════════════════════════
   // OpenAI / GPT
   // ══════════════════════════════════════════════════════════════════
+  // GPT-6 系（openai-api.md:860-863，2026-10-10 核对）。窗口 1.05M / 输出 128K。
+  // protocolKind=openai-responses：GPT-6 在 Chat Completions 上基本不能调工具
+  // （astra 只能走 Responses、6.1-sol 完全不支持、6-sol/luna 仅 effort:none 可用；
+  // openai-api.md:47,860-863），sid-code 是工具密集型，必须走 Responses。
+  // supportsThinking 沿用 GPT-5.6 族的写法（false），避免同一 Responses 路径上出现两套分支；
+  // 推理档位由 Responses 的 reasoning.effort 承载，不靠这个位。
+  // 长上下文：输入 >272K 时整单 2× 输入 / 1.5× 输出（openai-api.md:878），本表不表达分层。
+  "gpt-6-astra": {
+    contextWindow: 1_050_000,
+    maxOutputTokens: 128_000,
+    supportsThinking: false,
+    protocolKind: "openai-responses",
+    // 不支持 temperature/top_p（openai-api.md:111,860）
+    supportsTemperature: false,
+    // patch 计费 1.2 倍率表明列（openai-api.md:350,352）
+    supportsVision: true,
+    pricing: { input: 10, output: 50, cacheRead: 1, cacheWrite: 12.5 },
+  },
+  // 6.1-sol / 6-sol / 6-luna：图像计费表未列出（openai-api.md:350 明写「未验证」），
+  // 所以 supportsVision 不写（三态的「不知道」），OpenAI 兼容路径默认不发图。
+  "gpt-6.1-sol": {
+    contextWindow: 1_050_000,
+    maxOutputTokens: 128_000,
+    supportsThinking: false,
+    protocolKind: "openai-responses",
+    // 缓存读是 0.05× 输入（openai-api.md:293,861），不是通常的 0.1×
+    pricing: { input: 2, output: 10, cacheRead: 0.1, cacheWrite: 2.5 },
+  },
+  "gpt-6-sol": {
+    contextWindow: 1_050_000,
+    maxOutputTokens: 128_000,
+    supportsThinking: false,
+    protocolKind: "openai-responses",
+    pricing: { input: 2, output: 10, cacheRead: 0.2, cacheWrite: 2.5 },
+  },
+  "gpt-6-luna": {
+    contextWindow: 1_050_000,
+    maxOutputTokens: 128_000,
+    supportsThinking: false,
+    protocolKind: "openai-responses",
+    pricing: { input: 0.1, output: 0.5, cacheRead: 0.01, cacheWrite: 0.125 },
+  },
+  // 注：`gpt-5.3-codex` 有价（$1.75 / $0.175 / $14，openai-api.md:872），但文档该行
+  // 上下文 / 最大输出为「—」。contextWindow 是必填字段，不凭记忆补，故**不登记**；
+  // 它会走采集缓存 / 模糊层。
+  //
   // GPT-5.6 族（2026-07-09 GA，三档：luna 轻量 / terra 均衡 / sol 旗舰）。
   // 三者 contextWindow、maxOutputTokens、能力位完全一致，只有价格与推理质量不同。
   // `gpt-5.6` 裸名是别名，官方路由到 sol。
@@ -408,39 +600,52 @@ const REGISTRY: Record<string, ModelRegistryEntry> = {
   // pricing 为**官方标准价**（USD/1M）。网关渠道价（luna 实采 0.17/1.02）由 gateway-pricing.ts
   // 按渠道名精确命中并优先于此——此处仅作渠道 miss 时的兜底，勿用渠道价覆盖。
   // 注：官方对 >272K 输入的请求按 2x input / 1.5x output 计价，本表不表达该分层。
+  //
+  // ── 2026-10-10 回源核价（openai-api.md:864-866）──
+  // sol 当前是**促销价**（$4/$20，「至少到 2026-11-21」，openai-api.md:864），促销结束后
+  // 要再核一次；terra / luna 也比旧值低。缓存写 = 1.25× 输入（openai-api.md:877）。
+  //
+  // vision：图像 token 计费表把 gpt-5.6-* 列在 patch 计费 1.2 倍率档（openai-api.md:349-350），
+  // 即官方明确接受图片输入。
   "gpt-5.6": {
     contextWindow: 1_050_000,
     maxOutputTokens: 128_000,
     supportsThinking: false,
     protocolKind: "openai-responses",
-    pricing: { input: 5, output: 30, cacheRead: 0.5, cacheWrite: 6.25 },
+    supportsVision: true,
+    pricing: { input: 4, output: 20, cacheRead: 0.4, cacheWrite: 5 },
   },
   "gpt-5.6-sol": {
     contextWindow: 1_050_000,
     maxOutputTokens: 128_000,
     supportsThinking: false,
     protocolKind: "openai-responses",
-    pricing: { input: 5, output: 30, cacheRead: 0.5, cacheWrite: 6.25 },
+    supportsVision: true,
+    pricing: { input: 4, output: 20, cacheRead: 0.4, cacheWrite: 5 },
   },
   "gpt-5.6-terra": {
     contextWindow: 1_050_000,
     maxOutputTokens: 128_000,
     supportsThinking: false,
     protocolKind: "openai-responses",
-    pricing: { input: 2.5, output: 15, cacheRead: 0.25, cacheWrite: 3.125 },
+    supportsVision: true,
+    pricing: { input: 2, output: 12, cacheRead: 0.2, cacheWrite: 2.5 },
   },
   "gpt-5.6-luna": {
     contextWindow: 1_050_000,
     maxOutputTokens: 128_000,
     supportsThinking: false,
     protocolKind: "openai-responses",
-    pricing: { input: 1, output: 6, cacheRead: 0.1, cacheWrite: 1.25 },
+    supportsVision: true,
+    pricing: { input: 0.2, output: 1.2, cacheRead: 0.02, cacheWrite: 0.25 },
   },
+  // vision：gpt-5.5、gpt-5.4 系、gpt-5.2 在图像 patch 计费 1.2 倍率档（openai-api.md:350）
   "gpt-5.5": {
     contextWindow: 1_050_000,
     maxOutputTokens: 128_000,
     supportsThinking: false,
     protocolKind: "openai-responses",
+    supportsVision: true,
     pricing: { input: 5, output: 30, cacheRead: 0.5, cacheWrite: 0 },
   },
   "gpt-5.5-pro": {
@@ -455,6 +660,7 @@ const REGISTRY: Record<string, ModelRegistryEntry> = {
     maxOutputTokens: 128_000,
     supportsThinking: false,
     protocolKind: "openai-responses",
+    supportsVision: true,
     pricing: { input: 2.5, output: 15, cacheRead: 0.25, cacheWrite: 0 },
   },
   "gpt-5.4-mini": {
@@ -462,6 +668,7 @@ const REGISTRY: Record<string, ModelRegistryEntry> = {
     maxOutputTokens: 128_000,
     supportsThinking: false,
     protocolKind: "openai-responses",
+    supportsVision: true,
     pricing: { input: 0.75, output: 4.5, cacheRead: 0.075, cacheWrite: 0 },
   },
   "gpt-5.4-nano": {
@@ -469,6 +676,7 @@ const REGISTRY: Record<string, ModelRegistryEntry> = {
     maxOutputTokens: 128_000,
     supportsThinking: false,
     protocolKind: "openai-responses",
+    supportsVision: true,
     pricing: { input: 0.2, output: 1.25, cacheRead: 0.02, cacheWrite: 0 },
   },
   "gpt-5.4-pro": {
@@ -483,33 +691,52 @@ const REGISTRY: Record<string, ModelRegistryEntry> = {
     maxOutputTokens: 128_000,
     supportsThinking: false,
     protocolKind: "openai-responses",
+    supportsVision: true,
     pricing: { input: 1.75, output: 14, cacheRead: 0.175, cacheWrite: 0 },
   },
-  "gpt-4.1": { contextWindow: 1_000_000, maxOutputTokens: 128_000, supportsThinking: false },
+  // gpt-4.1：窗口 1,047,576 / 输出 32,768、价格 $2/$0.50/$8（openai-api.md:873）。
+  // 旧值 maxOutputTokens 128_000 高估 4 倍，按它下发 max_tokens 会被拒；>128K 输入走长上下文限额。
+  // tile 计费 85+170/块（openai-api.md:354）→ 接受图片。别名目前无下线日期（openai-api.md:897）。
+  "gpt-4.1": {
+    contextWindow: 1_047_576,
+    maxOutputTokens: 32_768,
+    supportsThinking: false,
+    supportsVision: true,
+    pricing: { input: 2, output: 8, cacheRead: 0.5, cacheWrite: 0 },
+  },
+  // vision：patch 计费 1.62 倍率（openai-api.md:350）。价格本轮文档未复核（openai-api.md:880），保持原值。
   "gpt-4.1-mini": {
     contextWindow: 1_000_000,
     maxOutputTokens: 128_000,
     supportsThinking: false,
+    supportsVision: true,
     pricing: { input: 0.4, output: 1.6, cacheRead: 0.1, cacheWrite: 0 },
   },
+  // ⚠ 计划 **2026-10-23 下线**（openai-api.md:892）。vision：patch 计费 2.46 倍率（openai-api.md:350）。
   "gpt-4.1-nano": {
     contextWindow: 1_000_000,
     maxOutputTokens: 128_000,
     supportsThinking: false,
+    supportsVision: true,
     pricing: { input: 0.1, output: 0.4, cacheRead: 0, cacheWrite: 0 },
   },
+  // vision：gpt-4o / gpt-4o-mini 在 tile 计费表（openai-api.md:354）。价格本轮未复核（openai-api.md:880）。
   "gpt-4o": {
+    supportsVision: true,
     contextWindow: 128_000,
     maxOutputTokens: 16_384,
     pricing: { input: 2.5, output: 10, cacheRead: 1.25, cacheWrite: 0 },
   },
   "gpt-4o-mini": {
+    supportsVision: true,
     contextWindow: 128_000,
     maxOutputTokens: 16_384,
     pricing: { input: 0.15, output: 0.6, cacheRead: 0.075, cacheWrite: 0 },
   },
 
   // ── O-Series ─────────────────────────────────────────────────────
+  // ⚠ `o3-2025-04-16` 计划 **2026-12-11 下线**（openai-api.md:874,894）。
+  // 价格 $2/$0.50/$8（openai-api.md:874）：缓存读旧值 0 是漏填。tile 计费（openai-api.md:354）→ vision。
   o3: {
     contextWindow: 200_000,
     maxOutputTokens: 100_000,
@@ -519,8 +746,10 @@ const REGISTRY: Record<string, ModelRegistryEntry> = {
     supportsTemperature: false,
     reasoningEffortValues: ["low", "medium", "high"],
     protocolKind: "o-series",
-    pricing: { input: 2, output: 8, cacheRead: 0, cacheWrite: 0 },
+    supportsVision: true,
+    pricing: { input: 2, output: 8, cacheRead: 0.5, cacheWrite: 0 },
   },
+  // ⚠ 计划 **2026-12-11 下线**（openai-api.md:894）。价格本轮未复核（openai-api.md:880）。
   "o3-pro": {
     contextWindow: 200_000,
     maxOutputTokens: 100_000,
@@ -532,6 +761,7 @@ const REGISTRY: Record<string, ModelRegistryEntry> = {
     protocolKind: "o-series",
     pricing: { input: 20, output: 80, cacheRead: 0, cacheWrite: 0 },
   },
+  // ⚠ 计划 **2026-10-23 下线**（openai-api.md:892）。
   "o3-mini": {
     contextWindow: 200_000,
     maxOutputTokens: 100_000,
@@ -542,6 +772,8 @@ const REGISTRY: Record<string, ModelRegistryEntry> = {
     reasoningEffortValues: ["low", "medium", "high"],
     protocolKind: "o-series",
   },
+  // ⚠ 计划 **2026-10-23 下线**（openai-api.md:875,892）。
+  // 价格 $1.10/$0.275/$4.40（openai-api.md:875）；vision：patch 计费 1.72 倍率（openai-api.md:350）。
   "o4-mini": {
     contextWindow: 200_000,
     maxOutputTokens: 100_000,
@@ -551,9 +783,12 @@ const REGISTRY: Record<string, ModelRegistryEntry> = {
     supportsTemperature: false,
     reasoningEffortValues: ["low", "medium", "high"],
     protocolKind: "o-series",
-    pricing: { input: 0.55, output: 2.2, cacheRead: 0, cacheWrite: 0 },
+    supportsVision: true,
+    pricing: { input: 1.1, output: 4.4, cacheRead: 0.275, cacheWrite: 0 },
   },
+  // ⚠ 计划 **2026-10-23 下线**（openai-api.md:892）。tile 计费（openai-api.md:354）→ vision。
   o1: {
+    supportsVision: true,
     contextWindow: 200_000,
     maxOutputTokens: 100_000,
     supportsThinking: true,
@@ -603,6 +838,9 @@ const REGISTRY: Record<string, ModelRegistryEntry> = {
     supportsThinking: true,
     pricing: { input: 0.5, output: 3, cacheRead: 0.05, cacheWrite: 0 },
   },
+  // ⚠ gemini-2.5-pro / -flash / -flash-lite 计划 **2026-10-16 停用**（gemini-api.md:643-645,684-685），
+  // 替代 3.5-flash / 3.1-flash-lite。条目保留供历史会话计价。
+  // 2.5-pro 是分层价（>200K 输入 $2.50/$15，gemini-api.md:643），本表只存 ≤200K 档。
   "gemini-2.5-pro": {
     contextWindow: 1_048_576,
     maxOutputTokens: 65_536,
@@ -625,17 +863,32 @@ const REGISTRY: Record<string, ModelRegistryEntry> = {
   // ══════════════════════════════════════════════════════════════════
   // Kimi (Moonshot)
   // ══════════════════════════════════════════════════════════════════
+  // 价格取国际站美元价（kimi-api.md:375-378），与本节既有条目同口径。
+  // 当前在售只有 4 个模型：k3 / k2.7-code / k2.7-code-highspeed / k2.6（kimi-api.md:37,356）。
+  // vision：文档只写了 image_url 内容块的格式约束（kimi-api.md:165-172），没逐个模型说明，故不标。
+  //
+  // kimi-k3：窗口 1,048,576；max_completion_tokens 默认 131072（kimi-api.md:87）；始终思考。
+  // 缓存写只有 K3 计费（kimi-api.md:389），取 5m 档 $3（kimi-api.md:375）。K3 不分段计价（380 行）。
+  "kimi-k3": {
+    contextWindow: 1_048_576,
+    maxOutputTokens: 131_072,
+    supportsThinking: true,
+    pricing: { input: 3, output: 15, cacheRead: 0.3, cacheWrite: 3 },
+  },
+  // k2.7-code：262,144 / 默认 32768（kimi-api.md:88,92）；$0.95/$4/$0.19（kimi-api.md:376）
   "kimi-k2.7-code": {
     contextWindow: 262_144,
     maxOutputTokens: 32_768,
     supportsThinking: true,
     pricing: { input: 0.95, output: 4, cacheRead: 0.19, cacheWrite: 0 },
   },
+  // highspeed 与 k2.7-code 同一模型、参数一致（kimi-api.md:89），但**价格是 2 倍**：
+  // $1.90/$8/$0.38（kimi-api.md:377）。旧值照抄了 k2.7-code 的价，低估一半。
   "kimi-k2.7-code-highspeed": {
     contextWindow: 262_144,
     maxOutputTokens: 32_768,
     supportsThinking: true,
-    pricing: { input: 0.95, output: 4, cacheRead: 0.19, cacheWrite: 0 },
+    pricing: { input: 1.9, output: 8, cacheRead: 0.38, cacheWrite: 0 },
   },
   "kimi-k2.6": {
     contextWindow: 262_144,
@@ -643,6 +896,8 @@ const REGISTRY: Record<string, ModelRegistryEntry> = {
     supportsThinking: true,
     pricing: { input: 0.95, output: 4, cacheRead: 0.16, cacheWrite: 0 },
   },
+  // ⚠ kimi-k2.5 与 moonshot-v1-* 全系 **2026-08 全平台下线**，调用返回 404（kimi-api.md:37,99）。
+  // 以下 4 条保留只为历史会话的成本估算不落 FALLBACK 高估。
   "kimi-k2.5": {
     contextWindow: 262_144,
     maxOutputTokens: 32_768,
@@ -737,11 +992,59 @@ const REGISTRY: Record<string, ModelRegistryEntry> = {
   // 智谱 GLM（OpenAI 兼容端点）。protocolKind=glm-openai：有 thinking 开关；仅 GLM-5.2 支持
   // reasoning_effort（含 max）。tool_choice 仅 auto（openai.ts applyToolChoice 对 glm 降级）。
   // [来源: glm-api.md:144-147,189-201,276]
+  //
+  // vision：文本模型 user content 只接受 string，数组（含 image_url）只有视觉模型接受
+  // （glm-api.md:190）→ 文本模型一律显式 false；视觉模型（glm-5.3-flash/flashx、glm-5v-turbo、
+  // glm-4.6v）显式 true（glm-api.md:126,141）。新增条目文档没给价，均不写 pricing。
+  //
+  // GLM-5.3 系：1M / 128K（glm-api.md:125-126；max_tokens 上限 131072，glm-api.md:172）；
+  // **强制思考**，reasoning_effort 只有 low/high/max（glm-api.md:209,225）。
+  "glm-5.3": {
+    contextWindow: 1_000_000,
+    maxOutputTokens: 128_000,
+    supportsThinking: true,
+    protocolKind: "glm-openai",
+    reasoningEffortValues: ["low", "high", "max"],
+    // 「仅文本模态」（glm-api.md:125）
+    supportsVision: false,
+  },
+  "glm-5.3-flash": {
+    contextWindow: 1_000_000,
+    maxOutputTokens: 128_000,
+    supportsThinking: true,
+    protocolKind: "glm-openai",
+    reasoningEffortValues: ["low", "high", "max"],
+    // 「原生多模态（归在视觉模型下）」（glm-api.md:126）
+    supportsVision: true,
+  },
+  "glm-5.3-flashx": {
+    contextWindow: 1_000_000,
+    maxOutputTokens: 128_000,
+    supportsThinking: true,
+    protocolKind: "glm-openai",
+    reasoningEffortValues: ["low", "high", "max"],
+    supportsVision: true,
+  },
+  // 视觉模型：glm-5v-turbo 200K/128K、glm-4.6v 128K/32K（glm-api.md:141；4.6v 输出上限 32768，174 行）。
+  // 文档没说它们的思考能力，supportsThinking 不写。
+  "glm-5v-turbo": {
+    contextWindow: 200_000,
+    maxOutputTokens: 128_000,
+    protocolKind: "glm-openai",
+    supportsVision: true,
+  },
+  "glm-4.6v": {
+    contextWindow: 128_000,
+    maxOutputTokens: 32_768,
+    protocolKind: "glm-openai",
+    supportsVision: true,
+  },
   "glm-5.2": {
     contextWindow: 1_000_000,
     maxOutputTokens: 128_000,
     supportsThinking: true,
     protocolKind: "glm-openai",
+    supportsVision: false,
     reasoningEffortValues: ["low", "medium", "high", "max"],
     pricing: { input: 1.4, output: 4.2, cacheRead: 0.7, cacheWrite: 0 },
   },
@@ -750,6 +1053,7 @@ const REGISTRY: Record<string, ModelRegistryEntry> = {
     maxOutputTokens: 128_000,
     supportsThinking: true,
     protocolKind: "glm-openai",
+    supportsVision: false,
     pricing: { input: 0.7, output: 2.1, cacheRead: 0.35, cacheWrite: 0 },
   },
   "glm-5": {
@@ -757,6 +1061,7 @@ const REGISTRY: Record<string, ModelRegistryEntry> = {
     maxOutputTokens: 128_000,
     supportsThinking: true,
     protocolKind: "glm-openai",
+    supportsVision: false,
     pricing: { input: 0.7, output: 2.1, cacheRead: 0.35, cacheWrite: 0 },
   },
   "glm-5-turbo": {
@@ -764,6 +1069,7 @@ const REGISTRY: Record<string, ModelRegistryEntry> = {
     maxOutputTokens: 128_000,
     supportsThinking: true,
     protocolKind: "glm-openai",
+    supportsVision: false,
     pricing: { input: 0.42, output: 1.26, cacheRead: 0.21, cacheWrite: 0 },
   },
   "glm-4.7": {
@@ -771,6 +1077,7 @@ const REGISTRY: Record<string, ModelRegistryEntry> = {
     maxOutputTokens: 128_000,
     supportsThinking: true,
     protocolKind: "glm-openai",
+    supportsVision: false,
     pricing: { input: 0.28, output: 0.84, cacheRead: 0.14, cacheWrite: 0 },
   },
   "glm-4.7-flashx": {
@@ -778,12 +1085,14 @@ const REGISTRY: Record<string, ModelRegistryEntry> = {
     maxOutputTokens: 128_000,
     supportsThinking: true,
     protocolKind: "glm-openai",
+    supportsVision: false,
   },
   "glm-4.7-flash": {
     contextWindow: 200_000,
     maxOutputTokens: 128_000,
     supportsThinking: true,
     protocolKind: "glm-openai",
+    supportsVision: false,
     pricing: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
   },
   "glm-4.6": {
@@ -791,29 +1100,35 @@ const REGISTRY: Record<string, ModelRegistryEntry> = {
     maxOutputTokens: 128_000,
     supportsThinking: true,
     protocolKind: "glm-openai",
+    supportsVision: false,
   },
+  // ⚠ glm-4.5 已不在模型概览与接口枚举中（glm-api.md:140），新接入不要用；保留供历史会话计价。
   "glm-4.5": {
     contextWindow: 128_000,
     maxOutputTokens: 96_000,
     supportsThinking: true,
     protocolKind: "glm-openai",
+    supportsVision: false,
   },
   "glm-4.5-air": {
     contextWindow: 128_000,
     maxOutputTokens: 96_000,
     supportsThinking: true,
     protocolKind: "glm-openai",
+    supportsVision: false,
   },
   "glm-4.5-flash": {
     contextWindow: 128_000,
     maxOutputTokens: 96_000,
     supportsThinking: true,
     protocolKind: "glm-openai",
+    supportsVision: false,
   },
   "glm-4-flash-250414": {
     contextWindow: 128_000,
     maxOutputTokens: 32_000,
     supportsThinking: false,
+    supportsVision: false,
   },
 
   // ══════════════════════════════════════════════════════════════════
@@ -821,6 +1136,48 @@ const REGISTRY: Record<string, ModelRegistryEntry> = {
   // ══════════════════════════════════════════════════════════════════
   // xAI Grok（OpenAI 兼容端点）。protocolKind=grok-openai：无 thinking 开关；reasoning_effort
   // 无 max（max→high）；推理模型用 max_completion_tokens。[来源: grok-api.md:30,32,157,277,487]
+  //
+  // 2026-10-10 回源（grok-api.md:79-90）：
+  //   · vision：「全部为文本 + 图片输入、文本输出」（grok-api.md:90）→ 全系 true（图片只收 jpg/png，34 行）。
+  //   · maxOutputTokens 128_000 = max_completion_tokens 默认值（grok-api.md:29）。
+  //   · 长上下文：prompt（含缓存）≥200K 时**整单**约 2× 计价（grok-api.md:27,77），本表不表达分层。
+  //   · effort：4.6/4.7 还有 `xhigh`、4.3 还有 `none`/`xhigh`（grok-api.md:28,81-84），
+  //     但 reasoningEffortValues 的类型只有 low/medium/high/max，表达不了这两档，只登记交集。
+  //     4.5+ 不可关推理，传 none 会报错（grok-api.md:28,382）。
+  //
+  // grok-4.7 / 4.6：500K，$2.00 / 缓存 $0.50 / $6.00（grok-api.md:81-82）。
+  "grok-4.7": {
+    contextWindow: 500_000,
+    maxOutputTokens: 128_000,
+    supportsThinking: true,
+    protocolKind: "grok-openai",
+    maxTokensField: "max_completion_tokens",
+    reasoningEffortValues: ["low", "medium", "high"],
+    supportsVision: true,
+    pricing: { input: 2, output: 6, cacheRead: 0.5, cacheWrite: 0 },
+  },
+  "grok-4.6": {
+    contextWindow: 500_000,
+    maxOutputTokens: 128_000,
+    supportsThinking: true,
+    protocolKind: "grok-openai",
+    maxTokensField: "max_completion_tokens",
+    reasoningEffortValues: ["low", "medium", "high"],
+    supportsVision: true,
+    pricing: { input: 2, output: 6, cacheRead: 0.5, cacheWrite: 0 },
+  },
+  // grok-4.5：500K，$2.00 / 缓存 **$0.30** / $6.00；effort low/medium/high（grok-api.md:83）。
+  "grok-4.5": {
+    contextWindow: 500_000,
+    maxOutputTokens: 128_000,
+    supportsThinking: true,
+    protocolKind: "grok-openai",
+    maxTokensField: "max_completion_tokens",
+    reasoningEffortValues: ["low", "medium", "high"],
+    supportsVision: true,
+    pricing: { input: 2, output: 6, cacheRead: 0.3, cacheWrite: 0 },
+  },
+  // grok-4.3：1M，$1.25/$0.20/$2.50（grok-api.md:84），仍在售未退役（grok-api.md:25）。
   "grok-4.3": {
     contextWindow: 1_000_000,
     maxOutputTokens: 128_000,
@@ -828,6 +1185,7 @@ const REGISTRY: Record<string, ModelRegistryEntry> = {
     protocolKind: "grok-openai",
     maxTokensField: "max_completion_tokens",
     reasoningEffortValues: ["low", "medium", "high"],
+    supportsVision: true,
     pricing: { input: 1.25, output: 2.5, cacheRead: 0.2, cacheWrite: 0 },
   },
   "grok-build-0.1": {
@@ -837,6 +1195,7 @@ const REGISTRY: Record<string, ModelRegistryEntry> = {
     protocolKind: "grok-openai",
     maxTokensField: "max_completion_tokens",
     reasoningEffortValues: ["low", "medium", "high"],
+    supportsVision: true,
     pricing: { input: 1, output: 2, cacheRead: 0.2, cacheWrite: 0 },
   },
   "grok-4.20-0309-reasoning": {
@@ -846,12 +1205,14 @@ const REGISTRY: Record<string, ModelRegistryEntry> = {
     protocolKind: "grok-openai",
     maxTokensField: "max_completion_tokens",
     reasoningEffortValues: ["low", "medium", "high"],
+    supportsVision: true,
     pricing: { input: 1.25, output: 2.5, cacheRead: 0.2, cacheWrite: 0 },
   },
   "grok-4.20-0309-non-reasoning": {
     contextWindow: 1_000_000,
     maxOutputTokens: 128_000,
     supportsThinking: false,
+    supportsVision: true,
     pricing: { input: 1.25, output: 2.5, cacheRead: 0.2, cacheWrite: 0 },
   },
 
@@ -889,8 +1250,19 @@ const REGISTRY: Record<string, ModelRegistryEntry> = {
  * "-" 拆分——否则会误伤 `claude-`、`gpt-`、`glm-`、`grok-` 等本就以连字符构成的正规名。
  *
  * 新增网关前缀时在此追加即可（保持全小写，含末尾连字符）。
+ *
+ * ⚠ **必须与 `model-name-normalize.ts` 的 `ROUTE_PREFIX_RE` 同步**（那份是
+ * `ali|tx|volc|origin|hw|az`）。两份不同步就是「采集侧认、注册表侧不认」的静默 miss：
+ * 采集缓存能按剥离后的名命中，注册表却查不到 → 定价落 FALLBACK、`supportsVision` 判不知道。
+ * 实测漂移形态：此前这里缺 `origin-`，用户真实配置 `origin-deepseek-v4-1-flash` /
+ * `origin-deepseek-v4-pro` 在注册表一侧全部返回 null。
  */
 const ROUTE_PREFIXES = [
+  // 与 model-name-normalize.ts ROUTE_PREFIX_RE 对齐的四个（此前缺失）
+  "origin-",
+  "tx-",
+  "hw-",
+  "az-",
   "ali-",
   "aliyun-",
   "bailian-",

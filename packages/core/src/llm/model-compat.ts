@@ -128,6 +128,15 @@ export interface ModelCompat {
    * 两个方向都会错，且都不是自愈能救的——故必须给用户一个显式出口。
    */
   requiresReasoningContentForToolCalls?: boolean;
+  /**
+   * 这条渠道是否接受图片输入。`true` → OpenAI 兼容路径把 Read 读到的图片以 `image_url`
+   * 内容块发给模型；`false` → 降级为文字说明（Anthropic 路径同样降级）。
+   *
+   * 依据：DeepSeek `deepseek-flash` 支持图片而 `deepseek-v4-pro` 不支持
+   * （deepseek-api.md:1831），能力按模型而非 provider 区分；注册表按名匹配，
+   * 网关私有模型名（`origin-xxx`）可能匹配不到，故给用户显式出口。见 `vision-capability.ts`。
+   */
+  supportsVision?: boolean;
 }
 
 /** compat 的全部合法键。归一化与校验共用，避免两处手写清单漂移（本仓「手写字段列表」有多次前科） */
@@ -139,6 +148,7 @@ export const MODEL_COMPAT_KEYS: readonly (keyof ModelCompat)[] = [
   "supportsToolChoice",
   "toolChoiceAutoOnly",
   "requiresReasoningContentForToolCalls",
+  "supportsVision",
 ];
 
 /** `MODEL_COMPAT_KEYS` 的 Set 形态（校验侧只需要 O(1) 判存在，不重复手写清单） */
@@ -159,6 +169,7 @@ export const COMPAT_KEY_ALIASES: Record<string, keyof ModelCompat> = {
   supports_tool_choice: "supportsToolChoice",
   tool_choice_auto_only: "toolChoiceAutoOnly",
   requires_reasoning_content_for_tool_calls: "requiresReasoningContentForToolCalls",
+  supports_vision: "supportsVision",
 };
 
 /**

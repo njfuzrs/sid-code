@@ -597,6 +597,8 @@ export interface Config {
 
   /** 会话自动清理配置（按保留时长 / 数量） */
   sessionRetention?: SessionRetentionConfig;
+  /** 旧字段：等价于 sessionRetention.maxAge（天）。两者都写时以 maxAge 为准 */
+  cleanupPeriodDays?: number;
 
   // 搜索配置
   search?: SearchConfig;
@@ -903,11 +905,13 @@ export interface GitConfig {
 export interface SessionRetentionConfig {
   /** 是否启用自动清理（默认 true） */
   enabled?: boolean;
-  /** 最大保留时间（如 "30d"） */
+  /** 最大保留时间（默认 "365d"；格式 数字+h/d/w/m） */
   maxAge?: string;
-  /** 最大保留数量 */
+  /** 最大保留数量（默认不限；防盘满靠 maxTotalSize） */
   maxCount?: number;
-  /** 最小保留时间（防止误删，如 "1d"） */
+  /** 会话 + 轨迹总体积上限（默认 "10GB"），超出才从最旧的开始删 */
+  maxTotalSize?: string;
+  /** 最小保留时间（防止误删，默认 "1d"） */
   minRetention?: string;
 }
 

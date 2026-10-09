@@ -65,7 +65,13 @@ import { recordRequestId } from "../api/request-id.ts";
 import { estimateTextTokens } from "../context/token.ts";
 import { sanitizeStrings } from "./sanitize-unicode.ts";
 import { getKeepAliveFetchOptions } from "./keepalive.ts";
-import { serializeToolResultContentForOpenAI } from "./openai-tool-result-content.ts";
+import {
+  serializeToolResultContentForOpenAI,
+  collectOpenAIImageMedia,
+  mediaBlockToDataURL,
+  toolImagesLeadText,
+} from "./openai-tool-result-content.ts";
+import { resolveVisionSupport } from "./vision-capability.ts";
 import { SseChunkDumper, currentSseDumpContext } from "./sse-chunk-dumper.ts";
 // PR9：parseSSE 的字节级判据（idle timer / contentElapsed）统一扣除休眠。
 import {
@@ -201,9 +207,10 @@ export class OpenAIProvider implements Provider {
       streaming: true,
       tools: true,
       thinking: false, // OpenAI 的 o1/o3 有内置推理，但接口不同
-      // §3.4：诚实能力。模型（GPT-4o）确实支持图片，但 sid-code 内部 ContentBlock
-      // 目前无 image 变体、convertMessages 也无 image → image_url content part 的转换，
-      // 即没有任何上游路径能把图片喂进来。在补齐多模态管线前如实声明 false，避免能力虚标。
+      // §3.4：provider 级只能如实声明「不保证」——图片能力是**按模型**的
+      //（同一 provider 下 deepseek-flash 支持、deepseek-v4-pro 不支持，deepseek-api.md:1831）。
+      // 真正决定发不发图的是 convertMessages 里的 resolveVisionSupport（vision-capability.ts），
+      // 不读这个字段；它保持 false 只表示「本 provider 不对所有模型承诺 vision」。
       vision: false,
       promptCaching: false,
       parallelToolCalls: true,
@@ -659,6 +666,9 @@ export class OpenAIProvider implements Provider {
   private convertMessages(messages: Message[], effectiveModel?: string, alias?: string): any[] {
     const model = effectiveModel || this._model;
     const result: any[] = [];
+    // 图片是否随 tool_result 发出：按模型能力判定，缺省（无声明）不发——
+    // 发给不认图的模型会 400，降级成文字说明至少不让整轮失败。见 vision-capability.ts。
+    const visionEnabled = resolveVisionSupport(model, alias) === true;
 
     // 方案 C 最后兜底：预扫所有 assistant 的 tool_use id 集合。
     // 上游防线（restoreSession 安全切片 + 发送前 backfill 切游离 + guard 哨兵）全部失效的
@@ -772,6 +782,10 @@ export class OpenAIProvider implements Provider {
         // 分离 tool_result 和普通内容
         const textParts: string[] = [];
         const toolResults: { tool_call_id: string; content: string }[] = [];
+        // 工具返回的图片：OpenAI 规范 tool message 只允许 text part，统一放进紧随其后的
+        // user 消息（image_url 内容块是各家 OpenAI 兼容端点的共同形态）。
+        const toolImages: { url: string }[] = [];
+        const toolImageIds: string[] = [];
 
         for (const block of msg.content) {
           if (block.type === "text") {
@@ -797,8 +811,13 @@ export class OpenAIProvider implements Provider {
               tool_call_id: block.tool_use_id,
               // §2.1：规范要求 tool message content 为非空 string。工具返回空串
               //（如 bash 无输出、grep 无匹配）时部分严格网关会判非法 → 400，兜底占位。
-              content: serializeToolResultContentForOpenAI(block, this.name()),
+              content: serializeToolResultContentForOpenAI(block, this.name(), { visionEnabled }),
             });
+            const imgs = collectOpenAIImageMedia(block, { visionEnabled });
+            if (imgs.length > 0) {
+              toolImageIds.push(block.tool_use_id);
+              for (const mb of imgs) toolImages.push({ url: mediaBlockToDataURL(mb) });
+            }
           }
         }
 
@@ -811,8 +830,15 @@ export class OpenAIProvider implements Provider {
           });
         }
 
-        // 纯文本部分作为 user 消息（如果有的话）
-        if (textParts.length > 0) {
+        // 纯文本 + 工具图片合成一条 user 消息。必须排在全部 role:"tool" 之后：
+        // 插在 tool message 中间会打断 tool_calls ↔ tool 的配对 → 400。
+        // 无图时保持纯字符串 content（字节级不变，不影响 prompt cache 前缀）。
+        if (toolImages.length > 0) {
+          const parts: any[] = [{ type: "text", text: toolImagesLeadText(toolImageIds) }];
+          for (const img of toolImages) parts.push({ type: "image_url", image_url: img });
+          if (textParts.length > 0) parts.push({ type: "text", text: textParts.join("\n") });
+          result.push({ role: "user", content: parts });
+        } else if (textParts.length > 0) {
           result.push({
             role: "user",
             content: textParts.join("\n"),

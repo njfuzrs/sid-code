@@ -6189,6 +6189,21 @@ export class App {
    */
   private statusNotifier: ((baseId: string, text: string, delayMs: number) => void) | null = null;
 
+  /** TUI 就绪前到达的瞬时提示，回填 statusNotifier 时补推（见 notifyStatus） */
+  private pendingStatusNotices: Array<{ baseId: string; text: string; delayMs: number }> = [];
+
+  /**
+   * 推一条状态栏瞬时提示（供 cli.ts 的后台任务用，如启动期会话自动清理）。
+   *
+   * 后台任务与 TUI 挂载是并发的，到达时 statusNotifier 可能还没回填 —— 先排队，
+   * 回填时补推，否则「删了你 N 个会话」这种必须让用户看见的提示会静默丢掉。
+   * 无头模式下 TUI 永不就绪，队列只是一直不被消费，无副作用。
+   */
+  notifyStatus(baseId: string, text: string, delayMs = 8000): void {
+    if (this.statusNotifier) this.statusNotifier(baseId, text, delayMs);
+    else this.pendingStatusNotices.push({ baseId, text, delayMs });
+  }
+
   /**
    * 工具实时进度接收器（bash 等长跑工具的执行中输出 → 执行中工具卡片）。
    *
@@ -7823,6 +7838,9 @@ export class App {
 
     // 回填实例通道：让实例方法（cyclePermissionMode 等）也能推送一次性状态栏提示。
     this.statusNotifier = addTransientStatusMessage;
+    for (const n of this.pendingStatusNotices.splice(0)) {
+      addTransientStatusMessage(n.baseId, n.text, n.delayMs);
+    }
 
     /**
      * 统一错误面板：推入一条错误，同 id 去重替换，最多保留 5 条。

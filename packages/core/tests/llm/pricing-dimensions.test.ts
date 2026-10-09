@@ -136,13 +136,26 @@ describe("DeepSeek 新价（D1 数据修复）", () => {
     expect(pro[0]!.output).toBe(pro[1]!.output);
     expect(pro[0]!.cacheRead).toBe(pro[1]!.cacheRead);
 
+    // V4.1-Flash（2026-09-10 降价）：官方主名 deepseek-flash + 两个路由别名 + 网关拼法，
+    // 高峰价 ¥2 / ¥8 / 命中 ¥0.04（deepseek-api.md:115-119,132）。
     const flash = [
+      "deepseek-flash",
+      "deepseek-v4-1-flash",
       "deepseek-v4-flash",
       "DeepSeek-V4-Flash",
-      "deepseek-chat",
-      "deepseek-reasoner",
     ].map((k) => lookupRegistryExact(k)!.pricing!);
     for (const f of flash) {
+      expect(f.input).toBeCloseTo(2, 6);
+      expect(f.output).toBeCloseTo(8, 6);
+      expect(f.cacheRead).toBeCloseTo(0.04, 6);
+    }
+
+    // deepseek-chat / deepseek-reasoner 已于 2026-07-24 停用（deepseek-api.md:57），
+    // 不再是 Flash 的别名：刻意停在停用前的价，只服务历史会话计价。
+    const retired = ["deepseek-chat", "deepseek-reasoner"].map(
+      (k) => lookupRegistryExact(k)!.pricing!,
+    );
+    for (const f of retired) {
       expect(f.input).toBeCloseTo(3, 6);
       expect(f.output).toBeCloseTo(9, 6);
       expect(f.cacheRead).toBeCloseTo(0.1, 6);
