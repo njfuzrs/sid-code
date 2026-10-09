@@ -1,0 +1,1352 @@
+{
+  "trailing-spaces": {
+    "text": "ab\ncd",
+    "cells": ["0:0-39:ab                                      ", "1:0-1:cd"]
+  },
+  "wrap": {
+    "text": "aaaaaaaaaabbbb",
+    "cells": ["0:0-9:aaaaaaaaaa", "1:0-3:bbbb"]
+  },
+  "wrap-tpl": {
+    "text": "cccc dddd ",
+    "cells": ["1:0-9:cccc dddd "]
+  },
+  "wrap-dbl": {
+    "text": "bbbbbbbbbb",
+    "cells": ["1:0-9:bbbbbbbbbb"]
+  },
+  "wide-end-left": {
+    "text": "第一",
+    "cells": ["1:0-3:第一"]
+  },
+  "wide-back": {
+    "text": "一行",
+    "cells": ["1:2-5:一行"]
+  },
+  "wide-back2": {
+    "text": "第一行",
+    "cells": ["1:0-5:第一行"]
+  },
+  "drag-y0": {
+    "text": "\nhello world foo-bar baz\n第一行",
+    "cells": ["0:0-39:hello world foo-bar baz                 ", "1:0-5:第一行"]
+  },
+  "drag-ybig": {
+    "text": "行 可以被选中的文本\npath/to/file.ts:12 x\na.b_c d$e (f) 'g'\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n",
+    "cells": [
+      "1:4-39:行 可以被选中的文本                 ",
+      "2:0-39:path/to/file.ts:12 x                    ",
+      "3:0-39:a.b_c d$e (f) 'g'                       ",
+      "4:0-39:                                        ",
+      "5:0-39:                                        ",
+      "6:0-39:                                        ",
+      "7:0-39:                                        ",
+      "8:0-39:                                        ",
+      "9:0-39:                                        "
+    ]
+  },
+  "drag-xbig": {
+    "text": "o world foo-bar baz",
+    "cells": ["0:4-39:o world foo-bar baz                 "]
+  },
+  "drag-x0": {
+    "text": "hello",
+    "cells": ["0:0-4:hello"]
+  },
+  "drag-no-release": {
+    "text": "hello",
+    "cells": ["0:0-4:hello"]
+  },
+  "drag-then-back-to-start": {
+    "text": "l",
+    "cells": ["0:2-2:l"]
+  },
+  "drag-one-cell": {
+    "text": "ll",
+    "cells": ["0:2-3:ll"]
+  },
+  "release-elsewhere": {
+    "text": "hello",
+    "cells": ["0:0-4:hello"]
+  },
+  "motion-no-button": {
+    "text": "",
+    "cells": []
+  },
+  "wheel-during": {
+    "text": "hello",
+    "cells": ["0:0-4:hello"]
+  },
+  "x10-drag": {
+    "text": "",
+    "cells": []
+  },
+  "drag-wide-right-cells": {
+    "text": "一",
+    "cells": ["1:2-3:一"]
+  },
+  "drag-to-left-of-wide": {
+    "text": "行 可",
+    "cells": ["1:4-8:行 可"]
+  },
+  "alt-press": {
+    "text": "hello",
+    "cells": ["0:0-4:hello"]
+  },
+  "ctrl-press": {
+    "text": "hello",
+    "cells": ["0:0-4:hello"]
+  },
+  "shift-drag": {
+    "text": "hello",
+    "cells": ["0:0-4:hello"]
+  },
+  "styled": {
+    "text": "red plain",
+    "cells": ["0:0-8:red plain"]
+  },
+  "dt-450": {
+    "text": "hello",
+    "cells": ["0:0-4:hello"]
+  },
+  "dt-480": {
+    "text": "hello",
+    "cells": ["0:0-4:hello"]
+  },
+  "dt-520": {
+    "text": "",
+    "cells": []
+  },
+  "dt-560": {
+    "text": "",
+    "cells": []
+  },
+  "dx-2": {
+    "text": "",
+    "cells": []
+  },
+  "dx-3": {
+    "text": "",
+    "cells": []
+  },
+  "dx-5": {
+    "text": "",
+    "cells": []
+  },
+  "dy-2": {
+    "text": "",
+    "cells": []
+  },
+  "tpl-slow3": {
+    "text": "",
+    "cells": []
+  },
+  "tpl-moved": {
+    "text": "",
+    "cells": []
+  },
+  "dbl-tol-diag": {
+    "text": "第一行",
+    "cells": ["1:0-5:第一行"]
+  },
+  "dbl-tol-left": {
+    "text": "hello",
+    "cells": ["0:0-4:hello"]
+  },
+  "tpl-tol": {
+    "text": "hello world foo-bar baz",
+    "cells": ["0:0-39:hello world foo-bar baz                 "]
+  },
+  "tpl-tol2": {
+    "text": "",
+    "cells": []
+  },
+  "tpl-time": {
+    "text": "hello world foo-bar baz",
+    "cells": ["0:0-39:hello world foo-bar baz                 "]
+  },
+  "five": {
+    "text": "hello world foo-bar baz",
+    "cells": ["0:0-39:hello world foo-bar baz                 "]
+  },
+  "six": {
+    "text": "hello world foo-bar baz",
+    "cells": ["0:0-39:hello world foo-bar baz                 "]
+  },
+  "dbl-drag-back": {
+    "text": "hello world foo-bar",
+    "cells": ["0:0-18:hello world foo-bar"]
+  },
+  "dbl-drag-space": {
+    "text": "hello",
+    "cells": ["0:0-5:hello "]
+  },
+  "dbl-drag-up": {
+    "text": "hello world foo-bar baz\n第一行 可以被选中的文本\npath/to/file.ts",
+    "cells": [
+      "0:0-39:hello world foo-bar baz                 ",
+      "1:0-39:第一行 可以被选中的文本                 ",
+      "2:0-14:path/to/file.ts"
+    ]
+  },
+  "tpl-drag-up": {
+    "text": "hello world foo-bar baz\n第一行 可以被选中的文本\npath/to/file.ts:12 x",
+    "cells": [
+      "0:0-39:hello world foo-bar baz                 ",
+      "1:0-39:第一行 可以被选中的文本                 ",
+      "2:0-39:path/to/file.ts:12 x                    "
+    ]
+  },
+  "dbl-then-drag-same": {
+    "text": "hello",
+    "cells": ["0:0-4:hello"]
+  },
+  "drag-zero-move": {
+    "text": "",
+    "cells": []
+  },
+  "drag-zero-then-move": {
+    "text": "llo",
+    "cells": ["0:2-4:llo"]
+  },
+  "drag-cancels-count": {
+    "text": "hello world foo-bar baz",
+    "cells": ["0:0-39:hello world foo-bar baz                 "]
+  },
+  "click-after-dbl-drag": {
+    "text": "",
+    "cells": []
+  },
+  "drag-then-click-same": {
+    "text": "hello",
+    "cells": ["0:0-4:hello"]
+  },
+  "drag-then-click-end": {
+    "text": "",
+    "cells": []
+  },
+  "drag-then-dbl": {
+    "text": "hello world foo-bar baz",
+    "cells": ["0:0-39:hello world foo-bar baz                 "]
+  },
+  "right-after-sel": {
+    "text": "hello",
+    "cells": ["0:0-4:hello"]
+  },
+  "middle-after-sel": {
+    "text": "hello",
+    "cells": ["0:0-4:hello"]
+  },
+  "press-only": {
+    "text": "",
+    "cells": []
+  },
+  "dbl-press-only": {
+    "text": "hello",
+    "cells": ["0:0-4:hello"]
+  },
+  "dbl-no-release-first": {
+    "text": "hello",
+    "cells": ["0:0-4:hello"]
+  },
+  "release-only": {
+    "text": "",
+    "cells": []
+  },
+  "press-out-then-drag": {
+    "text": "o world foo-bar baz\n第一行 可以被选中的文本\npath/to/file.ts:12 x\na.b_c d$e (f) 'g'\n\n\n\n\n\n\n\n\n\n\n",
+    "cells": [
+      "0:4-39:o world foo-bar baz                 ",
+      "1:0-39:第一行 可以被选中的文本                 ",
+      "2:0-39:path/to/file.ts:12 x                    ",
+      "3:0-39:a.b_c d$e (f) 'g'                       ",
+      "4:0-39:                                        ",
+      "5:0-39:                                        ",
+      "6:0-39:                                        ",
+      "7:0-39:                                        ",
+      "8:0-39:                                        ",
+      "9:0-39:                                        "
+    ]
+  },
+  "press-out-x-then-drag": {
+    "text": "o world foo-bar baz",
+    "cells": ["0:4-39:o world foo-bar baz                 "]
+  },
+  "oob-press-count": {
+    "text": "",
+    "cells": []
+  },
+  "oob-dbl-then-in": {
+    "text": "",
+    "cells": []
+  },
+  "dbl-at-x40": {
+    "text": "",
+    "cells": ["0:23-39:                 "]
+  },
+  "dbl-at-x41": {
+    "text": "",
+    "cells": []
+  },
+  "dbl-at-y10": {
+    "text": "",
+    "cells": ["9:0-39:                                        "]
+  },
+  "dbl-at-y11": {
+    "text": "",
+    "cells": []
+  },
+  "dbl-drag-oob": {
+    "text": "hello world foo-bar baz\n第一行 可以被选中的文本\npath/to/file.ts:12 x\na.b_c d$e (f) 'g'\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n",
+    "cells": [
+      "0:0-39:hello world foo-bar baz                 ",
+      "1:0-39:第一行 可以被选中的文本                 ",
+      "2:0-39:path/to/file.ts:12 x                    ",
+      "3:0-39:a.b_c d$e (f) 'g'                       ",
+      "4:0-39:                                        ",
+      "5:0-39:                                        ",
+      "6:0-39:                                        ",
+      "7:0-39:                                        ",
+      "8:0-39:                                        ",
+      "9:0-39:                                        "
+    ]
+  },
+  "tpl-drag-oob": {
+    "text": "hello world foo-bar baz\n第一行 可以被选中的文本\npath/to/file.ts:12 x\na.b_c d$e (f) 'g'\n\n\n\n\n\n",
+    "cells": [
+      "0:0-39:hello world foo-bar baz                 ",
+      "1:0-39:第一行 可以被选中的文本                 ",
+      "2:0-39:path/to/file.ts:12 x                    ",
+      "3:0-39:a.b_c d$e (f) 'g'                       ",
+      "4:0-39:                                        ",
+      "5:0-39:                                        ",
+      "6:0-39:                                        ",
+      "7:0-39:                                        ",
+      "8:0-39:                                        ",
+      "9:0-39:                                        "
+    ]
+  },
+  "dbl-drag-y0": {
+    "text": "\nhello world foo-bar baz\n第一行",
+    "cells": ["0:0-39:hello world foo-bar baz                 ", "1:0-5:第一行"]
+  },
+  "dbl-wide-spacer": {
+    "text": "第一行",
+    "cells": ["1:0-5:第一行"]
+  },
+  "tpl-row-short": {
+    "text": "ab",
+    "cells": ["0:0-39:ab                                      "]
+  },
+  "tpl-blank": {
+    "text": "",
+    "cells": ["6:0-39:                                        "]
+  },
+  "dbl-blank-row": {
+    "text": "",
+    "cells": ["6:0-39:                                        "]
+  },
+  "dbl-then-click-far-fast": {
+    "text": "",
+    "cells": []
+  },
+  "tpl-wrap-row0": {
+    "text": "aaaa bbbb ",
+    "cells": ["0:0-9:aaaa bbbb "]
+  },
+  "tpl-wrap-row2": {
+    "text": "eeee",
+    "cells": ["2:0-9:eeee      "]
+  },
+  "drag-wrap-end": {
+    "text": "aaaa bbbb ",
+    "cells": ["0:0-9:aaaa bbbb "]
+  },
+  "drag-wrap-3": {
+    "text": "aaaa bbbb cccc dddd eee",
+    "cells": ["0:0-9:aaaa bbbb ", "1:0-9:cccc dddd ", "2:0-2:eee"]
+  },
+  "drag-wrap-12": {
+    "text": "aaaa bbbb ccc",
+    "cells": ["0:0-11:aaaa bbbb   ", "1:0-2:ccc"]
+  },
+  "tpl-wrap-12": {
+    "text": "aaaa bbbb ",
+    "cells": ["0:0-11:aaaa bbbb   "]
+  },
+  "drag-wrap-hardnl": {
+    "text": "aaaa\nbbb",
+    "cells": ["0:0-9:aaaa      ", "1:0-2:bbb"]
+  },
+  "drag-wrap-2texts": {
+    "text": "aaaa\nbbb",
+    "cells": ["0:0-9:aaaa      ", "1:0-2:bbb"]
+  },
+  "drag-wrap-long": {
+    "text": "xxxxxxyy",
+    "cells": ["0:4-9:xxxxxx", "1:0-1:yy"]
+  },
+  "drag-wrap-sp": {
+    "text": "aaaaaaaaa bbb",
+    "cells": ["0:0-9:aaaaaaaaa ", "1:0-2:bbb"]
+  },
+  "sw12-0-8": {
+    "text": "aaaa bbbb",
+    "cells": ["0:0-8:aaaa bbbb"]
+  },
+  "sw12-0-9": {
+    "text": "aaaa bbbb ",
+    "cells": ["0:0-9:aaaa bbbb "]
+  },
+  "sw12-0-11": {
+    "text": "aaaa bbbb ",
+    "cells": ["0:0-11:aaaa bbbb   "]
+  },
+  "sw12-10-11-then-next": {
+    "text": "cc",
+    "cells": ["0:10-11:  ", "1:0-1:cc"]
+  },
+  "sw12-start-mid-next": {
+    "text": "bbbb cccc dddd ",
+    "cells": ["0:5-11:bbbb   ", "1:0-11:cccc dddd   "]
+  },
+  "sw-multispace": {
+    "text": "aa   b",
+    "cells": ["0:0-3:aa  ", "1:0-1: b"]
+  },
+  "sw-multispace-tpl": {
+    "text": "aa  ",
+    "cells": ["0:0-3:aa  "]
+  },
+  "sw-multispace6": {
+    "text": "aaaa   bb",
+    "cells": ["0:0-5:aaaa  ", "1:0-2: bb"]
+  },
+  "sw-hard-long": {
+    "text": "abcdef",
+    "cells": ["0:0-3:abcd", "1:0-1:ef"]
+  },
+  "sw-cjk": {
+    "text": "第一行可以被",
+    "cells": ["0:0-8:第一行可 ", "1:0-3:以被"]
+  },
+  "sw-dbl-across": {
+    "text": "aaaaaaaaaa",
+    "cells": ["0:0-9:aaaaaaaaaa"]
+  },
+  "sw-dbl-across2": {
+    "text": "bbbb",
+    "cells": ["1:0-3:bbbb"]
+  },
+  "sw-dbl-word": {
+    "text": "aaaa",
+    "cells": ["0:0-3:aaaa"]
+  },
+  "sw-dbl-wordwrap": {
+    "text": "bbbbbb",
+    "cells": ["1:0-5:bbbbbb"]
+  },
+  "sw-ends-at-space-only": {
+    "text": "bbb",
+    "cells": ["1:0-2:bbb"]
+  },
+  "sw-trailing-sp-hard": {
+    "text": "aaaa\nb",
+    "cells": ["0:0-19:aaaa                ", "1:0-0:b"]
+  },
+  "w0-1": {
+    "text": "~a",
+    "cells": ["0:0-1:~a"],
+    "blindRows": [3]
+  },
+  "w0-2": {
+    "text": "~a",
+    "cells": ["0:0-1:~a"],
+    "blindRows": [3]
+  },
+  "w0-3": {
+    "text": "@",
+    "cells": ["0:2-2:@"],
+    "blindRows": [3]
+  },
+  "w0-4": {
+    "text": "b",
+    "cells": ["0:3-3:b"],
+    "blindRows": [3]
+  },
+  "w0-5": {
+    "text": "#",
+    "cells": ["0:4-4:#"],
+    "blindRows": [3]
+  },
+  "w0-6": {
+    "text": "c",
+    "cells": ["0:5-5:c"],
+    "blindRows": [3]
+  },
+  "w0-7": {
+    "text": "%",
+    "cells": ["0:6-6:%"],
+    "blindRows": [3]
+  },
+  "w0-8": {
+    "text": "d+e",
+    "cells": ["0:7-9:d+e"],
+    "blindRows": [3]
+  },
+  "w0-9": {
+    "text": "d+e",
+    "cells": ["0:7-9:d+e"],
+    "blindRows": [3]
+  },
+  "w0-10": {
+    "text": "d+e",
+    "cells": ["0:7-9:d+e"],
+    "blindRows": [3]
+  },
+  "w0-11": {
+    "text": "=",
+    "cells": ["0:10-10:="],
+    "blindRows": [3]
+  },
+  "w0-12": {
+    "text": "f",
+    "cells": ["0:11-11:f"],
+    "blindRows": [3]
+  },
+  "w0-13": {
+    "text": ",",
+    "cells": ["0:12-12:,"],
+    "blindRows": [3]
+  },
+  "w0-14": {
+    "text": "g",
+    "cells": ["0:13-13:g"],
+    "blindRows": [3]
+  },
+  "w0-15": {
+    "text": ";",
+    "cells": ["0:14-14:;"],
+    "blindRows": [3]
+  },
+  "w0-16": {
+    "text": "h",
+    "cells": ["0:15-15:h"],
+    "blindRows": [3]
+  },
+  "w0-17": {
+    "text": "!",
+    "cells": ["0:16-16:!"],
+    "blindRows": [3]
+  },
+  "w0-18": {
+    "text": "i",
+    "cells": ["0:17-17:i"],
+    "blindRows": [3]
+  },
+  "w0-19": {
+    "text": "?",
+    "cells": ["0:18-18:?"],
+    "blindRows": [3]
+  },
+  "w0-20": {
+    "text": "j",
+    "cells": ["0:19-19:j"],
+    "blindRows": [3]
+  },
+  "w0-21": {
+    "text": "*",
+    "cells": ["0:20-20:*"],
+    "blindRows": [3]
+  },
+  "w0-22": {
+    "text": "k",
+    "cells": ["0:21-21:k"],
+    "blindRows": [3]
+  },
+  "w0-23": {
+    "text": "&",
+    "cells": ["0:22-22:&"],
+    "blindRows": [3]
+  },
+  "w0-24": {
+    "text": "l",
+    "cells": ["0:23-23:l"],
+    "blindRows": [3]
+  },
+  "w0-25": {
+    "text": "|",
+    "cells": ["0:24-24:|"],
+    "blindRows": [3]
+  },
+  "w0-26": {
+    "text": "m\\n",
+    "cells": ["0:25-27:m\\n"],
+    "blindRows": [3]
+  },
+  "w0-27": {
+    "text": "m\\n",
+    "cells": ["0:25-27:m\\n"],
+    "blindRows": [3]
+  },
+  "w0-28": {
+    "text": "m\\n",
+    "cells": ["0:25-27:m\\n"],
+    "blindRows": [3]
+  },
+  "w0-29": {
+    "text": "`",
+    "cells": ["0:28-28:`"],
+    "blindRows": [3]
+  },
+  "w0-30": {
+    "text": "o",
+    "cells": ["0:29-29:o"],
+    "blindRows": [3]
+  },
+  "w0-31": {
+    "text": "\"",
+    "cells": ["0:30-30:\""],
+    "blindRows": [3]
+  },
+  "w0-32": {
+    "text": "p",
+    "cells": ["0:31-31:p"],
+    "blindRows": [3]
+  },
+  "w0-33": {
+    "text": "[",
+    "cells": ["0:32-32:["],
+    "blindRows": [3]
+  },
+  "w0-34": {
+    "text": "q",
+    "cells": ["0:33-33:q"],
+    "blindRows": [3]
+  },
+  "w0-35": {
+    "text": "]",
+    "cells": ["0:34-34:]"],
+    "blindRows": [3]
+  },
+  "w0-36": {
+    "text": "r",
+    "cells": ["0:35-35:r"],
+    "blindRows": [3]
+  },
+  "w0-37": {
+    "text": "{",
+    "cells": ["0:36-36:{"],
+    "blindRows": [3]
+  },
+  "w0-38": {
+    "text": "s",
+    "cells": ["0:37-37:s"],
+    "blindRows": [3]
+  },
+  "w0-39": {
+    "text": "}",
+    "cells": ["0:38-38:}"],
+    "blindRows": [3]
+  },
+  "w0-40": {
+    "text": "t",
+    "cells": ["0:39-39:t"],
+    "blindRows": [3]
+  },
+  "w0-41": {
+    "text": "<",
+    "cells": ["0:40-40:<"],
+    "blindRows": [3]
+  },
+  "w0-42": {
+    "text": "u",
+    "cells": ["0:41-41:u"],
+    "blindRows": [3]
+  },
+  "w0-43": {
+    "text": ">",
+    "cells": ["0:42-42:>"],
+    "blindRows": [3]
+  },
+  "w0-44": {
+    "text": "v",
+    "cells": ["0:43-43:v"],
+    "blindRows": [3]
+  },
+  "w1-1": {
+    "text": "中文abc中",
+    "cells": ["1:0-8:中文abc中"],
+    "blindRows": [3]
+  },
+  "w1-3": {
+    "text": "中文abc中",
+    "cells": ["1:0-8:中文abc中"],
+    "blindRows": [3]
+  },
+  "w1-6": {
+    "text": "中文abc中",
+    "cells": ["1:0-8:中文abc中"],
+    "blindRows": [3]
+  },
+  "w1-8": {
+    "text": "中文abc中",
+    "cells": ["1:0-8:中文abc中"],
+    "blindRows": [3]
+  },
+  "w1-10": {
+    "text": "",
+    "cells": ["1:9-9: "],
+    "blindRows": [3]
+  },
+  "w1-12": {
+    "text": "中文",
+    "cells": ["1:10-13:中文"],
+    "blindRows": [3]
+  },
+  "w1-14": {
+    "text": "中文",
+    "cells": ["1:10-13:中文"],
+    "blindRows": [3]
+  },
+  "w1-16": {
+    "text": "，",
+    "cells": ["1:14-15:，"],
+    "blindRows": [3]
+  },
+  "w1-18": {
+    "text": "文本",
+    "cells": ["1:16-19:文本"],
+    "blindRows": [3]
+  },
+  "w1-19": {
+    "text": "文本",
+    "cells": ["1:16-19:文本"],
+    "blindRows": [3]
+  },
+  "w2-1": {
+    "text": "((",
+    "cells": ["2:0-1:(("],
+    "blindRows": [3]
+  },
+  "w2-2": {
+    "text": "((",
+    "cells": ["2:0-1:(("],
+    "blindRows": [3]
+  },
+  "w2-4": {
+    "text": "))",
+    "cells": ["2:3-4:))"],
+    "blindRows": [3]
+  },
+  "w2-7": {
+    "text": "::",
+    "cells": ["2:6-7:::"],
+    "blindRows": [3]
+  },
+  "w2-8": {
+    "text": "::",
+    "cells": ["2:6-7:::"],
+    "blindRows": [3]
+  },
+  "w2-10": {
+    "text": "::",
+    "cells": ["2:9-10:::"],
+    "blindRows": [3]
+  },
+  "w2-13": {
+    "text": "--c--",
+    "cells": ["2:12-16:--c--"],
+    "blindRows": [3]
+  },
+  "w2-14": {
+    "text": "--c--",
+    "cells": ["2:12-16:--c--"],
+    "blindRows": [3]
+  },
+  "w2-15": {
+    "text": "--c--",
+    "cells": ["2:12-16:--c--"],
+    "blindRows": [3]
+  },
+  "w2-16": {
+    "text": "--c--",
+    "cells": ["2:12-16:--c--"],
+    "blindRows": [3]
+  },
+  "w2-19": {
+    "text": "..d..",
+    "cells": ["2:18-22:..d.."],
+    "blindRows": [3]
+  },
+  "w2-20": {
+    "text": "..d..",
+    "cells": ["2:18-22:..d.."],
+    "blindRows": [3]
+  },
+  "w2-21": {
+    "text": "..d..",
+    "cells": ["2:18-22:..d.."],
+    "blindRows": [3]
+  },
+  "w2-25": {
+    "text": "//e//",
+    "cells": ["2:24-28://e//"],
+    "blindRows": [3]
+  },
+  "w2-26": {
+    "text": "//e//",
+    "cells": ["2:24-28://e//"],
+    "blindRows": [3]
+  },
+  "w2-28": {
+    "text": "//e//",
+    "cells": ["2:24-28://e//"],
+    "blindRows": [3]
+  },
+  "w3-1": {
+    "text": "😀😀",
+    "cells": [],
+    "blindRows": [3]
+  },
+  "w3-2": {
+    "text": "😀😀",
+    "cells": [],
+    "blindRows": [3]
+  },
+  "w3-5": {
+    "text": "a",
+    "cells": [],
+    "blindRows": [3]
+  },
+  "w3-6": {
+    "text": "",
+    "cells": [],
+    "blindRows": [3]
+  },
+  "w3-7": {
+    "text": "😀",
+    "cells": [],
+    "blindRows": [3]
+  },
+  "w4-1": {
+    "text": "a",
+    "cells": ["4:0-0:a"],
+    "blindRows": [3]
+  },
+  "w4-3": {
+    "text": "",
+    "cells": ["4:1-7:       "],
+    "blindRows": [3]
+  },
+  "w4-9": {
+    "text": "b",
+    "cells": ["4:8-8:b"],
+    "blindRows": [3]
+  },
+  "u-1-1": {
+    "text": "!?!?",
+    "cells": ["0:0-3:!?!?"],
+    "blindRows": [4]
+  },
+  "u-2-1": {
+    "text": "!?!?",
+    "cells": ["0:0-3:!?!?"],
+    "blindRows": [4]
+  },
+  "u-3-1": {
+    "text": "!?!?",
+    "cells": ["0:0-3:!?!?"],
+    "blindRows": [4]
+  },
+  "u-6-1": {
+    "text": "(@)",
+    "cells": ["0:5-7:(@)"],
+    "blindRows": [4]
+  },
+  "u-7-1": {
+    "text": "(@)",
+    "cells": ["0:5-7:(@)"],
+    "blindRows": [4]
+  },
+  "u-8-1": {
+    "text": "(@)",
+    "cells": ["0:5-7:(@)"],
+    "blindRows": [4]
+  },
+  "u-11-1": {
+    "text": "'",
+    "cells": ["0:10-10:'"],
+    "blindRows": [4]
+  },
+  "u-12-1": {
+    "text": "b",
+    "cells": ["0:11-11:b"],
+    "blindRows": [4]
+  },
+  "u-13-1": {
+    "text": "",
+    "cells": ["0:12-12: "],
+    "blindRows": [4]
+  },
+  "u-15-1": {
+    "text": ":",
+    "cells": ["0:14-14::"],
+    "blindRows": [4]
+  },
+  "u-16-1": {
+    "text": "y",
+    "cells": ["0:15-15:y"],
+    "blindRows": [4]
+  },
+  "u-1-2": {
+    "text": "über",
+    "cells": ["1:0-3:über"],
+    "blindRows": [4]
+  },
+  "u-7-2": {
+    "text": "Ωmega",
+    "cells": ["1:5-9:Ωmega"],
+    "blindRows": [4]
+  },
+  "u-12-2": {
+    "text": "12.5",
+    "cells": ["1:11-14:12.5"],
+    "blindRows": [4]
+  },
+  "u-13-2": {
+    "text": "12.5",
+    "cells": ["1:11-14:12.5"],
+    "blindRows": [4]
+  },
+  "u-14-2": {
+    "text": "12.5",
+    "cells": ["1:11-14:12.5"],
+    "blindRows": [4]
+  },
+  "u-17-2": {
+    "text": "ä",
+    "cells": ["1:16-16:ä"],
+    "blindRows": [4]
+  },
+  "u-1-3": {
+    "text": "１２ａｂ",
+    "cells": ["2:0-7:１２ａｂ"],
+    "blindRows": [4]
+  },
+  "u-5-3": {
+    "text": "１２ａｂ",
+    "cells": ["2:0-7:１２ａｂ"],
+    "blindRows": [4]
+  },
+  "u-10-3": {
+    "text": "한국어",
+    "cells": ["2:9-14:한국어"],
+    "blindRows": [4]
+  },
+  "u-17-3": {
+    "text": "ひらがなカタカナ",
+    "cells": ["2:16-31:ひらがなカタカナ"],
+    "blindRows": [4]
+  },
+  "u-23-3": {
+    "text": "ひらがなカタカナ",
+    "cells": ["2:16-31:ひらがなカタカナ"],
+    "blindRows": [4]
+  },
+  "u-1-4": {
+    "text": "→→",
+    "cells": ["3:0-1:→→"],
+    "blindRows": [4]
+  },
+  "u-4-4": {
+    "text": "←",
+    "cells": ["3:3-3:←"],
+    "blindRows": [4]
+  },
+  "u-5-4": {
+    "text": "a",
+    "cells": ["3:4-4:a"],
+    "blindRows": [4]
+  },
+  "u-8-4": {
+    "text": "#!#",
+    "cells": ["3:6-8:#!#"],
+    "blindRows": [4]
+  },
+  "u-9-4": {
+    "text": "#!#",
+    "cells": ["3:6-8:#!#"],
+    "blindRows": [4]
+  },
+  "u-12-4": {
+    "text": "@@",
+    "cells": ["3:10-11:@@"],
+    "blindRows": [4]
+  },
+  "u-13-4": {
+    "text": "x",
+    "cells": ["3:12-12:x"],
+    "blindRows": [4]
+  },
+  "u-1-5": {
+    "text": "ée",
+    "cells": [],
+    "blindRows": [4]
+  },
+  "u-4-5": {
+    "text": "é",
+    "cells": [],
+    "blindRows": [4]
+  },
+  "u-8-5": {
+    "text": "😀",
+    "cells": [],
+    "blindRows": [4]
+  },
+  "u-10-5": {
+    "text": "cd",
+    "cells": [],
+    "blindRows": [4]
+  },
+  "u-12-5": {
+    "text": "",
+    "cells": [],
+    "blindRows": [4]
+  },
+  "u-15-5": {
+    "text": "x",
+    "cells": [],
+    "blindRows": [4]
+  },
+  "u-16-5": {
+    "text": "",
+    "cells": [],
+    "blindRows": [4]
+  },
+  "u-18-5": {
+    "text": "",
+    "cells": [],
+    "blindRows": [4]
+  },
+  "q0-2": {
+    "text": "^",
+    "cells": ["0:1-1:^"]
+  },
+  "q0-6": {
+    "text": "·",
+    "cells": ["0:5-5:·"]
+  },
+  "q0-10": {
+    "text": "e٣f",
+    "cells": ["0:8-10:e٣f"]
+  },
+  "q0-14": {
+    "text": "…",
+    "cells": ["0:13-13:…"]
+  },
+  "q0-18": {
+    "text": "—",
+    "cells": ["0:17-17:—"]
+  },
+  "q0-22": {
+    "text": "'",
+    "cells": ["0:21-21:'"]
+  },
+  "q0-23": {
+    "text": "l",
+    "cells": ["0:22-22:l"]
+  },
+  "q1-2": {
+    "text": "::",
+    "cells": ["1:1-2:::"]
+  },
+  "q1-8": {
+    "text": "!?",
+    "cells": ["1:6-7:!?"]
+  },
+  "q1-12": {
+    "text": "q",
+    "cells": ["1:11-11:q"]
+  },
+  "q1-16": {
+    "text": "ab",
+    "cells": ["1:14-15:ab"]
+  },
+  "q1-18": {
+    "text": "cd",
+    "cells": ["1:17-18:cd"]
+  },
+  "c-\"!😀!\"-a": {
+    "text": "ab",
+    "cells": [],
+    "blindRows": [0]
+  },
+  "c-\"!😀!\"-mid": {
+    "text": "!😀!",
+    "cells": [],
+    "blindRows": [0]
+  },
+  "c-\"©\"-a": {
+    "text": "ab",
+    "cells": [],
+    "blindRows": [0]
+  },
+  "c-\"©\"-mid": {
+    "text": "©",
+    "cells": [],
+    "blindRows": [0]
+  },
+  "c-\"€\"-a": {
+    "text": "ab",
+    "cells": ["0:0-1:ab"]
+  },
+  "c-\"€\"-mid": {
+    "text": "€",
+    "cells": ["0:2-2:€"]
+  },
+  "c-\"$5\"-a": {
+    "text": "ab",
+    "cells": ["0:0-1:ab"]
+  },
+  "c-\"$5\"-mid": {
+    "text": "$",
+    "cells": ["0:2-2:$"]
+  },
+  "c-\"°\"-a": {
+    "text": "ab",
+    "cells": ["0:0-1:ab"]
+  },
+  "c-\"°\"-mid": {
+    "text": "°",
+    "cells": ["0:2-2:°"]
+  },
+  "c-\"。\"-a": {
+    "text": "ab",
+    "cells": ["0:0-1:ab"]
+  },
+  "c-\"。\"-mid": {
+    "text": "。",
+    "cells": ["0:2-3:。"]
+  },
+  "c-\"「\"-a": {
+    "text": "ab",
+    "cells": ["0:0-1:ab"]
+  },
+  "c-\"「\"-mid": {
+    "text": "「",
+    "cells": ["0:2-3:「"]
+  },
+  "c-\"！\"-a": {
+    "text": "ab",
+    "cells": ["0:0-1:ab"]
+  },
+  "c-\"！\"-mid": {
+    "text": "！",
+    "cells": ["0:2-3:！"]
+  },
+  "c-\"ー\"-a": {
+    "text": "abーcd",
+    "cells": ["0:0-5:abーcd"]
+  },
+  "c-\"ー\"-mid": {
+    "text": "abーcd",
+    "cells": ["0:0-5:abーcd"]
+  },
+  "c-\"々\"-a": {
+    "text": "ab々cd",
+    "cells": ["0:0-5:ab々cd"]
+  },
+  "c-\"々\"-mid": {
+    "text": "ab々cd",
+    "cells": ["0:0-5:ab々cd"]
+  },
+  "c-\" \"-a": {
+    "text": "ab",
+    "cells": ["0:0-1:ab"]
+  },
+  "c-\" \"-mid": {
+    "text": "",
+    "cells": ["0:2-2: "]
+  },
+  "c-\"　\"-a": {
+    "text": "ab",
+    "cells": ["0:0-1:ab"]
+  },
+  "c-\"　\"-mid": {
+    "text": "",
+    "cells": ["0:2-3:　"]
+  },
+  "c-\"👨‍👩‍👧\"-a": {
+    "text": "ab",
+    "cells": [],
+    "blindRows": [0]
+  },
+  "c-\"👨‍👩‍👧\"-mid": {
+    "text": "👨‍👩‍👧",
+    "cells": [],
+    "blindRows": [0]
+  },
+  "c-\"x́\"-a": {
+    "text": "abx́cd",
+    "cells": ["0:0-4:abx́cd"]
+  },
+  "c-\"x́\"-mid": {
+    "text": "abx́cd",
+    "cells": ["0:0-4:abx́cd"]
+  },
+  "c-\"ǅ\"-a": {
+    "text": "abǅcd",
+    "cells": ["0:0-4:abǅcd"]
+  },
+  "c-\"ǅ\"-mid": {
+    "text": "abǅcd",
+    "cells": ["0:0-4:abǅcd"]
+  },
+  "c-\"²\"-a": {
+    "text": "ab²cd",
+    "cells": ["0:0-4:ab²cd"]
+  },
+  "c-\"²\"-mid": {
+    "text": "ab²cd",
+    "cells": ["0:0-4:ab²cd"]
+  },
+  "c-\"ⅷ\"-a": {
+    "text": "abⅷcd",
+    "cells": ["0:0-4:abⅷcd"]
+  },
+  "c-\"ⅷ\"-mid": {
+    "text": "abⅷcd",
+    "cells": ["0:0-4:abⅷcd"]
+  },
+  "c-\"​\"-a": {
+    "text": "abcd",
+    "cells": ["0:0-3:abcd"]
+  },
+  "c-\"​\"-mid": {
+    "text": "abcd",
+    "cells": ["0:0-3:abcd"]
+  },
+  "c-\"@\"-a": {
+    "text": "ab",
+    "cells": ["0:0-1:ab"]
+  },
+  "c-\"@\"-mid": {
+    "text": "@",
+    "cells": ["0:2-2:@"]
+  },
+  "c-\":\"-a": {
+    "text": "ab",
+    "cells": ["0:0-1:ab"]
+  },
+  "c-\":\"-mid": {
+    "text": ":",
+    "cells": ["0:2-2::"]
+  },
+  "c-\"'\"-a": {
+    "text": "ab",
+    "cells": ["0:0-1:ab"]
+  },
+  "c-\"'\"-mid": {
+    "text": "'",
+    "cells": ["0:2-2:'"]
+  },
+  "c-\"%\"-a": {
+    "text": "ab",
+    "cells": ["0:0-1:ab"]
+  },
+  "c-\"%\"-mid": {
+    "text": "%",
+    "cells": ["0:2-2:%"]
+  },
+  "c-\"#\"-a": {
+    "text": "ab",
+    "cells": ["0:0-1:ab"]
+  },
+  "c-\"#\"-mid": {
+    "text": "#",
+    "cells": ["0:2-2:#"]
+  },
+  "c-\"=\"-a": {
+    "text": "ab",
+    "cells": ["0:0-1:ab"]
+  },
+  "c-\"=\"-mid": {
+    "text": "=",
+    "cells": ["0:2-2:="]
+  },
+  "c-\"^\"-a": {
+    "text": "ab",
+    "cells": ["0:0-1:ab"]
+  },
+  "c-\"^\"-mid": {
+    "text": "^",
+    "cells": ["0:2-2:^"]
+  },
+  "c-\"|\"-a": {
+    "text": "ab",
+    "cells": ["0:0-1:ab"]
+  },
+  "c-\"|\"-mid": {
+    "text": "|",
+    "cells": ["0:2-2:|"]
+  },
+  "adj-emoji-punct": {
+    "text": "!😀",
+    "cells": [],
+    "blindRows": [0]
+  },
+  "adj-emoji-punct2": {
+    "text": "😀!",
+    "cells": [],
+    "blindRows": [0]
+  },
+  "adj-cjkpunct-ascii": {
+    "text": "。!",
+    "cells": ["0:1-3:。!"]
+  },
+  "adj-nbsp-space": {
+    "text": "",
+    "cells": ["0:1-1: "]
+  },
+  "adj-ideo-space": {
+    "text": "",
+    "cells": ["0:1-2:　"]
+  },
+  "box-pad": {
+    "text": "  pad me\n   lead sp",
+    "cells": ["0:0-39:  pad me                                ", "1:0-9:   lead sp"]
+  },
+  "box-pad-dbl": {
+    "text": "",
+    "cells": ["0:0-1:  "]
+  },
+  "two-cols": {
+    "text": "left text wraps",
+    "cells": ["0:0-39:left text right                         ", "1:0-4:wraps"]
+  },
+  "two-cols-tpl": {
+    "text": "left text ",
+    "cells": ["0:0-39:left text right                         "]
+  },
+  "border": {
+    "text": "╭──────────────────────────────────────╮\n│inside",
+    "cells": ["0:0-39:╭──────────────────────────────────────╮", "1:0-8:│inside  "]
+  },
+  "bg-text": {
+    "text": "blue bg",
+    "cells": ["0:0-19:blue bg             "]
+  },
+  "middle": {
+    "text": "",
+    "cells": []
+  },
+  "tpl-y-beyond": {
+    "text": "",
+    "cells": []
+  },
+  "dbl-x-beyond": {
+    "text": "",
+    "cells": []
+  }
+}

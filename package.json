@@ -48,6 +48,7 @@
     "tui:screen-vectors": "bun run scripts/tui-screen-vectors.ts",
     "tui:frame-vectors": "bun run scripts/tui-frame-vectors.ts",
     "tui:input-vectors": "bun run scripts/tui-input-vectors.ts",
+    "tui:selection-vectors": "bun run scripts/tui-selection-vectors.ts",
     "lint:command-system": "bun run scripts/command-system-gate.ts",
     "format": "oxfmt packages tests scripts evals website",
     "format:check": "oxfmt --check packages tests scripts evals website",

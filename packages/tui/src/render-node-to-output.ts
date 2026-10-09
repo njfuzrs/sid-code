@@ -217,14 +217,28 @@ const renderLaidOutNode = (
 				const maxWidth = getMaxWidth(yogaNode);
 
 				// sid-code（B9 / T4.1）：RawAnsi 的内容已按列宽换好行，不再换行 / 截断（契约 T5）
+				// sid-code（B9 / T6.2a）：记下哪些输出行是自动换行折出来的（选区复制时与下一行拼接，见 Screen.wrapEnd）
+				let softWraps: boolean[] | undefined;
 				if (currentWidth > maxWidth && !node.attributes['internal_raw']) {
 					const textWrap = node.style.textWrap ?? 'wrap';
+					softWraps = [];
+					for (const line of text.split('\n')) {
+						const count = wrapText(line, maxWidth, textWrap).split('\n').length;
+						for (let index = 0; index < count; index++) {
+							softWraps.push(index < count - 1);
+						}
+					}
+
 					text = wrapText(text, maxWidth, textWrap);
 				}
 
+				const offsetY = node.childNodes[0]?.yogaNode?.getComputedTop() ?? 0;
 				text = applyPaddingToText(node, text);
+				if (softWraps && offsetY > 0) {
+					softWraps = [...Array.from({length: offsetY}, () => false), ...softWraps];
+				}
 
-				output.write(x, y, text, {transformers: newTransformers});
+				output.write(x, y, text, {transformers: newTransformers, softWraps});
 			}
 
 			return;

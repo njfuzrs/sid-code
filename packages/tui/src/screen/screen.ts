@@ -129,6 +129,13 @@ export class Screen {
 	readonly widths: Uint8Array;
 	readonly styles: Uint32Array;
 	readonly links: Uint32Array;
+	/**
+	 * 软换行记录（B9 / T6.2a，选区复制用）：`wrapEnd[y] >= 0` 表示第 y 行是被自动换行折断的，
+	 * 内容接着写在第 y+1 行，值是第 y 行内容结束的列（右开）。-1 = 硬换行或没有文本。
+	 * 复制时软换行的两行直接拼接、不插 `\n`，且第 y 行只取到这一列（之后写进同一行的别的文本不算，
+	 * 旧底座实测：并排两列时左列折行，复制左列首行不带右列内容）。
+	 */
+	readonly wrapEnd: Int32Array;
 	readonly stylePool: StylePool;
 	readonly hyperlinkPool: HyperlinkPool;
 
@@ -144,6 +151,7 @@ export class Screen {
 		this.widths = new Uint8Array(size).fill(CellWidth.Narrow);
 		this.styles = new Uint32Array(size);
 		this.links = new Uint32Array(size);
+		this.wrapEnd = new Int32Array(this.height).fill(-1);
 		this.stylePool = pools.styles ?? stylePool;
 		this.hyperlinkPool = pools.links ?? hyperlinkPool;
 	}

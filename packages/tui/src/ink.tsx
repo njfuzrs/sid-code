@@ -38,6 +38,12 @@ import {supportsSynchronizedOutput} from './terminal/sync-output.js';
 import App from './components/App.js';
 import drainStdin from './drain-stdin.js';
 import {
+	clearSelection,
+	createSelectionState,
+	selectionText,
+	type SelectionState,
+} from './selection.js';
+import {
 	disableInputModesSequences,
 	reassertExtendedKeysSequence,
 	supportsExtendedKeys,
@@ -331,6 +337,13 @@ export default class Ink {
 	/** alt-screen 的上一帧（已裁到视口）与它出帧时的视口；缺省 = 屏幕已是空白（R14） */
 	private altPreviousScreen: Screen | undefined;
 	private altViewport: {columns: number; rows: number} | undefined;
+	/**
+	 * sid-code（B9 / T6.2a）：alt-screen 选区状态（纯逻辑在 selection.ts）。鼠标字节接入、
+	 * 高亮绘制、复制到剪贴板归 T6.2b；这里先提供端口实例的三个选区方法（契约 X7）。
+	 */
+	private readonly selection: SelectionState = createSelectionState();
+	/** 选区高亮背景色（M5）；undefined = 反色。T6.2b 绘制高亮时读它 */
+	private selectionBgColor: string | undefined;
 	private readonly unsubscribeSigcont?: () => void;
 	private kittyProtocolEnabled = false;
 	private kittyFlags: KittyFlagName[] | undefined;
@@ -506,6 +519,25 @@ export default class Ink {
 		this.onRender();
 		this.lastTerminalWidth = getWindowSize(this.options.stdout).columns;
 	};
+
+	/** 端口 RenderInstance.setSelectionBgColor（M5）：只记下颜色，下一帧起生效（T6.2b） */
+	setSelectionBgColor(color: string): void {
+		this.selectionBgColor = color;
+	}
+
+	/** 端口 RenderInstance.copySelectionNoClear（M2）：当前选区的文本，不清选区；不在 alt-screen 时为空 */
+	copySelectionNoClear(): string {
+		if (!this.altPreviousScreen) {
+			return '';
+		}
+
+		return selectionText(this.selection, this.altPreviousScreen);
+	}
+
+	/** 端口 RenderInstance.clearTextSelection：清掉选区，保留连击计数（selection.ts） */
+	clearTextSelection(): void {
+		clearSelection(this.selection);
+	}
 
 	/**
 	 * sid-code（B9 / T3.3，契约 R8）：擦可视区（`2J H`，不清 scrollback、不进同步输出包裹）后当场按首帧画一遍。

@@ -49,6 +49,7 @@ export function clipToViewport(screen: Screen, rows: number): Screen {
 	clipped.widths.set(screen.widths.subarray(0, size));
 	clipped.styles.set(screen.styles.subarray(0, size));
 	clipped.links.set(screen.links.subarray(0, size));
+	clipped.wrapEnd.set(screen.wrapEnd.subarray(0, rows));
 	return clipped;
 }
 

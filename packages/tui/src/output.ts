@@ -26,6 +26,8 @@ type WriteOperation = {
 	y: number;
 	text: string;
 	transformers: OutputTransformer[];
+	/** 第 i 行是否被自动换行折断（B9 / T6.2a，见 Screen.wrapEnd）；缺省 = 全是硬换行 */
+	softWraps?: boolean[];
 };
 
 type ClipOperation = {
@@ -91,9 +93,9 @@ export default class Output {
 		x: number,
 		y: number,
 		text: string,
-		options: {transformers: OutputTransformer[]},
+		options: {transformers: OutputTransformer[]; softWraps?: boolean[]},
 	): void {
-		const {transformers} = options;
+		const {transformers, softWraps} = options;
 
 		if (!text) {
 			return;
@@ -105,6 +107,7 @@ export default class Output {
 			y,
 			text,
 			transformers,
+			...(softWraps?.includes(true) ? {softWraps} : {}),
 		});
 	}
 
@@ -191,6 +194,7 @@ export default class Output {
 				const {text, transformers} = operation;
 				let {x, y} = operation;
 				let lines = text.split('\n');
+				let softWraps = operation.softWraps;
 				let maxX = screen.width;
 
 				const clip = clips.at(-1);
@@ -242,6 +246,7 @@ export default class Output {
 						const to = y + height > clip.y2! ? clip.y2! - y : height;
 
 						lines = lines.slice(from, to);
+						softWraps = softWraps?.slice(from, to);
 
 						if (y < clip.y1!) {
 							y = clip.y1!;
@@ -254,7 +259,13 @@ export default class Output {
 						line = transformer(line, index);
 					}
 
-					screen.writeLine(x, y + index, line, 0, maxX);
+					const end = screen.writeLine(x, y + index, line, 0, maxX);
+					const row = y + index;
+					// 只记软换行，硬换行的写入不清记录：并排两列时右列的硬换行文本写在同一行，
+					// 旧底座复制左列折行时仍按左列拼接、不带右列（探针 `two-cols`）
+					if (softWraps?.[index] && row >= 0 && row < screen.height) {
+						screen.wrapEnd[row] = Math.min(end, maxX);
+					}
 				}
 			}
 		}
