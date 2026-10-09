@@ -52,41 +52,69 @@ function saveApprovals(store: ApprovalStore): void {
 }
 
 /**
- * 检查项目级 MCP Server 的审批状态
+ * 检查项目级 MCP Server 的审批状态。
+ *
+ * M4：projectPath 现在是项目身份（git root），旧版用的是启动 cwd。`legacyPath` 传启动 cwd，
+ * 新 key 没有记录时回退查旧 key —— 升级后不必在每个子目录重新审批一遍；
+ * 下次对该 server 写入（approve/reject）时旧 key 被清掉，完成迁移。
  */
-export function getProjectServerApproval(serverName: string, projectPath: string): ApprovalStatus {
+export function getProjectServerApproval(
+  serverName: string,
+  projectPath: string,
+  legacyPath?: string,
+): ApprovalStatus {
   const approvals = loadApprovals();
-  const key = `${projectPath}:${serverName}`;
-
-  if (approvals.rejected?.includes(key)) return "rejected";
-  if (approvals.approved?.includes(key)) return "approved";
-  if (approvals.approveAllProjects?.includes(projectPath)) return "approved";
+  const lookup = (path: string): ApprovalStatus | null => {
+    const key = `${path}:${serverName}`;
+    if (approvals.rejected?.includes(key)) return "rejected";
+    if (approvals.approved?.includes(key)) return "approved";
+    if (approvals.approveAllProjects?.includes(path)) return "approved";
+    return null;
+  };
+  const primary = lookup(projectPath);
+  if (primary) return primary;
+  if (legacyPath && legacyPath !== projectPath) {
+    const legacy = lookup(legacyPath);
+    if (legacy) return legacy;
+  }
   return "pending";
 }
 
 /**
  * 批准项目级 MCP Server
  */
-export function approveProjectServer(serverName: string, projectPath: string): void {
+export function approveProjectServer(
+  serverName: string,
+  projectPath: string,
+  legacyPath?: string,
+): void {
   const approvals = loadApprovals();
   const key = `${projectPath}:${serverName}`;
+  const legacyKey = legacyPath ? `${legacyPath}:${serverName}` : null;
+  approvals.approved = (approvals.approved ?? []).filter((k) => k !== legacyKey);
   if (!approvals.approved.includes(key)) {
     approvals.approved.push(key);
   }
-  approvals.rejected = approvals.rejected.filter((k) => k !== key);
+  approvals.rejected = (approvals.rejected ?? []).filter((k) => k !== key && k !== legacyKey);
   saveApprovals(approvals);
 }
 
 /**
  * 拒绝项目级 MCP Server
  */
-export function rejectProjectServer(serverName: string, projectPath: string): void {
+export function rejectProjectServer(
+  serverName: string,
+  projectPath: string,
+  legacyPath?: string,
+): void {
   const approvals = loadApprovals();
   const key = `${projectPath}:${serverName}`;
+  const legacyKey = legacyPath ? `${legacyPath}:${serverName}` : null;
+  approvals.rejected = (approvals.rejected ?? []).filter((k) => k !== legacyKey);
   if (!approvals.rejected.includes(key)) {
     approvals.rejected.push(key);
   }
-  approvals.approved = approvals.approved.filter((k) => k !== key);
+  approvals.approved = (approvals.approved ?? []).filter((k) => k !== key && k !== legacyKey);
   saveApprovals(approvals);
 }
 
@@ -115,16 +143,20 @@ export function setApproveAll(value: boolean, projectPath: string): void {
 
 /** 待审批的项目级 server 名 → 其配置（仅本进程内有效） */
 let pendingApproval: Record<string, unknown> = {};
-/** 待审批 server 所属的项目路径 */
+/** 待审批 server 所属的项目路径（M4 起是项目身份 git root） */
 let pendingApprovalProject = "";
+/** 旧版审批 key 用的启动 cwd，写入时一并清掉旧 key（M4 迁移） */
+let pendingApprovalLegacyPath: string | undefined;
 
 /** 登记待审批快照（loadConfig 调用） */
 export function setPendingApprovalServers(
   servers: Record<string, unknown>,
   projectPath: string,
+  legacyPath?: string,
 ): void {
   pendingApproval = servers;
   pendingApprovalProject = projectPath;
+  pendingApprovalLegacyPath = legacyPath;
 }
 
 /** 读取待审批 server 名单（/mcp 面板调用） */
@@ -143,7 +175,7 @@ export function getPendingApprovalServers(): { names: string[]; projectPath: str
  */
 export function approvePendingServer(serverName: string): boolean {
   if (!(serverName in pendingApproval)) return false;
-  approveProjectServer(serverName, pendingApprovalProject);
+  approveProjectServer(serverName, pendingApprovalProject, pendingApprovalLegacyPath);
   delete pendingApproval[serverName];
   return true;
 }
@@ -166,10 +198,31 @@ export async function approveAndConnectPendingServer<T>(
   return tools.length;
 }
 
+/**
+ * 「批准本项目全部」（M3 启动审批框的第二个选项）：打开按项目的 approveAll 开关，
+ * 并把快照里剩下的 server 逐个批准 + 连接。返回实际处理的名字。
+ */
+export async function approveAllPendingServers<T>(
+  connect?: (name: string, config: never) => Promise<T[]>,
+): Promise<string[]> {
+  if (pendingApprovalProject) setApproveAll(true, pendingApprovalProject);
+  const names = Object.keys(pendingApproval);
+  for (const name of names) {
+    if (connect) await approveAndConnectPendingServer(name, connect);
+    else approvePendingServer(name);
+  }
+  return names;
+}
+
+/** 读取某个待审批 server 的配置（启动审批框展示命令用） */
+export function getPendingApprovalConfig(serverName: string): unknown {
+  return pendingApproval[serverName];
+}
+
 /** 拒绝一个待审批 server 并从快照中移除（后续启动直接跳过，不再询问）。 */
 export function rejectPendingServer(serverName: string): boolean {
   if (!(serverName in pendingApproval)) return false;
-  rejectProjectServer(serverName, pendingApprovalProject);
+  rejectProjectServer(serverName, pendingApprovalProject, pendingApprovalLegacyPath);
   delete pendingApproval[serverName];
   return true;
 }
@@ -178,4 +231,10 @@ export function rejectPendingServer(serverName: string): boolean {
 export function __resetPendingApproval(): void {
   pendingApproval = {};
   pendingApprovalProject = "";
+  pendingApprovalLegacyPath = undefined;
+}
+
+/** 读取待审批快照对应的旧版 key 路径（CLI 写入时迁移用） */
+export function getPendingApprovalLegacyPath(): string | undefined {
+  return pendingApprovalLegacyPath;
 }

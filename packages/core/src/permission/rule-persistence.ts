@@ -10,6 +10,7 @@ import { existsSync, mkdirSync } from "fs";
 import { getLogger } from "../debug/logger.ts";
 import { addFileGlobRuleToGitignore } from "../config/gitignore.ts";
 import { getSidHome, isInsideSidHome } from "../config/paths.ts";
+import { getSettingsFilePath } from "../config/settings/constants.ts";
 import type { SettingsPermissions } from "./types.ts";
 
 /** 设置文件 JSON 格式 */
@@ -119,7 +120,9 @@ function getSettingsPath(target: "user" | "project" | "local", workspacePath?: s
     case "project":
       return join(resolveProjectBase(workspacePath), ".sid-code", "settings.json");
     case "local":
-      return join(resolveProjectBase(workspacePath), ".sid-code", "settings.local.json");
+      // P2：与读取端（rule-loader / settings 层）同一口径 —— B2，git root 的 settings.local.json。
+      // 此前写 cwd 那份，子目录里点「不再询问」，换个子目录启动就又问一遍。
+      return getSettingsFilePath("localSettings", resolveProjectBase(workspacePath))!;
   }
 }
 

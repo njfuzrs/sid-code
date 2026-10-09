@@ -197,6 +197,18 @@ export interface TUICallbacks {
    * 加载危险配置），false 拒绝（本会话不加载，下次仍询问）。
    */
   onTrustDecision?: (trusted: boolean) => void | Promise<void>;
+  /**
+   * M3：读取当前待审批的项目级 MCP 服务器（供启动审批框逐个展示）。
+   * 空数组表示无待审批项。
+   */
+  getPendingMcpApprovals?: () => Array<{ name: string; target?: string }>;
+  /**
+   * M3：对单个待审批 server 的决定。"skip" = Esc 暂不决定（本会话不再询问其余项）。
+   */
+  onMcpApprovalDecision?: (
+    name: string,
+    choice: "approve" | "approve-all" | "reject" | "skip",
+  ) => void | Promise<void>;
 }
 
 /** P2-1：投影给 UI 的回退点展示信息（不直接依赖 session 层 RewindPoint 类型）。 */

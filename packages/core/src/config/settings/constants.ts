@@ -10,9 +10,10 @@
  * - Policy Settings 走 sidPaths.managedPolicyCandidates（系统级优先、~/.sid-code 回退）
  */
 
-import { join } from "path";
+import { dirname, join, resolve } from "path";
 import { homedir } from "os";
-import { existsSync, readdirSync } from "fs";
+import { resolveProjectRoot } from "../../memory/paths.ts";
+import { existsSync, readdirSync, realpathSync } from "fs";
 import {
   getSidHome,
   isInsideSidHome,
@@ -51,7 +52,7 @@ export function getSettingsFilePath(
     case "projectSettings":
       return join(projectBase, ".sid-code", "settings.json");
     case "localSettings":
-      return join(projectBase, ".sid-code", "settings.local.json");
+      return join(resolveLocalSettingsBase(projectBase), ".sid-code", "settings.local.json");
     case "policySettings":
       // D6：与 PolicyManager / rule-loader 共用 sidPaths.managedPolicyCandidates 候选链
       // （系统级优先、用户级回退）。都不存在时返回系统级路径，供变更监听挂在正确位置。
@@ -59,6 +60,50 @@ export function getSettingsFilePath(
     case "flagSettings":
       return null;
   }
+}
+
+/**
+ * P1b：settings.local.json 的基准目录 = B2（git root，见 config/project-bases.ts）。
+ *
+ * 对齐 CC v2.1.211+：子目录启动时 local settings 读写都在仓库根，于是同一仓库任意子目录
+ * 共享一份本机私有配置（权限规则的「不再询问」也落在这里，见 permission/rule-persistence.ts）。
+ * 共享 settings.json 刻意**不**跟着改（B1，CC 明文只读启动目录那份）。
+ *
+ * 退回启动目录的情形（照 CC）：非 git 仓库（resolveProjectRoot 本身就退回 cwd）、
+ * 仓库根就是家目录（否则 ~/.sid-code/settings.local.json 会与用户级配置目录混在一起）、Windows。
+ */
+export function resolveLocalSettingsBase(workspacePath: string): string {
+  if (process.platform === "win32") return workspacePath;
+  const root = resolveProjectRoot(workspacePath);
+  if (sameDir(root, homedir())) return workspacePath;
+  // git toplevel 返回的是 realpath（macOS 上 /var → /private/var）。cwd 本身就是仓库根时
+  // 保留调用方给的写法，否则同一个文件会以两种路径出现（旧位置判定、日志、监听键全会分叉）。
+  if (sameDir(root, workspacePath)) return workspacePath;
+  return root;
+}
+
+/** 两个目录是否指向同一处（尽量 realpath，不存在时退回字面 resolve） */
+function sameDir(a: string, b: string): boolean {
+  const real = (p: string) => {
+    try {
+      return realpathSync(p);
+    } catch {
+      return resolve(p);
+    }
+  };
+  return real(a) === real(b);
+}
+
+/**
+ * P1b 兼容：启动目录里旧位置的 settings.local.json（基准迁到 git root 之前写下的）。
+ * 与新位置相同时返回 null。读取时与新位置合并、同 key 以新位置为准（照 CC 文档）。
+ */
+export function getLegacyLocalSettingsPath(workspacePath: string = process.cwd()): string | null {
+  const projectBase = isInsideSidHome(workspacePath) ? homedir() : workspacePath;
+  const legacy = join(projectBase, ".sid-code", "settings.local.json");
+  const current = getSettingsFilePath("localSettings", workspacePath);
+  if (!current) return legacy;
+  return sameDir(dirname(current), dirname(legacy)) ? null : legacy;
 }
 
 /**

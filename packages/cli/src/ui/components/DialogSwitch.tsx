@@ -34,6 +34,7 @@ import { RewindDialog } from "./RewindDialog.tsx";
 import { ClaudeMdExternalImportDialog } from "./ClaudeMdExternalImportDialog.tsx";
 import { ConflictDialog } from "./ConflictDialog.tsx";
 import { TrustDialog } from "./TrustDialog.tsx";
+import { McpApprovalQueue } from "./McpApprovalDialog.tsx";
 import type { OnboardingResult } from "./OnboardingDialog.tsx";
 import type {
   PermissionRequestInfo,
@@ -212,9 +213,19 @@ export const DialogSwitch: React.FC<DialogSwitchProps> = ({
   if (activeDialog === "onboarding" && onCompleteOnboarding) {
     return <OnboardingDialog onComplete={onCompleteOnboarding} onClose={onDialogClose} />;
   }
-  if (activeDialog === "mcp" && mcpManager && sessionState) {
+  if (activeDialog === "mcp" && mcpManager) {
+    return <McpDialog onClose={onDialogClose} mcpManager={mcpManager} />;
+  }
+  // M3：项目 .mcp.json 待审批 server 的启动审批框，一次一个（队列进度在 McpApprovalQueue 内）
+  if (activeDialog === "mcp-approval") {
+    const pending = callbacks.getPendingMcpApprovals?.() ?? [];
+    if (pending.length === 0) return null;
     return (
-      <McpDialog onClose={onDialogClose} mcpManager={mcpManager} sessionState={sessionState} />
+      <McpApprovalQueue
+        pending={pending}
+        onDecision={(name, choice) => callbacks.onMcpApprovalDecision?.(name, choice)}
+        onDone={onDialogClose}
+      />
     );
   }
   if (activeDialog === "effort") {
