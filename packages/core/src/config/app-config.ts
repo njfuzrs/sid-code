@@ -91,6 +91,7 @@ export interface AppConfig {
     enabled?: boolean;
     maxAge?: string;
     maxCount?: number;
+    maxTotalSize?: string;
     minRetention?: string;
   };
 
