@@ -148,4 +148,4 @@ CLI 侧的写入点由 `cli-modes.test.tsx` 钉住：走生产入口 `createFull
 | P2 | 流式期间帧耗时 p95、每 token 写入字节数不高于旧底座 1.1 倍 | — （差分测试台基线） | `packages/cli/tests/render-port/term-bench/scenarios.tsx` S1: { |
 | P3 | 历史 ≥ 500 项时帧耗时不随历史线性增长（旧底座靠节点布局缓存 blit 做到 O(dirty)）。新底座口径：只改底部一行时，每帧真正遍历的节点数与历史长度无关；缓存命中的输出与冷渲染逐字节一致 | `dom.ts:6`、`dom.ts:219` | `packages/tui/tests/render-cache.test.tsx` P3: |
 | P5 | `useAnimationFrame` 离屏暂停：帧高 p > 视口 H 时，动画盒底边落在帧的最后 H - 1 行之外（`y + h - 1 < p - H + 1`）就停止订阅时钟；判定只在组件重渲时做、读上一次提交的布局，所以回到视口后要再来一次父级重渲才恢复，`React.memo` 包住的则一直停着 | `hooks/use-animation-frame.ts:34`、`hooks/use-terminal-viewport.ts` | `packages/cli/tests/render-port/contracts-animation.test.tsx` P5: |
-| P4 | 长会话 RSS 不高于旧底座 1.2 倍 | — （差分测试台基线） | ⏳ T8.1 |
+| P4 | 长会话 RSS 不高于旧底座 1.2 倍。口径（T8.1c）：500 条带样式多行历史进 Static，同一测试内串行起两套底座，峰值 RSS 比值与堆增长斜率比值都 ≤ 1.2；灵敏度只到「整段多占几十 MB」，几 MB 级的泄漏抓不到 | — （差分测试台基线） | `packages/cli/tests/render-port/rss.test.ts` P4: |
