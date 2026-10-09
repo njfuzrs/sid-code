@@ -708,6 +708,19 @@ export class ReadTool implements Tool {
         `✓ 读取 ${filePath} ${normalizedLines.length}行 ${isTruncated ? `(截断，共${totalLines}行)` : ""}`,
       );
 
+      // 缺陷 10：记忆文件被读 = `memory_inject` 的分子。只在成功路径发（失败的 Read
+      // 不算「被读过」）；判定与埋点都不许影响读取结果。
+      try {
+        const { classifyMemoryReadPath } = await import("../memory/paths.ts");
+        const hit = classifyMemoryReadPath(filePath);
+        if (hit) {
+          const { logMemoryRead } = await import("../analytics/events.ts");
+          logMemoryRead(hit);
+        }
+      } catch {
+        /* 埋点失败静默 */
+      }
+
       return { output };
     } catch (err: any) {
       // 区分常见错误码

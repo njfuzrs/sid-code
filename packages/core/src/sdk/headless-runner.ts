@@ -15,6 +15,7 @@ import type { StructuredIO } from "./structured-io.ts";
 import type { SDKQueryEngine } from "./query-engine.ts";
 import type { CommandQueue, QueuedCommand } from "./command-queue.ts";
 import type { SDKMessage, SDKResultMessage, SDKUserMessage, StdoutMessage } from "./types.ts";
+import { SDKControlSetModelSchema } from "./control-schemas.ts";
 
 /** runHeadless 的收尾状态。调用方用它决定退出码，不能只看「有没有抛异常」。 */
 export interface HeadlessRunOutcome {
@@ -23,45 +24,131 @@ export interface HeadlessRunOutcome {
    * 但写出消息不等于进程以非 0 退出——CI 看的是退出码。
    */
   budgetExceeded: boolean;
+  /** 是否因 stdin 空闲超时（idleTimeoutMs）而结束读取（缺陷 7）。 */
+  idleTimedOut: boolean;
+}
+
+/** `get_context_usage` 的响应载荷 */
+export interface HeadlessContextUsage {
+  used_tokens: number;
+  max_tokens: number;
+  percent_of_window: number;
 }
 
 /** 宿主发来的控制请求里，CLI 侧要回调出去的那几类。 */
 export interface HeadlessControlHandlers {
   /** `interrupt`：中止当前轮。没有在跑的轮时也会被调用，实现方自己决定是否 no-op。 */
   onInterrupt?: () => void;
+  /**
+   * `set_model`：切换主模型，下一轮起生效。非法模型名请抛错——错误文案原样回给宿主。
+   * 返回切换后的模型名。不提供 = 回 error「未实现」。
+   */
+  onSetModel?: (model: string) => string;
+  /** `get_context_usage`：当前上下文占用。不提供 = 回 error「未实现」。 */
+  onGetContextUsage?: () => HeadlessContextUsage;
+}
+
+/** 本编排层能应答的入站控制子类型（随 handlers 增减；initialize 恒可答） */
+function supportedSubtypes(handlers: HeadlessControlHandlers): string[] {
+  const out = ["initialize", "interrupt"];
+  if (handlers.onSetModel) out.push("set_model");
+  if (handlers.onGetContextUsage) out.push("get_context_usage");
+  return out;
 }
 
 /**
- * B25：宿主控制请求的分发。只实现 `interrupt`；其余 subtype 一律回 error「未实现」——
- * 以前它们落进 runHeadlessStreaming 的 `if (type === "user")` 之外被**静默丢弃**，
- * 宿主那边永远等不到 control_response。回一个明确的错误，至少宿主能知道。
+ * `initialize` 里这些字段在 CLI 进程已启动后无法生效（system prompt / schema 工具 /
+ * 轮次与预算上限都在进程启动时装配进内核）。收到就**明确拒绝**，而不是回 success
+ * 让宿主以为设上了——那正是缺陷 6 的静默失效形态换了个入口。
+ */
+const INITIALIZE_STARTUP_ONLY_FIELDS: Record<string, string> = {
+  system_prompt: "--system-prompt",
+  json_schema: "--json-schema",
+  max_turns: "--max-turns",
+  max_budget_usd: "--max-budget-usd",
+};
+
+/**
+ * 宿主控制请求的分发（B25 起只有 interrupt；缺陷 3/4 补齐其余入站子类型）。
+ *
+ * 每个带 request_id 的入站 control_request **必回一条 control_response**——
+ * 宿主那边的 sendRequest 在等它。能做的回 success，做不了的回 error 并说清原因；
+ * 绝不静默丢弃。
  *
  * `can_use_tool` 方向相反（CLI → 宿主），宿主发过来同样回 error。
  */
 async function handleControlRequest(
   structuredIO: StructuredIO,
-  msg: { request_id?: unknown; request?: { subtype?: unknown } },
+  msg: { request_id?: unknown; request?: Record<string, unknown> & { subtype?: unknown } },
   handlers: HeadlessControlHandlers,
 ): Promise<void> {
   const requestId = typeof msg.request_id === "string" ? msg.request_id : "";
-  const subtype = typeof msg.request?.subtype === "string" ? msg.request.subtype : "";
+  const req = msg.request ?? {};
+  const subtype = typeof req.subtype === "string" ? req.subtype : "";
   if (!requestId) return; // 没有 request_id 就无从配对，回了也没人收
-  if (subtype === "interrupt") {
-    handlers.onInterrupt?.();
-    await structuredIO.write({
+
+  const success = (response?: unknown) =>
+    structuredIO.write({
       type: "control_response",
-      response: { subtype: "success", request_id: requestId },
+      response: {
+        subtype: "success",
+        request_id: requestId,
+        ...(response !== undefined ? { response } : {}),
+      },
     });
+  const error = (text: string) =>
+    structuredIO.write({
+      type: "control_response",
+      response: { subtype: "error", request_id: requestId, error: text },
+    });
+
+  try {
+    switch (subtype) {
+      case "interrupt":
+        handlers.onInterrupt?.();
+        await success();
+        return;
+
+      case "initialize": {
+        const rejected = Object.keys(INITIALIZE_STARTUP_ONLY_FIELDS).filter(
+          (k) => req[k] !== undefined,
+        );
+        if (rejected.length > 0) {
+          await error(
+            `initialize 字段 ${rejected.join(", ")} 只能在启动时设置，请改用 CLI 参数 ` +
+              rejected.map((k) => INITIALIZE_STARTUP_ONLY_FIELDS[k]).join(" / "),
+          );
+          return;
+        }
+        await success({ supported_control_subtypes: supportedSubtypes(handlers) });
+        return;
+      }
+
+      case "set_model": {
+        if (!handlers.onSetModel) break;
+        const parsed = SDKControlSetModelSchema().safeParse(req);
+        if (!parsed.success) {
+          await error(`set_model 请求格式错误：需要字符串字段 model`);
+          return;
+        }
+        const model = handlers.onSetModel(parsed.data.model);
+        await success({ model });
+        return;
+      }
+
+      case "get_context_usage":
+        if (!handlers.onGetContextUsage) break;
+        await success(handlers.onGetContextUsage());
+        return;
+    }
+  } catch (err) {
+    await error(err instanceof Error ? err.message : String(err));
     return;
   }
-  await structuredIO.write({
-    type: "control_response",
-    response: {
-      subtype: "error",
-      request_id: requestId,
-      error: `控制请求 "${subtype || "(缺 subtype)"}" 未实现（当前只支持 interrupt）`,
-    },
-  });
+
+  await error(
+    `控制请求 "${subtype || "(缺 subtype)"}" 未实现（当前支持：${supportedSubtypes(handlers).join(" / ")}）`,
+  );
 }
 
 /**
@@ -75,20 +162,35 @@ async function handleControlRequest(
  * 都要等这一轮结束才被读到——也就是永远等不到。所以读取放在后台泵里，
  * 控制消息到达即处理，user 消息只入队。
  *
- * 终止条件：输入流结束（stdin EOF）且队列排空。
+ * 终止条件：输入流结束（stdin EOF）且队列排空；或 stdin 空闲超时（idleTimeoutMs）。
+ *
+ * ⚠️ 缺陷 8：某一轮抛异常**不得**终止整个会话。旧实现里异常穿出 for-await，
+ * 读循环随之关闭——这一条没有 result、之后宿主已写进 stdin 的消息连读都不会被读。
+ * 现在每条命令独立兜底：抛异常且还没出过 result 的，补一条 error_during_execution，
+ * 然后继续处理下一条。
  */
 export async function* runHeadlessStreaming(
   structuredIO: StructuredIO,
   engine: SDKQueryEngine,
   commandQueue: CommandQueue,
-  _options: {
-    maxTurns?: number;
-    maxBudgetUsd?: number;
+  options: {
+    /**
+     * 缺陷 7：stdin 空闲上限。没有在跑的轮、队列为空、且这么久没收到任何入站消息时，
+     * 停止等待并正常收尾。0 / 不传 = 不设上限（宿主可以在两轮之间任意久地空闲）。
+     *
+     * 这里曾还有 maxTurns / maxBudgetUsd 两个字段，同缺陷 6：内核已硬停，此处零读取，删了。
+     */
     idleTimeoutMs?: number;
+    /** 空闲超时触发时回调（调用方记日志 / 决定退出码） */
+    onIdleTimeout?: () => void;
   } = {},
   handlers: HeadlessControlHandlers = {},
 ): AsyncGenerator<StdoutMessage> {
+  const idleTimeoutMs = options.idleTimeoutMs ?? 0;
   let inputDone = false;
+  let idleExpired = false;
+  /** 最近一次「有动静」的时刻：收到入站消息 / 一轮结束 */
+  let lastActivity = Date.now();
   let wake: (() => void) | null = null;
   const notify = () => {
     const w = wake;
@@ -100,6 +202,8 @@ export async function* runHeadlessStreaming(
   const pump = (async () => {
     try {
       for await (const input of structuredIO.read()) {
+        if (idleExpired) break;
+        lastActivity = Date.now();
         const type = (input as { type?: unknown }).type;
         if (type === "user") {
           const content = (input as SDKUserMessage).message.content;
@@ -134,24 +238,72 @@ export async function* runHeadlessStreaming(
     while (true) {
       let command: QueuedCommand | undefined;
       while ((command = commandQueue.dequeueBatch())) {
-        for await (const message of engine.submitMessage(command.value, {
-          uuid: command.uuid,
-        })) {
-          yield message;
+        let resultEmitted = false;
+        try {
+          for await (const message of engine.submitMessage(command.value, {
+            uuid: command.uuid,
+          })) {
+            if ((message as { type?: unknown }).type === "result") resultEmitted = true;
+            yield message;
+          }
+        } catch (err) {
+          // 已经出过 result 的轮再抛，说明终止信号已送达，不补第二条
+          if (!resultEmitted) yield turnErrorResult(engine, err);
         }
+        lastActivity = Date.now();
       }
       if (inputDone && commandQueue.isEmpty()) break;
+      if (idleExpired) break;
       await new Promise<void>((resolve) => {
-        wake = resolve;
+        let timer: ReturnType<typeof setTimeout> | null = null;
+        wake = () => {
+          if (timer) clearTimeout(timer);
+          resolve();
+        };
         // 等待期间泵可能已经结束或入队——复查一次，避免错过唤醒
-        if (inputDone || !commandQueue.isEmpty()) notify();
+        if (inputDone || !commandQueue.isEmpty()) {
+          notify();
+          return;
+        }
+        if (idleTimeoutMs > 0) {
+          const remaining = Math.max(0, lastActivity + idleTimeoutMs - Date.now());
+          timer = setTimeout(() => {
+            timer = null;
+            idleExpired = true;
+            options.onIdleTimeout?.();
+            notify();
+          }, remaining);
+          (timer as { unref?: () => void }).unref?.();
+        }
       });
+      // 超时与入队在同一时刻到达时，以入队为准：先把队列跑完再退出
+      if (idleExpired && !commandQueue.isEmpty()) idleExpired = false;
     }
   } finally {
     // 正常结束时泵已退出；提前 return（消费方中止）时不等它，stdin 由进程收尾关闭
     if (inputDone) await pump;
   }
   if (pumpError) throw pumpError;
+}
+
+/**
+ * 缺陷 8：某轮抛异常时补的那条 result。优先用引擎自带的（带 usage / cost / 轮数）；
+ * 嵌入方注入的 engine 若没有 errorResult（鸭子类型的 mock / 自定义实现），给一条最小合法 result。
+ */
+function turnErrorResult(engine: SDKQueryEngine, err: unknown): SDKResultMessage {
+  const e = engine as Partial<Pick<SDKQueryEngine, "errorResult">>;
+  if (typeof e.errorResult === "function") return e.errorResult.call(engine, err);
+  return {
+    type: "result",
+    subtype: "error_during_execution",
+    errors: [err instanceof Error ? err.message : String(err)],
+    duration_ms: 0,
+    num_turns: 0,
+    num_turns_without_model_interaction: 0,
+    total_cost_usd: 0,
+    usage: { inputTokens: 0, outputTokens: 0 },
+    session_id: "",
+  };
 }
 
 /** 提取 result(success) 的最终文本 */
@@ -180,13 +332,16 @@ export async function runHeadless(
     structuredIO?: StructuredIO;
     commandQueue?: CommandQueue;
     output?: Writable;
-    /** stream-json 下宿主控制请求的回调（B25：interrupt） */
+    /** stream-json 下宿主控制请求的回调（B25：interrupt；缺陷 4：set_model / get_context_usage） */
     controlHandlers?: HeadlessControlHandlers;
+    /** stream-json 下 stdin 空闲上限（缺陷 7）。0 / 不传 = 不设上限 */
+    idleTimeoutMs?: number;
   },
 ): Promise<HeadlessRunOutcome> {
   const { outputFormat, verbose, initialPrompt } = options;
   const out: Writable = options.output ?? process.stdout;
   let budgetExceeded = false;
+  let idleTimedOut = false;
   const watch = (msg: StdoutMessage) => {
     if (isBudgetExceededResult(msg)) budgetExceeded = true;
   };
@@ -206,13 +361,18 @@ export async function runHeadless(
       structuredIO,
       engine,
       commandQueue,
-      {},
+      {
+        idleTimeoutMs: options.idleTimeoutMs,
+        onIdleTimeout: () => {
+          idleTimedOut = true;
+        },
+      },
       options.controlHandlers,
     )) {
       watch(msg);
       await structuredIO.write(msg);
     }
-    return { budgetExceeded };
+    return { budgetExceeded, idleTimedOut };
   }
 
   // text / json：收集后统一输出
@@ -234,7 +394,7 @@ export async function runHeadless(
     // text
     out.write(extractResultText(messages) + "\n");
   }
-  return { budgetExceeded };
+  return { budgetExceeded, idleTimedOut };
 }
 
 /** result 消息里 subtype 为预算硬停。其余消息（含成功 result）返回 false。 */

@@ -101,6 +101,19 @@ function saveDreamState(memoryDir: string, state: DreamState): void {
 }
 
 /**
+ * dream 结束后对记忆目录跑一次 load：把「写空」的文件归档并重建索引（缺陷 3）。
+ * 失败只记日志 —— 收口失败不应让 dream 状态不落盘。
+ */
+export async function reconcileMemoryDir(memoryDir: string): Promise<void> {
+  try {
+    const { MemoryStore } = await import("../store.ts");
+    await new MemoryStore(undefined, { projectMemoryDir: memoryDir }).load();
+  } catch (err) {
+    getLogger().warn("DREAM", `dream 后记忆目录收口失败（空文件留待下次 load 归档）: ${err}`);
+  }
+}
+
+/**
  * 判断是否应触发 dream（三级 gate）。
  * 返回 { should, reason }——reason 用于日志（说明为何触发/跳过）。
  */
@@ -188,6 +201,10 @@ export function initAutoDream(ctx: DreamContext): AutoDreamHandle {
     } catch (err) {
       log.warn("DREAM", `记忆巩固失败: ${err}`);
     } finally {
+      // 缺陷 3：dream 的 prune 是「用 write 写空」，而归档 + 重建索引只发生在
+      // `MemoryStore.load()` 里。dream 跑在会话退出的 cleanup 中，此后不会再有人 load，
+      // 不在这里收口的话：空文件留在原处 → 下一次 dream 的 manifest 仍列出它 → 又删一次。
+      await reconcileMemoryDir(ctx.memoryDir);
       // 无论成败都更新状态（避免失败反复重试打满配额）
       saveDreamState(ctx.memoryDir, {
         lastDreamAt: now(),

@@ -3,7 +3,7 @@
  *
  * 后台记忆提取代理遵循最小权限原则：
  * - ✅ Read/Grep/Glob/ls（只读，无限制）
- * - ✅ Bash（仅只读命令：ls/find/cat/stat/wc/head/tail）
+ * - ✅ Bash（仅只读命令：管道/序列里**每个**命令都须在白名单内，见 isReadonlyBash）
  * - ✅ Edit/Write（仅 memoryDir 内的路径）
  * - ✅ save_memory（**仅 project scope**，见 P1-9：其余三个 scope 都落在 memoryDir 之外）
  * - ❌ 其他所有工具（MCP、Agent、网络、写入 memoryDir 外的路径）
@@ -17,6 +17,11 @@
 import type { CanUseToolFn } from "../../agent/forked-agent.ts";
 import type { PermissionResult } from "../../tool/types.ts";
 import { isAutoMemPath } from "../paths.ts";
+import {
+  parseBashCommand,
+  extractSimpleCommands,
+  extractRedirectTargets,
+} from "../../tool/bash/parser.ts";
 // P1-12 指标 ③：越权拒绝计数（防线触发次数，恒 0 亦是信号）。
 import { logMemoryGuard } from "../../analytics/events.ts";
 
@@ -64,19 +69,58 @@ function extractTargetPath(input: unknown): string | undefined {
   return undefined;
 }
 
-/** 判断 bash 命令是否为只读命令 */
-function isReadonlyBash(input: unknown): boolean {
-  if (input && typeof input === "object") {
-    const cmd = (input as Record<string, unknown>).command;
-    if (typeof cmd === "string") {
-      const trimmed = cmd.trim();
-      // 拒绝含有写重定向 / 管道破坏性命令
-      if (/[>]|rm\s|mv\s|sudo\s|curl\s|wget\s|chmod\s|chown\s/.test(trimmed)) return false;
-      const firstWord = trimmed.split(/\s+/)[0];
-      return READONLY_BASH_PREFIXES.includes(firstWord);
-    }
+/**
+ * `find` 里能执行命令或写盘的谓词。`find` 本身在白名单里，但 `-exec sh -c ...`
+ * 不会在 AST 里另起一个简单命令节点（参数原样挂在 find 下面），所以必须按参数拦。
+ */
+const FIND_UNSAFE_ARGS = new Set([
+  "-exec",
+  "-execdir",
+  "-ok",
+  "-okdir",
+  "-delete",
+  "-fprint",
+  "-fprint0",
+  "-fprintf",
+  "-fls",
+]);
+
+/**
+ * 命令替换 / 进程替换。parser 不展开它们（`$(curl x)` 会被切成参数 `"$(curl"`），
+ * 于是 AST 逐命令校验看不见里面的命令 —— 只能整串拒绝。后台代理是只读探查，
+ * 这几种形态没有正当用途。
+ */
+const SUBSTITUTION_RE = /\$\(|`|<\(|>\(/;
+
+/**
+ * 判断 bash 命令是否为只读命令（缺陷 1 · P0）。
+ *
+ * 旧实现只看**第一个词**：`cat x | sh`、`grep a f | bash` 首词在白名单里就放行，
+ * 比主路径 `isReadOnlyCommand`（AST 逐命令）还松 —— 而这个代理是无人监督的后台 fork，
+ * 方向反了。现在的口径：
+ * 1. 整串含命令/进程替换 → 拒（parser 看不见里面）；
+ * 2. 任何 `>` → 拒（含 `>/dev/null`，后台代理不需要；比主路径严是刻意的）；
+ * 3. AST 拆出的**每一个**简单命令都必须在白名单里（管道 / `;` / `&&` 全覆盖）；
+ * 4. `find` 额外拒绝 `-exec` / `-delete` 一类谓词（主路径同样漏这条，见缺陷文档）。
+ */
+export function isReadonlyBash(input: unknown): boolean {
+  if (!input || typeof input !== "object") return false;
+  const cmd = (input as Record<string, unknown>).command;
+  if (typeof cmd !== "string") return false;
+  const trimmed = cmd.trim();
+  if (!trimmed) return false;
+  if (SUBSTITUTION_RE.test(trimmed)) return false;
+  if (trimmed.includes(">")) return false;
+
+  const ast = parseBashCommand(trimmed);
+  if (extractRedirectTargets(ast).length > 0) return false;
+  const simple = extractSimpleCommands(ast);
+  if (simple.length === 0) return false;
+  for (const { command, args } of simple) {
+    if (!READONLY_BASH_PREFIXES.includes(command)) return false;
+    if (command === "find" && args.some((a) => FIND_UNSAFE_ARGS.has(a))) return false;
   }
-  return false;
+  return true;
 }
 
 /**

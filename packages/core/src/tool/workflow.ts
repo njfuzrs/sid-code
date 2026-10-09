@@ -82,7 +82,9 @@ const workflowSchema = lazySchema(() =>
       budget_total: z
         .number()
         .optional()
-        .describe("本次 run 的 token 目标(硬上限)。达上限后 agent() 抛错。省略=不限。"),
+        .describe(
+          "本次 run 的 token 目标(硬上限)。每个 agent() 取到调度槽位后检查,达上限后 agent() 抛错并让整个 workflow 失败(parallel/pipeline 也不吞);已在跑的至多 1 个并发批次可能略超。省略=不限。",
+        ),
     })
     .describe("跑一段确定性多 agent 编排脚本(Dynamic Workflow)"),
 );
@@ -340,8 +342,8 @@ export class WorkflowTool implements Tool {
       strictPhases: process.env.SID_CODE_WORKFLOW_STRICT_PHASES === "1",
       // 共享池：会话读口返回的是「主循环 + 全部子代理（含本 run 已回写的）」输出 token 之和。
       // 子代理用量在 onResult 里经 usageSink **同步**回写 SessionState，而预算硬门
-      // （runtime.agent 开头的 remaining() 检查）发生在下一次 agent() 调用时——
-      // 此时上一轮的用量已经进了会话累计，所以直接读会话总量就是池子，
+      // （runtime 在 agent() 取到调度槽位后的 remaining() 检查）发生在前面的 agent 跑完之后——
+      // 此时它们的用量已经进了会话累计，所以直接读会话总量就是池子，
       // 不能再加 outputTokens（那会把本 run 已回写的部分算两次）。
       // 未注入读口时退化为只计本 run（outputTokens），headless/测试行为不变。
       spentReader: this.sessionOutputTokensReader
