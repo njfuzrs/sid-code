@@ -283,7 +283,12 @@ export class GrepTool implements Tool {
       return result;
     } catch (err: any) {
       if (err instanceof RipgrepTimeoutError) {
-        const visiblePartial = this.filterHiddenLines(err.partialResults, searchPath, mode);
+        // 与正常路径一致：deny 过滤 → mtime 排序 → 分页（以前超时路径漏了排序）
+        const visiblePartial = this.sortLinesByMtime(
+          this.filterHiddenLines(err.partialResults, searchPath, mode),
+          searchPath,
+          mode,
+        );
         if (visiblePartial.length > 0) {
           const { appliedLimit, pagedLines } = this.applyPagination(
             visiblePartial,
