@@ -12,7 +12,20 @@
  * 断言走内存 `getCompletedMetrics()`，不写 `~/.sid-code/`。
  */
 
-import { describe, test, expect, beforeEach, afterEach } from "bun:test";
+import { describe, test, expect, beforeEach, afterEach, beforeAll, afterAll } from "bun:test";
+
+// 2026-10-08 有意语义变更（LLM 错误观测证据制，I1）：mock provider 的空响应 / 未识别异常
+// 不再 fail-fast，而是按 transient 预算重试。本文件测的是可观测性，不测退避，故把
+// 走 resolveLoopTimeouts 的一次性漏斗退避压成 0（env 优先级最高），文件结束后还原。
+let prevBackoffEnv: string | undefined;
+beforeAll(() => {
+  prevBackoffEnv = process.env.SID_CODE_RETRY_BACKOFF_BASE_MS;
+  process.env.SID_CODE_RETRY_BACKOFF_BASE_MS = "0";
+});
+afterAll(() => {
+  if (prevBackoffEnv === undefined) delete process.env.SID_CODE_RETRY_BACKOFF_BASE_MS;
+  else process.env.SID_CODE_RETRY_BACKOFF_BASE_MS = prevBackoffEnv;
+});
 import {
   initTelemetry,
   getTelemetryBus,
@@ -42,7 +55,10 @@ import type { Message, StreamEvent } from "@sid-code/core/llm/types.ts";
 const throwingProvider: any = {
   name: () => "mock",
   async *sendMessageStream(): AsyncIterable<StreamEvent> {
-    throw new Error("摘要请求失败（模拟）");
+    // 2026-10-08：用本地异常（local_fault 族：2 次、不退避）。普通 Error 现在按 transient
+    // 未识别子集重试，autoCompact 显式传了 1s 退避基数，6 次压缩会把测试拖过 5s 超时。
+    // 本条测的是熔断器三件套，失败归哪一族与它无关。
+    throw new TypeError("摘要请求失败（模拟）");
   },
 };
 

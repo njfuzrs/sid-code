@@ -108,6 +108,13 @@ export function is404Error(error: unknown): boolean {
  */
 export function isPromptTooLong(error: unknown): boolean {
   const msg = lower(error);
+  // 413 / `Request too large`（2026-10-08）：词表 `error-lexicon.ts` 早就把它们算作溢出，
+  // 本函数却不认 —— 而漏斗的「转交压缩」判据与 loop 的压缩闸门必须是**同一个函数**，
+  // 两边不一致时漏斗转交了 loop 也接不住。
+  // ⚠️ 413 不全是上下文溢出：单个图片 / PDF 过大也是 413，压缩历史治不了它，先排除。
+  if (isImageTooLarge(error) || isPdfTooLarge(error)) return false;
+  if (extractHTTPStatus(error) === 413) return true;
+  if (msg.includes("request too large") || msg.includes("request entity too large")) return true;
   return (
     msg.includes("prompt is too long") ||
     msg.includes("prompt too long") ||

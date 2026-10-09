@@ -61,6 +61,16 @@ export interface RetryTelemetryEvent {
      * "探针在正常限流"还是"词表把该探的挡住了"。
      */
     | "cooldown_probe_denied"
+    /**
+     * 2026-10-08「一次判死」根治 §4.5：本次调用**放弃**这个模型（I5 判定可审计）。
+     * 只在 `applyRecoveryAction` 的 give_up 唯一出口写入，带完整证据链。
+     */
+    | "recovery_give_up"
+    /**
+     * §4.5：错误落入 transient 只是因为「认不出」。只用来观察各网关实际回什么，
+     * ⛔ 不许写回分类规则自动生效（自动学习会把一次网关事故学成永久规则）。
+     */
+    | "unrecognized_error"
     // 流内诊断事件（由 stream-guard.ts 产生）
     | "stream_stall"
     | "stream_idle_timeout"
@@ -148,6 +158,27 @@ export interface RetryTelemetryEvent {
    * 混用会让"按拒绝原因分组"退化成子串匹配。
    */
   probeDecision?: string;
+  // ── 恢复决策字段（recovery_give_up / unrecognized_error / retry）──
+  /** 错误族（`ErrorFamily`） */
+  family?: string;
+  /** 错误指纹（status + upstreamType + 归一化文案） */
+  fingerprint?: string;
+  /** 结构化 HTTP 状态码 */
+  statusCode?: number;
+  /** 到达形态：仅遥测，不参与决策 */
+  arrival?: "thrown" | "stream_event";
+  /** recovery_give_up：放弃原因（`GiveUpReason` 闭集） */
+  giveUpReason?: string;
+  /** recovery_give_up：本次调用总尝试次数 */
+  attempts?: number;
+  /** recovery_give_up：每次尝试的状态码（无则 null） */
+  statuses?: (number | null)[];
+  /** recovery_give_up：每次尝试的指纹 */
+  fingerprints?: string[];
+  /** recovery_give_up：首次尝试到放弃的跨度 */
+  spanMs?: number;
+  /** recovery_give_up：最后一次错误是否被认出（false = 未识别子集） */
+  recognized?: boolean;
   /** max_tokens 调整：原始值 */
   originalTokens?: number;
   /** max_tokens 调整：新值 */
@@ -275,6 +306,20 @@ export function defaultTelemetryHandler(event: RetryTelemetryEvent): void {
       log.info(
         "TELEMETRY",
         `[cooldown_probe_denied] ${event.model} decision=${event.probeDecision} remaining=${event.remainingMs}ms reason=${event.error}`,
+      );
+      break;
+
+    case "recovery_give_up":
+      log.warn(
+        "TELEMETRY",
+        `[recovery_give_up] ${event.model} reason=${event.giveUpReason} family=${event.family} attempts=${event.attempts} statuses=${JSON.stringify(event.statuses)} span=${event.spanMs}ms`,
+      );
+      break;
+
+    case "unrecognized_error":
+      log.info(
+        "TELEMETRY",
+        `[unrecognized_error] ${event.model} status=${event.statusCode} fp=${event.fingerprint} arrival=${event.arrival} msg=${event.error}`,
       );
       break;
 

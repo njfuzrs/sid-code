@@ -258,8 +258,10 @@ export class QueryEngine {
     // 记录用户提示
     getSessionMetrics().recordPrompt();
 
-    // 新一轮对话开始，重置模型可用性的 retry_once 标记
-    this.deps.fallback.getAvailability().resetTurn();
+    // 2026-10-08：此处曾调 `availability.resetTurn()` 清 retry_once 计数。嫌疑态改为有时效
+    // 后不再需要「按轮重置」；主线程调用本来就不读嫌疑态（I4，见下方 sendWithRetry 的
+    // 显式 querySource）。⛔ 不要在共享 availability 上打「本轮首发豁免」标记——
+    // 先跑的 side-call（memory recall 等）会把豁免消费掉，主线程仍被拦。
 
     // ─── user_prompt_submit hook ───
     const finalInput = userInput;
@@ -380,6 +382,9 @@ export class QueryEngine {
         // 代码在、测试绿、生产路径上一次都没跑过（本仓「伪配置」同型）。
         return this.deps.fallback.executeWithFallback(this.deps.provider, params, signal, {
           deadlineAt: opts?.deadlineAt,
+          // I4：显式声明主线程，availability 据此**不读嫌疑态**（每次都真实发请求）。
+          // ⛔ 不依赖 `config.querySource` 缺省值：缺省值一变，豁免就静默失效。
+          querySource: "main_thread",
         });
       },
       processStream: (stream, onText, onThinking, turnAbortController) => {

@@ -234,7 +234,7 @@ describe("S5 释放侧：探针失败后的配额归属", () => {
     const availability = new ModelAvailabilityService();
     availability.markRateLimited("m1", 10_000, "429", "rate_limit");
     const { fb } = fastFallback({ availability });
-    // 401 是 Terminal(auth_failed)：它对"限流窗口过了没有"一个字都没回答。
+    // 401 是 auth_suspect/auth_failed：它对"限流窗口过了没有"一个字都没回答。
     const { provider } = makeProvider(
       errStream("401 invalid api key", "authentication_error", 401),
     );
@@ -242,7 +242,7 @@ describe("S5 释放侧：探针失败后的配额归属", () => {
     await drain(fb, provider);
 
     // 若这里是 true，一次无关的认证故障就把整个冷却窗口唯一的探针机会白吃掉了。
-    // 注意 401 会 markTerminal，但冷却记录与 states 是两张正交的表（availability.ts
+    // 注意 401 放弃时会 markSuspect，但冷却记录与嫌疑表是两张正交的表（availability.ts
     // 的 S2 段注释），冷却仍在 → 配额语义仍然有意义。
     expect(availability.isCooldownProbeConsumed("m1")).toBe(false);
   }, 15_000);

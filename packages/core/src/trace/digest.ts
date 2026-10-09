@@ -353,6 +353,90 @@ export interface JitDigestStats {
  * `advanceRatio` 是最终验收口径：推进次数 / 清单项数。方案定的目标是 ≥ 0.5
  * （做完一半以上的项时至少标记过一次），< 0.5 意味着仍在攒着最后一起勾。
  */
+/**
+ * 2026-10-08「一次判死」根治 §4.5：恢复口径。取数源全部是 `RetryTelemetry`：
+ *   - 放弃：`type=recovery_give_up`（`attempts` / `giveUpReason` / `family`）
+ *   - 重试：`type=retry`（带 `family`）；救回：同一 (model, agentId) 上 retry 之后的首个 `stream_completed`
+ *
+ * 分母写死（铁律 3）：
+ *   - `oneShotKillCount` 的分母 = `giveUps`（以失败结束的调用数）。目标恒为 0。
+ *   - `recoveryByFamily[f].rate` = 救回数 ÷ 进入该族的调用数（救回 + 该族放弃）。
+ */
+export interface RecoveryDigestStats {
+  /** 以失败结束的调用数（recovery_give_up 条数） */
+  giveUps: number;
+  /** attempts==1 且原因不在 I1-例外闭集里的放弃次数（北极星：恒为 0） */
+  oneShotKillCount: number;
+  /** 因时间预算放弃（S3，单独跟踪，不计入 one-shot） */
+  deadlineGiveUpCount: number;
+  /** 放弃原因分布 */
+  giveUpReasons: Record<string, number>;
+  /** 各错误族的重试后救回率 */
+  recoveryByFamily: Record<string, { entered: number; recovered: number; rate: number }>;
+  /** 认不出的错误条数（unrecognized_error 台账） */
+  unrecognized: number;
+}
+
+/** I1-例外闭集（与 llm/recovery-policy.ts 的 I1_EXCEPTIONS 同步；deadline 单独报） */
+const I1_EXEMPT_GIVE_UP = new Set(["user_abort", "server_declined", "background_529", "deadline"]);
+
+export function aggregateRecoveryStats(
+  events: Array<{ event?: string; data?: Record<string, unknown> }>,
+): RecoveryDigestStats | null {
+  const out: RecoveryDigestStats = {
+    giveUps: 0,
+    oneShotKillCount: 0,
+    deadlineGiveUpCount: 0,
+    giveUpReasons: {},
+    recoveryByFamily: {},
+    unrecognized: 0,
+  };
+  // (model, agentId) → 正在重试中的族（retry 之后、结束之前）
+  const pending = new Map<string, string>();
+  const fam = (f: string) => (out.recoveryByFamily[f] ??= { entered: 0, recovered: 0, rate: 0 });
+  let seen = false;
+  for (const e of events) {
+    if (e.event !== "RetryTelemetry" || !e.data) continue;
+    const d = e.data;
+    const key = `${d.model ?? ""}|${d.agentId ?? ""}`;
+    switch (d.type) {
+      case "retry":
+        seen = true;
+        if (typeof d.family === "string") pending.set(key, d.family);
+        break;
+      case "stream_completed": {
+        const f = pending.get(key);
+        if (f) {
+          fam(f).entered++;
+          fam(f).recovered++;
+          pending.delete(key);
+        }
+        break;
+      }
+      case "recovery_give_up": {
+        seen = true;
+        out.giveUps++;
+        const reason = String(d.giveUpReason ?? "unknown");
+        out.giveUpReasons[reason] = (out.giveUpReasons[reason] ?? 0) + 1;
+        if (reason === "deadline") out.deadlineGiveUpCount++;
+        if (d.attempts === 1 && !I1_EXEMPT_GIVE_UP.has(reason)) out.oneShotKillCount++;
+        if (typeof d.family === "string") fam(d.family).entered++;
+        pending.delete(key);
+        break;
+      }
+      case "unrecognized_error":
+        seen = true;
+        out.unrecognized++;
+        break;
+    }
+  }
+  if (!seen) return null;
+  for (const v of Object.values(out.recoveryByFamily)) {
+    v.rate = v.entered > 0 ? v.recovered / v.entered : 0;
+  }
+  return out;
+}
+
 export interface TodoDigestStats {
   /** 清单被推进的次数（`TodoProgressAdvanced` 条数 = writeVersion 增长次数） */
   advances: number;
@@ -633,6 +717,8 @@ export interface Digest {
    * （老会话 / 整场没建过清单）。
    */
   todo?: TodoDigestStats;
+  /** 2026-10-08：LLM 错误恢复口径。无重试 / 放弃事件时 undefined。 */
+  recovery?: RecoveryDigestStats;
   /**
    * P1-8：过程病态度量（6 项）。始终产出（不像上面几项那样依赖专用事件）——
    * 六项全部从 traj + 通用事件派生，"全部健康"本身就是有意义的结论，
@@ -2047,6 +2133,9 @@ export function buildDigest(ref: SessionRef, full: boolean, paths: DigestPaths):
   // 补的是"采了不看"这个缺口：三个事件此前只写不读，缺陷定性只能靠间接证据。
   const todo = aggregateTodoStats(events);
 
+  // ── 2026-10-08：LLM 错误恢复口径（one_shot_kill_count 北极星 + 各族救回率）──
+  const recovery = aggregateRecoveryStats(events);
+
   return {
     sessionId: ref.id,
     model: ledger?.model || meta.model || "unknown",
@@ -2075,6 +2164,7 @@ export function buildDigest(ref: SessionRef, full: boolean, paths: DigestPaths):
     jit: jit ?? undefined,
     prefixBreaks: prefixBreaks ?? undefined,
     todo: todo ?? undefined,
+    recovery: recovery ?? undefined,
     pathology,
     // P0-2：始终产出（不像 jit/todo 那样依赖专用事件）—— 样本为 0 时 n=0 是有意义的
     // 结论（"这个会话没有 TTFT 样本"），整节消失则无法区分"没样本"与"该版本没接线"
@@ -2369,6 +2459,33 @@ export function renderHuman(d: Digest, opts: RenderOptions = {}): string {
     }
     for (const f of j.topFiles) {
       L.push(c("gray", `    · ${truncate(f.path, 60)} ${fmtBytes(f.bytes)} [${f.reason}]`));
+    }
+  }
+
+  // 2026-10-08：LLM 错误恢复 section。one_shot_kill 非 0 标红：那就是本缺陷复发。
+  if (d.recovery) {
+    const r = d.recovery;
+    L.push("");
+    L.push(
+      c("bold", "错误恢复:") +
+        " " +
+        c(r.oneShotKillCount > 0 ? "red" : "green", `一次判死 ${r.oneShotKillCount}`) +
+        c("gray", ` / 放弃 ${r.giveUps}`) +
+        (r.deadlineGiveUpCount > 0 ? c("yellow", `  时间预算放弃 ${r.deadlineGiveUpCount}`) : "") +
+        (r.unrecognized > 0 ? c("gray", `  未识别措辞 ${r.unrecognized}`) : ""),
+    );
+    const fams = Object.entries(r.recoveryByFamily);
+    if (fams.length > 0) {
+      L.push(
+        c("gray", "  救回率: ") +
+          fams
+            .map(([f, v]) => `${f} ${v.recovered}/${v.entered} (${(v.rate * 100).toFixed(0)}%)`)
+            .join(", "),
+      );
+    }
+    const reasons = Object.entries(r.giveUpReasons);
+    if (reasons.length > 0) {
+      L.push(c("gray", "  放弃原因: ") + reasons.map(([k, v]) => `${k}×${v}`).join(", "));
     }
   }
 

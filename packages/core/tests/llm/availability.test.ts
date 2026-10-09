@@ -1,147 +1,119 @@
 /**
  * 模型可用性服务测试
- * Task 2：状态机转换（healthy → retry_once → terminal）、resetTurn() 行为
+ *
+ * 2026-10-08「一次判死」根治（设计 §4.3）：terminal 永久态与 retry_once 计数态合并为
+ * **有时效的嫌疑态**（suspect）。以下是有意的语义变更，旧断言（terminal 不可被 markHealthy
+ * 恢复、不受 resetTurn 影响、retry_once 第二次拒绝）钉的正是本设计要否决的行为：
+ *   - 嫌疑带 `until`，过期自动视为健康；
+ *   - 任何成功产出（markHealthy）都清嫌疑；
+ *   - 主线程 / headless 不读嫌疑（I4）；
+ *   - 其余调用方在嫌疑期内只放一路半开探针（保住 S1：并行子代理不一起撞坏模型）。
  */
 
 import { describe, test, expect } from "bun:test";
 import { ModelAvailabilityService } from "@sid-code/core/llm/availability.ts";
 
 describe("ModelAvailabilityService", () => {
-  // === 基本状态 ===
   test("默认状态为 healthy（可用）", () => {
     const svc = new ModelAvailabilityService();
     expect(svc.isAvailable("model-a").available).toBe(true);
+    expect(svc.isSuspect("model-a")).toBe(false);
   });
 
-  // === Terminal 状态 ===
-  describe("terminal 状态", () => {
-    test("markTerminal 后不可用", () => {
+  describe("suspect 嫌疑态", () => {
+    test("markSuspect 后：第一路非主线程调用作为半开探针放行，其余拒绝", () => {
       const svc = new ModelAvailabilityService();
-      svc.markTerminal("model-a", "auth_failed");
-      const check = svc.isAvailable("model-a");
-      expect(check.available).toBe(false);
-      expect(check.reason).toBe("auth_failed");
+      svc.markSuspect("model-a", "fp1", "auth_suspect ×3 HTTP 401");
+      const first = svc.isAvailable("model-a", "agent:builtin");
+      expect(first.available).toBe(true);
+      expect(first.probe).toBe(true);
+      const second = svc.isAvailable("model-a", "agent:builtin");
+      expect(second.available).toBe(false);
+      expect(second.reason).toContain("auth_suspect ×3");
     });
 
-    test("terminal 状态不可被 markHealthy 恢复", () => {
+    test("I4：主线程 / headless 不受嫌疑拦截（每次都放行，不消耗探针）", () => {
       const svc = new ModelAvailabilityService();
-      svc.markTerminal("model-a", "model_not_found");
+      svc.markSuspect("model-a", "fp1", "x");
+      for (let i = 0; i < 3; i++) {
+        expect(svc.isAvailable("model-a", "main_thread")).toEqual({ available: true });
+        expect(svc.isAvailable("model-a", "headless")).toEqual({ available: true });
+      }
+      // 探针仍留给子代理
+      expect(svc.isAvailable("model-a", "agent:builtin").probe).toBe(true);
+    });
+
+    test("顺序变体：side-call 先读 availability 不会消费主线程的放行", () => {
+      const svc = new ModelAvailabilityService();
+      svc.markSuspect("model-a", "fp1", "x");
+      svc.isAvailable("model-a", "memory_recall"); // 探针
+      svc.isAvailable("model-a", "memory_recall"); // 被拒
+      expect(svc.isAvailable("model-a", "main_thread").available).toBe(true);
+    });
+
+    test("嫌疑过期自动视为健康（不再是进程内永久态）", () => {
+      const svc = new ModelAvailabilityService();
+      svc.markSuspect("model-a", "fp1", "x", 0);
+      expect(svc.isSuspect("model-a")).toBe(false);
+      expect(svc.isAvailable("model-a", "agent:builtin")).toEqual({ available: true });
+    });
+
+    test("markHealthy（成功产出）无条件清除嫌疑", () => {
+      const svc = new ModelAvailabilityService();
+      svc.markSuspect("model-a", "fp1", "x");
       svc.markHealthy("model-a");
-      expect(svc.isAvailable("model-a").available).toBe(false);
+      expect(svc.isSuspect("model-a")).toBe(false);
+      expect(svc.isAvailable("model-a", "agent:builtin")).toEqual({ available: true });
     });
 
-    test("terminal 状态不可被 markRetryOnce 降级覆盖", () => {
+    test("续标（探针失败）刷新证据但不发还探针：串行子代理不能一个接一个去撞", () => {
       const svc = new ModelAvailabilityService();
-      svc.markTerminal("model-a", "auth_failed");
-      svc.markRetryOnce("model-a", "rate_limit");
-      const check = svc.isAvailable("model-a");
-      expect(check.available).toBe(false);
-      expect(check.reason).toBe("auth_failed"); // 仍是 terminal 原因
+      svc.markSuspect("model-a", "fp1", "first");
+      svc.isAvailable("model-a", "agent:builtin"); // 探针被占
+      svc.markSuspect("model-a", "fp2", "second"); // 探针失败后续标
+      expect(svc.getSuspectInfo("model-a")?.evidence).toBe("second");
+      expect(svc.isAvailable("model-a", "agent:builtin").available).toBe(false);
     });
 
-    test("terminal 不受 resetTurn 影响", () => {
+    test("嫌疑过期后重新标记：给一张新探针", () => {
       const svc = new ModelAvailabilityService();
-      svc.markTerminal("model-a", "auth_failed");
-      svc.resetTurn();
-      expect(svc.isAvailable("model-a").available).toBe(false);
+      svc.markSuspect("model-a", "fp1", "first", 0);
+      svc.markSuspect("model-a", "fp2", "second");
+      expect(svc.isAvailable("model-a", "agent:builtin").probe).toBe(true);
     });
   });
 
-  // === retry_once 状态 ===
-  describe("retry_once 状态", () => {
-    test("第一次检查可用（消耗机会）", () => {
-      const svc = new ModelAvailabilityService();
-      svc.markRetryOnce("model-a", "rate_limit");
-      expect(svc.isAvailable("model-a").available).toBe(true);
-    });
-
-    test("第二次检查不可用（机会已消耗）", () => {
-      const svc = new ModelAvailabilityService();
-      svc.markRetryOnce("model-a", "rate_limit");
-      svc.isAvailable("model-a"); // 消耗
-      const check = svc.isAvailable("model-a");
-      expect(check.available).toBe(false);
-      expect(check.reason).toBe("rate_limit");
-    });
-
-    test("resetTurn 重置 consumed 标记", () => {
-      const svc = new ModelAvailabilityService();
-      svc.markRetryOnce("model-a", "overloaded");
-      svc.isAvailable("model-a"); // 消耗
-      expect(svc.isAvailable("model-a").available).toBe(false);
-
-      svc.resetTurn(); // 重置
-      expect(svc.isAvailable("model-a").available).toBe(true); // 又有一次机会
-    });
-
-    test("markHealthy 可恢复 retry_once 状态", () => {
-      const svc = new ModelAvailabilityService();
-      svc.markRetryOnce("model-a", "rate_limit");
-      svc.isAvailable("model-a"); // 消耗
-      svc.markHealthy("model-a");
-      expect(svc.isAvailable("model-a").available).toBe(true);
-    });
-  });
-
-  // === 多模型隔离 ===
   test("不同模型状态互不影响", () => {
     const svc = new ModelAvailabilityService();
-    svc.markTerminal("model-a", "auth_failed");
-    svc.markRetryOnce("model-b", "rate_limit");
-
-    expect(svc.isAvailable("model-a").available).toBe(false);
-    expect(svc.isAvailable("model-b").available).toBe(true); // 第一次
-    expect(svc.isAvailable("model-c").available).toBe(true); // 未标记
+    svc.markSuspect("model-a", "fp", "x");
+    svc.isAvailable("model-a", "agent:builtin"); // 探针
+    expect(svc.isAvailable("model-a", "agent:builtin").available).toBe(false);
+    expect(svc.isAvailable("model-b", "agent:builtin").available).toBe(true);
   });
 
-  // === selectFirstAvailable ===
   describe("selectFirstAvailable", () => {
-    test("返回第一个可用模型", () => {
+    test("跳过嫌疑期且探针已被占用的模型", () => {
       const svc = new ModelAvailabilityService();
-      svc.markTerminal("model-a", "auth_failed");
-      const result = svc.selectFirstAvailable(["model-a", "model-b", "model-c"]);
-      expect("model" in result).toBe(true);
-      expect((result as any).model).toBe("model-b");
+      svc.markSuspect("model-a", "fp", "x");
+      svc.isAvailable("model-a", "agent:builtin"); // 探针
+      const result = svc.selectFirstAvailable(["model-a", "model-b"], "agent:builtin");
+      expect((result as { model: string }).model).toBe("model-b");
     });
 
     test("所有模型不可用时返回 unavailable", () => {
       const svc = new ModelAvailabilityService();
-      svc.markTerminal("model-a", "auth_failed");
-      svc.markTerminal("model-b", "model_not_found");
-      const result = svc.selectFirstAvailable(["model-a", "model-b"]);
+      for (const m of ["model-a", "model-b"]) {
+        svc.markSuspect(m, "fp", "x");
+        svc.isAvailable(m, "agent:builtin");
+      }
+      const result = svc.selectFirstAvailable(["model-a", "model-b"], "agent:builtin");
       expect("unavailable" in result).toBe(true);
-      expect((result as any).reason).toContain("不可用");
+      expect((result as { reason: string }).reason).toContain("不可用");
     });
 
     test("空列表返回 unavailable", () => {
       const svc = new ModelAvailabilityService();
-      const result = svc.selectFirstAvailable([]);
-      expect("unavailable" in result).toBe(true);
+      expect("unavailable" in svc.selectFirstAvailable([])).toBe(true);
     });
-
-    test("retry_once 模型在第一次选择时可用", () => {
-      const svc = new ModelAvailabilityService();
-      svc.markRetryOnce("model-a", "rate_limit");
-      const result = svc.selectFirstAvailable(["model-a", "model-b"]);
-      expect((result as any).model).toBe("model-a");
-    });
-  });
-
-  // === resetTurn 批量重置 ===
-  test("resetTurn 重置所有 retry_once 模型", () => {
-    const svc = new ModelAvailabilityService();
-    svc.markRetryOnce("model-a", "rate_limit");
-    svc.markRetryOnce("model-b", "overloaded");
-
-    // 消耗两个模型的机会
-    svc.isAvailable("model-a");
-    svc.isAvailable("model-b");
-    expect(svc.isAvailable("model-a").available).toBe(false);
-    expect(svc.isAvailable("model-b").available).toBe(false);
-
-    // 重置
-    svc.resetTurn();
-    expect(svc.isAvailable("model-a").available).toBe(true);
-    expect(svc.isAvailable("model-b").available).toBe(true);
   });
 });

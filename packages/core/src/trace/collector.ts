@@ -3026,6 +3026,17 @@ export class TraceCollector {
    */
   recordTurnError(input: { error: string; stack?: string; turn: number }): void {
     if (!this.initialized) return;
+    // §3.4：TurnError 同样是配对终点（看门狗注释里写的三者之一）。此前只有 handleAfterModel
+    // 清看门狗，于是一次 TurnError 结束的请求会在 PAIRING_TIMEOUT_MS 后被误报成
+    // ModelCallUnpaired（会话 20261008-173228-baeb949d，误把排查方向引到「请求 hang」）。
+    if (this.currentPair) {
+      const pairIndex = this.currentPair.index ?? this.resumedPairOffset + this.pairs.length + 1;
+      const pairingTimer = this.pendingModelCalls.get(pairIndex);
+      if (pairingTimer) {
+        clearTimeout(pairingTimer);
+        this.pendingModelCalls.delete(pairIndex);
+      }
+    }
     try {
       this.appendHookEvent({
         event: "TurnError",
