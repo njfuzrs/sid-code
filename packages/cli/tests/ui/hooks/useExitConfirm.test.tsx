@@ -11,8 +11,8 @@
 
 import { test, expect, describe, afterEach, jest } from "bun:test";
 import React, { useState } from "react";
-import { render } from "@sid-code/tui-renderer/_vendor/testing.tsx";
-import Text from "@sid-code/tui-renderer/components/Text.tsx";
+import { render } from "@sid-code/cli/ui/render-port/testing.ts";
+import { Text } from "@sid-code/cli/ui/render-port/components.ts";
 import { useExitConfirm, EXIT_CONFIRM_WINDOW_MS } from "@sid-code/cli/ui/hooks/useExitConfirm.ts";
 
 /**

@@ -44,3 +44,12 @@ indent_size = 2
 # 快照文件由测试生成，vendor 代码要保持与上游可比对。
 trim_trailing_whitespace = false
 insert_final_newline = false
+
+# B9 / T1.1：packages/tui/src 是上游 ink@7.1.1 源码（tab 缩进），要与上游 tag 可逐字节比对。
+# 这里按上游自己的 .editorconfig 设值（不是不套风格），否则编辑器一保存就把 tab 改成空格。
+[packages/tui/src/**]
+indent_style = tab
+end_of_line = lf
+charset = utf-8
+trim_trailing_whitespace = true
+insert_final_newline = true

@@ -14,7 +14,7 @@ import { spawn } from "node:child_process";
 import { mkdtempSync, writeFileSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import inkInstances from "@sid-code/tui-renderer/instances.ts";
+import { getRenderInstance } from "../render-port/runtime.ts";
 import { getLogger } from "@sid-code/core/debug/logger.ts";
 
 /**
@@ -51,7 +51,7 @@ export async function editInExternalEditor(
   stdout: NodeJS.WriteStream = process.stdout,
 ): Promise<ExternalEditResult> {
   const log = getLogger();
-  const ink = inkInstances.get(stdout);
+  const ink = getRenderInstance(stdout);
 
   // 建临时文件（.md 后缀让编辑器启用 markdown 高亮，贴合 prompt 场景）。
   let dir: string | null = null;
@@ -144,7 +144,7 @@ export async function openFileInExternalEditor(
   stdout: NodeJS.WriteStream = process.stdout,
 ): Promise<{ ok: boolean; error?: string }> {
   const log = getLogger();
-  const ink = inkInstances.get(stdout);
+  const ink = getRenderInstance(stdout);
   const cmd = resolveEditorCommand();
   const bin = cmd[0];
   const args = [...cmd.slice(1), filePath];

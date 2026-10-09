@@ -8,9 +8,9 @@
  */
 
 import React from "react";
-import Box from "@sid-code/tui-renderer/components/Box.tsx";
-import Text from "@sid-code/tui-renderer/components/Text.tsx";
-import type { Color } from "@sid-code/tui-renderer/styles.ts";
+import { Box } from "../render-port/components.ts";
+import { Text } from "../render-port/components.ts";
+import type { Color } from "../render-port/types.ts";
 import { theme } from "../semantic-colors.ts";
 import { useKeypress, KeypressPriority, type Key } from "../contexts/KeypressContext.tsx";
 import { SUCCESS_MARK, ERROR_MARK, WARNING_MARK } from "../constants/figures.ts";

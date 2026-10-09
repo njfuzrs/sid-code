@@ -6,7 +6,7 @@
  */
 
 import React from "react";
-import Text from "@sid-code/tui-renderer/components/Text.tsx";
+import { Text } from "../render-port/components.ts";
 import { theme } from "../semantic-colors.ts";
 
 /** 高亮片段类型 */

@@ -14,7 +14,7 @@ import React from "react";
 import { mkdtempSync, writeFileSync, rmSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
-import { render } from "@sid-code/tui-renderer/_vendor/testing.tsx";
+import { render } from "@sid-code/cli/ui/render-port/testing.ts";
 import { Notifications } from "@sid-code/cli/ui/components/Notifications.tsx";
 import { UIStateProvider } from "@sid-code/cli/ui/contexts/UIStateContext.tsx";
 import { StreamingProvider, StreamingState } from "@sid-code/cli/ui/contexts/StreamingContext.tsx";

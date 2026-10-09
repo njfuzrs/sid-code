@@ -13,11 +13,11 @@
 
 import { test, expect, describe, afterEach, jest } from "bun:test";
 import React from "react";
-import { render } from "@sid-code/tui-renderer/_vendor/testing.tsx";
+import { render } from "@sid-code/cli/ui/render-port/testing.ts";
 import { useLoadingIndicator } from "@sid-code/cli/ui/hooks/useLoadingIndicator.ts";
 import { StreamingState } from "@sid-code/cli/ui/types.ts";
 import { SLOW_RESPONSE_HINTS } from "@sid-code/cli/ui/constants/loading-phrases.ts";
-import Text from "@sid-code/tui-renderer/components/Text.tsx";
+import { Text } from "@sid-code/cli/ui/render-port/components.ts";
 
 /** 极简宿主：把 hook 返回值渲染成 `E<秒>|<文案>|<慢提示>` 便于字节断言。 */
 function Harness({

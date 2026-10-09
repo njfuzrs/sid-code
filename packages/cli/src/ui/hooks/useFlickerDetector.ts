@@ -8,8 +8,8 @@
  */
 
 import { useEffect } from "react";
-import measureElement from "@sid-code/tui-renderer/measure-element.ts";
-import type { DOMElement } from "@sid-code/tui-renderer/dom.ts";
+import { measureElement } from "../render-port/measure.ts";
+import type { DOMElement } from "../render-port/types.ts";
 import { useUIState } from "../contexts/UIStateContext.tsx";
 import { getLogger } from "@sid-code/core/debug/logger.ts";
 

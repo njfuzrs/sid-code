@@ -69,7 +69,7 @@ const mod: LocalCommandModule = {
 
     let copied = false;
     try {
-      const { setClipboard } = await import("@sid-code/tui-renderer/termio/osc.ts");
+      const { setClipboard } = await import("../../../ui/render-port/termio.ts");
       const oscSeq = await setClipboard(report);
       if (oscSeq) process.stdout.write(oscSeq);
       copied = true;

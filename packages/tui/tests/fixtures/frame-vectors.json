@@ -1,0 +1,1160 @@
+{
+  "增长 改行 收缩 拉长 截短 中间空行": [
+    {
+      "bytes": "\u001b[?2026ha\r\nb\r\n\u001b[?2026l\u001b[?25l",
+      "flickers": []
+    },
+    {
+      "bytes": "\u001b[?2026hc\r\n\u001b[?2026l",
+      "flickers": []
+    },
+    {
+      "bytes": "\u001b[?2026h\r\u001b[2AX\r\n\n\u001b[?2026l",
+      "flickers": []
+    },
+    {
+      "bytes": "\u001b[?2026h\u001b[2K\u001b[1A\u001b[2K\u001b[G\u001b[1A                    \r\u001b[1B                    \r\u001b[1A\u001b[?2026l",
+      "flickers": []
+    },
+    {
+      "bytes": "\u001b[?2026h\r\u001b[1C\u001b[1Abc\r\n\u001b[?2026l",
+      "flickers": []
+    },
+    {
+      "bytes": "\u001b[?2026h\r\u001b[2C\u001b[1A \r\n\u001b[?2026l",
+      "flickers": []
+    },
+    {
+      "bytes": "\u001b[?2026hd\r\n\u001b[?2026l",
+      "flickers": []
+    }
+  ],
+  "内容不变不写": [
+    {
+      "bytes": "\u001b[?2026ha\r\n\u001b[?2026l\u001b[?25l",
+      "flickers": []
+    },
+    {
+      "bytes": "",
+      "flickers": []
+    }
+  ],
+  "空帧到有内容": [
+    {
+      "bytes": "\u001b[?25l",
+      "flickers": []
+    },
+    {
+      "bytes": "\u001b[?2026h0\r\n1\r\n\u001b[?2026l",
+      "flickers": []
+    }
+  ],
+  "变成空帧": [
+    {
+      "bytes": "\u001b[?2026h0\r\n1\r\n2\r\n\u001b[?2026l\u001b[?25l",
+      "flickers": []
+    },
+    {
+      "bytes": "\u001b[?2026h\u001b[2K\u001b[1A\u001b[2K\u001b[1A\u001b[2K\u001b[G\u001b[1A                    \r\u001b[1B                    \r\u001b[1B                    \r\u001b[2A\u001b[?2026l",
+      "flickers": []
+    }
+  ],
+  "1 行 / 2 行变成空帧": [
+    {
+      "bytes": "\u001b[?2026h0\r\n\u001b[?2026l\u001b[?25l",
+      "flickers": []
+    },
+    {
+      "bytes": "\u001b[?2026h\r\u001b[1A                    \r\u001b[?2026l",
+      "flickers": []
+    },
+    {
+      "bytes": "\u001b[?2026h0\r\n1\r\n\u001b[?2026l",
+      "flickers": []
+    },
+    {
+      "bytes": "\u001b[?2026h\u001b[2K\u001b[1A\u001b[2K\u001b[G\u001b[1A                    \r\u001b[1B                    \r\u001b[1A\u001b[?2026l",
+      "flickers": []
+    }
+  ],
+  "改末行": [
+    {
+      "bytes": "\u001b[?2026h0\r\n1\r\n2\r\n\u001b[?2026l\u001b[?25l",
+      "flickers": []
+    },
+    {
+      "bytes": "\u001b[?2026h\r\u001b[1AX\r\n\u001b[?2026l",
+      "flickers": []
+    }
+  ],
+  "不相邻两行改": [
+    {
+      "bytes": "\u001b[?2026h0\r\n1\r\n2\r\n3\r\n4\r\n5\r\n\u001b[?2026l\u001b[?25l",
+      "flickers": []
+    },
+    {
+      "bytes": "\u001b[?2026h\r\u001b[5AX\r\u001b[3BX\r\n\n\u001b[?2026l",
+      "flickers": []
+    }
+  ],
+  "相邻两行改": [
+    {
+      "bytes": "\u001b[?2026h0\r\n1\r\n2\r\n3\r\n\u001b[?2026l\u001b[?25l",
+      "flickers": []
+    },
+    {
+      "bytes": "\u001b[?2026h\r\u001b[3AX\r\u001b[1BX\r\n\n\u001b[?2026l",
+      "flickers": []
+    }
+  ],
+  "改行带列偏移": [
+    {
+      "bytes": "\u001b[?2026h0\r\n1\r\n2\r\n3\r\n4\r\n5\r\n\u001b[?2026l\u001b[?25l",
+      "flickers": []
+    },
+    {
+      "bytes": "\u001b[?2026h\r\u001b[1C\u001b[5AX\r\u001b[1C\u001b[3BY\r\n\n\u001b[?2026l",
+      "flickers": []
+    }
+  ],
+  "改行同时增长": [
+    {
+      "bytes": "\u001b[?2026h0\r\n1\r\n2\r\n\u001b[?2026l\u001b[?25l",
+      "flickers": []
+    },
+    {
+      "bytes": "\u001b[?2026h\r\u001b[3AX\r\n\n\n3\r\n4\r\n\u001b[?2026l",
+      "flickers": []
+    }
+  ],
+  "收缩同时改行": [
+    {
+      "bytes": "\u001b[?2026h0\r\n1\r\n2\r\n3\r\n4\r\n5\r\n\u001b[?2026l\u001b[?25l",
+      "flickers": []
+    },
+    {
+      "bytes": "\u001b[?2026h\u001b[2K\u001b[1A\u001b[2K\u001b[G\u001b[1A\r\u001b[3AX\r\u001b[3B                    \r\u001b[1B                    \r\u001b[1A\u001b[?2026l",
+      "flickers": []
+    }
+  ],
+  "收缩一行 两行 三行": [
+    {
+      "bytes": "\u001b[?2026h0\r\n1\r\n2\r\n3\r\n4\r\n\u001b[?2026l\u001b[?25l",
+      "flickers": []
+    },
+    {
+      "bytes": "\u001b[?2026h\u001b[2K\u001b[G\u001b[1A                    \r\u001b[?2026l",
+      "flickers": []
+    },
+    {
+      "bytes": "\u001b[?2026h\u001b[2K\u001b[1A\u001b[2K\u001b[G\u001b[1A                    \r\u001b[1B                    \r\u001b[1A\u001b[?2026l",
+      "flickers": []
+    }
+  ],
+  "行内两段变化": [
+    {
+      "bytes": "\u001b[?2026habcdefghij\r\n\u001b[?2026l\u001b[?25l",
+      "flickers": []
+    },
+    {
+      "bytes": "\u001b[?2026h\r\u001b[1AX\u001b[8CY\r\n\u001b[?2026l",
+      "flickers": []
+    }
+  ],
+  "两段带样式变化，中间跳过": [
+    {
+      "bytes": "\u001b[?2026habcdefghij\r\n\u001b[?2026l\u001b[?25l",
+      "flickers": []
+    },
+    {
+      "bytes": "\u001b[?2026h\r\u001b[1C\u001b[1A\u001b[1mb\u001b[6Ci\u001b[22m\r\n\u001b[?2026l",
+      "flickers": []
+    }
+  ],
+  "跳过时样式不关": [
+    {
+      "bytes": "\u001b[?2026h\u001b[1mabcdef\u001b[22m\r\n\u001b[?2026l\u001b[?25l",
+      "flickers": []
+    },
+    {
+      "bytes": "\u001b[?2026h\r\u001b[1A\u001b[1mX\u001b[4CY\u001b[22m\r\n\u001b[?2026l",
+      "flickers": []
+    }
+  ],
+  "宽字符替换 截短 错位": [
+    {
+      "bytes": "\u001b[?2026hab中cd\r\n\u001b[?2026l\u001b[?25l",
+      "flickers": []
+    },
+    {
+      "bytes": "\u001b[?2026h\r\u001b[2C\u001b[1A文\r\n\u001b[?2026l",
+      "flickers": []
+    },
+    {
+      "bytes": "\u001b[?2026h\r\u001b[5C\u001b[1A \r\n\u001b[?2026l",
+      "flickers": []
+    },
+    {
+      "bytes": "\u001b[?2026h\r\u001b[1C\u001b[1A文文c\r\n\u001b[?2026l",
+      "flickers": []
+    }
+  ],
+  "跳过未变的宽字符": [
+    {
+      "bytes": "\u001b[?2026h中文中文x\r\n\u001b[?2026l\u001b[?25l",
+      "flickers": []
+    },
+    {
+      "bytes": "\u001b[?2026h\r\u001b[8C\u001b[1Ay\r\n\u001b[?2026l",
+      "flickers": []
+    },
+    {
+      "bytes": "\u001b[?2026h\r\u001b[2C\u001b[1Ax中文y \r\n\u001b[?2026l",
+      "flickers": []
+    }
+  ],
+  "宽字符两侧都改（行内跳过宽字符）": [
+    {
+      "bytes": "\u001b[?2026ha中b文c\r\n\u001b[?2026l\u001b[?25l",
+      "flickers": []
+    },
+    {
+      "bytes": "\u001b[?2026h\r\u001b[1AX\u001b[2CY\u001b[2CZ\r\n\u001b[?2026l",
+      "flickers": []
+    }
+  ],
+  "只改宽字符的颜色": [
+    {
+      "bytes": "\u001b[?2026h\u001b[31m中\u001b[39m文\r\n\u001b[?2026l\u001b[?25l",
+      "flickers": []
+    },
+    {
+      "bytes": "\u001b[?2026h\r\u001b[1A\u001b[32m中\u001b[39m\r\n\u001b[?2026l",
+      "flickers": []
+    }
+  ],
+  "宽度补偿字符前后改": [
+    {
+      "bytes": "\u001b[?2026ha\u001b[3G \u001b[2G❤️\u001b[4Gb\r\n\u001b[?2026l\u001b[?25l",
+      "flickers": []
+    },
+    {
+      "bytes": "\u001b[?2026h\r\u001b[3C\u001b[1Ac\r\n\u001b[?2026l",
+      "flickers": []
+    },
+    {
+      "bytes": "\u001b[?2026h\r\u001b[1Ax\r\n\u001b[?2026l",
+      "flickers": []
+    }
+  ],
+  "超链接改字与改目标": [
+    {
+      "bytes": "\u001b[?2026h\u001b]8;id=1wtdrc6;http://x\u0007ab\u001b]8;;\u0007cd\r\n\u001b[?2026l\u001b[?25l",
+      "flickers": []
+    },
+    {
+      "bytes": "\u001b[?2026h\r\u001b[1C\u001b[1A\u001b]8;id=1wtdrc6;http://x\u0007X\u001b]8;;\u0007\r\n\u001b[?2026l",
+      "flickers": []
+    },
+    {
+      "bytes": "\u001b[?2026h\r\u001b[1A\u001b]8;id=1wtdrc7;http://y\u0007aX\u001b]8;;\u0007\r\n\u001b[?2026l",
+      "flickers": []
+    }
+  ],
+  "行尾变空白与再写": [
+    {
+      "bytes": "\u001b[?2026habc\r\n\u001b[?2026l\u001b[?25l",
+      "flickers": []
+    },
+    {
+      "bytes": "\u001b[?2026h\r\u001b[1C\u001b[1A  \r\n\u001b[?2026l",
+      "flickers": []
+    },
+    {
+      "bytes": "\u001b[?2026h\r\u001b[3C\u001b[1Ab\r\n\u001b[?2026l",
+      "flickers": []
+    }
+  ],
+  "两行同色都改": [
+    {
+      "bytes": "\u001b[?2026h\u001b[32mab\u001b[39m\r\n\u001b[32mcd\u001b[39m\r\nt\r\n\u001b[?2026l\u001b[?25l",
+      "flickers": []
+    },
+    {
+      "bytes": "\u001b[?2026h\r\u001b[3A\u001b[32mx\r\u001b[1By\u001b[39m\r\n\n\u001b[?2026l",
+      "flickers": []
+    }
+  ],
+  "两行异色都改": [
+    {
+      "bytes": "\u001b[?2026h\u001b[32mab\u001b[39m\r\n\u001b[31mcd\u001b[39m\r\nt\r\n\u001b[?2026l\u001b[?25l",
+      "flickers": []
+    },
+    {
+      "bytes": "\u001b[?2026h\r\u001b[3A\u001b[32mx\r\u001b[1B\u001b[31my\u001b[39m\r\n\n\u001b[?2026l",
+      "flickers": []
+    }
+  ],
+  "有色行改完接默认样式行": [
+    {
+      "bytes": "\u001b[?2026h\u001b[32mab\u001b[39m\r\ncd\r\nt\r\n\u001b[?2026l\u001b[?25l",
+      "flickers": []
+    },
+    {
+      "bytes": "\u001b[?2026h\r\u001b[3A\u001b[32mx\r\u001b[1B\u001b[39my\r\n\n\u001b[?2026l",
+      "flickers": []
+    }
+  ],
+  "改有色行后回到底部": [
+    {
+      "bytes": "\u001b[?2026h\u001b[32mab\u001b[39m\r\nt\r\n\u001b[?2026l\u001b[?25l",
+      "flickers": []
+    },
+    {
+      "bytes": "\u001b[?2026h\r\u001b[2A\u001b[32mx\r\u001b[1B\u001b[39mu\r\n\u001b[?2026l",
+      "flickers": []
+    }
+  ],
+  "收缩时改有色行": [
+    {
+      "bytes": "\u001b[?2026h\u001b[32mab\u001b[39m\r\nt\r\n\u001b[?2026l\u001b[?25l",
+      "flickers": []
+    },
+    {
+      "bytes": "\u001b[?2026h\u001b[2K\u001b[G\u001b[1A\r\u001b[1A\u001b[32mx\r\u001b[1B\u001b[39m                    \r\u001b[?2026l",
+      "flickers": []
+    }
+  ],
+  "收缩到一行时改有色行带空格": [
+    {
+      "bytes": "\u001b[?2026h\u001b[32ma\u001b[1Cb\u001b[39m\r\nt\r\n\u001b[?2026l\u001b[?25l",
+      "flickers": []
+    },
+    {
+      "bytes": "\u001b[?2026h\u001b[2K\u001b[G\u001b[1A\r\u001b[1A\u001b[32mc\u001b[1Cd\r\u001b[1B\u001b[39m                    \r\u001b[?2026l",
+      "flickers": []
+    }
+  ],
+  "两行同链接都改": [
+    {
+      "bytes": "\u001b[?2026h\u001b]8;id=1wtdrbj;http://a\u0007ab\u001b]8;;\u0007\r\n\u001b]8;id=1wtdrbj;http://a\u0007cd\u001b]8;;\u0007\r\nt\r\n\u001b[?2026l\u001b[?25l",
+      "flickers": []
+    },
+    {
+      "bytes": "\u001b[?2026h\r\u001b[3A\u001b]8;id=1wtdrbj;http://a\u0007x\r\u001b[1By\u001b]8;;\u0007\r\n\n\u001b[?2026l",
+      "flickers": []
+    }
+  ],
+  "有色空格：首帧跳过、改动照写": [
+    {
+      "bytes": "\u001b[?2026h\u001b[32mabcd\u001b[39m\r\nt\r\n\u001b[?2026l\u001b[?25l",
+      "flickers": []
+    },
+    {
+      "bytes": "\u001b[?2026h\r\u001b[1C\u001b[2A\u001b[32m  \u001b[39m\r\n\n\u001b[?2026l",
+      "flickers": []
+    }
+  ],
+  "有色空格：追加的新行跳过": [
+    {
+      "bytes": "\u001b[?2026h\u001b[32mq\u001b[39m\r\n\u001b[?2026l\u001b[?25l",
+      "flickers": []
+    },
+    {
+      "bytes": "\u001b[?2026h\r\u001b[1A\u001b[32ma b\u001b[39m\r\n\u001b[32mc\u001b[1Cd\u001b[39m\r\n\u001b[?2026l",
+      "flickers": []
+    }
+  ],
+  "有色空格：单行首帧照写、增长后跳过": [
+    {
+      "bytes": "\u001b[?2026h\u001b[32ma b\u001b[39m\r\n\u001b[?2026l\u001b[?25l",
+      "flickers": []
+    },
+    {
+      "bytes": "\u001b[?2026h\u001b[32mc\u001b[1Cd\u001b[39m\r\n\u001b[?2026l",
+      "flickers": []
+    }
+  ],
+  "有色空格：full reset 时跳过": [
+    {
+      "bytes": "\u001b[?2026h\u001b[32ma\u001b[39m\r\n1\r\n2\r\n3\r\n4\r\n\u001b[?2026l\u001b[?25l",
+      "flickers": []
+    },
+    {
+      "bytes": "\u001b[?2026h\u001b[2J\u001b[3J\u001b[H\u001b[32ma\u001b[1Cb\u001b[39m\r\n1\r\n2\r\n3\r\n4\r\n\u001b[?2026l",
+      "flickers": ["offscreen"]
+    }
+  ],
+  "纯增长越过视口": [
+    {
+      "bytes": "\u001b[?2026h0\r\n1\r\n2\r\n\u001b[?2026l\u001b[?25l",
+      "flickers": []
+    },
+    {
+      "bytes": "\u001b[?2026h3\r\n4\r\n5\r\n6\r\n7\r\n8\r\n9\r\n\u001b[?2026l",
+      "flickers": []
+    }
+  ],
+  "溢出后在视口内收缩一行": [
+    {
+      "bytes": "\u001b[?2026h0\r\n1\r\n2\r\n3\r\n4\r\n5\r\n6\r\n7\r\n8\r\n9\r\n\u001b[?2026l\u001b[?25l",
+      "flickers": []
+    },
+    {
+      "bytes": "\u001b[?2026h\u001b[2K\u001b[G\u001b[1A                    \r\u001b[?2026l",
+      "flickers": []
+    }
+  ],
+  "溢出后改屏外行": [
+    {
+      "bytes": "\u001b[?2026h0\r\n1\r\n2\r\n3\r\n4\r\n5\r\n6\r\n7\r\n8\r\n\u001b[?2026l\u001b[?25l",
+      "flickers": []
+    },
+    {
+      "bytes": "\u001b[?2026h\u001b[2J\u001b[3J\u001b[HX\r\n1\r\n2\r\n3\r\n4\r\n5\r\n6\r\n7\r\n8\r\n\u001b[?2026l",
+      "flickers": ["offscreen"]
+    }
+  ],
+  "溢出后改视口首行": [
+    {
+      "bytes": "\u001b[?2026h0\r\n1\r\n2\r\n3\r\n4\r\n5\r\n6\r\n7\r\n8\r\n9\r\n\u001b[?2026l\u001b[?25l",
+      "flickers": []
+    },
+    {
+      "bytes": "\u001b[?2026h\u001b[2J\u001b[3J\u001b[H0\r\n1\r\n2\r\n3\r\nX\r\n5\r\n6\r\n7\r\n8\r\n9\r\n\u001b[?2026l",
+      "flickers": ["offscreen"]
+    }
+  ],
+  "溢出后改视口第二行": [
+    {
+      "bytes": "\u001b[?2026h0\r\n1\r\n2\r\n3\r\n4\r\n5\r\n6\r\n7\r\n8\r\n9\r\n\u001b[?2026l\u001b[?25l",
+      "flickers": []
+    },
+    {
+      "bytes": "\u001b[?2026h\u001b[2J\u001b[3J\u001b[H0\r\n1\r\n2\r\n3\r\nX\r\n5\r\n6\r\n7\r\n8\r\n9\r\n\u001b[?2026l",
+      "flickers": ["offscreen"]
+    },
+    {
+      "bytes": "\u001b[?2026h\r\u001b[5AX\r\n\n\n\n\n\u001b[?2026l",
+      "flickers": []
+    }
+  ],
+  "收缩后改行": [
+    {
+      "bytes": "\u001b[?2026h0\r\n1\r\n2\r\n3\r\n4\r\n5\r\n6\r\n7\r\n8\r\n9\r\n\u001b[?2026l\u001b[?25l",
+      "flickers": []
+    },
+    {
+      "bytes": "\u001b[?2026h\u001b[2K\u001b[G\u001b[1A                    \r\u001b[?2026l",
+      "flickers": []
+    },
+    {
+      "bytes": "\u001b[?2026h\r\u001b[5AX\r\n\n\n\n\n\u001b[?2026l",
+      "flickers": []
+    }
+  ],
+  "溢出后增长且改可视行": [
+    {
+      "bytes": "\u001b[?2026h0\r\n1\r\n2\r\n3\r\n4\r\n5\r\n6\r\n7\r\n8\r\n9\r\n\u001b[?2026l\u001b[?25l",
+      "flickers": []
+    },
+    {
+      "bytes": "\u001b[?2026h\r\u001b[2AX\r\n\n10\r\n11\r\n\u001b[?2026l",
+      "flickers": []
+    }
+  ],
+  "溢出后增长且改屏外行": [
+    {
+      "bytes": "\u001b[?2026h0\r\n1\r\n2\r\n3\r\n4\r\n5\r\n6\r\n7\r\n8\r\n9\r\n\u001b[?2026l\u001b[?25l",
+      "flickers": []
+    },
+    {
+      "bytes": "\u001b[?2026h\u001b[2J\u001b[3J\u001b[H0\r\n1\r\n2\r\nX\r\n4\r\n5\r\n6\r\n7\r\n8\r\n9\r\n10\r\n11\r\n\u001b[?2026l",
+      "flickers": ["offscreen"]
+    }
+  ],
+  "溢出后收缩且改屏外行": [
+    {
+      "bytes": "\u001b[?2026h0\r\n1\r\n2\r\n3\r\n4\r\n5\r\n6\r\n7\r\n8\r\n9\r\n\u001b[?2026l\u001b[?25l",
+      "flickers": []
+    },
+    {
+      "bytes": "\u001b[?2026h\u001b[2J\u001b[3J\u001b[H0\r\n1\r\nX\r\n3\r\n4\r\n5\r\n6\r\n7\r\n\u001b[?2026l",
+      "flickers": ["offscreen"]
+    }
+  ],
+  "占满视口时改首行": [
+    {
+      "bytes": "\u001b[?2026h0\r\n1\r\n2\r\n3\r\n4\r\n5\r\n\u001b[?2026l\u001b[?25l",
+      "flickers": []
+    },
+    {
+      "bytes": "\u001b[?2026h\u001b[2J\u001b[3J\u001b[HX\r\n1\r\n2\r\n3\r\n4\r\n5\r\n\u001b[?2026l",
+      "flickers": ["offscreen"]
+    }
+  ],
+  "占满视口时改第二行": [
+    {
+      "bytes": "\u001b[?2026h0\r\n1\r\n2\r\n3\r\n4\r\n5\r\n\u001b[?2026l\u001b[?25l",
+      "flickers": []
+    },
+    {
+      "bytes": "\u001b[?2026h\r\u001b[5AX\r\n\n\n\n\n\u001b[?2026l",
+      "flickers": []
+    }
+  ],
+  "差一行占满时改首行": [
+    {
+      "bytes": "\u001b[?2026h0\r\n1\r\n2\r\n3\r\n4\r\n\u001b[?2026l\u001b[?25l",
+      "flickers": []
+    },
+    {
+      "bytes": "\u001b[?2026h\r\u001b[5AX\r\n\n\n\n\n\u001b[?2026l",
+      "flickers": []
+    }
+  ],
+  "增长越过视口且改首行": [
+    {
+      "bytes": "\u001b[?2026h0\r\n1\r\n2\r\n\u001b[?2026l\u001b[?25l",
+      "flickers": []
+    },
+    {
+      "bytes": "\u001b[?2026h\r\u001b[3AX\r\n\n\n3\r\n4\r\n5\r\n6\r\n7\r\n\u001b[?2026l",
+      "flickers": []
+    }
+  ],
+  "大幅收缩后再改与再长": [
+    {
+      "bytes": "\u001b[?2026h0\r\n1\r\n2\r\n3\r\n4\r\n5\r\n6\r\n7\r\n8\r\n9\r\n10\r\n11\r\n12\r\n13\r\n14\r\n15\r\n16\r\n17\r\n18\r\n19\r\n\u001b[?2026l\u001b[?25l",
+      "flickers": []
+    },
+    {
+      "bytes": "\u001b[?2026h\u001b[2K\u001b[1A\u001b[2K\u001b[1A\u001b[2K\u001b[1A\u001b[2K\u001b[1A\u001b[2K\u001b[G\u001b[1A                    \r\u001b[1B                    \r\u001b[1B                    \r\u001b[1B                    \r\u001b[1B                    \r\u001b[4A\u001b[?2026l",
+      "flickers": []
+    },
+    {
+      "bytes": "\u001b[?2026h\r\u001b[4AX \r\n\n\n\n\u001b[?2026l",
+      "flickers": []
+    },
+    {
+      "bytes": "\u001b[?2026h\u001b[2J\u001b[3J\u001b[H0\r\n1\r\n2\r\n3\r\n4\r\n5\r\n6\r\n7\r\n8\r\nX\r\n10\r\n11\r\n12\r\n13\r\n14\r\n\u001b[?2026l",
+      "flickers": ["offscreen"]
+    }
+  ],
+  "大幅收缩后增长": [
+    {
+      "bytes": "\u001b[?2026h0\r\n1\r\n2\r\n3\r\n4\r\n5\r\n6\r\n7\r\n8\r\n9\r\n10\r\n11\r\n12\r\n13\r\n14\r\n15\r\n16\r\n17\r\n18\r\n19\r\n\u001b[?2026l\u001b[?25l",
+      "flickers": []
+    },
+    {
+      "bytes": "\u001b[?2026h\u001b[2K\u001b[1A\u001b[2K\u001b[1A\u001b[2K\u001b[1A\u001b[2K\u001b[1A\u001b[2K\u001b[G\u001b[1A                    \r\u001b[1B                    \r\u001b[1B                    \r\u001b[1B                    \r\u001b[1B                    \r\u001b[4A\u001b[?2026l",
+      "flickers": []
+    },
+    {
+      "bytes": "\u001b[?2026h15\r\n16\r\n\u001b[?2026l",
+      "flickers": []
+    }
+  ],
+  "收缩 6→4（视口 6）": [
+    {
+      "bytes": "\u001b[?2026h0\r\n1\r\n2\r\n3\r\n4\r\n5\r\n\u001b[?2026l\u001b[?25l",
+      "flickers": []
+    },
+    {
+      "bytes": "\u001b[?2026h\u001b[2J\u001b[3J\u001b[H0\r\n1\r\n2\r\n3\r\n\u001b[?2026l",
+      "flickers": ["offscreen"]
+    }
+  ],
+  "收缩 6→5（视口 6）": [
+    {
+      "bytes": "\u001b[?2026h0\r\n1\r\n2\r\n3\r\n4\r\n5\r\n\u001b[?2026l\u001b[?25l",
+      "flickers": []
+    },
+    {
+      "bytes": "\u001b[?2026h\u001b[2J\u001b[3J\u001b[H0\r\n1\r\n2\r\n3\r\n4\r\n\u001b[?2026l",
+      "flickers": ["offscreen"]
+    }
+  ],
+  "收缩 7→5（视口 6）": [
+    {
+      "bytes": "\u001b[?2026h0\r\n1\r\n2\r\n3\r\n4\r\n5\r\n6\r\n\u001b[?2026l\u001b[?25l",
+      "flickers": []
+    },
+    {
+      "bytes": "\u001b[?2026h\u001b[2J\u001b[3J\u001b[H0\r\n1\r\n2\r\n3\r\n4\r\n\u001b[?2026l",
+      "flickers": ["offscreen"]
+    }
+  ],
+  "收缩 7→6（视口 6）": [
+    {
+      "bytes": "\u001b[?2026h0\r\n1\r\n2\r\n3\r\n4\r\n5\r\n6\r\n\u001b[?2026l\u001b[?25l",
+      "flickers": []
+    },
+    {
+      "bytes": "\u001b[?2026h\u001b[2J\u001b[3J\u001b[H0\r\n1\r\n2\r\n3\r\n4\r\n5\r\n\u001b[?2026l",
+      "flickers": ["offscreen"]
+    }
+  ],
+  "收缩 7→7（视口 6）": [
+    {
+      "bytes": "\u001b[?2026h0\r\n1\r\n2\r\n3\r\n4\r\n5\r\n6\r\n\u001b[?2026l\u001b[?25l",
+      "flickers": []
+    },
+    {
+      "bytes": "",
+      "flickers": []
+    }
+  ],
+  "收缩 8→6（视口 6）": [
+    {
+      "bytes": "\u001b[?2026h0\r\n1\r\n2\r\n3\r\n4\r\n5\r\n6\r\n7\r\n\u001b[?2026l\u001b[?25l",
+      "flickers": []
+    },
+    {
+      "bytes": "\u001b[?2026h\u001b[2J\u001b[3J\u001b[H0\r\n1\r\n2\r\n3\r\n4\r\n5\r\n\u001b[?2026l",
+      "flickers": ["offscreen"]
+    }
+  ],
+  "收缩 8→7（视口 6）": [
+    {
+      "bytes": "\u001b[?2026h0\r\n1\r\n2\r\n3\r\n4\r\n5\r\n6\r\n7\r\n\u001b[?2026l\u001b[?25l",
+      "flickers": []
+    },
+    {
+      "bytes": "\u001b[?2026h\u001b[2K\u001b[G\u001b[1A                    \r\u001b[?2026l",
+      "flickers": []
+    }
+  ],
+  "收缩 9→7（视口 6）": [
+    {
+      "bytes": "\u001b[?2026h0\r\n1\r\n2\r\n3\r\n4\r\n5\r\n6\r\n7\r\n8\r\n\u001b[?2026l\u001b[?25l",
+      "flickers": []
+    },
+    {
+      "bytes": "\u001b[?2026h\u001b[2K\u001b[1A\u001b[2K\u001b[G\u001b[1A                    \r\u001b[1B                    \r\u001b[1A\u001b[?2026l",
+      "flickers": []
+    }
+  ],
+  "收缩 10→4（视口 6）": [
+    {
+      "bytes": "\u001b[?2026h0\r\n1\r\n2\r\n3\r\n4\r\n5\r\n6\r\n7\r\n8\r\n9\r\n\u001b[?2026l\u001b[?25l",
+      "flickers": []
+    },
+    {
+      "bytes": "\u001b[?2026h\u001b[2J\u001b[3J\u001b[H0\r\n1\r\n2\r\n3\r\n\u001b[?2026l",
+      "flickers": ["offscreen"]
+    }
+  ],
+  "收缩 10→5（视口 6）": [
+    {
+      "bytes": "\u001b[?2026h0\r\n1\r\n2\r\n3\r\n4\r\n5\r\n6\r\n7\r\n8\r\n9\r\n\u001b[?2026l\u001b[?25l",
+      "flickers": []
+    },
+    {
+      "bytes": "\u001b[?2026h\u001b[2J\u001b[3J\u001b[H0\r\n1\r\n2\r\n3\r\n4\r\n\u001b[?2026l",
+      "flickers": ["offscreen"]
+    }
+  ],
+  "收缩 10→6（视口 6）": [
+    {
+      "bytes": "\u001b[?2026h0\r\n1\r\n2\r\n3\r\n4\r\n5\r\n6\r\n7\r\n8\r\n9\r\n\u001b[?2026l\u001b[?25l",
+      "flickers": []
+    },
+    {
+      "bytes": "\u001b[?2026h\u001b[2J\u001b[3J\u001b[H0\r\n1\r\n2\r\n3\r\n4\r\n5\r\n\u001b[?2026l",
+      "flickers": ["offscreen"]
+    }
+  ],
+  "收缩 10→7（视口 6）": [
+    {
+      "bytes": "\u001b[?2026h0\r\n1\r\n2\r\n3\r\n4\r\n5\r\n6\r\n7\r\n8\r\n9\r\n\u001b[?2026l\u001b[?25l",
+      "flickers": []
+    },
+    {
+      "bytes": "\u001b[?2026h\u001b[2K\u001b[1A\u001b[2K\u001b[1A\u001b[2K\u001b[G\u001b[1A                    \r\u001b[1B                    \r\u001b[1B                    \r\u001b[2A\u001b[?2026l",
+      "flickers": []
+    }
+  ],
+  "收缩 10→8（视口 6）": [
+    {
+      "bytes": "\u001b[?2026h0\r\n1\r\n2\r\n3\r\n4\r\n5\r\n6\r\n7\r\n8\r\n9\r\n\u001b[?2026l\u001b[?25l",
+      "flickers": []
+    },
+    {
+      "bytes": "\u001b[?2026h\u001b[2K\u001b[1A\u001b[2K\u001b[G\u001b[1A                    \r\u001b[1B                    \r\u001b[1A\u001b[?2026l",
+      "flickers": []
+    }
+  ],
+  "收缩 11→6（视口 6）": [
+    {
+      "bytes": "\u001b[?2026h0\r\n1\r\n2\r\n3\r\n4\r\n5\r\n6\r\n7\r\n8\r\n9\r\n10\r\n\u001b[?2026l\u001b[?25l",
+      "flickers": []
+    },
+    {
+      "bytes": "\u001b[?2026h\u001b[2J\u001b[3J\u001b[H0\r\n1\r\n2\r\n3\r\n4\r\n5\r\n\u001b[?2026l",
+      "flickers": ["offscreen"]
+    }
+  ],
+  "收缩 11→7（视口 6）": [
+    {
+      "bytes": "\u001b[?2026h0\r\n1\r\n2\r\n3\r\n4\r\n5\r\n6\r\n7\r\n8\r\n9\r\n10\r\n\u001b[?2026l\u001b[?25l",
+      "flickers": []
+    },
+    {
+      "bytes": "\u001b[?2026h\u001b[2K\u001b[1A\u001b[2K\u001b[1A\u001b[2K\u001b[1A\u001b[2K\u001b[G\u001b[1A                    \r\u001b[1B                    \r\u001b[1B                    \r\u001b[1B                    \r\u001b[3A\u001b[?2026l",
+      "flickers": []
+    }
+  ],
+  "收缩 12→7（视口 6）": [
+    {
+      "bytes": "\u001b[?2026h0\r\n1\r\n2\r\n3\r\n4\r\n5\r\n6\r\n7\r\n8\r\n9\r\n10\r\n11\r\n\u001b[?2026l\u001b[?25l",
+      "flickers": []
+    },
+    {
+      "bytes": "\u001b[?2026h\u001b[2K\u001b[1A\u001b[2K\u001b[1A\u001b[2K\u001b[1A\u001b[2K\u001b[1A\u001b[2K\u001b[G\u001b[1A                    \r\u001b[1B                    \r\u001b[1B                    \r\u001b[1B                    \r\u001b[1B                    \r\u001b[4A\u001b[?2026l",
+      "flickers": []
+    }
+  ],
+  "收缩 13→7（视口 6）": [
+    {
+      "bytes": "\u001b[?2026h0\r\n1\r\n2\r\n3\r\n4\r\n5\r\n6\r\n7\r\n8\r\n9\r\n10\r\n11\r\n12\r\n\u001b[?2026l\u001b[?25l",
+      "flickers": []
+    },
+    {
+      "bytes": "\u001b[?2026h\u001b[2J\u001b[3J\u001b[H0\r\n1\r\n2\r\n3\r\n4\r\n5\r\n6\r\n\u001b[?2026l",
+      "flickers": ["offscreen"]
+    }
+  ],
+  "收缩 20→7（视口 6）": [
+    {
+      "bytes": "\u001b[?2026h0\r\n1\r\n2\r\n3\r\n4\r\n5\r\n6\r\n7\r\n8\r\n9\r\n10\r\n11\r\n12\r\n13\r\n14\r\n15\r\n16\r\n17\r\n18\r\n19\r\n\u001b[?2026l\u001b[?25l",
+      "flickers": []
+    },
+    {
+      "bytes": "\u001b[?2026h\u001b[2J\u001b[3J\u001b[H0\r\n1\r\n2\r\n3\r\n4\r\n5\r\n6\r\n\u001b[?2026l",
+      "flickers": ["offscreen"]
+    }
+  ],
+  "收缩 20→10（视口 6）": [
+    {
+      "bytes": "\u001b[?2026h0\r\n1\r\n2\r\n3\r\n4\r\n5\r\n6\r\n7\r\n8\r\n9\r\n10\r\n11\r\n12\r\n13\r\n14\r\n15\r\n16\r\n17\r\n18\r\n19\r\n\u001b[?2026l\u001b[?25l",
+      "flickers": []
+    },
+    {
+      "bytes": "\u001b[?2026h\u001b[2J\u001b[3J\u001b[H0\r\n1\r\n2\r\n3\r\n4\r\n5\r\n6\r\n7\r\n8\r\n9\r\n\u001b[?2026l",
+      "flickers": ["offscreen"]
+    }
+  ],
+  "收缩 30→24（视口 6）": [
+    {
+      "bytes": "\u001b[?2026h0\r\n1\r\n2\r\n3\r\n4\r\n5\r\n6\r\n7\r\n8\r\n9\r\n10\r\n11\r\n12\r\n13\r\n14\r\n15\r\n16\r\n17\r\n18\r\n19\r\n20\r\n21\r\n22\r\n23\r\n24\r\n25\r\n26\r\n27\r\n28\r\n29\r\n\u001b[?2026l\u001b[?25l",
+      "flickers": []
+    },
+    {
+      "bytes": "\u001b[?2026h\u001b[2J\u001b[3J\u001b[H0\r\n1\r\n2\r\n3\r\n4\r\n5\r\n6\r\n7\r\n8\r\n9\r\n10\r\n11\r\n12\r\n13\r\n14\r\n15\r\n16\r\n17\r\n18\r\n19\r\n20\r\n21\r\n22\r\n23\r\n\u001b[?2026l",
+      "flickers": ["offscreen"]
+    }
+  ],
+  "收缩 30→25（视口 6）": [
+    {
+      "bytes": "\u001b[?2026h0\r\n1\r\n2\r\n3\r\n4\r\n5\r\n6\r\n7\r\n8\r\n9\r\n10\r\n11\r\n12\r\n13\r\n14\r\n15\r\n16\r\n17\r\n18\r\n19\r\n20\r\n21\r\n22\r\n23\r\n24\r\n25\r\n26\r\n27\r\n28\r\n29\r\n\u001b[?2026l\u001b[?25l",
+      "flickers": []
+    },
+    {
+      "bytes": "\u001b[?2026h\u001b[2K\u001b[1A\u001b[2K\u001b[1A\u001b[2K\u001b[1A\u001b[2K\u001b[1A\u001b[2K\u001b[G\u001b[1A                    \r\u001b[1B                    \r\u001b[1B                    \r\u001b[1B                    \r\u001b[1B                    \r\u001b[4A\u001b[?2026l",
+      "flickers": []
+    }
+  ],
+  "收缩 15→10 与 15→11（视口 10）": [
+    {
+      "bytes": "\u001b[?2026h0\r\n1\r\n2\r\n3\r\n4\r\n5\r\n6\r\n7\r\n8\r\n9\r\n10\r\n11\r\n12\r\n13\r\n14\r\n\u001b[?2026l\u001b[?25l",
+      "flickers": []
+    },
+    {
+      "bytes": "\u001b[?2026h\u001b[2J\u001b[3J\u001b[H0\r\n1\r\n2\r\n3\r\n4\r\n5\r\n6\r\n7\r\n8\r\n9\r\n\u001b[?2026l",
+      "flickers": ["offscreen"]
+    },
+    {
+      "bytes": "\u001b[?2026h10\r\n11\r\n12\r\n13\r\n14\r\n\u001b[?2026l",
+      "flickers": []
+    },
+    {
+      "bytes": "\u001b[?2026h\u001b[2K\u001b[1A\u001b[2K\u001b[1A\u001b[2K\u001b[1A\u001b[2K\u001b[G\u001b[1A                    \r\u001b[1B                    \r\u001b[1B                    \r\u001b[1B                    \r\u001b[3A\u001b[?2026l",
+      "flickers": []
+    }
+  ],
+  "收缩 16→6（视口 10）": [
+    {
+      "bytes": "\u001b[?2026h0\r\n1\r\n2\r\n3\r\n4\r\n5\r\n6\r\n7\r\n8\r\n9\r\n10\r\n11\r\n12\r\n13\r\n14\r\n15\r\n\u001b[?2026l\u001b[?25l",
+      "flickers": []
+    },
+    {
+      "bytes": "\u001b[?2026h\u001b[2J\u001b[3J\u001b[H0\r\n1\r\n2\r\n3\r\n4\r\n5\r\n\u001b[?2026l",
+      "flickers": ["offscreen"]
+    }
+  ],
+  "变宽": [
+    {
+      "bytes": "\u001b[?2026hab\r\n\u001b[?2026l\u001b[?25l",
+      "flickers": []
+    },
+    {
+      "bytes": "\u001b[?2026h\u001b[2J\u001b[3J\u001b[Hab\r\n\u001b[?2026l",
+      "flickers": ["resize"]
+    },
+    {
+      "bytes": "",
+      "flickers": []
+    }
+  ],
+  "变窄": [
+    {
+      "bytes": "\u001b[?2026hab\r\ncd\r\n\u001b[?2026l\u001b[?25l",
+      "flickers": []
+    },
+    {
+      "bytes": "\u001b[?2026h\u001b[2J\u001b[3J\u001b[Hab\r\ncd\r\n\u001b[?2026l",
+      "flickers": ["resize"]
+    },
+    {
+      "bytes": "",
+      "flickers": []
+    }
+  ],
+  "尺寸不变的 resize 不出帧": [
+    {
+      "bytes": "\u001b[?2026hab\r\n\u001b[?2026l\u001b[?25l",
+      "flickers": []
+    },
+    {
+      "bytes": "",
+      "flickers": []
+    }
+  ],
+  "同 tick 两次 resize 回到原尺寸": [
+    {
+      "bytes": "\u001b[?2026hab\r\n\u001b[?2026l\u001b[?25l",
+      "flickers": []
+    },
+    {
+      "bytes": "",
+      "flickers": []
+    }
+  ],
+  "同 tick 三次变宽": [
+    {
+      "bytes": "\u001b[?2026hab\r\n\u001b[?2026l\u001b[?25l",
+      "flickers": []
+    },
+    {
+      "bytes": "\u001b[?2026h\u001b[2J\u001b[3J\u001b[Hab\r\n\u001b[?2026l",
+      "flickers": ["resize"]
+    }
+  ],
+  "变矮 full reset 变高不 reset": [
+    {
+      "bytes": "\u001b[?2026h0\r\n1\r\n2\r\n\u001b[?2026l\u001b[?25l",
+      "flickers": []
+    },
+    {
+      "bytes": "\u001b[?2026h\u001b[2J\u001b[3J\u001b[H0\r\n1\r\n2\r\n\u001b[?2026l",
+      "flickers": ["resize"]
+    },
+    {
+      "bytes": "\u001b[?2026h\u001b[2J\u001b[3J\u001b[H0\r\n1\r\n2\r\n\u001b[?2026l",
+      "flickers": ["resize"]
+    },
+    {
+      "bytes": "",
+      "flickers": []
+    },
+    {
+      "bytes": "\u001b[?2026h\r\u001b[1AX\r\n\u001b[?2026l",
+      "flickers": []
+    }
+  ],
+  "溢出态变矮再变宽": [
+    {
+      "bytes": "\u001b[?2026h0\r\n1\r\n2\r\n3\r\n4\r\n5\r\n6\r\n7\r\n8\r\n\u001b[?2026l\u001b[?25l",
+      "flickers": []
+    },
+    {
+      "bytes": "\u001b[?2026h\u001b[2J\u001b[3J\u001b[H0\r\n1\r\n2\r\n3\r\n4\r\n5\r\n6\r\n7\r\n8\r\n\u001b[?2026l",
+      "flickers": ["resize"]
+    },
+    {
+      "bytes": "\u001b[?2026h\u001b[2J\u001b[3J\u001b[H0\r\n1\r\n2\r\n3\r\n4\r\n5\r\n6\r\n7\r\n8\r\n\u001b[?2026l",
+      "flickers": ["resize"]
+    }
+  ],
+  "空帧变宽也 reset": [
+    {
+      "bytes": "\u001b[?25l",
+      "flickers": []
+    },
+    {
+      "bytes": "\u001b[?2026h\u001b[2J\u001b[3J\u001b[H\u001b[?2026l",
+      "flickers": ["resize"]
+    },
+    {
+      "bytes": "\u001b[?2026ha\r\n\u001b[?2026l",
+      "flickers": []
+    }
+  ],
+  "变矮后再改行": [
+    {
+      "bytes": "\u001b[?2026h0\r\n1\r\n2\r\n3\r\n\u001b[?2026l\u001b[?25l",
+      "flickers": []
+    },
+    {
+      "bytes": "\u001b[?2026h\u001b[2J\u001b[3J\u001b[H0\r\n1\r\n2\r\n3\r\n\u001b[?2026l",
+      "flickers": ["resize"]
+    },
+    {
+      "bytes": "\u001b[?2026h\r\u001b[1AX\r\n\u001b[?2026l",
+      "flickers": []
+    }
+  ],
+  "forceRedraw 后照常增量": [
+    {
+      "bytes": "\u001b[?2026h0\r\n1\r\n\u001b[?2026l\u001b[?25l",
+      "flickers": []
+    },
+    {
+      "bytes": "\u001b[2J\u001b[H\u001b[?2026h0\r\n1\r\n\u001b[?2026l",
+      "flickers": []
+    },
+    {
+      "bytes": "\u001b[?2026h\r\u001b[1AX\r\n\u001b[?2026l",
+      "flickers": []
+    }
+  ],
+  "forceRedraw 同 tick 再提交": [
+    {
+      "bytes": "\u001b[?2026h0\r\n1\r\n\u001b[?2026l\u001b[?25l",
+      "flickers": []
+    },
+    {
+      "bytes": "\u001b[2J\u001b[H\u001b[?2026h0\r\n1\r\n\u001b[?2026l\u001b[?2026h\r\u001b[2AX\r\n\n\u001b[?2026l",
+      "flickers": []
+    }
+  ],
+  "forceRedraw 空帧": [
+    {
+      "bytes": "\u001b[?25l",
+      "flickers": []
+    },
+    {
+      "bytes": "\u001b[2J\u001b[H",
+      "flickers": []
+    }
+  ],
+  "溢出态 forceRedraw 后改末行": [
+    {
+      "bytes": "\u001b[?2026h0\r\n1\r\n2\r\n3\r\n4\r\n5\r\n6\r\n7\r\n8\r\n\u001b[?2026l\u001b[?25l",
+      "flickers": []
+    },
+    {
+      "bytes": "\u001b[2J\u001b[H\u001b[?2026h0\r\n1\r\n2\r\n3\r\n4\r\n5\r\n6\r\n7\r\n8\r\n\u001b[?2026l",
+      "flickers": []
+    },
+    {
+      "bytes": "\u001b[?2026h\r\u001b[1AX\r\n\u001b[?2026l",
+      "flickers": []
+    }
+  ],
+  "resize 与 forceRedraw 同 tick": [
+    {
+      "bytes": "\u001b[?2026h0\r\n1\r\n\u001b[?2026l\u001b[?25l",
+      "flickers": []
+    },
+    {
+      "bytes": "\u001b[2J\u001b[H\u001b[?2026h\u001b[2J\u001b[3J\u001b[H0\r\n1\r\n\u001b[?2026l",
+      "flickers": ["resize"]
+    }
+  ],
+  "变矮与 forceRedraw 同 tick": [
+    {
+      "bytes": "\u001b[?2026h0\r\n1\r\n\u001b[?2026l\u001b[?25l",
+      "flickers": []
+    },
+    {
+      "bytes": "\u001b[2J\u001b[H\u001b[?2026h\u001b[2J\u001b[3J\u001b[H0\r\n1\r\n\u001b[?2026l",
+      "flickers": ["resize"]
+    }
+  ],
+  "变矮后 forceRedraw": [
+    {
+      "bytes": "\u001b[?2026h0\r\n1\r\n\u001b[?2026l\u001b[?25l",
+      "flickers": []
+    },
+    {
+      "bytes": "\u001b[?2026h\u001b[2J\u001b[3J\u001b[H0\r\n1\r\n\u001b[?2026l",
+      "flickers": ["resize"]
+    },
+    {
+      "bytes": "\u001b[2J\u001b[H\u001b[?2026h0\r\n1\r\n\u001b[?2026l",
+      "flickers": []
+    }
+  ],
+  "SIGCONT 后同内容": [
+    {
+      "bytes": "\u001b[?2026h0\r\n1\r\n2\r\n3\r\n\u001b[?2026l\u001b[?25l",
+      "flickers": []
+    },
+    {
+      "bytes": "",
+      "flickers": []
+    },
+    {
+      "bytes": "\u001b[?2026h\r\n\r\n\r\n\r\n\u001b[?2026l",
+      "flickers": []
+    }
+  ],
+  "SIGCONT 后改中间行": [
+    {
+      "bytes": "\u001b[?2026h0\r\n1\r\n2\r\n3\r\n\u001b[?2026l\u001b[?25l",
+      "flickers": []
+    },
+    {
+      "bytes": "",
+      "flickers": []
+    },
+    {
+      "bytes": "\u001b[?2026h\r\nX\r\n2\r\n3\r\n\u001b[?2026l",
+      "flickers": []
+    }
+  ],
+  "SIGCONT 后改首行": [
+    {
+      "bytes": "\u001b[?2026h0\r\n1\r\n2\r\n3\r\n\u001b[?2026l\u001b[?25l",
+      "flickers": []
+    },
+    {
+      "bytes": "",
+      "flickers": []
+    },
+    {
+      "bytes": "\u001b[?2026hX\r\n1\r\n2\r\n3\r\n\u001b[?2026l",
+      "flickers": []
+    }
+  ],
+  "SIGCONT 后增长": [
+    {
+      "bytes": "\u001b[?2026h0\r\n1\r\n\u001b[?2026l\u001b[?25l",
+      "flickers": []
+    },
+    {
+      "bytes": "",
+      "flickers": []
+    },
+    {
+      "bytes": "\u001b[?2026h\r\n\r\n2\r\n3\r\n\u001b[?2026l",
+      "flickers": []
+    }
+  ],
+  "SIGCONT 后收缩": [
+    {
+      "bytes": "\u001b[?2026h0\r\n1\r\n2\r\n3\r\n\u001b[?2026l\u001b[?25l",
+      "flickers": []
+    },
+    {
+      "bytes": "",
+      "flickers": []
+    },
+    {
+      "bytes": "\u001b[?2026h0\r\n1\r\n\u001b[?2026l",
+      "flickers": []
+    }
+  ],
+  "SIGCONT 后溢出态改末行": [
+    {
+      "bytes": "\u001b[?2026h0\r\n1\r\n2\r\n3\r\n4\r\n5\r\n6\r\n7\r\n\u001b[?2026l\u001b[?25l",
+      "flickers": []
+    },
+    {
+      "bytes": "",
+      "flickers": []
+    },
+    {
+      "bytes": "\u001b[?2026h\r\n\r\n\r\n\r\n\r\n\r\n\r\nX\r\n\u001b[?2026l",
+      "flickers": []
+    }
+  ],
+  "SIGCONT 后变矮": [
+    {
+      "bytes": "\u001b[?2026h0\r\n1\r\n\u001b[?2026l\u001b[?25l",
+      "flickers": []
+    },
+    {
+      "bytes": "",
+      "flickers": []
+    },
+    {
+      "bytes": "\u001b[?2026h\u001b[2J\u001b[3J\u001b[H0\r\n1\r\n\u001b[?2026l",
+      "flickers": ["resize"]
+    },
+    {
+      "bytes": "\u001b[?2026h\r\u001b[2AX\r\n\n\u001b[?2026l",
+      "flickers": []
+    }
+  ],
+  "SIGCONT 后 forceRedraw": [
+    {
+      "bytes": "\u001b[?2026h0\r\n1\r\n\u001b[?2026l\u001b[?25l",
+      "flickers": []
+    },
+    {
+      "bytes": "",
+      "flickers": []
+    },
+    {
+      "bytes": "\u001b[2J\u001b[H\u001b[?2026h0\r\n1\r\n\u001b[?2026l",
+      "flickers": []
+    }
+  ],
+  "SIGCONT 后第二帧照常 diff": [
+    {
+      "bytes": "\u001b[?2026h0\r\n1\r\n\u001b[?2026l\u001b[?25l",
+      "flickers": []
+    },
+    {
+      "bytes": "",
+      "flickers": []
+    },
+    {
+      "bytes": "\u001b[?2026h\r\n\r\n\u001b[?2026l",
+      "flickers": []
+    },
+    {
+      "bytes": "\u001b[?2026h\r\u001b[1AX\r\n\u001b[?2026l",
+      "flickers": []
+    }
+  ],
+  "非 TTY 逐帧整帧": [
+    {
+      "bytes": "",
+      "flickers": []
+    },
+    {
+      "bytes": "\u001b[?2026ha\u001b[?2026l",
+      "flickers": []
+    },
+    {
+      "bytes": "\u001b[?2026ha\u001b[?2026l",
+      "flickers": []
+    },
+    {
+      "bytes": "",
+      "flickers": []
+    },
+    {
+      "bytes": "\u001b[?2026hb\u001b[?2026l",
+      "flickers": []
+    },
+    {
+      "bytes": "\u001b[?2026ha\nc\u001b[?2026l",
+      "flickers": []
+    }
+  ]
+}

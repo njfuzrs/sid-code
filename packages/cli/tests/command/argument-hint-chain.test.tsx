@@ -12,7 +12,7 @@
 import { describe, test, expect } from "bun:test";
 import React from "react";
 import stripAnsi from "strip-ansi";
-import { render } from "@sid-code/tui-renderer/_vendor/testing.tsx";
+import { render } from "@sid-code/cli/ui/render-port/testing.ts";
 import { toCompletionEntries } from "@sid-code/cli/command/completion-list.ts";
 import * as suggestions from "@sid-code/cli/command/suggestions.ts";
 import { rankCommandInfos } from "@sid-code/cli/command/suggestions.ts";

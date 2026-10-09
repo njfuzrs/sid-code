@@ -8,7 +8,7 @@
 import { describe, test, expect } from "bun:test";
 import React from "react";
 import stripAnsi from "strip-ansi";
-import { render } from "@sid-code/tui-renderer/_vendor/testing.tsx";
+import { render } from "@sid-code/cli/ui/render-port/testing.ts";
 import { HooksDialog, countSkippedByTrust } from "@sid-code/cli/ui/components/HooksDialog.tsx";
 import { KeypressProvider } from "@sid-code/cli/ui/contexts/KeypressContext.tsx";
 import { HookSystem } from "@sid-code/core/hook/system.ts";

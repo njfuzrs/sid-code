@@ -11,7 +11,7 @@
  */
 
 import type { ThoughtSummary } from "./history-adapter.ts";
-import type { Color } from "@sid-code/tui-renderer/styles.ts";
+import type { Color } from "./render-port/types.ts";
 
 // ── 流式状态 ──
 

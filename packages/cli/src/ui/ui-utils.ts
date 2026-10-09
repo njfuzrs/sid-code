@@ -5,7 +5,7 @@
  */
 
 import { ELLIPSIS } from "./constants/collapse.ts";
-import { stringWidth } from "@sid-code/tui-renderer/stringWidth.ts";
+import { stringWidth } from "./render-port/text.ts";
 import { shortenPathForDisplay, stripPathNoiseInText } from "./utils/path-display.ts";
 
 /** 助手消息右侧留白（用于视觉区分） */

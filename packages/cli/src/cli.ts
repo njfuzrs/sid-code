@@ -799,12 +799,12 @@ async function runSessionPicker(
   opts: { searchFirst?: boolean; initialSearchQuery?: string } = {},
 ): Promise<string | null> {
   const React = await import("react");
-  const { default: render } = await import("@sid-code/tui-renderer/root.ts");
+  const { render } = await import("./ui/render-port/runtime.ts");
   const { SessionBrowser } = await import("./ui/SessionBrowser.tsx");
   const { sidPaths } = await import("@sid-code/core/config/paths.ts");
   const { consumeEarlyInput } = await import("./ui/early-input.ts");
-  const { drainStdin } = await import("@sid-code/tui-renderer/ink.tsx");
-  const { setSuppressTerminalProbe } = await import("@sid-code/tui-renderer/terminal.ts");
+  const { drainStdin } = await import("./ui/render-port/runtime.ts");
+  const { setSuppressTerminalProbe } = await import("./ui/render-port/runtime.ts");
   const { resolveProjectRoot } = await import("@sid-code/core/memory/paths.ts");
   const { join } = await import("path");
   const { unlinkSync, existsSync } = await import("fs");

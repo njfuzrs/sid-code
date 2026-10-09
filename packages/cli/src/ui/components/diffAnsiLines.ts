@@ -16,10 +16,10 @@
  */
 
 import { diffWordsWithSpace } from "diff";
-import { applyColor, colorize, applyTextStyles } from "@sid-code/tui-renderer/colorize.ts";
-import { stringWidth } from "@sid-code/tui-renderer/stringWidth.ts";
+import { applyColor, colorize, applyTextStyles } from "../render-port/text.ts";
+import { stringWidth } from "../render-port/text.ts";
 import { ELLIPSIS } from "../constants/collapse.ts";
-import type { Color } from "@sid-code/tui-renderer/styles.ts";
+import type { Color } from "../render-port/types.ts";
 import type { DiffLine, DiffRenderPlanItem } from "./DiffRenderer.js";
 
 /** 生产 ANSI 行所需的颜色(从 semanticTheme 取实际色值,避免本模块依赖主题单例) */

@@ -16,8 +16,8 @@
  */
 
 import React, { useMemo } from "react";
-import Box from "@sid-code/tui-renderer/components/Box.tsx";
-import { Ansi as AnsiRaw } from "@sid-code/tui-renderer/Ansi.tsx";
+import { Box } from "../render-port/components.ts";
+import { Ansi as AnsiRaw } from "../render-port/components.ts";
 import { colorizeCode } from "./CodeColorizer.tsx";
 import { TableRenderer } from "./TableRenderer.tsx";
 import { useSettings } from "../contexts/SettingsContext.tsx";
