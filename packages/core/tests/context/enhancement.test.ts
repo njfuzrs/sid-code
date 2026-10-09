@@ -370,3 +370,55 @@ describe("LoopDetector LLM 认知检测（循环检测默认全局启用，此�
     expect(prompt).toContain("a.ts");
   });
 });
+
+describe("缺陷 14：压缩保留段双下限", () => {
+  /** 前段若干轮短对话 + 末尾一条巨型工具结果（占 >90% 字符） */
+  function build(): Manager {
+    const mgr = new Manager({ maxTokens: 1_000_000 });
+    for (let i = 0; i < 20; i++) {
+      mgr.addMessage({
+        role: i % 2 === 0 ? "user" : "assistant",
+        content: [{ type: "text", text: `对话 ${i} ${"z".repeat(1500)}` }],
+      });
+    }
+    mgr.addMessage({
+      role: "assistant",
+      content: [{ type: "tool_use", id: "big", name: "read", input: { file_path: "a.ts" } }],
+    });
+    mgr.addMessage({
+      role: "user",
+      content: [{ type: "tool_result", tool_use_id: "big", content: "x".repeat(400_000) }],
+    });
+    return mgr;
+  }
+  const textTail = (mgr: Manager, sp: number) =>
+    mgr
+      .getMessages()
+      .slice(sp)
+      .filter((m) => m.content.some((b) => b.type === "text")).length;
+
+  test("一条巨型工具结果不再独自满足保留量：尾部至少 5 条含文本消息", () => {
+    const mgr = build();
+    const sp = mgr.findCompressSplitPoint();
+    expect(sp).toBeGreaterThan(0);
+    expect(textTail(mgr, sp)).toBeGreaterThanOrEqual(5);
+  });
+
+  test("minFloors:false（emergencyTruncate 口径）保持旧行为：只按比例切", () => {
+    const mgr = build();
+    const sp = mgr.findCompressSplitPoint(0.3, { minFloors: false });
+    expect(textTail(mgr, sp)).toBeLessThan(5);
+  });
+
+  test("短历史下限不可达时不改变旧行为，切点 > 0", () => {
+    const mgr = new Manager({ maxTokens: 1_000_000 });
+    for (let i = 0; i < 6; i++) {
+      mgr.addMessage({
+        role: i % 2 === 0 ? "user" : "assistant",
+        content: [{ type: "text", text: `m${i} ${"q".repeat(100)}` }],
+      });
+    }
+    const sp = mgr.findCompressSplitPoint();
+    expect(sp).toBeGreaterThan(0);
+  });
+});
