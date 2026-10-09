@@ -451,6 +451,40 @@ export function isAnyPrivateMemPath(absolutePath: string, cwd: string = process.
 }
 
 /**
+ * 判断一次 Read 的目标是不是记忆文件、属于哪条线（缺陷 10 的取数口径）。
+ *
+ * 返回 null = 不是记忆文件。与 `isAnyPrivateMemPath` 同一个廉价否定前置：
+ * 读工具每次调用都会走到这里，不在配置根下的路径不能为此 fork git。
+ * 顺序有讲究：team 目录与 project 目录同父，agent 目录在 global 之下，
+ * 所以先判更具体的那个。
+ */
+export function classifyMemoryReadPath(
+  absolutePath: string,
+  cwd: string = process.cwd(),
+): { scope: "project" | "global" | "agent" | "team"; isIndex: boolean } | null {
+  const target = resolve(absolutePath);
+  if (!target.endsWith(".md")) return null;
+  const home = resolve(getSidHome());
+  if (!target.startsWith(home + sep)) return null;
+  const isIndex = basename(target) === "MEMORY.md";
+  const under = (d: string) => {
+    const nd = resolve(d);
+    return target.startsWith(nd + sep);
+  };
+  try {
+    const { getTeamMemPath } = require("./team/paths.ts") as typeof import("./team/paths.ts");
+    if (under(getTeamMemPath(cwd))) return { scope: "team", isIndex };
+  } catch {
+    /* 团队路径解析失败不影响其余判定 */
+  }
+  if (under(getAutoMemPath(cwd))) return { scope: "project", isIndex };
+  const globalRoot = join(getSidHome(), "memory");
+  if (under(join(globalRoot, "agents"))) return { scope: "agent", isIndex };
+  if (under(globalRoot)) return { scope: "global", isIndex };
+  return null;
+}
+
+/**
  * 校验显式记忆目录覆盖路径的合法性。
  * 拒绝：相对路径、根路径、null 字节、UNC 路径。
  * 合法时返回规范化绝对路径，非法时返回 undefined。

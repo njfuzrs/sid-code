@@ -542,6 +542,45 @@ export class App {
    * 与 announcedMcpServers 同模式：会话内一次即够，重复注入纯烧 token。
    */
   private surfacedRecalledMemories = new Set<string>();
+  /**
+   * 缺陷 4：本会话（两次压缩之间）已注入的召回正文字节数，喂 `RECALL_SESSION_MAX_BYTES`。
+   * 与 `surfacedRecalledMemories` 同生命周期，见 `resetRecallState`。
+   */
+  private recalledMemoryBytes = 0;
+
+  /**
+   * 缺陷 4：压缩 / `/clear` 之后召回状态必须归零。
+   *
+   * 已注入集合是挂在上下文**外面**的状态：压缩把那些注入从消息里清掉了，
+   * 集合却还记着「给过了」⇒ 这条记忆本会话再也不会注入，且没有任何告警。
+   * 原先压缩只 `clearPromptCache()`，清的是提示词缓存，不是这个集合。
+   */
+  private resetRecallState(): void {
+    this.surfacedRecalledMemories.clear();
+    this.recalledMemoryBytes = 0;
+  }
+
+  /**
+   * 缺陷 2：从当前消息里取最近 N 次工具调用及成败，作为召回的第三个输入。
+   * 成败以配对的 tool_result.is_error 为准；没配上结果的调用不计（还没执行完）。
+   */
+  private collectRecentToolUses(limit = 10): Array<{ name: string; failed: boolean }> {
+    const msgs = this.ctxMgr.getMessages() as Array<{ content?: unknown }>;
+    const names = new Map<string, string>();
+    const out: Array<{ name: string; failed: boolean }> = [];
+    for (const m of msgs) {
+      if (!Array.isArray(m.content)) continue;
+      for (const b of m.content as Array<Record<string, unknown>>) {
+        if (b?.type === "tool_use" && typeof b.id === "string" && typeof b.name === "string") {
+          names.set(b.id, b.name);
+        } else if (b?.type === "tool_result" && typeof b.tool_use_id === "string") {
+          const name = names.get(b.tool_use_id);
+          if (name) out.push({ name, failed: b.is_error === true });
+        }
+      }
+    }
+    return out.slice(-limit);
+  }
   /** 会话 ID（§4.1/§4.3 落盘目录用）。 */
   private sessionIdForCompact = "";
   /** 当前生效的项目规则（CLAUDE.md）内存缓存，供运行时重建系统提示词复用 */
@@ -1412,9 +1451,16 @@ export class App {
           const recalled = await findRelevantMemories(query, memoryDir, sideQuery, {
             // 同一会话内已注入过的不再重复注入（多轮重复注入纯烧 token）
             alreadySurfaced: this.surfacedRecalledMemories,
+            // 缺陷 2：执行状态调制——成功在用的工具不推用法参考，失败的推坑
+            recentTools: this.collectRecentToolUses(),
+            // 缺陷 4：会话累计预算
+            sessionBytesUsed: this.recalledMemoryBytes,
           });
           if (recalled.length === 0) return null;
-          for (const m of recalled) this.surfacedRecalledMemories.add(m.filename);
+          for (const m of recalled) {
+            this.surfacedRecalledMemories.add(m.filename);
+            this.recalledMemoryBytes += Buffer.byteLength(m.content, "utf8");
+          }
 
           const { generateRecalledMemoryAttachment } =
             await import("@sid-code/core/config/attachments.ts");
@@ -2643,6 +2689,7 @@ export class App {
         // 否则新一轮对话永远不再播报延迟工具列表（详见 resetReminderDedupKeys 注释）。
         this.sessionState.resetReminderDedupKeys();
         clearPromptCache();
+        this.resetRecallState();
         this.quotaManager?.resetAlertLevel();
         this.fallback.reset();
         this.resetTodoTool();
@@ -2760,6 +2807,8 @@ export class App {
         // 否则后续 syncDisplay 因 newCount<=0 被 early return 跳过，historyItems 永远停在旧快照。
         resetSyncState();
         rebuildDisplay();
+        // 缺陷 4：手动压缩同样把召回注入清出了上下文
+        this.resetRecallState();
         appendCommandOutput(commandInput, result.summary ?? null);
         break;
 
@@ -2956,6 +3005,8 @@ export class App {
     /** 可选：reactiveCompact 的 emergencyTruncate 兜底路径不一定给（见 QueryDeps 注释） */
     tokensBefore?: number;
   }): Promise<void> {
+    // 缺陷 4：reactive / collapse 同样替换了消息历史
+    this.resetRecallState();
     try {
       const { runPostCompact } = await import("@sid-code/core/query/compact/post-compact.ts");
       await runPostCompact({
@@ -3033,6 +3084,8 @@ export class App {
       } catch {
         /* 忽略 */
       }
+      // 缺陷 4：召回的已注入集合 / 累计字节随压缩归零（清 prompt cache 不清它们）
+      this.resetRecallState();
 
       // §9.5：压缩后重新注入仍在作用域内的 JIT 规则（CLAUDE.md）。
       // JIT 上下文被追加到系统提示词，但摘要后的消息历史不再提及这些规则，
@@ -9312,6 +9365,7 @@ export class App {
             // 同上：reminder 跨轮去重键必须随 /clear 归零（详见 resetReminderDedupKeys 注释）。
             this.sessionState.resetReminderDedupKeys();
             clearPromptCache();
+            this.resetRecallState();
             this.quotaManager?.resetAlertLevel();
             this.fallback.reset();
             this.resetTodoTool();
