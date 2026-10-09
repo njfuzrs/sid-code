@@ -3,10 +3,11 @@
  * 对标 claude-code/src/utils/ripgrep.ts，提供健壮的 rg 调用封装。
  *
  * 核心能力：
- * - 超时控制（默认 20s，WSL 60s，可通过 SID_GREP_TIMEOUT_SECONDS 环境变量配置）
+ * - 超时控制（默认 20s，WSL 60s，可通过 settings.json searchTimeoutSeconds 或
+ *   SID_GREP_TIMEOUT_SECONDS 环境变量配置）
  * - 两级终止：SIGTERM → 5s → SIGKILL
  * - EAGAIN 自动重试（单线程 -j 1）
- * - 超时时返回部分结果（丢弃可能不完整的最后一行）
+ * - 超时抛 RipgrepTimeoutError，partialResults 带已扫到的部分结果（丢弃可能不完整的最后一行）
  * - 退出码 1 = 无匹配（正常返回 []，不是 error）
  * - 关键错误（ENOENT/EACCES/EPERM）直接 reject
  * - MAX_BUFFER = 20MB
@@ -77,12 +78,24 @@ export function __resetRgCommandCacheForTest(): void {
 }
 
 /**
- * 超时配置（毫秒）
- * - 优先读取环境变量 SID_GREP_TIMEOUT_SECONDS（秒）
- * - WSL 环境性能较差，默认 60s
- * - 其他平台默认 20s
+ * 超时配置（毫秒）。优先级：
+ * 1. settings.json 的 searchTimeoutSeconds（可随团队默认配置分发，用户最容易发现）
+ * 2. 环境变量 SID_GREP_TIMEOUT_SECONDS（秒）
+ * 3. 缺省：WSL 60s（文件 I/O 慢 3-5x），其他平台 20s
+ *
+ * 为什么要有上限：headless / 子代理场景没人按 ESC，扫 ~ 或网络盘时会无限挂起。
+ * 为什么 20s 够：rg 不排序时扫完整个家目录实测约 5s（2026-10-10，macOS）；
+ * 之前 glob 撞线是因为 --sortr 让 rg 退化单线程（27–32s），不是上限太短。
  */
-function getTimeoutMs(): number {
+export function getTimeoutMs(): number {
+  try {
+    const { getSettings } = require("../config/settings/settings.ts");
+    const v = getSettings().settings.searchTimeoutSeconds;
+    if (typeof v === "number" && v > 0) return Math.round(v * 1000);
+  } catch {
+    /* settings 未初始化时回退 env，不让搜索因配置系统故障而失败 */
+  }
+
   const envSeconds = parseInt(process.env.SID_GREP_TIMEOUT_SECONDS || "", 10) || 0;
   if (envSeconds > 0) return envSeconds * 1000;
 
@@ -91,6 +104,19 @@ function getTimeoutMs(): number {
     platform() === "linux" &&
     (process.env.WSL_DISTRO_NAME !== undefined || process.env.WSLENV !== undefined);
   return isWsl ? 60_000 : 20_000;
+}
+
+/**
+ * 超时报错文案。两类读者各给一条出路：
+ * - 模型：别把家目录 / 根目录当搜索根（轨迹 20261009-135641 两次都是 path=~）
+ * - 用户：上限可调，且说清在哪调——否则配置项存在等于不存在
+ */
+export function formatTimeoutMessage(timeoutMs: number): string {
+  return (
+    `ripgrep 搜索超时（${timeoutMs / 1000}秒）。请缩小搜索范围：指定更具体的 path` +
+    `（避免直接搜家目录或根目录）或更具体的 pattern。` +
+    `如确需更长时间，可在 settings.json 设置 searchTimeoutSeconds，或设置环境变量 SID_GREP_TIMEOUT_SECONDS。`
+  );
 }
 
 /** 超时错误 */
@@ -109,6 +135,19 @@ export class RipgrepTimeoutError extends Error {
  */
 function isEagainError(stderr: string): boolean {
   return stderr.includes("os error 11") || stderr.includes("Resource temporarily unavailable");
+}
+
+/**
+ * stderr 是否只包含逐路径的访问错误（`rg: <path>: ... (os error N)`）。
+ * 参数错误（如 `unrecognized flag`）、正则错误不带 `(os error N)`，仍按失败处理——
+ * 判据用白名单（每一行都得是路径错误），不用「包含某个子串」的黑名单。
+ */
+export function isOnlyPathAccessErrors(stderr: string): boolean {
+  const lines = stderr
+    .split("\n")
+    .map((l) => l.trim())
+    .filter(Boolean);
+  return lines.length > 0 && lines.every((l) => /^rg: .+\(os error \d+\)$/.test(l));
 }
 
 /**
@@ -229,8 +268,11 @@ async function ripGrepInternal(
     clearTimeout(killTimeoutId);
     abortSignal.removeEventListener("abort", abortListener);
 
-    // 退出码 0 = 找到匹配，1 = 无匹配（都是正常情况）
-    if (exitCode === 0 || exitCode === 1) {
+    // 退出码 0 = 找到匹配，1 = 无匹配（都是正常情况）。
+    // 退出码 2 且 stderr 全是逐路径访问错误（macOS TCC 保护目录、无权限子目录）= 搜索本身完成了，
+    // 只是跳过了读不了的目录 → 也按正常结果返回。以前整体判失败，连带丢掉 stdout 里已扫到的
+    // 匹配：path=~ 时必然命中（~/Library 下几十个受保护目录），2026-10-10 实测目标文件就在被丢的 stdout 里。
+    if (exitCode === 0 || exitCode === 1 || (exitCode === 2 && isOnlyPathAccessErrors(stderr))) {
       const lines = stdout
         .trim()
         .split("\n")
@@ -287,14 +329,10 @@ async function ripGrepInternal(
         lines = lines.slice(0, -1);
       }
 
-      if (lines.length > 0) {
-        return lines;
-      }
-
-      throw new RipgrepTimeoutError(
-        `ripgrep 搜索超时（${timeoutMs / 1000}秒）。请尝试缩小搜索范围（指定更具体的 path 或 pattern）。`,
-        lines,
-      );
+      // 有部分结果也必须抛错而不是 return：return 会把「扫了一半」伪装成「完整结果」，
+      // 模型据此下「不存在」的结论；而且调用方 glob/grep 的部分结果分支依赖
+      // partialResults 非空，以前这里先 return 了，导致那两个分支永远走不到（死接线）。
+      throw new RipgrepTimeoutError(formatTimeoutMessage(timeoutMs), lines);
     }
 
     // 非超时错误（如 exit code 2: unrecognized flag）→ 直接抛出原始错误
