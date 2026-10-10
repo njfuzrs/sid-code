@@ -135,43 +135,6 @@ export class FileStateCache {
     return this.map.has(normalizePath(path));
   }
 
-  /**
-   * 验证文件是否可以安全编辑
-   * 返回 null 表示可以编辑，返回字符串表示错误原因
-   */
-  validateForEdit(path: string): string | null {
-    const state = this.get(path);
-
-    // 1. 必须先读取
-    if (!state) {
-      return `文件必须先用 read 工具读取后才能编辑: ${path}`;
-    }
-
-    // 2. 检测外部修改
-    //    （不再校验 partial-view：对齐 claude-code，编辑安全性由 edit 的磁盘重读+串匹配保证）
-    try {
-      const resolved = resolve(path);
-      const currentMtime = statSync(resolved).mtimeMs;
-
-      if (currentMtime > state.mtime) {
-        // mtime 变了，但内容可能没变（如 touch 命令）
-        // 只有在完整读取的情况下才做内容比对
-        if (state.offset === undefined && state.limit === undefined) {
-          const currentContent = readFileSync(resolved, "utf-8");
-          if (currentContent === state.content) {
-            // 内容相同，仅 mtime 变化，允许编辑
-            return null;
-          }
-        }
-        return `文件自上次读取后已被外部修改，请重新读取: ${path}`;
-      }
-    } catch {
-      // 文件可能已被删除，让后续操作处理
-    }
-
-    return null;
-  }
-
   /** 编辑后更新缓存 */
   updateAfterEdit(path: string, newContent: string): void {
     try {

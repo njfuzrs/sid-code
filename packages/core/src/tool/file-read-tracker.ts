@@ -8,6 +8,40 @@ import { statSync, readFileSync } from "fs";
 import { resolve } from "path";
 import type { ConflictAction, ConflictReport } from "../session/conflict-detector.ts";
 
+/**
+ * 新鲜度埋点（F4）：先读后改护栏的拒绝与「bash 改了已读文件」都打一条事件。
+ *
+ * 为什么要它：此前 stale 拒绝只能靠 grep 报错文案统计，分不清真阳性（IDE 并发改）
+ * 与误拦（agent 自己的 bash 改的）——2026-10-10 轨迹核验 3/3 都是后者，但样本只有 3。
+ * 是否进一步把 edit 对「真外部修改」也降级（F2），要靠这条事件攒出分母再决定。
+ *
+ * 与 jit-telemetry 同款模块级 sink：tracker 有 6+ 处创建点（主代理/子代理/fork/btw/mcp-serve），
+ * 逐个穿线不现实。App 在 collector 就绪后注入；未注入或写入抛错一律静默。
+ */
+export const FILE_FRESHNESS_EVENT_NAME = "file_freshness";
+export type FileFreshnessSink = (data: Record<string, unknown>) => void;
+let freshnessSink: FileFreshnessSink | null = null;
+
+/** 注入/清除新鲜度埋点通道（null = 关闭，测试收尾复位用） */
+export function setFileFreshnessTraceSink(s: FileFreshnessSink | null): void {
+  freshnessSink = s;
+}
+
+function emitFreshness(data: Record<string, unknown>): void {
+  try {
+    freshnessSink?.(data);
+  } catch {
+    /* 埋点失败静默 */
+  }
+}
+
+/** bash 回扫结果里单个文件的记录 */
+export interface BashChangedFile {
+  path: string;
+  /** 文件被删除（record 已移除，后续 edit 会按"没读过"处理） */
+  deleted: boolean;
+}
+
 /** 文件读取记录 */
 interface ReadRecord {
   path: string;
@@ -30,6 +64,18 @@ interface ReadRecord {
    * 完整读取时用内容比对避免假"外部修改"误报。部分读取不记（无完整内容可比）。
    */
   content: string | null;
+  /**
+   * 读后被**本会话自己的 bash 命令**改过（F1）。
+   *
+   * 由 `noteBashExecution` 在 bash 结束时回扫写入：此时快照已刷新为磁盘当前内容，
+   * 所以 edit 的 mtime 校验会自然放行——edit 本身「从磁盘重读全文 + old_string 精确匹配」，
+   * 模型拿旧视图拼的 old_string 若已失效会被匹配失败拦下，不会改错。
+   *
+   * 但**模型上下文里的视图仍是旧的**。write 是整文件覆盖，基于旧视图写会静默冲掉
+   * bash（如 formatter）的改动——所以 write 看到此标记仍要求先重新 read。
+   * 重新 read（markAsRead 新建 record）即清除。
+   */
+  changedByBash: boolean;
 }
 
 export class FileReadTracker {
@@ -80,6 +126,7 @@ export class FileReadTracker {
       isPartialView,
       // 只在完整读取时保留内容（部分视图无完整内容可比，且避免为超大文件常驻内存）
       content: !isPartialView ? (opts?.content ?? null) : null,
+      changedByBash: false,
     });
   }
 
@@ -113,35 +160,37 @@ export class FileReadTracker {
    * 返回 null 表示可以编辑，返回字符串表示错误原因
    */
   validateForEdit(filePath: string): string | null {
-    return this.validateFresh(filePath, "编辑");
+    return this.validateFresh(filePath, "edit");
   }
 
   /**
    * 验证文件是否可以安全覆盖写入（write 工具用）。
-   * 语义与 validateForEdit 完全一致——覆盖已有文件同样需要「先完整读取 + 无外部修改」，
-   * 否则会静默冲掉未读区域或他人改动。仅错误文案按「写入/覆盖」措辞。
+   * 与 edit 共用 validateFresh，唯一差异：读后被本会话 bash 改过的文件（changedByBash），
+   * edit 放行、write 仍要求重新 read——理由见 ReadRecord.changedByBash。
    *
    * ⚠️ 调用方只应在「文件已存在」时调用；新建文件（写入即创建）无需先读，不要调用此方法。
    */
   validateForWrite(filePath: string): string | null {
-    return this.validateFresh(filePath, "覆盖写入");
+    return this.validateFresh(filePath, "write");
   }
 
   /**
    * 「先读后改」新鲜度校验的单一事实源，供 edit/write 共用，杜绝两条护栏逻辑漂移。
    *   1. 从没读过 → 拒绝
    *   2. 读后被外部修改（mtime 变且内容确实不同）→ 拒绝
+   *   3. 读后被本会话 bash 改过 → edit 放行 / write 拒绝
    *
    * ⚠️ 不再校验 partial-view（对齐 claude-code）：曾据 isPartialView 拒绝部分读取后的
    * 编辑，会误杀「读全文 → 编辑 → 定向读定位 → 再编辑」的自然工作流。编辑安全性由 edit
    * 自身「从磁盘重读全文 + old_string 精确串匹配」保证，无需此门禁。
-   * @param action 错误文案里的动作词（"编辑" / "覆盖写入"）
    */
-  private validateFresh(filePath: string, action: string): string | null {
+  private validateFresh(filePath: string, tool: "edit" | "write"): string | null {
+    const action = tool === "edit" ? "编辑" : "覆盖写入";
     const resolved = resolve(filePath).normalize("NFC");
     const record = this.readFiles.get(resolved);
 
     if (!record) {
+      emitFreshness({ tool, outcome: "rejected_unread" });
       return `文件必须先用 read 工具读取后才能${action}: ${filePath}`;
     }
 
@@ -161,16 +210,95 @@ export class FileReadTracker {
             // 读取失败则退回按 mtime 判定（保守报"已修改"）
           }
         }
-        return `文件自上次读取后已被外部修改，请重新读取后再${action}: ${filePath}`;
+        emitFreshness({
+          tool,
+          outcome: "rejected_modified",
+          ms_since_read: Date.now() - record.readTime,
+        });
+        // F3：说清可能来源 + 下一步。bash 前台命令的改动已由 noteBashExecution 吸收，
+        // 走到这里的是 bash 之外的改动（IDE / 外部格式化 / 后台命令 / 其他进程）。
+        return (
+          `文件自上次读取后已被外部修改，请重新读取后再${action}: ${filePath}\n` +
+          `（改动来自本会话前台 bash 之外：如 IDE 编辑、保存时格式化、后台命令或其他进程。` +
+          `重新 read 后基于最新内容再改，避免覆盖他人的改动。）`
+        );
       }
     } catch {
       // 文件可能已被删除，让后续操作处理
     }
 
+    if (tool === "write" && record.changedByBash) {
+      emitFreshness({ tool, outcome: "rejected_changed_by_bash" });
+      return (
+        `文件读取后已被你执行的 bash 命令修改，你看到的内容已过期，请重新读取后再${action}: ${filePath}\n` +
+        `（write 会整文件覆盖，基于旧内容写会冲掉 bash 命令的改动；局部修改可直接用 edit。）`
+      );
+    }
+
     return null;
   }
 
-  /** 更新文件的 mtime 与内容快照（写入/编辑后调用） */
+  /**
+   * F1：bash 命令结束后回扫已追踪文件，吸收「本会话 bash 改了已读文件」这类改动。
+   *
+   * 根因（2026-10-10 轨迹核验）：tracker 只认 read/edit/write，bash 写盘（oxfmt、`perl -pi`、
+   * `sed -i`…）对它不可见，于是 agent 自己刚格式化完的文件，下一次 edit 被判「外部修改」拒绝；
+   * 3/3 例重读后提交的 old/new_string 与被拒那次逐字相同——纯误拦，白烧 read+edit 两轮。
+   *
+   * 处理：mtime 变了且内容确实不同的文件，快照刷新为磁盘当前内容并打 changedByBash 标记；
+   * 返回变更清单，由 bash 工具追加到结果末尾告知模型（让它知道自己的视图过期了）。
+   *
+   * ⚠️ 归因边界：bash 运行期间如果恰好有别的进程（IDE）也改了同一文件，会被一并记到 bash 名下。
+   * 这对 edit 无害（edit 以磁盘最新内容做 old_string 精确匹配，不会覆盖他人改动），
+   * 对 write 也无害（changedByBash 仍要求重读）——损失的只是报错文案里的归因精度。
+   * 后台命令（run_in_background）不回扫：它结束时不经过这里，其改动仍按外部修改拦截。
+   */
+  noteBashExecution(): BashChangedFile[] {
+    const changed: BashChangedFile[] = [];
+    for (const [resolved, record] of this.readFiles) {
+      let currentMtime: number;
+      try {
+        currentMtime = statSync(resolved).mtimeMs;
+      } catch {
+        // 被 bash 删掉了：移除记录，后续 edit/write 会按"没读过 / 新建"处理
+        this.readFiles.delete(resolved);
+        changed.push({ path: resolved, deleted: true });
+        continue;
+      }
+      if (currentMtime === record.mtime) continue;
+
+      let currentContent: string | null = null;
+      try {
+        currentContent = readFileSync(resolved, "utf-8");
+      } catch {
+        // 读不了内容：保守按"已变更"处理（快照置空，只靠 mtime）
+      }
+      record.mtime = currentMtime;
+      if (currentContent !== null && currentContent === record.content) {
+        continue; // 仅 mtime 变（touch 之类），内容没变，不算变更、不打扰模型
+      }
+      // 部分读取的记录没有完整快照可比，mtime 变了就按变更处理
+      record.content = record.isPartialView ? null : currentContent;
+      record.changedByBash = true;
+      changed.push({ path: resolved, deleted: false });
+    }
+    if (changed.length > 0) {
+      emitFreshness({
+        tool: "bash",
+        outcome: "bash_changed_tracked_files",
+        files_changed: changed.length,
+        files_deleted: changed.filter((c) => c.deleted).length,
+      });
+    }
+    return changed;
+  }
+
+  /**
+   * 更新文件的 mtime 与内容快照（写入/编辑后调用）。
+   *
+   * ⚠️ 刻意不清 changedByBash：edit 只交了片段，bash 改动的其余部分模型仍没看过；
+   * 而带标记时 write 必被拒（见 validateFresh），只有重新 read 能清——不存在需要在这里清的路径。
+   */
   updateMtime(filePath: string, newContent?: string): void {
     const resolved = resolve(filePath).normalize("NFC");
     const record = this.readFiles.get(resolved);
