@@ -114,6 +114,9 @@ import { resolve, extname, join } from "path";
 import { sidPaths } from "@sid-code/core/config/paths.ts";
 import { deriveTaskTitle } from "./ui/utils/task-title.ts";
 import { buildInteractiveBashToolUse } from "./ui/shell-input.ts";
+import { panelSummaryLine } from "./ui/components/command-panel-layout.ts";
+import { mergeAnchoredItems } from "./ui/local-command-items.ts";
+import { resolvePanel } from "./command/executor.ts";
 import { startPreventSleep, stopPreventSleep } from "@sid-code/core/task/prevent-sleep.ts";
 import { getSleepLedger } from "@sid-code/shared/utils/sleep-detect.ts";
 import { getRawVersion } from "@sid-code/shared/version.ts";
@@ -613,6 +616,19 @@ export class App {
   private sdkCanUseTool: ReturnType<typeof createSDKCanUseTool> | null = null;
   /** TUI 状态更新回调（由 TUI 注入，用于同步 permissionMode 等状态） */
   private tuiStateUpdater: ((patch: Record<string, unknown>) => void) | null = null;
+  /**
+   * TUI 注入的「命令结果上屏」通道（与 onSlashCommand 走同一条 appendCommandOutput）。
+   * 给闭包之外的实例方法用：/export 面板在 Dialog 关闭后异步导出，结果要回到消息流。
+   * 此前这里写的是 `tuiStateUpdater({ commandOutput })`，但 TUIState 根本没有这个字段，
+   * 导出成功/失败的回执从来没显示过。
+   */
+  private commandResultPresenter:
+    | ((
+        input: string,
+        output: string,
+        panel?: import("./command/types.ts").CommandPanelSpec,
+      ) => void)
+    | null = null;
   /** 幂等保护：init() 只执行一次 */
   private initPromise: Promise<void> | null = null;
   /** 是否正在处理一轮对话（Cron 调度器据此避免 REPL 忙时触发） */
@@ -2700,6 +2716,12 @@ export class App {
       };
       updateState: (patch: Partial<import("./ui/App.tsx").TUIState>) => void;
       appendCommandOutput: (input: string, output: string | null, isError?: boolean) => void;
+      /** 把多行结果放进命令输出面板，消息流只留一行摘要 */
+      showCommandPanel: (
+        input: string,
+        output: string,
+        panel: import("./command/types.ts").CommandPanelSpec,
+      ) => void;
       getConversationClearedPatch: () => Partial<import("./ui/App.tsx").TUIState>;
       clearPromptCache: () => void;
       resetSyncState: () => void;
@@ -2712,6 +2734,7 @@ export class App {
       callbacks,
       updateState,
       appendCommandOutput,
+      showCommandPanel,
       getConversationClearedPatch,
       clearPromptCache,
       resetSyncState,
@@ -2876,8 +2899,15 @@ export class App {
         break;
 
       case "message":
+        if (result.panel && result.value) {
+          showCommandPanel(commandInput, result.value, result.panel);
+        } else {
+          appendCommandOutput(commandInput, result.value ?? null);
+        }
+        break;
+
       default:
-        appendCommandOutput(commandInput, result.value ?? null);
+        appendCommandOutput(commandInput, (result as { value?: string }).value ?? null);
         break;
     }
   }
@@ -6330,12 +6360,12 @@ export class App {
         sessionState: this.sessionState,
         cwd: process.cwd(),
       } as import("./command/types.ts").CommandContext);
-      // 将结果显示为命令输出
+      // 将结果显示为命令输出（短回执进消息流；导出报告多行时进面板，口径同 resolvePanel）
       if (result.type === "text") {
-        this.tuiStateUpdater?.({ commandOutput: result.value });
+        this.commandResultPresenter?.("/export", result.value, result.panel);
       }
-    })().catch(() => {
-      /* 静默 */
+    })().catch((err: any) => {
+      this.commandResultPresenter?.("/export", `导出失败: ${err?.message ?? err}`);
     });
   }
 
@@ -8003,6 +8033,29 @@ export class App {
     let lastSyncedCount = 0;
     let historyIdCounter = 0;
 
+    // ── 本地命令结果侧表 ──
+    //
+    // 斜杠命令的结果（/status 输出、面板摘要行）只在 UI 上，不进 ctxMgr；而 syncDisplay /
+    // rebuildDisplay 都从 ctxMgr 全量重建 historyItems，不记下来就会在下一次同步时消失。
+    // anchor = 追加时 ctxMgr 的消息数；重建时插到「前 anchor 条消息对应的历史项」之后。
+    // /clear、/compact 清空（resetSyncState）：上下文都重置了，旧锚点没有意义。
+    const localCommandItems: import("./ui/local-command-items.ts").AnchoredItem[] = [];
+    // anchor → 前缀消息生成的历史项数。消息只追加时前缀不变，缓存可复用；
+    // rebuildDisplay（rewind / compact / 降级）会改写前缀，在那里清空。
+    const anchorItemCountCache = new Map<number, number>();
+    const mergeLocalCommandItems = (
+      allMsgs: import("@sid-code/core/llm/types.ts").Message[],
+      items: import("./ui/types.ts").HistoryItemWithoutId[],
+    ): import("./ui/types.ts").HistoryItemWithoutId[] =>
+      mergeAnchoredItems(items, localCommandItems, allMsgs.length, (n) => {
+        let count = anchorItemCountCache.get(n);
+        if (count === undefined) {
+          count = messagesToHistoryItems(allMsgs.slice(0, n)).length;
+          anchorItemCountCache.set(n, count);
+        }
+        return count;
+      });
+
     /** 为 HistoryItemWithoutId[] 分配 id，返回 HistoryItem[] */
     const assignIds = (
       items: import("./ui/types.ts").HistoryItemWithoutId[],
@@ -8162,7 +8215,9 @@ export class App {
       // 新 HistoryItem：始终从完整消息列表重建
       // 这样 tool_use 和 tool_result 能正确合并，description/input 不会丢失
       historyIdCounter = 0;
-      const historyItems = assignIds(messagesToHistoryItems(allMsgs));
+      const historyItems = assignIds(
+        mergeLocalCommandItems(allMsgs, messagesToHistoryItems(allMsgs)),
+      );
       // 顺序要求：settled 先于 progress。先把已完成的工具翻成 success/error，
       // 之后 progress 注入只认剩下的 executing 项——否则已完成工具的残留进度文本
       // 会被贴到刚翻好的完成态卡片上。
@@ -8259,7 +8314,11 @@ export class App {
       // 这些消息不在 ctxMgr 中，messagesToDisplayItems 无法生成
       const systemItems = bridge.current.displayItems.filter((d) => d.kind === "system");
       const displayItems = [...messagesToDisplayItems(allMsgs), ...systemItems];
-      const historyItems = assignIds(messagesToHistoryItems(allMsgs));
+      // 前缀被改写过（rewind 删消息 / compact 换摘要），锚点计数缓存作废；越界锚点夹到末尾。
+      anchorItemCountCache.clear();
+      const historyItems = assignIds(
+        mergeLocalCommandItems(allMsgs, messagesToHistoryItems(allMsgs)),
+      );
       injectLiveToolSettled(historyItems);
       injectLiveToolProgress(historyItems);
       // 与 syncDisplay 同一组注入：漏了这里，/compact 之后仍在跑的子代理进度会凭空消失。
@@ -8269,6 +8328,13 @@ export class App {
       bridge.updateTasks();
     };
     const appendCommandOutput = (input: string, output: string | null, isError = false) => {
+      // 记一份到侧表：ctxMgr 里没有这条（命令结果不进对话上下文），下一次 syncDisplay
+      // 从 ctxMgr 全量重建 historyItems 时它会被冲掉——此前 /status 的输出在用户发下一句话后
+      // 就从屏幕上消失了。锚点 = 当时的消息数，重建时插回原位。
+      localCommandItems.push({
+        anchor: this.ctxMgr.getMessages().length,
+        item: { type: "command", input, output, isError },
+      });
       const displayItem = { kind: "command" as const, input, output };
       const prevDisplayItems = bridge.current.displayItems;
       const displayItems = [...prevDisplayItems, displayItem];
@@ -8285,6 +8351,26 @@ export class App {
       const historyItems = [...prevHistoryItems, historyItem];
 
       updateState({ displayItems, historyItems });
+    };
+
+    /**
+     * 多行命令结果进命令输出面板（Esc 关闭），消息流只留一行摘要作为痕迹。
+     * 面板已打开时直接替换内容（连敲两个诊断命令，看的是最新那个）。
+     */
+    const showCommandPanel = (
+      input: string,
+      output: string,
+      panel: import("./command/types.ts").CommandPanelSpec,
+    ) => {
+      updateState({
+        commandPanel: { title: panel.title ?? input, content: output },
+      });
+      appendCommandOutput(input, panelSummaryLine(output));
+    };
+    this.commandResultPresenter = (input, output, panel) => {
+      const resolved = resolvePanel(output, panel, true);
+      if (resolved) showCommandPanel(input, output, resolved);
+      else appendCommandOutput(input, output);
     };
 
     // 设置 TUI 权限确认回调
@@ -9473,10 +9559,13 @@ export class App {
             appendCommandOutput,
             getConversationClearedPatch,
             clearPromptCache,
+            showCommandPanel,
             resetSyncState: () => {
               lastSyncedCount = 0;
               historyIdCounter = 0;
               activeStatusMessages.clear();
+              localCommandItems.length = 0;
+              anchorItemCountCache.clear();
             },
             rebuildDisplay,
           });
@@ -9541,6 +9630,8 @@ export class App {
             lastSyncedCount = 0;
             historyIdCounter = 0;
             activeStatusMessages.clear();
+            localCommandItems.length = 0;
+            anchorItemCountCache.clear();
             updateState(getConversationClearedPatch());
             break;
 
@@ -9602,7 +9693,11 @@ export class App {
 
           case "message":
           default:
-            appendCommandOutput(commandInput, result.message ?? null);
+            if (result.kind === "message" && result.panel && result.message) {
+              showCommandPanel(commandInput, result.message, result.panel);
+            } else {
+              appendCommandOutput(commandInput, result.message ?? null);
+            }
             break;
         }
       },

@@ -197,6 +197,8 @@ export interface CommandResult {
   onConfirm?: () => Promise<CommandResult>;
   /** kind=dialog 时指定打开哪个对话框 */
   dialog?: DialogType;
+  /** kind=message 时强制进命令输出面板（同 LocalCommandResult.panel） */
+  panel?: import("@sid-code/core/command-contract/types.ts").CommandPanelSpec;
 }
 
 /**
@@ -243,6 +245,7 @@ export type {
   PromptCommand,
   UnifiedCommand,
   UnifiedCommandRegistryContract,
+  CommandPanelSpec,
 } from "@sid-code/core/command-contract/types.ts";
 
 // ============================================================
@@ -250,7 +253,13 @@ export type {
 // ============================================================
 
 export type CommandExecutionResult =
-  | { type: "message"; value: string; shouldQuery?: boolean }
+  | {
+      type: "message";
+      value: string;
+      shouldQuery?: boolean;
+      /** 有值 = TUI 里进命令输出面板（弹窗），而不是追加进消息流。见 CommandBase.outputPanel */
+      panel?: import("@sid-code/core/command-contract/types.ts").CommandPanelSpec;
+    }
   | { type: "submit_prompt"; value: string; shouldQuery: boolean }
   | { type: "dialog"; dialog: DialogType }
   | { type: "clear" }

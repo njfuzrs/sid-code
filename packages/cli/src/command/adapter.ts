@@ -63,7 +63,9 @@ export function toAppContext(ctx: CommandContext): AppContext {
 export function convertResult(result: LegacyCommandResult): LocalCommandResult {
   switch (result.kind) {
     case "message":
-      return { type: "text", value: result.message ?? "" };
+      return result.panel
+        ? { type: "text", value: result.message ?? "", panel: result.panel }
+        : { type: "text", value: result.message ?? "" };
     case "error":
       return { type: "text", value: `错误: ${result.message ?? ""}` };
     case "clear":
@@ -150,7 +152,9 @@ export function toCommandContext(appCtx: AppContext): CommandContext {
 function toLegacyResult(result: import("./types.ts").CommandExecutionResult): LegacyCommandResult {
   switch (result.type) {
     case "message":
-      return { kind: "message", message: result.value };
+      return result.panel
+        ? { kind: "message", message: result.value, panel: result.panel }
+        : { kind: "message", message: result.value };
     case "submit_prompt":
       return { kind: "submit_prompt", prompt: result.value };
     case "error":
@@ -233,7 +237,7 @@ export async function adaptUnifiedToLegacy(uc: UnifiedCommand): Promise<LegacyCo
  */
 export type LegacyCommandGates = Pick<
   UnifiedCommand,
-  "immediate" | "isHidden" | "userInvocable" | "requiresArgs" | "whenToUse"
+  "immediate" | "isHidden" | "userInvocable" | "requiresArgs" | "whenToUse" | "outputPanel"
 >;
 
 /**

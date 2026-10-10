@@ -14,6 +14,7 @@ const insights: UnifiedCommand = {
   description: "生成会话分析报告（模型/成本/token/工具/异常概览）",
   argumentHint: "[session-id|latest]",
   source: "builtin",
+  outputPanel: true,
   userInvocable: true,
   immediate: true,
   load: () => import("./insights.ts").then((m) => m.default),
