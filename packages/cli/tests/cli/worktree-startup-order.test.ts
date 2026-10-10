@@ -9,8 +9,8 @@
  *
  * 修法与紧邻的会话清理（D3 的 startBackgroundSessionCleanup）同构：
  * 不是「多传一个参数」，而是把**启动时机**挪到判据齐了之后。
- * 恢复那段只登记 gitRoot / activeWtPath，GC 在归属复核之后才启动；
- * 复核判定「不该进入」时把 skipPath 撤掉。
+ * 恢复那段只登记 gitRoot 与候选 worktree，GC 在归属复核之后才启动。
+ * 复核通过才 chdir；不通过则不进入、状态保留，skipPath 仍指向它（留给拥有者回来）。
  *
  * 为什么用静态门禁而不是行为测试：这段逻辑在 cli.ts 的 main() 里，
  * 跑它要拉起整个 CLI 启动流程（TUI、provider、session store）。
@@ -45,7 +45,7 @@ describe("GC 不再在归属复核之前启动", () => {
 
   test("登记 → 归属复核 → 启动 GC，三者顺序固定", () => {
     const register = idx("worktreeCleanupGitRoot = gitRoot;");
-    const ownershipCheck = idx("shouldAutoEnterWorktree(wt, resumedSessionIdForCleanup)");
+    const ownershipCheck = idx("if (shouldAutoEnterWorktree(wt, resumedSessionIdForCleanup)) {");
     const launch = idx("await startWorktreeCleanup();");
 
     expect(register).toBeLessThan(ownershipCheck);
@@ -59,17 +59,41 @@ describe("GC 不再在归属复核之前启动", () => {
   });
 });
 
-describe("复核推翻「该进入」时，skipPath 必须撤掉", () => {
-  test("清状态的同一分支里把 activeWorktreePathForCleanup 置空", () => {
-    const branch = idx("if (!shouldAutoEnterWorktree(wt, resumedSessionIdForCleanup)) {");
-    const clearSkip = idx("activeWorktreePathForCleanup = undefined;");
-    const launch = idx("await startWorktreeCleanup();");
+describe("持久化 worktree 只在归属复核通过后才 chdir（不再先进后撤）", () => {
+  test("启动恢复段只登记候选，不调 enterWorktreeCwd(session.worktreePath)", () => {
+    // 旧实现：恢复段直接 enterWorktreeCwd(session.worktreePath)，复核失败再 exitWorktreeCwd。
+    // 中间整段启动流程（选择器、-c、restoreSession）都跑在错误的 cwd 里。
+    expect(CLI_SRC).not.toContain("await enterWorktreeCwd(session.worktreePath);");
+    expect(CLI_SRC).not.toContain("await exitWorktreeCwd(wt.originalCwd);");
+    expect(idx("pendingWorktreeRestore = session;")).toBeLessThan(
+      idx("worktreeCleanupGitRoot = gitRoot;"),
+    );
+  });
 
-    // 撤销发生在复核分支内、且在 GC 启动之前
-    expect(clearSkip).toBeGreaterThan(branch);
-    expect(clearSkip).toBeLessThan(launch);
-    // 与 clearWorktreeState 同一分支（不是漂到别处的孤立语句）
-    expect(clearSkip).toBeGreaterThan(idx("clearWorktreeState(wt.originalCwd);"));
+  test("chdir 在复核放行分支内，且排在会话 id 已知之后", () => {
+    const resolved = idx("resumedSessionIdForCleanup = session.id;");
+    const check = idx("if (shouldAutoEnterWorktree(wt, resumedSessionIdForCleanup)) {");
+    const enter = idx("await enterWorktreeCwd(wt.worktreePath);");
+    expect(resolved).toBeLessThan(check);
+    expect(check).toBeLessThan(enter);
+    expect(enter).toBeLessThan(idx("await startWorktreeCleanup();"));
+  });
+
+  test("不进入时不清持久化状态（留给下次 resume 拥有者）", () => {
+    const section = CLI_SRC.slice(
+      idx("if (shouldAutoEnterWorktree(wt, resumedSessionIdForCleanup)) {"),
+      idx("await startBackgroundSessionCleanup();"),
+    );
+    expect(section).not.toContain("clearWorktreeState(");
+  });
+
+  test("回填逻辑会话 id 给后续 enter_worktree 落盘，分叉时不回填", () => {
+    expect(CLI_SRC).toContain(
+      "const logicalOwnerId = config.forkSession ? undefined : resumedSessionIdForCleanup;",
+    );
+    expect(idx("setWorktreeOwnerSessionId(logicalOwnerId);")).toBeGreaterThan(
+      idx("resumedSessionIdForCleanup = session.id;"),
+    );
   });
 
   test("GC 读的是变量而非恢复期的局部值（否则撤销无效）", () => {

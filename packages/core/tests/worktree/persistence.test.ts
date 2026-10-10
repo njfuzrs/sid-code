@@ -13,11 +13,10 @@ import {
   sessionConfigPath,
   removeSessionConfig,
   shouldAutoEnterWorktree,
+  setWorktreeOwnerSessionId,
 } from "@sid-code/core/worktree/persistence.ts";
 import type { WorktreeSession } from "@sid-code/core/worktree/types.ts";
 import { setSessionId } from "@sid-code/core/bootstrap/state.ts";
-import { registerSession, unregisterSession } from "@sid-code/core/session/concurrent.ts";
-import { sanitizeProjectKey } from "@sid-code/core/memory/paths.ts";
 
 let root: string;
 
@@ -119,86 +118,48 @@ describe("saveWorktreeState / restoreWorktreeSession", () => {
 /**
  * 归属判定（shouldAutoEnterWorktree）。
  *
- * 背景：enter 落盘的状态只有显式 exit_worktree 会清，关终端 / /quit / 任务做完
- * 都留着它。启动恢复若只问「目录还在不在」，就会把新会话 chdir 进一个
- * 已经没人用的 worktree。判定必须看拥有它的会话还活着没有。
- *
- * 会话 jsonl 落在 SID_CONFIG_DIR 下，而本文件的 beforeEach 只建了 gitRoot 临时目录。
- * 这里单独把配置根指到 root 内，避免碰用户真实的 ~/.sid-code，用完按原值恢复
- * （同进程内无条件 delete 会把预载的兜底一起抹掉）。
+ * 背景：enter 落盘的状态只有显式 exit_worktree 会清，关终端 / /quit / kill 都留着它。
+ * 旧判据「拥有者 jsonl 最后一条不是 session_end 就当崩溃、照常进入」在真实数据上
+ * 近半数会话命中（23 个里 11 个没有 session_end），普通启动被成批 chdir 进别人的
+ * worktree。新判据只问一件事：本次接续的是不是拥有者——与退出路径写没写成功无关。
  */
 describe("shouldAutoEnterWorktree 归属判定", () => {
-  let prevConfigDir: string | undefined;
   const ownerId = "20260925-220507-8628cad7";
 
-  beforeEach(() => {
-    prevConfigDir = process.env.SID_CONFIG_DIR;
-    process.env.SID_CONFIG_DIR = join(root, "sid-home");
-  });
-
   afterEach(() => {
-    unregisterSession(ownerId);
     setSessionId("");
-    if (prevConfigDir === undefined) delete process.env.SID_CONFIG_DIR;
-    else process.env.SID_CONFIG_DIR = prevConfigDir;
+    setWorktreeOwnerSessionId(undefined);
   });
 
-  /** 在隔离的配置根下写一份会话 jsonl，返回其路径 */
-  function writeSession(id: string, lines: string[]): void {
-    const dir = join(root, "sid-home", "sessions", sanitizeProjectKey(root));
-    mkdirSync(dir, { recursive: true });
-    writeFileSync(join(dir, `${id}.jsonl`), lines.join("\n") + "\n");
-  }
-
-  function startLine(id: string): string {
-    return JSON.stringify({ type: "session_start", sessionId: id, cwd: root });
-  }
-
-  it("拥有者会话已写 session_end：普通启动不自动进入", () => {
-    writeSession(ownerId, [startLine(ownerId), JSON.stringify({ type: "session_end" })]);
+  it("普通启动（没有接续任何会话）：不进入", () => {
     expect(shouldAutoEnterWorktree({ sessionId: ownerId })).toBe(false);
+    expect(shouldAutoEnterWorktree({ sessionId: ownerId }, undefined)).toBe(false);
   });
 
-  it("session_end 之后又续写：会话还活着，照常进入", () => {
-    writeSession(ownerId, [
-      startLine(ownerId),
-      JSON.stringify({ type: "session_end" }),
-      JSON.stringify({ type: "user_message" }),
-    ]);
-    expect(shouldAutoEnterWorktree({ sessionId: ownerId })).toBe(true);
-  });
-
-  it("尾部是半行损坏：不推翻前面读到的 session_end", () => {
-    writeSession(ownerId, [startLine(ownerId), JSON.stringify({ type: "session_end" }), "{broken"]);
-    expect(shouldAutoEnterWorktree({ sessionId: ownerId })).toBe(false);
-  });
-
-  it("注册表里 pid 还活着：即使 jsonl 已是 session_end 也不放弃", () => {
-    writeSession(ownerId, [startLine(ownerId), JSON.stringify({ type: "session_end" })]);
-    registerSession({
-      sessionId: ownerId,
-      pid: process.pid,
-      kind: "interactive",
-      cwd: root,
-      startedAt: 1,
-    });
-    expect(shouldAutoEnterWorktree({ sessionId: ownerId })).toBe(true);
-  });
-
-  it("本次就是 resume 拥有者：即使会话已结束也进入", () => {
-    writeSession(ownerId, [startLine(ownerId), JSON.stringify({ type: "session_end" })]);
+  it("接续的正是拥有者：进入", () => {
     expect(shouldAutoEnterWorktree({ sessionId: ownerId }, ownerId)).toBe(true);
-    // resume 的是别的会话 → 不进入
+  });
+
+  it("接续的是别的会话：不进入", () => {
     expect(shouldAutoEnterWorktree({ sessionId: ownerId }, "20260101-000000-deadbeef")).toBe(false);
   });
 
-  it("没有 sessionId 的旧状态：无从判断，保持原行为（进入）", () => {
-    expect(shouldAutoEnterWorktree({})).toBe(true);
-    expect(shouldAutoEnterWorktree({ sessionId: "" })).toBe(true);
+  it("没有 sessionId 的旧状态：证明不了归属，不进入", () => {
+    expect(shouldAutoEnterWorktree({})).toBe(false);
+    expect(shouldAutoEnterWorktree({ sessionId: "" })).toBe(false);
+    // 空串不能与「未接续」的空值互相匹配
+    expect(shouldAutoEnterWorktree({ sessionId: "" }, "")).toBe(false);
   });
 
-  it("jsonl 不存在（崩溃没落盘）：不把「没查到」当成「已结束」", () => {
-    expect(shouldAutoEnterWorktree({ sessionId: "no-such-session" })).toBe(true);
+  it("判定不碰磁盘：判 false 后持久化状态原样保留，供下次 resume 拥有者", () => {
+    const wtPath = join(root, ".sid-code", "worktrees", "brave-eagle-1");
+    mkdirSync(wtPath, { recursive: true });
+    writeFileSync(join(wtPath, ".git"), "gitdir: /fake\n");
+    saveWorktreeState({ ...makeSession(root, wtPath), sessionId: ownerId }, 1000);
+
+    const { session } = restoreWorktreeSession(root);
+    expect(shouldAutoEnterWorktree(session!)).toBe(false);
+    expect(restoreWorktreeSession(root).session?.sessionId).toBe(ownerId);
   });
 
   it("saveWorktreeState 带上当前会话 id，restore 读得回来", () => {
@@ -214,6 +175,23 @@ describe("shouldAutoEnterWorktree 归属判定", () => {
     const { session: restored } = restoreWorktreeSession(root);
     expect(restored).not.toBeNull();
     expect(restored!.sessionId).toBe(ownerId);
+  });
+
+  it("续写旧会话时落盘逻辑会话 id，而不是本进程新生成的 id", () => {
+    const wtPath = join(root, ".sid-code", "worktrees", "brave-eagle-1");
+    mkdirSync(wtPath, { recursive: true });
+    writeFileSync(join(wtPath, ".git"), "gitdir: /fake\n");
+
+    setSessionId("20261010-120000-newproc0"); // resume 时进程 id 恒是新的
+    setWorktreeOwnerSessionId(ownerId); // cli 在恢复目标确定后回填
+    const session = makeSession(root, wtPath);
+    session.sessionId = "";
+    saveWorktreeState(session, 1000);
+
+    const { session: restored } = restoreWorktreeSession(root);
+    expect(restored!.sessionId).toBe(ownerId);
+    // 下次 --resume ownerId 能对上
+    expect(shouldAutoEnterWorktree(restored!, ownerId)).toBe(true);
   });
 
   it("全局状态也没有会话 id：落盘不写 sessionId 字段（旧形态）", () => {
