@@ -1,12 +1,10 @@
 /**
- * 命令输出面板的纯函数部分：换行、视口高度、滚动夹取、关闭后的摘要行。
+ * 命令输出面板的纯函数部分：换行、视口高度、滚动夹取。
  *
- * 与组件拆开是为了单测能直接锁口径（视口不顶出屏幕、滚动不越界、摘要格式），
+ * 与组件拆开是为了单测能直接锁口径（视口不顶出屏幕、滚动不越界），
  * 不必渲染整棵 Ink 树。
  */
 
-import stringWidth from "string-width";
-import stripAnsi from "strip-ansi";
 import wrapAnsi from "wrap-ansi";
 
 /** 面板外框 + 标题 + 底部提示占用的行数：上下边框 2 + 标题 1 + 标题下留白 1 + 底部提示 1 + 提示上留白 1 */
@@ -65,29 +63,4 @@ export function panelScrollLabel(
   const first = offset + 1;
   const last = Math.min(offset + viewportRows, contentRows);
   return `${first}–${last} / ${contentRows} 行`;
-}
-
-/**
- * 面板关闭后留在消息流里的那一行摘要。
- *
- * 取输出的第一个非空行作为「标题」（诊断类命令的首行通常就是结论或报告名），
- * 截断到 maxWidth 列，后缀总行数。消息流里留下痕迹，用户回看时知道跑过什么；
- * 完整内容不再灌一遍——那正是面板要解决的问题。
- */
-export function panelSummaryLine(content: string, maxWidth = 60): string {
-  const lines = content.replace(/\r\n/g, "\n").trimEnd().split("\n");
-  const firstNonEmpty = lines.map((l) => stripAnsi(l).trim()).find((l) => l.length > 0) ?? "";
-  const head = truncateToWidth(firstNonEmpty, maxWidth);
-  return `${head}（${lines.length} 行 · 已在面板中查看）`;
-}
-
-/** 按终端列宽截断，超出补 `…` */
-function truncateToWidth(text: string, maxWidth: number): string {
-  if (stringWidth(text) <= maxWidth) return text;
-  let out = "";
-  for (const ch of text) {
-    if (stringWidth(out + ch) > maxWidth - 1) break;
-    out += ch;
-  }
-  return out + "…";
 }

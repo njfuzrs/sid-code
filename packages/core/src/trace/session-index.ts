@@ -4,7 +4,7 @@
  * ## 为什么需要它
  *
  * `trace/collector.ts` 的 `pruneOldSessions()` 在会话数超过 `maxSessionsRetained`
- *（默认 100）时 `rmSync` 整个会话目录，`session-summary.json` 与 `events.jsonl`
+ *（当时默认 100）时 `rmSync` 整个会话目录，`session-summary.json` 与 `events.jsonl`
  * 一起消失。后果不是"少了些历史文件"，而是**所有基于轨迹的指标不可复现**：
  *
  * 实测同一台机器上 TTFT p50 从文档记录的 4.7s（1032 样本）变成 3.3s（1399 样本）。
@@ -20,6 +20,12 @@
  *    原始轨迹 45MB，差两个数量级。删原始轨迹、留摘要，两个目标都能满足。
  *
  * 所以 `pruneOldSessions()` **不改**，只是它不再是唯一的数据留存路径。
+ *
+ * ⚠ 2026-10-10 补记：`pruneOldSessions()` 后来**确实改了**——默认不限数量、改为体积兜底
+ *（见 `trace/retention.ts`）。理由不是「保住指标」（那条仍由本索引承担），而是**调试**：
+ * 上面「45MB/会话」的前提实测差一个数量级（100 个目录合计 37MB），100 个只够两三周，
+ * 开发者回头排查时 raw.jsonl / events.jsonl 已经没了。本索引的契约不受影响：
+ * 体积兜底触发时目录照样会被删，曲线仍不能依赖原始轨迹活着。
  *
  * ## 设计契约
  *
