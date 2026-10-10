@@ -1576,7 +1576,8 @@ async function loadLocalMcpJson(): Promise<Record<string, MCPServerConfig>> {
   const log = getLogger();
   try {
     // 主仓根键（同仓库全部 worktree 共享一份 local 配置）；#220 起按工作树根存的旧文件兼容读取
-    const { resolveProjectStateFile } = await import("../mcp/project-files.ts");
+    const { resolveProjectStateFile, normalizeMcpServerMap } =
+      await import("../mcp/project-files.ts");
     const localPath = (await resolveProjectStateFile("mcp.local.json", process.cwd())).path;
 
     if (!existsSync(localPath)) {
@@ -1591,7 +1592,8 @@ async function loadLocalMcpJson(): Promise<Record<string, MCPServerConfig>> {
       return {};
     }
     log.info("CONFIG", `mcp.local.json 加载 ${Object.keys(servers).length} 个 local MCP 服务器`);
-    return servers;
+    // 与 .mcp.json 同一套归一（CC 的 type / 省略 stdio 写法）
+    return normalizeMcpServerMap(servers);
   } catch (err) {
     log.warn("CONFIG", `读取 mcp.local.json 失败: ${err}`);
     return {};

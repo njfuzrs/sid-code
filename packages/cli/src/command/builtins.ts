@@ -898,6 +898,7 @@ export class MemoryCommand implements Command {
           tools: ctx.registry.all(),
           projectRules: projectRules?.rawContent || undefined,
           projectRulesPath: projectRules?.sourcePath,
+          projectRulesPaths: projectRules?.loadedPaths,
           appendPrompt: ctx.config.appendSystemPrompt || undefined,
           workingDir: process.cwd(),
           permissionMode: ctx.config.permissionMode,

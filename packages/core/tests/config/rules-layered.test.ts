@@ -13,6 +13,7 @@ import {
   loadAllCLAUDEmd,
   mergeProjectRules,
 } from "@sid-code/core/config/rules.ts";
+import { JitContextManager } from "@sid-code/core/config/jit-context.ts";
 
 describe("parseRulesFrontmatter", () => {
   test("inline 数组写法", () => {
@@ -135,35 +136,36 @@ describe("loadAllCLAUDEmd 多层级", () => {
 
   // ── 回归：作用域规则被同层无条件文件「夹带」注入 ──
   //
-  // 真实事故：cwd=<repo>/website 做 VitePress 文档任务，却被注入 src/ui/CLAUDE.md 的 TUI 规范，
-  // 模型连续 6 次自述「system reminder 注入的是 TUI 规范，与当前任务无关」。
-  //
-  // 根因：loadAllCLAUDEmd 先把同层（subdir）多个文件 mergeProjectRules 成一条，而 merge 不返回
-  // paths → 条件被抹平；之后才统一 rulesPathsMatch，看到 undefined 即无条件通过。于是无条件的
-  // docs/summary/CLAUDE.md 成了「载体」，把带 paths 的 src/ui/CLAUDE.md 夹带进任意 cwd。
-  //
-  // 关键：必须**同层至少两个**子目录规则文件才能复现——单文件时 merge 不发生，旧实现看似正常。
-  test("回归：同层多文件时，带 paths 的子目录规则不被无条件文件夹带", async () => {
+  // 真实事故：cwd=<repo>/website 做 VitePress 文档任务，却被注入 src/ui/CLAUDE.md 的 TUI 规范。
+  // 当时的根因是启动期子目录扫描「先合并、后过滤」。2026-10-10 起启动期**不再扫子目录**
+  // （家目录启动扫进 65 个兄弟项目、一句「你好」就超窗），子目录规则全部改由 JIT 触达加载，
+  // 这条回归改为锁 JIT 侧的同一不变量：触达无条件目录不得夹带作用域规则。
+  test("回归：子目录规则启动期不注入，JIT 触达时按作用域各自加载、互不夹带", async () => {
     writeFileSync(join(proj, "CLAUDE.md"), "# Instructions\n项目根规则");
-    // 无条件生效的子目录规则（事故里的 docs/summary/CLAUDE.md 角色 = 载体）
     mkdirSync(join(proj, "docs"), { recursive: true });
     writeFileSync(join(proj, "docs", "CLAUDE.md"), "# Instructions\n无条件文档规则 CARRIER");
-    // 带作用域的子目录规则（事故里的 src/ui/CLAUDE.md 角色 = 被夹带者）
     mkdirSync(join(proj, "ui"), { recursive: true });
     writeFileSync(
       join(proj, "ui", "CLAUDE.md"),
       `---\npaths: ["ui/**"]\n---\n# Instructions\nTUI 专用规范 SCOPED`,
     );
 
-    // 无活动文件（对应启动时 cwd=website 的场景）：载体应在，被夹带者不应出现
-    const merged = await loadAllCLAUDEmd(proj);
-    expect(merged!.rawContent).toContain("无条件文档规则 CARRIER");
-    expect(merged!.rawContent).not.toContain("TUI 专用规范 SCOPED");
+    // 启动期：只有父链（项目根），子目录一份都不进——活动文件命中作用域也一样
+    for (const opts of [undefined, { activeFiles: ["ui/Footer.tsx"] }]) {
+      const merged = await loadAllCLAUDEmd(proj, opts);
+      expect(merged!.rawContent).toContain("项目根规则");
+      expect(merged!.rawContent).not.toContain("CARRIER");
+      expect(merged!.rawContent).not.toContain("SCOPED");
+    }
 
-    // 活动文件命中作用域：两者都应在
-    const inScope = await loadAllCLAUDEmd(proj, { activeFiles: ["ui/Footer.tsx"] });
-    expect(inScope!.rawContent).toContain("无条件文档规则 CARRIER");
-    expect(inScope!.rawContent).toContain("TUI 专用规范 SCOPED");
+    // JIT：触达 docs 只拿 docs 的规则，不夹带 ui
+    const mgr = new JitContextManager();
+    const docsCtx = await mgr.discoverContext(join(proj, "docs", "a.md"), proj);
+    expect(docsCtx).toContain("CARRIER");
+    expect(docsCtx).not.toContain("SCOPED");
+    // 触达 ui 下命中作用域的文件才拿到作用域规则
+    const uiCtx = await mgr.discoverContext(join(proj, "ui", "Footer.tsx"), proj);
+    expect(uiCtx).toContain("SCOPED");
   });
 
   test("回归：mergeProjectRules 不再丢弃 paths（兜底不失效）", () => {
@@ -182,16 +184,17 @@ describe("loadAllCLAUDEmd 多层级", () => {
     expect(mergeProjectRules(scoped, uncond).paths).toBeUndefined();
   });
 
-  test("回归：frontmatter 元数据不进 rawContent（不喂给模型）", async () => {
+  test("回归：frontmatter 元数据不进注入内容（不喂给模型）", async () => {
     mkdirSync(join(proj, "ui"), { recursive: true });
     writeFileSync(
       join(proj, "ui", "CLAUDE.md"),
       `---\npaths: ["ui/**"]\n---\n# Instructions\nUI 规范正文`,
     );
-    const merged = await loadAllCLAUDEmd(proj, { activeFiles: ["ui/a.tsx"] });
-    expect(merged!.rawContent).toContain("UI 规范正文");
+    // 子目录规则只经 JIT 注入（启动期不扫子目录），所以在 JIT 产物上断言
+    const ctx = await new JitContextManager().discoverContext(join(proj, "ui", "a.tsx"), proj);
+    expect(ctx).toContain("UI 规范正文");
     // `paths:` 是给加载器看的元数据，对模型无意义，不应出现在注入内容里
-    expect(merged!.rawContent).not.toMatch(/^paths:/m);
+    expect(ctx).not.toMatch(/^paths:/m);
   });
 
   test("回归：loadedPaths 只含实际注入的文件（JIT 预标记事实源）", async () => {
@@ -202,16 +205,13 @@ describe("loadAllCLAUDEmd 多层级", () => {
       `---\npaths: ["ui/**"]\n---\n# Instructions\nUI 规范`,
     );
 
-    // 未命中作用域：ui/CLAUDE.md 不得出现在 loadedPaths，否则 JIT 预标记它 → 作用域规则永久失效
-    const merged = await loadAllCLAUDEmd(proj);
-    expect(merged!.loadedPaths).toBeDefined();
-    expect(merged!.loadedPaths!.some((p) => p.includes(join("ui", "CLAUDE.md")))).toBe(false);
-    // 子目录无条件文件必须在列（否则 JIT 会二次注入同一份规则）
-    expect(merged!.loadedPaths!.some((p) => p === join(proj, "CLAUDE.md"))).toBe(true);
-
-    // 命中作用域后应在列
-    const inScope = await loadAllCLAUDEmd(proj, { activeFiles: ["ui/a.tsx"] });
-    expect(inScope!.loadedPaths!.some((p) => p.includes(join("ui", "CLAUDE.md")))).toBe(true);
+    // 子目录文件启动期不注入 → 绝不能进 loadedPaths，否则 JIT 预标记它 → 永久失效
+    for (const opts of [undefined, { activeFiles: ["ui/a.tsx"] }]) {
+      const merged = await loadAllCLAUDEmd(proj, opts);
+      expect(merged!.loadedPaths).toBeDefined();
+      expect(merged!.loadedPaths!.some((p) => p.includes(join("ui", "CLAUDE.md")))).toBe(false);
+      expect(merged!.loadedPaths!.some((p) => p === join(proj, "CLAUDE.md"))).toBe(true);
+    }
   });
 
   test("项目内无规则文件时不泄露项目内容", async () => {

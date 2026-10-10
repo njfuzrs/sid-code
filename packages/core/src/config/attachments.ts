@@ -167,14 +167,29 @@ export const PERMISSION_MODE_DESCRIPTIONS: Record<string, string> = {
  * 生成 CLAUDE.md 附件
  * 对标 Claude Code 的注入格式：明确告知模型这些规则覆盖默认行为
  *
- * @param content - CLAUDE.md 原始内容
+ * @param content - CLAUDE.md 原始内容（可能是多份文件按优先级合并后的结果）
  * @param sourcePath - 来源文件路径（用于标注）
+ * @param sourcePaths - 实际合并进 content 的全部文件（`ProjectRules.loadedPaths`）
  */
 export function generateClaudeMdAttachment(
   content: string,
   sourcePath?: string,
+  sourcePaths?: readonly string[],
 ): SystemPromptAttachment {
-  const sourceLabel = sourcePath ? `Contents of ${sourcePath}` : "Project rules";
+  // 多文件合并时**不能**只标 sourcePath：mergeProjectRules 让它取最后一个文件，
+  // 于是 65 个文件合并出的 887K tokens 被标成「Contents of <某个 3.3K 的文件>」——
+  // 排查时直接指错方向（实测事故），模型也会误以为全部规则出自那一个文件。
+  const sourceLabel =
+    sourcePaths && sourcePaths.length > 1
+      ? `Contents of ${sourcePaths.length} rule files (merged in order: ${sourcePaths.join(", ")})`
+      : sourcePath
+        ? `Contents of ${sourcePath}`
+        : "Project rules";
+  // 附件 label 只进日志 / 调试，多文件时给计数不给全量清单，避免一行日志几千字符
+  const label =
+    sourcePaths && sourcePaths.length > 1
+      ? `Contents of ${sourcePaths.length} rule files`
+      : sourceLabel;
   // P0-1：CLAUDE.md 会话内几乎不变，必须进静态缓存区。漏标会跟日期/MCP 拼成同一块动态区，
   // 任何动态字节变化都让全文走 cache_creation 全价。改规则时 rules.ts 已调 clearPromptCache()。
   return {
@@ -193,7 +208,7 @@ ${content}
 </system-reminder>`,
       PRIORITY.CLAUDE_MD,
     ),
-    label: sourceLabel,
+    label,
   };
 }
 
