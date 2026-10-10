@@ -114,7 +114,6 @@ import { resolve, extname, join } from "path";
 import { sidPaths } from "@sid-code/core/config/paths.ts";
 import { deriveTaskTitle } from "./ui/utils/task-title.ts";
 import { buildInteractiveBashToolUse } from "./ui/shell-input.ts";
-import { panelSummaryLine } from "./ui/components/command-panel-layout.ts";
 import { mergeAnchoredItems } from "./ui/local-command-items.ts";
 import { resolvePanel } from "./command/executor.ts";
 import { startPreventSleep, stopPreventSleep } from "@sid-code/core/task/prevent-sleep.ts";
@@ -8365,7 +8364,8 @@ export class App {
     };
 
     /**
-     * 多行命令结果进命令输出面板（Esc 关闭），消息流只留一行摘要作为痕迹。
+     * 多行命令结果进命令输出面板（Esc 关闭），消息流里不留任何痕迹——命令行与摘要都不写。
+     * 历史区只保留用户真正和模型的对话；口径与 dialog 分支一致（打开 /model 面板也不留痕）。
      * 面板已打开时直接替换内容（连敲两个诊断命令，看的是最新那个）。
      */
     const showCommandPanel = (
@@ -8376,7 +8376,6 @@ export class App {
       updateState({
         commandPanel: { title: panel.title ?? input, content: output },
       });
-      appendCommandOutput(input, panelSummaryLine(output));
     };
     this.commandResultPresenter = (input, output, panel) => {
       const resolved = resolvePanel(output, panel, true);
