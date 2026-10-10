@@ -283,7 +283,7 @@ settings.json 的全部可配字段、类型与默认值。
 |---|---|---|
 | `enabled` | boolean | 是否启用采集（默认 false） |
 | `outputDir` | string | 本地输出目录（默认 ~/.sid-code/trajectories） |
-| `maxSessionsRetained` | number | 本地最大保留会话数（默认 100，超过自动清理最旧的） |
+| `maxSessionsRetained` | number | 本地最大保留会话数（默认不限；防盘满靠 sessionRetention.maxTotalSize 体积兜底） |
 | `recordRawPayloads` | boolean | 是否把**请求/响应原文**写进 `raw.jsonl`（默认 `true`，保持既有行为）。 |
 | `upload` | TraceUploadConfig | 上传配置 |
 

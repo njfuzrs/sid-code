@@ -80,7 +80,7 @@ const RETENTION: Record<string, { text: string; days: number | null }> = {
     days: 1,
   },
   trajectories: {
-    text: "LRU 保留最近 100 会话 + 随会话保留期过期（默认 365 天）",
+    text: "默认不限数量；随会话保留期过期（默认 365 天），总量超 sessionRetention.maxTotalSize（10GB）时删最旧",
     days: 365,
   },
   checkpoints: { text: "30 天过期 + 200MB LRU（启动期兜底触发）", days: 30 },
