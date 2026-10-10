@@ -783,7 +783,7 @@ export interface TraceConfig {
   enabled?: boolean;
   /** 本地输出目录（默认 ~/.sid-code/trajectories） */
   outputDir?: string;
-  /** 本地最大保留会话数（默认 100，超过自动清理最旧的） */
+  /** 本地最大保留会话数（默认不限；防盘满靠 sessionRetention.maxTotalSize 体积兜底） */
   maxSessionsRetained?: number;
   /**
    * 是否把**请求/响应原文**写进 `raw.jsonl`（默认 `true`，保持既有行为）。

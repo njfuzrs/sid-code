@@ -258,7 +258,8 @@ describe("P0-2 端到端：LRU 触发后目录被删而索引仍在", () => {
     expect(readSessionIndex()).toHaveLength(105);
 
     // 构造 collector 即触发 LRU（构造函数里调 pruneOldSessions）
-    new TraceCollector({ outputDir: trajDir, maxSessionsRetained: 100 });
+    // minRetentionMs: 0 —— 这些目录都是刚造的，默认 1 天保护窗口会让它们一个都不删
+    new TraceCollector({ outputDir: trajDir, maxSessionsRetained: 100, minRetentionMs: 0 });
 
     // 目录被删到上限
     expect(readdirSync(sessionsDir)).toHaveLength(100);
