@@ -2720,6 +2720,9 @@ export async function main(): Promise<void> {
     // 这两个变量由 worktree 启动恢复那段登记，由归属复核之后的 startWorktreeCleanup 消费。
     let worktreeCleanupGitRoot: string | undefined;
     let activeWorktreePathForCleanup: string | undefined;
+    // 启动恢复读到的持久化 worktree：只是候选，归属复核（会话 id 解析完之后）通过才进入。
+    let pendingWorktreeRestore: import("@sid-code/core/worktree/types.ts").WorktreeSession | null =
+      null;
     const startWorktreeCleanup = async (): Promise<void> => {
       if (!worktreeCleanupGitRoot) return;
       const { cleanupStaleWorktrees } = await import("@sid-code/core/worktree/cleanup.ts");
@@ -2811,23 +2814,15 @@ export async function main(): Promise<void> {
           } else {
             // P0-1：恢复上次会话的 worktree（进程重启/crash 后）。
             //
-            // 这里**只校验目录还在不在**就先切进去。要不要因为「拥有它的会话
-            // 已经结束」而放弃，得到下方会话恢复解析出目标 id 之后再判定——
-            // config.resume 在这里还可能是序号或搜索词，不是会话 id，
-            // 此刻比较必然对不上，会把正要恢复的现场提前清掉。
+            // 这里**只校验、不切 cwd**。要不要进入取决于「本次接续的是不是拥有它的会话」，
+            // 而那个 id 要到下方会话恢复解析完才知道（config.resume 此刻还可能是序号或搜索词）。
+            // 以前是先 chdir 进去、事后再复核撤回：中间这段（--from-pr、会话选择器、
+            // `-c` 的 loadLatest、restoreSession 的跨项目检查）全在错误的目录里跑，
+            // 且复核的放行条件一旦宽了（曾经是「没查到 session_end 就当崩溃」），
+            // 普通启动就整个停在别的会话的 worktree 里。
             const { session, cleared } = restoreWorktreeSession(gitRoot);
             if (session) {
-              const { enterWorktreeCwd } = await import("@sid-code/core/worktree/canonical.ts");
-              const { logWorktreeEvent } = await import("@sid-code/core/worktree/analytics.ts");
-              try {
-                await enterWorktreeCwd(session.worktreePath);
-                setCurrentWorktreeSession(session);
-                activeWtPath = session.worktreePath;
-                logWorktreeEvent("worktree_resume", { slug: session.worktreeName, success: true });
-                getLogger().info("WORKTREE", `已恢复 worktree 会话: ${session.worktreeName}`);
-              } catch (err: any) {
-                getLogger().warn("WORKTREE", `恢复 worktree cwd 失败: ${err.message}`);
-              }
+              pendingWorktreeRestore = session;
             } else if (cleared && config.debug) {
               getLogger().info("WORKTREE", "持久化的 worktree 已失效，已清除状态");
             }
@@ -2835,10 +2830,9 @@ export async function main(): Promise<void> {
 
           // D16：后台清理过期临时 worktree（跳过当前活跃 session）。
           //
-          // W2：**只登记，不在这里启动**。此刻 activeWtPath 来自「目录还在不在」这一条
-          // 判据，而「拥有它的会话是不是已经结束」要到下方归属复核（会话 id 解析完）
-          // 才知道。在这里 fire-and-forget 会让 GC 带着一个**马上要被判定为不该进入**
-          // 的路径当 skipPath 跑出去：两次判定用相反的事实，且 GC 与会话选择器并发。
+          // W2：**只登记，不在这里启动**。持久化的候选 worktree 要到下方归属复核
+          // （会话 id 解析完）才知道进不进；在这里 fire-and-forget 会让 GC 与会话选择器
+          // 并发，且 skipPath 用的不是最终事实。此刻 activeWtPath 只来自 --worktree。
           // 这与上面 startBackgroundSessionCleanup 是同一个时序问题、同一个修法——
           // 不是「多传一个参数」，而是把启动时机挪到判据齐了之后。
           worktreeCleanupGitRoot = gitRoot;
@@ -2968,31 +2962,45 @@ export async function main(): Promise<void> {
       await app.restoreSession(session);
     }
 
-    // worktree 归属复核。上面的启动恢复只看「目录还在不在」就切了 cwd，
-    // 因为那时还不知道本次要恢复哪个会话。现在知道了：
-    // 拥有这份状态的会话已经结束，且本次不是 resume 它 → 切回主仓并清状态。
-    // 目录与分支不动，清的只是「下次启动要不要自动进去」。
-    if (!config.print && cliArgs.worktree === undefined) {
+    // worktree 归属。此刻本次接续的会话 id 已知（未接续则为 undefined）：
+    // 1. 回填「拥有者 id」：本进程之后 enter_worktree 落盘的应是 jsonl 的逻辑会话 id，
+    //    不是进程 id——否则下次 --resume 这个会话对不上，现场回不去。
+    //    分叉（--fork-session）写的是新 jsonl，拥有者就是本进程 id，不回填。
+    // 2. 启动恢复的候选只在「接续的正是拥有者」时进入；不进入时状态原样保留，
+    //    下次 resume 拥有者仍能回到现场。
+    if (!config.print) {
       try {
-        const { getCurrentWorktreeSession, clearWorktreeSession } =
-          await import("@sid-code/core/worktree/manager.ts");
-        const wt = getCurrentWorktreeSession();
-        if (wt) {
-          const { shouldAutoEnterWorktree, clearWorktreeState } =
-            await import("@sid-code/core/worktree/persistence.ts");
-          if (!shouldAutoEnterWorktree(wt, resumedSessionIdForCleanup)) {
-            const { exitWorktreeCwd } = await import("@sid-code/core/worktree/canonical.ts");
-            await exitWorktreeCwd(wt.originalCwd);
-            clearWorktreeSession();
-            clearWorktreeState(wt.originalCwd);
-            // W2：复核判定「不该进入」→ 它就不是本次的活跃 worktree，GC 的 skipPath
-            // 必须跟着撤掉。留着等于让 GC 按一个已被推翻的事实决定跳过谁。
-            // （这个目录本身不会因此被删：它仍受锁检查、改动检查、年龄门槛保护，
-            //   用户命名的 worktree 更是被 isEphemeralWorktree 整体挡在 GC 之外。）
-            activeWorktreePathForCleanup = undefined;
+        const { setWorktreeOwnerSessionId, shouldAutoEnterWorktree, saveWorktreeState } =
+          await import("@sid-code/core/worktree/persistence.ts");
+        const logicalOwnerId = config.forkSession ? undefined : resumedSessionIdForCleanup;
+        setWorktreeOwnerSessionId(logicalOwnerId);
+
+        if (cliArgs.worktree !== undefined) {
+          // --worktree 在会话 id 解析前就落了盘（用的是进程 id）；接续了旧会话时按逻辑 id 重写一次。
+          const { getCurrentWorktreeSession } = await import("@sid-code/core/worktree/manager.ts");
+          const wt = getCurrentWorktreeSession();
+          if (wt && logicalOwnerId) saveWorktreeState({ ...wt, sessionId: logicalOwnerId });
+        } else if (pendingWorktreeRestore) {
+          const wt = pendingWorktreeRestore;
+          // 进不进入，GC 都跳过它：状态保留着，就是留给拥有者下次 resume 回来的现场。
+          activeWorktreePathForCleanup = wt.worktreePath;
+          if (shouldAutoEnterWorktree(wt, resumedSessionIdForCleanup)) {
+            const { setCurrentWorktreeSession } =
+              await import("@sid-code/core/worktree/manager.ts");
+            const { enterWorktreeCwd } = await import("@sid-code/core/worktree/canonical.ts");
+            const { logWorktreeEvent } = await import("@sid-code/core/worktree/analytics.ts");
+            try {
+              await enterWorktreeCwd(wt.worktreePath);
+              setCurrentWorktreeSession(wt);
+              logWorktreeEvent("worktree_resume", { slug: wt.worktreeName, success: true });
+              getLogger().info("WORKTREE", `已恢复 worktree 会话: ${wt.worktreeName}`);
+            } catch (err: any) {
+              getLogger().warn("WORKTREE", `恢复 worktree cwd 失败: ${err.message}`);
+            }
+          } else {
             getLogger().info(
               "WORKTREE",
-              `worktree 所属会话已结束，不再自动进入: ${wt.worktreeName}`,
+              `本次未接续拥有者会话，不自动进入 worktree: ${wt.worktreeName}`,
             );
           }
         }
