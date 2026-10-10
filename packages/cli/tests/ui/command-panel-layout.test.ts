@@ -1,5 +1,5 @@
 /**
- * 命令输出面板的纯函数口径：换行、视口、滚动夹取、摘要行。
+ * 命令输出面板的纯函数口径：换行、视口、滚动夹取。
  * 视口算错 = 面板顶出屏幕或只剩边框；滚动越界 = 空白页；这两类都是肉眼才发现的缺陷，用单测锁住。
  */
 
@@ -12,7 +12,6 @@ import {
   clampPanelOffset,
   maxPanelOffset,
   panelScrollLabel,
-  panelSummaryLine,
   panelViewportRows,
   wrapPanelContent,
 } from "@sid-code/cli/ui/components/command-panel-layout.ts";
@@ -67,19 +66,5 @@ describe("视口与滚动", () => {
     expect(panelScrollLabel(0, 30, 10)).toBeNull();
     expect(panelScrollLabel(0, 30, 85)).toBe("1–30 / 85 行");
     expect(panelScrollLabel(55, 30, 85)).toBe("56–85 / 85 行");
-  });
-});
-
-describe("panelSummaryLine：面板关闭后留在消息流的痕迹", () => {
-  test("取首个非空行 + 总行数", () => {
-    expect(panelSummaryLine("\n环境自检 7/8 通过\n✔ git\n✘ rg")).toBe(
-      "环境自检 7/8 通过（4 行 · 已在面板中查看）",
-    );
-  });
-
-  test("首行去 ANSI，超宽截断补 …", () => {
-    const s = panelSummaryLine("\x1b[31m" + "长".repeat(50) + "\x1b[0m\n二\n三", 20);
-    expect(s).not.toContain("\x1b[");
-    expect(s.startsWith("长".repeat(9) + "…")).toBe(true);
   });
 });
