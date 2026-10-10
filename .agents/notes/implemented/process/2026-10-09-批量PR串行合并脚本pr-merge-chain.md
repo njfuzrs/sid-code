@@ -11,10 +11,16 @@ Date: 2026-10-09
 `gh pr update-branch` → 轮询到 `MERGED` → 才处理下一个。检查失败 / 冲突 / draft /
 已关闭 / 超时（默认 40 分钟）立即停止，后面的 PR 不动。`--dry-run` 只报告。
 
+**2026-10-10 补**：不给 PR 号时默认等同 `--all`（原先打印用法并退出码 1，被误认为脚本坏了）。
+`--all` 保留以兼容旧用法；与显式 PR 号同时给仍报错。
+
 合并判定仍交给 GitHub auto-merge + ruleset `protect-main`，脚本自己不判「能不能合」，
 所以没有绕过 `all-checks-passed` 的路径。
 
 ## 放弃了什么（以及为什么不选）
+
+- **无参数时保持报错、强制显式 `--all`**：这道「确认」不提供实际保护——每个 PR 照样要过
+  ruleset 必需检查、失败即停；它唯一的效果是每次多敲一个参数，且让人以为脚本坏了。
 
 - **一次性给所有 PR 都 update-branch**：strict 必需检查下，前一个合入后其余立刻又 BEHIND，
   白跑 N-1 轮 CI（2026-10-09 合 #214–#220 时实测每个约 10 分钟）。
@@ -29,6 +35,7 @@ Date: 2026-10-09
 - `bun test ./tests/scripts/pr-merge-chain.test.ts`：9 pass / 0 fail。用假 gh（`GH_BIN`）
   复现 BEHIND→BLOCKED→MERGED 序列，断言写操作顺序严格串行、CI 失败后对下一个 PR 零写操作、
   squash 被改为 merge、dry-run 零写操作、超时退出码 4。
+- 2026-10-10：新增「无参等同 --all」「仅 --dry-run 零写操作」「--all 与 PR 号互斥」三条用例。
 - 对真实仓库 `bash scripts/pr-merge-chain.sh --all --dry-run`：正确列出 #132 并报
   「已有 4 个检查失败，会停在这里」，无任何写操作。
 - 流程本身在 2026-10-09 用同逻辑的临时脚本串行合入 #215/#218/#219/#220，全程无人值守。

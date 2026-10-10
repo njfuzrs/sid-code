@@ -158,6 +158,27 @@ describe("pr-merge-chain.sh", () => {
     expect(r.out).toContain("共合入 2 个");
   });
 
+  test("不给 PR 号时等同 --all", () => {
+    writeFileSync(join(dir, "list"), "4\n");
+    seq(4, [row("MERGED", "UNKNOWN")]);
+    const r = run([]);
+    expect(r.code).toBe(0);
+    expect(r.writes[0]).toStartWith("pr list --base main");
+    expect(r.out).toContain("共合入 1 个");
+  });
+
+  test("只给 --dry-run 也走全部 PR，且零写操作（除 pr list）", () => {
+    writeFileSync(join(dir, "list"), "6\n");
+    seq(6, [row("OPEN", "BEHIND")]);
+    const r = run(["--dry-run"]);
+    expect(r.code).toBe(0);
+    expect(r.writes.filter((c) => !c.startsWith("pr list"))).toEqual([]);
+  });
+
+  test("--all 与显式 PR 号互斥", () => {
+    expect(run(["--all", "1"]).code).toBe(1);
+  });
+
   test("参数校验：非数字 PR 号、非法 method", () => {
     expect(run(["abc"]).code).toBe(1);
     expect(run(["--method", "fast", "1"]).code).toBe(1);

@@ -33,15 +33,16 @@ PRS=()
 
 usage() {
   cat >&2 <<'EOF'
-用法: pr-merge-chain.sh [选项] <PR 号...>
-      pr-merge-chain.sh [选项] --all
+用法: pr-merge-chain.sh [选项] [PR 号...]
+
+不给 PR 号时等同 --all：处理 base 分支上全部 open 且非 draft 的 PR。
 
 按顺序处理：挂 auto-merge → update branch → 等 CI 绿并自动合入 → 下一个。
 任一 PR 的 CI 失败、出现冲突或超时，立即停止（后面的不再处理）。
 
 选项:
-  --all             处理 base 分支上全部 open 且非 draft 的 PR（按编号升序）
-  --base <分支>     --all 时的 base 分支（默认 main）
+  --all             处理 base 分支上全部 open 且非 draft 的 PR（按编号升序；不给 PR 号时的默认行为）
+  --base <分支>     取全部 PR 时的 base 分支（默认 main）
   --method <方式>   merge | squash | rebase（默认 merge）
   --timeout <分钟>  单个 PR 最长等待时间（默认 40）
   --dry-run         只打印每个 PR 的当前状态和将要做的事，不做任何修改
@@ -50,8 +51,9 @@ usage() {
 在目标仓库的任意目录下运行即可（仓库由 gh 按当前目录识别，也可设 GH_REPO=owner/repo）。
 
 示例:
-  bun run pr:merge-chain 214 215 218
-  bun run pr:merge-chain --all --dry-run
+  bun run pr:merge-chain                  # 合 main 上全部就绪 PR
+  bun run pr:merge-chain --dry-run        # 只看状态，不做修改
+  bun run pr:merge-chain 214 215 218      # 只合指定的几个
 EOF
 }
 
@@ -78,15 +80,18 @@ case "$METHOD" in merge|squash|rebase) ;; *) die "--method 只能是 merge / squ
 [[ "$TIMEOUT_MIN" =~ ^[0-9]+$ && "$TIMEOUT_MIN" -gt 0 ]] || die "--timeout 必须是正整数"
 command -v "$GH" >/dev/null 2>&1 || die "找不到 gh CLI（https://cli.github.com）"
 
+# 不给 PR 号即取全部：日常用法就是「把就绪的都合了」，每次补 --all 是纯摩擦。
+# 安全性不靠「必须显式 --all」兜：每个 PR 仍要过 ruleset 必需检查，失败即停。
 if [[ $ALL -eq 1 ]]; then
   [[ ${#PRS[@]} -eq 0 ]] || die "--all 与显式 PR 号不能同时使用"
+fi
+if [[ ${#PRS[@]} -eq 0 ]]; then
   while IFS= read -r n; do [[ -n "$n" ]] && PRS+=("$n"); done < <(
     "$GH" pr list --base "$BASE" --state open --limit 100 \
       --json number,isDraft -q '[.[]|select(.isDraft|not)|.number]|sort|.[]'
   )
   [[ ${#PRS[@]} -gt 0 ]] || { log "base=$BASE 上没有 open 的非 draft PR"; exit 0; }
 fi
-[[ ${#PRS[@]} -gt 0 ]] || { usage; exit 1; }
 
 # 方式名在 gh 命令行是小写，在 API 返回里是大写
 METHOD_UPPER="$(printf '%s' "$METHOD" | tr '[:lower:]' '[:upper:]')"
