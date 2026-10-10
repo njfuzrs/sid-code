@@ -304,6 +304,10 @@ L1 视觉原子    字形、颜色、主题                          ← 最小�
 - **不标的**：作用于对话本身的（/compact /clear /rewind /btw /loop /goal）和单行回执类（/allow /theme /vim）。
 - **消息流不留痕**：进面板的命令既不写命令行也不写摘要，历史区只保留真实对话（与 dialog 分支同口径）。
   曾留过一行「xxx（22 行 · 已在面板中查看）」，用户反馈是噪音，已去掉——不要加回来。
+- **短回执也不进消息流**：< 3 行的回执与错误（`/model xxx` 的「主模型已切换为 …」、未知命令、用法错误）
+  走底部状态栏临时提示（4s，错误 8s），同样不写命令行。未声明 `outputPanel` 的命令输出 ≥ 3 行也进面板。
+  唯一出口是 `app.ts` 的 `presentCommandResult`，判据在 `ui/command-result-route.ts`。
+  仍写消息流的只有 `/bash`（shell 输出是对话素材）、`/compact` 摘要、`submit_prompt` 的命令行（本身就是一轮对话）。
 - **交互**：Esc / q 关闭；↑↓ j k 逐行，PgUp/PgDn/空格 翻页，Home/End g 跳头尾；视口按终端高度截断。
 - **只画上下横线**：命令输出用户会复制，按 L2.2 不画左右竖线。
 - **新增「查看/诊断」命令时**：直接标 `outputPanel`，**不要**再为它写专属 Dialog + 登记 `DialogType`——
