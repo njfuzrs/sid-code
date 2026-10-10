@@ -32,6 +32,7 @@ import {FrameScheduler} from './frame/scheduler.js';
 import {FRAME_INTERVAL_MS} from './frame/schedule.js';
 import {ClockContext, createClock, type Clock} from './clock.js';
 import TerminalWriteContext from './components/TerminalWriteContext.js';
+import TerminalSizeContext, {type TerminalSize} from './components/TerminalSizeContext.js';
 import {OSC} from './terminal/osc.js';
 import {isTabStatusDisabled, tabStatusSequence} from './hooks/use-tab-status.js';
 import {type Screen} from './screen/screen.js';
@@ -346,6 +347,12 @@ export default class Ink {
 	 */
 	private readonly resizeScheduler: FrameScheduler;
 	private lastResizeSize: {columns: number; rows: number};
+	/** TerminalSizeContext 的值：只在尺寸变化时换对象；resize 时用它重渲最近一次的 node（与旧底座一致） */
+	private terminalSize: TerminalSize;
+	private currentNode: ReactNode = null;
+	private hasRendered = false;
+	/** 最近一次提交给 React 的尺寸对象；与 terminalSize 不同才需要为 resize 重渲 */
+	private renderedSize: TerminalSize | undefined;
 	/** 上一帧出帧时的视口：R7 的「宽度变了 / 变矮了 → full reset」比的是它，不是上一帧的屏幕 */
 	private frameViewport: {columns: number; rows: number} | undefined;
 	/** 下一帧强制 full reset 的原因（离开 alt-screen 之后，主屏的旧帧已经不可信） */
@@ -444,6 +451,7 @@ export default class Ink {
 		this.lastOutputHeight = 0;
 		this.lastTerminalWidth = getWindowSize(this.options.stdout).columns;
 		this.lastResizeSize = getWindowSize(this.options.stdout);
+		this.terminalSize = getWindowSize(this.options.stdout);
 		this.frameViewport = undefined;
 		this.pendingResetReason = undefined;
 		this.resizeScheduler = new FrameScheduler(this.renderAfterResize, true);
@@ -526,6 +534,10 @@ export default class Ink {
 		}
 
 		this.lastResizeSize = size;
+		// 新尺寸先记下，React 侧的重渲放到合并后的那一帧里做（renderAfterResize）：
+		// 在这里当场提交会让每次 resize 各出一帧，破掉 R7 的同 tick 合并
+		this.terminalSize = size;
+
 		// alt-screen 下 resize 当场重开鼠标跟踪（有的终端 resize 会复位鼠标模式）；出帧仍走调度（R14）
 		if (
 			this.interactive &&
@@ -548,6 +560,12 @@ export default class Ink {
 		}
 
 		this.suspendedScreen = undefined;
+		// 把新尺寸经 TerminalSizeContext 推给 React（T8.1d）：CLI 按它定根 Box 宽度，
+		// 不重渲就停在旧宽度——拖窄被截断、拖宽不跟。值没变（同 tick 来回 resize 回原尺寸）就不提交
+		if (this.hasRendered && this.renderedSize !== this.terminalSize) {
+			this.render(this.currentNode);
+		}
+
 		this.calculateLayout();
 		dom.emitLayoutListeners(this.rootNode);
 		this.onRender();
@@ -982,6 +1000,9 @@ export default class Ink {
 	};
 
 	render(node: ReactNode): void {
+		this.currentNode = node;
+		this.hasRendered = true;
+		this.renderedSize = this.terminalSize;
 		const tree = (
 			<AccessibilityContext.Provider
 				value={{isScreenReaderEnabled: this.isScreenReaderEnabled}}
@@ -1004,9 +1025,11 @@ export default class Ink {
 					onStdinResume={this.handleStdinResume}
 					onMouseSequence={this.handleMouseSequence}
 				>
-					<TerminalWriteContext.Provider value={this.writeRaw}>
-						{node}
-					</TerminalWriteContext.Provider>
+					<TerminalSizeContext.Provider value={this.terminalSize}>
+						<TerminalWriteContext.Provider value={this.writeRaw}>
+							{node}
+						</TerminalWriteContext.Provider>
+					</TerminalSizeContext.Provider>
 				</App>
 				</ClockContext.Provider>
 			</AccessibilityContext.Provider>
