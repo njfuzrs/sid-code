@@ -57,7 +57,9 @@ export function useSlashCompletion({
       setSuggestions([], null);
       return;
     }
-    const ranked = rankCommandInfos(commands, target.query, 20);
+    // 不在数据层截断（同 useAtCompletion）：此前传 20，内置命令已 30 条，
+    // 输入 "/" 时排在后面的命令无论怎么 ↑↓ 都翻不到。
+    const ranked = rankCommandInfos(commands, target.query);
     setSuggestions(
       ranked.map((r) => ({
         label: r.label,
