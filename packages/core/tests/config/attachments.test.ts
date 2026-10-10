@@ -42,6 +42,25 @@ describe("generateClaudeMdAttachment", () => {
     expect(attachment.content).toContain("Contents of /project/CLAUDE.md");
   });
 
+  test("多文件合并时如实标注全部来源，不冒用最后一个文件名", () => {
+    // 事故：65 个文件合并的 887K tokens 被标成「Contents of <某个 3.3K 的文件>」，排查指错方向
+    const attachment = generateClaudeMdAttachment("内容", "/b/CLAUDE.md", [
+      "/a/CLAUDE.md",
+      "/b/CLAUDE.md",
+    ]);
+    expect(attachment.content).toContain("Contents of 2 rule files");
+    expect(attachment.content).toContain("/a/CLAUDE.md, /b/CLAUDE.md");
+    expect(attachment.content).not.toContain("Contents of /b/CLAUDE.md");
+    expect(attachment.label).toBe("Contents of 2 rule files");
+  });
+
+  test("单文件时 loadedPaths 不改变既有标注", () => {
+    const attachment = generateClaudeMdAttachment("内容", "/project/CLAUDE.md", [
+      "/project/CLAUDE.md",
+    ]);
+    expect(attachment.content).toContain("Contents of /project/CLAUDE.md");
+  });
+
   test("无来源路径时使用默认标注", () => {
     const attachment = generateClaudeMdAttachment("内容");
     expect(attachment.content).toContain("Project rules");

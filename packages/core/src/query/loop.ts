@@ -360,6 +360,53 @@ export function sleepUnlessAborted(ms: number, signal?: AbortSignal | null): Pro
 const MAX_CONSECUTIVE_COMPACT_FAILURES = 3;
 
 /**
+ * 「压缩救不了」的判据：常驻开销（系统提示词 + 工具定义）占**本次请求估算总量**的比例。
+ *
+ * 为什么不按「占窗口比例 ≥ 某值」判：走到熔断时 API 已经实锤超窗，要回答的只是
+ * 「超出来的那部分是不是历史」。按窗口比例判是在跟启发式估算误差赌阈值——事故现场
+ * 常驻 ~89 万 / 窗口 ~98 万，恰好 91%，0.9 的阈值差一点就判错，且换个窗口就漂。
+ * 按「常驻占总量」判：总量里八成以上是常驻，压缩掉全部历史也腾不出超窗那截。
+ */
+const FIXED_OVERHEAD_DOMINANT_RATIO = 0.8;
+
+/**
+ * 压缩失败熔断时给用户的文案。
+ *
+ * 两种成因的下一步动作完全不同，必须分开说：
+ * - 常驻开销自己就超窗（典型：CLAUDE.md / 规则文件过大、MCP 工具过多）——压缩只动
+ *   消息历史，`/compact` 与开新会话都**必然再失败**，只能减常驻内容；
+ * - 历史压不动——`/compact` 或开新会话才有用。
+ * 此前一律报后者，实测一句「你好」就熔断的会话被引去执行注定无效的 /compact。
+ */
+export function buildCompactCircuitBreakerText(
+  failures: number,
+  probe: { fixedTokens: number; totalTokens: number; memoryTokens: number; maxTokens: number },
+): string {
+  const { fixedTokens, totalTokens, memoryTokens, maxTokens } = probe;
+  if (
+    maxTokens > 0 &&
+    totalTokens > 0 &&
+    fixedTokens >= totalTokens * FIXED_OVERHEAD_DOMINANT_RATIO
+  ) {
+    const pct = Math.round((fixedTokens / maxTokens) * 100);
+    const k = (n: number) => `${Math.round(n / 1000)}K`;
+    const memoryHint =
+      memoryTokens > fixedTokens * 0.5
+        ? `其中 CLAUDE.md / 规则文件约 ${k(memoryTokens)} tokens，是主要来源——用 /context 查看明细，精简或拆分规则文件。`
+        : `用 /context 查看是哪一类常驻内容（工具定义 / MCP 工具 / 系统提示词）占满了窗口。`;
+    return (
+      `上下文已超出模型窗口：系统提示词与工具定义本身就占了约 ${k(fixedTokens)} tokens` +
+      `（窗口 ${k(maxTokens)}，${pct}%），对话历史为空也发不出去，压缩无法解决，已停止重试。` +
+      memoryHint
+    );
+  }
+  return (
+    `上下文已超出模型窗口，且连续 ${failures} 次自动压缩都未能减少历史，` +
+    `已停止重试以免空烧 API 调用。建议手动执行 /compact 精简上下文，或开一个新会话继续。`
+  );
+}
+
+/**
  * P1-3 + P2-1：把一次压缩尝试收敛成「唯一的横幅判据 + 唯一的埋点出口」。
  *
  * 事故背景（2026-07-29 假压缩误报）：`yield { kind: "compact" }` 是与消息数组**完全解耦**的
@@ -2409,9 +2456,12 @@ export async function* queryLoop(loopConfig: QueryLoopConfig): AsyncGenerator<Qu
               kind: "system",
               level: "error",
               terminal: true,
-              text:
-                `上下文已超出模型窗口，且连续 ${state.consecutiveCompactFailures} 次自动压缩都未能减少历史，` +
-                `已停止重试以免空烧 API 调用。建议手动执行 /compact 精简上下文，或开一个新会话继续。`,
+              text: buildCompactCircuitBreakerText(state.consecutiveCompactFailures ?? 0, {
+                fixedTokens: ctxMgr.estimateFixedOverheadTokens(toolRegistry.size()),
+                totalTokens: ctxMgr.estimateTokens(toolRegistry.size()),
+                memoryTokens: ctxMgr.getMemoryTokens(),
+                maxTokens: ctxMgr.getMaxTokens(),
+              }),
             };
             yield {
               kind: "done",
@@ -3061,9 +3111,12 @@ export async function* queryLoop(loopConfig: QueryLoopConfig): AsyncGenerator<Qu
               kind: "system",
               level: "error",
               terminal: true,
-              text:
-                `上下文已超出模型窗口，且连续 ${state.consecutiveCompactFailures} 次自动压缩都未能减少历史，` +
-                `已停止重试以免空烧 API 调用。建议手动执行 /compact 精简上下文，或开一个新会话继续。`,
+              text: buildCompactCircuitBreakerText(state.consecutiveCompactFailures ?? 0, {
+                fixedTokens: ctxMgr.estimateFixedOverheadTokens(toolRegistry.size()),
+                totalTokens: ctxMgr.estimateTokens(toolRegistry.size()),
+                memoryTokens: ctxMgr.getMemoryTokens(),
+                maxTokens: ctxMgr.getMaxTokens(),
+              }),
             };
             yield {
               kind: "done",

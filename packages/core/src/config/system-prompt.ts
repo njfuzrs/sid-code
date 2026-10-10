@@ -79,6 +79,8 @@ export interface SystemPromptContext {
   projectRules?: string;
   /** 项目规则来源路径（用于注入时标注） */
   projectRulesPath?: string;
+  /** 实际合并进 projectRules 的全部文件（`ProjectRules.loadedPaths`），多文件时用于如实标注 */
+  projectRulesPaths?: string[];
   /** 追加的系统提示词 */
   appendPrompt?: string;
   /** 从文件加载的系统提示词 */
@@ -535,7 +537,9 @@ export function buildSystemPrompt(ctx: SystemPromptContext): string {
 
   // CLAUDE.md 项目规则
   if (ctx.projectRules) {
-    attachments.push(generateClaudeMdAttachment(ctx.projectRules, ctx.projectRulesPath));
+    attachments.push(
+      generateClaudeMdAttachment(ctx.projectRules, ctx.projectRulesPath, ctx.projectRulesPaths),
+    );
   }
 
   // G12：输出风格（用户可插拔，优先级 12——CLAUDE.md 之后、诊断之前）
@@ -766,7 +770,10 @@ function collectMemorySections(ctx: SystemPromptContext, out: string[]): void {
   if (!ctx.onSectionTokens) return; // 未注入回调 → 完全不做这些字符串构造
   if (ctx.memorySystemPrompt) out.push(ctx.memorySystemPrompt);
   if (ctx.projectRules) {
-    out.push(generateClaudeMdAttachment(ctx.projectRules, ctx.projectRulesPath).content);
+    out.push(
+      generateClaudeMdAttachment(ctx.projectRules, ctx.projectRulesPath, ctx.projectRulesPaths)
+        .content,
+    );
   }
   if (ctx.recalledMemories && ctx.recalledMemories.length > 0) {
     const att = generateRecalledMemoryAttachment(ctx.recalledMemories);

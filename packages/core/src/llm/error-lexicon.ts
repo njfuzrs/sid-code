@@ -62,6 +62,7 @@ export type LexiconCode =
   | "network_error"
   // 只给面板，重试分类器不消费
   | "context_overflow"
+  | "context_fixed_overflow"
   | "no_finish_reason"
   | "html_error_page"
   | "empty_response"
@@ -72,6 +73,7 @@ export type LexiconCode =
 export type ClassifierLexiconCode = Exclude<
   LexiconCode,
   | "context_overflow"
+  | "context_fixed_overflow"
   | "no_finish_reason"
   | "html_error_page"
   | "empty_response"
@@ -167,6 +169,13 @@ export function matchErrorLexicon(msg: string): LexiconCode | undefined {
     ])
   ) {
     return "usage_limit_reached";
+  }
+
+  // ── 2.9 常驻上下文自己就超窗（loop.ts buildCompactCircuitBreakerText 的专用措辞）。
+  //       必须在通用「上下文溢出」之前：两者都含「上下文…超出」，而这一类的建议
+  //       恰好相反——/compact 与开新会话都必然再失败 ──
+  if (lower.includes("压缩无法解决") && lower.includes("系统提示词与工具定义")) {
+    return "context_fixed_overflow";
   }
 
   // ── 3. 上下文溢出。必须在裸 400 之前：上游常以 400 回它，归 invalid_request

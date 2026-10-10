@@ -96,6 +96,10 @@ CLAUDE.md > .claude.md > claude.md > .claude/CLAUDE.md > .claude/instructions.md
 **子目录这一层实际很好用**：在 `src/ui/` 放一个 `CLAUDE.md` 写"这个目录下的组件必须
 用函数式写法"，只在动那个目录时生效，不污染全局。
 
+子目录（cwd **之下**）的 `CLAUDE.md` **启动时不加载**，等 agent 读 / 改 / 搜到那个目录里的
+文件时才注入（JIT，与 Claude Code 一致）。启动时只读上表那条 cwd → 文件系统根的父链。
+所以在家目录这类「底下有一堆项目」的地方启动，不会把每个项目的规则都塞进上下文。
+
 ### `CLAUDE.local.md` vs `CLAUDE.md`
 
 同一个项目里两个人偏好不同的时候：
