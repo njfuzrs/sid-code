@@ -2617,6 +2617,18 @@ export class SubAgent {
       // P1-1：grep 无 per-session 可变状态，但必须接到同一道敏感文件过滤。
       // 子代理复用父实例时，父实例可能尚未 setPathHiddenFilter（mcp-serve / 测试装配）；
       // 有 hidden 就给一份带过滤器的独立实例，避免子代理搜出 .env。
+      // F1：bash 前台命令结束后回扫的是它绑定的 tracker。复用父实例 = 子代理 bash 格式化完
+      // 刷新的是**父** tracker，子代理自己紧接的 edit 仍被误判外部修改。给一个绑子 tracker 的视图
+      // （原型链继承，不重建 shell 快照、保留父实例已注入的 sandbox）。
+      if (
+        !replacement &&
+        t.name() === "bash" &&
+        typeof (t as { withFileReadTracker?: unknown }).withFileReadTracker === "function"
+      ) {
+        replacement = (
+          t as unknown as { withFileReadTracker(tr: FileReadTracker): LegacyTool }
+        ).withFileReadTracker(subTracker);
+      }
       if (!replacement && t.name() === "grep" && hidden) {
         replacement = new GrepTool(hidden);
       }

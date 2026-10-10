@@ -33,6 +33,7 @@ import { createAndSaveSnapshot, escapeForShell } from "./bash/shell-snapshot.ts"
 import { z } from "zod/v4";
 import { lazySchema } from "../sdk/lazy-schema.ts";
 import { bashWriteTargets } from "./jit-affected-paths.ts";
+import type { FileReadTracker, BashChangedFile } from "./file-read-tracker.ts";
 
 /** Bash 工具输入 schema —— 运行时校验 + JSON Schema 生成的唯一真相源 */
 const bashSchema = lazySchema(() =>
@@ -434,6 +435,33 @@ function withCwdNotice(
   return output;
 }
 
+/** 回扫清单在结果里最多列多少个路径（再多只给计数，避免一次大规模格式化灌满上下文） */
+const MAX_LISTED_CHANGED_FILES = 10;
+
+/**
+ * F1：已读文件被本次命令改动的告知（追加到 tool_result 末尾）。
+ *
+ * 与 cwdChangeNotice 同款理由落在 tool_result：零 cache 影响、只在真变了时出现一次、
+ * 位置正好是模型此刻在读的地方。文案必须给出两工具不同的下一步——edit 可直接继续，
+ * write 要先重读（见 FileReadTracker.ReadRecord.changedByBash）。
+ */
+export function trackedFilesChangedNotice(changed: BashChangedFile[]): string {
+  if (changed.length === 0) return "";
+  const shown = changed
+    .slice(0, MAX_LISTED_CHANGED_FILES)
+    .map((c) => (c.deleted ? `  - ${c.path}（已删除）` : `  - ${c.path}`));
+  const more =
+    changed.length > MAX_LISTED_CHANGED_FILES
+      ? `\n  …另有 ${changed.length - MAX_LISTED_CHANGED_FILES} 个`
+      : "";
+  return (
+    `\n[已读文件被本命令修改] 以下你读过的文件刚被这条命令改动（如格式化 / sed -i）：\n` +
+    `${shown.join("\n")}${more}\n` +
+    `你上下文里的内容已过期。edit 可直接继续（以磁盘最新内容匹配 old_string，匹配不到再 read）；` +
+    `write 整文件覆盖前须先重新 read。`
+  );
+}
+
 export class BashTool implements Tool {
   /** zod schema：执行器据此做运行时校验，registry 据此生成 LLM 定义 */
   readonly zodSchema = bashSchema();
@@ -445,10 +473,32 @@ export class BashTool implements Tool {
   /** macOS Seatbelt 沙箱管理器（可选，通过 setter 注入） */
   private sandboxManager: import("../permission/sandbox.ts").SandboxManager | null = null;
 
-  constructor() {
+  /**
+   * F1：与 read/edit/write 共享的 FileReadTracker。前台命令结束后回扫它追踪的文件，
+   * 把「本会话 bash 改了已读文件」吸收掉，否则下一次 edit 会把自己的格式化误判成外部修改。
+   * null = 不回扫（测试 / 未接线路径），退回改造前行为。
+   */
+  private tracker: FileReadTracker | null = null;
+
+  constructor(tracker?: FileReadTracker) {
+    this.tracker = tracker ?? null;
     // 构造期异步触发快照创建（BashTool 单例，cli.ts 仅 new 一次，构造期建快照成立）。
     // 不阻塞构造；execute 首次会 await snapshotReady 确保从第一条命令起就用上快照。
     this.snapshotReady = this.initSnapshot();
+  }
+
+  /**
+   * 返回一个绑定到另一个 tracker 的视图（子代理 / fork 用：它们有独立 tracker，
+   * 若复用父实例，子代理自己 bash 格式化完再 edit 仍会被误拦，而回扫刷新的却是父 tracker）。
+   *
+   * 用 Object.create(this) 而不是 new：new 会重建 shell 快照（spawn 一次登录 shell），
+   * 且丢掉 cli.ts 之后才注入的 sandboxManager。原型链继承让快照、沙箱随父实例生效，
+   * 只在视图上遮蔽 tracker 这一个字段。
+   */
+  withFileReadTracker(tracker: FileReadTracker): BashTool {
+    const view = Object.create(this) as BashTool;
+    view.tracker = tracker;
+    return view;
   }
 
   /** 注入沙箱管理器（macOS Seatbelt） */
@@ -711,6 +761,38 @@ export class BashTool implements Tool {
   }
 
   async execute(
+    input: unknown,
+    signal?: AbortSignal,
+    onProgress?: (event: import("./types.ts").ToolProgressData) => void,
+  ): Promise<ToolResult> {
+    const result = await this.executeCommand(input, signal, onProgress);
+    return this.withTrackedFileChanges(input, result);
+  }
+
+  /**
+   * F1：命令结束后回扫已读文件。失败 / 超时 / 取消也扫——命令可能已改了一半文件。
+   * 跳过：只读命令（不会写盘）、后台命令（此刻还没跑完，其改动之后仍按外部修改拦截）。
+   * Ctrl+B 转后台的命令此时 output 为空，回扫也只会看到已发生的改动，无害。
+   */
+  private withTrackedFileChanges(input: unknown, result: ToolResult): ToolResult {
+    if (!this.tracker) return result;
+    const params = input as {
+      command?: string;
+      run_in_background?: boolean;
+      is_background?: boolean;
+    };
+    if (!params?.command || params.run_in_background || params.is_background) return result;
+    if (isReadOnlyCommand(params.command)) return result;
+    let notice = "";
+    try {
+      notice = trackedFilesChangedNotice(this.tracker.noteBashExecution());
+    } catch {
+      // 回扫失败不影响命令结果本身
+    }
+    return notice ? { ...result, output: `${result.output}${notice}` } : result;
+  }
+
+  private async executeCommand(
     input: unknown,
     signal?: AbortSignal,
     onProgress?: (event: import("./types.ts").ToolProgressData) => void,

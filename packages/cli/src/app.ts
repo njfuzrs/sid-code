@@ -141,6 +141,10 @@ import {
   setJitTraceSink,
   JIT_EVENT_NAME,
 } from "@sid-code/core/trace/jit-telemetry.ts";
+import {
+  setFileFreshnessTraceSink,
+  FILE_FRESHNESS_EVENT_NAME,
+} from "@sid-code/core/tool/file-read-tracker.ts";
 import { setSkillTraceSink, SKILL_DEGRADATION_EVENT_NAME } from "@sid-code/core/skill/telemetry.ts";
 import {
   setGitOperationObserver,
@@ -3724,6 +3728,13 @@ export class App {
     setJitTraceSink(
       traceCollectorInstance
         ? (data) => traceCollectorInstance.recordCustomEvent(JIT_EVENT_NAME, data)
+        : null,
+    );
+    // F4：先读后改护栏的拒绝 / bash 回扫埋点，同款模块级 sink（tracker 有 6+ 处创建点）。
+    // 不接则 stale 拒绝只能 grep 文案统计，分不清真阳性与误拦。
+    setFileFreshnessTraceSink(
+      traceCollectorInstance
+        ? (data) => traceCollectorInstance.recordCustomEvent(FILE_FRESHNESS_EVENT_NAME, data)
         : null,
     );
     // P1-3：Skill 降级 / fail-open / ask 无通道埋点，同款模块级 sink（降级点在 core 纯函数里，

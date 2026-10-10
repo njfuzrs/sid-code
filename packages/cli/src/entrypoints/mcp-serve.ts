@@ -84,7 +84,7 @@ async function buildServeTools(allowWrite: boolean): Promise<LegacyTool[]> {
   lsTool.setPathHiddenFilter(hidden);
   const all: LegacyTool[] = [
     ...createStatefulTools(tracker, hidden), // read / edit / read_many / write
-    new BashTool(),
+    new BashTool(tracker), // F1：与有状态工具共享 tracker，bash 改了已读文件时回扫
     grepTool,
     globTool,
     lsTool,
