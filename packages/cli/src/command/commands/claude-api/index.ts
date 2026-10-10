@@ -14,6 +14,7 @@ const claudeApi: UnifiedCommand = {
   description: "加载 Claude API 参考文档作为对话上下文",
   argumentHint: "[messages|streaming|all]",
   source: "builtin",
+  outputPanel: true,
   userInvocable: true,
   immediate: true,
   load: () => import("./claude-api.ts").then((m) => m.default),

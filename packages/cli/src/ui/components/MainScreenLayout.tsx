@@ -122,6 +122,9 @@ interface MainScreenLayoutProps {
   // 通用对话框系统
   activeDialog: DialogType | null;
   onDialogClose: () => void;
+  /** 命令输出面板（null = 未打开），见 CommandOutputDialog */
+  commandPanel: import("./CommandOutputDialog.tsx").CommandPanelInfo | null;
+  onCommandPanelClose: () => void;
   /** modelId = 厂商真名（缺省 = name），仅供面板族识别，见 model-grouping.ts ModelOption */
   availableModels: Array<{
     name: string;
@@ -198,6 +201,8 @@ export const MainScreenLayout: React.FC<MainScreenLayoutProps> = memo(function M
   model,
   activeDialog,
   onDialogClose,
+  commandPanel,
+  onCommandPanelClose,
   availableModels,
   onModelSelect,
   availableThemes,
@@ -317,6 +322,8 @@ export const MainScreenLayout: React.FC<MainScreenLayoutProps> = memo(function M
             conflictRequest={conflictRequest}
             activeDialog={activeDialog}
             onDialogClose={onDialogClose}
+            commandPanel={commandPanel}
+            onCommandPanelClose={onCommandPanelClose}
             availableModels={availableModels}
             onModelSelect={onModelSelect}
             availableThemes={availableThemes}

@@ -1678,7 +1678,9 @@ export async function main(): Promise<void> {
     // 与子代理隔离路径（sub-agent.ts）共用工厂，避免构造逻辑漂移。
     // write 已并入工厂（与 edit 共享 tracker 做先读后写 + 写后回写），不再单独注册。
     for (const t of createStatefulTools(fileReadTracker)) toolRegistry.register(t);
-    toolRegistry.register(new BashTool());
+    // F1：bash 与 read/edit/write 共享同一 tracker——命令结束后回扫已读文件，
+    // 否则 agent 自己 bash 格式化完再 edit 会被误判「外部修改」。
+    toolRegistry.register(new BashTool(fileReadTracker));
     // G21 / P1-1：glob/ls/grep 需接权限 deny 规则 + 敏感文件做列举过滤，
     // 但 permissionChecker 此刻尚未创建，先留引用，待 checker 就绪后 setPathHiddenFilter。
     const globTool = new GlobTool();

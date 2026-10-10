@@ -14,6 +14,7 @@ const keybindings: UnifiedCommand = {
   description: "查看键位绑定 / 创建 keybindings.json 模板",
   argumentHint: "[init]",
   source: "builtin",
+  outputPanel: true,
   userInvocable: true,
   immediate: true,
   load: () => import("./keybindings.ts").then((m) => m.default),

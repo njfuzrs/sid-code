@@ -13,6 +13,7 @@ const model: UnifiedCommand = {
   description: "显示或切换模型（主模型 / fallback / 子代理，-p 持久化）",
   argumentHint: "[name|fallback <name>|sub <type> <name>] [-p]",
   source: "builtin",
+  outputPanel: true,
   immediate: true,
   // 无参（打开对话框）/list/help 等都能单次回车直执行；仅带模型名时才需参数，
   // 但补全列表回车回填后用户可继续输入，故不标 requiresArgs（保持无参可直接开对话框）。

@@ -314,13 +314,21 @@ export async function runForkedAgent(
   // 未注入时自建独立 tracker（F5）：缺省不得共享主代理 tracker。只替换主注册表里
   // 确实有的那几个名字 —— 工具定义取自主注册表，不能让 fork 调到一个没声明给模型的工具。
   const statefulMap = new Map<string, LegacyTool>();
+  const ownTracker = mainContext.statefulTools ? null : new FileReadTracker();
   const stateful =
     mainContext.statefulTools ??
-    createStatefulTools(new FileReadTracker()).filter((t) =>
-      mainContext.toolRegistry.get(t.name()),
-    );
+    createStatefulTools(ownTracker!).filter((t) => mainContext.toolRegistry.get(t.name()));
   for (const t of stateful) {
     statefulMap.set(t.name(), t);
+  }
+  // F1：自建 tracker 时，bash 也要绑到它——否则 fork 自己 bash 改完文件，回扫刷新的是主代理
+  // tracker，fork 紧接的 edit 仍被误判外部修改。注入 statefulTools 的调用方拿不到其 tracker，
+  // 那条路径维持复用主 bash（回扫落到主 tracker：对主代理是正确信息，不是污染）。
+  const mainBash = mainContext.toolRegistry.get("bash") as
+    | (LegacyTool & { withFileReadTracker?: (t: FileReadTracker) => LegacyTool })
+    | undefined;
+  if (ownTracker && typeof mainBash?.withFileReadTracker === "function") {
+    statefulMap.set("bash", mainBash.withFileReadTracker(ownTracker));
   }
 
   try {
