@@ -42,7 +42,7 @@ import {
   formatModelLatencyLine,
   type ModelLatencyStats,
 } from "./latency-by-model.ts";
-import { createProviderResolver } from "./provider-resolver.ts";
+import { createProviderResolver, resolveEventProvider } from "./provider-resolver.ts";
 
 // ─────────────────────────── 路径 ───────────────────────────
 
@@ -2771,8 +2771,8 @@ export function aggregateProviderStats(
     }
     // P0-1：TTFT 改从 StreamPhase("first_content") 收集——纯净的每次 fetch 首内容延迟
     if (e.event === "StreamPhase" && e.data && e.data.phase === "first_content") {
-      const model = (e.data.model as string) || "";
-      const provider = resolveProvider(model);
+      // D6：事件自带 provider（发生侧盖章）优先，老轨迹回落 resolver
+      const provider = resolveEventProvider(e.data, resolveProvider);
       const ttft = e.data.ttft_ms as number | undefined;
       if (ttft && ttft > 0) {
         ensure(provider).ttfts.push(ttft);
@@ -2807,12 +2807,13 @@ export function aggregateProviderStats(
     }
     // 从 TimeoutFired 事件补充超时计数
     if (e.event === "TimeoutFired" && e.data) {
-      const model = (e.data.model as string) || "";
-      // TimeoutFired 不带 provider 字段 ⇒ 必须走与 first_content 同一个 resolver。
+      // D6：provider 发生侧已盖章的 TimeoutFired 直接取字段；老轨迹 / 漏斗层（fallback /
+      // 主循环 / 子代理）的 emit 不带它，回落与 first_content 同一个 resolver。
       // 曾另起「只认 deepseek/claude，其余 unknown」一套（缺陷 37）：unknown 桶无分母，
       // glm/qwen/kimi 的超时从所有健康判据里消失，且真 provider 成功率虚高。
-      if (model) {
-        const stats = ensure(resolveProvider(model));
+      const provider = resolveEventProvider(e.data, resolveProvider);
+      if (provider !== "unknown") {
+        const stats = ensure(provider);
         stats.timedOut++;
       }
     }

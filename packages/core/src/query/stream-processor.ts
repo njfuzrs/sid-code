@@ -276,6 +276,7 @@ export async function processStream(
       switch (event.type) {
         case "message_start":
           accumulateUsage(response.usage, event.message.usage);
+          if (event.usageProvider) response.usageProvider = event.usageProvider;
           break;
 
         // 流重开 → 上一次尝试的内容块全部作废（2026-08-04 事故根因修复）。
@@ -453,6 +454,8 @@ export async function processStream(
           // 统一走 accumulateUsage：累加 input/output 并补齐 cacheRead/cacheCreation
           // （DeepSeek 命中在最终 usage chunk 经 message_delta 到达，缺了会按全价算）
           accumulateUsage(response.usage, event.usage);
+          // D5：记下产出 usage 的 provider（跨族降级时 ≠ config.provider），供归一化取口径
+          if (event.usageProvider) response.usageProvider = event.usageProvider;
           // 5.1 / 方案①：捕获 provider 原始 output 是否为 0（估算兜底前的事实）。
           // 任一 message_delta 报"原始为 0"即置位——聚合 usage 可能被 estimator 补成非零，
           // 故不能用 response.usage 反推，必须用此独立标记。

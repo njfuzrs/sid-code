@@ -3226,17 +3226,24 @@ export async function* queryLoop(loopConfig: QueryLoopConfig): AsyncGenerator<Qu
       // ─── 更新用量统计 ───
       // config.baseURL 是 resolveCurrentModelConfig 回填的当前模型端点，传入使计费按
       // (model, endpoint) 复合键精确匹配——同名不同渠道（如 ali-/tx-/origin- 前缀）各自计价。
+      //
+      // D5（多 Provider 层审计）：usage 的归一化口径取**产出它的那个 provider**，不是会话启动时
+      // 固化的 config.provider。跨族降级（主 openai / fallback anthropic）时两者不同，
+      // 用错口径 promptTotal 实测差 47.5 倍 —— 上下文校准被告知「几乎是空的」→ compact 过晚。
+      // 身份由 ModelFallback 在事件上盖章、stream-processor 带到 response 上（事实随数据走），
+      // 这里不再按 checkFallbackOccurred() 之类的信号二次推导。
+      const usageProvider = response.usageProvider ?? config.provider;
       sessionState.updateUsage(
         config.model,
         response.usage,
         apiDuration,
-        config.provider,
+        usageProvider,
         config.baseURL,
       );
       const thisCost = sessionState.calculateCost(
         config.model,
         response.usage,
-        config.provider,
+        usageProvider,
         config.baseURL,
       );
 
@@ -3244,7 +3251,7 @@ export async function* queryLoop(loopConfig: QueryLoopConfig): AsyncGenerator<Qu
       // 把 provider 原始 usage 归一化为完整 prompt（promptTotal，与厂商无关），
       // 喂给 ctxMgr 作校准锚点：收敛估算偏差 + 防止 compact 因启发式低估而触发过晚。
       try {
-        const norm = normalizeCacheUsage(response.usage, config.provider);
+        const norm = normalizeCacheUsage(response.usage, usageProvider);
         ctxMgr.recordActualTokens(norm.promptTotal, toolRegistry.size());
       } catch {
         /* 校准失败绝不影响主循环 */
@@ -3285,7 +3292,7 @@ export async function* queryLoop(loopConfig: QueryLoopConfig): AsyncGenerator<Qu
       const cacheSavingsUSD = sessionState.calculateSavings(
         config.model,
         response.usage,
-        config.provider,
+        usageProvider,
         config.baseURL,
       );
 
@@ -3506,7 +3513,8 @@ export async function* queryLoop(loopConfig: QueryLoopConfig): AsyncGenerator<Qu
             cache_savings_usd: cacheSavingsUSD,
             // 首个任意内容 chunk 的 TTFT（与 StreamPhase(first_content) 同值），纯 tool_use 轮也有
             ttft_ms: takeFirstContentTtft(state.turnCount),
-            provider: config.provider, // T12.3：Provider 维度标记
+            // D5：与上面归一化同一个身份 —— 轨迹的 context_usage_ratio 由 collector 按它归一化
+            provider: usageProvider, // T12.3：Provider 维度标记
             base_url: config.baseURL, // 端点维度：区分同模型不同渠道，便于排查 + 重算精确计费
             // P2-6：取走 provider 侧暂存的网关请求标识（读一次即清，见 api/request-id.ts）。
             // 取走时机必须是**本轮组装 AfterModel 时**：早了拿不到（响应头还没来），
@@ -5670,7 +5678,7 @@ export async function* queryLoop(loopConfig: QueryLoopConfig): AsyncGenerator<Qu
           config.model,
           summaryResponse.usage,
           0, // apiDuration：本轮没有 perfHandle，填 0 而不是猜一个值（宁可缺，不可假）
-          config.provider,
+          summaryResponse.usageProvider ?? config.provider, // D5
           config.baseURL,
         );
       } catch {
@@ -5705,7 +5713,7 @@ export async function* queryLoop(loopConfig: QueryLoopConfig): AsyncGenerator<Qu
               cost_usd: sessionState.calculateCost(
                 config.model,
                 summaryResponse.usage,
-                config.provider,
+                summaryResponse.usageProvider ?? config.provider,
                 config.baseURL,
               ),
               // 与主循环同一单一事实源（见主循环 cacheSavingsUSD 处注释）：不传则 TokenMeter
@@ -5713,12 +5721,12 @@ export async function* queryLoop(loopConfig: QueryLoopConfig): AsyncGenerator<Qu
               cache_savings_usd: sessionState.calculateSavings(
                 config.model,
                 summaryResponse.usage,
-                config.provider,
+                summaryResponse.usageProvider ?? config.provider,
                 config.baseURL,
               ),
               // 总结轮 index = turnCount + 1（与上方 setSseDumpContext 同口径）
               ttft_ms: takeFirstContentTtft(state.turnCount + 1),
-              provider: config.provider,
+              provider: summaryResponse.usageProvider ?? config.provider,
               base_url: config.baseURL,
               gateway_request_id: takeLastRequestId(),
             },

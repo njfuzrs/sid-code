@@ -10,6 +10,7 @@
 
 import type { Usage, NormalizedCacheUsage } from "../llm/types.ts";
 import { normalizeCacheUsage } from "../llm/types.ts";
+import { inferProviderByModelName } from "../llm/provider-infer.ts";
 import { getLogger } from "../debug/logger.ts";
 import { resolvePricing, effectivePricing, type PricingModelEntry } from "../api/cost-tracker.ts";
 
@@ -536,16 +537,10 @@ export class SessionState {
   }
 
   static inferProvider(model: string, availableModels?: PricingModelEntry[]): string {
-    // 优先从用户配置的 availableModels 中查找
-    if (availableModels?.length) {
-      const mc = availableModels.find((m) => m.name === model);
-      if (mc?.provider) return mc.provider;
-    }
-    // 兜底启发式按**真名**判（与 inferPricingProvider 同口径）：别名带渠道前缀时
-    // （gw-claude-sonnet-5）按别名判会落成 openai，缓存三段归一化口径反掉。
-    const { resolveWireModel } = require("../llm/wire-model.ts");
-    const wire: string = resolveWireModel(model, availableModels);
-    return /^claude/i.test(wire) ? "anthropic" : "openai";
+    // D6：唯一实现在 llm/provider-infer.ts（配置 provider > 真名锚定匹配）。
+    // 空名保持旧语义 "openai"（本函数的调用方都是计价/归一化，从不传空名，防御而已）。
+    const p = inferProviderByModelName(model, availableModels);
+    return p === "unknown" ? "openai" : p;
   }
 
   /**

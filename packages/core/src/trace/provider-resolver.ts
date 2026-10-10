@@ -16,11 +16,18 @@
  *（`tests/trace/provider-resolver.test.ts` 有一条结构断言拦这个）。
  */
 
-/** 只看 model 名的兜底启发式：真值映射查不到时才用 */
+/**
+ * 只看 model 名的兜底启发式：事件自带 provider 与真值映射都查不到时才用。
+ *
+ * D6：委托给全仓唯一实现 `llm/provider-infer.ts`（真名锚定 `^claude`）。原先这里是
+ * 不锚定的 `/claude/i`，与计费侧 `/^claude/i` 对 `my-claude-clone-v2` 这类第三方模型
+ * 给出相反归因 —— 账本说 openai、健康面板说 anthropic，两个仪器互相矛盾。
+ */
 export function inferProviderFromModel(model: string): string {
-  if (!model) return "unknown";
-  return /claude/i.test(model) ? "anthropic" : "openai";
+  return inferProviderByModelName(model);
 }
+
+import { inferProviderByModelName } from "../llm/provider-infer.ts";
 
 interface EventLike {
   event?: string;
@@ -41,4 +48,18 @@ export function createProviderResolver(events: readonly EventLike[]): (model: st
     }
   }
   return (model: string) => modelToProvider.get(model) || inferProviderFromModel(model);
+}
+
+/**
+ * 解析单个事件的 provider：**事件自带的 `provider` 字段优先**（D6，发生侧盖章），
+ * 缺省（老轨迹 / 未盖章的 emit 点）才回落 resolver。
+ */
+export function resolveEventProvider(
+  data: Record<string, unknown> | null | undefined,
+  resolve: (model: string) => string,
+): string {
+  const own = data?.provider;
+  if (typeof own === "string" && own) return own;
+  const model = (data?.model as string) || "";
+  return model ? resolve(model) : "unknown";
 }
