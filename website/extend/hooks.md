@@ -265,10 +265,12 @@ echo '{}' | sh -c '你的 command'
 按顺序查这四个：
 
 1. **没注册上**——跑 `sid-code hooks list`。被跳过的条目会单独列出并给出原因，
-   最常见的是「未信任工作区，已跳过」：项目级 hooks 只在信任过的工作区加载，
+   最常见的是「未信任工作区，已跳过」：项目级 hooks 只在信任过的工作区加载。信任按 git 主仓根记，
+   仓库任意子目录与 worktree 共用；父目录信任过，其下的仓库直接继承（家目录除外），
    `-p` 下用 `--trust-workspace` 本会话放行（SDK 宿主 spawn 时把这个参数加进命令行）
-2. **配错了文件**——sid-code 读 `~/.sid-code/settings.json`、`<项目>/.sid-code/settings.json`、
-   `<项目>/.sid-code/settings.local.json`，**不读** CC 的 `~/.claude/settings.json` 与 `.claude/settings.json`
+2. **配错了文件**——sid-code 读 `~/.sid-code/settings.json`、`<启动目录>/.sid-code/settings.json`、
+   `<git 仓库根>/.sid-code/settings.local.json`，**不读** CC 的 `~/.claude/settings.json` 与 `.claude/settings.json`。
+   注意共享的 `settings.json` 只读启动目录这一层：在仓库子目录启动，仓库根那份不生效
 3. **`matcher` 没匹配上**——先把 `matcher` 整个删掉试，能触发就是它的问题。
    纯字母数字加竖线（`Edit|Write`）是**精确匹配**而非正则；CC 名与内部名都认
 4. **事件本身还没接线**——[Hook 事件](/ref/hooks)的「会触发」列标 ✗ 的那些，

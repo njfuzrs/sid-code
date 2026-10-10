@@ -15,7 +15,8 @@
  */
 
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "fs";
-import { dirname, join, parse, resolve } from "path";
+import { dirname, join, resolve } from "path";
+import { getAncestorChain } from "../config/project-bases.ts";
 import type { MCPServerConfig } from "../config/config.ts";
 
 export interface ProjectMcpServers {
@@ -27,18 +28,13 @@ export interface ProjectMcpServers {
   files: string[];
 }
 
-/** cwd → 文件系统根（不含根）逐级列出目录，返回顺序为 cwd 在前 */
+/**
+ * cwd → 文件系统根逐级列出目录，返回顺序为 cwd 在前。
+ * 与 B4 共用 `getAncestorChain`（config/project-bases.ts）——此前这里另写了一份，
+ * cwd 恰为文件系统根时两份结果不同（一份返回空、一份返回 [根]），两条读取路径因此漂移。
+ */
 export function ancestorDirsToRoot(cwd: string): string[] {
-  const dirs: string[] = [];
-  let current = resolve(cwd);
-  const root = parse(current).root;
-  while (current !== root) {
-    dirs.push(current);
-    const parent = dirname(current);
-    if (parent === current) break;
-    current = parent;
-  }
-  return dirs;
+  return getAncestorChain(resolve(cwd)).reverse();
 }
 
 /** 解析单个 `.mcp.json`；格式不对 / 读失败返回 null（由调用方决定是否告警） */
@@ -88,12 +84,53 @@ export function loadProjectMcpServers(
 }
 
 /**
- * MCP 的「项目身份」：git root（非仓库退回 cwd；落在 ~/.sid-code 内退回家目录）。
- * 审批 key 与禁用列表都按它分区 ⇒ 同一仓库任意子目录只审批一次、禁用状态一致（M4）。
+ * MCP 的「项目身份」：主仓根（B2 identity，linked worktree 归到主 checkout；非仓库退回 cwd；
+ * 落在 ~/.sid-code 内退回家目录）。审批 key 与禁用列表都按它分区 ⇒ 同一仓库任意子目录、
+ * 任意 worktree 只审批一次、禁用状态一致（M4，对齐 CC `findCanonicalGitRoot`）。
  */
 export async function getMcpProjectRoot(cwd: string = process.cwd()): Promise<string> {
-  const { resolveProjectRoot } = await import("../memory/paths.ts");
-  return resolveProjectRoot(cwd);
+  const { getProjectIdentityRoot } = await import("../config/project-bases.ts");
+  return getProjectIdentityRoot(cwd);
+}
+
+/**
+ * 迁移兼容：此前（含 #220）用过的项目键，**不含**当前的主仓根。
+ * - 当前工作树根（`--show-toplevel`，worktree 下是 worktree 自己）—— #220 的键；
+ * - 启动 cwd —— #220 之前审批 key 用的就是它。
+ * 读取时新键查不到再查这些，写入时一并清掉，完成迁移。
+ */
+export async function getLegacyMcpProjectKeys(cwd: string = process.cwd()): Promise<string[]> {
+  const { getCheckoutRoot, getProjectIdentityRoot } = await import("../config/project-bases.ts");
+  const primary = getProjectIdentityRoot(cwd);
+  const out: string[] = [];
+  for (const p of [getCheckoutRoot(cwd), resolve(cwd)]) {
+    if (p !== primary && !out.includes(p)) out.push(p);
+  }
+  return out;
+}
+
+/** 某个项目根在 ~/.sid-code/projects/ 下的私有目录 */
+async function projectStateDir(root: string): Promise<string> {
+  const { sanitizeProjectKey } = await import("../memory/paths.ts");
+  const { sidPaths } = await import("../config/paths.ts");
+  return join(sidPaths.projects(), sanitizeProjectKey(root));
+}
+
+/**
+ * 项目私有目录里某个文件的读取路径：主仓根那份存在就用它，否则回退到旧键（worktree 自己
+ * 的根）下已存在的那份 —— #220 起 mcp.local.json / mcp-state.json 是按工作树分开存的，
+ * 改成按主仓归一后，老 worktree 的文件不能凭空失效。都不存在时返回主仓根路径（供写入）。
+ */
+export async function resolveProjectStateFile(
+  file: string,
+  cwd: string = process.cwd(),
+): Promise<{ path: string; primary: string }> {
+  const { getCheckoutRoot, getProjectIdentityRoot } = await import("../config/project-bases.ts");
+  const primary = join(await projectStateDir(getProjectIdentityRoot(cwd)), file);
+  if (existsSync(primary)) return { path: primary, primary };
+  const legacy = join(await projectStateDir(getCheckoutRoot(cwd)), file);
+  if (legacy !== primary && existsSync(legacy)) return { path: legacy, primary };
+  return { path: primary, primary };
 }
 
 // ─── M2：持久化禁用列表 ─────────────────────────────────────────────────────
@@ -105,12 +142,13 @@ export async function getMcpProjectRoot(cwd: string = process.cwd()): Promise<st
 
 interface McpProjectState {
   disabledMcpServers?: string[];
-}
-
-async function mcpStatePath(cwd: string): Promise<string> {
-  const { resolveProjectRoot, sanitizeProjectKey } = await import("../memory/paths.ts");
-  const { sidPaths } = await import("../config/paths.ts");
-  return join(sidPaths.projects(), sanitizeProjectKey(resolveProjectRoot(cwd)), "mcp-state.json");
+  /**
+   * 显式启用的 server。只为盖过配置源里写死的 `enabled:false`（历史上 `/mcp disable`
+   * 改写进 `.mcp.json` / 用户 settings 的那种）：只有「禁用名单」时，从面板启用一个
+   * 这样的 server 本会话能连上，重启又回到禁用 —— 用户点了「启用」却只活一个会话。
+   * 与 disabledMcpServers 互斥：写一边就从另一边删掉。
+   */
+  enabledMcpServers?: string[];
 }
 
 function readState(path: string): McpProjectState {
@@ -123,44 +161,85 @@ function readState(path: string): McpProjectState {
   return {};
 }
 
-/** 读当前项目的禁用列表 */
-export async function getDisabledMcpServers(cwd: string = process.cwd()): Promise<string[]> {
-  const list = readState(await mcpStatePath(cwd)).disabledMcpServers;
-  return Array.isArray(list) ? list.filter((n): n is string => typeof n === "string") : [];
+function stringList(v: unknown): string[] {
+  return Array.isArray(v) ? v.filter((n): n is string => typeof n === "string") : [];
 }
 
-/** 写入某 server 的禁用状态（幂等）；返回写入的文件路径 */
+/** 当前项目的持久化开关：禁用名单 + 显式启用名单 */
+export async function getMcpServerToggles(
+  cwd: string = process.cwd(),
+): Promise<{ disabled: string[]; enabled: string[] }> {
+  const state = readState((await resolveProjectStateFile("mcp-state.json", cwd)).path);
+  return {
+    disabled: stringList(state.disabledMcpServers),
+    enabled: stringList(state.enabledMcpServers),
+  };
+}
+
+/** 读当前项目的禁用列表 */
+export async function getDisabledMcpServers(cwd: string = process.cwd()): Promise<string[]> {
+  return (await getMcpServerToggles(cwd)).disabled;
+}
+
+/** 写入某 server 的启用 / 禁用状态（幂等）；返回写入的文件路径（总是主仓根那份） */
 export async function setMcpServerDisabled(
   name: string,
   disabled: boolean,
   cwd: string = process.cwd(),
 ): Promise<string> {
-  const path = await mcpStatePath(cwd);
-  const state = readState(path);
-  const set = new Set(state.disabledMcpServers ?? []);
-  if (disabled) set.add(name);
-  else set.delete(name);
-  state.disabledMcpServers = [...set];
-  mkdirSync(dirname(path), { recursive: true });
-  writeFileSync(path, JSON.stringify(state, null, 2));
-  return path;
+  const { path: readPath, primary } = await resolveProjectStateFile("mcp-state.json", cwd);
+  const state = readState(readPath);
+  const off = new Set(stringList(state.disabledMcpServers));
+  const on = new Set(stringList(state.enabledMcpServers));
+  if (disabled) {
+    off.add(name);
+    on.delete(name);
+  } else {
+    off.delete(name);
+    on.add(name);
+  }
+  state.disabledMcpServers = [...off];
+  state.enabledMcpServers = [...on];
+  mkdirSync(dirname(primary), { recursive: true });
+  writeFileSync(primary, JSON.stringify(state, null, 2));
+  return primary;
 }
 
 /**
- * 按禁用列表给 server 打上 enabled:false（不改原对象）。
- * manager.connectAll 会把它们放进 disabledConfigs ⇒ 面板显示「已禁用」，与历史
+ * 按持久化开关改写 server 的 enabled（不改原对象）：禁用名单 → enabled:false；
+ * 显式启用名单 → 去掉配置源里的 enabled:false。
+ * manager.connectAll 会把 enabled:false 的放进 disabledConfigs ⇒ 面板显示「已禁用」，与历史
  * `.mcp.json` 里的 `enabled:false` 走同一条路径。
+ *
+ * ⚠️ 必须作用于**最终交给 connectAll 的那份集合**（cli.ts 里合并了插件 / `--mcp-config` 之后），
+ * 而不是 loadConfig 里只含 settings + `.mcp.json` 的 config.mcpServers —— 否则插件与
+ * `--mcp-config` 来源的 server 禁用后提示「已持久化」，重启又连上。
  */
+export function applyServerToggles(
+  servers: Record<string, MCPServerConfig>,
+  toggles: { disabled: readonly string[]; enabled: readonly string[] },
+): Record<string, MCPServerConfig> {
+  if (toggles.disabled.length === 0 && toggles.enabled.length === 0) return servers;
+  const out: Record<string, MCPServerConfig> = {};
+  for (const [name, cfg] of Object.entries(servers)) {
+    if (toggles.disabled.includes(name)) {
+      out[name] = { ...cfg, enabled: false };
+    } else if (toggles.enabled.includes(name) && cfg.enabled === false) {
+      const { enabled: _e, ...rest } = cfg as MCPServerConfig & { enabled?: boolean };
+      out[name] = rest as MCPServerConfig;
+    } else {
+      out[name] = cfg;
+    }
+  }
+  return out;
+}
+
+/** 只按禁用名单打 enabled:false（保留给既有调用方；新代码用 applyServerToggles） */
 export function applyDisabledList(
   servers: Record<string, MCPServerConfig>,
   disabled: readonly string[],
 ): Record<string, MCPServerConfig> {
-  if (disabled.length === 0) return servers;
-  const out: Record<string, MCPServerConfig> = {};
-  for (const [name, cfg] of Object.entries(servers)) {
-    out[name] = disabled.includes(name) ? { ...cfg, enabled: false } : cfg;
-  }
-  return out;
+  return applyServerToggles(servers, { disabled, enabled: [] });
 }
 
 /** toggleMcpServer 需要的 manager 能力（只取接口，避免 project-files → manager 的依赖） */
@@ -192,4 +271,19 @@ export async function toggleMcpServer(
       : (await manager.enableServer(name)) !== null;
   }
   return { statePath, applied };
+}
+
+/**
+ * 启动时是否要建 MCPManager（M3）。有待审批的项目 server 也要建 —— 否则在「只有 .mcp.json」
+ * 的项目里（pending 不进生效集合），启动审批框批准后没有 manager 可连，只能落盘等下次启动，
+ * 用户还看不到任何提示。企业策略禁用 MCP 时 pending 不算：批准了也不会连。
+ */
+export function shouldCreateMcpManager(opts: {
+  serverCount: number;
+  ideAutoConnect: boolean;
+  pendingApprovalCount: number;
+  mcpAllowedByPolicy: boolean;
+}): boolean {
+  if (opts.serverCount > 0 || opts.ideAutoConnect) return true;
+  return opts.mcpAllowedByPolicy && opts.pendingApprovalCount > 0;
 }

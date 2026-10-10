@@ -25,7 +25,7 @@ MCP 服务器 "fs" 已添加到 project 配置（stdio）。重启会话后生�
 ```
 
 默认写进项目级 `.mcp.json`。项目级 server 来自仓库（等于别人的配置），**未批准前不加载**，
-所以这时 `mcp list` 里还看不到它，末尾会提示去看待审批列表：
+所以这时它不在 `mcp list` 的已配置列表里，而是在末尾被逐个列为待审批：
 
 ```bash
 sid-code mcp list
@@ -33,7 +33,8 @@ sid-code mcp list
 
 ```text
 未配置任何 MCP 服务器。用 `sid-code mcp add <name> <command|url>` 添加。
-另有 1 个项目级 MCP 服务器待审批（未加载），见 `sid-code mcp pending`。
+另有 1 个项目级 MCP 服务器待审批（未加载），见 `sid-code mcp pending`:
+  fs  ⏸ 待审批（启动 sid-code 时审批）
 ```
 
 ```bash
@@ -61,7 +62,7 @@ sid-code mcp approve fs
 已批准 1 个 MCP 服务器: fs。重启会话后连接。
 ```
 
-这之后 `mcp list` / `mcp get` 才能看到它：
+这之后它才进入 `mcp list` / `mcp get` 的已配置列表（来自 `.mcp.json` 的会多一行「来自 <文件路径>」）：
 
 ```bash
 sid-code mcp get fs
@@ -83,14 +84,20 @@ fs  [stdio]  npx -y @modelcontextprotocol/server-filesystem /tmp
 
 ::: tip 项目级 server 未批准前不加载
 项目级 MCP server（`.mcp.json`）来自仓库，从没批准或拒绝过的一律**不加载**（fail-closed），
-`mcp list` / `mcp get` 也看不到它，只出现在 `mcp pending` 里。批准有两条路：
+`mcp list` 只把它列为「⏸ 待审批」，`mcp get` 查不到。批准有三条路：
 
-- CLI：`sid-code mcp approve <name>`（或 `--all` 批准全部待审批项），`sid-code mcp reject <name> | --all` 拒绝
-- 会话里：`/mcp` 面板
+- **启动时**：TUI 启动发现待审批 server 会弹审批框，一次一个，可选批准 / 全部批准 / 拒绝，
+  光标默认停在「拒绝」；Esc 暂不决定（本会话不加载，下次启动再问）。批准后**当场连接**，不用重启。
+  有信任框或外部 `@import` 审批框时，审批框排在它们之后弹。
+- 会话里：`/mcp approve <name>`、`/mcp reject <name>`，或 `/mcp` 面板
+- CLI：`sid-code mcp approve <name>`（或 `--all` 批准全部待审批项），`sid-code mcp reject <name> | --all` 拒绝。
+  CLI 不启动会话，批准后下次启动才连接
 
 拒绝后不再询问；指名 approve / reject 可以随时改判已经批准或拒绝过的 server。
-批准记录存在 `~/.sid-code/state/mcp-approvals.json`，按 `项目路径:server 名` 记账，
-所以同一个 server 在不同项目里要分别批准。用户级配置不需要批准。
+批准记录存在 `~/.sid-code/state/mcp-approvals.json`，按 `项目身份:server 名` 记账。
+项目身份是 **git 主仓根**：同一仓库的任意子目录、任意 linked worktree 共用一份审批，
+只批准一次；不在 git 仓库里时就是启动目录。旧版按启动目录记的审批仍然认，下次改判时迁移。
+同一个 server 在不同仓库里要分别批准。用户级配置不需要批准。
 :::
 
 `sid-code mcp` 这套子命令**不启动会话**，只读写配置文件，所以脚本和 CI 里能直接用。
@@ -128,7 +135,7 @@ fs  [stdio]  npx -y @modelcontextprotocol/server-filesystem /tmp
 }
 ```
 
-`<项目>/.mcp.json`（项目级，跟仓库走，团队共享）：
+`.mcp.json`（项目级，跟仓库走，团队共享）：
 
 ```json
 {
@@ -168,11 +175,20 @@ fs  [stdio]  npx -y @modelcontextprotocol/server-filesystem /tmp
       "headers": {
         "Authorization": "Bearer ${EXAMPLE_MCP_TOKEN}"
       },
-      "disabled": true
+      "enabled": false
     }
   }
 }
 ```
+
+### `.mcp.json` 从哪里读
+
+从启动目录开始**逐级向上一直读到文件系统根**，每层的 `.mcp.json` 都读，同名 server
+**离启动目录越近越优先**。上界不是 git 仓库根，也不是家目录——所以 monorepo 外层工作区、
+甚至 `~/.mcp.json` 里声明的 server，在仓库深层子目录启动时同样可见（对齐 Claude Code）。
+`sid-code mcp list/pending/approve/reject` 与会话用的是同一套查找，列表一致。
+
+`"enabled": false` 让这个 server 默认不连接（面板里显示「已禁用」，可随时 `/mcp enable`）。
 
 三个只有读过源码才知道的坑：
 
@@ -252,8 +268,8 @@ token 存在 `~/.sid-code/mcp-oauth.json`，权限 `0600`。access token 过期�
 | --- | --- | --- |
 | `dynamic` | 运行时注入（IDE 集成等） | 当前会话 |
 | `user` | `~/.sid-code/settings.json` | 你的所有项目 |
-| `local` | `~/.sid-code/projects/<项目路径 hash>/mcp.local.json`（只能手写，`mcp add --scope` 只接受 user / project） | 当前项目，不进 git |
-| `project` | `<项目>/.mcp.json` | 团队共享 |
+| `local` | `~/.sid-code/projects/<项目身份>/mcp.local.json`（只能手写，`mcp add --scope` 只接受 user / project；项目身份 = git 主仓根，全部 worktree 共用） | 当前项目，不进 git |
+| `project` | 启动目录及其每一级父目录的 `.mcp.json` | 团队共享 |
 
 同名或**同签名**（相同 `command`+`args`，或相同 `url`）时，优先级：
 
@@ -475,6 +491,18 @@ sid-code -p "用 context7 查 Bun.serve 的 idleTimeout 默认值" \
 2. **项目级批准了吗** —— `sid-code mcp pending` 里还列着它，就是还没批准（未批准的不加载）
 3. **server 起来了吗** —— 开 `-d` 看 `[MCP] 连接服务器: xxx` 后面有没有报错；
    如果看到 `被 mcpPolicy 拒绝`，是企业策略拦了，见[企业管控](#企业管控)
+
+### 临时停用一个 server，不删配置
+
+会话里 `/mcp disable <name>`（或在 `/mcp` 面板里选它 → 禁用）：**当场断开连接、注销它的工具**，
+面板显示「已禁用」，模型下一轮就调不到了。`/mcp enable <name>` 当场重连。
+
+- 状态存在你自己的 `~/.sid-code/projects/<项目身份>/mcp-state.json`（项目身份 = git 主仓根，
+  同一仓库的子目录和 worktree 共用），**不改写 `.mcp.json`**——那是团队共享的文件。
+- 持久生效：重启后仍是禁用。对插件和 `--mcp-config` 来源的 server 同样有效。
+- 配置文件里写死 `"enabled": false` 的 server，`/mcp enable` 之后重启也保持启用
+  （`mcp-state.json` 里的「已启用」记录盖过配置里的 `false`）。
+- `sid-code mcp list` 里禁用的 server 照常列出，后面标「⊘ 已禁用」。
 
 ### 删一个 server
 

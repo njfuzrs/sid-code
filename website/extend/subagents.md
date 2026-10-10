@@ -155,7 +155,8 @@ cheap 档如果算出来比主模型还贵（或就是主模型自己），就�
 
 ## 写自己的子代理
 
-放一个 markdown 到 `<项目>/.sid-code/agents/`（用户级放 `~/.sid-code/agents/`）：
+放一个 markdown 到 `<项目>/.sid-code/agents/`（用户级放 `~/.sid-code/agents/`）。项目级从启动目录
+逐级往上扫到 git 仓库根，同名时离启动目录近的优先：
 
 ```markdown
 ---

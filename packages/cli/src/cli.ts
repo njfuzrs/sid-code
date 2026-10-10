@@ -2214,9 +2214,18 @@ export async function main(): Promise<void> {
     // 初始化 MCP 服务器（后台连接，不阻塞启动）。
     // P1-7 --strict-mcp-config：严格模式仅用 --mcp-config 指定的服务器，忽略 settings/.mcp.json/插件来源；
     // 非严格模式：用户配置 + 插件 MCP + --mcp-config 合并（--mcp-config 优先级最高）。
-    const allMcpServers = config.strictMcpConfig
-      ? { ...mcpConfigServers }
-      : { ...config.mcpServers, ...pluginMcpServers, ...mcpConfigServers };
+    let allMcpServers: Record<string, import("@sid-code/core/config/config.ts").MCPServerConfig> =
+      config.strictMcpConfig
+        ? { ...mcpConfigServers }
+        : { ...config.mcpServers, ...pluginMcpServers, ...mcpConfigServers };
+    // M2：持久化的启用 / 禁用开关必须套在**合并之后**的集合上。loadConfig 里那次只覆盖
+    // settings + .mcp.json，插件 / --mcp-config 来源的 server 在这里才并进来——不再套一次，
+    // 它们禁用后面板提示「已持久化」，重启又连上。
+    {
+      const { getMcpServerToggles, applyServerToggles } =
+        await import("@sid-code/core/mcp/project-files.ts");
+      allMcpServers = applyServerToggles(allMcpServers, await getMcpServerToggles(process.cwd()));
+    }
     if (config.strictMcpConfig) {
       getLogger().info(
         "MCP",
@@ -2247,7 +2256,18 @@ export async function main(): Promise<void> {
     const { shouldAutoConnect } = await import("@sid-code/core/ide/integration.ts");
     const ideAutoConnect = shouldAutoConnect(config.ide?.autoConnect);
 
-    if (Object.keys(allMcpServers).length > 0 || ideAutoConnect) {
+    // M3：有待审批的项目 server 也要建 manager（判据见 shouldCreateMcpManager）
+    const { getPendingApprovalServers } = await import("@sid-code/core/mcp/approval.ts");
+    const { shouldCreateMcpManager } = await import("@sid-code/core/mcp/project-files.ts");
+
+    if (
+      shouldCreateMcpManager({
+        serverCount: Object.keys(allMcpServers).length,
+        ideAutoConnect,
+        pendingApprovalCount: getPendingApprovalServers().names.length,
+        mcpAllowedByPolicy,
+      })
+    ) {
       const { MCPManager } = await import("@sid-code/core/mcp/manager.ts");
       mcpManager = new MCPManager();
       // D13：企业 mcpPolicy 在连接前的最后一道闸生效——插件 MCP、--mcp-config（含

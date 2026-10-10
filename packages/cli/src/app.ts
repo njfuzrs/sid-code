@@ -4287,6 +4287,23 @@ export class App {
    * 等于在 App 生命周期中段重跑构造逻辑，风险远大于让用户重启一次。这个取舍要点破，
    * 不能让用户点了"信任"却发现 hook 没生效还不知道为什么。
    */
+  /** 首屏对话框队列的下一个（规则见 ui/startup/dialog-queue.ts） */
+  nextStartupDialog(
+    after: import("./command/types.ts").DialogType | null,
+  ): import("./command/types.ts").DialogType | null {
+    const { nextStartupDialog } =
+      require("./ui/startup/dialog-queue.ts") as typeof import("./ui/startup/dialog-queue.ts");
+    return nextStartupDialog(after, (d) =>
+      d === "trust"
+        ? this.pendingTrustItems.length > 0
+        : d === "claude-md-external-imports"
+          ? this.pendingExternalImportPaths.length > 0
+          : d === "mcp-approval"
+            ? this.listPendingMcpApprovals().length > 0
+            : false,
+    );
+  }
+
   /**
    * M3：待审批的项目级 MCP server（来自 loadConfig 登记的快照）。
    * 同步读：approval.ts 是 core 里的纯模块，cli.ts 启动阶段已经 import 过，这里直接 require 缓存。
@@ -4329,8 +4346,10 @@ export class App {
       } else if (connect) {
         await approval.approveAndConnectPendingServer(name, connect);
       } else {
-        // 本会话没有 manager（没配任何 MCP 也没 IDE 自动连接）：只能落盘，下次启动连接
+        // 本会话没有 manager（企业策略禁用 MCP 时 cli.ts 不建）：只能落盘。如实告诉用户，
+        // 不让「批准」看起来像已经生效。
         approval.approvePendingServer(name);
+        this.statusNotifier?.("mcp_approval", `已批准 ${name}，重启会话后连接`, 5000);
       }
     } catch (e) {
       log.warn("MCP", `应用 MCP 审批决定失败 (${name}): ${(e as Error)?.message}`);
@@ -7689,18 +7708,8 @@ export class App {
       vimMode: !!this.config.vimMode,
       commands: initialCommands,
       cwd: process.cwd(),
-      // 首屏对话框优先级：onboarding > 信任门控 > 外部 @import 审批。
-      // 信任排在 @import 之前——信任是"这个项目能不能执行东西"的前置问题，
-      // 比"要不要展开某个 import"更根本（SEC-AUDIT-2026-07-19 P1）。
-      activeDialog: this.config._needsOnboarding
-        ? null
-        : this.pendingTrustItems.length > 0
-          ? ("trust" as const)
-          : this.pendingExternalImportPaths.length > 0
-            ? ("claude-md-external-imports" as const)
-            : this.listPendingMcpApprovals().length > 0
-              ? ("mcp-approval" as const)
-              : null,
+      // 首屏对话框队列见 nextStartupDialog：onboarding 期间不弹，其余按队列顺序取第一个。
+      activeDialog: this.config._needsOnboarding ? null : this.nextStartupDialog(null),
       availableModels: this.config.availableModels.map((m) => ({
         name: m.name,
         // 供面板做族识别（别名带渠道前后缀时按 name 分组会掉进「其他」兜底）。
@@ -9785,7 +9794,8 @@ export class App {
         // 5. 刷新状态栏
         this.pushKnobDisplay();
         updateState({
-          activeDialog: null,
+          // 引导完成后接续首屏队列（此前直接置 null，信任框 / MCP 审批框在首次启动时整个跳过）
+          activeDialog: this.nextStartupDialog("onboarding"),
           needsOnboarding: false,
           model: result.model,
           provider: result.provider,
@@ -9879,6 +9889,7 @@ export class App {
       onTrustDecision: async (trusted) => {
         await this.applyTrustDecision(trusted);
       },
+      nextStartupDialog: (after) => this.nextStartupDialog(after),
       // M3：项目 .mcp.json 待审批 server 的启动审批框
       getPendingMcpApprovals: () => this.listPendingMcpApprovals(),
       onMcpApprovalDecision: async (name, choice) => {
