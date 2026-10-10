@@ -280,6 +280,30 @@ export interface CommandBase {
 
   // === 子命令 ===
   subCommands?: () => UnifiedCommand[];
+
+  // === 结果展示 ===
+  /**
+   * 文本结果在 TUI 里进「命令输出面板」（Esc 关闭的弹窗），而不是灌进消息流。
+   *
+   * 判据：输出是多行报告、且与对话上下文无关（不喂 LLM）—— /doctor /status /trace 这类诊断、
+   * 查看命令。一两行的回执（「已切换到 xxx」）和错误不要标：进弹窗反而要多按一次 Esc。
+   *
+   * 声明在命令上而不是全局按行数判定：任意命令只要输出变长就弹窗，交互不可预期。
+   * 但声明了的命令，**短于 PANEL_MIN_LINES 行**的结果（「已删除」「用法: …」这类回执/错误）
+   * 仍留消息流——同一命令的报告与回执天然长度悬殊，按命令粒度一刀切会让回执也要按 Esc。
+   * 只影响 TUI；headless / `-p` 照样输出纯文本。子命令未声明时继承父命令（`/mcp list` 跟随
+   * `/mcp`，见 executor.resolveOutputPanel），子命令可单独声明 false 关掉。
+   * 命令也可以在单次结果上带 `panel` 字段强制进面板（不受行数下限约束）。
+   */
+  outputPanel?: boolean | CommandPanelSpec;
+}
+
+/** 声明了 outputPanel 的命令，结果至少这么多行才进面板；更短的回执留消息流。 */
+export const PANEL_MIN_LINES = 3;
+
+/** 命令输出面板的展示参数（标题缺省 = 命令输入原文，如 `/doctor`） */
+export interface CommandPanelSpec {
+  title?: string;
 }
 
 // ============================================================
@@ -297,7 +321,7 @@ export interface LocalCommandModule {
 }
 
 export type LocalCommandResult =
-  | { type: "text"; value: string } // 显示文本
+  | { type: "text"; value: string; panel?: CommandPanelSpec } // 显示文本（带 panel = 进输出面板）
   | { type: "compact"; summary: string } // 上下文压缩结果
   | { type: "skip" } // 静默完成
   | { type: "clear" } // 清空对话

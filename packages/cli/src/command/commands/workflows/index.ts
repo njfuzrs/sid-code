@@ -13,6 +13,7 @@ const workflows: UnifiedCommand = {
   description: "查看动态工作流 run（无参列出；带 runId 看详情）",
   argumentHint: "[runId|taskId]",
   source: "builtin",
+  outputPanel: true,
   userInvocable: true,
   immediate: true,
   load: () => import("./workflows.ts").then((m) => m.default),

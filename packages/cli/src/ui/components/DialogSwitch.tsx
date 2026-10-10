@@ -6,7 +6,7 @@
  * 本组件把整条分支链 + Composer 兜底收口到一处，两个布局都渲染它，
  * 新增 dialog 只改这一个文件，从构造上根治「漏改一个 Layout」。
  *
- * 优先级：权限/Shell 确认 > Plan 审批 > AskUserQuestion > activeDialog 各面板 > Composer。
+ * 优先级：权限/Shell 确认 > Plan 审批 > AskUserQuestion > activeDialog 各面板 > 命令输出面板 > Composer。
  */
 
 import React from "react";
@@ -34,6 +34,7 @@ import { RewindDialog } from "./RewindDialog.tsx";
 import { ClaudeMdExternalImportDialog } from "./ClaudeMdExternalImportDialog.tsx";
 import { ConflictDialog } from "./ConflictDialog.tsx";
 import { TrustDialog } from "./TrustDialog.tsx";
+import { CommandOutputDialog, type CommandPanelInfo } from "./CommandOutputDialog.tsx";
 import type { OnboardingResult } from "./OnboardingDialog.tsx";
 import type {
   PermissionRequestInfo,
@@ -59,6 +60,9 @@ export interface DialogSwitchProps {
   // 通用对话框系统
   activeDialog: DialogType | null;
   onDialogClose: () => void;
+  /** 命令输出面板（声明了 outputPanel 的命令的多行结果）；null = 未打开 */
+  commandPanel: CommandPanelInfo | null;
+  onCommandPanelClose: () => void;
   /** modelId = 厂商真名（缺省 = name），仅供面板族识别，见 model-grouping.ts ModelOption */
   availableModels: Array<{
     name: string;
@@ -112,6 +116,8 @@ export const DialogSwitch: React.FC<DialogSwitchProps> = ({
   askUserQuestionRequest,
   conflictRequest,
   activeDialog,
+  commandPanel,
+  onCommandPanelClose,
   onDialogClose,
   availableModels,
   onModelSelect,
@@ -359,6 +365,10 @@ export const DialogSwitch: React.FC<DialogSwitchProps> = ({
         onRewind={callbacks.onRewind}
       />
     );
+  }
+  // 通用命令输出面板：排在所有专属面板之后、Composer 之前（见文件头优先级）
+  if (commandPanel) {
+    return <CommandOutputDialog panel={commandPanel} onClose={onCommandPanelClose} />;
   }
   return (
     <Composer

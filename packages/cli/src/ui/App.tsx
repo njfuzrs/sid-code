@@ -453,6 +453,11 @@ export interface TUIState {
   turnStartOutputTokens?: number;
   /** 当前打开的对话框类型，null 表示无对话框 */
   activeDialog: import("../command/types.ts").DialogType | null;
+  /**
+   * 命令输出面板（声明了 outputPanel 的斜杠命令的多行结果）。与 activeDialog 互斥展示，
+   * 优先级低于 activeDialog：面板打开时又开了对话框，先处理对话框，关掉后面板还在。
+   */
+  commandPanel?: import("./components/CommandOutputDialog.tsx").CommandPanelInfo | null;
   /** 可用模型列表（对话框用） */
   /** modelId = 厂商真名（缺省 = name），仅供面板族识别，见 model-grouping.ts ModelOption */
   availableModels: Array<{
@@ -844,7 +849,7 @@ function TUIAppInner({ initialState, callbacks, bridge, alternateBuffer }: AppPr
   useKeypress(KeypressPriority.High, (key: Key) => {
     const b = matchBinding(key);
     if (b?.action !== "app:toggleModel") return false;
-    if (state.activeDialog) return false; // 已有对话框时不抢占
+    if (state.activeDialog || state.commandPanel) return false; // 已有对话框/面板时不抢占
     log.info("UI:APP", "Alt+P：打开模型切换对话框（保留输入）");
     bridge.update({ activeDialog: "model" });
     return true;
@@ -1004,7 +1009,8 @@ function TUIAppInner({ initialState, callbacks, bridge, alternateBuffer }: AppPr
       !state.permissionRequest &&
       !state.shellConfirmRequest &&
       !state.askUserQuestionRequest &&
-      !state.activeDialog;
+      !state.activeDialog &&
+      !state.commandPanel;
 
     if (!isInterruptible) return false;
     const b = matchBinding(key);
@@ -1025,6 +1031,7 @@ function TUIAppInner({ initialState, callbacks, bridge, alternateBuffer }: AppPr
     if (
       busy ||
       state.activeDialog ||
+      state.commandPanel ||
       state.permissionRequest ||
       state.shellConfirmRequest ||
       state.planApprovalRequest ||
@@ -1300,6 +1307,10 @@ function TUIAppInner({ initialState, callbacks, bridge, alternateBuffer }: AppPr
     bridge.update({ activeDialog: null });
   }, [bridge]);
 
+  const handleCommandPanelClose = useCallback(() => {
+    bridge.update({ commandPanel: null });
+  }, [bridge]);
+
   const handleDismissErrorPanel = useCallback(() => {
     bridge.update({ errorPanel: [] });
   }, [bridge]);
@@ -1460,6 +1471,8 @@ function TUIAppInner({ initialState, callbacks, bridge, alternateBuffer }: AppPr
               scrollPercent={scrollPercent}
               activeDialog={state.activeDialog}
               onDialogClose={handleDialogClose}
+              commandPanel={state.commandPanel ?? null}
+              onCommandPanelClose={handleCommandPanelClose}
               availableModels={availableModels}
               onModelSelect={handleModelSelect}
               availableThemes={availableThemes}
@@ -1521,6 +1534,8 @@ function TUIAppInner({ initialState, callbacks, bridge, alternateBuffer }: AppPr
               model={state.model}
               activeDialog={state.activeDialog}
               onDialogClose={handleDialogClose}
+              commandPanel={state.commandPanel ?? null}
+              onCommandPanelClose={handleCommandPanelClose}
               availableModels={availableModels}
               onModelSelect={handleModelSelect}
               availableThemes={availableThemes}

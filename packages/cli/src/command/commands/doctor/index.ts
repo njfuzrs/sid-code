@@ -6,6 +6,7 @@ const doctorCmd: UnifiedCommand = {
   aliases: ["checkup"],
   description: "环境自检诊断（版本/运行时/配置/git/ripgrep/模型/MCP）；--disk 看磁盘占用与保留策略",
   source: "builtin",
+  outputPanel: true,
   userInvocable: true,
   immediate: true,
   load: () => import("./doctor.ts").then((m) => m.default),

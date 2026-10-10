@@ -90,13 +90,41 @@ export async function loadSkillCommands(
  *
  * 刻意不导出（命令体系门禁 G1 数零生产调用的导出）；测试按名字写死期望值，
  * 不复用这张表 —— 复用的话「表里漏了字段」与「适配器没透传」会一起变绿。
+ *
+ * - `outputPanel`：多行诊断/查看报告进命令输出面板（Esc 关闭），不灌消息流。
+ *   声明了的命令，短于 PANEL_MIN_LINES 行的回执（「已删除」「用法: …」）仍留消息流，
+ *   所以 /memory /hooks /mcp 这种「既有列表又有回执」的命令也可整条声明。
+ *   刻意**不**标：/compact /clear /rewind /plan /init（作用于对话本身）、
+ *   /allow /deny /add-dir /theme /language（单行回执）、/exit。
  */
 const LEGACY_BUILTIN_GATES: Readonly<Record<string, LegacyCommandGates>> = {
-  cost: { immediate: true },
-  stats: { immediate: true },
+  cost: { immediate: true, outputPanel: true },
+  stats: { immediate: true, outputPanel: true },
   theme: { immediate: true },
   allow: { immediate: true, requiresArgs: true },
   deny: { immediate: true, requiresArgs: true },
+  help: { outputPanel: true },
+  config: { outputPanel: true },
+  cache: { outputPanel: true },
+  trace: { outputPanel: true },
+  telemetry: { outputPanel: true },
+  checkpoints: { outputPanel: true },
+  memory: { outputPanel: true },
+  hooks: { outputPanel: true },
+  undo: { outputPanel: true },
+  restore: { outputPanel: true },
+  mcp: { outputPanel: true },
+  ide: { outputPanel: true },
+  lsp: { outputPanel: true },
+  skills: { outputPanel: true },
+  agents: { outputPanel: true },
+  commands: { outputPanel: true },
+  plugin: { outputPanel: true },
+  "reload-plugins": { outputPanel: true },
+  permissions: { outputPanel: true },
+  ps: { outputPanel: true },
+  worktree: { outputPanel: true },
+  cron: { outputPanel: true },
 };
 
 /**
