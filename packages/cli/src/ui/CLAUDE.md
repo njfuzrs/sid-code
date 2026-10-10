@@ -178,7 +178,7 @@ L1 视觉原子    字形、颜色、主题                          ← 最小�
 | 工具调用 | `ToolMessage` / `ToolGroupMessage` | `⏺` bullet（颜色随状态）+ `⎿` 结果树枝 |
 | 工具结果 | `ToolResultDisplay` | `⎿` 树枝缩进 |
 | 错误 | `ErrorMessage` | `✘` + `theme.status.error` |
-| 命令 | `CommandMessage` | 命令专用样式 |
+| 命令 | `CommandMessage` | 命令专用样式（多行报告不在这里，见 L4-H） |
 | 计划评审 | `PlanReviewMessage` | 评审专用样式 |
 
 - **区分手段优先级**：字形 / 缩进 > 颜色。user 与 assistant 靠 `>` vs `⏺` 字形 + 缩进区分，不是靠左右对齐或背景色。
@@ -291,6 +291,22 @@ L1 视觉原子    字形、颜色、主题                          ← 最小�
 - **保留键不可覆盖** ✅：`reservedShortcuts.ts` 的 `RESERVED_STROKES` 保护 Ctrl+C（中断/退出）、Enter（提交）、裸 Tab（补全）等终端基础语义，用户在 `keybindings.json` 里改不动（`isReservedStroke` 拦截）。新增"绝不能被改"的键 → 加进 `RESERVED_STROKES`。
 - **用户自定义走合并而非替换** ✅：用户绑定与默认绑定合并，校验语法 / 重复键 / 保留键冲突后生效。
 - **和弦键超时取消** ✅：多键序列（如前缀键 + 第二键）1.5s 未按第二键则丢弃前缀（`chord.ts`），防止前缀键误触。
+
+### H. 命令的多行报告进输出面板，不灌消息流 ✅
+
+/doctor /status /trace /mcp list 这类**输出多行、且与对话上下文无关**的命令，结果进通用的
+命令输出面板（`CommandOutputDialog`），不追加进消息流。
+
+- **命令声明，不按行数全局判定**：在命令上标 `outputPanel: true`（新体系写在 `commands/*/index.ts`，
+  旧体系写在 `loaders.ts` 的 `LEGACY_BUILTIN_GATES`）。子命令继承父命令（`/mcp list` 跟随 `/mcp`）。
+- **声明了也只有 ≥ `PANEL_MIN_LINES`(3) 行才弹**：同一命令的报告与回执长度悬殊（`/cron` 列表 vs
+  「已删除任务 x」），回执和用法错误留消息流，不让用户为一行字按 Esc。判据在 `executor.ts` 的 `resolvePanel`。
+- **不标的**：作用于对话本身的（/compact /clear /rewind /btw /loop /goal）和单行回执类（/allow /theme /vim）。
+- **消息流留一行摘要**（`panelSummaryLine`：首个非空行 + 行数），回看时知道跑过什么。
+- **交互**：Esc / q 关闭；↑↓ j k 逐行，PgUp/PgDn/空格 翻页，Home/End g 跳头尾；视口按终端高度截断。
+- **只画上下横线**：命令输出用户会复制，按 L2.2 不画左右竖线。
+- **新增「查看/诊断」命令时**：直接标 `outputPanel`，**不要**再为它写专属 Dialog + 登记 `DialogType`——
+  专属面板只留给需要选择/编辑交互的场景（/model /mcp 面板）。
 
 ### G. 即时性——状态变化立刻可见
 

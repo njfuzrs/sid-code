@@ -14,6 +14,7 @@ import type { ReactNode } from "react";
 import type {
   CommandContext,
   CommandExecutionResult,
+  CommandPanelSpec,
   LocalCommand,
   LocalJSXCommand,
   LocalJSXCommandOnDone,
@@ -22,11 +23,32 @@ import type {
   UnifiedCommand,
 } from "./types.ts";
 import { parseSlashCommand, looksLikeCommand, isFilePath } from "./parser.ts";
+import { PANEL_MIN_LINES } from "@sid-code/core/command-contract/types.ts";
 import { getLogger } from "@sid-code/core/debug/logger.ts";
 // P0-1 漏斗 4：斜杠命令使用分布，回答「哪些功能是死功能」。
 // 自定义命令名可能含项目/客户名，脱敏规则在门面里，见 analytics/events.ts。
 import { logCommandInvoke, logCommandRejected } from "@sid-code/core/analytics/events.ts";
 import { recordUsage } from "./usage-tracking.ts";
+
+/**
+ * 决定一条文本结果是否进命令输出面板。
+ *
+ * - 结果自带 `panel` → 强制进（命令明确要求，不受行数约束）；
+ * - 命令声明了 `outputPanel` 且结果 ≥ PANEL_MIN_LINES 行 → 进；
+ * - 其余（未声明，或声明了但只是一两行回执/用法错误）→ 留消息流。
+ *
+ * 导出供单测锁口径。
+ */
+export function resolvePanel(
+  value: string,
+  explicit: CommandPanelSpec | undefined,
+  declared: UnifiedCommand["outputPanel"],
+): CommandPanelSpec | undefined {
+  if (explicit) return explicit;
+  if (!declared || !value) return undefined;
+  if (value.trimEnd().split("\n").length < PANEL_MIN_LINES) return undefined;
+  return declared === true ? {} : declared;
+}
 
 /** 应用层注入的副作用回调 */
 export interface ExecutorCallbacks {
@@ -74,7 +96,28 @@ export class CommandExecutor {
     const gateError = this.checkGates(cmd);
     if (gateError) return gateError;
 
-    return this.dispatch(cmd, parsed.args);
+    return this.dispatch(cmd, parsed.args, this.resolveOutputPanel(parsed.commandName, commands));
+  }
+
+  /**
+   * 沿命令路径取最近一个 `outputPanel` 声明（子命令未声明则继承父命令）。
+   *
+   * 必须单独走一遍而不是读 findCommand 的返回值：`/mcp list` 会解析到适配出的子命令，
+   * legacy 适配器给子命令时不带门控字段（adaptLegacyCommand 递归时没有 gates），
+   * 只看叶子会让整族 `/mcp list` `/skills list` 漏掉父命令的声明。
+   */
+  resolveOutputPanel(name: string, commands: UnifiedCommand[]): UnifiedCommand["outputPanel"] {
+    const parts = name.trim().split(/\s+/);
+    let current =
+      commands.find((c) => c.name === parts[0]) ??
+      commands.find((c) => c.aliases?.includes(parts[0]));
+    let decl = current?.outputPanel;
+    for (let i = 1; current && i < parts.length; i++) {
+      const subs: UnifiedCommand[] = current.subCommands?.() ?? [];
+      current = subs.find((c) => c.name === parts[i] || c.aliases?.includes(parts[i]));
+      if (current?.outputPanel !== undefined) decl = current.outputPanel;
+    }
+    return decl;
   }
 
   /**
@@ -146,7 +189,11 @@ export class CommandExecutor {
   }
 
   /** 按类型分发 */
-  private dispatch(cmd: UnifiedCommand, args: string): Promise<CommandExecutionResult> {
+  private dispatch(
+    cmd: UnifiedCommand,
+    args: string,
+    outputPanel: UnifiedCommand["outputPanel"] = cmd.outputPanel,
+  ): Promise<CommandExecutionResult> {
     // 漏斗 4 · 命令（P0-1）：斜杠命令使用分布，回答「哪些功能是死功能」。
     //
     // 埋在 dispatch 而非 executeSlashCommand，是为了同时覆盖 executeImmediate
@@ -180,7 +227,7 @@ export class CommandExecutor {
 
     switch (cmd.type) {
       case "local":
-        return this.executeLocal(cmd, args);
+        return this.executeLocal(cmd, args, outputPanel);
       case "local-jsx":
         return this.executeLocalJSX(cmd, args);
       case "prompt":
@@ -192,17 +239,25 @@ export class CommandExecutor {
   private async executeLocal(
     cmd: UnifiedCommand & LocalCommand,
     args: string,
+    outputPanel: UnifiedCommand["outputPanel"],
   ): Promise<CommandExecutionResult> {
     const mod = await cmd.load();
     const result = await mod.call(args, this.ctx);
-    return this.mapLocalResult(result);
+    return this.mapLocalResult(result, outputPanel);
   }
 
   /** 将 LocalCommandResult 映射为执行引擎结果 */
-  private mapLocalResult(result: LocalCommandResult): CommandExecutionResult {
+  private mapLocalResult(
+    result: LocalCommandResult,
+    outputPanel: UnifiedCommand["outputPanel"],
+  ): CommandExecutionResult {
     switch (result.type) {
-      case "text":
-        return { type: "message", value: result.value };
+      case "text": {
+        const panel = resolvePanel(result.value, result.panel, outputPanel);
+        return panel
+          ? { type: "message", value: result.value, panel }
+          : { type: "message", value: result.value };
+      }
       case "compact":
         return { type: "compact", summary: result.summary };
       case "clear":
@@ -217,7 +272,7 @@ export class CommandExecutor {
         return {
           type: "confirm",
           message: result.message,
-          onConfirm: async () => this.mapLocalResult(await result.onConfirm()),
+          onConfirm: async () => this.mapLocalResult(await result.onConfirm(), outputPanel),
         };
       case "skip":
         return { type: "skip" };

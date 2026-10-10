@@ -13,6 +13,7 @@ const bug: UnifiedCommand = {
   description: "生成 bug 报告模板（含环境信息）并复制到剪贴板",
   argumentHint: "[问题简述]",
   source: "builtin",
+  outputPanel: true,
   userInvocable: true,
   immediate: true,
   load: () => import("./bug.ts").then((m) => m.default),
