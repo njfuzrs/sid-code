@@ -4,25 +4,22 @@
  */
 
 import { join } from "path";
-import { existsSync, unlinkSync, rmSync, statSync } from "fs";
+import { existsSync, unlinkSync, rmSync, statSync, readdirSync } from "fs";
 import type { Config } from "../config/config.ts";
 import type { SessionFileEntry } from "./utils.ts";
 import { getAllSessionFiles, isDeletableExcludeReason } from "./utils.ts";
 import { getLogger } from "../debug/logger.ts";
 import { sidPaths } from "../config/paths.ts";
 import { listActiveSessions } from "./concurrent.ts";
+import {
+  parseRetentionPeriod,
+  parseRetentionSize,
+  resolveRetentionSettings,
+  type SessionRetentionSettings,
+} from "./retention.ts";
 
-/** 会话保留配置 */
-export interface SessionRetentionSettings {
-  /** 是否启用自动清理 */
-  enabled: boolean;
-  /** 最大保留时间（如 "30d"） */
-  maxAge?: string;
-  /** 最大保留数量 */
-  maxCount?: number;
-  /** 最小保留时间（防止误删，如 "1d"） */
-  minRetention?: string;
-}
+export type { SessionRetentionSettings } from "./retention.ts";
+export { parseRetentionPeriod } from "./retention.ts";
 
 /** 清理结果 */
 export interface CleanupResult {
@@ -41,32 +38,6 @@ export interface CleanupResult {
 }
 
 /**
- * 解析时间周期（如 "30d" → 毫秒）
- */
-export function parseRetentionPeriod(period: string): number {
-  const match = period.match(/^(\d+)([hdwm])$/);
-  if (!match) {
-    throw new Error(`无效的时间周期格式: ${period}`);
-  }
-
-  const value = parseInt(match[1], 10);
-  const unit = match[2];
-
-  switch (unit) {
-    case "h":
-      return value * 60 * 60 * 1000;
-    case "d":
-      return value * 24 * 60 * 60 * 1000;
-    case "w":
-      return value * 7 * 24 * 60 * 60 * 1000;
-    case "m":
-      return value * 30 * 24 * 60 * 60 * 1000;
-    default:
-      throw new Error(`未知的时间单位: ${unit}`);
-  }
-}
-
-/**
  * 识别待删除会话
  */
 export async function identifySessionsToDelete(
@@ -74,9 +45,18 @@ export async function identifySessionsToDelete(
   retentionConfig: SessionRetentionSettings,
   currentSessionId?: string,
   protectedSessionIds?: readonly string[],
+  opts: {
+    /**
+     * 单个会话在磁盘上的占用（字节）。提供时才启用 maxTotalSize 体积兜底 ——
+     * 判体积要 stat 会话文件与轨迹目录，纯函数式的调用方（单测）可以不传。
+     */
+    sizeOf?: (entry: SessionFileEntry) => number;
+  } = {},
 ): Promise<SessionFileEntry[]> {
   const toDelete: SessionFileEntry[] = [];
   const now = Date.now();
+  /** 不受保护、过了 minRetention、且未被时间/数量规则删掉的会话（最新在前），体积兜底只从这里挑 */
+  const evictable: SessionFileEntry[] = [];
 
   // ─────────────────────────────────────────────────────────────
   // N10：把**其它活着的进程**正在使用的会话一并纳入保护名单。
@@ -206,6 +186,42 @@ export async function identifySessionsToDelete(
     if (retentionConfig.maxCount && i >= retentionConfig.maxCount) {
       toDelete.push(entry);
       continue;
+    }
+
+    evictable.push(entry);
+  }
+
+  // ─────────────────────────────────────────────────────────────
+  // 体积兜底（maxTotalSize）：真正要防的是「盘被撑满」，所以按体积而非数量/天数截。
+  //
+  // 总量把**受保护会话也算进去**（它们同样占盘），但只从 evictable 里删、且最旧优先 ——
+  // 与 D12 的 maxCount 口径一致：保护优先于配额，宁可暂时超限也不删正在用 / 刚写过的会话。
+  // ─────────────────────────────────────────────────────────────
+  if (retentionConfig.maxTotalSize && opts.sizeOf && evictable.length > 0) {
+    let limit: number | null = null;
+    try {
+      limit = parseRetentionSize(retentionConfig.maxTotalSize);
+    } catch {
+      // 写错的体积配置 → 不做体积淘汰（绝不能因为解析失败就当成 0 字节上限把会话全删）
+      getLogger().warn(
+        "CLEANUP",
+        `maxTotalSize 格式无效，跳过体积清理: ${retentionConfig.maxTotalSize}`,
+      );
+    }
+    if (limit !== null) {
+      const deleting = new Set(toDelete);
+      const sizes = new Map<SessionFileEntry, number>();
+      let total = 0;
+      for (const entry of validSessions) {
+        if (deleting.has(entry)) continue;
+        const size = opts.sizeOf(entry);
+        sizes.set(entry, size);
+        total += size;
+      }
+      for (let k = evictable.length - 1; k >= 0 && total > limit; k--) {
+        toDelete.push(evictable[k]);
+        total -= sizes.get(evictable[k]) ?? 0;
+      }
     }
   }
 
@@ -435,6 +451,7 @@ export async function cleanupExpiredSessions(
     retentionConfig,
     currentSessionId,
     protectedSessionIds,
+    { sizeOf: (entry) => sessionDiskBytes(entry, config) },
   );
 
   const result: CleanupResult = {
@@ -484,11 +501,41 @@ export async function cleanupExpiredSessions(
  * 从配置中获取保留设置
  */
 export function getRetentionSettings(config: Config): SessionRetentionSettings {
-  const settings = config.sessionRetention || {};
-  return {
-    enabled: settings.enabled ?? true,
-    maxAge: settings.maxAge || "30d",
-    maxCount: settings.maxCount || 50,
-    minRetention: settings.minRetention || "1d",
-  };
+  // 默认值与 cleanupPeriodDays 别名的处理在 retention.ts（单一事实源），这里只做转发。
+  return resolveRetentionSettings(config.sessionRetention, config.cleanupPeriodDays);
+}
+
+/** 递归统计目录字节数（失败当 0：体积只用于淘汰排序的估算，读不到不应阻断清理） */
+function dirBytes(dir: string): number {
+  let total = 0;
+  try {
+    for (const e of readdirSync(dir, { withFileTypes: true })) {
+      const full = join(dir, e.name);
+      try {
+        total += e.isDirectory() ? dirBytes(full) : statSync(full).size;
+      } catch {
+        /* 单项失败忽略 */
+      }
+    }
+  } catch {
+    /* 目录不可读 */
+  }
+  return total;
+}
+
+/** 单个会话的磁盘占用 = 会话 jsonl + 同 id 轨迹目录（轨迹才是大头，实测 ~8×） */
+function sessionDiskBytes(entry: SessionFileEntry, config: Config): number {
+  let bytes = 0;
+  try {
+    bytes += statSync(join(entry.dirPath || sidPaths.sessions(), entry.fileName)).size;
+  } catch {
+    /* 文件已不在 */
+  }
+  const id = entry.sessionInfo?.id;
+  if (id) {
+    const trajRoot = config.trace?.outputDir ?? sidPaths.trajectories();
+    const trajDir = join(trajRoot, "sessions", id);
+    if (existsSync(trajDir)) bytes += dirBytes(trajDir);
+  }
+  return bytes;
 }

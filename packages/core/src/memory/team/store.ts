@@ -115,7 +115,53 @@ export async function rebuildTeamIndex(dir: string): Promise<void> {
         `未列出的记忆在磁盘上但不进上下文`,
     );
   }
-  await writeFile(join(dir, INDEX_FILE), content, "utf8");
+  const conflictSection = await buildConflictSection(dir);
+  await writeFile(
+    join(dir, INDEX_FILE),
+    conflictSection ? `${content.trimEnd()}\n\n${conflictSection}\n` : content,
+    "utf8",
+  );
+}
+
+/** 冲突段最多列几条——冲突是例外态，正常为 0；封顶防一次批量冲突把静态前缀撑大 */
+const MAX_CONFLICT_LINES = 20;
+
+/**
+ * 缺陷 8：未裁决的冲突副本**必须可见**。
+ *
+ * 同步按 mtime 选一边获胜（同步盘下 mtime 可能是同步时刻而非编辑时刻，较新 ≠ 较新的编辑），
+ * 输的那版另存为 `<key>.conflict-<ts>.md`。旧实现里这份副本既不进索引、也不参与同步 ——
+ * 字节在，但没人知道：输的那一方以为自己的修改同步成功了。
+ *
+ * 这里**不改裁决规则**（没有可靠的第二判据，换一种自动裁决只是换一种静默），
+ * 而是把副本作为「待人处理」单独列出：不作为记忆条目（不参与同步、不当事实引用），
+ * 但模型与人都能看到哪条记忆存在分歧、副本在哪。处理方式：合并后删除副本，索引下次重建即消失。
+ */
+async function buildConflictSection(dir: string): Promise<string | null> {
+  const all = await enumerateMemoryFiles(dir);
+  const conflicts = all
+    .filter((rel) => {
+      const segs = rel.split(/[\\/]/);
+      if (segs.some((seg) => seg.startsWith("."))) return false;
+      return segs[segs.length - 1].includes(".conflict-");
+    })
+    .sort();
+  if (conflicts.length === 0) return null;
+  const lines = conflicts.slice(0, MAX_CONFLICT_LINES).map((rel) => {
+    const winner = rel.replace(/\.conflict-\d+\.md$/, ".md");
+    return `- \`${rel}\` ↔ 当前生效版本 \`${winner}\``;
+  });
+  if (conflicts.length > MAX_CONFLICT_LINES) {
+    lines.push(`- ……另有 ${conflicts.length - MAX_CONFLICT_LINES} 份冲突副本未列出`);
+  }
+  return [
+    `## ⚠️ 未裁决的团队记忆冲突（${conflicts.length}）`,
+    "",
+    "以下副本是同步时按修改时间**自动落败**的另一版内容，不是有效记忆，不要当事实引用。" +
+      "当前生效版本可能并不是更新的那一版：用到对应记忆时，先对比两版，提醒用户合并后删除副本。",
+    "",
+    ...lines,
+  ].join("\n");
 }
 
 /** 团队索引表头（与私有侧 `# Memory Index` 区分，注入侧据此认出团队段）。 */

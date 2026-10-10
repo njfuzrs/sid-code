@@ -347,10 +347,13 @@ describe("A 组 · isOfficialEndpoint 判据", () => {
  *
  * 高峰时段（北京时间 09:00–12:00、14:00–18:00）价：
  *
- * |                  | v4-pro  | v4-flash |
- * | 输入（未命中）    | ¥9      | ¥3       |
- * | 输入（缓存命中）  | ¥0.3    | ¥0.1     |
- * | 输出              | ¥27     | ¥9       |
+ * |                  | v4-pro  | v4-flash（2026-09-10 起 = V4.1-Flash） |
+ * | 输入（未命中）    | ¥9      | ¥2       |
+ * | 输入（缓存命中）  | ¥0.3    | ¥0.04    |
+ * | 输出              | ¥27     | ¥8       |
+ *
+ * 2026-10-10 回源：`deepseek-v4-flash` 已是路由到 V4.1-Flash 的别名、按 Flash 价计费，
+ * Flash 于 2026-09-10 降价（deepseek-api.md:115-119,132,138）；V4-Pro 计费不变。
  *
  * 空闲时段为上表的一半（注册表用 `offPeakMultiplier: 0.5` 表达）。
  *
@@ -362,7 +365,7 @@ describe("A 组 · isOfficialEndpoint 判据", () => {
 describe("D 组 · 内置注册表 vs 官方人民币价目表（黄金基准）", () => {
   const OFFICIAL_CNY: Record<string, { input: number; cacheRead: number; output: number }> = {
     "deepseek-v4-pro": { input: 9, cacheRead: 0.3, output: 27 },
-    "deepseek-v4-flash": { input: 3, cacheRead: 0.1, output: 9 },
+    "deepseek-v4-flash": { input: 2, cacheRead: 0.04, output: 8 },
   };
 
   test("注册表逐项等于官方人民币高峰价（币种标注 + 单价一起钉住）", () => {
@@ -388,15 +391,21 @@ describe("D 组 · 内置注册表 vs 官方人民币价目表（黄金基准）
     }
   });
 
-  test("三项单价同比例（防止只改了一项）", () => {
-    // 官方三项在 pro/flash 之间是同一组比例（未命中:命中:输出 = 9:0.3:27 与 3:0.1:9）。
+  test("三项单价的 pro/flash 比例与官方价目表一致（防止只改了一项）", () => {
+    // ⚠ 2026-10-10 改过判据：原断言是「三项在 pro/flash 之间同比例」（9:0.3:27 与 3:0.1:9），
+    // 那是旧价目表恰好成立的巧合；V4.1-Flash 降价后官方三项比例已不同
+    // （输入 4.5×、命中 7.5×、输出 3.375×，deepseek-api.md:115-119）。
+    // 「只改了一项」这个防线意图不变：比例改为对照官方表本身，而不是假定它们相等。
     const pro = lookupRegistry("deepseek-v4-pro")!.pricing!;
     const flash = lookupRegistry("deepseek-v4-flash")!.pricing!;
-    const rIn = pro.input / flash.input;
-    const rOut = pro.output / flash.output;
-    const rCache = pro.cacheRead! / flash.cacheRead!;
-    expect(Math.abs(rIn - rOut) / rIn, "input↔output 比例不一致").toBeLessThan(0.05);
-    expect(Math.abs(rIn - rCache) / rIn, "input↔cacheRead 比例不一致").toBeLessThan(0.05);
+    const op = OFFICIAL_CNY["deepseek-v4-pro"]!;
+    const of = OFFICIAL_CNY["deepseek-v4-flash"]!;
+    expect(pro.input / flash.input, "input 比例").toBeCloseTo(op.input / of.input, 6);
+    expect(pro.output / flash.output, "output 比例").toBeCloseTo(op.output / of.output, 6);
+    expect(pro.cacheRead! / flash.cacheRead!, "cacheRead 比例").toBeCloseTo(
+      op.cacheRead / of.cacheRead,
+      6,
+    );
   });
 });
 

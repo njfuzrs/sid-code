@@ -79,12 +79,20 @@ const RETENTION: Record<string, { text: string; days: number | null }> = {
     text: "退出钩子清理 + 启动期兜底回收 24h 孤儿",
     days: 1,
   },
-  trajectories: { text: "LRU 保留最近 100 会话 + 30 天过期清理", days: 30 },
+  trajectories: {
+    text: "LRU 保留最近 100 会话 + 随会话保留期过期（默认 365 天）",
+    days: 365,
+  },
   checkpoints: { text: "30 天过期 + 200MB LRU（启动期兜底触发）", days: 30 },
   tasks: { text: "驱逐时删盘 + 启动期兜底回收 7 天孤儿", days: 7 },
   projects: { text: "无自动清理（用户记忆资产，刻意不删）", days: null },
   logs: { text: "按大小轮转，各保留 1 代", days: null },
-  sessions: { text: "无自动清理", days: null },
+  // days 刻意留 null：sessions/ 的直接子项是**项目目录**，它的 mtime 随项目里任一会话刷新，
+  // 按 staleUnder 的口径算出来的"超期量"既不是会话年龄也不是可回收量，报了就是骗人。
+  sessions: {
+    text: "sessionRetention：默认保留 365 天、不限数量，会话+轨迹总量超 10GB 时删最旧",
+    days: null,
+  },
   telemetry: { text: "无自动清理", days: null },
   "protocol-violations": { text: "LRU 保留最近 500 份（仅落盘时触发）", days: null },
   plans: { text: "无自动清理（用户资产）", days: null },

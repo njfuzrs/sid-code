@@ -160,3 +160,50 @@ describe("MemoryTool save_memory — G13 agent scope", () => {
     expect(r.output).toContain("敏感信息");
   });
 });
+
+describe("缺陷 12：写入质量软提示（不拒绝）", () => {
+  test("相对日期 → 保存成功但回提示", async () => {
+    const tool = makeTool();
+    const r = await tool.execute({
+      key: "freeze",
+      value: "下周开始冻结合并，Why: 发版",
+      scope: "project",
+    });
+    expect(r.isError).toBeFalsy();
+    expect(r.output).toContain("绝对日期");
+  });
+
+  test("feedback 类缺 Why → 提示补 Why", async () => {
+    const tool = makeTool();
+    const r = await tool.execute({
+      key: "no_mock",
+      value: "以后都不要 mock 数据库",
+      scope: "project",
+    });
+    expect(r.isError).toBeFalsy();
+    expect(r.output).toContain("Why:");
+  });
+
+  test("带 Why 的绝对日期记忆 → 无提示", async () => {
+    const tool = makeTool();
+    const r = await tool.execute({
+      key: "no_mock",
+      value: "以后都不要 mock 数据库。Why: 2026-09-01 mock 掩盖过迁移事故。How to apply: 集成测试",
+      scope: "project",
+    });
+    expect(r.output).not.toContain("写入质量提示");
+  });
+
+  test("提示词：即使用户要求也不存快照、不存修复配方、点名先核实", async () => {
+    const { buildMemoryInstructions } = await import("@sid-code/core/memory/prompt.ts");
+    const { buildExtractPrompt } = await import("@sid-code/core/memory/extract/prompts.ts");
+    const instr = buildMemoryInstructions();
+    expect(instr).toContain("即使用户明确要求");
+    expect(instr).toContain("修复配方");
+    expect(instr).toContain("绝对日期");
+    expect(instr).toContain("依据记忆给建议之前");
+    const ex = buildExtractPrompt("(空)");
+    expect(ex).toContain("修复配方");
+    expect(ex).toContain("绝对日期");
+  });
+});

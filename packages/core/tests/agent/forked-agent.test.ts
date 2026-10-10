@@ -17,6 +17,8 @@ import {
   extractWrittenPaths,
 } from "@sid-code/core/memory/extract/extractor.ts";
 import type { Message } from "@sid-code/core/llm/types.ts";
+import { buildExtractPrompt } from "@sid-code/core/memory/extract/prompts.ts";
+import { buildDreamPrompt } from "@sid-code/core/memory/dream/prompts.ts";
 import type { PermissionResult } from "@sid-code/core/tool/types.ts";
 
 /** 同步断言权限结果的 behavior（permissions 函数实际是同步的） */
@@ -308,6 +310,41 @@ describe("runForkedAgent", () => {
   });
 });
 
+describe("缺陷 7：fork 工具定义与主注册表一致（prompt cache 前缀）", () => {
+  test("发给 provider 的 tools 与主注册表 definitions() 逐字节相同，不按 canUseTool 裁剪", async () => {
+    let sentTools: unknown;
+    const provider = {
+      name: () => "mock",
+      defaultModel: () => "mock-model",
+      async *sendMessageStream(params: any) {
+        sentTools = params.tools;
+        yield {
+          type: "message_delta",
+          delta: { stop_reason: "end_turn" },
+          usage: { outputTokens: 1 },
+        };
+      },
+    };
+    const ctx = makeContext(provider);
+    await runForkedAgent(ctx, {
+      promptMessages: [{ role: "user", content: [{ type: "text", text: "提取" }] }],
+      // 全部拒绝：若实现按白名单裁剪，tools 会变空 → 与主循环前缀不一致
+      canUseTool: () => ({ behavior: "deny", message: "x" }),
+      maxTurns: 1,
+      querySource: "test",
+      timeoutMs: 3000,
+    });
+    expect(JSON.stringify(sentTools)).toBe(JSON.stringify(ctx.toolRegistry.definitions()));
+  });
+
+  test("提取 / dream 提示词禁止为核实去查源码与 git", () => {
+    const extract = buildExtractPrompt("(空)");
+    expect(extract).toContain("不要验证");
+    expect(extract).toMatch(/不要跑 git/);
+    expect(buildDreamPrompt("(空)")).toContain("不要为核实去查项目");
+  });
+});
+
 describe("createExtractPermissions", () => {
   let memDir: string;
   const perms = () => createExtractPermissions(memDir);
@@ -385,6 +422,21 @@ describe("hasMemoryWritesSince / extractWrittenPaths", () => {
       },
     ];
     expect(hasMemoryWritesSince(messages, memDir)).toBe(false);
+  });
+
+  test("缺陷 13：同名前缀目录（memory-backup / memory2）不算记忆写入", () => {
+    const mk = (fp: string): Message[] => [
+      { role: "user", content: [{ type: "text", text: "q" }] },
+      {
+        role: "assistant",
+        content: [{ type: "tool_use", id: "t1", name: "write", input: { file_path: fp } }],
+      },
+    ];
+    expect(hasMemoryWritesSince(mk(`${memDir}/feedback_x.md`), memDir)).toBe(true);
+    expect(hasMemoryWritesSince(mk(`${memDir}-backup/notes.md`), memDir)).toBe(false);
+    expect(hasMemoryWritesSince(mk(`${memDir}2/a.md`), memDir)).toBe(false);
+    expect(extractWrittenPaths(mk(`${memDir}-backup/notes.md`), memDir)).toEqual([]);
+    expect(extractWrittenPaths(mk(`${memDir}/feedback_x.md`), memDir)).toEqual(["feedback_x.md"]);
   });
 
   test("extractWrittenPaths 收集 save_memory key", () => {

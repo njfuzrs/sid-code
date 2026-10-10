@@ -44,6 +44,7 @@ import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { runStartupHousekeeping } from "@sid-code/core/config/startup-housekeeping.ts";
 import { sidPaths } from "@sid-code/core/config/paths.ts";
+import { resetSettingsCache } from "@sid-code/core/config/settings/cache.ts";
 
 let tmpHome: string;
 let prevConfigDir: string | undefined;
@@ -58,12 +59,15 @@ beforeEach(() => {
   tmpHome = mkdtempSync(join(tmpdir(), "sid-housekeeping-orphan-"));
   prevConfigDir = process.env.SID_CONFIG_DIR;
   process.env.SID_CONFIG_DIR = tmpHome;
+  // 保留期从 settings.json 读：换了 SID_CONFIG_DIR 之后必须清缓存，否则读到上一个用例的配置
+  resetSettingsCache();
 });
 
 afterEach(() => {
   // 存/恢复原值，不无条件 delete（同进程多文件跑，会抹掉 preload 兜底）
   if (prevConfigDir === undefined) delete process.env.SID_CONFIG_DIR;
   else process.env.SID_CONFIG_DIR = prevConfigDir;
+  resetSettingsCache();
   try {
     rmSync(tmpHome, { recursive: true, force: true });
   } catch {
@@ -363,7 +367,7 @@ describe("不越界：本模块不碰 settings 与记忆", () => {
   });
 });
 
-describe("过期 Session Memory 会话笔记回收（阈值 30 天，按 mtime 判）", () => {
+describe("过期 Session Memory 会话笔记回收（阈值 = 会话保留期，默认 365 天，按 mtime 判）", () => {
   /**
    * 这条是 P0-4 的配套：把 `.session_memory.md` 从「按项目一个」改成「按会话一个」
    * 修掉了并发/resume 互相覆盖，代价是文件一个会话攒一个 —— 那个修复必须配回收，
@@ -381,20 +385,51 @@ describe("过期 Session Memory 会话笔记回收（阈值 30 天，按 mtime �
     return file;
   }
 
-  test("超 30 天的删、30 天内的留", () => {
-    const stale = seedSessionMemory("proj-a", "20260101-000000-aaaaaaaa", 40);
+  test("超 365 天的删、365 天内的留（40 天前的笔记不再被删）", () => {
+    const stale = seedSessionMemory("proj-a", "20250101-000000-aaaaaaaa", 400);
     const fresh = seedSessionMemory("proj-a", "20260906-000000-bbbbbbbb", 3);
+    // 旧默认值（30 天）下会被删的那一档：新口径下必须留着
+    const month = seedSessionMemory("proj-a", "20260801-000000-dddddddd", 40);
 
     runStartupHousekeeping(Date.now());
 
     expect(existsSync(stale)).toBe(false);
     // 未超期的必须留着 —— 只断言"删了"的测试对"删太多"是盲的
     expect(existsSync(fresh)).toBe(true);
+    expect(existsSync(month)).toBe(true);
+  });
+
+  test("跟随 sessionRetention.maxAge：设成 7d 时 40 天前的笔记被删", () => {
+    writeFileSync(
+      join(tmpHome, "settings.json"),
+      JSON.stringify({ sessionRetention: { maxAge: "7d" } }),
+    );
+    resetSettingsCache();
+    const month = seedSessionMemory("proj-a", "20260801-000000-dddddddd", 40);
+    const fresh = seedSessionMemory("proj-a", "20260906-000000-bbbbbbbb", 3);
+
+    runStartupHousekeeping(Date.now());
+
+    expect(existsSync(month)).toBe(false);
+    expect(existsSync(fresh)).toBe(true);
+  });
+
+  test("sessionRetention.enabled=false：再旧也不按时间删", () => {
+    writeFileSync(
+      join(tmpHome, "settings.json"),
+      JSON.stringify({ sessionRetention: { enabled: false } }),
+    );
+    resetSettingsCache();
+    const ancient = seedSessionMemory("proj-a", "20200101-000000-aaaaaaaa", 2000);
+
+    runStartupHousekeeping(Date.now());
+
+    expect(existsSync(ancient)).toBe(true);
   });
 
   test("跨多个项目目录都会扫到", () => {
-    const a = seedSessionMemory("proj-a", "20260101-000000-aaaaaaaa", 40);
-    const b = seedSessionMemory("proj-b", "20260101-000000-cccccccc", 40);
+    const a = seedSessionMemory("proj-a", "20250101-000000-aaaaaaaa", 400);
+    const b = seedSessionMemory("proj-b", "20250101-000000-cccccccc", 400);
 
     runStartupHousekeeping(Date.now());
 

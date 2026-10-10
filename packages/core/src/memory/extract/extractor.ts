@@ -14,6 +14,8 @@ import { runForkedAgent } from "../../agent/forked-agent.ts";
 import { scanMemoryFiles, formatMemoryManifest } from "../scan.ts";
 import { buildExtractPrompt } from "./prompts.ts";
 import { getLogger } from "../../debug/logger.ts";
+// 缺陷 13：路径判据复用权限层同一个函数（带分隔符），两层对「是不是记忆写入」结论一致。
+import { isAutoMemPath } from "../paths.ts";
 
 /** 提取系统句柄 */
 export interface ExtractMemoriesHandle {
@@ -56,7 +58,6 @@ export function hasMemoryWritesSince(messages: Message[], memoryDir: string): bo
     }
   }
 
-  const path = require("path");
   for (let i = Math.max(0, lastUserIdx); i < messages.length; i++) {
     const msg = messages[i];
     if (msg.role !== "assistant") continue;
@@ -66,10 +67,8 @@ export function hasMemoryWritesSince(messages: Message[], memoryDir: string): bo
       if (block.name === "write" || block.name === "edit") {
         const input = block.input as Record<string, unknown> | undefined;
         const fp = input?.file_path ?? input?.path;
-        if (typeof fp === "string") {
-          const resolved = path.resolve(fp);
-          if (resolved.startsWith(path.resolve(memoryDir))) return true;
-        }
+        // 裸 startsWith 会把 `memory-backup/` 当成 `memory/`，本轮提取被误跳过（缺陷 13）。
+        if (typeof fp === "string" && isAutoMemPath(fp, memoryDir)) return true;
       }
     }
   }
@@ -91,7 +90,7 @@ export function extractWrittenPaths(messages: Message[], memoryDir: string): str
       } else if (block.name === "write" || block.name === "edit") {
         const input = block.input as Record<string, unknown> | undefined;
         const fp = input?.file_path ?? input?.path;
-        if (typeof fp === "string" && path.resolve(fp).startsWith(path.resolve(memoryDir))) {
+        if (typeof fp === "string" && isAutoMemPath(fp, memoryDir)) {
           paths.push(path.basename(fp));
         }
       }

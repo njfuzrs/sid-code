@@ -951,7 +951,20 @@ export function validateConfig(config: Config): ValidationResult {
       });
     }
     if (sr.maxCount !== undefined && (typeof sr.maxCount !== "number" || sr.maxCount <= 0)) {
-      warnings.push({ path: "sessionRetention.maxCount", message: "必须是正整数" });
+      warnings.push({
+        path: "sessionRetention.maxCount",
+        message: "必须是正整数（不想限制数量就删掉这一项，默认不限）",
+      });
+    }
+    // 与 session/retention.ts 的 RETENTION_SIZE_PATTERN 同款（理由同上，刻意内联）
+    if (
+      sr.maxTotalSize !== undefined &&
+      !/^(\d+(?:\.\d+)?)\s*(KB|MB|GB|TB)$/i.test(String(sr.maxTotalSize).trim())
+    ) {
+      warnings.push({
+        path: "sessionRetention.maxTotalSize",
+        message: `格式无效 ("${sr.maxTotalSize}")，应为 数字+KB/MB/GB/TB（如 "10GB"），否则体积清理不会生效`,
+      });
     }
   }
 

@@ -473,7 +473,7 @@ export const SettingsSchema = lazySchema(
         // includeCoAuthoredBy：commit 是否加 Co-Authored-By。缺省 true（保持既有行为）。
         // 比 git.commitAttribution.enabled 更粗：false 直接关掉默认归因，不需要写整段 git 配置。
         includeCoAuthoredBy: z.boolean().optional(),
-        // cleanupPeriodDays：会话轨迹清理周期（天）。缺省 30（与启动清理的内置默认值一致）。
+        // cleanupPeriodDays：旧字段，等价于 sessionRetention.maxAge（天）；两者都写时以 maxAge 为准。缺省 365。
         cleanupPeriodDays: z.number().positive().optional(),
 
         // B32：以下 27 个字段此前只在 Config 接口声明、靠本 schema 的 .passthrough() 生效 ——

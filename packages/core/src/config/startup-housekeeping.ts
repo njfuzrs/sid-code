@@ -83,36 +83,44 @@ import { getSidTempDir } from "@sid-code/shared/utils/temp-dir.ts";
 /** 清理触发间隔：24 小时 */
 const CLEANUP_INTERVAL_MS = 24 * 60 * 60 * 1000;
 
-/** trajectories 内 session 目录的过期阈值：30 天 */
-const DEFAULT_TRAJECTORY_MAX_AGE_MS = 30 * 24 * 60 * 60 * 1000;
-
 /**
- * G5：轨迹清理周期。settings.json 的 cleanupPeriodDays 优先，缺省 30 天。
+ * trajectories 内 session 目录与 Session Memory 笔记的过期阈值。
+ *
+ * 与会话清理**共用一个保留期**（`session/retention.ts` 是单一事实源）：
+ * `sessionRetention.maxAge` 优先，旧字段 `cleanupPeriodDays` 作别名，缺省 365 天。
+ *
+ * 此前这里写死 30 天、只认 `cleanupPeriodDays`，而会话清理认 `sessionRetention.maxAge` ——
+ * 用户把 maxAge 调到一年，轨迹照样 30 天被删，`/trace`、`eval-session` 和北极星曲线
+ * 拿不到一个月前的数据，而会话列表里那条会话还在，看起来一切正常。
+ *
+ * Session Memory 笔记跟着同一个数字走不是巧合：它的用途是 `--resume` 时接上上下文，
+ * 会话被清理之后它也无从挂靠；会话还在时删掉它，则恢复出来的会话丢了笔记。
+ *
  * 读 settings 失败时回退默认值，不让清理任务因配置故障而改变行为。
+ * 关闭自动清理（`sessionRetention.enabled: false`）时返回 Infinity —— 一处都不按时间删。
  */
-function trajectoryMaxAgeMs(): number {
+function retentionMaxAgeMs(): number {
   try {
     const { getSettings } = require("./settings/settings.ts");
-    const days = getSettings().settings.cleanupPeriodDays;
-    if (typeof days === "number" && days > 0) return days * 24 * 60 * 60 * 1000;
+    const {
+      resolveRetentionSettings,
+      retentionMaxAgeMs: toMs,
+    } = require("../session/retention.ts");
+    const settings = getSettings().settings;
+    const resolved = resolveRetentionSettings(
+      settings.sessionRetention,
+      settings.cleanupPeriodDays,
+    );
+    if (!resolved.enabled) return Number.POSITIVE_INFINITY;
+    return toMs(resolved);
   } catch {
     /* 回退默认 */
   }
-  return DEFAULT_TRAJECTORY_MAX_AGE_MS;
+  return DEFAULT_RETENTION_MAX_AGE_MS;
 }
 
-/**
- * Session Memory 单会话笔记的过期阈值：30 天。
- *
- * P0-4 把 `.session_memory.md` 从「按项目一个」改成「按会话一个」，修掉了并发/resume
- * 互相覆盖，代价是文件会**一个会话攒一个**。所以那个修复必须配一条回收，
- * 否则治好污染换来无界增长。
- *
- * 阈值与 trajectory 对齐（30 天）**不是巧合**：这份笔记的用途是 `--resume` 时接上
- * 上次的上下文，而 trajectory 过期后那个会话本来就 resume 不回来了，
- * 留着笔记也无从挂靠。两个数字应一起改。
- */
-const SESSION_MEMORY_MAX_AGE_MS = 30 * 24 * 60 * 60 * 1000;
+/** 读不到配置时的回退值，与 retention.ts 的 DEFAULT_SESSION_MAX_AGE（365d）一致 */
+const DEFAULT_RETENTION_MAX_AGE_MS = 365 * 24 * 60 * 60 * 1000;
 
 /**
  * shell 快照的孤儿回收阈值：24 小时。
@@ -306,7 +314,7 @@ function writeWatermark(now: number): void {
  *
  * 只按 mtime 判、只删该目录下的 `.md`：不去猜「这个会话还活着吗」——
  * 判活需要读 PID/crash marker，而那套判据本身就是另一处会失效的触发条件。
- * 30 天没被写过的笔记，对应的会话早已不可 resume（见 SESSION_MEMORY_MAX_AGE_MS）。
+ * 超过保留期没被写过的笔记，对应的会话也已被清理、不可 resume（见 retentionMaxAgeMs）。
  *
  * 刻意**不碰**旧的项目级 `.session_memory.md`：它是修复前的存量数据，用户可能
  * 还想看，而且它不随会话增长（就一个文件），不构成膨胀。
@@ -316,6 +324,7 @@ function writeWatermark(now: number): void {
 function cleanupStaleSessionMemories(now: number): number {
   const projectsRoot = sidPaths.projects();
   if (!existsSync(projectsRoot)) return 0;
+  const maxAgeMs = retentionMaxAgeMs();
 
   let removed = 0;
   let projectDirs: string[];
@@ -341,7 +350,7 @@ function cleanupStaleSessionMemories(now: number): number {
     for (const name of files) {
       const file = join(dir, name);
       try {
-        if (now - statSync(file).mtimeMs > SESSION_MEMORY_MAX_AGE_MS) {
+        if (now - statSync(file).mtimeMs > maxAgeMs) {
           rmSync(file, { force: true });
           removed++;
         }
@@ -354,12 +363,13 @@ function cleanupStaleSessionMemories(now: number): number {
 }
 
 /**
- * 清理 trajectories/sessions 下超过 TRAJECTORY_MAX_AGE_MS 的会话目录。
+ * 清理 trajectories/sessions 下超过保留期（retentionMaxAgeMs）的会话目录。
  * 返回移除的目录数。
  */
 function cleanupStaleTrajectories(now: number): number {
   const sessionsRoot = join(sidPaths.trajectories(), "sessions");
   if (!existsSync(sessionsRoot)) return 0;
+  const maxAgeMs = retentionMaxAgeMs();
 
   let removed = 0;
   for (const entry of readdirSync(sessionsRoot, { withFileTypes: true })) {
@@ -367,7 +377,7 @@ function cleanupStaleTrajectories(now: number): number {
     const dir = join(sessionsRoot, entry.name);
     try {
       const stat = statSync(dir);
-      if (now - stat.mtimeMs > trajectoryMaxAgeMs()) {
+      if (now - stat.mtimeMs > maxAgeMs) {
         rmSync(dir, { recursive: true, force: true });
         removed++;
       }

@@ -12,7 +12,7 @@
  */
 
 import { readFileSync, existsSync, mkdirSync } from "fs";
-import { dirname } from "path";
+import { dirname, resolve } from "path";
 import { resolveEnvVars } from "../env-interpolation.ts";
 import { markInternalWrite } from "./internal-writes.ts";
 import {
@@ -21,7 +21,12 @@ import {
   preserveCorruptedSettingsFile,
 } from "./backup.ts";
 import { writeAtomic } from "../app-config.ts";
-import { SETTING_SOURCES, getSettingsFilePath, type SettingSource } from "./constants.ts";
+import {
+  SETTING_SOURCES,
+  getLegacyLocalSettingsPath,
+  getSettingsFilePath,
+  type SettingSource,
+} from "./constants.ts";
 import { SettingsSchema, type SettingsJson } from "./types.ts";
 import {
   formatZodErrors,
@@ -197,6 +202,11 @@ function parseSettingsFile(path: string): {
   }
 }
 
+/** workspacePath 指向 cwd 以外的目录时为真——此时 L1/L2 缓存（按 cwd 建立）不适用 */
+function isForeignWorkspace(workspacePath: string | undefined): boolean {
+  return workspacePath !== undefined && resolve(workspacePath) !== resolve(process.cwd());
+}
+
 /**
  * 获取单个来源的 Settings（带 Level 2 缓存）。
  * projectSettings 会经过安全字段过滤。
@@ -210,7 +220,10 @@ export function getSettingsForSource(
     return { settings: flagSettings, errors: [] };
   }
 
-  const cachedSource = getCachedSource(source);
+  // P8：L2 缓存键只有 source，不含 workspacePath。传了别的项目目录（worktree 传 gitRoot）
+  // 还读写 L2，拿到的就是 cwd 那份、或把别处的设置塞进 cwd 的缓存。这种调用直接读盘。
+  const foreign = isForeignWorkspace(workspacePath);
+  const cachedSource = foreign ? undefined : getCachedSource(source);
   if (cachedSource !== undefined) {
     // L2 同时缓存 errors：此前只存 settings、命中时回 errors:[]，于是先被 getSettingsForSource
     // 填过 L2 的来源（loadConfigFile 就这么做）在 getSettings 合并时诊断恒为空——D10 的
@@ -220,11 +233,32 @@ export function getSettingsForSource(
 
   const path = getSettingsFilePath(source, workspacePath);
   if (!path) {
-    setCachedSource(source, { settings: null, errors: [] });
+    if (!foreign) setCachedSource(source, { settings: null, errors: [] });
     return { settings: null, errors: [] };
   }
 
-  const { settings, errors } = parseSettingsFile(path);
+  const parsedMain = parseSettingsFile(path);
+  const errors = parsedMain.errors;
+  let settings = parsedMain.settings;
+
+  // P1b 兼容：local 基准迁到 git root 之后，启动目录里的旧 settings.local.json 仍合并读取，
+  // 同 key 以 git root 那份为准（旧文件作基座、新文件叠加）。旧文件单独过一次不可信过滤，
+  // 因为下面的过滤只按新路径判定是否被 git 追踪。
+  if (source === "localSettings") {
+    const legacyPath = getLegacyLocalSettingsPath(workspacePath ?? process.cwd());
+    if (legacyPath && existsSync(legacyPath)) {
+      const legacy = parseSettingsFile(legacyPath);
+      errors.push(...legacy.errors);
+      if (legacy.settings) {
+        const legacySafe = isUntrustedSettingsFile(source, legacyPath)
+          ? filterProjectSettings(legacy.settings)
+          : legacy.settings;
+        settings = settings
+          ? mergeSettingsRead(legacySafe as Record<string, unknown>, settings)
+          : legacySafe;
+      }
+    }
+  }
 
   // B2：policySettings 额外合并 managed-settings.d/*.json。字母序后者覆盖前者，
   // 主文件（managed-settings.json）作为基座，drop-in 在其上叠加。
@@ -254,7 +288,7 @@ export function getSettingsForSource(
   }
   const finalSettings = merged && untrusted ? filterProjectSettings(merged) : merged;
 
-  setCachedSource(source, { settings: finalSettings, errors: [...errors] });
+  if (!foreign) setCachedSource(source, { settings: finalSettings, errors: [...errors] });
   return { settings: finalSettings, errors };
 }
 
@@ -496,6 +530,11 @@ export function loadSettingsFromDisk(workspacePath?: string): MergedSettings {
  * 这是上层模块读取行为配置的统一入口。唯一真相源为 settings.json。
  */
 export function getSettings(workspacePath?: string): SettingsWithErrors {
+  // P8：会话缓存是按 cwd 合并的那一份。旧实现有缓存就直接返回、参数被静默忽略，
+  // worktree/config.ts、worktree/manager.ts 传 gitRoot 实际拿到的是 cwd 的设置。
+  // 传了与 cwd 不同的目录就绕过两级缓存现读，也不回写（否则污染 cwd 那份）。
+  if (isForeignWorkspace(workspacePath)) return loadSettingsFromDisk(workspacePath);
+
   const cached = getSessionCache();
   if (cached) return cached;
 

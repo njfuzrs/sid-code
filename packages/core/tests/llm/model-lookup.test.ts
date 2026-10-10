@@ -36,14 +36,16 @@ describe("resolveRegistryMaxOutputTokens — 三段顺序", () => {
   });
 
   test("第 2 段：registry 精确 miss → 采集精确命中（这一段是修复的核心）", () => {
-    // glm-5.3 不在 registry 里，但 startsWith glm-5 → 模糊层能命中 glm-5。
+    // glm-5.4 不在 registry 里，但模糊层（版本感知借用）能借到 glm-5.3。
+    // ⚠ 夹具原为 glm-5.3；2026-10-10 它已按官方文档登记进注册表（精确命中），
+    // 再用它会让「精确 miss」这个前提失效、测试变成在测第 1 段。换成仍未登记的 glm-5.4。
     // 采集值必须赢，否则就退回「用猜的盖掉真的」那个 bug。
-    __resetCapabilityCacheForTest({ "glm-5.3": { maxOutputTokens: 64_000, source: "catalog" } });
-    expect(resolveRegistryMaxOutputTokens("glm-5.3")).toBe(64_000);
+    __resetCapabilityCacheForTest({ "glm-5.4": { maxOutputTokens: 64_000, source: "catalog" } });
+    expect(resolveRegistryMaxOutputTokens("glm-5.4")).toBe(64_000);
   });
 
   test("第 3 段：两层精确全 miss → registry 模糊兜底（不是直接 undefined）", () => {
-    expect(resolveRegistryMaxOutputTokens("glm-5.3")).toBe(128_000); // 前缀借 glm-5
+    expect(resolveRegistryMaxOutputTokens("glm-5.4")).toBe(128_000); // 版本感知借 glm-5.3
   });
 
   test("三段全 miss → undefined（**不臆测数字**）", () => {
@@ -56,10 +58,10 @@ describe("resolveRegistryMaxOutputTokens — 数值校验", () => {
   test("采集缓存里的非法值不算命中，继续往下走模糊层", () => {
     for (const bad of [0, -1, Number.NaN, Number.POSITIVE_INFINITY]) {
       __resetCapabilityCacheForTest({
-        "glm-5.3": { maxOutputTokens: bad as number, source: "catalog" },
+        "glm-5.4": { maxOutputTokens: bad as number, source: "catalog" },
       });
-      // 非法值被跳过 → 落到模糊层的 glm-5（128K），而不是返回 0/NaN/Infinity。
-      expect(resolveRegistryMaxOutputTokens("glm-5.3")).toBe(128_000);
+      // 非法值被跳过 → 落到模糊层借来的 glm-5.3（128K），而不是返回 0/NaN/Infinity。
+      expect(resolveRegistryMaxOutputTokens("glm-5.4")).toBe(128_000);
     }
   });
 
@@ -81,7 +83,7 @@ describe("resolveRegistryMaxOutputTokens — 调用契约", () => {
   });
 
   test("采集缓存键大小写不敏感（lookupCapability 内部归一化）", () => {
-    __resetCapabilityCacheForTest({ "glm-5.3": { maxOutputTokens: 64_000, source: "catalog" } });
-    expect(resolveRegistryMaxOutputTokens("GLM-5.3")).toBe(64_000);
+    __resetCapabilityCacheForTest({ "glm-5.4": { maxOutputTokens: 64_000, source: "catalog" } });
+    expect(resolveRegistryMaxOutputTokens("GLM-5.4")).toBe(64_000);
   });
 });

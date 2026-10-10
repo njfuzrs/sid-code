@@ -37,6 +37,7 @@
     "verify:agent-note": "bun run scripts/verify-agent-note.ts",
     "catalog:coverage": "bun run scripts/catalog-coverage.ts",
     "pr-batch": "bash scripts/pr-batch.sh",
+    "pr:merge-chain": "bash scripts/pr-merge-chain.sh",
     "lint": "oxlint packages tests scripts evals website",
     "lint:fix": "oxlint packages tests scripts evals website --fix",
     "lint:boundary": "bun run scripts/pkg-boundary-scan.ts",

@@ -61,7 +61,7 @@ description: 交互模式里可用的全部斜杠命令。
 | `/language` | 显示或切换输出语言偏好（-p 持久化） | `/lang` | `[zh\|en\|auto\|unset\|status] [-p]` |
 | `/loop` | 按间隔重复运行 prompt：/loop 5m &lt;任务>（固定节奏）或 /loop &lt;任务>（自适应轮询） | — | `[间隔如 5m] <要重复的任务>` |
 | `/lsp` | LSP 代码智能管理 | — | `[status\|reload]` |
-| `/mcp` | MCP 服务器管理（无参打开交互面板） | — | `[list\|add\|remove\|enable\|disable\|test\|authenticate\|approve\|prompts\|prompt\|resources] [参数]` |
+| `/mcp` | MCP 服务器管理（无参打开交互面板） | — | `[list\|add\|remove\|enable\|disable\|test\|authenticate\|approve\|reject\|prompts\|prompt\|resources] [参数]` |
 | `/memory` | 管理记忆（无参打开交互面板） | `/mem` | `[auto\|external\|set\|get\|delete\|list\|search\|show\|reload] [参数]` |
 | `/model` | 显示或切换模型（主模型 / fallback / 子代理，-p 持久化） | `/m` | `[name\|fallback <name>\|sub <type> <name>] [-p]` |
 | `/permissions` | 查看当前权限规则和模式 | `/perms` | — |

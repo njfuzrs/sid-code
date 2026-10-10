@@ -25,6 +25,7 @@ import { readdirSync, readFileSync, existsSync } from "fs";
 import { join, basename } from "path";
 import { getLogger } from "../debug/logger.ts";
 import { sidHomePath } from "./paths.ts";
+import { getExtensionScanDirs } from "./project-bases.ts";
 
 export interface OutputStyleDef {
   /** 风格名（frontmatter name 字段，或不带扩展名的文件名） */
@@ -97,15 +98,16 @@ function loadStylesFromDir(dir: string): OutputStyleDef[] {
 export function loadAllOutputStyles(): OutputStyleDef[] {
   // 走 sidHomePath（尊重 SID_CONFIG_DIR），不自行 join(homedir(), ".sid-code", ...)
   const globalDir = sidHomePath("output-styles");
-  const projectDir = join(process.cwd(), ".sid-code", "output-styles");
-
   const globalStyles = loadStylesFromDir(globalDir);
-  const projectStyles = loadStylesFromDir(projectDir);
 
   // 项目级覆盖全局级（同 name 去重）
   const merged = new Map<string, OutputStyleDef>();
   for (const s of globalStyles) merged.set(s.name, s);
-  for (const s of projectStyles) merged.set(s.name, s); // 覆盖
+  // P7a：项目层按 B3（cwd → git root 逐级），远者先、近者后覆盖。此前只读 cwd 一层，
+  // 子目录启动时仓库根定义的风格静默消失（对齐 CC loadOutputStylesDir）。
+  for (const dir of getExtensionScanDirs(join(".sid-code", "output-styles"), process.cwd())) {
+    for (const s of loadStylesFromDir(dir)) merged.set(s.name, s); // 覆盖
+  }
 
   return Array.from(merged.values());
 }

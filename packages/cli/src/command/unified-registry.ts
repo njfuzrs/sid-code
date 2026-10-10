@@ -246,9 +246,15 @@ export class UnifiedCommandRegistry {
    * 本方法更新快照并清 cwd 缓存 —— 下次 loadAllCommands 会带新列表重新加载，
    * 磁盘 Skill 的 isEnabled: () => !skill.disabled 与 bundled 过滤同步反映新状态，
    * 命令补全 / skill 工具随之更新，无需重启。
+   *
+   * W1：必须同步共享 SkillManager。磁盘 skill 的 disabled 态长在 manager 上，
+   * 而 loadSkillCommands 只在「没传 manager」的分支里调 setDisabledSkills ——
+   * 生产环境总传共享 manager，那个分支永不进，旧实现只更新快照 = 磁盘 skill 禁用是空操作
+   * （面板显示已禁用，/<skill> 与模型经 Skill 工具仍可调用）。
    */
   setDisabledSkills(names: string[]): void {
     this.loadOptions.disabledSkills = names;
+    this.loadOptions.skillManager?.setDisabledSkills(names);
     this.cache.clear();
     this.notifyCommandsChanged();
   }

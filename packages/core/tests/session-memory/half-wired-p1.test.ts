@@ -147,3 +147,13 @@ describe("P1-5 ③ SESSION_MEMORY_SECTIONS 真正参与校验与截断", () => {
     expect(out.indexOf("# Current State")).toBeLessThan(out.indexOf("# Worklog"));
   });
 });
+
+describe("缺陷 11：会话笔记更新提示词的反自指约束", () => {
+  test("明确告知指令不是对话的一部分、不得写进笔记", async () => {
+    const { buildSessionMemoryUpdatePrompt } =
+      await import("@sid-code/core/session-memory/prompts.ts");
+    const p = buildSessionMemoryUpdatePrompt("cur", "tpl");
+    expect(p).toContain("不是用户对话的一部分");
+    expect(p).toContain("note-taking");
+  });
+});

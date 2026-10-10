@@ -139,8 +139,24 @@ export interface ForkedAgentResult {
   deniedToolCalls: number;
 }
 
-/** 收集 forked agent 可用的工具定义（受 canUseTool 约束的工具仍需声明给模型） */
-function buildToolDefinitions(registry: ToolRegistry): ToolDefinition[] {
+/**
+ * 收集 forked agent 的工具定义 —— **刻意全量，不按 canUseTool 白名单裁剪**（缺陷 7）。
+ *
+ * 理由是 prompt cache 经济学，不是「受约束的工具也得声明」：
+ * fork 的请求 = 主对话的 system + 全量 messages + 一条追加提示。Anthropic 族的缓存前缀
+ * 顺序是 tools → system → messages，**tools 一变整条前缀全 miss**——而 messages
+ * 是主会话的全部历史（常见数万 token），远大于被拒工具的 schema 开销。
+ * 主循环在 tool search 关闭时发的正是 `registry.definitions()`（query/loop.ts），
+ * 与这里逐字节一致，fork 才能读到主会话已写好的缓存。
+ *
+ * ⛔ 不要「顺手」改成只发白名单工具：省下几 KB schema，换来每次 fork 全价重付整段历史。
+ * 被拒工具的调用由 `canUseTool` 兜底（记 `deniedToolCalls`），提示词也明确禁止
+ * 为核实而调用工具（见 memory/extract/prompts.ts 的「不要验证」段）。
+ * 已知未对齐：主循环开启 tool search 时发 `activeDefinitions()`，此时两者不同、
+ * fork 不共享 tools 段缓存 —— 对齐需要把主循环实际发出的定义透传进来，未做。
+ * 守卫单测：tests/agent/forked-agent.test.ts「工具定义与主注册表 definitions() 一致」。
+ */
+export function buildToolDefinitions(registry: ToolRegistry): ToolDefinition[] {
   return registry.definitions();
 }
 
