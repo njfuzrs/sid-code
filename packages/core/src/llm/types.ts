@@ -249,11 +249,33 @@ export function accumulateUsage(target: Usage, eventUsage: Usage | undefined): U
  *
  * 已有章不覆盖：嵌套的漏斗（外层再包一层 ModelFallback）以最内层、即真实发请求的那个为准。
  */
-export function stampUsageProvider(event: StreamEvent, providerName: string): StreamEvent {
+export function stampUsageProvider(
+  event: StreamEvent,
+  providerName: string | undefined,
+): StreamEvent {
+  if (!providerName) return event;
   if ((event.type === "message_start" || event.type === "message_delta") && !event.usageProvider) {
     return { ...event, usageProvider: providerName };
   }
   return event;
+}
+
+/**
+ * 安全读取 provider 名：盖章是**附加**的归因信息，绝不能因为它让请求失败。
+ *
+ * `Provider.name()` 按接口是必填的，但测试替身与第三方插件 provider 不一定实现
+ * （2026-10-11 PR #235 首轮 CI：`/compact` 用例的 mock provider 无 `name`，
+ * 无条件调用直接让摘要请求抛 TypeError）。取不到就返回 undefined，调用方跳过盖章，
+ * 消费侧回落 `config.provider` —— 与修前行为一致。
+ */
+export function safeProviderName(provider: { name?: unknown }): string | undefined {
+  try {
+    if (typeof provider.name !== "function") return undefined;
+    const n = (provider.name as () => unknown)();
+    return typeof n === "string" && n ? n : undefined;
+  } catch {
+    return undefined;
+  }
 }
 
 /** 文本增量 */

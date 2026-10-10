@@ -18,7 +18,7 @@
 
 import type { Provider } from "./provider.ts";
 import type { SendParams, StreamEvent } from "./types.ts";
-import { stampUsageProvider } from "./types.ts";
+import { safeProviderName, stampUsageProvider } from "./types.ts";
 import { getLogger } from "../debug/logger.ts";
 import {
   emitTimeoutFired,
@@ -1148,7 +1148,7 @@ export class ModelFallback {
             }
 
             // D5：盖上产出 usage 的 provider 身份（见 stampUsageProvider）
-            yield stampUsageProvider(event, primaryProvider.name());
+            yield stampUsageProvider(event, safeProviderName(primaryProvider));
           }
 
           // 验证流完整性
@@ -1941,7 +1941,8 @@ export class ModelFallback {
     // 拼接。清空一个本就为空的累加器是 no-op，代价为零，故显式广播把安全性变成局部可验。
     yield { type: "stream_restart", reason: "non_streaming_degrade" };
 
-    for (const ev of convertToStreamEvents(result)) yield stampUsageProvider(ev, provider.name());
+    for (const ev of convertToStreamEvents(result))
+      yield stampUsageProvider(ev, safeProviderName(provider));
     // 同模型非流式成功 → 该模型是好的（是 SSE 通道不通），清除可能残留的拉黑态。
     this.availability.markHealthy(params.model, true);
     outcome.degraded = true;
@@ -2013,7 +2014,7 @@ export class ModelFallback {
         fbYieldedError = true;
       }
       // D5：跨族降级的 usage 必须按 fallbackProvider 的口径归一化 —— 身份随事件走。
-      yield stampUsageProvider(event, fallbackProvider.name());
+      yield stampUsageProvider(event, safeProviderName(fallbackProvider));
     }
     // fallback 流跑完却既无内容事件、也无显式 error → 判定空响应（伪装成功的空流）。
     if (!fbYieldedContent && !fbYieldedError) {

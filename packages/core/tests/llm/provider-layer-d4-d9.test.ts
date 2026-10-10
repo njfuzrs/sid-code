@@ -146,6 +146,16 @@ describe("D5：跨族降级后 usage 的 provider 身份随数据走", () => {
     expect(wrong.promptTotal).toBe(50);
   });
 
+  test("provider 没实现 name()（测试替身 / 插件）时不盖章、不抛错", async () => {
+    const { name: _drop, ...noName } = anthropicLikeProvider();
+    const fb = new ModelFallback({ retryBackoffBaseMs: 0, retryBackoffMaxMs: 0 });
+    const response = await processStream(
+      fb.executeWithFallback(noName as unknown as Provider, params),
+    );
+    expect(response.usageProvider).toBeUndefined();
+    expect(response.usage.cacheReadInputTokens).toBe(9500);
+  });
+
   test("未降级：身份就是主 provider", async () => {
     const fb = new ModelFallback({ retryBackoffBaseMs: 0, retryBackoffMaxMs: 0 });
     const response = await processStream(fb.executeWithFallback(anthropicLikeProvider(), params));
