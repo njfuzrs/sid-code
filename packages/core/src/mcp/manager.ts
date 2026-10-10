@@ -1219,6 +1219,36 @@ export class MCPManager {
     this.onToolsRefresh?.(name, []);
   }
 
+  /**
+   * M2：运行时禁用一个 server —— 断连 + 注销工具 + 留在面板里显示「已禁用」。
+   *
+   * 不能只用 removeServer：它会把 server 从列表里整个抹掉，面板上看不到、也就没法再启用。
+   * 也不能只用 disconnect：它不调 onToolsRefresh，`mcp__<name>__*` 留在注册表里，
+   * 模型下一轮仍能调用、打到已关闭的 client。
+   *
+   * 持久化（写禁用列表）由调用方负责：manager 只管运行时状态，不知道项目身份。
+   * 返回 false 表示既不是受管连接、也不在禁用集合里（名字不存在）。
+   */
+  async disableServer(name: string): Promise<boolean> {
+    const config = this.serverConfigs.get(name) ?? this.disabledConfigs.get(name);
+    if (!config) return false;
+    await this.removeServer(name);
+    this.disabledConfigs.set(name, config);
+    this.notifyPromptsChanged();
+    return true;
+  }
+
+  /**
+   * M2：运行时启用一个已禁用的 server（从 disabledConfigs 取回配置 → addServer 当场连接）。
+   * 返回 null 表示该名字不在禁用集合里。
+   */
+  async enableServer(name: string): Promise<Tool[] | null> {
+    const config = this.disabledConfigs.get(name);
+    if (!config) return null;
+    const { enabled: _enabled, ...rest } = config as MCPServerConfig & { enabled?: boolean };
+    return this.addServer(name, rest as MCPServerConfig);
+  }
+
   /** 检查指定服务器是否已连接 */
   isConnected(name: string): boolean {
     return (

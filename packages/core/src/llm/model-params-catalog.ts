@@ -51,6 +51,8 @@ export interface ModelParamsEntry {
    * 见 model-registry.ts 同名字段（必删-4：替代 system-prompt 的 model.includes("deepseek")）。
    */
   reasoningLanguageDrift?: boolean;
+  /** 是否接受图片输入。见 model-registry.ts 同名字段（按模型声明，不按 provider）。 */
+  supportsVision?: boolean;
 }
 
 /** 从 ModelRegistryEntry 投影为 ModelParamsEntry（去掉 pricing） */

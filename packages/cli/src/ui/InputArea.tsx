@@ -51,7 +51,11 @@ import {
   expandPastedRefs,
   clearPastes,
 } from "./pasted-contents.ts";
-import { readClipboardImageToFile, detectDroppedImagePath } from "./utils/clipboard-image.ts";
+import {
+  readClipboardImageToFile,
+  detectDroppedImagePath,
+  resolveCopiedImageFile,
+} from "./utils/clipboard-image.ts";
 import { SuggestionsDisplay, type Suggestion } from "./components/SuggestionsDisplay.tsx";
 import { parseInputForHighlighting, renderHighlightedSegments } from "./utils/inputHighlight.tsx";
 import { DEFAULT_TERM_WIDTH } from "./markdown.ts";
@@ -727,6 +731,16 @@ export function InputArea({
       if (dropped) {
         insertImageRef(dropped);
         log.debug("UI:INPUT", `拖放图片: ${dropped}`);
+        return true;
+      }
+
+      // 访达复制图片文件（Cmd+C）后粘贴：终端只给裸文件名，从剪贴板文件引用找回真实路径。
+      // 不处理时用户消息里只剩一个文件名，模型得自己去全盘 glob（实测 20s 超时两次）。
+      const copied = resolveCopiedImageFile(cleaned);
+      if (copied) {
+        insertImageRef(copied);
+        log.info("UI:INPUT", `访达复制的图片: ${copied}`);
+        showTransientMessage("已粘贴图片文件", TransientMessageType.Hint);
         return true;
       }
 

@@ -597,6 +597,8 @@ export interface Config {
 
   /** 会话自动清理配置（按保留时长 / 数量） */
   sessionRetention?: SessionRetentionConfig;
+  /** 旧字段：等价于 sessionRetention.maxAge（天）。两者都写时以 maxAge 为准 */
+  cleanupPeriodDays?: number;
 
   // 搜索配置
   search?: SearchConfig;
@@ -903,11 +905,13 @@ export interface GitConfig {
 export interface SessionRetentionConfig {
   /** 是否启用自动清理（默认 true） */
   enabled?: boolean;
-  /** 最大保留时间（如 "30d"） */
+  /** 最大保留时间（默认 "365d"；格式 数字+h/d/w/m） */
   maxAge?: string;
-  /** 最大保留数量 */
+  /** 最大保留数量（默认不限；防盘满靠 maxTotalSize） */
   maxCount?: number;
-  /** 最小保留时间（防止误删，如 "1d"） */
+  /** 会话 + 轨迹总体积上限（默认 "10GB"），超出才从最旧的开始删 */
+  maxTotalSize?: string;
+  /** 最小保留时间（防止误删，默认 "1d"） */
   minRetention?: string;
 }
 
@@ -1543,30 +1547,21 @@ function mergeConfig(base: Partial<Config>, override: Partial<Config>): Partial<
   return result;
 }
 
-/** 加载项目级 .mcp.json 配置 */
+/**
+ * 加载项目级 .mcp.json 配置（M1）：从 cwd 逐级向上到文件系统根，近者覆盖远者。
+ * 发现逻辑在 mcp/project-files.ts，与 CLI `mcp list/pending/approve` 共用。
+ */
 async function loadMCPJson(): Promise<Record<string, MCPServerConfig>> {
   const log = getLogger();
-  const mcpJsonPath = join(process.cwd(), ".mcp.json");
-
-  if (!existsSync(mcpJsonPath)) {
-    return {};
+  const { loadProjectMcpServers } = await import("../mcp/project-files.ts");
+  const { servers, files } = loadProjectMcpServers(process.cwd(), (msg) => log.warn("CONFIG", msg));
+  if (files.length > 0) {
+    log.info(
+      "CONFIG",
+      `.mcp.json 加载 ${Object.keys(servers).length} 个 MCP 服务器（来自 ${files.join(", ")}）`,
+    );
   }
-
-  try {
-    const content = await Bun.file(mcpJsonPath).text();
-    const parsed = JSON.parse(content);
-    // 支持 { "mcpServers": { ... } } 或直接 { "serverName": { ... } }
-    const servers = parsed.mcpServers || parsed.mcp_servers || parsed;
-    if (typeof servers !== "object" || Array.isArray(servers)) {
-      log.warn("CONFIG", `.mcp.json 格式不正确，期望对象`);
-      return {};
-    }
-    log.info("CONFIG", `.mcp.json 加载 ${Object.keys(servers).length} 个 MCP 服务器`);
-    return servers;
-  } catch (err) {
-    log.warn("CONFIG", `读取 .mcp.json 失败: ${err}`);
-    return {};
-  }
+  return servers;
 }
 
 /**
@@ -1677,7 +1672,7 @@ export async function loadConfig(cliArgs: Partial<Config> = {}): Promise<Config>
   // 三源物理落点：
   //   user    —— ~/.sid-code/settings.json 的 mcpServers（合并期已进 merged.mcpServers）
   //   local   —— ~/.sid-code/projects/<项目 hash>/mcp.local.json（个人/实验，不入库）
-  //   project —— CWD .mcp.json（团队共享，需审批）
+  //   project —— cwd 向上逐级的 .mcp.json（团队共享，需审批；M1）
   // 此前是「裸浅合并 {...user, ...project}」——项目级无条件覆盖用户级、方向与文档相反、
   // 无 local、无签名去重、无 policy。改为接线 mergeMcpConfigs 统一处理。
   {
@@ -1691,9 +1686,12 @@ export async function loadConfig(cliArgs: Partial<Config> = {}): Promise<Config>
     const pendingApprovalServers: Record<string, MCPServerConfig> = {};
     if (Object.keys(mcpJsonServers).length > 0) {
       const { getProjectServerApproval } = await import("../mcp/approval.ts");
-      const projectPath = process.cwd();
+      // M4：审批 key 按项目身份（git root），同仓库任意子目录只审批一次；
+      // 旧版以 cwd 为 key 的记录由 getProjectServerApproval 兼容读取。
+      const { getMcpProjectRoot } = await import("../mcp/project-files.ts");
+      const projectPath = await getMcpProjectRoot(process.cwd());
       for (const [name, serverConfig] of Object.entries(mcpJsonServers)) {
-        const status = getProjectServerApproval(name, projectPath);
+        const status = getProjectServerApproval(name, projectPath, process.cwd());
         if (status === "rejected") {
           getLogger().info("CONFIG", `项目 MCP 服务器 "${name}" 已被拒绝，跳过`);
           continue;
@@ -1720,7 +1718,7 @@ export async function loadConfig(cliArgs: Partial<Config> = {}): Promise<Config>
       // 登记待审批快照，供 /mcp 面板展示与审批
       if (Object.keys(pendingApprovalServers).length > 0) {
         const { setPendingApprovalServers } = await import("../mcp/approval.ts");
-        setPendingApprovalServers(pendingApprovalServers, projectPath);
+        setPendingApprovalServers(pendingApprovalServers, projectPath, process.cwd());
       }
     }
 
@@ -1737,6 +1735,19 @@ export async function loadConfig(cliArgs: Partial<Config> = {}): Promise<Config>
         policy,
       );
       (merged as any).mcpServers = mergedMcp as Record<string, MCPServerConfig>;
+    }
+
+    // M2：用户私有的按项目禁用列表（对齐 CC disabledMcpServers）。打成 enabled:false
+    // 后 manager.connectAll 会放进 disabledConfigs，面板显示「已禁用」。
+    {
+      const { getDisabledMcpServers, applyDisabledList } = await import("../mcp/project-files.ts");
+      const disabled = await getDisabledMcpServers(process.cwd());
+      if (disabled.length > 0) {
+        (merged as any).mcpServers = applyDisabledList(
+          ((merged as Config).mcpServers || {}) as Record<string, MCPServerConfig>,
+          disabled,
+        );
+      }
     }
   }
 
