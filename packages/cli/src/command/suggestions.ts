@@ -87,12 +87,13 @@ function infoPriority(item: RankableCommandInfo, query: string): number {
  * 对轻量命令信息按查询词排序，返回补全建议
  * @param commands 命令信息列表
  * @param query    去掉 "/" 的查询词（可为空）
- * @param limit    最多返回条数
+ * @param limit    最多返回条数；缺省不截断——补全列表由 SuggestionsDisplay 的
+ *                 MAX_VISIBLE 虚拟滚动控制可见行，数据层截断会让 ↑↓ 翻不到第 limit+1 条
  */
 export function rankCommandInfos(
   commands: RankableCommandInfo[],
   query: string,
-  limit = 20,
+  limit = Infinity,
 ): RankedCommandSuggestion[] {
   const q = query.toLowerCase();
   const { fuse, items } = getInfoIndex(commands);
