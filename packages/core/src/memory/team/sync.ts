@@ -58,6 +58,11 @@ export interface TeamMemorySyncResult {
   deleted: number;
   /** 检测到的冲突数 */
   conflicts: number;
+  /**
+   * 缺陷 8：本轮按 mtime 落败、另存的冲突副本文件名（相对本地团队目录）。
+   * 计数之外给出名字，调用方（watcher / TUI）才能点名告知「哪条记忆有分歧」。
+   */
+  conflictFiles?: string[];
   /** 因含 secret 跳过 push 的**本地**文件（防外泄） */
   skippedSecrets: SkippedSecretFile[];
   /**
@@ -251,6 +256,7 @@ export async function syncTeamMemory(
       pushed = 0,
       deleted = 0,
       conflicts = 0;
+    const conflictFiles: string[] = [];
     const nextManifest: SyncManifest = {};
 
     for (const key of allKeys) {
@@ -330,6 +336,7 @@ export async function syncTeamMemory(
         conflicts++;
         const ts = Math.max(local.mtimeMs, shared.mtimeMs) | 0;
         const conflictName = key.replace(/\.md$/, `.conflict-${ts}.md`);
+        conflictFiles.push(conflictName);
         if (local.mtimeMs >= shared.mtimeMs) {
           // 本地较新：本地胜，远端旧版另存到两端的 conflict 副本，再推本地
           await writeEntry(localDir, conflictName, shared.content);
@@ -401,6 +408,15 @@ export async function syncTeamMemory(
         /* 埋点失败不影响同步 */
       }
     }
+    // 缺陷 8：冲突此前只有逐条 log.warn，混在日志里。汇总点名一次，指明处理动作。
+    if (conflictFiles.length > 0) {
+      log.warn(
+        "TEAMMEM",
+        `${conflictFiles.length} 条团队记忆按修改时间自动裁决，落败版本另存: ${conflictFiles.join(", ")}。` +
+          `修改时间较新不等于编辑较新（同步盘会改写 mtime），请对比后合并并删除副本；` +
+          `副本已列入团队 MEMORY.md 的「未裁决冲突」段。`,
+      );
+    }
     if (pulled || pushed || deleted || conflicts) {
       log.info(
         "TEAMMEM",
@@ -414,6 +430,7 @@ export async function syncTeamMemory(
       pushed,
       deleted,
       conflicts,
+      conflictFiles,
       skippedSecrets,
       blockedIncomingSecrets,
     };

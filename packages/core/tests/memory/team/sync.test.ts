@@ -259,7 +259,8 @@ describe("syncTeamMemory — pull 后重建本地 MEMORY.md 索引（审计第 1
     const r = await syncTeamMemory(opts(), cwd);
     expect(r.conflicts).toBe(1);
     const index = readFileSync(join(localDir(), "MEMORY.md"), "utf8");
-    expect(index).not.toContain(".conflict-");
+    // 不作为记忆条目列入（缺陷 8 起只出现在「未裁决冲突」段，见下方用例）
+    expect(index).not.toMatch(/\]\([^)]*\.conflict-/);
   });
 });
 
@@ -269,5 +270,39 @@ describe("hashContent", () => {
     expect(h.startsWith("sha256:")).toBe(true);
     expect(hashContent("hello")).toBe(h);
     expect(hashContent("world")).not.toBe(h);
+  });
+});
+
+describe("缺陷 8：冲突副本可见", () => {
+  test("落败副本列进索引的「未裁决冲突」段（不作为记忆条目），结果点名副本文件", async () => {
+    writeLocal("k.md", "base");
+    await syncTeamMemory(opts(), cwd);
+    writeLocal("k.md", "local-change");
+    await new Promise((res) => setTimeout(res, 20));
+    writeShared("k.md", "shared-change");
+
+    const r = await syncTeamMemory(opts(), cwd);
+    expect(r.conflicts).toBe(1);
+    expect(r.conflictFiles).toHaveLength(1);
+    expect(r.conflictFiles![0]).toMatch(/^k\.conflict-\d+\.md$/);
+    const index = readFileSync(join(localDir(), "MEMORY.md"), "utf8");
+    expect(index).toContain("未裁决的团队记忆冲突（1）");
+    expect(index).toContain(r.conflictFiles![0]);
+    expect(index).toContain("当前生效版本 `k.md`");
+    // 不作为普通记忆条目（`- [name](file)` 形态）出现
+    expect(index).not.toMatch(/\]\(k\.conflict-/);
+  });
+
+  test("副本删除后重建索引，冲突段消失", async () => {
+    writeLocal("m.md", "base");
+    await syncTeamMemory(opts(), cwd);
+    writeLocal("m.md", "local-change");
+    await new Promise((res) => setTimeout(res, 20));
+    writeShared("m.md", "shared-change");
+    const r = await syncTeamMemory(opts(), cwd);
+    rmSync(join(localDir(), r.conflictFiles![0]));
+    const { rebuildTeamIndex } = await import("@sid-code/core/memory/team/store.ts");
+    await rebuildTeamIndex(localDir());
+    expect(readFileSync(join(localDir(), "MEMORY.md"), "utf8")).not.toContain("未裁决");
   });
 });

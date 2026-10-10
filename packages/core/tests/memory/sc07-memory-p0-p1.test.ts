@@ -255,7 +255,9 @@ describe("缺陷 9：团队记忆索引递归 + 预算 + 年龄", () => {
     const idx = readFileSync(join(dir, "MEMORY.md"), "utf8");
     expect(idx).toContain("(sub/nested.md)");
     expect(idx).toContain("(top.md)");
-    expect(idx).not.toContain("conflict");
+    // 冲突副本不作为记忆条目进索引；缺陷 8 起它只出现在「未裁决冲突」段
+    expect(idx).not.toContain("](x.conflict-");
+    expect(idx).toContain("未裁决的团队记忆冲突（1）");
     expect(idx).toContain("# 团队共享记忆");
   });
 

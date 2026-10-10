@@ -134,6 +134,9 @@ export function buildSessionMemoryUpdatePrompt(currentContent: string, template:
 6. 保持简洁，高信号密度，无填充
 7. Current State 应反映最新的工作状态
 8. Worklog 按时间顺序追加，每步一行
+9. **不要记录你自己**：这条消息与这些指令**不是用户对话的一部分**。笔记里不要出现
+   「会话笔记」「笔记更新」「记笔记」「note-taking」或本更新指令的任何内容——
+   只记录用户与主代理之间真实发生的工作
 
 ## 当前文件内容
 

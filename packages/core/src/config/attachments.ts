@@ -514,16 +514,25 @@ export function generateRecalledMemoryAttachment(
 /**
  * 生成 Session Memory 附件（Task 7）。
  * 仅在压缩后注入结构化会话笔记。
+ *
+ * ## 缓存属性
+ *
+ * 标 `stable`：笔记只在压缩时注入/更新，跨许多轮不变。未标记会被分拣进动态区，
+ * 而 OpenAI 族的动态区每轮被切成 messages 末尾的一条 user 消息——内容不变却每轮
+ * 付一次前缀失效。与 `generateCriticalRemindersAttachment` 同一笔 trade-off：
+ * 压缩时换一次 miss，买此后所有轮次的静态前缀命中。
  */
 export function generateSessionMemoryAttachment(
   sessionMemoryContent: string | null,
-): Attachment | null {
+): SystemPromptAttachment | null {
   if (!sessionMemoryContent || !sessionMemoryContent.trim()) return null;
   return {
-    type: "sessionMemory",
+    ...stableAttachment(
+      "sessionMemory",
+      `<session-memory>\n以下是本次会话的结构化笔记（任务目标、进展、关键文件）：\n\n${sessionMemoryContent}\n</session-memory>`,
+      PRIORITY.SESSION_MEMORY,
+    ),
     label: "会话笔记",
-    content: `<session-memory>\n以下是本次会话的结构化笔记（任务目标、进展、关键文件）：\n\n${sessionMemoryContent}\n</session-memory>`,
-    priority: PRIORITY.SESSION_MEMORY,
   };
 }
 

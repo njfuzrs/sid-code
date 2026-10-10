@@ -13,10 +13,39 @@ import type {
   ToolUseContext,
 } from "./types.ts";
 import type { MemoryStore } from "../memory/store.ts";
+import { inferMemoryType } from "../memory/store.ts";
 import { getLogger } from "../debug/logger.ts";
 import { getSharedSecretRedactHook } from "../llm/hooks/secret-redact.ts";
 import { z } from "zod/v4";
 import { lazySchema } from "../sdk/lazy-schema.ts";
+
+/**
+ * 缺陷 12：写入质量的**软提示**（不拒绝，只把问题回给模型）。
+ *
+ * 为什么不做成硬拒绝：相对日期、缺 Why 都靠关键词判断，误判率不低——
+ * 「今天的约定是…」可能是引用原话，user/reference 类本来就不需要 Why。
+ * 硬拒绝会让一次合法保存失败且模型无从绕过；软提示让模型在同一轮用相同 key 覆盖修正，
+ * 判断权仍在模型手里。主防线是提示词（memory/prompt.ts「不应保存」与「写法要求」）。
+ */
+const RELATIVE_DATE_RE =
+  /(今天|昨天|明天|前天|后天|本周|这周|下周|上周|本月|这个月|下个月|上个月|今年|明年|去年|\btoday\b|\byesterday\b|\btomorrow\b|\b(?:next|last|this) (?:week|month|year)\b)/i;
+const WHY_RE = /\bwhy\s*[:：]|为什么|原因[:：]/i;
+
+export function memoryWriteHints(value: string, inferredType: string): string[] {
+  const hints: string[] = [];
+  const rel = value.match(RELATIVE_DATE_RE);
+  if (rel) {
+    hints.push(
+      `含相对日期「${rel[0]}」：记忆会在很久之后被读到，请改写成绝对日期（YYYY-MM-DD）后用相同 key 覆盖。`,
+    );
+  }
+  if ((inferredType === "feedback" || inferredType === "project") && !WHY_RE.test(value)) {
+    hints.push(
+      `这条看起来是 ${inferredType} 类，但正文没有 Why:——没有理由的规则日后无法判断边界，请补上 Why: 与 How to apply: 后覆盖。`,
+    );
+  }
+  return hints;
+}
 
 /** Memory 工具输入 schema —— 运行时校验 + JSON Schema 生成的唯一真相源 */
 const memorySchema = lazySchema(() =>
@@ -198,8 +227,11 @@ export class MemoryTool implements Tool {
       log.info("TOOL", `✓ 记忆已保存 [${scope}] ${key}`);
 
       const scopeLabel = scope === "global" ? "全局" : "项目";
+      const hints = memoryWriteHints(value, inferMemoryType(key, value));
+      const hintText =
+        hints.length > 0 ? `\n\n⚠️ 写入质量提示（已保存，可选修正）:\n- ${hints.join("\n- ")}` : "";
       return {
-        output: `记忆已保存到${scopeLabel}范围:\n键: ${key}\n值: ${value.slice(0, 100)}${value.length > 100 ? "..." : ""}`,
+        output: `记忆已保存到${scopeLabel}范围:\n键: ${key}\n值: ${value.slice(0, 100)}${value.length > 100 ? "..." : ""}${hintText}`,
       };
     } catch (err: any) {
       return { output: `保存记忆失败: ${err.message}`, isError: true };
