@@ -179,6 +179,40 @@ describe("pr-merge-chain.sh", () => {
     expect(run(["--all", "1"]).code).toBe(1);
   });
 
+  test("运行中脚本文件被原地改写，本次运行不受影响", () => {
+    // bash 边执行边按字节偏移读脚本；原地改写（编辑器 / open(...,'w') / cp 覆盖）
+    // 后偏移落进新内容半行，不包 main() 时这里报「未预期的 EOF」
+    const copy = join(dir, "chain.sh");
+    const orig = readFileSync(SCRIPT, "utf-8");
+    writeFileSync(copy, orig);
+    writeFileSync(join(dir, "padded.sh"), "# 填充注释\n".repeat(200) + orig);
+    // update-branch 时用 cp 原地覆盖（同一 inode），模拟运行期间脚本被改
+    writeFileSync(
+      join(dir, "gh"),
+      FAKE_GH.replace(
+        `"pr update-branch") echo`,
+        `"pr update-branch") cp "$d/padded.sh" "$d/chain.sh"; echo`,
+      ),
+    );
+    // 首行被外层初始查询消费，第二行 BEHIND 才进轮询触发 update-branch
+    seq(1, [
+      row("OPEN", "BEHIND", "MERGE"),
+      row("OPEN", "BEHIND", "MERGE"),
+      row("OPEN", "BLOCKED", "MERGE"),
+      row("MERGED", "UNKNOWN"),
+    ]);
+    seq(2, [row("MERGED", "UNKNOWN")]);
+    const r = Bun.spawnSync(["bash", copy, "1", "2"], {
+      env: { ...process.env, GH_BIN: join(dir, "gh"), FAKE_DIR: dir, PR_MERGE_CHAIN_INTERVAL: "0" },
+    });
+    const out = r.stdout.toString() + r.stderr.toString();
+    expect(readFileSync(copy, "utf-8").startsWith("# 填充注释")).toBe(true); // 改写真的发生了
+    expect(out).not.toContain("EOF");
+    expect(out).not.toContain("未绑定");
+    expect(r.exitCode).toBe(0);
+    expect(out).toContain("共合入 2 个");
+  });
+
   test("参数校验：非数字 PR 号、非法 method", () => {
     expect(run(["abc"]).code).toBe(1);
     expect(run(["--method", "fast", "1"]).code).toBe(1);

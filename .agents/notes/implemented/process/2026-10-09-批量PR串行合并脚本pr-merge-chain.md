@@ -14,6 +14,11 @@ Date: 2026-10-09
 **2026-10-10 补**：不给 PR 号时默认等同 `--all`（原先打印用法并退出码 1，被误认为脚本坏了）。
 `--all` 保留以兼容旧用法；与显式 PR 号同时给仍报错。
 
+**2026-10-10 再补**：脚本体整体包进 `main()`，末行 `main "$@"; exit $?`。bash 边执行边按字节偏移读脚本，
+本脚本一跑几十分钟，期间脚本文件被改写（合入的 PR 改了它本身 / 编辑器保存）就会从旧偏移读到新内容半行——
+实测合完 #227/#228 后在汇总行报「行 188: 寻找匹配的 `"' 时遇到了未预期的 EOF」。
+`exit` 必须与调用同一行：分两行时 main 返回后 bash 仍会去读被改写的文件（测试实测「current: 未绑定的变量」）。
+
 合并判定仍交给 GitHub auto-merge + ruleset `protect-main`，脚本自己不判「能不能合」，
 所以没有绕过 `all-checks-passed` 的路径。
 
@@ -35,6 +40,8 @@ Date: 2026-10-09
 - `bun test ./tests/scripts/pr-merge-chain.test.ts`：9 pass / 0 fail。用假 gh（`GH_BIN`）
   复现 BEHIND→BLOCKED→MERGED 序列，断言写操作顺序严格串行、CI 失败后对下一个 PR 零写操作、
   squash 被改为 merge、dry-run 零写操作、超时退出码 4。
+- 2026-10-10：「运行中脚本被原地改写」用例——update-branch 时 `cp` 覆盖脚本（同一 inode，前面多 200 行注释）。
+  变异自证：未修复版本复现用户原报错（`未预期的 EOF`）红；`exit` 分到下一行也红；修复版 13 pass / 0 fail。
 - 2026-10-10：新增「无参等同 --all」「仅 --dry-run 零写操作」「--all 与 PR 号互斥」三条用例。
 - 对真实仓库 `bash scripts/pr-merge-chain.sh --all --dry-run`：正确列出 #132 并报
   「已有 4 个检查失败，会停在这里」，无任何写操作。
