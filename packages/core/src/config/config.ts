@@ -1575,10 +1575,9 @@ async function loadMCPJson(): Promise<Record<string, MCPServerConfig>> {
 async function loadLocalMcpJson(): Promise<Record<string, MCPServerConfig>> {
   const log = getLogger();
   try {
-    const { resolveProjectRoot, sanitizeProjectKey } = await import("../memory/paths.ts");
-    const { sidPaths } = await import("./paths.ts");
-    const projectKey = sanitizeProjectKey(resolveProjectRoot(process.cwd()));
-    const localPath = join(sidPaths.projects(), projectKey, "mcp.local.json");
+    // 主仓根键（同仓库全部 worktree 共享一份 local 配置）；#220 起按工作树根存的旧文件兼容读取
+    const { resolveProjectStateFile } = await import("../mcp/project-files.ts");
+    const localPath = (await resolveProjectStateFile("mcp.local.json", process.cwd())).path;
 
     if (!existsSync(localPath)) {
       return {};
@@ -1688,10 +1687,12 @@ export async function loadConfig(cliArgs: Partial<Config> = {}): Promise<Config>
       const { getProjectServerApproval } = await import("../mcp/approval.ts");
       // M4：审批 key 按项目身份（git root），同仓库任意子目录只审批一次；
       // 旧版以 cwd 为 key 的记录由 getProjectServerApproval 兼容读取。
-      const { getMcpProjectRoot } = await import("../mcp/project-files.ts");
+      const { getMcpProjectRoot, getLegacyMcpProjectKeys } =
+        await import("../mcp/project-files.ts");
       const projectPath = await getMcpProjectRoot(process.cwd());
+      const legacyKeys = await getLegacyMcpProjectKeys(process.cwd());
       for (const [name, serverConfig] of Object.entries(mcpJsonServers)) {
-        const status = getProjectServerApproval(name, projectPath, process.cwd());
+        const status = getProjectServerApproval(name, projectPath, legacyKeys);
         if (status === "rejected") {
           getLogger().info("CONFIG", `项目 MCP 服务器 "${name}" 已被拒绝，跳过`);
           continue;
@@ -1718,7 +1719,7 @@ export async function loadConfig(cliArgs: Partial<Config> = {}): Promise<Config>
       // 登记待审批快照，供 /mcp 面板展示与审批
       if (Object.keys(pendingApprovalServers).length > 0) {
         const { setPendingApprovalServers } = await import("../mcp/approval.ts");
-        setPendingApprovalServers(pendingApprovalServers, projectPath, process.cwd());
+        setPendingApprovalServers(pendingApprovalServers, projectPath, legacyKeys);
       }
     }
 
@@ -1737,17 +1738,17 @@ export async function loadConfig(cliArgs: Partial<Config> = {}): Promise<Config>
       (merged as any).mcpServers = mergedMcp as Record<string, MCPServerConfig>;
     }
 
-    // M2：用户私有的按项目禁用列表（对齐 CC disabledMcpServers）。打成 enabled:false
+    // M2：用户私有的按项目启用 / 禁用开关（对齐 CC disabledMcpServers）。打成 enabled:false
     // 后 manager.connectAll 会放进 disabledConfigs，面板显示「已禁用」。
+    // 这里只覆盖 settings + .mcp.json 来源（供 `sid-code mcp list` 等读 config 的入口）；
+    // 插件 / --mcp-config 在 cli.ts 合并之后还要再套一次，见那里的注释。
     {
-      const { getDisabledMcpServers, applyDisabledList } = await import("../mcp/project-files.ts");
-      const disabled = await getDisabledMcpServers(process.cwd());
-      if (disabled.length > 0) {
-        (merged as any).mcpServers = applyDisabledList(
-          ((merged as Config).mcpServers || {}) as Record<string, MCPServerConfig>,
-          disabled,
-        );
-      }
+      const { getMcpServerToggles, applyServerToggles } = await import("../mcp/project-files.ts");
+      const toggles = await getMcpServerToggles(process.cwd());
+      (merged as any).mcpServers = applyServerToggles(
+        ((merged as Config).mcpServers || {}) as Record<string, MCPServerConfig>,
+        toggles,
+      );
     }
   }
 

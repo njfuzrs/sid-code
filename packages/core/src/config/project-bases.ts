@@ -4,6 +4,13 @@
  * ⛔ **不要合并成一个 getProjectBase()**。CC 本身就按子系统刻意使用四种基准：
  *   B1 启动 cwd            —— 共享 settings.json、hooks、skills 热更新监听、`mcp add -s project`
  *   B2 git root（项目身份） —— settings.local.json、权限规则读写、信任、MCP 审批 / 禁用 / local
+ *      B2 分两个入口（linked worktree 下才有区别）：
+ *        getProjectIdentityRoot() —— **主仓根**，给 ~/.sid-code 下按项目分区的私有状态当键
+ *          （信任、MCP 审批 / 禁用 / local 作用域）。对齐 CC `findCanonicalGitRoot`：
+ *          同一仓库的主 checkout 与全部 worktree 共用一份，不必在每个 worktree 重新审批一遍。
+ *        getCheckoutRoot() —— **当前工作树自己的根**，给落在工作树里的文件当基准
+ *          （settings.local.json、规则作用域的项目根）。worktree 是独立目录，
+ *          把文件写进另一个 checkout 会跨目录改别人的工作区。
  *   B3 cwd → git root 逐级  —— skills / commands / agents / output-styles
  *   B4 cwd → 文件系统根逐级 —— CLAUDE.md、rules、CLAUDE.local.md、AGENTS.md、.mcp.json
  * 统一成一个只会让某几个子系统偏离 CC：例如子目录启动时读到仓库根的共享 settings.json
@@ -17,7 +24,7 @@ import { existsSync } from "fs";
 import { homedir } from "os";
 import { dirname, join, resolve } from "path";
 import { getOriginalCwd } from "../bootstrap/state.ts";
-import { resolveProjectRoot } from "../memory/paths.ts";
+import { resolveMemoryProjectRoot, resolveProjectRoot } from "../memory/paths.ts";
 
 /** B1：启动目录一层 */
 export function getLaunchDir(cwd: string = getOriginalCwd()): string {
@@ -25,10 +32,19 @@ export function getLaunchDir(cwd: string = getOriginalCwd()): string {
 }
 
 /**
- * B2：项目身份根 = git toplevel；非仓库退回 cwd；落在 ~/.sid-code 内退回家目录
- * （三条都由 resolveProjectRoot 保证，这里只是给它一个按用途命名的入口）。
+ * B2（项目身份）：主仓根。linked worktree 归一到主 checkout（`git rev-parse --git-common-dir`）；
+ * 非仓库退回 cwd；落在 ~/.sid-code 内退回家目录（都由 resolveMemoryProjectRoot 保证）。
+ * 只给 ~/.sid-code 下按项目分区的私有状态当键——要定位工作树里的文件用 getCheckoutRoot。
  */
 export function getProjectIdentityRoot(cwd: string = getOriginalCwd()): string {
+  return resolveMemoryProjectRoot(resolve(cwd));
+}
+
+/**
+ * B2（工作树）：当前 checkout 的 git toplevel（worktree 下是 worktree 自己的根）。
+ * 非仓库退回 cwd；落在 ~/.sid-code 内退回家目录。
+ */
+export function getCheckoutRoot(cwd: string = getOriginalCwd()): string {
   return resolveProjectRoot(resolve(cwd));
 }
 

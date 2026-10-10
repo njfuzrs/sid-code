@@ -36,10 +36,20 @@ function getFlag(args: string[], name: string): string | undefined {
   return idx !== -1 && args[idx + 1] ? args[idx + 1] : undefined;
 }
 
-function describeServer(name: string, cfg: MCPServerConfig): string {
+function describeServer(name: string, cfg: MCPServerConfig, source?: string): string {
   const transport = cfg.transport ?? (cfg.url ? "http" : "stdio");
   const target = cfg.url ?? [cfg.command, ...(cfg.args ?? [])].filter(Boolean).join(" ");
-  return `${name}  [${transport}]  ${target}`;
+  // 对齐 CC `claude mcp list` 的 "⊘ Disabled"：禁用的 server 仍列出，但要看得出不会连接
+  const state = cfg.enabled === false ? "  ⊘ 已禁用（/mcp enable 重新启用）" : "";
+  // .mcp.json 现在逐级向上读，同名 server 取哪一份要看得见
+  const from = source ? `\n      来自 ${source}` : "";
+  return `${name}  [${transport}]  ${target}${state}${from}`;
+}
+
+/** 项目 .mcp.json 来源的 server → 声明它的文件（与 loadConfig 同一个发现函数） */
+async function projectServerSources(): Promise<Record<string, string>> {
+  const { loadProjectMcpServers } = await import("@sid-code/core/mcp/project-files.ts");
+  return loadProjectMcpServers(process.cwd()).sources;
 }
 
 /**
@@ -75,8 +85,9 @@ async function cmdList(asJson: boolean): Promise<void> {
     return;
   }
   console.log(`已配置的 MCP 服务器（共 ${names.length} 个）:\n`);
+  const sources = await projectServerSources();
   for (const name of names) {
-    console.log(`  ${describeServer(name, servers[name])}`);
+    console.log(`  ${describeServer(name, servers[name], sources[name])}`);
   }
   if (hint) console.log(`\n${hint}`);
 }
@@ -92,7 +103,7 @@ async function cmdGet(name: string, asJson: boolean): Promise<void> {
     console.log(JSON.stringify({ [name]: cfg }, null, 2));
     return;
   }
-  console.log(describeServer(name, cfg));
+  console.log(describeServer(name, cfg, (await projectServerSources())[name]));
   console.log(JSON.stringify(cfg, null, 2));
 }
 
@@ -303,9 +314,10 @@ async function cmdApproveReject(args: string[], approve: boolean): Promise<void>
   }
 
   // M4：审批 key 按项目身份（git root），并顺手清掉旧版按 cwd 记的 key
-  const { getMcpProjectRoot } = await import("@sid-code/core/mcp/project-files.ts");
+  const { getMcpProjectRoot, getLegacyMcpProjectKeys } =
+    await import("@sid-code/core/mcp/project-files.ts");
   const cwd = projectPath || (await getMcpProjectRoot(process.cwd()));
-  const legacy = process.cwd();
+  const legacy = await getLegacyMcpProjectKeys(process.cwd());
   const done: string[] = [];
   for (const t of targets) {
     if (!declared.includes(t)) {

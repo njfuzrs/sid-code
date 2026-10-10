@@ -204,12 +204,28 @@ sid-code 的循环要求模型能稳定输出结构化 tool call。7B 级别的�
 | 位置 | 作用范围 | 典型用途 |
 | --- | --- | --- |
 | `~/.sid-code/settings.json` | 你这台机器所有项目 | 放 API Key 和模型清单 |
-| `<项目>/.sid-code/settings.json` | 单个项目，可提交进仓库 | 团队共享的项目级约定 |
-| `<项目>/.sid-code/settings.local.json` | 单个项目，不提交 | 个人临时覆盖 |
+| `<启动目录>/.sid-code/settings.json` | 单个项目，可提交进仓库 | 团队共享的项目级约定 |
+| `<git 仓库根>/.sid-code/settings.local.json` | 单个项目，不提交 | 个人临时覆盖 |
 | 环境变量 | 当前 shell | 临时试一下，见下 |
 | 命令行参数 | 单次运行 | `--model` / `--provider` |
 
 后面的盖前面的。**API Key 只放用户级那份**，别写进项目里跟着 git 提交出去。
+
+两份项目级文件的「项目」不是同一个目录，这是对齐 Claude Code 的刻意设计：
+
+- 共享的 `settings.json` 只读**启动目录**那一层。在仓库子目录启动时，仓库根的 `settings.json` 不生效。
+- 私有的 `settings.local.json` 落在 **git 仓库根**（linked worktree 是 worktree 自己的根），
+  子目录启动也读写同一份；启动目录下的旧文件仍合并读取，同一个键以仓库根那份为准。
+  不在 git 仓库、仓库根就是家目录、仓库根不属于当前用户、Windows 时退回启动目录。
+
+### 各类配置从哪个目录找
+
+| 基准 | 哪些东西 |
+| --- | --- |
+| 启动目录这一层 | 共享 `settings.json`、项目级 hooks、`mcp add -s project` 写入位置 |
+| git 仓库根 | `settings.local.json`、权限规则读写、工作区信任、MCP 审批 / 禁用 / local 作用域（这几项私有状态按**主仓根**记，全部 worktree 共用） |
+| 启动目录 → git 仓库根逐级 | skills、commands、agents、output-styles（近的覆盖远的，仓库外上层不读） |
+| 启动目录 → 文件系统根逐级 | `CLAUDE.md`、rules 目录、`CLAUDE.local.md`、`AGENTS.md`、`.mcp.json` |
 
 ### 用环境变量临时试
 

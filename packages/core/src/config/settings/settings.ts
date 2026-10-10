@@ -24,6 +24,7 @@ import { writeAtomic } from "../app-config.ts";
 import {
   SETTING_SOURCES,
   getLegacyLocalSettingsPath,
+  realDir,
   getSettingsFilePath,
   type SettingSource,
 } from "./constants.ts";
@@ -204,7 +205,10 @@ function parseSettingsFile(path: string): {
 
 /** workspacePath 指向 cwd 以外的目录时为真——此时 L1/L2 缓存（按 cwd 建立）不适用 */
 function isForeignWorkspace(workspacePath: string | undefined): boolean {
-  return workspacePath !== undefined && resolve(workspacePath) !== resolve(process.cwd());
+  if (workspacePath === undefined) return false;
+  if (resolve(workspacePath) === resolve(process.cwd())) return false;
+  // 字面不同再比 realpath：指向 cwd 的 symlink 不是「别的目录」，否则每次都绕过缓存读盘
+  return realDir(workspacePath) !== realDir(process.cwd());
 }
 
 /**

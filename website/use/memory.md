@@ -54,18 +54,28 @@ description: 项目指令、个人记忆、团队记忆三层的作用范围与�
 不止项目根一个文件。完整合并链，**后者覆盖/累积在前者之上**：
 
 ```text
-企业 managed → managed/rules/ → 全局 → 用户规则目录 → 项目根 → 子目录 → 项目规则目录 → CLAUDE.local.md
+企业 managed → managed/rules/ → 全局 → 用户规则目录 → 父目录链逐层（远 → 近）
 ```
+
+「父目录链」是从启动目录**一直往上到文件系统根**的每一层目录（不停在 git 仓库根，
+monorepo 外层工作区的规则在仓库里同样生效）。**每一层内部**按这个顺序读：
+
+```text
+该层 CLAUDE.md → 该层 .sid-code/rules/、.claude/rules/ → 该层 CLAUDE.local.md
+```
+
+层与层之间离启动目录越近越靠后、优先级越高。所以外层目录的 `CLAUDE.local.md` 不会盖过
+内层仓库的 `CLAUDE.md` 和 rules。
 
 | 层 | 位置 | 用途 |
 | --- | --- | --- |
 | managed | `<managed 根>/CLAUDE.md`，外加 `<managed 根>/rules/*.md`（managed 根见下表） | 组织策略基座，个人改不掉 |
 | 全局（user） | `~/.claude/CLAUDE.md`，回退 `~/.sid-code/CLAUDE.md` | 你的个人习惯，跨所有项目 |
 | 用户规则目录 | `~/.claude/rules/` 与 `~/.sid-code/rules/`，**两个目录都会加载** | 拆成多个文件的个人规则 |
-| 项目根（project） | `<项目根>/CLAUDE.md` | 团队共享，检入代码库 |
-| 子目录（subdir） | 父目录链上各级的 `CLAUDE.md` | 目录级细化规则，越深优先级越高 |
-| 项目规则目录 | `<项目根>/.sid-code/rules/*.md` 与 `<项目根>/.claude/rules/*.md`，两个都读，`.sid-code/rules` 在前 | 项目规则拆分 |
-| local | `CLAUDE.local.md`（或 `.claude/CLAUDE.local.md`） | 你个人的项目内偏好，**不检入** |
+| 项目（project / subdir） | 父目录链上每一层的 `CLAUDE.md`，最深一层标 project，外层标 subdir | 团队共享，检入代码库；越深优先级越高 |
+| 项目规则目录 | 父目录链上每一层的 `.sid-code/rules/*.md` 与 `.claude/rules/*.md`，两个都读，`.sid-code/rules` 在前 | 项目规则拆分 |
+| local | 父目录链上每一层的 `CLAUDE.local.md`（或 `.claude/CLAUDE.local.md`） | 你个人的项目内偏好，**不检入** |
+| AGENTS.md 兜底 | 父目录链上每一层的 `AGENTS.md` | 只在整条链上**没有任何** CLAUDE 系文件（含 `CLAUDE.local.md`，全局 `~/.claude/CLAUDE.md` 不算）时才读，给只写了 AGENTS.md 的仓库一个加载点 |
 
 managed 根按平台固定（企业管理员照这个放文件）：
 
@@ -75,7 +85,7 @@ managed 根按平台固定（企业管理员照这个放文件）：
 | Linux 及其他 Unix | `/etc/sid-code` |
 | Windows | `%PROGRAMDATA%\SidCode`（未设置时为 `C:\ProgramData\SidCode`） |
 
-项目根与子目录这两层的文件名候选是固定 5 个，按顺序取第一个存在的：
+父目录链上每一层的文件名候选是固定 5 个，按顺序取第一个存在的：
 
 ```text
 CLAUDE.md > .claude.md > claude.md > .claude/CLAUDE.md > .claude/instructions.md
@@ -91,7 +101,7 @@ CLAUDE.md > .claude.md > claude.md > .claude/CLAUDE.md > .claude/instructions.md
 同一个项目里两个人偏好不同的时候：
 
 - `CLAUDE.md` —— 团队规范，检入 git，所有人一样
-- `CLAUDE.local.md` —— 你自己的，加进 `.gitignore`，优先级最高
+- `CLAUDE.local.md` —— 你自己的，加进 `.gitignore`，在它所在那一层里优先级最高
 
 比如团队用 `CLAUDE.md` 规定"注释写英文"，你个人在 `CLAUDE.local.md` 里加
 "跟我对话用中文"——两件事不冲突，各生效。
@@ -127,7 +137,8 @@ CLAUDE.md 不能靠 `@~/.ssh/id_rsa` 把你的私钥读进上下文。未批准�
 
 CLAUDE.md 管「做什么、不做什么」，输出风格管「怎么说」——回复长短、用不用 markdown、
 语气正式还是口语。放一个 `.md` 文件到 `.sid-code/output-styles/`（项目级）或
-`~/.sid-code/output-styles/`（用户级），内容会作为系统提示词注入。
+`~/.sid-code/output-styles/`（用户级），内容会作为系统提示词注入。项目级从启动目录
+逐级往上扫到 git 仓库根，同名时离启动目录近的优先。
 
 一个风格文件长这样：
 

@@ -44,11 +44,11 @@ sid-code 兼容读取 `~/.claude/` 与项目 `.claude/`，同名时以 `.sid-cod
 | --- | --- | --- | --- |
 | 全局记忆 | `~/.claude/CLAUDE.md` | ✅ 直接读 | `packages/core/src/config/rules.ts` |
 | 规则目录 | `~/.claude/rules/` | ✅ 直接读 | `packages/core/src/config/rules.ts` |
-| 项目记忆 | `CLAUDE.md`、`.claude/CLAUDE.md` 等 5 种文件名 | ✅ 直接读 | `packages/core/src/config/rules.ts` |
+| 项目记忆 | `CLAUDE.md`、`.claude/CLAUDE.md` 等 5 种文件名，父目录链每层都读；整条链都没有时读 `AGENTS.md` | ✅ 直接读 | `packages/core/src/config/rules.ts` |
 | 斜杠命令 | `~/.claude/commands/`、`<proj>/.claude/commands/` | ✅ 直接读 | `packages/core/src/extension/loader.ts` |
 | Skill | `~/.claude/skills/`、`<proj>/.claude/skills/` | ✅ 直接读 | `packages/core/src/extension/loader.ts`、`packages/cli/src/app.ts` |
 | 子代理 | `~/.claude/agents/`、`<proj>/.claude/agents/` | ✅ 直接读 | 同上 |
-| 项目 MCP | `<proj>/.mcp.json` | ✅ 原地可用 | `references/mapping.md` |
+| 项目 MCP | `<proj>/.mcp.json`，从启动目录逐级向上读到文件系统根 | ✅ 原地可用 | `references/mapping.md` |
 
 项目级 `CLAUDE.md` 认这 5 个文件名（`packages/core/src/config/rules.ts`）：
 `CLAUDE.md`、`.claude.md`、`claude.md`、`.claude/CLAUDE.md`、`.claude/instructions.md`。
@@ -157,7 +157,7 @@ CC 的 `model` / `ANTHROPIC_BASE_URL` / `ANTHROPIC_AUTH_TOKEN` 这套跟 sid-cod
 | --- | --- |
 | 用户 settings | `~/.sid-code/settings.json` |
 | 项目共享 settings | `<proj>/.sid-code/settings.json` |
-| 项目本地 settings | `<proj>/.sid-code/settings.local.json` |
+| 项目本地 settings | `<git 仓库根>/.sid-code/settings.local.json` |
 | 项目 MCP | `<proj>/.mcp.json` |
 | commands / skills / agents / output-styles | `~/.sid-code/<type>/`、`<proj>/.sid-code/<type>/` |
 | 项目记忆 | `~/.sid-code/projects/<项目键>/memory/` |

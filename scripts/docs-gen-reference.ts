@@ -829,8 +829,8 @@ function renderSettingFields(fields: SettingField[]): string {
     : `> 共 **${fields.length}** 个顶层字段，全部由 \`SettingsSchema\` 声明（类型/枚举/约束经运行时自省导出）。\n`;
   // 与 config.ts recordUnknownSettingKeys 的行为对账：未知键不拒绝（向前兼容），但启动会提示
   out += `> 写了表里没有的顶层键（多半是拼错）不会报错退出，但启动时会提示「未知配置项」并给出最接近的字段名。\n\n`;
-  out += `配置文件位置：\`~/.sid-code/settings.json\`（用户级）、\`.sid-code/settings.json\`（项目级，优先）、\n`;
-  out += `\`.sid-code/settings.local.json\`（项目级本地，gitignore，最优先）。\n\n`;
+  out += `配置文件位置：\`~/.sid-code/settings.json\`（用户级）、\`<启动目录>/.sid-code/settings.json\`（项目级，优先）、\n`;
+  out += `\`<git 仓库根>/.sid-code/settings.local.json\`（项目级本地，gitignore，最优先；启动目录下的旧文件也合并读取）。\n\n`;
   out += `| 字段 | 类型 | 取值 / 约束 | 说明 |\n|---|---|---|---|\n`;
   for (const f of fields) {
     const values = f.enumValues.length

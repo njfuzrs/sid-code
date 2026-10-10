@@ -13,7 +13,7 @@
  * - Memory: 记忆键值对（累积）
  */
 
-import { join, dirname, relative, sep } from "path";
+import { basename, join, dirname, relative, sep } from "path";
 import { homedir, platform } from "os";
 import { execFileSync } from "child_process";
 import { existsSync, watch, realpathSync } from "fs";
@@ -22,7 +22,7 @@ import { getLogger } from "../debug/logger.ts";
 import { sidHomePath, getClaudeHome } from "./paths.ts";
 import { clearPromptCache } from "./system-prompt.ts";
 import { getOriginalCwd } from "../bootstrap/state.ts";
-import { getAncestorChain, getProjectIdentityRoot } from "./project-bases.ts";
+import { getAncestorChain, getCheckoutRoot } from "./project-bases.ts";
 
 /**
  * CLAUDE.md 文件名候选列表（对标 Claude Code）。
@@ -682,6 +682,12 @@ export async function findCLAUDEmdChain(startDir: string): Promise<string[]> {
   return [...chain, ...collect([AGENTS_MD_FILE])];
 }
 
+/** 父链 CLAUDE 系文件所属的层目录：`<层>/CLAUDE.md` → `<层>`，`<层>/.claude/CLAUDE.md` → `<层>` */
+function chainLayerDir(file: string): string {
+  const dir = dirname(file);
+  return basename(dir) === ".claude" ? dirname(dir) : dir;
+}
+
 /** dir 是否等于 root 或位于其下（纯路径比较） */
 function isWithinDir(dir: string, root: string): boolean {
   const rel = relative(root, dir);
@@ -1013,9 +1019,11 @@ export async function loadAllCLAUDEmd(
   // 项目根 = 父链最深一层所在目录（无命中时回退 startDir），供子目录扫描 / @import 基准 / 作用域采集。
   // P3 之后父链会越过 git root 一直到文件系统根，最深一层可能落在仓库外（仓库里没有 CLAUDE.md、
   // 外层工作区有）。此时不能拿那个外层目录当项目根——findProjectCLAUDEmdFiles 会从它往下扫
-  // 3 层，把兄弟项目的 CLAUDE.md 拉进来。所以只认落在项目身份根（B2）之内的那一层。
+  // 3 层，把兄弟项目的 CLAUDE.md 拉进来。所以只认落在当前工作树根（B2 checkout）之内的那一层。
+  // 用工作树根而不是主仓根：linked worktree 不在主仓目录之下，拿主仓根判会把 worktree 自己的
+  // CLAUDE.md 判成「仓库外」。
   const projectPath = chainFiltered.length > 0 ? chainFiltered[chainFiltered.length - 1] : null;
-  const identityRoot = getProjectIdentityRoot(startDir);
+  const identityRoot = getCheckoutRoot(startDir);
   const projectPathDir = projectPath ? dirname(projectPath) : null;
   const projectRoot =
     projectPathDir && isWithinDir(projectPathDir, identityRoot) ? projectPathDir : startDir;
@@ -1108,7 +1116,9 @@ export async function loadAllCLAUDEmd(
     return false;
   };
 
-  let projectChainRules: ProjectRules | null = null;
+  // P3：父链 CLAUDE.md 按「所在层目录」登记，供下面按层交错合并。
+  // `.claude/CLAUDE.md` 这类候选的 dirname 是 `<层>/.claude`，要再上一级才是层目录。
+  const chainRulesByDir = new Map<string, ProjectRules>();
   for (const p of chainFiltered) {
     seenRealPaths.add(safeResolvePath(p));
     const rules = await loadAndParse(p, projectRoot);
@@ -1117,7 +1127,7 @@ export async function loadAllCLAUDEmd(
       rules.layer = p === projectPath ? "project" : "subdir";
       if (!keepInScope(rules)) continue;
       log.info("RULES", `加载父链规则[${rules.layer}]: ${p}`);
-      projectChainRules = projectChainRules ? mergeProjectRules(projectChainRules, rules) : rules;
+      chainRulesByDir.set(chainLayerDir(p), rules);
     }
   }
 
@@ -1140,40 +1150,57 @@ export async function loadAllCLAUDEmd(
     }
   }
 
-  // 4. P3：沿父链（B4，cwd → 文件系统根）**每一层**加载 rules 目录，远者在前、近者在后。
+  // 4. P3：沿父链（B4，cwd → 文件系统根）**每一层**加载 rules 目录与本地私有规则。
   //    此前只读「最深一个含 CLAUDE.md 的目录」那一层，上层仓库 / 工作区的 rules 静默丢失。
   //    家目录那层的 ~/.claude/rules、~/.sid-code/rules 已作为 userRulesDir 加载过，由 seen 去重。
   const ancestorDirs = getAncestorChain(startDir);
-  const rulesDirRules: ProjectRules[] = [];
+  const rulesDirByDir = new Map<string, ProjectRules[]>();
+  const localByDir = new Map<string, ProjectRules>();
   for (const dir of ancestorDirs) {
-    rulesDirRules.push(...(await loadRulesDir(dir, seenRealPaths, projectRoot)));
+    rulesDirByDir.set(dir, await loadRulesDir(dir, seenRealPaths, projectRoot));
   }
-
-  // 5. P3：本地私有规则同样每层都读（Local 层，优先级最高，远者在前、近者在后）
-  const localRulesList: ProjectRules[] = [];
   for (const dir of ancestorDirs) {
     const r = await loadLocalRules(dir, seenRealPaths, projectRoot);
-    if (r) localRulesList.push(r);
+    if (r) localByDir.set(dir, r);
+  }
+
+  // 5. P3：父链**逐层交错**合并 —— 每层内部 CLAUDE.md → rules → CLAUDE.local.md，层与层之间
+  //    远者在前、近者在后（对齐 CC `claudemd.ts` 的逐目录循环）。
+  //    ⛔ 别改回「全部层的 CLAUDE.md → 全部层的 rules → 全部层的 local」：那样外层的
+  //    CLAUDE.local.md 会排在内层 CLAUDE.md / rules 之后，越过更近的项目规则生效。
+  //    子目录 CLAUDE.md（§3，projectRoot 之下按作用域收集的）归入 projectRoot 那一层，
+  //    排在该层 CLAUDE.md 之后、rules 之前 —— 与修改前它在合并链里的相对位置一致。
+  const ancestorLayers: ProjectRules[] = [];
+  let subPlaced = false;
+  for (const dir of ancestorDirs) {
+    const chainRules = chainRulesByDir.get(dir);
+    if (chainRules) ancestorLayers.push(chainRules);
+    if (subRules && dir === projectRoot) {
+      ancestorLayers.push(subRules);
+      subPlaced = true;
+    }
+    ancestorLayers.push(...(rulesDirByDir.get(dir) ?? []));
+    const local = localByDir.get(dir);
+    if (local) ancestorLayers.push(local);
   }
 
   // 6. 按优先级链合并，frontmatter paths 不匹配的规则被跳过
   //    顺序（后者覆盖/累积在前者之上）：
-  //    managed → user → userRulesDir → 父链(project+subdir) → 子目录 → rulesDir → local
+  //    managed → user → userRulesDir → 父链逐层(CLAUDE.md → [子目录] → rules → local)
   const ordered: (ProjectRules | null)[] = [
     managedRules,
     ...managedRulesDirRules,
     globalRules,
     ...userRulesDirRules,
-    projectChainRules,
-    subRules,
-    ...rulesDirRules,
-    ...localRulesList,
+    ...ancestorLayers,
+    // projectRoot 不在父链上（理论上不会发生：它要么是 startDir 要么是其祖先）时兜底追加
+    subPlaced ? null : subRules,
   ];
 
-  // 已在 §2/§3 逐文件过滤过的聚合结果（那里才是「同层多文件合并」的发生地，必须在合并前拦），
+  // 已在 §2/§3 逐文件过滤过的条目（那里才是「同层多文件合并」的发生地，必须在合并前拦），
   // 此处不再重复过滤——否则其 sourcePath 会被二次登记进 loadedPaths。
   const preFiltered = new Set<ProjectRules>(
-    [projectChainRules, subRules].filter(Boolean) as ProjectRules[],
+    [...chainRulesByDir.values(), subRules].filter(Boolean) as ProjectRules[],
   );
 
   let merged: ProjectRules | null = null;
