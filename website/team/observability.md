@@ -128,9 +128,22 @@ UserPromptSubmit: 1
 
 ### 本地保留多少
 
-默认保留最近 **100** 个会话目录，超了按修改时间 LRU 清理（`packages/core/src/trace/collector.ts` 的 `maxSessionsRetained`）。
-清理有个偏向：**优先删已上传的**（数据已在远端），未上传的即使更旧也尽量留
-（看 `.uploaded` 标记），避免丢掉还没采集走的数据。
+默认**不限数量**，和会话共用一套保留策略（`sessionRetention`，见[会话](/use/sessions)）：
+
+| 规则 | 默认 | 说明 |
+| --- | --- | --- |
+| 按时间 | 365 天 | `sessionRetention.maxAge`，超期的轨迹目录在启动期清理 |
+| 按体积 | 10GB | `sessionRetention.maxTotalSize`，`trajectories/sessions/` 合计超了才从最旧的删 |
+| 保护窗口 | 1 天 | `sessionRetention.minRetention`，窗口内更新过的目录不删 |
+| 按数量 | 不限 | `trace.maxSessionsRetained`，想限再写 |
+
+清理有两个偏向：**优先删已上传的**（数据已在远端），未上传的即使更旧也尽量留
+（看 `.uploaded` 标记）；**正在被别的 sid-code 进程写的会话不删**，宁可暂时超限。
+`sessionRetention.enabled: false` 时轨迹也不按时间和体积删。
+
+参考量级：实测本机 100 个会话目录合计约 37MB（单个 p50 24KB、p95 1.3MB），
+一天几十个会话一年也是 GB 级，碰不到 10GB。成本、缓存命中这类长期指标读的是
+`usage-ledger.jsonl` 与 `session-index.jsonl`，不随轨迹目录清理消失。
 
 ## 关掉与打开
 

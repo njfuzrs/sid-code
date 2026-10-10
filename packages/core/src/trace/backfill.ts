@@ -24,7 +24,7 @@
  * ## 判据为什么用 `.uploaded` 而不是重试队列
  *
  * 重试队列（`.upload_queue.jsonl`）本身不可靠：条目指向的会话目录会被 LRU
- * （`maxSessionsRetained` 默认 100）轮转删掉，剩下一堆指向空地址的门票。
+ * （体积兜底 / 显式 `maxSessionsRetained`）轮转删掉，剩下一堆指向空地址的门票。
  * 而「目录在、`session.traj` 在、`.uploaded` 缺」这个判据是**自洽**的：
  * 它只依赖磁盘现状，不依赖任何一个可能已经失真的旁路记录。
  *

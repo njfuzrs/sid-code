@@ -110,10 +110,34 @@ export async function initTraceCollector(
       // 真正的终态就永远不会再被补传。
     }
 
+    // 轨迹与会话共用一个体积上限 / 最小保留窗口（session/retention.ts 是单一事实源）；
+    // 关闭自动清理时轨迹也不按体积删（maxTotalBytes=0）。
+    const { resolveRetentionSettings, parseRetentionSize, parseRetentionPeriod } =
+      await import("../session/retention.ts");
+    const retention = resolveRetentionSettings(config.sessionRetention, config.cleanupPeriodDays);
+    let maxTotalBytes: number | undefined;
+    let minRetentionMs: number | undefined;
+    if (!retention.enabled) {
+      maxTotalBytes = 0;
+    } else {
+      // 解析失败 → 留 undefined 交给 collector 用默认值，不让写错的配置变成「全删」
+      try {
+        maxTotalBytes = parseRetentionSize(retention.maxTotalSize!);
+      } catch {
+        log.warn("TRACE", `sessionRetention.maxTotalSize 格式无效，轨迹按默认上限清理`);
+      }
+      try {
+        minRetentionMs = parseRetentionPeriod(retention.minRetention!);
+      } catch {
+        /* 用默认 */
+      }
+    }
     const collector = new TraceCollector(
       {
         outputDir: traceConfig.outputDir,
         maxSessionsRetained: traceConfig.maxSessionsRetained,
+        maxTotalBytes,
+        minRetentionMs,
         // 不传（undefined）时由 collector 侧解析 env 兜底 SID_CODE_TRACE_NO_RAW，
         // 所以这里原样透传而不是先 `?? true` —— 提前定死会把 env 通道堵掉。
         recordRawPayloads: traceConfig.recordRawPayloads,
