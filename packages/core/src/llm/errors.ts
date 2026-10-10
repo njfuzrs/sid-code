@@ -1,39 +1,33 @@
 /**
- * LLM 错误分类体系
- * 将原始错误分为 Terminal / Retryable / StreamValidation 三类
+ * LLM 错误类型与结构化字段提取工具。
  *
- * 增强（Phase 1.1）：新增 x-should-retry header 解析、rate-limit-reset header 解析、
- * 更细粒度的 HTTP 状态码分类（408/409）、response headers 提取与 Retry-After 精确解析。
+ * 2026-10-08：分类与生死决策已迁出本文件。`classifyError` / `classifyStreamError` /
+ * `TerminalError` / `StreamLevelError` / 网关 401 占位句闸门全部删除——它们是「单次观测即判死」
+ * 的载体（会话 20261008-173228-baeb949d）。现在的链路是：
+ *   `error-normalize.ts`（两种到达形态 → 同一个 NormalizedLLMError → 唯一分类器 classifyFamily）
+ *   → `recovery-policy.ts`（纯函数 decideRecovery：分类只调预算，不判生死）。
+ * 本文件只保留错误类、header / 状态码 / 网络码提取、abort 判定与细粒度谓词。
  */
 
-import {
-  isClassifierLexiconCode,
-  matchErrorLexicon,
-  type ClassifierLexiconCode,
-} from "./error-lexicon.ts";
+import { matchErrorLexicon } from "./error-lexicon.ts";
 
 // ─── 遍历 cause 链的常量 ───
 // 保持与原始实现一致的深度限制
 const MAX_CAUSE_DEPTH = 5;
 
-/** 不可重试的终端错误（模型不存在、认证失败、配额耗尽） */
-export class TerminalError extends Error {
-  constructor(
-    message: string,
-    public readonly reason: TerminalReason,
-  ) {
-    super(message);
-    this.name = "TerminalError";
-  }
-}
-
-export type TerminalReason =
-  | "auth_failed" // API Key 无效 / 403 无权限
-  | "model_not_found" // 模型不存在
-  | "quota_exhausted" // 配额永久耗尽（402 / 余额不足）—— 重试没有任何自愈可能
+/**
+ * 「嫌疑」类原因：认证 / 请求被拒 / 服务端拒绝重试。
+ *
+ * 原名 `TerminalReason`。改名是语义变更：它们不再意味着「不可重试、立刻判死」，
+ * 只决定走 auth_suspect / request_suspect 哪一族的预算（见 recovery-policy.ts）。
+ */
+export type SuspectReason =
+  | "auth_failed" // 401 / 403 / 认证类文案
+  | "model_not_found" // 404 / 模型不存在
+  | "quota_exhausted" // 402 / 余额不足
   | "content_policy" // 内容策略拒绝
-  | "invalid_request" // 请求参数错误
-  | "usage_limit_reached" // 用量到顶（会话 / 周窗口），等重置或换模型，充值也不一定有用
+  | "invalid_request" // 400 / 422
+  | "usage_limit_reached" // 用量到顶（会话 / 周窗口）
   | "server_declined_retry"; // 服务端明确要求不要重试（x-should-retry: false）
 
 /** 可重试的瞬态错误（限流、过载、网络抖动、请求超时、锁超时） */
@@ -74,28 +68,6 @@ export type StreamValidationReason =
   | "no_finish_reason" // 流结束但没有 finish_reason
   | "malformed_tool_call" // 工具调用 JSON 解析失败
   | "empty_response"; // 响应为空
-
-/**
- * 流内错误（T6）：HTTP 200 但流内事件携带的服务端错误（如 Anthropic 的
- * overloaded_error、OpenAI 的 error chunk）。继承 RetryableError，让 fallback.ts
- * 的流式重试链天然识别为可重试，而无需依赖错误消息文本关键词匹配。
- *
- * 与普通 RetryableError 的区别：streamLevel=true 标记它来自"伪装成功的流"
- * （fail-fast 依据），并保留 provider / errorType / statusCode 供可观测性归因。
- */
-export class StreamLevelError extends RetryableError {
-  readonly streamLevel = true;
-  constructor(
-    public readonly provider: string,
-    public readonly statusCode: number,
-    message: string,
-    reason: RetryableReason = "overloaded",
-    retryAfterMs?: number,
-  ) {
-    super(message, reason, retryAfterMs);
-    this.name = "StreamLevelError";
-  }
-}
 
 /** 用户或系统主动中断请求 */
 /**
@@ -299,6 +271,13 @@ const RETRYABLE_CONNECTION_MESSAGES = [
   "network error",
   "failed to fetch",
   "terminated",
+  // 2026-10-08：Anthropic SDK 的 `Connection error.`（会话 20261005-234012 首轮零重试的原文）
+  // 与 Bun fetch 的网络失败（`fetch failed` / `Unable to connect…`，它们是 TypeError，
+  // 必须在 origin 判定里先于「是 TypeError → 本地 bug」认出来）。
+  "connection error",
+  "connection refused",
+  "unable to connect",
+  "fetch failed",
   // ─── B5-2：流被中途截断（响应体没读完就断） ───
   //
   // 这类故障与上面的"连接被对端关闭"同源、同为瞬态，但表现在**更上层**：连接确实
@@ -320,6 +299,19 @@ const RETRYABLE_CONNECTION_MESSAGES = [
   "premature close", // undici/node stream 提前关闭
   "incomplete chunked encoding", // chunked 传输未收到结束块
 ];
+
+/**
+ * 是否「网络 / 连接类故障」：有可重试的网络错误码，或文案命中连接被关闭 / 流被截断词表。
+ *
+ * `error-normalize.ts` 的 origin 判定第 2 步与分类器的已识别 network_error 都只调这一个函数，
+ * 词表只在本文件维护一份。
+ */
+export function isNetworkFailure(error: unknown): boolean {
+  const code = getNetworkErrorCode(error);
+  if (code && RETRYABLE_NETWORK_CODES.includes(code)) return true;
+  const msg = (error instanceof Error ? error.message : String(error ?? "")).toLowerCase();
+  return RETRYABLE_CONNECTION_MESSAGES.some((frag) => msg.includes(frag));
+}
 
 // ─── Cause 链遍历工具 ───
 
@@ -620,61 +612,10 @@ function messageOf(error: unknown): string {
 }
 
 /**
- * 「真 key 作废」的措辞白名单（小写）。命中即 Terminal，永不当占位句重试。
- *
- * 判据是**下一步动作**：命中这些说明要去换凭据，重试一万次也一样。
- * 与 `isGatewayPlaceholderAuthError` 的关系是「优先否决」——后者只在这批都不命中时才成立。
- */
-const REAL_AUTH_FAILURE_MESSAGES = [
-  "invalid api key",
-  "invalid x-api-key",
-  "authentication_error",
-  "authentication error",
-  "authentication failed",
-  "x-api-key header is required",
-  "no auth credentials",
-  "credentials expired",
-  "organization has been disabled",
-];
-
-/**
- * 16 号 C1：判断这是**网关回的 401 占位句**，而不是「我们的 key 真的作废了」。
- *
- * 为什么必须拆这两种：A2 五题（`regex-log` / `polyglot-c-py` / `sanitize-git-repo` …）
- * 的死因是网关回 `Invalid token. (request id: …)` 且带 `statusCode=401`，被
- * `classifyError` 判成 `TerminalError("auth_failed")` → 第一次 `auth_refresh`
- * retry-once 之后整轮收工（1–8 轮就死），而 cc 同题 3/5 解出。**key 是好的**，
- * 网关下一秒就恢复——这种句子该重试。真 key 作废则必须一次到底，否则用户要
- * 白等满次退避才看到「去换 key」。
- *
- * ⛔ 判据必须挂 `statusCode`，不能只在 `is401Error` 的文本表里加 `"invalid token"`：
- * 生产路径是 `StreamLevelError.statusCode=401`（`classifyStreamError` 兜底分支造的），
- * 正文里既没有边界 `401` 也没有认证关键词——只改文本表的版本**在生产路径上测不到**。
- *
- * ⛔ 刻意用**正向白名单**（占位句形状）而不是「401 且不是真 key 作废」的反向判据：
- * 反向判据会把一个措辞不透明的 `401 Unauthorized`（多半真是 key 配错了）也拖进
- * 3 次退避，把「立刻告诉用户去换 key」换成「慢 3 倍再告诉他」。
- */
-export function isGatewayPlaceholderAuthError(error: unknown): boolean {
-  // 必须是结构化 401：文本里的 401 可能来自 request id（见 hasBoundaryDigits 的事故）。
-  if (getHTTPStatus(error) !== 401) return false;
-
-  const msg = error instanceof Error ? error.message.toLowerCase() : String(error).toLowerCase();
-
-  // 真 key 作废优先否决。
-  if (REAL_AUTH_FAILURE_MESSAGES.some((m) => msg.includes(m))) return false;
-
-  // 网关占位句的形状：`Invalid token. (request id: 20260908…)`。
-  // `invalid token` 是实测原文；`request id` 是网关自报的转发标记（我们的 key
-  // 若真作废，厂商 SDK 给的是 `invalid x-api-key`，不带这个尾巴）。
-  return msg.includes("invalid token") || msg.includes("invalid_token");
-}
-
-/**
  * 从错误信息中解析 Retry-After（秒 → 毫秒）
  * 优先匹配 headers，回退到消息正则提取
  */
-function parseRetryAfter(error: unknown): number | undefined {
+export function parseRetryAfter(error: unknown): number | undefined {
   // 优先从 headers 提取
   const fromHeaders = parseRetryAfterFromHeaders(error);
   if (fromHeaders) return fromHeaders;
@@ -687,249 +628,4 @@ function parseRetryAfter(error: unknown): number | undefined {
     if (seconds > 0 && seconds <= 300) return seconds * 1000;
   }
   return undefined;
-}
-
-/**
- * HTTP 状态码 → 错误类。**只看状态码，不看文案**。
- *
- * 表与 `error-messages.ts` 的 `codeFromStructured` 是同一张：两处各写一份，
- * 就会出现「面板说欠费、重试却当 server_error 打满 10 次」这种相反结论。
- * 402 / 403 此前这张表里没有，欠费和无权限都落到「无法分类」。
- */
-function classifyByHttpStatus(
-  status: number,
-  msg: string,
-  error: unknown,
-): TerminalError | RetryableError | undefined {
-  switch (status) {
-    case 401:
-    case 403:
-      return new TerminalError(msg, "auth_failed");
-    case 402:
-      return new TerminalError(msg, "quota_exhausted");
-    case 404:
-      return new TerminalError(msg, "model_not_found");
-    case 400:
-    case 422:
-      return new TerminalError(msg, "invalid_request");
-    case 408:
-      return new RetryableError(msg, "request_timeout");
-    case 409:
-      return new RetryableError(msg, "lock_timeout");
-    case 429:
-      return new RetryableError(msg, "rate_limit", parseRetryAfter(error));
-    case 503:
-    case 529:
-      return new RetryableError(msg, "overloaded", parseRetryAfter(error));
-    case 500:
-    case 502:
-    case 504:
-      return new RetryableError(msg, "server_error");
-    default:
-      return undefined;
-  }
-}
-
-/** 词表码 → 重试决策。面板专属码（context_overflow 等）返回 undefined，保持 fail-fast。 */
-const LEXICON_TERMINAL: ReadonlySet<ClassifierLexiconCode> = new Set([
-  "auth_failed",
-  "model_not_found",
-  "quota_exhausted",
-  "content_policy",
-  "invalid_request",
-  "usage_limit_reached",
-]);
-
-function classifyByLexicon(
-  msg: string,
-  error: unknown,
-): TerminalError | RetryableError | undefined {
-  const code = matchErrorLexicon(msg);
-  if (!code || !isClassifierLexiconCode(code)) return undefined;
-  if (LEXICON_TERMINAL.has(code)) return new TerminalError(msg, code);
-  const retryAfter =
-    code === "rate_limit" || code === "overloaded" ? parseRetryAfter(error) : undefined;
-  return new RetryableError(msg, code, retryAfter);
-}
-
-/**
- * 将原始错误分类为 Terminal / Retryable / 未知
- * 供 fallback.ts 和 provider 使用
- *
- * 判定顺序：runtime 超时 → x-should-retry:true → 结构化状态码/共享词表的**终端**结论 →
- * x-should-retry:false → 同一次判定的**可重试**结论 → 网络错误码 →
- * 连接被对端关闭的文案 → 原样返回。
- * 终端与可重试被闸门隔开，不是笔误：见函数体里 1a / 1b 两段注释。
- * 词表与面板文案共用 `error-lexicon.ts`，不要在这里再写一份关键词。
- */
-export function classifyError(error: unknown): TerminalError | RetryableError | Error {
-  const msg = error instanceof Error ? error.message : String(error);
-  const structuredStatus = getHTTPStatus(error);
-
-  // ─── 0.0 runtime 级 TimeoutError（AbortSignal.timeout）→ 可重试 ───
-  //
-  // `AbortSignal.timeout(ms)` 到点时由 runtime 抛
-  // `DOMException("The operation timed out.", "TimeoutError")`。它此前**既不是**
-  // RetryableError **也不是** TerminalError：
-  //   · `isAbortError()` 不认它（name 是 TimeoutError，不是 AbortError），
-  //     两个 abort reason 白名单里也没有它；
-  //   · 词表里的 `timeout` 关键词看似能兜住，但那是**文本匹配**，
-  //     一旦 runtime 换文案（各引擎/各版本措辞不同、非英文 locale 更是）就落空。
-  // 于是它落到 `fallback.ts` 的 fail-fast 零重试分支：一条被 fetch 绝对硬顶掐断的流
-  // **一次重试都没有**。这层硬顶现已默认关闭（见 network-profile.ts 的
-  // fetchAbsoluteTimeoutMs），但用户可以显式开 —— 那时归因必须是对的，
-  // 所以这条分类不能随"默认关闭"一起省掉。
-  //
-  // 判据用**结构性信号** `err.name === "TimeoutError"`，不靠消息文本 ——
-  // memory `stream-timeout-misclassified-as-cancel-rootcause` 记的正是
-  // "判断是否该按超时/中断分类绝不能只靠错误消息文本"这条教训（上一次栽在
-  // 一个措辞通用的 RequestAbortedError 抢先命中文本正则上）。
-  // 放在最前面（连 x-should-retry 之前）：它是 runtime 抛的本地错误，
-  // 不带任何 HTTP 响应/响应头，下面所有基于 status/header 的分支对它都无意义。
-  if (isRuntimeTimeoutError(error)) {
-    return new RetryableError(msg, "timeout");
-  }
-
-  // 0. 服务端 x-should-retry header 优先（B5-3：现在能区分三态，见 parseXShouldRetry）
-  const serverRetryHint = parseXShouldRetry(error);
-  if (serverRetryHint === true) {
-    const retryAfter = parseRetryAfter(error);
-    return new RetryableError(msg, "server_error", retryAfter, true);
-  }
-
-  // 1. 结构化状态码优先于文案，其次才是共享词表。
-  //
-  // 有状态码时**不看文本**：一条 `400 ... overloaded` 是请求本身错了，文案里的
-  // overloaded 不能把它拖进重试；一条 `503 Service Unavailable`（正文既无数字也无
-  // overloaded）则必须按过载重试，而不是落到「无法分类」。这是 D1/D2 的根：
-  // 同一个状态码走两条路径得出相反结论，就是因为有一条路径把状态码丢了。
-  //
-  // 状态码在场但不在表里（如 418）→ **不**回退文本：文本里的巧合关键词不该推翻
-  // 一个结构化的、我们不认识的状态码。没有状态码才看文案，且只认词表里有的 ——
-  // 认不出就落到最后原样返回，把「认不出的都重试」会把确定性故障拖进 10 次退避。
-  //
-  // ⚠️ 这里只**算出**结论，不立刻全部返回：Terminal 的那半边马上返回，
-  // Retryable 的那半边必须等过了下面 B5-3 那道闸门。见那段注释。
-  const structural =
-    structuredStatus !== undefined
-      ? classifyByHttpStatus(structuredStatus, msg, error)
-      : classifyByLexicon(msg, error);
-
-  // 1a. 终端结论先返回：它们的 reason（auth_failed / model_not_found /
-  //     invalid_request / quota_exhausted）比 server_declined_retry 更具体，
-  //     是用户能照着动手修的信息。B5-3 的放置门槛钉的正是这条
-  //     （resilience-b5-gates.test.ts「false 不得越权盖掉更精确的 terminal 归因」）。
-  if (structural instanceof TerminalError) return structural;
-
-  // ─── B5-3：服务端明确 `x-should-retry: false` → 不重试 ───
-  //
-  // 位置是刻意的：**在终端分支之后、可重试分支之前**。
-  //  · 放终端之后 → 401/404/400 保住各自更精确的 reason（见上方注释）；
-  //  · 放可重试之前 → 这才是它真正改变行为的地方。下面 429/529/5xx 会无条件判成
-  //    RetryableError，网关说"别打了"也照打满 10 次退避（最坏 ~20 分钟）——正是本项要修的。
-  //
-  // 与 CC 的一处刻意差异：CC 对"内部用户 + 5xx"开了 `x-should-retry: false` 的豁免
-  // （`withRetry.ts:744-751`），依据是它自家 5xx 常为可自愈抖动。我们不照搬：我们默认
-  // 走公司网关，网关的 5xx + `false` 更可能是"这条线路/这个 key 不通"的确定性故障，
-  // 豁免它就等于把最该省的那 20 分钟又烧回去。
-  if (serverRetryHint === false) {
-    return new TerminalError(msg, "server_declined_retry");
-  }
-
-  // 1b. 到这里 serverRetryHint 只可能是 undefined（true 已在第 0 段返回、false 在上一段），
-  //     所以此刻才可以放行可重试结论。把这一步与 1a 合成一句 `return structural`
-  //     就是 2026-09-24 那次改动踩的坑：429/500/529 + `x-should-retry: false`
-  //     会在闸门之前就返回 RetryableError，网关说"别打了"仍照打满 10 次退避。
-  if (structural) return structural;
-
-  // 2. 网络错误码检测
-  const code = getNetworkErrorCode(error);
-  if (code && RETRYABLE_NETWORK_CODES.includes(code)) {
-    return new RetryableError(msg, "network_error");
-  }
-
-  // 3.5 连接被对端关闭（消息文本兜底）——这类错误常以裸 Error 冒泡，无 .code 结构字段，
-  // 靠上面的 RETRYABLE_NETWORK_CODES 命不中。典型：Bun/undici fetch 在流式响应中途
-  // 断连抛出 "The socket connection was closed unexpectedly"、"socket hang up"、
-  // "other side closed"、"terminated" 等。它们是**瞬态**网络故障，应重试而非静默放弃。
-  // 根因（2026-07 迁移 skill 崩溃复盘）：网关在 [DONE] 后延迟关 socket，最终 RST 抛出
-  // 上述消息，此前落到"无法分类"分支 → 不重试。放在网络码检测之后，避免遮蔽结构化码。
-  if (RETRYABLE_CONNECTION_MESSAGES.some((frag) => msg.toLowerCase().includes(frag))) {
-    return new RetryableError(msg, "network_error");
-  }
-
-  // 4. 无法分类，返回原始错误
-  return error instanceof Error ? error : new Error(msg);
-}
-
-/**
- * T6：把「流内错误」的结构化字段（provider + 上游 error.type/status + message）
- * 映射为 StreamLevelError。相比 classifyError(new Error(message)) 仅靠消息文本
- * 关键词匹配，这里优先用 provider 明确给出的错误类型（如 anthropic overloaded_error），
- * 消息不含关键词时也能正确判成 overloaded → 触发重试而非静默降级。
- *
- * @param provider  provider 名称（"anthropic" / "openai" / ...）
- * @param message   展示用错误消息
- * @param errorType 上游结构化错误类型（Anthropic: overloaded_error / api_error / rate_limit_error；OpenAI error.type / code）
- * @param statusCode 若上游附带 HTTP 语义状态码
- */
-export function classifyStreamError(
-  provider: string,
-  message: string,
-  errorType?: string,
-  statusCode?: number,
-): StreamLevelError | TerminalError {
-  const type = (errorType ?? "").toLowerCase();
-
-  // 1. 结构化 error.type 优先（不依赖消息文本）
-  if (type.includes("overloaded") || type === "overloaded_error") {
-    return new StreamLevelError(provider, statusCode ?? 529, message, "overloaded");
-  }
-  if (type.includes("rate_limit")) {
-    const retryAfter = parseRetryAfter(new Error(message));
-    return new StreamLevelError(provider, statusCode ?? 429, message, "rate_limit", retryAfter);
-  }
-  // 认证 / 模型不存在 / 无效请求：流内也可能出现，归 Terminal（不重试）
-  if (type.includes("authentication") || type === "authentication_error") {
-    return new TerminalError(message, "auth_failed");
-  }
-  if (type.includes("not_found")) {
-    return new TerminalError(message, "model_not_found");
-  }
-  if (type.includes("invalid_request")) {
-    return new TerminalError(message, "invalid_request");
-  }
-
-  // 2. 回退到 classifyError，**状态码必须带进去**。
-  //
-  // 此前写 `classifyError(new Error(message))`，statusCode 在这一步被丢掉，只在
-  // 第 1 步（看 errorType）和第 3 步（兜底回填，仅用于展示）用到。于是一条
-  // `type: "invalid_request"` 配 HTTP 400 的网关报文：第 1 步认不出这个 type
-  // （上面那条只认 `invalid_request` 作为子串，而网关常给的是别的 code），
-  // 第 2 步又没了状态码 → 落到第 3 步按 server_error 重试 10 次。
-  // 400 / 404 / 402 全是确定性失败，每次重试都是空烧。
-  //
-  // `getHTTPStatus` 读的是 `.status` / `.statusCode`，与 fallback.ts 在调用方
-  // 已经在做的是同一件事，只是那里做了、这里漏了。
-  const classified = classifyError(
-    statusCode !== undefined
-      ? Object.assign(new Error(message), { status: statusCode })
-      : new Error(message),
-  );
-  if (classified instanceof TerminalError) return classified;
-  if (classified instanceof RetryableError) {
-    return new StreamLevelError(
-      provider,
-      statusCode ?? 0,
-      message,
-      classified.reason,
-      classified.retryAfterMs,
-    );
-  }
-  // 3. 兜底：无法归类的流内错误默认按 server_error 重试（流已 200，倾向瞬态）。
-  //
-  // 到这里时状态码要么没有，要么不在 classifyByHttpStatus 的表里——4xx 在第 2 步
-  // 已经返回 Terminal 了，不会落到这一支。所以这个兜底不再能把 400 重试 10 次。
-  const finalStatus = statusCode ?? (hasBoundaryDigits(message, "529") ? 529 : 500);
-  return new StreamLevelError(provider, finalStatus, message, "server_error");
 }

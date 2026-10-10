@@ -22,6 +22,7 @@ import {
 } from "@sid-code/core/daemon/durable-projects.ts";
 import { extractFinalResponse } from "@sid-code/core/daemon/headless-executor.ts";
 import { Scheduler } from "@sid-code/core/cron/scheduler.ts";
+import { grantDurableTask } from "@sid-code/core/cron/durable-grants.ts";
 import type { CronTask } from "@sid-code/core/cron/types.ts";
 
 let tmpHome: string;
@@ -180,6 +181,20 @@ describe("HeadlessExecutor.extractFinalResponse", () => {
   it("空输入返回空串", () => {
     expect(extractFinalResponse("   ")).toBe("");
   });
+
+  it("stdout 前面混了 debug 日志时仍能抽到正文（B24：app.json debug=true 的 -p 子进程）", () => {
+    const payload = JSON.stringify(
+      { session_id: "s", role: "assistant", content: [{ type: "text", text: "## Review\n{\nx" }] },
+      null,
+      2,
+    );
+    const noisy = `\x1b[90m[21:22:46]\x1b[0m [CLI] 调试模式已启用\n\x1b[2m  {\n    "level": "DEBUG"\n  }\x1b[0m\n${payload}\n`;
+    expect(extractFinalResponse(noisy)).toBe("## Review\n{\nx");
+  });
+
+  it("非 JSON 且无可剥离前缀时仍原样返回", () => {
+    expect(extractFinalResponse("log line\n{\nnot json")).toBe("log line\n{\nnot json");
+  });
 });
 
 describe("Scheduler daemon 模式 catch-up", () => {
@@ -194,6 +209,8 @@ describe("Scheduler daemon 模式 catch-up", () => {
     mkdirSync(join(dir, ".sid-code"), { recursive: true });
     writeFileSync(join(dir, ".sid-code", "scheduled_tasks.json"), JSON.stringify([task]));
     registerDurableProject(dir);
+    // 模拟「本机创建」：直接写文件的任务没有本机授权，驱动者会拒绝执行（B43）
+    grantDurableTask(dir, { ...task, workspaceDir: task.workspaceDir ?? dir });
     return dir;
   }
 

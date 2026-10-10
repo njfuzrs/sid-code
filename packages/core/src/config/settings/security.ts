@@ -49,20 +49,37 @@ export const SECURITY_SENSITIVE_FIELDS = new Set<string>([
   // 不允许项目级 settings 把会话归属到别的 org / user。身份是审计 actor，
   // 被仓库 settings.json 改掉等于让恶意项目伪造成本归属。
   "identity",
+  // P2：backend.url 决定设备凭据发往哪里（登录 / 市场 / 远程 MCP origin 校验）。
+  // 仓库 settings.json 能改它，就能把员工凭据导到攻击者端点。
+  "backend",
 ]);
 
 /**
  * 过滤项目级配置中的安全敏感字段。
- * 返回新对象，不修改入参。
+ * 返回新对象，不修改入参（深拷贝：嵌套对象也不与入参共享引用）。
+ *
+ * 清单条目支持点分路径（如 `"webFetch.isolate"`），按路径逐层删除（D11）。
+ * 此前只按顶层键 `in` 匹配：把任一敏感开关重构进嵌套对象，这道防线会静默失效而现有
+ * 测试仍全绿。现在两头都锁住了——这里能删嵌套路径；`security-fields-shape.test.ts`
+ * 断言清单里每一条都能在 SettingsSchema 上解析到真实字段，字段挪了位置测试立刻红。
  */
 export function filterProjectSettings(settings: SettingsJson): SettingsJson {
-  const filtered: Record<string, unknown> = { ...settings };
+  const filtered = structuredClone(settings) as Record<string, unknown>;
   for (const field of SECURITY_SENSITIVE_FIELDS) {
-    if (field in filtered) {
-      delete filtered[field];
-    }
+    deletePath(filtered, field.split("."));
   }
   return filtered as SettingsJson;
+}
+
+/** 按路径删除嵌套键；中途遇到非对象即停（该路径不存在，无可删） */
+function deletePath(obj: Record<string, unknown>, segments: string[]): void {
+  let cur: unknown = obj;
+  for (let i = 0; i < segments.length - 1; i++) {
+    if (!cur || typeof cur !== "object" || Array.isArray(cur)) return;
+    cur = (cur as Record<string, unknown>)[segments[i]!];
+  }
+  if (!cur || typeof cur !== "object" || Array.isArray(cur)) return;
+  delete (cur as Record<string, unknown>)[segments[segments.length - 1]!];
 }
 
 /**

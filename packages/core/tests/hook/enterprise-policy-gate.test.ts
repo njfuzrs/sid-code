@@ -2,8 +2,8 @@
  * G13：EnterprisePolicyGate 接线到 HookRegistry
  *
  * 验证 getHooksForEvent 经企业策略门控过滤：
- * 1. disableAllHooks → 任何来源的 hook 都被屏蔽；
- * 2. allowManagedHooksOnly → 仅保留 Runtime/Project 来源，屏蔽 User/Plugin/Global；
+ * 1. disableAllHooks → 用户可配置的 hook 全部屏蔽（H28：内部 runtime hook 除外）；
+ * 2. allowManagedHooksOnly → 仅保留 Runtime/Managed 来源，屏蔽 User/Project/Plugin/Global（H27：Project 随 git clone 而来）；
  * 3. 未设策略 / 空策略 → 不过滤（全部返回）。
  */
 
@@ -33,9 +33,10 @@ describe("G13 EnterprisePolicyGate 过滤", () => {
     expect(registry.getHooksForEvent(HookEventName.PreToolUse).length).toBe(0);
   });
 
-  test("allowManagedHooksOnly → 仅保留 Runtime/Project 来源", () => {
+  test("allowManagedHooksOnly → 仅保留 Runtime/Managed 来源（H27：Project 不算企业管理）", () => {
     const registry = new HookRegistry();
     addHook(registry, ConfigSource.Runtime, "runtime-hook");
+    addHook(registry, ConfigSource.Managed, "managed-hook");
     addHook(registry, ConfigSource.Project, "project-hook");
     addHook(registry, ConfigSource.User, "user-hook");
     addHook(registry, ConfigSource.Plugin, "plugin-hook");
@@ -45,7 +46,8 @@ describe("G13 EnterprisePolicyGate 过滤", () => {
     const names = kept.map((e) => (e.config.type === "command" ? e.config.name : undefined));
     expect(kept.length).toBe(2);
     expect(names).toContain("runtime-hook");
-    expect(names).toContain("project-hook");
+    expect(names).toContain("managed-hook");
+    expect(names).not.toContain("project-hook");
     expect(names).not.toContain("user-hook");
     expect(names).not.toContain("plugin-hook");
   });
@@ -66,24 +68,29 @@ describe("G13 EnterprisePolicyGate 过滤", () => {
     system.registerHook(
       {
         type: "runtime",
-        name: "user-runtime-hook",
+        name: "internal-runtime-hook",
         action: async () => {
           fired = true;
         },
-        source: ConfigSource.User,
       },
+      HookEventName.PreToolUse,
+    );
+    system.registerHook(
+      { type: "command", name: "user-cmd", command: "true", source: ConfigSource.User },
       HookEventName.PreToolUse,
       { source: ConfigSource.User },
     );
+    const types = () => system.getHooksForEvent(HookEventName.PreToolUse).map((e) => e.config.type);
 
-    // 应用 disableAllHooks → 门面转发到 registry，fire 时被门控屏蔽，action 不执行
+    // 应用 disableAllHooks → 门面转发到 registry：用户 command hook 被屏蔽；
+    // H28：内部 runtime hook（轨迹 / 遥测 / 会话指标的载体）不受此开关影响，照常执行
     system.applyEnterprisePolicy({ disableAllHooks: true });
+    expect(types()).toEqual(["runtime"]);
     await system.firePreToolUseEvent("Bash", { command: "ls" }, "tool-1");
-    expect(fired).toBe(false);
-
-    // 解除门控 → hook 恢复执行
-    system.applyEnterprisePolicy(undefined);
-    await system.firePreToolUseEvent("Bash", { command: "ls" }, "tool-2");
     expect(fired).toBe(true);
+
+    // 解除门控 → 用户 hook 恢复
+    system.applyEnterprisePolicy(undefined);
+    expect(types().sort()).toEqual(["command", "runtime"]);
   });
 });

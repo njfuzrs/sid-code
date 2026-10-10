@@ -21,7 +21,7 @@
  *   bun run scripts/docs-gen-reference.ts --check    # 对账：不一致退 1（pre-commit 门禁调用）
  *   bun run scripts/docs-gen-reference.ts --stale    # 报告 >90 天未复核的指南页（只告警不阻塞）
  *   bun run scripts/docs-gen-reference.ts --coverage # 报告只在 ref/ 出现、无指南页介绍的命令（告警）
- *   bun run scripts/docs-gen-reference.ts --coverage-strict  # 同上，但有未覆盖即退 1（存量清完后启用）
+ *   bun run scripts/docs-gen-reference.ts --coverage-strict  # 同上，但有未覆盖即退 1（pre-commit 调用；2026-10-03 存量清零后启用）
  */
 import { readFileSync, writeFileSync, existsSync } from "node:fs";
 import { join, resolve } from "node:path";
@@ -98,6 +98,70 @@ function clip(s: string, max: number): string {
   const t = cell(s);
   const truncated = t.length <= max ? t : t.slice(0, max - 1) + "…";
   return truncated.replace(/</g, "&lt;").replace(/\{\{/g, "&#123;&#123;");
+}
+
+/**
+ * 内部编号：方案编号、审计编号、ADR、spec 章节号这类只有维护者看得懂的标记（B34 / D117）。
+ * 它们在源码注释里是「这段为什么这么写」的溯源线索，是资产；但搬上官网就成了噪音，
+ * 读者会以为是自己该知道的东西。只在**生成时**剥，源码注释保持原样。
+ *
+ * 前后要求不是字母数字：防止误伤「10MB」「v2」这类正常文本里的子串。
+ */
+const INTERNAL_ID =
+  /(?<![A-Za-z0-9_.-])(?:SEC-AUDIT-\d{4}-\d{2}-\d{2}(?: P\d)?|GAP-\d+|ADR-\d+|spec \d+(?:\s*§[\d.]+)?|§\d+(?:\.\d+)*(?: P\d-\d+)?|Phase \d+(?:\.\d+)*|P\d-\d+(?: 迭代 [IVX]+)?|E\.\d+|[GMB]\d+)(?![A-Za-z0-9])/g;
+
+/** 源码位置引用（`cli.ts:1223`、`hook/registry.ts`）：行号会漂（D117 实测已漂 117 行），且对用户无意义 */
+const SOURCE_REF = /(?:见\s*)?[\w./-]+\.tsx?(?::\d+(?:[-–]\d+)?)?/g;
+
+/**
+ * 字段 / 事件说明的用户可见版本：剥内部编号与源码位置，再收拾剥完留下的空括号与悬空标点。
+ * 导出给测试做变异自证。
+ */
+export function sanitizeDescription(raw: string): string {
+  // 只做空白归一，不调 cell()：表格转义由渲染端（clipSentences → cell）统一做一次，
+  // 这里先转义会让 `|` 变成 `\\|` 再被转一遍，页面上显示出反斜杠（实测撞到）。
+  let t = String(raw ?? "")
+    .replace(/\s+/g, " ")
+    .trim();
+  // 编号后跟分隔符的一起剥（「G10：autoDream…」「spec 17 — analytics」「P3-1：可配置归因」）
+  t = t.replace(new RegExp(INTERNAL_ID.source + "\\s*(?:[：:]|—|-(?=\\s)|[，,、])?\\s*", "g"), "");
+  t = t.replace(SOURCE_REF, "");
+  for (let i = 0; i < 3; i++) {
+    t = t
+      .replace(/[（(]\s*[，,、；;：:]?\s*[)）]/g, "") // 剥空了的括号
+      .replace(/[（(]\s*[，,、；;：:]\s*/g, "（") // 「（，默认…」
+      .replace(/\s*[，,、；;：:]\s*([)）])/g, "$1") // 「…，）」
+      .replace(/^\s*[，,、；;：:—-]\s*/, "");
+  }
+  return t
+    .replace(/\s+(?=[「」（）。，、；：])/g, "") // 剥掉编号后留在中文标点前的空格
+    .replace(/(?<=[「（])\s+/g, "")
+    .replace(/\s{2,}/g, " ")
+    .trim();
+}
+
+/**
+ * 按句截断（B34 / D118）：原先按字数硬截，`toolSearch` 截在取值列表中间、
+ * `sandboxAutoAllowBash` 截在「新默认值就变成…」—— 半句话比没有更误导。
+ *
+ * 规则：尽量多放完整句子；第一句本身就超长时**保留完整首句**（宁长勿断）。
+ * 句界认中文句号 / 问叹号 / 分号，以及列表项起点（JSDoc 里常见的「- "warn"：…」）。
+ */
+export function clipSentences(s: string, max: number): string {
+  const t = cell(s);
+  if (t.length <= max) return escapeVue(t);
+  const parts = t.split(/(?<=[。！？；])|(?=\s- )/).filter((p) => p.trim());
+  let out = "";
+  for (const p of parts) {
+    if (out && (out + p).length > max) break;
+    out += p;
+  }
+  out = out.trim();
+  return escapeVue(out.length < t.length ? `${out}…` : out);
+}
+
+function escapeVue(t: string): string {
+  return t.replace(/</g, "&lt;").replace(/\{\{/g, "&#123;&#123;");
 }
 
 // ============================================================
@@ -253,6 +317,8 @@ interface HookEvent {
   configName: string;
   /** 枚举注释标了「预留」= 有 fire 方法但无调用点，配了不会触发 */
   reserved: boolean;
+  /** 内部事件（INTERNAL_HOOK_EVENTS）：用户配置会被归一化层跳过并告警，不是「等接线」 */
+  internal: boolean;
   description: string;
 }
 
@@ -277,12 +343,15 @@ async function loadHookEvents(): Promise<HookEvent[]> {
     "HookEventName",
   );
   const wired = await loadWiredHookEvents();
+  const normalize = await import(join(ROOT, "packages/core/src/hook/config-normalize.ts"));
+  const internalSet = normalize.INTERNAL_HOOK_EVENTS as ReadonlySet<string>;
   return Object.keys(enumObj).map((k) => {
     const description = comments.get(k) ?? "";
     return {
       name: k,
       configName: toSnake.get(enumObj[k]) ?? k,
       reserved: !wired.has(k),
+      internal: internalSet.has(enumObj[k]!),
       description,
     };
   });
@@ -345,18 +414,29 @@ function renderHookEvents(events: HookEvent[]): string {
   out += `> 其中 **${fireable}** 类当前有真实触发点。\n`;
   out += `>\n`;
   out += `> **第一列就是你写进 \`settings.json\` 的键名。** 两种写法运行时等价\n`;
-  out += `> （\`pre_tool_use\` 与 \`PreToolUse\` 都认，内部会归一化），本表优先给 snake_case——\n`;
-  out += `> 与[配置 Hook](/extend/hooks) 的示例保持一致，少一处需要读者自己换算的地方。\n`;
+  out += `> （\`pre_tool_use\` 与 \`PreToolUse\` 都认，内部会归一化），本表第一列给 snake_case，\n`;
+  out += `> 第三列是 PascalCase（与 Claude Code 同名，[Hook 指南](/extend/hooks)的示例用这种）。\n`;
+  const pascalOnly = events.filter((e) => e.configName === e.name);
+  if (pascalOnly.length) {
+    out += `> 第一列是 PascalCase、枚举名列为 — 的 ${pascalOnly.length} 个事件**没有 snake_case 别名**，\n`;
+    out += `> 配置里只能写这一种（不是漏写）。\n`;
+  }
   out += `>\n`;
-  out += `> 「会触发」列标 ✗ 的事件枚举已定义但**当前无调用点，配了不会被调用**——\n`;
-  out += `> 这是实现现状，不是文档遗漏。它与「名字合不合法」是两个独立维度：\n`;
-  out += `> 这些名字都能通过配置校验，只是不会有东西来触发它们。\n\n`;
+  out += `> 「会触发」列标 ✗ 的事件**配了不会被调用**，分两种，触发时机列写明是哪一种：\n`;
+  out += `> 「内部事件」写进配置会被跳过并在启动时告警；「刻意不做」能通过配置校验，\n`;
+  out += `> 但 sid 没有对应场景，恒不触发（原因见 [Hook 指南](/extend/hooks)的刻意偏离表）。\n\n`;
   out += `| 配置里写 | 会触发 | 枚举名（源码内部） | 触发时机 |\n|---|---|---|---|\n`;
   for (const e of events) {
     const fires = e.reserved ? "✗" : "✓";
     // 预留事件的说明文字统一是那句「预留：有 fire 方法但无调用点」，已由「会触发」列表达，
     // 正文里再重复一遍纯占宽度，所以剥掉。
-    const desc = e.reserved ? "（枚举已定义，等接线）" : clip(e.description, 160);
+    // 内部事件与「刻意不做」是两回事：前者写进配置会被跳过并告警，后者合法但恒不触发。
+    // 原先统一写「等接线」，让人以为两者都只是还没做完。
+    const desc = e.internal
+      ? "（内部事件，不支持用户配置；写进配置会被跳过并告警）"
+      : e.reserved
+        ? clipSentences(sanitizeDescription(e.description), 160) || "（刻意不做，恒不触发）"
+        : clipSentences(sanitizeDescription(e.description), 160);
     const enumCol = e.configName === e.name ? "—" : `\`${cell(e.name)}\``;
     out += `| \`${cell(e.configName)}\` | ${fires} | ${enumCol} | ${desc} |\n`;
   }
@@ -386,7 +466,7 @@ function zodTypeName(z: any): {
     constraint = cur._def.checks
       .map((c: any) =>
         c.kind === "min"
-          ? `≥${c.value}`
+          ? `${c.inclusive === false ? ">" : "≥"}${c.value}`
           : c.kind === "max"
             ? `≤${c.value}`
             : c.kind === "int"
@@ -422,7 +502,12 @@ function zodTypeName(z: any): {
  * 不会告诉你是描述丢了。所以这里改成「至少 2 个空格、不限上限」，
  * 让缩进深度的变化（换 formatter、多包一层函数）不再影响提取结果。
  */
-function extractFieldComments(file: string, anchor: string, stopAt: string): Map<string, string> {
+function extractFieldComments(
+  file: string,
+  anchor: string,
+  stopAt: string,
+  opts: { lineCommentsAreHeaders?: boolean } = {},
+): Map<string, string> {
   const src = readFileSync(file, "utf8");
   const s = src.indexOf(anchor);
   if (s < 0) throw new Error(`${file} 里找不到锚点 "${anchor}"——源码结构变了，生成器需同步`);
@@ -441,22 +526,53 @@ function extractFieldComments(file: string, anchor: string, stopAt: string): Map
       out.set(field, inline);
       continue;
     }
-    const buf: string[] = [];
-    for (let j = i - 1; j >= 0; j--) {
-      const p = lines[j].trim();
-      if (p.startsWith("/**") || p === "*/" || p.startsWith("*") || p.startsWith("//")) {
-        buf.unshift(
-          p
-            .replace(/^\/\*\*|^\*\/$|^\*|^\/\//g, "")
-            .replace(/\*\/$/, "")
-            .trim(),
-        );
-      } else break;
-    }
-    const text = buf.filter(Boolean).join(" ").trim();
+    const text = leadingComment(lines, i, opts.lineCommentsAreHeaders === true);
     if (text) out.set(field, text);
   }
   return out;
+}
+
+/**
+ * 取第 i 行（字段行）紧贴上方的注释，作为用户可见说明。两条约定（B34 / D117、D118）：
+ *
+ * 1. **JSDoc 优先，且不越过它往上拼 `//` 分组行**。`// 权限配置` / `// Hook 和 MCP`
+ *    这类行注释是给一片字段起的小标题，原先会被一起拼进第一个字段的说明
+ *    （`provider`「LLM 配置 LLM 提供商…」、`hooks` 整条说明就是「Hook 和 MCP」）。
+ * 2. **JSDoc 只取首段**：空行（`*` 独占一行）之后是写给维护者的话——为什么这么定、
+ *    踩过什么坑——生成器不取。以后新字段照这个约定写，就不会再把内部讨论搬上官网。
+ *
+ * 只有 `//` 行注释（没有 JSDoc）时，取紧贴的那一串；中间有空行就停。
+ */
+function leadingComment(lines: string[], i: number, lineCommentsAreHeaders = false): string {
+  const raw: string[] = [];
+  let sawJsdoc = false;
+  // Config 接口的约定是「字段说明一律 JSDoc，`//` 只做分组小标题」：
+  // 那边紧贴字段的 `//` 行也是标题（`// Hook 和 MCP` 正上方就是 hooks），不取，
+  // 让说明回落到 SettingsSchema 那边的行注释。
+  if (lineCommentsAreHeaders && lines[i - 1]?.trim().startsWith("//")) return "";
+  for (let j = i - 1; j >= 0; j--) {
+    const p = lines[j].trim();
+    const isLine = p.startsWith("//");
+    const isDoc = p.startsWith("/**") || p === "*/" || p.startsWith("*");
+    if (!isLine && !isDoc) break;
+    if (isLine && sawJsdoc) break; // 规则 1：JSDoc 之上的分组行不要
+    if (isDoc) sawJsdoc = true;
+    raw.unshift(p);
+  }
+  // 规则 2：JSDoc 里第一个空段落之前的部分
+  const body: string[] = [];
+  for (const p of raw) {
+    const text = p
+      .replace(/^\/\*\*|^\*\/$|^\*|^\/\//g, "")
+      .replace(/\*\/$/, "")
+      .trim();
+    if (!text) {
+      if (body.length && sawJsdoc && p !== "*/" && !p.startsWith("/**")) break;
+      continue;
+    }
+    body.push(text);
+  }
+  return body.join(" ").trim();
 }
 
 interface SettingField {
@@ -467,6 +583,154 @@ interface SettingField {
   description: string;
   /** true = schema 未声明、靠 .passthrough() 生效的字段（写了能用，但拼错不报错） */
   passthroughOnly: boolean;
+  /** 对象字段的子键（B34 / D119，只展开一层；trace.upload 例外，见 PASSTHROUGH_OBJECTS） */
+  subKeys?: SubKey[];
+}
+
+interface SubKey {
+  name: string;
+  type: string;
+  description: string;
+  subKeys?: SubKey[];
+}
+
+/**
+ * schema 里是 `z.string()`、但合法取值另有一份可执行常量的字段（B34 / D115）。
+ * 取值从常量自省，不抄注释：`permissionMode` 的注释曾写「6 种」，常量早已是 9 种，
+ * 而 `--check` 只保证「页面 = 注释」，注释过期它照样绿。
+ */
+async function loadIntrospectedEnums(): Promise<Record<string, readonly string[]>> {
+  const schema = await import(join(ROOT, "packages/core/src/config/schema.ts"));
+  return { permissionMode: schema.PERMISSION_MODES as readonly string[] };
+}
+
+/**
+ * passthrough 对象字段 → 它的 TS 接口（文件 + 接口名）。schema 没声明这些对象，
+ * 子键只能从接口文本里读；类型列照抄接口里的类型标注。
+ */
+const PASSTHROUGH_OBJECTS: Record<string, { file: string; iface: string }> = {
+  trace: { file: "packages/core/src/config/config.ts", iface: "TraceConfig" },
+  telemetry: { file: "packages/core/src/config/config.ts", iface: "TelemetryConfig" },
+  analytics: { file: "packages/core/src/config/config.ts", iface: "AnalyticsConfig" },
+  ide: { file: "packages/core/src/config/config.ts", iface: "IDEConfig" },
+  teamMemory: { file: "packages/core/src/config/config.ts", iface: "TeamMemoryConfig" },
+  sessionRetention: { file: "packages/core/src/config/config.ts", iface: "SessionRetentionConfig" },
+  checkpoint: { file: "packages/core/src/config/config.ts", iface: "CheckpointConfig" },
+  goal: { file: "packages/core/src/goal/config.ts", iface: "GoalConfig" },
+  mcpPolicy: { file: "packages/core/src/mcp/types.ts", iface: "McpPolicy" },
+};
+
+/**
+ * 再往下展开一层的子对象。只开这一个口子：`trace.upload` 是轨迹上传的**唯一入口**
+ * （url / token / auto_upload / delete_after_upload），参考页查不到它就等于没写（D119）。
+ */
+const NESTED_OBJECTS: Record<string, { file: string; iface: string }> = {
+  "trace.upload": { file: "packages/core/src/config/config.ts", iface: "TraceUploadConfig" },
+};
+
+/** normalizeConfigKeys 对这些对象做了 snake_case → camelCase 归一（config.ts 的特殊处理分支） */
+const SNAKE_CASE_SUBKEYS = new Set(["trace", "telemetry", "analytics", "checkpoint", "identity"]);
+
+/** 读 TS 接口的直接成员：名字、类型标注、紧贴的注释。只认接口第一层（缩进 2 格）。 */
+function readInterfaceMembers(file: string, iface: string): SubKey[] {
+  const src = readFileSync(join(ROOT, file), "utf8");
+  const s = src.indexOf(`export interface ${iface} {`);
+  if (s < 0) throw new Error(`${file} 里找不到 interface ${iface}——源码结构变了，生成器需同步`);
+  const e = src.indexOf("\n}", s);
+  const lines = src.slice(s, e).split("\n");
+  const out: SubKey[] = [];
+  for (let i = 1; i < lines.length; i++) {
+    const m = lines[i].match(/^ {2}([a-zA-Z][a-zA-Z0-9]*)\??:\s*(.+?);?\s*(?:\/\/.*)?$/);
+    if (!m) continue;
+    const type = m[2]
+      .replace(/import\([^)]*\)\./g, "")
+      .replace(/;$/, "")
+      .trim();
+    out.push({ name: m[1], type, description: leadingComment(lines, i) });
+  }
+  return out;
+}
+
+/**
+ * schema 声明的对象字段 → 同形 TS 接口，用来补 zod 子 schema 没写 JSDoc 的子键说明。
+ * 子键**清单**永远取 zod（权威），接口只供说明文字。
+ */
+const SCHEMA_OBJECT_DOCS: Record<string, { file: string; iface: string }> = {
+  quota: { file: "packages/core/src/config/config.ts", iface: "QuotaFullConfig" },
+  search: { file: "packages/core/src/config/config.ts", iface: "SearchConfig" },
+  identity: { file: "packages/core/src/config/config.ts", iface: "IdentityConfig" },
+  git: { file: "packages/core/src/config/config.ts", iface: "GitConfig" },
+  worktree: { file: "packages/core/src/worktree/config.ts", iface: "WorktreeConfig" },
+};
+
+/**
+ * types.ts 里每个 `const XxxSchema = lazySchema(` 块各自的字段注释。
+ *
+ * 必须按块取、不能整份文件抽一张表：`commitAttribution` 同时出现在 worktree 与 git
+ * 两个子 schema 里，整份抽会让 `git.commitAttribution` 拿到 worktree 那条
+ * 「是否在 worktree 内安装 commit 归因 hook」（实测撞到过）。
+ *
+ * 只认 JSDoc：子 schema 里的 `//` 行注释在这个文件里是写给维护者的
+ * （「nonnegative 而非 positive」「PR14：…必须独立于…」），不是给用户的说明。
+ */
+function readSubSchemaBlocks(): Array<{ keys: Set<string>; docs: Map<string, string> }> {
+  const src = readFileSync(join(ROOT, "packages/core/src/config/settings/types.ts"), "utf8");
+  const blocks: Array<{ keys: Set<string>; docs: Map<string, string> }> = [];
+  const starts = [...src.matchAll(/^const \w+Schema = lazySchema\(/gm)].map((m) => m.index!);
+  for (let b = 0; b < starts.length; b++) {
+    const end = src.indexOf("\n);", starts[b]);
+    const lines = src.slice(starts[b], end).split("\n");
+    const keys = new Set<string>();
+    const docs = new Map<string, string>();
+    for (let i = 0; i < lines.length; i++) {
+      const m = lines[i].match(/^\s{2,}([a-zA-Z][a-zA-Z0-9_]*):\s*z\./);
+      if (!m || keys.has(m[1])) continue;
+      keys.add(m[1]);
+      if (lines[i - 1]?.trim().startsWith("//")) continue;
+      const text = leadingComment(lines, i);
+      if (text) docs.set(m[1], text);
+    }
+    blocks.push({ keys, docs });
+  }
+  return blocks;
+}
+
+/** zod 对象的直接子键（schema 声明的对象字段） */
+function zodSubKeys(
+  field: string,
+  z: any,
+  blocks: Array<{ keys: Set<string>; docs: Map<string, string> }>,
+): SubKey[] {
+  let cur = z;
+  for (let i = 0; i < 10 && cur?._def; i++) {
+    const t = cur._def.typeName;
+    if (t === "ZodOptional" || t === "ZodDefault" || t === "ZodNullable") cur = cur._def.innerType;
+    else break;
+  }
+  if (cur?._def?.typeName !== "ZodObject") return [];
+  const names = Object.keys(cur.shape);
+  // 子键集合完全吻合的那个块就是它的定义处（同名子 schema 不存在，所以至多一个）
+  const block = blocks.find(
+    (b) => b.keys.size === names.length && names.every((n) => b.keys.has(n)),
+  );
+  const ifaceSrc = SCHEMA_OBJECT_DOCS[field];
+  const ifaceDocs = new Map(
+    (ifaceSrc ? readInterfaceMembers(ifaceSrc.file, ifaceSrc.iface) : []).map((k) => [
+      k.name,
+      k.description,
+    ]),
+  );
+  return Object.entries(cur.shape as Record<string, any>).map(([name, v]) => {
+    const { type, enumValues, constraint } = zodTypeName(v);
+    const shown = enumValues.length
+      ? enumValues.map((x) => `"${x}"`).join(" | ")
+      : [type, constraint].filter(Boolean).join(" ");
+    return {
+      name,
+      type: shown,
+      description: block?.docs.get(name) || ifaceDocs.get(name) || "",
+    };
+  });
 }
 
 /**
@@ -478,57 +742,9 @@ interface SettingField {
  * 它们不是 settings.json 可配项，倒进来会造出"写了也没用"的假字段——比漏写更糟。
  */
 const PASSTHROUGH_FIELDS: Array<[string, string]> = [
-  ["trace", "object"],
-  ["telemetry", "object"],
-  ["analytics", "object"],
-  ["ide", "object"],
-  ["teamMemory", "object"],
-  ["sessionRetention", "object"],
-  ["checkpoint", "object"],
-  ["toolSearch", "union"],
-  ["pluginDirs", "array"],
-  ["showLineNumbers", "boolean"],
-  ["goal", "object"],
-  // §5.1 补录：三字段均在 Config 接口声明 + 有消费点 + SettingsSchema 未声明（靠 .passthrough() 生效），
-  // 用户写进 settings.json 能生效，此前漏进白名单导致 ref/settings.md 不含它们。
-  // 证据：config.ts:451(enableSandbox)+cli.ts:1808 消费；config.ts:144(outputStyle)+app.ts:2225/2689 消费；
-  // config.ts:449(speculativeClassifier)+tool-executor.ts:770/checker.ts:1148 消费。
-  ["enableSandbox", "boolean"],
-  // P2-3（2026-09-22）：沙箱自动放行 bash 的显式 opt-in。满足同一四条判据——
-  // Config 有声明（config.ts sandboxAutoAllowBash）+ keyMap 已登记 + 有真实消费点
-  // （cli.ts 构造 SandboxConfig）+ SettingsSchema 未声明（靠 .passthrough() 生效）。
-  ["sandboxAutoAllowBash", "boolean"],
-  ["outputStyle", "string"],
-  ["speculativeClassifier", "boolean"],
-  // 二次补录（2026-08-26）：同样满足「Config 有声明 + keyMap 已登记（故 settings.json
-  // 写了能生效）+ 有真实消费点 + SettingsSchema 未声明」四条。
-  //
-  // 纳入判据是**持久化配置旋钮**，不是「Config 里所有非 schema 字段」——
-  // print / resume / continue / maxTurns / outputFormat / sessionId 等属**单次调用态**
-  // （每次跑给一次的 CLI 参数），写进 settings.json 会得到"永久无头模式"这类荒谬语义，
-  // 故一律不收。判据与既有条目一致：trace / checkpoint / showLineNumbers 都是 app.json
-  // 侧的持久旋钮，所以 debug / audit 家族同样够格。
-  //
-  // 证据（消费点，均非测试）：
-  //   autoDream            app.ts:3388
-  //   autoMemory           app.ts:3336（经 isAutoMemoryEnabled）
-  //   conflictDetection    cli.ts:1466
-  //   conflictSeverity     cli.ts:1468 + tool/write.ts:237 + tool/edit.ts:514
-  //   mcpPolicy            config.ts:1441 → mcp/policy.ts 三层门控
-  //   toolSearchKeepLoaded query/loop.ts:741 + query/init-helpers.ts:414
-  //   audit / auditLogFile cli.ts:1247 / cli.ts:1256（零配置常驻审计日志）
-  //   debug*               cli.ts:1223 / :1230 / :1236（真正决定开不开调试日志的那一支）
-  ["autoDream", "boolean"],
-  ["autoMemory", "boolean"],
-  ["conflictDetection", "boolean"],
-  ["conflictSeverity", "string"],
-  ["mcpPolicy", "object"],
-  ["toolSearchKeepLoaded", "array"],
-  ["audit", "boolean"],
-  ["auditLogFile", "string"],
-  ["debug", "boolean"],
-  ["debugLevel", "string"],
-  ["debugLogFile", "string"],
+  // B32（2026-10-02）：原先这里的 27 个字段已全部补进 SettingsSchema（含漏登记的 bridge），
+  // 清单清空。机制保留：以后再有「Config 有声明 + 有消费点 + schema 未声明」的字段，
+  // 先补 schema；补不了（类型表达不出来）才登记到这里，页面会自动标 ⚠。
 ];
 
 /**
@@ -550,18 +766,28 @@ async function loadSettingFields(): Promise<SettingField[]> {
     join(ROOT, "packages/core/src/config/config.ts"),
     "export interface Config {",
     "\n}\n",
+    { lineCommentsAreHeaders: true },
   );
+
+  const introspected = await loadIntrospectedEnums();
+  const subSchemaBlocks = readSubSchemaBlocks();
 
   const fields: SettingField[] = [];
   for (const name of Object.keys(shape)) {
     const { type, enumValues, constraint } = zodTypeName(shape[name]);
+    const extra = introspected[name];
+    const zodKeys = type === "object" ? zodSubKeys(name, shape[name], subSchemaBlocks) : [];
+    // B32 把 trace 等补进 schema 时写的是 `z.object({}).passthrough()`——zod 侧 0 个子键，
+    // 真实子键仍只在 TS 接口里。不回退的话这批对象在参考页上整段消失（含 trace.upload）。
+    const subKeys = zodKeys.length ? zodKeys : (passthroughSubKeys(name) ?? []);
     fields.push({
       name,
-      type,
-      enumValues,
+      type: extra ? "enum" : type,
+      enumValues: extra ? [...extra] : enumValues,
       constraint,
       description: configComments.get(name) ?? schemaComments.get(name) ?? "",
       passthroughOnly: false,
+      subKeys: subKeys.length ? subKeys : undefined,
     });
   }
 
@@ -574,17 +800,35 @@ async function loadSettingFields(): Promise<SettingField[]> {
       constraint: "",
       description: configComments.get(name) ?? "",
       passthroughOnly: true,
+      subKeys: passthroughSubKeys(name),
     });
   }
 
   return fields.sort((a, b) => a.name.localeCompare(b.name));
 }
 
+function passthroughSubKeys(name: string): SubKey[] | undefined {
+  const src = PASSTHROUGH_OBJECTS[name];
+  if (!src) return undefined;
+  const keys = readInterfaceMembers(src.file, src.iface);
+  if (!keys.length) throw new Error(`interface ${src.iface} 读到 0 个成员——提取正则失配`);
+  for (const k of keys) {
+    const nested = NESTED_OBJECTS[`${name}.${k.name}`];
+    if (nested) k.subKeys = readInterfaceMembers(nested.file, nested.iface);
+  }
+  return keys;
+}
+
 function renderSettingFields(fields: SettingField[]): string {
   const pass = fields.filter((f) => f.passthroughOnly);
-  let out = `> 共 **${fields.length}** 个顶层字段。其中 ${fields.length - pass.length} 个由\n`;
-  out += `> \`SettingsSchema\` 声明（类型/枚举/约束经运行时自省导出），${pass.length} 个标 ⚠ 的字段\n`;
-  out += `> 靠 schema 的 \`.passthrough()\` 生效——**写了能用，但字段名拼错不会报错，只会静默不生效**。\n\n`;
+  // B32 之后 passthrough 补录清单为空是常态；导语按实际数量分支，别写出「0 个标 ⚠」这种句子
+  let out = pass.length
+    ? `> 共 **${fields.length}** 个顶层字段。其中 ${fields.length - pass.length} 个由\n` +
+      `> \`SettingsSchema\` 声明（类型/枚举/约束经运行时自省导出），${pass.length} 个标 ⚠ 的字段\n` +
+      `> 靠 schema 的 \`.passthrough()\` 生效——**写了能用，但字段名拼错不会报错，只会静默不生效**。\n`
+    : `> 共 **${fields.length}** 个顶层字段，全部由 \`SettingsSchema\` 声明（类型/枚举/约束经运行时自省导出）。\n`;
+  // 与 config.ts recordUnknownSettingKeys 的行为对账：未知键不拒绝（向前兼容），但启动会提示
+  out += `> 写了表里没有的顶层键（多半是拼错）不会报错退出，但启动时会提示「未知配置项」并给出最接近的字段名。\n\n`;
   out += `配置文件位置：\`~/.sid-code/settings.json\`（用户级）、\`.sid-code/settings.json\`（项目级，优先）、\n`;
   out += `\`.sid-code/settings.local.json\`（项目级本地，gitignore，最优先）。\n\n`;
   out += `| 字段 | 类型 | 取值 / 约束 | 说明 |\n|---|---|---|---|\n`;
@@ -592,11 +836,57 @@ function renderSettingFields(fields: SettingField[]): string {
     const values = f.enumValues.length
       ? f.enumValues.map((v) => `\`${v}\``).join(" / ")
       : f.constraint || "—";
+    const anchor = f.subKeys?.length ? `（子键见[下文](#${subKeyAnchor(f.name)})）` : "";
     out += `| \`${cell(f.name)}\`${f.passthroughOnly ? " ⚠" : ""} | ${f.type} | ${cell(
       values,
-    )} | ${clip(f.description, 120)} |\n`;
+    )} | ${clipSentences(userDescription(f.name, f.description), 160)}${anchor} |\n`;
+  }
+
+  const objects = fields.filter((f) => f.subKeys?.length);
+  if (objects.length) {
+    out += `\n## 对象字段的子键\n\n`;
+    out += `> 下表只展开一层；类型取自 zod schema（⚠ 字段取自 TypeScript 接口声明）。\n`;
+    for (const f of objects) {
+      out += `\n### \`${f.name}\` {#${subKeyAnchor(f.name)}}\n\n`;
+      if (SNAKE_CASE_SUBKEYS.has(f.name)) {
+        const sample = f.subKeys!.find((k) => /[A-Z]/.test(k.name)) ?? f.subKeys![0];
+        out += `子键也接受 snake_case 写法（如 \`${toSnake(sample.name)}\`），加载时归一。\n\n`;
+      }
+      out += renderSubKeyTable(f.subKeys!);
+      for (const k of f.subKeys!) {
+        if (!k.subKeys?.length) continue;
+        const path = `${f.name}.${k.name}`;
+        out += `\n#### \`${path}\` {#${subKeyAnchor(path)}}\n\n`;
+        out += renderSubKeyTable(k.subKeys);
+      }
+    }
   }
   return out;
+}
+
+function subKeyAnchor(path: string): string {
+  return `key-${path.replace(/\./g, "-").toLowerCase()}`;
+}
+
+function toSnake(name: string): string {
+  return name.replace(/[A-Z]/g, (c) => `_${c.toLowerCase()}`);
+}
+
+function renderSubKeyTable(keys: SubKey[]): string {
+  let out = `| 子键 | 类型 | 说明 |\n|---|---|---|\n`;
+  for (const k of keys) {
+    const desc = k.description ? clipSentences(userDescription(k.name, k.description), 160) : "—";
+    out += `| \`${cell(k.name)}\` | ${cell(k.type)} | ${desc} |\n`;
+  }
+  return out;
+}
+
+/**
+ * 用户可见的字段说明：剥内部编号与源码位置，再去掉复述字段名本身的开头
+ * （「cleanupPeriodDays：会话轨迹清理周期…」）—— 左边那一列已经写着字段名了。
+ */
+function userDescription(name: string, raw: string): string {
+  return sanitizeDescription(raw).replace(new RegExp(`^${name}\\s*[：:]\\s*`), "");
 }
 
 // ============================================================
@@ -624,6 +914,7 @@ export const HELP_ONLY_WHITELIST: Record<string, string> = {
   interval: "daemon 子命令参数（packages/cli/src/command/daemon.ts）",
   "max-concurrent": "daemon 子命令参数（packages/cli/src/command/daemon.ts）",
   json: "agents / mcp / auth 子命令参数",
+  verify: "auth status 子命令参数（packages/cli/src/command/auth.ts，调 /ctl/whoami 核验凭据）",
   scope: "mcp 子命令参数（packages/cli/src/command/mcp-cli.ts）",
   // bootstrap 零导入快速路径（与 --version / --self-check 同层），刻意不进顶层 parseArgs。
   // 理由：门禁要在**任何环境**下都能问构建身份 —— 配置缺失、~/.sid-code/ 不存在、
@@ -705,6 +996,12 @@ interface HelpEntry {
   group: string;
   flags: string;
   desc: string;
+  /**
+   * 子命令的续行原文（用法 / 选项 / 示例），保留换行与相对缩进。
+   * 只有子命令段填它：参数表一格一行没问题，子命令的多行用法压进一格再截断会丢掉
+   * 子命令清单本身（D112：`mcp` 一格正好截在 `<list|get|add|remove>` 处）。
+   */
+  detail?: string[];
 }
 
 /** 取 printHelp 的模板字符串正文 */
@@ -761,14 +1058,58 @@ function parseHelpSubcommands(helpSrc: string): HelpEntry[] {
     if (!inSection) continue;
     const m = line.match(/^ {2}([a-z][a-z-]*)\s{2,}(.*)$/);
     if (m) {
-      last = { group: "子命令", flags: m[1], desc: m[2].trim() };
+      last = { group: "子命令", flags: m[1], desc: m[2].trim(), detail: [] };
       entries.push(last);
       continue;
     }
-    const cont = line.match(/^\s{6,}(\S.*)$/);
-    if (cont && last) last.desc = `${last.desc} ${cont[1].trim()}`.trim();
+    // 续行不再拼进 desc：保留原文行，渲染时进独立的「用法」小节（D112）
+    if (/^\s{6,}\S/.test(line) && last) last.detail!.push(line);
+  }
+  // 去掉公共前导缩进，保留续行之间的相对缩进（「选项:」下各行要对齐）
+  for (const e of entries) {
+    const lines = e.detail!;
+    const indent = Math.min(...lines.map((l) => l.match(/^ */)![0].length));
+    e.detail = lines.map((l) => l.slice(indent));
   }
   return entries;
+}
+
+function subAnchor(name: string): string {
+  return `sub-${name}`;
+}
+
+/**
+ * 解释「参数条目数」与「parseArgs flag 数」为什么不相等（D113 ②）。
+ *
+ * 两个数口径不同：条目按 help 文本的行计，flag 按 parseArgs 声明计。一行可能写两个顶层
+ * flag（不同时出现在两个计数里），也可能写一个顶层没声明的入口（取反式 / 快速路径）；
+ * 反过来 HIDDEN_FLAGS 声明了但不写进 help。差值由这三类构成——**按数据算，不写死**，
+ * 否则下次加一个 flag 这句话就又成了一句骗人的解释。
+ */
+function describeCountGap(entries: HelpEntry[], rec: CliReconcile): string {
+  const declared = new Set(rec.parseArgsFlags);
+  const helpOnly: string[] = [];
+  const multi: string[] = [];
+  for (const e of entries) {
+    const flags = [...e.flags.matchAll(/--([a-z][a-z0-9-]*)/g)].map((m) => m[1]);
+    const top = flags.filter((f) => declared.has(f));
+    if (top.length === 0) helpOnly.push(`\`${e.flags}\``);
+    else if (top.length > 1) multi.push(`\`${e.flags}\``);
+  }
+  const hidden = rec.parseArgsFlags.filter((f) => f in HIDDEN_FLAGS).map((f) => `\`--${f}\``);
+  if (entries.length === rec.parseArgsFlags.length && !helpOnly.length && !multi.length) {
+    return "两个数逐一对应。";
+  }
+  const single = entries.length - helpOnly.length - multi.length;
+  const parts: string[] = [`${single} 条各对应 1 个顶层 flag`];
+  if (helpOnly.length)
+    parts.push(
+      `${helpOnly.length} 条不对应顶层声明（${helpOnly.join("、")}：取反式或快速路径入口）`,
+    );
+  if (multi.length) parts.push(`${multi.length} 条一行写了多个 flag（${multi.join("、")}）`);
+  if (hidden.length)
+    parts.push(`${hidden.length} 个声明了但刻意不写进帮助（${hidden.join("、")}）`);
+  return `两个数不相等是口径不同、不是对账没对平：条目按帮助文本的行计，${parts.join("；")}。`;
 }
 
 function renderCli(helpSrc: string, rec: CliReconcile): string {
@@ -778,10 +1119,19 @@ function renderCli(helpSrc: string, rec: CliReconcile): string {
   let out = `> 共 **${entries.length}** 个参数条目、**${subs.length}** 个子命令。\n`;
   out += `> 描述取自 \`sid-code --help\`，并与 \`packages/cli/src/cli.ts\` 的 \`parseArgs\` 声明\n`;
   out += `> （**参数能不能用的唯一权威**，共 ${rec.parseArgsFlags.length} 个 flag）交叉对账：\n`;
-  out += `> "能用但没写"和"写了但不能用"两类缺陷都会让对账测试失败。\n\n`;
+  out += `> "能用但没写"和"写了但不能用"两类缺陷都会让对账测试失败。\n`;
+  out += `> ${describeCountGap(entries, rec)}\n\n`;
 
   out += `## 子命令\n\n| 子命令 | 说明 |\n|---|---|\n`;
-  for (const s of subs) out += `| \`sid-code ${cell(s.flags)}\` | ${clip(s.desc, 200)} |\n`;
+  for (const s of subs) {
+    const more = s.detail?.length ? `（用法见[下文](#${subAnchor(s.flags)})）` : "";
+    out += `| \`sid-code ${cell(s.flags)}\` | ${clip(s.desc, 200)}${more} |\n`;
+  }
+  // 多行用法单独成节、原样进代码块：表格一格装不下，截断会丢掉子命令清单（D112）
+  for (const s of subs) {
+    if (!s.detail?.length) continue;
+    out += `\n### sid-code ${s.flags} {#${subAnchor(s.flags)}}\n\n\`\`\`text\n${s.detail.join("\n")}\n\`\`\`\n`;
+  }
 
   let group = "";
   for (const e of entries) {
@@ -798,13 +1148,13 @@ function renderCli(helpSrc: string, rec: CliReconcile): string {
 // 数据源 6：环境变量（help.ts 环境变量段 × 源码 process.env 扫描）
 // ============================================================
 
-interface EnvVar {
+export interface EnvVar {
   group: string;
   name: string;
   desc: string;
 }
 
-function parseHelpEnvVars(helpSrc: string): EnvVar[] {
+export function parseHelpEnvVars(helpSrc: string): EnvVar[] {
   const lines = helpBody(helpSrc);
   const out: EnvVar[] = [];
   let inSection = false;
@@ -914,12 +1264,37 @@ function scanSourceEnvVars(): Set<string> {
   return found;
 }
 
+/**
+ * help 环境变量段里同一个变量登记了两次 = 两处说明各说各的（D123 实测：
+ * `SID_CODE_RESPONSE_HEADER_TIMEOUT_MS` 在网络段和高级段各一行、说法不同），
+ * 页首计数也会多算。直接报错，让人当场合并，而不是把两条都搬上官网。
+ */
+export function findDuplicateEnvVars(vars: EnvVar[]): string[] {
+  const seen = new Set<string>();
+  const dup = new Set<string>();
+  for (const v of vars) (seen.has(v.name) ? dup : seen).add(v.name);
+  return [...dup].sort();
+}
+
 function renderEnv(vars: EnvVar[], scanned: Set<string>): string {
+  const dup = findDuplicateEnvVars(vars);
+  if (dup.length) {
+    throw new Error(
+      `packages/cli/src/help.ts 环境变量段重复登记：${dup.join("、")}。合并成一行后再生成。`,
+    );
+  }
   const documented = new Set(vars.map((v) => v.name));
   const undocumented = [...scanned].filter((n) => !documented.has(n)).sort();
+  const scannedDocumented = vars.filter((v) => scanned.has(v.name)).length;
+  const helpOnly = vars.length - scannedDocumented;
 
   let out = `> 共 **${vars.length}** 个环境变量，取自 \`sid-code --help\` 的环境变量段，\n`;
-  out += `> 并与源码里实际的 \`process.env\` 读取点（扫到 ${scanned.size} 个）交叉核对。\n\n`;
+  out += `> 并与源码里实际的 \`process.env\` 读取点（扫到 ${scanned.size} 个）交叉核对。\n`;
+  // D123：两个数口径不同——按数据算出来写清楚，不写死
+  out += `> 扫到的 ${scanned.size} 个里 ${scannedDocumented} 个在上表、${undocumented.length} 个列在页尾；`;
+  out += helpOnly
+    ? `表里另有 ${helpOnly} 个是扫描认不出的读法（如拼接出的变量名），仍以 help 为准。\n\n`
+    : `表里每个变量都扫到了读取点。\n\n`;
   out += `> 优先级：环境变量 > \`settings.json\`。\`SID_*\` 前缀的变量只对 sid-code 生效，\n`;
   out += `> 不与同机的其他工具共享。\n`;
 
@@ -1014,7 +1389,7 @@ function collectSitePages(): SitePage[] {
 
 function renderLlmsTxt(pages: SitePage[]): string {
   let out = `# sid-code\n\n`;
-  out += `> 跑在终端的 coding agent —— 多 provider 可插拔、功能自主、数据自主。\n\n`;
+  out += `> 长在企业研发环境里的 coding agent —— 你能改、能量、能审、数据不出门的 agent 底座。\n\n`;
   out += `本文件是给大模型读的全站索引（共 ${pages.length} 页）。\n`;
   out += `\`/ref/\` 下的参考页由 \`scripts/docs-gen-reference.ts\` 从源码生成，与实现同源。\n\n`;
 
@@ -1238,7 +1613,7 @@ export function checkNarrativeCoverage(cmdNames: string[]): CoverageResult {
  * 报告叙述覆盖度。
  *
  * @param strict true = 有未覆盖命令则返回非零（阻断）。
- *   当前存量 21 个未覆盖，先走告警模式；存量清完后把 pre-commit 的调用改成 --coverage-strict。
+ *   2026-10-03 存量清零，pre-commit 已改调 --coverage-strict；--coverage 只留给人工查看。
  */
 function reportCoverage(cmdNames: string[], strict: boolean): number {
   const { uncovered, covered, exempt, total } = checkNarrativeCoverage(cmdNames);
@@ -1263,8 +1638,8 @@ function reportCoverage(cmdNames: string[], strict: boolean): number {
 
   if (!strict) {
     console.log(
-      `\n  当前为告警模式（存量未清完，不阻断）。清完后把 pre-commit 的调用换成\n` +
-        `  --coverage-strict，"做了功能不写文档"在物理上就进不了仓库。`,
+      `\n  当前为告警模式（--coverage，不阻断）。pre-commit 调的是 --coverage-strict，\n` +
+        `  这些命令在提交时会被拦下；确不该写进指南的，加进 NARRATIVE_EXEMPT 并写理由。`,
     );
     return 0;
   }

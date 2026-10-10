@@ -78,6 +78,8 @@ import {
   HISTORY_WALK_FLAG,
 } from "./lib/changelog-git.ts";
 import { stripUrls } from "./lib/changelog-text.ts";
+import { resolveVersionChannel } from "./lib/changelog-stable.ts";
+import { readStableNotes } from "./changelog-stable.ts";
 import {
   validateCurated,
   toRenderSections,
@@ -100,6 +102,9 @@ const MD_FILE_HEADER =
 
 /** curated 文案目录（仓库根，入库、人工过目）。本脚本**只读**它，绝不生成。 */
 const CURATED_DIR = resolve(ROOT, "changelog/curated");
+const STABLE_DIR = resolve(CURATED_DIR, "stable");
+/** 当前稳定版号的入库记录（`release.sh --promote` 写） */
+const CHANNEL_PATH = resolve(ROOT, "changelog/channel.json");
 
 // 单个版本块的提交数超过此阈值时不展开 body 细节（只列 subject），保证可读性
 const MAX_DETAILED_COMMITS = 40;
@@ -443,6 +448,18 @@ interface SiteChangelog {
     highlight: string | null;
     /** false = 本版无用户可见变更（纯内部）。组件据此渲染一行淡色说明。 */
     userFacing: boolean;
+    /**
+     * 发布通道（T2）：`beta` = 比当前稳定版新（泡制中），或是被某个稳定版跳过、
+     * 说明已并入 `mergedInto` 的中间号。组件对 beta 版本显示「预发布」徽标、默认折叠。
+     * 判据源是 `changelog/channel.json`（由 `release.sh --promote` 写）+ 稳定版说明的 `covers`。
+     */
+    channel: "stable" | "beta";
+    /** 被跳过的 beta 号并入了哪个稳定版；其余为 null */
+    mergedInto: string | null;
+    /** 稳定版说明覆盖的版本号（多版本合并时才有，单版本为 null） */
+    covers: string[] | null;
+    /** beta 修复号的一句话说明（betaOnly 版本才有） */
+    betaNote: string | null;
     count: number;
     sections: RenderSection[];
   }>;
@@ -478,11 +495,29 @@ function loadCurated(version: string): CuratedEntry | null {
   return obj as CuratedEntry;
 }
 
+/**
+ * 当前稳定版号。读不到（老仓库 / 测试 fixture）返回 null —— 此时只用 covers 判通道，
+ * 不猜：猜错的后果是把正式版标成「预发布」。
+ */
+function readStableVersion(): string | null {
+  try {
+    const v = JSON.parse(readFileSync(CHANNEL_PATH, "utf-8")).stable;
+    return typeof v === "string" && /^\d+\.\d+\.\d+$/.test(v) ? v : null;
+  } catch {
+    return null;
+  }
+}
+
 function buildSiteData(models: VersionModel[], currentVersion: string): SiteChangelog {
   const missing: string[] = [];
+  const stable = readStableVersion();
+  const stableNotes = readStableNotes(STABLE_DIR);
+  const notesByVersion = new Map(stableNotes.map((n) => [n.version, n]));
 
   const versions = models.map((v) => {
-    const curated = loadCurated(v.version);
+    // 稳定版说明（多版本合并稿）优先：促升后的正式版要展示合并了跳过版本的那一份
+    const curated = notesByVersion.get(v.version) ?? loadCurated(v.version);
+    const ch = resolveVersionChannel(v.version, stable, stableNotes);
     if (!curated) missing.push(v.version);
 
     // stripUrls 同样作用于 curated 文案 —— 它走的是同一条通路发到公网，而且多一个
@@ -503,6 +538,10 @@ function buildSiteData(models: VersionModel[], currentVersion: string): SiteChan
       // 缺 curated 时按「无用户可见变更」渲染：组件会显示一行淡色说明，
       // 而**版本块本身仍然存在** —— 否则左栏时间线点进来会没有落点。
       userFacing: curated ? curated.userFacing : false,
+      channel: ch.channel,
+      mergedInto: ch.mergedInto,
+      covers: notesByVersion.get(v.version)?.covers ?? null,
+      betaNote: curated?.betaOnly && curated.betaNote ? stripUrls(curated.betaNote) : null,
       count: sections.reduce((n, s) => n + s.items.length, 0),
       sections,
     };

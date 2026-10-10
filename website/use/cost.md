@@ -116,7 +116,7 @@ sid-code 会替你判断并在 `/cost` 里标注，就是那行括号里的提�
 用 `/cache`——它读的是跨会话的用量账本，不是内存里的当前会话。
 
 数据存在 `~/.sid-code/usage-ledger.jsonl`（append-only，每会话一行汇总，
-`src/telemetry/usage-ledger.ts`）。所以即使会话关了、机器重启了，历史还在。
+`packages/core/src/telemetry/usage-ledger.ts`）。所以即使会话关了、机器重启了，历史还在。
 
 ### 默认输出：长期命中率与省钱趋势
 
@@ -134,7 +134,7 @@ sid-code 会替你判断并在 `/cost` 里标注，就是那行括号里的提�
 | --- | --- |
 | `--period day\|week\|month` | 聚合粒度，默认 `day`。`week` 用 ISO 周键、`month` 用年月键 |
 | `--model <name>` | 按模型名过滤（精确或前缀匹配） |
-| `--breaks` | 显示最近 20 条缓存中断记录 + 健康度建议（`src/api/cache-detection.ts` 的 `getCacheHealthAdvice()`） |
+| `--breaks` | 显示最近 20 条缓存中断记录 + 健康度建议（`packages/core/src/api/cache-detection.ts` 的 `getCacheHealthAdvice()`） |
 | `--history` | 跨会话缓存中断遥测历史聚合，从 `~/.sid-code/cache-breaks.jsonl` 读，按归因类型计数 |
 | `--prune <N>` | 滚动裁剪账本，只保留最近 N 行（账本太大时用） |
 
@@ -143,17 +143,19 @@ sid-code 会替你判断并在 `/cost` 里标注，就是那行括号里的提�
 这是 `/cache` 最该单独说一节的能力。**缓存命中率从 90% 掉到 70%，不是 `/cost` 能看出来的——
 你得知道它为什么掉了、什么时候掉的**。`--breaks` 就是干这个的。
 
-检测机制（`src/api/cache-detection.ts` 的 `CacheBreakDetector`）：每轮请求前快照缓存关键状态
+检测机制（`packages/core/src/api/cache-detection.ts` 的 `CacheBreakDetector`）：每轮请求前快照缓存关键状态
 （system prompt hash / 工具 schema hash / 模型 / cache control / beta headers / 消息数 /
 工具顺序），响应后比较 `cache_read_tokens` 变化。**下降 > 5% 且绝对值 > 2000 tokens**
-才算一次中断（`cache-detection.ts:115-116`）——避免正常波动报假警。
+才算一次中断（`cache-detection.ts` 的 `DROP_PERCENT_THRESHOLD` / `DROP_TOKENS_THRESHOLD`）——避免正常波动报假警。
 
-15+ 种归因维度：模型变化、system prompt 变化、工具增删改、工具顺序变化、缓存策略变化、
-beta headers 变化、消息数量骤减（compact 导致）、TTL 过期、重试关联……
+10 类归因：模型变化（`model`）、system prompt 变化（`system_prompt`）、工具增删改
+（`tools`）、工具顺序变化（`tool_order`）、缓存策略变化（`cache_policy`）、beta headers 变化
+（`beta_headers`）、消息数量骤减即 compact 导致（`compact`）、TTL 过期（`ttl_expiry`）、
+本地前缀断裂（`prefix_break`）、服务端波动（`server_fluctuation`）。
 
 `--history` 把这些中断落盘到 `~/.sid-code/cache-breaks.jsonl`（append-only），长期聚合，
 告诉你"最近哪种归因最频繁"。子代理的缓存中断**独立计**——`MultiSourceCacheDetector`
-按 agentId 维护独立基线（`cache-detection.ts:299-362`），不会把子代理的正常波动算进主会话。
+按 agentId 维护独立基线（`cache-detection.ts` 的 `MultiSourceCacheDetector`），不会把子代理的正常波动算进主会话。
 
 实测这些归因跑出来长什么样、以及为什么"本地前缀 hash 变没变"是最关键的那个判据，
 见 [Prompt Cache](/blog/prompt-cache) 的归因分布一节——绝大多数真实中断都是
@@ -176,8 +178,8 @@ beta headers 变化、消息数量骤减（compact 导致）、TTL 过期、重�
 /insights 20260728-004217-cc55cf0d   # 分析指定会话
 ```
 
-别名 `/analyze`。纯本地执行，不调模型（`src/command/commands/insights/insights.ts`），
-复用 `trace/digest.ts` 的 `renderHuman()` 渲染。产出结构（与
+别名 `/analyze`。纯本地执行，不调模型（`packages/cli/src/command/commands/insights/insights.ts`），
+复用 `packages/core/src/trace/digest.ts` 的 `renderHuman()` 渲染。产出结构（与
 [轨迹采集与可观测](/team/observability) 里 `trace-digest` 同源）：
 
 ```text
@@ -214,11 +216,15 @@ L1 假设层带证伪条件。它不直接给你"结论是 X"，而是给可验�
 
 ## 设花费上限
 
-单次会话给个硬顶，超了自动停：
+单次会话给个硬顶，超了自动停。交互模式和 `-p` 都生效：
 
 ```bash
 sid-code --max-budget-usd 0.50
 ```
+
+配置里同时有 `quota.costLimit` 时，**取两者中更严的那个**。上限是只许收紧的语义，
+所以团队默认配置的 `100` 不会盖掉你传的 `0.5`，你也没法用参数把团队上限放宽。
+`0` 表示「这一侧不限」，不参与比较。
 
 四级预警，按累计花费占上限的比例触发（实测输出）：
 
@@ -232,25 +238,16 @@ $0.0025 / 0.002  →  [exceeded] 成本已超出配额，自动停止
 到 `exceeded` 就真的终止本轮，实测：
 
 ```text
-⚠️  成本已超出配额（$0.0083 / $0.00），自动停止
+⚠️  成本已超出配额（$0.0083 / $0.0020），自动停止
 ```
 
 每级只报一次（级别升级才报），不会刷屏。计算基数是**含辅助调用的总花费**，
 所以影子调用烧的钱也受这个上限约束，不会绕过去。
 
-::: danger 两个必须知道的坑
-**一、`quota.costLimit` 会盖掉 `--max-budget-usd`。**
-配置里 `quota.costLimit` 一旦存在，命令行参数就不生效了（取值逻辑是
-`quota.costLimit ?? costLimit`，前者非空即胜）。实测配了
-`quota: { costLimit: 100 }` 之后传 `--max-budget-usd 0.002` 完全没反应——
-参数确实进了配置，但生效值仍是 100。删掉 `quota` 段后同一条命令立刻正常触发。
-**排查方法**：`--max-budget-usd` 不生效时，先去 `~/.sid-code/settings.json` 看有没有 `quota` 段。
-团队默认配置里就带 `quota.costLimit`，所以这事很容易撞上。
-
-**二、告警文案里的上限值会显示成 `$0.00`。**
-上面那行 `（$0.0083 / $0.00）` 里的 `$0.00` 其实是 `0.002`——
-文案对上限只保留两位小数，设了小于一分钱的上限就会显示成 0。
-不影响实际拦截（`0.0083 ≥ 0.002` 判定正确），只是数字看着怪。
+::: tip 上限不生效时先查这个
+`--max-budget-usd` 与 `quota.costLimit` 取更严的。所以「设了更小的值却没拦住」
+只剩一种可能：参数根本没传进去（拼错了、写在了别的子命令后面）。
+想放宽上限时，参数是做不到的，要改配置里的 `quota.costLimit`。
 :::
 
 团队级的持续管控（每分钟请求数、token 速率、按规则降级）不在这页，
@@ -284,7 +281,7 @@ $0.0025 / 0.002  →  [exceeded] 成本已超出配额，自动停止
 `/fast` 切换的是 fastMode 偏好——"优先用更快的输出端点/服务档位"。
 **如实说明：当前网关未提供对等 fast 能力，开启暂无实际加速效果。**
 这是预留开关，等网关支持后无需改命令即可生效
-（`src/command/commands/fast/fast.ts`，透传到 `src/llm/fallback.ts:212` 的
+（`packages/cli/src/command/commands/fast/fast.ts`，透传到 `packages/core/src/llm/fallback.ts` 的
 `fastMode` 字段，fallback 层标注为「预留，暂未启用」）。
 
 ```text
@@ -306,9 +303,7 @@ Fast Mode: off
 `/fast` 等网关就绪后才真正生效。无效参数会提示 `用法: /fast [on|off] [-p]`。
 
 ::: tip 为什么不删掉这个预留命令
-按项目约定（CLAUDE.md「做了但没接线也要说」），**如实写"预留"比不写好**。
-用户看到 `/fast` 在命令列表里，打了会明确告知"当前无实际加速"——
-比让它消失、等网关支持了再突然出现更诚实。
+打了会明确告知"当前无实际加速"，比让命令消失、等网关支持后再突然出现更清楚。
 :::
 
 ## 常见问题
@@ -325,13 +320,13 @@ Fast Mode: off
 
 ### `--max-budget-usd` 设了但没生效
 
-九成是被 `quota.costLimit` 盖掉了，见上面的坑一。检查：
+它和 `quota.costLimit` 取更严的那个，两种模式都生效。所以「设小了却没拦住」
+基本只剩参数没传进去这一种可能。反过来，「想用参数把上限调大」是做不到的，
+更宽的那个永远不会胜出，要放宽就改配置：
 
 ```bash
 grep -A3 '"quota"' ~/.sid-code/settings.json
 ```
-
-有 `costLimit` 就把它改小，或者整段删掉再用命令行参数。
 
 ### 输入 token 数比模型的上下文窗口还大
 
@@ -341,7 +336,7 @@ grep -A3 '"quota"' ~/.sid-code/settings.json
 
 ### 想看跨会话的成本趋势
 
-`/insights` 看聚合视图，`/trace --health` 看 provider 维度的成功率与延迟。
+`/cache` 看跨会话命中率与成本趋势（`--period week` 按周聚合），`/trace --health` 看 provider 维度的成功率与延迟。
 团队维度的采集见[轨迹采集与可观测](/team/observability)。
 
 ### 这些数字能证明"AI 提效了"吗

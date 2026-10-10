@@ -1,0 +1,135 @@
+{
+  "scenario": "S10",
+  "exitCode": 0,
+  "total": {
+    "bytes": 238,
+    "eraseScreen": 1,
+    "eraseScrollback": 0,
+    "syncBegin": 1,
+    "syncEnd": 1,
+    "altEnter": 1,
+    "altExit": 2,
+    "osc": {
+      "9": 1,
+      "21337": 1
+    }
+  },
+  "notes": {},
+  "steps": [
+    {
+      "label": "alt 初始",
+      "buffer": "alternate",
+      "cursor": {
+        "x": 0,
+        "y": 23,
+        "hidden": true
+      },
+      "modes": {
+        "bracketedPaste": false,
+        "mouseTracking": "none",
+        "sendFocus": false,
+        "wraparound": true
+      },
+      "metrics": {
+        "bytes": 73,
+        "eraseScreen": 1,
+        "eraseScrollback": 0,
+        "syncBegin": 0,
+        "syncEnd": 0,
+        "altEnter": 1,
+        "altExit": 0,
+        "osc": {}
+      },
+      "screen": ["alt 内容不应被 stderr 砸乱"],
+      "scrollback": [],
+      "styled": []
+    },
+    {
+      "label": "裸 stderr 之后",
+      "buffer": "alternate",
+      "cursor": {
+        "x": 0,
+        "y": 23,
+        "hidden": true
+      },
+      "modes": {
+        "bracketedPaste": false,
+        "mouseTracking": "none",
+        "sendFocus": false,
+        "wraparound": true
+      },
+      "metrics": {
+        "bytes": 0,
+        "eraseScreen": 0,
+        "eraseScrollback": 0,
+        "syncBegin": 0,
+        "syncEnd": 0,
+        "altEnter": 0,
+        "altExit": 0,
+        "osc": {}
+      },
+      "screen": ["alt 内容不应被 stderr 砸乱"],
+      "scrollback": [],
+      "styled": []
+    },
+    {
+      "label": "console.error 之后",
+      "buffer": "alternate",
+      "cursor": {
+        "x": 0,
+        "y": 23,
+        "hidden": true
+      },
+      "modes": {
+        "bracketedPaste": false,
+        "mouseTracking": "none",
+        "sendFocus": false,
+        "wraparound": true
+      },
+      "metrics": {
+        "bytes": 0,
+        "eraseScreen": 0,
+        "eraseScrollback": 0,
+        "syncBegin": 0,
+        "syncEnd": 0,
+        "altEnter": 0,
+        "altExit": 0,
+        "osc": {}
+      },
+      "screen": ["alt 内容不应被 stderr 砸乱"],
+      "scrollback": [],
+      "styled": []
+    },
+    {
+      "label": "(退出后)",
+      "buffer": "normal",
+      "cursor": {
+        "x": 0,
+        "y": 0,
+        "hidden": false
+      },
+      "modes": {
+        "bracketedPaste": false,
+        "mouseTracking": "none",
+        "sendFocus": false,
+        "wraparound": true
+      },
+      "metrics": {
+        "bytes": 165,
+        "eraseScreen": 0,
+        "eraseScrollback": 0,
+        "syncBegin": 1,
+        "syncEnd": 1,
+        "altEnter": 0,
+        "altExit": 2,
+        "osc": {
+          "9": 1,
+          "21337": 1
+        }
+      },
+      "screen": [],
+      "scrollback": [],
+      "styled": []
+    }
+  ]
+}

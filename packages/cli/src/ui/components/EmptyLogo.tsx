@@ -6,9 +6,10 @@
  */
 
 import React from "react";
-import Box from "@sid-code/tui-renderer/components/Box.tsx";
-import Text from "@sid-code/tui-renderer/components/Text.tsx";
+import { Box } from "../render-port/components.ts";
+import { Text } from "../render-port/components.ts";
 import { getRawVersion } from "@sid-code/shared/version.ts";
+import { getChannelLabel } from "@sid-code/shared/release-channel.ts";
 import { ThemedGradient } from "./ThemedGradient.tsx";
 import { theme } from "../semantic-colors.ts";
 import { ARROW_PROMPT } from "../constants/figures.ts";
@@ -86,12 +87,14 @@ export function EmptyLogo({ termWidth, cwd, gitBranch, model, needsOnboarding }:
   const displayProject = cwd ? projectName(cwd) : "sid-code";
 
   // 右侧面板信息行（key-value 对）
-  const infoLines: Array<{ key: string; value: string }> = [
+  // 非正式版（beta 预发布 / dev 本地开发）在版本行追加警示色标签；正式版不显示
+  const channelLabel = getChannelLabel();
+  const infoLines: Array<{ key: string; value: string; badge?: string }> = [
     { key: "Project", value: displayProject },
     ...(displayCwd ? [{ key: "Path", value: displayCwd }] : []),
     ...(gitBranch ? [{ key: "Branch", value: gitBranch }] : []),
     ...(model ? [{ key: "Model", value: model }] : []),
-    { key: "Version", value: `v${version}` },
+    { key: "Version", value: `v${version}`, ...(channelLabel ? { badge: channelLabel } : {}) },
   ];
 
   // 窄终端（<60 列）回退为单栏竖排
@@ -106,6 +109,9 @@ export function EmptyLogo({ termWidth, cwd, gitBranch, model, needsOnboarding }:
             <Box key={`info-${i}`}>
               <Text color={theme.text.secondary}>{info.key.padEnd(8)}</Text>
               <Text color={theme.text.primary}>{info.value}</Text>
+              {info.badge ? (
+                <Text bold color={theme.status.warning}>{`  ${info.badge}`}</Text>
+              ) : null}
             </Box>
           ))}
         </Box>
@@ -147,6 +153,9 @@ export function EmptyLogo({ termWidth, cwd, gitBranch, model, needsOnboarding }:
             <Box key={`info-${i}`}>
               <Text color={theme.text.secondary}>{info.key.padEnd(9)}</Text>
               <Text color={theme.text.primary}>{info.value}</Text>
+              {info.badge ? (
+                <Text bold color={theme.status.warning}>{`  ${info.badge}`}</Text>
+              ) : null}
             </Box>
           ))}
         </Box>

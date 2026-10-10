@@ -25,6 +25,7 @@
 import { existsSync, readFileSync, statSync } from "node:fs";
 import { join } from "node:path";
 import { sidPaths } from "@sid-code/core/config/paths.ts";
+import { listJsonlGenerations } from "@sid-code/core/telemetry/exporters/jsonl.ts";
 import { resolvePaths, listSessions, type SessionRef } from "@sid-code/core/trace/digest.ts";
 import { getFeatureValue_CACHED_MAY_BE_STALE } from "@sid-code/core/analytics/feature-flags.ts";
 
@@ -241,9 +242,11 @@ function countDefenseTriggers(dirs: string[]): number {
 
 function countDefenseTriggersTelemetry(): number {
   let n = 0;
-  const tel = join(sidPaths.telemetry(), "metrics.jsonl");
-  for (const row of readJsonl(tel)) {
-    if (metricName(row) === DEFENSE_TRIGGER) n++;
+  // 缺陷 20：读全部轮转代，只读固定名会在轮转后静默少数据
+  for (const tel of listJsonlGenerations(sidPaths.telemetry(), "metrics")) {
+    for (const row of readJsonl(tel)) {
+      if (metricName(row) === DEFENSE_TRIGGER) n++;
+    }
   }
   return n;
 }

@@ -47,11 +47,13 @@ async function loadBtw(): Promise<LocalCommandModule> {
 }
 
 describe("/btw 命令定义", () => {
-  test("name 为 btw，仅用户可调用，禁止模型调用", () => {
+  test("name 为 btw，仅用户可调用；不声明 disableModelInvocation（D11：内置命令无模型调用路径）", () => {
     expect(btwDef.name).toBe("btw");
     expect(btwDef.type).toBe("local");
     expect(btwDef.userInvocable).toBe(true);
-    expect(btwDef.disableModelInvocation).toBe(true);
+    expect(btwDef.disableModelInvocation).toBeUndefined();
+    // D10：requiresArgs 回填的另一半——补全列表要能告诉用户该填什么
+    expect(btwDef.argumentHint).toBe("你的问题");
   });
 });
 

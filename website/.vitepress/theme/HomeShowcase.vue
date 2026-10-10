@@ -42,14 +42,14 @@
  *     2026-08-10 教训：工具数从 "60+" 改成 44 时只改了首页，README 漏改，
  *     两份对外文档不一致挂了两周多。改这里时把几处一起 grep 一遍。
  *   2026-09-30 换口径：旧值「20 万+ 行 / 8000+ 单测」是静态扫描口径，与简历
- *   （`bun test` 实际执行数 + 全仓自研行数）对不上，访客对照两边会以为有一边在造假。
+ *   （`bun test` 实际执行数 + 全仓代码行数）对不上，访客对照两边会以为有一边在造假。
  *   现在四个数全部取自同一个取数脚本的同一次运行：
  *     docs-research 仓 scripts/resume-metrics.ts（`--coverage`，约 4 分钟）
  *
- *     自研代码行数  50.8 万：生产 + 渲染底座 fork + 测试 + 工程脚本，扣掉 _vendor/ 纯第三方
- *                   （2026-09-29 实测 507,914 行，其中测试 197,130 行）
- *     单测          `bun test` 实际执行数，含动态生成用例（2026-09-29 实测 12,875，0 失败）
- *     引擎行覆盖率  packages/core/src 的行覆盖（2026-09-29 实测 84.7% = 74,209 / 87,603）
+ *     代码行数      52.5 万：生产 + 渲染底座 fork + 测试 + 工程脚本，扣掉 _vendor/ 纯第三方
+ *                   （2026-10-04 实测 524,786 行，其中测试 206,413 行；HEAD=f1581f76）
+ *     单测          `bun test` 实际执行数，含动态生成用例（2026-10-04 实测 13,398，0 失败）
+ *     引擎行覆盖率  packages/core/src 的行覆盖（2026-10-04 实测 86.3% = 77,768 / 90,119）
  *                   ⚠ 只报引擎层；CLI/TUI 与渲染层覆盖率明显更低，是有意取舍，别换成全仓口径
  *     内置工具数    sid-code --dump-tools 数组长度（44，与 ref/tools.md 同源）
  *   Hook 事件数从能力条撤下：枚举 32 类里有一部分是预留、尚未接线，
@@ -75,9 +75,9 @@ interface Stat {
   decimals?: number;
 }
 const STATS: Stat[] = [
-  { value: 50.8, suffix: "万", label: "行自研 TypeScript（含测试）", decimals: 1 },
-  { value: 12875, suffix: "", label: "个单测，全绿才合入" },
-  { value: 84.7, suffix: "%", label: "Agent 引擎行覆盖率", decimals: 1 },
+  { value: 52.5, suffix: "万", label: "行 TypeScript（含测试）", decimals: 1 },
+  { value: 13398, suffix: "", label: "个单测，全绿才合入" },
+  { value: 86.3, suffix: "%", label: "Agent 引擎行覆盖率", decimals: 1 },
   { value: 44, suffix: "", label: "个内置工具" },
 ];
 
@@ -87,7 +87,7 @@ const AUDIENCES = [
     key: "team",
     tab: "企业",
     items: [
-      "代码与轨迹不出机房，安全审查一次过，不用为合规单独报批",
+      "轨迹、账本、评测全在本地；配本地模型时，代码也不出机房",
       "模型不绑死：网关涨价、换供应商、上自研模型，改配置不换工具",
       "你们的规矩能进 harness，团队默认配置一键分发，policy 可管控",
       "过程数据是你们自己的资产：查成本归属、防功能回退、做团队级优化",
@@ -124,7 +124,7 @@ const FEATURES: Card[] = [
   {
     title: "企业级",
     lead: "装上就接得上你公司已有的那套东西。",
-    desc: "内部网关计费口径、内网 GitLab、企业 SSO、MCP、团队默认配置分发，是按真实企业内网一条条适配出来的，不用先改造企业来适配工具。",
+    desc: "内部网关计费口径、飞书身份登录、MCP、团队默认配置分发，面向企业内网设计，不用先改造企业来适配工具。",
     link: "/team/defaults",
     linkText: "团队部署",
     paths: ["M3 21h18", "M5 21V7l7-4 7 4v14", "M9.5 21v-5h5v5"],
@@ -144,7 +144,7 @@ const FEATURES: Card[] = [
   },
   {
     title: "数据主权",
-    lead: "代码和对话不出你的机房。",
+    lead: "轨迹、账本、评测全在本地；配本地模型时，代码也不出机房。",
     desc: "会话轨迹、评测结果、成本账本全落在自己的基础设施里，不进任何人的训练集。数据在自己手上，才谈得上拿它做优化。",
     link: "/use/sessions",
     linkText: "本地落盘",
@@ -193,7 +193,7 @@ const DIRECTIONS: Card[] = [
     link: "/team/observability",
     linkText: "过程指标",
     paths: ["M21.8 11.2A10 10 0 1 1 17.2 3.4", "M9 11.5l2.5 2.5L21 5"],
-    gauge: "一次做对率 · 评测通过率 · 过程病态率",
+    gauge: "一次 edit 成功率 · 评测通过率 · 过程病态率",
   },
   {
     title: "更安全",
@@ -205,7 +205,7 @@ const DIRECTIONS: Card[] = [
       "M12 3l7.5 3v6.2c0 4.5-3.1 7.7-7.5 9.3-4.4-1.6-7.5-4.8-7.5-9.3V6L12 3z",
       "M9 12.4l2 2 4.2-4.4",
     ],
-    gauge: "防线触发率 · 权限匹配正确率 · 人工确认介入率",
+    gauge: "防线触发率 · 规则命中率 · 人工确认介入率",
   },
 ];
 
@@ -234,7 +234,7 @@ const STEPS = [
   {
     n: "02",
     title: "配模型",
-    desc: "sid-code 不带模型。Anthropic / OpenAI / Ollama 三族协议各有一份可直接粘的配置。",
+    desc: "sid-code 不带模型。Anthropic / OpenAI / Ollama 三族（OpenAI 族含 Chat Completions 与 Responses 两种），各有一份可直接粘的配置。",
     link: "/start/configure",
     linkText: "配置 LLM Provider",
   },
@@ -529,7 +529,7 @@ onUnmounted(() => {
       <header class="hs-head">
         <span class="hs-orb hs-orb-4" aria-hidden="true" />
         <h2 class="hs-h2">装上试试</h2>
-        <p class="hs-sub">一条命令装完 · macOS 与 Linux · 不需要 sudo</p>
+        <p class="hs-sub">一条命令装完 · macOS 与 Linux · Windows 走 WSL2 · 不需要 sudo</p>
       </header>
 
       <div class="hs-term">

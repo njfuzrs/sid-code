@@ -19,18 +19,15 @@
 
 import { getLogger } from "../debug/logger.ts";
 import { HookSystem } from "../hook/system.ts";
-import { HookEventName, LEGACY_EVENT_MAP, type CommandHookConfig } from "../hook/types.ts";
-
-/** 事件名解析（PascalCase 或旧 snake_case）；未知返回 null。 */
-function resolveEvent(name: string): HookEventName | null {
-  const values = Object.values(HookEventName) as string[];
-  if (values.includes(name)) return name as HookEventName;
-  return (LEGACY_EVENT_MAP as Record<string, HookEventName>)[name] ?? null;
-}
+import { ConfigSource } from "../hook/types.ts";
+import { reportRuntimeHookDiagnostics } from "../hook/diagnostic-sink.ts";
 
 /**
  * 把 agent frontmatter 声明的 hooks 注册进给定 HookSystem。
- * 非法事件名 / 缺 command 的项 warn 跳过（不 spawn 失败）。
+ *
+ * HC3：形状解析统一走 hook/config-normalize.ts。原先这里只取 command / timeout，
+ * frontmatter 里的 if / env / url / prompt / async 全部静默丢失。
+ * 非法事件名 / 缺字段的项 warn 跳过（不 spawn 失败）。
  * @returns 成功注册的 hook 数量
  */
 export function registerAgentHooks(
@@ -40,41 +37,17 @@ export function registerAgentHooks(
 ): number {
   if (!hooksConfig || typeof hooksConfig !== "object") return 0;
   const log = getLogger();
-  let count = 0;
-
-  for (const [eventName, definitions] of Object.entries(hooksConfig as Record<string, unknown>)) {
-    const resolved = resolveEvent(eventName);
-    if (!resolved) {
-      log.warn("AGENT", `Agent ${agentType} 声明了未知的 hook 事件: ${eventName}`);
-      continue;
-    }
-    if (!Array.isArray(definitions)) continue;
-
-    for (const def of definitions as Array<{
-      matcher?: string;
-      hooks?: Array<{ command?: string; timeout?: number }>;
-    }>) {
-      if (!def || !Array.isArray(def.hooks)) continue;
-      for (const hook of def.hooks) {
-        if (!hook?.command) continue;
-        const config: CommandHookConfig = {
-          type: "command",
-          name: `agent:${agentType}`,
-          command: hook.command,
-          ...(typeof hook.timeout === "number" ? { timeout: hook.timeout } : {}),
-        };
-        try {
-          hookSystem.registerHook(config, resolved, { matcher: def.matcher });
-          count++;
-          log.debug("AGENT", `注册 Agent hook: ${agentType} → ${eventName}:${def.matcher ?? "*"}`);
-        } catch (err) {
-          const msg = err instanceof Error ? err.message : String(err);
-          log.warn("AGENT", `注册 Agent hook 失败 (${agentType}): ${msg}`);
-        }
-      }
-    }
+  const before = hookSystem.getAllHooks().length;
+  const diagnostics = hookSystem.addNormalizedHooks(hooksConfig, ConfigSource.Runtime, {
+    pathPrefix: `agent:${agentType}.hooks`,
+    defaultName: `agent:${agentType}`,
+  });
+  for (const d of diagnostics) {
+    log.warn("AGENT", `Agent ${agentType} 的 hook 已跳过 ${d.path}: ${d.message}`);
   }
-
+  // spawn 时才注册，启动横幅已过：走运行期出口（隔离 HookSystem 上挂不了监听，见 diagnostic-sink.ts）
+  reportRuntimeHookDiagnostics(`Agent ${agentType}`, diagnostics);
+  const count = hookSystem.getAllHooks().length - before;
   if (count > 0) log.info("AGENT", `Agent ${agentType} 注册了 ${count} 个专属 hook`);
   return count;
 }

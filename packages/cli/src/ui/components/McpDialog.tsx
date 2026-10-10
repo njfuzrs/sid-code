@@ -10,10 +10,10 @@
  */
 
 import React, { useState, useEffect, useCallback } from "react";
-import Box from "@sid-code/tui-renderer/components/Box.tsx";
-import Text from "@sid-code/tui-renderer/components/Text.tsx";
+import { Box } from "../render-port/components.ts";
+import { Text } from "../render-port/components.ts";
 import { theme } from "../semantic-colors.ts";
-import type { Color } from "@sid-code/tui-renderer/styles.ts";
+import type { Color } from "../render-port/types.ts";
 import { useKeypress, KeypressPriority, type Key } from "../contexts/KeypressContext.tsx";
 import { BaseSelectionList, type SelectionListItem } from "./shared/BaseSelectionList.tsx";
 import {
@@ -33,7 +33,8 @@ import type { SessionState } from "@sid-code/core/session/state.ts";
 interface McpDialogProps {
   onClose: () => void;
   mcpManager: MCPManager;
-  sessionState: SessionState;
+  /** M2 起不再使用（禁用不再写 sessionState）；保留可选以免牵动 DialogSwitch 调用点 */
+  sessionState?: SessionState;
 }
 
 // ─── 状态机 ───
@@ -72,6 +73,8 @@ function getStatusIcon(status: MCPConnectionStatus | string): { icon: string; co
       return { icon: TODO_PENDING, color: theme.text.secondary };
     case "disabled":
       return { icon: TODO_PENDING, color: theme.text.secondary };
+    case "needs_auth":
+      return { icon: WARNING_MARK, color: theme.status.warning };
     default:
       return { icon: WARNING_MARK, color: theme.status.warning };
   }
@@ -83,6 +86,7 @@ function getStatusText(server: MCPServerStatusInfo): string {
     connecting: "连接中",
     reconnecting: `重连中 (${server.reconnectAttempts ?? 0}/5)`,
     failed: "连接失败",
+    needs_auth: "待授权",
     disabled: "已禁用",
     disconnected: "未连接",
   };
@@ -91,7 +95,7 @@ function getStatusText(server: MCPServerStatusInfo): string {
 
 // ─── 主组件 ───
 
-export const McpDialog: React.FC<McpDialogProps> = ({ onClose, mcpManager, sessionState }) => {
+export const McpDialog: React.FC<McpDialogProps> = ({ onClose, mcpManager }) => {
   const [viewState, setViewState] = useState<ViewState>({ type: "list" });
   const [servers, setServers] = useState<MCPServerStatusInfo[]>([]);
   const [feedbackMessage, setFeedbackMessage] = useState<string>("");
@@ -120,7 +124,6 @@ export const McpDialog: React.FC<McpDialogProps> = ({ onClose, mcpManager, sessi
         <McpServerMenu
           server={viewState.server}
           mcpManager={mcpManager}
-          sessionState={sessionState}
           feedbackMessage={feedbackMessage}
           onBack={() => {
             setFeedbackMessage("");
@@ -280,7 +283,6 @@ const McpServerList: React.FC<McpServerListProps> = ({ servers, onClose, onSelec
 interface McpServerMenuProps {
   server: MCPServerStatusInfo;
   mcpManager: MCPManager;
-  sessionState: SessionState;
   feedbackMessage: string;
   onBack: () => void;
   onViewTools: () => void;
@@ -291,7 +293,6 @@ interface McpServerMenuProps {
 const McpServerMenu: React.FC<McpServerMenuProps> = ({
   server,
   mcpManager,
-  sessionState,
   feedbackMessage,
   onBack,
   onViewTools,
@@ -360,21 +361,20 @@ const McpServerMenu: React.FC<McpServerMenuProps> = ({
           onRefresh();
           break;
         }
-        case "enable": {
-          const disabled = (sessionState.get("mcp_disabled") as string[]) || [];
-          const newDisabled = disabled.filter((n) => n !== server.name);
-          sessionState.set("mcp_disabled", newDisabled);
-          onFeedback(`"${server.name}" 已在当前会话启用`);
-          onRefresh();
-          break;
-        }
+        case "enable":
         case "disable": {
-          const disabled = (sessionState.get("mcp_disabled") as string[]) || [];
-          if (!disabled.includes(server.name)) {
-            disabled.push(server.name);
-            sessionState.set("mcp_disabled", disabled);
-          }
-          onFeedback(`"${server.name}" 已在当前会话禁用`);
+          // M2：先写持久状态（按项目身份的私有存储，不改 .mcp.json），再当场断连 / 重连。
+          // 原先只写 sessionState.mcp_disabled，零读者：提示「已禁用」而工具仍可调用。
+          const disable = action === "disable";
+          onFeedback(disable ? "禁用中…" : "启用中…");
+          const { toggleMcpServer } = await import("@sid-code/core/mcp/project-files.ts");
+          const { applied } = await toggleMcpServer(server.name, disable, mcpManager);
+          const verb = disable ? "禁用" : "启用";
+          onFeedback(
+            applied
+              ? `"${server.name}" 已${verb}（当前项目，已持久化）`
+              : `"${server.name}" 已${verb}（已持久化），重启会话后生效`,
+          );
           onRefresh();
           break;
         }

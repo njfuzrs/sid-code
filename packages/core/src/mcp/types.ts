@@ -75,6 +75,13 @@ export enum MCPConnectionStatus {
   CONNECTED = "connected",
   RECONNECTING = "reconnecting",
   FAILED = "failed",
+  /**
+   * D21：需要 OAuth 授权（无可用 token、或交互式授权超时 / 被取消）。
+   * 与 FAILED 分开，是为了让 /mcp 面板能区分「点一下授权就能用」和「配置写错了」。
+   * half-open 探测只探 FAILED，不探它——探测会再弹一次授权，等于定时骚扰用户。
+   */
+  NEEDS_AUTH = "needs_auth",
+  /** 配置里 enabled:false；connectAll 登记但不建连，面板里照常显示 */
   DISABLED = "disabled",
 }
 
@@ -143,6 +150,7 @@ export interface ScopedMcpServerConfig {
   retries?: number;
   includeTools?: string[];
   excludeTools?: string[];
+  auth?: "sid-backend";
   scope: ConfigScope;
 }
 
@@ -158,7 +166,11 @@ export interface ElicitRequest {
 }
 
 export interface ElicitResult {
-  action: "accept" | "cancel";
+  /**
+   * MCP 规范三态：accept = 用户确认并（表单时）提交了 content；
+   * decline = 用户明确拒绝 / 当前无法向用户提问；cancel = 用户放弃（关窗 / ESC）。
+   */
+  action: "accept" | "decline" | "cancel";
   content?: Record<string, unknown>;
 }
 

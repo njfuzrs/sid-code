@@ -6,7 +6,7 @@
 
 import type { CSSProperties } from "react";
 import type { SemanticColors } from "./semantic-tokens.ts";
-import type { Color } from "@sid-code/tui-renderer/styles.ts";
+import type { Color } from "../render-port/types.ts";
 import { interpolateColor, resolveColor } from "./color-utils.ts";
 
 export type ThemeType = "light" | "dark" | "ansi" | "custom";

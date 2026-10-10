@@ -17,8 +17,8 @@
  * 一样视为"项目级配置"——不主动写入 .gitignore，允许团队按需提交共享。
  */
 
-import { writeFileSync, readFileSync, unlinkSync, existsSync } from "fs";
-import { join } from "path";
+import { writeFileSync, readFileSync, unlinkSync, existsSync, mkdirSync } from "fs";
+import { join, dirname } from "path";
 
 /** 锁文件相对项目根的路径（项目级，刻意不放 HOME，理由见文件头注） */
 const LOCK_FILE = ".sid-code/scheduled_tasks.lock";
@@ -51,6 +51,9 @@ export function tryAcquireSchedulerLock(dir: string, sessionId: string): boolean
   };
 
   try {
+    // B43：`.sid-code/` 不存在时 wx 写会 ENOENT，被下面的 catch 吞成「抢锁失败」——
+    // 新项目里第一个会话永远当不了驱动者。
+    mkdirSync(dirname(lockPath), { recursive: true });
     if (existsSync(lockPath)) {
       // 检查持有者是否存活
       let existing: LockContent | null = null;
@@ -81,6 +84,21 @@ export function tryAcquireSchedulerLock(dir: string, sessionId: string): boolean
     // wx：原子性独占创建，已存在则抛错
     writeFileSync(lockPath, JSON.stringify(content), { flag: "wx" });
     return true;
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * 本项目调度锁是否被另一个存活进程持有（B43：cron_create 据此如实告诉用户谁来触发）。
+ * 持有者已死的残留锁不算。
+ */
+export function isSchedulerLockHeldByOther(dir: string, sessionId: string): boolean {
+  try {
+    const lockPath = join(dir, LOCK_FILE);
+    if (!existsSync(lockPath)) return false;
+    const existing: LockContent = JSON.parse(readFileSync(lockPath, "utf-8"));
+    return existing.sessionId !== sessionId && isProcessAlive(existing.pid);
   } catch {
     return false;
   }

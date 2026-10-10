@@ -1,6 +1,9 @@
 /**
  * /ide 命令 — IDE 集成管理
- * 子命令：status / connect / disconnect / install
+ * 子命令：status / connect / disconnect
+ *
+ * 曾有 install 子命令（经 IDE CLI 装 sid-code 扩展），已撤掉：扩展本体已裁决不做、
+ * 两个市场都查不到，执行必然失败。留着它等于给用户一条兑现不了的下一步。
  */
 
 import type { Command, AppContext, CommandResult } from "./types.ts";
@@ -17,16 +20,14 @@ export class IDECommand implements Command {
     return [];
   }
   description() {
-    return "IDE 集成管理（status/connect/disconnect/install）";
+    return "IDE 集成管理";
+  }
+  argumentHint() {
+    return "[status|connect|disconnect]";
   }
 
   subCommands(): Command[] {
-    return [
-      new IDEStatusCommand(),
-      new IDEConnectCommand(),
-      new IDEDisconnectCommand(),
-      new IDEInstallCommand(),
-    ];
+    return [new IDEStatusCommand(), new IDEConnectCommand(), new IDEDisconnectCommand()];
   }
 
   async execute(args: string, ctx: AppContext): Promise<CommandResult> {
@@ -147,41 +148,6 @@ class IDEDisconnectCommand implements Command {
   }
 }
 
-/** /ide install - 安装 IDE 扩展 */
-class IDEInstallCommand implements Command {
-  name() {
-    return "install";
-  }
-  aliases() {
-    return [];
-  }
-  description() {
-    return "安装 sid-code IDE 扩展";
-  }
-
-  async execute(_args: string, _ctx: AppContext): Promise<CommandResult> {
-    const { getTerminalIDEType, isExtensionInstalled, installExtension } =
-      await import("@sid-code/core/ide/extension-install.ts");
-
-    const ideType = getTerminalIDEType();
-    if (!ideType) {
-      return {
-        kind: "message",
-        message: "当前终端不在受支持的 IDE 中（VS Code / Cursor / Windsurf）\n无法自动安装扩展",
-      };
-    }
-
-    if (await isExtensionInstalled(ideType)) {
-      return { kind: "message", message: `${ideType} 扩展已安装` };
-    }
-
-    const result = await installExtension(ideType);
-    return result.installed
-      ? { kind: "message", message: `${ideType} 扩展安装成功，请重启 IDE 后使用 /ide connect` }
-      : { kind: "error", message: `扩展安装失败: ${result.error ?? "未知错误"}` };
-  }
-}
-
 /**
  * lockfile 缺失时的提示文案。
  *
@@ -192,9 +158,9 @@ class IDEInstallCommand implements Command {
 function noLockfileMessage(running: readonly string[]): string {
   if (running.length > 0) {
     const names = running.join("、");
-    return `检测到 ${names} 正在运行，但没有发现 sid-code 扩展（~/.sid-code/ide/ 下没有 lockfile）\n使用 /ide install 安装扩展，安装后重启 IDE`;
+    return `检测到 ${names} 正在运行，但没有发现 sid-code 扩展（~/.sid-code/ide/ 下没有 lockfile）\n需要 IDE 侧有实现 lockfile 协议的扩展在运行，sid-code 才能发现并连接`;
   }
-  return "未发现可用 IDE\n请确认 IDE 扩展已安装并运行（/ide install 可安装扩展）";
+  return "未发现可用 IDE\n需要 IDE 侧有实现 lockfile 协议的扩展在运行（~/.sid-code/ide/ 下写 <port>.lock）";
 }
 
 async function explainNoLockfile(): Promise<string> {

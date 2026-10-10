@@ -289,6 +289,17 @@ export interface TraceMetadata {
   app_version?: string;
   /** M1 切片键。与 app_version 同值；存量 traj 没有这个字段。 */
   ver?: string;
+  /**
+   * 写这份 traj 的构建属于哪个通道：stable / beta / dev（见 shared/release-channel.ts）。
+   * 同一个 app_version 可能是 beta 期的字节、promote 后的字节，也可能是带着未提交改动的
+   * 本地 sc-dev —— 只看版本号会把三者混进同一个桶。存量 traj 没有这个字段。
+   */
+  release_channel?: string;
+  /** 构建身份（编进字节的那一份，见 shared/build-info.ts）：commit / origin / dirty / describe。 */
+  build_commit?: string;
+  build_origin?: string;
+  build_dirty?: boolean | string;
+  build_describe?: string;
   /** M1 本机持久 deviceId（四方落盘共用 getIdentity()）。 */
   device_id?: string;
   user_id?: string;
@@ -497,6 +508,12 @@ export interface TrajectoryMetaOutput {
   app_version?: string;
   /** M1 切片键。与 app_version 同值。存量 traj 没有这个字段。 */
   ver?: string;
+  /** stable / beta / dev，同 TrajectoryMetadata.release_channel。 */
+  release_channel?: string;
+  build_commit?: string;
+  build_origin?: string;
+  build_dirty?: boolean | string;
+  build_describe?: string;
   device_id?: string;
   user_id?: string;
   org_id?: string;
@@ -1027,6 +1044,11 @@ export function buildTrajectory(
     // `"app_version": undefined` 这类击穿默认值的形态（`explicit-undefined-punches-through-defaults`）。
     ...(metadata.app_version ? { app_version: metadata.app_version } : {}),
     ...(metadata.ver ? { ver: metadata.ver } : {}),
+    ...(metadata.release_channel ? { release_channel: metadata.release_channel } : {}),
+    ...(metadata.build_commit ? { build_commit: metadata.build_commit } : {}),
+    ...(metadata.build_origin ? { build_origin: metadata.build_origin } : {}),
+    ...(metadata.build_dirty !== undefined ? { build_dirty: metadata.build_dirty } : {}),
+    ...(metadata.build_describe ? { build_describe: metadata.build_describe } : {}),
     ...(metadata.device_id ? { device_id: metadata.device_id } : {}),
     ...(metadata.user_id ? { user_id: metadata.user_id } : {}),
     ...(metadata.org_id ? { org_id: metadata.org_id } : {}),

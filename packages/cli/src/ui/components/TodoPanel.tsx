@@ -22,21 +22,22 @@
  */
 
 import React, { useEffect, useRef } from "react";
-import Box from "@sid-code/tui-renderer/components/Box.tsx";
-import Text from "@sid-code/tui-renderer/components/Text.tsx";
-import { useAnimationFrame } from "@sid-code/tui-renderer/hooks/use-animation-frame.ts";
+import { Box } from "../render-port/components.ts";
+import { Text } from "../render-port/components.ts";
+import { useAnimationFrame } from "../render-port/hooks.ts";
 import { useKeybindings } from "../contexts/KeybindingContext.tsx";
 import { shouldShowHint, markHintShown } from "@sid-code/core/config/app-config.ts";
 import type { TodoItem } from "@sid-code/core/tool/todo-write.ts";
 import type { TaskDisplayInfo } from "../App.tsx";
 import { theme } from "../semantic-colors.ts";
-import { stringWidth } from "@sid-code/tui-renderer/stringWidth.ts";
+import { stringWidth } from "../render-port/text.ts";
 import { useIsAccessibilityEnabled } from "../accessibility/AccessibilityContext.tsx";
 import { useExpandLevel } from "../contexts/UIStateContext.tsx";
 import { formatLargeNumber } from "../utils/format-number.ts";
 import { formatDuration } from "../utils/format-duration.ts";
 import {
   TODO_PENDING,
+  TODO_BLOCKED,
   TODO_IN_PROGRESS,
   TODO_COMPLETED,
   PROGRESS_FILLED,
@@ -116,14 +117,24 @@ const TodoRow = React.memo(function TodoRow({
 }) {
   const isCompleted = item.status === "completed";
   const isInProgress = item.status === "in_progress";
+  const isBlocked = item.status === "blocked";
 
-  const icon = isCompleted ? TODO_COMPLETED : isInProgress ? TODO_IN_PROGRESS : TODO_PENDING;
+  const icon = isCompleted
+    ? TODO_COMPLETED
+    : isInProgress
+      ? TODO_IN_PROGRESS
+      : isBlocked
+        ? TODO_BLOCKED
+        : TODO_PENDING;
 
+  // blocked 用 warning 色点睛：它是清单里唯一"需要用户动手"的项，必须一眼可辨
   const iconColor = isCompleted
     ? theme.status.success
     : isInProgress
       ? theme.ui.active
-      : theme.text.secondary;
+      : isBlocked
+        ? theme.status.warning
+        : theme.text.secondary;
 
   // 进行中优先显示 activeForm（现在分词形式，更生动），否则用 content
   const label = isInProgress && item.activeForm ? item.activeForm : item.content;
@@ -328,6 +339,7 @@ export const TodoPanel = React.memo(function TodoPanel({
   let todoSection: React.ReactNode = null;
   if (hasTodos) {
     const completed = todos.filter((t) => t.status === "completed").length;
+    const blockedCount = todos.filter((t) => t.status === "blocked").length;
     const total = todos.length;
 
     // 保持原始顺序，仅当超过显示上限时截断（始终保留 in_progress，其余按原始顺序取舍）
@@ -365,6 +377,10 @@ export const TodoPanel = React.memo(function TodoPanel({
           <Text
             color={allDone ? theme.status.success : theme.text.secondary}
           >{`  ${completed}/${total}`}</Text>
+          {/* 有 blocked 时点明"几项在等你"——否则 2/5 会被读成"agent 还剩 3 项没做" */}
+          {blockedCount > 0 && (
+            <Text color={theme.status.warning}>{`  ${blockedCount} 项等你操作`}</Text>
+          )}
           {hiddenCount > 0 && <Text>{`  …+${hiddenCount}`}</Text>}
         </Box>
         {!compactMode &&

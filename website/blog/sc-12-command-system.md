@@ -14,6 +14,22 @@ outline: [2, 3]
 代码在动，这些数字会腐坏——引用其中任何一个之前，请按文中给出的命令在你自己的仓库里复跑一次。
 :::
 
+::: warning 2026-10-07 勘误（与代码对齐）
+回源码复核后改了四处**事实性**描述，不只是数字：
+
+- **§5 整章描述的实现已重构**：`input-router.ts` / `queue.ts` / 三级 `PRIORITY_ORDER` 已作为死代码删除。
+  真实路径是 `command/streaming-gate.ts` 的 `canRunDuringStreaming`（判据）+ `ui/hooks/useMessageQueue.ts`（排队）。
+  该章保留作「设计思路」的讲解，代码片段不再对应现状，见章首提示。
+- **§7.5 分类展示从未上线**：`getCategorizedCommands` 一直零调用，已连同另外两个死导出一并删除。
+  敲单个 `/` 的真实行为是「使用频率 + 字母序」平铺。
+- **§3.4 / §7.7 的「显式逃生阀」`clearSuggestionsCache()` 已删除**：它清的是没人用的那层缓存，
+  对生产路径零作用。现在只剩引用比较这一种失效机制，前提由单测机械锁住。
+- **§4.3「26/30 关掉了模型调用」是假数**：内置命令根本没有模型调用路径，那 26 处声明不改变任何行为，
+  已删除；`disableModelInvocation` 只对 Skill 来源生效。
+
+行数类数字同步刷新到 2026-10-07 实测。
+:::
+
 > **这份文档写给谁**
 >
 > 你会用 `/compact`、`/model`、`/clear`，但没做过「一套代码同时接住内置命令、
@@ -31,7 +47,7 @@ outline: [2, 3]
 > 讲起，每个概念先给「为什么需要它」再给「它长什么样」，最后才给「谁做得好」。
 >
 > **本文的事实来源（两个实现同时上桌）**
-> - **sid-code 侧**：2026-09-03 实读 `packages/cli/src/command/`（33 个 `.ts`，8547 行）
+> - **sid-code 侧**：2026-09-03 实读 `packages/cli/src/command/`（2026-10-07 复测：35 个 `.ts`，9430 行）
 >   与 `packages/core/src/command-contract/types.ts`。行数口径：
 >   `wc -l packages/cli/src/command/*.ts`。
 > - **Claude Code 侧**：沿用同名调研文档 `chapter-09-command-system.md` 的实读口径，
@@ -174,7 +190,7 @@ function handleInput(input: string) {
 
 先记住这个提示：**一旦某个东西同时能被人和模型调用，
 你就需要两套独立的开关**（sid-code 里是 `userInvocable` 和 `disableModelInvocation`，
-见 §4.3）。
+见 §4.3；后者只在 Skill 上通电，内置命令没有模型调用路径）。
 
 ### 0.5 本章自检
 
@@ -316,7 +332,7 @@ export async function isFilePath(name: string): Promise<boolean> {
 而在于一个可验证的性质：**注册表不知道命令怎么执行，执行引擎不知道命令从哪来。**
 
 判据很硬：sid-code 的 `unified-registry.ts`（225 行）里
-**一次都没出现** `case "local"` 这类分发；`executor.ts`（363 行）里
+**一次都没出现** `case "local"` 这类分发；`executor.ts`（457 行，2026-10-07 复测）里
 **一次都没出现**「扫磁盘 / 读配置 / 连 MCP」。两边只通过 `UnifiedCommand` 这个类型说话。
 
 想验证一个命令系统有没有做到这件事，就 grep 这两处。混在一起的实现里，
@@ -799,12 +815,12 @@ without ever reaching the cleared inners. Must clear it explicitly.
 ```
 
 **判据：每加一层缓存，就要问「上面还有谁缓存了我的结果」。**
-sid-code 里对应的那层是 `suggestions.ts` 的 `indexCache`，
+sid-code 里对应的那层是 `suggestions.ts` 的 `infoIndexCache`，
 它用的是**引用比较**而不是 key 比较，恰好绕开了这个坑：
 
 ```ts
-if (indexCache?.commands === commands) {   // 比引用，不比内容
-  return { fuse: indexCache.fuse, items: indexCache.items };
+if (infoIndexCache?.commands === commands) {   // 比引用，不比内容
+  return { fuse: infoIndexCache.fuse, items: infoIndexCache.items };
 }
 ```
 
@@ -1054,28 +1070,34 @@ if (skill.disableModelInvocation) { ... }
 列表是「展示」，执行是另一个入口。模型有可能从对话历史里学到一个不在当前
 listing 里的名字然后去调它。
 
-#### 一个真实的分布，以及怎么读它
+#### 一个看起来很有说服力的分布，以及它为什么是假数
 
-实测 sid-code 30 条已迁移内置命令里，**26 条标了 `disableModelInvocation: true`**：
+这一节原先写的是：「sid-code 30 条已迁移内置命令里，**26 条标了 `disableModelInvocation: true`**，
+26/30 反映了『斜杠命令大部分是给人用的界面操作』这个真实分布。」
+
+**结论本身也许没错，但这个数字证明不了它。** 回源码核过消费方：
 
 ```bash
-$ grep -l 'disableModelInvocation: true' packages/cli/src/command/commands/*/index.ts | wc -l
-26
+$ grep -rn 'disableModelInvocation' packages/cli/src/command/ --include='*.ts' \
+    | grep -v 'commands/' | grep -v '\.test\.'
+# → 空（命令体系内零消费者）
 ```
 
-**26/30 —— 这个比例高得值得停一下想想它意味着什么。**
+全仓的消费者都在 Skill 侧（`skill/meta-tool.ts`、`skill/manager.ts`），读的是 `SkillDefinition`；
+而 `BUILTIN_COMMANDS` 只流进用户侧的补全和执行。**内置命令从来不会暴露给模型**，
+所以那 26 处 `true` 不改变任何行为 —— 两个开关只有 `userInvocable` 一个通电。
 
-看这些命令是什么：`/vim` `/color` `/tui` `/copy` `/statusline` `/terminal-setup`
-`/keybindings` `/diff` `/doctor` `/status` `/todos` `/export` …
-
-**它们是「人的操作」，不是「任务的步骤」。** 模型没有理由去改用户的 vim 模式
-或者主题颜色。所以这个高比例不是「过度限制」，它反映了一个真实的分布：
+这正是 §9.1「类型定义在，能力没在用」的中间档，而且代价比「无害冗余」大：
+下一个加命令的人会照抄这一行，并以为「写了 true 就安全了」；
+哪天真给内置命令开了模型通道，没人会想起去接这个字段，因为它看起来早就在工作。
+**这 26 处声明已删除**（2026-10-07），契约注释写明了适用范围，
+并加了一道门禁（命令体系 G3a）：字段有声明、无消费即红。
 
 > **一个 coding agent 的斜杠命令，大部分是给人用的界面操作，不是给模型用的能力。**
 > 给模型用的能力应该走**工具**（Tool），不走命令。
 
-反过来说：如果你发现自己在给一大批命令开放模型调用，
-**那可能说明这些东西本该是工具而不是命令**（回到 §0.4 那张表）。
+这句判断仍然成立，但它的证据是「命令列表里都是 `/vim` `/theme` `/statusline` 这类人的操作」，
+不是一个不生效的字段的计数。
 
 bundled Skill 里也有几条显式关掉模型调用，理由在源码注释里（`bundled/tool.ts`）：
 
@@ -1145,12 +1167,23 @@ This is separate from `isEnabled()`:
 1. `isHidden` 和 `userInvocable: false` 都让命令「不太可见」，它们各自表达什么？
    合成一个会毁掉哪个真实场景？
 2. 为什么用户被拒是「报错」，模型被拒是「不可见」？（答案里要提到 token）
-3. 26/30 的命令关掉了模型调用。这个比例说明了什么？
+3. 「26/30 的命令关掉了模型调用」为什么说明不了任何事？（提示：先问谁在读这个字段）
 4. 注册表已经按 `isEnabled` 过滤过了，执行引擎为什么还要再查一次？
 
 ---
 <a id="s5"></a>
 ## §5 输入路由与命令队列：模型正忙的时候怎么办
+
+::: warning 本章描述的实现已重构（2026-10-07）
+下文引用的 `input-router.ts`、`queue.ts`、`PRIORITY_ORDER` 三级优先级**已作为零引用死代码删除**
+（`InputRouter` 在生产路径上从未被实例化）。当前实现：
+
+- **判据**：`command/streaming-gate.ts` 的 `canRunDuringStreaming` —— 流式中只有显式标了
+  `immediate: true` 的 local 命令可直送，未标注即入队（fail-closed），prompt 型一律入队；
+- **排队**：`ui/hooks/useMessageQueue.ts`，由 `ui/App.tsx` 的提交路径调用。
+
+「三种处置」「`immediate` 的判据」这些**设计思路**仍然成立，可以照读；代码片段与行号不再对应现状。
+:::
 
 ### 5.1 三条路：这段输入到底是什么
 
@@ -1966,24 +1999,24 @@ if (lastWrite !== undefined && now - lastWrite < DEBOUNCE_MS) return;   // ← �
 反过来说：如果一个模块的失败会让核心功能不可用，就**不该**静默吞异常
 （对照 §3.5 那个「降级为空数组」的取舍讨论）。
 
-### 7.5 空输入：不搜索，改分类展示
+### 7.5 空输入：只做「使用频率 + 字母序」，分类展示没上线
 
-用户只敲了一个 `/` 时，没有查询词可搜。这时改成按来源分类（实读）：
+用户只敲了一个 `/` 时，没有查询词可搜。真实路径是 `rankCommandInfos(commands, "")`
+的空查询分支：**按使用频率降序，同分按字母序**，平铺展示，没有分组标题。
 
-```
-1. 最近使用（top 5，使用分数 > 0）
-2. 内置命令（字母序）
-3. Skills（字母序）
-4. 自定义命令（字母序）
-```
+本文初稿把一段「按来源分类」写成了已有功能（最近使用 top 5 → 内置 → Skills → 自定义）。
+那段逻辑（`getCategorizedCommands`）**从未有调用方**，而且它和现状已经分叉，
+接线也会当场坏：
 
-**为什么分类而不是"全部按使用频率排"？** 因为这时用户的意图不是"找某个命令"，
-而是"**看看有什么**"。前者要精准排序，后者要**结构**——
-分类让用户知道"哦，原来还有 Skills 这一类"。
+- 它按 `command.source` 分类，但 UI 持有的 `TUIState.commands` 是轻量结构，**没有 `source` 字段**；
+- 它只认 `builtin / skill / user / project` 四类，`CommandSource` 有六个成员 ——
+  `plugin` 与 `mcp` 命令会在分类里整体消失。
 
-**"最近使用 top 5"单独提到最前面**，解决的是另一个问题：
-高频用户不需要浏览，他们只想快点选中那几个常用的。
-**这两种用户（探索者 / 熟手）需要的东西不一样，分类 + 置顶同时服务了两者。**
+2026-10-07 已连同另外两个零调用导出一并删除。
+
+**这个设计本身值得讨论**：「看看有什么」（探索者）要的是结构，「快点选中常用的」（熟手）要的是置顶，
+分类 + 置顶确实能同时服务两者。但如果要做，前置是把 `source` 流进 UI 并补齐六类 ——
+**一段和数据结构分叉的死代码不是「等着被接线的功能」**，留着只会让文档继续把它当已交付功能描述。
 
 ### 7.6 中间位置补全：一个正则的性能坑
 
@@ -2024,16 +2057,17 @@ interpreter scans O(n) even with the $ anchor.
 而是：**热路径上的正则要考虑引擎的 JIT 能力，语义最直白的写法不一定是最快的。**
 判据是"这段代码每次按键都跑吗"。
 
-### 7.7 两级索引缓存：用引用当 key
+### 7.7 索引缓存：用引用当 key
 
-`suggestions.ts` 里有两套索引（完整 `UnifiedCommand` 的，和 UI 层轻量结构的），
-都用同一个缓存技巧（实读）：
+`suggestions.ts` 里的轻量结构索引（`infoIndexCache`）用了一个缓存技巧（实读）：
 
 ```ts
-if (indexCache?.commands === commands) {          // ★ 比引用，不比内容
-  return { fuse: indexCache.fuse, items: indexCache.items };
+if (infoIndexCache?.commands === commands) {      // ★ 比引用，不比内容
+  return { fuse: infoIndexCache.fuse, items: infoIndexCache.items };
 }
 ```
+
+（初稿写「两级索引」：另一级服务的是零调用的 `getCommandSuggestions`，已删除。）
 
 §3.4 讲过这个技巧和它的前提，这里补一个它解决的具体问题：
 **建 Fuse 索引不便宜**（要遍历所有命令、切分名字、建倒排结构），
@@ -2046,8 +2080,12 @@ if (indexCache?.commands === commands) {          // ★ 比引用，不比内�
 如果哪天有人写了 `commands.push(newCmd)`，引用没变，
 **索引会静默停留在旧内容**——新命令搜不到，而且没有任何报错。
 
-模块也提供了显式清除（`clearSuggestionsCache()`）作为逃生阀。
-**这是对的：自动机制 + 手动逃生阀，比只有自动机制稳。**
+初稿这里说模块提供了显式清除 `clearSuggestionsCache()` 作为逃生阀 ——
+**实测它只清了死路径那层 `indexCache`，活路径的 `infoIndexCache` 没有任何清理入口**。
+这正是 §9.6「清了内层外层不动」的变体：清的那层和用的那层根本不是同一层。
+逃生阀已随死代码删除；「上层必须重建数组」这个前提改由单测锁住
+（命令列表换新数组后，排序结果必须跟着变）。
+**一个清错层的逃生阀比没有更糟**：出事时你会去调它，它绿着什么都不做。
 
 ### 7.8 本章自检
 
@@ -2687,14 +2725,14 @@ return false;
 
 | | sid-code | Claude Code |
 | --- | --- | --- |
-| 命令系统代码量 | 8547 行（`packages/cli/src/command/` 33 个 `.ts`，实测） | — |
-| 内置命令数 | ≈65（30 已迁移 + 35 legacy 桥接，实测） | 80+（CC 调研口径） |
+| 命令系统代码量 | 9430 行（`packages/cli/src/command/` 35 个 `.ts`，2026-10-07 实测） | — |
+| 内置命令数 | ≈66（30 已迁移 + 36 legacy 桥接，实测） | 80+（CC 调研口径） |
 | 命令来源数 | 6（内置/用户/项目/Skill/插件/MCP） | 7（多 bundled skills 与 workflow） |
 | 最大单文件 | `builtins.ts` 1995 行 | `processSlashCommand.tsx` 922 行 |
 
 **sid-code 处于一次未完成的迁移中**：新体系（`commands/` 目录，判别联合）
-已有 30 条，旧体系（`builtins.ts` 里的 class + `execute()` 方法）还有 35 条，
-靠 `adapter.ts`（249 行）双向桥接。
+已有 30 条，旧体系（`builtins.ts` 里的 class + `execute()` 方法）还有 36 条，
+靠 `adapter.ts`（268 行）双向桥接。
 
 **这个"两套体系并存"本身是个值得学的现象**，见 §10.5。
 
@@ -2818,7 +2856,7 @@ export interface UnifiedCommandRegistryContract {
 
 ### 10.5 一个诚实的观察：sid-code 的迁移未完成
 
-实测：新体系 30 条，旧体系 35 条，靠 249 行适配器桥接。
+实测（2026-10-07）：新体系 30 条，旧体系 36 条，靠 268 行适配器桥接。
 `adapter.ts` 自己的注释写着"最终移除本文件"。
 
 **这个状态的代价是真实的，值得点出来**：
@@ -3253,7 +3291,7 @@ function executeLocalJSX(cmd: LocalJSXCommand): Promise<string> {
 | **门控** | 五个正交的可见性/可调用性开关。见 §4.1 |
 | **`isEnabled`** | 运行时动态开关（函数而非布尔值，因为结果会变） |
 | **`userInvocable`** | 用户能否 `/name` 调用。`false` = 仅模型可用 |
-| **`disableModelInvocation`** | 模型能否调用。`true` = 从模型 listing 里消失 |
+| **`disableModelInvocation`** | 模型能否调用。`true` = 从模型 listing 里消失。**仅 Skill 来源生效**，内置命令无模型调用路径 |
 | **`immediate`** | 模型运行时能否插队执行。见 §5.2 |
 | **`requiresArgs`** | 无参数就无法工作，补全列表回车时只回填不执行 |
 | **Skill** | 磁盘上的 `SKILL.md`，能被**用户和模型两条路径**调用的扩展形态 |

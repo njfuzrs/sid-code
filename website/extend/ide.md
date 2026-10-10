@@ -9,6 +9,12 @@ description: 在 VS Code / Cursor / Windsurf 里用 sid-code：选区同步、@�
 
 这页解决两个问题：**它能做什么**，以及**怎么连上**。
 
+::: warning 配套 IDE 扩展尚未发布
+IDE 一侧需要一个写 lockfile、提供选区 / diff 能力的扩展，这个扩展目前没有发布到
+VS Code Marketplace 或 Open VSX。本页描述的是 sid-code 一侧的连接协议与能力：
+扩展按下面的 lockfile 协议接入就能用，现在照着装是装不上的。
+:::
+
 ## 快速上手
 
 在 VS Code / Cursor / Windsurf 的内置终端里直接启动：
@@ -17,22 +23,14 @@ description: 在 VS Code / Cursor / Windsurf 里用 sid-code：选区同步、@�
 sid-code
 ```
 
-如果已装 sid-code 的 IDE 扩展，启动时会自动发现并连接，日志里能看到：
+IDE 侧有实现了下面 lockfile 协议的扩展在跑时，启动会自动发现并连接，日志里能看到：
 
 ```text
 ● [IDE] 开始搜索可用 IDE...
 ● [IDE] 已连接到 VS Code
 ```
 
-没装扩展或不在 IDE 终端里，这条不会出现——所有功能照常工作，IDE 集成是**可选增强**，不是前置依赖。
-
-手动装扩展：
-
-```text
-/ide install
-```
-
-它通过 IDE 的 CLI（`code` / `cursor` / `windsurf`）安装 sid-code 扩展，装完重启 IDE 后再 `/ide connect` 连上。
+没有扩展或不在 IDE 终端里，这条不会出现——所有功能照常工作，IDE 集成是**可选增强**，不是前置依赖。
 
 ## 连接机制
 
@@ -46,7 +44,7 @@ sid-code 不会主动去扫端口找 IDE。连接靠一个 **lockfile 协议**�
 
 - **IDE 是动态 MCP Server**——和你在 `mcp add` 里配的 server 走同一套连接管理、工具调用通道，只是生命周期由 lockfile 驱动
 - **断开不影响主流程**——所有 IDE RPC 调用都有容错包裹，IDE 关了或断了，sid-code 照常跑，只是失去增强能力
-- **多 IDE 实例需要手动选**——发现多个匹配的 lockfile 时不自动连（怕连错），用 `/ide connect` 手动连
+- **多个窗口的工作区重叠时按进程祖先判断**——看你所在的终端是哪个 IDE 窗口的子进程，能判出来就直接连那个；判不出来才报多实例、要你手动处理
 
 自动连接的条件（满足任一即触发）：
 
@@ -81,28 +79,25 @@ sid-code 不会主动去扫端口找 IDE。连接靠一个 **lockfile 协议**�
 
 ### Diff 视图
 
-sid-code 改文件时，如果你连了 IDE，改动会在 IDE 里以 **diff 标签页**展示，而不是直接落盘。你可以：
+需在 `settings.json` 里开 `ide.diffPreview: true`（**默认关**：开启后每次编辑都要等你在 IDE 里表态，无人值守时会把任务挂住）。
+
+开了之后，sid-code 改文件时，如果你连了 IDE，改动会先在 IDE 里以 **diff 标签页**展示，而不是直接落盘。你可以：
 
 - **保存**：接受改动（可在 diff 里再改一版再保存，sid-code 会拿到你改后的内容）
-- **拒绝**：否掉这次改动
-- **关闭**：关掉 diff 标签页
-
-Agent 循环结束时，残留的 diff 标签页会被自动清理，不会留一堆没关的标签。
-
-### 自动扩展安装
-
-`/ide install` 检测当前终端所在的 IDE 类型（靠 `TERM_PROGRAM`），用对应 CLI 安装扩展。不在受支持 IDE 的终端里时会直接告知「当前终端不在受支持的 IDE 中」。
+- **拒绝**：否掉这次改动，不落盘
+- **关闭**：关掉标签页 = 未表态，sid-code 按原改动写入（和没连 IDE 时一样）
 
 ## `/ide` 命令
 
-会话内管理 IDE 连接，四个子命令：
+会话内管理 IDE 连接：
 
 ```text
 /ide status       显示连接状态 + 可发现的 IDE
 /ide connect      手动连接（自动连接没触发时用）
 /ide disconnect   断开连接
-/ide install      安装 sid-code IDE 扩展
 ```
+
+（早期版本有个 `/ide install` 子命令，它要安装的扩展不会发布，已移除。）
 
 `/ide`（无参）等同 `/ide status`，输出长这样：
 
@@ -121,24 +116,26 @@ IDE 集成状态:
 
 ### 启动没自动连上 IDE
 
-四个排查点，按顺序：
+三个排查点，按顺序：
 
 1. **在 IDE 的内置终端里跑吗**——外部终端（iTerm / 系统终端）不在 IDE 进程里，`TERM_PROGRAM` 不是 vscode/cursor/windsurf 不会自动触发。用 `/ide connect` 手动连
-2. **扩展装了吗**——`/ide install` 装一下，装完重启 IDE
-3. **lockfile 写了吗**——扩展启动时会在 `~/.sid-code/ide/` 写 `<port>.lock`，没这个文件 sid-code 发现不了。确认扩展进程还在跑
-4. **工作区目录对得上吗**——lockfile 里记的工作区目录要包含当前 cwd，跨工作区连不上
+2. **lockfile 写了吗**——IDE 侧扩展启动时会在 `~/.sid-code/ide/` 写 `<port>.lock`，没这个文件 sid-code 发现不了。这时 `/ide` 会点名正在运行的 IDE：
+   `检测到 VS Code 正在运行，但没有发现 sid-code 扩展（~/.sid-code/ide/ 下没有 lockfile）`
+3. **工作区目录对得上吗**——lockfile 里记的工作区目录要包含当前 cwd，跨工作区连不上
 
 ### `/ide connect` 说发现多个 IDE
 
-开了多个 IDE 窗口且都装了扩展时会出现。关掉多余实例，只留当前工作区的那个，再重试。
+多个窗口的工作区都包含当前目录，而 sid-code 又判断不出你的终端属于哪个窗口时才会出现
+（比如在外部终端里跑）。在目标 IDE 窗口的内置终端里启动，或关掉多余实例再重试。
 
 ### 连上了但选区没进上下文
 
 选区有 5 分钟有效期，可能是选完过了一段时间才提问、选区已过期。重新选中再问。另外空选区（纯空白）会被忽略。
 
-### diff 标签页关了但改动没生效
+### 关掉 diff 标签页算拒绝吗
 
-关掉 diff 标签页 = 拒绝这次改动。要接受改动得在标签页里**保存**，不是关掉。如果选了拒绝，sid-code 不会落盘这次改动。
+关掉标签页不是拒绝，是未表态：sid-code 会按原改动写入（和没连 IDE 时一致）。
+要否掉这次改动请点**拒绝**。
 
 ## 相关
 

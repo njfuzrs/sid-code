@@ -27,6 +27,9 @@ export function buildDreamPrompt(existingMemoriesManifest: string): string {
 ## 操作约束
 
 - 只能操作记忆目录内的文件（read 审查、save_memory/write/edit 修改）
+- **不要为核实去查项目**：不 grep / glob 源码、不跑 git、不读记忆目录外的文件。
+  判断一条记忆是否过时，只依据记忆之间的矛盾与上面对话里出现的事实；
+  拿不准就保留——轮次预算只够整理，花在核实上会一条都改不完
 - **保守优先**：不确定一条记忆是否还有价值时，**保留**，不要误删
 - 合并时保留最准确、信息量最大的表述；feedback/project 类记忆保留其 Why
 - 绝不引入新的、清单里不存在的"记忆"——你的职责是整理，不是创造

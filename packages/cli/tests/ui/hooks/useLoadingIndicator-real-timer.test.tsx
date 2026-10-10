@@ -15,9 +15,9 @@
 
 import { test, expect, describe } from "bun:test";
 import React from "react";
-import { render } from "@sid-code/tui-renderer/_vendor/testing.tsx";
-import Box from "@sid-code/tui-renderer/components/Box.tsx";
-import Text from "@sid-code/tui-renderer/components/Text.tsx";
+import { render } from "@sid-code/cli/ui/render-port/testing.ts";
+import { Box } from "@sid-code/cli/ui/render-port/components.ts";
+import { Text } from "@sid-code/cli/ui/render-port/components.ts";
 import { useLoadingIndicator } from "@sid-code/cli/ui/hooks/useLoadingIndicator.ts";
 import { StreamingState } from "@sid-code/cli/ui/types.ts";
 

@@ -39,7 +39,7 @@
  */
 
 import { describe, test, expect } from "bun:test";
-import { classifyError, classifyStreamError, StreamLevelError } from "@sid-code/core/llm/errors.ts";
+import { classifyFamily, normalizeStreamEvent } from "@sid-code/core/llm/error-normalize.ts";
 import { parseResponsesBody } from "@sid-code/core/llm/openai-responses.ts";
 import { replayFixture, type ProtocolFamily, type ReplayResult } from "./replay-collect.ts";
 
@@ -329,7 +329,7 @@ describe("协议专属 · Anthropic", () => {
     const errEvent = r.events.find((e) => e.type === "error") as any;
     expect(errEvent).toBeDefined();
     expect(errEvent.error?.type).toBe("overloaded_error");
-    // streamLevel 是 fallback.ts 选 classifyStreamError（而非 classifyError）的开关
+    // streamLevel 原样透传（2026-10-08 起它不再是选分类器的开关，只保留字段还原契约）
     expect(errEvent.error?.streamLevel).toBe(true);
     // 消息取上游的人类可读文本，而不是 SDK 拼的整串 body JSON
     expect(errEvent.error?.message).toBe("Overloaded");
@@ -337,27 +337,37 @@ describe("协议专属 · Anthropic", () => {
 
   test("还原出的结构化 type 确实让 fallback 判成可重试（端到端到分类器）", async () => {
     // 光断言"字段还原了"不够——要证明它真的改变了分类结果。
-    // 关键点：这里刻意用**不含任何关键词**的场景才有意义，但本夹具消息是
-    // "Overloaded"（含关键词），所以直接拿分类器对比两种输入：
-    //   带 type   → StreamLevelError(可重试)
-    //   不带 type → classifyError 靠关键词，无关键词时退化成裸 Error
+    // 本夹具消息是 "Overloaded"（含关键词），所以直接拿分类器对比两种输入。
     const r = await replayFixture("anthropic-stream-error.json", "anthropic-messages");
     const errEvent = r.events.find((e) => e.type === "error") as any;
-    const classified = classifyStreamError(
-      "anthropic",
-      errEvent.error.message,
-      errEvent.error.type,
-      errEvent.error.statusCode,
+    const classified = classifyFamily(
+      normalizeStreamEvent({
+        message: errEvent.error.message,
+        type: errEvent.error.type,
+        statusCode: errEvent.error.statusCode,
+        streamLevel: errEvent.error.streamLevel,
+      }),
     );
-    expect(classified).toBeInstanceOf(StreamLevelError);
-    expect((classified as any).reason).toBe("overloaded");
+    expect(classified).toMatchObject({
+      family: "transient",
+      reason: "overloaded",
+      recognized: true,
+    });
 
-    // 反例：同样的消息文本但**没有关键词**时，丢了 type 就分不出可重试。
-    // 这正是缺陷 C 在 api_error 类错误上的真实后果。
-    const withoutType = classifyError(new Error("服务暂时不可用"));
-    expect(withoutType).not.toBeInstanceOf(StreamLevelError);
-    const withType = classifyStreamError("anthropic", "服务暂时不可用", "api_error");
-    expect(withType).toBeInstanceOf(StreamLevelError);
+    // 反例：消息文本**没有关键词**时，type 是唯一能让它被「认出来」的字段。
+    // 2026-10-08 有意语义变更：旧反例是「丢 type → 裸 Error 不重试」；现在认不出也进
+    // transient（可重试），差别变成 recognized——认不出的受「同指纹 3 次封顶」约束、
+    // 且退避与遥测按 unrecognized 记账。缺陷 C 的后果从「零重试」降级为「少认出一类」。
+    const withoutType = classifyFamily(normalizeStreamEvent({ message: "服务暂时不可用" }));
+    expect(withoutType).toEqual({ family: "transient", reason: "unrecognized", recognized: false });
+    const withType = classifyFamily(
+      normalizeStreamEvent({
+        message: "服务暂时不可用",
+        type: "overloaded_error",
+        streamLevel: true,
+      }),
+    );
+    expect(withType).toMatchObject({ family: "transient", reason: "overloaded", recognized: true });
   });
 });
 

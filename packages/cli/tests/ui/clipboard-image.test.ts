@@ -13,6 +13,7 @@ import { join } from "node:path";
 import {
   detectDroppedImagePath,
   readClipboardImageToFile,
+  resolveCopiedImageFile,
   IMAGE_EXTS,
 } from "@sid-code/cli/ui/utils/clipboard-image.ts";
 
@@ -93,5 +94,42 @@ describe("readClipboardImageToFile（P2-6 契约）", () => {
     }).not.toThrow();
     // 可能为 null（无图）或极少数环境真有图返回路径——只要不抛且类型正确即通过。
     expect(result === null || typeof result === "string").toBe(true);
+  });
+});
+
+describe("resolveCopiedImageFile（访达 Cmd+C 复制图片文件后粘贴）", () => {
+  // 复现会话 20261009-135641-0083c051：终端只粘贴进裸文件名，用户消息里连路径都没有。
+  test("裸文件名 + 剪贴板有同名文件引用 → 返回真实路径", () => {
+    const p = makeTmpImage("27259502_133938618036_2.jpg");
+    expect(resolveCopiedImageFile("27259502_133938618036_2.jpg", () => [p])).toBe(p);
+  });
+
+  test("多文件复制时按名字匹配，不取第一个", () => {
+    const a = makeTmpImage("a.png");
+    const b = makeTmpImage("b.png");
+    expect(resolveCopiedImageFile("b.png", () => [a, b])).toBe(b);
+  });
+
+  test("剪贴板无同名文件 → null（普通文字恰好以 .png 结尾不误判）", () => {
+    const a = makeTmpImage("a.png");
+    expect(resolveCopiedImageFile("logo.png", () => [a])).toBeNull();
+    expect(resolveCopiedImageFile("logo.png", () => [])).toBeNull();
+  });
+
+  test("非图片扩展名 / 含路径分隔符 / 多行 → null，且不去读剪贴板", () => {
+    let called = 0;
+    const read = () => {
+      called++;
+      return [];
+    };
+    expect(resolveCopiedImageFile("notes.txt", read)).toBeNull();
+    expect(resolveCopiedImageFile("dir/a.png", read)).toBeNull();
+    expect(resolveCopiedImageFile("a.png\nb.png", read)).toBeNull();
+    expect(resolveCopiedImageFile("", read)).toBeNull();
+    expect(called).toBe(0);
+  });
+
+  test("剪贴板文件引用指向已删除的文件 → null", () => {
+    expect(resolveCopiedImageFile("gone.png", () => ["/no/such/gone.png"])).toBeNull();
   });
 });

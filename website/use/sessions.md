@@ -30,16 +30,16 @@ sid-code -r
 sid-code --list-sessions
 ```
 
-真实输出（本机 56 个会话时）：
+输出示例（标题为虚构）：
 
 ```text
 共 56 个会话:
 
 索引 | 消息数 | 时间 | 名称
 -----|--------|------|------
-#  1 |     19 | 3d   | # Commit: 生成提交信息并提交 基于当前 git 变更生成规范 commit message
+#  1 |     19 | 3d   | 重构认证模块，把 session 校验抽成中间件
 #  3 |      1 | 3d   | hi
-#  5 |     12 | 3d   | 帮我从develop切个新分支然后把c191579551695da7cdd5c24917575794
+#  5 |     12 | 3d   | 给订单接口补分页参数和单测
 ```
 
 名字默认取首条消息前若干字符，所以会出现一堆 `hi`。要好认就自己命名（见下）。
@@ -73,34 +73,50 @@ sid-code -r 5
 
 存储位置是 `~/.sid-code/sessions/<项目目录派生的键>/<session-id>.jsonl`，
 一行一条事件（JSON Lines）。同一个项目的会话归在一个子目录下，所以
-`-c` 在不同项目里continue 到的是各自最近的那次，不会串台。
+`-c` 在不同项目里 continue 到的是各自最近的那次，不会串台。
 
 清理策略默认值：
 
-| 项 | 默认 |
-| --- | --- |
-| 启用 | 是 |
-| 最长保留 | 30 天 |
-| 最多保留数 | 50 个 |
-| 最短保留（防误删） | 1 天 |
+| 项 | 默认 | 字段 |
+| --- | --- | --- |
+| 启用 | 是 | `enabled` |
+| 最长保留 | 365 天 | `maxAge`（数字 + `h`/`d`/`w`/`m`，如 `"90d"`） |
+| 最多保留数 | 不限 | `maxCount` |
+| 总体积上限 | 10GB（会话 + 轨迹合计，超了才从最旧的删） | `maxTotalSize`（如 `"20GB"`） |
+| 最短保留（防误删） | 1 天 | `minRetention` |
+
+会话被清理时，它的轨迹、检查点、进度笔记一起删；轨迹目录和 Session Memory 笔记
+也按同一个保留期过期，不会出现「会话还在、轨迹被删」的情况。自动清理真删了东西时，
+TUI 状态栏会提示删了几个，不会静默删除。
 
 要改就写 `~/.sid-code/settings.json` 的 `sessionRetention` 段（字段类型见
-[settings.json 字段](/ref/settings)）。手动触发一次清理：
+[settings.json 字段](/ref/settings)）：
+
+```json
+{
+  "sessionRetention": { "maxAge": "730d", "maxTotalSize": "50GB" }
+}
+```
+
+完全不想自动删，写 `"sessionRetention": { "enabled": false }`。旧字段
+`cleanupPeriodDays`（天）仍然认，等价于 `maxAge`，两个都写时以 `maxAge` 为准。
+
+手动触发一次清理：
 
 ```bash
 sid-code --cleanup-sessions
 ```
 
-真实输出：
+输出形如：
 
 ```text
 开始清理过期会话...
-配置: maxAge=30d, maxCount=50
+配置: enabled=true, maxAge=365d, maxCount=不限, maxTotalSize=10GB
 
 清理完成:
-  扫描: 63 个
-  删除: 13 个
-  跳过: 50 个
+  扫描: 55 个
+  删除: 0 个
+  跳过: 55 个
   失败: 0 个
 ```
 
@@ -150,8 +166,8 @@ sid-code --cleanup-sessions
 
 ### `/status` 与 `/stats`：一眼概览 vs 会话统计
 
-这两个都给你看当前会话状态，但侧重不同（`src/command/commands/status/status.ts`、
-`src/command/builtins.ts:880`）：
+这两个都给你看当前会话状态，但侧重不同（`packages/cli/src/command/commands/status/status.ts`、
+`packages/cli/src/command/builtins.ts`）：
 
 | 命令 | 回答什么 | 形态 |
 | --- | --- | --- |
@@ -236,8 +252,9 @@ id，只有"分叉"这一种合理解释，所以必须显式写出来。
 名字默认取首条消息。起名两种办法：启动时 `-n "重构认证"`，或者会话里 `/rename`。
 
 **上周的会话找不到了。**
-默认只留 30 天 / 50 个。要留更久就调 `sessionRetention.maxAge` 和 `maxCount`。
-注意 `maxCount` 也会削——50 个满了，哪怕没到 30 天也会删掉最旧的。
+默认留 365 天、不限数量，只有会话 + 轨迹总量超过 10GB 才会从最旧的开始删。
+如果你自己设过 `maxCount` 或更短的 `maxAge`，先检查 `~/.sid-code/settings.json`；
+已经删掉的会话无法恢复。
 
 **回退选择器里没有我要的那一轮。**
 回退点上限 30 个，长会话里更早的轮次不在列表。这种情况走 `/checkpoints` 看文件

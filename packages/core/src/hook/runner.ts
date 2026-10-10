@@ -15,24 +15,91 @@ import {
   type HookInput,
   type HookOutput,
   type HookExecutionResult,
+  resolveHookTimeoutMs,
 } from "./types.ts";
 import { getLogger } from "../debug/logger.ts";
 import { sanitizeStrings } from "../llm/sanitize-unicode.ts";
 import { recordSideCall } from "../trace/side-call-sink.ts";
 import { SIDE_CALL_NO_THINK } from "../llm/side-call-timeout.ts";
 import { SIDE_CALL_TIMEOUT_REASON } from "../llm/errors.ts";
+import { ssrfGuardedFetch } from "./ssrf-guard.ts";
+import { toCcToolName } from "../tool/tool-name-aliases.ts";
 
-/** 默认超时 60 秒 */
-const DEFAULT_TIMEOUT = 60_000;
+/**
+ * 发给外部 handler（command stdin / http body / prompt·agent 的 $ARGUMENTS）的载荷（Q1 裁决）。
+ *
+ * `tool_name` 换成 CC 名并附 `sid_tool_name`，CC 脚本 `jq -r .tool_name == "Bash"` 零修改可用（HC9）。
+ * 只在序列化这一步改，不动 HookInput 本身：collector / hook-probe / session-metrics 三个 runtime
+ * 消费者拿 tool_name 做统计键，在对象上改名会让轨迹工具名在发版前后断成两段（北极星铁律 3）。
+ * sid 独有工具与 MCP 工具没有 CC 名，原样发内部名、不加 sid_tool_name。
+ */
+export function toExternalHookPayload(input: HookInput): HookInput {
+  const toolName = (input as { tool_name?: unknown }).tool_name;
+  if (typeof toolName !== "string") return input;
+  const cc = toCcToolName(toolName);
+  if (!cc) return input;
+  return { ...input, tool_name: cc, sid_tool_name: toolName } as HookInput;
+}
 
-/** 延迟 JSON 序列化：只在需要时序列化一次 */
+/**
+ * HC16：这些事件 exit 0 的纯文本 stdout 作为上下文给模型（对齐 CC）。
+ * 原先它进 systemMessage，而引擎只读 additionalContext——用户照 CC 文档写的
+ * `echo "当前分支: $(git branch --show-current)"` 跑了、模型却永远看不到。
+ */
+const CONTEXT_STDOUT_EVENTS: ReadonlySet<string> = new Set([
+  HookEventName.SessionStart,
+  HookEventName.UserPromptSubmit,
+]);
+
+/** exit 0 + 非 JSON stdout + 上下文类事件 → 搬到 hookSpecificOutput.additionalContext */
+export function promotePlainStdoutToContext(
+  output: HookOutput,
+  eventName: string,
+  exitCode: number,
+  stdout: string,
+): HookOutput {
+  if (exitCode !== EXIT_SUCCESS || !CONTEXT_STDOUT_EVENTS.has(eventName)) return output;
+  const text = stdout.trim();
+  // JSON 输出（以 { 开头）由 hook 自己决定字段，不搬
+  if (!text || text.startsWith("{")) return output;
+  if (output.hookSpecificOutput && "additionalContext" in output.hookSpecificOutput) return output;
+  return {
+    ...output,
+    systemMessage: undefined,
+    hookSpecificOutput: { ...(output.hookSpecificOutput ?? {}), additionalContext: text },
+  };
+}
+
+/** exec 形式允许替换的路径占位符（只认这几个，任意 $VAR 不替换——那是 shell 的活） */
+const EXEC_PLACEHOLDER_VARS = [
+  "CLAUDE_PROJECT_DIR",
+  "CLAUDE_PLUGIN_ROOT",
+  "CLAUDE_PLUGIN_DATA",
+  "SID_CODE_PROJECT_DIR",
+  "SID_CODE_PLUGIN_ROOT",
+  "SID_CODE_PLUGIN_DATA",
+  "SID_CODE_CWD",
+  "PLUGIN_ROOT",
+  "SKILL_DIR",
+] as const;
+
+/** exec 形式：把 `${VAR}` / `$VAR`（白名单内）替换成 env 里的值；env 没有的保持原样 */
+export function expandPathPlaceholders(part: string, env: Record<string, string>): string {
+  return part.replace(/\$\{([A-Z_]+)\}|\$([A-Z_]+)\b/g, (whole, braced, bare) => {
+    const name = (braced ?? bare) as string;
+    if (!(EXEC_PLACEHOLDER_VARS as readonly string[]).includes(name)) return whole;
+    return env[name] ?? whole;
+  });
+}
+
+/** 延迟 JSON 序列化：只在需要时序列化一次（外部载荷形状，见 toExternalHookPayload） */
 export class LazyJsonInput {
   private _json: string | undefined;
   constructor(private input: HookInput) {}
 
   get json(): string {
     if (this._json === undefined) {
-      this._json = JSON.stringify(this.input);
+      this._json = JSON.stringify(toExternalHookPayload(this.input));
     }
     return this._json;
   }
@@ -55,7 +122,95 @@ const SENSITIVE_ENV_PATTERNS = [
   /password/i,
   /credential/i,
   /auth/i,
+  // H13：原先只有 `api[_-]?key` 没有裸 key，PRIVATE_KEY / SSH_KEY / SIGNING_KEY 全部漏网。
+  // 按「_ 分隔的整段」匹配，避免误伤 KEYBOARD / MONKEY 这类无害名字。
+  /(^|[_-])(private|ssh|signing|access|secret)?[_-]?key($|[_-])/i,
+  // H13：缩写形态的密钥名（OPENAI_SK、GH_PAT）——同样按整段匹配
+  /(^|[_-])(sk|pat)($|[_-])/i,
+  /cookie/i,
+  // H13：网关端点不是凭据，但是企业内网拓扑，第三方 hook 脚本不该拿到
+  /[_-](base[_-]?url|endpoint)$/i,
 ];
+
+/**
+ * H13：值形态兜底。key 命名习惯没有上界（SK / PAT / DSN / SEED…），黑名单永远补不完；
+ * 已知凭据的「值」格式反而是有限的。命中任一前缀就脱敏，无论 key 叫什么。
+ */
+const SENSITIVE_ENV_VALUE_PATTERNS = [
+  /^sk-[A-Za-z0-9_-]{6,}/, // OpenAI / Anthropic / DeepSeek 等
+  /^(ghp|gho|ghs|ghu|ghr)_[A-Za-z0-9]{16,}/, // GitHub token
+  /^github_pat_[A-Za-z0-9_]{16,}/,
+  /^glpat-[A-Za-z0-9_-]{16,}/, // GitLab PAT
+  /^xox[abprs]-[A-Za-z0-9-]{10,}/, // Slack
+  /^(AKIA|ASIA)[0-9A-Z]{16}$/, // AWS access key id
+  /-----BEGIN [A-Z ]*PRIVATE KEY-----/,
+  /^eyJ[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}\./, // JWT
+];
+
+/**
+ * H17：HookOutput 的已知字段。parseJsonOutput 原先把任何对象（含数组）都当 HookOutput，
+ * `{"decission":"deny"}` 这类拼写错误被接受成「一个没有任何决策的合法输出」，零反馈。
+ */
+const KNOWN_HOOK_OUTPUT_FIELDS = new Set([
+  "continue",
+  "stopReason",
+  "suppressOutput",
+  "systemMessage",
+  "decision",
+  "reason",
+  "hookSpecificOutput",
+]);
+const KNOWN_HOOK_SPECIFIC_FIELDS = new Set([
+  "hookEventName", // CC 协议要求带上，我们不消费但不该告警
+  "additionalContext",
+  "clearContext",
+  "tailToolCallRequest",
+  "updatedInput",
+  "tool_input",
+  "permissionDecision",
+  "permissionDecisionReason",
+  "llm_request",
+  "llm_response",
+]);
+const KNOWN_DECISIONS = new Set(["allow", "approve", "deny", "block"]);
+
+/** H17：形状告警按「来源 + 问题」去重——挂在 PostToolUse 上的 hook 一次任务跑几十次，每次都 warn 会刷屏 */
+const reportedShapeIssues = new Set<string>();
+function warnShapeOnce(source: string, message: string): void {
+  const key = `${source}\u0000${message}`;
+  if (reportedShapeIssues.has(key)) return;
+  if (reportedShapeIssues.size > 500) reportedShapeIssues.clear();
+  reportedShapeIssues.add(key);
+  getLogger().warn("HOOK", message);
+}
+
+/**
+ * H17：列出一个已解析的 hook JSON 输出里的形状问题（未知字段、非法 decision）。
+ * 只告警不丢弃：未知字段可能是新协议字段，丢掉会让向前兼容变成静默失效的另一种形态。
+ */
+export function describeHookOutputShapeIssues(output: Record<string, unknown>): string[] {
+  const issues: string[] = [];
+  for (const key of Object.keys(output)) {
+    if (!KNOWN_HOOK_OUTPUT_FIELDS.has(key)) issues.push(`未知字段 "${key}"`);
+  }
+  if (output.decision !== undefined && !KNOWN_DECISIONS.has(output.decision as string)) {
+    issues.push(
+      `decision 取值 ${JSON.stringify(output.decision)} 不在 allow/approve/deny/block 内`,
+    );
+  }
+  const specific = output.hookSpecificOutput;
+  if (specific !== undefined) {
+    if (!specific || typeof specific !== "object" || Array.isArray(specific)) {
+      issues.push("hookSpecificOutput 不是对象");
+    } else {
+      for (const key of Object.keys(specific)) {
+        if (!KNOWN_HOOK_SPECIFIC_FIELDS.has(key))
+          issues.push(`未知字段 "hookSpecificOutput.${key}"`);
+      }
+    }
+  }
+  return issues;
+}
 
 /**
  * G6：agent hook 的真子代理执行器（由 app 层注入，携带 ProviderRegistry + 工具注册表）。
@@ -70,7 +225,30 @@ export type AgentHookExecutor = (params: {
   signal: AbortSignal;
 }) => Promise<{ ok: boolean; reason?: string; transcript?: string }>;
 
+/** hook 开始 / 结束事件（UI 用 statusMessage 显示「正在跑哪个 hook」） */
+export interface HookLifecycleEvent {
+  phase: "start" | "end";
+  /** start 与 end 配对用 */
+  runId: string;
+  hookConfig: HookConfig;
+  eventName: HookEventName;
+}
+export type HookLifecycleListener = (ev: HookLifecycleEvent) => void;
+
+let hookRunSeq = 0;
+
 export class HookRunner {
+  /**
+   * 会话启动时的项目根（HC14 / Q3）：导出为 CLAUDE_PROJECT_DIR / SID_CODE_PROJECT_DIR。
+   * 与 CC 一致，**不随 bash `cd` / worktree 变化**——原先取 input.cwd，cd 之后就变了，
+   * `${CLAUDE_PROJECT_DIR}/.sid-code/hooks/x.sh` 这类脚本路径会跟着漂。随 cd 变的是 SID_CODE_CWD。
+   */
+  private projectDir: string = process.cwd();
+
+  setProjectDir(dir: string): void {
+    this.projectDir = dir;
+  }
+
   /** G6：注入的真子代理执行器（app 层设置）。 */
   private agentHookExecutor?: AgentHookExecutor;
 
@@ -87,8 +265,50 @@ export class HookRunner {
     this.asyncRegistry = registry;
   }
 
+  /**
+   * hook 生命周期监听（statusMessage 的消费端，由 HookSystem.onHookLifecycle 注册）。
+   * 挂在 executeHook 而不是 executeHooksParallel/Sequential 的 onHookStart 参数上：
+   * 后者调用点有好几条（并行 / 串行 / SessionEnd 预算串行 / streaming），漏传一条就是一类事件
+   * 永远不显示；executeHook 是所有路径的唯一咽喉。
+   */
+  private lifecycleListeners = new Set<HookLifecycleListener>();
+
+  addLifecycleListener(fn: HookLifecycleListener): () => void {
+    this.lifecycleListeners.add(fn);
+    return () => this.lifecycleListeners.delete(fn);
+  }
+
+  private emitLifecycle(ev: HookLifecycleEvent): void {
+    for (const fn of this.lifecycleListeners) {
+      // 监听方（UI）出错不能让 hook 结论跟着变——吞掉，只记日志
+      try {
+        fn(ev);
+      } catch (e) {
+        getLogger().debug("HOOK", `hook 生命周期监听异常: ${e}`);
+      }
+    }
+  }
+
   /** 执行单个 hook */
   async executeHook(
+    hookConfig: HookConfig,
+    eventName: HookEventName,
+    input: HookInput,
+  ): Promise<HookExecutionResult> {
+    if (this.lifecycleListeners.size === 0) {
+      return this.executeHookInner(hookConfig, eventName, input);
+    }
+    // 每次执行一个独立 id：同一 hook 可能并发跑（两次并行工具调用），按 config 去配对会串
+    const runId = `hook-run-${++hookRunSeq}`;
+    this.emitLifecycle({ phase: "start", runId, hookConfig, eventName });
+    try {
+      return await this.executeHookInner(hookConfig, eventName, input);
+    } finally {
+      this.emitLifecycle({ phase: "end", runId, hookConfig, eventName });
+    }
+  }
+
+  private async executeHookInner(
     hookConfig: HookConfig,
     eventName: HookEventName,
     input: HookInput,
@@ -227,26 +447,41 @@ export class HookRunner {
       };
     }
 
-    const timeout = (hookConfig.timeout ?? DEFAULT_TIMEOUT / 1000) * 1000;
+    const timeout = resolveHookTimeoutMs(hookConfig, eventName);
 
     // 构建环境变量（清理敏感信息）
     const env: Record<string, string> = {
       ...this.sanitizeEnvironment(process.env as Record<string, string>),
       SID_CODE_HOOK_EVENT: eventName,
-      SID_CODE_PROJECT_DIR: input.cwd,
+      SID_CODE_PROJECT_DIR: this.projectDir,
+      // Q3：只导出 sid 真正支持语义的三个 CLAUDE_* 变量（另两个 PLUGIN_* 由 pathVars 按来源提供）
+      CLAUDE_PROJECT_DIR: this.projectDir,
+      // H14：$SID_CODE_CWD 原先只靠对命令串做字符串替换提供，删掉替换后改由环境变量提供，写法不变
+      SID_CODE_CWD: input.cwd,
+      // 来源决定的路径变量（插件根 / skill 目录 …）：shell 形式由 sh 从环境展开 ${CLAUDE_PLUGIN_ROOT} 等，
+      // 不再往命令串里替换路径（H14 同型）。用户 env 在后，可覆盖。
+      ...hookConfig.pathVars,
       ...hookConfig.env,
     };
 
     // 注入事件专属环境变量
     this.injectEventEnvVars(env, input);
 
-    // 展开命令中的变量
-    const command = this.expandCommand(hookConfig.command, input);
+    // H14：命令串原样交给 sh，不做任何字符串替换。$SID_CODE_PROJECT_DIR / $SID_CODE_CWD 由 sh
+    // 从上面的环境变量展开——环境变量的值不会被二次解析。原先把 cwd 裸拼进命令串，目录名里的
+    // `$(...)` / 反引号会被 sh 当代码执行，用户加双引号也挡不住（替换发生在引号解析之前）。
+    const command = hookConfig.command;
 
     const lazyInput = new LazyJsonInput(input);
 
+    // §三.5 exec 形式：有 args 时不经 shell，`[command, ...args]` 直接 spawn。没有 shell 会再解析，
+    // 所以路径占位符在这里做纯字符串替换（与 CC 一致），值不会被当代码执行。
+    const cmd = hookConfig.args
+      ? [command, ...hookConfig.args].map((part) => expandPathPlaceholders(part, env))
+      : ["sh", "-c", command];
+
     const proc = spawn({
-      cmd: ["sh", "-c", command],
+      cmd,
       env,
       cwd: input.cwd,
       stdin: "pipe",
@@ -270,27 +505,33 @@ export class HookRunner {
       const registry = this.asyncRegistry;
       const supportsRewake = hookConfig.asyncRewake === true;
 
-      // 后台等待进程结束 + 双阶段超时杀进程；结果写回 asyncRegistry（不 await）
-      const bgTimeoutId = setTimeout(() => {
-        proc.kill("SIGTERM");
-        setTimeout(() => {
-          try {
-            proc.kill("SIGKILL");
-          } catch {
-            /* 进程可能已退出 */
-          }
-        }, 5000);
-      }, timeout);
+      // 后台等待进程结束；结果写回 asyncRegistry（不 await）。
+      // Q5-3：纯 async 不强制 timeout（对齐 CC hooks.md「异步 hook 在后台运行后不强制执行 timeout」）——
+      // 后台跑测试 / 上传这类长任务本来就是 async 的用途，600s 强杀会让它们静默半途而废。
+      // asyncRewake 仍强制：它的结果要回灌下一轮，不设上限就可能永远挂着一个待回灌项（CC 同样如此）。
+      const bgTimeoutId = supportsRewake
+        ? setTimeout(() => {
+            proc.kill("SIGTERM");
+            setTimeout(() => {
+              try {
+                proc.kill("SIGKILL");
+              } catch {
+                /* 进程可能已退出 */
+              }
+            }, 5000);
+          }, timeout)
+        : undefined;
       void (async () => {
         try {
           const exitCode = await proc.exited;
           const stderr = await new Response(proc.stderr).text();
-          // 仅 asyncRewake=true 且 exit 2 才回灌（markCompleted 内部据 exitCode===2 入 rewake 队列）
-          registry.markCompleted(asyncId, supportsRewake ? (exitCode ?? 0) : 0, stderr);
+          // 仅 asyncRewake=true 且 exit 2 才回灌。H18：真实退出码照记——原先非 rewake 时硬传 0，
+          // 「后台 hook 失败了没有」在数据上无法回答；回灌与否改由 rewake 参数单独决定。
+          registry.markCompleted(asyncId, exitCode ?? 0, stderr, supportsRewake);
         } catch (e) {
-          registry.markCompleted(asyncId, 0, String(e));
+          registry.markCompleted(asyncId, 0, String(e), false);
         } finally {
-          clearTimeout(bgTimeoutId);
+          if (bgTimeoutId) clearTimeout(bgTimeoutId);
         }
       })();
 
@@ -346,7 +587,17 @@ export class HookRunner {
       const duration = Date.now() - startTime;
 
       // 解析输出
-      const output = this.parseCommandOutput(stdout, stderr, exitCode ?? 0);
+      const output = promotePlainStdoutToContext(
+        this.parseCommandOutput(
+          stdout,
+          stderr,
+          exitCode ?? 0,
+          `command:${hookConfig.name ?? command.slice(0, 60)}`,
+        ),
+        eventName,
+        exitCode ?? 0,
+        stdout,
+      );
 
       return {
         hookConfig,
@@ -380,38 +631,56 @@ export class HookRunner {
       };
     }
 
-    const timeout = (hookConfig.timeout ?? DEFAULT_TIMEOUT / 1000) * 1000;
+    const timeout = resolveHookTimeoutMs(hookConfig, eventName);
     const method = hookConfig.method || "POST";
 
     const controller = new AbortController();
     const timeoutId = setTimeout(() => controller.abort(), timeout);
 
     try {
-      const response = await fetch(hookConfig.url, {
+      // H5：原先是裸 fetch，ssrf-guard.ts 整个模块零调用，allowedEnvVars 写了也没效果。
+      // 现在 url hook 一律经它：私有/元数据地址拦截（loopback 放行，见该文件注释）、
+      // header 里的 $VAR 只插值 allowedEnvVars 白名单、CRLF 清理。
+      const response = await ssrfGuardedFetch(hookConfig.url, {
         method,
         headers: {
           "Content-Type": "application/json",
           ...(hookConfig.headers || {}),
         },
-        body: JSON.stringify(sanitizeStrings(input)),
+        body: JSON.stringify(sanitizeStrings(toExternalHookPayload(input))),
         signal: controller.signal,
+        allowedEnvVars: hookConfig.allowedEnvVars,
       });
 
       const text = await response.text();
       const duration = Date.now() - startTime;
 
+      // HC19：非 2xx 是**非阻塞错误**，执行继续（对齐 CC hooks.md「HTTP 响应处理」）。
+      // 原先直接判 deny：webhook 服务一抖（502 / 限流 429），所有工具调用全部被拦，
+      // 而 CC 明文规定 HTTP hook 不能仅靠状态码阻止，要阻止须返回 2xx + JSON 决策字段。
       if (!response.ok) {
+        const msg = `${hookConfig.name ?? hookConfig.url} hook error: HTTP ${response.status}${text ? ` ${text.slice(0, 200)}` : ""}`;
+        getLogger().warn("HOOK", msg);
         return {
           hookConfig,
           eventName,
           success: false,
-          output: { decision: "deny", reason: `HTTP ${response.status}: ${text.slice(0, 200)}` },
+          output: { systemMessage: msg },
           stdout: text,
+          error: new Error(msg),
           duration,
         };
       }
 
-      const output = this.parseJsonOutput(text);
+      // 2xx：空体 = 成功；JSON 对象体按 HookOutput 解析；其他体（纯文本）是非阻塞错误、不进上下文（CC 同）
+      const trimmedBody = text.trim();
+      if (trimmedBody && !trimmedBody.startsWith("{")) {
+        getLogger().warn(
+          "HOOK",
+          `${hookConfig.name ?? hookConfig.url} hook error: 2xx 响应体不是 JSON 对象，已忽略`,
+        );
+      }
+      const output = this.parseJsonOutput(text, `url:${hookConfig.name ?? hookConfig.url}`);
       return {
         hookConfig,
         eventName,
@@ -444,7 +713,7 @@ export class HookRunner {
     input: HookInput,
     startTime: number,
   ): Promise<HookExecutionResult> {
-    const timeout = hookConfig.timeout ?? DEFAULT_TIMEOUT;
+    const timeout = resolveHookTimeoutMs(hookConfig, eventName);
     const controller = new AbortController();
     let timeoutHandle: ReturnType<typeof setTimeout> | undefined;
 
@@ -492,49 +761,101 @@ export class HookRunner {
   // ============================================================
 
   /** 解析 command hook 输出（退出码语义：0=成功, 1=警告, 2+=阻塞） */
-  private parseCommandOutput(stdout: string, stderr: string, exitCode: number): HookOutput {
-    // JSON 输出优先（无论退出码）：结构化 decision 覆盖退出码语义。
-    // stdout 优先解析（CC 约定 JSON 走 stdout），stdout 非 JSON 时再尝试 stderr。
+  private parseCommandOutput(
+    stdout: string,
+    stderr: string,
+    exitCode: number,
+    source = "command",
+  ): HookOutput {
+    // H16：只从 stdout 解析 JSON，stderr 从不当 JSON（对齐 CC）。原先 stdout 非 JSON 时兜底解析 stderr，
+    // exit 0 的 hook 只因子命令（pino 日志 / tsc 诊断 / jq 错误对象）往 stderr 吐了一段带 decision 的 JSON，
+    // 就凭空造出一个 deny。stderr 只承载人读的文本：exit 2 的阻塞理由、其余非零的告警。
     const stdoutText = stdout.trim();
     const stderrText = stderr.trim();
-    const jsonOutput = this.parseJsonOutput(stdoutText) ?? this.parseJsonOutput(stderrText);
+    const jsonOutput = this.parseJsonOutput(stdoutText, source);
+
+    // H15：exit 2 一律阻塞，JSON 改不了（对齐 CC）。原先「JSON 无条件优先」让一个照文档写的
+    // hook —— stdout 输出结构化审计日志、stderr 写理由、exit 2 —— 只因 stdout 恰好是 JSON
+    // 就丢掉阻塞。JSON 里的其余字段（systemMessage / hookSpecificOutput 等）照常保留。
+    if (exitCode === EXIT_BLOCKING) {
+      const jsonReason = typeof jsonOutput?.reason === "string" ? jsonOutput.reason : undefined;
+      return {
+        ...jsonOutput,
+        decision: jsonOutput?.decision === "block" ? "block" : "deny",
+        // 阻塞原因优先取 JSON 的 reason，否则取 stderr；stdout 已被当 JSON 吃掉时不再拿它当理由
+        reason:
+          jsonReason ||
+          stderrText ||
+          (jsonOutput ? undefined : stdoutText) ||
+          `Hook 退出码 ${exitCode}`,
+      };
+    }
+
     if (jsonOutput) return jsonOutput;
 
     // 非 JSON：按 CC 退出码语义转换（仅 2 阻塞，其余非零非阻塞告警）。
+    // H4：这两支都**不写 decision**。exit 0 的含义是「hook 自己跑成功了」，不是「我批准这次调用」；
+    // 写成 allow 会被 SDK 桥读成主动放行，纯审计 hook 就绕过了宿主 can_use_tool。
     if (exitCode === EXIT_SUCCESS) {
       // 0：成功。stdout 作为 systemMessage（透明反馈，某些事件如 UserPromptSubmit/SessionStart
       // 会把它注入上下文；由事件层决定，这里只承载文本）。
-      return { decision: "allow", systemMessage: stdoutText || undefined };
-    } else if (exitCode === EXIT_BLOCKING) {
-      // 2：阻塞。stderr 优先反馈给模型（CC 约定 exit 2 的原因写在 stderr）。
-      return { decision: "deny", reason: stderrText || stdoutText || `Hook 退出码 ${exitCode}` };
-    } else {
-      // 其余非零（1/3/…）：非阻塞告警。stderr 展示给用户，继续执行（不 deny，对齐 CC）。
-      return {
-        decision: "allow",
-        systemMessage: stderrText ? `警告: ${stderrText}` : stdoutText || undefined,
-      };
+      return { systemMessage: stdoutText || undefined };
     }
+    // 其余非零（1/3/…）：非阻塞告警。stderr 展示给用户，继续执行（不 deny，对齐 CC）。
+    // 文案对齐 CC「<name> hook error: …」，让照 CC 文档排错的人能对上号
+    return {
+      systemMessage: stderrText ? `${source} hook error: ${stderrText}` : stdoutText || undefined,
+    };
   }
 
-  /** 尝试解析 JSON 输出 */
-  private parseJsonOutput(text: string): HookOutput | undefined {
+  /**
+   * 尝试解析 JSON 输出。
+   * @param shapeCheckSource 传了就按 HookOutput 协议校验形状并告警（command/url hook）；
+   *   prompt/agent hook 的 `{ok, reason}` 是另一套协议，不传。
+   */
+  private parseJsonOutput(text: string, shapeCheckSource?: string): HookOutput | undefined {
     const trimmed = text.trim();
     if (!trimmed) return undefined;
 
+    let parsed: unknown;
     try {
-      let parsed = JSON.parse(trimmed);
+      parsed = JSON.parse(trimmed);
       // 双重 JSON 字符串
       if (typeof parsed === "string") {
         parsed = JSON.parse(parsed);
       }
-      if (parsed && typeof parsed === "object") {
-        return parsed as HookOutput;
-      }
     } catch {
-      // 非 JSON
+      // HC19：看起来是 JSON（{ 开头 } 结尾）却解析失败 → CC 报非阻塞错误，而不是静默当纯文本。
+      // 静默的后果：hook 作者少写一个引号，决策字段整体失效，却没有任何地方告诉他。
+      if (shapeCheckSource && trimmed.startsWith("{") && trimmed.endsWith("}")) {
+        warnShapeOnce(
+          shapeCheckSource,
+          `${shapeCheckSource} hook error: stdout 形如 JSON 但解析失败，决策字段不会生效，已按普通文本处理`,
+        );
+      }
+      return undefined; // 非 JSON
     }
-    return undefined;
+    // H17：数组不是 HookOutput。原先 `typeof [] === "object"` 让 [1,2,3] 也被当成「hook 表达了意见」
+    if (Array.isArray(parsed)) {
+      if (shapeCheckSource) {
+        warnShapeOnce(
+          shapeCheckSource,
+          `hook 输出是 JSON 数组，不是 HookOutput 对象，已按普通文本处理 (${shapeCheckSource})`,
+        );
+      }
+      return undefined;
+    }
+    if (!parsed || typeof parsed !== "object") return undefined;
+    if (shapeCheckSource) {
+      const issues = describeHookOutputShapeIssues(parsed as Record<string, unknown>);
+      if (issues.length > 0) {
+        warnShapeOnce(
+          shapeCheckSource,
+          `hook 输出形状可疑 (${shapeCheckSource})：${issues.join("；")}——这些字段不会生效`,
+        );
+      }
+    }
+    return parsed as HookOutput;
   }
 
   // ============================================================
@@ -546,7 +867,13 @@ export class HookRunner {
     const result: Record<string, string> = {};
     for (const [key, value] of Object.entries(env)) {
       if (value === undefined) continue;
-      const isSensitive = SENSITIVE_ENV_PATTERNS.some((p) => p.test(key));
+      // Q3：父进程里的 CLAUDE_* 一律不透传（sid 跑在 CC 里时会带 CLAUDE_ENV_FILE / CLAUDE_CODE_* 等）。
+      // 透传等于替 sid 宣称支持这些语义——CC 脚本读到 CLAUDE_ENV_FILE 就会往一个 sid 永远不读的文件里写。
+      // sid 支持的那几个（CLAUDE_PROJECT_DIR / CLAUDE_PLUGIN_* / skill 的 CLAUDE_SKILL_DIR）由调用方之后显式设置。
+      if (key.startsWith("CLAUDE_")) continue;
+      const isSensitive =
+        SENSITIVE_ENV_PATTERNS.some((p) => p.test(key)) ||
+        SENSITIVE_ENV_VALUE_PATTERNS.some((p) => p.test(value));
       if (!isSensitive) {
         result[key] = value;
       }
@@ -594,13 +921,6 @@ export class HookRunner {
     if ("agent_type" in input) {
       env.SID_CODE_AGENT_TYPE = (input as any).agent_type;
     }
-  }
-
-  /** 展开命令中的变量 */
-  private expandCommand(command: string, input: HookInput): string {
-    return command
-      .replace(/\$SID_CODE_PROJECT_DIR/g, input.cwd)
-      .replace(/\$SID_CODE_CWD/g, input.cwd);
   }
 
   /** 串行链式传递：将 hook 输出应用到下一个 hook 的输入 */
@@ -685,10 +1005,10 @@ export class HookRunner {
     startTime: number,
   ): Promise<HookExecutionResult> {
     const log = getLogger();
-    const timeout = (hookConfig.timeout ?? 30) * 1000;
+    const timeout = resolveHookTimeoutMs(hookConfig, eventName);
 
     try {
-      const jsonInput = JSON.stringify(input);
+      const jsonInput = JSON.stringify(toExternalHookPayload(input));
       const processedPrompt = hookConfig.prompt.replace(/\$ARGUMENTS/g, jsonInput);
 
       // 动态导入避免循环依赖
@@ -736,7 +1056,8 @@ export class HookRunner {
           hookConfig,
           eventName,
           success: true,
-          output: { decision: "allow" },
+          // H4：验证通过 = 不拦，不是主动批准；不写 decision，免得被 SDK 桥当成放行
+          output: {},
           duration: Date.now() - startTime,
         };
       } finally {
@@ -748,7 +1069,8 @@ export class HookRunner {
         hookConfig,
         eventName,
         success: true,
-        output: { decision: "allow" },
+        // H4：执行失败放行 = 不拦，不是主动批准
+        output: {},
         duration: Date.now() - startTime,
       };
     }
@@ -765,9 +1087,9 @@ export class HookRunner {
     startTime: number,
   ): Promise<HookExecutionResult> {
     const log = getLogger();
-    const timeout = (hookConfig.timeout ?? 60) * 1000;
+    const timeout = resolveHookTimeoutMs(hookConfig, eventName);
 
-    const jsonInput = JSON.stringify(input);
+    const jsonInput = JSON.stringify(toExternalHookPayload(input));
     const processedPrompt = hookConfig.prompt.replace(/\$ARGUMENTS/g, jsonInput);
 
     // G6：优先走注入的真子代理执行器（可多轮、可用 read/grep/glob 等工具验证）。
@@ -801,7 +1123,8 @@ export class HookRunner {
           hookConfig,
           eventName,
           success: true,
-          output: { decision: "allow" },
+          // H4：验证通过 = 不拦，不是主动批准；不写 decision，免得被 SDK 桥当成放行
+          output: {},
           duration: Date.now() - startTime,
         };
       } catch (error) {
@@ -811,7 +1134,8 @@ export class HookRunner {
           hookConfig,
           eventName,
           success: true,
-          output: { decision: "allow" },
+          // H4：验证通过 = 不拦，不是主动批准；不写 decision，免得被 SDK 桥当成放行
+          output: {},
           duration: Date.now() - startTime,
         };
       } finally {
@@ -869,7 +1193,8 @@ export class HookRunner {
           hookConfig,
           eventName,
           success: true,
-          output: { decision: "allow" },
+          // H4：验证通过 = 不拦，不是主动批准；不写 decision，免得被 SDK 桥当成放行
+          output: {},
           duration: Date.now() - startTime,
         };
       } finally {
@@ -881,7 +1206,8 @@ export class HookRunner {
         hookConfig,
         eventName,
         success: true,
-        output: { decision: "allow" },
+        // H4：执行失败放行 = 不拦，不是主动批准
+        output: {},
         duration: Date.now() - startTime,
       };
     }

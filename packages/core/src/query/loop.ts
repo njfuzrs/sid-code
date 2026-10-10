@@ -15,6 +15,7 @@ import type { Config } from "../config/config.ts";
 import type { SendParams } from "../llm/types.ts";
 import { normalizeCacheUsage } from "../llm/types.ts";
 import type { HookSystem } from "../hook/system.ts";
+import { fireStopFailure } from "./stop-failure.ts";
 import type { QuotaManager } from "../llm/quota.ts";
 import type { TokenMeter } from "../telemetry/metrics/token-meter.ts";
 import type { BudgetTracker } from "../telemetry/metrics/budget-tracker.ts";
@@ -26,7 +27,9 @@ import {
 import { Manager as ContextManager } from "../context/manager.ts";
 import { Registry as ToolRegistry } from "../tool/registry.ts";
 import { resolveToolSearchEnabled } from "../tool/tool-search-auto.ts";
+import { snapshotMcpToolNames, withholdLateMcpTools } from "../tool/late-mcp-freeze.ts";
 import { stripReadEfficiencyHint } from "../tool/read.ts";
+import { STRUCTURED_OUTPUT_TOOL_NAME } from "../tool/structured-output-tool.ts";
 import { TOKEN_THRESHOLDS } from "../context/auto-compact.ts";
 import { logContextAssembled } from "../analytics/events.ts";
 import { ModelFallback } from "../llm/fallback.ts";
@@ -50,6 +53,7 @@ import {
   getStreamSnapshot,
   clearStreamSnapshot,
   clearAllSnapshots,
+  takeFirstContentTtft,
 } from "../trace/stream-observer.ts";
 import { runBackgroundTask } from "../agent/background-task-gate.ts";
 import { getSleepLedger, describeSleep } from "@sid-code/shared/utils/sleep-detect.ts";
@@ -121,8 +125,22 @@ import {
   buildTodoGateExhaustedMessage,
   buildTodoGateForgotMarkMessage,
   buildUnansweredEndTurnMessage,
+  buildTodoBlockedHandoffMessage,
   countUnfinished,
+  blockedTodos,
+  blockedSignature,
+  refreshTodoGateBudget,
+  TODO_GATE_BUDGET_KEY,
+  type TodoGateBudget,
 } from "./todo-reminder.ts";
+import {
+  TODO_REWORK_KEY,
+  createTodoReworkState,
+  recordTodoWrite,
+  recordFileEditForRework,
+  drainTodoReworkReminder,
+  type TodoReworkState,
+} from "./todo-rework.ts";
 import {
   getTodoReminderTurnCounts,
   shouldInjectTodoReminder,
@@ -227,7 +245,7 @@ import { buildGoalReminder } from "../goal/reminder.ts";
 import { collectEvidenceFromTurn } from "../goal/evidence-collector.ts";
 import { handleGoalGate } from "./goal-gate.ts";
 import { BlockedDetector } from "../goal/blocked-detector.ts";
-import { DEFAULT_GOAL_CONFIG } from "../goal/config.ts";
+import { DEFAULT_GOAL_CONFIG, resolveGoalEvaluatorModel } from "../goal/config.ts";
 import {
   checkResponseForCacheBreak,
   recordPromptState,
@@ -487,6 +505,30 @@ function getMeasuredProgress(sessionState: SessionState): MeasuredProgressState 
   return s;
 }
 
+/** 取本会话的「标完成后又返工」检测状态（会话级，理由同 getMeasuredProgress）。 */
+function getTodoReworkState(sessionState: SessionState): TodoReworkState {
+  let s = sessionState.get(TODO_REWORK_KEY) as TodoReworkState | undefined;
+  if (!s) {
+    s = createTodoReworkState();
+    sessionState.set(TODO_REWORK_KEY, s);
+  }
+  return s;
+}
+
+/**
+ * 取 end_turn 兜底的会话级续命预算，并按清单**真实推进**（completed 数 / 总项数）刷新。
+ * 只改措辞的 todo_write、新的一条用户消息，都不再让预算回满——见 TODO_GATE_BUDGET_KEY 注释。
+ */
+function getTodoGateBudget(
+  sessionState: SessionState,
+  todos: import("../tool/todo-write.ts").TodoItem[],
+): TodoGateBudget {
+  const prev = sessionState.get(TODO_GATE_BUDGET_KEY) as TodoGateBudget | undefined;
+  const next = refreshTodoGateBudget(prev, todos);
+  if (next !== prev) sessionState.set(TODO_GATE_BUDGET_KEY, next);
+  return next;
+}
+
 function emitNagInjectedEvent(
   deps: QueryDeps,
   sessionId: string,
@@ -551,7 +593,10 @@ function emitTodoProgressEvent(
     writeVersion: number;
     total: number;
     completed: number;
+    /** 模型可推进的未完成项（pending + in_progress），**不含 blocked** */
     unfinished: number;
+    /** 等待用户 / 外部条件的项（2026-10-06 新增；老事件无此字段） */
+    blocked: number;
   },
 ): void {
   if (!deps.traceAppendEvent) return;
@@ -755,6 +800,13 @@ export async function* queryLoop(loopConfig: QueryLoopConfig): AsyncGenerator<Qu
       deferredDefinitions,
     });
   })();
+
+  // F2：延迟加载关闭时，本次 loop 只发开始时已在的 MCP 工具，晚到的等下一条用户消息。
+  // 开启时 MCP 工具本就走 deferred 池，不需要冻结（冻了反而挡住 tool_search 的激活）。
+  const mcpToolsAtLoopStart = toolSearchEnabled
+    ? undefined
+    : snapshotMcpToolNames(toolRegistry.definitions());
+  let lateMcpWithheldLogged = false;
 
   // 回填定档结果给 registry，供 tool-executor 的「schema 未发送」补救判定使用
   // （模型盲调未激活的延迟工具、传了畸形参数时，追加"先 tool_search 激活"引导）。
@@ -1123,12 +1175,23 @@ export async function* queryLoop(loopConfig: QueryLoopConfig): AsyncGenerator<Qu
       const cleanedMessages = ctxMgr.getCleanedMessages();
       // 工具延迟加载开启时，首轮只发非延迟工具（activeDefinitions），延迟工具由模型经
       // tool_search 按需激活后才进上下文；关闭时发全量（definitions），行为与历史一致。
-      const toolDefs =
+      let toolDefs =
         toolCount > 0
           ? toolSearchEnabled
             ? toolRegistry.activeDefinitions()
             : toolRegistry.definitions()
           : undefined;
+      if (toolDefs && mcpToolsAtLoopStart) {
+        const held = withholdLateMcpTools(toolDefs, mcpToolsAtLoopStart);
+        toolDefs = held.defs;
+        if (held.withheld.length > 0 && !lateMcpWithheldLogged) {
+          lateMcpWithheldLogged = true;
+          log.info(
+            "TOOL_SEARCH",
+            `本次任务中途新连上 ${held.withheld.length} 个 MCP 工具，下一条用户消息起可见（保工具区前缀缓存）`,
+          );
+        }
+      }
       log.llmRequest(
         config.provider,
         config.model,
@@ -1296,6 +1359,28 @@ export async function* queryLoop(loopConfig: QueryLoopConfig): AsyncGenerator<Qu
         }
       }
 
+      // 「标了 completed 又返工」提醒（todo-rework.ts）：上一轮工具执行时登记、这里消费。
+      // 走 reminder 通道而不是写进 tool_result——命中在执行完之后才判定，且不该污染工具输出。
+      {
+        const reworkReminder = drainTodoReworkReminder(getTodoReworkState(sessionState));
+        if (reworkReminder) {
+          reminderParts.push(reworkReminder);
+          log.info("QUERY_LOOP", "清单返工提醒：已完成项对应的文件被再次修改");
+          if (deps.traceAppendEvent) {
+            try {
+              deps.traceAppendEvent({
+                event: "TodoReworkDetected",
+                session_id: sessionState.sessionId,
+                timestamp: new Date().toISOString(),
+                data: { ...turnMetrics(state, sessionState, promptSeq) },
+              });
+            } catch {
+              /* trace 写入失败不阻断主循环 */
+            }
+          }
+        }
+      }
+
       // P0-2：todo 每隔 N 轮回注完整清单（对标 claude-code attachments.ts）。
       // 根因 1 修复——todo 写完即沉没、只喂 TUI、从不回注 LLM，弱模型靠工作记忆追踪必然遗漏。
       // 触发条件：有未完成项 + 距上次 todo_write ≥ TURNS_SINCE_WRITE 轮 **且** 距上次回注
@@ -1352,7 +1437,10 @@ export async function* queryLoop(loopConfig: QueryLoopConfig): AsyncGenerator<Qu
               total: todoFactState.todos.length,
               completed: todoFactState.todos.filter((t) => t.status === "completed").length,
               unfinished: countUnfinished(todoFactState.todos),
+              blocked: blockedTodos(todoFactState.todos).length,
             });
+            // 返工检测：把上次写入以来落盘的文件归到本次新完成的项上（见 todo-rework.ts）
+            recordTodoWrite(getTodoReworkState(sessionState), todoFactState.todos);
           }
         }
         if (todoState && todoState.todos.length > 0 && countUnfinished(todoState.todos) > 0) {
@@ -1364,14 +1452,12 @@ export async function* queryLoop(loopConfig: QueryLoopConfig): AsyncGenerator<Qu
             // 有进展 → 刷新 end_turn todo gate 预算：同一条用户消息内模型完成部分项后，
             // gate 不该继续消耗上一段停滞攒下的续命额度。
             state.progressNagCount = 0;
-            state.todoGateRetryCount = 0;
+            // end_turn gate 预算**不在这里**复位：writeVersion 变化不等于清单有推进
+            // （只改措辞也会 +1）。预算改挂 SessionState、按完成数复位，见 getTodoGateBudget。
             // P1-4 item 2：模型确实更新了清单 = 记账催促奏效了 → 清零条件封顶预算，
             // 让它在下一段"有进展但又忘记记账"时还能再催。不清零的话一个长会话里
             // 只要早期催满 2 次，后面就永久哑火。
             sessionState.set(TODO_BOOKKEEPING_NAG_COUNT_KEY, 0);
-            // 误判自愈：writeVersion 变化 = 模型确实推进了清单 = 属"真没做完后继续干"的良性路径，
-            // 清零"有产出却不翻状态位"计数（该计数只统计连续的 B 类：交付了却忘标记）。
-            state.todoGateProductiveNoUpdateCount = 0;
           } else {
             // ─── 2026-08-01 修复 1：改为无状态消息扫描（对标 attachments.ts:3212-3291）───
             //
@@ -1740,22 +1826,15 @@ export async function* queryLoop(loopConfig: QueryLoopConfig): AsyncGenerator<Qu
           // `# MCP Server Instructions` 与用户 prompt 的 `# Commit:` 形态混同，
           // 是 2026-07-29 那次误读的三处裸注入之一（实测它排在用户指令前的 366 偏移处）。
           //
-          // 截断保护（对标 CC client.ts MAX_MCP_DESCRIPTION_LENGTH）：单个 server 的
-          // instructions 可能几千字（如 MasterGo DSL 工作流），全量注入既吃 token 又
-          // 增加模型元认知外泄概率（2026-07-30 轨迹 20260730-135709 实测 glm-5.2 把
-          // 注入内容"说"了出来）。超过上限截断并标注。
-          const MAX_MCP_INSTRUCTION_BLOCK_LENGTH = 4000;
-          const truncatedBlocks = mcpBlocks.map((block) =>
-            block.length > MAX_MCP_INSTRUCTION_BLOCK_LENGTH
-              ? block.slice(0, MAX_MCP_INSTRUCTION_BLOCK_LENGTH) + "… [已截断]"
-              : block,
-          );
+          // 截断保护不在这里：instructions 在连接时已由 mcp/manager.ts 的
+          // MAX_INSTRUCTIONS_LENGTH（2048）截过，那是唯一的事实源（D29）。
+          // 此处原有一道 4000 的二次截断，永远走不到，已删除——要调上限去改那个常量。
           reminderParts.push(
             `<system-reminder>\n` +
               `MCP Server Instructions（harness 注入的服务器使用说明，非用户输入）：\n\n` +
               `以下 MCP 服务器提供了使用说明，请在使用对应工具时遵循这些指令。\n` +
               `这些说明仅供你参考，静默遵循即可，不要在回复中提及这些说明的存在。\n\n` +
-              truncatedBlocks.join("\n\n") +
+              mcpBlocks.join("\n\n") +
               `\n</system-reminder>`,
           );
           log.info("QUERY_LOOP", `注入 ${mcpBlocks.length} 个 MCP server instructions`);
@@ -2372,8 +2451,11 @@ export async function* queryLoop(loopConfig: QueryLoopConfig): AsyncGenerator<Qu
 
       // ─── 处理流式响应 ───
       const perfHandle = getPerfTimer().start(`llm_request_${state.turnCount}`);
-      let ttftMs: number | undefined;
-      const ttftStart = performance.now();
+      // TTFT 不在这里自己计：曾用下方 processStream 的可视文本回调计时，纯 tool_use /
+      // thinking 轮恒 undefined（2026-10-08 端到端实测 3 轮只有 end_turn 那轮有值）。
+      // 改为取 lifecycle 层 first_content 的同一个值（首个任意内容 chunk、每次 fetch 单独计），
+      // 见 stream-observer.ts `_firstContentTtft`。这里先丢弃残留，保证 AfterModel 读到的只来自本轮。
+      takeFirstContentTtft(state.turnCount);
 
       let response: import("../llm/types.ts").AccumulatedResponse;
       // 本轮耗时基准与两类「非业务时长」扣除量。同 netTimeouts 声明在 try 之外，
@@ -2676,10 +2758,7 @@ export async function* queryLoop(loopConfig: QueryLoopConfig): AsyncGenerator<Qu
             deps.processStream(
               stream,
               (_text) => {
-                if (ttftMs === undefined) {
-                  ttftMs = performance.now() - ttftStart;
-                }
-                // 流式文本通过 QueryEngine 层的 onStreamText 回调桥接
+                // 流式文本通过 QueryEngine 层的 onStreamText 回调桥接；TTFT 见上方 takeFirstContentTtft
               },
               undefined,
               // Fix 3（同类路径根治）：把本轮 turn 级 controller 透传进 stream-processor，
@@ -2896,6 +2975,8 @@ export async function* queryLoop(loopConfig: QueryLoopConfig): AsyncGenerator<Qu
             model: config.model,
           });
           log.error("QUERY_LOOP", `流式超时重试耗尽`);
+          // HC24：API 错误（超时重试耗尽）结束本轮
+          fireStopFailure(hookSystem, err, "timeout");
 
           // 重试耗尽：yield 用户可见的错误提示，含配置逃生通道
           yield {
@@ -3019,6 +3100,10 @@ export async function* queryLoop(loopConfig: QueryLoopConfig): AsyncGenerator<Qu
         // 见上面的超时分支）、要么在此 throw——没有任何路径会"降级"出一个假的 response
         // 对象混进正常流程，这正是下面 isEndTurnLike 白名单判断天然不会被 API 错误触发的
         // 另一半保证。
+        // HC24：API 错误结束本轮 → StopFailure（用户中断不算 API 失败）
+        if (!isAbortError(err) && !turnAbortController.signal.aborted) {
+          fireStopFailure(hookSystem, err);
+        }
         throw err;
       }
       const apiDuration = perfHandle.end({ model: config.model });
@@ -3138,9 +3223,18 @@ export async function* queryLoop(loopConfig: QueryLoopConfig): AsyncGenerator<Qu
         /* 中断检测失败绝不影响主循环 */
       }
 
-      const cacheSavingsUSD = loopConfig.tokenMeter
-        ? loopConfig.tokenMeter.calculateCacheSavings(config.model, response.usage)
-        : 0;
+      // 缓存节省：与 thisCost 走**同一个** SessionState（同 provider + 同 baseURL 端点价），
+      // 也与 /cost 累加的 stats.cacheSavingsUSD 同一个函数 —— 单一事实源。
+      // 曾经走 tokenMeter.calculateCacheSavings（不传 baseURL），而 metric 侧又拿带 baseURL 的
+      // thisCost 去减不带 baseURL 的全价，于是同一次调用 span 与 metric 给出两个数
+      // （2026-10-08 实测 0.0661 vs 0.0858），两个都不等于 /cost 显示的那个。
+      // 这个值同时经 AfterModel 透传给 TokenMeter.record，metric 不再自己另算。
+      const cacheSavingsUSD = sessionState.calculateSavings(
+        config.model,
+        response.usage,
+        config.provider,
+        config.baseURL,
+      );
 
       if (loopConfig.quotaManager) {
         loopConfig.quotaManager.recordRequest(
@@ -3357,7 +3451,8 @@ export async function* queryLoop(loopConfig: QueryLoopConfig): AsyncGenerator<Qu
             cost_usd: thisCost,
             api_duration_ms: apiDuration,
             cache_savings_usd: cacheSavingsUSD,
-            ttft_ms: ttftMs,
+            // 首个任意内容 chunk 的 TTFT（与 StreamPhase(first_content) 同值），纯 tool_use 轮也有
+            ttft_ms: takeFirstContentTtft(state.turnCount),
             provider: config.provider, // T12.3：Provider 维度标记
             base_url: config.baseURL, // 端点维度：区分同模型不同渠道，便于排查 + 重算精确计费
             // P2-6：取走 provider 侧暂存的网关请求标识（读一次即清，见 api/request-id.ts）。
@@ -3828,8 +3923,8 @@ export async function* queryLoop(loopConfig: QueryLoopConfig): AsyncGenerator<Qu
             continue;
           }
 
-          // P2-3：验证真正跑过且全部通过 → 清零续命预算，与 todoGateRetryCount 在
-          // writeVersion 变化时复位同一取向。不清零的话，同一条用户消息里前面失败 3 次，
+          // P2-3：验证真正跑过且全部通过 → 清零续命预算，与 todo gate 预算在
+          // 清单完成数变化时复位同一取向。不清零的话，同一条用户消息里前面失败 3 次，
           // 后面每一轮 end_turn 都被当成"预算已耗尽"，即使模型已经修好也不再验证。
           // 只认 `passed`（真跑过且全通过），不认 `!shouldContinue && !forceStop`——
           // 后者把「耗尽仍失败」和「hook 抛异常」也算进去，那会让预算永远回满。
@@ -3914,23 +4009,20 @@ export async function* queryLoop(loopConfig: QueryLoopConfig): AsyncGenerator<Qu
         if (deps.getTodoState) {
           const todoState = deps.getTodoState();
           const unfinished = todoState ? countUnfinished(todoState.todos) : 0;
-          if (todoState && unfinished > 0) {
+          // 预算挂 SessionState、按完成数复位（2026-10-06）：旧实现挂 LoopState，
+          // 每条用户消息归零 + 每次 todo_write（哪怕只改措辞）归零，同一份停滞清单可被无限次拦截。
+          const budget = todoState ? getTodoGateBudget(sessionState, todoState.todos) : null;
+          if (todoState && budget && unfinished > 0) {
             // 误判自愈信号：本轮"有实质产出"（写了一段实质文字，如输出了完整报告）却试图收尾。
-            // 关键前提——本 gate 只在 `isEndTurnLike && !hasPendingToolUse` 分支到达，即本轮
-            // **没有任何工具调用**，因此 todo_write 本轮必然没执行、writeVersion 不可能变化。
-            // 于是"有产出却不翻状态位"= producedSubstantialText 即可，无需再判 writeVersion。
-            // 逐次累计；若某轮模型改走 todo_write（有工具调用）则不会到这里，且下一轮 P0-2 复位
-            // 逻辑会在 writeVersion 变化时把本计数清零（良性路径不会误触发忘标记判定）。
+            // 本 gate 只在 `isEndTurnLike && !hasPendingToolUse` 分支到达，即本轮没有工具调用，
+            // todo_write 本轮必然没执行，于是"有产出却不翻状态位"= producedSubstantialText。
+            // 计数与续命预算同一复位口径（完成数变化才清零）。
             const producedSubstantialText =
               responseText.trim().length >= TODO_GATE_PRODUCTIVE_TEXT_MIN;
-            if (producedSubstantialText) {
-              state.todoGateProductiveNoUpdateCount =
-                (state.todoGateProductiveNoUpdateCount ?? 0) + 1;
-            }
+            if (producedSubstantialText) budget.productiveNoUpdate += 1;
 
-            const retries = state.todoGateRetryCount ?? 0;
-            if (retries < MAX_TODO_GATE_RETRIES) {
-              state.todoGateRetryCount = retries + 1;
+            if (budget.retries < MAX_TODO_GATE_RETRIES) {
+              budget.retries += 1;
               ctxMgr.addMessage({
                 role: "user",
                 content: [
@@ -3945,44 +4037,66 @@ export async function* queryLoop(loopConfig: QueryLoopConfig): AsyncGenerator<Qu
               });
               log.info(
                 "QUERY_LOOP",
-                `P0-3：end_turn 拦截——仍有 ${unfinished} 项未完成，软续命 ${state.todoGateRetryCount}/${MAX_TODO_GATE_RETRIES}`,
+                `P0-3：end_turn 拦截——仍有 ${unfinished} 项未完成，软续命 ${budget.retries}/${MAX_TODO_GATE_RETRIES}`,
               );
               yield {
                 kind: "system",
                 level: "info",
                 // P2-1：中性措辞，避免"检测到…未完成"的报错感——这是正常的完成度兜底推进，非错误。
-                text: `清单还有 ${unfinished} 项待完成，继续推进 (${state.todoGateRetryCount}/${MAX_TODO_GATE_RETRIES})`,
+                text: `清单还有 ${unfinished} 项待完成，继续推进 (${budget.retries}/${MAX_TODO_GATE_RETRIES})`,
               };
               setTransition(state, { type: "todo_gate_retry" }, deps, sessionState.sessionId);
               continue;
             }
 
-            // 续命耗尽。区分两种外部观测相同、本质不同的收尾：
-            const forgotMark =
-              (state.todoGateProductiveNoUpdateCount ?? 0) >= TODO_GATE_FORGOT_MARK_THRESHOLD;
-            if (forgotMark) {
-              // B) 极可能"忘标记"：每次续命模型都在实质应答却始终不翻状态位。抛"未完成"是假警报，
-              // 反而误导用户以为交付物有缺失。改为中性收尾（warn 日志保留，供排查门禁误判率）。
-              log.warn(
+            // 续命耗尽。同一清单状态下只呈现一次——之后的 end_turn 直接放行：
+            // 此前每条新用户消息都会再弹一次同样的红字，用户读到的是"又没做完"，
+            // 而实际是"同一份清单、什么都没变"。
+            if (!budget.exhaustedNotified) {
+              budget.exhaustedNotified = true;
+              // 区分两种外部观测相同、本质不同的收尾：
+              const forgotMark = budget.productiveNoUpdate >= TODO_GATE_FORGOT_MARK_THRESHOLD;
+              if (forgotMark) {
+                // B) 极可能"忘标记"：每次续命模型都在实质应答却始终不翻状态位。抛"未完成"是假警报，
+                // 反而误导用户以为交付物有缺失。改为中性收尾（warn 日志保留，供排查门禁误判率）。
+                log.warn(
+                  "QUERY_LOOP",
+                  `P0-3：续命耗尽且判定为"忘标记"（连续 ${budget.productiveNoUpdate} 次有产出却未翻状态位），` +
+                    `抑制假警报，中性收尾；仍有 ${unfinished} 项未勾选`,
+                );
+                yield {
+                  kind: "system",
+                  level: "info",
+                  text: buildTodoGateForgotMarkMessage(),
+                };
+              } else {
+                // A) 真没做完：放行但如实呈现未完成项，不假装完成。
+                log.warn(
+                  "QUERY_LOOP",
+                  `P0-3：完成度续命已达上限 ${MAX_TODO_GATE_RETRIES}，放行但仍有 ${unfinished} 项未完成`,
+                );
+                yield {
+                  kind: "system",
+                  level: "warning",
+                  text: buildTodoGateExhaustedMessage(todoState.todos),
+                };
+              }
+            }
+          } else if (todoState && blockedTodos(todoState.todos).length > 0) {
+            // 只剩 blocked（模型可推进项为 0）：**不拦截**——下一步主语是用户，再催模型只会
+            // 产出同义重复（会话 20261005-233851-9b91e1b7 的 7 次）。给用户一条中性说明，
+            // 同一批 blocked 项只说一次（签名去重，挂会话级预算上，跨用户消息有效）。
+            const sig = blockedSignature(todoState.todos);
+            if (budget && budget.handoffSignature !== sig) {
+              budget.handoffSignature = sig;
+              log.info(
                 "QUERY_LOOP",
-                `P0-3：续命耗尽且判定为"忘标记"（连续 ${state.todoGateProductiveNoUpdateCount} 次有产出却未翻状态位），` +
-                  `抑制假警报，中性收尾；仍有 ${unfinished} 项未勾选`,
+                `P0-3：end_turn 放行——剩余 ${blockedTodos(todoState.todos).length} 项 blocked（等待用户/外部）`,
               );
               yield {
                 kind: "system",
                 level: "info",
-                text: buildTodoGateForgotMarkMessage(),
-              };
-            } else {
-              // A) 真没做完：放行但如实呈现未完成项，不假装完成。
-              log.warn(
-                "QUERY_LOOP",
-                `P0-3：完成度续命已达上限 ${MAX_TODO_GATE_RETRIES}，放行但仍有 ${unfinished} 项未完成`,
-              );
-              yield {
-                kind: "system",
-                level: "warning",
-                text: buildTodoGateExhaustedMessage(todoState.todos),
+                text: buildTodoBlockedHandoffMessage(todoState.todos),
               };
             }
           }
@@ -4055,7 +4169,7 @@ export async function* queryLoop(loopConfig: QueryLoopConfig): AsyncGenerator<Qu
             );
           } else if (ledger && (state.hypothesisGateRetryCount ?? 0) > 0) {
             // P2-3：登记表**已结清**（无 unsettled、无"确认后被打脸"）→ 清零续命预算，
-            // 与 todoGateRetryCount 在 writeVersion 变化时复位同一取向。
+            // 与 todo gate 预算在清单完成数变化时复位同一取向。
             //
             // 不清零的实测形态：全 refuted 时 cap=1，用掉这一次之后计数永久停在 1；
             // 后面模型登记了新的 unsettled 假设，`retries < MAX` 从此恒假，门禁**直接放行**
@@ -4195,7 +4309,7 @@ export async function* queryLoop(loopConfig: QueryLoopConfig): AsyncGenerator<Qu
           }
         }
 
-        // ─── /goal：Goal Gate（独立评估者判定目标是否满足）───
+        // ─── /goal：Goal Gate（评估者判定目标是否满足）───
         // 位于 Gate 链最末——只有前三道 Gate 全部放行，才轮到 Goal Gate 做最终判定。
         // Plan Mode 中暂停 Goal Gate（计划模式不执行操作，不应评估完成度）。
         if (deps.getGoalState) {
@@ -4203,14 +4317,13 @@ export async function* queryLoop(loopConfig: QueryLoopConfig): AsyncGenerator<Qu
           const inPlanMode = deps.getCurrentPermissionMode?.() === "plan";
           if (goal && goal.status === "active" && !inPlanMode) {
             try {
-              // 评估者模型优先级：config.goal.evaluatorModel > subAgentModels.default > 主模型
-              // 注意：刻意跳过 subAgentModels.verify —— verify 语义是"对抗验证子代理"（需强模型、慢），
-              // 而 goal 评估是"快速判是否完成"（需快模型、512 token JSON）。复用 verify 会让强慢模型
-              // 撞上短超时必然失败（见 20260707 排查 P0-1/P1-4）。两者解耦。
-              const evaluatorModel =
-                effectiveGoalConfig.evaluatorModel ||
-                config.subAgentModels?.default ||
-                config.model;
+              // 评估者模型：goal.evaluatorModel > subAgentModels.default > 主模型（刻意跳过 verify，
+              // 理由见 resolveGoalEvaluatorModel）。与 /goal 命令的提示共用同一个解析函数。
+              const evaluatorModel = resolveGoalEvaluatorModel({
+                model: config.model,
+                goal: effectiveGoalConfig,
+                subAgentModels: config.subAgentModels,
+              }).model;
               // F4（2026-09-03）：provider 按**评估器模型名**解析，读该模型在
               // availableModels 里声明的 provider/apiKey/baseURL。
               //
@@ -4336,8 +4449,9 @@ export async function* queryLoop(loopConfig: QueryLoopConfig): AsyncGenerator<Qu
         // 不能各自裸 fire-and-forget。它们各自内部的 `pending` 互斥只防"同一个任务重入"，
         // 完全不防"两个不同任务并发" —— 实测 `TurnComplete(end_turn)` 之后两个 fork
         // 交替发了 7 次十万 token 级请求、跑了 44 秒，用户为一个已答完的任务多付约 ¥2.3。
-        // 闸门语义是**串行 + 丢弃**（不排队）：被拒的提取下一个 end_turn 还会再来，
-        // 排队只会把并发换成"攒一串请求一次性烧掉"。详见 background-task-gate.ts 文件头。
+        // 闸门语义是**串行 + 按 label 待补一笔**：两条紧挨着提交，第二条记为待补、
+        // 等第一条跑完再放行（F3：旧的「丢弃」语义让第二条恒被拒）。待补每个 label
+        // 至多一笔，不会攒成一串请求。详见 background-task-gate.ts 文件头。
         //
         // 仍不 await：await 会把用户可感知的收尾延迟拉长到实测 44s（方案 §5.1 B3 已否决）。
         if (deps.updateSessionMemory) {
@@ -4722,6 +4836,32 @@ export async function* queryLoop(loopConfig: QueryLoopConfig): AsyncGenerator<Qu
         // 方案②：工具成功执行 → 模型已在正常推进（非"只思考不答复"），清零未答复计数
         state.unansweredRetryCount = 0;
 
+        // B26 顺带：`--json-schema` 下 StructuredOutput 已捕获合规载荷 = 任务交付完毕，就地收尾。
+        // 子代理路径（agentic-loop）靠 hasCapturedOutput 旁路结束，顶层主循环此前没有这个出口：
+        // 实测模型拿到成功返回后同参连调 99 次（会话 20261002-212543-660c152b，102 次 API / $1.06），
+        // 只有 maxTurns 能停住它。判据只认工具自报的 hasCapturedOutput，不认「本轮调过它」——
+        // 校验不通过的那次必须照常续轮，让模型按回喂的错误重试。
+        if (
+          toolBlocks.some((b) => b.type === "tool_use" && b.name === STRUCTURED_OUTPUT_TOOL_NAME)
+        ) {
+          const so = toolRegistry.get(STRUCTURED_OUTPUT_TOOL_NAME) as
+            | { hasCapturedOutput?: boolean }
+            | undefined;
+          if (so?.hasCapturedOutput === true) {
+            log.info("QUERY_LOOP", "StructuredOutput 已捕获合规输出，主循环收尾");
+            turnStopReason = "end_turn";
+            yield {
+              kind: "done",
+              turns: state.turnCount,
+              // §20.5：与 max_turns 路径同源同口径，见 types.ts 该字段注释。
+              turnsConsumedWithoutAssistant: state.turnsConsumedWithoutAssistant,
+              structuredOutputDelivered: true,
+            };
+            exitedViaReturn = true;
+            return;
+          }
+        }
+
         // ⚠️ PR1（§5.1 B1 / §5.7）：这里**原先**还有一处 `deps.updateSessionMemory?.()`
         // 的工具轮触发（"本轮工具结果已入历史，增量提取"），**已刻意删除**。
         //
@@ -4802,6 +4942,15 @@ export async function* queryLoop(loopConfig: QueryLoopConfig): AsyncGenerator<Qu
             if (FILE_MUTATING_TOOLS.has(b.name)) {
               recordFileChange(measuredProgress, (b.input as any)?.file_path);
               recordFileChange(measuredProgress, (b.input as any)?.notebook_path);
+              // 返工检测：只认执行成功的落盘（失败的 edit 没改磁盘，不算返工也不算进展）
+              const r = resultMap.get(b.id);
+              const failed = !!(r && r.type === "tool_result" && (r as any).is_error);
+              if (!failed) {
+                const rework = getTodoReworkState(sessionState);
+                const current = deps.getTodoState?.()?.todos ?? null;
+                recordFileEditForRework(rework, (b.input as any)?.file_path, current);
+                recordFileEditForRework(rework, (b.input as any)?.notebook_path, current);
+              }
             } else if (b.name === "bash" && typeof cmd === "string") {
               recordScalarObservation(measuredProgress, cmd, readOutput());
             }
@@ -5506,6 +5655,16 @@ export async function* queryLoop(loopConfig: QueryLoopConfig): AsyncGenerator<Qu
                 config.provider,
                 config.baseURL,
               ),
+              // 与主循环同一单一事实源（见主循环 cacheSavingsUSD 处注释）：不传则 TokenMeter
+              // 会退回自算，span 记 0、metric 记自算值 —— 又回到两套口径
+              cache_savings_usd: sessionState.calculateSavings(
+                config.model,
+                summaryResponse.usage,
+                config.provider,
+                config.baseURL,
+              ),
+              // 总结轮 index = turnCount + 1（与上方 setSseDumpContext 同口径）
+              ttft_ms: takeFirstContentTtft(state.turnCount + 1),
               provider: config.provider,
               base_url: config.baseURL,
               gateway_request_id: takeLastRequestId(),

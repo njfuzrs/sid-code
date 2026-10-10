@@ -33,9 +33,14 @@ import {
   cacheDimsFor,
 } from "../trace/stream-observer.ts";
 import { currentSseDumpContext } from "./sse-chunk-dumper.ts";
-import { recordBilledRequest, nextFetchId } from "./billing-sink.ts";
+import {
+  recordBilledRequest,
+  recordNonStreamingBilledRequest,
+  nextFetchId,
+} from "./billing-sink.ts";
 import { normalizeToolInput } from "./normalize-tool-input.ts";
 import { pickWireModel } from "./wire-model.ts";
+import { resolveVisionSupport } from "./vision-capability.ts";
 import {
   classifyProtocolFamily,
   getToolSchemaDialect,
@@ -57,12 +62,33 @@ import { RequestAbortedError } from "./errors.ts";
  * 让 Claude vision 直接看图/读 PDF；否则回退纯文本 content。收敛到单一函数供
  * 流式/非流式两条序列化路径共用，避免逻辑漂移。
  */
-function serializeToolResultBlock(block: {
-  tool_use_id: string;
-  content: string;
-  is_error?: boolean;
-  mediaBlocks?: import("./types.ts").ToolResultMediaBlock[];
-}): any {
+function serializeToolResultBlock(
+  block: {
+    tool_use_id: string;
+    content: string;
+    is_error?: boolean;
+    mediaBlocks?: import("./types.ts").ToolResultMediaBlock[];
+  },
+  visionSupported: boolean | undefined,
+): any {
+  // 显式声明不支持图片的模型（如经 Anthropic 兼容端点接入的 deepseek-v4-pro，
+  // deepseek-api.md:1831）发图会 400；缺省（Claude 全系）照旧发。见 vision-capability.ts。
+  if (visionSupported === false && block.mediaBlocks && block.mediaBlocks.length > 0) {
+    const kinds = block.mediaBlocks.map((mb) => `${mb.kind}(${mb.mediaType})`).join(", ");
+    getLogger().warn(
+      "LLM:PROTOCOL",
+      `[anthropic] tool_result（tool_use_id=${block.tool_use_id}）含 ${block.mediaBlocks.length} 个 ` +
+        `mediaBlocks，当前模型声明不支持图片/文档输入，已降级为文本说明。`,
+    );
+    return {
+      type: "tool_result" as const,
+      tool_use_id: block.tool_use_id,
+      content:
+        `${block.content || "(empty)"}\n[注意：本工具结果还包含 ${block.mediaBlocks.length} 个富媒体附件（${kinds}），` +
+        `但当前模型不支持图片/文档输入，你看不到这些内容。若需要其中信息，请让用户改用支持视觉的模型。]`,
+      is_error: block.is_error,
+    };
+  }
   if (block.mediaBlocks && block.mediaBlocks.length > 0) {
     const parts: any[] = [];
     if (block.content) {
@@ -142,6 +168,9 @@ export class AnthropicProvider implements Provider {
     // 提前发现 orphan tool_use 问题，比让 SDK 内部报错更可诊断
     guardOutgoingMessages(params.messages, { providerName: "anthropic" });
 
+    // 图片能力按模型判定：显式声明 false 的模型降级为文字说明（vision-capability.ts）
+    const visionSupported = resolveVisionSupport(pickWireModel(params, this._model), params.model);
+
     // 转换消息格式
     const messages = params.messages.map((msg) => ({
       role: msg.role,
@@ -156,7 +185,7 @@ export class AnthropicProvider implements Provider {
             input: block.input,
           };
         } else if (block.type === "tool_result") {
-          return serializeToolResultBlock(block); // G6：支持富媒体多部件 content
+          return serializeToolResultBlock(block, visionSupported); // G6：支持富媒体多部件 content
         } else if (block.type === "thinking") {
           // 多轮回传 thinking 块（含 signature）—— 丢失/修改 → 400
           // [来源: anthropic-api.md:358; tavily 确认]
@@ -838,6 +867,8 @@ export class AnthropicProvider implements Provider {
     // § P1: 非流式路径也加入 guardOutgoingMessages（对齐 openai.ts 双路径都有调用）
     guardOutgoingMessages(params.messages, { providerName: "anthropic" });
 
+    const visionSupported = resolveVisionSupport(pickWireModel(params, this._model), params.model);
+
     const messages = params.messages.map((msg) => ({
       role: msg.role,
       content: msg.content.map((block) => {
@@ -851,7 +882,7 @@ export class AnthropicProvider implements Provider {
             input: block.input,
           };
         } else if (block.type === "tool_result") {
-          return serializeToolResultBlock(block); // G6：支持富媒体多部件 content
+          return serializeToolResultBlock(block, visionSupported); // G6：支持富媒体多部件 content
         } else if (block.type === "thinking") {
           // 多轮回传 thinking 块（含 signature）
           return {
@@ -911,47 +942,68 @@ export class AnthropicProvider implements Provider {
       maxTokens: params.maxTokens,
     });
 
-    const message = await this.client.messages.create(
-      {
-        model: wireModel,
-        max_tokens: params.maxTokens,
-        messages: messages as any,
-        system: system as any,
-        tools: tools as any,
-        stream: false,
-        // OPT-2: 透传 tool_choice（与流式路径一致）
-        ...buildToolChoiceParam(params),
-        // 与流式路径一致：Extended Thinking（adaptive/manual 双模式）
-        ...(params.thinking?.enabled && buildThinkingParam(params)),
-        ...(params.outputConfig && {
-          output_config: { effort: params.outputConfig.effort },
-        }),
-        // G2: cache_edits（同流式路径门控）
-        ...(params.cacheEdits &&
-          params.cacheEdits.length > 0 &&
-          !process.env.SID_DISABLE_CACHE_EDITS && {
-            cache_edits: params.cacheEdits,
+    // 缺陷 15：非流式同样收口计费（见 recordNonStreamingBilledRequest）。
+    // SDK 对非 2xx 直接抛错，所以 create resolve 即「拿到 2xx」。
+    const billingFetchId = nextFetchId();
+    let billedUsage: Usage | undefined;
+    let billable = false;
+    try {
+      const message = await this.client.messages.create(
+        {
+          model: wireModel,
+          max_tokens: params.maxTokens,
+          messages: messages as any,
+          system: system as any,
+          tools: tools as any,
+          stream: false,
+          // OPT-2: 透传 tool_choice（与流式路径一致）
+          ...buildToolChoiceParam(params),
+          // 与流式路径一致：Extended Thinking（adaptive/manual 双模式）
+          ...(params.thinking?.enabled && buildThinkingParam(params)),
+          ...(params.outputConfig && {
+            output_config: { effort: params.outputConfig.effort },
           }),
-      },
-      signal ? { signal } : undefined,
-    );
+          // G2: cache_edits（同流式路径门控）
+          ...(params.cacheEdits &&
+            params.cacheEdits.length > 0 &&
+            !process.env.SID_DISABLE_CACHE_EDITS && {
+              cache_edits: params.cacheEdits,
+            }),
+        },
+        signal ? { signal } : undefined,
+      );
+      billable = true;
+      emitHttpConnected(currentSseDumpContext().turnIndex, { status: 200, model: this._model });
 
-    const content: ContentBlock[] = [];
-    for (const block of (message as any).content ?? []) {
-      const converted = this.convertContentBlock(block);
-      // 跳过被忽略的空块（未知类型）
-      if (converted.type === "text" && converted.text === "" && block.type !== "text") {
-        continue;
+      const content: ContentBlock[] = [];
+      for (const block of (message as any).content ?? []) {
+        const converted = this.convertContentBlock(block);
+        // 跳过被忽略的空块（未知类型）
+        if (converted.type === "text" && converted.text === "" && block.type !== "text") {
+          continue;
+        }
+        content.push(converted);
       }
-      content.push(converted);
-    }
 
-    return {
-      role: "assistant",
-      content,
-      stopReason: (message as any).stop_reason ?? null,
-      usage: this.convertUsage((message as any).usage),
-    };
+      const usage = this.convertUsage((message as any).usage);
+      if ((message as any).usage) billedUsage = usage;
+      return {
+        role: "assistant",
+        content,
+        stopReason: (message as any).stop_reason ?? null,
+        usage,
+      };
+    } finally {
+      if (billable) {
+        recordNonStreamingBilledRequest({
+          fetchId: billingFetchId,
+          model: params.model ?? this._model,
+          provider: this.name(),
+          baseURL: this.client.baseURL,
+          usage: billedUsage,
+        });
+      }
+    }
   }
 
   private convertUsage(usage: any): Usage {

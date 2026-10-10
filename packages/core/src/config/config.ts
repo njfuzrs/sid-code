@@ -11,6 +11,7 @@ import { getSidHome, sidPaths } from "./paths.ts";
 import { parseToolSearchEnv } from "../tool/tool-search-auto.ts";
 import type { NetworkTimeoutSettings, PerModelStreamTimeouts } from "./network-profile.ts";
 import type { LanguagePref } from "./prompt-lang.ts";
+import type { UserHookHandlerType } from "../hook/handler-types.ts";
 
 /**
  * 团队默认配置模板（scripts/team-defaults.template.json）里 apiKey 的占位符值。
@@ -48,6 +49,8 @@ export interface MCPServerConfig {
   scope?: "user" | "project" | "local" | "dynamic"; // 配置来源标记
   // ─── OAuth 2.1 接入（远程 MCP：Linear / Sentry / claude.ai 等，对标 Claude Code auth.ts） ───
   oauth?: MCPOAuthConfig; // 启用/配置 OAuth；为对象（含空对象 {}）即视为启用
+  // ─── 企业后端远程 MCP（P4）：用设备凭据鉴权，仅当 url 与 backend.url 同 origin 才注入 ───
+  auth?: "sid-backend";
 }
 
 /** MCP OAuth 配置（远程 HTTP/SSE 服务器） */
@@ -66,14 +69,17 @@ export interface MCPOAuthConfig {
 
 /** Hook 配置（支持 command / url / prompt / agent 四种类型） */
 export interface HookConfig {
-  type?: "command" | "url" | "prompt" | "agent"; // 钩子类型，默认 command
+  type?: UserHookHandlerType; // 钩子类型，默认 command（取值见 hook/handler-types.ts）
   event?: string; // 旧格式兼容：事件名
   command?: string; // command 类型：shell 命令
   url?: string; // url 类型：HTTP 地址
   method?: string; // url 类型：HTTP 方法，默认 POST
   headers?: Record<string, string>; // url 类型：HTTP 头
-  timeout?: number; // 超时（秒），默认 30
+  allowedEnvVars?: string[]; // url 类型：headers 里允许插值的 $VAR 白名单（H5，未列出的插值为空串）
+  timeout?: number; // 超时（秒）。缺省 command / url 600（UserPromptSubmit / SessionStart 上 30）、prompt 30、agent 60（单一事实源 hook/types.ts resolveHookTimeoutMs）
   blocking?: boolean; // 是否阻塞，默认 false
+  env?: Record<string, string>; // H22：command 类型额外环境变量（合并在脱敏后的进程 env 之上）
+  sequential?: boolean; // H23：true 时该事件这一批命中的 hook 整体串行执行（默认并行）
   async?: boolean; // G7：command 类型后台异步执行，不阻塞主循环
   asyncRewake?: boolean; // G7：后台 hook exit 2 时，其 stderr 下一轮回灌唤醒模型
   matcher?: string; // 工具匹配（精确或 /regex/）
@@ -227,7 +233,7 @@ export interface Config {
   /** Vim 输入模式开关（/vim 持久化端，settings.json vimMode）。缺省 = false */
   vimMode?: boolean;
   /**
-   * P1-5 可自定义状态栏（settings.json statusLine，对标 claude-code）。
+   * P1-5 可自定义状态栏（settings.json statusLine）。
    * { type: "command", command: "<脚本>", padding?: number }。缺省 = 走内置聚合状态栏。
    * 脚本经 stdin 收 JSON 会话数据，stdout 即状态栏内容（支持 ANSI）。
    */
@@ -244,7 +250,7 @@ export interface Config {
    */
   thinkingEnabled?: boolean;
   /**
-   * §12 P2-1：思考 token 预算上限（settings.json maxThinkingTokens，对标 CC MAX_THINKING_TOKENS）。
+   * §12 P2-1：思考 token 预算上限（settings.json maxThinkingTokens）。
    * env SID_CODE_MAX_THINKING_TOKENS / MAX_THINKING_TOKENS 优先；此为 env 未设时的兜底。
    * 透传到 SendParams.maxThinkingTokens，由 effort.ts 钳制思考预算。缺省 = 不钳制。
    */
@@ -252,16 +258,17 @@ export interface Config {
 
   /**
    * AskUserQuestion 交互态空闲超时（settings.json askUserQuestionTimeout）。
-   * 对齐 claude-code v2.1.200：交互模式下弹出提问对话框后，若用户在此时长内不响应，
+   * 交互模式下弹出提问对话框后，若用户在此时长内不响应，
    * 按 cancelled 自动解除（模型收到"请选默认继续"），避免带 TUI handler 的编排器/后台
    * 子代理场景被单个提问无限期阻塞。
-   * 取值："60s" / "5m" / "never"（或纯数字=毫秒）。缺省 = "never"（保守，对齐 CC 默认）。
+   * 取值："60s" / "5m" / "never"（或纯数字=毫秒）。缺省 = "never"（保守）。
    * 注意：headless/SDK/CI 无 handler 时本就返回 unavailable 不阻塞，本设置只作用于交互态。
    */
   askUserQuestionTimeout?: string;
 
   // 权限配置
-  // 支持 6 种模式：default, always-allow, deny-write, acceptEdits, plan, dontAsk
+  // 合法取值以 config/schema.ts 的 PERMISSION_MODES 为准，参考页从那里自省，这里不写数字。
+  /** 默认权限模式（manual 是 default 的别名） */
   permissionMode: string;
   skipPermissions: boolean;
   /** 预授权工具名单（免确认直接执行）。与 toolsWhitelist 不同：这是权限层，不裁剪工具集 */
@@ -338,9 +345,13 @@ export interface Config {
   // 同理，写给维护者的话要放在字段**之间**的空行区，别紧贴字段上方——
   // 紧贴就会被当成该字段的用户可见描述抓进参考页。
 
-  /** 调试日志总开关（-d / --debug）。真正决定「开不开 debug logger」的就是它（cli.ts:1223） */
+  /**
+   * 调试日志总开关（等同 -d / --debug），写 debug.log。
+   *
+   * 真正决定「开不开 debug logger」的就是它（cli.ts 构造 logger 那一支）。
+   */
   debug: boolean;
-  /** 调试日志级别 DEBUG/INFO/WARN/ERROR（缺省 DEBUG；大小写不敏感，见 cli.ts:1230） */
+  /** 调试日志级别 DEBUG/INFO/WARN/ERROR（缺省 DEBUG；大小写不敏感） */
   debugLevel: string;
   /** 调试日志落点（缺省 sidPaths.debugLog()，即 ~/.sid-code/debug.log；尊重 SID_CONFIG_DIR） */
   debugLogFile: string;
@@ -382,10 +393,10 @@ export interface Config {
   // 子代理模型映射
   subAgentModels?: import("../llm/registry.ts").SubAgentModelMap;
 
-  // /goal 目标驱动持续执行配置（缺省走 DEFAULT_GOAL_CONFIG）
+  /** /goal 目标驱动持续执行配置（评估模型、轮次上限、卡住检测等；未配置的项走内置默认值） */
   goal?: Partial<import("../goal/config.ts").GoalConfig>;
 
-  // 成本配额（美元）
+  /** 单会话花费上限（美元） */
   costLimit?: number;
 
   // 配额管控（增强版，向后兼容 costLimit）
@@ -491,7 +502,7 @@ export interface Config {
    */
   includePartialMessages?: boolean;
 
-  // Checkpoint 配置
+  /** 文件快照（checkpoint）配置：每文件快照数、总容量、过期天数等 */
   checkpoint?: CheckpointConfig;
 
   // Git 集成配置（P3-1：可配置归因）
@@ -503,7 +514,7 @@ export interface Config {
 
   // 工具延迟加载（ToolSearch）
   /**
-   * 工具延迟加载模式（默认 false 关闭）。对标 claude-code ENABLE_TOOL_SEARCH。
+   * 工具延迟加载模式（默认 false 关闭）：true 恒开，"auto" 按工具定义占上下文的比例自动判定，数字为自定义阈值百分比。
    *
    * 取值：
    *   - false / 不设置：恒关，全部工具照常进首轮上下文（行为与历史一致）。
@@ -520,8 +531,7 @@ export interface Config {
   /**
    * 延迟加载豁免名单：命中的工具即使本应延迟（mcp__ 前缀 / shouldDefer），也强制首轮可见。
    *
-   * sid 相对 claude-code 的**增量能力**——CC 客户端无此用户开关（只能靠 MCP server 自己
-   * 声明 alwaysLoad）。因 sid 默认 toolSearch:true 全 defer，用户每会话想用高频 MCP 工具
+   * 用户侧开关（不依赖 MCP server 自己声明 alwaysLoad）。因 sid 默认 toolSearch:true 全 defer，用户每会话想用高频 MCP 工具
    * 都得先花一轮 tool_search 往返；此名单让用户钉死 3-5 个高频工具首轮可见，省往返延迟。
    *
    * 支持两种形态：
@@ -546,7 +556,7 @@ export interface Config {
   /**
    * WebFetch 隔离提炼使用的模型（SEC-AUDIT-2026-07-19 P0，默认复用主循环模型）。
    *
-   * 抓取的网页正文不直返主模型，先由这个模型按 prompt 提炼（对齐 CC 用 Haiku 的设计）。
+   * 抓取的网页正文不直返主模型，先由这个模型按 prompt 提炼。
    * 配一个便宜的小模型能显著降本——提炼输入可达 6 万字符，用主模型跑并不划算。
    */
   webFetchExtractModel?: string;
@@ -585,8 +595,10 @@ export interface Config {
   /** 团队记忆同步配置（共享目录模型） */
   teamMemory?: TeamMemoryConfig;
 
-  // 会话保留配置
+  /** 会话自动清理配置（按保留时长 / 数量） */
   sessionRetention?: SessionRetentionConfig;
+  /** 旧字段：等价于 sessionRetention.maxAge（天）。两者都写时以 maxAge 为准 */
+  cleanupPeriodDays?: number;
 
   // 搜索配置
   search?: SearchConfig;
@@ -598,16 +610,16 @@ export interface Config {
    */
   identity?: IdentityConfig;
 
-  // 轨迹采集配置
+  /** 轨迹采集与上传配置（本地轨迹目录、保留数量、是否记录原文、上传端点） */
   trace?: TraceConfig;
 
-  // 遥测配置（OTel 兼容的结构化 Trace）
+  /** 遥测配置（OTel 兼容的结构化 span，可导出到 console / jsonl / otlp） */
   telemetry?: TelemetryConfig;
 
-  // 分析/事件系统配置（spec 17 — analytics 通道）
+  /** 事件分析通道配置（隐私级别、Feature Flag、远程事件后端），与 telemetry 的 span 通道并行 */
   analytics?: AnalyticsConfig;
 
-  // IDE 集成配置
+  /** IDE 集成配置（自动连接、发现超时、写盘前 diff 预览） */
   ide?: IDEConfig;
 
   /** Bridge 远程控制配置（D14 准入） */
@@ -620,6 +632,20 @@ export interface Config {
     warnings: { path: string; message: string }[];
     errors: { path: string; message: string }[];
   };
+
+  /**
+   * HC1：按来源收集的 hooks 层（managed / user / project / local），由 loadConfig 填。
+   * App 用它按真实来源注册 hook；信任门只给不可信层打 skippedByTrust，不再清空整个 hooks。
+   * 缺省（测试 / SDK 直接构造 Config）时回落到 `hooks` 字段、按用户级注册。仅运行时携带。
+   */
+  _hookLayers?: import("./hook-layers.ts").HookLayer[];
+
+  /**
+   * Q2：`--trust-workspace`——仅本会话信任工作区，不持久化。
+   * SDK 宿主（Python SDK / IDE 插件）是 spawn 本 CLI 的，放行方式就是在命令行加这个参数；
+   * 刻意不放进 initialize 握手：信任门在启动期（cli.ts）就已决定加载哪些层，握手到达时为时已晚。
+   */
+  trustWorkspace?: boolean;
 
   /**
    * 首次启动引导标记：TUI 模式下检测到"完全未配置模型/API Key"时置 true。
@@ -681,7 +707,7 @@ export interface BridgeConfig {
 
 /** 轨迹上传配置 */
 export interface TraceUploadConfig {
-  /** trajectory-platform URL，含路径前缀，如 http://<your-server>/traj */
+  /** trajectory-platform URL，含路径前缀，如 https://<your-server>/traj。缺省取 backend.url */
   url: string;
   /** X-Upload-Token 认证 token */
   token: string;
@@ -701,7 +727,7 @@ export interface TraceUploadConfig {
   toolSource?: string;
   /** 单文件最大重试次数（默认 5） */
   maxRetries?: number;
-  /** 指数退避基数毫秒（默认 2000，即 2s→4s→8s→16s→32s） */
+  /** 指数退避基数毫秒（默认 2000；maxRetries=5 时间隔为 2s→4s→8s→16s） */
   retryBaseMs?: number;
   /** 是否 gzip 压缩后上传（默认 true） */
   compress?: boolean;
@@ -833,11 +859,11 @@ export interface AnalyticsBackendConfig {
 export interface AnalyticsConfig {
   /** 隐私级别覆盖（环境变量优先级更高） */
   privacyLevel?: PrivacyLevel;
-  /** Feature Flag 远程端点（可选） */
+  /** 已弃用：Feature Flag 远程端点。配了 backend.url 时被忽略（地址由它推出），只作兼容 */
   featureFlagEndpoint?: string;
   /** 本地 Feature Flag 定义 */
   flags?: Record<string, string | number | boolean | Record<string, unknown>>;
-  /** 远程事件导出后端列表 */
+  /** 第三方事件 collector 列表（OTLP / 自建）。企业后端不用配这里：配了 backend.url 即内置上报 */
   backends?: AnalyticsBackendConfig[];
 }
 
@@ -879,11 +905,13 @@ export interface GitConfig {
 export interface SessionRetentionConfig {
   /** 是否启用自动清理（默认 true） */
   enabled?: boolean;
-  /** 最大保留时间（如 "30d"） */
+  /** 最大保留时间（默认 "365d"；格式 数字+h/d/w/m） */
   maxAge?: string;
-  /** 最大保留数量 */
+  /** 最大保留数量（默认不限；防盘满靠 maxTotalSize） */
   maxCount?: number;
-  /** 最小保留时间（防止误删，如 "1d"） */
+  /** 会话 + 轨迹总体积上限（默认 "10GB"），超出才从最旧的开始删 */
+  maxTotalSize?: string;
+  /** 最小保留时间（防止误删，默认 "1d"） */
   minRetention?: string;
 }
 
@@ -983,6 +1011,95 @@ function resolveEnvPlaceholder(value: string | undefined): string | undefined {
 }
 
 /**
+ * settings 键 → Config 字段的别名表（snake_case / YAML 风格写法）。
+ *
+ * 提到模块级是为了让未知键告警（recordUnknownSettingKeys）复用同一份：这里登记的别名
+ * 运行时确实生效，不能被报成「未知」。
+ */
+const SETTINGS_KEY_ALIASES: Record<string, keyof Config> = {
+  provider: "provider",
+  model: "model",
+  fallback_model: "fallbackModel",
+  fallback_switch_mode: "fallbackSwitchMode",
+  anthropic_key: "anthropicKey",
+  openai_api_key: "openaiKey",
+  base_url: "baseURL",
+  max_tokens: "maxTokens",
+  available_models: "availableModels",
+  permission_mode: "permissionMode",
+  ask_user_question_timeout: "askUserQuestionTimeout",
+  skip_permissions: "skipPermissions",
+  allowed_tools: "allowedTools",
+  disallowed_tools: "disallowedTools",
+  yes_mode: "yesMode",
+  allowed_directories: "allowedDirectories",
+  blocked_directories: "blockedDirectories",
+  session_id: "sessionId",
+  continue: "continue",
+  resume: "resume",
+  print: "print",
+  output_format: "outputFormat",
+  max_turns: "maxTurns",
+  system_prompt: "systemPrompt",
+  append_system_prompt: "appendSystemPrompt",
+  system_prompt_file: "systemPromptFile",
+  debug: "debug",
+  debug_level: "debugLevel",
+  debug_log_file: "debugLogFile",
+  audit: "audit",
+  audit_log_file: "auditLogFile",
+  hooks: "hooks",
+  mcp_servers: "mcpServers",
+  mcp_policy: "mcpPolicy",
+  mcpPolicy: "mcpPolicy",
+  sub_agent_models: "subAgentModels",
+  goal: "goal",
+  cost_limit: "costLimit",
+  show_line_numbers: "showLineNumbers",
+  quota: "quota",
+  disabled_skills: "disabledSkills",
+  disabled_hooks: "disabledHooks",
+  trust_project_extensions: "trustProjectExtensions",
+  checkpoint: "checkpoint",
+  git: "git",
+  jit_context: "jitContext",
+  tool_search: "toolSearch",
+  tool_search_keep_loaded: "toolSearchKeepLoaded",
+  sanitize_env: "sanitizeEnv",
+  enable_llm_classifier: "enableLLMClassifier",
+  classifier_model: "classifierModel",
+  // SEC-AUDIT-2026-07-19 P0：WebFetch 隔离提炼
+  web_fetch_extract_model: "webFetchExtractModel",
+  web_fetch_isolate: "webFetchIsolate",
+  // §12 P2-1：思考预算上限。settings.json 用 camelCase 直通（keyMap 兜底），
+  // 这里显式登记 snake_case 别名，让 YAML 风格配置也能命中同一 Config 字段。
+  max_thinking_tokens: "maxThinkingTokens",
+  speculative_classifier: "speculativeClassifier",
+  // P2-3：沙箱两个旋钮登记 snake_case 别名。camelCase 本来就靠 keyMap 兜底直通，
+  // 这里显式登记让 YAML 风格配置命中同一 Config 字段（与上面 max_thinking_tokens 同处理）。
+  enable_sandbox: "enableSandbox",
+  sandbox_auto_allow_bash: "sandboxAutoAllowBash",
+  team_memory: "teamMemory",
+  identity: "identity",
+  trace: "trace",
+  search: "search",
+  telemetry: "telemetry",
+  analytics: "analytics",
+  language: "language",
+  output_style: "outputStyle",
+  outputStyle: "outputStyle",
+  auto_dream: "autoDream",
+  autoDream: "autoDream",
+  auto_memory: "autoMemory",
+  autoMemory: "autoMemory",
+  theme: "theme",
+  vimMode: "vimMode",
+  alternateBuffer: "alternateBuffer",
+  accentColor: "accentColor",
+  fastMode: "fastMode",
+};
+
+/**
  * 将 YAML 字段名转换为 Config 字段名。
  *
  * 注意 keyMap 的兜底语义 `keyMap[k] || k`：未登记的键**原样保留**——这是 settings.json
@@ -996,88 +1113,7 @@ function normalizeConfigKeys(raw: any): Partial<Config> {
   if (!raw || typeof raw !== "object") {
     return {};
   }
-  const keyMap: Record<string, keyof Config> = {
-    provider: "provider",
-    model: "model",
-    fallback_model: "fallbackModel",
-    fallback_switch_mode: "fallbackSwitchMode",
-    anthropic_key: "anthropicKey",
-    openai_api_key: "openaiKey",
-    base_url: "baseURL",
-    max_tokens: "maxTokens",
-    available_models: "availableModels",
-    permission_mode: "permissionMode",
-    ask_user_question_timeout: "askUserQuestionTimeout",
-    skip_permissions: "skipPermissions",
-    allowed_tools: "allowedTools",
-    disallowed_tools: "disallowedTools",
-    yes_mode: "yesMode",
-    allowed_directories: "allowedDirectories",
-    blocked_directories: "blockedDirectories",
-    session_id: "sessionId",
-    continue: "continue",
-    resume: "resume",
-    print: "print",
-    output_format: "outputFormat",
-    max_turns: "maxTurns",
-    system_prompt: "systemPrompt",
-    append_system_prompt: "appendSystemPrompt",
-    system_prompt_file: "systemPromptFile",
-    debug: "debug",
-    debug_level: "debugLevel",
-    debug_log_file: "debugLogFile",
-    audit: "audit",
-    audit_log_file: "auditLogFile",
-    hooks: "hooks",
-    mcp_servers: "mcpServers",
-    mcp_policy: "mcpPolicy",
-    mcpPolicy: "mcpPolicy",
-    sub_agent_models: "subAgentModels",
-    goal: "goal",
-    cost_limit: "costLimit",
-    show_line_numbers: "showLineNumbers",
-    quota: "quota",
-    disabled_skills: "disabledSkills",
-    disabled_hooks: "disabledHooks",
-    trust_project_extensions: "trustProjectExtensions",
-    checkpoint: "checkpoint",
-    git: "git",
-    jit_context: "jitContext",
-    tool_search: "toolSearch",
-    tool_search_keep_loaded: "toolSearchKeepLoaded",
-    sanitize_env: "sanitizeEnv",
-    enable_llm_classifier: "enableLLMClassifier",
-    classifier_model: "classifierModel",
-    // SEC-AUDIT-2026-07-19 P0：WebFetch 隔离提炼
-    web_fetch_extract_model: "webFetchExtractModel",
-    web_fetch_isolate: "webFetchIsolate",
-    // §12 P2-1：思考预算上限。settings.json 用 camelCase 直通（keyMap 兜底），
-    // 这里显式登记 snake_case 别名，让 YAML 风格配置也能命中同一 Config 字段。
-    max_thinking_tokens: "maxThinkingTokens",
-    speculative_classifier: "speculativeClassifier",
-    // P2-3：沙箱两个旋钮登记 snake_case 别名。camelCase 本来就靠 keyMap 兜底直通，
-    // 这里显式登记让 YAML 风格配置命中同一 Config 字段（与上面 max_thinking_tokens 同处理）。
-    enable_sandbox: "enableSandbox",
-    sandbox_auto_allow_bash: "sandboxAutoAllowBash",
-    team_memory: "teamMemory",
-    identity: "identity",
-    trace: "trace",
-    search: "search",
-    telemetry: "telemetry",
-    analytics: "analytics",
-    language: "language",
-    output_style: "outputStyle",
-    outputStyle: "outputStyle",
-    auto_dream: "autoDream",
-    autoDream: "autoDream",
-    auto_memory: "autoMemory",
-    autoMemory: "autoMemory",
-    theme: "theme",
-    vimMode: "vimMode",
-    alternateBuffer: "alternateBuffer",
-    accentColor: "accentColor",
-    fastMode: "fastMode",
-  };
+  const keyMap = SETTINGS_KEY_ALIASES;
 
   const result: any = {};
   for (const [yamlKey, value] of Object.entries(raw as Record<string, any>)) {
@@ -1177,7 +1213,12 @@ function normalizeConfigKeys(raw: any): Partial<Config> {
       // 见 docs/bugfixes/done/20260807-遥测落盘恒空-配置undefined覆盖默认值.md
       const telemetry: Record<string, unknown> = {
         enabled: v.enabled ?? false,
-        exporters: Array.isArray(v.exporters) ? v.exporters : [],
+        // 字符串简写 `["jsonl"]` 归一成 `[{ type: "jsonl" }]`（B41 ①）。
+        // 不归一的话分派按 `.type` 走、字符串元素 type 为 undefined ⇒ 导出器被静默丢弃，
+        // 而校验 warning 只在 debug 级可见 —— 官网示例曾恰好是这种写法，照抄即零落盘。
+        exporters: Array.isArray(v.exporters)
+          ? v.exporters.map((e: unknown) => (typeof e === "string" ? { type: e } : e))
+          : [],
       };
       const batchSize = v.batch_size ?? v.batchSize;
       const flushIntervalMs = v.flush_interval_ms ?? v.flushIntervalMs;
@@ -1285,7 +1326,7 @@ async function loadConfigFile(): Promise<Partial<Config>> {
  * 也不能注入进程环境。路由流量字段（model/baseURL/provider/availableModels/env/mcpServers）
  * 刻意不在此列，见 loadConfigFile 的注释。
  */
-const PROJECT_BEHAVIOR_FIELDS = [
+export const PROJECT_BEHAVIOR_FIELDS = [
   "language",
   "theme",
   "vimMode",
@@ -1448,9 +1489,10 @@ function loadFromEnv(): Partial<Config> {
       enabled: true,
       outputDir: env.SID_CODE_TRACE_OUTPUT_DIR,
     };
-    if (env.SID_CODE_TRACE_UPLOAD_URL && env.SID_CODE_TRACE_UPLOAD_TOKEN) {
+    // 只给 token 也构造 upload 段：url 缺省时 loadConfig 会回落到 backend.url。
+    if (env.SID_CODE_TRACE_UPLOAD_TOKEN) {
       traceConfig.upload = {
-        url: env.SID_CODE_TRACE_UPLOAD_URL,
+        url: env.SID_CODE_TRACE_UPLOAD_URL ?? "",
         token: env.SID_CODE_TRACE_UPLOAD_TOKEN,
         userId: env.SID_CODE_TRACE_USER_ID,
         deviceId: env.SID_CODE_TRACE_DEVICE_ID,
@@ -1505,30 +1547,21 @@ function mergeConfig(base: Partial<Config>, override: Partial<Config>): Partial<
   return result;
 }
 
-/** 加载项目级 .mcp.json 配置 */
+/**
+ * 加载项目级 .mcp.json 配置（M1）：从 cwd 逐级向上到文件系统根，近者覆盖远者。
+ * 发现逻辑在 mcp/project-files.ts，与 CLI `mcp list/pending/approve` 共用。
+ */
 async function loadMCPJson(): Promise<Record<string, MCPServerConfig>> {
   const log = getLogger();
-  const mcpJsonPath = join(process.cwd(), ".mcp.json");
-
-  if (!existsSync(mcpJsonPath)) {
-    return {};
+  const { loadProjectMcpServers } = await import("../mcp/project-files.ts");
+  const { servers, files } = loadProjectMcpServers(process.cwd(), (msg) => log.warn("CONFIG", msg));
+  if (files.length > 0) {
+    log.info(
+      "CONFIG",
+      `.mcp.json 加载 ${Object.keys(servers).length} 个 MCP 服务器（来自 ${files.join(", ")}）`,
+    );
   }
-
-  try {
-    const content = await Bun.file(mcpJsonPath).text();
-    const parsed = JSON.parse(content);
-    // 支持 { "mcpServers": { ... } } 或直接 { "serverName": { ... } }
-    const servers = parsed.mcpServers || parsed.mcp_servers || parsed;
-    if (typeof servers !== "object" || Array.isArray(servers)) {
-      log.warn("CONFIG", `.mcp.json 格式不正确，期望对象`);
-      return {};
-    }
-    log.info("CONFIG", `.mcp.json 加载 ${Object.keys(servers).length} 个 MCP 服务器`);
-    return servers;
-  } catch (err) {
-    log.warn("CONFIG", `读取 .mcp.json 失败: ${err}`);
-    return {};
-  }
+  return servers;
 }
 
 /**
@@ -1569,8 +1602,9 @@ async function loadLocalMcpJson(): Promise<Record<string, MCPServerConfig>> {
 /**
  * 读企业 managed-settings.json 的 identity 段（first-exists-wins）。
  * 损坏 / 缺失 / 非对象一律当没配——身份通道 fail-open。
- * 不走 getSettings()：那条链的 policySettings 仍指向 /etc/sid-code/policy.json，
- * 跟规划写的 managed-settings.json 不是同一份文件。
+ * 直接按 sidPaths.managedPolicyCandidates 逐个读原始 JSON，不走 getSettings()：
+ * identity 段要在 settings 链之外独立 fail-open（损坏只告警、按文件跳过），
+ * 且不需要 drop-in 合并。两者读的是同一条候选链（policy.json / policy.yaml 已废弃不读）。
  */
 function pickIdentityString(
   rec: Record<string, unknown>,
@@ -1585,7 +1619,7 @@ function pickIdentityString(
 }
 
 function loadManagedIdentity(): IdentityConfig | undefined {
-  // 顺序跟 sidPaths.managedPolicyCandidates 走：/etc 系统管控优先，用户级回退。
+  // 顺序跟 sidPaths.managedPolicyCandidates 走：平台系统级优先，用户级回退。
   // 测试把 SID_CONFIG_DIR 指到 tmpdir 时走第二条；本机没有 /etc 文件则跳过。
   for (const p of sidPaths.managedPolicyCandidates()) {
     if (!existsSync(p)) continue;
@@ -1638,7 +1672,7 @@ export async function loadConfig(cliArgs: Partial<Config> = {}): Promise<Config>
   // 三源物理落点：
   //   user    —— ~/.sid-code/settings.json 的 mcpServers（合并期已进 merged.mcpServers）
   //   local   —— ~/.sid-code/projects/<项目 hash>/mcp.local.json（个人/实验，不入库）
-  //   project —— CWD .mcp.json（团队共享，需审批）
+  //   project —— cwd 向上逐级的 .mcp.json（团队共享，需审批；M1）
   // 此前是「裸浅合并 {...user, ...project}」——项目级无条件覆盖用户级、方向与文档相反、
   // 无 local、无签名去重、无 policy。改为接线 mergeMcpConfigs 统一处理。
   {
@@ -1652,9 +1686,12 @@ export async function loadConfig(cliArgs: Partial<Config> = {}): Promise<Config>
     const pendingApprovalServers: Record<string, MCPServerConfig> = {};
     if (Object.keys(mcpJsonServers).length > 0) {
       const { getProjectServerApproval } = await import("../mcp/approval.ts");
-      const projectPath = process.cwd();
+      // M4：审批 key 按项目身份（git root），同仓库任意子目录只审批一次；
+      // 旧版以 cwd 为 key 的记录由 getProjectServerApproval 兼容读取。
+      const { getMcpProjectRoot } = await import("../mcp/project-files.ts");
+      const projectPath = await getMcpProjectRoot(process.cwd());
       for (const [name, serverConfig] of Object.entries(mcpJsonServers)) {
-        const status = getProjectServerApproval(name, projectPath);
+        const status = getProjectServerApproval(name, projectPath, process.cwd());
         if (status === "rejected") {
           getLogger().info("CONFIG", `项目 MCP 服务器 "${name}" 已被拒绝，跳过`);
           continue;
@@ -1681,7 +1718,7 @@ export async function loadConfig(cliArgs: Partial<Config> = {}): Promise<Config>
       // 登记待审批快照，供 /mcp 面板展示与审批
       if (Object.keys(pendingApprovalServers).length > 0) {
         const { setPendingApprovalServers } = await import("../mcp/approval.ts");
-        setPendingApprovalServers(pendingApprovalServers, projectPath);
+        setPendingApprovalServers(pendingApprovalServers, projectPath, process.cwd());
       }
     }
 
@@ -1699,9 +1736,33 @@ export async function loadConfig(cliArgs: Partial<Config> = {}): Promise<Config>
       );
       (merged as any).mcpServers = mergedMcp as Record<string, MCPServerConfig>;
     }
+
+    // M2：用户私有的按项目禁用列表（对齐 CC disabledMcpServers）。打成 enabled:false
+    // 后 manager.connectAll 会放进 disabledConfigs，面板显示「已禁用」。
+    {
+      const { getDisabledMcpServers, applyDisabledList } = await import("../mcp/project-files.ts");
+      const disabled = await getDisabledMcpServers(process.cwd());
+      if (disabled.length > 0) {
+        (merged as any).mcpServers = applyDisabledList(
+          ((merged as Config).mcpServers || {}) as Record<string, MCPServerConfig>,
+          disabled,
+        );
+      }
+    }
   }
 
   const config = merged as Config;
+
+  // trace.upload.url 缺省时取 backend.url（U6）：以前要把同一个地址在两处各抄一遍，
+  // 抄错一处就是「轨迹发往 A、事件发往 B」。token 仍单独配——数据面用共享
+  // X-Upload-Token 是服务端冻结约束，只统一地址、不统一鉴权。
+  // 显式配了 trace.upload.url 仍然尊重（数据面允许独立部署），不一致时由
+  // init-helpers 在 logger 就绪后告警一次。
+  if (config.trace?.upload && !config.trace.upload.url) {
+    const { resolveBackendUrl } = await import("../identity/backend-url.ts");
+    const backend = resolveBackendUrl();
+    if (backend) config.trace.upload.url = backend.url;
+  }
 
   // trace 上传未显式配 userId / deviceId 时回落到全局 identity。
   // 不删 SID_CODE_TRACE_*：显式配置仍优先（与规划「并存、不删旧变量」一致）。
@@ -1762,6 +1823,8 @@ export async function loadConfig(cliArgs: Partial<Config> = {}): Promise<Config>
       );
     }
     config._needsOnboarding = true;
+    // settings.json 损坏时常落到这条分支（读不出模型），而迁移失败告警恰恰就是在说这件事
+    await collectMigrationWarnings(config);
     // 收尾 sessionId 后提前返回，跳过 provider/model 致命校验（详见下方 return 前逻辑）
     if (!config.sessionId) {
       const { generateSessionId } = await import("../session/id.ts");
@@ -1824,6 +1887,32 @@ export async function loadConfig(cliArgs: Partial<Config> = {}): Promise<Config>
     /* 诊断收集失败不影响启动 */
   }
 
+  await collectMigrationWarnings(config);
+
+  // B32：未知顶层键告警（拼错的字段此前静默不生效）。同样放在整体赋值之后。
+  try {
+    await recordUnknownSettingKeys(config);
+  } catch {
+    /* 诊断收集失败不影响启动 */
+  }
+
+  // HC1：按来源收集 hooks 层。用户层的诊断已由 validateConfig(config.hooks) 出过，
+  // 这里只补项目 / 本地 / 托管层的诊断，带来源文件（§三.9：每条被跳过的 hook 都要说清在哪个文件）。
+  try {
+    const { collectHookLayers } = await import("./hook-layers.ts");
+    const { normalizeHooksConfig } = await import("../hook/config-normalize.ts");
+    const layers = collectHookLayers();
+    config._hookLayers = layers;
+    for (const layer of layers) {
+      if (layer.source === "user") continue;
+      const { diagnostics } = normalizeHooksConfig(layer.hooks, layer.source as never);
+      for (const d of diagnostics)
+        recordStartupWarning(config, `${layer.file}#${d.path}`, d.message);
+    }
+  } catch (e) {
+    getLogger().debug("CONFIG", `收集 hooks 层失败（回落到用户级 hooks）: ${e}`);
+  }
+
   // baseURL 覆盖提示放在诊断赋值之后：赋值是整体替换，放前面会被盖掉。
   // 也不放进 resolveCurrentModelConfig：那是 /model 切换的共同咽喉，运行时再调
   // 会把一条启动提示重复塞进一份不再刷新到 TUI 的列表。
@@ -1867,11 +1956,60 @@ export async function loadConfig(cliArgs: Partial<Config> = {}): Promise<Config>
  * stderr 分支，TUI 接管终端后这段输出消失，用户看不到。诊断列表是 TUI 启动横幅和
  * --print stderr 诊断的共同数据源，挂在这里两条路径都看得见。
  * 同 path 同 message 不重复追加，防 loadConfig 的两个分支都命中时记两次。
+ * 导出给 app.init 的插件 hook 诊断用：插件在 loadConfig 之后才加载，但仍早于 TUI 横幅渲染。
  */
-function recordStartupWarning(config: Config, path: string, message: string): void {
+export function recordStartupWarning(config: Config, path: string, message: string): void {
   const diag = (config._validationDiagnostics ??= { warnings: [], errors: [] });
   if (diag.warnings.some((w) => w.path === path && w.message === message)) return;
   diag.warnings.push({ path, message });
+}
+
+/**
+ * 迁移失败告警（B35 / D128）并进启动诊断。runMigrations 跑在 logger 之前，
+ * 只能暂存在 migrations/warnings.ts，到这里统一出口（横幅与 --print 共用）。
+ * 必须在 _validationDiagnostics 整体赋值之后调用，否则会被盖掉。
+ */
+async function collectMigrationWarnings(config: Config): Promise<void> {
+  try {
+    const { getMigrationWarnings } = await import("../migrations/warnings.ts");
+    for (const w of getMigrationWarnings()) recordStartupWarning(config, w.path, w.message);
+  } catch {
+    /* 诊断收集失败不影响启动 */
+  }
+}
+
+/**
+ * settings.json 顶层出现未知键时记一条启动提示（B32），带 did-you-mean。
+ *
+ * 已知集合 = SettingsSchema 声明的键 ∪ 别名表（snake_case 写法运行时确实生效）∪ `$schema`
+ *（编辑器补全用，惯例键）。只查用户 / 项目 / 本地三个文件：managed-settings.json 里放的是
+ * 企业策略键（policyLimits、allowManagedHooksOnly……），走另一套解析，混进来全是误报。
+ *
+ * 读的是 getSettingsForSource 的结果而不是重新读盘：`.passthrough()` 会把未知键原样带出来，
+ * 这里正好拿到它们。
+ */
+async function recordUnknownSettingKeys(config: Config): Promise<void> {
+  const { getSettingsForSource, getEnabledSettingSources } = await import("./settings/settings.ts");
+  const { getSettingsFilePath } = await import("./settings/constants.ts");
+  const { SettingsSchema } = await import("./settings/types.ts");
+  const { findUnknownSettingKeys } = await import("./settings/validation.ts");
+  const { levenshteinDistance } = await import("../tool/path-utils.ts");
+
+  const declared = Object.keys(SettingsSchema().shape);
+  const known = new Set([...declared, ...Object.keys(SETTINGS_KEY_ALIASES), "$schema"]);
+  const enabled = new Set(getEnabledSettingSources());
+  for (const source of ["userSettings", "projectSettings", "localSettings"] as const) {
+    if (!enabled.has(source)) continue;
+    const { settings } = getSettingsForSource(source);
+    if (!settings) continue;
+    const file = getSettingsFilePath(source) ?? source;
+    for (const u of findUnknownSettingKeys(settings, known, declared, levenshteinDistance)) {
+      const hint = u.suggestion
+        ? `，是否想写「${u.suggestion}」？`
+        : "（可能是拼写错误或新版本才有的字段）";
+      recordStartupWarning(config, `${file}#${u.key}`, `未知配置项「${u.key}」不会生效${hint}`);
+    }
+  }
 }
 
 /**
@@ -2041,7 +2179,7 @@ export async function ensureConfigDir(): Promise<string> {
  * 本函数不再自行解析任何文件，全部委托给 RuleLoader（单一事实源）。各源与优先级
  * 由 RuleLoader 统一负责（低→高）：
  *   session → command → cliArg → userSettings → projectSettings → localSettings → flagSettings → policySettings
- * 其中企业策略从 managedPolicyCandidates()（/etc/sid-code/managed-settings.json
+ * 其中企业策略从 managedPolicyCandidates()（平台系统级 managed-settings.json
  * + ~/.sid-code/managed-settings.json）加载——历史上冲突的 /etc/sid-code/policy.json
  * 与 policy.yaml 两个路径已废弃，不再读取。
  *

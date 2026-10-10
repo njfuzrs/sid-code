@@ -149,7 +149,7 @@ WARN / ERROR 级日志走的是 stderr（即使没开 debug，关键错误也会
 所以 `2>/dev/null` 丢掉 stderr 是安全的，反过来则不行。
 :::
 
-## ⚠ 坑二：`--json-schema` 的结果不在 stdout 上
+## 用 `--json-schema` 取结构化结果
 
 `--json-schema` 用来约束模型输出成结构化 JSON：
 
@@ -165,38 +165,28 @@ cat > /tmp/schema.json <<'EOF'
 }
 EOF
 
-sid-code -p "分析 calc.ts，给出语言与顶层函数个数。" --json-schema /tmp/schema.json
+sid-code -p "分析 calc.ts，给出语言与顶层函数个数。" \
+  --json-schema /tmp/schema.json --output-format json 2>/dev/null \
+  | jq .structured_output
 ```
 
 机制是：给模型挂一个 `StructuredOutput` 工具，工具的 inputSchema 就是你的 schema，
 并在系统提示里强制要求"最后必须调一次它"。模型调用时按 schema 递归校验，
 不合规就把错误回喂让它重试。
 
-**但在 `-p` 路径上，校验通过的那份结构化数据不会出现在 stdout 上。** 实测输出是模型的散文：
+**校验通过的那份载荷在结果的 `structured_output` 字段里**：
 
-```text
-已完成。`calc.ts` 中恰好有两个顶层函数 `add` 和 `total`，语言为 TypeScript，结构化输出已返回。
-```
+- `--output-format json`：顶层对象的 `structured_output`；
+- `--output-format stream-json`：最后一条 `type: "result"`（`subtype: "success"`）消息的 `structured_output`。
 
-`--output-format json` 也一样——它取的是最后一条 assistant 消息，不是工具捕获的载荷。
-所以别指望管道里能直接拿到那个对象。
+取的是**最后一次校验通过**的调用，被打回重试的那几次不会混进来。
+模型始终没交出合规输出（重试耗尽、或根本没调工具）时**这个字段不出现**，
+脚本里请先判断它是否存在，别把缺失当成空对象。
 
-实际能用的做法二选一：
-
-**① 不用 `--json-schema`，直接在提示词里要 JSON**（最省事，脚本里最常用）：
-
-```bash
-sid-code -p '分析 calc.ts。只输出 JSON，形如 {"language":"...","functionCount":0}，不要解释。' \
-  --output-format json 2>/dev/null \
-  | jq -r '.content[] | select(.type=="text") | .text' \
-  | jq .
-```
-
-**② 用 `--output-format stream-json`**，从流里捞 `StructuredOutput` 的 tool_use 入参
-（`result.result` 仍是模型的文本收尾，不是结构化载荷）。
-
-`--json-schema` 真正发挥作用的地方是**它对模型的约束力**——不合 schema 会被打回重试。
-把它当"提高模型产出 JSON 正确率的手段"，而不是"取结构化结果的通道"。
+::: tip 别从 stdout 的文本里取
+`--output-format text`（默认）只输出模型的散文收尾，`content` / `result.result`
+也是文本，都不是结构化载荷。需要对象就用 `json` 或 `stream-json` 读 `structured_output`。
+:::
 
 ## 组合约束
 
@@ -214,100 +204,82 @@ sid-code -p '分析 calc.ts。只输出 JSON，形如 {"language":"...","functio
 `--input-format stream-json` 从 stdin 逐条读消息，配合 `--output-format stream-json`
 就是双向流——这是把 sid-code 当 SDK 嵌进自己程序的路子。
 
-## 作为可编程运行时：SDK
+## 作为可编程运行时：SDK 双向流
 
-`-p` 是「发一条、收一个结果」的单轮模式。但有些场景需要**多轮编程式对话**——
-外部程序持续注入消息、中途打断、动态切模型、甚至接管权限确认。sid-code 的
-`src/sdk/` 就是为此设计的可编程运行时入口。
+`-p` 是「发一条、收一个结果」的单轮模式。把 sid-code 嵌进自己的程序（IDE、CI 编排器、
+内部平台）时，用 spawn 子进程 + `--input-format stream-json --output-format stream-json`：
+stdin 逐条读 NDJSON，stdout 逐条写 NDJSON，跨语言可用。
 
-### 三层架构
-
-`src/sdk/index.ts` 自述为三层（把 sid-code 从「交互式 CLI」升级为「可编程的 Agent 运行时」，
-外部调用者通过子进程 spawn + NDJSON 协议通信）：
-
-| 层 | 职责 | 关键模块 |
-| --- | --- | --- |
-| 类型定义层 | Schema-First 的全部消息/控制协议类型 | `schemas.ts` / `control-schemas.ts` / `types.ts` |
-| 会话引擎层 | 无头编排、查询驱动 | `query-engine.ts`（`SDKQueryEngine`）/ `headless-runner.ts` |
-| 传输协议层 | 双向流式通信 | `structured-io.ts`（`StructuredIO`）/ `ndjson.ts` |
-
-外部程序两条接入路径：
-
-1. **spawn 子进程 + `--input-format stream-json --output-format stream-json`**——
-   最常用，跨语言（Python/Go 都能用），靠 NDJSON 双向流通信
-2. **import SDK 模块**（Bun/Node 程序）——拿到 `SDKQueryEngine` / `StructuredIO` 等
-   原语自己编排，灵活但要自己管进程
-
-### 双向流协议：消息怎么来回
-
-`--input-format stream-json` 让 sid-code 从 **stdin** 逐条读 NDJSON 消息，
-`--output-format stream-json` 把 sid-code 的产出写到 **stdout**。两者**共用同一个 NDJSON 通道**
-（单通道全序，避免跨通道时序问题，`control-schemas.ts:7`）。这是和单向 `-p` 的本质区别：
-`-p` 只能发一条收一个结果，双向流能持续多轮交互。
-
-数据消息（user/assistant/result）与控制消息（control_request/control_response）**混在同一条流里**，
-靠 `type` 字段区分。控制协议（`control-schemas.ts`）覆盖这些请求类型：
-
-| 控制请求 | 干什么 | 谁发起 |
-| --- | --- | --- |
-| `initialize` | 握手：注入 system_prompt / json_schema / max_turns / max_budget | 外部程序 → sid-code |
-| `interrupt` | 中断当前轮 | 外部程序 → sid-code |
-| `can_use_tool` | **权限请求**：sid-code 想调工具时问外部程序让不让 | sid-code → 外部程序 |
-| `set_model` | 运行时切模型 | 外部程序 → sid-code |
-| `get_context_usage` | 查上下文占用 | 外部程序 → sid-code |
-| `mcp_message` | MCP 跨进程消息桥接 | 双向 |
-
-控制请求带 `request_id`，响应（`control_response` 的 `success` / `error`）按 id 配对——
-这是标准的 request-response 通道，与数据消息的全序流复用一条 stdin/stdout。
-
-### 权限外部接管：`can_use_tool`
-
-这是 SDK 模式最独特的能力。`-p` 下权限只能靠预配 allow 规则或 `--dangerously-skip-permissions`，
-**没法在运行时由外部程序逐条决策**。SDK 模式可以：sid-code 每次要调工具前，发一条
-`can_use_tool` 控制请求（含 `tool_name` / `input` / `tool_use_id`），外部程序收到后回
-`allow` / `deny` / `always_allow`（`permission-bridge.ts` 的 `createSDKCanUseTool`）。
-
-这让外部程序能实现「按工具内容动态放行」——比如允许读文件但拦截写、
-允许跑测试但拦截 `git push`，且这些策略由外部程序自己定，不靠 sid-code 的配置。
-
-### 一个多轮交互的消息流示例
-
-外部程序 spawn sid-code 后，典型的多轮消息往返（混在一条 NDJSON 流里）：
-
-```text
-[外部 → sid-code]  control_request: initialize（注入 system_prompt、max_turns=10）
-[ sid-code → 外部] control_response: success
-[外部 → sid-code]  user 消息（第一条 prompt）
-[ sid-code → 外部] assistant 消息（含 thinking + text 块）
-[ sid-code → 外部] control_request: can_use_tool（想调 bash 跑 npm test）
-[外部 → sid-code] control_response: allow
-[ sid-code → 外部] assistant 消息（工具结果 + 继续推理）
-[ sid-code → 外部] result: success（这一轮的 total_cost_usd）
-[外部 → sid-code]  user 消息（第二轮 prompt，复用同一会话上下文）
-[ sid-code → 外部] assistant 消息
-[ sid-code → 外部] control_request: can_use_tool（想写文件）
-[外部 → sid-code] control_response: deny（外部程序按策略拒绝）
-[ sid-code → 外部] assistant 消息（模型收到拒绝后改路子）
-...
+```bash
+sid-code -p --input-format stream-json --output-format stream-json --verbose
 ```
 
-每一行都是一条 NDJSON。注意 `result` 只在**每轮结束**时出现，含 `total_cost_usd`——
-多轮场景里每轮都有一个 result，不是只有最后才有。
+stream-json 输入下首条 prompt 可以不写在命令行上，由宿主经 stdin 的第一条 `user` 消息送来。
 
-### SDK 能做而 `-p` 做不到的
+### 能做的三件事
 
-| 能力 | `-p` | SDK 双向流 |
+| 能力 | 方向 | 说明 |
 | --- | --- | --- |
-| 多轮编程式对话（复用上下文） | ❌ 一发一收 | ✅ 持续注入 |
-| 运行时权限逐条决策 | ❌ 只能预配 allow | ✅ `can_use_tool` 外部接管 |
-| 中途打断当前轮 | ❌（杀进程） | ✅ `interrupt` 控制请求 |
-| 运行时切模型 | ❌ 要重启 | ✅ `set_model` |
-| 查询上下文占用 | ❌ | ✅ `get_context_usage` |
-| MCP 跨进程桥接 | ❌ | ✅ `mcp_message` |
+| 多轮对话 | 宿主 → sid-code | 持续写 `user` 消息，复用同一会话上下文；**每轮**结束各出一条 `result`（含 `total_cost_usd`） |
+| `can_use_tool` 权限外部接管 | sid-code → 宿主 | 工具需要确认时问宿主，宿主回 `allow` / `deny` / `always_allow` |
+| `interrupt` 中断当前轮 | 宿主 → sid-code | 中止正在跑的这一轮，会话不结束，下一条 `user` 消息照常跑 |
 
-代价是：外部程序要自己管 NDJSON 解析、request_id 配对、进程生命周期。
-想最快上手，参考 `src/sdk/` 里的模块导出——`SDKQueryEngine` 和 `StructuredIO`
-是两个主要编排原语。
+数据消息与控制消息共用一条 NDJSON 流，靠 `type` 区分。控制请求带 `request_id`，
+响应（`control_response` 的 `success` / `error`）按 id 配对。
+
+其余控制请求（`initialize` / `set_model` / `get_context_usage` / `mcp_message`）**尚未实现**，
+发过来会收到 `control_response: error`，不会被静默丢弃。
+
+### `can_use_tool`：权限谁来批
+
+`-p` 下需要确认的工具无人可问，一律拒绝（fail-closed）。双向流下 sid-code 改为问宿主：
+
+```json
+{"type":"control_request","request_id":"…","request":{"subtype":"can_use_tool","tool_name":"write","input":{"file_path":"a.txt","content":"…"},"tool_use_id":"call_1"}}
+```
+
+宿主回：
+
+```json
+{"type":"control_response","response":{"subtype":"success","request_id":"…","response":{"behavior":"deny","tool_use_id":"call_1"}}}
+```
+
+几条边界：
+
+- 只问**需要确认**的工具。allow / deny 规则、`--permission-mode`、PreToolUse hook 照常先生效，
+  命中规则的调用不会打扰宿主。
+- 宿主回 `deny`、回 `error`、**60 秒不答**、关掉 stdin、或这一轮被 `interrupt`，都按**拒绝**处理，仍然 fail-closed。
+- `always_allow` 记为本会话内的放行，同一资源不再问。
+- 只有 `--input-format stream-json` 时才会问。只开 `--output-format stream-json` 时 stdin 没有回路，行为与 `-p` 相同。
+
+### `interrupt`
+
+```json
+{"type":"control_request","request_id":"i1","request":{"subtype":"interrupt"}}
+```
+
+sid-code 回 `{"type":"control_response","response":{"subtype":"success","request_id":"i1"}}`，
+当前轮随即结束并出一条 `result`。
+
+### 一次真实往返
+
+下面是 `packages/cli/tests/sdk/sdk-control-protocol-e2e.test.ts` 的消息序列（真实子进程 + 本地假模型）：
+
+```text
+[宿主 → sid-code] control_request: set_model
+[sid-code → 宿主] control_response: error（未实现）
+[宿主 → sid-code] user：写 denied.txt
+[sid-code → 宿主] control_request: can_use_tool（write, tool_use_id=call_deny_1）
+[宿主 → sid-code] control_response: deny
+[sid-code → 宿主] result（文件没有写出来，模型收到的是拒绝）
+[宿主 → sid-code] user：写 allowed.txt
+[sid-code → 宿主] control_request: can_use_tool（write）
+[宿主 → sid-code] control_response: allow
+[sid-code → 宿主] result（allowed.txt 已写出）
+```
+
+代价是宿主要自己做 NDJSON 解析、`request_id` 配对和进程生命周期管理。
+目前没有可 import 的 SDK 包，接入方式只有 spawn 子进程这一条。
 
 ## CI 里常用的参数
 
@@ -324,9 +296,13 @@ sid-code -p '分析 calc.ts。只输出 JSON，形如 {"language":"...","functio
 ```bash
 git diff main...HEAD > /tmp/pr.diff
 sid-code review --diff /tmp/pr.diff
+
+# 或者直接从 stdin 读 diff
+git diff main...HEAD | sid-code review
 ```
 
-`review` 是独立子命令，比自己拼 `-p` 提示词更省事——它内部走的是 `code-review` Skill。
+`review` 是独立子命令，比自己拼 `-p` 提示词更省事——它内部走的是 `code-review` Skill，
+提示词随二进制编译期嵌入。Markdown 报告写到 stdout，进度信息写到 stderr，可以直接重定向成文件。
 
 ## 权限怎么办
 
@@ -416,9 +392,10 @@ SID_CODE_MAX_SESSION_DURATION_MS=7200000 sid-code -p "..."   # 2 小时
 
 ### 退出码可靠吗
 
-不完全。有些错误路径会打印中文错误信息但退出码仍是 0（比如
-`sid-code mcp remove` 删不存在的 server）。脚本里别只看 `$?`，
-关键判断建议解析 `stream-json` 的 `result.is_error` 字段。
+子命令的报错路径会以非 0 退出（比如 `sid-code mcp remove` 删不存在的 server 退出码是 1），
+脚本里可以靠 `$?` 判断。但 `$?` 只能告诉你「成没成」，`-p` 跑完一轮时更多信息在结果里：
+解析 `stream-json` / `json` 输出里 `result` 的 `is_error`、`subtype`，能区分是模型报错、
+超出轮次还是正常结束，比只看 `$?` 信息更多。
 
 ### `-p` 和交互模式的行为差异
 

@@ -1,0 +1,144 @@
+{
+  "scenario": "S4",
+  "exitCode": 0,
+  "total": {
+    "bytes": 689,
+    "eraseScreen": 0,
+    "eraseScrollback": 0,
+    "syncBegin": 3,
+    "syncEnd": 3,
+    "altEnter": 0,
+    "altExit": 0,
+    "osc": {
+      "9": 1,
+      "21337": 1
+    }
+  },
+  "notes": {},
+  "steps": [
+    {
+      "label": "混排",
+      "buffer": "normal",
+      "cursor": {
+        "x": 0,
+        "y": 6,
+        "hidden": true
+      },
+      "modes": {
+        "bracketedPaste": false,
+        "mouseTracking": "none",
+        "sendFocus": false,
+        "wraparound": true
+      },
+      "metrics": {
+        "bytes": 229,
+        "eraseScreen": 0,
+        "eraseScrollback": 0,
+        "syncBegin": 1,
+        "syncEnd": 1,
+        "altEnter": 0,
+        "altExit": 0,
+        "osc": {}
+      },
+      "screen": [
+        "中文混排 ABC 一二三",
+        "emoji 👍 与 ZWJ 👨‍👩‍👧 家庭",
+        "组合字符 é（e + U+0301）",
+        "RTL: םלוע םולש mixed",
+        "很长的…名.ts",
+        "中文…"
+      ],
+      "scrollback": [],
+      "styled": []
+    },
+    {
+      "label": "挤到 9 列（宽字符被截）",
+      "buffer": "normal",
+      "cursor": {
+        "x": 0,
+        "y": 14,
+        "hidden": true
+      },
+      "modes": {
+        "bracketedPaste": false,
+        "mouseTracking": "none",
+        "sendFocus": false,
+        "wraparound": true
+      },
+      "metrics": {
+        "bytes": 311,
+        "eraseScreen": 0,
+        "eraseScrollback": 0,
+        "syncBegin": 1,
+        "syncEnd": 1,
+        "altEnter": 0,
+        "altExit": 0,
+        "osc": {}
+      },
+      "screen": [
+        "中文混排           ",
+        "ABC        Z   👨‍       ",
+        "一二三                  ",
+        "emoji 👍 ע    ש     d",
+        "与 ZWJ 👨‍👩‍👧   ",
+        " 家庭",
+        "组合字符",
+        "é（e +",
+        "U+0301）",
+        "RTL: םולש",
+        " םלוע",
+        "mixed",
+        "很长的…名.ts",
+        "中文…"
+      ],
+      "scrollback": [],
+      "styled": []
+    },
+    {
+      "label": "(退出后)",
+      "buffer": "normal",
+      "cursor": {
+        "x": 0,
+        "y": 14,
+        "hidden": false
+      },
+      "modes": {
+        "bracketedPaste": false,
+        "mouseTracking": "none",
+        "sendFocus": false,
+        "wraparound": true
+      },
+      "metrics": {
+        "bytes": 149,
+        "eraseScreen": 0,
+        "eraseScrollback": 0,
+        "syncBegin": 1,
+        "syncEnd": 1,
+        "altEnter": 0,
+        "altExit": 0,
+        "osc": {
+          "9": 1,
+          "21337": 1
+        }
+      },
+      "screen": [
+        "中文混排           ",
+        "ABC        Z   👨‍       ",
+        "一二三                  ",
+        "emoji 👍 ע    ש     d",
+        "与 ZWJ 👨‍👩‍👧   ",
+        " 家庭",
+        "组合字符",
+        "é（e +",
+        "U+0301）",
+        "RTL: םולש",
+        " םלוע",
+        "mixed",
+        "很长的…名.ts",
+        "中文…"
+      ],
+      "scrollback": [],
+      "styled": []
+    }
+  ]
+}

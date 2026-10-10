@@ -14,6 +14,7 @@ import type { Message } from "../llm/types.ts";
 import { getCapabilities } from "../llm/provider.ts";
 import { getLogger } from "../debug/logger.ts";
 import { recordSideCall } from "../trace/side-call-sink.ts";
+import { sendNonStreamingSideCall } from "../llm/side-call-nonstreaming.ts";
 import { SIDE_CALL_NO_THINK } from "../llm/side-call-timeout.ts";
 import { SIDE_CALL_TIMEOUT_REASON } from "../llm/errors.ts";
 
@@ -286,19 +287,11 @@ export class BashClassifier {
     try {
       // 优先非流式（更省、更直接）
       if (typeof provider.sendMessageNonStreaming === "function") {
-        const resp = await provider.sendMessageNonStreaming(sendParams, signal);
-        // 记录辅助调用用量
-        if (resp.usage) {
-          recordSideCall({
-            label: "bash-classifier",
-            model,
-            inputTokens: resp.usage.inputTokens ?? 0,
-            outputTokens: resp.usage.outputTokens ?? 0,
-            cacheReadTokens: (resp.usage as any).cacheReadInputTokens ?? 0,
-            cacheCreationTokens: (resp.usage as any).cacheCreationInputTokens ?? 0,
-            durationMs: 0,
-          });
-        }
+        // 缺陷 15–16：入账收口在 sendNonStreamingSideCall（无 usage 也记一次调用）
+        const resp = await sendNonStreamingSideCall(provider, sendParams, signal, {
+          querySource: "bash_classifier",
+          label: "bash-classifier",
+        });
         return extractText(resp.content);
       }
 

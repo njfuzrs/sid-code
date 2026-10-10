@@ -11,6 +11,7 @@ import {
   PRIORITY,
 } from "@sid-code/core/config/attachments.ts";
 import { buildSystemPrompt } from "@sid-code/core/config/system-prompt.ts";
+import { DYNAMIC_BOUNDARY } from "@sid-code/core/api/cache-strategy.ts";
 
 describe("buildMemoryInstructions", () => {
   test("包含 4 类分类法", () => {
@@ -196,6 +197,20 @@ describe("buildSystemPrompt — 记忆注入集成", () => {
     });
     expect(prompt).toContain("完成 Task 7");
     expect(prompt).toContain("session-memory");
+  });
+
+  test("缺陷 6：会话笔记进静态区（DYNAMIC_BOUNDARY 之前），不被每轮搬到动态区", () => {
+    // recalledMemories 未标 stable → 动态区非空，DYNAMIC_BOUNDARY 必然出现
+    const prompt = buildSystemPrompt({
+      tools: [],
+      sessionMemoryContent: "# Worklog\n- SM_MARKER",
+      recalledMemories: [{ filename: "a.md", content: "RECALL_MARKER" }],
+    });
+    const boundary = prompt.indexOf(DYNAMIC_BOUNDARY);
+    expect(boundary).toBeGreaterThan(-1);
+    expect(prompt.indexOf("SM_MARKER")).toBeLessThan(boundary);
+    expect(prompt.indexOf("RECALL_MARKER")).toBeGreaterThan(boundary);
+    expect(generateSessionMemoryAttachment("x")!.cacheStability).toBe("stable");
   });
 
   test("无记忆字段时不注入记忆内容", () => {

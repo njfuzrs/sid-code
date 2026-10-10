@@ -1,0 +1,141 @@
+{
+  "scenario": "S11",
+  "exitCode": 0,
+  "total": {
+    "bytes": 456,
+    "eraseScreen": 0,
+    "eraseScrollback": 0,
+    "syncBegin": 5,
+    "syncEnd": 5,
+    "altEnter": 0,
+    "altExit": 0,
+    "osc": {
+      "9": 2,
+      "21337": 2
+    }
+  },
+  "notes": {
+    "picker-registered": "true",
+    "after-picker-unmount": "false"
+  },
+  "steps": [
+    {
+      "label": "选择器",
+      "buffer": "normal",
+      "cursor": {
+        "x": 0,
+        "y": 1,
+        "hidden": true
+      },
+      "modes": {
+        "bracketedPaste": false,
+        "mouseTracking": "none",
+        "sendFocus": false,
+        "wraparound": true
+      },
+      "metrics": {
+        "bytes": 36,
+        "eraseScreen": 0,
+        "eraseScrollback": 0,
+        "syncBegin": 1,
+        "syncEnd": 1,
+        "altEnter": 0,
+        "altExit": 0,
+        "osc": {}
+      },
+      "screen": ["选择会话"],
+      "scrollback": [],
+      "styled": []
+    },
+    {
+      "label": "主 TUI",
+      "buffer": "normal",
+      "cursor": {
+        "x": 0,
+        "y": 2,
+        "hidden": true
+      },
+      "modes": {
+        "bracketedPaste": true,
+        "mouseTracking": "none",
+        "sendFocus": true,
+        "wraparound": true
+      },
+      "metrics": {
+        "bytes": 217,
+        "eraseScreen": 0,
+        "eraseScrollback": 0,
+        "syncBegin": 2,
+        "syncEnd": 2,
+        "altEnter": 0,
+        "altExit": 0,
+        "osc": {
+          "9": 1,
+          "21337": 1
+        }
+      },
+      "screen": ["选择会话", "输入框："],
+      "scrollback": [],
+      "styled": []
+    },
+    {
+      "label": "分片 DA1 回复 + 输入 hi",
+      "buffer": "normal",
+      "cursor": {
+        "x": 0,
+        "y": 2,
+        "hidden": true
+      },
+      "modes": {
+        "bracketedPaste": true,
+        "mouseTracking": "none",
+        "sendFocus": true,
+        "wraparound": true
+      },
+      "metrics": {
+        "bytes": 29,
+        "eraseScreen": 0,
+        "eraseScrollback": 0,
+        "syncBegin": 1,
+        "syncEnd": 1,
+        "altEnter": 0,
+        "altExit": 0,
+        "osc": {}
+      },
+      "screen": ["选择会话", "输入框：hi"],
+      "scrollback": [],
+      "styled": []
+    },
+    {
+      "label": "(退出后)",
+      "buffer": "normal",
+      "cursor": {
+        "x": 0,
+        "y": 2,
+        "hidden": false
+      },
+      "modes": {
+        "bracketedPaste": false,
+        "mouseTracking": "none",
+        "sendFocus": false,
+        "wraparound": true
+      },
+      "metrics": {
+        "bytes": 174,
+        "eraseScreen": 0,
+        "eraseScrollback": 0,
+        "syncBegin": 1,
+        "syncEnd": 1,
+        "altEnter": 0,
+        "altExit": 0,
+        "osc": {
+          "9": 1,
+          "21337": 1
+        }
+      },
+      "screen": ["选择会话", "输入框：hi"],
+      "scrollback": [],
+      "styled": []
+    }
+  ]
+}

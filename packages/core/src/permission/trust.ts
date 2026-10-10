@@ -5,13 +5,15 @@
  * 家目录的信任是 session-only，不持久化
  */
 
-import { join } from "path";
+import { dirname, join, resolve } from "path";
 import { homedir } from "os";
 import { existsSync, mkdirSync, readFileSync } from "fs";
 import { createHash } from "crypto";
 import { getLogger } from "../debug/logger.ts";
 import { sidPaths } from "../config/paths.ts";
 import { isGitTrackedFile } from "../config/settings/security.ts";
+import { getLegacyLocalSettingsPath, getSettingsFilePath } from "../config/settings/constants.ts";
+import { getProjectIdentityRoot } from "../config/project-bases.ts";
 
 /** 信任检查项 */
 export interface TrustCheckItem {
@@ -93,6 +95,11 @@ interface TrustedProjectsFile {
   projects: TrustedProject[];
 }
 
+/** 路径 → 记录键（与历史口径一致：对原始字符串做 sha256，不做 realpath） */
+function hashPath(p: string): string {
+  return createHash("sha256").update(p).digest("hex");
+}
+
 /** 信任记录持久化路径：~/.sid-code/state/trusted-projects.json */
 function trustedProjectsPath(): string {
   return sidPaths.trustedProjects();
@@ -102,12 +109,20 @@ function trustedProjectsPath(): string {
  * 工作区信任管理器
  */
 export class TrustManager {
+  /** 启动目录（B1）：危险配置从这里扫，与共享 settings.json 的加载口径一致 */
   private workspacePath: string;
+  /**
+   * P10：信任记录的键 = 项目身份根（B2，git root；非仓库退回 cwd）。此前 cli.ts / app.ts
+   * 用 cwd、worktree/hooks.ts 用 gitRoot，同一个仓库在根目录信任过、到子目录又判未信任，
+   * 而 worktree hook 判定读的又是另一把键。
+   */
+  private identityRoot: string;
   /** 当前会话的信任状态 */
   private sessionTrust = false;
 
   constructor(workspacePath: string) {
     this.workspacePath = workspacePath;
+    this.identityRoot = getProjectIdentityRoot(workspacePath);
   }
 
   /**
@@ -128,10 +143,15 @@ export class TrustManager {
    * 私有配置，把它也拉进来只会让每个用本机 hooks 的人每次改配置都被问一遍。
    */
   private untrustedSettingsFiles(): string[] {
-    const dir = join(this.workspacePath, ".sid-code");
-    const files = [join(dir, "settings.json")];
-    const local = join(dir, "settings.local.json");
-    if (isGitTrackedFile(local)) files.push(local);
+    const files = [join(this.workspacePath, ".sid-code", "settings.json")];
+    // P1b：local 文件可能有两份（git root 新位置 + 启动目录旧位置），被追踪的都要过信任门
+    const locals = [
+      getLegacyLocalSettingsPath(this.workspacePath),
+      getSettingsFilePath("localSettings", this.workspacePath),
+    ];
+    for (const local of locals) {
+      if (local && isGitTrackedFile(local)) files.push(local);
+    }
     return files;
   }
 
@@ -206,11 +226,10 @@ export class TrustManager {
     if (this.isHomeDirectory()) return false;
 
     // 检查持久化信任
-    const pathHash = this.getPathHash();
     const configHash = await this.getConfigHash();
     const trusted = await this.loadTrustedProjects();
 
-    const record = trusted.projects.find((p) => p.pathHash === pathHash);
+    const record = this.findRecord(trusted.projects);
     if (!record) return false;
 
     // 配置变更后需要重新信任
@@ -256,7 +275,7 @@ export class TrustManager {
 
     await this.saveTrustedProjects(trusted);
     this.sessionTrust = true;
-    log.info("TRUST", `工作区已信任: ${this.workspacePath}`);
+    log.info("TRUST", `工作区已信任: ${this.identityRoot}（启动目录 ${this.workspacePath}）`);
   }
 
   /**
@@ -266,7 +285,10 @@ export class TrustManager {
     this.sessionTrust = false;
     const pathHash = this.getPathHash();
     const trusted = await this.loadTrustedProjects();
-    trusted.projects = trusted.projects.filter((p) => p.pathHash !== pathHash);
+    const legacy = hashPath(this.workspacePath);
+    trusted.projects = trusted.projects.filter(
+      (p) => p.pathHash !== pathHash && p.pathHash !== legacy,
+    );
     await this.saveTrustedProjects(trusted);
   }
 
@@ -285,7 +307,7 @@ export class TrustManager {
       const file = trustedProjectsPath();
       if (!existsSync(file)) return false;
       const data = JSON.parse(readFileSync(file, "utf-8")) as TrustedProjectsFile;
-      const record = data.projects?.find((p) => p.pathHash === this.getPathHash());
+      const record = this.findRecord(data.projects ?? []);
       if (!record) return false;
       return record.configHash === this.getConfigHashSync();
     } catch {
@@ -320,15 +342,38 @@ export class TrustManager {
     return h.digest("hex").slice(0, 16);
   }
 
-  /** 是否为家目录 */
-  private isHomeDirectory(): boolean {
-    const home = homedir();
-    return this.workspacePath === home || this.workspacePath === home + "/";
+  /**
+   * P10：按「身份根 → 其祖先」的顺序找信任记录，最近的一条胜出（对齐 CC：任一祖先已信任即继承）。
+   * 末尾再认一次旧口径（启动目录 cwd 本身的键），迁移前写下的记录不失效。
+   *
+   * 与 CC 的差别是刻意保留的：继承来的记录**仍要过 configHash**（配置内容变了要重新确认），
+   * CC 的信任是锁存布尔值、没有这一层。放掉它等于让祖先目录的一次信任为其下任意仓库的
+   * 危险配置背书。
+   */
+  private findRecord(projects: TrustedProject[]): TrustedProject | undefined {
+    const byHash = new Map(projects.map((p) => [p.pathHash, p]));
+    const home = resolve(homedir());
+    let dir = resolve(this.identityRoot);
+    while (true) {
+      // 家目录及其上层不参与继承：在家目录点过「信任」只是 session-only，不该被子目录继承
+      if (dir === home) break;
+      const hit = byHash.get(hashPath(dir));
+      if (hit) return hit;
+      const parent = dirname(dir);
+      if (parent === dir) break;
+      dir = parent;
+    }
+    return byHash.get(hashPath(this.workspacePath));
   }
 
-  /** 获取路径 hash */
+  /** 是否为家目录（按身份根判：非仓库的家目录启动、仓库根恰是家目录都算） */
+  private isHomeDirectory(): boolean {
+    return resolve(this.identityRoot) === resolve(homedir());
+  }
+
+  /** 获取路径 hash（写入一律用身份根） */
   private getPathHash(): string {
-    return createHash("sha256").update(this.workspacePath).digest("hex");
+    return hashPath(this.identityRoot);
   }
 
   /** 获取配置内容 hash（用于检测配置变更） */

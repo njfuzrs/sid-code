@@ -9,7 +9,7 @@
 import * as path from "path";
 import { writeFileSync } from "fs";
 import type { LocalCommandModule, LocalCommandResult, CommandContext } from "../../types.ts";
-import { setClipboard } from "@sid-code/tui-renderer/termio/osc.ts";
+import { setClipboard } from "../../../ui/render-port/termio.ts";
 import { serializeToMarkdown } from "./serialize-md.ts";
 import { serializeToJson } from "./serialize-json.ts";
 import { getVersion } from "@sid-code/shared/version.ts";

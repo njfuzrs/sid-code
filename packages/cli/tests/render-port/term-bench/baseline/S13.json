@@ -1,0 +1,178 @@
+{
+  "scenario": "S13",
+  "exitCode": 0,
+  "total": {
+    "bytes": 771,
+    "eraseScreen": 1,
+    "eraseScrollback": 0,
+    "syncBegin": 1,
+    "syncEnd": 1,
+    "altEnter": 1,
+    "altExit": 2,
+    "osc": {
+      "9": 1,
+      "52": 1,
+      "21337": 1
+    }
+  },
+  "notes": {
+    "selected": "第一行 可以被选中的文本\n第二行 ano",
+    "double-click": "another"
+  },
+  "steps": [
+    {
+      "label": "alt 初始",
+      "buffer": "alternate",
+      "cursor": {
+        "x": 0,
+        "y": 23,
+        "hidden": true
+      },
+      "modes": {
+        "bracketedPaste": true,
+        "mouseTracking": "any",
+        "sendFocus": true,
+        "wraparound": true
+      },
+      "metrics": {
+        "bytes": 187,
+        "eraseScreen": 1,
+        "eraseScrollback": 0,
+        "syncBegin": 0,
+        "syncEnd": 0,
+        "altEnter": 1,
+        "altExit": 0,
+        "osc": {}
+      },
+      "screen": ["第一行 可以被选中的文本", "第二行 another line", "第三行"],
+      "scrollback": [],
+      "styled": []
+    },
+    {
+      "label": "拖选",
+      "buffer": "alternate",
+      "cursor": {
+        "x": 0,
+        "y": 23,
+        "hidden": true
+      },
+      "modes": {
+        "bracketedPaste": true,
+        "mouseTracking": "any",
+        "sendFocus": true,
+        "wraparound": true
+      },
+      "metrics": {
+        "bytes": 128,
+        "eraseScreen": 0,
+        "eraseScrollback": 0,
+        "syncBegin": 0,
+        "syncEnd": 0,
+        "altEnter": 0,
+        "altExit": 0,
+        "osc": {}
+      },
+      "screen": [
+        "第一行 可以被选中的文本                                                         ",
+        "第二行 another line",
+        "第三行"
+      ],
+      "scrollback": [],
+      "styled": [
+        {
+          "y": 0,
+          "runs": [
+            {
+              "text": "第一行 可以被选中的文本                                                         ",
+              "style": "r"
+            }
+          ]
+        },
+        {
+          "y": 1,
+          "runs": [
+            {
+              "text": "第二行 ano",
+              "style": "r"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "label": "双击",
+      "buffer": "alternate",
+      "cursor": {
+        "x": 0,
+        "y": 23,
+        "hidden": true
+      },
+      "modes": {
+        "bracketedPaste": true,
+        "mouseTracking": "any",
+        "sendFocus": true,
+        "wraparound": true
+      },
+      "metrics": {
+        "bytes": 226,
+        "eraseScreen": 0,
+        "eraseScrollback": 0,
+        "syncBegin": 0,
+        "syncEnd": 0,
+        "altEnter": 0,
+        "altExit": 0,
+        "osc": {
+          "52": 1
+        }
+      },
+      "screen": [
+        "第一行 可以被选中的文本                                                         ",
+        "第二行 another line",
+        "第三行"
+      ],
+      "scrollback": [],
+      "styled": [
+        {
+          "y": 1,
+          "runs": [
+            {
+              "text": "another",
+              "style": "r"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "label": "(退出后)",
+      "buffer": "normal",
+      "cursor": {
+        "x": 0,
+        "y": 0,
+        "hidden": false
+      },
+      "modes": {
+        "bracketedPaste": false,
+        "mouseTracking": "none",
+        "sendFocus": false,
+        "wraparound": true
+      },
+      "metrics": {
+        "bytes": 230,
+        "eraseScreen": 0,
+        "eraseScrollback": 0,
+        "syncBegin": 1,
+        "syncEnd": 1,
+        "altEnter": 0,
+        "altExit": 2,
+        "osc": {
+          "9": 1,
+          "21337": 1
+        }
+      },
+      "screen": [],
+      "scrollback": [],
+      "styled": []
+    }
+  ]
+}

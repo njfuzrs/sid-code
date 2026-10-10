@@ -49,17 +49,25 @@ export class GitCloneWorkspaceProvider implements WorkspaceProvider {
     const prefix = join(this.baseDir, "ws-");
     this.workdir = mkdtempSync(prefix);
 
-    const repoUrl = opts.repo.startsWith("http")
+    // 带协议的完整 URL 原样用（https / ssh / file，测试与自建 Git 服务走这里）；
+    // 否则按 GitHub 的 owner/repo 拼。worker 传入的是 `${owner}/${repo}`，GitHub 登录名
+    // 不含 ':'，不会被误判成 URL。
+    const repoUrl = /^[a-z][a-z0-9+.-]*:\/\//i.test(opts.repo)
       ? opts.repo
       : `https://github.com/${opts.repo}.git`;
 
     // 用数组参数（execFileSync）而非字符串拼接：opts.branch / repoUrl 溯源到
     // GitHub PR webhook 载荷（外部可控），字符串插值进 shell 会导致命令注入
     // （分支名含 `;`、`$()`、空格等）。数组参数不经 shell 解析，天然免疫。
-    execFileSync("git", ["clone", "--depth", "1", "--branch", opts.branch, repoUrl, this.workdir], {
-      stdio: "pipe",
-      timeout: 60_000,
-    });
+    // B43：不能用 --depth 1。浅克隆里没有 PR 分支与 base 的 merge-base，worker 的
+    // `git diff origin/<base>...HEAD` 必然失败，兜底的 `HEAD~1` 在单提交历史里也不存在，
+    // 整个 job 在 fork 子进程之前就报错（实测）。blob:none 拿全部提交历史、按需取文件，
+    // 克隆开销接近浅克隆，三点 diff 与指定 commit checkout 都可用。
+    execFileSync(
+      "git",
+      ["clone", "--filter=blob:none", "--no-tags", "--branch", opts.branch, repoUrl, this.workdir],
+      { stdio: "pipe", timeout: 120_000 },
+    );
 
     if (opts.commit) {
       execFileSync("git", ["checkout", opts.commit], {

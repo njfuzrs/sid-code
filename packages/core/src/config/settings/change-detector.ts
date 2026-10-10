@@ -12,12 +12,12 @@
 import { watch, type FSWatcher } from "fs";
 import { dirname, basename } from "path";
 import { EventEmitter } from "events";
-import { resetSettingsCache } from "./cache.ts";
+import { getCachedSource, resetSettingsCache } from "./cache.ts";
 import { consumeInternalWrite } from "./internal-writes.ts";
 import type { SettingSource } from "./constants.ts";
 import { getLogger } from "../../debug/logger.ts";
 
-/** 变更事件发射器。事件名 'change'，回调参数为 SettingSource。 */
+/** 变更事件发射器。事件名 'change'，回调参数为 (SettingSource, 文件路径?)。 */
 export const settingsChanged = new EventEmitter();
 
 const FILE_STABILITY_THRESHOLD_MS = 1000; // 等待文件写入稳定
@@ -78,7 +78,7 @@ function handleChange(path: string, source: SettingSource): void {
         pendingDeletions.delete(path);
       }
 
-      fanOut(source);
+      fanOut(source, path);
     }, FILE_STABILITY_THRESHOLD_MS),
   );
 }
@@ -93,16 +93,20 @@ function handlePossibleDeletion(path: string, source: SettingSource): void {
       pendingDeletions.delete(path);
       // 宽限期过后仍未重建 → 真正的删除/重建
       if (consumeInternalWrite(path, INTERNAL_WRITE_WINDOW_MS)) return;
-      fanOut(source);
+      fanOut(source, path);
     }, DELETION_GRACE_MS),
   );
 }
 
 /** fanOut：单生产者模式——先清缓存，再通知订阅者 */
-function fanOut(source: SettingSource): void {
+function fanOut(source: SettingSource, path?: string): void {
+  // HC24：清缓存前先留一份该来源的旧值，供 ConfigChange hook 算 changed_keys、
+  // 以及 hook 拦截（decision:block）时把缓存回退到旧值。没缓存过（undefined）就没有可回退的基线。
+  const previous = getCachedSource(source);
   resetSettingsCache();
   getLogger().info("SETTINGS", `检测到 ${source} 变更，缓存已刷新`);
-  settingsChanged.emit("change", source);
+  // 第二参数 path 供 ConfigChange hook 的 file_path；第三参数是旧值快照。老订阅者只读第一参数，不受影响
+  settingsChanged.emit("change", source, path, previous);
 }
 
 /** 清理所有监听器与定时器 */

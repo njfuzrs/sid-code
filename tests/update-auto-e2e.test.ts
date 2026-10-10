@@ -40,7 +40,9 @@ function makeRelease(): FakeRelease {
   mkdirSync(versionDir, { recursive: true });
   const tarRoot = join(root, "payload", "sid-code");
   mkdirSync(tarRoot, { recursive: true });
-  writeFileSync(join(tarRoot, "sid-code"), "#!/bin/bash\necho new\n", { mode: 0o700 });
+  writeFileSync(join(tarRoot, "sid-code"), "#!/bin/bash\necho new\n", {
+    mode: 0o700,
+  });
   const tarball = join(
     versionDir,
     `sid-code-${version}-${process.platform}-${process.arch === "arm64" ? "arm64" : "x64"}.tar.gz`,
@@ -131,7 +133,10 @@ describe("自动更新离线安装链路", () => {
       expect(result.stdout).toContain("目标版本: v0.1.604（通道: stable）");
       expect(result.stdout).toContain("安装完成！v0.1.604");
     } finally {
-      rmSync(join(fixture.releaseDir, "0.1.604"), { recursive: true, force: true });
+      rmSync(join(fixture.releaseDir, "0.1.604"), {
+        recursive: true,
+        force: true,
+      });
       rmSync(fixture.home, { recursive: true, force: true });
     }
   });
@@ -141,21 +146,124 @@ describe("自动更新离线安装链路", () => {
     try {
       writeFileSync(join(fixture.releaseDir, "latest.txt"), "0.1.603\n");
       writeFileSync(join(fixture.releaseDir, "beta.txt"), "0.1.604\n");
-      const { result } = runInstall(fixture.releaseDir, fixture.home, { SID_CODE_CHANNEL: "beta" });
+      const { result } = runInstall(fixture.releaseDir, fixture.home, {
+        SID_CODE_CHANNEL: "beta",
+      });
       if (result.status !== 0) throw new Error(result.stderr || result.stdout);
       expect(result.status).toBe(0);
       expect(result.stdout).toContain("通道: beta");
       expect(result.stdout).toContain("目标版本: v0.1.604");
+      // 通道标记：二进制据此在 --version / TUI 显示「beta 预发布版」
+      const marker = join(fixture.home, ".local/share/sid-code/versions/0.1.604/.channel");
+      expect(readFileSync(marker, "utf8").trim()).toBe("beta");
     } finally {
       rmSync(fixture.home, { recursive: true, force: true });
       rmSync(fixture.releaseDir, { recursive: true, force: true });
     }
   });
 
+  // promote 场景：同一版本目录先以 beta 装、再以 stable 装（目录被复用），标记必须翻回 stable，
+  // 否则 promote 后的稳定版用户会一直看到 beta 标。
+  test("同一版本先 beta 后 stable 安装，通道标记被覆盖为 stable", () => {
+    const fixture = makeRelease();
+    try {
+      const marker = join(fixture.home, ".local/share/sid-code/versions/0.1.604/.channel");
+      const beta = runInstall(fixture.releaseDir, fixture.home, {
+        SID_CODE_CHANNEL: "beta",
+      });
+      if (beta.result.status !== 0) throw new Error(beta.result.stderr || beta.result.stdout);
+      expect(readFileSync(marker, "utf8").trim()).toBe("beta");
+
+      const stable = runInstall(fixture.releaseDir, fixture.home);
+      if (stable.result.status !== 0) throw new Error(stable.result.stderr || stable.result.stdout);
+      expect(stable.result.stdout).toContain("直接复用");
+      expect(readFileSync(marker, "utf8").trim()).toBe("stable");
+    } finally {
+      rmSync(fixture.home, { recursive: true, force: true });
+      rmSync(fixture.releaseDir, { recursive: true, force: true });
+    }
+  });
+
+  // T4 端到端：已装 beta（.channel=beta）→ 通道判定为 beta → **真实的** spawnBackgroundInstall
+  // 带这个通道去跑 install.sh → install.sh 读 beta.txt 装上新号，且 .channel 仍是 beta。
+  // latest.txt 故意指向一个不存在的版本：若 installer 退回写死 stable，安装必然失败，这条测试变红
+  // （变异自证见下一条）。
+  async function autoUpdateWith(channel: "stable" | "beta") {
+    const fixture = makeRelease();
+    writeFileSync(join(fixture.releaseDir, "latest.txt"), "0.1.599\n"); // 服务器上没有这个目录
+    writeFileSync(join(fixture.releaseDir, "beta.txt"), "0.1.604\n");
+    const configDir = join(fixture.home, ".sid-code");
+    const lockDir = join(configDir, "updates", "lock");
+    mkdirSync(lockDir, { recursive: true });
+    const installerModule = join(ROOT, "packages/core/src/update/installer.ts");
+    const runner = `
+      const { spawnBackgroundInstall } = await import(${JSON.stringify(installerModule)});
+      spawnBackgroundInstall("0.1.604", "0.1.603", ${JSON.stringify(lockDir)}, ${JSON.stringify(channel)});
+    `;
+    const r = spawnSync("bun", ["--eval", runner], {
+      encoding: "utf8",
+      env: {
+        ...process.env,
+        HOME: fixture.home,
+        SHELL: "/bin/bash",
+        SID_CONFIG_DIR: configDir,
+        SID_CODE_INSTALL_URL: `file://${INSTALL_TEMPLATE}`,
+        RELEASE_BASE: `file://${fixture.releaseDir}`,
+        SID_CODE_CHANNEL: "stable", // 继承值故意相反：必须被调用方传入的通道覆盖
+      },
+    });
+    if (r.status !== 0) throw new Error(r.stderr || r.stdout);
+    const statePath = join(configDir, "updates", "state.json");
+    const deadline = Date.now() + 20_000;
+    while (Date.now() < deadline) {
+      try {
+        const st = JSON.parse(readFileSync(statePath, "utf8"));
+        if (st.lastAttempt?.status) return { fixture, state: st };
+      } catch {
+        /* 还没写完 */
+      }
+      await new Promise((res) => setTimeout(res, 100));
+    }
+    throw new Error("自动更新子进程超时未写 state.json");
+  }
+
+  test("beta 安装的自动更新读 beta.txt 装上新号，.channel 仍为 beta", async () => {
+    const { resolveReleaseChannel } = await import(
+      join(ROOT, "packages/shared/src/release-channel.ts")
+    );
+    // 已装的 beta：版本目录旁 .channel=beta → 判定为 beta（自动更新据此选通道）
+    const installed = mkdtempSync(join(tmpdir(), "sid-installed-beta-"));
+    writeFileSync(join(installed, ".channel"), "beta\n");
+    const channel = resolveReleaseChannel("release", installed);
+    rmSync(installed, { recursive: true, force: true });
+    expect(channel).toBe("beta");
+
+    const { fixture, state } = await autoUpdateWith(channel);
+    try {
+      expect(state.lastAttempt.status).toBe("success");
+      const marker = join(fixture.home, ".local/share/sid-code/versions/0.1.604/.channel");
+      expect(readFileSync(marker, "utf8").trim()).toBe("beta");
+    } finally {
+      rmSync(join(fixture.home, ".."), { recursive: true, force: true });
+    }
+  });
+
+  test("变异自证：通道若写死 stable，同一场景必然安装失败", async () => {
+    const { fixture, state } = await autoUpdateWith("stable");
+    try {
+      expect(state.lastAttempt.status).toBe("failed");
+    } finally {
+      rmSync(join(fixture.home, ".."), { recursive: true, force: true });
+    }
+  });
+
   test("下载失败时保持旧入口不变", () => {
     const fixture = makeRelease();
     try {
-      rmSync(join(fixture.releaseDir, "0.1.604"), { recursive: true, force: true });
+      rmSync(join(fixture.releaseDir, "0.1.604"), {
+        recursive: true,
+        force: true,
+      });
       const { result, oldPath } = runInstall(fixture.releaseDir, fixture.home);
       expect(result.status).not.toBe(0);
       expect(readFileSync(oldPath, "utf8")).toContain("old");

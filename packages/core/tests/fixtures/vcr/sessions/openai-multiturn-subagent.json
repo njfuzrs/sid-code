@@ -1,0 +1,149 @@
+{
+  "description": "OpenAI 族（deepseek）：read→grep→子代理→edit→收尾，5 主轮含 1 次子代理（2 轮）；隐式缓存只回 cached_tokens",
+  "family": "openai-chat",
+  "model": "deepseek-chat",
+  "prompt": "把 config.ts 里的超时从 30s 改成 60s",
+  "turns": [
+    {
+      "agent": "main",
+      "response": {
+        "content": [
+          {
+            "type": "tool_use",
+            "id": "call_01",
+            "name": "read",
+            "input": {
+              "path": "src/config.ts"
+            }
+          }
+        ],
+        "stop_reason": "tool_use"
+      },
+      "usage": {
+        "input_tokens": 9000,
+        "output_tokens": 30
+      }
+    },
+    {
+      "agent": "main",
+      "response": {
+        "content": [
+          {
+            "type": "tool_use",
+            "id": "call_02",
+            "name": "grep",
+            "input": {
+              "pattern": "30000"
+            }
+          }
+        ],
+        "stop_reason": "tool_use"
+      },
+      "usage": {
+        "input_tokens": 9400,
+        "output_tokens": 25,
+        "cache_read_input_tokens": 8960
+      }
+    },
+    {
+      "agent": "main",
+      "response": {
+        "content": [
+          {
+            "type": "tool_use",
+            "id": "call_03",
+            "name": "sub_agent",
+            "input": {
+              "type": "explore",
+              "description": "查调用方",
+              "prompt": "列出读取 config.timeout 的位置"
+            }
+          }
+        ],
+        "stop_reason": "tool_use"
+      },
+      "usage": {
+        "input_tokens": 9700,
+        "output_tokens": 50,
+        "cache_read_input_tokens": 9344
+      }
+    },
+    {
+      "agent": "sub",
+      "response": {
+        "content": [
+          {
+            "type": "tool_use",
+            "id": "call_s1",
+            "name": "grep",
+            "input": {
+              "pattern": "config.timeout"
+            }
+          }
+        ],
+        "stop_reason": "tool_use"
+      },
+      "usage": {
+        "input_tokens": 3000,
+        "output_tokens": 20
+      }
+    },
+    {
+      "agent": "sub",
+      "response": {
+        "content": [
+          {
+            "type": "text",
+            "text": "2 处，均读配置。"
+          }
+        ],
+        "stop_reason": "end_turn"
+      },
+      "usage": {
+        "input_tokens": 3200,
+        "output_tokens": 30,
+        "cache_read_input_tokens": 2944
+      }
+    },
+    {
+      "agent": "main",
+      "response": {
+        "content": [
+          {
+            "type": "tool_use",
+            "id": "call_04",
+            "name": "edit",
+            "input": {
+              "path": "src/config.ts",
+              "old": "30000",
+              "new": "60000"
+            }
+          }
+        ],
+        "stop_reason": "tool_use"
+      },
+      "usage": {
+        "input_tokens": 10100,
+        "output_tokens": 40,
+        "cache_read_input_tokens": 9664
+      }
+    },
+    {
+      "agent": "main",
+      "response": {
+        "content": [
+          {
+            "type": "text",
+            "text": "已改为 60s。"
+          }
+        ],
+        "stop_reason": "end_turn"
+      },
+      "usage": {
+        "input_tokens": 10300,
+        "output_tokens": 20,
+        "cache_read_input_tokens": 10048
+      }
+    }
+  ]
+}

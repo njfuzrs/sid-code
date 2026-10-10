@@ -42,6 +42,7 @@ import {
   formatModelLatencyLine,
   type ModelLatencyStats,
 } from "./latency-by-model.ts";
+import { createProviderResolver } from "./provider-resolver.ts";
 
 // ─────────────────────────── 路径 ───────────────────────────
 
@@ -352,6 +353,90 @@ export interface JitDigestStats {
  * `advanceRatio` 是最终验收口径：推进次数 / 清单项数。方案定的目标是 ≥ 0.5
  * （做完一半以上的项时至少标记过一次），< 0.5 意味着仍在攒着最后一起勾。
  */
+/**
+ * 2026-10-08「一次判死」根治 §4.5：恢复口径。取数源全部是 `RetryTelemetry`：
+ *   - 放弃：`type=recovery_give_up`（`attempts` / `giveUpReason` / `family`）
+ *   - 重试：`type=retry`（带 `family`）；救回：同一 (model, agentId) 上 retry 之后的首个 `stream_completed`
+ *
+ * 分母写死（铁律 3）：
+ *   - `oneShotKillCount` 的分母 = `giveUps`（以失败结束的调用数）。目标恒为 0。
+ *   - `recoveryByFamily[f].rate` = 救回数 ÷ 进入该族的调用数（救回 + 该族放弃）。
+ */
+export interface RecoveryDigestStats {
+  /** 以失败结束的调用数（recovery_give_up 条数） */
+  giveUps: number;
+  /** attempts==1 且原因不在 I1-例外闭集里的放弃次数（北极星：恒为 0） */
+  oneShotKillCount: number;
+  /** 因时间预算放弃（S3，单独跟踪，不计入 one-shot） */
+  deadlineGiveUpCount: number;
+  /** 放弃原因分布 */
+  giveUpReasons: Record<string, number>;
+  /** 各错误族的重试后救回率 */
+  recoveryByFamily: Record<string, { entered: number; recovered: number; rate: number }>;
+  /** 认不出的错误条数（unrecognized_error 台账） */
+  unrecognized: number;
+}
+
+/** I1-例外闭集（与 llm/recovery-policy.ts 的 I1_EXCEPTIONS 同步；deadline 单独报） */
+const I1_EXEMPT_GIVE_UP = new Set(["user_abort", "server_declined", "background_529", "deadline"]);
+
+export function aggregateRecoveryStats(
+  events: Array<{ event?: string; data?: Record<string, unknown> }>,
+): RecoveryDigestStats | null {
+  const out: RecoveryDigestStats = {
+    giveUps: 0,
+    oneShotKillCount: 0,
+    deadlineGiveUpCount: 0,
+    giveUpReasons: {},
+    recoveryByFamily: {},
+    unrecognized: 0,
+  };
+  // (model, agentId) → 正在重试中的族（retry 之后、结束之前）
+  const pending = new Map<string, string>();
+  const fam = (f: string) => (out.recoveryByFamily[f] ??= { entered: 0, recovered: 0, rate: 0 });
+  let seen = false;
+  for (const e of events) {
+    if (e.event !== "RetryTelemetry" || !e.data) continue;
+    const d = e.data;
+    const key = `${d.model ?? ""}|${d.agentId ?? ""}`;
+    switch (d.type) {
+      case "retry":
+        seen = true;
+        if (typeof d.family === "string") pending.set(key, d.family);
+        break;
+      case "stream_completed": {
+        const f = pending.get(key);
+        if (f) {
+          fam(f).entered++;
+          fam(f).recovered++;
+          pending.delete(key);
+        }
+        break;
+      }
+      case "recovery_give_up": {
+        seen = true;
+        out.giveUps++;
+        const reason = String(d.giveUpReason ?? "unknown");
+        out.giveUpReasons[reason] = (out.giveUpReasons[reason] ?? 0) + 1;
+        if (reason === "deadline") out.deadlineGiveUpCount++;
+        if (d.attempts === 1 && !I1_EXEMPT_GIVE_UP.has(reason)) out.oneShotKillCount++;
+        if (typeof d.family === "string") fam(d.family).entered++;
+        pending.delete(key);
+        break;
+      }
+      case "unrecognized_error":
+        seen = true;
+        out.unrecognized++;
+        break;
+    }
+  }
+  if (!seen) return null;
+  for (const v of Object.values(out.recoveryByFamily)) {
+    v.rate = v.entered > 0 ? v.recovered / v.entered : 0;
+  }
+  return out;
+}
+
 export interface TodoDigestStats {
   /** 清单被推进的次数（`TodoProgressAdvanced` 条数 = writeVersion 增长次数） */
   advances: number;
@@ -359,8 +444,15 @@ export interface TodoDigestStats {
   total: number;
   /** 会话终态已完成项数 */
   completed: number;
-  /** 会话终态未完成项数（> 0 说明收尾时仍有没做完/没标记的项） */
+  /** 会话终态未完成项数（模型可推进的 pending + in_progress；> 0 说明收尾时仍有没做完/没标记的项） */
   unfinished: number;
+  /**
+   * 会话终态等待用户 / 外部条件的项数（blocked，2026-10-06 起埋点；老事件无字段计 0）。
+   * 与 unfinished 分开：blocked 收尾是正当的"交给用户"，不该与"没做完"混在一个数里。
+   */
+  blocked: number;
+  /** 「标完成后又返工」提醒次数（`TodoReworkDetected`）——提前打勾的直接计数，越低越好 */
+  reworks: number;
   /**
    * 实时性比值 = advances / total。方案验收线 ≥ 0.5。
    * total 为 0（从未建过清单）时为 undefined —— 不是 0，二者含义不同：
@@ -525,6 +617,25 @@ export interface ProcessPathologyStats {
   retryWastedRatio?: number;
   /** retryWastedRatio > 0.20 */
   retryWastedPathological: boolean;
+
+  /**
+   * B47：计费恒等式左边 —— 应当产生计费事件的建连数。
+   *
+   * 口径：`HttpConnected` 中 status 为 2xx 且 content_type 不是 `text/html` 的条数。
+   * 两类排除都不是"钱没记上"：非 2xx 的 Responses 路径在 provider 判 `!response.ok`
+   * 后直接返回（厂商不计费）；`text/html` 是网关伪装成 200 的错误页，被 Content-Type
+   * 守卫在解析前拦下。把它们算进左边会让每次网关报错都触发一条假异常。
+   */
+  billableConnections: number;
+  /**
+   * B47：计费恒等式右边 —— `BilledRequest` 事件数（`billing-sink` 去重后落盘）。
+   *
+   * `undefined` = 本会话一条都没有，即**老轨迹**（B47 之前的版本不落这个事件）。
+   * 此时不判恒等式：把 0 当右边会让全部历史会话报红。
+   */
+  billedRequests?: number;
+  /** billedRequests 已知且 ≠ billableConnections */
+  billingIdentityBroken: boolean;
 }
 
 /**
@@ -606,6 +717,8 @@ export interface Digest {
    * （老会话 / 整场没建过清单）。
    */
   todo?: TodoDigestStats;
+  /** 2026-10-08：LLM 错误恢复口径。无重试 / 放弃事件时 undefined。 */
+  recovery?: RecoveryDigestStats;
   /**
    * P1-8：过程病态度量（6 项）。始终产出（不像上面几项那样依赖专用事件）——
    * 六项全部从 traj + 通用事件派生，"全部健康"本身就是有意义的结论，
@@ -658,6 +771,18 @@ export interface SessionLevelMetrics {
    * 那正是"HITL 没被触发过"的诚实表达，不是缺数据。
    */
   e2e_hitl_n: number;
+  /**
+   * 缺陷 7：等人确认的墙钟（来自 events.jsonl 的 `PermissionDecision`，`prompted=true`
+   * 且带 `duration_ms` 的那些）。`had_hitl` 只是一轮一个布尔，只能整轮剔除；
+   * 这里给的是「减掉那一段」所需的时长，否则工具耗时 p99 量的是人的犹豫。
+   *
+   * 次数与有时长的样本数分开给：弹窗后被 abort 的决策可能不带 duration_ms，
+   * 混成一个 n 会让 total 看起来比真实的少而无从察觉。
+   */
+  hitl_prompts: number;
+  hitl_wait_n: number;
+  hitl_wait_total_ms: number;
+  hitl_wait_p95_ms?: number;
   /** 是否触发过四环防线（hypothesis_register / hypothesis_challenge / verify 子代理） */
   defenseTriggered: boolean;
   /** P2-14：session.traj 是否损坏（1/56 实测损坏率此前完全不可见） */
@@ -1835,6 +1960,27 @@ export function buildDigest(ref: SessionRef, full: boolean, paths: DigestPaths):
   // 缺失所致）。digest 读 events.jsonl 的 SubagentStart/Stop 配对成 span，按相邻间隔判串行，
   // 关联 status 成败——让任何消费者（模型/人）无需回 raw.jsonl 交叉验证即可下结论，
   // 消灭 §8.2 的"全部 SUCCESS"误判。
+  // ── B17：计划对齐度（fidelity）——每份计划一行 L0 事实 ──
+  // 从前 getFidelityReport() 生产零调用，官网写的「能看到对齐度」是空的。
+  // 只报计数不下判断：偏离多是「计划写得粗」还是「执行跑偏」，轨迹给不出真值。
+  for (const f of aggregatePlanFidelity(events)) {
+    anomalies.push({
+      layer: "L0",
+      severity: "low",
+      kind: "plan_fidelity",
+      detail: `计划 ${f.planStepCount} 步 / 实际 ${f.actualToolCallCount} 次调用 / 偏离 ${f.offPlanCount} 次`,
+      provenance: [
+        {
+          sourceFile: eventsPath,
+          lineRef: "event=PlanFidelity（每份计划取末条快照）",
+          rawValue: `steps=${f.planStepCount} actual=${f.actualToolCallCount} off_plan=${f.offPlanCount}`,
+          mtime: fileMtimeIso(eventsPath),
+        },
+      ],
+      ...(f.planFile ? { pointer: f.planFile } : {}),
+    });
+  }
+
   const subAgents = buildSubAgentSummary(events);
   if (subAgents && subAgents.total > 0) {
     // L0 事实：几成几败（客观计数，带出处）
@@ -1987,6 +2133,9 @@ export function buildDigest(ref: SessionRef, full: boolean, paths: DigestPaths):
   // 补的是"采了不看"这个缺口：三个事件此前只写不读，缺陷定性只能靠间接证据。
   const todo = aggregateTodoStats(events);
 
+  // ── 2026-10-08：LLM 错误恢复口径（one_shot_kill_count 北极星 + 各族救回率）──
+  const recovery = aggregateRecoveryStats(events);
+
   return {
     sessionId: ref.id,
     model: ledger?.model || meta.model || "unknown",
@@ -2015,6 +2164,7 @@ export function buildDigest(ref: SessionRef, full: boolean, paths: DigestPaths):
     jit: jit ?? undefined,
     prefixBreaks: prefixBreaks ?? undefined,
     todo: todo ?? undefined,
+    recovery: recovery ?? undefined,
     pathology,
     // P0-2：始终产出（不像 jit/todo 那样依赖专用事件）—— 样本为 0 时 n=0 是有意义的
     // 结论（"这个会话没有 TTFT 样本"），整节消失则无法区分"没样本"与"该版本没接线"
@@ -2157,7 +2307,7 @@ export function renderHuman(d: Digest, opts: RenderOptions = {}): string {
           ? (((ps.requests - ps.failed - ps.timedOut) / ps.requests) * 100).toFixed(0)
           : "N/A";
       // P0-1：TTFT 现取自纯净的 first_content（首内容延迟，不含重试/生成污染）
-      const ttft = ps.ttft_p50 ? ` TTFT(首字节)P50=${(ps.ttft_p50 / 1000).toFixed(1)}s` : "";
+      const ttft = ps.ttft_p50 ? ` TTFT(首内容)P50=${(ps.ttft_p50 / 1000).toFixed(1)}s` : "";
       // P0-1：新增生成耗时分位，让"慢在生成"这一主因显式可见
       const gen = ps.gen_p50 ? ` 生成P50=${(ps.gen_p50 / 1000).toFixed(1)}s` : "";
       // Bug B：avgLatencyMs 是整轮 API 耗时（含握手+生成+重试），标注清楚，不是网关握手延迟
@@ -2217,6 +2367,18 @@ export function renderHuman(d: Digest, opts: RenderOptions = {}): string {
       L.push(
         c("gray", `  其中 ${m.e2e_hitl_n}/${m.e2e_n} 轮含权限确认等待`) +
           c("gray", " —— 评估 agent 自身速度时应排除这些样本"),
+      );
+    }
+    // 缺陷 7：给出「减掉那一段」所需的时长，而不只是「整轮剔除」的计数
+    if (m.hitl_prompts > 0) {
+      L.push(
+        c("gray", `  等人确认: ${m.hitl_prompts} 次，`) +
+          c(
+            "gray",
+            m.hitl_wait_n > 0
+              ? `计时 ${m.hitl_wait_n} 次共 ${s(m.hitl_wait_total_ms)} P95=${s(m.hitl_wait_p95_ms)}`
+              : "均无计时（弹窗后被中断）",
+          ),
       );
     }
     // 口径自证：端到端必然 ≥ 首字节。违反说明两个口径的基准点不一致——
@@ -2300,6 +2462,33 @@ export function renderHuman(d: Digest, opts: RenderOptions = {}): string {
     }
   }
 
+  // 2026-10-08：LLM 错误恢复 section。one_shot_kill 非 0 标红：那就是本缺陷复发。
+  if (d.recovery) {
+    const r = d.recovery;
+    L.push("");
+    L.push(
+      c("bold", "错误恢复:") +
+        " " +
+        c(r.oneShotKillCount > 0 ? "red" : "green", `一次判死 ${r.oneShotKillCount}`) +
+        c("gray", ` / 放弃 ${r.giveUps}`) +
+        (r.deadlineGiveUpCount > 0 ? c("yellow", `  时间预算放弃 ${r.deadlineGiveUpCount}`) : "") +
+        (r.unrecognized > 0 ? c("gray", `  未识别措辞 ${r.unrecognized}`) : ""),
+    );
+    const fams = Object.entries(r.recoveryByFamily);
+    if (fams.length > 0) {
+      L.push(
+        c("gray", "  救回率: ") +
+          fams
+            .map(([f, v]) => `${f} ${v.recovered}/${v.entered} (${(v.rate * 100).toFixed(0)}%)`)
+            .join(", "),
+      );
+    }
+    const reasons = Object.entries(r.giveUpReasons);
+    if (reasons.length > 0) {
+      L.push(c("gray", "  放弃原因: ") + reasons.map(([k, v]) => `${k}×${v}`).join(", "));
+    }
+  }
+
   // 2026-08-02：todo 实时性 section。验收标准就是这一节能直接答出
   // 「清单推进了几次 / 回注响了几次 / 收尾兜底拦了几次」，不用再手工 grep events.jsonl。
   if (d.todo) {
@@ -2316,7 +2505,13 @@ export function renderHuman(d: Digest, opts: RenderOptions = {}): string {
       c("bold", "todo 实时性:") +
         " " +
         c(ratioColor, `推进 ${t.advances} 次 / ${t.total} 项  ${ratioText}`) +
-        (t.total > 0 ? c("gray", `  终态: ${t.completed} 完成 / ${t.unfinished} 未完成`) : ""),
+        (t.total > 0
+          ? c(
+              "gray",
+              `  终态: ${t.completed} 完成 / ${t.unfinished} 未完成` +
+                (t.blocked > 0 ? ` / ${t.blocked} 等待用户` : ""),
+            )
+          : ""),
     );
     if (ratio !== undefined && ratio < 0.5) {
       // 点破而不只是标黄：这条线是缺陷本体的判据，读者需要知道该怎么读它。
@@ -2338,6 +2533,13 @@ export function renderHuman(d: Digest, opts: RenderOptions = {}): string {
     if (t.remindersAfterCompact > 0) nagBits.push(`其中压缩旁路 ${t.remindersAfterCompact} 次`);
     if (t.maxTurnsSinceWrite != null) nagBits.push(`最长停滞 ${t.maxTurnsSinceWrite} 轮未碰清单`);
     L.push(c("gray", "  L2 回注: ") + nagBits.join(c("gray", " / ")));
+    // 提前打勾的直接计数：标了 completed 之后又改了同一批文件。
+    if (t.reworks > 0) {
+      L.push(
+        c("yellow", `  ⚠ 已完成项被返工 ${t.reworks} 次`) +
+          c("gray", "（标 completed 后又修改了它对应的文件，清单曾把未改好的工作显示为已完成）"),
+      );
+    }
     // gate 触发次数越低越好：它高 = 实时化没生效、还在靠收尾硬拦（方案明确要它退回兜底位）。
     if (t.gateRetries > 0) {
       const gateColor: Color = t.gateRetries >= 3 ? "red" : "yellow";
@@ -2554,21 +2756,8 @@ export function aggregateProviderStats(
    */
   const bucketer = new TtftCacheBucketer();
 
-  // 按 model 名启发式推断 provider（映射兜底：first_content 无 provider、AfterModelRaw 未覆盖该 model 时用）
-  const inferProviderFromModel = (model: string): string =>
-    model.includes("claude") ? "anthropic" : model ? "openai" : "unknown";
-
-  // 第一遍：从 AfterModelRaw 建立 model→provider 映射（first_content 只带 model，需靠此归因）
-  const modelToProvider = new Map<string, string>();
-  for (const e of events) {
-    if (e.event === "AfterModelRaw" && e.data) {
-      const provider = (e.data.provider as string) || "";
-      const model = (e.data.model as string) || "";
-      if (provider && model && !modelToProvider.has(model)) modelToProvider.set(model, provider);
-    }
-  }
-  const resolveProvider = (model: string): string =>
-    modelToProvider.get(model) || inferProviderFromModel(model);
+  // first_content / TimeoutFired 只带 model：统一走共享 resolver（真值映射优先，缺陷 37）
+  const resolveProvider = createProviderResolver(events);
 
   // 第二遍：聚合各维度
   for (const e of events) {
@@ -2619,15 +2808,11 @@ export function aggregateProviderStats(
     // 从 TimeoutFired 事件补充超时计数
     if (e.event === "TimeoutFired" && e.data) {
       const model = (e.data.model as string) || "";
-      // TimeoutFired 没有 provider 字段，用 model 推断
+      // TimeoutFired 不带 provider 字段 ⇒ 必须走与 first_content 同一个 resolver。
+      // 曾另起「只认 deepseek/claude，其余 unknown」一套（缺陷 37）：unknown 桶无分母，
+      // glm/qwen/kimi 的超时从所有健康判据里消失，且真 provider 成功率虚高。
       if (model) {
-        const stats = ensure(
-          model.includes("deepseek")
-            ? "openai"
-            : model.includes("claude")
-              ? "anthropic"
-              : "unknown",
-        );
+        const stats = ensure(resolveProvider(model));
         stats.timedOut++;
       }
     }
@@ -2636,7 +2821,7 @@ export function aggregateProviderStats(
   // P2-3：遍历完再配对（completed 可能后到，边遍历边配会漏掉一半）
   const buckets = bucketer.finalize();
 
-  // P1（§0.1b）：TTFT/TTFB 按 model 分组。复用上面已建好的 modelToProvider 映射
+  // P1（§0.1b）：TTFT/TTFB 按 model 分组。复用上面的共享 resolver
   //（不在模块内自己再扫一遍 AfterModelRaw —— 两处各建一份映射必然漂移）。
   const latencyByModel = aggregateLatencyByModel(events, resolveProvider, percentile);
 
@@ -2699,6 +2884,8 @@ export function aggregateSessionMetrics(
   const ttfts: number[] = [];
   const e2es: number[] = [];
   let hitlSamples = 0;
+  let hitlPrompts = 0;
+  const hitlWaits: number[] = [];
   let defenseTriggered = false;
   let compactions = 0;
 
@@ -2736,9 +2923,18 @@ export function aggregateSessionMetrics(
       }
     }
 
+    // 缺陷 7：HITL 等待时长。只认 prompted=true —— 规则直放/直拒的 duration 是鉴权开销，
+    // 不是人在想，混进来会把「人的犹豫」稀释成毫秒级。
+    if (e.event === "PermissionDecision" && e.data.prompted === true) {
+      hitlPrompts++;
+      const ms = e.data.duration_ms;
+      if (typeof ms === "number" && ms >= 0) hitlWaits.push(ms);
+    }
+
     if (e.event === "PreCompact") compactions++;
   }
 
+  const sortedHitl = [...hitlWaits].sort((a, b) => a - b);
   const sortedTtfts = [...ttfts].sort((a, b) => a - b);
   const sortedE2es = [...e2es].sort((a, b) => a - b);
 
@@ -2752,6 +2948,10 @@ export function aggregateSessionMetrics(
     e2e_p99: percentile(sortedE2es, 0.99),
     e2e_n: sortedE2es.length,
     e2e_hitl_n: hitlSamples,
+    hitl_prompts: hitlPrompts,
+    hitl_wait_n: sortedHitl.length,
+    hitl_wait_total_ms: sortedHitl.reduce((a, b) => a + b, 0),
+    hitl_wait_p95_ms: percentile(sortedHitl, 0.95),
     defenseTriggered,
     trajCorrupt: opts.trajCorrupt,
     compactions,
@@ -3055,6 +3255,36 @@ export function aggregateJitStats(
   };
 }
 
+/** B17：一份计划的对齐度快照（`PlanFidelity` 事件的末条）。 */
+export interface PlanFidelityStats {
+  planFile: string;
+  planStepCount: number;
+  actualToolCallCount: number;
+  offPlanCount: number;
+}
+
+/**
+ * 聚合 `PlanFidelity` 事件：app 每批工具调用后落一条**累计快照**，所以同一份计划只取末条，
+ * 按首次出现顺序输出。累加会把 N 次快照算成 N 倍调用数。
+ */
+export function aggregatePlanFidelity(
+  events: Array<{ event?: string; data?: Record<string, unknown> }>,
+): PlanFidelityStats[] {
+  const byPlan = new Map<string, PlanFidelityStats>();
+  for (const e of events) {
+    if (e.event !== "PlanFidelity" || !e.data) continue;
+    const planFile = typeof e.data.plan_file === "string" ? e.data.plan_file : "";
+    // Map.set 覆盖已有键不改变插入顺序：值取末条，位置留在首次出现处
+    byPlan.set(planFile, {
+      planFile,
+      planStepCount: num(e.data.plan_step_count),
+      actualToolCallCount: num(e.data.actual_tool_call_count),
+      offPlanCount: num(e.data.off_plan_count),
+    });
+  }
+  return [...byPlan.values()];
+}
+
 /**
  * 聚合 todo 实时性度量（2026-08-02，方案 §8.3）。
  *
@@ -3085,6 +3315,8 @@ export function aggregateTodoStats(
   const total = lastAdvance ? num(lastAdvance.total) : 0;
   const completed = lastAdvance ? num(lastAdvance.completed) : 0;
   const unfinished = lastAdvance ? num(lastAdvance.unfinished) : 0;
+  const blocked = lastAdvance ? num(lastAdvance.blocked) : 0;
+  const reworks = events.filter((e) => e.event === "TodoReworkDetected").length;
 
   // 相邻推进间隔：按 absoluteTurn 差。缺 absoluteTurn 的老事件跳过，不用 turn 兜底——
   // turn 每条用户消息回绕（会算出负数间隔），混算比不算更糟。
@@ -3107,6 +3339,8 @@ export function aggregateTodoStats(
     total,
     completed,
     unfinished,
+    blocked,
+    reworks,
     // total=0 时留 undefined：见接口注释，"没建清单"与"建了没推进"必须可区分
     advanceRatio: total > 0 ? advanced.length / total : undefined,
     advanceGaps,
@@ -3125,8 +3359,30 @@ export function aggregateTodoStats(
  * `bg_task_get` 见 tool/task-get.ts、`task_list`/`task_get` 是结构化任务清单侧的
  * 两个同类）。**不要凭印象往里加名字**：多算一个就会让 pollRatio 虚高，
  * 而这个比值是"该不该看这次会话"的分诊主键。
+ *
+ * ⚠️ 缺陷 31：与 `agent/loop-detection.ts` 的 `CONDITIONALLY_EXEMPT_TOOLS` **刻意不同源**，
+ * 两者回答的问题不同：
+ * - 本集合：「这次调用算不算轮询」—— 离线统计，只看工具名，决定 `pollRatio` 的分子；
+ * - 条件豁免：「这次调用要不要放过循环检测」—— 运行时决策，按入参判。
+ * 已登记的差异见 {@link POLL_TOOLS_VS_CONDITIONAL_EXEMPT}：`task_output` 是取结果不是查状态，
+ * 不算轮询；`task_list`/`task_get`（结构化清单）算轮询，但不在条件豁免里（它们走 EXEMPT_TOOLS 无条件豁免）。
+ * 改任何一侧都要过 `tests/trace/poll-tools-alignment.test.ts`：差集必须等于这里登记的例外，
+ * 否则名单变一个元素，`pollRatio` 曲线就整体平移且没人知道。
  */
-const POLL_TOOLS = new Set(["bg_task_list", "bg_task_get", "task_list", "task_get"]);
+export const POLL_TOOLS: ReadonlySet<string> = new Set([
+  "bg_task_list",
+  "bg_task_get",
+  "task_list",
+  "task_get",
+]);
+
+/** POLL_TOOLS 与 CONDITIONALLY_EXEMPT_TOOLS 的**已登记**差异（缺陷 31 的对账门禁读它） */
+export const POLL_TOOLS_VS_CONDITIONAL_EXEMPT = {
+  /** 算轮询、但不在条件豁免里：结构化任务清单侧的查询工具 */
+  onlyInPoll: ["task_list", "task_get"],
+  /** 在条件豁免里、但不算轮询：取后台任务**结果**，不是查状态 */
+  onlyInConditionalExempt: ["task_output"],
+} as const;
 
 /** 编辑类工具名（editLatency 的触发工具）。核对自 tool/{edit,write,notebook-edit}.ts 的 name getter。 */
 const EDIT_TOOLS = new Set(["edit", "write", "notebook_edit"]);
@@ -3261,6 +3517,23 @@ export function computeProcessPathology(
       ? retryWastedTokens / recordedInput
       : undefined;
 
+  // ── 指标 7（B47）：计费恒等式 `可计费建连数 == BilledRequest 数` ──
+  // 只在单测里断言的恒等式等于没在线上验证过：这里逐会话复算，不等就进 anomaly。
+  // 它抓"新增调用链绕过入账"与"上报点只覆盖部分出口"；抓不住"绕过 provider 自发 fetch"
+  // （两边一起少），那条由 scripts/pricing-reconcile.ts 对官方账单兜底。
+  const billableConnections = events.filter((e) => {
+    if (e.event !== "HttpConnected") return false;
+    const d = e.data as any;
+    const status = typeof d?.status === "number" ? d.status : 200;
+    if (status < 200 || status >= 300) return false;
+    const ct = typeof d?.content_type === "string" ? d.content_type.toLowerCase() : "";
+    return !ct.includes("text/html");
+  }).length;
+  const billedCount = events.filter((e) => e.event === "BilledRequest").length;
+  const billedRequests = billedCount > 0 ? billedCount : undefined;
+  const billingIdentityBroken =
+    billedRequests !== undefined && billedRequests !== billableConnections;
+
   return {
     pollRatio,
     pollCalls,
@@ -3287,6 +3560,9 @@ export function computeProcessPathology(
     retryWastedRatio,
     retryWastedPathological:
       retryWastedRatio !== undefined && retryWastedRatio > RETRY_WASTED_RATIO_THRESHOLD,
+    billableConnections,
+    billedRequests,
+    billingIdentityBroken,
   };
 }
 
@@ -3397,6 +3673,27 @@ function describePathology(
         lossy: true, // 均值估算，非精确重发量：见 ProcessPathologyStats.retryWastedTokens 注释
       },
     );
+  }
+  if (p.billingIdentityBroken) {
+    // 定级 high（其余病态项是 medium）：这不是"过程可疑"，是钱的账对不上 ——
+    // 少了是漏记（账单会高于自报），多了是重复上报（去重失效）。两个方向都是确证缺陷。
+    const diff = p.billedRequests! - p.billableConnections;
+    out.push({
+      layer: "L0",
+      severity: "high",
+      kind: "billing_identity_broken",
+      detail:
+        `计费恒等式不成立：可计费建连 ${p.billableConnections} 次，计费事件 ${p.billedRequests} 条` +
+        `（${diff < 0 ? `少 ${-diff} 条 = 有调用链的钱没记上` : `多 ${diff} 条 = 同一 fetch 被重复计费`}）`,
+      provenance: [
+        {
+          sourceFile: eventsPath,
+          lineRef: "event=HttpConnected（status 2xx 且非 text/html）数 vs event=BilledRequest 数",
+          rawValue: `billable_conn=${p.billableConnections} billed=${p.billedRequests}`,
+          mtime: fileMtimeIso(eventsPath),
+        },
+      ],
+    });
   }
   return out;
 }

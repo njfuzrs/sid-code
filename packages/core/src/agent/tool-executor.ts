@@ -15,6 +15,7 @@
  * 与 query/tool-executor.ts 主循环口径一致（含 duration_ms、blocking 决策、输入修改）。
  */
 
+import type { ToolFailureKind } from "../hook/types.ts";
 import type { ContentBlock } from "../llm/types.ts";
 import type { Registry as ToolRegistry } from "../tool/registry.ts";
 import { isAbortError } from "../llm/errors.ts";
@@ -23,7 +24,14 @@ import { validateToolInput } from "../tool/input-validator.ts";
 import type { HookSystem } from "../hook/system.ts";
 import type { Checker, PermissionRequest } from "../permission/types.ts";
 import type { ToolProgressData } from "../tool/types.ts";
-import { buildHookModifiedNotice, interpretPreToolUse } from "../query/tool-executor.ts";
+import {
+  buildHookModifiedNotice,
+  hookFeedbackText,
+  interpretPreToolUse,
+} from "../query/tool-executor.ts";
+import { fireToolSideEvents } from "../query/tool-side-events.ts";
+import { getCwd } from "../bootstrap/state.ts";
+import { hookAgentOptions } from "./hook-agent-context.ts";
 import {
   partitionToolCalls,
   getMaxToolConcurrency,
@@ -37,6 +45,7 @@ import { resolveResultDisplayMode } from "../tool/result-display-mode.ts";
 // 在 `permission_deny` 上完全隐身。走门面而非直调 logEvent —— 门面强制脱敏工具名
 // （MCP 工具名含用户私有服务名），业务侧拿不到裸传接口。
 import {
+  logPermissionAllow,
   logPermissionDeny,
   logToolCall,
   logToolSuccess,
@@ -224,13 +233,15 @@ async function runWithConcurrencyLimit<T>(
  *
  * fire-and-forget + 全程 catch：这一层是可观测性补齐，绝不能成为新的失败源。
  */
-function firePostToolUseFailure(
+export function firePostToolUseFailure(
   hookSystem: HookSystem | undefined,
-  block: ContentBlock & { type: "tool_use" },
+  block: { name: string; id: string; input: unknown },
   reason: string,
   toolInput?: Record<string, unknown>,
   /** 调度器视角墙钟耗时；缺它则失败工具的 span 无耗时属性（见主循环同名 helper 注释） */
   durationMs?: number,
+  /** Q7：validation / hook_blocked 只送 runtime hook（见主循环同名 helper） */
+  kind: ToolFailureKind = "exception",
 ): void {
   if (!hookSystem) return;
   const log = getLogger();
@@ -241,13 +252,162 @@ function firePostToolUseFailure(
         (toolInput ?? block.input) as Record<string, unknown>,
         reason,
         block.id,
-        durationMs !== undefined ? { duration_ms: durationMs } : undefined,
+        {
+          ...(durationMs !== undefined ? { duration_ms: durationMs } : {}),
+          failure_kind: kind,
+          ...hookAgentOptions(),
+        },
       )
       ?.catch?.((e: any) =>
         log.error("SUBAGENT:HOOK", `post_tool_use_failure hook 失败: ${e?.message ?? e}`),
       );
   } catch (e: any) {
     log.error("SUBAGENT:HOOK", `post_tool_use_failure 触发异常（忽略）: ${e?.message ?? e}`);
+  }
+}
+
+/**
+ * B33：子代理路径 fire PermissionDenied hook，与主循环 `query/tool-executor.ts` 同名 helper 同策略：
+ * 不 await、异常吞掉 —— 通知类 hook 不能拖慢或打断拒绝结果回传。
+ *
+ * 子代理结构上没有弹窗通道，所以 source 只有两档：deny 规则命中记 "rule"，
+ * 其余（ask 被 dontAsk 降级、fail-closed 兜底）记 "auto" —— 两者处置相反，hook 侧要能分开。
+ * 主循环接线后子代理仍漏着，等于「权限被拒通知到 IM」只覆盖一半调用路径。
+ */
+export function firePermissionDenied(
+  hookSystem: HookSystem | undefined,
+  toolName: string,
+  toolInput: Record<string, unknown> | undefined,
+  reason: string,
+  source: "rule" | "auto",
+  toolUseId?: string,
+): void {
+  if (!hookSystem) return;
+  const log = getLogger();
+  try {
+    void hookSystem
+      .firePermissionDeniedEvent?.(
+        toolName,
+        toolInput ?? {},
+        reason,
+        source,
+        toolUseId,
+        hookAgentOptions(),
+      )
+      ?.catch?.((e: any) =>
+        log.error("SUBAGENT:HOOK", `permission_denied hook 失败: ${e?.message ?? e}`),
+      );
+  } catch (e: any) {
+    log.error("SUBAGENT:HOOK", `permission_denied 触发异常（忽略）: ${e?.message ?? e}`);
+  }
+}
+
+/**
+ * HC18（子代理侧）：工具执行完后 **await** PostToolUse / PostToolUseFailure，把 hook 的
+ * additionalContext 与 exit 2 / decision:"block" 的 reason 回灌进工具结果。
+ *
+ * 与主循环 `query/tool-executor.ts` 成功路径同一口径（同一个 hookFeedbackText 判据、
+ * 同样的 `[Hook 附加上下文]` / `[Hook 反馈]` 前缀）。原先这里 fire-and-forget：
+ * 按 CC 写的 lint hook 在子代理里跑了、拦了，子代理模型却永远看不到——它改完文件
+ * 就汇报「完成」，主代理据此转述给用户，错误被两层转述洗白。
+ *
+ * 进程内（executeSingleTool）与 spawn（sub-agent.ts executeToolForChild）两条路径共用，
+ * 不各写一份：两份逐字重复的回灌逻辑必然漂移（本仓 P0-1 已踩过同型坑）。
+ *
+ * hook 自身失败只记日志、返回原输出：回灌是增强，不能把成功的工具结果变成异常。
+ */
+export async function runPostToolHooks(
+  hookSystem: HookSystem | undefined,
+  args: {
+    toolName: string;
+    toolInput: Record<string, unknown>;
+    toolUseId: string | undefined;
+    output: string;
+    isError: boolean;
+    durationMs: number;
+  },
+): Promise<string> {
+  if (!hookSystem) return args.output;
+  const log = getLogger();
+  try {
+    const agent = hookAgentOptions();
+    // Q7：工具返回 isError → 只 fire PostToolUseFailure（对齐 CC）；成功才 fire PostToolUse
+    const post = args.isError
+      ? await hookSystem.firePostToolUseFailureEvent(
+          args.toolName,
+          args.toolInput,
+          args.output,
+          args.toolUseId,
+          {
+            duration_ms: args.durationMs,
+            failure_kind: "tool_error",
+            tool_output: args.output,
+            ...agent,
+          },
+        )
+      : await hookSystem.firePostToolUseEvent(
+          args.toolName,
+          args.toolInput,
+          { output: args.output, isError: false },
+          false,
+          args.toolUseId,
+          { duration_ms: args.durationMs, ...agent },
+        );
+    let out = args.output;
+    const ctx = post?.finalOutput?.getAdditionalContext?.();
+    if (ctx) out = out + "\n\n[Hook 附加上下文]\n" + ctx;
+    const feedback = hookFeedbackText(post);
+    if (feedback) {
+      log.info("SUBAGENT:HOOK", `PostToolUse hook 反馈回灌到 ${args.toolName} 结果`);
+      out = out + "\n\n[Hook 反馈]\n" + feedback;
+    }
+    return out;
+  } catch (e: any) {
+    log.error("SUBAGENT:HOOK", `post_tool_use hook 失败: ${e?.message ?? e}`);
+    return args.output;
+  }
+}
+
+/**
+ * 工具抛异常时 await PostToolUseFailure，返回要回灌的 hook 反馈（无则 undefined）。
+ *
+ * is_interrupt 按**真实中断**判：signal 已 abort，或异常本身是 abort 类。原先恒 false——
+ * 用户按 ESC 中断子代理时，CC 语义下按 is_interrupt 跳过告警的 hook 会把每次中断都当故障报。
+ * 判据比主循环多看一眼 signal：子代理的 abort 经 AbortSignal.any 合并而来，
+ * 工具可能以普通 Error（如 "子进程被终止"）收尾，只看异常名会漏判。
+ */
+export async function runToolExceptionHook(
+  hookSystem: HookSystem | undefined,
+  args: {
+    toolName: string;
+    toolInput: Record<string, unknown>;
+    toolUseId: string | undefined;
+    error: unknown;
+    durationMs: number;
+    signal?: AbortSignal;
+  },
+): Promise<string | undefined> {
+  if (!hookSystem) return undefined;
+  const log = getLogger();
+  const message = (args.error as { message?: string })?.message ?? String(args.error);
+  try {
+    const r = await hookSystem.firePostToolUseFailureEvent(
+      args.toolName,
+      args.toolInput,
+      message,
+      args.toolUseId,
+      {
+        failure_kind: "exception",
+        // 抛异常路径用纯执行耗时（与成功路径 duration_ms 同口径）：慢工具卡很久才抛，正是要看的那个数。
+        duration_ms: args.durationMs,
+        is_interrupt: args.signal?.aborted === true || isAbortError(args.error),
+        ...hookAgentOptions(),
+      },
+    );
+    return hookFeedbackText(r);
+  } catch (e: any) {
+    log.error("SUBAGENT:HOOK", `post_tool_use_failure hook 失败: ${e?.message ?? e}`);
+    return undefined;
   }
 }
 
@@ -291,6 +451,7 @@ async function executeSingleTool(
         block.name,
         block.input as Record<string, unknown>,
         block.id,
+        hookAgentOptions(),
       );
       // G3：与主循环共享同一 PreToolUse 解读（block/permissionDecision/updatedInput）
       const interp = interpretPreToolUse(preToolResult, block.input);
@@ -303,6 +464,7 @@ async function executeSingleTool(
           `Hook 阻止执行: ${interp.blockReason ?? "无原因"}`,
           effectiveInput,
           Date.now() - toolStartedAt,
+          "hook_blocked",
         );
         // 漏斗 1：hook 阻止是一次真实调度失败（主循环同口径）。权限拒绝不在这里——
         // 那条走漏斗 2。call + failure 成对，避免分母只有 failure 没有 call。
@@ -363,14 +525,15 @@ async function executeSingleTool(
         context: "subagent",
         reasonType: decision.decisionReason?.type,
       });
-      // Pre/Post 配对：权限拒绝也要补 Failure 收尾。
-      firePostToolUseFailure(
+      firePermissionDenied(
         hookSystem,
-        block,
-        `权限拒绝: ${reason}`,
+        block.name,
         effectiveInput,
-        Date.now() - toolStartedAt,
+        reason,
+        decision.decisionReason?.type === "rule" ? "rule" : "auto",
+        block.id,
       );
+      // Q7：权限拒绝只 fire PermissionDenied（对齐 CC），span 由 runtime 消费者按它关闭。
       return {
         type: "tool_result",
         tool_use_id: block.id,
@@ -378,6 +541,15 @@ async function executeSingleTool(
         is_error: true,
       };
     }
+    // 缺陷 5：allow 与 deny 必须覆盖同一组路径，否则子代理的拒绝率 = deny/(0+deny) 恒 100%。
+    // needsPrompt:false：子代理没有弹窗通道，能走到这里的都是规则/模式直接放行。
+    logPermissionAllow(block.name, {
+      source: "rule",
+      needsPrompt: false,
+      durationMs: Date.now() - toolStartedAt,
+      context: "subagent",
+      reasonType: decision.decisionReason?.type,
+    });
   } else {
     // B0（分级 fail-closed）：未配置权限检查器时，只读工具放行，写类工具直接拒绝。
     //
@@ -408,14 +580,15 @@ async function executeSingleTool(
         context: "subagent",
         reasonType: "other",
       });
-      // Pre/Post 配对：fail-closed 拒绝同样要补 Failure 收尾。
-      firePostToolUseFailure(
+      firePermissionDenied(
         hookSystem,
-        block,
-        "权限拒绝: 未配置权限检查器，写类操作默认拒绝（fail-closed）",
+        block.name,
         effectiveInput,
-        Date.now() - toolStartedAt,
+        "未配置权限检查器，写类操作默认拒绝（fail-closed）",
+        "auto",
+        block.id,
       );
+      // Q7：同上，fail-closed 拒绝只 fire PermissionDenied。
       return {
         type: "tool_result",
         tool_use_id: block.id,
@@ -423,6 +596,15 @@ async function executeSingleTool(
         is_error: true,
       };
     }
+    // 缺陷 5：fail-closed 放过的只读工具也是一次 allow。source:"other" 与上面的拒绝同理 ——
+    // 没有规则参与，是缺检查器时的兜底档。
+    logPermissionAllow(block.name, {
+      source: "other",
+      needsPrompt: false,
+      durationMs: Date.now() - toolStartedAt,
+      context: "subagent",
+      reasonType: "other",
+    });
   }
 
   // 漏斗 1 · 工具：权限通过之后才记 call。权限拒绝走漏斗 2（logPermissionDeny），
@@ -447,6 +629,7 @@ async function executeSingleTool(
       validation.message,
       effectiveInput,
       Date.now() - toolStartedAt,
+      "validation",
     );
     logToolFailure(block.name, {
       kind: "invalid_input",
@@ -471,12 +654,27 @@ async function executeSingleTool(
     const progressCallback = onProgress
       ? (event: ToolProgressData) => onProgress(block.name, block.id, event)
       : undefined;
+    const cwdBefore = getCwd();
     const result = await tool.execute(
       { ...cleanedInput, _agentId: "sub-agent" },
       signal,
       progressCallback,
     );
     const elapsed = Date.now() - startTime;
+    // HC24（子代理侧）：CwdChanged / TaskCreated / TaskCompleted。原先只在主循环发，
+    // 子代理里 cd / task_create 对 hook 不可见。cwd 读 getCwd()：带 task.cwd 的子代理跑在
+    // withAgentCwd 里，bash 的 cd 写回的是它自己的 ALS cwd（W16），getCwd 读到的也是它，
+    // 前后对比得出的正是「这个子代理换了目录」；不带 task.cwd 时 cd 改的是全局 cwd，
+    // 那确实是会话级目录变化，同样该发。
+    fireToolSideEvents(
+      hookSystem,
+      block.name,
+      cleanedInput,
+      result,
+      cwdBefore,
+      getCwd(),
+      hookAgentOptions()?.agent,
+    );
 
     // LSP 文件变更通知（子代理侧补齐）：edit/write 成功后同步最新内容给 LSP，
     // 复用主循环同一套 syncFileToLSP 编排（clearForFile + didChange + didSave）。
@@ -507,19 +705,15 @@ async function executeSingleTool(
     // ——函数形态的实现（skill）会查 SkillManager，重复调用是白花的开销。
     const displayMode = resolveResultDisplayMode(tool, effectiveInput);
 
-    // post_tool_use hook（驱动 execute_tool span，带真实 duration_ms）
-    if (hookSystem) {
-      hookSystem
-        .firePostToolUseEvent(
-          block.name,
-          effectiveInput,
-          { output: truncated, isError: result.isError },
-          result.isError,
-          block.id,
-          { duration_ms: elapsed },
-        )
-        .catch((e: any) => log.error("SUBAGENT:HOOK", `post_tool_use hook 失败: ${e.message}`));
-    }
+    // post_tool_use hook（驱动 execute_tool span，带真实 duration_ms）；await 并回灌反馈
+    const withHookFeedback = await runPostToolHooks(hookSystem, {
+      toolName: block.name,
+      toolInput: effectiveInput,
+      toolUseId: block.id,
+      output: truncated,
+      isError: !!result.isError,
+      durationMs: elapsed,
+    });
 
     if (result.isError) {
       logToolFailure(block.name, {
@@ -538,7 +732,10 @@ async function executeSingleTool(
     return {
       type: "tool_result",
       tool_use_id: block.id,
-      content: hookModifiedNotice ? hookModifiedNotice + "\n\n" + truncated : truncated,
+      // 改参告知前置（与主循环同序：先看到「参数被改过」，再读结果与 hook 反馈）
+      content: hookModifiedNotice
+        ? hookModifiedNotice + "\n\n" + withHookFeedback
+        : withHookFeedback,
       is_error: result.isError,
       // 结构化 diff 透传(edit/write):与主路径一致,供子代理结果在 UI 渲染高亮
       ...(result.structuredPatch?.length ? { structuredPatch: result.structuredPatch } : {}),
@@ -550,22 +747,15 @@ async function executeSingleTool(
   } catch (err: any) {
     const elapsed = Date.now() - startTime;
     log.error("SUBAGENT:TOOL", `工具执行异常: ${block.name}`, { error: err.message });
-    // post_tool_use_failure hook（异常路径也接入 hook，与主循环对齐）
-    if (hookSystem) {
-      hookSystem
-        .firePostToolUseFailureEvent(
-          block.name,
-          effectiveInput,
-          err.message,
-          block.id,
-          // 抛异常路径用纯执行耗时（与成功路径 duration_ms 同口径）：
-          // 慢工具卡很久才抛，正是要看的那个数。
-          { duration_ms: elapsed },
-        )
-        .catch((e: any) =>
-          log.error("SUBAGENT:HOOK", `post_tool_use_failure hook 失败: ${e.message}`),
-        );
-    }
+    // post_tool_use_failure hook（异常路径也接入 hook，await 以回灌反馈，与主循环对齐）
+    const failureFeedback = await runToolExceptionHook(hookSystem, {
+      toolName: block.name,
+      toolInput: effectiveInput,
+      toolUseId: block.id,
+      error: err,
+      durationMs: elapsed,
+      signal,
+    });
     // 取消单独分型：它不是「工具不可靠」的证据，混进 exception 会污染失败率。
     logToolFailure(block.name, {
       kind: isAbortError(err) ? "aborted" : "exception",
@@ -575,7 +765,9 @@ async function executeSingleTool(
     return {
       type: "tool_result",
       tool_use_id: block.id,
-      content: `工具执行异常: ${err.message}`,
+      content:
+        `工具执行异常: ${err.message}` +
+        (failureFeedback ? `\n\n[Hook 反馈]\n${failureFeedback}` : ""),
       is_error: true,
     };
   }

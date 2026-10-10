@@ -9,16 +9,18 @@
  * 落盘后由 watcher 同步到共享目录。
  */
 
-import { join } from "path";
+import { join, basename } from "path";
 import { existsSync, mkdirSync } from "fs";
-import { readdir, readFile, writeFile } from "fs/promises";
+import { readFile, writeFile, stat } from "fs/promises";
 import { getLogger } from "../../debug/logger.ts";
 import { getTeamMemPath } from "./paths.ts";
 import { scanForSecrets } from "./secret-scanner.ts";
 import { inferMemoryType, normalizeMemoryDesc } from "../store.ts";
 import { memoryFilename } from "../paths.ts";
 import { MEMORY_LIMITS, type MemoryType } from "../types.ts";
-import { readMemoryFrontmatter } from "../scan.ts";
+import { readMemoryFrontmatter, enumerateMemoryFiles } from "../scan.ts";
+import { buildTruncatedIndex } from "../index-budget.ts";
+import { memoryAge, memoryAgeDays } from "../freshness.ts";
 
 const INDEX_FILE = "MEMORY.md";
 
@@ -69,33 +71,140 @@ function serialize(
  *   - `syncTeamMemory`（pull / 删除传播 / 冲突落盘后，见 sync.ts 收尾）
  */
 export async function rebuildTeamIndex(dir: string): Promise<void> {
-  let names: string[];
-  try {
-    names = await readdir(dir);
-  } catch {
-    return;
-  }
-  const lines: string[] = ["# 团队共享记忆", ""];
-  for (const filename of names.sort()) {
-    if (!filename.endsWith(".md") || filename === INDEX_FILE) continue;
-    if (filename.startsWith(".") || filename.includes(".conflict-")) continue;
+  if (!existsSync(dir)) return;
+  // 缺陷 9：枚举、排序、预算全部与私有侧同口径。
+  // ① **递归**：旧实现平铺 `readdir`，子目录里的团队记忆字节在本地、却不进索引 ——
+  //    私有侧 P1-6 早已统一成递归，团队侧是漏掉的那条线；
+  // ② **新的在前**：截断时留下的是最近改过的（与私有侧 `updatedAt` 降序同义，团队记忆
+  //    没有 updatedAt 字段，取 mtime）；
+  // ③ **200 条 / 25KB 真字节、行边界截断、超限告警**：走 `buildTruncatedIndex`。
+  //    旧实现无上限，而这份索引整份进静态前缀，团队记忆越多每轮付得越多。
+  const files = (await listTeamMemoryFiles(dir)).sort();
+  const heads: Array<{ line: string; mtimeMs: number; rel: string }> = [];
+  for (const rel of files) {
     try {
-      const text = await readFile(join(dir, filename), "utf8");
+      const full = join(dir, rel);
+      const [text, st] = await Promise.all([readFile(full, "utf8"), stat(full)]);
       // P2-13：与私有侧共用同一个 frontmatter 读取口径。这里曾用裸 `/^name:/m`
       // 全文匹配（连 frontmatter 块都不限定），正文里任何一行以 `name:` 开头
       // 都会被当成记忆名 —— 团队记忆是别人写的文件，格式假设只能更宽不能更窄。
       const fm = readMemoryFrontmatter(text);
-      const name = fm.name || filename.replace(/\.md$/, "");
+      const name = fm.name || basename(rel).replace(/\.md$/, "");
       // 读侧也过归一化：既有旧文件的 frontmatter 里可能已存着 `## 标题`（本次修复前
       // 写入的），重建索引时剥掉，否则旧数据的陈述句标题会一直漏进注入侧索引。
       const desc = normalizeMemoryDesc(fm.description, "");
-      lines.push(`- [${name}](${filename})${desc ? ` — ${desc}` : ""}`);
+      heads.push({
+        line: `- [${name}](${rel})${desc ? ` — ${desc}` : ""}`,
+        mtimeMs: st.mtimeMs,
+        rel,
+      });
     } catch {
       /* 跳过损坏文件 */
     }
   }
-  lines.push("");
-  await writeFile(join(dir, INDEX_FILE), lines.join("\n"), "utf8");
+  // 同 mtime 按路径字典序：结果不随文件系统顺序漂移
+  heads.sort((a, b) => b.mtimeMs - a.mtimeMs || (a.rel < b.rel ? -1 : a.rel > b.rel ? 1 : 0));
+  const { content, entryCount, truncated } = buildTruncatedIndex(
+    heads.map((h) => h.line),
+    TEAM_INDEX_HEADER,
+  );
+  if (truncated) {
+    getLogger().warn(
+      "TEAMMEM",
+      `团队记忆索引已截断：${heads.length} 条只列出 ${entryCount} 条（${dir}）——` +
+        `未列出的记忆在磁盘上但不进上下文`,
+    );
+  }
+  const conflictSection = await buildConflictSection(dir);
+  await writeFile(
+    join(dir, INDEX_FILE),
+    conflictSection ? `${content.trimEnd()}\n\n${conflictSection}\n` : content,
+    "utf8",
+  );
+}
+
+/** 冲突段最多列几条——冲突是例外态，正常为 0；封顶防一次批量冲突把静态前缀撑大 */
+const MAX_CONFLICT_LINES = 20;
+
+/**
+ * 缺陷 8：未裁决的冲突副本**必须可见**。
+ *
+ * 同步按 mtime 选一边获胜（同步盘下 mtime 可能是同步时刻而非编辑时刻，较新 ≠ 较新的编辑），
+ * 输的那版另存为 `<key>.conflict-<ts>.md`。旧实现里这份副本既不进索引、也不参与同步 ——
+ * 字节在，但没人知道：输的那一方以为自己的修改同步成功了。
+ *
+ * 这里**不改裁决规则**（没有可靠的第二判据，换一种自动裁决只是换一种静默），
+ * 而是把副本作为「待人处理」单独列出：不作为记忆条目（不参与同步、不当事实引用），
+ * 但模型与人都能看到哪条记忆存在分歧、副本在哪。处理方式：合并后删除副本，索引下次重建即消失。
+ */
+async function buildConflictSection(dir: string): Promise<string | null> {
+  const all = await enumerateMemoryFiles(dir);
+  const conflicts = all
+    .filter((rel) => {
+      const segs = rel.split(/[\\/]/);
+      if (segs.some((seg) => seg.startsWith("."))) return false;
+      return segs[segs.length - 1].includes(".conflict-");
+    })
+    .sort();
+  if (conflicts.length === 0) return null;
+  const lines = conflicts.slice(0, MAX_CONFLICT_LINES).map((rel) => {
+    const winner = rel.replace(/\.conflict-\d+\.md$/, ".md");
+    return `- \`${rel}\` ↔ 当前生效版本 \`${winner}\``;
+  });
+  if (conflicts.length > MAX_CONFLICT_LINES) {
+    lines.push(`- ……另有 ${conflicts.length - MAX_CONFLICT_LINES} 份冲突副本未列出`);
+  }
+  return [
+    `## ⚠️ 未裁决的团队记忆冲突（${conflicts.length}）`,
+    "",
+    "以下副本是同步时按修改时间**自动落败**的另一版内容，不是有效记忆，不要当事实引用。" +
+      "当前生效版本可能并不是更新的那一版：用到对应记忆时，先对比两版，提醒用户合并后删除副本。",
+    "",
+    ...lines,
+  ].join("\n");
+}
+
+/** 团队索引表头（与私有侧 `# Memory Index` 区分，注入侧据此认出团队段）。 */
+const TEAM_INDEX_HEADER = ["# 团队共享记忆", ""] as const;
+
+/**
+ * 枚举团队记忆条目（相对路径，递归）。
+ *
+ * 在私有侧 `enumerateMemoryFiles` 的 skip 名单之上，再排除团队线特有的两类：
+ * 点文件（同步状态 `.sync-state.json` 之类的同级产物，以及编辑器临时文件）
+ * 与冲突副本 `*.conflict-*.md`（缺陷 8 另议，这里保持旧口径不进索引）。
+ * 同步侧 `readEntries` 用同一个函数 —— 「进索引」与「参与同步」必须是同一批文件。
+ */
+export async function listTeamMemoryFiles(dir: string): Promise<string[]> {
+  const all = await enumerateMemoryFiles(dir);
+  return all.filter((rel) => {
+    const segs = rel.split(/[\\/]/);
+    if (segs.some((seg) => seg.startsWith("."))) return false;
+    if (segs[segs.length - 1].includes(".conflict-")) return false;
+    return true;
+  });
+}
+
+/**
+ * 给团队索引行补「多久之前」（缺陷 9 ③）。私有侧 `annotateIndexAges` 按 key 查
+ * `updatedAt`；团队记忆没有内存条目，按索引行里的链接（相对路径）取文件 mtime。
+ */
+async function annotateTeamIndexAges(dir: string, text: string): Promise<string> {
+  const now = Date.now();
+  const lines = await Promise.all(
+    text.split("\n").map(async (line) => {
+      const m = line.match(/^(\s*-\s*\[[^\]]*\]\(([^)]*)\))(.*)$/);
+      if (!m) return line;
+      try {
+        const st = await stat(join(dir, m[2]));
+        if (memoryAgeDays(st.mtimeMs, now) < 1) return line;
+        return `${m[1]} ⏳${memoryAge(st.mtimeMs, now)}${m[3]}`;
+      } catch {
+        return line; // 索引里有、磁盘上没有：不编造年龄
+      }
+    }),
+  );
+  return lines.join("\n");
 }
 
 /**
@@ -113,7 +222,9 @@ export async function getTeamIndexContent(cwd: string = process.cwd()): Promise<
   try {
     const text = (await readFile(indexPath, "utf8")).trim();
     if (!text) return null;
-    return `#### 团队记忆（目录：${dir}）\n\n${text}`;
+    // 缺陷 9 ③：新鲜度判据此前到不了团队记忆
+    const annotated = await annotateTeamIndexAges(dir, text);
+    return `#### 团队记忆（目录：${dir}）\n\n${annotated}`;
   } catch {
     return null;
   }

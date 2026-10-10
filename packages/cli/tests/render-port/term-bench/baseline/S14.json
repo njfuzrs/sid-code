@@ -1,0 +1,275 @@
+{
+  "scenario": "S14",
+  "exitCode": 0,
+  "total": {
+    "bytes": 830,
+    "eraseScreen": 0,
+    "eraseScrollback": 0,
+    "syncBegin": 3,
+    "syncEnd": 3,
+    "altEnter": 0,
+    "altExit": 0,
+    "osc": {
+      "0": 4,
+      "2": 4,
+      "8": 2,
+      "9": 4,
+      "777": 1,
+      "21337": 6
+    }
+  },
+  "notes": {},
+  "steps": [
+    {
+      "label": "标题 + tab 忙",
+      "buffer": "normal",
+      "cursor": {
+        "x": 0,
+        "y": 1,
+        "hidden": true
+      },
+      "modes": {
+        "bracketedPaste": false,
+        "mouseTracking": "none",
+        "sendFocus": false,
+        "wraparound": true
+      },
+      "metrics": {
+        "bytes": 148,
+        "eraseScreen": 0,
+        "eraseScrollback": 0,
+        "syncBegin": 1,
+        "syncEnd": 1,
+        "altEnter": 0,
+        "altExit": 0,
+        "osc": {
+          "0": 1,
+          "2": 1,
+          "21337": 1
+        }
+      },
+      "screen": ["OSC 场景"],
+      "scrollback": [],
+      "styled": []
+    },
+    {
+      "label": "标题去 ANSI + tab 空闲",
+      "buffer": "normal",
+      "cursor": {
+        "x": 0,
+        "y": 1,
+        "hidden": true
+      },
+      "modes": {
+        "bracketedPaste": false,
+        "mouseTracking": "none",
+        "sendFocus": false,
+        "wraparound": true
+      },
+      "metrics": {
+        "bytes": 105,
+        "eraseScreen": 0,
+        "eraseScrollback": 0,
+        "syncBegin": 0,
+        "syncEnd": 0,
+        "altEnter": 0,
+        "altExit": 0,
+        "osc": {
+          "0": 1,
+          "2": 1,
+          "21337": 1
+        }
+      },
+      "screen": ["OSC 场景"],
+      "scrollback": [],
+      "styled": []
+    },
+    {
+      "label": "进度经原始写入口",
+      "buffer": "normal",
+      "cursor": {
+        "x": 0,
+        "y": 1,
+        "hidden": true
+      },
+      "modes": {
+        "bracketedPaste": false,
+        "mouseTracking": "none",
+        "sendFocus": false,
+        "wraparound": true
+      },
+      "metrics": {
+        "bytes": 124,
+        "eraseScreen": 0,
+        "eraseScrollback": 0,
+        "syncBegin": 0,
+        "syncEnd": 0,
+        "altEnter": 0,
+        "altExit": 0,
+        "osc": {
+          "0": 1,
+          "2": 1,
+          "9": 3,
+          "21337": 1
+        }
+      },
+      "screen": ["OSC 场景"],
+      "scrollback": [],
+      "styled": []
+    },
+    {
+      "label": "忙转闲通知（BEL + OSC 777）",
+      "buffer": "normal",
+      "cursor": {
+        "x": 0,
+        "y": 1,
+        "hidden": true
+      },
+      "modes": {
+        "bracketedPaste": false,
+        "mouseTracking": "none",
+        "sendFocus": false,
+        "wraparound": true
+      },
+      "metrics": {
+        "bytes": 123,
+        "eraseScreen": 0,
+        "eraseScrollback": 0,
+        "syncBegin": 0,
+        "syncEnd": 0,
+        "altEnter": 0,
+        "altExit": 0,
+        "osc": {
+          "0": 1,
+          "2": 1,
+          "777": 1,
+          "21337": 1
+        }
+      },
+      "screen": ["OSC 场景"],
+      "scrollback": [],
+      "styled": []
+    },
+    {
+      "label": "OSC 8 超链接",
+      "buffer": "normal",
+      "cursor": {
+        "x": 0,
+        "y": 2,
+        "hidden": true
+      },
+      "modes": {
+        "bracketedPaste": false,
+        "mouseTracking": "none",
+        "sendFocus": false,
+        "wraparound": true
+      },
+      "metrics": {
+        "bytes": 109,
+        "eraseScreen": 0,
+        "eraseScrollback": 0,
+        "syncBegin": 1,
+        "syncEnd": 1,
+        "altEnter": 0,
+        "altExit": 0,
+        "osc": {
+          "8": 2
+        }
+      },
+      "screen": ["OSC 场景", "见 文档"],
+      "scrollback": [],
+      "styled": [
+        {
+          "y": 1,
+          "runs": [
+            {
+              "text": "文档",
+              "style": "fg=#89b4fa u"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "label": "tab 状态经 tmux 包裹",
+      "buffer": "normal",
+      "cursor": {
+        "x": 0,
+        "y": 2,
+        "hidden": true
+      },
+      "modes": {
+        "bracketedPaste": false,
+        "mouseTracking": "none",
+        "sendFocus": false,
+        "wraparound": true
+      },
+      "metrics": {
+        "bytes": 72,
+        "eraseScreen": 0,
+        "eraseScrollback": 0,
+        "syncBegin": 0,
+        "syncEnd": 0,
+        "altEnter": 0,
+        "altExit": 0,
+        "osc": {
+          "21337": 1
+        }
+      },
+      "screen": ["OSC 场景", "见 文档"],
+      "scrollback": [],
+      "styled": [
+        {
+          "y": 1,
+          "runs": [
+            {
+              "text": "文档",
+              "style": "fg=#89b4fa u"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "label": "(退出后)",
+      "buffer": "normal",
+      "cursor": {
+        "x": 0,
+        "y": 2,
+        "hidden": false
+      },
+      "modes": {
+        "bracketedPaste": false,
+        "mouseTracking": "none",
+        "sendFocus": false,
+        "wraparound": true
+      },
+      "metrics": {
+        "bytes": 149,
+        "eraseScreen": 0,
+        "eraseScrollback": 0,
+        "syncBegin": 1,
+        "syncEnd": 1,
+        "altEnter": 0,
+        "altExit": 0,
+        "osc": {
+          "9": 1,
+          "21337": 1
+        }
+      },
+      "screen": ["OSC 场景", "见 文档"],
+      "scrollback": [],
+      "styled": [
+        {
+          "y": 1,
+          "runs": [
+            {
+              "text": "文档",
+              "style": "fg=#89b4fa u"
+            }
+          ]
+        }
+      ]
+    }
+  ]
+}

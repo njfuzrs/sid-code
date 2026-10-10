@@ -680,7 +680,10 @@ export class MemoryCommand implements Command {
     return ["mem"];
   }
   description() {
-    return "管理记忆（auto/external/set/get/delete/list/search/show/reload）";
+    return "管理记忆（无参打开交互面板）";
+  }
+  argumentHint() {
+    return "[auto|external|set|get|delete|list|search|show|reload] [参数]";
   }
 
   async execute(args: string, ctx: AppContext): Promise<CommandResult> {
@@ -1315,7 +1318,8 @@ export class TelemetryCommand implements Command {
     if (!bus.isEnabled()) {
       return {
         kind: "message",
-        message: "遥测未启用。在 ~/.sid-code/app.json 中设置 telemetry.enabled: true",
+        message:
+          "遥测未启用。在 ~/.sid-code/settings.json（或 ~/.sid-code/app.json）中设置 telemetry.enabled: true",
       };
     }
 
@@ -1333,19 +1337,37 @@ export class TelemetryCommand implements Command {
 
     // === 总览（最重要的信息放最前面）===
     if (chatSpans.length > 0) {
-      let totalIn = 0,
+      // 缺陷 10：chat span 的 INPUT_TOKENS 是**单轮 prompt 总长**（stock，含全部历史），
+      // 逐 span 相加是 N² 过计数（collector.ts 同名注释：29 次调用 3.65M vs 实际 167k）。
+      // 这里展示的是「上下文多大」= 末次（按 endTime 取最后一个），不是累加。
+      // output / cost / cache_savings 是每轮独立的 flow，累加正确。
+      let lastIn = 0,
+        lastEnd = -Infinity,
         totalOut = 0,
         totalCost = 0,
         totalCacheSavings = 0;
-      const ttfts: number[] = [];
+      // 缺陷 9：TTFT 按 model 分组 —— 同一会话 fallback 换模型时，跨 model 汇总是假数
+      // （CLAUDE.md TTFB/TTFT 铁律，latency-by-model.ts 同一理由）。
+      const ttftByModel = new Map<string, number[]>();
       for (const s of chatSpans) {
-        totalIn += (s.attributes[ATTR.INPUT_TOKENS] as number) || 0;
+        const inTok = (s.attributes[ATTR.INPUT_TOKENS] as number) || 0;
+        if (s.endTime >= lastEnd) {
+          lastEnd = s.endTime;
+          lastIn = inTok;
+        }
         totalOut += (s.attributes[ATTR.OUTPUT_TOKENS] as number) || 0;
         totalCost += (s.attributes[ATTR.COST_USD] as number) || 0;
         totalCacheSavings += (s.attributes[ATTR.CACHE_SAVINGS_USD] as number) || 0;
-        const ttft = s.attributes["sidcode.ttft_ms"] as number;
-        if (ttft) ttfts.push(ttft);
+        // 缺陷 8：原先读 "sidcode.ttft_ms" 但 probe 只写 span event，属性零生产者。
+        const ttft = s.attributes[ATTR.TTFT_MS];
+        if (typeof ttft === "number" && ttft > 0) {
+          const model = (s.attributes[ATTR.REQUEST_MODEL] as string) || "?";
+          const arr = ttftByModel.get(model) ?? [];
+          arr.push(ttft);
+          ttftByModel.set(model, arr);
+        }
       }
+      const { percentile } = await import("@sid-code/core/trace/digest.ts");
 
       // 按工具名统计
       const toolCounts = new Map<string, number>();
@@ -1357,7 +1379,7 @@ export class TelemetryCommand implements Command {
       lines.push("");
       lines.push(`  LLM 调用: ${chatSpans.length} 轮`);
       lines.push(
-        `  Token 消耗: ${fmtNum(totalIn + totalOut)} (输入 ${fmtNum(totalIn)} / 输出 ${fmtNum(totalOut)})`,
+        `  Token: 当前上下文 ${fmtNum(lastIn)}（末轮输入，不累加） / 累计输出 ${fmtNum(totalOut)}`,
       );
       if (totalCost > 0) {
         lines.push(`  费用: $${totalCost.toFixed(4)}`);
@@ -1365,9 +1387,21 @@ export class TelemetryCommand implements Command {
       if (totalCacheSavings > 0) {
         lines.push(`  缓存节省: $${totalCacheSavings.toFixed(4)}`);
       }
-      if (ttfts.length > 0) {
-        const avgTtft = ttfts.reduce((a, b) => a + b, 0) / ttfts.length;
-        lines.push(`  首 Token 延迟 (TTFT): 平均 ${Math.round(avgTtft)}ms`);
+      // 缺陷 9：报 p50/p95 不报均值（慢尾巴才是用户流失点），并标 n —— 单会话样本少，
+      // 不标 n 会让人误判置信度。没有样本时明说，不静默省掉整行（缺陷 8 的失败姿态）。
+      if (ttftByModel.size === 0) {
+        lines.push(`  首内容延迟 (TTFT): 无样本`);
+      } else {
+        lines.push(`  首内容延迟 (TTFT，按 model):`);
+        for (const [model, arr] of ttftByModel) {
+          const sorted = [...arr].sort((a, b) => a - b);
+          const p50 = percentile(sorted, 0.5)!;
+          const p95 = percentile(sorted, 0.95)!;
+          const short = model.split("/").pop() || model;
+          lines.push(
+            `    ${short}: P50 ${Math.round(p50)}ms / P95 ${Math.round(p95)}ms (n=${sorted.length})`,
+          );
+        }
       }
       if (toolSpans.length > 0) {
         const toolSummary = Array.from(toolCounts.entries())
@@ -1378,11 +1412,26 @@ export class TelemetryCommand implements Command {
     }
 
     // === 调用时间线 ===
-    if (spans.length > 0) {
+    // 缺陷 17：根 span 只在 SessionEnd 才 end，只读 history 时它必然缺席 ⇒ 补上进行中的快照
+    const active = bus.getActiveSpans();
+    if (spans.length > 0 || active.length > 0) {
       lines.push("", "调用时间线:");
-      const tree = buildSpanTree(spans);
-      for (let i = 0; i < tree.length; i++) {
-        renderSpanNode(tree[i], lines, "  ", ATTR, i + 1);
+      const { roots, orphanCount } = buildSpanTree(
+        [...spans, ...active],
+        new Set(active.map((x) => x.spanId)),
+      );
+      for (let i = 0; i < roots.length; i++) {
+        renderSpanNode(roots[i], lines, "  ", ATTR, i + 1);
+      }
+      // 缺陷 18 / 19：孤儿与截断必须明说，否则用户看到的是一份「看起来完整」的时间线
+      const evicted = bus.getEvictedSpanCount();
+      if (evicted > 0) {
+        lines.push(
+          `  ⚠ 历史已截断 ${fmtNum(evicted)} 条最旧 span（上限 500），其子节点可能显示为孤儿`,
+        );
+      }
+      if (orphanCount > 0) {
+        lines.push(`  ⚠ ${orphanCount} 个孤儿节点（父 span 不在本批数据中，标 ⊘）`);
       }
     }
 
@@ -1391,7 +1440,8 @@ export class TelemetryCommand implements Command {
       const agg = aggregateMetrics(metrics);
       // 过滤掉已在总览中展示的指标
       const extraMetrics = Object.entries(agg).filter(
-        ([name]) => name !== "gen_ai.client.token.usage" && name !== "sidcode.cost.usd",
+        ([name]) =>
+          !name.startsWith("gen_ai.client.inference.usage.") && name !== "sidcode.cost.usd",
       );
       if (extraMetrics.length > 0) {
         lines.push("", "其他指标:");
@@ -1418,7 +1468,7 @@ export class TelemetryCommand implements Command {
 
 /** Metric 名称 → 中文标签映射 */
 const METRIC_LABELS: Record<string, string> = {
-  "gen_ai.client.token.usage": "Token 消耗",
+  "gen_ai.client.operation.time_to_first_chunk": "首内容延迟 TTFT (s)",
   "sidcode.cost.usd": "费用 (USD)",
   "sidcode.cost.cache_savings_usd": "缓存节省 (USD)",
   "sidcode.budget.remaining_usd": "预算剩余 (USD)",
@@ -1428,38 +1478,68 @@ const METRIC_LABELS: Record<string, string> = {
 interface SpanTreeNode {
   span: import("@sid-code/core/telemetry/types.ts").SpanData;
   children: SpanTreeNode[];
+  /** 缺陷 18：有 parentSpanId 但父不在本批 —— 与真根（parentSpanId 为空）区分 */
+  orphan: boolean;
+  /** 缺陷 17：尚未 end 的快照节点 */
+  inProgress: boolean;
 }
 
-/** 将扁平 span 列表构建为树 */
+/**
+ * 将扁平 span 列表构建为树。
+ *
+ * 「父不在本批」与「本就是根」曾合并进同一个 else 分支，渲染上不可区分（缺陷 18）。
+ * 现在两者都进 roots，但孤儿打 `orphan` 标记并单独计数。
+ */
 function buildSpanTree(
   spans: readonly import("@sid-code/core/telemetry/types.ts").SpanData[],
-): SpanTreeNode[] {
+  activeIds?: ReadonlySet<string>,
+): { roots: SpanTreeNode[]; orphanCount: number } {
   const nodeMap = new Map<string, SpanTreeNode>();
   const roots: SpanTreeNode[] = [];
+  let orphanCount = 0;
 
-  // 创建所有节点
+  // 创建所有节点（同 id 后者覆盖前者：活跃快照与已完成 span 不会同时存在，防御性去重）
   for (const span of spans) {
-    nodeMap.set(span.spanId, { span, children: [] });
+    nodeMap.set(span.spanId, {
+      span,
+      children: [],
+      orphan: false,
+      inProgress: activeIds?.has(span.spanId) ?? false,
+    });
   }
 
   // 建立父子关系
-  for (const span of spans) {
-    const node = nodeMap.get(span.spanId)!;
-    if (span.parentSpanId && nodeMap.has(span.parentSpanId)) {
-      nodeMap.get(span.parentSpanId)!.children.push(node);
+  for (const node of nodeMap.values()) {
+    const { parentSpanId } = node.span;
+    if (parentSpanId && nodeMap.has(parentSpanId)) {
+      nodeMap.get(parentSpanId)!.children.push(node);
     } else {
+      if (parentSpanId) {
+        node.orphan = true;
+        orphanCount++;
+      }
       roots.push(node);
     }
   }
 
-  return roots;
+  // 按起点排序（快照追加在末尾，不排序时根会被画到最后）
+  const byStart = (a: SpanTreeNode, b: SpanTreeNode) => a.span.startTime - b.span.startTime;
+  roots.sort(byStart);
+  for (const n of nodeMap.values()) n.children.sort(byStart);
+
+  return { roots, orphanCount };
 }
 
-/** Span kind → 中文标签 */
-const SPAN_KIND_LABELS: Record<string, string> = {
+/**
+ * Span kind → 中文标签。缺陷 18：曾只覆盖 3 类，另 2 类落 fallback 显示英文原名。
+ * 类型写成 `Record<SpanKind, string>`：SpanKind 新增成员而这里漏加，typecheck 直接红。
+ */
+const SPAN_KIND_LABELS: Record<import("@sid-code/core/telemetry/types.ts").SpanKind, string> = {
   invoke_agent: "Agent",
   chat: "LLM 调用",
   execute_tool: "工具",
+  blocked_on_user: "等待确认",
+  hook_execution: "Hook",
 };
 
 /** 递归渲染 span 树节点 */
@@ -1472,7 +1552,10 @@ function renderSpanNode(
 ): void {
   const s = node.span;
   const dur = fmtDuration(s.durationMs);
-  const statusMark = s.status === "error" ? " ✗" : "";
+  const statusMark =
+    (s.status === "error" ? " ✗" : "") +
+    (node.inProgress ? " ⋯进行中" : "") +
+    (node.orphan ? " ⊘孤儿" : "");
   const kindLabel = SPAN_KIND_LABELS[s.kind] || s.kind;
   const indexStr = index !== undefined ? `#${index} ` : "";
 
@@ -1480,7 +1563,7 @@ function renderSpanNode(
   if (s.kind === "chat") {
     const model = (s.attributes[ATTR.REQUEST_MODEL] as string) || "?";
     const shortModel = model.split("/").pop() || model;
-    const ttft = s.attributes["sidcode.ttft_ms"] as number;
+    const ttft = s.attributes[ATTR.TTFT_MS] as number;
     const inTok = (s.attributes[ATTR.INPUT_TOKENS] as number) || 0;
     const outTok = (s.attributes[ATTR.OUTPUT_TOKENS] as number) || 0;
     const cost = (s.attributes[ATTR.COST_USD] as number) || 0;
@@ -1581,7 +1664,10 @@ export class CacheCommand implements Command {
     return [];
   }
   description() {
-    return "显示缓存命中率/省钱长期统计（--period day|week|month --model <name> --breaks --history --prune <N>）";
+    return "显示缓存命中率 / 省钱长期统计";
+  }
+  argumentHint() {
+    return "[--period day|week|month] [--model <name>] [--breaks] [--history] [--prune <N>]";
   }
 
   async execute(args: string, _ctx: AppContext): Promise<CommandResult> {
@@ -1790,7 +1876,10 @@ export class TraceCommand implements Command {
     return ["digest"];
   }
   description() {
-    return "排查会话:把当前/指定会话轨迹嚼碎成结构化摘要(--list 列会话, <id> 指定, --full 详细, --health 健康看板, --cache 缓存视图, --prune-index N 裁剪会话索引)";
+    return "排查会话：把当前 / 指定会话轨迹嚼碎成结构化摘要（--health 健康看板，--cache 缓存视图）";
+  }
+  argumentHint() {
+    return "[<id>] [--list] [--full] [--health] [--cache [--days N]] [--prune-index N]";
   }
 
   async execute(args: string, ctx: AppContext): Promise<CommandResult> {

@@ -31,26 +31,38 @@ import {
   startSleepObserver,
 } from "@sid-code/shared/utils/sleep-detect.ts";
 import {
-  classifyError,
-  classifyStreamError,
-  TerminalError,
-  RetryableError,
-  StreamLevelError,
-  StreamValidationError,
   isAbortError,
   toAbortError,
   RequestAbortedError,
   getNetworkErrorCode,
-  is401Error,
-  isGatewayPlaceholderAuthError,
+  StreamValidationError,
 } from "./errors.ts";
+import {
+  classifyFamily,
+  normalizeStreamEvent,
+  normalizeThrown,
+  NormalizedErrorCarrier,
+  type FamilyReason,
+  type FamilyVerdict,
+  type NormalizedLLMError,
+} from "./error-normalize.ts";
+import {
+  decideRecovery,
+  MIN_USEFUL_ATTEMPT_MS,
+  type AttemptRecord,
+  type GiveUpEvidence,
+  type RecoveryAction,
+} from "./recovery-policy.ts";
 import { ModelAvailabilityService } from "./availability.ts";
 import { shouldPreserveTransientCooldownProbeSlot } from "./cooldown-probe.ts";
 import { resolveRegistryMaxOutputTokens } from "./model-lookup.ts";
 import { lookupWireModelAlias } from "./wire-model.ts";
 import { dispatchRetryTelemetry, type RetryTelemetryEvent } from "./retry-telemetry.ts";
 import { DEFAULTS as NETWORK_DEFAULTS } from "../config/network-profile.ts";
-import { calculateRetryDelay as calculateSharedRetryDelay } from "./retry-backoff.ts";
+import {
+  calculateRetryDelay as calculateSharedRetryDelay,
+  type BackoffHint,
+} from "./retry-backoff.ts";
 import { disableKeepAlive } from "./keepalive.ts";
 // S4：非流式降级。`src/api/stream-handler.ts` 早就写好了这套（含 SSE 事件重放），
 // 但生产零消费——只有测试在驱动它（§2.3 / §七 F7 记的三处"死能力"之一）。
@@ -135,18 +147,6 @@ const STREAM_RETRY = {
   maxDelayMs: 120000,
 };
 
-/**
- * 16 号 C1：网关 401 占位句（`Invalid token. (request id: …)`）的重试上界。
- *
- * 3 而不是 `maxRetriesPerCall`(12)：占位句是网关侧的瞬时抖动，实测恢复窗口在数秒级。
- * 给它 12 次预算的坏处不是「慢」，是**把这次调用的全部重试预算喂给一个可能压根不会
- * 恢复的故障** —— 那之后真正该重试的 429/529 一次都轮不到。3 次退避（1s/2s/4s）足以
- * 穿过实测抖动，穿不过就该交给 fallback / 报错，让人去看网关。
- *
- * ⛔ 不要为了「对齐 cc 的 max_retries=10」调大它：16 §6 否决过改被测对象来对齐对照。
- */
-const GATEWAY_PLACEHOLDER_AUTH_MAX_RETRIES = 3;
-
 /** 默认流超时（毫秒）。配置-1：不再独立硬编码 300_000，从 network-profile 统一默认值派生
  *  （生产路径由 app.ts 注入 streamTimeoutMs；此默认仅在未注入时兜底，如直接 new ModelFallback() 的测试）。
  *
@@ -185,12 +185,6 @@ function resolveFloorOutputTokens(contextLimit: number): number {
   return FLOOR_OUTPUT_TOKENS;
 }
 
-/** 连续 529 触发降级的阈值 */
-const MAX_529_CONSECUTIVE = 3;
-
-/** persistent retry 最大退避（5 分钟） */
-const PERSISTENT_MAX_DELAY_MS = 300_000;
-
 /** S4：非流式降级的 maxTokens 上限。
  *
  *  非流式响应没有增量、要等整段生成完才返回，maxTokens 越大越容易整体超时。
@@ -199,14 +193,8 @@ const PERSISTENT_MAX_DELAY_MS = 300_000;
  *  这里是漏斗侧的独立决策，两者同值是巧合而非依赖，绑在一起反而制造隐式耦合。 */
 const NON_STREAMING_MAX_TOKENS = 16_384;
 
-/** S3：一次重试要「有意义」所需的最小剩余时间（毫秒）。
- *
- *  含义：退避睡完之后，至少还得留这么多时间给那次请求，重试才不是白等。
- *  取 5s 的依据——它要盖住「建连 + 首字节」这段：本仓 TTFT 观测（trace-digest 的
- *  gen 分位数）典型在 1–3s，5s 给慢网关留了余量，又不至于把"其实还来得及"的重试
- *  提前砍掉。这个值不需要精确：它是**方向正确的粗钳制**，用来替换"睡满 120s 再被
- *  外层 abort"这个明确错误的现状。 */
-const MIN_USEFUL_ATTEMPT_MS = 5_000;
+// S3：`MIN_USEFUL_ATTEMPT_MS`（退避睡完后至少要留给那次请求的时间）定义在 recovery-policy.ts，
+// 入口冷却等待与决策函数共用同一个值。
 
 /**
  * S2：共享冷却对齐时的错峰槽位数。
@@ -267,7 +255,16 @@ function cooldownStaggerSlot(agentId?: string): number {
  */
 export type FallbackDecision =
   | { action: "switch"; model: string; provider: Provider }
-  | { action: "abort" };
+  | { action: "abort" }
+  /**
+   * 2026-10-08 §4.4：就地重试当前模型。给一份**全新的族预算**（同指纹历史清零），
+   * 但仍受 `maxRetriesPerCall`（已用次数继承）与 `deadlineAt` 约束；
+   * 同一次调用最多 `MAX_RETRY_SAME_PER_CALL` 次，超过后钩子侧不再提供该选项。
+   */
+  | { action: "retry_same" };
+
+/** 同一次调用里「重试当前模型」最多几次（超过只给切换 / 终止） */
+export const MAX_RETRY_SAME_PER_CALL = 2;
 
 /** Fallback 切换模式：ask 询问用户 / auto 自动切默认 / off 不降级直接报错。 */
 export type FallbackSwitchMode = "ask" | "auto" | "off";
@@ -296,6 +293,10 @@ export interface FallbackConfig {
     reason: string;
     defaultFallbackModel?: string;
     signal?: AbortSignal;
+    /** 本次调用还能否「重试当前模型」（`retry_same`）。false 时钩子不应提供该选项 */
+    canRetrySame?: boolean;
+    /** 本次调用已重试次数（给用户看「到底试了几次」） */
+    attempts?: number;
   }) => Promise<FallbackDecision>;
   /** 模型可用性服务 */
   availability?: ModelAvailabilityService;
@@ -352,13 +353,13 @@ export interface FallbackConfig {
    *
    * ── 契约 ──
    *
-   * - 返回 `true`：凭据已刷新 → 漏斗**不退避、立即重试一次**（新凭据值得马上试）；
-   * - 返回 `false` / 抛异常 / 未注入：退化为原有的 retry-once 语义（用旧凭据重试一次），
-   *   即**行为与改造前逐字节一致**。未注入不该让 401 变得更糟，这是接线安全的底线。
+   * - 2026-10-08 起在 `auth_suspect` 族的**首次**重试上调用（两种到达形态都能触发）；
+   *   首次重试本就不退避，刷新与否只影响用不用新凭据。
+   * - 返回 `false` / 抛异常 / 未注入：用旧凭据重试。未注入不该让 401 变得更糟。
    * - 抛异常不向上传播（刷新失败是预期内的一种结果，不是 bug），只记日志。
    *
-   * 注意 `needsAuthRefresh` 闸门必须保留（防无限刷新循环）：无论刷新成功与否，
-   * 一次调用后即置位，第二个 401 落 `classifyError` → terminal，不会反复刷新。
+   * 防无限刷新循环：只在同指纹连续 streak=1 时刷新，auth_suspect 最多 3 次即放弃
+   * （`recovery-policy.ts` FAMILY_MAX_ATTEMPTS），不再需要单独的布尔闸门。
    *
    * @param provider 发生 401 的 provider 名（`provider.name()`），用于分派到对应的凭据体系
    * @param error 原始 401 错误，供实现方判别子类型（如 OAuth revoked vs 普通过期）
@@ -419,7 +420,17 @@ export interface FallbackConfig {
 /** 回退事件监听器 */
 export interface FallbackListener {
   onRetry?: (attempt: number, error: string, delayMs: number) => void;
-  onFallback?: (reason: string, fallbackModel: string) => void;
+  /**
+   * @param info.fromModel 失败的主模型
+   * @param info.viaDecision 目标由 onFallbackDecision 钩子决定（ask 模式）。钩子侧已经把目标提升为主模型
+   *   并发过 Pre/PostModelSwitch；为 false 时（auto 模式，含子代理 / 后台调用传入的 switchMode:"auto"）
+   *   只是当次调用换了模型，监听方要自己补发 PostModelSwitch（Q6 细则 2）。
+   */
+  onFallback?: (
+    reason: string,
+    fallbackModel: string,
+    info?: { fromModel: string; viaDecision: boolean },
+  ) => void;
   /** 后台 529 被丢弃时的回调 */
   on529Dropped?: (querySource: string) => void;
   /** max_tokens 自动调整时的回调 */
@@ -470,6 +481,13 @@ export interface PerCallOptions {
   /** 发起方 agent 标识（遥测归因与 B4 per-agent 状态隔离用）。 */
   agentId?: string;
   /**
+   * 内部字段：`retry_same` 重入时由漏斗自己传，调用方不要设。
+   * `retrySameUsed` = 本次调用已就地重试的次数；`priorRetries` = 之前已消耗的重试次数
+   * （继承进 `maxRetriesPerCall` 的分子，保证就地重试不撑大单次调用总上限）。
+   */
+  retrySameUsed?: number;
+  priorRetries?: number;
+  /**
    * S3（§5 缺口 C）：本次调用的 **wall-clock 截止时刻**（`Date.now()` 同轴的毫秒时间戳）。
    *
    * ── 它修的是什么 ──
@@ -494,20 +512,18 @@ export interface PerCallOptions {
 
 /** 内部重试上下文 */
 interface RetryContext {
-  /** 401 认证错误的「只重试一次」闸门（首个 401 置位并立即重试；第二个 401 因已置位落到
-   *  classifyError → TerminalError → markTerminal + fallback）。
-   *  N1（另案）：当前无 auth 刷新钩子消费此标志——重试用的仍是同一份旧凭据，故它实际只是
-   *  「retry-once 闸门」而非「刷新触发器」。真正接线凭据刷新钩子超出本次修复范围，另案跟踪；
-   *  在此之前**不可删除**该标志——删了会让首个 401 直接 terminal 拉黑，丧失「瞬时 401 重试一次」
-   *  的容错。 */
-  needsAuthRefresh: boolean;
-  /** 16 号 C1：本次调用内「网关 401 占位句」已重试的次数（独立封顶，见
-   *  GATEWAY_PLACEHOLDER_AUTH_MAX_RETRIES）。
+  /**
+   * 本次调用内**之前**失败的尝试（族、细分原因、指纹、状态码）。
    *
-   *  为什么不复用 `needsAuthRefresh`：那是「只放一次」的闸门，语义是「刷新凭据后再试
-   *  一次」；占位句根本不是凭据问题，刷新对它无意义，它要的是**多试几次等网关恢复**。
-   *  两个语义挤在一个布尔上，就回到了「第二次 401 立刻 Terminal」的原状。 */
-  gatewayPlaceholderAuthRetries: number;
+   * 判死的唯一依据：decideRecovery 读它判断「同一指纹在有间隔的多次尝试里是否一直复现」。
+   * 取代了旧的 `needsAuthRefresh`（401 只放一次）与 `gatewayPlaceholderAuthRetries`
+   * （占位句独立封顶）两个布尔/计数闸门——它们都是「认出某种文案就换一套规则」的形态。
+   */
+  attempts: AttemptRecord[];
+  /** 本次调用开始时刻（放弃证据的 spanMs） */
+  startedAt: number;
+  /** 本次调用是否已试过非流式降级（空响应首次直降级、耗尽后降级共用，最多一次） */
+  degradeTried: boolean;
   /** 是否需要禁用 keep-alive（ECONNRESET 后置位） */
   disableKeepAlive: boolean;
   /** 连续 529 计数 */
@@ -539,6 +555,10 @@ interface RetryContext {
   hasFallenBack: boolean;
   /** B1-a：本次调用的有效 per-call 覆盖（未传字段已在入口回落 this.config）。 */
   perCall: PerCallOptions;
+  /** 最近一次放弃的证据（耗尽出口文案用，I5：放弃要带证据） */
+  lastGiveUp?: GiveUpEvidence;
+  /** tryFallback 里用户选了「重试当前模型」：由 executeWithFallback 尾部重入 */
+  retrySameRequested?: boolean;
 }
 
 // ═══════════════════════════════════════════════════════════════════
@@ -645,6 +665,10 @@ export class ModelFallback {
       // 放进 this.config 会让全进程单实例的漏斗把一个子代理的截止时刻套到别人头上，
       // 正是 B1-a 修掉的那类状态共享缺陷。
       deadlineAt: perCallOptions?.deadlineAt,
+      // §4.4 retry_same 重入计数：⛔ 必须显式透传 —— 漏掉它 canRetrySame 永远为 true，
+      // 用户一直选「重试」就是无界循环（I2）。incident 测试钉住「最多 2 次」。
+      retrySameUsed: perCallOptions?.retrySameUsed,
+      priorRetries: perCallOptions?.priorRetries,
     };
 
     // § 注入流内遥测转发：把 provider 产出的协议无关 StreamTelemetrySignal
@@ -666,12 +690,17 @@ export class ModelFallback {
       },
     };
 
-    // 检查模型可用性
-    const availCheck = this.availability.isAvailable(params.model);
+    // 检查模型可用性（I4）：判据是 perCall **显式**传入的 querySource。
+    // 主线程 / headless 不受 suspect 拦截——用户下一次主动发消息，永远会真实发出一次请求；
+    // 其余调用方在 suspect 期内只放一路半开探针，其余转 fallback（S1：别一起撞同一个坏模型）。
+    const availCheck = this.availability.isAvailable(params.model, perCallOptions?.querySource);
     if (!availCheck.available) {
-      log.warn("FALLBACK", `模型 ${params.model} 不可用: ${availCheck.reason}`);
+      log.warn("FALLBACK", `模型 ${params.model} 暂不可用: ${availCheck.reason}`);
       yield* this.tryFallback(params, signal);
       return;
+    }
+    if (availCheck.probe) {
+      log.info("FALLBACK", `模型 ${params.model} 处于嫌疑期，本路径作为半开探针发起`);
     }
 
     // ═══════════════════════════════════════════════════════════════
@@ -934,11 +963,12 @@ export class ModelFallback {
 
     // 重试上下文（跨 phase 共享）
     const ctx: RetryContext = {
-      needsAuthRefresh: false,
-      gatewayPlaceholderAuthRetries: 0,
+      attempts: [],
+      startedAt: Date.now(),
+      degradeTried: false,
       disableKeepAlive: this.config.disableKeepAlive ?? false,
       consecutive529: 0,
-      totalRetriesThisCall: 0,
+      totalRetriesThisCall: perCallOptions?.priorRetries ?? 0,
       // B1-a：降级控制态从实例字段搬入 per-call 上下文（并发安全，见字段注释）。
       hasFallenBack: false,
       perCall,
@@ -1020,7 +1050,9 @@ export class ModelFallback {
     const streamMaxRetries = perCall.maxRetries ?? STREAM_RETRY.maxRetries;
 
     try {
-      for (let attempt = 0; attempt <= streamMaxRetries; attempt++) {
+      // 循环不再自己封顶：每次失败都由 decideRecovery 决定「重试 / 降级 / 转交 / 放弃」，
+      // 出口只有 return（成功、转交、降级成功）与 break（放弃 → S4 → fallback）。
+      for (let attempt = 0; ; attempt++) {
         try {
           log.debug("FALLBACK", `流式阶段尝试 ${attempt + 1}/${streamMaxRetries + 1}`);
 
@@ -1056,229 +1088,17 @@ export class ModelFallback {
               if (isAbortError(event.error.message)) {
                 throw toAbortError(event.error.message);
               }
-
-              // ── max_tokens 溢出自动恢复（感知 thinking budget）──
-              const maxTokensResult = this.tryRecoverMaxTokens(
-                event.error.message,
-                params.model,
-                params.thinking?.budgetTokens,
-              );
-              if (maxTokensResult !== null) {
-                const adjusted = maxTokensResult;
-                const original = params.maxTokens;
-                log.info("FALLBACK", `max_tokens 溢出恢复: ${original} → ${adjusted}`);
-                ctx.maxTokensOverride = adjusted;
-                this.listener?.onMaxTokensAdjusted?.(original, adjusted);
-                this.emitTelemetry(
-                  {
-                    type: "max_tokens_adjust",
-                    model: params.model,
-                    originalTokens: original,
-                    adjustedTokens: adjusted,
-                  },
-                  perCall.agentId,
-                );
-                // 跳出当前流，进入流式重试（会使用新的 maxTokens）
-                throw new RetryableError(event.error.message, "server_error");
-              }
-
               // ═══════════════════════════════════════════════════════
-              // 分类入参必须带上 statusCode —— 否则 429 落进"无法分类"
+              // I3：流内 error 事件**只做归一化 + throw**，决策全在下方 catch 那一处
               // ═══════════════════════════════════════════════════════
               //
-              // 事故 smoke-8（xarray-6461 / pytest-10081，2026-08-25）：headless 评测跑
-              // 到一半撞网关 429，**一次重试都没有**就终止整轮（19 次请求里
-              // `流式阶段尝试` 全是 `1/11`，重试计数器从没涨到 2）。
-              //
-              // 根因是这一行此前写 `classifyError(new Error(event.error.message))` ——
-              // **只把 message 传下去，把事件里明明有的 `statusCode` 丢了**。于是 429
-              // 的识别退化成对 message 做文本匹配（`errors.ts` 的 `hasBoundaryDigits`），
-              // 而 `anthropic.ts` 优先用上游给的人类可读文案（那条是网关的中文
-              // 「当前分组上游负载已饱和，请稍后再试」），里面既没有 "429" 也没有
-              // "rate_limit" → `classifyError` 返回**裸 Error** → 下方
-              // `classified instanceof RetryableError` 为 false → 跳过全部重试 →
-              // 落到"重试耗尽"出口 → tryFallback → 无备用模型 → abort → 整轮 fatal。
-              //
-              // 为什么 `streamLevel` 那条分支没接住它：`anthropic.ts` 置位 streamLevel 的
-              // 条件是 `upstreamType &&`，而这个网关回的 body 里 `"type": ""` 是**空字符串**
-              // （falsy）→ streamLevel 不置位 → 走 else 分支。`openai.ts` 的 Responses
-              // `!response.ok` 分支同样只带 statusCode 不带 streamLevel。**两族都会踩。**
-              //
-              // ⛔ 不要改成"把 streamLevel 无脑置位"来绕：那会让纯网络异常
-              // （ECONNRESET 等）也走流内错误分类器，而 `classifyStreamError` 的兜底是
-              // 「无法归类 → 按 server_error 重试」—— 等于把确定性故障也拖进 11 次退避。
-              // statusCode 是**权威且无歧义**的判据（`matchesHttpStatus` 拿到结构化状态码
-              // 就不再回退文本匹配），从它入手才是根治。
-              //
-              // 防复发：`tests/llm/status-code-classification.test.ts` 钉住"流内 error
-              // 事件带 statusCode 但不带 streamLevel"这个**生产真实形态**。此前全部
-              // fallback 测试的 mock 都显式写 `streamLevel: true`，恰好绕过了出问题的
-              // 这条分支 —— 又一例「绿了但没测到」。
-              const classified = event.error.streamLevel
-                ? classifyStreamError(
-                    params.model.split(":")[0] || params.model,
-                    event.error.message,
-                    event.error.type,
-                    event.error.statusCode,
-                  )
-                : classifyError(
-                    // 把结构化状态码挂到 Error 上：`getHTTPStatus` 会读 `.status`
-                    // （见 errors.ts 那个 cause 链遍历），于是 `matchesHttpStatus` 能
-                    // 直接用它判定，不再依赖 message 里恰好有没有那三位数字。
-                    event.error.statusCode !== undefined
-                      ? Object.assign(new Error(event.error.message), {
-                          status: event.error.statusCode,
-                        })
-                      : new Error(event.error.message),
-                  );
-
-              // ═══════════════════════════════════════════════════════
-              // S5 释放点之一（**流内 error 事件**路径）
-              // ═══════════════════════════════════════════════════════
-              //
-              // 为什么必须在这里也放一个（实测逼出来的，不是防御性编程）：
-              // 首版只在下方 catch 里释放，结果「探针死于 401 → 配额被发还」这条
-              // 断言**实测失败**。根因是 401 以 HTTP 200 + 流内 `error` 事件的形态
-              // 到达（网关的典型行为），走的是本分支 → `TerminalError` → 立刻
-              // `return`，**永远到不了 catch**。
-              //
-              // 也就是说：最该发还配额的两类（401 / 模型不存在）恰好走的是这条
-              // 不经过 catch 的路径。少这一处，S5 的释放逻辑对生产中最常见的
-              // 认证故障形态完全无效——而单测仍会全绿（纯函数是对的）。
-              heldCooldownProbe = this.maybeReleaseCooldownProbe(
-                params.model,
-                classified,
-                heldCooldownProbe,
-              );
-
-              // ── 16 号 C1：网关 401 占位句以**流内 error 事件**到达时不得在此终结 ──
-              //
-              // 这条分支有一个会绕过 catch 的出口（下面那个 TerminalError → return）。
-              // 而占位句正好有两种到达形态：
-              //   · 带 `streamLevel` → classifyStreamError 兜底成 StreamLevelError
-              //     （RetryableError）→ 落到下方 `throw classified` → 进 catch → C1 闸门；
-              //   · **不带** `streamLevel`（本网关的真实形态：`type` 是空字符串，见
-              //     status-code-classification.test.ts）→ classifyError → 401 →
-              //     TerminalError → **在此 return，永远到不了 catch**。
-              // 少这一段，C1 就只修好一半，且单测全绿——本文件上方那段注释点破过同一个
-              // 坑（「凡是只在 catch 里做的收尾动作，都要问一句流内 error 事件会不会绕过它」），
-              // S5 已经被它咬过一次。
-              //
-              // 这里只负责把它**送进 catch**（统一由那道闸门决定重试还是放弃），
-              // 不在此处重试：重试预算、退避、3 次上界全在闸门那一处，两处各写一份必然漂移。
-              if (
-                classified instanceof TerminalError &&
-                isGatewayPlaceholderAuthError(
-                  Object.assign(new Error(event.error.message), {
-                    status: event.error.statusCode,
-                  }),
-                )
-              ) {
-                throw new StreamLevelError(
-                  params.model.split(":")[0] || params.model,
-                  401,
-                  event.error.message,
-                  "server_error",
-                );
-              }
-
-              if (classified instanceof TerminalError) {
-                this.availability.markTerminal(params.model, classified.reason);
-                log.error("FALLBACK", `流式终端错误: ${classified.reason}`);
-                yield* this.tryFallback(params, signal, ctx);
-                return;
-              }
-
-              // ── 529 计数维护 ──
-              if (classified instanceof RetryableError && classified.reason === "overloaded") {
-                ctx.consecutive529++;
-              } else {
-                ctx.consecutive529 = 0;
-              }
-
-              // ── 后台 529 立即放弃 ──
-              if (
-                classified instanceof RetryableError &&
-                classified.reason === "overloaded" &&
-                !shouldRetry529(perCall.querySource)
-              ) {
-                log.info("FALLBACK", `后台查询遇 529，立即放弃`);
-                this.listener?.on529Dropped?.(perCall.querySource ?? "unknown");
-                this.emitTelemetry(
-                  {
-                    type: "529_dropped",
-                    model: params.model,
-                    querySource: perCall.querySource ?? "unknown",
-                  },
-                  perCall.agentId,
-                );
-                yield* this.tryFallback(params, signal, ctx);
-                return;
-              }
-
-              // ── 529 连续达上限 ──
-              if (
-                classified instanceof RetryableError &&
-                classified.reason === "overloaded" &&
-                ctx.consecutive529 >= MAX_529_CONSECUTIVE
-              ) {
-                log.warn("FALLBACK", `连续 ${ctx.consecutive529} 次 529，触发降级`);
-                this.emitTelemetry(
-                  {
-                    type: "fallback",
-                    model: params.model,
-                    fallbackModel: perCall.fallbackModel,
-                    error: "连续 529 错误",
-                  },
-                  perCall.agentId,
-                );
-                yield* this.tryFallback(params, signal, ctx);
-                return;
-              }
-
-              if (classified instanceof RetryableError && attempt < streamMaxRetries) {
-                log.warn("FALLBACK", `流式错误，准备重试: ${event.error.message}`);
-                throw classified;
-              }
-
-              // ── 重试耗尽 ──
-              //
-              // S4：这条出口此前**直接** tryFallback（换模型），完整绕过非流式降级。
-              //
-              // 为什么这是缺陷而不是设计：同一个传输层错误，形态不同则命运不同 ——
-              // 以 **throw** 形式到达的走下方 catch → 循环出口 → S4 能降级；
-              // 以**流内 `error` 事件**形式到达的走本分支 → 直接换模型。而「网关回
-              // text/html 错误页」这类 S4 存在理由的故障，在 `openai.ts` 里恰恰是
-              // yield 成 `type:"server_error", streamLevel:true` 的**事件**（见那里
-              // 「伪装成功的错误页」分支），也就是说 S4 最该生效的形态走的正是被绕过的那条路。
-              // 实测对照（同一个 `premature close`）：throw 路径降级 1 次、事件路径 0 次。
-              //
-              // 这与本文件已经修过一次的病同形：401 以「HTTP 200 + 流内 error 事件」到达，
-              // 导致 S5 配额发还在最常见的认证故障上失效（见上方 heldCooldownProbe 那段注释）。
-              // 同一条路径第二次咬人 —— 凡是「只在 catch 里做」的收尾动作，都要问一句
-              // 「流内 error 事件形态会不会绕过它」。
-              //
-              // 留档根因：本分支没走下方那两处赋值，不留档则 S4 的白名单读到的是
-              // **上一次**重试的 reason（或 undefined），判据就与本次失败无关了。
-              ctx.lastRetryError = classified.message;
-              ctx.lastRetryReason =
-                classified instanceof RetryableError ? classified.reason : undefined;
-
-              {
-                const degradeOutcome = { degraded: false };
-                yield* this.tryNonStreamingDegrade(
-                  primaryProvider,
-                  params,
-                  ctx,
-                  hasYieldedContent,
-                  signal,
-                  degradeOutcome,
-                );
-                if (degradeOutcome.degraded) return;
-              }
-
-              yield* this.tryFallback(params, signal, ctx);
-              return;
+              // 这里曾经有一整套平行出口：Terminal 直退（markTerminal + tryFallback）、
+              // 529 计数、后台 529 放弃、重试耗尽、max_tokens 恢复。它们和 catch 里那套
+              // 同名逻辑各写一份，于是同一个错误走 throw 还是走事件，命运不同 ——
+              // 401 占位句闸门、S5 配额发还、S4 非流式降级都被这条路径绕过过一次
+              // （会话 20261008-173228-baeb949d：`Token已失效，请重试` 5ms 内判死，零重试）。
+              // 现在两种到达形态先变成同一个 NormalizedLLMError，再进同一个 decideRecovery。
+              throw new NormalizedErrorCarrier(normalizeStreamEvent(event.error));
             }
 
             // B2：`content_block_start` 也算"有内容"。
@@ -1361,194 +1181,24 @@ export class ModelFallback {
           }
 
           // ═══════════════════════════════════════════════════════════
-          // 16 号 C1：网关 401 占位句 → 当瞬时 server_error 重试（封顶 3 次）
+          // 单一决策点（I3）：归一化 → decideRecovery → 按动作执行
           // ═══════════════════════════════════════════════════════════
           //
-          // **必须置于 B1-b 闸门之前**：占位句也满足 `is401Error`（statusCode=401），
-          // 落到下面那道闸门就退化成「retry-once 后第二次立刻 Terminal」——正是 A2
-          // 五题 1–8 轮就整轮收工的成因（cc 同题 3/5 解出）。
-          //
-          // 与 B1-b 的分工：
-          //   · 占位句（`Invalid token. (request id: …)`）→ 本分支，退避重试至多 3 次；
-          //     凭据是好的，刷新它没有意义，要的是等网关自己恢复。
-          //   · 真 key 作废 / 措辞不透明的 401 → 落下面 B1-b，retry-once 后 Terminal，
-          //     用户立刻看到「去修凭据」，不白等 3 次退避。
-          //
-          // 退避而非立即重试：网关抖动需要时间恢复，`attempt--` 式的立即重试（B1-b 的
-          // 做法，那里是为了让刷新后的新凭据马上生效）在这里只会连打 3 发全部撞墙。
-          // 故这里**消耗 attempt 预算**、走正常退避，并额外受 3 次独立上界约束。
-          if (
-            !isTimeoutAbort &&
-            isGatewayPlaceholderAuthError(err) &&
-            ctx.gatewayPlaceholderAuthRetries < GATEWAY_PLACEHOLDER_AUTH_MAX_RETRIES &&
-            attempt < streamMaxRetries
-          ) {
-            ctx.gatewayPlaceholderAuthRetries++;
-            // 取 `.message` 而非 `String(err)`：后者会带上 `StreamLevelError: ` 前缀，
-            // 而这段文字要拼进用户可见的耗尽文案（tryFallback 的 rootCause）。
-            const placeholderRetryable = new RetryableError(
-              err instanceof Error ? err.message : String(err),
-              "server_error",
-            );
-            // 留档根因：耗尽文案要说清「死在网关占位句」，不能只报一句重试用尽。
-            ctx.lastRetryError = placeholderRetryable.message;
-            ctx.lastRetryReason = placeholderRetryable.reason;
-            log.warn(
-              "FALLBACK",
-              `网关 401 占位句（非 key 作废），按瞬时错误重试 ` +
-                `${ctx.gatewayPlaceholderAuthRetries}/${GATEWAY_PLACEHOLDER_AUTH_MAX_RETRIES}: ${err}`,
-            );
-            // 用 `retry` 而非 `auth_refresh`：后者的语义是「刷过凭据」，这里一次都没刷。
-            // ⛔ 也正因如此，`RetryTelemetry > 0` 不能当 C1 的验收（16 §2.1：今天
-            // auth_refresh 已经 > 0，那条判据会假绿）。验收看的是**第二次以后仍在重试**。
-            const placeholderDelayMs = this.calculateRetryDelay(
-              err,
-              attempt,
-              placeholderRetryable,
-              STREAM_RETRY.maxDelayMs,
-            );
-            this.emitTelemetry(
-              {
-                type: "retry",
-                model: params.model,
-                attempt: attempt + 1,
-                delayMs: placeholderDelayMs,
-                error: `gateway placeholder 401: ${placeholderRetryable.message}`,
-                provider: primaryProvider.name(),
-                phase: "stream",
-                // 归因钥匙：轨迹里要能把这次重开与「网关占位句」对上，否则它和普通
-                // server_error 重试同形，C1 是否真的在生效就无从事后核查。
-                reopenReason: "gateway_placeholder_auth",
-              },
-              perCall.agentId,
-            );
-            yield* this.sleepWithProgress(
-              placeholderDelayMs,
-              attempt + 1,
-              streamMaxRetries + 1,
-              "retry",
-              signal,
-            );
-            resetStreamTimeout();
-            // 作废语义广播：与 B1-b / 正常重试同理，重开的是**全新请求**。
-            yield { type: "stream_restart", reason: "retry", attempt: attempt + 1 };
-            try {
-              const retryParams = ctx.maxTokensOverride
-                ? { ...params, maxTokens: ctx.maxTokensOverride }
-                : params;
-              stream = primaryProvider.sendMessageStream(retryParams, makeCombinedSignal());
-              resetAttemptProduction();
-              continue;
-            } catch (placeholderErr) {
-              if (signal?.aborted || isAbortError(placeholderErr)) {
-                throw toAbortError(placeholderErr);
-              }
-              log.error("FALLBACK", `网关 401 占位句重试建流失败: ${placeholderErr}`);
-              yield* this.tryFallback(params, signal, ctx);
-              return;
-            }
-          }
+          // 2026-10-08 起这里**没有**任何「认出某种文案就判死」的分支：网关 401 占位句闸门、
+          // B1-b 的 401 retry-once 闸门、「无法分类 → 不重试直接 fallback」的 fail-fast 全部删除。
+          // 它们的正确部分由 recovery-policy.ts 的错误族预算承接（auth_suspect 首次立即重试并刷新
+          // 凭据、local_fault 不退避快速暴露、认不出的同指纹 3 次封顶），判死改为观测证据制：
+          // 同一指纹在有间隔的多次尝试里一直复现才放弃，且放弃只作用于本次调用。
+          const normalized = normalizeThrown(
+            err,
+            isTimeoutAbort
+              ? { streamTimeoutMessage: `流式无进展超时（${streamTimeoutMs / 1000}s 无内容进展）` }
+              : {},
+          );
 
-          // ═══════════════════════════════════════════════════════════
-          // B1-b 复活①：401 retry-once 闸门
-          // ═══════════════════════════════════════════════════════════
-          //
-          // **必须置于 classifyError 之前**：401 会被 classifyError 判成
-          // TerminalError("auth_failed") → 下面立刻 markTerminal 拉黑模型 + 转
-          // fallback。放在其后等于闸门永不生效（这正是它在原连接循环里"看着有、
-          // 实际从不执行"之外的第二重失效）。
-          //
-          // 语义（沿用 RetryContext.needsAuthRefresh 注释）：首个 401 置位并**不退避**
-          // 立即重试一次——覆盖凭据瞬时失效/网关抖动；第二个 401 因已置位而落到
-          // classifyError → TerminalError → 拉黑 + fallback，不会无限重试。
-          //
-          // B5-7：`onAuthRefresh` 注入后，这里不再只是「retry-once 闸门」，而是
-          // **先真刷新、再重试**（原 N1 另案的落地点，注释随之更新）。未注入钩子时
-          // 完全退化为原语义（旧凭据重试一次），行为逐字节不变。
-          // 16 号 C1：占位句**不进**这道闸门。它不是凭据问题（刷新无意义），且
-          // 一旦进来就被「只放一次」封住 —— 那正是要修的原状。占位句的重试预算
-          // 由上面那道闸门单独管；3 次用尽后它落 classifyError → Terminal，
-          // 于是总重试次数**恰好封顶 3**，不会既吃 3 次又白吃一次 auth_refresh。
-          if (
-            !isTimeoutAbort &&
-            is401Error(err) &&
-            !isGatewayPlaceholderAuthError(err) &&
-            !ctx.needsAuthRefresh
-          ) {
-            // 闸门先置位、再刷新：即便刷新实现里自己抛错或卡住，也不会因为"没走到置位"
-            // 而让下一个 401 再刷一次 —— 防无限刷新循环的责任在闸门，不在刷新实现。
-            ctx.needsAuthRefresh = true;
-
-            // B5-7：真刷新。失败/未注入都不致命——退化成"用旧凭据重试一次"的原行为。
-            let refreshed = false;
-            if (this.config.onAuthRefresh) {
-              try {
-                refreshed = await this.config.onAuthRefresh(primaryProvider.name(), err);
-              } catch (refreshErr) {
-                // 刷新失败是预期内结果之一（refresh token 也过期了 / 刷新端点不可达），
-                // 不是 bug，故不向上传播：继续走"旧凭据重试一次"，再失败自然落 terminal。
-                log.warn("FALLBACK", `凭据刷新钩子抛错，退化为旧凭据重试一次: ${refreshErr}`);
-              }
-            }
-
-            log.info(
-              "FALLBACK",
-              refreshed
-                ? "401 认证错误，凭据已刷新，立即重试（不退避）"
-                : `401 认证错误，触发 retry-once 闸门并重试（${this.config.onAuthRefresh ? "凭据刷新未成功" : "未注入凭据刷新钩子"}，不退避）`,
-            );
-            this.emitTelemetry(
-              {
-                type: "auth_refresh",
-                model: params.model,
-                error: String(err),
-                provider: primaryProvider.name(),
-                // B5-7：区分"真刷新过"与"只是重试一次"。缺了它，遥测里两种语义
-                // 完全同形——正是本项要消除的那类"看着有能力、实际没有"的盲区。
-                authRefreshed: refreshed,
-              },
-              perCall.agentId,
-            );
-            resetStreamTimeout();
-            // 作废语义广播（与下方重试路径同理）：401 重试同样是**全新请求**。
-            // 401 通常在建流阶段就抛、尚未产出内容块，但「通常」不是「必然」——
-            // 网关可能先回 200 + 部分 SSE 再插一个 401 错误事件。少这一行就留下
-            // 一条能绕过作废广播的路径，事故会以更低频率复发（更难查）。
-            yield { type: "stream_restart", reason: "auth_refresh", attempt: attempt + 1 };
-            try {
-              const retryParams = ctx.maxTokensOverride
-                ? { ...params, maxTokens: ctx.maxTokensOverride }
-                : params;
-              stream = primaryProvider.sendMessageStream(retryParams, makeCombinedSignal());
-              resetAttemptProduction();
-              // 不消耗 attempt 预算：retry-once 闸门自带"只一次"上界（needsAuthRefresh
-              // 已置位），且不退避——与 CC withRetry 的 401 刷新重试同语义。
-              attempt--;
-              continue;
-            } catch (reauthErr) {
-              if (signal?.aborted || isAbortError(reauthErr)) {
-                throw toAbortError(reauthErr);
-              }
-              log.error("FALLBACK", `401 重试建流失败: ${reauthErr}`);
-              yield* this.tryFallback(params, signal, ctx);
-              return;
-            }
-          }
-
-          // ═══════════════════════════════════════════════════════════
-          // B1-b 复活②：ECONNRESET / EPIPE → 禁用 keep-alive
-          // ═══════════════════════════════════════════════════════════
-          //
-          // 与①同理，原先只在不可达的连接 catch 里置位；且置位的两个字段
-          // （ctx.disableKeepAlive / config.disableKeepAlive）**全仓无消费者**，
-          // 即便执行了也是空转。现同时接线真消费者：`keepalive.ts` 的进程级开关
-          // → provider fetch 选项 `{ keepalive: false }`（anthropic 走自定义 fetch
-          // 包装，openai 走 fetch init 展开）。
-          //
-          // 为什么必须禁用而非原样重试：ECONNRESET/EPIPE 的典型成因是连接池里的
-          // socket 已被对端/网关单方面关闭而本地仍认为可用，**原样重试会命中同一条
-          // 死连接**，重试次数被白烧。禁用复用后强制新建连接才可能自愈。
-          const netCode = getNetworkErrorCode(err);
+          // ── keep-alive 管理（ECONNRESET/EPIPE）──
+          // 对端重置/断管说明连接池里有半死的连接，后续请求不再复用（进程级）。
+          const netCode = getNetworkErrorCode(normalized.raw);
           if ((netCode === "ECONNRESET" || netCode === "EPIPE") && !ctx.disableKeepAlive) {
             log.info(
               "FALLBACK",
@@ -1559,62 +1209,125 @@ export class ModelFallback {
             disableKeepAlive(); // ← 真消费者：进入 provider 的 fetch 选项
           }
 
-          const classified = isTimeoutAbort
-            ? new RetryableError(
-                `流式无进展超时（${streamTimeoutMs / 1000}s 无内容进展）`,
-                "timeout",
-              )
-            : classifyError(err);
+          const verdict = classifyFamily(normalized);
 
-          // S5 释放点之二（连接/流异常抛出路径）。见 maybeReleaseCooldownProbe 注释。
+          // S5：探针失败于与限流窗口无关的原因 → 发还配额（两种到达形态现在走同一处）。
           heldCooldownProbe = this.maybeReleaseCooldownProbe(
             params.model,
-            classified,
+            verdict.reason,
             heldCooldownProbe,
           );
 
-          if (classified instanceof TerminalError) {
-            this.availability.markTerminal(params.model, classified.reason);
-            log.error("FALLBACK", `终端错误: ${classified.reason}`);
-            yield* this.tryFallback(params, signal, ctx);
+          // 未知措辞台账：只用来观察各网关实际在回什么。⛔ 不许写回分类规则自动生效 ——
+          // 自动学习会把一次网关事故学成永久规则，等于重建「认出文案就判死」。
+          if (!verdict.recognized) {
+            this.emitTelemetry(
+              {
+                type: "unrecognized_error",
+                model: params.model,
+                provider: primaryProvider.name(),
+                statusCode: normalized.status,
+                fingerprint: normalized.fingerprint,
+                error: normalized.message.slice(0, 200),
+                arrival: normalized.arrival,
+              },
+              perCall.agentId,
+            );
+          }
+
+          // 退避在同一次决策内只算一次（含 jitter）：S2 写冷却用的估计与最终睡的时长同源。
+          let backoffMemo: number | undefined;
+          const backoff = (retryIndex: number, v: FamilyVerdict, e: NormalizedLLMError): number =>
+            (backoffMemo ??= this.calculateRetryDelay(
+              e.raw,
+              retryIndex,
+              { reason: v.reason, retryAfterMs: e.retryAfterMs },
+              STREAM_RETRY.maxDelayMs,
+            ));
+
+          // ═══════════════════════════════════════════════════════════
+          // S2（写侧）：撞到限流 → 在共享 availability 上写下冷却截止时刻
+          // ═══════════════════════════════════════════════════════════
+          //
+          // 只对 `rate_limit` 写，不对 `overloaded`(529) 写：529 是服务端**容量**问题，
+          // 各路退避重试本身就是正确应对；而 429 是**配额**问题，配额是全局的——
+          // 别人替我撞出来的那条信息，对我同样有效。冷却上限由 markRateLimited 内部钳制。
+          if (this.config.respectSharedCooldown !== false && verdict.reason === "rate_limit") {
+            this.availability.markRateLimited(
+              params.model,
+              backoff(ctx.totalRetriesThisCall, verdict, normalized),
+              normalized.message,
+              "rate_limit",
+            );
+          }
+
+          // S2（读侧之二）：退避时长向共享冷却对齐（取 max，不相加；错峰避免惊群）。
+          let sharedCooldownMs: number | undefined;
+          let cooldownSlot = 0;
+          let cooldownRemaining = 0;
+          if (this.config.respectSharedCooldown !== false) {
+            cooldownRemaining = this.availability.getCooldownRemaining(params.model);
+            if (cooldownRemaining > 0) {
+              cooldownSlot = cooldownStaggerSlot(perCall.agentId);
+              sharedCooldownMs = cooldownRemaining + cooldownSlot * COOLDOWN_STAGGER_MS;
+            }
+          }
+
+          const maxTokensRecovery = this.tryRecoverMaxTokens(
+            normalized.message,
+            params.model,
+            params.thinking?.budgetTokens,
+          );
+          const decide = (): RecoveryAction =>
+            decideRecovery(
+              normalized,
+              {
+                attempts: ctx.attempts,
+                totalRetries: ctx.totalRetriesThisCall,
+                consecutive529: ctx.consecutive529,
+                degradeTried: ctx.degradeTried,
+                startedAt: ctx.startedAt,
+              },
+              {
+                callerMaxRetries: streamMaxRetries,
+                maxRetriesPerCall,
+                persistent: !!this.config.persistent,
+                retry529: shouldRetry529(perCall.querySource),
+                deadlineRemainingMs:
+                  perCall.deadlineAt !== undefined ? perCall.deadlineAt - Date.now() : undefined,
+                backoffBaseMs:
+                  this.config.retryBackoffBaseMs ?? NETWORK_DEFAULTS.retryBackoffBaseMs,
+                backoff,
+                sharedCooldownMs,
+                maxTokensRecovery: maxTokensRecovery ?? undefined,
+              },
+            );
+          let action = decide();
+
+          // 留档根因（缺口 D）：每次都覆盖，耗尽时留下的是**最后一次**失败原因。
+          ctx.lastRetryError = normalized.message;
+          ctx.lastRetryReason = verdict.reason;
+
+          // ── 转交：上下文溢出交给 loop 的 reactive compact ──
+          //
+          // 原样把错误作为流内 error 事件交出去，不拉黑、不换模型、不拼 rootCause：
+          // query/stream-processor.ts 把它转成 `LLMStreamError("LLM 错误: " + 原文)`，
+          // loop 的 isPromptTooLongError 接住后压缩重发；子代理侧同理。漏斗里不做压缩。
+          if (action.kind === "handoff") {
+            log.warn("FALLBACK", `上下文溢出，转交上层压缩: ${normalized.message}`);
+            yield {
+              type: "error",
+              error: {
+                message: normalized.message,
+                ...(normalized.status !== undefined && { statusCode: normalized.status }),
+                ...(normalized.upstreamType && { type: normalized.upstreamType }),
+              },
+            };
             return;
           }
 
-          // B2：**无法分类**的错误不重试（fail-fast），直接转 fallback。
-          //
-          // `classifyError` 的契约是「分类不出来就原样返回入参」（其第 4 分支注释写明
-          // "无法分类，返回原始错误"）——即既非 RetryableError 也非 TerminalError。
-          // 此前这类错误落进下方重试路径，等于把「我不知道这是什么」当成「值得重试」：
-          // 最坏烧掉 maxRetries × 退避（默认 10 × 5s+）才放弃，而它们典型是**确定性
-          // 故障**（provider 实现抛错、参数拼装 bug、SDK 版本不兼容），重试必然再失败。
-          //
-          // 判据取自本文档 §0.4：能力应由分类器**显式授予**，而非"没被否决就放行"。
-          // 被删的 R1 循环在这点上是对的（`canRetry = !!retryable && …`），收敛进漏斗时
-          // 必须把这条语义一并带过来——否则"删掉平行实现"会顺手弄丢一个正确行为。
-          if (!(classified instanceof RetryableError)) {
-            log.warn(
-              "FALLBACK",
-              `错误无法分类为可重试，不重试直接转 fallback: ${classified.message}`,
-            );
-            // 根因留档（缺口 D）：本路径没走重试，需在此显式记一笔，否则耗尽文案会丢掉它。
-            ctx.lastRetryError = classified.message;
-            // S4：**保留精确 reason**，不要一律压成 "unclassified"。
-            //
-            // `StreamValidationError("响应为空", "empty_response")` 也走这条 fail-fast 分支
-            // （它不是 RetryableError），压成 "unclassified" 会丢掉"这是空响应"这个关键信息：
-            // 空响应恰好是非流式降级唯一能治的那一类（网关回 text/html 错误页 / 空 body），
-            // 而 "unclassified"（provider 实现 bug、参数拼装错）恰好是**不该**降级的一类。
-            // 两者压成同一个标签，S4 就只能"要么都降级、要么都不降级"——前者浪费一次请求，
-            // 后者让 S4 在它最该生效的场景上永久失效。
-            ctx.lastRetryReason =
-              classified instanceof StreamValidationError ? classified.reason : "unclassified";
-
-            // S4：fail-fast 不代表"不许换传输方式"。
-            //
-            // 这条分支的语义是「**重试**必然无效」，而非流式降级不是重试——它是同一个
-            // 模型换一条传输通道，恰好能穿过"重试多少次都一样空"的网关故障。
-            // 门槛未被放宽：内部 transportish 白名单只放行 empty_response / network /
-            // timeout，provider 代码 bug（unclassified）照旧直接转 fallback。
+          // ── 空响应首次直降级（S4）：流式重试多少次都一样空，降级也失败才进 transient 预算 ──
+          if (action.kind === "degrade_non_streaming") {
             const degradeOutcome = { degraded: false };
             yield* this.tryNonStreamingDegrade(
               primaryProvider,
@@ -1625,188 +1338,141 @@ export class ModelFallback {
               degradeOutcome,
             );
             if (degradeOutcome.degraded) return;
-
-            yield* this.tryFallback(params, signal, ctx);
-            return;
+            ctx.degradeTried = true;
+            action = decide();
           }
 
-          if (attempt >= streamMaxRetries) {
-            log.warn("FALLBACK", `流式阶段重试 ${streamMaxRetries} 次后仍失败`);
-            this.availability.markRetryOnce(params.model, "流式传输失败");
+          // 本次失败记入历史。放在决策**之后**：决策读的是「之前」的尝试。
+          ctx.attempts.push({
+            family: verdict.family,
+            reason: verdict.reason,
+            recognized: verdict.recognized,
+            fingerprint: normalized.fingerprint,
+            status: normalized.status,
+          });
+          ctx.consecutive529 = verdict.reason === "overloaded" ? ctx.consecutive529 + 1 : 0;
 
-            // persistent 模式：无限重试
-            if (this.config.persistent) {
-              log.info("FALLBACK", "persistent 模式，继续重试");
-              const delayMs = PERSISTENT_MAX_DELAY_MS;
-              this.emitTelemetry(
-                {
-                  type: "persistent_retry_wait",
-                  model: params.model,
-                  delayMs,
-                },
-                perCall.agentId,
-              );
-              yield* this.sleepWithProgress(
-                delayMs,
-                attempt + 1,
-                streamMaxRetries + 1,
-                "persistent_retry",
-                signal,
-              );
-              // 重置计数，继续循环
-              attempt = -1;
-              continue;
-            }
-
-            break;
-          }
-
-          // 不确定-2/3：单次调用共享重试预算上界。persistent（无人值守）模式豁免——它明确
-          // 要求无限重试直到成功，不受此上界约束（其无限循环在上面的 attempt>=streamMaxRetries
-          // 分支内自成一路）。非 persistent 路径达到上界即停止重试、转 fallback。
-          if (!this.config.persistent && ctx.totalRetriesThisCall >= maxRetriesPerCall) {
-            log.warn(
-              "FALLBACK",
-              `流式阶段：单次调用累计重试已达上界 ${maxRetriesPerCall}，停止重试转 fallback`,
-            );
-            this.availability.markRetryOnce(params.model, "单次调用重试上界");
-            break;
-          }
-          ctx.totalRetriesThisCall++;
-
-          // B2（缺口 D）：留档真实根因。每次重试都覆盖，故耗尽时留下的是**最后一次**
-          // 失败原因——正是用户最需要看到的那个。
-          ctx.lastRetryError = classified.message;
-          ctx.lastRetryReason =
-            classified instanceof RetryableError ? classified.reason : undefined;
-
-          // 流式重试：重新发起完整请求
-          const delayMs = this.calculateRetryDelay(
-            err,
-            attempt,
-            classified,
-            STREAM_RETRY.maxDelayMs,
-          );
-
-          // ═══════════════════════════════════════════════════════════
-          // S2（写侧）：撞到限流 → 在共享 availability 上写下冷却截止时刻
-          // ═══════════════════════════════════════════════════════════
-          //
-          // 只对 `rate_limit` 写，不对 `overloaded`(529) 写：529 是服务端**容量**问题，
-          // 各路退避重试本身就是正确应对（换个时刻可能就有容量了）；而 429 是**配额**
-          // 问题，配额是全局的——别人替我撞出来的那条信息，对我同样有效。
-          //
-          // 写的是"退避时长"而非固定值：`delayMs` 已经融合了服务端 Retry-After /
-          // rate-limit-reset（见 retry-backoff.ts 的优先级），是我们手上关于"这个限流
-          // 窗口多长"的**最好估计**。冷却上限由 markRateLimited 内部钳制。
-          if (
-            this.config.respectSharedCooldown !== false &&
-            classified instanceof RetryableError &&
-            classified.reason === "rate_limit"
-          ) {
-            // S5：连**结构化成因**一起写。`classified.message` 是错误原文（给人看），
-            // `classified.reason` 是闭合词表（给探针判定看）。少传第四个参数，
-            // 冷却记录里就没有 cause → 探针判定 fail-closed 恒拒 → S5 静默失效
-            // 且测试全绿（这正是「仪器少记一个字段」那类故障的形态）。
-            this.availability.markRateLimited(
-              params.model,
-              delayMs,
-              classified.message,
-              classified.reason,
-            );
-          }
-
-          // ═══════════════════════════════════════════════════════════
-          // S2（读侧之二）：退避时长向共享冷却对齐
-          // ═══════════════════════════════════════════════════════════
-          //
-          // 为什么入口那个读点不够（实测，非推论）：6 路并发子代理**几乎同时**发起，
-          // 全部在任何人撞限流之前就通过了入口检查 —— 冷却表那时还是空的。真正的
-          // 放大发生在**重试循环**里：6 路各自按自己的退避节奏重试，彼此不知道
-          // 别人刚刚才撞了一次。第一版只写不在此处读，实测 `shared_cooldown_wait`
-          // 事件为 0，即"能力已接线但从未生效"——正是 §七 F7 要求用断言钉住的形态。
-          //
-          // 取 max 而非相加：冷却与退避是对**同一个**限流窗口的两个估计，不是两段
-          // 独立等待。相加会让 6 路一起过度退避，把 S2 从"更省"做成纯"更慢"。
-          let effectiveDelayMs = delayMs;
-          if (this.config.respectSharedCooldown !== false) {
-            const cdRemaining = this.availability.getCooldownRemaining(params.model);
-            if (cdRemaining > 0) {
-              // 错峰：冷却给"等多久"，槽位给"别和别人同时醒"。缺了错峰就是惊群，
-              // 实测零收益（见 COOLDOWN_STAGGER_SLOTS 注释里的前后数据）。
-              const slot = cooldownStaggerSlot(perCall.agentId);
-              const staggered = cdRemaining + slot * COOLDOWN_STAGGER_MS;
-              if (staggered > effectiveDelayMs) {
-                this.emitTelemetry(
-                  {
-                    type: "shared_cooldown_wait",
-                    model: params.model,
-                    attempt: attempt + 1,
-                    delayMs: staggered,
-                    remainingMs: cdRemaining,
-                    error: `retry aligned to shared cooldown (slot ${slot})`,
-                  },
-                  perCall.agentId,
-                );
-                effectiveDelayMs = staggered;
-              }
-            }
-          }
-
-          // ═══════════════════════════════════════════════════════════
-          // S3（§5 缺口 C）：按 wall-clock 剩余预算钳制
-          // ═══════════════════════════════════════════════════════════
-          //
-          // 判据不是"还有没有剩余时间"，而是"**这次退避睡完之后还来得及发一次请求吗**"。
-          // 只判前者会退化成"睡到被外层 abort"——那正是现状：最后一次退避等不完就被砍，
-          // 白烧最长 120s，且用户拿不到任何结论。
-          //
-          // persistent（无人值守）豁免：它的语义就是"等多久都行"，与截止时刻互斥。
-          // 注意判的是 `effectiveDelayMs`（已含 S2 冷却对齐）而不是原始 `delayMs`：
-          // 顺序上 S2 先抬高等待、S3 再裁决，否则会"按短的批准、按长的睡"——
-          // 批准了一个其实塞不进预算的等待，S3 就等于没做。
-          if (!this.config.persistent && perCall.deadlineAt !== undefined) {
-            const remaining = perCall.deadlineAt - Date.now();
-            if (remaining <= effectiveDelayMs + MIN_USEFUL_ATTEMPT_MS) {
-              log.warn(
-                "FALLBACK",
-                `S3：剩余预算 ${Math.max(0, remaining)}ms 不足以「退避 ${effectiveDelayMs}ms + 一次请求」，` +
-                  `停止重试（已重试 ${ctx.totalRetriesThisCall} 次）`,
-              );
+          if (action.kind === "give_up") {
+            this.recordGiveUp(params.model, action.evidence, normalized, perCall, primaryProvider);
+            ctx.lastGiveUp = action.evidence;
+            if (action.evidence.reason === "deadline") {
+              // S3：「时间不够」与「次数用尽」必须可分辨（修法完全不同：前者调 timeout /
+              // 退避 cap，后者查网关限流）。
+              ctx.lastRetryError = `时间预算不足（需退避 ${action.evidence.wantedDelayMs ?? 0}ms + 一次请求，剩余 ${action.evidence.remainingMs ?? 0}ms）— ${normalized.message}`;
               this.emitTelemetry(
                 {
                   type: "retry_budget_exhausted",
                   model: params.model,
                   attempt: attempt + 1,
-                  delayMs: effectiveDelayMs,
-                  remainingMs: Math.max(0, remaining),
-                  error: classified.message,
+                  delayMs: action.evidence.wantedDelayMs,
+                  remainingMs: action.evidence.remainingMs,
+                  error: normalized.message,
                 },
                 perCall.agentId,
               );
-              // 留档：让耗尽文案说得出"是时间不够，不是次数用尽"——两者修法完全不同
-              // （前者调 timeout / 降退避，后者查限流），归因混淆会把排查带偏。
-              ctx.lastRetryError = `${classified.message}（剩余时间预算不足，已重试 ${ctx.totalRetriesThisCall} 次后停止）`;
-              this.availability.markRetryOnce(params.model, "时间预算不足");
-              break;
             }
+            if (action.evidence.reason === "background_529") {
+              // 后台查询遇 529：省配额，直接放弃（不做非流式降级——那治不了过载）。
+              this.listener?.on529Dropped?.(perCall.querySource ?? "unknown");
+              this.emitTelemetry(
+                {
+                  type: "529_dropped",
+                  model: params.model,
+                  querySource: perCall.querySource ?? "unknown",
+                },
+                perCall.agentId,
+              );
+              yield* this.tryFallback(params, signal, ctx);
+              return;
+            }
+            break;
+          }
+          if (action.kind !== "retry") break;
+
+          ctx.totalRetriesThisCall++;
+
+          // ── max_tokens 溢出恢复（感知 thinking budget）：带新 maxTokens 在漏斗内重试 ──
+          if (action.maxTokensOverride !== undefined) {
+            const original = params.maxTokens;
+            log.info("FALLBACK", `max_tokens 溢出恢复: ${original} → ${action.maxTokensOverride}`);
+            ctx.maxTokensOverride = action.maxTokensOverride;
+            this.listener?.onMaxTokensAdjusted?.(original, action.maxTokensOverride);
+            this.emitTelemetry(
+              {
+                type: "max_tokens_adjust",
+                model: params.model,
+                originalTokens: original,
+                adjustedTokens: action.maxTokensOverride,
+              },
+              perCall.agentId,
+            );
           }
 
-          // 日志/监听器/遥测统一报 effectiveDelayMs——报 delayMs 会让"日志说等 400ms、
-          // 实际等了 2s"，是排查时最耗时间的那种不一致。
-          log.info("FALLBACK", `流式重试 ${attempt + 1}，延迟 ${effectiveDelayMs}ms`);
-          this.listener?.onRetry?.(attempt + 1, classified.message, effectiveDelayMs);
-          // §6.3 重复开流成因遥测：推导本次"重新获取流"的结构化原因。
-          // 优先取 stream-observer snapshot 里最近触发的超时层（idle_timeout /
-          // content_progress_timeout / fallback_stream_timeout——这些是导致重开的精确信号），
-          // 无超时记录则取 classified.reason（network_error/overloaded/empty_response 等）。
-          // 这是 §2.7 "同一轮重复开流"观测盲区的根因定位钥匙——回放会话时可据此判断
-          // 重复开流是 idle 超时、内容进展超时、还是网络抖动导致，而非仅凭 error 字符串猜测。
-          // 控制流收窄在深层嵌套循环里退化为 Error，用显式 instanceof 取 reason。
-          let reopenReason = "unknown";
-          if (classified instanceof RetryableError) {
-            reopenReason = classified.reason;
+          // ── auth_suspect 首次：先刷新凭据再立即重试（B5-7 钩子；未注入时用旧凭据重试）──
+          //
+          // 两种到达形态现在都能走到这里。旧闸门只在 catch 里，而 401 的生产形态恰恰是
+          // 「HTTP 200 + 流内 error 事件」，于是 auth_refresh 在事故会话里的计数是 0。
+          if (action.refreshAuth) {
+            let refreshed = false;
+            if (this.config.onAuthRefresh) {
+              try {
+                refreshed = await this.config.onAuthRefresh(primaryProvider.name(), normalized.raw);
+              } catch (refreshErr) {
+                log.warn("FALLBACK", `凭据刷新钩子抛错，退化为旧凭据重试: ${refreshErr}`);
+              }
+            }
+            log.info(
+              "FALLBACK",
+              refreshed
+                ? "认证类错误，凭据已刷新，立即重试（不退避）"
+                : `认证类错误，立即重试一次（${this.config.onAuthRefresh ? "凭据刷新未成功" : "未注入凭据刷新钩子"}）`,
+            );
+            this.emitTelemetry(
+              {
+                type: "auth_refresh",
+                model: params.model,
+                error: normalized.message,
+                provider: primaryProvider.name(),
+                authRefreshed: refreshed,
+              },
+              perCall.agentId,
+            );
           }
+
+          // ── persistent：调用方预算用尽后进入长等待，醒来给一份全新的观测窗口 ──
+          if (action.persistentWait) {
+            log.info("FALLBACK", "persistent 模式，继续重试");
+            this.emitTelemetry(
+              { type: "persistent_retry_wait", model: params.model, delayMs: action.delayMs },
+              perCall.agentId,
+            );
+            ctx.attempts = [];
+          }
+
+          const effectiveDelayMs = action.delayMs;
+          if (sharedCooldownMs !== undefined && sharedCooldownMs > action.baseDelayMs) {
+            this.emitTelemetry(
+              {
+                type: "shared_cooldown_wait",
+                model: params.model,
+                attempt: attempt + 1,
+                delayMs: sharedCooldownMs,
+                remainingMs: cooldownRemaining,
+                error: `retry aligned to shared cooldown (slot ${cooldownSlot})`,
+              },
+              perCall.agentId,
+            );
+          }
+
+          // 日志/监听器/遥测统一报 effectiveDelayMs（已向共享冷却对齐）。
+          log.info(
+            "FALLBACK",
+            `流式重试 ${attempt + 1}（${verdict.family}/${verdict.reason}），延迟 ${effectiveDelayMs}ms`,
+          );
+          this.listener?.onRetry?.(attempt + 1, normalized.message, effectiveDelayMs);
+          // §6.3 重复开流成因遥测：优先取 stream-observer 快照里最近触发的超时层，
+          // 无超时记录则取分类细分原因（network_error / overloaded / auth_failed …）。
+          let reopenReason: string = action.reopenReason;
           try {
             const { turnIndex, loopId } = currentSseDumpContext();
             // B4：读快照与上面 emitTimeoutFired 必须用**同一把 key**（含 agentId），
@@ -1819,22 +1485,20 @@ export class ModelFallback {
           } catch {
             /* 可观测性不影响重试 */
           }
-          // B4：这条是"哪个子代理重试了几次"的**主数据源**——按 agentId 聚合
-          // type=retry 事件即可回答。缺了它只能聚合到 querySource 类别，
-          // 分不清"一路撞 N 次"和"N 路各撞一次"（修法完全不同）。
           this.emitTelemetry(
             {
               type: "retry",
               model: params.model,
               attempt: attempt + 1,
               delayMs: effectiveDelayMs,
-              error: classified.message,
+              error: normalized.message,
+              provider: primaryProvider.name(),
               phase: "stream",
               reopenReason,
-              // PR6：把"这次重开扔掉了多少已产出内容"钉进同一条遥测。
-              // 放这里而不是放在下面 `yield stream_restart` 旁边，是因为**那行常常执行不到**：
-              // watchdog 会在退避睡眠期间（56~163ms vs 4.3~5.7s）把生成器杀掉。
-              // 这一条在退避**之前**发，实测 24/24 全部落盘。
+              family: verdict.family,
+              fingerprint: normalized.fingerprint,
+              // PR6：把"这次重开扔掉了多少已产出内容"钉进同一条遥测（在退避**之前**发，
+              // watchdog 在退避睡眠期间杀掉生成器也不丢）。
               discardedChars: produced.chars,
               discardedThinkingChars: produced.thinkingChars,
             },
@@ -1858,15 +1522,16 @@ export class ModelFallback {
             );
           }
 
-          // S2：睡 `effectiveDelayMs`（已向共享冷却对齐），不是原始 delayMs。
-          // 这一行是 S2 从"写了个字段"变成"真的少发一发请求"的落点。
-          yield* this.sleepWithProgress(
-            effectiveDelayMs,
-            attempt + 1,
-            streamMaxRetries + 1,
-            "retry",
-            signal,
-          );
+          // 认证首次重试不退避：refreshAuth 且 0 延迟时不进 sleepWithProgress（不打进度噪音）。
+          if (!(action.refreshAuth && effectiveDelayMs === 0)) {
+            yield* this.sleepWithProgress(
+              effectiveDelayMs,
+              attempt + 1,
+              streamMaxRetries + 1,
+              action.persistentWait ? "persistent_retry" : "retry",
+              signal,
+            );
+          }
 
           // 重置超时计时器
           resetStreamTimeout();
@@ -1917,7 +1582,7 @@ export class ModelFallback {
     // 前者代价更小、语义更保守（模型能力/价格/上下文窗口全不变），且它兜住的那类
     // 故障（网关不支持 SSE）换模型往往**根本治不了**——同一个网关的另一个模型
     // 一样不支持流式。反过来把换模型放前面，会用一次无谓的模型切换掩盖真实成因。
-    {
+    if (!ctx.degradeTried) {
       const degradeOutcome = { degraded: false };
       yield* this.tryNonStreamingDegrade(
         primaryProvider,
@@ -1934,6 +1599,23 @@ export class ModelFallback {
     // 重试耗尽 → Fallback Provider
     // ═══════════════════════════════════════════════════════════════
     yield* this.tryFallback(params, signal, ctx);
+
+    // §4.4：用户在弹窗里选了「重试当前模型」→ 以全新族预算重入，已用重试次数与
+    // deadline 继承（不撑大 maxRetriesPerCall / S3 的约束）。重入前广播作废：
+    // 上一轮主模型若流出过半截内容，消费方必须丢掉。
+    if (ctx.retrySameRequested) {
+      log.info(
+        "FALLBACK",
+        `用户选择重试当前模型 ${params.model}（第 ${(perCall.retrySameUsed ?? 0) + 1} 次）`,
+      );
+      yield { type: "stream_restart", reason: "retry_same" };
+      yield* this.executeWithFallback(primaryProvider, params, signal, {
+        ...perCallOptions,
+        querySource: perCall.querySource,
+        retrySameUsed: (perCall.retrySameUsed ?? 0) + 1,
+        priorRetries: ctx.totalRetriesThisCall,
+      });
+    }
   }
 
   /**
@@ -1968,6 +1650,16 @@ export class ModelFallback {
       const reason = ctx.lastRetryReason ? `${ctx.lastRetryReason}: ` : "";
       return `（重试 ${ctx.totalRetriesThisCall} 次，最后一次失败原因 — ${reason}${ctx.lastRetryError}）`;
     })();
+    // §4.4 / I5：放弃出口必须给出真实可执行的下一步 + 证据。「直接重发会重新请求该模型」
+    // 只有在 I4（主线程不读嫌疑态）落地后才是真的 —— 两者同 PR 上线。
+    const evidenceNote = ((): string => {
+      const ev = ctx?.lastGiveUp;
+      if (!ev) return "";
+      return `（已尝试 ${ev.attempts} 次，证据：${ev.family}/${ev.reason}，状态 [${ev.statuses
+        .map((x) => x ?? "-")
+        .join(",")}]，跨度 ${Math.round(ev.spanMs / 100) / 10}s）`;
+    })();
+    const resendHint = "直接重发消息会重新请求该模型。";
 
     // 已经用过 fallback（二次降级）→ 不再重复切换，直接报错。
     // B1-a：判据取 per-call 上下文（并发安全）；ctx 缺省时（理论上不发生，仅防御
@@ -1995,7 +1687,7 @@ export class ModelFallback {
       yield {
         type: "error",
         error: {
-          message: `模型请求失败，已达最大重试次数（降级已禁用 fallbackSwitchMode=off）${rootCause}`,
+          message: `模型请求失败${evidenceNote || "，已达最大重试次数"}（降级已禁用 fallbackSwitchMode=off）。${resendHint}${rootCause}`,
         },
       };
       return;
@@ -2004,6 +1696,7 @@ export class ModelFallback {
     // ── 决定切换目标：ask 走钩子，auto 走 config.fallbackModel ──
     let targetModel: string | undefined;
     let targetProvider: Provider | undefined;
+    const viaDecision = mode === "ask" && !!this.config.onFallbackDecision;
 
     if (mode === "ask" && this.config.onFallbackDecision) {
       let decision: FallbackDecision;
@@ -2018,6 +1711,8 @@ export class ModelFallback {
             : "主模型重试耗尽",
           defaultFallbackModel: cfgFallbackModel || undefined,
           signal,
+          canRetrySame: !!ctx && (pc?.retrySameUsed ?? 0) < MAX_RETRY_SAME_PER_CALL,
+          attempts: ctx?.totalRetriesThisCall,
         });
       } catch (err) {
         // 钩子抛错 → fail-open 到 auto 语义（保任务不中断，切默认 fallback）。
@@ -2031,6 +1726,15 @@ export class ModelFallback {
           };
         }
       }
+      if (decision.action === "retry_same") {
+        if (ctx && (pc?.retrySameUsed ?? 0) < MAX_RETRY_SAME_PER_CALL) {
+          ctx.retrySameRequested = true;
+          return;
+        }
+        // 超出次数（钩子没守约）→ 按终止处理，不让就地重试变成无界循环（I2）。
+        log.warn("FALLBACK", "retry_same 超出单次调用上限，按终止处理");
+        decision = { action: "abort" };
+      }
       if (decision.action === "abort") {
         log.warn("FALLBACK", "用户/钩子选择不切换，终止本轮");
         // 2026-09-06：这条出口此前是**四条耗尽出口里唯一漏拼 rootCause 的**，
@@ -2042,7 +1746,7 @@ export class ModelFallback {
         yield {
           type: "error",
           error: {
-            message: `主模型请求失败，已终止本轮。可重新发送消息重试，或用 /model 切换模型。${rootCause}`,
+            message: `主模型请求失败${evidenceNote}，已终止本轮。${resendHint}也可用 /model 切换模型。${rootCause}`,
           },
         };
         return;
@@ -2060,7 +1764,9 @@ export class ModelFallback {
       log.error("FALLBACK", "主 Provider 失败且无可用 fallback");
       yield {
         type: "error",
-        error: { message: `模型请求失败，已达最大重试次数且无可用 fallback${rootCause}` },
+        error: {
+          message: `模型请求失败${evidenceNote || "，已达最大重试次数"}，且无可用 fallback。${resendHint}${rootCause}`,
+        },
       };
       return;
     }
@@ -2071,7 +1777,10 @@ export class ModelFallback {
     if (ctx) ctx.hasFallenBack = true;
     this.lastCallFellBack = true;
     log.warn("FALLBACK", `切换到 fallback 模型: ${targetModel}`);
-    this.listener?.onFallback?.("主模型失败", targetModel);
+    this.listener?.onFallback?.("主模型失败", targetModel, {
+      fromModel: params.model,
+      viaDecision,
+    });
     // B4：agentId 从 ctx.perCall 取（tryFallback 无 perCall 局部变量）。
     // ctx 缺省时（防御性，仅未来新增路径漏传 ctx）退化为不带身份，与旧行为一致。
     this.emitTelemetry(
@@ -2340,7 +2049,7 @@ export class ModelFallback {
   private calculateRetryDelay(
     err: unknown,
     attempt: number,
-    classified: TerminalError | RetryableError | Error,
+    classified: BackoffHint,
     maxDelayMs: number,
   ): number {
     // 实现已抽到 retry-backoff.ts，与子代理路径（agentic-loop.ts）共用同一份。
@@ -2411,28 +2120,71 @@ export class ModelFallback {
   }
 
   /**
+   * 放弃本模型（本次调用）：写 suspect 证据 + RecoveryGiveUp 遥测。
+   *
+   * ⛔ 只写**有时效**的嫌疑态，不写永久拉黑：主线程下一次调用照样真实发请求（I4），
+   * 并行子代理在 suspect 期内由一路半开探针去验证（S1）。
+   * I1-例外（服务端拒绝 / 截止时刻 / 后台 529）不写 suspect：它们不是「模型坏了」的证据。
+   */
+  private recordGiveUp(
+    model: string,
+    evidence: GiveUpEvidence,
+    err: NormalizedLLMError,
+    perCall: PerCallOptions,
+    provider: Provider,
+  ): void {
+    const notModelEvidence =
+      evidence.reason === "server_declined" ||
+      evidence.reason === "deadline" ||
+      evidence.reason === "background_529";
+    if (!notModelEvidence) {
+      this.availability.markSuspect(
+        model,
+        err.fingerprint,
+        `${evidence.family} ×${evidence.attempts}${err.status !== undefined ? ` HTTP ${err.status}` : ""}`,
+      );
+    }
+    getLogger().warn(
+      "FALLBACK",
+      `放弃模型 ${model}（${evidence.reason}，${evidence.family}，${evidence.attempts} 次尝试，` +
+        `跨度 ${evidence.spanMs}ms，状态 [${evidence.statuses.join(",")}]）: ${err.message}`,
+    );
+    this.emitTelemetry(
+      {
+        type: "recovery_give_up",
+        model,
+        provider: provider.name(),
+        error: err.message.slice(0, 200),
+        giveUpReason: evidence.reason,
+        family: evidence.family,
+        attempts: evidence.attempts,
+        statuses: evidence.statuses,
+        fingerprints: evidence.fingerprints,
+        spanMs: evidence.spanMs,
+        recognized: evidence.recognized,
+        arrival: err.arrival,
+        ...(perCall.querySource && { querySource: perCall.querySource }),
+      },
+      perCall.agentId,
+    );
+  }
+
+  /**
    * S5：探针失败后按结构化 reason 决定配额是否发还。返回**更新后的持有标记**。
    *
-   * 抽成方法而不是在两处各写一遍：它有两个调用点（流内 `error` 事件路径、
-   * 连接/流异常 catch 路径），而这两条路径的分歧正是首版的 bug——只接一处时，
-   * 生产中最常见的 401 形态（HTTP 200 + 流内 error）走的恰好是没接的那条。
-   * 同一段判定手抄两遍，将来改一处漏一处会以更低频率复发（更难查）。
+   * 2026-10-08 起只有一个调用点：流内 `error` 事件已归一化后 throw 进 catch，两种到达形态
+   * 共用这一处（首版只接了 catch，生产最常见的 401 形态走事件路径，配额发还完全失效）。
    *
    * 返回值语义：调用方**必须**把它赋回自己的 `heldCooldownProbe`。这保证幂等——
    * 重试循环里本方法可被同一次调用多次进入，不置位就会反复"发还"配额，
    * 等于每次重试补一张探针券，配额形同虚设。
    */
-  private maybeReleaseCooldownProbe(model: string, classified: unknown, held: boolean): boolean {
+  private maybeReleaseCooldownProbe(
+    model: string,
+    reason: FamilyReason | undefined,
+    held: boolean,
+  ): boolean {
     if (!held) return false;
-    // 三个错误类都带 `reason`，但入参类型是 unknown（classifyError 的契约是
-    // 认不出就原样返回入参）。显式 instanceof 收窄而不是 `as any`：
-    // 认不出的那一格必须落到 undefined，而 undefined 在判定③里是"不发还"。
-    const reason =
-      classified instanceof TerminalError ||
-      classified instanceof RetryableError ||
-      classified instanceof StreamValidationError
-        ? classified.reason
-        : undefined;
     if (shouldPreserveTransientCooldownProbeSlot(reason)) {
       this.availability.releaseCooldownProbe(model);
       getLogger().info(

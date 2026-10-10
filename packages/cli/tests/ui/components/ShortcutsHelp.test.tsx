@@ -9,12 +9,14 @@
 
 import { test, expect, describe } from "bun:test";
 import React from "react";
-import { render } from "@sid-code/tui-renderer/_vendor/testing.tsx";
+import { render } from "@sid-code/cli/ui/render-port/testing.ts";
 import { ShortcutsHelp } from "@sid-code/cli/ui/components/ShortcutsHelp.tsx";
 
 describe("K1 — ShortcutsHelp 从表生成", () => {
   test("渲染出退出 / Copy Mode / Markdown 等关键键描述", () => {
-    const { lastFrame } = render(<ShortcutsHelp />);
+    // 用宽终端渲染：这里测的是「不丢项」，不是换行。80 列下 33% 宽的条目
+    // legacy 每行排 2 个、next 排 3 个，描述会在不同位置折行，子串断言就变成在测布局（B9 / T8.2）
+    const { lastFrame } = render(<ShortcutsHelp />, { columns: 200 });
     const frame = lastFrame() ?? "";
     expect(frame).toContain("退出");
     expect(frame).toContain("Copy Mode");

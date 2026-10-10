@@ -240,6 +240,8 @@ export class AddDirCommand implements Command {
     }
 
     checker.addAllowedDirectory(resolved);
+    // Q6：DirectoryAdded——运行时加入会话白名单之后（仅通知，fire-and-forget）
+    ctx.hookSystem?.fireDirectoryAddedEvent(resolved).catch(() => {});
     return {
       kind: "message",
       message: `✓ 已将目录加入当前会话可访问白名单: ${resolved}\n（用户级运行时授权，仅本会话生效，不写入配置文件）`,

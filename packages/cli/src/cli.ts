@@ -23,7 +23,7 @@ import { isPolicyAllowed } from "@sid-code/core/config/policy-limits.ts";
 import { sidPaths } from "@sid-code/core/config/paths.ts";
 import { printHelp } from "./help.ts";
 import { runMigrations } from "@sid-code/core/migrations/runner.ts";
-import { getVersion } from "@sid-code/shared/version.ts";
+import { getVersionDisplay } from "@sid-code/shared/version.ts";
 import { isAbortError, isRuntimeTimeoutError } from "@sid-code/core/llm/errors.ts";
 import { EFFORT_LEVELS, isEffortLevel } from "@sid-code/core/llm/effort.ts";
 import {
@@ -125,6 +125,17 @@ export function resolveAlternateBufferDecision(env: {
     value: undefined,
     reason: `未指定，走配置默认值（TERM_PROGRAM=${env.termProgram ?? "<未设置>"}）`,
   };
+}
+
+/**
+ * `SID_CODE_DEBUG` 是否开启调试模式（B27）。
+ *
+ * 取值口径必须与 `packages/tui-renderer/src/_vendor/debug.ts` 一致（`1` / `true`）：
+ * 同一个变量在两处读，一处认 `true` 一处不认，用户就会看到「ink 日志出来了、debug.log 没有」
+ * 这种半开状态，比完全不生效更难排查。
+ */
+export function isDebugEnvEnabled(raw: string | undefined): boolean {
+  return raw === "1" || raw === "true";
 }
 
 /**
@@ -249,6 +260,8 @@ function parseCLIArgs(): CLIArgs {
         "permission-mode": { type: "string" },
         "dangerously-skip-permissions": { type: "boolean" },
         yes: { type: "boolean", short: "y" },
+        // Q2：仅本会话信任当前工作区（项目级 hooks / MCP 照常加载），不写入信任记录
+        "trust-workspace": { type: "boolean" },
         // 缺口 C1 §5.3：预授权工具白名单（守护进程无头 job 注入；逗号分隔）
         "allowed-tools": { type: "string" },
         "disallowed-tools": { type: "string" },
@@ -330,6 +343,7 @@ function parseCLIArgs(): CLIArgs {
         // 目录授权（P1-1）：追加额外可访问目录（可重复）。映射到 config.allowedDirectories。
         "add-dir": { type: "string", multiple: true },
         // 花费上限美元（P1-9）：映射到 config.costLimit，超限终止。
+        // 交互模式与 -p 都生效；与 quota.costLimit 取更严的那个（B18）。
         "max-budget-usd": { type: "string" },
         // IDE 自动连接（A-4 子集）：等价于 SID_CODE_AUTO_CONNECT_IDE=true / config.ide.autoConnect。
         ide: { type: "boolean" },
@@ -385,7 +399,7 @@ function parseCLIArgs(): CLIArgs {
   }
 
   if (values.version) {
-    console.log(getVersion());
+    console.log(getVersionDisplay());
     process.exit(0);
   }
 
@@ -509,18 +523,17 @@ function parseCLIArgs(): CLIArgs {
     console.error("错误: --print 下 --output-format=stream-json 需要同时指定 --verbose");
     process.exit(1);
   }
-  // G1 / B2：这两个 flag 只在 --print 下改变行为。交互模式传了它不会报错退出
+  // G1 / B2：--output-format 只在 --print 下改变行为。交互模式传了它不会报错退出
   // （对齐 CC「only works with --print」的宽松处理），但静默忽略会让人以为
-  // TUI 会话也被花销上限或输出格式约束住了。告警写 stderr，不拦启动。
-  if (values.print !== true) {
-    if (outFmt !== undefined) {
-      console.error(
-        `警告: --output-format 只在 --print 下生效，交互模式已忽略（收到 "${outFmt}"）。`,
-      );
-    }
-    if (values["max-budget-usd"] !== undefined) {
-      console.error("警告: --max-budget-usd 只在 --print 下生效，交互模式已忽略。");
-    }
+  // TUI 会话也被输出格式约束住了。告警写 stderr，不拦启动。
+  //
+  // B18（2026-10-02）：--max-budget-usd 原来也在这里被告警并忽略。但交互模式的
+  // QuotaManager 本来就在跑（quota.costLimit 在 TUI 里是生效的），所以那不是能力缺失，
+  // 只是参数没接进去 —— 现在两种模式都经 resolveEffectiveCostLimit 生效，告警随之删除。
+  if (values.print !== true && outFmt !== undefined) {
+    console.error(
+      `警告: --output-format 只在 --print 下生效，交互模式已忽略（收到 "${outFmt}"）。`,
+    );
   }
 
   // setting-sources（P1-6）：逗号分隔子集 user/project/local。
@@ -603,6 +616,7 @@ function parseCLIArgs(): CLIArgs {
     permissionMode: values["permission-mode"],
     skipPermissions: values["dangerously-skip-permissions"],
     yesMode: values.yes,
+    trustWorkspace: values["trust-workspace"],
     // 缺口 C1 §5.3：逗号分隔 → string[]（守护进程无头 job 预授权白名单）
     allowedTools: values["allowed-tools"]
       ? String(values["allowed-tools"])
@@ -636,7 +650,9 @@ function parseCLIArgs(): CLIArgs {
     // P1-4：合并了 --append-system-prompt 与 --append-system-prompt-file 的内容
     appendSystemPrompt: appendSystemPrompt,
     systemPromptFile: values["system-prompt-file"],
-    debug: values.debug,
+    // B27：SID_CODE_DEBUG=1 与 --debug 等价。帮助文本、ref/env、排障页三处都在教这个变量，
+    // 此前代码里只有 tui-renderer 的 ink stderr 读它，debug.log 从不因它开启。
+    debug: values.debug || isDebugEnvEnabled(process.env.SID_CODE_DEBUG),
     debugLevel: values["debug-level"],
     debugLogFile: values["debug-log-file"],
     pluginDirs: values["plugin-dir"],
@@ -667,7 +683,7 @@ function parseCLIArgs(): CLIArgs {
     // 采集默认启用（--no-trace 关闭）。上传配置完全走配置文件（settings.json trace.upload 段），
     // CLI flag 仅作为覆盖手段——不在代码中硬编码 URL/token。
     // "是否上传 / 是否本地保留 / 上传后是否删除" 是独立开关，由配置文件各字段控制：
-    //   trace.upload.url / token      → 是否上传（有配置才上传）
+    //   trace.upload.url / token      → 是否上传（有配置才上传；url 缺省取 backend.url）
     //   trace.upload.auto_upload      → 会话结束自动上传还是手动
     //   trace.upload.delete_after_upload → 上传成功后是否删本地（默认 false = 保留）
     // --trace-upload-disabled 可强制关闭上传（最高优先级，覆盖配置文件）。
@@ -783,12 +799,12 @@ async function runSessionPicker(
   opts: { searchFirst?: boolean; initialSearchQuery?: string } = {},
 ): Promise<string | null> {
   const React = await import("react");
-  const { default: render } = await import("@sid-code/tui-renderer/root.ts");
+  const { render } = await import("./ui/render-port/runtime.ts");
   const { SessionBrowser } = await import("./ui/SessionBrowser.tsx");
   const { sidPaths } = await import("@sid-code/core/config/paths.ts");
   const { consumeEarlyInput } = await import("./ui/early-input.ts");
-  const { drainStdin } = await import("@sid-code/tui-renderer/ink.tsx");
-  const { setSuppressTerminalProbe } = await import("@sid-code/tui-renderer/terminal.ts");
+  const { drainStdin } = await import("./ui/render-port/runtime.ts");
+  const { setSuppressTerminalProbe } = await import("./ui/render-port/runtime.ts");
   const { resolveProjectRoot } = await import("@sid-code/core/memory/paths.ts");
   const { join } = await import("path");
   const { unlinkSync, existsSync } = await import("fs");
@@ -867,6 +883,27 @@ async function handleBrowseSessions(config: Config): Promise<void> {
   }
 }
 
+/**
+ * 一次性命令的统一出口：先恢复终端、等 stdout 排空，再显式退出。
+ *
+ * 为什么不能只 return：见 main() 里会话管理命令分支的注释（early-input 让 stdin
+ * 在交互终端下保持 resume，事件循环永不为空）。先等 drain 是因为管道下裸
+ * process.exit() 会截断尚未写出的输出。
+ */
+async function exitOneShot(code = 0): Promise<never> {
+  try {
+    if (process.stdin.isTTY && process.stdin.isRaw) process.stdin.setRawMode(false);
+    process.stdin.pause();
+  } catch {
+    /* stdin 可能已销毁 */
+  }
+  await new Promise<void>((resolve) => {
+    if (process.stdout.write("")) resolve();
+    else process.stdout.once("drain", () => resolve());
+  });
+  process.exit(code);
+}
+
 /** 处理清理会话命令 */
 async function handleCleanupSessions(config: Config): Promise<void> {
   const { cleanupExpiredSessions, getRetentionSettings } =
@@ -875,7 +912,14 @@ async function handleCleanupSessions(config: Config): Promise<void> {
   try {
     const retentionSettings = getRetentionSettings(config);
     console.log("开始清理过期会话...");
-    console.log(`配置: maxAge=${retentionSettings.maxAge}, maxCount=${retentionSettings.maxCount}`);
+    console.log(
+      `配置: enabled=${retentionSettings.enabled}, maxAge=${retentionSettings.maxAge}, ` +
+        `maxCount=${retentionSettings.maxCount ?? "不限"}, maxTotalSize=${retentionSettings.maxTotalSize}`,
+    );
+    if (!retentionSettings.enabled) {
+      console.log("自动清理已关闭（sessionRetention.enabled=false），不做任何删除。");
+      return;
+    }
 
     const result = await cleanupExpiredSessions(config, retentionSettings, config.sessionId);
 
@@ -909,7 +953,8 @@ async function handleUploadTraces(config: Config): Promise<void> {
   const traceUpload = config.trace?.upload;
   if (!traceUpload?.url || !traceUpload?.token) {
     console.error(
-      "错误: 未配置上传地址或 token，请在配置文件或通过 --trace-upload-url / --trace-upload-token 参数指定",
+      "错误: 未配置上传地址或 token。地址缺省取 backend.url，token 在 trace.upload.token 配置，\n" +
+        "      或通过 --trace-upload-url / --trace-upload-token 参数指定",
     );
     process.exit(1);
   }
@@ -1176,7 +1221,8 @@ export async function main(): Promise<void> {
     // 现在改为 fail-closed：未信任 → **当场从 config 里 strip 掉危险配置**，再把快照
     // 交给 TUI 弹对话框。用户确认信任后持久化，下次启动 isTrusted() 为真即完整加载。
     // 拒绝 → 本会话就是被 strip 后的降级配置在跑，不是"标记一下但照常加载"。
-    if (!config.skipPermissions && !config.yesMode) {
+    // Q2：--trust-workspace = 本会话信任工作区（不持久化），与 skip-permissions / yes 一样整段跳过门控。
+    if (!config.skipPermissions && !config.yesMode && !config.trustWorkspace) {
       try {
         const { TrustManager, setPendingTrust, setWorkspaceUntrusted } =
           await import("@sid-code/core/permission/trust.ts");
@@ -1189,13 +1235,22 @@ export async function main(): Promise<void> {
           setWorkspaceUntrusted(true);
           // fail-closed：先摘掉危险配置，无论后续是否有 UI 来问
           const stripped: string[] = [];
+          let skippedHookCount = 0;
           for (const item of dangerousItems) {
             // hooks / mcpServers 是**非可选**字段（默认 {}，见 config.ts:319-320、795-796），
             // 所以清空成 {} 而不是 delete——delete 会让下游 `Object.keys(config.hooks)`
             // 这类无防护访问炸在 undefined 上。env 是可选字段，delete 安全。
-            if (item.type === "hooks" && Object.keys(config.hooks ?? {}).length > 0) {
-              config.hooks = {};
-              stripped.push("hooks");
+            // HC2：只摘「随仓库分发」的层（项目级 + 被 git 追踪的 local），**不再 config.hooks = {}**
+            // ——config.hooks 只承载用户级 hooks，原先一刀切会把用户自己的 hooks 一起清空。
+            if (item.type === "hooks") {
+              for (const layer of config._hookLayers ?? []) {
+                if (layer.untrusted && !layer.skippedByTrust) {
+                  layer.skippedByTrust = true;
+                  skippedHookCount += Object.values(layer.hooks).flat().length;
+                }
+              }
+              if (skippedHookCount > 0)
+                stripped.push(`项目级 hooks ${skippedHookCount} 条（用户级照常）`);
             } else if (
               item.type === "mcp_servers" &&
               Object.keys(config.mcpServers ?? {}).length > 0
@@ -1225,6 +1280,12 @@ export async function main(): Promise<void> {
             // 非交互（-p / maxTurns）：无处可问，保持 strip 后的降级配置继续跑。
             // 这才真正兑现了原注释声称的"危险配置不会被加载"。
             log.warn("TRUST", "非交互模式：不询问信任，危险配置保持未加载");
+            // Q2：点名放行开关。原提示「已跳过 hooks」会被读成「全部 hooks 都没跑」
+            if (skippedHookCount > 0) {
+              console.error(
+                `未信任工作区：已跳过项目级 hooks ${skippedHookCount} 条（用户级照常）。确认可信可加 --trust-workspace`,
+              );
+            }
           }
         }
       } catch (err: any) {
@@ -1353,6 +1414,8 @@ export async function main(): Promise<void> {
         logFile: config.debugLogFile,
         console: !isTUI,
         fileOnly: isTUI,
+        // 无头模式 stdout 只留结果（text / json / stream-json），日志一律 stderr
+        consoleToStderr: !isTUI,
         mutedCategories: ["UI:MD", "TUI:STATE", "TUI:RESIZE", "STREAM_WRITER"],
       });
 
@@ -1459,29 +1522,37 @@ export async function main(): Promise<void> {
     }
 
     // 处理会话管理命令（不需要 API Key）
+    //
+    // 这几条一次性命令**必须以 exitOneShot() 收尾，不能只 return**：走到这里时
+    // bootstrap 已启动 early-input（交互终端下 stdin 被 setRawMode(true) + resume()），
+    // 另有 settings 变更监听等活引用。只 return 会让事件循环永远不空 ——
+    // 实测 `--cleanup-sessions` 在真实 pty 下打印完结果就挂住，必须 Ctrl+C。
+    // 管道 / 非 TTY 下 early-input 不启动，所以只在终端里复现，测试里很难看见。
+    // 与下面 --dump-tools 同套路；`--list-sessions` / `--delete-session` 平时走
+    // bootstrap 快速路径不经过这里，参数组合不命中快速路径时才会落到这里。
     if (cliArgs["list-sessions"]) {
       const { handleListSessions } = await import("@sid-code/core/session/commands.ts");
       await handleListSessions();
-      return;
+      return exitOneShot();
     }
     if (cliArgs["browse-sessions"]) {
       await handleBrowseSessions(config);
-      return;
+      return exitOneShot();
     }
     if (cliArgs["delete-session"]) {
       const { handleDeleteSession } = await import("@sid-code/core/session/commands.ts");
       await handleDeleteSession(cliArgs["delete-session"]);
-      return;
+      return exitOneShot();
     }
     if (cliArgs["cleanup-sessions"]) {
       await handleCleanupSessions(config);
-      return;
+      return exitOneShot();
     }
 
     // 手动触发重试队列（补传之前失败的上传）
     if (cliArgs["upload-traces"]) {
       await handleUploadTraces(config);
-      return;
+      return exitOneShot();
     }
 
     // 验证 API Key。
@@ -1619,7 +1690,7 @@ export async function main(): Promise<void> {
     toolRegistry.register(new WebFetchTool());
     toolRegistry.register(new MemoryTool(memoryStore));
 
-    // 注册 LSP 代码智能查询工具（goToDefinition/findReferences/hover/documentSymbol 等 9 操作）。
+    // 注册 LSP 代码智能查询工具（goToDefinition/findReferences/hover/documentSymbol/codeAction 等 10 操作）。
     // isEnabled 自动检测：LSP 初始化成功/进行中才进上下文，无配置时不暴露给模型（零配置体验）。
     const { LSPTool } = await import("@sid-code/core/tool/lsp.ts");
     toolRegistry.register(new LSPTool());
@@ -1772,15 +1843,20 @@ export async function main(): Promise<void> {
     const { CustomCommandLoader } = await import("./command/custom.ts");
     const { TrustManager } = await import("@sid-code/core/extension/trust.ts");
     const trustManager = new TrustManager();
+    // B20：交互模式此前直接返回全部文件 + 持久化，等于打开任何目录都静默信任它带的扩展。
+    // 现在启动阶段（TUI 起来之前）走 stdin y/N 确认，只有确认过的才加载并记住；
+    // 无 TTY / TUI 已接管 stdin 时 fail-closed（不加载、不持久化）。-p 维持跳过。
+    const { createTrustPrompt } = await import("@sid-code/core/extension/trust-prompt.ts");
+    const trustPrompt = createTrustPrompt({
+      print: !!config.print,
+      confirm: process.stdin.isTTY && !cliArgs.bridgeUrl ? (m) => promptYesNo(m) : undefined,
+      projectDir: process.cwd(),
+      warn: (m) => getLogger().warn("TRUST", m),
+    });
     const scanOptions = {
       trustManager,
       trustProjectExtensions: config.trustProjectExtensions,
-      onUntrusted: async (files: any[]) => {
-        if (config.print) return [];
-        const log = getLogger();
-        log.warn("TRUST", `发现 ${files.length} 个未信任的项目级扩展，已自动信任`);
-        return files;
-      },
+      onUntrusted: trustPrompt.onUntrusted,
       // additional 层（对齐 CC）：--add-dir 授权的目录，其 .sid-code/{type}/ 与
       // .claude/{type}/ 下的 skills/commands/agents 一并加载。此前 --add-dir 只影响
       // 文件访问白名单，授权目录自带的 skill 加载不进来。
@@ -2160,6 +2236,9 @@ export async function main(): Promise<void> {
       for (const key of Object.keys(allMcpServers)) delete allMcpServers[key];
     }
     let mcpManager: import("@sid-code/core/mcp/manager.ts").MCPManager | undefined;
+    // D30：MCP prompt 变更的转发目标。unifiedRegistry 创建前到达的通知记成 pending，建好后补发一次。
+    let notifyMcpPromptsChanged: (() => void) | undefined;
+    let mcpPromptsChangedPending = false;
 
     // IDE 自动连接需要 mcpManager（IDE 作为动态 MCP server 接入），
     // 因此即使没有配置 MCP 服务器，只要 IDE 自动连接生效也创建 manager
@@ -2172,6 +2251,14 @@ export async function main(): Promise<void> {
       // D13：企业 mcpPolicy 在连接前的最后一道闸生效——插件 MCP、--mcp-config（含
       // --strict-mcp-config）、IDE 动态注册、运行时重连都不经过 config 合并层的过滤。
       mcpManager.policy = config.mcpPolicy;
+      // B21：授权 URL 此前只走 log.info——不开 --debug 时 logger 停在 WARN 级（审计日志），
+      // URL 被静默丢掉，而 performOAuthFlow 会在回调上干等 5 分钟。用户看到的是
+      // 「MCP 连不上、也没有任何提示」。必须直出 stderr：stdout 是无头模式的结构化输出通道。
+      mcpManager.onOAuthAuthorizationUrl = (serverName, url) => {
+        process.stderr.write(
+          `\n[MCP] ${serverName} 需要 OAuth 授权，请在浏览器打开以下 URL（5 分钟内有效）:\n${url}\n\n`,
+        );
+      };
 
       // 回填 tool_search 的 MCP pending 检测：搜索无果时若有 server 仍在连接中，
       // 提示模型稍后重试（避免启动初期 MCP 异步连接未完成时误判工具不存在）。
@@ -2196,8 +2283,19 @@ export async function main(): Promise<void> {
         toolRegistry.invalidateParamTextCache();
       };
 
-      // G3 接线：注入 Elicitation 处理器（服务器请求额外信息时用终端交互处理）。
-      // App 就绪后可用 UI 版覆盖（见 App）；此处提供 CLI 版兜底，避免默认 cancel 一切。
+      // P1-2 / D30：prompt / 连接态变更 → 广播命令集合变更，让补全列表跟上。
+      // 必须在 connectAll **之前**挂：connectAll 是 fire-and-forget，下面到 unifiedRegistry 创建
+      // 之间有十几处 await，早连上的 stdio server 广播时回调还是 undefined，通知被静默丢掉。
+      // 此时 unifiedRegistry 还没建，先转发到一个占位，建好后再接上（见下方 flush）。
+      mcpManager.onPromptsChanged = () => {
+        if (notifyMcpPromptsChanged) notifyMcpPromptsChanged();
+        else mcpPromptsChangedPending = true;
+      };
+
+      // G3 / D28：注入 Elicitation 处理器。它不区分模式，而是走 ask-user-question-bridge：
+      // TUI 模式 app.ts 会注入提问处理器 → 弹对话框，用户的选择如实回传；
+      // 无头模式无处理器 → decline，且不写 stdout。（旧注释说「App 就绪后用 UI 版覆盖」，
+      // 那个覆盖从来不存在，见 D28。）
       {
         const { cliElicitationHandler } = await import("@sid-code/core/mcp/elicitation.ts");
         mcpManager.elicitationHandler = cliElicitationHandler;
@@ -2209,6 +2307,17 @@ export async function main(): Promise<void> {
           .connectAll(allMcpServers)
           .then(async (mcpTools) => {
             for (const tool of mcpTools) toolRegistry.register(tool);
+            // B22：_ctx_mcp_server_count 此前无人回填、恒为 0。计的是**连上的**数，不是配置数——
+            // 后者在配置里就能看到，分析时真正缺的是「这个会话实际有几个 server 可用」。
+            try {
+              const { MCPConnectionStatus: S } = await import("@sid-code/core/mcp/types.ts");
+              const { setMcpServerCount } = await import("@sid-code/core/analytics/metadata.ts");
+              setMcpServerCount(
+                mgrForSkills.getStatus().filter((s) => s.status === S.CONNECTED).length,
+              );
+            } catch {
+              /* 遥测回填失败不阻断 MCP 接入 */
+            }
             if (mcpTools.length > 0) {
               // 新工具进池后清 paramText 缓存：延迟工具集变化（含 schema 可能更新），
               // 避免 tool_search 命中陈旧参数文本（借鉴 CC ToolSearchTool 的缓存失效）。
@@ -2221,6 +2330,8 @@ export async function main(): Promise<void> {
               const { discoverMcpSkills } = await import("@sid-code/core/mcp/skill-discovery.ts");
               const mcpSkills = await discoverMcpSkills(mgrForSkills);
               if (mcpSkills.length > 0) {
+                // 声明了 paths 的 MCP skill 先过条件门，再进 manager（顺序见 gateLateConditionalSkills）
+                skillActivationCoordinator.gateLateConditionalSkills(mcpSkills);
                 skillManager.addPluginSkills(mcpSkills); // 复用 precedence 追加 + 热重载重放登记
                 for (const skill of mcpSkills) {
                   if (skill.userInvocable !== false) {
@@ -2460,8 +2571,11 @@ export async function main(): Promise<void> {
     // MCP prompt 不进 cwd 缓存（getCommands 每次现场构建），所以这里不需要清缓存，
     // 只需把"变了"这件事转发出去；订阅方在 app.ts 里重新 loadCommandList。
     // 覆盖 UI 调用点覆盖不到的那部分：心跳失败自动重连、子进程退出、退避重连成功。
-    if (mcpManager) {
-      mcpManager.onPromptsChanged = () => unifiedRegistry.notifyExternalChange();
+    // D30：回调本身在 connectAll 之前就挂上了（见上），这里只接上转发目标并补发窗口期的通知。
+    notifyMcpPromptsChanged = () => unifiedRegistry.notifyExternalChange();
+    if (mcpPromptsChangedPending) {
+      mcpPromptsChangedPending = false;
+      notifyMcpPromptsChanged();
     }
 
     // 预加载插件命令快照（custom/skill/builtin 由 getCommands 按 cwd 懒加载并缓存）
@@ -2526,6 +2640,10 @@ export async function main(): Promise<void> {
         isLoading: () => app.isBusy?.() ?? false,
         sessionId: config.sessionId,
         workspaceDir: process.cwd(),
+        // B43：只有 TUI 会话有提示词注入器，能真正执行 durable 任务。
+        // `-p` / bridge 会话（包括 daemon fork 出来的子进程）抢到驱动权就会把任务
+        // 认领掉（一次性任务删除、循环任务推进 lastFiredAt）却永远执行不了。
+        driveDurable: !config.print && !cliArgs.bridgeUrl,
       });
       scheduler.start();
 
@@ -2605,8 +2723,17 @@ export async function main(): Promise<void> {
       const protectedIds = resumedSessionIdForCleanup ? [resumedSessionIdForCleanup] : undefined;
       cleanupExpiredSessions(config, retentionSettings, config.sessionId, protectedIds)
         .then((result) => {
-          if (result.deleted > 0 && config.debug) {
+          if (result.deleted > 0) {
+            // 删用户数据必须让人看见：此前只在 --debug 下记一行日志，用户直到想 --resume
+            // 时才发现会话没了（Claude Code#64999 投诉的正是这种「静默删除」）。
+            // 提示里直接给出关掉/调大的位置，看见的人不用再去翻文档。
             getLogger().info("CLEANUP", `自动清理: 删除 ${result.deleted} 个过期会话`);
+            app.notifyStatus(
+              "session_cleanup",
+              `已按保留策略清理 ${result.deleted} 个旧会话（保留 ${retentionSettings.maxAge}；` +
+                `可在 settings.json 的 sessionRetention 调整或关闭）`,
+              10000,
+            );
           }
         })
         .catch((err: any) => {
@@ -2903,7 +3030,9 @@ export async function main(): Promise<void> {
         prompt = [prompt, pipedText].filter(Boolean).join("\n");
       }
       // resume 带了会话 id 时允许空 prompt：恢复后续跑，不需要新指令。
-      if (!prompt.trim() && !config.resume) {
+      // B25：stream-json 输入也允许——首条 prompt 由宿主经 stdin 的 `user` 消息送来，
+      // 嵌入方（IDE / SDK 宿主）常常是先握手、先发控制请求，再发第一条消息。
+      if (!prompt.trim() && !config.resume && config.inputFormat !== "stream-json") {
         console.error("错误: 无头模式需要提供提示词（位置参数或管道 stdin）");
         process.exit(1);
       }
@@ -2925,6 +3054,8 @@ export async function main(): Promise<void> {
       if (config.debug) {
         getLogger().info("CLI", `启动完成，耗时 ${startupDuration.toFixed(0)}ms`);
       }
+      // stdin 即将归 Ink：此后热重载遇到的新未信任扩展只记日志，下次启动再问
+      trustPrompt.closePrompting();
       await app.runTUI(cliArgs.prompt);
     }
   } catch (err) {

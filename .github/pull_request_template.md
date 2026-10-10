@@ -51,6 +51,9 @@ CI 有两个 job、五道门禁，上面五条本地全跑绿基本就不会红�
 - [ ] 改了 `packages/cli/src/{help,cli}.ts` / `packages/core/src/{tool,config,hook}/` /
       `packages/cli/src/command/` 的话，跑过 `bun run docs:gen-reference`
       并提交了 `website/ref/` 与 `website/public/llms.txt` 的改动
+- [ ] 改了 `packages/core/src/identity/endpoints.ts` 的路由表的话，已用
+      `UPDATE_BACKEND_PATHS=1 bun test packages/core/tests/identity/endpoints.test.ts` 重新生成快照，
+      并把 `packages/core/tests/fixtures/backend-paths.json` 同步到 agent-backend 的契约测试
 - [ ] 测试若会写 `~/.sid-code/`，已重定向到 tmpdir
       （见 [CONTRIBUTING.md](../CONTRIBUTING.md) 的测试约定——违反它的测试**会全绿**）
 - [ ] 分支不是 `main`（从 `main` 切出的 `<type>/<描述>` 短命分支），且已装 git hook

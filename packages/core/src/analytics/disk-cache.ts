@@ -11,6 +11,7 @@
 // HttpExporter 对 SkipRemoteExportError / UnauthorizedExportError 必须 throw，
 // 不能 return；return 会被当成成功，过期凭据堆积自清的意图落空。
 
+import { isTelemetryDisabled } from "./privacy-level.ts";
 import { appendFile, readdir, readFile, unlink, mkdir, stat } from "node:fs/promises";
 import { join } from "node:path";
 import { randomUUID } from "node:crypto";
@@ -59,6 +60,11 @@ export class EventDiskCache {
    * 于是过期凭据的机器会把文件留到 MAX_AGE_MS 自清（T2，可接受）。
    */
   async retryPreviousBatches(sendFn: (events: FailedEvent[]) => Promise<void>): Promise<void> {
+    // 缺陷 35（P0，20260927 可观测性审计）：重放是**推**数据，必须问隐私级别。
+    // sink.ts 的门控挂在 logEvent 入口，拦的只是本会话新事件；上个会话落盘的旧事件
+    // 走 recoverFromDisk → sendBatch 从入口旁边绕过去，发完即 unlink，事后不可审计。
+    // 禁用时**原样留盘**（不删）：用户切回 default 后照常补发，或由 cleanup() 过期自清。
+    if (isTelemetryDisabled()) return;
     let files: string[];
     try {
       files = (await readdir(this.config.cacheDir))

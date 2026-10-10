@@ -6,10 +6,11 @@ description: 哪些配置不用动就能用、哪些必须改结构、以及用�
 # 从 Claude Code 迁移
 
 好消息是大部分东西不用迁：sid-code 会直接读 `~/.claude/` 下的一批文件。
-坏消息是 `hooks` 的结构不兼容，而且它**配错了不报错、只是静默不生效**——
-这是整个迁移里最值得先看一眼的地方。
+`hooks` 段的格式也与 CC 一致了：嵌套写法、PascalCase 事件名、CC 工具名（`Bash` / `Edit|Write`）、
+`${CLAUDE_PROJECT_DIR}` 都能原样用，只需要把它**放到 sid-code 的配置文件里**——
+sid-code 不读 `~/.claude/settings.json` 与 `.claude/settings.json`。
 
-这页先说什么不用动，再说什么必须改，最后给一个半自动的迁移办法。
+这页先说什么不用动，再说什么要搬或要改，最后给一个半自动的迁移办法。
 
 ## 快速上手
 
@@ -21,7 +22,7 @@ sid-code
 ```
 
 内置 skill `claude-code-migration` 会被触发，它的流程是**先只读检查、
-出一份分 scope 的迁移计划、逐项确认后才写**（`src/skill/builtin/claude-code-migration/SKILL.md`）。
+出一份分 scope 的迁移计划、逐项确认后才写**（`packages/core/src/skill/builtin/claude-code-migration/SKILL.md`）。
 它的硬性约束值得知道，因为这些正是手工迁移最容易出错的地方：
 
 - 只 copy 不 move，不删源文件，不静默覆盖
@@ -41,15 +42,15 @@ sid-code 兼容读取 `~/.claude/` 与项目 `.claude/`，同名时以 `.sid-cod
 
 | 资源 | CC 路径 | 是否直接读 | 证据 |
 | --- | --- | --- | --- |
-| 全局记忆 | `~/.claude/CLAUDE.md` | ✅ 直接读 | `src/config/rules.ts:445` |
-| 规则目录 | `~/.claude/rules/` | ✅ 直接读 | `src/config/rules.ts:48` |
-| 项目记忆 | `CLAUDE.md`、`.claude/CLAUDE.md` 等 5 种文件名 | ✅ 直接读 | `src/config/rules.ts:24-31` |
-| 斜杠命令 | `~/.claude/commands/`、`<proj>/.claude/commands/` | ✅ 直接读 | `src/extension/loader.ts:111,155` |
-| Skill | `~/.claude/skills/`、`<proj>/.claude/skills/` | ✅ 直接读 | `src/extension/loader.ts:111,155`、`src/app.ts:2749-2751` |
+| 全局记忆 | `~/.claude/CLAUDE.md` | ✅ 直接读 | `packages/core/src/config/rules.ts` |
+| 规则目录 | `~/.claude/rules/` | ✅ 直接读 | `packages/core/src/config/rules.ts` |
+| 项目记忆 | `CLAUDE.md`、`.claude/CLAUDE.md` 等 5 种文件名 | ✅ 直接读 | `packages/core/src/config/rules.ts` |
+| 斜杠命令 | `~/.claude/commands/`、`<proj>/.claude/commands/` | ✅ 直接读 | `packages/core/src/extension/loader.ts` |
+| Skill | `~/.claude/skills/`、`<proj>/.claude/skills/` | ✅ 直接读 | `packages/core/src/extension/loader.ts`、`packages/cli/src/app.ts` |
 | 子代理 | `~/.claude/agents/`、`<proj>/.claude/agents/` | ✅ 直接读 | 同上 |
-| 项目 MCP | `<proj>/.mcp.json` | ✅ 原地可用 | `references/mapping.md:91` |
+| 项目 MCP | `<proj>/.mcp.json` | ✅ 原地可用 | `references/mapping.md` |
 
-项目级 `CLAUDE.md` 认这 5 个文件名（`src/config/rules.ts:24-31`）：
+项目级 `CLAUDE.md` 认这 5 个文件名（`packages/core/src/config/rules.ts`）：
 `CLAUDE.md`、`.claude.md`、`claude.md`、`.claude/CLAUDE.md`、`.claude/instructions.md`。
 
 所以如果你的 CC 配置只有 CLAUDE.md + 几个 skill/command/agent，
@@ -57,69 +58,58 @@ sid-code 兼容读取 `~/.claude/` 与项目 `.claude/`，同名时以 `.sid-cod
 
 ## 必须改的部分
 
-### hooks：结构不兼容，而且不报错就不生效
+### hooks：格式不用改，要换个文件放
 
-这是最大的差异。CC 是两层结构（`matcher` 分组包裹一个 `hooks` 数组），
-sid-code 是**snake_case 事件名 + 平铺条目**。
-
-把 CC 的配置原样搬过来，实测报错：
+把 CC `settings.json` 里的 `hooks` 段**原样**复制到 `~/.sid-code/settings.json`（用户级）
+或 `<项目>/.sid-code/settings.json`（项目级）即可，下面这份 CC 配置不改一个字就能用：
 
 ```json
 {
   "hooks": {
     "PreToolUse": [
-      { "matcher": "Bash", "hooks": [{ "type": "command", "command": "echo x" }] }
+      {
+        "matcher": "Bash",
+        "hooks": [{ "type": "command", "command": "\"$CLAUDE_PROJECT_DIR\"/.claude/hooks/block-rm.sh" }]
+      }
     ]
   }
 }
 ```
 
-```text
-⚠ hooks.PreToolUse: 未知的事件名 "PreToolUse"，有效值为 pre_tool_use, post_tool_use,
-  post_tool_use_failure, user_prompt_submit, session_start, session_end, pre_compact,
-  subagent_stop, permission_request, notification, instructions_loaded, teammate_idle
-✗ hooks.PreToolUse[0].command: command 类型的 Hook 必须指定 command 字段
+能直接用的部分（源码见 `packages/core/src/hook/config-normalize.ts`、`packages/core/src/tool/tool-name-aliases.ts`）：
+
+- **嵌套形状** `{matcher, hooks:[...]}`：推荐写法，与 CC 一致。sid-code 早期的平铺写法也永久兼容
+- **事件名**：PascalCase（`PreToolUse`）与 snake_case（`pre_tool_use`）等价
+- **工具名**：`matcher` 写 CC 名（`Bash`、`Edit|Write`）或 sid 内部名（`bash`、`edit|write`）都认；
+  hook 从 stdin 收到的 `tool_name` 是 CC 名，另带 `sid_tool_name` 给需要内部名的脚本
+- **`CLAUDE_PROJECT_DIR` / `CLAUDE_PLUGIN_ROOT` / `CLAUDE_PLUGIN_DATA`**：作为环境变量导出，
+  `CLAUDE_PROJECT_DIR` 固定为会话启动时的项目根（`bash cd` 之后也不变）
+- **输出语义**：exit 2 阻断、stdout JSON 的 `decision` / `hookSpecificOutput`、
+  `SessionStart` / `UserPromptSubmit` 的纯文本 stdout 进上下文，都按 CC 文档的描述生效
+
+要你动手的只有两件事：
+
+1. **脚本路径**：`.claude/hooks/x.sh` 这类脚本要么一起复制到 `.sid-code/hooks/` 并改路径，要么保留原路径不动
+   （sid-code 只是不读 CC 的 **settings**，脚本放在哪里都能执行）
+2. **项目级 hooks 要信任工作区**：未信任的工作区里项目级 hooks 会被跳过、用户级照常；
+   `-p` / SDK 下没有信任弹窗，用 `--trust-workspace` 本会话放行。这一点与 CC 不同，是刻意的
+
+::: tip 迁移完先确认 hook 真的注册上了
+```bash
+sid-code hooks list --json     # 实际注册表：事件、来源、matcher、handler
 ```
-
-两个问题同时中：事件名大驼峰不认，`{matcher, hooks:[]}` 嵌套结构里找不到 `command`。
-转换后的正确写法（实测加载无告警、hook 正常触发）：
-
-```json
-{
-  "hooks": {
-    "pre_tool_use": [
-      { "type": "command", "matcher": "bash", "command": "echo x >&2" }
-    ]
-  }
-}
-```
-
-转换规则就三条：
-
-1. 事件名转 snake_case：`PreToolUse` → `pre_tool_use`
-2. 拆掉 `{matcher, hooks:[...]}` 这层包裹，把内层每条提到外层数组
-3. `matcher` 作为**同级字段**保留在每条上（工具名用小写，如 `bash` 而非 `Bash`）
-
-事件名对照（`src/hook/types.ts:93-119` 的 `LEGACY_EVENT_MAP`）——CC 的这些都有同名对应：
-`pre_tool_use`、`post_tool_use`、`user_prompt_submit`、`session_start`、`session_end`、
-`pre_compact`、`subagent_stop`、`notification`、`stop`。
-
-sid-code 独有的事件（CC 没有）：`post_tool_use_failure`、`post_compact`、`subagent_start`、
-`permission_request`、`permission_denied`、`stop_failure`、`setup`、`config_change`、
-`file_changed`、`cwd_changed`、`task_created`、`task_completed`、`instructions_loaded`、
-`teammate_idle`、`elicitation`、`elicitation_result`。全部 32 类见[Hook 事件参考](/ref/hooks)。
-
-::: tip 迁移完先验证 hook 真的在跑
-配置校验只对**结构**报错，不保证 hook 逻辑生效。让 hook 往 stderr 写一句
-（`echo sentinel >&2`），跑一个会触发它的任务，看有没有那句话。
-`session_start` 是个例外——它是 fire-and-forget，**无法注入上下文**，
-详见[Hook](/extend/hooks)。
+被跳过的条目（未信任工作区、内部事件、字段非法）会单独列出并给出原因。
+确认注册后，再跑一个会触发它的任务看行为。
 :::
+
+sid-code 有、CC 没有的事件只有 `AfterAgent` / `BeforeModel` / `AfterModel` 三个；
+其余事件与 CC 同名。哪些事件当前会触发、刻意与 CC 不同的地方，见[Hook 指南](/extend/hooks#与-claude-code-的差异)
+与[Hook 事件参考](/ref/hooks)。
 
 ### MCP：`type` 要改成 `transport`
 
 sid-code 的 MCP server **必填 `transport`**（枚举 `stdio` / `http` / `sse` / `ws`），
-CC 用的是可选的 `type`（`references/mapping.md:100-107`）：
+CC 用的是可选的 `type`（`references/mapping.md`）：
 
 | CC 写法 | sid-code 写法 |
 | --- | --- |
@@ -138,7 +128,7 @@ CC 独有、sid-code 不支持的（`cwd`、`trust`、`oauth`、`extension`、`h
 
 CC 的 `model` / `ANTHROPIC_BASE_URL` / `ANTHROPIC_AUTH_TOKEN` 这套跟 sid-code 的
 `availableModels` 体系语义不同，迁移 skill 对它们**默认只报告不搬运**
-（`references/mapping.md:127-129`）。
+（`references/mapping.md`）。
 
 要新学的一条规则是 `baseURL` 的 `/v1`：**anthropic 族不带 `/v1`，openai 族要带**。
 这是 CC 用户最容易踩的新坑，因为 CC 只有一族。完整说明与两种配错的真实报错见
@@ -150,7 +140,7 @@ CC 的 `model` / `ANTHROPIC_BASE_URL` / `ANTHROPIC_AUTH_TOKEN` 这套跟 sid-cod
 ### permissions：结构同名，但要重看一遍
 
 `allow` / `deny` / `ask` / `defaultMode` 四个字段与 CC 同名兼容
-（`src/config/settings/types.ts:28-33`），可以直接搬。但有两点值得重看：
+（`packages/core/src/config/settings/types.ts`），可以直接搬。但有两点值得重看：
 
 - **规则语法有差异细节**：`Bash(npm *)` 的 `*` 不跨空格边界、
   `Read(/src/**)` 是**项目根相对**而 `//etc/**` 才是文件系统绝对。逐条语义见[权限系统](/use/permissions)。
@@ -161,7 +151,7 @@ CC 的 `model` / `ANTHROPIC_BASE_URL` / `ANTHROPIC_AUTH_TOKEN` 这套跟 sid-cod
 
 ## 目标路径对照
 
-迁移 skill 的映射准绳（`references/mapping.md:11-25`）：
+迁移 skill 的映射准绳（`references/mapping.md`）：
 
 | 范围 | 目标路径 |
 | --- | --- |
@@ -173,13 +163,13 @@ CC 的 `model` / `ANTHROPIC_BASE_URL` / `ANTHROPIC_AUTH_TOKEN` 这套跟 sid-cod
 | 项目记忆 | `~/.sid-code/projects/<项目键>/memory/` |
 
 `~/.claude.json` 里的 MCP 配置按位置分流：顶层 `mcpServers` → 用户 settings；
-`projects[path].mcpServers` → 该项目的 `settings.local.json`（`mapping.md:91-98`）。
+`projects[path].mcpServers` → 该项目的 `settings.local.json`（`mapping.md`）。
 
 配置根都可覆盖：CC 侧 `CLAUDE_CONFIG_DIR`，sid-code 侧 `SID_CONFIG_DIR`。
 
 ## 永不自动迁移的东西
 
-迁移 skill 明确列了黑名单（`references/mapping.md:239-250`），手工迁移也照这个来：
+迁移 skill 明确列了黑名单（`references/mapping.md`），手工迁移也照这个来：
 
 - auth state / OAuth / session 文件——重新登录
 - managed / policy settings——企业策略应由管理员下发，见[企业 policy](/team/policy)
@@ -196,11 +186,12 @@ CC 的 `model` / `ANTHROPIC_BASE_URL` / `ANTHROPIC_AUTH_TOKEN` 这套跟 sid-cod
 - **成本可见**：`/cost` 直接看这次会话花了多少、缓存命中率多少（[成本与用量](/use/cost)）
 - **子代理按类型分级用便宜模型**：零配置下 explore / plan / summarize 已自动降档
   （[子代理](/extend/subagents)）
-- **32 类 Hook 事件**（CC 约 9 类）
+- **主循环级 Hook 事件** `AfterAgent` / `BeforeModel` / `AfterModel`，见[Hook 事件参考](/ref/hooks)
 - **轨迹落盘可聚合**：[轨迹采集与可观测](/team/observability)
 - **配额与预算规则**：[配额与成本控制](/team/quota)
 
-反过来 CC 有而 sid-code 没有的主要是插件 marketplace 生态，以及 keybindings 自定义。
+反过来 CC 有而 sid-code 没有的主要是插件 marketplace 生态：插件目前只支持从本地目录安装。
+键位可以自定义（`~/.sid-code/keybindings.json`，见[交互模式](/use/interactive)），只是 schema 与 CC 不兼容、不自动迁移。
 
 ## 常见问题
 
@@ -208,7 +199,7 @@ CC 的 `model` / `ANTHROPIC_BASE_URL` / `ANTHROPIC_AUTH_TOKEN` 这套跟 sid-cod
 
 不用装。它会先探测运行时，优先用 `bun`（跑 sid-code 的那个 bun 一定在）。
 两者都探不到时会降级为纯内置 `read`/`glob`/`grep` 手查，
-**明确不会引导你装 node**（`SKILL.md:49-62`）。
+**明确不会引导你装 node**（`SKILL.md`）。
 
 ### 迁移能重复跑吗
 
@@ -234,13 +225,13 @@ sid-code -p "ok"         # 有没有 ⚠ / ✗ 开头的配置校验告警
 
 第三条最容易被忽略：配置校验的告警是**非致命**的，启动照常继续。
 所以一定要看一眼输出里有没有 `⚠ hooks.` 或 `⚠ quota.` 这类行——
-它们意味着某段配置静默失效了。
+它们意味着某段配置没有生效。hooks 另有 `sid-code hooks list` 可以直接看注册结果。
 
 ## 相关
 
 - [配置 LLM Provider](/start/configure) —— `/v1` 两族规则，迁移后必读
-- [Hook](/extend/hooks) —— 转换后的 hook 怎么写、三个实跑场景
-- [Hook 事件参考](/ref/hooks) —— 全部 32 类事件的 schema
+- [Hook](/extend/hooks) —— hook 怎么写、与 CC 的差异表
+- [Hook 事件参考](/ref/hooks) —— 全部事件与是否会触发
 - [权限系统](/use/permissions) —— 规则语法逐条语义
 - [记忆与规则](/use/memory) —— CLAUDE.md 七层合并链
 - [企业 policy 与安全边界](/team/policy) —— 项目级提权过滤为什么会剥掉你的字段

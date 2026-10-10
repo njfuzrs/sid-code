@@ -16,7 +16,12 @@
  *   - P3-1 args 参数用通用说明，不塞 argumentHint（argument-hint 只给用户 slash 补全）
  */
 
-import type { LegacyTool as Tool, LegacyToolResult as ToolResult } from "../tool/types.ts";
+import type {
+  LegacyTool as Tool,
+  LegacyToolResult as ToolResult,
+  PermissionResult,
+  ToolUseContext,
+} from "../tool/types.ts";
 import type { ProviderRegistry } from "../llm/registry.ts";
 import type { Registry as ToolRegistry } from "../tool/registry.ts";
 import type { HookSystem } from "../hook/system.ts";
@@ -38,6 +43,8 @@ import {
   newSkillHookScope,
 } from "./executor.ts";
 import { processSkillPrompt } from "./prompt-processor.ts";
+import { logToolInvoked } from "../analytics/events.ts";
+import { skillPluginOrigin } from "../analytics/plugin-attribution.ts";
 import { z } from "zod/v4";
 
 /** 元工具名（对齐 CC 的 SKILL_TOOL_NAME='Skill'） */
@@ -154,6 +161,28 @@ export class SkillMetaTool implements Tool {
   }
 
   /**
+   * 工具级权限意见：Skill 调用本身默认放行（checker Step 5.5）。
+   *
+   * 为什么放行：调用 Skill 只是「加载一份指令」，真正的副作用都落在它触发的后续动作上，
+   * 而那些动作各自仍过权限——
+   *   - activate：指令注入主对话，后续工具调用逐个走主 checker；
+   *   - delegate：子代理用 dontAsk 语义的 subChecker，写操作无 allow 规则即拒；
+   *   - 内联 !`cmd`：按 bash 过 subChecker（processPrompt 的 authorizeShell，fail-closed）；
+   *   - 敏感属性（allowed-tools / hooks / shell / agent …）：execute 里 authorizeSkill → ask，
+   *     -p 下无确认通道照旧拒绝——这一层**刻意不放宽**。
+   * 此前不实现本方法 → 落到 Step 14 默认 ask → -p 下 Skill 工具本身被拒，
+   * 模型绕开 skill 自己干，用户只能靠 `--allowed-tools Skill` 预授权才能跑任何 skill。
+   *
+   * 为什么不进 READ_ONLY_TOOLS：那张表在 plan 模式下也直接放行，而 delegate 子代理的
+   * subChecker 把 permissionMode 改写成 dontAsk、丢了 plan 约束。走 Step 5.5 的 allow
+   * 不越过 plan / deny-write，也排在 deny 规则、disallowedTools、ask 规则之后，
+   * 用户配的 `deny: ["Skill"]` / `ask: ["Skill"]` 仍然生效。
+   */
+  async checkPermissions(_input: unknown, _context: ToolUseContext): Promise<PermissionResult> {
+    return { behavior: "allow" };
+  }
+
+  /**
    * P0-1 + P3-2：导出可被模型调用的 skill 摘要条目，供 system prompt 的常驻 skill listing 使用。
    *
    * 数据源从 SkillManager 取（此前来自各 SkillTool 实例，现工具收敛为单一元工具）。
@@ -235,6 +264,12 @@ export class SkillMetaTool implements Tool {
         return { output: `权限未授予：Skill "${skill.name}" 需确认但未获批准。`, isError: true };
       }
     }
+
+    // 漏斗 10 · 插件：权限通过、即将真正执行时计一次（之后成功或失败都已算数）。
+    // 放在授权之后：被拒 / 未授予是「没用上」，不该进「被用了几次」。
+    // 归因取 skill **定义**（loadedFrom=plugin + 定义上的 `<plugin>:<skill>` 名），
+    // 不取模型输入 —— getSkill 不区分大小写，输入名不一定等于登记名。
+    logToolInvoked(SKILL_TOOL_NAME, skillPluginOrigin(skill));
 
     // ── P0-2：授权通过后注册生命周期 hooks（MCP 来源已在内部拒绝）──
     // 模型路径 skill 走 delegate 子代理执行。子代理有独立 hookSystem 时，hooks 应注册到子代理侧；

@@ -5,14 +5,29 @@
  * 供 swarm team 作为「共享任务列表」调度底座：进程重启可恢复、成员按依赖认领任务。
  *
  * 原子写（temp + rename）防并发/崩溃时半写损坏。
+ *
+ * 跨进程一致性（多代理 F6）：团队文件按目录共享，两个进程跑同名团队读写同一份 JSON。
+ * rename 只保证读不到半截文件，保证不了读到合并后的结果。所以每次写都走
+ * 「文件锁 → 重读磁盘 → 按任务合并进内存 → 写回」，认领也在同一把锁里先同步再认领。
+ * 锁是 mkdir 互斥（POSIX 下原子），持锁进程崩溃留下的锁按 mtime 超时回收。
  */
 
-import { writeFileSync, readFileSync, mkdirSync, existsSync, renameSync } from "fs";
+import {
+  writeFileSync,
+  readFileSync,
+  mkdirSync,
+  existsSync,
+  renameSync,
+  rmdirSync,
+  statSync,
+} from "fs";
 import { join } from "path";
 import { getLogger } from "../debug/logger.ts";
 import {
   serializeTeamTasks,
   restoreTeamTasks,
+  mergeTeamTasksFromSnapshot,
+  claimNextUnblockedTask,
   type StructuredTask,
 } from "./structured-task-store.ts";
 
@@ -36,16 +51,106 @@ export function teamTasksPath(teamName: string, baseDir?: string): string {
  */
 export function persistTeamTasks(teamName: string, baseDir?: string): void {
   const path = teamTasksPath(teamName, baseDir);
-  const snapshot = serializeTeamTasks(teamName);
   try {
-    const dir = join(path, "..");
-    mkdirSync(dir, { recursive: true });
-    // 原子写：先写临时文件再 rename（rename 在同一文件系统内原子），避免读到半写内容。
-    const tmp = `${path}.${process.pid}.tmp`;
-    writeFileSync(tmp, JSON.stringify({ version: 1, teamName, tasks: snapshot }, null, 2));
-    renameSync(tmp, path);
+    withTeamFileLock(path, () => {
+      syncFromDisk(teamName, path);
+      writeSnapshot(teamName, path);
+    });
   } catch (err: any) {
     getLogger().warn("TEAM_TASKS", `团队任务落盘失败 (${teamName}): ${err?.message ?? err}`);
+  }
+}
+
+/**
+ * 跨进程安全地认领下一个可做的团队任务：锁内先把别的进程的认领同步进来，再认领、再落盘。
+ * 不在锁内同步就认领，两个进程会同时把同一个 pending 任务标成自己的（F6 的失败场景）。
+ */
+export function claimNextTeamTask(
+  teamName: string,
+  owner: string,
+  baseDir?: string,
+  opts?: { onlyUnassigned?: boolean },
+): StructuredTask | undefined {
+  const path = teamTasksPath(teamName, baseDir);
+  let claimed: StructuredTask | undefined;
+  try {
+    withTeamFileLock(path, () => {
+      syncFromDisk(teamName, path);
+      claimed = claimNextUnblockedTask(owner, teamName, opts);
+      if (claimed) writeSnapshot(teamName, path);
+    });
+  } catch (err: any) {
+    getLogger().warn("TEAM_TASKS", `团队任务认领同步失败 (${teamName}): ${err?.message ?? err}`);
+    // 落盘层失败不阻断调度：退化为进程内认领（与改造前行为一致）。
+    claimed ??= claimNextUnblockedTask(owner, teamName, opts);
+  }
+  return claimed;
+}
+
+/** 读磁盘快照并按任务合并进内存（文件不存在/损坏则跳过）。 */
+function syncFromDisk(teamName: string, path: string): void {
+  if (!existsSync(path)) return;
+  try {
+    const parsed = JSON.parse(readFileSync(path, "utf-8")) as { tasks?: StructuredTask[] };
+    if (parsed && Array.isArray(parsed.tasks)) mergeTeamTasksFromSnapshot(teamName, parsed.tasks);
+  } catch {
+    /* 损坏的文件由本次写覆盖 */
+  }
+}
+
+function writeSnapshot(teamName: string, path: string): void {
+  mkdirSync(join(path, ".."), { recursive: true });
+  // 原子写：先写临时文件再 rename（rename 在同一文件系统内原子），避免读到半写内容。
+  const tmp = `${path}.${process.pid}.tmp`;
+  const snapshot = serializeTeamTasks(teamName);
+  writeFileSync(tmp, JSON.stringify({ version: 1, teamName, tasks: snapshot }, null, 2));
+  renameSync(tmp, path);
+}
+
+const LOCK_WAIT_MS = 2_000;
+const LOCK_STALE_MS = 10_000;
+const sleepCell = new Int32Array(new SharedArrayBuffer(4));
+
+/**
+ * mkdir 互斥锁。调用方都是同步路径（persist 在调度循环里同步调），所以等锁用 Atomics.wait。
+ * 等不到锁就不加锁执行并 warn：锁是一致性增益，不能让团队调度卡死在一个陈旧锁上。
+ */
+function withTeamFileLock(path: string, fn: () => void): void {
+  const lockDir = `${path}.lock`;
+  mkdirSync(join(path, ".."), { recursive: true });
+  const deadline = Date.now() + LOCK_WAIT_MS;
+  let locked = false;
+  while (!locked) {
+    try {
+      mkdirSync(lockDir);
+      locked = true;
+    } catch (err: any) {
+      if (err?.code !== "EEXIST") throw err;
+      try {
+        if (Date.now() - statSync(lockDir).mtimeMs > LOCK_STALE_MS) {
+          rmdirSync(lockDir);
+          continue;
+        }
+      } catch {
+        continue; // 锁刚被释放
+      }
+      if (Date.now() > deadline) {
+        getLogger().warn("TEAM_TASKS", `团队任务文件锁等待超时，无锁写入: ${lockDir}`);
+        break;
+      }
+      Atomics.wait(sleepCell, 0, 0, 10);
+    }
+  }
+  try {
+    fn();
+  } finally {
+    if (locked) {
+      try {
+        rmdirSync(lockDir);
+      } catch {
+        /* ignore */
+      }
+    }
   }
 }
 

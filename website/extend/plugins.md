@@ -67,9 +67,10 @@ sid-code --plugin-dir /tmp/my-plugin
 | 物化层 | 插件的实际文件 | `~/.sid-code/plugins/<name>/` |
 | 活跃层 | 运行时生效的命令 / Skill / Agent / Hook / MCP | 内存 |
 
-设计上插件**通过协议暴露能力，不注入代码**——组件都是 Markdown 或 JSON，
-没有可执行插件代码被 load 进进程。这也是为什么插件比"插件 API"安全：
-它能声明一个 Hook 去跑命令，但不能直接在 sid-code 进程里执行任意逻辑。
+插件不在 sid-code 进程里加载代码，组件都是 Markdown 或 JSON。
+但它带的 Hook 和 MCP server 会**以你的身份执行命令**：Hook 能跑任意 shell（比如下面示例里的
+`${PLUGIN_ROOT}/scripts/format.sh`），stdio 类型的 MCP server 能启动任意进程，两者都能读写你的整个家目录，
+权限和你手写的 Hook 一样大。**只装可信来源的插件。**
 
 ## plugin.json 字段
 
@@ -135,6 +136,9 @@ commands/env/staging.md    → /my-plugin:env:staging
 
 同名时优先级：**inline > 已安装 > 内置**。
 
+目前只支持从本地目录安装，没有插件市场，也不能从 git URL 安装。
+团队分发靠把插件目录放进仓库或共享盘，再 `/plugin install <路径>` 或 `--plugin-dir <路径>`。
+
 inline 排最高是给调试用的：改插件时不用先卸载已安装的版本，
 直接 `--plugin-dir` 指向工作副本就覆盖掉了。
 
@@ -150,7 +154,10 @@ sid-code --plugin-dir /tmp/plugin-a --plugin-dir /tmp/plugin-b
 | --- | --- |
 | `/plugin list` | 列出所有插件（启用 / 禁用 / 错误） |
 | `/plugin info <name>` | 看详情 |
-| `/plugin install <path>` | 从本地目录安装 |
+| `/plugin market [关键词]` | 浏览企业插件市场（需配置 `backend.url` 并 `sid-code auth login`） |
+| `/plugin install <name>@company` | 从企业市场安装：下载 → sha256 校验 → 安全解包 |
+| `/plugin update [name]` | 按市场目录更新市场插件，新包校验失败时保留旧版本 |
+| `/plugin install <path>` | 从本地目录安装（企业策略锁定时拒绝） |
 | `/plugin uninstall <name>` | 卸载（`--delete` 删文件，`--force` 忽略依赖） |
 | `/plugin enable <name>` | 启用 |
 | `/plugin disable <name>` | 禁用（`--force` 忽略反向依赖） |
@@ -158,6 +165,35 @@ sid-code --plugin-dir /tmp/plugin-a --plugin-dir /tmp/plugin-b
 
 `/plugins` 是 `/plugin` 的别名。依赖检查是双向的：卸载被依赖的插件会被拦下，
 要强行来加 `--force`。
+
+## 企业插件市场
+
+市场地址由 `backend.url` 推出（`<backend.url>/api/v1/ctl/marketplace/index`），请求带设备凭据。
+目录拉不到（网络错 / 5xx）时用上次缓存展示，已装插件照常加载；401 不退回缓存，
+凭据被吊销后目录与下载一起失效。
+
+安装时客户端会再做一遍服务端已经做过的检查：sha256 必须与目录登记的一致，
+包里不能有符号链接、硬链接、设备文件、`..` 或绝对路径，`plugin.json` 的名字和版本
+必须与目录一致，组件路径必须是包内相对路径。任何一条不过，整包拒绝，插件目录不留残留。
+
+### 锁定后只认市场来源
+
+企业策略里任一项生效，插件来源就会被锁定：
+
+- `strictPluginOnlyCustomization`（锁了任意一个面）
+- `strictKnownMarketplaces: [{ "source": "url", "url": "https://.../ctl/marketplace/index" }]`
+
+锁定后：
+
+| 来源 | 结果 |
+| --- | --- |
+| 内置插件 | 照常 |
+| 企业市场插件 | 有白名单时 index 地址必须在白名单内；没有白名单时必须是本机 `backend.url` 那个市场 |
+| 本地目录安装 / `--plugin-dir` | 拒绝安装，已装的不加载 |
+
+`strictKnownMarketplaces: []` 表示除内置插件外全部禁用。市场插件加载前会复核目录指纹，
+装好后被改过内容（比如往里加了 `hooks.json`）的插件不会加载，需要 `/plugin update` 或重装。
+这一层防的是误装和未审计的插件被顺手加载，挡不住有本机写权限、又存心伪造 `installed.json` 的人。
 
 ## Bridge：远程控制
 
@@ -181,12 +217,29 @@ sid-code --bridge wss://relay.example.com/session/abc --bridge-token <token>
   不是自动放行。这是 Bridge 和 `--dangerously-skip-permissions` 的本质区别。
 - **一次只跑一轮**。远程消息在上一轮没结束时排队串行消费，和交互模式的单轮语义一致。
 - **消息去重**。按 UUID 去重（有界环形缓冲），网络重传不会导致同一条消息执行两遍。
-- 只支持 `ws://` 和 `wss://`，别的协议直接报错：
+- 只认 `ws://` 和 `wss://`，别的协议直接报错：
   `不支持的 Bridge 传输协议: xxx（当前仅支持 ws:// / wss://）`
+
+### 准入：连上之前先过本机这一关
+
+远端拿到的是这台机器的执行权，而权限确认又是转发给远端自己批的，所以 `--bridge`
+在建立连接之前有一道本机准入（`packages/core/src/bridge/admission.ts`），按顺序判：
+
+1. **企业策略可以整体关掉 Bridge**：远程下发的 `bridgeEnabled: false` 或本机 settings 的
+   `bridge.enabled: false` 都会直接拒绝（远程的 false 盖过本机配置）：
+   `企业策略已禁用 Bridge 远程控制（settings 中 bridge.enabled = false）`
+2. **明文 `ws://` 默认拒绝**，要显式加 `--bridge-insecure` 才放行：
+   `拒绝明文 Bridge 连接: ws://…  改用 wss:// ，或确认风险后显式加 --bridge-insecure。`
+3. **首次连某个地址要当面确认**。终端会列出这个地址和风险提示，确认后记住，下次不再问。
+   记的是端点本身，URL 里的 query（常带 token）会被剥掉，不会落盘。
+4. **没有终端可问时 fail-closed**：首次连接却处在非交互环境（比如脚本里），直接拒绝，
+   要先在交互式终端里跑一次完成确认。
+
+每次准入拒绝都会记一条防线触发事件，可以在轨迹里统计。
 
 ::: danger Bridge 等于把这台机器的执行权交出去
 远端能让它读文件、改代码、跑命令——权限确认虽然转发到远端，但**确认的人不是你**。
-生产上务必：用 `wss://`（不要 `ws://` 明文）、带 `--bridge-token`、
+默认就只接受 `wss://`，`ws://` 要显式 `--bridge-insecure`；另外务必带 `--bridge-token`、
 中继服务器自己可控。不要连不明来源的中继。
 :::
 
@@ -214,8 +267,9 @@ sid-code --bridge wss://relay.example.com/session/abc --bridge-token <token>
 
 ### 插件能带 MCP server 吗
 
-能，`mcpServers` 字段写内联对象或指向文件。插件带的 server 会打上插件作用域标记，
-参与正常的 MCP 优先级合并——见 [MCP](/extend/mcp#四层作用域与优先级)。
+能，`mcpServers` 字段写内联对象或指向文件。插件带的 server 名字会带 `plugin:<插件名>:` 前缀，
+不会和你自己的配置撞名；但它不参与签名去重，和你自己配的是同一个 server 时会连两次。
+企业 `mcpPolicy` 对它照样生效——见 [MCP](/extend/mcp#四层作用域与优先级)。
 
 ### 插件里的 Skill 和自己写的 Skill 有区别吗
 

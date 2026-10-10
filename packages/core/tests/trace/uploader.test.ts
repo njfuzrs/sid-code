@@ -360,6 +360,49 @@ describe("UploadManager", () => {
     expect(typeof markerData.confirmed_at).toBe("string");
   });
 
+  // 上传清理后本地只剩 metadata.json —— 版本与构建身份必须留在里面，否则无从排查是哪个构建跑的
+  test("uploadSession: 清理后 metadata.json 保留版本与构建身份", async () => {
+    writeFileSync(
+      join(sessionDir, "session.traj"),
+      JSON.stringify({
+        trajectory: [],
+        metadata: {
+          session_id: sessionId,
+          model: "m",
+          app_version: "0.1.700",
+          release_channel: "beta",
+          build_commit: "a".repeat(40),
+          build_origin: "release",
+          build_dirty: false,
+          build_describe: "v0.1.700",
+          git_head: "b".repeat(40),
+        },
+      }),
+    );
+    const mgr = new UploadManager({
+      baseUrl: "http://localhost",
+      token: "tok",
+      outputDir: tmpDir,
+      maxRetries: 1,
+      compress: false,
+      deleteAfterUpload: true,
+    });
+    const origFetch = globalThis.fetch;
+    globalThis.fetch = mockFetchOk() as any;
+    const result = await mgr.uploadSession(sessionDir, sessionId);
+    globalThis.fetch = origFetch;
+
+    expect(result.allConfirmed).toBe(true);
+    const md = JSON.parse(readFileSync(join(sessionDir, "metadata.json"), "utf-8"));
+    expect(md.app_version).toBe("0.1.700");
+    expect(md.release_channel).toBe("beta");
+    expect(md.build_commit).toBe("a".repeat(40));
+    expect(md.build_origin).toBe("release");
+    expect(md.build_dirty).toBe(false);
+    expect(md.build_describe).toBe("v0.1.700");
+    expect(md.git_head).toBe("b".repeat(40));
+  });
+
   test("uploadSession: 部分失败时本地文件保留", async () => {
     let callCount = 0;
     const mgr = new UploadManager({

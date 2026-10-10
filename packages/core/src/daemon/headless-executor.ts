@@ -31,6 +31,8 @@ const KILL_GRACE_MS = 5_000;
 export interface HeadlessExecutorOptions {
   /** 结果落盘（复用 daemon StorageAdapter）；缺省不落盘 */
   storage?: StorageAdapter;
+  /** 子进程命令解析（测试注入假的 sid-code）；缺省 resolveExecutable() */
+  resolveExecutable?: () => { cmd: string; baseArgs: string[] };
 }
 
 export interface HeadlessRunResult {
@@ -136,11 +138,11 @@ export class HeadlessExecutor {
   }
 
   /**
-   * fork `sid-code -p --output-format json <prompt>` 子进程。
+   * fork `sid-code -p --output-format json` 子进程，prompt 经 stdin 传入。
    * 复用 command/review.ts 的成熟 spawn 模式：定位 bootstrap.ts、SIGTERM→SIGKILL 超时。
    */
   private spawnSidCode(job: HeadlessJob): Promise<HeadlessRunResult> {
-    const { cmd, baseArgs } = resolveExecutable();
+    const { cmd, baseArgs } = (this.opts.resolveExecutable ?? resolveExecutable)();
     const timeoutMs = job.timeoutMs > 0 ? job.timeoutMs : DEFAULT_TIMEOUT_MS;
 
     const cmdArgs: string[] = [...baseArgs, "-p", "--output-format", "json"];
@@ -154,8 +156,9 @@ export class HeadlessExecutor {
       // 无白名单 → 强制 plan 只读模式，绝不写文件/跑破坏性命令
       cmdArgs.push("--permission-mode", "plan");
     }
-    cmdArgs.push(job.prompt);
-
+    // B43：prompt 走 stdin 而不是 argv。webhook 的 prompt 里嵌了整个 PR diff，
+    // 超过 ARG_MAX（macOS 1MB）时 spawn 直接 E2BIG。`-p` 会把管道 stdin 拼进 prompt
+    // （cli/src/utils/piped-stdin.ts），位置参数留空即可。
     const start = Date.now();
     return new Promise<HeadlessRunResult>((resolve) => {
       const child = spawn(cmd, cmdArgs, {
@@ -167,9 +170,15 @@ export class HeadlessExecutor {
           // 子进程可据此识别自己是 daemon 触发的无头 job
           SID_DAEMON_JOB: job.jobId,
           SID_DAEMON_SOURCE: job.source,
+          // prompt 经 stdin 传入：别让子进程 3s 的默认管道等待在慢启动时截断它
+          SID_CODE_STDIN_TIMEOUT_MS: "120000",
         },
-        stdio: ["ignore", "pipe", "pipe"],
+        stdio: ["pipe", "pipe", "pipe"],
       });
+      child.stdin?.on("error", () => {
+        /* 子进程提前退出时写 stdin 会 EPIPE，结果以 exit code 为准 */
+      });
+      child.stdin?.end(job.prompt);
 
       const stdoutChunks: Buffer[] = [];
       const stderrChunks: Buffer[] = [];
@@ -219,10 +228,27 @@ export class HeadlessExecutor {
  * 从 `sid-code -p --output-format json` 的 stdout 抽取最终文本。
  * 输出形如 { session_id, role, content: [{type:"text",text}], usage }。
  * 兼容 review.ts 旧口径（final_response / text 字段）。
+ *
+ * 子进程开了 debug（app.json `debug: true`）时，-p 模式的 debug logger 会把日志打到 stdout、
+ * 排在 JSON 前面，整段 JSON.parse 失败，调用方拿到的「报告」就是原始输出（B24 实测）。
+ * 所以整段解析失败时，再从最后一个行首独占一行的 `{` 起重试：JSON 是 pretty-print 的，
+ * 嵌套对象都带缩进，字符串里的换行是转义的 `\n`，只有顶层 `{` 会形成 "\n{\n"。
  */
 export function extractFinalResponse(stdout: string): string {
   const trimmed = stdout.trim();
   if (!trimmed) return "";
+  const fromJson = extractFromJson(trimmed);
+  if (fromJson !== null) return fromJson;
+  const idx = trimmed.lastIndexOf("\n{\n");
+  if (idx >= 0) {
+    const tail = extractFromJson(trimmed.slice(idx + 1));
+    if (tail !== null) return tail;
+  }
+  return trimmed;
+}
+
+/** 解析成功返回抽到的文本（可能是原文），解析失败返回 null。 */
+function extractFromJson(trimmed: string): string | null {
   try {
     const parsed = JSON.parse(trimmed);
     if (typeof parsed.final_response === "string") return parsed.final_response;
@@ -236,6 +262,6 @@ export function extractFinalResponse(stdout: string): string {
     }
     return trimmed;
   } catch {
-    return trimmed;
+    return null;
   }
 }

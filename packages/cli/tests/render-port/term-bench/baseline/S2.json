@@ -1,0 +1,167 @@
+{
+  "scenario": "S2",
+  "exitCode": 0,
+  "total": {
+    "bytes": 778,
+    "eraseScreen": 1,
+    "eraseScrollback": 1,
+    "syncBegin": 4,
+    "syncEnd": 4,
+    "altEnter": 0,
+    "altExit": 0,
+    "osc": {
+      "9": 1,
+      "21337": 1
+    }
+  },
+  "notes": {},
+  "steps": [
+    {
+      "label": "3 行",
+      "buffer": "normal",
+      "cursor": {
+        "x": 0,
+        "y": 3,
+        "hidden": true
+      },
+      "modes": {
+        "bracketedPaste": false,
+        "mouseTracking": "none",
+        "sendFocus": false,
+        "wraparound": true
+      },
+      "metrics": {
+        "bytes": 70,
+        "eraseScreen": 0,
+        "eraseScrollback": 0,
+        "syncBegin": 1,
+        "syncEnd": 1,
+        "altEnter": 0,
+        "altExit": 0,
+        "osc": {}
+      },
+      "screen": ["动态行 0", "动态行 1", "动态行 2"],
+      "scrollback": [],
+      "styled": []
+    },
+    {
+      "label": "超出视口（30 行）",
+      "buffer": "normal",
+      "cursor": {
+        "x": 0,
+        "y": 23,
+        "hidden": true
+      },
+      "modes": {
+        "bracketedPaste": false,
+        "mouseTracking": "none",
+        "sendFocus": false,
+        "wraparound": true
+      },
+      "metrics": {
+        "bytes": 468,
+        "eraseScreen": 0,
+        "eraseScrollback": 0,
+        "syncBegin": 1,
+        "syncEnd": 1,
+        "altEnter": 0,
+        "altExit": 0,
+        "osc": {}
+      },
+      "screen": [
+        "动态行 7",
+        "动态行 8",
+        "动态行 9",
+        "动态行 10",
+        "动态行 11",
+        "动态行 12",
+        "动态行 13",
+        "动态行 14",
+        "动态行 15",
+        "动态行 16",
+        "动态行 17",
+        "动态行 18",
+        "动态行 19",
+        "动态行 20",
+        "动态行 21",
+        "动态行 22",
+        "动态行 23",
+        "动态行 24",
+        "动态行 25",
+        "动态行 26",
+        "动态行 27",
+        "动态行 28",
+        "动态行 29"
+      ],
+      "scrollback": [
+        "动态行 0",
+        "动态行 1",
+        "动态行 2",
+        "动态行 3",
+        "动态行 4",
+        "动态行 5",
+        "动态行 6"
+      ],
+      "styled": []
+    },
+    {
+      "label": "收缩回 4 行",
+      "buffer": "normal",
+      "cursor": {
+        "x": 0,
+        "y": 4,
+        "hidden": true
+      },
+      "modes": {
+        "bracketedPaste": false,
+        "mouseTracking": "none",
+        "sendFocus": false,
+        "wraparound": true
+      },
+      "metrics": {
+        "bytes": 91,
+        "eraseScreen": 1,
+        "eraseScrollback": 1,
+        "syncBegin": 1,
+        "syncEnd": 1,
+        "altEnter": 0,
+        "altExit": 0,
+        "osc": {}
+      },
+      "screen": ["动态行 0", "动态行 1", "动态行 2", "动态行 3"],
+      "scrollback": [],
+      "styled": []
+    },
+    {
+      "label": "(退出后)",
+      "buffer": "normal",
+      "cursor": {
+        "x": 0,
+        "y": 4,
+        "hidden": false
+      },
+      "modes": {
+        "bracketedPaste": false,
+        "mouseTracking": "none",
+        "sendFocus": false,
+        "wraparound": true
+      },
+      "metrics": {
+        "bytes": 149,
+        "eraseScreen": 0,
+        "eraseScrollback": 0,
+        "syncBegin": 1,
+        "syncEnd": 1,
+        "altEnter": 0,
+        "altExit": 0,
+        "osc": {
+          "9": 1,
+          "21337": 1
+        }
+      },
+      "screen": ["动态行 0", "动态行 1", "动态行 2", "动态行 3"],
+      "scrollback": [],
+      "styled": []
+    }
+  ]
+}

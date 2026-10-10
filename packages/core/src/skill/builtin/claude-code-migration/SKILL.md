@@ -73,7 +73,7 @@ inspector 是**状态感知**的：它读取迁移状态文件（默认 `~/.sid-
 
 ### 2. 阅读映射准绳
 
-在解释 inspector 输出、提出迁移方案或执行迁移前，先阅读 `references/mapping.md`，严格按其中的 scope、字段映射、schema 转换（MCP `type→transport`、hooks 结构展开）和缺口处理。
+在解释 inspector 输出、提出迁移方案或执行迁移前，先阅读 `references/mapping.md`，严格按其中的 scope、字段映射、schema 转换（MCP `type→transport`；hooks 原样复制、不做转换）和缺口处理。
 
 ### 3. 向用户展示计划
 
@@ -86,7 +86,7 @@ inspector 是**状态感知**的：它读取迁移状态文件（默认 `~/.sid-
 - 冲突和可选处理方式
 - 只报告、不支持、未知和空字段
 - **如涉及 MCP**：列出每个 server 推导出的 `transport` 值（Claude 的 `type` 会转成 sid-code 的 `transport`），以及 `disabled→enabled` 转换和不支持字段；env/headers 作为敏感项只展示 key 名
-- **如涉及 hooks**：把它作为执行风险项请用户确认。展示①事件名与展开后的 sid-code 扁平 HookEntry 结构（Claude 两层 matcher 分组会被展开）；②`$CLAUDE_PROJECT_DIR → $SID_CODE_PROJECT_DIR` 的 token 替换；③含其他 `CLAUDE_*`/`claude`/`.claude` 引用的 hook 命令需人工核对
+- **如涉及 hooks**：把它作为执行风险项请用户确认。sid-code 与 Claude Code 格式一致，**原样复制**（嵌套形状、PascalCase 事件名、CC 工具名、`${CLAUDE_PROJECT_DIR}` 都不改）。展示①将写入的 hooks 段；②引用 `.claude/` 下脚本的命令：问用户保留原路径还是复制到 `.sid-code/hooks/` 并只改路径；③调用 `claude` CLI 或用了 sid-code 不导出的 `CLAUDE_*` 变量的命令需人工核对
 - **如涉及 env 字段**：作为敏感项确认。只展示 key 名不打印值；提醒 Claude 专属 env（`ANTHROPIC_*`/`CLAUDE_CODE_*`/`API_TIMEOUT_MS`）语义与 sid-code 的 provider 配置不同，建议改写为 sid-code 原生字段（`baseURL`/`anthropicKey`/`maxTokens`）而非原样搬运
 - **如涉及项目 memory**（当前项目的 `~/.claude/projects/<id>/memory/`）：作为**敏感项单独确认**。memory（尤其 `MEMORY.md` 与 `team/`）可能含个人信息或凭据。列出源/目标路径，但**不打印 memory 内容**；提醒用户迁移前后自查。注意源目录名与目标目录名用**两套不同的 sanitize 规则**（inspector 已算好，直接用计划里的路径，不要自己推导）
 - **如涉及 plugins**（`enabledPlugins`/`extraKnownMarketplaces`）：只报告。sid-code 无插件 marketplace 机制，说明需用户改用 sid-code 的 skill/MCP/agent 重建等价能力
@@ -103,7 +103,7 @@ inspector 是**状态感知**的：它读取迁移状态文件（默认 `~/.sid-
 - **不覆盖已有目标。** 遇到冲突时，让用户选择跳过、追加、重命名副本或手动合并。
 - **settings.json / .mcp.json 用确定性脚本做 patch 合并**（见上方「JSON 合并的硬性约束」）：调用 `apply-migration.mjs --op merge-settings` / `--op merge-mcp`，不整体覆盖、不即兴写脚本。运行时为 `none` 时才走 `read`+`write` 手动合并的降级路径。
 - **MCP 写入时执行 `type→transport` 转换**：这一步由 `apply-migration.mjs --op merge-mcp` 自动完成（补 `transport`、`disabled→enabled`、丢弃 `cwd`/`trust`/`oauth` 等不支持字段），你只需把 Claude 侧 `mcpServers` 原样作为 `--servers` 传入。项目级 MCP 优先写项目根 `.mcp.json`；如果项目根已有有效 `.mcp.json`，只报告 sid-code 可直接读取，不复制。
-- **hooks 写入时执行结构展开**：把 Claude 的 `event -> [{matcher, hooks:[inner]}]` 展开成 sid-code 的扁平 `event -> [{type, event, matcher, command, timeout, ...}]`，并替换 `$CLAUDE_PROJECT_DIR` token。目标已有 hooks 时按事件名追加（需确认）。
+- **hooks 原样写入**：不展开结构、不替换 `CLAUDE_*` 变量；只在用户选了「复制脚本」时改写命令里的脚本路径。目标已有 hooks 时按事件名追加（需确认）。写完提醒用户跑 `sid-code hooks list` 确认注册结果（项目级 hooks 需信任工作区）。
 - **memory 复制**：把源 memory 目录整体 copy 到目标目录（inspector 计划里的目标路径）；`team/` 子目录整体保留结构；目标已存在时走冲突流程，绝不覆盖合并。
 - **compatibleInPlace 项不复制**：只告知用户它们已能被 sid-code 读取。
 
@@ -123,7 +123,7 @@ inspector 是**状态感知**的：它读取迁移状态文件（默认 `~/.sid-
 - 已跳过项目和原因（含因状态记录而「已迁移（本次跳过）」的项、compatibleInPlace 项）
 - 迁移状态文件的位置，以及本次新记录了哪些 identity
 - 冲突及用户选择的处理方式
-- 执行的 schema 转换（MCP transport、hooks 展开、token 替换）
+- 执行的 schema 转换（MCP transport；hooks 若改写了脚本路径也列出）
 - 不支持或未知字段
 - 只报告项目
 - 创建的新文件或备份文件

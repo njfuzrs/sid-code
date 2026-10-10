@@ -154,7 +154,9 @@ describe("TelemetryHookProbe", () => {
 
     const chatSpan = spans.find((s) => s.kind === "chat");
     expect(chatSpan).toBeDefined();
-    expect(chatSpan!.attributes[ATTR.INPUT_TOKENS]).toBe(100);
+    // anthropic 的 input_tokens 是未命中余量；规范要求 gen_ai.usage.input_tokens 含缓存命中，
+    // 所以 100 未命中 + 20 命中 = 120
+    expect(chatSpan!.attributes[ATTR.INPUT_TOKENS]).toBe(120);
     expect(chatSpan!.attributes[ATTR.OUTPUT_TOKENS]).toBe(50);
     expect(chatSpan!.attributes[ATTR.CACHE_READ_TOKENS]).toBe(20);
     expect(chatSpan!.attributes[ATTR.FINISH_REASONS]).toBe("end_turn");
@@ -214,6 +216,83 @@ describe("TelemetryHookProbe", () => {
     expect(toolSpan!.status).toBe("ok");
   });
 
+  test("execute_tool span 按 duration_ms 回填起点，span 时长 = 工具真实耗时（B42：瀑布图曾全是 0µs）", async () => {
+    const hookSystem = new HookSystem();
+    probe.registerHooks(hookSystem);
+
+    await hookSystem.fireSessionStartEvent("startup", { model: "claude-sonnet-4" });
+    // 让根 span 起点足够早，回填起点不会被钳
+    await Bun.sleep(80);
+    await hookSystem.firePostToolUseEvent(
+      "bash",
+      { command: "sleep 0.05" },
+      { output: "" },
+      false,
+      "tool-dur",
+      { duration_ms: 50 },
+    );
+    await hookSystem.fireSessionEndEvent("exit");
+    await bus.flush();
+
+    const toolSpan = spans.find((s) => s.kind === "execute_tool")!;
+    expect(toolSpan.durationMs).toBeGreaterThanOrEqual(50);
+    expect(toolSpan.durationMs).toBeLessThan(80);
+    expect(toolSpan.endTime - toolSpan.startTime).toBe(toolSpan.durationMs);
+  });
+
+  test("回填起点不早于父 span 起点（duration 计时基准不同源时钳到父内）", async () => {
+    const hookSystem = new HookSystem();
+    probe.registerHooks(hookSystem);
+
+    await hookSystem.fireSessionStartEvent("startup", { model: "claude-sonnet-4" });
+    await hookSystem.firePostToolUseEvent(
+      "read",
+      { file_path: "/x" },
+      { output: "" },
+      false,
+      "tool-clamp",
+      { duration_ms: 60_000 },
+    );
+    await hookSystem.fireSessionEndEvent("exit");
+    await bus.flush();
+
+    const root = spans.find((s) => s.kind === "invoke_agent")!;
+    const toolSpan = spans.find((s) => s.kind === "execute_tool")!;
+    expect(toolSpan.parentSpanId).toBe(root.spanId);
+    expect(toolSpan.startTime).toBeGreaterThanOrEqual(root.startTime);
+  });
+
+  test("chat span 的 usage 属性按 OTel GenAI 规范命名与口径", async () => {
+    const hookSystem = new HookSystem();
+    probe.registerHooks(hookSystem);
+
+    await hookSystem.fireBeforeModelEvent({ model: "claude-sonnet-4", messages: [] });
+    await hookSystem.fireAfterModelEvent(
+      { model: "claude-sonnet-4", messages: [] },
+      {
+        text: "",
+        usage: {
+          inputTokens: 10,
+          outputTokens: 5,
+          cacheReadInputTokens: 30,
+          cacheCreationInputTokens: 7,
+          reasoningTokens: 3,
+        },
+        stop_reason: "end_turn",
+      },
+    );
+    await bus.flush();
+
+    const a = spans.find((s) => s.kind === "chat")!.attributes;
+    // anthropic：input_tokens 是未命中余量，规范要求 input 含命中与写入 ⇒ 10 + 30 + 7
+    expect(a["gen_ai.usage.input_tokens"]).toBe(47);
+    expect(a["gen_ai.usage.cache_read.input_tokens"]).toBe(30);
+    expect(a["gen_ai.usage.cache_write.input_tokens"]).toBe(7);
+    expect(a["gen_ai.usage.reasoning.output_tokens"]).toBe(3);
+    // 旧名不得残留：同一个量两个名字，看板会重复计
+    expect("gen_ai.usage.cache_creation.input_tokens" in a).toBe(false);
+  });
+
   test("handlePostToolUse 错误时记录 error", async () => {
     const hookSystem = new HookSystem();
     probe.registerHooks(hookSystem);
@@ -234,6 +313,32 @@ describe("TelemetryHookProbe", () => {
     expect(toolSpan!.attributes[ATTR.SUCCESS]).toBe(false);
     expect(toolSpan!.status).toBe("error");
     expect(toolSpan!.error).toBeDefined();
+  });
+
+  /**
+   * Q7：权限拒绝的 span 已关闭、status=denied，且**不带** sidcode.success——
+   * 按 success 统计工具失败率的下游因此天然不把拒绝算进分子。
+   */
+  test("权限拒绝 span：status=denied、不计入工具失败（不带 success）", async () => {
+    const hookSystem = new HookSystem();
+    probe.registerHooks(hookSystem);
+
+    await hookSystem.fireSessionStartEvent("startup", { model: "claude-sonnet-4" });
+    await hookSystem.firePermissionDeniedEvent(
+      "bash",
+      { command: "rm -rf /" },
+      "规则拒绝",
+      "rule",
+      "tu-d1",
+    );
+    await hookSystem.fireSessionEndEvent("exit");
+    await bus.flush();
+
+    const toolSpan = spans.find((s) => s.kind === "execute_tool");
+    expect(toolSpan).toBeDefined();
+    expect(toolSpan!.attributes["sidcode.tool.status"]).toBe("denied");
+    expect(toolSpan!.attributes[ATTR.TOOL_CALL_ID]).toBe("tu-d1");
+    expect(ATTR.SUCCESS in toolSpan!.attributes).toBe(false);
   });
 
   /**
@@ -303,7 +408,8 @@ describe("TelemetryHookProbe", () => {
     }
     await hookSystem.fireSessionEndEvent("exit", {
       total_cost_usd: 0.01,
-      total_tokens_sent: 200,
+      total_tokens_sent: 100,
+      total_cumulative_prompt_tokens: 200,
       total_tokens_received: 100,
     });
     await bus.flush();
@@ -312,8 +418,11 @@ describe("TelemetryHookProbe", () => {
     expect(agentSpan).toBeDefined();
     expect(agentSpan!.attributes[ATTR.TOTAL_TURNS]).toBe(2);
     expect(agentSpan!.attributes[ATTR.TOTAL_COST_USD]).toBe(0.01);
-    expect(agentSpan!.attributes[ATTR.INPUT_TOKENS]).toBe(200);
-    expect(agentSpan!.attributes[ATTR.OUTPUT_TOKENS]).toBe(100);
+    // 缺陷 11：取累计（flow）200，不是末次（stock）100；且不借 gen_ai.usage.*
+    expect(agentSpan!.attributes[ATTR.AGENT_CUMULATIVE_INPUT_TOKENS]).toBe(200);
+    expect(agentSpan!.attributes[ATTR.AGENT_OUTPUT_TOKENS]).toBe(100);
+    expect(ATTR.INPUT_TOKENS in agentSpan!.attributes).toBe(false);
+    expect(ATTR.OUTPUT_TOKENS in agentSpan!.attributes).toBe(false);
   });
 
   // ── TTFT ──
@@ -345,6 +454,8 @@ describe("TelemetryHookProbe", () => {
     const ttftEvent = chatSpan!.events.find((e) => e.name === "gen_ai.first_token");
     expect(ttftEvent).toBeDefined();
     expect(ttftEvent!.attributes?.ttft_ms).toBe(350);
+    // 缺陷 8：同时写成属性，/telemetry 读的是属性
+    expect(chatSpan!.attributes[ATTR.TTFT_MS]).toBe(350);
   });
 
   test("无 ttft_ms 时不记录 TTFT event", async () => {
@@ -623,45 +734,47 @@ describe("TelemetryHookProbe", () => {
 });
 
 // ============================================================
-// TokenMeter.calculateCacheSavings
+// TokenMeter → OTel GenAI Inference Token Metrics（B51 ①）
 // ============================================================
-describe("TokenMeter.calculateCacheSavings", () => {
-  test("无缓存时返回 0", () => {
-    const meter = new TokenMeter(null, (_model, usage) => {
-      // 简单定价：input $1/M, output $3/M
-      return (usage.inputTokens * 1 + usage.outputTokens * 3) / 1_000_000;
-    });
+describe("TokenMeter 按 GenAI 规范拆分 token metric", () => {
+  const collect = (provider: string, usage: any) => {
+    const { bus } = createEnabledBus();
+    const meter = new TokenMeter(bus, () => 0);
+    meter.record({ model: "m", provider, usage, costUSD: 0, sessionId: "s" });
+    return bus.getCompletedMetrics();
+  };
 
-    const savings = meter.calculateCacheSavings("test-model", {
-      inputTokens: 1000,
-      outputTokens: 500,
+  test("拆成独立 Counter、带 {token} 单位与 Required 属性；旧名 token.usage 不再出现", () => {
+    const ms = collect("anthropic", {
+      inputTokens: 10,
+      outputTokens: 5,
+      cacheReadInputTokens: 30,
+      cacheCreationInputTokens: 7,
     });
-    expect(savings).toBe(0);
+    const by = Object.fromEntries(ms.map((m) => [m.name, m]));
+    expect(by["gen_ai.client.inference.usage.input_tokens"]!.value).toBe(47);
+    expect(by["gen_ai.client.inference.usage.output_tokens"]!.value).toBe(5);
+    expect(by["gen_ai.client.inference.usage.cache_read.input_tokens"]!.value).toBe(30);
+    expect(by["gen_ai.client.inference.usage.cache_write.input_tokens"]!.value).toBe(7);
+    const input = by["gen_ai.client.inference.usage.input_tokens"]!;
+    expect(input.unit).toBe("{token}");
+    expect(input.type).toBe("counter");
+    expect(input.attributes["gen_ai.operation.name"]).toBe("chat");
+    expect(input.attributes["gen_ai.token.modality"]).toBe("unknown");
+    expect(ms.some((m) => m.name === "gen_ai.client.token.usage")).toBe(false);
+    expect(ms.some((m) => "gen_ai.token.type" in m.attributes)).toBe(false);
   });
 
-  test("有缓存时返回正确的节省金额", () => {
-    const meter = new TokenMeter(null, (_model, usage) => {
-      // 简单定价：input $10/M, output $30/M, cacheRead $1/M
-      const inputCost = (usage.inputTokens * 10) / 1_000_000;
-      const outputCost = (usage.outputTokens * 30) / 1_000_000;
-      const cacheReadCost = ((usage.cacheReadInputTokens ?? 0) * 1) / 1_000_000;
-      return inputCost + outputCost + cacheReadCost;
-    });
+  test("OpenAI 族 prompt_tokens 已含命中，不重复加", () => {
+    const ms = collect("openai", { inputTokens: 100, outputTokens: 5, cacheReadInputTokens: 60 });
+    const input = ms.find((m) => m.name === "gen_ai.client.inference.usage.input_tokens")!;
+    expect(input.value).toBe(100);
+  });
 
-    const savings = meter.calculateCacheSavings("test-model", {
-      inputTokens: 1000,
-      outputTokens: 500,
-      cacheReadInputTokens: 5000,
-    });
-    // noCacheCost = (1000*10 + 500*30) / 1M = 0.025
-    // actualCost  = (1000*10 + 500*30 + 5000*1) / 1M = 0.03
-    // savings = max(0, 0.025 - 0.03) = 0（这个定价模型下缓存反而更贵）
-    // 但实际上 calculateCacheSavings 用的是 noCacheUsage（不传缓存字段）
-    // noCacheCost = (1000*10 + 500*30) / 1M = 0.025
-    // actualCost  = (1000*10 + 500*30 + 5000*1) / 1M = 0.03
-    // 这里 noCacheUsage 不传 cacheRead，所以 noCacheCost 不含 cacheRead
-    // savings = max(0, 0.025 - 0.03) = 0
-    // 需要一个更合理的定价模型来测试
-    expect(savings).toBeGreaterThanOrEqual(0);
+  test("缓存 / 推理为 0 时不落（「没有这个维度」与 0 是两件事）", () => {
+    const ms = collect("openai", { inputTokens: 100, outputTokens: 5 });
+    const names = ms.map((m) => m.name);
+    expect(names).not.toContain("gen_ai.client.inference.usage.cache_read.input_tokens");
+    expect(names).not.toContain("gen_ai.client.inference.usage.reasoning.output_tokens");
   });
 });

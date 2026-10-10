@@ -27,7 +27,7 @@ export enum HookEventName {
   PreToolUse = "PreToolUse",
   /** 工具执行成功返回结果后触发。不可 block，仅可注入附加上下文。 */
   PostToolUse = "PostToolUse",
-  /** 工具执行抛异常后触发。不可 block，fire-and-forget 不等待结果。 */
+  /** 工具执行了但失败（返回错误或抛异常）后触发；权限拒绝走 PermissionDenied，不触发本事件。不可 block。 */
   PostToolUseFailure = "PostToolUseFailure",
   /** 用户输入提交后、入上下文前触发。可 block（原 prompt 不入上下文）。 */
   UserPromptSubmit = "UserPromptSubmit",
@@ -37,7 +37,7 @@ export enum HookEventName {
   BeforeModel = "BeforeModel",
   /** 每轮 LLM 响应收全后触发。可 block（丢弃响应并结束循环）。 */
   AfterModel = "AfterModel",
-  /** 会话启动或 resume 时触发。不可 block（block 降级为告警）。 */
+  /** 会话启动 / resume / `/clear` 之后 / 压缩之后触发（matcher：source = startup / resume / clear / compact）。stdout 进上下文，不可 block。 */
   SessionStart = "SessionStart",
   /** 会话退出前触发（exit / error / abort）。不可 block，超时即放弃。 */
   SessionEnd = "SessionEnd",
@@ -49,44 +49,54 @@ export enum HookEventName {
   SubagentStart = "SubagentStart",
   /** 子代理任务结束后触发（finally）。不可 block，fire-and-forget。 */
   SubagentStop = "SubagentStop",
-  /** 预留：有 fire 方法但无调用点，配了不会被触发。 */
+  /** TUI 等待权限确认时触发（matcher：permission_prompt；sid 没有空闲提醒，不发 idle_prompt）。仅通知。 */
   Notification = "Notification",
   /** 助手回答收尾、准备停止时触发。可 block（注入错误并重试修复）。 */
   Stop = "Stop",
-  /** 预留：有 fire 方法但无调用点，配了不会被触发。 */
+  /** 轮次因 API 错误终止时触发（matcher：error_type）。仅通知。 */
   StopFailure = "StopFailure",
-  /** 预留：有 fire 方法但无调用点，配了不会被触发。 */
+  /** 刻意不做：sid 没有 `--init` / `--maintenance`，此事件恒不触发。 */
   Setup = "Setup",
-  /** 权限需用户确认时、三路竞速中触发。可 block（返回 deny 则拒绝该工具）。 */
+  /** 权限需用户确认时触发，与分类器、用户弹窗并行竞争、先到先决。可 block（返回 deny 则拒绝该工具）。 */
   PermissionRequest = "PermissionRequest",
-  /** 预留：有 fire 方法但无调用点，配了不会被触发。 */
+  /** 权限拒绝后触发（主循环弹窗被拒 / 超时 / 规则直拒，子代理规则直拒 / 自动拒），仅通知、不可改判。 */
   PermissionDenied = "PermissionDenied",
-  /** 预留：有 fire 方法但无调用点，配了不会被触发。 */
+  /** settings 文件被外部修改后触发（matcher：user_settings / project_settings / local_settings / policy_settings）。可 block（回退到变更前的设置，policy_settings 除外）。 */
   ConfigChange = "ConfigChange",
-  /** 预留：有 fire 方法但无调用点，配了不会被触发。 */
+  /** 刻意不做：sid 没有监视任意文件的机制，此事件恒不触发。 */
   FileChanged = "FileChanged",
-  /** 预留：有 fire 方法但无调用点，配了不会被触发。 */
+  /** bash `cd` 改变工作目录后触发。仅通知。 */
   CwdChanged = "CwdChanged",
-  /** 预留：有 fire 方法但无调用点，配了不会被触发。 */
+  /** task_create 创建任务成功后触发。仅通知（sid 暂不支持 exit 2 回滚创建）。 */
   TaskCreated = "TaskCreated",
-  /** 预留：有 fire 方法但无调用点，配了不会被触发。 */
+  /** task_update 把任务置为 completed 后触发。仅通知。 */
   TaskCompleted = "TaskCompleted",
-  /** 权限检查开始（spec 17 §6.1.3，用于 blocked_on_user span） */
+  /** 预留（内部事件）：无 fire 方法也无调用点，恒不触发；用户配置会被跳过。原计划供 blocked_on_user span。 */
   BeforePermissionCheck = "BeforePermissionCheck",
-  /** 权限检查结束 */
+  /** 预留（内部事件）：无 fire 方法也无调用点，恒不触发；用户配置会被跳过。 */
   AfterPermissionCheck = "AfterPermissionCheck",
-  /** Hook 执行开始（用于 hook_execution span） */
+  /** 预留（内部事件）：无 fire 方法也无调用点，恒不触发；用户配置会被跳过。原计划供 hook_execution span。 */
   BeforeHookExecution = "BeforeHookExecution",
-  /** Hook 执行结束 */
+  /** 预留（内部事件）：无 fire 方法也无调用点，恒不触发；用户配置会被跳过。 */
   AfterHookExecution = "AfterHookExecution",
   /** G11：指令加载到上下文（CLAUDE.md / rules 加载后触发） */
   InstructionsLoaded = "InstructionsLoaded",
   /** G11：团队代理空闲（可 block，用于团队协作场景） */
   TeammateIdle = "TeammateIdle",
-  /** G11：hook 反向向用户提问的协议（action: accept/decline/cancel），需配套 UI，先占位 */
+  /** MCP server 发来 elicitation 请求、弹给用户之前触发（matcher：server 名）。仅通知。 */
   Elicitation = "Elicitation",
-  /** G11：Elicitation 的用户响应结果 */
+  /** 用户回复 MCP elicitation 之后触发（matcher：server 名）。仅通知。 */
   ElicitationResult = "ElicitationResult",
+  /** 一批工具（含并行）全部执行完、结果回灌模型之前触发。仅通知。 */
+  PostToolBatch = "PostToolBatch",
+  /** 切换模型之前触发（matcher：trigger = manual / fallback / config）。仅通知（sid 切换路径同步，不支持拒绝）。 */
+  PreModelSwitch = "PreModelSwitch",
+  /** 模型切换之后触发，含降级链自动切换（matcher：trigger = manual / fallback / config）。仅通知。 */
+  PostModelSwitch = "PostModelSwitch",
+  /** 斜杠命令 / skill 展开成 prompt 之后、提交之前触发（matcher：命令名）。stdout 进上下文。 */
+  UserPromptExpansion = "UserPromptExpansion",
+  /** /add-dir 把目录加入会话白名单之后触发。仅通知。 */
+  DirectoryAdded = "DirectoryAdded",
 }
 
 /** 旧 snake_case → 新 PascalCase 映射（向后兼容） */
@@ -116,16 +126,33 @@ export const LEGACY_EVENT_MAP: Record<string, HookEventName> = {
   teammate_idle: HookEventName.TeammateIdle,
   elicitation: HookEventName.Elicitation,
   elicitation_result: HookEventName.ElicitationResult,
+  post_tool_batch: HookEventName.PostToolBatch,
+  pre_model_switch: HookEventName.PreModelSwitch,
+  post_model_switch: HookEventName.PostModelSwitch,
+  user_prompt_expansion: HookEventName.UserPromptExpansion,
+  directory_added: HookEventName.DirectoryAdded,
 };
 
 /** 配置来源（优先级从高到低） */
 export enum ConfigSource {
   Runtime = "runtime",
+  /** 仓库内 `.sid-code/settings.json`——随 git clone 而来，过信任门 */
   Project = "project",
+  /**
+   * HC1：`.sid-code/settings.local.json`。未被 git 追踪 = 本机私有，与用户级同等可信；
+   * 被追踪 = 随仓库分发，与 Project 一样过信任门（判据见 TrustManager.untrustedSettingsFiles）。
+   */
+  Local = "local",
   User = "user",
   Global = "global",
   /** 插件提供的 hook（可被 replacePluginHooks 原子替换） */
   Plugin = "plugin",
+  /**
+   * H27：来自企业 managed-settings（系统级托管配置）的 hook——allowManagedHooksOnly 唯一该放行的用户态来源。
+   * 原先没有这个值，`Project`（仓库内 `.sid-code/settings.json`，随 git clone 而来、任何有 push 权限的人都能改）
+   * 被拿来充数放行。⚠️ 目前尚无代码路径产生 Managed 源：开启 allowManagedHooksOnly 后只剩内部 runtime hook。
+   */
+  Managed = "managed",
 }
 
 /** Hook 实现类型 */
@@ -160,10 +187,24 @@ export interface CommandHookConfig {
   type: "command";
   name?: string;
   command: string;
+  /**
+   * CC exec 形式：有 args 时不经 shell，`[command, ...args]` 直接 spawn，路径占位符
+   * （`${CLAUDE_PROJECT_DIR}` / `${CLAUDE_PLUGIN_ROOT}` …）在 command 与每个 arg 上做纯字符串替换。
+   * 省略 = shell 形式（`sh -c command`，变量由 shell 从环境变量展开）。
+   */
+  args?: string[];
   timeout?: number;
   env?: Record<string, string>;
+  /**
+   * 来源相关的路径变量（插件根 / 插件数据目录 / skill 目录），由归一化层填。
+   * runner 把它们导出为环境变量（shell 形式靠 shell 展开），exec 形式另做字符串替换。
+   * 与 env 分开存：env 是用户写的，pathVars 是来源决定的，/hooks 面板展示时要区分。
+   */
+  pathVars?: Record<string, string>;
   async?: boolean;
   asyncRewake?: boolean;
+  /** CC：hook 运行时显示的提示文案（TUI 经 HookSystem.onHookLifecycle 显示在状态行） */
+  statusMessage?: string;
   source?: ConfigSource;
 }
 
@@ -176,6 +217,7 @@ export interface UrlHookConfig {
   headers?: Record<string, string>;
   timeout?: number;
   allowedEnvVars?: string[];
+  statusMessage?: string;
   source?: ConfigSource;
 }
 
@@ -186,6 +228,7 @@ export interface PromptHookConfig {
   prompt: string;
   model?: string;
   timeout?: number;
+  statusMessage?: string;
   source?: ConfigSource;
 }
 
@@ -197,6 +240,7 @@ export interface AgentHookConfig {
   model?: string;
   timeout?: number;
   tools?: string[];
+  statusMessage?: string;
   source?: ConfigSource;
 }
 
@@ -205,7 +249,10 @@ export interface RuntimeHookConfig {
   type: "runtime";
   name: string;
   action: (input: HookInput, options?: { signal: AbortSignal }) => Promise<HookOutput | void>;
+  /** 超时（秒），与其他四种类型同单位。H10：原先 runtime 这一个字段按毫秒解释，同一个 1 差 1000 倍 */
   timeout?: number;
+  /** 亚秒级超时（毫秒），内部代码专用，优先于 timeout。单位写进字段名，不再靠注释约定 */
+  timeoutMs?: number;
   source?: ConfigSource;
 }
 
@@ -216,27 +263,68 @@ export type HookConfig =
   | PromptHookConfig
   | AgentHookConfig;
 
-/** Hook 定义（配置文件中的一组 hook，带 matcher） */
-export interface HookDefinition {
-  matcher?: string;
-  /**
-   * G10：在 matcher（工具名）之上的细粒度 tool_input 条件（权限规则语法）。
-   * 例：`Bash(git *)` 仅当命令匹配 git 开头才触发；`Read(*.ts)` 仅当读 .ts 文件才触发。
-   * 仅 PreToolUse/PostToolUse/PostToolUseFailure/PermissionRequest 事件支持（有 tool_input）。
-   */
-  if?: string;
-  sequential?: boolean;
-  hooks: HookConfig[];
+/**
+ * H10：`timeout` 字段的单位与缺省值的唯一事实源。五种类型统一按**秒**解释。
+ * runner 的五个执行分支与企业策略的 maxHookTimeout 判定都调它——原先五处各写一遍换算，
+ * runtime 那处漏乘 1000，日志里各自的「超时 (1s)」「超时 (1ms)」都对，单看任何一条都看不出不一致。
+ *
+ * 缺省值按 Q5 裁决对齐 CC（HC20）：command / url(http) 600s、prompt 30s、agent 60s；
+ * UserPromptSubmit 上的 command / url 30s；SessionStart 上的 command / url 30s（偏离 CC：
+ * SessionStart 在第一轮之前同步等待，挂住的 hook 让启动卡 10 分钟会被当成 sid 卡死）。
+ * 不传 eventName（企业策略判定）时按事件无关的缺省值算——它比的是「这条 hook 最多能跑多久」。
+ * 用户显式写的 timeout 一律优先。SessionEnd 的共享预算不在这里，见 SESSION_END_BUDGET_MS。
+ */
+export function resolveHookTimeoutMs(hook: HookConfig, eventName?: string): number {
+  if (hook.type === "runtime" && typeof hook.timeoutMs === "number") return hook.timeoutMs;
+  if (typeof hook.timeout === "number") return hook.timeout * 1000;
+  return defaultHookTimeoutSeconds(hook.type, eventName) * 1000;
 }
 
-/** 新格式配置：按事件名分组 */
-export type NewHooksConfig = Partial<Record<HookEventName, HookDefinition[]>>;
+/** 缺省超时（秒），见 resolveHookTimeoutMs 注释 */
+export function defaultHookTimeoutSeconds(type: HookConfig["type"], eventName?: string): number {
+  if (type === "prompt") return 30;
+  if (type === "agent") return 60;
+  if (type === "runtime") return 60;
+  if (eventName === HookEventName.UserPromptSubmit || eventName === HookEventName.SessionStart) {
+    return 30;
+  }
+  return 600;
+}
 
-/** 生成 hook 唯一 key（用于去重） */
+/**
+ * SessionEnd 所有 hook 共享的时间预算（对齐 CC）：缺省 1.5s；某条 hook 显式配了更长的 timeout 时
+ * 预算提高到它的值，上限 60s。退出路径上不能让一个慢 hook 把关窗口卡住。
+ */
+export const SESSION_END_BUDGET_MS = { default: 1500, max: 60_000 } as const;
+
+export function sessionEndBudgetMs(hooks: HookConfig[]): number {
+  let budget: number = SESSION_END_BUDGET_MS.default;
+  for (const h of hooks) {
+    if (h.type !== "runtime" && typeof h.timeout === "number") {
+      budget = Math.max(budget, h.timeout * 1000);
+    }
+  }
+  return Math.min(budget, SESSION_END_BUDGET_MS.max);
+}
+
+/**
+ * 生成 hook 内容 key（用于去重）。
+ *
+ * H19：这是**内容**去重，刻意不含 matcher / if——同一条命令经两个都命中的 matcher（或 if）进来，
+ * 本次事件只跑一次，这是语义而不是 bug。正确性依赖「planner 先按 matcher / if 过滤、再去重」
+ * 的顺序：过滤掉的条目不参与去重，所以「A 的 if 不命中、B 的 if 命中」时留下的一定是 B。
+ * 这个顺序由 tests/hook/hook-p3-*.test.ts 锁住，改 planner 时别把去重挪到过滤之前。
+ *
+ * 但 key 必须覆盖**执行内容**：prompt / agent 原先只用 `rt:${name}`，两个未命名的 prompt hook
+ * key 相同、后一个被静默丢弃——内容不同却被当成同一个 hook。
+ */
 export function getHookKey(hook: HookConfig): string {
   const name = hook.name || "";
   if (hook.type === "command") return `cmd:${name}:${hook.command}`;
   if (hook.type === "url") return `url:${name}:${hook.url}`;
+  if (hook.type === "prompt" || hook.type === "agent") {
+    return `${hook.type}:${name}:${hook.model ?? ""}:${hook.prompt}`;
+  }
   return `rt:${name}`;
 }
 
@@ -250,8 +338,16 @@ export interface HookInput {
   cwd: string;
   hook_event_name: string;
   timestamp: string;
-  /** 当前权限模式（与 claude-trace collector.py 对齐） */
+  /**
+   * 当前权限模式，取 CC 的取值（HC11）：default / acceptEdits / plan / dontAsk / auto / bypassPermissions。
+   * sid 原值另放 sid_permission_mode（always-allow 与 deny-write 在 CC 里没有对应）。
+   */
   permission_mode?: string;
+  sid_permission_mode?: string;
+  /** 会话对话记录文件（sid 的会话 jsonl），对齐 CC transcript_path */
+  transcript_path?: string;
+  /** 每次用户提交生成一个 UUID，同一轮里的所有事件共用（对齐 CC prompt_id） */
+  prompt_id?: string;
   /** M1 本机持久 deviceId。四方落盘共用，未配置 identity 时仍有值。 */
   device_id?: string;
   user_id?: string;
@@ -259,20 +355,49 @@ export interface HookInput {
   team_id?: string;
 }
 
+/**
+ * CC 规定：工具事件在子代理里触发时带 agent_id / agent_type（主循环不带）。
+ * 不放进 HookInput 基础字段：基础字段由 createBaseInput 统一组装、与「在哪条执行链上」无关，
+ * 而这两个字段恰恰只由执行链决定，由各工具事件 fire 方法按调用方传入的 agent 条件展开。
+ */
+export interface HookAgentFields {
+  agent_id?: string;
+  agent_type?: string;
+}
+
+/** 子代理执行链身份（工具事件 fire 方法的可选入参，见 HookAgentFields） */
+export interface HookAgentRef {
+  agent_id: string;
+  agent_type: string;
+}
+
 /** PreToolUse 输入 */
-export interface PreToolUseInput extends HookInput {
+export interface PreToolUseInput extends HookInput, HookAgentFields {
   tool_name: string;
   tool_input: Record<string, unknown>;
   /** LLM 分配的工具调用 ID，用于关联 action↔observation */
   tool_use_id?: string;
 }
 
+/** Q7：工具失败成因 */
+export type ToolFailureKind = "tool_error" | "exception" | "validation" | "hook_blocked";
+
 /** PostToolUse 输入 */
-export interface PostToolUseInput extends HookInput {
+export interface PostToolUseInput extends HookInput, HookAgentFields {
   tool_name: string;
   tool_input: Record<string, unknown>;
   tool_response: Record<string, unknown>;
   is_error?: boolean;
+  /** PostToolUseFailure：顶层错误信息（CC 字段，HC12；tool_response.error 保留） */
+  error?: string;
+  /** PostToolUseFailure：是否因用户中断而失败（CC 字段） */
+  is_interrupt?: boolean;
+  /**
+   * Q7：sid 内部字段，失败成因。只有 tool_error / exception 会送到用户 hook（CC 语义）；
+   * validation / hook_blocked 只送 runtime hook（关 execute_tool span 用，见 event-handler）。
+   * 内部消费者据此保持切换前的口径（session-metrics 只数 tool_error，与原先「PostToolUse 带 is_error」等价）。
+   */
+  sid_failure_kind?: ToolFailureKind;
   /** 与 PreToolUse 中的 tool_use_id 对应 */
   tool_use_id?: string;
 
@@ -426,7 +551,12 @@ export interface AfterModelInput extends HookInput {
 
 /** SessionStart 输入 */
 export interface SessionStartInput extends HookInput {
-  source: "startup" | "resume" | "clear";
+  /**
+   * 对齐 CC：startup / resume / clear（/clear 之后）/ compact（压缩之后）。
+   * clear / compact 两次只发给用户 hook（userOnly），runtime 消费者（collector / hook-probe）
+   * 把 SessionStart 当「开新轨迹 / 新 invoke_agent span」，再收一次会把同一会话劈成两段。
+   */
+  source: "startup" | "resume" | "clear" | "compact";
   /** 当前使用的模型 */
   model?: string;
   /** system prompt 的 MD5 hash */
@@ -524,6 +654,10 @@ export interface SubagentStopInput extends HookInput {
   };
   /** 子代理执行耗时（毫秒） */
   duration_ms?: number;
+  /** 子代理最后一条 assistant 文本（CC 字段）。拿不到（如中途异常、spawn 无结果退出）时缺省 */
+  last_assistant_message?: string;
+  /** 子代理 sidechain 对话记录 jsonl 路径（CC 字段）。sidechain 未启用 / 未落盘时缺省 */
+  agent_transcript_path?: string;
   /** 兼容旧调用：允许携带任意附加字段（如 toolName） */
   [key: string]: unknown;
 }
@@ -551,14 +685,32 @@ export interface HookExecutionInput extends HookInput {
 
 /** Stop 事件输入（模型 end_turn 后执行检查） */
 export interface StopInput extends HookInput {
-  /** 模型最后一次回复的文本 */
+  /** 模型最后一次回复的文本（sid 旧字段名，保留） */
   assistant_response: string;
+  /** 同上，CC 字段名（HC12） */
+  last_assistant_message: string;
+  /** 本次 Stop 是否由之前的 Stop hook 回炉引起（CC 字段，HC12）：hook 据此避免无限回炉 */
+  stop_hook_active: boolean;
 }
 
 /** StopFailure 事件输入（API 错误导致的非正常结束） */
 export interface StopFailureInput extends HookInput {
   error: string;
-  error_type: "api_error" | "rate_limit" | "context_overflow" | "abort" | "unknown";
+  /** 取值对齐 CC 的 StopFailure matcher（rate_limit / authentication_failed / billing_error /
+   *  invalid_request / server_error / max_output_tokens / unknown），另保留 sid 原有的
+   *  api_error / context_overflow / abort / timeout */
+  error_type:
+    | "rate_limit"
+    | "authentication_failed"
+    | "billing_error"
+    | "invalid_request"
+    | "server_error"
+    | "max_output_tokens"
+    | "timeout"
+    | "api_error"
+    | "context_overflow"
+    | "abort"
+    | "unknown";
 }
 
 /** PostCompact 输入 */
@@ -583,7 +735,9 @@ export interface PermissionRequestInput extends HookInput {
 }
 
 /** PermissionDenied 输入 */
-export interface PermissionDeniedInput extends HookInput {
+export interface PermissionDeniedInput extends HookInput, HookAgentFields {
+  /** Q7：供 runtime 消费者关闭对应的 execute_tool span */
+  tool_use_id?: string;
   tool_name: string;
   tool_input: Record<string, unknown>;
   denial_reason: string;
@@ -593,7 +747,18 @@ export interface PermissionDeniedInput extends HookInput {
 /** ConfigChange 输入 */
 export interface ConfigChangeInput extends HookInput {
   changed_keys: string[];
-  source: "file" | "command" | "env";
+  /** 对齐 CC 的 ConfigChange matcher：user_settings / project_settings / local_settings /
+   *  policy_settings；旧值 file / command / env 保留兼容 */
+  source:
+    | "user_settings"
+    | "project_settings"
+    | "local_settings"
+    | "policy_settings"
+    | "file"
+    | "command"
+    | "env";
+  /** 变更的文件路径（文件来源时有） */
+  file_path?: string;
 }
 
 /** FileChanged 输入 */
@@ -603,19 +768,19 @@ export interface FileChangedInput extends HookInput {
 }
 
 /** CwdChanged 输入 */
-export interface CwdChangedInput extends HookInput {
+export interface CwdChangedInput extends HookInput, HookAgentFields {
   old_cwd: string;
   new_cwd: string;
 }
 
 /** TaskCreated 输入 */
-export interface TaskCreatedInput extends HookInput {
+export interface TaskCreatedInput extends HookInput, HookAgentFields {
   task_id: string;
   task_description: string;
 }
 
 /** TaskCompleted 输入 */
-export interface TaskCompletedInput extends HookInput {
+export interface TaskCompletedInput extends HookInput, HookAgentFields {
   task_id: string;
   task_description: string;
   success: boolean;
@@ -649,6 +814,42 @@ export interface ElicitationInput extends HookInput {
 }
 
 /** G11：ElicitationResult 输入——Elicitation 的用户响应结果 */
+/** Elicitation / ElicitationResult 共有：发起请求的 MCP server（matcher 按它匹配） */
+export interface ElicitationServerField {
+  mcp_server_name?: string;
+}
+
+/** PostToolBatch 输入 */
+export interface PostToolBatchInput extends HookInput {
+  /** 本批每个工具的结果摘要（tool_name 为内部名，外部 handler 不做换名——它是数组） */
+  tool_calls: Array<{ tool_name: string; tool_use_id: string; is_error: boolean }>;
+}
+
+/** PreModelSwitch / PostModelSwitch 输入 */
+export interface ModelSwitchInput extends HookInput {
+  from_model: string;
+  to_model: string;
+  /** manual = /model；fallback = 降级链自动切换；config = CLAUDE.md `# Model` 等配置驱动 */
+  trigger: "manual" | "fallback" | "config";
+  /** fallback 时的降级原因 */
+  reason?: string;
+}
+
+/** UserPromptExpansion 输入 */
+export interface UserPromptExpansionInput extends HookInput {
+  /** 触发展开的命令名（不带 /） */
+  command_name: string;
+  /** 用户原始输入（如 `/commit -m x`） */
+  original_prompt: string;
+  /** 展开后的 prompt */
+  expanded_prompt: string;
+}
+
+/** DirectoryAdded 输入 */
+export interface DirectoryAddedInput extends HookInput {
+  directory: string;
+}
+
 export interface ElicitationResultInput extends HookInput {
   /** 用户动作 */
   action: "accept" | "decline" | "cancel";
@@ -860,7 +1061,10 @@ export function createHookOutput(
   data: Partial<HookOutput>,
 ): DefaultHookOutput {
   switch (eventName) {
+    // H3：PermissionRequest 与 PreToolUse 同为工具类决策事件（输入都有 tool_name + tool_input），
+    // 必须认同一套 permissionDecision 协议。原先落到 default 拿父类，`permissionDecision:"deny"` 不算阻塞。
     case HookEventName.PreToolUse:
+    case HookEventName.PermissionRequest:
       return new PreToolUseHookOutput(data);
     case HookEventName.AfterAgent:
       return new AfterAgentHookOutput(data);

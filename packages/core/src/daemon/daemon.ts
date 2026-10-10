@@ -229,6 +229,14 @@ export class Daemon {
       getLogger().info("DAEMON", "webhook 源未启用（无 secret 且未显式开），纯调度模式");
       return;
     }
+    if (secret === "") {
+      // 显式 --webhook 但没 secret：server 对所有请求 401（fail-closed），开端口没有意义
+      getLogger().warn(
+        "DAEMON",
+        "指定了 --webhook 但未设置 SID_CODE_WEBHOOK_SECRET：所有请求都会被拒（401），webhook 源不启动",
+      );
+      return;
+    }
 
     try {
       const { createDaemonServer } = require("./server.ts");

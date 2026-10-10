@@ -37,6 +37,9 @@ import { join, relative, resolve } from "node:path";
 export const PACKAGE_RANK: Record<string, number> = {
   shared: 0,
   "tui-renderer": 1,
+  // B9 / T1.2：新渲染底座与旧底座同层（都是 CLI 之下、core 无从知道的渲染层）。
+  // 它目前零内部依赖（上游 ink 原样），rank 1 只约束「不许往上导 core / cli」。
+  tui: 1,
   core: 2,
   cli: 3,
 };
@@ -250,8 +253,8 @@ export function scanSrcMode(srcRoot: string): {
   return { violations, edges, sizes };
 }
 
-/** 参与边界校验的 4 个包，按 rank 升序。eval-framework 是独立 vendor 包，不在此列。 */
-export const PACKAGES = ["shared", "tui-renderer", "core", "cli"] as const;
+/** 参与边界校验的 5 个包，按 rank 升序。eval-framework 是独立 vendor 包，不在此列。 */
+export const PACKAGES = ["shared", "tui-renderer", "tui", "core", "cli"] as const;
 
 /**
  * 在真实 `packages/` 结构上校验包边界（拆包**后**的门禁路径）。
@@ -452,6 +455,47 @@ export function scanPackageTestsMode(packagesRoot: string): {
   return { violations, files: total };
 }
 
+/**
+ * 渲染端口规则（B9 / T0.2）：CLI 只能经 `packages/cli/src/ui/render-port/` 拿渲染底座。
+ *
+ * 为什么要这条：B9 要把旧底座整层换掉。CLI 里只要有一处绕过端口直连底座，
+ * 那一处在切换时就会**静默留在旧底座上**（同一进程两套 reconciler，Box 宿主类型不同源），
+ * 表现是某个组件渲染不出来或布局错乱，而 import 本身不报任何错。
+ *
+ * 扫描面：`packages/cli/src` + `packages/cli/tests`（测试也只能经端口，否则 L1 双跑时
+ * 那些测试永远只测 legacy）。禁止的说明符：`@sid-code/tui-renderer`（旧）与
+ * `@sid-code/tui`（新，T1.x 引入）——两个都只许端口目录自己用。
+ */
+export const RENDER_PORT_DIR = "packages/cli/src/ui/render-port";
+const RENDERER_SPEC = /^@sid-code\/(tui-renderer|tui)(?:\/|$)/;
+
+export function scanRenderPortMode(repoRoot: string): {
+  violations: Array<{ file: string; line: number; spec: string }>;
+  files: number;
+  portEdges: number;
+} {
+  const portAbs = join(repoRoot, RENDER_PORT_DIR);
+  const violations: Array<{ file: string; line: number; spec: string }> = [];
+  let files = 0;
+  let portEdges = 0;
+  for (const dir of ["packages/cli/src", "packages/cli/tests"]) {
+    for (const file of collectSourceFiles(join(repoRoot, dir))) {
+      files++;
+      const inPort = !relative(portAbs, file).startsWith("..");
+      for (const imp of extractImports(readFileSync(file, "utf8"))) {
+        if (!RENDERER_SPEC.test(imp.spec)) continue;
+        if (inPort) {
+          portEdges++;
+          continue;
+        }
+        violations.push({ file: relative(repoRoot, file), line: imp.line, spec: imp.spec });
+      }
+    }
+  }
+  if (files === 0) throw new Error("render-port 规则扫到 0 个文件 —— 门禁在空转");
+  return { violations, files, portEdges };
+}
+
 if (import.meta.main) {
   // 默认 --packages（分包已完成）。--src 是拆包前的试算模式，需显式指定。
   const useSrcMode = process.argv.includes("--src");
@@ -497,7 +541,17 @@ if (import.meta.main) {
       console.log("  ✅ 测试无跨包相对路径（跨包一律走 @sid-code/* bare specifier）。");
     }
 
-    process.exit(violations.length + t.violations.length > 0 ? 1 : 0);
+    // B9 / T0.2：CLI 只能经 render-port 拿渲染底座
+    const rp = scanRenderPortMode(root);
+    console.log(
+      `\n=== 渲染端口（${rp.files} 文件，端口内 ${rp.portEdges} 条底座导入）绕过端口直连底座：${rp.violations.length} 处 ===`,
+    );
+    for (const v of rp.violations) console.log(`  [render-port] ${v.file}:${v.line}  ${v.spec}`);
+    if (rp.violations.length === 0) {
+      console.log(`  ✅ CLI 只经 ${RENDER_PORT_DIR}/ 导入渲染底座。`);
+    }
+
+    process.exit(violations.length + t.violations.length + rp.violations.length > 0 ? 1 : 0);
   }
 
   const srcRoot = join(root, "src");

@@ -64,7 +64,7 @@ afterAll(() => {
 });
 
 /** spawn bootstrap.ts，喂空 stdin 避免无头模式挂起等待输入。 */
-async function run(args: string[]): Promise<RunResult> {
+async function run(args: string[], extraEnv: Record<string, string> = {}): Promise<RunResult> {
   const proc = Bun.spawn(["bun", BOOTSTRAP, ...args], {
     stdin: "ignore",
     stdout: "pipe",
@@ -74,6 +74,7 @@ async function run(args: string[]): Promise<RunResult> {
       SID_CODE_DISABLE_PROJECT_RULES: "1",
       // 显式隔离：不读用户真实配置，也不写用户真实 ~/.sid-code
       SID_CONFIG_DIR: CONFIG_DIR,
+      ...extraEnv,
     },
   });
   const [stdout, stderr, code] = await Promise.all([
@@ -156,7 +157,8 @@ describe("组合约束 P2-1 / P2-2", () => {
     expect(stderr).toContain("--output-format 只在 --print 下生效");
   });
 
-  test("--max-budget-usd 不带 -p → 告警但不退出（B2）", async () => {
+  // B18：交互模式已接线 --max-budget-usd，原「告警并忽略」改为不告警。
+  test("--max-budget-usd 不带 -p → 不再告警「交互模式已忽略」（B18）", async () => {
     const proc = Bun.spawn(["bun", BOOTSTRAP, "--max-budget-usd", "1"], {
       stdin: "ignore",
       stdout: "pipe",
@@ -167,7 +169,7 @@ describe("组合约束 P2-1 / P2-2", () => {
     proc.kill();
     const stderr = await new Response(proc.stderr).text();
     await proc.exited;
-    expect(stderr).toContain("--max-budget-usd 只在 --print 下生效");
+    expect(stderr).not.toContain("--max-budget-usd 只在 --print 下生效");
   });
 
   test("--no-session-persistence 不再是未知选项（bun allowNegative）", async () => {
@@ -258,9 +260,40 @@ describe("子命令路由", () => {
     expect(parsed).toHaveProperty("apiKeyConfigured");
   });
 
-  test("auth login → exit=1（不适用）", async () => {
-    const r = await run(["auth", "login"]);
+  test("auth login 未配置后端 → exit=1 + 提示配置 backend.url", async () => {
+    const r = await run(["auth", "login"], { SID_CODE_BACKEND_URL: "" });
     expect(r.code).toBe(1);
-    expect(r.stderr).toContain("不适用");
+    expect(r.stderr).toContain("backend");
+  });
+
+  // 回调服务器是 unref() 的：没有保活句柄时进程会在浏览器回调前以 exit 0 静默退出。
+  // 单测进程本身撑着事件循环看不见这个问题，只有独立子进程能测出来。
+  test("login 等待浏览器回调期间进程不提前退出", async () => {
+    const proc = Bun.spawn(["bun", BOOTSTRAP, "login"], {
+      stdin: "ignore",
+      stdout: "pipe",
+      stderr: "pipe",
+      env: {
+        ...process.env,
+        SID_CONFIG_DIR: CONFIG_DIR,
+        SID_CODE_BACKEND_URL: "http://127.0.0.1:9",
+        SID_CODE_NO_BROWSER: "1",
+      },
+    });
+    const early = await Promise.race([
+      proc.exited.then(() => "exited"),
+      new Promise((r) => setTimeout(() => r("alive"), 3000)),
+    ]);
+    proc.kill();
+    await proc.exited;
+    expect(early).toBe("alive");
+  }, 10_000);
+
+  test("auth status --json → 含 login 段", async () => {
+    const r = await run(["auth", "status", "--json"]);
+    expect(r.code).toBe(0);
+    const parsed = JSON.parse(r.stdout);
+    expect(parsed.login).toHaveProperty("loggedIn");
+    expect(parsed.login).toHaveProperty("deviceId");
   });
 });

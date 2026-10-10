@@ -326,7 +326,8 @@ describe("容器页与全站搜索隔离", () => {
     const src = readFileSync(CONFIG_PATH, "utf8");
     const hook = src.slice(src.indexOf("_render(src, env, md)"));
     const renderAt = hook.indexOf("md.render(src, env)");
-    const checkAt = hook.indexOf("search === false");
+    // 判断已抽到 search-scope.ts 的 isExcludedFromSearch，它读的是渲染后回填的 frontmatter
+    const checkAt = hook.indexOf("isExcludedFromSearch(");
     expect(renderAt).toBeGreaterThan(-1);
     expect(checkAt).toBeGreaterThan(-1);
     expect(renderAt).toBeLessThan(checkAt);
@@ -565,5 +566,29 @@ describe("changelog 取数口径统一走 --first-parent", () => {
     expect(isNoiseSubject("bump v0.1.601")).toBe(true);
     // 反向：合规的 PR 标题不得被误滤
     expect(isNoiseSubject("feat(cache): 新增 XXX")).toBe(false);
+  });
+});
+
+describe("changelog.json · 发布通道字段（T2，一修一号）", () => {
+  test("每个版本都有 channel，且当前稳定版及更早的版本标 stable", () => {
+    const d = JSON.parse(readFileSync(DATA_PATH, "utf8"));
+    const stable = JSON.parse(readFileSync(resolve(ROOT, "changelog/channel.json"), "utf8")).stable;
+    const cmp = (a: string, b: string) => {
+      const pa = a.split(".").map(Number);
+      const pb = b.split(".").map(Number);
+      for (let i = 0; i < 3; i++) if (pa[i] !== pb[i]) return pa[i]! - pb[i]!;
+      return 0;
+    };
+    for (const v of d.versions) {
+      expect(["stable", "beta"]).toContain(v.channel);
+      if (cmp(v.version, stable) > 0) expect(v.channel).toBe("beta");
+      if (v.mergedInto) expect(v.channel).toBe("beta");
+    }
+  });
+
+  test("组件默认不展示 beta（showBeta 初值 false），并对 beta 显示「预发布」徽标", () => {
+    const vue = readFileSync(COMPONENT_PATH, "utf8");
+    expect(vue).toContain("const showBeta = ref(false)");
+    expect(vue).toContain("预发布");
   });
 });

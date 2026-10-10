@@ -9,8 +9,15 @@ import { normalizeBaseURL } from "../llm/endpoint-key.ts";
 // compat 的合法键清单只在 model-compat.ts 维护一份：校验侧与归一化侧共用同一个源，
 // 否则加一个位就要改两处，漏改的那处会静默放过（或误报）用户的合法配置。
 import { MODEL_COMPAT_KEYS, COMPAT_KEY_ALIASES, COMPAT_KEY_SET } from "../llm/model-compat.ts";
-// VALID_HOOK_EVENTS 从这两个事实源派生，见其定义处的注释（手写清单会漂移出假告警）。
-import { HookEventName, LEGACY_EVENT_MAP } from "../hook/types.ts";
+// hooks 校验委托给 hook 层唯一归一化器：事件名 / 形状 / handler 类型的判据只在那里维护一份。
+import { ConfigSource } from "../hook/types.ts";
+import { normalizeHooksConfig } from "../hook/config-normalize.ts";
+import {
+  MCPTransportEnum,
+  BudgetPeriodEnum,
+  BudgetActionEnum,
+  SearchBackendEnum,
+} from "./settings/types.ts";
 
 /** 验证错误 */
 export interface ValidationError {
@@ -52,7 +59,7 @@ const VALID_PROVIDERS = new Set(["anthropic", "openai", "ollama", "replay"]);
 /** 有效的权限模式
  *  - "manual"：CC 别名，等价 "default"（在 config.ts 归一层映射为 default）
  *  - "auto"：分类器自动裁决模式，可经 --permission-mode auto 显式进入（需分类器可用） */
-const VALID_PERMISSION_MODES = new Set([
+export const PERMISSION_MODES = [
   "default",
   "manual",
   "always-allow",
@@ -62,29 +69,10 @@ const VALID_PERMISSION_MODES = new Set([
   "dontAsk",
   "auto",
   "dangerously-skip-permissions",
-]);
-
-/**
- * 有效的 Hook 事件名：**从 hook 层的事实源派生**，不再手写清单。
- *
- * 为什么必须派生：这里曾是一份手写的 12 条 snake_case 清单，而 registry 真正认的是
- * `HookEventName` 枚举（37 个成员）+ `LEGACY_EVENT_MAP`（25 条 snake_case 别名）两者的并集
- * ——`resolveEventName()` 对两种写法都返回有效事件。两边一漂移就产生**假告警**：
- * 用户按 `ref/hooks.md`（从枚举生成的权威参考页）写 `"PreToolUse"`，hook 实际能正常触发，
- * 却会收到一条 `未知的事件名 "PreToolUse"` 的警告，然后去怀疑自己配错了。
- * 反过来，枚举里新增事件时也不会有人记得回来同步这份清单。
- *
- * 校验的语义是「这个名字 registry 认不认」，而 registry 认什么由 hook 层定义，
- * 所以这里唯一正确的做法是引用它，而不是抄它。
- *
- * 注意：能通过校验 ≠ 该事件有调用点会触发。枚举里有一批标注「预留：有 fire 方法但无调用点」
- * 的事件，配了不会被触发——那是 `ref/hooks.md` 的「会不会触发」列要回答的问题，
- * 与本校验（名字合不合法）是两个独立维度，别混为一谈。
- */
-const VALID_HOOK_EVENTS = new Set<string>([
-  ...Object.values(HookEventName),
-  ...Object.keys(LEGACY_EVENT_MAP),
-]);
+] as const;
+// 导出成元组是给参考页生成器自省用的（B34 / D115）：ref/settings.md 的取值列直接读它，
+// 不再抄注释里的「N 种模式」——那句注释曾停在 6 种，而这里已经是 9 种。
+const VALID_PERMISSION_MODES = new Set<string>(PERMISSION_MODES);
 
 /** 有效的子代理类型：从活跃 agent registry 派生（含 built-in + custom + plugin）。
  *  额外允许 "default"：subAgentModels 的兜底键，作用于所有未单独指定的类型。
@@ -93,8 +81,10 @@ function getValidSubagentTypes(): Set<string> {
   return new Set<string>(["default", ...getActiveAgentTypes()]);
 }
 
-/** 有效的 MCP 传输类型 */
-const VALID_MCP_TRANSPORTS = new Set(["stdio", "http", "sse"]);
+/** 有效的 MCP 传输类型：从 settings Zod 枚举派生，与 mcp/manager.ts 的实现分支同源。
+ *  曾手写为 stdio/http/sse，漏了 ws / http-json，导致合法配置被报「无效值」（B36）——
+ *  与上面 Hook 事件名那次是同一形态：手写名单与事实源漂移。 */
+const VALID_MCP_TRANSPORTS: ReadonlySet<string> = new Set(MCPTransportEnum.options);
 
 /** 明显的占位符 API Key */
 const PLACEHOLDER_PATTERNS = [
@@ -212,9 +202,11 @@ export function validateConfig(config: Config): ValidationResult {
         });
       }
 
-      // http/sse 类型必须有 url
+      // 远程传输（http / http-json / sse / ws）必须有 url：manager.ts 建连时缺 url 直接抛错
       if (
-        (serverConfig.transport === "http" || serverConfig.transport === "sse") &&
+        serverConfig.transport &&
+        serverConfig.transport !== "stdio" &&
+        VALID_MCP_TRANSPORTS.has(serverConfig.transport) &&
         !serverConfig.url
       ) {
         errors.push({
@@ -245,80 +237,32 @@ export function validateConfig(config: Config): ValidationResult {
           });
         }
       }
+
+      // auth 只认 sid-backend；写错（如 "sid_backend"）若静默忽略，就会变成不带凭据去连后端
+      if (serverConfig.auth !== undefined && serverConfig.auth !== "sid-backend") {
+        errors.push({
+          path: `${prefix}.auth`,
+          message: '无效值，目前只支持 "sid-backend"',
+          value: serverConfig.auth,
+        });
+      } else if (serverConfig.auth === "sid-backend" && serverConfig.transport === "stdio") {
+        errors.push({
+          path: `${prefix}.auth`,
+          message: 'auth:"sid-backend" 只用于远程传输（http / http-json / sse）',
+          value: serverConfig.auth,
+        });
+      }
     }
   }
 
-  // 验证 hooks
-  if (config.hooks && typeof config.hooks === "object") {
-    for (const [eventName, hookList] of Object.entries(config.hooks)) {
-      if (!VALID_HOOK_EVENTS.has(eventName)) {
-        warnings.push({
-          path: `hooks.${eventName}`,
-          message: `未知的事件名 "${eventName}"，有效值为 ${Array.from(VALID_HOOK_EVENTS).join(", ")}`,
-        });
-      }
-
-      if (!Array.isArray(hookList)) {
-        errors.push({
-          path: `hooks.${eventName}`,
-          message: "Hook 配置必须是数组",
-          value: hookList,
-        });
-        continue;
-      }
-
-      hookList.forEach((hook, index) => {
-        const prefix = `hooks.${eventName}[${index}]`;
-
-        // 验证 type（G5：新增 prompt/agent 两种 LLM 层 hook）
-        const VALID_HOOK_TYPES = ["command", "url", "prompt", "agent"];
-        if (hook.type && !VALID_HOOK_TYPES.includes(hook.type)) {
-          errors.push({
-            path: `${prefix}.type`,
-            message: `无效值 "${hook.type}"，有效值为 ${VALID_HOOK_TYPES.join("/")}`,
-            value: hook.type,
-          });
-        }
-
-        // command 类型必须有 command 字段
-        const hookType = hook.type || "command";
-        if (hookType === "command" && !hook.command) {
-          errors.push({
-            path: `${prefix}.command`,
-            message: "command 类型的 Hook 必须指定 command 字段",
-            value: hook.command,
-          });
-        }
-
-        // url 类型必须有 url 字段
-        if (hookType === "url" && !hook.url) {
-          errors.push({
-            path: `${prefix}.url`,
-            message: "url 类型的 Hook 必须指定 url 字段",
-            value: hook.url,
-          });
-        }
-
-        // prompt / agent 类型必须有 prompt 字段
-        if ((hookType === "prompt" || hookType === "agent") && !hook.prompt) {
-          errors.push({
-            path: `${prefix}.prompt`,
-            message: `${hookType} 类型的 Hook 必须指定 prompt 字段`,
-            value: hook.prompt,
-          });
-        }
-
-        // 验证 timeout
-        if (hook.timeout !== undefined) {
-          if (typeof hook.timeout !== "number" || hook.timeout <= 0) {
-            errors.push({
-              path: `${prefix}.timeout`,
-              message: "timeout 必须是正数",
-              value: hook.timeout,
-            });
-          }
-        }
-      });
+  // 验证 hooks：委托给 hook 层唯一归一化器（HC3）。原先这里有一套手写校验，
+  // 只认平铺形状，CC 嵌套形状 `{matcher, hooks:[...]}` 被判「必须指定 command」——
+  // 两套逻辑漂移过一次（手写事件名清单出过假告警），这次直接删掉手写的那套。
+  if (config.hooks !== undefined && config.hooks !== null) {
+    const { diagnostics } = normalizeHooksConfig(config.hooks, ConfigSource.User);
+    for (const d of diagnostics) {
+      if (d.level === "error") errors.push({ path: d.path, message: d.message, value: undefined });
+      else warnings.push({ path: d.path, message: d.message });
     }
   }
 
@@ -666,8 +610,9 @@ export function validateConfig(config: Config): ValidationResult {
     }
 
     if (Array.isArray(q.budgetRules)) {
-      const VALID_BUDGET_PERIODS = new Set(["session", "hourly", "daily", "weekly", "monthly"]);
-      const VALID_BUDGET_ACTIONS = new Set(["alert", "downgrade", "block"]);
+      // 从 Zod 枚举派生（B36 同形态收口），不手写第二份名单
+      const VALID_BUDGET_PERIODS: ReadonlySet<string> = new Set(BudgetPeriodEnum.options);
+      const VALID_BUDGET_ACTIONS: ReadonlySet<string> = new Set(BudgetActionEnum.options);
       const seenRuleIds = new Set<string>();
 
       q.budgetRules.forEach((rule, index) => {
@@ -703,6 +648,14 @@ export function validateConfig(config: Config): ValidationResult {
           warnings.push({
             path: `${prefix}.action`,
             message: `无效值 "${rule.action}"，有效值为 ${Array.from(VALID_BUDGET_ACTIONS).join("/")}`,
+          });
+        } else if (rule.action === "downgrade") {
+          // B39：downgrade 是合法值但没有实现——主循环只判 action === "block"（query/loop.ts），
+          // 没有降级分支，超限时只告警。配了零报错 = 「配了不生效」，所以这里点名。
+          // 不从合法值里删：删了会让已配的用户启动报「无效值」，比现在更糟。
+          warnings.push({
+            path: `${prefix}.action`,
+            message: `"downgrade" 当前未实现，行为等同 alert（超限只告警，不切换模型）`,
           });
         }
 
@@ -820,7 +773,7 @@ export function validateConfig(config: Config): ValidationResult {
       if (!upload.url) {
         errors.push({
           path: "trace.upload.url",
-          message: "上传 URL 不能为空",
+          message: "上传 URL 不能为空（缺省取 backend.url，两者都没配）",
           value: upload.url,
         });
       }
@@ -904,7 +857,8 @@ export function validateConfig(config: Config): ValidationResult {
   // 验证 search 配置：backend 枚举 + 组合一致性
   if (config.search) {
     const s = config.search;
-    const VALID_SEARCH_BACKENDS = new Set(["searxng", "brave", "tavily", "duckduckgo"]);
+    // 从 Zod 枚举派生（B36 同形态收口）；brave / tavily 「合法但未实现」的告警在下面单独处理
+    const VALID_SEARCH_BACKENDS: ReadonlySet<string> = new Set(SearchBackendEnum.options);
     if (s.backend !== undefined) {
       if (!VALID_SEARCH_BACKENDS.has(s.backend)) {
         warnings.push({
@@ -997,7 +951,20 @@ export function validateConfig(config: Config): ValidationResult {
       });
     }
     if (sr.maxCount !== undefined && (typeof sr.maxCount !== "number" || sr.maxCount <= 0)) {
-      warnings.push({ path: "sessionRetention.maxCount", message: "必须是正整数" });
+      warnings.push({
+        path: "sessionRetention.maxCount",
+        message: "必须是正整数（不想限制数量就删掉这一项，默认不限）",
+      });
+    }
+    // 与 session/retention.ts 的 RETENTION_SIZE_PATTERN 同款（理由同上，刻意内联）
+    if (
+      sr.maxTotalSize !== undefined &&
+      !/^(\d+(?:\.\d+)?)\s*(KB|MB|GB|TB)$/i.test(String(sr.maxTotalSize).trim())
+    ) {
+      warnings.push({
+        path: "sessionRetention.maxTotalSize",
+        message: `格式无效 ("${sr.maxTotalSize}")，应为 数字+KB/MB/GB/TB（如 "10GB"），否则体积清理不会生效`,
+      });
     }
   }
 

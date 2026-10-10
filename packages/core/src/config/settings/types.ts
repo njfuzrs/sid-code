@@ -13,6 +13,7 @@
  */
 
 import { z } from "zod/v3";
+import { USER_HOOK_HANDLER_TYPES, isUserHookHandlerType } from "../../hook/handler-types.ts";
 
 /** 延迟求值包装器——避免模块加载阶段的 CPU 开销 */
 export function lazySchema<T extends z.ZodType>(factory: () => T): () => T {
@@ -39,24 +40,52 @@ const PermissionsSchema = lazySchema(() =>
 const HookEntrySchema = lazySchema(() =>
   z
     .object({
-      type: z.enum(["command", "url"]).optional(),
+      // H24：类型合法性不在字段上判，而在下面的 superRefine 里判到「整条 hook」上——
+      // 字段级 issue 只会让 removeInvalidValues 摘掉 `type` 这一个键，剩下的条目按缺省
+      // type=command 继续注册（`{type:"nonsense", command:"x"}` 会被当 command 跑）。
+      type: z.string().optional(),
       event: z.string().optional(),
       command: z.string().optional(),
       url: z.string().optional(),
       method: z.string().optional(),
       headers: z.record(z.string()).optional(),
+      // url 类型：headers 里允许插值的 $VAR 白名单，未列出的插值为空串（H5）
+      allowedEnvVars: z.array(z.string()).optional(),
+      // 单位：秒（runner 里乘 1000），不是毫秒
       timeout: z.number().positive().optional(),
       blocking: z.boolean().optional(),
       matcher: z.string().optional(),
+      // H22：command 类型额外环境变量（原先 passthrough 保住了它，却在 registry 转换时被丢）
+      env: z.record(z.string()).optional(),
+      // H23：该事件命中的 hook 整体串行（原先 registry 硬编码 false，写了也不生效）
+      sequential: z.boolean().optional(),
     })
-    .passthrough(),
+    .passthrough()
+    .superRefine((entry, ctx) => {
+      if (entry.type !== undefined && !isUserHookHandlerType(entry.type)) {
+        ctx.addIssue({
+          code: z.ZodIssueCode.custom,
+          // path 留空 = 指向整条 hook：只丢这一条，同文件的 permissions.deny 等照常生效
+          path: [],
+          message: `无效的 hook 类型 "${entry.type}"，有效值为 ${USER_HOOK_HANDLER_TYPES.join(" / ")}，本条 hook 已跳过`,
+        });
+      }
+    }),
 );
+
+/**
+ * MCP 传输方式枚举：合法值的唯一事实源。
+ * config/schema.ts 的校验器从这里的 `.options` 派生，不再手写名单——
+ * 手写名单曾漏掉 ws / http-json，照官网填 ws 会被报「无效值」（B36 / D129）。
+ * 新增传输方式时只改这一处，并在 mcp/manager.ts 补对应分支。
+ */
+export const MCPTransportEnum = z.enum(["stdio", "http", "http-json", "sse", "ws"]);
 
 /** MCP 服务器 Schema */
 const MCPServerSchema = lazySchema(() =>
   z
     .object({
-      transport: z.enum(["stdio", "http", "http-json", "sse", "ws"]),
+      transport: MCPTransportEnum,
       command: z.string().optional(),
       args: z.array(z.string()).optional(),
       env: z.record(z.string()).optional(),
@@ -67,6 +96,7 @@ const MCPServerSchema = lazySchema(() =>
       retries: z.number().nonnegative().optional(),
       includeTools: z.array(z.string()).optional(),
       excludeTools: z.array(z.string()).optional(),
+      auth: z.literal("sid-backend").optional(),
     })
     .passthrough(),
 );
@@ -126,13 +156,21 @@ const ModelConfigSchema = lazySchema(() =>
     .passthrough(),
 );
 
+/**
+ * 预算周期 / 动作 / 搜索后端枚举：同 MCPTransportEnum，是 config/schema.ts 校验器的事实源。
+ * 校验器从 `.options` 派生，不再手写第二份名单（B36 同形态收口）。
+ */
+export const BudgetPeriodEnum = z.enum(["session", "hourly", "daily", "weekly", "monthly"]);
+export const BudgetActionEnum = z.enum(["alert", "downgrade", "block"]);
+export const SearchBackendEnum = z.enum(["searxng", "brave", "tavily", "duckduckgo"]);
+
 /** 预算规则 Schema */
 const BudgetRuleSchema = lazySchema(() =>
   z
     .object({
       id: z.string(),
       name: z.string(),
-      period: z.enum(["session", "hourly", "daily", "weekly", "monthly"]),
+      period: BudgetPeriodEnum,
       limit_usd: z.number().positive(),
       scope: z.object({ model: z.string().optional() }).passthrough().optional(),
       thresholds: z
@@ -143,7 +181,7 @@ const BudgetRuleSchema = lazySchema(() =>
         })
         .passthrough()
         .optional(),
-      action: z.enum(["alert", "downgrade", "block"]).optional(),
+      action: BudgetActionEnum.optional(),
     })
     .passthrough(),
 );
@@ -171,11 +209,25 @@ const IdentitySettingsSchema = lazySchema(() =>
     .passthrough(),
 );
 
+/**
+ * P2 统一后端地址。读取走 identity/backend-url.ts（bootstrap 快速路径直接读文件），不进 Config。
+ * 必须是具名 schema：内联 `.passthrough()` 会截断 docs-gen-reference 的 SettingsSchema 注释扫描
+ * （它以第一个 `.passthrough()` 为终点），后面所有字段的说明会静默消失。
+ */
+const BackendSettingsSchema = lazySchema(() =>
+  z
+    .object({
+      /** 企业后端地址（即服务端 PUBLIC_BASE_URL），全部企业通道（登录 / 策略 / 预算 / 账本 / 事件 / flag / 轨迹上传）由它推出路径；只允许 https 或 loopback http。环境变量 SID_CODE_BACKEND_URL 优先 */
+      url: z.string().optional(),
+    })
+    .passthrough(),
+);
+
 /** 搜索配置 Schema */
 const SearchSchema = lazySchema(() =>
   z
     .object({
-      backend: z.enum(["searxng", "brave", "tavily", "duckduckgo"]).optional(),
+      backend: SearchBackendEnum.optional(),
       searxngUrl: z.string().optional(),
       braveApiKey: z.string().optional(),
       tavilyApiKey: z.string().optional(),
@@ -343,7 +395,7 @@ export const SettingsSchema = lazySchema(
         // 环境变量
         env: z.record(z.string()).optional(),
 
-        // Hooks（按事件分组）
+        // Hooks（按事件分组）。每条 hook 的 timeout 单位是秒（command / url / agent 默认 60，prompt 默认 30），写 5000 是 83 分钟不是 5 秒
         hooks: z.record(z.array(HookEntrySchema())).optional(),
 
         // MCP 服务器
@@ -400,25 +452,70 @@ export const SettingsSchema = lazySchema(
         // M1 身份注入（可注入，非登录）。项目级不可覆盖——见 SECURITY_SENSITIVE_FIELDS。
         identity: IdentitySettingsSchema().optional(),
 
+        // 企业后端地址（登录 / 插件市场 / 远程 MCP 共用），如 https://www.sid-code.cc/traj。项目级不可覆盖。
+        backend: BackendSettingsSchema().optional(),
+
         // 可自定义状态栏（/statusline 持久化端；缺省 = 内置聚合状态栏）
         statusLine: StatusLineSchema().optional(),
 
         // 网络超时/重试配置（direct/gateway 场景适配）
         network: NetworkTimeoutsSchema().optional(),
 
-        // G5：行为控制字段（对齐 CC SettingsSchema 里有实际价值的子集）。
-        // respectGitignore：grep/glob 是否尊重 .gitignore。缺省 true，对齐 grep 现状（rg 默认尊重）。
+        // G5：行为控制字段。
+
+        // respectGitignore：grep/glob 是否尊重 .gitignore。缺省 true（与 rg 默认行为一致）。
         respectGitignore: z.boolean().optional(),
+        // searchTimeoutSeconds：grep/glob 底层 ripgrep 的超时秒数。缺省 20（WSL 60）；优先于环境变量 SID_GREP_TIMEOUT_SECONDS。
+        searchTimeoutSeconds: z.number().positive().optional(),
         // disableAllHooks：一键禁用全部 hook（应急/调试）。与企业策略的同名字段是两个来源，
         // 任一为 true 即禁用。见 hook/registry.ts。
         disableAllHooks: z.boolean().optional(),
         // includeCoAuthoredBy：commit 是否加 Co-Authored-By。缺省 true（保持既有行为）。
         // 比 git.commitAttribution.enabled 更粗：false 直接关掉默认归因，不需要写整段 git 配置。
         includeCoAuthoredBy: z.boolean().optional(),
-        // cleanupPeriodDays：会话轨迹清理周期（天）。缺省 30，对齐 startup-housekeeping 的硬编码默认。
+        // cleanupPeriodDays：旧字段，等价于 sessionRetention.maxAge（天）；两者都写时以 maxAge 为准。缺省 365。
         cleanupPeriodDays: z.number().positive().optional(),
+
+        // B32：以下 27 个字段此前只在 Config 接口声明、靠本 schema 的 .passthrough() 生效 ——
+        // 写了能用，但拼错没有任何提示。补进来之后它们进了「已知键」集合，未知键告警
+        // （config.ts 的 recordUnknownSettingKeys）才不会把它们误报成拼写错误。
+        //
+        // 类型只写到「不比运行时更严」：用户级 settings.json 的运行时取值走 loadConfigFile 的
+        // 原始 JSON，不经本 schema；这里判不合法只会多一条提示 + 摘掉 getSettings() 视图里
+        // 的那个值，不会让一个原本能用的值失效。对象一律 passthrough 空壳：子字段由各自
+        // 消费点解析，在这里写死结构 = 第二份会漂移的事实源。
+        trace: z.object({}).passthrough().optional(),
+        telemetry: z.object({}).passthrough().optional(),
+        analytics: z.object({}).passthrough().optional(),
+        ide: z.object({}).passthrough().optional(),
+        bridge: z.object({}).passthrough().optional(),
+        teamMemory: z.object({}).passthrough().optional(),
+        sessionRetention: z.object({}).passthrough().optional(),
+        checkpoint: z.object({}).passthrough().optional(),
+        goal: z.object({}).passthrough().optional(),
+        mcpPolicy: z.object({}).passthrough().optional(),
+        // boolean | "auto" | 百分比数字，与 Config.toolSearch / parseToolSearchConfig 同口径
+        toolSearch: z.union([z.boolean(), z.literal("auto"), z.number()]).optional(),
+        toolSearchKeepLoaded: z.array(z.string()).optional(),
+        pluginDirs: z.array(z.string()).optional(),
+        showLineNumbers: z.boolean().optional(),
+        enableSandbox: z.boolean().optional(),
+        // 缺省 = undefined = 走 SandboxConfig 默认值；显式写才覆盖（回退语义在 cli.ts 构造处）
+        sandboxAutoAllowBash: z.boolean().optional(),
+        speculativeClassifier: z.boolean().optional(),
+        outputStyle: z.string().optional(),
+        autoDream: z.boolean().optional(),
+        autoMemory: z.boolean().optional(),
+        conflictDetection: z.boolean().optional(),
+        // cli.ts 对非法值回退 warn；这里判不合法同样等价于"未设 → 默认 warn"，只多一条提示
+        conflictSeverity: z.enum(["warn", "block", "off"]).optional(),
+        audit: z.boolean().optional(),
+        auditLogFile: z.string().optional(),
+        debug: z.boolean().optional(),
+        debugLevel: z.string().optional(),
+        debugLogFile: z.string().optional(),
       })
-      .passthrough(), // 保留未知字段（向前兼容）
+      .passthrough(), // 保留未知字段（向前兼容）；未知键只告警不拒绝，见 config.ts recordUnknownSettingKeys
 );
 
 /** 从 Schema 推导 TypeScript 类型 */

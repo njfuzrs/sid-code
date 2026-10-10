@@ -1,6 +1,6 @@
 ---
 title: 权限与人工确认
-description: 八种权限模式怎么选、allow/deny/ask 规则怎么写，以及哪些操作任何模式都拦不住。
+description: 八种权限模式怎么选、allow/deny/ask 规则怎么写，以及 --dangerously-skip-permissions 到底跳过了哪些层。
 ---
 
 # 权限与人工确认
@@ -9,7 +9,7 @@ description: 八种权限模式怎么选、allow/deny/ask 规则怎么写，以�
 
 - 按场景选对权限模式，不再被每一步打断，也不至于让它乱改代码
 - 写出精确的 `allow` / `deny` / `ask` 规则（含 bash 通配、路径前缀、MCP、子代理）
-- 知道 `--dangerously-skip-permissions` 的风险边界，以及它**依然拦不住什么**
+- 知道 `--dangerously-skip-permissions` 跳过了哪些层（答案：全部，只留审计）
 - 看懂 `→ 需确认(危险命令: …)` 这类日志，判断是规则拦的还是安全层拦的
 
 完整字段类型与默认值不在这页，去[settings.json 字段](/ref/settings)查；
@@ -66,38 +66,41 @@ sid-code --dangerously-skip-permissions
 | mode | 状态栏显示 | 行为 | 什么时候用 |
 | --- | --- | --- | --- |
 | `default` | Manual（手动） | 除只读操作外逐个问 | 第一次进一个陌生仓库 |
-| `acceptEdits` | 自动接受编辑 | 文件读写自动放行；bash 仍要问（工作目录内的 `mkdir`/`mv` 一类文件系统命令除外） | **日常最顺手的档位** |
+| `acceptEdits` | 自动接受编辑 | 文件读写自动放行；bash 仍要问（工作目录内的 `mkdir` / `touch` / `cp` / `sed` 除外，`rm` / `rmdir` / `mv` 不在此列） | **日常最顺手的档位** |
 | `plan` | 计划模式 | 代码级强制只读，先出方案再动手 | 复杂改动，想先看它打算怎么干 |
-| `auto` | 自动模式 | 交给风险分类判断，低风险放行、高风险问 | 熟悉的仓库里想少点打扰 |
+| `auto` | 自动模式 | 交给风险分类判断，低风险放行、高风险问；危险命令与受保护路径（hooks / commands / settings 等）分类器无权放行，仍要人工确认 | 熟悉的仓库里想少点打扰 |
 | `always-allow` | 全部允许 | 跳过规则与模式确认，安全层仍生效 | 一次性批量任务，你会盯着看 |
 | `deny-write` | 禁止写入 | 只读；写操作直接拒绝，不给确认机会 | 只让它分析、绝不许改 |
 | `dontAsk` | 静默拒绝 | 该问的一律当拒绝，不弹窗 | 无头脚本里不想挂住 |
-| `dangerously-skip-permissions` | 跳过权限(危险) | 等价 `-y` / `--yes` 的最宽档 | 容器 / 一次性沙箱 |
+| `dangerously-skip-permissions` | 跳过权限(危险) | 最宽档，跳过全部检查（含危险命令拦截），只留审计记录。与 `-y` / `--yes` 不同——后者只自动批准普通的需确认操作，危险命令仍拦 | 容器 / 一次性沙箱 |
 
 <kbd>Shift+Tab</kbd> 在会话里循环切换，实测顺序：
 
 ```text
 default → acceptEdits → auto → default → …           # 常规
-default → acceptEdits → auto → always-allow → default # 启动时开了 -y/--yes
+default → acceptEdits → auto → always-allow → default # 启动时开了 --dangerously-skip-permissions
 ```
 
 <!--
   ⚠ **plan 不在这个循环里**，别再把它写回去（原先写的是
   `default → acceptEdits → plan → auto → always-allow`）。
-  src/permission/mode.ts 的纯函数 getNextPermissionMode 顺序里确实有 plan，
-  但键盘入口 app.ts:4301-4305 在外面套了一层跳过循环，只跳 plan（和被企业策略禁用的模式）；
-  且 app.ts:4285-4288 在 plan 态直接拒绝按键、提示走 exit_plan_mode。
+  packages/core/src/permission/mode.ts 的纯函数 getNextPermissionMode 顺序里确实有 plan，
+  但键盘入口 getNextKeyboardPermissionMode（同文件）在外面套了一层跳过循环，只跳 plan（和被企业策略禁用的模式）；
+  且 packages/cli/src/app.ts 的 cyclePermissionMode 在 plan 态直接拒绝按键、提示走 exit_plan_mode。
   原因：plan 是独立状态机，键盘只改这个字符串会造出一个假的 plan 态。
   照错顺序按键的人会以为自己按漏了一档。
-  另注：tests/permission/mode.test.ts 复刻的跳过逻辑同时跳 plan 和 auto，
-  与 app.ts 现状不一致（auto 已接线），是个已知的测试漂移。
+  另注：跳过逻辑已提成 getNextKeyboardPermissionMode，测试与生产调同一个函数，
+  早先测试手抄一份、连 auto 一起跳的漂移已消除。
+  ⚠ always-allow 进循环的判据是 skipPermissions（--dangerously-skip-permissions），
+  不是 yesMode（-y/--yes），见 packages/cli/src/app.ts 的 bypassAvailableAtLaunch。
+  两个字段在 cli.ts 里是独立的，别再写成 -y。
 -->
 
 **plan 不在这个循环里**——它是独立状态机，进出要用 `/plan` 或让它自己
 `exit_plan_mode`；已经在 plan 态时按 <kbd>Shift+Tab</kbd> 会提示你走那条路。
 `deny-write` / `dontAsk` 也不在循环里，只能用参数或配置指定。
 
-`always-allow` 只在**启动时就开了** `-y` / `--yes` 时才进循环（这是启动瞬间的快照，
+`always-allow` 只在**启动时就开了** `--dangerously-skip-permissions` 时才进循环（`-y` / `--yes` 不算；这是启动瞬间的快照，
 不随会话中途切换漂移）。企业策略禁用 bypass 时（`disableBypassPermissionsMode`）
 它也会被跳过，`auto` 直接回到 `default`。
 
@@ -169,18 +172,33 @@ allow: ["Bash(*)"] + ask: ["Bash(rm *)"]
 
 ## 配置层级
 
-五层，后面的覆盖前面的：
+规则来自 8 个来源，每个来源有一个优先级数值，**数值大的优先**
+（定义在 `packages/core/src/permission/types.ts` 的 `RULE_SOURCE_PRIORITY`）：
 
-| 优先级 | 来源 | 文件 | 典型用途 |
+| 优先级 | 来源 | 从哪来 | 典型用途 |
 | --- | --- | --- | --- |
-| 1（最低） | 用户级 | `~/.sid-code/settings.json` | 你自己的习惯 |
-| 2 | 项目级 | `<项目>/.sid-code/settings.json` | 团队共享，提交 git |
-| 3 | 本地级 | `<项目>/.sid-code/settings.local.json` | 你在这个项目里的私货，gitignore |
-| 4 | CLI 参数 | `--settings` / `--allow-tool` / `--deny-tool` | 一次性 |
-| 5（最高） | 企业策略 | `/etc/sid-code/policy.json` | 公司管控，用户改不掉 |
+| 0（最低） | session | 权限弹窗里选「总是允许」 | 本次会话临时放行 |
+| 1 | command | `/allow` / `/deny`（不带 `-p`） | 会话里手动加 |
+| 2 | cliArg | `--allow-tool` / `--deny-tool` | 一次性 |
+| 3 | userSettings | `~/.sid-code/settings.json` | 你自己的习惯 |
+| 4 | projectSettings | `<项目>/.sid-code/settings.json` | 团队共享，提交 git |
+| 5 | localSettings | `<项目>/.sid-code/settings.local.json` | 你在这个项目里的私货，gitignore |
+| 6 | flagSettings | `--settings <文件或内联 JSON>` 里的 `permissions` | 脚本 / CI 注入一套规则 |
+| 7（最高） | policySettings | 企业策略 `managed-settings.json` | 公司管控；部署在系统级时用户改不掉，放在用户级时用户能删 |
 
-`allow` / `deny` / `ask` 三个数组在各层之间是**合并**而不是覆盖——
-项目级加的 deny 不会把用户级的 deny 冲掉。
+注意 CLI 参数（cliArg）的优先级**低于**你的用户级配置，`--settings` 注入的才高于磁盘上的三份文件。
+
+企业策略文件按顺序取第一个存在的：平台系统级路径
+（macOS `/Library/Application Support/SidCode/managed-settings.json`、
+Linux `/etc/sid-code/managed-settings.json`、
+Windows `%PROGRAMDATA%\SidCode\managed-settings.json`），
+其次 `~/.sid-code/managed-settings.json`。
+**`/etc/sid-code/policy.json` 是废弃路径，不再读取**——写在那里的规则不会生效，
+详见[企业 policy 与安全边界](/team/policy)。
+
+`allow` / `deny` / `ask` 三个数组在各来源之间是**合并**而不是覆盖——
+项目级加的 deny 不会把用户级的 deny 冲掉；合并后仍按 `deny` > `ask` > `allow` 判定，
+来源优先级决定的是同类规则的排序（也是 `/permissions` 阴影检测的依据）。
 
 ## 运行时查看与管理
 
@@ -248,7 +266,7 @@ allow: ["Bash(*)"] + ask: ["Bash(rm *)"]
 
 上面讲的规则层、危险命令层、敏感文件层都是**应用内的软约束**——它们拦的是「模型想让 sid-code 做什么」。
 但 bash 工具真正执行命令时，命令本身能碰什么文件、能不能联网，应用层是管不到的。
-macOS 上 sid-code 还有一道**操作系统级**的硬隔离：[Seatbelt 沙箱](https://developer.apple.com/library/archive/technotes/tn2067/)（`src/permission/sandbox.ts`）。
+macOS 上 sid-code 还有一道**操作系统级**的硬隔离：[Seatbelt 沙箱](https://developer.apple.com/library/archive/technotes/tn2067/)（`packages/core/src/permission/sandbox.ts`）。
 
 ### 它和前面几层是什么关系
 
@@ -260,12 +278,12 @@ macOS 上 sid-code 还有一道**操作系统级**的硬隔离：[Seatbelt 沙�
 | **Seatbelt 沙箱** | **命令执行时能碰哪些文件/网络** | **macOS 内核** |
 
 前三层是「调不调用」的决策，沙箱是「调用之后、命令真正执行时」的操作系统兜底。即使前三层全放行了，
-沙箱仍能在内核级挡住命令越界读写。**它只在 macOS 上生效**（`process.platform === "darwin"`，
-`sandbox.ts:57`），其他平台降级为无沙箱。
+沙箱仍能在内核级挡住命令越界读写。**它只在 macOS 上生效**（`process.platform === "darwin"`），
+其他平台降级为无沙箱，启动时会告警一次。
 
 ### 沙箱 profile 长什么样
 
-沙箱用 macOS 自带的 `sandbox-exec` 生成一份 Seatbelt profile（`sandbox.ts:81-140`），
+沙箱用 macOS 自带的 `sandbox-exec` 生成一份 Seatbelt profile（`packages/core/src/permission/sandbox.ts`），
 把每条 bash 命令包进 `sandbox-exec -p '<profile>' /bin/sh -c '<command>'`。profile 默认
 `(deny default)`（默认全拒）后逐项放行，允许/禁止的路径：
 
@@ -276,51 +294,50 @@ macOS 上 sid-code 还有一道**操作系统级**的硬隔离：[Seatbelt 沙�
 | 临时目录 | 读写 `/tmp` `/private/tmp` | 命令临时文件 |
 | 家目录工具 | 只读 `~/.bun` `~/.nvm` `~/.npm` `~/.cargo` | 运行包管理器需要 |
 | **敏感目录** | **显式 deny** `~/.ssh` `~/.gnupg` `~/.sid-code` | SSH 密钥、GPG、sid-code 自身配置与轨迹 |
-| 网络 | 默认只放行 `localhost`（`allowedHosts`） | 防 bash 命令外发数据 |
+| 网络 | 只放行 `localhost` | 防 bash 命令外发数据 |
 
 `~/.ssh`、`~/.gnupg`、`~/.sid-code` 是**显式 deny** 的——即使权限规则放行了 bash，命令也
 碰不到这三处。这层防御不依赖应用层判断，是内核强制的。
 
 ### 怎么开
 
-settings.json 的 `enableSandbox` 字段（`src/config/config.ts:451`，CLI 消费在 `src/cli.ts:1808`）：
+settings.json 里只有两个字段（定义在 `packages/core/src/config/config.ts`，CLI 在 `packages/cli/src/cli.ts` 构造沙箱时消费）：
 
 ```json
 {
   "enableSandbox": true,
-  "sandbox": {
-    "autoAllowBashIfSandboxed": true,
-    "allowedWritePaths": [],
-    "allowedReadPaths": [],
-    "allowedHosts": ["localhost"]
-  }
+  "sandboxAutoAllowBash": false
 }
 ```
 
 | 字段 | 默认 | 作用 |
 | --- | --- | --- |
 | `enableSandbox` | `false` | 总开关，开=bash 命令进沙箱 |
-| `autoAllowBashIfSandboxed` | `true` | 沙箱启用时自动放行 bash（减少弹窗——反正内核已兜底） |
-| `allowedWritePaths` | `[]` | 额外允许写入的目录 |
-| `allowedReadPaths` | `[]` | 额外允许读取的目录 |
-| `allowedHosts` | `["localhost"]` | 网络白名单主机 |
+| `sandboxAutoAllowBash` | `false` | 沙箱启用时是否自动放行 bash（少弹窗），要显式写 `true` 才生效 |
 
-沙箱启用后 `autoAllowBashIfSandboxed` 默认为 true：因为命令执行被内核限制在白名单路径内，
-应用层再逐条确认 bash 是冗余的——这是「用硬隔离换少打扰」的取舍。想保留逐条确认就设 `false`。
+额外读写目录与网络白名单目前**不能从 settings.json 配**，profile 用上表的内置默认值。
+
+`sandboxAutoAllowBash` 默认是 `false`，这是改过的（原先默认放行，理由是「开了沙箱就不用再逐条确认」）。
+改的原因是那个理由的前提不成立：profile 放开了整个工作目录的写权限，
+`echo x > .git/hooks/pre-commit` 这类命令在内核层完全合法——沙箱兜不住工作区内的改动。
+所以「少弹窗」改成你显式选择的行为，而不是装上就有。
+
+即使打开自动放行，两条边界不变：危险命令拦截与敏感重定向检测在它**之前**，照样生效；
+`plan` / `deny-write` 两个只读模式不会因为沙箱被打穿。
 
 ### 能防什么 / 不能防什么
 
 **能防**（内核级，应用层绕不过）：
 
-- 命令读写工作目录外的文件（除非在 `allowedWritePaths`/`allowedReadPaths` 里）
+- 命令读写工作目录外的文件（上表放行的系统目录与临时目录除外）
 - 命令读 `~/.ssh`、`~/.gnupg`、`~/.sid-code`
-- 命令发网络请求到 `allowedHosts` 之外的主机
+- 命令发网络请求到 `localhost` 之外的主机
 
 **不能防**（沙箱的边界）：
 
 - **工作目录内的任意操作**——沙箱允许读写整个 `cwd` 子树，所以 `rm -rf .` 在工作目录内
   沙箱是放行的（这要靠前面的危险命令层拦）
-- **非 macOS 平台**——Linux / Windows 上 `isEnabled()` 返回 false，沙箱不生效（`sandbox.ts:57`）
+- **非 macOS 平台**——Linux / Windows 上 `isEnabled()` 返回 false，沙箱不生效
 - **非 bash 工具的写操作**——沙箱只包 bash 命令；`edit`/`write` 工具走的是应用层路径校验，
   不经 sandbox-exec
 
@@ -328,15 +345,16 @@ settings.json 的 `enableSandbox` 字段（`src/config/config.ts:451`，CLI 消�
 **互补**而非替代：应用层管「该不该调」，沙箱管「调了之后内核允不允许」。
 
 ::: warning 沙箱违规不是错误，是告警
-沙箱违规（命令尝试碰被 deny 的路径/主机）会记录到 `violations` 列表并 warn
-（`sandbox.ts:71-75`），**不一定会让命令失败**——取决于 sandbox-exec 的处理。
+沙箱违规（命令尝试碰被 deny 的路径/主机）会记录到 `violations` 列表并 warn，
+**不一定会让命令失败**——取决于 sandbox-exec 的处理。
 看日志里 `[SANDBOX]` 行能知道哪条命令撞了边界。
 :::
 
-## 哪些操作任何模式都拦得住
+## 哪些操作 `allow` 规则与 `always-allow` 都绕不过
 
 这是和权限规则**平行的一层**，位置在规则之前，所以 `allow` 规则和 `always-allow`
-模式都绕不过去。以下均在 `allow: ["Bash(*)"]` + `always-allow` 下实测仍被拦：
+模式都绕不过去。以下均在 `allow: ["Bash(*)"]` + `always-allow` 下实测仍被拦。
+**`--dangerously-skip-permissions` 例外**，它连这一层也跳过，见本节末尾的 danger 框：
 
 | 命令 | 结果 |
 | --- | --- |
@@ -365,9 +383,11 @@ high 弹确认。非交互模式（`-p`）下没人能确认，所以 high 也�
 同一层还有系统目录保护（`/etc/`、`/proc/`、`/sys/`、`/dev/`…）和 symlink 逃逸解析。
 
 ::: danger --dangerously-skip-permissions 的真实边界
-它跳过的是**规则层和模式层的确认**，不是安全层——`rm -rf /` 这类 critical
-命令在它下面依然被拦。但它确实把「改任意文件、跑任意命令」的门全开了。
-`sc` 这个别名就等价于带上它，所以**别在重要仓库里用 `sc`**。
+它跳过**全部检查**，包括上面的危险命令拦截、敏感文件保护和路径校验，只留一条审计记录。
+`rm -rf /` 在它下面不会被拦。唯一能约束它的是企业策略 `disableBypassPermissionsMode`
+（禁用后带这个参数启动会直接报错退出）。
+`-y` / `--yes` 不一样：它只自动批准普通的需确认操作，危险命令触发的确认仍然拦截。
+`sc` 这个别名就等价于带上 `--dangerously-skip-permissions`，所以**别在重要仓库里用 `sc`**。
 判断标准：这个目录里的东西全丢了你能不能接受。不能，就别用。
 :::
 
@@ -393,7 +413,7 @@ sid-code 2>&1 | grep "权限规则"
 
 # 2. 路径规则的前缀写对了吗（/src/** 是项目根相对，//src/** 才是文件系统根）
 
-# 3. 有没有被更高优先级的层覆盖（企业策略 > CLI > 本地 > 项目 > 用户）
+# 3. 有没有被更高优先级的来源覆盖（企业策略 > --settings > 本地 > 项目 > 用户 > --allow-tool）
 ```
 
 最常见的是第 2 条。`Read(/Users/me/proj/src/**)` 这种写法会被当成
@@ -431,4 +451,4 @@ write(...)    → 允许(acceptEdits模式)
 - [内置工具](/ref/tools) —— 规则里工具名的确切拼写
 - [交互模式与键位](/use/interactive) —— <kbd>Shift+Tab</kbd> 及其他快捷键
 - [Plan Mode 与 Todo](/use/plan-mode) —— plan 模式的完整用法
-- [企业 policy 与安全边界](/team/policy) —— 用 `/etc/sid-code/policy.json` 做团队管控
+- [企业 policy 与安全边界](/team/policy) —— 用 `managed-settings.json` 做团队管控

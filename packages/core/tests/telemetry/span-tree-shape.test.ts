@@ -55,6 +55,7 @@
  * 显示 PASS。这条门禁抓的是它声称要抓的东西，不是自我感觉。
  */
 
+import { runInSpanScope } from "../../src/telemetry/span-scope.ts";
 import { describe, test, expect, beforeEach, afterEach } from "bun:test";
 import { mkdtempSync, rmSync } from "node:fs";
 import { join } from "node:path";
@@ -132,7 +133,7 @@ function findDanglingParentViolations(spans: readonly SpanData[]): string[] {
  *
  * 禁止的父→子组合：`chat` 不能是 `chat` 的父（一轮推理不会嵌套另一轮推理；
  * 真出现说明 llmSpan 没被 AfterModel 结束，栈底残留）。
- * `execute_tool` 也不该成为 `chat` 的父（工具 span 在 PostToolUse 里创建即结束）。
+ * `execute_tool` 也不该成为 `chat` 的父（工具 span 在 PostToolUse 里按真实耗时回填起点后立即结束）。
  */
 const FORBIDDEN_NESTING: ReadonlyArray<[SpanKind, SpanKind]> = [
   ["chat", "chat"],
@@ -228,7 +229,8 @@ async function runSession(probe: TelemetryHookProbe, model: string): Promise<voi
     model,
     provider: "anthropic",
   });
-  await fireTurn(hookSystem, model);
+  // 生产路径里子代理执行体跑在 span 作用域内（sub-agent.ts 的 runInSpanScope），这里同构
+  await runInSpanScope("agent-1", () => fireTurn(hookSystem, model));
   await hookSystem.fireSubagentStopEvent({
     agent_id: "agent-1",
     agent_type: "explore",
@@ -330,7 +332,9 @@ describe("span 树成形门禁（§0.3c）", () => {
     const root = roots[0];
     expect(root.kind).toBe("invoke_agent");
     expect(root.attributes["gen_ai.agent.name"]).toBe("sid-code");
-    expect(root.name).toBe("invoke_agent claude-sonnet-4");
+    // 根名按 GenAI 约定取 agent 名，模型在属性上
+    expect(root.name).toBe("invoke_agent sid-code");
+    expect(root.attributes["gen_ai.request.model"]).toBe("claude-sonnet-4");
   });
 
   test("多会话：N 条 trace 各自恰好一个根（跨 trace 不串门）", async () => {

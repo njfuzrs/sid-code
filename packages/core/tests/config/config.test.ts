@@ -369,3 +369,20 @@ describe("config", () => {
     });
   });
 });
+
+// B41 ①：官网示例曾是 `exporters: ["jsonl"]`，按 `.type` 分派时字符串元素被静默丢弃
+describe("telemetry.exporters 字符串简写", () => {
+  test('["jsonl", "otlp"] 归一成 [{type:"jsonl"},{type:"otlp"}]，对象写法原样保留', async () => {
+    const { normalizeConfigKeysForTest } = await import("@sid-code/core/config/config.ts");
+    const out = normalizeConfigKeysForTest({
+      telemetry: {
+        enabled: true,
+        exporters: ["jsonl", { type: "otlp", options: { timeoutMs: 1 } }],
+      },
+    }) as any;
+    expect(out.telemetry.exporters).toEqual([
+      { type: "jsonl" },
+      { type: "otlp", options: { timeoutMs: 1 } },
+    ]);
+  });
+});

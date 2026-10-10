@@ -30,11 +30,18 @@
  */
 
 import { getTelemetryBus } from "../index.ts";
-import { TTFT_BUCKET_BOUNDS_MS, TURNS_BUCKET_BOUNDS } from "../types.ts";
+import { HITL_WAIT_BUCKET_BOUNDS_S, TTFT_BUCKET_BOUNDS_S, TURNS_BUCKET_BOUNDS } from "../types.ts";
 import type { Attributes } from "../types.ts";
+import { sanitizeToolName } from "../../analytics/sanitize.ts";
 
-/** TTFT 分布的 metric 名（OTel GenAI 半标准命名） */
-export const TTFT_METRIC = "gen_ai.client.time_to_first_token";
+/**
+ * TTFT 分布的 metric 名 —— OTel GenAI 语义约定的客户端侧标准名，单位秒。
+ *
+ * 曾用 `gen_ai.client.time_to_first_token`（毫秒）：规范里没有这个名字，
+ * `time_to_first_token` 只有 server 侧版本。口径一致：规范定义是「发出请求 → 收到首个 chunk」，
+ * 与本项目「首个**任意**内容 chunk」的铁律相同，所以只改名与单位，不改测量点。
+ */
+export const TTFT_METRIC = "gen_ai.client.operation.time_to_first_chunk";
 
 /** 单轮 turns 分布的 metric 名 */
 export const TURNS_METRIC = "sidcode.agent.turns";
@@ -58,7 +65,11 @@ export function recordTtftHistogram(
     if (!Number.isFinite(ttftMs) || ttftMs <= 0) return;
     if (!model) return;
 
-    const attributes: Attributes = { "gen_ai.request.model": model };
+    // operation.name 是该 metric 的 Required 属性；TTFT 只在流式 chat 上有意义
+    const attributes: Attributes = {
+      "gen_ai.operation.name": "chat",
+      "gen_ai.request.model": model,
+    };
     if (extra?.provider) attributes["gen_ai.provider.name"] = extra.provider;
     // cache_hit 只在**已知**时才落：不知道（OpenAI 族在首内容时刻拿不到 usage）
     // 与知道且为 false 是两件事，落假的 false 会污染对照结论。
@@ -66,11 +77,13 @@ export function recordTtftHistogram(
 
     getTelemetryBus().recordMetric({
       name: TTFT_METRIC,
-      value: ttftMs,
+      // 入参保持毫秒（全仓 TTFT 都是 ms 口径），只在出口换算成规范要求的秒
+      value: ttftMs / 1000,
+      unit: "s",
       timestamp: Date.now(),
       attributes,
       type: "histogram",
-      buckets: { bounds: [...TTFT_BUCKET_BOUNDS_MS] },
+      buckets: { bounds: [...TTFT_BUCKET_BOUNDS_S] },
     });
   } catch {
     /* 可观测性不影响正常流程 */
@@ -105,10 +118,57 @@ export function recordTurnsHistogram(
     getTelemetryBus().recordMetric({
       name: TURNS_METRIC,
       value: turns,
+      unit: "{turn}",
       timestamp: Date.now(),
       attributes,
       type: "histogram",
       buckets: { bounds: [...TURNS_BUCKET_BOUNDS] },
+    });
+  } catch {
+    /* 可观测性不影响正常流程 */
+  }
+}
+
+/** HITL 确认耗时分布的 metric 名，单位秒 */
+export const HITL_WAIT_METRIC = "sidcode.permission.hitl_wait";
+
+/**
+ * 记录一次 HITL 确认耗时（缺陷 27，20260927 可观测性审计）。
+ *
+ * 「更安全 ↔ 更快」这个 trade-off 的计价器有两半：介入率（`had_hitl`，已有）与
+ * **确认耗时**（此前 metric 通道零埋点 —— `recordHitlPrompt` 只计次不计时）。
+ * trace 层的 `PermissionDecision.duration_ms` 只落本地 events.jsonl，外部后端拿不到分布。
+ *
+ * 只在**确实弹过窗**的路径上调（主循环 ask 分支），所以分母天然是「弹窗次数」，
+ * 与 `had_hitl` 同口径（子代理 / forked 物理上不能弹窗，见缺陷文档 §19.2）。
+ *
+ * @param waitMs  从弹窗到三路竞争出结果的墙钟（含批准 / 拒绝 / 超时 / abort）
+ * @param outcome 受控值：allow / deny
+ * @param source  谁赢了三路竞争（user / hook / classifier / timeout …）
+ */
+export function recordHitlWaitHistogram(
+  waitMs: number,
+  toolName: string,
+  outcome: "allow" | "deny",
+  source: string,
+): void {
+  try {
+    if (!Number.isFinite(waitMs) || waitMs < 0) return;
+    // 工具名走同一条脱敏规则：metric 属性同样随 OTLP 外发（缺陷 22 的同族约束）
+    // 缺陷 34：不再就地重写规则，统一走 analytics/sanitize.ts（sanitize 收紧时这里自动跟上）
+    const tool = sanitizeToolName(toolName);
+    getTelemetryBus().recordMetric({
+      name: HITL_WAIT_METRIC,
+      value: waitMs / 1000,
+      unit: "s",
+      timestamp: Date.now(),
+      attributes: {
+        "gen_ai.tool.name": tool,
+        "sidcode.permission.outcome": outcome,
+        "sidcode.permission.source": source,
+      },
+      type: "histogram",
+      buckets: { bounds: [...HITL_WAIT_BUCKET_BOUNDS_S] },
     });
   } catch {
     /* 可观测性不影响正常流程 */

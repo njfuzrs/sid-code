@@ -10,8 +10,8 @@
  */
 
 import React, { useState, useCallback, useEffect, useRef, useMemo } from "react";
-import useApp from "@sid-code/tui-renderer/hooks/use-app.ts";
-import inkInstances from "@sid-code/tui-renderer/instances.ts";
+import { useApp } from "./render-port/hooks.ts";
+import { getRenderInstance } from "./render-port/runtime.ts";
 import {
   killAllRunningTasks,
   hasRunningTasks,
@@ -197,6 +197,18 @@ export interface TUICallbacks {
    * 加载危险配置），false 拒绝（本会话不加载，下次仍询问）。
    */
   onTrustDecision?: (trusted: boolean) => void | Promise<void>;
+  /**
+   * M3：读取当前待审批的项目级 MCP 服务器（供启动审批框逐个展示）。
+   * 空数组表示无待审批项。
+   */
+  getPendingMcpApprovals?: () => Array<{ name: string; target?: string }>;
+  /**
+   * M3：对单个待审批 server 的决定。"skip" = Esc 暂不决定（本会话不再询问其余项）。
+   */
+  onMcpApprovalDecision?: (
+    name: string,
+    choice: "approve" | "approve-all" | "reject" | "skip",
+  ) => void | Promise<void>;
 }
 
 /** P2-1：投影给 UI 的回退点展示信息（不直接依赖 session 层 RewindPoint 类型）。 */
@@ -433,6 +445,8 @@ export interface TUIState {
     aliases: string[];
     description: string;
     requiresArgs?: boolean;
+    /** 参数提示（D10）：补全列表在命令名后 dim 显示 */
+    argumentHint?: string;
     immediate?: boolean;
     type?: string;
   }>;
@@ -856,7 +870,7 @@ function TUIAppInner({ initialState, callbacks, bridge, alternateBuffer }: AppPr
     const b = matchBinding(key);
     if (b?.action !== "app:clearScreen") return false;
     log.info("UI:APP", "Ctrl+L：清屏（保留历史与上下文）");
-    inkInstances.get(process.stdout)?.forceRedraw();
+    getRenderInstance()?.forceRedraw();
     return true;
   });
 
@@ -1051,7 +1065,11 @@ function TUIAppInner({ initialState, callbacks, bridge, alternateBuffer }: AppPr
   // 底层分发：真正把一条输入送到 App 业务层（Shell / 斜杠命令 / 普通输入）。
   // 被 handleSubmit（直送）与消息队列（接续）共用。
   const dispatchInput = useCallback(
-    async (text: string) => {
+    async (raw: string) => {
+      // D3：与 canRunDuringStreaming / parseSlashCommand 同口径先 trim。修复前这里不 trim、
+      // 闸门 trim：" /model opus" 被闸门判为可插队直送，到这里却按普通对话发给模型。
+      // 今天 text-buffer 的 submit 已 trim 挡住了，但队列接续 / 程序化提交不保证经过它。
+      const text = raw.trim();
       log.info("UI:INPUT", `dispatchInput: "${text.slice(0, 100)}"`);
       const shellCommand = parseShellInput(text);
       if (shellCommand) {

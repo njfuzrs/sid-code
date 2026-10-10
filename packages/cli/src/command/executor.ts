@@ -26,6 +26,7 @@ import { getLogger } from "@sid-code/core/debug/logger.ts";
 // P0-1 漏斗 4：斜杠命令使用分布，回答「哪些功能是死功能」。
 // 自定义命令名可能含项目/客户名，脱敏规则在门面里，见 analytics/events.ts。
 import { logCommandInvoke, logCommandRejected } from "@sid-code/core/analytics/events.ts";
+import { recordUsage } from "./usage-tracking.ts";
 
 /** 应用层注入的副作用回调 */
 export interface ExecutorCallbacks {
@@ -161,6 +162,22 @@ export class CommandExecutor {
       hasArgs: args.trim().length > 0,
     });
 
+    // D1 + D2：使用频率记账与调用埋点同址。
+    //
+    // 修复前记账在 app.ts 的 onSlashCommand 开头、查找与门控**之前**，记的是用户敲的原文：
+    // - D1：`/m` 记成 "m"，而补全排序只按 canonical name 查 "model" —— 两端 key 口径不一致，
+    //   习惯用别名的用户，那条命令的使用分恒为 0 或严重偏低；
+    // - D2：`/xyzabc`（未知命令）、`/tmp`（路径 passthrough）、被 /skills 禁用的 skill
+    //   全部 +1 并落盘 —— 用户自由文本被写进 command-usage.json，与上面 unknown_command
+    //   「刻意不上报那个名字」的敏感度判定相反。
+    // dispatch 只在「查到 + 过闸」之后被调用，且 cmd.name 天然是 canonical；
+    // 同时覆盖 executeImmediate，不会只记一条入口。
+    try {
+      recordUsage(cmd.name);
+    } catch {
+      // 使用追踪失败不影响命令执行
+    }
+
     switch (cmd.type) {
       case "local":
         return this.executeLocal(cmd, args);
@@ -235,9 +252,18 @@ export class CommandExecutor {
         .load()
         .then((mod) => mod.call(onDone, this.ctx, args))
         .then((jsx) => {
-          if (jsx && !doneWasCalled) {
+          if (doneWasCalled) return;
+          if (jsx) {
             this.callbacks.setToolJSX?.(jsx); // 渲染交互式 UI
+            return;
           }
+          // D13：call() 正常返回空 jsx 且没调 onDone —— 修复前这条出口什么都不做，
+          // Promise 永不 resolve，命令队列死锁且无报错无堆栈。
+          // 判据：new Promise 里每一条控制流出口都必须 resolve。
+          // 语义是「跑完了、没有要显示的东西」，所以是 skip 而不是 error。
+          doneWasCalled = true;
+          this.callbacks.setToolJSX?.(null);
+          resolve({ type: "skip" });
         })
         .catch((e) => {
           // 异常兜底：必须 resolve，否则队列处理器死锁
@@ -285,10 +311,39 @@ export class CommandExecutor {
     }
 
     try {
-      const prompt = await cmd.getPromptForCommand(args, this.ctx);
+      let prompt = await cmd.getPromptForCommand(args, this.ctx);
+
+      // Q6：UserPromptExpansion——命令 / skill 展开成 prompt 之后、提交之前（matcher：命令名）。
+      // 与 CC 一致：exit 2 / decision:"block" 拦下本次提交；additionalContext 追加在展开结果后。
+      if (this.ctx.hookSystem) {
+        const original = args.trim() ? `/${cmd.name} ${args.trim()}` : `/${cmd.name}`;
+        try {
+          const r = await this.ctx.hookSystem.fireUserPromptExpansionEvent(
+            cmd.name,
+            original,
+            prompt,
+          );
+          const out = r.finalOutput;
+          if (out?.isBlockingDecision() || out?.shouldStopExecution()) {
+            return {
+              type: "error",
+              message: `UserPromptExpansion hook 拦截了 /${cmd.name}：${out.getEffectiveReason()}`,
+            };
+          }
+          const extra = out?.getAdditionalContext();
+          if (extra) prompt = `${prompt}\n\n<system-reminder>\n${extra}\n</system-reminder>`;
+        } catch (e: any) {
+          getLogger().error("HOOK", `user_prompt_expansion hook 失败（忽略）: ${e?.message ?? e}`);
+        }
+      }
 
       if (cmd.context === "fork") {
-        return await this.executeFork(cmd, prompt);
+        const forked = await this.executeFork(cmd, prompt);
+        if (forked) return forked;
+        // D8：无 providerRegistry → 降级为 inline，落到下面那条唯一的 inline 出口。
+        // 修复前 executeFork 自己拼了一个 submit_prompt 返回，绕过了 inline 必做的两步：
+        // hooks 被 finally 按 fork 语义卸载（prompt 却已注入主对话）、不上报 addInvokedSkill
+        // （压缩后模型遗忘 skill 指令）。inline 的必做事只写在一处，降级路径自动跟上。
       }
 
       // inline：prompt 注入主对话。hooks 需在整段对话期间存活，故**不卸载**
@@ -326,11 +381,14 @@ export class CommandExecutor {
     }
   }
 
-  /** fork 模式：在子代理中独立执行，返回最终输出 */
+  /**
+   * fork 模式：在子代理中独立执行，返回最终输出。
+   * 返回 null 表示无法 fork（缺 providerRegistry），由调用方降级走 inline 分支（D8）。
+   */
   private async executeFork(
     cmd: UnifiedCommand & PromptCommand,
     prompt: string,
-  ): Promise<CommandExecutionResult> {
+  ): Promise<CommandExecutionResult | null> {
     const log = getLogger();
     try {
       const { SubAgent } = await import("@sid-code/core/agent/sub-agent.ts");
@@ -338,7 +396,7 @@ export class CommandExecutor {
       if (!this.ctx.providerRegistry) {
         // 无 ProviderRegistry 时退回 inline 注入，避免命令不可用
         log.warn("COMMAND", `fork 命令 /${cmd.name} 无 providerRegistry，退回 inline`);
-        return { type: "submit_prompt", value: prompt, shouldQuery: true };
+        return null;
       }
 
       const skill = cmd.skill;

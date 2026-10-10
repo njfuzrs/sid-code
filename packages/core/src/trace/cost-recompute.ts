@@ -22,6 +22,14 @@ import type { Usage } from "../llm/types.ts";
 import { getLogger } from "../debug/logger.ts";
 
 /** 单条 AfterModelRaw 重算结果 */
+
+/** 事件时刻 → Date；缺失 / 非法时返回 undefined（交给 calculateUSDCost 用"现在"兜底） */
+function parseEventTime(ts: unknown): Date | undefined {
+  if (typeof ts !== "string" && typeof ts !== "number") return undefined;
+  const d = new Date(ts);
+  return Number.isNaN(d.getTime()) ? undefined : d;
+}
+
 export interface RecomputedCall {
   index: number;
   model: string;
@@ -121,7 +129,12 @@ export function recomputeCostFromEvents(
       cacheReadInputTokens: cacheReadTokens,
       cacheCreationInputTokens: cacheCreationTokens,
     };
-    const costUSD = calculateUSDCost(model, usage, availableModels, provider, baseURL);
+    // 缺陷 36：按**请求发生那一刻**取价（分时段定价）。缺省"现在"会让空闲时段的历史请求
+    // 在白天重算出高峰价（差 2 倍），而 backfillTrajCost 会把这个错数写回 traj。
+    // 时刻是事件顶层的 `timestamp`（ISO 串，collector.ts 的 AfterModelRaw 落盘）；
+    // 缺失或无法解析时退回"现在"（与旧行为一致，best-effort）。
+    const at = parseEventTime(evt.timestamp);
+    const costUSD = calculateUSDCost(model, usage, availableModels, provider, baseURL, at);
 
     calls.push({
       index: Number(data.index ?? calls.length + 1),

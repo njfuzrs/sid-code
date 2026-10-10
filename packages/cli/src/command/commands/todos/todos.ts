@@ -1,6 +1,11 @@
 import type { LocalCommandModule } from "../../types.ts";
 import type { TodoItem } from "@sid-code/core/tool/todo-write.ts";
-import { TODO_PENDING, TODO_IN_PROGRESS, TODO_COMPLETED } from "../../../ui/constants/figures.ts";
+import {
+  TODO_PENDING,
+  TODO_IN_PROGRESS,
+  TODO_COMPLETED,
+  TODO_BLOCKED,
+} from "../../../ui/constants/figures.ts";
 
 /**
  * /todos 命令实现（按需加载）
@@ -30,7 +35,7 @@ const mod: LocalCommandModule = {
 };
 
 /**
- * 状态字形：靠「填充度」表达递进（○ 待办 → ◐ 进行中 → ● 完成），单色几何字形。
+ * 状态字形：靠「填充度」表达递进（○ 待办 → ◐ 进行中 → ● 完成；◌ 等待用户），单色几何字形。
  * 从 figures.ts 取，遵守 src/ui/CLAUDE.md L1.1「禁彩色 emoji」——此前用 ✅🔄⬜ 违反该铁律。
  */
 function icon(status: TodoItem["status"]): string {
@@ -38,14 +43,17 @@ function icon(status: TodoItem["status"]): string {
     ? TODO_COMPLETED
     : status === "in_progress"
       ? TODO_IN_PROGRESS
-      : TODO_PENDING;
+      : status === "blocked"
+        ? TODO_BLOCKED
+        : TODO_PENDING;
 }
 
-/** 按状态分组渲染：进行中 → 待开始 → 已完成，末尾附进度汇总 */
+/** 按状态分组渲染：进行中 → 待开始 → 等待你操作 → 已完成，末尾附进度汇总 */
 function renderTodos(todos: TodoItem[]): string {
   const inProgress = todos.filter((t) => t.status === "in_progress");
   const pending = todos.filter((t) => t.status === "pending");
   const completed = todos.filter((t) => t.status === "completed");
+  const blocked = todos.filter((t) => t.status === "blocked");
 
   const lines: string[] = ["待办清单:"];
 
@@ -61,13 +69,15 @@ function renderTodos(todos: TodoItem[]): string {
 
   section("进行中:", inProgress);
   section("待开始:", pending);
+  section("等待你操作:", blocked);
   section("已完成:", completed);
 
   lines.push(
     "",
     `进度: ${completed.length}/${todos.length} 已完成` +
       (inProgress.length > 0 ? `, ${inProgress.length} 进行中` : "") +
-      (pending.length > 0 ? `, ${pending.length} 待开始` : ""),
+      (pending.length > 0 ? `, ${pending.length} 待开始` : "") +
+      (blocked.length > 0 ? `, ${blocked.length} 等待你操作` : ""),
   );
 
   return lines.join("\n");

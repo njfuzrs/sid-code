@@ -10,7 +10,7 @@
 
 import { test, expect, describe } from "bun:test";
 import React from "react";
-import { render } from "@sid-code/tui-renderer/_vendor/testing.tsx";
+import { render } from "@sid-code/cli/ui/render-port/testing.ts";
 import { useTerminalIntegration } from "@sid-code/cli/ui/hooks/useTerminalIntegration.ts";
 import { StreamingState } from "@sid-code/cli/ui/types.ts";
 import { TITLE_STATIC_PREFIX, TITLE_ANIMATION_FRAMES } from "@sid-code/cli/ui/constants/figures.ts";

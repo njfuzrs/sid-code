@@ -10,7 +10,7 @@ description: 全部可用环境变量及其作用。
 <!--
   本页由脚本生成，请勿手工编辑
   AUTO-GEN:START 与 AUTO-GEN:END 标记之间的内容由
-  scripts/docs-gen-reference.ts 从源码生成（数据源：src/help.ts + 源码扫描），
+  scripts/docs-gen-reference.ts 从源码生成（数据源：packages/cli/src/help.ts + 源码扫描），
   手改会在下次生成时被覆盖，且 pre-commit 会先拦住。
   需要补充说明请写在标记之外——那部分内容会被保留。
   （此提示写给维护者，HTML 注释不会渲染给终端用户。）
@@ -18,8 +18,9 @@ description: 全部可用环境变量及其作用。
 
 <!-- AUTO-GEN:START 由 scripts/docs-gen-reference.ts 生成，勿手工编辑 -->
 
-> 共 **123** 个环境变量，取自 `sid-code --help` 的环境变量段，
-> 并与源码里实际的 `process.env` 读取点（扫到 173 个）交叉核对。
+> 共 **124** 个环境变量，取自 `sid-code --help` 的环境变量段，
+> 并与源码里实际的 `process.env` 读取点（扫到 182 个）交叉核对。
+> 扫到的 182 个里 121 个在上表、61 个列在页尾；表里另有 3 个是扫描认不出的读法（如拼接出的变量名），仍以 help 为准。
 
 > 优先级：环境变量 > `settings.json`。`SID_*` 前缀的变量只对 sid-code 生效，
 > 不与同机的其他工具共享。
@@ -34,7 +35,7 @@ description: 全部可用环境变量及其作用。
 | `SID_CODE_LLM_MODEL` | 模型名称（仅 sid-code 生效） |
 | `SID_CODE_LLM_BASE_URL` | 自定义 API 基础 URL（仅 sid-code 生效） |
 | `SID_CODE_LLM_API_KEY` | OpenAI 兼容端点的 API 密钥（仅 sid-code 生效） |
-| `SID_CODE_EFFORT_LEVEL` | 推理强度档位 (low/medium/high/max)；兼容 CLAUDE_CODE_EFFORT_LEVEL |
+| `SID_CODE_EFFORT_LEVEL` | 推理强度档位 (low/medium/high/xhigh/max)；兼容 CLAUDE_CODE_EFFORT_LEVEL |
 | `SID_CODE_THINKING` | 思考开关覆盖 (on/off/auto) |
 | `SID_CODE_MAX_THINKING_TOKENS` | 思考 token 预算上限；兼容 MAX_THINKING_TOKENS，优先于 settings.maxThinkingTokens |
 | `SID_MAX_OUTPUT_TOKENS` | 最大输出 token 数覆盖（缺省 32768） |
@@ -48,19 +49,20 @@ description: 全部可用环境变量及其作用。
 
 | 变量 | 说明 |
 |---|---|
-| `SID_CODE_TRACE` | 设为 1 或 true 启用轨迹采集 |
+| `SID_CODE_TRACE` | 设为 1 或 true 强制启用轨迹采集（默认已启用，关闭用 --no-trace） |
 | `SID_CODE_TRACE_OUTPUT_DIR` | 自定义轨迹输出目录 |
 | `SID_CODE_TRACE_NO_RAW` | 设为 1 不把 prompt/响应原文写进 raw.jsonl |
-| `SID_CODE_TRACE_UPLOAD_URL` | 轨迹上传平台地址 |
+| `SID_CODE_TRACE_UPLOAD_URL` | 轨迹上传平台地址（缺省取 backend.url） |
 | `SID_CODE_TRACE_UPLOAD_TOKEN` | 上传认证 token |
 | `SID_CODE_TRACE_USER_ID` | 用户标识（仅轨迹上传；未设时回落到 SID_CODE_IDENTITY_USER_ID） |
 | `SID_CODE_TRACE_DEVICE_ID` | 设备标识（仅轨迹上传；未设时回落到本机持久 device-id） |
 | `SID_CODE_IDENTITY_USER_ID` | 用户标识（如 zhangsan@corp.com） |
 | `SID_CODE_IDENTITY_ORG_ID` | 组织标识（如 corp-shanghai） |
 | `SID_CODE_IDENTITY_TEAM_ID` | 团队标识（如 infra-platform） |
-| `SID_CODE_POLICY_ENDPOINT` | 远程企业策略 URL（只读环境变量；未设则不拉取，fail-open） |
-| `SID_CODE_USAGE_ENDPOINT` | 用量账本远程 upsert URL（完整路径，含 /api/v1/usage/ledger；未设则只写本地 jsonl） |
-| `SID_CODE_BUDGET_ENDPOINT` | 远程预算 URL（完整路径，含 /api/v1/ctl/budget；未设则不拉取，fail-open） |
+| `SID_CODE_BACKEND_URL` | 企业后端地址（覆盖 settings 的 backend.url）。登录 / 策略 / 预算 / 账本 / 事件 / flag / 轨迹上传全部由它推出路径，只填 base（如 https://&lt;后端>/traj） |
+| `SID_CODE_POLICY_ENDPOINT` | 已弃用：远程策略完整 URL。仅在未配 backend.url 时生效，下个版本删除 |
+| `SID_CODE_USAGE_ENDPOINT` | 已弃用：账本上报完整 URL。仅在未配 backend.url 时生效，下个版本删除 |
+| `SID_CODE_BUDGET_ENDPOINT` | 已弃用：远程预算完整 URL。仅在未配 backend.url 时生效，下个版本删除 |
 
 ## 功能开关
 
@@ -88,13 +90,13 @@ description: 全部可用环境变量及其作用。
 | `SID_CODE_HOME` | SID_CONFIG_DIR 的兼容别名（历史上仅轨迹子系统读它）；新配置请用 SID_CONFIG_DIR |
 | `SID_CODE_TMPDIR` | 临时目录覆盖（沙箱/测试用） |
 | `SID_RIPGREP_PATH` | 指定 rg 可执行文件路径（缺省用内嵌释放的 rg，再回退系统 PATH；sid-code doctor 会显示实际来源） |
-| `SID_GREP_TIMEOUT_SECONDS` | grep/glob 搜索超时秒数（缺省 20，WSL 下 60） |
+| `SID_GREP_TIMEOUT_SECONDS` | grep/glob 搜索超时秒数（缺省 20，WSL 下 60；settings.json 的 searchTimeoutSeconds 优先） |
 
 ## 安装与更新
 
 | 变量 | 说明 |
 |---|---|
-| `SID_CODE_CHANNEL` | 发布通道 stable\|beta（缺省 stable）；beta 是抢先版，通道不写进本地配置，每次 update 都要带 |
+| `SID_CODE_CHANNEL` | 发布通道 stable\|beta（缺省沿用当前安装的通道，未装 beta 即 stable）；显式设置可切换通道 |
 | `SID_CODE_RELEASE_HOST` | 发布服务器地址覆盖（缺省 https://www.sid-code.cc；裸 host 自动补 https） |
 | `SID_CODE_INSTALL_URL` | install.sh 完整 URL 覆盖（非标准路径时用） |
 
@@ -109,7 +111,7 @@ description: 全部可用环境变量及其作用。
 
 | 变量 | 说明 |
 |---|---|
-| `SID_CODE_DEBUG` | 设为 1 启用调试输出（到 stderr） |
+| `SID_CODE_DEBUG` | 设为 1 等同 --debug（写 debug.log），同时把 ink 渲染层日志打到 stderr |
 | `SID_CODE_PROFILE_STARTUP` | 设为 1 启用启动性能打点 |
 | `SID_CODE_DEBUG_SSE` | 设为 1 启用 SSE 诊断日志 |
 | `SID_CODE_PERFETTO_TRACE` | 启用 Perfetto 追踪输出（性能分析） |
@@ -142,6 +144,7 @@ description: 全部可用环境变量及其作用。
 | `SID_CODE_WATCHDOG_HEADER_GRACE_MS` | 首字节余量（缺省 15000） |
 | `SID_CODE_RESPONSE_HEADER_TIMEOUT_MS` | 响应头超时（缺省 300000） |
 | `SID_CODE_MAX_SESSION_DURATION_MS` | 单次输入的连续执行总时长上限（缺省 0＝关闭） |
+| `SID_CODE_SDK_IDLE_TIMEOUT_MS` | stream-json 模式 stdin 空闲上限，无轮在跑且无入站消息时结束（缺省 0＝关闭） |
 | `SID_CODE_STDIN_TIMEOUT_MS` | 无头模式等待管道 stdin EOF 的上限（缺省 3000；到点用已收到的部分继续） |
 | `SID_CODE_MAX_TIMEOUT_RETRIES` | loop 层重试上限（缺省 10） |
 | `SID_CODE_RETRY_BACKOFF_BASE_MS` | 指数退避基数（缺省 5000，带 ±15% jitter） |
@@ -178,7 +181,6 @@ description: 全部可用环境变量及其作用。
 | 变量 | 说明 |
 |---|---|
 | `SID_CODE_PROTOCOL_STRICT` | 设为 1 启用协议严格模式（默认宽容模式只告警） |
-| `SID_CODE_RESPONSE_HEADER_TIMEOUT_MS` | HTTP 响应头超时毫秒 |
 | `SID_CODE_WEBHOOK_SECRET` | Webhook 认证 token（daemon 使用） |
 | `SID_CODE_SSE_PORT` | IDE SSE 端口（IDE 自动发现） |
 | `SID_DISABLE_STRICT_TOOLS` | 设为 1 禁用 strict 工具模式 |
@@ -212,10 +214,10 @@ description: 全部可用环境变量及其作用。
 | `SID_CODE_AGENT_ID` | 代理 ID |
 | `SID_CODE_AGENT_TYPE` | 代理类型 |
 
-## 未列入上表的读取点（55）
+## 未列入上表的读取点（61）
 
 源码里有读取、但未写进 `--help` 环境变量段的变量。多为内部/测试用途，**不保证向后兼容，不建议依赖**：
 
-`ANTHROPIC_MODEL`、`CLAUDE_CODE_COMMIT_LOG`、`CLAUDE_CODE_DEBUG_REPAINTS`、`CLAUDE_CODE_EFFORT_LEVEL`、`CLAUDE_CODE_MAX_OUTPUT_TOKENS`、`CLAUDE_CODE_SUBAGENT_MODEL`、`CLAUDE_CODE_TMUX_TRUECOLOR`、`SIDCODE_AGENT_PROGRESS_SUMMARY`、`SIDCODE_MAX_OLD_SPACE_SIZE`、`SIDCODE_NO_SPAWN`、`SIDCODE_SSE_EVENT_SHIM`、`SID_ACCESSIBILITY`、`SID_CODE_ALERT_WEBHOOK_URL`、`SID_CODE_AUTOCOMPACT_PCT`、`SID_CODE_AUTO_UPDATE`、`SID_CODE_BUILD_INFO`、`SID_CODE_CACHE_BREAKS`、`SID_CODE_CHANNEL_TRUST`、`SID_CODE_DEBUG_SSE_DUMP`、`SID_CODE_DISABLE_POLICY_SKILLS`、`SID_CODE_DISABLE_SKILL_HOT_RELOAD`、`SID_CODE_FAILED_USAGE_LEDGER`、`SID_CODE_LANGUAGE`、`SID_CODE_MAX_RETRIES_PER_CALL`、`SID_CODE_MAX_TURN_DURATION_MS`、`SID_CODE_MEMORY_RECALL`、`SID_CODE_OPENAI_PROTOCOL`、`SID_CODE_PAIRING_TIMEOUT_MS`、`SID_CODE_RETRY_BACKOFF_MAX_MS`、`SID_CODE_SESSION_INDEX`、`SID_CODE_STRUCTURED_OUTPUT_MAX_RETRIES`、`SID_CODE_UPDATE_CHECK_INTERVAL_HOURS`、`SID_CODE_USAGE_FILE`、`SID_CODE_USAGE_LEDGER`、`SID_CODE_WORKFLOW_STRICT_PHASES`、`SID_CODE_WSL_HOST_IP`、`SID_DISABLE_EDIT_FAILURE_REMINDER`、`SID_DISABLE_TOOL_CACHE`、`SID_EDIT_FAILURE_REMINDER_THRESHOLD`、`SID_ENABLE_AGENT_TEAMS`、`SID_ENABLE_GOAL_HARD_STOP`、`SID_ENABLE_MIDTURN_DRAIN`、`SID_ENABLE_NESTED_SUBAGENT`、`SID_ENABLE_OUTPUT_STALL`、`SID_ENABLE_STREAMING_TOOL_EXEC`、`SID_ENABLE_THINKING_DIVERGENCE`、`SID_GLOB_HIDDEN`、`SID_GLOB_NO_IGNORE`、`SID_LOOP_MAX_RECOVERY`、`SID_LOOP_SHAPE_THRESHOLD`、`SID_LOOP_SHAPE_WINDOW`、`SID_LOOP_TOOL_CALL_THRESHOLD`、`SID_SCREEN_READER`、`SID_SUBAGENT_MAX_DEPTH`、`SID_TEAMMATE_MODE`
+`ANTHROPIC_MODEL`、`CLAUDE_CODE_COMMIT_LOG`、`CLAUDE_CODE_DEBUG_REPAINTS`、`CLAUDE_CODE_EFFORT_LEVEL`、`CLAUDE_CODE_MAX_OUTPUT_TOKENS`、`CLAUDE_CODE_SUBAGENT_MODEL`、`CLAUDE_CODE_TMUX_TRUECOLOR`、`SIDCODE_AGENT_PROGRESS_SUMMARY`、`SIDCODE_MAX_OLD_SPACE_SIZE`、`SIDCODE_NO_SPAWN`、`SIDCODE_SSE_EVENT_SHIM`、`SID_ACCESSIBILITY`、`SID_AGENT_DEPTH`、`SID_CODE_ALERT_WEBHOOK_URL`、`SID_CODE_AUTOCOMPACT_PCT`、`SID_CODE_AUTO_UPDATE`、`SID_CODE_BUILD_INFO`、`SID_CODE_CACHE_BREAKS`、`SID_CODE_CHANNEL_TRUST`、`SID_CODE_CWD`、`SID_CODE_DEBUG_SSE_DUMP`、`SID_CODE_DISABLE_POLICY_SKILLS`、`SID_CODE_DISABLE_SKILL_HOT_RELOAD`、`SID_CODE_FAILED_USAGE_LEDGER`、`SID_CODE_LANGUAGE`、`SID_CODE_MAX_RETRIES_PER_CALL`、`SID_CODE_MAX_TURN_DURATION_MS`、`SID_CODE_MEMORY_RECALL`、`SID_CODE_NO_BROWSER`、`SID_CODE_OPENAI_PROTOCOL`、`SID_CODE_PAIRING_TIMEOUT_MS`、`SID_CODE_PLUGIN_DATA`、`SID_CODE_PLUGIN_ROOT`、`SID_CODE_RETRY_BACKOFF_MAX_MS`、`SID_CODE_SESSION_INDEX`、`SID_CODE_STRUCTURED_OUTPUT_MAX_RETRIES`、`SID_CODE_UPDATE_CHECK_INTERVAL_HOURS`、`SID_CODE_USAGE_FILE`、`SID_CODE_USAGE_LEDGER`、`SID_CODE_WORKFLOW_STRICT_PHASES`、`SID_CODE_WSL_HOST_IP`、`SID_DISABLE_EDIT_FAILURE_REMINDER`、`SID_DISABLE_TOOL_CACHE`、`SID_EDIT_FAILURE_REMINDER_THRESHOLD`、`SID_ENABLE_AGENT_TEAMS`、`SID_ENABLE_GOAL_HARD_STOP`、`SID_ENABLE_MIDTURN_DRAIN`、`SID_ENABLE_NESTED_SUBAGENT`、`SID_ENABLE_OUTPUT_STALL`、`SID_ENABLE_STREAMING_TOOL_EXEC`、`SID_ENABLE_THINKING_DIVERGENCE`、`SID_GLOB_HIDDEN`、`SID_GLOB_NO_IGNORE`、`SID_LOOP_MAX_RECOVERY`、`SID_LOOP_SHAPE_THRESHOLD`、`SID_LOOP_SHAPE_WINDOW`、`SID_LOOP_TOOL_CALL_THRESHOLD`、`SID_SCREEN_READER`、`SID_SUBAGENT_MAX_DEPTH`、`SID_TEAMMATE_MODE`、`SID_TUI_RENDERER`
 
 <!-- AUTO-GEN:END -->

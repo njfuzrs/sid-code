@@ -20,6 +20,15 @@ import { readInstalledPlugins } from "./installed.ts";
 import { loadPluginFromDirectory } from "./manifest.ts";
 import { getBuiltinPlugins } from "./builtin.ts";
 import { verifyAndDemote } from "./dependency.ts";
+import {
+  evaluatePluginOrigin,
+  isPluginOriginLocked,
+  type PluginOrigin,
+} from "@sid-code/core/config/plugin-only-policy.ts";
+import { defaultMarketIndexUrl } from "./market.ts";
+import { computeTreeHash } from "./tree-hash.ts";
+import type { InstalledPluginEntry } from "./types.ts";
+import { setMarketPlugins } from "@sid-code/core/analytics/plugin-attribution.ts";
 
 /** 会话级插件目录（由 CLI --plugin-dir 设置，进程内全局） */
 let inlinePluginDirs: string[] = [];
@@ -32,6 +41,41 @@ export function setInlinePluginDirs(dirs: string[]): void {
 /** 获取会话级插件目录 */
 export function getInlinePluginDirs(): string[] {
   return [...inlinePluginDirs];
+}
+
+/**
+ * 企业策略的插件来源门（P5，strictKnownMarketplaces / strictPluginOnlyCustomization）。
+ * 未锁定时零开销直接放行；锁定时本地 / inline 一律拒，市场插件还要复核目录指纹 ——
+ * installed.json 是本机文件，只看 `market` 段等于让手改一行 JSON 就能把本地目录洗成市场插件。
+ */
+async function checkPluginOrigin(
+  origin: PluginOrigin,
+  source: string,
+  errors: PluginError[],
+  entry?: InstalledPluginEntry,
+): Promise<boolean> {
+  if (!isPluginOriginLocked()) return true;
+  const decision = evaluatePluginOrigin(origin, defaultMarketIndexUrl() ?? undefined);
+  if (!decision.allowed) {
+    errors.push({ type: "policy-blocked", source, reason: decision.reason });
+    getLogger().warn("PLUGIN", `企业策略拒绝加载插件 ${source}: ${decision.reason}`);
+    return false;
+  }
+  if (origin.kind === "market" && entry?.market) {
+    let actual: string;
+    try {
+      actual = await computeTreeHash(entry.path);
+    } catch (err: any) {
+      actual = `error:${err?.message ?? err}`;
+    }
+    if (actual !== entry.market.treeHash) {
+      const reason = "插件目录内容与市场安装时不一致（被修改过），请 /plugin update 或重新安装";
+      errors.push({ type: "policy-blocked", source, reason });
+      getLogger().warn("PLUGIN", `企业策略拒绝加载插件 ${source}: ${reason}`);
+      return false;
+    }
+  }
+  return true;
 }
 
 /**
@@ -51,10 +95,17 @@ async function loadInstalledPlugins(errors: PluginError[]): Promise<LoadedPlugin
       });
       continue;
     }
-    const plugin = await loadPluginFromDirectory(entry.path, "local", entry.enabled, errors);
+    const origin: PluginOrigin = entry.market
+      ? { kind: "market", indexUrl: entry.market.indexUrl }
+      : { kind: "local" };
+    if (!(await checkPluginOrigin(origin, entry.source, errors, entry))) continue;
+    // 市场插件的标识符后缀用市场名（feishu-docs@company），本地仍是 @local
+    const sourceKind = entry.market?.name ?? "local";
+    const plugin = await loadPluginFromDirectory(entry.path, sourceKind, entry.enabled, errors);
     if (plugin) {
       // installed.json 中的 enabled 状态优先
       plugin.enabled = entry.enabled;
+      if (entry.market) plugin.marketplace = entry.market.name;
       plugins.push(plugin);
     }
   }
@@ -75,6 +126,7 @@ async function loadInlinePlugins(errors: PluginError[]): Promise<LoadedPlugin[]>
       });
       continue;
     }
+    if (!(await checkPluginOrigin({ kind: "inline" }, `${dir}@inline`, errors))) continue;
     const plugin = await loadPluginFromDirectory(dir, "inline", true, errors);
     if (plugin) plugins.push(plugin);
   }
@@ -154,6 +206,14 @@ async function assemblePluginLoadResult(_fullLoad: boolean): Promise<PluginLoadR
   // 5. 依赖验证（固定点降级）
   const demoted = verifyAndDemote(enabled, disabled);
   errors.push(...demoted.errors);
+
+  // 6. tool_invoked 归因注册表：只放启用中的市场插件（整表替换，卸载 / 禁用后随之消失）。
+  //    inline 能覆盖同名已装插件，被覆盖时 merge 已经把市场那份丢掉，这里自然不会误归因。
+  setMarketPlugins(
+    demoted.enabled
+      .filter((p) => p.marketplace)
+      .map((p) => ({ name: p.name, marketplace: p.marketplace! })),
+  );
 
   return { enabled: demoted.enabled, disabled: demoted.disabled, errors };
 }

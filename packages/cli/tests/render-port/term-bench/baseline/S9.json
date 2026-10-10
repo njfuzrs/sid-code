@@ -1,0 +1,194 @@
+{
+  "scenario": "S9",
+  "exitCode": 0,
+  "total": {
+    "bytes": 503,
+    "eraseScreen": 3,
+    "eraseScrollback": 0,
+    "syncBegin": 4,
+    "syncEnd": 4,
+    "altEnter": 1,
+    "altExit": 2,
+    "osc": {
+      "9": 2,
+      "21337": 2
+    }
+  },
+  "notes": {},
+  "steps": [
+    {
+      "label": "主屏",
+      "buffer": "normal",
+      "cursor": {
+        "x": 0,
+        "y": 1,
+        "hidden": true
+      },
+      "modes": {
+        "bracketedPaste": false,
+        "mouseTracking": "none",
+        "sendFocus": false,
+        "wraparound": true
+      },
+      "metrics": {
+        "bytes": 45,
+        "eraseScreen": 0,
+        "eraseScrollback": 0,
+        "syncBegin": 1,
+        "syncEnd": 1,
+        "altEnter": 0,
+        "altExit": 0,
+        "osc": {}
+      },
+      "screen": ["需要重绘的内容"],
+      "scrollback": [],
+      "styled": []
+    },
+    {
+      "label": "被外部写入污染",
+      "buffer": "normal",
+      "cursor": {
+        "x": 4,
+        "y": 0,
+        "hidden": true
+      },
+      "modes": {
+        "bracketedPaste": false,
+        "mouseTracking": "none",
+        "sendFocus": false,
+        "wraparound": true
+      },
+      "metrics": {
+        "bytes": 12,
+        "eraseScreen": 0,
+        "eraseScrollback": 0,
+        "syncBegin": 0,
+        "syncEnd": 0,
+        "altEnter": 0,
+        "altExit": 0,
+        "osc": {}
+      },
+      "screen": ["污染重绘的内容"],
+      "scrollback": [],
+      "styled": []
+    },
+    {
+      "label": "主屏 forceRedraw 后",
+      "buffer": "normal",
+      "cursor": {
+        "x": 0,
+        "y": 1,
+        "hidden": true
+      },
+      "modes": {
+        "bracketedPaste": false,
+        "mouseTracking": "none",
+        "sendFocus": false,
+        "wraparound": true
+      },
+      "metrics": {
+        "bytes": 46,
+        "eraseScreen": 1,
+        "eraseScrollback": 0,
+        "syncBegin": 1,
+        "syncEnd": 1,
+        "altEnter": 0,
+        "altExit": 0,
+        "osc": {}
+      },
+      "screen": ["需要重绘的内容"],
+      "scrollback": [],
+      "styled": []
+    },
+    {
+      "label": "alt-screen",
+      "buffer": "alternate",
+      "cursor": {
+        "x": 0,
+        "y": 23,
+        "hidden": true
+      },
+      "modes": {
+        "bracketedPaste": false,
+        "mouseTracking": "none",
+        "sendFocus": false,
+        "wraparound": true
+      },
+      "metrics": {
+        "bytes": 193,
+        "eraseScreen": 1,
+        "eraseScrollback": 0,
+        "syncBegin": 1,
+        "syncEnd": 1,
+        "altEnter": 1,
+        "altExit": 0,
+        "osc": {
+          "9": 1,
+          "21337": 1
+        }
+      },
+      "screen": ["alt 内容"],
+      "scrollback": [],
+      "styled": []
+    },
+    {
+      "label": "alt forceRedraw 后",
+      "buffer": "alternate",
+      "cursor": {
+        "x": 0,
+        "y": 23,
+        "hidden": true
+      },
+      "modes": {
+        "bracketedPaste": false,
+        "mouseTracking": "none",
+        "sendFocus": false,
+        "wraparound": true
+      },
+      "metrics": {
+        "bytes": 42,
+        "eraseScreen": 1,
+        "eraseScrollback": 0,
+        "syncBegin": 0,
+        "syncEnd": 0,
+        "altEnter": 0,
+        "altExit": 0,
+        "osc": {}
+      },
+      "screen": ["alt 内容"],
+      "scrollback": [],
+      "styled": []
+    },
+    {
+      "label": "(退出后)",
+      "buffer": "normal",
+      "cursor": {
+        "x": 0,
+        "y": 1,
+        "hidden": false
+      },
+      "modes": {
+        "bracketedPaste": false,
+        "mouseTracking": "none",
+        "sendFocus": false,
+        "wraparound": true
+      },
+      "metrics": {
+        "bytes": 165,
+        "eraseScreen": 0,
+        "eraseScrollback": 0,
+        "syncBegin": 1,
+        "syncEnd": 1,
+        "altEnter": 0,
+        "altExit": 2,
+        "osc": {
+          "9": 1,
+          "21337": 1
+        }
+      },
+      "screen": ["需要重绘的内容"],
+      "scrollback": [],
+      "styled": []
+    }
+  ]
+}

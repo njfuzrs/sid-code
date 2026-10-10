@@ -34,10 +34,14 @@ export class SpanHandle {
     private _name: string,
     private _kind: SpanKind,
     initialAttributes?: Attributes,
+    startTime?: number,
+    /** true = 不进 traceContext 栈（并发 span，见 TelemetryBus.startSpan 的 detached） */
+    private readonly detached = false,
   ) {
-    this._startTime = Date.now();
+    this._startTime = startTime ?? Date.now();
     if (initialAttributes) this._attributes = { ...initialAttributes };
-    traceContext.pushSpan(spanId);
+    if (!detached) traceContext.pushSpan(spanId);
+    bus.markActive(spanId, this._startTime, this);
   }
 
   /** 已经过的毫秒数（用于计算 TTFT 等） */
@@ -74,6 +78,27 @@ export class SpanHandle {
     return this;
   }
 
+  /**
+   * 未结束 span 的只读快照（缺陷 17）：`endTime` 取 `now`，`status` 保持 `unset`。
+   * 只供 `/telemetry` 这类会话内读路径画「进行中」节点，**不进导出队列**。
+   */
+  snapshot(now = Date.now()): SpanData {
+    return {
+      traceId: this.traceContext.traceId,
+      spanId: this.spanId,
+      parentSpanId: this.parentSpanId,
+      name: this._name,
+      kind: this._kind,
+      status: this._status,
+      startTime: this._startTime,
+      endTime: now,
+      durationMs: now - this._startTime,
+      attributes: { ...this._attributes },
+      events: [...this._events],
+      error: this._error,
+    };
+  }
+
   /** 结束 Span 并提交到总线 */
   end(finalAttributes?: Attributes): void {
     if (this._ended) return;
@@ -97,7 +122,9 @@ export class SpanHandle {
       error: this._error,
     };
 
-    this.traceContext.popSpan();
+    // 按 id 移除而非 popSpan()：结束的不一定是栈顶（缺陷 2，见 context.ts 类注释）
+    if (!this.detached) this.traceContext.removeSpan(this.spanId);
+    this.bus.markEnded(this.spanId);
     this.bus.enqueueSpan(spanData);
   }
 }
@@ -111,6 +138,13 @@ const DEFAULT_CONFIG: TelemetryConfig = {
   maxQueueSize: 2048,
 };
 
+/**
+ * shutdown 排空的总时限。必须**短于** graceful-shutdown 的 flush 阶段硬超时
+ * （`TELEMETRY_FLUSH_TIMEOUT_MS = 500`）：取更长的值时外层先超时、进程退出，
+ * 下面那条「丢弃 N 条」的 warn 永远打不出来 —— 又回到零信号。
+ */
+const SHUTDOWN_DRAIN_BUDGET_MS = 450;
+
 /** 会话内 span/metric 历史上限（防止长会话内存膨胀） */
 const MAX_HISTORY_SPANS = 500;
 const MAX_HISTORY_METRICS = 2000;
@@ -118,7 +152,13 @@ const MAX_HISTORY_METRICS = 2000;
 /** 遥测总线 */
 export class TelemetryBus {
   private spanQueue: SpanData[] = [];
+  /** 活跃 span 的起点（spanId → Unix ms），供回填起点时钳到父 span 之内 */
+  private activeStartTimes = new Map<string, number>();
+  /** 活跃 span 句柄（缺陷 17：/telemetry 要画出尚未 end 的根 span） */
+  private activeHandles = new Map<string, SpanHandle>();
   private metricQueue: MetricPoint[] = [];
+  /** 达阈值触发的后台 flush（fire-and-forget），shutdown 前必须等它们落地（缺陷 29） */
+  private inFlight = new Set<Promise<void>>();
   private exporters: TelemetryExporter[] = [];
   private flushTimer?: ReturnType<typeof setInterval>;
   private config: TelemetryConfig;
@@ -129,6 +169,12 @@ export class TelemetryBus {
   private spanHistory: SpanData[] = [];
   /** 会话内已记录的 metric 历史（供 /telemetry 命令查询） */
   private metricHistory: MetricPoint[] = [];
+  /**
+   * 因 MAX_HISTORY_SPANS 被挤出 history 的 span 累计数（缺陷 19）。
+   * 截断丢最旧的，而最旧的常是父节点 ⇒ 子 span 变孤儿；不对外表达就是一份
+   * 「看起来完整」的时间线。消费方据此明说「已截断 N 条」。
+   */
+  private evictedHistorySpans = 0;
 
   constructor(config?: Partial<TelemetryConfig>) {
     // ⚠️ 双保险：对象展开时**显式存在的 undefined 键**会覆盖掉 DEFAULT_CONFIG 的值，
@@ -167,7 +213,7 @@ export class TelemetryBus {
     // 防重复:已有定时器时先清理,避免重复 start() 泄漏 setInterval(LEAK-5)
     if (this.flushTimer) clearInterval(this.flushTimer);
     this.flushTimer = setInterval(() => {
-      this.flush().catch(() => {});
+      this.track(this.flush());
     }, this.config.flushIntervalMs);
     // 关闭交由统一的 graceful-shutdown 流程驱动(spec 17 §3.4):
     // 不再在此自行注册 SIGINT/SIGTERM,避免与 app.ts 的信号处理器、
@@ -192,18 +238,49 @@ export class TelemetryBus {
     return this.traceContext;
   }
 
-  /** 创建新 Span */
-  startSpan(kind: SpanKind, name: string, attributes?: Attributes): SpanHandle {
+  /**
+   * 创建新 Span。
+   *
+   * `opts.startTime`（Unix 毫秒）用于**事后补建**的 span：观测点只在操作结束后才拿得到
+   * 数据时（如 PostToolUse 才知道工具跑了多久），按真实起点回填，瀑布图上的长度才是真的。
+   *
+   * `opts.parentSpanId` + `opts.detached`：给**可能并发**的 span 用（子代理 invoke_agent）。
+   * 显式指定 parent、不进栈 —— 进栈的话并发成员会互相成为对方的 parent（缺陷 2）。
+   */
+  startSpan(
+    kind: SpanKind,
+    name: string,
+    attributes?: Attributes,
+    opts?: { startTime?: number; parentSpanId?: string; detached?: boolean },
+  ): SpanHandle {
     const ctx = this.traceContext;
     if (!ctx) {
       // 没有活跃 trace 时自动创建
       this.startTrace();
-      return this.startSpan(kind, name, attributes);
+      return this.startSpan(kind, name, attributes, opts);
     }
 
     const spanId = generateSpanId();
-    const parentSpanId = ctx.currentSpanId;
-    return new SpanHandle(this, ctx, spanId, parentSpanId, name, kind, attributes);
+    const parentSpanId = opts?.parentSpanId ?? ctx.currentSpanId;
+    // 回填的起点不得早于父 span 的起点：duration 的计时基准与父 span 不同源
+    // （如工具耗时可能把父 span 开始前的排队也算进去），越界会让子 span 在瀑布图上
+    // 画到父的左边，被后端判成时间错位。
+    let startTime = opts?.startTime;
+    if (startTime !== undefined && parentSpanId !== undefined) {
+      const parentStart = this.activeStartTimes.get(parentSpanId);
+      if (parentStart !== undefined && startTime < parentStart) startTime = parentStart;
+    }
+    return new SpanHandle(
+      this,
+      ctx,
+      spanId,
+      parentSpanId,
+      name,
+      kind,
+      attributes,
+      startTime,
+      opts?.detached ?? false,
+    );
   }
 
   /** 记录 Metric 数据点 */
@@ -216,10 +293,29 @@ export class TelemetryBus {
       this.metricHistory.splice(0, this.metricHistory.length - MAX_HISTORY_METRICS);
     }
 
+    // 队列溢出：与 enqueueSpan 同口径丢最旧 10%（缺陷 4）。
+    // flushMetrics 不 await，导出器卡在不可达端点的 TCP 超时期间 push 不受限，
+    // 原先 maxQueueSize 只管 spanQueue，名字读起来管两个队列、实际只管一个。
+    if (this.metricQueue.length >= this.config.maxQueueSize) {
+      const evictCount = Math.ceil(this.config.maxQueueSize * 0.1);
+      this.metricQueue.splice(0, evictCount);
+    }
     this.metricQueue.push(point);
     if (this.metricQueue.length >= this.config.batchSize) {
-      this.flushMetrics().catch(() => {});
+      this.track(this.flushMetrics());
     }
+  }
+
+  /** @internal 由 SpanHandle 构造时调用 */
+  markActive(spanId: string, startTime: number, handle?: SpanHandle): void {
+    this.activeStartTimes.set(spanId, startTime);
+    if (handle) this.activeHandles.set(spanId, handle);
+  }
+
+  /** @internal 由 SpanHandle.end() 调用 */
+  markEnded(spanId: string): void {
+    this.activeStartTimes.delete(spanId);
+    this.activeHandles.delete(spanId);
   }
 
   /** 将完成的 Span 加入队列（由 SpanHandle.end() 调用） */
@@ -229,7 +325,9 @@ export class TelemetryBus {
     // 保留到历史（供 /telemetry 命令查询）
     this.spanHistory.push(span);
     if (this.spanHistory.length > MAX_HISTORY_SPANS) {
-      this.spanHistory.splice(0, this.spanHistory.length - MAX_HISTORY_SPANS);
+      const over = this.spanHistory.length - MAX_HISTORY_SPANS;
+      this.spanHistory.splice(0, over);
+      this.evictedHistorySpans += over;
     }
 
     // 队列溢出：丢弃最旧的 10%
@@ -239,7 +337,7 @@ export class TelemetryBus {
     }
     this.spanQueue.push(span);
     if (this.spanQueue.length >= this.config.batchSize) {
-      this.flushSpans().catch(() => {});
+      this.track(this.flushSpans());
     }
   }
 
@@ -274,20 +372,73 @@ export class TelemetryBus {
     );
   }
 
-  /** 关闭总线，刷新剩余数据 */
+  /**
+   * 关闭时等**所有在途导出**落地，再排空残余队列（缺陷 29，20260927 可观测性审计）。
+   *
+   * 审计原文的判定（「shutdown 只 flush 一个 batch ⇒ 最多丢 1536 条」）**复核不成立**：
+   * enqueueSpan / recordMetric 在队列达 batchSize 时**同步** splice 走一批，队列长度恒
+   * < batchSize（实测默认配置下峰值 511），单次 flush 必然排空队列。
+   *
+   * 真实的丢失在旁边：那些达阈值触发的 flush 是 fire-and-forget，shutdown 原先只 await
+   * 自己那一批 —— 导出器慢时，前面几批还在路上，exporter.shutdown() 与进程退出就把它们
+   * 截掉了。丢的是**整批**，且同样只有 debug 级信号。所以这里先等 inFlight 全部落地。
+   *
+   * 总时限防导出器卡死拖住退出；超时后剩余量打 warn（不再是零信号）。
+   */
+  async drain(budgetMs: number = SHUTDOWN_DRAIN_BUDGET_MS): Promise<void> {
+    const deadline = Date.now() + budgetMs;
+    // 循环而非一次：等待期间可能又有 end() 入队触发新的在途批次
+    while (this.inFlight.size > 0 || this.spanQueue.length > 0 || this.metricQueue.length > 0) {
+      const remaining = deadline - Date.now();
+      if (remaining <= 0) break;
+      let timer: ReturnType<typeof setTimeout> | undefined;
+      const timedOut = await Promise.race([
+        Promise.allSettled([...this.inFlight, this.flush()]).then(() => false),
+        new Promise<boolean>((r) => {
+          timer = setTimeout(() => r(true), remaining);
+        }),
+      ]);
+      if (timer) clearTimeout(timer);
+      if (timedOut) break;
+    }
+    if (this.inFlight.size > 0 || this.spanQueue.length > 0 || this.metricQueue.length > 0) {
+      getLogger().warn(
+        "TELEMETRY",
+        `关闭时导出超时（${budgetMs}ms）：${this.inFlight.size} 批仍在途，` +
+          `队列残留 ${this.spanQueue.length} 条 span / ${this.metricQueue.length} 条 metric`,
+      );
+    }
+  }
+
+  /** 登记一次后台 flush，供 drain 等待（见 drain 注释） */
+  private track(p: Promise<void>): void {
+    this.inFlight.add(p);
+    p.catch(() => {}).finally(() => this.inFlight.delete(p));
+  }
+
+  /** 关闭总线，排空剩余数据 */
   async shutdown(): Promise<void> {
     if (this.flushTimer) {
       clearInterval(this.flushTimer);
       this.flushTimer = undefined;
     }
-    await this.flush();
+    await this.drain();
 
     // Perfetto 追踪输出（spec 17 §6.2）：SID_CODE_PERFETTO_TRACE 启用时落盘
     try {
       const { isPerfettoEnabled, writePerfettoTrace } = await import("./perfetto.ts");
       if (isPerfettoEnabled() && this.spanHistory.length > 0) {
-        const path = writePerfettoTrace(this.spanHistory);
-        if (path) getLogger().debug("TELEMETRY", `Perfetto 追踪已写入: ${path}`);
+        const path = writePerfettoTrace(this.spanHistory, undefined, this.evictedHistorySpans);
+        if (path) {
+          getLogger().debug("TELEMETRY", `Perfetto 追踪已写入: ${path}`);
+          // 缺陷 38：根被淘汰后图是一堆浮空条，文件却完全合法 —— 必须出声
+          if (this.evictedHistorySpans > 0) {
+            getLogger().warn(
+              "TELEMETRY",
+              `Perfetto 追踪不完整：最早的 ${this.evictedHistorySpans} 条 span（含根）已被 history 上限淘汰`,
+            );
+          }
+        }
       }
     } catch {
       // Perfetto 输出失败不影响关闭
@@ -299,6 +450,23 @@ export class TelemetryBus {
   /** 获取会话内所有已完成的 span（供 /telemetry 命令使用） */
   getCompletedSpans(): readonly SpanData[] {
     return this.spanHistory;
+  }
+
+  /**
+   * 获取尚未 end 的 span 快照（缺陷 17）。
+   *
+   * 根 span（invoke_agent）只在 SessionEnd 才 end，而 `/telemetry` 只能在会话中执行 ——
+   * 只读 history 时根**必然**缺席，整棵树退化成平铺的孤立根。快照不进导出队列。
+   */
+  getActiveSpans(): SpanData[] {
+    if (!this.config.enabled) return [];
+    const now = Date.now();
+    return [...this.activeHandles.values()].map((h) => h.snapshot(now));
+  }
+
+  /** history 因上限被挤掉的 span 累计数（缺陷 19） */
+  getEvictedSpanCount(): number {
+    return this.evictedHistorySpans;
   }
 
   /** 获取会话内所有已记录的 metric（供 /telemetry 命令使用） */

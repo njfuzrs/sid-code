@@ -39,7 +39,9 @@ import {
   isTransientErrorCode,
 } from "@sid-code/core/llm/error-messages.ts";
 import { SessionState } from "@sid-code/core/session/state.ts";
-import { SessionStore } from "@sid-code/core/session/store.ts";
+import { createSubAgentUsageSink } from "@sid-code/core/agent/usage-sink.ts";
+import { SessionStore, currentProjectSessionDir } from "@sid-code/core/session/store.ts";
+import { extractHookContext } from "@sid-code/core/hook/context-inject.ts";
 import { generateSessionId } from "@sid-code/core/session/id.ts";
 import {
   stashPendingInput,
@@ -47,7 +49,7 @@ import {
   clearPendingInput,
   canRestoreCanceledInput,
 } from "./ui/pending-input.ts";
-import { QuotaManager } from "@sid-code/core/llm/quota.ts";
+import { QuotaManager, resolveEffectiveCostLimit } from "@sid-code/core/llm/quota.ts";
 import { TokenMeter } from "@sid-code/core/telemetry/metrics/token-meter.ts";
 import { upsertUsageLedger } from "@sid-code/core/telemetry/usage-ledger.ts";
 import { getIdentity } from "@sid-code/core/identity/index.ts";
@@ -55,7 +57,10 @@ import { BudgetTracker } from "@sid-code/core/telemetry/metrics/budget-tracker.t
 import type { BudgetRule } from "@sid-code/core/telemetry/metrics/budget-tracker.ts";
 import type { BudgetRuleConfig } from "@sid-code/core/config/config.ts";
 import { loadAllCLAUDEmd, watchCLAUDEmd, unwatchCLAUDEmd } from "@sid-code/core/config/rules.ts";
-import { cleanup as cleanupSettingsWatcher } from "@sid-code/core/config/settings/change-detector.ts";
+import {
+  cleanup as cleanupSettingsWatcher,
+  settingsChanged,
+} from "@sid-code/core/config/settings/change-detector.ts";
 import { stopAppConfigWatcher } from "@sid-code/core/config/app-config.ts";
 import type { ProjectRules } from "@sid-code/core/config/rules.ts";
 import { clearPromptCache } from "@sid-code/core/config/system-prompt.ts";
@@ -68,12 +73,15 @@ import { resetBetaHeaders } from "@sid-code/core/api/beta-header-latch.ts";
 import { resetCircuitBreaker } from "@sid-code/core/query/auto-compact.ts";
 import { clearQueue as clearMessageQueue } from "@sid-code/core/query/message-queue-manager.ts";
 import { HookSystem } from "@sid-code/core/hook/system.ts";
+import { ConfigSource } from "@sid-code/core/hook/types.ts";
+import { pickHookPolicy } from "@sid-code/core/hook/enterprise-policy.ts";
 import {
   SDKQueryEngine,
   type SDKQueryEngineDriver,
   StructuredIO,
   CommandQueue,
   runHeadless as sdkRunHeadless,
+  createSDKCanUseTool,
   classifyHeadlessStreamText,
   formatHeadlessEvent,
 } from "@sid-code/core/sdk/index.ts";
@@ -123,6 +131,7 @@ import {
   getPeakRatio,
   type BilledRequest,
 } from "@sid-code/core/llm/billing-sink.ts";
+import { sendNonStreamingSideCall } from "@sid-code/core/llm/side-call-nonstreaming.ts";
 import {
   buildJitEventData,
   emitJitEvent,
@@ -322,6 +331,17 @@ export interface AppOptions {
 }
 
 /**
+ * 缺陷 7：stream-json 模式下 stdin 空闲上限（ms）。`SID_CODE_SDK_IDLE_TIMEOUT_MS`，
+ * 缺省 0 = 关闭。非法值（负数 / 非数字）按 0 处理，不让一个手误把会话秒杀。
+ */
+export function readSdkIdleTimeoutMs(env: NodeJS.ProcessEnv = process.env): number {
+  const raw = env.SID_CODE_SDK_IDLE_TIMEOUT_MS;
+  if (raw === undefined || raw.trim() === "") return 0;
+  const n = Number(raw);
+  return Number.isFinite(n) && n > 0 ? Math.floor(n) : 0;
+}
+
+/**
  * CM3/CM4：从重试错误文本推断重试种类，决定 TUI 提示语气与是否给升级建议。
  * - 限流(429 / rate limit / quota)→ rate_limit（CM4 附升级建议）
  * - 过载(529 / overloaded / 503)→ overloaded
@@ -418,11 +438,12 @@ export class App {
   private sessionState: SessionState;
   private quotaManager?: QuotaManager;
   /**
-   * 本次会话实际生效的花费上限（美元）。quota.costLimit 优先于 --max-budget-usd，
+   * 本次会话实际生效的花费上限（美元；0 = 不限）。B18：quota.costLimit 与
+   * 顶层 costLimit（--max-budget-usd 落在这里）取更严的那个，见 resolveEffectiveCostLimit。
    * 与传给 QuotaManager 的是同一个数——超限报告里的 limit 必须等于真正触发停止的那个，
    * 不能回退去读 CLI 原值（两者不同时报告会自相矛盾）。
    */
-  private effectiveCostLimit?: number;
+  private effectiveCostLimit = 0;
   private tokenMeter?: TokenMeter;
   private budgetTracker?: BudgetTracker;
   private abortController: AbortController | null = null;
@@ -483,6 +504,11 @@ export class App {
     discardedTextLength: number;
   }) => void;
   private queryEngine: QueryEngine;
+  /** B26：--json-schema 模式下注册的 StructuredOutput 工具，收尾时取校验通过的载荷写进 result */
+  private structuredOutputTool: {
+    hasCapturedOutput: boolean;
+    getCapturedOutput(): unknown;
+  } | null = null;
   private hookSystem!: HookSystem;
   private jitContextMgr: JitContextManager;
   /**
@@ -527,6 +553,45 @@ export class App {
    * 与 announcedMcpServers 同模式：会话内一次即够，重复注入纯烧 token。
    */
   private surfacedRecalledMemories = new Set<string>();
+  /**
+   * 缺陷 4：本会话（两次压缩之间）已注入的召回正文字节数，喂 `RECALL_SESSION_MAX_BYTES`。
+   * 与 `surfacedRecalledMemories` 同生命周期，见 `resetRecallState`。
+   */
+  private recalledMemoryBytes = 0;
+
+  /**
+   * 缺陷 4：压缩 / `/clear` 之后召回状态必须归零。
+   *
+   * 已注入集合是挂在上下文**外面**的状态：压缩把那些注入从消息里清掉了，
+   * 集合却还记着「给过了」⇒ 这条记忆本会话再也不会注入，且没有任何告警。
+   * 原先压缩只 `clearPromptCache()`，清的是提示词缓存，不是这个集合。
+   */
+  private resetRecallState(): void {
+    this.surfacedRecalledMemories.clear();
+    this.recalledMemoryBytes = 0;
+  }
+
+  /**
+   * 缺陷 2：从当前消息里取最近 N 次工具调用及成败，作为召回的第三个输入。
+   * 成败以配对的 tool_result.is_error 为准；没配上结果的调用不计（还没执行完）。
+   */
+  private collectRecentToolUses(limit = 10): Array<{ name: string; failed: boolean }> {
+    const msgs = this.ctxMgr.getMessages() as Array<{ content?: unknown }>;
+    const names = new Map<string, string>();
+    const out: Array<{ name: string; failed: boolean }> = [];
+    for (const m of msgs) {
+      if (!Array.isArray(m.content)) continue;
+      for (const b of m.content as Array<Record<string, unknown>>) {
+        if (b?.type === "tool_use" && typeof b.id === "string" && typeof b.name === "string") {
+          names.set(b.id, b.name);
+        } else if (b?.type === "tool_result" && typeof b.tool_use_id === "string") {
+          const name = names.get(b.tool_use_id);
+          if (name) out.push({ name, failed: b.is_error === true });
+        }
+      }
+    }
+    return out.slice(-limit);
+  }
   /** 会话 ID（§4.1/§4.3 落盘目录用）。 */
   private sessionIdForCompact = "";
   /** 当前生效的项目规则（CLAUDE.md）内存缓存，供运行时重建系统提示词复用 */
@@ -541,6 +606,11 @@ export class App {
         signal?: AbortSignal,
       ) => Promise<"yes" | "no" | "always" | "always-persist">)
     | null = null;
+  /**
+   * B25：SDK 双向流下把 ask 交给宿主的 can_use_tool。只在 runHeadlessSDK 且
+   * `--input-format stream-json` 时注入，其余模式恒 null。
+   */
+  private sdkCanUseTool: ReturnType<typeof createSDKCanUseTool> | null = null;
   /** TUI 状态更新回调（由 TUI 注入，用于同步 permissionMode 等状态） */
   private tuiStateUpdater: ((patch: Record<string, unknown>) => void) | null = null;
   /** 幂等保护：init() 只执行一次 */
@@ -830,11 +900,14 @@ export class App {
     // ——速率限制配置静默失效、无任何警告。三者任一有值就该创建：QuotaManager 内部
     // 对未配项一律按 0 处理（costLimit<=0 时 check() 恒返回 null），互不依赖。
     const quotaConfig = opts.config.quota;
-    const effectiveCostLimit = quotaConfig?.costLimit ?? opts.config.costLimit;
+    const effectiveCostLimit = resolveEffectiveCostLimit(
+      quotaConfig?.costLimit,
+      opts.config.costLimit,
+    );
     this.effectiveCostLimit = effectiveCostLimit;
     const rpmLimit = quotaConfig?.requestsPerMinute;
     const tpmLimit = quotaConfig?.tokensPerMinute;
-    const hasAnyQuota = (effectiveCostLimit ?? 0) > 0 || (rpmLimit ?? 0) > 0 || (tpmLimit ?? 0) > 0;
+    const hasAnyQuota = effectiveCostLimit > 0 || (rpmLimit ?? 0) > 0 || (tpmLimit ?? 0) > 0;
     if (hasAnyQuota) {
       this.quotaManager = new QuotaManager({
         costLimit: effectiveCostLimit,
@@ -852,8 +925,8 @@ export class App {
 
     // Token 计量器（依赖 telemetry bus，延迟到 init() 中创建）
     // 先用 null bus 创建，init() 中 telemetry 启用后会重建
-    this.tokenMeter = new TokenMeter(null, (model, usage) =>
-      this.sessionState.calculateCost(model, usage),
+    this.tokenMeter = new TokenMeter(null, (model, usage, provider) =>
+      this.sessionState.calculateCost(model, usage, provider),
     );
 
     // 预算追踪器（如果配置了 budgetRules）
@@ -1029,8 +1102,8 @@ export class App {
         // B5-7：401 凭据刷新钩子（§5 新发现 3）
         //
         // 修的是一处错误归因：此前 401 是「用同一份旧凭据重试一次，再失败就
-        // markTerminal 拉黑模型」。而 terminal 是进程内**永久**态（availability.ts：
-        // 默认不可被自动流程恢复），于是一次凭据过期能让一个**健康**模型整场会话不可用。
+        // markTerminal 拉黑模型」。而当时 terminal 是进程内**永久**态（2026-10-08 已改为
+        // 有时效的嫌疑态），于是一次凭据过期能让一个**健康**模型整场会话不可用。
         //
         // ── 我们的"刷新"是什么，不是什么（诚实边界） ──
         //
@@ -1096,9 +1169,18 @@ export class App {
             },
           });
         },
-        onFallback: (reason, model) => {
+        onFallback: (reason, model, info) => {
           const log = getLogger();
           log.warn("FALLBACK", `降级到 ${model}，原因: ${reason}`);
+          // Q6 细则 2：auto 模式（fallbackSwitchMode=auto、子代理 / 压缩等后台调用传 switchMode:"auto"）
+          // 不经 applyPrimaryModelSwitch——它只换当次调用、不改主模型——于是原先这条最常见的
+          // 自动降级对 PostModelSwitch 完全不可见。ask 模式由决策钩子提升主模型时已发过，这里不重复。
+          // trigger=fallback 与 applyPrimaryModelSwitch 的降级口径一致。
+          if (info && !info.viaDecision && info.fromModel !== model) {
+            this.hookSystem
+              ?.firePostModelSwitchEvent(info.fromModel, model, "fallback", reason)
+              .catch((e: any) => log.error("HOOK", `model_switch hook 失败: ${e?.message ?? e}`));
+          }
           // CM3：降级也作为一种重试状态展示（attempt 不适用，置 0）。
           this.tuiStateUpdater?.({
             retryStatus: {
@@ -1126,12 +1208,55 @@ export class App {
 
     // 初始化 Hook 系统
     this.hookSystem = new HookSystem();
-    this.hookSystem.initializeFromLegacy(this.config.hooks);
+    // HC1 / HC2：按真实来源分层注册（managed → user → project → local，按事件追加）。
+    // 被信任门打了 skippedByTrust 的层不注册——只摘随仓库分发的那几层，用户级照常。
+    // 用户层取 _hookLayers 里的原始 JSON 而不是 config.hooks：后者经 resolveEnvVars 展开过 ${VAR}，
+    // `${CLAUDE_PROJECT_DIR}` 会在 sid 进程里被提前展开（见 config/hook-layers.ts 头注释）。
+    {
+      const layers = this.config._hookLayers;
+      const hasUserLayer = layers?.some((l) => l.source === "user") ?? false;
+      const sourceOf: Record<string, ConfigSource> = {
+        managed: ConfigSource.Managed,
+        user: ConfigSource.User,
+        project: ConfigSource.Project,
+        local: ConfigSource.Local,
+      };
+      const regLayers: Array<{
+        hooks: unknown;
+        source: ConfigSource;
+        ctx?: { pathPrefix: string };
+      }> = [];
+      for (const l of layers ?? []) {
+        if (l.skippedByTrust) continue;
+        regLayers.push({
+          hooks: l.hooks,
+          source: sourceOf[l.source]!,
+          ctx: { pathPrefix: `${l.file}#hooks` },
+        });
+      }
+      // 测试 / SDK 直接构造 Config（没有 _hookLayers）或 CLI 注入的 hooks：按用户级注册
+      if (!hasUserLayer && Object.keys(this.config.hooks ?? {}).length > 0) {
+        regLayers.unshift({ hooks: this.config.hooks, source: ConfigSource.User });
+      }
+      this.hookSystem.initializeFromSources(regLayers);
+    }
     this.hookSystem.setSessionId(sessionId);
     this.hookSystem.setCwd(process.cwd());
+    // HC14：CLAUDE_PROJECT_DIR = 会话启动时的项目根，之后 bash cd / 进 worktree 都不变（与 CC 一致）
+    this.hookSystem.setProjectDir(process.cwd());
+    // HC11：stdin permission_mode / transcript_path。取值函数而非快照——模式运行时会被改写。
+    this.hookSystem.setPermissionModeProvider(() => this.config.permissionMode);
+    // resume 时 jsonl 续写的是**被恢复会话**的文件（见 doInit 的 resumeSession），不是本进程新 id。
+    // 原先按 hook 的 session_id（进程 id）拼路径，resume 后 transcript_path 指向一个不存在的文件。
+    // 用 getLogicalSessionId 取值：它与 SessionStore 实际写入的 jsonl 归属同口径；入参 id 不再使用。
+    this.hookSystem.setTranscriptPathProvider(() =>
+      join(currentProjectSessionDir(), `${this.getLogicalSessionId()}.jsonl`),
+    );
     // 恢复 settings.json disabledHooks（/hooks disable -p 持久化端）。
     // 插件 hook 在 loadPluginHooks 后才注册，故那里会再应用一次（见下方 loadPluginHooks 调用点）。
     this.hookSystem.applyDisabledHooks(this.config.disabledHooks);
+    // HC24：ConfigChange / Elicitation 接线（原为「预留」：fire 方法在、调用点为零）
+    this.wireConfigAndElicitationHooks();
 
     // G13：应用企业策略 Hook 门控。必须复用 cli 已经 await 过的那一次 load
     // （loadEnterprisePolicyOnce），禁止再 new PolicyManager().load() 打第二次网。
@@ -1139,14 +1264,15 @@ export class App {
       try {
         const { PolicyManager } = await import("@sid-code/core/config/policy.ts");
         const policy = await new PolicyManager().load();
-        if (policy && (policy.disableAllHooks || policy.allowManagedHooksOnly)) {
-          this.hookSystem.applyEnterprisePolicy({
-            disableAllHooks: policy.disableAllHooks,
-            allowManagedHooksOnly: policy.allowManagedHooksOnly,
-          });
+        // H12：原先只传两个字段，另外四个（allowedHookSources / blockedCommands / blockedUrls /
+        // maxHookTimeout）实现在、调用链断在这里——grep applyEnterprisePolicy 会命中，看起来是接好的。
+        // 字段清单与 EnterprisePolicy 逐字段对齐，由 tests/hook/hook-p3-*.test.ts 机械比对。
+        const hookPolicy = pickHookPolicy(policy);
+        if (hookPolicy) {
+          this.hookSystem.applyEnterprisePolicy(hookPolicy);
           getLogger().info(
             "HOOK",
-            `企业策略 Hook 门控已应用（disableAllHooks=${!!policy.disableAllHooks}, allowManagedHooksOnly=${!!policy.allowManagedHooksOnly}）`,
+            `企业策略 Hook 门控已应用（${Object.keys(hookPolicy).join(", ")}）`,
           );
         }
       } catch (e) {
@@ -1336,9 +1462,16 @@ export class App {
           const recalled = await findRelevantMemories(query, memoryDir, sideQuery, {
             // 同一会话内已注入过的不再重复注入（多轮重复注入纯烧 token）
             alreadySurfaced: this.surfacedRecalledMemories,
+            // 缺陷 2：执行状态调制——成功在用的工具不推用法参考，失败的推坑
+            recentTools: this.collectRecentToolUses(),
+            // 缺陷 4：会话累计预算
+            sessionBytesUsed: this.recalledMemoryBytes,
           });
           if (recalled.length === 0) return null;
-          for (const m of recalled) this.surfacedRecalledMemories.add(m.filename);
+          for (const m of recalled) {
+            this.surfacedRecalledMemories.add(m.filename);
+            this.recalledMemoryBytes += Buffer.byteLength(m.content, "utf8");
+          }
 
           const { generateRecalledMemoryAttachment } =
             await import("@sid-code/core/config/attachments.ts");
@@ -1430,23 +1563,8 @@ export class App {
 
   /** 注入子代理 usage 归集 sink（P0-1）。遍历工具注册表，给所有带 setUsageSink 的工具接线。 */
   private wireSubAgentUsageSink(): void {
-    const sink = (result: import("@sid-code/core/agent/sub-agent.ts").SubAgentResult): void => {
-      const usage = result.usage;
-      if (!usage) return;
-      // 子代理可能用不同 subAgentModel，按其实际 model 分别计费；缺省回退主模型。
-      const model = result.model || this.config.model;
-      const provider =
-        result.provider || SessionState.inferProvider(model, this.config.availableModels);
-      // 端点必须与主循环同口径（loop.ts 的 updateUsage 传了 config.baseURL）：
-      // 计价按 (model, endpoint) 复合键精确匹配，缺 baseURL 会让子代理落进
-      // 空 key 桶（"官方默认端点"），于是主/子两条路径对**同一个模型**取到不同价格桶，
-      // 同一会话内的费用口径自相矛盾。按子代理实际模型在 availableModels 里的
-      // 配置取端点，缺省回退主模型端点（与 resolveEffortCap 同款派生）。
-      const mc = this.config.availableModels?.find((m) => m.name === model);
-      const baseURL = mc?.baseURL ?? this.config.baseURL;
-      // 子代理无独立 API 耗时归集口径，durationMs 计 0（费用/ token 才是归集重点）。
-      this.sessionState.updateUsage(model, usage, 0, provider, baseURL);
-    };
+    // 实现下沉到 core（usage-sink.ts），让会话级回放测试跑的是生产这份而不是复制品。
+    const sink = createSubAgentUsageSink(this.sessionState, this.config);
     // P2-2：workflow 的 token 预算按「共享池」计——主循环 + 全部子代理已累计的输出 token。
     // 读的就是上面这个 sink 回写的 SessionState，所以必须和 sink 一起注入：
     // 只注入 sink 不注入读口，预算门看到的仍是「本 run 独立预算」，主循环花掉的不算数。
@@ -1527,6 +1645,83 @@ export class App {
   /** 注入 HookSystem 到 spawn-agent 类工具（根因修复）。遍历工具注册表，给所有带
    *  setHookSystem 的工具（SubAgentTool / WorkflowTool）回填 hookSystem，使其内部 spawn 的
    *  子代理能触发 Subagent 生命周期 hook 与工具级 execute_tool span。 */
+  /** 退订 settings 变更（ConfigChange hook），在两个清理出口调用 */
+  private offConfigChangeHook?: () => void;
+
+  /**
+   * HC24：ConfigChange 与 Elicitation / ElicitationResult 接线。
+   *
+   * ConfigChange 订阅 change-detector 的 fanOut（外部改 settings 文件、缓存已刷新之后）；
+   * source 换成 CC 的 matcher 值（user_settings / project_settings …）。内部写入在
+   * change-detector 里已被 consumeInternalWrite 过滤掉，不会因 /model 之类自己写盘而误触发。
+   * Elicitation 走 MCPManager 注入的发射端，避免 mcp → hook 反向依赖。
+   */
+  private wireConfigAndElicitationHooks(): void {
+    const ccSource: Record<
+      string,
+      "user_settings" | "project_settings" | "local_settings" | "policy_settings"
+    > = {
+      userSettings: "user_settings",
+      projectSettings: "project_settings",
+      localSettings: "local_settings",
+      policySettings: "policy_settings",
+    };
+    const onChange = async (
+      source: string,
+      path?: string,
+      previous?: import("@sid-code/core/config/settings/cache.ts").ParsedSettings,
+    ) => {
+      const mapped = ccSource[source];
+      if (!mapped) return;
+      try {
+        const { getSettingsForSource } = await import("@sid-code/core/config/settings/settings.ts");
+        const { diffTopLevelKeys, restoreSourceSnapshot } =
+          await import("@sid-code/core/config/settings/cache.ts");
+        const next = getSettingsForSource(source as any).settings as Record<string, unknown> | null;
+        // changed_keys：原先恒传 []。没有旧快照（该来源此前从未被读过）时无从比较，按新值全部键上报
+        const changedKeys = previous
+          ? diffTopLevelKeys(previous.settings as Record<string, unknown> | null, next)
+          : Object.keys(next ?? {}).sort();
+        const result = await this.hookSystem.fireConfigChangeEvent(changedKeys, mapped, path);
+        // CC：ConfigChange 可 block（拒绝变更生效），policy_settings 除外——托管策略不能被用户 hook 否决。
+        // 原先返回值被丢，hook 返回 block 也照样生效。回退的是内存缓存，磁盘文件不动（见 restoreSourceSnapshot）。
+        if (result.finalOutput?.isBlockingDecision() && mapped !== "policy_settings" && previous) {
+          restoreSourceSnapshot(source as any, previous);
+          const reason = result.finalOutput.getEffectiveReason();
+          getLogger().warn(
+            "HOOK",
+            `ConfigChange hook 拒绝了 ${mapped} 的变更，已回退到变更前的设置${reason ? `：${reason}` : ""}`,
+          );
+        }
+      } catch (e: any) {
+        getLogger().error("HOOK", `config_change hook 失败: ${e?.message ?? e}`);
+      }
+    };
+    // D4：权限规则跟随 settings 文件热更新。RuleLoader 启动时只 loadAll 一次，此前改了
+    // permissions.deny 要重启才生效——fanOut 清了缓存，但读进内存的规则没人刷新。
+    // 重载后重新下发子代理 checker（它们是 wire 那一刻的快照，同 W22）。
+    const onRulesChange = (source: string) => {
+      if (!ccSource[source]) return; // 只认文件型来源
+      const checker = this.permissionChecker as {
+        reloadSettingsRules?: () => Promise<void>;
+      } | null;
+      if (typeof checker?.reloadSettingsRules !== "function") return;
+      checker
+        .reloadSettingsRules()
+        .then(() => this.wireToolPermissionChecker())
+        .catch((e) =>
+          getLogger().error("PERMISSION", `settings 变更后重载权限规则失败: ${e?.message ?? e}`),
+        );
+    };
+    settingsChanged.on("change", onChange);
+    settingsChanged.on("change", onRulesChange);
+    this.offConfigChangeHook = () => {
+      settingsChanged.off("change", onChange);
+      settingsChanged.off("change", onRulesChange);
+    };
+    if (this.mcpManager) this.mcpManager.elicitationHooks = this.hookSystem;
+  }
+
   private wireToolHookSystem(): void {
     for (const tool of this.toolRegistry.all()) {
       const maybe = tool as { setHookSystem?: (h: HookSystem) => void };
@@ -1585,6 +1780,22 @@ export class App {
    * 只重载主 checker 不重新 wire，子代理拿到的仍是旧目录的规则。
    */
   private wireWorkspaceRuleReload(): void {
+    // P9（对齐 CC EnterWorktree 清 CLAUDE.md 记忆缓存）：rules.ts 没有模块级缓存，
+    // 规则快照活在 this.currentProjectRules 里，只在启动 / 文件变化 / 导入审批时重载。
+    // 不在这里重载，切进 worktree 后系统提示词仍是旧目录的 CLAUDE.md / rules。
+    // 放在 permissionChecker 判空之前：两者无关，没有 checker 时规则也要跟着换。
+    const { onWorkspaceChange: onWsChange } = require("@sid-code/core/worktree/canonical.ts");
+    onWsChange(async (dir: string) => {
+      try {
+        const newRules = await loadAllCLAUDEmd(dir);
+        if (newRules) {
+          this.applyProjectRules(newRules);
+          await this.rebuildSystemPrompt();
+        }
+      } catch (err) {
+        getLogger().warn("APP", `切换工作区后重载项目规则失败: ${err}`);
+      }
+    });
     if (!this.permissionChecker) return;
     const checker = this.permissionChecker as {
       reloadWorkspaceRules?: (dir: string) => Promise<void>;
@@ -1949,6 +2160,25 @@ export class App {
         /* availability 未就绪不阻断切换 */
       }
     }
+    // Q6：PreModelSwitch / PostModelSwitch。本函数是 /model、降级链、CLAUDE.md `# Model`
+    // 三条路径的汇合点，挂在这里一处即覆盖三者（含降级链自动切换——Q6 细则 2）。
+    // 本函数是同步的（/model 命令同步返回），PreModelSwitch 因此只通知、不能拒绝切换（刻意偏离 CC）。
+    const fromModel = this.config.model;
+    const switchTrigger: "manual" | "fallback" | "config" = !opts?.reason
+      ? "manual"
+      : opts.reason.includes("降级")
+        ? "fallback"
+        : "config";
+    const fireSwitch = (phase: "pre" | "post") => {
+      if (fromModel === model) return;
+      const hs = this.hookSystem;
+      if (!hs) return;
+      (phase === "pre"
+        ? hs.firePreModelSwitchEvent(fromModel, model, switchTrigger, opts?.reason)
+        : hs.firePostModelSwitchEvent(fromModel, model, switchTrigger, opts?.reason)
+      ).catch((e) => log.error("HOOK", `model_switch hook 失败: ${e?.message ?? e}`));
+    };
+    fireSwitch("pre");
     this.config.model = model;
     const { resolveCurrentModelConfig } = require("@sid-code/core/config/config.ts");
     resolveCurrentModelConfig(this.config);
@@ -1970,6 +2200,7 @@ export class App {
       /* 窗口解析失败不影响切换，沿用旧窗口 */
     }
     this.tuiStateUpdater?.({ model });
+    fireSwitch("post");
     // 事件元数据同步：_ctx_model / _ctx_provider 是 primeMetadata 在会话初始化时一次性
     // 缓存的，运行时切模型不刷新则此后所有事件都带着旧模型名上报——归因直接错到另一个
     // 模型头上（切模型往往正是为了对比两个模型，这恰好是最需要归因准确的场景）。
@@ -2136,6 +2367,8 @@ export class App {
     reason: string;
     defaultFallbackModel?: string;
     signal?: AbortSignal;
+    canRetrySame?: boolean;
+    attempts?: number;
   }): Promise<FallbackDecision> {
     const log = getLogger();
     const { askUserQuestion, hasAskUserQuestionHandler } =
@@ -2172,9 +2405,8 @@ export class App {
     }
 
     // 构造选项：默认备用置顶（标注）+ 其它 availableModels（排除主模型与默认备用）+ 不切换。
-    // H2：对处于 terminal 拉黑态的模型在 description 追加标注，让用户知情——选中被拉黑的模型
-    // 会在切入时 force 清一次 terminal（见下方选中分支），给它一次干净机会；不置灰移除，避免
-    // 瞬时 401/400 误拉黑后用户彻底无法选回。
+    // H2：对处于嫌疑期（近期有调用在它身上放弃过）的模型在 description 追加标注，让用户知情——
+    // 选中它会在切入时清一次嫌疑（见下方选中分支）；不置灰移除，避免用户无法选回。
     const avail = (() => {
       try {
         return this.fallback?.getAvailability();
@@ -2183,8 +2415,17 @@ export class App {
       }
     })();
     const terminalNote = (name: string): string =>
-      avail?.isTerminal(name) ? "（曾被标记不可用，切入将重试）" : "";
+      avail?.isSuspect(name) ? "（近期请求失败，切入将重试）" : "";
     const options: { label: string; description?: string }[] = [];
+    // 2026-10-08 §4.4：「重试当前模型」置顶为默认项。网关把临时故障包成 401/400/404 已有实测，
+    // 此前弹窗只有「切换 / 不切换」，用户想再试一次只能终止后重发。漏斗侧限制每次调用最多 2 次。
+    const RETRY_SAME = `重试当前模型 ${ctx.failedModel}`;
+    if (ctx.canRetrySame) {
+      options.push({
+        label: RETRY_SAME,
+        description: `重新请求（全新重试预算${ctx.attempts !== undefined ? `，本次已重试 ${ctx.attempts} 次` : ""}）`,
+      });
+    }
     if (ctx.defaultFallbackModel && this.buildFallbackProvider(ctx.defaultFallbackModel)) {
       options.push({
         label: ctx.defaultFallbackModel,
@@ -2200,7 +2441,7 @@ export class App {
     const NO_SWITCH = "不切换，终止本轮";
     options.push({ label: NO_SWITCH, description: "保持当前状态，可稍后重发消息或用 /model 切换" });
 
-    const question = `主模型 ${ctx.failedModel} 请求失败（${ctx.reason}），是否切换到备用模型继续？`;
+    const question = `主模型 ${ctx.failedModel} 请求失败（${ctx.reason}），要重试、切换到备用模型，还是终止？`;
     let result;
     try {
       // 人机输入闸门：本弹窗阻塞等用户作答期间，通知看门狗（stream-processor 心跳 +
@@ -2236,6 +2477,10 @@ export class App {
 
     // answered：取用户选中的答案（answers 按"问题文本 → 答案"映射）。
     const answer = result.answers[question];
+    if (answer === RETRY_SAME && ctx.canRetrySame) {
+      log.info("FALLBACK", `用户选择重试当前模型 ${ctx.failedModel}`);
+      return { action: "retry_same" };
+    }
     if (!answer || answer === NO_SWITCH) {
       log.info("FALLBACK", "用户选择不切换，终止本轮");
       return { action: "abort" };
@@ -2413,14 +2658,7 @@ export class App {
    * 无新注册表时回退旧 Registry.all()。
    */
   private async loadCommandList(): Promise<
-    Array<{
-      name: string;
-      aliases: string[];
-      description: string;
-      requiresArgs?: boolean;
-      immediate?: boolean;
-      type?: string;
-    }>
+    import("./command/completion-list.ts").CompletionCommandEntry[]
   > {
     // P1-8 --disable-slash-commands：禁用时补全列表为空（配合 onSlashCommand 门控，彻底关闭斜杠命令）。
     if (this.config.disableSlashCommands) return [];
@@ -2432,26 +2670,8 @@ export class App {
           process.cwd(),
           buildMcpPromptCommands(this.mcpManager),
         );
-        return (
-          cmds
-            // 隐藏命令不进补全列表
-            .filter((c) => !c.isHidden)
-            // 仅用户可调用的进补全（userInvocable 默认 true）
-            .filter((c) => c.userInvocable !== false)
-            .map((c) => ({
-              name: c.name,
-              aliases: c.aliases ?? [],
-              description: c.description,
-              requiresArgs: c.requiresArgs,
-              // P0-1/P0-2：immediate 与 type 透传给 UI，让「流式中是否允许插队」这个
-              // 判断能在提交那一刻做出来。此前 27 条命令声明 immediate、0 处读取，
-              // 于是 /compact 等会改写消息历史的命令也一律直送，与流式写入构成
-              // 读-改-写竞争。判据必须落在 UI 提交路径上（App.tsx handleSubmit），
-              // 那里是唯一能决定「直送还是入队」的地方。
-              immediate: c.immediate,
-              type: c.type,
-            }))
-        );
+        const { toCompletionEntries } = await import("./command/completion-list.ts");
+        return toCompletionEntries(cmds);
       } catch (err: any) {
         getLogger().warn("APP", `统一注册表加载命令列表失败，回退旧 Registry: ${err?.message}`);
       }
@@ -2460,6 +2680,7 @@ export class App {
       name: cmd.name(),
       aliases: cmd.aliases(),
       description: cmd.description(),
+      argumentHint: cmd.argumentHint?.() || undefined,
     }));
   }
 
@@ -2509,6 +2730,7 @@ export class App {
         // 否则新一轮对话永远不再播报延迟工具列表（详见 resetReminderDedupKeys 注释）。
         this.sessionState.resetReminderDedupKeys();
         clearPromptCache();
+        this.resetRecallState();
         this.quotaManager?.resetAlertLevel();
         this.fallback.reset();
         this.resetTodoTool();
@@ -2539,6 +2761,14 @@ export class App {
         // 必须在 rebuildDisplay/系统提示词重建这一批里一起归零。
         this.jitContextMgr.reset();
         this.reportedJitFailures.clear();
+        // HC12 / HC16：/clear 之后重发 SessionStart(source=clear)，对齐 CC——
+        // 清空对话也清掉了启动时 hook 注入的上下文，不重发就只有第一段对话看得到它。
+        // fire-and-forget：/clear 是同步交互，不能被一个慢 hook 卡住；结果在下一条用户消息注入。
+        void this.hookSystem
+          .fireSessionRestartEvent("clear", this.config.model)
+          .catch((err: any) =>
+            log.debug("HOOK", `SessionStart(clear) 失败: ${err?.message ?? err}`),
+          );
         // 记账同步归零（JIT 分量已清，基线由后续重建的 onSectionTokens 重新报）
         this.refreshMemoryTokenAccounting();
         // 缓存检测状态重置：旧基线对新会话无效，不清会产生虚假中断检测
@@ -2618,6 +2848,8 @@ export class App {
         // 否则后续 syncDisplay 因 newCount<=0 被 early return 跳过，historyItems 永远停在旧快照。
         resetSyncState();
         rebuildDisplay();
+        // 缺陷 4：手动压缩同样把召回注入清出了上下文
+        this.resetRecallState();
         appendCommandOutput(commandInput, result.summary ?? null);
         break;
 
@@ -2814,6 +3046,8 @@ export class App {
     /** 可选：reactiveCompact 的 emergencyTruncate 兜底路径不一定给（见 QueryDeps 注释） */
     tokensBefore?: number;
   }): Promise<void> {
+    // 缺陷 4：reactive / collapse 同样替换了消息历史
+    this.resetRecallState();
     try {
       const { runPostCompact } = await import("@sid-code/core/query/compact/post-compact.ts");
       await runPostCompact({
@@ -2891,6 +3125,8 @@ export class App {
       } catch {
         /* 忽略 */
       }
+      // 缺陷 4：召回的已注入集合 / 累计字节随压缩归零（清 prompt cache 不清它们）
+      this.resetRecallState();
 
       // §9.5：压缩后重新注入仍在作用域内的 JIT 规则（CLAUDE.md）。
       // JIT 上下文被追加到系统提示词，但摘要后的消息历史不再提及这些规则，
@@ -2981,7 +3217,22 @@ export class App {
     // 加载插件 Hooks（原子注册到 HookSystem，失败不阻塞启动）
     try {
       const { loadPluginHooks } = await import("./plugin/index.ts");
-      await loadPluginHooks(this.hookSystem);
+      const pluginHookDiags = await loadPluginHooks(this.hookSystem);
+      // §三.9：插件 hook 诊断与项目层同一出口。cli.ts 打 -p stderr 诊断在 init 之前，
+      // 此刻已经过了那一刻，所以 -p 直接写 stderr；交互模式记进启动横幅（runTUI 在 init 之后才取横幅）。
+      if (pluginHookDiags.length > 0) {
+        const { recordStartupWarning } = await import("@sid-code/core/config/config.ts");
+        for (const d of pluginHookDiags) {
+          if (this.config.print) console.error(`  ⚠ [提示] ${d.path}: ${d.message}`);
+          else recordStartupWarning(this.config, d.path, d.message);
+        }
+      }
+      // skill / agent 的 hooks 运行期才注册、横幅早过了；-p 下诊断走 stderr（TUI 在 runTUI 里另行注册）
+      if (this.config.print) {
+        const { setRuntimeHookDiagnosticSink } =
+          await import("@sid-code/core/hook/diagnostic-sink.ts");
+        setRuntimeHookDiagnosticSink((line) => console.error(`  ⚠ [提示] ${line}`));
+      }
       // 插件 hook 刚注册,重新应用 disabledHooks,让持久化的禁用状态覆盖插件 hook。
       this.hookSystem.applyDisabledHooks(this.config.disabledHooks);
     } catch (err: any) {
@@ -3138,6 +3389,7 @@ export class App {
       const { StructuredOutputTool, structuredOutputPromptSuffix } =
         await import("@sid-code/core/tool/structured-output-tool.ts");
       const structuredTool = new StructuredOutputTool(this.config.jsonSchema);
+      this.structuredOutputTool = structuredTool;
       this.toolRegistry.register(structuredTool);
       systemPrompt += structuredOutputPromptSuffix();
       log.info("APP", `--json-schema 模式：注册 StructuredOutput 工具 + system prompt 后缀`);
@@ -3514,12 +3766,22 @@ export class App {
     // 使 trajectory 元数据能反查到 SessionStore 的 sessions/{旧id}.jsonl。
     // ⚠️ 必须保持在 initTelemetrySystem **之后**（见上面那段时序不变量），
     // 且必须在 initTraceCollector 之后——两个消费者一前一后夹住这行。
-    this.hookSystem
-      .fireSessionStartEvent(this.resumedSessionId ? "resume" : "startup", {
-        model: this.config.model,
-        resumedFrom: this.resumedSessionId ?? undefined,
-      })
-      .catch((err) => log.error("HOOK", `session_start hook 失败: ${err.message}`));
+    //
+    // HC16 / Q5：改为 await。原先 fire-and-forget，返回值整个丢弃——hook 的 stdout / additionalContext
+    // 永远进不了模型上下文。现在结果存进 queryEngine，在第一条用户消息后作为独立 <system-reminder> 注入。
+    // 代价是启动同步等 hook：缺省超时因此是 30s 而不是 CC 的 600s（resolveHookTimeoutMs）。
+    try {
+      const startResult = await this.hookSystem.fireSessionStartEvent(
+        this.resumedSessionId ? "resume" : "startup",
+        {
+          model: this.config.model,
+          resumedFrom: this.resumedSessionId ?? undefined,
+        },
+      );
+      this.queryEngine.setPendingSessionStartContext(extractHookContext(startResult));
+    } catch (err: any) {
+      log.error("HOOK", `session_start hook 失败: ${err?.message ?? err}`);
+    }
 
     // 信号兜底：SIGINT / SIGTERM 时强制落地 SessionEnd（reason=abort），避免 trajectory 残留 unknown
     // 这是 25% session 卡在 exit_status=unknown 的另一个根因——promptfoo timeout 时 SIGTERM 杀进程
@@ -3984,6 +4246,56 @@ export class App {
    * 等于在 App 生命周期中段重跑构造逻辑，风险远大于让用户重启一次。这个取舍要点破，
    * 不能让用户点了"信任"却发现 hook 没生效还不知道为什么。
    */
+  /**
+   * M3：待审批的项目级 MCP server（来自 loadConfig 登记的快照）。
+   * 同步读：approval.ts 是 core 里的纯模块，cli.ts 启动阶段已经 import 过，这里直接 require 缓存。
+   */
+  listPendingMcpApprovals(): Array<{ name: string; target?: string }> {
+    try {
+      const approval =
+        require("@sid-code/core/mcp/approval.ts") as typeof import("@sid-code/core/mcp/approval.ts");
+      return approval.getPendingApprovalServers().names.map((name) => {
+        const cfg = approval.getPendingApprovalConfig(name) as
+          | { command?: string; args?: string[]; url?: string }
+          | undefined;
+        const target = cfg?.url ?? [cfg?.command, ...(cfg?.args ?? [])].filter(Boolean).join(" ");
+        return { name, target: target || undefined };
+      });
+    } catch {
+      return [];
+    }
+  }
+
+  /**
+   * M3：应用启动审批框的决定。批准走 approveAndConnectPendingServer 当场连接（有 manager 时），
+   * 结论都落到 approval.ts 的持久化存储；"skip" 不落盘，下次启动再问。
+   */
+  async applyMcpApprovalDecision(
+    name: string,
+    choice: "approve" | "approve-all" | "reject" | "skip",
+  ): Promise<void> {
+    const log = getLogger();
+    if (choice === "skip") return;
+    try {
+      const approval = await import("@sid-code/core/mcp/approval.ts");
+      const mgr = this.mcpManager;
+      const connect = mgr ? (n: string, c: never) => mgr.addServer(n, c) : undefined;
+      if (choice === "reject") {
+        approval.rejectPendingServer(name);
+      } else if (choice === "approve-all") {
+        const names = await approval.approveAllPendingServers(connect);
+        log.info("MCP", `已批准本项目全部待审批 MCP 服务器: ${names.join(", ")}`);
+      } else if (connect) {
+        await approval.approveAndConnectPendingServer(name, connect);
+      } else {
+        // 本会话没有 manager（没配任何 MCP 也没 IDE 自动连接）：只能落盘，下次启动连接
+        approval.approvePendingServer(name);
+      }
+    } catch (e) {
+      log.warn("MCP", `应用 MCP 审批决定失败 (${name}): ${(e as Error)?.message}`);
+    }
+  }
+
   async applyTrustDecision(trusted: boolean): Promise<void> {
     const log = getLogger();
     const itemCount = this.pendingTrustItems.length;
@@ -5227,7 +5539,32 @@ export class App {
     toolName?: string,
     toolInput?: unknown,
     signal?: AbortSignal,
+    toolUseId?: string,
   ): Promise<boolean> {
+    // B25：SDK 双向流——ask 转给宿主（can_use_tool）。
+    // 宿主超时 / 断开 / 回 error / 本轮被 interrupt，sendRequest 都会 reject：一律按拒绝闭合，
+    // 与「-p 无人可问时 fail-closed」同一口径，只是多了一个可以问的人。
+    if (this.sdkCanUseTool) {
+      try {
+        const behavior = await this.sdkCanUseTool(
+          toolName || req?.toolName || "",
+          toolInput ?? req?.input,
+          toolUseId || `sdk-${Date.now()}`,
+          { signal },
+        );
+        if (behavior === "always_allow" && req && this.permissionChecker?.rememberDecision) {
+          this.permissionChecker.rememberDecision(req, true);
+        }
+        return behavior === "allow" || behavior === "always_allow";
+      } catch (err) {
+        getLogger().info(
+          "PERMISSION",
+          `SDK 宿主未给出 can_use_tool 决定，按拒绝处理: ${(err as Error)?.message ?? err}`,
+        );
+        return false;
+      }
+    }
+
     // Bridge 模式：确认走已注入的远程代理。Bridge 不进 TUI，若仍落到下面的
     // always-allow 布尔，ask 工具会在本机立刻 false，permission_request 根本不出站。
     // 不复活 PermissionChecker.requestConfirmation——那个方法全仓零调用，是死代码。
@@ -5319,11 +5656,13 @@ export class App {
         this.permissionChecker.rememberDecision(req, true);
       }
 
-      // ② 持久化到 project settings：下次会话仍生效
+      // ② 持久化到 local settings（git root 的 settings.local.json）：下次会话仍生效。
+      // P2：对齐 CC「Yes, and don't ask again」写 localSettings —— 此前写共享的
+      // settings.json，一个人的放行决定会随提交分发给全团队。
       const { persistRule } = await import("@sid-code/core/permission/rule-persistence.ts");
-      await persistRule("project", "allow", rule, process.cwd());
+      await persistRule("local", "allow", rule, process.cwd());
       this.statusNotifier?.("perm_persist", `已持久化允许规则: ${rule}`, 3000);
-      log.info("PERMISSION", `Bash always(持久) → 写入 project settings: ${rule}`);
+      log.info("PERMISSION", `Bash always(持久) → 写入 local settings: ${rule}`);
     } catch (err) {
       log.warn("PERMISSION", `持久化允许规则失败(降级为会话内): ${err}`);
       if (req && this.permissionChecker?.rememberDecision) {
@@ -5382,8 +5721,8 @@ export class App {
       // 保证 PreToolUse 只 fire 一次且 permissionDecision 能注入权限层。
       preToolUseCache: new Map(),
       getAbortSignal: () => this.abortController?.signal,
-      requestUserConfirmation: (desc, permReq, toolName, toolInput, signal) =>
-        this.requestUserConfirmation(desc, permReq, toolName, toolInput, signal),
+      requestUserConfirmation: (desc, permReq, toolName, toolInput, signal, toolUseId) =>
+        this.requestUserConfirmation(desc, permReq, toolName, toolInput, signal, toolUseId),
       handlePlanModeTransitions: (toolBlocks, resultMap) =>
         this.handlePlanModeTransitions(toolBlocks, resultMap),
       getPlanModeReminder: () => this.buildPlanModeReminderIfActive(),
@@ -5530,8 +5869,27 @@ export class App {
     const log = getLogger();
     const followup: ContentBlock[] = [];
 
+    // B17：执行阶段（approve 之后）的每次真实调用都喂给 fidelity 追踪，批末落一条快照事件。
+    // 从前 recordActualToolCall 生产零调用，getFidelityReport() 永远是 0/0，
+    // 官网却写着「能看到对齐度」——采集在、消费方无、用户看不到。
+    let fidelityTouched = false;
+    // 取批开始时的状态：同批里排在 exit_plan_mode 之后的调用是在规划态下执行的，
+    // 不能因为循环走到它们时已经 approve 了就算成执行动作。
+    const executingAtBatchStart = this.planManager.isExecuting();
+
     for (const { block, idx } of toolBlocks) {
       const result = resultMap.get(idx);
+
+      // 失败的调用也算「实际调用」：对齐度问的是它做了什么，不是做成了什么。
+      // 规划态自身的两个工具不算执行动作。
+      if (
+        executingAtBatchStart &&
+        block.name !== "exit_plan_mode" &&
+        block.name !== "enter_plan_mode"
+      ) {
+        this.planManager.recordActualToolCall(block.name, block.input);
+        fidelityTouched = true;
+      }
 
       // 工具执行失败 + (planning 探索阶段 或 执行阶段) → 触发 Recovery Hook
       //
@@ -5586,6 +5944,9 @@ export class App {
       if (block.name === "exit_plan_mode" && this.planManager.isAwaitingApproval()) {
         const approvalFollowup = await this.handlePlanApproval();
         if (approvalFollowup) followup.push(...approvalFollowup);
+        // 批准时先落一条 0 调用快照：计划步数在这一刻就确定了，
+        // 批准后会话立刻结束的情况下 /insights 也能看到「计划 N 步 / 实际 0 次」。
+        if (this.planManager.isExecuting()) fidelityTouched = true;
       }
 
       // plan 文件 write/edit 成功 → 记录 update 计数（plan_recovery capability 用）
@@ -5608,7 +5969,25 @@ export class App {
       }
     }
 
+    if (fidelityTouched) this.recordPlanFidelitySnapshot();
+
     return followup.length > 0 ? { followup } : {};
+  }
+
+  /**
+   * B17：把当前计划的 fidelity 报告落成 `PlanFidelity` 事件（快照语义，digest 取每份计划的末条）。
+   * 不写进 metadata：metadata 是会话级的，一个会话可以有多份计划；事件天然按时间序带出处。
+   * NaN（计划 0 步）不能进 JSON，比值交给 digest 由计数重算。
+   */
+  private recordPlanFidelitySnapshot(): void {
+    if (!this.planManager) return;
+    const r = this.planManager.getFidelityReport();
+    this.traceCollector?.recordCustomEvent?.("PlanFidelity", {
+      plan_file: this.planManager.getPlanFilePath() ?? "",
+      plan_step_count: r.planStepCount,
+      actual_tool_call_count: r.actualToolCallCount,
+      off_plan_count: r.offPlanCount,
+    });
   }
 
   /**
@@ -5809,6 +6188,21 @@ export class App {
    * cyclePermissionMode）也能推送一次性状态栏提示。未就绪时安全跳过。
    */
   private statusNotifier: ((baseId: string, text: string, delayMs: number) => void) | null = null;
+
+  /** TUI 就绪前到达的瞬时提示，回填 statusNotifier 时补推（见 notifyStatus） */
+  private pendingStatusNotices: Array<{ baseId: string; text: string; delayMs: number }> = [];
+
+  /**
+   * 推一条状态栏瞬时提示（供 cli.ts 的后台任务用，如启动期会话自动清理）。
+   *
+   * 后台任务与 TUI 挂载是并发的，到达时 statusNotifier 可能还没回填 —— 先排队，
+   * 回填时补推，否则「删了你 N 个会话」这种必须让用户看见的提示会静默丢掉。
+   * 无头模式下 TUI 永不就绪，队列只是一直不被消费，无副作用。
+   */
+  notifyStatus(baseId: string, text: string, delayMs = 8000): void {
+    if (this.statusNotifier) this.statusNotifier(baseId, text, delayMs);
+    else this.pendingStatusNotices.push({ baseId, text, delayMs });
+  }
 
   /**
    * 工具实时进度接收器（bash 等长跑工具的执行中输出 → 执行中工具卡片）。
@@ -6785,13 +7179,15 @@ export class App {
         // 不走 SDK 消息，所以在结果体里单列。limit 取本次生效的花费上限。
         result.error = {
           reason: "max_budget_usd",
-          limitUsd: this.effectiveCostLimit,
+          limitUsd: this.effectiveCostLimit || undefined,
           spentUsd: this.sessionState.getEffectiveTotalCostUSD(),
         };
         result.is_error = true;
       }
       const denials = this.headlessPermissionDenials();
       if (denials.length > 0) result.permission_denials = denials;
+      const structured = this.capturedStructuredOutput();
+      if (structured !== undefined) result.structured_output = structured;
       console.log(JSON.stringify(result, null, 2));
     } else {
       process.stdout.write(streamBuffer);
@@ -6809,6 +7205,7 @@ export class App {
     // 清理
     unwatchCLAUDEmd();
     cleanupSettingsWatcher();
+    this.offConfigChangeHook?.();
     stopAppConfigWatcher();
     this.mcpManager?.closeAll();
 
@@ -6951,7 +7348,33 @@ export class App {
         this.queryEngine.setStreamTextCallback(cb),
       // D1：stream-json 的 result 消息带上被拒清单。与 text/json 路径读的是同一份 tracking。
       getPermissionDenials: () => this.headlessPermissionDenials(),
+      getStructuredOutput: () => this.capturedStructuredOutput(),
+      // 缺陷 4：set_model 之后 system/init 报新模型
+      getModel: () => this.config.model,
     };
+  }
+
+  /**
+   * 缺陷 4：宿主 `set_model`。与 `/model` 同一条切换路径（applyPrimaryModelSwitch），
+   * 同样先校验 availableModels——非法名抛错，错误文案原样回给宿主。不持久化。
+   */
+  private sdkSetModel(model: string): string {
+    const name = model.trim();
+    if (!name) throw new Error("set_model: model 不能为空");
+    const list = this.config.availableModels;
+    if (list.length > 0 && !list.some((m) => m.name === name)) {
+      throw new Error(
+        `模型 "${name}" 不在可用模型列表中（可用：${list.map((m) => m.name).join(", ")}）`,
+      );
+    }
+    this.applyPrimaryModelSwitch(name, { clearTerminal: true });
+    return this.config.model;
+  }
+
+  /** B26：StructuredOutput 校验通过的载荷；未开 --json-schema 或未捕获时为 undefined */
+  private capturedStructuredOutput(): unknown {
+    const tool = this.structuredOutputTool;
+    return tool?.hasCapturedOutput ? tool.getCapturedOutput() : undefined;
   }
 
   /**
@@ -6971,16 +7394,26 @@ export class App {
     const commandQueue = new CommandQueue();
     const driver = this.buildSDKDriver();
 
+    // B25：只有 stdin 也是 stream-json 时才有回路——宿主能读到 can_use_tool，也能回 control_response。
+    // 仅 `--output-format stream-json`（stdin 是 prompt 文本或空）时问了也没人答，维持 fail-closed。
+    // 不传 hookSystem：PreToolUse 已在 tool-executor 里 fire 过（preToolUseCache），再传会 fire 两次。
+    const hostAskChannel = this.config.inputFormat === "stream-json";
+    const askChecker = this.permissionChecker as {
+      setExternalAskChannel?: (enabled: boolean) => void;
+    } | null;
+    if (hostAskChannel) {
+      this.sdkCanUseTool = createSDKCanUseTool({ structuredIO });
+      askChecker?.setExternalAskChannel?.(true);
+    }
+
     const engine = new SDKQueryEngine(
       {
         cwd: process.cwd(),
         sessionId: this.sessionState.sessionId,
         model: this.config.model,
-        maxTurns: this.config.maxTurns || undefined,
-        // P1-9：花费上限透传到 SDK 引擎（超限终止）。
-        maxBudgetUsd: this.config.costLimit || undefined,
-        systemPrompt: this.config.systemPrompt || undefined,
-        jsonSchema: this.config.jsonSchema,
+        // 缺陷 6：maxTurns / 花费上限 / systemPrompt / jsonSchema 不再传给 SDK 引擎——
+        // 它从不读这四个字段。真实执行点：queryLoop + QuotaManager（effectiveCostLimit，
+        // 结果映射成 error_max_budget_usd）、buildSystemPrompt、StructuredOutputTool。
         // P2-2 --include-partial-messages：显式开启则转发 stream_event 部分增量；
         // verbose 模式亦隐含开启（与既有行为兼容）。
         includeStreamEvents: this.config.includePartialMessages || this.config.verbose,
@@ -7020,8 +7453,36 @@ export class App {
         initialPrompt: input,
         structuredIO,
         commandQueue,
+        controlHandlers: {
+          // B25：interrupt 只中止当前轮，不结束会话——abort 后立刻换一个新的 controller，
+          // 否则下一条 user 消息一开轮就拿到已 aborted 的 signal，出生即死。
+          // reason 用 "user-cancel"：已登记 ABORT_REASONS，语义上就是宿主侧的「用户取消」。
+          onInterrupt: () => {
+            const current = this.abortController;
+            if (!current || current.signal.aborted) return;
+            this.abortController = new AbortController();
+            current.abort("user-cancel");
+          },
+          onSetModel: (model) => this.sdkSetModel(model),
+          onGetContextUsage: () => {
+            const u = this.ctxMgr.getContextUsageForDisplay(this.toolRegistry.size());
+            return {
+              used_tokens: u.used,
+              max_tokens: u.maxTokens,
+              percent_of_window: u.percentOfWindow,
+            };
+          },
+        },
+        // 缺陷 7：stdin 空闲上限。默认 0（关闭）——与 maxSessionDurationMs 同一「保活优先」
+        // 取向：宿主两轮之间空闲多久是它的自由。CI / 批处理要兜底时显式开。
+        idleTimeoutMs: readSdkIdleTimeoutMs(),
       });
       budgetExceeded = outcome.budgetExceeded;
+      if (outcome.idleTimedOut) {
+        process.stderr.write(
+          `[runHeadlessSDK] stdin 空闲超过 ${Math.round(readSdkIdleTimeoutMs() / 1000)}s，已结束会话\n`,
+        );
+      }
     } catch (err: any) {
       runError = err instanceof Error ? err : new Error(String(err));
       aborted = runError.name === "AbortError" || /abort/i.test(runError.message ?? "");
@@ -7039,6 +7500,10 @@ export class App {
     } finally {
       if (sdkSessionTimer) clearTimeout(sdkSessionTimer);
       this.abortController = null;
+      if (hostAskChannel) {
+        this.sdkCanUseTool = null;
+        askChecker?.setExternalAskChannel?.(false);
+      }
     }
 
     // session_end hook（与文本/JSON 模式一致：abort/error/exit 三态）
@@ -7148,7 +7613,8 @@ export class App {
       cacheSavingsUSD: this.sessionState.getTotalCacheSavings(),
       totalRequests: this.sessionState.getTotalRequests(),
       discardedRequests: this.sessionState.getDiscardedRequests(),
-      costLimit: this.config.costLimit ?? 0,
+      // B18：状态栏百分比的分母必须是真正会拦的那个上限。
+      costLimit: this.effectiveCostLimit,
       ...this.contextDisplayState(),
       permissionMode: this.config.permissionMode || "default",
       isPlanMode: false,
@@ -7191,7 +7657,9 @@ export class App {
           ? ("trust" as const)
           : this.pendingExternalImportPaths.length > 0
             ? ("claude-md-external-imports" as const)
-            : null,
+            : this.listPendingMcpApprovals().length > 0
+              ? ("mcp-approval" as const)
+              : null,
       availableModels: this.config.availableModels.map((m) => ({
         name: m.name,
         // 供面板做族识别（别名带渠道前后缀时按 name 分组会掉进「其他」兜底）。
@@ -7278,7 +7746,9 @@ export class App {
             "title-generation",
             TITLE_TIMEOUT_MS,
             (signal) =>
-              this.provider.sendMessageNonStreaming!(
+              // 缺陷 15–16：入账收口在 sendNonStreamingSideCall（无 usage 也记一次调用）
+              sendNonStreamingSideCall(
+                this.provider,
                 {
                   model: this.config.model,
                   system: SESSION_TITLE_PROMPT,
@@ -7293,21 +7763,10 @@ export class App {
                   thinking: { enabled: false, budgetTokens: 0 },
                 },
                 signal,
+                { querySource: "title_generation", label: "title-generation" },
               ),
             // 不与主对话的 abortController 关联——后台任务独立。
           );
-          // 记录辅助调用用量
-          if (resp.usage) {
-            recordSideCall({
-              label: "title-generation",
-              model: this.config.model,
-              inputTokens: resp.usage.inputTokens ?? 0,
-              outputTokens: resp.usage.outputTokens ?? 0,
-              cacheReadTokens: (resp.usage as any).cacheReadInputTokens ?? 0,
-              cacheCreationTokens: (resp.usage as any).cacheCreationInputTokens ?? 0,
-              durationMs: 0,
-            });
-          }
           const raw = resp.content
             .filter((b): b is import("@sid-code/core/llm/types.ts").TextBlock => b.type === "text")
             .map((b) => b.text)
@@ -7379,6 +7838,9 @@ export class App {
 
     // 回填实例通道：让实例方法（cyclePermissionMode 等）也能推送一次性状态栏提示。
     this.statusNotifier = addTransientStatusMessage;
+    for (const n of this.pendingStatusNotices.splice(0)) {
+      addTransientStatusMessage(n.baseId, n.text, n.delayMs);
+    }
 
     /**
      * 统一错误面板：推入一条错误，同 id 去重替换，最多保留 5 条。
@@ -7433,6 +7895,26 @@ export class App {
       const joined = [...activeStatusMessages.values()].join(" | ") || "";
       updateState({ statusMessage: joined });
     }
+
+    // CC hooks statusMessage：hook 跑起来时在状态行显示它声明的文案，结束即移除。
+    // 只在 runTUI 订阅——headless / SDK / bridge 不走这里，天然不显示（stdout 要留给结构化输出）。
+    // 用 runId 做 key 而不是 hook 名：同一 hook 可能被两次并行工具调用同时触发，按名字会一个结束就抹掉另一个。
+    this.hookSystem.onHookLifecycle((ev) => {
+      // runtime hook（轨迹 / 遥测）是内部实现，没有 statusMessage，也不该打扰用户
+      const text = ev.hookConfig.type === "runtime" ? undefined : ev.hookConfig.statusMessage;
+      if (!text) return;
+      const id = `hook_status:${ev.runId}`;
+      if (ev.phase === "start") addStatusMessage(id, text);
+      else removeStatusMessage(id);
+    });
+
+    // skill / agent 运行期注册 hook 的诊断：启动横幅已过，进状态行（transient，8s 后自清，
+    // 不 sticky——它描述的是配置文件的问题，不是本轮状态；完整列表仍可 `sid-code hooks list` 看）。
+    void import("@sid-code/core/hook/diagnostic-sink.ts").then(({ setRuntimeHookDiagnosticSink }) =>
+      setRuntimeHookDiagnosticSink((line) =>
+        addTransientStatusMessage("hook_diagnostic", `⚠ ${line}`, 8000),
+      ),
+    );
 
     /**
      * 上一轮遗留的 sticky 状态提示 key —— 新一轮开始时统一清掉。
@@ -7833,6 +8315,16 @@ export class App {
           return;
         }
         if (signal) signal.addEventListener("abort", onAbort, { once: true });
+        // HC24：Notification（matcher：permission_prompt，对齐 CC）。仅通知、不等待，不影响弹窗。
+        this.hookSystem
+          ?.fireNotificationEvent(
+            "permission_prompt",
+            `sid-code 需要你确认是否允许使用 ${toolName}`,
+            {
+              tool_name: toolName,
+            },
+          )
+          .catch((e) => log.error("HOOK", `notification hook 失败: ${e?.message ?? e}`));
         updateState({
           permissionRequest: {
             toolName,
@@ -8886,6 +9378,8 @@ export class App {
           sendToLLM: async (text) => {
             await callbacks.onUserInput(text);
           },
+          // B16：命令层一次性提示走状态栏瞬态通知（8s），不进对话历史
+          notify: (text) => this.statusNotifier?.("command_notice", text, 8000),
           customCommands: this.getCustomCommandsSummary(),
           confirmShellCommands: async (commands) => {
             return new Promise<boolean>((resolve) => {
@@ -8938,13 +9432,8 @@ export class App {
           permissionChecker: this.permissionChecker,
         };
 
-        // 记录命令使用频率（驱动补全排序的指数衰减统计）
-        try {
-          const { recordUsage } = await import("./command/usage-tracking.ts");
-          recordUsage(cmd);
-        } catch {
-          // 使用追踪失败不影响命令执行
-        }
+        // 使用频率记账在 CommandExecutor.dispatch 里（D1/D2）：只记查到且过闸的命令，
+        // 记 canonical name。不要在这里按原文 cmd 再记一次。
 
         // 新体系执行路径：CommandExecutor 分发 UnifiedCommand
         if (this.unifiedRegistry) {
@@ -9022,6 +9511,7 @@ export class App {
             // 同上：reminder 跨轮去重键必须随 /clear 归零（详见 resetReminderDedupKeys 注释）。
             this.sessionState.resetReminderDedupKeys();
             clearPromptCache();
+            this.resetRecallState();
             this.quotaManager?.resetAlertLevel();
             this.fallback.reset();
             this.resetTodoTool();
@@ -9042,6 +9532,12 @@ export class App {
             // 统一消息队列清空（缺口1 h2A）：会话级重置不应让排队输入/未出队通知跨会话残留。
             clearMessageQueue();
             this.announcedMcpServers.clear();
+            // HC12 / HC16：同上，/clear 后重发 SessionStart(source=clear)
+            void this.hookSystem
+              .fireSessionRestartEvent("clear", this.config.model)
+              .catch((err: any) =>
+                log.debug("HOOK", `SessionStart(clear) 失败: ${err?.message ?? err}`),
+              );
             lastSyncedCount = 0;
             historyIdCounter = 0;
             activeStatusMessages.clear();
@@ -9277,6 +9773,11 @@ export class App {
       onTrustDecision: async (trusted) => {
         await this.applyTrustDecision(trusted);
       },
+      // M3：项目 .mcp.json 待审批 server 的启动审批框
+      getPendingMcpApprovals: () => this.listPendingMcpApprovals(),
+      onMcpApprovalDecision: async (name, choice) => {
+        await this.applyMcpApprovalDecision(name, choice);
+      },
     };
 
     // 恢复会话首屏渲染：restoreSession 仅把历史灌入 ctxMgr（LLM 上下文），
@@ -9364,6 +9865,7 @@ export class App {
     }
     unwatchCLAUDEmd();
     cleanupSettingsWatcher();
+    this.offConfigChangeHook?.();
     stopAppConfigWatcher();
     this.mcpManager?.closeAll();
 

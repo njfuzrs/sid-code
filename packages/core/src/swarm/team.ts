@@ -20,11 +20,10 @@ import {
   getStructuredTask,
   getTeamTasks,
   clearTeamTasks,
-  claimNextUnblockedTask,
   isTaskUnblocked,
   hasUnfinishedTasks,
 } from "../task/structured-task-store.ts";
-import { persistTeamTasks, loadTeamTasks } from "../task/team-task-store.ts";
+import { persistTeamTasks, loadTeamTasks, claimNextTeamTask } from "../task/team-task-store.ts";
 import { getLogger } from "../debug/logger.ts";
 import type { ProviderRegistry } from "../llm/registry.ts";
 import { Registry as ToolRegistry } from "../tool/registry.ts";
@@ -483,10 +482,9 @@ export class TeamManager {
   /**
    * 执行所有成员任务，返回汇总结果。
    *
-   * 隔离模型说明：process.chdir 是进程级全局状态，并发成员无法各自持有独立 cwd。
-   * 因此：
-   * - 隔离成员（isolated，会改文件）→ 串行执行（chdir 进 worktree → 跑 → 切回），互不踩 cwd
-   * - 非隔离成员（只读/不依赖 cwd）→ 并发执行
+   * 隔离模型说明：全部成员并发执行（Promise.all）。隔离成员（isolated，会改文件）
+   * 各自跑在自己的 worktree 里，cwd 经 SubAgentTask.cwd → withAgentCwd（AsyncLocalStorage）
+   * 按调用链传递，不碰进程级的 process.chdir，因此不存在并发踩 cwd 的竞态（见下方 B7）。
    * 结束后清理无改动的 worktree（fail-closed，有改动则保留）。
    *
    * @param stampMs 时间戳（由调用方传入，避免内部依赖 Date.now 便于测试）
@@ -597,7 +595,7 @@ export class TeamManager {
           kept.push(m);
         }
         // 有可认领的任务就醒。这里只**探测**不认领——认领统一走循环顶部的
-        // claimNextUnblockedTask，避免两处各认一次把同一个任务领走两遍。
+        // claimNextTeamTask，避免两处各认一次把同一个任务领走两遍。
         if (this.hasClaimableTask()) {
           clearInterval(timer);
           resolve({ shutdown: false, reason: "" });
@@ -857,7 +855,8 @@ export class TeamManager {
       // leader 的 shutdown_request、或 signal abort。一次性批模式保持原行为（池空即退）。
       let shutdownReason: string | null = null;
       while (!memberSignal?.aborted && shutdownReason === null) {
-        const claimed = claimNextUnblockedTask(member.name, this.teamName, {
+        // F6：锁内先同步磁盘再认领并落盘，跨进程不会两边同时认领同一任务。
+        const claimed = claimNextTeamTask(this.teamName, member.name, this.opts.baseDir, {
           onlyUnassigned: true,
         });
         if (!claimed) {
@@ -866,7 +865,6 @@ export class TeamManager {
           if (woke.shutdown) shutdownReason = woke.reason;
           continue;
         }
-        persistTeamTasks(this.teamName, this.opts.baseDir);
         log.info(
           "TEAM_TASKS",
           `成员 "${member.name}" 认领共享任务 #${claimed.id}: ${claimed.subject}`,

@@ -23,7 +23,6 @@ name: changelog-entry
 description: 按本仓库约定把一条改动写成 CHANGELOG 条目：读最近一条提交，产出一行「- 类型: 描述」。
 when-to-use: 当用户说「写 changelog」「补一条变更记录」时触发
 mode: activate
-allowed-tools: bash, read
 ---
 
 # changelog-entry
@@ -40,7 +39,11 @@ EOF
 sid-code -p "用 changelog-entry skill 生成一条变更记录"
 ```
 
-实测输出（仓库最近一条提交是 `fix: 修正 add 函数的边界条件`）：
+调用 Skill 工具本身不需要确认，`-p` 下不用加 `--allowed-tools Skill`：加载一份 skill 只是把指令交给模型，
+它接下来调的每个工具仍各自过权限（`packages/core/src/skill/meta-tool.ts` 的 `checkPermissions`）。
+想在 `-p` 下禁止调用 skill，配 `permissions.deny: ["Skill"]` 或 `--disallowed-tools Skill`。
+
+实测输出（仓库最近一条提交是 `fix: 修正 add 函数的边界条件`，已开 `trust_project_extensions`）：
 
 ```text
 - fix: 修正 add 函数的边界条件
@@ -57,7 +60,16 @@ sid-code -p "用 changelog-entry skill 生成一条变更记录"
 { "trust_project_extensions": true }
 ```
 
-交互模式不受影响——它会弹确认让你决定。详见[下方](#项目级-skill-写了但模型说不存在)。
+交互模式下首次加载会弹确认让你决定（答 `y` 才加载并记住，内容变了会再问）。详见[下方](#项目级-skill-写了但模型说不存在)。
+:::
+
+::: warning 示例里刻意没写 `allowed-tools`
+`allowed-tools`、`shell`、`agent`、`hooks`、`max-turns`、`timeout-mins`、`effort` 属于**敏感属性**：
+skill 声明了其中任何一个，执行前都要再确认一次（`packages/core/src/skill/permission.ts`）。
+交互模式会弹窗问你；`-p` 下没有确认通道，会被拒绝（`--allowed-tools Skill` 也放行不了这一层，要放行得配 `permissions.allow: ["Skill(<名字>)"]`）。
+实测把上面的示例加回 `allowed-tools: bash, read` 再跑同一条命令，模型回复「changelog-entry skill
+没跑起来，这次调用的权限没批」。activate 模式的 skill 跑在当前对话里，用的是主会话的工具，
+本来就不需要声明它。
 :::
 
 ## 8 个内置 Skill
@@ -96,6 +108,9 @@ sid-code -p "用 changelog-entry skill 生成一条变更记录"
 
 拿不准就用 `activate`——它行为更直观。真正需要"独立产出一份报告"时才用 delegate。
 
+也可以写 `context: inline` / `context: fork`（分别对应 activate / delegate）。从别的工具迁来的 skill
+多半用这个写法；两者同时写时以 `context` 为准。
+
 ## SKILL.md 的字段
 
 文件必须是 `<skill 目录>/SKILL.md`，YAML frontmatter + Markdown 正文。
@@ -107,9 +122,10 @@ frontmatter 字段用 **kebab-case**（`when-to-use`，不是 `whenToUse`）：
 | `description` | 是 | **模型据此判断要不要触发**。写具体，别写"处理各种任务" |
 | `when-to-use` | 否 | 触发场景的补充说明，给模型更明确的信号 |
 | `mode` | 否 | `activate` / `delegate`（默认 delegate） |
-| `allowed-tools` | 否 | 允许用的工具，逗号分隔。不写 = 不额外限制 |
-| `max-turns` | 否 | delegate 模式最大轮次，默认 10，上限 50 |
-| `timeout-mins` | 否 | delegate 模式超时（分钟），默认 2，上限 30 |
+| `context` | 否 | `inline` / `fork`，分别等价于 `activate` / `delegate`；和 `mode` 同时写时以 `context` 为准 |
+| `allowed-tools` | 否 | 允许用的工具，逗号分隔。delegate 模式下不写时只给只读默认集（`read` / `grep` / `glob` / `ls`），要写文件或执行命令必须显式声明；显式写空列表 = 零工具。声明它会让 skill 执行前多一次确认 |
+| `max-turns` | 否 | delegate 模式最大轮次，默认 30。模型自动调用时上限 50；手动 `/name` 触发不封顶 |
+| `timeout-mins` | 否 | delegate 模式超时（分钟），默认 2，上限 30。只在模型自动调用时生效，手动 `/name` 触发不受它约束 |
 | `model` | 否 | 指定模型（比如让审计走更强的模型） |
 | `effort` | 否 | 推理努力程度：`low` / `medium` / `high` / `max` |
 | `disable-model-invocation` | 否 | `true` = 只能手动 `/name` 触发，模型不能自动调 |
@@ -148,10 +164,13 @@ ci-self-heal 看 CI log, 输入与目标场景明确不重叠」——多个 Ski
 | `~/.claude/skills/` | 用户级（Claude Code 兼容读取） | 无 |
 | `<项目>/.sid-code/skills/<名>/SKILL.md` | 项目级 | **要** |
 | `<项目>/.claude/skills/` | 项目级（兼容读取） | **要** |
+| `--add-dir <目录>` 下的 skill | 额外授权目录 | 无 |
 | 插件提供的 skill | 看插件作用域 | 看来源 |
 | 企业 managed 目录 | 全局，优先级最高 | 无（企业下发即可信） |
 
-同名时优先级：**managed > 用户级 > 项目级**。企业策略压得住个人配置。
+同名时优先级：**managed > `--add-dir` 目录 > 项目级 > 用户级 > 内置**，后加载的覆盖先加载的；
+同一层内 `.sid-code` 覆盖 `.claude`。也就是说仓库里的同名 skill 会盖掉你用户级的那份，
+而企业下发的 managed 压得住所有人。
 
 ## 常见问题
 
@@ -175,7 +194,7 @@ ci-self-heal 看 CI log, 输入与目标场景明确不重叠」——多个 Ski
 - 在 `~/.sid-code/app.json` 设 `"trust_project_extensions": true`（CI 里常用）
 - 或把 Skill 挪到用户级 `~/.sid-code/skills/`（不受信任门槛约束）
 
-交互模式不受影响，会弹确认给你决定。
+交互模式下启动时会弹确认给你决定：答 `y` 才加载并记住；拒绝、空回车、没有交互终端，或会话已开始后才新加进来的文件，都是本次不加载、下次启动再问。
 
 ### 怎么确认 Skill 到底加载了几个
 

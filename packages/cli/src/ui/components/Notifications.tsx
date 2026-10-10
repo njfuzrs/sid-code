@@ -11,8 +11,8 @@
  */
 
 import React, { useState, useCallback, useMemo } from "react";
-import Box from "@sid-code/tui-renderer/components/Box.tsx";
-import Text from "@sid-code/tui-renderer/components/Text.tsx";
+import { Box } from "../render-port/components.ts";
+import { Text } from "../render-port/components.ts";
 import { theme } from "../semantic-colors.ts";
 import { useUIState } from "../contexts/UIStateContext.tsx";
 import { useStreamingState, StreamingState } from "../contexts/StreamingContext.tsx";

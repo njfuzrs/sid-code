@@ -37,12 +37,12 @@ describe("MCPManager", () => {
     // 关键是验证 disabled 的服务器不会被尝试连接
     await manager.connectAll(servers);
 
-    // 获取状态，disabled 不应该出现
+    // D21：disabled 不建连，但出现在状态面板里、状态为 disabled
     const statuses = manager.getStatus();
     const names = statuses.map((s) => s.name);
     expect(names).toContain("active");
     expect(names).toContain("defaultEnabled");
-    expect(names).not.toContain("disabled");
+    expect(String(statuses.find((s) => s.name === "disabled")?.status)).toBe("disabled");
 
     manager.closeAll();
   });

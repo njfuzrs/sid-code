@@ -33,19 +33,33 @@ import {
   type PreCompactInput,
   type SubagentStartInput,
   type UserPromptSubmitInput,
+  type PermissionDeniedInput,
 } from "../hook/types.ts";
 import type { HookSystem } from "../hook/system.ts";
 import { getRawVersion } from "@sid-code/shared/version.ts";
+import { getReleaseChannel } from "@sid-code/shared/release-channel.ts";
+import { getBuildInfo } from "@sid-code/shared/build-info.ts";
 import { getIdentity, getGitSnapshot } from "../identity/index.ts";
 import { TraceWriter, type RawJsonlEntry, type HookEvent } from "./writer.ts";
 import { buildTrajectory, type RequestResponsePair, type TraceMetadata } from "./builder.ts";
 import { buildDigest, resolvePaths, type SessionLevelMetrics } from "./digest.ts";
 import { upsertSessionIndex, buildSessionIndexEntry } from "./session-index.ts";
+import {
+  setPermissionDecisionObserver,
+  type PermissionDecisionEvent,
+} from "../permission/decision-telemetry.ts";
+import {
+  accumulatePermissionDecision,
+  emptyPermissionDecisionStats,
+  EditFirstTryTracker,
+  type PermissionDecisionStats,
+} from "./decision-metrics.ts";
 import { getLogger } from "../debug/logger.ts";
 import { sidPaths } from "../config/paths.ts";
 import { estimateTextTokens } from "../context/token.ts";
 import type { Message, Usage } from "../llm/types.ts";
 import { normalizeCacheUsage } from "../llm/types.ts";
+import { resetPriceTierCounts } from "../llm/billing-sink.ts";
 import { TokenEstimator } from "../llm/token-estimator.ts";
 import { checkMessageHistoryIntegrity } from "../agent/message-invariants.ts";
 import { resetSideCallStats, getSideStats, setSideStatsObserver } from "./side-call-sink.ts";
@@ -92,6 +106,13 @@ export interface CollectorOptions {
    * 不传时由 {@link resolveRecordRawPayloads} 解析 env 兜底。
    */
   recordRawPayloads?: boolean;
+  /**
+   * 是否自动上传（默认 true）。对应 `trace.upload.auto_upload`。
+   * false 时 SessionEnd 不上传、SessionStart 不做启动补传，只在本地留存；
+   * 手动通道（`--upload-traces`、`/debug` 上传快照）不受影响。
+   * 此前这个字段在 config 层解析齐全却无人读取，配了 false 照样自动传。
+   */
+  autoUpload?: boolean;
 }
 
 /** 关闭 raw.jsonl 内容记录的环境变量（兜底通道，优先级低于显式配置） */
@@ -180,6 +201,25 @@ function estimateMessagesTokens(rawMessages: unknown[], system?: unknown, tools?
 
 // ─── 主类 ───
 
+/**
+ * 构建身份字段（通道 + 编进字节的 commit/origin/dirty/describe）。
+ * 读不到时整组省略而非写 "unknown" 占位以外的假值；任何异常都不能挡住会话初始化。
+ */
+function buildIdentityFields(): Record<string, string | boolean> {
+  try {
+    const info = getBuildInfo();
+    return {
+      release_channel: getReleaseChannel(),
+      build_commit: info.commit,
+      build_origin: info.origin,
+      build_dirty: info.dirty,
+      build_describe: info.describe,
+    };
+  } catch {
+    return {};
+  }
+}
+
 export class TraceCollector {
   private pairs: RequestResponsePair[] = [];
   private metadata!: TraceMetadata;
@@ -197,6 +237,8 @@ export class TraceCollector {
   private resumedPairOffset: number = 0;
   private writer!: TraceWriter;
   private uploader: TraceUploaderInterface | null;
+  /** 见 CollectorOptions.autoUpload */
+  private readonly autoUpload: boolean;
   private readonly outputDir: string;
   /** 本地最大保留会话数（LRU 清理用，默认 100） */
   private readonly maxSessionsRetained: number;
@@ -243,6 +285,8 @@ export class TraceCollector {
    * 单向置位；source 只记录是哪一层停的，推断本身不读它。
    */
   private hitBudgetExceeded = false;
+  /** B26：本轮以 StructuredOutput 交付收尾（{@link recordStructuredOutputDelivered}），收尾归 end_turn */
+  private hitStructuredOutputDelivered = false;
   private budgetExceededSource: "budget_rule" | "quota" | "remote" | undefined;
   /** 待写入下次 raw.jsonl 的 compact_boundary */
   private pendingCompactBoundary: RawJsonlEntry["compact_boundary"] | undefined;
@@ -312,6 +356,10 @@ export class TraceCollector {
   private harnessEditFirstPass = 0;
   private harnessProtocols: Record<string, number> = {};
 
+  // ── B11 / B12：会话级权限决策与「一次 edit 成功」累加器（口径见 decision-metrics.ts）──
+  private permissionStats: PermissionDecisionStats = emptyPermissionDecisionStats();
+  private readonly editFirstTry = new EditFirstTryTracker();
+
   // 缺口分析五类：上下文窗口查询（TokenEstimator 是窗口大小的 SSOT，避免另建静态表漂移）
   private readonly tokenEstimator = new TokenEstimator();
 
@@ -330,6 +378,7 @@ export class TraceCollector {
     this.maxSessionsRetained = options.maxSessionsRetained ?? 100;
     this.recordRawPayloads = resolveRecordRawPayloads(options.recordRawPayloads);
     this.uploader = uploader;
+    this.autoUpload = options.autoUpload !== false;
     // 启动时做一次 LRU 清理，回收已上传/旧会话目录，防止本地无限堆积
     this.pruneOldSessions();
     // 启动时补清理「历史遗留空壳」——SessionEnd 没跑到时 cleanupIfBlankSession 从未执行
@@ -649,6 +698,9 @@ export class TraceCollector {
    * 必须在 SessionStart 之前调用。
    */
   registerHooks(hookSystem: HookSystem): void {
+    // B11：权限决策不走 hook（鉴权点没有对应的"已决策"事件，PermissionDenied 只覆盖一半），
+    // 走 decision-telemetry 的模块级观察者。与 hook 同一时机注入，保证「采集启用」⇔「决策进轨迹」。
+    setPermissionDecisionObserver((e) => this.handlePermissionDecision(e));
     const eventNames = [
       HookEventName.SessionStart,
       HookEventName.BeforeModel,
@@ -656,6 +708,8 @@ export class TraceCollector {
       HookEventName.PreToolUse,
       HookEventName.PostToolUse,
       HookEventName.PostToolUseFailure,
+      // Q7：权限拒绝不再 fire PostToolUseFailure，改由 PermissionDenied 给 PreToolUse 配对收尾
+      HookEventName.PermissionDenied,
       HookEventName.UserPromptSubmit,
       HookEventName.PreCompact,
       HookEventName.SubagentStart,
@@ -699,7 +753,17 @@ export class TraceCollector {
           this.handlePostToolUse(input as PostToolUseInput);
           break;
         case HookEventName.PostToolUseFailure:
-          this.handlePostToolUseFailure(input as PostToolUseInput);
+          // Q7：「工具执行了但返回 isError」切换前走 PostToolUse(is_error:true)，现在走 Failure。
+          // 落盘口径保持不变——仍按 PostToolUse 记（files_edited / B12 首次编辑成功率 /
+          // 工具耗时累计都依赖它），离线脚本与 digest 的工具失败率分子不变。
+          if ((input as PostToolUseInput).sid_failure_kind === "tool_error") {
+            this.handlePostToolUse(input as PostToolUseInput);
+          } else {
+            this.handlePostToolUseFailure(input as PostToolUseInput);
+          }
+          break;
+        case HookEventName.PermissionDenied:
+          this.handlePermissionDenied(input as PermissionDeniedInput);
           break;
         case HookEventName.UserPromptSubmit:
           this.handleUserPromptSubmit(input as UserPromptSubmitInput);
@@ -733,10 +797,16 @@ export class TraceCollector {
     // 撞顶 / 预算硬停标志随会话重置：上个会话的收尾事实不能漏到这个会话。
     this.hitMaxTurns = false;
     this.hitBudgetExceeded = false;
+    this.hitStructuredOutputDelivered = false;
     this.budgetExceededSource = undefined;
 
     // 重置辅助调用统计（避免跨会话污染）
     resetSideCallStats();
+    // 缺陷 24：billing-sink 的时段计数同为模块级单例，不清零则 peakRatio 跨会话混算
+    resetPriceTierCounts();
+    // B11 / B12 同理：同进程内 /clear 或 resume 开新会话，上个会话的决策与 edit 结论不能串过来
+    this.permissionStats = emptyPermissionDecisionStats();
+    this.editFirstTry.reset();
 
     // 修复问题一：-c/--resume 续接同一 trajectory 目录，而非每次恢复都新建。
     // input.resumed_from 是被恢复会话的旧 id；resume 时用它作 trajectory session_id，
@@ -770,6 +840,9 @@ export class TraceCollector {
       // env 覆盖保持与 `analytics/metadata.ts:184` 同一口径（灰度/回放时手动打标）。
       app_version: input.app_version ?? process.env.SID_CODE_VERSION ?? getRawVersion(),
       ver: input.app_version ?? process.env.SID_CODE_VERSION ?? getRawVersion(),
+      // 版本号之外再记「哪种构建、哪个 commit」：同一版本号下 beta / 正式版 / 本地 sc-dev
+      // 的字节可能完全不同（make build 刻意不 bump），排查时只看 app_version 会归错因。
+      ...buildIdentityFields(),
       // M1：身份与 git 快照。hook input 优先（外部脚本 / 测试可覆盖），否则本机 getIdentity()。
       // 与事件 / 账本 / hook 共用同一份 deviceId，切片才守恒。
       device_id: input.device_id ?? ident.deviceId,
@@ -958,7 +1031,7 @@ export class TraceCollector {
     // `resumed_from`，即真实轨迹目录名）。用进程 id 当护栏会空转 —— 见 init-helpers 注释。
     //
     // fire-and-forget + 全量 catch：采集永不阻塞主循环（不变量 1）。
-    if (this.uploader?.backfillPendingSessions) {
+    if (this.autoUpload && this.uploader?.backfillPendingSessions) {
       void this.uploader
         .backfillPendingSessions({ currentSessionId: traceSessionId })
         .then((r) => {
@@ -1536,6 +1609,9 @@ export class TraceCollector {
       }
     }
 
+    // B12：按「文件 × 会话」记第一次 edit 是否成功（只看 PostToolUse，见 decision-metrics.ts 口径）
+    this.editFirstTry.record(input.tool_name, input.tool_input, input.is_error ?? false);
+
     // 如果有 edit_meta，累积 Harness 编辑统计
     if (input.edit_meta) {
       this.harnessEditCount++;
@@ -1583,6 +1659,23 @@ export class TraceCollector {
     }
   }
 
+  // ─── 权限决策（B11）───
+
+  private handlePermissionDecision(e: PermissionDecisionEvent): void {
+    if (!this.initialized) return;
+    accumulatePermissionDecision(this.permissionStats, e);
+    // 逐条落 events.jsonl：会话级累计只够画曲线，排查「哪条规则在吵」要回到单条事件
+    this.recordCustomEvent("PermissionDecision", {
+      tool_name: e.tool,
+      outcome: e.outcome,
+      prompted: e.prompted,
+      source: e.source,
+      ...(e.reasonType ? { reason_type: e.reasonType } : {}),
+      execution_context: e.context,
+      ...(e.durationMs !== undefined ? { duration_ms: e.durationMs } : {}),
+    });
+  }
+
   // ─── PostToolUseFailure ───
 
   private handlePostToolUseFailure(input: PostToolUseInput): void {
@@ -1607,6 +1700,29 @@ export class TraceCollector {
       "AUDIT:TOOL",
       `✗ ${input.tool_name} id=${input.tool_use_id ?? "?"} (PostToolUseFailure)`,
     );
+  }
+
+  // ─── PermissionDenied（Q7）───
+
+  /**
+   * 权限拒绝给 PreToolUse 配对收尾。切换前它以 PostToolUseFailure(is_error:true) 落盘，
+   * 于是「工具失败率」的分子含权限拒绝；现在单独记 PermissionDenied，**不计入工具失败**。
+   * 这是有意的口径变化（发版说明须写明），拒绝本身仍由 B11 的权限决策观察者记录。
+   */
+  private handlePermissionDenied(input: PermissionDeniedInput): void {
+    if (!this.initialized) return;
+    this.metadata.tools_used.add(input.tool_name);
+    this.appendHookEvent({
+      event: HookEventName.PermissionDenied,
+      session_id: this.metadata.session_id,
+      timestamp: input.timestamp,
+      cwd: input.cwd,
+      data: {
+        tool_name: input.tool_name,
+        tool_use_id: input.tool_use_id,
+        denial_source: input.denial_source,
+      },
+    });
   }
 
   // ─── UserPromptSubmit ───
@@ -1881,7 +1997,7 @@ export class TraceCollector {
         ? "max_turns"
         : this.hitBudgetExceeded
           ? "budget_exceeded"
-          : lastPair?.stop_reason === "end_turn"
+          : lastPair?.stop_reason === "end_turn" || this.hitStructuredOutputDelivered
             ? "end_turn"
             : "user_interrupt";
       if (this.hitBudgetExceeded && this.budgetExceededSource) {
@@ -1985,7 +2101,12 @@ export class TraceCollector {
     //   - 传不完不再假装「后台继续」，而是**明确交给下次启动的补传**
     //     （backfill.ts，判据是 `.uploaded` 标记缺失，与退出路径解耦）。
     // 这样退出快 + 不丢数据同时成立，而不是用体验换正确性。
-    if (this.uploader) {
+    if (this.uploader && !this.autoUpload) {
+      getLogger().info(
+        "TRACE",
+        "auto_upload=false，会话结束不自动上传（可用 --upload-traces 手动补传）",
+      );
+    } else if (this.uploader) {
       const budgetMs = this.uploadBudgetMs;
       if (budgetMs <= 0) {
         // 预算为 0 = 调用方明确要求不在退出路径等上传（如信号退出）。
@@ -2278,6 +2399,8 @@ export class TraceCollector {
               edit_latency: digest.pathology.editLatencyPathological,
               observation_entropy: digest.pathology.observationEntropyPathological,
               retry_wasted_tokens: digest.pathology.retryWastedPathological,
+              // B47：计费恒等式不成立（钱的账对不上，不是过程可疑）
+              billing_identity: digest.pathology.billingIdentityBroken,
             })
               .filter(([, v]) => v)
               .map(([k]) => k)
@@ -2359,6 +2482,8 @@ export class TraceCollector {
           traj_corrupt: m?.trajCorrupt,
           traj_corrupt_detected_by: "session_end",
           compactions: this.metadata.compactions.length,
+          permission: this.permissionStats,
+          edit_first_try: this.editFirstTry.stats(),
         }),
       );
     } catch (err: any) {
@@ -2657,6 +2782,10 @@ export class TraceCollector {
             ts: Math.floor(Date.now() / 1000),
             app_version: this.metadata.app_version,
             compactions: this.metadata.compactions.length,
+            // 与 compactions 同理：这两项是 collector 自己累计的事实，增量行也能如实给出
+            //（不像 real_errors 要等 digest），崩溃会话的样本因此不丢
+            permission: this.permissionStats,
+            edit_first_try: this.editFirstTry.stats(),
           },
         ),
       );
@@ -2853,6 +2982,16 @@ export class TraceCollector {
     this.budgetExceededSource = source;
   }
 
+  /**
+   * 记录「本轮以 StructuredOutput 交付收尾」。由 `engine.ts` 在收到带
+   * `structuredOutputDelivered` 的 `done` 时调用。理由同 {@link recordBudgetExceeded}：
+   * 末轮 stop_reason 是 tool_use，从 SessionEnd 推不出「正常交付」，不声明就落 user_interrupt。
+   * max_turns / budget_exceeded 仍优先（更具体的控制流事实）。
+   */
+  recordStructuredOutputDelivered(): void {
+    this.hitStructuredOutputDelivered = true;
+  }
+
   // ─── 异常路径诊断信号（§3.1 errors.jsonl）───
 
   /**
@@ -2887,6 +3026,17 @@ export class TraceCollector {
    */
   recordTurnError(input: { error: string; stack?: string; turn: number }): void {
     if (!this.initialized) return;
+    // §3.4：TurnError 同样是配对终点（看门狗注释里写的三者之一）。此前只有 handleAfterModel
+    // 清看门狗，于是一次 TurnError 结束的请求会在 PAIRING_TIMEOUT_MS 后被误报成
+    // ModelCallUnpaired（会话 20261008-173228-baeb949d，误把排查方向引到「请求 hang」）。
+    if (this.currentPair) {
+      const pairIndex = this.currentPair.index ?? this.resumedPairOffset + this.pairs.length + 1;
+      const pairingTimer = this.pendingModelCalls.get(pairIndex);
+      if (pairingTimer) {
+        clearTimeout(pairingTimer);
+        this.pendingModelCalls.delete(pairIndex);
+      }
+    }
     try {
       this.appendHookEvent({
         event: "TurnError",

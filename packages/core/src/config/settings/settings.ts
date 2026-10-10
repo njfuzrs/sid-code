@@ -11,11 +11,22 @@
  * 唯一真相源为 settings.json，旧格式 config.yaml 已废弃，不再回退读取。
  */
 
-import { readFileSync, writeFileSync, existsSync, mkdirSync } from "fs";
-import { dirname } from "path";
+import { readFileSync, existsSync, mkdirSync } from "fs";
+import { dirname, resolve } from "path";
 import { resolveEnvVars } from "../env-interpolation.ts";
 import { markInternalWrite } from "./internal-writes.ts";
-import { SETTING_SOURCES, getSettingsFilePath, type SettingSource } from "./constants.ts";
+import {
+  backupSettingsFile,
+  listSettingsBackups,
+  preserveCorruptedSettingsFile,
+} from "./backup.ts";
+import { writeAtomic } from "../app-config.ts";
+import {
+  SETTING_SOURCES,
+  getLegacyLocalSettingsPath,
+  getSettingsFilePath,
+  type SettingSource,
+} from "./constants.ts";
 import { SettingsSchema, type SettingsJson } from "./types.ts";
 import {
   formatZodErrors,
@@ -54,11 +65,17 @@ export interface SettingsWithErrors {
  */
 let flagSettings: SettingsJson | null = null;
 
-/** 注入 flagSettings（--settings CLI 参数）。注入后清空缓存以重新合并。 */
+/**
+ * 注入 flagSettings（--settings CLI 参数）。注入后清空 L1 合并缓存以重新合并。
+ *
+ * flagSettings **不走 L2/L3 缓存**：getSettingsForSource 在缓存检查之前就直接返回这个
+ * 模块变量。此前这里还顺手写了一条 L2 条目，但它永远不会被读到（D12），只会让读者
+ * 以为 flagSettings 参与三级缓存、会被 resetSettingsCache 失效——实际两者都不成立，
+ * 也不应成立（它是本进程显式注入的内存值，没有磁盘文件可以重读）。
+ */
 export function setFlagSettings(settings: SettingsJson | null): void {
   flagSettings = settings;
   setSessionCache(null);
-  setCachedSource("flagSettings", { settings, errors: [] });
 }
 
 /**
@@ -185,6 +202,11 @@ function parseSettingsFile(path: string): {
   }
 }
 
+/** workspacePath 指向 cwd 以外的目录时为真——此时 L1/L2 缓存（按 cwd 建立）不适用 */
+function isForeignWorkspace(workspacePath: string | undefined): boolean {
+  return workspacePath !== undefined && resolve(workspacePath) !== resolve(process.cwd());
+}
+
 /**
  * 获取单个来源的 Settings（带 Level 2 缓存）。
  * projectSettings 会经过安全字段过滤。
@@ -193,12 +215,15 @@ export function getSettingsForSource(
   source: SettingSource,
   workspacePath?: string,
 ): { settings: SettingsJson | null; errors: ValidationError[] } {
-  // flagSettings 来自内存，不读文件
+  // flagSettings 来自内存，不读文件，也不经 L2 缓存（见 setFlagSettings）
   if (source === "flagSettings") {
     return { settings: flagSettings, errors: [] };
   }
 
-  const cachedSource = getCachedSource(source);
+  // P8：L2 缓存键只有 source，不含 workspacePath。传了别的项目目录（worktree 传 gitRoot）
+  // 还读写 L2，拿到的就是 cwd 那份、或把别处的设置塞进 cwd 的缓存。这种调用直接读盘。
+  const foreign = isForeignWorkspace(workspacePath);
+  const cachedSource = foreign ? undefined : getCachedSource(source);
   if (cachedSource !== undefined) {
     // L2 同时缓存 errors：此前只存 settings、命中时回 errors:[]，于是先被 getSettingsForSource
     // 填过 L2 的来源（loadConfigFile 就这么做）在 getSettings 合并时诊断恒为空——D10 的
@@ -208,11 +233,32 @@ export function getSettingsForSource(
 
   const path = getSettingsFilePath(source, workspacePath);
   if (!path) {
-    setCachedSource(source, { settings: null, errors: [] });
+    if (!foreign) setCachedSource(source, { settings: null, errors: [] });
     return { settings: null, errors: [] };
   }
 
-  const { settings, errors } = parseSettingsFile(path);
+  const parsedMain = parseSettingsFile(path);
+  const errors = parsedMain.errors;
+  let settings = parsedMain.settings;
+
+  // P1b 兼容：local 基准迁到 git root 之后，启动目录里的旧 settings.local.json 仍合并读取，
+  // 同 key 以 git root 那份为准（旧文件作基座、新文件叠加）。旧文件单独过一次不可信过滤，
+  // 因为下面的过滤只按新路径判定是否被 git 追踪。
+  if (source === "localSettings") {
+    const legacyPath = getLegacyLocalSettingsPath(workspacePath ?? process.cwd());
+    if (legacyPath && existsSync(legacyPath)) {
+      const legacy = parseSettingsFile(legacyPath);
+      errors.push(...legacy.errors);
+      if (legacy.settings) {
+        const legacySafe = isUntrustedSettingsFile(source, legacyPath)
+          ? filterProjectSettings(legacy.settings)
+          : legacy.settings;
+        settings = settings
+          ? mergeSettingsRead(legacySafe as Record<string, unknown>, settings)
+          : legacySafe;
+      }
+    }
+  }
 
   // B2：policySettings 额外合并 managed-settings.d/*.json。字母序后者覆盖前者，
   // 主文件（managed-settings.json）作为基座，drop-in 在其上叠加。
@@ -242,7 +288,7 @@ export function getSettingsForSource(
   }
   const finalSettings = merged && untrusted ? filterProjectSettings(merged) : merged;
 
-  setCachedSource(source, { settings: finalSettings, errors: [...errors] });
+  if (!foreign) setCachedSource(source, { settings: finalSettings, errors: [...errors] });
   return { settings: finalSettings, errors };
 }
 
@@ -304,14 +350,37 @@ export function writeSettingsFile(
   const dir = dirname(path);
   if (!existsSync(dir)) mkdirSync(dir, { recursive: true });
 
+  backupSettingsFile(source, path);
   markInternalWrite(path); // 抑制自身写入触发的变更通知
-  writeFileSync(path, JSON.stringify(settings, null, 2), { mode: 0o600 });
+  writeAtomic(path, JSON.stringify(settings, null, 2)); // D9：原子写
 
   // 失效缓存，下次读取重新读盘（必须 clear 删键，不能 setCachedSource(source,null)——
   // 后者会被 getCachedSource 当"已缓存且无设置"命中，导致同会话内后续 read-then-patch
   // 从空对象起步、覆盖掉本次补丁写入的字段）。
   clearCachedSource(source);
   setSessionCache(null);
+}
+
+/**
+ * 损坏文件的报错文案：留档原文件，并给出可用的恢复路径（D9）。
+ * 此前只有一句「解析失败」，用户手里没有任何备份可恢复。
+ */
+function corruptedSettingsMessage(
+  action: string,
+  source: SettingSource,
+  path: string,
+  err: unknown,
+): string {
+  const preserved = preserveCorruptedSettingsFile(source, path);
+  const backups = listSettingsBackups(source, path);
+  const lines = [`settings 文件解析失败，${action}: ${path}\n${err}`];
+  if (preserved) lines.push(`损坏文件已留档: ${preserved}`);
+  lines.push(
+    backups.length > 0
+      ? `最近一次可用备份: ${backups[0]}（共 ${backups.length} 份，复制回原路径即可恢复）`
+      : "没有可用的写前备份，请手动修复该文件的 JSON 语法",
+  );
+  return lines.join("\n");
 }
 
 /**
@@ -348,7 +417,7 @@ export function patchSettingsFile(
       raw = JSON.parse(readFileSync(path, "utf-8"));
     } catch (err) {
       // 文件损坏时不要静默覆盖用户配置——直接抛出，让上层决定是否吞掉。
-      throw new Error(`settings 文件解析失败，已跳过补丁写入以免覆盖: ${err}`);
+      throw new Error(corruptedSettingsMessage("已跳过补丁写入以免覆盖", source, path, err));
     }
   }
 
@@ -358,8 +427,9 @@ export function patchSettingsFile(
   const dir = dirname(path);
   if (!existsSync(dir)) mkdirSync(dir, { recursive: true });
 
+  backupSettingsFile(source, path);
   markInternalWrite(path); // 抑制自身写入触发的变更通知
-  writeFileSync(path, JSON.stringify(raw, null, 2), { mode: 0o600 });
+  writeAtomic(path, JSON.stringify(raw, null, 2)); // D9：原子写
 
   // 失效缓存，下次读取重新读盘（必须 clear 删键，不能 setCachedSource(source,null)——
   // 后者会被 getCachedSource 当"已缓存且无设置"命中，导致同会话内后续 read-then-patch
@@ -405,7 +475,7 @@ export function mergeMissingTopLevelKeys(
     raw = JSON.parse(readFileSync(path, "utf-8"));
   } catch (err) {
     // 文件损坏时不要静默覆盖用户配置——直接抛出，让上层（迁移 runner）记录警告并跳过。
-    throw new Error(`settings 文件解析失败，已跳过默认配置补全以免覆盖: ${err}`);
+    throw new Error(corruptedSettingsMessage("已跳过默认配置补全以免覆盖", source, path, err));
   }
 
   const added: string[] = [];
@@ -421,8 +491,9 @@ export function mergeMissingTopLevelKeys(
   const dir = dirname(path);
   if (!existsSync(dir)) mkdirSync(dir, { recursive: true });
 
+  backupSettingsFile(source, path);
   markInternalWrite(path); // 抑制自身写入触发的变更通知
-  writeFileSync(path, JSON.stringify(raw, null, 2), { mode: 0o600 });
+  writeAtomic(path, JSON.stringify(raw, null, 2)); // D9：原子写
 
   // 失效缓存，下次读取重新读盘（必须 clear 删键，不能 setCachedSource(source,null)——
   // 后者会被 getCachedSource 当"已缓存且无设置"命中，导致同会话内后续 read-then-patch
@@ -459,6 +530,11 @@ export function loadSettingsFromDisk(workspacePath?: string): MergedSettings {
  * 这是上层模块读取行为配置的统一入口。唯一真相源为 settings.json。
  */
 export function getSettings(workspacePath?: string): SettingsWithErrors {
+  // P8：会话缓存是按 cwd 合并的那一份。旧实现有缓存就直接返回、参数被静默忽略，
+  // worktree/config.ts、worktree/manager.ts 传 gitRoot 实际拿到的是 cwd 的设置。
+  // 传了与 cwd 不同的目录就绕过两级缓存现读，也不回写（否则污染 cwd 那份）。
+  if (isForeignWorkspace(workspacePath)) return loadSettingsFromDisk(workspacePath);
+
   const cached = getSessionCache();
   if (cached) return cached;
 

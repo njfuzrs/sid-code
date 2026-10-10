@@ -12,7 +12,7 @@
 import { describe, test, expect } from "bun:test";
 import React from "react";
 import stripAnsi from "strip-ansi";
-import { render } from "@sid-code/tui-renderer/_vendor/testing.tsx";
+import { render } from "@sid-code/cli/ui/render-port/testing.ts";
 import { MarkdownAnsi } from "@sid-code/cli/ui/components/MarkdownAnsi.tsx";
 import { SettingsProvider } from "@sid-code/cli/ui/contexts/SettingsContext.tsx";
 

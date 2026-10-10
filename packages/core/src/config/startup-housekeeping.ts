@@ -6,7 +6,7 @@
  * 2. cleanupLegacyToolResults() —— 清理修复前老代码遗留的 tool-results 污染目录
  * 3. ensureRuntimeFilesGitignored() —— 把项目 .sid-code/ 下的运行时文件注册进全局 gitignore
  * 4. 按"清理水位线"节流触发过期数据清理 —— 避免每次启动都扫全盘。水位线内含：
- *    trajectories 旧 session / tool-outputs / tmp masked-outputs，
+ *    trajectories 旧 session / tool-outputs / tmp masked-outputs / tmp pasted-images（粘贴截图），
  *    以及孤儿 shell 快照、孤儿 task 输出、过期 checkpoints（后三项见下方"为什么需要兜底"）
  *
  * 项目 .sid-code/ 的 gitignore 策略（对标 claude-code，详见 lock.ts 文件头注）：
@@ -83,36 +83,44 @@ import { getSidTempDir } from "@sid-code/shared/utils/temp-dir.ts";
 /** 清理触发间隔：24 小时 */
 const CLEANUP_INTERVAL_MS = 24 * 60 * 60 * 1000;
 
-/** trajectories 内 session 目录的过期阈值：30 天 */
-const DEFAULT_TRAJECTORY_MAX_AGE_MS = 30 * 24 * 60 * 60 * 1000;
-
 /**
- * G5：轨迹清理周期。settings.json 的 cleanupPeriodDays 优先，缺省 30 天。
+ * trajectories 内 session 目录与 Session Memory 笔记的过期阈值。
+ *
+ * 与会话清理**共用一个保留期**（`session/retention.ts` 是单一事实源）：
+ * `sessionRetention.maxAge` 优先，旧字段 `cleanupPeriodDays` 作别名，缺省 365 天。
+ *
+ * 此前这里写死 30 天、只认 `cleanupPeriodDays`，而会话清理认 `sessionRetention.maxAge` ——
+ * 用户把 maxAge 调到一年，轨迹照样 30 天被删，`/trace`、`eval-session` 和北极星曲线
+ * 拿不到一个月前的数据，而会话列表里那条会话还在，看起来一切正常。
+ *
+ * Session Memory 笔记跟着同一个数字走不是巧合：它的用途是 `--resume` 时接上上下文，
+ * 会话被清理之后它也无从挂靠；会话还在时删掉它，则恢复出来的会话丢了笔记。
+ *
  * 读 settings 失败时回退默认值，不让清理任务因配置故障而改变行为。
+ * 关闭自动清理（`sessionRetention.enabled: false`）时返回 Infinity —— 一处都不按时间删。
  */
-function trajectoryMaxAgeMs(): number {
+function retentionMaxAgeMs(): number {
   try {
     const { getSettings } = require("./settings/settings.ts");
-    const days = getSettings().settings.cleanupPeriodDays;
-    if (typeof days === "number" && days > 0) return days * 24 * 60 * 60 * 1000;
+    const {
+      resolveRetentionSettings,
+      retentionMaxAgeMs: toMs,
+    } = require("../session/retention.ts");
+    const settings = getSettings().settings;
+    const resolved = resolveRetentionSettings(
+      settings.sessionRetention,
+      settings.cleanupPeriodDays,
+    );
+    if (!resolved.enabled) return Number.POSITIVE_INFINITY;
+    return toMs(resolved);
   } catch {
     /* 回退默认 */
   }
-  return DEFAULT_TRAJECTORY_MAX_AGE_MS;
+  return DEFAULT_RETENTION_MAX_AGE_MS;
 }
 
-/**
- * Session Memory 单会话笔记的过期阈值：30 天。
- *
- * P0-4 把 `.session_memory.md` 从「按项目一个」改成「按会话一个」，修掉了并发/resume
- * 互相覆盖，代价是文件会**一个会话攒一个**。所以那个修复必须配一条回收，
- * 否则治好污染换来无界增长。
- *
- * 阈值与 trajectory 对齐（30 天）**不是巧合**：这份笔记的用途是 `--resume` 时接上
- * 上次的上下文，而 trajectory 过期后那个会话本来就 resume 不回来了，
- * 留着笔记也无从挂靠。两个数字应一起改。
- */
-const SESSION_MEMORY_MAX_AGE_MS = 30 * 24 * 60 * 60 * 1000;
+/** 读不到配置时的回退值，与 retention.ts 的 DEFAULT_SESSION_MAX_AGE（365d）一致 */
+const DEFAULT_RETENTION_MAX_AGE_MS = 365 * 24 * 60 * 60 * 1000;
 
 /**
  * shell 快照的孤儿回收阈值：24 小时。
@@ -225,6 +233,8 @@ export function runStartupHousekeeping(
     const outputsCleaned = cleanupStaleToolOutputs();
     // 6. 清理 /tmp 下过期的 masked-outputs 临时文件
     const maskedCleaned = cleanupStaleMaskedOutputs();
+    // 6b. 清理 /tmp 下过期的粘贴截图（截图可能含敏感内容，不能无限期留在共享 /tmp）
+    const pastedCleaned = cleanupStalePastedImages(now);
     // 7-9. 孤儿运行时数据兜底回收（各模块自己的清理只挂在正常路径上，见文件头注释）
     const snapshotsCleaned = cleanupOrphanedShellSnapshots(now);
     const taskOutputsCleaned = cleanupOrphanedTaskOutputs(now);
@@ -242,6 +252,9 @@ export function runStartupHousekeeping(
     }
     if (maskedCleaned > 0) {
       getLogger().info("CLEANUP", `启动清理：移除 ${maskedCleaned} 个过期遮罩输出文件`);
+    }
+    if (pastedCleaned > 0) {
+      getLogger().info("CLEANUP", `启动清理：移除 ${pastedCleaned} 个过期粘贴截图`);
     }
     if (snapshotsCleaned > 0) {
       getLogger().info("CLEANUP", `启动清理：回收 ${snapshotsCleaned} 个孤儿 shell 快照`);
@@ -301,7 +314,7 @@ function writeWatermark(now: number): void {
  *
  * 只按 mtime 判、只删该目录下的 `.md`：不去猜「这个会话还活着吗」——
  * 判活需要读 PID/crash marker，而那套判据本身就是另一处会失效的触发条件。
- * 30 天没被写过的笔记，对应的会话早已不可 resume（见 SESSION_MEMORY_MAX_AGE_MS）。
+ * 超过保留期没被写过的笔记，对应的会话也已被清理、不可 resume（见 retentionMaxAgeMs）。
  *
  * 刻意**不碰**旧的项目级 `.session_memory.md`：它是修复前的存量数据，用户可能
  * 还想看，而且它不随会话增长（就一个文件），不构成膨胀。
@@ -311,6 +324,7 @@ function writeWatermark(now: number): void {
 function cleanupStaleSessionMemories(now: number): number {
   const projectsRoot = sidPaths.projects();
   if (!existsSync(projectsRoot)) return 0;
+  const maxAgeMs = retentionMaxAgeMs();
 
   let removed = 0;
   let projectDirs: string[];
@@ -336,7 +350,7 @@ function cleanupStaleSessionMemories(now: number): number {
     for (const name of files) {
       const file = join(dir, name);
       try {
-        if (now - statSync(file).mtimeMs > SESSION_MEMORY_MAX_AGE_MS) {
+        if (now - statSync(file).mtimeMs > maxAgeMs) {
           rmSync(file, { force: true });
           removed++;
         }
@@ -349,12 +363,13 @@ function cleanupStaleSessionMemories(now: number): number {
 }
 
 /**
- * 清理 trajectories/sessions 下超过 TRAJECTORY_MAX_AGE_MS 的会话目录。
+ * 清理 trajectories/sessions 下超过保留期（retentionMaxAgeMs）的会话目录。
  * 返回移除的目录数。
  */
 function cleanupStaleTrajectories(now: number): number {
   const sessionsRoot = join(sidPaths.trajectories(), "sessions");
   if (!existsSync(sessionsRoot)) return 0;
+  const maxAgeMs = retentionMaxAgeMs();
 
   let removed = 0;
   for (const entry of readdirSync(sessionsRoot, { withFileTypes: true })) {
@@ -362,7 +377,7 @@ function cleanupStaleTrajectories(now: number): number {
     const dir = join(sessionsRoot, entry.name);
     try {
       const stat = statSync(dir);
-      if (now - stat.mtimeMs > trajectoryMaxAgeMs()) {
+      if (now - stat.mtimeMs > maxAgeMs) {
         rmSync(dir, { recursive: true, force: true });
         removed++;
       }
@@ -449,6 +464,45 @@ function cleanupStaleMaskedOutputs(): number {
     // temp dir 不存在或无权限，跳过
   }
   return totalCleaned;
+}
+
+/** 粘贴截图的保留期：7 天（与 masked-outputs / tool-outputs 同口径） */
+const PASTED_IMAGE_MAX_AGE_MS = 7 * 24 * 3600_000;
+
+/**
+ * 清理 /tmp 下过期的粘贴截图（`{sidTemp}/pasted-images/`）。
+ *
+ * 写入方是 `packages/cli/src/ui/utils/clipboard-image.ts`：每次粘贴截图生成一个临时 PNG，
+ * 之后再没有任何代码删它。系统重启会清 /tmp，但长期不关机的开发机上它们会一直留着 ——
+ * 而截图常含敏感内容（内部页面、token、聊天记录），这比 masked-outputs 更不该无限期留存。
+ *
+ * 判据与 masked-outputs 一致：按 mtime 超 7 天删。不看「是否还被会话引用」：
+ * 截图在粘贴当轮就已读进消息（base64），磁盘文件只是中转，7 天后不可能还有人要读它。
+ * 只删目录下的普通文件、不递归；目录本身留着（下次粘贴会 mkdir，留着零成本）。
+ *
+ * @returns 删除的文件数
+ */
+function cleanupStalePastedImages(now: number): number {
+  let cleaned = 0;
+  try {
+    const dir = join(getSidTempDir(), "pasted-images");
+    if (!existsSync(dir)) return 0;
+    for (const entry of readdirSync(dir, { withFileTypes: true })) {
+      if (!entry.isFile()) continue;
+      const filePath = join(dir, entry.name);
+      try {
+        if (now - statSync(filePath).mtimeMs > PASTED_IMAGE_MAX_AGE_MS) {
+          rmSync(filePath, { force: true });
+          cleaned++;
+        }
+      } catch {
+        /* 单文件失败跳过 */
+      }
+    }
+  } catch {
+    // temp dir 不存在或无权限，跳过
+  }
+  return cleaned;
 }
 
 /**

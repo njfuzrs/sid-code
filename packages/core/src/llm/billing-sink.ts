@@ -56,6 +56,8 @@
 
 import type { Usage } from "./types.ts";
 import { resolvePricing, priceTierAt } from "../api/cost-tracker.ts";
+import { emitBilledRequest } from "../trace/stream-observer.ts";
+import { currentSseDumpContext } from "./sse-chunk-dumper.ts";
 
 /** 一次真实计费请求（= 一次 fetch，无论成功失败、无论谁发起的） */
 export interface BilledRequest {
@@ -154,6 +156,14 @@ export const BILLING_SELF_REPORTED_LABELS: ReadonlySet<string> = new Set([
   "compact", // auto-compact.ts / context-collapse.ts / partial-compact.ts 共用此 querySource
   "hook_agent", // hook/runner.ts
   "goal_eval", // goal/evaluator.ts
+  // 缺陷 15：直调 sendMessageNonStreaming 的影子调用点。它们自己 recordSideCall
+  // （见 recordNonStreamingSideCall），provider 非流式收口发的事件只作恒等式核对与归因。
+  // 门禁：tests/llm/billing-self-reported-labels.test.ts 的非流式那一条。
+  "cache_warmup", // session/warmup.ts
+  "tool_classifier", // permission/tool-classifier.ts
+  "bash_classifier", // permission/bash-classifier.ts
+  "web_fetch_extract", // tool/web-fetch-extract.ts
+  "title_generation", // cli/app.ts
 ]);
 
 /**
@@ -169,15 +179,20 @@ export function shouldChargeBilledRequest(req: BilledRequest): boolean {
 }
 
 const observers = new Set<BillingObserver>();
-/** 已见过的 fetchId（去重）。有界，见 MAX_SEEN。 */
-let seen = new Set<string>();
 /**
- * fetchId 去重集合上限。
+ * 已见过的 fetchId（去重），**双桶轮换**：`seen` 是当前桶，`seenPrev` 是上一桶。
  *
- * 超过即整体清空而不是 LRU 淘汰：这个集合防的是**同一条流在同一瞬间被 emit 两次**
- * （provider 的正常/异常路径都可能走到收口点），跨越几千次请求之后的重复不可能发生。
- * 无界增长在长会话里是真实泄漏（一次 fetch 一个字符串键）。
+ * 缺陷 25（20260927 可观测性审计）：原先满 MAX_SEEN 即整体清空，清空那一瞬间
+ * 前 4096 个 id **全体失保** —— 其中任何一条若还欠第二次 emit（openai 有
+ * `sendViaResponsesAPI` 与 `parseSSE` 两个收口点，长流 / 异常路径收尾可能隔着整条流），
+ * 就会被当新请求重复入账。错向是**高估**，正是本文件头注释点破的那个更隐蔽的方向。
+ *
+ * 双桶只多一个字段：当前桶满时降为上一桶、开新桶，查重同时看两桶 ⇒ 任何 fetchId
+ * 至少在其后 MAX_SEEN 次上报内必然被记住，内存上界 2 × MAX_SEEN。
  */
+let seen = new Set<string>();
+let seenPrev = new Set<string>();
+/** 单桶上限。无界增长在长会话里是真实泄漏（一次 fetch 一个字符串键），所以必须有界。 */
 const MAX_SEEN = 4096;
 
 /** 注册计费观察者。返回反注册函数。 */
@@ -194,8 +209,11 @@ export function addBillingObserver(fn: BillingObserver): () => void {
  */
 export function recordBilledRequest(req: BilledRequest): void {
   try {
-    if (!req.fetchId || seen.has(req.fetchId)) return;
-    if (seen.size >= MAX_SEEN) seen = new Set();
+    if (!req.fetchId || seen.has(req.fetchId) || seenPrev.has(req.fetchId)) return;
+    if (seen.size >= MAX_SEEN) {
+      seenPrev = seen;
+      seen = new Set();
+    }
     seen.add(req.fetchId);
     // 时段观测在**去重之后**：同一条流被 emit 两次时不能把高峰数记两遍。
     // 放在观察者之前：它与"谁给这笔钱记账"无关，所有 fetch 都要数（见 recordPriceTier）。
@@ -205,6 +223,26 @@ export function recordBilledRequest(req: BilledRequest): void {
     } catch {
       /* 时段统计失败不影响入账 */
     }
+    // B47：落 events.jsonl，让恒等式能在真实轨迹上复算（见 emitBilledRequest）。
+    // 与时段统计同理放在去重之后、观察者之前：落盘与"谁记这笔钱"无关，全部 fetch 都落。
+    emitBilledRequest({
+      fetch_id: req.fetchId,
+      index: req.index,
+      model: req.model,
+      provider: req.provider,
+      ...(req.agentId && { agent_id: req.agentId }),
+      ...(req.callerLabel && { caller: req.callerLabel }),
+      accounted: req.accounted,
+      charged: shouldChargeBilledRequest(req),
+      input_tokens: req.usage.inputTokens ?? 0,
+      output_tokens: req.usage.outputTokens ?? 0,
+      ...(req.usage.cacheReadInputTokens !== undefined && {
+        cache_read_tokens: req.usage.cacheReadInputTokens,
+      }),
+      ...(req.usage.cacheCreationInputTokens !== undefined && {
+        cache_creation_tokens: req.usage.cacheCreationInputTokens,
+      }),
+    });
     for (const fn of observers) {
       try {
         fn(req);
@@ -266,17 +304,28 @@ export function getPeakRatio(): number | undefined {
   return peakCount / tieredCount;
 }
 
-/** 重置（会话切换 / 测试）。 */
-export function resetBillingSink(): void {
-  observers.clear();
-  seen = new Set();
+/**
+ * 只清时段计数（会话切换时调）—— 缺陷 24（20260927 可观测性审计）。
+ *
+ * `peakCount` / `tieredCount` 是模块级单例，而 `peakRatio` 是**比值**：同进程 `/clear`
+ * 或 resume 开新会话而不清零，新会话账本行写进的是「两个会话的 flow 之和」之比，
+ * 既不描述前会话也不描述后会话，且进程活得越久越贴近全生命周期均值（长驻 TUI 受害最重）。
+ * 生产调用点在 `trace/collector.ts` 的 handleSessionStart，与 `resetSideCallStats` 同一时机。
+ *
+ * 刻意**不动**观察者与去重集合：观察者由 app 构造期注册一次、跨会话复用，清了就断账；
+ * fetchId 全局唯一（`nextFetchId` 自增序号），跨会话不会撞，去重集合无需随会话清。
+ */
+export function resetPriceTierCounts(): void {
   peakCount = 0;
   tieredCount = 0;
 }
 
-/** 只清去重集合，保留观察者（跨会话复用同一批观察者时用）。 */
-export function clearBillingDedupe(): void {
+/** 全量重置（测试用）：观察者 + 去重集合 + 时段计数。 */
+export function resetBillingSink(): void {
+  observers.clear();
   seen = new Set();
+  seenPrev = new Set();
+  resetPriceTierCounts();
 }
 
 let fetchSeq = 0;
@@ -290,4 +339,48 @@ let fetchSeq = 0;
 export function nextFetchId(): string {
   fetchSeq += 1;
   return `f${fetchSeq}-${Date.now()}`;
+}
+
+/**
+ * 非流式请求的计费收口（缺陷 15，20260927 可观测性审计）。
+ *
+ * 流式路径把 `recordBilledRequest` 挂在 provider 的 finally 里；非流式的
+ * `sendMessageNonStreaming` 此前**一处都没有** —— 文件头那句「所有调用链都必然经过那里」
+ * 只在流式上成立。更隐蔽的是恒等式 `HttpConnected == BilledRequest`：非流式两边都不数，
+ * 于是它在这条路径上恒为 `0 == 0`，漏多少钱都 PASS（假门禁）。
+ *
+ * 调用约定（与流式同口径，恒等式才能逐条对上）：
+ * - provider 收到 **2xx 响应头**后调 `emitHttpConnected` 一次；
+ * - 在同一个 try 的 finally 里调本函数一次 —— 读 body 失败 / abort 也要记：
+ *   厂商按收到的 prompt 计费，与客户端是否读完 body 无关。
+ * - `usage` 缺失时记 0 token，事件仍落盘：「这次 fetch 花了钱但不知道多少」
+ *   必须可见（`BilledRequest.input_tokens == 0` 即信号），不能因为没 usage 就不存在。
+ *
+ * 身份取 ALS（`currentSseDumpContext`）：包了 `withRequestContext` 的影子调用点
+ * 带 callerLabel，消费侧按 `BILLING_SELF_REPORTED_LABELS` 跳过（它们自己 recordSideCall）。
+ */
+export function recordNonStreamingBilledRequest(req: {
+  fetchId: string;
+  model: string;
+  provider: string;
+  baseURL?: string;
+  usage: Usage | undefined;
+}): void {
+  try {
+    const bctx = currentSseDumpContext();
+    recordBilledRequest({
+      fetchId: req.fetchId,
+      model: req.model,
+      provider: req.provider,
+      baseURL: req.baseURL,
+      usage: req.usage ?? { inputTokens: 0, outputTokens: 0 },
+      index: bctx.turnIndex,
+      agentId: bctx.agentId,
+      callerLabel: bctx.callerLabel,
+      atMs: Date.now(),
+      accounted: !bctx.agentId && !bctx.callerLabel,
+    });
+  } catch {
+    /* 计费上报绝不影响请求 */
+  }
 }

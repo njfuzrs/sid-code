@@ -121,7 +121,7 @@ sid-code 支持的 MCP server 字段：
 | 字段 | 迁移策略 |
 |---|---|
 | `permissions.allow` / `deny` / `ask` | 必须确认。结构同名兼容，展示目标 scope 和访问边界影响后再保留值。sid-code 的 `permissions.defaultMode` 若源没有则不补。 |
-| `hooks` | 必须确认（执行风险）。**必做结构转换**，见下方 Hooks 节。 |
+| `hooks` | 必须确认（执行风险）。格式与 CC 一致，**原样复制**、不做结构转换，见下方 Hooks 节。 |
 | `outputStyle` | 必须确认。只有对应 style 文件已在 sid-code 目标位置存在后，才设置 active style。 |
 | `mcpServers` | 按 MCP 规则处理（含 `type→transport`）。 |
 | `env` | 敏感项，必须逐条确认。sid-code **有**顶层 `env` 字段（不同于 Qoder），可迁移，但：① 值多为 secret（如 `*_API_KEY`、`*_AUTH_TOKEN`），只展示 key 名不打印值；② Claude 专属 env（`ANTHROPIC_BASE_URL`、`ANTHROPIC_AUTH_TOKEN`、`CLAUDE_CODE_MAX_OUTPUT_TOKENS`、`ANTHROPIC_MAX_TOKENS`、`API_TIMEOUT_MS` 等）语义与 sid-code 的 provider/model 配置不同，**默认只报告**，让用户决定是否改写为 sid-code 的 `baseURL`/`anthropicKey`/`maxTokens` 等原生字段，而非原样搬运 env。 |
@@ -135,50 +135,23 @@ sid-code 的 settings.json **必须用 patch 式写入**（`patchSettingsFile` /
 
 ## Hooks
 
-**必做结构转换**：Claude Code 与 sid-code 的 hooks 结构不同。
+**原样复制，不做结构转换**：sid-code 的 hooks 格式与 Claude Code 一致（`packages/core/src/hook/config-normalize.ts` 统一归一化）。
+以下都能直接用，**不要改写**：
 
-Claude Code（两层，含 matcher 分组包裹）：
-
-```json
-{
-  "hooks": {
-    "PreToolUse": [
-      { "matcher": "Write", "hooks": [ { "type": "command", "command": "...", "timeout": 5 } ] }
-    ]
-  }
-}
-```
-
-sid-code（扁平，每个 HookEntry 直接带命令）：
-
-```json
-{
-  "hooks": {
-    "PreToolUse": [
-      { "type": "command", "event": "PreToolUse", "matcher": "Write", "command": "...", "timeout": 5 }
-    ]
-  }
-}
-```
-
-转换规则（对每个事件名）：
-
-- 遍历 Claude 的 `event -> [ { matcher?, hooks: [ inner... ] } ]`，把每个内层 hook 展开成一条 sid-code HookEntry：`{ type, command, matcher: 分组的 matcher, timeout, event: 事件名 }`。丢弃中间的 `hooks` 包裹层。
-- sid-code HookEntry 支持字段：`type`(`command|url`)、`event`、`command`、`url`、`method`、`headers`、`timeout`、`blocking`、`matcher`。Claude hook 里不在此列的字段列为不支持并报告。
-
-明确支持的 token 替换：
-
-| Claude token | sid-code token |
-|---|---|
-| `$CLAUDE_PROJECT_DIR` | `$SID_CODE_PROJECT_DIR` |
-| `${CLAUDE_PROJECT_DIR}` | `${SID_CODE_PROJECT_DIR}` |
+- 嵌套形状 `event -> [ { matcher?, hooks: [ inner... ] } ]`（sid-code 推荐写法；旧的平铺写法也兼容，但迁移不要转成平铺）
+- PascalCase 事件名（`PreToolUse`）
+- CC 工具名 matcher（`Bash`、`Edit|Write`），sid-code 自动映射到内部名
+- `${CLAUDE_PROJECT_DIR}` / `$CLAUDE_PROJECT_DIR`、`${CLAUDE_PLUGIN_ROOT}`、`${CLAUDE_PLUGIN_DATA}`：sid-code 作为环境变量导出，**不要替换成 `SID_CODE_*`**
+- handler 字段 `type`（`command` / `http` / `url` / `prompt` / `agent`）、`command`、`url`、`headers`、`allowedEnvVars`、`timeout`（秒）、`async`、`asyncRewake`、`if`、`statusMessage`、`env`、`sequential`、`name`
+- `mcp_tool` 类型：识别但不执行，只报告
 
 规则：
 
-- 写入前展示 hook diff（转换后的 sid-code 结构 + token 替换结果），并把 hooks 标为需要用户确认的执行风险项。
-- 仅自动替换上表列出的 token。其他 `CLAUDE_*` 变量、环境变量名、命令名称、matcher、timeout、type、事件名和顺序都保持原样。
-- 如果 hook 含有其他 `CLAUDE_*` token、显式调用 `claude`、读取 Claude 状态文件（如 `~/.claude/...`）或依赖 Claude-only 路径，默认只报告转换后仍需人工核对，除非用户明确批准。
-- 如果目标已存在 hooks，询问追加、替换或跳过。事件名下的 HookEntry 数组按追加合并（不去重覆盖）需用户确认。
+- 写入前展示将写入的 hooks 段（应与源文件逐字相同），并把 hooks 标为需要用户确认的执行风险项。
+- **唯一需要处理的是脚本路径**：命令里引用的 `.claude/hooks/*` 等脚本，让用户选择「保留原路径」（sid-code 只是不读 CC 的 settings，脚本照常可执行）或「复制到 `.sid-code/hooks/` 并改写命令里的路径」。只改写路径，其余一字不动。
+- 命令显式调用 `claude` CLI、读取 Claude 状态文件（如 `~/.claude/projects/...`），或使用除上述三个以外的 `CLAUDE_*` 变量时，只报告需人工核对。
+- 项目级 hooks 只在信任过的工作区加载；`-p` / SDK 下需要 `--trust-workspace`。迁移后提醒用户跑 `sid-code hooks list` 确认注册结果。
+- 如果目标已存在 hooks，询问追加、替换或跳过。事件名下的 matcher 分组数组按追加合并（不去重覆盖）需用户确认。
 
 ## 记忆与规则（关键差异：多为兼容位置，无需迁移）
 

@@ -25,8 +25,8 @@
 
 import { existsSync, mkdirSync, readFileSync, unlinkSync, writeFileSync } from "node:fs";
 import { dirname } from "node:path";
-import { applyDeviceAuth } from "../identity/credential.ts";
-import { isNonLocalHttp } from "../config/policy.ts";
+import { applyDeviceAuth, RELOGIN_HINT } from "../identity/credential.ts";
+import { resolveEndpoint } from "../identity/endpoints.ts";
 import { sidPaths } from "../config/paths.ts";
 import { getLogger } from "../debug/logger.ts";
 import { QuadraticBackoff } from "../analytics/backoff.ts";
@@ -40,7 +40,7 @@ export const USAGE_LEDGER_REMOTE_TIMEOUT_MS = 5_000;
 export const USAGE_LEDGER_REMOTE_MAX_BODY_BYTES = 16 * 1024;
 
 export class SkipRemoteExportError extends Error {
-  constructor(readonly reason: "no_auth" | "plaintext_http") {
+  constructor(readonly reason: "no_auth") {
     super(reason);
     this.name = "SkipRemoteExportError";
   }
@@ -68,7 +68,6 @@ export interface FailedUsageLedgerRow {
 }
 
 let warnedSkipNoAuth = false;
-let warnedSkipPlaintext = false;
 let warnedUnauthorized = false;
 let warnedTooLarge = false;
 let warnedPrivacy = false;
@@ -108,9 +107,9 @@ export function failedUsageLedgerPath(): string {
 }
 
 function usageEndpoint(): string | undefined {
-  const raw = process.env.SID_CODE_USAGE_ENDPOINT;
-  if (!raw || raw.trim() === "") return undefined;
-  return raw.trim();
+  // backend.url 推出 POST /usage/ledger；旧 SID_CODE_USAGE_ENDPOINT 仅作兼容。
+  // 明文非本地地址在 resolveEndpoint 里统一拒绝并告警，这里拿到的就是 undefined。
+  return resolveEndpoint("usage")?.url;
 }
 
 function readFailedRows(): FailedUsageLedgerRow[] {
@@ -188,17 +187,11 @@ function removeFailedSession(sessionId: string): void {
   }
 }
 
-function warnOnce(
-  kind: "no_auth" | "plaintext" | "401" | "too_large" | "privacy",
-  message: string,
-): void {
+function warnOnce(kind: "no_auth" | "401" | "too_large" | "privacy", message: string): void {
   const log = getLogger();
   if (kind === "no_auth") {
     if (warnedSkipNoAuth) return;
     warnedSkipNoAuth = true;
-  } else if (kind === "plaintext") {
-    if (warnedSkipPlaintext) return;
-    warnedSkipPlaintext = true;
   } else if (kind === "401") {
     if (warnedUnauthorized) return;
     warnedUnauthorized = true;
@@ -220,14 +213,6 @@ async function sendUsageLedger(entry: UsageLedgerEntry): Promise<"skipped" | "se
 
   const endpoint = usageEndpoint();
   if (!endpoint) return "skipped";
-  if (isNonLocalHttp(endpoint)) {
-    warnOnce(
-      "plaintext",
-      `SID_CODE_USAGE_ENDPOINT 拒绝明文非本地地址（只允许 https:// 或 http://127.0.0.1|localhost）: ${endpoint}`,
-    );
-    throw new SkipRemoteExportError("plaintext_http");
-  }
-
   const headers = applyDeviceAuth({ "Content-Type": "application/json" });
   if (!headers.Authorization) {
     warnOnce("no_auth", "账本远程上报无可用设备凭据，不上报远程、本拍不写失败盘（已有失败盘保留）");
@@ -254,7 +239,10 @@ async function sendUsageLedger(entry: UsageLedgerEntry): Promise<"skipped" | "se
       signal: controller.signal,
     });
     if (response.status === 401) {
-      warnOnce("401", "账本远程上报 401：设备凭据无效或已吊销，本会话不再重试、不写失败盘");
+      warnOnce(
+        "401",
+        `账本远程上报 401：设备凭据无效或已吊销，本会话不再重试、不写失败盘。${RELOGIN_HINT}`,
+      );
       throw new UnauthorizedExportError();
     }
     if (response.status === 413) {
@@ -353,7 +341,6 @@ export async function pushUsageLedgerRemote(entry: UsageLedgerEntry): Promise<vo
 /** 仅测试 */
 export function __resetUsageLedgerRemoteForTest(): void {
   warnedSkipNoAuth = false;
-  warnedSkipPlaintext = false;
   warnedUnauthorized = false;
   warnedTooLarge = false;
   warnedPrivacy = false;

@@ -12,7 +12,7 @@ sid-code - AI 编程 CLI 工具
   cat file.txt | sid-code -p "分析这个文件"   无头模式下读取管道 stdin（仅 --input-format text）
 
 LLM 配置:
-  --provider <name>           LLM 提供商 (anthropic/openai/ollama)
+  --provider <name>           LLM 提供商协议族 (anthropic/openai/ollama；openai 族含 Chat Completions 与 Responses)
   -m, --model <name>          模型名称
   --fallback-model <name>     主模型失败时的降级模型（须在 available_models 中）
   --max-tokens <n>            响应最大 token 数
@@ -20,9 +20,10 @@ LLM 配置:
   --language <lang>          输出语言偏好 (zh/en/auto/unset)；也可用 SID_LANGUAGE 环境变量
 
 权限配置:
-  --permission-mode <mode>    权限模式 (default/always-allow/deny-write/acceptEdits/plan/dontAsk)
+  --permission-mode <mode>    权限模式 (default/always-allow/deny-write/acceptEdits/plan/dontAsk/auto/dangerously-skip-permissions；manual 为 default 的别名)
   --dangerously-skip-permissions  跳过所有权限检查（仅限沙箱环境）
-  -y, --yes                   自动批准所有权限请求
+  -y, --yes                   自动批准需确认的操作（危险命令仍拦截；跳过全部检查用 --dangerously-skip-permissions）
+  --trust-workspace           仅本会话信任当前工作区（项目级 hooks / MCP 照常加载，不写入信任记录）
   --allowed-tools <list>      工具白名单（逗号分隔，如 "read,grep,bash"）
   --disallowed-tools <list>   工具黑名单（逗号分隔）
   --allow-tool <rule>         追加允许规则（规则语法，如 "Bash(git status)"；可重复或逗号分隔）
@@ -80,7 +81,7 @@ MCP:
   --betas <beta>              额外 anthropic-beta 头值（可重复或逗号分隔）
 
 限制控制:
-  --max-budget-usd <amount>   花费上限（美元，超限终止）
+  --max-budget-usd <amount>   花费上限（美元，超限终止；与 quota.costLimit 取更严的）
 
 IDE:
   --ide                       启动即自动连接 IDE（等价 SID_CODE_AUTO_CONNECT_IDE=true）
@@ -142,12 +143,15 @@ Worktree 隔离:
   agents                      列出所有可用子代理（内置/自定义/插件）
                                 用法: sid-code agents [--json] [--setting-sources user,project,local]
   mcp                         管理 MCP 服务器配置（不启动会话）
-                                用法: sid-code mcp <list|get|add|remove> [参数] [--json]
+                                用法: sid-code mcp <list|get|add|remove|pending|approve|reject|serve> [参数] [--json]
                                 示例: sid-code mcp list
                                       sid-code mcp add fs npx -y @modelcontextprotocol/server-filesystem /tmp --scope user
                                       sid-code mcp remove fs
-  auth                        认证配置诊断
-                                用法: sid-code auth status [--json]
+  auth                        企业登录（飞书）与认证诊断
+                                用法: sid-code auth <login|logout|status> [--json] [--verify]
+                                别名: sid-code login / sid-code logout
+                                login 需先配置 backend.url（或 SID_CODE_BACKEND_URL）
+                                status 逐条列出企业通道；--verify 对每条发一次不写数据的探测
 
 环境变量:
   ANTHROPIC_API_KEY             Anthropic API 密钥
@@ -158,7 +162,7 @@ Worktree 隔离:
   SID_CODE_LLM_MODEL            模型名称（仅 sid-code 生效）
   SID_CODE_LLM_BASE_URL         自定义 API 基础 URL（仅 sid-code 生效）
   SID_CODE_LLM_API_KEY          OpenAI 兼容端点的 API 密钥（仅 sid-code 生效）
-  SID_CODE_EFFORT_LEVEL         推理强度档位 (low/medium/high/max)；兼容 CLAUDE_CODE_EFFORT_LEVEL
+  SID_CODE_EFFORT_LEVEL         推理强度档位 (low/medium/high/xhigh/max)；兼容 CLAUDE_CODE_EFFORT_LEVEL
   SID_CODE_THINKING             思考开关覆盖 (on/off/auto)
   SID_CODE_MAX_THINKING_TOKENS  思考 token 预算上限；兼容 MAX_THINKING_TOKENS，优先于 settings.maxThinkingTokens
   SID_MAX_OUTPUT_TOKENS         最大输出 token 数覆盖（缺省 32768）
@@ -169,10 +173,10 @@ Worktree 隔离:
   SID_STRONG_MODEL              强力档模型覆盖（旁路调用用，最高权威）
 
   轨迹采集:
-  SID_CODE_TRACE                设为 1 或 true 启用轨迹采集
+  SID_CODE_TRACE                设为 1 或 true 强制启用轨迹采集（默认已启用，关闭用 --no-trace）
   SID_CODE_TRACE_OUTPUT_DIR     自定义轨迹输出目录
   SID_CODE_TRACE_NO_RAW         设为 1 不把 prompt/响应原文写进 raw.jsonl
-  SID_CODE_TRACE_UPLOAD_URL     轨迹上传平台地址
+  SID_CODE_TRACE_UPLOAD_URL     轨迹上传平台地址（缺省取 backend.url）
   SID_CODE_TRACE_UPLOAD_TOKEN   上传认证 token
   SID_CODE_TRACE_USER_ID        用户标识（仅轨迹上传；未设时回落到 SID_CODE_IDENTITY_USER_ID）
   SID_CODE_TRACE_DEVICE_ID      设备标识（仅轨迹上传；未设时回落到本机持久 device-id）
@@ -181,9 +185,11 @@ Worktree 隔离:
   SID_CODE_IDENTITY_USER_ID     用户标识（如 zhangsan@corp.com）
   SID_CODE_IDENTITY_ORG_ID      组织标识（如 corp-shanghai）
   SID_CODE_IDENTITY_TEAM_ID     团队标识（如 infra-platform）
-  SID_CODE_POLICY_ENDPOINT      远程企业策略 URL（只读环境变量；未设则不拉取，fail-open）
-  SID_CODE_USAGE_ENDPOINT       用量账本远程 upsert URL（完整路径，含 /api/v1/usage/ledger；未设则只写本地 jsonl）
-  SID_CODE_BUDGET_ENDPOINT      远程预算 URL（完整路径，含 /api/v1/ctl/budget；未设则不拉取，fail-open）
+  SID_CODE_BACKEND_URL          企业后端地址（覆盖 settings 的 backend.url）。登录 / 策略 / 预算 / 账本 /
+                                事件 / flag / 轨迹上传全部由它推出路径，只填 base（如 https://<后端>/traj）
+  SID_CODE_POLICY_ENDPOINT      已弃用：远程策略完整 URL。仅在未配 backend.url 时生效，下个版本删除
+  SID_CODE_USAGE_ENDPOINT       已弃用：账本上报完整 URL。仅在未配 backend.url 时生效，下个版本删除
+  SID_CODE_BUDGET_ENDPOINT      已弃用：远程预算完整 URL。仅在未配 backend.url 时生效，下个版本删除
 
   功能开关:
   SID_CODE_TOOL_SEARCH          工具延迟加载模式 (true/false/auto/auto:N)
@@ -205,10 +211,10 @@ Worktree 隔离:
   SID_CODE_HOME                 SID_CONFIG_DIR 的兼容别名（历史上仅轨迹子系统读它）；新配置请用 SID_CONFIG_DIR
   SID_CODE_TMPDIR               临时目录覆盖（沙箱/测试用）
   SID_RIPGREP_PATH              指定 rg 可执行文件路径（缺省用内嵌释放的 rg，再回退系统 PATH；sid-code doctor 会显示实际来源）
-  SID_GREP_TIMEOUT_SECONDS      grep/glob 搜索超时秒数（缺省 20，WSL 下 60）
+  SID_GREP_TIMEOUT_SECONDS      grep/glob 搜索超时秒数（缺省 20，WSL 下 60；settings.json 的 searchTimeoutSeconds 优先）
 
   安装与更新:
-  SID_CODE_CHANNEL              发布通道 stable|beta（缺省 stable）；beta 是抢先版，通道不写进本地配置，每次 update 都要带
+  SID_CODE_CHANNEL              发布通道 stable|beta（缺省沿用当前安装的通道，未装 beta 即 stable）；显式设置可切换通道
   SID_CODE_RELEASE_HOST         发布服务器地址覆盖（缺省 https://www.sid-code.cc；裸 host 自动补 https）
   SID_CODE_INSTALL_URL          install.sh 完整 URL 覆盖（非标准路径时用）
 
@@ -217,7 +223,7 @@ Worktree 隔离:
   FORCE_COLOR                   强制颜色级别 (0-3)
 
   调试/诊断:
-  SID_CODE_DEBUG                设为 1 启用调试输出（到 stderr）
+  SID_CODE_DEBUG                设为 1 等同 --debug（写 debug.log），同时把 ink 渲染层日志打到 stderr
   SID_CODE_PROFILE_STARTUP      设为 1 启用启动性能打点
   SID_CODE_DEBUG_SSE            设为 1 启用 SSE 诊断日志
   SID_CODE_PERFETTO_TRACE       启用 Perfetto 追踪输出（性能分析）
@@ -246,6 +252,7 @@ Worktree 隔离:
   SID_CODE_WATCHDOG_HEADER_GRACE_MS  首字节余量（缺省 15000）
   SID_CODE_RESPONSE_HEADER_TIMEOUT_MS  响应头超时（缺省 300000）
   SID_CODE_MAX_SESSION_DURATION_MS  单次输入的连续执行总时长上限（缺省 0＝关闭）
+  SID_CODE_SDK_IDLE_TIMEOUT_MS  stream-json 模式 stdin 空闲上限，无轮在跑且无入站消息时结束（缺省 0＝关闭）
   SID_CODE_STDIN_TIMEOUT_MS     无头模式等待管道 stdin EOF 的上限（缺省 3000；到点用已收到的部分继续）
   SID_CODE_MAX_TIMEOUT_RETRIES  loop 层重试上限（缺省 10）
   SID_CODE_MAX_RETRIES_PER_CALL 单次调用内连接+流式重试的共享上界（缺省 12）
@@ -275,7 +282,6 @@ Worktree 隔离:
 
   高级/实验性:
   SID_CODE_PROTOCOL_STRICT      设为 1 启用协议严格模式（默认宽容模式只告警）
-  SID_CODE_RESPONSE_HEADER_TIMEOUT_MS  HTTP 响应头超时毫秒
   SID_CODE_WEBHOOK_SECRET       Webhook 认证 token（daemon 使用）
   SID_CODE_SSE_PORT             IDE SSE 端口（IDE 自动发现）
   SID_DISABLE_STRICT_TOOLS      设为 1 禁用 strict 工具模式

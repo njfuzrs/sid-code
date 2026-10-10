@@ -58,6 +58,7 @@ import {
   buildTodoReminder,
   buildTodoGateMessage,
   countUnfinished,
+  countCompleted,
   TODO_REMINDER_CONFIG,
   MAX_TODO_GATE_RETRIES,
 } from "../query/todo-reminder.ts";
@@ -122,9 +123,9 @@ export interface AgentLoopConfig {
   /** GAP-07（子代理侧）：长跑工具中间进度回调。缺省时工具执行无进度上报（无副作用）。 */
   onToolProgress?: import("./tool-executor.ts").SubAgentToolProgress;
   /** H9：模型可用性服务（与主 fallback 引擎共享同一实例，来自 ProviderRegistry.availability）。
-   *  子代理遇 terminal 类错误（认证失败 / 模型不存在 / 内容策略）时 markTerminal，让拉黑状态跨
-   *  主路径/子代理/side-call 共享——避免同一坏模型下次子代理再选它撞一次。缺省时不做拉黑（兼容
-   *  无 registry 的旧测试）。 */
+   *  子代理对某模型用尽预算放弃时，漏斗 markSuspect（有时效的嫌疑态，默认 60s），让嫌疑跨
+   *  主路径/子代理/side-call 共享——嫌疑期内并行子代理只放一路半开探针，避免一起撞坏模型。
+   *  主线程不读嫌疑态（I4）。缺省时不做标记（兼容无 registry 的旧测试）。 */
   availability?: import("../llm/availability.ts").ModelAvailabilityService;
   /**
    * P2-1：JIT 上下文发现（子代理侧）。
@@ -381,6 +382,9 @@ async function runAgentLoopInner(
   let lastTodoReminderTurn = 0;
   // end_turn 完成度门禁的软续命次数（上限与主循环共用 MAX_TODO_GATE_RETRIES）
   let todoGateRetryCount = 0;
+  // 续命预算的复位基线：completed 项数。只改措辞的 todo_write 不复位（与主循环同一口径，
+  // 见 todo-reminder.ts countCompleted 注释），完成数增长才复位。
+  let todoGateCompletedBaseline = -1;
   // B5-4（缺口 D）：重试计数写进 `retryStats` holder（跨轮次累计，由 runAgentLoop
   // 在所有出口统一回填）。累计而非每轮重置——用户问的是"这个子代理一共重试了多少次"，
   // 而"第 3 轮重试了 2 次"这种粒度已经在遥测（type=retry + agentId）里了。
@@ -647,8 +651,8 @@ async function runAgentLoopInner(
     // 现在只声明"我是谁 + 我能不能弹窗"，韧性能力由漏斗统一提供：
     //  ① querySource 按实际子代理类型传（内置 / 自定义），进遥测可归因到路径；
     //  ② switchMode 固定 auto —— 子代理无 TUI，ask 会挂死在等不到答案的 Promise 上；
-    //  ③ availability 注入共享实例，terminal 类错误跨路径拉黑（原 H9 的能力，
-    //     漏斗内部 markTerminal 已覆盖，不必在此另写一份）。
+    //  ③ availability 注入共享实例，放弃时的嫌疑态跨路径共享（原 H9 的能力，
+    //     漏斗内部 markSuspect 已覆盖，不必在此另写一份）。
     //
     // 三层超时的分工（不要合并，见 resilient-stream.ts 的 streamTimeoutMs 注释）：
     //   漏斗 streamTimeoutMs = **单次尝试的整体上限**（180s）→ 触发后**重试**；
@@ -996,8 +1000,17 @@ async function runAgentLoopInner(
       //     主循环有真实转录背书，子代理侧没有同等证据，先不抄一个未经校准的阈值。
       //   - 续命上限与主循环共用 MAX_TODO_GATE_RETRIES，耗尽即放行（不阻断父代理），
       //     放行时留一条 warn，让「子代理收尾但清单未尽」在日志里可查。
+      //   - blocked 项不拦（countUnfinished 不含 blocked）：子代理同样可能卡在需要用户的条件上，
+      //     此时再催只会让它空转。
       const todosAtEnd = readSubAgentTodos(tools);
       const unfinishedAtEnd = todosAtEnd ? countUnfinished(todosAtEnd) : 0;
+      if (todosAtEnd) {
+        const completedNow = countCompleted(todosAtEnd);
+        if (completedNow !== todoGateCompletedBaseline) {
+          todoGateCompletedBaseline = completedNow;
+          todoGateRetryCount = 0;
+        }
+      }
       if (todosAtEnd && unfinishedAtEnd > 0) {
         if (todoGateRetryCount < MAX_TODO_GATE_RETRIES) {
           todoGateRetryCount++;

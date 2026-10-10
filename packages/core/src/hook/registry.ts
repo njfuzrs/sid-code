@@ -3,18 +3,39 @@
  * 多源加载（runtime/project/user/global）、验证、优先级排序、启用/禁用管理
  */
 
+import { HookEventName, ConfigSource, type HookConfig } from "./types.ts";
 import {
-  HookEventName,
-  ConfigSource,
-  LEGACY_EVENT_MAP,
-  type HookConfig,
-  type NewHooksConfig,
-} from "./types.ts";
-import type {
-  HooksConfig as LegacyHooksConfig,
-  HookConfig as LegacyHookConfig,
-} from "../config/config.ts";
+  normalizeHooksConfig,
+  formatHookDiagnostic,
+  type HookDiagnostic,
+  type NormalizeContext,
+} from "./config-normalize.ts";
 import { getLogger } from "../debug/logger.ts";
+import { ALL_HOOK_HANDLER_TYPES } from "./handler-types.ts";
+import { isInternalRuntimeHook } from "./enterprise-policy.ts";
+
+/**
+ * H18：声明「可 block」的事件（与 types.ts 枚举注释一致，aggregator 对它们走一票否决）。
+ * async hook 挂在这些事件上会静默失去阻塞能力，配置期要告警。
+ */
+const BLOCKING_EVENTS: ReadonlySet<HookEventName> = new Set([
+  HookEventName.PreToolUse,
+  HookEventName.UserPromptSubmit,
+  HookEventName.BeforeModel,
+  HookEventName.AfterModel,
+  HookEventName.PreCompact,
+  HookEventName.Stop,
+  HookEventName.PermissionRequest,
+  HookEventName.TeammateIdle,
+]);
+
+/** H21：有 tool_input 的事件——`if` 条件只在这些事件上能被判定（与 HookDefinition.if 文档一致） */
+const TOOL_INPUT_EVENTS: ReadonlySet<HookEventName> = new Set([
+  HookEventName.PreToolUse,
+  HookEventName.PostToolUse,
+  HookEventName.PostToolUseFailure,
+  HookEventName.PermissionRequest,
+]);
 
 /** 注册表条目 */
 export interface HookRegistryEntry {
@@ -51,103 +72,71 @@ export class HookRegistry {
     this.policyGate = gate;
   }
 
-  /** 从旧格式配置初始化（向后兼容） */
-  initializeFromLegacy(legacyHooks: LegacyHooksConfig): void {
-    const log = getLogger();
-    // 保留已有的 runtime hook
-    const runtimeEntries = this.entries.filter((e) => e.source === ConfigSource.Runtime);
-    this.entries = [...runtimeEntries];
+  /**
+   * HC1：按来源分层初始化。各层**按事件追加**、不互相替换（与 CC 一致），每条带真实 source。
+   * 只清掉配置文件来源的旧条目：runtime（内部 / skill）与 plugin（replacePluginHooks 管）不动。
+   */
+  initializeFromSources(
+    layers: Array<{ hooks: unknown; source: ConfigSource; ctx?: NormalizeContext }>,
+  ): HookDiagnostic[] {
+    this.entries = this.entries.filter(
+      (e) => e.source === ConfigSource.Runtime || e.source === ConfigSource.Plugin,
+    );
     this.rebuildEventIndex();
-
-    for (const [eventKey, hookList] of Object.entries(legacyHooks)) {
-      if (!hookList || !Array.isArray(hookList) || hookList.length === 0) continue;
-
-      // 解析事件名（支持旧 snake_case 和新 PascalCase）
-      const eventName = this.resolveEventName(eventKey);
-      if (!eventName) {
-        log.warn("HOOK", `无效的事件名: "${eventKey}"，跳过`);
-        continue;
-      }
-
-      for (const legacyHook of hookList) {
-        const config = this.convertLegacyHook(legacyHook);
-        if (!config) {
-          // 这里曾经是裸 `continue`，形状写错的 hook 被**静默丢弃**：加载不报错、不打日志，
-          // 配置看着没问题、hook 就是不触发，是最难自查的一类错。
-          // 最常见的错法是照抄 agent frontmatter 的嵌套形状 `{matcher, hooks:[{...}]}`
-          // ——settings.json 走的是平铺形状（matcher/command 与 type 同级），
-          // 嵌套时同级 command 缺失，convertLegacyHook 返回 null。
-          // 所以这条日志必须点名缺了哪个字段，并在嵌套形状时直接说破。
-          const type = (legacyHook as { type?: string })?.type || "command";
-          const missing =
-            type === "url" ? "url" : type === "prompt" || type === "agent" ? "prompt" : "command";
-          const looksNested =
-            legacyHook &&
-            typeof legacyHook === "object" &&
-            Array.isArray((legacyHook as { hooks?: unknown }).hooks);
-          log.warn(
-            "HOOK",
-            looksNested
-              ? `${eventKey} 的 hook 用了嵌套形状 {matcher, hooks:[...]}，settings.json 需要平铺形状` +
-                  `（把 type/command 提到与 matcher 同级）——本条已跳过，不会触发`
-              : `${eventKey} 的 hook 缺少 "${missing}" 字段（type=${type}），已跳过，不会触发`,
-          );
-          continue;
-        }
-
-        if (!this.validateHookConfig(config, eventName)) continue;
-
-        this.entries.push({
-          config,
-          source: ConfigSource.User,
-          eventName,
-          matcher: legacyHook.matcher,
-          if: legacyHook.if,
-          sequential: false,
-          enabled: true,
-        });
-        this.incrementEventIndex(eventName);
-      }
+    const diagnostics: HookDiagnostic[] = [];
+    for (const layer of layers) {
+      diagnostics.push(...this.addNormalized(layer.hooks, layer.source, layer.ctx));
     }
-
-    log.debug("HOOK", `注册表初始化完成，共 ${this.entries.length} 个 hook`);
+    for (const d of diagnostics) {
+      getLogger()[d.level === "error" ? "warn" : "debug"]("HOOK", formatHookDiagnostic(d));
+    }
+    getLogger().debug("HOOK", `注册表初始化完成，共 ${this.entries.length} 个 hook`);
+    return diagnostics;
   }
 
-  /** 从新格式配置初始化 */
-  initializeFromNew(newHooks: NewHooksConfig, source: ConfigSource = ConfigSource.User): void {
-    const log = getLogger();
+  /**
+   * 归一化一份 hooks 配置并注册到指定来源（插件 / skill / agent / settings 共用）。
+   * @returns 归一化诊断
+   */
+  addNormalized(
+    raw: unknown,
+    source: ConfigSource,
+    ctx?: NormalizeContext,
+    meta?: { skillName?: string; hookScope?: string },
+  ): HookDiagnostic[] {
+    const { entries, diagnostics } = normalizeHooksConfig(raw, source, ctx);
+    for (const n of entries) {
+      if (!this.validateHookConfig(n.config, n.eventName)) continue;
+      this.warnOnUnusableIf(n.eventName, n.if);
+      this.entries.push({
+        config: n.config,
+        source,
+        eventName: n.eventName,
+        matcher: n.matcher,
+        if: n.if,
+        // H23：sequential 透传（原先硬编码 false）
+        sequential: n.sequential === true,
+        enabled: true,
+        ...(meta?.skillName ? { skillName: meta.skillName } : {}),
+        ...(meta?.hookScope ? { hookScope: meta.hookScope } : {}),
+        ...(n.once ? { once: true, executed: false } : {}),
+      });
+      this.incrementEventIndex(n.eventName);
+    }
+    return diagnostics;
+  }
 
-    for (const [eventName, definitions] of Object.entries(newHooks)) {
-      if (!definitions || !Array.isArray(definitions)) continue;
-
-      const resolvedEvent = this.resolveEventName(eventName);
-      if (!resolvedEvent) {
-        log.warn("HOOK", `无效的事件名: "${eventName}"，跳过`);
-        continue;
-      }
-
-      for (const def of definitions) {
-        if (!def || typeof def !== "object" || !Array.isArray(def.hooks)) {
-          log.warn("HOOK", `无效的 hook 定义: ${JSON.stringify(def)?.slice(0, 100)}`);
-          continue;
-        }
-
-        for (const hookConfig of def.hooks) {
-          if (!this.validateHookConfig(hookConfig, resolvedEvent)) continue;
-
-          hookConfig.source = source;
-          this.entries.push({
-            config: hookConfig,
-            source,
-            eventName: resolvedEvent,
-            matcher: def.matcher,
-            if: def.if,
-            sequential: def.sequential,
-            enabled: true,
-          });
-          this.incrementEventIndex(resolvedEvent);
-        }
-      }
+  /**
+   * H21：`if` 依赖 tool_input，配在非工具事件上永远不命中（planner 判不命中是对的，不该在无法判定时放行）。
+   * 告警放在注册期而不是触发期：触发期打会每轮刷屏。语法错在触发期已有 warn，「用错事件」原先没有任何提示。
+   */
+  private warnOnUnusableIf(eventName: HookEventName, ifCond?: string): void {
+    if (ifCond?.trim() && !TOOL_INPUT_EVENTS.has(eventName)) {
+      getLogger().warn(
+        "HOOK",
+        `${eventName} 上的 hook 配了 if 条件 "${ifCond}"，但该事件没有 tool_input，if 永远不命中——` +
+          `本条 hook 不会触发。if 只在 ${[...TOOL_INPUT_EVENTS].join(" / ")} 上生效`,
+      );
     }
   }
 
@@ -162,6 +151,7 @@ export class HookRegistry {
     if (!this.validateHookConfig(config, eventName)) {
       throw new Error(`无效的 hook 配置: ${eventName} from ${source}`);
     }
+    this.warnOnUnusableIf(eventName, options?.if);
 
     this.entries.push({
       config,
@@ -189,7 +179,17 @@ export class HookRegistry {
 
     // G5：用户级 settings.json 的 disableAllHooks。与企业策略的同名字段是两个来源，
     // 任一为 true 即全禁用。放在企业门控之前：用户显式关了就不必再逐条问企业策略。
-    if (userDisabledAllHooks()) return [];
+    // H28：「全部」只指用户可配置的 hook（command/url/prompt/agent）。type=runtime 只能由内部代码
+    // 注册（settings / 插件都配不出来），承载的是轨迹采集、遥测探针、会话指标——原先一起被关，
+    // 越是管得严的企业越拿不到自己的度量数据，而「采集停了」与「没人用」在数据上不可区分。
+    if (userDisabledAllHooks()) {
+      const kept = entries.filter(isInternalRuntimeHook);
+      this.reportDisableAllHooks("用户 settings.json", entries.length - kept.length, kept.length);
+      entries = kept;
+    } else if (this.policyGate?.isDisabled) {
+      const kept = entries.filter(isInternalRuntimeHook).length;
+      this.reportDisableAllHooks("企业策略", entries.length - kept, kept);
+    }
 
     // G13：企业策略门控——disableAllHooks / allowManagedHooksOnly / blockedCommands 等。
     // 门控读取 config.source，故过滤前把 entry.source 回填到 config.source（entry 与 config 分别存 source）。
@@ -208,6 +208,11 @@ export class HookRegistry {
   /**
    * 注册 Skill 声明的会话级 hook（Task 7）
    * source 固定为 Runtime，附带 skillName / once 元数据。
+   *
+   * H11：会话隔离靠**实例边界**，不靠 sessionId——每个 App 构造一个 HookSystem（cli/app.ts），
+   * 声明了 hooks 的子代理用 buildAgentHookSystem 另起一个实例。所以 entry 里刻意不存 sessionId。
+   * 曾有一个按 sessionId 分桶的 SessionHookManager 承担同一职责，零调用，已删除；
+   * 若将来同一个 HookSystem 要同时服务多个会话，要把 sessionId 补到这里，而不是再写一个管理器。
    */
   registerSessionHook(
     config: HookConfig,
@@ -298,6 +303,18 @@ export class HookRegistry {
     return removed;
   }
 
+  /** H28：disableAllHooks 生效时说清影响范围（每个来源只报一次，避免每次派发刷屏） */
+  private disableAllReported = new Set<string>();
+  private reportDisableAllHooks(origin: string, disabled: number, keptInternal: number): void {
+    if (this.disableAllReported.has(origin)) return;
+    this.disableAllReported.add(origin);
+    getLogger().info(
+      "HOOK",
+      `disableAllHooks 已生效（来源：${origin}）：本事件屏蔽 ${disabled} 个用户可配置 hook，` +
+        `保留 ${keptInternal} 个内部 runtime hook（轨迹 / 遥测 / 会话指标，不受此开关影响）`,
+    );
+  }
+
   /** 获取 hook 名称 */
   getHookName(entry: HookRegistryEntry): string {
     const cfg = entry.config;
@@ -309,72 +326,10 @@ export class HookRegistry {
 
   // ---- 私有方法 ----
 
-  /** 解析事件名（支持旧 snake_case 和新 PascalCase） */
-  private resolveEventName(name: string): HookEventName | null {
-    // 直接匹配 PascalCase
-    const values = Object.values(HookEventName);
-    if (values.includes(name as HookEventName)) {
-      return name as HookEventName;
-    }
-    // 旧 snake_case 映射
-    if (name in LEGACY_EVENT_MAP) {
-      return LEGACY_EVENT_MAP[name];
-    }
-    return null;
-  }
-
-  /** 将旧格式 HookConfig 转换为新格式 */
-  private convertLegacyHook(legacy: LegacyHookConfig): HookConfig | null {
-    const type = legacy.type || "command";
-    if (type === "url") {
-      if (!legacy.url) return null;
-      return {
-        type: "url",
-        url: legacy.url,
-        method: legacy.method,
-        headers: legacy.headers,
-        timeout: legacy.timeout,
-      };
-    }
-    // G5：prompt 类型（LLM 单轮验证）
-    if (type === "prompt") {
-      if (!legacy.prompt) return null;
-      return {
-        type: "prompt",
-        name: legacy.name,
-        prompt: legacy.prompt,
-        model: legacy.model,
-        timeout: legacy.timeout,
-      };
-    }
-    // G5：agent 类型（多轮子代理验证）
-    if (type === "agent") {
-      if (!legacy.prompt) return null;
-      return {
-        type: "agent",
-        name: legacy.name,
-        prompt: legacy.prompt,
-        model: legacy.model,
-        tools: legacy.tools,
-        timeout: legacy.timeout,
-      };
-    }
-    // command
-    if (!legacy.command) return null;
-    return {
-      type: "command",
-      name: legacy.name,
-      command: legacy.command,
-      timeout: legacy.timeout,
-      async: legacy.async, // G7：后台异步执行
-      asyncRewake: legacy.asyncRewake, // G7：exit 2 回灌唤醒
-    };
-  }
-
   /** 验证 hook 配置 */
   private validateHookConfig(config: HookConfig, eventName: HookEventName): boolean {
     const log = getLogger();
-    if (!config.type || !["command", "url", "runtime", "prompt", "agent"].includes(config.type)) {
+    if (!config.type || !(ALL_HOOK_HANDLER_TYPES as readonly string[]).includes(config.type)) {
       log.warn("HOOK", `无效的 hook 类型: ${config.type} (事件: ${eventName})`);
       return false;
     }
@@ -398,6 +353,16 @@ export class HookRegistry {
       log.warn("HOOK", `agent hook 缺少 prompt 字段 (事件: ${eventName})`);
       return false;
     }
+    // H18：async 的定义就是不等结果，所以它的 exit 2 / deny 永远赶不上本轮决策。这是设计，
+    // 但用户的心智是「async 只是不占时间」，实际语义是「放弃这个 hook 的一切决策权」——要说出来。
+    // 只告警不拒绝：后台跑审计 / 通知是 async 的正当用法。
+    if (config.type === "command" && config.async === true && BLOCKING_EVENTS.has(eventName)) {
+      log.warn(
+        "HOOK",
+        `${eventName} 上的 async hook（${config.name ?? config.command.slice(0, 40)}）不能阻塞：` +
+          `后台执行的结果赶不上本轮决策，exit 2 / deny 都不会生效。要拦截请去掉 async`,
+      );
+    }
     return true;
   }
 
@@ -406,6 +371,10 @@ export class HookRegistry {
     switch (source) {
       case ConfigSource.Runtime:
         return 0;
+      case ConfigSource.Managed:
+        return 0;
+      case ConfigSource.Local:
+        return 1;
       case ConfigSource.Project:
         return 1;
       case ConfigSource.User:

@@ -25,8 +25,8 @@ async function main(): Promise<void> {
   // 快速路径 1: --version — 从 package.json 读取版本号
   if (args.length === 1 && (args[0] === "--version" || args[0] === "-v")) {
     profileCheckpoint("bootstrap_route_resolved");
-    const { getVersion } = await import("@sid-code/shared/version.ts");
-    console.log(getVersion());
+    const { getVersionDisplay } = await import("@sid-code/shared/version.ts");
+    console.log(getVersionDisplay());
     return;
   }
 
@@ -121,6 +121,14 @@ async function main(): Promise<void> {
     return;
   }
 
+  // 快速路径 8.5: hooks 子命令 — 无头列出实际注册的 hook 与被跳过的条目（自检，不启动 App）
+  if (args[0] === "hooks") {
+    profileCheckpoint("bootstrap_route_resolved");
+    const { handleHooksCommand } = await import("../command/hooks-cli.ts");
+    await handleHooksCommand(args.slice(1));
+    return;
+  }
+
   // 快速路径 9: mcp 子命令（缺口 A-3）— 无头管理 MCP 服务器配置（list/get/add/remove），不启动 App
   if (args[0] === "mcp") {
     profileCheckpoint("bootstrap_route_resolved");
@@ -129,11 +137,12 @@ async function main(): Promise<void> {
     return;
   }
 
-  // 快速路径 10: auth 子命令（缺口 A-1 可行子集）— 认证配置诊断（status），login/logout 不适用
-  if (args[0] === "auth") {
+  // 快速路径 10: auth 子命令 — login / logout（P2 飞书登录）+ status（登录态 + 模型 Key 诊断）
+  // 顶层 `sid-code login` / `sid-code logout` 是 `auth login` / `auth logout` 的别名
+  if (args[0] === "auth" || args[0] === "login" || args[0] === "logout") {
     profileCheckpoint("bootstrap_route_resolved");
     const { handleAuthCommand } = await import("../command/auth.ts");
-    await handleAuthCommand(args.slice(1));
+    await handleAuthCommand(args[0] === "auth" ? args.slice(1) : args);
     return;
   }
 

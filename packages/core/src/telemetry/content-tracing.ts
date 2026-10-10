@@ -36,6 +36,7 @@
 import { createHash } from "node:crypto";
 import type { SpanHandle } from "./bus.ts";
 import type { Attributes } from "./types.ts";
+import { sanitizeToolName } from "../analytics/sanitize.ts";
 
 // ─────────────────────────────────────────────────────────────
 // 常量
@@ -185,15 +186,36 @@ function shortHash(content: string): string {
  * 先脱敏则无论截在哪里，留下的都是已经打过码的文本。
  */
 function prepare(raw: string): { content: string; truncated: boolean; originalBytes: number } {
-  let masked = raw;
-  try {
-    const { maskSensitiveData } = require("../permission/sensitive.ts");
-    masked = maskSensitiveData(raw);
-  } catch {
-    // 脱敏模块不可用时**不外发内容**：宁可少一条诊断数据，不可裸传凭证。
+  const masked = maskOrNull(raw);
+  // 脱敏模块不可用时**不外发内容**：宁可少一条诊断数据，不可裸传凭证。
+  if (masked === null) {
     return { content: "[脱敏模块不可用，内容已丢弃]", truncated: false, originalBytes: 0 };
   }
   return truncateToBytes(masked);
+}
+
+/** 只脱敏不截断；脱敏模块不可用时返回 null（调用方据此不外发） */
+function maskOrNull(raw: string): string | null {
+  try {
+    const { maskSensitiveData } = require("../permission/sensitive.ts");
+    return maskSensitiveData(raw);
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * span **属性**上的 preview 与字节数。
+ *
+ * 缺陷 28（P0，20260927 可观测性审计）：两个 `_preview` 属性曾直接 `slice(0,500)` 原文，
+ * 绕过了第 4 道闸门 —— 而属性与 event 走同一条 OTLP 外发通道，隐私等级完全相同。
+ * 顺序同 prepare()：**先脱敏再截**，否则横跨第 500 个字符的凭证会半截裸传。
+ * 字节数同样按脱敏后算，与 event 上的 `content_bytes`（prepare 的 originalBytes）同口径。
+ */
+function maskedPreview(raw: string): { preview: string; bytes: number } {
+  const masked = maskOrNull(raw);
+  if (masked === null) return { preview: "[脱敏模块不可用，内容已丢弃]", bytes: 0 };
+  return { preview: masked.slice(0, PREVIEW_CHARS), bytes: encoder.encode(masked).length };
 }
 
 /** 安全序列化——循环引用等异常一律降级为占位符，绝不抛到调用方 */
@@ -259,10 +281,11 @@ export function addRequestContent(
     const system = safeStringify(payload.system);
     if (system) {
       const { hash } = emitOnce(span, "content.system_prompt", system);
+      const { preview, bytes } = maskedPreview(system);
       span.setAttributes({
         "sidcode.content.system_prompt_hash": hash,
-        "sidcode.content.system_prompt_preview": system.slice(0, PREVIEW_CHARS),
-        "sidcode.content.system_prompt_bytes": encoder.encode(system).length,
+        "sidcode.content.system_prompt_preview": preview,
+        "sidcode.content.system_prompt_bytes": bytes,
       });
     }
 
@@ -343,7 +366,7 @@ export function addResponseContent(
         ...(truncated ? { content_truncated: true } : {}),
       });
       span.setAttributes({
-        "sidcode.content.output_preview": payload.text.slice(0, PREVIEW_CHARS),
+        "sidcode.content.output_preview": maskedPreview(payload.text).preview,
         "sidcode.content.output_bytes": originalBytes,
       });
     }
@@ -401,12 +424,30 @@ export function addToolContent(
   }
 }
 
-/** 复用埋点门面的工具名脱敏规则，拿不到时退化为「只保留是否 MCP」这一位信息 */
-function sanitizedToolName(name: string): string {
-  try {
-    const { sanitizeToolName } = require("../analytics/sanitize.ts");
-    return sanitizeToolName(name);
-  } catch {
-    return name.startsWith("mcp__") ? "mcp_tool" : name;
-  }
+/**
+ * span 上的**错误摘要**：先脱敏、再按 UTF-8 字节截断（缺陷 23，20260927 可观测性审计）。
+ *
+ * `recordError` 无条件执行、不受内容级 tracing 的开关约束，所以它写进 span 的任何文本
+ * 都必须过第 4 道闸门 —— 否则「内容级 tracing 没开」的用户以为 span 上没有内容，
+ * 失败路径上却有工具返回值（bash stderr、绝对路径、回显的 API key）随 OTLP 外发。
+ * 脱敏模块不可用时只留占位，不回退原文。截断按字节而非 UTF-16 码元，与本文件其余口径一致。
+ */
+export function maskedErrorSummary(raw: string, maxBytes: number = 200): string {
+  const masked = maskOrNull(raw);
+  if (masked === null) return "[脱敏模块不可用，错误详情已丢弃]";
+  const bytes = encoder.encode(masked);
+  if (bytes.length <= maxBytes) return masked;
+  return decoder.decode(bytes.slice(0, maxBytes)).replace(/\uFFFD+$/, "");
+}
+
+/**
+ * 复用埋点门面的工具名脱敏规则 —— 规则只在 `analytics/sanitize.ts` 一处。
+ *
+ * 缺陷 34：曾是 `require()` + catch 里手写一份 `mcp__ → mcp_tool` 的 fallback，即「绕过门面
+ * 自己拼」的第二份规则：sanitize 侧收紧规则时这里不会跟着变，span 通道脱敏静默降级。
+ * `sanitize.ts` 只依赖 `privacy.ts`（且是 type-only import），静态 import 没有导入链污染，
+ * 也就不需要"加载失败"这条分支。
+ */
+export function sanitizedToolName(name: string): string {
+  return sanitizeToolName(name);
 }

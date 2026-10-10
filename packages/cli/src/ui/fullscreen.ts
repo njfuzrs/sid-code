@@ -7,8 +7,8 @@
  * 退出时 src/ink fork 会自动将最终帧渲染到主缓冲区（由 AlternateBufferQuittingDisplay 提供内容）
  */
 
-import render from "@sid-code/tui-renderer/root.ts";
-import { AlternateScreen } from "@sid-code/tui-renderer/components/AlternateScreen.tsx";
+import { render } from "./render-port/runtime.ts";
+import { AlternateScreen } from "./render-port/components.ts";
 import React, { type ReactElement } from "react";
 import { getLogger } from "@sid-code/core/debug/logger.ts";
 import { registerProcessOutputErrorHandlers } from "@sid-code/shared/utils/process.ts";

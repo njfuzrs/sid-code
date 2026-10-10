@@ -262,6 +262,29 @@ let _eventWriter: EventWriter | null = null;
 const _snapshots = new Map<string, StreamSnapshot>();
 
 /**
+ * 每个 (loopId, index, agentId) 最近一次 `first_content` 的 TTFT（ms），供 AfterModel 载荷取用。
+ *
+ * ## 为什么需要它（2026-10-08 端到端核出）
+ *
+ * 主循环曾在 `query/loop.ts` 里用 `processStream` 的**可视文本**回调自己计 TTFT，
+ * 于是纯 tool_use / 纯 thinking 的轮次恒为 undefined —— 实测一个 3 轮会话只有最后那个
+ * end_turn 轮带 TTFT，前两轮 StreamPhase 明明是 9614ms / 5623ms。`/telemetry` 的 TTFT
+ * 统计因此系统性只看文本轮，违反 CLAUDE.md 的 TTFT 口径铁律（首个**任意**内容 chunk、
+ * 每次 fetch 单独计）。而 `first_content` 正是按这条铁律在 lifecycle 层算的唯一干净源，
+ * 所以 span 属性改为从这里取，不再自己另算一份。
+ *
+ * ## 为什么不放进 `_snapshots`
+ *
+ * 快照在 race settle 的 finally 里就被 `clearStreamSnapshot` 清掉（`loop.ts` 的 Fix 3），
+ * 而 AfterModel 在那之后才组装 —— 放进快照等于每次都读到 undefined。
+ *
+ * 覆盖写：同一 index 内重试时，后一次 fetch 的值覆盖前一次 —— AfterModel 描述的是
+ * **被采纳那次** fetch 的响应，TTFT 必须是同一次 fetch 的（与「不跨重试累计」同一条铁律）。
+ * 读取方用 `takeFirstContentTtft` 读一次即清，避免下一轮在没有 first_content 时拿到旧值。
+ */
+const _firstContentTtft = new Map<string, number>();
+
+/**
  * 每个 (loopId, index, agentId) 的重试序号状态（P2 · `(session,index)` 非唯一键）。
  *
  * ## 为什么必须与 `_snapshots` 分开存
@@ -363,6 +386,7 @@ export function initStreamObserver(
   _eventWriter = eventWriter;
   _snapshots.clear();
   _attempts.clear();
+  _firstContentTtft.clear();
 }
 
 /**
@@ -373,6 +397,7 @@ export function resetStreamObserver(): void {
   _eventWriter = null;
   _snapshots.clear();
   _attempts.clear();
+  _firstContentTtft.clear();
 }
 
 // ─── StreamPhase 事件（缺口 1+6） ───
@@ -456,6 +481,9 @@ export function emitStreamPhase(
     if (phase === "first_content") {
       const ttft = extra?.ttft_ms;
       const model = extra?.model;
+      if (typeof ttft === "number" && Number.isFinite(ttft) && ttft > 0) {
+        _firstContentTtft.set(key, ttft);
+      }
       if (typeof ttft === "number" && typeof model === "string") {
         recordTtftHistogram(ttft, model, {
           cacheHit: typeof extra?.cache_hit === "boolean" ? extra.cache_hit : undefined,
@@ -661,6 +689,49 @@ export function emitHttpConnected(
         session_id: _sessionId,
         timestamp: new Date().toISOString(),
         data: { index, ...data },
+      });
+    }
+  } catch {
+    /* 可观测性不影响正常流程 */
+  }
+}
+
+// ─── BilledRequest 事件（B47：计费恒等式落到真实轨迹） ───
+
+/**
+ * 记录一次权威计费事件（= 一次 fetch 的钱，无论谁发起）。调用点：`llm/billing-sink.ts`
+ * 的 `recordBilledRequest` **去重之后**。
+ *
+ * 为什么要落盘：`HttpConnected == 计费事件数` 这条恒等式此前只在单测里断言，
+ * 计费事件只通知内存观察者，真实会话里没法数 —— 「修好了」只能从测试推，
+ * 不能从轨迹证。落成独立事件后 `trace/digest.ts` 逐会话复算，不等即报异常。
+ *
+ * 放在去重之后而非 provider 里：同一 fetch 被 emit 两次时只能落一条，
+ * 否则恒等式右边会被重复上报撑大，把"漏记"掩盖成"平衡"。
+ */
+export function emitBilledRequest(data: {
+  fetch_id: string;
+  index: number;
+  model: string;
+  provider: string;
+  agent_id?: string;
+  caller?: string;
+  /** 已由主循环入账（本事件只作核对） */
+  accounted: boolean;
+  /** 消费侧是否为它加钱（= shouldChargeBilledRequest），落盘便于离线核对双记 */
+  charged: boolean;
+  input_tokens: number;
+  output_tokens: number;
+  cache_read_tokens?: number;
+  cache_creation_tokens?: number;
+}): void {
+  try {
+    if (_eventWriter && _sessionId) {
+      _eventWriter({
+        event: "BilledRequest",
+        session_id: _sessionId,
+        timestamp: new Date().toISOString(),
+        data: data as unknown as Record<string, unknown>,
       });
     }
   } catch {
@@ -916,6 +987,11 @@ export function clearAllSnapshots(loopId: string): void {
       _snapshots.delete(key);
     }
   }
+  for (const key of _firstContentTtft.keys()) {
+    if (key.startsWith(`${loopId}:`)) {
+      _firstContentTtft.delete(key);
+    }
+  }
   // attempt 计数与快照分开存（见 `_attempts` 注释），但**生命周期在这里对齐**：
   // queryLoop 结束即整轮结束，留着会让下一个 loop 复用同 index 时从旧序号续起。
   for (const key of _attempts.keys()) {
@@ -953,6 +1029,29 @@ export function cleanupAgentSnapshots(agentId: string): void {
       _attempts.delete(key);
     }
   }
+  for (const key of _firstContentTtft.keys()) {
+    if (key.includes(marker)) {
+      _firstContentTtft.delete(key);
+    }
+  }
+}
+
+/**
+ * 取走指定 index 最近一次 `first_content` 的 TTFT（读一次即清）。没有则返回 undefined。
+ *
+ * 口径与 `StreamPhase("first_content").ttft_ms` 完全相同（同一个值），见 `_firstContentTtft` 注释。
+ * 调用方在发起一轮请求**之前**也应调一次丢弃残留，保证读到的只可能是本轮 fetch 产生的值。
+ */
+export function takeFirstContentTtft(
+  index: number,
+  loopId?: string,
+  agentId?: string,
+): number | undefined {
+  const effectiveLoopId = loopId ?? currentSseDumpContext().loopId;
+  const key = makeSnapshotKey(effectiveLoopId, index, agentId);
+  const v = _firstContentTtft.get(key);
+  _firstContentTtft.delete(key);
+  return v;
 }
 
 // ─── WatchdogKill 事件（T1：setInterval 看门狗强杀） ───

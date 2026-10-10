@@ -62,7 +62,14 @@ export async function handleAgentsCommand(args: string[]): Promise<void> {
       source: "built-in",
       model: def.model ?? "(主模型)",
       description: def.description,
-      tools: def.tools && def.tools.length > 0 ? def.tools.join(", ") : "(全部)",
+      // summarize 的 tools 字段为空，但空在这里的含义是「零工具」而不是「不限制」：
+      // filterToolsForAgent 对它直接 return []（core/agent/tool-filter.ts）。按通用规则显示「(全部)」就说反了。
+      tools:
+        def.agentType === "summarize"
+          ? "(无，纯文本)"
+          : def.tools && def.tools.length > 0
+            ? def.tools.join(", ")
+            : "(全部)",
     });
   }
 

@@ -17,10 +17,9 @@ const statusline: UnifiedCommand = {
   type: "local",
   name: "statusline",
   aliases: [],
-  description: "配置自定义状态栏脚本（stdin JSON → stdout 状态栏，对齐 CC）",
+  description: "配置自定义状态栏脚本（stdin JSON → stdout 状态栏）",
   source: "builtin",
   userInvocable: true,
-  disableModelInvocation: true,
   immediate: true,
   load: () => import("./statusline.ts").then((m) => m.default),
 };

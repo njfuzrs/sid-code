@@ -12,9 +12,9 @@
  */
 
 import React from "react";
-import Box from "@sid-code/tui-renderer/components/Box.tsx";
-import Text from "@sid-code/tui-renderer/components/Text.tsx";
-import type { Color } from "@sid-code/tui-renderer/styles.ts";
+import { Box } from "../../render-port/components.ts";
+import { Text } from "../../render-port/components.ts";
+import type { Color } from "../../render-port/types.ts";
 import { theme } from "../../semantic-colors.ts";
 import { getAgentInkColor } from "@sid-code/core/agent/color.ts";
 import { BULLET, TREE_BRANCH } from "../../constants/figures.ts";

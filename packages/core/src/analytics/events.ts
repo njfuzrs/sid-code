@@ -30,6 +30,8 @@ import { PROTECTED_PREFIX } from "./privacy.ts";
 import { asVerified } from "./types.ts";
 import { sanitizeToolName, safeFileExtension, mcpToolDetailsForAnalytics } from "./sanitize.ts";
 import type { DefenseLayer, DefenseOutcome } from "../telemetry/metrics/defense-metrics.ts";
+import { recordPermissionDecision } from "../permission/decision-telemetry.ts";
+import { getPluginMarketplace, type PluginToolOrigin } from "./plugin-attribution.ts";
 
 // ─────────────────────────────────────────────────────────────
 // 事件名单一事实源
@@ -65,6 +67,7 @@ export const EVENT_NAMES = {
   // ── 漏斗 6 · 记忆：写进去的记忆有没有被读到（P1-12）──
   MEMORY_INDEX_HEALTH: "memory_index_health",
   MEMORY_INJECT: "memory_inject",
+  MEMORY_READ: "memory_read",
   MEMORY_GUARD: "memory_guard",
 
   // ── 漏斗 7 · 企业策略：远程策略到底有没有在拦东西（M4）──
@@ -73,6 +76,10 @@ export const EVENT_NAMES = {
   GUARDRAIL_TRIGGERED: "guardrail_triggered",
   // ── 漏斗 9 · 上下文组装：每轮真实用了多少、压缩档位（M4）──
   CONTEXT_ASSEMBLED: "context_assembled",
+
+  // ── 漏斗 10 · 插件：哪个市场插件被谁用了几次 ──
+  TOOL_INVOKED: "tool_invoked",
+  PLUGIN_INSTALLED: "plugin_installed",
 } as const;
 
 export type EventName = (typeof EVENT_NAMES)[keyof typeof EVENT_NAMES];
@@ -99,6 +106,10 @@ function v(s: string): VerifiedNotCodeOrFilepaths {
  *   - `_PROTECTED_mcp_*`：真实 server / tool 名，仅特权后端可见
  *
  * 业务侧拿不到「不脱敏地记一个工具名」的接口，这是刻意的。
+ *
+ * @internal 导出**仅供测试**直接断言脱敏规则（`instrumentation-privacy.test.ts`）。
+ * 生产代码一律走 `logXxx` 门面：自己 import 它拼字段就绕过了 `instrumentation-sentinel`
+ * 的 logEvent 强制脱敏门禁（缺陷 34）；`tests/analytics/field-builders-test-only.test.ts` 拦这个。
  */
 export function toolNameFields(toolName: string): EventMetadata {
   const fields: EventMetadata = {
@@ -119,6 +130,8 @@ export function toolNameFields(toolName: string): EventMetadata {
  *
  * 路径含用户目录结构（`/Users/<name>/work/<client>/…`），本身就是 PII。
  * 缺陷清单 P1-6 点明：补埋点时不接这层，等于「把工具名和路径裸传出去」。
+ *
+ * @internal 导出仅供测试，生产走 `logXxx` 门面（同 {@link toolNameFields}，缺陷 34）。
  */
 export function filePathFields(filePath: string | undefined): EventMetadata {
   if (typeof filePath !== "string" || filePath.length === 0) return {};
@@ -287,6 +300,7 @@ export type PermissionDenyReasonType =
   | "mode"
   | "safetyCheck"
   | "dangerousCommand"
+  | "destructiveTool"
   | "pathValidation"
   | "sessionMemory"
   | "denialTracking"
@@ -295,8 +309,14 @@ export type PermissionDenyReasonType =
 /**
  * 权限批准。needsPrompt 区分「弹过窗才批」与「规则直接放行」。
  *
- * `context` 缺省为 `"main"`：本函数在补 context 之前只有主循环在调，
- * 缺省值取主循环使得既有调用点语义不变（而不是多出一桶 `undefined`）。
+ * `context` **必填**（缺陷 5）：原先缺省为 `"main"`，于是子代理 / forked 路径补调用点时
+ * 漏传 context 会被静默归进 main 桶 ——「漏传」与「确实是 main」在数据里长得一模一样。
+ * 必填让漏传在类型层就报出来。
+ *
+ * ⚠️ allow 与 deny 必须覆盖**同一组**执行路径：拒绝率 = deny / (allow + deny)，
+ * 原先 deny 覆盖 main/subagent/forked 三路而 allow 只有 main，子代理里 10 allow + 2 deny
+ * 在盘上算出拒绝率 100%，偏向「看起来更不安全」并诱导放宽规则。
+ * 门禁在 `tests/analytics/instrumentation-sentinel.test.ts`「权限漏斗分子分母同口径」。
  */
 export function logPermissionAllow(
   toolName: string,
@@ -304,15 +324,31 @@ export function logPermissionAllow(
     source: PermissionSource;
     needsPrompt: boolean;
     durationMs?: number;
-    context?: PermissionContext;
+    context: PermissionContext;
+    /**
+     * B11：放行的成因（rule / mode / sessionMemory …）。只进本地轨迹，**不进遥测**：
+     * 遥测侧 permission_allow 的字段集维持原样，避免改动外发 schema。
+     */
+    reasonType?: PermissionDenyReasonType;
   },
 ): void {
   emit(EVENT_NAMES.PERMISSION_ALLOW, {
     ...toolNameFields(toolName),
     source: v(opts.source),
     needed_prompt: opts.needsPrompt,
-    execution_context: v(opts.context ?? "main"),
+    execution_context: v(opts.context),
     ...(opts.durationMs !== undefined ? { duration_ms: opts.durationMs } : {}),
+  });
+  // B11：同一个出口落进本地轨迹。挂在门面里而非各调用点 —— 见 decision-telemetry.ts 头注释。
+  // 不受遥测开关管辖：轨迹是本地数据，不外发。
+  recordPermissionDecision({
+    tool: toolName,
+    outcome: "allow",
+    prompted: opts.needsPrompt,
+    source: opts.source,
+    ...(opts.reasonType ? { reasonType: opts.reasonType } : {}),
+    context: opts.context,
+    ...(opts.durationMs !== undefined ? { durationMs: opts.durationMs } : {}),
   });
 }
 
@@ -341,7 +377,8 @@ export function logPermissionDeny(
     source: PermissionSource;
     needsPrompt: boolean;
     durationMs?: number;
-    context?: PermissionContext;
+    /** 必填，理由同 logPermissionAllow 的 context（缺陷 5） */
+    context: PermissionContext;
     reasonType?: PermissionDenyReasonType;
   },
 ): void {
@@ -349,9 +386,18 @@ export function logPermissionDeny(
     ...toolNameFields(toolName),
     source: v(opts.source),
     needed_prompt: opts.needsPrompt,
-    execution_context: v(opts.context ?? "main"),
+    execution_context: v(opts.context),
     ...(opts.reasonType ? { reason_type: v(opts.reasonType) } : {}),
     ...(opts.durationMs !== undefined ? { duration_ms: opts.durationMs } : {}),
+  });
+  recordPermissionDecision({
+    tool: toolName,
+    outcome: "deny",
+    prompted: opts.needsPrompt,
+    source: opts.source,
+    ...(opts.reasonType ? { reasonType: opts.reasonType } : {}),
+    context: opts.context,
+    ...(opts.durationMs !== undefined ? { durationMs: opts.durationMs } : {}),
   });
 }
 
@@ -554,8 +600,9 @@ export function logError(opts: {
 //     **这一个指标就能自动发现 P0-1（重名遮蔽）、P1-6（子目录分裂）、
 //     P1-7①（配额少 2 条）、P1-10（写空残留）** —— 它们的共同表征都是
 //     「磁盘上有、索引里没有」。此前发现 P0-1 靠的是手工 `comm` 比对。
-//  2. `memory_inject` —— 每次注入的索引条目数（分母）与真被 Read 的条数（分子）。
-//     回答 §12.2「写进去了 ≠ 被召回过」。
+//  2. `memory_inject` —— 每次注入的索引条目数（分母）；分子是 `memory_read`
+//     （Read 工具成功读到记忆文件时发，见 tool/read.ts）。两者合起来回答
+//     §12.2「写进去了 ≠ 被召回过」。缺陷 10 之前分子只写在注释里、没有生产者。
 //  3. `memory_guard` —— 各道防线的触发次数。**恒 0 的曲线本身就是信号** ——
 //     P1-8（secret 闸门缺三条线）与 P1-9（scope 越权）之所以长期无人知情，
 //     正是因为没有这条线：防线不存在与防线从未被触发，在轨迹里长得一模一样。
@@ -601,6 +648,29 @@ export function logMemoryInject(opts: {
     index_entry_count: opts.indexEntryCount,
     ...(opts.tokens !== undefined ? { tokens: opts.tokens } : {}),
     ...(opts.agedEntryCount !== undefined ? { aged_entry_count: opts.agedEntryCount } : {}),
+  });
+}
+
+/**
+ * 记忆被 Read（缺陷 10：`memory_inject` 的**分子**）。
+ *
+ * `memory_inject` 只记「注入了几条指针」，分母单独存在时 `index_entry_count > 0`
+ * 会被读成「记忆系统在工作」，而它只说明「索引被塞进了 prompt」。这条事件补上
+ * 「模型真的打开了一个记忆文件」这一环。
+ *
+ * 口径写死：**一次成功的 Read 调用 = 1**，不按会话去重（去重在查询侧做，
+ * 原始事件保留重复读这个信号）；读 MEMORY.md 索引本身单独标 `is_index`，
+ * 不计入「读了一条记忆」。同漏斗纪律：不记路径、不记文件名、不记内容。
+ */
+export function logMemoryRead(opts: {
+  /** project / global / agent / team */
+  scope: string;
+  /** 读的是 MEMORY.md 索引本身而不是某条记忆 */
+  isIndex: boolean;
+}): void {
+  emit(EVENT_NAMES.MEMORY_READ, {
+    memory_scope: v(opts.scope),
+    is_index: opts.isIndex,
   });
 }
 
@@ -733,8 +803,11 @@ export function logGuardrailTriggered(opts: {
 /**
  * 工具执行成功：60s 内同一 tool 的未决护栏记一条 suspected_false_positive。
  * 挂在 logToolSuccess 里，主循环 / 子代理 / forked 三条路径一处覆盖。
+ *
+ * 刻意**不 export**（缺陷 6）：唯一调用方是本文件的 logToolSuccess，外部零调用（含测试）。
+ * 导出会让人以为「别的模块该在某个时机调它」，而那样会与 logToolSuccess 里的那次重复计数。
  */
-export function noteGuardrailToolSuccess(toolName: string): void {
+function noteGuardrailToolSuccess(toolName: string): void {
   if (!toolName) return;
   const now = Date.now();
   for (const entry of pendingGuardrails) {
@@ -805,6 +878,71 @@ export function logContextAssembled(opts: {
     blocking: opts.blocking,
     calibrated: opts.calibrated,
     tool_count: opts.toolCount,
+  });
+}
+
+// ─────────────────────────────────────────────────────────────
+// 漏斗 10 · 插件：哪个市场插件被谁用了几次
+// ─────────────────────────────────────────────────────────────
+//
+// 为什么这两条事件的插件名 / 工具名**不加 `_PROTECTED_` 前缀**（与漏斗 1 的硬约束 1 不同）：
+// 只对「从企业市场安装的插件」发（plugin-attribution.ts 的注册表是唯一判据），
+// 这些插件名、市场名、MCP 工具名、skill 名都是**管理员上架时登记、审核过的**公开目录项，
+// 不是用户私有的服务名。用户自己配的 MCP、本地目录插件、`--plugin-dir`、内置插件
+// 一律查不到注册表 ⇒ 不发，所以私有名字不会经这条路出去。
+// 反过来，若加了 `_PROTECTED_`，HTTP 后端默认 stripProtected=true 会剥掉，
+// 「按插件聚合调用次数」又回到取不到数据的原点 —— 那正是新开这条事件的理由。
+
+/**
+ * 一次市场插件工具调用（成功或失败都算，每次调用一条）。
+ *
+ * 发点在**工具自身的 execute 里**（MCPToolAdapter / SkillMetaTool），不在各执行器：
+ * 主循环、进程内子代理、spawn 子代理、forked agent 四条路最终都调 `tool.execute`，
+ * 在工具里发天然只有一个汇聚点，不会因为某条执行器漏接或两层都接而少计 / 重计。
+ *
+ * 只出插件名 / 市场名 / 组件类型 / 插件内工具名 / 脱敏工具名，**不带任何参数内容**。
+ * 不是市场插件时静默不发。
+ */
+export function logToolInvoked(toolName: string, origin: PluginToolOrigin | undefined): void {
+  if (!origin) return;
+  const marketplace = getPluginMarketplace(origin.pluginName);
+  if (!marketplace) return;
+  emit(EVENT_NAMES.TOOL_INVOKED, {
+    plugin_name: v(origin.pluginName),
+    plugin_marketplace: v(marketplace),
+    plugin_component: v(origin.component),
+    plugin_tool: v(origin.pluginTool),
+    tool_name: v(sanitizeToolName(toolName)),
+  });
+}
+
+/**
+ * 市场插件安装 / 更新完成。调用点在 cli 的市场安装流程（插件市场客户端 PR 接线）。
+ * 字段不加 `_PROTECTED_` 的理由同 tool_invoked（见本节顶部）。
+ */
+export function logPluginInstalled(opts: {
+  pluginName: string;
+  marketplace: string;
+  version: string;
+  action: "install" | "update";
+  components: {
+    skills: number;
+    commands: number;
+    agents: number;
+    hooks: number;
+    mcpServers: number;
+  };
+}): void {
+  emit(EVENT_NAMES.PLUGIN_INSTALLED, {
+    plugin_name: v(opts.pluginName),
+    plugin_marketplace: v(opts.marketplace),
+    plugin_version: v(opts.version),
+    install_action: v(opts.action),
+    component_skills: opts.components.skills,
+    component_commands: opts.components.commands,
+    component_agents: opts.components.agents,
+    component_hooks: opts.components.hooks,
+    component_mcp_servers: opts.components.mcpServers,
   });
 }
 

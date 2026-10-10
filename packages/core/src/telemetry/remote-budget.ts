@@ -2,7 +2,8 @@
  * 远程预算加载器（M5 PR-5.2）。
  *
  * 独立于 PolicySettings：ALLOWED_REMOTE_KEYS 不含 quota / costLimit（R4）。
- * 端点只读 `SID_CODE_BUDGET_ENDPOINT`。远程 body 里的 `budgetEndpoint` 一律忽略（自举）。
+ * 端点来自 `resolveEndpoint("budget")`（backend.url 推出 GET /ctl/budget；
+ * 旧 SID_CODE_BUDGET_ENDPOINT 仅作兼容）。远程 body 里的 `budgetEndpoint` 一律忽略（自举）。
  *
  * fail-open：401 / 5xx / 超时 / 明文拒绝 / 无凭据 → 当没配远程预算。
  * 本地 costLimit 硬停保持不变。
@@ -23,8 +24,8 @@
 
 import { chmodSync, existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { dirname } from "node:path";
-import { applyDeviceAuth, getUsableCredentialToken } from "../identity/credential.ts";
-import { isNonLocalHttp } from "../config/policy.ts";
+import { applyDeviceAuth, getUsableCredentialToken, RELOGIN_HINT } from "../identity/credential.ts";
+import { resolveEndpoint } from "../identity/endpoints.ts";
 import { sidPaths } from "../config/paths.ts";
 import { getLogger } from "../debug/logger.ts";
 import { onUsageLedgerRemotePushed } from "./usage-ledger-remote.ts";
@@ -71,7 +72,6 @@ export type RemoteBudgetCheck =
 const BOOTSTRAP_KEYS = new Set(["budgetEndpoint", "endpoint", "SID_CODE_BUDGET_ENDPOINT"]);
 
 let warnedNoCredential = false;
-let warnedPlaintext = false;
 let warnedCorruptCache = false;
 let lastGetAt = 0;
 let lastPushedSessionId: string | undefined;
@@ -81,9 +81,7 @@ let pushHookRegistered = false;
 let lastBudget: RemoteBudget | null | undefined;
 
 function budgetEndpoint(): string | undefined {
-  const raw = process.env.SID_CODE_BUDGET_ENDPOINT;
-  if (!raw || raw.trim() === "") return undefined;
-  return raw.trim();
+  return resolveEndpoint("budget")?.url;
 }
 
 function parseEnforcement(raw: unknown): BudgetEnforcement {
@@ -313,7 +311,10 @@ function interpret(
     return null;
   }
   if (result.status === 401 || result.status >= 500) {
-    log.warn("BUDGET", `远程预算 HTTP ${result.status}（fail-open，当没配）`);
+    log.warn(
+      "BUDGET",
+      `远程预算 HTTP ${result.status}（fail-open，当没配）${result.status === 401 ? `。${RELOGIN_HINT}` : ""}`,
+    );
     lastBudget = null;
     return null;
   }
@@ -340,24 +341,13 @@ function interpret(
 }
 
 /**
- * 启动拉一次。未配 endpoint / 明文 / 无凭据 → null，零硬停。
+ * 启动拉一次。未配 endpoint（明文已由 resolveEndpoint 拒绝）/ 无凭据 → null，零硬停。
  */
 export async function loadRemoteBudget(): Promise<RemoteBudget | null> {
   ensurePushHook();
   const log = getLogger();
   const endpoint = budgetEndpoint();
   if (!endpoint) {
-    lastBudget = null;
-    return null;
-  }
-  if (isNonLocalHttp(endpoint)) {
-    if (!warnedPlaintext) {
-      warnedPlaintext = true;
-      log.warn(
-        "BUDGET",
-        `SID_CODE_BUDGET_ENDPOINT 拒绝明文非本地地址（只允许 https:// 或 http://127.0.0.1|localhost）: ${endpoint}`,
-      );
-    }
     lastBudget = null;
     return null;
   }
@@ -455,7 +445,6 @@ export function formatRemoteBudgetWarning(
 /** 仅测试 */
 export function __resetRemoteBudgetForTest(): void {
   warnedNoCredential = false;
-  warnedPlaintext = false;
   warnedCorruptCache = false;
   lastGetAt = 0;
   lastPushedSessionId = undefined;

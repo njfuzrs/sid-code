@@ -99,7 +99,7 @@ describe("TelemetryBus：显式 undefined 不得击穿默认值", () => {
     bus.addExporter(exporter);
 
     bus.recordMetric({
-      name: "gen_ai.client.token.usage",
+      name: "gen_ai.client.inference.usage.input_tokens",
       value: 42,
       timestamp: 1_700_000_000_000,
       attributes: {},
@@ -110,7 +110,7 @@ describe("TelemetryBus：显式 undefined 不得击穿默认值", () => {
 
     expect(metricBatches).toHaveLength(1);
     expect(metricBatches[0]!.length).toBe(1);
-    expect(metricBatches[0]![0]!.name).toBe("gen_ai.client.token.usage");
+    expect(metricBatches[0]![0]!.name).toBe("gen_ai.client.inference.usage.input_tokens");
 
     await bus.shutdown();
   });
@@ -155,6 +155,36 @@ describe("TelemetryBus：显式 undefined 不得击穿默认值", () => {
     expect(total).toBeLessThan(2500);
     expect(total).toBeGreaterThan(0);
 
+    await bus.shutdown();
+  });
+});
+
+describe("metricQueue 受 maxQueueSize 约束（可观测性缺陷 4）", () => {
+  test("metric 入队超过 maxQueueSize 时丢最旧，与 spanQueue 同口径", async () => {
+    const { exporter, metricBatches } = makeRecordingExporter();
+    const bus = new TelemetryBus({
+      enabled: true,
+      exporters: [],
+      batchSize: 100_000, // 避免中途自动 flush，只验驱逐
+      maxQueueSize: 100,
+    });
+    bus.addExporter(exporter);
+    for (let i = 0; i < 250; i++) {
+      bus.recordMetric({
+        name: "m",
+        type: "counter",
+        value: i,
+        attributes: {},
+        timestamp: Date.now(),
+      } as MetricPoint);
+    }
+    await bus.flush();
+    const flushed = metricBatches.flat();
+    // 修复前：无上限 ⇒ 250
+    expect(flushed.length).toBeLessThanOrEqual(100);
+    expect(flushed.length).toBeGreaterThan(0);
+    // 丢的是最旧的：最后一条必须还在
+    expect(flushed[flushed.length - 1]!.value).toBe(249);
     await bus.shutdown();
   });
 });

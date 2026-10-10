@@ -1,16 +1,22 @@
 /**
  * 策略层抽象
- * 支持本地文件策略（managed-settings.json）和远程策略（SID_CODE_POLICY_ENDPOINT）
+ * 支持本地文件策略（managed-settings.json）和远程策略（backend.url 推出的 GET /ctl/policy）
  * first-source-wins：只取最高优先级的来源，不合并
  */
 
 import { chmodSync, existsSync, mkdirSync, readFileSync, statSync, writeFileSync } from "fs";
 import { dirname } from "path";
 import { getLogger } from "../debug/logger.ts";
-import { applyDeviceAuth, getUsableCredentialToken } from "../identity/credential.ts";
+import { applyDeviceAuth, getUsableCredentialToken, RELOGIN_HINT } from "../identity/credential.ts";
+import { resolveEndpoint } from "../identity/endpoints.ts";
 import { setModePolicy } from "../permission/mode-policy.ts";
 import { resolveManagedPolicyFile, sidPaths } from "./paths.ts";
-import { setPluginOnlyPolicy, type CustomizationSurface } from "./plugin-only-policy.ts";
+import {
+  setKnownMarketplacesPolicy,
+  setPluginOnlyPolicy,
+  type CustomizationSurface,
+  type KnownMarketplace,
+} from "./plugin-only-policy.ts";
 import { setBridgePolicy } from "../bridge/bridge-policy.ts";
 import { setPolicyLimits } from "./policy-limits.ts";
 import { setRemotePolicyPermissions } from "./remote-policy-state.ts";
@@ -44,8 +50,20 @@ export interface PolicySettings {
   allowManagedPermissionRulesOnly?: boolean;
   /** G13：禁用所有 Hook（企业管控最强档，任何来源的 hook 都不执行） */
   disableAllHooks?: boolean;
-  /** G13：只允许企业管理的 Hook（Runtime/Project 来源），屏蔽 User/Plugin/Global 来源的 hook */
+  /** G13：只允许企业管理的 Hook（Runtime/Managed 来源），屏蔽 User/Project/Plugin/Global 来源的 hook（H27：Project 随 git clone 而来，不算企业管理） */
   allowManagedHooksOnly?: boolean;
+  /**
+   * H12：以下四个 hook 门控字段原先只在 EnterprisePolicy 类型里有、app 层从不传入——配了零效果零报错。
+   * 现在经 app.ts 接到 EnterprisePolicyGate。⚠️ 只从本地 managed-settings.json 生效：远程策略的键是
+   * 与服务端 extra=forbid 对齐的闭集（ALLOWED_REMOTE_KEYS），服务端没加之前客户端单方面放行没有意义。
+   */
+  allowedHookSources?: import("../hook/types.ts").ConfigSource[];
+  /** 命令黑名单（命令词边界匹配，`/re/` 为正则）。误用防呆，不是安全边界 */
+  blockedCommands?: string[];
+  /** URL 黑名单（子串匹配） */
+  blockedUrls?: string[];
+  /** 单个 hook 最大超时（秒）；未写 timeout 的 hook 按实际缺省值判 */
+  maxHookTimeout?: number;
   /** 禁用的权限模式（通用：禁用任意模式，接进 cyclePermissionMode 与 CLI 校验） */
   disabledModes?: string[];
   /**
@@ -65,6 +83,12 @@ export interface PolicySettings {
     | boolean
     | import("./plugin-only-policy.ts").CustomizationSurface[];
   /**
+   * 只允许从这些企业市场安装 / 加载插件（P5，对齐 CC strictKnownMarketplaces 的形状）。
+   * 省略 = 不限制；数组 = 白名单（空数组 = 除内置外禁用全部插件）。
+   * 下发后本地目录安装与 --plugin-dir 一律拒绝。判定见 plugin-only-policy.ts 的 evaluatePluginOrigin。
+   */
+  strictKnownMarketplaces?: KnownMarketplace[];
+  /**
    * 远程关掉 Bridge。省略 / undefined = 未配置 = 不关。
    * false 覆盖本机 settings.json 的 bridge.enabled。true 只是显式允许，
    * 首次本机确认与 wss 要求仍在。不要做成无认证 flag：开遥控不需要远程字段。
@@ -75,10 +99,6 @@ export interface PolicySettings {
 /** 策略加载器接口（可扩展） */
 export interface PolicyLoader {
   load(): Promise<PolicySettings | null>;
-  /** 是否支持后台轮询 */
-  supportsPolling: boolean;
-  /** 轮询间隔（毫秒） */
-  pollingInterval?: number;
 }
 
 /**
@@ -110,8 +130,6 @@ export function getLastPolicyLoad(): PolicyLoadMeta | null {
 
 /** 本地文件策略加载器 */
 export class ManagedFileLoader implements PolicyLoader {
-  supportsPolling = false;
-
   async load(): Promise<PolicySettings | null> {
     const log = getLogger();
     // D6/D7：走与 settings 链、rule-loader 相同的候选链（系统级优先）。此前只读
@@ -156,29 +174,20 @@ export class ManagedFileLoader implements PolicyLoader {
  *   `POLICY_CACHE_STALE_MS`。缺一条就当无远程策略，不得续命已撤销的 deny。
  *
  * 其它：
- * - 未设 `SID_CODE_POLICY_ENDPOINT` → 立即 null，零请求（不是错误）
- * - `http://` 且 host 不是 localhost/127.0.0.1 → 拒绝请求并 warn，当 null
+ * - 地址来自 `resolveEndpoint("policy")`（backend.url 推出；旧 SID_CODE_POLICY_ENDPOINT 仅作兼容）
+ * - 未配置 → 立即 null，零请求（不是错误；`auth status` 会显示「未配置」）
+ * - 明文非本地地址由 resolveEndpoint 统一拒绝并告警，这里拿到的就是 null
  * - 200 + 空对象 `{source:"remote"}` 才是「远程明确下发了什么都不禁」（会盖掉本地）
  *
- * `supportsPolling` 保持 true，但 PolicyManager 本里程碑不轮询——生效延迟 = 下次重启。
+ * 只在启动时拉一次、不轮询——生效延迟 = 下次重启。此前留过 supportsPolling /
+ * pollingInterval（1 小时）两个字段，全仓无调用方，读起来像「每小时刷新」，B40 删除。
+ * 真要做轮询时再连同调度与缓存失效一起设计，不要只把字段加回来。
  */
 export class RemotePolicyLoader implements PolicyLoader {
-  supportsPolling = true;
-  pollingInterval = 60 * 60 * 1000; // 1 小时；本里程碑没有任何调用方 setInterval
-
   async load(): Promise<PolicySettings | null> {
     const log = getLogger();
-    const endpoint = process.env.SID_CODE_POLICY_ENDPOINT?.trim();
+    const endpoint = resolveEndpoint("policy")?.url;
     if (!endpoint) return null;
-
-    if (isNonLocalHttp(endpoint)) {
-      log.warn(
-        "POLICY",
-        `SID_CODE_POLICY_ENDPOINT 拒绝明文非本地地址（只允许 https:// 或 http://127.0.0.1|localhost）: ${endpoint}`,
-      );
-      rememberLoadMeta({ source: "none", outcome: "error", durationMs: 0 });
-      return null;
-    }
 
     let cache = readPolicyCache();
     if (cache && cache.endpoint !== endpoint) cache = null;
@@ -240,9 +249,11 @@ const ALLOWED_REMOTE_KEYS = new Set([
   "disabledModes",
   "disableBypassPermissionsMode",
   "strictPluginOnlyCustomization",
+  "strictKnownMarketplaces",
   "bridgeEnabled",
 ]);
 
+// 远程 body 不得改自己的取址（自举）。旧变量名保留在名单里：老服务端可能还会回显它。
 const BOOTSTRAP_KEYS = new Set(["policyEndpoint", "endpoint", "SID_CODE_POLICY_ENDPOINT"]);
 
 interface PolicyCacheFile {
@@ -264,24 +275,6 @@ let warnedCorruptCache = false;
 /** 进程内默认链只 fetch 一次：cli 与 app 共用。自定义 loaders 的 PolicyManager 不走这里。 */
 let inFlightDefaultLoad: Promise<PolicySettings | null> | null = null;
 let defaultLoadResult: PolicySettings | null | undefined;
-
-/**
- * 明文 HTTP 且 host 不是 loopback → 拒绝。
- * https 一律放行（证书校验交给运行时）。非法 URL 也当拒绝。
- */
-export function isNonLocalHttp(endpoint: string): boolean {
-  let url: URL;
-  try {
-    url = new URL(endpoint);
-  } catch {
-    return true;
-  }
-  const proto = url.protocol.toLowerCase();
-  if (proto === "https:") return false;
-  if (proto !== "http:") return true;
-  const host = url.hostname.toLowerCase();
-  return host !== "127.0.0.1" && host !== "localhost";
-}
 
 /**
  * 剥未知键、强制 source="remote"、丢掉自举字段。
@@ -360,6 +353,8 @@ export function sanitizeRemotePolicy(raw: unknown): PolicySettings | null {
   }
   const pluginOnly = sanitizePluginOnly(input.strictPluginOnlyCustomization);
   if (pluginOnly !== undefined) out.strictPluginOnlyCustomization = pluginOnly;
+  const known = sanitizeKnownMarketplaces(input.strictKnownMarketplaces);
+  if (known !== undefined) out.strictKnownMarketplaces = known;
   if (typeof input.bridgeEnabled === "boolean") {
     out.bridgeEnabled = input.bridgeEnabled;
   }
@@ -378,6 +373,23 @@ function asStringArray(value: unknown): string[] | undefined {
   if (!Array.isArray(value)) return undefined;
   const out = value.filter((v): v is string => typeof v === "string");
   return out;
+}
+
+/**
+ * 数组 → 只保留 `{source:"url", url:string}` 形状的项（地址合法性由 setKnownMarketplacesPolicy
+ * 再校验一次并告警）。非数组 = 未下发。**坏条目不会让整份白名单变成未下发**。
+ */
+function sanitizeKnownMarketplaces(value: unknown): KnownMarketplace[] | undefined {
+  if (!Array.isArray(value)) return undefined;
+  return value
+    .filter(
+      (v): v is KnownMarketplace =>
+        !!v &&
+        typeof v === "object" &&
+        (v as Record<string, unknown>).source === "url" &&
+        typeof (v as Record<string, unknown>).url === "string",
+    )
+    .map((v) => ({ source: "url" as const, url: v.url }));
 }
 
 function sanitizePluginOnly(value: unknown): boolean | CustomizationSurface[] | undefined {
@@ -597,7 +609,10 @@ function interpretRemoteResponse(
   }
 
   if (result.status === 401) {
-    log.warn("POLICY", `远程策略 401 elapsed_ms=${elapsedMs}：设备凭据无效或已吊销`);
+    log.warn(
+      "POLICY",
+      `远程策略 401 elapsed_ms=${elapsedMs}：设备凭据无效或已吊销，${RELOGIN_HINT}`,
+    );
     const cached = usableCachedSettings(cache, `401 elapsed_ms=${elapsedMs}`);
     rememberLoadMeta({
       source: cached ? "remote" : "none",
@@ -714,6 +729,8 @@ export function applyLoadedPolicy(policy: PolicySettings | null, meta?: PolicyLo
     setPluginOnlyPolicy(policy.strictPluginOnlyCustomization);
     setModePolicy(policy.disabledModes, policy.disableBypassPermissionsMode);
   }
+  // 与 bridge 同理：null 也要拨回，否则上次下发的白名单会留在进程里
+  setKnownMarketplacesPolicy(policy?.strictKnownMarketplaces);
   emitPolicyEnforced(policy, meta);
 }
 

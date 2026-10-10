@@ -5,7 +5,8 @@
  * 本文件只钉「改造是否真的生效」，不重复既有 fallback.test.ts 的行为覆盖。
  *
  * 三条门槛（缺一条则改造可被静默回退成"标志位置了但没人读"的原样）：
- *   ① 401 在**流式阶段**触发 retry-once 闸门，而非首个 401 就 terminal 拉黑；
+ *   ① 401 在**流式阶段**进入重试，而非首个 401 就判死（2026-10-08 起 retry-once 闸门已删，
+ *      改为 auth_suspect 同指纹 3 次封顶，见 recovery-policy.ts）；
  *   ② ECONNRESET/EPIPE 后 `keepalive: false` **进入实际 fetch 选项**
  *      （断言消费方读到，不是断言标志被置位——后者正是修复前的空转状态）；
  *   ③ 连接阶段重试 for 循环**已不存在**（防日后被"修活"成第二份平行重试实现）。
@@ -56,15 +57,15 @@ async function collect(gen: AsyncGenerator<StreamEvent>): Promise<StreamEvent[]>
 function fastConfig(extra: Record<string, unknown> = {}) {
   return {
     availability: new ModelAvailabilityService(),
-    retryBackoffBaseMs: 1,
-    retryBackoffMaxMs: 5,
+    retryBackoffBaseMs: 0,
+    retryBackoffMaxMs: 0,
     streamTimeoutMs: 5000,
     ...extra,
   };
 }
 
-describe("B1 门槛①：401 retry-once 闸门在流式阶段生效", () => {
-  test("首个 401 从流内抛出 → 重试一次并成功（不首刀 terminal 拉黑）", async () => {
+describe("B1 门槛①：401 在流式阶段进入重试", () => {
+  test("首个 401 从流内抛出 → 重试一次并成功（不首刀判死）", async () => {
     let calls = 0;
     // 关键：错误从 **generator 函数体内** 抛出，模拟真实 provider 行为
     // （惰性求值：错误发生在首次 next()，而非调用 sendMessageStream 时）。
@@ -91,12 +92,11 @@ describe("B1 门槛①：401 retry-once 闸门在流式阶段生效", () => {
     expect(events.some((e) => e.type === "message_stop")).toBe(true);
     // 没有降级（闸门在主模型上自愈，无需 fallback）
     expect(fallback.checkFallbackOccurred()).toBe(false);
-    // 主模型没被 terminal 拉黑 —— 这是「401 闸门必须置于 classifyError 之前」的判据：
-    // 若顺序颠倒，401 会先被判成 TerminalError → markTerminal，闸门永不生效。
-    expect(availability.isAvailable("primary-model").available).toBe(true);
+    // 主模型没被记嫌疑 —— 自愈的调用不留任何「放弃」证据。
+    expect(availability.isSuspect("primary-model")).toBe(false);
   });
 
-  test("第二个 401 不再重试（闸门只放一次）→ 落 terminal + 降级", async () => {
+  test("同指纹 401 连续 3 次 → 放弃本次调用 + 降级", async () => {
     let calls = 0;
     const provider: Provider = {
       name: () => "mock",
@@ -124,9 +124,9 @@ describe("B1 门槛①：401 retry-once 闸门在流式阶段生效", () => {
 
     const events = await collect(fallback.executeWithFallback(provider, BASE_PARAMS));
 
-    // 闸门只放一次：第 1 次 401 触发重试，第 2 次 401 落 terminal → 降级。
-    // 不应无限重试（若闸门失效会一直 continue）。
-    expect(calls).toBe(2);
+    // 2026-10-08 有意语义变更：旧行为是 retry-once 闸门只放一次、第 2 个 401 即 terminal（calls===2）。
+    // 现在 auth_suspect 同指纹最多 3 次后放弃。仍守住「不无限重试」：封顶存在且由族预算决定。
+    expect(calls).toBe(3);
     expect(fallback.checkFallbackOccurred()).toBe(true);
     expect(events.some((e) => e.type === "message_stop")).toBe(true);
   });

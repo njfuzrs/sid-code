@@ -27,9 +27,9 @@
  */
 
 import { createHash } from "crypto";
-import { join } from "path";
+import { join, dirname } from "path";
 import { existsSync, mkdirSync } from "fs";
-import { readdir, stat, unlink, readFile, writeFile } from "fs/promises";
+import { stat, unlink, readFile, writeFile } from "fs/promises";
 import { getLogger } from "../../debug/logger.ts";
 import { scanForSecrets, type SecretMatch } from "./secret-scanner.ts";
 import { getTeamMemPath, resolveSharedTeamDir, type TeamMemoryOptions } from "./paths.ts";
@@ -58,6 +58,11 @@ export interface TeamMemorySyncResult {
   deleted: number;
   /** 检测到的冲突数 */
   conflicts: number;
+  /**
+   * 缺陷 8：本轮按 mtime 落败、另存的冲突副本文件名（相对本地团队目录）。
+   * 计数之外给出名字，调用方（watcher / TUI）才能点名告知「哪条记忆有分歧」。
+   */
+  conflictFiles?: string[];
   /** 因含 secret 跳过 push 的**本地**文件（防外泄） */
   skippedSecrets: SkippedSecretFile[];
   /**
@@ -106,20 +111,13 @@ async function readEntries(
   const out = new Map<string, MemEntry>();
   if (!existsSync(dir)) return out;
 
-  let names: string[];
-  try {
-    names = await readdir(dir);
-  } catch {
-    return out;
-  }
+  // 缺陷 9：枚举与索引侧共用 `listTeamMemoryFiles`（递归；跳过 MEMORY.md、archive/、
+  // 点文件、冲突副本）。旧实现平铺 `readdir`，子目录文件既不同步、也不进索引 ——
+  // 字节在本地，协作者看不到，本机模型也看不到。「进索引」与「参与同步」必须是同一批。
+  const { listTeamMemoryFiles } = await import("./store.ts");
+  const names = await listTeamMemoryFiles(dir);
 
   for (const filename of names) {
-    // 只同步 .md 记忆条目；跳过 MEMORY.md 索引（各端本地重建）、隐藏文件、冲突副本
-    if (!filename.endsWith(".md")) continue;
-    if (filename === "MEMORY.md") continue;
-    if (filename.startsWith(".")) continue;
-    if (filename.includes(".conflict-")) continue;
-
     const filePath = join(dir, filename);
     try {
       const st = await stat(filePath);
@@ -177,8 +175,11 @@ async function writeManifest(localDir: string, manifest: SyncManifest): Promise<
 
 /** 安全写入一个记忆文件（确保目录存在） */
 async function writeEntry(dir: string, key: string, content: string): Promise<void> {
-  if (!existsSync(dir)) mkdirSync(dir, { recursive: true });
-  await writeFile(join(dir, key), content, "utf8");
+  // key 现在可能带子目录（`sub/x.md`），建的是文件所在目录而不只是根
+  const target = join(dir, key);
+  const parent = dirname(target);
+  if (!existsSync(parent)) mkdirSync(parent, { recursive: true });
+  await writeFile(target, content, "utf8");
 }
 
 /** 删除一个记忆文件（不存在则忽略） */
@@ -255,6 +256,7 @@ export async function syncTeamMemory(
       pushed = 0,
       deleted = 0,
       conflicts = 0;
+    const conflictFiles: string[] = [];
     const nextManifest: SyncManifest = {};
 
     for (const key of allKeys) {
@@ -334,6 +336,7 @@ export async function syncTeamMemory(
         conflicts++;
         const ts = Math.max(local.mtimeMs, shared.mtimeMs) | 0;
         const conflictName = key.replace(/\.md$/, `.conflict-${ts}.md`);
+        conflictFiles.push(conflictName);
         if (local.mtimeMs >= shared.mtimeMs) {
           // 本地较新：本地胜，远端旧版另存到两端的 conflict 副本，再推本地
           await writeEntry(localDir, conflictName, shared.content);
@@ -405,6 +408,15 @@ export async function syncTeamMemory(
         /* 埋点失败不影响同步 */
       }
     }
+    // 缺陷 8：冲突此前只有逐条 log.warn，混在日志里。汇总点名一次，指明处理动作。
+    if (conflictFiles.length > 0) {
+      log.warn(
+        "TEAMMEM",
+        `${conflictFiles.length} 条团队记忆按修改时间自动裁决，落败版本另存: ${conflictFiles.join(", ")}。` +
+          `修改时间较新不等于编辑较新（同步盘会改写 mtime），请对比后合并并删除副本；` +
+          `副本已列入团队 MEMORY.md 的「未裁决冲突」段。`,
+      );
+    }
     if (pulled || pushed || deleted || conflicts) {
       log.info(
         "TEAMMEM",
@@ -418,6 +430,7 @@ export async function syncTeamMemory(
       pushed,
       deleted,
       conflicts,
+      conflictFiles,
       skippedSecrets,
       blockedIncomingSecrets,
     };

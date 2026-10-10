@@ -13,8 +13,8 @@ description: 项目指令、个人记忆、团队记忆三层的作用范围与�
 | 机制 | 谁写 | 什么时候进上下文 | 适合放什么 |
 | --- | --- | --- | --- |
 | **CLAUDE.md** | 你手写 | 每次会话，全量 | 项目约定、规范、铁律 |
-| **记忆**（save_memory） | 模型写，你确认 | 索引每次带，正文按需读 | 你的偏好、纠正、决策 |
-| **团队记忆** | 团队共享目录 | 索引每次带 | 团队级规范与架构决策 |
+| **记忆**（save_memory） | 模型自动存（不弹确认），可 `/memory delete <key>` 删 | 索引每次带，正文按需读 | 你的偏好、纠正、决策 |
+| **团队记忆** | 模型写入本地团队目录，配了共享目录才同步给其他成员 | 索引每次带 | 团队级规范与架构决策 |
 
 先用 CLAUDE.md。写一个文件就生效，性价比最高。
 
@@ -54,20 +54,34 @@ description: 项目指令、个人记忆、团队记忆三层的作用范围与�
 不止项目根一个文件。完整合并链，**后者覆盖/累积在前者之上**：
 
 ```text
-企业 managed → 全局 → 用户规则目录 → 项目根 → 子目录 → .claude/rules/ → CLAUDE.local.md
+企业 managed → managed/rules/ → 全局 → 用户规则目录 → 项目根 → 子目录 → 项目规则目录 → CLAUDE.local.md
 ```
 
 | 层 | 位置 | 用途 |
 | --- | --- | --- |
-| managed | 系统级 managed 目录 | 组织策略基座，个人改不掉 |
+| managed | `<managed 根>/CLAUDE.md`，外加 `<managed 根>/rules/*.md`（managed 根见下表） | 组织策略基座，个人改不掉 |
 | 全局（user） | `~/.claude/CLAUDE.md`，回退 `~/.sid-code/CLAUDE.md` | 你的个人习惯，跨所有项目 |
-| 用户规则目录 | `~/.claude/rules/`，回退 `~/.sid-code/rules/` | 拆成多个文件的个人规则 |
+| 用户规则目录 | `~/.claude/rules/` 与 `~/.sid-code/rules/`，**两个目录都会加载** | 拆成多个文件的个人规则 |
 | 项目根（project） | `<项目根>/CLAUDE.md` | 团队共享，检入代码库 |
 | 子目录（subdir） | 父目录链上各级的 `CLAUDE.md` | 目录级细化规则，越深优先级越高 |
-| 规则目录 | `<项目根>/.claude/rules/*.md` | 项目规则拆分 |
-| local | `CLAUDE.local.md` | 你个人的项目内偏好，**不检入** |
+| 项目规则目录 | `<项目根>/.sid-code/rules/*.md` 与 `<项目根>/.claude/rules/*.md`，两个都读，`.sid-code/rules` 在前 | 项目规则拆分 |
+| local | `CLAUDE.local.md`（或 `.claude/CLAUDE.local.md`） | 你个人的项目内偏好，**不检入** |
 
-文件名候选除了 `CLAUDE.md` 还认 `.claude/CLAUDE.md` 等，同层多个候选取优先级最高的那个。
+managed 根按平台固定（企业管理员照这个放文件）：
+
+| 平台 | managed 根 |
+| --- | --- |
+| macOS | `/Library/Application Support/SidCode` |
+| Linux 及其他 Unix | `/etc/sid-code` |
+| Windows | `%PROGRAMDATA%\SidCode`（未设置时为 `C:\ProgramData\SidCode`） |
+
+项目根与子目录这两层的文件名候选是固定 5 个，按顺序取第一个存在的：
+
+```text
+CLAUDE.md > .claude.md > claude.md > .claude/CLAUDE.md > .claude/instructions.md
+```
+
+「同层只取一个」只管这 5 个文件名；`rules/` 目录下是全部 `*.md` 都加载。
 
 **子目录这一层实际很好用**：在 `src/ui/` 放一个 `CLAUDE.md` 写"这个目录下的组件必须
 用函数式写法"，只在动那个目录时生效，不污染全局。
@@ -176,18 +190,22 @@ CLAUDE.md 是你手写的，记忆是模型用 `save_memory` 存的，跨会话�
 - API Key、token、密码等凭证明文
 - 已经在 CLAUDE.md 里的规则
 
-存储在 `~/.sid-code/projects/<项目键>/memory/` 下。项目键用 **git 顶层目录**派生，
+存储在 `~/.sid-code/projects/<项目键>/memory/` 下。项目键用**主仓根目录**派生（`git rev-parse --git-common-dir`），
 所以同一个仓库的多个 worktree 共享同一份记忆——在 worktree 里攒的记忆回主仓照样在。
 
 管理命令：
 
 ```text
-/memory list             列出记忆
-/memory search <关键词>  搜
-/memory show <名字>      看正文
-/memory delete <名字>    删
-/memory auto             切自动记忆开关
-/memory reload           重新加载
+/memory                          无参：打开交互式记忆面板（最常用）
+/memory list                     列出记忆
+/memory search <关键词>          搜
+/memory get <key>                看某条正文
+/memory set <key> <value> [--global]  手动写一条（默认项目级，--global 写全局）
+/memory delete <key>             删
+/memory show                     看当前注入系统提示词的记忆内容（不接参数）
+/memory auto on|off|status [-p]  自动记忆开关；无参是查状态，-p 持久化到 settings.json
+/memory external allow|deny|status  CLAUDE.md 里项目外 @import 的批准开关
+/memory reload                   重新加载并刷新系统提示词
 ```
 
 **注入方式是"索引 + 按需读"**：每次会话只带一份 MEMORY.md 索引（名字 + 一行描述），
@@ -210,8 +228,11 @@ SID_CODE_AUTO_MEMORY=false sid-code
 
 ### 团队记忆
 
-共享目录模型：团队成员共用一个目录，写入后同步到各人本机，
-团队 MEMORY.md 索引也注入每个会话——否则团队知识永远进不了上下文。
+共享目录模型：模型先写进你本机的团队记忆目录，后台 watcher 按内容校验和与共享目录做增量双向同步，
+不需要额外后端。团队 MEMORY.md 索引也注入每个会话——否则团队知识永远进不了上下文。
+
+**前提是启用 `teamMemory` 并配了合法的共享目录 `teamMemory.dir`（绝对路径）**。
+没配共享目录时团队记忆只存在本机，不跨成员同步。
 
 ```bash
 SID_CODE_TEAM_MEMORY='{"enabled":true,"dir":"/shared/team-memory"}' sid-code
@@ -227,7 +248,8 @@ SID_CODE_TEAM_MEMORY='{"enabled":true,"dir":"/shared/team-memory"}' sid-code
 加载了还不遵守，通常是写法问题——把"建议用 X"改成"必须用 X，不要用 Y"。
 
 **`@` import 的文件没被读进来。**
-如果引用的路径在项目根之外（含 `~/`），需要批准才生效。这是防止恶意仓库读你本机文件的
+如果引用的路径在项目根之外（含 `~/`），需要批准才生效；之前拒绝过可以用
+`/memory external allow` 改主意。这是防止恶意仓库读你本机文件的
 设计，不是 bug。
 
 **改了 CLAUDE.md 要重启吗。**
@@ -237,12 +259,14 @@ SID_CODE_TEAM_MEMORY='{"enabled":true,"dir":"/shared/team-memory"}' sid-code
 按上面那条合并链，越靠后越优先。`CLAUDE.local.md` 最大。
 
 **我在 worktree 里让它记的东西，回主仓没了。**
-不该发生——记忆按 git 顶层目录分桶，多 worktree 共享。真遇到这情况先确认那个
-worktree 是不是同一个仓库的（`git rev-parse --show-toplevel` 对比一下）。
+不该发生——记忆按主仓根目录分桶，多 worktree 共享。真遇到这情况先确认那个
+worktree 是不是同一个仓库的（两边各跑一次 `git rev-parse --path-format=absolute --git-common-dir`，
+结果应相同）。注意 `--show-toplevel` 在 worktree 里返回的是 worktree 自己，用它对比会误判。
 
 **记忆里存了敏感信息怎么办。**
-`/memory delete <名字>` 删掉。系统提示词里已经禁止存凭证，但如果你在对话里贴过
-明文 key，它有可能被摘进 `project` 类记忆——发现了直接删。
+`save_memory` 落盘前没有人工审核环节，现有的隐私边界是三条：写入时做 secret 检测，
+疑似凭证的内容直接拒收；系统提示词明令不存凭证；事后可以 `/memory delete <key>` 删。
+如果你在对话里贴过明文 key，检测没认出来的形态仍可能被摘进 `project` 类记忆——发现了直接删。
 
 **能不能完全不用记忆，只用 CLAUDE.md。**
 可以，`autoMemory: false`。很多人就这么用，CLAUDE.md 已经覆盖大部分需求。

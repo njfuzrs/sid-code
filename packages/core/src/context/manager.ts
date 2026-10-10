@@ -38,6 +38,19 @@ const KEEP_RECENT_OUTPUTS = parseInt(process.env.SID_KEEP_RECENT_OUTPUTS ?? "6",
 const COMPRESSION_TOOL_OUTPUT_BUDGET = 50_000;
 /** 保留最近对话的比例 */
 const COMPRESSION_PRESERVE_RATIO = 0.3;
+/**
+ * 缺陷 14：保留段双下限（对齐 sc-07 §9.6）。只有比例时，一条巨型工具结果就能独自满足
+ * 保留量，保留段退化成「一条 tool_result + 它的配对」，会话笔记 / 摘要失去可核对的原文。
+ * 字符口径与 findCompressSplitPoint 的 msgChars 一致（不是 token）。
+ */
+const COMPRESSION_MIN_PRESERVE_TEXT_MESSAGES = 5;
+const COMPRESSION_MIN_PRESERVE_CHARS = 20_000;
+/**
+ * 下限往前补的上限：**额外**多保留的字符不超过总量的这个比例，保证压缩仍然压得动。
+ * 刻意按「增量」而不是「保留段总量」设上限：巨型工具结果本身就可能占保留段 90%，
+ * 按总量设上限会让补齐一步都走不动，恰好在最需要补的场景失效。
+ */
+const COMPRESSION_MAX_EXTRA_PRESERVE_RATIO = 0.2;
 
 /** 截断结果 */
 export interface TruncationResult {
@@ -1807,7 +1820,7 @@ export class Manager {
     const log = getLogger();
     const before = this.messages.length;
     const tokensBefore = this.estimateTokens();
-    const splitPoint = this.findCompressSplitPoint(0.3);
+    const splitPoint = this.findCompressSplitPoint(0.3, { minFloors: false });
 
     // P0-4：no-op 分支不再静默（此前无 else 分支，且下方日志无条件打印）。
     if (splitPoint <= 0) {
@@ -2002,7 +2015,10 @@ export class Manager {
    * 找到安全的压缩分割点（只在 user 消息处分割）
    * 确保不会在 tool_use/tool_result 对中间切割
    */
-  findCompressSplitPoint(preserveRatio: number = COMPRESSION_PRESERVE_RATIO): number {
+  findCompressSplitPoint(
+    preserveRatio: number = COMPRESSION_PRESERVE_RATIO,
+    opts: { minFloors?: boolean } = {},
+  ): number {
     const msgChars = (msg: Message): number =>
       msg.content.reduce((s, b) => {
         if (b.type === "text") return s + b.text.length;
@@ -2033,16 +2049,42 @@ export class Manager {
 
     let cumulative = 0;
     let lastSafePoint = 0;
+    let split = 0;
     for (let i = 0; i < this.messages.length; i++) {
       if (safePoints.has(i)) lastSafePoint = i;
       cumulative += msgChars(this.messages[i]);
-      // 已裁掉足够字符且拿到可用切点 → 立即返回（保留尾部 preserveRatio 比例）
+      // 已裁掉足够字符且拿到可用切点 → 停（保留尾部 preserveRatio 比例）
       if (cumulative >= targetChars && lastSafePoint > 0) {
-        return lastSafePoint;
+        split = lastSafePoint;
+        break;
       }
     }
+    if (split === 0) split = lastSafePoint;
+    if (split <= 0 || opts.minFloors === false) return split;
 
-    return lastSafePoint;
+    // 缺陷 14：双下限——保留段至少 N 条含文本的消息 **且** 至少 M 字符，不够就把切点
+    // 往前挪到更早的安全点；但保留段不超过总量的 MAX 比例，且切点必须 > 0（否则压缩 no-op）。
+    // emergencyTruncate 传 minFloors:false：上下文已溢出时，保留更多可能直接塞不下。
+    const n = this.messages.length;
+    const suffixChars = new Array<number>(n + 1).fill(0);
+    const suffixText = new Array<number>(n + 1).fill(0);
+    for (let i = n - 1; i >= 0; i--) {
+      const m = this.messages[i];
+      suffixChars[i] = suffixChars[i + 1] + msgChars(m);
+      const hasText = m.content.some((b) => b.type === "text" && b.text.trim().length > 0);
+      suffixText[i] = suffixText[i + 1] + (hasText ? 1 : 0);
+    }
+    // 字符下限不高于比例本身保留的量：短历史里 20K 不可达，否则会一路补到上限、改变旧行为。
+    const minChars = Math.min(COMPRESSION_MIN_PRESERVE_CHARS, totalChars * preserveRatio);
+    const maxPreserveChars = suffixChars[split] + totalChars * COMPRESSION_MAX_EXTRA_PRESERVE_RATIO;
+    const floorsMet = (i: number) =>
+      suffixText[i] >= COMPRESSION_MIN_PRESERVE_TEXT_MESSAGES && suffixChars[i] >= minChars;
+    for (let i = split - 1; i > 0 && !floorsMet(split); i--) {
+      if (!safePoints.has(i)) continue;
+      if (suffixChars[i] > maxPreserveChars) break;
+      split = i;
+    }
+    return split;
   }
 
   /**

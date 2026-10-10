@@ -201,7 +201,7 @@ function extractMemoryResource(req: PermissionRequest): string {
  */
 function isSafetyConfirmation(reason: PermissionDecisionReason | undefined): boolean {
   const t = reason?.type;
-  return t === "dangerousCommand" || t === "safetyCheck";
+  return t === "dangerousCommand" || t === "safetyCheck" || t === "destructiveTool";
 }
 
 /**
@@ -211,7 +211,7 @@ function isSafetyConfirmation(reason: PermissionDecisionReason | undefined): boo
  */
 function classifierMayApprove(reason: PermissionDecisionReason | undefined): boolean {
   if (!reason) return true;
-  if (reason.type === "dangerousCommand") return false;
+  if (reason.type === "dangerousCommand" || reason.type === "destructiveTool") return false;
   if (reason.type === "safetyCheck") return reason.classifierApprovable === true;
   return true;
 }
@@ -239,6 +239,16 @@ const READ_ONLY_TOOLS = new Set([
   // 其在无头模式被拒是符合设计的，不在本次放行范围内。
   "hypothesis_register",
   "hypothesis_challenge",
+  // 2026-10-02（B22，同一形态第二次）：MCP 工具默认延迟加载（registry.isToolDeferred），
+  // tool_search 是把它们调进上下文的**唯一入口**。它只改 registry 的激活集，不碰 fs /
+  // 网络 / 子进程，readOnly() 也是 true；不在本表 → 无头模式与子代理一律 deny。
+  // 实测：配了 6 个 MCP、5 个连上（88 个工具），模型主动 `tool_search("context7")`
+  // 两次都被「非交互模式自动拒绝」，最后退回 web_fetch；本机历史 70+ 会话 mcp__ 调用 0 次。
+  // 放行它不等于放行 MCP 工具：被调出来的 mcp__* 每次调用仍各自走权限判定。
+  "tool_search",
+  // 只列出已连接 server 的资源元数据（内存里的 serverStates），同样零副作用。
+  // 对照：ReadMcpResource 会把 blob 落盘、且返回外部不可信内容，**刻意不放行**。
+  "ListMcpResources",
 ]);
 
 /** 会话记忆最大条目数 */
@@ -291,6 +301,18 @@ export class PermissionChecker implements Checker {
         dangerLevel: string;
       }) => Promise<boolean>)
     | null = null;
+
+  /**
+   * B25：SDK stream-json 双向流下，ask 可以交给宿主（`can_use_tool`）。
+   * 置 true 后 isNonInteractive() 返回 false，ask 不再被就地判 deny，而是回 needsConfirmation
+   * 交给 App.requestUserConfirmation → 宿主。宿主超时 / 断开时那一侧按 deny 闭合（仍 fail-closed）。
+   * 只在 `--input-format stream-json` 下打开：没有 stdin 回路时问了也没人答。
+   */
+  private externalAskChannel = false;
+
+  setExternalAskChannel(enabled: boolean): void {
+    this.externalAskChannel = enabled;
+  }
 
   /** 设置 Bridge 远程权限代理（null 清除，回退到本地确认） */
   setBridgePermissionDelegate(
@@ -358,6 +380,7 @@ export class PermissionChecker implements Checker {
     if (this.toolClassifier) derived.setToolClassifier(this.toolClassifier);
     if (this.bridgePermissionDelegate)
       derived.setBridgePermissionDelegate(this.bridgePermissionDelegate);
+    if (this.externalAskChannel) derived.setExternalAskChannel(true);
     // 运行时扩展的允许目录白名单也一并继承（用户 /add-dir 授权对子代理同样生效）。
     for (const dir of this.getAllowedDirectories()) derived.addAllowedDirectory(dir);
     return derived;
@@ -369,6 +392,15 @@ export class PermissionChecker implements Checker {
    */
   async reloadWorkspaceRules(workspaceDir: string): Promise<void> {
     await this.ruleLoader.reloadWorkspaceSources(workspaceDir);
+    this.rules = this.ruleLoader.toPermissionRule();
+  }
+
+  /**
+   * D4：settings 文件被外部改动后重载文件来源的权限规则（运行期规则保留）。
+   * 由 app 层订阅 settingsChanged 调用；调用方还要重新下发子代理 checker（它们是快照）。
+   */
+  async reloadSettingsRules(): Promise<void> {
+    await this.ruleLoader.reloadFileSources();
     this.rules = this.ruleLoader.toPermissionRule();
   }
 
@@ -1213,6 +1245,22 @@ export class PermissionChecker implements Checker {
       };
     }
 
+    // Step 13.5（D16）：工具自报破坏性（MCP destructiveHint: true）→ 安全类确认。
+    // 与普通 ask 的区别只在下游：yesMode / auto 分类器 / PreToolUse hook allow 都不能放行它
+    // （isSafetyConfirmation）。用户显式 allow 规则、always-allow、预授权在上面已经生效，不受影响——
+    // 那是用户自己的明确决定；这里只吸收「Server 主动警告我会删东西」这条原先被丢弃的信息。
+    // hint 是 Server 自声明，只用于收紧，绝不用于放行。
+    if (tool?.isDestructive?.(req.input)) {
+      const openWorld = (tool as { isOpenWorld?: () => boolean }).isOpenWorld?.() === true;
+      log.info("PERMISSION", `${req.toolName} → 需确认(工具声明 destructive)`);
+      return {
+        allowed: false,
+        needsConfirmation: true,
+        reason: `工具 "${req.toolName}" 声明了破坏性操作，需要用户确认`,
+        decisionReason: { type: "destructiveTool", tool: req.toolName, openWorld },
+      };
+    }
+
     // Step 14: passthrough → ask（默认需要用户确认）
     log.info("PERMISSION", `${req.toolName}(${resource.slice(0, 80)}) → 需确认(默认策略)`);
     return {
@@ -1256,7 +1304,14 @@ export class PermissionChecker implements Checker {
 
     // 会话记忆快速路径（空 key 不命中：写工具 / 无 path 的 grep / 无 url 的 web_fetch）
     const memKey = this.getMemoryKey(req);
-    if (memKey && this.sessionMemory.has(memKey)) {
+    // H25：会话记忆的 allow 不能吃掉 hook 的 ask 升级。hook 的价值在于看得到规则看不到的东西
+    // （文件内容、时间、外部状态），「同一资源第 2 次访问时 hook 改主意」是它的正常用法。
+    // 只对 allow 记忆让路：deny 记忆照常早退（hook allow 不能越过用户明确拒绝）；skipPermissions 在上面已早退，不受影响。
+    const memoryYieldsToHookAsk =
+      options?.hookPermissionDecision === "ask" &&
+      !!memKey &&
+      this.sessionMemory.get(memKey) === true;
+    if (memKey && this.sessionMemory.has(memKey) && !memoryYieldsToHookAsk) {
       const allowed = this.sessionMemory.get(memKey)!;
       log.info(
         "PERMISSION",
@@ -2084,6 +2139,8 @@ export class PermissionChecker implements Checker {
 
   /** 检测是否处于非交互模式 */
   private isNonInteractive(): boolean {
+    // B25：有外部 ask 通道（SDK 宿主）时不是「无人可问」
+    if (this.externalAskChannel) return false;
     // print 模式（单次输出）或 maxTurns > 0（批处理模式）视为非交互
     return (
       this.config.print === true || (this.config.maxTurns !== undefined && this.config.maxTurns > 0)

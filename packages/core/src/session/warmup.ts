@@ -26,6 +26,7 @@ import type { Message } from "../llm/types.ts";
 import { getLogger } from "../debug/logger.ts";
 import { recordSideCall } from "../trace/side-call-sink.ts";
 import { withSideCallDeadline } from "../llm/side-call-timeout.ts";
+import { sendNonStreamingSideCall } from "../llm/side-call-nonstreaming.ts";
 import { resolveSideCallTimeouts } from "../config/network-profile.ts";
 
 export interface WarmupParams {
@@ -71,8 +72,10 @@ export async function warmupPromptCache(params: WarmupParams): Promise<boolean> 
     // 会话启动。套 10s 硬超时（Promise.race + 合并 signal），超时/失败都走下方 catch 静默降级。
     // 配置-4：走 network-profile 的 side-call 子表统一解析（env override > 默认 10s）
     const WARMUP_TIMEOUT_MS = resolveSideCallTimeouts().warmupMs;
-    const resp = await withSideCallDeadline("cache-warmup", WARMUP_TIMEOUT_MS, (signal) =>
-      params.provider.sendMessageNonStreaming!(
+    // 缺陷 15–16：入账收口在 sendNonStreamingSideCall（无 usage 也记一次调用）
+    await withSideCallDeadline("cache-warmup", WARMUP_TIMEOUT_MS, (signal) =>
+      sendNonStreamingSideCall(
+        params.provider,
         {
           model: "", // 使用 provider 默认模型
           system: params.systemPrompt,
@@ -81,21 +84,9 @@ export async function warmupPromptCache(params: WarmupParams): Promise<boolean> 
           maxTokens: 1, // 最小化输出 token 开销
         },
         signal,
+        { querySource: "cache_warmup", label: "cache-warmup" },
       ),
     );
-
-    // 记录辅助调用用量
-    if (resp?.usage) {
-      recordSideCall({
-        label: "cache-warmup",
-        model: "",
-        inputTokens: resp.usage.inputTokens ?? 0,
-        outputTokens: resp.usage.outputTokens ?? 0,
-        cacheReadTokens: (resp.usage as any).cacheReadInputTokens ?? 0,
-        cacheCreationTokens: (resp.usage as any).cacheCreationInputTokens ?? 0,
-        durationMs: 0,
-      });
-    }
 
     log.info("CACHE_WARMUP", "预热完成（system+tools 已缓存）");
     return true;

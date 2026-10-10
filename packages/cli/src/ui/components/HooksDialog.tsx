@@ -9,8 +9,8 @@
  */
 
 import React, { useState, useMemo } from "react";
-import Box from "@sid-code/tui-renderer/components/Box.tsx";
-import Text from "@sid-code/tui-renderer/components/Text.tsx";
+import { Box } from "../render-port/components.ts";
+import { Text } from "../render-port/components.ts";
 import { theme } from "../semantic-colors.ts";
 import { useKeypress, KeypressPriority, type Key } from "../contexts/KeypressContext.tsx";
 import { BaseSelectionList, type SelectionListItem } from "./shared/BaseSelectionList.tsx";
@@ -18,10 +18,25 @@ import { ARROW_PROMPT, SUCCESS_MARK, ERROR_MARK } from "../constants/figures.ts"
 import type { HookSystem } from "@sid-code/core/hook/system.ts";
 import type { HookRegistryEntry } from "@sid-code/core/hook/registry.ts";
 import { ConfigSource } from "@sid-code/core/hook/types.ts";
+import type { HookLayer } from "@sid-code/core/config/hook-layers.ts";
 
 interface HooksDialogProps {
   onClose: () => void;
   hookSystem: HookSystem;
+  /**
+   * 配置文件的 hooks 层（含被信任门摘掉的）。被摘掉的层不进注册表，getAllHooks() 看不到它们——
+   * 不单独标注，用户会以为项目里的 hooks「写了没生效」而去查格式，真正原因是没信任工作区。
+   */
+  hookLayers?: HookLayer[];
+}
+
+/** 被信任门跳过的项目级 hook 条数（与 cli.ts 信任门、`hooks list` 同一计数口径：每个事件下的数组项） */
+export function countSkippedByTrust(layers: HookLayer[] | undefined): number {
+  let n = 0;
+  for (const l of layers ?? []) {
+    if (l.skippedByTrust) n += Object.values(l.hooks).flat().length;
+  }
+  return n;
 }
 
 type ViewState = { type: "list" } | { type: "detail"; hook: HookRegistryEntry };
@@ -48,8 +63,16 @@ function hookName(entry: HookRegistryEntry): string {
   return cfg.command || cfg.url || cfg.prompt?.slice(0, 30) || entry.eventName;
 }
 
-export const HooksDialog: React.FC<HooksDialogProps> = ({ onClose, hookSystem }) => {
+export const HooksDialog: React.FC<HooksDialogProps> = ({ onClose, hookSystem, hookLayers }) => {
   const [view, setView] = useState<ViewState>({ type: "list" });
+  const skippedCount = useMemo(() => countSkippedByTrust(hookLayers), [hookLayers]);
+  // 警告色点睛一行即可（L1.2 克制点睛），不另起盒子
+  const skippedNotice =
+    skippedCount > 0 ? (
+      <Box marginTop={1}>
+        <Text color={theme.status.warning}>未信任工作区，已跳过 {skippedCount} 条（项目级）</Text>
+      </Box>
+    ) : null;
 
   const hooks = useMemo(() => hookSystem.getAllHooks(), [hookSystem]);
 
@@ -150,6 +173,7 @@ export const HooksDialog: React.FC<HooksDialogProps> = ({ onClose, hookSystem })
           <Text color={theme.text.secondary}>当前没有注册任何 Hook</Text>
         </Box>
         <Text>可在 .sid-code/settings.json 或 ~/.sid-code/settings.json 的 hooks 配置中添加</Text>
+        {skippedNotice}
         <Box marginTop={1}>
           <Text italic>Esc 关闭</Text>
         </Box>
@@ -209,6 +233,7 @@ export const HooksDialog: React.FC<HooksDialogProps> = ({ onClose, hookSystem })
           }}
         />
       </Box>
+      {skippedNotice}
       <Box marginTop={1}>
         <Text italic>↑↓ 导航 · Enter 查看详情 · Esc 关闭</Text>
       </Box>

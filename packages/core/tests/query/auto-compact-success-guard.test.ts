@@ -70,7 +70,11 @@ function throwingProvider(): Provider {
   return {
     name: () => "mock",
     async *sendMessageStream(): AsyncIterable<StreamEvent> {
-      throw new Error("摘要请求失败（模拟）");
+      // 2026-10-08 有意语义变更：认不出的裸 Error 不再零重试，而是同指纹 3 次封顶，
+      // 且 auto-compact 把退避写死为 1000ms 基数（测试注入不了）→ 3 次预热要真睡约 9s。
+      // 改抛 TypeError：归 local_fault（不退避、2 次即放弃），仍是「摘要请求失败」，
+      // 被测对象（熔断器计数 / 不被假成功复位）不变。
+      throw new TypeError("摘要请求失败（模拟）");
     },
   } as Provider;
 }

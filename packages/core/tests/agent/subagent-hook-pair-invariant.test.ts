@@ -19,10 +19,12 @@ interface HookLog {
   pre: string[];
   post: string[];
   postFailure: Array<{ id: string; error: string; durationMs?: number }>;
+  /** Q7：权限拒绝只 fire PermissionDenied（对齐 CC），它也算 Pre 的配对收尾 */
+  denied: string[];
 }
 
 function emptyLog(): HookLog {
-  return { pre: [], post: [], postFailure: [] };
+  return { pre: [], post: [], postFailure: [], denied: [] };
 }
 
 function makeTool(opts: {
@@ -75,6 +77,16 @@ function makeHookSystem(hookLog: HookLog, opts: { blockHookFor?: string } = {}) 
       hookLog.post.push(toolUseId ?? toolName);
       return { finalOutput: undefined };
     },
+    firePermissionDeniedEvent: async (
+      toolName: string,
+      _input: unknown,
+      _reason: string,
+      _source: string,
+      toolUseId?: string,
+    ) => {
+      hookLog.denied.push(toolUseId ?? toolName);
+      return { finalOutput: undefined };
+    },
     firePostToolUseFailureEvent: async (
       toolName: string,
       _i: unknown,
@@ -101,7 +113,7 @@ async function flushAsyncHooks(): Promise<void> {
 }
 
 function expectPaired(hookLog: HookLog, label: string) {
-  const postTotal = hookLog.post.length + hookLog.postFailure.length;
+  const postTotal = hookLog.post.length + hookLog.postFailure.length + hookLog.denied.length;
   expect(
     postTotal,
     `${label}：Pre 触发 ${hookLog.pre.length} 次但 Post* 只有 ${postTotal} 次 —— ` +
@@ -162,7 +174,7 @@ describe("子代理 Pre/Post hook 配对不变量", () => {
     expect(hookLog.postFailure).toHaveLength(1);
   });
 
-  test("权限拒绝必须 fire Post*", async () => {
+  test("权限拒绝必须有配对收尾（Q7：PermissionDenied）", async () => {
     const tools = makeRegistry([makeTool({ name: "bash", concurrencySafe: false })]);
     const hookLog = emptyLog();
 
@@ -177,10 +189,12 @@ describe("子代理 Pre/Post hook 配对不变量", () => {
 
     expect(String((results[0] as any)?.content)).toContain("权限拒绝");
     expectPaired(hookLog, "权限拒绝");
-    expect(hookLog.postFailure).toHaveLength(1);
+    // Q7：对齐 CC，权限拒绝只 fire PermissionDenied
+    expect(hookLog.denied).toHaveLength(1);
+    expect(hookLog.postFailure).toHaveLength(0);
   });
 
-  test("fail-closed 拒绝（未配置权限检查器 + 写类工具）必须 fire Post*", async () => {
+  test("fail-closed 拒绝（未配置权限检查器 + 写类工具）必须有配对收尾（Q7：PermissionDenied）", async () => {
     // B0 分级 fail-closed：无 permissionChecker 时写类工具直接拒绝。
     const tools = makeRegistry([makeTool({ name: "write", concurrencySafe: false })]);
     const hookLog = emptyLog();
@@ -196,7 +210,9 @@ describe("子代理 Pre/Post hook 配对不变量", () => {
 
     expect(String((results[0] as any)?.content)).toContain("fail-closed");
     expectPaired(hookLog, "fail-closed 拒绝");
-    expect(hookLog.postFailure).toHaveLength(1);
+    // Q7：对齐 CC，权限拒绝只 fire PermissionDenied
+    expect(hookLog.denied).toHaveLength(1);
+    expect(hookLog.postFailure).toHaveLength(0);
   });
 
   test("正常成功路径仍走 PostToolUse（不被误报成失败）", async () => {

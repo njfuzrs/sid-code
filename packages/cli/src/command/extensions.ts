@@ -114,6 +114,25 @@ class SkillsListCommand implements Command {
   }
 }
 
+/**
+ * W1：把合并后的生效禁用列表推给当前会话（与 /skills 面板同一路径）。
+ *
+ * 旧实现只写盘、回复「已禁用」，当前会话里 /<skill> 与模型调用照常可用，重启才生效。
+ * 返回是否真的热生效——拿不到注册表 / manager 时（headless 等）如实告诉用户要重启。
+ */
+function applyDisabledSkillsLive(ctx: AppContext): boolean {
+  const eff = getSettings().settings?.disabledSkills ?? [];
+  if (ctx.unifiedRegistry) {
+    ctx.unifiedRegistry.setDisabledSkills(eff);
+    return true;
+  }
+  if (ctx.skillManager) {
+    ctx.skillManager.setDisabledSkills(eff);
+    return true;
+  }
+  return false;
+}
+
 /** /skills enable - 启用 skill */
 class SkillsEnableCommand implements Command {
   name() {
@@ -126,7 +145,7 @@ class SkillsEnableCommand implements Command {
     return "启用 skill";
   }
 
-  async execute(args: string, _ctx: AppContext): Promise<CommandResult> {
+  async execute(args: string, ctx: AppContext): Promise<CommandResult> {
     const parser = new ArgParser(args);
     const name = parser.get(0);
 
@@ -138,9 +157,10 @@ class SkillsEnableCommand implements Command {
 
     try {
       this.updateSkillStatus(name, "enable", scope);
+      const live = applyDisabledSkillsLive(ctx);
       return {
         kind: "message",
-        message: `Skill "${name}" 已在 ${scope} 配置中启用`,
+        message: `Skill "${name}" 已在 ${scope} 配置中启用${live ? "，当前会话已生效" : "，重启会话后生效"}`,
       };
     } catch (err: any) {
       return { kind: "error", message: `启用失败: ${err.message}` };
@@ -187,7 +207,7 @@ class SkillsDisableCommand implements Command {
     return "禁用 skill";
   }
 
-  async execute(args: string, _ctx: AppContext): Promise<CommandResult> {
+  async execute(args: string, ctx: AppContext): Promise<CommandResult> {
     const parser = new ArgParser(args);
     const name = parser.get(0);
 
@@ -199,9 +219,10 @@ class SkillsDisableCommand implements Command {
 
     try {
       new SkillsEnableCommand()["updateSkillStatus"](name, "disable", scope);
+      const live = applyDisabledSkillsLive(ctx);
       return {
         kind: "message",
-        message: `Skill "${name}" 已在 ${scope} 配置中禁用`,
+        message: `Skill "${name}" 已在 ${scope} 配置中禁用${live ? "，当前会话已生效" : "，重启会话后生效"}`,
       };
     } catch (err: any) {
       return { kind: "error", message: `禁用失败: ${err.message}` };

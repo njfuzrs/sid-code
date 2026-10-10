@@ -13,8 +13,8 @@ import type { SinkBackend } from "../sink.ts";
 import type { EventMetadata } from "../index.ts";
 import { EventDiskCache, type FailedEvent } from "../disk-cache.ts";
 import { QuadraticBackoff } from "../backoff.ts";
-import { applyDeviceAuth } from "../../identity/credential.ts";
-import { isNonLocalHttp } from "../../config/policy.ts";
+import { applyDeviceAuth, RELOGIN_HINT } from "../../identity/credential.ts";
+import { isNonLocalHttp } from "../../identity/endpoints.ts";
 import { getLogger } from "../../debug/logger.ts";
 
 export interface HttpExporterConfig {
@@ -202,7 +202,7 @@ export class HttpExporter implements SinkBackend {
       this.warnedUnauthorized = true;
       log.warn(
         "TELEMETRY",
-        `远程事件 ${this.name} 401：设备凭据无效或已吊销，本会话不再重试、不写磁盘`,
+        `远程事件 ${this.name} 401：设备凭据无效或已吊销，本会话不再重试、不写磁盘。${RELOGIN_HINT}`,
       );
       return;
     }

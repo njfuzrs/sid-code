@@ -888,3 +888,64 @@ describe("northstar · 接线门禁", () => {
     expect(sh).toContain("docs-research");
   });
 });
+
+describe("B11 / B12 · 更安全与一次 edit 成功率", () => {
+  const perm = (total: number, prompted: number, ruleHits: number, durations: number[] = []) => ({
+    total,
+    prompted,
+    denied: 0,
+    rule_hits: ruleHits,
+    prompt_durations_ms: durations,
+    by_tool: {},
+    by_reason: {},
+  });
+
+  test("HITL 介入率与规则命中率按决策总数合并，不按会话比率平均", () => {
+    const s = snap(
+      [
+        idx({ permission: perm(10, 1, 8, [2000]) }),
+        idx({ permission: perm(90, 9, 0, [4000, 6000]) }),
+      ],
+      [],
+    );
+    expect(s.safer.hitl_rate.value).toBeCloseTo(10 / 100);
+    expect(s.safer.hitl_rate.n).toBe(100);
+    expect(s.safer.rule_hit_rate.value).toBeCloseTo(8 / 100);
+    expect(s.safer.prompt_duration_p50.value).toBe(4000);
+    expect(s.safer.prompt_duration_p50.n).toBe(3);
+    expect(s.safer.sessions_with_field).toBe(2);
+  });
+
+  test("旧版本行（无 permission 键）不进分母，全是旧行时值为 null 而非 0%", () => {
+    const s = snap([idx(), idx()], []);
+    expect(s.safer.hitl_rate.value).toBeNull();
+    expect(s.safer.hitl_rate.n).toBe(0);
+    expect(renderSnapshot(s)).toContain("B11 埋点之前的版本产生");
+  });
+
+  test("一次 edit 成功率：分母是文件数，含增量行", () => {
+    const s = snap(
+      [
+        idx({ edit_first_try: { files: 4, first_try_ok: 3 } }),
+        idx({ exit_status: "incomplete", edit_first_try: { files: 1, first_try_ok: 0 } }),
+        idx(),
+      ],
+      [],
+    );
+    expect(s.fewerRedos.edit_first_try_rate.value).toBeCloseTo(3 / 5);
+    expect(s.fewerRedos.edit_first_try_rate.n).toBe(5);
+    expect(s.fewerRedos.edit_first_try_rate.source).toContain("文件×会话");
+  });
+
+  test("与缺少新字段的旧快照对比不崩，旧侧记为 —", () => {
+    const after = snap([idx({ permission: perm(5, 1, 1) })], []);
+    const before = JSON.parse(JSON.stringify(after));
+    delete before.safer;
+    delete before.fewerRedos.edit_first_try_rate;
+    const deltas = compareSnapshots(before, after);
+    const hitl = deltas.find((d) => d.key === "更安全 · HITL 介入率")!;
+    expect(hitl.before).toBeNull();
+    expect(hitl.nBefore).toBe(0);
+    expect(hitl.underpowered).toBe(true);
+  });
+});

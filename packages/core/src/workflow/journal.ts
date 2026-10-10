@@ -6,10 +6,21 @@
  *
  * 缓存键设计(关键,绕开 cc #63102):
  *   cc 早期用"prompt 内容 hash"做键,导致两个**不同调用点**但 prompt 恰好相同的 agent() 串台
- *   (一个的结果被另一个错误复用)。本实现的键 = **调用序号 callIndex + (prompt, opts) 的稳定
- *   指纹**。callIndex 由 runtime 全局自增,贯穿整个 run,天然区分调用点;指纹再保证"同序号但
- *   脚本被改过"时缓存失效、触发重跑。两者结合 = 同脚本同 args → 100% 命中;改了第 N 个 agent →
- *   前 N-1 命中、第 N 起重跑。
+ *   (一个的结果被另一个错误复用)。本实现的键 = **结构性调用键 key + (prompt, opts) 的稳定指纹**。
+ *
+ *   key 由 runtime 的调用作用域生成(见 runtime.ts 的 CallScope):形如 `3`(顶层第 3 个位置)、
+ *   `1p2/0`(顶层第 1 个位置是 parallel,其第 2 个 thunk 内第 0 个调用)、`0l4/1`(pipeline 第 4 条
+ *   item 链内第 1 个调用)、`2w/0`(第 2 个位置是内联子 workflow)。它只由脚本结构决定,
+ *   与完成顺序无关——曾经用全局自增的 callIndex,pipeline/parallel 下时序一变就串台(P0-3)。
+ *   纯串行脚本的 key 恰好是 "0","1",…,与老 journal 的 callIndex 一致,老记录照常命中。
+ *
+ *   失效游标(P0-2):某个 key 没命中(指纹变了 / 没记录 / 上次失败)就记下它,此后**结构上排在
+ *   它之后、且可能依赖它**的调用一律不走缓存。「之后」= 同一顺序作用域里序号更大;parallel 的
+ *   兄弟 thunk、pipeline 的兄弟 item 链彼此独立,不连坐。于是改了第 N 个 agent → 前 N-1 命中、
+ *   第 N 起重跑,且在扇出里只连坐真正的下游。
+ *
+ *   失败不缓存(P0-1):runner 的契约是失败返回 null,null 不写盘;老 journal 里已有的 null 记录
+ *   回放时也视为未命中。
  *
  * 持久化:append-only JSONL(对齐 session/store.ts 的 appendRecord 模式),落 workflow 运行目录。
  * append-only 的好处:崩溃中断也不会损坏已写记录;重跑时顺序回放即可重建缓存。
@@ -22,8 +33,10 @@ import { getLogger } from "../debug/logger.ts";
 
 /** 单条 journal 记录(一次 agent() 调用的结果) */
 export interface JournalEntry {
-  /** 调用序号(runtime 全局自增) */
+  /** 调用序号(runtime 全局自增;只用于展示排序,不再作缓存键) */
   callIndex: number;
+  /** 结构性调用键(缓存键)。老 journal 没有该字段,按 String(callIndex) 处理。 */
+  key?: string;
   /** (prompt, opts) 的稳定指纹 */
   fingerprint: string;
   /** agent() 的返回值(已是 JSON 可序列化:string 或 schema 对象或 null) */
@@ -73,19 +86,47 @@ function stableStringify(value: unknown): string {
   return `{${parts.join(",")}}`;
 }
 
+/** 解析 key 的一段:`3`(叶子)/ `3p2`(parallel 分支)/ `3l2`(pipeline 链)/ `3w`(子 workflow) */
+function parseSegment(seg: string): { seq: number; branch: number | null } {
+  const m = /^(\d+)(?:[plw](\d+)?)?$/.exec(seg);
+  if (!m) return { seq: Number.NaN, branch: null };
+  return { seq: Number(m[1]), branch: m[2] !== undefined ? Number(m[2]) : null };
+}
+
+/**
+ * b 是否在结构上排在 a 之后、可能依赖 a 的结果。
+ * 逐段比较:同一顺序作用域里序号更大 → 之后;序号相同但分支不同(兄弟 thunk / item 链)→ 独立。
+ * 无法解析的段一律按「之后」处理(宁可多重跑,不给错答案)。
+ */
+export function isStructurallyAfter(b: string, a: string): boolean {
+  const bs = b.split("/");
+  const as = a.split("/");
+  const n = Math.min(bs.length, as.length);
+  for (let i = 0; i < n; i++) {
+    const sb = parseSegment(bs[i]!);
+    const sa = parseSegment(as[i]!);
+    if (Number.isNaN(sb.seq) || Number.isNaN(sa.seq)) return b !== a;
+    if (sb.seq !== sa.seq) return sb.seq > sa.seq;
+    if (sb.branch !== sa.branch) return false;
+  }
+  return false;
+}
+
 /**
  * Journal:append-only 的 agent() 结果缓存。
  *
  * 用法:
  *   const journal = new Journal(path)
  *   journal.load()                              // 重跑时回放已有记录
- *   const hit = journal.lookup(callIndex, fp)   // 命中返回 {result},否则 null
- *   journal.record({callIndex, fingerprint, result})  // 真跑后追加
+ *   const hit = journal.lookup(key, fp)         // 命中返回 {result},否则 null(并推进失效游标)
+ *   journal.record({callIndex, key, fingerprint, result})  // 真跑成功后追加
  */
 export class Journal {
   private readonly path: string;
-  /** callIndex → entry(回放后填充) */
-  private readonly entries = new Map<number, JournalEntry>();
+  /** key → entry(回放后填充) */
+  private readonly entries = new Map<string, JournalEntry>();
+  /** 本次 run 里没命中的 key(失效游标):结构上在它们之后的调用不走缓存 */
+  private readonly invalidated: string[] = [];
   /** 是否启用(无 path 时为纯内存 no-op,便于测试/无 resume 场景) */
   private readonly enabled: boolean;
 
@@ -105,8 +146,8 @@ export class Journal {
         if (!trimmed) continue;
         try {
           const entry = JSON.parse(trimmed) as JournalEntry;
-          // 后写覆盖先写(同 callIndex 以最新为准)
-          this.entries.set(entry.callIndex, entry);
+          // 后写覆盖先写(同 key 以最新为准)
+          this.entries.set(keyOf(entry), entry);
         } catch {
           log.warn("WORKFLOW", `journal 行解析失败,跳过: ${trimmed.slice(0, 80)}`);
         }
@@ -118,19 +159,29 @@ export class Journal {
   }
 
   /**
-   * 查缓存:callIndex 命中且指纹一致 → 返回 {result};否则 null(需真跑)。
-   * 指纹不一致表示该调用点的脚本被改过,**该序号及其之后**都应重跑——调用方据此处理。
+   * 查缓存:key 命中、指纹一致、结果非 null、且不在任何失效 key 之后 → 返回 {result};否则 null(需真跑)。
+   * 没命中时把 key 记进失效游标——该位置之后的依赖调用随之全部重跑(P0-2),由本方法自己执行,
+   * 不再靠调用方配合。
    */
-  lookup(callIndex: number, fingerprint: string): { result: unknown } | null {
-    const entry = this.entries.get(callIndex);
-    if (!entry) return null;
-    if (entry.fingerprint !== fingerprint) return null; // 脚本改过,失效
+  lookup(key: string | number, fingerprint: string): { result: unknown } | null {
+    const k = String(key);
+    if (this.invalidated.some((bad) => isStructurallyAfter(k, bad))) {
+      this.invalidated.push(k);
+      return null;
+    }
+    const entry = this.entries.get(k);
+    // 没记录 / 脚本改过 / 上次失败(老 journal 里的 null) → 失效
+    if (!entry || entry.fingerprint !== fingerprint || entry.result === null) {
+      this.invalidated.push(k);
+      return null;
+    }
     return { result: entry.result };
   }
 
-  /** 追加一条记录(真跑完成后)。同时写内存与磁盘。 */
+  /** 追加一条记录(真跑成功后)。同时写内存与磁盘。null 结果不记录(失败不缓存)。 */
   record(entry: JournalEntry): void {
-    this.entries.set(entry.callIndex, entry);
+    if (entry.result === null) return;
+    this.entries.set(keyOf(entry), entry);
     if (!this.enabled) return;
     try {
       mkdirSync(dirname(this.path), { recursive: true });
@@ -149,4 +200,9 @@ export class Journal {
   all(): JournalEntry[] {
     return [...this.entries.values()].sort((a, b) => a.callIndex - b.callIndex);
   }
+}
+
+/** 条目的缓存键(老 journal 无 key 字段 → 退回 callIndex,与纯串行脚本的结构键一致) */
+function keyOf(entry: JournalEntry): string {
+  return entry.key ?? String(entry.callIndex);
 }

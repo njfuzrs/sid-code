@@ -14,7 +14,7 @@
  * 四道防线，每道针对一个具体的退化路径：
  *  1. 事件名双向对账：EVENT_NAMES 里的名字必须有生产调用点（防死代码），
  *     生产调用点用的名字必须在表里（防绕过常量表硬编码字符串）。
- *  2. 埋点密度下限：九条核心漏斗的门面调用点总数不得低于阈值（防被整批删回去）。
+ *  2. 埋点密度下限：核心漏斗的门面调用点总数不得低于阈值（防被整批删回去）。
  *     第六条「记忆」漏斗由 P1-12 补上；第七–九条（策略 / 护栏 / 上下文组装）由 M4 补上。
  *  3. 脱敏强制：业务代码不得绕过门面直调 logEvent（绕过 = 工具名与路径裸传）。
  *  4. 脱敏与门控函数非零消费者：sanitize.ts / privacy.ts / privacy-level.ts 的
@@ -102,7 +102,20 @@ const FACADE_EMITTERS = [
   "logPolicyEnforced",
   "logGuardrailTriggered",
   "logContextAssembled",
+  // 漏斗 10 · 插件：市场插件按调用 / 安装计数。
+  "logToolInvoked",
+  "logPluginInstalled",
 ] as const;
+
+/**
+ * 「已登记、调用点在别的 PR 里接线」的临时豁免。
+ *
+ * 只豁免「必须有生产调用点」这一条，其余门禁（孤立常量、脱敏不可绕过）照常生效。
+ * **豁免是会自我失效的**：下方有一条断言要求豁免项此刻确实零调用 ——
+ * 接线 PR 合入后它立刻变红，逼着把这一行删掉，而不是让豁免悄悄留成永久后门。
+ */
+// logPluginInstalled 的豁免已随插件市场客户端 PR 删除：调用点在 cli/src/plugin/market-operations.ts
+const PENDING_WIRING: Record<string, string> = {};
 
 describe("埋点接线哨兵：事件名双向对账", () => {
   test("EVENT_NAMES 里每个事件名都有对应的门面 emit 函数（无孤立常量）", () => {
@@ -126,15 +139,29 @@ describe("埋点接线哨兵：事件名双向对账", () => {
     expect(sources.length).toBeGreaterThan(200); // 扫描面自证非空
 
     const uncalled: string[] = [];
+    const wiredButStillExempt: string[] = [];
     for (const fn of FACADE_EMITTERS) {
       const called = sources.some(
         ({ rel, text }) => rel !== FACADE_REL && new RegExp(`\\b${fn}\\(`).test(text),
       );
+      if (fn in PENDING_WIRING) {
+        if (called) wiredButStillExempt.push(fn);
+        continue;
+      }
       if (!called) uncalled.push(fn);
     }
 
     // 这正是本批修复之前的状态：函数写好了、类型对了、没人调。
     expect(uncalled).toEqual([]);
+    // 豁免自我失效：已经接上线的函数必须从 PENDING_WIRING 删掉，恢复正常约束。
+    expect(wiredButStillExempt).toEqual([]);
+  });
+
+  test("PENDING_WIRING 只能豁免 FACADE_EMITTERS 里的函数（防拼错名字豁免了个空气）", () => {
+    const unknown = Object.keys(PENDING_WIRING).filter(
+      (fn) => !(FACADE_EMITTERS as readonly string[]).includes(fn),
+    );
+    expect(unknown).toEqual([]);
   });
 
   test("九条核心漏斗各自都有生产调用点", () => {
@@ -151,6 +178,8 @@ describe("埋点接线哨兵：事件名双向对账", () => {
       策略: ["logPolicyEnforced"],
       护栏: ["logGuardrailTriggered"],
       上下文组装: ["logContextAssembled"],
+      // 漏斗 10：logToolInvoked 已有调用点（MCP 适配器 / Skill 元工具），故整条漏斗不需豁免
+      插件: ["logToolInvoked", "logPluginInstalled"],
     };
 
     const missing: string[] = [];
@@ -161,6 +190,30 @@ describe("埋点接线哨兵：事件名双向对账", () => {
       if (!anyCalled) missing.push(funnel);
     }
     expect(missing).toEqual([]);
+  });
+});
+
+describe("埋点接线哨兵：权限漏斗分子分母同口径（缺陷 5）", () => {
+  // 拒绝率 = deny / (allow + deny)。deny 覆盖了某条执行路径而 allow 没有，
+  // 那条路径的拒绝率就恒为 100%（分母缺项），偏向「看起来更不安全」。
+  // 判据按 context 字面量收集：每个 logPermissionDeny 用到的 context，
+  // 必须也有 logPermissionAllow 用到。
+  function contextsOf(fn: string): Set<string> {
+    const out = new Set<string>();
+    const re = new RegExp(`\\b${fn}\\([^;]*?context:\\s*"(\\w+)"`, "gs");
+    for (const { rel, text } of readAllSources()) {
+      if (rel === FACADE_REL) continue;
+      for (const m of text.matchAll(re)) out.add(m[1]!);
+    }
+    return out;
+  }
+
+  test("deny 覆盖的每条执行路径 allow 也覆盖", () => {
+    const deny = contextsOf("logPermissionDeny");
+    const allow = contextsOf("logPermissionAllow");
+    // 扫描面自证：三条路径都已知有 deny
+    expect([...deny].sort()).toEqual(["forked", "main", "subagent"]);
+    expect([...deny].filter((c) => !allow.has(c))).toEqual([]);
   });
 });
 

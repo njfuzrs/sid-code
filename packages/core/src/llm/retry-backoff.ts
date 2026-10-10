@@ -11,12 +11,16 @@
  * 语义与 ModelFallback.calculateRetryDelay 完全一致，fallback.ts 现委托到此处。
  */
 
-import {
-  RetryableError,
-  TerminalError,
-  parseRateLimitReset,
-  parseRetryAfterFromHeaders,
-} from "./errors.ts";
+import { parseRateLimitReset, parseRetryAfterFromHeaders } from "./errors.ts";
+
+/**
+ * 退避需要的那点分类信息：细分原因（只用来认 rate_limit）与服务端建议等待。
+ * 2026-10-08 起由 `error-normalize.ts` 的归一化结果提供，不再依赖错误类实例。
+ */
+export interface BackoffHint {
+  reason?: string;
+  retryAfterMs?: number;
+}
 import { computeBackoffMs, DEFAULTS as NETWORK_DEFAULTS } from "../config/network-profile.ts";
 
 /** 退避延迟上限（用于封顶服务端 Retry-After / rate-limit-reset）。
@@ -36,7 +40,7 @@ export interface BackoffOptions {
 /**
  * 计算重试延迟。
  *
- * 优先级：服务端 Retry-After header > RetryableError.retryAfterMs >
+ * 优先级：服务端 Retry-After header > 归一化的 retryAfterMs >
  *         rate-limit-reset header > 指数退避 + jitter
  *
  * 限流（rate_limit）用 +20% 单向正抖动而非 ±15% 双向：双向抖动可能算出比服务端
@@ -45,19 +49,15 @@ export interface BackoffOptions {
 export function calculateRetryDelay(
   err: unknown,
   attempt: number,
-  classified: TerminalError | RetryableError | Error,
+  classified: BackoffHint,
   opts: BackoffOptions,
 ): number {
   // 1. 服务端明确指定的 Retry-After（headers 优先）
   const retryAfterMs = parseRetryAfterFromHeaders(err);
   if (retryAfterMs && retryAfterMs > 0) return Math.min(retryAfterMs, MAX_DELAY_MS);
 
-  // 2. RetryableError 携带的 retryAfterMs
-  if (
-    classified instanceof RetryableError &&
-    classified.retryAfterMs &&
-    classified.retryAfterMs > 0
-  ) {
+  // 2. 归一化阶段解析出的 retryAfterMs
+  if (classified.retryAfterMs && classified.retryAfterMs > 0) {
     return Math.min(classified.retryAfterMs, MAX_DELAY_MS);
   }
 
@@ -75,7 +75,7 @@ export function calculateRetryDelay(
     opts.maxDelayMs,
     opts.retryBackoffMaxMs ?? NETWORK_DEFAULTS.retryBackoffMaxMs,
   );
-  const isRateLimit = classified instanceof RetryableError && classified.reason === "rate_limit";
+  const isRateLimit = classified.reason === "rate_limit";
 
   if (isRateLimit) {
     // 限流：+20% 正向抖动（尊重服务器最小延迟，不用双向 jitter 以免早于服务器最小延迟）

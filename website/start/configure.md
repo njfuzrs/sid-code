@@ -1,11 +1,11 @@
 ---
 title: 配置 LLM Provider
-description: anthropic / openai / ollama 三族协议各一份可直接粘的 settings.json，含 base_url 的 /v1 两族相反规则。
+description: anthropic / openai / ollama 三族各一份可直接粘的 settings.json（openai 族含 Chat Completions 与 Responses 两种），含 base_url 的 /v1 两族相反规则。
 ---
 
 # 配置 LLM Provider
 
-sid-code 自己不带模型，你得告诉它去哪调、用什么 key。这页给三族协议各一份**可直接粘**的配置。
+sid-code 自己不带模型，你得告诉它去哪调、用什么 key。这页给三族（Anthropic / OpenAI / Ollama，OpenAI 族含 Chat Completions 与 Responses 两种）各一份**可直接粘**的配置。
 
 先读一句最省事的：**这里有一个 `base_url` 要不要带 `/v1` 的坑，两族协议的规则正好相反，
 配错会 404**。它是新手最大的卡点，所以放在最前面讲。
@@ -47,7 +47,7 @@ sid-code auth status
 认证状态:
 
   Provider:     openai
-  主模型:       glm-5.2
+  主模型:       gpt-5.4
   API Key:      ✓ 已配置  sk-R…Ykle（长度 51）
   Key 来源:     模型级 (available_models[].apiKey)
   baseURL:      https://your-gateway.example.com/v1
@@ -102,7 +102,7 @@ sid-code auth status
 
 ```text
 ✗ OpenAI 响应 Content-Type=text/html; charset=utf-8（非 SSE，疑似网关错误页）
-  model=glm-5.2 body=<!doctype html> <html lang="en"> ...
+  model=gpt-5.4 body=<!doctype html> <html lang="en"> ...
 ```
 
 这个方向不报 404，而是拿回一个 **HTTP 200 的 HTML 页面**。
@@ -111,16 +111,18 @@ sid-code 会识别出"Content-Type 不是 event-stream，这是伪装成成功�
 
 ::: warning 为什么不能靠"能启动"来判断配对了
 两种配错都**不阻碍启动**——sid-code 照样进 TUI，输入框照样能打字，
-问题要等你发第一条消息才炸，而且中间还夹着 11 次重试和 fallback 切换，报错会被冲得很远。
+问题要等你发第一条消息才炸，而且中间还夹着若干次流式重试和 fallback 切换，报错会被冲得很远。
 所以配完永远先跑一次 `sid-code auth status`，别等发消息。
 :::
 
-## 三族协议各一份完整配置
+## 三族各一份完整配置
 
 ### openai 族（含各家 OpenAI 兼容网关）
 
 覆盖面最广：OpenAI 官方、DeepSeek、通义千问、GLM、Kimi、公司自建网关、
 以及任何声称"兼容 OpenAI 协议"的服务。
+
+同一个 openai 族下有 Chat Completions 与 Responses 两种请求形态，默认自动选：模型目录声明了 Responses 的走 Responses，非官方端点其余一律走 Chat Completions。网关不支持 `/responses` 时设 `SID_CODE_OPENAI_PROTOCOL=chat` 强制回退（`responses` 则强制走 Responses）。判定逻辑在 `packages/core/src/llm/openai.ts`。
 
 ```json
 {
@@ -288,7 +290,7 @@ curl -s https://your-gateway.example.com/v1/models \
 
 ### 一直在重试然后失败
 
-日志里出现 `[FALLBACK] 连接阶段尝试 1/11` 这种，说明请求确实发出去了但被拒。
+日志里出现 `[FALLBACK] 流式阶段尝试 …` 这种，说明请求确实发出去了但被拒。
 先用上面的 `/v1` 规则对一遍 `base_url`，再确认 key 和网络（网关在内网的话要连 VPN）。
 
 ## 相关

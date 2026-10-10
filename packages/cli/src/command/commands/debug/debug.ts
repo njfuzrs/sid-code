@@ -6,7 +6,7 @@
 import type { LocalCommandModule, LocalCommandResult, CommandContext } from "../../types.ts";
 import { getVersion } from "@sid-code/shared/version.ts";
 import { getSessionMetrics } from "@sid-code/core/debug/index.ts";
-import { setClipboard } from "@sid-code/tui-renderer/termio/osc.ts";
+import { setClipboard } from "../../../ui/render-port/termio.ts";
 import { SessionState } from "@sid-code/core/session/state.ts";
 
 const mod: LocalCommandModule = {

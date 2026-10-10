@@ -1,6 +1,6 @@
 /**
  * 扩展文件加载器
- * 扫描 ~/.sid-code/{type}/ 和 {projectDir}/.sid-code/{type}/ 下的 .md 文件
+ * 扫描 ~/.sid-code/{type}/ 和 {projectDir → git root 逐级}/.sid-code/{type}/ 下的 .md 文件
  * 5 分钟 TTL 缓存，project 覆盖 user
  */
 
@@ -12,6 +12,7 @@ import { getLogger } from "../debug/logger.ts";
 import { sidPaths, getClaudeHome } from "../config/paths.ts";
 import { isRestrictedToPluginOnly } from "../config/plugin-only-policy.ts";
 import { isPolicyAllowed } from "../config/policy-limits.ts";
+import { getExtensionScanDirs } from "../config/project-bases.ts";
 import type {
   ExtensionSource,
   ParsedExtensionFile,
@@ -178,18 +179,23 @@ export class ExtensionLoader {
         return trustedFilesTemp;
       };
 
-      const projClaudeDir = join(projectDir, ".claude", type);
-      const { files: projClaudeFiles, errors: projClaudeErrors } = await this.scanDir(
-        projClaudeDir,
-        "project",
-      );
-      mergeFiles(await filterTrusted(projClaudeFiles));
-      errors.push(...projClaudeErrors);
+      // P4/P6/P7a：项目层按 B3（cwd → git root 逐级）扫描，远者先合并、近者后合并覆盖。
+      // 此前只扫 projectDir 一层，子目录启动时仓库根的 skills / commands / agents 静默消失。
+      // 上界是 git root 而不是家目录：仓库外上层目录的扩展不属于本项目（对齐 CC）。
+      for (const baseDir of getExtensionScanDirs(undefined, projectDir)) {
+        const projClaudeDir = join(baseDir, ".claude", type);
+        const { files: projClaudeFiles, errors: projClaudeErrors } = await this.scanDir(
+          projClaudeDir,
+          "project",
+        );
+        mergeFiles(await filterTrusted(projClaudeFiles));
+        errors.push(...projClaudeErrors);
 
-      const projDir = join(projectDir, ".sid-code", type);
-      const { files: projFiles, errors: projErrors } = await this.scanDir(projDir, "project");
-      mergeFiles(await filterTrusted(projFiles));
-      errors.push(...projErrors);
+        const projDir = join(baseDir, ".sid-code", type);
+        const { files: projFiles, errors: projErrors } = await this.scanDir(projDir, "project");
+        mergeFiles(await filterTrusted(projFiles));
+        errors.push(...projErrors);
+      }
     }
 
     // 2.5 additional 层（--add-dir 授权目录，对齐 CC loadSkillsDir 的 additionalDirs）。

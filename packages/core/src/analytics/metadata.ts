@@ -36,6 +36,8 @@ interface EventMetadataContext {
 }
 
 let cachedContext: EventMetadataContext | null = null;
+/** setMcpServerCount 在 analytics 未初始化时的暂存值（见该函数注释） */
+let pendingMcpServerCount: number | undefined;
 
 /**
  * 标记字符串为已确认安全(内部辅助)。
@@ -113,9 +115,25 @@ export function getEventMetadataFields(): EventMetadata {
   return fields;
 }
 
+/**
+ * 回填已连接的 MCP server 数（B22）。
+ *
+ * 为什么不复用 refreshMetadata：MCP connectAll 是异步的，完成时机与 analytics 初始化
+ * （primeMetadata）谁先谁后不确定。refreshMetadata 在未 primed 时是 no-op，
+ * 先连完 MCP 的那一次就会被静默丢掉。这里在未 primed 时暂存，collectMetadata 时补上。
+ *
+ * 修前全仓没有任何调用方传这个字段：本机 1,616 个会话 `_ctx_mcp_server_count` 全部是 0，
+ * 而同期 debug.log 显示 5 个 server 连接成功——拿它分析会得出「从没连上过 MCP」的错误结论。
+ */
+export function setMcpServerCount(count: number): void {
+  if (cachedContext) cachedContext.mcp_server_count = count;
+  else pendingMcpServerCount = count;
+}
+
 /** 重置缓存(仅测试用) */
 export function __resetMetadataForTest(): void {
   cachedContext = null;
+  pendingMcpServerCount = undefined;
 }
 
 // --- 内部实现 ---
@@ -136,7 +154,7 @@ function collectMetadata(): EventMetadataContext {
     is_interactive: process.stdin?.isTTY ?? false,
     vcs_type: detectVCS(),
     repo_hash: computeRepoHash(),
-    mcp_server_count: 0,
+    mcp_server_count: pendingMcpServerCount ?? 0,
     device_id: ident.deviceId,
     user_id: ident.userId ?? null,
     org_id: ident.orgId ?? null,

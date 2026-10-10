@@ -6,8 +6,10 @@
  * Layer 3（Agent 定义级）：每个 Agent 可声明 tools/disallowedTools
  * Layer 4（异步白名单）：后台 Agent 只允许安全子集
  *
- * MCP 工具对非只读子代理始终通过硬性过滤（用户显式配置的）；
- * 只读子代理（explore/plan/verify）的 MCP 工具也受 Layer 2 白名单约束（见下文）。
+ * MCP 工具只豁免 Layer 1 硬禁（那份名单按内置工具名写，对 MCP 无意义）。
+ * Layer 2 只读类型（内置）与 Layer 3 `tools` 白名单（自定义 agent）对 MCP **生效**，放行口只有一个：
+ * `tools` 里显式写了这个 MCP 工具的全名（见 explicitlyAllowed）。
+ * Layer 4 后台白名单仍豁免 MCP（理由见该层注释）。
  */
 
 import type { LegacyTool as Tool } from "../tool/types.ts";
@@ -149,8 +151,11 @@ export function filterToolsForAgent(allTools: Tool[], options: ToolFilterOptions
   return allTools.filter((tool) => {
     const name = tool.name();
 
-    // MCP 工具始终通过硬性过滤（用户显式配置的）
+    // MCP 工具只豁免 Layer 1 硬禁类名单（按内置工具名写，对 MCP 对不上）。
     const isMcp = name.startsWith("mcp__");
+    // MCP 的显式放行口：Agent 定义的 `tools` 里写了该工具全名。
+    // Layer 2 只读类型与 Layer 3 白名单共用这一个口径。
+    const explicitlyAllowed = options.tools?.includes(name) === true;
 
     // Layer 1: 硬性禁止
     if (!isMcp && ALL_AGENT_DISALLOWED_TOOLS.has(name)) return false;
@@ -183,7 +188,6 @@ export function filterToolsForAgent(allTools: Tool[], options: ToolFilterOptions
         // Layer 2 放行），允许用户为某个只读子代理显式授权特定 MCP 工具。
         const isReadOnlyType = BUILTIN_AGENTS[options.builtInType]?.readOnly === true;
         const mcpBypassed = isMcp && !isReadOnlyType;
-        const explicitlyAllowed = options.tools?.includes(name);
         if (!mcpBypassed && !explicitlyAllowed && !allowed.includes(name)) {
           return false;
         }
@@ -194,11 +198,23 @@ export function filterToolsForAgent(allTools: Tool[], options: ToolFilterOptions
     // 黑名单
     if (options.disallowedTools?.includes(name)) return false;
     // 白名单（如果指定了且不是 ["*"]）
+    // F7（2026-10-07）：此前这里是 `!isMcp && ...`，MCP 被白名单短路 —— 用户写
+    // `tools: read, grep` 以为是只读代理，会话连了 playwright 时它照样拿到浏览器工具。
+    // 内置只读类型在 Layer 2 已因同一事故（轨迹 20260730-135709）收紧，自定义 agent 没有。
+    // 只对自定义 agent 收紧：内置类型的 `tools` 是框架写的能力清单（task 也是显式列表、
+    // 不含 MCP 名），它们的 MCP 去留由 Layer 2 的 readOnly 判据决定，这里再裁就是让
+    // task 类型整体失去 MCP —— 回退而非收紧。
+    const mcpExemptFromWhitelist = isMcp && options.isBuiltIn === true;
     if (options.tools && !options.tools.includes("*")) {
-      if (!isMcp && !isDeferredLoader && !options.tools.includes(name)) return false;
+      if (!mcpExemptFromWhitelist && !isDeferredLoader && !options.tools.includes(name)) {
+        return false;
+      }
     }
 
     // Layer 4: 异步白名单（后台 Agent 只允许安全子集）
+    // F7 取舍：Layer 4 对 MCP 仍豁免。agent 声明了 `tools` 白名单时，Layer 3 已经只放
+    // 显式写名的 MCP；没声明（或 `"*"`）即用户授权了全部工具，此处再裁会让
+    // general-purpose 后台任务整体失去 MCP，这是一次行为回退而非收紧。
     if (
       options.isAsync &&
       !isMcp &&

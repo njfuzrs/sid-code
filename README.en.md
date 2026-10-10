@@ -12,7 +12,7 @@
 language; it reads your code, edits files, runs commands, and then proves the change
 is correct with real compiler and test output.
 
-Built in-house on TypeScript + Bun + Ink, shipped as a single compiled binary — download
+Written in TypeScript on Bun, with a terminal UI adapted from ink, shipped as a single compiled binary — download
 one file and run it. No Node install, no `npm install`.
 
 - 📖 **Documentation:** https://www.sid-code.cc/ (Chinese)
@@ -68,15 +68,15 @@ Every step is visible in the terminal, and <kbd>Esc</kbd> interrupts at any poin
 
 ## Four things that set it apart
 
-On features, this tracks Claude Code closely — agentic loop, tool calling, permission
+Claude Code's main capability areas are all here — agentic loop, tool calling, permission
 gating, hooks, skills, and MCP all have working counterparts. The differences below
 aren't claims of "we did it better"; they're things a **closed-source commercial product
-structurally cannot offer**:
+is structurally positioned not to offer**:
 
 | Capability | What it means |
 | --- | --- |
-| **Fits enterprise plumbing** | Internal gateway billing, on-prem GitLab, MCP integrations, team-wide default config distribution — adapted to real corporate networks. It plugs into what your company already runs, instead of asking the company to adapt to the tool |
-| **Any model, and the whole harness is yours** | Change one config line to swap models (Anthropic / OpenAI / Ollama protocol families, with automatic fallback); write one file to extend it (hooks, skills, subagents, MCP); open one PR to change the core (44 built-in tools, context engineering, the main loop — all open source) |
+| **Fits enterprise plumbing** | Internal gateway billing, MCP integrations, team-wide default config distribution — designed for enterprise networks. It plugs into what your company already runs, instead of asking the company to adapt to the tool |
+| **Any model, and the whole harness is yours** | Change one config line to swap models (three protocol families — Anthropic / OpenAI / Ollama, where the OpenAI family covers both Chat Completions and Responses — with automatic fallback); write one file to extend it (hooks, skills, subagents, MCP); open one PR to change the core (44 built-in tools, context engineering, the main loop — all open source) |
 | **Your data stays yours** | Session trajectories, eval results, and cost ledgers live in your own infrastructure, and never enter anyone's training set. That's a compliance prerequisite, and it's also the fuel for improving the agent |
 | **Every cent and every decision is auditable** | Latency, cost, and decisions are all recorded in local trajectories, on by default; evals run before each release to catch regressions. It's also the only measurement source behind the directions we track release over release: faster, cheaper, less rework, safer |
 
@@ -87,8 +87,8 @@ Coming from Claude Code, migration is close to zero-cost — see the
 
 | Item | Status |
 | --- | --- |
-| First-party code | 508k lines of TypeScript (including 197k lines of tests) |
-| Engineering loop | 12,875 unit tests, 84.7% line coverage on the agent engine; CI runs the full suite on every PR and it must be green to merge |
+| Codebase | 525k lines of TypeScript (including 206k lines of tests) |
+| Engineering loop | 13,398 unit tests, 86.3% line coverage on the agent engine; CI runs the full suite on every PR and it must be green to merge |
 | Surface area | 44 built-in tools, MCP client / server, LSP code intelligence, permission gating, observable trajectories |
 | Evaluation | Separate benchmark [agent-traj-bench](https://github.com/njfuzrs/agent-traj-bench): 39 SWE-bench-style tasks reverse-built from real sessions |
 
@@ -99,11 +99,11 @@ Coming from Claude Code, migration is close to zero-cost — see the
     cases") came from static scans and didn't match the resume; the 30 eval cases were deleted
     on 2026-09-18 along with the old evals/ suites, so keeping them here would be untrue.
     The first two rows now come from one run of scripts/resume-metrics.ts (`--coverage`)
-    in the docs-research repo:
-    lines of code  507,914 (production + renderer fork + tests + tooling, minus _vendor/ third-party);
-                   tests 197,130
-    unit tests     12,875 as executed by `bun test` (includes generated cases a static grep misses)
-    coverage       84.7% line coverage of packages/core/src (74,209 / 87,603); engine layer only
+    in the docs-research repo (2026-10-04, HEAD=f1581f76):
+    lines of code  524,786 (production + renderer fork + tests + tooling, minus _vendor/ third-party);
+                   tests 206,413
+    unit tests     13,398 as executed by `bun test` (includes generated cases a static grep misses)
+    coverage       86.3% line coverage of packages/core/src (77,768 / 90,119); engine layer only
     built-in tools length of the `sid-code --dump-tools` array (44, same source as ref/tools.md)
     Hook event count is no longer in this table: some of the 32 HookEventName members are
     reserved and not wired yet, so "32" here would read as 32 usable events. See website/ref/hooks.md.

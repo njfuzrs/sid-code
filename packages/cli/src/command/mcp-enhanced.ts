@@ -34,7 +34,10 @@ export class MCPEnhancedCommand implements Command {
     return [];
   }
   description() {
-    return "MCP 服务器管理";
+    return "MCP 服务器管理（无参打开交互面板）";
+  }
+  argumentHint() {
+    return "[list|add|remove|enable|disable|test|authenticate|approve|reject|prompts|prompt|resources] [参数]";
   }
 
   subCommands(): Command[] {
@@ -46,6 +49,8 @@ export class MCPEnhancedCommand implements Command {
       new MCPDisableCommand(),
       new MCPTestCommand(),
       new MCPAuthenticateCommand(),
+      new MCPApproveCommand(),
+      new MCPRejectCommand(),
       new MCPPromptsCommand(),
       new MCPPromptRunCommand(),
       new MCPResourcesCommand(),
@@ -96,6 +101,7 @@ class MCPListCommand implements Command {
           connecting: "… 连接中",
           reconnecting: "↻ 重连中",
           failed: "✗ 连接失败",
+          needs_auth: "! 待授权",
           disabled: "○ 已禁用",
           disconnected: "✗ 未连接",
         }[s.status] || s.status;
@@ -304,6 +310,42 @@ class MCPRemoveCommand implements Command {
   }
 }
 
+/**
+ * /mcp enable|disable 的共用实现（M2）。
+ *
+ * 对齐 CC：禁用是持久化的、用户私有、按项目身份（git root）存，**不改写共享的 .mcp.json**，
+ * 并且当场断连 / 重连。原先的 `--session` 档只写 `sessionState.mcp_disabled`，全仓零读者
+ * （提示「已禁用」而工具仍可调用），CC 也没有这一档 —— 已删除。
+ */
+async function toggleCommand(
+  args: string,
+  ctx: AppContext,
+  disabled: boolean,
+): Promise<CommandResult> {
+  const verb = disabled ? "disable" : "enable";
+  const name = new ArgParser(args).get(0);
+  if (!name) {
+    return { kind: "error", message: `用法: /mcp ${verb} <name>` };
+  }
+  const known = ctx.mcpManager?.getStatus().some((s) => s.name === name) ?? false;
+  if (!known && ctx.mcpManager) {
+    return { kind: "error", message: `未找到 MCP 服务器 "${name}"（用 /mcp list 查看）` };
+  }
+  try {
+    const { toggleMcpServer } = await import("@sid-code/core/mcp/project-files.ts");
+    const { applied } = await toggleMcpServer(name, disabled, ctx.mcpManager);
+    const action = disabled ? "禁用" : "启用";
+    return {
+      kind: "message",
+      message: applied
+        ? `MCP 服务器 "${name}" 已${action}（当前项目，已持久化）`
+        : `MCP 服务器 "${name}" 已${action}（当前项目，已持久化），重启会话后生效`,
+    };
+  } catch (err: any) {
+    return { kind: "error", message: `${disabled ? "禁用" : "启用"}失败: ${err.message}` };
+  }
+}
+
 /** /mcp enable - 启用 MCP 服务器 */
 class MCPEnableCommand implements Command {
   name() {
@@ -313,40 +355,11 @@ class MCPEnableCommand implements Command {
     return [];
   }
   description() {
-    return "启用 MCP 服务器";
+    return "启用 MCP 服务器（当前项目，持久化）";
   }
 
   async execute(args: string, ctx: AppContext): Promise<CommandResult> {
-    const parser = new ArgParser(args);
-    const name = parser.get(0);
-
-    if (!name) {
-      return { kind: "error", message: "用法: /mcp enable <name> [--session]" };
-    }
-
-    const sessionOnly = parser.flag("session");
-
-    if (sessionOnly) {
-      // 会话级启用（从 SessionState 中移除禁用标记）
-      const disabled = (ctx.sessionState.get("mcp_disabled") as string[]) || [];
-      const newDisabled = disabled.filter((n) => n !== name);
-      ctx.sessionState.set("mcp_disabled", newDisabled);
-      return { kind: "message", message: `MCP 服务器 "${name}" 已在当前会话启用` };
-    }
-
-    // G6-3：持久化启用——把 enabled=true 写回 server 所在配置源（user/project）。
-    try {
-      const target = setServerEnabled(name, true);
-      if (!target) {
-        return { kind: "error", message: `未在 user/project 配置中找到 MCP 服务器 "${name}"` };
-      }
-      return {
-        kind: "message",
-        message: `MCP 服务器 "${name}" 已持久启用（${target} 配置）\n重启会话后生效`,
-      };
-    } catch (err: any) {
-      return { kind: "error", message: `启用失败: ${err.message}` };
-    }
+    return toggleCommand(args, ctx, false);
   }
 }
 
@@ -359,83 +372,12 @@ class MCPDisableCommand implements Command {
     return [];
   }
   description() {
-    return "禁用 MCP 服务器";
+    return "禁用 MCP 服务器（当前项目，持久化，当场断开）";
   }
 
   async execute(args: string, ctx: AppContext): Promise<CommandResult> {
-    const parser = new ArgParser(args);
-    const name = parser.get(0);
-
-    if (!name) {
-      return { kind: "error", message: "用法: /mcp disable <name> [--session]" };
-    }
-
-    const sessionOnly = parser.flag("session");
-
-    if (sessionOnly) {
-      // 会话级禁用（存储在 SessionState）
-      const disabled = (ctx.sessionState.get("mcp_disabled") as string[]) || [];
-      if (!disabled.includes(name)) {
-        disabled.push(name);
-        ctx.sessionState.set("mcp_disabled", disabled);
-      }
-      return { kind: "message", message: `MCP 服务器 "${name}" 已在当前会话禁用` };
-    }
-
-    // G6-3：持久化禁用——把 enabled=false 写回 server 所在配置源（user/project）。
-    try {
-      const target = setServerEnabled(name, false);
-      if (!target) {
-        return { kind: "error", message: `未在 user/project 配置中找到 MCP 服务器 "${name}"` };
-      }
-      return {
-        kind: "message",
-        message: `MCP 服务器 "${name}" 已持久禁用（${target} 配置）\n重启会话后生效`,
-      };
-    } catch (err: any) {
-      return { kind: "error", message: `禁用失败: ${err.message}` };
-    }
+    return toggleCommand(args, ctx, true);
   }
-}
-
-/**
- * G6-3：把某 MCP 服务器的 enabled 位持久化到它所在的配置源。
- *
- * 查找顺序：project(.mcp.json) → user(settings.json)。找到即在该源就地改 enabled，
- * 返回命中的 scope；两处都没有返回 null。用 patchSettingsFile 只改一字段，避免整体
- * 重写 settings 时 Zod 有损解析（strip 掉 MCP 自定义字段 + 展开 env 占位符落明文）。
- */
-function setServerEnabled(name: string, enabled: boolean): "project" | "user" | null {
-  const log = getLogger();
-
-  // project：.mcp.json
-  const mcpJsonPath = resolve(process.cwd(), ".mcp.json");
-  if (existsSync(mcpJsonPath)) {
-    try {
-      const parsed = JSON.parse(readFileSync(mcpJsonPath, "utf-8"));
-      const servers = parsed.mcpServers ?? parsed.mcp_servers ?? parsed;
-      if (servers && typeof servers === "object" && servers[name]) {
-        servers[name].enabled = enabled;
-        writeFileSync(mcpJsonPath, JSON.stringify(parsed, null, 2), "utf-8");
-        log.info("MCP", `已持久化 ${name} enabled=${enabled} 到 .mcp.json`);
-        return "project";
-      }
-    } catch (err) {
-      log.warn("MCP", `读取 .mcp.json 失败: ${err}`);
-    }
-  }
-
-  // user：~/.sid-code/settings.json 的 mcpServers
-  const { settings } = getSettingsForSource("userSettings");
-  const servers = { ...(settings?.mcpServers ?? {}) } as Record<string, any>;
-  if (servers[name]) {
-    servers[name] = { ...servers[name], enabled };
-    patchSettingsFile("userSettings", "mcpServers", servers);
-    log.info("MCP", `已持久化 ${name} enabled=${enabled} 到用户 settings.json`);
-    return "user";
-  }
-
-  return null;
 }
 
 /** /mcp test - 测试 MCP 服务器连接 */
@@ -484,6 +426,10 @@ class MCPTestCommand implements Command {
 
     if (server.error) {
       lines.push(`错误: ${server.error}`);
+    }
+
+    if (server.status === "needs_auth") {
+      lines.push(`提示: 运行 /mcp authenticate ${name} 完成 OAuth 授权`);
     }
 
     if (server.reconnectAttempts) {
@@ -540,6 +486,95 @@ class MCPAuthenticateCommand implements Command {
     } catch (err: any) {
       return { kind: "error", message: `授权失败: ${err.message}` };
     }
+  }
+}
+
+/**
+ * /mcp approve - 会话内批准项目 .mcp.json 里待审批的 server 并立即连接（D17）。
+ *
+ * 原先唯一的审批入口是 `sid-code mcp approve`（独立子进程，手上没有 manager），
+ * 只能落盘后让用户重启。会话内有 manager，就直接 addServer 热连接。
+ */
+class MCPApproveCommand implements Command {
+  name() {
+    return "approve";
+  }
+  aliases() {
+    return [];
+  }
+  description() {
+    return "批准项目 .mcp.json 中待审批的 MCP 服务器并立即连接";
+  }
+
+  async execute(args: string, ctx: AppContext): Promise<CommandResult> {
+    const name = new ArgParser(args).get(0);
+    const approval = await import("@sid-code/core/mcp/approval.ts");
+    const { names } = approval.getPendingApprovalServers();
+
+    if (!name) {
+      return {
+        kind: "message",
+        message:
+          names.length === 0
+            ? "没有待审批的项目级 MCP 服务器"
+            : `用法: /mcp approve <name>\n待审批: ${names.join(", ")}`,
+      };
+    }
+    if (!names.includes(name)) {
+      return { kind: "error", message: `"${name}" 不在待审批列表中` };
+    }
+    if (!ctx.mcpManager) {
+      // 本会话没有任何 MCP server 时 manager 不会创建：只能落盘，下次启动连接
+      approval.approvePendingServer(name);
+      return { kind: "message", message: `已批准 "${name}"，重启会话后连接` };
+    }
+    const mgr = ctx.mcpManager;
+    const count = await approval.approveAndConnectPendingServer(name, (n, c) =>
+      mgr.addServer(n, c),
+    );
+    const status = mgr.getStatus().find((s) => s.name === name);
+    if (status?.status === "connected") {
+      return { kind: "message", message: `已批准并连接 "${name}"，注册了 ${count} 个工具` };
+    }
+    return {
+      kind: "message",
+      message: `已批准 "${name}"，但连接未成功${status?.error ? `：${status.error}` : ""}（下次启动会再试）`,
+    };
+  }
+}
+
+/**
+ * /mcp reject - 会话内拒绝项目 .mcp.json 里待审批的 server（M3）。
+ * 拒绝后续启动直接跳过、不再询问；改主意用 `sid-code mcp approve <name>`。
+ */
+class MCPRejectCommand implements Command {
+  name() {
+    return "reject";
+  }
+  aliases() {
+    return [];
+  }
+  description() {
+    return "拒绝项目 .mcp.json 中待审批的 MCP 服务器（后续启动不再询问）";
+  }
+
+  async execute(args: string, _ctx: AppContext): Promise<CommandResult> {
+    const name = new ArgParser(args).get(0);
+    const approval = await import("@sid-code/core/mcp/approval.ts");
+    const { names } = approval.getPendingApprovalServers();
+    if (!name) {
+      return {
+        kind: "message",
+        message:
+          names.length === 0
+            ? "没有待审批的项目级 MCP 服务器"
+            : `用法: /mcp reject <name>\n待审批: ${names.join(", ")}`,
+      };
+    }
+    if (!approval.rejectPendingServer(name)) {
+      return { kind: "error", message: `"${name}" 不在待审批列表中` };
+    }
+    return { kind: "message", message: `已拒绝 "${name}"，后续启动不再询问` };
   }
 }
 

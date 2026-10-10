@@ -81,7 +81,7 @@
 | ② 工具层 | 工具调用成功 / 失败率 | ✅ `PostToolUse.is_error` |
 | | **tool selection accuracy**（选对工具的比例，<90% 说明工具太多或描述差）、**tool retry rate**（同一步失败重试率） | ❌ 均未派生 |
 | ③ eval 通过率 | 回归套件通过率，每次发布都跑 | ✅ `evals/` |
-| ④ 编辑一次成功率 | 首次 edit 即成功的比例 | ⚠️ 只有连续失败信号（`edit-failure-tracker`），**成功率本身未派生** |
+| ④ 编辑一次成功率 | 首次 edit 即成功的比例（**单位：文件 × 会话**，分母 = 真实执行过 edit 的文件数，不含 write） | ✅ `session-index.edit_first_try` → northstar `edit_first_try_rate` |
 | 结果 / 归因 | 人工介入率 / 返工率、**exit status 分布**（end_turn / 中断 / 错误） | ✅ `metadata.exit_status` |
 | | 子代理成败与串并行判定 —— 消灭「全部 SUCCESS」类误判 | ✅ `SubAgentSummary`（`concurrency: serial/parallel/mixed`） |
 
@@ -96,8 +96,8 @@
 | 指标 | 状态 / 取数源 |
 | --- | --- |
 | **防线触发率** —— 分母限定在「审计核查类任务」，全量任务的分母会把信号稀释掉 | ✅ `scripts/defense-trigger-rate.ts`（实测审计类任务 0% 触发，即「防线全在、调用全 0」） |
-| **HITL 介入率**（分工具 / 分规则）与确认耗时 —— 它同时是「更安全 ↔ 更快」这个 trade-off 的计价器 | ❌ trace 层无权限决策埋点 |
-| **权限规则匹配正确率**（该拦的拦住、不该拦的别拦） | ❌ 同上，当前只能靠单测 / e2e 断言，出不了曲线 |
+| **HITL 介入率**（分工具 / 分规则）与确认耗时 —— 它同时是「更安全 ↔ 更快」这个 trade-off 的计价器 | ✅ `PermissionDecision` 事件 + `session-index.permission`（分母 = 权限决策数）；⚠️ 确认耗时只在交互会话真弹窗时有样本，headless 恒 n=0 |
+| **权限规则匹配正确率**（该拦的拦住、不该拦的别拦） | ⚠️ 只有**规则命中率**（`permission.rule_hits` ÷ 决策数）与按 reason 分桶；「正确」需要标注真值，轨迹给不出，仍靠单测 / e2e 断言 |
 | **policy e2e 拦截验证**、fail-closed 路径触发计数 | ⚠️ 有 e2e 断言，无长期趋势 |
 
 **新增防线时的验收判据**：不是「build 过 + 单测过」，而是**「真实会话里被触发过」**——
@@ -362,6 +362,9 @@ git merge-base --is-ancestor v<version> main && echo OK
 - **旧版本清理要豁免两个指针指向的版本**。beta 泡制期连发几版会把 stable 指向的那版
   挤出 `RELEASE_KEEP_VERSIONS=5` 窗口；删掉之后 latest.txt 还指着它 ——
   形态是**全部稳定版用户 404 装不上**，服务器端零报错。
+- **窗口外的目录要 OSS 归档当场核对通过才删**（B46 P3，`scripts/archive-ops.sh verify`）。
+  服务器只是热缓存，归档是唯一事实源；核对出错时跳过核对继续删 = 退回永久删除
+  （B46 之前已因此丢过 20 个版本）。promote / rollback 到已淘汰的版本会先从归档回暖。
 
 ⚠️ **回滚不会让已装坏版本的用户自动降级**，他们要各自再跑一次 `sid-code update`。
 `rollback.sh` 挡住的只是「还没更新的人不再踩坑」，这是它能做到的全部。

@@ -17,7 +17,6 @@ const vim: UnifiedCommand = {
   argumentHint: "[on|off] [-p]",
   source: "builtin",
   userInvocable: true,
-  disableModelInvocation: true,
   immediate: true,
   load: () => import("./vim.ts").then((m) => m.default),
 };

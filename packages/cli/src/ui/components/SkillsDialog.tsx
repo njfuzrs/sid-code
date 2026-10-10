@@ -21,11 +21,11 @@
 
 import React, { useState, useMemo, useEffect, useCallback } from "react";
 import stringWidth from "string-width";
-import Box from "@sid-code/tui-renderer/components/Box.tsx";
-import Text from "@sid-code/tui-renderer/components/Text.tsx";
-import useStdout from "@sid-code/tui-renderer/_vendor/use-stdout.ts";
+import { Box } from "../render-port/components.ts";
+import { Text } from "../render-port/components.ts";
+import { useStdout } from "../render-port/hooks.ts";
 import { theme } from "../semantic-colors.ts";
-import type { Color } from "@sid-code/tui-renderer/styles.ts";
+import type { Color } from "../render-port/types.ts";
 import { useKeypress, KeypressPriority, type Key } from "../contexts/KeypressContext.tsx";
 import { POINTER, SUCCESS_MARK, ERROR_MARK, SEARCH_MARK } from "../constants/figures.ts";
 import { SkillManager } from "@sid-code/core/skill/manager.ts";

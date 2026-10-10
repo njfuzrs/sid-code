@@ -10,6 +10,25 @@ import type { TokenMeter } from "../telemetry/metrics/token-meter.ts";
 import { getLogger, getSessionMetrics } from "../debug/index.ts";
 
 /** 初始化轨迹采集，返回 collector 实例（供 engine 异常路径持久化） */
+/**
+ * trace.upload.url 显式配了且与 backend.url 不同 → 告警一次（§3.3）。
+ * 尊重显式值（数据面允许独立部署），只是让「同一个人的数据分散在两个后端」看得见。
+ */
+function warnIfTraceUploadDiverges(uploadUrl: string): void {
+  void import("../identity/backend-url.ts")
+    .then(({ resolveBackendUrl, normalizeBackendUrl }) => {
+      const backend = resolveBackendUrl();
+      const upload = normalizeBackendUrl(uploadUrl)?.url ?? uploadUrl;
+      if (backend && backend.url !== upload) {
+        getLogger().warn(
+          "TRACE",
+          `轨迹与控制面指向不同的后端：trace.upload.url=${upload}，backend.url=${backend.url}`,
+        );
+      }
+    })
+    .catch(() => {});
+}
+
 export async function initTraceCollector(
   config: Config,
   hookSystem: HookSystem,
@@ -32,7 +51,19 @@ export async function initTraceCollector(
     // 那两条外发通道**：轨迹上传（本处）与告警 webhook（provider-health.ts）。
     // 它们只看自己的开关，从不问隐私级别——配了 essential-traffic 的用户以为
     // 限制了数据外发，实际整份轨迹照传。这类缺陷比崩溃危险，因为它静默。
-    const { isEssentialTrafficOnly } = await import("../analytics/privacy-level.ts");
+    const { isEssentialTrafficOnly, setConfiguredPrivacyLevel } =
+      await import("../analytics/privacy-level.ts");
+    // 配置文件里的 privacy_level 原本只在 initTelemetrySystem 里注入，而那一步在本函数
+    // **之后**才跑（app.ts 先 initTraceCollector 再 initTelemetrySystem）——于是
+    // settings.json 写 `analytics.privacy_level: "essential-traffic"` 拦不住轨迹上传，
+    // 只有环境变量能拦。这里提前注入一次；后面那次注入的是同一个值，幂等。
+    if (config.analytics?.privacyLevel) setConfiguredPrivacyLevel(config.analytics.privacyLevel);
+    if (traceConfig.upload?.url) warnIfTraceUploadDiverges(traceConfig.upload.url);
+    if (traceConfig.upload && traceConfig.upload.url && !traceConfig.upload.token) {
+      // 地址有了（多半是回落自 backend.url）但没 token：不上传，且要说出来，
+      // 否则又是一条「没配 = 关闭」的静默通道（U4）。
+      log.warn("TRACE", "轨迹上传缺少 trace.upload.token，本会话不上传（仅本地留存）");
+    }
     if (traceConfig.upload?.url && traceConfig.upload?.token && isEssentialTrafficOnly()) {
       log.info("TRACE", "隐私级别为 essential-traffic，轨迹上传已禁用（仅本地留存）");
     } else if (traceConfig.upload?.url && traceConfig.upload?.token) {
@@ -54,13 +85,23 @@ export async function initTraceCollector(
         // §6.4：传入模型定价列表，使上传前 cost 校正能用权威 pricing 重算
         availableModels: config.availableModels,
       });
-      uploadMgr.startHealthCheck(traceConfig.upload.healthCheckIntervalMs ?? 60_000);
-      // 死配置修复：`queue_scan_interval_ms` 同样从未生效——全文只有心跳一个
-      // setInterval，processRetryQueue 的唯一调用点是 `--upload-traces` 手动命令。
-      // 于是"配了自动补传"是个错觉。这里把它真正接上。
-      uploadMgr.startQueueScan(traceConfig.upload.queueScanIntervalMs ?? 300_000);
+      // auto_upload=false：保留 uploader 给手动通道（/debug 上传快照），
+      // 但不起任何自动外发的定时器（心跳探测也是一次外发请求）。
+      const autoUpload = traceConfig.upload.autoUpload !== false;
+      if (autoUpload) {
+        uploadMgr.startHealthCheck(traceConfig.upload.healthCheckIntervalMs ?? 60_000);
+        // 死配置修复：`queue_scan_interval_ms` 同样从未生效——全文只有心跳一个
+        // setInterval，processRetryQueue 的唯一调用点是 `--upload-traces` 手动命令。
+        // 于是"配了自动补传"是个错觉。这里把它真正接上。
+        uploadMgr.startQueueScan(traceConfig.upload.queueScanIntervalMs ?? 300_000);
+      }
       uploader = uploadMgr;
-      log.info("TRACE", `上传已启用: ${traceConfig.upload.url}`);
+      log.info(
+        "TRACE",
+        autoUpload
+          ? `上传已启用: ${traceConfig.upload.url}`
+          : `上传已配置但 auto_upload=false，仅手动上传: ${traceConfig.upload.url}`,
+      );
       // P0 最后一道防线（启动补传）刻意**不在这里**触发，而是由 collector 在
       // SessionStart 里调 —— 那里才有 resume 感知的权威 trace session id。
       // ⚠️ 不要改成在此处传 `config.sessionId`：那是**进程**会话 id，resume 时与
@@ -76,6 +117,7 @@ export async function initTraceCollector(
         // 不传（undefined）时由 collector 侧解析 env 兜底 SID_CODE_TRACE_NO_RAW，
         // 所以这里原样透传而不是先 `?? true` —— 提前定死会把 env 通道堵掉。
         recordRawPayloads: traceConfig.recordRawPayloads,
+        autoUpload: traceConfig.upload?.autoUpload,
       },
       uploader,
     );
@@ -111,12 +153,19 @@ export async function initTelemetrySystem(
 
   try {
     const { initTelemetry, getTelemetryBus } = await import("../telemetry/index.ts");
+    // 缺陷 21：OTLP 导出器在 initTelemetry 里按隐私级别决定注册与否，配置文件的
+    // privacy_level 必须在此之前注入（initAnalyticsSink 在后面才注入；trace 关闭时
+    // initTraceCollector 也不会提前注入）。与后面那次注入同值，幂等。
+    if (config.analytics?.privacyLevel) {
+      const { setConfiguredPrivacyLevel } = await import("../analytics/privacy-level.ts");
+      setConfiguredPrivacyLevel(config.analytics.privacyLevel);
+    }
     const telemetryConfig = config.telemetry;
     if (telemetryConfig?.enabled) {
       initTelemetry(telemetryConfig);
       const { TokenMeter } = await import("../telemetry/metrics/token-meter.ts");
-      result.tokenMeter = new TokenMeter(getTelemetryBus(), (model, usage) =>
-        sessionState.calculateCost(model, usage),
+      result.tokenMeter = new TokenMeter(getTelemetryBus(), (model, usage, provider) =>
+        sessionState.calculateCost(model, usage, provider),
       );
       log.info(
         "TELEMETRY",
@@ -166,7 +215,7 @@ export async function initTelemetrySystem(
     // 即使 telemetry.exporters 为空也绑定,使 logEvent 队列得以排空(进入 no-op 后端)。
     await initAnalyticsSink(config, sessionState.sessionId);
 
-    // M5：账本失败盘跨会话重放。未配 SID_CODE_USAGE_ENDPOINT 时零操作。
+    // M5：账本失败盘跨会话重放。未配 backend.url（及旧 SID_CODE_USAGE_ENDPOINT）时零操作。
     // 与 events recoverFromDisk 同款 fire-and-forget，不挡启动。
     try {
       const { startUsageLedgerRemoteRecovery } =
@@ -176,7 +225,15 @@ export async function initTelemetrySystem(
       log.debug("TELEMETRY", `账本远程恢复跳过: ${err?.message}`);
     }
 
-    // M5：远程预算启动拉一次。未配 SID_CODE_BUDGET_ENDPOINT 时零操作。
+    // 已登录却解析不出 backend.url：七条通道全部静默不发，启动告警一次（§3.4-2）
+    try {
+      const { warnIfLoggedInWithoutBackend } = await import("../identity/backend-channels.ts");
+      warnIfLoggedInWithoutBackend();
+    } catch (err: any) {
+      log.debug("BACKEND", `后端地址自检跳过: ${err?.message}`);
+    }
+
+    // M5：远程预算启动拉一次。未配 backend.url（及旧 SID_CODE_BUDGET_ENDPOINT）时零操作。
     try {
       const { loadEnterpriseBudgetOnce } = await import("../telemetry/remote-budget.ts");
       await loadEnterpriseBudgetOnce();
@@ -201,7 +258,32 @@ export async function initTelemetrySystem(
  *   3. 注册本地后端(JSONL,完整数据)与可选的远程 HTTP 后端(脱敏)
  *   4. 绑定 Sink,排空启动期暂存的 logEvent 事件
  */
-async function initAnalyticsSink(config: Config, sessionId: string): Promise<void> {
+/** 内置事件后端名（killswitch 按 name 关它）。 */
+export const BUILTIN_EVENTS_BACKEND = "sid-backend";
+
+/**
+ * analytics.backends 里与内置后端指向同一端点的 http 项会重复上报，跳过（§3.3）。
+ * 比较前两边都规范化：尾斜杠 / query 差异不算不同。
+ */
+export function isDuplicateOfBuiltin(
+  backendCfg: { type: string; endpoint?: string },
+  builtinEventsUrl: string | undefined,
+): boolean {
+  if (!builtinEventsUrl || backendCfg.type !== "http" || !backendCfg.endpoint) return false;
+  try {
+    const norm = (u: string) => {
+      const x = new URL(u.trim());
+      x.search = "";
+      x.hash = "";
+      return x.toString().replace(/\/+$/, "");
+    };
+    return norm(backendCfg.endpoint) === norm(builtinEventsUrl);
+  } catch {
+    return false;
+  }
+}
+
+export async function initAnalyticsSink(config: Config, sessionId: string): Promise<void> {
   const log = getLogger();
   try {
     const { attachAnalyticsSink } = await import("../analytics/index.ts");
@@ -212,7 +294,7 @@ async function initAnalyticsSink(config: Config, sessionId: string): Promise<voi
       setKillswitchHook,
       setMetadataHook,
     } = await import("../analytics/sink.ts");
-    const { setConfiguredPrivacyLevel, shouldLoadRemoteConfig } =
+    const { setConfiguredPrivacyLevel, shouldLoadRemoteConfig, isTelemetryDisabled } =
       await import("../analytics/privacy-level.ts");
 
     // 1. 配置文件中的隐私级别覆盖
@@ -228,9 +310,16 @@ async function initAnalyticsSink(config: Config, sessionId: string): Promise<voi
       try {
         const { initFeatureFlags } = await import("../analytics/feature-flags.ts");
         const { getSidHome } = await import("../config/paths.ts");
+        // 地址由 backend.url 推出（GET /ctl/flags）；featureFlagEndpoint 降为兼容项。
+        const { resolveEndpoint } = await import("../identity/endpoints.ts");
         initFeatureFlags({
           configDir: getSidHome(),
-          remoteEndpoint: analyticsCfg?.featureFlagEndpoint,
+          remoteEndpoint: resolveEndpoint("flags", {
+            legacySetting: {
+              name: "analytics.featureFlagEndpoint",
+              value: analyticsCfg?.featureFlagEndpoint,
+            },
+          })?.url,
           localFlags: analyticsCfg?.flags,
         });
 
@@ -270,9 +359,54 @@ async function initAnalyticsSink(config: Config, sessionId: string): Promise<voi
     //   http → HttpExporter(自定义 JSON 批量端点)
     //   otlp → OtlpExporter(标准 OTLP/HTTP logs 协议)
     // 新增 type 必须同步 config.ts 的 AnalyticsBackendConfig 与 schema.ts 的校验白名单。
-    if (analyticsCfg?.backends && shouldLoadRemoteConfig()) {
+    //
+    // 内置后端 `sid-backend`：配了 backend.url 就自动注册，发往 POST /events。
+    // 它不出现在 analytics.backends[] 里，也不能被它覆盖——backends[] 只用来对接第三方
+    // collector。以前只认 backends[]，配了 backend.url 并登录的机器事件照样只写本地。
+    //
+    // 缺陷 35（P0）：远程**上报**后端的注册判据是 !isTelemetryDisabled()，不是
+    // shouldLoadRemoteConfig()。后者回答「能否**拉**远程配置」（下行，essential-traffic 才禁），
+    // 被借来门控「能否**推**数据」（上行，no-telemetry 就该禁）。借错的后果是 no-telemetry 下
+    // 后端照样注册、recoverFromDisk 把上个会话的旧事件 POST 出去。disk-cache 里另有一道同判据的闸。
+    const allowRemoteReport = !isTelemetryDisabled();
+    let builtinEventsUrl: string | undefined;
+    if (allowRemoteReport) {
+      const { resolveEndpoint } = await import("../identity/endpoints.ts");
+      builtinEventsUrl = resolveEndpoint("events")?.url;
+      if (builtinEventsUrl) {
+        try {
+          const { EventDiskCache } = await import("../analytics/disk-cache.ts");
+          const { sidPaths } = await import("../config/paths.ts");
+          const { HttpExporter } = await import("../analytics/exporters/http.ts");
+          const exporter = new HttpExporter({
+            name: BUILTIN_EVENTS_BACKEND,
+            endpoint: builtinEventsUrl,
+            stripProtected: true,
+            diskCache: new EventDiskCache({
+              cacheDir: sidPaths.telemetry(),
+              sessionId,
+              maxRetries: 8,
+            }),
+          });
+          registerBackend(exporter);
+          void exporter.recoverFromDisk();
+          log.info("TELEMETRY", `内置事件后端已注册: ${builtinEventsUrl}`);
+        } catch (bErr: any) {
+          log.warn("TELEMETRY", `内置事件后端初始化失败: ${bErr?.message}`);
+        }
+      }
+    }
+
+    if (analyticsCfg?.backends && allowRemoteReport) {
       for (const backendCfg of analyticsCfg.backends) {
         if (backendCfg.type !== "http" && backendCfg.type !== "otlp") continue;
+        if (isDuplicateOfBuiltin(backendCfg, builtinEventsUrl)) {
+          log.warn(
+            "TELEMETRY",
+            `analytics.backends 中「${backendCfg.name}」已由 backend.url 覆盖（内置后端），已跳过，可以删除这一项`,
+          );
+          continue;
+        }
         try {
           const { EventDiskCache } = await import("../analytics/disk-cache.ts");
           const { sidPaths } = await import("../config/paths.ts");

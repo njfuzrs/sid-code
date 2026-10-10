@@ -22,6 +22,7 @@ import {
 import { readFile, writeFile } from "node:fs/promises";
 import { getLogger } from "../debug/logger.ts";
 import { sidPaths } from "../config/paths.ts";
+import { backendUrl } from "../identity/endpoints.ts";
 import type { TraceUploaderInterface } from "./collector.ts";
 
 // ─── 接口定义 ───
@@ -209,7 +210,7 @@ export class UploadManager implements TraceUploaderInterface {
 
   /**
    * 启动心跳检测
-   * 定时 GET {baseUrl}/api/v1/health，更新 serverReachable 状态
+   * 定时 GET 健康检查端点（路径见 identity/endpoints.ts），更新 serverReachable 状态
    * @param intervalMs 检测间隔，默认 60 秒
    */
   startHealthCheck(intervalMs = 60_000): void {
@@ -283,7 +284,7 @@ export class UploadManager implements TraceUploaderInterface {
 
   private async checkHealth(): Promise<void> {
     try {
-      const resp = await fetch(`${this.opts.baseUrl}/api/v1/health`, {
+      const resp = await fetch(backendUrl(this.opts.baseUrl, "health"), {
         signal: AbortSignal.timeout(5_000),
       });
       this.serverReachable = resp.ok;
@@ -386,7 +387,7 @@ export class UploadManager implements TraceUploaderInterface {
         if (this.opts.deviceId) formData.append("device_id", this.opts.deviceId);
 
         // 发送请求（30 秒超时）
-        const response = await fetch(`${this.opts.baseUrl}/api/v1/upload/session-file`, {
+        const response = await fetch(backendUrl(this.opts.baseUrl, "upload", "/session-file"), {
           method: "POST",
           headers: {
             "X-Upload-Token": this.opts.token,
@@ -445,7 +446,8 @@ export class UploadManager implements TraceUploaderInterface {
         lastError = err;
       }
 
-      // 指数退避：2s, 4s, 8s, 16s, 32s
+      // 指数退避：maxRetries 是**总尝试次数**（默认 5），所以间隔只出现 maxRetries-1 次：
+      // 2s, 4s, 8s, 16s（最后一次失败后不再等待）
       if (attempt < this.opts.maxRetries - 1) {
         const delay = this.opts.retryBaseMs * Math.pow(2, attempt);
         getLogger().warn(
@@ -760,6 +762,14 @@ export class UploadManager implements TraceUploaderInterface {
         model: md.model,
         // ★§6.4：/model 切换后归因对照（仅 session.traj 里存在时才带；未切换则无此字段）。
         ...(md.model_at_start ? { model_at_start: md.model_at_start } : {}),
+        // 版本与构建身份：上传后本地只剩这份 metadata.json，缺了它就再也说不清是哪个构建跑的
+        ...(md.app_version ? { app_version: md.app_version } : {}),
+        ...(md.release_channel ? { release_channel: md.release_channel } : {}),
+        ...(md.build_commit ? { build_commit: md.build_commit } : {}),
+        ...(md.build_origin ? { build_origin: md.build_origin } : {}),
+        ...(md.build_dirty !== undefined ? { build_dirty: md.build_dirty } : {}),
+        ...(md.build_describe ? { build_describe: md.build_describe } : {}),
+        ...(md.git_head ? { git_head: md.git_head } : {}),
         start_time: md.start_time,
         end_time: md.end_time,
         total_steps: md.total_steps,

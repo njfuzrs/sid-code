@@ -45,6 +45,14 @@ interface Version {
   date: string;
   highlight: string | null;
   userFacing: boolean;
+  /** 发布通道（T2）：beta = 还在泡制 / 被稳定版跳过的中间号。老数据缺省按 stable */
+  channel?: "stable" | "beta";
+  /** 被跳过的 beta 号并入了哪个稳定版 */
+  mergedInto?: string | null;
+  /** 稳定版说明合并了哪些版本（多版本时才有） */
+  covers?: string[] | null;
+  /** beta 修复号的一句话说明 */
+  betaNote?: string | null;
   count: number;
   sections: Section[];
 }
@@ -60,6 +68,16 @@ const changelog = data as unknown as {
 };
 
 const query = ref("");
+/**
+ * 是否展示 beta 预发布版本。默认只看稳定版：beta 号（含被跳过的中间号）的变更
+ * 在促升时已并入稳定版说明，默认全展开会让读者以为每个号都正式发布过。
+ */
+const showBeta = ref(false);
+const isBeta = (v: Version) => v.channel === "beta";
+const betaCount = computed(() => changelog.versions.filter(isBeta).length);
+const visibleVersions = computed(() =>
+  showBeta.value ? changelog.versions : changelog.versions.filter((v) => !isBeta(v)),
+);
 /** 当前只看某一类变更（null = 全部）。点徽章切换，再点取消。 */
 const activeSection = ref<string | null>(null);
 
@@ -90,10 +108,10 @@ function itemMatches(text: string, terms: string[]): boolean {
 const filtered = computed<Version[]>(() => {
   const terms = query.value.trim().toLowerCase().split(/\s+/).filter(Boolean);
   const k = activeSection.value;
-  if (terms.length === 0 && !k) return changelog.versions;
+  if (terms.length === 0 && !k) return visibleVersions.value;
 
   const out: Version[] = [];
-  for (const v of changelog.versions) {
+  for (const v of visibleVersions.value) {
     const highlightHit = !k && terms.length > 0 && !!v.highlight && itemMatches(v.highlight, terms);
 
     const sections: Section[] = [];
@@ -180,6 +198,8 @@ async function revealHashTarget(hash: string) {
   // 交给浏览器/VitePress 自己的锚点滚动，避免和它抢滚动位置。
   if (!versionInDom(version)) {
     reset();
+    // 深链到一个 beta 号：自动展开 beta，否则锚点没有落点
+    if (changelog.versions.some((v) => v.version === version && isBeta(v))) showBeta.value = true;
     await nextTick();
     document.getElementById(versionAnchor(version))?.scrollIntoView();
   }
@@ -238,6 +258,10 @@ onMounted(() => void revealHashTarget(route.hash));
           {{ s.title }}<i>{{ s.total }}</i>
         </button>
       </div>
+      <label v-if="betaCount > 0" class="cl-beta-toggle">
+        <input v-model="showBeta" type="checkbox" />
+        显示 beta 预发布版本（{{ betaCount }}）
+      </label>
       <p v-if="isFiltering" class="cl-hint">
         命中 <b>{{ matchCount }}</b> 项变更，分布在 <b>{{ filtered.length }}</b> 个版本
       </p>
@@ -264,8 +288,24 @@ onMounted(() => void revealHashTarget(route.hash));
         <span class="cl-dot" aria-hidden="true"></span>
         <h2 class="cl-vtitle">v{{ v.version }}</h2>
         <time class="cl-date">{{ v.date }}</time>
+        <span v-if="isBeta(v)" class="cl-prerelease">预发布</span>
         <span v-if="v.count" class="cl-vcount">{{ v.count }} 项</span>
       </div>
+
+      <p v-if="v.mergedInto" class="cl-internal">
+        该 beta 版本未单独进入稳定通道，变更已并入 v{{ v.mergedInto }}。
+      </p>
+      <p v-if="v.covers && v.covers.length > 1" class="cl-internal">
+        本次稳定版合并了 beta 期
+        {{
+          v.covers
+            .filter((c) => c !== v.version)
+            .map((c) => `v${c}`)
+            .join("、")
+        }}
+        的变更。
+      </p>
+      <p v-if="v.betaNote" class="cl-internal">beta 修复：{{ v.betaNote }}</p>
 
       <!--
         highlight：本版最值得说的一件事。放在版本卡外、正文之上，
@@ -277,7 +317,7 @@ onMounted(() => void revealHashTarget(route.hash));
         userFacing=false 是一个**合法结论**（纯内部版本），不是数据缺失。
         必须显式说出来 —— 否则一个空白的版本块看起来就是「坏了」或「漏了」。
       -->
-      <p v-if="!v.userFacing && v.sections.length === 0" class="cl-internal">
+      <p v-if="!v.userFacing && v.sections.length === 0 && !v.betaNote" class="cl-internal">
         本版没有用户可见的变更（内部改动、构建或文档）。
       </p>
 
@@ -297,6 +337,23 @@ onMounted(() => void revealHashTarget(route.hash));
 </template>
 
 <style scoped>
+.cl-prerelease {
+  font-size: 12px;
+  padding: 1px 8px;
+  border-radius: 999px;
+  border: 1px solid var(--vp-c-warning-2);
+  color: var(--vp-c-warning-1);
+  background: var(--vp-c-warning-soft);
+}
+.cl-beta-toggle {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  margin-top: 8px;
+  font-size: 13px;
+  color: var(--vp-c-text-2);
+  cursor: pointer;
+}
 /* 全部颜色走站点变量：深浅色自动跟随，不内联任何品牌色 */
 
 .cl {

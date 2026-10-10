@@ -32,7 +32,7 @@ tags: [Agent 架构, 主循环, 机制解析, 实测]
   但这件事只写进 warn.log，一条结构化轨迹事件都没有——
   于是它无法被聚合，我是靠比对两个计数器差 1 才发现的。
 - 主循环默认没有轮次上限（`maxTurns: 0` → `Infinity`），
-  这是刻意对齐 claude-code 的取舍，代价写在边界节里。
+  理由是长任务不该被轮数打断，代价写在边界节里。
 :::
 
 ## 一、约束：为什么"继续还是收尾"不能是一个 if
@@ -93,7 +93,7 @@ if (isEndTurnLike && !hasPendingToolUse) {
 | todo 完成度 | 清单仍有未勾选项 | 3 | `loop.ts:3056` |
 | 假设交付门禁 | 登记表有未结清假设 | 1 或 2（分档） | `loop.ts:3139` |
 | token 预算续写 | 本轮带了 `+500k` 预算指令 | 按预算 | `loop.ts:3263` |
-| Goal Gate | 独立评估者判定未达成 | 按配置 | `loop.ts:3308` |
+| Goal Gate | 评估模型判定未达成 | 按配置 | `loop.ts:3308` |
 
 顺序不是随便排的：不依赖 todo 的排在依赖 todo 的前面。
 "未答复兜底"放在 todo 闸门之前，因为完成度校验链原本全以 todo 存在为前提，
@@ -353,10 +353,10 @@ todo 闸门那唯一一次续命花了 71k input token。
 
 ## 七、当前的能力边界
 
-主循环默认没有轮次上限。`maxTurns: 0`（`src/config/config.ts:792`）
-在 `loop.ts:560` 被转成 `Infinity`。这是刻意对齐 claude-code
-（交互模式也无硬上限），尊重"不打断长任务"。
-绕法：`SID_MAX_TURNS=<N>` 开一个软阈值提醒（`src/query/soft-turn-limit.ts`），
+主循环默认没有轮次上限。`maxTurns: 0`（`packages/core/src/config/config.ts`）
+在主循环 `packages/core/src/query/loop.ts` 里被转成 `Infinity`。
+理由是长任务不该被轮数打断（交互模式也无硬上限）。
+绕法：`SID_MAX_TURNS=<N>` 开一个软阈值提醒（`packages/core/src/query/soft-turn-limit.ts`），
 超过 N 轮注入一次自省提示。注意它只提醒不强杀，不会掐断任务。
 失效方向偏安全（宁可多跑不误杀），但对接弱模型的长任务仍需要人盯着 ESC。
 

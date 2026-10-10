@@ -14,6 +14,7 @@
 import * as childProcess from "node:child_process";
 import { INSTALL_URL } from "@sid-code/core/update/config.ts";
 import { isValidVersion } from "@sid-code/core/update/versions.ts";
+import { getReleaseChannel, type ReleaseChannel } from "@sid-code/shared/release-channel.ts";
 function printHelp(): void {
   console.log(`sid-code update — 更新到最新版本
 
@@ -28,9 +29,10 @@ function printHelp(): void {
   当前不支持 --list；服务器只提供稳定版和 beta 通道指针。
 
 发布通道:
-  缺省更新到稳定版（服务器 latest.txt）。想留在抢先版通道要显式带上：
-    SID_CODE_CHANNEL=beta sid-code update
-  通道不写进本地配置，所以不带这个变量就会回到稳定版。
+  缺省沿用当前安装的通道：装的是 beta 就继续更新到 beta（服务器 beta.txt），
+  否则更新到稳定版（latest.txt）。显式切换通道：
+    SID_CODE_CHANNEL=stable sid-code update   # 退出 beta，回到稳定版
+    SID_CODE_CHANNEL=beta sid-code update     # 加入 beta 抢先版
   已有的 ~/.sid-code/ 配置与会话数据不受影响，只替换二进制本身。`);
 }
 
@@ -56,9 +58,26 @@ function parseVersion(args: string[]): string | undefined {
   return version;
 }
 
+/**
+ * 决定传给 install.sh 的通道：显式 SID_CODE_CHANNEL 优先；否则沿用当前安装的通道（T4）。
+ *
+ * 以前不带变量就静默回到 stable —— beta 测试人员跑一次裸 `sid-code update` 就掉出了 beta，
+ * 而他们自己不会察觉。dev 构建不沿用（它不是从任何通道装的），交给 install.sh 缺省 stable。
+ */
+function resolveUpdateChannel(
+  explicit: string | undefined,
+  installed: ReleaseChannel,
+): { channel: string | undefined; inherited: boolean } {
+  const e = explicit?.trim();
+  if (e) return { channel: e, inherited: false };
+  if (installed === "beta") return { channel: "beta", inherited: true };
+  return { channel: undefined, inherited: false };
+}
+
 export async function handleUpdateCommand(
   args: string[],
   execute: typeof childProcess.execFileSync = childProcess.execFileSync,
+  installedChannel: () => ReleaseChannel = () => getReleaseChannel(),
 ): Promise<void> {
   if (args.includes("--help") || args.includes("-h")) {
     printHelp();
@@ -66,10 +85,18 @@ export async function handleUpdateCommand(
   }
 
   const version = parseVersion(args);
-  const channel = process.env.SID_CODE_CHANNEL?.trim();
+  const { channel, inherited } = resolveUpdateChannel(
+    process.env.SID_CODE_CHANNEL,
+    installedChannel(),
+  );
   const env: NodeJS.ProcessEnv = { ...process.env };
+  if (channel) env.SID_CODE_CHANNEL = channel;
   if (version) env.SID_CODE_VERSION = version;
   else delete env.SID_CODE_VERSION;
+
+  if (inherited) {
+    console.log("沿用当前通道 beta；切回稳定版：SID_CODE_CHANNEL=stable sid-code update");
+  }
 
   console.log(
     `正在更新 sid-code（${INSTALL_URL}${channel ? `，通道: ${channel}` : ""}${version ? `，版本: ${version}` : ""}）...`,
