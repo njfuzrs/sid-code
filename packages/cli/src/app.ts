@@ -114,9 +114,9 @@ import { resolve, extname, join } from "path";
 import { sidPaths } from "@sid-code/core/config/paths.ts";
 import { deriveTaskTitle } from "./ui/utils/task-title.ts";
 import { buildInteractiveBashToolUse } from "./ui/shell-input.ts";
-import { panelSummaryLine } from "./ui/components/command-panel-layout.ts";
 import { mergeAnchoredItems } from "./ui/local-command-items.ts";
 import { resolvePanel } from "./command/executor.ts";
+import { routeCommandResult } from "./ui/command-result-route.ts";
 import { startPreventSleep, stopPreventSleep } from "@sid-code/core/task/prevent-sleep.ts";
 import { getSleepLedger } from "@sid-code/shared/utils/sleep-detect.ts";
 import { getRawVersion } from "@sid-code/shared/version.ts";
@@ -2720,11 +2720,11 @@ export class App {
       };
       updateState: (patch: Partial<import("./ui/App.tsx").TUIState>) => void;
       appendCommandOutput: (input: string, output: string | null, isError?: boolean) => void;
-      /** 把多行结果放进命令输出面板，消息流只留一行摘要 */
-      showCommandPanel: (
+      /** 命令结果统一出口：多行进面板、短回执进状态栏，消息流不留痕 */
+      presentCommandResult: (
         input: string,
-        output: string,
-        panel: import("./command/types.ts").CommandPanelSpec,
+        output: string | null | undefined,
+        opts?: { panel?: import("./command/types.ts").CommandPanelSpec; isError?: boolean },
       ) => void;
       getConversationClearedPatch: () => Partial<import("./ui/App.tsx").TUIState>;
       clearPromptCache: () => void;
@@ -2738,7 +2738,7 @@ export class App {
       callbacks,
       updateState,
       appendCommandOutput,
-      showCommandPanel,
+      presentCommandResult,
       getConversationClearedPatch,
       clearPromptCache,
       resetSyncState,
@@ -2816,7 +2816,7 @@ export class App {
         break;
 
       case "quit":
-        appendCommandOutput(commandInput, result.message ?? "再见！");
+        presentCommandResult(commandInput, result.message ?? "再见！");
         // D3-4：/quit 退出前必须 fireSessionEndEvent，保证 transcript 落盘（纪律不变量第 1 条）。
         void (async () => {
           try {
@@ -2864,8 +2864,8 @@ export class App {
         break;
 
       case "passthrough":
-        // 不像命令的输入：当作普通文本发给模型
-        appendCommandOutput(commandInput, null);
+        // 不像命令的输入：当作普通文本发给模型。不再先写一条空命令项——onUserInput
+        // 会把它作为用户消息上屏，先写那条只会在历史区多出一行重复的命令行。
         await callbacks.onUserInput(result.value);
         break;
 
@@ -2890,12 +2890,12 @@ export class App {
       case "confirm": {
         // 确认型结果：暂以文本提示用户（新体系 confirm 的 UI 接线后续可增强）。
         // 当前 bundled skills 不产生 confirm，此分支为完整性兜底。
-        appendCommandOutput(commandInput, result.message ?? "需要确认");
+        presentCommandResult(commandInput, result.message ?? "需要确认");
         break;
       }
 
       case "error":
-        appendCommandOutput(commandInput, `错误: ${result.message ?? ""}`, true);
+        presentCommandResult(commandInput, `错误: ${result.message ?? ""}`, { isError: true });
         break;
 
       case "skip":
@@ -2903,15 +2903,11 @@ export class App {
         break;
 
       case "message":
-        if (result.panel && result.value) {
-          showCommandPanel(commandInput, result.value, result.panel);
-        } else {
-          appendCommandOutput(commandInput, result.value ?? null);
-        }
+        presentCommandResult(commandInput, result.value, { panel: result.panel });
         break;
 
       default:
-        appendCommandOutput(commandInput, (result as { value?: string }).value ?? null);
+        presentCommandResult(commandInput, (result as { value?: string }).value);
         break;
     }
   }
@@ -3670,6 +3666,7 @@ export class App {
           tools: this.toolRegistry.enabled(),
           projectRules: newRules.rawContent,
           projectRulesPath: newRules.sourcePath,
+          projectRulesPaths: newRules.loadedPaths,
           appendPrompt: this.config.appendSystemPrompt || undefined,
           outputStyleContent,
           workingDir: process.cwd(),
@@ -4521,6 +4518,7 @@ export class App {
         tools: this.toolRegistry.enabled(),
         projectRules: rules?.rawContent,
         projectRulesPath: rules?.sourcePath,
+        projectRulesPaths: rules?.loadedPaths,
         appendPrompt: this.config.appendSystemPrompt || undefined,
         outputStyleContent,
         workingDir: process.cwd(),
@@ -8374,7 +8372,8 @@ export class App {
     };
 
     /**
-     * 多行命令结果进命令输出面板（Esc 关闭），消息流只留一行摘要作为痕迹。
+     * 多行命令结果进命令输出面板（Esc 关闭），消息流里不留任何痕迹——命令行与摘要都不写。
+     * 历史区只保留用户真正和模型的对话；口径与 dialog 分支一致（打开 /model 面板也不留痕）。
      * 面板已打开时直接替换内容（连敲两个诊断命令，看的是最新那个）。
      */
     const showCommandPanel = (
@@ -8385,12 +8384,29 @@ export class App {
       updateState({
         commandPanel: { title: panel.title ?? input, content: output },
       });
-      appendCommandOutput(input, panelSummaryLine(output));
+    };
+    /**
+     * 斜杠命令结果的唯一出口：消息流里一律不留痕（历史区只保留真实对话）。
+     *
+     * 多行进面板、短回执/错误进底部状态栏临时提示（判据见 ui/command-result-route.ts）。
+     *
+     * 此前短回执仍走 appendCommandOutput，`/model xxx` 切换后历史区留下
+     * `> /model xxx` + 「主模型已切换为 …」（#228 只收了多行那一半）。
+     * 不经过这里、仍写消息流的只剩：/bash（shell 输出是对话素材）、/compact 摘要、
+     * submit_prompt 的命令行（它本身就是发给模型的一轮对话）。
+     */
+    const presentCommandResult = (
+      input: string,
+      output: string | null | undefined,
+      opts: { panel?: import("./command/types.ts").CommandPanelSpec; isError?: boolean } = {},
+    ) => {
+      const route = routeCommandResult(output, opts);
+      if (route.to === "panel") showCommandPanel(input, route.content, route.panel);
+      else if (route.to === "status")
+        addTransientStatusMessage("command-result", route.text, route.delayMs);
     };
     this.commandResultPresenter = (input, output, panel) => {
-      const resolved = resolvePanel(output, panel, true);
-      if (resolved) showCommandPanel(input, output, resolved);
-      else appendCommandOutput(input, output);
+      presentCommandResult(input, output, { panel: resolvePanel(output, panel, true) });
     };
 
     // 设置 TUI 权限确认回调
@@ -9567,7 +9583,7 @@ export class App {
             updateState({ model: this.config.model, provider: this.config.provider });
           } catch (err: any) {
             log.error("TUI:CMD", `命令执行失败: /${cmd}`, { error: err.message, stack: err.stack });
-            appendCommandOutput(commandInput, `命令执行失败: ${err.message}`, true);
+            presentCommandResult(commandInput, `命令执行失败: ${err.message}`, { isError: true });
             return;
           }
 
@@ -9579,7 +9595,7 @@ export class App {
             appendCommandOutput,
             getConversationClearedPatch,
             clearPromptCache,
-            showCommandPanel,
+            presentCommandResult,
             resetSyncState: () => {
               lastSyncedCount = 0;
               historyIdCounter = 0;
@@ -9596,7 +9612,9 @@ export class App {
         const command = this.commandRegistry.get(cmd);
         if (!command) {
           log.warn("TUI:CMD", `未知命令: /${cmd}`);
-          appendCommandOutput(commandInput, `未知命令: /${cmd}，输入 /help 查看可用命令`, true);
+          presentCommandResult(commandInput, `未知命令: /${cmd}，输入 /help 查看可用命令`, {
+            isError: true,
+          });
           return;
         }
 
@@ -9607,7 +9625,7 @@ export class App {
           updateState({ model: this.config.model, provider: this.config.provider });
         } catch (err: any) {
           log.error("TUI:CMD", `命令执行失败: /${cmd}`, { error: err.message, stack: err.stack });
-          appendCommandOutput(commandInput, `命令执行失败: ${err.message}`, true);
+          presentCommandResult(commandInput, `命令执行失败: ${err.message}`, { isError: true });
           return;
         }
 
@@ -9656,7 +9674,7 @@ export class App {
             break;
 
           case "quit":
-            appendCommandOutput(commandInput, result.message ?? "再见！");
+            presentCommandResult(commandInput, result.message ?? "再见！");
             // D3-4：/quit 退出前必须 fireSessionEndEvent，否则跳过 line 1665 的 SessionEnd，
             // 导致 messages.json / trajectory 不落盘（违反纪律不变量第 1 条「transcript 必落盘」）。
             void (async () => {
@@ -9700,7 +9718,7 @@ export class App {
             break;
 
           case "error":
-            appendCommandOutput(commandInput, `错误: ${result.message ?? ""}`, true);
+            presentCommandResult(commandInput, `错误: ${result.message ?? ""}`, { isError: true });
             break;
 
           case "dialog":
@@ -9713,11 +9731,9 @@ export class App {
 
           case "message":
           default:
-            if (result.kind === "message" && result.panel && result.message) {
-              showCommandPanel(commandInput, result.message, result.panel);
-            } else {
-              appendCommandOutput(commandInput, result.message ?? null);
-            }
+            presentCommandResult(commandInput, result.message, {
+              panel: result.kind === "message" ? result.panel : undefined,
+            });
             break;
         }
       },

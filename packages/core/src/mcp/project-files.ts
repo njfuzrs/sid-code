@@ -37,13 +37,50 @@ export function ancestorDirsToRoot(cwd: string): string[] {
   return getAncestorChain(resolve(cwd)).reverse();
 }
 
+/**
+ * 把 CC 格式的 server 条目归一成 sid-code 的 `transport` 口径。
+ *
+ * `.mcp.json` 是两家共用的文件：CC 用 `type` 字段，且 stdio 可以**不写**（只给 `command`）。
+ * 此前原样透传，`~/.mcp.json` 里一条合法的 CC 配置在启动时被报
+ * `transport: 无效值 "undefined"`，manager 建连时也落进「不支持的传输方式」分支。
+ *
+ * 规则（显式字段优先，推断只在两者都缺时发生）：
+ * 1. 已有 `transport` → 原样保留（sid 原生写法，不做任何改写）；
+ * 2. 否则取 `type`（`streamable-http` 是 MCP 规范里 http 的别名）；
+ * 3. 都没有：有 `command` → stdio（CC 的默认值），只有 `url` → http。
+ * 无法推断时保持缺省，交给 config/schema.ts 报错——不猜一个错的传输方式。
+ */
+export function normalizeMcpServerEntry(raw: unknown): MCPServerConfig {
+  if (!raw || typeof raw !== "object" || Array.isArray(raw)) return raw as MCPServerConfig;
+  const entry = { ...(raw as Record<string, unknown>) };
+  if (typeof entry.transport !== "string" || entry.transport === "") {
+    const type = typeof entry.type === "string" ? entry.type : undefined;
+    const inferred =
+      type === "streamable-http"
+        ? "http"
+        : (type ?? (entry.command ? "stdio" : entry.url ? "http" : undefined));
+    if (inferred) entry.transport = inferred;
+  }
+  delete entry.type;
+  return entry as unknown as MCPServerConfig;
+}
+
+/** 对一整层 server 表做 {@link normalizeMcpServerEntry}（.mcp.json 与 mcp.local.json 共用） */
+export function normalizeMcpServerMap(
+  servers: Record<string, unknown>,
+): Record<string, MCPServerConfig> {
+  const out: Record<string, MCPServerConfig> = {};
+  for (const [name, cfg] of Object.entries(servers)) out[name] = normalizeMcpServerEntry(cfg);
+  return out;
+}
+
 /** 解析单个 `.mcp.json`；格式不对 / 读失败返回 null（由调用方决定是否告警） */
 function readMcpJsonFile(path: string): Record<string, MCPServerConfig> | null {
   const parsed = JSON.parse(readFileSync(path, "utf-8"));
   // 支持 { "mcpServers": { ... } } 或直接 { "serverName": { ... } }
   const servers = parsed?.mcpServers || parsed?.mcp_servers || parsed;
   if (!servers || typeof servers !== "object" || Array.isArray(servers)) return null;
-  return servers as Record<string, MCPServerConfig>;
+  return normalizeMcpServerMap(servers as Record<string, unknown>);
 }
 
 /**

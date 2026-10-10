@@ -766,77 +766,6 @@ async function loadAndParse(filePath: string, projectRoot?: string): Promise<Pro
 }
 
 /**
- * 在项目根目录下递归搜索 CLAUDE.md 文件。
- * - BFS 搜索，最大深度 3 层
- * - 跳过 node_modules、.git、dist 等目录
- * - 文件身份去重（处理大小写不敏感文件系统）
- */
-async function findProjectCLAUDEmdFiles(projectRoot: string): Promise<string[]> {
-  const log = getLogger();
-  const found: string[] = [];
-  const visited = new Set<string>();
-  const maxDepth = 3;
-
-  // 需要跳过的目录
-  const skipDirs = new Set([
-    "node_modules",
-    ".git",
-    "dist",
-    "build",
-    "out",
-    ".next",
-    ".nuxt",
-    "coverage",
-    ".cache",
-    "tmp",
-    "temp",
-  ]);
-
-  async function searchDir(dir: string, depth: number): Promise<void> {
-    if (depth > maxDepth) return;
-
-    // 去重（处理大小写不敏感文件系统）
-    const normalizedDir = dir.toLowerCase();
-    if (visited.has(normalizedDir)) return;
-    visited.add(normalizedDir);
-
-    try {
-      const entries = await Array.fromAsync(new Bun.Glob("*").scan({ cwd: dir, onlyFiles: false }));
-
-      for (const entry of entries) {
-        const fullPath = join(dir, entry);
-
-        // 检查是否是 CLAUDE.md 文件
-        if (CLAUDE_MD_FILES.some((name) => entry === name || fullPath.endsWith(name))) {
-          if (existsSync(fullPath)) {
-            found.push(fullPath);
-            log.debug("RULES", `发现子目录 CLAUDE.md: ${fullPath}`);
-          }
-          continue;
-        }
-
-        // 递归搜索子目录
-        if (!skipDirs.has(entry)) {
-          try {
-            const stat = await Bun.file(fullPath).stat();
-            if (stat.isDirectory()) {
-              await searchDir(fullPath, depth + 1);
-            }
-          } catch {
-            // 忽略无法访问的目录
-          }
-        }
-      }
-    } catch (err) {
-      log.debug("RULES", `搜索目录失败: ${dir}`, err);
-    }
-  }
-
-  await searchDir(projectRoot, 0);
-  return found;
-}
-
-/**
  * 通用规则目录加载器：扫描 dir 下所有 *.md，按文件名排序逐个解析。
  * M9：跟随 symlink（Glob followSymlinks）+ realpath 去重防环——同一 realpath 只加载一次。
  *
@@ -1131,24 +1060,18 @@ export async function loadAllCLAUDEmd(
     }
   }
 
-  // 3. 查找并加载子目录 CLAUDE.md（Subdir 层）
-  const subFiles = await findProjectCLAUDEmdFiles(projectRoot);
-  // 过滤掉已加载的（父链 / 全局 / managed，realpath 去重）
-  const subFilesFiltered = subFiles.filter((f) => !seenRealPaths.has(safeResolvePath(f)));
-
-  let subRules: ProjectRules | null = null;
-  for (const subFile of subFilesFiltered) {
-    seenRealPaths.add(safeResolvePath(subFile));
-    const rules = await loadAndParse(subFile, projectRoot);
-    if (rules) {
-      rules.layer = "subdir";
-      // 关键：子目录层是本缺陷的实际发生地（docs/summary 无条件 + src/ui 带 paths 同层合并）。
-      // 逐文件过滤后，src/ui 的 paths 在 cwd=website 时正确落空、不再被夹带。
-      if (!keepInScope(rules)) continue;
-      log.info("RULES", `加载子目录规则: ${subFile}`);
-      subRules = subRules ? mergeProjectRules(subRules, rules) : rules;
-    }
-  }
+  // 3. 子目录 CLAUDE.md：**启动时不扫描**，统一交给 JIT 在工具触达该目录时按需加载
+  //    （config/jit-context.ts，对齐 CC：`getMemoryFilesForNestedDirectory` 只在读到
+  //    嵌套目录里的文件时触发，`getMemoryFiles` 启动期只走 cwd → 根的父链）。
+  //
+  //    ⛔ 不要加回「从 projectRoot 往下 BFS N 层」：
+  //    - projectRoot 在非 git 目录 / 父链无命中时退回 startDir。startDir = 家目录时，
+  //      实测扫进 65 个兄弟项目 / worktree 的 CLAUDE.md，系统提示词 236 万字符
+  //      （~89 万 token），用户说一句「你好」就超窗，压缩又压不动系统提示词 → 熔断。
+  //    - 即使在仓库内，启动期注入的是「可能用得上」的规则，成本每轮全量携带；
+  //      JIT 注入的是「这次真的读到了那个目录」的规则，两者对同一个文件内容一致。
+  //    - 加边界（深度 / 文件数 / 字符预算）都只是把阈值从 89 万挪到某个数，
+  //      没有任何阈值能回答「这个子目录的规则和当前任务有关吗」——JIT 的触发条件能。
 
   // 4. P3：沿父链（B4，cwd → 文件系统根）**每一层**加载 rules 目录与本地私有规则。
   //    此前只读「最深一个含 CLAUDE.md 的目录」那一层，上层仓库 / 工作区的 rules 静默丢失。
@@ -1168,17 +1091,10 @@ export async function loadAllCLAUDEmd(
   //    远者在前、近者在后（对齐 CC `claudemd.ts` 的逐目录循环）。
   //    ⛔ 别改回「全部层的 CLAUDE.md → 全部层的 rules → 全部层的 local」：那样外层的
   //    CLAUDE.local.md 会排在内层 CLAUDE.md / rules 之后，越过更近的项目规则生效。
-  //    子目录 CLAUDE.md（§3，projectRoot 之下按作用域收集的）归入 projectRoot 那一层，
-  //    排在该层 CLAUDE.md 之后、rules 之前 —— 与修改前它在合并链里的相对位置一致。
   const ancestorLayers: ProjectRules[] = [];
-  let subPlaced = false;
   for (const dir of ancestorDirs) {
     const chainRules = chainRulesByDir.get(dir);
     if (chainRules) ancestorLayers.push(chainRules);
-    if (subRules && dir === projectRoot) {
-      ancestorLayers.push(subRules);
-      subPlaced = true;
-    }
     ancestorLayers.push(...(rulesDirByDir.get(dir) ?? []));
     const local = localByDir.get(dir);
     if (local) ancestorLayers.push(local);
@@ -1186,29 +1102,24 @@ export async function loadAllCLAUDEmd(
 
   // 6. 按优先级链合并，frontmatter paths 不匹配的规则被跳过
   //    顺序（后者覆盖/累积在前者之上）：
-  //    managed → user → userRulesDir → 父链逐层(CLAUDE.md → [子目录] → rules → local)
+  //    managed → user → userRulesDir → 父链逐层(CLAUDE.md → rules → local)
   const ordered: (ProjectRules | null)[] = [
     managedRules,
     ...managedRulesDirRules,
     globalRules,
     ...userRulesDirRules,
     ...ancestorLayers,
-    // projectRoot 不在父链上（理论上不会发生：它要么是 startDir 要么是其祖先）时兜底追加
-    subPlaced ? null : subRules,
   ];
 
-  // 已在 §2/§3 逐文件过滤过的条目（那里才是「同层多文件合并」的发生地，必须在合并前拦），
-  // 此处不再重复过滤——否则其 sourcePath 会被二次登记进 loadedPaths。
-  const preFiltered = new Set<ProjectRules>(
-    [...chainRulesByDir.values(), subRules].filter(Boolean) as ProjectRules[],
-  );
+  // 已在 §2 逐文件过滤过的条目，此处不再重复过滤——否则其 sourcePath 会被二次登记进 loadedPaths。
+  const preFiltered = new Set<ProjectRules>(chainRulesByDir.values());
 
   let merged: ProjectRules | null = null;
   for (const r of ordered) {
     if (!r) continue;
     // frontmatter paths 条件过滤：只作用于**尚未逐文件过滤**的条目——
     // 单文件条目（managed / global / local）与规则目录条目（*RulesDirRules 每文件独立成项，
-    // 不预先合并）。与 §2/§3 的逐文件过滤互补，覆盖全部来源、无遗漏也无重复。
+    // 不预先合并）。与 §2 的逐文件过滤互补，覆盖全部来源、无遗漏也无重复。
     if (!preFiltered.has(r) && !keepInScope(r)) continue;
     merged = merged ? mergeProjectRules(merged, r) : r;
   }

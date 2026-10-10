@@ -157,6 +157,13 @@ export const ERROR_USER_MESSAGES: Record<string, ErrorUserMessage> = {
       "对话或单条请求超出模型上下文上限。请用 /compact 压缩对话、开新会话，或移除过大的文件 / 图片附件后重试",
   },
 
+  context_fixed_overflow: {
+    title: "常驻上下文超出模型窗口",
+    suggestion:
+      "系统提示词 / CLAUDE.md / 工具定义本身就超出窗口，/compact 和开新会话都无法解决。" +
+      "用 /context 查看明细，精简规则文件或禁用部分 MCP 服务器；或换一个上下文窗口更大的模型",
+  },
+
   // ─── 自定义扩展码（非 errors.ts 枚举，但实际出现的场景）───
   subagent_failed: {
     title: "子代理执行失败",

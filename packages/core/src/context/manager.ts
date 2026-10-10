@@ -1457,6 +1457,22 @@ export class Manager {
     });
   }
 
+  /**
+   * 常驻开销估算：系统提示词 + 工具定义，**不含任何消息**（与 estimateTokensFor 同源校准）。
+   *
+   * 用途：压缩失败熔断时判断「压缩本来就救不了」。压缩只动消息历史，系统提示词与工具
+   * 定义每轮全量携带——它俩本身就逼近窗口时，再怎么压历史也发不出去。此前这种情形
+   * 也报「连续 3 次自动压缩都未能减少历史，建议 /compact」，用户照做必然再失败。
+   */
+  estimateFixedOverheadTokens(toolCount: number = 0): number {
+    return this.estimateTokensFor([], toolCount);
+  }
+
+  /** 系统提示词里记忆 / CLAUDE.md 部分的 token 数（与 /context 的 memoryFiles 同源，未校准） */
+  getMemoryTokens(): number {
+    return this.memoryTokens;
+  }
+
   /** 获取上下文窗口最大 token 数 */
   getMaxTokens(): number {
     return this.maxTokens;

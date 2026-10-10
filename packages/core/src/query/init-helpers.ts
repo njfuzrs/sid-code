@@ -582,6 +582,7 @@ export async function buildInitialSystemPrompt(
     tools,
     projectRules: projectRules?.rawContent,
     projectRulesPath: projectRules?.sourcePath,
+    projectRulesPaths: projectRules?.loadedPaths,
     appendPrompt: config.appendSystemPrompt || undefined,
     filePrompt,
     outputStyleContent,
