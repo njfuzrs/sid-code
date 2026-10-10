@@ -44,6 +44,14 @@ import { TraceWriter, type RawJsonlEntry, type HookEvent } from "./writer.ts";
 import { buildTrajectory, type RequestResponsePair, type TraceMetadata } from "./builder.ts";
 import { buildDigest, resolvePaths, type SessionLevelMetrics } from "./digest.ts";
 import { upsertSessionIndex, buildSessionIndexEntry } from "./session-index.ts";
+import { selectTraceDirsToPrune, type TraceDirEntry } from "./retention.ts";
+import {
+  DEFAULT_SESSION_MAX_TOTAL_SIZE,
+  DEFAULT_SESSION_MIN_RETENTION,
+  parseRetentionPeriod,
+  parseRetentionSize,
+} from "../session/retention.ts";
+import { listActiveSessions } from "../session/concurrent.ts";
 import {
   setPermissionDecisionObserver,
   type PermissionDecisionEvent,
@@ -99,8 +107,18 @@ export interface TraceUploaderInterface {
 export interface CollectorOptions {
   /** 本地输出目录（默认 ~/.sid-code/trajectories） */
   outputDir?: string;
-  /** 本地最大保留会话数（默认 100） */
+  /**
+   * 本地最大保留会话数。默认不限（undefined）—— 防盘满靠 {@link maxTotalBytes}，
+   * 不靠数量（理由见 `trace/retention.ts`）。显式配置时仍生效。
+   */
   maxSessionsRetained?: number;
+  /**
+   * 轨迹目录总体积上限（字节）。默认取 `sessionRetention.maxTotalSize` 的默认值（10GB）；
+   * 传 0 / 负数 = 不按体积删（`sessionRetention.enabled: false` 时由调用方传 0）。
+   */
+  maxTotalBytes?: number;
+  /** 更新时间在此窗口内的目录不删（毫秒，默认 1 天，对齐 `sessionRetention.minRetention`） */
+  minRetentionMs?: number;
   /**
    * 是否把请求/响应原文写进 `raw.jsonl`（默认 true）。
    * 不传时由 {@link resolveRecordRawPayloads} 解析 env 兜底。
@@ -240,8 +258,11 @@ export class TraceCollector {
   /** 见 CollectorOptions.autoUpload */
   private readonly autoUpload: boolean;
   private readonly outputDir: string;
-  /** 本地最大保留会话数（LRU 清理用，默认 100） */
-  private readonly maxSessionsRetained: number;
+  /** 本地最大保留会话数（默认不限） */
+  private readonly maxSessionsRetained: number | undefined;
+  /** 轨迹目录总体积上限（字节）；undefined = 不按体积删 */
+  private readonly maxTotalBytes: number | undefined;
+  private readonly minRetentionMs: number;
   /**
    * SessionEnd 里等待上传的时间预算（毫秒）。0 = 不在退出路径等上传。
    *
@@ -375,11 +396,16 @@ export class TraceCollector {
 
   constructor(options: CollectorOptions = {}, uploader: TraceUploaderInterface | null = null) {
     this.outputDir = options.outputDir ?? sidPaths.trajectories();
-    this.maxSessionsRetained = options.maxSessionsRetained ?? 100;
+    this.maxSessionsRetained = options.maxSessionsRetained;
+    const maxTotalBytes =
+      options.maxTotalBytes ?? parseRetentionSize(DEFAULT_SESSION_MAX_TOTAL_SIZE);
+    this.maxTotalBytes = maxTotalBytes > 0 ? maxTotalBytes : undefined;
+    this.minRetentionMs =
+      options.minRetentionMs ?? parseRetentionPeriod(DEFAULT_SESSION_MIN_RETENTION);
     this.recordRawPayloads = resolveRecordRawPayloads(options.recordRawPayloads);
     this.uploader = uploader;
     this.autoUpload = options.autoUpload !== false;
-    // 启动时做一次 LRU 清理，回收已上传/旧会话目录，防止本地无限堆积
+    // 启动时做一次体积兜底清理，防止本地无限堆积（默认不按数量删）
     this.pruneOldSessions();
     // 启动时补清理「历史遗留空壳」——SessionEnd 没跑到时 cleanupIfBlankSession 从未执行
     this.lastBlankPrune = this.pruneStaleBlankSessions();
@@ -414,49 +440,63 @@ export class TraceCollector {
   }
 
   /**
-   * LRU 清理：当 sessions/ 下目录数超过 maxSessionsRetained 时，按修改时间删最旧的。
+   * 本地轨迹淘汰：默认**不限数量**，只在总体积超过 `maxTotalBytes`（默认 10GB）时删。
    * 优先删已上传的（含 .uploaded 标记）——它们的数据已安全落到远端；
-   * 未上传的目录（重试队列待传）即使较旧也尽量保留，避免丢失尚未采集到的训练数据。
+   * 未上传的目录（重试队列待传）即使较旧也尽量保留。活着的进程正在写的会话、
+   * `minRetention` 窗口内更新过的目录永不删。选择逻辑在 `trace/retention.ts`（纯函数）。
    * 失败静默：清理不是关键路径，不能阻塞采集。
    *
-   * ⚠ **P0-2：本函数只清原始轨迹，指标摘要已由 `trace/session-index.ts` 长期留存**
-   *（`~/.sid-code/session-index.jsonl`，与 trajectories/ 同级，不受本函数影响）。
+   * ⚠ 2026-10-10 推翻了此前「默认 100 个、不要调大」的定案：那条论证的前提是
+   * 「原始轨迹 ≈45MB/会话」，实测开发者本机 100 个目录合计 37MB（p95 1.3MB）。
+   * 一天几十个会话时 100 个只够两三周，调试要的 raw.jsonl / events.jsonl 早被删了。
+   * 防盘满改由体积上限承担，与会话保留（PR #218）同口径。
    *
-   * 不要为了"保住指标"而调大 `maxSessionsRetained` —— 那条路已经论证过是错解：
-   * 只是把问题推迟到 1000 个会话之后，且届时数据量 ×10。真正需要长留的是每会话
-   * ≈500B 的摘要，不是 45MB 的原始轨迹，两者差两个数量级。
-   *
-   * 修复前的后果值得记下来：本函数删掉目录时 `session-summary.json` 一起消失，
-   * 于是 TTFT p50 从文档记录的 4.7s（1032 样本）"变成" 3.3s（1399 样本）——
-   * **不是性能改善，是样本被换了一批**。一个不可复现的指标证明不了任何改进。
+   * 指标的长期留存仍由 `trace/session-index.ts` 承担（P0-2）——本函数删掉目录时
+   * `session-summary.json` 一起消失，曲线不能依赖原始轨迹活着。
    */
   private pruneOldSessions(): void {
     try {
       const sessionsDir = join(this.outputDir, "sessions");
       if (!existsSync(sessionsDir)) return;
+      if (this.maxSessionsRetained === undefined && this.maxTotalBytes === undefined) return;
 
-      const entries = readdirSync(sessionsDir, { withFileTypes: true })
+      const needBytes = this.maxTotalBytes !== undefined;
+      const entries: TraceDirEntry[] = readdirSync(sessionsDir, { withFileTypes: true })
         .filter((e) => e.isDirectory())
         .map((e) => {
           const dir = join(sessionsDir, e.name);
-          let mtime = 0;
+          let mtimeMs = 0;
           try {
-            mtime = statSync(dir).mtimeMs;
+            mtimeMs = statSync(dir).mtimeMs;
           } catch {
             /* 忽略 */
           }
-          const uploaded = existsSync(join(dir, ".uploaded"));
-          return { dir, mtime, uploaded };
+          return {
+            id: e.name,
+            dir,
+            mtimeMs,
+            uploaded: existsSync(join(dir, ".uploaded")),
+            bytes: needBytes ? dirBytes(dir) : undefined,
+          };
         });
 
-      if (entries.length <= this.maxSessionsRetained) return;
+      // 跨进程保护：隔壁 sid-code 正在写的会话（resume 时目录名是被恢复的旧 id）
+      const protectedIds = new Set<string>();
+      try {
+        for (const a of listActiveSessions()) {
+          protectedIds.add(a.sessionId);
+          if (a.logicalSessionId) protectedIds.add(a.logicalSessionId);
+        }
+      } catch {
+        /* 读不到活跃表时只靠 minRetention 窗口保护 */
+      }
 
-      const overflow = entries.length - this.maxSessionsRetained;
-      // 删除优先级：已上传的优先（按最旧在前），其次才动未上传的（同样最旧在前）
-      const deletable = [
-        ...entries.filter((e) => e.uploaded).sort((a, b) => a.mtime - b.mtime),
-        ...entries.filter((e) => !e.uploaded).sort((a, b) => a.mtime - b.mtime),
-      ].slice(0, overflow);
+      const deletable = selectTraceDirsToPrune(entries, {
+        maxCount: this.maxSessionsRetained,
+        maxTotalBytes: this.maxTotalBytes,
+        protectAfterMs: Date.now() - this.minRetentionMs,
+        protectedIds,
+      });
 
       let removed = 0;
       for (const e of deletable) {
@@ -470,11 +510,12 @@ export class TraceCollector {
       if (removed > 0) {
         getLogger().info(
           "TRACE",
-          `LRU 清理：本地会话 ${entries.length} 个超过上限 ${this.maxSessionsRetained}，已删除最旧 ${removed} 个`,
+          `轨迹清理：本地 ${entries.length} 个会话目录，已删除最旧 ${removed} 个` +
+            `（上限：数量 ${this.maxSessionsRetained ?? "不限"}，体积 ${this.maxTotalBytes ?? "不限"} 字节）`,
         );
       }
     } catch (err) {
-      getLogger().warn("TRACE", `LRU 清理失败（不影响采集）: ${err}`);
+      getLogger().warn("TRACE", `轨迹清理失败（不影响采集）: ${err}`);
     }
   }
 
@@ -3165,4 +3206,22 @@ export class TraceCollector {
       /* 采集遥测写入失败不影响主流程 */
     }
   }
+}
+
+/** 目录递归字节数（单项失败忽略） */
+function dirBytes(dir: string): number {
+  let total = 0;
+  try {
+    for (const e of readdirSync(dir, { withFileTypes: true })) {
+      const full = join(dir, e.name);
+      try {
+        total += e.isDirectory() ? dirBytes(full) : statSync(full).size;
+      } catch {
+        /* 忽略 */
+      }
+    }
+  } catch {
+    /* 目录不可读 */
+  }
+  return total;
 }
