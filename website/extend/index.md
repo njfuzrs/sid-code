@@ -104,8 +104,11 @@ sid-code --plugin-dir /tmp/demo-plugin
 | Skill | `~/.sid-code/skills/<名>/SKILL.md` | `<项目>/.sid-code/skills/<名>/SKILL.md` |
 | Hook | `~/.sid-code/settings.json` 的 `hooks` | `<项目>/.sid-code/settings.json` |
 | 子代理 | `~/.sid-code/agents/*.md` | `<项目>/.sid-code/agents/*.md` |
-| MCP | `~/.sid-code/settings.json` 的 `mcpServers` | `<项目>/.mcp.json` |
+| MCP | `~/.sid-code/settings.json` 的 `mcpServers` | 启动目录及每一级父目录的 `.mcp.json` |
 | 插件 | `~/.sid-code/plugins/` | `--plugin-dir <路径>`（会话级） |
+
+项目级 Skill / 子代理 / 命令 / 输出风格从启动目录**逐级往上扫到 git 仓库根**，同名时离启动目录近的优先，
+仓库外的上层目录不读。各类配置的基准目录汇总见[配置](/start/configure#各类配置从哪个目录找)。
 
 ::: tip 项目级扩展有信任门槛
 项目级 Skill / 命令 / 子代理来自仓库，等于"别人的代码"，默认要确认才加载。

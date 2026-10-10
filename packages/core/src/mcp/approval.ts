@@ -27,6 +27,11 @@ interface ApprovalStore {
   approveAll?: unknown;
 }
 
+function legacyList(legacy?: string | readonly string[]): readonly string[] {
+  if (!legacy) return [];
+  return typeof legacy === "string" ? [legacy] : legacy;
+}
+
 /** 审批记录路径：~/.sid-code/state/mcp-approvals.json */
 function approvalsPath(): string {
   return sidPaths.stateFile("mcp-approvals.json");
@@ -54,14 +59,15 @@ function saveApprovals(store: ApprovalStore): void {
 /**
  * 检查项目级 MCP Server 的审批状态。
  *
- * M4：projectPath 现在是项目身份（git root），旧版用的是启动 cwd。`legacyPath` 传启动 cwd，
- * 新 key 没有记录时回退查旧 key —— 升级后不必在每个子目录重新审批一遍；
+ * M4：projectPath 现在是项目身份（主仓根，linked worktree 归到主 checkout）。旧版用过两种键：
+ * 启动 cwd（#220 之前）与当前工作树根（#220）。`legacyPath` 传这些旧键，新 key 没有记录时
+ * 回退查 —— 升级后不必在每个子目录 / worktree 重新审批一遍；
  * 下次对该 server 写入（approve/reject）时旧 key 被清掉，完成迁移。
  */
 export function getProjectServerApproval(
   serverName: string,
   projectPath: string,
-  legacyPath?: string,
+  legacyPath?: string | readonly string[],
 ): ApprovalStatus {
   const approvals = loadApprovals();
   const lookup = (path: string): ApprovalStatus | null => {
@@ -73,8 +79,9 @@ export function getProjectServerApproval(
   };
   const primary = lookup(projectPath);
   if (primary) return primary;
-  if (legacyPath && legacyPath !== projectPath) {
-    const legacy = lookup(legacyPath);
+  for (const p of legacyList(legacyPath)) {
+    if (p === projectPath) continue;
+    const legacy = lookup(p);
     if (legacy) return legacy;
   }
   return "pending";
@@ -86,16 +93,17 @@ export function getProjectServerApproval(
 export function approveProjectServer(
   serverName: string,
   projectPath: string,
-  legacyPath?: string,
+  legacyPath?: string | readonly string[],
 ): void {
   const approvals = loadApprovals();
   const key = `${projectPath}:${serverName}`;
-  const legacyKey = legacyPath ? `${legacyPath}:${serverName}` : null;
-  approvals.approved = (approvals.approved ?? []).filter((k) => k !== legacyKey);
+  const legacyKeys = new Set(legacyList(legacyPath).map((p) => `${p}:${serverName}`));
+  legacyKeys.delete(key);
+  approvals.approved = (approvals.approved ?? []).filter((k) => !legacyKeys.has(k));
   if (!approvals.approved.includes(key)) {
     approvals.approved.push(key);
   }
-  approvals.rejected = (approvals.rejected ?? []).filter((k) => k !== key && k !== legacyKey);
+  approvals.rejected = (approvals.rejected ?? []).filter((k) => k !== key && !legacyKeys.has(k));
   saveApprovals(approvals);
 }
 
@@ -105,16 +113,17 @@ export function approveProjectServer(
 export function rejectProjectServer(
   serverName: string,
   projectPath: string,
-  legacyPath?: string,
+  legacyPath?: string | readonly string[],
 ): void {
   const approvals = loadApprovals();
   const key = `${projectPath}:${serverName}`;
-  const legacyKey = legacyPath ? `${legacyPath}:${serverName}` : null;
-  approvals.rejected = (approvals.rejected ?? []).filter((k) => k !== legacyKey);
+  const legacyKeys = new Set(legacyList(legacyPath).map((p) => `${p}:${serverName}`));
+  legacyKeys.delete(key);
+  approvals.rejected = (approvals.rejected ?? []).filter((k) => !legacyKeys.has(k));
   if (!approvals.rejected.includes(key)) {
     approvals.rejected.push(key);
   }
-  approvals.approved = (approvals.approved ?? []).filter((k) => k !== key && k !== legacyKey);
+  approvals.approved = (approvals.approved ?? []).filter((k) => k !== key && !legacyKeys.has(k));
   saveApprovals(approvals);
 }
 
@@ -145,18 +154,18 @@ export function setApproveAll(value: boolean, projectPath: string): void {
 let pendingApproval: Record<string, unknown> = {};
 /** 待审批 server 所属的项目路径（M4 起是项目身份 git root） */
 let pendingApprovalProject = "";
-/** 旧版审批 key 用的启动 cwd，写入时一并清掉旧 key（M4 迁移） */
-let pendingApprovalLegacyPath: string | undefined;
+/** 旧版审批 key（启动 cwd / 工作树根），写入时一并清掉（M4 迁移） */
+let pendingApprovalLegacyPath: readonly string[] | undefined;
 
 /** 登记待审批快照（loadConfig 调用） */
 export function setPendingApprovalServers(
   servers: Record<string, unknown>,
   projectPath: string,
-  legacyPath?: string,
+  legacyPath?: string | readonly string[],
 ): void {
   pendingApproval = servers;
   pendingApprovalProject = projectPath;
-  pendingApprovalLegacyPath = legacyPath;
+  pendingApprovalLegacyPath = legacyList(legacyPath);
 }
 
 /** 读取待审批 server 名单（/mcp 面板调用） */
@@ -235,6 +244,6 @@ export function __resetPendingApproval(): void {
 }
 
 /** 读取待审批快照对应的旧版 key 路径（CLI 写入时迁移用） */
-export function getPendingApprovalLegacyPath(): string | undefined {
+export function getPendingApprovalLegacyPath(): readonly string[] | undefined {
   return pendingApprovalLegacyPath;
 }

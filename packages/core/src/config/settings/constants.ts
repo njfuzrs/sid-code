@@ -13,7 +13,7 @@
 import { dirname, join, resolve } from "path";
 import { homedir } from "os";
 import { resolveProjectRoot } from "../../memory/paths.ts";
-import { existsSync, readdirSync, realpathSync } from "fs";
+import { existsSync, readdirSync, realpathSync, statSync } from "fs";
 import {
   getSidHome,
   isInsideSidHome,
@@ -70,28 +70,64 @@ export function getSettingsFilePath(
  * 共享 settings.json 刻意**不**跟着改（B1，CC 明文只读启动目录那份）。
  *
  * 退回启动目录的情形（照 CC）：非 git 仓库（resolveProjectRoot 本身就退回 cwd）、
- * 仓库根就是家目录（否则 ~/.sid-code/settings.local.json 会与用户级配置目录混在一起）、Windows。
+ * 仓库根就是家目录（否则 ~/.sid-code/settings.local.json 会与用户级配置目录混在一起）、Windows、
+ * 仓库根目录的属主不是当前用户（共享机器上别人的仓库：往别人的目录里写自己的放行规则，
+ * 或读别人放在那里的 local 文件当成自己的私有配置，两个方向都不对）。
+ *
+ * 用的是**当前工作树**的根（worktree 下是 worktree 自己），不是主仓根：这是落在工作树里的
+ * 文件，写进另一个 checkout 等于跨目录改别人的工作区（见 config/project-bases.ts B2 两个入口）。
  */
 export function resolveLocalSettingsBase(workspacePath: string): string {
   if (process.platform === "win32") return workspacePath;
   const root = resolveProjectRoot(workspacePath);
   if (sameDir(root, homedir())) return workspacePath;
+  if (!ownedByCurrentUser(root)) return workspacePath;
   // git toplevel 返回的是 realpath（macOS 上 /var → /private/var）。cwd 本身就是仓库根时
   // 保留调用方给的写法，否则同一个文件会以两种路径出现（旧位置判定、日志、监听键全会分叉）。
   if (sameDir(root, workspacePath)) return workspacePath;
   return root;
 }
 
-/** 两个目录是否指向同一处（尽量 realpath，不存在时退回字面 resolve） */
+/** 目录属主是否为当前用户；拿不到 uid（Windows）或 stat 失败时按「是」处理，不改变行为 */
+function ownedByCurrentUser(dir: string): boolean {
+  const uid = typeof process.getuid === "function" ? process.getuid() : undefined;
+  if (uid === undefined || uid === 0) return true; // root 本来就能写任何目录，不按属主退回
+  try {
+    return statSync(dir).uid === uid;
+  } catch {
+    return true;
+  }
+}
+
+/**
+ * realpath 的进程内缓存。sameDir 落在每次求 local settings 路径的路径上（settings 合并、
+ * 规则加载、信任扫描都会走），每次两次 realpathSync 是纯浪费。只缓存成功结果：
+ * 路径尚不存在时不缓存，目录之后被创建也能拿到正确答案。
+ */
+const realpathCache = new Map<string, string>();
+
+/** 尽量 realpath，不存在时退回字面 resolve */
+export function realDir(p: string): string {
+  const key = resolve(p);
+  const hit = realpathCache.get(key);
+  if (hit !== undefined) return hit;
+  try {
+    const real = realpathSync(key);
+    realpathCache.set(key, real);
+    return real;
+  } catch {
+    return key;
+  }
+}
+
+/** 测试辅助：清空 realpath 缓存 */
+export function __clearRealDirCache(): void {
+  realpathCache.clear();
+}
+
+/** 两个目录是否指向同一处 */
 function sameDir(a: string, b: string): boolean {
-  const real = (p: string) => {
-    try {
-      return realpathSync(p);
-    } catch {
-      return resolve(p);
-    }
-  };
-  return real(a) === real(b);
+  return realDir(a) === realDir(b);
 }
 
 /**

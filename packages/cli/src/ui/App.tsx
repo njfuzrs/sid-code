@@ -203,6 +203,13 @@ export interface TUICallbacks {
    */
   getPendingMcpApprovals?: () => Array<{ name: string; target?: string }>;
   /**
+   * 首屏对话框队列：`after` 关闭后下一个该弹的对话框（无则 null）。
+   * 不在队列里的对话框关闭时返回 null，不会把首屏对话框重新拉起来。
+   */
+  nextStartupDialog?: (
+    after: import("../command/types.ts").DialogType | null,
+  ) => import("../command/types.ts").DialogType | null;
+  /**
    * M3：对单个待审批 server 的决定。"skip" = Esc 暂不决定（本会话不再询问其余项）。
    */
   onMcpApprovalDecision?: (
@@ -1315,9 +1322,12 @@ function TUIAppInner({ initialState, callbacks, bridge, alternateBuffer }: AppPr
   const scrollPercent = scrollState ? scrollState.percent : undefined;
 
   // ── 对话框回调 ──
+  // 关闭首屏队列里的对话框（信任 → @import → MCP 审批）时接着弹下一个，而不是直接置空。
   const handleDialogClose = useCallback(() => {
-    bridge.update({ activeDialog: null });
-  }, [bridge]);
+    const closing = state.activeDialog;
+    const next = closing ? (callbacks.nextStartupDialog?.(closing) ?? null) : null;
+    bridge.update({ activeDialog: next });
+  }, [bridge, callbacks, state.activeDialog]);
 
   const handleCommandPanelClose = useCallback(() => {
     bridge.update({ commandPanel: null });
