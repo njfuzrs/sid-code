@@ -13,7 +13,7 @@ import { getLogger } from "../debug/logger.ts";
 import { sidPaths } from "../config/paths.ts";
 import { isGitTrackedFile } from "../config/settings/security.ts";
 import { getLegacyLocalSettingsPath, getSettingsFilePath } from "../config/settings/constants.ts";
-import { getProjectIdentityRoot } from "../config/project-bases.ts";
+import { getCheckoutRoot, getProjectIdentityRoot } from "../config/project-bases.ts";
 
 /** 信任检查项 */
 export interface TrustCheckItem {
@@ -229,10 +229,13 @@ export class TrustManager {
     const configHash = await this.getConfigHash();
     const trusted = await this.loadTrustedProjects();
 
-    const record = this.findRecord(trusted.projects);
-    if (!record) return false;
+    const found = this.findRecord(trusted.projects);
+    if (!found) return false;
+    // 祖先目录的信任是锁存值（对齐 CC），不比 configHash —— 见 findRecord
+    if (found.inherited) return true;
+    const record = found.record;
 
-    // 配置变更后需要重新信任
+    // 配置变更后需要重新信任（只对本项目自己的记录）
     if (record.configHash !== configHash) {
       getLogger().info("TRUST", "项目配置已变更，需要重新信任");
       return false;
@@ -285,9 +288,12 @@ export class TrustManager {
     this.sessionTrust = false;
     const pathHash = this.getPathHash();
     const trusted = await this.loadTrustedProjects();
-    const legacy = hashPath(this.workspacePath);
+    const legacy = new Set([
+      hashPath(this.workspacePath),
+      hashPath(getCheckoutRoot(this.workspacePath)),
+    ]);
     trusted.projects = trusted.projects.filter(
-      (p) => p.pathHash !== pathHash && p.pathHash !== legacy,
+      (p) => p.pathHash !== pathHash && !legacy.has(p.pathHash),
     );
     await this.saveTrustedProjects(trusted);
   }
@@ -307,9 +313,10 @@ export class TrustManager {
       const file = trustedProjectsPath();
       if (!existsSync(file)) return false;
       const data = JSON.parse(readFileSync(file, "utf-8")) as TrustedProjectsFile;
-      const record = this.findRecord(data.projects ?? []);
-      if (!record) return false;
-      return record.configHash === this.getConfigHashSync();
+      const found = this.findRecord(data.projects ?? []);
+      if (!found) return false;
+      if (found.inherited) return true;
+      return found.record.configHash === this.getConfigHashSync();
     } catch {
       return false; // 读不出来一律当未信任（fail-closed）
     }
@@ -346,24 +353,37 @@ export class TrustManager {
    * P10：按「身份根 → 其祖先」的顺序找信任记录，最近的一条胜出（对齐 CC：任一祖先已信任即继承）。
    * 末尾再认一次旧口径（启动目录 cwd 本身的键），迁移前写下的记录不失效。
    *
-   * 与 CC 的差别是刻意保留的：继承来的记录**仍要过 configHash**（配置内容变了要重新确认），
-   * CC 的信任是锁存布尔值、没有这一层。放掉它等于让祖先目录的一次信任为其下任意仓库的
-   * 危险配置背书。
+   * `inherited` 区分两种命中，判据不同：
+   * - **本项目自己的记录**（身份根 / 旧 cwd 键）：仍比 configHash，配置内容变了要重新确认；
+   * - **祖先目录的记录**：锁存布尔值，**不比 configHash**（对齐 CC 的信任语义）。
+   *   祖先记录里的 hash 是祖先自己当时的配置，拿它和本仓库的配置比必然不等 ——
+   *   #220 照比，结果「向上继承」只在两边都没有危险配置时成立，而那时信任框根本不弹，
+   *   继承成了死代码（门禁测试用空配置，测不出来）。
+   *   代价要点破：在 ~/Code 这类父目录信任一次，其下新 clone 的仓库危险配置会直接生效。
+   *   家目录不参与继承，这是唯一的上界。
    */
-  private findRecord(projects: TrustedProject[]): TrustedProject | undefined {
+  private findRecord(
+    projects: TrustedProject[],
+  ): { record: TrustedProject; inherited: boolean } | undefined {
     const byHash = new Map(projects.map((p) => [p.pathHash, p]));
     const home = resolve(homedir());
-    let dir = resolve(this.identityRoot);
+    const self = resolve(this.identityRoot);
+    let dir = self;
     while (true) {
       // 家目录及其上层不参与继承：在家目录点过「信任」只是 session-only，不该被子目录继承
       if (dir === home) break;
       const hit = byHash.get(hashPath(dir));
-      if (hit) return hit;
+      if (hit) return { record: hit, inherited: dir !== self };
       const parent = dirname(dir);
       if (parent === dir) break;
       dir = parent;
     }
-    return byHash.get(hashPath(this.workspacePath));
+    // 旧口径：启动 cwd（#220 之前）、当前工作树根（#220，worktree 下不归主仓）
+    for (const p of [getCheckoutRoot(this.workspacePath), this.workspacePath]) {
+      const legacy = byHash.get(hashPath(p));
+      if (legacy) return { record: legacy, inherited: false };
+    }
+    return undefined;
   }
 
   /** 是否为家目录（按身份根判：非仓库的家目录启动、仓库根恰是家目录都算） */

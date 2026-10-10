@@ -21,8 +21,8 @@ settings.json 的全部可配字段、类型与默认值。
 > 共 **80** 个顶层字段，全部由 `SettingsSchema` 声明（类型/枚举/约束经运行时自省导出）。
 > 写了表里没有的顶层键（多半是拼错）不会报错退出，但启动时会提示「未知配置项」并给出最接近的字段名。
 
-配置文件位置：`~/.sid-code/settings.json`（用户级）、`.sid-code/settings.json`（项目级，优先）、
-`.sid-code/settings.local.json`（项目级本地，gitignore，最优先）。
+配置文件位置：`~/.sid-code/settings.json`（用户级）、`<启动目录>/.sid-code/settings.json`（项目级，优先）、
+`<git 仓库根>/.sid-code/settings.local.json`（项目级本地，gitignore，最优先；启动目录下的旧文件也合并读取）。
 
 | 字段 | 类型 | 取值 / 约束 | 说明 |
 |---|---|---|---|
