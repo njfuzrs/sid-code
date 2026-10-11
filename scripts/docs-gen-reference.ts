@@ -23,7 +23,8 @@
  *   bun run scripts/docs-gen-reference.ts --coverage # 报告只在 ref/ 出现、无指南页介绍的命令（告警）
  *   bun run scripts/docs-gen-reference.ts --coverage-strict  # 同上，但有未覆盖即退 1（pre-commit 调用；2026-10-03 存量清零后启用）
  */
-import { readFileSync, writeFileSync, existsSync } from "node:fs";
+import { readFileSync, writeFileSync, existsSync, mkdtempSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { Glob } from "bun";
 
@@ -174,10 +175,25 @@ interface ToolDef {
  * 上一次编译时的源码——正是本生成器要防的漂移。从源码跑保证与工作区一致。
  */
 function loadTools(): ToolDef[] {
-  const proc = Bun.spawnSync(
-    ["bun", "run", join(ROOT, "packages/cli/src/entrypoints/bootstrap.ts"), "--dump-tools"],
-    { cwd: ROOT, stdout: "pipe", stderr: "pipe" },
-  );
+  // 子进程是一次完整启动（迁移 / 启动计数 / 启动管家都会跑），不隔离就写真实 ~/.sid-code：
+  // 实测每生成一次 app.json 的 numStartups +1，迁移也在用户不知情时对真实配置跑了一遍。
+  // pre-commit 每次提交都会触发本生成器，所以这是最高频的泄漏源。工具清单与配置目录无关
+  // （隔离前后 --dump-tools 输出 44 个工具、零差异）。
+  const isolatedHome = mkdtempSync(join(tmpdir(), "sid-docs-gen-"));
+  let proc: ReturnType<typeof Bun.spawnSync>;
+  try {
+    proc = Bun.spawnSync(
+      ["bun", "run", join(ROOT, "packages/cli/src/entrypoints/bootstrap.ts"), "--dump-tools"],
+      {
+        cwd: ROOT,
+        stdout: "pipe",
+        stderr: "pipe",
+        env: { ...process.env, SID_CONFIG_DIR: isolatedHome },
+      },
+    );
+  } finally {
+    rmSync(isolatedHome, { recursive: true, force: true });
+  }
   if (proc.exitCode !== 0) {
     throw new Error(
       `--dump-tools 失败（exit ${proc.exitCode}）：${proc.stderr.toString().slice(0, 500)}`,

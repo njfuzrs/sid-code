@@ -124,7 +124,9 @@ describe("参考页生成器 · 计数断言（问题 B：生成器有没有漏�
     // 直连运行时真值，与生成器走的是同一个出口但独立一次调用
     const proc = Bun.spawnSync(
       ["bun", "run", join(ROOT, "packages/cli/src/entrypoints/bootstrap.ts"), "--dump-tools"],
-      { cwd: ROOT, stdout: "pipe", stderr: "pipe" },
+      // env 必须显式传：Bun 子进程不继承运行时改过的 process.env，preload 设的 SID_CONFIG_DIR
+      // 不传就丢，子进程是一次完整启动，会写真实 ~/.sid-code（启动计数 / 迁移 / 启动管家）。
+      { cwd: ROOT, stdout: "pipe", stderr: "pipe", env: { ...process.env } },
     );
     expect(proc.exitCode, `--dump-tools 应退 0，stderr: ${proc.stderr.toString()}`).toBe(0);
     const defs = JSON.parse(proc.stdout.toString());
@@ -363,6 +365,7 @@ describe("参考页生成器 · --check 自洽（问题 A：同源性）", () =>
   test("干净状态下 --check 退 0", () => {
     const proc = Bun.spawnSync(["bun", "run", "scripts/docs-gen-reference.ts", "--check"], {
       cwd: ROOT,
+      env: { ...process.env },
       stdout: "pipe",
       stderr: "pipe",
     });
@@ -376,6 +379,7 @@ describe("参考页生成器 · --check 自洽（问题 A：同源性）", () =>
   test("--stale 只报告不阻塞（退 0），且能识别超期页", () => {
     const proc = Bun.spawnSync(["bun", "run", "scripts/docs-gen-reference.ts", "--stale"], {
       cwd: ROOT,
+      env: { ...process.env },
       stdout: "pipe",
       stderr: "pipe",
     });
@@ -475,6 +479,7 @@ describe("叙述覆盖度门禁 · 端到端", () => {
   test("--coverage 只告警不阻塞（退 0），且输出未覆盖清单", () => {
     const proc = Bun.spawnSync(["bun", "run", "scripts/docs-gen-reference.ts", "--coverage"], {
       cwd: ROOT,
+      env: { ...process.env },
       stdout: "pipe",
       stderr: "pipe",
     });
@@ -485,7 +490,7 @@ describe("叙述覆盖度门禁 · 端到端", () => {
   test("--coverage-strict 在存量为 0 时退 0（pre-commit 调的就是它）", () => {
     const proc = Bun.spawnSync(
       ["bun", "run", "scripts/docs-gen-reference.ts", "--coverage-strict"],
-      { cwd: ROOT, stdout: "pipe", stderr: "pipe" },
+      { cwd: ROOT, stdout: "pipe", stderr: "pipe", env: { ...process.env } },
     );
     expect(proc.exitCode, proc.stdout.toString()).toBe(0);
   }, 60_000);

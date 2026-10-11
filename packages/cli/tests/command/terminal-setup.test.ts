@@ -130,42 +130,42 @@ describe("/terminal-setup — 命令分支", () => {
     expect((res as any).value).toContain("Enter");
   });
 
-  test("VSCode 系：真实写入临时 keybindings + 幂等", async () => {
-    // 用 XDG_CONFIG_HOME 把路径导到临时目录（linux 分支）；mac/win 分支各自路径不便重定向，
-    // 这里只在 linux/other 平台断言真实写入，其它平台跳过写入断言（仍验证不抛错）。
-    const tmp = join(process.env.TMPDIR ?? "/tmp", `sid-termsetup-${Date.now()}`);
-    restores.push(
-      withEnv({
-        TERM_PROGRAM: "vscode",
-        XDG_CONFIG_HOME: tmp,
-        __CFBundleIdentifier: undefined,
-        CURSOR_TRACE_ID: undefined,
-        WINDSURF_TRACE_ID: undefined,
-      }),
-    );
-    const mod = await loadHandler();
-    const res1 = await mod.call("", {} as CommandContext);
-    const v1 = (res1 as any).value as string;
+  // mac/win 的 keybindings 路径走 homedir() / APPDATA，XDG_CONFIG_HOME 管不到。此前这里先调用
+  // 再判平台，于是在 mac 上每跑一次就往用户**真实的** VS Code keybindings.json 写一条 shift+enter
+  // （伪 HOME 全量跑实测命中 ~/Library/Application Support/Code/User/keybindings.json）。
+  // 只在能重定向的平台跑；mac/win 上一次都不调用写入路径。
+  test.skipIf(platform() === "darwin" || platform() === "win32")(
+    "VSCode 系：真实写入临时 keybindings + 幂等",
+    async () => {
+      // 用 XDG_CONFIG_HOME 把路径导到临时目录（linux 分支）。
+      const tmp = join(process.env.TMPDIR ?? "/tmp", `sid-termsetup-${Date.now()}`);
+      restores.push(
+        withEnv({
+          TERM_PROGRAM: "vscode",
+          XDG_CONFIG_HOME: tmp,
+          __CFBundleIdentifier: undefined,
+          CURSOR_TRACE_ID: undefined,
+          WINDSURF_TRACE_ID: undefined,
+        }),
+      );
+      const mod = await loadHandler();
+      const res1 = await mod.call("", {} as CommandContext);
+      const v1 = (res1 as any).value as string;
 
-    if (platform() === "darwin" || platform() === "win32") {
-      // 这些平台路径不走 XDG，可能写到真实用户目录——不做破坏性断言，仅验证返回文本合理。
-      expect(v1).toMatch(/VSCode|Shift\+Enter|keybindings/);
-      return;
-    }
+      // linux/other：应真实写入临时目录。
+      expect(v1).toContain("已为");
+      const { existsSync, readFileSync } = require("fs");
+      const p = getVSCodeKeybindingsPath({ label: "VSCode", configDir: "Code" });
+      expect(p.startsWith(tmp)).toBe(true);
+      expect(existsSync(p)).toBe(true);
+      const parsed = parseJSONC(readFileSync(p, "utf-8")) as any[];
+      expect(parsed.some((b) => b.key === "shift+enter")).toBe(true);
 
-    // linux/other：应真实写入临时目录。
-    expect(v1).toContain("已为");
-    const { existsSync, readFileSync } = require("fs");
-    const p = getVSCodeKeybindingsPath({ label: "VSCode", configDir: "Code" });
-    expect(p.startsWith(tmp)).toBe(true);
-    expect(existsSync(p)).toBe(true);
-    const parsed = parseJSONC(readFileSync(p, "utf-8")) as any[];
-    expect(parsed.some((b) => b.key === "shift+enter")).toBe(true);
-
-    // 幂等：再跑一次应提示已存在、不重复。
-    const res2 = await mod.call("", {} as CommandContext);
-    expect((res2 as any).value).toContain("已存在");
-    const parsed2 = parseJSONC(readFileSync(p, "utf-8")) as any[];
-    expect(parsed2.filter((b) => b.key === "shift+enter").length).toBe(1);
-  });
+      // 幂等：再跑一次应提示已存在、不重复。
+      const res2 = await mod.call("", {} as CommandContext);
+      expect((res2 as any).value).toContain("已存在");
+      const parsed2 = parseJSONC(readFileSync(p, "utf-8")) as any[];
+      expect(parsed2.filter((b) => b.key === "shift+enter").length).toBe(1);
+    },
+  );
 });

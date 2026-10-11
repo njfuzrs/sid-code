@@ -16,7 +16,7 @@ describe("App.runBridge · 成功提示", () => {
   test("stderr 与 BRIDGE 日志不含 query 里的 token", async () => {
     const proc = Bun.spawn(
       ["bun", new URL("./bridge-ready-url-child.ts", import.meta.url).pathname],
-      { stdout: "pipe", stderr: "pipe" },
+      { stdout: "pipe", stderr: "pipe", env: { ...process.env } },
     );
     const [stderr, code] = await Promise.all([new Response(proc.stderr).text(), proc.exited]);
     expect({ code, stderr: stderr.trim() }).toEqual({ code: 0, stderr: "" });

@@ -74,6 +74,7 @@ beforeAll(() => {
       entry,
     ],
     cwd: ROOT,
+    env: { ...process.env },
   });
   if (build.exitCode !== 0) {
     throw new Error(`fixture 构建失败：${new TextDecoder().decode(build.stderr)}`);
