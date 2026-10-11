@@ -2,7 +2,8 @@
  * 契约 E1 / E2（B9 / T7.1a）：裸 `process.stderr.write` 护栏与它的重入守卫。
  *
  * 期望值是 2026-10-09 legacy 黑盒实测（探针备份在 `~/Backups/sid-code-t67-probe-results-20261008/T7.1a/`）。
- * 每个用例在 legacy / next 两个子进程里各跑一遍：先断言 legacy 等于写死的期望，再断言 next 与 legacy 一致。
+ * 每个用例跑一个子进程：断言 T9.1 删除旧底座前冻结的 legacy 结果（`fixtures/legacy-frozen/`）等于写死的期望，
+ * 再断言 next 与它一致。
  * 必须是子进程：护栏换的是全局 `process.stderr.write`，`SID_CODE_DEBUG` 又在底座模块加载时读。
  *
  * ⚠️ 与 SPEC 旧描述不符：「alt-screen 下强制全量重绘」实测**不存在**。旧底座吞掉 stderr 后一个字节都不写，
@@ -10,35 +11,46 @@
  */
 import { describe, expect, test } from "bun:test";
 import { join, resolve } from "node:path";
+import { frozenKey, legacyFrozen } from "./fixtures/legacy-frozen.ts";
 
 const ROOT = resolve(import.meta.dir, "../../../..");
 const FIXTURE = join(import.meta.dir, "fixtures/stderr-guard-app.tsx");
 const CLEAR = new Set([
-  "SID_TUI_RENDERER",
   "SID_CODE_DEBUG",
   "FIXTURE_ALT",
   "FIXTURE_TTY",
   "FIXTURE_CE",
+  // 终端识别类：决定 alt 帧包不包 DEC 2026（R14），宿主值会漏进断言
+  "TERM",
+  "TERM_PROGRAM",
+  "TMUX",
+  "STY",
+  "KITTY_WINDOW_ID",
+  "WT_SESSION",
+  "ZED_TERM",
+  "VTE_VERSION",
 ]);
+/**
+ * 冻结基线采集时的宿主终端（VS Code 集成终端）。alt-screen 那条的 frame 段因此带同步包裹；
+ * 不钉住的话 CI（没有 TERM_PROGRAM）必然对不上。
+ */
+const FROZEN_HOST = { TERM: "xterm-256color", TERM_PROGRAM: "vscode" };
 
 type Run = { notes: Record<string, unknown>; segments: Record<string, string>; fd2: string };
 
-function run(
-  renderer: "legacy" | "next",
-  scenario: string,
-  env: Record<string, string | undefined>,
-): Run {
+function run(scenario: string, env: Record<string, string | undefined>): Run {
   const base: Record<string, string> = {};
   for (const [k, v] of Object.entries(process.env))
     if (v !== undefined && !CLEAR.has(k)) base[k] = v;
+  Object.assign(base, FROZEN_HOST);
   for (const [k, v] of Object.entries(env)) if (v !== undefined) base[k] = v;
   const r = Bun.spawnSync([process.execPath, FIXTURE, scenario], {
     cwd: ROOT,
-    env: { ...base, SID_TUI_RENDERER: renderer },
+    env: base,
   });
   const s = r.stdout.toString();
   if (r.exitCode !== 0 || !s.includes("<<END>>")) {
-    throw new Error(`${renderer} ${scenario} 夹具失败（rc=${r.exitCode}）：${r.stderr.toString()}`);
+    throw new Error(`${scenario} 夹具失败（rc=${r.exitCode}）：${r.stderr.toString()}`);
   }
   const notes: Record<string, unknown> = {};
   for (const m of s.matchAll(/<<([^@=>][^=>]*)=(.*?)>>/g)) notes[m[1]!] = JSON.parse(m[2]!);
@@ -52,9 +64,8 @@ function run(
 }
 
 function both(scenario: string, env: Record<string, string | undefined> = {}) {
-  const legacy = run("legacy", scenario, env);
-  const next = run("next", scenario, env);
-  return { legacy, next };
+  const legacy = legacyFrozen<Run>("stderr-guard", frozenKey(scenario, env));
+  return { legacy, next: run(scenario, env) };
 }
 
 const LOG = (t: string) => [`[ink] [stderr] ${t}`, { level: "warn" }];

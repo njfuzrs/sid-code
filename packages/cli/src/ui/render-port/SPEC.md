@@ -10,7 +10,8 @@
 每条契约一行：`| ID | 行为 | 来源 | 测试 |`
 
 - **ID**：分组字母 + 序号（`R1`、`I1b`），全文唯一。分组是闭集：R 渲染管线 / L 布局 / T 文本 / I 输入 / M 鼠标与选区 / O 终端集成 / E 错误护栏 / X 生命周期 / P 性能。
-- **来源**：旧底座或 CLI 的 `文件:行`（路径相对 `packages/tui-renderer/src`，CLI 文件写全路径）。说不出来源的契约不许写。
+- **来源**：旧底座或 CLI 的 `文件:行`（路径相对旧底座 `packages/tui-renderer/src`，CLI 文件写全路径）。说不出来源的契约不许写。
+  旧底座在 B9 / T9.1 删除，这些来源从此是历史出处（查 git 历史或 `.vendor-src` 快照），行为以测试与冻结基线为准。
 - **测试**，三种之一：
   - `` `测试文件` 片段 `` —— 已有测试。脚本检查文件存在且包含该片段。新写的端口测试统一用 `"<ID>: "` 作测试名前缀，片段就写 `ID:`。
   - 差分测试台场景：`` `packages/cli/tests/render-port/term-bench/scenarios.tsx` S3: { ``。场景的 `covers` 与这一列必须双向一致（`term-bench/bench.test.ts` 校验）。
@@ -44,7 +45,7 @@
 | ID | 行为 | 来源 | 测试 |
 | --- | --- | --- | --- |
 | L1 | Flexbox 语义与 yoga 一致，覆盖 `SURFACE.md` §2 列出的全部 props | `styles.ts`、`layout/` | `packages/cli/tests/render-port/contracts-layout-text.test.tsx` L1: |
-| L2 | 布局缓存命中后子节点仍按新宽度重新定位（flex-end / center 反复 resize 不漂移） | `layout/`（纯 TS yoga 移植） | `packages/tui-renderer/tests/ink/yoga-layout-cache-positions.test.ts` yoga 多槽布局缓存不得跳过子节点定位 |
+| L2 | 布局缓存命中后子节点仍按新宽度重新定位（flex-end / center 反复 resize 不漂移） | `layout/`（纯 TS yoga 移植） | `packages/tui/tests/yoga-layout-cache-positions.test.ts` yoga 多槽布局缓存不得跳过子节点定位 |
 | L3 | `overflow: hidden` 裁剪子内容；单轴取值优先于 `overflow`，`scroll` 在本轴上等同 `hidden`。纵向 `scroll` 只画第一个子节点（内容盒）的子项：按「在内容盒里的位置」与视口 `[0, 内框高)` 求交，有交集就整项画；内容盒自身的背景 / 边框 / 裁剪不画；不提供 scrollTop，剔除恒按滚动位置 0 —— CLI 靠上下 spacer 与负 `marginTop` 表达滚动位置（T4.3 黑盒对拍） | `render-node-to-output.ts:626-628`、CLI `packages/cli/src/ui/components/VirtualizedList.tsx:8-19` | `packages/cli/tests/render-port/contracts-layout-text.test.tsx` L3: |
 | L4 | `ResizeObserver` 轮询式：`observe` 后微任务里单独报一次当前尺寸，之后每 16ms 只比宽高、同一轮的变化合成一次回调，节点移除报 0×0，定时器 unref；`measureElement` 返回最近一次布局的宽高（已移除节点 0×0）；`getBoundingBox` 是布局树绝对坐标（累加父链，含负 margin），空参数 / 已移除节点得 `null` | `_vendor/resize-observer.ts:39`、`_vendor/resize-observer.ts:91`、`measure-element.ts:18` | `packages/cli/tests/render-port/contracts-layout-text.test.tsx` L4: |
 | L5 | 交互判定只看 `stdout.isTTY`，不看 `CI` 环境变量（上游 ink 7 会看 `is-in-ci`，新底座必须关掉或在此写明行为变化） | `ink.tsx:288` | `packages/cli/tests/render-port/contracts-runtime.test.tsx` L5: |
@@ -93,7 +94,7 @@
 | 光标显示 `?25` | — | `ink.tsx:1754` 卸载时显示 | — | — | 只归底座 |
 
 CLI 侧的写入点由 `cli-modes.test.tsx` 钉住：走生产入口 `createFullScreen` + 真实 `KeypressProvider` / `MouseProvider`，
-按调用栈把每次写入归给 CLI 或底座，两套底座逐条一致（卸载之后底座那段的相对顺序归 X3）。
+按调用栈把每次写入归给 CLI 或底座，与冻结的 legacy 输出逐条一致（卸载之后底座那段的相对顺序归 X3）。
 另有两处 CLI 直写不属于模式、也不在本表：`terminalCapabilityManager.ts:230` 的能力查询与 `:87` 的 OSC 11 背景色查询，
 前者随 `detectCapabilities()` 一起是死代码，后者的调用方 `TerminalContext.tsx` 的 `queryTerminalBackground` 也没有使用者。
 
@@ -116,7 +117,7 @@ CLI 侧的写入点由 `cli-modes.test.tsx` 钉住：走生产入口 `createFull
 | O3 | 底座经 `TerminalWriteContext` 提供原始写入口：身份在实例内稳定、原样直写 stdout（不等帧、非 TTY 也写），CLI 用它写 BEL / OSC 777 / OSC 9;4。TTY 卸载时写 OSC 9;4 进度清除（固定 BEL 终止、不包裹）与 tab 状态清除（随终端终止、按 tmux / screen 包裹、`SID_DISABLE_TAB_STATUS` 非空不写），与之前写没写过无关；非 TTY 都不写；相对其余模式恢复的顺序归 X3 | `useTerminalNotification.ts:18`、`ink.tsx:1756` | `packages/cli/tests/render-port/terminal-progress.test.tsx` O3: |
 | O4 | OSC 8 超链接只在 `supportsHyperlinks()` 为真时输出 | `supports-hyperlinks.ts:26` | `packages/cli/tests/render-port/contracts-layout-text.test.tsx` O4: |
 | O5 | 终端识别读取的环境变量全集与逐个结论见 `SURFACE.md` §3（D125：`CLAUDE_CODE_*` 改名或删除，T7.2c 定论）。无障碍开关只压掉两处隐藏光标：首帧后、Ctrl+Z 挂起后 SIGCONT 恢复时；外部编辑器收回终端照样隐藏。取值非空且不是 `0` / `false` / `no`（不分大小写）即开。next 认新名 `SID_CODE_ACCESSIBILITY`，旧名 `CLAUDE_CODE_ACCESSIBILITY` 留作别名到 T9 | `SURFACE.md` §3、`components/App.tsx:230`、`components/App.tsx:488` | `packages/cli/tests/render-port/contracts-runtime.test.tsx` O5: |
-| O6 | termio 端口面（`OSC` 表、`osc`、`wrapForMultiplexer`、`setClipboard`、`supportsHyperlinks`）在两套底座上逐字节一致：OSC 终止符 kitty 用 ST、其余 BEL，加载时判定；`TMUX` 优先于 `STY` 包裹 DCS；剪贴板跳过 SSH、linux 依次试 wl-copy / xclip / xsel 并记住结果、tmux 等 `load-buffer`（2s，`LC_TERMINAL=iTerm2` 不带 `-w`）成功才包裹且里层固定 BEL | `termio/osc.ts:18`、`termio/osc.ts:35`、`termio/osc.ts:135`、`supports-hyperlinks.ts:26` | `packages/cli/tests/render-port/contracts-termio.test.ts` O6: |
+| O6 | termio 端口面（`OSC` 表、`osc`、`wrapForMultiplexer`、`setClipboard`、`supportsHyperlinks`）与冻结的 legacy 输出逐字节一致：OSC 终止符 kitty 用 ST、其余 BEL，加载时判定；`TMUX` 优先于 `STY` 包裹 DCS；剪贴板跳过 SSH、linux 依次试 wl-copy / xclip / xsel 并记住结果、tmux 等 `load-buffer`（2s，`LC_TERMINAL=iTerm2` 不带 `-w`）成功才包裹且里层固定 BEL | `termio/osc.ts:18`、`termio/osc.ts:35`、`termio/osc.ts:135`、`supports-hyperlinks.ts:26` | `packages/cli/tests/render-port/contracts-termio.test.ts` O6: |
 
 ## E 错误与输出护栏
 
@@ -148,4 +149,4 @@ CLI 侧的写入点由 `cli-modes.test.tsx` 钉住：走生产入口 `createFull
 | P2 | 流式期间帧耗时 p95、每 token 写入字节数不高于旧底座 1.1 倍 | — （差分测试台基线） | `packages/cli/tests/render-port/term-bench/scenarios.tsx` S1: { |
 | P3 | 历史 ≥ 500 项时帧耗时不随历史线性增长（旧底座靠节点布局缓存 blit 做到 O(dirty)）。新底座口径：只改底部一行时，每帧真正遍历的节点数与历史长度无关；缓存命中的输出与冷渲染逐字节一致 | `dom.ts:6`、`dom.ts:219` | `packages/tui/tests/render-cache.test.tsx` P3: |
 | P5 | `useAnimationFrame` 离屏暂停：帧高 p > 视口 H 时，动画盒底边落在帧的最后 H - 1 行之外（`y + h - 1 < p - H + 1`）就停止订阅时钟；判定只在组件重渲时做、读上一次提交的布局，所以回到视口后要再来一次父级重渲才恢复，`React.memo` 包住的则一直停着 | `hooks/use-animation-frame.ts:34`、`hooks/use-terminal-viewport.ts` | `packages/cli/tests/render-port/contracts-animation.test.tsx` P5: |
-| P4 | 长会话 RSS 不高于旧底座 1.2 倍。口径（T8.1c）：500 条带样式多行历史进 Static，同一测试内串行起两套底座，峰值 RSS 比值与堆增长斜率比值都 ≤ 1.2；灵敏度只到「整段多占几十 MB」，几 MB 级的泄漏抓不到 | — （差分测试台基线） | `packages/cli/tests/render-port/rss.test.ts` P4: |
+| P4 | 长会话 RSS 不高于旧底座 1.2 倍。口径（T8.1c）：500 条带样式多行历史进 Static，next 现场采样、legacy 用 T9.1 删除前冻结的样本（`fixtures/rss-legacy-baseline.json`），峰值 RSS 比值与堆增长斜率比值都 ≤ 1.2；灵敏度只到「整段多占几十 MB」，几 MB 级的泄漏抓不到 | — （差分测试台基线） | `packages/cli/tests/render-port/rss.test.ts` P4: |

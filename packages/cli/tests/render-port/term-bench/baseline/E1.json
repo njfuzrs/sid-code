@@ -1,0 +1,178 @@
+{
+  "scenario": "E1",
+  "exitCode": 0,
+  "total": {
+    "bytes": 2497,
+    "eraseScreen": 0,
+    "eraseScrollback": 0,
+    "syncBegin": 49,
+    "syncEnd": 49,
+    "altEnter": 0,
+    "altExit": 0,
+    "osc": {
+      "9": 1,
+      "21337": 1
+    }
+  },
+  "notes": {},
+  "steps": [
+    {
+      "label": "空",
+      "buffer": "normal",
+      "cursor": {
+        "x": 0,
+        "y": 0,
+        "hidden": true
+      },
+      "modes": {
+        "bracketedPaste": false,
+        "mouseTracking": "none",
+        "sendFocus": false,
+        "wraparound": true
+      },
+      "metrics": {
+        "bytes": 6,
+        "eraseScreen": 0,
+        "eraseScrollback": 0,
+        "syncBegin": 0,
+        "syncEnd": 0,
+        "altEnter": 0,
+        "altExit": 0,
+        "osc": {}
+      },
+      "screen": [],
+      "scrollback": [],
+      "styled": []
+    },
+    {
+      "label": "追加到 24 行",
+      "buffer": "normal",
+      "cursor": {
+        "x": 0,
+        "y": 23,
+        "hidden": true
+      },
+      "modes": {
+        "bracketedPaste": false,
+        "mouseTracking": "none",
+        "sendFocus": false,
+        "wraparound": true
+      },
+      "metrics": {
+        "bytes": 1166,
+        "eraseScreen": 0,
+        "eraseScrollback": 0,
+        "syncBegin": 24,
+        "syncEnd": 24,
+        "altEnter": 0,
+        "altExit": 0,
+        "osc": {}
+      },
+      "screen": [
+        "流式 1 内容内容",
+        "流式 2 内容内容内容",
+        "流式 3 内容内容内容内容",
+        "流式 4 内容",
+        "流式 5 内容内容",
+        "流式 6 内容内容内容",
+        "流式 7 内容内容内容内容",
+        "流式 8 内容",
+        "流式 9 内容内容",
+        "流式 10 内容内容内容",
+        "流式 11 内容内容内容内容",
+        "流式 12 内容",
+        "流式 13 内容内容",
+        "流式 14 内容内容内容",
+        "流式 15 内容内容内容内容",
+        "流式 16 内容",
+        "流式 17 内容内容",
+        "流式 18 内容内容内容",
+        "流式 19 内容内容内容内容",
+        "流式 20 内容",
+        "流式 21 内容内容",
+        "流式 22 内容内容内容",
+        "流式 23 内容内容内容内容"
+      ],
+      "scrollback": ["流式 0 内容"],
+      "styled": []
+    },
+    {
+      "label": "追加到 48 行",
+      "buffer": "normal",
+      "cursor": {
+        "x": 0,
+        "y": 23,
+        "hidden": true
+      },
+      "modes": {
+        "bracketedPaste": false,
+        "mouseTracking": "none",
+        "sendFocus": false,
+        "wraparound": true
+      },
+      "metrics": {
+        "bytes": 1176,
+        "eraseScreen": 0,
+        "eraseScrollback": 0,
+        "syncBegin": 24,
+        "syncEnd": 24,
+        "altEnter": 0,
+        "altExit": 0,
+        "osc": {}
+      },
+      "screen": [
+        "流式 25 内容内容",
+        "流式 26 内容内容内容",
+        "流式 27 内容内容内容内容",
+        "流式 28 内容",
+        "流式 29 内容内容",
+        "流式 30 内容内容内容",
+        "流式 31 内容内容内容内容",
+        "流式 32 内容",
+        "流式 33 内容内容",
+        "流式 34 内容内容内容",
+        "流式 35 内容内容内容内容",
+        "流式 36 内容",
+        "流式 37 内容内容",
+        "流式 38 内容内容内容",
+        "流式 39 内容内容内容内容",
+        "流式 40 内容",
+        "流式 41 内容内容",
+        "流式 42 内容内容内容",
+        "流式 43 内容内容内容内容",
+        "流式 44 内容",
+        "流式 45 内容内容",
+        "流式 46 内容内容内容",
+        "流式 47 内容内容内容内容"
+      ],
+      "scrollback": [
+        "流式 0 内容",
+        "流式 1 内容内容",
+        "流式 2 内容内容内容",
+        "流式 3 内容内容内容内容",
+        "流式 4 内容",
+        "流式 5 内容内容",
+        "流式 6 内容内容内容",
+        "流式 7 内容内容内容内容",
+        "流式 8 内容",
+        "流式 9 内容内容",
+        "流式 10 内容内容内容",
+        "流式 11 内容内容内容内容",
+        "流式 12 内容",
+        "流式 13 内容内容",
+        "流式 14 内容内容内容",
+        "流式 15 内容内容内容内容",
+        "流式 16 内容",
+        "流式 17 内容内容",
+        "流式 18 内容内容内容",
+        "流式 19 内容内容内容内容",
+        "流式 20 内容",
+        "流式 21 内容内容",
+        "流式 22 内容内容内容",
+        "流式 23 内容内容内容内容",
+        "流式 24 内容"
+      ],
+      "styled": []
+    }
+  ]
+}

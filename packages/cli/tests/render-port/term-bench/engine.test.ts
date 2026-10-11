@@ -1,31 +1,38 @@
 /**
- * 引擎级场景 E1–E10 双底座差分（B9 / T3.2–T3.3，设计文档阶段 3 出口）。
+ * 引擎级场景 E1–E10（B9 / T3.2–T3.3，设计文档阶段 3 出口）。
  *
- * 每个场景在 legacy 与 next 上各跑一遍，用 S 场景同一套判定（compareToBaseline）以 legacy 为基线比较：
- * 网格、scrollback、光标、模式逐项一致，full reset 次数与字节数不超过 legacy 的 1.1 倍。
- * 卸载后那一步不比：卸载时恢复终端模式、清进度 / tab 状态属于生命周期（X 组，T7.x），新底座还没做。
+ * 用 S 场景同一套判定（compareToBaseline）对冻结的 legacy 基线 `baseline/E*.json` 比较：
+ * 网格、scrollback、光标、模式逐项一致，full reset 次数与字节数不超过基线的 1.1 倍。
+ * 卸载后那一步不比（生命周期归 X 组，单独有契约测试）。
+ *
+ * 基线是 T9.1 删除旧底座前用 legacy 现场生成后入库的（两次生成逐字节一致），旧底座已不在仓库，
+ * 所以**不能重生成**：next 的行为若有意变化，改 JSON 并在 PR 里逐项说明。
  */
 import { describe, expect, test } from "bun:test";
+import { readFileSync } from "node:fs";
+import { join } from "node:path";
 import { compareToBaseline, EXIT_LABEL, runScenario, summarize } from "./harness.ts";
 import { ENGINE_SCENARIOS } from "./engine-scenarios.tsx";
 
-const run = async (name: string, renderer: "legacy" | "next") => {
-  const r = await runScenario(name, { env: { SID_TUI_RENDERER: renderer } });
-  if (r.error) throw new Error(`${renderer} ${name}: ${r.error}`);
+const BASELINE_DIR = join(import.meta.dir, "baseline");
+
+const run = async (name: string) => {
+  const r = await runScenario(name);
+  if (r.error) throw new Error(`${name}: ${r.error}`);
   const s = summarize(r);
   return { ...s, steps: s.steps.filter((st) => st.label !== EXIT_LABEL) };
 };
 
-describe("引擎级场景 E1–E10（legacy ↔ next）", () => {
+describe("引擎级场景 E1–E10（对冻结 legacy 基线）", () => {
   for (const name of Object.keys(ENGINE_SCENARIOS)) {
     test(`${name} ${ENGINE_SCENARIOS[name]!.covers.join(" ")}`, async () => {
-      const [legacy, next] = await Promise.all([run(name, "legacy"), run(name, "next")]);
-      expect(compareToBaseline(next, legacy)).toEqual([]);
+      const baseline = JSON.parse(readFileSync(join(BASELINE_DIR, `${name}.json`), "utf8"));
+      expect(compareToBaseline(await run(name), baseline)).toEqual([]);
     }, 30_000);
   }
 
   test("E5：同一 tick 5 次提交合并成 2 帧；5 次 store 更新被 React 批成 1 帧（R2）", async () => {
-    const r = await runScenario("E5", { env: { SID_TUI_RENDERER: "next" } });
+    const r = await runScenario("E5");
     expect(r.notes).toEqual({ "store-burst-frames": "1", "commit-burst-frames": "2" });
   }, 30_000);
 });

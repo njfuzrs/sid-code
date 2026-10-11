@@ -7,8 +7,8 @@ import { setSuppressTerminalProbe as nextSetSuppressTerminalProbe } from "@sid-c
 import type { RenderInstance } from "../runtime.ts";
 
 /**
- * 端口的 render 是 async（legacy 在首帧前让出一个微任务，见旧底座 root.ts 注释），上游是同步。
- * 这里保留同一个微任务边界，让两套底座首帧时机一致。
+ * 端口的 render 是 async（旧底座在首帧前让出一个微任务），上游是同步。
+ * 这里保留同一个微任务边界：CLI 调用点都按「await 之后才有首帧」写，契约测试也按这个时机断言。
  */
 export async function render(node: ReactNode, options?: NodeJS.WriteStream | RenderOptions) {
   await Promise.resolve();
@@ -19,9 +19,9 @@ export const drainStdin: (stdin?: NodeJS.ReadStream) => void = upstreamDrainStdi
 export const setSuppressTerminalProbe: (value: boolean) => void = nextSetSuppressTerminalProbe;
 
 /**
- * ⚠️ 直接返回上游 Ink 实例，**刻意不包一层 adapter**：上游 Ink 没有 RenderInstance 的 8 个方法，
- * 这时契约 X7 在 next 上必须红，CLI 调 `?.forceRedraw()` 也要抛 TypeError，而不是被一个
- * 「方法存在但会抛」的 adapter 骗成 X7 全绿。方法由 T3.3 / T6.1 / T6.2 / T7.1 在实例上逐个补齐。
+ * ⚠️ 直接返回底座的 Ink 实例，**刻意不包一层 adapter**：RenderInstance 的方法都实现在实例上，
+ * 少一个时契约 X7（`render-instance.test.tsx`）必须红、CLI 调 `?.forceRedraw()` 也要抛 TypeError，
+ * 而不是被一个「方法存在但会抛」的 adapter 骗成全绿。
  */
 export function getRenderInstance(
   stdout: NodeJS.WriteStream = process.stdout,

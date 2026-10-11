@@ -1,4 +1,4 @@
-// B9 / T5.3b：I4 归属表「CLI：开 / 关」两列的子进程夹具。由 cli-modes.test.tsx 按不同 SID_TUI_RENDERER / 环境运行。
+// B9 / T5.3b：I4 归属表「CLI：开 / 关」两列的子进程夹具。由 cli-modes.test.tsx 按不同环境运行。
 // 走生产入口 createFullScreen（fullscreen.ts 的 ?7）+ 真实 KeypressProvider（terminalCapabilityManager 的 ?2004h）
 // + MouseProvider（MouseContext 的鼠标全套），底座与 CLI 写的是同一个 process.stdout。
 // 每次 process.stdout.write 按调用栈归属：栈上第一个仓内源码帧在 `packages/cli/src/`（render-port 除外）记 `cli:`，
@@ -50,8 +50,7 @@ const tick = (ms = 60) => new Promise((r) => setTimeout(r, ms));
 const log: string[] = [];
 const mark = (m: string) => void log.push(`<<${m}>>`);
 
-// legacy 的源码经 symlink 解析成 `.vendor-src/tui-renderer-src/`
-const SRC = /\/packages\/(cli|tui|tui-renderer)\/src\/|\/\.vendor-src\/tui-renderer-src\//;
+const SRC = /\/packages\/(cli|tui)\/src\//;
 function owner(): "cli" | "base" {
   for (const line of (new Error().stack ?? "").split("\n").slice(2)) {
     if (!SRC.test(line)) continue;

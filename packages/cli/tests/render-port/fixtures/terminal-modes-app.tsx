@@ -1,4 +1,4 @@
-// B9 / T5.3a：契约 I4 的子进程夹具。由 terminal-modes.test.tsx 按不同 SID_TUI_RENDERER / 环境运行。
+// B9 / T5.3a：契约 I4 的子进程夹具。由 terminal-modes.test.tsx 按不同环境运行。
 // 必须是子进程：扩展键开不开在底座模块加载时按环境变量判定一次，进程内改 env 不生效。
 // 用法：`bun terminal-modes-app.tsx <场景>`；stdout 是 PassThrough 之外的真 fd，结果以一行 `JSON:` 写到 stderr，
 // 是 stdout.write 的逐次入参，夹着 `<<标记>>` 与 `{ref} / {unref} / {raw:…}` 调用记录。

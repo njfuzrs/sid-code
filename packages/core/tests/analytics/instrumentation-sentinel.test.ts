@@ -32,7 +32,7 @@ import { EVENT_NAMES } from "@sid-code/core/analytics/events.ts";
 /**
  * 生产源码根目录（P2-2 分包后是 4 个包，不再是单一 `src/`）。
  *
- * **tui-renderer 刻意不在列**：它是 vendor 进来的 ink fork（原 `src/ink`），
+ * **渲染底座 `tui` 刻意不在列**：它是上游 ink 的 fork（原 `src/ink`，B9 前叫 tui-renderer），
  * 不参与埋点约定 —— 与分包前 `collectSourceFiles` 跳过 `ink` 目录等价。
  *
  * ⚠️ 这个清单漏一个包 = 门禁少扫一片代码，且**不会报错**。

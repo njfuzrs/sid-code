@@ -1,0 +1,20 @@
+{
+  "_comment": "B9 / T9.1：旧底座删除前最后一次实测的 legacy 样本（rss-app.tsx，串行 3 轮，取中位数）。2026-10-10，macOS arm64，bun 1.4.2。只用于 P4 比值判据，不要手改；旧底座已不在仓库，无法重生成。",
+  "machine": "darwin-arm64",
+  "runs": {
+    "items0": [
+      { "base": 47.2, "peak": 47.2, "delta": 0, "heapMB": 4.6 },
+      { "base": 46.7, "peak": 46.8, "delta": 0.1, "heapMB": 4.6 },
+      { "base": 47, "peak": 47, "delta": 0, "heapMB": 4.6 }
+    ],
+    "items500": [
+      { "base": 46.3, "peak": 234.3, "delta": 188, "heapMB": 44.7 },
+      { "base": 47.3, "peak": 211.1, "delta": 163.8, "heapMB": 44.6 },
+      { "base": 46.2, "peak": 221.6, "delta": 175.4, "heapMB": 44.7 }
+    ]
+  },
+  "median": {
+    "legacy0": { "base": 47, "peak": 47, "delta": 0, "heapMB": 4.6 },
+    "legacy": { "base": 46.3, "peak": 221.6, "delta": 175.4, "heapMB": 44.7 }
+  }
+}

@@ -35,7 +35,7 @@ const REPO_ROOT = join(import.meta.dir, "..", "..", "..", "..");
  * 「凡 implements Tool 的都要守 snake_case」这条约束不该因为文件搬到哪个包而放过。
  * 下面「下限哨兵」用例会在扫到 0 个工具时炸响，防路径指错后静默假绿。
  */
-const SRC_ROOTS = ["shared", "tui-renderer", "core", "cli"].map((p) =>
+const SRC_ROOTS = ["shared", "tui", "core", "cli"].map((p) =>
   join(REPO_ROOT, "packages", p, "src"),
 );
 

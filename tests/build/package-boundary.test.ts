@@ -9,7 +9,7 @@
  *
  * 本文件断言三件事，对应 `scripts/pkg-boundary-scan.ts --packages` 报的三类违规：
  *
- *  1. **rank 越界**：shared(0) < tui-renderer(1) < core(2) < cli(3)，低 rank 不得导入高 rank。
+ *  1. **rank 越界**：shared(0) < tui(1) < core(2) < cli(3)，低 rank 不得导入高 rank。
  *  2. **跨包相对路径**：`../../core/src/x.ts` 这种偷渡 —— 方向合法也算违规，因为它绕过
  *     package.json 的 exports 契约，依赖关系在 dependencies 字段里查不到，
  *     单独发包时才会炸（那时已经很难追责到具体某次提交）。
@@ -54,20 +54,19 @@ describe("包边界：packages/ 下的真实依赖方向", () => {
 
   test("core 完全不知道 TUI 的存在（分包的核心目标）", () => {
     // 单独立一条：它是分包最重要的那个不变量，混在「零越界」里失败时不够醒目。
-    const coreToTui = scan.violations.filter(
-      (v) => v.fromPkg === "core" && v.toPkg === "tui-renderer",
-    );
+    const coreToTui = scan.violations.filter((v) => v.fromPkg === "core" && v.toPkg === "tui");
     expect(coreToTui.map((v) => `${v.file}:${v.line}`)).toEqual([]);
     // 边也必须为 0（边包含合法方向的引用，rank 违规只是它的子集）
-    expect(scan.edges.get("core→tui-renderer") ?? 0).toBe(0);
+    expect(scan.edges.get("core→tui") ?? 0).toBe(0);
     expect(scan.edges.get("core→cli") ?? 0).toBe(0);
   });
 
-  test("rank 表自洽：shared(0) < tui-renderer(1) = tui(1) < core(2) < cli(3)", () => {
-    // 锁住顺序本身。曾经的设计方案里 §2.1 与 §4.4 自相矛盾（tui-renderer 到底是不是叶子），
+  test("rank 表自洽：shared(0) < tui(1) < core(2) < cli(3)", () => {
+    // 锁住顺序本身。曾经的设计方案里 §2.1 与 §4.4 自相矛盾（渲染层到底是不是叶子），
     // 择一之后必须钉死，否则「把 rank 调一下让门禁变绿」是最省事也最有害的修法。
-    // B9 / T1.2：新底座 tui 与旧底座同层，T9 删旧底座后这里回到 4 项。
-    expect(PACKAGES.map((p) => PACKAGE_RANK[p])).toEqual([0, 1, 1, 2, 3]);
+    // B9 / T9.1 删除旧底座 tui-renderer 后回到 4 项。
+    expect(PACKAGES.map((p) => PACKAGE_RANK[p])).toEqual([0, 1, 2, 3]);
+    expect(PACKAGE_RANK["tui-renderer"]).toBeUndefined();
   });
 });
 
@@ -89,8 +88,8 @@ describe("包边界门禁自身有效性（防假绿）", () => {
     // 若 extractImports 或 bare specifier 正则失效，违规会是 0，但边也会是 0。
     // 「零违规 + 零边」是假绿的典型指纹，「零违规 + 大量合法边」才是真的干净。
     expect(scan.edges.get("cli→core") ?? 0).toBeGreaterThan(100);
-    // B9 / T0.2 后 CLI 对底座的导入全部收进 ui/render-port/（实测 36 条），下限随之下调。
-    expect(scan.edges.get("cli→tui-renderer") ?? 0).toBeGreaterThan(20);
+    // CLI 对底座的导入全部收进 ui/render-port/next/（T9.1 后实测见门禁输出），下限只防空转。
+    expect(scan.edges.get("cli→tui") ?? 0).toBeGreaterThan(10);
     expect(scan.edges.get("core→shared") ?? 0).toBeGreaterThan(0);
   });
 
@@ -115,7 +114,7 @@ describe("包边界门禁自身有效性（防假绿）", () => {
   });
 
   test("注释里的 import 示例不算依赖（避免误红）", () => {
-    // tui-renderer 的文档注释里有 `from 'ink'` 这类示例代码。若不先剥注释，
+    // 底座（上游 ink）的文档注释里有 `from 'ink'` 这类示例代码。若不先剥注释，
     // 门禁会对着注释报越界 —— 一道会误红的门禁最终会被 --no-verify 绕过。
     const withComment = [
       "/**",

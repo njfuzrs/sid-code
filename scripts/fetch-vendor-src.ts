@@ -2,13 +2,14 @@
 /**
  * fetch-vendor-src.ts — 构建时准备 vendor 源码目录（不入库的第三方代码）
  *
- * 为什么存在：`packages/tui-renderer/src/` 与
- * `packages/cli/src/command/commands/claude-api/reference/` **不入库**（见 .gitignore），
- * 但它们是**编译期依赖**：
- *   · 前者被 `packages/cli/src` 下 102 个文件按 `@sid-code/tui-renderer/*` 导入；
- *   · 后者被 `claude-api.ts` 用 Bun 的 `with { type: "text" }` 内联进单二进制。
- * 因此 fresh clone / CI 上必须先把它们取回来，否则 `bun test` 与 `make build` 都跑不起来
- * —— 实测新仓首批 CI 全红就是这个原因（`Cannot find module '@sid-code/tui-renderer/stringWidth.ts'`）。
+ * 为什么存在：`packages/cli/src/command/commands/claude-api/reference/` **不入库**（见 .gitignore），
+ * 但它是**编译期依赖**：`claude-api.ts` 用 Bun 的 `with { type: "text" }` 把它内联进单二进制。
+ * 因此 fresh clone / CI 上必须先把它取回来，否则 `bun test` 与 `make build` 都跑不起来。
+ *
+ * B9 / T9.1 之前这里还取旧渲染底座 `packages/tui-renderer/src/`（当时被 CLI 102 个文件导入，
+ * 新仓首批 CI 全红就是缺它：`Cannot find module '@sid-code/tui-renderer/stringWidth.ts'`）。
+ * 旧底座删除后服务器上的 tar 包**没有重打**：它仍同时装着旧底座与 claude-api reference，
+ * 本脚本解包后只取后者，旧底座那份随临时目录一起丢掉。重打包属于 vendor 治理，不在 T9.1 内。
  *
  * 机制与 `fetch-ripgrep.ts` **同源**（刻意照抄那套先例，不另创一套），但多一层间接：
  *   1. 真实字节存放在**仓库内的缓存目录** `.vendor-src/<name>/`（不入库、被 ignore）；
@@ -38,6 +39,8 @@
  *
  * ## ⚠️ 四个实测踩到的坑（改这个脚本前必读，每条都会静默出错）
  *
+ * （下面几条里的「125 个文件」「两个 symlink」是旧底座还在清单里时的实测，机理不变。）
+ *
  * 1. **缓存必须在仓库内，不能放 `~/.cache/`。** 试过 `~/.cache/sid-code/vendor-src/`，
  *    `make build` 当场失败：`Could not resolve: "react"`。原因是 bun 按 **realpath**
  *    向上找 `node_modules`，而 `~/.cache` 那条链路上一个都没有。放仓库内则
@@ -47,14 +50,14 @@
  *    换成 symlink 后 `git check-ignore` **不再命中**，两个 symlink 出现在 git status 里
  *    并可能被 `git add -A` 入库。所以规则必须写成**不带尾斜杠**的形态。
  * 3. **`tar -xzf` 不能穿过 symlink 解包。** 服务器 tar 包内是仓库内规范路径
- *    （`packages/tui-renderer/src/...`），直接解包会报
+ *    （如 `packages/cli/src/command/...`），直接解包会报
  *    `Cannot extract through symlink` 而**部分失败**。所以下载路径必须
  *    先解到临时目录，再把内容搬进 `.vendor-src/`。
  * 4. **`--pack` 必须加 `tar -h`（跟随 symlink）。** 不加只会把两个 symlink 本身
  *    打进包里 —— 实测包内文件数从 125 变成 **2**，而 tar 退出码是 0、
  *    上传照样成功、sha256 照样算得出来。下一个 fresh clone 才会炸。
  *
- * 服务器布局（nginx root=/var/www/html，与 ripgrep 并列）：
+ * 服务器布局（nginx root=/var/www/html，与 ripgrep 并列；目录名沿用历史的 tui-renderer）：
  *   https://www.sid-code.cc/vendor-bin/tui-renderer/<version>/tui-renderer-src-<version>.tar.gz
  *   https://www.sid-code.cc/vendor-bin/tui-renderer/<version>/tui-renderer-src-<version>.tar.gz.sha256
  *
@@ -95,10 +98,7 @@ const DEFAULT_PUBLIC_BASE_URL = "https://www.sid-code.cc";
  * ⚠️ 与 .gitignore 里那两条**必须一致**。加一条不入库目录就要同步这里，
  * 否则 CI 会在"某个模块解析不到"上失败，而错误信息完全指不到这个清单。
  */
-const VENDOR_DIRS = [
-  "packages/tui-renderer/src",
-  "packages/cli/src/command/commands/claude-api/reference",
-] as const;
+const VENDOR_DIRS = ["packages/cli/src/command/commands/claude-api/reference"] as const;
 
 /**
  * 真实字节的存放处（相对仓库根）。**必须在仓库内** —— 见文件头坑 1：
@@ -112,9 +112,33 @@ const CACHE_DIR = ".vendor-src";
 
 /** 规范路径 → 缓存里对应的子目录名。用短名而非原路径，避免缓存里再套六层目录。 */
 const CACHE_NAME: Record<string, string> = {
-  "packages/tui-renderer/src": "tui-renderer-src",
   "packages/cli/src/command/commands/claude-api/reference": "claude-api-reference",
 };
+
+/**
+ * 旧渲染底座在老克隆里留下的东西（B9 / T9.1 删除）。git 只删了被追踪的 package.json / bunfig.toml，
+ * symlink `packages/tui-renderer/src` 与缓存 `.vendor-src/tui-renderer-src/` 都不在 git 里，切到新版本后原样留着。
+ * symlink 和那个空壳目录可以安全删；缓存目录**只提示、不删**：有人往里放过与旧底座无关的文件
+ * （T9.1 动手前就发现过一份会话导出），自动删会把它们一起带走。
+ */
+const LEGACY_LINK = "packages/tui-renderer";
+const LEGACY_CACHE = join(CACHE_DIR, "tui-renderer-src");
+
+async function cleanupLegacyRenderer(): Promise<void> {
+  const dir = join(ROOT, LEGACY_LINK);
+  if (existsSync(dir) || isBrokenLink(join(dir, "src"))) {
+    // 只在里面没有被追踪的文件时删：package.json 还在说明是 T9.1 之前的版本，不该动
+    if (!existsSync(join(dir, "package.json"))) {
+      await rm(dir, { recursive: true, force: true });
+      console.log(`  ✓ 已移除旧渲染底座留下的 ${LEGACY_LINK}/（symlink 与 node_modules 空壳）`);
+    }
+  }
+  if (existsSync(join(ROOT, LEGACY_CACHE))) {
+    console.log(
+      `  ⚠ ${LEGACY_CACHE}/ 是旧渲染底座的缓存，已不再使用。确认里面没有自己的文件后可手动删除。`,
+    );
+  }
+}
 
 function cacheAbs(rel: string): string {
   const name = CACHE_NAME[rel];
@@ -449,6 +473,7 @@ async function main(): Promise<void> {
 
   console.log(`fetch-vendor-src: version=${version} baseUrl=${resolveBaseUrl()}`);
   await download(version, resolveBaseUrl(), argv.includes("--force"));
+  await cleanupLegacyRenderer();
 }
 
 await main();
