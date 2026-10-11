@@ -16,14 +16,13 @@ const FIXTURE = join(import.meta.dir, "fixtures/terminal-modes-app.tsx");
 const E = "\x1b";
 
 /** 宿主终端的识别变量会影响扩展键判定，子进程只给 PATH / HOME 与矩阵里的变量 */
-function spawn(renderer: "legacy" | "next", scenario: string, env: Record<string, string>) {
+function spawn(scenario: string, env: Record<string, string>) {
   return Bun.spawnSync([process.execPath, FIXTURE, scenario], {
     cwd: ROOT,
     env: {
       PATH: process.env.PATH ?? "",
       HOME: process.env.HOME ?? "",
       SID_CONFIG_DIR: process.env.SID_CONFIG_DIR ?? "",
-      SID_TUI_RENDERER: renderer,
       ...env,
     },
   });
@@ -42,12 +41,12 @@ const KEEP = new Set([
 ]);
 
 /** 场景的 I4 视图：逐次写入里只留模式序列（转成 `E[…`）、`<<标记>>` 与 `{stdin 调用}`，空格连接 */
-function modes(renderer: "legacy" | "next", scenario: string, env: Record<string, string>) {
-  const r = spawn(renderer, scenario, env);
+function modes(scenario: string, env: Record<string, string>) {
+  const r = spawn(scenario, env);
   const err = r.stderr.toString();
   const i = err.indexOf("JSON:");
   if (r.exitCode !== 0 || i < 0)
-    throw new Error(`${renderer} ${scenario} 夹具失败（rc=${r.exitCode}）：${err}`);
+    throw new Error(`${scenario} 夹具失败（rc=${r.exitCode}）：${err}`);
   const log = JSON.parse(err.slice(i + 5).split("\n")[0]!) as string[];
   return log
     .filter((x) => KEEP.has(x) || x.startsWith("<<") || x.startsWith("{"))
@@ -64,8 +63,7 @@ const ON_EXT = `${ON} E[>1u E[>4;2m`;
 const OFF = "E[>4m E[<u E[?1004l E[?2004l {raw:false} {unref}";
 
 function both(scenario: string, env: Record<string, string>, expected: string) {
-  expect(modes("legacy", scenario, env)).toBe(expected);
-  expect(modes("next", scenario, env)).toBe(expected);
+  expect(modes(scenario, env)).toBe(expected);
 }
 
 describe("I4: 跟着 raw mode 计数开关", () => {
@@ -162,8 +160,8 @@ describe("I4: stdin 静默 > 5s 后的第一块输入重申扩展键（I1c 的�
 
 describe("I4: 卸载时再关一次", () => {
   const DISABLE = `${E}[>4m${E}[<u${E}[?1004l${E}[?2004l`;
-  const count = (renderer: "legacy" | "next", env: Record<string, string>) => {
-    const out = spawn(renderer, "unmount-fd1", env).stdout.toString();
+  const count = (env: Record<string, string>) => {
+    const out = spawn("unmount-fd1", env).stdout.toString();
     const seg = out.slice(out.indexOf("<UNMOUNT>"), out.indexOf("<END>"));
     return seg.split(DISABLE).length - 1;
   };
@@ -174,14 +172,13 @@ describe("I4: 卸载时再关一次", () => {
     ["非 TTY + useInput", { ...KITTY, FIXTURE_TTY: "0" }, 1],
     ["非 TTY、没用 useInput", { ...KITTY, FIXTURE_TTY: "0", FIXTURE_INPUT: "0" }, 0],
   ] as const)("I4: %s", (_name, env, n) => {
-    expect(count("legacy", env)).toBe(n);
-    expect(count("next", env)).toBe(n);
+    expect(count(env)).toBe(n);
   });
 });
 
 describe("I4: 扩展键判定（只看环境变量）", () => {
   // 期望值是 legacy 子进程实测；全量矩阵（纯函数逐条）在 `packages/tui/tests/extended-keys.test.ts`，
-  // 这里两套底座各跑子进程抽样，确认底座真的按判定结果写字节
+  // 这里跑子进程抽样，确认底座真的按判定结果写字节
   const MATRIX: [Record<string, string>, boolean][] = [
     [{}, false],
     [{ TERM_PROGRAM: "kitty" }, true],
@@ -195,11 +192,10 @@ describe("I4: 扩展键判定（只看环境变量）", () => {
     [{ VSCODE_GIT_ASKPASS_MAIN: "/a/Cursor.app/b", TERM_PROGRAM: "kitty" }, true],
   ];
 
-  test("I4: 两套底座子进程抽样", () => {
+  test("I4: 子进程抽样", () => {
     for (const [env, want] of MATRIX) {
       const expected = `${want ? ON_EXT : ON} <<mounted>> <<unmount>> ${OFF}`;
-      expect([env, modes("legacy", "mount", env)]).toEqual([env, expected]);
-      expect([env, modes("next", "mount", env)]).toEqual([env, expected]);
+      expect([env, modes("mount", env)]).toEqual([env, expected]);
     }
   });
 });

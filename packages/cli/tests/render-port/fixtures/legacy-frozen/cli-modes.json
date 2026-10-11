@@ -1,0 +1,40 @@
+{
+  "main | {\"TERM\":\"xterm-256color\"}": [
+    "cli:E[?2004h",
+    "base:E[?2004h",
+    "base:E[?1004h",
+    "<<mounted>>"
+  ],
+  "main | {\"TERM_PROGRAM\":\"kitty\"}": [
+    "cli:E[?2004h",
+    "base:E[?2004h",
+    "base:E[?1004h",
+    "base:E[>1u",
+    "base:E[>4;2m",
+    "<<mounted>>"
+  ],
+  "alt | {\"TERM\":\"xterm-256color\"}": [
+    "base:E[?1000hE[?1002hE[?1003hE[?1006hE[?1007h",
+    "cli:E[?1000hE[?1002hE[?1006hE[?1007h",
+    "cli:E[?2004h",
+    "base:E[?2004h",
+    "base:E[?1004h",
+    "cli:E[?7l",
+    "<<mounted>>"
+  ],
+  "alt-copy | {\"TERM_PROGRAM\":\"kitty\"}": [
+    "base:E[?1000hE[?1002hE[?1003hE[?1006hE[?1007h",
+    "cli:E[?1000hE[?1002hE[?1006hE[?1007h",
+    "cli:E[?2004h",
+    "base:E[?2004h",
+    "base:E[?1004h",
+    "base:E[>1u",
+    "base:E[>4;2m",
+    "cli:E[?7l",
+    "<<mounted>>",
+    "cli:E[?1007lE[?1006lE[?1002lE[?1000l",
+    "<<copy-on>>",
+    "cli:E[?1000hE[?1002hE[?1006hE[?1007h",
+    "<<copy-off>>"
+  ]
+}

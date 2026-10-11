@@ -260,7 +260,7 @@ describe("内容级 tracing · 接线哨兵（防退化成死代码）", () => {
       "--type",
       "ts",
       "packages/shared/src/",
-      "packages/tui-renderer/src/",
+      "packages/tui/src/",
       "packages/core/src/",
       "packages/cli/src/",
     ]);

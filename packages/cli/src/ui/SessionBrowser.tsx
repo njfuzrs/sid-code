@@ -6,7 +6,7 @@
  * 它是个 React TUI 组件（ink 的 Box/Text、useInput、useStdout、theme），
  * 却曾待在 src/session/（core 包）里，属于放错了位置：
  *   - 它 import theme（cli）→ 一处 core → cli 越界；
- *   - 它 import ink 的 4 个组件 → 4 处 core → tui-renderer 依赖。
+ *   - 它 import ink 的 4 个组件 → 4 处 core → 渲染底座（当时是 tui-renderer）依赖。
  * 移到 cli 后这 5 处一起消失，且唯一调用方 cli.ts 本就在 cli 包内。
  */
 

@@ -130,7 +130,7 @@ export function resolveAlternateBufferDecision(env: {
 /**
  * `SID_CODE_DEBUG` 是否开启调试模式（B27）。
  *
- * 取值口径必须与 `packages/tui-renderer/src/_vendor/debug.ts` 一致（`1` / `true`）：
+ * 取值口径必须与渲染底座 `packages/tui/src/stderr-guard.ts` 一致（`1` / `true`，`debug-env.test.ts` 核对）：
  * 同一个变量在两处读，一处认 `true` 一处不认，用户就会看到「ink 日志出来了、debug.log 没有」
  * 这种半开状态，比完全不生效更难排查。
  */
@@ -651,7 +651,7 @@ function parseCLIArgs(): CLIArgs {
     appendSystemPrompt: appendSystemPrompt,
     systemPromptFile: values["system-prompt-file"],
     // B27：SID_CODE_DEBUG=1 与 --debug 等价。帮助文本、ref/env、排障页三处都在教这个变量，
-    // 此前代码里只有 tui-renderer 的 ink stderr 读它，debug.log 从不因它开启。
+    // 此前代码里只有渲染底座的 ink stderr 读它，debug.log 从不因它开启。
     debug: values.debug || isDebugEnvEnabled(process.env.SID_CODE_DEBUG),
     debugLevel: values["debug-level"],
     debugLogFile: values["debug-log-file"],

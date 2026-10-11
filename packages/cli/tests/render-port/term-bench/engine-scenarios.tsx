@@ -3,7 +3,7 @@
  *
  * 和 S1–S14 同一个测试台、同一套 xterm 判定，区别是**只用 Box / Text**，不挂 CLI 组件：
  * 阶段 3 时新底座还没有 Static / Ansi / alt-screen，S 场景跑不起来（见设计文档阶段 3 的 review 修正）。
- * 不入基线文件：每个场景在 legacy 与 next 上各跑一遍，当场比较（engine.test.ts）。
+ * 基线 `baseline/E*.json` 是 T9.1 删除旧底座前用 legacy 生成的冻结值（engine.test.ts）。
  */
 import React, { useSyncExternalStore } from "react";
 import { Box, Text } from "../../../src/ui/render-port/components.ts";

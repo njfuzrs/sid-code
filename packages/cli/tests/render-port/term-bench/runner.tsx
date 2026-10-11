@@ -12,9 +12,15 @@
  */
 import { writeSync } from "node:fs";
 import { PassThrough } from "node:stream";
-import { SCENARIOS, type ScenarioCtx } from "./scenarios.tsx";
-import { ENGINE_SCENARIOS } from "./engine-scenarios.tsx";
-import { COMPONENT_SCENARIOS } from "./component-scenarios.tsx";
+import type { ScenarioCtx } from "./scenarios.tsx";
+
+// 平台相关的渲染（如 figures.ts 的 BULLET：darwin 是 ⏺、其余是 ●）在模块加载时定值，
+// 所以必须在加载场景之前钉住平台，场景模块因此改成动态 import。
+if (process.env.BENCH_PLATFORM)
+  Object.defineProperty(process, "platform", { value: process.env.BENCH_PLATFORM });
+const { SCENARIOS } = await import("./scenarios.tsx");
+const { ENGINE_SCENARIOS } = await import("./engine-scenarios.tsx");
+const { COMPONENT_SCENARIOS } = await import("./component-scenarios.tsx");
 
 const name = process.argv[2]!;
 // S* 是 App 级场景（基线文件），E* 是引擎级场景（T3.2）、C* 是组件级场景（T4.2），后两者两套底座当场比较

@@ -114,14 +114,12 @@ sc-dev                # 启动开发版
 bun test              # 全量单测
 ```
 
-> ⚠️ **新克隆必须先跑 `bun run vendor:fetch`**。两个目录
-> （`packages/tui-renderer/src/` 与 `packages/cli/src/command/commands/claude-api/reference/`）
-> **不入库但是编译期依赖**，缺了它们编译直接失败
-> （`Cannot find module '@sid-code/tui-renderer/...'`）。
+> ⚠️ **新克隆必须先跑 `bun run vendor:fetch`**。`packages/cli/src/command/commands/claude-api/reference/`
+> **不入库但是编译期依赖**，缺了它编译直接失败。
 > `make build` 会自动跑这一步，但**单独跑 `bun test` 不会** —— 克隆后先手动跑一次。
 > 机制与入库的 `ripgrep` 同源：本地有则用本地，缺失则下载 + sha256 校验。
 >
-> 这两个路径是**指向 `.vendor-src/` 的 symlink**，真实字节存在那里。该路径不在任何
+> 这个路径是**指向 `.vendor-src/` 的 symlink**，真实字节存在那里。该路径不在任何
 > git ref 里，所以 `checkout` / `merge` / `reset` 都删不掉这些文件（`git checkout -f`
 > 可能把 symlink 换掉，但 `bun run vendor:fetch` 会不联网复原）。
 > 机理与三条不能破的约束见 [CONTRIBUTING.md](./CONTRIBUTING.md#新克隆必须先-bun-run-vendorfetch)。

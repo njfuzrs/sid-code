@@ -1,0 +1,280 @@
+{
+  "scenario": "C1",
+  "exitCode": 0,
+  "total": {
+    "bytes": 599,
+    "eraseScreen": 0,
+    "eraseScrollback": 0,
+    "syncBegin": 5,
+    "syncEnd": 5,
+    "altEnter": 0,
+    "altExit": 0,
+    "osc": {
+      "9": 1,
+      "21337": 1
+    }
+  },
+  "notes": {},
+  "steps": [
+    {
+      "label": "用户消息",
+      "buffer": "normal",
+      "cursor": {
+        "x": 0,
+        "y": 6,
+        "hidden": true
+      },
+      "modes": {
+        "bracketedPaste": false,
+        "mouseTracking": "none",
+        "sendFocus": false,
+        "wraparound": true
+      },
+      "metrics": {
+        "bytes": 113,
+        "eraseScreen": 0,
+        "eraseScrollback": 0,
+        "syncBegin": 1,
+        "syncEnd": 1,
+        "altEnter": 0,
+        "altExit": 0,
+        "osc": {}
+      },
+      "screen": ["", "> 看一下 README", "", "", "思考中…"],
+      "scrollback": [],
+      "styled": [
+        {
+          "y": 1,
+          "runs": [
+            {
+              "text": ">",
+              "style": "fg=#cba6f7"
+            },
+            {
+              "text": "看一下",
+              "style": "fg=#cdd6f4"
+            },
+            {
+              "text": "README",
+              "style": "fg=#cdd6f4"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "label": "工具执行中",
+      "buffer": "normal",
+      "cursor": {
+        "x": 0,
+        "y": 8,
+        "hidden": true
+      },
+      "modes": {
+        "bracketedPaste": false,
+        "mouseTracking": "none",
+        "sendFocus": false,
+        "wraparound": true
+      },
+      "metrics": {
+        "bytes": 151,
+        "eraseScreen": 0,
+        "eraseScrollback": 0,
+        "syncBegin": 1,
+        "syncEnd": 1,
+        "altEnter": 0,
+        "altExit": 0,
+        "osc": {}
+      },
+      "screen": ["", "> 看一下 README", "", "", "⏺ read_file read_file 参数 2", "", "思考中…"],
+      "scrollback": [],
+      "styled": [
+        {
+          "y": 1,
+          "runs": [
+            {
+              "text": ">",
+              "style": "fg=#cba6f7"
+            },
+            {
+              "text": "看一下",
+              "style": "fg=#cdd6f4"
+            },
+            {
+              "text": "README",
+              "style": "fg=#cdd6f4"
+            }
+          ]
+        },
+        {
+          "y": 4,
+          "runs": [
+            {
+              "text": "⏺",
+              "style": "fg=#89b4fa"
+            },
+            {
+              "text": "read_file",
+              "style": "fg=#cdd6f4 b"
+            },
+            {
+              "text": "read_file 参数 2",
+              "style": "fg=#6c7086"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "label": "工具完成（原地 reconcile）",
+      "buffer": "normal",
+      "cursor": {
+        "x": 0,
+        "y": 8,
+        "hidden": true
+      },
+      "modes": {
+        "bracketedPaste": false,
+        "mouseTracking": "none",
+        "sendFocus": false,
+        "wraparound": true
+      },
+      "metrics": {
+        "bytes": 62,
+        "eraseScreen": 0,
+        "eraseScrollback": 0,
+        "syncBegin": 1,
+        "syncEnd": 1,
+        "altEnter": 0,
+        "altExit": 0,
+        "osc": {}
+      },
+      "screen": ["", "> 看一下 README", "", "", "⏺ read_file read_file 参数 2", "", "回答中…"],
+      "scrollback": [],
+      "styled": [
+        {
+          "y": 1,
+          "runs": [
+            {
+              "text": ">",
+              "style": "fg=#cba6f7"
+            },
+            {
+              "text": "看一下",
+              "style": "fg=#cdd6f4"
+            },
+            {
+              "text": "README",
+              "style": "fg=#cdd6f4"
+            }
+          ]
+        },
+        {
+          "y": 4,
+          "runs": [
+            {
+              "text": "⏺",
+              "style": "fg=#a6e3a1"
+            },
+            {
+              "text": "read_file",
+              "style": "fg=#cdd6f4 b"
+            },
+            {
+              "text": "read_file 参数 2",
+              "style": "fg=#6c7086"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "label": "回答进历史",
+      "buffer": "normal",
+      "cursor": {
+        "x": 0,
+        "y": 9,
+        "hidden": true
+      },
+      "modes": {
+        "bracketedPaste": false,
+        "mouseTracking": "none",
+        "sendFocus": false,
+        "wraparound": true
+      },
+      "metrics": {
+        "bytes": 124,
+        "eraseScreen": 0,
+        "eraseScrollback": 0,
+        "syncBegin": 1,
+        "syncEnd": 1,
+        "altEnter": 0,
+        "altExit": 0,
+        "osc": {}
+      },
+      "screen": [
+        "",
+        "> 看一下 README",
+        "",
+        "",
+        "⏺ read_file read_file 参数 2",
+        "",
+        "⏺ README 讲的是安装与用法。"
+      ],
+      "scrollback": [],
+      "styled": [
+        {
+          "y": 1,
+          "runs": [
+            {
+              "text": ">",
+              "style": "fg=#cba6f7"
+            },
+            {
+              "text": "看一下",
+              "style": "fg=#cdd6f4"
+            },
+            {
+              "text": "README",
+              "style": "fg=#cdd6f4"
+            }
+          ]
+        },
+        {
+          "y": 4,
+          "runs": [
+            {
+              "text": "⏺",
+              "style": "fg=#a6e3a1"
+            },
+            {
+              "text": "read_file",
+              "style": "fg=#cdd6f4 b"
+            },
+            {
+              "text": "read_file 参数 2",
+              "style": "fg=#6c7086"
+            }
+          ]
+        },
+        {
+          "y": 6,
+          "runs": [
+            {
+              "text": "⏺",
+              "style": "fg=#89b4fa"
+            },
+            {
+              "text": "安装",
+              "style": "b"
+            },
+            {
+              "text": "用法",
+              "style": "fg=#94e2d5"
+            }
+          ]
+        }
+      ]
+    }
+  ]
+}

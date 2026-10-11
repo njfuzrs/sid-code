@@ -230,21 +230,11 @@ __pycache__/
 # 它每次都出现在 `git status` 里，而 harbor 目录下**真的**会有别人的在途文件。
 /evals/external-benchmarks/harbor/.ruff_cache/
 
-# ─── vendor 进来的终端渲染底座（不入库、不推远端） ─────────────────────────
-# packages/tui-renderer/src/ 是 fork 进来的第三方渲染代码，本仓不再把它纳入版本控制。
-#
-# ⚠️ 两件必须知道的事，不然会误判：
-# 1. **gitignore 只挡「未追踪」的文件。** 这些文件此前是已追踪状态，
-#    是先跑了 `git rm -r --cached packages/tui-renderer/src` 撤销追踪，这条才生效。
-#    以后若有人 `git add -f`，仍然能强行入库 —— ignore 不是权限控制。
-# 2. **文件仍在磁盘上，构建依赖它。** `packages/cli/src` 下 102 个文件从
-#    `@sid-code/tui-renderer` 导入，缺了它 `make build` 直接失败。
-#    所以这不是「删掉」，是「本地保留、不入库」。
-#    ⇒ 新克隆一份仓库是**构建不出来的**，需要另外拿到这个目录。
-# ⚠️ 不带尾斜杠：这个路径现在是**指向 .vendor-src/ 的 symlink**，而尾斜杠形态
-# （`.../src/`）只匹配目录、**不匹配 symlink** —— 实测加了尾斜杠时
-# `git check-ignore` 不命中，两个 symlink 会出现在 git status 里并可能被
-# `git add -A` 入库。两种形态都要挡，所以写成不带尾斜杠的。
+# ─── 旧终端渲染底座的残留（B9 / T9.1 已删除） ─────────────────────────────
+# 旧底座 packages/tui-renderer/ 已从仓库与构建链移除，渲染底座只剩 packages/tui。
+# 老克隆里那个指向 .vendor-src/ 的 symlink 不在 git 里，切到新版本后会原样留着
+# （`bun run vendor:fetch` 会清掉它）。这条规则留着，防它在清掉之前被 `git add -A` 带进库。
+# ⚠️ 不带尾斜杠：尾斜杠形态只匹配目录、**不匹配 symlink**（实测 `git check-ignore` 不命中）。
 /packages/tui-renderer/src
 
 # ─── 入库的第三方 API 参考资料（不入库、不推远端） ───────────────────────────
@@ -253,7 +243,7 @@ __pycache__/
 # ⚠️ 它们是**编译期依赖**，不是普通参考资料：
 # `packages/cli/src/command/commands/claude-api/claude-api.ts` 用 Bun 的
 # `with { type: "text" }` 把原文内联进单二进制，缺了就编译不过。
-# 与上面 tui-renderer 那条同理：本地保留、不入库，新克隆需另外拿到。
+# 本地保留、不入库，新克隆跑 `bun run vendor:fetch` 取回（`make build` 会自动跑）。
 # 同上：不带尾斜杠，才能同时挡住真目录与 symlink 两种形态。
 /packages/cli/src/command/commands/claude-api/reference
 

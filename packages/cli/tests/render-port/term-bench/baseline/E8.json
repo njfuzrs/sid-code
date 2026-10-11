@@ -1,0 +1,287 @@
+{
+  "scenario": "E8",
+  "exitCode": 0,
+  "total": {
+    "bytes": 1125,
+    "eraseScreen": 3,
+    "eraseScrollback": 3,
+    "syncBegin": 7,
+    "syncEnd": 7,
+    "altEnter": 0,
+    "altExit": 0,
+    "osc": {
+      "9": 1,
+      "21337": 1
+    }
+  },
+  "notes": {},
+  "steps": [
+    {
+      "label": "初始",
+      "buffer": "normal",
+      "cursor": {
+        "x": 0,
+        "y": 5,
+        "hidden": true
+      },
+      "modes": {
+        "bracketedPaste": false,
+        "mouseTracking": "none",
+        "sendFocus": false,
+        "wraparound": true
+      },
+      "metrics": {
+        "bytes": 75,
+        "eraseScreen": 0,
+        "eraseScrollback": 0,
+        "syncBegin": 1,
+        "syncEnd": 1,
+        "altEnter": 0,
+        "altExit": 0,
+        "osc": {}
+      },
+      "screen": [
+        "左                                                                            右",
+        "行 0",
+        "行 1",
+        "行 2",
+        "行 3"
+      ],
+      "scrollback": [],
+      "styled": []
+    },
+    {
+      "label": "同 tick 三次变宽",
+      "buffer": "normal",
+      "cursor": {
+        "x": 0,
+        "y": 5,
+        "hidden": true
+      },
+      "modes": {
+        "bracketedPaste": false,
+        "mouseTracking": "none",
+        "sendFocus": false,
+        "wraparound": true
+      },
+      "metrics": {
+        "bytes": 80,
+        "eraseScreen": 1,
+        "eraseScrollback": 1,
+        "syncBegin": 1,
+        "syncEnd": 1,
+        "altEnter": 0,
+        "altExit": 0,
+        "osc": {}
+      },
+      "screen": [
+        "左                                                                  右",
+        "行 0",
+        "行 1",
+        "行 2",
+        "行 3"
+      ],
+      "scrollback": [],
+      "styled": []
+    },
+    {
+      "label": "尺寸不变的 resize",
+      "buffer": "normal",
+      "cursor": {
+        "x": 0,
+        "y": 5,
+        "hidden": true
+      },
+      "modes": {
+        "bracketedPaste": false,
+        "mouseTracking": "none",
+        "sendFocus": false,
+        "wraparound": true
+      },
+      "metrics": {
+        "bytes": 0,
+        "eraseScreen": 0,
+        "eraseScrollback": 0,
+        "syncBegin": 0,
+        "syncEnd": 0,
+        "altEnter": 0,
+        "altExit": 0,
+        "osc": {}
+      },
+      "screen": [
+        "左                                                                  右",
+        "行 0",
+        "行 1",
+        "行 2",
+        "行 3"
+      ],
+      "scrollback": [],
+      "styled": []
+    },
+    {
+      "label": "变矮",
+      "buffer": "normal",
+      "cursor": {
+        "x": 0,
+        "y": 5,
+        "hidden": true
+      },
+      "modes": {
+        "bracketedPaste": false,
+        "mouseTracking": "none",
+        "sendFocus": false,
+        "wraparound": true
+      },
+      "metrics": {
+        "bytes": 80,
+        "eraseScreen": 1,
+        "eraseScrollback": 1,
+        "syncBegin": 1,
+        "syncEnd": 1,
+        "altEnter": 0,
+        "altExit": 0,
+        "osc": {}
+      },
+      "screen": [
+        "左                                                                  右",
+        "行 0",
+        "行 1",
+        "行 2",
+        "行 3"
+      ],
+      "scrollback": [],
+      "styled": []
+    },
+    {
+      "label": "变高",
+      "buffer": "normal",
+      "cursor": {
+        "x": 0,
+        "y": 5,
+        "hidden": true
+      },
+      "modes": {
+        "bracketedPaste": false,
+        "mouseTracking": "none",
+        "sendFocus": false,
+        "wraparound": true
+      },
+      "metrics": {
+        "bytes": 0,
+        "eraseScreen": 0,
+        "eraseScrollback": 0,
+        "syncBegin": 0,
+        "syncEnd": 0,
+        "altEnter": 0,
+        "altExit": 0,
+        "osc": {}
+      },
+      "screen": [
+        "左                                                                  右",
+        "行 0",
+        "行 1",
+        "行 2",
+        "行 3"
+      ],
+      "scrollback": [],
+      "styled": []
+    },
+    {
+      "label": "变高后改行",
+      "buffer": "normal",
+      "cursor": {
+        "x": 0,
+        "y": 5,
+        "hidden": true
+      },
+      "modes": {
+        "bracketedPaste": false,
+        "mouseTracking": "none",
+        "sendFocus": false,
+        "wraparound": true
+      },
+      "metrics": {
+        "bytes": 29,
+        "eraseScreen": 0,
+        "eraseScrollback": 0,
+        "syncBegin": 1,
+        "syncEnd": 1,
+        "altEnter": 0,
+        "altExit": 0,
+        "osc": {}
+      },
+      "screen": [
+        "左                                                                  右",
+        "行 0",
+        "行 1",
+        "行 2",
+        "改了"
+      ],
+      "scrollback": [],
+      "styled": []
+    },
+    {
+      "label": "溢出态变矮",
+      "buffer": "normal",
+      "cursor": {
+        "x": 0,
+        "y": 19,
+        "hidden": true
+      },
+      "modes": {
+        "bracketedPaste": false,
+        "mouseTracking": "none",
+        "sendFocus": false,
+        "wraparound": true
+      },
+      "metrics": {
+        "bytes": 712,
+        "eraseScreen": 1,
+        "eraseScrollback": 1,
+        "syncBegin": 2,
+        "syncEnd": 2,
+        "altEnter": 0,
+        "altExit": 0,
+        "osc": {}
+      },
+      "screen": [
+        "行 13",
+        "行 14",
+        "行 15",
+        "行 16",
+        "行 17",
+        "行 18",
+        "行 19",
+        "行 20",
+        "行 21",
+        "行 22",
+        "行 23",
+        "行 24",
+        "行 25",
+        "行 26",
+        "行 27",
+        "行 28",
+        "行 29",
+        "行 30",
+        "行 31"
+      ],
+      "scrollback": [
+        "左                                                                  右",
+        "行 0",
+        "行 1",
+        "行 2",
+        "行 3",
+        "行 4",
+        "行 5",
+        "行 6",
+        "行 7",
+        "行 8",
+        "行 9",
+        "行 10",
+        "行 11",
+        "行 12"
+      ],
+      "styled": []
+    }
+  ]
+}

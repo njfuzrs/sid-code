@@ -187,12 +187,10 @@ jobs:
         run: bun install --frozen-lockfile
 
       # ⚠️ 这一步不能省，也不能加 `continue-on-error`。
-      # `packages/tui-renderer/src/` 与 `.../claude-api/reference/` **不入库**（见 .gitignore），
-      # 但它们是**编译期依赖**：前者被 packages/cli/src 下 102 个文件按
-      # `@sid-code/tui-renderer/*` 导入，后者被 claude-api.ts 用 `with { type: "text" }` 内联。
-      # 不取回来的实测后果是**全红**（2026-09-04 新仓首批 4 个 dependabot PR）：
-      #   Cannot find module '@sid-code/tui-renderer/stringWidth.ts'
-      #   ENOENT: no such file or directory, scandir '.../packages/tui-renderer/src'
+      # `.../claude-api/reference/` **不入库**（见 .gitignore），但它是**编译期依赖**：
+      # claude-api.ts 用 `with { type: "text" }` 把它内联进二进制，缺了编译不过。
+      # （B9 / T9.1 之前这里还取旧渲染底座 packages/tui-renderer/src，2026-09-04 新仓首批
+      #  4 个 dependabot PR 全红就是缺它；旧底座删除后只剩 claude-api reference 一项。）
       # 机制与仓内 ripgrep 同源（fetch-ripgrep.ts）：本地有则跳过，缺失则下载 + sha256 校验。
       - name: 取回 vendor 源码（不入库的编译期依赖）
         run: bun run vendor:fetch
@@ -255,12 +253,10 @@ jobs:
         run: bun install --frozen-lockfile
 
       # ⚠️ 这一步不能省，也不能加 `continue-on-error`。
-      # `packages/tui-renderer/src/` 与 `.../claude-api/reference/` **不入库**（见 .gitignore），
-      # 但它们是**编译期依赖**：前者被 packages/cli/src 下 102 个文件按
-      # `@sid-code/tui-renderer/*` 导入，后者被 claude-api.ts 用 `with { type: "text" }` 内联。
-      # 不取回来的实测后果是**全红**（2026-09-04 新仓首批 4 个 dependabot PR）：
-      #   Cannot find module '@sid-code/tui-renderer/stringWidth.ts'
-      #   ENOENT: no such file or directory, scandir '.../packages/tui-renderer/src'
+      # `.../claude-api/reference/` **不入库**（见 .gitignore），但它是**编译期依赖**：
+      # claude-api.ts 用 `with { type: "text" }` 把它内联进二进制，缺了编译不过。
+      # （B9 / T9.1 之前这里还取旧渲染底座 packages/tui-renderer/src，2026-09-04 新仓首批
+      #  4 个 dependabot PR 全红就是缺它；旧底座删除后只剩 claude-api reference 一项。）
       # 机制与仓内 ripgrep 同源（fetch-ripgrep.ts）：本地有则跳过，缺失则下载 + sha256 校验。
       - name: 取回 vendor 源码（不入库的编译期依赖）
         run: bun run vendor:fetch
@@ -277,7 +273,7 @@ jobs:
       - name: oxfmt
         run: bun run format:check
 
-      # P2-2 步骤6：包边界（shared(0) < tui-renderer(1) < core(2) < cli(3)）。
+      # P2-2 步骤6：包边界（shared(0) < tui(1) < core(2) < cli(3)）。
       # 与 lint 同 job：都是几百毫秒的静态检查，没必要各起一次 checkout + bun install。
       #
       # 为什么不只依赖 pre-commit：hook 装在本地、可被 --no-verify 跳过，
