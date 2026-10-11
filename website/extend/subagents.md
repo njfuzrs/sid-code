@@ -119,38 +119,32 @@ sid-code agents --json   # 机器可读
 | 2 | `subAgentModels[类型]` | 按类型显式配置，永远优先 |
 | 3 | `subAgentModels.default` | 你的兜底默认 |
 | 4 | agent 定义里的 `model` | 自定义 agent 的 frontmatter |
-| 5 | 语义档位（`modelTier`） | 从 `availableModels` 的价格自动派生 |
-| 6 | 主模型 | 兜底，配错绝不会变更贵 |
+| 5 | 语义档位（`modelTier`） | **只**读环境变量 `SID_CHEAP_MODEL` / `SID_STRONG_MODEL` |
+| 6 | 主模型 | 以上都没配时的默认 |
 
-### 零配置也已经在省钱了
+### 没配就跟主模型
 
-第 5 层是自动的。实测：主模型 `claude-sonnet-5`，`availableModels` 里还有更便宜的
-`glm-5.2`，**完全不配 `subAgentModels`** 时的实际派发：
+**完全不配 `subAgentModels`、也没设档位环境变量**时，所有子代理都用主模型：
+sid-code 不会替你从 `availableModels` 里挑一个。
 
-```text
-explore          → glm-5.2          ← 自动降到便宜档
-plan             → glm-5.2          ← 自动降
-summarize        → glm-5.2          ← 自动降
-task             → claude-sonnet-5
-verify           → claude-sonnet-5
-general-purpose  → claude-sonnet-5
-```
-
-`explore` / `plan` / `summarize` 三类被标成 cheap 档，自动挑 `availableModels` 里最便宜的。
-`task` / `verify` 要真干活或做判断，留在主模型。
-
-档位派生不硬编码模型名单，而是**按 `availableModels` 里的 input 单价排序**。
-所以要让它生效，`availableModels` 得配全（配置见[配置 LLM Provider](/start/configure)）。
-想手动指定档位模型用环境变量：
+`availableModels` 是「你配过的模型」，不是「此刻能用的模型」。曾经的版本会按单价
+自动给 explore / plan / summarize 挑最便宜的那个，结果挑中一个在用户网关分组下
+没有渠道的模型，子代理起步就全失败，而用户从没选过它、也不知道是它。
+所以现在省钱必须是**你显式选的**：
 
 ```bash
+# explore / plan / summarize（cheap 档）统一换模型
 export SID_CHEAP_MODEL=glm-5.2
+# 声明了 modelTier: strong 的自定义 agent 用这个
 export SID_STRONG_MODEL=claude-opus-5
 ```
 
-::: tip 派生绝不会让你变贵
-cheap 档如果算出来比主模型还贵（或就是主模型自己），就直接回退主模型而不是硬用。
-配错方向的后果是「没省到」，不是「更贵了」。
+或者用上面的 `subAgentModels` 按类型精确配置（优先级更高）。
+
+::: tip 连接跟着模型走
+无论模型是怎么选出来的（配置、环境变量、单次调用指定），请求都会发给**该模型**在
+`availableModels` 里声明的 provider / baseURL / apiKey。主模型走 OpenAI 兼容网关、
+子代理模型走 Anthropic 直连这种跨协议组合是支持的。
 :::
 
 ## 写自己的子代理
@@ -186,7 +180,7 @@ frontmatter 可用字段：
 | `description` | **必填**。模型据此判断什么时候该派它，写清楚触发场景 |
 | `tools` | 工具白名单。**收窄工具集是最有效的约束**——只给 read/grep 它就不可能改文件 |
 | `model` | 固定用某个模型；`inherit` 或留空 = 跟主模型 |
-| `modelTier` | `cheap` / `strong` / `default`，让它自动挑档位 |
+| `modelTier` | `cheap` / `strong` / `default`，映射到 `SID_CHEAP_MODEL` / `SID_STRONG_MODEL`；没设就跟主模型 |
 | `color` | UI 区分色 |
 | `permissionMode` | 该 agent 专用的权限模式 |
 | `background` | 是否默认后台执行 |

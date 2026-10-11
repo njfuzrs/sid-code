@@ -356,13 +356,13 @@ export class AnthropicProvider implements Provider {
           http_status: response.status,
           content_type: contentType,
           ttfb_ms: ttfbMs,
-          model: this._model,
+          model: params.model ?? this._model,
         });
         emitHttpConnected(obsIndex, {
           status: response.status,
           content_type: contentType,
           ttfb_ms: ttfbMs,
-          model: this._model,
+          model: params.model ?? this._model,
         });
       } catch {
         /* 可观测性 emit 失败绝不影响主流程 */
@@ -424,7 +424,7 @@ export class AnthropicProvider implements Provider {
               // OpenAI 族做不到（usage 在流尾部），只能在 completed 阶段补 emit。
               emitStreamPhase(currentSseDumpContext().turnIndex, "first_content", {
                 ttft_ms: ttftMs,
-                model: this._model,
+                model: params.model ?? this._model,
                 provider: this.name(),
                 ...cacheDimsFor(ttftCacheRead),
               });
@@ -463,7 +463,7 @@ export class AnthropicProvider implements Provider {
                   : LIFECYCLE_PRESETS.mainLoop.idleTimeoutMs;
             emitTimeoutFired(currentSseDumpContext().turnIndex, timeoutLayer, {
               threshold_ms: threshold,
-              model: this._model,
+              model: params.model ?? this._model,
               provider: this.name(),
             });
           } catch {
@@ -796,7 +796,10 @@ export class AnthropicProvider implements Provider {
       // 接入审计日志:连接/流式异常(含超时中断、ECONNRESET)是会话 hang/中断的关键信号。
       log.warn(
         "AUDIT:API",
-        `✗ Anthropic 请求异常 model=${this._model} err=${(err?.message ?? String(err)).slice(0, 200)}`,
+        // 必须打**本次请求**的模型：provider 实例按 (provider, baseURL) 缓存、构造时的
+        // _model 恒为主模型，子代理换模型复用同一实例 → 旧写法把子代理请求全记成主模型名
+        // （2026-10-11 事故排查时 haiku 的 503 被记成 model=主模型，直接误导归因）。
+        `✗ Anthropic 请求异常 model=${params.model ?? this._model} err=${(err?.message ?? String(err)).slice(0, 200)}`,
       );
       // § 从 SDK 抛出的 APIError 里还原结构化字段（缺陷 C 修复）
       //
@@ -975,7 +978,10 @@ export class AnthropicProvider implements Provider {
         signal ? { signal } : undefined,
       );
       billable = true;
-      emitHttpConnected(currentSseDumpContext().turnIndex, { status: 200, model: this._model });
+      emitHttpConnected(currentSseDumpContext().turnIndex, {
+        status: 200,
+        model: params.model ?? this._model,
+      });
 
       const content: ContentBlock[] = [];
       for (const block of (message as any).content ?? []) {

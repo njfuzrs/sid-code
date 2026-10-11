@@ -230,7 +230,7 @@ sid-code --bridge wss://relay.example.com/session/abc --bridge-token <token>
    `企业策略已禁用 Bridge 远程控制（settings 中 bridge.enabled = false）`
 2. **明文 `ws://` 默认拒绝**，要显式加 `--bridge-insecure` 才放行：
    `拒绝明文 Bridge 连接: ws://…  改用 wss:// ，或确认风险后显式加 --bridge-insecure。`
-3. **首次连某个地址要当面确认**。终端会列出这个地址和风险提示，确认后记住，下次不再问。
+3. **首次连某个地址要当面确认**。会弹一个 TUI 确认框列出这个地址和风险提示（与其余审批框同一套交互，默认聚焦「拒绝」，Esc 拒绝），确认后记住，下次不再问。
    记的是端点本身，URL 里的 query（常带 token）会被剥掉，不会落盘。
 4. **没有终端可问时 fail-closed**：首次连接却处在非交互环境（比如脚本里），直接拒绝，
    要先在交互式终端里跑一次完成确认。

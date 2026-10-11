@@ -1,15 +1,18 @@
 /**
- * P0-1：子代理语义模型档位（modelTier）派生 单测
+ * 子代理模型解析：**没有显式配置就跟主模型**，不做任何隐式选模型。
  *
- * 这是「更省」方向上直接影响成本的一段逻辑，必须锁住五级优先级与 fail-open 语义：
+ * 锁住的五级优先级：
  *   1. subAgentModels[type]（用户按类型配）
  *   2. subAgentModels.default（用户兜底）
  *   3. agentDef.model（frontmatter 显式）
- *   4. modelTier 档位派生（env > availableModels 按价排序）
- *   5. 主模型兜底
+ *   4. modelTier 档位 —— **只**读 SID_CHEAP_MODEL / SID_STRONG_MODEL
+ *   5. 主模型
  *
- * 铁律：不硬编码模型名（档位→模型由价格排序派生），且**绝不返回比主模型更贵的 cheap 档**，
- * 派生失败一律 fail-open 回退主模型而非报错。
+ * 回归背景（2026-10-11 事故）：旧第 4 层会在 availableModels 里按单价自动挑最便宜的。
+ * 用户主模型可用、从未配过子代理模型，explore 却被派到一个在其网关分组下无渠道的
+ * claude-haiku-5-5，5 个子代理零轮全灭，且用户根本不知道选中的是谁。
+ * 本文件的「价格表存在也不派生」用例就是那次事故的形态，**不要**为了"省钱"把它改回去——
+ * 想省钱请显式配 subAgentModels 或 SID_CHEAP_MODEL。
  */
 
 import { describe, test, expect, afterEach } from "bun:test";
@@ -48,85 +51,132 @@ afterEach(() => {
   clearDynamicAgents();
 });
 
-describe("内置 cheap 档代理按价派生到最便宜模型", () => {
-  test("explore/plan/summarize 走 cheap 档 → 最便宜模型", () => {
+describe("零配置：所有内置子代理都跟主模型（价格表存在也不派生）", () => {
+  test("explore/plan/summarize/task/verify/general-purpose → 主模型", () => {
     const r = new ProviderRegistry(pricedConfig());
-    for (const type of ["explore", "plan", "summarize"]) {
-      expect(r.getModelForSubAgent(type)).toBe("budget-model");
+    for (const type of ["explore", "plan", "summarize", "task", "verify", "general-purpose"]) {
+      expect(r.getModelForSubAgent(type)).toBe("main-model");
     }
   });
 
-  test("非 cheap 档代理（task）仍用主模型", () => {
-    const r = new ProviderRegistry(pricedConfig());
-    expect(r.getModelForSubAgent("task")).toBe("main-model");
+  test("事故形态：availableModels 里有更便宜的跨 provider 模型，也绝不被自动选中", () => {
+    // 复刻 2026-10-11：主模型 openai 族，表里有个单价更低的 anthropic 族模型
+    const r = new ProviderRegistry(
+      pricedConfig({
+        model: "origin-deepseek-v4-1-flash",
+        availableModels: [
+          {
+            name: "origin-deepseek-v4-1-flash",
+            provider: "openai",
+            pricing: { input: 0.27, output: 1.1 },
+          },
+          {
+            name: "claude-haiku-5-5",
+            provider: "anthropic",
+            baseURL: "https://other-gw",
+            pricing: { input: 0.1, output: 0.5 },
+          },
+        ],
+      }),
+    );
+    expect(r.getModelForSubAgent("explore")).toBe("origin-deepseek-v4-1-flash");
+    // 连接也必须是主模型的：spawn 配置不能偷偷换到 anthropic
+    const sc = r.getSpawnConfigForSubAgent("explore");
+    expect(sc.model).toBe("origin-deepseek-v4-1-flash");
+    expect(sc.providerName).toBe("openai");
   });
-});
 
-describe("env 档位覆盖（最高权威，不看价格表）", () => {
-  test("SID_CHEAP_MODEL 直接指定 cheap 档模型", () => {
-    process.env[CHEAP_KEY] = "my-tiny-model";
+  test("自定义 agent 只声明 modelTier=cheap/strong 且无环境变量 → 主模型", () => {
+    registerDynamicAgents([
+      {
+        agentType: "tier-cheap",
+        description: "d",
+        whenToUse: "w",
+        systemPrompt: "s",
+        modelTier: "cheap",
+      } as any,
+      {
+        agentType: "tier-strong",
+        description: "d",
+        whenToUse: "w",
+        systemPrompt: "s",
+        modelTier: "strong",
+      } as any,
+    ]);
     const r = new ProviderRegistry(pricedConfig());
-    expect(r.getModelForSubAgent("explore")).toBe("my-tiny-model");
+    expect(r.getModelForSubAgent("tier-cheap")).toBe("main-model");
+    expect(r.getModelForSubAgent("tier-strong")).toBe("main-model");
   });
 
-  test("SID_STRONG_MODEL 只作用于 strong 档，不影响 cheap 档代理", () => {
-    process.env[STRONG_KEY] = "my-big-model";
-    const r = new ProviderRegistry(pricedConfig());
-    // explore 是 cheap 档，不受 STRONG 影响
-    expect(r.getModelForSubAgent("explore")).toBe("budget-model");
-  });
-});
-
-describe("fail-open：派生不出就回退主模型，绝不报错也绝不更贵", () => {
-  test("无 availableModels → 回退主模型", () => {
+  test("无 availableModels → 主模型", () => {
     const r = new ProviderRegistry(pricedConfig({ availableModels: [] }));
     expect(r.getModelForSubAgent("explore")).toBe("main-model");
   });
 
-  test("模型表无定价信息 → 回退主模型", () => {
-    const r = new ProviderRegistry(
-      pricedConfig({
-        // 刻意不给 pricing，且用不在内置价格表里的名字
-        availableModels: [
-          { name: "zzz-unknown-a", provider: "openai" },
-          { name: "main-model", provider: "openai" },
-        ],
-      }),
-    );
-    // 派生不出可靠价格时不乱选，回退主模型
+  test("未知 agent 类型 → 主模型（不抛）", () => {
+    const r = new ProviderRegistry(pricedConfig());
+    expect(r.getModelForSubAgent("no-such-agent")).toBe("main-model");
+  });
+});
+
+describe("档位只认显式环境变量", () => {
+  test("SID_CHEAP_MODEL 作用于 cheap 档代理（explore/plan/summarize）", () => {
+    process.env[CHEAP_KEY] = "my-tiny-model";
+    const r = new ProviderRegistry(pricedConfig());
+    for (const type of ["explore", "plan", "summarize"]) {
+      expect(r.getModelForSubAgent(type)).toBe("my-tiny-model");
+    }
+    // 非 cheap 档不受影响
+    expect(r.getModelForSubAgent("task")).toBe("main-model");
+  });
+
+  test("SID_STRONG_MODEL 只作用于 strong 档，cheap 档代理仍跟主模型", () => {
+    process.env[STRONG_KEY] = "my-big-model";
+    registerDynamicAgents([
+      {
+        agentType: "heavy",
+        description: "d",
+        whenToUse: "w",
+        systemPrompt: "s",
+        modelTier: "strong",
+      } as any,
+    ]);
+    const r = new ProviderRegistry(pricedConfig());
+    expect(r.getModelForSubAgent("heavy")).toBe("my-big-model");
     expect(r.getModelForSubAgent("explore")).toBe("main-model");
   });
 
-  test("最便宜的就是主模型本身 → 不派生，回退主模型", () => {
-    const r = new ProviderRegistry(
-      pricedConfig({
-        model: "budget-model", // 主模型已是最便宜的
-      }),
-    );
-    expect(r.getModelForSubAgent("explore")).toBe("budget-model");
+  test("空白环境变量视同未设", () => {
+    process.env[CHEAP_KEY] = "   ";
+    const r = new ProviderRegistry(pricedConfig());
+    expect(r.getModelForSubAgent("explore")).toBe("main-model");
   });
 
-  test("候选比主模型贵/相等 → 拒绝派生（cheap 档绝不更贵）", () => {
-    const r = new ProviderRegistry(
-      pricedConfig({
-        model: "cheapest-main",
-        availableModels: [
-          { name: "cheapest-main", provider: "openai", pricing: { input: 0.05, output: 0.2 } },
-          { name: "pricier", provider: "openai", pricing: { input: 9, output: 30 } },
-        ],
-      }),
-    );
-    expect(r.getModelForSubAgent("explore")).toBe("cheapest-main");
+  test("modelTier=default → 主模型（环境变量也不生效）", () => {
+    process.env[CHEAP_KEY] = "my-tiny-model";
+    registerDynamicAgents([
+      {
+        agentType: "plain",
+        description: "d",
+        whenToUse: "w",
+        systemPrompt: "s",
+        modelTier: "default",
+      } as any,
+    ]);
+    const r = new ProviderRegistry(pricedConfig());
+    expect(r.getModelForSubAgent("plain")).toBe("main-model");
   });
 });
 
 describe("五级优先级", () => {
-  test("用户按类型配置 > 档位派生", () => {
+  test("用户按类型配置 > 环境变量档位", () => {
+    process.env[CHEAP_KEY] = "env-cheap";
     const r = new ProviderRegistry(pricedConfig(), { explore: "user-pick" });
     expect(r.getModelForSubAgent("explore")).toBe("user-pick");
   });
 
-  test("用户 default 兜底 > 档位派生", () => {
+  test("用户 default 兜底 > 环境变量档位", () => {
+    process.env[CHEAP_KEY] = "env-cheap";
     const r = new ProviderRegistry(pricedConfig(), { default: "user-default" });
     expect(r.getModelForSubAgent("explore")).toBe("user-default");
   });
@@ -139,7 +189,8 @@ describe("五级优先级", () => {
     expect(r.getModelForSubAgent("explore")).toBe("by-type");
   });
 
-  test("agentDef.model（frontmatter）> 档位派生", () => {
+  test("agentDef.model（frontmatter）> 环境变量档位", () => {
+    process.env[CHEAP_KEY] = "env-cheap";
     registerDynamicAgents([
       {
         agentType: "my-agent",
@@ -154,50 +205,9 @@ describe("五级优先级", () => {
     expect(r.getModelForSubAgent("my-agent")).toBe("frontmatter-model");
   });
 
-  test("自定义 agent 只声明 modelTier=cheap → 按价派生", () => {
-    registerDynamicAgents([
-      {
-        agentType: "tier-only",
-        description: "d",
-        whenToUse: "w",
-        systemPrompt: "s",
-        modelTier: "cheap",
-      } as any,
-    ]);
+  test("CLAUDE_CODE_SUBAGENT_MODEL 作为 default 兜底仍生效", () => {
+    process.env[CC_KEY] = "cc-model";
     const r = new ProviderRegistry(pricedConfig());
-    expect(r.getModelForSubAgent("tier-only")).toBe("budget-model");
-  });
-
-  test("modelTier=strong → 派生到最贵模型", () => {
-    registerDynamicAgents([
-      {
-        agentType: "heavy",
-        description: "d",
-        whenToUse: "w",
-        systemPrompt: "s",
-        modelTier: "strong",
-      } as any,
-    ]);
-    const r = new ProviderRegistry(pricedConfig());
-    expect(r.getModelForSubAgent("heavy")).toBe("premium-model");
-  });
-
-  test("modelTier=default → 不派生，用主模型", () => {
-    registerDynamicAgents([
-      {
-        agentType: "plain",
-        description: "d",
-        whenToUse: "w",
-        systemPrompt: "s",
-        modelTier: "default",
-      } as any,
-    ]);
-    const r = new ProviderRegistry(pricedConfig());
-    expect(r.getModelForSubAgent("plain")).toBe("main-model");
-  });
-
-  test("未知 agent 类型 → 主模型兜底（不抛）", () => {
-    const r = new ProviderRegistry(pricedConfig());
-    expect(r.getModelForSubAgent("no-such-agent")).toBe("main-model");
+    expect(r.getModelForSubAgent("explore")).toBe("cc-model");
   });
 });

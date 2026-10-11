@@ -34,6 +34,7 @@ import { RewindDialog } from "./RewindDialog.tsx";
 import { ClaudeMdExternalImportDialog } from "./ClaudeMdExternalImportDialog.tsx";
 import { ConflictDialog } from "./ConflictDialog.tsx";
 import { TrustDialog } from "./TrustDialog.tsx";
+import { ExtensionTrustDialog } from "./ExtensionTrustDialog.tsx";
 import { McpApprovalQueue } from "./McpApprovalDialog.tsx";
 import { CommandOutputDialog, type CommandPanelInfo } from "./CommandOutputDialog.tsx";
 import type { OnboardingResult } from "./OnboardingDialog.tsx";
@@ -290,6 +291,25 @@ export const DialogSwitch: React.FC<DialogSwitchProps> = ({
           onDialogClose();
         }}
         onClose={onDialogClose}
+      />
+    );
+  }
+  // 项目级扩展信任（原 TUI 启动前的终端 y/N）。Esc = 不信任。
+  if (activeDialog === "extension-trust") {
+    const items = callbacks.getPendingExtensionTrust?.() ?? [];
+    if (items.length === 0) return null;
+    return (
+      <ExtensionTrustDialog
+        items={items}
+        workspacePath={cwd}
+        onDecision={async (approved) => {
+          await callbacks.onExtensionTrustDecision?.(approved);
+          onDialogClose();
+        }}
+        onClose={async () => {
+          await callbacks.onExtensionTrustDecision?.(false);
+          onDialogClose();
+        }}
       />
     );
   }

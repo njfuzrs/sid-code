@@ -30,7 +30,8 @@ export interface AgentDefinition {
    * 语义模型档位（P0-1，对齐 CC 给 Explore pin haiku 的成本设计）。
    * "cheap" 高频只读代理（explore/plan/summarize）省 token；"strong" 需最强模型；"default" 跟主模型。
    * 不硬编码模型名（铁律 feedback-no-hardcoded-model-tier-rules）——档位→实际模型由
-   * registry.getModelForSubAgent 从「已注册模型按价格排序 + 环境变量」派生，fail-open 回退主模型。
+   * registry.getModelForSubAgent **只**按环境变量 SID_CHEAP_MODEL / SID_STRONG_MODEL 映射，
+   * 没设就跟主模型——不按价格表自动挑（挑中网关不可用的模型会让子代理零轮失败，见 registry.ts）。
    * 优先级：task.model 每次调用覆盖 > subAgentModels[type] 用户配置 > model 字段 > modelTier 档位 > 主模型。
    */
   modelTier?: "cheap" | "default" | "strong";
