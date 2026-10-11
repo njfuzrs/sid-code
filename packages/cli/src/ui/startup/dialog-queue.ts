@@ -1,8 +1,11 @@
 /**
- * 首屏对话框队列：onboarding > 信任门控 > 外部 @import 审批 > MCP 启动审批。
+ * 首屏对话框队列：onboarding > 信任门控 > 项目扩展信任 > 外部 @import 审批 > MCP 启动审批。
  *
  * 信任排在 @import 之前——信任是"这个项目能不能执行东西"的前置问题，
  * 比"要不要展开某个 import"更根本（SEC-AUDIT-2026-07-19 P1）。
+ *
+ * 项目扩展信任紧跟工作区信任：两者回答的是同一类问题（仓库带来的东西能不能执行），
+ * 此前它在 TUI 起来之前用终端 `[y/N]` 问，样式与其余审批框不统一。
  *
  * 首屏一次只能挂一个对话框。旧实现关掉信任框 / @import 框就把 activeDialog 置 null，
  * 排在后面的 MCP 启动审批框整个会话都不再出现。所以关闭时要问队列「下一个是谁」。
@@ -12,6 +15,7 @@ import type { DialogType } from "@sid-code/core/command-contract/types.ts";
 export const STARTUP_DIALOG_QUEUE = [
   "onboarding",
   "trust",
+  "extension-trust",
   "claude-md-external-imports",
   "mcp-approval",
 ] as const satisfies readonly DialogType[];

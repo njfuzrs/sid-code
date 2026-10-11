@@ -1033,28 +1033,6 @@ export function setLastApp(app: import("./app.ts").App): void {
 }
 
 /** 全局异常兜底处理器 */
-/**
- * 极简 yes/no 交互确认（走 stdin，不依赖 TUI）。
- *
- * 为什么不复用 TUI 的确认组件：这里是**建连之前**、TUI 还没起来的时刻，
- * 而 Bridge 模式根本不进 TUI（它是与 runTUI / runHeadless 平级的第三种形态）。
- *
- * 默认答案是 **no**：空回车、EOF、读取出错一律当拒绝。准入这类判定必须
- * fail-closed —— 默认放行等于没有这道门。
- */
-async function promptYesNo(message: string): Promise<boolean> {
-  const { createInterface } = await import("node:readline/promises");
-  const rl = createInterface({ input: process.stdin, output: process.stderr });
-  try {
-    const answer = await rl.question(`${message}\n\n继续吗？[y/N] `);
-    return /^y(es)?$/i.test(answer.trim());
-  } catch {
-    return false; // EOF / 中断 → 拒绝
-  } finally {
-    rl.close();
-  }
-}
-
 function registerGlobalErrorHandlers(): void {
   process.on("unhandledRejection", (reason: unknown, _promise: Promise<unknown>) => {
     const msg = reason instanceof Error ? reason.message : String(reason);
@@ -1846,12 +1824,12 @@ export async function main(): Promise<void> {
     const { TrustManager } = await import("@sid-code/core/extension/trust.ts");
     const trustManager = new TrustManager();
     // B20：交互模式此前直接返回全部文件 + 持久化，等于打开任何目录都静默信任它带的扩展。
-    // 现在启动阶段（TUI 起来之前）走 stdin y/N 确认，只有确认过的才加载并记住；
-    // 无 TTY / TUI 已接管 stdin 时 fail-closed（不加载、不持久化）。-p 维持跳过。
+    // 现在未信任的项目级扩展一律不加载，登记为待确认，由 TUI 的「项目扩展信任」对话框询问
+    // （不在终端里 y/N）。批准后 App 落盘信任并重扫加载。无 TUI（Bridge / 无 TTY）fail-closed。
     const { createTrustPrompt } = await import("@sid-code/core/extension/trust-prompt.ts");
     const trustPrompt = createTrustPrompt({
       print: !!config.print,
-      confirm: process.stdin.isTTY && !cliArgs.bridgeUrl ? (m) => promptYesNo(m) : undefined,
+      interactive: !!process.stdin.isTTY && !cliArgs.bridgeUrl,
       projectDir: process.cwd(),
       warn: (m) => getLogger().warn("TRUST", m),
     });
@@ -2622,6 +2600,7 @@ export async function main(): Promise<void> {
       fileReadTracker,
       skillActivationCoordinator,
       skillManager,
+      extensionTrust: { prompt: trustPrompt, trustManager, scanOptions },
     });
     // 注册全局 App 弱引用（供 uncaughtException 等异常兜底使用）
     setLastApp(app);
@@ -3035,7 +3014,18 @@ export async function main(): Promise<void> {
         policyEnabled: isBridgePolicyEnabled(),
         // 只在真有 TTY 时提供 confirm：没有 TTY 就让 admission 走 fail-closed，
         // 而不是在这里"默认放行"——默认放行等于没有这道门。
-        confirm: process.stdin.isTTY ? (prompt) => promptYesNo(prompt) : undefined,
+        // 确认用 TUI 对话框（临时挂载、答完卸载），不在终端里 y/N：与其余审批框同一套交互。
+        confirm: process.stdin.isTTY
+          ? async (prompt) => {
+              const { runStandaloneDialog } = await import("./ui/standalone-dialog.tsx");
+              const { BridgeAdmissionDialog } =
+                await import("./ui/components/BridgeAdmissionDialog.tsx");
+              const React = await import("react");
+              return runStandaloneDialog<boolean>((done) =>
+                React.createElement(BridgeAdmissionDialog, { message: prompt, onDecision: done }),
+              );
+            }
+          : undefined,
       });
 
       if (!admission.allowed) {
@@ -3084,8 +3074,6 @@ export async function main(): Promise<void> {
       if (config.debug) {
         getLogger().info("CLI", `启动完成，耗时 ${startupDuration.toFixed(0)}ms`);
       }
-      // stdin 即将归 Ink：此后热重载遇到的新未信任扩展只记日志，下次启动再问
-      trustPrompt.closePrompting();
       await app.runTUI(cliArgs.prompt);
     }
   } catch (err) {

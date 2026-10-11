@@ -70,6 +70,8 @@ export type DialogType =
   | "claude-md-external-imports"
   // M3：项目 .mcp.json 中待审批 MCP 服务器的启动审批框
   | "mcp-approval"
+  // 项目级扩展（skill / 命令 / agent）信任确认。此前在 TUI 起来前用终端 y/N 问，现统一进 TUI
+  | "extension-trust"
   // SEC-AUDIT-2026-07-19 P1：首次打开含危险配置的代码库时的信任门控
   | "trust";
 
