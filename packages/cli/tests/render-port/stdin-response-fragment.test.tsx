@@ -1,13 +1,13 @@
 /**
  * 契约 I3（B9 / T5.2a）：终端回复与回复残片不当按键。
  *
- * 两套底座都跑，只通过端口驱动。期望值全部是 2026-10-08 对拍 legacy 的黑盒探针实测
+ * 只通过端口驱动。期望值全部是 2026-10-08 对拍 legacy 的黑盒探针实测
  * （结果备份在 `~/Backups/sid-code-t5x-probe-results-20261008/t52a/`），没有读旧底座代码（设计文档 D-5）。
  * 更细的分片边界（切在 1、2、中间、末字节 × 10 / 80ms 间隔）在键位语料的 `resp` 组里逐条对拍
  * （`packages/tui/tests/input.test.ts`）；这里钉住用户看得见的结论：回复的字节一个都不进 `useInput`。
  *
- * 旧底座侧的同名测试 `packages/tui-renderer/tests/ink/terminal-response-fragment.test.ts` 测的是解析器内部函数，
- * T9 删旧底座时会一起删掉；它的 10 条输入在下面「旧测试的 10 条输入」一组里按端口口径保留。
+ * 旧底座侧曾有同名测试（测解析器内部函数），T9.1 随旧底座删除；
+ * 它的 10 条输入在下面「旧测试的 10 条输入」一组里按端口口径保留。
  */
 import { describe, expect, test } from "bun:test";
 import React from "react";

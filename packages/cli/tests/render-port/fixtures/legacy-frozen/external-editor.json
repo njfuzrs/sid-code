@@ -1,0 +1,210 @@
+{
+  "basic | {}": {
+    "entered": "{raw:false}\u001b[<u\u001b[>4m\u001b[?1049h\u001b[?1004l\u001b[0m\u001b[?25h\u001b[2J\u001b[H",
+    "during": "EDITOR",
+    "exited": "\u001b[2J\u001b[H\u001b[?1049l\u001b[?25l{raw:true}\u001b[?2026h\r\n\u001b[?2026l\u001b[?1004h",
+    "afterExit": "",
+    "post": "\u001b[?2026h\r\u001b[1Apost\r\n\u001b[?2026l",
+    "unmount": ""
+  },
+  "commit | {}": {
+    "entered": "{raw:false}\u001b[<u\u001b[>4m\u001b[?1049h\u001b[?1004l\u001b[0m\u001b[?25h\u001b[2J\u001b[H",
+    "during": "EDITOR",
+    "exited": "\u001b[2J\u001b[H\u001b[?1049l\u001b[?25l{raw:true}\u001b[?2026hduring\r\n\u001b[?2026l\u001b[?1004h",
+    "afterExit": "",
+    "post": "\u001b[?2026h\r\u001b[1Apost  \r\n\u001b[?2026l",
+    "unmount": ""
+  },
+  "shrink | {}": {
+    "entered": "{raw:false}\u001b[<u\u001b[>4m\u001b[?1049h\u001b[?1004l\u001b[0m\u001b[?25h\u001b[2J\u001b[H",
+    "during": "EDITOR",
+    "exited": "\u001b[2J\u001b[H\u001b[?1049l\u001b[?25l{raw:true}\u001b[?2026hduring\r\n\u001b[?2026l\u001b[?1004h",
+    "afterExit": "",
+    "post": "\u001b[?2026h\r\u001b[1Apost  \r\n\u001b[?2026l",
+    "unmount": ""
+  },
+  "resize | {}": {
+    "entered": "{raw:false}\u001b[<u\u001b[>4m\u001b[?1049h\u001b[?1004l\u001b[0m\u001b[?25h\u001b[2J\u001b[H",
+    "during": "EDITOR",
+    "exited": "\u001b[2J\u001b[H\u001b[?1049l\u001b[?25l{raw:true}\u001b[?2026h\u001b[2J\u001b[3J\u001b[Hmain\r\n\u001b[?2026l\u001b[?1004h",
+    "afterExit": "",
+    "post": "\u001b[?2026h\r\u001b[1Apost\r\n\u001b[?2026l",
+    "unmount": ""
+  },
+  "commit | {\"CLAUDE_CODE_ACCESSIBILITY\":\"1\"}": {
+    "entered": "{raw:false}\u001b[<u\u001b[>4m\u001b[?1049h\u001b[?1004l\u001b[0m\u001b[?25h\u001b[2J\u001b[H",
+    "during": "EDITOR",
+    "exited": "\u001b[2J\u001b[H\u001b[?1049l\u001b[?25l{raw:true}\u001b[?2026hduring\r\n\u001b[?2026l\u001b[?1004h",
+    "afterExit": "",
+    "post": "\u001b[?2026h\r\u001b[1Apost  \r\n\u001b[?2026l",
+    "unmount": ""
+  },
+  "input | {}": {
+    "entered": "{raw:false}\u001b[<u\u001b[>4m\u001b[?1049h\u001b[?1004l\u001b[0m\u001b[?25h\u001b[2J\u001b[H",
+    "during": "EDITOR",
+    "exited": "\u001b[2J\u001b[H\u001b[?1049l\u001b[?25l{raw:true}\u001b[?2026h\r\n\u001b[?2026l\u001b[?1004h",
+    "afterExit": "{input:q}",
+    "post": "\u001b[?2026h\r\u001b[1Apost\r\n\u001b[?2026l",
+    "unmount": ""
+  },
+  "redraw | {}": {
+    "entered": "{raw:false}\u001b[<u\u001b[>4m\u001b[?1049h\u001b[?1004l\u001b[0m\u001b[?25h\u001b[2J\u001b[H",
+    "during": "EDITOR",
+    "exited": "\u001b[2J\u001b[H\u001b[?1049l\u001b[?25l{raw:true}\u001b[?2026h\r\n\u001b[?2026l\u001b[?1004h",
+    "afterExit": "",
+    "post": "\u001b[?2026h\r\u001b[1Apost\r\n\u001b[?2026l",
+    "unmount": ""
+  },
+  "sigcont | {}": {
+    "entered": "{raw:false}\u001b[<u\u001b[>4m\u001b[?1049h\u001b[?1004l\u001b[0m\u001b[?25h\u001b[2J\u001b[H",
+    "during": "EDITOR",
+    "exited": "\u001b[2J\u001b[H\u001b[?1049l\u001b[?25l{raw:true}\u001b[?2026h\r\n\u001b[?2026l\u001b[?1004h",
+    "afterExit": "",
+    "post": "\u001b[?2026h\r\u001b[1Apost\r\n\u001b[?2026l",
+    "unmount": ""
+  },
+  "double | {}": {
+    "entered": "{raw:false}\u001b[<u\u001b[>4m\u001b[?1049h\u001b[?1004l\u001b[0m\u001b[?25h\u001b[2J\u001b[H",
+    "entered2": "\u001b[<u\u001b[>4m\u001b[?1049h\u001b[?1004l\u001b[0m\u001b[?25h\u001b[2J\u001b[H",
+    "during": "EDITOR",
+    "exited": "\u001b[2J\u001b[H\u001b[?1049l\u001b[?25l{raw:true}\u001b[?2026h\r\n\u001b[?2026l\u001b[?1004h",
+    "exited2": "\u001b[2J\u001b[H\u001b[?1049l\u001b[?25l\u001b[?2026h\r\n\u001b[?2026l\u001b[?1004h",
+    "afterExit": "",
+    "post": "\u001b[?2026h\r\u001b[1Apost\r\n\u001b[?2026l",
+    "unmount": ""
+  },
+  "exitOnly | {}": {
+    "exited": "\u001b[2J\u001b[H\u001b[?1049l\u001b[?25l\u001b[?2026h\r\n\u001b[?2026l\u001b[?1004h",
+    "afterExit": "",
+    "post": "\u001b[?2026h\r\u001b[1Apost\r\n\u001b[?2026l",
+    "unmount": ""
+  },
+  "basic | {\"FIXTURE_INPUT\":\"0\"}": {
+    "entered": "\u001b[<u\u001b[>4m\u001b[?1049h\u001b[?1004l\u001b[0m\u001b[?25h\u001b[2J\u001b[H",
+    "during": "EDITOR",
+    "exited": "\u001b[2J\u001b[H\u001b[?1049l\u001b[?25l\u001b[?2026h\r\n\u001b[?2026l\u001b[?1004h",
+    "afterExit": "",
+    "post": "\u001b[?2026h\r\u001b[1Apost\r\n\u001b[?2026l",
+    "unmount": ""
+  },
+  "basic | {\"KITTY_WINDOW_ID\":\"1\",\"TERM_PROGRAM\":\"kitty\"}": {
+    "entered": "{raw:false}\u001b[<u\u001b[>4m\u001b[?1049h\u001b[?1004l\u001b[0m\u001b[?25h\u001b[2J\u001b[H",
+    "during": "EDITOR",
+    "exited": "\u001b[2J\u001b[H\u001b[?1049l\u001b[?25l{raw:true}\u001b[?2026h\r\n\u001b[?2026l\u001b[?1004h\u001b[<u\u001b[>1u\u001b[>4;2m",
+    "afterExit": "",
+    "post": "\u001b[?2026h\r\u001b[1Apost\r\n\u001b[?2026l",
+    "unmount": ""
+  },
+  "basic | {\"FIXTURE_INPUT\":\"0\",\"KITTY_WINDOW_ID\":\"1\",\"TERM_PROGRAM\":\"kitty\"}": {
+    "entered": "\u001b[<u\u001b[>4m\u001b[?1049h\u001b[?1004l\u001b[0m\u001b[?25h\u001b[2J\u001b[H",
+    "during": "EDITOR",
+    "exited": "\u001b[2J\u001b[H\u001b[?1049l\u001b[?25l\u001b[?2026h\r\n\u001b[?2026l\u001b[?1004h\u001b[<u\u001b[>1u\u001b[>4;2m",
+    "afterExit": "",
+    "post": "\u001b[?2026h\r\u001b[1Apost\r\n\u001b[?2026l",
+    "unmount": ""
+  },
+  "basic | {\"FIXTURE_TTY\":\"0\"}": {
+    "entered": "\u001b[?2026hmain\u001b[?2026l{raw:false}\u001b[<u\u001b[>4m\u001b[?1049h\u001b[?1004l\u001b[0m\u001b[?25h\u001b[2J\u001b[H",
+    "during": "EDITOR",
+    "exited": "\u001b[2J\u001b[H\u001b[?1049l\u001b[?25l{raw:true}\u001b[?2026h\u001b[?2026l\u001b[?1004h",
+    "afterExit": "",
+    "post": "\u001b[?2026hpost\u001b[?2026l",
+    "unmount": ""
+  },
+  "alt | {}": {
+    "entered": "{raw:false}\u001b[<u\u001b[>4m\u001b[?1007l\u001b[?1006l\u001b[?1003l\u001b[?1002l\u001b[?1000l\u001b[?1004l\u001b[0m\u001b[?25h\u001b[2J\u001b[H",
+    "during": "EDITOR",
+    "exited": "\u001b[?1049h\u001b[2J\u001b[H\u001b[?1000h\u001b[?1002h\u001b[?1003h\u001b[?1006h\u001b[?1007h\u001b[?25l{raw:true}\u001b[Hduring\u001b[6;1H\u001b[?1004h",
+    "afterExit": "",
+    "post": "\u001b[Hpost  \u001b[6;1H",
+    "unmount": ""
+  },
+  "altNoMouse | {}": {
+    "entered": "{raw:false}\u001b[<u\u001b[>4m\u001b[?1004l\u001b[0m\u001b[?25h\u001b[2J\u001b[H",
+    "during": "EDITOR",
+    "exited": "\u001b[?1049h\u001b[2J\u001b[H\u001b[?25l{raw:true}\u001b[Hduring\u001b[6;1H\u001b[?1004h",
+    "afterExit": "",
+    "post": "\u001b[Hpost  \u001b[6;1H",
+    "unmount": ""
+  },
+  "altResize | {}": {
+    "entered": "{raw:false}\u001b[<u\u001b[>4m\u001b[?1007l\u001b[?1006l\u001b[?1003l\u001b[?1002l\u001b[?1000l\u001b[?1004l\u001b[0m\u001b[?25h\u001b[2J\u001b[H",
+    "during": "EDITOR",
+    "exited": "\u001b[?1049h\u001b[2J\u001b[H\u001b[?1000h\u001b[?1002h\u001b[?1003h\u001b[?1006h\u001b[?1007h\u001b[?25l{raw:true}\u001b[Hduring\u001b[6;1H\u001b[?1004h",
+    "afterExit": "",
+    "post": "\u001b[Hpost  \u001b[6;1H",
+    "unmount": ""
+  },
+  "altSigcont | {}": {
+    "entered": "{raw:false}\u001b[<u\u001b[>4m\u001b[?1007l\u001b[?1006l\u001b[?1003l\u001b[?1002l\u001b[?1000l\u001b[?1004l\u001b[0m\u001b[?25h\u001b[2J\u001b[H",
+    "during": "EDITOR\u001b[?1049h\u001b[2J\u001b[H\u001b[?1000h\u001b[?1002h\u001b[?1003h\u001b[?1006h\u001b[?1007h",
+    "exited": "\u001b[?1049h\u001b[2J\u001b[H\u001b[?1000h\u001b[?1002h\u001b[?1003h\u001b[?1006h\u001b[?1007h\u001b[?25l{raw:true}\u001b[Hduring\u001b[6;1H\u001b[?1004h",
+    "afterExit": "",
+    "post": "\u001b[Hpost  \u001b[6;1H",
+    "unmount": ""
+  },
+  "alt | {\"KITTY_WINDOW_ID\":\"1\",\"TERM_PROGRAM\":\"kitty\"}": {
+    "entered": "{raw:false}\u001b[<u\u001b[>4m\u001b[?1007l\u001b[?1006l\u001b[?1003l\u001b[?1002l\u001b[?1000l\u001b[?1004l\u001b[0m\u001b[?25h\u001b[2J\u001b[H",
+    "during": "EDITOR",
+    "exited": "\u001b[?1049h\u001b[2J\u001b[H\u001b[?1000h\u001b[?1002h\u001b[?1003h\u001b[?1006h\u001b[?1007h\u001b[?25l{raw:true}\u001b[?2026h\u001b[Hduring\u001b[6;1H\u001b[?2026l\u001b[?1004h\u001b[<u\u001b[>1u\u001b[>4;2m",
+    "afterExit": "",
+    "post": "\u001b[?2026h\u001b[Hpost  \u001b[6;1H\u001b[?2026l",
+    "unmount": ""
+  },
+  "mountDuring | {\"FIXTURE_INPUT\":\"0\"}": {
+    "entered": "\u001b[<u\u001b[>4m\u001b[?1049h\u001b[?1004l\u001b[0m\u001b[?25h\u001b[2J\u001b[H",
+    "during": "EDITOR{ref}{raw:true}\u001b[?2004h\u001b[?1004h\u001b[>0q\u001b[c",
+    "exited": "\u001b[2J\u001b[H\u001b[?1049l\u001b[?25l\u001b[?2026hduring\r\n\u001b[?2026l\u001b[?1004h",
+    "afterExit": "",
+    "post": "\u001b[>4m\u001b[<u\u001b[?1004l\u001b[?2004l{raw:false}{unref}\u001b[?2026h\r\u001b[1Apost  \r\n\u001b[?2026l",
+    "unmount": ""
+  },
+  "mountDuring | {\"FIXTURE_INPUT\":\"0\",\"KITTY_WINDOW_ID\":\"1\",\"TERM_PROGRAM\":\"kitty\"}": {
+    "entered": "\u001b[<u\u001b[>4m\u001b[?1049h\u001b[?1004l\u001b[0m\u001b[?25h\u001b[2J\u001b[H",
+    "during": "EDITOR{ref}{raw:true}\u001b[?2004h\u001b[?1004h\u001b[>1u\u001b[>4;2m\u001b[>0q\u001b[c",
+    "exited": "\u001b[2J\u001b[H\u001b[?1049l\u001b[?25l\u001b[?2026hduring\r\n\u001b[?2026l\u001b[?1004h\u001b[<u\u001b[>1u\u001b[>4;2m",
+    "afterExit": "",
+    "post": "\u001b[>4m\u001b[<u\u001b[?1004l\u001b[?2004l{raw:false}{unref}\u001b[?2026h\r\u001b[1Apost  \r\n\u001b[?2026l",
+    "unmount": ""
+  },
+  "unmountDuring | {}": {
+    "entered": "{raw:false}\u001b[<u\u001b[>4m\u001b[?1049h\u001b[?1004l\u001b[0m\u001b[?25h\u001b[2J\u001b[H",
+    "during": "EDITOR\u001b[>4m\u001b[<u\u001b[?1004l\u001b[?2004l{raw:false}{unref}",
+    "exited": "\u001b[2J\u001b[H\u001b[?1049l\u001b[?25l{raw:true}\u001b[?2026hduring\r\n\u001b[?2026l\u001b[?1004h",
+    "afterExit": "",
+    "post": "\u001b[?2026h\r\u001b[1Apost  \r\n\u001b[?2026l{ref}{raw:true}\u001b[?2004h\u001b[?1004h\u001b[>0q\u001b[c",
+    "unmount": ""
+  },
+  "unmountDuring | {\"KITTY_WINDOW_ID\":\"1\",\"TERM_PROGRAM\":\"kitty\"}": {
+    "entered": "{raw:false}\u001b[<u\u001b[>4m\u001b[?1049h\u001b[?1004l\u001b[0m\u001b[?25h\u001b[2J\u001b[H",
+    "during": "EDITOR\u001b[>4m\u001b[<u\u001b[?1004l\u001b[?2004l{raw:false}{unref}",
+    "exited": "\u001b[2J\u001b[H\u001b[?1049l\u001b[?25l{raw:true}\u001b[?2026hduring\r\n\u001b[?2026l\u001b[?1004h\u001b[<u\u001b[>1u\u001b[>4;2m",
+    "afterExit": "",
+    "post": "\u001b[?2026h\r\u001b[1Apost  \r\n\u001b[?2026l{ref}{raw:true}\u001b[?2004h\u001b[?1004h\u001b[>1u\u001b[>4;2m\u001b[>0q\u001b[c",
+    "unmount": ""
+  },
+  "remountDuring | {}": {
+    "entered": "{raw:false}\u001b[<u\u001b[>4m\u001b[?1049h\u001b[?1004l\u001b[0m\u001b[?25h\u001b[2J\u001b[H",
+    "during": "EDITOR\u001b[>4m\u001b[<u\u001b[?1004l\u001b[?2004l{raw:false}{unref}{remount}{ref}{raw:true}\u001b[?2004h\u001b[?1004h\u001b[>0q\u001b[c",
+    "exited": "\u001b[2J\u001b[H\u001b[?1049l\u001b[?25l{raw:true}\u001b[?2026hduring\r\n\u001b[?2026l\u001b[?1004h",
+    "afterExit": "",
+    "post": "\u001b[?2026h\r\u001b[1Apost  \r\n\u001b[?2026l",
+    "unmount": ""
+  },
+  "altMountDuring | {\"FIXTURE_INPUT\":\"0\"}": {
+    "entered": "\u001b[<u\u001b[>4m\u001b[?1007l\u001b[?1006l\u001b[?1003l\u001b[?1002l\u001b[?1000l\u001b[?1004l\u001b[0m\u001b[?25h\u001b[2J\u001b[H",
+    "during": "EDITOR{ref}{raw:true}\u001b[?2004h\u001b[?1004h\u001b[>0q\u001b[c",
+    "exited": "\u001b[?1049h\u001b[2J\u001b[H\u001b[?1000h\u001b[?1002h\u001b[?1003h\u001b[?1006h\u001b[?1007h\u001b[?25l\u001b[Hduring\u001b[6;1H\u001b[?1004h",
+    "afterExit": "",
+    "post": "\u001b[>4m\u001b[<u\u001b[?1004l\u001b[?2004l{raw:false}{unref}\u001b[Hpost  \u001b[6;1H",
+    "unmount": ""
+  },
+  "altUnmountDuring | {}": {
+    "entered": "{raw:false}\u001b[<u\u001b[>4m\u001b[?1007l\u001b[?1006l\u001b[?1003l\u001b[?1002l\u001b[?1000l\u001b[?1004l\u001b[0m\u001b[?25h\u001b[2J\u001b[H",
+    "during": "EDITOR\u001b[>4m\u001b[<u\u001b[?1004l\u001b[?2004l{raw:false}{unref}",
+    "exited": "\u001b[?1049h\u001b[2J\u001b[H\u001b[?1000h\u001b[?1002h\u001b[?1003h\u001b[?1006h\u001b[?1007h\u001b[?25l{raw:true}\u001b[Hduring\u001b[6;1H\u001b[?1004h",
+    "afterExit": "",
+    "post": "\u001b[Hpost  \u001b[6;1H{ref}{raw:true}\u001b[?2004h\u001b[?1004h\u001b[>0q\u001b[c",
+    "unmount": ""
+  }
+}

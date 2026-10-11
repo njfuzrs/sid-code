@@ -41,15 +41,12 @@ make build            # 构建开发版二进制（不改版本号）
 
 ### 新克隆必须先 `bun run vendor:fetch`
 
-两个目录**不入库但是编译期依赖**，缺了它们编译不过：
+`packages/cli/src/command/commands/claude-api/reference/` **不入库但是编译期依赖**：
+`claude-api.ts` 用 Bun 的 `with { type: "text" }` 把原文内联进二进制，缺了它编译不过。
 
-| 目录 | 为什么是编译期依赖 |
-| --- | --- |
-| `packages/tui-renderer/src/` | `packages/cli/src` 下 102 个文件按 `@sid-code/tui-renderer/*` 导入 |
-| `packages/cli/src/command/commands/claude-api/reference/` | `claude-api.ts` 用 Bun 的 `with { type: "text" }` 把原文内联进二进制 |
-
-不取回来的实测形态是 `Cannot find module '@sid-code/tui-renderer/stringWidth.ts'`
-与 `ENOENT: scandir '.../packages/tui-renderer/src'`。
+（旧渲染底座 `packages/tui-renderer/src/` 以前也走这条路，B9 / T9.1 已删除。老克隆里留下的
+symlink 跑一次 `vendor:fetch` 会清掉；`.vendor-src/tui-renderer-src/` 只提示不自动删，确认里面
+没有自己的文件后手动删。）
 
 机制与入库的 `ripgrep` 同源（`scripts/fetch-ripgrep.ts` 是先例）：
 **本地已有则跳过、全程不联网**；缺失才下载 tar.gz + sha256 校验后解包。
@@ -63,18 +60,17 @@ bun run vendor:pack    # 反向：改了本地 vendor 源码后打包，供上�
 ⚠️ **`make build` 会自动跑这一步，但单独跑 `bun test` 不会。**
 克隆后只跑测试会红一片，先手动跑一次 `vendor:fetch`。
 
-#### 那两个路径是 symlink，真实字节在 `.vendor-src/`
+#### 那个路径是 symlink，真实字节在 `.vendor-src/`
 
-上面两个路径**不是真目录，是指向 `.vendor-src/` 的相对 symlink**：
+上面的路径**不是真目录，是指向 `.vendor-src/` 的相对 symlink**：
 
 ```
-packages/tui-renderer/src                       → ../../.vendor-src/tui-renderer-src
 packages/cli/src/command/commands/claude-api/reference → ../../../../../../.vendor-src/claude-api-reference
 ```
 
 **为什么要多这一层** —— 治的是一次真实事故（125 个文件曾从磁盘上消失）：
 `.gitignore` 只挡「未追踪文件不被 add」，**完全不挡「已记录删除的文件不被 checkout
-删掉」**。仓库里 37+ 个分支仍把那两个路径记为已追踪，切过去再切回来，
+删掉」**。仓库里 37+ 个分支仍把这些路径记为已追踪，切过去再切回来，
 git 就按索引把工作区文件删了。而 `.vendor-src/` **在全部 371 个 ref 里都不存在**，
 所以任何 checkout / merge / reset 都碰不到它。
 
@@ -497,7 +493,7 @@ pre-commit hook 有 `--check` 门禁会拦住这种漂移（未装 hook 先跑 `
 
 `.oxfmtrc.json` 有两处刻意的范围限制，改之前先读那里的注释：**yaml 与 markdown 不在
 格式化范围内**（yaml 是评测 case 数据、含 `evals/holdout/` 永封集；markdown 会被重排
-表格并动到 `CLAUDE.md` 这类约定事实源），生成物与 `packages/tui-renderer/src/_vendor/`
+表格并动到 `CLAUDE.md` 这类约定事实源），生成物与上游源码 `packages/tui/src/`
 也排除在外。
 
 风格约定本身（formatter 覆盖不到的部分）：

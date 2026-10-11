@@ -19,6 +19,10 @@
  * 修复：多槽缓存只在 `!performLayout`（measure pass）时参与命中。
  *
  * 本测试用**纯 yoga**（不涉及 ink / React / 终端）钉死该行为——bug 在这一层就能复现。
+ *
+ * B9 / T9.1：原在旧底座侧（测它 vendored 的 yoga 移植）。新底座用 npm `yoga-layout@3.2.1`，
+ * 那个多槽缓存的 bug 属于旧实现；但 Footer 右对齐这条用户可见行为与布局引擎无关，所以迁到这里，
+ * 断言不变，钉住新底座的布局引擎同样不在反复 resize 后冻结子节点位置。
  */
 
 import { test, expect, describe } from "bun:test";
@@ -29,9 +33,9 @@ import Yoga, {
   Wrap,
   Edge,
   type Node as YogaNode,
-} from "@sid-code/tui-renderer/_vendor/yoga-layout/index.ts";
+} from "yoga-layout";
 
-/** 按根宽度重算布局（第二参显式传 undefined：vendored 签名要求 ≥2 参）。 */
+/** 按根宽度重算布局。 */
 function layoutAt(root: YogaNode, width: number): void {
   root.setWidth(width);
   root.calculateLayout(width, undefined);
@@ -85,7 +89,7 @@ describe("yoga 多槽布局缓存不得跳过子节点定位", () => {
 
   test("同一宽度重复 layout 幂等（不因缓存写入而漂移）", () => {
     const { root, row, content } = buildFooterLikeTree(CONTENT_W);
-    // 超过 CACHE_SLOTS(4) 次，确保 LRU 环绕后依然正确
+    // 超过旧实现 CACHE_SLOTS(4) 次，确保 LRU 环绕后依然正确
     for (let i = 0; i < 6; i++) {
       layoutAt(root, 80);
       expect(content.getComputedLeft()).toBe(row.getComputedWidth() - CONTENT_W);

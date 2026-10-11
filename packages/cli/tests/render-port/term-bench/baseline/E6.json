@@ -1,0 +1,101 @@
+{
+  "scenario": "E6",
+  "exitCode": 0,
+  "total": {
+    "bytes": 367,
+    "eraseScreen": 0,
+    "eraseScrollback": 0,
+    "syncBegin": 3,
+    "syncEnd": 3,
+    "altEnter": 0,
+    "altExit": 0,
+    "osc": {
+      "8": 4,
+      "9": 1,
+      "21337": 1
+    }
+  },
+  "notes": {},
+  "steps": [
+    {
+      "label": "初始",
+      "buffer": "normal",
+      "cursor": {
+        "x": 0,
+        "y": 3,
+        "hidden": true
+      },
+      "modes": {
+        "bracketedPaste": false,
+        "mouseTracking": "none",
+        "sendFocus": false,
+        "wraparound": true
+      },
+      "metrics": {
+        "bytes": 133,
+        "eraseScreen": 0,
+        "eraseScrollback": 0,
+        "syncBegin": 1,
+        "syncEnd": 1,
+        "altEnter": 0,
+        "altExit": 0,
+        "osc": {
+          "8": 2
+        }
+      },
+      "screen": ["前 ❤️  后 x", "链接 x 尾", "不变行"],
+      "scrollback": [],
+      "styled": [
+        {
+          "y": 1,
+          "runs": [
+            {
+              "text": "链接 x",
+              "style": "u"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "label": "补偿字符后 + 链接目标变化",
+      "buffer": "normal",
+      "cursor": {
+        "x": 0,
+        "y": 3,
+        "hidden": true
+      },
+      "modes": {
+        "bracketedPaste": false,
+        "mouseTracking": "none",
+        "sendFocus": false,
+        "wraparound": true
+      },
+      "metrics": {
+        "bytes": 85,
+        "eraseScreen": 0,
+        "eraseScrollback": 0,
+        "syncBegin": 1,
+        "syncEnd": 1,
+        "altEnter": 0,
+        "altExit": 0,
+        "osc": {
+          "8": 2
+        }
+      },
+      "screen": ["前 ❤️  后 y", "链接 y 尾", "不变行"],
+      "scrollback": [],
+      "styled": [
+        {
+          "y": 1,
+          "runs": [
+            {
+              "text": "链接 y",
+              "style": "u"
+            }
+          ]
+        }
+      ]
+    }
+  ]
+}

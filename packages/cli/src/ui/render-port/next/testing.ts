@@ -74,12 +74,18 @@ export function render(tree: ReactElement, options: ShimOptions = {}) {
 
 export const renderSync = upstreamRender;
 
-/** 见 legacy/testing.ts：从实例注册表里摘掉这个 stdout 的实例。 */
+/**
+ * 从实例注册表里摘掉这个 stdout 的实例。正常卸载会自己摘；`detachForShutdown` 之后
+ * unmount 早退、不会摘（X4），同一个 stdout 再 render 会复用那个已卸载的实例。
+ */
 export function forgetRenderInstance(stdout: NodeJS.WriteStream): void {
   upstreamInstances.delete(stdout);
 }
 
-/** 见 legacy/testing.ts。新底座的开关在 `frame/schedule.ts`，不再借 `NODE_ENV`。 */
+/**
+ * 在测试进程里打开真实的帧调度（16ms 节流 + microtask 合并，契约 R2），返回恢复函数。
+ * 测试环境默认每次提交同步出帧（契约 R13），只有专门测调度的用例才调这个。开关在 `frame/schedule.ts`。
+ */
 export function enableFrameThrottle(): () => void {
   return enableFrameThrottleInTests();
 }

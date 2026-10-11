@@ -1,4 +1,4 @@
-// B9 / T7.1b：X3 卸载序列的子进程夹具，由 unmount.test.tsx 按不同 SID_TUI_RENDERER / 变体运行。
+// B9 / T7.1b：X3 卸载序列的子进程夹具，由 unmount.test.tsx 按不同变体运行。
 // 结果就是 fd 1 原样：X3 兜底段同步直写 fd 1，不经 stdout 流对象。经 `process.stdout.write` 的每一块前插
 // 一个 `<W>` 标记，以区分「经流写」与「直写 fd」—— 兜底段落在哪个通道也是契约的一部分。
 // 用法：`bun unmount-app.tsx <变体>`，变体是 `-` 连接的开关：

@@ -510,7 +510,6 @@ export function cleanEnv(extra: Record<string, string>): Record<string, string> 
     "NO_COLOR",
     "FORCE_COLOR",
     "COLORTERM",
-    "SID_TUI_RENDERER",
   ]);
   for (const [k, v] of Object.entries(process.env)) if (v !== undefined && !drop.has(k)) out[k] = v;
   return { ...out, TERM: "xterm-256color", FORCE_COLOR: "3", ...extra };

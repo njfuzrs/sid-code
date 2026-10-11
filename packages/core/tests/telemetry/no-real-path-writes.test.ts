@@ -186,7 +186,7 @@ describe("防复发哨兵：扫描 tests/ 下所有落盘调用方", () => {
       join(repoRoot, "packages", "core", "tests"),
       join(repoRoot, "packages", "cli", "tests"),
       join(repoRoot, "packages", "shared", "tests"),
-      join(repoRoot, "packages", "tui-renderer", "tests"),
+      join(repoRoot, "packages", "tui", "tests"),
       join(repoRoot, "tests"),
     ];
     const files = testRoots.flatMap((r) => collectTestFiles(r));

@@ -1,15 +1,4 @@
 /**
- * 宿主组件。按 `SID_TUI_RENDERER` 选 legacy / next 实现，见 README.md 与 select.ts。
- *
- * 两边都是字面量动态 import，`bun build --compile` 会把两套都打进产物（D-4），
- * 运行时只求值选中的那一套。next 的类型按 legacy 断言：新底座要实现的就是 legacy 的端口面。
+ * 宿主组件。实现在 `next/components.ts`（底座 `packages/tui`），见 README.md。
  */
-import { RENDERER } from "./select.ts";
-import type * as Impl from "./legacy/components.ts";
-
-const impl: typeof Impl =
-  RENDERER === "next"
-    ? ((await import("./next/components.ts")) as unknown as typeof Impl)
-    : await import("./legacy/components.ts");
-
-export const { Box, Text, Static, Ansi, RawAnsi, AlternateScreen } = impl;
+export { Box, Text, Static, Ansi, RawAnsi, AlternateScreen } from "./next/components.ts";

@@ -2,8 +2,8 @@
  * 契约 O3（B9 / T7.2b）：原始终端写入口 TerminalWriteContext，与退出时清进度条 / tab 状态点。
  *
  * 期望值是 2026-10-08 legacy 实测（探针结果备份在
- * `~/Backups/sid-code-t67-probe-results-20261008/T7.2b/`）。每个环境在 legacy / next 两个子进程里各跑一遍，
- * 断言两边的 OSC 9 / 21337 片段都等于实测字节。
+ * `~/Backups/sid-code-t67-probe-results-20261008/T7.2b/`）。每个环境起一个子进程，
+ * 断言 OSC 9 / 21337 片段等于实测字节。
  * 卸载序列的其余部分（光标、鼠标、扩展键、bracketed paste）和它们与清除序列的相对顺序归 X3（T7.1b），
  * 这里不比 —— next 现在还缺那几段，整段比会让 O3 替 X3 红。
  */
@@ -23,21 +23,20 @@ const CLEAR = new Set([
   "WT_SESSION",
   "LC_TERMINAL",
   "SID_DISABLE_TAB_STATUS",
-  "SID_TUI_RENDERER",
   "CI",
 ]);
 
-function run(renderer: "legacy" | "next", env: Record<string, string>) {
+function run(env: Record<string, string>) {
   const base: Record<string, string> = {};
   for (const [k, v] of Object.entries(process.env))
     if (v !== undefined && !CLEAR.has(k)) base[k] = v;
   const r = Bun.spawnSync([process.execPath, FIXTURE], {
     cwd: ROOT,
-    env: { ...base, TERM: "xterm-256color", SID_TUI_RENDERER: renderer, ...env },
+    env: { ...base, TERM: "xterm-256color", ...env },
   });
   const s = r.stdout.toString();
   if (r.exitCode !== 0 || !s.includes("<END")) {
-    throw new Error(`${renderer} 夹具失败（rc=${r.exitCode}）：${r.stderr.toString()}`);
+    throw new Error(`夹具失败（rc=${r.exitCode}）：${r.stderr.toString()}`);
   }
   const u = s.indexOf("<UNMOUNT>");
   const e = s.indexOf("<END");
@@ -71,10 +70,7 @@ const MATRIX: [string, Record<string, string>, string][] = [
 describe("O3 退出时清进度条与 tab 状态点", () => {
   for (const [name, env, expected] of MATRIX) {
     test(`O3: ${name}`, () => {
-      const legacy = run("legacy", env);
-      const next = run("next", env);
-      expect(oscOnly(legacy.unmount)).toBe(expected);
-      expect(oscOnly(next.unmount)).toBe(expected);
+      expect(oscOnly(run(env).unmount)).toBe(expected);
     });
   }
 });
@@ -84,17 +80,13 @@ describe("O3 原始写入口 TerminalWriteContext", () => {
   const once = (s: string) => s.split("<RAW>").length - 1;
 
   test("O3: 底座提供函数、重渲后身份不变、原样直写 stdout", () => {
-    for (const renderer of ["legacy", "next"] as const) {
-      const r = run(renderer, {});
-      expect(r.end).toBe("<END ctx=function renders=2 stable=true>");
-      // 身份稳定 ⇒ 依赖它的 effect 重渲不重跑 ⇒ 恰好一次
-      expect(once(r.mount)).toBe(1);
-    }
+    const r = run({});
+    expect(r.end).toBe("<END ctx=function renders=2 stable=true>");
+    // 身份稳定 ⇒ 依赖它的 effect 重渲不重跑 ⇒ 恰好一次
+    expect(once(r.mount)).toBe(1);
   });
 
   test("O3: 非 TTY 下也写", () => {
-    for (const renderer of ["legacy", "next"] as const) {
-      expect(once(run(renderer, { FIXTURE_TTY: "0" }).mount)).toBe(1);
-    }
+    expect(once(run({ FIXTURE_TTY: "0" }).mount)).toBe(1);
   });
 });

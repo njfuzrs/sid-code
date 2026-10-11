@@ -1,6 +1,5 @@
-/** 端口类型（T0.2：直接取 legacy 的类型；T1.3 起改为端口自有类型 + satisfies 检查）。 */
-export type { AnsiColor, Color } from "@sid-code/tui-renderer/styles.ts";
-export type { DOMElement } from "@sid-code/tui-renderer/dom.ts";
-export type { Props as TextProps } from "@sid-code/tui-renderer/components/Text.tsx";
-export type { StyledChar } from "@sid-code/tui-renderer/_vendor/styled-chars.ts";
-export type { TabStatusKind } from "@sid-code/tui-renderer/hooks/use-tab-status.ts";
+/** 端口类型。颜色类型的源头在 `@sid-code/shared`（core 也要用），其余取自底座 `packages/tui`。 */
+export type { AnsiColor, Color } from "@sid-code/shared/types/color.ts";
+export type { DOMElement, TextProps } from "@sid-code/tui";
+export type { StyledChar } from "@sid-code/tui/text/index.ts";
+export type { TabStatusKind } from "@sid-code/tui/hooks/use-tab-status.ts";

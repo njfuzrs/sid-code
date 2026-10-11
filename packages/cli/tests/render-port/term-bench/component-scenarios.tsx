@@ -4,7 +4,7 @@
  * 引擎级场景（E*）只用 Box / Text；App 级场景（S*）要等阶段 5 的 stdin 就位才能在 next 上跑完整 App。
  * 这里介于两者之间：挂**真实的 CLI 历史项组件**（HistoryItemDisplay，含 tool_group / user / assistant），
  * 包在端口 `Static`（next 上是 History）里，按 MainScreenLayout 的结构排开：历史区 + 动态区。
- * 和 E* 一样不入基线，legacy 与 next 当场比较（component.test.ts）。
+ * 和 E* 一样对 T9.1 前冻结的 legacy 基线 `baseline/C*.json` 比较（component.test.ts）。
  */
 import React, { createRef, useSyncExternalStore } from "react";
 import { Box, Static, Text } from "../../../src/ui/render-port/components.ts";

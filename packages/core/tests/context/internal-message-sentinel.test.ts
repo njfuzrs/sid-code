@@ -85,7 +85,7 @@ describe("防漂移哨兵：源码扫描所有 origin 注入点", () => {
   test('所有手写 `_meta: { origin: "…" }` 的字面量 origin 都已登记到 INTERNAL_ORIGINS', () => {
     // P2-2 分包：生产源码分布在 4 个包，全扫。只扫一个包会让哨兵半瞎且不报错。
     const repoRoot = join(import.meta.dir, "..", "..", "..", "..");
-    const files = ["shared", "tui-renderer", "core", "cli"].flatMap((p) =>
+    const files = ["shared", "tui", "core", "cli"].flatMap((p) =>
       collectSourceFiles(join(repoRoot, "packages", p, "src")),
     );
     // 防空转：路径指错时会扫到 0 个文件而假绿。

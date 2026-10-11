@@ -415,7 +415,7 @@ describe("isAbortError", () => {
     // P2-2 分包：生产源码分布在 4 个包里，必须全扫 —— 只扫一个包等于门禁半瞎，
     // 而且不会报错。下面的 `tsFiles.length` 断言就是防这种静默空转的。
     const repoRoot = join(import.meta.dir, "..", "..", "..", "..");
-    const srcRoots = ["shared", "tui-renderer", "core", "cli"].map((p) =>
+    const srcRoots = ["shared", "tui", "core", "cli"].map((p) =>
       join(repoRoot, "packages", p, "src"),
     );
 

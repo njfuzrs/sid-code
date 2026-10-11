@@ -1,0 +1,200 @@
+{
+  "scenario": "E2",
+  "exitCode": 0,
+  "total": {
+    "bytes": 477,
+    "eraseScreen": 0,
+    "eraseScrollback": 0,
+    "syncBegin": 5,
+    "syncEnd": 5,
+    "altEnter": 0,
+    "altExit": 0,
+    "osc": {
+      "9": 1,
+      "21337": 1
+    }
+  },
+  "notes": {},
+  "steps": [
+    {
+      "label": "初始",
+      "buffer": "normal",
+      "cursor": {
+        "x": 0,
+        "y": 6,
+        "hidden": true
+      },
+      "modes": {
+        "bracketedPaste": false,
+        "mouseTracking": "none",
+        "sendFocus": false,
+        "wraparound": true
+      },
+      "metrics": {
+        "bytes": 186,
+        "eraseScreen": 0,
+        "eraseScrollback": 0,
+        "syncBegin": 1,
+        "syncEnd": 1,
+        "altEnter": 0,
+        "altExit": 0,
+        "osc": {}
+      },
+      "screen": [
+        "第 0 行 不变",
+        "第 1 行 不变",
+        "中文 ABC 一二三",
+        "第 3 行 不变",
+        "colored",
+        "第 5 行 不变"
+      ],
+      "scrollback": [],
+      "styled": [
+        {
+          "y": 4,
+          "runs": [
+            {
+              "text": "colored",
+              "style": "fg=1 b"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "label": "改一行",
+      "buffer": "normal",
+      "cursor": {
+        "x": 0,
+        "y": 6,
+        "hidden": true
+      },
+      "modes": {
+        "bracketedPaste": false,
+        "mouseTracking": "none",
+        "sendFocus": false,
+        "wraparound": true
+      },
+      "metrics": {
+        "bytes": 37,
+        "eraseScreen": 0,
+        "eraseScrollback": 0,
+        "syncBegin": 1,
+        "syncEnd": 1,
+        "altEnter": 0,
+        "altExit": 0,
+        "osc": {}
+      },
+      "screen": [
+        "第 0 行 不变",
+        "第 1 行 改了",
+        "中文 ABC 一二三",
+        "第 3 行 不变",
+        "colored",
+        "第 5 行 不变"
+      ],
+      "scrollback": [],
+      "styled": [
+        {
+          "y": 4,
+          "runs": [
+            {
+              "text": "colored",
+              "style": "fg=1 b"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "label": "只改颜色",
+      "buffer": "normal",
+      "cursor": {
+        "x": 0,
+        "y": 6,
+        "hidden": true
+      },
+      "modes": {
+        "bracketedPaste": false,
+        "mouseTracking": "none",
+        "sendFocus": false,
+        "wraparound": true
+      },
+      "metrics": {
+        "bytes": 50,
+        "eraseScreen": 0,
+        "eraseScrollback": 0,
+        "syncBegin": 1,
+        "syncEnd": 1,
+        "altEnter": 0,
+        "altExit": 0,
+        "osc": {}
+      },
+      "screen": [
+        "第 0 行 不变",
+        "第 1 行 改了",
+        "中文 ABC 一二三",
+        "第 3 行 不变",
+        "colored",
+        "第 5 行 不变"
+      ],
+      "scrollback": [],
+      "styled": [
+        {
+          "y": 4,
+          "runs": [
+            {
+              "text": "colored",
+              "style": "fg=2 b"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "label": "宽字符行改窄字符 + 行尾变短",
+      "buffer": "normal",
+      "cursor": {
+        "x": 0,
+        "y": 6,
+        "hidden": true
+      },
+      "modes": {
+        "bracketedPaste": false,
+        "mouseTracking": "none",
+        "sendFocus": false,
+        "wraparound": true
+      },
+      "metrics": {
+        "bytes": 55,
+        "eraseScreen": 0,
+        "eraseScrollback": 0,
+        "syncBegin": 1,
+        "syncEnd": 1,
+        "altEnter": 0,
+        "altExit": 0,
+        "osc": {}
+      },
+      "screen": [
+        "第 0 行 不变",
+        "第 1 行 改了",
+        "中文 XBC 一二三",
+        "第 3 行 不变",
+        "colored",
+        "短          "
+      ],
+      "scrollback": [],
+      "styled": [
+        {
+          "y": 4,
+          "runs": [
+            {
+              "text": "colored",
+              "style": "fg=2 b"
+            }
+          ]
+        }
+      ]
+    }
+  ]
+}

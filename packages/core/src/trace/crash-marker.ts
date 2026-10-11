@@ -106,8 +106,8 @@ function findCrashedSessions(): string[] {
  * → 冒泡成 uncaughtException → 兜底写 crash.json。整条链上没有任何一处是 sid-code 的故障，
  * 但它进了 crash.json，于是「崩溃率」这个指标里混进了「用户正常关窗口」。
  *
- * 为什么判据放在这里、而不是去 tui-renderer 的 writeSync 外面包 try/catch：
- * 1. `packages/tui-renderer/src/` 是 vendor 进来的渲染底座，改动要最小化；
+ * 为什么判据放在这里、而不是去渲染底座的 writeSync 外面包 try/catch：
+ * 1. 渲染底座（当时是 vendor 进来的 `packages/tui-renderer/src/`，现为 `packages/tui`）改动要最小化；
  *    而 EIO 的**危害**是污染崩溃统计，统计的入口就是本文件。
  * 2. writeSync 直写 fd 1，绕过了 stream 对象，
  *    `registerProcessOutputErrorHandlers()` 注册的 'error' 事件处理器**保护不到它**

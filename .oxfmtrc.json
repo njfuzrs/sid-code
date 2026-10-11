@@ -57,9 +57,6 @@
   // node_modules 默认已跳过（见 --with-node-modules），不必在此列出。
   // oxfmt 默认还会读 .gitignore / .prettierignore，所以被 ignore 的构建物自动不碰。
   "ignorePatterns": [
-    // 第三方 vendor 代码：保持与上游可比对，套本仓风格会让 diff 失去意义。
-    // 这条与 .editorconfig 末尾那段同源：保持其形态不变，便于与上游比对。
-    "packages/tui-renderer/src/_vendor/**",
     // B9 / T1.1：新渲染底座以上游 ink@7.1.1 源码为起点（xo / tab 风格）。
     // 首提交必须与上游 tag 逐字节一致，后续每个改动单独提交，`git log` 即「相对上游改了什么」。
     // 套本仓风格会让整目录一次性重排，这条证据链当场失效。

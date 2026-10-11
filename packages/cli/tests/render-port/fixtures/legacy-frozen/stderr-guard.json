@@ -1,0 +1,401 @@
+{
+  "basic | {\"SID_CODE_DEBUG\":\"1\"}": {
+    "notes": {
+      "patched": true,
+      "ret": [true, true],
+      "cb": ["cb1:0", "after1", "cb2:0"],
+      "log": [
+        [
+          "[ink] [stderr] A\n",
+          {
+            "level": "warn"
+          }
+        ],
+        [
+          "[ink] [stderr] B\n",
+          {
+            "level": "warn"
+          }
+        ],
+        [
+          "[ink] [stderr] 68690a",
+          {
+            "level": "warn"
+          }
+        ],
+        [
+          "[ink] [stderr] 中文\n",
+          {
+            "level": "warn"
+          }
+        ],
+        [
+          "[ink] [stderr] 中",
+          {
+            "level": "warn"
+          }
+        ],
+        [
+          "[ink] [stderr] ",
+          {
+            "level": "warn"
+          }
+        ]
+      ],
+      "bad:object": ["cb", "threw:TypeError"],
+      "bad:null": ["cb", "threw:TypeError"],
+      "bad:undefined": ["cb", "threw:TypeError"],
+      "restored": true
+    },
+    "segments": {
+      "write": "",
+      "frame": "\u001b[?2026h\r\u001b[6C\u001b[1A1\r\n\u001b[?2026l",
+      "end-frame": "\u001b[?2026h\u001b[?25h\u001b[?2026l\u001b[?1007l\u001b[?1006l\u001b[?1003l\u001b[?1002l\u001b[?1000l\u001b[>4m\u001b[<u\u001b[?1004l\u001b[?2004l\u001b[?25h\u001b]9;4;0;\u0007\u001b]21337;indicator=;status=;status-color=\u0007\u001b[?25h",
+      "after-unmount": "",
+      "done": ""
+    },
+    "fd2": "AFTER\n"
+  },
+  "basic | {\"FIXTURE_ALT\":\"1\",\"SID_CODE_DEBUG\":\"1\"}": {
+    "notes": {
+      "patched": true,
+      "ret": [true, true],
+      "cb": ["cb1:0", "after1", "cb2:0"],
+      "log": [
+        [
+          "[ink] [stderr] A\n",
+          {
+            "level": "warn"
+          }
+        ],
+        [
+          "[ink] [stderr] B\n",
+          {
+            "level": "warn"
+          }
+        ],
+        [
+          "[ink] [stderr] 68690a",
+          {
+            "level": "warn"
+          }
+        ],
+        [
+          "[ink] [stderr] 中文\n",
+          {
+            "level": "warn"
+          }
+        ],
+        [
+          "[ink] [stderr] 中",
+          {
+            "level": "warn"
+          }
+        ],
+        [
+          "[ink] [stderr] ",
+          {
+            "level": "warn"
+          }
+        ]
+      ],
+      "bad:object": ["cb", "threw:TypeError"],
+      "bad:null": ["cb", "threw:TypeError"],
+      "bad:undefined": ["cb", "threw:TypeError"],
+      "restored": true
+    },
+    "segments": {
+      "write": "",
+      "frame": "\u001b[?2026h\u001b[H\u001b[6C1\u001b[6;1H\u001b[?2026l",
+      "end-frame": "\u001b[?2026h\u001b[?25h\u001b[?2026l\u001b[?1049l\u001b[?1007l\u001b[?1006l\u001b[?1003l\u001b[?1002l\u001b[?1000l\u001b[>4m\u001b[<u\u001b[?1004l\u001b[?2004l\u001b[?25h\u001b]9;4;0;\u0007\u001b]21337;indicator=;status=;status-color=\u0007\u001b[?25h\u001b[?1049l",
+      "after-unmount": "",
+      "done": ""
+    },
+    "fd2": "AFTER\n"
+  },
+  "basic | {\"FIXTURE_TTY\":\"0\",\"SID_CODE_DEBUG\":\"1\"}": {
+    "notes": {
+      "patched": true,
+      "ret": [true, true],
+      "cb": ["cb1:0", "after1", "cb2:0"],
+      "log": [
+        [
+          "[ink] [stderr] A\n",
+          {
+            "level": "warn"
+          }
+        ],
+        [
+          "[ink] [stderr] B\n",
+          {
+            "level": "warn"
+          }
+        ],
+        [
+          "[ink] [stderr] 68690a",
+          {
+            "level": "warn"
+          }
+        ],
+        [
+          "[ink] [stderr] 中文\n",
+          {
+            "level": "warn"
+          }
+        ],
+        [
+          "[ink] [stderr] 中",
+          {
+            "level": "warn"
+          }
+        ],
+        [
+          "[ink] [stderr] ",
+          {
+            "level": "warn"
+          }
+        ]
+      ],
+      "bad:object": ["cb", "threw:TypeError"],
+      "bad:null": ["cb", "threw:TypeError"],
+      "bad:undefined": ["cb", "threw:TypeError"],
+      "restored": true
+    },
+    "segments": {
+      "write": "",
+      "frame": "\u001b[?2026hcount 1\u001b[?2026l",
+      "end-frame": "\u001b[?2026hcount 1\u001b[?2026l\u001b[?2026h\n\u001b[?2026l",
+      "after-unmount": "",
+      "done": ""
+    },
+    "fd2": "AFTER\n"
+  },
+  "basic | {\"SID_CODE_DEBUG\":\"true\"}": {
+    "notes": {
+      "patched": true,
+      "ret": [true, true],
+      "cb": ["cb1:0", "after1", "cb2:0"],
+      "log": [
+        [
+          "[ink] [stderr] A\n",
+          {
+            "level": "warn"
+          }
+        ],
+        [
+          "[ink] [stderr] B\n",
+          {
+            "level": "warn"
+          }
+        ],
+        [
+          "[ink] [stderr] 68690a",
+          {
+            "level": "warn"
+          }
+        ],
+        [
+          "[ink] [stderr] 中文\n",
+          {
+            "level": "warn"
+          }
+        ],
+        [
+          "[ink] [stderr] 中",
+          {
+            "level": "warn"
+          }
+        ],
+        [
+          "[ink] [stderr] ",
+          {
+            "level": "warn"
+          }
+        ]
+      ],
+      "bad:object": ["cb", "threw:TypeError"],
+      "bad:null": ["cb", "threw:TypeError"],
+      "bad:undefined": ["cb", "threw:TypeError"],
+      "restored": true
+    },
+    "segments": {
+      "write": "",
+      "frame": "\u001b[?2026h\r\u001b[6C\u001b[1A1\r\n\u001b[?2026l",
+      "end-frame": "\u001b[?2026h\u001b[?25h\u001b[?2026l\u001b[?1007l\u001b[?1006l\u001b[?1003l\u001b[?1002l\u001b[?1000l\u001b[>4m\u001b[<u\u001b[?1004l\u001b[?2004l\u001b[?25h\u001b]9;4;0;\u0007\u001b]21337;indicator=;status=;status-color=\u0007\u001b[?25h",
+      "after-unmount": "",
+      "done": ""
+    },
+    "fd2": "AFTER\n"
+  },
+  "basic | {\"SID_CODE_DEBUG\":\"0\"}": {
+    "notes": {
+      "patched": true,
+      "ret": [true, true],
+      "cb": ["cb1:0", "after1", "cb2:0"],
+      "log": [],
+      "bad:object": ["cb", "threw:TypeError"],
+      "bad:null": ["cb", "threw:TypeError"],
+      "bad:undefined": ["cb", "threw:TypeError"],
+      "restored": true
+    },
+    "segments": {
+      "write": "",
+      "frame": "\u001b[?2026h\r\u001b[6C\u001b[1A1\r\n\u001b[?2026l",
+      "end-frame": "\u001b[?2026h\u001b[?25h\u001b[?2026l\u001b[?1007l\u001b[?1006l\u001b[?1003l\u001b[?1002l\u001b[?1000l\u001b[>4m\u001b[<u\u001b[?1004l\u001b[?2004l\u001b[?25h\u001b]9;4;0;\u0007\u001b]21337;indicator=;status=;status-color=\u0007\u001b[?25h",
+      "after-unmount": "",
+      "done": ""
+    },
+    "fd2": "AFTER\n"
+  },
+  "basic | {\"SID_CODE_DEBUG\":\"TRUE\"}": {
+    "notes": {
+      "patched": true,
+      "ret": [true, true],
+      "cb": ["cb1:0", "after1", "cb2:0"],
+      "log": [],
+      "bad:object": ["cb", "threw:TypeError"],
+      "bad:null": ["cb", "threw:TypeError"],
+      "bad:undefined": ["cb", "threw:TypeError"],
+      "restored": true
+    },
+    "segments": {
+      "write": "",
+      "frame": "\u001b[?2026h\r\u001b[6C\u001b[1A1\r\n\u001b[?2026l",
+      "end-frame": "\u001b[?2026h\u001b[?25h\u001b[?2026l\u001b[?1007l\u001b[?1006l\u001b[?1003l\u001b[?1002l\u001b[?1000l\u001b[>4m\u001b[<u\u001b[?1004l\u001b[?2004l\u001b[?25h\u001b]9;4;0;\u0007\u001b]21337;indicator=;status=;status-color=\u0007\u001b[?25h",
+      "after-unmount": "",
+      "done": ""
+    },
+    "fd2": "AFTER\n"
+  },
+  "basic | {\"SID_CODE_DEBUG\":\" 1\"}": {
+    "notes": {
+      "patched": true,
+      "ret": [true, true],
+      "cb": ["cb1:0", "after1", "cb2:0"],
+      "log": [],
+      "bad:object": ["cb", "threw:TypeError"],
+      "bad:null": ["cb", "threw:TypeError"],
+      "bad:undefined": ["cb", "threw:TypeError"],
+      "restored": true
+    },
+    "segments": {
+      "write": "",
+      "frame": "\u001b[?2026h\r\u001b[6C\u001b[1A1\r\n\u001b[?2026l",
+      "end-frame": "\u001b[?2026h\u001b[?25h\u001b[?2026l\u001b[?1007l\u001b[?1006l\u001b[?1003l\u001b[?1002l\u001b[?1000l\u001b[>4m\u001b[<u\u001b[?1004l\u001b[?2004l\u001b[?25h\u001b]9;4;0;\u0007\u001b]21337;indicator=;status=;status-color=\u0007\u001b[?25h",
+      "after-unmount": "",
+      "done": ""
+    },
+    "fd2": "AFTER\n"
+  },
+  "basic | {\"SID_CODE_DEBUG\":\"yes\"}": {
+    "notes": {
+      "patched": true,
+      "ret": [true, true],
+      "cb": ["cb1:0", "after1", "cb2:0"],
+      "log": [],
+      "bad:object": ["cb", "threw:TypeError"],
+      "bad:null": ["cb", "threw:TypeError"],
+      "bad:undefined": ["cb", "threw:TypeError"],
+      "restored": true
+    },
+    "segments": {
+      "write": "",
+      "frame": "\u001b[?2026h\r\u001b[6C\u001b[1A1\r\n\u001b[?2026l",
+      "end-frame": "\u001b[?2026h\u001b[?25h\u001b[?2026l\u001b[?1007l\u001b[?1006l\u001b[?1003l\u001b[?1002l\u001b[?1000l\u001b[>4m\u001b[<u\u001b[?1004l\u001b[?2004l\u001b[?25h\u001b]9;4;0;\u0007\u001b]21337;indicator=;status=;status-color=\u0007\u001b[?25h",
+      "after-unmount": "",
+      "done": ""
+    },
+    "fd2": "AFTER\n"
+  },
+  "basic | {}": {
+    "notes": {
+      "patched": true,
+      "ret": [true, true],
+      "cb": ["cb1:0", "after1", "cb2:0"],
+      "log": [],
+      "bad:object": ["cb", "threw:TypeError"],
+      "bad:null": ["cb", "threw:TypeError"],
+      "bad:undefined": ["cb", "threw:TypeError"],
+      "restored": true
+    },
+    "segments": {
+      "write": "",
+      "frame": "\u001b[?2026h\r\u001b[6C\u001b[1A1\r\n\u001b[?2026l",
+      "end-frame": "\u001b[?2026h\u001b[?25h\u001b[?2026l\u001b[?1007l\u001b[?1006l\u001b[?1003l\u001b[?1002l\u001b[?1000l\u001b[>4m\u001b[<u\u001b[?1004l\u001b[?2004l\u001b[?25h\u001b]9;4;0;\u0007\u001b]21337;indicator=;status=;status-color=\u0007\u001b[?25h",
+      "after-unmount": "",
+      "done": ""
+    },
+    "fd2": "AFTER\n"
+  },
+  "lifecycle | {\"SID_CODE_DEBUG\":\"1\"}": {
+    "notes": {
+      "steps": [
+        "a:true",
+        "custom-untouched:true",
+        "b-new:true",
+        "b-off->pa:true",
+        "a-off->orig:true",
+        "a2-off-still-patched:true",
+        "b2-off-still-patched:true",
+        "foreign-kept:true"
+      ],
+      "custom": ["C\n"],
+      "log": []
+    },
+    "segments": {
+      "cleanup": "\u001b[?1007l\u001b[?1006l\u001b[?1003l\u001b[?1002l\u001b[?1000l\u001b[>4m\u001b[<u\u001b[?1004l\u001b[?2004l\u001b[?25h\u001b]9;4;0;\u0007\u001b]21337;indicator=;status=;status-color=\u0007",
+      "end": "<<steps=[\"a:true\",\"custom-untouched:true\",\"b-new:true\",\"b-off->pa:true\",\"a-off->orig:true\",\"a2-off-still-patched:true\",\"b2-off-still-patched:true\",\"foreign-kept:true\"]>>"
+    },
+    "fd2": "CLEANUP\n"
+  },
+  "reenter | {\"FIXTURE_CE\":\"loop\",\"SID_CODE_DEBUG\":\"1\"}": {
+    "notes": {
+      "res": ["cb:R1", "true", "cb:R2", "true"],
+      "log": [
+        [
+          "[ink] [stderr] R1\n",
+          {
+            "level": "warn"
+          }
+        ],
+        [
+          "[ink] [stderr] R2\n",
+          {
+            "level": "warn"
+          }
+        ]
+      ],
+      "restored": true
+    },
+    "segments": {
+      "write": "",
+      "end": "\u001b[?2026h\u001b[?25h\u001b[?2026l\u001b[?1007l\u001b[?1006l\u001b[?1003l\u001b[?1002l\u001b[?1000l\u001b[>4m\u001b[<u\u001b[?1004l\u001b[?2004l\u001b[?25h\u001b]9;4;0;\u0007\u001b]21337;indicator=;status=;status-color=\u0007\u001b[?25h"
+    },
+    "fd2": "inner:1\ninner:2\n"
+  },
+  "reenter | {\"FIXTURE_CE\":\"throw\",\"SID_CODE_DEBUG\":\"1\"}": {
+    "notes": {
+      "res": ["cb:R1", "threw:boom", "cb:R2", "threw:boom"],
+      "log": [
+        [
+          "[ink] [stderr] R1\n",
+          {
+            "level": "warn"
+          }
+        ],
+        [
+          "[ink] [stderr] R2\n",
+          {
+            "level": "warn"
+          }
+        ]
+      ],
+      "restored": true
+    },
+    "segments": {
+      "write": "",
+      "end": "\u001b[?2026h\u001b[?25h\u001b[?2026l\u001b[?1007l\u001b[?1006l\u001b[?1003l\u001b[?1002l\u001b[?1000l\u001b[>4m\u001b[<u\u001b[?1004l\u001b[?2004l\u001b[?25h\u001b]9;4;0;\u0007\u001b]21337;indicator=;status=;status-color=\u0007\u001b[?25h"
+    },
+    "fd2": ""
+  }
+}

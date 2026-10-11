@@ -1,0 +1,771 @@
+{
+  "scenario": "C2",
+  "exitCode": 0,
+  "total": {
+    "bytes": 6414,
+    "eraseScreen": 1,
+    "eraseScrollback": 1,
+    "syncBegin": 4,
+    "syncEnd": 4,
+    "altEnter": 0,
+    "altExit": 0,
+    "osc": {
+      "9": 1,
+      "21337": 1
+    }
+  },
+  "notes": {},
+  "steps": [
+    {
+      "label": "bash 执行中",
+      "buffer": "normal",
+      "cursor": {
+        "x": 0,
+        "y": 8,
+        "hidden": true
+      },
+      "modes": {
+        "bracketedPaste": false,
+        "mouseTracking": "none",
+        "sendFocus": false,
+        "wraparound": true
+      },
+      "metrics": {
+        "bytes": 256,
+        "eraseScreen": 0,
+        "eraseScrollback": 0,
+        "syncBegin": 1,
+        "syncEnd": 1,
+        "altEnter": 0,
+        "altExit": 0,
+        "osc": {}
+      },
+      "screen": [
+        "",
+        "> 跑一下测试",
+        "",
+        "",
+        "⏺ bash bash 参数 2                                                 (执行中…)",
+        "",
+        "执行中…"
+      ],
+      "scrollback": [],
+      "styled": [
+        {
+          "y": 1,
+          "runs": [
+            {
+              "text": ">",
+              "style": "fg=#cba6f7"
+            },
+            {
+              "text": "跑一下测试",
+              "style": "fg=#cdd6f4"
+            }
+          ]
+        },
+        {
+          "y": 4,
+          "runs": [
+            {
+              "text": "⏺",
+              "style": "fg=#89b4fa"
+            },
+            {
+              "text": "bash",
+              "style": "fg=#cdd6f4 b"
+            },
+            {
+              "text": "bash",
+              "style": "fg=#6c7086"
+            },
+            {
+              "text": "参数",
+              "style": "fg=#6c7086"
+            },
+            {
+              "text": "2",
+              "style": "fg=#6c7086"
+            },
+            {
+              "text": "(执行中…)",
+              "style": "fg=#89b4fa"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "label": "执行中项被挤进 scrollback",
+      "buffer": "normal",
+      "cursor": {
+        "x": 0,
+        "y": 23,
+        "hidden": true
+      },
+      "modes": {
+        "bracketedPaste": false,
+        "mouseTracking": "none",
+        "sendFocus": false,
+        "wraparound": true
+      },
+      "metrics": {
+        "bytes": 2912,
+        "eraseScreen": 0,
+        "eraseScrollback": 0,
+        "syncBegin": 1,
+        "syncEnd": 1,
+        "altEnter": 0,
+        "altExit": 0,
+        "osc": {}
+      },
+      "screen": [
+        "",
+        "⏺ read_file read_file 参数 24",
+        "",
+        "⏺ read_file read_file 参数 25",
+        "",
+        "⏺ read_file read_file 参数 26",
+        "",
+        "⏺ read_file read_file 参数 27",
+        "",
+        "⏺ read_file read_file 参数 28",
+        "",
+        "⏺ read_file read_file 参数 29",
+        "",
+        "⏺ read_file read_file 参数 30",
+        "",
+        "⏺ read_file read_file 参数 31",
+        "",
+        "⏺ read_file read_file 参数 32",
+        "",
+        "⏺ read_file read_file 参数 33",
+        "",
+        "执行中…"
+      ],
+      "scrollback": [
+        "",
+        "> 跑一下测试",
+        "",
+        "",
+        "⏺ bash bash 参数 2                                                 (执行中…)",
+        "",
+        "⏺ read_file read_file 参数 10",
+        "",
+        "⏺ read_file read_file 参数 11",
+        "",
+        "⏺ read_file read_file 参数 12",
+        "",
+        "⏺ read_file read_file 参数 13",
+        "",
+        "⏺ read_file read_file 参数 14",
+        "",
+        "⏺ read_file read_file 参数 15",
+        "",
+        "⏺ read_file read_file 参数 16",
+        "",
+        "⏺ read_file read_file 参数 17",
+        "",
+        "⏺ read_file read_file 参数 18",
+        "",
+        "⏺ read_file read_file 参数 19",
+        "",
+        "⏺ read_file read_file 参数 20",
+        "",
+        "⏺ read_file read_file 参数 21",
+        "",
+        "⏺ read_file read_file 参数 22",
+        "",
+        "⏺ read_file read_file 参数 23"
+      ],
+      "styled": [
+        {
+          "y": 1,
+          "runs": [
+            {
+              "text": "⏺",
+              "style": "fg=#a6e3a1"
+            },
+            {
+              "text": "read_file",
+              "style": "fg=#cdd6f4 b"
+            },
+            {
+              "text": "read_file",
+              "style": "fg=#6c7086"
+            },
+            {
+              "text": "参数",
+              "style": "fg=#6c7086"
+            },
+            {
+              "text": "24",
+              "style": "fg=#6c7086"
+            }
+          ]
+        },
+        {
+          "y": 3,
+          "runs": [
+            {
+              "text": "⏺",
+              "style": "fg=#a6e3a1"
+            },
+            {
+              "text": "read_file",
+              "style": "fg=#cdd6f4 b"
+            },
+            {
+              "text": "read_file",
+              "style": "fg=#6c7086"
+            },
+            {
+              "text": "参数",
+              "style": "fg=#6c7086"
+            },
+            {
+              "text": "25",
+              "style": "fg=#6c7086"
+            }
+          ]
+        },
+        {
+          "y": 5,
+          "runs": [
+            {
+              "text": "⏺",
+              "style": "fg=#a6e3a1"
+            },
+            {
+              "text": "read_file",
+              "style": "fg=#cdd6f4 b"
+            },
+            {
+              "text": "read_file",
+              "style": "fg=#6c7086"
+            },
+            {
+              "text": "参数",
+              "style": "fg=#6c7086"
+            },
+            {
+              "text": "26",
+              "style": "fg=#6c7086"
+            }
+          ]
+        },
+        {
+          "y": 7,
+          "runs": [
+            {
+              "text": "⏺",
+              "style": "fg=#a6e3a1"
+            },
+            {
+              "text": "read_file",
+              "style": "fg=#cdd6f4 b"
+            },
+            {
+              "text": "read_file",
+              "style": "fg=#6c7086"
+            },
+            {
+              "text": "参数",
+              "style": "fg=#6c7086"
+            },
+            {
+              "text": "27",
+              "style": "fg=#6c7086"
+            }
+          ]
+        },
+        {
+          "y": 9,
+          "runs": [
+            {
+              "text": "⏺",
+              "style": "fg=#a6e3a1"
+            },
+            {
+              "text": "read_file",
+              "style": "fg=#cdd6f4 b"
+            },
+            {
+              "text": "read_file",
+              "style": "fg=#6c7086"
+            },
+            {
+              "text": "参数",
+              "style": "fg=#6c7086"
+            },
+            {
+              "text": "28",
+              "style": "fg=#6c7086"
+            }
+          ]
+        },
+        {
+          "y": 11,
+          "runs": [
+            {
+              "text": "⏺",
+              "style": "fg=#a6e3a1"
+            },
+            {
+              "text": "read_file",
+              "style": "fg=#cdd6f4 b"
+            },
+            {
+              "text": "read_file",
+              "style": "fg=#6c7086"
+            },
+            {
+              "text": "参数",
+              "style": "fg=#6c7086"
+            },
+            {
+              "text": "29",
+              "style": "fg=#6c7086"
+            }
+          ]
+        },
+        {
+          "y": 13,
+          "runs": [
+            {
+              "text": "⏺",
+              "style": "fg=#a6e3a1"
+            },
+            {
+              "text": "read_file",
+              "style": "fg=#cdd6f4 b"
+            },
+            {
+              "text": "read_file",
+              "style": "fg=#6c7086"
+            },
+            {
+              "text": "参数",
+              "style": "fg=#6c7086"
+            },
+            {
+              "text": "30",
+              "style": "fg=#6c7086"
+            }
+          ]
+        },
+        {
+          "y": 15,
+          "runs": [
+            {
+              "text": "⏺",
+              "style": "fg=#a6e3a1"
+            },
+            {
+              "text": "read_file",
+              "style": "fg=#cdd6f4 b"
+            },
+            {
+              "text": "read_file",
+              "style": "fg=#6c7086"
+            },
+            {
+              "text": "参数",
+              "style": "fg=#6c7086"
+            },
+            {
+              "text": "31",
+              "style": "fg=#6c7086"
+            }
+          ]
+        },
+        {
+          "y": 17,
+          "runs": [
+            {
+              "text": "⏺",
+              "style": "fg=#a6e3a1"
+            },
+            {
+              "text": "read_file",
+              "style": "fg=#cdd6f4 b"
+            },
+            {
+              "text": "read_file",
+              "style": "fg=#6c7086"
+            },
+            {
+              "text": "参数",
+              "style": "fg=#6c7086"
+            },
+            {
+              "text": "32",
+              "style": "fg=#6c7086"
+            }
+          ]
+        },
+        {
+          "y": 19,
+          "runs": [
+            {
+              "text": "⏺",
+              "style": "fg=#a6e3a1"
+            },
+            {
+              "text": "read_file",
+              "style": "fg=#cdd6f4 b"
+            },
+            {
+              "text": "read_file",
+              "style": "fg=#6c7086"
+            },
+            {
+              "text": "参数",
+              "style": "fg=#6c7086"
+            },
+            {
+              "text": "33",
+              "style": "fg=#6c7086"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "label": "屏外项完成",
+      "buffer": "normal",
+      "cursor": {
+        "x": 0,
+        "y": 23,
+        "hidden": true
+      },
+      "modes": {
+        "bracketedPaste": false,
+        "mouseTracking": "none",
+        "sendFocus": false,
+        "wraparound": true
+      },
+      "metrics": {
+        "bytes": 3097,
+        "eraseScreen": 1,
+        "eraseScrollback": 1,
+        "syncBegin": 1,
+        "syncEnd": 1,
+        "altEnter": 0,
+        "altExit": 0,
+        "osc": {}
+      },
+      "screen": [
+        "",
+        "⏺ read_file read_file 参数 24",
+        "",
+        "⏺ read_file read_file 参数 25",
+        "",
+        "⏺ read_file read_file 参数 26",
+        "",
+        "⏺ read_file read_file 参数 27",
+        "",
+        "⏺ read_file read_file 参数 28",
+        "",
+        "⏺ read_file read_file 参数 29",
+        "",
+        "⏺ read_file read_file 参数 30",
+        "",
+        "⏺ read_file read_file 参数 31",
+        "",
+        "⏺ read_file read_file 参数 32",
+        "",
+        "⏺ read_file read_file 参数 33",
+        "",
+        "完成"
+      ],
+      "scrollback": [
+        "",
+        "> 跑一下测试",
+        "",
+        "",
+        "⏺ bash bash 参数 2",
+        "",
+        "⏺ read_file read_file 参数 10",
+        "",
+        "⏺ read_file read_file 参数 11",
+        "",
+        "⏺ read_file read_file 参数 12",
+        "",
+        "⏺ read_file read_file 参数 13",
+        "",
+        "⏺ read_file read_file 参数 14",
+        "",
+        "⏺ read_file read_file 参数 15",
+        "",
+        "⏺ read_file read_file 参数 16",
+        "",
+        "⏺ read_file read_file 参数 17",
+        "",
+        "⏺ read_file read_file 参数 18",
+        "",
+        "⏺ read_file read_file 参数 19",
+        "",
+        "⏺ read_file read_file 参数 20",
+        "",
+        "⏺ read_file read_file 参数 21",
+        "",
+        "⏺ read_file read_file 参数 22",
+        "",
+        "⏺ read_file read_file 参数 23"
+      ],
+      "styled": [
+        {
+          "y": 1,
+          "runs": [
+            {
+              "text": "⏺",
+              "style": "fg=#a6e3a1"
+            },
+            {
+              "text": "read_file",
+              "style": "fg=#cdd6f4 b"
+            },
+            {
+              "text": "read_file",
+              "style": "fg=#6c7086"
+            },
+            {
+              "text": "参数",
+              "style": "fg=#6c7086"
+            },
+            {
+              "text": "24",
+              "style": "fg=#6c7086"
+            }
+          ]
+        },
+        {
+          "y": 3,
+          "runs": [
+            {
+              "text": "⏺",
+              "style": "fg=#a6e3a1"
+            },
+            {
+              "text": "read_file",
+              "style": "fg=#cdd6f4 b"
+            },
+            {
+              "text": "read_file",
+              "style": "fg=#6c7086"
+            },
+            {
+              "text": "参数",
+              "style": "fg=#6c7086"
+            },
+            {
+              "text": "25",
+              "style": "fg=#6c7086"
+            }
+          ]
+        },
+        {
+          "y": 5,
+          "runs": [
+            {
+              "text": "⏺",
+              "style": "fg=#a6e3a1"
+            },
+            {
+              "text": "read_file",
+              "style": "fg=#cdd6f4 b"
+            },
+            {
+              "text": "read_file",
+              "style": "fg=#6c7086"
+            },
+            {
+              "text": "参数",
+              "style": "fg=#6c7086"
+            },
+            {
+              "text": "26",
+              "style": "fg=#6c7086"
+            }
+          ]
+        },
+        {
+          "y": 7,
+          "runs": [
+            {
+              "text": "⏺",
+              "style": "fg=#a6e3a1"
+            },
+            {
+              "text": "read_file",
+              "style": "fg=#cdd6f4 b"
+            },
+            {
+              "text": "read_file",
+              "style": "fg=#6c7086"
+            },
+            {
+              "text": "参数",
+              "style": "fg=#6c7086"
+            },
+            {
+              "text": "27",
+              "style": "fg=#6c7086"
+            }
+          ]
+        },
+        {
+          "y": 9,
+          "runs": [
+            {
+              "text": "⏺",
+              "style": "fg=#a6e3a1"
+            },
+            {
+              "text": "read_file",
+              "style": "fg=#cdd6f4 b"
+            },
+            {
+              "text": "read_file",
+              "style": "fg=#6c7086"
+            },
+            {
+              "text": "参数",
+              "style": "fg=#6c7086"
+            },
+            {
+              "text": "28",
+              "style": "fg=#6c7086"
+            }
+          ]
+        },
+        {
+          "y": 11,
+          "runs": [
+            {
+              "text": "⏺",
+              "style": "fg=#a6e3a1"
+            },
+            {
+              "text": "read_file",
+              "style": "fg=#cdd6f4 b"
+            },
+            {
+              "text": "read_file",
+              "style": "fg=#6c7086"
+            },
+            {
+              "text": "参数",
+              "style": "fg=#6c7086"
+            },
+            {
+              "text": "29",
+              "style": "fg=#6c7086"
+            }
+          ]
+        },
+        {
+          "y": 13,
+          "runs": [
+            {
+              "text": "⏺",
+              "style": "fg=#a6e3a1"
+            },
+            {
+              "text": "read_file",
+              "style": "fg=#cdd6f4 b"
+            },
+            {
+              "text": "read_file",
+              "style": "fg=#6c7086"
+            },
+            {
+              "text": "参数",
+              "style": "fg=#6c7086"
+            },
+            {
+              "text": "30",
+              "style": "fg=#6c7086"
+            }
+          ]
+        },
+        {
+          "y": 15,
+          "runs": [
+            {
+              "text": "⏺",
+              "style": "fg=#a6e3a1"
+            },
+            {
+              "text": "read_file",
+              "style": "fg=#cdd6f4 b"
+            },
+            {
+              "text": "read_file",
+              "style": "fg=#6c7086"
+            },
+            {
+              "text": "参数",
+              "style": "fg=#6c7086"
+            },
+            {
+              "text": "31",
+              "style": "fg=#6c7086"
+            }
+          ]
+        },
+        {
+          "y": 17,
+          "runs": [
+            {
+              "text": "⏺",
+              "style": "fg=#a6e3a1"
+            },
+            {
+              "text": "read_file",
+              "style": "fg=#cdd6f4 b"
+            },
+            {
+              "text": "read_file",
+              "style": "fg=#6c7086"
+            },
+            {
+              "text": "参数",
+              "style": "fg=#6c7086"
+            },
+            {
+              "text": "32",
+              "style": "fg=#6c7086"
+            }
+          ]
+        },
+        {
+          "y": 19,
+          "runs": [
+            {
+              "text": "⏺",
+              "style": "fg=#a6e3a1"
+            },
+            {
+              "text": "read_file",
+              "style": "fg=#cdd6f4 b"
+            },
+            {
+              "text": "read_file",
+              "style": "fg=#6c7086"
+            },
+            {
+              "text": "参数",
+              "style": "fg=#6c7086"
+            },
+            {
+              "text": "33",
+              "style": "fg=#6c7086"
+            }
+          ]
+        }
+      ]
+    }
+  ]
+}

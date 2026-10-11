@@ -1,0 +1,110 @@
+{
+  "enterExit | {}": {
+    "pre": "\u001b[?2026hpre\r\n\u001b[?2026l\u001b[?25l",
+    "enter": "\u001b[?1049h\u001b[2J\u001b[H\u001b[?1000h\u001b[?1002h\u001b[?1003h\u001b[?1006h\u001b[?1007h\u001b[Hhi\u001b[6;1H",
+    "update": "\u001b[H\r\u001b[1Bv2\u001b[6;1H",
+    "exit": "\u001b[?1007l\u001b[?1006l\u001b[?1003l\u001b[?1002l\u001b[?1000l\u001b[?1049l\u001b[?2026h\u001b[2J\u001b[3J\u001b[Hpost\r\n\u001b[?2026l",
+    "afterExit": "\u001b[?2026h\r\u001b[4C\u001b[1A2\r\n\u001b[?2026l",
+    "unmount": ""
+  },
+  "noMouse | {}": {
+    "enter": "\u001b[?1049h\u001b[2J\u001b[H\u001b[Hhi\u001b[6;1H\u001b[?25l",
+    "exit": "\u001b[?1049l\u001b[?2026h\u001b[2J\u001b[3J\u001b[Hpost\r\n\u001b[?2026l",
+    "unmount": ""
+  },
+  "defaultProps | {}": {
+    "enter": "\u001b[?1049h\u001b[2J\u001b[H\u001b[?1000h\u001b[?1002h\u001b[?1003h\u001b[?1006h\u001b[?1007h\u001b[Hhi\u001b[6;1H\u001b[?25l",
+    "unmount": ""
+  },
+  "defaultProps | {\"SID_CODE_DISABLE_MOUSE_CLICKS\":\"1\"}": {
+    "enter": "\u001b[?1049h\u001b[2J\u001b[H\u001b[?1000h\u001b[?1002h\u001b[?1003h\u001b[?1006h\u001b[?1007h\u001b[Hhi\u001b[6;1H\u001b[?25l",
+    "unmount": ""
+  },
+  "toggleMouse | {}": {
+    "enter": "\u001b[?1049h\u001b[2J\u001b[H\u001b[?1000h\u001b[?1002h\u001b[?1003h\u001b[?1006h\u001b[?1007h\u001b[Ht\u001b[6;1H\u001b[?25l",
+    "off": "\u001b[?1007l\u001b[?1006l\u001b[?1003l\u001b[?1002l\u001b[?1000l\u001b[?1049l\u001b[?1049h\u001b[2J\u001b[H\u001b[Ht\u001b[6;1H",
+    "on": "\u001b[?1049l\u001b[?1049h\u001b[2J\u001b[H\u001b[?1000h\u001b[?1002h\u001b[?1003h\u001b[?1006h\u001b[?1007h\u001b[Ht\u001b[6;1H",
+    "unmount": ""
+  },
+  "nested | {}": {
+    "enter": "\u001b[?1049h\u001b[2J\u001b[H\u001b[?1049h\u001b[2J\u001b[H\u001b[?1000h\u001b[?1002h\u001b[?1003h\u001b[?1006h\u001b[?1007h\u001b[Hn\u001b[6;1H\u001b[?25l",
+    "inner": "\u001b[?1049l\u001b[?2026h\u001b[2J\u001b[3J\u001b[Hn\r\n\r\n\r\n\r\n\r\n\r\n\u001b[?2026l",
+    "outer": "\u001b[?1007l\u001b[?1006l\u001b[?1003l\u001b[?1002l\u001b[?1000l\u001b[?1049l\u001b[?2026h\u001b[2J\u001b[3J\u001b[Hx\r\n\u001b[?2026l",
+    "unmount": ""
+  },
+  "siblings | {}": {
+    "enter": "\u001b[?1049h\u001b[2J\u001b[H\u001b[?1000h\u001b[?1002h\u001b[?1003h\u001b[?1006h\u001b[?1007h\u001b[?1049h\u001b[2J\u001b[H\u001b[?1000h\u001b[?1002h\u001b[?1003h\u001b[?1006h\u001b[?1007h\u001b[Ha\u001b[6;1H\u001b[?25l",
+    "unmount": ""
+  },
+  "resize | {}": {
+    "enter": "\u001b[?1049h\u001b[2J\u001b[H\u001b[?1000h\u001b[?1002h\u001b[?1003h\u001b[?1006h\u001b[?1007h\u001b[Hr\u001b[6;1H\u001b[?25l",
+    "resized": "\u001b[?1000h\u001b[?1002h\u001b[?1003h\u001b[?1006h\u001b[?1007h\u001b[2J\u001b[Hr\u001b[8;1H",
+    "sameSize": "",
+    "taller": "\u001b[?1000h\u001b[?1002h\u001b[?1003h\u001b[?1006h\u001b[?1007h\u001b[2J\u001b[Hr\u001b[9;1H",
+    "unmount": ""
+  },
+  "tall | {}": {
+    "enter": "\u001b[?1049h\u001b[2J\u001b[H\u001b[?1000h\u001b[?1002h\u001b[?1003h\u001b[?1006h\u001b[?1007h\u001b[HL4\r\u001b[1BL9\r\u001b[1BL14\r\u001b[1BL19\r\u001b[1BL24\r\u001b[1BL29\u001b[6;1H\u001b[?25l",
+    "update": "\u001b[H\u001b[2Cx\u001b[6;1H",
+    "unmount": ""
+  },
+  "tallNoShrink | {}": {
+    "enter": "\u001b[?1049h\u001b[2J\u001b[H\u001b[?1000h\u001b[?1002h\u001b[?1003h\u001b[?1006h\u001b[?1007h\u001b[HL0\r\u001b[1BL1\r\u001b[1BL2\r\u001b[1BL3\r\u001b[1BL4\r\u001b[1BL5\u001b[6;1H\u001b[?25l",
+    "unmount": ""
+  },
+  "scroll | {}": {
+    "enter": "\u001b[?1049h\u001b[2J\u001b[H\u001b[?1000h\u001b[?1002h\u001b[?1003h\u001b[?1006h\u001b[?1007h\u001b[H\r\u001b[5Bbar\u001b[6;1H\u001b[?25l",
+    "unmount": ""
+  },
+  "growShrink | {}": {
+    "enter": "\u001b[?1049h\u001b[2J\u001b[H\u001b[?1000h\u001b[?1002h\u001b[?1003h\u001b[?1006h\u001b[?1007h\u001b[Ha\r\u001b[1Bb\u001b[6;1H\u001b[?25l",
+    "grow": "\u001b[H\r\u001b[1C\u001b[1Bc\r\u001b[1Bd\u001b[6;1H",
+    "shrink": "\u001b[H\r\u001b[1B  \r\u001b[1B \u001b[6;1H",
+    "same": "",
+    "unmount": ""
+  },
+  "styled | {\"FORCE_COLOR\":\"3\"}": {
+    "enter": "\u001b[?1049h\u001b[2J\u001b[H\u001b[?1000h\u001b[?1002h\u001b[?1003h\u001b[?1006h\u001b[?1007h\u001b[H\u001b[1ma b\r\u001b[1B\u001b[22m\u001b[7mc  d\u001b[27m\u001b[6;1H\u001b[?25l",
+    "update": "\u001b[H\u001b[2C\u001b[1m  b\r\u001b[3C\u001b[1B\u001b[22m\u001b[7me\u001b[27m\u001b[6;1H",
+    "unmount": ""
+  },
+  "wide | {}": {
+    "enter": "\u001b[?1049h\u001b[2J\u001b[H\u001b[?1000h\u001b[?1002h\u001b[?1003h\u001b[?1006h\u001b[?1007h\u001b[H中文ab\r\u001b[1Bx\u001b[1Cy\u001b[6;1H\u001b[?25l",
+    "update": "\u001b[H\u001b[4Ccd\r\u001b[2C\u001b[1B y\u001b[6;1H",
+    "unmount": ""
+  },
+  "empty | {}": {
+    "enter": "\u001b[?1049h\u001b[2J\u001b[H\u001b[?1000h\u001b[?1002h\u001b[?1003h\u001b[?1006h\u001b[?1007h\u001b[?25l",
+    "update": "\u001b[Hz\u001b[6;1H",
+    "unmount": ""
+  },
+  "sigcont | {}": {
+    "enter": "\u001b[?1049h\u001b[2J\u001b[H\u001b[Hs1\u001b[6;1H\u001b[?25l",
+    "sigcont": "\u001b[?1049h\u001b[2J\u001b[H",
+    "frame": "\u001b[Hs2\u001b[6;1H",
+    "unmount": ""
+  },
+  "enterExit | {\"TERM_PROGRAM\":\"vscode\"}": {
+    "pre": "\u001b[?2026hpre\r\n\u001b[?2026l\u001b[?25l",
+    "enter": "\u001b[?1049h\u001b[2J\u001b[H\u001b[?1000h\u001b[?1002h\u001b[?1003h\u001b[?1006h\u001b[?1007h\u001b[?2026h\u001b[Hhi\u001b[6;1H\u001b[?2026l",
+    "update": "\u001b[?2026h\u001b[H\r\u001b[1Bv2\u001b[6;1H\u001b[?2026l",
+    "exit": "\u001b[?1007l\u001b[?1006l\u001b[?1003l\u001b[?1002l\u001b[?1000l\u001b[?1049l\u001b[?2026h\u001b[2J\u001b[3J\u001b[Hpost\r\n\u001b[?2026l",
+    "afterExit": "\u001b[?2026h\r\u001b[4C\u001b[1A2\r\n\u001b[?2026l",
+    "unmount": ""
+  },
+  "resize | {\"TERM_PROGRAM\":\"vscode\"}": {
+    "enter": "\u001b[?1049h\u001b[2J\u001b[H\u001b[?1000h\u001b[?1002h\u001b[?1003h\u001b[?1006h\u001b[?1007h\u001b[?2026h\u001b[Hr\u001b[6;1H\u001b[?2026l\u001b[?25l",
+    "resized": "\u001b[?1000h\u001b[?1002h\u001b[?1003h\u001b[?1006h\u001b[?1007h\u001b[?2026h\u001b[2J\u001b[Hr\u001b[8;1H\u001b[?2026l",
+    "sameSize": "",
+    "taller": "\u001b[?1000h\u001b[?1002h\u001b[?1003h\u001b[?1006h\u001b[?1007h\u001b[?2026h\u001b[2J\u001b[Hr\u001b[9;1H\u001b[?2026l",
+    "unmount": ""
+  },
+  "enterExit | {\"TERM_PROGRAM\":\"vscode\",\"TMUX\":\"/tmp/tmux-1/default,1,0\"}": {
+    "pre": "\u001b[?2026hpre\r\n\u001b[?2026l\u001b[?25l",
+    "enter": "\u001b[?1049h\u001b[2J\u001b[H\u001b[?1000h\u001b[?1002h\u001b[?1003h\u001b[?1006h\u001b[?1007h\u001b[Hhi\u001b[6;1H",
+    "update": "\u001b[H\r\u001b[1Bv2\u001b[6;1H",
+    "exit": "\u001b[?1007l\u001b[?1006l\u001b[?1003l\u001b[?1002l\u001b[?1000l\u001b[?1049l\u001b[?2026h\u001b[2J\u001b[3J\u001b[Hpost\r\n\u001b[?2026l",
+    "afterExit": "\u001b[?2026h\r\u001b[4C\u001b[1A2\r\n\u001b[?2026l",
+    "unmount": ""
+  }
+}

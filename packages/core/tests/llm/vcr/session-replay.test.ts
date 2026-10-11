@@ -126,6 +126,8 @@ async function runSession(fx: SessionFixture, at: Date): Promise<RunResult> {
     getCurrentModel: () => fx.model,
     getModelForSubAgent: () => fx.model,
     getProviderForSubAgent: () => subProvider,
+    // 子代理现按「最终模型」解析 provider（不再按类型），mock 须提供该入口
+    getProviderForModelName: () => subProvider,
     getLanguage: () => "zh" as const,
     getKnownModelNames: () => [fx.model],
     getContextWindow: () => 200_000,

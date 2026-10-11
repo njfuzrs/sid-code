@@ -2,13 +2,14 @@
  * 契约 X5（B9 / T6.1b）：外部编辑器前后的 `enterAlternateScreen` / `exitAlternateScreen`。
  *
  * 期望值是 2026-10-09 对 legacy 的黑盒探针（D-5）。每个用例在子进程里跑 fixtures/external-editor-app.tsx，
- * 两套底座各跑一次：先断言 legacy 满足写死的字节（防止测试和基线一起漂），再断言 next 与 legacy 逐段一致。
+ * 先断言写死的字节，再断言 next 与 T9.1 删除旧底座前冻结的 legacy 输出逐段一致（`fixtures/legacy-frozen/`）。
  * 卸载那一段（`unmount` 标记之后）不比：属于生命周期（X3，T7.1b）。
  */
 import { describe, expect, test } from "bun:test";
 import { closeSync, mkdtempSync, openSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { frozenKey, legacyFrozen } from "./fixtures/legacy-frozen.ts";
 
 const APP = join(import.meta.dir, "fixtures/external-editor-app.tsx");
 const ESC = "\x1b";
@@ -22,9 +23,7 @@ const HANDOFF_TAIL = `${ESC}[?1004l${ESC}[0m${ESC}[?25h${ESC}[2J${ESC}[H`;
 const KITTY = { TERM_PROGRAM: "kitty", KITTY_WINDOW_ID: "1" };
 const REASSERT_KEYS = `${ESC}[<u${ESC}[>1u${ESC}[>4;2m`;
 
-type Renderer = "legacy" | "next";
-
-function run(name: string, renderer: Renderer, env: Record<string, string> = {}) {
+function run(name: string, env: Record<string, string> = {}) {
   const dir = mkdtempSync(join(tmpdir(), "external-editor-"));
   const file = join(dir, "out");
   const fd = openSync(file, "w");
@@ -37,12 +36,11 @@ function run(name: string, renderer: Renderer, env: Record<string, string> = {})
         HOME: process.env.HOME!,
         NODE_ENV: "test",
         TERM: "xterm-256color",
-        SID_TUI_RENDERER: renderer,
         ...env,
       },
     });
     if (r.exitCode !== 0)
-      throw new Error(`${renderer} ${name} 退出码 ${r.exitCode}：${readFileSync(file, "utf8")}`);
+      throw new Error(`${name} 退出码 ${r.exitCode}：${readFileSync(file, "utf8")}`);
   } finally {
     closeSync(fd);
   }
@@ -54,18 +52,16 @@ function run(name: string, renderer: Renderer, env: Record<string, string> = {})
     segs[m[1]!] = raw.slice(start, m.index!);
     start = m.index! + m[0].length;
   }
-  if (!("unmount" in segs))
-    throw new Error(`${renderer} ${name} 没跑到 unmount 标记：${JSON.stringify(raw)}`);
+  if (!("unmount" in segs)) throw new Error(`${name} 没跑到 unmount 标记：${JSON.stringify(raw)}`);
   return segs;
 }
 
-function dual(name: string, expected: Record<string, string>, env?: Record<string, string>) {
-  const legacy = run(name, "legacy", env);
-  for (const [k, v] of Object.entries(expected))
-    expect(legacy[k], `legacy ${name}「${k}」`).toBe(v);
-  const next = run(name, "next", env);
+function dual(name: string, expected: Record<string, string>, env: Record<string, string> = {}) {
+  const next = run(name, env);
+  for (const [k, v] of Object.entries(expected)) expect(next[k], `${name}「${k}」`).toBe(v);
   // 挂载段（首帧 + raw mode 开启）不归 X5：两边隐藏光标的时机不同（I4 / X3 的事），只比之后的段
-  delete legacy.mounted;
+  // 冻结时已去掉 legacy 的 mounted 段
+  const legacy = legacyFrozen<Record<string, string>>("external-editor", frozenKey(name, env));
   delete next.mounted;
   expect(next).toEqual(legacy);
 }

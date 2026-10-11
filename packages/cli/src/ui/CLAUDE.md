@@ -1,5 +1,5 @@
 ---
-paths: ["src/ui/**", "src/ink/**"]
+paths: ["src/ui/**"]
 ---
 
 # src/ui — TUI 设计规范：视觉语言 + 交互体验（改任何 UI 前必读）
@@ -30,7 +30,7 @@ L1 视觉原子    字形、颜色、主题                          ← 最小�
 - ✅ **已落地**：代码里已实现，照着用、改到时对齐，别推翻。
 - ⚠️ **待补**：方向认可但还没做全，新需求碰到了就补上，补时遵循这里的设计。
 
-> 注：渲染底座正在整层替换（B9）。组件**只经 `ui/render-port/` 导入**渲染能力，**不要去读、也不要从旧底座（`packages/tui-renderer` / `.vendor-src/`）或 cc 源码搬代码**——详见 L5.3。
+> 注：渲染底座是 `packages/tui`（B9 已完成整层替换）。组件**只经 `ui/render-port/` 导入**渲染能力，**不从 cc 源码搬代码**——详见 L5.3。
 
 **元原则（贯穿五层，记不住别的就记这三条）：**
 
@@ -206,7 +206,7 @@ L1 视觉原子    字形、颜色、主题                          ← 最小�
 
 ### 3.4 流式渲染：逐字可见，已完成与进行中分离 ✅
 
-> **渲染能力一律经 `ui/render-port/` 取**（B9 重构中，见 L5.3）。下文提到的底座文件名只说明能力出处，不是让你去读那里的代码。
+> **渲染能力一律经 `ui/render-port/` 取**（见 L5.3）。下文提到的底座文件名只说明能力出处，不是让你去读那里的代码。
 
 - **逐字输出可见** ✅，不要憋到结束才一次性吐出（`StreamingMessage.tsx`）。
 - **已完成消息走 Static + blit 缓存，进行中消息重渲** ✅：端口的 `Static`（`render-port/components.ts`）承载已完成消息（`MainScreenLayout.tsx` 已用），items 引用不变时 memo 跳过重渲；底座内部按节点缓存 layout bounds 做 blit + 局部清除（O(dirty) 而非 O(mounted)，契约 P3）。新组件让"已完成区"items 引用稳定即可吃到这套缓存，不要每帧重建数组。
@@ -353,23 +353,21 @@ L1 视觉原子    字形、颜色、主题                          ← 最小�
 - 颜色：`themeManager.getSemanticColors()` 看**实际解析出的值**（定义 ≠ 生效）。
 - 关键计算：进度条 0/1 边界、`stringWidth` 对齐、tail 截断行数等纯函数直接打印验证。
 
-### 5.3 渲染底座：只经 `ui/render-port/` 使用，不读旧底座、不搬 cc ✅
+### 5.3 渲染底座：只经 `ui/render-port/` 使用，不搬 cc ✅
 
-**现状（2026-10，B9 / T1.3）**：渲染底座正在整层替换（设计文档《TUI 渲染底座重构 —— 整体设计》）。
-旧底座 `packages/tui-renderer` 是经泄露快照引入的 cc ink 衍生版，B9 要把它换成「以 MIT 上游 ink 为起点、自研差异部分」的新底座。
-在此期间四条规则：
+**现状（2026-10，B9 / T9.1 起）**：渲染底座只有一套 —— `packages/tui`，以 MIT 上游 ink@7.1.1 为起点，
+相对上游的改动逐条记在 `packages/tui/UPSTREAM-DIFF.md`。旧底座 `packages/tui-renderer`（经泄露快照引入的 cc ink 衍生版）
+与 `SID_TUI_RENDERER` 开关已删除，`tests/build/no-legacy-renderer.test.ts` 防它回来。四条规则：
 
 1. **只经端口导入**。CLI（`src` 与 `tests`）里所有渲染能力从 `ui/render-port/*.ts` 取
    （`components` / `hooks` / `measure` / `text` / `termio` / `runtime` / `testing` / `types`，分组理由见该目录 `README.md`）。
-   直接写 `@sid-code/tui-renderer/*` 或 `@sid-code/tui/*` 会被 `bun run lint:boundary` 拦下。
-2. **不读旧底座、不搬 cc 做法**。以前这里写的是「遇 cc 做法默认能搬，先去 `src/ink` 找」，**已作废**：
-   B9 要求旧代码只回答「应该表现成什么样」，不当代码来源。要了解某个能力的行为，读 `packages/tui/SPEC.md` 的契约（T0.3 起）和端口的 `SURFACE.md`，不打开 `.vendor-src/`。
-3. **端口缺能力 → 先在端口里加，再用**。端口模块是切换层（T1.3 起），实现在 `legacy/` 与 `next/` 两个子目录：
-   在 `legacy/<模块>.ts` 加 re-export，在 `next/<模块>.ts` 加实现或 `notImplemented*` 占位，再把名字加进切换层的解构导出；
-   `next-switch.test.ts` 会核对两边导出同一组符号。最后跑 `bun run tui:surface` 重生成 `SURFACE.md` 并一起提交。
-   这一步的意义是让「新底座也必须提供它」被看见。别为了绕开端口而在组件里直连底座。
-4. **`SID_TUI_RENDERER=legacy|next` 选底座**（T8.2 起默认 next，只在 `render-port/select.ts` 读一次）。legacy 保留作回退口到 T9。
-   next 若有未实现的能力，一用就抛 `NotImplementedError`，信息里带负责的任务号，这是预期行为，不要往组件里加兜底。
+   直接写 `@sid-code/tui/*` 会被 `bun run lint:boundary` 拦下。
+2. **不搬 cc 做法**。以前这里写的是「遇 cc 做法默认能搬，先去 `src/ink` 找」，**已作废**。
+   要了解某个能力该怎么表现，读 `render-port/SPEC.md` 的契约和 `SURFACE.md` 的端口面清单。
+3. **端口缺能力 → 先查 `SURFACE.md`，再在 `next/<模块>.ts` 里实现、在 `<模块>.ts` 里导出**，然后再用。
+   底座本身缺的，在 `packages/tui` 里改，并在 `UPSTREAM-DIFF.md` 记一条。别为了绕开端口而在组件里直连底座。
+4. **行为基线是冻结的**。旧底座删除前的输出冻结在 `tests/render-port/term-bench/baseline/`、`tests/render-port/fixtures/legacy-frozen/`
+   与 `packages/tui/tests/fixtures/*-vectors.json`，**不能重生成**。有意改行为时手改基线，并在 PR 里逐项说明。
 
 当前已有、组件可以直接用的能力（都从端口取）：
 
@@ -383,7 +381,7 @@ L1 视觉原子    字形、颜色、主题                          ← 最小�
 | 整帧渲染测试 | `render-port/testing.ts` | ✅ 非 TTY 整帧，测不到增量 diff 与闪烁 |
 
 - 选区引擎、follow-scroll、blit 缓存这些在引擎内部，组件不直接碰，经 `AlternateScreen` / `MouseContext` / `ScrollProvider` 间接使用。
-- 历史包袱提醒：早期 memory / 文档里「`src/ink` fork 可随便读改」「cc 能力默认能搬」的说法**已失效**，以本节为准。
+- 历史包袱提醒：早期 memory / 文档里「`src/ink` fork 可随便读改」「cc 能力默认能搬」「`SID_TUI_RENDERER=legacy` 回退」的说法**已失效**，以本节为准。
 
 ---
 
@@ -402,7 +400,7 @@ L1 视觉原子    字形、颜色、主题                          ← 最小�
 | L3 折叠 | 每处自编 "还有很多…" | 统一 `… +N more` + `(ctrl+o 展开)` |
 | L4 危险 | 删除确认默认聚焦"确定" | 默认聚焦"取消" + 标红警告 |
 | L4 提示 | 每次都显示同一条 onboarding | `hasSeen*` / `*HintCount < N` 衰减 |
-| L5 渲染 | 组件里直接 `import … from "@sid-code/tui-renderer/…"`，或打开旧底座 / cc 源码照着搬 | 从 `ui/render-port/*.ts` 导入；端口缺能力就在端口里加一行 re-export，并重跑 `bun run tui:surface` |
+| L5 渲染 | 组件里直接 `import … from "@sid-code/tui/…"`，或打开 cc 源码照着搬 | 从 `ui/render-port/*.ts` 导入；端口缺能力就在 `next/` 里实现、在端口模块里导出 |
 
 ---
 

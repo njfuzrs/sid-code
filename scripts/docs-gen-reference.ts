@@ -39,21 +39,15 @@ const REF = join(WEBSITE, "ref");
  * 分包时实测 env 扫描一度归零、整段「未列入上表的读取点」被静默删掉。
  * 新增包时同步这里。
  *
- * ⚠️ `tui-renderer` 虽然**不入库**（见 .gitignore），但仍必须留在这个清单里：
- * CI 与 fresh clone 都会先跑 `bun run vendor:fetch` 把它取回来（ci.yml 的
- * 「取回 vendor 源码」步骤 / Makefile 的 build 首行），所以扫描时目录一定存在。
- * 少了它，该目录下 6 个只此一处读取的变量会从参考页静默消失
- * （`CLAUDE_CODE_COMMIT_LOG` / `CLAUDE_CODE_DEBUG_REPAINTS` /
- * `CLAUDE_CODE_TMUX_TRUECOLOR` / `CLAUDE_CODE_ACCESSIBILITY` /
- * `SID_CODE_DISABLE_MOUSE_CLICKS` / `SID_DISABLE_TAB_STATUS`），
- * 而它们运行时仍生效 —— 实测参考页读取点会从 158 掉到 152。
+ * B9 / T9.1：渲染底座从不入库的 `tui-renderer`（要先 vendor:fetch 才在）换成入库的 `tui`，
+ * 扫描时目录一定存在。`CLAUDE_CODE_COMMIT_LOG` / `CLAUDE_CODE_DEBUG_REPAINTS` 只有旧底座读，
+ * 随它删除从参考页消失是正确结果；`CLAUDE_CODE_ACCESSIBILITY` / `CLAUDE_CODE_TMUX_TRUECOLOR` /
+ * `SID_CODE_DISABLE_MOUSE_CLICKS` / `SID_DISABLE_TAB_STATUS` 新底座照读（用方括号写法，以前的扫描认不出）。
  *
  * ⚠️ 不要改成「按目录是否存在动态过滤」：那会让取回前/取回后生成两份不同的
  * env 列表，`--check` 必然在其中一边红。要么目录一定在，要么硬排除，不能看情况。
  */
-const PKG_SRC_DIRS = ["shared", "tui-renderer", "core", "cli"].map((p) =>
-  join(ROOT, "packages", p, "src"),
-);
+const PKG_SRC_DIRS = ["shared", "tui", "core", "cli"].map((p) => join(ROOT, "packages", p, "src"));
 
 const CHECK = process.argv.includes("--check");
 const STALE = process.argv.includes("--stale");

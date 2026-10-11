@@ -543,7 +543,7 @@ export function logCommandRejected(reason: CommandRejectReason): void {
  * 先纠正一个会误导后人的计数：分诊前的清单写「9 个调用点却 0 落盘，最可疑」。
  * 实测**本函数只有 1 个生产调用点**（`query/engine.ts` 的 queryLoop catch 块）。
  * 另外 8 处是三个**同名但完全无关**的函数：
- *   - `tui-renderer/src/_vendor/log.ts` 的 ink 渲染期 stderr 打印（4 处引用）；
+ *   - 旧渲染底座 `tui-renderer/src/_vendor/log.ts` 的 ink 渲染期 stderr 打印（4 处引用，B9 / T9.1 随旧底座删除）；
  *   - `cli/src/state/bootstrap.ts` 的进程内存错误环形缓冲；
  *   - `cli/src/entrypoints/headless.ts` 里一个写 stderr 的局部闭包（3 处调用）。
  * 按函数名 grep 会把它们全算进来 —— 这正是「'有无引用'测不出接线状态」的又一例。

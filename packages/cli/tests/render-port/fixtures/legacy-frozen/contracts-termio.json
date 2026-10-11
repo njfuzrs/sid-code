@@ -1,0 +1,1127 @@
+{
+  "默认": {
+    "OSC": {
+      "SET_TITLE_AND_ICON": 0,
+      "SET_ICON": 1,
+      "SET_TITLE": 2,
+      "SET_COLOR": 4,
+      "SET_CWD": 7,
+      "HYPERLINK": 8,
+      "ITERM2": 9,
+      "SET_FG_COLOR": 10,
+      "SET_BG_COLOR": 11,
+      "SET_CURSOR_COLOR": 12,
+      "CLIPBOARD": 52,
+      "KITTY": 99,
+      "RESET_COLOR": 104,
+      "RESET_FG_COLOR": 110,
+      "RESET_BG_COLOR": 111,
+      "RESET_CURSOR_COLOR": 112,
+      "SEMANTIC_PROMPT": 133,
+      "GHOSTTY": 777,
+      "TAB_STATUS": 21337
+    },
+    "BEL": "\u0007",
+    "osc": [
+      "\u001b]\u0007",
+      "\u001b]0;t\u0007",
+      "\u001b]52;c;QQ==\u0007",
+      "\u001b]a;1;\u0007",
+      "\u001b]8;;\u0007"
+    ],
+    "wrap": ["\u001b]0;t\u0007", "\u001b]9;a\u001b\\", "", "x\u001by"],
+    "hyper": [false, false],
+    "clip": [
+      {
+        "seq": "\u001b]52;c;aGk=\u0007",
+        "calls": {
+          "native": ["pbcopy"],
+          "tmux": []
+        }
+      }
+    ]
+  },
+  "kitty TERM": {
+    "OSC": {
+      "SET_TITLE_AND_ICON": 0,
+      "SET_ICON": 1,
+      "SET_TITLE": 2,
+      "SET_COLOR": 4,
+      "SET_CWD": 7,
+      "HYPERLINK": 8,
+      "ITERM2": 9,
+      "SET_FG_COLOR": 10,
+      "SET_BG_COLOR": 11,
+      "SET_CURSOR_COLOR": 12,
+      "CLIPBOARD": 52,
+      "KITTY": 99,
+      "RESET_COLOR": 104,
+      "RESET_FG_COLOR": 110,
+      "RESET_BG_COLOR": 111,
+      "RESET_CURSOR_COLOR": 112,
+      "SEMANTIC_PROMPT": 133,
+      "GHOSTTY": 777,
+      "TAB_STATUS": 21337
+    },
+    "BEL": "\u0007",
+    "osc": [
+      "\u001b]\u001b\\",
+      "\u001b]0;t\u001b\\",
+      "\u001b]52;c;QQ==\u001b\\",
+      "\u001b]a;1;\u001b\\",
+      "\u001b]8;;\u001b\\"
+    ],
+    "wrap": ["\u001b]0;t\u0007", "\u001b]9;a\u001b\\", "", "x\u001by"],
+    "hyper": [false, true],
+    "clip": [
+      {
+        "seq": "\u001b]52;c;aGk=\u001b\\",
+        "calls": {
+          "native": ["pbcopy"],
+          "tmux": []
+        }
+      }
+    ]
+  },
+  "kitty TERM_PROGRAM": {
+    "OSC": {
+      "SET_TITLE_AND_ICON": 0,
+      "SET_ICON": 1,
+      "SET_TITLE": 2,
+      "SET_COLOR": 4,
+      "SET_CWD": 7,
+      "HYPERLINK": 8,
+      "ITERM2": 9,
+      "SET_FG_COLOR": 10,
+      "SET_BG_COLOR": 11,
+      "SET_CURSOR_COLOR": 12,
+      "CLIPBOARD": 52,
+      "KITTY": 99,
+      "RESET_COLOR": 104,
+      "RESET_FG_COLOR": 110,
+      "RESET_BG_COLOR": 111,
+      "RESET_CURSOR_COLOR": 112,
+      "SEMANTIC_PROMPT": 133,
+      "GHOSTTY": 777,
+      "TAB_STATUS": 21337
+    },
+    "BEL": "\u0007",
+    "osc": [
+      "\u001b]\u001b\\",
+      "\u001b]0;t\u001b\\",
+      "\u001b]52;c;QQ==\u001b\\",
+      "\u001b]a;1;\u001b\\",
+      "\u001b]8;;\u001b\\"
+    ],
+    "wrap": ["\u001b]0;t\u0007", "\u001b]9;a\u001b\\", "", "x\u001by"],
+    "hyper": [false, true],
+    "clip": [
+      {
+        "seq": "\u001b]52;c;aGk=\u001b\\",
+        "calls": {
+          "native": ["pbcopy"],
+          "tmux": []
+        }
+      }
+    ]
+  },
+  "KITTY_WINDOW_ID": {
+    "OSC": {
+      "SET_TITLE_AND_ICON": 0,
+      "SET_ICON": 1,
+      "SET_TITLE": 2,
+      "SET_COLOR": 4,
+      "SET_CWD": 7,
+      "HYPERLINK": 8,
+      "ITERM2": 9,
+      "SET_FG_COLOR": 10,
+      "SET_BG_COLOR": 11,
+      "SET_CURSOR_COLOR": 12,
+      "CLIPBOARD": 52,
+      "KITTY": 99,
+      "RESET_COLOR": 104,
+      "RESET_FG_COLOR": 110,
+      "RESET_BG_COLOR": 111,
+      "RESET_CURSOR_COLOR": 112,
+      "SEMANTIC_PROMPT": 133,
+      "GHOSTTY": 777,
+      "TAB_STATUS": 21337
+    },
+    "BEL": "\u0007",
+    "osc": [
+      "\u001b]\u001b\\",
+      "\u001b]0;t\u001b\\",
+      "\u001b]52;c;QQ==\u001b\\",
+      "\u001b]a;1;\u001b\\",
+      "\u001b]8;;\u001b\\"
+    ],
+    "wrap": ["\u001b]0;t\u0007", "\u001b]9;a\u001b\\", "", "x\u001by"],
+    "hyper": [false, false],
+    "clip": [
+      {
+        "seq": "\u001b]52;c;aGk=\u001b\\",
+        "calls": {
+          "native": ["pbcopy"],
+          "tmux": []
+        }
+      }
+    ]
+  },
+  "KITTY_WINDOW_ID 空": {
+    "OSC": {
+      "SET_TITLE_AND_ICON": 0,
+      "SET_ICON": 1,
+      "SET_TITLE": 2,
+      "SET_COLOR": 4,
+      "SET_CWD": 7,
+      "HYPERLINK": 8,
+      "ITERM2": 9,
+      "SET_FG_COLOR": 10,
+      "SET_BG_COLOR": 11,
+      "SET_CURSOR_COLOR": 12,
+      "CLIPBOARD": 52,
+      "KITTY": 99,
+      "RESET_COLOR": 104,
+      "RESET_FG_COLOR": 110,
+      "RESET_BG_COLOR": 111,
+      "RESET_CURSOR_COLOR": 112,
+      "SEMANTIC_PROMPT": 133,
+      "GHOSTTY": 777,
+      "TAB_STATUS": 21337
+    },
+    "BEL": "\u0007",
+    "osc": [
+      "\u001b]\u0007",
+      "\u001b]0;t\u0007",
+      "\u001b]52;c;QQ==\u0007",
+      "\u001b]a;1;\u0007",
+      "\u001b]8;;\u0007"
+    ],
+    "wrap": ["\u001b]0;t\u0007", "\u001b]9;a\u001b\\", "", "x\u001by"],
+    "hyper": [false, false],
+    "clip": [
+      {
+        "seq": "\u001b]52;c;aGk=\u0007",
+        "calls": {
+          "native": ["pbcopy"],
+          "tmux": []
+        }
+      }
+    ]
+  },
+  "tmux": {
+    "OSC": {
+      "SET_TITLE_AND_ICON": 0,
+      "SET_ICON": 1,
+      "SET_TITLE": 2,
+      "SET_COLOR": 4,
+      "SET_CWD": 7,
+      "HYPERLINK": 8,
+      "ITERM2": 9,
+      "SET_FG_COLOR": 10,
+      "SET_BG_COLOR": 11,
+      "SET_CURSOR_COLOR": 12,
+      "CLIPBOARD": 52,
+      "KITTY": 99,
+      "RESET_COLOR": 104,
+      "RESET_FG_COLOR": 110,
+      "RESET_BG_COLOR": 111,
+      "RESET_CURSOR_COLOR": 112,
+      "SEMANTIC_PROMPT": 133,
+      "GHOSTTY": 777,
+      "TAB_STATUS": 21337
+    },
+    "BEL": "\u0007",
+    "osc": [
+      "\u001b]\u0007",
+      "\u001b]0;t\u0007",
+      "\u001b]52;c;QQ==\u0007",
+      "\u001b]a;1;\u0007",
+      "\u001b]8;;\u0007"
+    ],
+    "wrap": [
+      "\u001bPtmux;\u001b\u001b]0;t\u0007\u001b\\",
+      "\u001bPtmux;\u001b\u001b]9;a\u001b\u001b\\\u001b\\",
+      "\u001bPtmux;\u001b\\",
+      "\u001bPtmux;x\u001b\u001by\u001b\\"
+    ],
+    "hyper": [false, false],
+    "clip": [
+      {
+        "seq": "\u001bPtmux;\u001b\u001b]52;c;aGk=\u0007\u001b\\",
+        "calls": {
+          "native": ["pbcopy"],
+          "tmux": ["tmux load-buffer -w -"]
+        }
+      }
+    ]
+  },
+  "tmux + iTerm2": {
+    "OSC": {
+      "SET_TITLE_AND_ICON": 0,
+      "SET_ICON": 1,
+      "SET_TITLE": 2,
+      "SET_COLOR": 4,
+      "SET_CWD": 7,
+      "HYPERLINK": 8,
+      "ITERM2": 9,
+      "SET_FG_COLOR": 10,
+      "SET_BG_COLOR": 11,
+      "SET_CURSOR_COLOR": 12,
+      "CLIPBOARD": 52,
+      "KITTY": 99,
+      "RESET_COLOR": 104,
+      "RESET_FG_COLOR": 110,
+      "RESET_BG_COLOR": 111,
+      "RESET_CURSOR_COLOR": 112,
+      "SEMANTIC_PROMPT": 133,
+      "GHOSTTY": 777,
+      "TAB_STATUS": 21337
+    },
+    "BEL": "\u0007",
+    "osc": [
+      "\u001b]\u0007",
+      "\u001b]0;t\u0007",
+      "\u001b]52;c;QQ==\u0007",
+      "\u001b]a;1;\u0007",
+      "\u001b]8;;\u0007"
+    ],
+    "wrap": [
+      "\u001bPtmux;\u001b\u001b]0;t\u0007\u001b\\",
+      "\u001bPtmux;\u001b\u001b]9;a\u001b\u001b\\\u001b\\",
+      "\u001bPtmux;\u001b\\",
+      "\u001bPtmux;x\u001b\u001by\u001b\\"
+    ],
+    "hyper": [false, true],
+    "clip": [
+      {
+        "seq": "\u001bPtmux;\u001b\u001b]52;c;aGk=\u0007\u001b\\",
+        "calls": {
+          "native": ["pbcopy"],
+          "tmux": ["tmux load-buffer -"]
+        }
+      }
+    ]
+  },
+  "tmux + kitty": {
+    "OSC": {
+      "SET_TITLE_AND_ICON": 0,
+      "SET_ICON": 1,
+      "SET_TITLE": 2,
+      "SET_COLOR": 4,
+      "SET_CWD": 7,
+      "HYPERLINK": 8,
+      "ITERM2": 9,
+      "SET_FG_COLOR": 10,
+      "SET_BG_COLOR": 11,
+      "SET_CURSOR_COLOR": 12,
+      "CLIPBOARD": 52,
+      "KITTY": 99,
+      "RESET_COLOR": 104,
+      "RESET_FG_COLOR": 110,
+      "RESET_BG_COLOR": 111,
+      "RESET_CURSOR_COLOR": 112,
+      "SEMANTIC_PROMPT": 133,
+      "GHOSTTY": 777,
+      "TAB_STATUS": 21337
+    },
+    "BEL": "\u0007",
+    "osc": [
+      "\u001b]\u001b\\",
+      "\u001b]0;t\u001b\\",
+      "\u001b]52;c;QQ==\u001b\\",
+      "\u001b]a;1;\u001b\\",
+      "\u001b]8;;\u001b\\"
+    ],
+    "wrap": [
+      "\u001bPtmux;\u001b\u001b]0;t\u0007\u001b\\",
+      "\u001bPtmux;\u001b\u001b]9;a\u001b\u001b\\\u001b\\",
+      "\u001bPtmux;\u001b\\",
+      "\u001bPtmux;x\u001b\u001by\u001b\\"
+    ],
+    "hyper": [false, true],
+    "clip": [
+      {
+        "seq": "\u001bPtmux;\u001b\u001b]52;c;aGk=\u0007\u001b\\",
+        "calls": {
+          "native": ["pbcopy"],
+          "tmux": ["tmux load-buffer -w -"]
+        }
+      }
+    ]
+  },
+  "tmux 空": {
+    "OSC": {
+      "SET_TITLE_AND_ICON": 0,
+      "SET_ICON": 1,
+      "SET_TITLE": 2,
+      "SET_COLOR": 4,
+      "SET_CWD": 7,
+      "HYPERLINK": 8,
+      "ITERM2": 9,
+      "SET_FG_COLOR": 10,
+      "SET_BG_COLOR": 11,
+      "SET_CURSOR_COLOR": 12,
+      "CLIPBOARD": 52,
+      "KITTY": 99,
+      "RESET_COLOR": 104,
+      "RESET_FG_COLOR": 110,
+      "RESET_BG_COLOR": 111,
+      "RESET_CURSOR_COLOR": 112,
+      "SEMANTIC_PROMPT": 133,
+      "GHOSTTY": 777,
+      "TAB_STATUS": 21337
+    },
+    "BEL": "\u0007",
+    "osc": [
+      "\u001b]\u0007",
+      "\u001b]0;t\u0007",
+      "\u001b]52;c;QQ==\u0007",
+      "\u001b]a;1;\u0007",
+      "\u001b]8;;\u0007"
+    ],
+    "wrap": ["\u001b]0;t\u0007", "\u001b]9;a\u001b\\", "", "x\u001by"],
+    "hyper": [false, false],
+    "clip": [
+      {
+        "seq": "\u001b]52;c;aGk=\u0007",
+        "calls": {
+          "native": ["pbcopy"],
+          "tmux": []
+        }
+      }
+    ]
+  },
+  "screen": {
+    "OSC": {
+      "SET_TITLE_AND_ICON": 0,
+      "SET_ICON": 1,
+      "SET_TITLE": 2,
+      "SET_COLOR": 4,
+      "SET_CWD": 7,
+      "HYPERLINK": 8,
+      "ITERM2": 9,
+      "SET_FG_COLOR": 10,
+      "SET_BG_COLOR": 11,
+      "SET_CURSOR_COLOR": 12,
+      "CLIPBOARD": 52,
+      "KITTY": 99,
+      "RESET_COLOR": 104,
+      "RESET_FG_COLOR": 110,
+      "RESET_BG_COLOR": 111,
+      "RESET_CURSOR_COLOR": 112,
+      "SEMANTIC_PROMPT": 133,
+      "GHOSTTY": 777,
+      "TAB_STATUS": 21337
+    },
+    "BEL": "\u0007",
+    "osc": [
+      "\u001b]\u0007",
+      "\u001b]0;t\u0007",
+      "\u001b]52;c;QQ==\u0007",
+      "\u001b]a;1;\u0007",
+      "\u001b]8;;\u0007"
+    ],
+    "wrap": [
+      "\u001bP\u001b]0;t\u0007\u001b\\",
+      "\u001bP\u001b]9;a\u001b\\\u001b\\",
+      "\u001bP\u001b\\",
+      "\u001bPx\u001by\u001b\\"
+    ],
+    "hyper": [false, false],
+    "clip": [
+      {
+        "seq": "\u001b]52;c;aGk=\u0007",
+        "calls": {
+          "native": ["pbcopy"],
+          "tmux": []
+        }
+      }
+    ]
+  },
+  "tmux + screen": {
+    "OSC": {
+      "SET_TITLE_AND_ICON": 0,
+      "SET_ICON": 1,
+      "SET_TITLE": 2,
+      "SET_COLOR": 4,
+      "SET_CWD": 7,
+      "HYPERLINK": 8,
+      "ITERM2": 9,
+      "SET_FG_COLOR": 10,
+      "SET_BG_COLOR": 11,
+      "SET_CURSOR_COLOR": 12,
+      "CLIPBOARD": 52,
+      "KITTY": 99,
+      "RESET_COLOR": 104,
+      "RESET_FG_COLOR": 110,
+      "RESET_BG_COLOR": 111,
+      "RESET_CURSOR_COLOR": 112,
+      "SEMANTIC_PROMPT": 133,
+      "GHOSTTY": 777,
+      "TAB_STATUS": 21337
+    },
+    "BEL": "\u0007",
+    "osc": [
+      "\u001b]\u0007",
+      "\u001b]0;t\u0007",
+      "\u001b]52;c;QQ==\u0007",
+      "\u001b]a;1;\u0007",
+      "\u001b]8;;\u0007"
+    ],
+    "wrap": [
+      "\u001bPtmux;\u001b\u001b]0;t\u0007\u001b\\",
+      "\u001bPtmux;\u001b\u001b]9;a\u001b\u001b\\\u001b\\",
+      "\u001bPtmux;\u001b\\",
+      "\u001bPtmux;x\u001b\u001by\u001b\\"
+    ],
+    "hyper": [false, false],
+    "clip": [
+      {
+        "seq": "\u001bPtmux;\u001b\u001b]52;c;aGk=\u0007\u001b\\",
+        "calls": {
+          "native": ["pbcopy"],
+          "tmux": ["tmux load-buffer -w -"]
+        }
+      }
+    ]
+  },
+  "tmux 失败": {
+    "OSC": {
+      "SET_TITLE_AND_ICON": 0,
+      "SET_ICON": 1,
+      "SET_TITLE": 2,
+      "SET_COLOR": 4,
+      "SET_CWD": 7,
+      "HYPERLINK": 8,
+      "ITERM2": 9,
+      "SET_FG_COLOR": 10,
+      "SET_BG_COLOR": 11,
+      "SET_CURSOR_COLOR": 12,
+      "CLIPBOARD": 52,
+      "KITTY": 99,
+      "RESET_COLOR": 104,
+      "RESET_FG_COLOR": 110,
+      "RESET_BG_COLOR": 111,
+      "RESET_CURSOR_COLOR": 112,
+      "SEMANTIC_PROMPT": 133,
+      "GHOSTTY": 777,
+      "TAB_STATUS": 21337
+    },
+    "BEL": "\u0007",
+    "osc": [
+      "\u001b]\u0007",
+      "\u001b]0;t\u0007",
+      "\u001b]52;c;QQ==\u0007",
+      "\u001b]a;1;\u0007",
+      "\u001b]8;;\u0007"
+    ],
+    "wrap": [
+      "\u001bPtmux;\u001b\u001b]0;t\u0007\u001b\\",
+      "\u001bPtmux;\u001b\u001b]9;a\u001b\u001b\\\u001b\\",
+      "\u001bPtmux;\u001b\\",
+      "\u001bPtmux;x\u001b\u001by\u001b\\"
+    ],
+    "hyper": [false, false],
+    "clip": [
+      {
+        "seq": "\u001b]52;c;aGk=\u0007",
+        "calls": {
+          "native": ["pbcopy"],
+          "tmux": ["tmux load-buffer -w -"]
+        }
+      }
+    ]
+  },
+  "tmux 不存在": {
+    "OSC": {
+      "SET_TITLE_AND_ICON": 0,
+      "SET_ICON": 1,
+      "SET_TITLE": 2,
+      "SET_COLOR": 4,
+      "SET_CWD": 7,
+      "HYPERLINK": 8,
+      "ITERM2": 9,
+      "SET_FG_COLOR": 10,
+      "SET_BG_COLOR": 11,
+      "SET_CURSOR_COLOR": 12,
+      "CLIPBOARD": 52,
+      "KITTY": 99,
+      "RESET_COLOR": 104,
+      "RESET_FG_COLOR": 110,
+      "RESET_BG_COLOR": 111,
+      "RESET_CURSOR_COLOR": 112,
+      "SEMANTIC_PROMPT": 133,
+      "GHOSTTY": 777,
+      "TAB_STATUS": 21337
+    },
+    "BEL": "\u0007",
+    "osc": [
+      "\u001b]\u0007",
+      "\u001b]0;t\u0007",
+      "\u001b]52;c;QQ==\u0007",
+      "\u001b]a;1;\u0007",
+      "\u001b]8;;\u0007"
+    ],
+    "wrap": [
+      "\u001bPtmux;\u001b\u001b]0;t\u0007\u001b\\",
+      "\u001bPtmux;\u001b\u001b]9;a\u001b\u001b\\\u001b\\",
+      "\u001bPtmux;\u001b\\",
+      "\u001bPtmux;x\u001b\u001by\u001b\\"
+    ],
+    "hyper": [false, false],
+    "clip": [
+      {
+        "seq": "\u001b]52;c;aGk=\u0007",
+        "calls": {
+          "native": [],
+          "tmux": []
+        }
+      }
+    ]
+  },
+  "SSH": {
+    "OSC": {
+      "SET_TITLE_AND_ICON": 0,
+      "SET_ICON": 1,
+      "SET_TITLE": 2,
+      "SET_COLOR": 4,
+      "SET_CWD": 7,
+      "HYPERLINK": 8,
+      "ITERM2": 9,
+      "SET_FG_COLOR": 10,
+      "SET_BG_COLOR": 11,
+      "SET_CURSOR_COLOR": 12,
+      "CLIPBOARD": 52,
+      "KITTY": 99,
+      "RESET_COLOR": 104,
+      "RESET_FG_COLOR": 110,
+      "RESET_BG_COLOR": 111,
+      "RESET_CURSOR_COLOR": 112,
+      "SEMANTIC_PROMPT": 133,
+      "GHOSTTY": 777,
+      "TAB_STATUS": 21337
+    },
+    "BEL": "\u0007",
+    "osc": [
+      "\u001b]\u0007",
+      "\u001b]0;t\u0007",
+      "\u001b]52;c;QQ==\u0007",
+      "\u001b]a;1;\u0007",
+      "\u001b]8;;\u0007"
+    ],
+    "wrap": ["\u001b]0;t\u0007", "\u001b]9;a\u001b\\", "", "x\u001by"],
+    "hyper": [false, false],
+    "clip": [
+      {
+        "seq": "\u001b]52;c;aGk=\u0007",
+        "calls": {
+          "native": [],
+          "tmux": []
+        }
+      }
+    ]
+  },
+  "SSH + tmux": {
+    "OSC": {
+      "SET_TITLE_AND_ICON": 0,
+      "SET_ICON": 1,
+      "SET_TITLE": 2,
+      "SET_COLOR": 4,
+      "SET_CWD": 7,
+      "HYPERLINK": 8,
+      "ITERM2": 9,
+      "SET_FG_COLOR": 10,
+      "SET_BG_COLOR": 11,
+      "SET_CURSOR_COLOR": 12,
+      "CLIPBOARD": 52,
+      "KITTY": 99,
+      "RESET_COLOR": 104,
+      "RESET_FG_COLOR": 110,
+      "RESET_BG_COLOR": 111,
+      "RESET_CURSOR_COLOR": 112,
+      "SEMANTIC_PROMPT": 133,
+      "GHOSTTY": 777,
+      "TAB_STATUS": 21337
+    },
+    "BEL": "\u0007",
+    "osc": [
+      "\u001b]\u0007",
+      "\u001b]0;t\u0007",
+      "\u001b]52;c;QQ==\u0007",
+      "\u001b]a;1;\u0007",
+      "\u001b]8;;\u0007"
+    ],
+    "wrap": [
+      "\u001bPtmux;\u001b\u001b]0;t\u0007\u001b\\",
+      "\u001bPtmux;\u001b\u001b]9;a\u001b\u001b\\\u001b\\",
+      "\u001bPtmux;\u001b\\",
+      "\u001bPtmux;x\u001b\u001by\u001b\\"
+    ],
+    "hyper": [false, false],
+    "clip": [
+      {
+        "seq": "\u001bPtmux;\u001b\u001b]52;c;aGk=\u0007\u001b\\",
+        "calls": {
+          "native": [],
+          "tmux": ["tmux load-buffer -w -"]
+        }
+      }
+    ]
+  },
+  "darwin pbcopy 失败后重试": {
+    "OSC": {
+      "SET_TITLE_AND_ICON": 0,
+      "SET_ICON": 1,
+      "SET_TITLE": 2,
+      "SET_COLOR": 4,
+      "SET_CWD": 7,
+      "HYPERLINK": 8,
+      "ITERM2": 9,
+      "SET_FG_COLOR": 10,
+      "SET_BG_COLOR": 11,
+      "SET_CURSOR_COLOR": 12,
+      "CLIPBOARD": 52,
+      "KITTY": 99,
+      "RESET_COLOR": 104,
+      "RESET_FG_COLOR": 110,
+      "RESET_BG_COLOR": 111,
+      "RESET_CURSOR_COLOR": 112,
+      "SEMANTIC_PROMPT": 133,
+      "GHOSTTY": 777,
+      "TAB_STATUS": 21337
+    },
+    "BEL": "\u0007",
+    "osc": [
+      "\u001b]\u0007",
+      "\u001b]0;t\u0007",
+      "\u001b]52;c;QQ==\u0007",
+      "\u001b]a;1;\u0007",
+      "\u001b]8;;\u0007"
+    ],
+    "wrap": ["\u001b]0;t\u0007", "\u001b]9;a\u001b\\", "", "x\u001by"],
+    "hyper": [false, false],
+    "clip": [
+      {
+        "seq": "\u001b]52;c;aGk=\u0007",
+        "calls": {
+          "native": ["pbcopy"],
+          "tmux": []
+        }
+      },
+      {
+        "seq": "\u001b]52;c;aGk=\u0007",
+        "calls": {
+          "native": ["pbcopy"],
+          "tmux": []
+        }
+      }
+    ]
+  },
+  "win32": {
+    "OSC": {
+      "SET_TITLE_AND_ICON": 0,
+      "SET_ICON": 1,
+      "SET_TITLE": 2,
+      "SET_COLOR": 4,
+      "SET_CWD": 7,
+      "HYPERLINK": 8,
+      "ITERM2": 9,
+      "SET_FG_COLOR": 10,
+      "SET_BG_COLOR": 11,
+      "SET_CURSOR_COLOR": 12,
+      "CLIPBOARD": 52,
+      "KITTY": 99,
+      "RESET_COLOR": 104,
+      "RESET_FG_COLOR": 110,
+      "RESET_BG_COLOR": 111,
+      "RESET_CURSOR_COLOR": 112,
+      "SEMANTIC_PROMPT": 133,
+      "GHOSTTY": 777,
+      "TAB_STATUS": 21337
+    },
+    "BEL": "\u0007",
+    "osc": [
+      "\u001b]\u0007",
+      "\u001b]0;t\u0007",
+      "\u001b]52;c;QQ==\u0007",
+      "\u001b]a;1;\u0007",
+      "\u001b]8;;\u0007"
+    ],
+    "wrap": ["\u001b]0;t\u0007", "\u001b]9;a\u001b\\", "", "x\u001by"],
+    "hyper": [false, false],
+    "clip": [
+      {
+        "seq": "\u001b]52;c;aGk=\u0007",
+        "calls": {
+          "native": ["clip"],
+          "tmux": []
+        }
+      }
+    ]
+  },
+  "linux 首选成功": {
+    "OSC": {
+      "SET_TITLE_AND_ICON": 0,
+      "SET_ICON": 1,
+      "SET_TITLE": 2,
+      "SET_COLOR": 4,
+      "SET_CWD": 7,
+      "HYPERLINK": 8,
+      "ITERM2": 9,
+      "SET_FG_COLOR": 10,
+      "SET_BG_COLOR": 11,
+      "SET_CURSOR_COLOR": 12,
+      "CLIPBOARD": 52,
+      "KITTY": 99,
+      "RESET_COLOR": 104,
+      "RESET_FG_COLOR": 110,
+      "RESET_BG_COLOR": 111,
+      "RESET_CURSOR_COLOR": 112,
+      "SEMANTIC_PROMPT": 133,
+      "GHOSTTY": 777,
+      "TAB_STATUS": 21337
+    },
+    "BEL": "\u0007",
+    "osc": [
+      "\u001b]\u0007",
+      "\u001b]0;t\u0007",
+      "\u001b]52;c;QQ==\u0007",
+      "\u001b]a;1;\u0007",
+      "\u001b]8;;\u0007"
+    ],
+    "wrap": ["\u001b]0;t\u0007", "\u001b]9;a\u001b\\", "", "x\u001by"],
+    "hyper": [false, false],
+    "clip": [
+      {
+        "seq": "\u001b]52;c;aGk=\u0007",
+        "calls": {
+          "native": ["wl-copy"],
+          "tmux": []
+        }
+      },
+      {
+        "seq": "\u001b]52;c;aGk=\u0007",
+        "calls": {
+          "native": ["wl-copy"],
+          "tmux": []
+        }
+      }
+    ]
+  },
+  "linux 回落并记住": {
+    "OSC": {
+      "SET_TITLE_AND_ICON": 0,
+      "SET_ICON": 1,
+      "SET_TITLE": 2,
+      "SET_COLOR": 4,
+      "SET_CWD": 7,
+      "HYPERLINK": 8,
+      "ITERM2": 9,
+      "SET_FG_COLOR": 10,
+      "SET_BG_COLOR": 11,
+      "SET_CURSOR_COLOR": 12,
+      "CLIPBOARD": 52,
+      "KITTY": 99,
+      "RESET_COLOR": 104,
+      "RESET_FG_COLOR": 110,
+      "RESET_BG_COLOR": 111,
+      "RESET_CURSOR_COLOR": 112,
+      "SEMANTIC_PROMPT": 133,
+      "GHOSTTY": 777,
+      "TAB_STATUS": 21337
+    },
+    "BEL": "\u0007",
+    "osc": [
+      "\u001b]\u0007",
+      "\u001b]0;t\u0007",
+      "\u001b]52;c;QQ==\u0007",
+      "\u001b]a;1;\u0007",
+      "\u001b]8;;\u0007"
+    ],
+    "wrap": ["\u001b]0;t\u0007", "\u001b]9;a\u001b\\", "", "x\u001by"],
+    "hyper": [false, false],
+    "clip": [
+      {
+        "seq": "\u001b]52;c;aGk=\u0007",
+        "calls": {
+          "native": ["wl-copy", "xclip -selection clipboard"],
+          "tmux": []
+        }
+      },
+      {
+        "seq": "\u001b]52;c;aGk=\u0007",
+        "calls": {
+          "native": ["xclip -selection clipboard"],
+          "tmux": []
+        }
+      },
+      {
+        "seq": "\u001b]52;c;aGk=\u0007",
+        "calls": {
+          "native": ["xclip -selection clipboard"],
+          "tmux": []
+        }
+      }
+    ]
+  },
+  "linux 全失败后不再试": {
+    "OSC": {
+      "SET_TITLE_AND_ICON": 0,
+      "SET_ICON": 1,
+      "SET_TITLE": 2,
+      "SET_COLOR": 4,
+      "SET_CWD": 7,
+      "HYPERLINK": 8,
+      "ITERM2": 9,
+      "SET_FG_COLOR": 10,
+      "SET_BG_COLOR": 11,
+      "SET_CURSOR_COLOR": 12,
+      "CLIPBOARD": 52,
+      "KITTY": 99,
+      "RESET_COLOR": 104,
+      "RESET_FG_COLOR": 110,
+      "RESET_BG_COLOR": 111,
+      "RESET_CURSOR_COLOR": 112,
+      "SEMANTIC_PROMPT": 133,
+      "GHOSTTY": 777,
+      "TAB_STATUS": 21337
+    },
+    "BEL": "\u0007",
+    "osc": [
+      "\u001b]\u0007",
+      "\u001b]0;t\u0007",
+      "\u001b]52;c;QQ==\u0007",
+      "\u001b]a;1;\u0007",
+      "\u001b]8;;\u0007"
+    ],
+    "wrap": ["\u001b]0;t\u0007", "\u001b]9;a\u001b\\", "", "x\u001by"],
+    "hyper": [false, false],
+    "clip": [
+      {
+        "seq": "\u001b]52;c;aGk=\u0007",
+        "calls": {
+          "native": ["wl-copy", "xclip -selection clipboard", "xsel --clipboard --input"],
+          "tmux": []
+        }
+      },
+      {
+        "seq": "\u001b]52;c;aGk=\u0007",
+        "calls": {
+          "native": [],
+          "tmux": []
+        }
+      }
+    ]
+  },
+  "freebsd": {
+    "OSC": {
+      "SET_TITLE_AND_ICON": 0,
+      "SET_ICON": 1,
+      "SET_TITLE": 2,
+      "SET_COLOR": 4,
+      "SET_CWD": 7,
+      "HYPERLINK": 8,
+      "ITERM2": 9,
+      "SET_FG_COLOR": 10,
+      "SET_BG_COLOR": 11,
+      "SET_CURSOR_COLOR": 12,
+      "CLIPBOARD": 52,
+      "KITTY": 99,
+      "RESET_COLOR": 104,
+      "RESET_FG_COLOR": 110,
+      "RESET_BG_COLOR": 111,
+      "RESET_CURSOR_COLOR": 112,
+      "SEMANTIC_PROMPT": 133,
+      "GHOSTTY": 777,
+      "TAB_STATUS": 21337
+    },
+    "BEL": "\u0007",
+    "osc": [
+      "\u001b]\u0007",
+      "\u001b]0;t\u0007",
+      "\u001b]52;c;QQ==\u0007",
+      "\u001b]a;1;\u0007",
+      "\u001b]8;;\u0007"
+    ],
+    "wrap": ["\u001b]0;t\u0007", "\u001b]9;a\u001b\\", "", "x\u001by"],
+    "hyper": [false, false],
+    "clip": [
+      {
+        "seq": "\u001b]52;c;aGk=\u0007",
+        "calls": {
+          "native": [],
+          "tmux": []
+        }
+      }
+    ]
+  },
+  "多字节内容": {
+    "OSC": {
+      "SET_TITLE_AND_ICON": 0,
+      "SET_ICON": 1,
+      "SET_TITLE": 2,
+      "SET_COLOR": 4,
+      "SET_CWD": 7,
+      "HYPERLINK": 8,
+      "ITERM2": 9,
+      "SET_FG_COLOR": 10,
+      "SET_BG_COLOR": 11,
+      "SET_CURSOR_COLOR": 12,
+      "CLIPBOARD": 52,
+      "KITTY": 99,
+      "RESET_COLOR": 104,
+      "RESET_FG_COLOR": 110,
+      "RESET_BG_COLOR": 111,
+      "RESET_CURSOR_COLOR": 112,
+      "SEMANTIC_PROMPT": 133,
+      "GHOSTTY": 777,
+      "TAB_STATUS": 21337
+    },
+    "BEL": "\u0007",
+    "osc": [
+      "\u001b]\u0007",
+      "\u001b]0;t\u0007",
+      "\u001b]52;c;QQ==\u0007",
+      "\u001b]a;1;\u0007",
+      "\u001b]8;;\u0007"
+    ],
+    "wrap": ["\u001b]0;t\u0007", "\u001b]9;a\u001b\\", "", "x\u001by"],
+    "hyper": [false, false],
+    "clip": [
+      {
+        "seq": "\u001b]52;c;YSBiCuS4rQ==\u0007",
+        "calls": {
+          "native": ["pbcopy"],
+          "tmux": []
+        }
+      }
+    ]
+  },
+  "iTerm 超链接": {
+    "OSC": {
+      "SET_TITLE_AND_ICON": 0,
+      "SET_ICON": 1,
+      "SET_TITLE": 2,
+      "SET_COLOR": 4,
+      "SET_CWD": 7,
+      "HYPERLINK": 8,
+      "ITERM2": 9,
+      "SET_FG_COLOR": 10,
+      "SET_BG_COLOR": 11,
+      "SET_CURSOR_COLOR": 12,
+      "CLIPBOARD": 52,
+      "KITTY": 99,
+      "RESET_COLOR": 104,
+      "RESET_FG_COLOR": 110,
+      "RESET_BG_COLOR": 111,
+      "RESET_CURSOR_COLOR": 112,
+      "SEMANTIC_PROMPT": 133,
+      "GHOSTTY": 777,
+      "TAB_STATUS": 21337
+    },
+    "BEL": "\u0007",
+    "osc": [
+      "\u001b]\u0007",
+      "\u001b]0;t\u0007",
+      "\u001b]52;c;QQ==\u0007",
+      "\u001b]a;1;\u0007",
+      "\u001b]8;;\u0007"
+    ],
+    "wrap": ["\u001b]0;t\u0007", "\u001b]9;a\u001b\\", "", "x\u001by"],
+    "hyper": [false, true],
+    "clip": [
+      {
+        "seq": "\u001b]52;c;aGk=\u0007",
+        "calls": {
+          "native": ["pbcopy"],
+          "tmux": []
+        }
+      }
+    ]
+  },
+  "FORCE_HYPERLINK": {
+    "OSC": {
+      "SET_TITLE_AND_ICON": 0,
+      "SET_ICON": 1,
+      "SET_TITLE": 2,
+      "SET_COLOR": 4,
+      "SET_CWD": 7,
+      "HYPERLINK": 8,
+      "ITERM2": 9,
+      "SET_FG_COLOR": 10,
+      "SET_BG_COLOR": 11,
+      "SET_CURSOR_COLOR": 12,
+      "CLIPBOARD": 52,
+      "KITTY": 99,
+      "RESET_COLOR": 104,
+      "RESET_FG_COLOR": 110,
+      "RESET_BG_COLOR": 111,
+      "RESET_CURSOR_COLOR": 112,
+      "SEMANTIC_PROMPT": 133,
+      "GHOSTTY": 777,
+      "TAB_STATUS": 21337
+    },
+    "BEL": "\u0007",
+    "osc": [
+      "\u001b]\u0007",
+      "\u001b]0;t\u0007",
+      "\u001b]52;c;QQ==\u0007",
+      "\u001b]a;1;\u0007",
+      "\u001b]8;;\u0007"
+    ],
+    "wrap": ["\u001b]0;t\u0007", "\u001b]9;a\u001b\\", "", "x\u001by"],
+    "hyper": [true, true],
+    "clip": [
+      {
+        "seq": "\u001b]52;c;aGk=\u0007",
+        "calls": {
+          "native": ["pbcopy"],
+          "tmux": []
+        }
+      }
+    ]
+  },
+  "Apple Terminal": {
+    "OSC": {
+      "SET_TITLE_AND_ICON": 0,
+      "SET_ICON": 1,
+      "SET_TITLE": 2,
+      "SET_COLOR": 4,
+      "SET_CWD": 7,
+      "HYPERLINK": 8,
+      "ITERM2": 9,
+      "SET_FG_COLOR": 10,
+      "SET_BG_COLOR": 11,
+      "SET_CURSOR_COLOR": 12,
+      "CLIPBOARD": 52,
+      "KITTY": 99,
+      "RESET_COLOR": 104,
+      "RESET_FG_COLOR": 110,
+      "RESET_BG_COLOR": 111,
+      "RESET_CURSOR_COLOR": 112,
+      "SEMANTIC_PROMPT": 133,
+      "GHOSTTY": 777,
+      "TAB_STATUS": 21337
+    },
+    "BEL": "\u0007",
+    "osc": [
+      "\u001b]\u0007",
+      "\u001b]0;t\u0007",
+      "\u001b]52;c;QQ==\u0007",
+      "\u001b]a;1;\u0007",
+      "\u001b]8;;\u0007"
+    ],
+    "wrap": ["\u001b]0;t\u0007", "\u001b]9;a\u001b\\", "", "x\u001by"],
+    "hyper": [false, false],
+    "clip": [
+      {
+        "seq": "\u001b]52;c;aGk=\u0007",
+        "calls": {
+          "native": ["pbcopy"],
+          "tmux": []
+        }
+      }
+    ]
+  }
+}

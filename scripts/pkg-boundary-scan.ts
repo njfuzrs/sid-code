@@ -20,25 +20,14 @@ import { join, relative, resolve } from "node:path";
 /**
  * 包的层级 rank：低 rank 不得导入高 rank。
  *
- * ⚠️ `shared` 是 rank 0（真叶子），`tui-renderer` 是 rank 1 —— 与方案 §6.1 写的
- * 「tui-renderer(0) < shared(1)」相反。这是**方案内部两处自相矛盾**，落地时必须择一：
- *
- * - §2.1 说 tui-renderer「无内部依赖（叶子）」；
- * - §4.4 却裁决「把 Color 类型下移到 shared，**tui-renderer 与 core 都从 shared 导入**，
- *   让 core → tui-renderer 归零」。
- *
- * 两条不可能同时成立 —— 一旦 tui-renderer 从 shared 取 Color，它就不再是叶子。
- * 采用 §4.4 的目标（core 完全不知道 TUI 的存在，这是「core 能当库用」的前提），
- * 于是唯一自洽的顺序是 shared(0) < tui-renderer(1) < core(2) < cli(3)：
- * shared 零内部依赖，是真正的叶子。
- *
- * 实测印证：`src/utils`、`src/util`、`src/types` 对 ink 的引用数为 0（反向为 2）。
+ * ⚠️ `shared` 是 rank 0（真叶子），渲染底座 `tui` 是 rank 1：底座从 shared 取 Color 类型，
+ * 所以它不是叶子。顺序 shared(0) < tui(1) < core(2) < cli(3) 的目标是 core 完全不知道 TUI 的存在
+ * （「core 能当库用」的前提）。分包时（P2-2）的渲染层是旧底座 `tui-renderer`，B9 / T9.1 删除，
+ * 新底座 `tui` 接替同一层。
  */
 export const PACKAGE_RANK: Record<string, number> = {
   shared: 0,
-  "tui-renderer": 1,
-  // B9 / T1.2：新渲染底座与旧底座同层（都是 CLI 之下、core 无从知道的渲染层）。
-  // 它目前零内部依赖（上游 ink 原样），rank 1 只约束「不许往上导 core / cli」。
+  // 渲染底座：CLI 之下、core 无从知道的渲染层。rank 1 约束「不许往上导 core / cli」。
   tui: 1,
   core: 2,
   cli: 3,
@@ -46,8 +35,8 @@ export const PACKAGE_RANK: Record<string, number> = {
 
 /** `src/` 一级目录 → 包名。拆包前试算用。 */
 export const MODULE_TO_PACKAGE: Record<string, string> = {
-  // tui-renderer：vendor 的 ink fork
-  ink: "tui-renderer",
+  // 渲染层（拆包前的 src/ink，现为 packages/tui）
+  ink: "tui",
 
   // shared：纯叶子工具层
   utils: "shared",
@@ -254,7 +243,7 @@ export function scanSrcMode(srcRoot: string): {
 }
 
 /** 参与边界校验的 5 个包，按 rank 升序。eval-framework 是独立 vendor 包，不在此列。 */
-export const PACKAGES = ["shared", "tui-renderer", "tui", "core", "cli"] as const;
+export const PACKAGES = ["shared", "tui", "core", "cli"] as const;
 
 /**
  * 在真实 `packages/` 结构上校验包边界（拆包**后**的门禁路径）。
@@ -417,7 +406,7 @@ export function scanPackageTestsMode(packagesRoot: string): {
     try {
       files = collectSourceFiles(pkgTests);
     } catch {
-      continue; // 该包还没有 tests/ —— 不是错误（tui-renderer 之外都有，但不强制）
+      continue; // 该包还没有 tests/ —— 不是错误（目前都有，但不强制）
     }
     total += files.length;
 
@@ -462,9 +451,9 @@ export function scanPackageTestsMode(packagesRoot: string): {
  * 那一处在切换时就会**静默留在旧底座上**（同一进程两套 reconciler，Box 宿主类型不同源），
  * 表现是某个组件渲染不出来或布局错乱，而 import 本身不报任何错。
  *
- * 扫描面：`packages/cli/src` + `packages/cli/tests`（测试也只能经端口，否则 L1 双跑时
- * 那些测试永远只测 legacy）。禁止的说明符：`@sid-code/tui-renderer`（旧）与
- * `@sid-code/tui`（新，T1.x 引入）——两个都只许端口目录自己用。
+ * 扫描面：`packages/cli/src` + `packages/cli/tests`（测试也只能经端口）。禁止的说明符：
+ * `@sid-code/tui`，只许端口目录自己用。旧底座 `@sid-code/tui-renderer` 在 T9.1 删除后仍在禁止名单里：
+ * 有人照着旧文档写出这个导入时，这里给出的报错比「模块找不到」更能指明该走端口。
  */
 export const RENDER_PORT_DIR = "packages/cli/src/ui/render-port";
 const RENDERER_SPEC = /^@sid-code\/(tui-renderer|tui)(?:\/|$)/;

@@ -152,6 +152,7 @@ describe("vendor 真实字节与 symlink 防线（⑯）", () => {
   test(".gitignore 用不带尾斜杠的形态，能同时挡住真目录与 symlink", () => {
     // 核心断言。用 `git check-ignore` 而不是自己解析 .gitignore ——
     // 尾斜杠"只匹配目录"这类语义只有 git 自己算得准（这正是坑 2 的成因）。
+    // tui-renderer/src：旧底座已删（B9 / T9.1），老克隆里的残留 symlink 仍要挡住（见 .gitignore 那段）
     const paths = [
       "packages/tui-renderer/src",
       "packages/cli/src/command/commands/claude-api/reference",
@@ -169,6 +170,8 @@ describe("vendor 真实字节与 symlink 防线（⑯）", () => {
 
     // 形态也钉一下：带尾斜杠的旧写法必须已消失，否则 symlink 会漏出来。
     const gitignore = readFileSync(join(REPO_ROOT, ".gitignore"), "utf-8");
+    expect(gitignore).toContain("/packages/cli/src/command/commands/claude-api/reference\n");
+    expect(gitignore).not.toContain("/packages/cli/src/command/commands/claude-api/reference/\n");
     expect(gitignore).toContain("/packages/tui-renderer/src\n");
     expect(gitignore).not.toContain("/packages/tui-renderer/src/\n");
   });
@@ -229,12 +232,14 @@ describe("vendor 真实字节与 symlink 防线（⑯）", () => {
 
   test("工作区里规范路径确实是指向缓存的 symlink（本机可用性回归）", () => {
     // fresh clone / CI 上跑过 vendor:fetch 之后才有意义；没有则跳过，避免无意义地红。
-    const rel = join("packages", "tui-renderer", "src");
+    const rel = join("packages", "cli", "src", "command", "commands", "claude-api", "reference");
     const abs = join(REPO_ROOT, rel);
     if (!existsSync(abs)) return;
     if (!lstatSync(abs).isSymbolicLink()) return; // 老克隆尚未迁移，vendor:fetch 会就地迁
 
-    expect(readlinkSync(abs)).toBe(join("..", "..", CACHE_DIR, "tui-renderer-src"));
+    expect(readlinkSync(abs)).toBe(
+      join("..", "..", "..", "..", "..", "..", CACHE_DIR, "claude-api-reference"),
+    );
     // 经 symlink 必须真能读到内容（空目录比不存在更危险：grep 静默返回 0 命中）
     expect(readdirSync(abs).length).toBeGreaterThan(0);
   });

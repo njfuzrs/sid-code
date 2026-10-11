@@ -130,14 +130,12 @@ sc-dev                # run the dev build
 bun test              # full unit test suite
 ```
 
-> ⚠️ `bun run vendor:fetch` is required on a fresh clone. Two directories
-> (`packages/tui-renderer/src/` and `packages/cli/src/command/commands/claude-api/reference/`)
-> are not tracked in git but *are* build-time dependencies, so a clone without them fails to
-> compile (`Cannot find module '@sid-code/tui-renderer/...'`). `make build` runs the fetch on
+> ⚠️ `bun run vendor:fetch` is required on a fresh clone. `packages/cli/src/command/commands/claude-api/reference/`
+> is not tracked in git but *is* a build-time dependency, so a clone without it fails to compile. `make build` runs the fetch on
 > its own; a bare `bun test` does not — run it once after cloning. Same mechanism as the
 > vendored `ripgrep`: local copy wins, otherwise download + sha256 verify.
 >
-> Both paths are **symlinks into `.vendor-src/`**, where the real bytes live. That path exists
+> That path is a **symlink into `.vendor-src/`**, where the real bytes live. That path exists
 > in no git ref, so no `checkout` / `merge` / `reset` can delete the files — a `git checkout -f`
 > may replace the symlink, but `bun run vendor:fetch` restores it offline. Details and the three
 > constraints you must not break: [CONTRIBUTING.md](./CONTRIBUTING.md#新克隆必须先-bun-run-vendorfetch).

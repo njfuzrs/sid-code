@@ -1,0 +1,363 @@
+{
+  "scenario": "C3",
+  "exitCode": 0,
+  "total": {
+    "bytes": 443,
+    "eraseScreen": 0,
+    "eraseScrollback": 0,
+    "syncBegin": 3,
+    "syncEnd": 3,
+    "altEnter": 0,
+    "altExit": 0,
+    "osc": {
+      "9": 1,
+      "21337": 1
+    }
+  },
+  "notes": {},
+  "steps": [
+    {
+      "label": "粘底（测量回灌后）",
+      "buffer": "normal",
+      "cursor": {
+        "x": 0,
+        "y": 10,
+        "hidden": true
+      },
+      "modes": {
+        "bracketedPaste": false,
+        "mouseTracking": "none",
+        "sendFocus": false,
+        "wraparound": true
+      },
+      "metrics": {
+        "bytes": 162,
+        "eraseScreen": 0,
+        "eraseScrollback": 0,
+        "syncBegin": 1,
+        "syncEnd": 1,
+        "altEnter": 0,
+        "altExit": 0,
+        "osc": {}
+      },
+      "screen": [
+        "标题",
+        "项 1",
+        " 第二行 1",
+        "项 2",
+        "项 3",
+        " 第二行 3",
+        "项 4",
+        "项 5",
+        " 第二行 5",
+        " 状态栏 "
+      ],
+      "scrollback": [],
+      "styled": [
+        {
+          "y": 9,
+          "runs": [
+            {
+              "text": " 状态栏 ",
+              "style": "r"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "label": "上滚 5 行",
+      "buffer": "normal",
+      "cursor": {
+        "x": 0,
+        "y": 10,
+        "hidden": true
+      },
+      "modes": {
+        "bracketedPaste": false,
+        "mouseTracking": "none",
+        "sendFocus": false,
+        "wraparound": true
+      },
+      "metrics": {
+        "bytes": 0,
+        "eraseScreen": 0,
+        "eraseScrollback": 0,
+        "syncBegin": 0,
+        "syncEnd": 0,
+        "altEnter": 0,
+        "altExit": 0,
+        "osc": {}
+      },
+      "screen": [
+        "标题",
+        "项 1",
+        " 第二行 1",
+        "项 2",
+        "项 3",
+        " 第二行 3",
+        "项 4",
+        "项 5",
+        " 第二行 5",
+        " 状态栏 "
+      ],
+      "scrollback": [],
+      "styled": [
+        {
+          "y": 9,
+          "runs": [
+            {
+              "text": " 状态栏 ",
+              "style": "r"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "label": "回到顶部",
+      "buffer": "normal",
+      "cursor": {
+        "x": 0,
+        "y": 10,
+        "hidden": true
+      },
+      "modes": {
+        "bracketedPaste": false,
+        "mouseTracking": "none",
+        "sendFocus": false,
+        "wraparound": true
+      },
+      "metrics": {
+        "bytes": 0,
+        "eraseScreen": 0,
+        "eraseScrollback": 0,
+        "syncBegin": 0,
+        "syncEnd": 0,
+        "altEnter": 0,
+        "altExit": 0,
+        "osc": {}
+      },
+      "screen": [
+        "标题",
+        "项 1",
+        " 第二行 1",
+        "项 2",
+        "项 3",
+        " 第二行 3",
+        "项 4",
+        "项 5",
+        " 第二行 5",
+        " 状态栏 "
+      ],
+      "scrollback": [],
+      "styled": [
+        {
+          "y": 9,
+          "runs": [
+            {
+              "text": " 状态栏 ",
+              "style": "r"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "label": "追加 3 项（不粘底不跟随）",
+      "buffer": "normal",
+      "cursor": {
+        "x": 0,
+        "y": 10,
+        "hidden": true
+      },
+      "modes": {
+        "bracketedPaste": false,
+        "mouseTracking": "none",
+        "sendFocus": false,
+        "wraparound": true
+      },
+      "metrics": {
+        "bytes": 0,
+        "eraseScreen": 0,
+        "eraseScrollback": 0,
+        "syncBegin": 0,
+        "syncEnd": 0,
+        "altEnter": 0,
+        "altExit": 0,
+        "osc": {}
+      },
+      "screen": [
+        "标题",
+        "项 1",
+        " 第二行 1",
+        "项 2",
+        "项 3",
+        " 第二行 3",
+        "项 4",
+        "项 5",
+        " 第二行 5",
+        " 状态栏 "
+      ],
+      "scrollback": [],
+      "styled": [
+        {
+          "y": 9,
+          "runs": [
+            {
+              "text": " 状态栏 ",
+              "style": "r"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "label": "Copy Mode（marginTop 表达）",
+      "buffer": "normal",
+      "cursor": {
+        "x": 0,
+        "y": 10,
+        "hidden": true
+      },
+      "modes": {
+        "bracketedPaste": false,
+        "mouseTracking": "none",
+        "sendFocus": false,
+        "wraparound": true
+      },
+      "metrics": {
+        "bytes": 0,
+        "eraseScreen": 0,
+        "eraseScrollback": 0,
+        "syncBegin": 0,
+        "syncEnd": 0,
+        "altEnter": 0,
+        "altExit": 0,
+        "osc": {}
+      },
+      "screen": [
+        "标题",
+        "项 1",
+        " 第二行 1",
+        "项 2",
+        "项 3",
+        " 第二行 3",
+        "项 4",
+        "项 5",
+        " 第二行 5",
+        " 状态栏 "
+      ],
+      "scrollback": [],
+      "styled": [
+        {
+          "y": 9,
+          "runs": [
+            {
+              "text": " 状态栏 ",
+              "style": "r"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "label": "回到底部",
+      "buffer": "normal",
+      "cursor": {
+        "x": 0,
+        "y": 10,
+        "hidden": true
+      },
+      "modes": {
+        "bracketedPaste": false,
+        "mouseTracking": "none",
+        "sendFocus": false,
+        "wraparound": true
+      },
+      "metrics": {
+        "bytes": 0,
+        "eraseScreen": 0,
+        "eraseScrollback": 0,
+        "syncBegin": 0,
+        "syncEnd": 0,
+        "altEnter": 0,
+        "altExit": 0,
+        "osc": {}
+      },
+      "screen": [
+        "标题",
+        "项 1",
+        " 第二行 1",
+        "项 2",
+        "项 3",
+        " 第二行 3",
+        "项 4",
+        "项 5",
+        " 第二行 5",
+        " 状态栏 "
+      ],
+      "scrollback": [],
+      "styled": [
+        {
+          "y": 9,
+          "runs": [
+            {
+              "text": " 状态栏 ",
+              "style": "r"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "label": "整批换数据（项高全变）",
+      "buffer": "normal",
+      "cursor": {
+        "x": 0,
+        "y": 10,
+        "hidden": true
+      },
+      "modes": {
+        "bracketedPaste": false,
+        "mouseTracking": "none",
+        "sendFocus": false,
+        "wraparound": true
+      },
+      "metrics": {
+        "bytes": 132,
+        "eraseScreen": 0,
+        "eraseScrollback": 0,
+        "syncBegin": 1,
+        "syncEnd": 1,
+        "altEnter": 0,
+        "altExit": 0,
+        "osc": {}
+      },
+      "screen": [
+        "标题",
+        "项 100",
+        "项 102   ",
+        "项 104",
+        "项 106",
+        "项 108   ",
+        "项 110",
+        "项 112",
+        "项 114   ",
+        " 状态栏 "
+      ],
+      "scrollback": [],
+      "styled": [
+        {
+          "y": 9,
+          "runs": [
+            {
+              "text": " 状态栏 ",
+              "style": "r"
+            }
+          ]
+        }
+      ]
+    }
+  ]
+}

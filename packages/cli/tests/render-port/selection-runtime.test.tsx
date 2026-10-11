@@ -3,7 +3,6 @@
  *
  * 期望值是 2026-10-09 对 legacy 的黑盒探针（D-5，没读旧代码），探针与原始结果备份在
  * `~/Backups/sid-code-t67-probe-results-20261008/T6.2b/`。全部经真实 SGR 鼠标字节驱动，不碰选区内部状态。
- * 两套底座跑同一份断言（`SID_TUI_RENDERER` 选底座）。
  */
 import { afterEach, describe, expect, test } from "bun:test";
 import React from "react";

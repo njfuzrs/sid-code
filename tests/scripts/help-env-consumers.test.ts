@@ -9,9 +9,9 @@
  *
  * 口径边界（刻意的）：
  * - 只查「有没有消费者」，不查「作用是否与描述一致」——后者要语义判断，交 review。
- * - **扫描范围排除 `tui-renderer`**：`SID_CODE_DEBUG` 恰好被 ink 渲染层读（只打 stderr、
+ * - **扫描范围排除渲染底座 `tui`**：`SID_CODE_DEBUG` 恰好被渲染层读（只打 stderr、
  *   不开 debug.log），把它算进来，这条门禁当场就会漏掉它当初要抓的那个变量。
- *   只在 tui-renderer 生效的变量走 `TUI_ONLY` 白名单，且白名单本身要被核验（见下）。
+ *   只在渲染底座生效的变量走 `TUI_ONLY` 白名单，且白名单本身要被核验（见下）。
  * - **匹配前先剥注释**：变异自证时撤掉接线、只留注释里的变量名，门禁照样绿 ——
  *   注释写着「这里读 X」不等于代码读了 X。
  * - 「出现」包括写入：Hook 运行时注入的 `SID_CODE_HOOK_EVENT` 等是 core 写给子进程的，
@@ -27,17 +27,17 @@ import { parseHelpEnvVars } from "../../scripts/docs-gen-reference.ts";
 const REPO_ROOT = join(import.meta.dir, "..", "..");
 const HELP_PATH = join(REPO_ROOT, "packages/cli/src/help.ts");
 
-/** 主程序源码根：不含 tui-renderer（理由见文件头） */
+/** 主程序源码根：不含渲染底座（理由见文件头） */
 const MAIN_SRC_DIRS = ["shared", "core", "cli"].map((p) => join(REPO_ROOT, "packages", p, "src"));
-const TUI_SRC_DIR = join(REPO_ROOT, "packages", "tui-renderer", "src");
+const TUI_SRC_DIR = join(REPO_ROOT, "packages", "tui", "src");
 
 /**
- * 只在 tui-renderer 里被读、且 help 描述的正是渲染层行为的变量。
+ * 只在渲染底座里被读、且 help 描述的正是渲染层行为的变量。
  * 新增一项必须写理由；描述与渲染层行为对不上的变量不许进这里（那正是 SID_CODE_DEBUG 的形态）。
  */
 const TUI_ONLY: Record<string, string> = {
-  SID_DISABLE_TAB_STATUS: "termio/osc.ts 读，控制终端 Tab 状态指示（OSC），help 描述一致",
-  SID_CODE_DISABLE_MOUSE_CLICKS: "_vendor/fullscreen.ts 读，控制鼠标点击，help 描述一致",
+  SID_DISABLE_TAB_STATUS: "hooks/use-tab-status.ts 读，控制终端 Tab 状态指示（OSC），help 描述一致",
+  SID_CODE_DISABLE_MOUSE_CLICKS: "ink.tsx 读，控制 alt-screen 里的选区与链接点击，help 描述一致",
 };
 
 function loadSources(dirs: string[], exclude: (path: string) => boolean): Map<string, string> {
@@ -96,7 +96,7 @@ describe("help 环境变量段 × 源码消费者", () => {
     expect(missing).toEqual([]);
   });
 
-  test("TUI_ONLY 白名单不陈旧：每项仍在 help 里、仍被 tui-renderer 读、且主程序确实不读", () => {
+  test("TUI_ONLY 白名单不陈旧：每项仍在 help 里、仍被渲染底座读、且主程序确实不读", () => {
     for (const name of Object.keys(TUI_ONLY)) {
       expect(helpNames).toContain(name);
       expect(findWithoutConsumer([name], tuiSources.values())).toEqual([]);
