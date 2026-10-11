@@ -153,3 +153,94 @@ describe("隔离兜底接线（P1-2 测试分包后的防复发门禁）", () =>
     ).toEqual([]);
   });
 });
+
+/**
+ * 子进程 env 门禁 —— preload 兜底管不到的第二个失效面（2026-10-12）。
+ *
+ * Bun 的 `Bun.spawn` / `Bun.spawnSync` **不继承运行时改过的 `process.env`**：
+ * 不传 `env` 时子进程拿到的是进程启动那一刻的环境，preload 里设的 `SID_CONFIG_DIR`
+ * 不在其中（实测：`process.env.X = "v"` 后 `Bun.spawnSync(["sh","-c","echo $X"])` 输出 unset；
+ * node 的 `child_process` 则会继承）。于是起 `bun` 子进程（CLI 入口、生成器脚本）而不传 `env`
+ * 的测试，子进程直接写用户真实 `~/.sid-code/`，且全绿。
+ *
+ * 实测命中：伪 HOME 全量跑后，伪 `~/.sid-code/app.json` 的 numStartups=2，
+ * 来源是 `tests/website/gen-reference.test.ts` 里不带 env 的 `--dump-tools`。
+ *
+ * Bun 的 spawn 是不可配置属性，没法在 preload 里打补丁，只能静态卡住调用点。
+ * 判据：调用参数里出现 `"bun"` 或 `process.execPath`（起的是 bun 进程），就必须带 `env`。
+ */
+const SPAWN_SCAN_DIRS = [
+  "tests",
+  ...readdirSync(join(REPO_ROOT, "packages")).map((p) => `packages/${p}/tests`),
+];
+
+function listTestSources(dir: string, out: string[] = []): string[] {
+  let entries;
+  try {
+    entries = readdirSync(dir, { withFileTypes: true });
+  } catch {
+    return out;
+  }
+  for (const e of entries) {
+    if (e.name === "node_modules" || e.name === "fixtures") continue;
+    const p = join(dir, e.name);
+    if (e.isDirectory()) listTestSources(p, out);
+    else if (/\.(ts|tsx)$/.test(e.name)) out.push(p);
+  }
+  return out;
+}
+
+/** 找出起 bun 子进程却没传 env 的 Bun.spawn / Bun.spawnSync 调用，返回 1 起始行号 */
+export function findSpawnWithoutEnv(src: string): number[] {
+  const hits: number[] = [];
+  const re = /Bun\.spawn(Sync)?\(/g;
+  let m: RegExpExecArray | null;
+  while ((m = re.exec(src))) {
+    let depth = 0;
+    let j = m.index + m[0].length - 1;
+    for (; j < src.length; j++) {
+      const c = src[j];
+      if (c === "(") depth++;
+      else if (c === ")" && --depth === 0) break;
+    }
+    const call = src.slice(m.index, j + 1);
+    if (!/["']bun["']|process\.execPath/.test(call)) continue;
+    if (/\benv\s*[:,}]/.test(call)) continue;
+    hits.push(src.slice(0, m.index).split("\n").length);
+  }
+  return hits;
+}
+
+describe("子进程 env 门禁：起 bun 子进程必须显式传 env", () => {
+  test("测试源码零违规", () => {
+    const violations: string[] = [];
+    for (const d of SPAWN_SCAN_DIRS) {
+      for (const f of listTestSources(join(REPO_ROOT, d))) {
+        // 本文件的变异自证用例里有违规写法的字符串字面量，不扫自己
+        if (f === import.meta.path) continue;
+        for (const line of findSpawnWithoutEnv(readFileSync(f, "utf-8"))) {
+          violations.push(`${relative(REPO_ROOT, f)}:${line}`);
+        }
+      }
+    }
+    expect(
+      violations,
+      `以下调用起了 bun 子进程但没传 env —— Bun 子进程不继承运行时的 process.env，\n` +
+        `preload 设的 SID_CONFIG_DIR 会丢，子进程写用户真实 ~/.sid-code/。\n` +
+        `修法：加 \`env: { ...process.env }\`（或显式给一个隔离的 SID_CONFIG_DIR）。`,
+    ).toEqual([]);
+  });
+
+  test("变异自证：违规写法能被抓到、合规写法不误报", () => {
+    expect(
+      findSpawnWithoutEnv(`Bun.spawnSync(["bun", "run", "x.ts"], { cwd: ROOT, stdout: "pipe" });`),
+    ).toEqual([1]);
+    expect(findSpawnWithoutEnv(`Bun.spawn({ cmd: [process.execPath, "x.ts"] });`)).toEqual([1]);
+    expect(
+      findSpawnWithoutEnv(`Bun.spawnSync(["bun", "x"], { env: { ...process.env } });`),
+    ).toEqual([]);
+    expect(findSpawnWithoutEnv(`Bun.spawnSync(["bun", "x"], { env });`)).toEqual([]);
+    // 起的不是 bun（git / tar 等），不归本门禁管
+    expect(findSpawnWithoutEnv(`Bun.spawnSync(["git", "log"], { cwd: ROOT });`)).toEqual([]);
+  });
+});

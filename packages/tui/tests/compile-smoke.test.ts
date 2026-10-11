@@ -44,7 +44,7 @@ describe("packages/tui 编译冒烟", () => {
         bin,
         FIXTURE,
       ],
-      { stdout: "pipe", stderr: "pipe" },
+      { stdout: "pipe", stderr: "pipe", env: { ...process.env } },
     );
     expect(r.exitCode, r.stderr.toString()).toBe(0);
   }, 60_000);

@@ -454,6 +454,7 @@ describe("E3 stdout EIO / EPIPE 护栏（CLI 侧）", () => {
   `;
   const run = (register: boolean, code: string) => {
     const p = Bun.spawnSync(["bun", "-e", script(register, code)], {
+      env: { ...process.env },
       stdout: "pipe",
       stderr: "pipe",
     });
