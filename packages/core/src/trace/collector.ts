@@ -67,6 +67,7 @@ import { sidPaths } from "../config/paths.ts";
 import { estimateTextTokens } from "../context/token.ts";
 import type { Message, Usage } from "../llm/types.ts";
 import { normalizeCacheUsage } from "../llm/types.ts";
+import { inferProviderByModelName } from "../llm/provider-infer.ts";
 import { resetPriceTierCounts } from "../llm/billing-sink.ts";
 import { TokenEstimator } from "../llm/token-estimator.ts";
 import { checkMessageHistoryIntegrity } from "../agent/message-invariants.ts";
@@ -3129,7 +3130,9 @@ export class TraceCollector {
     provider?: string,
   ): { usedTokens: number; window: number; ratio: number } | null {
     try {
-      const prov = provider || (/claude/i.test(model) ? "anthropic" : "openai");
+      // D6：AfterModel 已带 provider（主循环按产出 usage 的 provider 盖章，见 D5）；
+      // 缺省才兜底，且走唯一实现（真名锚定，不再 /claude/i 误伤第三方模型）。
+      const prov = provider || inferProviderByModelName(model);
       const normalized = normalizeCacheUsage(usage as Usage, prov);
       const usedTokens = normalized.promptTotal;
       if (!(usedTokens > 0)) return null;

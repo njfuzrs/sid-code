@@ -240,6 +240,44 @@ export function accumulateUsage(target: Usage, eventUsage: Usage | undefined): U
   return target;
 }
 
+/**
+ * 给携带 usage 的事件盖上「产出它的 provider」的章（D5，多 Provider 层审计）。
+ *
+ * 盖在 ModelFallback —— 它是唯一同时知道「这个事件从哪个 provider 实例出来」的位置
+ * （主流 / 非流式降级 / fallbackProvider 三处出口）。此前它只暴露一个布尔上报位
+ * `lastCallFellBack`，主循环**拿不到**实际 provider，只能退回 `config.provider` 常量。
+ *
+ * 已有章不覆盖：嵌套的漏斗（外层再包一层 ModelFallback）以最内层、即真实发请求的那个为准。
+ */
+export function stampUsageProvider(
+  event: StreamEvent,
+  providerName: string | undefined,
+): StreamEvent {
+  if (!providerName) return event;
+  if ((event.type === "message_start" || event.type === "message_delta") && !event.usageProvider) {
+    return { ...event, usageProvider: providerName };
+  }
+  return event;
+}
+
+/**
+ * 安全读取 provider 名：盖章是**附加**的归因信息，绝不能因为它让请求失败。
+ *
+ * `Provider.name()` 按接口是必填的，但测试替身与第三方插件 provider 不一定实现
+ * （2026-10-11 PR #235 首轮 CI：`/compact` 用例的 mock provider 无 `name`，
+ * 无条件调用直接让摘要请求抛 TypeError）。取不到就返回 undefined，调用方跳过盖章，
+ * 消费侧回落 `config.provider` —— 与修前行为一致。
+ */
+export function safeProviderName(provider: { name?: unknown }): string | undefined {
+  try {
+    if (typeof provider.name !== "function") return undefined;
+    const n = (provider.name as () => unknown)();
+    return typeof n === "string" && n ? n : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
 /** 文本增量 */
 export interface TextDelta {
   type: "text_delta";
@@ -254,7 +292,12 @@ export interface InputJsonDelta {
 
 /** 流式事件类型 */
 export type StreamEvent =
-  | { type: "message_start"; message: { usage: Usage } }
+  | {
+      type: "message_start";
+      message: { usage: Usage };
+      /** 产出这份 usage 的 provider 名（由 ModelFallback 盖章，见 {@link stampUsageProvider}） */
+      usageProvider?: string;
+    }
   /**
    * 流被**重开**：上一次尝试已产出的所有内容块**全部作废**，消费方必须清空累加状态。
    *
@@ -311,6 +354,8 @@ export type StreamEvent =
       delta: { stop_reason: string | null };
       usage: Usage;
       _rawOutputTokensZero?: boolean;
+      /** 产出这份 usage 的 provider 名（由 ModelFallback 盖章，见 {@link stampUsageProvider}） */
+      usageProvider?: string;
     }
   | { type: "message_stop" }
   | {
@@ -500,6 +545,18 @@ export interface AccumulatedResponse {
   content: ContentBlock[];
   stopReason: string | null;
   usage: Usage;
+  /**
+   * 产出 `usage` 的那个 provider 的名字（D5，多 Provider 层审计）。
+   *
+   * `normalizeCacheUsage` 的三段拆分按 provider 二分（Anthropic 的 inputTokens 是未命中余量，
+   * OpenAI 族的含命中），而跨族降级时 usage 来自 fallbackProvider —— 消费方若拿会话启动时
+   * 固化的 `config.provider` 去归一化，`promptTotal` 实测差 47.5 倍（上下文校准被告知
+   * 「几乎是空的」→ compact 触发过晚）。所以身份必须**随数据走**，不能在消费侧再推导一次。
+   *
+   * 取**最后一个**带 usage 的事件的身份：降级成功后那份 usage 才是本轮的主体。
+   * 缺省 = 上游没盖章（未经 ModelFallback 的直连路径），调用方回落自己的 provider。
+   */
+  usageProvider?: string;
   _meta?: Record<string, unknown>;
   /**
    * 方案①/②（deepseek-reasoning-leak 修复）：本轮以 end_turn 收尾，但没有面向用户的

@@ -492,7 +492,22 @@ export class OpenAIProvider implements Provider {
     // 其余族（Grok / o-series / 未知族）刻意不发：thinking 结构各家不同
     // （Anthropic 是 `{budget_tokens}`），瞎猜结构的 400 风险远高于一个标量字段，
     // 且无法从错误文本反推正确结构 —— 自愈救不回来。
-    if (wire.thinkingToggle === "type-enum" && params.thinking && !thinkingToggleBlocked) {
+    //
+    // D7（多 Provider 层审计）：compat 的 `supportsThinkingToggle: true` / `thinkingAlwaysOn: true`
+    // 本身就是用户对**这条渠道**的线格式声明（两字段的定义都是「认 `thinking:{type}` 开关」），
+    // 必须与族推导**并列**而不是嵌在它里面。此前只看 `wire.thinkingToggle`，网关改名模型
+    // （`origin-glm-5.3`）被判 unknown ⇒ 守卫不成立 ⇒ 文档点名的 `thinking_always_on` 出口是死字段。
+    // 兄弟位 `toolChoiceAutoOnly` 早就是这个形态（compat 独立判据、族推导兜底）。
+    //
+    // 这**不**违背上面「未知族不猜结构」的论证：没有声明时 unknown 族照旧不发；
+    // 有声明时发的是用户自己声明认的结构，不是猜的。
+    const compatDeclaresTypeEnum =
+      compat?.supportsThinkingToggle === true || compat?.thinkingAlwaysOn === true;
+    if (
+      (wire.thinkingToggle === "type-enum" || compatDeclaresTypeEnum) &&
+      params.thinking &&
+      !thinkingToggleBlocked
+    ) {
       // ── 恒思考模型：请求关思考时降级为「不下发」，而不是发一个必被拒的 disabled ──
       //
       // 2026-08-17 实证（会话 `20260817-135824-fcf863e1`）：GLM-5.3 恒思考，
@@ -1030,6 +1045,7 @@ export class OpenAIProvider implements Provider {
         emitTimeoutFired(obsIndex, "header_timeout", {
           threshold_ms: headerTimeoutMs,
           model: attrModel,
+          provider: this.name(),
         });
         // 缺口 2 进阶：武装未生效检查（abort 后若 fetch 未在 5s 内 settle → TimeoutIneffective）
         disarmHeaderIneffective = armIneffectiveCheck(
@@ -1245,7 +1261,11 @@ export class OpenAIProvider implements Provider {
           if (!firstTokenTime) {
             firstTokenTime = Date.now();
             log.debug("LLM:OPENAI", `首 token 延迟: ${ttftMs}ms`);
-            emitStreamPhase(obsIndex, "first_content", { ttft_ms: ttftMs, model: attrModel });
+            emitStreamPhase(obsIndex, "first_content", {
+              ttft_ms: ttftMs,
+              model: attrModel,
+              provider: this.name(),
+            });
           }
         },
         // § 行为等价（T7）：abort 由 parseSSE（内部 abortPromise race）+ 下方消费循环
@@ -1267,6 +1287,7 @@ export class OpenAIProvider implements Provider {
                   ? streamTimeouts.overallTimeoutMs
                   : LIFECYCLE_PRESETS.mainLoop.overallTimeoutMs,
               model: attrModel,
+              provider: this.name(),
             });
           } catch {
             /* 可观测性不影响主流程 */
@@ -1483,6 +1504,7 @@ export class OpenAIProvider implements Provider {
       emitTimeoutFired(obsIndex, "header_timeout", {
         threshold_ms: headerTimeoutMs,
         model: attrModel,
+        provider: this.name(),
       });
       disarmHeaderIneffective = armIneffectiveCheck(
         obsIndex,
@@ -1615,7 +1637,11 @@ export class OpenAIProvider implements Provider {
           if (!firstTokenTime) {
             firstTokenTime = Date.now();
             log.debug("LLM:OPENAI:RESPONSES", `首 token 延迟: ${ttftMs}ms`);
-            emitStreamPhase(obsIndex, "first_content", { ttft_ms: ttftMs, model: attrModel });
+            emitStreamPhase(obsIndex, "first_content", {
+              ttft_ms: ttftMs,
+              model: attrModel,
+              provider: this.name(),
+            });
           }
         },
         // 三层各自上报自己的 layer 与**自己的**阈值（对齐 anthropic.ts 的写法）。
@@ -1640,6 +1666,7 @@ export class OpenAIProvider implements Provider {
             emitTimeoutFired(obsIndex, timeoutLayer, {
               threshold_ms: threshold,
               model: attrModel,
+              provider: this.name(),
             });
           } catch {
             /* 可观测性不影响主流程 */
@@ -2062,12 +2089,15 @@ export class OpenAIProvider implements Provider {
 
       // 顺带把 Responses 的失败态转成异常，让上层 classifyError 决定是否重试；
       // 否则 status=failed 会被当成一个内容为空的正常回合（静默截断）。
+      const parsed = parseResponsesBody(body);
+      // D4 / D9 同型（多 Provider 层审计）：usage 必须在 failed 判定**之前**取。
+      // 原写法先 throw 再读 usage ⇒ finally 里的计费收口拿到 undefined、记 0 token ——
+      // 与流式 `response.failed` 那条是同一个漏洞，只是换了传输方式。
+      // failed 的 prompt 已被上游收下计费，且它必然触发重试/降级，是白烧的典型样本。
+      if ((body as any).usage) billedUsage = parsed.usage;
       if (body.status === "failed") {
         throw new Error(`OpenAI Responses API 返回 failed: ${body.error?.message ?? "未知原因"}`);
       }
-
-      const parsed = parseResponsesBody(body);
-      if ((body as any).usage) billedUsage = parsed.usage;
       return {
         role: "assistant",
         content: parsed.content as ContentBlock[],
@@ -2454,6 +2484,7 @@ export class OpenAIProvider implements Provider {
             chunks: totalChunks,
             empty_chunks: emptyChunks,
             model: this._model,
+            provider: this.name(),
             // PR11：补规范 chunk 字段（老 `chunks` 原样保留，见 CHUNK_COUNT_FIELD）
             ...chunkCountFields(totalChunks, "chunks"),
           });
@@ -2818,6 +2849,7 @@ export class OpenAIProvider implements Provider {
             chunks: totalChunks,
             empty_chunks: emptyChunks,
             model: this._model,
+            provider: this.name(),
             // PR11：补规范 chunk 字段（老 `chunks` 原样保留，见 CHUNK_COUNT_FIELD）
             ...chunkCountFields(totalChunks, "chunks"),
           });

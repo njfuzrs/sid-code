@@ -425,6 +425,7 @@ export class AnthropicProvider implements Provider {
               emitStreamPhase(currentSseDumpContext().turnIndex, "first_content", {
                 ttft_ms: ttftMs,
                 model: this._model,
+                provider: this.name(),
                 ...cacheDimsFor(ttftCacheRead),
               });
             } catch {
@@ -463,6 +464,7 @@ export class AnthropicProvider implements Provider {
             emitTimeoutFired(currentSseDumpContext().turnIndex, timeoutLayer, {
               threshold_ms: threshold,
               model: this._model,
+              provider: this.name(),
             });
           } catch {
             /* 可观测性不影响主流程 */

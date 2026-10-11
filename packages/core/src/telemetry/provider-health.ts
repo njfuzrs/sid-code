@@ -21,7 +21,7 @@ import {
   formatModelLatencyLine,
   type ModelLatencyStats,
 } from "../trace/latency-by-model.ts";
-import { createProviderResolver } from "../trace/provider-resolver.ts";
+import { createProviderResolver, resolveEventProvider } from "../trace/provider-resolver.ts";
 // P1-8 门控：privacy-level 零依赖、无副作用，同步 import 不引入导入链污染。
 import { isEssentialTrafficOnly } from "../analytics/privacy-level.ts";
 
@@ -205,8 +205,8 @@ export function aggregateProviderHealth(options: {
 
     // P0-1：TTFT 改从 StreamPhase("first_content") 收集——lifecycle 层每次 fetch 独立计算的首内容延迟
     if (e.event === "StreamPhase" && e.data && e.data.phase === "first_content") {
-      const model = (e.data.model as string) || "";
-      const prov = resolveProvider(model);
+      // D6：事件自带 provider 优先（发生侧盖章），老轨迹回落 resolver
+      const prov = resolveEventProvider(e.data, resolveProvider);
       if (filterProvider && prov !== filterProvider) continue;
       const ttft = e.data.ttft_ms as number | undefined;
       if (ttft && ttft > 0) {
@@ -238,10 +238,10 @@ export function aggregateProviderHealth(options: {
 
     if (e.event === "TimeoutFired" && e.data) {
       const layer = (e.data.layer as string) || "unknown";
-      const model = (e.data.model as string) || "";
-      // 缺陷 37：与 first_content 同一个 resolver。曾另起「只认 deepseek/claude」一套，
-      // 其余模型的超时落进无分母的 unknown 桶 ⇒ successRate 兜底 1，告警永不触发。
-      const prov = model ? resolveProvider(model) : "unknown";
+      // 缺陷 37 / D6：事件自带 provider 优先，否则与 first_content 同一个 resolver。
+      // 曾另起「只认 deepseek/claude」一套，其余模型的超时落进无分母的 unknown 桶
+      // ⇒ successRate 兜底 1，告警永不触发。
+      const prov = resolveEventProvider(e.data, resolveProvider);
       if (filterProvider && prov !== filterProvider) continue;
       const acc = ensure(prov);
       acc.timeoutsByLayer[layer] = (acc.timeoutsByLayer[layer] || 0) + 1;
