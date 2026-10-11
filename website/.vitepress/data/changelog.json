@@ -27,7 +27,7 @@
       "date": "2026-10-12",
       "highlight": "首次安装缺少 API key 时直接在界面里引导配置",
       "userFacing": true,
-      "channel": "beta",
+      "channel": "stable",
       "mergedInto": null,
       "covers": null,
       "betaNote": null,
