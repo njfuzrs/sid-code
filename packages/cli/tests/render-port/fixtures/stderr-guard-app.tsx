@@ -1,4 +1,4 @@
-// B9 / T7.1a：契约 E1 / E2（裸 stderr 护栏）的子进程夹具，由 stderr-guard.test.tsx 按 SID_TUI_RENDERER 运行。
+// B9 / T7.1a：契约 E1 / E2（裸 stderr 护栏）的子进程夹具，由 stderr-guard.test.tsx 运行。
 //
 // 必须是子进程：护栏换的是全局 `process.stderr.write`，`SID_CODE_DEBUG` 又在底座模块加载时读，
 // 进程内测会互相污染。fd 1 / fd 2 都是管道，观测结果以 `<<key=value>>` 写进 fd 1（writeSync，不经被测的 write）。

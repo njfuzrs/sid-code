@@ -1,9 +1,9 @@
 /**
- * B9 / T2.3：termio 端口面在 legacy / next 两套底座上逐字节一致（契约 O4 / O6 / O7 / M3）。
+ * B9 / T2.3：termio 端口面与旧底座逐字节一致（契约 O4 / O6 / O7 / M3）。
  *
- * 做法：同一段探针脚本只经端口 `render-port/termio.ts` 调用，分别在 `SID_TUI_RENDERER=legacy|next`
- * 的子进程里跑，环境矩阵逐条比较输出。子进程是必须的：osc 的终止符在模块加载时判定，
- * 底座也只能在加载时选一次（select.ts）。
+ * 做法：同一段探针脚本只经端口 `render-port/termio.ts` 调用，在子进程里跑，环境矩阵逐条与
+ * T9.1 删除旧底座前冻结的 legacy 输出（`fixtures/legacy-frozen/contracts-termio.json`）比较。
+ * 子进程是必须的：osc 的终止符在模块加载时判定。
  *
  * 剪贴板用 PATH 前置的假命令（记录调用、按文件决定成败），不碰真实剪贴板。
  */
@@ -11,6 +11,7 @@ import { afterAll, describe, expect, test } from "bun:test";
 import { chmodSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
+import { frozenKey, legacyFrozen } from "./fixtures/legacy-frozen.ts";
 
 const PORT = resolve(import.meta.dir, "../../src/ui/render-port/termio.ts");
 const work = mkdtempSync(join(tmpdir(), "termio-diff-"));
@@ -29,7 +30,7 @@ for (const cmd of ["pbcopy", "clip", "wl-copy", "xclip", "xsel", "tmux"]) {
 }
 // 预热：每个假命令先执行一次。新写出的可执行文件第一次执行有一次性开销（空载实测 ~300ms，
 // 满载时会越过下面探针里 400ms 的等待），而本机剪贴板那一路是「发出去不等」的——
-// 没预热时，矩阵第一条（「O6: 默认」）里先跑的 legacy 一侧会偶发漏记 pbcopy，看起来像两套底座不一致。
+// 没预热时，矩阵第一条（「O6: 默认」）会偶发漏记 pbcopy，看起来像与基线不一致。
 // 这里同步付掉这笔开销，探针里的 400ms 只需要覆盖热启动（实测 6–14ms）。
 const warmLog = join(work, "warmup.log");
 for (const cmd of ["pbcopy", "clip", "wl-copy", "xclip", "xsel", "tmux"]) {
@@ -83,10 +84,9 @@ const CLEAR = [
   "WT_SESSION",
   "VTE_VERSION",
   "CI",
-  "SID_TUI_RENDERER",
 ];
 
-function probe(renderer: "legacy" | "next", env: Record<string, string>, tag: string) {
+function probe(env: Record<string, string>, tag: string) {
   const base: Record<string, string> = {};
   for (const [k, v] of Object.entries(process.env))
     if (v !== undefined && !CLEAR.includes(k)) base[k] = v;
@@ -95,13 +95,12 @@ function probe(renderer: "legacy" | "next", env: Record<string, string>, tag: st
     env: {
       ...base,
       PATH: `${BIN}:/usr/bin:/bin:${dirname(process.execPath)}`,
-      FAKE_LOG: join(work, `${tag}-${renderer}.log`),
-      FAKE_FAIL: join(work, `${tag}-${renderer}.fail`),
-      SID_TUI_RENDERER: renderer,
+      FAKE_LOG: join(work, `${tag}.log`),
+      FAKE_FAIL: join(work, `${tag}.fail`),
       ...env,
     },
   });
-  if (r.exitCode !== 0) throw new Error(`${renderer} 探针失败：${r.stderr.toString()}`);
+  if (r.exitCode !== 0) throw new Error(`探针失败：${r.stderr.toString()}`);
   return JSON.parse(r.stdout.toString());
 }
 
@@ -133,13 +132,17 @@ const MATRIX: [string, Record<string, string>][] = [
   ["Apple Terminal", { TERM_PROGRAM: "Apple_Terminal" }],
 ];
 
-describe("termio 端口：legacy 与 next 逐字节一致", () => {
+describe("termio 端口：与冻结的 legacy 输出逐字节一致", () => {
   MATRIX.forEach(([name, env], i) => {
     test(`O6: ${name}`, () => {
-      const legacy = probe("legacy", env, `m${i}`);
-      const next = probe("next", env, `m${i}`);
+      // 冻结键用矩阵名：env 里有一条 PATH 含 bun 安装路径，跨机器会变
+      const legacy = legacyFrozen<{ clip: unknown[]; OSC: object }>(
+        "contracts-termio",
+        frozenKey(name),
+      );
+      const next = probe(env, `m${i}`);
       expect(next).toEqual(legacy);
-      // 防空对拍：探针真的产出了东西
+      // 防空对拍：基线真的有内容
       expect(legacy.clip.length).toBeGreaterThan(0);
       expect(Object.keys(legacy.OSC).length).toBe(19);
     });

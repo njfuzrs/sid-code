@@ -3,7 +3,7 @@
  *
  * 覆盖 SSH 进 VS Code 集成终端（`TERM_PROGRAM` 不传）的情形。期望值是 2026-10-09 对 legacy 的黑盒探针
  * （35 个变体，D-5，没读旧代码），探针备份在 `~/Backups/sid-code-t67-probe-results-20261008/T8.1a/`。
- * 两套底座跑同一份断言（`SID_TUI_RENDERER` 选底座）。识别结果是进程级的，每条用例一个子进程。
+ * 识别结果是进程级的，每条用例一个子进程。
  */
 import { describe, expect, test } from "bun:test";
 import { join } from "node:path";

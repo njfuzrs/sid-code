@@ -742,7 +742,7 @@ describe("参考页生成器 · pre-commit 接线", () => {
       // process.env 读取点（env.md 页尾），4 个包都扫
       "packages/core/src/trace/collector.ts",
       "packages/shared/src/index.ts",
-      "packages/tui-renderer/src/ink.tsx",
+      "packages/tui/src/ink.tsx",
       // llms.txt 汇总全部页面 frontmatter
       "website/use/interactive.md",
       "website/ref/glossary.md",

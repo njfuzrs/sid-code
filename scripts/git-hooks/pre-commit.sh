@@ -105,7 +105,7 @@ fi
 # ============================================================================
 STAGED_SOURCES=$(git diff --cached --name-only --diff-filter=ACMR \
   | grep -E '\.(ts|tsx|js|jsx|mjs|cjs|sh|json|md)$' \
-  | grep -v -E '^(vendor/|packages/tui-renderer/src/_vendor/)' || true)
+  | grep -v -E '^vendor/' || true)
 
 if [ -n "$STAGED_SOURCES" ]; then
   NUL_HITS=""
@@ -160,7 +160,7 @@ fi
 # 更能精确定位是本次改动引入的问题，而不是让人对着一堆存量报错发懵）
 #
 # .oxlintrc.json 的 ignorePatterns 对显式传入的文件同样生效（已实测），
-# 所以直接把 staged 路径喂给 oxlint 不会漏用 packages/tui-renderer/src/ 等排除规则。
+# 所以直接把 staged 路径喂给 oxlint 不会漏用 vendor/ 等排除规则。
 # ============================================================================
 STAGED_TS=$(git diff --cached --name-only --diff-filter=ACM | grep -E '\.(ts|tsx)$' || true)
 
@@ -241,7 +241,7 @@ if [ -n "$STAGED_FMT" ]; then
 fi
 
 # ============================================================================
-# P2-2 步骤6：包边界门禁（shared(0) < tui-renderer(1) < core(2) < cli(3)）
+# P2-2 步骤6：包边界门禁（shared(0) < tui(1) < core(2) < cli(3)）
 #
 # 只在 packages/*/src/ 下的 .ts/.tsx 有改动时跑（全仓扫一次约 0.2s，但限定 staged
 # 触发能避免改文档 / 改脚本时也等它）。注意**触发条件按 staged 判、扫描却是全仓**：
@@ -251,13 +251,13 @@ fi
 # tsc 也照样绿 —— 没有专门的门禁，"core 不知道 TUI 存在"这条分包核心不变量
 # 会在几次「随手 import 一下」之后静默失效，而那时已经很难追责到具体某次提交。
 # ============================================================================
-STAGED_PKG_TS=$(git diff --cached --name-only --diff-filter=ACMR | grep -E '^packages/(shared|tui-renderer|tui|core|cli)/src/.*\.(ts|tsx)$' || true)
+STAGED_PKG_TS=$(git diff --cached --name-only --diff-filter=ACMR | grep -E '^packages/(shared|tui|core|cli)/src/.*\.(ts|tsx)$' || true)
 
 if [ -n "$STAGED_PKG_TS" ]; then
   echo "[pre-commit] 包边界扫描（packages/ 全仓）..."
   if ! (cd "$REPO_ROOT" && bun run scripts/pkg-boundary-scan.ts); then
     echo "[pre-commit] ❌ 包边界越界，commit 中止"
-    echo "             低 rank 包不得导入高 rank 包（shared < tui-renderer < core < cli）。"
+    echo "             低 rank 包不得导入高 rank 包（shared < tui < core < cli）。"
     echo "             修法：把共享类型下移到 shared，或反转依赖方向；改 rank 表让它变绿是最有害的修法。"
     echo "             细节见 scripts/pkg-boundary-scan.ts 文件头与 tests/build/package-boundary.test.ts"
     exit 1

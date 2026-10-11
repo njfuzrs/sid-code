@@ -45,7 +45,7 @@ describe("jitContext 默认值单一事实源", () => {
     // 漏包 = 门禁少扫一片；下面的 files.length 断言就是防这种空转的
     // （分包时它真的红了：src/ 搬空后只扫到 1 个文件）。
     const files = await Array.fromAsync(
-      new Bun.Glob("packages/{shared,tui-renderer,core,cli}/src/**/*.{ts,tsx}").scan("."),
+      new Bun.Glob("packages/{shared,tui,core,cli}/src/**/*.{ts,tsx}").scan("."),
     );
     // 门禁自身的有效性前提：真的扫到了文件。Glob 失效时应该红，不该静默通过。
     expect(files.length).toBeGreaterThan(100);

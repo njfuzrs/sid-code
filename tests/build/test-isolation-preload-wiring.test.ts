@@ -101,7 +101,7 @@ describe("隔离兜底接线（P1-2 测试分包后的防复发门禁）", () =>
   });
 
   test("扫描面非空——包目录改名/结构变动导致空扫时本门禁不得静默通过", () => {
-    // 迁移后至少 core / cli / shared / tui-renderer / eval-framework 五个包有测试文件。
+    // 迁移后至少 core / cli / shared / tui / eval-framework 五个包有测试文件。
     // eval-framework 是判据从"有 tests/ 目录"改成"有 *.test.ts"后新纳入的那个
     // （它的 4 个测试平铺在 core/、sandbox/、graders/ 下，旧判据整包跳过）。
     expect(packagesWithTests().length).toBeGreaterThanOrEqual(5);

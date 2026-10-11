@@ -3,7 +3,7 @@
   "version": "0.0.0",
   "private": true,
   "type": "module",
-  "description": "agent 运行时：llm / tool / query / config / skill / permission / trace 等。刻意不依赖 tui-renderer，将来可单独转 public 当库用",
+  "description": "agent 运行时：llm / tool / query / config / skill / permission / trace 等。刻意不依赖渲染底座（tui），将来可单独转 public 当库用",
   "exports": {
     "./*": "./src/*"
   },

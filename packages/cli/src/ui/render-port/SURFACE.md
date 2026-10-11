@@ -1,4 +1,4 @@
-<!-- 本文件由 scripts/tui-surface.ts 生成，勿手改。重新生成：bun run tui:surface -->
+<!-- 本文件曾由 scripts/tui-surface.ts 生成。该脚本扫描旧底座，B9 / T9.1 随旧底座删除；此后这里是 T9.1 时的冻结快照，可手改。 -->
 <!-- surface-signature: ff8eceb706de4a9b -->
 
 # 渲染端口面（CLI 对渲染底座的全部依赖）
@@ -200,11 +200,9 @@ B9 / T0.1 产物。新底座必须提供这里列出的全部符号与 props；r
 - `packages/cli/tests/render-port/fixtures/alt-screen-app.tsx`
 - `packages/cli/tests/render-port/fixtures/cli-modes-app.tsx`
 - `packages/cli/tests/render-port/fixtures/external-editor-app.tsx`
-- `packages/cli/tests/render-port/fixtures/next-minimal-app.tsx`
 - `packages/cli/tests/render-port/fixtures/osc-unmount-app.tsx`
 - `packages/cli/tests/render-port/fixtures/stderr-guard-app.tsx`
 - `packages/cli/tests/render-port/fixtures/terminal-modes-app.tsx`
-- `packages/cli/tests/render-port/next-switch.test.ts`
 - `packages/cli/tests/render-port/render-instance.test.tsx`
 - `packages/cli/tests/render-port/static-reconcile.test.tsx`
 - `packages/cli/tests/render-port/stdin-dual-reader.test.tsx`

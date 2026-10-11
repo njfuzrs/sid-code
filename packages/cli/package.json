@@ -10,7 +10,6 @@
   "dependencies": {
     "@sid-code/core": "workspace:*",
     "@sid-code/shared": "workspace:*",
-    "@sid-code/tui": "workspace:*",
-    "@sid-code/tui-renderer": "workspace:*"
+    "@sid-code/tui": "workspace:*"
   }
 }

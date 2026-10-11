@@ -1,5 +1,5 @@
 /**
- * 契约 X3（B9 / T7.1b）：卸载时的终端恢复序列。两套底座都跑，期望值全部是 2026-10-09 对拍 legacy 的黑盒探针实测
+ * 契约 X3（B9 / T7.1b）：卸载时的终端恢复序列。期望值全部是 2026-10-09 对拍 legacy 的黑盒探针实测
  * （没有读旧底座代码，设计文档 D-5；探针备份在 `~/Backups/sid-code-t67-probe-results-20261008/T7.1b/`）。
  *
  * 必须是子进程：兜底段同步直写 fd 1，进程内的流对象截不到；`<W>` 标记出每一次经 `process.stdout.write` 的写入，
@@ -14,23 +14,19 @@
  */
 import { describe, expect, test } from "bun:test";
 import { join, resolve } from "node:path";
+import { frozenKey, legacyFrozen } from "./fixtures/legacy-frozen.ts";
 
 const ROOT = resolve(import.meta.dir, "../../../..");
 const FIXTURE = join(import.meta.dir, "fixtures/unmount-app.tsx");
 const E = "\x1b";
 
-function unmountSegment(
-  renderer: "legacy" | "next",
-  variant: string,
-  env: Record<string, string> = {},
-): string {
+function unmountSegment(variant: string, env: Record<string, string> = {}): string {
   const r = Bun.spawnSync([process.execPath, FIXTURE, variant], {
     cwd: ROOT,
     env: {
       PATH: process.env.PATH ?? "",
       HOME: process.env.HOME ?? "",
       SID_CONFIG_DIR: process.env.SID_CONFIG_DIR ?? "",
-      SID_TUI_RENDERER: renderer,
       TERM: "xterm-256color",
       NODE_ENV: "test",
       ...env,
@@ -38,7 +34,7 @@ function unmountSegment(
   });
   const out = r.stdout.toString();
   const i = out.indexOf("<UNMOUNT>");
-  if (i < 0) throw new Error(`${renderer} ${variant} 没有走到卸载：\n${r.stderr.toString()}`);
+  if (i < 0) throw new Error(`${variant} 没有走到卸载：\n${r.stderr.toString()}`);
   return out.slice(i + "<UNMOUNT>".length).replaceAll(E, "E");
 }
 
@@ -89,30 +85,24 @@ const PROD: [string, string][] = [
 
 describe("X3: 卸载时的终端恢复序列", () => {
   test.each(CASES)("X3: %s", (variant, expected) => {
-    const legacy = unmountSegment("legacy", variant);
-    expect(legacy).toBe(expected);
-    expect(unmountSegment("next", variant)).toBe(legacy);
+    expect(unmountSegment(variant)).toBe(expected);
   });
 
   test.each(PROD)("X3（生产调度）: %s", (variant, expected) => {
-    const legacy = unmountSegment("legacy", variant, { NODE_ENV: "production" });
-    expect(legacy).toBe(expected);
-    expect(unmountSegment("next", variant, { NODE_ENV: "production" })).toBe(legacy);
+    expect(unmountSegment(variant, { NODE_ENV: "production" })).toBe(expected);
   });
 
   // 环境相关的两处：tab 清除可关、按 tmux 包裹（规则归 O2，这里只确认兜底段里用的是同一套）
   test.each([
     ["SID_DISABLE_TAB_STATUS=1", { SID_DISABLE_TAB_STATUS: "1" }],
     ["TMUX", { TMUX: "/tmp/tmux-0/default,1,0" }],
-  ] as const)("X3: alt-mouse + %s 与 legacy 一致", (_name, env) => {
-    const legacy = unmountSegment("legacy", "alt-mouse", env);
-    expect(legacy).toContain(MOUSE_OFF + "E[>4mE[<uE[?1004lE[?2004lE[?25hE]9;4;0;\x07");
-    expect(unmountSegment("next", "alt-mouse", env)).toBe(legacy);
+  ] as const)("X3: alt-mouse + %s 与冻结的 legacy 一致", (_name, env) => {
+    const next = unmountSegment("alt-mouse", env);
+    expect(next).toContain(MOUSE_OFF + "E[>4mE[<uE[?1004lE[?2004lE[?25hE]9;4;0;\x07");
+    expect(next).toBe(legacyFrozen<string>("unmount", frozenKey("alt-mouse", env)));
   });
 
   test("X3: SID_DISABLE_TAB_STATUS 时兜底段不写 tab 清除", () => {
-    expect(unmountSegment("legacy", "main", { SID_DISABLE_TAB_STATUS: "1" })).not.toContain(
-      "21337",
-    );
+    expect(unmountSegment("main", { SID_DISABLE_TAB_STATUS: "1" })).not.toContain("21337");
   });
 });

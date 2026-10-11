@@ -2,7 +2,7 @@
  * 契约 M1 / R14（B9 / T6.1a）：`<AlternateScreen>` 的进出字节、鼠标跟踪开关、alt-screen 出帧。
  *
  * 期望值是 2026-10-08 对 legacy 的黑盒探针（D-5）。每个用例在子进程里跑 fixtures/alt-screen-app.tsx，
- * 两套底座各跑一次：先断言 legacy 本身满足写死的字节（防止测试和基线一起漂），再断言 next 与 legacy 逐段一致。
+ * 先断言写死的字节，再断言 next 与 T9.1 删除旧底座前冻结的 legacy 输出逐段一致（`fixtures/legacy-frozen/`）。
  *
  * 卸载那一段（`unmount` 标记之后）不比：卸载时恢复终端模式、清 OSC 进度属于生命周期（X 组，T7.1b）。
  */
@@ -10,6 +10,7 @@ import { describe, expect, test } from "bun:test";
 import { closeSync, mkdtempSync, openSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { frozenKey, legacyFrozen } from "./fixtures/legacy-frozen.ts";
 
 const APP = join(import.meta.dir, "fixtures/alt-screen-app.tsx");
 const ESC = "\x1b";
@@ -22,14 +23,8 @@ const BSU = `${ESC}[?2026h`;
 const ESU = `${ESC}[?2026l`;
 const HIDE = `${ESC}[?25l`;
 
-type Renderer = "legacy" | "next";
-
 /** 跑一个用例，按 OSC 7777 标记切段：`{ 标记: 该标记之前那一段的字节 }`；`unmount` 之后的不要 */
-function run(
-  name: string,
-  renderer: Renderer,
-  env: Record<string, string> = {},
-): Record<string, string> {
+function run(name: string, env: Record<string, string> = {}): Record<string, string> {
   const dir = mkdtempSync(join(tmpdir(), "alt-screen-"));
   const file = join(dir, "out");
   const fd = openSync(file, "w");
@@ -42,11 +37,10 @@ function run(
         HOME: process.env.HOME!,
         NODE_ENV: "test",
         TERM: "xterm-256color",
-        SID_TUI_RENDERER: renderer,
         ...env,
       },
     });
-    if (r.exitCode !== 0) throw new Error(`${renderer} ${name} 退出码 ${r.exitCode}`);
+    if (r.exitCode !== 0) throw new Error(`${name} 退出码 ${r.exitCode}`);
   } finally {
     closeSync(fd);
   }
@@ -58,18 +52,18 @@ function run(
     segs[m[1]!] = raw.slice(start, m.index!);
     start = m.index! + m[0].length;
   }
-  if (!("unmount" in segs))
-    throw new Error(`${renderer} ${name} 没跑到 unmount 标记：${JSON.stringify(raw)}`);
+  if (!("unmount" in segs)) throw new Error(`${name} 没跑到 unmount 标记：${JSON.stringify(raw)}`);
   return segs;
 }
 
-/** legacy 满足写死的期望，next 与 legacy 逐段一致 */
+const legacyOf = (name: string, env: Record<string, string> = {}) =>
+  legacyFrozen<Record<string, string>>("alt-screen", frozenKey(name, env));
+
+/** 满足写死的期望，且与冻结的 legacy 输出逐段一致 */
 function dual(name: string, expected: Record<string, string>, env?: Record<string, string>) {
-  const legacy = run(name, "legacy", env);
-  for (const [k, v] of Object.entries(expected))
-    expect(legacy[k], `legacy ${name}「${k}」`).toBe(v);
-  const next = run(name, "next", env);
-  expect(next).toEqual(legacy);
+  const next = run(name, env);
+  for (const [k, v] of Object.entries(expected)) expect(next[k], `${name}「${k}」`).toBe(v);
+  expect(next).toEqual(legacyOf(name, env));
 }
 
 const VSCODE = { TERM_PROGRAM: "vscode" };

@@ -1,0 +1,4 @@
+{
+  "alt-mouse | {\"SID_DISABLE_TAB_STATUS\":\"1\"}": "<W>E[?2026hE[?25hE[?2026lE[?1049lE[?1007lE[?1006lE[?1003lE[?1002lE[?1000lE[>4mE[<uE[?1004lE[?2004lE[?25hE]9;4;0;\u0007<W>E[?25h<W>E[>4m<W>E[<u<W>E[?1004l<W>E[?2004l<W>E[?1007lE[?1006lE[?1003lE[?1002lE[?1000lE[?1049l<END>",
+  "alt-mouse | {\"TMUX\":\"/tmp/tmux-0/default,1,0\"}": "<W>E[?2026hE[?25hE[?2026lE[?1049lE[?1007lE[?1006lE[?1003lE[?1002lE[?1000lE[>4mE[<uE[?1004lE[?2004lE[?25hE]9;4;0;\u0007EPtmux;EE]21337;indicator=;status=;status-color=\u0007E\\<W>E[?25h<W>E[>4m<W>E[<u<W>E[?1004l<W>E[?2004l<W>E[?1007lE[?1006lE[?1003lE[?1002lE[?1000lE[?1049l<END>"
+}

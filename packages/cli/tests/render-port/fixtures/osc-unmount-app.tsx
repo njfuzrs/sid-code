@@ -1,4 +1,4 @@
-// B9 / T7.2b：契约 O3 的子进程夹具。由 terminal-progress.test.tsx 按不同 SID_TUI_RENDERER / 环境运行。
+// B9 / T7.2b：契约 O3 的子进程夹具。由 terminal-progress.test.tsx 按不同环境运行。
 // 必须是子进程：旧底座卸载时 `writeSync(1)` 直写 fd 1，进程内 PassThrough 截不到（同 term-bench）。
 // 输出：`<RAW>` 之前是挂载期，`<UNMOUNT>` 之后是卸载序列，`<END …>` 带上 TerminalWriteContext 的观测。
 import React, { useContext, useEffect } from "react";
