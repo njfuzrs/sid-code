@@ -21,6 +21,7 @@ sid-code —— 第三方代码来源与归属声明
 1. vendor/ripgrep/ —— 入库的 ripgrep 二进制
 2. npm 运行时依赖
 3. 完整许可条款原文
+4. packages/tui/ —— 以 ink@7.1.1 为起点的渲染底座（MIT）
 
 
 ================================================================================
@@ -38,7 +39,8 @@ sid-code —— 第三方代码来源与归属声明
 ================================================================================
 
 `package.json` 的 `dependencies` 所列包（react、chalk、marked、zod 等 30 余个）
-均通过 npm 正常安装，各自许可以其包内声明为准；这些包会被 `bun build --compile`
+均通过 npm 正常安装，各自许可以其包内声明为准（其中包括渲染底座的布局引擎
+`yoga-layout@3.2.1`，MIT，Meta，见第 4 节）；这些包会被 `bun build --compile`
 打进分发的单文件二进制。本文件不逐个罗列，请以 `package.json` 与
 `node_modules/*/package.json` 中的 `license` 字段为准。
 
@@ -76,3 +78,43 @@ ARISING FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR
 OTHER DEALINGS IN THE SOFTWARE.
 
 For more information, please refer to <http://unlicense.org/>
+
+--------------------------------------------------------------------------------
+ink —— MIT License
+（适用于 packages/tui/ 中继承自上游 ink 的部分；见第 4 节）
+--------------------------------------------------------------------------------
+
+MIT License
+
+Copyright (c) Vadym Demedes <vadimdemedes@hey.com> (https://github.com/vadimdemedes)
+Copyright (c) Sindre Sorhus <sindresorhus@gmail.com> (https://sindresorhus.com)
+
+Permission is hereby granted, free of charge, to any person obtaining a copy of this software and associated documentation files (the "Software"), to deal in the Software without restriction, including without limitation the rights to use, copy, modify, merge, publish, distribute, sublicense, and/or sell copies of the Software, and to permit persons to whom the Software is furnished to do so, subject to the following conditions:
+
+The above copyright notice and this permission notice shall be included in all copies or substantial portions of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
+
+
+================================================================================
+4. packages/tui/ —— 以 ink@7.1.1 为起点的渲染底座（MIT）
+================================================================================
+
+    目录：packages/tui/（终端渲染底座，经 packages/cli/src/ui/render-port/ 接入）
+    上游：https://github.com/vadimdemedes/ink，tag v7.1.1
+          （commit 70af033dbd2b126a16f144164685612b2c1fd554）
+    导入：上游 src/ 全部 62 个文件原样导入，见本仓 commit 8fd9048d（B9 / T1.1）
+    许可：MIT，许可原文保留在 packages/tui/LICENSE，并照抄在第 3 节
+    版权：
+          Copyright (c) Vadym Demedes <vadimdemedes@hey.com> (https://github.com/vadimdemedes)
+          Copyright (c) Sindre Sorhus <sindresorhus@gmail.com> (https://sindresorhus.com)
+    修改：相对上游的每一处改动（新增文件、改写文件、依赖变更）逐条记在
+          packages/tui/UPSTREAM-DIFF.md，含改动原因与对应契约
+    布局：布局引擎是 npm 依赖 yoga-layout@3.2.1（MIT, Meta），未入库，
+          许可以其包内声明为准（第 2 节）
+
+旧渲染底座的说明：在本节的底座之前，sid-code 用的是另一套 ink 衍生渲染底座
+（packages/tui-renderer/），它经由 2026-03-31 公开流出的 Claude Code 源码快照引入，
+其中的增量修改未获授权。该底座自 commit 5954159b（B9 / T9.1，2026-10-11）起
+已从仓库与构建产物中删除，v0.1.608 是第一个不含它的发布版本；
+在此之前的版本（含 v0.1.607 及更早）的二进制含该代码。
