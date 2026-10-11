@@ -6,6 +6,7 @@
 import type { TelemetryBus } from "../bus.ts";
 import type { Attributes } from "../types.ts";
 import { normalizeCacheUsage, type Usage } from "../../llm/types.ts";
+import { inferProviderByModelName } from "../../llm/provider-infer.ts";
 
 /** 单次 LLM 调用的 token 用量记录 */
 export interface TokenUsageRecord {
@@ -197,7 +198,7 @@ export class TokenMeter {
    * Anthropic 族的 inputTokens 本就是未命中余量（不含 hit/write），去掉缓存字段并不构造
    * 「全价」，只构造「少发了 H+W 个 token」⇒ 差值必负、被 max(0,…) 钳成 0 ——
    * 唯一真正靠显式缓存省钱的那一族，省钱 metric 恒为 0。口径与 SessionState.calculateSavings 一致。
-   * provider 缺省时按 model 名推断（claude* → anthropic），与 SessionState.inferProvider 的兜底同规则。
+   * provider 缺省时按 model 名推断，与 SessionState.inferProvider 同一份实现（llm/provider-infer.ts）。
    */
   private savingsFor(
     model: string,
@@ -205,7 +206,8 @@ export class TokenMeter {
     provider: string | undefined,
     actualCost: number,
   ): number {
-    const prov = provider ?? (/claude/i.test(model) ? "anthropic" : "openai");
+    // D6：兜底走唯一实现（llm/provider-infer.ts），不再自写一份不锚定的正则
+    const prov = provider ?? inferProviderByModelName(model);
     const norm = normalizeCacheUsage(usage, prov);
     const fullCost = this.calculateCost(
       model,

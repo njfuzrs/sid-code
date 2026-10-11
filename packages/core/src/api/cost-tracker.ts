@@ -17,6 +17,7 @@ import { normalizeCacheUsage } from "../llm/types.ts";
 import { lookupRegistryExact, lookupRegistryFuzzy } from "../llm/model-registry.ts";
 import { sameEndpoint } from "../llm/endpoint-key.ts";
 import { lookupGatewayPricing } from "../llm/gateway-pricing.ts";
+import { inferProviderByModelName } from "../llm/provider-infer.ts";
 
 /**
  * 模型定价（每百万 token，USD）。
@@ -308,15 +309,9 @@ export function resolvePricing(
  * 优先级：availableModels[].provider（用户配置，权威） > 启发式（claude* → anthropic，其余 → openai）。
  */
 export function inferPricingProvider(model: string, availableModels?: PricingModelEntry[]): string {
-  const mc = availableModels?.find((m) => m.name === model);
-  if (mc?.provider) return mc.provider;
-  // 兜底启发式必须按**真名**判：别名带渠道前缀时（gw-claude-sonnet-5）`/^claude/i`
-  // 判成 openai，normalizeCacheUsage 的三段拆分口径随之反了（Anthropic 的
-  // inputTokens 是未命中余量，OpenAI 的含命中），成本静默算错、不报错。
-  // 用户显式配了 provider 时上面已返回，走不到这里。
-  const { resolveWireModel } = require("../llm/wire-model.ts");
-  const wire: string = resolveWireModel(model, availableModels);
-  return /^claude/i.test(wire) ? "anthropic" : "openai";
+  // D6：收口到唯一实现（配置 provider > 真名锚定匹配），见 llm/provider-infer.ts。
+  // 原先这里与 SessionState.inferProvider 各写一份、可观测侧另有三份且判据不同。
+  return inferProviderByModelName(model, availableModels);
 }
 
 /**

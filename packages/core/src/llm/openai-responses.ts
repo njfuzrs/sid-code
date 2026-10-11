@@ -392,6 +392,23 @@ function mapResponseEvent(
         raw.response?.status === "incomplete"
           ? "Response incomplete"
           : (raw.error?.message ?? "Response failed");
+      // D4（多 Provider 层审计）：三个终态都带完整 Response 对象（含 usage），此前只有
+      // completed / incomplete 读了，failed 漏读 ⇒ sendViaResponsesAPI 的 accumulatedUsage
+      // 停在 0、这一轮记 $0。而 failed 的 prompt 已被上游收下计费，且它必然触发重试/降级
+      // ——白烧最典型的样本恰好免费，retryWastedRatio 的分子在它的目标人群上恒 0。
+      //
+      // ⚠ 只补 usage，不改失败语义：stop_reason 给 null（不是 end_turn），后面照发 error。
+      // 发成 end_turn 会把一次真失败伪装成正常结束。消费方对 null stop_reason 的
+      // message_delta 只做 usage 累加（stream-restart 契约：作废尝试的 token 计入不回退）。
+      const usage = raw.response?.usage;
+      if (usage) {
+        applyResponsesUsage(state.usage, usage);
+        results.push({
+          type: "message_delta",
+          delta: { stop_reason: null },
+          usage: { ...state.usage },
+        } as StreamEvent);
+      }
       results.push({
         type: "error",
         error: { message: errMsg },
