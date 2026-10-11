@@ -51,6 +51,18 @@ export function looksLikeCommand(name: string): boolean {
 }
 
 /**
+ * 一条已提交的输入是否是斜杠命令（`/model`、`/model opus`、`/compact`）。
+ *
+ * 用于把斜杠命令排除出 ↑/↓ 输入历史：命令被翻回输入框后，行首 `/` 会立刻弹出补全列表，
+ * 补全列表接管 ↑/↓，于是历史翻不动了，回车还会选中补全项直接执行（`/model` → 模型弹窗）。
+ * 纯字符串判定，不查注册表：`/tmp` 这类单段路径也会被判为命令，代价只是它不进 ↑ 历史，
+ * 换来的是这里不必拿到命令列表（text-buffer 的 reducer 里也要用）。
+ */
+export function isSlashCommandInput(text: string): boolean {
+  return /^\/[a-zA-Z0-9:\-_]+(\s|$)/.test(text.trim());
+}
+
+/**
  * 检查输入是否为以 / 开头的绝对文件路径（异步，需要文件系统访问）
  * 用于区分 /var/log/syslog 这类路径与命令
  */
