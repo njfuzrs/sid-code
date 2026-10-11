@@ -102,6 +102,14 @@ export interface TrajMeta {
   total_api_calls?: number;
   total_tokens_sent?: number;
   total_tokens_received?: number;
+  /** 累计 prompt（flow）。`total_tokens_sent` 是末轮快照（stock），两者不可混用 */
+  total_cumulative_prompt_tokens?: number;
+  total_cache_read_tokens?: number;
+  total_reasoning_tokens?: number;
+  /** 旁路调用（fork / 标题 / 摘要等）的独立账，不含在 total_cost_usd 里 */
+  side_api_calls?: number;
+  side_cost_usd?: number;
+  side_tokens_sent?: number;
   total_cost_usd?: number;
   exit_status?: string;
   tools_used?: string[];
@@ -607,8 +615,9 @@ export interface ProcessPathologyStats {
    * `AfterModelRaw` 入账。实测 2026-08-21 那次会话的 22 个差额全部属于这一类，
    * 而当时它们被报成"重试白烧"，把排查引向了 `fallback.ts`（那里没有问题）。
    *
-   * 判据是 StreamPhase 上的 `agent_id` / `caller` 字段（PR2 起 provider 侧落）。
-   * 老轨迹无该字段 → 恒 0，全部差额归入 `retryConnections`（与改造前口径一致）。
+   * 判据取两个身份源的较大者：StreamPhase 上的 `agent_id` / `caller`（Anthropic 路径落），
+   * 与 `BilledRequest.accounted === false`（两族都落；OpenAI 族 StreamPhase 不带身份，
+   * 只能靠它）。两者都没有的老轨迹 → 恒 0，全部差额归入 `retryConnections`。
    */
   otherChainConnections: number;
   /** §5.4：差额中归因为**真·重试**的条数（= extraConnections − otherChainConnections） */
@@ -692,8 +701,29 @@ export interface Digest {
   apiCalls: number;
   totalSteps: number;
   costUSD: number;
+  /** 末轮 prompt 快照（stock）。头部展示不用它，见 tokensSentCumulative */
   tokensSent: number;
+  /**
+   * 累计 prompt（flow）。头部 `tok ↑` 必须用它：与 `tokensReceived`（累计）同口径。
+   * 老轨迹没有该字段时为 undefined，渲染退回 tokensSent 并显式标「末轮」。
+   */
+  tokensSentCumulative?: number;
   tokensReceived: number;
+  /** 主循环缓存命中 token 累计；与 tokensSentCumulative 相除即缓存命中率 */
+  cacheReadTokens?: number;
+  /** 推理 token（OpenAI 族 >0；Anthropic 族恒 0） */
+  reasoningTokens?: number;
+  /** 旁路调用独立账（fork / 标题 / 摘要）。costUSD 只是主循环，两者相加才是会话真实成本 */
+  sideCalls?: { apiCalls: number; costUSD: number; tokensSent: number };
+  /**
+   * 进程存活核验（只在缺 SessionEnd 时做）。alive=true 时 session_end_missing 不报：
+   * 会话还没结束，缺 SessionEnd 是正常状态，不是故障。
+   */
+  liveProcess?: { pid: number; alive: boolean };
+  /** 后台 fork 里执行的工具调用（PermissionDecision.execution_context=forked），按工具计数 */
+  forkedToolCalls?: Record<string, number>;
+  /** warn.log 里的 CACHE_BREAK 告警条数（服务端缓存波动 vs 本地前缀断裂的对照） */
+  cacheBreakWarnings?: number;
   workingDir: string;
   userPrompts: string[];
   toolsUsed: string[];
@@ -999,6 +1029,8 @@ function previewArgs(
   const anchors = [
     "file_path",
     "path",
+    // ls 的参数名是 dir_path，不在锚点里时会落到兜底分支只显示 `{dir_path}` 键名
+    "dir_path",
     "pattern",
     "command",
     "query",
@@ -1019,6 +1051,87 @@ function previewArgs(
     return keys.length ? `{${keys.slice(0, 3).join(",")}}` : "{}";
   }
   return parts.join(" ");
+}
+
+/**
+ * 在 `<root>/trajectories/.pids/*.json` 里找属于该会话的 PID 条目，并用 `kill(pid, 0)` 核验存活。
+ *
+ * 不复用 pid-manager：那边的路径固定走 `sidPaths.trajectories()`，而 digest 的根目录
+ * 可由 `resolvePaths(root)` 显式指定（测试 / 离线分析别人的轨迹目录）—— 复用会让
+ * 「分析 A 目录的会话、却去 B 目录查 PID」，判据静默错位。
+ *
+ * EPERM 视为存活（进程在、只是不属于当前用户），与 pid-manager.findOrphanPids 一致。
+ * PID 复用的误判（原进程已退、同号新进程在跑）用 `process_title` 不能可靠排除，
+ * 所以只在条目的 session_id 精确匹配时才认，并在渲染层把 PID 原样展示，供人复核。
+ */
+export function findSessionProcess(
+  paths: DigestPaths,
+  sessionId: string,
+): { pid: number; alive: boolean } | undefined {
+  const dir = join(paths.sessionsDir, "..", ".pids");
+  try {
+    if (!existsSync(dir)) return undefined;
+    for (const f of readdirSync(dir)) {
+      if (!f.endsWith(".json")) continue;
+      const entry = readJsonSafe<{ pid?: number; session_id?: string }>(join(dir, f));
+      if (!entry || entry.session_id !== sessionId || typeof entry.pid !== "number") continue;
+      let alive = false;
+      try {
+        process.kill(entry.pid, 0);
+        alive = true;
+      } catch (err) {
+        alive = (err as NodeJS.ErrnoException)?.code === "EPERM";
+      }
+      return { pid: entry.pid, alive };
+    }
+  } catch {
+    /* 读不到 PID 目录 → 当作无从核验，维持原判据 */
+  }
+  return undefined;
+}
+
+/**
+ * 后台 fork 里执行的工具调用计数。fork（session-memory-update / memory-extract）的工具
+ * 不进主 traj、也不进 PreToolUse，唯一留痕是 `PermissionDecision.execution_context=forked`。
+ * 不展示的话，「后台在改文件」这件事在 /trace 里完全不可见。
+ */
+export function countForkedToolCalls(
+  events: Array<{ event?: string; data?: Record<string, unknown> }>,
+): Record<string, number> | undefined {
+  const out: Record<string, number> = {};
+  for (const e of events) {
+    if (e.event !== "PermissionDecision" || e.data?.execution_context !== "forked") continue;
+    const tool = String(e.data?.tool_name ?? "?");
+    out[tool] = (out[tool] ?? 0) + 1;
+  }
+  return Object.keys(out).length > 0 ? out : undefined;
+}
+
+/** warn.log 里 `[CACHE_BREAK]` 条数。没有 warn.log → undefined（不是 0：0 会读成「查过了没有」） */
+function countCacheBreakWarnings(dir: string): number | undefined {
+  const p = join(dir, "warn.log");
+  if (!existsSync(p)) return undefined;
+  try {
+    return readFileSync(p, "utf-8")
+      .split("\n")
+      .filter((l) => l.includes("[CACHE_BREAK]")).length;
+  } catch {
+    return undefined;
+  }
+}
+
+/**
+ * 清洗 user_prompt 用于展示：去掉控制字符与首尾空白。
+ *
+ * 实测会话 20261011-220000-97ae3124 的 prompt 开头是 **NUL 字节**（0x00 × 数十个，
+ * 粘贴进 TUI 时带进来的），终端把它们渲染成空白，编号 `1.` 于是独占一行。
+ * 光 `trim()` 不够 —— JS 的 trim 不剥 NUL。只影响展示，原始数据不动。
+ */
+export function cleanPrompt(p: unknown): string {
+  // eslint-disable-next-line no-control-regex
+  return String(p ?? "")
+    .replace(/[\u0000-\u0008\u000b\u000c\u000e-\u001f\u007f]/g, "")
+    .trim();
 }
 
 function deriveDuration(meta: TrajMeta): number {
@@ -1741,8 +1854,15 @@ export function buildDigest(ref: SessionRef, full: boolean, paths: DigestPaths):
   }
 
   // 检测 SessionEnd 缺失（进程可能被强杀或 hang）
+  //
+  // ⚠ 先核验进程是否还活着（2026-10-12 实测误报）：对**正在运行**的会话跑 /trace，
+  // 缺 SessionEnd 是正常状态 —— 它还没结束。此前这里无条件报 [中] session_end_missing
+  // + L1「进程被强杀」，而那条 L1 自己的证伪条件就是「进程仍存活（ps 查 PID）」——
+  // digest 有能力自己查却把这一步留给读者，于是每次在活会话里跑 /trace 都会看到一条假告警。
+  // PID 文件由 pid-manager 启动时写、正常退出时删（`.pids/<pid>.json`，含 session_id）。
   const hasSessionEnd = events.some((e) => e.event === "SessionEnd");
-  if (!hasSessionEnd && events.length > 0) {
+  const liveProcess = !hasSessionEnd ? findSessionProcess(paths, ref.id) : undefined;
+  if (!hasSessionEnd && events.length > 0 && !liveProcess?.alive) {
     anomalies.push({
       layer: "L0",
       severity: "medium",
@@ -2081,7 +2201,9 @@ export function buildDigest(ref: SessionRef, full: boolean, paths: DigestPaths):
     pointers.push({
       label: "心跳快照",
       path: join(ref.dir, "heartbeat.txt"),
-      hint: "最后心跳: event_loop_lag_ms>100 说明事件循环阻塞; active_request.elapsed_ms 大且仍在跳=hang",
+      hint:
+        "最后心跳: event_loop_lag_ms>100 说明事件循环阻塞; active_request.elapsed_ms 大且仍在跳=hang" +
+        "（phase 为 completed/aborted/error 时不算 hang，是已收尾快照未清理）",
     });
   }
 
@@ -2146,9 +2268,23 @@ export function buildDigest(ref: SessionRef, full: boolean, paths: DigestPaths):
     totalSteps: meta.total_steps ?? steps.length,
     costUSD,
     tokensSent,
+    tokensSentCumulative: meta.total_cumulative_prompt_tokens,
     tokensReceived: meta.total_tokens_received ?? traj.info?.model_stats?.tokens_received ?? 0,
+    cacheReadTokens: meta.total_cache_read_tokens,
+    reasoningTokens: meta.total_reasoning_tokens,
+    sideCalls:
+      (meta.side_api_calls ?? 0) > 0
+        ? {
+            apiCalls: meta.side_api_calls!,
+            costUSD: meta.side_cost_usd ?? 0,
+            tokensSent: meta.side_tokens_sent ?? 0,
+          }
+        : undefined,
+    liveProcess,
+    forkedToolCalls: countForkedToolCalls(events),
+    cacheBreakWarnings: countCacheBreakWarnings(ref.dir),
     workingDir: meta.working_directory || "",
-    userPrompts: (meta.user_prompts || []).map((p) => truncate(String(p), full ? 300 : 160)),
+    userPrompts: (meta.user_prompts || []).map((p) => truncate(cleanPrompt(p), full ? 300 : 160)),
     toolsUsed: meta.tools_used || [],
     filesEdited: meta.files_edited || [],
     toolSequence,
@@ -2206,8 +2342,43 @@ export function renderHuman(d: Digest, opts: RenderOptions = {}): string {
   L.push(
     `  模型 ${c("cyan", d.model)}   API ${d.apiCalls} 次   步骤 ${d.totalSteps}   ` +
       `耗时 ${fmtDuration(d.durationMs)}   成本 ${fmtUsd(d.costUSD)}   ` +
-      `tok ${d.tokensSent}↑/${d.tokensReceived}↓`,
+      // stock/flow 铁律：↓ 是累计输出，↑ 必须也是累计 prompt。此前用的是
+      // total_tokens_sent（末轮快照），实测 80833↑ vs 真实累计 763109，差 9.4 倍。
+      (d.tokensSentCumulative !== undefined
+        ? `tok ${d.tokensSentCumulative}↑/${d.tokensReceived}↓（累计）`
+        : `tok ${d.tokensSent}↑(末轮)/${d.tokensReceived}↓(累计)`),
   );
+  // 成本结构：缓存命中率 / 推理 token / 旁路调用。三者都在 metadata 里现成，
+  // 此前从未渲染 —— 旁路调用实测占主循环成本的 67%，是最易漏计的一块。
+  const costBits: string[] = [];
+  if (d.tokensSentCumulative && d.cacheReadTokens !== undefined) {
+    costBits.push(
+      `缓存命中 ${((d.cacheReadTokens / d.tokensSentCumulative) * 100).toFixed(1)}%` +
+        `(${d.cacheReadTokens}/${d.tokensSentCumulative})`,
+    );
+  }
+  if (d.reasoningTokens) {
+    const share = d.tokensReceived > 0 ? (d.reasoningTokens / d.tokensReceived) * 100 : 0;
+    costBits.push(`推理 ${d.reasoningTokens} tok(占输出 ${share.toFixed(0)}%)`);
+  }
+  if (d.sideCalls) {
+    costBits.push(
+      `旁路调用 ${d.sideCalls.apiCalls} 次 ${fmtUsd(d.sideCalls.costUSD)} ` +
+        `(${d.sideCalls.tokensSent}↑，未计入上方成本；合计 ${fmtUsd(d.costUSD + d.sideCalls.costUSD)})`,
+    );
+  }
+  if (costBits.length) L.push(`  ${costBits.join("   ")}`);
+  if (d.forkedToolCalls) {
+    const parts = Object.entries(d.forkedToolCalls)
+      .sort((a, b) => b[1] - a[1])
+      .map(([t, n]) => `${t}×${n}`);
+    L.push(c("gray", `  后台 fork 工具调用(不在下方工具序列中): ${parts.join(" ")}`));
+  }
+  if (d.liveProcess?.alive) {
+    L.push(
+      c("green", `  ● 进程仍在运行 (PID ${d.liveProcess.pid})，会话未结束，缺 SessionEnd 属正常`),
+    );
+  }
   if (d.workingDir) L.push(c("gray", `  cwd ${d.workingDir}`));
 
   if (d.userPrompts.length) {
@@ -2581,8 +2752,24 @@ export function renderHuman(d: Digest, opts: RenderOptions = {}): string {
     if (p.earliestBrokenMessageIndex !== undefined) {
       L.push(c("gray", `  最早断点: 第 ${p.earliestBrokenMessageIndex} 条消息（越靠前浪费越大）`));
     }
+    if (p.shrunkTurns > 0) {
+      L.push(
+        c("yellow", `  ⚠ ${p.shrunkTurns} 轮历史被缩短`) +
+          c("gray", "（本轮总字符 < 上轮：上一轮注入的内容被撤掉，属本地前缀断裂，非服务端波动）"),
+      );
+    }
     if (p.brokenTurns === 0) {
       L.push(c("green", "  ✓ 全部为尾部追加，前缀未被打断"));
+    }
+    // 与 warn.log 的 CACHE_BREAK 对照：那边判的是「前缀 hash 未变但命中下降」= 服务端波动，
+    // 这边是本地前缀变化。两类并排，才分得清哪些是我们的 bug、哪些本地不可控。
+    if (d.cacheBreakWarnings) {
+      L.push(
+        c(
+          "gray",
+          `  另 warn.log 有 ${d.cacheBreakWarnings} 条 CACHE_BREAK（前缀未变的命中下降，判为服务端波动）`,
+        ),
+      );
     }
 
     // ── 字符级判据（P1-3 解锁条件）──
@@ -3102,6 +3289,15 @@ export interface PrefixBreakDigestStats {
    * 合并会让历史空档读起来像判据冲突。
    */
   charJudgeMissingTurns: number;
+  /**
+   * 断裂轮次中「本轮总字符数 < 上轮」的轮次数 —— 历史被**缩短**，不是追加/插入。
+   *
+   * 典型成因是上一轮注入的内容这一轮被撤掉（首轮 reminder / JIT 回注只发一次）。
+   * 与「中部插入」修法相反：插入要改注入位置，缩短要让注入物在后续轮次保持原样。
+   * 实测会话 20261011-220000-97ae3124 第 2 轮：msg[0] 变化、83610→78109 字符，
+   * 该轮 cache_read 只剩 256 —— 3.5 万 input 全价重付，属于本地前缀断裂（我们的 bug）。
+   */
+  shrunkTurns: number;
 }
 
 /** 从 events.jsonl 聚合前缀断裂分布（P1-2） */
@@ -3121,6 +3317,7 @@ export function aggregatePrefixBreakStats(
   let charMax = 0;
   let disagreements = 0;
   let charMissing = 0;
+  let shrunk = 0;
 
   for (const e of rows) {
     // 字符级先统计：它对 broken 与否都有意义，放在 continue 之后就只剩 broken 轮，
@@ -3137,6 +3334,11 @@ export function aggregatePrefixBreakStats(
 
     if (e.data!.broken !== true) continue;
     broken++;
+    const prevChars = e.data!.prev_total_chars;
+    const currChars = e.data!.curr_total_chars;
+    if (typeof prevChars === "number" && typeof currChars === "number" && currChars < prevChars) {
+      shrunk++;
+    }
     const w = (e.data!.wasted_ratio as number) ?? 0;
     wastedSum += w;
     const kind = (e.data!.first_changed_kind as string) ?? "unknown";
@@ -3171,6 +3373,7 @@ export function aggregatePrefixBreakStats(
     maxCharWastedRatio: charMax,
     disagreementTurns: disagreements,
     charJudgeMissingTurns: charMissing,
+    shrunkTurns: shrunk,
   };
 }
 
@@ -3501,8 +3704,29 @@ export function computeProcessPathology(
     if (d?.phase !== "fetch_sent" && d?.phase !== "headers_received") continue;
     sideStreamKeys.add(`${id}:${d?.index}:${d?.attempt ?? 0}`);
   }
+  // 第二身份源：`BilledRequest.accounted === false` = 这次 fetch 真的发生且计了费，
+  // 但不进主循环账（fork / title_generation / side-call）。
+  //
+  // ⚠ 2026-10-12 实测（会话 20261011-220000-97ae3124）：OpenAI 族的 StreamPhase
+  // **不带** agent_id（emit 点没传身份），上面那个 Set 恒为空 → 7 次 fork 流 + 1 次
+  // 标题生成全被报成「重试白烧 0.47M token / 61.5%」，而 20 条 RetryTelemetry 全是
+  // stream_completed、一次重试都没有。§5.4 修的归因错误在这条路径上原样复活。
+  // BilledRequest 是 provider 出口统一上报的（billing-sink），身份字段两族都齐，
+  // 所以它才是可靠判据；StreamPhase 那条保留给老轨迹 / Anthropic 路径。
+  //
+  // 两个源描述的是同一批流，取 max 而不是相加 —— 相加会把同一条流算两次。
+  const billedSideKeys = new Set<string>();
+  for (const e of events) {
+    if (e.event !== "BilledRequest") continue;
+    const d = e.data as any;
+    if (d?.accounted !== false) continue;
+    billedSideKeys.add(String(d?.fetch_id ?? `${d?.agent_id ?? d?.caller}:${d?.index}`));
+  }
   // ② 的条数不得超过总差额（防止身份齐全但 AfterModelRaw 也齐全时算出负数的 ①）
-  const otherChainConnections = Math.min(extraConnections, sideStreamKeys.size);
+  const otherChainConnections = Math.min(
+    extraConnections,
+    Math.max(sideStreamKeys.size, billedSideKeys.size),
+  );
   const retryConnections = Math.max(0, extraConnections - otherChainConnections);
   const recordedInput = inputsPerTurn.reduce((a, b) => a + b, 0);
   const avgInput = inputsPerTurn.length > 0 ? recordedInput / inputsPerTurn.length : 0;

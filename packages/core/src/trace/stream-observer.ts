@@ -37,12 +37,31 @@ export type StreamPhase =
  * 不知道（OpenAI 族在首内容时刻拿不到 usage）与知道且为 0 是两件事，
  * 落一个假的 `cache_hit: false` 会把"未知"算进 miss 桶，直接污染对照结论。
  */
-export function cacheDimsFor(cacheReadTokens: number | undefined): {
+export function cacheDimsFor(
+  cacheReadTokens: number | undefined,
+  promptTotalTokens?: number,
+): {
   cache_hit?: boolean;
   cache_read?: number;
+  cache_read_ratio?: number;
 } {
   if (cacheReadTokens === undefined) return {};
-  return { cache_hit: cacheReadTokens > 0, cache_read: cacheReadTokens };
+  // `cache_read_ratio`：命中量占本次 prompt 的比例。`cache_hit` 只是「>0」，
+  // 而 DeepSeek 等网关在几乎全未命中时也会报 cache_read=256（最小命中粒度），
+  // 实测 20/20 条全是 cache_hit:true、其中 3 条 ratio < 1% —— 分桶「未命中：无样本」
+  // 是判据造成的，不是真没有未命中。比例给消费侧做阈值分桶用。
+  // `cache_hit` 本身保留原语义不改：改了会让历史 TTFT 分桶曲线整体平移。
+  // 分母只在调用方明确知道「prompt 总量含命中部分」时才传（OpenAI 族 prompt_tokens 含 cached；
+  // Anthropic 族 input_tokens 不含，口径不同，不传）。
+  const ratio =
+    promptTotalTokens !== undefined && promptTotalTokens > 0
+      ? Math.round((cacheReadTokens / promptTotalTokens) * 10_000) / 10_000
+      : undefined;
+  return {
+    cache_hit: cacheReadTokens > 0,
+    cache_read: cacheReadTokens,
+    ...(ratio !== undefined ? { cache_read_ratio: ratio } : {}),
+  };
 }
 
 // ─── 字段归一：chunk 计数的唯一规范名（PR11 / §4.3）───

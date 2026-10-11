@@ -86,6 +86,24 @@ export interface TtftCacheBucket {
   total: number;
 }
 
+/**
+ * 「命中」的比例阈值：cache_read / prompt_total ≥ 此值才进 hit 桶。
+ *
+ * 只看 `cache_hit`（= cache_read > 0）不够：DeepSeek 等网关几乎全未命中时也报
+ * cache_read=256（最小命中粒度），实测 20/20 条全是 hit、其中 3 条比例 < 1%，
+ * 于是「未命中：无样本」是判据造成的假象。0.5 = 过半前缀走了缓存，才谈得上「命中让首字快」。
+ * 事件没有 `cache_read_ratio`（老轨迹 / Anthropic 族不落分母）时退回布尔 `cache_hit`，
+ * 历史曲线不平移。
+ */
+export const CACHE_HIT_MIN_RATIO = 0.5;
+
+/** 统一的命中判定：有比例看比例，没有退回布尔 */
+export function effectiveCacheHit(data: Record<string, unknown> | undefined): boolean | undefined {
+  const ratio = data?.cache_read_ratio;
+  if (typeof ratio === "number" && Number.isFinite(ratio)) return ratio >= CACHE_HIT_MIN_RATIO;
+  return typeof data?.cache_hit === "boolean" ? data.cache_hit : undefined;
+}
+
 /** 事件的最小形状 —— 两个消费方的事件类型不同，这里只约束用到的字段 */
 interface BucketableEvent {
   event?: string;
@@ -159,10 +177,11 @@ export class TtftCacheBucketer {
     // P2-8：先记分母。放在两条分支**之前**，因为 total 的定义是"观察到多少条
     // first_content"，与它最终进了哪个桶无关 —— 写在分支里就会漏掉待配对那一路。
     this.ensure(provider).total++;
-    if (typeof e.data?.cache_hit === "boolean") {
+    const hitNow = effectiveCacheHit(e.data);
+    if (hitNow !== undefined) {
       // Anthropic：事件自带命中维度，直接分桶
       const b = this.ensure(provider);
-      (e.data.cache_hit ? b.hit : b.miss).push(ttft);
+      (hitNow ? b.hit : b.miss).push(ttft);
       return;
     }
     // OpenAI 族：维度在同次 fetch 的 completed 事件上，暂存待配对
@@ -179,8 +198,9 @@ export class TtftCacheBucketer {
    */
   observeCompleted(e: BucketableEvent): void {
     const key = bucketKey(e);
-    if (typeof e.data?.cache_hit === "boolean") {
-      TtftCacheBucketer.push(this.pendingHit, key, e.data.cache_hit);
+    const hit = effectiveCacheHit(e.data);
+    if (hit !== undefined) {
+      TtftCacheBucketer.push(this.pendingHit, key, hit);
       return;
     }
     this.dimensionlessCompleted.set(key, (this.dimensionlessCompleted.get(key) ?? 0) + 1);
