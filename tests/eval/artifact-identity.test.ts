@@ -861,6 +861,7 @@ fi
     for (const sub of ["read", "gate"]) {
       const p = Bun.spawnSync({
         cmd: ["bun", "run", cli, sub, missing],
+        env: { ...process.env },
         cwd: ROOT,
         stdout: "pipe",
         stderr: "pipe",

@@ -33,6 +33,7 @@ afterEach(() => {
 /** 用 bun 跑脚本（sid-code 基于 bun，运行时一定在），返回解析后的 stdout JSON */
 async function run(args: string[]): Promise<any> {
   const proc = Bun.spawn(["bun", SCRIPT, ...args], {
+    env: { ...process.env },
     stdout: "pipe",
     stderr: "pipe",
   });
