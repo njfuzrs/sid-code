@@ -218,7 +218,13 @@ export const DialogSwitch: React.FC<DialogSwitchProps> = ({
     );
   }
   if (activeDialog === "onboarding" && onCompleteOnboarding) {
-    return <OnboardingDialog onComplete={onCompleteOnboarding} onClose={onDialogClose} />;
+    return (
+      <OnboardingDialog
+        onComplete={onCompleteOnboarding}
+        onClose={onDialogClose}
+        presets={callbacks.getOnboardingPresets?.() ?? []}
+      />
+    );
   }
   if (activeDialog === "mcp" && mcpManager) {
     return <McpDialog onClose={onDialogClose} mcpManager={mcpManager} />;

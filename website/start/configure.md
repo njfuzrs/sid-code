@@ -126,35 +126,58 @@ sid-code 会识别出"Content-Type 不是 event-stream，这是伪装成成功�
 
 ```json
 {
-  "model": "gpt-5.4",
-  "fallbackModel": "deepseek-chat",
+  "model": "deepseek-v4-pro",
+  "fallbackModel": "deepseek-flash",
   "availableModels": [
     {
-      "name": "gpt-5.4",
+      "name": "deepseek-v4-pro",
       "provider": "openai",
-      "base_url": "https://api.openai.com/v1",
+      "base_url": "https://api.deepseek.com",
       "api_key": "sk-你的key"
     },
     {
-      "name": "deepseek-chat",
+      "name": "deepseek-flash",
       "provider": "openai",
-      "base_url": "https://api.deepseek.com/v1",
+      "base_url": "https://api.deepseek.com",
+      "api_key": "sk-你的key"
+    },
+    {
+      "name": "gpt-6.1-sol",
+      "provider": "openai",
+      "base_url": "https://api.openai.com/v1",
       "api_key": "sk-另一个key"
     }
   ]
 }
 ```
 
-`base_url` **带 `/v1`**。留空则默认 `https://api.openai.com/v1`。
+`base_url` **带 `/v1`**（DeepSeek 带不带都行；GLM、通义千问的路径本身不是 `/v1`，照下表抄）。留空则默认 `https://api.openai.com/v1`。
+
+#### 各家官方端点速查
+
+2026-10-11 对照各家官方文档核对。安装脚本写入的默认配置就是这张表（见[团队默认配置](/team/defaults#每个模型从哪来)）：
+
+| 厂商 | 主力模型 | provider | 官方 base_url |
+| --- | --- | --- | --- |
+| DeepSeek | `deepseek-v4-pro` / `deepseek-flash` | `openai` | `https://api.deepseek.com` |
+| Anthropic | `claude-opus-5-5` | `anthropic` | `https://api.anthropic.com` |
+| OpenAI | `gpt-6.1-sol` | `openai` | `https://api.openai.com/v1` |
+| 智谱 GLM | `glm-5.3` | `openai` | `https://open.bigmodel.cn/api/paas/v4` |
+| Kimi | `kimi-k3` | `openai` | `https://api.moonshot.cn/v1` |
+| 通义千问 | `qwen3.8-max` | `openai` | `https://dashscope.aliyuncs.com/compatible-mode/v1` |
+
+地域 / 套餐变体：GLM Coding 套餐 `https://open.bigmodel.cn/api/coding/paas/v4`、Z.ai 国际站 `https://api.z.ai/api/paas/v4`；
+Kimi 国际站 `https://api.moonshot.ai/v1`；千问新加坡 `https://dashscope-intl.aliyuncs.com/compatible-mode/v1`。
+不同站点 / 地域的 key 不通用。
 
 ### anthropic 族
 
 ```json
 {
-  "model": "claude-sonnet-5",
+  "model": "claude-opus-5-5",
   "availableModels": [
     {
-      "name": "claude-sonnet-5",
+      "name": "claude-opus-5-5",
       "provider": "anthropic",
       "base_url": "https://api.anthropic.com",
       "api_key": "sk-ant-你的key"
@@ -262,9 +285,20 @@ sid-code auth status
 
 ### 手工编辑之外的路子
 
-第一次启动时如果检测到没有任何模型配置，TUI 会弹出一个分步引导对话框
-（选 provider → 填 base URL → 填模型名 → 填 key），完成后自动写进
-`~/.sid-code/settings.json`。想手动改配置就用本页的做法，两条路等价。
+第一次启动时如果当前模型还没有可用的 key（没有任何配置，或者是安装脚本写入的模板、key 仍是
+`__YOUR_API_KEY__`），**不会在命令行报错退出**，而是正常进入 TUI 并弹出配置向导：
+
+- **有预置模型时**（装完的默认情况）：列出模板里的官方端点模型，选一个 → 粘贴 key → 回车。
+  同一个端点的模型共用这把 key（DeepSeek 的 pro / flash 填一次都能用）；
+  `fallbackModel` 和 `subAgentModels` 里仍指向没 key 模型的引用会自动改到能用的模型上，
+  免得主模型能用、降级和子代理却一跑就 401。其它厂商条目原样保留，以后拿到 key 再填。
+- **选「其他（手动配置）」或没有预置时**：选 provider → 填 base URL → 填模型名 → 填 key。
+
+向导按 Esc 可以先关掉。之后欢迎页一直显示一行引导；输入 `/model` 重新打开向导；
+没配好就发消息，会重新打开向导，刚才那句放回输入框，配好后回车就能发出去。
+
+向导写的就是 `~/.sid-code/settings.json`，和本页手改是同一份文件，两条路等价。
+`sid-code -p`（无头模式）没法交互，缺 key 时仍直接报错退出，并提示去哪配。
 
 ## 常见问题
 

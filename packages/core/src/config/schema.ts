@@ -551,13 +551,28 @@ export function validateConfig(config: Config): ValidationResult {
     const placeholderModels = config.availableModels.filter(
       (m) => m.provider !== "ollama" && m.apiKey && TEMPLATE_PLACEHOLDER_PATTERN.test(m.apiKey),
     );
+    // 分级：团队模板按厂商列了多条官方端点（DeepSeek / Claude / GPT / GLM / Kimi / Qwen），
+    // 用户通常只有其中一两家的 key。若「当前模型」已填真 key，其余厂商条目仍是占位符是
+    // 预期状态而非故障——仍要提示（/model 切过去会 401），但降为 warning，不再每次启动
+    // 顶着一条 [配置错误] 横幅。当前模型自己是占位符（或找不到当前模型）时保持 errors。
     if (placeholderModels.length > 0) {
-      const detail = placeholderModels.map((m) => `${m.name}(${m.apiKey})`).join(", ");
-      errors.push({
-        path: "availableModels",
-        message: `以下模型的 apiKey 仍是模板占位符，发消息时会认证失败：${detail}。请编辑 settings.json 替换为真实 Key`,
-        value: placeholderModels.map((m) => m.apiKey),
-      });
+      const current = config.availableModels.find((m) => m.name === config.model);
+      const currentIsPlaceholder =
+        !current || placeholderModels.some((m) => m.name === current.name);
+      if (currentIsPlaceholder) {
+        const detail = placeholderModels.map((m) => `${m.name}(${m.apiKey})`).join(", ");
+        errors.push({
+          path: "availableModels",
+          message: `以下模型的 apiKey 仍是模板占位符，发消息时会认证失败：${detail}。请编辑 settings.json 替换为真实 Key`,
+          value: placeholderModels.map((m) => m.apiKey),
+        });
+      } else {
+        const names = placeholderModels.map((m) => m.name).join(", ");
+        warnings.push({
+          path: "availableModels",
+          message: `以下模型尚未填写 apiKey（仍是模板占位符），用 /model 切过去会认证失败：${names}。用不到的条目可以直接从 settings.json 删掉`,
+        });
+      }
     }
   }
 

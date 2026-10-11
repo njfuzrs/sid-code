@@ -5,6 +5,9 @@
  * 分步收集配置。完成后写入 ~/.sid-code/settings.json 并热加载 Provider。
  *
  * 分步流程：
+ *   0. （有模板预置模型时）选一个预置模型——只需再填 key，baseURL / 模型名沿用模板；
+ *      选「其他」才进入下面的手动流程。预置来自安装脚本写入的团队默认配置
+ *      （availableModels 里 apiKey 仍是占位符的条目，见 app.ts getOnboardingPresets）。
  *   1. Provider 选择（anthropic / openai / ollama / 其他 OpenAI 兼容）
  *   2. Base URL（可选，留空走默认；ollama 预填 localhost）
  *   3. Model 名称（文本输入，给提示）
@@ -30,11 +33,40 @@ export interface OnboardingResult {
   baseURL: string;
   model: string;
   apiKey: string;
+  /** true = 选的是模板预置模型：只回填 key，不覆盖 availableModels */
+  fromPreset?: boolean;
+}
+
+/** 模板预置模型（availableModels 里 apiKey 仍是占位符的条目） */
+export interface OnboardingPreset {
+  name: string;
+  provider: string;
+  baseURL: string;
 }
 
 interface OnboardingDialogProps {
   onComplete: (result: OnboardingResult) => void;
   onClose: () => void;
+  presets?: OnboardingPreset[];
+}
+
+/** 官方端点 → 厂商名（仅用于展示；未知端点显示主机名） */
+const VENDOR_BY_HOST: Record<string, string> = {
+  "api.deepseek.com": "DeepSeek",
+  "api.anthropic.com": "Anthropic",
+  "api.openai.com": "OpenAI",
+  "open.bigmodel.cn": "智谱 GLM",
+  "api.moonshot.cn": "Kimi",
+  "dashscope.aliyuncs.com": "通义千问",
+};
+
+export function vendorLabel(baseURL: string): string {
+  try {
+    const host = new URL(baseURL).hostname;
+    return VENDOR_BY_HOST[host] ?? host;
+  } catch {
+    return baseURL || "自定义";
+  }
 }
 
 /** Provider 预设选项 */
@@ -78,10 +110,14 @@ function maskKey(key: string): string {
   return "•".repeat(key.length - 4) + key.slice(-4);
 }
 
-type Step = "provider" | "baseURL" | "model" | "apiKey" | "confirm";
+type Step = "preset" | "provider" | "baseURL" | "model" | "apiKey" | "confirm";
 
-export function OnboardingDialog({ onComplete, onClose }: OnboardingDialogProps) {
-  const [step, setStep] = useState<Step>("provider");
+export function OnboardingDialog({ onComplete, onClose, presets = [] }: OnboardingDialogProps) {
+  const hasPresets = presets.length > 0;
+  const [step, setStep] = useState<Step>(hasPresets ? "preset" : "provider");
+  // 预置列表末尾多一项「其他（手动配置）」
+  const [presetCursor, setPresetCursor] = useState(0);
+  const [fromPreset, setFromPreset] = useState(false);
   const [providerCursor, setProviderCursor] = useState(0);
   const [provider, setProvider] = useState("");
   const [baseURL, setBaseURL] = useState("");
@@ -100,12 +136,27 @@ export function OnboardingDialog({ onComplete, onClose }: OnboardingDialogProps)
       baseURL: baseURL.trim(),
       model: model.trim(),
       apiKey: apiKey.trim(),
+      fromPreset,
     });
   };
 
   // 进入下一步
   const nextStep = () => {
     switch (step) {
+      case "preset": {
+        const picked = presets[presetCursor];
+        if (picked) {
+          setProvider(picked.provider);
+          setBaseURL(picked.baseURL);
+          setModel(picked.name);
+          setFromPreset(true);
+          setStep(picked.provider === "ollama" ? "confirm" : "apiKey");
+        } else {
+          setFromPreset(false);
+          setStep("provider");
+        }
+        break;
+      }
       case "provider":
         setProvider(PROVIDER_OPTIONS[providerCursor].key);
         setStep("baseURL");
@@ -141,6 +192,24 @@ export function OnboardingDialog({ onComplete, onClose }: OnboardingDialogProps)
     if (key.name === "escape") {
       onClose();
       return true;
+    }
+
+    // ── 预置模型选择步骤 ──
+    if (step === "preset") {
+      const count = presets.length + 1;
+      if (key.name === "up" || (key.ctrl && key.name === "p")) {
+        setPresetCursor((c) => (c - 1 + count) % count);
+        return true;
+      }
+      if (key.name === "down" || (key.ctrl && key.name === "n")) {
+        setPresetCursor((c) => (c + 1) % count);
+        return true;
+      }
+      if (key.name === "return" || key.name === "enter") {
+        nextStep();
+        return true;
+      }
+      return false;
     }
 
     // ── Provider 选择步骤 ──
@@ -198,6 +267,7 @@ export function OnboardingDialog({ onComplete, onClose }: OnboardingDialogProps)
   // ═══════════ 渲染 ═══════════
 
   const stepTitles: Record<Step, string> = {
+    preset: "选择要使用的模型（已按官方端点预置，只需填 API Key）",
     provider: "选择 Provider",
     baseURL: "设置 Base URL",
     model: "输入模型名称",
@@ -205,8 +275,23 @@ export function OnboardingDialog({ onComplete, onClose }: OnboardingDialogProps)
     confirm: "确认配置",
   };
 
-  const stepNum = ["provider", "baseURL", "model", "apiKey", "confirm"].indexOf(step) + 1;
-  const totalSteps = provider === "ollama" ? 4 : 5;
+  // 实际会走的步骤序列：预置路径只有 选模型 → 填 key → 确认
+  // 停在「选预置」这一步时按预置路径计数（绝大多数人走这条），选了「其他」才换成手动流程。
+  const flow: Step[] =
+    fromPreset || step === "preset"
+      ? ["preset", "apiKey", "confirm"]
+      : [
+          ...(hasPresets ? (["preset"] as Step[]) : []),
+          "provider",
+          "baseURL",
+          "model",
+          ...(provider === "ollama" ? [] : (["apiKey"] as Step[])),
+          "confirm",
+        ];
+  const stepNum = flow.indexOf(step) + 1;
+  const totalSteps = flow.length;
+  const vendor = vendorLabel(baseURL);
+  const sameVendorCount = presets.filter((p) => p.baseURL === baseURL).length;
 
   return (
     <Box flexDirection="column" borderStyle="round" borderColor={accent} paddingX={1}>
@@ -223,6 +308,35 @@ export function OnboardingDialog({ onComplete, onClose }: OnboardingDialogProps)
       <Box paddingLeft={2} marginBottom={1}>
         <Text color={theme.text.secondary}>{stepTitles[step]}</Text>
       </Box>
+
+      {/* 预置模型选择 */}
+      {step === "preset" && (
+        <Box flexDirection="column" paddingLeft={2}>
+          {[...presets, null].map((p, i) => {
+            const isCursor = presetCursor === i;
+            return (
+              <Box key={p ? p.name : "__manual__"}>
+                <Box width={2} flexShrink={0}>
+                  <Text color={isCursor ? accent : theme.text.secondary}>
+                    {isCursor ? BULLET : " "}
+                  </Text>
+                </Box>
+                <Box width={22} flexShrink={0}>
+                  <Text color={isCursor ? accent : theme.text.primary} bold={isCursor}>
+                    {p ? p.name : "其他（手动配置）"}
+                  </Text>
+                </Box>
+                <Text color={theme.text.secondary}>
+                  {p ? vendorLabel(p.baseURL) : "自建网关、Ollama 或其它兼容服务"}
+                </Text>
+              </Box>
+            );
+          })}
+          <Box marginTop={1}>
+            <Text color={theme.text.secondary}>↑↓ 选择 Enter 确认 Esc 稍后配置</Text>
+          </Box>
+        </Box>
+      )}
 
       {/* Provider 选择 */}
       {step === "provider" && (
@@ -294,7 +408,9 @@ export function OnboardingDialog({ onComplete, onClose }: OnboardingDialogProps)
         <Box flexDirection="column" paddingLeft={2}>
           <Box marginBottom={1}>
             <Text color={theme.text.secondary}>
-              输入你的 API Key（将保存到 ~/.sid-code/settings.json）
+              {fromPreset
+                ? `输入 ${vendor} 的 API Key（${sameVendorCount > 1 ? `同厂商 ${sameVendorCount} 个模型共用，` : ""}将保存到 ~/.sid-code/settings.json）`
+                : "输入你的 API Key（将保存到 ~/.sid-code/settings.json）"}
             </Text>
           </Box>
           <Box>

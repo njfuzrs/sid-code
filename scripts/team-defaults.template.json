@@ -1,61 +1,49 @@
 {
-  "model": "ali-deepseek-v4-pro",
-  "fallbackModel": "ali-deepseek-v4-flash",
+  "model": "deepseek-v4-pro",
+  "fallbackModel": "deepseek-flash",
   "fallbackSwitchMode": "ask",
   "autoUpdate": "auto",
   "availableModels": [
     {
-      "name": "ali-deepseek-v4-pro",
+      "name": "deepseek-v4-pro",
       "provider": "openai",
-      "baseURL": "https://your-gateway.example.com/v1",
+      "baseURL": "https://api.deepseek.com",
       "apiKey": "__YOUR_API_KEY__"
     },
     {
-      "name": "ali-deepseek-v4-flash",
+      "name": "deepseek-flash",
       "provider": "openai",
-      "baseURL": "https://your-gateway.example.com/v1",
+      "baseURL": "https://api.deepseek.com",
       "apiKey": "__YOUR_API_KEY__"
     },
     {
-      "name": "gpt-5.4",
-      "provider": "openai",
-      "baseURL": "https://your-gateway.example.com/v1",
-      "apiKey": "__YOUR_API_KEY__"
-    },
-    {
-      "name": "claude-sonnet-5",
+      "name": "claude-opus-5-5",
       "provider": "anthropic",
-      "baseURL": "https://your-gateway.example.com",
+      "baseURL": "https://api.anthropic.com",
       "apiKey": "__YOUR_API_KEY__"
     },
     {
-      "name": "claude-sonnet-4-6",
-      "provider": "anthropic",
-      "baseURL": "https://your-gateway.example.com",
-      "apiKey": "__YOUR_API_KEY__"
-    },
-    {
-      "name": "glm-5.2",
+      "name": "gpt-6.1-sol",
       "provider": "openai",
-      "baseURL": "https://your-gateway.example.com/v1",
+      "baseURL": "https://api.openai.com/v1",
       "apiKey": "__YOUR_API_KEY__"
     },
     {
-      "name": "gemini-3.5-flash",
+      "name": "glm-5.3",
       "provider": "openai",
-      "baseURL": "https://your-gateway.example.com/v1",
+      "baseURL": "https://open.bigmodel.cn/api/paas/v4",
       "apiKey": "__YOUR_API_KEY__"
     },
     {
-      "name": "kimi-k2.6",
+      "name": "kimi-k3",
       "provider": "openai",
-      "baseURL": "https://your-gateway.example.com/v1",
+      "baseURL": "https://api.moonshot.cn/v1",
       "apiKey": "__YOUR_API_KEY__"
     },
     {
-      "name": "qwen3.7-max",
+      "name": "qwen3.8-max",
       "provider": "openai",
-      "baseURL": "https://your-gateway.example.com/v1",
+      "baseURL": "https://dashscope.aliyuncs.com/compatible-mode/v1",
       "apiKey": "__YOUR_API_KEY__"
     }
   ],
@@ -66,18 +54,14 @@
   "hooks": {},
   "mcpServers": {},
   "subAgentModels": {
-    "default": "ali-deepseek-v4-flash",
-    "task": "ali-deepseek-v4-pro",
-    "verify": "ali-deepseek-v4-pro"
+    "default": "deepseek-flash",
+    "task": "deepseek-v4-pro",
+    "verify": "deepseek-v4-pro"
   },
   "quota": {
     "costLimit": 100
   },
   "costLimit": 100,
-  "search": {
-    "backend": "searxng",
-    "searxngUrl": "https://www.sid-code.cc/searxng"
-  },
   "disabledSkills": [],
   "trustProjectExtensions": false,
   "allowedDirectories": [],

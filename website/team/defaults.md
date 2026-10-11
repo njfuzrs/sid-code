@@ -17,49 +17,113 @@ description: 用 team-defaults.json 给全团队统一 provider 与默认配置�
 - 老用户升级后能拿到后来新增的默认字段，**且不会被覆盖掉自己的配置**
 :::
 
-## 快速上手
+## 仓库里的模板长什么样
 
-配置文件就是一份普通的 `settings.json`。以仓库里的模板 `scripts/team-defaults.template.json`
-为起点改（网关地址已是占位符，换成你自己的）。下面是节选，模型清单只留了两族各一个：
+仓库自带一份模板 `scripts/team-defaults.template.json`，官网安装脚本分发的就是它。
+它**不绑定任何私有网关**：6 家厂商各一条官方端点，key 全是占位符，谁拿到都能直接填自己的 key 用。
 
 ```json
 {
-  "model": "ali-deepseek-v4-pro",
-  "fallbackModel": "ali-deepseek-v4-flash",
+  "model": "deepseek-v4-pro",
+  "fallbackModel": "deepseek-flash",
   "fallbackSwitchMode": "ask",
   "autoUpdate": "auto",
   "availableModels": [
-    {
-      "name": "ali-deepseek-v4-pro",
-      "provider": "openai",
-      "baseURL": "https://your-gateway.example.com/v1",
-      "apiKey": "__YOUR_API_KEY__"
-    },
-    {
-      "name": "claude-sonnet-5",
-      "provider": "anthropic",
-      "baseURL": "https://your-gateway.example.com",
-      "apiKey": "__YOUR_API_KEY__"
-    }
+    { "name": "deepseek-v4-pro", "provider": "openai",    "baseURL": "https://api.deepseek.com",                          "apiKey": "__YOUR_API_KEY__" },
+    { "name": "deepseek-flash",  "provider": "openai",    "baseURL": "https://api.deepseek.com",                          "apiKey": "__YOUR_API_KEY__" },
+    { "name": "claude-opus-5-5", "provider": "anthropic", "baseURL": "https://api.anthropic.com",                         "apiKey": "__YOUR_API_KEY__" },
+    { "name": "gpt-6.1-sol",     "provider": "openai",    "baseURL": "https://api.openai.com/v1",                         "apiKey": "__YOUR_API_KEY__" },
+    { "name": "glm-5.3",         "provider": "openai",    "baseURL": "https://open.bigmodel.cn/api/paas/v4",              "apiKey": "__YOUR_API_KEY__" },
+    { "name": "kimi-k3",         "provider": "openai",    "baseURL": "https://api.moonshot.cn/v1",                        "apiKey": "__YOUR_API_KEY__" },
+    { "name": "qwen3.8-max",     "provider": "openai",    "baseURL": "https://dashscope.aliyuncs.com/compatible-mode/v1", "apiKey": "__YOUR_API_KEY__" }
   ],
   "language": "zh",
   "permissionMode": "default",
   "subAgentModels": {
-    "default": "ali-deepseek-v4-flash",
-    "task": "ali-deepseek-v4-pro",
-    "verify": "ali-deepseek-v4-pro"
+    "default": "deepseek-flash",
+    "task": "deepseek-v4-pro",
+    "verify": "deepseek-v4-pro"
   },
   "quota": { "costLimit": 100 },
+  "costLimit": 100,
+  "trace": { "enabled": true },
   "effortLevel": "max"
 }
 ```
 
-完整模板有 9 个模型，另外还有一段 `"trace": { "enabled": true }`——只开本地轨迹采集，
-**不含任何上传配置**：按这份模板分发，轨迹只留在每个人自己的机器上。团队要集中收轨迹，
-在 `trace.upload` 里填你们自己的地址与 token，见[轨迹采集与可观测](/team/observability)。
+（节选，另有 `allowedTools`、`hooks`、`mcpServers` 等空值占位键，见仓库原文件。）
 
-注意两条 `baseURL` 一个带 `/v1` 一个不带——这不是笔误，是[两族协议的相反规则](/start/configure)。
-把它固化进团队配置，正是这套机制最直接的价值：这个坑每人只需要踩零次。
+### 每个模型从哪来
+
+模型名和端点都是 2026-10-11 对照各家官方文档核过的，选的是各家当前的主力模型：
+
+| 厂商 | 模型名 | provider | 官方 baseURL | 去哪拿 key | 说明 |
+| --- | --- | --- | --- | --- | --- |
+| DeepSeek | `deepseek-v4-pro` / `deepseek-flash` | `openai` | `https://api.deepseek.com` | platform.deepseek.com | 默认主模型与降级模型。`deepseek-flash` 是官方现用名（V4.1-Flash），旧名 `deepseek-v4-flash` 仍能调但已路由到它 |
+| Anthropic | `claude-opus-5-5` | `anthropic` | `https://api.anthropic.com` | console.anthropic.com | 官方推荐的默认起点。**不带 `/v1`** |
+| OpenAI | `gpt-6.1-sol` | `openai` | `https://api.openai.com/v1` | platform.openai.com | GPT-6 系在 Chat Completions 上基本不能调工具，sid-code 会按模型目录自动走 **Responses API**，不用额外配置 |
+| 智谱 GLM | `glm-5.3` | `openai` | `https://open.bigmodel.cn/api/paas/v4` | bigmodel.cn 控制台 | 强制思考。GLM Coding 套餐用户换成 `https://open.bigmodel.cn/api/coding/paas/v4`，两者 key 不通用；国际站是 `https://api.z.ai/api/paas/v4` |
+| Kimi | `kimi-k3` | `openai` | `https://api.moonshot.cn/v1` | platform.moonshot.cn | 需充值解锁。国际站换成 `https://api.moonshot.ai/v1` |
+| 通义千问 | `qwen3.8-max` | `openai` | `https://dashscope.aliyuncs.com/compatible-mode/v1` | 阿里云百炼控制台 | 北京地域。其它地域 key 不通用：新加坡 `https://dashscope-intl.aliyuncs.com/compatible-mode/v1`；也可换成控制台里的业务空间专属域名 |
+
+注意 base URL 的 `/v1` 规则：anthropic 族不带、openai 族带（DeepSeek 两种都收，GLM / 千问路径本身就不是 `/v1`）。
+这是[两族协议的相反规则](/start/configure)，照抄上表即可。
+
+### 拿到模板后要做什么
+
+装完只需要做一件事：**把你有的那家的 `apiKey` 换成真 key，并让 `model` 指向它**。
+
+最省事的是直接跑 `sid-code`：首次启动会进入 TUI 并弹出配置向导，列出上表 7 个模型，
+选你有 key 的那家、粘贴 key，向导会把同端点的占位符条目一起填上，并把 `model`、
+以及仍指向没 key 模型的 `fallbackModel` / `subAgentModels` 改到能用的模型上
+（详见[配置 LLM Provider](/start/configure#手工编辑之外的路子)）。
+
+手改文件的话：
+
+- 只有 DeepSeek 的 key：替换两条 deepseek 的 `apiKey` 就能用，其余什么都不用动。
+- 只有别家的 key：替换对应条目的 `apiKey`，再把 `model`、`fallbackModel`、`subAgentModels`
+  里的模型名改成那家的（这三处引用的名字必须在 `availableModels` 里存在，否则启动报错）。
+- 用不到的厂商条目建议直接删掉。不删也能用：只要**当前模型**有真 key，其余占位符条目只降为一条普通提示
+  「以下模型尚未填写 apiKey……用 /model 切过去会认证失败」（TUI 启动横幅 / `-p` 模式 stderr 的 `[提示]`），
+  不算配置错误。当前模型自己还是占位符时，启动横幅以 `[配置错误]` 置顶提醒。
+
+key 不想明文写进文件，就写环境变量占位符：
+
+```json
+{ "apiKey": "${DEEPSEEK_API_KEY}" }
+```
+
+启动时展开，文件里只留占位符。
+
+### 模板刻意不带的东西
+
+这份模板会被所有照官网安装的人拿到，所以凡是会把数据发到**维护者服务器**的字段一律不放：
+
+| 字段 | 不放的原因 | 不配时的行为 |
+| --- | --- | --- |
+| `trace.upload` | 轨迹上传。只开本地采集（`trace.enabled: true`），轨迹只留在你自己的机器上 | 不上传 |
+| `search.searxngUrl` | 模型生成的搜索词可能夹带代码片段与路径，不该默认发往别人的 SearXNG | WebSearch 回落 DuckDuckGo；要自建见 [settings 参考](/ref/settings) 的 `search` 段 |
+| `backend.url` | 企业后端（登录 / 策略 / 账本）只对自己公司有意义 | 不连任何后端 |
+
+模板里**会出网的字段只剩 `availableModels[].baseURL`**，也就是你选的模型厂商本身。
+模型请求的内容会发给那家厂商，对方如何留存由对方的政策决定。
+
+## 给自己的团队定制
+
+开源模板是给个人用户的起点。团队要统一用公司网关，复制一份改掉 `availableModels`：
+
+```json
+{
+  "model": "deepseek-v4-pro",
+  "availableModels": [
+    { "name": "deepseek-v4-pro", "provider": "openai",    "baseURL": "https://<你的网关>/v1", "apiKey": "${TEAM_LLM_KEY}" },
+    { "name": "claude-opus-5-5", "provider": "anthropic", "baseURL": "https://<你的网关>",    "apiKey": "${TEAM_LLM_KEY}" }
+  ]
+}
+```
+
+网关上的模型名带路由前缀（如 `ali-deepseek-v4-pro`）也没关系，内置模型目录会剥掉已知前缀再匹配窗口与价格。
+团队要集中收轨迹，在 `trace.upload` 里填你们自己的地址与 token，见[轨迹采集与可观测](/team/observability)。
 
 推上去：
 
@@ -76,6 +140,12 @@ description: 用 team-defaults.json 给全团队统一 provider 与默认配置�
 
 这个参数**只做上传，不打版本号、不构建二进制**（`scripts/release.sh` 上传完直接
 `exit 0`）。所以随时能单独更新团队配置，不影响发版节奏。
+
+推完核对一次线上内容，确认分发出去的就是你想要的那份：
+
+```bash
+curl -fsS https://<你的发布地址>/team-defaults.json | jq '{model, trace, search, urls: [.availableModels[].baseURL]}'
+```
 
 ## 两条分发路径
 
@@ -203,14 +273,27 @@ ls -l ~/.sid-code/settings.json
 "检测到已有配置 …，保留不变"。这不是 bug，是设计——安装脚本无权覆盖别人的配置。
 让 TA 备份后删掉重装，或者手工合并。
 
-### 常规发版会不会把仓库里的占位模板推上去覆盖真实配置
+### 常规发版会不会把仓库模板推上去覆盖服务器上的配置
 
 不会。`team-defaults.json` 被刻意排除在常规发布流程外（`scripts/release.sh`），
-只能通过 `--upload-team-defaults` 显式单独推送。理由正是防止把
-`__YOUR_API_KEY__` 这样的占位模板覆盖掉服务器上的真实配置。
+只能通过 `--upload-team-defaults` 显式单独推送。官方发布地址上放的就是仓库模板本身；
+自建发布地址的团队放的是自己的定制版，常规发版不会把它冲回开源模板。
 
 同理，服务器端的旧版本清理只删形如 `<path>/<x.y.z>/` 的版本目录，
 `install.sh` / `latest.txt` / `team-defaults.json` 不受影响（`scripts/release.sh`）。
+
+### 改了模板，老用户的配置会变吗
+
+分三种情况：
+
+| 改动 | 新装用户 | 老用户 |
+| --- | --- | --- |
+| 改已有顶层键的值（换模型、换 baseURL） | 拿到新值 | **不变**，本地值保留 |
+| 删掉某个顶层键（如本次删掉 `search`） | 不再有这个键 | **不变**，本地原有的值照旧生效 |
+| 新增一个顶层键 | 拿到 | 升级后下次启动补进来（只补他们没有的） |
+
+所以老用户本地要是已有指向别人服务器的 `search.searxngUrl`，改模板清不掉，需要自己删。
+要强制统一，走 [policy](/team/policy)。
 
 ### 团队配置里能不能直接放真实 API key
 
