@@ -359,6 +359,7 @@ describe.if(HAS_PYTHON3)("L1 静态契约(无需 harbor)", () => {
     const identityScript = join(import.meta.dir, "..", "..", "scripts", "artifact-identity.ts");
     const probe = Bun.spawnSync({
       cmd: ["bun", "run", identityScript, "read", process.execPath],
+      env: { ...process.env },
       cwd: join(import.meta.dir, "..", ".."),
       stdout: "pipe",
       stderr: "pipe",
