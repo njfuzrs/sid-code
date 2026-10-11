@@ -315,7 +315,7 @@ Worktree 隔离:
 
 配置文件:
   ~/.sid-code/settings.json   用户级配置（模型/权限/MCP/子代理模型/配额/Hook/搜索/IDE 等）
-  ~/.sid-code/app.json        应用配置（调试/遥测/检查点/启动计数等）
+  ~/.sid-code/app.json        运行状态（启动计数/hint/项目信任，程序自动维护，勿手改）
   .sid-code/settings.json     项目级配置（优先于用户级）
   .sid-code/settings.local.json  项目级本地配置（gitignore，优先于项目级）
   CLAUDE.md                   项目规则文件（LLM 上下文注入）

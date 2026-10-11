@@ -21,6 +21,7 @@ import { migrate as relocateLossyProjectKey } from "./relocate-lossy-project-key
 import { migrate as rewriteLegacyReleaseHost } from "./rewrite-legacy-release-host.ts";
 import { migrate as moveStrayAppConfigKeys } from "./move-stray-app-config-keys.ts";
 import { migrate as removeTeamDefaultTraceUpload } from "./remove-team-default-trace-upload.ts";
+import { migrate as moveBehaviorKeysOutOfAppJson } from "./move-behavior-keys-out-of-app-json.ts";
 
 interface Migration {
   version: number;
@@ -64,6 +65,13 @@ const migrations: Migration[] = [
     version: 6,
     name: "remove-team-default-trace-upload",
     migrate: removeTeamDefaultTraceUpload,
+  },
+  {
+    // v4 白名单误收了 9 个行为键（sessionRetention / debug / checkpoint …），app.json 的旧默认
+    // 快照因此盖过 settings.json 与代码默认。收回后两个文件键集合不相交。
+    version: 7,
+    name: "move-behavior-keys-out-of-app-json",
+    migrate: moveBehaviorKeysOutOfAppJson,
   },
 ];
 

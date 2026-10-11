@@ -1319,8 +1319,7 @@ export class TelemetryCommand implements Command {
     if (!bus.isEnabled()) {
       return {
         kind: "message",
-        message:
-          "遥测未启用。在 ~/.sid-code/settings.json（或 ~/.sid-code/app.json）中设置 telemetry.enabled: true",
+        message: "遥测未启用。在 ~/.sid-code/settings.json 中设置 telemetry.enabled: true",
       };
     }
 

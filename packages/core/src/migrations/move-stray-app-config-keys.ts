@@ -27,6 +27,9 @@ import { getSidHome } from "../config/paths.ts";
 import { APP_CONFIG_OWNED_KEYS } from "../config/app-config.ts";
 import { defaultConfig } from "../config/config.ts";
 import { join } from "path";
+import { BEHAVIOR_KEYS_FORMERLY_IN_APP_JSON } from "./move-behavior-keys-out-of-app-json.ts";
+
+const BEHAVIOR_KEY_SET: ReadonlySet<string> = new Set(BEHAVIOR_KEYS_FORMERLY_IN_APP_JSON);
 
 /**
  * 这些键出现在 ~/.sid-code/settings.json 里、又与 defaultConfig() 的值完全相同，
@@ -76,6 +79,9 @@ export function migrate(): void {
     if (parsed && typeof parsed === "object" && !Array.isArray(parsed)) {
       appRaw = parsed as Record<string, unknown>;
       for (const [key, value] of Object.entries(appRaw)) {
+        // v7 负责的 9 个行为键留给 v7：它认得「历史默认值快照」，v4 只认当前默认，
+        // 会把 sessionRetention 30d 这类旧快照当成用户设置搬进 settings.json。
+        if (BEHAVIOR_KEY_SET.has(key)) continue;
         if (!APP_CONFIG_OWNED_KEYS.has(key)) stray[key] = value;
       }
     }

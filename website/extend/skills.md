@@ -54,10 +54,10 @@ sid-code -p "用 changelog-entry skill 生成一条变更记录"
 原因不是 Skill 写错了，是**信任门槛**：项目级扩展来自仓库（等于别人的代码），
 默认要确认才加载，而 `-p` 无头模式下无法确认 → 直接跳过。
 
-打开信任即可（`~/.sid-code/app.json`）：
+打开信任即可（`~/.sid-code/settings.json`）：
 
 ```json
-{ "trust_project_extensions": true }
+{ "trustProjectExtensions": true }
 ```
 
 交互模式下首次加载会在 TUI 里弹「项目扩展信任」对话框让你决定（选「信任并加载」才加载并记住，当场生效不用重启；内容变了会再问）。详见[下方](#项目级-skill-写了但模型说不存在)。
@@ -195,7 +195,7 @@ ci-self-heal 看 CI log, 输入与目标场景明确不重叠」——多个 Ski
 
 解决方式二选一：
 
-- 在 `~/.sid-code/app.json` 设 `"trust_project_extensions": true`（CI 里常用）
+- 在 `~/.sid-code/settings.json` 设 `"trustProjectExtensions": true`（CI 里常用）
 - 或把 Skill 挪到用户级 `~/.sid-code/skills/`（不受信任门槛约束）
 
 交互模式下启动时会弹确认给你决定：答 `y` 才加载并记住；拒绝、空回车、没有交互终端，或会话已开始后才新加进来的文件，都是本次不加载、下次启动再问。

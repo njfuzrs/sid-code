@@ -1342,7 +1342,13 @@ export async function main(): Promise<void> {
     try {
       const { runStartupHousekeeping } =
         await import("@sid-code/core/config/startup-housekeeping.ts");
-      runStartupHousekeeping(Date.now(), { selfSessionId: config.sessionId });
+      // retention 与下面 startBackgroundSessionCleanup 用同一个解析入口：会话 / 轨迹 / 笔记
+      // 三处的保留期必须是同一个生效值（此前两条路径各读各的，曾出现会话 30d、轨迹 365d）。
+      const { getRetentionSettings } = await import("@sid-code/core/session/cleanup.ts");
+      runStartupHousekeeping(Date.now(), {
+        selfSessionId: config.sessionId,
+        retention: getRetentionSettings(config),
+      });
     } catch (err) {
       getLogger().debug("CONFIG", `启动管家任务跳过: ${err}`);
     }

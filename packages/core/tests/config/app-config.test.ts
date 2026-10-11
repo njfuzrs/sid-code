@@ -33,9 +33,10 @@ describe("AppConfig 读写往返", () => {
   test("默认值合理", async () => {
     const { createDefaultAppConfig } = await import("@sid-code/core/config/app-config.ts");
     const def = createDefaultAppConfig();
-    expect(def.showLineNumbers).toBe(true);
     expect(def.numStartups).toBe(0);
-    expect(def.debug).toBe(false);
+    // 行为默认值不许出现在 AppConfig 默认里：saveAppConfig 会把它们连带写盘，
+    // 变成一份优先级不明、与 defaultConfig() 不一致的快照（曾是 debug:false / debugLevel:"INFO"）。
+    expect(Object.keys(def)).toEqual(["numStartups"]);
   });
 
   test("incrementStartupCount 持久化 + write-through 缓存", async () => {
@@ -89,5 +90,30 @@ describe("AppConfig 读写往返", () => {
     expect(existsSync(backupDir)).toBe(true);
 
     mod.stopAppConfigWatcher();
+  });
+});
+
+describe("app.json 与 settings.json 键集合不相交", () => {
+  // 两个文件各管各的：app.json 只有程序自己写的运行状态，Config 的行为字段一个都不许进白名单。
+  // 这条门禁防的是 v4 那次的漏网：白名单里混进 sessionRetention 等 9 个行为键，
+  // app.json 的旧默认快照于是盖过了 settings.json 与代码默认值。
+  test("APP_CONFIG_OWNED_KEYS 与 defaultConfig() / SettingsSchema 的键零交集", async () => {
+    const { APP_CONFIG_OWNED_KEYS } = await import("@sid-code/core/config/app-config.ts");
+    const { defaultConfig } = await import("@sid-code/core/config/config.ts");
+    const { SettingsSchema } = await import("@sid-code/core/config/settings/types.ts");
+    const behavior = new Set([
+      ...Object.keys(defaultConfig()),
+      ...Object.keys((SettingsSchema() as any).shape),
+    ]);
+    const overlap = [...APP_CONFIG_OWNED_KEYS].filter((k) => behavior.has(k));
+    expect(overlap).toEqual([]);
+  });
+
+  test("变异自证：把 sessionRetention 放回白名单会被抓到", async () => {
+    const { SettingsSchema } = await import("@sid-code/core/config/settings/types.ts");
+    const shape = Object.keys((SettingsSchema() as any).shape);
+    for (const k of ["sessionRetention", "debug", "checkpoint", "telemetry", "showLineNumbers"]) {
+      expect(shape).toContain(k);
+    }
   });
 });

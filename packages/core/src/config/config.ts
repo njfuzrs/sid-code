@@ -1,7 +1,7 @@
 /**
  * 配置加载模块
  * 优先级：命令行参数 > 环境变量 > 配置文件 > 默认值
- * 配置文件位置：~/.sid-code/settings.json + ~/.sid-code/app.json（唯一真相源）
+ * 配置文件位置：~/.sid-code/settings.json（唯一真相源；app.json 是运行状态，不参与合并）
  */
 
 import { join } from "path";
@@ -1285,26 +1285,22 @@ export const normalizeConfigKeysForTest = normalizeConfigKeys;
 /**
  * 加载配置文件。
  *
- * 唯一真相源：settings.json + app.json（~/.sid-code/ 下）。
- * 两文件均为 JSON，合并后经 env 占位符展开 + normalizeConfigKeys 归一化。
+ * 唯一真相源：~/.sid-code/settings.json（经 env 占位符展开 + normalizeConfigKeys 归一化）。
+ * app.json 是程序自己写的运行状态（启动计数 / hint / 项目信任），**不参与** Config 合并——
+ * 两个文件的键集合不相交。此前 app.json 也参与合并且后读覆盖前读，一份旧默认值快照
+ * （sessionRetention 30d）因此盖掉了 settings.json 与代码默认，见 2026-10-11 Agent Note。
  * 旧格式 config.yaml 已废弃，不再读取（历史用户请手动迁移到 settings.json）。
  */
 async function loadConfigFile(): Promise<Partial<Config>> {
   const configDir = getSidHome();
   const settingsPath = join(configDir, "settings.json");
-  const appConfigPath = join(configDir, "app.json");
 
-  // 用户级 settings.json + app.json 是底。app.json 是内部状态（debug/checkpoint/trace），
-  // 不进 5 层级，单独读。
-  const userConfig =
-    existsSync(settingsPath) || existsSync(appConfigPath)
-      ? await loadNewFormatAsConfig(settingsPath, appConfigPath)
-      : {};
+  const userConfig = existsSync(settingsPath) ? await loadSettingsFileAsConfig(settingsPath) : {};
 
   // 项目级 / 本地级只叠加行为字段，而且只取这两个来源——不能取 getSettings() 的合并结果。
   // getSettings() 把 userSettings 放在合并链的最底层，整份拿来再盖一次 userConfig，
-  // 等于把 ~/.sid-code/settings.json 读了两遍：用户自己的字段以「更高一层」的身份盖掉
-  // app.json 里的同名字段（showLineNumbers 两个文件都有），字段归属从此分不清。
+  // 等于把 ~/.sid-code/settings.json 读了两遍，用户级字段被当成「更高一层」再叠一次，
+  // 字段归属从此分不清。
   //
   // 路由流量字段（model/baseURL/provider/availableModels/env）不在此放行：信任门控在
   // loadConfig 之后才摘 hooks/mcpServers，env 也在信任判定前生效，恶意仓库若能在
@@ -1358,57 +1354,19 @@ function pickProjectBehaviorFields(settings: Record<string, unknown>): Partial<C
 }
 
 /**
- * 从新格式（settings.json + app.json）构造 Config。
- * 两文件均为 camelCase JSON，合并后经 env 占位符展开（${VAR}）。
- * app.json 字段（debug/checkpoint/trace/...）与 settings.json 字段（provider/model/...）
- * 合并到同一 Config，字段名已对齐 Config 接口，无需 snake_case 归一化。
+ * 从用户级 settings.json 构造 Config（camelCase JSON，经 env 占位符展开 ${VAR}）。
  */
-async function loadNewFormatAsConfig(
-  settingsPath: string,
-  appConfigPath: string,
-): Promise<Partial<Config>> {
+async function loadSettingsFileAsConfig(settingsPath: string): Promise<Partial<Config>> {
   const log = getLogger();
   const { resolveEnvVars } = await import("./env-interpolation.ts");
-  const merged: Record<string, unknown> = {};
-
-  // app.json 只贡献 AppConfig 声明过的字段。磁盘上还留着一批不属于它的键
-  // （alternateBuffer / audit / ide / sanitizeEnv ……），是某次把整份运行时配置
-  // 回写进 app.json 的残留，和 settings.json 形成第二份互相矛盾的真相源。
-  // 本函数按「settings 先、app 后」合并，所以是 app.json 的残留盖掉 settings.json
-  // 的显式设置，不是反过来。这些键由迁移 v4 搬回 settings.json 并删除；这里再拦
-  // 一层，是为了迁移还没跑到、或用户手写了新的越界键时行为仍然确定——
-  // app.json 永远不能覆盖 settings.json 里的行为配置。
-  const { APP_CONFIG_OWNED_KEYS } = await import("./app-config.ts");
-
-  for (const p of [settingsPath, appConfigPath]) {
-    if (!existsSync(p)) continue;
-    const appFile = p === appConfigPath;
-    try {
-      const raw = JSON.parse(await Bun.file(p).text());
-      if (raw && typeof raw === "object") {
-        // 一层深合并嵌套对象（如 trace/telemetry/checkpoint），避免 app.json 的
-        // { trace: { enabled: true } } 覆盖 settings.json 的完整 trace 配置。
-        // 注意：仅一层深合并（非递归）。嵌套 >2 层的对象仍是后者整体覆盖前者。
-        // 当前所有配置结构（trace.upload、telemetry.exporters 等）实际只需一层即可。
-        for (const [key, value] of Object.entries(raw)) {
-          if (appFile && !APP_CONFIG_OWNED_KEYS.has(key)) continue;
-          if (
-            value !== null &&
-            typeof value === "object" &&
-            !Array.isArray(value) &&
-            merged[key] !== null &&
-            typeof merged[key] === "object" &&
-            !Array.isArray(merged[key])
-          ) {
-            merged[key] = { ...(merged[key] as Record<string, unknown>), ...value };
-          } else {
-            merged[key] = value;
-          }
-        }
-      }
-    } catch (err) {
-      log.warn("CONFIG", `读取 ${p} 失败，跳过: ${err}`);
+  let merged: Record<string, unknown> = {};
+  try {
+    const raw = JSON.parse(await Bun.file(settingsPath).text());
+    if (raw && typeof raw === "object" && !Array.isArray(raw)) {
+      merged = raw as Record<string, unknown>;
     }
+  } catch (err) {
+    log.warn("CONFIG", `读取 ${settingsPath} 失败，跳过: ${err}`);
   }
 
   const interpolated = resolveEnvVars(merged);
