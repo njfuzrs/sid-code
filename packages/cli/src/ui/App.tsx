@@ -197,6 +197,10 @@ export interface TUICallbacks {
    * 加载危险配置），false 拒绝（本会话不加载，下次仍询问）。
    */
   onTrustDecision?: (trusted: boolean) => void | Promise<void>;
+  /** 待确认的项目级扩展（skill / 命令 / agent），供「项目扩展信任」对话框展示 */
+  getPendingExtensionTrust?: () => Array<{ kind: string; displayPath: string }>;
+  /** 项目扩展信任决定：approved=true 落盘信任并当场加载；false 本次不加载 */
+  onExtensionTrustDecision?: (approved: boolean) => void | Promise<void>;
   /**
    * M3：读取当前待审批的项目级 MCP 服务器（供启动审批框逐个展示）。
    * 空数组表示无待审批项。

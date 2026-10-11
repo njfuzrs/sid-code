@@ -153,6 +153,7 @@ import {
 } from "@sid-code/core/tool/git-operation-tracking.ts";
 import { withSideCallDeadline } from "@sid-code/core/llm/side-call-timeout.ts";
 import { resolveSideCallTimeouts } from "@sid-code/core/config/network-profile.ts";
+import { InteractionQueue } from "./ui/interaction-queue.ts";
 
 /**
  * 展开用户输入中的 @path 引用为文件内容。
@@ -335,6 +336,15 @@ export interface AppOptions {
   skillActivationCoordinator?: import("@sid-code/core/skill/activation-coordinator.ts").SkillActivationCoordinator;
   /** P2-3：Skill 管理器（热重载需调 reload() 重扫磁盘 skill）。可选。 */
   skillManager?: import("@sid-code/core/skill/manager.ts").SkillManager;
+  /**
+   * 项目级扩展信任：待确认列表 + 落盘信任 + 重扫用的 scanOptions。
+   * 由 cli.ts 启动扫描时建好传进来，TUI 的「项目扩展信任」对话框经它确认。
+   */
+  extensionTrust?: {
+    prompt: import("@sid-code/core/extension/trust-prompt.ts").TrustPrompt;
+    trustManager: import("@sid-code/core/extension/trust.ts").TrustManager;
+    scanOptions: import("@sid-code/core/extension/types.ts").ScanOptions;
+  };
 }
 
 /**
@@ -678,6 +688,10 @@ export class App {
    * 由 cli.ts strip 危险配置时登记，doInit 取出。非空 → 首屏弹信任对话框。
    */
   private pendingTrustItems: import("@sid-code/core/permission/trust.ts").TrustCheckItem[] = [];
+  /** 交互式确认的串行队列（权限 / Shell / Plan / 提问 / 冲突），防止并发请求互相覆盖 */
+  private interactionQueue = new InteractionQueue();
+  /** 项目级扩展信任（见 AppOptions.extensionTrust） */
+  private extensionTrust?: AppOptions["extensionTrust"];
   /**
    * 推理强度运行时态（/effort 切换端）。undefined = auto（跟随模型默认）。
    * 与 config.permissionMode 同级——运行时可变，queryLoop 每轮经注入的 getter 取最新值。
@@ -712,6 +726,7 @@ export class App {
     this.fileReadTracker = opts.fileReadTracker ?? null;
     this.skillActivationCoordinator = opts.skillActivationCoordinator;
     this.skillManager = opts.skillManager;
+    this.extensionTrust = opts.extensionTrust;
     const sessionId = opts.config.sessionId || generateSessionId();
     this.sessionIdForCompact = sessionId;
     // 上下文窗口按模型实际大小初始化（deepseek-v4 为 1M，Claude 200K，gpt-4o 128K）。
@@ -4293,11 +4308,13 @@ export class App {
     return nextStartupDialog(after, (d) =>
       d === "trust"
         ? this.pendingTrustItems.length > 0
-        : d === "claude-md-external-imports"
-          ? this.pendingExternalImportPaths.length > 0
-          : d === "mcp-approval"
-            ? this.listPendingMcpApprovals().length > 0
-            : false,
+        : d === "extension-trust"
+          ? this.listPendingExtensionTrust().length > 0
+          : d === "claude-md-external-imports"
+            ? this.pendingExternalImportPaths.length > 0
+            : d === "mcp-approval"
+              ? this.listPendingMcpApprovals().length > 0
+              : false,
     );
   }
 
@@ -4351,6 +4368,93 @@ export class App {
     } catch (e) {
       log.warn("MCP", `应用 MCP 审批决定失败 (${name}): ${(e as Error)?.message}`);
     }
+  }
+
+  /** 待确认的项目级扩展（TUI「项目扩展信任」对话框展示用） */
+  listPendingExtensionTrust(): Array<{ kind: string; displayPath: string }> {
+    return (this.extensionTrust?.prompt.getPending() ?? []).map((p) => ({
+      kind: p.kind,
+      displayPath: p.displayPath,
+    }));
+  }
+
+  /**
+   * 应用项目扩展信任决定。批准 → 落盘信任 + 当场重扫加载（命令 / skill / agent），
+   * 不用重启；拒绝 → 本进程内不再问，下次启动再问。
+   *
+   * 重扫必须先清 loader 缓存：扫描结果按 5 分钟 TTL 缓存，不清的话命中的是「未信任时」
+   * 那份空结果，批准了也加载不出来。
+   */
+  async applyExtensionTrustDecision(approved: boolean): Promise<void> {
+    const log = getLogger();
+    const et = this.extensionTrust;
+    if (!et) return;
+    const files = et.prompt.decide(approved);
+    if (files.length === 0) return;
+    const projectDir = process.cwd();
+    try {
+      await et.trustManager.trustBatch(
+        files.map((f) => ({ filePath: f.filePath, content: f.rawContent })),
+        projectDir,
+      );
+    } catch (e) {
+      log.warn("TRUST", `项目扩展信任落盘失败: ${(e as Error)?.message}`);
+      return;
+    }
+    await this.reloadTrustedExtensions(et.scanOptions);
+    log.info("TRUST", `已信任并加载 ${files.length} 个项目级扩展`);
+    this.statusNotifier?.("extension_trust", `已信任并加载 ${files.length} 个项目级扩展`, 5000);
+  }
+
+  /** 信任变化后重扫命令 / skill / agent，让新信任的扩展本会话就生效 */
+  private async reloadTrustedExtensions(
+    scanOptions: import("@sid-code/core/extension/types.ts").ScanOptions,
+  ): Promise<void> {
+    const log = getLogger();
+    // 命令：旧 Registry 重注册项目级自定义命令；新体系清缓存后从磁盘重投影
+    try {
+      const { CustomCommandLoader } = await import("./command/custom.ts");
+      for (const { cmd, source } of await new CustomCommandLoader().loadAll(
+        undefined,
+        scanOptions,
+      )) {
+        this.commandRegistry.register(cmd, source);
+      }
+    } catch (e) {
+      log.warn("TRUST", `重载自定义命令失败: ${(e as Error)?.message}`);
+    }
+    // skill：走热重载同一条路径（清 loader 缓存 + 重建门控 + 斜杠命令 + system prompt）
+    if (this.skillManager) await this.reloadSkillsAfterChange([]);
+    // agent：重新注册进聚合 registry，sub_agent 的 type 枚举随之更新
+    try {
+      const { CustomAgentLoader } = await import("@sid-code/core/agent/custom.ts");
+      const { registerDynamicAgents } = await import("@sid-code/core/agent/agent-definition.ts");
+      const agents = await new CustomAgentLoader().loadAll(undefined, scanOptions);
+      if (agents.length > 0) {
+        registerDynamicAgents(
+          agents.map((def) => ({
+            agentType: def.name,
+            description: def.description,
+            whenToUse: def.description,
+            systemPrompt: def.prompt,
+            tools: def.tools.length > 0 ? def.tools : undefined,
+            source: "userSettings" as const,
+            filePath: def.filePath,
+            model: def.model,
+            skills: def.skills,
+            color: def.color,
+            permissionMode: def.permissionMode,
+            hooks: def.hooks,
+            background: def.background,
+            isolation: def.isolation,
+          })),
+        );
+        this.toolRegistry.invalidateParamTextCache?.();
+      }
+    } catch (e) {
+      log.warn("TRUST", `重载自定义 agent 失败: ${(e as Error)?.message}`);
+    }
+    this.unifiedRegistry?.invalidateSkillCommands();
   }
 
   async applyTrustDecision(trusted: boolean): Promise<void> {
@@ -5625,7 +5729,7 @@ export class App {
 
     // Bridge 模式：确认走已注入的远程代理。Bridge 不进 TUI，若仍落到下面的
     // always-allow 布尔，ask 工具会在本机立刻 false，permission_request 根本不出站。
-    // 不复活 PermissionChecker.requestConfirmation——那个方法全仓零调用，是死代码。
+    // PermissionChecker 曾有一个走 readline 的 requestConfirmation（零调用的死代码），已删除——别复活。
     const bridgeChecker = this.permissionChecker as {
       hasBridgePermissionDelegate?: () => boolean;
       requestBridgePermission?: (req: {
@@ -7886,6 +7990,14 @@ export class App {
 
     // 回填实例通道：让实例方法（cyclePermissionMode 等）也能推送一次性状态栏提示。
     this.statusNotifier = addTransientStatusMessage;
+
+    // 会话中途（热重载 / reload）扫到新的未信任项目扩展：当前没有别的对话框时当场弹确认框，
+    // 有的话排在首屏队列里，等当前对话框关闭时由 nextStartupDialog 接续。
+    // 此前 TUI 一接管 stdin 就关掉确认通道，这类扩展整个会话里都没有地方能批准。
+    this.extensionTrust?.prompt.onPendingChange(() => {
+      if (bridge.current.activeDialog || bridge.current.needsOnboarding) return;
+      updateState({ activeDialog: "extension-trust" });
+    });
     for (const n of this.pendingStatusNotices.splice(0)) {
       addTransientStatusMessage(n.baseId, n.text, n.delayMs);
     }
@@ -8410,106 +8522,123 @@ export class App {
     };
 
     // 设置 TUI 权限确认回调
+    // 所有交互式确认经 interactionQueue 串行显示：state 里每类只有一个格子，
+    // 并发到达时直接写 state 会让后一个盖掉前一个（前一个的 resolve 永远没人调）。
     this.setTUIConfirmCallback(async (toolName, toolInput, desc, shadowedRules, signal) => {
-      return new Promise<"yes" | "no" | "always" | "always-persist">((resolve) => {
-        log.info("TUI:PERM", `显示权限对话框: ${toolName} - ${desc}`);
-        // H7：settled 去重 + onAbort 清理，防止「用户作答」与「signal abort」双触发 resolve
-        // 或 abort 后残留监听器泄漏。对齐已修的 askUserQuestion handler（signal.addEventListener("abort")）。
-        let settled = false;
-        const onAbort = () => {
-          if (settled) return;
-          settled = true;
-          log.info("TUI:PERM", `权限对话框被中断（signal abort），按拒绝解除弹窗`);
-          updateState({ permissionRequest: null });
-          resolve("no"); // 中断 = 不放行（保守）：既解除孤儿弹窗，又不误放行未确认的工具
-        };
-        const wrappedResolve = (answer: "yes" | "no" | "always" | "always-persist") => {
-          if (settled) return;
-          settled = true;
-          if (signal) signal.removeEventListener("abort", onAbort);
-          log.info("TUI:PERM", `权限对话框响应: ${answer}`);
-          updateState({ permissionRequest: null });
-          resolve(answer);
-        };
-        // signal 已 abort（弹窗还没显示就被取消）→ 立即按拒绝短路，不显示孤儿弹窗。
-        if (signal?.aborted) {
-          onAbort();
-          return;
-        }
-        if (signal) signal.addEventListener("abort", onAbort, { once: true });
-        // HC24：Notification（matcher：permission_prompt，对齐 CC）。仅通知、不等待，不影响弹窗。
-        this.hookSystem
-          ?.fireNotificationEvent(
-            "permission_prompt",
-            `sid-code 需要你确认是否允许使用 ${toolName}`,
-            {
-              tool_name: toolName,
-            },
-          )
-          .catch((e) => log.error("HOOK", `notification hook 失败: ${e?.message ?? e}`));
-        updateState({
-          permissionRequest: {
-            toolName,
-            toolInput,
-            description: desc,
-            resolve: wrappedResolve,
-            shadowedRules,
-          },
-        });
-      });
+      return this.interactionQueue.run(
+        () =>
+          new Promise<"yes" | "no" | "always" | "always-persist">((resolve) => {
+            log.info("TUI:PERM", `显示权限对话框: ${toolName} - ${desc}`);
+            // H7：settled 去重 + onAbort 清理，防止「用户作答」与「signal abort」双触发 resolve
+            // 或 abort 后残留监听器泄漏。对齐已修的 askUserQuestion handler（signal.addEventListener("abort")）。
+            let settled = false;
+            const onAbort = () => {
+              if (settled) return;
+              settled = true;
+              log.info("TUI:PERM", `权限对话框被中断（signal abort），按拒绝解除弹窗`);
+              updateState({ permissionRequest: null });
+              resolve("no"); // 中断 = 不放行（保守）：既解除孤儿弹窗，又不误放行未确认的工具
+            };
+            const wrappedResolve = (answer: "yes" | "no" | "always" | "always-persist") => {
+              if (settled) return;
+              settled = true;
+              if (signal) signal.removeEventListener("abort", onAbort);
+              log.info("TUI:PERM", `权限对话框响应: ${answer}`);
+              updateState({ permissionRequest: null });
+              resolve(answer);
+            };
+            // signal 已 abort（弹窗还没显示就被取消）→ 立即按拒绝短路，不显示孤儿弹窗。
+            if (signal?.aborted) {
+              onAbort();
+              return;
+            }
+            if (signal) signal.addEventListener("abort", onAbort, { once: true });
+            // HC24：Notification（matcher：permission_prompt，对齐 CC）。仅通知、不等待，不影响弹窗。
+            this.hookSystem
+              ?.fireNotificationEvent(
+                "permission_prompt",
+                `sid-code 需要你确认是否允许使用 ${toolName}`,
+                {
+                  tool_name: toolName,
+                },
+              )
+              .catch((e) => log.error("HOOK", `notification hook 失败: ${e?.message ?? e}`));
+            updateState({
+              permissionRequest: {
+                toolName,
+                toolInput,
+                description: desc,
+                resolve: wrappedResolve,
+                shadowedRules,
+              },
+            });
+          }),
+        // 排队期间被中断 = 不放行（与弹窗中被中断同口径）
+        () => "no" as const,
+        signal,
+      );
     });
 
     // 设置 TUI Plan Mode 审批回调
     this.setPlanApprovalCallback(async (planFilePath) => {
-      return new Promise<string>((resolve) => {
-        log.info("TUI:PLAN", `显示 Plan 审批对话框: ${planFilePath}`);
-        // 读取计划文件内容
-        let planContent = "";
-        try {
-          const { readFileSync } = require("fs");
-          planContent = readFileSync(planFilePath, "utf-8");
-        } catch (err: any) {
-          planContent = `(无法读取计划文件: ${err.message})`;
-        }
+      return this.interactionQueue.run(
+        () =>
+          new Promise<string>((resolve) => {
+            log.info("TUI:PLAN", `显示 Plan 审批对话框: ${planFilePath}`);
+            // 读取计划文件内容
+            let planContent = "";
+            try {
+              const { readFileSync } = require("fs");
+              planContent = readFileSync(planFilePath, "utf-8");
+            } catch (err: any) {
+              planContent = `(无法读取计划文件: ${err.message})`;
+            }
 
-        // 把计划内容注入到消息滚动区域（用户可滚动查看完整计划）
-        historyIdCounter += 1;
-        const planHistoryItem: import("./ui/types.ts").HistoryItem = {
-          id: historyIdCounter,
-          type: "plan_review",
-          planContent,
-          planFilePath,
-        };
-        const prevHistoryItems = bridge.current.historyItems;
-        updateState({ historyItems: [...prevHistoryItems, planHistoryItem] });
+            // 把计划内容注入到消息滚动区域（用户可滚动查看完整计划）
+            historyIdCounter += 1;
+            const planHistoryItem: import("./ui/types.ts").HistoryItem = {
+              id: historyIdCounter,
+              type: "plan_review",
+              planContent,
+              planFilePath,
+            };
+            const prevHistoryItems = bridge.current.historyItems;
+            updateState({ historyItems: [...prevHistoryItems, planHistoryItem] });
 
-        const wrappedResolve = (decision: string) => {
-          log.info("TUI:PLAN", `Plan 审批响应: ${decision}`);
-          updateState({ planApprovalRequest: null });
-          resolve(decision);
-        };
-        updateState({
-          planApprovalRequest: { planFilePath, planContent, resolve: wrappedResolve },
-        });
-      });
+            const wrappedResolve = (decision: string) => {
+              log.info("TUI:PLAN", `Plan 审批响应: ${decision}`);
+              updateState({ planApprovalRequest: null });
+              resolve(decision);
+            };
+            updateState({
+              planApprovalRequest: { planFilePath, planContent, resolve: wrappedResolve },
+            });
+          }),
+        // 排队期间被取消 = 取消审批（不是拒绝，拒绝会带反馈回模型）
+        () => "cancel",
+      );
     });
 
     // 设置并发冲突处理回调（Phase 2.1）
     if (this.fileReadTracker) {
       this.fileReadTracker.conflictHandler = async (report) => {
-        return new Promise((resolve) => {
-          log.info("TUI:CONFLICT", `显示并发冲突对话框: ${report.filePath}`);
-          const wrappedResolve = (
-            action: import("./ui/components/ConflictDialog.tsx").ConflictAction,
-          ) => {
-            log.info("TUI:CONFLICT", `并发冲突对话框响应: ${action}`);
-            updateState({ conflictRequest: null });
-            resolve(action);
-          };
-          updateState({
-            conflictRequest: { conflictReport: report, resolve: wrappedResolve },
-          });
-        });
+        return this.interactionQueue.run(
+          () =>
+            new Promise<import("./ui/components/ConflictDialog.tsx").ConflictAction>((resolve) => {
+              log.info("TUI:CONFLICT", `显示并发冲突对话框: ${report.filePath}`);
+              const wrappedResolve = (
+                action: import("./ui/components/ConflictDialog.tsx").ConflictAction,
+              ) => {
+                log.info("TUI:CONFLICT", `并发冲突对话框响应: ${action}`);
+                updateState({ conflictRequest: null });
+                resolve(action);
+              };
+              updateState({
+                conflictRequest: { conflictReport: report, resolve: wrappedResolve },
+              });
+            }),
+          () => "stop" as const,
+        );
       };
     }
 
@@ -8518,59 +8647,66 @@ export class App {
       const { setAskUserQuestionHandler, parseAskTimeoutMs } =
         await import("@sid-code/core/tool/ask-user-question-bridge.ts");
       setAskUserQuestionHandler(async (req, signal) => {
-        return new Promise((resolve) => {
-          log.info("TUI:ASK", `显示提问对话框: ${req.questions.length} 题`);
-          let settled = false;
-          // 空闲超时（askUserQuestionTimeout）：交互态弹窗后若用户在此时长内不响应，
-          // 按 cancelled 自动解除，避免带 handler 的编排器/后台子代理被单个提问无限期阻塞。
-          const idleTimeoutMs = parseAskTimeoutMs(this.config.askUserQuestionTimeout);
-          let idleTimer: ReturnType<typeof setTimeout> | null = null;
-          const clearIdleTimer = () => {
-            if (idleTimer) {
-              clearTimeout(idleTimer);
-              idleTimer = null;
-            }
-          };
-          const wrappedResolve = (
-            result:
-              | {
-                  decision: "answered";
-                  answers: Record<string, string>;
-                  notes?: Record<string, string>;
+        return this.interactionQueue.run(
+          () =>
+            new Promise<
+              import("@sid-code/core/tool/ask-user-question-bridge.ts").AskUserQuestionResult
+            >((resolve) => {
+              log.info("TUI:ASK", `显示提问对话框: ${req.questions.length} 题`);
+              let settled = false;
+              // 空闲超时（askUserQuestionTimeout）：交互态弹窗后若用户在此时长内不响应，
+              // 按 cancelled 自动解除，避免带 handler 的编排器/后台子代理被单个提问无限期阻塞。
+              const idleTimeoutMs = parseAskTimeoutMs(this.config.askUserQuestionTimeout);
+              let idleTimer: ReturnType<typeof setTimeout> | null = null;
+              const clearIdleTimer = () => {
+                if (idleTimer) {
+                  clearTimeout(idleTimer);
+                  idleTimer = null;
                 }
-              | { decision: "cancelled" },
-          ) => {
-            if (settled) return;
-            settled = true;
-            clearIdleTimer();
-            log.info("TUI:ASK", `提问对话框响应: ${result.decision}`);
-            updateState({ askUserQuestionRequest: null });
-            if (result.decision === "answered") {
-              resolve({ status: "answered", answers: result.answers, notes: result.notes });
-            } else {
-              resolve({ status: "cancelled" });
-            }
-          };
-          // abort（用户 ESC 中断整轮 / 超时）时清理对话框并按取消处理，避免悬挂
-          if (signal) {
-            if (signal.aborted) {
-              wrappedResolve({ decision: "cancelled" });
-              return;
-            }
-            signal.addEventListener("abort", () => wrappedResolve({ decision: "cancelled" }), {
-              once: true,
-            });
-          }
-          if (idleTimeoutMs !== null) {
-            idleTimer = setTimeout(() => {
-              log.info("TUI:ASK", `提问对话框空闲超时 (${idleTimeoutMs}ms)，按取消处理`);
-              wrappedResolve({ decision: "cancelled" });
-            }, idleTimeoutMs);
-          }
-          updateState({
-            askUserQuestionRequest: { questions: req.questions, resolve: wrappedResolve },
-          });
-        });
+              };
+              const wrappedResolve = (
+                result:
+                  | {
+                      decision: "answered";
+                      answers: Record<string, string>;
+                      notes?: Record<string, string>;
+                    }
+                  | { decision: "cancelled" },
+              ) => {
+                if (settled) return;
+                settled = true;
+                clearIdleTimer();
+                log.info("TUI:ASK", `提问对话框响应: ${result.decision}`);
+                updateState({ askUserQuestionRequest: null });
+                if (result.decision === "answered") {
+                  resolve({ status: "answered", answers: result.answers, notes: result.notes });
+                } else {
+                  resolve({ status: "cancelled" });
+                }
+              };
+              // abort（用户 ESC 中断整轮 / 超时）时清理对话框并按取消处理，避免悬挂
+              if (signal) {
+                if (signal.aborted) {
+                  wrappedResolve({ decision: "cancelled" });
+                  return;
+                }
+                signal.addEventListener("abort", () => wrappedResolve({ decision: "cancelled" }), {
+                  once: true,
+                });
+              }
+              if (idleTimeoutMs !== null) {
+                idleTimer = setTimeout(() => {
+                  log.info("TUI:ASK", `提问对话框空闲超时 (${idleTimeoutMs}ms)，按取消处理`);
+                  wrappedResolve({ decision: "cancelled" });
+                }, idleTimeoutMs);
+              }
+              updateState({
+                askUserQuestionRequest: { questions: req.questions, resolve: wrappedResolve },
+              });
+            }),
+          () => ({ status: "cancelled" as const }),
+          signal,
+        );
       });
     }
 
@@ -9504,17 +9640,21 @@ export class App {
           notify: (text) => this.statusNotifier?.("command_notice", text, 8000),
           customCommands: this.getCustomCommandsSummary(),
           confirmShellCommands: async (commands) => {
-            return new Promise<boolean>((resolve) => {
-              // 与 permissionRequest / planApprovalRequest 对齐：resolve 前先清 state，
-              // 否则 DialogManager 按键只调 resolve、确认框永远残留在屏幕上（范式一）。
-              const wrappedResolve = (ok: boolean) => {
-                updateState({ shellConfirmRequest: null });
-                resolve(ok);
-              };
-              updateState({
-                shellConfirmRequest: { commands, resolve: wrappedResolve },
-              });
-            });
+            return this.interactionQueue.run(
+              () =>
+                new Promise<boolean>((resolve) => {
+                  // 与 permissionRequest / planApprovalRequest 对齐：resolve 前先清 state，
+                  // 否则 DialogManager 按键只调 resolve、确认框永远残留在屏幕上（范式一）。
+                  const wrappedResolve = (ok: boolean) => {
+                    updateState({ shellConfirmRequest: null });
+                    resolve(ok);
+                  };
+                  updateState({
+                    shellConfirmRequest: { commands, resolve: wrappedResolve },
+                  });
+                }),
+              () => false,
+            );
           },
           hookSystem: this.hookSystem,
           // P0-3：skill 权限 ask 决策的用户确认回调（用户斜杠路径用主会话弹窗）。
@@ -9906,6 +10046,11 @@ export class App {
         await this.applyTrustDecision(trusted);
       },
       nextStartupDialog: (after) => this.nextStartupDialog(after),
+      // 项目级扩展信任（原终端 y/N，现统一进 TUI）
+      getPendingExtensionTrust: () => this.listPendingExtensionTrust(),
+      onExtensionTrustDecision: async (approved) => {
+        await this.applyExtensionTrustDecision(approved);
+      },
       // M3：项目 .mcp.json 待审批 server 的启动审批框
       getPendingMcpApprovals: () => this.listPendingMcpApprovals(),
       onMcpApprovalDecision: async (name, choice) => {
