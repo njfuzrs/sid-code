@@ -12,7 +12,7 @@
 language; it reads your code, edits files, runs commands, and then proves the change
 is correct with real compiler and test output.
 
-Written in TypeScript on Bun, with a terminal UI adapted from ink, shipped as a single compiled binary — download
+Written in TypeScript on Bun, with a terminal rendering layer rebuilt from MIT-licensed ink as its starting point (`packages/tui`, provenance in NOTICE), shipped as a single compiled binary — download
 one file and run it. No Node install, no `npm install`.
 
 - 📖 **Documentation:** https://www.sid-code.cc/ (Chinese)
@@ -87,8 +87,8 @@ Coming from Claude Code, migration is close to zero-cost — see the
 
 | Item | Status |
 | --- | --- |
-| Codebase | 525k lines of TypeScript (including 206k lines of tests) |
-| Engineering loop | 13,398 unit tests, 86.3% line coverage on the agent engine; CI runs the full suite on every PR and it must be green to merge |
+| Codebase | 559k lines of TypeScript (including 234k lines of tests; excludes the parts of the rendering layer still inherited verbatim from upstream ink) |
+| Engineering loop | 15,911 unit tests, 88.0% line coverage on the agent engine; CI runs the full suite on every PR and it must be green to merge |
 | Surface area | 44 built-in tools, MCP client / server, LSP code intelligence, permission gating, observable trajectories |
 | Evaluation | Separate benchmark [agent-traj-bench](https://github.com/njfuzrs/agent-traj-bench): 39 SWE-bench-style tasks reverse-built from real sessions |
 
@@ -99,11 +99,12 @@ Coming from Claude Code, migration is close to zero-cost — see the
     cases") came from static scans and didn't match the resume; the 30 eval cases were deleted
     on 2026-09-18 along with the old evals/ suites, so keeping them here would be untrue.
     The first two rows now come from one run of scripts/resume-metrics.ts (`--coverage`)
-    in the docs-research repo (2026-10-04, HEAD=f1581f76):
-    lines of code  524,786 (production + renderer fork + tests + tooling, minus _vendor/ third-party);
-                   tests 206,413
-    unit tests     13,398 as executed by `bun test` (includes generated cases a static grep misses)
-    coverage       86.3% line coverage of packages/core/src (77,768 / 90,119); engine layer only
+    in the docs-research repo (2026-10-12, HEAD=cdb37f58, after B9 / T9.1 removed the old renderer):
+    lines of code  559,229 = 567,027 (production + tests + tooling) − 7,798 (lines in packages/tui/src
+                   that git blame still attributes to the upstream ink import commit 8fd9048d); tests 234,289.
+                   The pre-T9.1 value 524,786 included the old renderer fork (19,824 lines); not comparable
+    unit tests     15,911 as executed by `bun test` (includes generated cases a static grep misses)
+    coverage       88.0% line coverage of packages/core/src (83,564 / 94,973); engine layer only
     built-in tools length of the `sid-code --dump-tools` array (44, same source as ref/tools.md)
     Hook event count is no longer in this table: some of the 32 HookEventName members are
     reserved and not wired yet, so "32" here would read as 32 usable events. See website/ref/hooks.md.
@@ -160,6 +161,6 @@ in [CLAUDE.md](./CLAUDE.md) — the single source of truth (there is deliberatel
 
 **[MIT](./LICENSE)** for our own code. Non-commercial: not sold, not operated for profit.
 
-Third-party assets that ship with this repository (the vendored `ripgrep` binaries and
-the npm runtime dependencies) are governed by their own licenses, recorded in
+Third-party assets that ship with this repository (the vendored `ripgrep` binaries, the
+ink-derived rendering layer in `packages/tui`, and the npm runtime dependencies) are governed by their own licenses, recorded in
 **[NOTICE](./NOTICE)**.
