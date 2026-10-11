@@ -97,6 +97,9 @@ function probe(env: Record<string, string>, tag: string) {
       PATH: `${BIN}:/usr/bin:/bin:${dirname(process.execPath)}`,
       FAKE_LOG: join(work, `${tag}.log`),
       FAKE_FAIL: join(work, `${tag}.fail`),
+      // 冻结基线是在 darwin 上采的（本机剪贴板走 pbcopy）。不钉平台的话 linux runner 走 wl-copy，
+      // 与基线必然不一致。要测别的平台的用例自己写 PLAT 覆盖。
+      PLAT: "darwin",
       ...env,
     },
   });

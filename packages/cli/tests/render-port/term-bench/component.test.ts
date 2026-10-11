@@ -13,8 +13,11 @@ import { COMPONENT_SCENARIOS } from "./component-scenarios.tsx";
 
 const BASELINE_DIR = join(import.meta.dir, "baseline");
 
+/** C 场景的冻结基线是在 darwin 上采的（行首 bullet 是 ⏺），跨平台跑要钉住 */
+const FROZEN_PLATFORM = "darwin";
+
 const run = async (name: string) => {
-  const r = await runScenario(name);
+  const r = await runScenario(name, { env: { BENCH_PLATFORM: FROZEN_PLATFORM } });
   if (r.error) throw new Error(`${name}: ${r.error}`);
   const s = summarize(r);
   return { ...s, steps: s.steps.filter((st) => st.label !== EXIT_LABEL) };

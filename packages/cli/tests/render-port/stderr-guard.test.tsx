@@ -15,7 +15,26 @@ import { frozenKey, legacyFrozen } from "./fixtures/legacy-frozen.ts";
 
 const ROOT = resolve(import.meta.dir, "../../../..");
 const FIXTURE = join(import.meta.dir, "fixtures/stderr-guard-app.tsx");
-const CLEAR = new Set(["SID_CODE_DEBUG", "FIXTURE_ALT", "FIXTURE_TTY", "FIXTURE_CE"]);
+const CLEAR = new Set([
+  "SID_CODE_DEBUG",
+  "FIXTURE_ALT",
+  "FIXTURE_TTY",
+  "FIXTURE_CE",
+  // 终端识别类：决定 alt 帧包不包 DEC 2026（R14），宿主值会漏进断言
+  "TERM",
+  "TERM_PROGRAM",
+  "TMUX",
+  "STY",
+  "KITTY_WINDOW_ID",
+  "WT_SESSION",
+  "ZED_TERM",
+  "VTE_VERSION",
+]);
+/**
+ * 冻结基线采集时的宿主终端（VS Code 集成终端）。alt-screen 那条的 frame 段因此带同步包裹；
+ * 不钉住的话 CI（没有 TERM_PROGRAM）必然对不上。
+ */
+const FROZEN_HOST = { TERM: "xterm-256color", TERM_PROGRAM: "vscode" };
 
 type Run = { notes: Record<string, unknown>; segments: Record<string, string>; fd2: string };
 
@@ -23,6 +42,7 @@ function run(scenario: string, env: Record<string, string | undefined>): Run {
   const base: Record<string, string> = {};
   for (const [k, v] of Object.entries(process.env))
     if (v !== undefined && !CLEAR.has(k)) base[k] = v;
+  Object.assign(base, FROZEN_HOST);
   for (const [k, v] of Object.entries(env)) if (v !== undefined) base[k] = v;
   const r = Bun.spawnSync([process.execPath, FIXTURE, scenario], {
     cwd: ROOT,
