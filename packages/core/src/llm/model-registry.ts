@@ -923,6 +923,18 @@ const REGISTRY: Record<string, ModelRegistryEntry> = {
   // ══════════════════════════════════════════════════════════════════
   // 通义千问 Qwen
   // ══════════════════════════════════════════════════════════════════
+  // qwen3.8-max：百炼当前首推旗舰（help.aliyun.com/zh/model-studio/qwen3-8-max，2026-10-11 核对）。
+  // 上下文 1,000,000 / 最大输出 131,072；支持思考模式；输入模态 Image/Text/Video。
+  // 北京价 ¥12 / ¥36 / 缓存命中 ¥1.5（每百万），与本节同口径折美元（≈ ÷7.14）。
+  // 团队默认模板（scripts/team-defaults.template.json）用的就是它——不登记会落模糊层，
+  // 被前缀匹配到 qwen3.7-max 的 65K 输出上限。
+  "qwen3.8-max": {
+    contextWindow: 1_000_000,
+    maxOutputTokens: 131_072,
+    supportsThinking: true,
+    supportsVision: true,
+    pricing: { input: 1.68, output: 5.04, cacheRead: 0.21, cacheWrite: 0 },
+  },
   "qwen3.7-max": {
     contextWindow: 1_000_000,
     maxOutputTokens: 65_536,

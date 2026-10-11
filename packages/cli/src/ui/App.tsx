@@ -203,6 +203,11 @@ export interface TUICallbacks {
    */
   getPendingMcpApprovals?: () => Array<{ name: string; target?: string }>;
   /**
+   * 首次引导的预置模型：availableModels 里 apiKey 仍是模板占位符的条目
+   * （安装脚本写入的默认配置）。非空时向导第一步改为「选一个预置模型 → 只填 key」。
+   */
+  getOnboardingPresets?: () => import("./components/OnboardingDialog.tsx").OnboardingPreset[];
+  /**
    * 首屏对话框队列：`after` 关闭后下一个该弹的对话框（无则 null）。
    * 不在队列里的对话框关闭时返回 null，不会把首屏对话框重新拉起来。
    */
@@ -1382,9 +1387,13 @@ function TUIAppInner({ initialState, callbacks, bridge, alternateBuffer }: AppPr
     [callbacks],
   );
 
-  // 首次启动引导：needsOnboarding 且当前无其它对话框时，自动弹出 OnboardingDialog
+  // 首次启动引导：needsOnboarding 且当前无其它对话框时，自动弹出 OnboardingDialog。
+  // 只自动弹**一次**：用户 Esc 关掉就是「先进去看看、稍后再配」，不能关一次弹一次把人困在向导里。
+  // 之后由 EmptyLogo 的提示行、/model、以及发消息时的拦截提示（app.ts onUserInput）再引导。
+  const onboardingAutoOpenedRef = useRef(false);
   useEffect(() => {
-    if (state.needsOnboarding && !state.activeDialog) {
+    if (state.needsOnboarding && !state.activeDialog && !onboardingAutoOpenedRef.current) {
+      onboardingAutoOpenedRef.current = true;
       bridge.update({ activeDialog: "onboarding" });
     }
   }, [state.needsOnboarding, state.activeDialog, bridge]);
@@ -1492,6 +1501,7 @@ function TUIAppInner({ initialState, callbacks, bridge, alternateBuffer }: AppPr
               model={state.model}
               scrollPercent={scrollPercent}
               activeDialog={state.activeDialog}
+              needsOnboarding={state.needsOnboarding}
               onDialogClose={handleDialogClose}
               commandPanel={state.commandPanel ?? null}
               onCommandPanelClose={handleCommandPanelClose}
@@ -1555,6 +1565,7 @@ function TUIAppInner({ initialState, callbacks, bridge, alternateBuffer }: AppPr
               contextLevel={state.contextLevel}
               model={state.model}
               activeDialog={state.activeDialog}
+              needsOnboarding={state.needsOnboarding}
               onDialogClose={handleDialogClose}
               commandPanel={state.commandPanel ?? null}
               onCommandPanelClose={handleCommandPanelClose}

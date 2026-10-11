@@ -112,6 +112,12 @@ const mod: LocalCommandModule = {
       return switchModel(rest[0], persist, ctx);
     }
 
+    // 还没配好 key（首次引导被关掉）：模板里列了多家预置模型，但一个都没 key，
+    // 打开选择器切过去也是 401——直接回到配置向导（EmptyLogo 引导行说的就是这条路）。
+    if (ctx.config._needsOnboarding) {
+      return { type: "dialog", dialog: "onboarding" };
+    }
+
     // 无参数且有可用模型时，打开交互式选择对话框
     if (ctx.config.availableModels.length > 0) {
       return { type: "dialog", dialog: "model" };

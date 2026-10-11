@@ -240,6 +240,14 @@ export function InputArea({
       .catch(() => {
         /* 静默失败 */
       });
+    // 挂载时也消费「待回填输入」：未配 key 时发消息会被拦下并打开配置向导（app.ts onUserInput），
+    // 向导期间 Composer 被卸载，loading→idle 边沿那条回填路径走不到——向导关掉、输入框重新挂载时
+    // 在这里把刚才那句放回去。
+    const restore = consumePendingRestore();
+    if (restore && tb.isEmpty()) {
+      tb.setText(restore.text);
+      if (restore.shellMode) setShellModeActive(true);
+    }
   }, []);
 
   // 反向搜索

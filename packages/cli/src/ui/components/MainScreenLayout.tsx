@@ -122,6 +122,8 @@ interface MainScreenLayoutProps {
   // 通用对话框系统
   activeDialog: DialogType | null;
   onDialogClose: () => void;
+  /** 仍未完成首次配置（向导关掉后 EmptyLogo 常驻引导行） */
+  needsOnboarding?: boolean;
   /** 命令输出面板（null = 未打开），见 CommandOutputDialog */
   commandPanel: import("./CommandOutputDialog.tsx").CommandPanelInfo | null;
   onCommandPanelClose: () => void;
@@ -200,6 +202,7 @@ export const MainScreenLayout: React.FC<MainScreenLayoutProps> = memo(function M
   contextLevel,
   model,
   activeDialog,
+  needsOnboarding,
   onDialogClose,
   commandPanel,
   onCommandPanelClose,
@@ -261,7 +264,9 @@ export const MainScreenLayout: React.FC<MainScreenLayoutProps> = memo(function M
               cwd={cwd}
               gitBranch={gitBranch}
               model={model}
-              needsOnboarding={activeDialog === "onboarding"}
+              onboarding={
+                activeDialog === "onboarding" ? "open" : needsOnboarding ? "pending" : undefined
+              }
             />
           ) : null}
 

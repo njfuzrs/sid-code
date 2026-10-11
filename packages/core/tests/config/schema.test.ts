@@ -608,3 +608,53 @@ describe("Config Validation", () => {
     });
   });
 });
+
+describe("availableModels 模板占位符 key 分级", () => {
+  // 团队模板按厂商列多条官方端点，用户通常只填其中一两家的 key：
+  // 当前模型有真 key 时，其余占位符条目只提示（warning），不顶 [配置错误] 横幅。
+  const PH = "__YOUR_API_KEY__";
+  const base = {
+    provider: "openai",
+    maxTokens: 16384,
+    permissionMode: "default",
+  } as unknown as Config;
+  const models = (currentKey: string) => [
+    {
+      name: "deepseek-v4-pro",
+      provider: "openai",
+      baseURL: "https://api.deepseek.com",
+      apiKey: currentKey,
+    },
+    { name: "kimi-k3", provider: "openai", baseURL: "https://api.moonshot.cn/v1", apiKey: PH },
+  ];
+
+  test("当前模型已填真 key ⇒ 其余占位符条目降为 warning", () => {
+    const r = validateConfig({
+      ...base,
+      model: "deepseek-v4-pro",
+      availableModels: models("sk-real-key-0123456789"),
+    } as Config);
+    expect(r.errors.some((e) => e.path === "availableModels")).toBe(false);
+    const w = r.warnings.find((x) => x.path === "availableModels");
+    expect(w?.message).toContain("kimi-k3");
+    expect(w?.message).not.toContain("deepseek-v4-pro");
+  });
+
+  test("当前模型自己仍是占位符 ⇒ 保持 errors", () => {
+    const r = validateConfig({
+      ...base,
+      model: "deepseek-v4-pro",
+      availableModels: models(PH),
+    } as Config);
+    expect(r.errors.some((e) => e.path === "availableModels")).toBe(true);
+  });
+
+  test("当前模型不在清单里 ⇒ 保持 errors（不因找不到而放过）", () => {
+    const r = validateConfig({
+      ...base,
+      model: "not-listed",
+      availableModels: models("sk-real-key-0123456789"),
+    } as Config);
+    expect(r.errors.some((e) => e.path === "availableModels")).toBe(true);
+  });
+});

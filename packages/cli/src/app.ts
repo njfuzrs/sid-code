@@ -4302,6 +4302,23 @@ export class App {
   }
 
   /**
+   * 首次引导的预置模型：availableModels 里 apiKey 仍是模板占位符、且有 provider + baseURL 的条目。
+   * 安装脚本写入的团队默认配置正是这种形状——用户只需选一个、填 key。
+   * 当前模型排第一（它就是用户「默认会用」的那个）。
+   */
+  private getOnboardingPresets(): import("./ui/components/OnboardingDialog.tsx").OnboardingPreset[] {
+    const { isMissingApiKey } = require("@sid-code/core/config/config.ts");
+    const presets = this.config.availableModels
+      .filter(
+        (m) => m.provider && m.provider !== "ollama" && m.baseURL && isMissingApiKey(m.apiKey),
+      )
+      .map((m) => ({ name: m.name, provider: m.provider!, baseURL: m.baseURL! }));
+    const i = presets.findIndex((p) => p.name === this.config.model);
+    if (i > 0) presets.unshift(...presets.splice(i, 1));
+    return presets;
+  }
+
+  /**
    * M3：待审批的项目级 MCP server（来自 loadConfig 登记的快照）。
    * 同步读：approval.ts 是 core 里的纯模块，cli.ts 启动阶段已经 import 过，这里直接 require 缓存。
    */
@@ -9220,6 +9237,20 @@ export class App {
       onShellCommand: executeInteractiveShell,
       onUserInput: async (text, opts) => {
         log.debug("TUI:CB", `onUserInput 被调用: "${text.slice(0, 100)}"`);
+        // 还没配好 key（首次引导被 Esc 关掉）：不发请求去撞 401，重新打开配置向导，
+        // 并把刚敲的内容放回输入框——配好之后回车就能直接发。
+        if (this.config._needsOnboarding) {
+          log.info("TUI:ONBOARD", "未配置 API Key，拦截本次发送并重新打开配置向导");
+          stashPendingInput(text, false);
+          markForRestore();
+          addTransientStatusMessage(
+            "onboarding_required",
+            "› 先配置 API Key，配好后回车即可发送",
+            6000,
+          );
+          updateState({ activeDialog: "onboarding" });
+          return;
+        }
         // P2-1：本轮用户输入提交前登记回退点（对话锚点=当前消息数组长度，文件锚点=最新快照 id）。
         // 供 Esc+Esc 回退选择器列出并回退到本轮之前。displayCommand（斜杠命令展开）也登记——
         // 它同样推进对话，值得成为一个回退锚点；预览用触发命令而非整段展开提示词更可读。
@@ -9758,30 +9789,79 @@ export class App {
       onCompleteOnboarding: (result) => {
         log.info("TUI:ONBOARD", `首次引导完成: provider=${result.provider} model=${result.model}`);
         const { patchSettingsFile } = require("@sid-code/core/config/settings/settings.ts");
-        const { resolveCurrentModelConfig } = require("@sid-code/core/config/config.ts");
+        const {
+          resolveCurrentModelConfig,
+          isMissingApiKey,
+        } = require("@sid-code/core/config/config.ts");
 
-        // 构造 ModelConfig 对象
-        const modelEntry: Record<string, unknown> = {
-          name: result.model,
-          provider: result.provider,
-        };
-        if (result.baseURL) modelEntry.base_url = result.baseURL;
-        if (result.apiKey) modelEntry.api_key = result.apiKey;
+        if (result.fromPreset) {
+          // 预置路径：只回填 key（同端点占位符条目一起），保留模板里其余厂商条目，
+          // 并把仍指向「没 key 模型」的 fallbackModel / subAgentModels 改到能用的模型上。
+          const { applyPresetApiKey } = require("@sid-code/core/config/onboarding-preset.ts");
+          const { getSettingsFilePath } = require("@sid-code/core/config/settings/constants.ts");
+          const { readFileSync } = require("fs");
+          let patch: Record<string, unknown>;
+          try {
+            const raw = JSON.parse(readFileSync(getSettingsFilePath("userSettings"), "utf-8"));
+            patch = applyPresetApiKey(raw, result.model, result.apiKey);
+          } catch (e) {
+            log.warn("TUI:ONBOARD", `预置模型回填失败: ${(e as Error)?.message}`);
+            addTransientStatusMessage(
+              "onboarding_failed",
+              `⚠ 保存失败：${(e as Error)?.message}。可直接编辑 ~/.sid-code/settings.json`,
+              8000,
+            );
+            updateState({ activeDialog: null });
+            return;
+          }
+          for (const [k, v] of Object.entries(patch)) patchSettingsFile("userSettings", k, v);
 
-        // 1. 写入 settings.json（外科式补丁，保留 env 占位符安全）
-        patchSettingsFile("userSettings", "availableModels", [modelEntry]);
-        patchSettingsFile("userSettings", "model", result.model);
-
-        // 2. 更新内存 config
-        this.config.availableModels = [
-          {
+          // 内存 config 同步：同端点占位符条目换成真 key（与写盘同一判据）
+          const picked = this.config.availableModels.find((m) => m.name === result.model);
+          for (const m of this.config.availableModels) {
+            if (
+              (m === picked || (picked?.baseURL && m.baseURL === picked.baseURL)) &&
+              isMissingApiKey(m.apiKey)
+            ) {
+              m.apiKey = result.apiKey;
+            }
+          }
+          this.config.model = result.model;
+          // fallback 目标一律重建：即便 fallbackModel 名字没变（如 deepseek-flash 与主模型同端点、
+          // 刚被一起回填了 key），启动时构建的降级 provider 仍持有占位符 key，不重建首次降级就 401。
+          const fb =
+            typeof patch.fallbackModel === "string"
+              ? patch.fallbackModel
+              : this.config.fallbackModel;
+          this.setFallbackModelRuntime(fb || undefined, false);
+          if (patch.subAgentModels && this.config.subAgentModels) {
+            // 原地 mutate：ProviderRegistry 持有同一对象引用（见 setSubAgentModelRuntime）
+            Object.assign(this.config.subAgentModels, patch.subAgentModels);
+          }
+        } else {
+          // 构造 ModelConfig 对象
+          const modelEntry: Record<string, unknown> = {
             name: result.model,
             provider: result.provider,
-            baseURL: result.baseURL || undefined,
-            apiKey: result.apiKey || undefined,
-          },
-        ];
-        this.config.model = result.model;
+          };
+          if (result.baseURL) modelEntry.base_url = result.baseURL;
+          if (result.apiKey) modelEntry.api_key = result.apiKey;
+
+          // 1. 写入 settings.json（外科式补丁，保留 env 占位符安全）
+          patchSettingsFile("userSettings", "availableModels", [modelEntry]);
+          patchSettingsFile("userSettings", "model", result.model);
+
+          // 2. 更新内存 config
+          this.config.availableModels = [
+            {
+              name: result.model,
+              provider: result.provider,
+              baseURL: result.baseURL || undefined,
+              apiKey: result.apiKey || undefined,
+            },
+          ];
+          this.config.model = result.model;
+        }
         this.config.provider = result.provider;
         if (result.baseURL) this.config.baseURL = result.baseURL;
         delete this.config._needsOnboarding;
@@ -9815,14 +9895,20 @@ export class App {
           needsOnboarding: false,
           model: result.model,
           provider: result.provider,
-          availableModels: [
-            {
-              name: result.model,
-              provider: result.provider,
-              description: result.baseURL ? `${result.provider} (${result.baseURL})` : undefined,
-            },
-          ],
+          availableModels: this.config.availableModels.map((m) => ({
+            name: m.name,
+            modelId: m.modelId,
+            provider: m.provider || this.config.provider,
+            description: m.baseURL
+              ? `${m.provider || this.config.provider} (${m.baseURL})`
+              : undefined,
+          })),
         });
+        addTransientStatusMessage(
+          "onboarding_done",
+          `✔ 已保存到 ~/.sid-code/settings.json，当前模型 ${result.model}，可以开始对话了`,
+          6000,
+        );
         log.info("TUI:ONBOARD", "配置已写入 settings.json，Provider 热加载成功");
       },
       // /mcp 交互面板依赖的稳定引用（非响应式，直接透传实例）
@@ -9908,6 +9994,7 @@ export class App {
       nextStartupDialog: (after) => this.nextStartupDialog(after),
       // M3：项目 .mcp.json 待审批 server 的启动审批框
       getPendingMcpApprovals: () => this.listPendingMcpApprovals(),
+      getOnboardingPresets: () => this.getOnboardingPresets(),
       onMcpApprovalDecision: async (name, choice) => {
         await this.applyMcpApprovalDecision(name, choice);
       },
