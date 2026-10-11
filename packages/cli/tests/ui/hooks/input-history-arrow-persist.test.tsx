@@ -16,6 +16,7 @@ import { Text } from "@sid-code/cli/ui/render-port/components.ts";
 import { textBufferReducer as reduce, createInitialState } from "@sid-code/cli/ui/text-buffer.ts";
 import { useInputHistoryStore } from "@sid-code/cli/ui/hooks/useInputHistoryStore.ts";
 import { getProjectRoot, setProjectRoot } from "@sid-code/core/bootstrap/state.ts";
+import { isSlashCommandInput } from "@sid-code/cli/command/parser.ts";
 
 describe("TextBuffer 初始历史", () => {
   test("带初始历史时 ↑ 能翻到上一会话的输入", () => {
@@ -34,6 +35,31 @@ describe("TextBuffer 初始历史", () => {
     s = reduce(s, { type: "reset" });
     expect(s.history).toEqual(["a", "b", "c"]);
   });
+
+  test("提交斜杠命令不进 ↑ 历史：翻回 /model 会弹补全锁死 ↑/↓、回车直接打开弹窗", () => {
+    let s = createInitialState("/model", ["你好"]);
+    s = reduce(s, { type: "reset" });
+    expect(s.history).toEqual(["你好"]);
+    s = createInitialState("/model opus", ["你好"]);
+    s = reduce(s, { type: "reset" });
+    expect(s.history).toEqual(["你好"]);
+    // 普通对话照常进
+    s = createInitialState("看下 /tmp/a.log", ["你好"]);
+    s = reduce(s, { type: "reset" });
+    expect(s.history).toEqual(["看下 /tmp/a.log", "你好"]);
+  });
+});
+
+describe("isSlashCommandInput", () => {
+  test("命令与带参命令判真，普通文本 / 多段路径 / 孤立 / 判假", () => {
+    expect(isSlashCommandInput("/model")).toBe(true);
+    expect(isSlashCommandInput("  /model opus ")).toBe(true);
+    expect(isSlashCommandInput("/mcp:list")).toBe(true);
+    expect(isSlashCommandInput("你好 /model")).toBe(false);
+    expect(isSlashCommandInput("/var/log/syslog 里有什么")).toBe(false);
+    expect(isSlashCommandInput("/")).toBe(false);
+    expect(isSlashCommandInput("")).toBe(false);
+  });
 });
 
 describe("useInputHistoryStore.projectHistory", () => {
@@ -51,7 +77,12 @@ describe("useInputHistoryStore.projectHistory", () => {
     // 文件是最旧在前的追加序
     writeFileSync(
       join(dir, "history.jsonl"),
-      [line("p1-旧", "/p1"), line("p2-输入", "/p2"), line("p1-新", "/p1")].join("\n") + "\n",
+      [
+        line("p1-旧", "/p1"),
+        line("/model", "/p1"),
+        line("p2-输入", "/p2"),
+        line("p1-新", "/p1"),
+      ].join("\n") + "\n",
     );
   });
 
@@ -67,10 +98,10 @@ describe("useInputHistoryStore.projectHistory", () => {
     return React.createElement(Text, null, `P=${projectHistory.join(",")}|A=${history.join(",")}`);
   }
 
-  test("↑/↓ 只灌当前项目的历史（最新在前），Ctrl+R 仍是全局", () => {
+  test("↑/↓ 只灌当前项目的历史（最新在前、不含斜杠命令），Ctrl+R 仍是全局且保留命令", () => {
     setProjectRoot("/p1");
     const { lastFrame } = render(<Harness />);
     expect(lastFrame()).toContain("P=p1-新,p1-旧|");
-    expect(lastFrame()).toContain("A=p1-新,p2-输入,p1-旧");
+    expect(lastFrame()).toContain("A=p1-新,p2-输入,/model,p1-旧");
   });
 });

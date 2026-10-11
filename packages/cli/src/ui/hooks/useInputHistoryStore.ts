@@ -17,6 +17,7 @@ import {
 } from "@sid-code/core/session/history-index.ts";
 import { getSessionId, getProjectRoot } from "@sid-code/core/bootstrap/state.ts";
 import { listPastes } from "../pasted-contents.ts";
+import { isSlashCommandInput } from "../../command/parser.ts";
 
 /** 内存展示上限（与 history-index 的读取上限一致即可） */
 const MAX_IN_MEMORY = 500;
@@ -54,9 +55,13 @@ export function useInputHistoryStore(): UseInputHistoryStoreReturn {
   );
   // 项目过滤是在倒读时逐行判定的，limit 计的是命中条数，不会因别的项目输入多而被挤空。
   // project 取不到（""）时退化为全局，不让 ↑ 变成恒空。
+  // 斜杠命令不灌进 ↑/↓：history.jsonl 里照常记（Ctrl+R 仍能搜到），只是不在 ↑ 里翻出来——
+  // 翻回 `/model` 会立刻弹补全、补全接管 ↑/↓，回车还会直接执行打开模型弹窗。
   const [projectHistory] = useState<string[]>(() => {
     const project = safeProjectRoot();
-    return readHistoryDisplays({ limit: MAX_IN_MEMORY, project: project || undefined });
+    return readHistoryDisplays({ limit: MAX_IN_MEMORY, project: project || undefined }).filter(
+      (d) => !isSlashCommandInput(d),
+    );
   });
 
   const addEntry = useCallback((text: string) => {

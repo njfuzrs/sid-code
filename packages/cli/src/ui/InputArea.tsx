@@ -431,7 +431,10 @@ export function InputArea({
     setSuggestions: setShellSuggestions,
   });
 
-  const hasSuggestions = suggestions.length > 0;
+  // 正在翻历史（historyIndex ≥ 0）时不弹补全：翻到的条目末尾若恰好是 `@path` / ` /cmd`，
+  // 补全列表会接管 ↑/↓（历史卡在这一条翻不动）和 Enter（回车变成"选补全项"而不是提交）。
+  // 用户一打字 insert 就把 historyIndex 清回 -1，补全随即恢复。
+  const hasSuggestions = suggestions.length > 0 && tb.state.historyIndex < 0;
 
   // 应用补全：替换触发文本为选中的补全值
   const applyCompletion = useCallback(
