@@ -8,7 +8,6 @@ import type { Config, ModelConfig } from "../config/config.ts";
 import { getLogger } from "../debug/logger.ts";
 import { ModelAvailabilityService } from "./availability.ts";
 import { TokenEstimator } from "./token-estimator.ts";
-import { resolvePricingUSD } from "../api/cost-tracker.ts";
 import { resolveWireModel, buildWireModelAliasMap } from "./wire-model.ts";
 import { buildModelCompatMap } from "./model-compat.ts";
 import { resolveAgent } from "../agent/agent-definition.ts";
@@ -169,10 +168,18 @@ export class ProviderRegistry {
    *   1. subAgentModels[type]     —— 用户按类型显式配置（最高，永远优先于任何默认）
    *   2. subAgentModels.default   —— 用户兜底默认
    *   3. agentDef.model           —— agent 定义/frontmatter 声明的 model（P0-2 自定义 agent）
-   *   4. modelTier 档位映射        —— 语义档位派生（P0-1，explore/plan/summarize=cheap）
-   *   5. this.config.model        —— 主模型兜底（fail-open，绝不因配错更贵或报错）
+   *   4. modelTier 档位映射        —— **仅**读环境变量 SID_CHEAP_MODEL / SID_STRONG_MODEL
+   *   5. this.config.model        —— 主模型（未显式配置时的默认，不是"兜底"）
    *
-   * 注意：task.model（每次调用覆盖）在调用方 sub-agent.ts 层处理，优先级高于本方法的全部返回值。
+   * ⛔ 不做任何隐式选模型：没有显式配置就跟主模型。曾经第 4 层会在 availableModels 里
+   * 按单价自动挑最便宜的（2026-10-11 事故：主模型可用，explore 被自动派到一个在该网关
+   * 分组下无渠道的 claude-haiku-5-5，5 个子代理零轮全灭）。availableModels 是「配过的」，
+   * 不是「此刻可用的」；价格表也说不出可用性。详见
+   * .agents/notes/implemented/bug-fix/2026-10-11-子代理模型解析不再隐式降档.md。
+   *
+   * 注意：task.model（每次调用覆盖）在调用方 sub-agent.ts 层处理，优先级高于本方法的全部返回值；
+   * 拿到最终模型后**必须**经 {@link getProviderForModelName} / {@link getSpawnConfigForModel}
+   * 解析连接，不能再按类型查——否则模型名与 provider 会错配。
    */
   getModelForSubAgent(type: string): string {
     // 1 + 2：用户配置（按类型 > default）——永远优先，保留用户完全控制权。
@@ -191,68 +198,29 @@ export class ProviderRegistry {
     if (def) {
       // 3：frontmatter/定义显式 model（P0-2）。"inherit" 已在解析层归一为不设，此处非空即用。
       if (def.model && def.model.trim()) return def.model.trim();
-      // 4：语义档位映射（P0-1）。仅 cheap/strong 尝试派生；default 或未设直接落主模型。
+      // 4：语义档位映射。只认用户显式设的环境变量；没设就落主模型，不做任何派生。
       if (def.modelTier && def.modelTier !== "default") {
         const tierModel = this.resolveModelForTier(def.modelTier);
         if (tierModel) return tierModel;
       }
     }
 
-    // 5：主模型兜底。
+    // 5：主模型（未显式配置时的默认）。
     return this.config.model;
   }
 
   /**
-   * 语义档位 → 实际模型名派生（P0-1）。
+   * 语义档位 → 实际模型名。**只**读用户显式设的环境变量 SID_CHEAP_MODEL / SID_STRONG_MODEL，
+   * 没设返回 null（调用方落主模型）。
    *
-   * 不硬编码模型名单（铁律 feedback-no-hardcoded-model-tier-rules）。派生来源按优先级：
-   *   1. 环境变量 SID_CHEAP_MODEL / SID_STRONG_MODEL（用户显式指定，最高权威）
-   *   2. availableModels 按 input 价排序：cheap=最便宜、strong=最贵（且不同于主模型档位）
-   *   3. 派生不出（无 availableModels / 无定价 / 只有主模型自己）→ null，调用方 fail-open 回退主模型
-   *
-   * 绝不返回比主模型更贵的 cheap 档，也绝不因派生失败报错。
+   * ⛔ 不要加回「按 availableModels 价格排序挑最便宜/最贵」：价格表回答不了
+   * 「这个模型此刻在用户的网关分组里能不能用」，挑中不可用的模型时子代理起步即失败，
+   * 而用户从未选过它、也不知道是它（见 getModelForSubAgent 注释里的事故）。
+   * 想省钱请显式配 subAgentModels 或本环境变量——选了谁用户自己知道。
    */
   private resolveModelForTier(tier: "cheap" | "strong"): string | null {
-    // 1：环境变量显式指定。
     const envName = tier === "cheap" ? "SID_CHEAP_MODEL" : "SID_STRONG_MODEL";
-    const envModel = process.env[envName]?.trim();
-    if (envModel) return envModel;
-
-    // 2：从 availableModels 按价格派生。无配置模型列表时无从派生。
-    const models = this.config.availableModels;
-    if (!models || models.length === 0) return null;
-
-    // 为每个候选模型解析 input 单价（USD/M），过滤解析不出价格的。
-    const priced: Array<{ name: string; input: number }> = [];
-    for (const m of models) {
-      if (!m.name) continue;
-      // D1：**必须过 effectivePricing** —— 本函数跨模型比单价大小，而注册表里
-      // 各模型的 pricing 可能是不同币种 / 高峰价。不折算就是拿人民币和美元比大小，
-      // cheap/strong 档会选错模型（一个人民币标价 9 的便宜模型会被判成比美元标价 3 的贵）。
-      const pricing = resolvePricingUSD(m.name, models, m.baseURL);
-      if (pricing && pricing.input > 0) {
-        priced.push({ name: m.name, input: pricing.input });
-      }
-    }
-    if (priced.length === 0) return null;
-
-    // 主模型的价格作为参照：cheap 档必须严格更便宜，strong 档必须严格更贵，否则宁可回退主模型。
-    const mainPricing = resolvePricingUSD(this.config.model, models, this.config.baseURL);
-    const mainInput = mainPricing && mainPricing.input > 0 ? mainPricing.input : null;
-
-    if (tier === "cheap") {
-      // 取最便宜的一个；若比主模型贵/相等则不派生（回退主模型，绝不更贵）。
-      const cheapest = priced.reduce((a, b) => (b.input < a.input ? b : a));
-      if (cheapest.name === this.config.model) return null;
-      if (mainInput !== null && cheapest.input >= mainInput) return null;
-      return cheapest.name;
-    } else {
-      // strong：取最贵的一个；若不比主模型贵则不派生。
-      const strongest = priced.reduce((a, b) => (b.input > a.input ? b : a));
-      if (strongest.name === this.config.model) return null;
-      if (mainInput !== null && strongest.input <= mainInput) return null;
-      return strongest.name;
-    }
+    return process.env[envName]?.trim() || null;
   }
 
   /**
@@ -288,7 +256,17 @@ export class ProviderRegistry {
     apiKey: string;
     baseURL?: string;
   } {
-    const model = this.getModelForSubAgent(type);
+    return this.getSpawnConfigForModel(this.getModelForSubAgent(type));
+  }
+
+  /**
+   * 按**最终生效的模型名**解析 spawn 配置（模型 + 真名 + 对应 provider/apiKey/baseURL）。
+   *
+   * 存在理由：调用方常有 task.model / modelOverride 覆盖，此时「按类型」查出的连接属于
+   * 另一个模型。2026-10-11 事故里 deepseek-v4-pro（openai 族、api.deepseek.com）就是被
+   * 配上了 explore 类型默认模型的 anthropic 连接发出去，必然失败。连接只能跟着模型走。
+   */
+  getSpawnConfigForModel(model: string): ReturnType<ProviderRegistry["getSpawnConfigForSubAgent"]> {
     // 别名 → 真名：spawn 出的子进程不读配置、别名表为空，只能靠父进程在这里解析后传过去。
     const wireModel = resolveWireModel(model, this.config.availableModels);
     // 整张表（含 fallback 目标等「本次不发但子进程内可能切过去」的别名）。

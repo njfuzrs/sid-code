@@ -153,14 +153,18 @@ async function runPartial(
   },
 ): Promise<{ type: "text"; value: string }> {
   const { partialCompact } = await import("@sid-code/core/query/compact/index.ts");
-  // 摘要用低成本模型优先（子代理 summarize 档），否则回退主模型
+  // 摘要模型按 summarize 类型解析（用户配了 subAgentModels.summarize 就用它，否则即主模型）。
   const compactModel = ctx.providerRegistry?.getModelForSubAgent("summarize") ?? ctx.config.model;
+  // provider 必须跟着模型走：summarize 模型可能在另一个网关 / 协议族上，
+  // 直接用主 provider 发它就是模型/连接错配（与子代理 2026-10-11 事故同型）。
+  const compactProvider =
+    ctx.providerRegistry?.getProviderForModelName(compactModel) ?? ctx.provider;
 
   // 压缩前的原始消息快照：post-compact 的摘要覆盖率校验要拿它跟摘要比对
   const originalMessages = ctx.ctxMgr.getMessages();
 
   const result = await partialCompact(originalMessages, opts.upTo, {
-    provider: ctx.provider,
+    provider: compactProvider,
     model: compactModel,
     customInstructions: opts.customInstructions,
   });

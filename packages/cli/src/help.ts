@@ -169,8 +169,8 @@ Worktree 隔离:
   SID_MODEL_CATALOG_TTL_MS      外部模型目录同步 TTL 毫秒（缺省 86400000，即 1 天）；设小值可强制重新采集模型能力
   SID_LANGUAGE                  输出语言偏好 (zh/en/auto)；兼容 SID_CODE_LANGUAGE，优先级低于 --language
   ANTHROPIC_AUTH_TOKEN          Anthropic 密钥备用名（ANTHROPIC_API_KEY 优先）
-  SID_CHEAP_MODEL               廉价档模型覆盖（旁路调用用，最高权威）
-  SID_STRONG_MODEL              强力档模型覆盖（旁路调用用，最高权威）
+  SID_CHEAP_MODEL               cheap 档子代理（explore/plan/summarize）用的模型；不设则跟主模型
+  SID_STRONG_MODEL              strong 档子代理（modelTier: strong）用的模型；不设则跟主模型
 
   轨迹采集:
   SID_CODE_TRACE                设为 1 或 true 强制启用轨迹采集（默认已启用，关闭用 --no-trace）
