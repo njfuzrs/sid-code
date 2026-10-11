@@ -965,7 +965,16 @@ export class TraceCollector {
             //   2. 主循环无活跃流（如正在跑工具）时退到最早开始的子代理那份，
             //      并带上 agent_id 说明这是谁 —— 否则读心跳的人会以为主循环在流式阶段。
             // 并发数一并落盘，让"6 路并行时卡住"与"单路卡住"在心跳里可分辨。
-            const activeSnapshots = getActiveStreamSnapshots();
+            // 终态快照（completed / aborted / error）不是「活跃请求」：旁路调用链（fork /
+            // 标题生成）的快照收尾后不一定被 clearStreamSnapshot 清掉，留在 Map 里继续被
+            // 心跳挑中，于是 `phase:"completed"` 配一个持续增长的 elapsed_ms（实测 2.8h），
+            // 恰好命中 /trace 提示里的「elapsed_ms 大且仍在跳 = hang」—— 假 hang。
+            // 所以终态快照一律不作为 active_request（没有活流时 active_request=null，走下方
+            // last_known_state 兜底），残留条数单独落 `stale_terminal_snapshots`。
+            const allSnapshots = getActiveStreamSnapshots();
+            const isTerminal = (p: string) => p === "completed" || p === "aborted" || p === "error";
+            const liveSnapshots = allSnapshots.filter((s) => !isTerminal(s.phase));
+            const activeSnapshots = liveSnapshots;
             const mainSnapshot = activeSnapshots.find((s) => s.agentId === undefined);
             const oldestAgent = activeSnapshots
               .filter((s) => s.agentId !== undefined)
@@ -993,6 +1002,8 @@ export class TraceCollector {
                   ...(activeSnapshots.length > 1 ? { active_count: activeSnapshots.length } : {}),
                 }
               : null;
+            // 残留的终态快照数单独落一格：它是「快照泄漏」的信号，而不是 hang 的信号。
+            const staleTerminal = allSnapshots.length - liveSnapshots.length;
             // 优化 3：stream-observer 快照仅覆盖流式阶段；工具执行/后处理等非流式阶段
             // activeRequest 为 null，此前心跳就只剩时间戳，进程 hang 时看不出卡在哪。
             // 兜底塞入 last_known_state（§3.6 已维护 phase/turn/model），让 tool_exec
@@ -1003,6 +1014,7 @@ export class TraceCollector {
               session_id: traceSessionId,
               event_loop_lag_ms: lagMs,
               active_request: activeRequest,
+              ...(staleTerminal > 0 ? { stale_terminal_snapshots: staleTerminal } : {}),
               ...(lastState ? { last_known_state: lastState } : {}),
             });
             writeFileSync(this.heartbeatPath, content);

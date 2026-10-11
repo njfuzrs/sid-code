@@ -12,6 +12,7 @@
 
 import { useReducer, useCallback, useMemo } from "react";
 import stringWidth from "string-width";
+import { isSlashCommandInput } from "../command/parser.ts";
 
 // ── 类型定义 ──────────────────────────────────────────────────────
 
@@ -453,9 +454,11 @@ function baseReducer(state: TextBufferState, action: Action): TextBufferState {
       const text = getText(state).trim();
       // 去重后置顶：与持久化侧 readHistoryDisplays 的「最新在前、去重」口径一致，
       // 否则启动时灌进来的历史与本会话新提交的同一句会在 ↑ 里连按出现两次。
-      const newHistory = text
-        ? [text, ...state.history.filter((h) => h !== text)].slice(0, MAX_HISTORY)
-        : state.history;
+      // 斜杠命令不进 ↑/↓ 历史：翻回来会弹补全、锁死 ↑/↓（见 isSlashCommandInput）。
+      const newHistory =
+        text && !isSlashCommandInput(text)
+          ? [text, ...state.history.filter((h) => h !== text)].slice(0, MAX_HISTORY)
+          : state.history;
       return {
         lines: [""],
         cursorRow: 0,

@@ -2407,7 +2407,8 @@ export class OpenAIProvider implements Provider {
         // 首内容时刻拿不到命中数，所以缓存维度挂在 completed 而不是 first_content。
         // 消费侧因此需要把 first_content(ttft) 与 completed(cache_hit) 按
         // (session, index, 出现顺序) 配对 —— 见 digest.ts 的 TTFT 分桶实现。
-        ...cacheDimsFor(usage.cacheReadInputTokens ?? 0),
+        // 第二参：OpenAI 族 prompt_tokens 含 cached 部分，可直接做命中比例分母
+        ...cacheDimsFor(usage.cacheReadInputTokens ?? 0, usage.inputTokens || undefined),
       });
       updateStreamStats(parseObsIndex, {
         chunksReceived: totalChunks,
