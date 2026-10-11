@@ -123,13 +123,12 @@ sid-code -p "..." --output-format stream-json 2>/dev/null \
 `jq` 拿到这个只会报解析失败。两种触发方式都要注意：
 
 - 命令行显式加了 `-d` / `--debug`
-- `~/.sid-code/app.json` 里 `"debug": true`（**用久了的机器上很可能是这个**——
-  比如首次启动生成的是 `"debug": false`，但被谁改过了）
+- `~/.sid-code/settings.json` 里 `"debug": true`，或没写 `debug`（代码默认就是 `true`）
 
 脚本里的稳妥做法是显式确认一次：
 
 ```bash
-grep '"debug"' ~/.sid-code/app.json
+grep '"debug"' ~/.sid-code/settings.json
 ```
 
 CI 里更彻底的隔离——用干净的配置目录：
@@ -330,10 +329,10 @@ sid-code -p "..." --dangerously-skip-permissions
 ### 项目级 Skill / 命令 / 子代理在 `-p` 下加载不到
 
 这是设计行为：项目级扩展来自仓库，默认视作不可信要用户确认，`-p` 下没法确认 → 跳过。
-CI 里要用得显式打开信任（`~/.sid-code/app.json`）：
+CI 里要用得显式打开信任（`~/.sid-code/settings.json`）：
 
 ```json
-{ "trust_project_extensions": true }
+{ "trustProjectExtensions": true }
 ```
 
 细节见 [Skill](/extend/skills#项目级-skill-写了但模型说不存在)。

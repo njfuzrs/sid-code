@@ -301,10 +301,10 @@ describe("config", () => {
     }
   });
 
-  // 回归：app.json 里混进了不属于 AppConfig 的残留键（alternateBuffer 等），按
-  // 「settings 先、app 后」合并且会盖掉 settings.json 的显式值。app.json 只允许
-  // 贡献自己声明过的字段；两边冲突时以 settings.json 为准。
-  test("app.json 的越界键不覆盖 settings.json，声明内的键仍然生效", async () => {
+  // 回归：app.json 里混进了行为键（alternateBuffer / sessionRetention 等），按
+  // 「settings 先、app 后」合并会盖掉 settings.json 的显式值与代码默认。
+  // 现在 loadConfig 根本不读 app.json：两个文件键集合不相交。
+  test("app.json 里的任何键都不进 Config", async () => {
     const { mkdtempSync, writeFileSync, readFileSync, rmSync } = await import("node:fs");
     const { join } = await import("node:path");
     const { tmpdir } = await import("node:os");
@@ -318,6 +318,7 @@ describe("config", () => {
           alternateBuffer: true,
           audit: false,
           showLineNumbers: false,
+          sessionRetention: { enabled: true, maxAge: "30d", maxCount: 50, minRetention: "1d" },
           numStartups: 7,
         }),
       );
@@ -328,8 +329,13 @@ describe("config", () => {
       expect(cfg.alternateBuffer).toBe(false);
       // audit 没有被 app.json 的残留 false 盖掉，回到默认 true。
       expect(cfg.audit).toBe(true);
-      // showLineNumbers 是 AppConfig 声明内的字段，app.json 的值仍然生效。
-      expect(cfg.showLineNumbers).toBe(false);
+      // showLineNumbers 是行为配置，只认 settings.json / 默认值。
+      expect(cfg.showLineNumbers).toBe(true);
+      // 实测事故形态：app.json 里的旧默认快照（30d / maxCount 50）不许再盖过代码新默认。
+      expect(cfg.sessionRetention).toBeUndefined();
+      const { getRetentionSettings } = await import("@sid-code/core/session/cleanup.ts");
+      expect(getRetentionSettings(cfg).maxAge).toBe("365d");
+      expect(getRetentionSettings(cfg).maxCount).toBeUndefined();
 
       // 读盘过滤必须贯穿回写：启动计数这种「读出再整份写回」的路径，
       // 不能把 alternateBuffer 这类越界键原样存回去。
@@ -340,6 +346,8 @@ describe("config", () => {
       const app = JSON.parse(readFileSync(join(dir, "app.json"), "utf-8"));
       expect(app.alternateBuffer).toBeUndefined();
       expect(app.audit).toBeUndefined();
+      expect(app.sessionRetention).toBeUndefined();
+      expect(app.showLineNumbers).toBeUndefined();
       expect(app.numStartups).toBe(8);
     } finally {
       if (prevHome === undefined) delete process.env.SID_CONFIG_DIR;

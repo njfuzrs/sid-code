@@ -75,6 +75,7 @@ import {
 import { join } from "path";
 import { getLogger } from "../debug/logger.ts";
 import { sidPaths } from "./paths.ts";
+import type { SessionRetentionSettings } from "../session/retention.ts";
 import { ensureConfigGitignore } from "./ensure-gitignore.ts";
 import { addFileGlobRuleToGitignore } from "./gitignore.ts";
 import { cleanupPersistedOutputs } from "../context/tool-result-storage.ts";
@@ -96,10 +97,26 @@ const CLEANUP_INTERVAL_MS = 24 * 60 * 60 * 1000;
  * Session Memory 笔记跟着同一个数字走不是巧合：它的用途是 `--resume` 时接上上下文，
  * 会话被清理之后它也无从挂靠；会话还在时删掉它，则恢复出来的会话丢了笔记。
  *
+ * 生产路径由 cli.ts 传入 `opts.retention`（= 会话清理用的同一份 `getRetentionSettings(config)`），
+ * 保证会话 / 轨迹 / 笔记三处拿到的是**同一个生效值**。此前这里自己读 getSettings()，
+ * 而会话清理读 loadConfig 的合并结果（当时还叠了 app.json）——同一台机器上会话 30 天、
+ * 轨迹 365 天。没传时（单测、旧调用点）才回退自读 settings。
+ *
  * 读 settings 失败时回退默认值，不让清理任务因配置故障而改变行为。
  * 关闭自动清理（`sessionRetention.enabled: false`）时返回 Infinity —— 一处都不按时间删。
  */
+let retentionOverride: SessionRetentionSettings | null = null;
+
 function retentionMaxAgeMs(): number {
+  try {
+    const { retentionMaxAgeMs: toMs } = require("../session/retention.ts");
+    if (retentionOverride) {
+      if (!retentionOverride.enabled) return Number.POSITIVE_INFINITY;
+      return toMs(retentionOverride);
+    }
+  } catch {
+    /* 回退下面的自读路径 */
+  }
   try {
     const { getSettings } = require("./settings/settings.ts");
     const {
@@ -200,8 +217,9 @@ const RUNTIME_FILES_TO_GITIGNORE = [
  */
 export function runStartupHousekeeping(
   now: number = Date.now(),
-  opts: { selfSessionId?: string } = {},
+  opts: { selfSessionId?: string; retention?: SessionRetentionSettings } = {},
 ): void {
+  retentionOverride = opts.retention ?? null;
   // 1. 配置目录 .gitignore（独立幂等，与清理无关，始终尝试）
   ensureConfigGitignore();
 

@@ -78,8 +78,8 @@ describe("SID_CONFIG_DIR 覆盖日志落盘路径（缺陷 B 本体）", () => {
     expect(c.debugLogFile).not.toContain("~");
   });
 
-  test("createDefaultAppConfig 的 debugLogFile 与 defaultConfig 一致（两份副本不许漂移）", () => {
-    expect(createDefaultAppConfig().debugLogFile).toBe(defaultConfig().debugLogFile);
+  test("createDefaultAppConfig 不再带 debugLogFile 副本（行为默认只有 defaultConfig 一份）", () => {
+    expect("debugLogFile" in createDefaultAppConfig()).toBe(false);
   });
 
   test("logger 真的把日志写进 SID_CONFIG_DIR（不只是路径字符串对）", async () => {
@@ -190,12 +190,15 @@ const FORBIDDEN_PATTERNS = [
  * - `cli/src/ui/utils/memory-files.ts`：那个字面量是**给用户看的显示名**
  *   （`probe(sidHomePath("CLAUDE.md"), "~/.sid-code/CLAUDE.md", …)` —— 真实路径已走
  *   `sidHomePath`，第二个参数只是 UI 上那行字）。
+ * - `migrations/move-behavior-keys-out-of-app-json.ts`：那个字面量是**比对用的历史数据**
+ *   （老版本写进 app.json 的旧默认值），用来识别「这是快照、不是用户设置」，从不拿它拼路径落盘。
  */
 const EXEMPT = [
   "packages/core/src/config/paths.ts",
   "packages/core/src/skill/builtin/skill-creator/scripts/init_skill.ts",
   "packages/core/src/skill/builtin-embedded.generated.ts",
   "packages/cli/src/ui/utils/memory-files.ts",
+  "packages/core/src/migrations/move-behavior-keys-out-of-app-json.ts",
 ] as const;
 
 /**

@@ -26,7 +26,7 @@ import {
   renameSync,
 } from "fs";
 import { join } from "path";
-import { getSidHome, sidPaths } from "./paths.ts";
+import { getSidHome } from "./paths.ts";
 
 /** 项目级配置（按项目路径索引） */
 export interface ProjectConfig {
@@ -47,12 +47,18 @@ export interface ProjectConfig {
   claudeMdExternalImportsWarningShown?: boolean;
 }
 
-/** 全局应用配置 */
+/**
+ * 全局应用状态（不是配置）。
+ *
+ * 判据：**由程序自己写、用户不需要也不应该手改**的才放这里。凡是用户会想调的
+ * 行为开关（debug / checkpoint / sessionRetention / trace / telemetry / theme /
+ * showLineNumbers ……）一律在 settings.json，app.json 不存、loadConfig 也不读。
+ *
+ * 此前这里同时声明了一批行为字段，loadConfig 按「settings 先、app 后」合并，
+ * 于是 app.json 里一份旧默认值快照（`sessionRetention: 30d / maxCount 50`）
+ * 盖掉了代码新默认（365d / 10GB），而提示文案让用户去改 settings.json —— 改了也不生效。
+ */
 export interface AppConfig {
-  // UI 偏好
-  theme?: string;
-  showLineNumbers: boolean;
-
   // 会话追踪
   numStartups: number;
   firstStartTime?: string;
@@ -67,50 +73,8 @@ export interface AppConfig {
   // 确保 update 后立即拿到最新渠道价，而不必等 TTL 到期或用户手动 /model discover --pricing。
   lastPricingSyncVersion?: string;
 
-  // 调试配置
-  debug: boolean;
-  debugLevel: string;
-  debugLogFile: string;
-
   // 项目级状态（按路径索引）
   projects?: Record<string, ProjectConfig>;
-
-  // Checkpoint 配置
-  checkpoint?: {
-    enabled?: boolean;
-    maxCheckpointsPerFile?: number;
-    maxTotalSizeMb?: number;
-    maxAgeDays?: number;
-    compressThresholdKb?: number;
-    largeFileThresholdLines?: number;
-    hugeFileThresholdLines?: number;
-  };
-
-  // 会话保留配置
-  sessionRetention?: {
-    enabled?: boolean;
-    maxAge?: string;
-    maxCount?: number;
-    maxTotalSize?: string;
-    minRetention?: string;
-  };
-
-  // 轨迹采集配置
-  trace?: {
-    enabled?: boolean;
-    outputDir?: string;
-    maxSessionsRetained?: number;
-    upload?: Record<string, unknown>;
-  };
-
-  // 遥测配置
-  telemetry?: {
-    enabled: boolean;
-    exporters: Array<{ type: string; options?: Record<string, unknown> }>;
-    batchSize?: number;
-    flushIntervalMs?: number;
-    maxQueueSize?: number;
-  };
 }
 
 /** AppConfig 文件路径 */
@@ -129,39 +93,27 @@ const MIN_BACKUP_INTERVAL_S = 60;
 /**
  * app.json 合法拥有的顶层键 = AppConfig 的全部字段。
  *
- * 这是「app.json 不存行为配置」的机械边界：loadNewFormatAsConfig 读 app.json 时
- * 丢弃清单外的键，迁移 v4 把清单外的存量键搬回 settings.json。
+ * 这是「app.json 不存行为配置」的机械边界：读 app.json 时丢弃清单外的键，
+ * 迁移 v4/v7 把清单外的存量键搬回 settings.json。loadConfig 不读 app.json ——
+ * 清单里没有一个键是 Config 字段，两个文件的键集合不相交（门禁见 app-config.test.ts）。
  * 新增 AppConfig 字段时必须同时加进这里——漏了的后果是该字段从 app.json 读不出来，
  * 而不是静默读到一份来源不明的值。
  */
 export const APP_CONFIG_OWNED_KEYS: ReadonlySet<string> = new Set([
-  "theme",
-  "showLineNumbers",
   "numStartups",
   "firstStartTime",
   "hasCompletedOnboarding",
   "hints",
   "lastPricingSyncVersion",
-  "debug",
-  "debugLevel",
-  "debugLogFile",
   "projects",
-  "checkpoint",
-  "sessionRetention",
-  "trace",
-  "telemetry",
 ]);
 
 /** 默认 AppConfig */
 export function createDefaultAppConfig(): AppConfig {
+  // 只放运行状态的初值。此前这里还带着 debug:false / debugLevel:"INFO" 等行为默认值，
+  // saveAppConfig 会把它们连带写进磁盘，成了一份与 defaultConfig() 不一致、且优先级更高的快照。
   return {
-    showLineNumbers: true,
     numStartups: 0,
-    debug: false,
-    debugLevel: "INFO",
-    // 走 sidPaths 派生，不写 "~/.sid-code/debug.log" 字面量：字面量的展开侧
-    // （debug/logger.ts）用 homedir()，于是 SID_CONFIG_DIR 管不到日志落点。
-    debugLogFile: sidPaths.debugLog(),
   };
 }
 
