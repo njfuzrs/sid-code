@@ -294,8 +294,8 @@ LLM 请求前后、压缩前后、会话起止、子代理起止等，部分事�
 6 个内置类型：`explore` / `task` / `plan` / `summarize` / `verify` / `general-purpose`。
 
 **你什么时候碰到它**：两个价值——① 探索过程中读的一堆文件不进主上下文；
-② **可以按类型配便宜模型**，零配置下 `explore`/`plan`/`summarize` 已自动降到便宜档，
-`task`/`verify` 留主模型保质量。
+② **可以按类型配便宜模型**（`subAgentModels` 或 `SID_CHEAP_MODEL`），没配就跟主模型——
+不会替你自动挑。
 
 **相关**：[子代理](/extend/subagents)
 

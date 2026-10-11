@@ -184,8 +184,8 @@ CC 的 `model` / `ANTHROPIC_BASE_URL` / `ANTHROPIC_AUTH_TOKEN` 这套跟 sid-cod
 不是重点，但迁完值得知道自己多了什么：
 
 - **成本可见**：`/cost` 直接看这次会话花了多少、缓存命中率多少（[成本与用量](/use/cost)）
-- **子代理按类型分级用便宜模型**：零配置下 explore / plan / summarize 已自动降档
-  （[子代理](/extend/subagents)）
+- **子代理按类型分级用便宜模型**：`subAgentModels` 按类型配，或 `SID_CHEAP_MODEL` 一键换
+  explore / plan / summarize（[子代理](/extend/subagents)）
 - **主循环级 Hook 事件** `AfterAgent` / `BeforeModel` / `AfterModel`，见[Hook 事件参考](/ref/hooks)
 - **轨迹落盘可聚合**：[轨迹采集与可观测](/team/observability)
 - **配额与预算规则**：[配额与成本控制](/team/quota)

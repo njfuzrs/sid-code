@@ -1042,8 +1042,12 @@ export class SubAgent {
     // 计费口径对齐：spawn 模式按子代理类型解析模型 + 对应 provider 配置，
     // 与进程内 executeInner 的 getModelForSubAgent/getProviderForSubAgent 口径一致。
     // 缺省（registry 未实现）回退主模型 + 主 spawn 配置。
-    const sc = this.registry?.getSpawnConfigForSubAgent?.(task.type);
-    const model = sc?.model ?? this.model;
+    // task.model（每次调用覆盖）优先：连接必须按**最终生效的模型**解析，不能按类型查——
+    // 按类型查到的是该类型默认模型的 provider，配上 task.model 就是模型/连接错配（2026-10-11 事故）。
+    const sc = task.model
+      ? this.registry?.getSpawnConfigForModel?.(task.model)
+      : this.registry?.getSpawnConfigForSubAgent?.(task.type);
+    const model = sc?.model ?? task.model ?? this.model;
     // 真名必须显式过管道：子进程是独立 OS 进程，不读配置、别名表恒空，
     // 只给别名会让它把 "xxx-gateway" 当模型名发给厂商（见 sub-agent-protocol wire_model）。
     const wireModel = sc?.wireModel;
@@ -1110,14 +1114,14 @@ export class SubAgent {
     const toolDefs = this.getCustomToolDefs(task.allowedTools);
 
     // 计费口径对齐 executeCustomInner：modelOverride 优先，否则按 "task" 类型解析。
-    const sc = this.registry?.getSpawnConfigForSubAgent?.("task");
-    const model = this.modelOverride ?? sc?.model ?? this.model;
-    // 真名要按**最终生效的 model** 重新解析：modelOverride 会绕过 sc.model，
-    // 此时 sc.wireModel 是 "task" 类型模型的真名，与实际要发的模型不是一回事。
-    // 直接用会把 A 模型的别名配上 B 模型的真名发出去——比不翻译更糟。
-    const wireModel = this.modelOverride
-      ? this.registry?.resolveWireModelForAlias?.(model)
-      : sc?.wireModel;
+    // 整套连接（真名 + provider/apiKey/baseURL）都按**最终生效的 model** 解析：modelOverride
+    // 绕过 "task" 类型模型时，旧实现只重算了真名、provider 仍是 "task" 类型模型的——
+    // 模型名与连接错配，跨 provider 必然失败（2026-10-11 事故同型）。
+    const sc = this.modelOverride
+      ? this.registry?.getSpawnConfigForModel?.(this.modelOverride)
+      : this.registry?.getSpawnConfigForSubAgent?.("task");
+    const model = sc?.model ?? this.modelOverride ?? this.model;
+    const wireModel = sc?.wireModel;
     // 整张别名表与 model 的选择无关（它是全量映射，不是"本次那条"），
     // 故 modelOverride 分支同样直接用，不需要重新解析。子进程内换模型时靠它翻译。
     const wireModelAliases = sc?.wireModelAliases;
@@ -1928,16 +1932,20 @@ export class SubAgent {
         `[${task.type}] 可用工具: ${toolNames.join(", ") || "无"}, 超时: ${timeout / 1000}秒, 最大轮次: ${maxTurns}`,
       );
 
-      // 动态获取 provider/model（registry 模式下按子代理类型选择）
+      // 先定模型、再按模型定 provider（registry 模式）。
       // M4(Dynamic Workflows): task.model 显式指定时优先于按类型查找的默认模型。
-      const activeProvider = this.registry
-        ? this.registry.getProviderForSubAgent(task.type)
-        : this.provider;
+      //
+      // ⛔ provider 不能按类型查：旧实现 getProviderForSubAgent(task.type) 拿的是「该类型
+      // 默认模型」的连接，配上 task.model 就错配——2026-10-11 事故里 deepseek-v4-pro / gpt-5.4
+      // （openai 族）被用 Anthropic 协议发到 explore 默认模型的端点，零轮失败。
       const activeModel = task.model
         ? task.model
         : this.registry
           ? this.registry.getModelForSubAgent(task.type)
           : this.model;
+      const activeProvider = this.registry
+        ? this.registry.getProviderForModelName(activeModel)
+        : this.provider;
 
       // M5: 使用共享 runAgentLoop() 运行独立 Agent Loop
       let lastTextOutput = "";
@@ -1966,7 +1974,8 @@ export class SubAgent {
       // 现在与主循环共用 resolveEffortCapability + applyToSendParams，上限经 maxThinkingTokens
       // 交给各族 applier（manual 精确钳、adaptive 降档）。
       const { buildSubAgentEffortParams } = await import("./sub-agent-effort.ts");
-      const spawnCfg = this.registry?.getSpawnConfigForSubAgent?.(task.type);
+      // baseURL 同样按最终模型取（按类型取会是另一个模型的端点）。
+      const spawnCfg = this.registry?.getSpawnConfigForModel?.(activeModel);
       const sendParamsExtra: Partial<SendParams> = buildSubAgentEffortParams({
         model: activeModel,
         providerName: activeProvider.name(),
@@ -2401,14 +2410,14 @@ export class SubAgent {
         `[custom] 可用工具: ${task.allowedTools.join(", ") || "无"}, 超时: ${timeout / 1000}秒, 最大轮次: ${maxTurns}`,
       );
 
-      // 动态获取 provider/model（registry 模式下使用 modelOverride 或主模型）
-      const activeProvider = this.registry
-        ? this.modelOverride
-          ? this.registry.getProviderForSubAgent("task") // 自定义 agent 按 task 类型查找
-          : this.registry.getProvider()
-        : this.provider;
+      // 先定模型（modelOverride 或主模型）、再按该模型定 provider。
+      // 旧实现 modelOverride 时取 getProviderForSubAgent("task")——那是 "task" 类型默认模型的
+      // 连接，与 modelOverride 不是同一个模型，跨 provider 必然错配（2026-10-11 事故同型）。
       const activeModel =
         this.modelOverride || (this.registry ? this.registry.getCurrentModel() : this.model);
+      const activeProvider = this.registry
+        ? this.registry.getProviderForModelName(activeModel)
+        : this.provider;
 
       // M5: 使用共享 runAgentLoop() 运行独立 Agent Loop
       let lastTextOutput = "";
@@ -2419,7 +2428,7 @@ export class SubAgent {
       // skill frontmatter 声明 effort: high 时经此生效（此前 executeCustomInner 从不消费 effort）。
       const { buildSubAgentEffortParams: buildCustomEffortParams } =
         await import("./sub-agent-effort.ts");
-      const customSpawnCfg = this.registry?.getSpawnConfig?.();
+      const customSpawnCfg = this.registry?.getSpawnConfigForModel?.(activeModel);
       const customSendParamsExtra: Partial<SendParams> = buildCustomEffortParams({
         model: activeModel,
         providerName: activeProvider.name(),

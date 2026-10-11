@@ -110,6 +110,8 @@ function mockProviderRegistry(provider: Provider, model: string = "test-model"):
     getModelForSubAgent: () => model,
     getLanguage: () => "zh" as const,
     getProviderForSubAgent: () => provider,
+    // 子代理现按「最终模型」解析 provider（不再按类型），mock 须提供该入口
+    getProviderForModelName: () => provider,
     clearCache: () => {},
   } as unknown as ProviderRegistry;
 }

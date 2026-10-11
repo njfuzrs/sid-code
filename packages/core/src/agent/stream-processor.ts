@@ -7,7 +7,7 @@
  * - 转换 error 事件为 stopReason="error"（不抛异常）
  */
 
-import type { ContentBlock, StreamEvent, Usage } from "../llm/types.ts";
+import type { ContentBlock, StreamEvent, ToolUseBlock, Usage } from "../llm/types.ts";
 import { accumulateUsage } from "../llm/types.ts";
 import { getLogger } from "../debug/index.ts";
 import { normalizeToolInput } from "../llm/normalize-tool-input.ts";
@@ -105,6 +105,10 @@ export async function processStream(
   let stopReason: string | null = null;
   const usage: Usage = { inputTokens: 0, outputTokens: 0 };
   const jsonAccumulators = new Map<number, string>();
+  /** SSE index → content 数组位置（见 content_block_start 处的注释：数组必须密集） */
+  const indexToPosition = new Map<number, number>();
+  /** 思考块 SSE index → provider 发来的原块（stop 时取 signature） */
+  const thinkingStarts = new Map<number, unknown>();
 
   // ── T7：心跳 + 整体超时改由 StreamLifecycle 统一管理（替代原 setInterval 手写心跳）──
   // idle（心跳）= 60s 无事件 → abort；overall = 180s 请求级绝对上限。子代理阈值比主循环短。
@@ -193,29 +197,65 @@ export async function processStream(
         //
         // usage 刻意不回退：作废尝试的 token 是真实计费的（见 stream-restart.ts）。
         case "stream_restart": {
-          const outcome = resetOnStreamRestart({ content, jsonAccumulators });
+          const outcome = resetOnStreamRestart({
+            content,
+            jsonAccumulators,
+            indexToPosition,
+            thinkingIndexes: new Set(thinkingStarts.keys()),
+          });
+          thinkingStarts.clear();
           recordStreamRestart(event, outcome, "subagent");
           break;
         }
 
-        case "content_block_start":
-          if (event.content_block.type === "text") {
-            content[event.index] = { type: "text", text: "" };
-          } else if (event.content_block.type === "tool_use") {
-            content[event.index] = {
+        // ⛔ 不要改回 `content[event.index] = ...` 按 SSE index 直接落位。
+        //
+        // 2026-10-11 事故：旧实现只认 text / tool_use，thinking 块被**跳过不落位**，
+        // 于是「thinking(0) + tool_use(1)」的响应产出 `[<hole>, tool_use]` 稀疏数组，
+        // 下游 agentic-loop 一遍历就崩 `undefined is not an object (evaluating 'block.type')`。
+        // always-on 思考模型（Sonnet/Opus 5.x）每个工具轮都这样，子代理第 2 轮必崩。
+        // 现与主循环 query/stream-processor 同构：index → position 映射 + push，数组恒密集；
+        // 未知块类型、跳跃 index 都不可能再造出空洞。
+        case "content_block_start": {
+          const cb = event.content_block as ContentBlock & { type: string };
+          const isThinking =
+            cb.type === "thinking" ||
+            (cb.type === "text" && (event._raw_block as { type?: string })?.type === "thinking");
+          let block: ContentBlock | undefined;
+          if (isThinking) {
+            // 思考增量以 text_delta 送达（anthropic.ts / openai.ts 均如此），先累积成 text，
+            // stop 时转型成 thinking 块——与主循环口径一致。
+            block = { type: "text", text: "" };
+            // 记住 provider 给的原块：anthropic.ts 在 stop 前会把累积的 signature 写回它。
+            thinkingStarts.set(event.index, cb);
+          } else if (cb.type === "text") {
+            block = { type: "text", text: "" };
+          } else if (cb.type === "tool_use") {
+            block = {
               type: "tool_use",
-              id: event.content_block.id,
-              name: event.content_block.name,
+              id: (cb as ToolUseBlock).id,
+              name: (cb as ToolUseBlock).name,
               input: {},
             };
             jsonAccumulators.set(event.index, "");
+          } else if (cb.type === "redacted_thinking") {
+            // 多轮回传必须原样保留，丢了会静默破坏推理链（anthropic-api.md:356-357）
+            block = { ...(cb as ContentBlock) };
+          }
+          // 其余未知类型（server_tool_use 等）不落位——只要不占位，就不会出空洞。
+          if (block) {
+            indexToPosition.set(event.index, content.length);
+            content.push(block);
           }
           break;
+        }
 
         case "content_block_delta": {
+          const pos = indexToPosition.get(event.index);
+          if (pos === undefined) break; // 未落位的块（未知类型）的增量，忽略
           const delta = event.delta;
           if (delta.type === "text_delta") {
-            const block = content[event.index];
+            const block = content[pos];
             if (block?.type === "text") {
               block.text += delta.text;
             }
@@ -227,9 +267,23 @@ export async function processStream(
         }
 
         case "content_block_stop": {
+          const pos = indexToPosition.get(event.index);
+          const startBlock = thinkingStarts.get(event.index);
+          if (pos !== undefined && startBlock) {
+            const block = content[pos];
+            if (block?.type === "text") {
+              const signature = (startBlock as { signature?: string }).signature;
+              content[pos] = {
+                type: "thinking",
+                thinking: block.text,
+                ...(signature ? { signature } : {}),
+              };
+            }
+            thinkingStarts.delete(event.index);
+          }
           const jsonStr = jsonAccumulators.get(event.index);
-          if (jsonStr !== undefined) {
-            const block = content[event.index];
+          if (jsonStr !== undefined && pos !== undefined) {
+            const block = content[pos];
             // D8：provider 在 stop 时修订 tool_use 身份（OpenAI 族 id/name 可能首片缺席或被切碎），
             // 必须先于 input 解析与 onToolUseComplete 覆盖 —— 否则下游拿到的是 start 时的空串/半截。
             if (block?.type === "tool_use" && event.tool_use) {
