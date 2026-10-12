@@ -340,6 +340,8 @@ function App({
 	// sid-code（B9 / T6.1b，契约 X5）：外部编辑器占着终端。期间不读 stdin（字节留在流里，交还后再交出）
 	const isHandoffRef = useRef(false);
 	const handoffPausedRawRef = useRef(false);
+	// 让渡时是否 pause() 过 stdin 流（见 pauseForHandoff）；重复让渡只 pause / resume 一次
+	const handoffPausedStreamRef = useRef(false);
 	const writeStdout = useCallback(
 		(data: string): void => {
 			try {
@@ -649,6 +651,16 @@ function App({
 	// 计数为 0（没人要 raw mode）时什么都不做。重复让渡只关一次
 	const pauseForHandoff = useCallback((): void => {
 		isHandoffRef.current = true;
+		// 只靠 isHandoffRef 让 handleReadable 不读还不够：CLI 侧（KeypressContext / MouseContext /
+		// TerminalContext）直接挂了 `stdin.on('data')`，流处于 flowing 状态，父进程会继续从 tty fd
+		// 读字节，和 spawn 出来的编辑器抢输入——实测 vi 一个键都收不到（Ctrl+G 后终端「卡死」）。
+		// pause() 停掉父进程对 fd 的读取，字节留在内核 tty 缓冲里归编辑器；不摘监听、不清解析器，
+		// 交还时 resume() 即可，X5「期间输入不丢」的契约不变。
+		if (isRawModeSupported && !handoffPausedStreamRef.current) {
+			handoffPausedStreamRef.current = true;
+			stdin.pause();
+		}
+
 		if (
 			!isRawModeSupported ||
 			handoffPausedRawRef.current ||
@@ -667,6 +679,13 @@ function App({
 		handoffPausedRawRef.current = false;
 		if (resumed && !isAppUnmountedRef.current) {
 			stdin.setRawMode(true);
+		}
+
+		if (handoffPausedStreamRef.current) {
+			handoffPausedStreamRef.current = false;
+			if (!isAppUnmountedRef.current) {
+				stdin.resume();
+			}
 		}
 
 		// 让渡期间缓冲的输入：异步交出（旧底座在 exitAlternateScreen 返回之后才送到 useInput）
