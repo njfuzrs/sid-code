@@ -89,7 +89,7 @@ describe("旧渲染底座已删除且不回来（T9.1）", () => {
     ).toEqual([]);
   });
 
-  test("工作区里也没有 packages/tui-renderer 目录（vendor:fetch 会清掉老克隆的残留）", () => {
+  test("工作区里也没有 packages/tui-renderer 目录（老克隆的残留需手动 rm -rf）", () => {
     expect(existsSync(join(REPO_ROOT, "packages", "tui-renderer"))).toBe(false);
   });
 

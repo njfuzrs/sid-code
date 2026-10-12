@@ -135,7 +135,6 @@ describe("真实内置命令表的声明", () => {
     "terminal-setup",
     "diff",
     "bug",
-    "claude-api",
     "model",
     "statusline",
     "help",

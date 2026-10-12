@@ -47,7 +47,8 @@ describe("isExcludedFromSearch", () => {
 
 const chunks = join(import.meta.dir, "../../website/.vitepress/dist/assets/chunks");
 const indexFile = existsSync(chunks)
-  ? readdirSync(chunks).find((f) => f.startsWith("@localSearchIndexroot."))
+  ? // 只认 .js：website-deploy.sh 会在同目录留下 .gz / .br 预压缩副本，读到它们断言必红
+    readdirSync(chunks).find((f) => f.startsWith("@localSearchIndexroot.") && f.endsWith(".js"))
   : undefined;
 
 describe.skipIf(!indexFile)("构建产物里的搜索索引（需先 vitepress build）", () => {
