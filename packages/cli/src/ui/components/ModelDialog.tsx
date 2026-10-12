@@ -25,6 +25,7 @@ import { Box } from "../render-port/components.ts";
 import { Text } from "../render-port/components.ts";
 import { useStdout } from "../render-port/hooks.ts";
 import { theme } from "../semantic-colors.ts";
+import { fitCell } from "./shared/text-layout.ts";
 import {
   TODO_COMPLETED,
   ARROW_PROMPT,
@@ -458,7 +459,9 @@ const ModelRowView: React.FC<{
       {cols.endpointWidth > 0 && row.note && (
         <Text color={theme.text.secondary}>
           {"  "}
-          {padTo(`— ${row.note}`, cols.endpointWidth)}
+          {/* note 与 endpoint 共用一列，但列宽只按 endpoint 算（computeMetaColumns 不知道 note）。
+              只 pad 不截时 note 更长就会把右侧上下文/价格列整体推歪，所以这里截到列宽 */}
+          {fitCell(`— ${row.note}`, cols.endpointWidth)}
         </Text>
       )}
       {/* 上下文与价格列：dim 到次要色，它们是辅助决策的参考量而不是行的主体（L2.1 克制点睛）。

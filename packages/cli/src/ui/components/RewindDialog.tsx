@@ -15,6 +15,7 @@ import React, { useState } from "react";
 import { Box } from "../render-port/components.ts";
 import { Text } from "../render-port/components.ts";
 import { theme } from "../semantic-colors.ts";
+import { oneLine } from "./shared/text-layout.ts";
 import { BaseSelectionList, type SelectionListItem } from "./shared/BaseSelectionList.tsx";
 import { ARROW_PROMPT } from "../constants/figures.ts";
 import { useKeypress, KeypressPriority, type Key } from "../contexts/KeypressContext.tsx";
@@ -285,13 +286,22 @@ export const RewindDialog: React.FC<RewindDialogProps> = ({
           selectedIndicator={ARROW_PROMPT}
           renderItem={(item, { isSelected }) => {
             const p = item.point;
+            // 尾部元信息（时间 · 快照）定宽不收缩，输入预览压单行后吃剩余宽度并截断。
+            // 旧实现三段兄弟 Text 无定宽，多行输入会把时间挤到下一行、各行错位。
+            const meta = ` ${formatRelative(p.timestamp, now)}${p.hasSnapshot ? " · 有快照" : ""}`;
             return (
-              <Box>
-                <Text color={isSelected ? theme.ui.focus : theme.text.primary} wrap="truncate-end">
-                  {p.inputPreview || "(空输入)"}
-                </Text>
-                <Text color={theme.text.secondary}> {formatRelative(p.timestamp, now)}</Text>
-                {p.hasSnapshot && <Text color={theme.text.secondary}> · 有快照</Text>}
+              <Box flexDirection="row">
+                <Box flexGrow={1} flexShrink={1}>
+                  <Text
+                    color={isSelected ? theme.ui.focus : theme.text.primary}
+                    wrap="truncate-end"
+                  >
+                    {oneLine(p.inputPreview) || "(空输入)"}
+                  </Text>
+                </Box>
+                <Box flexShrink={0}>
+                  <Text color={theme.text.secondary}>{meta}</Text>
+                </Box>
               </Box>
             );
           }}

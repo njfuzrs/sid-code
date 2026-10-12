@@ -15,6 +15,7 @@ import React, { useState } from "react";
 import { Box } from "../render-port/components.ts";
 import { Text } from "../render-port/components.ts";
 import { theme } from "../semantic-colors.ts";
+import { clipLine } from "./shared/text-layout.ts";
 import { BaseSelectionList, type SelectionListItem } from "./shared/BaseSelectionList.tsx";
 import { ARROW_PROMPT } from "../constants/figures.ts";
 import { useKeypress, KeypressPriority, type Key } from "../contexts/KeypressContext.tsx";
@@ -89,7 +90,8 @@ export const McpApprovalDialog: React.FC<Props> = ({
       </Box>
       {target ? (
         <Box>
-          <Text color={theme.text.secondary}>命令: {target.slice(0, 160)}</Text>
+          {/* 原 .slice(0,160) 按码元截：CJK 超宽、命令里的换行不压 */}
+          <Text color={theme.text.secondary}>命令: {clipLine(target, 160)}</Text>
         </Box>
       ) : null}
       <Box marginTop={1} flexDirection="column">

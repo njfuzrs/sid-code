@@ -20,6 +20,7 @@ import { Box } from "../render-port/components.ts";
 import { Text } from "../render-port/components.ts";
 import { theme } from "../semantic-colors.ts";
 import { stringWidth } from "../render-port/text.ts";
+import { truncateToWidth, oneLine } from "./shared/text-layout.ts";
 
 export interface Suggestion {
   /** 显示文本 */
@@ -50,25 +51,8 @@ const LABEL_COL_MAX_RATIO = 0.45;
 /** 列间距 */
 const GAP = 2;
 
-/** 按显示列宽截断（CJK 安全），超出时预留 1 列给省略号 */
-export function truncateToWidth(text: string, maxWidth: number): string {
-  if (maxWidth <= 0) return "";
-  if (stringWidth(text) <= maxWidth) return text;
-  let w = 0;
-  let out = "";
-  for (const ch of text) {
-    const cw = stringWidth(ch);
-    if (w + cw > maxWidth - 1) break;
-    w += cw;
-    out += ch;
-  }
-  return out + "…";
-}
-
-/** 描述只取第一行并压掉多余空白：skill description 常带换行，混进来会破坏「一项一行」 */
-function oneLine(text: string): string {
-  return text.replace(/\s+/g, " ").trim();
-}
+// 截断 / 压单行已抽到 shared/text-layout.ts，多个面板共用；这里保留再导出兼容既有引用
+export { truncateToWidth };
 
 export function SuggestionsDisplay({ suggestions, activeIndex, width }: SuggestionsDisplayProps) {
   if (suggestions.length === 0) return null;

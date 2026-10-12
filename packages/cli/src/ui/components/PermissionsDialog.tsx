@@ -78,9 +78,14 @@ export const PermissionsDialog: React.FC<PermissionsDialogProps> = ({ onClose, c
           </Box>
         ) : (
           allowedTools.slice(0, 10).map((rule, i) => (
-            <Box key={i} paddingLeft={2}>
-              <Text color={theme.status.success}>{SUCCESS_MARK} </Text>
-              <Text color={theme.text.primary}>{rule}</Text>
+            // 图标列定宽不收缩，规则在本列内换行：长规则不再挤压图标、换行起点不漂到行首
+            <Box key={i} paddingLeft={2} flexDirection="row">
+              <Box width={2} flexShrink={0}>
+                <Text color={theme.status.success}>{SUCCESS_MARK}</Text>
+              </Box>
+              <Box flexGrow={1} flexShrink={1}>
+                <Text color={theme.text.primary}>{rule}</Text>
+              </Box>
             </Box>
           ))
         )}
@@ -102,9 +107,14 @@ export const PermissionsDialog: React.FC<PermissionsDialogProps> = ({ onClose, c
           </Box>
         ) : (
           disallowedTools.slice(0, 10).map((rule, i) => (
-            <Box key={i} paddingLeft={2}>
-              <Text color={theme.status.error}>{ERROR_MARK} </Text>
-              <Text color={theme.text.primary}>{rule}</Text>
+            // 图标列定宽不收缩，规则在本列内换行：长规则不再挤压图标、换行起点不漂到行首
+            <Box key={i} paddingLeft={2} flexDirection="row">
+              <Box width={2} flexShrink={0}>
+                <Text color={theme.status.error}>{ERROR_MARK}</Text>
+              </Box>
+              <Box flexGrow={1} flexShrink={1}>
+                <Text color={theme.text.primary}>{rule}</Text>
+              </Box>
             </Box>
           ))
         )}
