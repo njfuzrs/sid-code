@@ -799,8 +799,11 @@ export class ModelFallback {
               },
               perCall.agentId,
             );
+            // 共享冷却等待同样是主动等待，与重试退避同一信号（不算请求卡死）。
+            yield { type: "retry_backoff", phase: "start", delayMs: waitMs };
             await this.sleep(waitMs, signal);
             if (signal?.aborted) throw new RequestAbortedError("Request aborted");
+            yield { type: "retry_backoff", phase: "end", delayMs: waitMs };
           } else {
             // 预算不够等 → 不等。记一笔，否则"为什么这一路没遵守冷却"无从解释。
             log.info(
@@ -1526,6 +1529,17 @@ export class ModelFallback {
 
           // 认证首次重试不退避：refreshAuth 且 0 延迟时不进 sleepWithProgress（不打进度噪音）。
           if (!(action.refreshAuth && effectiveDelayMs === 0)) {
+            // 退避段前后显式打点：外层看门狗据此把这段主动等待剔除出「单次请求」计时，
+            // 次数上限（maxTimeoutRetries）与单次卡死判定各管各的（见 types.ts retry_backoff）。
+            // 本层的流超时同理：退避期间先停表，下面 resetStreamTimeout 为新 attempt 重新起表 ——
+            // 否则 120s 退避会吃掉新 attempt 的无进展窗口。
+            clearStreamTimeout();
+            yield {
+              type: "retry_backoff",
+              phase: "start",
+              delayMs: effectiveDelayMs,
+              attempt: attempt + 1,
+            };
             yield* this.sleepWithProgress(
               effectiveDelayMs,
               attempt + 1,
@@ -1533,6 +1547,12 @@ export class ModelFallback {
               action.persistentWait ? "persistent_retry" : "retry",
               signal,
             );
+            yield {
+              type: "retry_backoff",
+              phase: "end",
+              delayMs: effectiveDelayMs,
+              attempt: attempt + 1,
+            };
           }
 
           // 重置超时计时器

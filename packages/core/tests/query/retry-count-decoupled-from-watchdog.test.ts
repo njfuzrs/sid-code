@@ -1,39 +1,29 @@
 /**
- * 两层重试预算相乘 —— 缺陷 2 的门禁（Harbor A11 第五棒实测，2026-08-29）
+ * 重试次数与看门狗解耦（2026-10-12）—— 取代 2026-08-29 的「两层预算共享」门禁
  *
- * ## 拦的是什么
+ * ## 用户看到的症状
  *
- * 内层 `fallback.ts` 有 11 次重试预算；外层 `loop.ts` 的 watchdog 在
- * 「无首字节 `headerTimeoutMs + grace`」或「无内容进展 `watchdogNoProgressMs`」时
- * 强杀整个调用。上游饱和时实测形态（`regex-log` 的第一次调用）：
+ * 上游 429 饱和时报「已尝试 6 次 … 证据：transient/deadline … 时间预算不足」，
+ * 重试 5 次就结束，而 `maxTimeoutRetries` 配的是 10。
  *
- * | watchdog 周期 | 内层 attempt 最高用到 | 内层退避累计 | 被杀于 |
- * | --- | --- | --- | --- |
- * | 1 | **5 / 11** | 154s | 315,788ms |
- * | 2–6 | **4 / 11** | 75–78s | ~315,500ms |
+ * ## 根因
  *
- * 内层永远用不完那 11 次预算，外层 `TimeoutRetry` 又从 attempt 1 重新数 ——
- * **两层预算不是共享，是相乘**。7 个周期 ≈ 37 分钟、零内容产出（`chunk_count: 0`）。
+ * 主循环看门狗判「单次请求卡死」，却把 fallback 漏斗里的**重试退避**也算成「无进展」。
+ * 2026-08-29 为避免「内层退避中被外层杀掉、外层再从 1 数起」的两层相乘，
+ * 把看门狗阈值（315s）当 `deadlineAt` 交给内层 —— 于是次数上限被时间上限架空：
+ * 5s→120s 的指数退避在 315s 内最多 5–6 次。
  *
- * ## 这个缺陷的形态：修复代码早就在，只是从没被接上
+ * ## 修法：各管各的
  *
- * `fallback.ts` 的 S3 时间预算钳制（`perCall.deadlineAt`）**早就实现且有测试**
- * （`tests/llm/resilience-b6-gates.test.ts`），但主循环调的是不带
- * `perCallOptions` 的三参版本 —— 于是那套钳制**在生产路径上一次都没跑过**。
- * 本仓「伪配置 / 死功能」的同型：代码在、测试绿、真实路径不经过。
+ * - 漏斗在退避前后发 `retry_backoff` start/end；
+ * - 看门狗（loop.ts）与心跳/整体超时（stream-processor.ts）退避期不判、退避后从零起算；
+ * - 主循环不再给漏斗传 `deadlineAt`，次数只由 `maxRetries` 决定。
  *
- * ⛔ 所以本门禁**不测 S3 钳制本身**（那边已经测了），只测**接线**：
- * 主循环发请求时到底有没有把截止时刻交给 fallback。这正是那个缺陷所在的那一层。
- *
- * ## 不是「把 315s 改大」
- *
- * 记忆里两条相关教训：「多层超时同为 300s → 单点修复只换杀手」「抬阈值治不了」。
- * 本修复**一个阈值都没动**，动的是两层之间要不要交换「还剩多少时间」这个事实。
- * 第 3 个 test 把这条钉住：deadline 必须取两条防线里**先开枪的那个**（min），
- * 取 max 会让内层以为自己还有时间、继续睡退避，然后照样被先到的那层杀掉 = 没修。
+ * 每条正向断言都配一条负向对照（去掉 `retry_backoff` 信号同样场景必被杀），
+ * 防止「看门狗本来就没开枪」那种空集全绿。
  */
 
-import { describe, test, expect } from "bun:test";
+import { describe, test, expect, beforeEach, afterEach } from "bun:test";
 import { queryLoop } from "@sid-code/core/query/loop.ts";
 import type { QueryLoopConfig } from "@sid-code/core/query/loop.ts";
 import type { QueryDeps } from "@sid-code/core/query/types.ts";
@@ -41,13 +31,12 @@ import { Manager as ContextManager } from "@sid-code/core/context/manager.ts";
 import { Registry as ToolRegistry } from "@sid-code/core/tool/registry.ts";
 import { ModelFallback } from "@sid-code/core/llm/fallback.ts";
 import { SessionState } from "@sid-code/core/session/state.ts";
-import { resolveLoopTimeouts } from "@sid-code/core/config/network-profile.ts";
+import { processStream } from "@sid-code/core/query/stream-processor.ts";
+import { trackRetryBackoff } from "@sid-code/core/query/retry-backoff-window.ts";
 import type { Config } from "@sid-code/core/config/config.ts";
 import type { StreamEvent, AccumulatedResponse } from "@sid-code/core/llm/types.ts";
 
-async function* emptyStream(): AsyncIterable<StreamEvent> {
-  /* processStream 被 mock */
-}
+const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 
 function endTurnResp(): AccumulatedResponse {
   return {
@@ -58,47 +47,75 @@ function endTurnResp(): AccumulatedResponse {
   } as AccumulatedResponse;
 }
 
-/** 捕获主循环每次调 sendWithRetry 时传进来的第三个参数 */
-function setup(network?: Record<string, number>) {
-  const seen: { opts: { deadlineAt?: number } | undefined }[] = [];
+/** 模拟漏斗：先退避 backoffMs（可选择是否发信号），再给出正常响应 */
+function backoffThenOk(backoffMs: number, signalled: boolean) {
+  return async function* (): AsyncGenerator<StreamEvent> {
+    if (signalled) yield { type: "retry_backoff", phase: "start", delayMs: backoffMs, attempt: 1 };
+    await sleep(backoffMs);
+    if (signalled) yield { type: "retry_backoff", phase: "end", delayMs: backoffMs, attempt: 1 };
+    yield { type: "message_start", message: { usage: { inputTokens: 1, outputTokens: 0 } } } as any;
+    yield {
+      type: "content_block_start",
+      index: 0,
+      content_block: { type: "text", text: "" },
+    } as any;
+    yield {
+      type: "content_block_delta",
+      index: 0,
+      delta: { type: "text_delta", text: "ok" },
+    } as any;
+    yield { type: "content_block_stop", index: 0 } as any;
+    yield {
+      type: "message_delta",
+      delta: { stop_reason: "end_turn" },
+      usage: { outputTokens: 1 },
+    } as any;
+    yield { type: "message_stop" } as any;
+  };
+}
 
+function setup(sendWithRetry: QueryDeps["sendWithRetry"]) {
+  const signals: AbortSignal[] = [];
+  const optsSeen: unknown[] = [];
   const ctxMgr = new ContextManager({ maxTokens: 200000 });
   ctxMgr.setSystemPrompt("test");
   ctxMgr.addMessage({ role: "user", content: [{ type: "text", text: "hi" }] });
 
   const deps: QueryDeps = {
-    sendWithRetry: (
-      _params: unknown,
-      _signal: AbortSignal | undefined,
-      opts: { deadlineAt?: number } | undefined,
-    ) => {
-      seen.push({ opts });
-      return emptyStream();
+    sendWithRetry: (params: any, signal?: AbortSignal, opts?: any) => {
+      if (signal) signals.push(signal);
+      optsSeen.push(opts);
+      return sendWithRetry(params, signal, opts);
     },
-    processStream: async () => endTurnResp(),
+    // 真正消费流（包裹后的流），让退避信号经过 trackRetryBackoff
+    processStream: async (stream: AsyncIterable<StreamEvent>) => {
+      for await (const _ of stream) {
+        /* drain */
+      }
+      return endTurnResp();
+    },
     executeTools: async () => ({ results: [] }),
     autoCompact: async () => {},
     handleContextOverflow: () => null,
     getAbortSignal: () => undefined,
     uuid: () => "u1",
+    maxTurnDurationMs: 60_000,
   } as unknown as QueryDeps;
 
   const loopConfig: QueryLoopConfig = {
     config: {
-      model: "claude-opus-4-8",
+      model: "m",
       provider: "anthropic",
       maxTurns: 1,
       maxTokens: 8000,
-      ...(network ? { network } : {}),
     } as unknown as Config,
     ctxMgr,
     toolRegistry: new ToolRegistry(),
-    sessionState: new SessionState("test-shared-retry-budget"),
+    sessionState: new SessionState("test-retry-decoupled"),
     fallback: new ModelFallback(),
     deps,
   };
-
-  return { loopConfig, seen };
+  return { loopConfig, signals, optsSeen };
 }
 
 async function drain(loopConfig: QueryLoopConfig) {
@@ -107,86 +124,178 @@ async function drain(loopConfig: QueryLoopConfig) {
   return events;
 }
 
-describe("缺陷 2：主循环必须把 wall-clock 预算交给内层 fallback", () => {
-  test("每次发请求都带 deadlineAt（不带 = 两层预算相乘，那正是缺陷形态）", async () => {
-    const { loopConfig, seen } = setup();
-    const before = Date.now();
+const watchdogKilled = (signals: AbortSignal[]) =>
+  signals.some((s) => s.aborted && String(s.reason) === "watchdog-timeout");
+
+describe("主循环：不再给漏斗设时间上限", () => {
+  test("sendWithRetry 不带 deadlineAt（带了 = 次数又被时间截断）", async () => {
+    const { loopConfig, optsSeen } = setup(() => backoffThenOk(0, false)());
     await drain(loopConfig);
-    const after = Date.now();
+    expect(optsSeen.length).toBeGreaterThanOrEqual(1);
+    for (const o of optsSeen) expect((o as any)?.deadlineAt).toBeUndefined();
+  });
+});
 
-    expect(seen.length).toBeGreaterThanOrEqual(1);
-    for (const { opts } of seen) {
-      // ⛔ 这一条就是缺陷本身：修复前这里是 undefined，于是 fallback 的 S3
-      // 钳制结构性从不生效（`perCall.deadlineAt !== undefined` 恒 false）。
-      expect(opts).toBeDefined();
-      expect(typeof opts!.deadlineAt).toBe("number");
-      // 必须是未来的绝对时刻（与 Date.now() 同轴），不是"剩余毫秒数"。
-      // 传成相对值会让 fallback 把 1970 年当截止时刻 → 每次都判"预算不足"立刻停手，
-      // 那是把「从不生效」换成「永远生效」，同样是坏的，且同样不报错。
-      expect(opts!.deadlineAt!).toBeGreaterThan(before);
-    }
+describe("看门狗：退避期不判，退避后从零起算", () => {
+  beforeEach(() => {
+    // 看门狗阈值压到 ~60ms，退避 400ms —— 远超阈值
+    process.env.SID_CODE_WATCHDOG_CHECK_INTERVAL_MS = "10";
+    process.env.SID_CODE_WATCHDOG_NO_PROGRESS_MS = "60";
+    process.env.SID_CODE_RESPONSE_HEADER_TIMEOUT_MS = "40";
+    process.env.SID_CODE_WATCHDOG_HEADER_GRACE_MS = "20";
+    process.env.SID_CODE_MAX_TIMEOUT_RETRIES = "0";
+    process.env.SID_CODE_RETRY_BACKOFF_BASE_MS = "1";
+    process.env.SID_CODE_RETRY_BACKOFF_MAX_MS = "1";
+  });
+  afterEach(() => {
+    for (const k of [
+      "SID_CODE_WATCHDOG_CHECK_INTERVAL_MS",
+      "SID_CODE_WATCHDOG_NO_PROGRESS_MS",
+      "SID_CODE_RESPONSE_HEADER_TIMEOUT_MS",
+      "SID_CODE_WATCHDOG_HEADER_GRACE_MS",
+      "SID_CODE_MAX_TIMEOUT_RETRIES",
+      "SID_CODE_RETRY_BACKOFF_BASE_MS",
+      "SID_CODE_RETRY_BACKOFF_MAX_MS",
+    ])
+      delete process.env[k];
+  });
 
-    // 默认配置下 deadline = min(headerTimeout+grace, watchdogNoProgress) = 315s
-    const nt = resolveLoopTimeouts({});
-    const expectedSpan = Math.min(
-      nt.headerTimeoutMs + nt.watchdogHeaderGraceMs,
-      nt.watchdogNoProgressMs,
+  test("退避远超看门狗阈值 → 不被杀，正常拿到响应", async () => {
+    const { loopConfig, signals } = setup(() => backoffThenOk(400, true)());
+    const events = await drain(loopConfig);
+    expect(watchdogKilled(signals)).toBe(false);
+    expect(events.some((e) => e.kind === "assistant_message")).toBe(true);
+  }, 15_000);
+
+  test("负向对照：同样的静默但没有 retry_backoff 信号 → 看门狗照常开枪", async () => {
+    const { loopConfig, signals } = setup(() => backoffThenOk(400, false)());
+    await drain(loopConfig);
+    // 变异自证：若看门狗本来就不会在 400ms 内开枪，上一条的「没被杀」毫无意义
+    expect(watchdogKilled(signals)).toBe(true);
+  }, 15_000);
+
+  test("退避结束后请求真卡死 → 看门狗仍然开枪（只豁免退避，不豁免卡死）", async () => {
+    const { loopConfig, signals } = setup(() =>
+      (async function* (): AsyncGenerator<StreamEvent> {
+        yield { type: "retry_backoff", phase: "start", delayMs: 200 };
+        await sleep(200);
+        yield { type: "retry_backoff", phase: "end", delayMs: 200 };
+        await new Promise<never>(() => {
+          /* 新一次请求永不返回 */
+        });
+      })(),
     );
-    // ⚠️ 方向：`deadlineAt` 是在 `before` **之后**的某一刻算出来的
-    // （`Date.now() + span`），所以 `deadlineAt - before >= expectedSpan`，
-    // 差额就是"从取 before 到真正发请求"这段。断成 `<=` 会因为几毫秒的执行耗时
-    // 随机翻红 —— 那是测试自己的口径错，不是被测代码的问题。
-    const span = seen[0].opts!.deadlineAt! - before;
-    expect(span).toBeGreaterThanOrEqual(expectedSpan);
-    // 上界用真实经过的时间兜：必须仍是同一量级（不能炸成 90min 的单轮硬顶）
-    expect(span).toBeLessThanOrEqual(expectedSpan + (after - before) + 1_000);
+    await drain(loopConfig);
+    expect(watchdogKilled(signals)).toBe(true);
+  }, 15_000);
+});
+
+describe("stream-processor：心跳 / 整体超时同样剔除退避", () => {
+  const opts = (overallTimeoutMs = 60_000) => ({
+    heartbeatTimeoutMs: 60,
+    firstByteTimeoutMs: 60,
+    overallTimeoutMs,
+    heartbeatCheckIntervalMs: 10,
   });
 
-  test("deadline 随 settings 的超时配置一起走（不是硬编码常量）", async () => {
-    // 用户把首字节超时调小 → deadline 必须跟着变小。硬编码一个 315s 会让
-    // 「调了配置但预算没跟着动」，形态是配置看起来生效了、实际只生效一半。
-    const { loopConfig, seen } = setup({
-      headerTimeoutMs: 20_000,
-      watchdogHeaderGraceMs: 5_000,
-      watchdogNoProgressMs: 600_000,
+  test("退避 300ms 远超首字节/心跳 60ms → 不超时", async () => {
+    const resp = await processStream(backoffThenOk(300, true)(), undefined, undefined, opts());
+    expect(resp.content.some((b: any) => b.type === "text" && b.text === "ok")).toBe(true);
+  }, 10_000);
+
+  test("负向对照：无信号的 300ms 静默 → 首字节超时", async () => {
+    let thrown: unknown = null;
+    try {
+      await processStream(backoffThenOk(300, false)(), undefined, undefined, opts());
+    } catch (e) {
+      thrown = e;
+    }
+    expect(String(thrown)).toContain("timeout");
+  }, 10_000);
+
+  test("整体超时扣除退避时长（退避 300ms > 整体 200ms 仍完成）", async () => {
+    const resp = await processStream(backoffThenOk(300, true)(), undefined, undefined, opts(200));
+    expect(resp.stopReason).toBe("end_turn");
+  }, 10_000);
+});
+
+describe("漏斗：每次退避成对发信号，次数只由 maxRetries 决定", () => {
+  function errStream(): AsyncGenerator<StreamEvent> {
+    return (async function* () {
+      yield {
+        type: "error",
+        error: {
+          message: "当前分组上游负载已饱和",
+          type: "rate_limit_error",
+          statusCode: 429,
+          streamLevel: true,
+        },
+      } as unknown as StreamEvent;
+    })();
+  }
+
+  test("429 持续 → 跑满 1+10 次，10 对 retry_backoff，无 deadline 放弃", async () => {
+    let calls = 0;
+    const provider: any = {
+      name: () => "anthropic",
+      sendMessageStream: () => {
+        calls++;
+        return errStream();
+      },
+    };
+    const telemetry: any[] = [];
+    const fb = new ModelFallback({
+      retryBackoffBaseMs: 1,
+      retryBackoffMaxMs: 2,
+      maxRetries: 10,
+      respectSharedCooldown: false,
+      allowNonStreamingFallback: false,
+      onTelemetry: (e) => telemetry.push(e),
     });
-    const before = Date.now();
-    await drain(loopConfig);
+    const out: StreamEvent[] = [];
+    try {
+      for await (const e of fb.executeWithFallback(
+        provider,
+        { model: "m1", messages: [], maxTokens: 10 } as any,
+        undefined,
+        {
+          querySource: "main_thread",
+          switchMode: "off",
+        },
+      ))
+        out.push(e);
+    } catch {
+      /* 耗尽后抛错或发 error 事件均可 */
+    }
+    expect(calls).toBe(11);
+    const starts = out.filter(
+      (e) => e.type === "retry_backoff" && (e as any).phase === "start",
+    ).length;
+    const ends = out.filter((e) => e.type === "retry_backoff" && (e as any).phase === "end").length;
+    expect(starts).toBe(10);
+    expect(ends).toBe(10);
+    expect(telemetry.filter((e) => e.type === "retry_budget_exhausted").length).toBe(0);
+  }, 15_000);
+});
 
-    const span = seen[0].opts!.deadlineAt! - before;
-    // min(20s + 5s, 600s) = 25s（下界即 25s，上界留执行耗时余量，见上条注释）
-    expect(span).toBeGreaterThanOrEqual(25_000);
-    expect(span).toBeLessThan(30_000);
-  });
-
-  test("取两条防线里先开枪的那个（min，不是 max）", async () => {
-    // watchdogNoProgress 比 header+grace 小的配置：deadline 必须跟小的那个。
-    // 取 max 的话内层会以为自己还有 315s，继续睡退避，然后被 30s 那层杀掉 = 没修。
-    const { loopConfig, seen } = setup({
-      headerTimeoutMs: 300_000,
-      watchdogHeaderGraceMs: 15_000,
-      watchdogNoProgressMs: 30_000,
-    });
-    const before = Date.now();
-    await drain(loopConfig);
-
-    const span = seen[0].opts!.deadlineAt! - before;
-    expect(span).toBeGreaterThanOrEqual(30_000);
-    // 变异自证：若实现取了 max，这里会是 ~315s，下面这条必然翻转
-    expect(span).toBeLessThan(60_000);
-  });
-
-  test("刻意不把单轮硬顶（90min）算进 deadline", async () => {
-    // maxTurnDurationMs 是「整轮」预算（跨多次 fetch、跨降级切换），
-    // 而 deadlineAt 是「这一次调用」的。混进来会让内层以为自己有 90 分钟 ——
-    // 那正是本缺陷的形态（内层预算永远用不完）。
-    const nt = resolveLoopTimeouts({});
-    const { loopConfig, seen } = setup();
-    const before = Date.now();
-    await drain(loopConfig);
-
-    const span = seen[0].opts!.deadlineAt! - before;
-    expect(nt.maxTurnDurationMs).toBeGreaterThan(span);
-    expect(span).toBeLessThan(nt.maxTurnDurationMs);
+describe("trackRetryBackoff 单元", () => {
+  test("start/end 计时、透传全部事件", async () => {
+    let t = 1000;
+    const src = (async function* (): AsyncGenerator<StreamEvent> {
+      yield { type: "retry_backoff", phase: "start", delayMs: 5 };
+      t = 1500;
+      yield { type: "retry_backoff", phase: "end", delayMs: 5 };
+      yield { type: "message_stop" } as any;
+    })();
+    const { stream, window } = trackRetryBackoff(src, () => t);
+    const seen: string[] = [];
+    for await (const e of stream) {
+      seen.push(e.type);
+      if (seen.length === 1) expect(window.active).toBe(true);
+    }
+    expect(seen).toEqual(["retry_backoff", "retry_backoff", "message_stop"]);
+    expect(window.active).toBe(false);
+    expect(window.totalMs).toBe(500);
+    expect(window.lastEndedAt).toBe(1500);
   });
 });
