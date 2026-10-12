@@ -38,6 +38,7 @@ import { ModelFallback } from "../llm/fallback.ts";
 import { AnthropicProvider } from "../llm/anthropic.ts";
 import { OpenAIProvider } from "../llm/openai.ts";
 import { isAwaitingHumanInput } from "./human-input-gate.ts";
+import { trackRetryBackoff } from "./retry-backoff-window.ts";
 import { setSseDumpContext } from "../llm/sse-chunk-dumper.ts";
 import { takeLastRequestId } from "../api/request-id.ts";
 import { resolveWireModel } from "../llm/wire-model.ts";
@@ -2194,27 +2195,18 @@ export async function* queryLoop(loopConfig: QueryLoopConfig): AsyncGenerator<Qu
       // 仍在 `try` 之外，故 catch 块（超时重试分支）读到的仍是同一份解析结果。
       const netTimeouts = resolveLoopTimeouts({ network: config.network });
 
-      // ─── 两层重试预算共享：把外层 watchdog 的时间预算告诉内层 fallback ───
+      // ─── 重试次数与看门狗解耦（2026-10-12）───
       //
-      // 内层 `fallback.ts` 有 11 次重试预算；外层 watchdog 在「无首字节
-      // headerTimeoutMs + grace」或「无内容进展 watchdogNoProgressMs」时强杀整个调用。
-      // 不告诉内层这个截止时刻，两层预算就是**相乘**而不是共享：实测上游饱和时
-      // 内层每次只用到 attempt 4–5/11 就被外层杀掉，外层再从 attempt 1 重新数，
-      // 7 个周期烧掉约 37 分钟、零内容产出（详见 QueryDeps.sendWithRetry 的注释）。
+      // 此前这里把看门狗阈值（min(header+grace, noProgress) = 315s）当 `deadlineAt` 交给 fallback，
+      // 让内层在被外层杀掉前自己收手（2026-08-29 修「两层预算相乘」）。代价是重试次数实际由
+      // 315s 决定：指数退避 5s→120s 下最多 5–6 次，`maxTimeoutRetries=10` 形同虚设，
+      // 用户看到「重试 5 次就结束」。
       //
-      // 取两条防线里**先开枪的那个**（Math.min）：deadline 的语义是"外层还能容忍多久"，
-      // 取大的那个会让内层以为自己还有时间、继续睡退避，然后照样被先到的那层杀掉 ——
-      // 等于没修。两个阈值本身一个都没动。
-      //
-      // ⚠️ 这里刻意**不**把 maxTurnDurationMs（档③单轮硬顶，90min）算进来：
-      // 它是"整轮"预算（跨多次 fetch、跨降级切换），而 deadlineAt 是"这一次调用"的。
-      // 混进来会让内层以为自己有 90 分钟，那正是本缺陷的形态。
-      const streamDeadlineAt =
-        Date.now() +
-        Math.min(
-          netTimeouts.headerTimeoutMs + netTimeouts.watchdogHeaderGraceMs,
-          netTimeouts.watchdogNoProgressMs,
-        );
+      // 现在根因层面拆开：看门狗不再把退避计入「无进展」（见下方 trackRetryBackoff 与
+      // watchdog 闸门），于是不必再给内层设时间上限 —— 次数归次数上限管，卡死归看门狗管。
+      // 「两层相乘」也随之消失：外层不会在内层退避期间开枪，内层用满次数后自己放弃。
+      // ⚠️ 别把 deadlineAt 加回来：加回来就退回「次数听时间的」那一版。
+      // 子代理 / side-call 的 deadlineAt 是真实的总时长预算（子代理 timeout 等），不受影响。
 
       // ─── 发送请求（含上下文溢出 + prompt-too-long 自动恢复）───
       let stream: AsyncIterable<import("../llm/types.ts").StreamEvent>;
@@ -2363,9 +2355,7 @@ export async function* queryLoop(loopConfig: QueryLoopConfig): AsyncGenerator<Qu
         //（默认关闭，SID_CODE_DEBUG_SSE_DUMP=1 才真正落盘）。
         // Fix 1：loopId 传入 ambientCtx，使 emitStreamPhase 写入的快照带有正确的 namespace。
         setSseDumpContext(sessionState.sessionId, state.turnCount, loopId);
-        stream = deps.sendWithRetry(sendParams, composedSignal, {
-          deadlineAt: streamDeadlineAt,
-        });
+        stream = deps.sendWithRetry(sendParams, composedSignal);
       } catch (err: any) {
         // 优化 1：连接阶段异常落 errors.jsonl。此 catch 的所有处理路径都是降级重试
         //（prompt-too-long 响应式压缩 continue / 上下文溢出调 maxTokens 或 autoCompact continue），
@@ -2439,10 +2429,7 @@ export async function* queryLoop(loopConfig: QueryLoopConfig): AsyncGenerator<Qu
             `上下文溢出，自动调整 maxTokens: ${sendParams.maxTokens} → ${adjusted}`,
           );
           sendParams.maxTokens = adjusted;
-          // 同上：重开流也要带 deadline，否则「调 maxTokens 后重试」那条路又退回相乘形态。
-          stream = deps.sendWithRetry(sendParams, composedSignal, {
-            deadlineAt: streamDeadlineAt,
-          });
+          stream = deps.sendWithRetry(sendParams, composedSignal);
         } else {
           // P2-2 熔断（连接阶段）：与流式阶段同一道闸。此前本分支既不计失败也不看熔断计数，
           // 于是「压不动 + 无法调 maxTokens」会一路 continue 到 max_turns 才停——每轮都白发
@@ -2670,6 +2657,12 @@ export async function* queryLoop(loopConfig: QueryLoopConfig): AsyncGenerator<Qu
         // Fix 2：看门狗启动前主动清除可能残留的旧快照（防止孤儿 generator 写入的脏数据误杀）
         clearStreamSnapshot(state.turnCount);
         const watchdogStartedAt = Date.now();
+        // 重试退避窗口（2026-10-12 解耦）：fallback 漏斗在退避前后发 `retry_backoff`。
+        // 看门狗判的是「单次请求卡死」，退避是主动等待 —— 退避中不判，退避结束后从零起算。
+        // 这样重试次数只由 maxTimeoutRetries 决定，不再被看门狗阈值截断。
+        const backoffTracked = trackRetryBackoff(stream);
+        stream = backoffTracked.stream;
+        const retryBackoff = backoffTracked.window;
         // 人机输入闸门配套状态（humanInputPausedAt / humanInputPauseAccumMs）已提升到 turn_hard
         // 之前定义，turn_hard 与 watchdog 共享同一套（H6）：两个 setInterval 都在单线程事件循环内
         // 跑，先跑的那个 tick 负责「结束等待→累计→置 null」，后跑的看到 null 即跳过，天然不会重复
@@ -2728,6 +2721,8 @@ export async function* queryLoop(loopConfig: QueryLoopConfig): AsyncGenerator<Qu
                 humanInputPauseAccumMs += Date.now() - humanInputPausedAt;
                 humanInputPausedAt = null;
               }
+              // 闸门：漏斗正在重试退避 → 不判无进展（同人机闸门：主动等待不是 hang）。
+              if (retryBackoff.active) return;
               const snapshot = getStreamSnapshot(state.turnCount);
               // Fix 6（隐患 4）：快照缺失 = 还在等首字节，用 headerTimeoutMs（+10s 余量）
               // 而非固定 90s 阈值兜底——否则 DeepSeek 大上下文请求（首字节需 90-120s 属正常）
@@ -2737,7 +2732,12 @@ export async function* queryLoop(loopConfig: QueryLoopConfig): AsyncGenerator<Qu
                 ? WATCHDOG_NO_PROGRESS_MS
                 : netTimeouts.headerTimeoutMs + WATCHDOG_HEADER_GRACE_MS;
               // 快照存在用 lastContentProgressAt；缺失则退化为 watchdog 启动时间兜底。
-              const lastProgressAt = snapshot?.lastContentProgressAt ?? watchdogStartedAt;
+              // 退避结束即新一次请求的起点：基线取「最近内容进展」与「最近退避结束」中较晚者，
+              // 每次重试都拿到一份完整的单次请求窗口。
+              const lastProgressAt = Math.max(
+                snapshot?.lastContentProgressAt ?? watchdogStartedAt,
+                retryBackoff.lastEndedAt ?? 0,
+              );
               // 扣除累计的用户等待时段 + 累计休眠时长，两者都不是"流 hang"。
               // 休眠这项是本次事故的根治点：三次强杀的"无进展"全部是系统休眠，
               // 剔除后它们不再构成杀流理由，也不再冤枉重试配额。
