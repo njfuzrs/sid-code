@@ -173,6 +173,11 @@ export async function processStream(
   // 从两个超时的分母里剔除，答完自然恢复计时。
   let humanWaitStartedAt: number | null = null;
   let humanWaitAccumMs = 0;
+  // 重试退避（`retry_backoff` 事件）同理：漏斗主动等待不是流 hang，退避期不判心跳，
+  // 退避时长从整体超时里剔除 —— 否则 10 次重试的累计退避会被整体超时截断，
+  // 次数上限又被时间上限架空（2026-10-12 解耦，见 query/retry-backoff-window.ts）。
+  let backoffStartedAt: number | null = null;
+  let backoffAccumMs = 0;
 
   const checkInterval = setInterval(() => {
     const now = Date.now();
@@ -191,8 +196,14 @@ export async function processStream(
       lastActivityTime = now;
     }
 
-    // 整体超时检测（扣除累计的用户等待时段）
-    if (now - startTime - humanWaitAccumMs > OVERALL_TIMEOUT) {
+    // 退避中：不判心跳，活动时间对齐到现在（退避结束后从零起算）。
+    if (backoffStartedAt !== null) {
+      lastActivityTime = now;
+      return;
+    }
+
+    // 整体超时检测（扣除累计的用户等待时段与重试退避时段）
+    if (now - startTime - humanWaitAccumMs - backoffAccumMs > OVERALL_TIMEOUT) {
       timeoutError = new Error(`Stream overall timeout: ${OVERALL_TIMEOUT / 1000}s 总时长超限`);
       log.warn("STREAM", `整体超时: ${OVERALL_TIMEOUT / 1000}s`);
       // 根治（2026-07）：abort 时携带 reason。AbortSignal.reason 在首次 abort() 时被
@@ -475,6 +486,15 @@ export async function processStream(
             event.error.type,
             event.error.streamLevel,
           );
+
+        case "retry_backoff":
+          if (event.phase === "start") {
+            backoffStartedAt = Date.now();
+          } else if (backoffStartedAt !== null) {
+            backoffAccumMs += Date.now() - backoffStartedAt;
+            backoffStartedAt = null;
+          }
+          break;
 
         case "system_api_error":
           // 重试进度提示统一由 RetryStatus 组件承载（app.ts onRetry/onFallback 回调 →
