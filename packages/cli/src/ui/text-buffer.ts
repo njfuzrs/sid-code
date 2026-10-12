@@ -79,7 +79,10 @@ type Action =
   | { type: "yank-pop" }
   | { type: "history-up" }
   | { type: "history-down" }
-  | { type: "reset" }
+  // historyText：写进 ↑/↓ 历史的文本（缺省 = 缓冲区原文）。
+  // 粘贴占位 `[粘贴 #N +M 行]` 必须以还原后的全文入历史——占位依赖的登记表提交即清空，
+  // 存原文的话 ↑ 翻回来只剩一个查不到内容的占位，再回车就把占位字面量发给模型。
+  | { type: "reset"; historyText?: string }
   | { type: "set-text"; text: string }
   // ── Vim 动作（现有 action 无法表达的最小补充；移动/退格等复用现有 move/delete-*）──
   | { type: "vim-delete-line" } // dd：删整逻辑行
@@ -451,7 +454,7 @@ function baseReducer(state: TextBufferState, action: Action): TextBufferState {
     }
 
     case "reset": {
-      const text = getText(state).trim();
+      const text = (action.historyText ?? getText(state)).trim();
       // 去重后置顶：与持久化侧 readHistoryDisplays 的「最新在前、去重」口径一致，
       // 否则启动时灌进来的历史与本会话新提交的同一句会在 ↑ 里连按出现两次。
       // 斜杠命令不进 ↑/↓ 历史：翻回来会弹补全、锁死 ↑/↓（见 isSlashCommandInput）。
@@ -703,12 +706,19 @@ export function useTextBuffer(props: UseTextBufferProps) {
     dispatch({ type: "history-down" });
   }, []);
 
-  const submit = useCallback((): string | null => {
-    const text = getText(state).trim();
-    if (!text) return null;
-    dispatch({ type: "reset" });
-    return text;
-  }, [state]);
+  /**
+   * 提交并清空缓冲区，返回原文。
+   * toHistory：把原文转换成写进 ↑/↓ 历史的形态（如还原粘贴占位），缺省原样入历史。
+   */
+  const submit = useCallback(
+    (toHistory?: (text: string) => string): string | null => {
+      const text = getText(state).trim();
+      if (!text) return null;
+      dispatch({ type: "reset", historyText: toHistory ? toHistory(text) : undefined });
+      return text;
+    },
+    [state],
+  );
 
   const getTextValue = useCallback((): string => {
     return getText(state);
