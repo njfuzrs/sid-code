@@ -231,7 +231,15 @@ L1 视觉原子    字形、颜色、主题                          ← 最小�
 用户敲进去的字、选到一半的状态，是他的劳动，丢了就是事故。
 
 - **ESC 取消流式 → 自动回填刚才的输入** ✅（`pending-input.ts` 的 stash/markForRestore/consumePendingRestore；数据流：提交时 stash → ESC 且过守卫则 markForRestore → loading→idle 边沿 consume 回填）。任何会清空输入的操作，先想"取消后能不能恢复"。
-- **流式进行中用户又输入 → 排队，不丢弃、不打断** ⚠️：cc 用三优先级队列 `now > next > later`（`now`=中断类立即处理，`next`=用户输入，`later`=系统通知不抢占用户输入），回合结束后自动接续，并支持 ↑ 弹回队列编辑。本项目目前只有 ESC 回填（单条）+ 键盘事件优先级（`KeypressContext` 的 `KeypressPriority`），**没有"流式中多条输入排队接续"**。补这块时对标 cc 三优先级，且系统通知不能抢占用户输入。
+- **本轮进行中用户又输入 → 排队，不丢弃、不打断** ✅：对标 cc 三优先级 `now > next > later`
+  （Enter=next / Alt+N=now 插队 / Alt+L=later 延后），队列内核是 core 的
+  `query/message-queue-manager.ts`，UI 侧 `hooks/useMessageQueue.ts` 在 Idle 时逐条接续，
+  输入框上方显示「已排队 N 条」，空输入框按 ↑ 弹回队尾编辑。系统通知（task-notification）不在 UI drain，不抢占用户输入。
+  - **入队 / 直送的唯一判据是 `command/streaming-gate.ts` 的 `routeSubmit`**。「本轮进行中」必须同时看
+    `isSubmittingRef`（覆盖整轮，dispatchInput 会 await 整个 agent loop）与派生 StreamingState
+    （覆盖队列 drain 发出、不经 handleSubmit 的轮次）。
+  - ⛔ **别在 handleSubmit 里写 `if (isSubmittingRef.current) return;`**：它曾让整轮期间的输入
+    被静默丢弃（输入框已清空、无排队提示、结束也不发）——正是本条要防的事故。
 - **输入历史跨会话持久化** ✅（`useInputHistoryStore` → `~/.sid-code/input-history.json`），↑↓ 召回。
 
 ### B. 中断要给出路，不是死胡同
