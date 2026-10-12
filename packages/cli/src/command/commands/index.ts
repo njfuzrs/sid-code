@@ -32,7 +32,6 @@ import rename from "./rename/index.ts";
 import insights from "./insights/index.ts";
 import bug from "./bug/index.ts";
 import keybindings from "./keybindings/index.ts";
-import claudeApi from "./claude-api/index.ts";
 import fork from "./fork/index.ts";
 import tui from "./tui/index.ts";
 import color from "./color/index.ts";
@@ -64,7 +63,6 @@ export const BUILTIN_COMMANDS: UnifiedCommand[] = [
   insights,
   bug,
   keybindings,
-  claudeApi,
   fork,
   tui,
   color,

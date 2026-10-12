@@ -232,31 +232,7 @@ __pycache__/
 
 # ─── 旧终端渲染底座的残留（B9 / T9.1 已删除） ─────────────────────────────
 # 旧底座 packages/tui-renderer/ 已从仓库与构建链移除，渲染底座只剩 packages/tui。
-# 老克隆里那个指向 .vendor-src/ 的 symlink 不在 git 里，切到新版本后会原样留着
-# （`bun run vendor:fetch` 会清掉它）。这条规则留着，防它在清掉之前被 `git add -A` 带进库。
+# 老克隆里那个 symlink 不在 git 里，切到新版本后会原样留着，需要手动 `rm -rf packages/tui-renderer`。
+# 这条规则留着，防它在删掉之前被 `git add -A` 带进库。
 # ⚠️ 不带尾斜杠：尾斜杠形态只匹配目录、**不匹配 symlink**（实测 `git check-ignore` 不命中）。
 /packages/tui-renderer/src
-
-# ─── 入库的第三方 API 参考资料（不入库、不推远端） ───────────────────────────
-# 这两份是第三方 API 文档的摘录，许可未确认，本仓不再纳入版本控制。
-#
-# ⚠️ 它们是**编译期依赖**，不是普通参考资料：
-# `packages/cli/src/command/commands/claude-api/claude-api.ts` 用 Bun 的
-# `with { type: "text" }` 把原文内联进单二进制，缺了就编译不过。
-# 本地保留、不入库，新克隆跑 `bun run vendor:fetch` 取回（`make build` 会自动跑）。
-# 同上：不带尾斜杠，才能同时挡住真目录与 symlink 两种形态。
-/packages/cli/src/command/commands/claude-api/reference
-
-# ─── vendor 真实字节的缓存（不入库、不推远端） ─────────────────────────────
-# `.vendor-src/` 存放上面两个路径的**真实字节**，规范路径只是指向这里的 symlink。
-#
-# 为什么要多这一层（治的是一次真实事故，125 个文件曾从磁盘消失）：
-# `.gitignore` 只挡「未追踪文件不被 add」，**不挡「已记录删除的文件不被 checkout
-# 删掉」**。仓库里 37+ 个分支仍把那两个路径记为已追踪，切过去再切回来 git 就按索引
-# 把工作区文件删了。把字节挪到一个**在任何 ref 里都不存在**的路径上，
-# checkout / merge / reset 就再也碰不到它。
-#
-# ⚠️ 所以这条路径**必须保持在所有分支里都不存在**。谁把它入库一次，
-# 这条防线就当场失效（而且不会有任何东西报错）。
-# 门禁在 tests/build/vendor-location.test.ts。
-/.vendor-src/

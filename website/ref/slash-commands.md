@@ -18,7 +18,7 @@ description: 交互模式里可用的全部斜杠命令。
 
 <!-- AUTO-GEN:START 由 scripts/docs-gen-reference.ts 生成，勿手工编辑 -->
 
-> 共 **64** 个内置斜杠命令，从运行时命令注册表导出。
+> 共 **63** 个内置斜杠命令，从运行时命令注册表导出。
 > 在交互模式输入 `/` 会看到同一份列表（补全列表与本表同源）。
 
 | 命令 | 说明 | 别名 | 参数 |
@@ -31,7 +31,6 @@ description: 交互模式里可用的全部斜杠命令。
 | `/bug` | 生成 bug 报告模板（含环境信息）并复制到剪贴板 | `/feedback` | `[问题简述]` |
 | `/cache` | 显示缓存命中率 / 省钱长期统计 | — | `[--period day\|week\|month] [--model <name>] [--breaks] [--history] [--prune <N>]` |
 | `/checkpoints` | 查看快照历史 | `/cp` | — |
-| `/claude-api` | 加载 Claude API 参考文档作为对话上下文 | — | `[messages\|streaming\|all]` |
 | `/clear` | 清空对话历史 | `/reset` `/new` | — |
 | `/color` | 设置 UI 强调色（品牌色），reset 恢复，-p 持久化 | `/accent` | `[#hex\|reset] [-p]` |
 | `/commands` | 列出所有自定义命令 | `/cmds` | — |

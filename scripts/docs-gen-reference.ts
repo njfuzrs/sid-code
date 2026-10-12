@@ -40,7 +40,7 @@ const REF = join(WEBSITE, "ref");
  * 分包时实测 env 扫描一度归零、整段「未列入上表的读取点」被静默删掉。
  * 新增包时同步这里。
  *
- * B9 / T9.1：渲染底座从不入库的 `tui-renderer`（要先 vendor:fetch 才在）换成入库的 `tui`，
+ * B9 / T9.1：渲染底座从不入库的 `tui-renderer`（当时要先取回才在）换成入库的 `tui`，
  * 扫描时目录一定存在。`CLAUDE_CODE_COMMIT_LOG` / `CLAUDE_CODE_DEBUG_REPAINTS` 只有旧底座读，
  * 随它删除从参考页消失是正确结果；`CLAUDE_CODE_ACCESSIBILITY` / `CLAUDE_CODE_TMUX_TRUECOLOR` /
  * `SID_CODE_DISABLE_MOUSE_CLICKS` / `SID_DISABLE_TAB_STATUS` 新底座照读（用方括号写法，以前的扫描认不出）。
