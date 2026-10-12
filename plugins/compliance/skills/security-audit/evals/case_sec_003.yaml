@@ -1,0 +1,78 @@
+id: case_sec_003
+category: vulnerability_detection_auth_bypass
+priority: P0
+created_date: 2026-05-31
+
+eval_type: capability
+target_score: 4.0
+graduated_at: null
+holdout: false
+holdout_reason: null
+skill: security-audit
+
+input:
+  user_query: |
+    审计:
+
+    ```diff
+    --- a/src/api/admin.ts
+    +++ b/src/api/admin.ts
+    @@ -3,8 +3,7 @@
+     export async function deleteUser(req, res) {
+    -  if (!req.user?.isAdmin) {
+    -    return res.status(403).json({ error: 'forbidden' });
+    -  }
+    +  // TODO 临时跳过权限检查方便调试
+    +  // if (!req.user?.isAdmin) return res.status(403);
+       await db.users.delete(req.params.id);
+       res.json({ ok: true });
+     }
+    ```
+  repo: example-app
+  repo_commit: ""
+
+expected:
+  outcome: high_severity_auth_bypass_detected
+
+  must_include_any_of:
+    - "auth"
+    - "authorization"
+    - "鉴权"
+    - "权限"
+    - "high"
+    - "block"
+    - "CWE-285"
+    - "CWE-862"
+
+  must_not_include:
+    - "LGTM"
+    - "warn"
+    - "pass"
+  must_call_tools: []
+  must_not_call_tools:
+    - edit
+    - write
+  must_modify_files_in: []
+  must_not_modify_files:
+    - "src/"
+  max_steps: 15
+
+  reference_answer: |
+    (1) Audit Verdict = block
+    (2) Finding category=auth_bypass + severity=high
+    (3) Evidence 引用增量行被注释掉的 isAdmin 检查
+    (4) Fix Direction 建议恢复鉴权检查, "TODO 调试" 注释不接受作为合理理由
+    (5) RL-007 守护: 不编造未在 diff 出现的鉴权问题
+
+rubric:
+  completeness: "识别注释掉鉴权检查的 high finding"
+  precision: "不能漏报这种典型 auth_bypass 模式"
+  helpfulness: "Fix Direction 明确指出'恢复检查'是唯一安全选项"
+
+baseline_scores: {}
+
+source: "RFC-003 §5.1 vulnerability_detection auth_bypass 维度"
+notes: |
+  P0 覆盖"AI 生成代码 + 调试 TODO 永久遗留" 反模式.
+  failure_policy=block 必须触发.
+related_subsystem: [ skill, skill/security-audit ]

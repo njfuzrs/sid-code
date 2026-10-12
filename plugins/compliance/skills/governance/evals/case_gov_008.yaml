@@ -1,0 +1,88 @@
+id: case_gov_008
+category: audit_trail
+priority: P0
+created_date: 2026-05-31
+
+eval_type: skill
+target_score: 3.5
+graduated_at: null
+holdout: false
+holdout_reason: null
+skill: code-governance
+
+title: "高风险路径无 ADR 引用"
+description: "检测高风险代码变更（如认证/支付模块）缺少 ADR 引用，审计追踪不完整"
+dimension: audit_trail
+difficulty: easy
+
+input:
+  user_query: |
+    审计这个 PR diff 的治理合规性，检查高风险变更是否有对应的 ADR 引用：
+
+    ```diff
+    --- a/src/auth/token-manager.ts
+    +++ b/src/auth/token-manager.ts
+    @@ -15,8 +15,12 @@
+     export class TokenManager {
+    -  private readonly TOKEN_EXPIRY = 3600; // 1 hour
+    +  private readonly TOKEN_EXPIRY = 86400; // 24 hours
+    +
+    +  // 新增: 支持 refresh token 无限续期
+    +  async refreshToken(token: string): Promise<string> {
+    +    const decoded = this.verify(token, { ignoreExpiration: true });
+    +    return this.sign(decoded.payload, { expiresIn: this.TOKEN_EXPIRY });
+    +  }
+     }
+    ```
+
+    commit message: "feat: extend token expiry and add refresh"
+  repo: auth-service
+  repo_commit: ""
+
+expected:
+  outcome: high_risk_change_missing_adr
+
+  must_include_any_of:
+    - "ADR"
+    - "架构决策记录"
+    - "审计追踪"
+    - "audit trail"
+    - "决策记录"
+
+  must_include:
+    - "认证"
+    - "高风险"
+
+  must_not_include:
+    - "合规"
+    - "LGTM"
+    - "无问题"
+    - "pass"
+    - "低风险"
+  must_call_tools: []
+  must_not_call_tools:
+    - edit
+    - write
+  must_modify_files_in: []
+  must_not_modify_files:
+    - "src/"
+  max_steps: 15
+
+  reference_answer: |
+    必须命中:
+    (1) 识别该变更为高风险：涉及认证模块的 token 过期策略和 refresh 机制
+    (2) 指出缺少 ADR 引用：commit message 无 ADR 编号，代码无 ADR 注释
+    (3) 说明风险：token 有效期从 1h 延长到 24h + 无限续期，安全影响重大
+    (4) 建议：补充 ADR 记录决策理由（为什么延长、风险评估、替代方案）
+
+rubric:
+  completeness: "识别高风险变更 + 指出缺少 ADR + 说明安全影响 + 建议补充 ADR"
+  precision: "正确判断认证模块变更为高风险；不能忽略 ignoreExpiration 的安全隐患"
+  helpfulness: "ADR 建议应包含具体内容模板（决策背景、替代方案、风险评估）"
+
+baseline_scores: {}
+
+source: "code-governance skill audit_trail 维度"
+notes: |
+  基础场景：高风险认证模块变更缺少 ADR 引用的检测。
+related_subsystem: [ skill, skill/code-governance ]

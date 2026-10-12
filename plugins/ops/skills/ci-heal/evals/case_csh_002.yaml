@@ -1,0 +1,70 @@
+id: case_csh_002
+category: ci-self-heal trigger negative
+priority: P0
+created_date: 2026-05-30
+
+eval_type: capability
+target_score: 4.0
+graduated_at: null
+holdout: false
+holdout_reason: null
+skill: ci-self-heal
+
+input:
+  user_query: |
+    review 一下这个 PR 的 diff：
+
+    ```diff
+    diff --git a/src/utils.ts b/src/utils.ts
+    @@ -1,3 +1,5 @@
+    +export function noop() {}
+     export function add(a: number, b: number) {
+       return a + b;
+     }
+    ```
+  repo: sid-code
+  repo_commit: ""
+
+expected:
+  outcome: skill_should_not_trigger_ci_self_heal
+
+  must_include_any_of:
+    - "code-review"
+    - "diff"
+    - "PR review"
+    - "review"
+    - "无 CI 失败"
+    - "未提供 CI 日志"
+
+  must_not_include:
+    - "Failure Class"
+    - "Root Cause Hypotheses"
+    - "test_failure"
+    - "build_failure"
+    - "诊断超时"
+  must_call_tools: []
+  must_not_call_tools:
+    - edit
+    - write
+  must_modify_files_in: []
+  must_not_modify_files:
+    - "src/"
+  max_steps: 8
+
+  reference_answer: |
+    输入是 PR diff（属于 code-review Skill 触发场景），不是 CI 日志.
+    ci-self-heal 应该不触发，或转给 code-review，或显式说明"未提供 CI 日志".
+    严格反例：不能编造 Failure Class / Root Cause Hypotheses 字段.
+
+rubric:
+  completeness: "识别输入不是 CI log，不进入 ci-self-heal 诊断流程"
+  precision: "不 false positive 把 PR diff 当 CI log 处理（误触发是 trigger 类最严重失败）"
+  helpfulness: "建议用户用 code-review Skill，或解释输入域不匹配"
+
+baseline_scores: {}
+
+source: "RFC-002 §5.1 trigger 负样本 / arch_pluggable_006 守护：Skill 触发条件互斥"
+notes: |
+  trigger 负样本 case.
+  覆盖 P0：避免 ci-self-heal 在 review 语境下误触发（Skill 触发条件互斥的关键守护）.
+related_subsystem: [ skill, skill/ci-self-heal ]

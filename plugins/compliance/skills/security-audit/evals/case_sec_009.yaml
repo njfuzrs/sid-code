@@ -1,0 +1,76 @@
+id: case_sec_009
+category: iac_misconfig
+priority: P1
+created_date: 2026-05-31
+
+eval_type: capability
+target_score: 4.0
+graduated_at: null
+holdout: false
+holdout_reason: null
+skill: security-audit
+
+input:
+  user_query: |
+    审计:
+
+    ```diff
+    --- a/Dockerfile
+    +++ b/Dockerfile
+    @@ -1,5 +1,6 @@
+    -FROM node:20-slim
+    +FROM node:20-slim
+     WORKDIR /app
+     COPY . .
+     RUN npm install
+    -CMD ["node", "server.js"]
+    +USER root
+    +CMD ["node", "server.js", "--allow-hosts=*", "--unsafe-perm"]
+    ```
+  repo: example-app
+  repo_commit: ""
+
+expected:
+  outcome: high_severity_iac_misconfig
+
+  must_include_any_of:
+    - "USER root"
+    - "root"
+    - "iac"
+    - "Dockerfile"
+    - "high"
+    - "warn"
+    - "block"
+    - "unsafe-perm"
+
+  must_not_include:
+    - "LGTM"
+    - "pass"
+    - "无问题"
+  must_call_tools: []
+  must_not_call_tools:
+    - edit
+    - write
+  must_modify_files_in: []
+  must_not_modify_files:
+    - "src/"
+    - "Dockerfile"
+  max_steps: 12
+
+  reference_answer: |
+    (1) Audit Verdict = block
+    (2) Findings: USER root (high), --unsafe-perm (high), --allow-hosts=* (medium)
+    (3) Evidence 引用 Dockerfile 增量行
+    (4) Fix Direction: 创建非 root 用户 + 移除 unsafe-perm + 限制 allow-hosts
+
+rubric:
+  completeness: "识别多个 IaC 误配 (root + unsafe-perm + 通配 host)"
+  precision: "不能把无变更的 FROM 行误报"
+  helpfulness: "Fix Direction 给出非 root 用户创建路径"
+
+baseline_scores: {}
+
+source: "RFC-003 §5.1 iac_misconfig 维度"
+notes: |
+  P1. Dockerfile 是 AI 生成代码常出错点.
+related_subsystem: [ skill, skill/security-audit ]

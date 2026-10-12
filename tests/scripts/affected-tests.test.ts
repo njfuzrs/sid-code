@@ -272,3 +272,35 @@ describe("eval-framework/judge 搬家后不得漏测", () => {
     expect(r).toEqual(["./packages/eval-framework/"]);
   });
 });
+
+describe("仓内插件 plugins/ 不得漏测（内置 skill 下沉方案 P1）", () => {
+  // 变异自证：删掉 ROOT_TEST_AREAS 里 `/^plugins\//` 那一行，下面三条全红 ——
+  // plugins/ 会落到 mapPathToTests 末尾的 `return []`，即「改插件零验证且全绿」。
+  const cases = [
+    "plugins/ops/plugin.json",
+    "plugins/compliance/skills/security-audit/SKILL.md",
+    "plugins/ops/skills/ci-heal/scripts/parse-ci-log.ts",
+    "plugins/tests/ci-self-heal.test.ts",
+  ];
+  for (const p of cases) {
+    test(`${p} → ./plugins/`, () => {
+      expect(mapPathToTests(p)).toEqual(["./plugins/"]);
+    });
+  }
+
+  test("映射目标真实存在且含测试文件（不是一个空目录）", () => {
+    expect(existsSync(join(ROOT, "plugins/tests"))).toBe(true);
+    const tests = readdirSync(join(ROOT, "plugins/tests")).filter((f) => f.endsWith(".test.ts"));
+    expect(tests.length).toBeGreaterThanOrEqual(6);
+  });
+
+  test("改打包脚本 scripts/plugins-pack.ts 跑插件套件，而不是只跑根 tests/", () => {
+    expect(mapPathToTests("scripts/plugins-pack.ts")).toEqual(["./plugins/"]);
+  });
+
+  test("只改插件的 diff 判定为选择性且目标非空", () => {
+    const d = decide(["plugins/github-pr/skills/comments/SKILL.md"]);
+    expect(d.decision).toBe("selective");
+    expect(d.targets).toEqual(["./plugins/"]);
+  });
+});

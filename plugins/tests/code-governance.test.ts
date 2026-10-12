@@ -13,24 +13,13 @@ import { describe, test, expect } from "bun:test";
 import { readFileSync, existsSync, statSync } from "node:fs";
 import { join } from "node:path";
 import { parse as loadYaml } from "yaml";
-import { checkLicenses } from "@sid-code/core/skill/builtin/code-governance/scripts/license-check.ts";
-import { scanPii } from "@sid-code/core/skill/builtin/code-governance/scripts/pii-scan.ts";
-import { exportCompliance } from "@sid-code/core/skill/builtin/code-governance/scripts/compliance-export.ts";
-import { checkAuditTrail } from "@sid-code/core/skill/builtin/code-governance/scripts/audit-trail-check.ts";
+import { checkLicenses } from "../compliance/skills/governance/scripts/license-check.ts";
+import { scanPii } from "../compliance/skills/governance/scripts/pii-scan.ts";
+import { exportCompliance } from "../compliance/skills/governance/scripts/compliance-export.ts";
+import { checkAuditTrail } from "../compliance/skills/governance/scripts/audit-trail-check.ts";
+import { skillDir } from "./helpers.ts";
 
-const SKILL_DIR = join(
-  import.meta.dir,
-  "..",
-  "..",
-  "..",
-  "..",
-  "packages",
-  "core",
-  "src",
-  "skill",
-  "builtin",
-  "code-governance",
-);
+const SKILL_DIR = skillDir("compliance", "governance");
 const SKILL_FILE = join(SKILL_DIR, "SKILL.md");
 
 interface SkillFrontmatter {
@@ -72,7 +61,7 @@ describe("code-governance Skill - SKILL.md frontmatter 契约", () => {
   const { fm } = parseFrontmatter(markdown);
 
   test("name = code-governance", () => {
-    expect(fm.name).toBe("code-governance");
+    expect(fm.name).toBe("governance");
   });
 
   test("mode = delegate", () => {

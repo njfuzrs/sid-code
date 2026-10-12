@@ -17,21 +17,9 @@ import { describe, test, expect } from "bun:test";
 import { readFileSync, existsSync, statSync, readdirSync } from "node:fs";
 import { join } from "node:path";
 import { parse as loadYaml } from "yaml";
-import { SkillManager } from "@sid-code/core/skill/manager.ts";
+import { loadPluginSkillsFromRepo, skillDir } from "./helpers.ts";
 
-const SKILL_DIR = join(
-  import.meta.dir,
-  "..",
-  "..",
-  "..",
-  "..",
-  "packages",
-  "core",
-  "src",
-  "skill",
-  "builtin",
-  "incident-rca",
-);
+const SKILL_DIR = skillDir("ops", "incident-rca");
 const SKILL_FILE = join(SKILL_DIR, "SKILL.md");
 
 interface SkillFrontmatter {
@@ -83,8 +71,6 @@ describe("incident-rca Skill - 文件结构契约", () => {
   test("runner scripts/eval/run-incident-rca-skill.ts 落盘", () => {
     const runner = join(
       import.meta.dir,
-      "..",
-      "..",
       "..",
       "..",
       "scripts",
@@ -246,38 +232,26 @@ describe("incident-rca Skill - 红线 / 反例守护契约 (SKILL.md body)", () 
   });
 });
 
-describe("incident-rca Skill - SkillLoader 集成 (无 LLM 调用)", () => {
-  test("SkillManager.discover 把 incident-rca 标为 builtin (ADR-025 修复后)", async () => {
-    const manager = new SkillManager();
-    await manager.discover();
-    const skills = manager.getAllSkills();
-    const found = skills.find((s) => s.name === "incident-rca");
+describe("incident-rca Skill - 插件加载集成(无 LLM 调用)", () => {
+  // 迁到插件后不再是 builtin：断言对象换成客户端装上插件后实际拿到的 SkillDefinition
+  test("插件加载链给出带命名空间的 ops:incident-rca", async () => {
+    const skills = await loadPluginSkillsFromRepo("ops");
+    const found = skills.find((s) => s.name === "ops:incident-rca");
     expect(found).toBeDefined();
-    expect(found!.isBuiltin).toBe(true);
-    expect(found!.source).toBe("builtin");
+    expect(found!.isBuiltin).not.toBe(true);
+    expect(found!.loadedFrom).toBe("plugin");
     expect(found!.mode).toBe("delegate");
     expect(found!.allowedTools).toContain("read");
     expect(found!.allowedTools).not.toContain("edit");
     expect(found!.allowedTools).not.toContain("write");
   });
 
-  test("incident-rca 与 4 个其他 builtin Skill 共存,不冲突", async () => {
-    const manager = new SkillManager();
-    await manager.discover();
-    const all = manager.getAllSkills();
-    const inc = all.find((s) => s.name === "incident-rca");
-    const sec = all.find((s) => s.name === "security-audit");
-    const cr = all.find((s) => s.name === "code-review");
-    const csh = all.find((s) => s.name === "ci-self-heal");
-    const sk = all.find((s) => s.name === "skill-creator");
-    expect(inc).toBeDefined();
-    expect(sec).toBeDefined();
-    expect(cr).toBeDefined();
-    expect(csh).toBeDefined();
-    expect(sk).toBeDefined();
-    // 5 个 Skill 各自独立 SKILL.md
-    const paths = [inc!.filePath, sec!.filePath, cr!.filePath, csh!.filePath, sk!.filePath];
-    expect(new Set(paths).size).toBe(5);
+  test("同插件内各 skill 独立 SKILL.md, 不冲突", async () => {
+    const skills = await loadPluginSkillsFromRepo("ops");
+    const names = skills.map((s) => s.name);
+    expect(names).toContain("ops:ci-heal");
+    expect(names).toContain("ops:incident-rca");
+    expect(new Set(skills.map((s) => s.filePath)).size).toBe(skills.length);
   });
 });
 

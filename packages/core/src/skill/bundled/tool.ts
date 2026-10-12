@@ -30,6 +30,7 @@ import type {
 import { SubAgent } from "../../agent/sub-agent.ts";
 import { getLogger } from "../../debug/logger.ts";
 import { resolveSkillAllowedTools } from "../executor.ts";
+import { emitSkillInvoked } from "../telemetry.ts";
 import { z } from "zod/v4";
 
 /** 工具输入：透传给 skill 的 getPromptForCommand(args) */
@@ -92,6 +93,8 @@ export class BundledSkillTool implements Tool {
     // bundled skill 的 getPromptForCommand 仅用到 args，不依赖 ctx 字段；
     // 传一个最小占位 ctx 以满足签名。若将来某 skill 真的读 ctx，需在此补齐。
     const prompt = await this.cmd.getPromptForCommand(args, {} as CommandContext);
+    // 本地轨迹的 skill 调用埋点（模型路径 · bundled fork skill，如 review）
+    emitSkillInvoked({ name: this.cmd.name, via: "model", loadedFrom: "bundled" });
 
     const subAgent = SubAgent.fromRegistry(
       this.providerRegistry,

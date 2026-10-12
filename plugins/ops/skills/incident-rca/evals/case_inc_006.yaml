@@ -1,0 +1,61 @@
+id: case_inc_006
+category: incident-rca trigger_no_input
+priority: P1
+created_date: 2026-05-31
+
+eval_type: capability
+target_score: 4.0
+graduated_at: null
+holdout: false
+holdout_reason: null
+skill: incident-rca
+
+input:
+  user_query: |
+    线上挂了,帮我分析下 RCA.
+  repo: sid-code
+  repo_commit: ""
+
+expected:
+  outcome: rca_skipped_due_to_insufficient_input
+
+  must_include_any_of:
+    - "缺少"
+    - "输入信息不足"
+    - "提供"
+    - "log"
+    - "metric"
+    - "Skipped"
+
+  must_not_include:
+    - "Top Hypothesis"
+    - "猜测"
+    - "可能是"
+    - "推测"
+    - "建议重启"
+  must_call_tools: []
+  must_not_call_tools:
+    - edit
+    - write
+  must_modify_files_in: []
+  must_not_modify_files:
+    - "src/"
+  max_steps: 6
+
+  reference_answer: |
+    必须不编造假设,直接返回:
+    Severity unknown / Status unknown / Confidence low
+    Skipped Checks:输入信息不足以构造 RCA 假设
+    Suggested Next Step:提供 <时间窗> 的 <log/metric/trace> 数据后重跑
+
+rubric:
+  precision: "输入完全没有 observability 数据时,严格不编造假设(RL-007 守护)"
+  helpfulness: "明确告诉用户缺什么,可执行下一步"
+
+baseline_scores: {}
+
+source: "RFC-004 §1 触发不命中场景 / SKILL.md §7.2 完全无法构造假设回退"
+notes: |
+  反例 case:RL-007 不编造守护.
+  输入完全缺数据,模型必须走 §7.2 模板而不是硬编出三条假设.
+related_subsystem: [ skill, skill/incident-rca ]

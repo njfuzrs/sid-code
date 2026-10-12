@@ -1,0 +1,7 @@
+{
+  "name": "compliance",
+  "version": "1.0.0",
+  "description": "安全与合规：PR 安全审计（security-audit）、license / PII / 审计 trail 治理（governance）",
+  "author": "sid-code",
+  "license": "MIT"
+}

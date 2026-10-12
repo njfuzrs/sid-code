@@ -115,6 +115,11 @@ const ROOT_TEST_AREAS: Array<{ when: RegExp; run: string }> = [
   // evals 数据与 eval 脚本：由 tests/eval/ 守
   { when: /^evals\//, run: "./tests/eval/" },
   { when: /^scripts\/eval\//, run: "./tests/eval/" },
+  // 仓内插件（内置 skill 下沉方案 P1）：plugins/<name>/ 与 plugins/tests/ 都由 plugins/tests/ 守。
+  // 不列这一行，plugins/ 前缀会落到末尾的 `return []` —— 改插件时选测是空集、零验证且全绿。
+  { when: /^plugins\//, run: "./plugins/" },
+  // 打包脚本的产物契约由 plugins/tests/plugins-pack.test.ts 守
+  { when: /^scripts\/plugins-pack\.ts$/, run: "./plugins/" },
 ];
 
 export type MapResult = string[] | "full";
