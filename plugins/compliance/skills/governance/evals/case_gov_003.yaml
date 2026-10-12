@@ -1,0 +1,84 @@
+id: case_gov_003
+category: pii_detection
+priority: P0
+created_date: 2026-05-31
+
+eval_type: skill
+target_score: 3.5
+graduated_at: null
+holdout: false
+holdout_reason: null
+skill: code-governance
+
+title: "中国手机号泄露检测"
+description: "检测代码中硬编码的中国大陆手机号，属于 PII 泄露"
+dimension: pii_detection
+difficulty: easy
+
+input:
+  user_query: |
+    审计这个 PR diff，检查是否有 PII 泄露：
+
+    ```diff
+    --- a/src/services/notification.ts
+    +++ b/src/services/notification.ts
+    @@ -5,6 +5,12 @@
+     export class NotificationService {
+    +  // 测试用管理员手机号
+    +  private readonly ADMIN_PHONE = "13812345678";
+    +
+    +  async sendAlert(message: string) {
+    +    await this.smsClient.send(this.ADMIN_PHONE, message);
+    +  }
+     }
+    ```
+  repo: notification-service
+  repo_commit: ""
+
+expected:
+  outcome: pii_phone_number_hardcoded
+
+  must_include_any_of:
+    - "手机号"
+    - "电话"
+    - "phone"
+    - "PII"
+    - "个人信息"
+
+  must_include:
+    - "13812345678"
+    - "硬编码"
+
+  must_not_include:
+    - "无 PII"
+    - "无泄露"
+    - "LGTM"
+    - "pass"
+    - "合规"
+  must_call_tools: []
+  must_not_call_tools:
+    - edit
+    - write
+  must_modify_files_in: []
+  must_not_modify_files:
+    - "src/"
+  max_steps: 15
+
+  reference_answer: |
+    必须命中:
+    (1) 识别 13812345678 为中国大陆手机号（PII）
+    (2) 指出硬编码手机号在源码中属于 PII 泄露
+    (3) 建议使用环境变量或密钥管理服务存储
+    (4) 说明即使是"测试用"注释也不应在生产代码中硬编码真实手机号
+
+rubric:
+  completeness: "识别手机号 PII + 指出硬编码风险 + 给出环境变量/密钥管理替代方案"
+  precision: "准确识别中国手机号格式（1[3-9]开头11位）"
+  helpfulness: "修复建议具体可执行（环境变量名示例或配置方式）"
+
+baseline_scores: {}
+
+source: "code-governance skill pii_detection 维度"
+notes: |
+  基础场景：硬编码中国手机号的检测。
+related_subsystem: [ skill, skill/code-governance ]

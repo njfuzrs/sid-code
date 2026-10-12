@@ -6,11 +6,12 @@
  */
 
 import { describe, test, expect } from "bun:test";
-import { detectVulnerabilities } from "@sid-code/core/skill/builtin/security-audit/scripts/detect-vulnerabilities.ts";
+import { detectVulnerabilities } from "../compliance/skills/security-audit/scripts/detect-vulnerabilities.ts";
 import {
   detectEcosystem,
   lookupCves,
-} from "@sid-code/core/skill/builtin/security-audit/scripts/cve-lookup.ts";
+} from "../compliance/skills/security-audit/scripts/cve-lookup.ts";
+import { skillDir } from "./helpers.ts";
 
 const wrapDiff = (file: string, content: string): string => {
   const lines = content.split("\n");
@@ -293,17 +294,7 @@ describe("security-audit scripts/references 文件结构", () => {
     const path = await import("node:path");
     const fs = await import("node:fs");
     const p = path.join(
-      import.meta.dir,
-      "..",
-      "..",
-      "..",
-      "..",
-      "packages",
-      "core",
-      "src",
-      "skill",
-      "builtin",
-      "security-audit",
+      skillDir("compliance", "security-audit"),
       "references",
       "cve-snapshot.json",
     );
@@ -323,17 +314,7 @@ describe("security-audit scripts/references 文件结构", () => {
     const path = await import("node:path");
     const fs = await import("node:fs");
     const p = path.join(
-      import.meta.dir,
-      "..",
-      "..",
-      "..",
-      "..",
-      "packages",
-      "core",
-      "src",
-      "skill",
-      "builtin",
-      "security-audit",
+      skillDir("compliance", "security-audit"),
       "references",
       "vulnerability-patterns.md",
     );
@@ -344,17 +325,7 @@ describe("security-audit scripts/references 文件结构", () => {
     const path = await import("node:path");
     const fs = await import("node:fs");
     const p = path.join(
-      import.meta.dir,
-      "..",
-      "..",
-      "..",
-      "..",
-      "packages",
-      "core",
-      "src",
-      "skill",
-      "builtin",
-      "security-audit",
+      skillDir("compliance", "security-audit"),
       "validations",
       "output-schema.json",
     );

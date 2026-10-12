@@ -1,0 +1,74 @@
+id: case_sec_004
+category: vulnerability_detection_crypto_weak
+priority: P1
+created_date: 2026-05-31
+
+eval_type: capability
+target_score: 4.0
+graduated_at: null
+holdout: false
+holdout_reason: null
+skill: security-audit
+
+input:
+  user_query: |
+    审计:
+
+    ```diff
+    --- a/src/auth/password.ts
+    +++ b/src/auth/password.ts
+    @@ -1,5 +1,7 @@
+    +import { createHash } from "crypto";
+    +
+     export function hashPassword(plain: string) {
+    -  return bcrypt.hashSync(plain, 10);
+    +  return createHash("md5").update(plain).digest("hex");
+     }
+    ```
+  repo: example-app
+  repo_commit: ""
+
+expected:
+  outcome: high_severity_crypto_weak_detected
+
+  must_include_any_of:
+    - "MD5"
+    - "md5"
+    - "弱"
+    - "weak"
+    - "bcrypt"
+    - "high"
+    - "CWE-327"
+    - "CWE-328"
+
+  must_not_include:
+    - "LGTM"
+    - "pass"
+    - "无问题"
+  must_call_tools: []
+  must_not_call_tools:
+    - edit
+    - write
+  must_modify_files_in: []
+  must_not_modify_files:
+    - "src/"
+  max_steps: 12
+
+  reference_answer: |
+    (1) Audit Verdict = block
+    (2) Finding category=crypto_weak severity=high (密码哈希降级 bcrypt → MD5)
+    (3) Evidence 引用 src/auth/password.ts 增量行
+    (4) Fix Direction 建议恢复 bcrypt 或 argon2id
+    (5) CWE-327 / CWE-328 引用
+
+rubric:
+  completeness: "识别 MD5 用于密码哈希的 high 风险 + 提到 bcrypt/argon2id 替代"
+  precision: "不能把 MD5 用于 ETag/checksum 这类非敏感场景误标 high"
+  helpfulness: "Fix Direction 明确替代算法"
+
+baseline_scores: {}
+
+source: "RFC-003 §5.1 vulnerability_detection crypto_weak 维度"
+notes: |
+  P1 但典型, 加密弱化是金融/医疗合规重点.
+related_subsystem: [ skill, skill/security-audit ]

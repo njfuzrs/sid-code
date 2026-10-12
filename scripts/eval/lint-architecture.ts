@@ -3,7 +3,7 @@
  * 架构纪律 lint 脚本（E-14 / P-11）
  *
  * 2 个规则：
- *   E-14 每个 Skill 目录含 SKILL.md + Known Limitations 段（scope=packages/core/src/skill/builtin/）
+ *   E-14 每个 Skill 目录含 SKILL.md + Known Limitations 段（scope=packages/core/src/skill/builtin/ + plugins/<插件>/skills/）
  *   P-11 core_code commit 拆分检查（scope=git 历史）
  *
  * 用法：
@@ -56,25 +56,37 @@ function listDirs(dir: string): string[] {
 // ============================================================
 // E-14: 每个 Skill 目录含 SKILL.md + Known Limitations 段
 // ============================================================
+/**
+ * E-14 的扫描面：内置 skill + 仓内插件的 skill（相对仓库根的 skill 目录）。
+ *
+ * 插件化（内置 skill 下沉方案 P1）之前只扫 `packages/core/src/skill/builtin/`，
+ * 迁到 `plugins/<插件>/skills/<skill>/` 的 skill 会**静默脱离**这条检查且不报错。
+ * 导出给 tests/eval/lint-architecture-e14.test.ts 断言扫描面确实含插件 skill。
+ */
+export function listE14SkillDirs(root: string = ROOT): string[] {
+  const out: string[] = [];
+  const builtin = "packages/core/src/skill/builtin";
+  for (const name of listDirs(join(root, builtin))) out.push(`${builtin}/${name}`);
+  for (const plugin of listDirs(join(root, "plugins"))) {
+    const skillsDir = `plugins/${plugin}/skills`;
+    for (const name of listDirs(join(root, skillsDir))) out.push(`${skillsDir}/${name}`);
+  }
+  return out;
+}
+
 const ruleE14: LintRule = {
   id: "E-14",
   description: "每个 Skill 目录含 SKILL.md + Known Limitations 段",
   run(): LintFinding[] {
     const findings: LintFinding[] = [];
-    const builtinDir = join(ROOT, "packages/core/src/skill/builtin");
-    if (!existsSync(builtinDir)) {
-      // M0 阶段没有 Skill 也算 pass，但 M3 起必至少有 1 个
-      return findings;
-    }
-    const skills = listDirs(builtinDir);
-    for (const skillName of skills) {
-      const skillMd = join(builtinDir, skillName, "SKILL.md");
+    for (const rel of listE14SkillDirs()) {
+      const skillMd = join(ROOT, rel, "SKILL.md");
       const content = readSafe(skillMd);
       if (content === null) {
         findings.push({
           rule: this.id,
           severity: "error",
-          file: `packages/core/src/skill/builtin/${skillName}/SKILL.md`,
+          file: `${rel}/SKILL.md`,
           message: "Skill 目录缺 SKILL.md",
         });
         continue;
@@ -87,7 +99,7 @@ const ruleE14: LintRule = {
         findings.push({
           rule: this.id,
           severity: "warn",
-          file: `packages/core/src/skill/builtin/${skillName}/SKILL.md`,
+          file: `${rel}/SKILL.md`,
           message: "SKILL.md 缺 Known Limitations 段（M0 阶段允许 warn，S3+ 必须有）",
         });
       }

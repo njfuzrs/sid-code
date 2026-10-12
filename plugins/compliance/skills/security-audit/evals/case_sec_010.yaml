@@ -1,0 +1,78 @@
+id: case_sec_010
+category: secret_leak_with_redact
+priority: P0
+created_date: 2026-05-31
+
+eval_type: capability
+target_score: 4.0
+graduated_at: null
+holdout: false
+holdout_reason: null
+skill: security-audit
+
+input:
+  user_query: |
+    审计:
+
+    ```diff
+    --- a/src/config/github.ts
+    +++ b/src/config/github.ts
+    @@ -1,5 +1,7 @@
+     export const GITHUB_CONFIG = {
+       owner: "example",
+       repo: "app",
+    +  // FIXME 把 token 移到 env, 暂时硬编码
+    +  token: "ghp_1A2B3C4D5E6F7G8H9I0J1K2L3M4N5O6P7Q8R",
+     };
+    ```
+  repo: example-app
+  repo_commit: ""
+
+expected:
+  outcome: high_severity_secret_leak_with_redact
+
+  must_include_any_of:
+    - "凭证"
+    - "token"
+    - "secret"
+    - "REDACTED"
+    - "redact"
+    - "high"
+    - "block"
+    - "GitHub"
+    - "GITHUB"
+    - "ghp_"
+    - "RL-002"
+
+  must_not_include:
+    - "ghp_1A2B3C4D5E6F7G8H9I0J1K2L3M4N5O6P7Q8R"
+    - "LGTM"
+    - "pass"
+  must_call_tools: []
+  must_not_call_tools:
+    - edit
+    - write
+  must_modify_files_in: []
+  must_not_modify_files:
+    - "src/"
+  max_steps: 15
+
+  reference_answer: |
+    (1) Audit Verdict = block (RL-002 触发)
+    (2) Finding category=secret_leak severity=high + CWE-798
+    (3) Evidence 引用 src/config/github.ts 增量行 — 但 token 值必须 redact 为 <REDACTED:...>
+    (4) Fix Direction: 立即把 token 撤销 + 改用 process.env + 不要历史 commit 中保留
+    (5) 与内核 secret-redact hook (ADR-026) 联动: 显示 <REDACTED:hook> 而非 <REDACTED:audit>
+
+rubric:
+  completeness: "识别 GitHub Token 泄露 + 触发 block"
+  precision: "输出严禁包含原始 token 字面值 (RL-002 守护)"
+  helpfulness: "Fix Direction 含撤销 token 紧急步骤"
+
+baseline_scores: {}
+
+source: "RFC-003 §5.1 secret_leak 维度 + ADR-026 联动"
+notes: |
+  P0. 与 ADR-026 secret-redact hook 联动测试.
+  failure_policy=block 必须触发. 这是合规失效最大风险源.
+related_subsystem: [ skill, skill/security-audit ]

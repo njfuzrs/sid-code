@@ -44,6 +44,7 @@ import {
 } from "./executor.ts";
 import { processSkillPrompt } from "./prompt-processor.ts";
 import { logToolInvoked } from "../analytics/events.ts";
+import { emitSkillInvoked } from "./telemetry.ts";
 import { skillPluginOrigin } from "../analytics/plugin-attribution.ts";
 import { z } from "zod/v4";
 
@@ -270,6 +271,12 @@ export class SkillMetaTool implements Tool {
     // 归因取 skill **定义**（loadedFrom=plugin + 定义上的 `<plugin>:<skill>` 名），
     // 不取模型输入 —— getSkill 不区分大小写，输入名不一定等于登记名。
     logToolInvoked(SKILL_TOOL_NAME, skillPluginOrigin(skill));
+    // 本地轨迹的 skill 调用埋点（模型路径）：与上面同址，口径同为「过了权限、即将执行」
+    emitSkillInvoked({
+      name: skill.name,
+      via: "model",
+      loadedFrom: skill.loadedFrom ?? skill.source,
+    });
 
     // ── P0-2：授权通过后注册生命周期 hooks（MCP 来源已在内部拒绝）──
     // 模型路径 skill 走 delegate 子代理执行。子代理有独立 hookSystem 时，hooks 应注册到子代理侧；

@@ -1,0 +1,87 @@
+id: case_inc_009
+category: incident-rca multi_hypothesis_priority
+priority: P1
+created_date: 2026-05-31
+
+eval_type: capability
+target_score: 4.0
+graduated_at: null
+holdout: false
+holdout_reason: null
+skill: incident-rca
+
+input:
+  user_query: |
+    P1 incident,2026-05-31T16:00 ~ 16:30,搜索接口慢 + 错误率上升.
+
+    日志(混合):
+    ```
+    15:58:11 INFO [es] cluster member node-3 left
+    16:01:00 ERROR [search] timeout on query (cluster=yellow)
+    16:03:25 INFO [deploy] hotfix v2.5.2 deployed (search service only)
+    16:05:30 ERROR [search] timeout on query (cluster=yellow)
+    16:08:00 ERROR [search] HTTP 500 (cause: ES timeout)
+    16:12:00 INFO [es] node-3 rejoined cluster
+    16:14:00 INFO [es] cluster green
+    16:18:00 ERROR [search] timeout on query (cluster=green)
+    ```
+
+    metrics:
+    - es.cluster_status: green → yellow (15:58) → green (16:14)
+    - search.timeout_rate: 0% → 12% (起点 15:58) → 仍然 8% (16:30)
+
+    recent activity:
+    - 16:03 v2.5.2 部署 (新搜索 query 优化)
+    - 15:58 ES node-3 网络抖动
+
+    请给 RCA — 至少 ≥ 2 条假设.
+  repo: sid-code
+  repo_commit: ""
+
+expected:
+  outcome: rca_multiple_hypotheses_with_priority
+
+  must_include_any_of:
+    - "ES"
+    - "es"
+    - "node"
+    - "v2.5.2"
+    - "hotfix"
+    - "yellow"
+    - "deploy"
+
+  must_not_include:
+    - "只有一个原因"
+    - "无法诊断"
+    - "已修复"
+  must_call_tools: []
+  must_not_call_tools:
+    - edit
+    - write
+  must_modify_files_in: []
+  must_not_modify_files:
+    - "src/"
+  max_steps: 12
+
+  reference_answer: |
+    Top Hypothesis 必须 ≥ 2 条 (因为 2 个独立诱因):
+    #1 [priority=1] ES node-3 离群 (15:58) → cluster yellow → search timeout 起点
+       - Evidence: cluster_status 时间窗对应 / es.node-3 left 日志
+       - Likelihood: high
+    #2 [priority=2] v2.5.2 (16:03) 引入的新 query 优化在 cluster green 后仍未恢复
+       - Evidence: 16:18 cluster green 但 timeout 仍 8% / 起点对应 deploy
+       - Likelihood: medium
+    Hotfix: 回滚 v2.5.2 验证假设 #2;同时观察 ES 集群健康
+    Long-term: deploy + infra incident 同时发生时的归因流程
+
+rubric:
+  rca_hypothesis: "≥ 2 条独立假设,各自有证据 / 时间窗对应 / likelihood 标注"
+  fix_priority: "回滚 v2.5.2 必须出现在 hotfix 段,因为是验证假设的最快路径"
+
+baseline_scores: {}
+
+source: "RFC-004 §3.1 5 维度 / 多假设排序场景"
+notes: |
+  multi_hypothesis 主维度 case.
+  考察 2 个并发因导致的故障的归因能力 — 不能只盯一条假设.
+related_subsystem: [ skill, skill/incident-rca ]

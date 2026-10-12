@@ -188,7 +188,14 @@ describe("防复发哨兵：扫描 tests/ 下所有落盘调用方", () => {
       join(repoRoot, "packages", "shared", "tests"),
       join(repoRoot, "packages", "tui", "tests"),
       join(repoRoot, "tests"),
+      // 仓内插件的测试根（内置 skill 下沉方案 P1）：ci-heal / security-audit 的脚本测试
+      // 正属于会写盘的那类，漏扫等于这批测试脱离哨兵。
+      join(repoRoot, "plugins", "tests"),
     ];
+    // 每个根都必须真的扫到文件：只看总数 > 100 时，某个根被挪走/改名会被别的根的文件数掩盖
+    for (const r of testRoots) {
+      expect(collectTestFiles(r).length, r).toBeGreaterThan(0);
+    }
     const files = testRoots.flatMap((r) => collectTestFiles(r));
     // 断言扫描面非空——目录结构变动导致空扫时，这条门禁会静默变成"永远通过"
     expect(files.length).toBeGreaterThan(100);

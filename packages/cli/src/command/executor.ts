@@ -29,6 +29,7 @@ import { getLogger } from "@sid-code/core/debug/logger.ts";
 // 自定义命令名可能含项目/客户名，脱敏规则在门面里，见 analytics/events.ts。
 import { logCommandInvoke, logCommandRejected } from "@sid-code/core/analytics/events.ts";
 import { recordUsage } from "./usage-tracking.ts";
+import { emitSkillInvoked } from "@sid-code/core/skill/telemetry.ts";
 
 /**
  * 决定一条文本结果是否进命令输出面板。
@@ -363,6 +364,16 @@ export class CommandExecutor {
       }
       hookScope = cmd.context === "fork" ? newSkillHookScope() : undefined;
       registeredHookCount = registerSkillLifecycleHooks(skill, this.ctx.hookSystem, hookScope);
+    }
+
+    // skill 调用埋点（用户斜杠路径）：放在权限通过之后，被拒 / 未批准不算「用了」。
+    // 磁盘 skill 带 cmd.skill；bundled TS skill 没有 SkillDefinition，靠 source==="skill" 识别。
+    if (skill || cmd.source === "skill") {
+      emitSkillInvoked({
+        name: skill?.name ?? cmd.name,
+        via: "slash",
+        loadedFrom: skill ? (skill.loadedFrom ?? skill.source) : "bundled",
+      });
     }
 
     try {

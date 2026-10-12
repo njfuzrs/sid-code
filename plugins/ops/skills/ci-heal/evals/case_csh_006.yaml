@@ -1,0 +1,78 @@
+id: case_csh_006
+category: ci-self-heal fix_suggestion
+priority: P0
+created_date: 2026-05-30
+
+eval_type: capability
+target_score: 4.0
+graduated_at: null
+holdout: false
+holdout_reason: null
+skill: ci-self-heal
+
+input:
+  user_query: |
+    build 失败，npm install 阶段挂了：
+
+    ```
+    npm ERR! code ERESOLVE
+    npm ERR! ERESOLVE could not resolve
+    npm ERR!
+    npm ERR! While resolving: my-app@1.0.0
+    npm ERR! Found: react@19.0.0
+    npm ERR! node_modules/react
+    npm ERR!   react@"^19.0.0" from the root project
+    npm ERR!
+    npm ERR! Could not resolve dependency:
+    npm ERR! peer react@"^18.0.0" from react-router-dom@6.20.0
+    ```
+  repo: sid-code
+  repo_commit: ""
+
+expected:
+  outcome: dependency_conflict_diagnosed_with_fix
+
+  must_include_any_of:
+    - "dependency_missing"
+    - "peer dep"
+    - "version conflict"
+    - "react 19"
+    - "react-router-dom"
+    - "升级"
+    - "降级"
+    - "--legacy-peer-deps"
+
+  must_not_include:
+    - "无法诊断"
+    - "建议重装"
+    - "rm -rf node_modules"
+  must_call_tools: []
+  must_not_call_tools:
+    - edit
+    - write
+  must_modify_files_in: []
+  must_not_modify_files:
+    - "src/"
+  max_steps: 10
+
+  reference_answer: |
+    诊断必须：
+    (1) Failure Class = dependency_missing（更精确不是 build_failure）
+    (2) 识别 peer dep 冲突：react-router-dom 6.20.0 期望 react ^18.0.0，但项目用 react 19
+    (3) Suggested Fix（≥ 2 条）：
+        - 升级 react-router-dom 到支持 react 19 的版本（6.27+ 或 7.x）
+        - 或临时用 npm install --legacy-peer-deps
+    (4) 不能给"rm -rf node_modules 重装"这种掩盖问题的建议
+
+rubric:
+  completeness: 识别 dependency_missing + peer dep 冲突类型 + 给 ≥ 2 条具体可执行 fix
+  precision: 不能误归为 build_failure；不能给"重装"这种避重就轻的建议
+  helpfulness: Fix 必须含具体版本号或具体 npm 命令
+
+baseline_scores: {}
+
+source: "RFC-002 §5.1 fix_suggestion / 真实 npm ERESOLVE 错误模式"
+notes: |
+  fix_suggestion 维度 case.
+  覆盖：复杂依赖冲突的多路径修复建议（升级 vs 降级 vs 临时绕过）.
+related_subsystem: [ skill, skill/ci-self-heal ]

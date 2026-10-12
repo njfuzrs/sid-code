@@ -1,0 +1,103 @@
+id: case_gov_007
+category: compliance_metadata
+priority: P0
+created_date: 2026-05-31
+
+eval_type: skill
+target_score: 4.0
+graduated_at: null
+holdout: false
+holdout_reason: null
+skill: code-governance
+
+title: "中国算法备案触发检测"
+description: "检测代码中的推荐算法是否触发中国《互联网信息服务算法推荐管理规定》备案要求"
+dimension: compliance_metadata
+difficulty: medium
+
+input:
+  user_query: |
+    审计这个模块的合规性，判断是否需要进行中国算法备案：
+
+    ```typescript
+    // src/feed/recommendation-engine.ts
+    import { UserProfile, ContentItem, FeedConfig } from './types';
+
+    export class RecommendationEngine {
+      /**
+       * 个性化内容推荐引擎
+       * 基于用户画像和行为数据，为每个用户生成个性化信息流
+       * 面向中国大陆用户提供服务
+       */
+      async generateFeed(user: UserProfile, config: FeedConfig): Promise<ContentItem[]> {
+        // 协同过滤 + 内容特征匹配
+        const candidates = await this.recall(user);
+        const scored = await this.rank(candidates, user);
+        const filtered = this.applyDiversityRules(scored);
+        return this.applyBusinessRules(filtered, config);
+      }
+
+      private async rank(items: ContentItem[], user: UserProfile) {
+        // 基于用户历史行为的点击率预估模型
+        return items.map(item => ({
+          ...item,
+          score: this.predictCTR(item, user)
+        })).sort((a, b) => b.score - a.score);
+      }
+
+      private predictCTR(item: ContentItem, user: UserProfile): number {
+        // 深度学习 CTR 预估
+        return this.model.predict([item.features, user.behaviorFeatures]);
+      }
+    }
+    ```
+  repo: content-platform
+  repo_commit: ""
+
+expected:
+  outcome: china_algorithm_filing_required
+
+  must_include_any_of:
+    - "算法备案"
+    - "算法推荐管理规定"
+    - "互联网信息服务"
+    - "algorithm filing"
+    - "备案"
+
+  must_include:
+    - "个性化推荐"
+    - "用户画像"
+
+  must_not_include:
+    - "无需备案"
+    - "不适用"
+    - "LGTM"
+    - "合规"
+    - "低风险"
+  must_call_tools: []
+  must_not_call_tools:
+    - edit
+    - write
+  must_modify_files_in: []
+  must_not_modify_files:
+    - "src/"
+  max_steps: 15
+
+  reference_answer: |
+    必须命中:
+    (1) 判定该系统触发中国《互联网信息服务算法推荐管理规定》备案要求
+    (2) 说明触发条件：面向中国大陆用户 + 使用个性化推荐算法影响信息呈现
+    (3) 列出备案要求：算法名称、类型、应用场景、自评估报告
+    (4) 建议添加合规元数据（algorithm_type, filing_status, target_region）
+
+rubric:
+  completeness: "正确判定需备案 + 引用法规 + 列出备案要素 + 建议元数据标注"
+  precision: "触发条件判断准确（个性化推荐 + 面向中国用户）；不能遗漏关键法规"
+  helpfulness: "备案流程建议应具体（去哪里备案、需要什么材料）"
+
+baseline_scores: {}
+
+source: "code-governance skill compliance_metadata 维度"
+notes: |
+  中等难度：需要理解中国算法备案制度，从代码功能推断是否触发备案义务。
+related_subsystem: [ skill, skill/code-governance ]

@@ -1,0 +1,7 @@
+{
+  "name": "github-pr",
+  "version": "1.0.0",
+  "description": "GitHub PR 协作：读取 reviewer 评论并逐条处理（改代码 / 起草回复）",
+  "author": "sid-code",
+  "license": "MIT"
+}

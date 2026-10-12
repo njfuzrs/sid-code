@@ -1,0 +1,70 @@
+id: case_csh_007
+category: ci-self-heal fix_suggestion
+priority: P0
+created_date: 2026-05-30
+
+eval_type: capability
+target_score: 4.0
+graduated_at: null
+holdout: false
+holdout_reason: null
+skill: ci-self-heal
+
+input:
+  user_query: |
+    Go test 挂了：
+
+    ```
+    --- FAIL: TestParseConfig (0.00s)
+        config_test.go:42: want config.Port=8080, got 0
+        config_test.go:43: want config.Host="localhost", got ""
+    FAIL
+    FAIL    github.com/example/app/config   0.123s
+    ```
+  repo: sid-code
+  repo_commit: ""
+
+expected:
+  outcome: go_test_failure_diagnosed
+
+  must_include_any_of:
+    - "test_failure"
+    - "TestParseConfig"
+    - "config_test.go:42"
+    - "config_test.go:43"
+    - "Port"
+    - "Host"
+
+  must_not_include:
+    - "build_failure"
+    - "lint_failure"
+    - "flaky"
+    - "无法识别"
+  must_call_tools: []
+  must_not_call_tools:
+    - edit
+    - write
+  must_modify_files_in: []
+  must_not_modify_files:
+    - "src/"
+  max_steps: 10
+
+  reference_answer: |
+    诊断必须：
+    (1) Failure Class = test_failure（runner=go-test）
+    (2) 识别问题：ParseConfig 返回 Port=0 / Host=""，明显未读取到配置
+    (3) hypothesis：config 解析逻辑有 bug（json/yaml unmarshal 失败 / 字段名/tag 不匹配 / 文件路径错误）
+    (4) Suggested Fix：检查 config 文件路径与 struct field tag
+
+rubric:
+  completeness: "识别 test_failure + 引用 config_test.go:42/43 行号 + 给出根因假设"
+  precision: "不能误归为 lint 或 build；不能编造没在 log 里出现的字段"
+  helpfulness: "Fix 含可执行检查方向（config 路径 / struct tag / unmarshal）"
+
+baseline_scores: {}
+
+source: "RFC-002 §5.1 fix_suggestion / 真实 Go test 失败模式"
+notes: |
+  fix_suggestion + 多语言覆盖 case.
+  覆盖 Go runner（与 jest/pytest 不同的 want/got 格式）.
+related_subsystem: [ skill, skill/ci-self-heal ]
