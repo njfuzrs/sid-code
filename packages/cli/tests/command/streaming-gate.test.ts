@@ -14,7 +14,14 @@
  */
 
 import { describe, test, expect } from "bun:test";
-import { canRunDuringStreaming, routeSubmit } from "@sid-code/cli/command/streaming-gate.ts";
+import { routeSubmit } from "@sid-code/cli/command/streaming-gate.ts";
+
+/**
+ * canRunDuringStreaming 不再导出（生产唯一调用方是 routeSubmit，导出即死导出，命令体系门禁 G1 会数）。
+ * 「轮内可插队」与 routeSubmit 在进行中返回 dispatch-nested 完全等价，经它间接断言原判据。
+ */
+const canRunDuringStreaming = (text: string, commands: Parameters<typeof routeSubmit>[1]) =>
+  routeSubmit(text, commands, { streaming: true, submitting: false }) === "dispatch-nested";
 
 /** 逼近真实命令表：27 条标了 immediate，3 条刻意没标。 */
 const COMMANDS = [

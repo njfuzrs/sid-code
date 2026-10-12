@@ -69,10 +69,7 @@ function extractCommandName(text: string): string | null {
  *    塞消息，而对话正在被写 —— 类型层做硬限（机械可查），命令声明做细化，两层都要
  * 5. 其余：只有显式 `immediate === true` 才直送
  */
-export function canRunDuringStreaming(
-  text: string,
-  commands: readonly StreamingGateCommand[],
-): boolean {
+function canRunDuringStreaming(text: string, commands: readonly StreamingGateCommand[]): boolean {
   const name = extractCommandName(text);
   // 1. 普通文本：入队接续
   if (!name) return false;
@@ -111,7 +108,7 @@ export function canRunDuringStreaming(
  * 输入框已被 tb.submit() 清空、队列提示不出现、本轮结束后也不发。
  * 文档承诺的「打字不会被丢掉，会排队」在第一轮之后全部失效。
  */
-export type SubmitRoute = "enqueue" | "dispatch" | "dispatch-nested";
+type SubmitRoute = "enqueue" | "dispatch" | "dispatch-nested";
 
 export function routeSubmit(
   text: string,
