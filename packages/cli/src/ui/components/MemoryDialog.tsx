@@ -18,8 +18,9 @@
 import React, { useState, useMemo, useEffect, useCallback } from "react";
 import { Box } from "../render-port/components.ts";
 import { Text } from "../render-port/components.ts";
-import stringWidth from "string-width";
+import { useStdout } from "../render-port/hooks.ts";
 import { theme } from "../semantic-colors.ts";
+import { fitCell, columnWidth } from "./shared/text-layout.ts";
 import { useKeypress, KeypressPriority, type Key } from "../contexts/KeypressContext.tsx";
 import { BaseSelectionList, type SelectionListItem } from "./shared/BaseSelectionList.tsx";
 import { ARROW_PROMPT } from "../constants/figures.ts";
@@ -80,7 +81,26 @@ function formatUpdated(ms: number): string {
   return `${d.getFullYear()}-${p(d.getMonth() + 1)}-${p(d.getDate())} ${p(d.getHours())}:${p(d.getMinutes())}`;
 }
 
+const DEFAULT_TERM_WIDTH = 100;
+/** 边框 2 + paddingX 2 + 列表指针列 2 + 1 列余量 */
+const ROW_OVERHEAD = 7;
+/** 名称列（记忆 key / 文件路径）最多占行宽的比例 */
+const NAME_COL_MAX_RATIO = 0.5;
+const COL_GAP = 2;
+
+/**
+ * 两栏布局（名称 / 元信息）的名称列宽。
+ * 旧实现列宽 = 最宽值，无上限：一条超长 key 或深层路径会把所有行推宽，
+ * 元信息被挤到下一行、整列错位。现在封顶并截断。
+ */
+export function memoryNameColWidth(names: string[], termWidth: number): number {
+  const inner = Math.max(30, termWidth - ROW_OVERHEAD);
+  return columnWidth(names, Math.floor(inner * NAME_COL_MAX_RATIO), 4);
+}
+
 export const MemoryDialog: React.FC<MemoryDialogProps> = ({ onClose, cwd }) => {
+  const { stdout } = useStdout();
+  const termWidth = stdout?.columns || DEFAULT_TERM_WIDTH;
   const [view, setView] = useState<ViewState>({ type: "auto-list" });
   const [entries, setEntries] = useState<MemoryEntry[] | null>(null);
   const [highlightedKey, setHighlightedKey] = useState<string | null>(null);
@@ -342,7 +362,10 @@ export const MemoryDialog: React.FC<MemoryDialogProps> = ({ onClose, cwd }) => {
       key: `f-${i}`,
       info,
     }));
-    const pathColWidth = Math.max(...files.map((f) => stringWidth(f.displayPath)), 0);
+    const pathColWidth = memoryNameColWidth(
+      files.map((f) => f.displayPath),
+      termWidth,
+    );
     return (
       <Box
         flexDirection="column"
@@ -370,18 +393,18 @@ export const MemoryDialog: React.FC<MemoryDialogProps> = ({ onClose, cwd }) => {
             selectedIndicator={ARROW_PROMPT}
             renderItem={(item, { isSelected }) => {
               const { info } = item;
-              const pad = " ".repeat(Math.max(2, pathColWidth - stringWidth(info.displayPath) + 2));
+              // 整行单个 Text + truncate：路径定宽截断，元信息列对齐
               return (
-                <Box>
+                <Text wrap="truncate">
                   <Text color={isSelected ? theme.ui.focus : theme.text.primary}>
-                    {info.displayPath}
+                    {fitCell(info.displayPath, pathColWidth)}
                   </Text>
                   <Text color={theme.text.secondary}>
-                    {pad}
+                    {" ".repeat(COL_GAP)}
                     {SCOPE_LABEL[info.scope]} · {formatFileSize(info.size)} ·{" "}
                     {formatMtime(info.mtimeMs)}
                   </Text>
-                </Box>
+                </Text>
               );
             }}
           />
@@ -441,7 +464,10 @@ export const MemoryDialog: React.FC<MemoryDialogProps> = ({ onClose, cwd }) => {
     key: `e-${i}`,
     entry,
   }));
-  const keyColWidth = Math.max(...entries.map((e) => stringWidth(e.key)), 0);
+  const keyColWidth = memoryNameColWidth(
+    entries.map((e) => e.key),
+    termWidth,
+  );
 
   return (
     <Box
@@ -471,16 +497,17 @@ export const MemoryDialog: React.FC<MemoryDialogProps> = ({ onClose, cwd }) => {
           selectedIndicator={ARROW_PROMPT}
           renderItem={(item, { isSelected }) => {
             const { entry } = item;
-            const pad = " ".repeat(Math.max(2, keyColWidth - stringWidth(entry.key) + 2));
             const meta = `${ENTRY_SCOPE_LABEL[entry.scope]}${entry.type ? ` · ${TYPE_LABEL[entry.type] ?? entry.type}` : ""} · ${formatMtime(entry.updatedAt)}`;
             return (
-              <Box>
-                <Text color={isSelected ? theme.ui.focus : theme.text.primary}>{entry.key}</Text>
+              <Text wrap="truncate">
+                <Text color={isSelected ? theme.ui.focus : theme.text.primary}>
+                  {fitCell(entry.key, keyColWidth)}
+                </Text>
                 <Text color={theme.text.secondary}>
-                  {pad}
+                  {" ".repeat(COL_GAP)}
                   {meta}
                 </Text>
-              </Box>
+              </Text>
             );
           }}
         />

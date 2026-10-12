@@ -25,6 +25,7 @@ import { Box } from "../render-port/components.ts";
 import { Text } from "../render-port/components.ts";
 import { useStdout } from "../render-port/hooks.ts";
 import { theme } from "../semantic-colors.ts";
+import { oneLine } from "./shared/text-layout.ts";
 import type { Color } from "../render-port/types.ts";
 import { useKeypress, KeypressPriority, type Key } from "../contexts/KeypressContext.tsx";
 import { POINTER, SUCCESS_MARK, ERROR_MARK, SEARCH_MARK } from "../constants/figures.ts";
@@ -750,7 +751,9 @@ export const SkillsDialog: React.FC<SkillsDialogProps> = ({ onClose, registry })
                 </Box>
                 <Box flexGrow={1}>
                   <Text color={theme.text.secondary}>
-                    {truncateToWidth(row.description, descWidth)}
+                    {/* 先压单行：skill description 常带换行，truncateToWidth 不处理 \n，
+                        带换行的描述会把这一行撑成多行、后续行错位 */}
+                    {truncateToWidth(oneLine(row.description), descWidth)}
                   </Text>
                 </Box>
               </Box>

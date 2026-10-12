@@ -2,6 +2,7 @@ import React from "react";
 import { Box } from "../render-port/components.ts";
 import { Text } from "../render-port/components.ts";
 import { theme } from "../semantic-colors.ts";
+import { truncateToWidth, oneLine } from "./shared/text-layout.ts";
 import { useKeypress, KeypressPriority, type Key } from "../contexts/KeypressContext.tsx";
 import { ARROW_PROMPT } from "../constants/figures.ts";
 import {
@@ -66,15 +67,21 @@ export const AgentsDialog: React.FC<AgentsDialogProps> = ({ onClose }) => {
             <Box key={a.agentType} flexDirection="row">
               <Box flexShrink={0} width={22}>
                 {/* P1-2：agent 名直接用其身份色渲染——声明了 color 的显式色，
-                    未声明的走哈希分配。比单独列一个「色:blue」文字标签更直观。 */}
-                <Text color={getAgentInkColor(a.agentType)}>{a.agentType}</Text>
+                    未声明的走哈希分配。比单独列一个「色:blue」文字标签更直观。
+                    名称超过列宽时截断（留 1 列间隔），否则会在列内折成两行。 */}
+                <Text color={getAgentInkColor(a.agentType)} wrap="truncate">
+                  {truncateToWidth(a.agentType, 21)}
+                </Text>
               </Box>
               <Box flexGrow={1} flexDirection="column">
+                {/* 描述先压单行：frontmatter 的多行 description 含 \n 时 truncate 仍会分行 */}
                 <Text wrap="truncate-end" color={theme.text.primary}>
-                  {a.description || a.whenToUse}
+                  {oneLine(a.description || a.whenToUse)}
                 </Text>
                 {tags.length > 0 ? (
-                  <Text color={theme.text.secondary}>{tags.join("  ·  ")}</Text>
+                  <Text color={theme.text.secondary} wrap="truncate-end">
+                    {tags.join("  ·  ")}
+                  </Text>
                 ) : null}
               </Box>
             </Box>

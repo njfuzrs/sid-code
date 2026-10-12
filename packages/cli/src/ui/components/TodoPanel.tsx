@@ -31,6 +31,7 @@ import type { TodoItem } from "@sid-code/core/tool/todo-write.ts";
 import type { TaskDisplayInfo } from "../App.tsx";
 import { theme } from "../semantic-colors.ts";
 import { stringWidth } from "../render-port/text.ts";
+import { oneLine } from "./shared/text-layout.ts";
 import { useIsAccessibilityEnabled } from "../accessibility/AccessibilityContext.tsx";
 import { useExpandLevel } from "../contexts/UIStateContext.tsx";
 import { formatLargeNumber } from "../utils/format-number.ts";
@@ -67,7 +68,10 @@ interface TodoPanelProps {
 }
 
 /** 截断文本到指定显示宽度（CJK 安全：按 stringWidth 列宽累计，非码点数） */
-function truncate(text: string, maxLen: number): string {
+function truncate(raw: string, maxLen: number): string {
+  // 先压单行：todo 内容 / 任务描述 / 活动文案由模型生成，常带换行，
+  // 不压的话一项会撑成多行，后续各行错位（与 /commands 面板同源问题）
+  const text = oneLine(raw);
   if (stringWidth(text) <= maxLen) return text;
   // 预留 1 列给省略号，逐字符累计显示宽度
   const budget = Math.max(1, maxLen - 1);
@@ -267,15 +271,18 @@ const TaskRow = React.memo(function TaskRow({
             {statusIcon}
           </Text>
         </Box>
-        <Box flexGrow={1}>
-          <Text>
+        <Box flexGrow={1} flexShrink={1}>
+          <Text wrap="truncate">
             <Text color={theme.ui.active}>{`[${label}] `}</Text>
             <Text color={isRunning ? theme.text.primary : theme.text.secondary}>
               {truncate(desc, Math.max(10, maxContentLen - 24))}
             </Text>
           </Text>
         </Box>
-        <Text color={theme.text.secondary}>{statsText}</Text>
+        {/* 统计列定宽不收缩：上面的 24 是估算预留，描述偏长时由描述列让位截断，统计不被挤折行 */}
+        <Box flexShrink={0}>
+          <Text color={theme.text.secondary}>{statsText}</Text>
+        </Box>
       </Box>
       {/* verbose（Ctrl+O expandLevel≥1）且有工具活动序列：逐行展开最近活动。
           否则折叠为单行 activityLine。 */}
