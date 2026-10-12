@@ -91,3 +91,34 @@ export function canRunDuringStreaming(
   // 5. 只有显式声明 immediate 的才直送
   return cmd.immediate === true;
 }
+
+/**
+ * 提交路由：一条输入该入队、直送，还是「直送但不占提交位」。
+ *
+ * - `enqueue`：本轮未结束且不可插队 → 入队，本轮结束后接续发送
+ * - `dispatch`：空闲 → 直送，并占住提交位（isSubmittingRef）直到整轮结束
+ * - `dispatch-nested`：本轮进行中但可插队（immediate 命令）→ 直送，**不碰提交位**——
+ *   外层那一轮还没结束，内层 finally 把它清成 false 会让后续输入绕过入队
+ *
+ * 「本轮进行中」必须同时看两个信号：
+ * - `submitting`：handleSubmit 正 await dispatchInput（覆盖整轮，含回车 → isLoading
+ *   置位之前的空窗）
+ * - `streaming`：派生 StreamingState 非 Idle（覆盖队列 drain 发出的那几轮——
+ *   它们直接调 dispatchInput，不经 handleSubmit，submitting 恒 false）
+ *
+ * 修复前 handleSubmit 首行是 `if (isSubmittingRef.current) return;`：
+ * 而 dispatchInput 会 await 整轮 agent loop，于是**整轮期间所有提交被静默丢弃**——
+ * 输入框已被 tb.submit() 清空、队列提示不出现、本轮结束后也不发。
+ * 文档承诺的「打字不会被丢掉，会排队」在第一轮之后全部失效。
+ */
+export type SubmitRoute = "enqueue" | "dispatch" | "dispatch-nested";
+
+export function routeSubmit(
+  text: string,
+  commands: readonly StreamingGateCommand[],
+  busy: { streaming: boolean; submitting: boolean },
+): SubmitRoute {
+  const inTurn = busy.streaming || busy.submitting;
+  if (!inTurn) return "dispatch";
+  return canRunDuringStreaming(text, commands) ? "dispatch-nested" : "enqueue";
+}

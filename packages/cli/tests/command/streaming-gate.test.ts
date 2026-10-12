@@ -14,7 +14,7 @@
  */
 
 import { describe, test, expect } from "bun:test";
-import { canRunDuringStreaming } from "@sid-code/cli/command/streaming-gate.ts";
+import { canRunDuringStreaming, routeSubmit } from "@sid-code/cli/command/streaming-gate.ts";
 
 /** 逼近真实命令表：27 条标了 immediate，3 条刻意没标。 */
 const COMMANDS = [
@@ -104,5 +104,45 @@ describe("canRunDuringStreaming", () => {
       if (cmd.name === "exit" || cmd.name === "quit") continue;
       expect(canRunDuringStreaming(`/${cmd.name}`, stripped)).toBe(false);
     }
+  });
+});
+
+/**
+ * 提交路由（「模型正在输出时你还能打字」）。
+ *
+ * 修复前 handleSubmit 首行 `if (isSubmittingRef.current) return;`，而 dispatchInput
+ * await 整轮 agent loop —— 整轮期间的输入全部被静默丢弃（输入框已清空、无排队提示、
+ * 本轮结束也不发）。核心用例是 submitting=true 且 streaming=false：
+ * 这正是「回车 → isLoading 置位前」与「工具执行间隙派生态短暂抖回 Idle」的形态。
+ */
+describe("routeSubmit", () => {
+  const idle = { streaming: false, submitting: false };
+
+  test("空闲 → 直送并占提交位", () => {
+    expect(routeSubmit("你好", COMMANDS, idle)).toBe("dispatch");
+    expect(routeSubmit("/compact", COMMANDS, idle)).toBe("dispatch");
+  });
+
+  test("整轮进行中（submitting）的普通输入入队，不能被丢弃", () => {
+    expect(routeSubmit("再帮我看下", COMMANDS, { streaming: true, submitting: true })).toBe(
+      "enqueue",
+    );
+    // 变异自证：只看 streaming 会在这里返回 dispatch（旧实现则是直接 return 丢弃）
+    expect(routeSubmit("再帮我看下", COMMANDS, { streaming: false, submitting: true })).toBe(
+      "enqueue",
+    );
+  });
+
+  test("队列 drain 发出的那轮（streaming 但不经 handleSubmit）同样入队", () => {
+    expect(routeSubmit("第三条", COMMANDS, { streaming: true, submitting: false })).toBe("enqueue");
+  });
+
+  test("进行中的 immediate 命令直送但不占提交位", () => {
+    expect(routeSubmit("/model opus", COMMANDS, { streaming: true, submitting: true })).toBe(
+      "dispatch-nested",
+    );
+    expect(routeSubmit("/compact", COMMANDS, { streaming: true, submitting: true })).toBe(
+      "enqueue",
+    );
   });
 });
