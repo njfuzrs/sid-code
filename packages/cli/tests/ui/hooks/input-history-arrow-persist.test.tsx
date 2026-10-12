@@ -14,6 +14,7 @@ import { tmpdir } from "os";
 import { render } from "@sid-code/cli/ui/render-port/testing.ts";
 import { Text } from "@sid-code/cli/ui/render-port/components.ts";
 import { textBufferReducer as reduce, createInitialState } from "@sid-code/cli/ui/text-buffer.ts";
+import { registerPaste, expandPastedRefs, clearPastes } from "@sid-code/cli/ui/pasted-contents.ts";
 import { useInputHistoryStore } from "@sid-code/cli/ui/hooks/useInputHistoryStore.ts";
 import { getProjectRoot, setProjectRoot } from "@sid-code/core/bootstrap/state.ts";
 import { isSlashCommandInput } from "@sid-code/cli/command/parser.ts";
@@ -47,6 +48,32 @@ describe("TextBuffer 初始历史", () => {
     s = createInitialState("看下 /tmp/a.log", ["你好"]);
     s = reduce(s, { type: "reset" });
     expect(s.history).toEqual(["看下 /tmp/a.log", "你好"]);
+  });
+
+  test("粘贴占位以还原后的全文进 ↑ 历史：登记表提交即清空，存占位翻回来就只剩省略号", () => {
+    clearPastes();
+    const big = Array.from({ length: 13 }, (_, i) => `报错行 ${i + 1}`).join("\n");
+    const ref = registerPaste(big);
+    let s = createInitialState(`${ref} 为什么重试 5 次？`, []);
+    s = reduce(s, { type: "reset", historyText: expandPastedRefs(s.lines.join("\n")) });
+    clearPastes(); // 与 InputArea.handleSubmit 同序：提交后立刻清空登记表
+
+    // 期间又粘贴一段：id 从 1 重新分配，旧占位若残留会被还原成这段（串号）
+    registerPaste(Array.from({ length: 8 }, () => "无关内容").join("\n"));
+
+    s = reduce(s, { type: "history-up" });
+    const recalled = s.lines.join("\n");
+    expect(recalled).toBe(`${big} 为什么重试 5 次？`);
+    expect(recalled).not.toContain("[粘贴 #");
+    // 再回车也不会被新登记表误还原
+    expect(expandPastedRefs(recalled)).toBe(recalled);
+    clearPastes();
+  });
+
+  test("不传 historyText 时行为不变：原文入历史", () => {
+    let s = createInitialState("普通一句", []);
+    s = reduce(s, { type: "reset" });
+    expect(s.history).toEqual(["普通一句"]);
   });
 });
 

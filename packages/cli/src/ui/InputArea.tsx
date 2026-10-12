@@ -533,10 +533,13 @@ export function InputArea({
    */
   const handleSubmit = useCallback(
     (priority?: "now" | "next" | "later") => {
-      const raw = tb.submit();
+      // IN3：把粘贴占位引用 [粘贴 #N ...] 还原为真实内容后再提交，随后清空登记表。
+      // ↑/↓ 历史也必须存还原后的全文（传 expandPastedRefs 给 submit）：登记表下一行就清空，
+      // 存占位的话翻回来只剩 `[粘贴 #1 +13 行]`，回车时查不到登记 → 占位字面量被发给模型；
+      // 若期间又粘贴过新内容，id 从 1 重新分配，旧占位还会被还原成**另一段**粘贴。
+      const raw = tb.submit(expandPastedRefs);
       if (!raw) return;
 
-      // IN3：把粘贴占位引用 [粘贴 #N ...] 还原为真实内容后再提交，随后清空登记表。
       const text = expandPastedRefs(raw);
       clearPastes();
 
