@@ -155,20 +155,33 @@ export class SkillCommand implements Command {
       const effort = normalizeSkillEffort(this.skill.effort);
       const agentType = await resolveSkillAgentType(this.skill.agent, this.skill.name);
 
-      const result = await subAgent.executeCustom({
-        systemPrompt: "你是一个专注的助手，请完成以下任务。",
-        userPrompt: prompt,
-        // P0-5：未声明 allowed-tools 时给只读默认集，而不是零工具
-        allowedTools: resolveSkillAllowedTools(this.skill),
-        // P2-2：与 command/executor.ts 的 fork 命令同档，默认从 10 提到 30
-        maxTurns: this.skill.maxTurns ?? 30,
-        effort,
-        type: agentType ?? `skill:${this.skill.name}`,
-      });
+      const run = ctx.beginForkedRun?.();
+      let result: Awaited<ReturnType<typeof subAgent.executeCustom>>;
+      try {
+        result = await subAgent.executeCustom(
+          {
+            systemPrompt: "你是一个专注的助手，请完成以下任务。",
+            userPrompt: prompt,
+            // P0-5：未声明 allowed-tools 时给只读默认集，而不是零工具
+            allowedTools: resolveSkillAllowedTools(this.skill),
+            // P2-2：与 command/executor.ts 的 fork 命令同档，默认从 10 提到 30
+            maxTurns: this.skill.maxTurns ?? 30,
+            effort,
+            type: agentType ?? `skill:${this.skill.name}`,
+          },
+          run?.signal,
+        );
+      } finally {
+        run?.end();
+      }
+      if (run?.signal.aborted) {
+        return { kind: "error", message: `已取消 /${this.skill.name}` };
+      }
 
       return {
         kind: "message",
         message: result.success ? result.output : `子代理执行失败: ${result.output}`,
+        conversational: true,
       };
     } catch (e: any) {
       return { kind: "error", message: `fork 执行失败: ${e?.message ?? String(e)}` };

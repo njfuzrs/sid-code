@@ -8,6 +8,7 @@
 
 import { PANEL_MIN_LINES } from "@sid-code/core/command-contract/types.ts";
 import type { CommandPanelSpec } from "../command/types.ts";
+import type { Message } from "@sid-code/core/llm/types.ts";
 
 export type CommandResultRoute =
   | { to: "panel"; content: string; panel: CommandPanelSpec }
@@ -32,4 +33,27 @@ export function routeCommandResult(
   return opts.isError
     ? { to: "status", text: `✗ ${oneLine}`, delayMs: COMMAND_ERROR_STATUS_MS }
     : { to: "status", text: oneLine, delayMs: COMMAND_STATUS_MS };
+}
+
+/**
+ * 模型对斜杠命令的回答（fork 子代理执行的 skill / 自定义命令）落成的一轮对话。
+ *
+ * 不在 routeCommandResult 的三个去处里：它不是命令报告，是对话本身——要进消息流、
+ * 进上下文（下一轮模型才接得上）、进会话存档（resume 后还在）。
+ * user 消息用 command-expansion 标记，屏幕只显示触发命令（与 inline 展开同一套渲染），
+ * 正文同样是触发命令原文：展开后的提示词只喂给了子代理，主对话里没有它。
+ */
+export function buildCommandAnswerMessages(
+  input: string,
+  output: string | null | undefined,
+): Message[] {
+  const text = (output ?? "").trim();
+  return [
+    {
+      role: "user",
+      content: [{ type: "text", text: input }],
+      _meta: { origin: "command-expansion", displayCommand: input },
+    },
+    { role: "assistant", content: [{ type: "text", text: text || "（无输出）" }] },
+  ];
 }

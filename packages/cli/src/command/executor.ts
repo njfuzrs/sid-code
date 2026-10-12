@@ -254,6 +254,10 @@ export class CommandExecutor {
   ): CommandExecutionResult {
     switch (result.type) {
       case "text": {
+        // 模型的回答不受 outputPanel 声明影响：它属于对话，不是命令报告
+        if (result.conversational) {
+          return { type: "message", value: result.value, conversational: true };
+        }
         const panel = resolvePanel(result.value, result.panel, outputPanel);
         return panel
           ? { type: "message", value: result.value, panel }
@@ -491,27 +495,43 @@ export class CommandExecutor {
         subAgent.setPermissionChecker(this.ctx.permissionChecker);
       }
 
-      const result = await subAgent.executeCustom({
-        systemPrompt: skill
-          ? `你是一个专门执行 "${skill.name}" 任务的代理。${skill.description}`
-          : "你是一个专注的助手，请完成以下任务。",
-        userPrompt: prompt,
-        allowedTools,
-        // P2-2：fork 命令无 forkMessages/继承主对话概念（systemPrompt 是全新的“专注助手”提示词），
-        // 与常规非 fork 子代理同档：默认从 10 提到 30。
-        maxTurns: cmd.maxTurns ?? 30,
-        // 超时透传：对齐磁盘 skill 的钳制（默认 2 分钟，最大 30 分钟）。
-        // 不传 timeoutMins 时 executeCustom 内部默认 120_000ms，与历史行为一致。
-        timeout:
-          cmd.timeoutMins != null ? Math.min(Math.max(cmd.timeoutMins, 1), 30) * 60_000 : undefined,
-        effort,
-        // agent 优先作为 agent 类型（memory/system prompt 跟随）；否则沿用 skill:<name>
-        type: skill ? (agentType ?? `skill:${skill.name}`) : undefined,
-      });
+      // 开跑前先回显 + 进加载态（cc 同处 setToolJSX 出 spinner），拿到本次运行的中断信号
+      const run = this.ctx.beginForkedRun?.();
+      let result: Awaited<ReturnType<typeof subAgent.executeCustom>>;
+      try {
+        result = await subAgent.executeCustom(
+          {
+            systemPrompt: skill
+              ? `你是一个专门执行 "${skill.name}" 任务的代理。${skill.description}`
+              : "你是一个专注的助手，请完成以下任务。",
+            userPrompt: prompt,
+            allowedTools,
+            // P2-2：fork 命令无 forkMessages/继承主对话概念（systemPrompt 是全新的“专注助手”提示词），
+            // 与常规非 fork 子代理同档：默认从 10 提到 30。
+            maxTurns: cmd.maxTurns ?? 30,
+            // 超时透传：对齐磁盘 skill 的钳制（默认 2 分钟，最大 30 分钟）。
+            // 不传 timeoutMins 时 executeCustom 内部默认 120_000ms，与历史行为一致。
+            timeout:
+              cmd.timeoutMins != null
+                ? Math.min(Math.max(cmd.timeoutMins, 1), 30) * 60_000
+                : undefined,
+            effort,
+            // agent 优先作为 agent 类型（memory/system prompt 跟随）；否则沿用 skill:<name>
+            type: skill ? (agentType ?? `skill:${skill.name}`) : undefined,
+          },
+          run?.signal,
+        );
+      } finally {
+        run?.end();
+      }
+      if (run?.signal.aborted) {
+        return { type: "error", message: `已取消 /${cmd.name}` };
+      }
 
       return {
         type: "message",
         value: result.success ? result.output : `子代理执行失败: ${result.output}`,
+        conversational: true,
       };
     } catch (e: any) {
       return {
