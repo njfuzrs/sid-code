@@ -627,12 +627,19 @@ export default defineConfig({
     externalLinkIcon: true,
 
     footer: {
+      // 备案信息：工信部 ICP 备案 + 公安联网备案，按规定需在页脚展示并链接到官方查询页。
+      // 公安徽标放在 public/beian-gongan.png（原图 62×67），这里按行高缩到 16px。
+      // message / copyright 由 VitePress 以 v-html 渲染，所以可以直接写 HTML。
+      message:
+        'ICP备案/许可证号：<a href="https://beian.miit.gov.cn/" target="_blank" rel="noopener noreferrer">苏ICP备2026053462号-1</a>' +
+        '<span style="margin: 0 0.75em">|</span>' +
+        '<a href="https://beian.mps.gov.cn/#/query/webSearch?code=32011502014154" target="_blank" rel="noopener noreferrer">' +
+        '<img src="/beian-gongan.png" alt="公安备案图标" width="15" height="16" style="display: inline-block; vertical-align: -3px; margin-right: 4px">' +
+        "苏公网安备32011502014154号</a>",
       // llms.txt 由 scripts/docs-gen-reference.ts 生成（T-3.3b），供 agent 抓全站索引。
       // sid-code 本身就是 agent，自家 agent 能读懂自家文档是个闭环。
-      message:
-        '本站由 <a href="https://vitepress.dev/">VitePress</a> 构建。参考类页面由脚本从源码生成。' +
-        '给大模型看的全站索引：<a href="/llms.txt">llms.txt</a>',
-      copyright: "sid-code · 跑在终端的 coding agent",
+      copyright:
+        'Copyright © 2026 sid-code · 跑在终端的 coding agent · <a href="/llms.txt">llms.txt</a>',
     },
   },
 
