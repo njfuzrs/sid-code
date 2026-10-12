@@ -127,6 +127,13 @@ type SessionRecordInput =
       source?: "summary" | "emergency" | "pipeline";
     }
   | { type: "metadata"; key: string; value: unknown; timestamp: string }
+  /**
+   * 撤回一条「未送达模型」的用户输入（ESC 取消 / 请求失败后 ESC）。
+   * JSONL 是追加写，不能删行，所以落一条撤回标记：恢复时把它之前最近的 `dropCount` 条
+   * 消息记录弹掉。没有这条记录，`-c` 恢复后被撤回的消息会重新出现，并作为一条
+   * 「模型从未回应过的 user 消息」毒化下一轮请求（与新消息被合并成同一条 user）。
+   */
+  | { type: "prompt_retracted"; dropCount: number; timestamp: string }
   | { type: "session_end"; totalCostUSD: number; totalMessages: number; timestamp: string };
 
 /** 落盘记录形态：调用方记录 + 链字段 */
@@ -389,6 +396,11 @@ export class SessionStore {
   private pendingStart: Extract<SessionRecord, { type: "session_start" }> | null = null;
   /** P0-1：当前链尾 uuid，null 表示尚无记录或链头 */
   private lastUuid: string | null = null;
+  /**
+   * 本进程累计落盘的消息记录数（user/assistant/tool_result）。只用作**相对**计数：
+   * 调用方在一轮开始前取快照，撤回时用差值算出要弹掉几条（见 appendPromptRetraction）。
+   */
+  private messageRecordCount = 0;
 
   constructor() {
     // P0-1：写入落到「当前项目」子目录（sessions/<projectKey>/）。
@@ -619,6 +631,7 @@ export class SessionStore {
     },
   ): void {
     if (!this.currentFile) return;
+    this.messageRecordCount++;
     const type =
       message.role === "user"
         ? "user_message"
@@ -691,6 +704,30 @@ export class SessionStore {
       // 可选字段：老文件无此字段，读取方不得假设它存在。
       ...(source ? { source } : {}),
     } as SessionRecordInput);
+  }
+
+  /** 本进程已落盘的消息记录数（相对计数，供 appendPromptRetraction 计算差值）。 */
+  getMessageRecordCount(): number {
+    return this.messageRecordCount;
+  }
+
+  /**
+   * 撤回自 `sinceCount`（调用方在本轮开始前取的 getMessageRecordCount 快照）之后落盘的
+   * 全部消息记录。恢复时 parseSessionJsonl 会把它们弹掉。
+   *
+   * @returns 撤回的消息记录条数（0 = 没有需要撤回的，不落记录）
+   */
+  appendPromptRetraction(sinceCount: number): number {
+    if (!this.currentFile) return 0;
+    const dropCount = this.messageRecordCount - sinceCount;
+    if (dropCount <= 0) return 0;
+    this.appendRecord({
+      type: "prompt_retracted",
+      dropCount,
+      timestamp: new Date().toISOString(),
+    });
+    this.messageRecordCount = sinceCount;
+    return dropCount;
   }
 
   /** 记录元数据变更 */
@@ -1163,6 +1200,14 @@ export function parseSessionJsonlLines(lines: string[]): SessionData | null {
         // B2 方案A：compact 记录退化为纯标记，**不清空 messages**（详见函数顶部说明）。
         updatedAt = record.timestamp;
         break;
+      case "prompt_retracted": {
+        // 撤回未送达模型的用户输入：弹掉最近 dropCount 条消息记录。
+        // 夹到 [0, messages.length]：坏数据最多弹空，不越界。
+        const n = Math.min(Math.max(0, Math.floor(record.dropCount) || 0), messages.length);
+        if (n > 0) messages.splice(messages.length - n, n);
+        updatedAt = record.timestamp;
+        break;
+      }
       case "session_end":
         updatedAt = record.timestamp;
         break;
