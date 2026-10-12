@@ -13,6 +13,7 @@
 import React from "react";
 import { Box } from "../render-port/components.ts";
 import { Text } from "../render-port/components.ts";
+import { stringWidth } from "../render-port/text.ts";
 import { theme } from "../semantic-colors.ts";
 import { BaseSelectionList, type SelectionListItem } from "./shared/BaseSelectionList.tsx";
 import { ARROW_PROMPT } from "../constants/figures.ts";
@@ -66,6 +67,8 @@ export const ExtensionTrustDialog: React.FC<Props> = ({
 
   const shown = items.slice(0, MAX_ITEMS_SHOWN);
   const extra = items.length - shown.length;
+  // 「› [kind]」+ 1 列间隔；kind 是闭集短词（skill/command/agent），按实际最宽算
+  const kindColWidth = Math.max(0, ...shown.map((it) => stringWidth(`[${it.kind}]`))) + 3;
 
   return (
     <Box
@@ -88,11 +91,19 @@ export const ExtensionTrustDialog: React.FC<Props> = ({
         <Text color={theme.ui.active}>{workspacePath}</Text>
       </Box>
       <Box marginTop={1} flexDirection="column">
+        {/* 安全闸门：路径不截断（用户要看清加载的是哪个文件），kind 列定宽、路径在本列内换行。
+            旧实现三段平铺，长路径会挤压 [kind] 并让换行起点漂到行首。 */}
         {shown.map((item) => (
-          <Box key={item.displayPath}>
-            <Text color={theme.status.warning}>{ARROW_PROMPT} </Text>
-            <Text color={theme.text.primary}>[{item.kind}] </Text>
-            <Text color={theme.text.secondary}>{item.displayPath}</Text>
+          <Box key={item.displayPath} flexDirection="row">
+            <Box width={kindColWidth} flexShrink={0}>
+              <Text>
+                <Text color={theme.status.warning}>{ARROW_PROMPT} </Text>
+                <Text color={theme.text.primary}>[{item.kind}]</Text>
+              </Text>
+            </Box>
+            <Box flexGrow={1} flexShrink={1}>
+              <Text color={theme.text.secondary}>{item.displayPath}</Text>
+            </Box>
           </Box>
         ))}
         {extra > 0 && <Text> …等共 {items.length} 项</Text>}

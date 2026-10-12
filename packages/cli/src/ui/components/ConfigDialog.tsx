@@ -12,8 +12,8 @@
 import React, { useState, useMemo } from "react";
 import { Box } from "../render-port/components.ts";
 import { Text } from "../render-port/components.ts";
-import stringWidth from "string-width";
 import { theme } from "../semantic-colors.ts";
+import { fitCell, columnWidth } from "./shared/text-layout.ts";
 import type { Color } from "../render-port/types.ts";
 import { useKeypress, KeypressPriority, type Key } from "../contexts/KeypressContext.tsx";
 import { BaseSelectionList, type SelectionListItem } from "./shared/BaseSelectionList.tsx";
@@ -137,10 +137,15 @@ export const ConfigDialog: React.FC<ConfigDialogProps> = ({ onClose, config, run
     prevGroup = info.group;
   });
 
-  // key 列宽对齐
-  const keyColWidth = Math.max(...configItems.map((it) => stringWidth(it.key)), 0);
-  // value 列宽对齐（截断超长值到 28 列，避免撑破）
-  const valColWidth = Math.min(28, Math.max(...configItems.map((it) => stringWidth(it.value)), 0));
+  // key 列封顶 32、value 列封顶 28：值可能是长 URL / JSON，超出截断而不是撑破整行
+  const keyColWidth = columnWidth(
+    configItems.map((it) => it.key),
+    32,
+  );
+  const valColWidth = columnWidth(
+    configItems.map((it) => it.value),
+    28,
+  );
 
   const handleSelect = (key: string) => {
     const info = configItems.find((it) => it.key === key);
@@ -168,12 +173,8 @@ export const ConfigDialog: React.FC<ConfigDialogProps> = ({ onClose, config, run
           selectedIndicator={ARROW_PROMPT}
           renderItem={(item, { isSelected }) => {
             const { info, isGroupFirst } = item;
-            const keyPad = " ".repeat(Math.max(2, keyColWidth - stringWidth(info.key) + 2));
-            const valDisplay =
-              stringWidth(info.value) > valColWidth
-                ? info.value.slice(0, valColWidth - 1) + "…"
-                : info.value;
-            const valPad = " ".repeat(Math.max(1, valColWidth - stringWidth(valDisplay) + 2));
+            // 旧实现判断用 stringWidth、截取却用 .slice（按码元），CJK 值仍会超宽；
+            // 且值里的换行没压掉。统一走 fitCell：压单行 → 按显示宽截断 → 补齐
             return (
               <Box flexDirection="column">
                 {isGroupFirst && (
@@ -181,18 +182,16 @@ export const ConfigDialog: React.FC<ConfigDialogProps> = ({ onClose, config, run
                     {info.group}
                   </Text>
                 )}
-                <Box>
+                <Text wrap="truncate">
                   <Text color={isSelected ? theme.ui.focus : theme.text.primary}>
                     {"  "}
-                    {info.key}
-                    {keyPad}
+                    {fitCell(info.key, keyColWidth)}
                   </Text>
-                  <Text color={theme.text.primary}>
-                    {valDisplay}
-                    {valPad}
-                  </Text>
+                  {"  "}
+                  <Text color={theme.text.primary}>{fitCell(info.value, valColWidth)}</Text>
+                  {"  "}
                   <Text color={sourceColor(info.source)}>[{sourceLabel(info.source)}]</Text>
-                </Box>
+                </Text>
               </Box>
             );
           }}

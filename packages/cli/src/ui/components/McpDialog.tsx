@@ -12,7 +12,10 @@
 import React, { useState, useEffect, useCallback } from "react";
 import { Box } from "../render-port/components.ts";
 import { Text } from "../render-port/components.ts";
+import { useStdout } from "../render-port/hooks.ts";
+import { stringWidth } from "../render-port/text.ts";
 import { theme } from "../semantic-colors.ts";
+import { fitCell, clipLine, columnWidth } from "./shared/text-layout.ts";
 import type { Color } from "../render-port/types.ts";
 import { useKeypress, KeypressPriority, type Key } from "../contexts/KeypressContext.tsx";
 import { BaseSelectionList, type SelectionListItem } from "./shared/BaseSelectionList.tsx";
@@ -91,6 +94,72 @@ function getStatusText(server: MCPServerStatusInfo): string {
     disconnected: "未连接",
   };
   return texts[server.status] || server.status;
+}
+
+// ─── 行布局 ───
+
+const DEFAULT_TERM_WIDTH = 100;
+/** 边框 2 + paddingX 2 + 列表指针列 2 + 1 列余量（防写满最后一列触发终端自动折行） */
+const ROW_OVERHEAD = 7;
+const COL_GAP = 2;
+
+function serverCounts(s: MCPServerStatusInfo): string {
+  if (s.status !== "connected") return "";
+  const counts = [`${s.toolCount} 工具`];
+  if (s.resourceCount > 0) counts.push(`${s.resourceCount} 资源`);
+  if (s.promptCount > 0) counts.push(`${s.promptCount} 提示词`);
+  return `[${counts.join(", ")}]`;
+}
+
+export interface McpServerRowLayout {
+  nameCol: number;
+  transportCol: number;
+  statusCol: number;
+  countsCol: number;
+  tailCol: number;
+}
+
+/**
+ * 服务器列表的列宽。旧实现一行平铺 6 个 Text、无定宽无截断，
+ * 而 error 是运行时错误信息（常带换行、动辄上百字），会把名称挤折行、整列错位。
+ * 名称 / 传输 / 状态 / 计数各自定宽，错误信息压单行后截到剩余宽度。
+ */
+export function computeMcpServerLayout(
+  servers: MCPServerStatusInfo[],
+  termWidth: number,
+): McpServerRowLayout {
+  const inner = Math.max(30, termWidth - ROW_OVERHEAD);
+  const nameCol = columnWidth(
+    servers.map((s) => s.name),
+    Math.floor(inner * 0.3),
+    4,
+  );
+  const transportCol = columnWidth(
+    servers.map((s) => `(${s.transport})`),
+    16,
+  );
+  const statusCol = columnWidth(
+    servers.map((s) => `${getStatusIcon(s.status).icon} ${getStatusText(s)}`),
+    18,
+  );
+  const countsCol = columnWidth(servers.map(serverCounts), 28);
+  const used = nameCol + transportCol + statusCol + countsCol + COL_GAP * 4;
+  return { nameCol, transportCol, statusCol, countsCol, tailCol: Math.max(0, inner - used) };
+}
+
+/** 工具列表：名称定宽 + 描述压单行按显示宽截断（原先 `.slice(0, 60)` 按码元截，CJK 下超宽） */
+export function computeMcpToolLayout(
+  tools: MCPToolDefinition[],
+  termWidth: number,
+): { nameCol: number; descCol: number } {
+  // 列表开了序号列：`${n}. `，宽度 = 位数 + 2
+  const inner = Math.max(30, termWidth - ROW_OVERHEAD - (String(tools.length).length + 2));
+  const nameCol = columnWidth(
+    tools.map((t) => t.name),
+    Math.floor(inner * 0.4),
+    4,
+  );
+  return { nameCol, descCol: Math.max(0, inner - nameCol - COL_GAP) };
 }
 
 // ─── 主组件 ───
@@ -181,6 +250,8 @@ interface McpServerListProps {
 }
 
 const McpServerList: React.FC<McpServerListProps> = ({ servers, onClose, onSelectServer }) => {
+  const { stdout } = useStdout();
+  const layout = computeMcpServerLayout(servers, stdout?.columns || DEFAULT_TERM_WIDTH);
   // Esc 关闭
   useKeypress(KeypressPriority.Critical, (key: Key) => {
     if (key.name === "escape") {
@@ -246,27 +317,35 @@ const McpServerList: React.FC<McpServerListProps> = ({ servers, onClose, onSelec
           maxItemsToShow={12}
           selectedIndicator={ARROW_PROMPT}
           renderItem={(item, { isSelected }) => {
-            const { icon, color } = getStatusIcon(item.value.status);
-            const counts: string[] = [];
-            if (item.value.status === "connected") {
-              counts.push(`${item.value.toolCount} 工具`);
-              if (item.value.resourceCount > 0) counts.push(`${item.value.resourceCount} 资源`);
-              if (item.value.promptCount > 0) counts.push(`${item.value.promptCount} 提示词`);
-            }
-            const countsStr = counts.length > 0 ? ` [${counts.join(", ")}]` : "";
-            const errorStr = item.value.error ? ` - ${item.value.error}` : "";
-
+            const s = item.value;
+            const { icon, color } = getStatusIcon(s.status);
+            const gap = " ".repeat(COL_GAP);
+            // 状态列是「图标 + 文本」两种颜色：图标单独上色，文本补齐到列宽
+            const statusText = fitCell(getStatusText(s), layout.statusCol - stringWidth(icon) - 1);
+            // 整行单个 Text + truncate，不交给 flex 收缩
             return (
-              <Box>
+              <Text wrap="truncate">
                 <Text color={isSelected ? theme.ui.focus : theme.text.primary}>
-                  {item.value.name}
+                  {fitCell(s.name, layout.nameCol)}
                 </Text>
-                <Text color={theme.text.secondary}> ({item.value.transport}) </Text>
-                <Text color={color}>{icon}</Text>
-                <Text color={theme.text.secondary}> {getStatusText(item.value)}</Text>
-                {countsStr && <Text color={theme.text.secondary}>{countsStr}</Text>}
-                {errorStr && <Text color={theme.status.error}>{errorStr}</Text>}
-              </Box>
+                {gap}
+                <Text color={theme.text.secondary}>
+                  {fitCell(`(${s.transport})`, layout.transportCol)}
+                </Text>
+                {gap}
+                <Text color={color}>{icon}</Text>{" "}
+                <Text color={theme.text.secondary}>{statusText}</Text>
+                {gap}
+                <Text color={theme.text.secondary}>
+                  {fitCell(serverCounts(s), layout.countsCol)}
+                </Text>
+                {s.error ? (
+                  <>
+                    {gap}
+                    <Text color={theme.status.error}>{clipLine(s.error, layout.tailCol)}</Text>
+                  </>
+                ) : null}
+              </Text>
             );
           }}
         />
@@ -455,6 +534,8 @@ interface McpToolListProps {
 }
 
 const McpToolList: React.FC<McpToolListProps> = ({ server, tools, onBack, onSelectTool }) => {
+  const { stdout } = useStdout();
+  const layout = computeMcpToolLayout(tools, stdout?.columns || DEFAULT_TERM_WIDTH);
   useKeypress(KeypressPriority.Critical, (key: Key) => {
     if (key.name === "escape") {
       onBack();
@@ -518,16 +599,17 @@ const McpToolList: React.FC<McpToolListProps> = ({ server, tools, onBack, onSele
           maxItemsToShow={15}
           selectedIndicator={ARROW_PROMPT}
           renderItem={(item, { titleColor }) => (
-            <Box>
-              <Text color={titleColor}>{item.value.name}</Text>
-              {item.value.description && (
-                <Text color={theme.text.secondary}>
-                  {" "}
-                  — {item.value.description.slice(0, 60)}
-                  {item.value.description.length > 60 ? "…" : ""}
-                </Text>
-              )}
-            </Box>
+            <Text wrap="truncate">
+              <Text color={titleColor}>{fitCell(item.value.name, layout.nameCol)}</Text>
+              {item.value.description ? (
+                <>
+                  {" ".repeat(COL_GAP)}
+                  <Text color={theme.text.secondary}>
+                    {clipLine(item.value.description, layout.descCol)}
+                  </Text>
+                </>
+              ) : null}
+            </Text>
           )}
         />
       </Box>

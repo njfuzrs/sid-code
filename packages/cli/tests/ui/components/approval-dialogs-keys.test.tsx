@@ -9,6 +9,7 @@
 import { test, expect, describe } from "bun:test";
 import React from "react";
 import { PassThrough } from "node:stream";
+import stringWidth from "string-width";
 import { renderSync } from "@sid-code/cli/ui/render-port/testing.ts";
 import { KeypressProvider, ESC_TIMEOUT } from "@sid-code/cli/ui/contexts/KeypressContext.tsx";
 import { ExtensionTrustDialog } from "@sid-code/cli/ui/components/ExtensionTrustDialog.tsx";
@@ -86,7 +87,15 @@ describe("ExtensionTrustDialog", () => {
     await r.press("");
     const frame = r.lastFrame();
     expect(frame).toContain("发现 2 个未信任的项目级扩展");
-    expect(frame).toContain("[命令] .sid-code/commands/evil.md");
+    // kind 列定宽对齐（[命令] 6 列补齐到 [skill] 7 列），所以 kind 与路径之间的空格数不固定；
+    // 改为断言内容在同一行 + 两行路径起点对齐
+    expect(frame).toMatch(/\[命令\]\s+\.sid-code\/commands\/evil\.md/);
+    const lines = (frame ?? "").split("\n");
+    const pathCols = [".sid-code/commands/evil.md", ".claude/skills/x/SKILL.md"].map((p) => {
+      const line = lines.find((l) => l.includes(p)) ?? "";
+      return stringWidth(line.slice(0, line.indexOf(p)));
+    });
+    expect(pathCols[0]).toBe(pathCols[1]);
     expect(frame).not.toContain("[y/N]");
     await r.press(KEY.enter);
     expect(decisions).toEqual([false]);

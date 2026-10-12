@@ -16,7 +16,9 @@
 import React from "react";
 import { Box } from "../render-port/components.ts";
 import { Text } from "../render-port/components.ts";
+import { stringWidth } from "../render-port/text.ts";
 import { theme } from "../semantic-colors.ts";
+import { oneLine, clipLine } from "./shared/text-layout.ts";
 import { BaseSelectionList, type SelectionListItem } from "./shared/BaseSelectionList.tsx";
 import { ARROW_PROMPT } from "../constants/figures.ts";
 import { useKeypress, KeypressPriority, type Key } from "../contexts/KeypressContext.tsx";
@@ -64,6 +66,11 @@ const TYPE_LABELS: Record<TrustCheckItem["type"], string> = {
   bash_permissions: "Bash 权限规则",
 };
 
+/** 类型标签列宽：「› Bash 权限规则:」= 2 + 13 + 1 = 16 列，再留 1 列间隔 */
+const TYPE_COL_WIDTH = Math.max(...Object.values(TYPE_LABELS).map((l) => stringWidth(l))) + 4;
+/** details 预览的显示宽度上限（原 120 码元，改为 120 显示列） */
+const DETAILS_MAX_WIDTH = 120;
+
 export const TrustDialog: React.FC<Props> = ({ items, workspacePath, onDecision, onClose }) => {
   useKeypress(KeypressPriority.Critical, (key: Key) => {
     if (key.name === "escape") {
@@ -98,14 +105,27 @@ export const TrustDialog: React.FC<Props> = ({ items, workspacePath, onDecision,
         <Text color={theme.ui.active}>{workspacePath}</Text>
       </Box>
       <Box marginTop={1} flexDirection="column">
+        {/* 安全闸门：描述不截断（用户要看清在授权什么），改为标签列定宽 + 描述在本列内换行。
+            旧实现三段 Text 平铺，长描述会挤压类型标签、换行后起点漂移到行首。
+            details 原先 .slice(0,120) 按码元截（CJK 超宽、换行不压），改为按显示宽截断。 */}
         {shown.map((item, i) => (
           <Box key={`${item.type}-${i}`} flexDirection="column">
-            <Box>
-              <Text color={theme.status.warning}>{ARROW_PROMPT} </Text>
-              <Text color={theme.text.primary}>{TYPE_LABELS[item.type]}: </Text>
-              <Text color={theme.text.secondary}>{item.description}</Text>
+            <Box flexDirection="row">
+              <Box width={TYPE_COL_WIDTH} flexShrink={0}>
+                <Text>
+                  <Text color={theme.status.warning}>{ARROW_PROMPT} </Text>
+                  <Text color={theme.text.primary}>{TYPE_LABELS[item.type]}:</Text>
+                </Text>
+              </Box>
+              <Box flexGrow={1} flexShrink={1}>
+                <Text color={theme.text.secondary}>{oneLine(item.description)}</Text>
+              </Box>
             </Box>
-            {item.details ? <Text> {item.details.slice(0, 120)}</Text> : null}
+            {item.details ? (
+              <Box paddingLeft={TYPE_COL_WIDTH}>
+                <Text wrap="truncate">{clipLine(item.details, DETAILS_MAX_WIDTH)}</Text>
+              </Box>
+            ) : null}
           </Box>
         ))}
         {extra > 0 && <Text> …等共 {items.length} 项</Text>}
