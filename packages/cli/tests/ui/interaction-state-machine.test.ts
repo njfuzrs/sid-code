@@ -15,7 +15,7 @@
 
 import { test, expect, describe } from "bun:test";
 import { matchBinding, bindingFor } from "@sid-code/cli/ui/keybindings/defaultBindings.ts";
-import { ChordMachine, defaultChordBindings } from "@sid-code/cli/ui/keybindings/chord.ts";
+import { ChordMachine, exampleChordBindings } from "@sid-code/cli/ui/keybindings/chord.ts";
 import type { Key } from "@sid-code/cli/ui/contexts/KeypressContext.tsx";
 
 /** 构造一个 Key 事件（默认无修饰键） */
@@ -75,19 +75,19 @@ describe("D4-3 — 键位分发状态机", () => {
 
 describe("D4-3 — ChordMachine 状态机", () => {
   test("初始状态 idle：isPending=false", () => {
-    const m = new ChordMachine(defaultChordBindings);
+    const m = new ChordMachine(exampleChordBindings);
     expect(m.isPending()).toBe(false);
   });
 
   test("和弦前缀键 → chord_started，进入 pending", () => {
-    const m = new ChordMachine(defaultChordBindings);
+    const m = new ChordMachine(exampleChordBindings);
     const r = m.process(key("k", { ctrl: true })); // Ctrl+K 是 Ctrl+K Ctrl+C 的前缀
     expect(r.type).toBe("chord_started");
     expect(m.isPending()).toBe(true);
   });
 
   test("完整和弦序列 Ctrl+K Ctrl+C → match editor:copyLine", () => {
-    const m = new ChordMachine(defaultChordBindings);
+    const m = new ChordMachine(exampleChordBindings);
     m.process(key("k", { ctrl: true }));
     const r = m.process(key("c", { ctrl: true }));
     expect(r.type).toBe("match");
@@ -97,7 +97,7 @@ describe("D4-3 — ChordMachine 状态机", () => {
   });
 
   test("和弦第二键不匹配 → cancel，并 replay 该键", () => {
-    const m = new ChordMachine(defaultChordBindings);
+    const m = new ChordMachine(exampleChordBindings);
     m.process(key("k", { ctrl: true }));
     const r = m.process(key("z")); // z 不是任何 Ctrl+K 和弦的第二键
     expect(r.type).toBe("cancel");
@@ -106,7 +106,7 @@ describe("D4-3 — ChordMachine 状态机", () => {
   });
 
   test("expire：pending 中超时 → 返回 replayKey 并回 idle", () => {
-    const m = new ChordMachine(defaultChordBindings);
+    const m = new ChordMachine(exampleChordBindings);
     m.process(key("k", { ctrl: true }));
     expect(m.isPending()).toBe(true);
     const expired = m.expire();
@@ -116,14 +116,14 @@ describe("D4-3 — ChordMachine 状态机", () => {
   });
 
   test("非前缀单键 → none（不消费）", () => {
-    const m = new ChordMachine(defaultChordBindings);
+    const m = new ChordMachine(exampleChordBindings);
     const r = m.process(key("x"));
     expect(r.type).toBe("none");
     expect(m.isPending()).toBe(false);
   });
 
   test("reset：强制回 idle 不返回键", () => {
-    const m = new ChordMachine(defaultChordBindings);
+    const m = new ChordMachine(exampleChordBindings);
     m.process(key("k", { ctrl: true }));
     m.reset();
     expect(m.isPending()).toBe(false);

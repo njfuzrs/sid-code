@@ -45,6 +45,7 @@ import { useInputHistoryStore } from "./hooks/useInputHistoryStore.ts";
 import { useShellCompletion } from "./hooks/useShellCompletion.ts";
 import { consumePendingRestore } from "./pending-input.ts";
 import { editInExternalEditor } from "./utils/external-editor.ts";
+import { isShortcutsHelpTrigger } from "./keybindings/helpShortcuts.ts";
 import {
   registerPaste,
   shouldPlaceholder,
@@ -85,6 +86,8 @@ interface InputAreaProps {
   onPermissionModeSwitch?: () => void;
   /** Ctrl+D（输入框为空时）请求退出的回调——由 App 传入 triggerQuit。 */
   onExitRequest?: () => void;
+  /** 空输入框按 `?` 时切换快捷键面板（由 Composer 持有显隐状态）。未传时 `?` 照常作字符插入。 */
+  onToggleShortcutsHelp?: () => void;
 }
 
 /**
@@ -187,6 +190,7 @@ export function InputArea({
   onPopQueuedForEdit,
   onPermissionModeSwitch,
   onExitRequest,
+  onToggleShortcutsHelp,
 }: InputAreaProps) {
   const lastSubmittedRef = useRef<string>("");
   const externalEditingRef = useRef(false); // Ctrl+G 外部编辑防重入
@@ -703,6 +707,13 @@ export function InputArea({
         .finally(() => {
           externalEditingRef.current = false;
         });
+      return true;
+    }
+
+    // ? 快捷键面板：只在空输入框、非输出中触发，并消费该键（不把 ? 插进输入框）。
+    // 句中的 ? 照常作字符输入——判定必须在这里做，因为只有 InputArea 知道输入框是否为空。
+    if (onToggleShortcutsHelp && isShortcutsHelpTrigger(key, tb.isEmpty(), isLoading)) {
+      onToggleShortcutsHelp();
       return true;
     }
 

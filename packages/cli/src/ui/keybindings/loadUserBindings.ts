@@ -36,7 +36,9 @@ export interface LoadBindingsResult {
  * 纯函数：把用户绑定合并进默认表。
  *
  * 规则：
- * 1. 用户绑定按 action 覆盖默认表里同 action 的项（stroke/display/description 全替换）。
+ * 1. 用户绑定按 action 覆盖默认表里同 action 的项（stroke/display/description 全替换），
+ *    **原位替换**——此前是跳过默认项再把用户项追加到表尾，结果只要 keybindings.json 里写了
+ *    （哪怕与默认完全相同的）覆盖，那几项就从帮助面板原来的位置跑到最后。
  * 2. 若用户把某 stroke 绑给 action X，而默认表里该 stroke 原属 action Y(≠X)，
  *    则移除默认表中那条 Y 绑定（防止同一键触发两个动作）。
  * 3. 用户新增的 action 追加到表尾。
@@ -45,19 +47,24 @@ export function mergeBindings(
   userBindings: KeyBinding[],
   defaults: KeyBinding[] = DEFAULT_BINDINGS,
 ): KeyBinding[] {
-  const userActions = new Set(userBindings.map((b) => b.action));
+  const userByAction = new Map(userBindings.map((b) => [b.action, b]));
   const userStrokeSigs = new Set(userBindings.map((b) => strokeSignature(b.stroke)));
 
   const merged: KeyBinding[] = [];
   for (const d of defaults) {
-    // 该默认 action 被用户覆盖 → 跳过默认项（稍后由用户项替代）。
-    if (userActions.has(d.action)) continue;
+    // 该默认 action 被用户覆盖 → 原位换成用户项。
+    const override = userByAction.get(d.action);
+    if (override) {
+      merged.push(override);
+      continue;
+    }
     // 该默认项的 stroke 被用户抢去绑别的 action → 移除，避免一键双义。
     if (userStrokeSigs.has(strokeSignature(d.stroke))) continue;
     merged.push(d);
   }
-  // 追加用户绑定（覆盖项 + 新增项）。
-  merged.push(...userBindings);
+  // 追加用户新增的 action。
+  const defaultActions = new Set(defaults.map((d) => d.action));
+  merged.push(...userBindings.filter((b) => !defaultActions.has(b.action)));
   return merged;
 }
 

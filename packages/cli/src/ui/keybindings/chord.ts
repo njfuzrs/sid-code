@@ -155,8 +155,18 @@ export class ChordMachine {
   }
 }
 
-/** 默认和弦绑定示例(可扩展) */
-export const defaultChordBindings: ChordBinding[] = [
+/**
+ * 默认和弦绑定：刻意为空。
+ *
+ * 这里原本直接把下面两条「示例」接进了运行时，结果 Ctrl+K 被当成和弦前缀吞掉——
+ * 第二键不匹配只 replay 第二键、超时直接丢弃前缀，InputArea 的 Ctrl+K（删到行尾，
+ * emacs / cc 惯例）因此**从未生效过**，而帮助里也从没提过这两条和弦。
+ * 新增默认和弦前必须先确认前缀键没有被单键语义占用，否则就是同样的吞键。
+ */
+export const defaultChordBindings: ChordBinding[] = [];
+
+/** 和弦状态机的示例绑定：仅供单测驱动 ChordMachine，不接入运行时。 */
+export const exampleChordBindings: ChordBinding[] = [
   {
     keys: [
       { ctrl: true, name: "k" },
