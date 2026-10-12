@@ -1,0 +1,79 @@
+id: case_inc_005
+category: incident-rca fix_priority
+priority: P0
+created_date: 2026-05-31
+
+eval_type: capability
+target_score: 4.0
+graduated_at: null
+holdout: false
+holdout_reason: null
+skill: incident-rca
+
+input:
+  user_query: |
+    P0 ongoing incident,2026-05-31T20:30 起,持续中.主页打不开,用户大量投诉.
+
+    日志:
+    ```
+    20:28:00 INFO [cdn] cache invalidation requested: key=index_html (issued by deploy-bot)
+    20:28:30 ERROR [origin] HTTP 503 Service Unavailable on /
+    20:30:00 ERROR [origin] HTTP 503 Service Unavailable on /
+    ... (重复)
+    ```
+
+    metrics:
+    - cdn.cache_hit_rate: 95% → 8%
+    - origin.qps: 200 → 6800 (34x)
+    - origin.cpu: 30% → 100% (饱和)
+
+    现状:故障还在持续,值班需要立即决策.
+
+    请给 RCA + 行动建议.
+  repo: sid-code
+  repo_commit: ""
+
+expected:
+  outcome: rca_fix_priority_three_tiers
+
+  must_include_any_of:
+    - "Hotfix"
+    - "立即"
+    - "Mitigation"
+    - "降级"
+    - "Long-term"
+    - "根治"
+    - "缓存"
+    - "CDN"
+
+  must_not_include:
+    - "无法诊断"
+    - "建议观察"
+    - "等等看"
+    - "已修复"
+  must_call_tools: []
+  must_not_call_tools:
+    - edit
+    - write
+  must_modify_files_in: []
+  must_not_modify_files:
+    - "src/"
+  max_steps: 12
+
+  reference_answer: |
+    必须给出三档行动:
+    Hotfix (立即, < 5 分钟): CDN 上手动重新生成 index_html 缓存,或临时启用 stale-while-revalidate
+    Mitigation (短期, < 30 分钟): origin 临时扩容 / 限流;在 LB 层加 503 friendly 页降级
+    Long-term Fix: cache invalidation 流程加分批 / 加 prewarm 步骤;deploy-bot 不允许全量 invalidate
+
+rubric:
+  fix_priority: "三档建议必须明确区分时间档(< 5min / < 30min / 长期),不能全合并成一段"
+  helpfulness: "Hotfix 必须可在没有研发参与的情况下由 SRE 执行"
+
+baseline_scores: {}
+
+source: "RFC-004 §2.2 fix_priority 维度 / CDN cache thundering herd archetype"
+notes: |
+  fix_priority 主维度 case.
+  考察三档行动建议的时间窗划分能力.
+related_subsystem: [ skill, skill/incident-rca ]

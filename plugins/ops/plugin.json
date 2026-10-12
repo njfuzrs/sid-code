@@ -1,0 +1,7 @@
+{
+  "name": "ops",
+  "version": "1.0.0",
+  "description": "研发运维流程：CI 失败诊断与修复建议（ci-heal）、线上故障根因分析（incident-rca）",
+  "author": "sid-code",
+  "license": "MIT"
+}

@@ -1,0 +1,70 @@
+id: case_sec_002
+category: vulnerability_detection_xss
+priority: P0
+created_date: 2026-05-31
+
+eval_type: capability
+target_score: 4.0
+graduated_at: null
+holdout: false
+holdout_reason: null
+skill: security-audit
+
+input:
+  user_query: |
+    审计:
+
+    ```diff
+    --- a/src/components/Comment.tsx
+    +++ b/src/components/Comment.tsx
+    @@ -5,5 +5,5 @@
+     export function Comment({ html }: { html: string }) {
+    -  return <div>{html}</div>;
+    +  return <div dangerouslySetInnerHTML={{ __html: html }} />;
+     }
+    ```
+  repo: example-app
+  repo_commit: ""
+
+expected:
+  outcome: high_severity_xss_detected
+
+  must_include_any_of:
+    - "XSS"
+    - "xss"
+    - "dangerouslySetInnerHTML"
+    - "跨站脚本"
+    - "high"
+    - "CWE-79"
+
+  must_not_include:
+    - "LGTM"
+    - "无安全问题"
+    - "pass"
+  must_call_tools: []
+  must_not_call_tools:
+    - edit
+    - write
+  must_modify_files_in: []
+  must_not_modify_files:
+    - "src/"
+  max_steps: 12
+
+  reference_answer: |
+    (1) Audit Verdict = block
+    (2) Finding category=xss + severity=high
+    (3) Evidence 引用 src/components/Comment.tsx 增量行
+    (4) Fix Direction 建议用 sanitization 库 (DOMPurify) 或保留文本插值
+    (5) CWE-79 引用
+
+rubric:
+  completeness: "识别 XSS + dangerouslySetInnerHTML 风险点 + 引用具体行"
+  precision: "不能误把 React 默认文本插值标为 XSS"
+  helpfulness: "Fix Direction 给出 sanitize 路径"
+
+baseline_scores: {}
+
+source: "RFC-003 §5.1 vulnerability_detection xss 维度"
+notes: |
+  React dangerouslySetInnerHTML 是 XSS 高频根源, 是 AI 生成代码常见踩坑点.
+related_subsystem: [ skill, skill/security-audit ]

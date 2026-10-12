@@ -1,0 +1,89 @@
+id: case_gov_002
+category: license_compliance
+priority: P0
+created_date: 2026-05-31
+
+eval_type: skill
+target_score: 4.0
+graduated_at: null
+holdout: false
+holdout_reason: null
+skill: code-governance
+
+title: "AGPL 依赖检测与替代建议"
+description: "检测 AGPL-3.0 依赖在网络服务中的合规风险，需给出具体替代方案"
+dimension: license_compliance
+difficulty: medium
+
+input:
+  user_query: |
+    我们的后端服务使用了以下依赖，请检查许可证合规性：
+
+    ```json
+    // package.json
+    {
+      "name": "payment-gateway",
+      "license": "Apache-2.0",
+      "private": true,
+      "dependencies": {
+        "fastify": "^4.21.0",
+        "pg": "^8.11.0",
+        "mongo-connector-agpl": "^3.2.1",
+        "zod": "^3.22.0",
+        "ioredis": "^5.3.0"
+      }
+    }
+    ```
+
+    mongo-connector-agpl 的许可证是 AGPL-3.0。这是一个对外提供 API 的支付网关服务。
+  repo: payment-gateway
+  repo_commit: ""
+
+expected:
+  outcome: agpl_network_service_risk_detected
+
+  must_include_any_of:
+    - "AGPL"
+    - "AGPL-3.0"
+    - "网络交互"
+    - "network interaction"
+    - "Affero"
+
+  must_include:
+    - "mongo-connector-agpl"
+    - "替代"
+
+  must_not_include:
+    - "无合规问题"
+    - "所有依赖合规"
+    - "LGTM"
+    - "fastify"
+    - "zod"
+    - "ioredis"
+  must_call_tools: []
+  must_not_call_tools:
+    - edit
+    - write
+  must_modify_files_in: []
+  must_not_modify_files:
+    - "src/"
+  max_steps: 15
+
+  reference_answer: |
+    必须命中:
+    (1) 识别 mongo-connector-agpl 为 AGPL-3.0 许可证
+    (2) 指出 AGPL 在网络服务场景下的传染性（通过网络交互也触发开源义务）
+    (3) 说明支付网关作为对外 API 服务，使用 AGPL 依赖意味着整个服务代码需开源
+    (4) 给出具体替代方案（如官方 MongoDB driver 或其他兼容许可证的连接器）
+
+rubric:
+  completeness: "识别 AGPL + 网络服务传染性解释 + 法律风险 + 具体替代方案"
+  precision: "不能误报 fastify/pg/zod/ioredis 等合规依赖；AGPL 与普通 GPL 的区别需说清"
+  helpfulness: "替代方案必须具体到库名或官方 driver，不能只说'换一个'"
+
+baseline_scores: {}
+
+source: "code-governance skill license_compliance 维度"
+notes: |
+  中等难度：AGPL 在网络服务场景的特殊传染性，比普通 GPL 更严格。
+related_subsystem: [ skill, skill/code-governance ]

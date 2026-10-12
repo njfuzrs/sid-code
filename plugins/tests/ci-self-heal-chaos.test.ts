@@ -1,7 +1,7 @@
 /**
  * ci-self-heal Skill 混沌测试(chaos test)
  *
- * 与 tests/skill/ci-self-heal.test.ts 互补 — 关注异常路径:
+ * 与 plugins/tests/ci-self-heal.test.ts 互补 — 关注异常路径:
  *   (1) 超时降级(SLA.failure_policy=degrade)
  *   (2) 报错降级(adapter error / LLM 失败)
  *   (3) 边界输入(日志截断 / 多语言 / flaky / 依赖循环 / 信息严重不足)case yaml 自身契约
@@ -17,20 +17,9 @@ import { describe, test, expect } from "bun:test";
 import { readFileSync, readdirSync } from "node:fs";
 import { join } from "node:path";
 import { parse as loadYaml } from "yaml";
+import { skillDir } from "./helpers.ts";
 
-const SKILL_DIR = join(
-  import.meta.dir,
-  "..",
-  "..",
-  "..",
-  "..",
-  "packages",
-  "core",
-  "src",
-  "skill",
-  "builtin",
-  "ci-self-heal",
-);
+const SKILL_DIR = skillDir("ops", "ci-heal");
 const EVALS_DIR = join(SKILL_DIR, "evals");
 const SKILL_FILE = join(SKILL_DIR, "SKILL.md");
 

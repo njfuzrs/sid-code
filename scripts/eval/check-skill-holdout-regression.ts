@@ -115,9 +115,12 @@ async function main(argv: string[]): Promise<number> {
     // P2-2 分包：builtin Skill 归 core 包。walkYaml 对不存在的目录返回 []，
     // 路径指错不会报错，只会「扫到 0 个 SKILL.md → 打印 skip → return 0」——
     // 这道 holdout 泄露门禁就此静默失效。
-    stagedSkills = walkYaml(
-      join(SID_CODE_ROOT, "packages", "core", "src", "skill", "builtin"),
-    ).filter((p) => p.endsWith("/SKILL.md") || p.endsWith("\\SKILL.md"));
+    // 插件化（2026-10 内置 skill 下沉方案 P1）：迁出的 skill 住在仓库根 plugins/，
+    // 不扫这里它们就脱离了这道门禁，而且同样不报错。
+    stagedSkills = [
+      ...walkYaml(join(SID_CODE_ROOT, "packages", "core", "src", "skill", "builtin")),
+      ...walkYaml(join(SID_CODE_ROOT, "plugins")),
+    ].filter((p) => p.endsWith("/SKILL.md") || p.endsWith("\\SKILL.md"));
   }
 
   if (stagedSkills.length === 0) {

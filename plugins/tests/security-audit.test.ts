@@ -17,21 +17,9 @@ import { describe, test, expect } from "bun:test";
 import { readFileSync, existsSync, statSync, readdirSync } from "node:fs";
 import { join } from "node:path";
 import { parse as loadYaml } from "yaml";
-import { SkillManager } from "@sid-code/core/skill/manager.ts";
+import { loadPluginSkillsFromRepo, skillDir } from "./helpers.ts";
 
-const SKILL_DIR = join(
-  import.meta.dir,
-  "..",
-  "..",
-  "..",
-  "..",
-  "packages",
-  "core",
-  "src",
-  "skill",
-  "builtin",
-  "security-audit",
-);
+const SKILL_DIR = skillDir("compliance", "security-audit");
 const SKILL_FILE = join(SKILL_DIR, "SKILL.md");
 
 interface SkillFrontmatter {
@@ -77,8 +65,6 @@ describe("security-audit Skill - 文件结构契约", () => {
   test("runner scripts/eval/run-security-audit-skill.ts 落盘", () => {
     const runner = join(
       import.meta.dir,
-      "..",
-      "..",
       "..",
       "..",
       "scripts",
@@ -227,35 +213,26 @@ describe("security-audit Skill - 红线 / 反例守护契约 (SKILL.md body)", (
   });
 });
 
-describe("security-audit Skill - SkillLoader 集成 (无 LLM 调用)", () => {
-  test("SkillManager.discover 把 security-audit 标为 builtin (ADR-025 修复后)", async () => {
-    const manager = new SkillManager();
-    await manager.discover();
-    const skills = manager.getAllSkills();
-    const found = skills.find((s) => s.name === "security-audit");
+describe("security-audit Skill - 插件加载集成(无 LLM 调用)", () => {
+  // 迁到插件后不再是 builtin：断言对象换成客户端装上插件后实际拿到的 SkillDefinition
+  test("插件加载链给出带命名空间的 compliance:security-audit", async () => {
+    const skills = await loadPluginSkillsFromRepo("compliance");
+    const found = skills.find((s) => s.name === "compliance:security-audit");
     expect(found).toBeDefined();
-    expect(found!.isBuiltin).toBe(true);
-    expect(found!.source).toBe("builtin");
+    expect(found!.isBuiltin).not.toBe(true);
+    expect(found!.loadedFrom).toBe("plugin");
     expect(found!.mode).toBe("delegate");
     expect(found!.allowedTools).toContain("read");
     expect(found!.allowedTools).not.toContain("edit");
     expect(found!.allowedTools).not.toContain("write");
   });
 
-  test("security-audit 与 code-review / ci-self-heal 共存, 不冲突", async () => {
-    const manager = new SkillManager();
-    await manager.discover();
-    const all = manager.getAllSkills();
-    const sec = all.find((s) => s.name === "security-audit");
-    const cr = all.find((s) => s.name === "code-review");
-    const csh = all.find((s) => s.name === "ci-self-heal");
-    expect(sec).toBeDefined();
-    expect(cr).toBeDefined();
-    expect(csh).toBeDefined();
-    // 三个 Skill 必须各自独立 SKILL.md
-    expect(sec!.filePath).not.toBe(cr!.filePath);
-    expect(sec!.filePath).not.toBe(csh!.filePath);
-    expect(cr!.filePath).not.toBe(csh!.filePath);
+  test("同插件内各 skill 独立 SKILL.md, 不冲突", async () => {
+    const skills = await loadPluginSkillsFromRepo("compliance");
+    const names = skills.map((s) => s.name);
+    expect(names).toContain("compliance:security-audit");
+    expect(names).toContain("compliance:governance");
+    expect(new Set(skills.map((s) => s.filePath)).size).toBe(skills.length);
   });
 });
 

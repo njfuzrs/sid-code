@@ -1,0 +1,79 @@
+id: case_inc_004
+category: incident-rca rca_hypothesis_priority
+priority: P0
+created_date: 2026-05-31
+
+eval_type: capability
+target_score: 4.0
+graduated_at: null
+holdout: false
+holdout_reason: null
+skill: incident-rca
+
+input:
+  user_query: |
+    P1 incident,2026-05-31T11:00 ~ 11:15 UTC,登录接口 5% 用户报 401.
+
+    日志(节选):
+    ```
+    11:02:33 WARN [auth] JWT verification failed: token signature mismatch (user_id=12345)
+    11:02:34 WARN [auth] JWT verification failed: token signature mismatch (user_id=67890)
+    11:03:11 WARN [auth] JWT verification failed: invalid issuer (user_id=23456)
+    11:03:50 INFO [auth] config reloaded: jwt_signing_key_id=v3
+    ```
+
+    metrics:
+    - auth.401_rate: 0.1% → 5%
+    - auth.qps: 持平
+    - jwt.signing_key_rotated_at: 2026-05-31T11:00 (15 分钟前)
+
+    recent ADR / SKILL changes:
+    - 11:00 ADR-XX (key rotation) approved + auto-applied via Daemon
+
+    请给 RCA.
+  repo: sid-code
+  repo_commit: ""
+
+expected:
+  outcome: rca_hypothesis_key_rotation_grace_period
+
+  must_include_any_of:
+    - "JWT"
+    - "key"
+    - "轮换"
+    - "rotation"
+    - "grace"
+    - "签名"
+    - "v3"
+
+  must_not_include:
+    - "无法诊断"
+    - "请提供更多上下文"
+    - "已修复"
+  must_call_tools: []
+  must_not_call_tools:
+    - edit
+    - write
+  must_modify_files_in: []
+  must_not_modify_files:
+    - "src/"
+  max_steps: 12
+
+  reference_answer: |
+    Top Hypothesis #1 应识别:
+    (1) 11:00 JWT signing key rotation 启动,但 grace period 不足 → 旧 key 签出的 token 立刻失效
+    (2) 5% 用户即旧 token 持有者 (15 分钟前已签发但还没过期)
+    (3) Hotfix: 临时回滚到 v2 key 同时支持 v2/v3 双签
+    (4) Long-term Fix: key rotation 必须保留 24h grace period 双 key 验证窗口
+
+rubric:
+  rca_hypothesis: "假设排序要把 key rotation 置首位,排除 token 篡改 / 用户输错密码等假设"
+  fix_priority: "hotfix 必须能在 5 分钟内 mitigate (双 key 验证或回滚)"
+
+baseline_scores: {}
+
+source: "RFC-004 §2.2 rca_hypothesis 维度 / 配置变更 archetype"
+notes: |
+  rca_hypothesis 主维度 case.
+  考察"假设排序的 commit / config 时间相关性"推理.
+related_subsystem: [ skill, skill/incident-rca ]

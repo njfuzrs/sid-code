@@ -12,24 +12,12 @@ import { describe, test, expect } from "bun:test";
 import { readFileSync, existsSync, statSync } from "node:fs";
 import { join } from "node:path";
 import { parse as loadYaml } from "yaml";
-import { SkillManager } from "@sid-code/core/skill/manager.ts";
-import { parseCILog } from "@sid-code/core/skill/builtin/ci-self-heal/scripts/parse-ci-log.ts";
-import { classifyFailure } from "@sid-code/core/skill/builtin/ci-self-heal/scripts/classify-failure.ts";
-import { generateFixSuggestions } from "@sid-code/core/skill/builtin/ci-self-heal/scripts/fix-suggestion-templates.ts";
+import { parseCILog } from "../ops/skills/ci-heal/scripts/parse-ci-log.ts";
+import { classifyFailure } from "../ops/skills/ci-heal/scripts/classify-failure.ts";
+import { generateFixSuggestions } from "../ops/skills/ci-heal/scripts/fix-suggestion-templates.ts";
+import { loadPluginSkillsFromRepo, skillDir } from "./helpers.ts";
 
-const SKILL_DIR = join(
-  import.meta.dir,
-  "..",
-  "..",
-  "..",
-  "..",
-  "packages",
-  "core",
-  "src",
-  "skill",
-  "builtin",
-  "ci-self-heal",
-);
+const SKILL_DIR = skillDir("ops", "ci-heal");
 const SKILL_FILE = join(SKILL_DIR, "SKILL.md");
 
 interface SkillFrontmatter {
@@ -91,7 +79,7 @@ describe("ci-self-heal Skill - SKILL.md frontmatter 契约", () => {
   const { fm } = parseFrontmatter(markdown);
 
   test("name = ci-self-heal", () => {
-    expect(fm.name).toBe("ci-self-heal");
+    expect(fm.name).toBe("ci-heal");
   });
 
   test("description 含 CI / 失败 / 诊断 关键字", () => {
@@ -188,29 +176,25 @@ describe("ci-self-heal Skill - 红线 / 反例守护契约(SKILL.md body)", () =
   });
 });
 
-describe("ci-self-heal Skill - SkillLoader 集成(无 LLM 调用)", () => {
-  test("SkillManager.discover 把 ci-self-heal 标为 builtin(ADR-025 修复后)", async () => {
-    const manager = new SkillManager();
-    await manager.discover();
-    const skills = manager.getAllSkills();
-    const csh = skills.find((s) => s.name === "ci-self-heal");
-    expect(csh).toBeDefined();
-    expect(csh!.isBuiltin).toBe(true);
-    expect(csh!.source).toBe("builtin");
-    expect(csh!.mode).toBe("delegate");
-    expect(csh!.allowedTools).toContain("read");
-    expect(csh!.allowedTools).not.toContain("edit");
+describe("ci-self-heal Skill - 插件加载集成(无 LLM 调用)", () => {
+  // 迁到插件后不再是 builtin：断言对象换成客户端装上插件后实际拿到的 SkillDefinition
+  test("插件加载链给出带命名空间的 ops:ci-heal", async () => {
+    const skills = await loadPluginSkillsFromRepo("ops");
+    const found = skills.find((s) => s.name === "ops:ci-heal");
+    expect(found).toBeDefined();
+    expect(found!.isBuiltin).not.toBe(true);
+    expect(found!.loadedFrom).toBe("plugin");
+    expect(found!.mode).toBe("delegate");
+    expect(found!.allowedTools).toContain("read");
+    expect(found!.allowedTools).not.toContain("edit");
   });
 
-  test("ci-self-heal 与 code-review 共存, 不冲突", async () => {
-    const manager = new SkillManager();
-    await manager.discover();
-    const all = manager.getAllSkills();
-    const cr = all.find((s) => s.name === "code-review");
-    const csh = all.find((s) => s.name === "ci-self-heal");
-    expect(cr).toBeDefined();
-    expect(csh).toBeDefined();
-    expect(cr!.filePath).not.toBe(csh!.filePath);
+  test("同插件内各 skill 独立 SKILL.md, 不冲突", async () => {
+    const skills = await loadPluginSkillsFromRepo("ops");
+    const names = skills.map((s) => s.name);
+    expect(names).toContain("ops:ci-heal");
+    expect(names).toContain("ops:incident-rca");
+    expect(new Set(skills.map((s) => s.filePath)).size).toBe(skills.length);
   });
 });
 

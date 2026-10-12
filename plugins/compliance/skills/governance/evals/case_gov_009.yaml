@@ -1,0 +1,94 @@
+id: case_gov_009
+category: audit_trail
+priority: P0
+created_date: 2026-05-31
+
+eval_type: skill
+target_score: 3.5
+graduated_at: null
+holdout: false
+holdout_reason: null
+skill: code-governance
+
+title: "高风险路径有 ADR 引用（验证 pass）"
+description: "高风险代码变更已正确引用 ADR，审计追踪完整，应判定为合规"
+dimension: audit_trail
+difficulty: easy
+
+input:
+  user_query: |
+    审计这个 PR diff 的治理合规性，检查高风险变更是否有对应的 ADR 引用：
+
+    ```diff
+    --- a/src/payment/gateway.ts
+    +++ b/src/payment/gateway.ts
+    @@ -8,6 +8,18 @@
+     export class PaymentGateway {
+    +  /**
+    +   * 新增支付宝渠道支持
+    +   * See ADR-015-payment-channel-expansion.md
+    +   * 风险评估: 中等（新渠道引入，已有沙箱测试覆盖）
+    +   */
+    +  async processAlipay(order: Order): Promise<PaymentResult> {
+    +    const client = this.getChannelClient('alipay');
+    +    return client.charge({
+    +      amount: order.totalAmount,
+    +      subject: order.description,
+    +      outTradeNo: order.id,
+    +    });
+    +  }
+     }
+    ```
+
+    commit message: "feat(payment): add alipay channel (ADR-015)"
+  repo: payment-service
+  repo_commit: ""
+
+expected:
+  outcome: audit_trail_complete_pass
+
+  must_include_any_of:
+    - "ADR-015"
+    - "合规"
+    - "审计追踪完整"
+    - "pass"
+    - "符合"
+
+  must_include:
+    - "ADR"
+    - "支付"
+
+  must_not_include:
+    - "缺少 ADR"
+    - "缺少审计"
+    - "不合规"
+    - "block"
+    - "高风险未记录"
+    - "需要补充 ADR"
+  must_call_tools: []
+  must_not_call_tools:
+    - edit
+    - write
+  must_modify_files_in: []
+  must_not_modify_files:
+    - "src/"
+  max_steps: 15
+
+  reference_answer: |
+    必须命中:
+    (1) 判定审计追踪完整 / 合规
+    (2) 确认 ADR-015 引用存在于代码注释和 commit message 中
+    (3) 确认风险评估已记录（"中等"+ 沙箱测试覆盖说明）
+    (4) 可选：肯定该实践为良好的治理范例
+
+rubric:
+  completeness: "正确判定合规 + 确认 ADR 引用 + 确认风险评估存在"
+  precision: "不能对已合规的变更产生误报；不能忽略 ADR 引用而报不合规"
+  helpfulness: "可以补充说明该实践的优点，作为团队参考"
+
+baseline_scores: {}
+
+source: "code-governance skill audit_trail 维度"
+notes: |
+  基础场景（正例）：验证有 ADR 引用的高风险变更能正确 pass。
+related_subsystem: [ skill, skill/code-governance ]

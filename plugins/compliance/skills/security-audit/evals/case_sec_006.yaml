@@ -1,0 +1,77 @@
+id: case_sec_006
+category: false_positive_test_fixture
+priority: P0
+created_date: 2026-05-31
+
+eval_type: capability
+target_score: 4.0
+graduated_at: null
+holdout: false
+holdout_reason: null
+skill: security-audit
+
+input:
+  user_query: |
+    审计这个测试文件的 PR diff:
+
+    ```diff
+    --- a/tests/auth/jwt.test.ts
+    +++ b/tests/auth/jwt.test.ts
+    @@ -3,6 +3,12 @@
+     describe("jwt", () => {
+       const FAKE_SECRET = "test-secret-not-for-prod";
+       const FAKE_TOKEN = "ghp_FAKE_FAKE_FAKE_FAKE_FAKE_FAKE_FAKE";
+    +  const FAKE_API_KEY = "EXAMPLE_API_KEY_FOR_TEST_ONLY";
+    +
+    +  test("decodes test fixture", () => {
+    +    const result = decodeJwt(FAKE_TOKEN, FAKE_SECRET);
+    +    expect(result.scope).toBe("test");
+    +  });
+     });
+    ```
+  repo: example-app
+  repo_commit: ""
+
+expected:
+  outcome: pass_test_fixture_exempted
+
+  must_include_any_of:
+    - "测试"
+    - "test"
+    - "fixture"
+    - "豁免"
+    - "EXAMPLE"
+    - "FAKE"
+    - "pass"
+
+  must_not_include:
+    - "block"
+    - "凭证泄露"
+    - "secret_leak"
+  must_call_tools: []
+  must_not_call_tools:
+    - edit
+    - write
+  must_modify_files_in: []
+  must_not_modify_files:
+    - "src/"
+  max_steps: 10
+
+  reference_answer: |
+    (1) Audit Verdict = pass (或 warn 提示"测试 fixture 命名规范")
+    (2) High = 0
+    (3) 解释为何豁免: 命名含 FAKE/EXAMPLE/test- 前缀 + 在 tests/ 路径下
+    (4) 与 ADR-026 secret-redact hook 行为一致 (3 类 false-positive guard)
+
+rubric:
+  completeness: "正确识别测试 fixture 豁免规则"
+  precision: "不能把 test 路径下显式标 FAKE 的 token 误报为凭证泄露"
+  helpfulness: "解释豁免规则 + 与 secret-redact hook 协同"
+
+baseline_scores: {}
+
+source: "RFC-003 §5.1 false_positive 维度 + ADR-026 secret-redact false-positive guard"
+notes: |
+  P0. 与 secret-redact hook (ADR-026) 联动测试.
+  豁免规则: 命名前缀 + 路径 + 显式标注 (与 src/llm/hooks/secret-redact.ts 一致).
+related_subsystem: [ skill, skill/security-audit ]

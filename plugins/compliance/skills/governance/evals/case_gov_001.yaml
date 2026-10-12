@@ -1,0 +1,87 @@
+id: case_gov_001
+category: license_compliance
+priority: P0
+created_date: 2026-05-31
+
+eval_type: skill
+target_score: 3.5
+graduated_at: null
+holdout: false
+holdout_reason: null
+skill: code-governance
+
+title: "GPL 依赖检测"
+description: "检测项目中引入了 GPL-3.0 许可证的依赖，应告警并建议替换"
+dimension: license_compliance
+difficulty: easy
+
+input:
+  user_query: |
+    审计这个项目的依赖合规性：
+
+    ```json
+    // package.json
+    {
+      "name": "my-saas-app",
+      "license": "MIT",
+      "dependencies": {
+        "express": "^4.18.0",
+        "lodash": "^4.17.21",
+        "readline-sync": "^1.4.10",
+        "gpl-crypto-lib": "^2.1.0"
+      }
+    }
+    ```
+
+    其中 gpl-crypto-lib 的 license 是 GPL-3.0。项目本身是 MIT 许可的商业 SaaS。
+  repo: my-saas-app
+  repo_commit: ""
+
+expected:
+  outcome: license_incompatibility_detected
+
+  must_include_any_of:
+    - "GPL"
+    - "GPL-3.0"
+    - "许可证冲突"
+    - "license incompatible"
+    - "传染"
+    - "copyleft"
+
+  must_include:
+    - "gpl-crypto-lib"
+    - "MIT"
+
+  must_not_include:
+    - "无合规问题"
+    - "所有依赖合规"
+    - "LGTM"
+    - "pass"
+    - "express"
+  must_call_tools: []
+  must_not_call_tools:
+    - edit
+    - write
+  must_modify_files_in: []
+  must_not_modify_files:
+    - "src/"
+  max_steps: 15
+
+  reference_answer: |
+    必须命中:
+    (1) 识别 gpl-crypto-lib 为 GPL-3.0 许可证
+    (2) 指出 GPL-3.0 与项目 MIT 许可证不兼容（copyleft 传染性）
+    (3) 说明商业 SaaS 使用 GPL 依赖的法律风险
+    (4) 建议替换为兼容许可证的替代库
+
+rubric:
+  completeness: "识别 GPL 依赖 + 指出与 MIT 不兼容 + 说明风险 + 给出替换建议"
+  precision: "不能误报 express/lodash 等 MIT 依赖为不合规"
+  helpfulness: "替换建议应具体可执行，而非泛泛而谈"
+
+baseline_scores: {}
+
+source: "code-governance skill license_compliance 维度"
+notes: |
+  基础场景：单个 GPL 依赖在 MIT 项目中的检测。
+related_subsystem: [ skill, skill/code-governance ]

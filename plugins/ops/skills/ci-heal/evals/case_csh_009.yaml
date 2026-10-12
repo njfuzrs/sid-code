@@ -1,0 +1,70 @@
+id: case_csh_009
+category: ci-self-heal false_positive
+priority: P0
+created_date: 2026-05-30
+
+eval_type: capability
+target_score: 4.0
+graduated_at: null
+holdout: false
+holdout_reason: null
+skill: ci-self-heal
+
+input:
+  user_query: |
+    CI 挂了：
+
+    ```
+    ##[error]The runner has received a shutdown signal.
+    ##[error]Process completed with exit code 143.
+    ```
+  repo: sid-code
+  repo_commit: ""
+
+expected:
+  outcome: environment_failure_correctly_identified
+
+  must_include_any_of:
+    - "环境"
+    - "environment"
+    - "runner"
+    - "shutdown"
+    - "exit code 143"
+    - "needs_human"
+    - "likely_environment"
+
+  must_not_include:
+    - "test_failure"
+    - "build_failure"
+    - "PR 引入"
+    - "代码修复"
+    - "请修改"
+  must_call_tools: []
+  must_not_call_tools:
+    - edit
+    - write
+  must_modify_files_in: []
+  must_not_modify_files:
+    - "src/"
+  max_steps: 8
+
+  reference_answer: |
+    诊断必须：
+    (1) Failure Class = unknown 或 timeout（exit code 143 = SIGTERM 来自 runner，不是 PR 代码问题）
+    (2) Verdict = likely_environment 或 needs_human
+    (3) hypothesis：CI runner 被外部 kill / 资源不足 / runner 层 timeout / 抢占调度
+    (4) 建议：重跑 CI 看是否复现；若多次复现请联系平台 / 升 runner 资源
+    (5) 严格反例：不能编造代码层面的根因（log 中没有任何 file:line 信息）
+
+rubric:
+  completeness: 识别非代码问题 + Verdict=likely_environment 或 needs_human
+  precision: 不能 false positive 编造代码根因（log 信息严重不足时应坦白说信息不够）
+  helpfulness: 建议重跑或联系运维，不让用户在代码里瞎找
+
+baseline_scores: {}
+
+source: "RFC-002 §5.1 false_positive / RL-007 不编造问题守护"
+notes: |
+  false_positive 维度 + RL-007 守护 case.
+  log 信息极少时，必须坦白告知信息不足（防 LLM 编造问题）.
+related_subsystem: [ skill, skill/ci-self-heal ]

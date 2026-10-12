@@ -54,3 +54,50 @@ export function emitSkillDegradation(
     /* 埋点失败静默 */
   }
 }
+
+// ─── skill 调用埋点（内置 skill 下沉方案 P1 · §2.3 / §8）─────────────────────
+//
+// 为什么需要：本机 101 个会话里 skill 元工具调用 0 次，但这个 0 不能当「没人用」——
+// 用户手敲 /xxx 走命令执行器，不经过元工具；logCommandInvoke 对非内置命令只报 "custom"
+// 占位，按 skill 名分不开。所以「迁走之后还有没有人在用」一直没有分母。
+// 这里在用户斜杠路径与模型路径各打一条，只进**本地轨迹**（events.jsonl），不经遥测出机器。
+
+/** 事件名常量 —— 生产侧与消费侧共用 */
+export const SKILL_INVOKED_EVENT_NAME = "skill_invoked";
+
+/** 调用路径（闭集）：slash = 用户斜杠命令，model = 模型经 Skill 元工具 / bundled 工具 */
+export type SkillInvocationVia = "slash" | "model";
+
+export interface SkillInvocationEvent {
+  /** 登记名（插件 skill 带 `<plugin>:` 前缀） */
+  skill: string;
+  via: SkillInvocationVia;
+  /** 来源：builtin / user / project / plugin / mcp / bundled 等；bundled TS skill 固定为 "bundled" */
+  loaded_from: string;
+  /** 只有插件 skill 才有 */
+  plugin?: string;
+}
+
+let invocationSink: SkillEventSink | null = null;
+
+/** 注入/清除调用埋点通道。传 `null` 表示关闭。 */
+export function setSkillInvocationSink(s: SkillEventSink | null): void {
+  invocationSink = s;
+}
+
+/** 写一条调用事件。只在「已过权限、即将执行」时调用；失败静默。 */
+export function emitSkillInvoked(opts: {
+  name: string;
+  via: SkillInvocationVia;
+  loadedFrom?: string;
+}): void {
+  try {
+    const loadedFrom = opts.loadedFrom ?? "bundled";
+    const ev: SkillInvocationEvent = { skill: opts.name, via: opts.via, loaded_from: loadedFrom };
+    const sep = opts.name.indexOf(":");
+    if (loadedFrom === "plugin" && sep > 0) ev.plugin = opts.name.slice(0, sep);
+    invocationSink?.({ ...ev });
+  } catch {
+    /* 埋点失败静默 */
+  }
+}

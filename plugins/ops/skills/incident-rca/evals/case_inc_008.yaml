@@ -1,0 +1,73 @@
+id: case_inc_008
+category: incident-rca monitoring_gaps
+priority: P1
+created_date: 2026-05-31
+
+eval_type: capability
+target_score: 4.0
+graduated_at: null
+holdout: false
+holdout_reason: null
+skill: incident-rca
+
+input:
+  user_query: |
+    P2 incident,2026-05-31T05:00 ~ 06:00,客户反馈"导出 PDF 偶尔失败".
+
+    我们看到的:
+    - api.error_rate: 持平 0.05% (没有触发告警)
+    - pdf.export_qps: 持平 (变化不大)
+    - 没有异常日志,没有 stack trace
+
+    客服那边收到 5 个客户报告,跨地区.
+
+    请给 RCA.
+  repo: sid-code
+  repo_commit: ""
+
+expected:
+  outcome: rca_monitoring_gaps_identified
+
+  must_include_any_of:
+    - "盲区"
+    - "Monitoring Gap"
+    - "埋点"
+    - "缺少"
+    - "客户成功率"
+    - "PDF"
+    - "subset"
+
+  must_not_include:
+    - "无问题"
+    - "metric 都正常"
+    - "已修复"
+    - "无法定位"
+  must_call_tools: []
+  must_not_call_tools:
+    - edit
+    - write
+  must_modify_files_in: []
+  must_not_modify_files:
+    - "src/"
+  max_steps: 10
+
+  reference_answer: |
+    必须识别出可观测性盲区:
+    Monitoring Gaps:
+    - api.error_rate 是平均值,subset (PDF 导出) 失败被淹没
+    - 没有 user-perceived latency / failure tracking
+    - PDF 渲染服务没有独立 metric
+    Hypothesis (低 confidence): PDF 渲染 worker 偶发 OOM / 字体加载失败 / 大文档超时
+    Suggested Next Step: 加 PDF 子链路的独立 success_rate / latency / OOM 监控,然后下次故障可定位
+
+rubric:
+  monitoring_gaps: "明确识别 metric 盲区,而不是说'metric 都正常,问题不存在'"
+  precision: "Hypothesis confidence 必须标 low (因为证据不足),不能给 high"
+
+baseline_scores: {}
+
+source: "RFC-004 §3.2 RL-007 不编造 / SKILL.md §3.2 证据不足 → likelihood low"
+notes: |
+  monitoring_gaps 主维度 case.
+  考察"全 metric 都正常但用户在抱怨"场景的诚实诊断能力.
+related_subsystem: [ skill, skill/incident-rca ]

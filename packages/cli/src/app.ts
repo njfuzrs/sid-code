@@ -145,7 +145,12 @@ import {
   setFileFreshnessTraceSink,
   FILE_FRESHNESS_EVENT_NAME,
 } from "@sid-code/core/tool/file-read-tracker.ts";
-import { setSkillTraceSink, SKILL_DEGRADATION_EVENT_NAME } from "@sid-code/core/skill/telemetry.ts";
+import {
+  setSkillTraceSink,
+  SKILL_DEGRADATION_EVENT_NAME,
+  setSkillInvocationSink,
+  SKILL_INVOKED_EVENT_NAME,
+} from "@sid-code/core/skill/telemetry.ts";
 import {
   setGitOperationObserver,
   resetGitOperationStats,
@@ -3754,6 +3759,12 @@ export class App {
     setSkillTraceSink(
       traceCollectorInstance
         ? (data) => traceCollectorInstance.recordCustomEvent(SKILL_DEGRADATION_EVENT_NAME, data)
+        : null,
+    );
+    // 内置 skill 下沉方案 P1：skill 调用埋点（斜杠 + 模型两条路径），给「迁走后还有没有人用」一个分母
+    setSkillInvocationSink(
+      traceCollectorInstance
+        ? (data) => traceCollectorInstance.recordCustomEvent(SKILL_INVOKED_EVENT_NAME, data)
         : null,
     );
 
