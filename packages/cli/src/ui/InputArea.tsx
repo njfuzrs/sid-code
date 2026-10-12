@@ -43,7 +43,12 @@ import {
 import { useReverseSearch } from "./hooks/useReverseSearch.ts";
 import { useInputHistoryStore } from "./hooks/useInputHistoryStore.ts";
 import { useShellCompletion } from "./hooks/useShellCompletion.ts";
-import { consumePendingRestore } from "./pending-input.ts";
+import {
+  consumePendingRestore,
+  onRestoreArmed,
+  hasRetractableFailedTurn,
+  retractFailedTurn,
+} from "./pending-input.ts";
 import { editInExternalEditor } from "./utils/external-editor.ts";
 import { isShortcutsHelpTrigger } from "./keybindings/helpShortcuts.ts";
 import {
@@ -502,6 +507,22 @@ export function InputArea({
     }
   }, [isLoading, tb]);
 
+  // A4：app 层 markForRestore 时主动通知并立即回填。
+  // 只靠上面的 loading→idle 边沿不够：tuiAgentLoop 的 finally 先把 isLoading 置 false，
+  // onUserInput 等 tuiAgentLoop 返回后才 arm，边沿早已过去，回填会拿到 null。
+  useEffect(
+    () =>
+      onRestoreArmed(() => {
+        if (!tb.isEmpty()) return; // 不覆盖用户已敲入的新内容；状态留给下一次边沿
+        const restore = consumePendingRestore();
+        if (!restore) return;
+        tb.setText(restore.text);
+        if (restore.shellMode) setShellModeActive(true);
+        log.info("UI:INPUT", "已自动恢复被取消的输入");
+      }),
+    [tb],
+  );
+
   // P2-6/P2-7 共用：把图片文件路径以 @<path> 引用插入输入框，走 Read 工具 vision 管道。
   // 路径含空格时用引号包裹，确保 @ 引用解析与 shell 补全不被空格截断。
   const insertImageRef = useCallback(
@@ -610,6 +631,25 @@ export function InputArea({
   useKeypress(KeypressPriority.Normal, (key) => {
     // 流式响应中仍允许编辑输入：提交走 onSubmit → App 层入队接续（多条输入排队）。
     // 中断键（esc）由 App 的 High 优先级处理器先行拦截，不会落到这里。
+
+    // ── A4 路径 B：请求失败后（空闲）在空输入框按 Esc → 撤回这条未送达模型的输入并放回输入框 ──
+    // 放在 Vim 拦截之前：输入框为空时 Vim 的 Esc 没有可编辑的东西，撤回优先。
+    if (
+      key.name === "escape" &&
+      !isLoading &&
+      tb.isEmpty() &&
+      !reverseSearch.state.active &&
+      completion.mode === "none" &&
+      hasRetractableFailedTurn()
+    ) {
+      const restored = retractFailedTurn();
+      if (restored) {
+        tb.setText(restored.text);
+        if (restored.shellMode) setShellModeActive(true);
+        log.info("UI:INPUT", "已撤回失败的未送达输入并放回输入框");
+        return true;
+      }
+    }
 
     // ── Vim 拦截（vimMode 开启时最先处理）──
     // normal 模式下 hjkl/x/dd 等被状态机消费并阻断普通分发；insert 模式仅拦 Esc，其余放行。

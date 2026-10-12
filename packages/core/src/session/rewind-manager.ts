@@ -237,6 +237,15 @@ export class RewindManager {
     return { point, mode, messagesDropped, filesRestored, fileRestoreSkipped };
   }
 
+  /**
+   * 丢弃指定回退点（撤回一条未送达模型的输入时调用）。
+   * 那一轮已从对话里抹掉，留着它会让 Esc+Esc 面板列出一个「回到从未发生过的轮次之前」的点。
+   * 找不到（已被环形上限淘汰 / 已清空）静默忽略。
+   */
+  dropPoint(id: number): void {
+    this.points = this.points.filter((p) => p.id !== id);
+  }
+
   /** 清空所有回退点（新会话/clear 时）。 */
   clear(): void {
     this.points = [];

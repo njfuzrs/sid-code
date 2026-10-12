@@ -1997,6 +1997,32 @@ export class Manager {
    * 一轮 = 一次用户输入 + 一次 AI 回复（含工具调用）
    * 返回实际删除的轮数
    */
+  /**
+   * 把消息历史恢复为某个「轮次开始前」的快照（撤回一条未送达模型的用户输入用）。
+   *
+   * 为什么不用 rewindTurns(1)：本轮用户消息可能因角色交替被 addMessage **合并**进上一条
+   * user 消息（上一轮以 tool_result 收尾时），rewindTurns 会把上一轮的 tool_result 一起删掉。
+   * 这里按快照恢复，合并 / 压缩过的情况都能还原到本轮之前的准确状态。
+   *
+   * - 前缀未被改写（逐条引用相同）→ 只截掉尾部，不动发送前缀冻结集（保 cache 命中）。
+   * - 前缀被改写（合并 / 压缩）→ 整体替换为快照（走 setMessages，代价是一次 cache 前缀重建）。
+   *
+   * @returns 实际移除（或替换掉）的消息条数差
+   */
+  restoreToPrefix(snapshot: Message[]): number {
+    const before = this.messages.length;
+    const n = snapshot.length;
+    const prefixIntact = before >= n && snapshot.every((m, i) => this.messages[i] === m);
+    if (prefixIntact) {
+      if (before > n) this.messages.splice(n);
+      // 失败轮的真实 token 锚点（若有）描述的是更长的上下文，作废它让估算回落。
+      this.invalidateActualTokenAnchor();
+    } else {
+      this.setMessages(snapshot);
+    }
+    return before - this.messages.length;
+  }
+
   rewindTurns(n: number): number {
     let removed = 0;
     while (removed < n && this.messages.length > 0) {

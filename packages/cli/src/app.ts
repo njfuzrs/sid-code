@@ -46,8 +46,10 @@ import { generateSessionId } from "@sid-code/core/session/id.ts";
 import {
   stashPendingInput,
   markForRestore,
+  markRetractable,
+  setFailedTurnRetractor,
   clearPendingInput,
-  canRestoreCanceledInput,
+  isTurnUnanswered,
 } from "./ui/pending-input.ts";
 import { QuotaManager, resolveEffectiveCostLimit } from "@sid-code/core/llm/quota.ts";
 import { TokenMeter } from "@sid-code/core/telemetry/metrics/token-meter.ts";
@@ -7105,23 +7107,6 @@ export class App {
   }
 
   /**
-   * A4：判断"被取消的本轮输入"是否应自动回填到输入框。
-   *
-   * 对标 claude-code `messagesAfterAreOnlySynthetic`（REPL.tsx:3015）：
-   * 仅当用户在"收到任何实质响应之前"中断,才回退会话并恢复输入框——
-   * 若 LLM 已经吐出真实内容,保留对话、不回填。
-   *
-   * sid-code 适配:取末尾最后一条 user 消息,检查其后是否**没有任何含非空 text 的 assistant 消息**。
-   * - 其后只有 tool_use/tool_result（工具已跑但还没产出 assistant 总结）→ 仍视为"无实质响应",可回填。
-   * - 其后有非空 assistant text → 有实质响应,不回填。
-   *
-   * @returns true 表示可回填(且调用方应回退该 user 轮次)
-   */
-  private shouldRestoreCanceledInput(): boolean {
-    return canRestoreCanceledInput(this.ctxMgr.getMessages() as any);
-  }
-
-  /**
    * P2-14：崩溃快照里的「已发生多少次 API 调用」。
    *
    * 口径与 SessionEnd 的 `total_api_calls` 完全一致（都是各模型 requests 之和），
@@ -8191,6 +8176,23 @@ export class App {
     let lastSyncedCount = 0;
     let historyIdCounter = 0;
 
+    // ── 本轮探针：判定「用户这条输入有没有送达模型」+ 本轮结局 ──
+    //
+    // tuiAgentLoop 每轮开头新建一份，onUserInput 在本轮收尾（正常返回或 catch）时读取。
+    // 撤回（ESC 后把输入放回输入框）的唯一前提是 modelResponded=false：模型回过任何东西
+    // （文本 / 思考 / 工具调用），这条消息就已经送达，ESC 只中断不撤回。
+    // startMessages / startRecordCount 是撤回时恢复内存历史与落盘记录的锚点。
+    type TurnProbe = {
+      startMessages: import("@sid-code/core/llm/types.ts").Message[];
+      startRecordCount: number;
+      modelResponded: boolean;
+      /** 本轮以「用户 ESC 取消」收尾（throw 被内层 catch 吞掉 / loop 以 done(aborted) 优雅收尾） */
+      userCanceled: boolean;
+      /** 本轮以错误收尾（fatal_error / system error / 重试耗尽 / 异常穿透） */
+      failed: boolean;
+    };
+    let lastTurnProbe: TurnProbe | null = null;
+
     // ── 本地命令结果侧表 ──
     //
     // 斜杠命令的结果（/status 输出、面板摘要行）只在 UI 上，不进 ctxMgr；而 syncDisplay /
@@ -8738,6 +8740,58 @@ export class App {
       });
     }
 
+    // ── 撤回「未送达模型」的用户输入（A4 修复）──
+    //
+    // 口径：模型零响应（无文本 / 思考 / 工具调用流出，ctxMgr 里本轮之后也没有 assistant）
+    // 才算未送达。已送达的轮次 ESC 只中断、不撤回——撤回会让对话历史与模型实际看到的错位。
+    const isUnsentTurn = (): boolean => {
+      const probe = lastTurnProbe;
+      if (!probe || probe.modelResponded) return false;
+      return isTurnUnanswered(probe.startMessages, this.ctxMgr.getMessages());
+    };
+
+    /**
+     * 执行撤回：内存历史恢复到本轮之前、落盘记撤回标记、丢弃本轮回退点、重建屏幕。
+     * 重建屏幕即移除乐观追加的 user 气泡——这是「两条消息叠加」的根治点。
+     */
+    const retractUnsentTurn = (probe: TurnProbe, rewindPointId: number | null): boolean => {
+      try {
+        this.ctxMgr.restoreToPrefix(probe.startMessages);
+        try {
+          this.sessionStore?.appendPromptRetraction(probe.startRecordCount);
+        } catch (e) {
+          log.warn("TUI:CB", `撤回记录落盘失败（不阻断）: ${(e as Error)?.message}`);
+        }
+        if (rewindPointId !== null) this.rewindManager?.dropPoint(rewindPointId);
+        if (lastTurnProbe === probe) lastTurnProbe = null;
+        clearTransientErrorPanel();
+        rebuildDisplay({ retryStatus: null });
+        log.info("TUI:CB", "已撤回未送达模型的输入轮次，输入框将恢复原文");
+        return true;
+      } catch (e) {
+        log.warn("TUI:CB", `撤回未送达输入失败: ${(e as Error)?.message}`);
+        return false;
+      }
+    };
+
+    /**
+     * 路径 B：本轮失败且未送达 → 登记「可撤回」，等用户在空输入框按 ESC 时再撤回。
+     * 撤回前校验现场没变（期间没跑过别的轮次 / 改写历史的命令），变了就放弃。
+     */
+    const armRetractable = (probe: TurnProbe, rewindPointId: number | null): void => {
+      const endMessages = this.ctxMgr.getMessages();
+      setFailedTurnRetractor(() => {
+        if (lastTurnProbe !== probe) return false;
+        const now = this.ctxMgr.getMessages();
+        if (now.length !== endMessages.length || now.some((m, i) => m !== endMessages[i])) {
+          return false;
+        }
+        return retractUnsentTurn(probe, rewindPointId);
+      });
+      markRetractable();
+      log.info("TUI:CB", "本轮请求失败且未送达模型，空输入框按 Esc 可撤回并恢复输入");
+    };
+
     // TUI 版本的 agentLoop（消费 QueryEngine async generator）
     const tuiAgentLoop = async (userInput: string, displayCommand?: string) => {
       // 不确定-1：会话级硬顶纳入 network-profile 统一配置（此前硬编码 30min 且无覆盖入口）。
@@ -8815,6 +8869,16 @@ export class App {
       let streamSynced = false;
       let completedNormally = false;
 
+      // 本轮探针：快照必须在 submitMessage 把 user 消息加入 ctxMgr / 落盘**之前**取。
+      const probe: TurnProbe = {
+        startMessages: this.ctxMgr.getMessages(),
+        startRecordCount: this.sessionStore?.getMessageRecordCount() ?? 0,
+        modelResponded: false,
+        userCanceled: false,
+        failed: false,
+      };
+      lastTurnProbe = probe;
+
       // 新一轮开始 = 上一轮遗留的 sticky 状态提示已过时（上下文警告/轮次上限/循环检测/
       // 循环恢复/hook 阻止/预算配额），统一清一次。这些提示的产生条件每轮都会重新判定，
       // 仍然成立就会再报一遍，所以清掉不掩盖真问题，只移除陈旧那份。详见函数注释。
@@ -8837,6 +8901,8 @@ export class App {
           addStatusMessage("system:transient", `⟳ ${text.slice("[重试中] ".length)}`);
           return;
         }
+        // 模型真实文本到达 = 消息已送达，本轮不再可撤回。
+        probe.modelResponded = true;
         if (!streamSynced) {
           streamSynced = true;
           syncDisplay();
@@ -8865,6 +8931,8 @@ export class App {
 
       // v2：设置流式思考回调（桥接 processStream 内部的 onThinking，对标 Claude Code）
       this.queryEngine.setStreamThinkingCallback((thinking: string) => {
+        // 思考 token 到达 = 模型已收到消息并开始处理，本轮不再可撤回。
+        probe.modelResponded = true;
         const isFirst = streamingThinkingFull === "";
         streamingThinkingFull += thinking;
         // 关键修复：思考也是「模型正在产出」，必须置 isStreaming=true。
@@ -8918,6 +8986,8 @@ export class App {
               break;
             }
             case "tool_start":
+              // 模型发起了工具调用 = 消息已送达，本轮不再可撤回。
+              probe.modelResponded = true;
               // 工具开始前，结束当前流式输出。
               // 不变量：tool_start 始终在 LLM 串行完成后到达，不会与 onThinking/onText 并发，
               // 因此此处清零 streamingThinkingFull 是安全的——下一轮 LLM 思考会重新累积。
@@ -9072,6 +9142,7 @@ export class App {
                   });
                 }
               } else if (event.level === "error") {
+                probe.failed = true;
                 // 根因修复：此前 error 级别被 switch 完全忽略——loop.ts 重试耗尽等场景
                 // yield 的用户可见错误提示从未展示，紧随其后的 done 又清空了流式内容，
                 // 导致"内容消失+无任何提示"。仿照 fatal_error 持久化到 displayItems。
@@ -9112,6 +9183,7 @@ export class App {
               // 把具体错误原因**持久化**写入 displayItems（永久留存，对标 cc 错误展示），
               // 而非仅 status bar 瞬态 5 秒——用户回神时仍能看到失败原因，便于排查/重试。
               completedNormally = true; // 已显式展示错误，避免 finally 再叠加模糊的"任务异常中断"
+              probe.failed = true;
               streamingFullText = "";
               streamingThinkingFull = "";
               streamSynced = false;
@@ -9152,6 +9224,16 @@ export class App {
             }
             case "done": {
               completedNormally = true;
+              // loop 的三条 abort 收尾（退避期 / 本地限流等待期 / 流式结束后检测到 abort）
+              // 走的是 yield done(aborted) + return，**不抛异常**——onUserInput 的 catch 永远
+              // 看不到它们。必须在这里把「用户取消」记到探针上，否则回填分支不可达。
+              if (event.incompleteReason === "aborted") {
+                if (this.abortController?.signal?.reason === "user-cancel") {
+                  probe.userCanceled = true;
+                }
+              } else if (event.incompleteReason === "timeout_retry_exhausted") {
+                probe.failed = true;
+              }
               streamingFullText = "";
               streamingThinkingFull = "";
               streamSynced = false;
@@ -9211,8 +9293,14 @@ export class App {
             isSessionTimeoutAbortReason(this.abortController?.signal?.reason));
         if (isAbortError(err) && !internalTimeoutLeaked && !sessionTimedOut) {
           completedNormally = true;
+          // 这里吞掉了 abort（不 rethrow），onUserInput 的 catch 不会再看到它——
+          // 「用户取消」必须经探针传出去，否则回填分支永远不可达（A4 自引入起的死代码根因）。
+          if (this.abortController?.signal?.reason === "user-cancel") {
+            probe.userCanceled = true;
+          }
           log.info("TUI", "用户中断当前响应");
         } else {
+          probe.failed = true;
           if (sessionTimedOut) {
             log.warn("TUI", "会话超过时长上限，throw 交由上层展示专属文案");
           } else if (internalTimeoutLeaked) {
@@ -9401,8 +9489,11 @@ export class App {
         // P2-1：本轮用户输入提交前登记回退点（对话锚点=当前消息数组长度，文件锚点=最新快照 id）。
         // 供 Esc+Esc 回退选择器列出并回退到本轮之前。displayCommand（斜杠命令展开）也登记——
         // 它同样推进对话，值得成为一个回退锚点；预览用触发命令而非整段展开提示词更可读。
+        // 撤回未送达输入时要把本轮回退点一起丢掉，故记下 id。
+        let rewindPointId: number | null = null;
         try {
-          this.rewindManager?.registerPoint(opts?.displayCommand ?? text, Date.now());
+          rewindPointId =
+            this.rewindManager?.registerPoint(opts?.displayCommand ?? text, Date.now())?.id ?? null;
         } catch (e) {
           log.warn("REWIND", `登记回退点失败: ${(e as Error)?.message}`);
         }
@@ -9442,8 +9533,34 @@ export class App {
           }
           const finalInput = injectedContent ? `${displayText}\n\n${injectedContent}` : displayText;
           await tuiAgentLoop(finalInput, opts?.displayCommand);
-          // 正常完成 → 丢弃暂存,不回填
-          clearPendingInput();
+          // tuiAgentLoop 正常返回不等于「本轮成功」：用户 ESC（内层 catch 吞掉 abort /
+          // loop 以 done(aborted) 收尾）与请求失败（fatal_error / 重试耗尽）都从这里出来。
+          // 此前这里无条件 clearPendingInput()，下面 catch 里的回填分支因此从未生效。
+          const probe = lastTurnProbe;
+          const canRetract = !opts?.displayCommand && probe !== null && isUnsentTurn();
+          if (canRetract && probe!.userCanceled) {
+            if (retractUnsentTurn(probe!, rewindPointId)) {
+              markForRestore();
+              historyIdCounter += 1;
+              updateState({
+                historyItems: [
+                  ...bridge.current.historyItems,
+                  {
+                    id: historyIdCounter,
+                    type: "hint",
+                    text: "已取消，消息未送达模型 — 原文已放回输入框，可修改后重新发送。",
+                  },
+                ],
+              });
+            } else {
+              clearPendingInput();
+            }
+          } else if (canRetract && probe!.failed) {
+            armRetractable(probe!, rewindPointId);
+          } else {
+            // 正常完成 / 消息已送达 → 丢弃暂存，不回填
+            clearPendingInput();
+          }
         } catch (err: any) {
           // 根治（2026-07，防御纵深第二层）：区分"用户主动 ESC 取消"与"内部超时自愈
           // 中断漏到此处"。两者 isAbortError 都为 true（reason 均登记于 ABORT_REASONS），
@@ -9481,22 +9598,20 @@ export class App {
           let restoredInput = false;
           if (aborted) {
             log.info("TUI:CB", "当前响应已被用户中断");
-            // A4：仅"用户主动 ESC 取消"（reason==='user-cancel'，A6）且尚无实质响应时,
-            // 回退该 user 轮次并标记输入框回填。超时/其他 reason 不回填。
+            // A4：仅"用户主动 ESC 取消"（reason==='user-cancel'，A6）且消息未送达模型时，
+            // 撤回该轮并标记输入框回填。超时/其他 reason 不回填。
             const reason = this.abortController?.signal?.reason;
-            if (reason === "user-cancel" && this.shouldRestoreCanceledInput()) {
-              this.ctxMgr.rewindTurns(1); // 回退本轮 user 输入及其后残留消息
-              // 立即重建 historyItems：rewindTurns 物理删除了 ctxMgr 中的消息，
-              // 但 bridge.current.historyItems 仍是回退前的旧快照。不重建会导致：
-              // ① 被取消的消息残留在屏幕上直到下一次 syncDisplay；
-              // ② 多次 ESC+重发时旧消息叠加（乐观更新基于过时的 prevHistoryItems）。
-              rebuildDisplay();
-              markForRestore();
-              restoredInput = true;
-              log.info("TUI:CB", "已回退被取消的输入轮次,输入框将自动恢复原文");
+            if (reason === "user-cancel" && !opts?.displayCommand && isUnsentTurn()) {
+              restoredInput = retractUnsentTurn(lastTurnProbe!, rewindPointId);
+              if (restoredInput) markForRestore();
+              else clearPendingInput();
             } else {
               clearPendingInput();
             }
+          } else if (!sessionTimedOut && !opts?.displayCommand && isUnsentTurn()) {
+            // 请求失败且消息未送达模型：保留报错现场，等用户在空输入框按 ESC 再撤回（路径 B）。
+            log.error("TUI:CB", `onUserInput 异常`, { error: err?.message, stack: err?.stack });
+            armRetractable(lastTurnProbe!, rewindPointId);
           } else {
             if (sessionTimedOut) {
               log.warn("TUI:CB", "会话超过时长上限，已自动结束");
