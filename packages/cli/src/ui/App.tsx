@@ -54,7 +54,7 @@ import { useTerminalIntegration } from "./hooks/useTerminalIntegration.ts";
 import { useMessageQueue } from "./hooks/useMessageQueue.ts";
 import { parseShellInput } from "./shell-input.ts";
 // P0-1/P0-2：流式中「直送 vs 入队」的唯一判据，让 immediate 字段真正生效。
-import { canRunDuringStreaming } from "../command/streaming-gate.ts";
+import { routeSubmit } from "../command/streaming-gate.ts";
 import { useExitConfirm } from "./hooks/useExitConfirm.ts";
 import {
   messagesToHistoryItems,
@@ -1127,21 +1127,36 @@ function TUIAppInner({ initialState, callbacks, bridge, alternateBuffer }: AppPr
   const handleSubmit = useCallback(
     async (text: string, priority: "now" | "next" | "later" = "next") => {
       log.info("UI:INPUT", `handleSubmit: "${text.slice(0, 100)}"`);
-      if (isSubmittingRef.current) return;
 
       // 用户提交输入 → 取消任何待确认的 Ctrl+C 退出意图（对标 cc：继续操作即视为放弃退出）。
       cancelCtrlCConfirm();
 
-      // 流式进行中：只有**显式标了 immediate** 的斜杠命令才直送，其余（含普通输入）入队接续。
+      // 本轮进行中：只有**显式标了 immediate** 的斜杠命令才直送，其余（含普通输入）入队接续。
       //
       // P0-1/P0-2：这里原本写的是 `busy && !text.startsWith("/")`，那个否定条件让所有
       // 斜杠命令一律穿透直送 —— 包括 /compact、/btw、/loop 这三条刻意**不**标 immediate 的。
       // /compact 与流式写入构成读-改-写竞争（读快照 → 调模型数秒 → 写回），
       // 症状是「模型说过的话凭空消失」。判据下沉到 canRunDuringStreaming，见那里的注释。
-      const busy = streamingStateRef.current !== StreamingState.Idle;
-      if (busy && !canRunDuringStreaming(text, state.commands)) {
-        log.info("UI:INPUT", `流式中，输入入队等待接续（${priority}）`);
+      //
+      // 「进行中」必须把 isSubmittingRef 算进去，且**不能**用它提前 return：
+      // dispatchInput 会 await 整轮 agent loop，旧的 `if (isSubmittingRef.current) return;`
+      // 让整轮期间的所有输入被静默丢弃。路由判据见 routeSubmit 的注释。
+      const route = routeSubmit(text, state.commands, {
+        streaming: streamingStateRef.current !== StreamingState.Idle,
+        submitting: isSubmittingRef.current,
+      });
+      if (route === "enqueue") {
+        log.info("UI:INPUT", `本轮进行中，输入入队等待接续（${priority}）`);
         enqueue(text, priority);
+        return;
+      }
+      if (route === "dispatch-nested") {
+        // 外层那一轮仍持有提交位，这里不置位也不清位
+        try {
+          await dispatchInput(text);
+        } catch (err: any) {
+          log.error("UI:INPUT", `handleSubmit 异常`, { error: err.message });
+        }
         return;
       }
 

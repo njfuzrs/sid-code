@@ -93,7 +93,7 @@ export PATH="$HOME/.local/bin:$PATH"
 | API Key 无效或已过期 | key 错了 / 过期 / 环境变量没生效 | 查 `settings.json` 的 `apiKey`，或确认 `OPENAI_API_KEY` / `ANTHROPIC_API_KEY` |
 | 模型不存在或不可用 | 模型 ID 和网关实际可用的不一致（**区分大小写**） | 对齐 `settings.json` 的 `model` 字段 |
 | 账户配额已耗尽 | 余额没了 | 充值，或配 `fallbackModel` 切别的 |
-| 请求被限流 (429) | 频率太高 | 已在自动退避重试，持续出现就降频 |
+| 请求被限流 (429) | 频率太高 / 网关分组饱和 | 已在自动退避重试（最多 `network.maxTimeoutRetries` 次，默认 10，指数退避 5s→120s，最坏约 12 分钟才报错）；等不及就 `Esc` 或 `/model` 切模型，持续出现就降频 |
 | 服务过载 (529/503) | 上游过载 | 已自动重试，等一会 |
 | **网关返回非流式错误页** | 见下 | 见下 |
 

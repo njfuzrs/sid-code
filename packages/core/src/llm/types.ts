@@ -326,6 +326,18 @@ export type StreamEvent =
    *   3. 通知 UI 撤回已流出的文本（否则用户屏幕上留着作废那半段叙述）
    */
   | { type: "stream_restart"; reason: string; attempt?: number }
+  /**
+   * 漏斗**主动**进入 / 结束一段重试退避等待（含 S2 共享冷却等待）。
+   *
+   * 为什么需要显式信号（2026-10-12）：外层 `query/loop.ts` 看门狗判的是「单次请求卡死」，
+   * 退避睡眠是我们自己决定的等待，不是请求在卡。没有这个信号时看门狗把退避也算成
+   * 「无进展」，于是重试次数实际由看门狗阈值决定（315s 内最多 5–6 次），
+   * `maxTimeoutRetries=10` 形同虚设。消费方据此把退避段从各自的「单次请求」计时里剔除。
+   *
+   * 契约：`start` 与 `end` 成对出现；退避被 abort 打断时不会有 `end`（整条流随之结束）。
+   * 不关心的消费方忽略即可，不影响内容累加。
+   */
+  | { type: "retry_backoff"; phase: "start" | "end"; delayMs: number; attempt?: number }
   | {
       type: "content_block_start";
       index: number;

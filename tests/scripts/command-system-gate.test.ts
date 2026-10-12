@@ -97,8 +97,10 @@ describe("countProductionReferences 口径", () => {
 describe("变异自证：门禁必须真的能分辨死活", () => {
   test("已知的活导出不被判死（排除「把所有导出都当死的」实现）", () => {
     const dead = findDeadExports().map((d) => d.symbol);
-    // canRunDuringStreaming 被 ui/App.tsx 的 handleSubmit 真实调用
-    expect(dead).not.toContain("canRunDuringStreaming");
+    // routeSubmit 被 ui/App.tsx 的 handleSubmit 真实调用
+    // （原先断言 canRunDuringStreaming，它已改为模块内私有 —— 不导出就不会出现在死导出清单里，
+    //  断言会恒绿而不再证明任何事，所以换成当前真正的活导出）
+    expect(dead).not.toContain("routeSubmit");
     // isFilePath 本次刚接线进 executor.ts —— 它此前正是一条零调用导出
     expect(dead).not.toContain("isFilePath");
     expect(dead).not.toContain("parseSlashCommand");
