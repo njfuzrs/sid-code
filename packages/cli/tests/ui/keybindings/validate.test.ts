@@ -198,4 +198,66 @@ describe("K2 — mergeBindings", () => {
     const merged = mergeBindings([]);
     expect(merged).toEqual(DEFAULT_BINDINGS);
   });
+
+  // 回归：此前覆盖项被追加到表尾，keybindings.json 里写了与默认相同的覆盖，
+  // ? 面板里 Alt+M / Ctrl+L 就从原位置跑到最后。
+  test("覆盖项原位替换，不改变帮助顺序", () => {
+    const { accepted } = validateUserBindings(
+      [
+        { action: "app:toggleMarkdown", stroke: { alt: true, name: "m" } },
+        { action: "app:clearScreen", stroke: { ctrl: true, name: "l" } },
+      ],
+      DEFAULT_BINDINGS,
+    );
+    const merged = mergeBindings(accepted);
+    expect(merged.map((b) => b.action)).toEqual(DEFAULT_BINDINGS.map((b) => b.action));
+  });
+});
+
+describe("固定键保护（fixed 动作不走查表，改绑会让帮助说谎）", () => {
+  test("把固定动作改绑到新键被拒", () => {
+    const { accepted, issues } = validateUserBindings(
+      [{ action: "input:historyUpDown", stroke: { ctrl: true, name: "p" } }],
+      DEFAULT_BINDINGS,
+    );
+    expect(accepted).toHaveLength(0);
+    expect(issues.some((i: BindingIssue) => i.code === "fixed")).toBe(true);
+  });
+
+  test("把别的动作绑到固定键（Ctrl+W）被拒", () => {
+    const { accepted, issues } = validateUserBindings(
+      [{ action: "app:toggleMarkdown", stroke: { ctrl: true, name: "w" } }],
+      DEFAULT_BINDINGS,
+    );
+    expect(accepted).toHaveLength(0);
+    expect(issues.some((i: BindingIssue) => i.code === "fixed")).toBe(true);
+  });
+
+  test("固定动作绑回原键放行（等于没改）", () => {
+    const { accepted, issues } = validateUserBindings(
+      [{ action: "input:shellMode", stroke: { name: "!" } }],
+      DEFAULT_BINDINGS,
+    );
+    expect(issues.filter((i: BindingIssue) => i.level === "error")).toHaveLength(0);
+    expect(accepted).toHaveLength(1);
+  });
+});
+
+describe("display 跟随 stroke", () => {
+  test("改了 stroke 但没写 display → 按新键生成，不沿用旧显示", () => {
+    const { accepted } = validateUserBindings(
+      [{ action: "app:toggleMarkdown", stroke: { alt: true, name: "k" } }],
+      DEFAULT_BINDINGS,
+    );
+    expect(accepted[0].display).toBe("Alt+K");
+    expect(accepted[0].group).toBe("view");
+  });
+
+  test("stroke 未变 → 继承默认 display", () => {
+    const { accepted } = validateUserBindings(
+      [{ action: "input:permMode", stroke: { shift: true, name: "tab" } }],
+      DEFAULT_BINDINGS,
+    );
+    expect(accepted[0].display).toBe("Shift+Tab");
+  });
 });

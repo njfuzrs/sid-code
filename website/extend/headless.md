@@ -349,7 +349,7 @@ CI 里要用得显式打开信任（`~/.sid-code/settings.json`）：
 | `network.overallTimeoutMs` | 1500s | 单次请求的软兜底，不因事件重置 |
 | `network.watchdogNoProgressMs` | 720s | 外层复核「已建连但中途静默」，比上面 provider 层更宽 |
 | `network.maxTurnDurationMs` | 90min | 单轮硬顶，兜任何单次挂起根因（不感知进展） |
-| `network.maxTimeoutRetries` | 10 次 | 上面几层判超时后的重试上限（指数退避） |
+| `network.maxTimeoutRetries` | 10 次 | 重试上限（超时与 429/5xx 同一份次数，指数退避 5s→120s）。**只由次数决定**：退避等待不计入上面任何一层的「无进展」，所以不会被看门狗提前截断 |
 
 几层的**谓词互不相同**（收不到字节 / 收到字节但没内容 / 整轮兜底），不是同一个判断
 复制几遍——所以数值上它们严格递增：越靠外的层掌握的信息越少，就该越宽松。

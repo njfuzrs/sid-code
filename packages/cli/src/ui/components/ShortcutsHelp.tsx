@@ -14,13 +14,12 @@ import { useStdout } from "../render-port/hooks.ts";
 import { theme } from "../semantic-colors.ts";
 import { DEFAULT_TERM_WIDTH } from "../markdown.ts";
 import { useKeybindings } from "../contexts/KeybindingContext.tsx";
-
-// ── 快捷键数据 ──
-
-interface ShortcutItem {
-  key: string;
-  description: string;
-}
+import {
+  buildHelpSections,
+  computeHelpLayout,
+  HELP_COLUMN_GAP,
+  type HelpItem,
+} from "../keybindings/helpShortcuts.ts";
 
 // ── ShortcutsHint（简要提示） ──
 
@@ -30,14 +29,12 @@ export const ShortcutsHint: React.FC = () => (
 
 // ── ShortcutsHelp（完整列表） ──
 
-const NARROW_WIDTH_THRESHOLD = 60;
-
-const Shortcut: React.FC<{ item: ShortcutItem }> = ({ item }) => (
+const Shortcut: React.FC<{ item: HelpItem; keyWidth: number }> = ({ item, keyWidth }) => (
   <Box flexDirection="row">
-    <Box flexShrink={0} marginRight={1}>
+    <Box flexShrink={0} width={keyWidth} marginRight={1}>
       <Text color={theme.text.accent}>{item.key}</Text>
     </Box>
-    <Box flexGrow={1}>
+    <Box flexGrow={1} flexShrink={1}>
       <Text color={theme.text.primary}>{item.description}</Text>
     </Box>
   </Box>
@@ -46,14 +43,12 @@ const Shortcut: React.FC<{ item: ShortcutItem }> = ({ item }) => (
 export const ShortcutsHelp: React.FC = () => {
   const { stdout } = useStdout();
   const termWidth = stdout.columns || DEFAULT_TERM_WIDTH;
-  const isNarrow = termWidth < NARROW_WIDTH_THRESHOLD;
 
   // 从合并后的运行时键位表(默认 + 用户 keybindings.json)生成,
-  // 用户自定义键位会自动反映在帮助里(K2/K4 闭环)。
+  // 用户自定义键位会自动反映在帮助里(K2/K4 闭环)；再补上不走查表的固定键。
   const { bindings } = useKeybindings();
-  const SHORTCUTS: ShortcutItem[] = bindings
-    .filter((b) => b.showInHelp)
-    .map((b) => ({ key: b.display, description: b.description }));
+  const sections = buildHelpSections(bindings);
+  const { columnWidth, keyWidth } = computeHelpLayout(sections, termWidth);
 
   return (
     <Box flexDirection="column" width="100%">
@@ -61,19 +56,25 @@ export const ShortcutsHelp: React.FC = () => {
         <Text color={theme.text.accent} bold>
           快捷键
         </Text>
-        <Text color={theme.text.secondary}> — 输入 /help 查看更多</Text>
+        <Text color={theme.text.secondary}> — 任意键关闭 · /keybindings 查看可改绑的动作</Text>
       </Box>
-      <Box flexDirection="row" flexWrap="wrap" paddingLeft={1} paddingRight={2}>
-        {SHORTCUTS.map((item, index) => (
-          <Box
-            key={`${item.key}-${index}`}
-            width={isNarrow ? "100%" : "33%"}
-            paddingRight={isNarrow ? 0 : 2}
-          >
-            <Shortcut item={item} />
+      {sections.map((section) => (
+        <Box key={section.group} flexDirection="column" paddingLeft={1} paddingRight={2}>
+          <Text color={theme.text.secondary}>{section.title}</Text>
+          <Box flexDirection="row" flexWrap="wrap">
+            {section.items.map((item, index) => (
+              <Box
+                key={`${item.key}-${index}`}
+                width={columnWidth}
+                flexShrink={0}
+                paddingRight={HELP_COLUMN_GAP}
+              >
+                <Shortcut item={item} keyWidth={keyWidth} />
+              </Box>
+            ))}
           </Box>
-        ))}
-      </Box>
+        </Box>
+      ))}
     </Box>
   );
 };

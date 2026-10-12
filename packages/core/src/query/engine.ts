@@ -376,10 +376,8 @@ export class QueryEngine {
     const queryDeps: QueryDeps = {
       sendWithRetry: (params: SendParams, signal?: AbortSignal, opts?: { deadlineAt?: number }) => {
         this.deps.fallback.reset();
-        // `deadlineAt` 透传是「两层重试预算相乘」那个缺陷的修复接线（见
-        // QueryDeps.sendWithRetry 的注释）。此前主循环调的是三参版本，
-        // 于是 fallback 里那套 S3 时间预算钳制**结构性从不生效** ——
-        // 代码在、测试绿、生产路径上一次都没跑过（本仓「伪配置」同型）。
+        // `deadlineAt` 原样透传：主循环自 2026-10-12 起不传（重试次数与看门狗解耦，
+        // 见 QueryDeps.sendWithRetry 注释），保留透传给仍有总时长预算的调用方。
         return this.deps.fallback.executeWithFallback(this.deps.provider, params, signal, {
           deadlineAt: opts?.deadlineAt,
           // I4：显式声明主线程，availability 据此**不读嫌疑态**（每次都真实发请求）。

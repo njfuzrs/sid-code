@@ -54,7 +54,7 @@ export type UserKeyBindingInput = z.infer<typeof UserKeyBindingSchema>;
 export interface BindingIssue {
   level: "error" | "warning";
   /** 机器可判类型，便于测试与上层分流。 */
-  code: "reserved" | "conflict" | "duplicate_action" | "schema";
+  code: "reserved" | "fixed" | "conflict" | "duplicate_action" | "schema";
   message: string;
   action?: string;
 }
@@ -126,6 +126,33 @@ export function validateUserBindings(raw: unknown, defaults: KeyBinding[]): Vali
       }
     }
 
+    // ── 2b. 固定键保护 ──
+    // fixed 动作在 InputArea 里按字符/光标语义硬编码、不走 matchBinding：改绑只会让帮助显示新键、
+    // 按下去仍是旧行为；反过来把别的动作绑到固定键上，该键会先被硬编码分支吃掉、永远触发不到。
+    // 两个方向都拒绝。绑回原键（等于没改）放行，与保留键豁免同口径。
+    const fixedDefault = defaults.find((d) => d.fixed && d.action === ub.action);
+    if (fixedDefault && strokeSignature(fixedDefault.stroke) !== sig) {
+      issues.push({
+        level: "error",
+        code: "fixed",
+        action: ub.action,
+        message: `"${ub.action}" 是固定键位（${fixedDefault.display}），不支持改绑`,
+      });
+      continue;
+    }
+    const fixedOwner = defaults.find(
+      (d) => d.fixed && d.action !== ub.action && strokeSignature(d.stroke) === sig,
+    );
+    if (fixedOwner) {
+      issues.push({
+        level: "error",
+        code: "fixed",
+        action: ub.action,
+        message: `组合键 ${formatStroke(stroke)} 被固定键位 "${fixedOwner.action}" 占用，不可绑给 "${ub.action}"`,
+      });
+      continue;
+    }
+
     // ── 3a. 用户表内部重复 action ──
     if (seenActions.has(ub.action)) {
       issues.push({
@@ -191,11 +218,16 @@ function materialize(
   defaults: KeyBinding[],
 ): KeyBinding {
   const fromDefault = defaults.find((d) => d.action === ub.action);
+  // 只有键没变时才继承默认 display：改了 stroke 却沿用旧 display，帮助会显示一个按了没用的键。
+  const sameStroke =
+    fromDefault !== undefined && strokeSignature(fromDefault.stroke) === strokeSignature(stroke);
   return {
     action: ub.action,
     stroke,
-    display: ub.display ?? fromDefault?.display ?? formatStroke(stroke),
+    display: ub.display ?? (sameStroke ? fromDefault.display : formatStroke(stroke)),
     description: ub.description ?? fromDefault?.description ?? "",
     showInHelp: ub.showInHelp ?? fromDefault?.showInHelp ?? false,
+    ...(fromDefault?.group ? { group: fromDefault.group } : {}),
+    ...(fromDefault?.fixed ? { fixed: true } : {}),
   };
 }

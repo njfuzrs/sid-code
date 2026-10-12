@@ -661,30 +661,14 @@ export interface QueryDeps {
   /**
    * 调用 LLM（含重试和回退）。
    *
-   * `opts.deadlineAt` 是**本次调用的 wall-clock 截止时刻**（epoch ms），用于让
-   * fallback 内层的重试退避与外层 watchdog **共享同一个时间预算**。
+   * `opts.deadlineAt` 是**本次调用的 wall-clock 截止时刻**（epoch ms），只给**真有总时长预算**的
+   * 调用方用（子代理 timeout、recall / compact 等 side-call）：漏斗在每次退避前自查
+   * 「退避 + 一次最小请求还塞得进剩余预算吗」，塞不进就停手转降级。
    *
-   * ## 不传它会发生什么（Harbor A11 实测，2026-08-29）
-   *
-   * 内层 `fallback.ts` 有 11 次重试预算，外层 `loop.ts` 的 watchdog 在
-   * `headerTimeoutMs + grace = 315s` 无首字节时强杀整个调用。上游饱和时实测形态：
-   *
-   * | watchdog 周期 | 内层 attempt 最高用到 | 被杀于 |
-   * | --- | --- | --- |
-   * | 1 | **5 / 11** | 315,788ms |
-   * | 2–6 | **4 / 11** | ~315,500ms |
-   *
-   * 内层永远用不完那 11 次预算（每次刚到 4–5 就被外层杀掉），而外层的
-   * `TimeoutRetry` 从 attempt 1 重新数 —— **两层预算不是共享，是相乘**。
-   * 7 个周期 = 约 37 分钟、零内容产出（`chunk_count: 0`）。
-   *
-   * 传了之后，内层在每次退避**前**自查「这次退避 + 一次最小请求，还塞得进剩余预算吗」，
-   * 塞不进就立即停止重试转降级 —— 把本会白等的时间还给"至少留个能落地的结论"。
-   *
-   * ⚠️ **这不是"把 315s 改大"**（记忆里那条「抬阈值治不了、多层超时同值只换杀手」）。
-   * 阈值一个都没动，动的是**两层之间要不要交换"还剩多少时间"这个事实**。
-   *
-   * 可选：不传则逐字节退化为原有的纯次数上界（子代理/side-call 路径已各自传）。
+   * ⛔ 主循环**不传**（2026-10-12）。此前它把看门狗阈值（315s）当 deadline 传进来，
+   * 重试次数于是被时间架空（5s→120s 退避下最多 5–6 次，`maxTimeoutRetries=10` 形同虚设）。
+   * 现在看门狗不把退避计入「无进展」（`retry_backoff` 信号，见 query/retry-backoff-window.ts），
+   * 两层不再相乘，也就不需要这个 deadline。
    */
   sendWithRetry: (
     params: SendParams,

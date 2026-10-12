@@ -15,7 +15,11 @@ import { tmpdir } from "node:os";
 import { CommandExecutor } from "@sid-code/cli/command/executor.ts";
 import { _resetUsageCache, getUsageScore } from "@sid-code/cli/command/usage-tracking.ts";
 import { loadBuiltinCommands } from "@sid-code/cli/command/loaders.ts";
-import { canRunDuringStreaming } from "@sid-code/cli/command/streaming-gate.ts";
+import { routeSubmit } from "@sid-code/cli/command/streaming-gate.ts";
+
+/** canRunDuringStreaming 已私有化：经 routeSubmit 在「本轮进行中」返回 dispatch-nested 等价断言。 */
+const canRunDuringStreaming = (text: string, commands: Parameters<typeof routeSubmit>[1]) =>
+  routeSubmit(text, commands, { streaming: true, submitting: false }) === "dispatch-nested";
 import { parseSlashCommand } from "@sid-code/cli/command/parser.ts";
 import type { UnifiedCommand, CommandContext } from "@sid-code/cli/command/types.ts";
 

@@ -26,11 +26,14 @@ const COMMON_COMMANDS = [
   { name: "help", desc: "显示帮助" },
 ];
 
+// 与 defaultBindings / helpShortcuts 同口径：此前写「Ctrl+C / Ctrl+D 退出程序」，
+// 实际两者都要按两次（Ctrl+C 忙时先中断，Ctrl+D 只在空输入时生效）。完整列表在 ? 面板。
 const SHORTCUTS = [
-  { key: "Esc", desc: "中断当前操作" },
-  { key: "Ctrl+C", desc: "退出程序" },
-  { key: "Ctrl+D", desc: "退出程序" },
-  { key: "Tab", desc: "命令补全" },
+  { key: "?", desc: "空输入框按下，查看全部快捷键" },
+  { key: "Esc", desc: "中断模型输出 / 工具执行" },
+  { key: "Ctrl+C", desc: "忙时中断；空闲时按两次退出" },
+  { key: "Ctrl+D", desc: "空输入框按两次退出" },
+  { key: "Tab", desc: "补全时回填选中项" },
 ];
 
 export const HelpDialog: React.FC<HelpDialogProps> = ({ onClose }) => {

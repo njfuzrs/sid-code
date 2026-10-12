@@ -50,6 +50,7 @@ import {
   retractFailedTurn,
 } from "./pending-input.ts";
 import { editInExternalEditor } from "./utils/external-editor.ts";
+import { isShortcutsHelpTrigger } from "./keybindings/helpShortcuts.ts";
 import {
   registerPaste,
   shouldPlaceholder,
@@ -90,6 +91,8 @@ interface InputAreaProps {
   onPermissionModeSwitch?: () => void;
   /** Ctrl+D（输入框为空时）请求退出的回调——由 App 传入 triggerQuit。 */
   onExitRequest?: () => void;
+  /** 空输入框按 `?` 时切换快捷键面板（由 Composer 持有显隐状态）。未传时 `?` 照常作字符插入。 */
+  onToggleShortcutsHelp?: () => void;
 }
 
 /**
@@ -192,6 +195,7 @@ export function InputArea({
   onPopQueuedForEdit,
   onPermissionModeSwitch,
   onExitRequest,
+  onToggleShortcutsHelp,
 }: InputAreaProps) {
   const lastSubmittedRef = useRef<string>("");
   const externalEditingRef = useRef(false); // Ctrl+G 外部编辑防重入
@@ -554,10 +558,13 @@ export function InputArea({
    */
   const handleSubmit = useCallback(
     (priority?: "now" | "next" | "later") => {
-      const raw = tb.submit();
+      // IN3：把粘贴占位引用 [粘贴 #N ...] 还原为真实内容后再提交，随后清空登记表。
+      // ↑/↓ 历史也必须存还原后的全文（传 expandPastedRefs 给 submit）：登记表下一行就清空，
+      // 存占位的话翻回来只剩 `[粘贴 #1 +13 行]`，回车时查不到登记 → 占位字面量被发给模型；
+      // 若期间又粘贴过新内容，id 从 1 重新分配，旧占位还会被还原成**另一段**粘贴。
+      const raw = tb.submit(expandPastedRefs);
       if (!raw) return;
 
-      // IN3：把粘贴占位引用 [粘贴 #N ...] 还原为真实内容后再提交，随后清空登记表。
       const text = expandPastedRefs(raw);
       clearPastes();
 
@@ -740,6 +747,13 @@ export function InputArea({
         .finally(() => {
           externalEditingRef.current = false;
         });
+      return true;
+    }
+
+    // ? 快捷键面板：只在空输入框、非输出中触发，并消费该键（不把 ? 插进输入框）。
+    // 句中的 ? 照常作字符输入——判定必须在这里做，因为只有 InputArea 知道输入框是否为空。
+    if (onToggleShortcutsHelp && isShortcutsHelpTrigger(key, tb.isEmpty(), isLoading)) {
+      onToggleShortcutsHelp();
       return true;
     }
 
@@ -1037,38 +1051,6 @@ export function InputArea({
 
   // ── 渲染 ──────────────────────────────────────────────────────────
 
-  // 反向搜索模式 UI
-  if (reverseSearch.state.active) {
-    const { query, match } = reverseSearch.state;
-    return (
-      <Box
-        flexDirection="column"
-        width={termWidth}
-        {...INPUT_BORDER_PROPS}
-        borderColor={modeBorderColor(theme.status.warning)}
-        paddingX={1}
-      >
-        <Box>
-          <Text color={theme.status.warning}>反向搜索: </Text>
-          <Text>{query}</Text>
-          <Text inverse> </Text>
-        </Box>
-        {match ? (
-          <Box>
-            <Text>匹配: </Text>
-            <Text>
-              {match.length > termWidth - 10 ? match.slice(0, termWidth - 13) + "..." : match}
-            </Text>
-          </Box>
-        ) : query ? (
-          <Box>
-            <Text color={theme.status.error}>无匹配</Text>
-          </Box>
-        ) : null}
-      </Box>
-    );
-  }
-
   // 流式响应中不再阻塞输入：继续走下方可编辑渲染分支，
   // 用户此时提交的输入会被 App 层入队，当前轮结束后自动接续。
 
@@ -1151,6 +1133,41 @@ export function InputArea({
         </Text>
       </Box>
     ) : null;
+
+  // 反向搜索模式 UI
+  // ⚠️ 这个提前 return 必须放在本组件**所有 hook 之后**：它原本在上面队列/Shell 提示
+  // 那两组 useRef/useEffect 之前，Ctrl+R 激活后本次渲染少调 6 个 hook（4 useRef + 2 useEffect），React 抛
+  // #300（Rendered fewer hooks than expected）直接崩掉整个 TUI。新增 hook 一律写在这行之上。
+  if (reverseSearch.state.active) {
+    const { query, match } = reverseSearch.state;
+    return (
+      <Box
+        flexDirection="column"
+        width={termWidth}
+        {...INPUT_BORDER_PROPS}
+        borderColor={modeBorderColor(theme.status.warning)}
+        paddingX={1}
+      >
+        <Box>
+          <Text color={theme.status.warning}>反向搜索: </Text>
+          <Text>{query}</Text>
+          <Text inverse> </Text>
+        </Box>
+        {match ? (
+          <Box>
+            <Text>匹配: </Text>
+            <Text>
+              {match.length > termWidth - 10 ? match.slice(0, termWidth - 13) + "..." : match}
+            </Text>
+          </Box>
+        ) : query ? (
+          <Box>
+            <Text color={theme.status.error}>无匹配</Text>
+          </Box>
+        ) : null}
+      </Box>
+    );
+  }
 
   if (isEmpty) {
     const currentPrompt = shellModeActive ? SHELL_PROMPT : PROMPT;
