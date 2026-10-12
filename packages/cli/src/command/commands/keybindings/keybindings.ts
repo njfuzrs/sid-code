@@ -71,7 +71,9 @@ const mod: LocalCommandModule = {
     // 只列展示项（showInHelp），避免刷屏。
     for (const b of bindings) {
       if (!b.showInHelp) continue;
-      lines.push(`  ${b.display.padEnd(14)} ${b.description}  [${b.action}]`);
+      // 固定键不走查表，改绑会被校验拒绝——标出来，免得用户照着列表去改一个改不动的键。
+      const tag = b.fixed ? "（固定，不可改绑）" : `[${b.action}]`;
+      lines.push(`  ${b.display.padEnd(14)} ${b.description}  ${tag}`);
     }
     lines.push("", "提示: 编辑 keybindings.json 后需重启 sid-code 生效。");
     return { type: "text", value: lines.join("\n") };

@@ -4,7 +4,7 @@ import {
   keystrokeMatches,
   keystrokeEquals,
   toKeystroke,
-  defaultChordBindings,
+  exampleChordBindings,
   type ChordBinding,
 } from "@sid-code/cli/ui/keybindings/chord.ts";
 import type { Key } from "@sid-code/cli/ui/contexts/KeypressContext.tsx";
@@ -66,7 +66,7 @@ describe("keystrokeEquals / toKeystroke", () => {
 
 describe("ChordMachine 两键和弦", () => {
   test("完整 Ctrl+K → Ctrl+C 触发动作", () => {
-    const m = new ChordMachine(defaultChordBindings);
+    const m = new ChordMachine(exampleChordBindings);
 
     const r1 = m.process(ctrlK);
     expect(r1.type).toBe("chord_started");
@@ -78,7 +78,7 @@ describe("ChordMachine 两键和弦", () => {
   });
 
   test("第二个键不匹配 → cancel 并 replay 该键", () => {
-    const m = new ChordMachine(defaultChordBindings);
+    const m = new ChordMachine(exampleChordBindings);
     m.process(ctrlK);
     const r = m.process(plainA);
     expect(r.type).toBe("cancel");
@@ -89,7 +89,7 @@ describe("ChordMachine 两键和弦", () => {
   });
 
   test("同一前缀的不同后缀走不同动作", () => {
-    const m = new ChordMachine(defaultChordBindings);
+    const m = new ChordMachine(exampleChordBindings);
     m.process(ctrlK);
     expect(m.process(ctrlU)).toEqual({
       type: "match",
@@ -98,7 +98,7 @@ describe("ChordMachine 两键和弦", () => {
   });
 
   test("非前缀、非单键 → none", () => {
-    const m = new ChordMachine(defaultChordBindings);
+    const m = new ChordMachine(exampleChordBindings);
     const r = m.process(plainA);
     expect(r.type).toBe("none");
     expect(m.isPending()).toBe(false);
@@ -138,7 +138,7 @@ describe("ChordMachine 单键和弦", () => {
 
 describe("ChordMachine 超时与重置", () => {
   test("expire 返回挂起的原始键并回到 idle", () => {
-    const m = new ChordMachine(defaultChordBindings);
+    const m = new ChordMachine(exampleChordBindings);
     m.process(ctrlK);
     expect(m.isPending()).toBe(true);
     const expired = m.expire();
@@ -147,19 +147,19 @@ describe("ChordMachine 超时与重置", () => {
   });
 
   test("无 pending 时 expire 返回 null", () => {
-    const m = new ChordMachine(defaultChordBindings);
+    const m = new ChordMachine(exampleChordBindings);
     expect(m.expire()).toBeNull();
   });
 
   test("reset 清空 pending", () => {
-    const m = new ChordMachine(defaultChordBindings);
+    const m = new ChordMachine(exampleChordBindings);
     m.process(ctrlK);
     m.reset();
     expect(m.isPending()).toBe(false);
   });
 
   test("setBindings 会重置 pending 状态", () => {
-    const m = new ChordMachine(defaultChordBindings);
+    const m = new ChordMachine(exampleChordBindings);
     m.process(ctrlK);
     m.setBindings([]);
     expect(m.isPending()).toBe(false);

@@ -14,7 +14,7 @@
  * Composer 和 DialogRenderer 互斥显示。
  */
 
-import React, { useState, useEffect } from "react";
+import React, { useState, useEffect, useCallback } from "react";
 import { Box } from "../render-port/components.ts";
 import { Text } from "../render-port/components.ts";
 import { useStdout } from "../render-port/hooks.ts";
@@ -238,18 +238,14 @@ export const Composer: React.FC<ComposerProps> = ({
       ? Math.round((session.contextPercent / session.contextTriggerPercent) * 100) >= 60
       : session.contextPercent >= 50;
 
-  // ? 键展开/收起快捷键帮助（仅空闲且输入为空时）
-  useKeypress(KeypressPriority.Normal, (key) => {
-    if (!isIdle || isLoading) return false;
-    if (key.insertable && key.sequence === "?" && !shortcutsHelpVisible) {
-      // 仅在输入框为空时触发（避免输入 ? 字符时误触发）
-      // 这里无法直接判断输入框是否为空，所以用 debounce 方式：
-      // 如果 200ms 内没有其他按键，则展开
-      setShortcutsHelpVisible(true);
-      return false; // 不消费，让 InputArea 也能收到 ?
-    }
-    if (shortcutsHelpVisible && key.name !== "?" && key.sequence !== "?") {
-      // 任意非 ? 键关闭帮助
+  // ? 的展开/收起判定在 InputArea（只有它知道输入框是否为空），经 onToggleShortcutsHelp 回调。
+  // 此前判定写在这里，拿不到输入框内容，句中打 `what?` 也会弹面板。
+  const toggleShortcutsHelp = useCallback(() => setShortcutsHelpVisible((v) => !v), []);
+  // 面板展开时任意非 ? 键关闭，且不消费——关闭的那一键照常生效。
+  // 用 Critical：Normal/High 层的 handler（InputArea、App 全局键）消费按键后不会再往下广播，
+  // 放在它们之后就会出现「按了 Ctrl+L 面板却不关」。
+  useKeypress(KeypressPriority.Critical, (key) => {
+    if (shortcutsHelpVisible && key.sequence !== "?") {
       setShortcutsHelpVisible(false);
     }
     return false;
@@ -352,6 +348,7 @@ export const Composer: React.FC<ComposerProps> = ({
         onPopQueuedForEdit={onPopQueuedForEdit}
         onExitRequest={onExitRequest}
         onPermissionModeSwitch={onCyclePermissionMode}
+        onToggleShortcutsHelp={toggleShortcutsHelp}
       />
     </Box>
   );
