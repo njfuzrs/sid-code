@@ -11,8 +11,9 @@
 #
 # 把同一道关卡前移到 PR：让失败发生在写代码的时候，而不是发版的时候。
 #
-# 刻意**不含**类型检查（`tsc --noEmit`）：当前有 187 个存量错误（P1-3），接了就是永久红灯。
-# 清零后再在这里加一个 step，别另开 workflow。
+# 类型检查走**基线棘轮**（2026-10-13 接入）：存量错误记在 `scripts/tsc-baseline.json`，
+# 只拦新增、允许收紧 —— 裸 `tsc --noEmit` 会因存量错误恒红，恒红的门禁等于没有门禁。
+# 步骤见下方 lint job 的「类型检查（只拦新增）」，别另开 workflow。
 #
 # lint 门禁（P1-4，2026-08-10 接入）见下方独立的 `lint` job —— `.oxlintrc.json` 只开
 # correctness 档、关掉 style/pedantic 等风格类噪音，接入前已把存量 61 处 no-unused-vars
@@ -276,6 +277,11 @@ jobs:
       # `bun test` 绿发现不了这类问题，只有单独数生产调用点的门禁能。
       - name: 命令体系门禁
         run: bun run lint:command-system
+
+      # 类型检查棘轮：存量错误进 scripts/tsc-baseline.json，只拦新增、允许收紧。
+      # 不直接跑裸 tsc：存量错误会让它恒红，恒红的门禁等于没有门禁。
+      - name: 类型检查（只拦新增）
+        run: bun run typecheck:gate
 
   # ── 汇聚门（2026-08-19 接入，抄 langfuse pipeline.yml 的 all-checks-passed）──────────
   #
