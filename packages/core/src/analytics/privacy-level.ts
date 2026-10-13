@@ -49,7 +49,17 @@ export function isEssentialTrafficOnly(): boolean {
   return getPrivacyLevel() === "essential-traffic";
 }
 
-/** 是否允许加载远程配置(Feature Flag / 自动更新检查) */
+/**
+ * 是否允许连接硬编码的第三方 / 发布服务器（essential-traffic 下为 false）。
+ *
+ * 实际接入方（P1-11 核对过调用点）：Feature Flag 拉取、自动更新检查
+ * （update/index.ts）、外部模型目录同步（model-capabilities.ts syncExternalCatalogs）。
+ *
+ * **刻意不受它控制**的出网——它们只连用户自己配置的模型端点，不新增暴露面：
+ * 主模型请求、网关定价同步（gateway-pricing.ts，关掉只会让成本估算失真）、
+ * API 预连接（只连主模型 baseURL，取不到就不连）。
+ * 轨迹上传 / 告警 webhook / `--upload-traces` 用的是 isEssentialTrafficOnly()。
+ */
 export function shouldLoadRemoteConfig(): boolean {
   return !isEssentialTrafficOnly();
 }

@@ -18,11 +18,11 @@ sid-code 的全部命令行参数与子命令。
 
 <!-- AUTO-GEN:START 由 scripts/docs-gen-reference.ts 生成，勿手工编辑 -->
 
-> 共 **68** 个参数条目、**6** 个子命令。
+> 共 **69** 个参数条目、**6** 个子命令。
 > 描述取自 `sid-code --help`，并与 `packages/cli/src/cli.ts` 的 `parseArgs` 声明
-> （**参数能不能用的唯一权威**，共 67 个 flag）交叉对账：
+> （**参数能不能用的唯一权威**，共 68 个 flag）交叉对账：
 > "能用但没写"和"写了但不能用"两类缺陷都会让对账测试失败。
-> 两个数不相等是口径不同、不是对账没对平：条目按帮助文本的行计，65 条各对应 1 个顶层 flag；3 条不对应顶层声明（`-r, --resume [值]`、`--no-session-persistence`、`--build-info [--json]`：取反式或快速路径入口）；2 个声明了但刻意不写进帮助（`--dump-tools`、`--session-persistence`）。
+> 两个数不相等是口径不同、不是对账没对平：条目按帮助文本的行计，66 条各对应 1 个顶层 flag；3 条不对应顶层声明（`-r, --resume [值]`、`--no-session-persistence`、`--build-info [--json]`：取反式或快速路径入口）；2 个声明了但刻意不写进帮助（`--dump-tools`、`--session-persistence`）。
 
 ## 子命令
 
@@ -209,7 +209,8 @@ status 逐条列出企业通道；--verify 对每条发一次不写数据的探�
 | `--trace-upload-token <tok>` | 上传认证 token（CLI 覆盖配置文件） |
 | `--trace-user-id <id>` | 用户标识（多用户场景） |
 | `--trace-device-id <id>` | 设备标识 |
-| `--upload-traces` | 手动触发重试队列补传（处理之前失败的上传） |
+| `--upload-traces` | 手动触发重试队列补传（处理之前失败的上传）；只传配置上传之后产生的会话 |
+| `--include-history` | 与 --upload-traces 连用：连配置上传之前的历史会话一起上传（先列出数量与时间范围） |
 
 ## UI
 

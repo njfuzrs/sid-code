@@ -1007,6 +1007,13 @@ export async function syncExternalCatalogs(opts?: {
   timeoutMs?: number;
   now?: number;
 }): Promise<{ updated: number; sources: string[]; failed: string[] }> {
+  // P1-11：essential-traffic 下不拉外部目录。4 个源都是硬编码的第三方 CDN
+  // （不是用户配置的模型端点），会暴露 IP 与「在用 sid-code」这一事实，属非必要外发。
+  // 闸放在这里而不是启动调用点：miss 触发刷新（maybeTriggerMissRefresh）也走这个函数，
+  // 只拦启动那一处会留一条「查一个未知模型名就出网」的旁路。
+  // 不记失败退避：这不是源坏了，是用户不让连；退避计数会污染切回 default 之后的判断。
+  const { shouldLoadRemoteConfig } = await import("../analytics/privacy-level.ts");
+  if (!shouldLoadRemoteConfig()) return { updated: 0, sources: [], failed: [] };
   if (memModels === null) loadCapabilityCache();
   const timeoutMs = opts?.timeoutMs ?? resolveSideCallTimeouts().gatewayPricingMs;
   const now = opts?.now ?? Date.now();

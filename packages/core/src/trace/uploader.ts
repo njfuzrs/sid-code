@@ -828,10 +828,33 @@ export class UploadManager implements TraceUploaderInterface {
    * best-effort：不抛异常，调用方可以 fire-and-forget。
    */
   async backfillPendingSessions(
-    opts: Omit<import("./backfill.ts").BackfillOptions, "outputDir"> = {},
+    opts: Omit<import("./backfill.ts").BackfillOptions, "outputDir"> & {
+      /**
+       * 跳过补传水位，连配置上传之前的历史会话一起传（P0-3）。
+       * 只有 `--upload-traces --include-history` 这一处显式传 true；默认一律带水位。
+       */
+      includeHistory?: boolean;
+    } = {},
   ): Promise<import("./backfill.ts").BackfillResult> {
     const { runBackfill } = await import("./backfill.ts");
-    return runBackfill(this, { ...opts, outputDir: this.opts.outputDir });
+    const { includeHistory, ...rest } = opts;
+    let watermarkMs = rest.watermarkMs;
+    if (!includeHistory && watermarkMs === undefined) {
+      // 水位按上传目标分别记：换地址 = 新目标 = 从现在起算，旧历史不会整批发往新地址
+      const { getUploadWatermark } = await import("./upload-watermark.ts");
+      watermarkMs = getUploadWatermark(this.opts.baseUrl, { outputDir: this.opts.outputDir });
+    }
+    return runBackfill(this, {
+      ...rest,
+      watermarkMs: includeHistory ? undefined : watermarkMs,
+      outputDir: this.opts.outputDir,
+    });
+  }
+
+  /** 当前上传目标的补传水位（ms）；`/debug` 体检与 `--upload-traces` 提示用 */
+  async getBackfillWatermark(): Promise<number> {
+    const { getUploadWatermark } = await import("./upload-watermark.ts");
+    return getUploadWatermark(this.opts.baseUrl, { outputDir: this.opts.outputDir });
   }
 }
 

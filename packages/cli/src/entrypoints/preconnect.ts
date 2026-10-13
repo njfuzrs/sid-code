@@ -15,18 +15,22 @@
 
 import { profileCheckpoint } from "@sid-code/shared/utils/startup-profiler.ts";
 
-/** 默认 Anthropic API 端点 */
-const DEFAULT_ANTHROPIC_BASE = "https://api.anthropic.com";
-
 /** 记录已预连接的 origin，避免重复预热 */
 const preconnected = new Set<string>();
 
 /**
  * 对给定 base URL 发起预连接。
- * @param baseUrl API 基址，缺省用 Anthropic 官方端点
+ *
+ * ⚠️ 取不到地址就**跳过**，永不回落 `api.anthropic.com`（P1-11）。原实现只读环境变量
+ * `SID_CODE_LLM_BASE_URL`，未设时固定连 Anthropic —— 而通过 settings.json 配网关的用户
+ * （团队模板就是这种）从不设这个变量，于是每次启动都向一个与自己无关的第三方暴露启动事实，
+ * 首请求也吃不到预热（连的根本不是同一个主机）。调用方应传已解析 config 的主模型 baseURL。
+ *
+ * @param baseUrl 主模型实际请求的 API 基址；空 / 缺省 / 非法时不发任何请求
  */
 export function preconnectApi(baseUrl?: string): void {
-  const base = baseUrl && baseUrl.trim() ? baseUrl : DEFAULT_ANTHROPIC_BASE;
+  if (!baseUrl || !baseUrl.trim()) return;
+  const base = baseUrl;
 
   let origin: string;
   try {

@@ -125,9 +125,16 @@ const mod: LocalCommandModule = {
         const { getUploadBacklog } = await import("@sid-code/core/trace/backfill.ts");
         const { sidPaths } = await import("@sid-code/core/config/paths.ts");
         const outputDir = ctx.config.trace?.outputDir ?? sidPaths.trajectories();
-        const b = getUploadBacklog({ outputDir, currentSessionId: sessionId });
+        // P0-3：「待补传」与启动补传同口径——只数配置上传之后的会话。不带水位的话，
+        // 刚配上传的用户会在这里看到一个永远消不掉的大数，并被下面那行提示引去跑补传。
+        const { getUploadWatermark } = await import("@sid-code/core/trace/upload-watermark.ts");
+        // 未配置上传时不建水位（读水位会给该目标落盘一条记录），积压只做纯计数
+        const watermarkMs = uploadUrl ? getUploadWatermark(uploadUrl, { outputDir }) : undefined;
+        const b = getUploadBacklog({ outputDir, currentSessionId: sessionId, watermarkMs });
         lines.push(
-          `本地会话   : ${b.totalSessions} 个（已上传 ${b.uploaded}，待补传 ${b.pending}）`,
+          `本地会话   : ${b.totalSessions} 个（已上传 ${b.uploaded}，待补传 ${b.pending}` +
+            (b.beforeWatermark > 0 ? `，配置上传前 ${b.beforeWatermark} 个不自动上传` : "") +
+            `）`,
         );
         lines.push(
           `重试队列   : ${b.queueEntries === null ? "读取失败" : `${b.queueEntries} 条`}` +

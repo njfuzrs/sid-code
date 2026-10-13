@@ -625,7 +625,8 @@ function TUIAppInner({ initialState, callbacks, bridge, alternateBuffer }: AppPr
     // 启动延迟预取（首屏渲染完成后后台预热）
     import("../entrypoints/deferred-prefetch.ts")
       .then(({ startDeferredPrefetches }) => {
-        startDeferredPrefetches(true);
+        // config.baseURL 由 resolveCurrentModelConfig 回填为主模型实际端点
+        startDeferredPrefetches(true, callbacks.config?.baseURL);
       })
       .catch(() => {
         /* 静默失败 */
