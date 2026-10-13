@@ -88,13 +88,13 @@ const FORCE_FULL_PATTERNS: RegExp[] = [
 const CROSS_PACKAGE_FULL_THRESHOLD = 3;
 
 /**
- * `src/` 独有、没有同名 `tests/` 目录的 core domain（实测 2026-08-19）。
+ * `src/` 独有、没有同名 `tests/` 目录的 core domain。
  * 改到它们回退整包，而不是输出一个不存在的路径或空集。
  *
- * ⚠️ 这三个目录**缺测试**本身是个真实缺口（`bootstrap` 是无头入口之一），
- * 不属于本脚本的职责范围，但别把这里的回退当成「已覆盖」。
+ * 2026-10-13：bootstrap / command-contract / coordinator 三个目录已补测试（PR-E），
+ * 名单清空。新增无测试目录时由下方 existsSync 兜底回退整包，不需要手动加进来。
  */
-const CORE_SRC_WITHOUT_TESTS = new Set(["bootstrap", "command-contract", "coordinator"]);
+const CORE_SRC_WITHOUT_TESTS = new Set<string>([]);
 
 /**
  * `packages/core/tests/` 下**不是 domain 测试**的目录 —— 它们是被别的测试消费的
