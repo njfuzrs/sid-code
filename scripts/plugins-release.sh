@@ -103,7 +103,7 @@ if git rev-parse -q --verify "refs/tags/$TAG" >/dev/null; then
     fail "tag $TAG 已存在，版本不可覆盖（G3）：请先升 plugins/$NAME/plugin.json 的 version"
 fi
 if git ls-remote --exit-code --tags origin "refs/tags/$TAG" >/dev/null 2>&1; then
-    fail "远端已有 tag $TAG，版本不可覆盖（G3）"
+    fail "远端已有 tag ${TAG}，版本不可覆盖（G3）"
 fi
 ok "G3 tag $TAG 未被占用"
 
@@ -199,7 +199,7 @@ esac
 
 # ─── tag ───
 git tag -a "$TAG" -m "Release plugin ${NAME}@${VERSION} (sha256 ${P_SHA})"
-git push origin "$TAG" || warn "tag 推送失败，可稍后手动推送 $TAG（发布本身已完成）"
+git push origin "$TAG" || warn "tag 推送失败，可稍后手动推送 ${TAG}（发布本身已完成）"
 ok "已打 tag $TAG"
 
 # ─── 冒烟：对外地址能拿到新目录 ───
