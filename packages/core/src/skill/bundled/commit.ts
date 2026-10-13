@@ -61,7 +61,7 @@ const COMMIT_PROMPT = `# Commit: 生成提交信息并提交
 
 ## 约束
 - 只提交已暂存内容，不擅自扩大范围；不修改任何代码文件，只生成 message 并提交
-- **不要**自动 \`git push\`——推送是 /commit-push-pr 的职责
+- **不要**自动 \`git push\`——推送与建 PR 是 /pr-workflow 的职责
 - 若暂存区疑似含密钥文件（.env / credentials / *.key 等），先用 \`ask_user_question\`
   警示并让用户确认是否继续，再往下走
 - 全程保持简洁：不复述命令原始输出，不写长表格，把交互交给 ask_user_question`;

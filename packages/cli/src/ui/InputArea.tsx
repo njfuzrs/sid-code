@@ -30,6 +30,7 @@ import { useExitConfirm } from "./hooks/useExitConfirm.ts";
 import { useTextBuffer, getVisualLines, getCursorVisualPosition } from "./text-buffer.ts";
 import { useSlashCompletion, type CommandInfo } from "./hooks/useSlashCompletion.ts";
 import { applySlashCompletion, canSubmitSlashCompletionDirectly } from "../command/mid-input.ts";
+import { isMigratedSkillInput } from "../command/migrated-skills.ts";
 import { useAtCompletion } from "./hooks/useAtCompletion.ts";
 import { useSettings } from "./contexts/SettingsContext.tsx";
 import { reduceVimEngine } from "./vim/transitions.ts";
@@ -837,6 +838,19 @@ export function InputArea({
       }
       if (key.name === "enter" && !key.shift) {
         const picked = suggestions[activeIndex];
+        // 内置 skill 下沉 P4：整条输入是已迁走 / 已删除的旧命令名（如 /commit-push-pr），
+        // 而补全项是别的命令（模糊匹配到 /commit）→ 提交原文拿迁移提示，
+        // 不能替用户执行一个他没敲的命令。补全项恰好同名（用户自定义了同名 skill）时照常走。
+        const typed = tb.state.lines.join("\n");
+        if (
+          completionMode === "slash" &&
+          isMigratedSkillInput(typed) &&
+          picked?.value.trim() !== typed.trim()
+        ) {
+          setCompletion({ suggestions: [], activeIndex: 0, mode: "none" });
+          submitCommandText(typed.trim());
+          return true;
+        }
         // 斜杠命令 + 不需要参数 → 单次回车直接执行（对齐 claude-code，省掉"回填再回车"）。
         // 用补全项的规范命令名（value 去掉尾随空格）提交，忽略用户输入的模糊查询。
         // D4：「忽略用户输入」只在整条输入就是这一个命令 token 时成立；中间位置 / 多行 /

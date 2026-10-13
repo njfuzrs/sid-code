@@ -72,27 +72,48 @@ skill 声明了其中任何一个，执行前都要再确认一次（`packages/c
 本来就不需要声明它。
 :::
 
-## 8 个内置 Skill
+## 3 个内置 Skill
 
-`sid-code` 自带 8 个，开箱可用，无需配置：
+`sid-code` 自带 3 个，开箱可用，无需配置：
 
 | 名称 | 干什么 | 模式 |
 | --- | --- | --- |
-| `bug-fix` | 修 bug 的完整 SOP：复现 → 定位根因（要 `file:line` 实证）→ 出方案 → 人工审批 → 实现 → 测试验证 | activate |
 | `code-review` | 针对 PR diff 出结构化 review：bug / 安全漏洞 / 设计反模式，带行号和可执行建议 | delegate |
-| `security-audit` | 8 类漏洞检测（注入 / 凭据泄露 / XSS / 认证绕过 / 弱加密 / CVE 依赖 / IaC 配置 / 数据泄露），带 CWE/OWASP 引用 | delegate |
-| `code-governance` | 合规治理：license / PII / 合规元数据 / 审计 trail | delegate |
-| `ci-self-heal` | 读 CI 失败日志出诊断：失败分类 + 根因假设 + 可执行 fix | delegate |
-| `incident-rca` | 线上故障根因分析：跨 log / metric / trace / commit / ADR 五个维度构造假设，给 hotfix / 缓解 / 长期三档建议 | delegate |
 | `skill-creator` | 帮你写 Skill（写 Skill 的 Skill） | activate |
 | `claude-code-migration` | 把 Claude Code 的配置迁到 sid-code：只 copy 不 move，不删源文件，不静默覆盖 | activate |
 
-在会话里用 `/skills` 看当前加载了哪些，或直接 `/bug-fix` 手动触发某一个。
+另有 `/simplify`、`/verify`、`/review`、`/commit`、`/pr`、`/pr-workflow` 这几个编译进二进制的命令式 skill。
+
+在会话里用 `/skills` 看当前加载了哪些，或直接 `/code-review` 手动触发某一个。
 
 ::: tip delegate 类的定位
-`code-review` / `security-audit` / `ci-self-heal` / `incident-rca` / `code-governance`
-都是 delegate 模式——它们在**独立子代理**里跑，产出结构化报告回来，不占主对话上下文。
-这几个专门为「给 AI 生成的代码兜底」设计：AI 写得快，但得有人复核。
+`code-review` 是 delegate 模式：在**独立子代理**里跑，产出结构化报告回来，不占主对话上下文。
+它专门为「给 AI 生成的代码兜底」设计：AI 写得快，但得有人复核。
+:::
+
+## 官方插件市场里的 Skill
+
+专项审计、运维、GitHub 评论处理这几类按需安装，不再随二进制分发。官方市场 `sid-code` 默认已注册：
+
+| 插件 | 调用名 | 干什么 | 原内置名 |
+| --- | --- | --- | --- |
+| `compliance` | `/compliance:security-audit` | 8 类漏洞检测（注入 / 凭据泄露 / XSS / 认证绕过 / 弱加密 / CVE 依赖 / IaC 配置 / 数据泄露），带 CWE/OWASP 引用 | `security-audit` |
+| `compliance` | `/compliance:governance` | 合规治理：license / PII / 合规元数据 / 审计 trail | `code-governance` |
+| `ops` | `/ops:ci-heal` | 读 CI 失败日志出诊断：失败分类 + 根因假设 + 可执行 fix | `ci-self-heal` |
+| `ops` | `/ops:incident-rca` | 线上故障根因分析：跨 log / metric / trace / commit / ADR 五个维度构造假设，给 hotfix / 缓解 / 长期三档建议 | `incident-rca` |
+| `github-pr` | `/github-pr:comments` | 处理 PR 上的 review 评论：逐条修改、推送并回复 | `pr-comments` |
+
+```text
+/plugin install compliance@sid-code
+```
+
+敲旧命令名（如 `/security-audit`）会提示去哪装、装完叫什么。`bug-fix` 与 `commit-push-pr` 已移除：
+前者的流程本来就是默认工作方式，后者等于 `/commit` + `git push` + `/pr`，或直接用 `/pr-workflow`。
+
+::: warning 锁定了插件来源的企业
+开了 `strictPluginOnlyCustomization` 且没下发白名单时，只认 `backend.url` 对应的企业市场，官方市场装不了，
+需要管理员把这几个插件镜像上架到企业市场。下发 `strictKnownMarketplaces` 白名单时要**同时**写上
+企业市场和官方市场的 index 地址——只写官方的话，企业市场反而会被拒。
 :::
 
 ## activate 与 delegate 的区别
@@ -167,7 +188,7 @@ frontmatter 字段用 **kebab-case**（`when-to-use`，不是 `whenToUse`）：
 Skill 能不能自动生效，几乎全看 `description` 写得够不够具体。模型看到的只有摘要列表，
 它靠 `description` 判断"这次任务该不该展开这个 Skill"。
 
-对比一下内置 `ci-self-heal` 的写法：
+对比一下官方插件 `ops` 里 `ci-heal`（原内置 `ci-self-heal`）的写法：
 
 ```yaml
 description: "针对 CI 失败日志输出结构化诊断与修复建议. 识别失败分类(test/lint/build/type/dependency/config/flaky/timeout) / 根因假设 / 可执行 fix, 引用具体 file:line."
@@ -177,7 +198,7 @@ when-to-use: "当 CI 失败日志可用且用户说 'CI 挂了' / 'build failed'
 它把**触发词**直接列进去了（"CI 挂了"、"build failed"）。写成
 `description: 处理 CI 相关问题` 的话，模型大概率不会触发它——太含糊，没有判断依据。
 
-内置 Skill 还有一个做法值得抄：**显式写清和其他 Skill 的边界**。
+这个 Skill 还有一个做法值得抄：**显式写清和其他 Skill 的边界**。
 `ci-self-heal` 的 `when-to-use` 里有一句「与 code-review 的关系是: review 看 PR diff,
 ci-self-heal 看 CI log, 输入与目标场景明确不重叠」——多个 Skill 场景相近时，
 这种说明能避免模型选错。
@@ -244,7 +265,7 @@ ci-self-heal 看 CI log, 输入与目标场景明确不重叠」——多个 Ski
 `~/.sid-code/settings.json` 里列进 `disabledSkills`：
 
 ```json
-{ "disabledSkills": ["code-governance", "incident-rca"] }
+{ "disabledSkills": ["skill-creator"] }
 ```
 
 ### 改了 SKILL.md 要重启吗
