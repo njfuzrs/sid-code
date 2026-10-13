@@ -49,6 +49,19 @@ BUN=bun
 BUILD_INFO_LINE:=$(shell ./scripts/build-info-line.sh local)
 BUILD_DEFINES=--define process.env.NODE_ENV='"production"' --define process.env.SID_CODE_BUILD_INFO='"$(BUILD_INFO_LINE)"'
 
+# ─────────────────────────────────────────────────────────────────────────────
+# 编译产物禁止在运行时自动加载**运行目录**里的配置文件（别删，删了是安全漏洞）
+#
+# `bun build --compile` 的产物默认会读取 cwd 的 `.env` / `.env.local` / `.env.{NODE_ENV}`
+# 并注入 process.env，还会读 cwd 的 `bunfig.toml`（其 `preload` 会执行任意代码）。
+# 这一步发生在任何 JS 执行之前，工作区信任门与项目级配置白名单都管不到：
+# 克隆一个仓库再在里面启动 sid-code，就可能被改道或执行仓库里的代码。
+#
+# tsconfig / package-json 两项 bun 1.4.2 默认已关，仍显式写上，防 bun 将来改默认值。
+# 新增构建入口必须带齐这四个参数，防漂移门禁见 tests/build/compile-autoload-flags.test.ts。
+# ─────────────────────────────────────────────────────────────────────────────
+BUILD_NO_AUTOLOAD=--no-compile-autoload-dotenv --no-compile-autoload-bunfig --no-compile-autoload-tsconfig --no-compile-autoload-package-json
+
 .PHONY: help build rebuild build-bump release run test test-providers clean deps lint canary stability-test stress-test provider-health
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -79,7 +92,7 @@ build:
 	$(BUN) run scripts/embed-builtin-skills.ts
 	-$(BUN) run scripts/fetch-ripgrep.ts --as-embed
 	-$(BUN) run scripts/gen-model-catalog-snapshot.ts
-	$(BUN) build --compile $(BUILD_DEFINES) --outfile $(BINARY) packages/cli/src/entrypoints/bootstrap.ts
+	$(BUN) build --compile $(BUILD_NO_AUTOLOAD) $(BUILD_DEFINES) --outfile $(BINARY) packages/cli/src/entrypoints/bootstrap.ts
 	@./$(BINARY) --self-check
 
 # 兼容旧习惯与历史文档里的 `make rebuild`：与 `make build` 完全等价。

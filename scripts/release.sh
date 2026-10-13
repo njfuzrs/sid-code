@@ -1047,7 +1047,12 @@ for entry in "${TARGETS[@]}"; do
     # 这 5 个 target 的身份行**故意共用一次取数**（BUILD_INFO_LINE 在循环外算，见上），
     # 否则同一次发布的 4 个平台产物会有不同的 built_at —— 那让"这 4 个包是同一次发布的吗"
     # 变成一个要人肉比较时间戳的问题。
+    #
+    # --no-compile-autoload-*：禁止产物在运行时读取运行目录的 .env / bunfig.toml 等
+    # （与 Makefile 的 BUILD_NO_AUTOLOAD 同源同理由，别删）。
     bun build --compile --target="$BUN_TARGET" \
+        --no-compile-autoload-dotenv --no-compile-autoload-bunfig \
+        --no-compile-autoload-tsconfig --no-compile-autoload-package-json \
         --define process.env.NODE_ENV='"production"' \
         --define process.env.SID_CODE_BUILD_INFO="\"$BUILD_INFO_LINE\"" \
         --outfile "$OUT_DIR/sid-code" \

@@ -1172,6 +1172,21 @@ export async function main(): Promise<void> {
     }
     profileCheckpoint("migrations_end");
 
+    // 编译产物不再读取运行目录的 .env（--no-compile-autoload-dotenv），cwd 里有 SID_CODE_* /
+    // *_API_KEY 时提示一次（只打键名、走 stderr）。源码模式下 bun 仍会加载 .env，提示即为假话，跳过。
+    try {
+      const { IS_DEV_MODE } = await import("@sid-code/core/bootstrap/resolve-executable.ts");
+      if (!IS_DEV_MODE) {
+        const [{ maybeNotifyProjectDotenv }, { sidPaths }] = await Promise.all([
+          import("./utils/project-dotenv-notice.ts"),
+          import("@sid-code/core/config/paths.ts"),
+        ]);
+        maybeNotifyProjectDotenv(process.cwd(), sidPaths.stateFile("dotenv-notice.json"));
+      }
+    } catch (err) {
+      getLogger().debug("STARTUP", `运行目录 .env 提示检测失败（不阻塞启动）: ${err}`);
+    }
+
     profileCheckpoint("config_load_start");
     const config = await loadConfig(cliArgs);
     profileCheckpoint("config_load_end");
