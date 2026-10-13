@@ -28,6 +28,8 @@ function makeDeps(overrides: Partial<AutoUpdateDependencies> = {}) {
       calls.push(`notice:${notice.type}`);
       state.pendingNotice = notice;
     },
+    // 显式注入，避免用例结论随宿主环境变量 SID_CODE_DISABLE_NONESSENTIAL_TRAFFIC 翻转
+    shouldLoadRemoteConfig: () => true,
     ...overrides,
   };
   return { calls, state, deps };
@@ -149,5 +151,38 @@ describe("runAutoUpdateCheck", () => {
     });
     await runAutoUpdateCheck(deps);
     expect(calls).toEqual([]);
+  });
+
+  // P1-11：essential-traffic 下不向发布服务器发任何请求，也不推进节流时间戳
+  test("essential-traffic 下不检查", async () => {
+    const { calls, state, deps } = makeDeps({
+      shouldLoadRemoteConfig: () => false,
+      fetchLatestVersion: async () => {
+        calls.push("fetch");
+        return "0.1.604";
+      },
+    });
+    await runAutoUpdateCheck(deps);
+    expect(calls).toEqual([]);
+    expect(state.lastCheckAt).toBeUndefined();
+  });
+
+  test("默认依赖接的是真实隐私级别（反漂移：别只在测试里注入）", async () => {
+    const prev = process.env.SID_CODE_DISABLE_NONESSENTIAL_TRAFFIC;
+    process.env.SID_CODE_DISABLE_NONESSENTIAL_TRAFFIC = "1";
+    try {
+      const { calls, deps } = makeDeps({
+        fetchLatestVersion: async () => {
+          calls.push("fetch");
+          return "0.1.604";
+        },
+      });
+      delete (deps as Record<string, unknown>).shouldLoadRemoteConfig;
+      await runAutoUpdateCheck(deps);
+      expect(calls).toEqual([]);
+    } finally {
+      if (prev === undefined) delete process.env.SID_CODE_DISABLE_NONESSENTIAL_TRAFFIC;
+      else process.env.SID_CODE_DISABLE_NONESSENTIAL_TRAFFIC = prev;
+    }
   });
 });

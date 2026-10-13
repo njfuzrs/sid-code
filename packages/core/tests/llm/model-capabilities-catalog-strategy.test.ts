@@ -512,3 +512,25 @@ describe("zstd 解压路径 —— 压缩源必须能解出正文，坏字节只
     }
   });
 });
+
+// P1-11：essential-traffic 下外部目录同步一次都不连（4 个源都是硬编码第三方 CDN），
+// 且不记失败退避——这不是源坏了，切回 default 后应立即正常同步。
+describe("essential-traffic 门控", () => {
+  test("不发任何请求，也不推进失败计数", async () => {
+    const prev = process.env.SID_CODE_DISABLE_NONESSENTIAL_TRAFFIC;
+    process.env.SID_CODE_DISABLE_NONESSENTIAL_TRAFFIC = "1";
+    const calls: Array<{ url: string; headers: Record<string, string> }> = [];
+    globalThis.fetch = fakeFetchAlwaysFresh(calls);
+    try {
+      const r = await syncExternalCatalogs({ timeoutMs: 5000 });
+      expect(calls.length).toBe(0);
+      expect(r).toEqual({ updated: 0, sources: [], failed: [] });
+    } finally {
+      if (prev === undefined) delete process.env.SID_CODE_DISABLE_NONESSENTIAL_TRAFFIC;
+      else process.env.SID_CODE_DISABLE_NONESSENTIAL_TRAFFIC = prev;
+    }
+    // 对照组：放开后同一调用确实会出网（证明上面的 0 不是假实现本身造成的）
+    await syncExternalCatalogs({ timeoutMs: 5000 });
+    expect(calls.length).toBeGreaterThan(0);
+  });
+});
