@@ -1,9 +1,8 @@
 {
   "tscVersion": "5.9.3",
-  "total": 92,
+  "total": 91,
   "note": "tsc 存量错误基线（由 scripts/tsc-baseline.ts 维护）。门禁只拦新增、允许收紧：新增的错误必须修掉，不许调高数字；存量清理之后跑 bun run typecheck:gate --update-baseline 收紧。键 = 归一化文件路径 + 错误码 + 归一化消息（不含行列号，行号漂移不触发门禁），值 = 出现次数。换 tsc 版本或大改依赖树之后错误集合可能变，需要重新 --init 并在 PR 里说明总数变化。",
   "errors": {
-    "packages/cli/src/cli.ts|TS2353|Object literal may only specify known properties, and 'diffPreview' does not exist in type '{ discoveryTimeout?: number | undefined; }'.": 1,
     "packages/cli/src/ui/hooks/useFlickerDetector.ts|TS2503|Cannot find namespace 'React'.": 1,
     "packages/cli/src/utils/piped-stdin.ts|TS2339|Property 'isTTY' does not exist on type '(ReadStream & { fd: 0; }) | Readable'.": 1,
     "packages/cli/tests/command/ide-no-lockfile-message.test.ts|TS18048|'result.message' is possibly 'undefined'.": 2,
