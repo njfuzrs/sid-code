@@ -346,9 +346,11 @@ export class HookSystem {
       model?: string;
       systemPromptHash?: string;
       resumedFrom?: string;
+      /** source="clear"：被结束的上一个会话 id */
+      parentSessionId?: string;
       /** P0-1：一般不传，由 event-handler 填真实版本号；仅测试/回放需显式覆盖 */
       app_version?: string;
-      /** clear / compact 的二次 SessionStart：只跑用户 hook，不送 runtime */
+      /** compact 的二次 SessionStart：只跑用户 hook，不送 runtime */
       userOnly?: boolean;
     },
   ): Promise<AggregatedHookResult> {
@@ -359,15 +361,30 @@ export class HookSystem {
    * HC12 / HC16：/clear 与压缩之后重发 SessionStart（source=clear / compact，对齐 CC），
    * 让「SessionStart 注入项目上下文」的 hook 在上下文被清空 / 压掉之后重新注入。
    *
-   * 只跑用户 hook（userOnly）：collector / hook-probe 把 SessionStart 当开新轨迹。
+   * - compact：只跑用户 hook（userOnly）—— 压缩不换会话，collector / hook-probe 收到
+   *   SessionStart 会开新轨迹 / 新根 span，把同一会话劈成两段。
+   * - clear：**全量发送**（含 runtime）。/clear 对齐 CC `regenerateSessionId`：调用方先发
+   *   SessionEnd(clear) 收尾旧会话、再 setSessionId(新 id)，然后由这里开新会话 ——
+   *   collector 开新轨迹目录，hook-probe 开新根 span。此前这里也是 userOnly，于是 /clear
+   *   后所有轨迹继续写进旧会话目录（实测 20261013-124000-9c3eb216：两个任务一份轨迹）。
+   *
    * 返回的上下文暂存在这里，由 QueryEngine 在下一条用户消息时取走（takePendingSessionContext）——
    * 放在 HookSystem 而不是让三条压缩路径各自去找 engine：压缩收尾模块不持有 engine，
    * 而 hookSystem 是三条路径（auto / manual / reactive·collapse）都已经传进来的唯一依赖。
    */
-  async fireSessionRestartEvent(source: "clear" | "compact", model?: string): Promise<void> {
+  async fireSessionRestartEvent(
+    source: "clear" | "compact",
+    model?: string,
+    options?: { parentSessionId?: string },
+  ): Promise<void> {
     // /clear 之后，clear 之前还没用掉的上下文属于已被清空的对话，丢弃
     if (source === "clear") this.pendingSessionContext = [];
-    const result = await this.eventHandler.fireSessionStartEvent(source, { model, userOnly: true });
+    const result = await this.eventHandler.fireSessionStartEvent(
+      source,
+      source === "clear"
+        ? { model, parentSessionId: options?.parentSessionId }
+        : { model, userOnly: true },
+    );
     const text = extractHookContext(result);
     if (text) this.pendingSessionContext.push(text);
   }

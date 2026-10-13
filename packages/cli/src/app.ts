@@ -474,8 +474,8 @@ export class App {
   private emergencyEnded = false;
   /** B1/B2/B3：会话持久化写入端（JSONL 增量写入） */
   private sessionStore: SessionStore | null = null;
-  /** N12：/clear 后下一次 persistUsageStats 必须落一条 side_call_stats 归零快照（哪怕全零）。 */
-  private sideStatsClearedPending = false;
+  /** /clear 换会话后重置「首条消息起标题」的一次性闸门（runTUI 闭包内注入）。 */
+  private resetSessionTitle: (() => void) | null = null;
   /** B6：被 resume 恢复的会话 id（非 null 表示当前是 resume 会话，doInit 应续写原 jsonl 而非新建） */
   private resumedSessionId: string | null = null;
   /** P0-2：--fork-session 时记录分叉来源会话 id（非 null 表示当前是分叉会话，新建 jsonl 并把源 id 写入 parentUuid） */
@@ -2653,6 +2653,187 @@ export class App {
   }
 
   /**
+   * /clear 的唯一实现（两条命令入口共用，此前各写一份、重置项早已不一致）。
+   *
+   * 语义对齐 CC `commands/clear/conversation.ts`：**一次 /clear = 结束旧会话 + 开一个新会话**。
+   * 此前 sid 只清内存、session id 不变，于是 clear 前后的两个任务共用同一份轨迹目录、同一个
+   * sessions jsonl、同一行 session-index、同一行成本账本，/trace 看到的永远是两段混算
+   * （实测 20261013-124000-9c3eb216）。顺序是硬约束：
+   *
+   *   1. 旧会话收尾 —— SessionEnd(reason=clear) + 账本 + jsonl session_end。
+   *      **必须在任何计数器归零之前**：stats 读的就是这些旧值，先归零就把旧会话成本记成 0。
+   *   2. 清会话级内存状态（与改动前同一批，一项不少）。
+   *   3. 换身份 —— 新 id 下发到每一个持有 session id 的组件（漏一个就是一条跨会话串数据）。
+   *   4. 新会话开始 —— jsonl startSession（懒创建）+ SessionStart(source=clear) 全量发送：
+   *      collector 开新轨迹目录、hook-probe 开新根 span、用户 hook 重新注入上下文。
+   *
+   * 不清的东西（刻意，与 CC 一致）：后台任务里仍在运行的（clearInactiveBackgroundTasks 只清已结束的），
+   * 会话标题以外的 UI 偏好，进程级配置。
+   */
+  private async clearConversation(): Promise<void> {
+    const log = getLogger();
+    const oldSessionId = this.sessionState.sessionId;
+    const newSessionId = generateSessionId();
+    log.info("TUI:CMD", `/clear：结束会话 ${oldSessionId}，开新会话 ${newSessionId}`);
+
+    // ── 1. 旧会话收尾（计数器此时仍是旧值） ──
+    // 上传不在 /clear 上同步等（collector 对 reason=clear 走后台上传）；用户 hook 有 1.5s 共享预算
+    // （HC20），这里再兜一层 2s 上限——慢 hook 不能把一次 /clear 卡住。超时不影响正确性：
+    // collector 的 SessionStart 会等在途收尾写完，迟到的旧 SessionEnd 也会被识别丢弃。
+    try {
+      await Promise.race([
+        this.hookSystem.fireSessionEndEvent("clear", this.buildSessionEndStats()),
+        new Promise((resolve) => setTimeout(resolve, 2000)),
+      ]);
+    } catch (err: any) {
+      log.warn("HOOK", `SessionEnd(clear) 失败（不阻断 /clear）: ${err?.message ?? err}`);
+    }
+    this.hookSystem.cleanupAsyncHooks();
+    // jsonl 落 session_end + 账本落旧会话终值行（upsert，按旧 sessionId 一行）
+    this.finalizeSessionStore();
+    try {
+      CrashMarker.cleanup(oldSessionId);
+    } catch {
+      /* ignore */
+    }
+    try {
+      const { clearFileIntent } = await import("@sid-code/core/session/file-intent.ts");
+      clearFileIntent(oldSessionId);
+    } catch {
+      /* ignore */
+    }
+
+    // ── 2. 清会话级内存状态 ──
+    this.ctxMgr.clear();
+    // N12：影子调用会话维度与 sideCostUSD 同批归零（rotate → resetCounters 已清 sideCostUSD）。
+    resetSessionSideStats();
+    // /clear 后模型对"已播报过的延迟工具/权限提醒"完全失忆，去重键必须一并归零，
+    // 否则新一轮对话永远不再播报延迟工具列表（详见 resetReminderDedupKeys 注释）。
+    this.sessionState.resetReminderDedupKeys();
+    clearPromptCache();
+    this.resetRecallState();
+    this.quotaManager?.resetAlertLevel();
+    this.fallback.reset();
+    this.resetTodoTool();
+    this.resetHypothesisLedger();
+    // 负收益防线审计发现 1：resetDenialTracking() 此前**只有定义、无任何生产调用方**，
+    // /clear 是"新一轮对话"的确切时机，在此归零（与 todo/假设登记表等会话级状态同批重置）。
+    this.permissionChecker?.resetDenialTracking?.();
+    this.clearInactiveBackgroundTasks();
+    // P2-1：/clear 清空对话 → 回退点全部失效（对应的消息已不存在），一并清空。
+    this.rewindManager?.clear();
+    // /clear 后 goal 目标状态清空：旧 /goal 不应跨会话残留
+    this.goalState = null;
+    // 压缩后待注入的会话笔记、压缩中提取的用户约束都属于旧对话
+    this.pendingSessionMemoryContent = undefined;
+    this.criticalConstraints.clear();
+    // P2-7：JIT 缓存重置（对齐 CC `loadedNestedMemoryPaths?.clear()`）——不清则 clear 前加载过的
+    // 规则在重建后的系统提示词里永久丢失、再次触达也不重新注入。
+    this.jitContextMgr.reset();
+    this.reportedJitFailures.clear();
+    // 记账同步归零（JIT 分量已清，基线由后续重建的 onSectionTokens 重新报）
+    this.refreshMemoryTokenAccounting();
+    // 缓存检测状态重置：旧基线对新会话无效，不清会产生虚假中断检测
+    resetCacheDetection();
+    clearCacheBreaks();
+    // 压缩熔断器重置：旧会话的失败记录不应阻止新会话的合理压缩
+    resetCircuitBreaker();
+    // G5/G7：TTL 决策和 beta header 集合不应跨 /clear 泄漏
+    resetTTLLatch();
+    resetBetaHeaders();
+    // 统一消息队列清空（缺口1 h2A）：排队中的用户输入 / 未出队的后台任务通知不应跨会话残留。
+    clearMessageQueue();
+    this.announcedMcpServers.clear();
+
+    // ── 3. 换身份（对齐 CC regenerateSessionId({ setCurrentAsParent: true })） ──
+    // rotate 同时归零用量计数器与轮次序号（新会话从 0 记）。
+    this.sessionState.rotate(newSessionId);
+    // clear 后不再续写被 resume / fork 的旧会话：逻辑会话 id 回到本进程新 id
+    this.resumedSessionId = null;
+    this.forkedFromSessionId = null;
+    this.forkSourceMessages = null;
+    this.rotateSessionIdentity(oldSessionId, newSessionId);
+
+    // ── 4. 新会话开始 ──
+    try {
+      this.sessionStore?.startSession(
+        newSessionId,
+        this.config.model,
+        this.config.provider,
+        process.cwd(),
+        undefined,
+        oldSessionId,
+      );
+    } catch (err: any) {
+      log.warn("SESSION", `新会话持久化启动失败（不阻断）: ${err?.message ?? err}`);
+    }
+    // Session Memory 按会话分文件：重接到新 id，否则新任务往旧任务的笔记里写
+    await this.wireSessionMemory();
+    // 会话标题属于旧会话：新会话首条消息重新起名（终端标签也随之刷新）
+    this.config.sessionName = undefined;
+    this.resetSessionTitle?.();
+    // HC12 / HC16：SessionStart(source=clear) —— 现在全量发送（含 runtime）：
+    // collector 据此开新轨迹目录，用户 hook 重新注入上下文（结果在下一条用户消息注入）。
+    // 不 await 用户 hook：/clear 是同步交互，不能被一个慢 hook 卡住。
+    void this.hookSystem
+      .fireSessionRestartEvent("clear", this.config.model, { parentSessionId: oldSessionId })
+      .catch((err: any) => log.debug("HOOK", `SessionStart(clear) 失败: ${err?.message ?? err}`));
+  }
+
+  /**
+   * 把新 session id 下发到所有持有它的组件。新增持有 session id 的组件时必须加到这里 ——
+   * 每漏一个，/clear 之后就有一类数据继续挂在旧会话名下。
+   */
+  private rotateSessionIdentity(oldSessionId: string, newSessionId: string): void {
+    const log = getLogger();
+    this.sessionIdForCompact = newSessionId;
+    this.config.sessionId = newSessionId;
+    this.ctxMgr.setSessionId(newSessionId);
+    this.hookSystem.setSessionId(newSessionId);
+    getSessionMetrics().setSessionId(newSessionId);
+    getSessionMetrics().reset();
+    // 子代理 sidechain / 并发冲突上下文跟随主会话
+    try {
+      this.wireSubAgentSessionId();
+    } catch {
+      /* 不阻断 */
+    }
+    this.fileReadTracker?.applySessionContext?.({
+      sessionId: newSessionId,
+      pid: process.pid,
+      cwd: process.cwd(),
+    });
+    // PID 文件内容（文件名按 pid）与活跃会话注册表：跨进程「别碰活着的会话」护栏要护的是新会话
+    try {
+      PidManager.write(newSessionId);
+    } catch {
+      /* ignore */
+    }
+    void (async () => {
+      try {
+        const { setSessionId } = await import("@sid-code/core/bootstrap/state.ts");
+        setSessionId(newSessionId);
+        const { renameActiveSession } = await import("@sid-code/core/session/concurrent.ts");
+        renameActiveSession(oldSessionId, newSessionId, {
+          pid: process.pid,
+          kind: this.config.print ? "headless" : "interactive",
+          cwd: process.cwd(),
+          startedAt: Date.now(),
+          model: this.config.model,
+        });
+        const { setCurrentSessionId } = await import("@sid-code/core/task/session-task-store.ts");
+        setCurrentSessionId(newSessionId);
+        const { primeMetadata } = await import("@sid-code/core/analytics/metadata.ts");
+        primeMetadata({ sessionId: newSessionId });
+        const { getBackends } = await import("@sid-code/core/analytics/sink.ts");
+        for (const b of getBackends()) b.setSessionId?.(newSessionId);
+      } catch (err: any) {
+        log.warn("APP", `会话身份下发不完整（不阻断 /clear）: ${err?.message ?? err}`);
+      }
+    })();
+  }
+
+  /**
    * /clear 时重置 TodoWrite 工具的内部清单状态。
    * UI 层 todos 由 getConversationClearedPatch 清空，但工具内部 currentTodos 是
    * 模块级私有状态、不随 ctxMgr.clear() 重置——不清会导致 /clear 后 TodoPanel 残留旧清单"幽灵"。
@@ -2820,77 +3001,14 @@ export class App {
       presentCommandResult,
       presentConversationalResult,
       getConversationClearedPatch,
-      clearPromptCache,
       resetSyncState,
       rebuildDisplay,
     } = deps;
 
     switch (result.type) {
       case "clear":
-        log.info("TUI:CMD", "清空消息历史，重置上下文");
-        this.ctxMgr.clear();
-        this.sessionState.resetCounters();
-        // N12：影子调用会话维度与 sideCostUSD 同批归零（resetCounters 已清 sideCostUSD）。
-        resetSessionSideStats();
-        this.sideStatsClearedPending = true;
-        // /clear 后模型对"已播报过的延迟工具/权限提醒"完全失忆，去重键必须一并归零，
-        // 否则新一轮对话永远不再播报延迟工具列表（详见 resetReminderDedupKeys 注释）。
-        this.sessionState.resetReminderDedupKeys();
-        clearPromptCache();
-        this.resetRecallState();
-        this.quotaManager?.resetAlertLevel();
-        this.fallback.reset();
-        this.resetTodoTool();
-        this.resetHypothesisLedger();
-        // 负收益防线审计发现 1：resetDenialTracking() 此前**只有定义、无任何生产调用方**，
-        // 注释说"新一轮对话时调用"但没人调 → totalDenials 单调不减。/clear 是"新一轮对话"
-        // 的确切时机，在此归零（与 todo/假设登记表等会话级状态同批重置）。
-        this.permissionChecker?.resetDenialTracking?.();
-        this.clearInactiveBackgroundTasks();
-        // P2-1：/clear 清空对话 → 回退点全部失效（对应的消息已不存在），一并清空。
-        this.rewindManager?.clear();
-        // /clear 后 goal 目标状态清空：旧 /goal 不应跨会话残留
-        this.goalState = null;
-        // 边界加固：/clear 续写同一 jsonl（不新建文件），若清空后用户直接退出、没有新一轮 done，
-        // 恢复会按"取最后一条"读到 clear 前的旧快照 → 幽灵清单/统计/目标/假设。这里立即覆盖式
-        // 落一条归零快照，让 clear 语义在恢复端也生效。全部对称处理。失败不阻断。
-        this.persistUsageStats();
-        this.persistTodoState();
-        this.persistHypothesisLedger();
-        // goal 特殊：goalState 已置 null，persistGoalState() 会 no-op 落不了空目标，
-        // 故用清除哨兵覆盖 clear 前的旧目标快照，restoreSession 读到哨兵即跳过恢复。
-        this.persistGoalState(true);
-        // P2-7：JIT 缓存重置（对齐 CC `commands/clear/conversation.ts:132` 的
-        // `loadedNestedMemoryPaths?.clear()`）。`reset()` 此前**无任何生产调用方** ——
-        // 注释写着"会话重启时调用"但没人调，于是 `/clear` 后 loadedFiles 仍记着
-        // clear 前加载过的文件，而系统提示词已重建（JIT 追加内容被抹掉）：
-        // 两边不一致 → 那些规则**永久丢失**直到进程重启，且再次触达也不会重新注入。
-        // 必须在 rebuildDisplay/系统提示词重建这一批里一起归零。
-        this.jitContextMgr.reset();
-        this.reportedJitFailures.clear();
-        // HC12 / HC16：/clear 之后重发 SessionStart(source=clear)，对齐 CC——
-        // 清空对话也清掉了启动时 hook 注入的上下文，不重发就只有第一段对话看得到它。
-        // fire-and-forget：/clear 是同步交互，不能被一个慢 hook 卡住；结果在下一条用户消息注入。
-        void this.hookSystem
-          .fireSessionRestartEvent("clear", this.config.model)
-          .catch((err: any) =>
-            log.debug("HOOK", `SessionStart(clear) 失败: ${err?.message ?? err}`),
-          );
-        // 记账同步归零（JIT 分量已清，基线由后续重建的 onSectionTokens 重新报）
-        this.refreshMemoryTokenAccounting();
-        // 缓存检测状态重置：旧基线对新会话无效，不清会产生虚假中断检测
-        resetCacheDetection();
-        clearCacheBreaks();
-        // 压缩熔断器重置：旧会话的失败记录不应阻止新会话的合理压缩
-        resetCircuitBreaker();
-        // G5/G7：TTL 决策和 beta header 集合不应跨 /clear 泄漏
-        resetTTLLatch();
-        resetBetaHeaders();
-        // 统一消息队列清空（缺口1 h2A）：/clear 是会话级重置，排队中的用户输入 / 未出队的
-        // 后台任务通知不应跨会话残留（否则 clear 后队列 drain 会把上一会话的旧输入注入新会话）。
-        // 队列是模块级单例，ctxMgr.clear() 不会触及它 —— 必须显式清空，对齐其余重置项。
-        clearMessageQueue();
-        this.announcedMcpServers.clear();
+        // 两条 /clear 入口共用一个实现（见 clearConversation 注释）
+        await this.clearConversation();
         resetSyncState();
         updateState(getConversationClearedPatch());
         break;
@@ -3274,6 +3392,58 @@ export class App {
   }
 
   /**
+   * 接线 Session Memory（按逻辑会话 id 分文件）。doInit 调一次；/clear 换会话后再调一次——
+   * 否则新会话仍往旧会话的 .session_memory.md 里写，压缩时把上一个任务的笔记当成本任务历史注入。
+   */
+  private async wireSessionMemory(): Promise<void> {
+    const log = getLogger();
+    // Step 0：接线 Session Memory 子系统（压缩前持续维护结构化会话笔记）。
+    // 三处接线之一（① init）——构造 handle 并持有：
+    //   - getMainContext 提供 ForkedAgentContext（共享主对话历史前缀，cache 友好）
+    //   - canUseTool 把提取代理权限收窄到只能编辑 .session_memory.md 单文件
+    // 另两处接线在 query loop 每轮收尾（② updateSessionMemory ③ recordToolCall），见 query/loop.ts。
+    // 失败不阻断启动：sessionMemory 保持 null，autoCompact 回退 LLM 摘要。
+    try {
+      const { initSessionMemory } = await import("@sid-code/core/session-memory/session-memory.ts");
+      const { createSessionMemoryPermissions } =
+        await import("@sid-code/core/memory/extract/permissions.ts");
+      const { getSessionMemoryPath } = await import("@sid-code/core/memory/paths.ts");
+      const { createStatefulTools } = await import("@sid-code/core/tool/stateful-tools.ts");
+      const { FileReadTracker } = await import("@sid-code/core/tool/file-read-tracker.ts");
+      // P0-4：按**逻辑会话 id** 分文件。用 getLogicalSessionId()（resume 时是被恢复
+      // 的那个 id，否则是本进程新 id）——与 sidechain 持久化同源，这样 `--resume`
+      // 拿回的是同一份笔记，而并发的两个会话各写各的，不再互相覆盖。
+      const sessionMemorySessionId = this.getLogicalSessionId();
+      const sessionMemoryFile = getSessionMemoryPath(process.cwd(), sessionMemorySessionId);
+      this.sessionMemory = initSessionMemory({
+        getMainContext: () => ({
+          systemPrompt: this.ctxMgr.getSystemPrompt(),
+          messages: this.ctxMgr.getMessages(),
+          provider: this.provider,
+          toolRegistry: this.toolRegistry,
+          model: this.config.model,
+          // FileReadTracker 隔离（缺口 A）：每次提取用独立 tracker 重建有状态工具，
+          // 不共享主代理 tracker——避免 forked agent 读 .session_memory.md 污染主代理
+          // 缓存新鲜度、绕过「先读后写」护栏。对标 cc cloneFileStateCache。
+          statefulTools: createStatefulTools(new FileReadTracker()),
+        }),
+        canUseTool: createSessionMemoryPermissions(sessionMemoryFile),
+        cwd: process.cwd(),
+        sessionId: sessionMemorySessionId,
+      });
+      // 把 handle 暴露给 queryLoop（经 QueryEngine），用于每轮收尾触发提取 + 记录工具调用。
+      this.queryEngine.setSessionMemory(this.sessionMemory);
+      log.info("APP", `Session Memory 子系统已接线: ${sessionMemoryFile}`);
+    } catch (e) {
+      this.sessionMemory = null;
+      log.warn(
+        "APP",
+        `Session Memory 接线失败（不阻断，autoCompact 回退 LLM 摘要）: ${(e as Error)?.message}`,
+      );
+    }
+  }
+
+  /**
    * §2.2 Context Collapse：autoCompact 前置层。对最老的若干段消息做分段摘要。
    * 返回 true 表示 collapse 后已达目标（可跳过 autoCompact），false 表示仍需 autoCompact。
    * 受压缩锁保护（与 autoCompact 互斥）；摘要走低成本模型。
@@ -3642,50 +3812,8 @@ export class App {
       /* sidechain 接线失败不影响启动，子代理仍正常执行只是不持久化 */
     }
 
-    // Step 0：接线 Session Memory 子系统（压缩前持续维护结构化会话笔记）。
-    // 三处接线之一（① init）——构造 handle 并持有：
-    //   - getMainContext 提供 ForkedAgentContext（共享主对话历史前缀，cache 友好）
-    //   - canUseTool 把提取代理权限收窄到只能编辑 .session_memory.md 单文件
-    // 另两处接线在 query loop 每轮收尾（② updateSessionMemory ③ recordToolCall），见 query/loop.ts。
-    // 失败不阻断启动：sessionMemory 保持 null，autoCompact 回退 LLM 摘要。
-    try {
-      const { initSessionMemory } = await import("@sid-code/core/session-memory/session-memory.ts");
-      const { createSessionMemoryPermissions } =
-        await import("@sid-code/core/memory/extract/permissions.ts");
-      const { getSessionMemoryPath } = await import("@sid-code/core/memory/paths.ts");
-      const { createStatefulTools } = await import("@sid-code/core/tool/stateful-tools.ts");
-      const { FileReadTracker } = await import("@sid-code/core/tool/file-read-tracker.ts");
-      // P0-4：按**逻辑会话 id** 分文件。用 getLogicalSessionId()（resume 时是被恢复
-      // 的那个 id，否则是本进程新 id）——与 sidechain 持久化同源，这样 `--resume`
-      // 拿回的是同一份笔记，而并发的两个会话各写各的，不再互相覆盖。
-      const sessionMemorySessionId = this.getLogicalSessionId();
-      const sessionMemoryFile = getSessionMemoryPath(process.cwd(), sessionMemorySessionId);
-      this.sessionMemory = initSessionMemory({
-        getMainContext: () => ({
-          systemPrompt: this.ctxMgr.getSystemPrompt(),
-          messages: this.ctxMgr.getMessages(),
-          provider: this.provider,
-          toolRegistry: this.toolRegistry,
-          model: this.config.model,
-          // FileReadTracker 隔离（缺口 A）：每次提取用独立 tracker 重建有状态工具，
-          // 不共享主代理 tracker——避免 forked agent 读 .session_memory.md 污染主代理
-          // 缓存新鲜度、绕过「先读后写」护栏。对标 cc cloneFileStateCache。
-          statefulTools: createStatefulTools(new FileReadTracker()),
-        }),
-        canUseTool: createSessionMemoryPermissions(sessionMemoryFile),
-        cwd: process.cwd(),
-        sessionId: sessionMemorySessionId,
-      });
-      // 把 handle 暴露给 queryLoop（经 QueryEngine），用于每轮收尾触发提取 + 记录工具调用。
-      this.queryEngine.setSessionMemory(this.sessionMemory);
-      log.info("APP", `Session Memory 子系统已接线: ${sessionMemoryFile}`);
-    } catch (e) {
-      this.sessionMemory = null;
-      log.warn(
-        "APP",
-        `Session Memory 接线失败（不阻断，autoCompact 回退 LLM 摘要）: ${(e as Error)?.message}`,
-      );
-    }
+    // Step 0：接线 Session Memory 子系统（见 wireSessionMemory）。
+    await this.wireSessionMemory();
 
     // 接线后台记忆提取子系统 + autoDream。
     // M2：auto-memory 开关门控（env SID_CODE_AUTO_MEMORY > settings autoMemory > 默认 true）。
@@ -6922,10 +7050,9 @@ export class App {
     // N12：落的是会话维度（resume 回灌基线 + 本进程），读取端在 restoreSession。
     try {
       const s = getSessionSideStats();
-      // 无影子调用时不落盘（避免每轮写一条全零记录）；但 /clear 归零后要落一条全零覆盖旧快照，
-      // 否则恢复会读到 clear 前的旧值（与 usage_stats 的归零快照对称）。
-      if (s.apiCalls > 0 || this.sideStatsClearedPending) {
-        this.sideStatsClearedPending = false;
+      // 无影子调用时不落盘（避免每轮写一条全零记录）。/clear 换到新 jsonl，新文件里本就没有旧快照，
+      // 不再需要「归零快照覆盖」（那是 /clear 续写旧文件时代的补丁）。
+      if (s.apiCalls > 0) {
         this.sessionStore.appendMetadata("side_call_stats", {
           apiCalls: s.apiCalls,
           costUSD: s.costUSD,
@@ -7892,6 +8019,9 @@ export class App {
     // ② 后台用小请求生成更凝练的标题覆盖（fire-and-forget,失败静默回退启发式）。
     // 对标 cc：先启发式占位,Haiku 解析后升级。仅设一次,后续轮次不再改。
     let sessionTitleSet = false;
+    this.resetSessionTitle = () => {
+      sessionTitleSet = false;
+    };
 
     const SESSION_TITLE_PROMPT =
       "为下面这段编程会话的首条指令起一个 3-7 个词的简短任务名,用于终端标签区分。" +
@@ -9993,39 +10123,7 @@ export class App {
         // 处理结构化结果
         switch (result.kind) {
           case "clear":
-            log.info("TUI:CMD", "清空消息历史，重置上下文");
-            this.ctxMgr.clear();
-            this.sessionState.resetCounters();
-            // 同上：reminder 跨轮去重键必须随 /clear 归零（详见 resetReminderDedupKeys 注释）。
-            this.sessionState.resetReminderDedupKeys();
-            clearPromptCache();
-            this.resetRecallState();
-            this.quotaManager?.resetAlertLevel();
-            this.fallback.reset();
-            this.resetTodoTool();
-            this.resetHypothesisLedger();
-            this.clearInactiveBackgroundTasks();
-            // P2-1：/clear 清空对话 → 回退点全部失效，一并清空。
-            this.rewindManager?.clear();
-            // /clear 后 goal 目标状态清空：旧 /goal 不应跨会话残留
-            this.goalState = null;
-            // 缓存检测状态重置：旧基线对新会话无效，不清会产生虚假中断检测
-            resetCacheDetection();
-            clearCacheBreaks();
-            // 压缩熔断器重置：旧会话的失败记录不应阻止新会话的合理压缩
-            resetCircuitBreaker();
-            // G5/G7：TTL 决策和 beta header 集合不应跨 /clear 泄漏
-            resetTTLLatch();
-            resetBetaHeaders();
-            // 统一消息队列清空（缺口1 h2A）：会话级重置不应让排队输入/未出队通知跨会话残留。
-            clearMessageQueue();
-            this.announcedMcpServers.clear();
-            // HC12 / HC16：同上，/clear 后重发 SessionStart(source=clear)
-            void this.hookSystem
-              .fireSessionRestartEvent("clear", this.config.model)
-              .catch((err: any) =>
-                log.debug("HOOK", `SessionStart(clear) 失败: ${err?.message ?? err}`),
-              );
+            await this.clearConversation();
             lastSyncedCount = 0;
             historyIdCounter = 0;
             activeStatusMessages.clear();

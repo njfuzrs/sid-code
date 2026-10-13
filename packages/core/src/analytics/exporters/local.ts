@@ -34,6 +34,11 @@ export class LocalEventBackend implements SinkBackend {
     this.filePath = join(dir, EVENTS_FILE);
   }
 
+  /** /clear 换会话后事件归到新会话（构造期 id 只是初值）。 */
+  setSessionId(id: string): void {
+    this.sessionId = id;
+  }
+
   accepts(_eventName: string): boolean {
     return true;
   }

@@ -173,8 +173,11 @@ describe("缺陷 4：召回三层预算", () => {
 
   test("app.ts 压缩 / clear 路径重置召回状态（静态接线门禁）", async () => {
     const src = await Bun.file(join(import.meta.dir, "../../../cli/src/app.ts")).text();
-    // 5 处：两处 /clear、/compact 命令、autoCompact、reactive/collapse
-    expect(src.match(/this\.resetRecallState\(\);/g)?.length ?? 0).toBeGreaterThanOrEqual(5);
+    // 4 处：/clear（两条命令入口已合并进 clearConversation，只剩一处）、/compact 命令、
+    // autoCompact、reactive/collapse
+    expect(src.match(/this\.resetRecallState\(\);/g)?.length ?? 0).toBeGreaterThanOrEqual(4);
+    const clearBody = src.slice(src.indexOf("private async clearConversation("));
+    expect(clearBody.slice(0, 12_000)).toContain("this.resetRecallState();");
     expect(src).toContain("recentTools: this.collectRecentToolUses()");
     expect(src).toContain("sessionBytesUsed: this.recalledMemoryBytes");
   });
