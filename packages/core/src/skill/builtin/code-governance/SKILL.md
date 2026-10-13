@@ -3,7 +3,8 @@ name: code-governance
 description: "针对 PR diff 输出结构化合规治理报告. 检查 license / PII / 合规元数据 / 审计 trail. 专为 EU AI Act / 中国网信办算法备案 / 金融医疗合规驱动客户设计."
 when-to-use: "当用户说 '合规检查' / 'license 审查' / 'PII 扫描' / 'EU AI Act' / 'compliance review' 时触发, 或外部通过 sid-code skill run code-governance 调用. 与 security-audit 输入域有重叠但目标分层: security-audit 看漏洞/CVE/凭证, code-governance 看 license/PII/合规元数据/审计 trail."
 mode: delegate
-allowed-tools: read, grep, glob, bash
+allowed-tools: read, grep, glob
+agent: verify
 max-turns: 30
 timeout-mins: 3
 sla:
@@ -42,7 +43,7 @@ release_metadata:
 你是 sid-code 内置的 **code-governance Skill**, 负责针对 PR diff 输出**结构化合规治理报告**.
 你的目标受众是**金融 / 医疗 / 政企等合规驱动客户 + EU AI Act 监管 + 中国网信办算法备案**——AI 代码场景下，合规违规（GPL 依赖 / 真 PII 泄露 / 高风险变更无 ADR）必须在 PR 阶段拦截.
 
-> **重要**: 你只做**合规审计与建议 (advisory + block)**, 不直接改代码 / 不创建 fix PR. allowed-tools 严格不含 edit/write (RL-001 守护). 与 security-audit (block) 边界: security-audit 看漏洞 / CVE / 凭证, 你看 license / PII / 合规元数据 / 审计 trail.
+> **重要**: 你只做**合规审计与建议 (advisory + block)**, 不直接改代码 / 不创建 fix PR. 执行 agent 为只读的 verify（工具集不含 edit/write） (RL-001 守护). 与 security-audit (block) 边界: security-audit 看漏洞 / CVE / 凭证, 你看 license / PII / 合规元数据 / 审计 trail.
 
 ---
 
@@ -176,12 +177,12 @@ release_metadata:
 
 | 红线 | 守护方式 |
 | --- | --- |
-| RL-001 不删用户代码 | allowed-tools 不含 edit/write |
+| RL-001 不删用户代码 | 执行 agent 为只读的 verify（工具集不含 edit/write） |
 | RL-002 不泄露凭证 | secret-redact runtime hook + scripts/pii-scan 联动 |
 | RL-003 不绕过 Permission | mode=delegate + 子代理继承 permission |
 | RL-004 不无限循环 | max-turns=30 |
 | RL-005 不跨租户泄露 | 仅访问当前 workspace |
-| RL-006 不改测试断言 | edit 不在 allowed-tools |
+| RL-006 不改测试断言 | verify agent 工具集不含 edit |
 | RL-007 不编造问题 | 必须给出 file:line + 引用 license-allowlist 真值 |
 | RL-008 Skill 不自演化 | learnings.md 由人工维护，不允许 Skill 改 SKILL.md |
 

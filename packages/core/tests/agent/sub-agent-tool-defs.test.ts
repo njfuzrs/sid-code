@@ -215,7 +215,7 @@ describe("第 18 条：getToolDefs 保留 usageGuide 与 strict", () => {
     tools.register(new GuidedTool("my_read", "读工具", GUIDE_TEXT));
 
     const sub = new SubAgent(new StubProvider(), "stub-model", tools);
-    const defs = (sub as any).getCustomToolDefs(["my_read"]) as Array<{
+    const defs = (sub as any).getCustomToolDefs({ allowedTools: ["my_read"] }) as Array<{
       name: string;
       description: string;
       strict?: boolean;

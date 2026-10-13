@@ -4,6 +4,8 @@
  * 每个 Agent 包装为 Tool，LLM 可自动调用
  */
 
+import { parseAllowedToolsSpec, ruleToToolName } from "../tool/allowed-tools-spec.ts";
+import type { Checker } from "../permission/types.ts";
 import type { LegacyTool as Tool, LegacyToolResult as ToolResult } from "../tool/types.ts";
 import type { ProviderRegistry } from "../llm/registry.ts";
 import type { Registry as ToolRegistry } from "../tool/registry.ts";
@@ -55,19 +57,8 @@ export interface CustomAgentDefinition {
  * 非字符串非数组 → 空数组。
  */
 export function parseListField(raw: unknown): string[] {
-  if (typeof raw === "string") {
-    return raw
-      .split(",")
-      .map((s) => s.trim())
-      .filter(Boolean);
-  }
-  if (Array.isArray(raw)) {
-    return raw
-      .map(String)
-      .map((s) => s.trim())
-      .filter(Boolean);
-  }
-  return [];
+  // 括号感知切分（与 allowed-tools 同一解析器）：`Bash(git add, git commit)` 不被逗号切坏
+  return parseAllowedToolsSpec(raw)?.rules ?? [];
 }
 
 /**
@@ -262,6 +253,7 @@ export class CustomAgentTool implements Tool {
   private toolRegistry: ToolRegistry;
   /** 子代理 usage 归集 sink（P0-1，由主会话注入） */
   private usageSink?: import("./tool.ts").SubAgentUsageSink;
+  private permissionChecker?: Checker;
 
   /** zod schema：执行器据此做运行时校验，registry 据此生成 LLM 定义 */
   readonly zodSchema = customAgentSchema;
@@ -300,8 +292,17 @@ export class CustomAgentTool implements Tool {
   }
 
   readOnly(): boolean {
-    const writeTools = ["write", "edit", "bash"];
-    return !this.def.tools.some((t) => writeTools.includes(t));
+    const writeTools = ["write", "edit", "bash", "notebook_edit"];
+    // P2：按归一后的工具名判断（`Edit` / `Bash(git *)` 也算写工具）
+    return !this.def.tools.some((t) => writeTools.includes(ruleToToolName(t)));
+  }
+
+  /**
+   * P8：注入子代理 checker（app.ts wireToolPermissionChecker 遍历工具时自动回填）。
+   * 修复前本工具建 SubAgent 不注入 checker，子代理落到 B0 兜底：只读放行、其余 fail-closed。
+   */
+  setPermissionChecker(checker: Checker): void {
+    this.permissionChecker = checker;
   }
 
   async execute(input: unknown, signal?: AbortSignal): Promise<ToolResult> {
@@ -312,6 +313,7 @@ export class CustomAgentTool implements Tool {
     log.info("CUSTOM_AGENT", `执行自定义 Agent: ${this.def.name}`, { task: task.slice(0, 200) });
 
     const subAgent = SubAgent.fromRegistry(this.providerRegistry, this.toolRegistry);
+    if (this.permissionChecker) subAgent.setPermissionChecker(this.permissionChecker);
 
     const result = await subAgent.executeCustom(
       {

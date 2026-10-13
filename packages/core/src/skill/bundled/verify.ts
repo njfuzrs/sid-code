@@ -39,7 +39,8 @@ export function registerVerifySkill(): void {
     name: "verify",
     description: "验证代码变更是否按预期工作（运行类型检查、构建、相关测试）",
     whenToUse: "当用户说 'verify'、'验证'、'检查是否工作'、'跑测试确认' 时",
-    allowedTools: ["read", "bash", "grep", "glob", "edit"],
+    // 免确认规则（对齐 CC）；裸 bash/edit/write 不列——那等于整段放行，写操作按主会话权限模式判定
+    allowedTools: ["read", "grep", "glob"],
     context: "fork",
     userInvocable: true,
     maxTurns: 20,

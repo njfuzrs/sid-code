@@ -54,7 +54,7 @@ import {
 import { QuotaManager, resolveEffectiveCostLimit } from "@sid-code/core/llm/quota.ts";
 import { TokenMeter } from "@sid-code/core/telemetry/metrics/token-meter.ts";
 import { upsertUsageLedger } from "@sid-code/core/telemetry/usage-ledger.ts";
-import { getIdentity } from "@sid-code/core/identity/index.ts";
+import { buildUsageLedgerEntry } from "@sid-code/core/telemetry/usage-ledger-entry.ts";
 import { BudgetTracker } from "@sid-code/core/telemetry/metrics/budget-tracker.ts";
 import type { BudgetRule } from "@sid-code/core/telemetry/metrics/budget-tracker.ts";
 import type { BudgetRuleConfig } from "@sid-code/core/config/config.ts";
@@ -111,6 +111,7 @@ import {
 import * as CrashMarker from "@sid-code/core/trace/crash-marker.ts";
 import * as PidManager from "@sid-code/core/trace/pid-manager.ts";
 import { execSync } from "child_process";
+import { existsSync, readFileSync } from "fs";
 import { readFile } from "fs/promises";
 import { resolve, extname, join } from "path";
 import { sidPaths } from "@sid-code/core/config/paths.ts";
@@ -121,7 +122,6 @@ import { resolvePanel } from "./command/executor.ts";
 import { buildCommandAnswerMessages, routeCommandResult } from "./ui/command-result-route.ts";
 import { startPreventSleep, stopPreventSleep } from "@sid-code/core/task/prevent-sleep.ts";
 import { getSleepLedger } from "@sid-code/shared/utils/sleep-detect.ts";
-import { getRawVersion } from "@sid-code/shared/version.ts";
 import {
   recordSideCall,
   setSideCostCalculator,
@@ -133,7 +133,6 @@ import {
 import {
   addBillingObserver,
   shouldChargeBilledRequest,
-  getPeakRatio,
   type BilledRequest,
 } from "@sid-code/core/llm/billing-sink.ts";
 import { sendNonStreamingSideCall } from "@sid-code/core/llm/side-call-nonstreaming.ts";
@@ -1785,7 +1784,16 @@ export class App {
     for (const tool of this.toolRegistry.all()) {
       const maybe = tool as {
         setInvokedSkillSink?: (fn: (name: string, content: string) => void) => void;
+        setCommandScopedRulesSink?: (
+          fn: (rules: string[], trusted: boolean, origin: string) => void,
+        ) => void;
       };
+      if (typeof maybe.setCommandScopedRulesSink === "function") {
+        // P5：模型路径 activate skill 的 allowed-tools → 主 checker 本轮规则（onUserInput finally 清空）
+        maybe.setCommandScopedRulesSink((rules, trusted) =>
+          this.applyCommandScopedRules(rules, trusted),
+        );
+      }
       if (typeof maybe.setInvokedSkillSink === "function") {
         maybe.setInvokedSkillSink((name, content) => this.ctxMgr.addInvokedSkill(name, content));
       }
@@ -1848,6 +1856,46 @@ export class App {
       await checker.reloadWorkspaceRules!(dir);
       this.wireToolPermissionChecker();
     });
+  }
+
+  /**
+   * P5：设置本轮命令作用域 allow 规则（无规则时等价于清空）。被剥离的危险规则告警 + 状态栏提示。
+   * 规则加在**主** checker 上：主循环的工具调用走它；子代理 checker 是派生快照，不受影响。
+   */
+  private applyCommandScopedRules(rules: string[] | undefined, trusted: boolean | undefined): void {
+    const checker = this.permissionChecker as
+      | import("@sid-code/core/permission/types.ts").Checker
+      | null
+      | undefined;
+    if (!checker?.setCommandScopedRules) return;
+    if (!rules || rules.length === 0) {
+      checker.clearCommandScopedRules?.();
+      return;
+    }
+    try {
+      const dropped = checker.setCommandScopedRules(rules, trusted === true, "命令 allowed-tools");
+      getLogger().info("PERMISSION", `本轮命令 allow 规则: ${rules.join(", ")}`, { dropped });
+      if (dropped.length > 0) {
+        this.statusNotifier?.(
+          "command_allowed_tools_dropped",
+          `⚠ 项目级命令的 allowed-tools 含危险规则已忽略：${dropped.join(", ")}`,
+          5000,
+        );
+      }
+    } catch (e: any) {
+      getLogger().warn("PERMISSION", `设置命令 allow 规则失败（不阻断）: ${e?.message ?? e}`);
+    }
+  }
+
+  /** P5：清空本轮命令作用域 allow 规则（幂等） */
+  private clearCommandScopedRules(): void {
+    try {
+      (
+        this.permissionChecker as import("@sid-code/core/permission/types.ts").Checker | null
+      )?.clearCommandScopedRules?.();
+    } catch {
+      /* 清空失败不阻断（下一轮 apply 会整体替换） */
+    }
   }
 
   private wireToolPermissionChecker(): void {
@@ -2738,7 +2786,14 @@ export class App {
       cmd: string;
       commandInput: string;
       callbacks: {
-        onUserInput: (text: string, opts?: { displayCommand?: string }) => Promise<void>;
+        onUserInput: (
+          text: string,
+          opts?: {
+            displayCommand?: string;
+            commandAllowedTools?: string[];
+            commandAllowedToolsTrusted?: boolean;
+          },
+        ) => Promise<void>;
       };
       updateState: (patch: Partial<import("./ui/App.tsx").TUIState>) => void;
       appendCommandOutput: (input: string, output: string | null, isError?: boolean) => void;
@@ -2884,7 +2939,16 @@ export class App {
           // 不再 appendCommandOutput（那条命令项会被 syncDisplay 从 ctxMgr 全量重建时冲掉）。
           // 改由 displayCommand 让展开的提示词以「命令历史项」形式渲染（只显示 /commit
           // 触发命令本身），提示词全文仅喂 LLM、不泄漏到屏幕。
-          await callbacks.onUserInput(result.value, { displayCommand: commandInput });
+          await callbacks.onUserInput(result.value, {
+            displayCommand: commandInput,
+            // P5：命令 allowed-tools → 本轮免确认 allow 规则（onUserInput 内设置 / finally 清空）
+            ...(result.allowedTools?.length
+              ? {
+                  commandAllowedTools: result.allowedTools,
+                  commandAllowedToolsTrusted: result.allowedToolsTrusted === true,
+                }
+              : {}),
+          });
         }
         break;
 
@@ -6366,7 +6430,6 @@ export class App {
   private countPlanSteps(planPath: string | null): number {
     if (!planPath || !this.planManager) return 0;
     try {
-      const { existsSync, readFileSync } = require("fs");
       if (!existsSync(planPath)) return 0;
       const md = readFileSync(planPath, "utf-8");
       return this.planManager.parsePlanFromMarkdown(md).length;
@@ -6993,85 +7056,19 @@ export class App {
   /**
    * 从当前 SessionState 构造账本行；空会话（无 API 调用）返回 null。
    *
-   * - 经 SessionState.getNormalizedCacheUsage() 单一事实源派生三段，口径与 Footer/摘要一致。
-   * - 只存聚合数字，绝不含消息内容——隐私安全。
+   * D1：构造逻辑已下沉到 core 的 `buildUsageLedgerEntry`（纯函数，可在 core 单测：
+   * packages/core/tests/telemetry/usage-ledger-entry.test.ts）。三段归一化口径、
+   * 主模型选取、影子调用接线、各可选字段的缺失语义都在那边；这里只做委托。
+   * 本方法保留是因为它被 appendSessionToLedger / flushSessionLedgerIncremental 两处调用。
    */
   private buildLedgerEntry():
     | import("@sid-code/core/telemetry/usage-ledger.ts").UsageLedgerEntry
     | null {
-    const n = this.sessionState.getNormalizedCacheUsage();
-    if (n.promptTotal <= 0) return null; // 空会话不落行
-    const models = Object.entries(this.sessionState.modelUsage);
-    // 主模型 = 请求数最多者（多模型会话取主导模型标注；token 仍为全会话汇总）
-    const primary = models.sort(([, a], [, b]) => b.requests - a.requests)[0];
-    const model = primary?.[0] ?? this.config.model ?? "unknown";
-    const provider = primary?.[1]?.provider ?? this.config.provider ?? "unknown";
-    const ident = getIdentity();
-    return {
-      ts: Math.floor(Date.now() / 1000),
-      sessionId: this.sessionState.sessionId,
-      model,
-      provider,
-      promptTotal: n.promptTotal,
-      cacheHit: n.cacheHitTokens,
-      cacheWrite: n.cacheWriteTokens,
-      uncachedInput: n.uncachedInputTokens,
-      output: n.outputTokens,
-      costUSD: this.sessionState.getEffectiveTotalCostUSD(),
-      savingsUSD: this.sessionState.getTotalCacheSavings(),
-      durationMs: this.sessionState.getElapsedMs(),
-      // P2-1：影子调用 token 接线。costUSD 走 getEffectiveTotalCostUSD() 已含
-      // sideCostUSD，而上面的 token 三段只遍历 modelUsage（不含影子调用）——
-      // 同一行里成本与 token 口径不同，"成本 ÷ token"就算不出来。影子调用的
-      // token 早在 side-call-sink 采集，这里只是接上，不是新建埋点。
-      ...this.buildLedgerSideUsage(),
-      // P0-4：主模型的端点 host，供缓存视图按渠道标注可信度（不可信渠道不进总计）。
-      // 取主模型而非 config.baseURL：多模型会话里账本行标注的是主导模型，
-      // 端点必须与之对应，否则会把 A 渠道的可信度贴到 B 渠道的数字上。
-      ...(primary?.[1]?.endpointHost ? { endpointHost: primary[1].endpointHost } : {}),
-      // P0-1：写这一行的 sid-code 版本号。两个用途：① 四方向第 3 级的 release-over-release
-      // 曲线唯一分组键；② 让消费侧能把「08-08 前用旧采集代码写的脏数据」隔离出总计（P2-9）。
-      // 无条件写（不像上面几个字段做存在性判断）：版本号永远拿得到，缺失只发生在存量行上，
-      // 而「缺失」本身正是消费侧用来识别存量数据的信号。
-      // env 覆盖与 `analytics/metadata.ts:184`、`trace/collector.ts` 同一口径。
-      appVersion: process.env.SID_CODE_VERSION ?? getRawVersion(),
-      deviceId: ident.deviceId,
-      ...(ident.userId ? { userId: ident.userId } : {}),
-      ...(ident.orgId ? { orgId: ident.orgId } : {}),
-      ...(ident.teamId ? { teamId: ident.teamId } : {}),
-      // D1 / §5.5：本会话请求落在高峰时段的比例。采集点在 `llm/billing-sink.ts`
-      // （唯一必然经过的点 —— 挂消费侧只数得到 fork，是个偏样本）。
-      // `undefined` = 本会话没有任何分时段模型，此时**不落字段**（落 0 会与
-      // "全部落在空闲时段"这个真实的好结果混在一起）。
-      ...(getPeakRatio() !== undefined ? { peakRatio: getPeakRatio() } : {}),
-    };
-  }
-
-  /**
-   * 取影子调用的聚合用量供账本使用；无影子调用时返回空对象（不落三个恒零字段）。
-   *
-   * 落 0 与"旧数据没有这个字段"在读侧无法区分，而账本要长期回溯 —— 字段缺失
-   * 明确表示"本会话没有影子调用"，比一个 0 更诚实。
-   */
-  private buildLedgerSideUsage(): {
-    sideInputTokens?: number;
-    sideOutputTokens?: number;
-    sideCostUSD?: number;
-  } {
-    try {
-      // N12：取会话维度，与同一行 costUSD（getEffectiveTotalCostUSD，含 resume 回灌的
-      // sideCostUSD）同口径；取进程维度会让 resume 后的行「成本含历史、token 不含」。
-      const s = getSessionSideStats();
-      if (s.apiCalls <= 0) return {};
-      return {
-        sideInputTokens: s.tokensSent,
-        sideOutputTokens: s.tokensReceived,
-        sideCostUSD: s.costUSD,
-      };
-    } catch {
-      // 影子调用统计不可用绝不影响账本主体落盘
-      return {};
-    }
+    return buildUsageLedgerEntry({
+      sessionState: this.sessionState,
+      fallbackModel: this.config.model,
+      fallbackProvider: this.config.provider,
+    });
   }
 
   /**
@@ -8643,7 +8640,6 @@ export class App {
             // 读取计划文件内容
             let planContent = "";
             try {
-              const { readFileSync } = require("fs");
               planContent = readFileSync(planFilePath, "utf-8");
             } catch (err: any) {
               planContent = `(无法读取计划文件: ${err.message})`;
@@ -9537,6 +9533,11 @@ export class App {
         } catch (e) {
           log.warn("APP", `登记用户 URL 来源失败（不阻断）: ${(e as Error)?.message}`);
         }
+        // P5：命令 / skill 的 allowed-tools 只作用于它触发的这一轮（对齐 CC REPL.tsx：每轮写入
+        // alwaysAllowRules.command，下一个非命令轮次清空）。设置放在 try 外紧前、清空放 finally，
+        // 异常 / 用户中断 / 早退都一定清掉。普通输入先清一次：兜住模型路径 activate skill
+        // 在上一轮留下的规则（它在轮中经 sink 设置）。
+        this.applyCommandScopedRules(opts?.commandAllowedTools, opts?.commandAllowedToolsTrusted);
         try {
           this.abortController = new AbortController();
           // @ 文件注入：展开用户输入中的 @path 引用
@@ -9757,6 +9758,7 @@ export class App {
           }
         } finally {
           this.abortController = null;
+          this.clearCommandScopedRules();
         }
       },
       onSlashCommand: async (cmd, args) => {
@@ -10131,7 +10133,6 @@ export class App {
           // 并把仍指向「没 key 模型」的 fallbackModel / subAgentModels 改到能用的模型上。
           const { applyPresetApiKey } = require("@sid-code/core/config/onboarding-preset.ts");
           const { getSettingsFilePath } = require("@sid-code/core/config/settings/constants.ts");
-          const { readFileSync } = require("fs");
           let patch: Record<string, unknown>;
           try {
             const raw = JSON.parse(readFileSync(getSettingsFilePath("userSettings"), "utf-8"));

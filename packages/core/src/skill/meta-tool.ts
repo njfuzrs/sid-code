@@ -29,7 +29,6 @@ import type { Checker, PermissionRule } from "../permission/types.ts";
 import type { SkillDefinition } from "./types.ts";
 import type { SkillManager } from "./manager.ts";
 import { dirname } from "node:path";
-import { SubAgent } from "../agent/sub-agent.ts";
 import { getLogger } from "../debug/logger.ts";
 import { scanSkillResources } from "./resources.ts";
 import {
@@ -39,9 +38,11 @@ import {
   normalizeSkillEffort,
   resolveSkillAgentType,
   resolveSkillExecutionContext,
-  resolveSkillAllowedTools,
+  isTrustedSkillSource,
   newSkillHookScope,
 } from "./executor.ts";
+import { runForkedCommand } from "../agent/forked-command.ts";
+import { parseAllowedToolsSpec } from "../tool/allowed-tools-spec.ts";
 import { processSkillPrompt } from "./prompt-processor.ts";
 import { logToolInvoked } from "../analytics/events.ts";
 import { emitSkillInvoked } from "./telemetry.ts";
@@ -71,6 +72,7 @@ export class SkillMetaTool implements Tool {
   private permissionRules?: PermissionRule;
   /** 审计第 19 条：activate 分支上报 skill 调用，供压缩时重注入工作流指令 */
   private invokedSkillSink?: (name: string, content: string) => void;
+  private commandScopedRulesSink?: (rules: string[], trusted: boolean, origin: string) => void;
   /** P0-3：${SESSION_ID} 替换所需的逻辑会话 id（函数形态：resume 后 id 会变，快照会失真） */
   private sessionIdProvider?: () => string;
 
@@ -109,6 +111,17 @@ export class SkillMetaTool implements Tool {
    */
   setInvokedSkillSink(sink: (name: string, content: string) => void): void {
     this.invokedSkillSink = sink;
+  }
+
+  /**
+   * P5：inline（activate）skill 的 `allowed-tools` 要作为**本轮剩余部分**的免确认 allow 规则
+   * 加到**主** checker 上（本工具手里的是子代理 checker 快照，加在它上面主循环看不到）。
+   * 由 app 注入；规则在本轮结束时随斜杠路径同一处 finally 清空。
+   */
+  setCommandScopedRulesSink(
+    sink: (rules: string[], trusted: boolean, origin: string) => void,
+  ): void {
+    this.commandScopedRulesSink = sink;
   }
 
   /** P0-3：注入逻辑会话 id 读取器（app 侧接 getLogicalSessionId）。未注入时 ${SESSION_ID} 替换为空串。 */
@@ -336,6 +349,18 @@ export class SkillMetaTool implements Tool {
 
     this.manager.activateSkill(skill.name);
 
+    if (skill.allowedTools && skill.allowedTools.length > 0) {
+      try {
+        this.commandScopedRulesSink?.(
+          skill.allowedTools,
+          isTrustedSkillSource(skill),
+          `skill ${skill.name} allowed-tools`,
+        );
+      } catch (e: any) {
+        log.warn("SKILL", `下发 skill allowed-tools 失败（不阻断）: ${e?.message ?? String(e)}`);
+      }
+    }
+
     const output = `${prompt}${resources}${inputSection}`;
 
     // 审计第 19 条：在真正执行注入的这一方上报，供压缩时重注入 skill 工作流指令。
@@ -373,33 +398,32 @@ export class SkillMetaTool implements Tool {
     const effort = normalizeSkillEffort(skill.effort);
     const agentType = await resolveSkillAgentType(skill.agent, skill.name);
 
-    const subAgent = SubAgent.fromRegistry(
-      this.providerRegistry,
-      this.toolRegistry,
-      this.hookSystem,
-      skill.model,
-    );
-    if (this.permissionChecker) subAgent.setPermissionChecker(this.permissionChecker);
-
     const maxTurns = Math.min(skill.maxTurns || 30, 50);
     const timeoutMins = Math.min(skill.timeoutMins || 2, 30);
     const timeout = timeoutMins * 60_000;
 
-    const result = await subAgent.executeCustom(
-      {
-        systemPrompt: `你是一个专门执行 "${skill.name}" 任务的代理。${skill.description}`,
-        userPrompt,
-        // P0-5：未声明 allowed-tools 时给只读默认集，而不是零工具
-        allowedTools: resolveSkillAllowedTools(skill),
-        maxTurns,
-        timeout,
-        // P1-1：effort 透传（provider reasoningEffort 生效）
-        effort,
-        // P1-1：agent 优先作为 agent 类型（memory/system prompt 跟随）；否则沿用 skill:<name>
-        type: agentType ?? `skill:${skill.name}`,
-      },
+    // P3：统一入口——必注入 checker；工具集按 agent 类型（缺省 general-purpose），
+    // allowed-tools 只作本次 fork 的 allow 规则（不再是工具白名单，也不再有只读默认集）
+    const result = await runForkedCommand({
+      providerRegistry: this.providerRegistry,
+      toolRegistry: this.toolRegistry,
+      hookSystem: this.hookSystem,
+      permissionChecker: this.permissionChecker ?? null,
+      name: skill.name,
+      systemPrompt: `你是一个专门执行 "${skill.name}" 任务的代理。${skill.description}`,
+      prompt: userPrompt,
+      allowedRules: skill.allowedTools ? parseAllowedToolsSpec(skill.allowedTools) : undefined,
+      trusted: isTrustedSkillSource(skill),
+      agentType,
+      model: skill.model,
+      maxTurns,
+      timeout,
+      // P1-1：effort 透传（provider reasoningEffort 生效）
+      effort,
+      // P1-1：agent 优先作为 agent 类型（memory/system prompt 跟随）；否则沿用 skill:<name>
+      type: agentType ?? `skill:${skill.name}`,
       signal,
-    );
+    });
 
     log.info("SKILL", `Skill ${skill.name} 完成`, {
       success: result.success,

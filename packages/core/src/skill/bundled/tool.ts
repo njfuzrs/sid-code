@@ -27,9 +27,10 @@ import type {
   PromptCommand,
   CommandContext,
 } from "../../command-contract/types.ts";
-import { SubAgent } from "../../agent/sub-agent.ts";
+import { runForkedCommand } from "../../agent/forked-command.ts";
+import { resolveAgent } from "../../agent/agent-definition.ts";
+import { parseAllowedToolsSpec } from "../../tool/allowed-tools-spec.ts";
 import { getLogger } from "../../debug/logger.ts";
-import { resolveSkillAllowedTools } from "../executor.ts";
 import { emitSkillInvoked } from "../telemetry.ts";
 import { z } from "zod/v4";
 
@@ -77,12 +78,9 @@ export class BundledSkillTool implements Tool {
   }
 
   readOnly(): boolean {
-    // 取决于 allowedTools 是否含写工具（review 锁只读 → true）
-    const writeTools = ["write", "edit", "bash"];
-    if (this.cmd.allowedTools) {
-      return !this.cmd.allowedTools.some((t) => writeTools.includes(t));
-    }
-    return true;
+    // 方案 E：由 agent 类型推导（allowed-tools 已不是工具白名单，不能再据此判只读）
+    if (!this.cmd.agent) return false;
+    return resolveAgent(this.cmd.agent)?.readOnly === true;
   }
 
   async execute(input: unknown, signal?: AbortSignal): Promise<ToolResult> {
@@ -96,32 +94,27 @@ export class BundledSkillTool implements Tool {
     // 本地轨迹的 skill 调用埋点（模型路径 · bundled fork skill，如 review）
     emitSkillInvoked({ name: this.cmd.name, via: "model", loadedFrom: "bundled" });
 
-    const subAgent = SubAgent.fromRegistry(
-      this.providerRegistry,
-      this.toolRegistry,
-      this.hookSystem,
-    );
-    if (this.permissionChecker) subAgent.setPermissionChecker(this.permissionChecker);
-
     const timeoutMins = this.cmd.timeoutMins;
-    const result = await subAgent.executeCustom(
-      {
-        systemPrompt: "你是一个专注的助手，请完成以下任务。",
-        userPrompt: prompt,
-        // P0-5：未声明 allowed-tools 时给只读默认集，而不是零工具
-        allowedTools: resolveSkillAllowedTools({
-          name: this.cmd.name,
-          allowedTools: this.cmd.allowedTools,
-        }),
-        // P2-2：内置 skill 若忘记声明 maxTurns 时的兜底默认，从 10 提到 30
-        // （与 sub-agent.ts/skill/meta-tool.ts 的常规子代理默认对齐；现有内置 skill 均已显式声明，不受影响）
-        maxTurns: this.cmd.maxTurns ?? 30,
-        timeout: timeoutMins != null ? Math.min(Math.max(timeoutMins, 1), 30) * 60_000 : undefined,
-        // G13：以内置 skill 名作为 agent 类型，让同一 skill 跨会话沉淀领域经验
-        type: `skill:${this.cmd.name}`,
-      },
+    // P3：统一入口——必注入 checker；工具集按 agent 类型，allowed-tools 只作本次 fork 的 allow 规则
+    const result = await runForkedCommand({
+      providerRegistry: this.providerRegistry,
+      toolRegistry: this.toolRegistry,
+      hookSystem: this.hookSystem,
+      permissionChecker: this.permissionChecker ?? null,
+      name: this.cmd.name,
+      prompt,
+      allowedRules: this.cmd.allowedTools
+        ? parseAllowedToolsSpec(this.cmd.allowedTools)
+        : undefined,
+      trusted: true, // bundled 随二进制发布，可信
+      agentType: this.cmd.agent,
+      // P2-2：内置 skill 若忘记声明 maxTurns 时的兜底默认 30
+      maxTurns: this.cmd.maxTurns ?? 30,
+      timeout: timeoutMins != null ? Math.min(Math.max(timeoutMins, 1), 30) * 60_000 : undefined,
+      // G13：以内置 skill 名作为 agent 类型，让同一 skill 跨会话沉淀领域经验
+      type: `skill:${this.cmd.name}`,
       signal,
-    );
+    });
 
     log.info("SKILL", `Bundled Skill ${this.cmd.name} 完成`, {
       success: result.success,

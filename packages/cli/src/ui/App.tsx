@@ -85,7 +85,15 @@ export { isPlaceholderMessage, messagesToHistoryItems };
 
 /** TUI 回调接口 */
 export interface TUICallbacks {
-  onUserInput: (text: string, opts?: { displayCommand?: string }) => Promise<void>;
+  onUserInput: (
+    text: string,
+    opts?: {
+      displayCommand?: string;
+      /** 命令 allowed-tools：本轮免确认 allow 规则（app.ts 设置 / 清空） */
+      commandAllowedTools?: string[];
+      commandAllowedToolsTrusted?: boolean;
+    },
+  ) => Promise<void>;
   onSlashCommand: (cmd: string, args: string) => Promise<void>;
   /** 直接执行交互式 Shell 命令，不经过斜杠命令注册表。 */
   onShellCommand: (command: string) => Promise<void>;

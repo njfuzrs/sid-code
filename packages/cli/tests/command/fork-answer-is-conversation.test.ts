@@ -1,5 +1,5 @@
 /**
- * fork 型 prompt 命令（未写 context 的磁盘 skill、带 allowed-tools 的自定义命令）的产出
+ * fork 型 prompt 命令（`context: fork` 的磁盘 skill / 自定义命令）的产出
  * 是**模型的回答**，必须进对话，不能被当成命令报告塞进输出面板 / 状态栏。
  *
  * #223 之后 app.ts 把所有 message 结果都交给 routeCommandResult，fork 产出 ≥3 行即进面板：
@@ -22,6 +22,9 @@ import { CustomCommand } from "@sid-code/cli/command/custom.ts";
 import { buildCommandAnswerMessages } from "@sid-code/cli/ui/command-result-route.ts";
 import { messagesToHistoryItems } from "@sid-code/cli/ui/history-adapter.ts";
 import type { UnifiedCommand, CommandContext } from "@sid-code/cli/command/types.ts";
+
+/** fork 入口（runForkedCommand）要求必有 checker；桩对象非 PermissionChecker 实例，原样透传 */
+const FAKE_CHECKER = { check: async () => ({ allowed: true }) };
 
 const ANSWER = ["第一题：说说重试为什么不会重复计费？", "", "（请作答）", "第四行"].join("\n");
 
@@ -53,7 +56,10 @@ function forkPromptCmd(over: Partial<UnifiedCommand> = {}): UnifiedCommand {
 
 describe("fork 出口打 conversational 标记", () => {
   test("CommandExecutor：fork prompt 命令的回答带标记，即使命令声明了 outputPanel", async () => {
-    const ctx = { providerRegistry: {} } as unknown as CommandContext;
+    const ctx = {
+      providerRegistry: {},
+      permissionChecker: FAKE_CHECKER,
+    } as unknown as CommandContext;
     const r = await withFakeSubAgent(() =>
       new CommandExecutor(ctx).executeSlashCommand("/interview Q12", [
         forkPromptCmd({ outputPanel: true }),
@@ -68,8 +74,9 @@ describe("fork 出口打 conversational 标记", () => {
       description: "口试",
       prompt: "# interview",
       source: "project",
+      context: "fork", // P6 起缺省 inline，fork 须显式声明
     } as any;
-    const ctx = { providerRegistry: {}, registry: {} } as any;
+    const ctx = { providerRegistry: {}, permissionChecker: FAKE_CHECKER, registry: {} } as any;
     const r = await withFakeSubAgent(() => new SkillCommand(skill).execute("", ctx));
     expect(r).toMatchObject({ kind: "message", message: ANSWER, conversational: true });
   });
@@ -77,8 +84,9 @@ describe("fork 出口打 conversational 标记", () => {
   test("CustomCommand：带 allowed-tools 走 fork，回答带标记", async () => {
     const cmd = new CustomCommand("project-qa", "盘点 $ARGUMENTS", "", {
       allowedTools: ["read"],
+      context: "fork", // P1 起只有 context: fork 才 fork（allowed-tools 不再触发）
     } as any);
-    const ctx = { providerRegistry: {}, registry: {} } as any;
+    const ctx = { providerRegistry: {}, permissionChecker: FAKE_CHECKER, registry: {} } as any;
     const r = await withFakeSubAgent(() => cmd.execute("讲稿", ctx));
     expect(r).toEqual({ kind: "message", message: ANSWER, conversational: true });
   });
@@ -184,7 +192,11 @@ describe("beginForkedRun：开跑前回显，结束必收尾", () => {
   test("CommandExecutor：begin → 子代理拿到信号 → end", async () => {
     const log: Log = [];
     const b = bracket(log);
-    const ctx = { providerRegistry: {}, beginForkedRun: b.beginForkedRun } as any;
+    const ctx = {
+      providerRegistry: {},
+      permissionChecker: FAKE_CHECKER,
+      beginForkedRun: b.beginForkedRun,
+    } as any;
     const r = await withSubAgent(log, b, "ok", () =>
       new CommandExecutor(ctx).executeSlashCommand("/interview", [forkPromptCmd()]),
     );
@@ -195,7 +207,11 @@ describe("beginForkedRun：开跑前回显，结束必收尾", () => {
   test("子代理抛错也调 end（否则 TUI 卡在加载态）", async () => {
     const log: Log = [];
     const b = bracket(log);
-    const ctx = { providerRegistry: {}, beginForkedRun: b.beginForkedRun } as any;
+    const ctx = {
+      providerRegistry: {},
+      permissionChecker: FAKE_CHECKER,
+      beginForkedRun: b.beginForkedRun,
+    } as any;
     const r = await withSubAgent(log, b, "throw", () =>
       new CommandExecutor(ctx).executeSlashCommand("/interview", [forkPromptCmd()]),
     );
@@ -206,7 +222,11 @@ describe("beginForkedRun：开跑前回显，结束必收尾", () => {
   test("Esc 中断：返回取消错误，不把半截回答当对话落", async () => {
     const log: Log = [];
     const b = bracket(log, true);
-    const ctx = { providerRegistry: {}, beginForkedRun: b.beginForkedRun } as any;
+    const ctx = {
+      providerRegistry: {},
+      permissionChecker: FAKE_CHECKER,
+      beginForkedRun: b.beginForkedRun,
+    } as any;
     const r = await withSubAgent(log, b, "ok", () =>
       new CommandExecutor(ctx).executeSlashCommand("/interview", [forkPromptCmd()]),
     );
@@ -222,12 +242,22 @@ describe("beginForkedRun：开跑前回显，结束必收尾", () => {
           description: "",
           prompt: "# x",
           source: "project",
+          context: "fork",
         } as any),
-      () => new CustomCommand("project-qa", "盘点", "", { allowedTools: ["read"] } as any),
+      () =>
+        new CustomCommand("project-qa", "盘点", "", {
+          allowedTools: ["read"],
+          context: "fork",
+        } as any),
     ]) {
       const log: Log = [];
       const b = bracket(log);
-      const ctx = { providerRegistry: {}, registry: {}, beginForkedRun: b.beginForkedRun } as any;
+      const ctx = {
+        providerRegistry: {},
+        permissionChecker: FAKE_CHECKER,
+        registry: {},
+        beginForkedRun: b.beginForkedRun,
+      } as any;
       const r = await withSubAgent(log, b, "ok", () => make().execute("", ctx));
       expect(log).toEqual(["begin", "run:signal", "end"]);
       expect(r).toMatchObject({ conversational: true });

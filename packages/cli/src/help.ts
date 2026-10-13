@@ -24,7 +24,7 @@ LLM 配置:
   --dangerously-skip-permissions  跳过所有权限检查（仅限沙箱环境）
   -y, --yes                   自动批准需确认的操作（危险命令仍拦截；跳过全部检查用 --dangerously-skip-permissions）
   --trust-workspace           仅本会话信任当前工作区（项目级 hooks / MCP 照常加载，不写入信任记录）
-  --allowed-tools <list>      工具白名单（逗号分隔，如 "read,grep,bash"）
+  --allowed-tools <list>      免确认工具规则（逗号/空格分隔，认 CC 名与模式，如 "Read,Bash(git *)"）
   --disallowed-tools <list>   工具黑名单（逗号分隔）
   --allow-tool <rule>         追加允许规则（规则语法，如 "Bash(git status)"；可重复或逗号分隔）
   --deny-tool <rule>          追加拒绝规则（同上语法；拒绝优先于允许）

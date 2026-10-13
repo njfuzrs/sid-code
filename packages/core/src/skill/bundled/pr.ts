@@ -15,8 +15,8 @@
  *                          默认不提交、不推送、不建 PR。用户可拿去手动建 PR，
  *                          或让 AI 接着调 gh 创建（需用户明确要求）。
  *
- * ⚠️ inline 模式下 allowedTools 不生效（见 commit.ts 头注释），此处仅作意图声明；
- *   真正的安全边界靠 prompt 行为约束 + 主会话 Permission 系统。
+ * allowedTools 在 inline 下作为本轮免确认 allow 规则生效（见 commit.ts 头注释），只给只读 git；
+ *   其余操作（gh pr create 等）照常走主会话 Permission 系统。
  */
 
 import { registerBundledSkill } from "./registry.ts";
@@ -70,8 +70,16 @@ export function registerPrSkill(): void {
     description: "分析当前分支的 commit 与 diff，生成 PR 标题与结构化描述",
     whenToUse: "当用户说 '生成 PR 描述'、'写个 PR'、'pr description'、'总结这个分支的改动发 PR' 时",
     argumentHint: "[基线分支或额外要求]",
-    // inline 模式下以下白名单不生效，仅作意图声明（见 commit.ts 头注释）
-    allowedTools: ["bash", "read", "grep", "glob"],
+    // 本轮免确认：只读 git 与只读工具
+    allowedTools: [
+      "Bash(git log:*)",
+      "Bash(git diff:*)",
+      "Bash(git status:*)",
+      "Bash(git branch:*)",
+      "read",
+      "grep",
+      "glob",
+    ],
     context: "inline",
     userInvocable: true,
     async getPromptForCommand(args, context) {

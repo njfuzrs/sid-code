@@ -200,6 +200,10 @@ export interface CommandResult {
   kind: CommandResultKind;
   message?: string; // kind=message/error/confirm 时的文本
   prompt?: string; // kind=submit_prompt 时的提示词
+  /** kind=submit_prompt：命令 `allowed-tools`，作为**本轮**免确认 allow 规则（见 app.ts onUserInput） */
+  allowedTools?: string[];
+  /** allowedTools 来源是否可信（false → 剥离危险自我授权规则） */
+  allowedToolsTrusted?: boolean;
   /** kind=confirm 时的确认回调 */
   onConfirm?: () => Promise<CommandResult>;
   /** kind=dialog 时指定打开哪个对话框 */
@@ -274,7 +278,14 @@ export type CommandExecutionResult =
        */
       conversational?: boolean;
     }
-  | { type: "submit_prompt"; value: string; shouldQuery: boolean }
+  | {
+      type: "submit_prompt";
+      value: string;
+      shouldQuery: boolean;
+      /** 命令 `allowed-tools`：本轮免确认 allow 规则（只作用于这一轮，app 负责清空） */
+      allowedTools?: string[];
+      allowedToolsTrusted?: boolean;
+    }
   | { type: "dialog"; dialog: DialogType }
   | { type: "clear" }
   | { type: "quit"; message?: string }

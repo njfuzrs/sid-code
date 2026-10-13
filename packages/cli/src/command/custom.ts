@@ -12,6 +12,7 @@ import { isPolicyAllowed } from "@sid-code/core/config/policy-limits.ts";
 import { PROTECTED_COMMAND_NAMES } from "@sid-code/core/command-contract/protected-names.ts";
 import { matchesSensitivePath } from "@sid-code/core/permission/path-validator.ts";
 import { splitShellWords } from "@sid-code/core/tool/bash/parser.ts";
+import { parseAllowedToolsSpec } from "@sid-code/core/tool/allowed-tools-spec.ts";
 import { execSync } from "child_process";
 import { closeSync, openSync, readFileSync, readSync, realpathSync, statSync } from "fs";
 import { isAbsolute, relative, resolve, sep } from "path";
@@ -36,13 +37,24 @@ function extractDescription(body: string): string {
  * P2-2：自定义命令 frontmatter 高级字段（对齐 claude-code）。
  * - argumentHint：补全时显示的参数提示（frontmatter key: argument-hint）。
  *   adapter 取 argumentHint() 进 UnifiedCommand，再经 app.ts loadCommandList 透传到行内补全（D10）。
- * - allowedTools：限定 prompt 执行时可用工具集，非空则走 fork 子代理隔离执行。
+ * - allowedTools：`allowed-tools` 原样规则串（对齐 CC：**免确认 allow 规则**，不裁剪工具集、不触发 fork）。
+ *   inline 时只在该命令触发的那一轮生效；fork 时只加在那个子代理的 checker 上。
+ * - context：只有 `context: fork` 才 fork（CC 口径）；缺省 inline。
  * - model：指定该命令用哪个模型执行（仅 fork 路径生效）。
  */
 export interface CustomCommandOptions {
   argumentHint?: string;
   allowedTools?: string[];
   model?: string;
+  context?: "inline" | "fork";
+  /** skill `agent:` 同义：fork 子代理的工具集来源（缺省 general-purpose） */
+  agent?: string;
+  /**
+   * 来源是否可信（加载器按目录填：用户级 = true，项目级 = false）。
+   * 不可信来源的 allow 规则先剥离 `Bash(*)` / `Bash(rm …)` 等危险自我授权——
+   * 仓库会随代码分发 `.claude/commands/*.md`，不能借它给自己提权。缺省按不可信处理。
+   */
+  trusted?: boolean;
 }
 
 /**
@@ -61,22 +73,19 @@ export function parseCustomCommandOptions(
 
   const rawTools =
     frontmatter["allowed-tools"] ?? frontmatter["allowedTools"] ?? frontmatter["tools"];
-  if (typeof rawTools === "string" && rawTools.trim()) {
-    opts.allowedTools = rawTools
-      .split(",")
-      .map((s) => s.trim())
-      .filter(Boolean);
-  } else if (Array.isArray(rawTools)) {
-    opts.allowedTools = rawTools
-      .map(String)
-      .map((s) => s.trim())
-      .filter(Boolean);
-  }
+  const spec = parseAllowedToolsSpec(rawTools);
+  if (spec && spec.rules.length > 0) opts.allowedTools = spec.rules;
 
   const model = frontmatter["model"];
   if (typeof model === "string" && model.trim()) {
     opts.model = model.trim();
   }
+
+  const context = frontmatter["context"];
+  if (context === "fork" || context === "inline") opts.context = context;
+
+  const agent = frontmatter["agent"];
+  if (typeof agent === "string" && agent.trim()) opts.agent = agent.trim();
 
   return opts;
 }
@@ -383,50 +392,68 @@ export class CustomCommand implements Command {
       };
     }
 
-    // P2-2：声明了 allowed-tools 或 model 时走 fork 子代理隔离执行——
-    // 限定工具集 + 指定模型，返回子代理最终输出。否则维持 inline 注入当前对话。
-    const { allowedTools, model } = this._options;
-    if ((allowedTools && allowedTools.length > 0) || model) {
-      return this.executeFork(text, ctx, allowedTools, model);
+    // P1：对齐 CC，只有 `context: fork` 才 fork。修复前「声明了 allowed-tools 或 model 就 fork」，
+    // 从 CC 迁来的命令只要写了 allowed-tools，就被换进隔离子代理，主会话的授权、上下文、工具全丢。
+    //
+    // 只写 `model` 仍走 fork（D2）：主循环没有「单轮换模型」的口子，inline 下 model 无处生效；
+    // 保留旧行为并 warn，免得用户以为 model 生效了。
+    const { model, context } = this._options;
+    if (context === "fork") {
+      return this.executeFork(text, ctx);
+    }
+    if (model && context !== "inline") {
+      getLogger().warn(
+        "CUSTOM_CMD",
+        `/${this._name} 声明了 model 但未写 context：sid-code 暂不支持 inline 单轮换模型，按 fork 执行（写 context: fork 可消除本告警）`,
+      );
+      return this.executeFork(text, ctx);
     }
 
-    return { kind: "submit_prompt", prompt: text };
+    return this.inlineResult(text);
   }
 
-  /** fork 模式：在受限子代理中执行 prompt（复用 SubAgent.executeCustom）。 */
-  private async executeFork(
-    prompt: string,
-    ctx: AppContext,
-    allowedTools?: string[],
-    model?: string,
-  ): Promise<CommandResult> {
+  /** inline：allowed-tools 作为**本轮**免确认 allow 规则随 prompt 下发，由 app 在本轮前后设置 / 清空 */
+  private inlineResult(prompt: string): CommandResult {
+    const { allowedTools } = this._options;
+    return {
+      kind: "submit_prompt",
+      prompt,
+      ...(allowedTools && allowedTools.length > 0
+        ? { allowedTools, allowedToolsTrusted: this._options.trusted === true }
+        : {}),
+    };
+  }
+
+  /** fork 模式：经统一入口 runForkedCommand 执行（P3：必注入 checker，allowed-tools 只作 allow 规则）。 */
+  private async executeFork(prompt: string, ctx: AppContext): Promise<CommandResult> {
+    const { allowedTools, model, agent } = this._options;
     const log = getLogger();
     if (!ctx.providerRegistry) {
       // 无 ProviderRegistry（如无头精简环境）时退回 inline，保证命令仍可用。
       log.warn("CUSTOM_CMD", `fork 命令 /${this._name} 无 providerRegistry，退回 inline`);
-      return { kind: "submit_prompt", prompt };
+      return this.inlineResult(prompt);
     }
     try {
-      const { SubAgent } = await import("@sid-code/core/agent/sub-agent.ts");
-      const subAgent = SubAgent.fromRegistry(
-        ctx.providerRegistry,
-        ctx.registry, // AppContext 的 ToolRegistry 字段名为 registry
-        ctx.hookSystem,
-        model, // modelOverride：未指定则用主模型
-      );
+      const { runForkedCommand } = await import("@sid-code/core/agent/forked-command.ts");
+      const { parseAllowedToolsSpec } = await import("@sid-code/core/tool/allowed-tools-spec.ts");
       const run = ctx.beginForkedRun?.();
-      let result: Awaited<ReturnType<typeof subAgent.executeCustom>>;
+      let result: Awaited<ReturnType<typeof runForkedCommand>>;
       try {
-        result = await subAgent.executeCustom(
-          {
-            systemPrompt: "你是一个专注的助手，请完成以下任务。",
-            userPrompt: prompt,
-            allowedTools: allowedTools ?? [],
-            maxTurns: 30,
-            type: "custom-command",
-          },
-          run?.signal,
-        );
+        result = await runForkedCommand({
+          providerRegistry: ctx.providerRegistry,
+          toolRegistry: ctx.registry, // AppContext 的 ToolRegistry 字段名为 registry
+          hookSystem: ctx.hookSystem,
+          permissionChecker: ctx.permissionChecker ?? null,
+          name: this._name,
+          prompt,
+          allowedRules: allowedTools ? parseAllowedToolsSpec(allowedTools) : undefined,
+          trusted: this._options.trusted === true,
+          agentType: agent,
+          model, // 未指定则用主模型
+          maxTurns: 30,
+          type: "custom-command",
+          signal: run?.signal,
+        });
       } finally {
         run?.end();
       }
@@ -440,7 +467,7 @@ export class CustomCommand implements Command {
     } catch (err: any) {
       log.error("CUSTOM_CMD", `fork 执行失败 /${this._name}: ${err?.message}`);
       // fork 出错兜底回 inline，避免命令完全不可用。
-      return { kind: "submit_prompt", prompt };
+      return this.inlineResult(prompt);
     }
   }
 }
@@ -488,9 +515,13 @@ export class CustomCommandLoader {
 
       const description = (file.frontmatter.description as string) || extractDescription(file.body);
       // P2-2：解析 argument-hint / allowed-tools / model 高级字段。
-      const options = parseCustomCommandOptions(file.frontmatter);
-      const cmd = new CustomCommand(file.name, description, file.body, options);
       const source: "user" | "project" = file.source === "user" ? "user" : "project";
+      // 用户级目录可信；项目级（含 .claude/commands 随仓库分发）不可信，危险 allow 规则会被剥离
+      const options = {
+        ...parseCustomCommandOptions(file.frontmatter),
+        trusted: file.source === "user" || file.source === "managed" || file.source === "builtin",
+      };
+      const cmd = new CustomCommand(file.name, description, file.body, options);
       results.push({ cmd, source });
     }
 

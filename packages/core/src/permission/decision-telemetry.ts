@@ -64,3 +64,39 @@ export function recordPermissionDecision(event: PermissionDecisionEvent): void {
     /* 度量失败不影响主流程 */
   }
 }
+
+// ─── 命令 allowed-tools 下发（bugfixes 20261013 方案 G）───
+
+/**
+ * 一次命令 / skill 的 `allowed-tools` 被装进 commandScoped 规则源。
+ * 用途：复算「声明了 allowed-tools 的命令里，有多少条规则被危险过滤剥离」
+ * （辅助口径分母 = 本事件条数，分子 = `dropped` 非空的条数）。
+ * 记在 RuleLoader.setCommandScopedRules 里——inline 与 fork 都经过它，结构上不会漏一条路径。
+ */
+export interface CommandAllowedToolsEvent {
+  /** 来源标签（如 "/project-qa allowed-tools"、"命令 allowed-tools"） */
+  origin: string;
+  /** 声明的规则条数 */
+  declared: number;
+  /** 实际装入的规则（原样串） */
+  rules: string[];
+  /** 因来源不可信被剥离的规则 */
+  dropped: string[];
+  trusted: boolean;
+}
+
+let _commandObserver: ((event: CommandAllowedToolsEvent) => void) | null = null;
+
+export function setCommandAllowedToolsObserver(
+  fn: ((event: CommandAllowedToolsEvent) => void) | null,
+): void {
+  _commandObserver = fn;
+}
+
+export function recordCommandAllowedTools(event: CommandAllowedToolsEvent): void {
+  try {
+    _commandObserver?.(event);
+  } catch {
+    /* 度量失败不影响主流程 */
+  }
+}

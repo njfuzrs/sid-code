@@ -7,9 +7,8 @@
  *   选 inline 的理由：用户需要在对话里看到并确认生成的 commit message 再提交，
  *   fork 子代理看不到主对话、也不便交互确认。
  *
- * ⚠️ 重要约束：inline 模式下 allowedTools 完全不生效（被执行引擎忽略，见
- *   src/command/executor.ts:204-215 与本批次补齐分析 §3.3）。下方 allowedTools
- *   仅作"意图声明 + 未来切 fork 时复用"，真正的安全边界靠：
+ * allowedTools 语义（对齐 CC）：inline 下作为**本轮**免确认 allow 规则生效（app.ts onUserInput
+ *   设置 / finally 清空），不裁剪工具集。其余安全边界：
  *     (1) 下方 prompt 的行为约束（展示 message → 用户确认 → 才 commit）；
  *     (2) 主会话本身的 Permission 系统（危险 git 操作会触发确认）。
  *   这与 claude-code 的 /commit 一致：它也是 inline 跑在主会话、靠权限系统兜底。
@@ -73,8 +72,17 @@ export function registerCommitSkill(): void {
     description: "读取 git diff，生成 conventional commits 规范的提交信息并提交",
     whenToUse: "当用户说 'commit'、'提交代码'、'生成提交信息'、'帮我 commit' 时",
     argumentHint: "[额外要求，如 scope 或语言]",
-    // inline 模式下以下白名单不生效，仅作意图声明（见文件头注释）
-    allowedTools: ["bash", "read", "grep", "glob"],
+    // 本轮免确认：只放行 git 读写与只读工具（对齐 CC commit.ts 的 ALLOWED_TOOLS）
+    allowedTools: [
+      "Bash(git add:*)",
+      "Bash(git status:*)",
+      "Bash(git commit:*)",
+      "Bash(git diff:*)",
+      "Bash(git log:*)",
+      "read",
+      "grep",
+      "glob",
+    ],
     context: "inline",
     userInvocable: true,
     async getPromptForCommand(args, context) {
