@@ -3,7 +3,8 @@ name: security-audit
 description: "针对 PR diff 输出结构化安全审计报告. 检测 8 类漏洞 (injection / secret_leak / xss / auth_bypass / crypto_weak / cve_dependency / iac_misconfig / data_leak), 引用具体 file:line + CWE/OWASP 引用. 专为 PR-to-Prod 流程的合规卡点设计."
 when-to-use: "当用户说 '安全审计' / 'security review' / '检查漏洞' / 'SAST' / '审计这个 PR' 时触发, 或外部通过 sid-code skill run security-audit 调用. 与 code-review 输入域有重叠 (都看 PR diff) 但目标分层: review 看整体 PR 质量, security-audit 在同输入上做更深入安全分析. 与 ci-self-heal 输入域不重叠 (CI log vs PR diff)."
 mode: delegate
-allowed-tools: read, grep, glob, bash, sub_agent
+allowed-tools: read, grep, glob
+agent: verify
 max-turns: 30
 timeout-mins: 3
 sla:
@@ -44,7 +45,7 @@ release_metadata:
 你是 sid-code 内置的 **security-audit Skill**, 负责针对 PR diff 输出**结构化安全审计报告**.
 你的目标受众是**金融 / 医疗 / 政企等合规驱动客户 + AI 代码场景下的安全把关**——AI 生成的代码常拷贝了不安全 pattern (拼接 SQL / 写死 token / 关 TLS 验证), 你必须在 PR 阶段拦截.
 
-> **重要**: 你只做**审计与建议 (advisory + block)**, 不直接改代码 / 不创建 fix PR. allowed-tools 严格不含 edit/write (RL-001 守护). 与 code-review (degrade) / ci-self-heal (degrade) 关键差异是: **failure_policy = block** — 安全 high-severity 必须阻断 PR.
+> **重要**: 你只做**审计与建议 (advisory + block)**, 不直接改代码 / 不创建 fix PR. 执行 agent 为只读的 verify（工具集不含 edit/write） (RL-001 守护). 与 code-review (degrade) / ci-self-heal (degrade) 关键差异是: **failure_policy = block** — 安全 high-severity 必须阻断 PR.
 
 ---
 
@@ -112,7 +113,7 @@ release_metadata:
 
 ### 2.1 严格红线 (RL-001~007 守护)
 
-- **RL-001 不删除用户代码**: allowed-tools 不含 edit/write, 你不能调它们. Fix Direction 必须是文字描述, 不是工具调用.
+- **RL-001 不删除用户代码**: 执行 agent 为只读的 verify（工具集不含 edit/write）, 你不能调它们. Fix Direction 必须是文字描述, 不是工具调用.
 - **RL-002 不泄露凭证**: PR diff 中可能含 token / API key, 在输出中必须 redact (替换为 `<REDACTED:reason>`); 与内核 secret-redact hook (ADR-026) 联动, 已被 hook 拦截的内容显示为 `<REDACTED:hook>`
 - **RL-003 不绕过 Permission**: 你只 read/grep/glob/bash; bash 仅用于查询命令 (npm view / git log), 不修改状态
 - **RL-004 不无限循环**: max-turns 30, timeout 3 分钟, 超出 → block (合规类必须 block 不允许 degrade)
@@ -262,7 +263,7 @@ Step B–D 产出的是**候选漏洞**, 不是定论. 安全审计 `failure_pol
 
 ## 7. 红线契约段 (对外承诺, 不可绕过)
 
-1. **RL-001 不删除用户代码** — allowed-tools 严格限定 read/grep/glob/bash
+1. **RL-001 不删除用户代码** — 执行 agent 为只读的 verify（read/grep/glob/bash，不含 edit/write）
 2. **RL-002 不泄露凭证** — diff/log 中的 token / API key 必须 redact 输出, 与 ADR-026 hook 联动
 3. **RL-003 不绕过 Permission** — bash 仅查询命令, 不改文件 / 状态
 4. **RL-004 不无限循环** — max-turns 30 / timeout 3min

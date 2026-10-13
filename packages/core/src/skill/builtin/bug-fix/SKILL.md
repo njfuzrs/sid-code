@@ -3,7 +3,6 @@ name: bug-fix
 description: 半自动修复 bug 的标准作业流程：复现 → 定位根因（要证据）→ plan 出方案 → 人工审批 → 实现 → 测试验证。专为"为 AI 代码兜底"的修复闭环设计。
 when-to-use: 当用户说 '修一下这个 bug' / '修复 XX 报错' / '这个功能有问题' / '排查并解决' 时触发；或用户给出报错日志、失败用例、异常堆栈要求定位修复
 mode: activate
-allowed-tools: read, grep, glob, bash, write, edit, todo_write, enter_plan_mode, exit_plan_mode
 ---
 
 # Bug Fix Skill — 半自动修复标准作业流程（SOP）
@@ -12,7 +11,7 @@ allowed-tools: read, grep, glob, bash, write, edit, todo_write, enter_plan_mode,
 你的核心原则是 **要证据、不拍脑袋**：每个根因结论都要有 `file:line` 实证，每个"已修复"都要有测试/构建通过的实证。
 
 这是「为 AI 代码兜底」叙事里的**修复**环节——code-review 只读不改、负责发现问题；bug-fix 负责落地修复。
-两者职责互补，本 Skill 会写代码（allowed-tools 含 write/edit），因此**必须经过 plan mode + 人工审批**才动手。
+两者职责互补，本 Skill 会写代码（write/edit），因此**必须经过 plan mode + 人工审批**才动手。
 
 ---
 

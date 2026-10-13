@@ -3,6 +3,7 @@
  * 从 ~/.sid-code/skills/ 和 {project}/.sid-code/skills/ 加载 Skill 定义
  */
 
+import { parseAllowedToolsSpec } from "../tool/allowed-tools-spec.ts";
 import { dirname } from "node:path";
 import { ExtensionLoader } from "../extension/loader.ts";
 import type { ScanOptions, ParsedExtensionFile } from "../extension/types.ts";
@@ -46,17 +47,10 @@ export function parseSkillFrontmatterFields(
   SkillDefinition,
   "name" | "description" | "prompt" | "source" | "loadedFrom" | "filePath" | "skillRoot"
 > {
-  // 解析 allowed-tools（支持逗号分隔字符串或数组）
-  let allowedTools: string[] | undefined;
+  // 解析 allowed-tools（逗号 / 空白分隔或数组；括号感知，`Bash(git add, git commit)` 是一条规则）
+  // 语义：免确认 allow 规则（对齐 CC），原样保留规则串交给规则引擎
   const rawTools = fm["allowed-tools"] ?? fm["allowedTools"] ?? fm["tools"];
-  if (typeof rawTools === "string") {
-    allowedTools = rawTools
-      .split(",")
-      .map((s) => s.trim())
-      .filter(Boolean);
-  } else if (Array.isArray(rawTools)) {
-    allowedTools = rawTools.map(String);
-  }
+  const allowedTools: string[] | undefined = parseAllowedToolsSpec(rawTools)?.rules;
 
   // 解析 mode 字段
   const rawMode = fm.mode as string;

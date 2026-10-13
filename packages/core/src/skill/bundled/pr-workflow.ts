@@ -6,7 +6,7 @@
  * /pr-workflow 一键按阶段顺序走完整条链路。
  *
  * 上下文模式：fork（子代理独立执行）。
- *   选 fork 的理由：长流程多步骤，独立执行不污染主对话；allowedTools 真实生效。
+ *   选 fork 的理由：长流程多步骤，独立执行不污染主对话；allowedTools 是该子代理的免确认规则。
  *
  * ⚠️ 轮次/超时上限（见 §5.1 与 skill/types.ts:51-54）：
  *   maxTurns 最大 50、timeoutMins 最大 30（写超会被钳到上限）。这里取满。
@@ -81,8 +81,16 @@ export function registerPrWorkflowSkill(): void {
     description: "完整 PR 工作流 SOP：提交 → 推送 → 创建 PR → 自审 → 处理评审意见(一键走完)",
     whenToUse: "当用户说 'pr workflow'、'走完整 PR 流程'、'一键提交发 PR 并审查'、'PR SOP' 时",
     argumentHint: "[PR 说明 / reviewer 评论 / 额外要求]",
-    // fork 模式：白名单真实生效（含 edit/write 以便阶段 5 改代码）
-    allowedTools: ["bash", "read", "grep", "glob", "edit", "write"],
+    // 免确认规则（对齐 CC）；裸 bash/edit/write 不列——那等于整段放行，写操作按主会话权限模式判定
+    allowedTools: [
+      "Bash(git status:*)",
+      "Bash(git diff:*)",
+      "Bash(git log:*)",
+      "Bash(gh pr view:*)",
+      "read",
+      "grep",
+      "glob",
+    ],
     context: "fork",
     userInvocable: true,
     // 强副作用(push + 建 PR + 改代码)：禁止模型自动调用，仅用户显式 /pr-workflow 触发

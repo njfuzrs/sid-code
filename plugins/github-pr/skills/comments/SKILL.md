@@ -3,7 +3,7 @@ name: comments
 description: "读取 PR 上的 reviewer 评论，逐条处理(改代码 / 生成回复)"
 when-to-use: "当用户说 'pr comments'、'处理评审意见'、'回复 PR 评论'、'reviewer 提的意见' 时"
 argument-hint: "[PR 编号或 URL]"
-# fork 模式：子会话独立执行，allowed-tools 白名单真实生效（含 edit/write 以便改代码）
+# fork 模式：子会话独立执行；allowed-tools 是免确认规则（对齐 CC），工具集为 general-purpose
 context: fork
 allowed-tools: bash, read, grep, glob, edit, write
 max-turns: 30

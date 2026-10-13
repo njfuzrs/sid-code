@@ -3,7 +3,8 @@ name: code-review
 description: 针对 PR diff 输出结构化 Code Review。识别 bug / 安全漏洞 / 设计反模式，引用具体文件行号，给出可执行修改建议。专为 AI 生成代码兜底设计。
 when-to-use: 当用户说 'review 代码' / '代码审查' / 'PR review' / '审一下这个 PR' 时触发；或外部通过 sid-code skill run code-review 调用，输入 PR diff 路径
 mode: delegate
-allowed-tools: read, grep, glob, bash, sub_agent
+allowed-tools: read, grep, glob
+agent: verify
 max-turns: 30
 timeout-mins: 15
 sla:
@@ -38,7 +39,7 @@ release_metadata:
   sla_observed_token_cost_usd: null
   # ---- 红线守护清单 (Sprint S1 100% pass)----
   redline_protection:
-    - RL-001                         # 不删除用户代码（allowed-tools 不含 edit/write）
+    - RL-001                         # 不删除用户代码（执行 agent 为只读的 verify（工具集不含 edit/write））
     - RL-002                         # 不泄露凭证（case_cr_001 admin123 守护）
     - RL-003                         # 不绕过 Permission（内核保证）
     - RL-004                         # 不无限循环（max-turns 30 / timeout-mins 15）

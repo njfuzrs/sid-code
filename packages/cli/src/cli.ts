@@ -14,6 +14,7 @@ if (!process.env.FORCE_COLOR && !process.env.NO_COLOR) {
 
 import { parseArgs } from "node:util";
 import { loadConfig, isMissingApiKey, PLACEHOLDER_API_KEY } from "@sid-code/core/config/config.ts";
+import { splitToolList } from "@sid-code/core/tool/allowed-tools-spec.ts";
 import type { Config } from "@sid-code/core/config/config.ts";
 import { initLogger, getLogger, LogLevel, getPerfTimer } from "@sid-code/core/debug/index.ts";
 import { clearFileIntent } from "@sid-code/core/session/file-intent.ts";
@@ -618,11 +619,10 @@ function parseCLIArgs(): CLIArgs {
     yesMode: values.yes,
     trustWorkspace: values["trust-workspace"],
     // 缺口 C1 §5.3：逗号分隔 → string[]（守护进程无头 job 预授权白名单）
+    // P7：括号感知切分（对齐 CC parseToolListFromCLI）——`Read,"Bash(git add, git commit)"` 是两条规则；
+    // 之后由 checker Step 12 走规则引擎匹配（认 CC 名 / Bash(pattern) / MCP 通配）
     allowedTools: values["allowed-tools"]
-      ? String(values["allowed-tools"])
-          .split(",")
-          .map((s: string) => s.trim())
-          .filter(Boolean)
+      ? splitToolList(String(values["allowed-tools"]))
       : undefined,
     disallowedTools: values["disallowed-tools"]
       ? String(values["disallowed-tools"])

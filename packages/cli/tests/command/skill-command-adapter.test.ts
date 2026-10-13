@@ -41,10 +41,11 @@ describe("skillToCommand", () => {
     expect(cmd.context).toBe("inline");
   });
 
-  test("默认（未指定 mode）→ fork", () => {
+  // P6：对齐 CC，未声明 context / mode 缺省 inline（修复前缺省 fork）
+  test("默认（未指定 mode）→ inline", () => {
     const cmd = skillToCommand(makeSkill());
     if (cmd.type !== "prompt") throw new Error("应为 prompt");
-    expect(cmd.context).toBe("fork");
+    expect(cmd.context).toBe("inline");
   });
 
   test("getPromptForCommand 替换 {{args}}", async () => {

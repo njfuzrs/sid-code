@@ -18,7 +18,7 @@ import type { SkillDefinition } from "@sid-code/core/skill/types.ts";
 import { processSkillPrompt } from "@sid-code/core/skill/prompt-processor.ts";
 import {
   resolveSkillExecutionContext,
-  resolveSkillAllowedTools,
+  isTrustedSkillSource,
 } from "@sid-code/core/skill/executor.ts";
 import { getLogger } from "@sid-code/core/debug/logger.ts";
 
@@ -128,7 +128,19 @@ export class SkillCommand implements Command {
     }
 
     log.debug("SKILL", `inline 注入 skill /${this.skill.name}`);
-    return { kind: "submit_prompt", prompt };
+    return this.inlineResult(prompt);
+  }
+
+  /** inline：allowed-tools 作为本轮免确认 allow 规则随 prompt 下发（P5） */
+  private inlineResult(prompt: string): CommandResult {
+    const tools = this.skill.allowedTools;
+    if (!tools || tools.length === 0) return { kind: "submit_prompt", prompt };
+    return {
+      kind: "submit_prompt",
+      prompt,
+      allowedTools: tools,
+      allowedToolsTrusted: isTrustedSkillSource(this.skill),
+    };
   }
 
   /** fork 模式：在子代理中执行，返回最终输出；无 providerRegistry 时退回 inline */
@@ -137,40 +149,42 @@ export class SkillCommand implements Command {
 
     if (!ctx.providerRegistry) {
       log.warn("SKILL", `fork skill /${this.skill.name} 无 providerRegistry，退回 inline 注入`);
-      return { kind: "submit_prompt", prompt };
+      return this.inlineResult(prompt);
     }
 
     try {
-      const { SubAgent } = await import("@sid-code/core/agent/sub-agent.ts");
-      const { normalizeSkillEffort, resolveSkillAgentType } =
+      const { runForkedCommand } = await import("@sid-code/core/agent/forked-command.ts");
+      const { parseAllowedToolsSpec } = await import("@sid-code/core/tool/allowed-tools-spec.ts");
+      const { normalizeSkillEffort, resolveSkillAgentType, isTrustedSkillSource } =
         await import("@sid-code/core/skill/executor.ts");
-      const subAgent = SubAgent.fromRegistry(
-        ctx.providerRegistry,
-        ctx.registry,
-        ctx.hookSystem,
-        this.skill.model,
-      );
 
       // P1-1：effort/agent 透传（与模型路径 SkillMetaTool 同口径）
       const effort = normalizeSkillEffort(this.skill.effort);
       const agentType = await resolveSkillAgentType(this.skill.agent, this.skill.name);
 
       const run = ctx.beginForkedRun?.();
-      let result: Awaited<ReturnType<typeof subAgent.executeCustom>>;
+      let result: Awaited<ReturnType<typeof runForkedCommand>>;
       try {
-        result = await subAgent.executeCustom(
-          {
-            systemPrompt: "你是一个专注的助手，请完成以下任务。",
-            userPrompt: prompt,
-            // P0-5：未声明 allowed-tools 时给只读默认集，而不是零工具
-            allowedTools: resolveSkillAllowedTools(this.skill),
-            // P2-2：与 command/executor.ts 的 fork 命令同档，默认从 10 提到 30
-            maxTurns: this.skill.maxTurns ?? 30,
-            effort,
-            type: agentType ?? `skill:${this.skill.name}`,
-          },
-          run?.signal,
-        );
+        // P3：统一入口——必注入 checker；allowed-tools 只作本次 fork 的 allow 规则
+        result = await runForkedCommand({
+          providerRegistry: ctx.providerRegistry,
+          toolRegistry: ctx.registry,
+          hookSystem: ctx.hookSystem,
+          permissionChecker: ctx.permissionChecker ?? null,
+          name: this.skill.name,
+          prompt,
+          allowedRules: this.skill.allowedTools
+            ? parseAllowedToolsSpec(this.skill.allowedTools)
+            : undefined,
+          trusted: isTrustedSkillSource(this.skill),
+          agentType,
+          model: this.skill.model,
+          // P2-2：与 command/executor.ts 的 fork 命令同档，默认从 10 提到 30
+          maxTurns: this.skill.maxTurns ?? 30,
+          effort,
+          type: agentType ?? `skill:${this.skill.name}`,
+          signal: run?.signal,
+        });
       } finally {
         run?.end();
       }

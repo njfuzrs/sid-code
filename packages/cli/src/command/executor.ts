@@ -272,7 +272,14 @@ export class CommandExecutor {
       case "dialog":
         return { type: "dialog", dialog: result.dialog };
       case "submit_prompt":
-        return { type: "submit_prompt", value: result.prompt, shouldQuery: true };
+        return {
+          type: "submit_prompt",
+          value: result.prompt,
+          shouldQuery: true,
+          ...(result.allowedTools?.length
+            ? { allowedTools: result.allowedTools, allowedToolsTrusted: result.allowedToolsTrusted }
+            : {}),
+        };
       case "confirm":
         return {
           type: "confirm",
@@ -436,7 +443,23 @@ export class CommandExecutor {
         }
       }
 
-      return { type: "submit_prompt", value: prompt, shouldQuery: true };
+      // P5：inline 下 allowed-tools 作为**本轮**免确认 allow 规则随 prompt 下发（对齐 CC
+      // REPL.tsx 每轮写入 alwaysAllowRules.command）。修复前这里直接丢弃，inline 命令的
+      // allowed-tools 完全不生效（bundled commit.ts 注释自己承认过）。
+      let allowedToolsTrusted =
+        cmd.source === "builtin" || cmd.source === "user" || cmd.source === "skill";
+      if (skill) {
+        const { isTrustedSkillSource } = await import("@sid-code/core/skill/executor.ts");
+        allowedToolsTrusted = isTrustedSkillSource(skill);
+      }
+      return {
+        type: "submit_prompt",
+        value: prompt,
+        shouldQuery: true,
+        ...(cmd.allowedTools?.length
+          ? { allowedTools: cmd.allowedTools, allowedToolsTrusted }
+          : {}),
+      };
     } finally {
       // fork：hooks 作用域仅本次子代理调用，返回后卸载（与 SkillMetaTool.executeDelegate 同口径）。
       if (registeredHookCount > 0 && skill && this.ctx.hookSystem) {
@@ -461,8 +484,6 @@ export class CommandExecutor {
   ): Promise<CommandExecutionResult | null> {
     const log = getLogger();
     try {
-      const { SubAgent } = await import("@sid-code/core/agent/sub-agent.ts");
-
       if (!this.ctx.providerRegistry) {
         // 无 ProviderRegistry 时退回 inline 注入，避免命令不可用
         log.warn("COMMAND", `fork 命令 /${cmd.name} 无 providerRegistry，退回 inline`);
@@ -470,57 +491,53 @@ export class CommandExecutor {
       }
 
       const skill = cmd.skill;
+      const { runForkedCommand } = await import("@sid-code/core/agent/forked-command.ts");
+      const { parseAllowedToolsSpec } = await import("@sid-code/core/tool/allowed-tools-spec.ts");
 
       // P1-1：skill 来源命令透传 effort / agent 类型 / model（与模型路径 SkillMetaTool 同口径）。
       let effort: "low" | "medium" | "high" | "xhigh" | "max" | undefined;
-      let agentType: string | undefined;
-      let allowedTools = cmd.allowedTools ?? [];
+      let agentType: string | undefined = cmd.agent;
+      // bundled skill（source=skill 且无 cmd.skill）随二进制发布，可信
+      let trusted = cmd.source === "builtin" || cmd.source === "user" || cmd.source === "skill";
       if (skill) {
-        const { normalizeSkillEffort, resolveSkillAgentType, resolveSkillAllowedTools } =
+        const { normalizeSkillEffort, resolveSkillAgentType, isTrustedSkillSource } =
           await import("@sid-code/core/skill/executor.ts");
         effort = normalizeSkillEffort(skill.effort);
         agentType = await resolveSkillAgentType(skill.agent, skill.name);
-        // P0-5：skill 来源命令未声明 allowed-tools 时给只读默认集，而不是零工具
-        allowedTools = resolveSkillAllowedTools(skill);
-      }
-
-      const subAgent = SubAgent.fromRegistry(
-        this.ctx.providerRegistry,
-        this.ctx.toolRegistry,
-        this.ctx.hookSystem,
-        skill?.model,
-      );
-      // 子代理内的工具权限判定沿用主会话 checker（未注入时子代理走自身默认）
-      if (this.ctx.permissionChecker) {
-        subAgent.setPermissionChecker(this.ctx.permissionChecker);
+        trusted = isTrustedSkillSource(skill);
       }
 
       // 开跑前先回显 + 进加载态（cc 同处 setToolJSX 出 spinner），拿到本次运行的中断信号
       const run = this.ctx.beginForkedRun?.();
-      let result: Awaited<ReturnType<typeof subAgent.executeCustom>>;
+      let result: Awaited<ReturnType<typeof runForkedCommand>>;
       try {
-        result = await subAgent.executeCustom(
-          {
-            systemPrompt: skill
-              ? `你是一个专门执行 "${skill.name}" 任务的代理。${skill.description}`
-              : "你是一个专注的助手，请完成以下任务。",
-            userPrompt: prompt,
-            allowedTools,
-            // P2-2：fork 命令无 forkMessages/继承主对话概念（systemPrompt 是全新的“专注助手”提示词），
-            // 与常规非 fork 子代理同档：默认从 10 提到 30。
-            maxTurns: cmd.maxTurns ?? 30,
-            // 超时透传：对齐磁盘 skill 的钳制（默认 2 分钟，最大 30 分钟）。
-            // 不传 timeoutMins 时 executeCustom 内部默认 120_000ms，与历史行为一致。
-            timeout:
-              cmd.timeoutMins != null
-                ? Math.min(Math.max(cmd.timeoutMins, 1), 30) * 60_000
-                : undefined,
-            effort,
-            // agent 优先作为 agent 类型（memory/system prompt 跟随）；否则沿用 skill:<name>
-            type: skill ? (agentType ?? `skill:${skill.name}`) : undefined,
-          },
-          run?.signal,
-        );
+        // P3：统一入口——必注入 checker；工具集按 agent 类型，allowed-tools 只作 allow 规则
+        result = await runForkedCommand({
+          providerRegistry: this.ctx.providerRegistry,
+          toolRegistry: this.ctx.toolRegistry,
+          hookSystem: this.ctx.hookSystem,
+          permissionChecker: this.ctx.permissionChecker ?? null,
+          name: cmd.name,
+          systemPrompt: skill
+            ? `你是一个专门执行 "${skill.name}" 任务的代理。${skill.description}`
+            : undefined,
+          prompt,
+          allowedRules: cmd.allowedTools ? parseAllowedToolsSpec(cmd.allowedTools) : undefined,
+          trusted,
+          agentType,
+          model: skill?.model,
+          effort,
+          // P2-2：fork 命令无 forkMessages/继承主对话概念，与常规非 fork 子代理同档 30。
+          maxTurns: cmd.maxTurns ?? 30,
+          // 超时透传：对齐磁盘 skill 的钳制（默认 2 分钟，最大 30 分钟）。
+          timeout:
+            cmd.timeoutMins != null
+              ? Math.min(Math.max(cmd.timeoutMins, 1), 30) * 60_000
+              : undefined,
+          // agent 优先作为 agent 类型（memory/system prompt 跟随）；否则沿用 skill:<name>
+          type: skill ? (agentType ?? `skill:${skill.name}`) : undefined,
+          signal: run?.signal,
+        });
       } finally {
         run?.end();
       }

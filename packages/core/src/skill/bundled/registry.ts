@@ -23,7 +23,10 @@ export interface BundledSkillDefinition {
   description: string;
   whenToUse?: string;
   argumentHint?: string;
+  /** 免确认 allow 规则（对齐 CC；不裁剪工具集） */
   allowedTools?: string[];
+  /** fork 子代理的工具集来源 agent 类型（缺省 general-purpose）；只读 skill 用 verify 收窄 */
+  agent?: string;
   userInvocable?: boolean;
   context?: "inline" | "fork";
   model?: string;
@@ -74,7 +77,9 @@ export function registerBundledSkill(definition: BundledSkillDefinition): void {
     allowedTools: definition.allowedTools,
     userInvocable: definition.userInvocable ?? true,
     disableModelInvocation: definition.disableModelInvocation,
-    context: definition.context ?? "fork",
+    // P6：缺省 inline（对齐 CC）；现有 bundled skill 全部显式声明了 context，不受影响
+    context: definition.context ?? "inline",
+    agent: definition.agent,
     maxTurns: definition.maxTurns,
     timeoutMins: definition.timeoutMins,
     isEnabled: definition.isEnabled,

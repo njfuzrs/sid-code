@@ -1,7 +1,7 @@
 /**
  * 多来源权限规则加载器
  * 从 8 种来源加载规则并按优先级合并
- * 优先级（低→高）：session → command → cliArg → userSettings → projectSettings → localSettings → flagSettings → policySettings
+ * 优先级（低→高）：commandScoped → session → command → cliArg → userSettings → projectSettings → localSettings → flagSettings → policySettings
  *
  * 安全约束：projectSettings 是不可信来源，某些敏感设置必须排除
  */
@@ -54,6 +54,17 @@ const DANGEROUS_SELF_AUTHORIZATION_PATTERNS: RegExp[] = [
   /^Bash\([^)]*\|[^)]*\)$/, // Bash(... | ...) 放行管道（curl|bash 类）
   /^(Write|Edit)\(\s*\*\s*\)$/i, // Write/Edit(*) 全放行文件写入
 ];
+
+/**
+ * 命令作用域专用：不带参数的写 / 执行类工具名（CC 名与内部名都算）。
+ * 设置文件里裸 `Bash` 历来允许（用户自己写的），但随仓库分发的命令声明它就等于全放行。
+ */
+const BARE_DANGEROUS_TOOL = /^(bash|write|edit|notebook_?edit)$/i;
+
+/** 单条 allow 规则是否属于「危险的自我授权」（不可信来源不得声明）。 */
+export function isDangerousSelfAuthorization(rawRule: string): boolean {
+  return DANGEROUS_SELF_AUTHORIZATION_PATTERNS.some((p) => p.test(rawRule.trim()));
+}
 
 /**
  * 规则加载器
@@ -348,10 +359,7 @@ export class RuleLoader {
 
     for (const rule of rules) {
       if (rule.behavior === "allow") {
-        const dangerous = DANGEROUS_SELF_AUTHORIZATION_PATTERNS.some((p) =>
-          p.test(rule.rawRule.trim()),
-        );
-        if (dangerous) {
+        if (isDangerousSelfAuthorization(rule.rawRule)) {
           dropped.push(rule.rawRule);
           continue;
         }
@@ -416,6 +424,45 @@ export class RuleLoader {
     const existing = this.sources.get("session") || [];
     existing.push({ source: "session", behavior, rawRule });
     this.sources.set("session", existing);
+    this.invalidateCache();
+  }
+
+  /**
+   * 设置命令作用域的 allow 规则（斜杠命令 / skill 的 `allowed-tools`，对齐 CC
+   * `alwaysAllowRules.command`）。整体替换上一批，不累加——生命周期由调用方
+   * 在「本轮结束」或「fork 子代理返回」时 {@link clearCommandScopedRules}。
+   *
+   * `trusted=false`（项目级命令 / skill、MCP skill）先过危险自我授权剥离：
+   * 仓库可以随代码分发 `.claude/commands/*.md`，`Bash(*)` 这类声明不能自我提权。
+   *
+   * @returns 被剥离的规则（调用方据此告警 / 埋点）
+   */
+  setCommandScopedRules(allow: string[], trusted: boolean, origin = "command"): string[] {
+    let rules: SourcedPermissionRule[] = allow
+      .map((r) => r.trim())
+      .filter(Boolean)
+      .map((rawRule) => ({
+        source: "commandScoped" as const,
+        behavior: "allow" as const,
+        rawRule,
+      }));
+    const before = rules.map((r) => r.rawRule);
+    if (!trusted) {
+      // 命令 / skill 声明里裸写 `Bash` / `Write` / `Edit` 等价于 `Bash(*)` / `Write(*)`，同样剥离
+      rules = rules.filter((r) => !BARE_DANGEROUS_TOOL.test(r.rawRule.trim()));
+      rules = this.filterUntrustedProjectRules(rules, origin);
+    }
+    const kept = new Set(rules.map((r) => r.rawRule));
+    if (rules.length > 0) this.sources.set("commandScoped", rules);
+    else this.sources.delete("commandScoped");
+    this.invalidateCache();
+    return before.filter((r) => !kept.has(r));
+  }
+
+  /** 清空命令作用域规则（本轮结束 / 中断 / 异常时都要调） */
+  clearCommandScopedRules(): void {
+    if (!this.sources.has("commandScoped")) return;
+    this.sources.delete("commandScoped");
     this.invalidateCache();
   }
 

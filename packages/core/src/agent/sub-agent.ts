@@ -31,6 +31,7 @@ import { isAbortError } from "../llm/errors.ts";
 import { LoopDetector } from "./loop-detection.ts";
 import { type LanguagePref, resolveEffectiveLanguage } from "../config/prompt-lang.ts";
 import { filterToolsForAgent } from "./tool-filter.ts";
+import { ruleToToolName } from "../tool/allowed-tools-spec.ts";
 import { runAgentLoop } from "./agentic-loop.ts";
 import { JitContextManager, JIT_CONTEXT_DEFAULT } from "../config/jit-context.ts";
 import { collectJitAccessedPaths } from "../tool/jit-affected-paths.ts";
@@ -410,7 +411,21 @@ async function enhanceSubAgentPrompt(
 export interface CustomSubAgentTask {
   systemPrompt: string;
   userPrompt: string;
+  /**
+   * 工具集**白名单**（agent 定义的 `tools:` / agent hook 的 tools 用）。
+   * 名字大小写不敏感、认 CC 名（`Read` → `read`），`Bash(git *)` 这类规则写法取括号前的工具名；
+   * 查不到的名字 warn 后丢弃。给了 {@link toolsFromAgentType} 时本字段被忽略。
+   *
+   * ⚠️ 斜杠命令 / skill 的 `allowed-tools` **不**走这里——那是权限层的 allow 规则，
+   * 见 agent/forked-command.ts。
+   */
   allowedTools: string[];
+  /**
+   * fork 命令 / skill 用：工具集按该 agent 类型的定义走 `filterToolsForAgent`
+   * （缺省 general-purpose 即全量减硬禁项），与 `sub_agent` 派出的同类型子代理同一口径。
+   * 对齐 CC：fork 子代理拿 `command.agent ?? 'general-purpose'` 的完整工具集。
+   */
+  toolsFromAgentType?: string;
   maxTurns?: number;
   maxTokens?: number;
   timeout?: number;
@@ -1013,15 +1028,54 @@ export class SubAgent {
    * 自定义子代理的 `allowedTools` 是显式白名单（由调用方解析自 frontmatter），
    * 经 `Registry.filter` 精确筛出后走 `definitionsForTools`。
    */
-  private getCustomToolDefs(allowedTools: string[]): ToolDef[] {
-    const filtered = this.toolRegistry.filter(allowedTools);
-    const defs = filtered.definitionsForTools(filtered.all());
+  private getCustomToolDefs(task: CustomSubAgentTask): ToolDef[] {
+    const filtered = this.resolveCustomTools(task);
+    const defs = this.toolRegistry.definitionsForTools(filtered);
     return defs.map((d) => ({
       name: d.name,
       description: d.description,
       inputSchema: d.input_schema,
       strict: d.strict,
     }));
+  }
+
+  /**
+   * 自定义子代理实际拿到的工具（spawn 与进程内两条路径共用，P2）。
+   *
+   * 修复前三处各写 `toolRegistry.filter(task.allowedTools)`：内部是大小写敏感的精确查表，
+   * `Read` / `Glob` / `Bash(ls*)` 全部查不到且**零告警**，子代理悄悄只剩 MCP 全名精确命中的那几个
+   * （轨迹 20261013-100055-7eeb1160：命令声明了 Read 等 14 项，子代理只挂上两个 tavily 工具）。
+   */
+  private resolveCustomTools(task: CustomSubAgentTask): LegacyTool[] {
+    if (task.toolsFromAgentType) {
+      const agentType = task.toolsFromAgentType;
+      const def = resolveAgent(agentType);
+      const isBuiltInType = agentType in BUILTIN_AGENTS;
+      return filterToolsForAgent(this.toolRegistry.all(), {
+        isBuiltIn: isBuiltInType,
+        builtInType: isBuiltInType ? agentType : undefined,
+        tools: def?.tools,
+        disallowedTools: def?.disallowedTools,
+      });
+    }
+    const out: LegacyTool[] = [];
+    const missing: string[] = [];
+    const seen = new Set<string>();
+    for (const raw of task.allowedTools) {
+      const name = ruleToToolName(raw);
+      if (seen.has(name)) continue;
+      seen.add(name);
+      const tool = this.toolRegistry.get(name);
+      if (tool) out.push(tool);
+      else missing.push(raw);
+    }
+    if (missing.length > 0) {
+      getLogger().warn(
+        "SUBAGENT",
+        `[custom] 声明的工具未找到，已忽略: ${missing.join(", ")}（类型 ${task.type ?? "custom"}）`,
+      );
+    }
+    return out;
   }
 
   /** Spawn 子代理（标准类型） */
@@ -1107,11 +1161,9 @@ export class SubAgent {
       this.language,
       process.cwd(),
     );
-    const tools =
-      task.allowedTools.length > 0
-        ? this.toolRegistry.filter(task.allowedTools)
-        : new ToolRegistry();
-    const toolDefs = this.getCustomToolDefs(task.allowedTools);
+    const tools = new ToolRegistry();
+    for (const t of this.resolveCustomTools(task)) tools.register(t);
+    const toolDefs = this.getCustomToolDefs(task);
 
     // 计费口径对齐 executeCustomInner：modelOverride 优先，否则按 "task" 类型解析。
     // 整套连接（真名 + provider/apiKey/baseURL）都按**最终生效的 model** 解析：modelOverride
@@ -1138,7 +1190,8 @@ export class SubAgent {
       task_type: "task", // 自定义代理按 task 类型
       system_prompt: enhancedSystemPrompt,
       user_prompt: task.userPrompt,
-      allowed_tools: task.allowedTools,
+      // 与 tool_defs 同源：传归一后的实际工具名，而非声明串（`Read` / `Bash(ls*)` 子进程同样查不到）
+      allowed_tools: toolDefs.map((d) => d.name),
       tool_defs: toolDefs,
       model,
       wire_model: wireModel,
@@ -2394,12 +2447,10 @@ export class SubAgent {
         /* sidechain 落盘失败静默 */
       }
 
+      const resolvedTools = this.resolveCustomTools(task);
       const tools =
-        task.allowedTools.length > 0
-          ? this.buildIsolatedToolRegistry(
-              this.toolRegistry.filter(task.allowedTools).all(),
-              task.type,
-            )
+        resolvedTools.length > 0
+          ? this.buildIsolatedToolRegistry(resolvedTools, task.type)
           : new ToolRegistry();
       // P2-2：CustomSubAgentTask 无 forkMessages，resolveSubAgentMaxTurns 自然落到常规档 30。
       const maxTurns = resolveSubAgentMaxTurns(task);
@@ -2407,7 +2458,8 @@ export class SubAgent {
 
       log.info(
         "SUBAGENT",
-        `[custom] 可用工具: ${task.allowedTools.join(", ") || "无"}, 超时: ${timeout / 1000}秒, 最大轮次: ${maxTurns}`,
+        // P9：打**实际拿到**的工具，而不是声明列表——后者在名字对不上时会误导排查
+        `[custom] 可用工具: ${resolvedTools.map((t) => t.name()).join(", ") || "无"}${task.toolsFromAgentType ? `（agent 类型 ${task.toolsFromAgentType}）` : ""}, 超时: ${timeout / 1000}秒, 最大轮次: ${maxTurns}`,
       );
 
       // 先定模型（modelOverride 或主模型）、再按该模型定 provider。

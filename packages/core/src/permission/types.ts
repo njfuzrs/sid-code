@@ -85,6 +85,14 @@ export interface Checker {
    */
   getBashClassifier?(): import("./bash-classifier.ts").BashClassifier | null;
   /**
+   * 设置命令作用域 allow 规则（斜杠命令 / skill 的 `allowed-tools`），返回被剥离的危险规则（可选）。
+   * 生命周期由调用方负责：inline 命令 = 触发它的那一轮，结束（含异常 / 中断）必须
+   * {@link clearCommandScopedRules}。
+   */
+  setCommandScopedRules?(allow: string[], trusted: boolean, origin?: string): string[];
+  /** 清空命令作用域 allow 规则（可选） */
+  clearCommandScopedRules?(): void;
+  /**
    * 获取内部路径校验器（可选）。
    *
    * 供**工具层之外**的读文件路径复用同一道路径防线——目前唯一消费方是 `@文件` 提及展开
@@ -140,6 +148,7 @@ export interface AuditEntry {
 
 /** 规则来源（8 种，优先级从低到高） */
 export type PermissionRuleSource =
+  | "commandScoped" // 斜杠命令 / skill 的 allowed-tools，仅作用于触发它的那一轮（或那一个 fork 子代理）
   | "session" // 运行时动态添加（权限弹窗 Always Allow）
   | "command" // 斜杠命令 /allow, /deny
   | "cliArg" // CLI 参数 --allow-tool, --deny-tool
@@ -151,6 +160,8 @@ export type PermissionRuleSource =
 
 /** 规则来源优先级（数值越大优先级越高） */
 export const RULE_SOURCE_PRIORITY: Record<PermissionRuleSource, number> = {
+  // 最低档：只产生「免确认」allow，任何持久来源的 deny / ask 都压得住它
+  commandScoped: -1,
   session: 0,
   command: 1,
   cliArg: 2,

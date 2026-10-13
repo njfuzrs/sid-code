@@ -14,12 +14,7 @@ import { SkillManager } from "@sid-code/core/skill/manager.ts";
 import { SkillActivationCoordinator } from "@sid-code/core/skill/activation-coordinator.ts";
 import { substituteArguments, processSkillPrompt } from "@sid-code/core/skill/prompt-processor.ts";
 import { skillToCommand } from "@sid-code/core/skill/command-adapter.ts";
-import {
-  authorizeSkill,
-  resolveSkillExecutionContext,
-  resolveSkillAllowedTools,
-  DEFAULT_SKILL_ALLOWED_TOOLS,
-} from "@sid-code/core/skill/executor.ts";
+import { authorizeSkill, resolveSkillExecutionContext } from "@sid-code/core/skill/executor.ts";
 import type { SkillDefinition } from "@sid-code/core/skill/types.ts";
 
 function makeSkill(overrides: Partial<SkillDefinition>): SkillDefinition {
@@ -170,7 +165,7 @@ describe("P0-4 context 字段在模型路径生效", () => {
 
   test("context 优先于 mode；三处调用方同源", () => {
     const cases: Array<[Partial<SkillDefinition>, "inline" | "fork"]> = [
-      [{}, "fork"],
+      [{}, "inline"], // P6：对齐 CC，缺省 inline
       [{ mode: "activate" }, "inline"],
       [{ mode: "delegate" }, "fork"],
       [{ context: "inline", mode: "delegate" }, "inline"],
@@ -188,39 +183,36 @@ describe("P0-4 context 字段在模型路径生效", () => {
   });
 });
 
-describe("P0-5 未声明 allowed-tools 的 fork skill 不再零工具", () => {
-  test("未声明 → 只读默认集；显式声明（含空数组）原样尊重", () => {
-    expect(resolveSkillAllowedTools({ name: "x" })).toEqual([...DEFAULT_SKILL_ALLOWED_TOOLS]);
-    expect(resolveSkillAllowedTools({ name: "x", allowedTools: [] })).toEqual([]);
-    expect(resolveSkillAllowedTools({ name: "x", allowedTools: ["bash"] })).toEqual(["bash"]);
-  });
-
-  test("默认集是只读的（不含写/执行工具）", () => {
-    for (const t of ["write", "edit", "bash"]) {
-      expect(DEFAULT_SKILL_ALLOWED_TOOLS).not.toContain(t);
-    }
-  });
-
-  test("模型路径 delegate 实际传给子代理的 allowedTools 非空", async () => {
-    let captured: string[] | undefined;
+describe("P0-5（语义对齐 CC 后）fork skill 的工具集来自 agent 类型，不再由 allowed-tools 裁剪", () => {
+  test("模型路径 delegate：子代理按 agent 类型取工具集，allowed-tools 不作白名单", async () => {
+    let captured: { allowedTools: string[]; toolsFromAgentType?: string } | undefined;
     const { SubAgent } = await import("@sid-code/core/agent/sub-agent.ts");
     const orig = SubAgent.fromRegistry;
     (SubAgent as any).fromRegistry = () => ({
-      setPermissionChecker() {},
-      executeCustom: async (task: { allowedTools: string[] }) => {
-        captured = task.allowedTools;
-        return { success: true, output: "ok", turns: 1 };
+      setPermissionChecker: () => {},
+      executeCustom: async (task: { allowedTools: string[]; toolsFromAgentType?: string }) => {
+        captured = task;
+        return { success: true, output: "ok" };
       },
     });
     try {
-      const skill = makeSkill({ name: "release-version" }); // 无 mode、无 allowed-tools
+      const skill = makeSkill({ mode: "delegate", allowedTools: ["Read", "Bash(git *)"] });
       const t = new SkillMetaTool(stubManager(skill), {} as any, {} as any);
-      const r = await t.execute({ skill: "release-version" });
-      expect(r.isError).toBe(false);
-      expect(captured).toEqual([...DEFAULT_SKILL_ALLOWED_TOOLS]);
+      t.setPermissionChecker({ check: async () => ({ allowed: true }) } as any);
+      await t.execute({ skill: "demo" });
+      expect(captured?.allowedTools).toEqual([]);
+      expect(captured?.toolsFromAgentType).toBe("general-purpose");
     } finally {
       (SubAgent as any).fromRegistry = orig;
     }
+  });
+
+  test("无 checker 时 fork 明确报错，而不是让子代理静默 fail-closed", async () => {
+    const skill = makeSkill({ mode: "delegate" });
+    const t = new SkillMetaTool(stubManager(skill), {} as any, {} as any);
+    const r = await t.execute({ skill: "demo" });
+    expect(r.isError).toBe(true);
+    expect(r.output).toContain("无权限检查器");
   });
 });
 

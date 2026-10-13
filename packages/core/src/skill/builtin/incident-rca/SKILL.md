@@ -3,7 +3,8 @@ name: incident-rca
 description: "针对线上 incident(P0/P1) 输出结构化根因分析报告. 跨 log / metric / trace / commit / ADR 5 个证据维度构造假设,排序根因,给出 hotfix / mitigation / long-term 三档行动建议. 专为 AI 代码场景下的多 provider 编排故障溯源设计."
 when-to-use: "当用户说 '线上挂了' / 'incident' / '故障复盘' / 'RCA' / '根因分析' / '帮我看下这个故障' 时触发, 或外部通过 sid-code skill run incident-rca 调用. 与 ci-self-heal 输入域明确不重叠 (CI log vs production observability), 与 code-review / security-audit 关注阶段不同 (前者 PR 阶段,本 Skill 故障后)."
 mode: delegate
-allowed-tools: read, grep, glob, bash, sub_agent
+allowed-tools: read, grep, glob
+agent: verify
 max-turns: 40
 timeout-mins: 3
 sla:
@@ -46,7 +47,7 @@ AI 代码 + 多 provider + 工具调用链长 → 故障责任链复杂, 你必�
 让人能在 30 分钟内做出决策.
 
 > **重要**: 你**只做诊断与建议(advisory)**, 不直接改代码 / 不创建 hotfix PR / 不重启服务.
-> allowed-tools 严格不含 edit/write/network. failure_policy=degrade(RCA 不准不抛 block).
+> 执行 agent 为只读的 verify（工具集不含 edit/write）/network. failure_policy=degrade(RCA 不准不抛 block).
 >
 > 红线守护(必须遵守):
 > - **RL-001 不删用户代码**: 永远不修改源码 / 不创建 PR
@@ -178,7 +179,7 @@ AI 代码 + 多 provider + 工具调用链长 → 故障责任链复杂, 你必�
 | 反模式 | 守护 |
 | --- | --- |
 | 编造日志行号 / 时间戳 | RL-007 — 必须引用真实输入,缺则标 unknown |
-| 直接重启服务 / 改配置 | allowed-tools 不含 edit/write/network |
+| 直接重启服务 / 改配置 | 执行 agent 为只读的 verify（工具集不含 edit/write）/network |
 | 跳过证据直接给结论 | §3.2 强约束:每假设必须 ≥ 1 条 Evidence |
 | 把 ci-self-heal / code-review 的输入塞进来 | §1 触发不命中场景明文区分 |
 | 输出长篇大论 | 严格用 §2 模板;Top Hypotheses ≤ 3 条 |

@@ -9,7 +9,7 @@
  *
  * 上下文模式：fork（子代理独立执行）。
  *   选 fork 的理由：处理评审意见可能多轮改代码 + 回复，独立执行不污染主对话；
- *   需要 write/edit 权限，fork 下 allowedTools 真实生效可控制范围。
+ *   需要 write/edit 权限，按主会话权限模式判定（always-allow 继承进子代理）。
  *
  * ⚠️ fork 限制（见补齐分析 §4.3）：子代理看不到主对话，PR 信息全靠 gh 命令自取。
  */
@@ -67,8 +67,16 @@ export function registerPrCommentsSkill(): void {
     description: "读取 PR 上的 reviewer 评论，逐条处理(改代码 / 生成回复)",
     whenToUse: "当用户说 'pr comments'、'处理评审意见'、'回复 PR 评论'、'reviewer 提的意见' 时",
     argumentHint: "[PR 编号或 URL]",
-    // fork 模式：白名单真实生效（含 edit/write 以便改代码）
-    allowedTools: ["bash", "read", "grep", "glob", "edit", "write"],
+    // 免确认规则（对齐 CC）；裸 bash/edit/write 不列——那等于整段放行，写操作按主会话权限模式判定
+    allowedTools: [
+      "Bash(gh pr view:*)",
+      "Bash(gh api:*)",
+      "Bash(git diff:*)",
+      "Bash(git log:*)",
+      "read",
+      "grep",
+      "glob",
+    ],
     context: "fork",
     userInvocable: true,
     // 强副作用(改代码 + 可能发布回复)：禁止模型自动调用，仅用户显式 /pr-comments 触发

@@ -1,7 +1,7 @@
 /**
  * 子代理专用 PermissionChecker 工厂
  *
- * 为子代理创建 dontAsk 语义的 PermissionChecker：
+ * 为子代理创建 dontAsk 语义的 PermissionChecker（fork 命令可选继承 always-allow，见 inheritBypassMode）：
  * - 危险命令拦截 + safetyCheck 照常生效
  * - ask 场景自动 deny（子代理不弹窗）
  * - 每个子代理实例独立的 denialTracking（隔离互不影响）
@@ -17,19 +17,37 @@ import type { Config } from "../config/config.ts";
  * @param mainChecker 主循环的 PermissionChecker（提供规则/分类器/配置）
  * @param workspacePath 工作区路径（子代理可能在 worktree 中，路径不同于主代理）
  */
+/** 主会话处于这些模式时，fork 子代理继承之（P4，对齐 CC：fork 子代理继承主会话 toolPermissionContext.mode） */
+const INHERITABLE_BYPASS_MODES = new Set(["always-allow", "dangerously-skip-permissions"]);
+
+export interface SubAgentCheckerOptions {
+  /**
+   * 继承主会话的「全放行」类模式（always-allow / dangerously-skip-permissions），其余仍降为 dontAsk。
+   *
+   * 只给 fork 命令 / skill 用（agent/forked-command.ts）：用户显式选了 always-allow，
+   * 修复前子代理被强制改成 dontAsk，allow 规则外的写操作一律被拒。
+   * deny 规则、危险命令、safetyCheck 都排在 Step 8 之前，继承后照常生效。
+   */
+  inheritBypassMode?: boolean;
+}
+
 export function createSubAgentChecker(
   mainChecker: PermissionChecker,
   workspacePath?: string,
+  options: SubAgentCheckerOptions = {},
 ): PermissionChecker {
   // 构造 config 副本，强制 permissionMode = "dontAsk"
   // dontAsk 语义：checker 返回 ask 时，上层（非交互模式后处理）自动 deny
   const mainConfig = mainChecker.getConfig();
+  const inherit =
+    options.inheritBypassMode === true && INHERITABLE_BYPASS_MODES.has(mainConfig.permissionMode);
   const config: Config = {
     ...mainConfig,
-    permissionMode: "dontAsk",
+    permissionMode: inherit ? mainConfig.permissionMode : "dontAsk",
   } as Config;
 
   const checker = new PermissionChecker(config, undefined, workspacePath);
+  checker.setParentChecker(mainChecker);
 
   // 复用主 checker 的分类器（BashClassifier 无内部状态，共享安全）
   const classifier = mainChecker.getBashClassifier();
