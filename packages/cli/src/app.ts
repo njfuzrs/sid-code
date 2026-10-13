@@ -54,7 +54,7 @@ import {
 import { QuotaManager, resolveEffectiveCostLimit } from "@sid-code/core/llm/quota.ts";
 import { TokenMeter } from "@sid-code/core/telemetry/metrics/token-meter.ts";
 import { upsertUsageLedger } from "@sid-code/core/telemetry/usage-ledger.ts";
-import { getIdentity } from "@sid-code/core/identity/index.ts";
+import { buildUsageLedgerEntry } from "@sid-code/core/telemetry/usage-ledger-entry.ts";
 import { BudgetTracker } from "@sid-code/core/telemetry/metrics/budget-tracker.ts";
 import type { BudgetRule } from "@sid-code/core/telemetry/metrics/budget-tracker.ts";
 import type { BudgetRuleConfig } from "@sid-code/core/config/config.ts";
@@ -121,7 +121,6 @@ import { resolvePanel } from "./command/executor.ts";
 import { buildCommandAnswerMessages, routeCommandResult } from "./ui/command-result-route.ts";
 import { startPreventSleep, stopPreventSleep } from "@sid-code/core/task/prevent-sleep.ts";
 import { getSleepLedger } from "@sid-code/shared/utils/sleep-detect.ts";
-import { getRawVersion } from "@sid-code/shared/version.ts";
 import {
   recordSideCall,
   setSideCostCalculator,
@@ -133,7 +132,6 @@ import {
 import {
   addBillingObserver,
   shouldChargeBilledRequest,
-  getPeakRatio,
   type BilledRequest,
 } from "@sid-code/core/llm/billing-sink.ts";
 import { sendNonStreamingSideCall } from "@sid-code/core/llm/side-call-nonstreaming.ts";
@@ -6993,85 +6991,19 @@ export class App {
   /**
    * 从当前 SessionState 构造账本行；空会话（无 API 调用）返回 null。
    *
-   * - 经 SessionState.getNormalizedCacheUsage() 单一事实源派生三段，口径与 Footer/摘要一致。
-   * - 只存聚合数字，绝不含消息内容——隐私安全。
+   * D1：构造逻辑已下沉到 core 的 `buildUsageLedgerEntry`（纯函数，可在 core 单测：
+   * packages/core/tests/telemetry/usage-ledger-entry.test.ts）。三段归一化口径、
+   * 主模型选取、影子调用接线、各可选字段的缺失语义都在那边；这里只做委托。
+   * 本方法保留是因为它被 appendSessionToLedger / flushSessionLedgerIncremental 两处调用。
    */
   private buildLedgerEntry():
     | import("@sid-code/core/telemetry/usage-ledger.ts").UsageLedgerEntry
     | null {
-    const n = this.sessionState.getNormalizedCacheUsage();
-    if (n.promptTotal <= 0) return null; // 空会话不落行
-    const models = Object.entries(this.sessionState.modelUsage);
-    // 主模型 = 请求数最多者（多模型会话取主导模型标注；token 仍为全会话汇总）
-    const primary = models.sort(([, a], [, b]) => b.requests - a.requests)[0];
-    const model = primary?.[0] ?? this.config.model ?? "unknown";
-    const provider = primary?.[1]?.provider ?? this.config.provider ?? "unknown";
-    const ident = getIdentity();
-    return {
-      ts: Math.floor(Date.now() / 1000),
-      sessionId: this.sessionState.sessionId,
-      model,
-      provider,
-      promptTotal: n.promptTotal,
-      cacheHit: n.cacheHitTokens,
-      cacheWrite: n.cacheWriteTokens,
-      uncachedInput: n.uncachedInputTokens,
-      output: n.outputTokens,
-      costUSD: this.sessionState.getEffectiveTotalCostUSD(),
-      savingsUSD: this.sessionState.getTotalCacheSavings(),
-      durationMs: this.sessionState.getElapsedMs(),
-      // P2-1：影子调用 token 接线。costUSD 走 getEffectiveTotalCostUSD() 已含
-      // sideCostUSD，而上面的 token 三段只遍历 modelUsage（不含影子调用）——
-      // 同一行里成本与 token 口径不同，"成本 ÷ token"就算不出来。影子调用的
-      // token 早在 side-call-sink 采集，这里只是接上，不是新建埋点。
-      ...this.buildLedgerSideUsage(),
-      // P0-4：主模型的端点 host，供缓存视图按渠道标注可信度（不可信渠道不进总计）。
-      // 取主模型而非 config.baseURL：多模型会话里账本行标注的是主导模型，
-      // 端点必须与之对应，否则会把 A 渠道的可信度贴到 B 渠道的数字上。
-      ...(primary?.[1]?.endpointHost ? { endpointHost: primary[1].endpointHost } : {}),
-      // P0-1：写这一行的 sid-code 版本号。两个用途：① 四方向第 3 级的 release-over-release
-      // 曲线唯一分组键；② 让消费侧能把「08-08 前用旧采集代码写的脏数据」隔离出总计（P2-9）。
-      // 无条件写（不像上面几个字段做存在性判断）：版本号永远拿得到，缺失只发生在存量行上，
-      // 而「缺失」本身正是消费侧用来识别存量数据的信号。
-      // env 覆盖与 `analytics/metadata.ts:184`、`trace/collector.ts` 同一口径。
-      appVersion: process.env.SID_CODE_VERSION ?? getRawVersion(),
-      deviceId: ident.deviceId,
-      ...(ident.userId ? { userId: ident.userId } : {}),
-      ...(ident.orgId ? { orgId: ident.orgId } : {}),
-      ...(ident.teamId ? { teamId: ident.teamId } : {}),
-      // D1 / §5.5：本会话请求落在高峰时段的比例。采集点在 `llm/billing-sink.ts`
-      // （唯一必然经过的点 —— 挂消费侧只数得到 fork，是个偏样本）。
-      // `undefined` = 本会话没有任何分时段模型，此时**不落字段**（落 0 会与
-      // "全部落在空闲时段"这个真实的好结果混在一起）。
-      ...(getPeakRatio() !== undefined ? { peakRatio: getPeakRatio() } : {}),
-    };
-  }
-
-  /**
-   * 取影子调用的聚合用量供账本使用；无影子调用时返回空对象（不落三个恒零字段）。
-   *
-   * 落 0 与"旧数据没有这个字段"在读侧无法区分，而账本要长期回溯 —— 字段缺失
-   * 明确表示"本会话没有影子调用"，比一个 0 更诚实。
-   */
-  private buildLedgerSideUsage(): {
-    sideInputTokens?: number;
-    sideOutputTokens?: number;
-    sideCostUSD?: number;
-  } {
-    try {
-      // N12：取会话维度，与同一行 costUSD（getEffectiveTotalCostUSD，含 resume 回灌的
-      // sideCostUSD）同口径；取进程维度会让 resume 后的行「成本含历史、token 不含」。
-      const s = getSessionSideStats();
-      if (s.apiCalls <= 0) return {};
-      return {
-        sideInputTokens: s.tokensSent,
-        sideOutputTokens: s.tokensReceived,
-        sideCostUSD: s.costUSD,
-      };
-    } catch {
-      // 影子调用统计不可用绝不影响账本主体落盘
-      return {};
-    }
+    return buildUsageLedgerEntry({
+      sessionState: this.sessionState,
+      fallbackModel: this.config.model,
+      fallbackProvider: this.config.provider,
+    });
   }
 
   /**
