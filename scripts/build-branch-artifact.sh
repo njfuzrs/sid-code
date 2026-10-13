@@ -109,8 +109,12 @@ BUILD_INFO_LINE="$(scripts/build-info-line.sh local)" ||
 #   NODE_ENV            不带则产物跑 React development build，console.error 刷用户的屏
 #   SID_CODE_BUILD_INFO 不带则产物没身份，G1 全程走 mtime 兜底
 # 防漂移哨兵：tests/build/node-env-define.test.ts + tests/build/build-info-define.test.ts
+# --no-compile-autoload-* 禁止产物读取运行目录的 .env / bunfig.toml（评测在任务仓库里跑，
+# 正是最需要它的场景），哨兵：tests/build/compile-autoload-flags.test.ts
 info "编译 ${BUN_TARGET} ..."
 bun build --compile --target="$BUN_TARGET" \
+    --no-compile-autoload-dotenv --no-compile-autoload-bunfig \
+    --no-compile-autoload-tsconfig --no-compile-autoload-package-json \
     --define process.env.NODE_ENV='"production"' \
     --define process.env.SID_CODE_BUILD_INFO="\"$BUILD_INFO_LINE\"" \
     --outfile "$OUT_DIR/sid-code" \
