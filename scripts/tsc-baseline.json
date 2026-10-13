@@ -1,6 +1,6 @@
 {
   "tscVersion": "5.9.3",
-  "total": 95,
+  "total": 92,
   "note": "tsc 存量错误基线（由 scripts/tsc-baseline.ts 维护）。门禁只拦新增、允许收紧：新增的错误必须修掉，不许调高数字；存量清理之后跑 bun run typecheck:gate --update-baseline 收紧。键 = 归一化文件路径 + 错误码 + 归一化消息（不含行列号，行号漂移不触发门禁），值 = 出现次数。换 tsc 版本或大改依赖树之后错误集合可能变，需要重新 --init 并在 PR 里说明总数变化。",
   "errors": {
     "packages/cli/src/cli.ts|TS2353|Object literal may only specify known properties, and 'diffPreview' does not exist in type '{ discoveryTimeout?: number | undefined; }'.": 1,
@@ -16,9 +16,6 @@
     "packages/cli/tests/render-port/fixtures/idle-timers-app.tsx|TS2451|Cannot redeclare block-scoped variable 'Text'.": 1,
     "packages/cli/tests/ui/pending-input.test.ts|TS2769|No overload matches this call.": 1,
     "packages/core/src/checkpoint/manager.ts|TS2345|Argument of type 'Uint8Array<ArrayBufferLike>' is not assignable to parameter of type 'string | ArrayBuffer | Uint8Array<ArrayBuffer>'.": 1,
-    "packages/core/src/ide/detect.ts|TS2339|Property 'ok' does not exist on type 'Set<number>'.": 1,
-    "packages/core/src/ide/detect.ts|TS2339|Property 'pids' does not exist on type 'Set<number>'.": 1,
-    "packages/core/src/ide/detect.ts|TS2345|Argument of type '() => Promise<AncestorLookup>' is not assignable to parameter of type '() => Promise<Set<number>>'.": 1,
     "packages/core/src/trace/collector.ts|TS2345|Argument of type 'number | undefined' is not assignable to parameter of type 'number'.": 2,
     "packages/core/src/trace/digest.ts|TS2339|Property 'budget_exceeded_source' does not exist on type 'TrajMeta'.": 2,
     "packages/core/tests/agent/background-abort-scope.test.ts|TS2554|Expected 2-3 arguments, but got 1.": 1,
