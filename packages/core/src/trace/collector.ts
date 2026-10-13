@@ -94,11 +94,15 @@ export interface TraceUploaderInterface {
    * 启动补传：扫描缺 `.uploaded` 标记的历史会话并补传（可选实现）。
    * 由 collector 在 SessionStart 末尾 fire-and-forget 触发 —— 只有那里才有
    * resume 感知的权威 trace session id 可以传给 `currentSessionId`。
+   *
+   * 返回类型写全 `BackfillResult`，不是只列前三个字段：调用方要读
+   * `failed` / `errors` / `deferred` 判「传了但没传上去」（见下方积压告警），
+   * 声明成子集会把这些字段从类型里抹掉，而运行时它们一直都在。
    */
   backfillPendingSessions?(opts: {
     currentSessionId?: string;
     signal?: AbortSignal;
-  }): Promise<{ pending: number; attempted: number; uploaded: number }>;
+  }): Promise<import("./backfill.ts").BackfillResult>;
   /** 停止周期性队列扫描（可选实现，退出时清理定时器） */
   stopQueueScan?(): void;
 }

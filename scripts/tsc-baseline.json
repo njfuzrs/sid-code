@@ -1,6 +1,6 @@
 {
   "tscVersion": "5.9.3",
-  "total": 107,
+  "total": 95,
   "note": "tsc 存量错误基线（由 scripts/tsc-baseline.ts 维护）。门禁只拦新增、允许收紧：新增的错误必须修掉，不许调高数字；存量清理之后跑 bun run typecheck:gate --update-baseline 收紧。键 = 归一化文件路径 + 错误码 + 归一化消息（不含行列号，行号漂移不触发门禁），值 = 出现次数。换 tsc 版本或大改依赖树之后错误集合可能变，需要重新 --init 并在 PR 里说明总数变化。",
   "errors": {
     "packages/cli/src/cli.ts|TS2353|Object literal may only specify known properties, and 'diffPreview' does not exist in type '{ discoveryTimeout?: number | undefined; }'.": 1,
@@ -19,14 +19,6 @@
     "packages/core/src/ide/detect.ts|TS2339|Property 'ok' does not exist on type 'Set<number>'.": 1,
     "packages/core/src/ide/detect.ts|TS2339|Property 'pids' does not exist on type 'Set<number>'.": 1,
     "packages/core/src/ide/detect.ts|TS2345|Argument of type '() => Promise<AncestorLookup>' is not assignable to parameter of type '() => Promise<Set<number>>'.": 1,
-    "packages/core/src/trace/backfill.ts|TS2322|Type 'Dirent<string>[]' is not assignable to type 'Dirent<NonSharedBuffer>[]'.": 1,
-    "packages/core/src/trace/backfill.ts|TS2322|Type 'NonSharedBuffer' is not assignable to type 'string'.": 1,
-    "packages/core/src/trace/backfill.ts|TS2339|Property 'startsWith' does not exist on type 'NonSharedBuffer'.": 1,
-    "packages/core/src/trace/backfill.ts|TS2345|Argument of type 'NonSharedBuffer' is not assignable to parameter of type 'string'.": 2,
-    "packages/core/src/trace/backfill.ts|TS2367|This comparison appears to be unintentional because the types 'NonSharedBuffer' and 'string' have no overlap.": 1,
-    "packages/core/src/trace/collector.ts|TS2339|Property 'deferred' does not exist on type '{ pending: number; attempted: number; uploaded: number; }'.": 2,
-    "packages/core/src/trace/collector.ts|TS2339|Property 'errors' does not exist on type '{ pending: number; attempted: number; uploaded: number; }'.": 2,
-    "packages/core/src/trace/collector.ts|TS2339|Property 'failed' does not exist on type '{ pending: number; attempted: number; uploaded: number; }'.": 2,
     "packages/core/src/trace/collector.ts|TS2345|Argument of type 'number | undefined' is not assignable to parameter of type 'number'.": 2,
     "packages/core/src/trace/digest.ts|TS2339|Property 'budget_exceeded_source' does not exist on type 'TrajMeta'.": 2,
     "packages/core/tests/agent/background-abort-scope.test.ts|TS2554|Expected 2-3 arguments, but got 1.": 1,
