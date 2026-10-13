@@ -106,7 +106,10 @@ export async function detectIDEs(
  */
 async function belongsToThisTerminal(
   detected: DetectedIDE,
-  loadAncestors: () => Promise<Set<number>>,
+  // 参数类型是完整的查询结果（含 ok 标志），不是裸 PID 集合：调用点传的就是
+  // AncestorLookup，函数体也按它消费（下面先看 ok、再查 pids）——
+  // 声明成 Set<number> 会让这两处变成"不存在的属性"。
+  loadAncestors: () => Promise<AncestorLookup>,
 ): Promise<boolean> {
   if (!isSupportedIdeTerminal()) return true;
   if (detected.pid === undefined) return true;

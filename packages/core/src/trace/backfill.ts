@@ -42,9 +42,10 @@
  * 那个窗口，这个窗口里上面三条信号全都是空的。
  */
 
-import { existsSync, readdirSync, readFileSync, statSync } from "node:fs";
+import { existsSync, readdirSync, readFileSync, statSync, type Dirent } from "node:fs";
 import { join } from "node:path";
 import { getLogger } from "../debug/logger.ts";
+import { sessionCreatedAtMs } from "./upload-watermark.ts";
 
 /** 只需要 uploadSession 的最小上传器视图（便于测试注入，无需真实网络） */
 export interface BackfillUploader {
@@ -66,6 +67,12 @@ export interface BackfillOptions {
   heartbeatFreshMs?: number;
   /** 中止信号：退出时取消未完成的补传，绝不拖慢退出 */
   signal?: AbortSignal;
+  /**
+   * 补传水位（ms，P0-3）：会话**创建时间**早于它的一律不补传，计入 `beforeWatermark`。
+   * 不传 = 不设下限（仅 `--upload-traces --include-history` 与体检类调用这么用）。
+   * 创建时间的取法与「为什么不用 mtime」见 upload-watermark.ts。
+   */
+  watermarkMs?: number;
 }
 
 /** 一个待补传的会话 */
@@ -76,6 +83,8 @@ export interface PendingSession {
   mtimeMs: number;
   /** session.traj 字节数（仅用于日志/诊断） */
   trajBytes: number;
+  /** 会话创建时间（取不到为 null）；`--include-history` 打印时间范围用 */
+  createdMs: number | null;
 }
 
 /** 扫描统计：每个被跳过的会话都必须落进某一格，不允许「悄悄没了」 */
@@ -94,6 +103,12 @@ export interface ScanStats {
   live: number;
   /** 只有 session.traj、没有 events.jsonl 的「幽灵目录」，不传 */
   ghost: number;
+  /**
+   * 创建时间早于补传水位（配置上传之前产生的会话），不自动补传。
+   * 单列一格而不并进 pending：否则启动日志会长期报一个大的「待补传」，
+   * 并触发 collector 里「积压偏多」的 WARN 升级 —— 而这些会话本来就不该传。
+   */
+  beforeWatermark: number;
   /** 读目录/文件出错 */
   errored: number;
 }
@@ -179,7 +194,13 @@ function hasLivePid(outputDir: string, sessionId: string): boolean {
  * 扫描待补传会话。纯读，无任何副作用（不写盘、不发网络），可安全在启动早期调用。
  */
 export function scanPendingUploads(opts: BackfillOptions): ScanResult {
-  const { outputDir, currentSessionId, minAgeMs = 60_000, heartbeatFreshMs = 30_000 } = opts;
+  const {
+    outputDir,
+    currentSessionId,
+    minAgeMs = 60_000,
+    heartbeatFreshMs = 30_000,
+    watermarkMs,
+  } = opts;
 
   const stats: ScanStats = {
     scanned: 0,
@@ -189,12 +210,13 @@ export function scanPendingUploads(opts: BackfillOptions): ScanResult {
     tooNew: 0,
     live: 0,
     ghost: 0,
+    beforeWatermark: 0,
     errored: 0,
   };
   const pending: PendingSession[] = [];
 
   const sessionsDir = join(outputDir, "sessions");
-  let entries: ReturnType<typeof readdirSync>;
+  let entries: Dirent[];
   try {
     if (!existsSync(sessionsDir)) return { pending, stats };
     entries = readdirSync(sessionsDir, { withFileTypes: true });
@@ -256,6 +278,15 @@ export function scanPendingUploads(opts: BackfillOptions): ScanResult {
         continue;
       }
 
+      // ③.6 补传水位（P0-3）：配置上传之前产生的会话不自动补传。
+      // 比较对象是**会话创建时间**，不是下面 ④ 用的目录 mtime —— resume 会刷新 mtime，
+      // 拿它当水位，一次 resume 就能把授权前的会话推过去。取不到创建时间 → 按水位前处理。
+      const createdMs = sessionCreatedAtMs(sessionId, dir);
+      if (watermarkMs !== undefined && (createdMs === null || createdMs < watermarkMs)) {
+        stats.beforeWatermark++;
+        continue;
+      }
+
       // ④ 时间闸：目录太新一律不动。
       // ⚠️ mtimeMs 是浮点数，刚建的目录 now - mtimeMs 可能是**负数**；用 `<` 比较
       // 天然把负数判成"太新，不动"，方向是安全的（见 MEMORY mtime-float-breaks-maxage-zero）。
@@ -278,7 +309,7 @@ export function scanPendingUploads(opts: BackfillOptions): ScanResult {
         continue;
       }
 
-      pending.push({ sessionId, dir, mtimeMs, trajBytes });
+      pending.push({ sessionId, dir, mtimeMs, trajBytes, createdMs });
     } catch {
       stats.errored++;
     }
@@ -359,7 +390,7 @@ export function formatBackfillResult(r: BackfillResult): string {
     `未确认 ${r.failed}，异常 ${r.errors}）；` +
     `顺延 ${r.deferred}，跳过：已上传 ${r.alreadyUploaded}、无 traj ${r.noTraj}、` +
     `空 traj ${r.emptyTraj}、太新 ${r.tooNew}、进程在写 ${r.live}、` +
-    `幽灵目录 ${r.ghost}、读错 ${r.errored}` +
+    `幽灵目录 ${r.ghost}、配置上传前 ${r.beforeWatermark}、读错 ${r.errored}` +
     (r.aborted ? "；已被中止" : "")
   );
 }
@@ -377,6 +408,8 @@ export interface UploadBacklog {
   live: number;
   /** 只含 traj 的幽灵目录数（历史遗留残骸） */
   ghost: number;
+  /** 配置上传之前产生、不会自动补传的会话数（未传 watermarkMs 时恒 0） */
+  beforeWatermark: number;
   /** 重试队列条目数（读不到时为 null，与 0 区分） */
   queueEntries: number | null;
 }
@@ -411,6 +444,7 @@ export function getUploadBacklog(opts: BackfillOptions): UploadBacklog {
     pending: pending.length,
     live: stats.live,
     ghost: stats.ghost,
+    beforeWatermark: stats.beforeWatermark,
     queueEntries,
   };
 }

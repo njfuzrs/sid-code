@@ -54,9 +54,10 @@ make build            # 构建开发版二进制（不改版本号）
 ### 贡献者不需要任何 LLM API key
 
 `evals/` 目录、`packages/eval-framework/` 依赖真实模型调用，但这**不是**外部贡献者
-提 PR 的门槛。提 PR 之前必须跑的五道 CI 门禁（见下一节）全部不需要 LLM：
+提 PR 的门槛。提 PR 之前必须跑的六道 CI 门禁（见下一节）全部不需要 LLM：
 `bun test` / `make build` / `bun run lint` / `bun run format:check` /
-`bun run lint:boundary` 都是本地静态检查或跑固定断言，没有一处调真实模型。
+`bun run lint:boundary` / `bun run typecheck:gate` 都是本地静态检查或跑固定断言，
+没有一处调真实模型。
 
 评测（`.github/workflows/eval-*.yml`）是维护者职责，需要仓库配好
 `DEEPSEEK_API_KEY`（judge 打分还需 `ANTHROPIC_API_KEY`）才能真正跑起来。
@@ -313,7 +314,7 @@ merge_queue 规则返回 `422 Invalid rule 'merge_queue'`，2026-08-19 实测）
 
 ## 提 PR 之前必须跑的门禁
 
-CI（`.github/workflows/ci.yml`）有 **两个 job、五道门禁**，本地全部可跑：
+CI（`.github/workflows/ci.yml`）有 **两个 job、六道门禁**，本地全部可跑：
 
 ```bash
 # test job
@@ -324,9 +325,10 @@ make build               # 构建 + 产物自检，必须成功
 bun run lint             # oxlint，只开 correctness 档
 bun run format:check     # oxfmt 排版检查（红了跑 bun run format 再 git add）
 bun run lint:boundary    # 包边界扫描，动了跨包导入必跑
+bun run typecheck:gate   # 类型检查棘轮：只拦新增错误（存量在 scripts/tsc-baseline.json）
 ```
 
-**五条都跑绿，CI 基本不会红。** 只跑前两条是不够的 —— lint job 是独立的，
+**六条都跑绿，CI 基本不会红。** 只跑前两条是不够的 —— lint job 是独立的，
 排版或跨包导入不合规照样拦。
 
 ### 开发过程中用选择性测试，最后一次再跑全量
@@ -371,8 +373,11 @@ bun run affected-tests:run   # 执行选出来的最小测试集
 - **`make build` 不改版本号**，日常就用它。带 `-bump` 后缀的目标（`make build-bump`）会把版本号 +1，
   贡献者不需要用，**版本号只在发布流程里变**。
 - **不要跑 `./scripts/release.sh`**，那是维护者的发布脚本。
-- CI **刻意不含** `tsc --noEmit`：仓库有存量类型错误（P1-3），暂不纳入门禁。
-  但请不要新增类型错误。
+- CI 跑 **`bun run typecheck:gate`**（tsc 增量门禁，2026-10-13 接入）：存量类型错误
+  记在 `scripts/tsc-baseline.json`，**只要新增就红**。修掉存量错误之后跑
+  `bun run typecheck:gate --update-baseline` 收紧基线，并把 `scripts/tsc-baseline.json`
+  与代码一起提交（`--update-baseline` 只允许收紧，想顺手调高数字会被脚本拒绝）。
+  为什么不是裸 `tsc --noEmit`：存量不清零时它恒红，恒红的门禁等于没有门禁。
 - `bun run lint` 跑 oxlint（P1-4，2026-08-10 接入），CI 与 pre-commit 都会拦。
   规则集只开 correctness 档（真错误），不管风格。规则口径与豁免理由见仓库根
   `.oxlintrc.json` 的注释。

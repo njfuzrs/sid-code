@@ -45,6 +45,8 @@ type CLIArgs = Partial<Config> & {
   "delete-session"?: string;
   "cleanup-sessions"?: boolean;
   "upload-traces"?: boolean;
+  /** 与 --upload-traces 连用：连配置上传之前的历史会话一起补传（P0-3） */
+  "include-history"?: boolean;
   /** --json-schema 指向的文件路径，后续解析为 config.jsonSchema */
   jsonSchemaFile?: string;
   /** Bridge 远程控制：中继 WebSocket URL（ws:// 或 wss://） */
@@ -328,6 +330,7 @@ function parseCLIArgs(): CLIArgs {
         "trace-device-id": { type: "string" },
         "trace-upload-disabled": { type: "boolean" }, // 强制禁用上传（最高优先级，覆盖配置文件）
         "upload-traces": { type: "boolean" },
+        "include-history": { type: "boolean" },
 
         // Bridge 远程控制（spec 16 §7）
         bridge: { type: "string" }, // 中继 WebSocket URL，提供即进入 Bridge 模式
@@ -661,6 +664,7 @@ function parseCLIArgs(): CLIArgs {
     "delete-session": values["delete-session"],
     "cleanup-sessions": values["cleanup-sessions"],
     "upload-traces": values["upload-traces"],
+    "include-history": values["include-history"],
     // T-3.2：文档生成出口（隐藏 flag，见 CLIArgs.dumpTools 注释）
     dumpTools: values["dump-tools"],
     bridgeUrl: values.bridge,
@@ -949,7 +953,28 @@ async function handleCleanupSessions(config: Config): Promise<void> {
 }
 
 /** 处理手动触发重试队列补传 */
-async function handleUploadTraces(config: Config): Promise<void> {
+async function handleUploadTraces(
+  config: Config,
+  opts: { includeHistory?: boolean } = {},
+): Promise<void> {
+  // P2-1：手动上传同样受隐私级别约束。原先只查 url/token，essential-traffic 用户跑这条
+  // 命令照样把整份轨迹外发——与「essential-traffic 下轨迹只在本地留存」的承诺相反。
+  // 配置文件里的 privacy_level 要先注入：这条命令在 App 初始化之前就 return，
+  // 不注入的话只有环境变量能拦住它（init-helpers.ts 里修过同型的坑）。
+  {
+    const { setConfiguredPrivacyLevel, isEssentialTrafficOnly } =
+      await import("@sid-code/core/analytics/privacy-level.ts");
+    if (config.analytics?.privacyLevel) setConfiguredPrivacyLevel(config.analytics.privacyLevel);
+    if (isEssentialTrafficOnly()) {
+      console.error(
+        "错误: 当前隐私级别为 essential-traffic，轨迹只在本地留存，--upload-traces 已禁用。\n" +
+          "      如需临时上传一次：确认未设 SID_CODE_DISABLE_NONESSENTIAL_TRAFFIC=1，\n" +
+          "      并临时把 settings.json 的 analytics.privacy_level 改为 default 后再运行。",
+      );
+      process.exit(1);
+    }
+  }
+
   const traceUpload = config.trace?.upload;
   if (!traceUpload?.url || !traceUpload?.token) {
     console.error(
@@ -1008,14 +1033,41 @@ async function handleUploadTraces(config: Config): Promise<void> {
   // 判据改成只看磁盘现状（目录在、traj 在、标记缺），与退出路径是否跑到完全解耦。
   //
   // 手动命令给足额度：用户显式跑这条命令就是要补传，不该只传 20 个就停。
+  //
+  // P0-3：默认仍带补传水位——只传配置上传之后产生的会话。更早的历史必须显式
+  // --include-history，且执行前先打印数量与时间范围，让用户知道自己放出去的是什么。
   console.log("正在扫描未上传的历史会话...");
   try {
-    const { formatBackfillResult } = await import("@sid-code/core/trace/backfill.ts");
+    const { formatBackfillResult, scanPendingUploads } =
+      await import("@sid-code/core/trace/backfill.ts");
+    if (opts.includeHistory) {
+      const watermarkMs = await mgr.getBackfillWatermark();
+      const { pending } = scanPendingUploads({ outputDir });
+      const history = pending.filter((p) => p.createdMs === null || p.createdMs < watermarkMs);
+      const times = history
+        .map((p) => p.createdMs)
+        .filter((t): t is number => t !== null)
+        .sort((a, b) => a - b);
+      const range =
+        times.length > 0
+          ? `${new Date(times[0]!).toLocaleString()} ~ ${new Date(times[times.length - 1]!).toLocaleString()}`
+          : "（无法解析创建时间）";
+      console.log(
+        `--include-history：将额外上传 ${history.length} 个配置上传之前产生的会话，时间范围 ${range}`,
+      );
+    }
     const b = await mgr.backfillPendingSessions({
       maxSessions: Number.POSITIVE_INFINITY,
       concurrency: 3,
+      includeHistory: opts.includeHistory === true,
     });
     console.log(formatBackfillResult(b));
+    if (!opts.includeHistory && b.beforeWatermark > 0) {
+      console.log(
+        `另有 ${b.beforeWatermark} 个会话产生于配置上传之前，未上传；` +
+          `如需一并上传，运行 sid-code --upload-traces --include-history`,
+      );
+    }
   } catch (err: any) {
     console.error(`补传扫描失败: ${err.message}`);
     process.exit(1);
@@ -1172,6 +1224,21 @@ export async function main(): Promise<void> {
     }
     profileCheckpoint("migrations_end");
 
+    // 编译产物不再读取运行目录的 .env（--no-compile-autoload-dotenv），cwd 里有 SID_CODE_* /
+    // *_API_KEY 时提示一次（只打键名、走 stderr）。源码模式下 bun 仍会加载 .env，提示即为假话，跳过。
+    try {
+      const { IS_DEV_MODE } = await import("@sid-code/core/bootstrap/resolve-executable.ts");
+      if (!IS_DEV_MODE) {
+        const [{ maybeNotifyProjectDotenv }, { sidPaths }] = await Promise.all([
+          import("./utils/project-dotenv-notice.ts"),
+          import("@sid-code/core/config/paths.ts"),
+        ]);
+        maybeNotifyProjectDotenv(process.cwd(), sidPaths.stateFile("dotenv-notice.json"));
+      }
+    } catch (err) {
+      getLogger().debug("STARTUP", `运行目录 .env 提示检测失败（不阻塞启动）: ${err}`);
+    }
+
     profileCheckpoint("config_load_start");
     const config = await loadConfig(cliArgs);
     profileCheckpoint("config_load_end");
@@ -1183,6 +1250,27 @@ export async function main(): Promise<void> {
     {
       const { setSessionId } = await import("@sid-code/core/bootstrap/state.ts");
       setSessionId(config.sessionId);
+    }
+
+    // 补传水位基线（P0-3）：**不论是否配了上传都要跑**。状态文件第一次出现的时刻就是
+    // 「升级到带水位版本」的时刻——只有这一刻已经配置的上传目标才按迁移语义保留积压；
+    // 推迟到「第一次读水位」再建，会把「升级一个月后才配上传」的用户也当成迁移，
+    // 一年的历史又被放出去。只认「真正会上传」的目标：url+token 齐全，且隐私级别不是
+    // essential-traffic——后者下上传被禁，此刻登记会把一个从未授权过的目标当成迁移，
+    // 等用户切回 default 时全部积压按旧语义放出去（产物端到端实测踩到过）。
+    try {
+      const up = config.trace?.upload;
+      const { ensureUploadWatermarks } = await import("@sid-code/core/trace/upload-watermark.ts");
+      const { sidPaths } = await import("@sid-code/core/config/paths.ts");
+      const { setConfiguredPrivacyLevel, isEssentialTrafficOnly } =
+        await import("@sid-code/core/analytics/privacy-level.ts");
+      if (config.analytics?.privacyLevel) setConfiguredPrivacyLevel(config.analytics.privacyLevel);
+      const willUpload = !!(up?.url && up?.token) && !isEssentialTrafficOnly();
+      ensureUploadWatermarks(willUpload ? up!.url : undefined, {
+        outputDir: config.trace?.outputDir ?? sidPaths.trajectories(),
+      });
+    } catch (err) {
+      getLogger().debug("TRACE", `补传水位初始化失败（不阻塞启动）: ${err}`);
     }
 
     // ── 工作区信任门控（SEC-AUDIT-2026-07-19 P1）─────────────────────────────
@@ -1535,7 +1623,7 @@ export async function main(): Promise<void> {
 
     // 手动触发重试队列（补传之前失败的上传）
     if (cliArgs["upload-traces"]) {
-      await handleUploadTraces(config);
+      await handleUploadTraces(config, { includeHistory: cliArgs["include-history"] === true });
       return exitOneShot();
     }
 

@@ -112,6 +112,12 @@ export interface TrajMeta {
   side_tokens_sent?: number;
   total_cost_usd?: number;
   exit_status?: string;
+  /**
+   * exit_status 为 budget_exceeded 时是哪一层停的（取值与写入侧 builder.ts 一致）。
+   * digest 在 L0 异常里要把来源打进 detail，缺这个键读侧就取不到 ——
+   * 而 session.traj 里它一直都在。
+   */
+  budget_exceeded_source?: "budget_rule" | "quota" | "remote";
   tools_used?: string[];
   files_edited?: string[];
   working_directory?: string;

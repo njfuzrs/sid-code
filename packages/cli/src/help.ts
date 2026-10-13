@@ -101,7 +101,8 @@ IDE:
   --trace-upload-token <tok>  上传认证 token（CLI 覆盖配置文件）
   --trace-user-id <id>        用户标识（多用户场景）
   --trace-device-id <id>      设备标识
-  --upload-traces             手动触发重试队列补传（处理之前失败的上传）
+  --upload-traces             手动触发重试队列补传（处理之前失败的上传）；只传配置上传之后产生的会话
+  --include-history           与 --upload-traces 连用：连配置上传之前的历史会话一起上传（先列出数量与时间范围）
 
   上传配置推荐写在 ~/.sid-code/settings.json 的 trace.upload 段，不要硬编码在命令行。
   关键开关：
@@ -197,7 +198,8 @@ Worktree 隔离:
   SID_CODE_TEAM_MEMORY          团队记忆同步配置（JSON 对象，如 {"enabled":true,"dir":"/shared"}）
   SID_CODE_AUTO_CONNECT_IDE     设为 true 自动连接 IDE
   SID_CODE_DISABLE_TELEMETRY    设为 1 禁用遥测
-  SID_CODE_DISABLE_NONESSENTIAL_TRAFFIC  设为 1 禁用非必要网络流量
+  SID_CODE_DISABLE_NONESSENTIAL_TRAFFIC  设为 1 关闭遥测、轨迹上传（含 --upload-traces）、更新检查、外部模型目录同步；
+                                保留与模型端点同源的流量：主模型请求、网关定价同步、预连接
   SID_CODE_DISABLE_PROJECT_RULES  设为 1 跳过 CLAUDE.md 加载（评测隔离）
   SID_CODE_DISABLE_CRON     设为 1 整体禁用定时任务（工具不注册、调度器不轮询、已持久化任务不触发）
   SID_CODE_AUTO_MEMORY          后台自动提取记忆开关 (0/1，缺省启用；优先于 settings.autoMemory)

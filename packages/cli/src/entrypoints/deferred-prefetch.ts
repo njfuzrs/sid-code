@@ -15,14 +15,16 @@ import { preconnectApi } from "./preconnect.ts";
  * 启动延迟预取
  * 非交互模式（--print）没有「用户正在输入」的时间窗口，预取是纯开销，跳过
  */
-export function startDeferredPrefetches(isInteractive: boolean): void {
+export function startDeferredPrefetches(isInteractive: boolean, apiBaseUrl?: string): void {
   if (!isInteractive) return;
 
   profileCheckpoint("deferred_prefetch_start");
 
   // API 预连接：在用户输入期间提前建立 TCP+TLS，首次请求零握手延迟。
-  // 走环境变量配置的 base URL（已在 init 阶段经 safe-env 处理），无则用官方端点。
-  preconnectApi(process.env.SID_CODE_LLM_BASE_URL);
+  // 取址必须是**已解析 config 的主模型 baseURL**（per-model base_url > env > 空），
+  // 不能只读环境变量——settings.json 配网关的用户不设它，原先会回落连 api.anthropic.com
+  // （P1-11）。取不到就不预连，preconnectApi 内部不再有任何默认主机。
+  preconnectApi(apiBaseUrl);
 
   void prefetchGitStatus();
   void prefetchMemory();

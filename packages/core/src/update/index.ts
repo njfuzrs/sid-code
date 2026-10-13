@@ -24,6 +24,7 @@ import { fetchLatestVersion, type UpdateChannel } from "./checker.ts";
 import { acquireLock } from "./lock.ts";
 import { spawnBackgroundInstall } from "./installer.ts";
 import { writePendingNotice } from "./notify.ts";
+import { shouldLoadRemoteConfig } from "../analytics/privacy-level.ts";
 
 const log = () => getLogger();
 
@@ -41,9 +42,12 @@ export interface AutoUpdateDependencies {
   acquireLock?: typeof acquireLock;
   spawnInstall?: typeof spawnBackgroundInstall;
   writeNotice?: typeof writePendingNotice;
+  /** 隐私级别是否允许拉远程配置（essential-traffic 下为 false） */
+  shouldLoadRemoteConfig?: () => boolean;
 }
 
 const defaultDependencies: Required<AutoUpdateDependencies> = {
+  shouldLoadRemoteConfig,
   getCurrentVersion: getRawVersion,
   getChannel: () => getReleaseChannel(),
   getSettings: () => getSettings(),
@@ -98,6 +102,14 @@ async function doCheck(deps: Required<AutoUpdateDependencies>): Promise<void> {
     return;
   }
   const channel: UpdateChannel = releaseChannel;
+
+  // P1-11：essential-traffic 下不发更新检查。它请求的是硬编码的发布服务器
+  // （不是用户配置的模型端点），会向第三方暴露 IP 与启动时间，属于非必要外发。
+  // privacy-level.ts 的注释此前就声称这一级「禁止自动更新检查」，但这里从未问过它。
+  if (!deps.shouldLoadRemoteConfig()) {
+    log().info("AUTO_UPDATE", "隐私级别为 essential-traffic，跳过更新检查");
+    return;
+  }
 
   // 3. 读取 settings 和状态
   const settings = deps.getSettings().settings;

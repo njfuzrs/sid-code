@@ -74,12 +74,28 @@ describe("preconnect", () => {
     }).not.toThrow();
   });
 
-  test("空参数走默认端点不抛错", async () => {
+  // P1-11 契约变更：空参数不再回落 api.anthropic.com，而是不发任何请求
+  test("空参数不预连接，永不回落 api.anthropic.com", async () => {
     const { preconnectApi, resetPreconnectState } =
       await import("@sid-code/cli/entrypoints/preconnect.ts");
     resetPreconnectState();
-    expect(() => preconnectApi(undefined)).not.toThrow();
-    expect(() => preconnectApi("")).not.toThrow();
+    const origFetch = globalThis.fetch;
+    const urls: string[] = [];
+    globalThis.fetch = (async (input: unknown) => {
+      urls.push(String(input));
+      return new Response(null);
+    }) as any;
+    try {
+      expect(() => preconnectApi(undefined)).not.toThrow();
+      expect(() => preconnectApi("")).not.toThrow();
+      expect(() => preconnectApi("   ")).not.toThrow();
+      expect(urls).toEqual([]);
+      preconnectApi("https://gateway.example.invalid/v1");
+      expect(urls).toEqual(["https://gateway.example.invalid"]);
+    } finally {
+      globalThis.fetch = origFetch;
+      resetPreconnectState();
+    }
   });
 });
 
