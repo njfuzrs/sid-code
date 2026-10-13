@@ -14,9 +14,10 @@
  * 只改加载侧会让 TUI 与 CLI 的列表在子目录下不一致（M4）。
  */
 
-import { existsSync, mkdirSync, readFileSync, writeFileSync } from "fs";
+import { existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from "fs";
 import { dirname, join, resolve } from "path";
 import { getAncestorChain } from "../config/project-bases.ts";
+import { getLogger } from "../debug/logger.ts";
 import type { MCPServerConfig } from "../config/config.ts";
 
 export interface ProjectMcpServers {
@@ -188,13 +189,34 @@ interface McpProjectState {
   enabledMcpServers?: string[];
 }
 
+/**
+ * 本进程内读到的「损坏且尚未备份」的项目状态文件路径。
+ *
+ * 与 approval.ts 的 corruptPending 同源：readState 解析失败时返回空对象（fail-safe），
+ * 但紧接着 setMcpServerDisabled 会把空对象整体写回 —— 原有禁用 / 启用名单被一份
+ * 几乎为空的文件静默覆盖，不可逆。把「损坏」这个事实从读传到写，写入前先把原文件挪走。
+ */
+let corruptPending: string | null = null;
+
 function readState(path: string): McpProjectState {
+  // 文件不存在 = 该项目还没有任何开关记录（正常首次使用），不告警
+  if (!existsSync(path)) return {};
   try {
-    if (existsSync(path)) {
-      const parsed = JSON.parse(readFileSync(path, "utf-8"));
-      if (parsed && typeof parsed === "object" && !Array.isArray(parsed)) return parsed;
+    const parsed: unknown = JSON.parse(readFileSync(path, "utf-8"));
+    if (parsed && typeof parsed === "object" && !Array.isArray(parsed)) {
+      // 上一次读到损坏、这一次读到合法内容 = 文件已被外部修复 → 清掉待备份标记，
+      // 否则紧接着的写入会把一份好文件当成损坏件挪走
+      if (corruptPending === path) corruptPending = null;
+      return parsed as McpProjectState;
     }
-  } catch {}
+  } catch {
+    // JSON 解析失败与「顶层不是对象」同属不可用，统一走下面的损坏处理
+  }
+  corruptPending = path;
+  getLogger().warn(
+    "MCP",
+    `MCP 项目状态已损坏（${path}），已按空状态处理；原文件将在下次写入前备份为 ${path}.corrupt-<时间戳>`,
+  );
   return {};
 }
 
@@ -238,7 +260,23 @@ export async function setMcpServerDisabled(
   state.disabledMcpServers = [...off];
   state.enabledMcpServers = [...on];
   mkdirSync(dirname(primary), { recursive: true });
+  // 写入前备份损坏文件，但只有「读的就是要写的那份」才需要：readPath !== primary 说明
+  // 主仓根那份还不存在（resolveProjectStateFile 只在 primary 不存在时才回退到旧键），
+  // 本次写入是新建文件、不会覆盖旧键下那份损坏内容 —— 挪走它反而丢了用户可手动抢救的原件。
+  if (readPath === primary && corruptPending === primary && existsSync(primary)) {
+    try {
+      renameSync(primary, `${primary}.corrupt-${Date.now()}`);
+    } catch (err) {
+      // 备份失败不阻断写入：损坏内容本就解析不出来，禁用 / 启用仍要能用；补告警说明原文件没能保住
+      getLogger().warn(
+        "MCP",
+        `备份损坏的 MCP 项目状态失败（${primary}）：${err instanceof Error ? err.message : String(err)}`,
+      );
+    }
+  }
   writeFileSync(primary, JSON.stringify(state, null, 2));
+  // 写入成功后才清标记：写失败时上面这次读取的损坏事实仍然有效，下次写入会重新尝试备份
+  corruptPending = null;
   return primary;
 }
 
