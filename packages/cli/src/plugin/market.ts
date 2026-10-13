@@ -24,6 +24,8 @@ import { getLogger } from "@sid-code/core/debug/logger.ts";
 import { resolveBackendUrl } from "@sid-code/core/identity/backend-url.ts";
 import { backendUrl } from "@sid-code/core/identity/endpoints.ts";
 import { getUsableCredentialToken, RELOGIN_HINT } from "@sid-code/core/identity/credential.ts";
+import { getSettings } from "@sid-code/core/config/settings/settings.ts";
+import { normalizeMarketplaceUrl } from "@sid-code/core/config/plugin-only-policy.ts";
 import { ARCHIVE_LIMITS, ArchiveError, parseTarGz, writeEntries } from "./archive.ts";
 import { getPluginsDir } from "./installed.ts";
 import { validateManifest } from "./validate.ts";
@@ -55,6 +57,8 @@ export interface MarketPluginVersion {
   sha256: string;
   size: number;
   published_at?: string;
+  /** 历史版本自己的制品地址（静态市场带 .tar.gz 后缀，后端没有）；缺省时由当前版本地址推出 */
+  artifact?: string;
 }
 
 export interface MarketPlugin {
@@ -77,14 +81,6 @@ export interface MarketIndex {
   plugins: MarketPlugin[];
 }
 
-/** 一个已解析的市场：名字 + index 地址 */
-export interface ResolvedMarket {
-  name: string;
-  indexUrl: string;
-  /** 只有 index 与 backend.url 同源时才带设备凭据 */
-  backendOrigin?: string;
-}
-
 export type IndexFetchResult =
   | { ok: true; index: MarketIndex; fromCache: boolean; staleReason?: string }
   | { ok: false; error: string };
@@ -102,28 +98,164 @@ export function defaultMarketIndexUrl(): string | null {
   return backend ? backendUrl(backend.url, "marketplace", "/index") : null;
 }
 
-/**
- * 解析市场来源。目前只实现 `source:"url"`；不传则取 backend.url 推出的企业市场。
- * 其余 source（github / git / npm / directory）仍是预留，明确报错而不是静默忽略。
- */
-export function resolveMarket(source?: MarketplaceSource): ResolvedMarket | null {
-  const backend = resolveBackendUrl();
-  if (!source) {
-    if (!backend) return null;
+// ─── 多市场（内置 Skill 下沉方案 P2 §6.2）───────────────────────────────
+//
+// 市场名由**本机配置**决定，不取 index 里自报的 name：
+// - 缓存文件、installed.json 的 market.name、插件标识符后缀都用它；
+// - 让 index 自报名字，两个市场就能自称同一个名字，缓存互相作废、标识互相冒充
+//   （P1 之前所有市场都叫 DEFAULT_MARKET_NAME，正是这个形态）。
+
+/** 官方市场名（与 scripts/plugins-pack.ts 的 OFFICIAL_MARKET_NAME 一致） */
+export const OFFICIAL_MARKET_NAME = "sid-code";
+/** 官方静态市场 index 地址。SID_CODE_OFFICIAL_MARKET_URL 可覆盖（镜像 / 测试）。 */
+export const OFFICIAL_MARKET_URL = "https://www.sid-code.cc/plugins/index.json";
+
+/** 保留名：不能被 extraKnownMarketplaces 占用，否则可以冒充官方 / 企业市场 */
+const RESERVED_MARKET_NAMES = new Set([
+  OFFICIAL_MARKET_NAME,
+  DEFAULT_MARKET_NAME,
+  "local",
+  "builtin",
+  "inline",
+]);
+
+export type MarketKind = "official" | "company" | "extra";
+
+/** 一个已解析的市场：名字 + index 地址 */
+export interface ResolvedMarket {
+  name: string;
+  indexUrl: string;
+  kind: MarketKind;
+  /** 只有 index 与 backend.url 同源时才带设备凭据；官方市场永不带 */
+  backendOrigin?: string;
+}
+
+/** 读插件相关设置。损坏的 settings 不能让 /plugin 整体不可用，读不到就当没配。 */
+function readMarketSettings(): {
+  extra?: Record<string, { source?: { source?: string; url?: string } }>;
+  official?: boolean;
+} {
+  try {
+    const s = getSettings().settings as Record<string, unknown>;
     return {
+      extra: s.extraKnownMarketplaces as never,
+      official: typeof s.officialMarketplace === "boolean" ? s.officialMarketplace : undefined,
+    };
+  } catch {
+    return {};
+  }
+}
+
+function officialIndexUrl(): string {
+  return process.env.SID_CODE_OFFICIAL_MARKET_URL?.trim() || OFFICIAL_MARKET_URL;
+}
+
+/**
+ * 列出本机已注册的全部市场，顺序固定：企业（backend.url 推出）→ 官方 → 额外。
+ * 坏条目（名字不合规 / 占用保留名 / 非 url 源 / 地址不合法 / 与已有市场同地址）丢掉并告警，
+ * 不让一条写错的配置挡住其余市场。
+ */
+export function resolveMarkets(): ResolvedMarket[] {
+  const backend = resolveBackendUrl();
+  const { extra, official } = readMarketSettings();
+  const out: ResolvedMarket[] = [];
+  const seenUrls = new Set<string>();
+  const push = (m: ResolvedMarket) => {
+    const key = normalizeMarketplaceUrl(m.indexUrl) ?? m.indexUrl;
+    if (seenUrls.has(key)) {
+      getLogger().warn("PLUGIN", `市场 ${m.name} 与已注册市场地址相同（${m.indexUrl}），已忽略`);
+      return;
+    }
+    seenUrls.add(key);
+    out.push(m);
+  };
+
+  if (backend) {
+    push({
       name: DEFAULT_MARKET_NAME,
       indexUrl: backendUrl(backend.url, "marketplace", "/index"),
+      kind: "company",
       backendOrigin: backend.origin,
-    };
+    });
   }
+  if (official !== false) {
+    // 官方市场不带 backendOrigin：即使有人把 backend.url 配成 sid-code.cc，
+    // 企业设备凭据也不该发往一个公共静态目录。
+    push({ name: OFFICIAL_MARKET_NAME, indexUrl: officialIndexUrl(), kind: "official" });
+  }
+  for (const [name, entry] of Object.entries(extra ?? {})) {
+    const src = entry?.source;
+    if (!NAME_RE.test(name) || RESERVED_MARKET_NAMES.has(name)) {
+      getLogger().warn(
+        "PLUGIN",
+        `extraKnownMarketplaces 里的市场名不可用（不合规或是保留名）: ${name}`,
+      );
+      continue;
+    }
+    if (src?.source !== "url" || typeof src.url !== "string") {
+      getLogger().warn(
+        "PLUGIN",
+        `extraKnownMarketplaces.${name}: 暂不支持的来源类型 ${String(src?.source)}（目前只支持 url）`,
+      );
+      continue;
+    }
+    if (!normalizeMarketplaceUrl(src.url)) {
+      getLogger().warn(
+        "PLUGIN",
+        `extraKnownMarketplaces.${name}: 地址不合法（只认 https）: ${src.url}`,
+      );
+      continue;
+    }
+    push({ name, indexUrl: src.url, kind: "extra", backendOrigin: backend?.origin });
+  }
+  return out;
+}
+
+/** 按名字找市场；不传名字返回 null（调用方自己决定默认值） */
+export function findMarket(name: string): ResolvedMarket | null {
+  return resolveMarkets().find((m) => m.name === name) ?? null;
+}
+
+/**
+ * 兼容入口：不传 source 返回第一个已注册的市场（有企业市场时就是企业市场，与 P1 前行为一致）。
+ * 传 source 只接受 `source:"url"`，名字仍按地址在已注册市场里反查 —— 不认识的地址给一个
+ * 由 host 派生的名字，而不是统一叫 company（那正是缓存互相作废的根因）。
+ */
+export function resolveMarket(source?: MarketplaceSource): ResolvedMarket | null {
+  const markets = resolveMarkets();
+  if (!source) return markets[0] ?? null;
   if (source.source !== "url" || !source.url) {
     throw new MarketError(`暂不支持的市场来源类型: ${source.source}（目前只支持 url）`);
   }
+  const key = normalizeMarketplaceUrl(source.url);
+  const known = markets.find((m) => normalizeMarketplaceUrl(m.indexUrl) === key);
+  if (known) return known;
+  let host = "adhoc";
+  try {
+    host = new URL(source.url).hostname.replace(/[^a-z0-9-]/gi, "-").toLowerCase() || host;
+  } catch {
+    /* 下面 fetch 时会报地址不合法 */
+  }
   return {
-    name: DEFAULT_MARKET_NAME,
+    name: `url-${host}`.slice(0, 64),
     indexUrl: source.url,
-    backendOrigin: backend?.origin,
+    kind: "extra",
+    backendOrigin: resolveBackendUrl()?.origin,
   };
+}
+
+/** 该市场默认是否自动更新：官方开、其余关；settings.pluginMarketplaceAutoUpdate 按名覆盖 */
+export function isMarketAutoUpdate(market: Pick<ResolvedMarket, "name" | "kind">): boolean {
+  try {
+    const map = (getSettings().settings as Record<string, unknown>).pluginMarketplaceAutoUpdate;
+    if (map && typeof map === "object") {
+      const v = (map as Record<string, unknown>)[market.name];
+      if (typeof v === "boolean") return v;
+    }
+  } catch {
+    /* 读不到设置按默认值 */
+  }
+  return market.kind === "official";
 }
 
 /** 同源才带凭据：index / 制品地址一旦指向别的 origin，凭据不能跟着走 */
@@ -450,6 +582,22 @@ export function formatComponents(c: MarketComponents | undefined): string[] {
   if (lines.length === 0) lines.push("  组件：（无）");
   return lines;
 }
+
+/**
+ * 「在本机执行什么」的指纹：只取 hooks 与 MCP（skills / commands / agents 是提示词，不执行命令）。
+ * 市场没给组件清单时返回 undefined —— 调用方必须把它当成「未知」，不能当成「没有」。
+ */
+export function execSignature(c: MarketComponents | undefined): string | undefined {
+  if (!c) return undefined;
+  const hooks = [...(c.hooks ?? [])].sort();
+  const mcp = (c.mcpServers ?? [])
+    .map((s) => [s.name, s.type ?? "", s.url ?? "", s.command ?? "", s.auth ?? ""].join("|"))
+    .sort();
+  return createHash("sha256").update(JSON.stringify({ hooks, mcp })).digest("hex").slice(0, 16);
+}
+
+/** 没有任何 hooks / MCP 的指纹（自动更新时「新版本什么都不执行」可以放心升级） */
+export const EMPTY_EXEC_SIGNATURE = execSignature({})!;
 
 /** 组件计数，给 plugin_installed 事件用 */
 export function countComponents(c: MarketComponents | undefined): {

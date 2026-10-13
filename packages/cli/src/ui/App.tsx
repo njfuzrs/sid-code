@@ -651,6 +651,16 @@ function TUIAppInner({ initialState, callbacks, bridge, alternateBuffer }: AppPr
         /* 静默失败 */
       });
 
+    // 市场插件自动更新（内置 Skill 下沉 P2）：只升已装、hooks/MCP 变化不静默，结果一行提示
+    import("../plugin/auto-update.ts")
+      .then(async ({ runPluginAutoUpdate, formatAutoUpdateNotice }) => {
+        const text = formatAutoUpdateNotice(await runPluginAutoUpdate());
+        if (text) showTransientMessage(text, TransientMessageType.Hint);
+      })
+      .catch(() => {
+        /* 静默失败 */
+      });
+
     // 标记首屏渲染完成
     import("@sid-code/shared/utils/startup-profiler.ts")
       .then(({ profileCheckpoint }) => {

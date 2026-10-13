@@ -2,10 +2,11 @@
  * 插件管理命令
  *   /plugin list                  - 列出所有插件（启用/禁用/错误）
  *   /plugin info <name>           - 查看插件详情
- *   /plugin market [关键词]        - 浏览企业插件市场（P5）
- *   /plugin install <name>@<市场>  - 从企业市场安装（下载 → sha256 校验 → 安全解包）
+ *   /plugin market [--market <名>] [关键词] - 浏览插件市场（默认列出全部已注册市场）
+ *   /plugin marketplaces          - 列出已注册的市场（企业 company / 官方 sid-code / 额外）
+ *   /plugin install <name>@<市场>  - 从市场安装（下载 → sha256 校验 → 安全解包）
  *   /plugin install <path>        - 从本地目录安装插件（企业策略锁定时拒绝）
- *   /plugin update [name]         - 按市场 index 更新市场插件
+ *   /plugin update [name]         - 回各自安装来源的市场比对并更新
  *   /plugin uninstall <name>      - 卸载插件（--delete 删文件，--force 忽略依赖）
  *   /plugin enable <name>         - 启用插件
  *   /plugin disable <name>        - 禁用插件（--force 忽略反向依赖）
@@ -28,19 +29,39 @@ import {
   installFromMarket,
   isMarketSpec,
   listMarket,
+  listMarketplaces,
   updateFromMarket,
 } from "../plugin/market-operations.ts";
 
+/** 带值的 flag（`--market <name>` 或 `--market=<name>`） */
+const VALUE_FLAGS = new Set(["market"]);
+
 /** 解析 flag 与位置参数 */
-function parseArgs(args: string): { positionals: string[]; flags: Set<string> } {
+function parseArgs(args: string): {
+  positionals: string[];
+  flags: Set<string>;
+  values: Map<string, string>;
+} {
   const parts = args.trim().split(/\s+/).filter(Boolean);
   const positionals: string[] = [];
   const flags = new Set<string>();
-  for (const p of parts) {
-    if (p.startsWith("--")) flags.add(p.slice(2));
-    else positionals.push(p);
+  const values = new Map<string, string>();
+  for (let i = 0; i < parts.length; i++) {
+    const p = parts[i]!;
+    if (!p.startsWith("--")) {
+      positionals.push(p);
+      continue;
+    }
+    const eq = p.indexOf("=");
+    const key = eq > 0 ? p.slice(2, eq) : p.slice(2);
+    if (VALUE_FLAGS.has(key)) {
+      const v = eq > 0 ? p.slice(eq + 1) : parts[++i];
+      if (v) values.set(key, v);
+    } else {
+      flags.add(key);
+    }
   }
-  return { positionals, flags };
+  return { positionals, flags, values };
 }
 
 /** /plugin 命令 */
@@ -55,11 +76,11 @@ export class PluginCommand implements Command {
     return "插件管理";
   }
   argumentHint() {
-    return "[list|market|info|install|update|uninstall|enable|disable] [插件名]";
+    return "[list|market|marketplaces|info|install|update|uninstall|enable|disable] [插件名]";
   }
 
   async execute(args: string, ctx: AppContext): Promise<CommandResult> {
-    const { positionals, flags } = parseArgs(args);
+    const { positionals, flags, values } = parseArgs(args);
     const sub = positionals[0]?.toLowerCase() || "list";
 
     switch (sub) {
@@ -70,7 +91,14 @@ export class PluginCommand implements Command {
         return this.info(positionals[1]);
       case "market":
       case "search":
-        return this.wrap(listMarket(positionals.slice(1).join(" ")));
+        return this.wrap(
+          listMarket(positionals.slice(1).join(" "), { market: values.get("market") }),
+        );
+      case "marketplaces":
+      case "markets": {
+        const r = listMarketplaces();
+        return r.ok ? { kind: "message", message: r.message } : { kind: "error", message: r.error };
+      }
       case "update":
       case "upgrade":
         return this.wrap(updateFromMarket(positionals[1]), true);
@@ -88,7 +116,7 @@ export class PluginCommand implements Command {
       default:
         return {
           kind: "error",
-          message: `未知子命令: ${sub}\n用法: /plugin list|market|info|install|update|uninstall|enable|disable`,
+          message: `未知子命令: ${sub}\n用法: /plugin list|market|marketplaces|info|install|update|uninstall|enable|disable`,
         };
     }
   }

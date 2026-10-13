@@ -22,6 +22,7 @@ import {
 import { validateManifest } from "@sid-code/cli/plugin/validate.ts";
 import {
   buildIndex,
+  mergeIntoIndex,
   OFFICIAL_MARKET_NAME,
   PackError,
   packAll,
@@ -63,7 +64,11 @@ describe("plugins-pack：客户端能解析", () => {
 
   test("artifact 相对 index 解析后同源（静态目录可直接挂）", () => {
     const parsed = parseIndex(index);
-    const market = { name: "sid-code", indexUrl: "https://www.sid-code.cc/plugins/index.json" };
+    const market = {
+      name: "sid-code",
+      indexUrl: "https://www.sid-code.cc/plugins/index.json",
+      kind: "official" as const,
+    };
     for (const p of parsed.plugins) {
       expect(resolveArtifactUrl(market, p)).toBe(
         `https://www.sid-code.cc/plugins/artifacts/${p.name}/${p.version}.tar.gz`,
@@ -148,5 +153,49 @@ describe("plugins-pack：拒绝不合规的插件（能在打包时拦就别留�
     withPlugin({ "plugin.json": okManifest, "README.md": "x" }, (dir) => {
       expect(() => packPlugin(dir)).toThrow(/SKILL\.md/);
     });
+  });
+});
+
+describe("mergeIntoIndex（plugins-release.sh 的发布前置，P2）", () => {
+  const ops = packed.find((p) => p.name === "ops")!;
+  const bump = (v: string) => ({ ...ops, version: v });
+
+  test("首次发布：远端为空也能生成合法 index，且能被客户端解析", () => {
+    const idx = mergeIntoIndex(undefined, ops);
+    expect(idx.name).toBe(OFFICIAL_MARKET_NAME);
+    expect(parseIndex(idx).plugins.map((p) => p.name)).toEqual(["ops"]);
+  });
+
+  test("新版本置顶，历史版本保留并补齐各自的 artifact 地址；其它插件条目不动", () => {
+    // 远端的 ops 停在 0.9.0（且是 P1 形态：历史版本没写 artifact），其余插件照常
+    const remote = buildIndex([bump("0.9.0"), ...packed.filter((p) => p.name !== "ops")]);
+    (remote.plugins.find((p) => p.name === "ops")!.versions[0] as any).artifact = undefined;
+    const merged = mergeIntoIndex(remote, bump("1.0.0"));
+    const entry = merged.plugins.find((p) => p.name === "ops")!;
+    expect(entry.version).toBe("1.0.0");
+    expect(entry.versions.map((v: any) => [v.version, v.artifact])).toEqual([
+      ["1.0.0", "artifacts/ops/1.0.0.tar.gz"],
+      ["0.9.0", "artifacts/ops/0.9.0.tar.gz"],
+    ]);
+    expect(merged.plugins.map((p) => p.name)).toEqual(["compliance", "github-pr", "ops"]);
+    // 合并结果客户端能解析，历史版本的 artifact 被 pickVersion 认到
+    expect(parseIndex(merged).plugins.find((p) => p.name === "ops")!.versions).toHaveLength(2);
+  });
+
+  test("版本不可覆盖：同版本重发拒绝（字节一样也拒）", () => {
+    const remote = buildIndex([bump("1.0.0")]);
+    expect(() => mergeIntoIndex(remote, bump("1.0.0"))).toThrow(PackError);
+    expect(() => mergeIntoIndex(remote, bump("1.0.0"))).toThrow("版本不可覆盖");
+  });
+
+  test("版本必须单调递增：比线上旧的版本拒绝", () => {
+    const remote = buildIndex([bump("2.0.0")]);
+    expect(() => mergeIntoIndex(remote, bump("1.5.0"))).toThrow("不高于线上最新");
+  });
+
+  test("远端 index 不是官方市场：拒绝", () => {
+    expect(() => mergeIntoIndex({ schema: 1, name: "company", plugins: [] }, ops)).toThrow(
+      "不是 sid-code",
+    );
   });
 });

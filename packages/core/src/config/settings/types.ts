@@ -223,6 +223,23 @@ const BackendSettingsSchema = lazySchema(() =>
     .passthrough(),
 );
 
+/**
+ * 额外插件市场（对齐 CC extraKnownMarketplaces 的形状）：键 = 市场名，值 = 来源。
+ * 目前只实现 `source:"url"`（指向一份与后端同契约的静态 / 动态 index）。
+ */
+const ExtraMarketplaceSchema = lazySchema(() =>
+  z
+    .object({
+      source: z
+        .object({
+          source: z.string(),
+          url: z.string().optional(),
+        })
+        .passthrough(),
+    })
+    .passthrough(),
+);
+
 /** 搜索配置 Schema */
 const SearchSchema = lazySchema(() =>
   z
@@ -454,6 +471,16 @@ export const SettingsSchema = lazySchema(
 
         // 企业后端地址（登录 / 插件市场 / 远程 MCP 共用），如 https://www.sid-code.cc/traj。项目级不可覆盖。
         backend: BackendSettingsSchema().optional(),
+
+        // 插件市场（内置 Skill 下沉方案 P2）。三个字段都决定「从哪下载会在本机执行的东西」，
+        // 已登记 SECURITY_SENSITIVE_FIELDS：项目级 settings 不能加市场、不能开自动更新。
+        // 额外市场：{ "<市场名>": { "source": { "source": "url", "url": "https://…/index.json" } } }
+        extraKnownMarketplaces: z.record(ExtraMarketplaceSchema()).optional(),
+        // 是否默认注册官方市场 sid-code（缺省 true，对齐 CC 首次启动自动注册官方市场）
+        officialMarketplace: z.boolean().optional(),
+        // 按市场的自动更新开关（键 = 市场名）。缺省：官方 sid-code 开，其余关（只提示）。
+        // 只升级已装插件、从不新装；hooks / MCP 有变化时一律只提示不静默升级。
+        pluginMarketplaceAutoUpdate: z.record(z.boolean()).optional(),
 
         // 可自定义状态栏（/statusline 持久化端；缺省 = 内置聚合状态栏）
         statusLine: StatusLineSchema().optional(),

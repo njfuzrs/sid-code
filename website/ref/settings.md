@@ -18,7 +18,7 @@ settings.json 的全部可配字段、类型与默认值。
 
 <!-- AUTO-GEN:START 由 scripts/docs-gen-reference.ts 生成，勿手工编辑 -->
 
-> 共 **80** 个顶层字段，全部由 `SettingsSchema` 声明（类型/枚举/约束经运行时自省导出）。
+> 共 **83** 个顶层字段，全部由 `SettingsSchema` 声明（类型/枚举/约束经运行时自省导出）。
 > 写了表里没有的顶层键（多半是拼错）不会报错退出，但启动时会提示「未知配置项」并给出最接近的字段名。
 
 配置文件位置：`~/.sid-code/settings.json`（用户级）、`<启动目录>/.sid-code/settings.json`（项目级，优先）、
@@ -60,6 +60,7 @@ settings.json 的全部可配字段、类型与默认值。
 | `enableLLMClassifier` | boolean | — | 是否启用 LLM 命令风险分类器（第二道防线，默认 false 保守） |
 | `enableSandbox` | boolean | — | 是否启用 macOS Seatbelt 沙箱（限制 bash 命令的文件系统和网络访问，默认 false） |
 | `env` | object | — | 环境变量 |
+| `extraKnownMarketplaces` | object | — | 插件市场（内置 Skill 下沉方案 P2）。三个字段都决定「从哪下载会在本机执行的东西」， 已登记 SECURITY_SENSITIVE_FIELDS：项目级 settings 不能加市场、不能开自动更新。… |
 | `fallbackModel` | string | — | 主模型失败时的降级模型（必须在 availableModels 中存在），为空字符串则不降级 |
 | `fallbackSwitchMode` | enum | `ask` / `auto` / `off` | 主模型重试耗尽后的降级模式：ask 询问用户 / auto 自动切默认 / off 不降级直接报错。 可选——未设时消费点按 "ask" 兜底（生产默认询问）。 |
 | `fastMode` | boolean | — | Fast Mode 开关（/fast 持久化端，settings.json fastMode）。缺省 = false。 语义：偏好更快的输出端点/服务档位。… |
@@ -77,11 +78,13 @@ settings.json 的全部可配字段、类型与默认值。
 | `mcpServers` | object | — | MCP 服务器 |
 | `model` | string | — | 主模型名（须在 availableModels 中；/model 可运行时切换） |
 | `network` | object | — | 网络超时/重试配置（统一单套保活优先默认值）（子键见[下文](#key-network)） |
+| `officialMarketplace` | boolean | — | 是否默认注册官方市场 sid-code（缺省 true，对齐 CC 首次启动自动注册官方市场） |
 | `openaiKey` | string | — | OpenAI 兼容端点的 API 密钥（provider=openai/ollama 等；env OPENAI_API_KEY 优先） |
 | `outputStyle` | string | — | 输出风格名（settings.json outputStyle）。 匹配 .sid-code/output-styles/ 或 ~/.sid-code/output-styles/ 下 .md 文件的 name 字段。 不设置时不注入任何风格约束。 |
 | `permissionMode` | enum | `default` / `manual` / `always-allow` / `deny-write` / `acceptEdits` / `plan` / `dontAsk` / `auto` / `dangerously-skip-permissions` | 默认权限模式（manual 是 default 的别名） |
 | `permissions` | object | — | 权限配置（子键见[下文](#key-permissions)） |
 | `pluginDirs` | array | — | 会话级插件目录（--plugin-dir，不持久化，视为 inline 来源） |
+| `pluginMarketplaceAutoUpdate` | object | — | 按市场的自动更新开关（键 = 市场名）。缺省：官方 sid-code 开，其余关（只提示）。 只升级已装插件、从不新装；hooks / MCP 有变化时一律只提示不静默升级。 |
 | `provider` | string | — | LLM 提供商（anthropic / openai / ollama 等，决定走哪套协议） |
 | `quota` | object | — | 配额（子键见[下文](#key-quota)） |
 | `respectGitignore` | boolean | — | grep/glob 是否尊重 .gitignore。缺省 true（与 rg 默认行为一致）。 |

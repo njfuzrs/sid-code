@@ -52,6 +52,12 @@ export const SECURITY_SENSITIVE_FIELDS = new Set<string>([
   // P2：backend.url 决定设备凭据发往哪里（登录 / 市场 / 远程 MCP origin 校验）。
   // 仓库 settings.json 能改它，就能把员工凭据导到攻击者端点。
   "backend",
+  // 内置 Skill 下沉方案 P2：插件市场来源决定从哪下载会在本机执行的 hooks / MCP。
+  // 仓库 settings.json 能加市场 = 能让 clone 了仓库的人装上攻击者的插件；能开自动更新 =
+  // 能把「需要用户确认」的升级变成静默。三者都只认用户级 / 企业级。
+  "extraKnownMarketplaces",
+  "officialMarketplace",
+  "pluginMarketplaceAutoUpdate",
 ]);
 
 /**

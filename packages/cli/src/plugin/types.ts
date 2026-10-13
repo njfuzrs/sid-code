@@ -156,6 +156,11 @@ export interface InstalledMarketInfo {
   sha256: string;
   /** 解包后插件目录的内容指纹，加载时复核，防止手改 installed.json 把本地目录冒充成市场插件 */
   treeHash: string;
+  /**
+   * 安装时 index 登记的 hooks / MCP 指纹（P2 自动更新用）。新版本指纹与它不同 =
+   * 升级会改变「在本机执行什么」，不能静默升级。旧条目没有这个字段时按「未知」处理（同样不静默）。
+   */
+  execSignature?: string;
 }
 
 // ============================================================

@@ -13,7 +13,10 @@
  *   bun run scripts/plugins-pack.ts --out <dir>
  *   bun run scripts/plugins-pack.ts --check         # 只校验能打包 + 能被客户端解析，不写盘
  *
- * 本脚本**只打包不发布**。上传到 www.sid-code.cc 是 P2 的 scripts/plugins-release.sh，
+ *   bun run scripts/plugins-pack.ts --release-prep <name> --remote-index <file> --out <dir>
+ *                                                   # 发布前置：单插件打包 + 合并远端 index
+ *
+ * 本脚本**只打包不发布**。上传到 www.sid-code.cc 是 scripts/plugins-release.sh，
  * 由维护者本机跑（CI 不持有服务器写凭据，方案 §7）。
  *
  * 为什么自己写 ustar 而不是调系统 `tar`：
@@ -263,6 +266,100 @@ export function buildIndex(packed: PackedPlugin[]) {
   };
 }
 
+// ─── 发布（P2，scripts/plugins-release.sh 调用）─────────────────────────
+
+type IndexJson = ReturnType<typeof buildIndex>;
+type IndexEntry = IndexJson["plugins"][number];
+
+/**
+ * 把一个新打的插件版本合并进**服务器上现有的** index，返回新 index。
+ *
+ * 版本不可覆盖：目标版本已经出现在该插件的 versions 里就拒绝 —— 哪怕字节一样也拒，
+ * 「重发一次同版本」本身就说明有人在绕过版本号，应该先升版本。
+ * 历史版本保留各自的 artifact 地址（静态市场带 .tar.gz，客户端 pickVersion 认这个字段）。
+ * 新版本必须比当前最新版本高：发一个比线上还旧的版本当 latest，等于静默回滚所有自动更新用户。
+ */
+export function mergeIntoIndex(remote: unknown, p: PackedPlugin): IndexJson {
+  const base: IndexJson =
+    remote && typeof remote === "object" && Array.isArray((remote as IndexJson).plugins)
+      ? (remote as IndexJson)
+      : { schema: 1, name: OFFICIAL_MARKET_NAME, plugins: [] };
+  if (base.name !== OFFICIAL_MARKET_NAME) {
+    throw new PackError(`远端 index 的 name 是 ${String(base.name)}，不是 ${OFFICIAL_MARKET_NAME}`);
+  }
+  const fresh = buildIndex([p]).plugins[0]!;
+  const current = base.plugins.find((x) => x.name === p.name);
+  const plugins = base.plugins.filter((x) => x.name !== p.name);
+  let versions: Array<Record<string, unknown>> = [];
+  if (current) {
+    versions = (current.versions ?? []).map((v) => ({ ...v }));
+    if (versions.some((v) => v.version === p.version)) {
+      throw new PackError(
+        `${p.name}@${p.version} 已发布过，版本不可覆盖（请先升 plugin.json 的 version）`,
+      );
+    }
+    if (Bun.semver.order(p.version, current.version) <= 0) {
+      throw new PackError(
+        `${p.name}@${p.version} 不高于线上最新 ${current.version}，拒绝发布（会让自动更新用户被静默回滚）`,
+      );
+    }
+    // 旧条目可能缺 artifact（P1 的 index 没写），补上它当时的地址
+    for (const v of versions) {
+      if (typeof v.artifact !== "string")
+        v.artifact = artifactPath({ name: p.name, version: String(v.version) });
+    }
+  }
+  const entry: IndexEntry = {
+    ...fresh,
+    versions: [
+      { version: p.version, sha256: p.sha256, size: p.size, artifact: artifactPath(p) } as never,
+      ...(versions as never[]),
+    ],
+  };
+  plugins.push(entry);
+  plugins.sort((a, b) => a.name.localeCompare(b.name));
+  return { schema: 1, name: OFFICIAL_MARKET_NAME, plugins };
+}
+
+/**
+ * `--release-prep <name> --remote-index <file> --out <dir>`：
+ * 打包单个插件 + 与远端 index 合并，产物写到 out（index.json + artifacts/<name>/<ver>.tar.gz），
+ * 最后一行 stdout 打印 `__PREP__ <name> <version> <sha256> <artifact>` 给 shell 解析。
+ */
+function releasePrep(argv: string[]): number {
+  const arg = (k: string) => {
+    const i = argv.indexOf(k);
+    return i >= 0 ? argv[i + 1] : undefined;
+  };
+  const name = arg("--release-prep");
+  const remoteFile = arg("--remote-index");
+  const out = arg("--out");
+  if (!name || !out) {
+    console.error("用法: --release-prep <name> --remote-index <file|-> --out <dir>");
+    return 2;
+  }
+  try {
+    if (!listPluginDirs().includes(name))
+      throw new PackError(`plugins/${name} 不存在或没有 plugin.json`);
+    const p = packPlugin(join(PLUGINS_ROOT, name));
+    let remote: unknown = undefined;
+    if (remoteFile && remoteFile !== "-") {
+      const raw = readFileSync(remoteFile, "utf-8").trim();
+      if (raw) remote = JSON.parse(raw);
+    }
+    const index = mergeIntoIndex(remote, p);
+    const target = join(out, artifactPath(p));
+    mkdirSync(dirname(target), { recursive: true });
+    writeFileSync(target, p.archive);
+    writeFileSync(join(out, "index.json"), `${JSON.stringify(index, null, 2)}\n`);
+    console.log(`__PREP__ ${p.name} ${p.version} ${p.sha256} ${artifactPath(p)}`);
+    return 0;
+  } catch (err: any) {
+    console.error(`✗ ${err?.message ?? err}`);
+    return 1;
+  }
+}
+
 export function packAll(root: string = PLUGINS_ROOT): PackedPlugin[] {
   const names = listPluginDirs(root);
   if (names.length === 0) throw new PackError(`${root} 下没有任何插件`);
@@ -270,6 +367,7 @@ export function packAll(root: string = PLUGINS_ROOT): PackedPlugin[] {
 }
 
 function main(argv: string[]): number {
+  if (argv.includes("--release-prep")) return releasePrep(argv);
   const check = argv.includes("--check");
   const outIdx = argv.indexOf("--out");
   const outDir =
