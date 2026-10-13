@@ -7180,6 +7180,115 @@ export class App {
     }
   }
 
+  /**
+   * 无头三形态（-p 文本/JSON、stream-json、Bridge）的**唯一**提交入口：先做斜杠命令分发，再交给引擎。
+   *
+   * 修复前三处都直接 `queryEngine.submitMessage(input)`，`-p "/plugin market"` 被原样当提示词，
+   * 模型自己去翻二进制找 /plugin 是什么。判定与结果映射在 command/headless-dispatch.ts；
+   * 这里只负责把四种结果翻成引擎事件，让三种形态各自的消费循环不用改：
+   * - not_command / submit → 原样 / 展开后交给引擎（submit 带本轮 allowed-tools）；
+   * - output（fork skill 的回答等）→ 写进上下文与会话落盘，经流式回调输出，再补一条 done；
+   * - error → fatal_error（退出码非 0；stream-json 映射为 error_during_execution）。
+   */
+  private async *submitHeadlessInput(
+    input: string,
+  ): AsyncGenerator<import("@sid-code/core/query/types.ts").QueryEngineEvent> {
+    const outcome = await this.resolveHeadlessSlash(input);
+    switch (outcome.kind) {
+      case "not_command":
+        yield* this.queryEngine.submitMessage(outcome.input);
+        return;
+      case "submit":
+        this.applyCommandScopedRules(outcome.allowedTools, outcome.allowedToolsTrusted);
+        try {
+          yield* this.queryEngine.submitMessage(outcome.prompt, {
+            displayCommand: outcome.displayCommand,
+          });
+        } finally {
+          this.clearCommandScopedRules();
+        }
+        return;
+      case "output":
+        for (const msg of buildCommandAnswerMessages(outcome.displayCommand, outcome.text)) {
+          try {
+            this.sessionStore?.appendMessage(msg);
+          } catch (e: any) {
+            getLogger().warn("HEADLESS", `命令回答持久化失败（不阻断）: ${e?.message ?? e}`);
+          }
+          this.ctxMgr.addMessage(msg);
+        }
+        this.queryEngine.emitStreamText(
+          outcome.text.endsWith("\n") ? outcome.text : `${outcome.text}\n`,
+        );
+        yield { kind: "done", turns: 0 };
+        return;
+      case "error":
+        yield { kind: "fatal_error", message: outcome.message, recoverable: false };
+        return;
+    }
+  }
+
+  /** 构建无头命令上下文并分发。只给提示词类命令需要的那几项，交互类 builtin 在分发前就被拒绝。 */
+  private async resolveHeadlessSlash(
+    input: string,
+  ): Promise<import("./command/headless-dispatch.ts").HeadlessSlashOutcome> {
+    const registry = this.unifiedRegistry;
+    if (!registry) return { kind: "not_command", input };
+    const { resolveHeadlessSlash } = await import("./command/headless-dispatch.ts");
+    const { CommandExecutor } = await import("./command/executor.ts");
+    const { toCommandContext } = await import("./command/adapter.ts");
+    const { buildMcpPromptCommands } = await import("./command/mcp-prompt-commands.ts");
+
+    const appCtx: import("./command/types.ts").AppContext = {
+      ctxMgr: this.ctxMgr,
+      registry: this.toolRegistry,
+      config: this.config,
+      sessionId: "",
+      checkpointSessionId: this.getLogicalSessionId(),
+      provider: this.provider,
+      // fork 型 skill / 自定义命令靠它起子代理；缺了 executor 会静默退回 inline
+      providerRegistry: this.providerRegistry,
+      mcpManager: this.mcpManager,
+      setModel: (m, persist) => this.applyPrimaryModelSwitch(m, { persist, clearTerminal: true }),
+      exitRequested: false,
+      sessionState: this.sessionState,
+      // fork 子代理跟随本轮中断信号（会话硬顶 / SDK interrupt / Bridge abort）
+      beginForkedRun: () => ({
+        signal: this.abortController?.signal ?? new AbortController().signal,
+        end: () => {},
+      }),
+      customCommands: this.getCustomCommandsSummary(),
+      // 自定义命令模板里的 `!{shell}` 与 skill 的 ask 决策走同一条确认通道：
+      // SDK 宿主 can_use_tool / Bridge 远端 / 否则按 permissionMode（default 即 fail-closed 拒绝）
+      confirmShellCommands: (commands) =>
+        this.requestUserConfirmation(`执行命令模板中的 shell：${commands.join("; ")}`),
+      requestUserConfirmation: (desc: string) => this.requestUserConfirmation(desc),
+      permissionRules: this.getRawPermissionRules(),
+      permissionChecker: this.permissionChecker,
+      hookSystem: this.hookSystem,
+      commandRegistry: this.commandRegistry,
+      unifiedRegistry: registry,
+      skillManager: this.skillManager,
+      traceCollector: this.traceCollector ?? undefined,
+      fileReadTracker: this.fileReadTracker ?? undefined,
+      sessionDir: this.resolveSessionDir(),
+    };
+    const executor = new CommandExecutor(toCommandContext(appCtx));
+    try {
+      const commands = await registry.getCommands(
+        process.cwd(),
+        buildMcpPromptCommands(this.mcpManager),
+      );
+      return await resolveHeadlessSlash(input, {
+        commands,
+        executor,
+        disableSlashCommands: this.config.disableSlashCommands,
+      });
+    } catch (err: any) {
+      return { kind: "error", message: `命令执行失败: ${err?.message ?? String(err)}` };
+    }
+  }
+
   /** 无头模式：消费 QueryEngine async generator，不依赖任何 renderer */
   async runHeadless(input: string): Promise<string> {
     await this.init();
@@ -7249,7 +7358,7 @@ export class App {
     // P2-1：以 plan 权限模式启动（或被 CLAUDE.md 规则改成 plan）的会话在这里进入状态机。
     this.syncPlanModeFromPermissionMode();
     try {
-      for await (const event of this.queryEngine.submitMessage(input)) {
+      for await (const event of this.submitHeadlessInput(input)) {
         if (event.kind === "done") {
           // 预算硬停：loop 先 yield 一条 system warning（已由 formatHeadlessEvent 打到 stderr），
           // 再 yield 这条带 budgetExceeded 的 done。这里只记标志，退出码在收尾处决定。
@@ -7437,7 +7546,8 @@ export class App {
 
     const runner = new BridgeRunner(
       {
-        submitMessage: (input: string) => this.queryEngine.submitMessage(input),
+        // 远端发来的 `/xxx` 与 -p 同一分发入口（submitHeadlessInput）
+        submitMessage: (input: string) => this.submitHeadlessInput(input),
         setStreamTextCallback: (cb) => this.queryEngine.setStreamTextCallback(cb),
         abort: () => this.abortController?.abort(),
         setPermissionDelegate: (delegate) => {
@@ -7510,7 +7620,8 @@ export class App {
    */
   private buildSDKDriver(): SDKQueryEngineDriver {
     return {
-      submitMessage: (input: string) => this.queryEngine.submitMessage(input),
+      // 斜杠命令分发与 -p 同一入口（submitHeadlessInput），stdin 后续每条 user 消息同样经过它
+      submitMessage: (input: string) => this.submitHeadlessInput(input),
       getUsage: () => this.sessionState.getTotalUsage(),
       getCostUsd: () => this.sessionState.getEffectiveTotalCostUSD(),
       getMessages: () => this.ctxMgr.getMessages(),

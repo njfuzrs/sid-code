@@ -47,6 +47,8 @@ LLM 配置:
 
 无头模式:
   -p, --print                 无头模式（非交互式，需提供提示词或管道输入）
+                              提示词以 / 开头时按斜杠命令分发：自定义命令 / skill / 插件 / MCP prompt
+                              展开后交给模型；交互与管理类内置命令报错退出（如 /plugin → sid-code plugin）
   --input-format <fmt>        输入格式 (text/stream-json，默认 text；stream-json 从 stdin 逐条读消息，
                               且必须同时指定 --output-format stream-json)
   --output-format <fmt>       输出格式 (text/json/stream-json，默认 text)
@@ -87,7 +89,7 @@ IDE:
   --ide                       启动即自动连接 IDE（等价 SID_CODE_AUTO_CONNECT_IDE=true）
 
 功能开关:
-  --disable-slash-commands    禁用所有斜杠命令（headless/受限场景）
+  --disable-slash-commands    禁用所有斜杠命令：/xxx 原样作为提示词交给模型（TUI 与 -p 同口径）
 
 调试:
   -d, --debug                 启用调试模式（日志输出到 ~/.sid-code/debug.log）
@@ -143,6 +145,10 @@ Worktree 隔离:
   update                      下载并替换二进制到最新版（不动 ~/.sid-code/ 数据）
   agents                      列出所有可用子代理（内置/自定义/插件）
                                 用法: sid-code agents [--json] [--setting-sources user,project,local]
+  plugin                      管理插件（与 /plugin 同一实现，不启动会话，供脚本 / CI 使用）
+                                用法: sid-code plugin <list|market|marketplaces|info|install|update|uninstall|enable|disable> [参数]
+                                示例: sid-code plugin market
+                                      sid-code plugin install my-skill@sid-code
   mcp                         管理 MCP 服务器配置（不启动会话）
                                 用法: sid-code mcp <list|get|add|remove|pending|approve|reject|serve> [参数] [--json]
                                 示例: sid-code mcp list
