@@ -270,6 +270,8 @@ const PLAN_MODE_EXTRA_TOOLS = new Set(["enter_plan_mode", "exit_plan_mode", "sub
 export class PermissionChecker implements Checker {
   private config: Config;
   private preApproved = new Set<string>();
+  /** 派生来源（子代理 checker 指向主 checker；主 checker 为 undefined） */
+  private parentChecker?: PermissionChecker;
   /** 会话内权限记忆：key = "toolName:inputHash", value = allowed */
   private sessionMemory = new Map<string, boolean>();
   /** 权限规则（从配置文件加载） */
@@ -836,6 +838,38 @@ export class PermissionChecker implements Checker {
     this.rules = this.ruleLoader.toPermissionRule();
   }
 
+  /**
+   * 设置命令作用域 allow 规则（斜杠命令 / skill 的 `allowed-tools`，对齐 CC
+   * `alwaysAllowRules.command`）。写完立即 refresh：RuleLoader 与 `this.rules` 是两份状态，
+   * 不 refresh 则本轮规则根本不进判定（sub-agent-checker.ts 记录过同型 bug）。
+   *
+   * @returns 因来源不可信被剥离的危险规则
+   */
+  setCommandScopedRules(allow: string[], trusted: boolean, origin?: string): string[] {
+    const dropped = this.ruleLoader.setCommandScopedRules(allow, trusted, origin);
+    this.refreshRulesFromLoader();
+    return dropped;
+  }
+
+  /** 清空命令作用域规则（本轮结束 / 中断 / 异常时调用；无规则时是空操作） */
+  clearCommandScopedRules(): void {
+    this.ruleLoader.clearCommandScopedRules();
+    this.refreshRulesFromLoader();
+  }
+
+  /**
+   * 派生链的根 checker（主会话那一个）。子代理 checker 是派生时刻的**快照**，
+   * fork 命令要按主会话**当前**的模式与规则重新派生，必须回到根上（见 agent/forked-command.ts）。
+   */
+  getRootChecker(): PermissionChecker {
+    return this.parentChecker?.getRootChecker() ?? this;
+  }
+
+  /** 标记派生来源（仅 createSubAgentChecker 调用） */
+  setParentChecker(parent: PermissionChecker): void {
+    this.parentChecker = parent;
+  }
+
   /** 读取当前合并后的权限规则（P0-3：供 skill 元工具抽取 Skill(name) 规则）。 */
   getRules(): PermissionRule | null {
     return this.rules;
@@ -1229,8 +1263,13 @@ export class PermissionChecker implements Checker {
       }
     }
 
-    // Step 12: 预授权工具放行
-    if (this.preApproved.has(req.toolName)) {
+    // Step 12: 预授权工具放行（`--allowed-tools` / config.allowedTools / CLAUDE.md 工具白名单）
+    //
+    // P7：此前是 `preApproved.has(req.toolName)` 精确比较——`--allowed-tools Read` 对不上 `read`，
+    // `--allowed-tools "Bash(git *)"` 永远不命中。CC 的 `--allowedTools` 是规则语法，这里改走
+    // 规则引擎（认 CC 名 / 大小写 / `Bash(pattern)` / MCP 通配，bash 复合命令逐子命令校验）。
+    // 位置保持在 Step 12（plan / 只读 / acceptEdits 之后），放行面只多了「名字写法」这一层。
+    if (this.preApproved.size > 0 && this.matchesAllowList([...this.preApproved], req)) {
       log.info("PERMISSION", `${req.toolName}(${resource.slice(0, 80)}) → 允许(预授权)`);
       return { allowed: true };
     }
@@ -2003,7 +2042,16 @@ export class PermissionChecker implements Checker {
    */
   private checkAllowRules(req: PermissionRequest): Decision | null {
     if (!this.rules) return null;
-    const allowRules = { deny: [], allow: this.rules.allow, ask: [] };
+    return this.checkAllowList(this.rules.allow ?? [], req);
+  }
+
+  /** 预授权清单（Step 12）是否覆盖本次请求——与 allow 规则同一套匹配（见 checkAllowList） */
+  private matchesAllowList(allow: string[], req: PermissionRequest): boolean {
+    return this.checkAllowList(allow, req)?.allowed === true;
+  }
+
+  private checkAllowList(allow: string[], req: PermissionRequest): Decision | null {
+    const allowRules = { deny: [], allow, ask: [] };
     const pathCtx = this.buildPathRuleContext(req);
 
     // 非 bash：保持原整条匹配语义（文件类工具走路径前缀解析）

@@ -311,8 +311,8 @@ CI 里没人按 y/n。三种做法，安全性递减：
 # ① 推荐：预先在 settings.json 里配 allow 规则，只放开需要的
 sid-code -p "..."
 
-# ② 指定这次允许的工具
-sid-code -p "..." --allowed-tools read,grep,glob
+# ② 指定这次免确认的工具（认 Claude Code 写法与模式）
+sid-code -p "..." --allowed-tools 'Read,Grep,Glob,Bash(git log*)'
 
 # ③ 全部跳过确认（只在完全可信的隔离环境用）
 sid-code -p "..." --dangerously-skip-permissions

@@ -258,37 +258,29 @@ export async function resolveSkillAgentType(
 /**
  * P0-4：skill 执行上下文的单一事实源（inline 注入 / fork 子代理）。
  *
- * `context`（CC 权威字段）优先于 `mode`；都未指定默认 fork。此前模型路径（SkillMetaTool）
- * 只认 mode，`context: inline` 的约束型 skill 经模型调用被 fork 进子代理，约束对主对话
- * 一次都没生效。用户斜杠路径、命令投影、模型路径三处都必须调这里，别再各写一份。
+ * `context`（CC 权威字段）优先于 `mode`（sid 旧字段：activate=inline、delegate=fork）；
+ * **都未指定默认 inline**（P6，对齐 CC `loadSkillsDir.ts`：`context === 'fork' ? 'fork' : undefined`）。
+ * 修复前缺省 fork，从 CC 迁来的 skill（不写 context）一律被换进子代理执行。
+ * 用户斜杠路径、命令投影、模型路径三处都必须调这里，别再各写一份。
  */
 export function resolveSkillExecutionContext(
   skill: Pick<SkillDefinition, "context" | "mode">,
 ): "inline" | "fork" {
-  return skill.context ?? (skill.mode === "activate" ? "inline" : "fork");
+  return skill.context ?? (skill.mode === "delegate" ? "fork" : "inline");
 }
 
 /**
- * P0-5：skill 未声明 `allowed-tools` 时 fork 子代理使用的默认工具集（只读）。
+ * skill 的 `allowed-tools` 是否来自可信来源（决定是否剥离危险自我授权规则）。
  *
- * 下游 executeCustom 把空数组解释为「零工具」，而此前三处调用方都写 `allowedTools || []`，
- * 把「未声明」与「声明为空」塌缩成同一个值——照文档最小示例写的 delegate skill 一个工具
- * 都没有，且无报错。skill 是声明式资产，作者不写就该有安全的默认值而不是零能力：
- * 只读四件套同时满足最小权限与「能跑起来」。要写/执行能力须在 frontmatter 显式声明。
+ * 可信：内置（builtin / bundled）、企业托管（managed）、用户级目录（~/.claude/skills、~/.sid-code/skills）。
+ * 不可信：项目级目录（随仓库分发）、插件（loadPluginSkills 已标为 project）、MCP。
  */
-export const DEFAULT_SKILL_ALLOWED_TOOLS: readonly string[] = ["read", "grep", "glob", "ls"];
-
-/**
- * P0-5：解析 fork 子代理实际可用的工具名。
- * 未声明 → 只读默认集并 warn；显式声明（含显式空数组）→ 原样尊重。
- */
-export function resolveSkillAllowedTools(
-  skill: Pick<SkillDefinition, "name" | "allowedTools">,
-): string[] {
-  if (skill.allowedTools !== undefined) return [...skill.allowedTools];
-  getLogger().warn(
-    "SKILL",
-    `skill "${skill.name}" 未声明 allowed-tools，已按只读默认集放行: ${DEFAULT_SKILL_ALLOWED_TOOLS.join(", ")}`,
-  );
-  return [...DEFAULT_SKILL_ALLOWED_TOOLS];
+export function isTrustedSkillSource(
+  skill: Pick<SkillDefinition, "source" | "loadedFrom" | "isBuiltin">,
+): boolean {
+  if (skill.isBuiltin) return true;
+  if (skill.loadedFrom === "builtin" || skill.loadedFrom === "bundled") return true;
+  if (skill.loadedFrom === "managed") return true;
+  if (skill.loadedFrom === "mcp" || skill.loadedFrom === "plugin") return false;
+  return skill.source === "user" || skill.source === "builtin" || skill.source === "managed";
 }

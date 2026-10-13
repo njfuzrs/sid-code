@@ -94,15 +94,16 @@ describe("code-review Skill - SKILL.md frontmatter 契约", () => {
     expect(fm.mode).toBe("delegate");
   });
 
-  test("allowed-tools 含 read / grep / glob / bash，不含 edit / write", () => {
-    expect(fm["allowed-tools"]).toBeDefined();
+  // 方案 E：allowed-tools 已是免确认规则（不裁剪工具集），只读护栏改由 agent 类型承担
+  test("只读护栏：agent: verify（工具集只读），allowed-tools 只含只读工具", async () => {
+    expect((fm as Record<string, unknown>)["agent"]).toBe("verify");
+    const { resolveAgent } = await import("@sid-code/core/agent/agent-definition.ts");
+    const verify = resolveAgent("verify")!;
+    expect(verify.readOnly).toBe(true);
+    expect(verify.tools).not.toContain("edit");
+    expect(verify.tools).not.toContain("write");
     const tools = (fm["allowed-tools"] as string).split(",").map((s) => s.trim());
-    expect(tools).toContain("read");
-    expect(tools).toContain("grep");
-    expect(tools).toContain("glob");
-    expect(tools).toContain("bash");
-    expect(tools).not.toContain("edit");
-    expect(tools).not.toContain("write");
+    for (const t of ["edit", "write", "bash"]) expect(tools).not.toContain(t);
   });
 
   test("max-turns 在 10..30 范围", () => {

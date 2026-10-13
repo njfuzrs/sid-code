@@ -1784,7 +1784,16 @@ export class App {
     for (const tool of this.toolRegistry.all()) {
       const maybe = tool as {
         setInvokedSkillSink?: (fn: (name: string, content: string) => void) => void;
+        setCommandScopedRulesSink?: (
+          fn: (rules: string[], trusted: boolean, origin: string) => void,
+        ) => void;
       };
+      if (typeof maybe.setCommandScopedRulesSink === "function") {
+        // P5：模型路径 activate skill 的 allowed-tools → 主 checker 本轮规则（onUserInput finally 清空）
+        maybe.setCommandScopedRulesSink((rules, trusted) =>
+          this.applyCommandScopedRules(rules, trusted),
+        );
+      }
       if (typeof maybe.setInvokedSkillSink === "function") {
         maybe.setInvokedSkillSink((name, content) => this.ctxMgr.addInvokedSkill(name, content));
       }
@@ -1847,6 +1856,46 @@ export class App {
       await checker.reloadWorkspaceRules!(dir);
       this.wireToolPermissionChecker();
     });
+  }
+
+  /**
+   * P5：设置本轮命令作用域 allow 规则（无规则时等价于清空）。被剥离的危险规则告警 + 状态栏提示。
+   * 规则加在**主** checker 上：主循环的工具调用走它；子代理 checker 是派生快照，不受影响。
+   */
+  private applyCommandScopedRules(rules: string[] | undefined, trusted: boolean | undefined): void {
+    const checker = this.permissionChecker as
+      | import("@sid-code/core/permission/types.ts").Checker
+      | null
+      | undefined;
+    if (!checker?.setCommandScopedRules) return;
+    if (!rules || rules.length === 0) {
+      checker.clearCommandScopedRules?.();
+      return;
+    }
+    try {
+      const dropped = checker.setCommandScopedRules(rules, trusted === true, "命令 allowed-tools");
+      getLogger().info("PERMISSION", `本轮命令 allow 规则: ${rules.join(", ")}`, { dropped });
+      if (dropped.length > 0) {
+        this.statusNotifier?.(
+          "command_allowed_tools_dropped",
+          `⚠ 项目级命令的 allowed-tools 含危险规则已忽略：${dropped.join(", ")}`,
+          5000,
+        );
+      }
+    } catch (e: any) {
+      getLogger().warn("PERMISSION", `设置命令 allow 规则失败（不阻断）: ${e?.message ?? e}`);
+    }
+  }
+
+  /** P5：清空本轮命令作用域 allow 规则（幂等） */
+  private clearCommandScopedRules(): void {
+    try {
+      (
+        this.permissionChecker as import("@sid-code/core/permission/types.ts").Checker | null
+      )?.clearCommandScopedRules?.();
+    } catch {
+      /* 清空失败不阻断（下一轮 apply 会整体替换） */
+    }
   }
 
   private wireToolPermissionChecker(): void {
@@ -2737,7 +2786,14 @@ export class App {
       cmd: string;
       commandInput: string;
       callbacks: {
-        onUserInput: (text: string, opts?: { displayCommand?: string }) => Promise<void>;
+        onUserInput: (
+          text: string,
+          opts?: {
+            displayCommand?: string;
+            commandAllowedTools?: string[];
+            commandAllowedToolsTrusted?: boolean;
+          },
+        ) => Promise<void>;
       };
       updateState: (patch: Partial<import("./ui/App.tsx").TUIState>) => void;
       appendCommandOutput: (input: string, output: string | null, isError?: boolean) => void;
@@ -2883,7 +2939,16 @@ export class App {
           // 不再 appendCommandOutput（那条命令项会被 syncDisplay 从 ctxMgr 全量重建时冲掉）。
           // 改由 displayCommand 让展开的提示词以「命令历史项」形式渲染（只显示 /commit
           // 触发命令本身），提示词全文仅喂 LLM、不泄漏到屏幕。
-          await callbacks.onUserInput(result.value, { displayCommand: commandInput });
+          await callbacks.onUserInput(result.value, {
+            displayCommand: commandInput,
+            // P5：命令 allowed-tools → 本轮免确认 allow 规则（onUserInput 内设置 / finally 清空）
+            ...(result.allowedTools?.length
+              ? {
+                  commandAllowedTools: result.allowedTools,
+                  commandAllowedToolsTrusted: result.allowedToolsTrusted === true,
+                }
+              : {}),
+          });
         }
         break;
 
@@ -9468,6 +9533,11 @@ export class App {
         } catch (e) {
           log.warn("APP", `登记用户 URL 来源失败（不阻断）: ${(e as Error)?.message}`);
         }
+        // P5：命令 / skill 的 allowed-tools 只作用于它触发的这一轮（对齐 CC REPL.tsx：每轮写入
+        // alwaysAllowRules.command，下一个非命令轮次清空）。设置放在 try 外紧前、清空放 finally，
+        // 异常 / 用户中断 / 早退都一定清掉。普通输入先清一次：兜住模型路径 activate skill
+        // 在上一轮留下的规则（它在轮中经 sink 设置）。
+        this.applyCommandScopedRules(opts?.commandAllowedTools, opts?.commandAllowedToolsTrusted);
         try {
           this.abortController = new AbortController();
           // @ 文件注入：展开用户输入中的 @path 引用
@@ -9688,6 +9758,7 @@ export class App {
           }
         } finally {
           this.abortController = null;
+          this.clearCommandScopedRules();
         }
       },
       onSlashCommand: async (cmd, args) => {

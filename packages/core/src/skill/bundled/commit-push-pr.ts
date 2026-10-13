@@ -5,8 +5,7 @@
  *
  * 上下文模式：fork（子代理独立执行）。
  *   选 fork 的理由：这是一条多步骤的长流程（commit + push + 建 PR），独立执行
- *   不污染主对话；且 fork 下 allowedTools 真实生效（见 sub-agent.ts:352-355），
- *   可把工具集锁定在 git/gh/读写范围内。
+ *   不污染主对话。allowedTools 是该子代理的免确认 allow 规则（对齐 CC commit-push-pr.ts）。
  *
  * ⚠️ fork 限制（见补齐分析 §4.3）：
  *   (1) 子代理看不到主对话上下文——用户在主对话里"刚改了什么、想强调什么"，
@@ -63,8 +62,19 @@ export function registerCommitPushPrSkill(): void {
     description: "提交变更、推送到远端并创建 PR(gh pr create)的完整流程",
     whenToUse: "当用户说 'commit push pr'、'提交并发 PR'、'推送并创建 PR'、'一键发 PR' 时",
     argumentHint: "[PR 标题或额外说明]",
-    // fork 模式：以下白名单真实生效
-    allowedTools: ["bash", "read", "grep", "glob"],
+    // fork 子代理的免确认规则（对齐 CC）；其余 bash 按主会话权限模式判定
+    allowedTools: [
+      "Bash(git add:*)",
+      "Bash(git status:*)",
+      "Bash(git commit:*)",
+      "Bash(git push:*)",
+      "Bash(git checkout -b:*)",
+      "Bash(gh pr create:*)",
+      "Bash(gh pr view:*)",
+      "read",
+      "grep",
+      "glob",
+    ],
     context: "fork",
     userInvocable: true,
     // 强副作用(git push + gh pr create)：禁止模型自动调用，仅用户显式 /commit-push-pr 触发

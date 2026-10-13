@@ -350,7 +350,13 @@ export type LocalCommandResult =
   | { type: "clear" } // 清空对话
   | { type: "quit"; message?: string } // 退出程序
   | { type: "dialog"; dialog: DialogType } // 打开交互式对话框
-  | { type: "submit_prompt"; prompt: string } // 将文本提交给 LLM
+  | {
+      type: "submit_prompt";
+      prompt: string;
+      /** 命令 `allowed-tools`：本轮免确认 allow 规则 */
+      allowedTools?: string[];
+      allowedToolsTrusted?: boolean;
+    } // 将文本提交给 LLM
   | { type: "confirm"; message: string; onConfirm: () => Promise<LocalCommandResult> }; // 需要用户确认
 
 /** local-jsx 命令：渲染 Ink 交互式 UI */
@@ -377,7 +383,13 @@ export interface PromptCommand {
   type: "prompt";
   context?: "inline" | "fork"; // inline=当前对话展开，fork=子代理执行
   getPromptForCommand(args: string, ctx: CommandContext): Promise<string>;
-  allowedTools?: string[]; // 限制模型可用的工具集（fork 模式）
+  /**
+   * `allowed-tools` 原样规则串（对齐 CC：免确认 allow 规则，**不**裁剪工具集）。
+   * inline 作用于触发的那一轮；fork 作用于那个子代理。
+   */
+  allowedTools?: string[];
+  /** fork 子代理的工具集来源 agent 类型（bundled skill 用；磁盘 skill 走 skill.agent） */
+  agent?: string;
   maxTurns?: number; // 最大轮次（fork 模式）
   timeoutMins?: number; // 子代理超时(分钟，fork 模式)；默认 2，最大 30
   /**

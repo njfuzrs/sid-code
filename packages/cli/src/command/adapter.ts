@@ -77,7 +77,13 @@ export function convertResult(result: LegacyCommandResult): LocalCommandResult {
     case "quit":
       return { type: "quit", message: result.message };
     case "submit_prompt":
-      return { type: "submit_prompt", prompt: result.prompt ?? "" };
+      return {
+        type: "submit_prompt",
+        prompt: result.prompt ?? "",
+        ...(result.allowedTools?.length
+          ? { allowedTools: result.allowedTools, allowedToolsTrusted: result.allowedToolsTrusted }
+          : {}),
+      };
     case "dialog":
       // dialog 必有 dialog 字段；缺失时降级为文本
       return result.dialog
@@ -164,7 +170,13 @@ function toLegacyResult(result: import("./types.ts").CommandExecutionResult): Le
         ? { kind: "message", message: result.value, panel: result.panel }
         : { kind: "message", message: result.value };
     case "submit_prompt":
-      return { kind: "submit_prompt", prompt: result.value };
+      return {
+        kind: "submit_prompt",
+        prompt: result.value,
+        ...(result.allowedTools?.length
+          ? { allowedTools: result.allowedTools, allowedToolsTrusted: result.allowedToolsTrusted }
+          : {}),
+      };
     case "error":
       return { kind: "error", message: result.message };
     case "clear":

@@ -84,8 +84,10 @@ export function registerReviewSkill(): void {
     description: "对当前变更或指定 diff 做 code review，输出结构化审查意见",
     whenToUse: "当用户说 'review'、'代码审查'、'审一下'、'review 这个 PR'、'review 这次改动' 时",
     argumentHint: "[diff 文件路径 / commit range / 审查重点]",
-    // fork 模式：白名单真实生效，锁定只读工具（对齐 code-review RL-001）
-    allowedTools: ["read", "grep", "glob", "bash"],
+    // 免确认规则：只读工具（bash 由 verify agent 提供、按权限模式判定）
+    allowedTools: ["read", "grep", "glob"],
+    // 方案 E：只读护栏从「allowed-tools 白名单」迁到 agent 类型（verify = 只读工具 + bash）
+    agent: "verify",
     context: "fork",
     userInvocable: true,
     maxTurns: 30,

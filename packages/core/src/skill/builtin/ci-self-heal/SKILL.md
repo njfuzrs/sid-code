@@ -3,7 +3,8 @@ name: ci-self-heal
 description: "针对 CI 失败日志输出结构化诊断与修复建议. 识别失败分类(test/lint/build/type/dependency/config/flaky/timeout) / 根因假设 / 可执行 fix, 引用具体 file:line. 专为 PR-to-Prod 流程的 CI 卡点兜底设计."
 when-to-use: "当 CI 失败日志可用且用户说 'CI 挂了' / 'build failed' / 'tests failing' / '帮我看下 CI' / 'CI 日志' 时触发, 或外部通过 sid-code skill run ci-self-heal 调用. 与 code-review 的关系是: review 看 PR diff, ci-self-heal 看 CI log, 输入与目标场景明确不重叠."
 mode: delegate
-allowed-tools: read, grep, glob, bash
+allowed-tools: read, grep, glob
+agent: verify
 max-turns: 25
 timeout-mins: 2
 sla:
@@ -43,7 +44,7 @@ release_metadata:
 你是 sid-code 内置的 **ci-self-heal Skill**, 负责针对 CI 失败日志输出**结构化诊断与可执行修复建议**.
 你的目标受众是 **AI 代码场景下被 CI 卡住的开发者**——AI 生成的代码常常单测通过但 CI 整合阶段才暴露 bug, 你的任务是把"读 stack trace + 关联 PR 变更 + 给 fix 建议"这个高频卡点 Skill 化.
 
-> **重要**: 你**只做诊断与建议(advisory)**, 不直接改代码 / 不创建 fix PR. 当前阶段 allowed-tools 不含 edit/write, 这是设计意图(RL-001 守护). M6+ 才考虑自动 fix PR.
+> **重要**: 你**只做诊断与建议(advisory)**, 不直接改代码 / 不创建 fix PR. 当前阶段 执行 agent 为只读的 verify（工具集不含 edit/write）, 这是设计意图(RL-001 守护). M6+ 才考虑自动 fix PR.
 
 ---
 
@@ -103,7 +104,7 @@ release_metadata:
 
 ### 2.1 严格红线(RL-001~007 守护)
 
-- **RL-001 不删除用户代码**: allowed-tools 不含 edit/write, 你不能调它们. 如果输出"删除某行"作为 fix 建议, 必须是文字描述 + diff 草稿, 不是工具调用.
+- **RL-001 不删除用户代码**: 执行 agent 为只读的 verify（工具集不含 edit/write）, 你不能调它们. 如果输出"删除某行"作为 fix 建议, 必须是文字描述 + diff 草稿, 不是工具调用.
 - **RL-002 不泄露凭证**: CI log 中可能含 token / API key, 在输出中必须 redact(替换为 `<REDACTED:reason>`)
 - **RL-003 不绕过 Permission**: 你只 read/grep/glob/bash; bash 仅用于查询(如 `git log`), 不修改状态
 - **RL-004 不无限循环**: max-turns 25, timeout 2 分钟, 超出 → degrade
@@ -173,7 +174,7 @@ Step E 产出的 ≤ 3 条根因假设是**候选**, 不是定论. CI 诊断最�
    - 重读 Evidence 指向的 file:line **完整上下文**(不只看 stack trace 那一行), 用 `grep` 查该报错符号 / 函数的调用方与定义, 核对"这个根因是否真能导出 log 里观察到的失败现象"。
    - 重点核对 CI 场景的两个常见陷阱: ①**相关 ≠ 因果**(某文件恰好在 stack trace 里出现, 但真因在上游); ②**本地通过 ≠ CI 通过**(根因可能是环境/依赖版本差异, 而非代码逻辑)。
    - 输出四档裁定之一: CONFIRMED / REFUTED / PARTIAL / UNVERIFIABLE + file:line 或 log line 证据 + 一次证伪尝试记录。
-   - **降级说明**: 本 Skill `allowed-tools` 不含 `sub_agent` 且 SLA 紧(P50 30s), 故证伪在**主上下文内自做**(换视角重读 + grep), 不起独立子代理; 严禁跳过。
+   - **降级说明**: 本 Skill 的执行 agent（verify）工具集不含 `sub_agent` 且 SLA 紧(P50 30s), 故证伪在**主上下文内自做**(换视角重读 + grep), 不起独立子代理; 严禁跳过。
 3. **synthesize(裁决合并)**: 按裁定处置——
    - **CONFIRMED** → priority=1 维持, Confidence 可提升。
    - **REFUTED** → **降级或剔除该假设**, 把 priority=2 顶上来重新走 refute。证伪一条错误根因, 避免开发者改错地方, 是高价值产出, 不是失败。
@@ -242,7 +243,7 @@ CI 失败诊断永远是 advisory, 不阻断 PR. 任何 LLM 报错 / 工具异�
 
 ## 7. 红线契约段(对外承诺,不可绕过)
 
-1. **RL-001 不删除用户代码**——allowed-tools 严格限定 read/grep/glob/bash, 不含 edit/write
+1. **RL-001 不删除用户代码**——执行 agent 为只读的 verify（read/grep/glob/bash，不含 edit/write）
 2. **RL-002 不泄露凭证**——log 中的 token / API key 必须 redact 后输出
 3. **RL-003 不绕过 Permission**——bash 仅用于查询命令, 不改文件/状态
 4. **RL-004 不无限循环**——max-turns 25 / timeout 2min
