@@ -6,6 +6,10 @@
  * 这里锁 app.ts 里那几行接线 —— restoreSession 是 9000+ 行 App 的私有路径，
  * 没有行为层接缝，与 checkpoint-session-id-wiring.test.ts 同一种静态门禁。
  *
+ * D1（2026-10-13）：账本行构造下沉到 core 的 usage-ledger-entry.ts 之后，
+ * 「账本侧取会话维度」那条断言跟随搬家；app.ts 侧补一条锁「委托调用 core」的接线，
+ * 否则搬迁会让这条门禁静默失去覆盖对象（扫描到 -1 才发现）。
+ *
  * 纯静态扫描：只 readFileSync，不落盘。
  */
 
@@ -14,6 +18,11 @@ import { readFileSync } from "node:fs";
 import { join } from "node:path";
 
 const appSrc = readFileSync(join(import.meta.dir, "..", "..", "src", "app.ts"), "utf-8");
+/** D1 下沉后的账本行构造模块：账本侧 getSessionSideStats 的调用点在这里 */
+const ledgerEntrySrc = readFileSync(
+  join(import.meta.dir, "..", "..", "..", "core", "src", "telemetry", "usage-ledger-entry.ts"),
+  "utf-8",
+);
 
 /** 取从 marker 开始、到下一个同缩进方法声明为止的一段（粗粒度定位，够用且不依赖行号）。 */
 function section(marker: string, len = 4000): string {
@@ -37,7 +46,10 @@ describe("N12 · side_call_stats 读写两端", () => {
     // 用进程维度落盘 = resume 后下一轮用「只含本进程」的值覆盖旧快照，历史直接丢
     expect(appSrc).not.toMatch(/\bgetSideStats\(/);
     expect(section("private persistUsageStats(")).toContain("getSessionSideStats()");
-    expect(section("private buildLedgerSideUsage(")).toContain("getSessionSideStats()");
+    // D1：账本侧调用点已随代码搬到 core（语义不变：仍取会话维度，不用进程维度）
+    expect(ledgerEntrySrc).toContain("getSessionSideStats()");
+    // 并锁住 app.ts → core 的委托接线，防「搬迁后调用被摘掉」而无人发现
+    expect(section("private buildLedgerEntry(")).toContain("buildUsageLedgerEntry(");
   });
 
   test("/clear 归零会话维度，并强制落一条归零快照", () => {
