@@ -118,7 +118,7 @@ import { deriveTaskTitle } from "./ui/utils/task-title.ts";
 import { buildInteractiveBashToolUse } from "./ui/shell-input.ts";
 import { mergeAnchoredItems } from "./ui/local-command-items.ts";
 import { resolvePanel } from "./command/executor.ts";
-import { routeCommandResult } from "./ui/command-result-route.ts";
+import { buildCommandAnswerMessages, routeCommandResult } from "./ui/command-result-route.ts";
 import { startPreventSleep, stopPreventSleep } from "@sid-code/core/task/prevent-sleep.ts";
 import { getSleepLedger } from "@sid-code/shared/utils/sleep-detect.ts";
 import { getRawVersion } from "@sid-code/shared/version.ts";
@@ -2748,6 +2748,8 @@ export class App {
         output: string | null | undefined,
         opts?: { panel?: import("./command/types.ts").CommandPanelSpec; isError?: boolean },
       ) => void;
+      /** 模型对命令的回答（fork 型 skill / 自定义命令）：作为一轮对话写进消息流与上下文 */
+      presentConversationalResult: (input: string, output: string | null | undefined) => void;
       getConversationClearedPatch: () => Partial<import("./ui/App.tsx").TUIState>;
       clearPromptCache: () => void;
       resetSyncState: () => void;
@@ -2761,6 +2763,7 @@ export class App {
       updateState,
       appendCommandOutput,
       presentCommandResult,
+      presentConversationalResult,
       getConversationClearedPatch,
       clearPromptCache,
       resetSyncState,
@@ -2925,7 +2928,8 @@ export class App {
         break;
 
       case "message":
-        presentCommandResult(commandInput, result.value, { panel: result.panel });
+        if (result.conversational) presentConversationalResult(commandInput, result.value);
+        else presentCommandResult(commandInput, result.value, { panel: result.panel });
         break;
 
       default:
@@ -8535,7 +8539,8 @@ export class App {
      * 此前短回执仍走 appendCommandOutput，`/model xxx` 切换后历史区留下
      * `> /model xxx` + 「主模型已切换为 …」（#228 只收了多行那一半）。
      * 不经过这里、仍写消息流的只剩：/bash（shell 输出是对话素材）、/compact 摘要、
-     * submit_prompt 的命令行（它本身就是发给模型的一轮对话）。
+     * submit_prompt 的命令行（它本身就是发给模型的一轮对话）、
+     * 以及 fork 型 skill / 自定义命令的回答（conversational，见 presentConversationalResult）。
      */
     const presentCommandResult = (
       input: string,
@@ -8546,6 +8551,26 @@ export class App {
       if (route.to === "panel") showCommandPanel(input, route.content, route.panel);
       else if (route.to === "status")
         addTransientStatusMessage("command-result", route.text, route.delayMs);
+    };
+    /**
+     * 模型对斜杠命令的回答（fork 子代理执行的 skill / 自定义命令）进对话，而不是面板/状态栏。
+     *
+     * #223 之后所有 message 结果一律走 presentCommandResult，fork 型 prompt 命令的产出
+     * （它就是模型的回答）因此被当成命令报告塞进面板，Esc 一关就没了、下一轮模型也看不到。
+     * 这里按一轮对话落（消息形状见 buildCommandAnswerMessages）：两条都进 ctxMgr 和
+     * 会话存档，所以 resume、后续追问、compact 都与 inline 命令一致。
+     */
+    const presentConversationalResult = (input: string, output: string | null | undefined) => {
+      const msgs = buildCommandAnswerMessages(input, output);
+      for (const msg of msgs) {
+        try {
+          this.sessionStore?.appendMessage(msg);
+        } catch (e: any) {
+          log.warn("TUI:CMD", `命令回答持久化失败（不阻断）: ${e?.message ?? e}`);
+        }
+        this.ctxMgr.addMessage(msg);
+      }
+      syncDisplay({});
     };
     this.commandResultPresenter = (input, output, panel) => {
       presentCommandResult(input, output, { panel: resolvePanel(output, panel, true) });
@@ -9793,6 +9818,42 @@ export class App {
           sendToLLM: async (text) => {
             await callbacks.onUserInput(text);
           },
+          // fork 型 skill / 自定义命令开跑：立刻回显触发命令 + 进加载态（spinner / Esc 可中断 /
+          // 期间输入排队），对齐 cc executeForkedSlashCommand 开跑前先出进度 UI。
+          // 此前要等子代理整段跑完、回答落盘后 syncDisplay 才出现 `/interview`，期间整屏空白。
+          // 回显是乐观项：回答经 presentConversationalResult 进 ctxMgr 后被全量重建覆盖。
+          beginForkedRun: () => {
+            const controller = new AbortController();
+            this.abortController = controller;
+            this.busy = true;
+            startPreventSleep();
+            historyIdCounter += 1;
+            updateState({
+              isLoading: true,
+              historyItems: [
+                ...bridge.current.historyItems,
+                { id: historyIdCounter, type: "command", input: commandInput, output: null },
+              ],
+              turnStartOutputTokens: this.sessionState.getTotalUsage().outputTokens,
+            });
+            let ended = false;
+            return {
+              signal: controller.signal,
+              end: () => {
+                if (ended) return;
+                ended = true;
+                stopPreventSleep();
+                this.busy = false;
+                updateState({ isLoading: false });
+                // 乐观回显要由 ctxMgr 全量重建收口，但不能在这里同步做：成功时回答随后才经
+                // presentConversationalResult 入 ctxMgr，此刻重建会先把 `/interview` 撤掉、
+                // 下一帧再加回来（闪一下）。推到下一个宏任务——那时回答已落（中间只有 microtask），
+                // 这次重建是幂等的；中断 / 异常没有回答要落，回显就在这里消失，原因走状态栏。
+                setTimeout(() => syncDisplay({}), 0);
+                void this.flushScheduledPrompts();
+              },
+            };
+          },
           // B16：命令层一次性提示走状态栏瞬态通知（8s），不进对话历史
           notify: (text) => this.statusNotifier?.("command_notice", text, 8000),
           customCommands: this.getCustomCommandsSummary(),
@@ -9893,6 +9954,7 @@ export class App {
             getConversationClearedPatch,
             clearPromptCache,
             presentCommandResult,
+            presentConversationalResult,
             resetSyncState: () => {
               lastSyncedCount = 0;
               historyIdCounter = 0;
@@ -10028,6 +10090,10 @@ export class App {
 
           case "message":
           default:
+            if (result.kind === "message" && result.conversational) {
+              presentConversationalResult(commandInput, result.message);
+              break;
+            }
             presentCommandResult(commandInput, result.message, {
               panel: result.kind === "message" ? result.panel : undefined,
             });

@@ -108,6 +108,13 @@ export interface AppContext {
   /** 将文本注入对话并触发 LLM 响应（自定义命令用） */
   sendToLLM?: (text: string) => Promise<void>;
   /**
+   * fork 执行（子代理跑 prompt 命令 / skill）开始前调用：TUI 立刻回显触发命令、进入加载态，
+   * 返回本次运行的中断信号（Esc 生效）；`end` 在子代理返回后调用（无论成败）。
+   * 对齐 cc executeForkedSlashCommand 开跑前先 setToolJSX 出 spinner——不回显时用户回车后
+   * 面对一整段空白，以为命令没执行。未注入（headless / 测试）时 fork 照常执行，只是没有回显与中断。
+   */
+  beginForkedRun?: () => { signal: AbortSignal; end: () => void };
+  /**
    * 一次性提示（不进对话、不喂 LLM）。交互模式接状态栏瞬态通知；无头模式为 undefined。
    * B16：/goal 设定时提示「评估者 = 主模型」—— submit_prompt 的提示词只喂 LLM、不上屏，需要这条旁路。
    */
@@ -199,6 +206,8 @@ export interface CommandResult {
   dialog?: DialogType;
   /** kind=message 时强制进命令输出面板（同 LocalCommandResult.panel） */
   panel?: import("@sid-code/core/command-contract/types.ts").CommandPanelSpec;
+  /** kind=message 时表示这是模型的回答，进对话（同 LocalCommandResult.conversational） */
+  conversational?: boolean;
 }
 
 /**
@@ -259,6 +268,11 @@ export type CommandExecutionResult =
       shouldQuery?: boolean;
       /** 有值 = TUI 里进命令输出面板（弹窗），而不是追加进消息流。见 CommandBase.outputPanel */
       panel?: import("@sid-code/core/command-contract/types.ts").CommandPanelSpec;
+      /**
+       * 模型对本次命令的回答（fork 执行的 prompt 命令 / skill）：TUI 写进消息流与上下文，
+       * 当一轮对话展示，**不**走面板/状态栏。优先级高于 panel。
+       */
+      conversational?: boolean;
     }
   | { type: "submit_prompt"; value: string; shouldQuery: boolean }
   | { type: "dialog"; dialog: DialogType }

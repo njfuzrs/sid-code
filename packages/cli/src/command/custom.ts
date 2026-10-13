@@ -414,17 +414,29 @@ export class CustomCommand implements Command {
         ctx.hookSystem,
         model, // modelOverride：未指定则用主模型
       );
-      const result = await subAgent.executeCustom({
-        systemPrompt: "你是一个专注的助手，请完成以下任务。",
-        userPrompt: prompt,
-        allowedTools: allowedTools ?? [],
-        maxTurns: 30,
-        type: "custom-command",
-      });
+      const run = ctx.beginForkedRun?.();
+      let result: Awaited<ReturnType<typeof subAgent.executeCustom>>;
+      try {
+        result = await subAgent.executeCustom(
+          {
+            systemPrompt: "你是一个专注的助手，请完成以下任务。",
+            userPrompt: prompt,
+            allowedTools: allowedTools ?? [],
+            maxTurns: 30,
+            type: "custom-command",
+          },
+          run?.signal,
+        );
+      } finally {
+        run?.end();
+      }
+      if (run?.signal.aborted) {
+        return { kind: "error", message: `已取消 /${this._name}` };
+      }
       if (!result.success) {
         return { kind: "error", message: result.output || "自定义命令执行失败" };
       }
-      return { kind: "message", message: result.output };
+      return { kind: "message", message: result.output, conversational: true };
     } catch (err: any) {
       log.error("CUSTOM_CMD", `fork 执行失败 /${this._name}: ${err?.message}`);
       // fork 出错兜底回 inline，避免命令完全不可用。

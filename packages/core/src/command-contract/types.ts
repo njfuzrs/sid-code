@@ -210,6 +210,13 @@ export interface CommandContext {
   /** 将文本注入对话并触发 LLM 响应 */
   sendToLLM?: (text: string) => Promise<void>;
   /**
+   * fork 执行（子代理跑 prompt 命令 / skill）开始前调用：TUI 立刻回显触发命令、进入加载态，
+   * 返回本次运行的中断信号（Esc 生效）；`end` 在子代理返回后调用（无论成败）。
+   * 对齐 cc executeForkedSlashCommand 开跑前先 setToolJSX 出 spinner——不回显时用户回车后
+   * 面对一整段空白，以为命令没执行。未注入（headless / 测试）时 fork 照常执行，只是没有回显与中断。
+   */
+  beginForkedRun?: () => { signal: AbortSignal; end: () => void };
+  /**
    * 一次性提示（不进对话、不喂 LLM）。交互模式接状态栏瞬态通知；无头模式为 undefined。
    * B16：/goal 设定时提示「评估者 = 主模型」—— submit_prompt 的提示词只喂 LLM、不上屏，需要这条旁路。
    */
@@ -327,7 +334,17 @@ export interface LocalCommandModule {
 }
 
 export type LocalCommandResult =
-  | { type: "text"; value: string; panel?: CommandPanelSpec } // 显示文本（带 panel = 进输出面板）
+  | {
+      type: "text";
+      value: string;
+      /** 带 panel = 进输出面板 */
+      panel?: CommandPanelSpec;
+      /**
+       * 这段文本是**模型对本次命令的回答**（fork 子代理执行的 prompt 命令 / skill），
+       * 不是命令自身的报告。TUI 把它当一轮对话写进消息流与上下文，不走面板/状态栏。
+       */
+      conversational?: boolean;
+    }
   | { type: "compact"; summary: string } // 上下文压缩结果
   | { type: "skip" } // 静默完成
   | { type: "clear" } // 清空对话

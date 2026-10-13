@@ -43,6 +43,7 @@ export function toAppContext(ctx: CommandContext): AppContext {
     exitRequested: false,
     sessionState: ctx.sessionState,
     sendToLLM: ctx.sendToLLM,
+    beginForkedRun: ctx.beginForkedRun,
     notify: ctx.notify,
     customCommands: ctx.customCommands,
     confirmShellCommands: ctx.confirmShellCommands,
@@ -63,6 +64,9 @@ export function toAppContext(ctx: CommandContext): AppContext {
 export function convertResult(result: LegacyCommandResult): LocalCommandResult {
   switch (result.kind) {
     case "message":
+      if (result.conversational) {
+        return { type: "text", value: result.message ?? "", conversational: true };
+      }
       return result.panel
         ? { type: "text", value: result.message ?? "", panel: result.panel }
         : { type: "text", value: result.message ?? "" };
@@ -122,6 +126,7 @@ export function toCommandContext(appCtx: AppContext): CommandContext {
     getThinkingState: appCtx.getThinkingState,
     sessionState: appCtx.sessionState,
     sendToLLM: appCtx.sendToLLM,
+    beginForkedRun: appCtx.beginForkedRun,
     notify: appCtx.notify,
     customCommands: appCtx.customCommands,
     confirmShellCommands: appCtx.confirmShellCommands,
@@ -152,6 +157,9 @@ export function toCommandContext(appCtx: AppContext): CommandContext {
 function toLegacyResult(result: import("./types.ts").CommandExecutionResult): LegacyCommandResult {
   switch (result.type) {
     case "message":
+      if (result.conversational) {
+        return { kind: "message", message: result.value, conversational: true };
+      }
       return result.panel
         ? { kind: "message", message: result.value, panel: result.panel }
         : { kind: "message", message: result.value };
