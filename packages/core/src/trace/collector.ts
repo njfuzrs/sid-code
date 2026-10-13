@@ -1928,13 +1928,21 @@ export class TraceCollector {
       // 记为 undefined，由 isBlankSession 走「拿不到证据就保留」的分支。
       let receivedContent: boolean | undefined;
       try {
-        const ref = this.streamSnapshotRefs.get(this.currentPair.index);
-        const snap = ref
-          ? getStreamSnapshot(ref.turn_index, ref.loop_id)
-          : getStreamSnapshot(this.currentPair.index);
-        // 三态：true=确实收到过；false=有快照且明确 0 chunk；undefined=无快照，不可判。
-        // 别把「无快照」压成 false —— 那是"二态布尔吞掉不可判态"，本仓踩过同型的坑。
-        receivedContent = snap ? snap.chunksReceived > 0 : undefined;
+        // currentPair 是 Partial<RequestResponsePair>，index 可能缺失。
+        // 取不到就不查快照（走「无快照」分支，保守保留），绝不补一个 index 去查 ——
+        // 那会把「不可判」伪造成某条别的快照的结论。
+        const idx = this.currentPair.index;
+        if (idx === undefined) {
+          receivedContent = undefined;
+        } else {
+          const ref = this.streamSnapshotRefs.get(idx);
+          const snap = ref
+            ? getStreamSnapshot(ref.turn_index, ref.loop_id)
+            : getStreamSnapshot(idx);
+          // 三态：true=确实收到过；false=有快照且明确 0 chunk；undefined=无快照，不可判。
+          // 别把「无快照」压成 false —— 那是"二态布尔吞掉不可判态"，本仓踩过同型的坑。
+          receivedContent = snap ? snap.chunksReceived > 0 : undefined;
+        }
       } catch {
         receivedContent = undefined;
       }
