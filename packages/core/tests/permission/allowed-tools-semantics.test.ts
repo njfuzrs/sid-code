@@ -216,3 +216,26 @@ describe("T13 --allowed-tools 走规则引擎", () => {
     expect((await c.check(bash("echo hi"))).allowed).toBe(true);
   });
 });
+
+describe("方案 G 可观测：CommandAllowedTools 事件", () => {
+  test("setCommandScopedRules 记录 declared / rules / dropped（inline 与 fork 同一出口）", async () => {
+    const { setCommandAllowedToolsObserver } =
+      await import("@sid-code/core/permission/decision-telemetry.ts");
+    const events: any[] = [];
+    setCommandAllowedToolsObserver((e) => events.push(e));
+    try {
+      const c = makeChecker();
+      c.setCommandScopedRules(["Bash(*)", "Read"], false, "/demo allowed-tools");
+      expect(events).toHaveLength(1);
+      expect(events[0]).toMatchObject({
+        origin: "/demo allowed-tools",
+        declared: 2,
+        rules: ["Read"],
+        dropped: ["Bash(*)"],
+        trusted: false,
+      });
+    } finally {
+      setCommandAllowedToolsObserver(null);
+    }
+  });
+});

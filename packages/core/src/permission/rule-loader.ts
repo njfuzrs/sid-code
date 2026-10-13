@@ -6,6 +6,7 @@
  * 安全约束：projectSettings 是不可信来源，某些敏感设置必须排除
  */
 
+import { recordCommandAllowedTools } from "./decision-telemetry.ts";
 import { join } from "path";
 import { existsSync } from "fs";
 import { getLogger } from "../debug/logger.ts";
@@ -456,7 +457,15 @@ export class RuleLoader {
     if (rules.length > 0) this.sources.set("commandScoped", rules);
     else this.sources.delete("commandScoped");
     this.invalidateCache();
-    return before.filter((r) => !kept.has(r));
+    const dropped = before.filter((r) => !kept.has(r));
+    recordCommandAllowedTools({
+      origin,
+      declared: before.length,
+      rules: [...kept],
+      dropped,
+      trusted,
+    });
+    return dropped;
   }
 
   /** 清空命令作用域规则（本轮结束 / 中断 / 异常时都要调） */

@@ -54,6 +54,7 @@ import {
 import { listActiveSessions } from "../session/concurrent.ts";
 import {
   setPermissionDecisionObserver,
+  setCommandAllowedToolsObserver,
   type PermissionDecisionEvent,
 } from "../permission/decision-telemetry.ts";
 import {
@@ -747,6 +748,17 @@ export class TraceCollector {
     // B11：权限决策不走 hook（鉴权点没有对应的"已决策"事件，PermissionDenied 只覆盖一半），
     // 走 decision-telemetry 的模块级观察者。与 hook 同一时机注入，保证「采集启用」⇔「决策进轨迹」。
     setPermissionDecisionObserver((e) => this.handlePermissionDecision(e));
+    // 方案 G：命令 allowed-tools 下发与剥离进轨迹（可复算「多少命令声明被丢弃」）
+    setCommandAllowedToolsObserver((e) => {
+      if (!this.initialized) return;
+      this.recordCustomEvent("CommandAllowedTools", {
+        origin: e.origin,
+        declared: e.declared,
+        rules: e.rules,
+        dropped: e.dropped,
+        trusted: e.trusted,
+      });
+    });
     const eventNames = [
       HookEventName.SessionStart,
       HookEventName.BeforeModel,

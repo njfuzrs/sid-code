@@ -99,17 +99,44 @@ skill 声明了其中任何一个，执行前都要再确认一次（`packages/c
 
 这是写 Skill 时第一个要决定的事，选错影响很大：
 
-| | `mode: activate` | `mode: delegate`（默认） |
+| | `mode: activate`（默认） | `mode: delegate` |
 | --- | --- | --- |
 | 在哪跑 | 注入**当前对话**，模型接着往下做 | 派**子代理**去跑，只把结果带回来 |
 | 上下文 | 共享主对话，能看到之前聊的一切 | 独立上下文，看不到主对话历史 |
 | 适合 | 流程要和当前任务咬合（改代码的 SOP、写 changelog） | 独立可交付的活（出一份 review 报告、审计报告） |
 | 代价 | 占主对话上下文 | 多一次 LLM 调用，但主对话不膨胀 |
 
-拿不准就用 `activate`——它行为更直观。真正需要"独立产出一份报告"时才用 delegate。
+拿不准就用默认的 `activate`——它行为更直观。真正需要"独立产出一份报告"时才用 delegate。
 
 也可以写 `context: inline` / `context: fork`（分别对应 activate / delegate）。从别的工具迁来的 skill
 多半用这个写法；两者同时写时以 `context` 为准。
+
+::: warning 默认值已改为 inline（与 Claude Code 一致）
+`mode` 与 `context` 都不写时，skill 现在在**当前对话**里跑（旧版本默认 delegate）。
+需要隔离执行的 skill 请显式写 `context: fork`。
+:::
+
+### `allowed-tools` 是免确认规则，不是工具白名单
+
+与 Claude Code 同一语义：`allowed-tools` 列出的是**这次执行期间不用弹窗确认**的 allow 规则，
+认 Claude Code 写法（`Read`、`Bash(git diff*)`、`mcp__server__tool`），括号内的逗号不会被切开。
+
+- 它**不裁剪工具集**，也**不决定是否 fork**；
+- inline 时只作用于触发它的那一轮，下一轮自动清空；fork 时只加在那个子代理上；
+- deny 规则、危险命令拦截照常生效，压得住它；
+- 项目级与插件来源的 skill / 命令（随仓库分发，不可信）里，`Bash(*)`、`Bash(rm …)`、裸 `Bash` / `Write` / `Edit` 这类自我授权会被剥离并告警。
+
+要**收窄** fork 子代理能用的工具，用 `agent:` 指向一个工具受限的子代理类型（如只读的 `verify`）。
+fork 子代理默认拿 `general-purpose` 的完整工具集，并继承主会话的权限模式
+（主会话是 `--yes` / `--dangerously-skip-permissions` 时子代理同样放行，其余模式按「不弹窗、需确认即拒」处理）。
+
+### 自定义命令（`.sid-code/commands/*.md`）同一套语义
+
+自定义命令的 frontmatter 认 `allowed-tools`、`context`、`agent`、`model`，口径与 skill 一致：
+
+- 只有 `context: fork` 才 fork；只写 `allowed-tools` **不再**触发 fork（旧版本会）；
+- 只写 `model` 不写 `context` 时暂按 fork 执行并告警（inline 单轮换模型尚未支持），写上 `context: fork` 即可消除告警；
+- 从 Claude Code 迁来的命令（`allowed-tools: Read, Glob, Bash(ls*)`）原样可用，不需要改成内部工具名。
 
 ## SKILL.md 的字段
 
@@ -121,9 +148,9 @@ frontmatter 字段用 **kebab-case**（`when-to-use`，不是 `whenToUse`）：
 | `name` | 是 | Skill 名，也是斜杠命令名（`/changelog-entry`） |
 | `description` | 是 | **模型据此判断要不要触发**。写具体，别写"处理各种任务" |
 | `when-to-use` | 否 | 触发场景的补充说明，给模型更明确的信号 |
-| `mode` | 否 | `activate` / `delegate`（默认 delegate） |
+| `mode` | 否 | `activate` / `delegate`（默认 activate） |
 | `context` | 否 | `inline` / `fork`，分别等价于 `activate` / `delegate`；和 `mode` 同时写时以 `context` 为准 |
-| `allowed-tools` | 否 | 允许用的工具，逗号分隔。delegate 模式下不写时只给只读默认集（`read` / `grep` / `glob` / `ls`），要写文件或执行命令必须显式声明；显式写空列表 = 零工具。声明它会让 skill 执行前多一次确认 |
+| `allowed-tools` | 否 | 免确认 allow 规则（逗号/空格分隔，认 `Read`、`Bash(git *)` 等写法），**不裁剪工具集**，见上文。声明它会让 skill 执行前多一次确认 |
 | `max-turns` | 否 | delegate 模式最大轮次，默认 30。模型自动调用时上限 50；手动 `/name` 触发不封顶 |
 | `timeout-mins` | 否 | delegate 模式超时（分钟），默认 2，上限 30。只在模型自动调用时生效，手动 `/name` 触发不受它约束 |
 | `model` | 否 | 指定模型（比如让审计走更强的模型） |
@@ -131,7 +158,7 @@ frontmatter 字段用 **kebab-case**（`when-to-use`，不是 `whenToUse`）：
 | `disable-model-invocation` | 否 | `true` = 只能手动 `/name` 触发，模型不能自动调 |
 | `user-invocable` | 否 | `false` = 不注册斜杠命令，只给模型自动调 |
 | `paths` | 否 | glob 列表，只在操作匹配文件时才激活（条件激活） |
-| `version` / `argument-hint` / `agent` / `shell` | 否 | 版本号 / 参数提示 / 子代理类型 / `!` 命令用的 shell |
+| `version` / `argument-hint` / `agent` / `shell` | 否 | 版本号 / 参数提示 / fork 子代理类型（决定工具集，缺省 `general-purpose`） / `!` 命令用的 shell |
 
 正文里可以用 `${SKILL_DIR}` 引用 Skill 自己的目录——放脚本、模板文件都靠它定位。
 
