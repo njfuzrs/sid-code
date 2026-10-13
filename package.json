@@ -39,6 +39,7 @@
     "lint:fix": "oxlint packages tests scripts evals website plugins --fix",
     "lint:boundary": "bun run scripts/pkg-boundary-scan.ts",
     "typecheck": "tsc --noEmit",
+    "typecheck:gate": "bun run scripts/tsc-baseline.ts",
     "tui:spec": "bun run scripts/verify-tui-spec.ts",
     "tui:bench": "bun run scripts/tui-bench-report.ts",
     "lint:command-system": "bun run scripts/command-system-gate.ts",
