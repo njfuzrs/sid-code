@@ -3,8 +3,9 @@
  * 审批记录存储在 ~/.sid-code/state/mcp-approvals.json
  */
 
-import { existsSync, readFileSync, writeFileSync, mkdirSync } from "fs";
+import { existsSync, readFileSync, writeFileSync, mkdirSync, renameSync } from "fs";
 import { sidPaths } from "../config/paths.ts";
+import { getLogger } from "../debug/logger.ts";
 
 export type ApprovalStatus = "approved" | "rejected" | "pending";
 
@@ -37,12 +38,37 @@ function approvalsPath(): string {
   return sidPaths.stateFile("mcp-approvals.json");
 }
 
+/**
+ * 本进程内读到的「损坏且尚未备份」的审批文件路径。
+ *
+ * 为什么必须把「损坏」这个事实从读传到写：`loadApprovals` 解析失败时只能返回空 store
+ * （fail-safe：所有项目级 server 回到待审批，重新询问用户），但紧接着的
+ * `approveProjectServer` / `rejectProjectServer` / `setApproveAll` 都是
+ * 「load → 改 → 整个文件重写」。若读的时候只告警不记状态，这一次写入就会用一份
+ * 几乎为空的文件覆盖掉用户**全部项目**的历史审批 / 拒绝记录 —— 静默且不可逆。
+ */
+let corruptPending: string | null = null;
+
 function loadApprovals(): ApprovalStore {
+  const path = approvalsPath();
+  // 文件不存在 = 正常首次使用（saveApprovals 会创建），不告警
+  if (!existsSync(path)) return { approved: [], rejected: [] };
   try {
-    if (existsSync(approvalsPath())) {
-      return JSON.parse(readFileSync(approvalsPath(), "utf-8"));
+    const parsed: unknown = JSON.parse(readFileSync(path, "utf-8"));
+    if (parsed && typeof parsed === "object" && !Array.isArray(parsed)) {
+      // 上一次读到损坏、这一次读到合法内容 = 文件已被外部修复 → 清掉待备份标记，
+      // 否则紧接着的写入会把一份好文件当成损坏件挪走
+      if (corruptPending === path) corruptPending = null;
+      return parsed as ApprovalStore;
     }
-  } catch {}
+  } catch {
+    // JSON 解析失败与「顶层不是对象」同属不可用，统一走下面的损坏处理
+  }
+  corruptPending = path;
+  getLogger().warn(
+    "MCP",
+    `审批记录已损坏（${path}），已按空记录处理；原文件将在下次写入前备份为 ${path}.corrupt-<时间戳>`,
+  );
   return { approved: [], rejected: [] };
 }
 
@@ -53,7 +79,25 @@ function saveApprovals(store: ApprovalStore): void {
   if (!existsSync(dir)) {
     mkdirSync(dir, { recursive: true });
   }
-  writeFileSync(approvalsPath(), JSON.stringify(store, null, 2));
+  const path = approvalsPath();
+  // 本次进程读到过损坏 → 写入前先把原文件挪走。每个损坏文件只备份一次：
+  // 备份完（或确认无需备份）即清标记，后续写入不会再产生第二份备份。
+  if (corruptPending === path && existsSync(path)) {
+    try {
+      renameSync(path, `${path}.corrupt-${Date.now()}`);
+    } catch (err) {
+      // 备份失败不阻断写入：损坏内容本就解析不出来，approve 仍要能用；
+      // 补一条告警说明原文件没能保住即可。
+      getLogger().warn(
+        "MCP",
+        `备份损坏的审批记录失败（${path}）：${err instanceof Error ? err.message : String(err)}`,
+      );
+    }
+  }
+  writeFileSync(path, JSON.stringify(store, null, 2));
+  // 写入成功后才清标记：若上面 rename 成功而这里写失败，path 已不存在，
+  // 下次写入会被 existsSync 拦住、不会产生第二个备份文件。
+  corruptPending = null;
 }
 
 /**
