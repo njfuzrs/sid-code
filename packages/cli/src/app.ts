@@ -111,6 +111,7 @@ import {
 import * as CrashMarker from "@sid-code/core/trace/crash-marker.ts";
 import * as PidManager from "@sid-code/core/trace/pid-manager.ts";
 import { execSync } from "child_process";
+import { existsSync, readFileSync } from "fs";
 import { readFile } from "fs/promises";
 import { resolve, extname, join } from "path";
 import { sidPaths } from "@sid-code/core/config/paths.ts";
@@ -6364,7 +6365,6 @@ export class App {
   private countPlanSteps(planPath: string | null): number {
     if (!planPath || !this.planManager) return 0;
     try {
-      const { existsSync, readFileSync } = require("fs");
       if (!existsSync(planPath)) return 0;
       const md = readFileSync(planPath, "utf-8");
       return this.planManager.parsePlanFromMarkdown(md).length;
@@ -8575,7 +8575,6 @@ export class App {
             // 读取计划文件内容
             let planContent = "";
             try {
-              const { readFileSync } = require("fs");
               planContent = readFileSync(planFilePath, "utf-8");
             } catch (err: any) {
               planContent = `(无法读取计划文件: ${err.message})`;
@@ -10063,7 +10062,6 @@ export class App {
           // 并把仍指向「没 key 模型」的 fallbackModel / subAgentModels 改到能用的模型上。
           const { applyPresetApiKey } = require("@sid-code/core/config/onboarding-preset.ts");
           const { getSettingsFilePath } = require("@sid-code/core/config/settings/constants.ts");
-          const { readFileSync } = require("fs");
           let patch: Record<string, unknown>;
           try {
             const raw = JSON.parse(readFileSync(getSettingsFilePath("userSettings"), "utf-8"));
