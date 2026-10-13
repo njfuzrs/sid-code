@@ -1483,7 +1483,26 @@ describe("TraceCollector", () => {
       },
       backfillPendingSessions: async () => {
         calls.backfill++;
-        return { pending: 0, attempted: 0, uploaded: 0 };
+        // 返回类型是 backfill.ts 的 BackfillResult（ScanStats + 本轮统计），
+        // 字段必须逐一对齐：缺一格这个 mock 就不再兼容 TraceUploaderInterface。
+        return {
+          scanned: 0,
+          alreadyUploaded: 0,
+          noTraj: 0,
+          emptyTraj: 0,
+          tooNew: 0,
+          live: 0,
+          ghost: 0,
+          beforeWatermark: 0,
+          errored: 0,
+          pending: 0,
+          attempted: 0,
+          uploaded: 0,
+          failed: 0,
+          errors: 0,
+          deferred: 0,
+          aborted: false,
+        };
       },
     };
     const c = new TraceCollector({ outputDir: testDir, autoUpload }, mockUploader);
