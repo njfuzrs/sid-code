@@ -114,7 +114,8 @@ describe("路径映射：core domain 的 src ↔ tests 对应关系", () => {
   test("src 独有目录（无同名 tests/）回退整包，而不是产出空集或不存在的路径", () => {
     for (const d of dirsOf("packages/core/src")) {
       if (existsSync(join(ROOT, `packages/core/tests/${d}`))) continue;
-      // 这几个目录当前确实缺测试（bootstrap / command-contract / coordinator），
+      // 这三个目录已在 2026-10-13 补上测试（PR-E）；
+      // 本用例保留，用于覆盖将来新增的、没有测试目录的 src 目录。
       // 回退整包是"宁可多跑"，绝不能是空集——空集意味着改了代码零验证。
       expect(mapPathToTests(`packages/core/src/${d}/x.ts`)).toEqual(["./packages/core/"]);
     }
