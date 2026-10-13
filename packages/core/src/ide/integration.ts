@@ -222,7 +222,9 @@ let singleton: IDEIntegration | null = null;
 export function getIDEIntegration(
   mcpManager?: MCPManager,
   cwd?: string,
-  options?: { discoveryTimeout?: number },
+  // options 与构造函数同形：这里少一个字段，透传它的调用点就会报错
+  // （diffPreview 是构造函数接受并真正消费的可选开关）。
+  options?: { discoveryTimeout?: number; diffPreview?: boolean },
 ): IDEIntegration | null {
   if (singleton) return singleton;
   if (!mcpManager || !cwd) return null;

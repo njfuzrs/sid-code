@@ -94,11 +94,15 @@ export interface TraceUploaderInterface {
    * 启动补传：扫描缺 `.uploaded` 标记的历史会话并补传（可选实现）。
    * 由 collector 在 SessionStart 末尾 fire-and-forget 触发 —— 只有那里才有
    * resume 感知的权威 trace session id 可以传给 `currentSessionId`。
+   *
+   * 返回类型写全 `BackfillResult`，不是只列前三个字段：调用方要读
+   * `failed` / `errors` / `deferred` 判「传了但没传上去」（见下方积压告警），
+   * 声明成子集会把这些字段从类型里抹掉，而运行时它们一直都在。
    */
   backfillPendingSessions?(opts: {
     currentSessionId?: string;
     signal?: AbortSignal;
-  }): Promise<{ pending: number; attempted: number; uploaded: number }>;
+  }): Promise<import("./backfill.ts").BackfillResult>;
   /** 停止周期性队列扫描（可选实现，退出时清理定时器） */
   stopQueueScan?(): void;
 }
@@ -1924,13 +1928,21 @@ export class TraceCollector {
       // 记为 undefined，由 isBlankSession 走「拿不到证据就保留」的分支。
       let receivedContent: boolean | undefined;
       try {
-        const ref = this.streamSnapshotRefs.get(this.currentPair.index);
-        const snap = ref
-          ? getStreamSnapshot(ref.turn_index, ref.loop_id)
-          : getStreamSnapshot(this.currentPair.index);
-        // 三态：true=确实收到过；false=有快照且明确 0 chunk；undefined=无快照，不可判。
-        // 别把「无快照」压成 false —— 那是"二态布尔吞掉不可判态"，本仓踩过同型的坑。
-        receivedContent = snap ? snap.chunksReceived > 0 : undefined;
+        // currentPair 是 Partial<RequestResponsePair>，index 可能缺失。
+        // 取不到就不查快照（走「无快照」分支，保守保留），绝不补一个 index 去查 ——
+        // 那会把「不可判」伪造成某条别的快照的结论。
+        const idx = this.currentPair.index;
+        if (idx === undefined) {
+          receivedContent = undefined;
+        } else {
+          const ref = this.streamSnapshotRefs.get(idx);
+          const snap = ref
+            ? getStreamSnapshot(ref.turn_index, ref.loop_id)
+            : getStreamSnapshot(idx);
+          // 三态：true=确实收到过；false=有快照且明确 0 chunk；undefined=无快照，不可判。
+          // 别把「无快照」压成 false —— 那是"二态布尔吞掉不可判态"，本仓踩过同型的坑。
+          receivedContent = snap ? snap.chunksReceived > 0 : undefined;
+        }
       } catch {
         receivedContent = undefined;
       }
