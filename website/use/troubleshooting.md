@@ -230,7 +230,7 @@ export PATH="$HOME/.local/bin:$PATH"
 | `/cost` | 花了多少 |
 | `/trace` | **它当时到底干了什么** —— 把轨迹嚼成结构化摘要，`--full` 看详细 |
 | `/insights` | 会话分析报告（模型/成本/token/工具/异常） |
-| `/debug` | 诊断数据、复制 Session ID、上传轨迹快照 |
+| `/debug` | 诊断数据、复制 Session ID；配了 `trace.upload` 时会立即上传当前轨迹到你配置的地址 |
 | `/bug` | 生成带环境信息的 bug 报告模板，直接进剪贴板 |
 
 **`/trace` 是被低估的那个**。"它为什么改了那个文件"、"这一步为什么重试了三次"

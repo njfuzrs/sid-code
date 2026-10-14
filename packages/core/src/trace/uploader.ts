@@ -608,8 +608,8 @@ export class UploadManager implements TraceUploaderInterface {
         const filePath = join(sessionDir, entry.file);
 
         if (!existsSync(filePath)) {
-          // 文件不存在 —— 绝大多数是会话目录已被 LRU（maxSessionsRetained 默认 100）
-          // 轮转删掉，队列里剩的是指向空地址的门票。丢弃是对的，但**必须计数 + 告警**：
+          // 文件不存在 —— 绝大多数是会话目录已被保留策略（默认 365 天 / 10GB，或显式的
+          // maxSessionsRetained）清理掉，队列里剩的是指向空地址的门票。丢弃是对的，但**必须计数 + 告警**：
           // 这是「本地数据已经没了、云端也没有」的唯一可见信号。
           stats.droppedMissingFile++;
           droppedSessions.add(entry.session_id);

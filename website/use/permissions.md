@@ -449,7 +449,27 @@ write(...)    → 允许(acceptEdits模式)
 配了 `allow: ["Bash(*)"]` 之后进 plan 模式，bash 仍然能跑。
 要让 plan 模式的只读保证真的成立，就不要给写类工具配宽泛的 allow 规则。
 
+### 搜索词和抓取的网址会发往哪里
+
+WebSearch 的搜索词由模型生成，可能夹带代码片段、文件路径或报错原文。
+配了 `search.searxngUrl`（或环境变量 `SEARXNG_URL`）就发往那台 SearXNG，没配就发往 `duckduckgo.com`。
+WebFetch 把模型要抓的整个 URL（含查询参数）发往对应网站。
+
+想收紧，有两种做法：
+
+- 换成自建 SearXNG，搜索词只到自己的服务器：
+
+  ```json
+  { "search": { "backend": "searxng", "searxngUrl": "https://searxng.internal.example.com" } }
+  ```
+
+- 用权限规则禁用或限定范围，例如 `"deny": ["WebSearch"]`、`"allow": ["WebFetch(domain:*.example.com)"]`。
+
+全部出网通道的对照见[隐私与数据流向](/use/privacy#出网总表)。
+
 ## 相关
+
+- [隐私与数据流向](/use/privacy) —— 什么会离开本机、隐私级别、脱敏边界
 
 - [settings.json 字段](/ref/settings) —— `permissions` 段的完整字段类型与默认值
 - [内置工具](/ref/tools) —— 规则里工具名的确切拼写
