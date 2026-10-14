@@ -67,7 +67,12 @@ export interface SessionPerfReport {
   sessionId: string;
   model: string;
   ttft: { p50?: number; p95?: number; n: number };
-  ttftByModel: Array<{ model: string; n: number; p50?: number; p95?: number; ttfbP50?: number }>;
+  /**
+   * 按 model 的延迟，**原样引用** `latency-by-model.ts` 的结构而不复制 TTFB 字段 ——
+   * 结构门禁（observability-d22-d30.test.ts 缺陷 26）禁止在那个模块之外定义 ttfb 分位字段，
+   * 防止有人在这里顺手做跨 model 汇总。
+   */
+  ttftByModel: Array<{ model: string; stats: ModelLatencyStats }>;
   e2e: { p50?: number; p95?: number; n: number };
   gen: { p95?: number; n: number };
   tps?: number;
@@ -79,14 +84,8 @@ export interface SessionPerfReport {
 export function buildSessionPerf(input: SessionPerfInput): SessionPerfReport {
   const m = input.metrics;
   const byModel = Object.entries(input.latencyByModel ?? {})
-    .map(([model, s]) => ({
-      model,
-      n: s.n,
-      p50: s.ttft_p50,
-      p95: s.ttft_p95,
-      ttfbP50: s.ttfb_p50,
-    }))
-    .sort((a, b) => b.n - a.n);
+    .map(([model, stats]) => ({ model, stats }))
+    .sort((a, b) => b.stats.n - a.stats.n);
   const modelMs = input.modelTimeMs ?? 0;
   const toolMs = input.toolDurationMs ?? 0;
   return {
@@ -369,11 +368,12 @@ export function renderSessionPerf(r: SessionPerfReport): string {
     lines.push(`  首字延迟 TTFT   P50 ${ms(r.ttft.p50)}  P95 ${ms(r.ttft.p95)}  (n=${r.ttft.n})`);
   }
   // 多 model（fallback / 切模型）时必须分开看：跨 model 的 TTFT 汇总是假数
-  if (r.ttftByModel.length > 1 || r.ttftByModel.some((m) => m.ttfbP50 !== undefined)) {
-    for (const m of r.ttftByModel) {
-      const ttfb = m.ttfbP50 !== undefined ? `  TTFB P50 ${ms(m.ttfbP50)}` : "";
+  if (r.ttftByModel.length > 1 || r.ttftByModel.some((m) => m.stats.ttfb_p50 !== undefined)) {
+    for (const { model, stats } of r.ttftByModel) {
+      // TTFB 只在单 model 内展示：跨路由语义不同，见 latency-by-model.ts 头注释
+      const ttfb = stats.ttfb_p50 !== undefined ? `  TTFB P50 ${ms(stats.ttfb_p50)}` : "";
       lines.push(
-        `    ${shortModel(m.model)}: TTFT P50 ${ms(m.p50)} / P95 ${ms(m.p95)} (n=${m.n})${ttfb}`,
+        `    ${shortModel(model)}: TTFT P50 ${ms(stats.ttft_p50)} / P95 ${ms(stats.ttft_p95)} (n=${stats.n})${ttfb}`,
       );
     }
   }
