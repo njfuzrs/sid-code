@@ -90,14 +90,27 @@ cat ~/.sid-code/updates/last-update.log
 
 ### 回滚
 
-没有「列出历史版本」的接口（`sid-code update --list` 会直接拒绝）。
-知道要回到哪一版就指定版本号：
+先列出可安装的版本，再指定版本号：
 
 ```bash
+sid-code update --list               # 按版本号倒序，标注 stable / beta / 当前
 sid-code update --version <版本号>
 ```
 
-前提是服务器上还留着那个版本目录。配置和会话数据不受影响，只换二进制。
+0.1.602 起的每个版本都在归档里，服务器清理旧目录不影响安装。
+更早的版本已丢失，`--list` 末尾会如实列出。配置和会话数据不受影响，只换二进制。
+
+两点要注意：
+
+- **停留在旧版本要关自动更新。** 默认 `auto` 模式只要服务器上有更新的版本就会升级，
+  下次启动就把你装的旧版本换掉了。想停留，在 settings 里写 `"autoUpdate": "off"`，
+  或设环境变量 `SID_CODE_AUTO_UPDATE=off`。
+- **0.1.599 及更早的版本内置的更新地址已停用。** 这批版本自己的 `sid-code update`
+  和自动更新都会失败。要换版本，请重新运行 install.sh：
+
+```bash
+curl -fsSL https://www.sid-code.cc/releases/sid-code/install.sh | SID_CODE_VERSION=<版本号> bash
+```
 
 ### 无头模式不自动更新
 

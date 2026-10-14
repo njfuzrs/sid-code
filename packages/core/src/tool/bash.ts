@@ -548,6 +548,7 @@ export class BashTool implements Tool {
 - 要向用户传达信息时，直接在回复正文里输出文本，不要用 echo/printf 打印（除非确实需要把文本喂给管道/重定向等 shell 流程）
 - 必须提供 description 参数，用自然语言描述命令意图
 - 设置合理的 timeout，默认 2 分钟，最长 10 分钟
+- 命令预计耗时超过 10 分钟时直接用 run_in_background=true：前台 timeout 传更大的值也会被截到上限，后台任务没有这个上限
 - 输出超过 30000 字符会被自动截断
 - 长时间运行的进程（如 dev server）可设置 run_in_background=true 后台运行（旧名 is_background 已废弃）
 - 后台任务会返回 task_id，可用 task_output 查看输出、task_stop 终止；完成时有通知

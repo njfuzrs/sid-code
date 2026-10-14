@@ -7,7 +7,7 @@
  * 参考 gemini-cli useFlickerDetector.ts
  */
 
-import { useEffect } from "react";
+import { useEffect, type RefObject } from "react";
 import { measureElement } from "../render-port/measure.ts";
 import type { DOMElement } from "../render-port/types.ts";
 import { useUIState } from "../contexts/UIStateContext.tsx";
@@ -23,7 +23,7 @@ let flickerCount = 0;
  * @param terminalHeight 终端高度（行数）
  */
 export function useFlickerDetector(
-  rootUiRef: React.RefObject<DOMElement | null>,
+  rootUiRef: RefObject<DOMElement | null>,
   terminalHeight: number,
 ): void {
   const { constrainHeight } = useUIState();

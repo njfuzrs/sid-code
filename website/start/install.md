@@ -115,6 +115,10 @@ curl -fsSL https://www.sid-code.cc/releases/sid-code/install.sh | SID_CODE_VERSI
 | `SID_CONFIG_DIR` | 配置目录，默认 `~/.sid-code` |
 | `RELEASE_BASE` | 下载地址前缀，默认官网下载地址 |
 
+0.1.602 起的全部版本都可以通过 `SID_CODE_VERSION` 安装，用 `sid-code update --list` 查看。
+装的版本低于稳定版最新时，脚本结尾会提醒：默认的自动更新会把它升回去，
+想停留要设置 `"autoUpdate": "off"`（见[自动更新](/use/auto-update#回滚)）。
+
 ## 抢先版（beta 通道）
 
 新版本先发到 `beta` 通道泡一段时间，验收没问题才促升到稳定版。
