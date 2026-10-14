@@ -28,6 +28,8 @@ export interface SinkBackend {
   stripProtected: boolean;
   /** 可选:关闭时刷新缓冲 */
   shutdown?(): Promise<void>;
+  /** 可选:/clear 换会话时切到新会话 id（构造期绑定 id 的后端实现） */
+  setSessionId?(id: string): void;
 }
 
 // --- 状态 ---

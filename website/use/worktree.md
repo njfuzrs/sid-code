@@ -303,7 +303,7 @@ settings.json 的 `git` 字段（`packages/core/src/config/config.ts` 的 `GitCo
 
 **只有 sid-code 执行的 git 操作才加归因**，不是所有 git commit 都加：
 
-- `/commit`、`/commit-push-pr`、`/pr-workflow`、`/pr` 这些 skill 的 prompt 里会动态注入归因指令，
+- `/commit`、`/pr-workflow`、`/pr` 这些 skill 的 prompt 里会动态注入归因指令，
   模型写 commit/PR 时按指令追加——这是主路径
 - worktree 内若装上了 `prepare-commit-msg` hook（`worktree.commitAttribution: true`，
   且 hooks 目录是该 worktree 私有的，见下），你手动 `git commit` 也会触发

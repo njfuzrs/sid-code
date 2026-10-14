@@ -553,10 +553,20 @@ export interface AfterModelInput extends HookInput {
 export interface SessionStartInput extends HookInput {
   /**
    * 对齐 CC：startup / resume / clear（/clear 之后）/ compact（压缩之后）。
-   * clear / compact 两次只发给用户 hook（userOnly），runtime 消费者（collector / hook-probe）
-   * 把 SessionStart 当「开新轨迹 / 新 invoke_agent span」，再收一次会把同一会话劈成两段。
+   *
+   * - `compact` 只发给用户 hook（userOnly）：压缩不换会话，runtime 消费者（collector /
+   *   hook-probe）把 SessionStart 当「开新轨迹 / 新 invoke_agent span」，再收一次会把
+   *   同一会话劈成两段。
+   * - `clear` **全量发送（含 runtime）**：对齐 CC `regenerateSessionId`，/clear = 结束旧会话
+   *   （SessionEnd reason=clear）+ 以新 session_id 开新会话。collector 据此开新轨迹目录、
+   *   hook-probe 开新根 span。session_id 已是新 id，旧 id 在 {@link parent_session_id}。
    */
   source: "startup" | "resume" | "clear" | "compact";
+  /**
+   * source="clear" 时携带被 /clear 结束的上一个会话 id（血缘追溯，对齐 CC parentSessionId）。
+   * 落进 trajectory metadata.parent_session_id，使「同一终端里接连做的几个任务」可串起来。
+   */
+  parent_session_id?: string;
   /** 当前使用的模型 */
   model?: string;
   /** system prompt 的 MD5 hash */

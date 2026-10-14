@@ -276,6 +276,8 @@ export interface TraceMetadata {
   budget_exceeded_source?: "budget_rule" | "quota" | "remote";
   start_source?: string;
   end_source?: string;
+  /** /clear 换会话时被结束的上一个会话 id（start_source="clear" 才有，对齐 CC parentSessionId） */
+  parent_session_id?: string;
   /**
    * P0-1：sid-code 自身版本号（裸 x.y.z）。**飞轮维度的唯一来源。**
    *
@@ -498,6 +500,8 @@ export interface TrajectoryMetaOutput {
   tool_source: "sid-code";
   start_source?: string;
   end_source?: string;
+  /** /clear 换会话时被结束的上一个会话 id */
+  parent_session_id?: string;
   /**
    * P0-1：写这份 traj 的 sid-code 版本号（裸 x.y.z，如 "0.1.601"）。
    *
@@ -1040,6 +1044,7 @@ export function buildTrajectory(
     tool_source: "sid-code",
     ...(metadata.start_source ? { start_source: metadata.start_source } : {}),
     ...(metadata.end_source ? { end_source: metadata.end_source } : {}),
+    ...(metadata.parent_session_id ? { parent_session_id: metadata.parent_session_id } : {}),
     // P0-1：版本号。用「有值才写」而非无条件写 undefined —— 后者会让 JSON 里出现
     // `"app_version": undefined` 这类击穿默认值的形态（`explicit-undefined-punches-through-defaults`）。
     ...(metadata.app_version ? { app_version: metadata.app_version } : {}),

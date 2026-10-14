@@ -135,7 +135,7 @@ describe("extract 安全防护", () => {
 });
 
 describe("loadBundledSkills (内置注册)", () => {
-  test("注册全部 8 个内置 Skill", () => {
+  test("注册全部 6 个内置 Skill", () => {
     const skills = loadBundledSkills();
     const names = skills.map((s) => s.name);
     // 质量保障类
@@ -143,12 +143,15 @@ describe("loadBundledSkills (内置注册)", () => {
     expect(names).toContain("verify");
     // Git/PR 工作流（补齐分析 P0-1）
     expect(names).toContain("commit");
-    expect(names).toContain("commit-push-pr");
     expect(names).toContain("review");
-    expect(names).toContain("pr-comments");
     expect(names).toContain("pr-workflow");
     // P2-3：/pr 独立命令（专注生成 PR 描述，inline）
     expect(names).toContain("pr");
+    // 内置 skill 下沉方案 P4：commit-push-pr 删除、pr-comments 迁到插件 github-pr。
+    // 反漂移：有人顺手把它们注册回来，listing 会重新多两行且与插件版 /github-pr:comments 并存。
+    expect(names).not.toContain("commit-push-pr");
+    expect(names).not.toContain("pr-comments");
+    expect(skills.length).toBe(6);
   });
 
   test("P2-3 /pr 为 inline 命令且专注生成描述", () => {
@@ -160,17 +163,11 @@ describe("loadBundledSkills (内置注册)", () => {
     expect(pr.userInvocable).toBe(true);
   });
 
-  test("pr-comments 暴露 pr_comments 别名（兼容下划线命名）", () => {
-    const skills = loadBundledSkills();
-    const prComments = skills.find((s) => s.name === "pr-comments");
-    expect(prComments?.aliases).toContain("pr_comments");
-  });
-
   test("Git/PR fork 命令配置了 timeoutMins（避免锁死 2 分钟）", () => {
     const skills = loadBundledSkills();
     const byName = (n: string) => skills.find((s) => s.name === n);
     // fork 长流程：均应显式配置 timeoutMins
-    for (const name of ["commit-push-pr", "review", "pr-comments", "pr-workflow"]) {
+    for (const name of ["review", "pr-workflow"]) {
       const cmd = byName(name);
       if (cmd?.type !== "prompt") throw new Error(`${name} 应为 prompt 命令`);
       expect(cmd.context).toBe("fork");
@@ -192,8 +189,9 @@ describe("loadBundledSkills (内置注册)", () => {
     expect(review.context).toBe("fork");
     expect(review.disableModelInvocation).toBeFalsy();
 
-    // 强副作用 skill：必须禁止模型自动调用，仅斜杠命令
-    for (const name of ["commit-push-pr", "pr-workflow", "pr-comments"]) {
+    // 强副作用 skill：必须禁止模型自动调用，仅斜杠命令。
+    // pr-comments 迁成插件后，这条断言搬到了 plugins/tests/github-pr.test.ts（方案 §3.4）。
+    for (const name of ["pr-workflow"]) {
       expect(byName(name)?.disableModelInvocation).toBe(true);
     }
   });

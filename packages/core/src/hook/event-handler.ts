@@ -315,9 +315,11 @@ export class HookEventHandler {
       model?: string;
       systemPromptHash?: string;
       resumedFrom?: string;
+      /** source="clear"：被结束的上一个会话 id（见 SessionStartInput.parent_session_id） */
+      parentSessionId?: string;
       /** P0-1：一般不传，由本函数填真值；仅测试与回放需要显式覆盖 */
       app_version?: string;
-      /** 只跑用户 hook、不送 runtime（clear / compact 的二次 SessionStart 用，见 SessionStartInput.source） */
+      /** 只跑用户 hook、不送 runtime（compact 的二次 SessionStart 用，见 SessionStartInput.source） */
       userOnly?: boolean;
     },
   ): Promise<AggregatedHookResult> {
@@ -327,6 +329,7 @@ export class HookEventHandler {
       model: options?.model,
       system_prompt_hash: options?.systemPromptHash,
       resumed_from: options?.resumedFrom,
+      ...(options?.parentSessionId ? { parent_session_id: options.parentSessionId } : {}),
       // P0-1：飞轮维度。四方向第 3 级都是 release-over-release 曲线，版本是唯一分组键。
       app_version: options?.app_version ?? appVersion(),
     };

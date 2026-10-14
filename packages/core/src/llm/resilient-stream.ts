@@ -38,6 +38,7 @@ import { resolveLoopTimeouts } from "../config/network-profile.ts";
 import { LIFECYCLE_PRESETS } from "./stream-lifecycle.ts";
 import { TokenEstimator } from "./token-estimator.ts";
 import { streamInRequestContext, type RequestContext } from "./request-context.ts";
+import { clearSnapshotsForIndex } from "../trace/stream-observer.ts";
 
 /**
  * 非主循环路径的单次尝试流超时缺省值（P2-6）。
@@ -210,15 +211,23 @@ export function streamWithResilience(
   //
   // 同一次 `streamWithResilience` 调用内的多次重试**沿用同一个 index**，
   // attempt 由 observer 按 phase 序列自行进位 —— 那才是"重试"的真实语义。
+  // 号段归属决定谁清快照：调用方传了 observerIndex 就由调用方自己的收尾负责
+  // （agentic-loop 的 cleanupAgentSnapshots）；本函数自分配的号只有本函数知道，
+  // 必须由本函数在流结束（正常 / 异常 / 消费方提前 return）时清掉，见 clearSnapshotsForIndex。
+  const ownsIndex = opts.observerIndex === undefined;
   const reqCtx: RequestContext = {
     turnIndex: opts.observerIndex ?? nextSideObserverIndex(),
     agentId: opts.agentId,
     callerLabel: opts.querySource,
   };
+  const finish = (gen: AsyncGenerator<StreamEvent>): AsyncGenerator<StreamEvent> =>
+    ownsIndex ? releaseSideIndexOnFinish(gen, reqCtx.turnIndex) : gen;
 
   if (opts.fallback) {
-    return streamInRequestContext(reqCtx, () =>
-      opts.fallback!.executeWithFallback(provider, params, signal, perCall),
+    return finish(
+      streamInRequestContext(reqCtx, () =>
+        opts.fallback!.executeWithFallback(provider, params, signal, perCall),
+      ),
     );
   }
 
@@ -257,7 +266,28 @@ export function streamWithResilience(
     opts.onRetry ? { onRetry: opts.onRetry } : undefined,
   );
 
-  return streamInRequestContext(reqCtx, () =>
-    fallback.executeWithFallback(provider, params, signal, perCall),
+  return finish(
+    streamInRequestContext(reqCtx, () =>
+      fallback.executeWithFallback(provider, params, signal, perCall),
+    ),
   );
+}
+
+/**
+ * 透传流事件，结束时（含异常 / 消费方 break）清掉本次自分配影子 index 的流快照。
+ * 不清的后果见 `clearSnapshotsForIndex` 注释：心跳长期误报一条「在途请求」。
+ */
+async function* releaseSideIndexOnFinish(
+  gen: AsyncGenerator<StreamEvent>,
+  index: number,
+): AsyncGenerator<StreamEvent> {
+  try {
+    yield* gen;
+  } finally {
+    try {
+      clearSnapshotsForIndex(index);
+    } catch {
+      /* 可观测性清理失败不影响调用方 */
+    }
+  }
 }

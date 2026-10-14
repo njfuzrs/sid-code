@@ -1021,6 +1021,30 @@ export function clearAllSnapshots(loopId: string): void {
 }
 
 /**
+ * 清理某个**进程内唯一** index 的全部快照（跨所有 loopId / agentId）。
+ *
+ * 只给 `streamWithResilience` 自分配的影子号段（900_000+，见 resilient-stream.ts）用：
+ * 那个号进程内单调递增、永不复用，所以按 index 跨 loop 清是安全的。
+ *
+ * 为什么不能靠已有的两条清理路径（实测会话 20261013-124000-9c3eb216：空闲 36 分钟后
+ * heartbeat.txt 仍报 `active_request: {index: 900002, phase: "first_content"}`）：
+ *   - `clearAllSnapshots(loopId)` 在主循环收尾时跑；轮后记忆提取等 fork 在那**之后**才开流，
+ *     下一轮又换了新 loopId —— 这把 key 永远不会被任何一次 clearAllSnapshots 匹配到；
+ *   - `cleanupAgentSnapshots(agentId)` 按 `:agentId:` 匹配；anthropic 路径 emit 时不带
+ *     agentId，key 里没有这一段，也匹配不到。
+ *   - anthropic 永不发 `completed`，心跳的 isTerminal 过滤也认不出它已结束。
+ * 于是快照永久残留，心跳把一条早已收完的影子流报成「卡在 first_content 的在途请求」。
+ */
+export function clearSnapshotsForIndex(index: number): void {
+  const suffix = `:${index}`;
+  for (const map of [_snapshots, _attempts, _firstContentTtft] as Map<string, unknown>[]) {
+    for (const key of map.keys()) {
+      if (key.endsWith(suffix)) map.delete(key);
+    }
+  }
+}
+
+/**
  * B4：清理某个 agent 的全部快照（子代理结束时调用）。
  *
  * 对标 CC `promptCacheBreakDetection.ts:700` 的 `cleanupAgentTracking(agentId)`。
