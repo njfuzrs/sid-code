@@ -82,6 +82,8 @@ export async function initTraceCollector(
         // 死配置修复：`max_queue_retries` 此前在 config 层声明+转换齐全，
         // 却从未被 uploader 读取（那里硬编码 `attempts >= 50`）。
         maxQueueRetries: traceConfig.upload.maxQueueRetries ?? 50,
+        // P1-7：可选的家目录前缀替换，只作用于上传字节（默认关，见 redact-home.ts）
+        redactHomeDir: traceConfig.upload.redactHomeDir ?? false,
         // §6.4：传入模型定价列表，使上传前 cost 校正能用权威 pricing 重算
         availableModels: config.availableModels,
       });
@@ -201,6 +203,7 @@ export async function initTelemetrySystem(
         model: config.model,
         provider: config.provider,
         sessionId: sessionState.sessionId,
+        redactHomeDir: config.trace?.upload?.redactHomeDir ?? false,
       });
       probe.registerHooks(hookSystem);
       result.telemetryProbe = probe;

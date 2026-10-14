@@ -307,6 +307,7 @@ settings.json 的全部可配字段、类型与默认值。
 | `healthCheckIntervalMs` | number | 心跳检测间隔毫秒（默认 60000） |
 | `maxQueueRetries` | number | 持久化重试队列最大重试次数（默认 50，覆盖约 24 小时） |
 | `queueScanIntervalMs` | number | 重试队列扫描间隔毫秒（默认 300000，即 5 分钟） |
+| `redactHomeDir` | boolean | 上传前把家目录前缀替换为 `~`（默认 false）。只作用于上传的字节，本地轨迹不变； 同时作用于 OTLP 根 span 的 `sidcode.cwd`。保留相对路径结构，不做 hash。 |
 
 ### `worktree` {#key-worktree}
 

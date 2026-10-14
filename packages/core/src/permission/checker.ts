@@ -123,6 +123,16 @@ const DANGEROUS_PATTERNS: DangerousPattern[] = [
   },
 
   // medium: 需要用户确认
+  // 数据主权整改 PR-B（P1-9）：整体转储环境变量。上面的「读取敏感凭证文件」只认读类命令 +
+  // 文件路径，而 `env` / `printenv` 一条命令就把 shell 里所有 *_API_KEY 打进工具输出 →
+  // 进上下文 → 进轨迹（落盘脱敏是唯一兜底，且规则必有漏网）。
+  // 只拦**转储**形态：裸 `env`（可带 -0）、任意 `printenv`；`env FOO=1 cmd` 这种用 env
+  // 设置变量再执行命令的常见写法不拦。按子命令匹配，所以 `env | grep KEY` 同样命中。
+  {
+    name: "转储环境变量",
+    pattern: /^\s*(?:printenv\b.*|env(?:\s+-0)?\s*)$/,
+    severity: "medium",
+  },
   { name: "路径遍历", pattern: /\.\.[\/\\]/, severity: "medium" },
   { name: "后台进程", pattern: /&\s*$/, severity: "medium" },
   { name: "管道到文件覆盖", pattern: />\s*\/etc\//, severity: "medium" },

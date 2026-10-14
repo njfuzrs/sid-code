@@ -1000,6 +1000,7 @@ async function handleUploadTraces(
     deleteAfterUpload: traceUpload.deleteAfterUpload ?? false,
     outputDir,
     maxQueueRetries: traceUpload.maxQueueRetries ?? 50,
+    redactHomeDir: traceUpload.redactHomeDir ?? false,
     // §6.4：手动补传队列时也据 events.jsonl 校正历史会话 cost=0
     availableModels: config.availableModels,
   });

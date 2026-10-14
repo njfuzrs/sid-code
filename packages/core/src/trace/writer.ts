@@ -11,7 +11,7 @@
  *
  * 脱敏（SEC-AUDIT-2026-07-19 P2）：
  *   轨迹是本仓的核心资产——它会被 /trace 读、被 uploader 上传、被贴进 issue 和 PR。
- *   而它记录的恰好是「完整请求/响应对」，包含 Authorization 头、模型吐出的 key、
+ *   而它记录的恰好是「完整请求/响应对」（内部表示，不含 HTTP 请求头），包含模型吐出的 key、
  *   用户粘贴的凭证。此前这里**零脱敏**，凭证随轨迹一起落盘并可能出境。
  *
  *   本文件的 6 个写入方法（traj / raw.jsonl / events.jsonl / errors.jsonl /
@@ -29,15 +29,25 @@
  *   `JSON.parse` 失败，`/trace` 与 `trace-digest` 单文件损坏即整体 rc=1。
  *
  *   所以本文件所有 JSON 落盘一律走 `maskSensitiveJson`（只脱敏字符串值/键名，
- *   数字字面量绝不触碰），再叠一道 `assertParsable` 自校验：脱敏产物解析不了就
- *   **落原始内容 + 告警**，绝不把损坏数据写进盘。宁可少脱一次敏，也不能毁掉轨迹本身
- *   ——轨迹损坏是静默的、不可逆的，且会连带打死诊断入口。
+ *   数字字面量绝不触碰），再叠一道 `maskJsonSafe` 自校验。
+ *
+ * 脱敏失败改为 fail-closed（数据主权整改 PR-B，P1-5）：
+ *   原先脱敏产物解析不了就「落原始内容 + 告警」——等于脱敏 bug 一出，凭证原样落盘并上传。
+ *   现在出错的那个字符串字段换成占位，其余字段照常落盘（整文件占位会让这条会话对评测
+ *   整条作废），详见 maskJsonSafe。
+ *
+ * 旁路落盘同样脱敏：`warn.log`（debug/logger.ts）与 `protocol-violations/*.json`
+ * （llm/protocol-sentinel.ts）不经过本文件，但各自在写盘前调用同一套规则。
  */
 
 import { join } from "node:path";
 import { mkdirSync, appendFileSync, existsSync, writeFileSync } from "node:fs";
 import { getLogger } from "../debug/logger.ts";
-import { maskSensitiveJson } from "../permission/sensitive.ts";
+import {
+  maskJsonByWalk,
+  maskSensitiveJson,
+  REDACTION_FAILED_PLACEHOLDER,
+} from "../permission/sensitive.ts";
 
 /** hook 事件记录（写入 events.jsonl 的行格式） */
 export interface HookEvent {
@@ -115,35 +125,62 @@ export interface RawJsonlEntry {
 }
 
 /**
- * 脱敏 + 落盘前自校验：脱敏产物必须仍是合法 JSON，否则退回原文并告警。
+ * 脱敏 + 落盘前自校验。**fail-closed，粒度是单个字符串字段**。
  *
- * 这是最后一道闸门。上游 `maskSensitiveJson` 已从结构上保证不碰数字，本函数防的是
- * 「未来又有人加了个纯文本规则、或结构化路径出了别的意外」——落盘损坏的代价远高于
- * 少脱一次敏（损坏是静默且不可逆的，还会打死 /trace 与 trace-digest）。
+ * 旧实现在脱敏抛异常或产物不可解析时**回落原文**（fail-open）：脱敏逻辑一出 bug，
+ * 凭证就原样落盘、随后被上传。改成：
+ *   1. 词法路径（maskSensitiveJson）：单个字段出错只把那个值换成占位，其余照常；
+ *   2. 词法路径整体失败或产物不可解析 → 走 parse/逐字段/stringify 兜底（格式会按 indent 重排，
+ *      但产物必为合法 JSON，usage / 步骤 / 工具序列都保住，评测仍可用这条会话）；
+ *   3. 连兜底都失败（输入本身不是 JSON）→ 整条换成占位对象。
+ * 每一步降级都必须告警，不能静默：丢掉的诊断信息要能被人发现。
  *
  * @param content 原始 JSON 文本
  * @param indent 原始序列化缩进（需与调用方 JSON.stringify 一致）
  * @param what 文件名，仅用于告警文案
  */
-function maskJsonSafe(content: string, indent: number, what: string): string {
-  let masked: string;
+export function maskJsonSafe(
+  content: string,
+  indent: number,
+  what: string,
+  /** 仅测试注入：用一个会抛错的 masker 证明 fail-closed 不回落原文 */
+  masker?: (s: string) => string,
+): string {
+  let fieldErrors = 0;
+  let firstErr: unknown;
+  const onFieldError = (err: unknown): void => {
+    fieldErrors++;
+    if (firstErr === undefined) firstErr = err;
+  };
+  const reportFieldErrors = (): void => {
+    if (fieldErrors > 0) {
+      getLogger().warn(
+        "TRACE",
+        `${what} 有 ${fieldErrors} 个字符串字段脱敏异常，已替换为 ${REDACTION_FAILED_PLACEHOLDER}` +
+          `（其余字段照常落盘）: ${firstErr}`,
+      );
+    }
+  };
+
   try {
-    masked = maskSensitiveJson(content, indent);
-  } catch (err) {
-    getLogger().warn("TRACE", `${what} 脱敏异常，落原始内容: ${err}`);
-    return content;
-  }
-  try {
+    const masked = maskSensitiveJson(content, indent, onFieldError, masker);
     JSON.parse(masked);
+    reportFieldErrors();
     return masked;
   } catch (err) {
-    // 脱敏把 JSON 弄坏了 —— 这是 bug，必须响，不能静默降级
-    getLogger().warn(
-      "TRACE",
-      `${what} 脱敏后 JSON 不可解析（脱敏逻辑有 bug，已回退为原始内容，` +
-        `可能包含未脱敏凭证）: ${err}`,
-    );
-    return content;
+    // 词法路径整体失败或把 JSON 弄坏了 —— 这是 bug，必须响
+    getLogger().warn("TRACE", `${what} 结构化脱敏失败，改走逐字段兜底: ${err}`);
+  }
+
+  fieldErrors = 0;
+  firstErr = undefined;
+  try {
+    const walked = maskJsonByWalk(content, indent, onFieldError, masker);
+    reportFieldErrors();
+    return walked;
+  } catch (err) {
+    getLogger().warn("TRACE", `${what} 逐字段脱敏兜底也失败，整条替换为占位（不落原文）: ${err}`);
+    return JSON.stringify({ redaction_failed: true, file: what });
   }
 }
 

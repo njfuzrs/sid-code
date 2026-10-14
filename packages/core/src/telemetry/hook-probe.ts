@@ -35,6 +35,7 @@ import type {
   SubagentStartInput,
   SubagentStopInput,
 } from "../hook/types.ts";
+import { redactHomeDir } from "../trace/redact-home.ts";
 
 /**
  * Span 属性扩展器：从 Hook 载荷中提取额外属性注入到 Span
@@ -82,7 +83,13 @@ export class TelemetryHookProbe {
   constructor(
     private bus: TelemetryBus,
     private tokenMeter: TokenMeter | null,
-    private config: { model: string; provider: string; sessionId: string },
+    private config: {
+      model: string;
+      provider: string;
+      sessionId: string;
+      /** 根 span 的 `sidcode.cwd` 是否替换家目录前缀（取 trace.upload.redactHomeDir） */
+      redactHomeDir?: boolean;
+    },
   ) {}
 
   /** 注册 Span 属性扩展器（Harness 模块调用） */
@@ -238,7 +245,11 @@ export class TelemetryHookProbe {
       [ATTR.AGENT_NAME]: "sid-code",
       [ATTR.CONVERSATION_ID]: this.config.sessionId,
       [ATTR.REQUEST_MODEL]: this.config.model,
-      [ATTR.CWD]: input.cwd,
+      // P1-8：OTLP 是外发通道，cwd 绝对路径含本机用户名；与轨迹上传共用同一开关
+      [ATTR.CWD]:
+        this.config.redactHomeDir && typeof input.cwd === "string"
+          ? redactHomeDir(input.cwd)
+          : input.cwd,
       ...(this.collectEnrichedAttributes("invoke_agent", input) as Attributes),
     };
     this.agentSpan = this.bus.startSpan("invoke_agent", name, attributes);
