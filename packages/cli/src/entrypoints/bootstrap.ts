@@ -137,6 +137,16 @@ async function main(): Promise<void> {
     return;
   }
 
+  // 快速路径 9.5: plugin 子命令 — 无头管理插件（与 /plugin 同一实现），不启动 App。
+  // `-p "/plugin ..."` 在无头下会被拒绝并指向这里（command/headless-dispatch.ts）。
+  if (args[0] === "plugin" || args[0] === "plugins") {
+    profileCheckpoint("bootstrap_route_resolved");
+    const { handlePluginCommand } = await import("../command/plugin-cli.ts");
+    const code = await handlePluginCommand(args.slice(1));
+    if (code !== 0) process.exit(code);
+    return;
+  }
+
   // 快速路径 10: auth 子命令 — login / logout（P2 飞书登录）+ status（登录态 + 模型 Key 诊断）
   // 顶层 `sid-code login` / `sid-code logout` 是 `auth login` / `auth logout` 的别名
   if (args[0] === "auth" || args[0] === "login" || args[0] === "logout") {

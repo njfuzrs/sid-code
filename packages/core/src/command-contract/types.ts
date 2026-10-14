@@ -284,6 +284,15 @@ export interface CommandBase {
   immediate?: boolean; // 是否绕过队列立即执行（模型运行时可用）
   requiresArgs?: boolean; // 无参数就无法工作（如 /btw）。true = 补全列表回车仅回填等待输入；
   // 默认 false = 补全列表回车直接执行（无参开对话框/显示状态的命令）
+  /**
+   * 能否在无头（`-p` / stream-json / Bridge）下按 `/name` 执行。
+   *
+   * 缺省按来源判：非 builtin（自定义命令 / skill / 插件 / MCP prompt）本质是提示词模板，放行；
+   * builtin 默认拒绝——它们多是交互或管理类（`/model` 选择器、`/plugin`、`/permissions`），
+   * 依赖 TUI 回调，无头下要么无意义要么半失效。builtin 里真正「只是展开提示词」的（`/init`）
+   * 显式标 `true`。判定实现只有一处：`command/headless-dispatch.ts` 的 `headlessRefusal`。
+   */
+  headless?: boolean;
 
   // === 来源追踪 ===
   source?: CommandSource; // 来源标记

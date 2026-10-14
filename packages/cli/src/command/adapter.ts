@@ -257,7 +257,13 @@ export async function adaptUnifiedToLegacy(uc: UnifiedCommand): Promise<LegacyCo
  */
 export type LegacyCommandGates = Pick<
   UnifiedCommand,
-  "immediate" | "isHidden" | "userInvocable" | "requiresArgs" | "whenToUse" | "outputPanel"
+  | "immediate"
+  | "isHidden"
+  | "userInvocable"
+  | "requiresArgs"
+  | "whenToUse"
+  | "outputPanel"
+  | "headless"
 >;
 
 /**
