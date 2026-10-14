@@ -52,13 +52,13 @@ describe("N12 · side_call_stats 读写两端", () => {
     expect(section("private buildLedgerEntry(")).toContain("buildUsageLedgerEntry(");
   });
 
-  test("/clear 归零会话维度，并强制落一条归零快照", () => {
-    const i = appSrc.indexOf("this.sessionState.resetCounters();");
-    expect(i).toBeGreaterThan(-1);
-    const clearBody = appSrc.slice(i, i + 3000);
+  test("/clear 归零会话维度；换到新 jsonl 后不再往旧文件落归零快照", () => {
+    // /clear 现在 = 结束旧会话 + 开新会话（clearConversation）。会话维度影子统计仍须归零，
+    // 但「clear 后强制落一条全零 side_call_stats 覆盖旧快照」是续写旧文件时代的补丁 ——
+    // 新 jsonl 里本就没有旧快照，再落一条只是噪音，故该闸门（sideStatsClearedPending）已删除。
+    const clearBody = section("private async clearConversation(", 12_000);
     expect(clearBody).toContain("resetSessionSideStats();");
-    expect(clearBody).toContain("this.sideStatsClearedPending = true;");
-    expect(clearBody).toContain("this.persistUsageStats();");
-    expect(section("private persistUsageStats(")).toContain("this.sideStatsClearedPending");
+    expect(appSrc).not.toContain("sideStatsClearedPending");
+    expect(section("private persistUsageStats(")).toContain("if (s.apiCalls > 0) {");
   });
 });

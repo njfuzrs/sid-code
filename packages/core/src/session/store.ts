@@ -90,6 +90,8 @@ type SessionRecordInput =
       provider: string;
       cwd: string;
       timestamp: string;
+      /** /clear 换会话时被结束的上一个会话 id（对齐 CC parentSessionId；与 fork 的 parentUuid 不同义） */
+      parentSessionId?: string;
     }
   // P2-G7：user_message 可选携带 per-message 上下文（cwd/gitBranch/permissionMode）。
   // 仅在**相对上一条发生变化**时落盘（见 appendMessage），继承语义比 CC 每条都写更省空间。
@@ -422,6 +424,8 @@ export class SessionStore {
   /**
    * @param forkedFromSessionId P0-2 --fork-session：分叉来源会话 id。非空时写入 session_start.parentUuid，
    *   记录本会话是从哪个会话分叉出来的，便于溯源；不影响历史（历史已由 App 注入 ctxMgr）。
+   * @param parentSessionId /clear 换会话：被结束的上一个会话 id，写入 session_start.parentSessionId。
+   *   新会话**不带**旧历史（与 fork 相反），只记血缘。仍是懒创建：clear 后直接退出不留空文件。
    */
   startSession(
     sessionId: string,
@@ -429,6 +433,7 @@ export class SessionStore {
     provider: string,
     cwd: string,
     forkedFromSessionId?: string,
+    parentSessionId?: string,
   ): void {
     this.currentFile = join(this.sessionDir, `${sessionId}.jsonl`);
 
@@ -476,6 +481,7 @@ export class SessionStore {
       timestamp: new Date().toISOString(),
       uuid,
       parentUuid: forkedFromSessionId ?? null,
+      ...(parentSessionId ? { parentSessionId } : {}),
     };
     // 链尾提前指向待写入的 session_start，即便文件还未 materialize，
     // 后续记录的 parentUuid 也能正确指向它（写入顺序由 ensureMaterialized 保证）。

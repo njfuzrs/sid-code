@@ -4,9 +4,13 @@
  * 对标 CC utils/commitAttribution.ts + attribution.ts：commit 尾注与 PR 尾注分别可配、可关。
  *
  * 三条消费路径共用本模块，避免归因文本三处漂移：
- *   1. /commit、/commit-push-pr skill 的 prompt 动态拼入（覆盖所有 commit 路径）。
+ *   1. /commit、/pr-workflow skill 的 prompt 动态拼入（覆盖所有 commit 路径）。
  *   2. worktree 的 prepare-commit-msg hook（非 skill 裸 commit 的兜底）。
- *   3. PR 描述尾注（/commit-push-pr、/pr-workflow）。
+ *   3. PR 描述尾注（/pr-workflow、/pr）。
+ *
+ * /commit-push-pr 已在内置 skill 下沉方案 P4 删除（= /commit + git push + /pr）。
+ * 读本模块的 skill 必须是 TS skill：改成 markdown 插件就拿不到 context.config.git，
+ * 归因开关与自定义文本会静默失效——这正是 commit / pr / pr-workflow 留在内置的理由。
  *
  * enabled=false 时所有路径都不加归因（对标 CC shouldIncludeGitInstructions）。
  */

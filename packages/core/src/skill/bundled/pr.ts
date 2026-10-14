@@ -10,7 +10,6 @@
  *
  * 职责边界（与其它 Git/PR 命令区分，避免功能重叠）：
  *   - /commit          —— 只生成 commit message 并提交，不推送。
- *   - /commit-push-pr  —— 提交 + 推送 + 建 PR 全链路（一键走完）。
  *   - /pr（本命令）    —— 只"生成 PR 描述"：分析 commit 汇总成标题+正文，
  *                          默认不提交、不推送、不建 PR。用户可拿去手动建 PR，
  *                          或让 AI 接着调 gh 创建（需用户明确要求）。
@@ -59,7 +58,7 @@ const PR_PROMPT = `# PR: 生成 Pull Request 描述
 
 ## 约束
 - **只生成描述**：默认不 \`git add\` / \`git commit\` / \`git push\` / \`gh pr create\`。
-  用户如需你接着提交或建 PR，会明确说——那属于 /commit 或 /commit-push-pr 的职责。
+  用户如需你接着提交或建 PR，会明确说——那属于 /commit 或 /pr-workflow 的职责。
 - 标题控制在 70 字符内；正文分节清晰，不堆砌命令原始输出。
 - 测试情况不要编造：只写你**确实**从 git 历史/对话里看到的，没有就标"待补"。
 - 全程简洁：不复述 diff 全文，聚焦"讲清楚这个 PR"。`;

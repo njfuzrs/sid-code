@@ -293,6 +293,10 @@ export class TraceCollector {
    * 这个坑在 SIGHUP 修复后才变得常见（此前 handleSessionEnd 根本跑不到空壳判定）。
    */
   private sessionDisposed = false;
+  /** 在途的 SessionEnd 处理（/clear 换会话时 SessionStart 须等它写完，见 handleSessionStart）。 */
+  private sessionEndInFlight: Promise<void> | null = null;
+  /** 被 /clear 结束的会话 id：其迟到的 SessionEnd 一律丢弃（见 handleSessionEnd 开头）。 */
+  private retiredSessionIds = new Set<string>();
   /** 是否把请求/响应原文写进 raw.jsonl（默认 true；env `SID_CODE_TRACE_NO_RAW=1` 可关） */
   private readonly recordRawPayloads: boolean;
   private initialized = false;
@@ -418,6 +422,15 @@ export class TraceCollector {
     // 辅助调用（标题生成/记忆召回等）用量落定的瞬间即同步进 trajectory，
     // 不必等待（可能因崩溃/被杀而永远不会到来的）SessionEnd——见 syncSideCallMetadata 注释。
     // 用 forceRebuildTraj（非节流版）——side-call 稀少（一两次/会话），崩溃安全优先。
+    this.installSideStatsObserver();
+  }
+
+  /**
+   * 注册 side-call 观察者。构造时装一次；/clear 换会话时上一段若被判空壳，
+   * cleanupIfBlankSession 会把它摘掉（setSideStatsObserver(null)），新会话必须重新装上，
+   * 否则 /clear 之后的辅助调用用量再也同步不进 trajectory。
+   */
+  private installSideStatsObserver(): void {
     setSideStatsObserver(() => {
       if (!this.initialized || this.sessionDisposed) return;
       this.syncSideCallMetadata();
@@ -835,9 +848,18 @@ export class TraceCollector {
         case HookEventName.SubagentStop:
           this.handleSubagentStop(input);
           break;
-        case HookEventName.SessionEnd:
-          await this.handleSessionEnd(input as SessionEndInput);
+        case HookEventName.SessionEnd: {
+          // 记下在途收尾：/clear 换会话时 SessionStart(clear) 可能在它还没写完时到达
+          // （App 对 SessionEnd(clear) 只等有限时间），见 handleSessionStart 开头的串行化。
+          const p = this.handleSessionEnd(input as SessionEndInput);
+          this.sessionEndInFlight = p;
+          try {
+            await p;
+          } finally {
+            if (this.sessionEndInFlight === p) this.sessionEndInFlight = null;
+          }
           break;
+        }
       }
     } catch (err) {
       getLogger().warn("TRACE", `采集事件处理失败 [${input.hook_event_name}]: ${err}`);
@@ -847,6 +869,36 @@ export class TraceCollector {
   // ─── SessionStart ───
 
   private async handleSessionStart(input: SessionStartInput): Promise<void> {
+    // 串行化：上一段会话的收尾（rebuildTraj / messages.json / 上传…）还在 await 时，
+    // 不能在它脚下把 metadata / writer / pairs 换成新会话 —— 否则旧会话的终态写进新目录。
+    if (this.sessionEndInFlight) {
+      try {
+        await this.sessionEndInFlight;
+      } catch {
+        /* 旧会话收尾失败不影响新会话开始 */
+      }
+    }
+    // /clear 换会话：同一进程内第二次 SessionStart。上一段会话的心跳定时器必须先停 ——
+    // 否则旧 interval 仍按旧 heartbeatPath 每 10s 写一次，旧目录永远像"还活着"
+    // （heartbeat.txt 是 hang 诊断与空壳清理的判据），且定时器泄漏。
+    // 以及上一段 cleanupIfBlankSession 置上的 sessionDisposed 必须复位，否则新会话所有落盘都被拒。
+    if (this.heartbeatTimer) {
+      clearInterval(this.heartbeatTimer);
+      this.heartbeatTimer = null;
+    }
+    this.sessionDisposed = false;
+    if (input.source === "clear" && input.parent_session_id) {
+      this.retiredSessionIds.add(input.parent_session_id);
+    }
+    this.installSideStatsObserver();
+    this.resumedPairOffset = 0;
+    this.harnessEditCount = 0;
+    this.harnessEditFirstPass = 0;
+    this.harnessProtocols = {};
+    this.pendingCompactBoundary = undefined;
+    for (const t of this.pendingModelCalls.values()) clearTimeout(t);
+    this.pendingModelCalls.clear();
+    this.streamSnapshotRefs.clear();
     this.pairs = [];
     this.prevMessageCount = 0;
     // P1-2：新会话不与上个会话的前缀比对（否则首轮会被记成一次巨大断裂）
@@ -892,6 +944,10 @@ export class TraceCollector {
       has_thinking: false,
       has_sub_agent: false,
       start_source: input.source,
+      // /clear 换会话：记录被结束的上一个会话 id，同一终端接连做的几个任务可串起来
+      ...(input.source === "clear" && input.parent_session_id
+        ? { parent_session_id: input.parent_session_id }
+        : {}),
       // P0-1：版本号是四方向第 3 级「release-over-release 曲线」的唯一维度。
       // **兜底而非只透传**：hook input 可能来自旧版本或测试构造，collector 自己能拿到
       // 真值时不该依赖上游 —— 上游漏传就静默丢维度是这类字段最常见的失效方式。
@@ -1058,6 +1114,7 @@ export class TraceCollector {
         ...(isResume
           ? { resumed_from: input.resumed_from, process_session_id: input.session_id }
           : {}),
+        ...(input.parent_session_id ? { parent_session_id: input.parent_session_id } : {}),
       },
     });
 
@@ -1915,6 +1972,15 @@ export class TraceCollector {
 
   private async handleSessionEnd(input: SessionEndInput): Promise<void> {
     if (!this.initialized) return;
+    // /clear 换会话的竞态护栏：App 对 SessionEnd(clear) 只等有限时间（慢用户 hook 不能卡住 /clear），
+    // 若它在新会话 SessionStart 之后才轮到本处理器，input.session_id 是旧 id —— 此时
+    // this.metadata 已是新会话，照常收尾会把**新会话**结束掉。按进程会话 id 比对，迟到的旧终态直接丢弃。
+    // 只认「被 /clear 明确结束过」的 id（SessionStart(clear).parent_session_id 登记），
+    // 不做「≠ 当前 id 就丢」的宽判：测试 / SDK 构造的 input 可能不带一致的 session_id。
+    if (input.session_id && this.retiredSessionIds.has(input.session_id)) {
+      getLogger().warn("TRACE", `忽略 /clear 后迟到的旧会话 SessionEnd（${input.session_id}）`);
+      return;
+    }
 
     this.metadata.end_time = input.timestamp;
     this.metadata.end_source = input.reason;
@@ -2186,7 +2252,15 @@ export class TraceCollector {
       );
     } else if (this.uploader) {
       const budgetMs = this.uploadBudgetMs;
-      if (budgetMs <= 0) {
+      if (input.reason === "clear") {
+        // /clear 换会话：进程不退出，上传可以真正在后台跑完，不让它卡住交互式 /clear。
+        // 失败照常进重试队列（uploadSession 内部处理），下次启动补传兜底。
+        const dir = this.writer.getSessionDir();
+        const sid = this.metadata.session_id;
+        void this.uploader.uploadSession(dir, sid).catch((err: any) => {
+          getLogger().warn("TRACE", `/clear 后台上传异常: ${err?.message ?? err}`);
+        });
+      } else if (budgetMs <= 0) {
         // 预算为 0 = 调用方明确要求不在退出路径等上传（如信号退出）。
         // 不发起请求：发了也会被 process.exit 杀在半路，只是白建一次连接。
         getLogger().info("TRACE", "退出路径不等待上传，已交由下次启动补传");
@@ -2217,11 +2291,14 @@ export class TraceCollector {
       }
     }
 
-    // 停掉周期性队列扫描（退出后没有意义，且定时器虽 unref 也应显式清理）
-    try {
-      this.uploader?.stopQueueScan?.();
-    } catch {
-      /* 清理失败静默 */
+    // 停掉周期性队列扫描（退出后没有意义，且定时器虽 unref 也应显式清理）。
+    // /clear 换会话不是退出：进程还活着，扫描必须继续（它只在 init 时启动一次，停了就不会再起）。
+    if (input.reason !== "clear") {
+      try {
+        this.uploader?.stopQueueScan?.();
+      } catch {
+        /* 清理失败静默 */
+      }
     }
 
     // 停止心跳并清理 heartbeat.txt

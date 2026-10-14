@@ -71,7 +71,7 @@ export class AskUserQuestionTool implements Tool {
    * 对标 claude-code 的 alwaysLoad 语义：ToolSearch 启用时仍把完整 schema 发进首轮
    * 上下文，无需一轮 tool_search 往返即可正确调用。
    *
-   * 为什么不 shouldDefer——尽管本工具确实"低频"，但它是 /commit、/commit-push-pr 等
+   * 为什么不 shouldDefer——尽管本工具确实"低频"，但它是 /commit、/pr-workflow 等
    * 内置流程的**刚需**：这些流程的提示词直接点名要求「用 ask_user_question 弹结构化选项」。
    * 若延迟加载，模型看到工具名却没看到 schema，会凭记忆猜参数结构直接盲调（实测把
    * `questions: [...]` 猜成 `answers: [...]`），触发参数校验失败→再 tool_search 激活→重试，

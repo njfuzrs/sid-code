@@ -127,6 +127,33 @@ export function registerLogicalSessionId(sessionId: string, logicalSessionId: st
   }
 }
 
+/**
+ * /clear 换会话：把本进程的活跃会话登记从旧 id 迁到新 id（pid / kind / cwd 不变）。
+ *
+ * 不迁的话：活跃表里只有旧 id，跨进程保护（清理 / 补传「别碰活着的会话」）护住的是已经
+ * 结束的旧会话，正在写的新会话反而无人保护。logicalSessionId 一并清掉 —— clear 后不再续写
+ * 被 resume 的旧 jsonl。条目不存在时按新 id 补登记（best-effort，失败只告警）。
+ */
+export function renameActiveSession(
+  oldSessionId: string,
+  newSessionId: string,
+  fallback: Omit<SessionEntry, "sessionId">,
+): void {
+  try {
+    const oldPath = sessionPath(oldSessionId);
+    let entry: SessionEntry = { ...fallback, sessionId: newSessionId };
+    if (existsSync(oldPath)) {
+      const prev = JSON.parse(readFileSync(oldPath, "utf-8")) as SessionEntry;
+      entry = { ...prev, sessionId: newSessionId, startedAt: fallback.startedAt };
+      delete entry.logicalSessionId;
+      unlinkSync(oldPath);
+    }
+    registerSession(entry);
+  } catch (err: any) {
+    getLogger().warn("SESSION", `迁移活跃会话登记失败（跨进程保护降级）: ${err?.message ?? err}`);
+  }
+}
+
 /** 注销会话 */
 export function unregisterSession(sessionId: string): void {
   try {
