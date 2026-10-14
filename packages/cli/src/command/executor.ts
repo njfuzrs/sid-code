@@ -30,6 +30,7 @@ import { getLogger } from "@sid-code/core/debug/logger.ts";
 import { logCommandInvoke, logCommandRejected } from "@sid-code/core/analytics/events.ts";
 import { recordUsage } from "./usage-tracking.ts";
 import { emitSkillInvoked } from "@sid-code/core/skill/telemetry.ts";
+import { getMigratedSkillHint } from "./migrated-skills.ts";
 
 /**
  * 决定一条文本结果是否进命令输出面板。
@@ -76,6 +77,13 @@ export class CommandExecutor {
 
     const cmd = this.findCommand(parsed.commandName, commands);
     if (!cmd) {
+      // 内置 skill 下沉方案 P4：已迁走 / 已删除的旧命令名给去向，而不是「未知命令」。
+      // 放在命令表查找之后：用户或项目自己定义了同名 skill 时，用的仍是他们自己的那个。
+      const migrated = getMigratedSkillHint(parsed.commandName);
+      if (migrated) {
+        logCommandRejected("unknown_command");
+        return { type: "error", message: migrated };
+      }
       // 像命令名（仅字母数字连字符）→ 报未知命令；否则当作普通文本。
       //
       // P1-1：正则那一道拦不住**单段的真实目录**——`/tmp` `/usr` `/etc` 只含字母，

@@ -89,11 +89,11 @@ describe("P3-1 settings.git Schema 校验", () => {
 });
 
 /**
- * PR 归因必须覆盖**所有** PR 路径（/commit-push-pr、/pr-workflow、/pr）——
+ * PR 归因必须覆盖**所有** PR 路径（/pr-workflow、/pr；/commit-push-pr 已于下沉方案 P4 删除）——
  * 只接一处会导致其余路径的 PR 描述缺归因（方案 P3-1 「统一注入路径」要求）。
  */
 describe("P3-1 PR 归因覆盖所有 PR skill", () => {
-  const PR_SKILLS = ["commit-push-pr", "pr-workflow", "pr"];
+  const PR_SKILLS = ["pr-workflow", "pr"];
 
   /**
    * 按名取一个 bundled skill 的 prompt 构造器。
@@ -106,8 +106,6 @@ describe("P3-1 PR 归因覆盖所有 PR skill", () => {
   async function getSkill(name: string) {
     const { getBundledSkills } = await import("@sid-code/core/skill/bundled/registry.ts");
     const registrars: Record<string, () => Promise<() => void>> = {
-      "commit-push-pr": async () =>
-        (await import("@sid-code/core/skill/bundled/commit-push-pr.ts")).registerCommitPushPrSkill,
       "pr-workflow": async () =>
         (await import("@sid-code/core/skill/bundled/pr-workflow.ts")).registerPrWorkflowSkill,
       pr: async () => (await import("@sid-code/core/skill/bundled/pr.ts")).registerPrSkill,

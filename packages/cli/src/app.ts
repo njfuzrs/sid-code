@@ -9921,7 +9921,7 @@ export class App {
           // checkpoint 跟随逻辑会话 id，使 `-c` 恢复后 /undo 够得到 resume 之前的检查点。
           checkpointSessionId: this.getLogicalSessionId(),
           provider: this.provider,
-          // providerRegistry 必传：fork 模式的 bundled skill（/review、/commit-push-pr 等 6 个）
+          // providerRegistry 必传：fork 模式的 bundled skill（/review、/pr-workflow 等）
           // 依赖它创建子代理；缺失会让 executor 静默退回 inline，导致 fork 隔离/allowedTools/maxTurns 失效。
           providerRegistry: this.providerRegistry,
           // clearTerminal:true —— 用户显式 /model 切换，给目标模型清一次 terminal 拉黑（H2）。

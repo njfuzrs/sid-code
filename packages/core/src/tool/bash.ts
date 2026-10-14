@@ -570,7 +570,7 @@ export class BashTool implements Tool {
 - 破坏性操作（git reset --hard / push --force / checkout . / restore . / clean -f / branch -D / stash drop）执行前，先想有没有更安全的等价做法；只在确实最优且用户要求时才用
 - 绝不用 --no-verify 跳过 hooks、--no-gpg-sign 跳过签名，除非用户明确要求；hook 失败时排查并修复根因，而不是跳过
 - 不擅自 git config 写操作（尤其 core.hooksPath）、不改 git 远程与分支上游，除非用户要求
-- 不自动 push / 建 PR（走 /commit-push-pr 或用户显式要求）
+- 不自动 push / 建 PR（走 /pr-workflow 或用户显式要求）
 
 ## 合并冲突处理（git merge / rebase / cherry-pick / pull 报冲突时）
 1. git status 找出所有冲突文件（Unmerged paths）

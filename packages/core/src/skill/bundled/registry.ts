@@ -18,7 +18,7 @@ import { getLogger } from "../../debug/logger.ts";
 /** Bundled Skill 定义 */
 export interface BundledSkillDefinition {
   name: string;
-  /** 别名（如 pr-comments 的 pr_comments，兼容 claude-code 下划线命名） */
+  /** 别名（兼容 claude-code 下划线命名之类的旧名） */
   aliases?: string[];
   description: string;
   whenToUse?: string;
