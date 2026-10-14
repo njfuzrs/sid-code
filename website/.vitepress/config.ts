@@ -273,7 +273,7 @@ export default defineConfig({
   ...(canUseAbsoluteUrls() ? { sitemap: { hostname: `${siteHostname()}/` } } : {}),
   lang: "zh-CN",
   title: "sid-code",
-  description: "长在企业研发环境里的 coding agent —— 你能改、能量、能审、数据不出门的 agent 底座",
+  description: "长在企业研发环境里的 coding agent —— 你能改、能量、能审、数据归你的 agent 底座",
 
   base: "/",
   cleanUrls: true,
