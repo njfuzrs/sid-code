@@ -90,9 +90,17 @@ export interface UsageSnapshot {
 
 /** 会话状态 */
 export class SessionState {
-  readonly sessionId: string;
+  /**
+   * 本进程当前会话 id。**不再 readonly**：`/clear` 对齐 CC（`regenerateSessionId`）
+   * 会经 {@link rotate} 换成新 id —— 一次 /clear = 结束旧会话 + 开新会话。
+   * 外部只读，只允许 rotate 改它（setter 私有化靠约定：全仓仅 rotate 写）。
+   */
+  sessionId: string;
   readonly cwd: string;
-  readonly startTime: number;
+  /** 会话起点（duration_ms 的基准）。rotate 时随新会话重置。 */
+  startTime: number;
+  /** /clear 换会话时记录上一个会话 id（血缘追溯，对齐 CC parentSessionId）。 */
+  parentSessionId: string | undefined;
 
   /** 总花费（美元） */
   totalCostUSD: number = 0;
@@ -290,6 +298,25 @@ export class SessionState {
     this.totalAPIDuration = 0;
     this.totalToolDuration = 0;
     this.modelUsage = {};
+  }
+
+  /**
+   * /clear：切换到一个新会话（对齐 CC `regenerateSessionId({ setCurrentAsParent: true })`）。
+   *
+   * 只做「身份 + 会话级计数」的切换：新 id、父 id、起点时间、用量计数器、轮次序号。
+   * 必须在旧会话 SessionEnd **之后**调用 —— SessionEnd 的 stats 读的正是这些旧值，
+   * 先换再收尾会把旧会话的成本记成 0（这正是 rotate 之前「往旧文件落归零快照」的病）。
+   *
+   * sessionData 中与 reminder 去重相关的键由 resetReminderDedupKeys 单独清，
+   * 其余 sessionData 是命令间共享的临时状态，不随会话切换丢弃（与改动前一致）。
+   */
+  rotate(newSessionId: string): void {
+    this.parentSessionId = this.sessionId;
+    this.sessionId = newSessionId;
+    this.startTime = Date.now();
+    this.resetCounters();
+    this.absoluteTurnCount = 0;
+    this.promptSeq = 0;
   }
 
   /**

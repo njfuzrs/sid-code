@@ -56,6 +56,8 @@ export class TelemetryHookProbe {
    */
   private llmSpans = new Map<string, SpanHandle>();
   private turns = 0;
+  /** 被 /clear 结束的会话 id：其迟到的 SessionEnd 一律忽略（见 handleSessionEnd）。 */
+  private retiredSessionIds = new Set<string>();
 
   /** blocked_on_user span 暂存：key = tool_use_id || tool_name */
   private permissionSpans = new Map<string, SpanHandle>();
@@ -211,6 +213,20 @@ export class TelemetryHookProbe {
   }
 
   private handleSessionStart(input: SessionStartInput): void {
+    // /clear 换会话（对齐 CC regenerateSessionId）：同一进程内第二次 SessionStart，
+    // input.session_id 已是新 id。会话身份必须跟着换 —— config.sessionId 是构造期快照，
+    // 不换的话新会话的根 span / chat span 的 conversation.id 仍挂在旧会话下。
+    // 旧根 span 正常情况下已在 SessionEnd(clear) 里 end；若那次收尾没跑到（超时 / 异常），
+    // 这里兜底 end 掉，避免它永不入队、且 spanId 残留在 traceContext 栈里成为新会话的幽灵父。
+    if (input.source === "clear") {
+      if (this.agentSpan) {
+        this.agentSpan.end();
+        this.agentSpan = undefined;
+      }
+      if (input.parent_session_id) this.retiredSessionIds.add(input.parent_session_id);
+      if (input.session_id) this.config.sessionId = input.session_id;
+      this.turns = 0;
+    }
     // 创建顶层 invoke_agent span。
     // 名字按 OTel GenAI 约定取 `invoke_agent {gen_ai.agent.name}`（曾用模型名：
     // 那会让同一个 agent 换个模型就成了另一种操作，后端按 span 名聚合时被拆散）。
@@ -565,6 +581,8 @@ export class TelemetryHookProbe {
   }
 
   private handleSessionEnd(input: SessionEndInput): void {
+    // /clear 竞态护栏（同 collector）：迟到的旧会话 SessionEnd 不能结束新会话的根 span。
+    if (input.session_id && this.retiredSessionIds.has(input.session_id)) return;
     // 缺陷 3：最后一轮 AfterModel 没 fire 的话，chat span 在这里收掉，必须早于根 span end
     for (const key of [...this.llmSpans.keys()]) this.abandonLlmSpan(key, "session_end");
     const stats = input.stats;

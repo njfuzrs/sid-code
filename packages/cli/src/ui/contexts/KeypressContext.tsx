@@ -21,6 +21,7 @@ import { ESC } from "../utils/input.ts";
 import { parseMouseEvent } from "../utils/mouse.ts";
 import { terminalCapabilityManager } from "../utils/terminalCapabilityManager.ts";
 import { getLogger } from "@sid-code/core/debug/logger.ts";
+import { stopCapturingEarlyInput } from "../early-input.ts";
 
 // ── 常量 ──
 
@@ -725,6 +726,9 @@ export function KeypressProvider({ children }: { children: React.ReactNode }) {
   );
 
   useEffect(() => {
+    // 键盘层接管 stdin：先停掉 bootstrap 的早期输入捕获（保留已缓冲内容给 InputArea）。
+    // 不停的话两边同时读 stdin，首屏对话框里的按键会被它吞进缓冲、关框后回填进输入框。
+    stopCapturingEarlyInput();
     terminalCapabilityManager.enableSupportedModes();
 
     const wasRaw = stdin.isRaw;
