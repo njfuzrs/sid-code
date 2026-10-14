@@ -233,15 +233,24 @@ describe("新鲜度埋点（F4）", () => {
     await tick();
     writeFileSync(f, "9\n");
     await edit.execute({ file_path: f, old_string: "9", new_string: "8" });
-    await edit.execute({ file_path: join(dir, "never-read.ts"), old_string: "a", new_string: "b" });
+    // 未读文件：精确命中放行（allowed_unread_exact），未命中拒绝（rejected_unread + 策略）。
+    // 两者同属「未读 edit」分母，放行率 = allowed ÷ (allowed + rejected) 才算得出来。
+    const u1 = join(dir, "never-read-1.ts");
+    const u2 = join(dir, "never-read-2.ts");
+    writeFileSync(u1, "a\n");
+    writeFileSync(u2, "a\n");
+    await edit.execute({ file_path: u1, old_string: "a", new_string: "b" });
+    await edit.execute({ file_path: u2, old_string: "zzz", new_string: "b" });
 
     expect(events.map((e) => e.outcome)).toEqual([
       "bash_changed_tracked_files",
       "rejected_modified",
+      "allowed_unread_exact",
       "rejected_unread",
     ]);
     expect(events[0]).toMatchObject({ tool: "bash", files_changed: 1 });
     expect(typeof events[1]!.ms_since_read).toBe("number");
+    expect(events[3]).toMatchObject({ tool: "edit", match_strategy: "none" });
   });
 });
 
