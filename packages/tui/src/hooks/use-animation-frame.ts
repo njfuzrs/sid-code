@@ -10,7 +10,7 @@
  * 所以要等别的原因（父组件重渲等）让它重渲、且上一帧里它已回到视口内，才恢复。旧底座就是这样
  * （例如帧从 11 行收缩到 10 行的那次重渲仍判离屏，再下一次重渲才恢复；React.memo 包住的组件则一直停着）。
  */
-import {useContext, useEffect, useRef, useState} from 'react';
+import {type RefObject, useContext, useEffect, useRef, useState} from 'react';
 import Yoga from 'yoga-layout';
 import {ClockContext} from '../clock.js';
 import {type DOMElement} from '../dom.js';
@@ -53,7 +53,7 @@ export function isInViewport(node: DOMElement | null, rows: number): boolean {
 
 export default function useAnimationFrame(
 	intervalMs: number | null = 16,
-): [React.RefObject<DOMElement | null>, number] {
+): [RefObject<DOMElement | null>, number] {
 	const clock = useContext(ClockContext);
 	const {stdout} = useContext(StdoutContext);
 	const ref = useRef<DOMElement | null>(null);
