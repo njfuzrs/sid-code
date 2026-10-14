@@ -14,6 +14,8 @@
 #   ./scripts/release.sh --upload-team-defaults <file>  # 单独上传团队默认配置（不打版本号）
 #   ./scripts/release.sh --upload-ripgrep <dir> <version>  # 单独上传预编译 ripgrep 二进制（不打版本号）
 #   ./scripts/release.sh --archive-existing     # 把服务器上现存的版本目录逐个归档到 OSS（标 original，可重跑）
+#   ./scripts/release.sh --publish-manifest     # 从 OSS 归档重建 versions.json 并发布到指针层（B46 P5，可重跑）
+#   ./scripts/release.sh --audit-archive        # I1 审计 + 最老已归档版本回源冒烟（B46 P6，只读）
 #
 # ─── 发布通道（2026-08-24 接入，A2）────────────────────────────────────────────
 #
@@ -263,6 +265,8 @@ NO_COMMIT=false
 DO_PROMOTE=false
 PROMOTE_VERSION=""
 DO_ARCHIVE_EXISTING=false
+DO_PUBLISH_MANIFEST=false
+DO_AUDIT_ARCHIVE=false
 BETA_FIX=false
 BETA_NOTE=""
 
@@ -286,6 +290,8 @@ while [ $# -gt 0 ]; do
         --allow-dirty) ALLOW_DIRTY=true; shift ;;
         --no-commit) NO_COMMIT=true; shift ;;
         --archive-existing) DO_ARCHIVE_EXISTING=true; shift ;;
+        --publish-manifest) DO_PUBLISH_MANIFEST=true; shift ;;
+        --audit-archive) DO_AUDIT_ARCHIVE=true; shift ;;
         --upload-team-defaults)
             DO_UPLOAD_TEAM_DEFAULTS=true
             TEAM_DEFAULTS_FILE="${2:-}"
@@ -414,6 +420,62 @@ warm_remote() { # <version>
     [ "$rc" -eq 0 ] || return 1
     grep -Eqx "__WARM_(OK|PRESENT)__ ${ver}" <<<"$out" || return 1
     return 0
+}
+
+# ─── 版本清单 versions.json + I1 审计（B46 P5 / P6）──────────────────────────
+#
+# 取数在服务器上（scripts/manifest-ops.sh dump：OSS 只对 ECS 开放），解析与生成在本机
+# （scripts/release-manifest.ts：服务器上没有 bun，逻辑也不该写两份）。
+#
+# 清单与审计**都从归档现取**，不读服务器上已有的 versions.json：清单是派生物，
+# 审计拿上一次写的清单当输入，等于用昨天的照片证明今天没丢东西。
+MANIFEST_DUMP=""
+
+manifest_dump() { # 结果写到 ${MANIFEST_DUMP}（本地临时文件）
+    local remote="/tmp/sid-manifest-ops-$$.sh" rc=0
+    run_scp "$SCRIPT_DIR/manifest-ops.sh" "${DEPLOY_SSH_USER}@${DEPLOY_SSH_HOST}:${remote}" >/dev/null \
+        || { warn "清单脚本上传失败"; return 1; }
+    MANIFEST_DUMP="$(mktemp "${TMPDIR:-/tmp}/sid-manifest-dump-XXXXXX")"
+    run_ssh "${DEPLOY_SSH_USER}@${DEPLOY_SSH_HOST}" \
+        "bash '${remote}' dump; _rc=\$?; rm -f '${remote}'; exit \$_rc" \
+        >"$MANIFEST_DUMP" 2>"${MANIFEST_DUMP}.err" || rc=$?
+    grep -v 'setlocale' "${MANIFEST_DUMP}.err" | sed 's/^/  /' >&2 || true
+    rm -f "${MANIFEST_DUMP}.err"
+    [ "$rc" -eq 0 ] || { warn "从归档取清单原料失败（ssh 退出码 ${rc}）"; return 1; }
+    # 判据只认结束标记：ssh 返回 0 但输出被截断时，生成出来的就是一份少了版本的清单
+    grep -qx "__DUMP_OK__" "$MANIFEST_DUMP" || { warn "清单原料不完整（缺 __DUMP_OK__）"; return 1; }
+}
+
+manifest_cleanup() { [ -z "$MANIFEST_DUMP" ] || rm -f "$MANIFEST_DUMP" "${MANIFEST_DUMP}.json"; MANIFEST_DUMP=""; }
+
+# 重建 versions.json 并原子写到服务器指针层（另在 OSS 存一份只追加的审计副本）
+publish_manifest() {
+    local out remote_json="/tmp/sid-versions-$$.json" remote_ops="/tmp/sid-manifest-ops-pub-$$.sh" res rc=0
+    manifest_dump || { manifest_cleanup; return 1; }
+    out="${MANIFEST_DUMP}.json"
+    bun run "$SCRIPT_DIR/release-manifest.ts" build "$MANIFEST_DUMP" "$out" || { manifest_cleanup; return 1; }
+    run_scp "$out" "${DEPLOY_SSH_USER}@${DEPLOY_SSH_HOST}:${remote_json}" >/dev/null \
+        && run_scp "$SCRIPT_DIR/manifest-ops.sh" "${DEPLOY_SSH_USER}@${DEPLOY_SSH_HOST}:${remote_ops}" >/dev/null \
+        || { warn "清单上传失败"; manifest_cleanup; return 1; }
+    res="$(run_ssh "${DEPLOY_SSH_USER}@${DEPLOY_SSH_HOST}" \
+        "bash '${remote_ops}' publish '${remote_json}' '${DEPLOY_PATH}'; _rc=\$?; rm -f '${remote_ops}' '${remote_json}'; exit \$_rc" 2>&1)" || rc=$?
+    printf '%s\n' "$res" | grep -v 'setlocale' | grep -v '^__PUBLISH_OK__$' | sed 's/^/  /' || true
+    manifest_cleanup
+    [ "$rc" -eq 0 ] || return 1
+    grep -qx "__PUBLISH_OK__" <<<"$res" || return 1
+}
+
+# I1 审计：git tag -l 'v*' ⊆ 归档 ∪ lost。传 smoke 时再对最老的已归档版本发 HEAD（验回源链路）
+audit_archive() { # [smoke]
+    local rc=0
+    manifest_dump || { manifest_cleanup; return 1; }
+    if [ "${1:-}" = smoke ]; then
+        bun run "$SCRIPT_DIR/release-manifest.ts" audit "$MANIFEST_DUMP" --smoke "${PUBLIC_BASE_URL}/releases/sid-code" || rc=$?
+    else
+        bun run "$SCRIPT_DIR/release-manifest.ts" audit "$MANIFEST_DUMP" || rc=$?
+    fi
+    manifest_cleanup
+    return "$rc"
 }
 
 # ─── 失败回滚（EXIT trap）───────────────────────────────────────────────────
@@ -820,6 +882,25 @@ if [ "$DO_ARCHIVE_EXISTING" = true ]; then
     echo ""
     [ -z "$_bad" ] || fail "归档失败的版本:${_bad}（成功 ${_ok_n} 个；可直接重跑，已归档对象不会被覆盖）"
     ok "全部 ${_ok_n} 个版本已归档并回读校验通过"
+    exit 0
+fi
+
+# ─── 单独重建并发布版本清单（B46 P5，可重跑）───
+if [ "$DO_PUBLISH_MANIFEST" = true ]; then
+    require_ssh_user
+    cd "$ROOT"
+    echo ">>> 从 OSS 归档重建 versions.json ..."
+    publish_manifest || fail "版本清单发布失败（服务器上原有的 versions.json 未改动）"
+    ok "versions.json 已发布：${PUBLIC_BASE_URL}/releases/sid-code/versions.json"
+    exit 0
+fi
+
+# ─── 单独跑 I1 审计 + 最老版本回源冒烟（B46 P6，只读）───
+if [ "$DO_AUDIT_ARCHIVE" = true ]; then
+    require_ssh_user
+    cd "$ROOT"
+    echo ">>> I1 审计：git tag ⊆ 归档 ∪ lost；最老已归档版本回源冒烟 ..."
+    audit_archive smoke || fail "归档审计未通过"
     exit 0
 fi
 
@@ -1375,6 +1456,15 @@ fi"
         || fail "归档失败 —— 本次不算发布：beta.txt 与 install.sh 均未改动（v${VERSION} 目录已在服务器上，无指针指向它；修复后 --no-bump --upload 重跑）"
     ok "v${VERSION} 已归档（回读 sha256 校验通过）"
 
+    # ─── 版本清单（B46 P5）：归档之后、写指针之前，从归档重建 versions.json ───
+    #
+    # 失败只 warn 不阻断：清单是加速失败用的，不是门禁 —— 客户端拉到旧清单时，
+    # 指针指着的版本仍判为可装（manifest.ts lookupVersion），拉不到清单时直接交给 install.sh。
+    # 反过来，清单发布失败就拒绝发版，等于让一个展示用的派生物挡住整条发布链。
+    echo ">>> 重建版本清单 versions.json ..."
+    publish_manifest && ok "versions.json 已更新" \
+        || warn "版本清单发布失败（不阻断发布）：修复后跑 ./scripts/release.sh --publish-manifest 补发"
+
     run_scp "$RELEASE_DIR/install.sh" "${DEPLOY_SSH_USER}@${DEPLOY_SSH_HOST}:${DEPLOY_PATH}/install.sh"
 
     # 上传顶层 CHANGELOG.md（供用户通过链接查看版本变更）
@@ -1391,6 +1481,16 @@ fi"
     # "反正是同一个版本号"）就等于取消整个通道机制：一次 --upload 立刻全量放量，
     # 泡制期归零，而**不会有任何东西报错**。反漂移断言在
     # tests/release-flow-contract.test.ts「发布通道」那组。
+    # ─── I1 审计 + 最老版本回源冒烟（B46 P6）：写指针前的最后一道门 ───────────
+    #
+    # 放在写 beta.txt **之前**而不是发布收尾：放收尾就只是「事后告知」，坏状态已经对外了。
+    # 审计红 = 有一个打过 tag 的版本既不在归档也不在 lost 里（哪一步漏了归档），
+    # 冒烟红 = 最老的已归档版本下载不到（nginx 回源 / bucket policy / resolver 被改）。
+    # 两者都意味着「任何打过 tag 的版本都能装上」这条承诺此刻是假的，不该再往上叠一个新版本。
+    echo ">>> I1 审计 + 最老已归档版本回源冒烟 ..."
+    audit_archive smoke \
+        || fail "归档审计未通过 —— beta.txt 未改动（v${VERSION} 已归档、目录已在服务器上；修复后 --no-bump --upload 重跑，或先单独跑 --audit-archive 排查）"
+
     run_scp "$RELEASE_DIR/beta.txt" "${DEPLOY_SSH_USER}@${DEPLOY_SSH_HOST}:${DEPLOY_PATH}/beta.txt"
     ok "beta 通道已指向 v${VERSION}（稳定通道未改动，需 --promote 显式促升）"
 

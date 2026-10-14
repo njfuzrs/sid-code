@@ -187,7 +187,13 @@ TARBALL_URL="${RELEASE_BASE}/${VERSION}/${TARBALL_NAME}"
 TARBALL_PATH="$TMPDIR_DL/$TARBALL_NAME"
 
 info "下载: $TARBALL_URL"
-curl -fsSL "$TARBALL_URL" -o "$TARBALL_PATH" || fail "下载失败: $TARBALL_URL"
+if ! curl -fsSL "$TARBALL_URL" -o "$TARBALL_PATH"; then
+    # 显式指定版本时最常见的失败是「这个版本不存在」：给出能查到可用版本的那条命令（B46 P5）
+    if [ -n "${SID_CODE_VERSION:-}" ]; then
+        fail "下载失败: ${TARBALL_URL}（版本 ${VERSION} 可能不存在；用 sid-code update --list 查看可安装的版本）"
+    fi
+    fail "下载失败: $TARBALL_URL"
+fi
 
 CHECKSUM_URL="${TARBALL_URL}.sha256"
 CHECKSUM_PATH="$TARBALL_PATH.sha256"
@@ -371,6 +377,51 @@ echo "╔═══════════════════════�
 echo "║   安装完成！v$VERSION"
 echo "╚══════════════════════════════════════╝"
 echo ""
+
+# ─── 显式装了旧版本：提示自动更新会把它升回去（B46 P5）─────────────────────────
+#
+# 默认 autoUpdate=auto，只要 latest > 当前就升级 —— 用户特意装的旧版本，下次启动就没了，
+# 而他不会知道为什么。只提示、不替用户改配置（改配置是用户的决定，且会影响以后所有升级）。
+# known_issues 从 versions.json 里**这个版本那一行**取：清单刻意一个版本一行，
+# 这样这里不依赖 jq / python3 也能读（见 scripts/release-manifest.ts serializeManifest）。
+version_lt() { # a < b（x.y.z 纯数字三段）
+    local IFS=.
+    # shellcheck disable=SC2206
+    local a=($1) b=($2) i
+    for i in 0 1 2; do
+        [ "${a[$i]:-0}" -lt "${b[$i]:-0}" ] && return 0
+        [ "${a[$i]:-0}" -gt "${b[$i]:-0}" ] && return 1
+    done
+    return 1
+}
+if [ -n "${SID_CODE_VERSION:-}" ]; then
+    LATEST_STABLE="$(curl -fsSL "$RELEASE_BASE/latest.txt" 2>/dev/null | tr -d '[:space:]' || true)"
+    case "$LATEST_STABLE" in
+        [0-9]*.[0-9]*.[0-9]*)
+            if version_lt "$VERSION" "$LATEST_STABLE"; then
+                echo "  📌 你装的是指定版本 v${VERSION}（稳定版最新为 v${LATEST_STABLE}）。"
+                echo "    默认会被自动更新升回最新版；如需停留在此版本，设置 \"autoUpdate\": \"off\""
+                echo "    （~/.sid-code/settings.json）或环境变量 SID_CODE_AUTO_UPDATE=off。"
+                echo ""
+            fi
+            ;;
+    esac
+    MANIFEST_LINE="$(curl -fsSL "$RELEASE_BASE/versions.json" 2>/dev/null \
+        | grep -F "\"version\":\"${VERSION}\"" | head -1 || true)"
+    case "$MANIFEST_LINE" in
+        *'"rebuilt"'*)
+            echo "  ⓘ v${VERSION} 是事后重建的产物（provenance: rebuilt），sha256 与当年发布的不同。"
+            echo ""
+            ;;
+    esac
+    case "$MANIFEST_LINE" in
+        *'"self-update-broken"'*)
+            echo "  ⚠️  已知问题 self-update-broken：此版本内置的更新地址已停用，"
+            echo "    sid-code update 与自动更新都会失败；换版本请重新运行 install.sh。"
+            echo ""
+            ;;
+    esac
+fi
 # beta 装完必须显式说一句：通道靠环境变量记住，而人不会记得自己上次装的是哪个通道。
 # 不说的话，beta 用户下次 `sid-code update`（不带变量）会静默掉回 stable，
 # 而 §7 那条验收判据（"至少一次真实回归在 beta 期被发现"）依赖 beta 用户**持续**在 beta 上。

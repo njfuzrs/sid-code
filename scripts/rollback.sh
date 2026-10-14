@@ -2,7 +2,7 @@
 # scripts/rollback.sh — 把发布通道回滚到某个历史版本（秒级，纯指针操作）
 #
 # 用法：
-#   ./scripts/rollback.sh                    # 列出服务器上可回滚的版本与两个通道当前指向
+#   ./scripts/rollback.sh                    # 列出热缓存里的版本与两个通道当前指向（已归档版本都可回滚）
 #   ./scripts/rollback.sh 0.1.600            # 把 stable 通道（latest.txt）指回 v0.1.600
 #   ./scripts/rollback.sh 0.1.600 --channel beta   # 回滚 beta 通道（beta.txt）
 #   ./scripts/rollback.sh 0.1.600 --yes      # 跳过交互确认（脚本化场景）
@@ -149,7 +149,8 @@ echo ""
 info "stable (latest.txt): ${CUR_STABLE:-<空>}"
 info "beta   (beta.txt)  : ${CUR_BETA:-<空>}"
 echo ""
-echo "  服务器上可回滚的版本（按 mtime 新→旧）："
+echo "  热缓存里的版本（按 mtime 新→旧；不在这里的已归档版本同样可回滚，会先从 OSS 回暖，"
+echo "  全量清单见 ${PUBLIC_BASE_URL:-https://www.sid-code.cc}/releases/sid-code/versions.json 或 sid-code update --list）："
 if [ -z "$VERSIONS" ]; then
     warn "一个版本目录都没有 —— 无法回滚"
 else

@@ -93,10 +93,112 @@ describe("sid-code update 子命令 - 行为契约", () => {
       return Buffer.from("");
     };
     const { handleUpdateCommand } = await import("@sid-code/cli/command/update.ts");
-    await handleUpdateCommand(["--version", "0.1.602"], execute as never);
+    await handleUpdateCommand(["--version", "0.1.602"], execute as never, () => "stable", noIndex);
     expect(calls).toHaveLength(1);
     const options = calls[0]?.[2] as { env: NodeJS.ProcessEnv };
     expect(options.env.SID_CODE_VERSION).toBe("0.1.602");
+  });
+
+  // ── B46 P5：--list / --version 查清单 ──
+  const noIndex = async () => ({
+    manifestUrl: "https://x/versions.json",
+    manifest: null,
+    latest: null,
+    beta: null,
+  });
+  const index = async () => ({
+    manifestUrl: "https://x/versions.json",
+    latest: "0.1.606",
+    beta: "0.1.607",
+    manifest: {
+      schema: 1 as const,
+      generated_at: "",
+      archive_since: "0.1.602",
+      versions: [
+        { version: "0.1.607", provenance: "original" as const, platforms: {} },
+        { version: "0.1.606", provenance: "original" as const, platforms: {} },
+        {
+          version: "0.1.590",
+          provenance: "rebuilt" as const,
+          platforms: {},
+          known_issues: ["self-update-broken"],
+        },
+      ],
+      lost: [{ version: "0.1.585", reason: "已丢失" }],
+    },
+  });
+
+  async function capture(fn: () => Promise<void>) {
+    const logs: string[] = [];
+    const originalLog = console.log;
+    console.log = (msg: string) => logs.push(String(msg));
+    try {
+      await fn();
+    } finally {
+      console.log = originalLog;
+    }
+    return logs.join("\n");
+  }
+
+  test("--list 列出清单版本并标注通道 / 重建 / 已知问题，不执行安装", async () => {
+    const calls: unknown[][] = [];
+    const execute = (...args: unknown[]) => (calls.push(args), Buffer.from(""));
+    const { handleUpdateCommand } = await import("@sid-code/cli/command/update.ts");
+    const out = await capture(() =>
+      handleUpdateCommand(["--list"], execute as never, () => "stable", index),
+    );
+    expect(calls).toHaveLength(0);
+    const rows = out.split("\n").filter((l) => /^\s+0\.1\.\d+/.test(l));
+    expect(rows.map((l) => l.trim().split(/\s+/)[0])).toEqual(["0.1.607", "0.1.606", "0.1.590"]);
+    expect(rows[0]).toContain("beta");
+    expect(rows[1]).toContain("stable");
+    expect(rows[2]).toContain("(重建)");
+    expect(rows[2]).toContain("self-update-broken");
+    expect(out).toContain("0.1.585");
+    expect(out).toContain('"autoUpdate": "off"');
+  });
+
+  test("--list 拉不到清单 → 报错并给出 --version 的退路", async () => {
+    const { handleUpdateCommand } = await import("@sid-code/cli/command/update.ts");
+    await expect(
+      handleUpdateCommand(["--list"], (() => Buffer.from("")) as never, () => "stable", noIndex),
+    ).rejects.toThrow("拉取版本清单失败");
+  });
+
+  test("--version 不在清单里 → 报不存在并提示 --list，不执行安装", async () => {
+    const calls: unknown[][] = [];
+    const execute = (...args: unknown[]) => (calls.push(args), Buffer.from(""));
+    const { handleUpdateCommand } = await import("@sid-code/cli/command/update.ts");
+    await expect(
+      handleUpdateCommand(["--version", "9.9.9"], execute as never, () => "stable", index),
+    ).rejects.toThrow("sid-code update --list");
+    await expect(
+      handleUpdateCommand(["--version", "0.1.585"], execute as never, () => "stable", index),
+    ).rejects.toThrow("已丢失");
+    expect(calls).toHaveLength(0);
+  });
+
+  test("--version 在清单里且有已知问题 → 打印提示后照常安装", async () => {
+    const calls: unknown[][] = [];
+    const execute = (...args: unknown[]) => (calls.push(args), Buffer.from(""));
+    const { handleUpdateCommand } = await import("@sid-code/cli/command/update.ts");
+    const out = await capture(() =>
+      handleUpdateCommand(["--version", "0.1.590"], execute as never, () => "stable", index),
+    );
+    expect(out).toContain("self-update-broken");
+    expect(calls).toHaveLength(1);
+  });
+
+  test("清单拉不到 → --version 不拒绝、不降级，直接交给 install.sh", async () => {
+    const calls: unknown[][] = [];
+    const execute = (...args: unknown[]) => (calls.push(args), Buffer.from(""));
+    const { handleUpdateCommand } = await import("@sid-code/cli/command/update.ts");
+    await capture(() =>
+      handleUpdateCommand(["--version", "9.9.9"], execute as never, () => "stable", noIndex),
+    );
+    expect(calls).toHaveLength(1);
+    const options = calls[0]![2] as { env: NodeJS.ProcessEnv };
+    expect(options.env.SID_CODE_VERSION).toBe("9.9.9");
   });
 
   // ── T4：sid-code update 缺省沿用当前安装的通道 ──
@@ -139,7 +241,8 @@ describe("sid-code update 子命令 - 行为契约", () => {
     expect((await runUpdate("dev")).env.SID_CODE_CHANNEL).toBeUndefined();
   });
 
-  test("非法 --version、--list 和未知参数拒绝执行安装", async () => {
+  // B46 P5 起 --list 是合法参数（契约有意变更），这里改测 --list 与 --version 互斥
+  test("非法 --version、--list 与 --version 混用、未知参数拒绝执行安装", async () => {
     const calls: unknown[][] = [];
     const execute = (...args: unknown[]) => {
       calls.push(args);
@@ -149,9 +252,9 @@ describe("sid-code update 子命令 - 行为契约", () => {
     await expect(handleUpdateCommand(["--version", "invalid"], execute as never)).rejects.toThrow(
       "版本号非法",
     );
-    await expect(handleUpdateCommand(["--list"], execute as never)).rejects.toThrow(
-      "不支持 --list",
-    );
+    await expect(
+      handleUpdateCommand(["--list", "--version", "0.1.602"], execute as never),
+    ).rejects.toThrow("不能同时使用");
     await expect(handleUpdateCommand(["--unknown"], execute as never)).rejects.toThrow("未知参数");
     expect(calls).toHaveLength(0);
   });

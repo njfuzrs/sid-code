@@ -13,20 +13,30 @@
 
 import * as childProcess from "node:child_process";
 import { INSTALL_URL } from "@sid-code/core/update/config.ts";
+import {
+  describeKnownIssue,
+  fetchReleaseIndex,
+  formatVersionList,
+  lookupVersion,
+  type ReleaseIndex,
+} from "@sid-code/core/update/manifest.ts";
 import { isValidVersion } from "@sid-code/core/update/versions.ts";
 import { getReleaseChannel, type ReleaseChannel } from "@sid-code/shared/release-channel.ts";
+import { getRawVersion } from "@sid-code/shared/version.ts";
 function printHelp(): void {
   console.log(`sid-code update — 更新到最新版本
 
 用法:
   sid-code update                       下载并安装最新版本
-  sid-code update --version x.y.z       安装指定稳定版本
+  sid-code update --version x.y.z       安装指定版本
+  sid-code update --list                列出可安装的历史版本（标注 stable / beta / 当前）
   sid-code update -h                    显示帮助
 
 说明:
   缺省从稳定版通道更新。指定版本也可以使用：
     SID_CODE_VERSION=x.y.z sid-code update
-  当前不支持 --list；服务器只提供稳定版和 beta 通道指针。
+  版本清单来自服务器 versions.json（由 OSS 归档派生，0.1.602 起的版本都在归档里）。
+  停留在旧版本需关闭自动更新："autoUpdate": "off" 或 SID_CODE_AUTO_UPDATE=off。
 
 发布通道:
   缺省沿用当前安装的通道：装的是 beta 就继续更新到 beta（服务器 beta.txt），
@@ -36,8 +46,9 @@ function printHelp(): void {
   已有的 ~/.sid-code/ 配置与会话数据不受影响，只替换二进制本身。`);
 }
 
-function parseVersion(args: string[]): string | undefined {
+function parseArgs(args: string[]): { version?: string; list: boolean } {
   let version: string | undefined;
+  let list = false;
   for (let index = 0; index < args.length; index += 1) {
     const arg = args[index];
     if (arg === "--version") {
@@ -51,11 +62,47 @@ function parseVersion(args: string[]): string | undefined {
       continue;
     }
     if (arg === "--list") {
-      throw new Error("当前不支持 --list；服务器没有版本清单接口");
+      list = true;
+      continue;
     }
     throw new Error(`未知参数: ${arg}`);
   }
-  return version;
+  if (list && version) throw new Error("--list 与 --version 不能同时使用");
+  return { version, list };
+}
+
+/**
+ * `--version x` 安装前先查清单（B46 P5）。
+ *
+ * 清单拉不到 → 不判断，直接交给 install.sh（它会对不存在的版本报 404）。
+ * 既不静默降级成「装最新」，也不因为清单不可用就拒绝安装 —— 清单只是加速失败，不是门禁。
+ */
+function checkRequestedVersion(index: ReleaseIndex, version: string): void {
+  const r = lookupVersion(index, version);
+  if (r.kind === "missing") {
+    throw new Error(`版本 ${version} 不存在，用 sid-code update --list 查看可安装的版本`);
+  }
+  if (r.kind === "lost") {
+    throw new Error(
+      `版本 ${version} 已丢失、无法安装${r.reason ? `（${r.reason}）` : ""}；用 sid-code update --list 查看可安装的版本`,
+    );
+  }
+  if (r.kind === "unknown") {
+    console.log(`（版本清单暂时拉不到，直接尝试安装 ${version}；不存在时安装脚本会报 404）`);
+    return;
+  }
+  for (const id of r.entry?.known_issues ?? []) {
+    console.log(`⚠ v${version} 已知问题 ${id}：${describeKnownIssue(id)}`);
+  }
+}
+
+async function printVersionList(index: ReleaseIndex): Promise<void> {
+  if (!index.manifest) {
+    throw new Error(
+      `拉取版本清单失败（${index.manifestUrl}）。稍后重试，或直接 sid-code update --version <版本号>`,
+    );
+  }
+  for (const line of formatVersionList(index, getRawVersion())) console.log(line);
 }
 
 /**
@@ -78,13 +125,19 @@ export async function handleUpdateCommand(
   args: string[],
   execute: typeof childProcess.execFileSync = childProcess.execFileSync,
   installedChannel: () => ReleaseChannel = () => getReleaseChannel(),
+  loadIndex: () => Promise<ReleaseIndex> = () => fetchReleaseIndex(),
 ): Promise<void> {
   if (args.includes("--help") || args.includes("-h")) {
     printHelp();
     return;
   }
 
-  const version = parseVersion(args);
+  const { version, list } = parseArgs(args);
+  if (list) {
+    await printVersionList(await loadIndex());
+    return;
+  }
+  if (version) checkRequestedVersion(await loadIndex(), version);
   const { channel, inherited } = resolveUpdateChannel(
     process.env.SID_CODE_CHANNEL,
     installedChannel(),
