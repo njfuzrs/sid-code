@@ -5,7 +5,7 @@
  * - 第二次启动 device-id 不变
  * - 删文件 / 损坏后重建有告警
  * - 未配置 identity 时所有功能正常（getIdentity 仍返回 deviceId）
- * - 凭据过期不阻断，只告警 + 不带 Authorization
+ * - 本地 expiresAt 已过仍带 Authorization（服务端滑动续期，失效只认服务端 401）
  *
  * 隔离：SID_CONFIG_DIR → tmpdir。必须存/恢复原值，不能无条件 delete。
  */
@@ -179,14 +179,34 @@ describe("设备凭据 fail-open（PR-1.4）", () => {
     });
   });
 
-  test("过期凭据告警且不带 Authorization（fail-open）", () => {
-    saveDeviceCredential({
-      credential: "expired-token",
-      expiresAt: new Date(Date.now() - 1000).toISOString(),
-    });
-    expect(getUsableCredentialToken()).toBeUndefined();
-    expect(applyDeviceAuth({ X: "1" })).toEqual({ X: "1" });
-    expect(warnSpy!.mock.calls.some((c: unknown[]) => String(c[1]).includes("过期"))).toBe(true);
+  // 契约变更（B1，2026-10-14）：原用例断言「本地过期 → 不带 Authorization」。服务端是滑动续期，
+  // 本地 expiresAt 是登录时快照、从不更新，按它扣下凭据会让登录满一个 TTL 的活跃用户静默断联。
+  // 现在本地过期仍照常携带，失效只认服务端 401（401 的停发断言在各通道测试里）。
+  test("本地 expiresAt 已过仍带 Authorization，只打一次 debug、不告警", () => {
+    const debugSpy = spyOn(getLogger(), "debug");
+    try {
+      saveDeviceCredential({
+        credential: "locally-expired-token",
+        expiresAt: new Date(Date.now() - 1000).toISOString(),
+      });
+      expect(getUsableCredentialToken()).toBe("locally-expired-token");
+      expect(applyDeviceAuth({ X: "1" })).toEqual({
+        X: "1",
+        Authorization: "Bearer locally-expired-token",
+      });
+      expect(warnSpy!.mock.calls.some((c: unknown[]) => String(c[1]).includes("过期"))).toBe(false);
+      const expiryDebug = debugSpy.mock.calls.filter((c: unknown[]) =>
+        String(c[1]).includes("过期"),
+      );
+      expect(expiryDebug.length).toBe(1);
+    } finally {
+      debugSpy.mockRestore();
+    }
+  });
+
+  test("expiresAt 不可解析也照常携带（同样交给服务端判定）", () => {
+    saveDeviceCredential({ credential: "bad-date-token", expiresAt: "not-a-date" });
+    expect(getUsableCredentialToken()).toBe("bad-date-token");
   });
 
   test("损坏文件告警并视为缺失，不阻断", () => {

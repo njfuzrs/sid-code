@@ -241,7 +241,9 @@ async function sendUsageLedger(entry: UsageLedgerEntry): Promise<"skipped" | "se
     if (response.status === 401) {
       warnOnce(
         "401",
-        `账本远程上报 401：设备凭据无效或已吊销，本会话不再重试、不写失败盘。${RELOGIN_HINT}`,
+        // 401 不写失败盘，但已有的失败盘不删（见文件头 T2），下一次 upsert 照常带凭据发。
+        // 旧文案写「本会话不再重试」与行为不符：凭据修好后会自动恢复。
+        `账本远程上报 401：设备凭据无效或已吊销，这一行未上报（不写失败盘，已有失败盘保留）；凭据修好后自动恢复。${RELOGIN_HINT}`,
       );
       throw new UnauthorizedExportError();
     }

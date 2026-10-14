@@ -257,7 +257,10 @@ describe("设备鉴权与稳定不发（M4 PR-4.1）", () => {
     expect(calls[0].Authorization).toBe(STATIC_AUTH);
   });
 
-  test("过期凭据视为无凭据（fail-open，不发远程）", async () => {
+  // 契约变更（B1，2026-10-14）：原用例断言「本地过期视为无凭据，不发远程」。服务端滑动续期，
+  // 本地 expiresAt 是登录时快照，按它停发会让活跃用户在第 TTL 天静默断联。现在照常发送，
+  // 是否失效交给服务端 401（下一条用例守住 fail-closed 那一半）。
+  test("本地 expiresAt 已过仍带凭据发送", async () => {
     saveDeviceCredential({ credential: "old", expiresAt: "2020-01-01T00:00:00Z" });
     const fetched = stubFetch();
     const exporter = new HttpExporter({
@@ -267,7 +270,25 @@ describe("设备鉴权与稳定不发（M4 PR-4.1）", () => {
     });
     exporter.send("e1", {});
     await new Promise((r) => setTimeout(r, 20));
-    expect(fetched.to(EVENTS_URL).length).toBe(0);
+    const calls = fetched.to(EVENTS_URL);
+    expect(calls.length).toBe(1);
+    expect(calls[0].Authorization).toBe("Bearer old");
+  });
+
+  test("本地已过期且服务端 401：这一批丢弃，不写磁盘、不退避", async () => {
+    saveDeviceCredential({ credential: "old", expiresAt: "2020-01-01T00:00:00Z" });
+    const fetched = stubFetch(401);
+    const diskCache = new EventDiskCache({ cacheDir, sessionId: "s-exp", maxRetries: 8 });
+    const exporter = new HttpExporter({
+      name: "ev",
+      endpoint: EVENTS_URL,
+      batchSize: 1,
+      diskCache,
+    });
+    exporter.send("e1", {});
+    await new Promise((r) => setTimeout(r, 80));
+    expect(fetched.to(EVENTS_URL).length).toBe(1);
+    expect(existsSync(cacheDir) ? readdirSync(cacheDir) : []).toEqual([]);
   });
 
   test("无凭据且无 authHeader：不发 fetch、不写磁盘", async () => {

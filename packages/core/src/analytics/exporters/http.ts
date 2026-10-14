@@ -202,7 +202,9 @@ export class HttpExporter implements SinkBackend {
       this.warnedUnauthorized = true;
       log.warn(
         "TELEMETRY",
-        `远程事件 ${this.name} 401：设备凭据无效或已吊销，本会话不再重试、不写磁盘。${RELOGIN_HINT}`,
+        // 实际行为是「这一批丢弃，下一批照常带凭据发」（flush 没有会话级停发开关），
+        // 所以重新登录后自动恢复。旧文案写「本会话不再重试」与行为不符。
+        `远程事件 ${this.name} 401：设备凭据无效或已吊销，这一批已丢弃（不写磁盘）；凭据修好后自动恢复上报。${RELOGIN_HINT}`,
       );
       return;
     }

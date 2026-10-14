@@ -4,11 +4,12 @@
  * 诚实说明档位：文件 + 0o600，与现有 API Key / mcp-oauth.json 同档。不假装进了 keychain。
  *
  * 失败语义（规划 §6，写进代码而非事后改）：
- * - 读取 / 过期 / 损坏：**fail-open**——降级到本地默认 + 告警，不阻塞主流程。
+ * - 读取失败 / 损坏：**fail-open**——降级到本地默认 + 告警，不阻塞主流程。
  *   身份通道挂了不该让开发者无法工作；M2/M3 控制面请求此时不带 Authorization。
  * - 签发本身（enroll）是 fail-closed，那是平台 PR-1.3 的事，本模块不签发。
  *
- * 吊销只能由服务端判定（401）；本地只看 expires_at。
+ * 吊销与过期都只由服务端判定（401）。本地 expires_at 只是登录时的快照，仅用于展示，
+ * 不再据此扣下凭据（服务端滑动续期，见 getUsableCredentialToken）。
  */
 
 import { chmodSync, existsSync, mkdirSync, readFileSync, unlinkSync, writeFileSync } from "node:fs";
@@ -65,7 +66,7 @@ function parseUser(raw: unknown): CredentialUser | undefined {
 }
 
 let cached: DeviceCredential | null | undefined;
-let warnedExpired = false;
+let loggedLocalExpired = false;
 let warnedCorrupt = false;
 
 function parseCredential(raw: string): DeviceCredential | null {
@@ -132,21 +133,26 @@ export function isCredentialExpired(cred: DeviceCredential, now = Date.now()): b
 }
 
 /**
- * 返回仍可用于 Authorization 的凭据明文。
- * 过期 / 缺失 / 损坏一律返回 undefined，并告警，不抛错。
+ * 返回用于 Authorization 的凭据明文。缺失 / 损坏返回 undefined，不抛错。
+ *
+ * **本地 expiresAt 已过也照常返回**（B1）：服务端是滑动续期（每次鉴权通过把过期时间
+ * 往后推），而本地文件里的 expiresAt 是登录那一刻的快照、从不更新。以前本地一过期就
+ * 扣下凭据，结果登录满一个 TTL 后，哪怕天天在用，所有企业通道也静默失去凭据——
+ * 服务端那边凭据其实还有效。所以「是否失效」只由服务端 401 判定，各通道的 401 路径
+ * 本来就处理好了。凭据只发往 backend.url 同源地址，本地过期不扩大泄露面。
+ *
+ * 不要改回「本地过期就返回 undefined」，也不要让客户端自己模仿服务端滑动续期
+ * （要硬编码服务端 TTL，服务端改配置就再次漂移）。
  */
 export function getUsableCredentialToken(now = Date.now()): string | undefined {
   const cred = getDeviceCredential();
   if (!cred) return undefined;
-  if (isCredentialExpired(cred, now)) {
-    if (!warnedExpired) {
-      warnedExpired = true;
-      getLogger().warn(
-        "IDENTITY",
-        "设备凭据已过期，控制面请求将不携带 Authorization（fail-open，不阻断主流程）",
-      );
-    }
-    return undefined;
+  if (isCredentialExpired(cred, now) && !loggedLocalExpired) {
+    loggedLocalExpired = true;
+    getLogger().debug(
+      "IDENTITY",
+      "本地记录的设备凭据过期时间已过，仍照常携带（服务端滑动续期，以服务端 401 为准）",
+    );
   }
   return cred.credential;
 }
@@ -196,14 +202,14 @@ export function saveDeviceCredential(cred: DeviceCredential): void {
     /* umask 兜底 */
   }
   cached = cred;
-  warnedExpired = false;
+  loggedLocalExpired = false;
   warnedCorrupt = false;
 }
 
 /** 删除落盘凭据（登出 / 吊销后的本地清理）。失败不抛。 */
 export function clearDeviceCredential(): void {
   cached = null;
-  warnedExpired = false;
+  loggedLocalExpired = false;
   warnedCorrupt = false;
   const path = sidPaths.deviceCredential();
   try {
@@ -216,6 +222,6 @@ export function clearDeviceCredential(): void {
 /** 仅测试 */
 export function __resetCredentialCacheForTest(): void {
   cached = undefined;
-  warnedExpired = false;
+  loggedLocalExpired = false;
   warnedCorrupt = false;
 }

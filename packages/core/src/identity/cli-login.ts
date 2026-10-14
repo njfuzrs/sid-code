@@ -21,7 +21,6 @@ import { getOrCreateDeviceId } from "./device-id.ts";
 import {
   clearDeviceCredential,
   getDeviceCredential,
-  getUsableCredentialToken,
   saveDeviceCredential,
   type CredentialUser,
   type DeviceCredential,
@@ -273,8 +272,12 @@ export async function performCliLogout(
   backendUrl: string | null,
   fetchImpl: typeof fetch = fetch,
 ): Promise<CliLogoutResult> {
-  const hadCredential = getDeviceCredential() !== null;
-  const token = getUsableCredentialToken();
+  // 直接取原始凭据，不经 getUsableCredentialToken：本地 expiresAt 是否已过与能否解绑无关
+  // （服务端滑动续期，本地早过期时服务端往往仍有效）。以前走它会在本地过期时跳过解绑，
+  // 设备在服务端仍绑定原用户，换人登录撞 409（B2）。已失效的凭据服务端回 401，下面按解绑完成处理。
+  const cred = getDeviceCredential();
+  const hadCredential = cred !== null;
+  const token = cred?.credential;
   let remote: CliLogoutResult["remote"] = "skipped";
   let remoteDetail: string | undefined;
   if (backendUrl && token) {
