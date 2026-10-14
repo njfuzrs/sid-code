@@ -95,6 +95,8 @@ describe("写盘与驱动权解耦", () => {
   it("同项目第二个会话（没抢到锁）建的任务也写盘", () => {
     const a = make();
     a.s.start();
+    // 项目里先得有 durable 任务，a 才会去抢锁（没有任务文件时不抢锁，避免在任意 cwd 建 .sid-code/）
+    expect(a.s.addDurableTask(task("seed"))).toBe(true);
     check(a.s);
     const b = make();
     b.s.start();

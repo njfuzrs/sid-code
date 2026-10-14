@@ -215,6 +215,40 @@ describe("调度器触发", () => {
     expect(scheduler.listTasks().length).toBe(0);
   });
 
+  it("没有 durable 任务文件时，check 不在工作目录建 .sid-code/（不抢锁）", () => {
+    // 回归：每个打开过 sid-code 的目录都被建出 .sid-code/scheduled_tasks.lock
+    dir = mkdtempSync(join(tmpdir(), "sid-cron-"));
+    const scheduler = new Scheduler({
+      onFire: () => {},
+      isLoading: () => false,
+      sessionId: "s",
+      workspaceDir: dir,
+      isDaemonRunning: () => false,
+    });
+    (scheduler as any).check();
+    (scheduler as any).check();
+    expect(existsSync(join(dir, ".sid-code"))).toBe(false);
+    expect(scheduler.isDrivingDurable()).toBe(false);
+  });
+
+  it("有 durable 任务文件时，check 照常抢锁驱动", () => {
+    dir = mkdtempSync(join(tmpdir(), "sid-cron-"));
+    require("fs").mkdirSync(join(dir, ".sid-code"), { recursive: true });
+    writeFileSync(join(dir, ".sid-code", "scheduled_tasks.json"), "[]");
+    const scheduler = new Scheduler({
+      onFire: () => {},
+      isLoading: () => false,
+      sessionId: "s",
+      workspaceDir: dir,
+      isDaemonRunning: () => false,
+    });
+    (scheduler as any).check();
+    expect(scheduler.isDrivingDurable()).toBe(true);
+    expect(existsSync(join(dir, ".sid-code", "scheduled_tasks.lock"))).toBe(true);
+    scheduler.stop();
+    expect(existsSync(join(dir, ".sid-code", "scheduled_tasks.lock"))).toBe(false);
+  });
+
   it("持久任务写盘并可重新加载", () => {
     dir = mkdtempSync(join(tmpdir(), "sid-cron-"));
     require("fs").mkdirSync(join(dir, ".sid-code"), { recursive: true });

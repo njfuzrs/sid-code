@@ -276,6 +276,11 @@ export class Scheduler {
    * 交互模式：每轮重新判定本会话是否该驱动本项目的 durable 任务。
    * daemon 在场 → 让出（并释放项目锁，daemon 不抢它但别的会话可以）；
    * daemon 不在 → 尝试抢项目级锁（lock.ts 自带 mkdir，`.sid-code/` 不存在也能抢）。
+   *
+   * 本项目没有 scheduled_tasks.json → 没有可驱动的 durable 任务，不抢锁。
+   * 否则每个打开过 sid-code 的目录都会被建出 `.sid-code/scheduled_tasks.lock`
+   * （lock.ts 抢锁前会 mkdir，而 check() 每轮都调这里）。任务文件一旦被
+   * addDurableTask 写出，下一轮 check / durableDriver 就会照常抢锁，不影响触发。
    */
   private updateDriving(): void {
     if (this.opts.daemonMode) return;
@@ -284,6 +289,10 @@ export class Scheduler {
       if (this.drivingDurable) {
         getLogger().info("CRON", "检测到守护进程在场，本会话让出 durable 任务驱动");
       }
+      this.releaseDriving();
+      return;
+    }
+    if (!existsSync(durableFilePath(this.opts.workspaceDir))) {
       this.releaseDriving();
       return;
     }
