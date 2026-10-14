@@ -49,7 +49,7 @@ rm -rf ~/.sid-code/trajectories/sessions
 | 模型请求 | 你配置的模型端点 | 对话内容、读到的文件、工具结果、你的 API key | 关不掉，这是工作本身；涉密场景换本地模型（见[模型配置](/start/configure)的 ollama 一节） |
 | 启动预连接 | 主模型端点的同一主机，一次 `HEAD` | 不带任何内容 | 不单独提供开关：与模型请求同主机，不新增暴露面；取不到主模型地址时不连 |
 | 网关定价同步 | 你的网关 `<host>/api/pricing`，`GET` | 不带 API key，不带会话数据 | 不受隐私级别控制，理由同上；关掉只会让成本估算回落内置价格表 |
-| 更新检查 | `www.sid-code.cc/releases/sid-code/latest.txt`（beta 通道读 `beta.txt`），24 小时最多一次，仅交互界面 | 一次裸 `GET`，不带会话或设备数据；对方能看到 IP 与时间 | `autoUpdate: "off"`、`SID_CODE_AUTO_UPDATE=off`，或隐私级别 `essential-traffic`（见[自动更新](/use/auto-update)） |
+| 更新检查 | `www.sid-code.cc/releases/sid-code/latest.txt`（beta 通道读 `beta.txt`），24 小时最多一次，仅交互界面 | 一次裸 `GET`，不带会话或设备数据；对方能看到 IP 与时间。手动运行 `sid-code update` 时同样请求这里，`update --list` 或指定版本时另拉 `versions.json` | `autoUpdate: "off"`、`SID_CODE_AUTO_UPDATE=off`，或隐私级别 `essential-traffic`（见[自动更新](/use/auto-update)）；手动命令不受这些开关影响 |
 | 外部模型目录 | `models.opencode.ai`、`catalog.stencil.so`、`cdn.jsdelivr.net`、`openrouter.ai` | `GET`，不带用户数据；对方能看到 IP 与「在用 sid-code」 | 隐私级别 `essential-traffic` |
 | 官方插件市场 | `www.sid-code.cc/plugins/index.json` 及插件包 | `GET`，**永不带凭据**；交互启动时只在装了市场插件时拉目录，其余只在你运行 `/plugin` 时 | `officialMarketplace: false` 关掉官方市场。**不受隐私级别控制** |
 | WebSearch | 配了 SearXNG 就发往它，否则 `duckduckgo.com` | 搜索词。搜索词由模型生成，可能夹带代码片段与路径 | 在[权限规则](/use/permissions)里禁用 WebSearch，或配自建 SearXNG（`search.searxngUrl`） |
