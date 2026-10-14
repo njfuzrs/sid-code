@@ -1636,6 +1636,19 @@ export async function loadConfig(cliArgs: Partial<Config> = {}): Promise<Config>
     setIdentityConfig(identity);
   }
 
+  // 隐私级别必须在 loadConfig 返回前注入：启动路径上有比 initTraceCollector / initTelemetrySystem
+  // 更早的出网点（app.ts 构造期的外部模型目录同步），它们只问 privacy-level.ts，读不到配置。
+  // 此前只在那两个 init 里注入，于是 settings.json 写 `analytics.privacy_level: "essential-traffic"`
+  // 拦得住更新检查（晚）却拦不住目录同步（早）——只有环境变量能拦（v0.1.609 发布产物实测）。
+  // 之后那几处注入的是同一个值，幂等。
+  {
+    const level = (merged as Config).analytics?.privacyLevel;
+    if (level) {
+      const { setConfiguredPrivacyLevel } = await import("../analytics/privacy-level.ts");
+      setConfiguredPrivacyLevel(level);
+    }
+  }
+
   // B1：多源 MCP 配置合并（user > local > project，签名去重 + policy 过滤）。
   // 三源物理落点：
   //   user    —— ~/.sid-code/settings.json 的 mcpServers（合并期已进 merged.mcpServers）
