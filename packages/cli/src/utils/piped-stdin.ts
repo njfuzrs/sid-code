@@ -48,7 +48,9 @@ export interface PipedStdinResult {
  */
 export async function readPipedStdin(opts: ReadPipedStdinOptions = {}): Promise<PipedStdinResult> {
   const stdin = opts.stdin ?? process.stdin;
-  const isTTY = opts.isTTY ?? stdin.isTTY === true;
+  // 注入的 stdin 类型是通用 Readable（没有 isTTY），只有 process.stdin（ReadStream）才有；
+  // 用 `in` 收窄而不是断言：mock 流没有这个字段时按「非 TTY」处理，与原运行时行为一致。
+  const isTTY = opts.isTTY ?? ("isTTY" in stdin && stdin.isTTY === true);
   if (isTTY) return { text: "", timedOut: false };
 
   const timeoutMs = resolveStdinTimeoutMs(opts.timeoutMs);

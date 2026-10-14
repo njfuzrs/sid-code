@@ -2,6 +2,275 @@
 
 本文件由 scripts/generate-changelog.ts 自动生成，请勿手改。
 
+## v0.1.609 (2026-10-14)
+
+### 新功能
+- **skill** · 内置 skill 下沉 P4——从二进制删除 7 项，旧命令给迁移提示 (#270) `c505dfcc`
+  - builtin 迁移项（已在 `plugins/ops`、`plugins/compliance`）：`ci-self-heal`、`code-governance`、`incident-rca`、`security-audit`
+  - builtin 删除项：`bug-fix`
+  - bundled：`commit-push-pr`（删除）、`pr-comments`（已在 `plugins/github-pr`）
+  - 判据与 `/plugin install` 用同一个 `evaluatePluginOrigin`。
+  - 只在命令表查不到时触发，用户自定义的同名 skill 不受影响。
+  - 迁移表保留到 2027-04-12，到期由单测提醒。
+  - 同步改掉指向已删命令的措辞：`bash.ts` 工具描述、`commit` / `pr` 的 prompt、`git-attribution.ts` 注释与测试、若干注释。
+  - `bundled.test.ts` 改为 6 个，并反向断言已删项不在。
+- **plugin** · 内置 skill 下沉插件市场 P2——多市场与按市场自动更新 (#259) `c4e966cd`
+  - **多市场**：`resolveMarkets()` 按固定顺序解析 企业 `company`（backend.url）→ 官方 `sid-code`（默认注册，`officialMarketplace:false` 可关）→ `extraKnownMarketplaces`。市场名取本机配置，不取 index 自报的 name。
+  - **按市场隔离缓存**：缓存文件按市场名分开，两个市场交替拉取后各自的 fail-static 仍然命中。
+  - **同名不覆盖**：跨市场的同名插件在下载前就拒装并给出提示；`/plugin update` 回到各自的安装来源。历史版本的 artifact 地址也一并修正（静态市场带 `.tar.gz`）。
+  - **命令**：`/plugin market [--market <名>]`、`/plugin marketplaces`；列表按 `kind` 标注 skill 包或插件。
+  - **按市场自动更新**（启动时 fire-and-forget）：官方市场默认开启，企业市场默认只提示；只升级已装插件，不会新装；hooks/MCP 指纹有变化或市场没给组件清单时，不做静默升级。
+  - **`scripts/plugins-release.sh`**：门禁 G1 工作区干净 / G2 HEAD 已进 origin/main / G3 版本不可覆盖 / G4 版本单调递增；制品在服务器端复核 sha256 之后，才原子替换 index（带并发检测与 `.prev-*` 回滚点）。
+  - 三个新 settings 字段登记到 `SECURITY_SENSITIVE_FIELDS`，项目级 settings 改不了。
+  - `market.test.ts` 45 pass（新增 26 条）：双市场 × 锁定判定表 6 格 + A/B 端到端用例、缓存隔离、同名拒装、自动更新 6 条。
+- **plugins** · 内置 skill 下沉插件市场 P1——仓内 plugins/、门禁接线、静态 index 打包、skill 调用埋点 (#249) `5971c4be`
+  - 新建仓库根 `plugins/`，按领域打 3 个插件：
+  - `github-pr`: comments（原 bundled pr-comments，TS 改写为 SKILL.md，带 `disable-model-invocation`）
+  - `ops`: ci-heal（原 ci-self-heal）、incident-rca
+  - `compliance`: security-audit、governance（原 code-governance） 调用名一律 `/插件名:skill名`，不做短名回退。
+  - 二进制不动：`builtin/` 与 `bundled/pr-comments.ts` 原样保留，embed 脚本不改。
+  - 6 个测试 `git mv` 到 `plugins/tests/`，改走真实插件加载链（`loadPluginFromDirectory → loadSkillsForPlugin`）。4 个 eval runner 的 `SKILL_ROOT` 改到 plugins 路径，holdout 检查同时扫 builtin 和 `plugins/`。
+  - 补齐方案 §4.1 三处门禁接线：
+  - affected-tests 的 `ROOT_TEST_AREAS` 加 `^plugins/` 与 `scripts/plugins-pack.ts`
+
+### 修复
+- **cron** · 项目无 durable 任务时不抢调度锁，不再在任意目录生成 .sid-code/ (#273) `0ae5f90f`
+  - 新增 2 条单测：没有任务文件时不建 `.sid-code/`；有任务文件时照常抢锁，`stop()` 后释放
+  - `bun test ./packages/core/tests/cron/ ./packages/core/tests/daemon/ ./packages/core/tests/tool/`：1209 pass / 0 fail
+  - `bun run affected-tests:run` 通过；`make build` 通过，自检通过，没有 `will always be undefined` 警告
+  - `bun run lint` / `bun run format:check` 全绿
+  - 真 pty 端到端对照（空目录拉起 TUI，停留 40s）：线上版生成了 `['scheduled_tasks.lock']`；本次构建没有生成 `.sid-code/`
+- **trace** · 补齐轨迹脱敏漏网形态，脱敏失败改为字段级 fail-closed (#272) `4973fe3a`
+  - **私钥**：整块遮（任意类型前缀含 ENCRYPTED / OPENSSH），无 END 行时遮到正文结束，兼容 JSON 文本里的字面 `\n`；占位 `<PEM <类型> PRIVATE KEY:<N>B>`
+  - **sk-**：新增显式前缀 `sk-(proj|svcacct|admin)-`，通用 `sk-` 补左边界；**不放宽通用字符类**（实测会误伤 `task-…` / `disk-…` 路径）；新增 `github_pat_`
+  - **赋值写法**：`*_API_KEY=` / `*_TOKEN=` / `*_SECRET=` / `x-api-key:` 只遮字面量值、保留键名（表达式、占位、短值不遮）
+  - **去重修正**：重叠区间漏判导致交叉替换乱码
+  - **旁路落盘**：`warn.log`、`protocol-violations/*.json` 写盘前脱敏
+  - **fail-closed**：`maskJsonSafe` 单字段出错只替换该字段为 `[REDACTION_FAILED]`，不再回落原文
+  - **可选标识处理**：`trace.upload.redact_home_dir`（默认关）——上传字节与 OTLP `sidcode.cwd` 家目录前缀换 `~`，不做 hash，本地落盘不变
+  - **bash**：`env` / `printenv` 转储形态需确认（`env FOO=1 cmd` 不拦）
+- **headless** · -p 分发斜杠命令，新增 sid-code plugin 子命令 (#271) `618e7a0d`
+  - `-p "/plugin market"` 被原样当成提示词，模型自己去 strings 二进制、读源码（实测 110s 未结束）。CI / 脚本因此装不了插件。
+  - `-p "/某skill"` 也不展开，能用上只是模型碰巧认出了名字。
+  - `--disable-slash-commands` 的帮助文本写着「headless/受限场景」，实际只在 TUI 生效。
+  - **`App.submitHeadlessInput`**：成为三种无头形态唯一的提交入口，复用 TUI 那个 `CommandExecutor`。分发结果会被翻成引擎事件，所以三处消费循环都不用改。
+  - **`command/headless-dispatch.ts`**（纯函数）：自定义命令、skill、插件、MCP prompt 这类提示词命令放行，展开后交给模型。builtin 默认拒绝，只有显式标了 `headless: true` 的才放行，目前只有 `/init`。被拒绝的命令报错退出（退出码 1），并提示对应的 CLI 子命令。
+  - **`sid-code plugin <子命令>`**：直接复用 `PluginCommand.execute`，不启动会话，不调用模型，退出码确定。
+  - `--disable-slash-commands` 接入无头路径，行为和 TUI 一致。
+  - `QueryEngine.emitStreamText`：本地命令的结果和模型回答走同一个流式出口。
+- **session** · /clear 对齐 CC——结束旧会话并开新会话 (#269) `b2afe189`
+  - `events.jsonl` 只有 1 条 `SessionStart`（startup）、2 条 `UserPromptSubmit`
+  - `raw.jsonl` / `session.traj` / sessions jsonl / `session-index.jsonl` / 成本账本全部两段混在一份
+  - `/trace` 默认看「当前 sessionId」，clear 后看到的仍是上一轮数据
+  - 心跳空闲 36 分钟仍报 `active_request: {index: 900002, phase: "first_content"}`
+  - **旧会话收尾**：`SessionEnd(reason=clear)` + jsonl `session_end` + 账本终值行——在任何计数器归零之前
+  - **清会话级状态**：两条 `/clear` 入口合并为 `clearConversation()`（旧体系路径此前漏了 `resetDenialTracking` / `jitContextMgr.reset` 等）；另清 `pendingSessionMemoryContent` / `criticalConstraints`
+  - **换身份**：`SessionState.rotate(新 id)`（parent = 旧 id），新 id 下发到 ctxMgr / hookSystem / sessionMetrics / bootstrap / 子代理 / FileReadTracker / PID 文件 / 活跃会话注册表 / 任务清单 / analytics；clear 后不再续写被 resume / fork 的…
+  - **新会话开始**：`SessionStore.startSession(新 id, parentSessionId)`（仍懒创建，clear 后直接退出不留空文件）+ `SessionStart(clear)` 全量发送（compact 仍 userOnly）
+- **tui** · 首屏对话框里的按键不再被早期输入捕获回填成 NUL (#268) `cfa949ea`
+  - **早期输入捕获停得太晚**（`packages/cli/src/ui/early-input.ts`）：捕获只在 `InputArea` 挂载时才停。首屏弹对话框时 `InputArea` 还没挂载，捕获就和 `KeypressContext` 同时读 stdin，把对话框里的 ↑、回车吞进缓冲，关框后又回填进输入框。
+  - **字符串被当成字节处理**：`KeypressContext` 调过 `setEncoding("utf8")` 之后，`read()` 返回的是字符串。旧实现调用 `String.fromCharCode(字符)` 得到 NaN，也就是 `"\x00"`。
+  - `KeypressProvider` 接管 stdin 时调用 `stopCapturingEarlyInput()`。它只停捕获，已缓冲的内容保留给 `InputArea`。
+  - 新增 `appendEarlyInputData()`，Buffer 和字符串统一按字符处理。ESC 序列整段跳过（旧实现会留下 `[A`），退格按码点删除。
+  - 真 pty 端到端（python `pty.fork()`，隔离 `SID_CONFIG_DIR`）：
+  - 修复前：`提交输入: "\x00\x00\x00bc"`
+  - 修复后：选信任、选不信任、不弹框三组都是 `"bc"`
+  - `bun test ./packages/cli/tests/ui/early-input.test.ts`：7 pass / 0 fail
+- **permission** · allowed-tools 语义对齐 CC——fork 判定、工具名归一、权限注入 (#267) `bdfda24e`
+  - **A 公共解析** `core/tool/allowed-tools-spec.ts`：括号感知切分（对齐 CC `parseToolListFromCLI`），名字经 `toInternalToolName` 归一；skill / 自定义命令 / agent `tools:` / `--allowed-tools` 共用
+  - **B 执行上下文**：只有 `context: fork`（或 `mode: delegate`）才 fork；skill / bundled 缺省改 inline；自定义命令只写 `model` 仍 fork + warn（D2）
+  - **C inline 本轮规则**：新增 `commandScoped` 规则源（最低优先级），app.ts 本轮前设置、`finally` 清空；模型路径 activate skill 经 sink 同样生效
+  - **D fork 统一入口** `core/agent/forked-command.ts` `runForkedCommand`：checker 必填，缺失明确报错；工具集按 `agent ?? general-purpose`；派生 checker 继承 always-allow / skip-permissions（P4）；6 个调用方全部改走它
+  - **E 只读护栏迁移**：内置 / 插件只读 skill 改 `agent: verify`；删除 `DEFAULT_SKILL_ALLOWED_TOOLS` / `resolveSkillAllowedTools`
+  - **F `--allowed-tools` / config.allowedTools**：Step 12 改走规则引擎（认 `Read`、`Bash(git *)`）
+  - **G 可观测**：子代理日志打实际工具；未命中名 warn；新增轨迹事件 `CommandAllowedTools{declared, rules, dropped, trusted}`
+  - **安全**：项目级 / 插件 / MCP 来源剥离 `Bash(*)`、`Bash(rm …)`、裸 `Bash/Write/Edit` 自我授权；deny 优先不变
+- **types** · 修正 src/ 里 5 处类型与运行时漂移，消掉 14 个 tsc 错误 (#265) `ce1df243`
+  - **B1** `packages/core/src/trace/collector.ts`：`backfillPendingSessions` 返回类型从 `{ pending; attempted; uploaded }` 改为 `BackfillResult` —— 实现（uploader.ts）返回的就是它， 且调用方要读 `failed` / `errors` / `deferred`…
+  - **B2** `packages/core/src/ide/detect.ts`：`belongsToThisTerminal` 的 `loadAncestors` 参数从 `() => Promise<Set<number>>` 改为 `() => Promise<AncestorLookup>` —— 函数体本来就按 `{ ok, pids }` 消费，调用点传的也是它。
+  - **B3** `packages/core/src/ide/integration.ts`：`getIDEIntegration` 的 options 补 `diffPreview?: boolean`，与构造函数同形（cli.ts 已在透传该字段）。
+  - **B4** `packages/core/src/trace/digest.ts`：`TrajMeta` 补 `budget_exceeded_source` —— builder.ts 一直在写这个键，digest 在 L0 异常里按它归因来源。
+  - **B6** `packages/core/src/trace/collector.ts`：中断收尾时 `currentPair.index` 缺失就不查 流观测器快照，走「无快照」分支（`receivedContent = undefined`），不用 `!` 非空断言。
+  - **B6 不用 `!` 断言**：`index` 取不到时「不查快照」才是正确语义（`isBlankSession` 会走 「拿不到证据就保留」的分支）。断言成 `number` 会把「不可判」伪装成某个具体快照的结论， 方向正好反了。
+  - **B1 直接引用 `BackfillResult` 而不是再复制一份字段清单**：复制出来的类型第二次就会漂移， 同一类错误会在半年后再犯一次。
+  - [x] 五道 CI 门禁本地全绿（见上）
+- **trace** · 启动补传加水位，essential-traffic 覆盖更新检查与模型目录 (#264) `66bde732`
+  - **P0-3 启动补传水位**（新模块 `packages/core/src/trace/upload-watermark.ts`）
+  - 补传只覆盖「创建时间 ≥ 该上传目标水位」的会话；创建时间取会话 id 前缀，回落 `events.jsonl` / `session.traj` 的 `start_time`，取不到按水位前处理（fail-closed）。**不用目录 mtime**（resume 会刷新它）。
+  - 水位按上传目标（origin + path）分别记，存 `~/.sid-code/state/upload-watermarks.json`，不写 settings.json。换地址 = 新目标 = 从现在起算。
+  - 迁移：启动时无条件建基线；升级时已配置（且非 essential-traffic）的目标水位取最早未上传会话的创建时间，积压照常补传。
+  - `scanPendingUploads` 新增 `beforeWatermark`，不计入待补传，避免触发积压 WARN；`/debug` 同口径。
+  - 新增 `--upload-traces --include-history`：执行前打印数量与时间范围。
+  - **P2-1**：`--upload-traces` 在 essential-traffic 下报错退出（先注入配置文件里的隐私级别）。
+  - **P1-11**：更新检查、外部模型目录同步接入 `shouldLoadRemoteConfig()`；预连接改取已解析 config 的 baseURL，删除 `api.anthropic.com` 兜底；网关定价同步刻意保留。`help.ts` / `privacy-level.ts` 描述与实现一致，参考页已重新生成。
+- **mcp** · 状态文件损坏时告警并在写入前备份，避免静默覆盖 (#262) `7ebcf55b`
+  - `mcp-approvals.json`（项目级 `.mcp.json` 审批记录）—— `packages/core/src/mcp/approval.ts`
+  - `mcp-state.json`（按项目的禁用 / 启用名单）—— `packages/core/src/mcp/project-files.ts`
+  - **读侧**：区分「文件不存在」与「文件损坏」。不存在 = 正常首次使用，静默返回空；损坏 = 写一条 `WARN`（含文件路径与备份去向），读取结果仍返回空（fail-safe：所有项目级 server 回到 `pending` ⇒ 重新询问用户，不是 fail-open）。
+  - **写侧**：用模块级 `corruptPending` 把「损坏」事实从读传到写；写入前若该文件正是本次读到的损坏件，先 `renameSync` 成 `<path>.corrupt-<时间戳>` 再写新文件，每个损坏文件只备份一次。文件被外部修复后不再误备份。
+  - **fail-closed（检测到损坏就拒绝启动 / 拒绝写入）**：过度反应。一个损坏的审批文件不该让 CLI 起不来，也不该挡住用户重新审批；这类文件是可重建的缓存物。
+  - **只加日志不备份**：日志会滚动掉（`debug.log` 10MB 轮转、审计模式另有 `audit.log`），原始字节再也找不回来。
+  - **写入时合并旧内容**：旧内容本来就解析不出来（JSON 无效 / 顶层不是对象），没有东西可合并。
+  - **读时备份**：读发生在每次启动的状态查询路径上，会让「只看一眼」的调用也产生备份文件；备份的语义应是「防止被覆盖」。
+- **security** · 关闭编译产物的运行目录配置自动加载 (#260) `5a8f365d`
+  - 三处 `bun build --compile` 入口（`Makefile` 的 `BUILD_NO_AUTOLOAD`、`scripts/release.sh`、`scripts/build-branch-artifact.sh`）统一加上 `--no-compile-autoload-dotenv --no-compile-autoload-bunfig --no-compile-autol…
+  - 新增防漂移哨兵 `tests/build/compile-autoload-flags.test.ts`：每条非注释的 `--compile` 命令（含 `\` 续行）必须带齐四个参数；另用最小程序真编译、真运行，对照组 / 实验组各一条。
+  - 编译产物启动时，若运行目录的 `.env` / `.env.local` / `.env.production` 含 `SID_CODE_*` / `*_API_KEY`，向 stderr 提示一次（只打键名、不进 stdout、每个目录一次）。源码模式跳过。
+  - Agent Note：`.agents/notes/implemented/bug-fix/2026-10-13-编译产物不再读取运行目录的env与bunfig.md`
+  - `bun test ./tests/build/compile-autoload-flags.test.ts ./packages/cli/tests/utils/project-dotenv-notice.test.ts ./tests/build/test-isolation-preload-wiring.test.ts`：17 pass / 0 fail
+  - 变异自证：从 `release.sh` 删掉一个参数，哨兵对应用例变红
+  - `bun run affected-tests:run`（Makefile 改动判定为全量）：16075 个测试里 1 fail（新测试 spawn 没传 env，已修，复跑通过）
+  - `make build` 成功、自检通过，`will always be undefined` 0 条
+- **tui** · fork 型 skill/自定义命令回车即回显，回答进对话 (#258) `d288845b`
+  - **回答进了输出面板**：所有 `message` 结果都走 `routeCommandResult`，3 行及以上进面板、更短进状态栏。fork 子代理的产出其实是模型的回答，结果 Esc 一关就没了，下一轮模型也看不到。
+  - **回车后整屏空白**：fork 路径整段在 `executor.executeSlashCommand` 里 await，跑完之前没有回显、不进 `isLoading`。没有 spinner，Esc 无效，看起来像命令没执行。
+  - **`conversational` 标记**：三个 fork 出口（`executor.ts` / `skill-command.ts` / `custom.ts`）给结果打标，契约和 adapter 两向透传，标记压过 `outputPanel` 声明。app.ts 新增 `presentConversationalResult`，按一轮对话（user 命令 + assistant 回答）写…
+  - **`beginForkedRun` 回调**：fork 开跑前调用，TUI 立刻回显触发命令并进入加载态，同时返回中断信号给子代理（Esc 生效）。子代理返回后无论成败都调 `end` 收尾；中断时返回「已取消 /xxx」，不写入半截回答。
+  - 内置命令的面板 / 状态栏语义不变，inline 型 prompt 命令不受影响。
+  - 新增 `packages/cli/tests/command/fork-answer-is-conversation.test.ts`，13 条全过。覆盖三个 fork 出口的标记、begin→信号→end 时序（含抛错与 Esc 中断）、适配层透传、普通 local 命令的多行报告仍进面板、历史区渲染为「触发命令 + 回答」且不泄漏展开后的提示词。
+  - 反向验证：去掉 executor 的标记，测试红 1 条；不调 `beginForkedRun`，测试红 3 条。
+  - `bun run affected-tests:run`：13012 pass / 0 fail。`make build`、lint、format、lint:boundary、参考页 `--check` 全部通过。
+- **tui** · /commands 等列表面板行布局错乱，统一定宽列截断 (#257) `950b39d7`
+  - 新增 `shared/text-layout.ts`：`truncateToWidth` / `oneLine` / `fitCell` / `clipLine` / `columnWidth`，按 `stringWidth` 计算显示宽度，CJK 安全
+  - **列表行（可截断）**：预先算好定宽列，整行用单个 `<Text wrap="truncate">`。涉及 Commands、Mcp 服务器与工具列表、Hooks 列表、Memory（列宽加了封顶）、Config
+  - **安全闸门和详情页（不截断）**：Trust、ExtensionTrust、Permissions、Hooks 详情改为标签列定宽，值在自己那一列内换行，用户能看全自己在授权什么
+  - **小修**：Skills / Agents / Rewind / TodoPanel 的描述先压成单行；ModelDialog 的 note 列截断到列宽；`.slice(0, N)` 按码元截取的写法改为按显示宽度截断
+  - 新增 `commands-dialog-layout.test.tsx`、`dialog-row-layout.test.tsx`，共 15 个用例。在 80 / 100 / 120 / 140 列宽下断言：每项一行、列起点一致、没有行超出终端宽度
+  - 变异自证：把 Commands / Mcp / Hooks 的行渲染换回旧写法，对应的渲染用例变红；还原后转绿
+  - `approval-dialogs-keys.test.tsx`：kind 列定宽后空格数不再固定，这是有意的契约变更，断言改为「同一行 + 路径起点对齐」
+  - `bun run affected-tests:run` 2327 pass / 0 fail；`make build`、`lint`、`format:check`、`lint:boundary`、`verify:agent-note` 通过
+- **tui** · ESC 撤回未送达模型的输入并放回输入框 (#256) `05edc90f`
+  - `tuiAgentLoop` 内层 catch（A3，比 A4 早一小时合入）吞掉了 abort，没有 rethrow；
+  - loop 的三条 abort 收尾（退避期、本地限流等待期、流式结束后）走的是 `yield done(aborted)` + return，根本不抛异常。
+  - `app.ts`：每轮新建一个 `TurnProbe`，记录本轮开始前的快照、`modelResponded`、`userCanceled`、`failed`。`tuiAgentLoop` 正常返回和走 catch 两条路径都读取它。
+  - 忙时 ESC：立即撤回，并回填输入框。
+  - 请求失败：保留报错现场，等用户在空输入框按 Esc 再撤回。撤回前会校验对话历史没被改动过。
+  - `pending-input.ts`：判定改为「本轮之后没有任何 assistant 消息」，用快照对比实现。新增 `onRestoreArmed` 通知，因为 `isLoading` 的下降沿早于 arm，只靠下降沿触发时取到的是 null。新增路径 B（失败后撤回）的可撤回状态。
+  - `ContextManager.restoreToPrefix`：按快照恢复对话历史。用户消息被合并进上一条 tool_result 时，`rewindTurns(1)` 会误删上一轮的 tool_result，这个方法不会。
+  - `SessionStore`：新增 `prompt_retracted` 记录，`-c` 恢复会话时弹掉被撤回的消息。
+- **tui** · ? 快捷键面板补齐漏项、改正误述，修复 Ctrl+K 被吞 (#255) `7069cd12`
+  - **补齐漏项**：Esc Esc（回退）、Ctrl+D、Tab、PgUp/PgDn、Shift+↑/↓、Emacs 编辑键（Ctrl+A/E/B/F/K/U/W/Y、Alt+B/F/Y）、Enter 排队、空输入 ↑ 弹回排队、`?` 自身（新文件 `keybindings/helpShortcuts.ts`，仅展示、不参与匹配）
+  - **改正误述 / 写明前提**：Ctrl+C（忙时中断，空闲按两次退出）、Esc（仅执行中）、Alt+N/L（仅输出中）、Ctrl+F/X/B（无对应任务时照常编辑）、Ctrl+S（仅全屏）、↑/↓（多行时移光标）
+  - **分组展示 + 列宽按内容实测**：消除「（双击确认」与孤立「）」的折行；标题去掉误导的「输入 /help 查看更多」
+  - **`?` 误触发**：判定从 Composer 挪到 InputArea，仅空输入框触发并消费；句中 `what?` 不再弹面板。面板关闭 handler 提到 Critical，避免被消费按键的 handler 截断
+  - **固定键诚实化**：`KeyBinding` 加 `fixed`，`!`/`@`/换行/↑↓/Ctrl+Y/W 不走查表，validate 拒绝改绑（新错误码 `fixed`），`/keybindings` 标「固定」
+  - **合并顺序**：用户覆盖项原位替换（此前追加到表尾，导致 Alt+M / Ctrl+L 排到最后）；改了 stroke 未写 display 时按新键重算
+  - **Ctrl+K 从未生效**：`defaultChordBindings` 的两条示例和弦把 Ctrl+K 当前缀吞掉，killLine 不可达。清空默认表，示例改名 `exampleChordBindings` 仅供单测
+  - HelpDialog、官网 `website/use/interactive.md` 同步；附 Agent Note
+- **tui** · Ctrl+G 外部编辑器收不到按键——让渡时 pause stdin 流 (#254) `8aa03234`
+  - 真 pty 驱动构建产物 + 真 vi：Ctrl+G 后输入 `A XYZEDITED <Esc> :wq`，修复前文件内容 `[TED]`（前面的键被父进程吃掉），修复后 `[abcXYZEDITED]`
+  - 新增 `packages/cli/tests/render-port/external-editor-stdin.test.tsx`：撤掉修复后红，恢复后绿
+  - X5 契约 `external-editor.test.tsx` 保持全绿（26 pass / 0 fail）
+  - `bun run affected-tests:run`：3220 pass / 1 fail，失败的是 `tui/tests/render-cache.test.tsx` 的 P3 性能用例；单独跑 worktree 与主仓各 3 次都是 10 pass / 0 fail，判定为全量并发下的计时 flake
+  - `make build`、`bun run lint`、`bun run format:check` 通过
+- **llm** · 重试次数与看门狗解耦，退避不再截断 maxTimeoutRetries (#253) `7d1ecfe0`
+  - `llm/types.ts`：新 StreamEvent `retry_backoff`（start/end）
+  - `llm/fallback.ts`：重试退避与 S2 冷却等待前后成对发信号；退避前停本层流超时
+  - `query/retry-backoff-window.ts`（新）：per-call 包裹流维护退避窗口（不用进程级状态，避免并行子代理互相暂停看门狗）
+  - `query/loop.ts`：删 `streamDeadlineAt`，看门狗退避中不判，基线取 max(最近内容进展, 最近退避结束)
+  - `query/stream-processor.ts`：退避期不判心跳/首字节，整体超时扣除退避
+  - 子代理 / recall / compact 的 `deadlineAt` 不动（那些是真实总时长预算）
+  - `blog/sc-01-agentic-loop.md`：§8.3 新增「细节 4：次数与看门狗各管各的」，§8.4 退避行更新
+  - `extend/headless.md`：防线表 `maxTimeoutRetries` 行说明只由次数决定
+- **cli** · Ctrl+R 反向搜索触发 React #300 导致 TUI 崩溃 (#252) `222c6ce1`
+  - 变异自证：对修复前的源码跑检测逻辑，识别出提前 return 之后有 `useRef ×4, useEffect ×2`；修复后结果为 `[]`
+  - `bun run affected-tests:run`：2273 pass / 0 fail（212 个文件）
+  - `bun run lint`：0 warnings / 0 errors；`bun run format:check` 通过；`bun run lint:boundary` 0 处越界
+  - `make build` 自检通过，没有 `will always be undefined` 告警
+  - 未做：在真实终端用 `sc-dev` 手动按 Ctrl+R
+- **tui** · 本轮进行中的输入不再被静默丢弃，改为排队接续 (#251) `850dff97`
+  - `command/streaming-gate.ts` 新增纯函数 `routeSubmit`：「本轮进行中」= `streaming || submitting`，返回 `enqueue` / `dispatch` / `dispatch-nested`
+  - `ui/App.tsx` 的 `handleSubmit` 删除首行 `if (isSubmittingRef.current) return;`，按路由分流；轮内 immediate 命令（如 `/model`）直送但不动提交位
+  - `src/ui/CLAUDE.md` L4-A「流式中多条输入排队」由 ⚠️ 待补改为 ✅，并记下禁令
+  - Agent Note：`.agents/notes/implemented/bug-fix/2026-10-12-本轮进行中的输入被静默丢弃-提交路由收口.md`
+  - `bun test ./packages/cli/tests/command/streaming-gate.test.ts` → 17 pass / 0 fail（新增 4 组，`{streaming:false, submitting:true}` 必须 `enqueue`，专锁旧 bug 形态）
+  - `bun test ./packages/cli/tests/command/ ./packages/cli/tests/ui/` → 1548 pass / 0 fail
+  - `make build` rc=0，`will always be undefined` 告警 0 条；pre-commit（oxlint / oxfmt / 包边界 / Agent Note）全过
+  - 待人工：`sc-dev` 中流式时回车 → 出现「已排队」→ 本轮结束自动发送
+- **cli** · ↑/↓ 回显历史时粘贴内容只剩占位 (#250) `94e00d35`
+  - ↑ 翻回来只剩占位，看不到粘贴内容；
+  - 回车时 `expandPastedRefs` 查不到登记 → 占位字面量直接发给模型（用户实测看到的就是这个）；
+  - 期间若有新粘贴，id 从 1 重新分配，旧占位会被还原成另一段内容（串号）。
+  - 新增回归（`input-history-arrow-persist.test.tsx`）：13 行粘贴 → 提交并清空登记 → 再粘贴无关内容 → ↑，断言回显全文、不含占位、不串号
+  - 变异自证：旧路径 ↑ 回显恰为 `[粘贴 #1 +13 行] q`
+  - `bun run affected-tests:run`：2271 pass / 0 fail
+  - `make build` rc=0，无 `will always be undefined`；lint / format:check 全绿
+- **ui** · ↑/↓ 历史不再回显斜杠命令，翻历史期间不弹补全 (#244) `21a0fe8e`
+  - **斜杠命令不进 ↑/↓ 历史**
+  - `packages/cli/src/command/parser.ts`：新增 `isSlashCommandInput()`
+  - `packages/cli/src/ui/text-buffer.ts`：`reset` 提交斜杠命令时不推进本会话 history
+  - `packages/cli/src/ui/hooks/useInputHistoryStore.ts`：启动灌入的 `projectHistory` 过滤斜杠命令
+  - history.jsonl 照常写，`Ctrl+R` 反向搜索仍能搜到命令
+  - **顺带发现的同源问题：翻历史期间不弹补全**
+  - 普通历史条目末尾若是 `@path` 或 ` /cmd`（如「看下 @src/a.ts」），翻到它时同样会弹补全、锁死 ↑/↓ 与 Enter
+  - `packages/cli/src/ui/InputArea.tsx`：`hasSuggestions` 增加 `historyIndex < 0` 条件，用户一打字就恢复补全
+- **trace** · /trace 三处误报修正 + 成本结构补全 (#243) `60535dd0`
+  - **`retry_wasted_tokens`**：原报「8 次重试白烧 0.47M token / 61.5%」，实际是 1 次标题生成 + 7 次 fork，零重试（20 条 RetryTelemetry 全是 `stream_completed`）。根因是 §5.4 拆分判据只读 `StreamPhase.agent_id`，OpenAI 族不落该字段。新增 `BilledRequest.…
+  - **`session_end_missing` / `hypothesis_process_killed`**：对活会话必误报。现按 session_id 匹配 `.pids/*.json` 并 `kill(pid,0)` 核验，存活则不报。
+  - **头部 `tok ↑`**：末轮快照（80833）和累计输出并排，违反 stock/flow 铁律；改用累计 prompt（763109）。
+  - TTFT 缓存分桶：OpenAI 族 completed 新增 `cache_read_ratio`，按 ≥0.5 判命中（原 `cache_read>0` 让 cache_read=256 也算命中）；老事件退回布尔，历史曲线不平移。
+  - 心跳：终态快照不再当 active_request（实测 completed 快照 elapsed 涨到 2.8h，像 hang）。
+  - `ls` 的 `dir_path` 参数显示；user_prompt 剥 NUL 控制字符。
+  - 新增 `digest-trace-audit-20261012.test.ts` 16 条，含反向断言（真重试仍报、PID 死/缺失仍报）
+  - 变异自证：回退判据后 3 条变红，恢复后 16/16 绿
+
+### 重构
+- **cli** · 账本行构造下沉 core 纯函数，摘掉三处 require("fs") (#266) `0a789ad9`
+  - **D1**（`93276afe`）：`app.ts` 的 `buildLedgerEntry` + `buildLedgerSideUsage`（约 76 行） 下沉为 core 纯函数 `buildUsageLedgerEntry`（新文件 `packages/core/src/telemetry/usage-ledger-entry.ts`），`app.ts` 侧留一行委托。 **行为零变…
+  - **D2**（`d22318f8`）：`app.ts` 三处 `const { ... } = require("fs")` 改顶层 `import { existsSync, readFileSync } from "fs"`。
+  - **Agent Note**（`a72ba3f3`）： `.agents/notes/implemented/simplification/2026-10-13-账本行构造下沉core.md`。
+  - **一次性大拆 `app.ts`**：测试比只有 0.46，绝大多数路径没有行为层接缝（私有方法只能靠静态 扫描门禁兜底），没有对拍测试就大拆等于把重构做成静默行为漂移。先拿纯逻辑开刀。
+  - **`appendSessionToLedger` / `flushSessionLedgerIncremental` 不搬**：耦合 App 生命周期与 logger， 搬走要连带设计注入面，而它们的逻辑就是「调 buildLedgerEntry → upsertUsageLedger」，收益极小。
+  - **D2 第四处 `require("node:fs")`（`app.ts:2956`，命名空间写法）不动**：卡片范围是「三处 `require("fs")`」（验收命令也是 `grep -c 'require("fs")' → 0`），克制在卡片范围内。
+  - 把 core 文件的 `getSessionSideStats()` 改名为未定义符号 → 门禁 1 fail（3 pass / 1 fail）； 恢复后 4 pass。
+  - 把 `app.ts` 的 `buildUsageLedgerEntry(` 改名为未定义符号 → 门禁 1 fail；恢复后 4 pass。
+- 删除 .vendor-src 机制与 /claude-api 命令 (#247) `b7498c3a`
+  - 删除 `/claude-api` 命令和测试：内置斜杠命令 64 → 63，`ref/slash-commands.md` 由生成器同步
+  - 删除 `scripts/fetch-vendor-src.ts`、`vendor:fetch|check|pack` 三个脚本、`make build` 和 CI 两个 job 里的取回步骤、`artifact-identity.ts` 里的登记、`.gitignore` 的两条规则、`vendor-location.test.ts` 的 ⑯ 组，以及已无使用方的 `*.md` 文本 impor…
+  - README 中英文、CONTRIBUTING 删掉「新克隆必须先 vendor:fetch」整段；官网 `extend/index.md` 删掉 `/claude-api` 小节
+  - 顺手修 `search-scope.test.ts`：发布后 dist 里有 `.gz` 副本，现在只认 `.js`
+  - 历史 Agent Note 和 changelog 里的提及不改
+  - 本机删掉 `.vendor-src/` 后：`make build` 和自检通过；`bun test` 跑 15,916 个用例，唯一的失败是 search-scope（本 PR 已修，单跑 6/6 通过）
+  - `docs:gen-reference --check`、lint、format、包边界检查通过；tsc 错误数与 main 相同（104）
+  - `rg 'vendor-src|vendor:fetch|fetch-vendor-src|claude-api'` 只剩历史 Agent Note、changelog 和博客转载
+
+### 文档
+- **changelog** · v0.1.609 用户视角更新说明 `d6cc1d5d`
+- **website** · 页脚改为正式备案信息 (#248) `b816a564`
+  - 去掉页脚「本站由 VitePress 构建。参考类页面由脚本从源码生成。」等非正式文案
+  - 新增 `ICP备案/许可证号：苏ICP备2026053462号-1`（链接工信部备案查询）
+  - 新增公安徽标 + `苏公网安备32011502014154号`（链接公安备案查询，图标放在 `website/public/beian-gongan.png`）
+  - 版权行改为 `Copyright © 2026 sid-code · 跑在终端的 coding agent · llms.txt`，保留 llms.txt 入口
+  - `cd website && bun run build` 通过（rc=0）
+  - 检查产物 `dist/index.html` 的 `<footer>`，备案号、徽标、链接均已渲染；文档页（`use/*.html`）同样包含
+  - pre-commit（oxlint / oxfmt）与 pre-push（含 website 构建）均通过
+- **b9** · T9.2 对外回写——NOTICE 补 ink 来源，首页/README 数字重取 (#246) `eec616ba`
+  - `diff` NOTICE 与 LICENSE 版权行：一致
+  - `git merge-base --is-ancestor 5954159b v0.1.607` → 否；`… v0.1.608` → 是
+  - 数字来自 `resume-metrics.ts --coverage`（HEAD `cdb37f58`）；裸 `bun test`：15,901 pass / 9 skip / 1 fail，唯一失败是 `search-scope` 读到本机旧 dist，`website:build` 后 6/6 通过
+  - `affected-tests:run` 202 pass、`make build` 自检通过、lint / format / `docs:gen-reference --check` 通过
+
+### 其他
+- **typecheck** · 接入 tsc 基线棘轮门禁（只拦新增、允许收紧） (#263) `f2ea2b01`
+  - `d08bbaad` `chore(typecheck): 锁定 typescript 5.9.3 并新增 typecheck 脚本`
+  - devDependencies 此前没有 typescript，`bunx tsc` 每次临时拉版本；现在 `--exact` 锁死并有固定入口 `bun run typecheck`。
+  - `b145bb97` `feat(typecheck): 新增 tsc 基线棘轮门禁（只拦新增、允许收紧）`
+  - 新增 `scripts/tsc-baseline.ts` + `scripts/tsc-baseline.json`（基线 107 处 / 62 个键）+ `tests/scripts/tsc-baseline.test.ts`（14 条，含双向变异自证）。
+  - `28e982a8` `ci(typecheck): 接入 CI lint job 并修正类型检查的文档漂移`
+  - CI `lint` job 新增 step「类型检查（只拦新增）」（已有 job 内加 step，不动 `all-checks-passed` 的 `needs`）；修掉 `ci.yml`「187 个存量错误」的文档漂移（实测 107）；`CONTRIBUTING.md` 五道→六道；Agent Note。
+  - **身份键 = 归一化文件路径 + 错误码 + 归一化消息，不含行列号** —— 在错误上方插一行代码会让后面所有错误行号漂移，带行号的门禁大面积假报，然后人就会绕过它。
+  - **计数比较而非集合比较** —— 同一文件出现第二个完全相同的错误，集合比较发现不了。
+- 给三个无测试目录补最小单测 (#261) `56287d52`
+  - `bootstrap`（cwd-context）：6 条，覆盖 `withAgentCwd` / `getAgentCwd` / `setAgentCwd` / `getAgentRoot` 的作用域语义
+  - `command-contract`（protected-names）：5 条，覆盖 `isProtectedCommandName` 的正反例和大小写/前导 `/` 不归一化
+  - `coordinator`（mode）：6 条，覆盖模式切换、env 检测、系统提示词、协调者专属工具集
+- **release** · 促升 v0.1.608 到稳定通道 (#245) `cdb37f58`
+  - release.sh --promote 0.1.608 生成的通道记录与稳定版说明。
+  - 🤖 Generated with [Claude Code](<链接已省略>)
+- **release** · v0.1.608 (#242) `af6d938e`
+  - **docs(changelog): v0.1.608 用户视角变更说明**
+  - **bump v0.1.608**
+
 ## v0.1.608 (2026-10-12)
 
 ### 新功能
