@@ -146,9 +146,9 @@ const FEATURES: Card[] = [
   {
     title: "数据主权",
     lead: "轨迹、账本、评测全在本地；配本地模型时，代码也不出机房。",
-    desc: "会话轨迹、评测结果、成本账本全落在自己的基础设施里，不进任何人的训练集。数据在自己手上，才谈得上拿它做优化。",
-    link: "/use/sessions",
-    linkText: "本地落盘",
+    desc: "会话轨迹、评测结果、成本账本全落在自己的基础设施里，sid-code 不向维护者回传会话内容；模型请求只发往你选的 provider。数据在自己手上，才谈得上拿它做优化。",
+    link: "/use/privacy",
+    linkText: "隐私与数据流向",
     paths: [
       "M4 5.5h16v5H4z",
       "M4 13.5h16v5H4z",
@@ -365,7 +365,7 @@ onUnmounted(() => {
         <p class="hs-pos-main">
           别人给你一个 agent；<br
             class="hs-br"
-          />我们给你一个<em>你能改、能量、能审、数据不出门</em>的 agent 底座。
+          />我们给你一个<em>你能改、能量、能审、数据归你</em>的 agent 底座。
         </p>
         <p class="hs-pos-sub">
           开源社区的技术自由度 + 商业产品的工程完备度，再加一件通用工具不会做的事——
