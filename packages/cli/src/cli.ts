@@ -1980,7 +1980,7 @@ export async function main(): Promise<void> {
     // Bundled Skill 模型调用路径（Gap 1）：把 fork 模式且未禁止模型调用的
     // Bundled Skill 注册为工具，使 LLM 可自动调用（与磁盘 Skill 的 Skill 元工具对等）。
     // inline 模式语义是注入主对话、不返回结果，不适合做工具，仅保留斜杠命令。
-    // 带强副作用的 skill（commit-push-pr / pr-workflow / pr-comments）已在各自定义里
+    // 带强副作用的 skill（如 pr-workflow）已在各自定义里
     // 设 disableModelInvocation:true，仅 review(只读) 暴露给模型。
     try {
       const { loadBundledSkills } = await import("@sid-code/core/skill/bundled/index.ts");

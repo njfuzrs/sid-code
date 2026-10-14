@@ -125,6 +125,9 @@ const LEGACY_BUILTIN_GATES: Readonly<Record<string, LegacyCommandGates>> = {
   ps: { outputPanel: true },
   worktree: { outputPanel: true },
   cron: { outputPanel: true },
+  // 无头可用：/init 默认只是展开一段分析提示词交给模型（--dirs-only 是纯文件脚手架），
+  // 两条路径都不依赖 TUI 回调。其余 builtin 缺省拒绝，见 headless-dispatch.ts。
+  init: { headless: true },
 };
 
 /**

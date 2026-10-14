@@ -14,7 +14,7 @@
  *   - 仅 fork 模式可包装。inline 模式语义是"把 prompt 注入主对话"，不是"返回结果
  *     给模型"，做成工具语义不符——inline skill（如 /commit）只保留斜杠命令。
  *   - 是否暴露由 BundledSkillDefinition.disableModelInvocation 控制。带强副作用的
- *     skill（commit-push-pr / pr-workflow / pr-comments）应显式 disableModelInvocation，
+ *     skill（如 pr-workflow）应显式 disableModelInvocation，
  *     避免模型在无显式指令时自主 push / 建 PR。只读的 review 适合暴露。
  */
 

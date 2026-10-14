@@ -194,12 +194,15 @@ describe("T11 skill 缺省执行上下文", () => {
 });
 
 describe("T12 内置只读 skill 护栏迁到 agent 类型", () => {
+  // 内置 skill 下沉方案 P4：除 code-review 外的 4 个已迁到仓内 plugins/，
+  // 护栏照样要锁——迁成插件不该让只读 skill 悄悄拿到 edit/write。
+  const PLUGINS = join(import.meta.dir, "../../../../plugins");
   const READ_ONLY = [
-    "code-review",
-    "security-audit",
-    "ci-self-heal",
-    "code-governance",
-    "incident-rca",
+    join(import.meta.dir, "../../../core/src/skill/builtin/code-review"),
+    join(PLUGINS, "compliance/skills/security-audit"),
+    join(PLUGINS, "ops/skills/ci-heal"),
+    join(PLUGINS, "compliance/skills/governance"),
+    join(PLUGINS, "ops/skills/incident-rca"),
   ];
 
   test("builtin 只读 skill 都声明 agent: verify，且 verify 工具集不含 edit/write", () => {
@@ -207,9 +210,8 @@ describe("T12 内置只读 skill 护栏迁到 agent 类型", () => {
     expect(verify.readOnly).toBe(true);
     expect(verify.tools).not.toContain("edit");
     expect(verify.tools).not.toContain("write");
-    const dir = join(import.meta.dir, "../../../core/src/skill/builtin");
-    for (const name of READ_ONLY) {
-      const { frontmatter } = parseFrontmatter(readFileSync(join(dir, name, "SKILL.md"), "utf-8"));
+    for (const dir of READ_ONLY) {
+      const { frontmatter } = parseFrontmatter(readFileSync(join(dir, "SKILL.md"), "utf-8"));
       expect(frontmatter.agent).toBe("verify");
     }
   });

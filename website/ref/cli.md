@@ -18,7 +18,7 @@ sid-code 的全部命令行参数与子命令。
 
 <!-- AUTO-GEN:START 由 scripts/docs-gen-reference.ts 生成，勿手工编辑 -->
 
-> 共 **69** 个参数条目、**6** 个子命令。
+> 共 **69** 个参数条目、**7** 个子命令。
 > 描述取自 `sid-code --help`，并与 `packages/cli/src/cli.ts` 的 `parseArgs` 声明
 > （**参数能不能用的唯一权威**，共 68 个 flag）交叉对账：
 > "能用但没写"和"写了但不能用"两类缺陷都会让对账测试失败。
@@ -32,6 +32,7 @@ sid-code 的全部命令行参数与子命令。
 | `sid-code daemon` | 本地调度守护进程管理（用法见[下文](#sub-daemon)） |
 | `sid-code update` | 下载并替换二进制到最新版（不动 ~/.sid-code/ 数据） |
 | `sid-code agents` | 列出所有可用子代理（内置/自定义/插件）（用法见[下文](#sub-agents)） |
+| `sid-code plugin` | 管理插件（与 /plugin 同一实现，不启动会话，供脚本 / CI 使用）（用法见[下文](#sub-plugin)） |
 | `sid-code mcp` | 管理 MCP 服务器配置（不启动会话）（用法见[下文](#sub-mcp)） |
 | `sid-code auth` | 企业登录（飞书）与认证诊断（用法见[下文](#sub-auth)） |
 
@@ -57,6 +58,14 @@ sid-code 的全部命令行参数与子命令。
 
 ```text
 用法: sid-code agents [--json] [--setting-sources user,project,local]
+```
+
+### sid-code plugin {#sub-plugin}
+
+```text
+用法: sid-code plugin <list|market|marketplaces|info|install|update|uninstall|enable|disable> [参数]
+示例: sid-code plugin market
+      sid-code plugin install my-skill@sid-code
 ```
 
 ### sid-code mcp {#sub-mcp}
@@ -123,7 +132,7 @@ status 逐条列出企业通道；--verify 对每条发一次不写数据的探�
 
 | 参数 | 说明 |
 |---|---|
-| `-p, --print` | 无头模式（非交互式，需提供提示词或管道输入） |
+| `-p, --print` | 无头模式（非交互式，需提供提示词或管道输入） 提示词以 / 开头时按斜杠命令分发：自定义命令 / skill / 插件 / MCP prompt 展开后交给模型；交互与管理类内置命令报错退出（如 /plugin → sid-code plugin） |
 | `--input-format <fmt>` | 输入格式 (text/stream-json，默认 text；stream-json 从 stdin 逐条读消息， 且必须同时指定 --output-format stream-json) |
 | `--output-format <fmt>` | 输出格式 (text/json/stream-json，默认 text) |
 | `--include-partial-messages` | 转发 token 级增量（仅 -p 且 --output-format stream-json 时有效） |
@@ -189,7 +198,7 @@ status 逐条列出企业通道；--verify 对每条发一次不写数据的探�
 
 | 参数 | 说明 |
 |---|---|
-| `--disable-slash-commands` | 禁用所有斜杠命令（headless/受限场景） |
+| `--disable-slash-commands` | 禁用所有斜杠命令：/xxx 原样作为提示词交给模型（TUI 与 -p 同口径） |
 
 ## 调试
 

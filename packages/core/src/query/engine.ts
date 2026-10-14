@@ -618,6 +618,17 @@ export class QueryEngine {
   }
 
   /**
+   * 把一段**非模型产出**的文本推给当前流式消费者。
+   *
+   * 用途：无头 / SDK / Bridge 下本地执行的斜杠命令（如 fork skill 的回答、命令报错之外的文本结果）
+   * 要和模型回答走同一个出口——三种运行形态各自挂了不同的回调（拼 stdout / 转 stream_event /
+   * 发给远端），由这里统一转发，调用方不必知道当前是哪一种。未挂回调时是空操作。
+   */
+  emitStreamText(text: string): void {
+    if (text) this.streamTextCallback?.(text);
+  }
+
+  /**
    * 设置流式思考回调（v2：对标 Claude Code 的独立思考流通道）
    * 通过此回调桥接：processStream 内部 onThinking → 此回调 → 外部消费者（TUI）
    */

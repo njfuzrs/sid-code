@@ -8,9 +8,7 @@
 import { registerSimplifySkill } from "./simplify.ts";
 import { registerVerifySkill } from "./verify.ts";
 import { registerCommitSkill } from "./commit.ts";
-import { registerCommitPushPrSkill } from "./commit-push-pr.ts";
 import { registerReviewSkill } from "./review.ts";
-import { registerPrCommentsSkill } from "./pr-comments.ts";
 import { registerPrWorkflowSkill } from "./pr-workflow.ts";
 import { registerPrSkill } from "./pr.ts";
 import { getBundledSkills as getRegisteredBundledSkills } from "./registry.ts";
@@ -27,11 +25,11 @@ export {
 const REGISTRARS = [
   registerSimplifySkill,
   registerVerifySkill,
-  // Git/PR 工作流命令（补齐分析 P0-1）
+  // Git/PR 工作流命令（补齐分析 P0-1）。
+  // 内置 skill 下沉方案 P4：commit-push-pr 已删（= commit + git push + pr），
+  // pr-comments 已迁到插件 github-pr（/github-pr:comments）；旧命令名由 migrated-skills.ts 给迁移提示。
   registerCommitSkill,
-  registerCommitPushPrSkill,
   registerReviewSkill,
-  registerPrCommentsSkill,
   registerPrWorkflowSkill,
   registerPrSkill,
 ] as const;
