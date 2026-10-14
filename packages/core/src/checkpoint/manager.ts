@@ -116,7 +116,10 @@ function encodeFullEntry(
   }
   f.binary = true;
   if (content.length > compressThresholdBytes) {
-    f.content = Buffer.from(Bun.gzipSync(content)).toString("base64");
+    // gzipSync 的签名只收 ArrayBuffer 背书的 Uint8Array（排除 SharedArrayBuffer）。
+    // 这里的字节来自 Bun.file().bytes() / 调用方传入的普通缓冲区，不会是共享内存，
+    // 所以收窄类型即可；用 new Uint8Array(content) 拷一份也能过类型，但对大文件是白付一次复制。
+    f.content = Buffer.from(Bun.gzipSync(content as Uint8Array<ArrayBuffer>)).toString("base64");
     f.compressed = true;
   } else {
     f.content = Buffer.from(content).toString("base64");
