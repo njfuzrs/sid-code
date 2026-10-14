@@ -185,6 +185,27 @@ export interface SessionIndexEntry {
    * 键不存在的语义同上：旧版本行，不是「零个文件」。
    */
   edit_first_try?: { files: number; first_try_ok: number };
+
+  /**
+   * /perf：会话级性能派生量。**此前只落在 session.traj**，而轨迹会被 LRU 清掉、
+   * 索引不会 —— 于是这几项一清理就没了，跨会话趋势无从画起。
+   *
+   * 全部可选，缺失 = 无样本或旧版本行，**绝不兜底成 0**（0 会被读成「0 tok/s」「0ms」）。
+   */
+  /** 输出吞吐 tok/s = total_tokens_received ÷ 纯生成耗时累计（collector 派生） */
+  tps?: number;
+  /**
+   * 生成耗时 p95（ms），取自 RetryTelemetry(stream_completed).elapsedMs，单次 fetch。
+   * ⚠ 起点是 lifecycle 创建（**响应头之后**），不含等 header 的时间：网关若等模型出字才回
+   * header，大部分等待落在 TTFT 里，这个数会远小于 TTFT —— 不是算错，是口径。
+   */
+  gen_p95?: number;
+  /** 纯生成耗时样本数（有 gen_p95 时必有） */
+  gen_n?: number;
+  /** 工具执行墙钟累计（ms）。与 duration_ms 对比可得「慢在模型还是工具」 */
+  tool_duration_ms?: number;
+  /** 上下文占用峰值 used ÷ window（0–1） */
+  context_peak_ratio?: number;
 }
 
 /** 应用 `SID_CODE_SESSION_INDEX` 重定向。语义与 `applyLedgerPathOverride` 一致 */
@@ -345,6 +366,13 @@ export function buildSessionIndexEntry(
     compactions?: number;
     permission?: import("./decision-metrics.ts").PermissionDecisionStats;
     edit_first_try?: import("./decision-metrics.ts").EditFirstTryStats;
+    perf?: {
+      tps?: number;
+      gen_p95?: number;
+      gen_n?: number;
+      tool_duration_ms?: number;
+      context_peak_ratio?: number;
+    };
   },
 ): SessionIndexEntry {
   const num = (v: unknown, fallback = 0): number => (typeof v === "number" ? v : fallback);
@@ -412,5 +440,26 @@ export function buildSessionIndexEntry(
           },
         }
       : {}),
+    ...perfFields(extra.perf),
   };
+}
+
+/**
+ * 只落「有限正数」的性能字段（context_peak_ratio 允许 0 以外的 (0,1]）。
+ * NaN / ∞ / 0 / 负数一律不落：它们都只可能是「没样本」的伪装。
+ */
+function perfFields(
+  p: NonNullable<Parameters<typeof buildSessionIndexEntry>[1]["perf"]> | undefined,
+) {
+  if (!p) return {};
+  const ok = (v: unknown): v is number => typeof v === "number" && Number.isFinite(v) && v > 0;
+  const out: Partial<SessionIndexEntry> = {};
+  if (ok(p.tps)) out.tps = p.tps;
+  if (ok(p.gen_p95) && ok(p.gen_n)) {
+    out.gen_p95 = p.gen_p95;
+    out.gen_n = p.gen_n;
+  }
+  if (ok(p.tool_duration_ms)) out.tool_duration_ms = p.tool_duration_ms;
+  if (ok(p.context_peak_ratio)) out.context_peak_ratio = p.context_peak_ratio;
+  return out;
 }

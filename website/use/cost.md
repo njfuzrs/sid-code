@@ -212,7 +212,8 @@ L1 假设层带证伪条件。它不直接给你"结论是 X"，而是给可验�
 | `/insights` | 这次发生了什么、哪里可能有问题 | `trajectories/sessions/<id>/` 轨迹文件 | 单会话深度 |
 
 三者不重复、不替代：`/cost` 看当下花了多少、`/cache` 看长期缓存在不在退化、
-`/insights` 看单次会话的决策链与异常信号。
+`/insights` 看单次会话的决策链与异常信号。时间花在哪、最近是不是变慢了，用 `/perf`，
+见[性能与延迟](/use/performance)。
 
 ## 设花费上限
 
@@ -350,6 +351,7 @@ grep -A3 '"quota"' ~/.sid-code/settings.json
 
 - [AI 提效的熵账本](/blog/entropy-accounting) —— 为什么"省了多少钱"不等于"提效了"，
   以及四条筛掉伪指标的判据
+- [性能与延迟](/use/performance) —— `/perf` 看首字延迟、生成速度、慢在哪
 - [上下文与压缩](/use/context) —— 上下文体积怎么控，什么时候 `/compact`
 - [子代理](/extend/subagents) —— 按类型给子代理分级模型，最直接的省钱手段
 - [配额与成本控制](/team/quota) —— 团队级 `costLimit` / RPM / TPM / 预算规则

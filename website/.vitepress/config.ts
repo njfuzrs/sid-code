@@ -105,12 +105,14 @@ const GUIDE_SIDEBAR = [
   },
   {
     /**
-     * 只有一页，所以刻意**不包一层组**——写成 `{ text, items: [同名的一条] }`
-     * 会在左栏渲染出「成本与用量 › 成本与用量」这种同名嵌套，是纯视觉噪音。
-     * 顶级条目带 link 会渲染成可点的分区标题，视觉重量与其它组标题一致。
+     * 曾经只有一页而刻意不包组（同名嵌套是视觉噪音）。/perf 加入后有了第二页，
+     * 组名改成「成本与性能」，与两页标题都不同名，不再有同名嵌套问题。
      */
-    text: "成本与用量",
-    link: "/use/cost",
+    text: "成本与性能",
+    items: [
+      { text: "成本与用量", link: "/use/cost" },
+      { text: "性能与延迟", link: "/use/performance" },
+    ],
   },
   {
     /**
@@ -381,7 +383,7 @@ export default defineConfig({
           { text: "权限与安全", link: "/use/permissions" },
           { text: "上下文与记忆", link: "/use/context" },
           { text: "任务编排", link: "/use/plan-mode" },
-          { text: "成本与用量", link: "/use/cost" },
+          { text: "成本与性能", link: "/use/cost" },
           { text: "扩展能力", link: "/extend/" },
           { text: "开发环境集成", link: "/extend/ide" },
           // ⚠ 这 8 条必须与 GUIDE_SIDEBAR 的 8 个分组一一对应、同序。

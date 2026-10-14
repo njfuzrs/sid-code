@@ -30,6 +30,7 @@ import workflows from "./workflows/index.ts";
 import copy from "./copy/index.ts";
 import rename from "./rename/index.ts";
 import insights from "./insights/index.ts";
+import perf from "./perf/index.ts";
 import bug from "./bug/index.ts";
 import keybindings from "./keybindings/index.ts";
 import fork from "./fork/index.ts";
@@ -61,6 +62,7 @@ export const BUILTIN_COMMANDS: UnifiedCommand[] = [
   copy,
   rename,
   insights,
+  perf,
   bug,
   keybindings,
   fork,
