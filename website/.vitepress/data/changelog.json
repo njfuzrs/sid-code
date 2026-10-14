@@ -27,7 +27,7 @@
       "date": "2026-10-14",
       "highlight": "内置 Skill 改由插件市场提供，支持多市场自动更新",
       "userFacing": true,
-      "channel": "beta",
+      "channel": "stable",
       "mergedInto": null,
       "covers": null,
       "betaNote": null,
