@@ -25,6 +25,16 @@
   // 仍是**单个根 tsconfig 检查全仓**（不给每个包配独立 tsconfig + project references）——
   // 4 个包共 1 个编译单元，Bun 下包不是编译单元，拆 tsconfig 只增加维护面。
   // eval-framework 有自己的 tsconfig，不在此列。
-  "include": ["packages/shared/**/*", "packages/core/**/*", "packages/cli/**/*", "tests/**/*"],
+  // packages/tui/src 必须显式列入：tui 源码原本只作为 cli 的 import 被「顺带」检查，
+  // 而 global.d.ts（声明 ink-box / ink-text 两个 JSX 内置元素）不被任何文件 import，
+  // 不列入就不进编译单元，Box/Text 等组件每用一次内置元素报一条 TS2339（实测 12 条）。
+  // 只列 src/：tui/tests 不在本次清理范围。
+  "include": [
+    "packages/shared/**/*",
+    "packages/core/**/*",
+    "packages/cli/**/*",
+    "packages/tui/src/**/*",
+    "tests/**/*"
+  ],
   "exclude": ["node_modules", "internal", "cmd", "**/node_modules"]
 }
