@@ -629,10 +629,18 @@ export interface PreCompactInput extends HookInput {
 
 /** SubagentStart 输入 */
 export interface SubagentStartInput extends HookInput {
+  /** 规范子代理 id：`<parent_session_id>-sub-<taskId>`。与该子代理的 StreamPhase /
+   *  RetryTelemetry / BilledRequest 的 agent_id 同值（E1，2026-10-14 起） */
   agent_id: string;
+  /** 旧形态 `subagent-<type>-<taskId>`（2026-10-14 前的 agent_id），过渡期保留 */
+  legacy_agent_id?: string;
   /** explore / task / plan / summarize / verify / custom */
   agent_type: string;
+  /** 父会话 id（派发子代理的那个会话） */
   parent_session_id?: string;
+  /** 派发本子代理的 sub_agent 工具调用 id，等于父会话 PreToolUse 的 tool_use_id。
+   *  swarm / workflow / skill 派出的子代理没有对应工具调用，缺省 */
+  parent_tool_use_id?: string;
   /** 子代理任务描述（模型为什么派这个子代理）。排查时无需回 raw.jsonl 找原始 prompt。 */
   description?: string;
   /** 子代理实际使用的模型（遥测按 model 分类/计费用；start 时为预期模型） */
@@ -643,7 +651,14 @@ export interface SubagentStartInput extends HookInput {
 
 /** SubagentStop 输入（携带子代理实际用量，供遥测单独计费 / 按 model 分类） */
 export interface SubagentStopInput extends HookInput {
+  /** 规范子代理 id，与 SubagentStart.agent_id 同值 */
   agent_id?: string;
+  /** 旧形态 id（见 SubagentStartInput.legacy_agent_id） */
+  legacy_agent_id?: string;
+  /** 父会话 id */
+  parent_session_id?: string;
+  /** 派发本子代理的 sub_agent 工具调用 id */
+  parent_tool_use_id?: string;
   agent_type?: string;
   /** 子代理实际使用的模型 */
   model?: string;

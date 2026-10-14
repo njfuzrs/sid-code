@@ -255,16 +255,20 @@ describe("B0 — config key 一致性哨兵（两条 runAgentLoop 路径共用 b
     // permissionChecker/deadlineAt/discoverJitContext 等公共字段——自定义路径正是这样
     // 漏掉了 permissionChecker（本次修复的 P0 缺口）。现在两处都必须走同一个工厂，
     // 若未来有人在其中一处手写字面量绕开工厂，这条断言应当失败。
-    const calls = [...src.matchAll(/\.\.\.this\.buildBaseLoopConfig\(ctxMgr,/g)];
+    const calls = [...src.matchAll(/\.\.\.this\.buildBaseLoopConfig\(ctxMgr\)/g)];
     expect(calls.length).toBe(2);
   });
 
-  test("buildBaseLoopConfig 工厂本身收敛了 permissionChecker / availability / deadlineAt / discoverJitContext 四个公共字段", () => {
+  test("buildBaseLoopConfig 工厂本身收敛了 permissionChecker / availability / discoverJitContext 三个公共字段", () => {
     const factoryMatch = src.match(/private buildBaseLoopConfig\([\s\S]*?\n  \}/);
     expect(factoryMatch).toBeTruthy();
     const factoryBody = factoryMatch![0];
-    for (const field of ["permissionChecker", "availability", "deadlineAt", "discoverJitContext"]) {
+    for (const field of ["permissionChecker", "availability", "discoverJitContext"]) {
       expect(factoryBody).toContain(field);
     }
+    // B1（2026-10-14）：子代理不再传 deadlineAt（墙钟是 detach 软返回点不是硬截止）。
+    // 只看代码不看注释，注释里允许出现这个词。
+    const code = factoryBody.replace(/\/\/.*$/gm, "");
+    expect(code).not.toContain("deadlineAt");
   });
 });

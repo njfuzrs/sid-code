@@ -119,6 +119,17 @@ export type RecoveryAction =
   | { kind: "handoff"; to: "context_overflow" }
   | { kind: "give_up"; evidence: GiveUpEvidence; verdict: FamilyVerdict };
 
+/**
+ * C1（2026-10-14）：唤醒后重开跨越休眠的请求时的 reopenReason。
+ *
+ * 刻意**不进** decideRecovery：休眠不是服务端故障，不该消耗为服务端故障准备的重试预算
+ * （maxRetries / 族预算），不该退避，也不该让 availability 记失败（冷却 / 拉黑）。
+ * 所以 fallback.ts 在 catch 入口就识别并旁路它，本常量只是两侧共用的词表。
+ */
+export const HOST_SLEEP_REOPEN_REASON = "host_sleep" as const;
+/** C1：唤醒后网络恢复的固定等待（不走指数退避——这不是故障，只是网卡在重连） */
+export const HOST_SLEEP_NETWORK_READY_MS = 2_000;
+
 /** S3：一次重试要「有意义」所需的最小剩余时间（与 fallback.ts 同值同义） */
 export const MIN_USEFUL_ATTEMPT_MS = 5_000;
 /** 连续 529 达到此值即放弃本模型转 fallback（原 MAX_529_CONSECUTIVE，行为不变） */

@@ -30,6 +30,19 @@
  * `buildSalvageOutput` 把子代理自己的最后文本输出（`finalText`）放在**最前面**原样保留，
  * 残卷各段附在其后。任何"没拿到 finalText 就只输出残卷"的改法都会重新引入本缺陷的
  * 一半——模型的自然语言结论往往比机械清单更有信息量。
+ *
+ * ## `<progress>` 的 token 口径（2026-10-14，卡 D1）
+ *
+ * 旧版只有一个 `tokens="N"`，口径不明（实为 input + output 之和，不含 cache）。
+ * 现在调用方给得出 `usage` 时显式输出 `input / output / cache_read / cache_creation`；
+ * 给不出（runAgentLoop 抛异常、spawn 子进程）时输出 `input_output_tokens`——
+ * 属性名本身写明口径，绝不再出现无口径的单个数字。
+ *
+ * ## 失败归因（卡 D1）
+ *
+ * 事故 20261014-110202：三个子代理真正的死因是「休眠断网 → 漏斗放弃」，残卷却说
+ * 「达到墙钟预算」「停在读懂上下文」「检查模型是否可用」——三句全错。根因是判据只有
+ * `detached || hardKilled`。归因统一走 {@link classifySubAgentFailure}，四处调用点共用。
  */
 
 /** 一次工具调用的极简记录（只留残卷需要的字段）。 */
@@ -160,8 +173,129 @@ export type SalvageReason =
   /** 执行抛异常。 */
   | "error";
 
+/** 失败的具体成因族（决定建议怎么写）。 */
+export type FailureCause = "network" | "rate_limit" | "auth" | "context_overflow" | "unknown";
+
+/** 漏斗最后一次 `recovery_give_up` 的结构化证据（由 runAgentLoop 结果带出）。 */
+export interface SubAgentGiveUpEvidence {
+  /** `GiveUpReason`：budget / same_fingerprint / deadline / … */
+  giveUpReason: string;
+  /** `ErrorFamily`：transient / auth_suspect / request_suspect / local_fault */
+  family?: string;
+  /** 本次调用总尝试次数 */
+  attempts?: number;
+  /** 最后一次错误原文（截断） */
+  lastError?: string;
+}
+
+export interface FailureClassInput {
+  /** 用户 / 父代理 abort（外层 signal） */
+  parentAborted: boolean;
+  /** detach 之后又跑满硬 kill 期限 */
+  hardKilled: boolean;
+  /** 墙钟到点（软返回点） */
+  detached: boolean;
+  /** 本路径能否真正转后台续跑（只有 `_isAsync` 内置子代理能） */
+  canDetach: boolean;
+  /** 漏斗放弃证据；有它就说明「真正的死因」已知 */
+  giveUp?: SubAgentGiveUpEvidence;
+  /** 最后一次重试的分类原因（`retry` 遥测的 reopenReason） */
+  lastRetryReason?: string;
+  /** runAgentLoop 的 errorMessage 或 catch 到的异常消息 */
+  errorMessage?: string;
+}
+
+export interface FailureClass {
+  reason: SalvageReason;
+  /** 只在 reason="error" 时有意义 */
+  cause?: FailureCause;
+}
+
+/**
+ * 子代理失败归因（四处调用点唯一入口）。
+ *
+ * 优先级：外层 abort > 硬 kill > **漏斗放弃证据** > 墙钟到点 > 其他错误。
+ * 第三条是这次修复的核心：墙钟到点（detached）只是软返回点，它和「请求放弃」同时发生时，
+ * 后者才是用户该看到的原因。退回 `detached || hardKilled` 就会把断网说成超时。
+ */
+export function classifySubAgentFailure(i: FailureClassInput): FailureClass {
+  if (i.parentAborted) return { reason: "aborted" };
+  if (i.hardKilled) return { reason: "timeout" };
+  if (i.giveUp) {
+    return {
+      reason: "error",
+      cause: inferFailureCause(
+        i.giveUp.family,
+        i.lastRetryReason,
+        i.giveUp.lastError ?? i.errorMessage,
+      ),
+    };
+  }
+  if (i.detached) return { reason: i.canDetach ? "detached" : "timeout" };
+  return {
+    reason: "error",
+    cause: inferFailureCause(undefined, i.lastRetryReason, i.errorMessage),
+  };
+}
+
+/** 错误族 → 建议族。结构化字段优先，文本只做兜底（文本措辞各网关不一）。 */
+export function inferFailureCause(
+  family: string | undefined,
+  reason: string | undefined,
+  message: string | undefined,
+): FailureCause {
+  const r = reason ?? "";
+  const m = message ?? "";
+  if (
+    r === "context_overflow" ||
+    /context[_ ]?(length|window|overflow)|上下文.{0,4}(超出|溢出)/i.test(m)
+  ) {
+    return "context_overflow";
+  }
+  if (
+    family === "auth_suspect" ||
+    /^auth/.test(r) ||
+    /\b401\b|unauthori[sz]ed|invalid.{0,10}api.?key/i.test(m)
+  ) {
+    return "auth";
+  }
+  if (
+    r === "rate_limit" ||
+    r === "overloaded" ||
+    /\b(429|529)\b|rate.?limit|限流|负载已饱和/i.test(m)
+  ) {
+    return "rate_limit";
+  }
+  if (
+    family === "transient" ||
+    /network|timeout|connection/.test(r) ||
+    /connection error|ECONNRESET|ETIMEDOUT|EPIPE|socket|fetch failed|network/i.test(m)
+  ) {
+    return "network";
+  }
+  return "unknown";
+}
+
+/** 残卷 token 口径（见模块头注释）。 */
+export interface SalvageUsage {
+  inputTokens: number;
+  outputTokens: number;
+  cacheReadInputTokens?: number;
+  cacheCreationInputTokens?: number;
+}
+
 export interface BuildSalvageOptions {
   reason: SalvageReason;
+  /** reason="error" 时的成因族（来自 classifySubAgentFailure），决定建议的写法。 */
+  cause?: FailureCause;
+  /** 本次 LLM 重试次数（网络类建议里要说「已重试 N 次」）。 */
+  retryAttempts?: number;
+  /** 子代理生命周期内的系统休眠时长（毫秒）；>0 时追加休眠说明。 */
+  sleptMs?: number;
+  /** 只读类子代理（explore / plan 等）：零改动是必然的，不构成「停在读懂上下文」的信号。 */
+  readOnlyAgent?: boolean;
+  /** 显式 token 口径；缺省时退回 snap.tokenCount（input+output 之和）。 */
+  usage?: SalvageUsage;
   /** 子代理自己的最终文本输出（**必须原样保留在最前**，见模块头注释的硬约束）。 */
   finalText?: string;
   /** 墙钟预算（毫秒），用于文案里说明"跑了多久"。 */
@@ -170,8 +304,11 @@ export interface BuildSalvageOptions {
   errorMessage?: string;
   /** detach 后可用于取回最终结果的任务 id。 */
   taskId?: string;
-  /** 完整输出的落盘路径（残卷是摘要，超长内容在这里）。 */
+  /** 完整输出的落盘路径（残卷是摘要，超长内容在这里）。
+   *  E1：优先是 sidechain transcript（不会被驱逐），不是 `tasks/*.output`。 */
   outputFile?: string;
+  /** E1：父会话 id。残卷被贴进别的会话后，靠它追溯回父会话轨迹。 */
+  parentSessionId?: string;
 }
 
 /** 单段结论的截断上限。残卷整体要能塞进主代理上下文，逐条封顶比整体截断更保信息密度。 */
@@ -198,8 +335,10 @@ export function buildSalvageOutput(snap: SalvageSnapshot, opts: BuildSalvageOpti
   parts.push("<partial-result>");
   parts.push(`  <interrupted-because>${describeReason(opts)}</interrupted-because>`);
   parts.push(
-    `  <progress turns="${snap.turns}" tool_uses="${snap.toolUseCount}" tokens="${snap.tokenCount}"/>`,
+    `  <progress turns="${snap.turns}" tool_uses="${snap.toolUseCount}" ${tokenAttrs(snap, opts)}/>`,
   );
+  const sleepNote = describeSubAgentSleep(opts.sleptMs);
+  if (sleepNote) parts.push(`  <host-sleep>${sleepNote}</host-sleep>`);
 
   // ② 已改动文件清单——验收断言直接看这一段（"包含已改动文件清单而非只有一句超时"）。
   if (snap.changedFiles.length > 0) {
@@ -240,9 +379,28 @@ export function buildSalvageOutput(snap: SalvageSnapshot, opts: BuildSalvageOpti
   parts.push("  </next-step>");
 
   if (opts.outputFile) parts.push(`  <output-file>${opts.outputFile}</output-file>`);
+  if (opts.parentSessionId)
+    parts.push(`  <parent-session>${opts.parentSessionId}</parent-session>`);
   parts.push("</partial-result>");
 
   return parts.join("\n");
+}
+
+function tokenAttrs(snap: SalvageSnapshot, opts: BuildSalvageOptions): string {
+  const u = opts.usage;
+  if (!u) return `input_output_tokens="${snap.tokenCount}"`;
+  return (
+    `input="${u.inputTokens}" output="${u.outputTokens}" ` +
+    `cache_read="${u.cacheReadInputTokens ?? 0}" cache_creation="${u.cacheCreationInputTokens ?? 0}"`
+  );
+}
+
+/** 休眠说明（给人读）。休眠导致的断网在用户眼里和网关故障一模一样，不说清楚就会去查不存在的故障。 */
+export function describeSubAgentSleep(sleptMs: number | undefined): string | null {
+  if (!sleptMs || sleptMs <= 0) return null;
+  const sec = Math.round(sleptMs / 1000);
+  const dur = sec >= 120 ? `约 ${Math.round(sec / 60)} 分钟（${sec}s）` : `${sec}s`;
+  return `期间系统休眠 ${dur}，休眠会断开网络连接，这不是网关或模型故障`;
 }
 
 function describeReason(opts: BuildSalvageOptions): string {
@@ -279,11 +437,40 @@ function suggestNextSteps(snap: SalvageSnapshot, opts: BuildSalvageOptions): str
     );
   }
 
-  if (snap.turns === 0) {
+  // D1：已知具体成因 → 按错误族给建议，不再猜「模型不可用」「读懂上下文」。
+  const knownCause =
+    opts.reason === "error" && opts.cause !== undefined && opts.cause !== "unknown";
+  if (knownCause) {
+    const n = opts.retryAttempts ?? 0;
+    switch (opts.cause) {
+      case "network":
+        lines.push(
+          `网络连接中断${n > 0 ? `，已重试 ${n} 次` : ""}。可直接重派同一任务，无需改 prompt。`,
+        );
+        break;
+      case "rate_limit":
+        lines.push("上游限流，稍后重试同一任务即可。");
+        break;
+      case "auth":
+        lines.push("认证失败，检查凭证（API Key / 网关令牌）后重试。");
+        break;
+      case "context_overflow":
+        lines.push("上下文超出模型窗口，缩小任务范围（拆成更小的子任务）后重派。");
+        break;
+    }
+    const sleepNote = describeSubAgentSleep(opts.sleptMs);
+    if (sleepNote) lines.push(`${sleepNote}。`);
+  } else if (snap.turns === 0) {
     lines.push(
       "子代理零轮产出，属于起步即失败（模型不可用/限流/参数错误的可能性大于任务太难）。重派前先确认模型可用。",
     );
-  } else if (snap.changedFiles.length === 0 && opts.reason !== "detached") {
+  } else if (
+    snap.changedFiles.length === 0 &&
+    opts.reason === "timeout" &&
+    opts.readOnlyAgent !== true
+  ) {
+    // 只在「墙钟停下 + 无更具体原因 + 非只读类」时给：只读类零改动是必然的，不是信号；
+    // detached 仍在后台跑，此时下结论太早。
     lines.push(
       "子代理跑了多轮但未改动任何文件，说明它停在「读懂上下文」阶段。重派时请把已确认的结论直接写进 prompt（省掉重新探索），并把范围缩到单一具体目标。",
     );

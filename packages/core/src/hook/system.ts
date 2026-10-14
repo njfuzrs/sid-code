@@ -418,7 +418,15 @@ export class HookSystem {
     agentId: string,
     agentType: string,
     parentSessionId?: string,
-    extra?: { model?: string; provider?: string; description?: string },
+    extra?: {
+      model?: string;
+      provider?: string;
+      description?: string;
+      /** E1：派发本子代理的 sub_agent tool_use_id */
+      parentToolUseId?: string;
+      /** E1：旧形态 agent_id（过渡期保留） */
+      legacyAgentId?: string;
+    },
   ): Promise<AggregatedHookResult> {
     return this.eventHandler.fireSubagentStartEvent(agentId, agentType, parentSessionId, extra);
   }

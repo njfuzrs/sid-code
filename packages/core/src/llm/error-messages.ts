@@ -167,7 +167,9 @@ export const ERROR_USER_MESSAGES: Record<string, ErrorUserMessage> = {
   // ─── 自定义扩展码（非 errors.ts 枚举，但实际出现的场景）───
   subagent_failed: {
     title: "子代理执行失败",
-    suggestion: "请检查子代理使用的模型是否可用，或重试当前操作",
+    // D1（2026-10-14）：不再自行猜「模型是否可用」——事故里真因是休眠断网，这句把排查带偏。
+    // 按错误族的具体建议由 salvage.ts 写进 partial-result，这里只指路。
+    suggestion: "子代理执行失败，详见上方 partial-result 中的原因",
   },
   html_error_page: {
     title: "网关返回非流式错误页",

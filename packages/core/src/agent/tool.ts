@@ -416,6 +416,8 @@ ${typeLines}
       model?: string;
       cwd?: string;
       _agentId?: string;
+      /** E1：派发本次子代理的 tool_use_id（执行器注入，见 internal-fields.ts） */
+      _parentToolUseId?: string;
     };
 
     // P3-1：嵌套受控放开——由深度上下文（ALS）裁决，而非"是不是子代理"的布尔判断。
@@ -632,6 +634,7 @@ ${typeLines}
       isolation?: "worktree";
       model?: string;
       cwd?: string;
+      _parentToolUseId?: string;
     },
     signal?: AbortSignal,
     onProgress?: (event: import("../tool/types.ts").ToolProgressData) => void,
@@ -705,6 +708,7 @@ ${typeLines}
           // 两遍（用户报的问题一：工具卡片与面板 `◓ [AG explore]` 完全重合）。
           // 仅摘可见性，taskId / 磁盘输出 / task_output 查询不受影响。
           _showInPanel: false,
+          _parentToolUseId: params._parentToolUseId,
           // 治问题三（过程黑盒）：把子代理每轮的进度快照经工具 onProgress 通道回灌到
           // **本工具自己的卡片**下方。问题一摘掉面板行之后，这里是前台子代理唯一的
           // 实时可见性——不接就等于用户在这 1m35s 里什么都看不到。
@@ -760,6 +764,7 @@ ${typeLines}
       isolation?: "worktree";
       model?: string;
       cwd?: string;
+      _parentToolUseId?: string;
     },
     signal?: AbortSignal,
   ): Promise<ToolResult> {
@@ -815,6 +820,7 @@ ${typeLines}
       isolation?: "worktree";
       model?: string;
       cwd?: string;
+      _parentToolUseId?: string;
     },
     abortController: AbortController,
   ): Promise<void> {
@@ -880,6 +886,7 @@ ${typeLines}
           _taskId: taskId,
           _abortController: abortController,
           _isAsync: true,
+          _parentToolUseId: params._parentToolUseId,
         },
         abortController.signal,
       );

@@ -40,23 +40,48 @@ import { registerCleanup } from "@sid-code/shared/utils/graceful-shutdown.ts";
 import { getLogger } from "../debug/logger.ts";
 
 /**
- * caffeinate 自身的超时（秒）——**故意让它会自己死**。
+ * ── 为什么是 `-w <pid>` 而不是 `-t 300` + 定期重启（2026-10-14 事故）────────
+ * 旧实现每 4 分钟「先杀旧 caffeinate、再起新的」，以 -t 300 自过期防孤儿。
+ * 会话 20261014-110202-8c0ffb30：`pmset -g log` 当天 7 次
+ * `caffeinate ClientDied … [System: No Assertions]` 后**整 31 秒**就 Idle Sleep，
+ * 其中一次（12:59:50 → 13:00:21 睡 184s）让三个 explore 子代理全部失败。
+ * 机理：用户空闲早已超过 `pmset sleep 1`，空闲计时器早就到期、只是被 assertion
+ * 挡着；assertion 计数一旦归零 powerd 立即启动休眠流程，新 caffeinate 就算同一秒
+ * 起来也挡不回来（12:55:50 那次新进程同秒起来，系统仍睡了 15s）。
+ * 所以判据是「assertion 计数任何时刻都不为零」——只要还有「重启」这个动作就有窗口，
+ * 缩短间隔 / 先起后杀的重叠方案都仍依赖会漂移的定时器（TimerDrift 实测 11.7s）。
  *
- * 这是自愈设计，不是保守：若主进程被 SIGKILL（跑不到任何 cleanup 钩子），
- * 孤儿 caffeinate 最多 5 分钟后自动退出，绝不会把用户的 Mac 永久钉醒。
- * 用户机器的睡眠权比我们的任务保活更重要——宁可少挡一会儿，不可钉死不放。
+ * `caffeinate -w <pid>`：被等待的进程退出（含 SIGKILL）时 assertion 自动释放，
+ * 原生解决了 -t 想解决的孤儿问题，于是重启机制本身就不需要了。
  */
-const CAFFEINATE_TIMEOUT_SECONDS = 300;
 
-/**
- * 重启间隔：必须**显著早于** CAFFEINATE_TIMEOUT_SECONDS，否则两者之间会出现
- * "上一个已过期、下一个还没起"的裸奔窗口，恰好落在窗口里的休眠就挡不住了。
- * 4 分钟 vs 5 分钟留 1 分钟余量。
- */
-const RESTART_INTERVAL_MS = 4 * 60 * 1000;
+/** 意外退出后的重拉上限：窗口内最多重拉次数，超过就放弃（防死循环）。 */
+export const RESPAWN_WINDOW_MS = 60 * 1000;
+export const RESPAWN_MAX_IN_WINDOW = 3;
 
-let caffeinateProc: { kill: (sig?: number | NodeJS.Signals) => void } | null = null;
-let restartTimer: ReturnType<typeof setInterval> | null = null;
+type CaffeinateProc = {
+  kill: (sig?: number | NodeJS.Signals) => void;
+  exited: Promise<unknown>;
+  unref?: () => void;
+};
+type Spawner = (argv: string[]) => CaffeinateProc;
+
+const defaultSpawner: Spawner = (argv) =>
+  Bun.spawn(argv, { stdout: "ignore", stderr: "ignore", stdin: "ignore" });
+let spawner: Spawner = defaultSpawner;
+/** 测试注入点：未注入时 isSupported() 仍按真实平台判定。 */
+let forceSupportedForTest = false;
+/** 最近的意外重拉时间戳（滑动窗口计数用）。 */
+let respawnTimes: number[] = [];
+
+/** 构造 caffeinate 参数（导出给测试钉住 argv 形态）。 */
+export function buildCaffeinateArgv(pid: number = process.pid): string[] {
+  // -i：只阻止 idle sleep（合盖仍会睡，-s/-d 越权，见 spawnCaffeinate 注释）。
+  // -w：随本进程退出自动释放；刻意**不带 -t**，否则又回到"到期即零 assertion"。
+  return ["caffeinate", "-i", "-w", String(pid)];
+}
+
+let caffeinateProc: CaffeinateProc | null = null;
 /**
  * 引用计数：允许多处并发工作（主循环 + 后台任务 + 子 agent）共享同一个 assertion，
  * 最后一个结束才真正放开休眠。用计数而非布尔，避免"A 还在跑，B 结束时把 A 的
@@ -67,7 +92,7 @@ let cleanupRegistered = false;
 
 /** 仅 macOS 生效；其他平台全部 no-op。 */
 function isSupported(): boolean {
-  return process.platform === "darwin";
+  return forceSupportedForTest || process.platform === "darwin";
 }
 
 /**
@@ -78,7 +103,6 @@ export function startPreventSleep(): void {
   refCount += 1;
   if (refCount !== 1) return; // 已有人在保活，复用同一个 assertion
   spawnCaffeinate();
-  startRestartTimer();
 }
 
 /**
@@ -88,7 +112,6 @@ export function startPreventSleep(): void {
 export function stopPreventSleep(): void {
   if (refCount > 0) refCount -= 1;
   if (refCount > 0) return;
-  stopRestartTimer();
   killCaffeinate();
 }
 
@@ -98,7 +121,6 @@ export function stopPreventSleep(): void {
  */
 export function forceStopPreventSleep(): void {
   refCount = 0;
-  stopRestartTimer();
   killCaffeinate();
 }
 
@@ -115,30 +137,36 @@ export function isPreventSleepActive(): boolean {
 /** 重置全部内部状态（仅测试用，避免用例间互相污染） */
 export function __resetPreventSleepForTest(): void {
   refCount = 0;
-  stopRestartTimer();
   killCaffeinate();
   cleanupRegistered = false;
+  spawner = defaultSpawner;
+  forceSupportedForTest = false;
+  respawnTimes = [];
 }
 
-function startRestartTimer(): void {
-  if (!isSupported() || restartTimer !== null) return;
-  restartTimer = setInterval(() => {
-    // 计数已归零（stop 与 timer 竞态）→ 不再续命，交给 stop 收尾。
-    if (refCount <= 0) return;
-    killCaffeinate();
-    spawnCaffeinate();
-  }, RESTART_INTERVAL_MS);
-  // unref：保活定时器绝不能成为"进程该退出却退不掉"的原因。
-  // 与 loop.ts 里 watchdog 刻意不 unref 的取舍相反——那个是关键防线（宁可拖着
-  // 进程也要按时判超时），这个只是锦上添花（挡不住休眠远好过挂住进程不退）。
-  restartTimer.unref?.();
+/** 测试注入假 spawner（同时强制视为受支持平台，Linux CI 上也能验 argv）。 */
+export function __setCaffeinateSpawnerForTest(fn: Spawner): void {
+  spawner = fn;
+  forceSupportedForTest = true;
 }
 
-function stopRestartTimer(): void {
-  if (restartTimer !== null) {
-    clearInterval(restartTimer);
-    restartTimer = null;
+/**
+ * caffeinate 意外退出（被外部杀 / 崩溃）且仍有人在保活 → 立即重拉。
+ * 滑动窗口限次：caffeinate 若持续起不来（例如被 MDM 策略杀），无限重拉就是死循环。
+ */
+function onUnexpectedExit(): void {
+  if (refCount <= 0) return;
+  const now = Date.now();
+  respawnTimes = respawnTimes.filter((t) => now - t < RESPAWN_WINDOW_MS);
+  if (respawnTimes.length >= RESPAWN_MAX_IN_WINDOW) {
+    getLogger().warn?.(
+      "PREVENT_SLEEP",
+      `caffeinate ${RESPAWN_WINDOW_MS / 1000}s 内意外退出超过 ${RESPAWN_MAX_IN_WINDOW} 次，放弃保活（休眠检测层仍兜底）`,
+    );
+    return;
   }
+  respawnTimes.push(now);
+  spawnCaffeinate();
 }
 
 function spawnCaffeinate(): void {
@@ -150,7 +178,7 @@ function spawnCaffeinate(): void {
   // 走 gracefulShutdown 的路径上执行，而进程还有"直接 process.exit / 未捕获异常 /
   // 测试进程跑完自然退出"等多条不经过它的出口。caffeinate 是**外部进程**，漏杀
   // 就会把用户的 Mac 一直钉醒——这类资源必须挂到最兜底的出口上。
-  // （-t 300 的自过期是最后一道保险，但不能拿它当正常回收手段。）
+  // （-w 的随主进程释放是最后一道保险，但不能拿它当正常回收手段。）
   if (!cleanupRegistered) {
     cleanupRegistered = true;
     registerCleanup(() => forceStopPreventSleep());
@@ -160,25 +188,20 @@ function spawnCaffeinate(): void {
   try {
     // -i：只阻止 **idle sleep**，显示器仍可休眠、合盖仍会睡。
     //     刻意不用 -s（阻止一切系统休眠）——那会连合盖都不让睡，是对用户机器的
-    //     越权；而本次事故 100% 是 Idle Sleep，-i 已经足够。
-    // -t：caffeinate 自己的存活上限（见 CAFFEINATE_TIMEOUT_SECONDS 的自愈说明）。
-    const proc = Bun.spawn(["caffeinate", "-i", "-t", String(CAFFEINATE_TIMEOUT_SECONDS)], {
-      stdout: "ignore",
-      stderr: "ignore",
-      stdin: "ignore",
-    });
+    //     越权；而事故 100% 是 Idle Sleep，-i 已经足够。
+    // -w：见文件头「为什么是 -w」。
+    const proc = spawner(buildCaffeinateArgv());
     caffeinateProc = proc;
     proc.unref?.();
-    // 进程自己退出（-t 到期 / 被外部杀）时清空句柄，
-    // 否则 spawnCaffeinate 的 `!== null` 守卫会永久挡住后续重启。
-    void proc.exited
-      .then(() => {
-        if (caffeinateProc === proc) caffeinateProc = null;
-      })
-      .catch(() => {
-        if (caffeinateProc === proc) caffeinateProc = null;
-      });
-    getLogger().debug?.("PREVENT_SLEEP", "已启动 caffeinate -i，任务期间阻止空闲休眠");
+    // 进程自己退出时清空句柄，否则 spawnCaffeinate 的 `!== null` 守卫会永久挡住重拉。
+    // killCaffeinate 会先把 caffeinateProc 置 null，所以「=== proc」只在**意外**退出时成立。
+    const onExit = () => {
+      if (caffeinateProc !== proc) return;
+      caffeinateProc = null;
+      onUnexpectedExit();
+    };
+    void proc.exited.then(onExit, onExit);
+    getLogger().debug?.("PREVENT_SLEEP", "已启动 caffeinate -i -w，任务期间阻止空闲休眠");
   } catch {
     // caffeinate 不存在 / spawn 失败 → 静默降级。
     // 保活是增强而非正确性依赖：拿不到 assertion 时仍有第二/三层纵深兜底，

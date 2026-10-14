@@ -75,3 +75,15 @@ describe("aggregateRecoveryStats", () => {
     expect(r.oneShotKillCount).toBe(0);
   });
 });
+
+describe("C1：host_sleep_reopen 与 retry 分开计", () => {
+  it("休眠重开单独计数，不进 retry / 族救回率", () => {
+    const r = aggregateRecoveryStats([
+      rt({ type: "host_sleep_reopen", model: "m", sleptMs: 181000 }),
+      rt({ type: "stream_completed", model: "m" }),
+    ])!;
+    expect(r.hostSleepReopens).toBe(1);
+    expect(r.recoveryByFamily).toEqual({});
+    expect(r.giveUps).toBe(0);
+  });
+});

@@ -72,3 +72,16 @@ description: 全部 Hook 事件的配置键名、是否会触发与触发时机�
 | `directory_added` | ✓ | `DirectoryAdded` | /add-dir 把目录加入会话白名单之后触发。仅通知。 |
 
 <!-- AUTO-GEN:END -->
+
+## 子代理事件的关联字段（2026-10-14 起）
+
+`SubagentStart` / `SubagentStop` 以及子代理内工具事件（`PreToolUse` / `PostToolUse` …）的 stdin 携带：
+
+| 字段 | 含义 |
+| --- | --- |
+| `agent_id` | 规范子代理 id：`<parent_session_id>-sub-<taskId>`。与该子代理在轨迹里的 `StreamPhase` / `RetryTelemetry` / `BilledRequest` 同值 |
+| `legacy_agent_id` | 旧形态 `subagent-<type>-<taskId>`（此前的 `agent_id`），过渡期保留，后续版本移除 |
+| `parent_session_id` | 派发子代理的父会话 id |
+| `parent_tool_use_id` | 派发它的那次 `sub_agent` 工具调用 id，等于父会话 `PreToolUse` 的 `tool_use_id`；swarm / workflow / skill 派出的子代理无此字段 |
+
+按旧形态匹配 `agent_id` 的 hook 脚本请改用 `legacy_agent_id` 或 `agent_type`。
