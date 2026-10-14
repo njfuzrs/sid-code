@@ -90,7 +90,7 @@ describe("缺口 1：子代理独立 tracker 隔离", () => {
   });
 
   test("父代理未读、子代理读过的文件，父代理 edit 仍被拒绝（护栏不被绕过）", async () => {
-    const filePath = makeTmpFile("const x = 1;\n");
+    const filePath = makeTmpFile("function f() {\n    return 1;\n}\n");
 
     const parentTracker = new FileReadTracker();
     const subTracker = new FileReadTracker();
@@ -100,11 +100,13 @@ describe("缺口 1：子代理独立 tracker 隔离", () => {
     // 子代理读过
     await subRead.execute({ file_path: filePath });
 
-    // 父代理从没读过，直接 edit → 必须被先读后写护栏拒绝
+    // 父代理从没读过，直接 edit → 必须被先读后写护栏拒绝。
+    // old_string 刻意用缩进不符的版本（只能灵活匹配）：未读文件精确命中会被放行，
+    // 只有近似匹配才拒——用近似匹配，拒绝才能证明「父 tracker 确实没被子代理污染」。
     const result = await parentEdit.execute({
       file_path: filePath,
-      old_string: "const x = 1;",
-      new_string: "const x = 2;",
+      old_string: "function f() {\n  return 1;\n}",
+      new_string: "function f() {\n  return 2;\n}",
     });
 
     expect(result.isError).toBe(true);

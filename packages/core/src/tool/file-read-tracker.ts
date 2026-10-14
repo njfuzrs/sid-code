@@ -174,6 +174,40 @@ export class FileReadTracker {
     return this.validateFresh(filePath, "write");
   }
 
+  /** 该文件在本 tracker 里没有读取记录 */
+  isUnread(filePath: string): boolean {
+    return !this.hasBeenRead(filePath);
+  }
+
+  /**
+   * 「从没读过」拒绝的单一出口（文案 + 埋点），供 validateFresh 与 edit 的延后判定共用。
+   *
+   * @param matchStrategy edit 延后判定时实际命中的策略（none / flexible / regex / fuzzy），
+   *   用于区分「old_string 没精确命中所以拒」与「压根没走到匹配」两类分母。
+   */
+  rejectUnread(filePath: string, tool: "edit" | "write", matchStrategy?: string): string {
+    const action = tool === "edit" ? "编辑" : "覆盖写入";
+    emitFreshness({
+      tool,
+      outcome: "rejected_unread",
+      ...(matchStrategy ? { match_strategy: matchStrategy } : {}),
+    });
+    if (matchStrategy) {
+      return (
+        `文件必须先用 read 工具读取后才能${action}: ${filePath}\n` +
+        `（未读文件只在 old_string 于磁盘内容中精确命中时放行；本次${
+          matchStrategy === "none" ? "未命中" : "只能近似命中"
+        }，近似匹配在没看过文件时可能改错位置。）`
+      );
+    }
+    return `文件必须先用 read 工具读取后才能${action}: ${filePath}`;
+  }
+
+  /** edit 对未读文件精确命中放行时的埋点（与 rejected_unread 构成同一分母） */
+  noteUnreadExactEdit(): void {
+    emitFreshness({ tool: "edit", outcome: "allowed_unread_exact" });
+  }
+
   /**
    * 「先读后改」新鲜度校验的单一事实源，供 edit/write 共用，杜绝两条护栏逻辑漂移。
    *   1. 从没读过 → 拒绝
@@ -190,8 +224,7 @@ export class FileReadTracker {
     const record = this.readFiles.get(resolved);
 
     if (!record) {
-      emitFreshness({ tool, outcome: "rejected_unread" });
-      return `文件必须先用 read 工具读取后才能${action}: ${filePath}`;
+      return this.rejectUnread(filePath, tool);
     }
 
     // 检查文件是否在读取后被外部修改

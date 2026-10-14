@@ -366,18 +366,80 @@ describe("EditTool - 先读后改校验（FileReadTracker 增强）", () => {
     cleanup([file]);
   });
 
-  test("从没 read 直接编辑仍被拒绝（先读后改护栏保留）", async () => {
+  test("从没 read 但 old_string 精确命中：放行（模型多用 bash cat 看过，补读后原样重发是纯空转）", async () => {
     const tracker = new FileReadTracker();
     const edit = new EditTool(tracker);
-    const file = join(TMP, "never-read.ts");
+    const file = join(TMP, "never-read-exact.ts");
     writeFileSync(file, "const a = 1;\n");
     const result = await edit.execute({
       file_path: file,
       old_string: "const a = 1;",
       new_string: "const a = 2;",
     });
+    expect(result.isError).toBeFalsy();
+    expect(await Bun.file(file).text()).toBe("const a = 2;\n");
+    cleanup([file]);
+  });
+
+  test("从没 read 且只能灵活匹配（缩进不符）：拒绝，且不落盘", async () => {
+    const tracker = new FileReadTracker();
+    const edit = new EditTool(tracker);
+    const file = join(TMP, "never-read-flexible.ts");
+    const original = "function foo() {\n    return 1;\n}\n";
+    writeFileSync(file, original);
+    const result = await edit.execute({
+      file_path: file,
+      old_string: "function foo() {\n  return 1;\n}",
+      new_string: "function foo() {\n  return 2;\n}",
+    });
     expect(result.isError).toBe(true);
     expect(result.output).toContain("先用 read");
+    expect(result.output).toContain("近似命中");
+    expect(await Bun.file(file).text()).toBe(original);
+    cleanup([file]);
+  });
+
+  test("对照：同一灵活匹配在读过之后放行（拒绝来自未读，不是匹配本身）", async () => {
+    const tracker = new FileReadTracker();
+    const read = new ReadTool(tracker);
+    const edit = new EditTool(tracker);
+    const file = join(TMP, "read-flexible.ts");
+    writeFileSync(file, "function foo() {\n    return 1;\n}\n");
+    await read.execute({ file_path: file });
+    const result = await edit.execute({
+      file_path: file,
+      old_string: "function foo() {\n  return 1;\n}",
+      new_string: "function foo() {\n  return 2;\n}",
+    });
+    expect(result.isError).toBeFalsy();
+    cleanup([file]);
+  });
+
+  test("从没 read 且完全未命中：报先读，而不是给近似匹配诊断", async () => {
+    const tracker = new FileReadTracker();
+    const edit = new EditTool(tracker);
+    const file = join(TMP, "never-read-miss.ts");
+    writeFileSync(file, "const a = 1;\n");
+    const result = await edit.execute({
+      file_path: file,
+      old_string: "totally unrelated content that is not there",
+      new_string: "x",
+    });
+    expect(result.isError).toBe(true);
+    expect(result.output).toContain("先用 read");
+    expect(result.output).toContain("未命中");
+    cleanup([file]);
+  });
+
+  test("从没 read 且精确命中多处（未设 replace_all）：照常报多处，不落盘", async () => {
+    const tracker = new FileReadTracker();
+    const edit = new EditTool(tracker);
+    const file = join(TMP, "never-read-multi.ts");
+    writeFileSync(file, "x;\nx;\n");
+    const result = await edit.execute({ file_path: file, old_string: "x;", new_string: "y;" });
+    expect(result.isError).toBe(true);
+    expect(result.output).toContain("2 处匹配");
+    expect(await Bun.file(file).text()).toBe("x;\nx;\n");
     cleanup([file]);
   });
 

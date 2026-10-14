@@ -452,7 +452,7 @@ export class EditTool implements Tool {
 
   usageGuide(): string {
     return `- 使用 edit 而不是 bash sed/awk 来修改文件
-- 必须先用 read 读取文件，否则会被拒绝
+- 编辑前应先用 read 读取文件；没读过的文件只在 old_string 精确命中时放行，近似匹配会被拒绝
 - old_string 优先精确匹配，失败时自动尝试灵活/正则/模糊匹配
 - 如果 read 输出带行号前缀（如 "123→"），edit 会自动剥离，无需手动处理
 - 设置 replace_all=true 可替换所有匹配项
@@ -565,16 +565,26 @@ export class EditTool implements Tool {
       }
     }
 
-    // 先读后改校验
-    if (this.tracker) {
+    // 行号前缀剥离（如 "123\tcontent" / "123→content" → "content"）
+    const oldString = this.stripLineNumbers(params.old_string);
+
+    // 先读后改校验。
+    // 从没 read 过的文件**不在这里一刀切拒绝**，延后到匹配之后判：old_string 在磁盘全文里
+    // 精确命中就放行，只靠灵活/正则/模糊才命中则拒绝。
+    // 理由（2026-10-15 轨迹核验，188 会话）：未读拒绝 38 次里 30 次模型其实已用 bash cat
+    // 看过该文件，20 次补读后原样重发——拦截零收益、白烧一轮。精确命中本身就证明模型对
+    // 那段的认知与磁盘一致；真正的风险在 4 级降级匹配：没看过文件凭印象拼的 old_string
+    // 可能被模糊匹配静默落到相似的错误块上，read 前置是这条路唯一的前置防线，所以保留。
+    // old_string='' 的创建/填充语义不属于"匹配"，仍走原校验（行为不变）。
+    // write 不受影响：整文件覆盖会丢掉模型没见过的内容，validateForWrite 照旧拦。
+    const deferUnreadCheck =
+      this.tracker !== null && oldString !== "" && this.tracker.isUnread(filePath);
+    if (this.tracker && !deferUnreadCheck) {
       const error = this.tracker.validateForEdit(filePath);
       if (error) {
         return { output: `错误: ${error}`, isError: true };
       }
     }
-
-    // 行号前缀剥离（如 "123\tcontent" / "123→content" → "content"）
-    const oldString = this.stripLineNumbers(params.old_string);
     const newString = params.new_string;
     // LLM 可能把布尔写成字符串 "false"——JS truthiness 会误判为 true，
     // 导致本该替换一处却替换全部。用语义化布尔归一化兜底。
@@ -688,6 +698,19 @@ export class EditTool implements Tool {
       const lineEnding = detectLineEnding(rawContent);
 
       const result = calculateReplacement(rawContent, oldString, newString, replaceAll);
+
+      // 未读文件的延后判定：只认精确命中（含 1:1 引号规范化，它也报 exact）。
+      // 必须排在下面「歧义 / 未命中 / 多处」报错之前——否则未读文件会拿到近似匹配的
+      // 诊断信息，暗示它"差一点就能改"，而真正该做的是先 read。
+      if (deferUnreadCheck && this.tracker) {
+        if (result.strategy !== "exact") {
+          return {
+            output: `错误: ${this.tracker.rejectUnread(filePath, "edit", result.strategy)}`,
+            isError: true,
+          };
+        }
+        this.tracker.noteUnreadExactEdit();
+      }
 
       // 模糊匹配歧义信号（occurrences=-1）：old_string 拼写偏差过大，
       // 有多个相似度接近的候选块，无法确定该改哪个。拒绝而非静默赌一个。
