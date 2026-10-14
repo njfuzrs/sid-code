@@ -1,8 +1,8 @@
 {
-  "generatedAt": "2026-10-12",
-  "currentVersion": "0.1.608",
-  "totalVersions": 27,
-  "totalItems": 353,
+  "generatedAt": "2026-10-14",
+  "currentVersion": "0.1.609",
+  "totalVersions": 28,
+  "totalItems": 380,
   "sectionMeta": [
     {
       "key": "breaking",
@@ -22,6 +22,70 @@
     }
   ],
   "versions": [
+    {
+      "version": "0.1.609",
+      "date": "2026-10-14",
+      "highlight": "内置 Skill 改由插件市场提供，支持多市场自动更新",
+      "userFacing": true,
+      "channel": "beta",
+      "mergedInto": null,
+      "covers": null,
+      "betaNote": null,
+      "count": 27,
+      "sections": [
+        {
+          "key": "breaking",
+          "title": "破坏性变更",
+          "items": [
+            "7 项内置 Skill 已移出二进制，旧命令会提示对应的迁移方式",
+            "不再自动读取运行目录的 .env 与 bunfig.toml，需要的变量请改用 shell 环境变量或 settings.json 的 env",
+            "启动补传只上传配置上传之后产生的会话，更早的历史需显式运行 --upload-traces --include-history"
+          ]
+        },
+        {
+          "key": "feat",
+          "title": "新功能",
+          "items": [
+            "无头模式支持用 -p 执行斜杠命令",
+            "新增 sid-code plugin 命令管理插件市场与插件",
+            "插件支持配置多个市场，并按市场自动更新",
+            "内置 Skill 改由插件市场提供，插件调用会记录使用情况"
+          ]
+        },
+        {
+          "key": "improve",
+          "title": "改进",
+          "items": [
+            "调度任务时不再在无持久化任务的目录生成 .sid-code/",
+            "/clear 现在会结束旧会话并开启新会话",
+            "allowed-tools 对 Skill、子代理和工具名称的权限判断更一致",
+            "essential-traffic 隐私级别下不再检查更新、不再同步外部模型目录，--upload-traces 也会拒绝执行",
+            "启动预连接改连你实际配置的模型地址，不再固定连 api.anthropic.com",
+            "MCP 状态文件写入前会自动备份，避免损坏文件被静默覆盖",
+            "重试退避不再占用单次请求的超时预算",
+            "输入历史支持完整回显粘贴内容，并隐藏历史中的斜杠命令",
+            "列表面板统一列宽并按显示宽度截断，窄终端下更整齐",
+            "快捷键帮助面板补全说明，并修正 Ctrl+K 等快捷键提示",
+            "Ctrl+G 调用外部编辑器时，编辑器可以正常接收按键"
+          ]
+        },
+        {
+          "key": "fix",
+          "title": "修复",
+          "items": [
+            "轨迹与日志脱敏覆盖更多凭证格式（私钥、新式 API key 等），脱敏出错时只替换出错字段",
+            "修复首屏对话框按键被误显示为 NUL 字符的问题",
+            "修复 Skill 或自定义命令的回答没有进入对话记录的问题",
+            "修复按 ESC 撤回尚未发送的输入后内容丢失的问题",
+            "修复模型生成期间输入被静默丢弃的问题，现在会排队接续",
+            "修复 Ctrl+R 反向搜索导致 TUI 崩溃的问题",
+            "修复 ↑/↓ 翻阅历史时粘贴内容只显示占位符的问题",
+            "修复 ↑/↓ 翻阅历史时错误弹出补全的问题",
+            "修复 /trace 输出误报并补全成本明细的问题"
+          ]
+        }
+      ]
+    },
     {
       "version": "0.1.608",
       "date": "2026-10-12",
