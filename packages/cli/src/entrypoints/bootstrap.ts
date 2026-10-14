@@ -142,7 +142,8 @@ async function main(): Promise<void> {
   if (args[0] === "plugin" || args[0] === "plugins") {
     profileCheckpoint("bootstrap_route_resolved");
     const { handlePluginCommand } = await import("../command/plugin-cli.ts");
-    await handlePluginCommand(args.slice(1));
+    const code = await handlePluginCommand(args.slice(1));
+    if (code !== 0) process.exit(code);
     return;
   }
 

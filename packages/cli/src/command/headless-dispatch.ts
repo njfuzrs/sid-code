@@ -60,7 +60,7 @@ const CLI_ALTERNATIVES: Readonly<Record<string, string>> = {
  *
  * 判定口径的**唯一实现**（契约字段 `CommandBase.headless` 的注释指向这里）。
  */
-export function headlessRefusal(cmd: UnifiedCommand, typedName: string): string | null {
+function headlessRefusal(cmd: UnifiedCommand, typedName: string): string | null {
   const allowed = cmd.headless ?? (cmd.source ?? "builtin") !== "builtin";
   if (allowed) return null;
   if (cmd.name === "reload-plugins") {
@@ -102,8 +102,8 @@ export async function resolveHeadlessSlash(
   return mapExecutionResult(result, displayCommand);
 }
 
-/** CommandExecutionResult → 无头分发结果。导出供单测穷举。 */
-export function mapExecutionResult(
+/** CommandExecutionResult → 无头分发结果（单测经 resolveHeadlessSlash 注入假 executor 穷举）。 */
+function mapExecutionResult(
   result: CommandExecutionResult,
   displayCommand: string,
 ): HeadlessSlashOutcome {

@@ -15,8 +15,6 @@
 import { describe, test, expect } from "bun:test";
 import { CommandExecutor } from "@sid-code/cli/command/executor.ts";
 import {
-  headlessRefusal,
-  mapExecutionResult,
   resolveHeadlessSlash,
   type HeadlessSlashOutcome,
 } from "@sid-code/cli/command/headless-dispatch.ts";
@@ -149,9 +147,9 @@ describe("交互 / 管理类 builtin：拒绝并指向 CLI 子命令", () => {
     expect(msg).not.toContain("CLI 子命令");
   });
 
-  test("未声明来源按 builtin 处理（fail-closed）", () => {
+  test("未声明来源按 builtin 处理（fail-closed）", async () => {
     const cmd = { ...localCmd({ name: "x" }), source: undefined } as UnifiedCommand;
-    expect(headlessRefusal(cmd, "x")).not.toBeNull();
+    expect((await run("/x", [cmd])).kind).toBe("error");
   });
 
   test("CLI 替代表里的子命令在 bootstrap 快速路径真实存在（防止指向一个不存在的命令）", async () => {
@@ -199,8 +197,14 @@ describe("mapExecutionResult：每个结果类型都有确定去向", () => {
     [{ type: "clear" }, "error"],
   ];
   for (const [result, kind] of cases) {
-    test(`${result.type} → ${kind}`, () => {
-      expect(mapExecutionResult(result, "/x").kind).toBe(kind);
+    test(`${result.type} → ${kind}`, async () => {
+      // 经公开入口注入假 executor：映射是 resolveHeadlessSlash 的实现细节，不单独导出
+      const executor = {
+        findCommand: () => undefined,
+        executeSlashCommand: async () => result,
+      };
+      const r = await resolveHeadlessSlash("/x", { commands: [], executor });
+      expect(r.kind).toBe(kind);
     });
   }
 });

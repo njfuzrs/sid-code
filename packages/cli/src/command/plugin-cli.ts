@@ -28,8 +28,12 @@ const USAGE = `用法: sid-code plugin <子命令> [参数]
   uninstall <name> [--delete] [--force]
   enable <name> | disable <name> [--force]`;
 
-/** 返回进程退出码（0 成功 / 1 失败），由 bootstrap 负责 exit。导出供单测。 */
-export async function runPluginCli(
+/**
+ * 执行一条 plugin 子命令，返回进程退出码（0 成功 / 1 失败）。
+ *
+ * 不在这里 `process.exit`：bootstrap 快速路径负责退出，单测注入 `out` 观测输出与退出码。
+ */
+export async function handlePluginCommand(
   args: string[],
   out: { log: (s: string) => void; error: (s: string) => void } = console,
 ): Promise<number> {
@@ -52,9 +56,4 @@ export async function runPluginCli(
   }
   out.log(message);
   return 0;
-}
-
-export async function handlePluginCommand(args: string[]): Promise<void> {
-  const code = await runPluginCli(args);
-  if (code !== 0) process.exit(code);
 }
