@@ -784,7 +784,7 @@ export interface TeamMemoryConfig {
 
 /** 轨迹采集配置 */
 export interface TraceConfig {
-  /** 是否启用采集（默认 false） */
+  /** 是否启用采集（默认 true，只写本机；上传另需 trace.upload） */
   enabled?: boolean;
   /** 本地输出目录（默认 ~/.sid-code/trajectories） */
   outputDir?: string;
@@ -862,7 +862,10 @@ export interface AnalyticsBackendConfig {
 
 /** 分析/事件系统配置（spec 17 — analytics 通道，与 telemetry Span 通道并行） */
 export interface AnalyticsConfig {
-  /** 隐私级别覆盖（环境变量优先级更高） */
+  /**
+   * 隐私级别：default / no-telemetry（关遥测上报）/ essential-traffic（再关轨迹上传、
+   * 更新检查、外部模型目录等非必要外发）。环境变量优先级更高，各级覆盖面见官网隐私页。
+   */
   privacyLevel?: PrivacyLevel;
   /** 已弃用：Feature Flag 远程端点。配了 backend.url 时被忽略（地址由它推出），只作兼容 */
   featureFlagEndpoint?: string;

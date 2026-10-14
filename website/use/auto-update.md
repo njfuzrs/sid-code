@@ -60,6 +60,10 @@ beta 只升 beta（beta 期发的修复号也会自动装上）。`dev` 本地�
 最多每 24 小时查一次，依据是 `~/.sid-code/updates/state.json` 里的 `lastCheckAt`。
 网络失败、版本号非法都算「查过」，不会每开一次会话就打一次服务器。
 
+一次检查就是对 `www.sid-code.cc/releases/sid-code/latest.txt`（beta 通道读 `beta.txt`）的裸 `GET`，
+不带会话内容、设备 ID 或任何配置；服务器能看到的只有你的 IP 与请求时间。
+不想要这次请求：`"autoUpdate": "off"`，或隐私级别 `essential-traffic`（见[隐私与数据流向](/use/privacy#三个隐私级别)）。
+
 ### 装的时候不会动正在跑的进程
 
 下载、SHA256 校验、冒烟测试都在后台子进程里做，通过版本化目录 + 软链接原子切换

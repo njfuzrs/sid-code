@@ -237,6 +237,22 @@ UNC 远程共享、敏感文件 `.env` / `*.pem` / `id_rsa` / `.ssh/` / `.aws/co
 （`packages/core/src/config/paths.ts`），这一层最后扫描、优先级最高，覆盖同名的 user / project 扩展，
 且不走项目信任确认。
 
+### 隐私级别：锁定数据外发
+
+没有专门的「禁止轨迹上传」字段，但可以用托管配置的 `env` 段强制隐私级别。
+它在启动时写进进程环境，而环境变量是隐私级别里优先级最高的信号，用户的 `settings.json` 放不开：
+
+```json
+{
+  "env": { "SID_CODE_DISABLE_NONESSENTIAL_TRAFFIC": "1" }
+}
+```
+
+生效后轨迹上传（含手动 `--upload-traces`）、更新检查、外部模型目录同步等非必要外发全部关闭，
+只保留模型请求与企业策略拉取；完整对照见[隐私与数据流向](/use/privacy#三个隐私级别)。
+只想关遥测上报、保留其它功能，改用 `SID_CODE_DISABLE_TELEMETRY`。
+和其它策略一样，只有部署在系统级路径才算锁定。
+
 ### 审计日志
 
 权限决策写 `~/.sid-code/logs/permissions-audit.log`，超过 10MB 自动轮转

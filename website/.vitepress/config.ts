@@ -78,6 +78,7 @@ const GUIDE_SIDEBAR = [
     collapsed: false,
     items: [
       { text: "权限与人工确认", link: "/use/permissions" },
+      { text: "隐私与数据流向", link: "/use/privacy" },
       { text: "Worktree 隔离", link: "/use/worktree" },
     ],
   },

@@ -120,7 +120,7 @@ settings.json 的全部可配字段、类型与默认值。
 
 | 子键 | 类型 | 说明 |
 |---|---|---|
-| `privacyLevel` | PrivacyLevel | 隐私级别覆盖（环境变量优先级更高） |
+| `privacyLevel` | PrivacyLevel | 隐私级别：default / no-telemetry（关遥测上报）/ essential-traffic（再关轨迹上传、 更新检查、外部模型目录等非必要外发）。环境变量优先级更高，各级覆盖面见官网隐私页。 |
 | `featureFlagEndpoint` | string | 已弃用：Feature Flag 远程端点。配了 backend.url 时被忽略（地址由它推出），只作兼容 |
 | `flags` | Record<string, string \| number \| boolean \| Record<string, unknown>> | 本地 Feature Flag 定义 |
 | `backends` | AnalyticsBackendConfig[] | 第三方事件 collector 列表（OTLP / 自建）。企业后端不用配这里：配了 backend.url 即内置上报 |
@@ -284,7 +284,7 @@ settings.json 的全部可配字段、类型与默认值。
 
 | 子键 | 类型 | 说明 |
 |---|---|---|
-| `enabled` | boolean | 是否启用采集（默认 false） |
+| `enabled` | boolean | 是否启用采集（默认 true，只写本机；上传另需 trace.upload） |
 | `outputDir` | string | 本地输出目录（默认 ~/.sid-code/trajectories） |
 | `maxSessionsRetained` | number | 本地最大保留会话数（默认不限；防盘满靠 sessionRetention.maxTotalSize 体积兜底） |
 | `recordRawPayloads` | boolean | 是否把**请求/响应原文**写进 `raw.jsonl`（默认 `true`，保持既有行为）。 |

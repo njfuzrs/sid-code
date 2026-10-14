@@ -279,7 +279,8 @@ worktree 是不是同一个仓库的（两边各跑一次 `git rev-parse --path-
 结果应相同）。注意 `--show-toplevel` 在 worktree 里返回的是 worktree 自己，用它对比会误判。
 
 **记忆里存了敏感信息怎么办。**
-`save_memory` 落盘前没有人工审核环节，现有的隐私边界是三条：写入时做 secret 检测，
+`save_memory` 落盘前没有人工审核环节，现有的隐私边界是三条：写入时做 secret 检测
+（一套独立的常见凭证规则，比[轨迹脱敏](/use/privacy#脱敏)的覆盖面窄），
 疑似凭证的内容直接拒收；系统提示词明令不存凭证；事后可以 `/memory delete <key>` 删。
 如果你在对话里贴过明文 key，检测没认出来的形态仍可能被摘进 `project` 类记忆——发现了直接删。
 

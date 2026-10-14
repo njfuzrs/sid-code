@@ -5,10 +5,12 @@ description: 每次会话落盘了什么、能回答什么问题、怎么用一�
 
 # 轨迹采集与可观测
 
-每次会话结束，sid-code 都在本地留了一份完整档案：每次 API 的原始请求响应、
-每个工具调用、每个决策节点、每一分钱。**默认就开着**，不需要配置。
+每次会话结束，sid-code 都在本地留了一份完整档案：每次 API 的请求响应、
+每个工具调用、每个决策节点、每一分钱。采集默认开着，**只写本机**；
+只有配置了 `trace.upload` 才会上传，而且只上传配置之后产生的会话。
 
 这页讲这些数据在哪、怎么读、以及怎么汇总到团队维度。
+什么会离开这台机器、脱敏覆盖哪些内容，统一见[隐私与数据流向](/use/privacy)。
 
 ::: tip 为什么这件事是地基
 轨迹是"更快、更省"这两个方向唯一的度量来源。没有它，"这次改动省了多少 token"
@@ -106,12 +108,17 @@ Provider 健康:
 | `metadata.json` | 一行式总账：模型、起止时间、步骤数、API 次数、token、成本、退出状态、用过的工具、改过的文件 | 想快速知道"这次花了多少、干了什么" |
 | `session-summary.json` | 结构化摘要：轮数、异常计数与分类、真实错误数、top 工具、是否用了子代理 | 批量筛"哪些会话不正常" |
 | `session.traj` | 完整 TAO 步骤 + history + metadata | 回溯全过程、做 SFT 训练数据 |
-| `raw.jsonl` | **逐次 API 的 request / response / usage / stop_reason** | 排查协议或参数问题——这是唯一能看到真实报文的地方 |
+| `raw.jsonl` | **逐次 API 的 request / response / usage / stop_reason** | 排查协议或参数问题——请求体最完整的一份记录（内部表示，不含 HTTP 请求头） |
 | `events.jsonl` | 事件流，每行一个事件 | 分析决策链、统计防线触发 |
 | `messages.json` | 崩溃验尸快照，含 attribution 归因 | 会话异常终止后查死因 |
 | `warn.log` | 本次会话的告警 | 有静默失效的配置时 |
 
 `raw.jsonl` 通常是最大的那个文件（这例 115K），因为它存全量报文。
+不想记原文就设 `SID_CODE_TRACE_NO_RAW=1`，`raw.jsonl` 只留计数行。
+
+上面这些文件，以及 `warn.log` 和 `~/.sid-code/` 下的日志，落盘前都经过脱敏（API key、token、私钥等）。
+脱敏只作用于落盘，不改写模型看到的内容，也不处理邮箱、手机号这类个人信息和代码原文；
+某个字段脱敏出错时只把这个字段换成占位并告警。规则类别与边界见[隐私与数据流向 · 脱敏](/use/privacy#脱敏)。
 
 `events.jsonl` 的事件类型分布（某个简单会话的实际统计）：
 
@@ -186,12 +193,18 @@ grep -A4 '"upload"' ~/.sid-code/settings.json   # 没有输出 = 不上传
 不一致时启动会告警一次（轨迹和控制面数据会落到两个后端）。token 始终单独配置，
 上传端点用的是共享 `X-Upload-Token`，不是设备凭据。
 
-环境变量那行：不设 `SID_CODE_TRACE=1` 时整组被忽略，仍按 settings.json 走；
-设了 `SID_CODE_TRACE=1` 但没给 TOKEN，会把 settings.json 里的上传配置**覆盖成空**
-（环境变量那层整块替换 `trace`，不是按字段合并）。
+环境变量和命令行这两层都是**整块替换 `trace`**，不是按字段合并：
+
+- 设了 `SID_CODE_TRACE=1`，settings.json 里的整个 `trace` 段都被换掉。没给 TOKEN 时上传配置变成空；
+  给了 TOKEN，`auto_upload`、`delete_after_upload`、`max_sessions_retained` 等字段也回到默认值，
+  `output_dir` 只认 `SID_CODE_TRACE_OUTPUT_DIR`。不设 `SID_CODE_TRACE=1` 时整组被忽略，仍按 settings.json 走；
+- 命令行带了 `--no-trace`、`--trace-upload-disabled`、`--trace-upload-url` 或 `--trace-upload-token` 中任意一个，
+  同样整块替换：`output_dir`、`max_sessions_retained` 回到默认值，上传配置只剩命令行给的。
 
 **项目级 `.sid-code/settings.json` 里写 `trace` 不生效**：项目配置只放行界面与行为类字段，
 不放行任何外发地址——否则克隆一个仓库就可能把你的轨迹改道到别人的服务器。
+发布的二进制也不读取运行目录的 `.env`、`.env.*` 与 `bunfig.toml`，仓库没法用它们注入上传地址；
+从源码运行（`bun <entry>.ts`）不在此保证内。
 
 ### 配置示例
 
@@ -230,7 +243,8 @@ grep -A4 '"upload"' ~/.sid-code/settings.json   # 没有输出 = 不上传
 | --- | --- | --- |
 | `trace.enabled` | 是否采集（关了就什么都不落盘，也就无从上传） | `true` |
 | `trace.upload.url` + `token` | 是否具备上传能力（两个都有才算配置；`url` 缺省取 `backend.url`） | 未配置 |
-| `trace.upload.auto_upload` | `true`：会话结束自动传 + 启动时补传历史未传会话；`false`：只在本地留，等你手动 `--upload-traces` | `true` |
+| `trace.upload.auto_upload` | `true`：会话结束自动传 + 启动时补传配置上传之后未传成功的会话；`false`：只在本地留，等你手动 `--upload-traces` 或 `/debug` | `true` |
+| `trace.upload.redact_home_dir` | 上传前把路径里的家目录换成 `~`（同时作用于 OTLP 的 `sidcode.cwd`），本地文件不变 | `false` |
 | `trace.upload.delete_after_upload` | 传完删本地数据文件（保留 metadata 快照） | `false` |
 | `trace.upload.compress` | gzip 压缩后上传 | `true` |
 | `trace.upload.user_id` / `device_id` | 团队聚合的分组键，多人传到同一平台时区分来源 | `device_id` 缺省用本机持久 id |
@@ -242,7 +256,11 @@ grep -A4 '"upload"' ~/.sid-code/settings.json   # 没有输出 = 不上传
 - `--trace-upload-disabled`：本次会话不上传（采集照常）。
 - `--no-trace`：连采集一起关。
 - `SID_CODE_DISABLE_NONESSENTIAL_TRAFFIC=1`（或 `analytics.privacy_level: "essential-traffic"`）：
-  隐私级别最严档，轨迹上传与其它非必要外发一起禁用，只在本地留存。
+  隐私级别最严档，轨迹只在本地留存。同时关掉的还有手动 `--upload-traces`（直接报错退出）、
+  更新检查、外部模型目录同步、远端开关拉取与告警 webhook。
+  刻意保留的是只连你自己模型端点的请求（模型请求、启动预连接、网关定价同步）和企业下行管控；
+  另外插件市场目录目前不随它关闭。完整对照见[隐私与数据流向 · 三个隐私级别](/use/privacy#三个隐私级别)。
+  这一档下产生的会话不会登记到上传目标，切回 `default` 后也不会被补传。
 
 ### 上传的实际形态
 
@@ -250,16 +268,40 @@ grep -A4 '"upload"' ~/.sid-code/settings.json   # 没有输出 = 不上传
 
 - 鉴权头 `X-Upload-Token`，完整性头 `X-Content-SHA256`
 - 默认 gzip level 6 压缩，`Content-Type: application/gzip`
+- 每个会话传三个文件：`session.traj`、`raw.jsonl`、`events.jsonl`（就是本地已脱敏的那份字节）
 - 表单字段：`file` / `session_id` / `file_type` / `tool_source`，可选 `user_id` / `device_id`
 - 30 秒超时；失败最多尝试 5 次，间隔指数退避 2s→4s→8s→16s（最后一次失败后不再等待）
 - 服务端返回非空 `sha256` 时会做二次校验，不一致算失败重试
 - `auto_upload: true` 时另有两个后台动作：每 60 秒探一次 `<url>/api/v1/health`，
-  每 5 分钟扫一次重试队列；启动时补传最多 20 个缺 `.uploaded` 标记的历史会话
+  每 5 分钟扫一次重试队列
 
-失败的进持久化重试队列。手动补传（`auto_upload: false` 时这是唯一的上传入口）：
+`session.traj` 里还带这些标识，平台侧据此分组：
+
+| 字段 | 内容 |
+| --- | --- |
+| `working_directory` | 会话的绝对路径，通常含用户名（开 `redact_home_dir` 后家目录变 `~`） |
+| `device_id` | 本机持久随机 ID（`~/.sid-code/device-id`） |
+| `user_id` / `org_id` / `team_id` | 你或企业配置的身份字段，没配就没有 |
+| `git_head` | 当前仓库的 commit SHA |
+
+三个时机会上传：
+
+| 时机 | 什么时候发生 |
+| --- | --- |
+| 会话结束 | `auto_upload: true` 时自动 |
+| 启动补传 | `auto_upload: true` 时每次启动自动做，最多 20 个。**只补配置上传之后产生的会话**：按会话创建时间判断，每个上传地址单独计起点，换了地址不会把旧历史发往新地址 |
+| `/debug` | 立即上传当前会话快照到你配置的地址；没配上传时只显示本地路径 |
+
+失败的进持久化重试队列。手动补传（`auto_upload: false` 时这是唯一的批量上传入口）：
 
 ```bash
 sid-code --upload-traces
+```
+
+配置上传之前产生的历史默认不传。确实要传，加 `--include-history`，执行前会先列出会话数与时间范围：
+
+```bash
+sid-code --upload-traces --include-history
 ```
 
 ## 能回答什么问题
@@ -322,7 +364,7 @@ done
 | --- | --- | --- |
 | 数据位置 | 内存 | `~/.sid-code/trajectories/sessions/<id>/` |
 | 时效 | 会话进行中即时看 | 会话结束后看 |
-| 持久 | 会话结束即消失（内存） | 默认保留 100 个会话目录 |
+| 持久 | 会话结束即消失（内存） | 默认保留 365 天、合计 10GB 内不删 |
 | 用途 | 看当前调用结构是否正常 | 事后诊断、跨会话统计 |
 
 想看当前会话"哪一步慢、花了多少"用 `/telemetry`；想回溯昨天那次会话用 `trace-digest` 读落盘。
@@ -480,8 +522,15 @@ tar xzf otelcol-contrib_0.162.0_darwin_arm64.tar.gz
 | `sidcode.cost.usd` / `sidcode.cost.cache_savings_usd` | Counter | `USD` |
 | `sidcode.agent.turns` | Histogram | `{turn}` |
 
-prompt 与工具输出原文**默认不导出**。内容级 tracing 是独立开关（`SID_CODE_CONTENT_TRACING=1` 等四道闸门，见
-`packages/core/src/telemetry/content-tracing.ts`），企业要求「不落原文」时保持默认即可。
+prompt 与工具输出原文**默认不导出**。内容级 tracing 要依次过四道闸门才会导出
+（`packages/core/src/telemetry/content-tracing.ts`）：
+
+1. 本地开关：`SID_CODE_CONTENT_TRACING=1`，不设就是关；
+2. 隐私级别：`no-telemetry` 或 `essential-traffic` 下一律不导出；
+3. 远端 flag：只能否决、不能替你打开，拉不到 flag 时按本地开关走；
+4. 脱敏：前三道都放行后，内容在导出前先截断、脱敏再附哈希。这一道不是开关，是处理步骤。
+
+企业要求「不落原文」时保持默认即可。
 
 ### 导出 Perfetto trace
 
@@ -534,14 +583,17 @@ Trace Event 格式的 JSON（`{ traceEvents: [{ name, cat, ph: "X", ts, dur, pid
 ### 轨迹会不会包含代码内容
 
 会。`raw.jsonl` 存完整 API 报文，里面有你发给模型的文件内容和模型的回复。
-所以上传前要确认平台的权限边界。敏感项目建议按项目关掉上传：
-`--trace-upload-disabled`，或直接 `--no-trace` 连采集一起关。
+脱敏只遮凭证，不处理代码原文，所以上传前要确认平台的权限边界。办法有三种：
+
+- 不记原文：`SID_CODE_TRACE_NO_RAW=1`，`raw.jsonl` 只留计数行；
+- 本次不上传：`--trace-upload-disabled`；
+- 连采集一起关：`--no-trace`。
 
 ### 磁盘会不会一直涨
 
-不会。LRU 上限 100 个会话目录。单会话典型体积在几百 KB 量级
-（上面那例全部文件加起来约 210K），所以稳态占用大致几十 MB。
-想更省就开 `delete_after_upload: true`，上传成功后本地只留 metadata 快照。
+不会无限涨。默认保留 365 天，`trajectories/sessions/` 合计超过 10GB 才从最旧的删（见上文[本地保留多少](#本地保留多少)）。
+单会话典型体积在几百 KB 量级（上面那例全部文件加起来约 210K），一年也是 GB 级。
+想更省就开 `delete_after_upload: true`，上传成功后本地只留 metadata 快照；想限数量写 `trace.max_sessions_retained`。
 
 ### 上传一直失败怎么查
 
@@ -563,6 +615,7 @@ curl -sS -o /dev/null -w '%{http_code}\n' http://your-platform.example.com/traj/
 
 ## 相关
 
+- [隐私与数据流向](/use/privacy) —— 出网总表、隐私级别、脱敏边界的唯一事实源
 - [成本与用量](/use/cost) —— 单会话的成本口径与降本手段
 - [配额与成本控制](/team/quota) —— 花费护栏；为什么跨会话统计要靠轨迹
 - [会话管理](/use/sessions) —— session id、恢复、历史

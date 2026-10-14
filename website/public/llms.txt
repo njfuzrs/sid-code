@@ -2,7 +2,7 @@
 
 > 长在企业研发环境里的 coding agent —— 你能改、能量、能审、数据不出门的 agent 底座。
 
-本文件是给大模型读的全站索引（共 109 页）。
+本文件是给大模型读的全站索引（共 110 页）。
 `/ref/` 下的参考页由 `scripts/docs-gen-reference.ts` 从源码生成，与实现同源。
 
 ## 站点
@@ -37,6 +37,7 @@
 - [记忆与 CLAUDE.md](/use/memory): 项目指令、个人记忆、团队记忆三层的作用范围与优先级。
 - [权限与人工确认](/use/permissions): 八种权限模式怎么选、allow/deny/ask 规则怎么写，以及 --dangerously-skip-permissions 到底跳过了哪些层。
 - [Plan Mode 与 Todo](/use/plan-mode): 先规划后动手的用法，以及 todo 清单在长任务里的作用。
+- [隐私与数据流向](/use/privacy): sid-code 在本机存了什么、什么会离开这台机器、每条出网受哪个开关控制。
 - [会话管理](/use/sessions): 会话持久化、恢复（-c）、checkpoint 与回滚。
 - [排障](/use/troubleshooting): 真实踩过的坑：症状 → 原因 → 解法。
 - [Worktree 隔离](/use/worktree): 在独立 worktree 里干活，含 symlink node_modules 的跨分支 lockfile 风险。
