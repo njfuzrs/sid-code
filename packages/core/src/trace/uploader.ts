@@ -24,6 +24,7 @@ import { getLogger } from "../debug/logger.ts";
 import { sidPaths } from "../config/paths.ts";
 import { backendUrl } from "../identity/endpoints.ts";
 import type { TraceUploaderInterface } from "./collector.ts";
+import { redactHomeDir } from "./redact-home.ts";
 
 // ─── 接口定义 ───
 
@@ -75,6 +76,11 @@ export interface UploadOptions {
    * 比崩溃危险，因为它静默地制造虚假的安全感。反漂移断言见 uploader-queue.test.ts。
    */
   maxQueueRetries?: number;
+  /**
+   * 上传前把家目录前缀替换为 `~`（默认 false）。只作用于外发字节，本地落盘不动。
+   * 默认关：会改变平台按项目 / 用户的聚合口径，需先与平台侧对齐。见 redact-home.ts。
+   */
+  redactHomeDir?: boolean;
 }
 
 export interface FileUploadResult {
@@ -199,6 +205,7 @@ export class UploadManager implements TraceUploaderInterface {
       availableModels: options.availableModels ?? [],
       outputDir: options.outputDir || sidPaths.trajectories(),
       maxQueueRetries: options.maxQueueRetries ?? 50,
+      redactHomeDir: options.redactHomeDir ?? false,
     };
     // P1-5：队列文件从 outputDir 派生，而非全局 sidPaths.uploadQueue()。
     // 否则测试传 outputDir:tmpDir 以为隔离了，实际每跑一次就往真实 HOME 追加条目
@@ -370,6 +377,12 @@ export class UploadManager implements TraceUploaderInterface {
         // `Uint8Array<ArrayBuffer>`，类型不兼容。本文件下一行就在用 Bun.gzipSync，
         // 读侧也走 Bun API 更一致，且省掉一次 ArrayBuffer 拷贝。
         let content: Uint8Array<ArrayBuffer> = await Bun.file(filePath).bytes();
+        if (this.opts.redactHomeDir) {
+          // 在压缩与 SHA256 之前替换：服务端校验的是「实际发出去的字节」
+          content = new TextEncoder().encode(
+            redactHomeDir(new TextDecoder().decode(content)),
+          ) as Uint8Array<ArrayBuffer>;
+        }
         if (this.opts.compress) {
           content = Bun.gzipSync(content, { level: 6 });
         }

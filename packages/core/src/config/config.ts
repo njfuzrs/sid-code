@@ -737,6 +737,11 @@ export interface TraceUploadConfig {
   maxQueueRetries?: number;
   /** 重试队列扫描间隔毫秒（默认 300000，即 5 分钟） */
   queueScanIntervalMs?: number;
+  /**
+   * 上传前把家目录前缀替换为 `~`（默认 false）。只作用于上传的字节，本地轨迹不变；
+   * 同时作用于 OTLP 根 span 的 `sidcode.cwd`。保留相对路径结构，不做 hash。
+   */
+  redactHomeDir?: boolean;
 }
 
 /** 搜索配置 */
@@ -1199,6 +1204,7 @@ function normalizeConfigKeys(raw: any): Partial<Config> {
                   upload.health_check_interval_ms || upload.healthCheckIntervalMs,
                 maxQueueRetries: upload.max_queue_retries || upload.maxQueueRetries,
                 queueScanIntervalMs: upload.queue_scan_interval_ms || upload.queueScanIntervalMs,
+                redactHomeDir: upload.redact_home_dir ?? upload.redactHomeDir,
               }
             : undefined,
       };

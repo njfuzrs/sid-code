@@ -366,9 +366,12 @@ class Logger {
         const ts = new Date().toISOString();
         const levelName = level === LogLevel.ERROR ? "ERROR" : "WARN";
         const dataStr = data !== undefined ? ` ${JSON.stringify(data)}` : "";
+        // warn.log 与主日志同等脱敏（数据主权整改 PR-B，P1-4）：此前这里原样写 message
+        // 与 JSON.stringify(data)，而同文件主日志（formatMessage / formatData）是脱敏的，
+        // 凭证从这条旁路明文落盘。JSON.stringify 文本里的换行是字面 `\n`，PEM 规则已兼容。
         appendFileSync(
           this.sessionWarnLogPath,
-          `[${ts}] [${levelName}] [${category}] ${message}${dataStr}\n`,
+          `[${ts}] [${levelName}] [${category}] ${maskSensitiveData(message + dataStr)}\n`,
         );
       } catch {
         /* per-session 日志写入失败静默 */

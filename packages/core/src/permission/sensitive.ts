@@ -26,7 +26,102 @@ interface SensitivePattern {
    * 里的尾数 16 位会被信用卡号规则命中（真实事故，见 isolatedNumber 注释）。
    */
   validate?: (value: string, index: number, text: string) => boolean;
+  /**
+   * 自定义遮盖（可选）。缺省用 keepHead / keepTail 的头尾保留式遮盖。
+   *
+   * 两类规则需要它：PEM 整块要换成「类型 + 长度量级」占位（头尾保留对多行密钥无意义）；
+   * `KEY=value` 赋值写法要**保留键名、只遮值**（键名是排查时最有用的线索，且不敏感）。
+   */
+  mask?: (match: RegExpExecArray) => string;
 }
+
+/**
+ * 已知凭证前缀：值以这些开头时，赋值类规则不再要求「字母 + 数字混合」的多样性。
+ * 只用于放宽二次校验，不单独构成命中条件。
+ */
+const KNOWN_SECRET_PREFIXES = [
+  "sk-",
+  "ghp_",
+  "gho_",
+  "ghs_",
+  "github_pat_",
+  "glpat-",
+  "xox",
+  "AKIA",
+  "npm_",
+  "eyJ",
+];
+
+/**
+ * 赋值类规则（`*_API_KEY=` / `x-api-key:`）的值二次校验：只遮「像字面量凭证」的值。
+ *
+ * 朴素规则的误伤是实测出来的（PR-B 方案 §8.3）：`API_KEY = process.env.<某个变量>`（形如读环境变量的表达式）
+ * 会被命中，而这类表达式恰恰出现在被测代码 / diff 里，遮掉会改写 tool_input，
+ * 让评测的分歧分析失真。所以：
+ *   - 含 `.` `(` `)` `$` `{` `}` 的是表达式 / 模板，不遮；含 `/` `\` 的是路径，不遮；
+ *   - 长度 < 16 的不遮（真凭证几乎都更长，短值多是开关、枚举）；
+ *   - 明显占位（xxxx、your-…、<…>、__…__、changeme、placeholder）不遮；
+ *   - 不带已知前缀时要求同时含字母和数字——长常量名、驼峰变量名通常不含数字。
+ */
+function literalSecretValue(value: string): boolean {
+  if (value.length < 16) return false;
+  if (/[.(){}$/\\<>`]/.test(value)) return false;
+  const lower = value.toLowerCase();
+  if (
+    lower.includes("xxxx") ||
+    lower.startsWith("your-") ||
+    lower.startsWith("your_") ||
+    /^__.*__$/.test(value) ||
+    lower.includes("changeme") ||
+    lower.includes("placeholder") ||
+    lower.includes("replace_me") ||
+    lower.includes("replace-me")
+  ) {
+    return false;
+  }
+  if (KNOWN_SECRET_PREFIXES.some((p) => value.startsWith(p))) return true;
+  return /[A-Za-z]/.test(value) && /[0-9]/.test(value);
+}
+
+/** 赋值类规则的统一遮盖：键名与分隔符原样保留，只遮值。约定第 1 组是「键 + 分隔符」，第 2 组是值。 */
+function maskAssignment(m: RegExpExecArray): string {
+  const prefix = m[1] ?? "";
+  const value = m[2] ?? "";
+  const rest = m[0].slice(prefix.length + value.length);
+  return prefix + maskValue(value, 3, 4) + rest;
+}
+
+/** PEM 占位：保留密钥类型与字节量级（分歧分析仍能看出「这一步写了一个密钥」），正文全部抹掉。 */
+function maskPem(m: RegExpExecArray): string {
+  const kind = (m[1] ?? "").trim();
+  const label = kind ? `${kind} PRIVATE KEY` : "PRIVATE KEY";
+  return `<PEM ${label}:${m[0].length}B>`;
+}
+
+/**
+ * 赋值类规则的二次校验：从命中串里取出值部分再判断。
+ * 正则只负责「键名 + 分隔符 + 一段非空白」的形态，是否是字面量凭证交给 literalSecretValue。
+ */
+function assignmentValueOk(pattern: RegExp): (value: string) => boolean {
+  // 用一个不带 g 标志的副本解析分组，避免与外层 exec 循环共享 lastIndex
+  const single = new RegExp(pattern.source, pattern.flags.replace("g", ""));
+  return (value: string) => {
+    const m = single.exec(value);
+    return m !== null && literalSecretValue(m[2] ?? "");
+  };
+}
+
+/**
+ * `*_API_KEY=` / `*_TOKEN=` / `*_SECRET=` 赋值写法（含 JSON 的 `"KEY": "value"` 形态）。
+ * 键名前缀任意（`OPENAI_`、`MY_APP_`…），也接受裸 `API_KEY=`。
+ * 第 1 组 = 键 + 引号 + 分隔符 + 可选开引号，第 2 组 = 值。
+ */
+const ENV_ASSIGNMENT_PATTERN =
+  /\b((?:[A-Za-z0-9]+_)*(?:API_?KEY|TOKEN|SECRET(?:_KEY)?|ACCESS_KEY)["']?\s*[=:]\s*["']?)([^\s'",;]+)/gi;
+
+/** 文本形态的鉴权请求头：`x-api-key: <value>`、`api-key=<value>`、`x-auth-token: <value>`。分组约定同上。 */
+const HEADER_ASSIGNMENT_PATTERN =
+  /(?<![A-Za-z0-9_-])((?:x-api-key|api-key|x-auth-token)["']?\s*[:=]\s*["']?)([^\s'",;]+)/gi;
 
 /**
  * Luhn 校验（信用卡号的行业标准校验位算法）。
@@ -78,10 +173,32 @@ const SENSITIVE_PATTERNS: SensitivePattern[] = [
 
   // AI 服务密钥
   { type: "Anthropic API Key", pattern: /sk-ant-[A-Za-z0-9_-]{20,}/g, keepHead: 7, keepTail: 4 },
-  { type: "OpenAI API Key", pattern: /sk-[A-Za-z0-9]{20,}/g, keepHead: 3, keepTail: 4 },
+  // ⚠️ `sk-` 系列**不放宽通用规则的字符类**（加 `-_`）。实测放宽后会命中
+  // `cd tasks/task-qemu-alpine-ssh-key-setup` 里的 `sk-qemu-alpine-ssh-key-setup`、
+  // `disk-usage-monitor-service_v2`、`fix/task-panel-dismiss-manual-exit`——`task-` / `disk-` /
+  // `mask-` 前缀在路径与命令里极常见，改写的正是评测分歧分析依赖的 command / file_path。
+  // 所以：带连字符的新格式一律走**显式前缀**，通用规则只补左边界。新增前缀类密钥照此办理。
+  {
+    type: "OpenAI Project Key",
+    pattern: /(?<![A-Za-z0-9_-])sk-(?:proj|svcacct|admin)-[A-Za-z0-9_-]{20,}/g,
+    keepHead: 8,
+    keepTail: 4,
+  },
+  {
+    type: "OpenAI API Key",
+    pattern: /(?<![A-Za-z0-9_-])sk-[A-Za-z0-9]{20,}/g,
+    keepHead: 3,
+    keepTail: 4,
+  },
 
   // 代码托管 Token
   { type: "GitHub Token", pattern: /gh[ps]_[A-Za-z0-9]{36,}/g, keepHead: 4, keepTail: 4 },
+  {
+    type: "GitHub Fine-grained Token",
+    pattern: /github_pat_[A-Za-z0-9_]{22,}/g,
+    keepHead: 11,
+    keepTail: 4,
+  },
   { type: "GitHub OAuth Token", pattern: /gho_[A-Za-z0-9]{36,}/g, keepHead: 4, keepTail: 4 },
   { type: "GitLab Token", pattern: /glpat-[A-Za-z0-9_-]{20,}/g, keepHead: 6, keepTail: 4 },
 
@@ -111,12 +228,40 @@ const SENSITIVE_PATTERNS: SensitivePattern[] = [
     keepTail: 0,
   },
 
-  // SSH 私钥
+  // 环境变量 / 配置赋值写法：`OPENAI_API_KEY=…`、`GITHUB_TOKEN: …`、`MY_SECRET=…`
+  // 只遮值、保留键名；值必须像字面量凭证（见 literalSecretValue 的误伤约束）。
   {
-    type: "SSH 私钥",
-    pattern: /-----BEGIN (?:RSA |EC |DSA |OPENSSH )?PRIVATE KEY-----/g,
-    keepHead: 10,
+    type: "凭证赋值",
+    pattern: ENV_ASSIGNMENT_PATTERN,
+    keepHead: 0,
     keepTail: 0,
+    validate: assignmentValueOk(ENV_ASSIGNMENT_PATTERN),
+    mask: maskAssignment,
+  },
+  // 文本形态的鉴权请求头（curl -H 'x-api-key: …'、日志里的头部打印）
+  {
+    type: "鉴权请求头",
+    pattern: HEADER_ASSIGNMENT_PATTERN,
+    keepHead: 0,
+    keepTail: 0,
+    validate: assignmentValueOk(HEADER_ASSIGNMENT_PATTERN),
+    mask: maskAssignment,
+  },
+
+  // 私钥（PEM 整块）。旧规则只认 BEGIN 行：遮掉头一行，base64 正文与 END 行原样落盘，
+  // 等于没遮；`ENCRYPTED PRIVATE KEY` 头也不认。现在：
+  //   - 类型前缀任意（RSA / EC / DSA / OPENSSH / ENCRYPTED / 无），第 1 组捕获类型供占位用；
+  //   - 有 END 行时遮到 END 行；**没有 END 行**（工具输出被截断时很常见）时遮到正文结束；
+  //   - 正文字符类含 `\`，兼容 `JSON.stringify` 文本里的字面 `\n`（warn.log 就是这种）；
+  //   - 有限量词 {0,16384}：真实私钥 < 4KB，上限防大文件上的回溯。
+  {
+    // type 名沿用旧值「SSH 私钥」：检测结果按 type 聚合告警（tool-executor），改名会断口径
+    type: "SSH 私钥",
+    pattern:
+      /-----BEGIN ((?:[A-Z0-9]+ )*)PRIVATE KEY-----(?:[\s\S]{0,16384}?-----END (?:[A-Z0-9]+ )*PRIVATE KEY-----|[A-Za-z0-9+/=\s\\:,-]{0,16384})/g,
+    keepHead: 0,
+    keepTail: 0,
+    mask: maskPem,
   },
 
   // Slack Token
@@ -196,24 +341,32 @@ export function maskSensitiveData(text: string): string {
     let match: RegExpExecArray | null;
     while ((match = sp.pattern.exec(text)) !== null) {
       const value = match[0];
+      if (value.length === 0) {
+        sp.pattern.lastIndex++; // 防零宽匹配死循环
+        continue;
+      }
       if (sp.validate && !sp.validate(value, match.index, text)) continue;
-      const masked = maskValue(value, sp.keepHead, sp.keepTail);
+      const masked = sp.mask ? sp.mask(match) : maskValue(value, sp.keepHead, sp.keepTail);
       allMatches.push({ index: match.index, length: value.length, masked });
     }
   }
 
-  // 按位置从后往前排序，避免替换偏移
-  allMatches.sort((a, b) => b.index - a.index);
-
-  // 去重（重叠区间只保留最长的）
+  // 去重：重叠区间只保留一个——起点更早者优先，同起点取更长者。
+  //
+  // 旧实现按起点倒序、只判断「新区间的起点是否落在已选区间内」，漏了「新区间从前面
+  // 跨进已选区间」这一种重叠：两段都会被替换，而后一次替换用的是原文下标，结果是乱码。
+  // PEM 整块（几 KB）里的 base64 正文随机撞上 `AKIA…` 之类的短规则，正好就是这种形态。
+  allMatches.sort((a, b) => a.index - b.index || b.length - a.length);
   const deduped: typeof allMatches = [];
+  let coveredUntil = -1;
   for (const m of allMatches) {
-    const overlaps = deduped.some((d) => m.index >= d.index && m.index < d.index + d.length);
-    if (!overlaps) {
-      deduped.push(m);
-    }
+    if (m.index < coveredUntil) continue;
+    deduped.push(m);
+    coveredUntil = m.index + m.length;
   }
 
+  // 从后往前替换，避免偏移
+  deduped.reverse();
   for (const m of deduped) {
     result = result.slice(0, m.index) + m.masked + result.slice(m.index + m.length);
   }
@@ -243,7 +396,13 @@ export function maskSensitiveData(text: string): string {
  * @param text 待脱敏文本（通常是 JSON.stringify 的产物）
  * @param _indent 兼容保留：词法扫描天然保持原缩进，本参数已无作用
  */
-export function maskSensitiveJson(text: string, _indent = 0): string {
+export function maskSensitiveJson(
+  text: string,
+  _indent = 0,
+  onFieldError?: (err: unknown) => void,
+  /** 字段级脱敏函数，缺省 maskSensitiveData；仅测试注入用于触发 fail-closed 路径 */
+  masker: (s: string) => string = maskSensitiveData,
+): string {
   // 先确认是合法 JSON——非 JSON（日志行、纯文本）必须走纯文本脱敏，否则
   // 「没有引号包裹的凭证」会被整条漏掉。
   try {
@@ -294,13 +453,62 @@ export function maskSensitiveJson(text: string, _indent = 0): string {
       i = j + 1;
       continue;
     }
-    const masked = maskSensitiveData(decoded);
+    let masked: string;
+    try {
+      masked = masker(decoded);
+    } catch (err) {
+      // fail-closed，粒度是**单个字符串字段**：只把出错的这一个值换成占位，
+      // 其余字段（usage / 步骤 / 工具序列）照常落盘。整文件回落原文会泄露凭证，
+      // 整文件占位又会让这条会话对评测整条作废——两头都不能接受。
+      if (!onFieldError) throw err;
+      onFieldError(err);
+      out += JSON.stringify(REDACTION_FAILED_PLACEHOLDER);
+      i = j + 1;
+      continue;
+    }
     // 未命中任何规则时原样回填，避免转义形态被规范化（如 中 → 中）
     out += masked === decoded ? rawLiteral : JSON.stringify(masked);
     i = j + 1;
   }
 
   return out;
+}
+
+/** 脱敏出错时替换该字符串字段的占位。固定文本，便于在轨迹里 grep 统计。 */
+export const REDACTION_FAILED_PLACEHOLDER = "[REDACTION_FAILED]";
+
+/**
+ * 结构化逐字段脱敏（maskSensitiveJson 失效时的兜底）：parse → 逐个字符串值脱敏 → stringify。
+ *
+ * 代价是格式会按 indent 重排、超大整数可能丢精度，所以只在词法路径失败时才走这里；
+ * 换来的是「无论脱敏函数出什么错，产物都是合法 JSON 且不含未脱敏原文」。
+ * 输入本身不是 JSON 时抛出，由调用方决定整条占位。
+ */
+export function maskJsonByWalk(
+  text: string,
+  indent: number,
+  onFieldError: (err: unknown) => void,
+  masker: (s: string) => string = maskSensitiveData,
+): string {
+  const maskOne = (s: string): string => {
+    try {
+      return masker(s);
+    } catch (err) {
+      onFieldError(err);
+      return REDACTION_FAILED_PLACEHOLDER;
+    }
+  };
+  const walk = (v: unknown): unknown => {
+    if (typeof v === "string") return maskOne(v);
+    if (Array.isArray(v)) return v.map(walk);
+    if (v && typeof v === "object") {
+      const out: Record<string, unknown> = {};
+      for (const [k, val] of Object.entries(v)) out[maskOne(k)] = walk(val);
+      return out;
+    }
+    return v;
+  };
+  return JSON.stringify(walk(JSON.parse(text)), null, indent || undefined);
 }
 
 /** 遮盖单个值 */

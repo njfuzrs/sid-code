@@ -30,6 +30,7 @@ import {
 } from "../agent/message-invariants.ts";
 import { getLogger } from "../debug/logger.ts";
 import { sidHomePath } from "../config/paths.ts";
+import { maskSensitiveJson } from "../permission/sensitive.ts";
 
 export interface ProtocolGuardOptions {
   /** Provider 名称（诊断标签） */
@@ -156,7 +157,9 @@ export function dumpProtocolViolation(
     };
 
     const filePath = join(dumpDir, `protocol-violation-${ts}.json`);
-    writeFileSync(filePath, JSON.stringify(snapshot, null, 2));
+    // 落盘前脱敏（数据主权整改 PR-B，P1-4）：context_window 含截断后的消息文本，
+    // 工具输出里的凭证会原样进来。走结构化脱敏，数字字段不碰、产物仍是合法 JSON。
+    writeFileSync(filePath, maskSensitiveJson(JSON.stringify(snapshot, null, 2), 2));
     // P2-12：落盘后做一次 LRU，把目录压回上限内。
     // 放在 write **之后**：本次样本永远保得住，被回收的只会是更旧的。
     pruneOldViolationDumps(dumpDir);
