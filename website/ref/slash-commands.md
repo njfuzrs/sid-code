@@ -18,7 +18,7 @@ description: 交互模式里可用的全部斜杠命令。
 
 <!-- AUTO-GEN:START 由 scripts/docs-gen-reference.ts 生成，勿手工编辑 -->
 
-> 共 **63** 个内置斜杠命令，从运行时命令注册表导出。
+> 共 **64** 个内置斜杠命令，从运行时命令注册表导出。
 > 在交互模式输入 `/` 会看到同一份列表（补全列表与本表同源）。
 
 | 命令 | 说明 | 别名 | 参数 |
@@ -63,6 +63,7 @@ description: 交互模式里可用的全部斜杠命令。
 | `/mcp` | MCP 服务器管理（无参打开交互面板） | — | `[list\|add\|remove\|enable\|disable\|test\|authenticate\|approve\|reject\|prompts\|prompt\|resources] [参数]` |
 | `/memory` | 管理记忆（无参打开交互面板） | `/mem` | `[auto\|external\|set\|get\|delete\|list\|search\|show\|reload] [参数]` |
 | `/model` | 显示或切换模型（主模型 / fallback / 子代理，-p 持久化） | `/m` | `[name\|fallback <name>\|sub <type> <name>] [-p]` |
+| `/perf` | 查看本机性能数据：本会话卡在哪一段，近 N 天变快还是变慢 | `/performance` | `[--days N] [--by-version] [--json] [session-id\|latest]` |
 | `/permissions` | 查看当前权限规则和模式 | `/perms` | — |
 | `/plan` | 进入计划模式（先规划后执行） | — | — |
 | `/plugin` | 插件管理 | `/plugins` | `[list\|market\|marketplaces\|info\|install\|update\|uninstall\|enable\|disable] [插件名]` |

@@ -2,7 +2,7 @@
 
 > 长在企业研发环境里的 coding agent —— 你能改、能量、能审、数据不出门的 agent 底座。
 
-本文件是给大模型读的全站索引（共 110 页）。
+本文件是给大模型读的全站索引（共 111 页）。
 `/ref/` 下的参考页由 `scripts/docs-gen-reference.ts` 从源码生成，与实现同源。
 
 ## 站点
@@ -35,6 +35,7 @@
 - [成本与用量](/use/cost): 单次任务花了多少、prompt cache 命中率怎么看、怎么把成本降下来、怎么设花费上限。
 - [交互模式与键位](/use/interactive): 常用键位、和弦、中断与排队输入的行为。
 - [记忆与 CLAUDE.md](/use/memory): 项目指令、个人记忆、团队记忆三层的作用范围与优先级。
+- [性能与延迟](/use/performance): 用 /perf 看本机的首字延迟、生成速度、端到端耗时和工具耗时，判断慢在模型、网关还是工具，并跨天、跨版本对比。
 - [权限与人工确认](/use/permissions): 八种权限模式怎么选、allow/deny/ask 规则怎么写，以及 --dangerously-skip-permissions 到底跳过了哪些层。
 - [Plan Mode 与 Todo](/use/plan-mode): 先规划后动手的用法，以及 todo 清单在长任务里的作用。
 - [隐私与数据流向](/use/privacy): sid-code 在本机存了什么、什么会离开这台机器、每条出网受哪个开关控制。

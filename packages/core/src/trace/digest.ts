@@ -825,6 +825,12 @@ export interface SessionLevelMetrics {
   trajCorrupt: boolean;
   /** 上下文压缩次数 */
   compactions: number;
+  /**
+   * /perf：纯生成耗时 p95（ms）—— 与 `aggregateProviderStats` 的 gens 同源
+   *（`RetryTelemetry(stream_completed).elapsedMs`，单次 fetch，不含重试）。
+   */
+  gen_p95?: number;
+  gen_n: number;
 }
 
 export interface SessionRef {
@@ -3082,6 +3088,7 @@ export function aggregateSessionMetrics(
   const hitlWaits: number[] = [];
   let defenseTriggered = false;
   let compactions = 0;
+  const gens: number[] = [];
 
   /** 四环防线的工具信号，与 `scripts/defense-trigger-rate.ts:32` 同一口径 */
   const HYP_TOOLS = new Set(["hypothesis_register", "hypothesis_challenge"]);
@@ -3126,8 +3133,15 @@ export function aggregateSessionMetrics(
     }
 
     if (e.event === "PreCompact") compactions++;
+
+    // 与 aggregateProviderStats 同款条件：单次 fetch 的纯生成耗时
+    if (e.event === "RetryTelemetry" && e.data.type === "stream_completed") {
+      const gen = e.data.elapsedMs as number | undefined;
+      if (gen && gen > 0) gens.push(gen);
+    }
   }
 
+  const sortedGens = [...gens].sort((a, b) => a - b);
   const sortedHitl = [...hitlWaits].sort((a, b) => a - b);
   const sortedTtfts = [...ttfts].sort((a, b) => a - b);
   const sortedE2es = [...e2es].sort((a, b) => a - b);
@@ -3149,6 +3163,8 @@ export function aggregateSessionMetrics(
     defenseTriggered,
     trajCorrupt: opts.trajCorrupt,
     compactions,
+    gen_p95: percentile(sortedGens, 0.95),
+    gen_n: sortedGens.length,
   };
 }
 

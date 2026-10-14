@@ -2639,11 +2639,34 @@ export class TraceCollector {
           compactions: this.metadata.compactions.length,
           permission: this.permissionStats,
           edit_first_try: this.editFirstTry.stats(),
+          perf: { ...this.perfIndexFields(), gen_p95: m?.gen_p95, gen_n: m?.gen_n },
         }),
       );
     } catch (err: any) {
       getLogger().warn("TRACE", `写 session-index 失败（不影响退出）: ${err?.message ?? err}`);
     }
+  }
+
+  /**
+   * /perf：collector 自己累计的性能事实，供索引行使用（两条写入路径共用一份，防漂移）。
+   * tps 在增量路径上可能尚未派生（SessionEnd 才算）—— 此处按同一公式现算。
+   */
+  private perfIndexFields(): {
+    tps?: number;
+    tool_duration_ms?: number;
+    context_peak_ratio?: number;
+  } {
+    const md = this.metadata;
+    const tps =
+      md.output_tokens_per_sec ??
+      (md.gen_samples > 0 && md.total_gen_elapsed_ms > 0
+        ? md.total_tokens_received / (md.total_gen_elapsed_ms / 1000)
+        : undefined);
+    return {
+      tps,
+      tool_duration_ms: md.tool_duration_samples > 0 ? md.total_tool_duration_ms : undefined,
+      context_peak_ratio: md.context_usage_peak_ratio,
+    };
   }
 
   /**
@@ -2941,6 +2964,8 @@ export class TraceCollector {
             //（不像 real_errors 要等 digest），崩溃会话的样本因此不丢
             permission: this.permissionStats,
             edit_first_try: this.editFirstTry.stats(),
+            // 增量行同样给：这几项是 collector 自己累计的事实（gen_p95 要 digest，留给权威行）
+            perf: this.perfIndexFields(),
           },
         ),
       );
