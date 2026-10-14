@@ -99,7 +99,19 @@ export async function resolveHeadlessSlash(
   // 未命中的输入也交给 executor：它负责「未知命令」与「/tmp 这类真实路径 passthrough」的区分，
   // 那条判定（含 stat）只该有一份实现。
   const result = await opts.executor.executeSlashCommand(input, opts.commands);
-  return mapExecutionResult(result, displayCommand);
+  const outcome = mapExecutionResult(result, displayCommand);
+  if (outcome.kind === "error") outcome.message = toCliHint(outcome.message);
+  return outcome;
+}
+
+/**
+ * 把提示文本里的 `/plugin <子命令>` 改写成 `sid-code plugin <子命令>`。
+ *
+ * executor 的提示是给 TUI 写的（如已下沉 skill 的迁移提示「/plugin install compliance@sid-code」），
+ * 无头下 `/plugin` 本身会被拒绝——照着提示做会再碰一次壁。只改写错误文本，不动 TUI 那份。
+ */
+function toCliHint(message: string): string {
+  return message.replace(/(^|[\s：:（(])\/plugin(?=\s)/g, "$1sid-code plugin");
 }
 
 /** CommandExecutionResult → 无头分发结果（单测经 resolveHeadlessSlash 注入假 executor 穷举）。 */

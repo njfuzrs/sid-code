@@ -177,6 +177,18 @@ describe("不是命令的输入：原样提交", () => {
     expect((r as { message: string }).message).toContain("未知命令");
   });
 
+  test("已下沉 skill 的迁移提示：/plugin install 改写成 sid-code plugin install（无头下 /plugin 会被拒）", async () => {
+    const r = await run("/security-audit", []);
+    expect(r.kind).toBe("error");
+    const msg = (r as { message: string }).message;
+    expect(msg).toContain("compliance");
+    expect(msg).not.toMatch(/(^|[\s：:])\/plugin\s/);
+    // 官方市场可装时才有安装命令；企业锁定时是「联系管理员」，两种都不能出现 /plugin
+    if (msg.includes("install")) expect(msg).toContain("sid-code plugin install");
+    // 插件内命令名 /compliance:security-audit 不被误改
+    if (msg.includes("之后用")) expect(msg).toContain("/compliance:security-audit");
+  });
+
   test("--disable-slash-commands：连交互类 builtin 也原样提交（与 TUI 同口径）", async () => {
     const r = await run("/plugin market", [localCmd({ name: "plugin" })], true);
     expect(r).toEqual({ kind: "not_command", input: "/plugin market" });
