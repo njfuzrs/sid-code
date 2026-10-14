@@ -38,7 +38,13 @@ import { collectJitAccessedPaths } from "../tool/jit-affected-paths.ts";
 import { buildJitEventData, emitJitEvent } from "../trace/jit-telemetry.ts";
 import { describeToolActivity, pushRecentActivity } from "./progress.ts";
 // P0-1：超时不再丢弃成果——残卷（已改动文件 / 已确认结论 / 未完成部分 / 下一步）见 salvage.ts 头注释。
-import { SalvageCollector, buildSalvageOutput } from "./salvage.ts";
+import {
+  SalvageCollector,
+  buildSalvageOutput,
+  classifySubAgentFailure,
+  type FailureClass,
+} from "./salvage.ts";
+import { getSleepLedger } from "@sid-code/shared/utils/sleep-detect.ts";
 // P0-1(a)(c)：detach 语义的硬 kill 倍数 + 按实测吞吐派生墙钟预算。
 import {
   resolveSubAgentTimeout,
@@ -46,6 +52,7 @@ import {
   HARD_KILL_MULTIPLIER,
 } from "./timeout-budget.ts";
 import { SUBAGENT_HARD_KILL_REASON } from "../llm/errors.ts";
+import { armSleepAwareTimer, type SleepAwareTimer } from "./sleep-aware-timer.ts";
 import {
   createAgentTask,
   completeAgentTask,
@@ -228,6 +235,11 @@ export interface SubAgentTask {
    *  由 tool.ts runSync 把工具执行器的 onProgress 接进来；后台/swarm/workflow 路径不传，
    *  行为与改造前完全一致。 */
   _onProgress?: (snapshot: import("./progress.ts").AgentProgressSnapshot) => void;
+  /** E1（2026-10-14）：派发本子代理的那次 `sub_agent` 工具调用 id（内部使用）。
+   *  SubagentStart/Stop 与 sidechain_start 据此带 `parent_tool_use_id`，父会话 PreToolUse
+   *  与子代理事件按键精确关联。由 query/tool-executor 注入、tool.ts 透传；swarm / workflow
+   *  路径没有对应的父工具调用，缺省即可。 */
+  _parentToolUseId?: string;
 }
 
 /** P2-2：计算子代理默认 maxTurns（未显式指定 task.maxTurns 时）。
@@ -437,6 +449,10 @@ export interface CustomSubAgentTask {
    * 显式指定即开 thinking 并下发该族的线格式；不传则关 thinking。
    */
   effort?: "low" | "medium" | "high" | "xhigh" | "max";
+  /** E1（内部使用）：executeCustom 分配的「类型 + 调用序号」后缀。三处（hook agent_id /
+   *  观测身份 / sidechain）共用它，才不会各自 ++_customAgentSeq 得出三个不同序号。
+   *  直接调 executeCustomInner / executeSpawnedCustom 的测试不传时各自现场分配。 */
+  _customKey?: string;
 }
 
 /**
@@ -619,7 +635,7 @@ export class SubAgent {
    * B0：两条 runAgentLoop 路径（`executeInner` 内置子代理 / `executeCustomInner` 自定义子代理）
    * 共有字段的工厂函数。
    *
-   * 为什么要抽这个：此前两条路径各自手写完整 config 字面量，`availability`/`deadlineAt`/
+   * 为什么要抽这个：此前两条路径各自手写完整 config 字面量，`availability`/
    * `discoverJitContext` 等字段靠人工在两处同步“记得传”——`sub-agent.ts:1471` 附近的注释
    * 早就写过“两条路径都要接，只接一条就会成为隐形差异”，结果自定义路径依然漏传了
    * `permissionChecker`（本次修复的 P0 缺口）。把公共字段收进一个工厂，两处只需
@@ -630,11 +646,9 @@ export class SubAgent {
    */
   private buildBaseLoopConfig(
     ctxMgr: ContextManager,
-    startTime: number,
-    timeout: number,
   ): Pick<
     Parameters<typeof runAgentLoop>[0],
-    "hookSystem" | "permissionChecker" | "availability" | "deadlineAt" | "discoverJitContext"
+    "hookSystem" | "permissionChecker" | "availability" | "discoverJitContext"
   > {
     return {
       hookSystem: this.hookSystem,
@@ -643,8 +657,14 @@ export class SubAgent {
       permissionChecker: this.permissionChecker ?? undefined,
       // H9：透传共享的 availability（与主 fallback 引擎同一实例），terminal 类错误跨路径拉黑。
       availability: this.registry?.availability,
-      // S3：与调用方 timeoutCtrl 同源的截止时刻，缺省不传则漏斗退化为纯次数上界。
-      deadlineAt: startTime + timeout,
+      // B1（2026-10-14）：**不再传 deadlineAt**。墙钟 timeout 自 P0-1(a) 起只是 detach
+      // （软返回点），不是硬截止；把它当漏斗的 deadlineAt 等于让「次数听时间的」——
+      // 事故 20261014-110202 里子代理第一次可重试错误就 giveUp("deadline")（attempts=1），
+      // 而同一漏斗主循环能重试 10 次。现在三者各管一件事，与主循环 2026-10-12 解耦对齐：
+      //   次数 → maxRetries（netTimeouts.maxTimeoutRetries）；
+      //   卡死 → 漏斗单次尝试上限（LIFECYCLE_PRESETS.subAgent.overallTimeoutMs=180s，扣休眠）；
+      //   总时长失控 → 硬 kill（timeout × HARD_KILL_MULTIPLIER，扣休眠）。
+      // ⚠️ 别改成 `startTime + timeout × 3`：仍是次数听时间的，且与硬 kill 双处计时必漂移。
       // P2-1：子代理 JIT 上下文发现（每次调用独立实例，见 createJitDiscoverer 注释）。
       // B2：`jitContext: false` 必须对子代理也生效 —— 这个第二参此前从不传值，
       // 于是开关只关得住主代理（`createJitDiscoverer` 的 `jitDisabled` 逻辑一直是对的，
@@ -718,10 +738,18 @@ export class SubAgent {
    * 不再靠人在三处分别记住（与 resolveFilteredToolsForTask 收敛同型缺陷是同一做法）。
    * 缺父会话 id 或 agentId 时返回 undefined，调用方经可选链安全跳过。
    */
-  private openSidechain(agentId: string | undefined): SidechainWriter | undefined {
+  private openSidechain(
+    agentId: string | undefined,
+    parentToolUseId?: string,
+  ): SidechainWriter | undefined {
+    // E1：sidechain_start 带上规范 id（与 SubagentStart.agent_id / StreamPhase.agent_id 同值）
+    // 与派发它的 tool_use_id，transcript 才能直接对上父会话 events.jsonl。
     const writer =
       this.parentSessionId && agentId
-        ? new SidechainWriter(this.parentSessionId, agentId)
+        ? new SidechainWriter(this.parentSessionId, agentId, {
+            canonicalAgentId: this.deriveSubAgentSessionId(agentId),
+            parentToolUseId,
+          })
         : undefined;
     // SubagentStop.agent_transcript_path（CC 字段）：路径只有这里知道，三条路径都经这个入口，
     // 在此登记一次即全覆盖。是否真落了盘由 fire 处 existsSync 判（写入失败只 warn 不抛）。
@@ -777,7 +805,12 @@ export class SubAgent {
 
     let result: SubAgentResult;
     // 稳定 agentId：贯穿 start → stop，让遥测能把一个子代理的 start/stop 配对成同一 span。
-    const agentId = `subagent-${task.type}-${taskId}`;
+    // E1（2026-10-14）：统一成规范 id `<parentSessionId>-sub-<taskId>`（= StreamPhase /
+    // RetryTelemetry / BilledRequest 早已在用的 deriveSubAgentSessionId）。此前同一个子代理
+    // 在轨迹里有三种 id（`subagent-<type>-<taskId>` / `<parent>-sub-<taskId>` / 裸 taskId），
+    // 排查事故 20261014-110202 时要靠时间戳人肉拼。旧形态改名 legacy_agent_id 保留一个周期。
+    const agentId = this.deriveSubAgentSessionId(taskId);
+    const legacyAgentId = `subagent-${task.type}-${taskId}`;
     const startedAt = Date.now();
     // HC23：子代理执行链的 hook 作用域。agent_id 与 SubagentStart/Stop 同一个值，
     // hook 才能把「子代理里的工具事件」与「哪个子代理」配上对。
@@ -806,9 +839,11 @@ export class SubAgent {
       const expectedModel =
         task.model ?? (this.registry ? this.registry.getModelForSubAgent(task.type) : this.model);
       this.hookSystem
-        ?.fireSubagentStartEvent(agentId, task.type, undefined, {
+        ?.fireSubagentStartEvent(agentId, task.type, this.parentSessionId, {
           model: expectedModel,
           description: task.description,
+          parentToolUseId: task._parentToolUseId,
+          legacyAgentId,
         })
         .catch((err) => log.error("HOOK", `subagent_start hook 失败: ${err.message}`));
 
@@ -881,7 +916,10 @@ export class SubAgent {
       this.hookSystem
         ?.fireSubagentStopEvent({
           agent_id: agentId,
+          legacy_agent_id: legacyAgentId,
           agent_type: task.type,
+          ...(this.parentSessionId ? { parent_session_id: this.parentSessionId } : {}),
+          ...(task._parentToolUseId ? { parent_tool_use_id: task._parentToolUseId } : {}),
           toolName: `subagent:${task.type}`,
           success: r?.success,
           model: r?.model,
@@ -911,15 +949,22 @@ export class SubAgent {
     const log = getLogger();
 
     let result: SubAgentResult;
-    const customAgentId = `subagent-custom-${Date.now()}`;
+    // E1：与内置路径同一规范形态。自定义路径无 taskId，用「类型 + 调用序号」做后缀，
+    // 与 executeCustomInner 的观测身份 / sidechain 共用同一个序号（经 task._customSeq 传入）。
+    const customSeq = ++_customAgentSeq;
+    const customKey = `custom-${task.type ?? "task"}-c${customSeq}`;
+    const customAgentId = this.deriveSubAgentSessionId(customKey);
+    const legacyCustomAgentId = `subagent-custom-${Date.now()}`;
+    const customTask: CustomSubAgentTask = { ...task, _customKey: customKey };
     const hookScope: SubAgentHookScope = {
       agent: { agent_id: customAgentId, agent_type: "custom" },
     };
     try {
       // SubagentStart hook（description 取自 userPrompt 首段，便于轨迹排查识别派活意图）
       this.hookSystem
-        ?.fireSubagentStartEvent(customAgentId, "custom", undefined, {
+        ?.fireSubagentStartEvent(customAgentId, "custom", this.parentSessionId, {
           description: task.userPrompt?.slice(0, 120),
+          legacyAgentId: legacyCustomAgentId,
         })
         .catch((err) => log.error("HOOK", `subagent_start hook 失败: ${err.message}`));
 
@@ -929,15 +974,15 @@ export class SubAgent {
           // 尝试 spawn 模式
           if (this.shouldUseSpawn()) {
             try {
-              const spawned = await this.executeSpawnedCustom(task, signal);
+              const spawned = await this.executeSpawnedCustom(customTask, signal);
               log.info("SUBAGENT", `[custom] spawn 模式完成`);
               return spawned;
             } catch (err: any) {
               log.warn("SUBAGENT", `spawn 模式失败，回退到进程内模式: ${err.message}`);
-              return await this.executeCustomInner(task, signal);
+              return await this.executeCustomInner(customTask, signal);
             }
           }
-          return await this.executeCustomInner(task, signal);
+          return await this.executeCustomInner(customTask, signal);
         }),
       );
     } finally {
@@ -946,7 +991,9 @@ export class SubAgent {
       this.hookSystem
         ?.fireSubagentStopEvent({
           agent_id: customAgentId,
+          legacy_agent_id: legacyCustomAgentId,
           agent_type: "custom",
+          ...(this.parentSessionId ? { parent_session_id: this.parentSessionId } : {}),
           toolName: "subagent:custom",
           ...subagentStopCcFields(hookScope),
         })
@@ -1147,7 +1194,12 @@ export class SubAgent {
       signal,
       taskId,
       task._onProgress,
-      { agentId: taskId, agentType: task.type, description: task.description },
+      {
+        agentId: taskId,
+        agentType: task.type,
+        description: task.description,
+        parentToolUseId: task._parentToolUseId,
+      },
     );
   }
 
@@ -1210,7 +1262,7 @@ export class SubAgent {
     // N3：自定义路径无 taskId，按「类型 + 调用序号」派生 sidechain agentId（每次调用唯一，
     // 同类型并发不共用一个文件；序号语义见 _customAgentSeq 注释）。
     return this.executeSpawnedInternal(initMsg, tools, signal, undefined, undefined, {
-      agentId: `custom-${task.type ?? "task"}-c${++_customAgentSeq}`,
+      agentId: task._customKey ?? `custom-${task.type ?? "task"}-c${++_customAgentSeq}`,
       agentType: task.type ?? "custom",
       description: task.userPrompt?.slice(0, 120) ?? "",
     });
@@ -1223,7 +1275,12 @@ export class SubAgent {
     signal?: AbortSignal,
     taskId?: string,
     onProgress?: (snapshot: import("./progress.ts").AgentProgressSnapshot) => void,
-    sidechainMeta?: { agentId?: string; agentType: string; description: string },
+    sidechainMeta?: {
+      agentId?: string;
+      agentType: string;
+      description: string;
+      parentToolUseId?: string;
+    },
   ): Promise<SubAgentResult> {
     const log = getLogger();
     const startTime = Date.now();
@@ -1234,7 +1291,7 @@ export class SubAgent {
     // + 最终输出——足以还原一份可续跑的对话骨架。子进程每轮的纯文本输出协议里没有
     // （ChildProgressMessage 只报 lastActivity），这部分缺失与残卷同源，属协议限制。
     // 结束状态口径与 executeInner 一致：默认 aborted，只有明确成功/失败才改写。
-    const sidechain = this.openSidechain(sidechainMeta?.agentId);
+    const sidechain = this.openSidechain(sidechainMeta?.agentId, sidechainMeta?.parentToolUseId);
     let sidechainStatus: "completed" | "failed" | "aborted" = "aborted";
     const sidechainAppend = (
       role: "user" | "assistant" | "tool",
@@ -1539,7 +1596,7 @@ export class SubAgent {
               reason: "timeout",
               timeoutMs: timeout,
               taskId,
-              outputFile: taskId ? getTask(taskId)?.outputFile : undefined,
+              ...this.traceLinks(sidechain, taskId),
             }),
             usage: spawnUsage,
             turns: snap.turns,
@@ -1554,7 +1611,7 @@ export class SubAgent {
             output: buildSalvageOutput(snap, {
               reason: "aborted",
               taskId,
-              outputFile: taskId ? getTask(taskId)?.outputFile : undefined,
+              ...this.traceLinks(sidechain, taskId),
             }),
             usage: spawnUsage,
             turns: snap.turns,
@@ -1568,7 +1625,7 @@ export class SubAgent {
             reason: "error",
             errorMessage: `子进程意外退出 (exit code: ${exitCode})`,
             taskId,
-            outputFile: taskId ? getTask(taskId)?.outputFile : undefined,
+            ...this.traceLinks(sidechain, taskId),
           }),
           usage: spawnUsage,
           turns: snap.turns,
@@ -1827,6 +1884,8 @@ export class SubAgent {
   ): Promise<SubAgentResult> {
     const log = getLogger();
     const startTime = Date.now();
+    /** D1：生命周期内的休眠增量（残卷里要说「期间系统休眠 Ns」） */
+    const sleepLedgerAtStart = getSleepLedger().getTotalMs();
     log.info("SUBAGENT", `启动子代理 [${task.type}]: ${task.description}`);
 
     // 超时控制：task.timeout > env > 实测派生 > AgentDefinition.timeout > 默认 120 秒。
@@ -1867,8 +1926,9 @@ export class SubAgent {
     /** detach 是否已触发（墙钟到点）。超时分支据此判定，不再看 `timeoutCtrl.signal.aborted`。 */
     let detached = false;
     /** detach 后的硬 kill 定时器；只有它才会真的 abort。 */
-    let hardKillTimer: ReturnType<typeof setTimeout> | undefined;
-    const timer = setTimeout(() => {
+    let hardKillTimer: SleepAwareTimer | undefined;
+    // B2（2026-10-14）：墙钟与硬 kill 都扣休眠，见 sleep-aware-timer.ts 头注释。
+    const timer = armSleepAwareTimer(timeout, () => {
       detached = true;
       log.warn(
         "SUBAGENT",
@@ -1876,20 +1936,17 @@ export class SubAgent {
           `转 detach：交回残卷、不终止执行（硬 kill 在 ${HARD_KILL_MULTIPLIER}× 后）`,
       );
       // 到点**不** abort。只挂硬 kill 兜底，避免 detach 后无限跑。
-      hardKillTimer = setTimeout(
-        () => {
-          log.warn(
-            "SUBAGENT",
-            `[${task.type}] detach 后仍未结束，达到硬 kill 期限（${HARD_KILL_MULTIPLIER}×${Math.round(timeout / 1000)}s），终止`,
-          );
-          // reason 必须登记于 ABORT_REASONS（历史事故：自定义 reason 绕过 isAbortError
-          // 闸门致崩溃）。detach 后的续跑没有前台 await，底层 fetch 会以这个裸字符串
-          // reject，未登记就是一条孤儿 rejection。
-          timeoutCtrl.abort(SUBAGENT_HARD_KILL_REASON);
-        },
-        timeout * (HARD_KILL_MULTIPLIER - 1),
-      );
-    }, timeout);
+      hardKillTimer = armSleepAwareTimer(timeout * (HARD_KILL_MULTIPLIER - 1), () => {
+        log.warn(
+          "SUBAGENT",
+          `[${task.type}] detach 后仍未结束，达到硬 kill 期限（${HARD_KILL_MULTIPLIER}×${Math.round(timeout / 1000)}s），终止`,
+        );
+        // reason 必须登记于 ABORT_REASONS（历史事故：自定义 reason 绕过 isAbortError
+        // 闸门致崩溃）。detach 后的续跑没有前台 await，底层 fetch 会以这个裸字符串
+        // reject，未登记就是一条孤儿 rejection。
+        timeoutCtrl.abort(SUBAGENT_HARD_KILL_REASON);
+      });
+    });
     const mergedSignal = signal
       ? AbortSignal.any([signal, timeoutCtrl.signal])
       : timeoutCtrl.signal;
@@ -1904,7 +1961,7 @@ export class SubAgent {
 
     // P2-10：子代理 sidechain 持久化。仅当父会话 id 与 taskId（作 agentId）都在时启用；
     // 缺任一则 writer 为 undefined，所有写入调用经可选链安全跳过（不影响执行）。
-    const sidechain = this.openSidechain(taskId);
+    const sidechain = this.openSidechain(taskId, task._parentToolUseId);
     /** P2-10：已持久化到 sidechain 的消息数游标（onTurnEnd 增量落盘用）。 */
     let sidechainCursor = 0;
     /** P2-10：子代理最终结束状态，finally 中据此写 sidechain_end。默认 aborted——
@@ -2047,8 +2104,8 @@ export class SubAgent {
         loopDetector,
         sendParamsExtra,
         // B0：两条 runAgentLoop 路径共有字段收进工厂（hookSystem / permissionChecker /
-        // availability / deadlineAt / discoverJitContext），见 buildBaseLoopConfig 注释。
-        ...this.buildBaseLoopConfig(ctxMgr, startTime, timeout),
+        // availability / discoverJitContext），见 buildBaseLoopConfig 注释。
+        ...this.buildBaseLoopConfig(ctxMgr),
         // B2（D1）：内置子代理走漏斗时的来源标签。与自定义路径（agent:custom）区分，
         // 让遥测能回答"哪类子代理在重试"——两条路径共用一个标签就丧失了这个分辨力。
         querySource: "agent:builtin",
@@ -2265,29 +2322,35 @@ export class SubAgent {
         // detach 语义下墙钟到点根本不 abort，signal 只在硬 kill / 外层取消时才 aborted。
         // 这与「判超时看 abort reason 白名单而非错误文本」是同一条原则的延伸——
         // 判据要对准真正表达该语义的那个状态位。
+        // D1：归因统一走 classifySubAgentFailure（优先级：外层 abort > 硬 kill > 漏斗放弃证据
+        // > 墙钟到点）。旧判据 `detached || hardKilled` 会把「断网后放弃」说成超时。
         const hardKilled = timeoutCtrl.signal.reason === SUBAGENT_HARD_KILL_REASON;
-        const isTimeout = detached || hardKilled;
+        const fc = classifySubAgentFailure({
+          parentAborted: signal?.aborted === true,
+          hardKilled,
+          detached,
+          canDetach: task._isAsync === true,
+          giveUp: loopResult.giveUp,
+          lastRetryReason: loopResult.lastRetryReason,
+          errorMessage: loopResult.errorMessage,
+        });
+        const isTimeout = fc.reason === "timeout" || fc.reason === "detached";
         // P2-10：超时/中断记为 aborted（可恢复），其余非成功记为 failed。
-        sidechainStatus = isTimeout ? "aborted" : "failed";
+        sidechainStatus = isTimeout || fc.reason === "aborted" ? "aborted" : "failed";
         const snap = salvage.snapshot();
         // B5-4（缺口 D）：重试次数仍要带上（限流打满退避耗尽会被误读成"超时"，
         // 见 formatRetryHint 注释）。非超时分支的 errorMessage 里漏斗已含重试信息，不重复拼。
         const retryHint = isTimeout ? formatRetryHint(loopResult) : "";
         const output = buildSalvageOutput(snap, {
-          // 前台 detach 也归 "timeout"：真正能"转后台续跑"的只有 _isAsync 路径，
-          // 前台调用方在 await 我们，提前 return 就没有栈可以承载续跑（见上方 detach 注释）。
-          reason: isTimeout
-            ? task._isAsync === true && !hardKilled
-              ? "detached"
-              : "timeout"
-            : "error",
+          ...this.failureSalvageOpts(fc, task.type, sleepLedgerAtStart, loopResult.retryAttempts),
+          usage: totalUsage,
           finalText: finalOutput,
           timeoutMs: timeout,
           errorMessage: isTimeout
             ? retryHint.replace(/^，/, "") || undefined
             : loopResult.errorMessage || "子代理执行未成功",
           taskId,
-          outputFile: taskId ? getTask(taskId)?.outputFile : undefined,
+          ...this.traceLinks(sidechain, taskId),
         });
         return {
           success: false,
@@ -2308,7 +2371,16 @@ export class SubAgent {
       // 与一次零成本失败完全同形。现在按残卷里的实际累计值回填。
       const snap = salvage.snapshot();
       const hardKilled = timeoutCtrl.signal.reason === SUBAGENT_HARD_KILL_REASON;
-      const isTimeout = detached || hardKilled;
+      // D1：catch 分支拿不到 loopResult，只有异常消息可用于成因推断。
+      // canDetach=false：抛出意味着执行已结束，没有后台可续跑。
+      const fc = classifySubAgentFailure({
+        parentAborted: signal?.aborted === true,
+        hardKilled,
+        detached,
+        canDetach: false,
+        errorMessage: err?.message,
+      });
+      const isTimeout = fc.reason === "timeout";
       if (isTimeout) {
         log.warn("SUBAGENT", `[${task.type}] 墙钟到点抛出（${timeout}ms），交回残卷`);
       } else {
@@ -2317,11 +2389,11 @@ export class SubAgent {
       return {
         success: false,
         output: buildSalvageOutput(snap, {
-          reason: isTimeout ? "timeout" : "error",
+          ...this.failureSalvageOpts(fc, task.type, sleepLedgerAtStart),
           timeoutMs: timeout,
           errorMessage: isTimeout ? undefined : err.message,
           taskId,
-          outputFile: taskId ? getTask(taskId)?.outputFile : undefined,
+          ...this.traceLinks(sidechain, taskId),
         }),
         // ── usage 回填的口径（诚实声明，勿当精确值读）──
         //
@@ -2349,10 +2421,10 @@ export class SubAgent {
         toolUseCount: snap.toolUseCount,
       };
     } finally {
-      clearTimeout(timer);
+      timer.cancel();
       // detach 后的硬 kill 定时器同样要清——不清会让进程多挂住 2×timeout 才退出
       // （Node/Bun 的 pending timer 会阻止事件循环空转退出）。
-      if (hardKillTimer !== undefined) clearTimeout(hardKillTimer);
+      hardKillTimer?.cancel();
       // P2-10：无论成功/失败/异常，都写 sidechain_end 收尾。sidechainStatus 默认 aborted，
       // 仅成功/明确失败分支改写——恢复扫描据此过滤已结束的 sidechain。
       sidechain?.end(sidechainStatus);
@@ -2366,6 +2438,7 @@ export class SubAgent {
   ): Promise<SubAgentResult> {
     const log = getLogger();
     const startTime = Date.now();
+    const sleepLedgerAtStart = getSleepLedger().getTotalMs();
     log.info("SUBAGENT", `启动自定义子代理`);
 
     // 三级回退：task.timeout > env/派生 > 默认 300s（与 task 类型对齐）。
@@ -2381,8 +2454,9 @@ export class SubAgent {
     const timeoutCtrl = new AbortController();
     /** P0-1(a)：墙钟到点标志。自定义路径同样不再到点即 abort，见 executeInner 的 detach 注释。 */
     let detached = false;
-    let hardKillTimer: ReturnType<typeof setTimeout> | undefined;
-    const timer = setTimeout(() => {
+    let hardKillTimer: SleepAwareTimer | undefined;
+    // B2（2026-10-14）：墙钟与硬 kill 都扣休眠，见 sleep-aware-timer.ts 头注释。
+    const timer = armSleepAwareTimer(timeout, () => {
       detached = true;
       log.warn(
         "SUBAGENT",
@@ -2391,14 +2465,11 @@ export class SubAgent {
       // 自定义路径（skill/agent 调用）**没有** taskId、不进 registry，所以"转后台续跑"
       // 无处附着：调用方在 await 我们，提前 return 就没有栈能承载续跑。因此这里 detach
       // 的收益只有「交回残卷」这一半，硬 kill 仍要挂——否则自定义子代理会无限跑下去。
-      hardKillTimer = setTimeout(
-        () => {
-          log.warn("SUBAGENT", `[custom] detach 后仍未结束，硬 kill`);
-          timeoutCtrl.abort(SUBAGENT_HARD_KILL_REASON);
-        },
-        timeout * (HARD_KILL_MULTIPLIER - 1),
-      );
-    }, timeout);
+      hardKillTimer = armSleepAwareTimer(timeout * (HARD_KILL_MULTIPLIER - 1), () => {
+        log.warn("SUBAGENT", `[custom] detach 后仍未结束，硬 kill`);
+        timeoutCtrl.abort(SUBAGENT_HARD_KILL_REASON);
+      });
+    });
     const mergedSignal = signal
       ? AbortSignal.any([signal, timeoutCtrl.signal])
       : timeoutCtrl.signal;
@@ -2410,11 +2481,12 @@ export class SubAgent {
     // B4：观测身份必须「每次调用唯一」，而 masking 的 sessionId 刻意按 task.type
     // 复用（同类型自定义代理共用一个临时目录，见下方注释）。两者目的不同，故分开派生：
     // 复用 sessionId 当观测 id 会让两个同类型并发实例共用快照 key，隔离形同虚设。
-    const customSeq = ++_customAgentSeq;
-    const observerAgentId = `${this.deriveSubAgentSessionId(task.type)}-c${customSeq}`;
+    // E1：观测身份 = hook agent_id = 规范 id（同一个 customKey 派生），不再是第三种形态。
+    const customKey = task._customKey ?? `custom-${task.type ?? "task"}-c${++_customAgentSeq}`;
+    const observerAgentId = this.deriveSubAgentSessionId(customKey);
 
     // N3：自定义路径同样落 sidechain（原先 0 处）。agentId 与 spawn 自定义路径同一派生规则。
-    const sidechain = this.openSidechain(`custom-${task.type ?? "task"}-c${customSeq}`);
+    const sidechain = this.openSidechain(customKey);
     let sidechainCursor = 0;
     let sidechainStatus: "completed" | "failed" | "aborted" = "aborted";
 
@@ -2506,7 +2578,7 @@ export class SubAgent {
         // B0：两条 runAgentLoop 路径共有字段收进工厂。此前这条自定义路径唯独漏传
         // permissionChecker——权限层被整体绕过（自定义子代理调 edit/bash 不经检查），
         // 是本次修复的 P0 安全缺口。现在用工厂统一收敛，不再靠人工在两处分别记住传参。
-        ...this.buildBaseLoopConfig(ctxMgr, startTime, timeout),
+        ...this.buildBaseLoopConfig(ctxMgr),
         sendParamsExtra: customSendParamsExtra,
         onTurnEnd: (info) => {
           lastTextOutput = info.textOutput || lastTextOutput;
@@ -2567,19 +2639,30 @@ export class SubAgent {
         // 继续丢成果，且不会有任何报错（formatRetryHint 的注释记录过同型的"两处逐字重复
         // 各改一遍必然漂移"教训）。
         const hardKilled = timeoutCtrl.signal.reason === SUBAGENT_HARD_KILL_REASON;
-        const isTimeout = detached || hardKilled;
-        sidechainStatus = isTimeout ? "aborted" : "failed";
+        // 自定义路径无 taskId、不进 registry，转后台无处附着 → canDetach=false（一律 "timeout"），
+        // 不谎报 "detached"（说了转后台却取不回来，比不说更坏）。见上方 detach 注释。
+        const fc = classifySubAgentFailure({
+          parentAborted: signal?.aborted === true,
+          hardKilled,
+          detached,
+          canDetach: false,
+          giveUp: loopResult.giveUp,
+          lastRetryReason: loopResult.lastRetryReason,
+          errorMessage: loopResult.errorMessage,
+        });
+        const isTimeout = fc.reason === "timeout";
+        sidechainStatus = isTimeout || fc.reason === "aborted" ? "aborted" : "failed";
         const snap = salvage.snapshot();
         const retryHint = isTimeout ? formatRetryHint(loopResult) : "";
         const output = buildSalvageOutput(snap, {
-          // 自定义路径无 taskId、不进 registry，转后台无处附着 → 一律 "timeout"，
-          // 不谎报 "detached"（说了转后台却取不回来，比不说更坏）。见上方 detach 注释。
-          reason: isTimeout ? "timeout" : "error",
+          ...this.failureSalvageOpts(fc, "custom", sleepLedgerAtStart, loopResult.retryAttempts),
+          usage: totalUsage,
           finalText: finalOutput,
           timeoutMs: timeout,
           errorMessage: isTimeout
             ? retryHint.replace(/^，/, "") || undefined
             : loopResult.errorMessage || "子代理执行未成功",
+          ...this.traceLinks(sidechain),
         });
         return {
           success: false,
@@ -2595,8 +2678,15 @@ export class SubAgent {
       // P0-1(b)：catch 分支同样交回残卷，usage/turns 不归零（口径说明见 executeInner 同位注释）。
       const snap = salvage.snapshot();
       const hardKilled = timeoutCtrl.signal.reason === SUBAGENT_HARD_KILL_REASON;
-      const isTimeout = detached || hardKilled;
-      sidechainStatus = isTimeout ? "aborted" : "failed";
+      const fc = classifySubAgentFailure({
+        parentAborted: signal?.aborted === true,
+        hardKilled,
+        detached,
+        canDetach: false,
+        errorMessage: err?.message,
+      });
+      const isTimeout = fc.reason === "timeout";
+      sidechainStatus = isTimeout || fc.reason === "aborted" ? "aborted" : "failed";
       if (isTimeout) {
         log.warn("SUBAGENT", `[custom] 墙钟到点抛出（${timeout}ms），交回残卷`);
       } else {
@@ -2605,9 +2695,10 @@ export class SubAgent {
       return {
         success: false,
         output: buildSalvageOutput(snap, {
-          reason: isTimeout ? "timeout" : "error",
+          ...this.failureSalvageOpts(fc, "custom", sleepLedgerAtStart),
           timeoutMs: timeout,
           errorMessage: isTimeout ? undefined : err.message,
+          ...this.traceLinks(sidechain),
         }),
         usage: { inputTokens: snap.tokenCount, outputTokens: 0 },
         turns: snap.turns,
@@ -2619,9 +2710,52 @@ export class SubAgent {
       } catch {
         /* 静默 */
       }
-      clearTimeout(timer);
-      if (hardKillTimer !== undefined) clearTimeout(hardKillTimer);
+      timer.cancel();
+      hardKillTimer?.cancel();
     }
+  }
+
+  /**
+   * E1：残卷里的追溯锚点。
+   *
+   * - `<output-file>` 指向 sidechain transcript：`tasks/<taskId>.output` 会被
+   *   `evictTaskOutput` 删除（事故 20261014-110202 事后去找，三个文件全不在），
+   *   sidechain 不会被驱逐。sidechain 没落盘（缺父会话 id / 写入失败）时才退回旧路径。
+   * - `<parent-session>`：报错文本被贴进别的会话后，靠它找回父会话轨迹（本次事故
+   *   就是贴进了 113129，光定位父会话 110202 就花了好几步）。
+   */
+  private traceLinks(
+    sidechain: SidechainWriter | undefined,
+    taskId?: string,
+  ): { outputFile?: string; parentSessionId?: string } {
+    const sidechainPath = sidechain?.getFilePath();
+    const outputFile =
+      sidechainPath && existsSync(sidechainPath)
+        ? sidechainPath
+        : taskId
+          ? getTask(taskId)?.outputFile
+          : undefined;
+    return { outputFile, parentSessionId: this.parentSessionId };
+  }
+
+  /**
+   * D1：四处失败出口共用的残卷归因参数（reason / cause / 休眠增量 / 只读类 / 重试次数）。
+   * 抽出来是为了让四处不再各自手写——「两处逐字重复各改一遍必然漂移」见 formatRetryHint 注释。
+   */
+  private failureSalvageOpts(
+    fc: FailureClass,
+    agentType: string,
+    sleepLedgerAtStart: number,
+    retryAttempts?: number,
+  ) {
+    return {
+      reason: fc.reason,
+      cause: fc.cause,
+      retryAttempts,
+      sleptMs: Math.max(0, getSleepLedger().getTotalMs() - sleepLedgerAtStart),
+      // 只读类（explore / plan …）零改动是必然的，不构成「停在读懂上下文」的信号。
+      readOnlyAgent: resolveAgent(agentType)?.readOnly === true,
+    };
   }
 
   /**

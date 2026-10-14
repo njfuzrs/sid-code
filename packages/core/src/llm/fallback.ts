@@ -30,6 +30,8 @@ import { currentSseDumpContext } from "./sse-chunk-dumper.ts";
 import {
   createSleepAwareDeadline,
   startSleepObserver,
+  onWake,
+  type WakeInfo,
 } from "@sid-code/shared/utils/sleep-detect.ts";
 import {
   isAbortError,
@@ -37,6 +39,7 @@ import {
   RequestAbortedError,
   getNetworkErrorCode,
   StreamValidationError,
+  HOST_SLEEP_REOPEN_ABORT_REASON,
 } from "./errors.ts";
 import {
   classifyFamily,
@@ -49,6 +52,8 @@ import {
 } from "./error-normalize.ts";
 import {
   decideRecovery,
+  HOST_SLEEP_REOPEN_REASON,
+  HOST_SLEEP_NETWORK_READY_MS,
   MIN_USEFUL_ATTEMPT_MS,
   type AttemptRecord,
   type GiveUpEvidence,
@@ -853,6 +858,30 @@ export class ModelFallback {
     // 期间持有，finally 里 release。
     const releaseSleepObserver = startSleepObserver();
 
+    // ── C1（2026-10-14）：唤醒后主动回收跨越休眠的在飞 attempt ──
+    //
+    // 事故 20261014-110202：三个请求在休眠前 0–15s 发出，休眠中 socket 被杀，唤醒后
+    // 43–69s 才报 `Connection error` —— 这段纯等待把剩余预算吃到 0。账本早就知道
+    // 「刚刚睡过」，只是没人据此行动。
+    //
+    // 判据必须是「attempt 发起早于休眠开始」：休眠之后才发出的请求是健康的，误杀它们
+    // 会把一次休眠放大成一串无谓重开。`attemptInFlight` 在退避期间为 false（那时没有
+    // 在飞请求，退避本身也已扣休眠）。
+    let attemptStartedAt = Date.now();
+    let attemptInFlight = true;
+    let pendingWake: WakeInfo | null = null;
+    const unsubscribeWake = onWake((info) => {
+      if (!attemptInFlight || pendingWake !== null) return;
+      if (attemptStartedAt >= info.sleepStartedAt) return;
+      pendingWake = info;
+      log.warn(
+        "FALLBACK",
+        `检测到系统休眠 ${(info.sleptMs / 1000).toFixed(0)}s，本次请求发起于休眠前，` +
+          `连接大概率已失效 → 主动中断并重开（不计重试次数）`,
+      );
+      streamTimeoutCtl.abort(HOST_SLEEP_REOPEN_ABORT_REASON);
+    });
+
     const startStreamTimeout = (delayMs: number = streamTimeoutMs) => {
       streamTimeoutId = setTimeout(() => {
         // ─── 休眠二次校验（PR9）：这一枪是"真超时"还是"休眠补发"？ ───
@@ -1169,6 +1198,47 @@ export class ModelFallback {
           // 用户主动中断（ESC）：立即传播，终止整轮对话
           if (signal?.aborted) {
             throw toAbortError(err);
+          }
+
+          // ── C1：唤醒回收 → 旁路 decideRecovery 直接重开（不计次、不退避、不记失败）──
+          const wake = pendingWake as WakeInfo | null;
+          if (wake !== null && streamTimeoutCtl.signal.reason === HOST_SLEEP_REOPEN_ABORT_REASON) {
+            pendingWake = null;
+            attemptInFlight = false;
+            (disarmStreamIneffective as (() => void) | null)?.();
+            disarmStreamIneffective = null;
+            clearStreamTimeout();
+            this.emitTelemetry(
+              {
+                type: "host_sleep_reopen",
+                model: params.model,
+                provider: primaryProvider.name(),
+                reopenReason: HOST_SLEEP_REOPEN_REASON,
+                sleptMs: wake.sleptMs,
+                attemptAgeMs: wake.wokeAt - attemptStartedAt,
+                discardedChars: produced.chars,
+                discardedThinkingChars: produced.thinkingChars,
+              },
+              perCall.agentId,
+            );
+            // 唤醒后网卡需要 1–2s 重连；固定等待而非指数退避（这不是故障）。
+            await this.sleep(HOST_SLEEP_NETWORK_READY_MS, signal);
+            resetStreamTimeout();
+            yield {
+              type: "stream_restart",
+              reason: HOST_SLEEP_REOPEN_REASON,
+              attempt: attempt + 1,
+            };
+            attemptStartedAt = Date.now();
+            attemptInFlight = true;
+            stream = this.openStream(
+              primaryProvider,
+              ctx.maxTokensOverride ? { ...params, maxTokens: ctx.maxTokensOverride } : params,
+              makeCombinedSignal(),
+              signal,
+            );
+            resetAttemptProduction();
+            continue;
           }
 
           // 区分「流式超时中断」与「其他 abort」：
@@ -1534,6 +1604,7 @@ export class ModelFallback {
             // 本层的流超时同理：退避期间先停表，下面 resetStreamTimeout 为新 attempt 重新起表 ——
             // 否则 120s 退避会吃掉新 attempt 的无进展窗口。
             clearStreamTimeout();
+            attemptInFlight = false;
             yield {
               type: "retry_backoff",
               phase: "start",
@@ -1580,6 +1651,8 @@ export class ModelFallback {
           // 「首次同步抛错可重试、重试时同步抛错却立刻放弃」两套语义。实测回归：
           // `stream-interrupt-recovery.test.ts` 的 ECONNRESET 用例断言 3 次尝试
           // （2 失败 + 1 成功），旧 break 路径只跑 2 次就降级。
+          attemptStartedAt = Date.now();
+          attemptInFlight = true;
           stream = this.openStream(
             primaryProvider,
             ctx.maxTokensOverride ? { ...params, maxTokens: ctx.maxTokensOverride } : params,
@@ -1592,6 +1665,7 @@ export class ModelFallback {
       }
     } finally {
       clearStreamTimeout();
+      unsubscribeWake();
       // PR9：释放休眠观测器引用（引用计数归零时才真的停 interval）。
       releaseSleepObserver();
     }

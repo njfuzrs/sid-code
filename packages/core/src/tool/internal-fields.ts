@@ -14,7 +14,14 @@
  */
 
 /** 内部字段名单：这些字段只应由 harness 注入，绝不接受模型自行生成 */
-export const INTERNAL_FIELDS = ["_agentId", "_simulatedSedEdit", "_hookInjected"] as const;
+export const INTERNAL_FIELDS = [
+  "_agentId",
+  "_simulatedSedEdit",
+  "_hookInjected",
+  // E1（2026-10-14）：派发子代理的那次 sub_agent 调用 id，由执行器在剥离后注入。
+  // 模型伪造它会让 SubagentStart.parent_tool_use_id 指向别的调用，关联键就失真了。
+  "_parentToolUseId",
+] as const;
 
 /**
  * 剥离 input 中的内部字段，返回浅拷贝（不改原对象）。

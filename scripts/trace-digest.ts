@@ -16,6 +16,7 @@
  *   bun scripts/trace-digest.ts --cache --days 7 # 同上,只看最近 N 天
  *   bun scripts/trace-digest.ts --health         # 跨会话 Provider 健康度看板(P2-7)
  *   bun scripts/trace-digest.ts --health --period 7d  # 同上,指定周期(1h|24h|7d,默认 24h)
+ *   bun scripts/trace-digest.ts <id> --agent <agentId|taskId>  # 单个子代理视图:父调用 → 起止 → 每条请求(E1)
  *
  * 注:--cache 与 --health 在产品内也可达(/trace --cache、/trace --health),
  * 不必为看这两个视图回到仓库跑脚本。
@@ -30,6 +31,7 @@ import {
   renderList,
 } from "@sid-code/core/trace/digest.ts";
 import { renderCacheSection } from "@sid-code/core/trace/cache-report.ts";
+import { buildAgentView, renderAgentView } from "@sid-code/core/trace/agent-view.ts";
 import {
   aggregateProviderHealth,
   renderHealthText,
@@ -54,12 +56,17 @@ export const KNOWN_FLAGS = new Set([
   "--health",
   "--days",
   "--period",
+  "--agent",
 ]);
 
 function main() {
   const args = process.argv.slice(2);
   const flags = new Set(args.filter((a) => a.startsWith("--")));
-  const positional = args.filter((a) => !a.startsWith("--"));
+  // 带值参数的值不算位置参数（否则 `--agent aoiyka2wx` 会把 taskId 当会话 id 解析）
+  const VALUE_FLAGS = new Set(["--days", "--period", "--agent"]);
+  const positional = args.filter(
+    (a, i) => !a.startsWith("--") && !VALUE_FLAGS.has(args[i - 1] ?? ""),
+  );
   const json = flags.has("--json");
   const full = flags.has("--full");
   const noColor = !process.stdout.isTTY || !!process.env.NO_COLOR;
@@ -146,6 +153,23 @@ function main() {
   if (!ref) {
     process.stderr.write(`未找到 session "${positional[0]}"。用 --list 看可用会话,或用 latest。\n`);
     process.exitCode = 1;
+    return;
+  }
+
+  // E1：单个子代理视图。子代理事件留在父会话 events.jsonl，按规范 id 过滤即可，
+  // 所以这里先解析父会话，再在它里面找子代理（不支持"只给子代理 id 反查父会话"——
+  // 残卷里有 <parent-session>，报错文本本身就带着父会话 id）。
+  const agentIdx = args.indexOf("--agent");
+  if (agentIdx >= 0) {
+    const agentQuery = args[agentIdx + 1];
+    if (!agentQuery || agentQuery.startsWith("--")) {
+      process.stderr.write(`⚠ --agent 需要一个子代理 id(规范 id / legacy id / taskId 后缀)\n`);
+      process.exitCode = 1;
+      return;
+    }
+    const view = buildAgentView(`${ref.dir}/events.jsonl`, agentQuery);
+    process.stdout.write((json ? JSON.stringify(view, null, 2) : renderAgentView(view)) + "\n");
+    if (view.agentIds.length === 0) process.exitCode = 1;
     return;
   }
 

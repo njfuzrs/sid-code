@@ -274,3 +274,250 @@ describe("P0-1(c) 墙钟预算按实测吞吐派生", () => {
     expect(HARD_KILL_MULTIPLIER).toBeGreaterThan(1);
   });
 });
+
+// ═══════════════════════════════════════════════════════════════════
+// 卡 D1（2026-10-14）：子代理失败的真实归因与文案
+// 事故 20261014-110202-8c0ffb30：三个 explore 子代理死于「休眠断网 → 漏斗放弃」，残卷却说
+// 「达到墙钟预算」「停在读懂上下文」「检查模型是否可用」。
+// ═══════════════════════════════════════════════════════════════════
+import {
+  classifySubAgentFailure,
+  type FailureClassInput,
+  type SubAgentGiveUpEvidence,
+} from "@sid-code/core/agent/salvage.ts";
+
+describe("D1 classifySubAgentFailure + 建议文案（表驱动）", () => {
+  const DEADLINE_TRANSIENT: SubAgentGiveUpEvidence = {
+    giveUpReason: "deadline",
+    family: "transient",
+    attempts: 1,
+    lastError: "Connection error.",
+  };
+  const RATE: SubAgentGiveUpEvidence = {
+    giveUpReason: "budget",
+    family: "transient",
+    attempts: 6,
+    lastError: "429 rate limit",
+  };
+  const AUTH: SubAgentGiveUpEvidence = {
+    giveUpReason: "budget",
+    family: "auth_suspect",
+    attempts: 2,
+    lastError: "401 Unauthorized",
+  };
+
+  // 一个跑了多轮、零改动的快照（事故现场：9–10 轮、只读）
+  const snapOf = () => {
+    const c = new SalvageCollector();
+    for (let t = 1; t <= 9; t++) {
+      c.recordTurn({
+        turn: t,
+        textOutput: `发现 ${t}`,
+        tools: [{ name: "read", input: { file_path: `/x/${t}.ts` } }],
+        tokenCount: t * 1000,
+        toolUseCount: t,
+      });
+    }
+    return c.snapshot();
+  };
+
+  type Row = {
+    name: string;
+    input: Partial<FailureClassInput>;
+    readOnly: boolean;
+    sleptMs?: number;
+    retryAttempts?: number;
+    reason: string;
+    has: string[];
+    lacks: string[];
+  };
+  const base: FailureClassInput = {
+    parentAborted: false,
+    hardKilled: false,
+    detached: false,
+    canDetach: true,
+  };
+  const rows: Row[] = [
+    {
+      name: "事故组：detached + giveUp(deadline/transient) + 休眠 181s + explore",
+      input: { detached: true, giveUp: DEADLINE_TRANSIENT },
+      readOnly: true,
+      sleptMs: 181_000,
+      retryAttempts: 1,
+      reason: "error",
+      has: ["网络连接中断", "期间系统休眠", "这不是网关或模型故障", "执行出错"],
+      lacks: ["墙钟预算", "读懂上下文", "模型是否可用"],
+    },
+    {
+      name: "detached + giveUp(rate_limit) → 上游限流",
+      input: { detached: true, giveUp: RATE, lastRetryReason: "rate_limit" },
+      readOnly: true,
+      reason: "error",
+      has: ["上游限流"],
+      lacks: ["墙钟预算", "读懂上下文", "休眠"],
+    },
+    {
+      name: "giveUp(auth) → 检查凭证",
+      input: { giveUp: AUTH },
+      readOnly: false,
+      reason: "error",
+      has: ["检查凭证"],
+      lacks: ["读懂上下文"],
+    },
+    {
+      name: "giveUp(context_overflow) → 缩小范围",
+      input: {
+        giveUp: {
+          giveUpReason: "budget",
+          family: "request_suspect",
+          lastError: "context_length_exceeded",
+        },
+      },
+      readOnly: false,
+      reason: "error",
+      has: ["缩小任务范围"],
+      lacks: ["读懂上下文"],
+    },
+    {
+      name: "hardKilled 压过 giveUp → timeout",
+      input: { detached: true, hardKilled: true, giveUp: DEADLINE_TRANSIENT },
+      readOnly: false,
+      reason: "timeout",
+      has: ["墙钟预算", "读懂上下文"],
+      lacks: ["网络连接中断"],
+    },
+    {
+      name: "父代理 abort 压过一切 → aborted",
+      input: { parentAborted: true, detached: true, hardKilled: true, giveUp: DEADLINE_TRANSIENT },
+      readOnly: false,
+      reason: "aborted",
+      has: ["被主动中止"],
+      lacks: ["墙钟预算"],
+    },
+    {
+      name: "纯墙钟到点、可转后台 → detached（不给「读懂上下文」）",
+      input: { detached: true },
+      readOnly: false,
+      reason: "detached",
+      has: ["已转后台继续执行"],
+      lacks: ["读懂上下文"],
+    },
+    {
+      name: "纯墙钟到点、不可转后台、非只读 → timeout + 读懂上下文",
+      input: { detached: true, canDetach: false },
+      readOnly: false,
+      reason: "timeout",
+      has: ["墙钟预算", "读懂上下文"],
+      lacks: ["网络连接中断"],
+    },
+    {
+      name: "纯墙钟到点、只读类 → timeout，但不给「读懂上下文」",
+      input: { detached: true, canDetach: false },
+      readOnly: true,
+      reason: "timeout",
+      has: ["墙钟预算"],
+      lacks: ["读懂上下文"],
+    },
+    {
+      name: "无 giveUp、Connection error 异常（catch 路径）→ error/网络",
+      input: { errorMessage: "Connection error." },
+      readOnly: true,
+      reason: "error",
+      has: ["网络连接中断"],
+      lacks: ["墙钟预算", "读懂上下文"],
+    },
+  ];
+
+  for (const r of rows) {
+    test(r.name, () => {
+      const fc = classifySubAgentFailure({ ...base, ...r.input });
+      expect(fc.reason).toBe(r.reason as typeof fc.reason);
+      const out = buildSalvageOutput(snapOf(), {
+        reason: fc.reason,
+        cause: fc.cause,
+        sleptMs: r.sleptMs,
+        retryAttempts: r.retryAttempts,
+        readOnlyAgent: r.readOnly,
+        timeoutMs: 300_000,
+        errorMessage: r.input.giveUp?.lastError ?? r.input.errorMessage,
+      });
+      for (const s of r.has) expect(out).toContain(s);
+      for (const s of r.lacks) expect(out).not.toContain(s);
+    });
+  }
+});
+
+describe("D1 <progress> token 口径", () => {
+  test("给了 usage → 显式 input/output/cache_read/cache_creation，无裸 tokens=", () => {
+    const snap = new SalvageCollector().snapshot();
+    const out = buildSalvageOutput(snap, {
+      reason: "error",
+      usage: {
+        inputTokens: 100,
+        outputTokens: 5,
+        cacheReadInputTokens: 900,
+        cacheCreationInputTokens: 7,
+      },
+    });
+    expect(out).toContain('input="100" output="5" cache_read="900" cache_creation="7"');
+    expect(out).not.toMatch(/ tokens="/);
+  });
+
+  test("没有 usage → 属性名写明口径 input_output_tokens", () => {
+    const c = new SalvageCollector();
+    c.recordTurn({ turn: 1, textOutput: "", tools: [], tokenCount: 42, toolUseCount: 0 });
+    const out = buildSalvageOutput(c.snapshot(), { reason: "error" });
+    expect(out).toContain('input_output_tokens="42"');
+    expect(out).not.toMatch(/ tokens="/);
+  });
+});
+
+describe("D1 回放：事故三个 explore 子代理（脱敏 fixture）", () => {
+  // 取自 sidechain transcript 的形态：9–10 轮只读工具、最后一次 Connection error、
+  // recovery_give_up giveUpReason=deadline attempts=1、休眠 181s。路径已脱敏。
+  const FIXTURE = [
+    { turns: 9, lastError: "Connection error.", sleptMs: 181_000 },
+    { turns: 10, lastError: "Connection error.", sleptMs: 181_000 },
+    { turns: 10, lastError: "Connection error.", sleptMs: 181_000 },
+  ];
+  for (const [i, f] of FIXTURE.entries()) {
+    test(`子代理 #${i + 1}`, () => {
+      const c = new SalvageCollector();
+      for (let t = 1; t <= f.turns; t++) {
+        c.recordTurn({
+          turn: t,
+          textOutput: "",
+          tools: [{ name: "grep", input: { pattern: "foo", path: "/repo" } }],
+          tokenCount: t * 10_000,
+          toolUseCount: t,
+        });
+      }
+      const fc = classifySubAgentFailure({
+        parentAborted: false,
+        hardKilled: false,
+        detached: true,
+        canDetach: true,
+        giveUp: {
+          giveUpReason: "deadline",
+          family: "transient",
+          attempts: 1,
+          lastError: f.lastError,
+        },
+      });
+      const out = buildSalvageOutput(c.snapshot(), {
+        reason: fc.reason,
+        cause: fc.cause,
+        sleptMs: f.sleptMs,
+        readOnlyAgent: true,
+        timeoutMs: 300_000,
+        errorMessage: f.lastError,
+      });
+      expect(out).toContain("执行出错：Connection error.");
+      expect(out).toContain("网络连接中断");
+      expect(out).toContain("期间系统休眠 约 3 分钟（181s）");
+      expect(out).not.toContain("墙钟预算");
+      expect(out).not.toContain("读懂上下文");
+      expect(out).not.toContain("模型是否可用");
+    });
+  }
+});

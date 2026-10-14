@@ -2206,7 +2206,8 @@ export async function* queryLoop(loopConfig: QueryLoopConfig): AsyncGenerator<Qu
       // watchdog 闸门），于是不必再给内层设时间上限 —— 次数归次数上限管，卡死归看门狗管。
       // 「两层相乘」也随之消失：外层不会在内层退避期间开枪，内层用满次数后自己放弃。
       // ⚠️ 别把 deadlineAt 加回来：加回来就退回「次数听时间的」那一版。
-      // 子代理 / side-call 的 deadlineAt 是真实的总时长预算（子代理 timeout 等），不受影响。
+      // 子代理同样不传（2026-10-14），总时长由 sub-agent.ts 的硬 kill 兜底；
+      // side-call（compact / recall / hook agent 等）的 deadlineAt 才是真实的总时长预算，不受影响。
 
       // ─── 发送请求（含上下文溢出 + prompt-too-long 自动恢复）───
       let stream: AsyncIterable<import("../llm/types.ts").StreamEvent>;

@@ -387,6 +387,7 @@ describe("isAbortError", () => {
       "agent-stream-timeout",
       "alert-webhook-timeout",
       "external-abort",
+      "host-sleep-reopen",
       "midturn-preempt",
       "race-settled",
       "session-timeout",

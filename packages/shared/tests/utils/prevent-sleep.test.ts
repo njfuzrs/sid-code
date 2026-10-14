@@ -13,6 +13,9 @@ import {
   getPreventSleepRefCount,
   isPreventSleepActive,
   __resetPreventSleepForTest,
+  __setCaffeinateSpawnerForTest,
+  buildCaffeinateArgv,
+  RESPAWN_MAX_IN_WINDOW,
 } from "@sid-code/core/task/prevent-sleep.ts";
 
 const isMac = process.platform === "darwin";
@@ -111,7 +114,7 @@ describe("反复 start/stop 不泄漏", () => {
     if (!isMac) return; // 其他平台不起进程，无可验
 
     const countCaffeinate = (): number => {
-      const r = Bun.spawnSync(["bash", "-c", 'pgrep -f "caffeinate -i -t" | wc -l']);
+      const r = Bun.spawnSync(["bash", "-c", 'pgrep -f "caffeinate -i -w" | wc -l']);
       return parseInt(r.stdout.toString().trim(), 10) || 0;
     };
 
@@ -125,5 +128,81 @@ describe("反复 start/stop 不泄漏", () => {
     await new Promise((r) => setTimeout(r, 300));
 
     expect(countCaffeinate()).toBeLessThanOrEqual(before);
+  });
+});
+
+// ── 2026-10-14：-w 单进程，消灭零 assertion 窗口 ──────────────────────────
+describe("caffeinate -w：不重启、意外退出重拉", () => {
+  type FakeProc = {
+    argv: string[];
+    killed: number;
+    kill: () => void;
+    exited: Promise<unknown>;
+    die: () => void;
+  };
+  let spawned: FakeProc[] = [];
+
+  beforeEach(() => {
+    spawned = [];
+    __setCaffeinateSpawnerForTest((argv) => {
+      let resolve!: () => void;
+      const exited = new Promise<void>((r) => (resolve = r));
+      const p: FakeProc = {
+        argv,
+        killed: 0,
+        kill: () => {
+          p.killed += 1;
+          resolve();
+        },
+        exited,
+        die: () => resolve(),
+      };
+      spawned.push(p);
+      return p;
+    });
+  });
+
+  test("argv 恰为 caffeinate -i -w <pid>，不带 -t", () => {
+    expect(buildCaffeinateArgv(123)).toEqual(["caffeinate", "-i", "-w", "123"]);
+    startPreventSleep();
+    expect(spawned[0]!.argv).toEqual(["caffeinate", "-i", "-w", String(process.pid)]);
+  });
+
+  test("refCount 1→2→1 期间 spawn 一次、kill 零次", () => {
+    startPreventSleep();
+    startPreventSleep();
+    stopPreventSleep();
+    expect(spawned.length).toBe(1);
+    expect(spawned[0]!.killed).toBe(0);
+    stopPreventSleep();
+    expect(spawned[0]!.killed).toBe(1);
+  });
+
+  test("长时间持有不会被定时重启（重启 = 零 assertion 窗口）", async () => {
+    // 旧实现每 4 分钟 kill+spawn；这里用源码断言兜底：模块里不得再出现 setInterval。
+    const src = await Bun.file(
+      new URL("../../../core/src/task/prevent-sleep.ts", import.meta.url),
+    ).text();
+    const code = src.replace(/\/\/.*$/gm, "").replace(/\/\*[\s\S]*?\*\//g, "");
+    expect(code).not.toContain("setInterval");
+    expect(code).not.toMatch(/"-t"/);
+  });
+
+  test("意外退出后立即重拉，且受窗口次数上限约束", async () => {
+    startPreventSleep();
+    for (let i = 0; i < RESPAWN_MAX_IN_WINDOW + 2; i++) {
+      spawned[spawned.length - 1]!.die();
+      await new Promise((r) => setTimeout(r, 0));
+    }
+    // 1 次初始 + RESPAWN_MAX_IN_WINDOW 次重拉，之后放弃
+    expect(spawned.length).toBe(1 + RESPAWN_MAX_IN_WINDOW);
+    expect(isPreventSleepActive()).toBe(false);
+  });
+
+  test("refCount=0 时进程退出不重拉", async () => {
+    startPreventSleep();
+    stopPreventSleep();
+    await new Promise((r) => setTimeout(r, 0));
+    expect(spawned.length).toBe(1);
   });
 });

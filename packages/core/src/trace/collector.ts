@@ -37,6 +37,7 @@ import {
 } from "../hook/types.ts";
 import type { HookSystem } from "../hook/system.ts";
 import { getRawVersion } from "@sid-code/shared/version.ts";
+import { BackoffLedger, createPairingDeadline } from "./pairing-deadline.ts";
 import { getReleaseChannel } from "@sid-code/shared/release-channel.ts";
 import { getBuildInfo } from "@sid-code/shared/build-info.ts";
 import { getIdentity, getGitSnapshot } from "../identity/index.ts";
@@ -327,6 +328,8 @@ export class TraceCollector {
   private heartbeatPath: string = "";
   /** §3.4：BeforeModel 配对看门狗（index → timer） */
   private pendingModelCalls = new Map<number, ReturnType<typeof setTimeout>>();
+  /** F1：主循环重试退避账本（retry 遥测喂入），配对看门狗据此剔除退避时长 */
+  private readonly backoffLedger = new BackoffLedger();
   /** 发现 1：index → StreamPhase 快照定位信息（turn_index + loop_id）。
    * 看门狗 fire 时据此用与 emitStreamPhase 一致的 key 查快照，修复 stream_snapshot 恒 null。 */
   private streamSnapshotRefs = new Map<number, { turn_index: number; loop_id: string }>();
@@ -1386,7 +1389,23 @@ export class TraceCollector {
     if (staleTimer) {
       clearTimeout(staleTimer);
     }
-    const pairingTimer = setTimeout(() => {
+    // F1（2026-10-14）：有效耗时 = 挂钟 − 退避 − 休眠；没到点就重排而非开枪
+    // （setTimeout 在休眠后唤醒即补发，退避是我们主动的等待——两者都不是「请求挂住」）。
+    const pairingDeadline = createPairingDeadline(this.PAIRING_TIMEOUT_MS, this.backoffLedger);
+    const armPairing = (delayMs: number): ReturnType<typeof setTimeout> => {
+      const t = setTimeout(() => onPairingTimeout(), delayMs);
+      if (t && typeof t === "object" && "unref" in t) (t as any).unref();
+      return t;
+    };
+    const onPairingTimeout = (): void => {
+      const remaining = pairingDeadline.remainingMs();
+      if (remaining > 0) {
+        // 只在这条配对仍是本次 BeforeModel 时重排（已被 AfterModel 清掉 / 被重试覆盖则作废）
+        if (this.pendingModelCalls.get(index) !== pairingTimer) return;
+        pairingTimer = armPairing(remaining);
+        this.pendingModelCalls.set(index, pairingTimer);
+        return;
+      }
       try {
         // 缺口 3 + 发现 1：从 stream-observer 获取流状态快照，附加到 ModelCallUnpaired 事件。
         // 发现 1 修复：用 emitStreamPhase 写入时同款 key（turn_index + loop_id）查快照。
@@ -1439,6 +1458,9 @@ export class TraceCollector {
             index,
             model: req.model,
             elapsed_ms: this.PAIRING_TIMEOUT_MS,
+            // F1：被剔除的退避 / 休眠时长（elapsed_ms 是「有效」耗时，挂钟 = 三者之和）
+            excluded_backoff_ms: pairingDeadline.backoffMs(),
+            excluded_sleep_ms: pairingDeadline.sleepMs(),
             // still_progressing 时是「慢响应」而非 hang，hint 相应区分，避免误导排查者。
             hint: stillProgressing
               ? "BeforeModel 发出后超时未配对，但流仍在收 chunk：慢响应而非 hang（模型长响应/网关慢）"
@@ -1451,11 +1473,9 @@ export class TraceCollector {
       }
       this.pendingModelCalls.delete(index);
       this.streamSnapshotRefs.delete(index);
-    }, this.PAIRING_TIMEOUT_MS);
-    // unref 确保看门狗不阻止进程退出
-    if (pairingTimer && typeof pairingTimer === "object" && "unref" in pairingTimer) {
-      (pairingTimer as any).unref();
-    }
+    };
+    // unref 确保看门狗不阻止进程退出（armPairing 内处理）
+    let pairingTimer = armPairing(this.PAIRING_TIMEOUT_MS);
     this.pendingModelCalls.set(index, pairingTimer);
   }
 
@@ -1925,6 +1945,9 @@ export class TraceCollector {
         agent_id: input.agent_id,
         agent_type: input.agent_type,
         parent_session_id: input.parent_session_id,
+        // E1：父会话 PreToolUse(sub_agent).tool_use_id → 本条 → agent_id 相同的全部请求
+        parent_tool_use_id: input.parent_tool_use_id ?? null,
+        ...(input.legacy_agent_id ? { legacy_agent_id: input.legacy_agent_id } : {}),
         // §9.2：写入派活意图，排查时无需回 raw.jsonl 找原始 prompt
         description: input.description ?? null,
       },
@@ -1954,6 +1977,7 @@ export class TraceCollector {
       data: {
         agent_id: stopInput.agent_id ?? null,
         agent_type: stopInput.agent_type ?? null,
+        parent_tool_use_id: stopInput.parent_tool_use_id ?? null,
         elapsed_ms: stopInput.duration_ms ?? null,
         output_tokens: stopInput.usage?.outputTokens ?? null,
         input_tokens: stopInput.usage?.inputTokens ?? null,
@@ -3287,6 +3311,11 @@ export class TraceCollector {
   /** T12：写入 RetryTelemetry 事件到 events.jsonl */
   writeRetryTelemetry(event: Record<string, unknown>): void {
     if (!this.initialized) return;
+    // F1：主循环退避喂进配对看门狗。子代理（带 agentId）不走 BeforeModel 配对，不计入，
+    // 否则并行子代理的退避会让主循环的真 hang 漏报。
+    if (event.type === "retry" && !event.agentId && typeof event.delayMs === "number") {
+      this.backoffLedger.record(event.delayMs);
+    }
     try {
       this.appendHookEvent({
         event: "RetryTelemetry",

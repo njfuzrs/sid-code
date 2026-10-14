@@ -94,7 +94,19 @@ class SleepLedger {
     if (gap <= 0) return 0;
     this.totalMs += gap;
     this.events += 1;
-    this.lastAtMs = Date.now();
+    const now = Date.now();
+    this.lastAtMs = now;
+    // C1（2026-10-14）：唤醒通知。sleepStartedAt 取「现在 − 休眠时长」——休眠必然在上次
+    // tick 之后才开始，所以这是开始时刻的**上界**：拿它判「attempt 是否早于休眠」只会少杀、
+    // 不会误杀休眠后才发出的健康请求。
+    const info: WakeInfo = { sleptMs: gap, wokeAt: now, sleepStartedAt: now - gap };
+    for (const cb of [...wakeListeners]) {
+      try {
+        cb(info);
+      } catch {
+        // 订阅方异常不得影响记账
+      }
+    }
     return gap;
   }
 
@@ -126,7 +138,36 @@ class SleepLedger {
   }
 }
 
+/** 一次被确认的休眠（唤醒时回调） */
+export interface WakeInfo {
+  /** 本次休眠时长（毫秒，已剔除一个正常 tick 周期） */
+  sleptMs: number;
+  /** 检测到唤醒的挂钟时刻 */
+  wokeAt: number;
+  /** 休眠开始时刻（上界估计，见 record 注释） */
+  sleepStartedAt: number;
+}
+
+const wakeListeners = new Set<(info: WakeInfo) => void>();
+
 const ledger = new SleepLedger();
+
+/**
+ * 订阅「检测到唤醒」（C1，2026-10-14 事故）。返回取消订阅函数。
+ *
+ * 为什么需要：账本此前只用于「判超时时扣掉休眠」，没有任何地方在唤醒时**主动**回收
+ * 跨越休眠的在飞请求。休眠前建的 TCP 连接基本已死，进程却要等 OS 报错——事故里唤醒后
+ * 43–69s 才报 `Connection error`，半开连接甚至根本不报、只能挂到 180s 超时。
+ *
+ * 判据与账本同源（`isSleepGap`，下限 SLEEP_DETECT_FLOOR_MS），只在真确认休眠时回调。
+ * 订阅方须自己持有 `startSleepObserver()`，否则没人 tick、永远等不到回调。
+ */
+export function onWake(cb: (info: WakeInfo) => void): () => void {
+  wakeListeners.add(cb);
+  return () => {
+    wakeListeners.delete(cb);
+  };
+}
 
 /** 全局休眠账本（进程级单例，理由见 SleepLedger 类注释） */
 export function getSleepLedger(): SleepLedger {

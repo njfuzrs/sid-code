@@ -389,6 +389,11 @@ export interface RecoveryDigestStats {
   recoveryByFamily: Record<string, { entered: number; recovered: number; rate: number }>;
   /** 认不出的错误条数（unrecognized_error 台账） */
   unrecognized: number;
+  /**
+   * C1（2026-10-14）：唤醒后主动重开跨越休眠的请求次数（`host_sleep_reopen`）。
+   * 与 retry / network_error **分开计**：它不是故障，混进去会把休眠算成 retry 浪费。
+   */
+  hostSleepReopens: number;
 }
 
 /** I1-例外闭集（与 llm/recovery-policy.ts 的 I1_EXCEPTIONS 同步；deadline 单独报） */
@@ -404,6 +409,7 @@ export function aggregateRecoveryStats(
     giveUpReasons: {},
     recoveryByFamily: {},
     unrecognized: 0,
+    hostSleepReopens: 0,
   };
   // (model, agentId) → 正在重试中的族（retry 之后、结束之前）
   const pending = new Map<string, string>();
@@ -441,6 +447,10 @@ export function aggregateRecoveryStats(
       case "unrecognized_error":
         seen = true;
         out.unrecognized++;
+        break;
+      case "host_sleep_reopen":
+        seen = true;
+        out.hostSleepReopens++;
         break;
     }
   }
@@ -2655,7 +2665,8 @@ export function renderHuman(d: Digest, opts: RenderOptions = {}): string {
         c(r.oneShotKillCount > 0 ? "red" : "green", `一次判死 ${r.oneShotKillCount}`) +
         c("gray", ` / 放弃 ${r.giveUps}`) +
         (r.deadlineGiveUpCount > 0 ? c("yellow", `  时间预算放弃 ${r.deadlineGiveUpCount}`) : "") +
-        (r.unrecognized > 0 ? c("gray", `  未识别措辞 ${r.unrecognized}`) : ""),
+        (r.unrecognized > 0 ? c("gray", `  未识别措辞 ${r.unrecognized}`) : "") +
+        (r.hostSleepReopens > 0 ? c("gray", `  休眠重开 ${r.hostSleepReopens}（不计重试）`) : ""),
     );
     const fams = Object.entries(r.recoveryByFamily);
     if (fams.length > 0) {

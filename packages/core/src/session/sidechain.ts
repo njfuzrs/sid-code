@@ -40,6 +40,11 @@ export type SidechainRecord =
       description: string;
       model: string;
       timestamp: string;
+      /** E1（2026-10-14）：关联键。`agentId` 仍是文件名 / 恢复扫描用的短键（taskId），
+       *  这几个字段让 transcript 能直接对上父会话 events.jsonl 里的同一个子代理。 */
+      parentSessionId?: string;
+      parentToolUseId?: string;
+      canonicalAgentId?: string;
     }
   | {
       type: "message";
@@ -131,6 +136,8 @@ export class SidechainWriter {
   constructor(
     private readonly parentSessionId: string,
     private readonly agentId: string,
+    /** E1：写进 sidechain_start 的关联键（规范 id / 派发它的 tool_use_id），缺省不写 */
+    private readonly links: { canonicalAgentId?: string; parentToolUseId?: string } = {},
   ) {
     this.dir = resolveSessionDirForSidechain(parentSessionId);
     this.filePath = join(this.dir, sidechainFileName(parentSessionId, agentId));
@@ -162,6 +169,9 @@ export class SidechainWriter {
       description,
       model,
       timestamp: nowIso(),
+      parentSessionId: this.parentSessionId,
+      ...(this.links.parentToolUseId ? { parentToolUseId: this.links.parentToolUseId } : {}),
+      ...(this.links.canonicalAgentId ? { canonicalAgentId: this.links.canonicalAgentId } : {}),
     });
   }
 

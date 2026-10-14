@@ -395,13 +395,21 @@ export class HookEventHandler {
     agentId: string,
     agentType: string,
     parentSessionId?: string,
-    extra?: { model?: string; provider?: string; description?: string },
+    extra?: {
+      model?: string;
+      provider?: string;
+      description?: string;
+      parentToolUseId?: string;
+      legacyAgentId?: string;
+    },
   ): Promise<AggregatedHookResult> {
     const input: SubagentStartInput = {
       ...this.createBaseInput(HookEventName.SubagentStart),
       agent_id: agentId,
       agent_type: agentType,
       parent_session_id: parentSessionId,
+      ...(extra?.parentToolUseId ? { parent_tool_use_id: extra.parentToolUseId } : {}),
+      ...(extra?.legacyAgentId ? { legacy_agent_id: extra.legacyAgentId } : {}),
       ...(extra?.description ? { description: extra.description } : {}),
       ...(extra?.model ? { model: extra.model } : {}),
       ...(extra?.provider ? { provider: extra.provider } : {}),

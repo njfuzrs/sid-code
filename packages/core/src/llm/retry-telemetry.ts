@@ -71,6 +71,13 @@ export interface RetryTelemetryEvent {
      * ⛔ 不许写回分类规则自动生效（自动学习会把一次网关事故学成永久规则）。
      */
     | "unrecognized_error"
+    /**
+     * C1（2026-10-14）：唤醒后主动中断并重开**跨越休眠**的在飞请求。
+     *
+     * 与 `retry` 分开：它不计入重试次数、不退避、不记 availability 失败。
+     * digest 若把它算进 retry / network_error，「更准」方向的 retry 浪费比会把休眠算成故障。
+     */
+    | "host_sleep_reopen"
     // 流内诊断事件（由 stream-guard.ts 产生）
     | "stream_stall"
     | "stream_idle_timeout"
@@ -179,6 +186,10 @@ export interface RetryTelemetryEvent {
   spanMs?: number;
   /** recovery_give_up：最后一次错误是否被认出（false = 未识别子集） */
   recognized?: boolean;
+  /** host_sleep_reopen：本次休眠时长（毫秒） */
+  sleptMs?: number;
+  /** host_sleep_reopen：被回收的 attempt 从发起到唤醒的挂钟时长（含休眠） */
+  attemptAgeMs?: number;
   /** max_tokens 调整：原始值 */
   originalTokens?: number;
   /** max_tokens 调整：新值 */
@@ -320,6 +331,13 @@ export function defaultTelemetryHandler(event: RetryTelemetryEvent): void {
       log.info(
         "TELEMETRY",
         `[unrecognized_error] ${event.model} status=${event.statusCode} fp=${event.fingerprint} arrival=${event.arrival} msg=${event.error}`,
+      );
+      break;
+
+    case "host_sleep_reopen":
+      log.warn(
+        "TELEMETRY",
+        `[host_sleep_reopen] ${event.model} slept=${event.sleptMs}ms attempt_age=${event.attemptAgeMs}ms discarded=${event.discardedChars ?? 0}`,
       );
       break;
 

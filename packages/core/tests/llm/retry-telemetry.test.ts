@@ -51,16 +51,17 @@ const EVENT_TYPE_TABLE: Record<RetryTelemetryEvent["type"], true> = {
   stream_content_progress_timeout: true,
   stream_overall_timeout: true,
   stream_completed: true,
+  host_sleep_reopen: true,
 };
 
 const ALL_EVENT_TYPES = Object.keys(EVENT_TYPE_TABLE) as RetryTelemetryEvent["type"][];
 
 describe("T8.12 — defaultTelemetryHandler 覆盖所有事件类型", () => {
-  test("哨兵自身覆盖 18 类（漏登记时先在此处红）", () => {
+  test("哨兵自身覆盖 19 类（漏登记时先在此处红）", () => {
     // 这条断言与上面 Record 的穷尽性是**两道不同的门**，都要留：
     // Record 拦"漏写键"（编译期），本断言拦"类型自身被删/被改少"（运行期）——
     // 后者在删除一个 type 时会让数字对不上，逼人显式确认那是刻意删除。
-    expect(ALL_EVENT_TYPES.length).toBe(18);
+    expect(ALL_EVENT_TYPES.length).toBe(19);
   });
 
   test("每个 type 都不抛异常", () => {

@@ -1450,6 +1450,12 @@ export async function executeSingleTool(
   // 也不信任 schema 层一定拦得住（部分工具走 passthrough），在执行层再加一道，
   // 防止模型伪造内部字段绕过控制（如伪造 _agentId 冒充子代理）。
   effectiveInput = stripInternalFields(validation.data);
+  // E1（2026-10-14）：sub_agent 需要知道「是哪次工具调用派出了我」，SubagentStart 据此带
+  // parent_tool_use_id，父会话 PreToolUse 与子代理事件才能按键精确关联（此前只能靠时间戳对）。
+  // 只给 sub_agent 注：其它工具收到多余字段没有消费者，徒增 input 形态差异。
+  if (block.name === "sub_agent" && effectiveInput && typeof effectiveInput === "object") {
+    effectiveInput = { ...(effectiveInput as Record<string, unknown>), _parentToolUseId: block.id };
+  }
 
   const startTime = Date.now();
 

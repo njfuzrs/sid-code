@@ -176,6 +176,10 @@ export const ABORT_REASONS = [
   // 这个裸字符串 reject，未登记就是一条绕过 isAbortError 总闸门的孤儿 rejection（历史事故：
   // 自定义 reason 绕过闸门致崩溃）。
   "subagent-hard-kill",
+  // C1（2026-10-14）：唤醒后主动回收**跨越休眠**的在飞请求（fallback.ts）。
+  // 休眠前建的连接基本已死，等 OS 报错要 43–69s（半开连接甚至不报）。登记理由同上：
+  // 底层 fetch 以该裸字符串 reject，未登记即孤儿 rejection。
+  "host-sleep-reopen",
 ] as const;
 
 /** H10：子代理流整体硬超时的 abort reason（单一事实源，供 agentic-loop 使用）。 */
@@ -189,6 +193,9 @@ export const SIDE_CALL_TIMEOUT_REASON = "side-call-timeout" as const;
  * 这是本次修复的语义核心——见 ABORT_REASONS 里 "subagent-hard-kill" 的说明。
  */
 export const SUBAGENT_HARD_KILL_REASON = "subagent-hard-kill" as const;
+
+/** C1：唤醒回收在飞请求的 abort reason（单一事实源，供 fallback.ts 使用）。 */
+export const HOST_SLEEP_REOPEN_ABORT_REASON = "host-sleep-reopen" as const;
 
 export type AbortReason = (typeof ABORT_REASONS)[number];
 

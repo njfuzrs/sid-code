@@ -656,7 +656,12 @@ async function executeSingleTool(
       : undefined;
     const cwdBefore = getCwd();
     const result = await tool.execute(
-      { ...cleanedInput, _agentId: "sub-agent" },
+      {
+        ...cleanedInput,
+        _agentId: "sub-agent",
+        // E1：嵌套子代理同样带上派发它的 tool_use_id（与主循环 query/tool-executor.ts 同口径）
+        ...(block.name === "sub_agent" ? { _parentToolUseId: block.id } : {}),
+      },
       signal,
       progressCallback,
     );

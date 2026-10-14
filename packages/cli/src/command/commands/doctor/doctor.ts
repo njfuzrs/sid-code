@@ -20,6 +20,10 @@ import { getSidHome, sidPaths } from "@sid-code/core/config/paths.ts";
 import { collectDiskUsage, formatBytes } from "@sid-code/core/config/disk-usage.ts";
 import { resolveRgCommand } from "@sid-code/core/tool/ripgrep.ts";
 import { getVersionDisplay } from "@sid-code/shared/version.ts";
+import {
+  getPreventSleepRefCount,
+  isPreventSleepActive,
+} from "@sid-code/core/task/prevent-sleep.ts";
 
 /** 诊断项状态：ok=✔ / warn=⚠ / fail=✘ */
 type CheckStatus = "ok" | "warn" | "fail";
@@ -34,6 +38,33 @@ function mark(status: CheckStatus): string {
   if (status === "ok") return SUCCESS_MARK;
   if (status === "warn") return WARNING_MARK;
   return ERROR_MARK;
+}
+
+/**
+ * 防休眠 assertion 是否由本进程持有（2026-10-14 事故：零 assertion 窗口让三个子代理失败）。
+ * /doctor 执行时通常没有任务在跑，refCount=0 时"未持有"是正常的，所以只在
+ * 「有人要保活却没持有」时才 warn——那才说明 caffeinate 起不来。
+ */
+function checkPreventSleep(): CheckItem {
+  if (process.platform !== "darwin") {
+    return { status: "ok", label: "防休眠", detail: "非 macOS，不适用" };
+  }
+  const refs = getPreventSleepRefCount();
+  const active = isPreventSleepActive();
+  if (refs > 0 && !active) {
+    return {
+      status: "warn",
+      label: "防休眠",
+      detail: `${refs} 个任务需要保活，但本进程未持有 caffeinate assertion`,
+    };
+  }
+  return {
+    status: "ok",
+    label: "防休眠",
+    detail: active
+      ? `本进程持有 caffeinate -i -w ${process.pid}（${refs} 个任务）`
+      : "空闲中（任务运行时自动持有）",
+  };
 }
 
 /**
@@ -397,6 +428,9 @@ const mod: LocalCommandModule = {
 
     // MCP
     items.push(...checkMCP(ctx));
+
+    // 防休眠 assertion
+    items.push(checkPreventSleep());
 
     // 企业后端通道（未配置 / 不合法 / 旧配置）
     items.push(...(await checkBackendChannels(ctx)));
