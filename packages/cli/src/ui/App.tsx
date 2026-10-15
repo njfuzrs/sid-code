@@ -293,6 +293,13 @@ export interface ShadowedRuleInfo {
 /** Shell 命令确认请求信息 */
 export interface ShellConfirmRequestInfo {
   commands: string[];
+  /**
+   * 斜杠命令的 confirm 结果（/login 重新登录、/logout 等）复用这个确认框：
+   * 有 message 时不展示 shell 命令，只展示这段说明 + 确认/取消。
+   * 不另开一个 state 格子，是因为 Esc 中断、双击 Esc、流式状态推导等十余处
+   * 已经把 shellConfirmRequest 当作「有确认框在屏」的判据，复用即全部生效。
+   */
+  message?: string;
   resolve: (confirmed: boolean) => void;
 }
 

@@ -41,6 +41,7 @@ import {
   buildShellConfirmChoices,
   initialPermissionChoiceIndex,
   initialShellChoiceIndex,
+  type HotkeyChoice,
   type PermissionAnswer,
 } from "./permission-choices.ts";
 
@@ -174,6 +175,42 @@ function ShellConfirmDialog({ request }: { request: ShellConfirmRequestInfo }) {
     resolvedRef.current = true;
     request.resolve(confirmed);
   };
+
+  // 斜杠命令 confirm（如 /login 重新登录）：只有说明文字、没有 shell 命令
+  if (request.message !== undefined) {
+    const msgChoices: Array<HotkeyChoice<boolean>> = [
+      { value: true, hotkey: "y", label: "确认", tone: "allow" },
+      { value: false, hotkey: "n", label: "取消", tone: "deny" },
+    ];
+    return (
+      <Box
+        flexDirection="column"
+        borderStyle="round"
+        borderColor={theme.status.warning}
+        paddingX={1}
+      >
+        <Text color={theme.status.warning} bold>
+          {`${BULLET} 需要确认`}
+        </Text>
+        <Box paddingLeft={2}>
+          <Text wrap="wrap">{request.message}</Text>
+        </Box>
+        <Box marginTop={1} paddingLeft={1}>
+          <HotkeyChoiceList<boolean>
+            choices={msgChoices}
+            initialIndex={0}
+            onSelect={decide}
+            escapeValue={false}
+          />
+        </Box>
+        <Box marginTop={1}>
+          <Text color={theme.text.secondary}>
+            {choiceListHint(msgChoices.map((c) => c.hotkey))}
+          </Text>
+        </Box>
+      </Box>
+    );
+  }
 
   const accentColor = isDangerous ? theme.status.error : theme.text.accent;
   const title = isDangerous ? `${WARNING_MARK} 危险 Shell 命令确认` : `${BULLET} Shell 命令确认`;
