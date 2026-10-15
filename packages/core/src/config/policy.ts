@@ -120,9 +120,17 @@ export interface PolicyLoadMeta {
 export interface PolicyLoadResult {
   settings: PolicySettings | null;
   meta: PolicyLoadMeta;
+  /**
+   * D7：本次链上远程那一环是否拿到了权威响应（200 有效 / 204 / 304 有缓存）。
+   * 不能从 meta 推：远程 204 或超时之后链会继续走 ManagedFileLoader，meta 被它覆盖成
+   * managed_file/applied，于是「远程明确撤销」与「远程网抖」在 meta 上长得一样。
+   * 未配远程地址时为 undefined。
+   */
+  remoteAuthoritative?: boolean;
 }
 
 let lastPolicyLoadMeta: PolicyLoadMeta | null = null;
+let lastRemoteAuthoritative: boolean | undefined;
 
 function rememberLoadMeta(meta: PolicyLoadMeta): void {
   lastPolicyLoadMeta = meta;
@@ -184,9 +192,8 @@ export class ManagedFileLoader implements PolicyLoader {
  * - 明文非本地地址由 resolveEndpoint 统一拒绝并告警，这里拿到的就是 null
  * - 200 + 空对象 `{source:"remote"}` 才是「远程明确下发了什么都不禁」（会盖掉本地）
  *
- * 只在启动时拉一次、不轮询——生效延迟 = 下次重启。此前留过 supportsPolling /
- * pollingInterval（1 小时）两个字段，全仓无调用方，读起来像「每小时刷新」，B40 删除。
- * 真要做轮询时再连同调度与缓存失效一起设计，不要只把字段加回来。
+ * 启动、/login 时各拉一次；交互会话里另有 30 分钟一次的低频轮询（D7，`policy-poll.ts`），
+ * 轮询只采纳权威结果，非权威时保留进程内现状。无头模式不轮询，生效延迟 = 下次启动。
  */
 export class RemotePolicyLoader implements PolicyLoader {
   async load(): Promise<PolicySettings | null> {
@@ -207,6 +214,7 @@ export class RemotePolicyLoader implements PolicyLoader {
         log.debug("POLICY", "无设备凭据，跳过远程策略（有未过期 200 缓存则用缓存）");
       }
       const cached = usableCachedSettings(cache, "no_credential", "debug");
+      lastRemoteAuthoritative = false;
       rememberLoadMeta({
         source: cached ? "remote" : "none",
         outcome: cached ? "cache_fallback" : "error",
@@ -218,7 +226,13 @@ export class RemotePolicyLoader implements PolicyLoader {
     const started = Date.now();
     const result = await fetchRemotePolicyWithRetry(endpoint, cache);
     const elapsedMs = Date.now() - started;
-    return interpretRemoteResponse(result, cache, endpoint, elapsedMs);
+    const settings = interpretRemoteResponse(result, cache, endpoint, elapsedMs);
+    // interpretRemoteResponse 每条路径都记了信封：applied / none / unchanged 是权威，
+    // cache_fallback / error 是非权威（超时、5xx、401、坏 body）。
+    const outcome = lastPolicyLoadMeta?.outcome;
+    lastRemoteAuthoritative =
+      outcome === "applied" || outcome === "none" || outcome === "unchanged";
+    return settings;
   }
 }
 
@@ -697,10 +711,12 @@ export function __resetRemotePolicyLoaderForTest(): void {
   inFlightDefaultLoad = null;
   defaultLoadResult = undefined;
   lastPolicyLoadMeta = null;
+  lastRemoteAuthoritative = undefined;
 }
 
 async function runLoaders(loaders: PolicyLoader[]): Promise<PolicySettings | null> {
   lastPolicyLoadMeta = null;
+  lastRemoteAuthoritative = undefined;
   for (const loader of loaders) {
     const settings = await loader.load();
     if (settings) return settings;
@@ -824,7 +840,7 @@ export class PolicyManager {
       outcome: settings ? "applied" : "none",
       durationMs: 0,
     };
-    return { settings, meta };
+    return { settings, meta, remoteAuthoritative: lastRemoteAuthoritative };
   }
 
   /** 获取缓存的策略 */
