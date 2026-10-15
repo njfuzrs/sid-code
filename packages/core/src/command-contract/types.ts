@@ -52,6 +52,8 @@ export type DialogType =
   | "settings"
   | "onboarding"
   | "mcp"
+  // /plugin 无参：已安装插件的交互管理面板（查看 / 启用 / 禁用 / 更新 / 卸载）
+  | "plugins"
   | "effort"
   | "think"
   | "language"
