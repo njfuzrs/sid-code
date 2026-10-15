@@ -260,6 +260,15 @@ export async function initTelemetrySystem(
       log.debug("BACKEND", `后端地址自检跳过: ${err?.message}`);
     }
 
+    // 登录闭环 §5.1 方案 A：按服务端 whoami 回写续期后的凭据过期时间。
+    // fire-and-forget，24h 最多一次；未配 backend.url / 未登录时零操作。
+    try {
+      const { startCredentialSync } = await import("../identity/credential-sync.ts");
+      startCredentialSync();
+    } catch (err: any) {
+      log.debug("IDENTITY", `凭据过期时间同步跳过: ${err?.message}`);
+    }
+
     // M5：远程预算启动拉一次。未配 backend.url（及旧 SID_CODE_BUDGET_ENDPOINT）时零操作。
     try {
       const { loadEnterpriseBudgetOnce } = await import("../telemetry/remote-budget.ts");
