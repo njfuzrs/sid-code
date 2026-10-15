@@ -16,6 +16,7 @@ import { ModelDialog } from "./ModelDialog.tsx";
 import { ThemeDialog } from "./ThemeDialog.tsx";
 import { OnboardingDialog } from "./OnboardingDialog.tsx";
 import { McpDialog } from "./McpDialog.tsx";
+import { PluginsDialog } from "./PluginsDialog.tsx";
 import { EffortDialog } from "./EffortDialog.tsx";
 import { ThinkDialog } from "./ThinkDialog.tsx";
 import { LanguageDialog } from "./LanguageDialog.tsx";
@@ -228,6 +229,9 @@ export const DialogSwitch: React.FC<DialogSwitchProps> = ({
   }
   if (activeDialog === "mcp" && mcpManager) {
     return <McpDialog onClose={onDialogClose} mcpManager={mcpManager} />;
+  }
+  if (activeDialog === "plugins") {
+    return <PluginsDialog onClose={onDialogClose} />;
   }
   // M3：项目 .mcp.json 待审批 server 的启动审批框，一次一个（队列进度在 McpApprovalQueue 内）
   if (activeDialog === "mcp-approval") {

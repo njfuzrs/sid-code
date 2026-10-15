@@ -68,7 +68,7 @@ description: 交互模式里可用的全部斜杠命令。
 | `/perf` | 查看本机性能数据：本会话卡在哪一段，近 N 天变快还是变慢 | `/performance` | `[--days N] [--by-version] [--json] [session-id\|latest]` |
 | `/permissions` | 查看当前权限规则和模式 | `/perms` | — |
 | `/plan` | 进入计划模式（先规划后执行） | — | — |
-| `/plugin` | 插件管理 | `/plugins` | `[list\|market\|marketplaces\|info\|install\|update\|uninstall\|enable\|disable] [插件名]` |
+| `/plugin` | 插件管理（无参打开交互面板） | `/plugins` | `[list\|market\|marketplaces\|info\|install\|update\|uninstall\|enable\|disable] [插件名]` |
 | `/ps` | 列出后台任务和活跃会话 | `/tasks` | — |
 | `/reload-plugins` | 重新加载所有插件组件（命令/Skills/Hooks/MCP） | `/reload-plugin` | — |
 | `/rename` | 重命名当前会话（无参则据上下文自动生成名字） | — | `[新名字]` |
