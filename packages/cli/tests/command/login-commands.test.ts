@@ -113,6 +113,31 @@ describe("/login", () => {
     expect(text(await c.onConfirm())).toContain("/feishu/cli/start");
   });
 
+  test("授权链接面板绑定登录流程：流程结束（此处为取消）后 until 落定，TUI 据此自动关面板", async () => {
+    const ctx = { notify: () => {} };
+    const r = await call(loginCmd, "", ctx);
+    const until = (r as { panel?: { until?: Promise<unknown> } }).panel?.until;
+    expect(until).toBeInstanceOf(Promise);
+    // 重复 /login 返回的面板绑的是同一个流程
+    const again = await call(loginCmd, "", ctx);
+    expect((again as { panel?: { until?: Promise<unknown> } }).panel?.until).toBe(until);
+
+    let settled = false;
+    void until!.then(() => (settled = true));
+    await new Promise((res) => setTimeout(res, 20));
+    expect(settled).toBe(false); // 等待授权期间面板保持打开
+
+    await call(loginCmd, "cancel", ctx);
+    await until;
+    expect(settled).toBe(true);
+  });
+
+  test("文案不再声称面板打开时「可以继续使用」，而是说明会自动关闭", async () => {
+    const out = text(await call(loginCmd, "", { notify: () => {} }));
+    expect(out).toContain("自动关闭");
+    expect(out).not.toContain("可以继续使用");
+  });
+
   test("未知参数给出用法", async () => {
     expect(text(await call(loginCmd, "foo"))).toContain("用法: /login [cancel]");
   });
@@ -138,6 +163,17 @@ describe("/logout", () => {
     expect(out).toContain("已通知后端解绑本设备");
     expect(fetchedUrls.some((u) => u.includes("/cli/logout"))).toBe(true);
     expect(existsSync(sidPaths.deviceCredential())).toBe(false);
+    // 正常登出只有一行：TUI 走状态栏回执自动消失，不再弹一个要手动 Esc 的面板
+    expect(out.trim().split("\n")).toHaveLength(1);
+  });
+
+  test("后端解绑失败：保留多行说明（要用户照做，进面板）", async () => {
+    saveDeviceCredential(CRED);
+    globalThis.fetch = (async () => new Response("x", { status: 500 })) as unknown as typeof fetch;
+    const c = (await call(logoutCmd, "")) as Extract<LocalCommandResult, { type: "confirm" }>;
+    const out = text(await c.onConfirm());
+    expect(out).toContain("通知后端解绑失败");
+    expect(out.split("\n").length).toBeGreaterThanOrEqual(3);
   });
 });
 

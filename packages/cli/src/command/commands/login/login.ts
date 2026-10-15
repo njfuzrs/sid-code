@@ -19,6 +19,10 @@ interface PendingLogin {
 
 let pending: PendingLogin | null = null;
 
+function tuiHint(message: string): string {
+  return message.replace(/sid-code (auth )?login/g, "/login");
+}
+
 function linkMessage(url: string, again: boolean): string {
   return [
     again
@@ -27,9 +31,18 @@ function linkMessage(url: string, again: boolean): string {
     "",
     `  ${url}`,
     "",
-    "5 分钟内有效。可以继续使用，授权完成后状态栏会提示；/login cancel 取消。",
+    "5 分钟内有效。授权完成后本面板自动关闭，结果显示在状态栏；",
+    "也可以先按 Esc 关掉面板继续使用，授权仍在后台等待（/login cancel 取消）。",
     "SSH 远程机器上：回调地址是 127.0.0.1，需要 ssh -L <端口>:127.0.0.1:<端口> 转发。",
   ].join("\n");
+}
+
+/**
+ * 授权链接进命令输出面板，并绑定到登录流程：流程结束（成功 / 失败 / 超时 / 取消）面板自动关掉。
+ * 链接只在等待授权期间有意义，此前面板一直停在屏上，登录成功了还要用户自己按 Esc。
+ */
+function linkResult(entry: PendingLogin, again: boolean): LocalCommandResult {
+  return { type: "text", value: linkMessage(entry.url, again), panel: { until: entry.done } };
 }
 
 async function startLogin(ctx: CommandContext, backendUrl: string): Promise<LocalCommandResult> {
@@ -57,7 +70,8 @@ async function startLogin(ctx: CommandContext, backendUrl: string): Promise<Loca
         ctx.notify?.("已取消登录");
         return;
       }
-      ctx.notify?.(`✗ 登录失败：${err.message}`);
+      // core 的报错文案面向终端（「请重新执行 sid-code auth login」），在 TUI 里要指向 /login
+      ctx.notify?.(`✗ 登录失败：${tuiHint(err.message)}`);
     },
   );
 
@@ -71,7 +85,7 @@ async function startLogin(ctx: CommandContext, backendUrl: string): Promise<Loca
   ]);
   if (!first.url) {
     const error = "error" in first ? first.error : undefined;
-    return { type: "text", value: `✗ 登录失败：${error?.message ?? "未拿到授权链接"}` };
+    return { type: "text", value: `✗ 登录失败：${tuiHint(error?.message ?? "未拿到授权链接")}` };
   }
 
   const entry: PendingLogin = { url: first.url, abort, done };
@@ -93,7 +107,7 @@ async function startLogin(ctx: CommandContext, backendUrl: string): Promise<Loca
     }
     return { type: "text", value: `${linkMessage(first.url, false)}\n\n${lines.join("\n")}` };
   }
-  return { type: "text", value: linkMessage(first.url, false) };
+  return linkResult(entry, false);
 }
 
 const mod: LocalCommandModule = {
@@ -108,7 +122,7 @@ const mod: LocalCommandModule = {
       return { type: "text", value: `未知参数「${sub}」。用法: /login [cancel]` };
     }
 
-    if (pending) return { type: "text", value: linkMessage(pending.url, true) };
+    if (pending) return linkResult(pending, true);
 
     const { resolveBackendUrl } = await import("@sid-code/core/identity/backend-url.ts");
     const { NO_BACKEND_HINT } = await import("@sid-code/core/identity/login-status.ts");

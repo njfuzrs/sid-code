@@ -326,6 +326,12 @@ export const PANEL_MIN_LINES = 3;
 /** 命令输出面板的展示参数（标题缺省 = 命令输入原文，如 `/doctor`） */
 export interface CommandPanelSpec {
   title?: string;
+  /**
+   * 面板内容只在某个后台过程进行期间有意义时（如 /login 的授权链接），传入该过程的 Promise：
+   * 它结束（无论成败）后 TUI 自动关掉这个面板。结果本身由命令自己经 notify 报到状态栏。
+   * 只关「由本次结果打开的那个面板」：期间面板已被别的命令替换或被用户关掉，则什么都不做。
+   */
+  until?: Promise<unknown>;
 }
 
 // ============================================================
