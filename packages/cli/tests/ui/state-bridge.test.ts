@@ -49,3 +49,67 @@ describe("getConversationClearedPatch", () => {
     expect(patch.turnStartOutputTokens).toBe(0);
   });
 });
+
+// ─── 流式合帧（updateStreaming）───
+// 背景：流式回调每 token 一次 update → 每 token 一次整树 reconcile。合帧后 emit 降到
+// 每 STREAM_FLUSH_MS 一次。下面锁住三条约束：current 同步、窗口内只 emit 一次、
+// 普通 update 立即带出待发状态（不乱序、不延后状态切换）。
+describe("StateBridge.updateStreaming 合帧", () => {
+  const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
+  const mk = async () => {
+    const { StateBridge } = await import("@sid-code/cli/ui/state-bridge.ts");
+    const bridge = new StateBridge({ streamingText: "", isStreaming: false } as any);
+    const emitted: string[] = [];
+    bridge.on("change", (s: any) => emitted.push(s.streamingText));
+    return { bridge, emitted };
+  };
+
+  test("current 同步合并，窗口内多次更新只 emit 一次且是最新值", async () => {
+    const { bridge, emitted } = await mk();
+    const { STREAM_FLUSH_MS } = await import("@sid-code/cli/ui/state-bridge.ts");
+    for (let i = 1; i <= 50; i++) {
+      bridge.updateStreaming({ streamingText: "x".repeat(i) } as any);
+      // 同步读 current 必须是最新值（app.ts 大量同步读 bridge.current）
+      expect((bridge.current as any).streamingText.length).toBe(i);
+    }
+    expect(emitted).toEqual([]);
+    await sleep(STREAM_FLUSH_MS + 20);
+    expect(emitted).toEqual(["x".repeat(50)]);
+    bridge.detach();
+  });
+
+  test("持续流式下每个窗口都出帧（固定窗口，不是 debounce）", async () => {
+    const { bridge, emitted } = await mk();
+    const { STREAM_FLUSH_MS } = await import("@sid-code/cli/ui/state-bridge.ts");
+    const end = Date.now() + STREAM_FLUSH_MS * 5;
+    let n = 0;
+    while (Date.now() < end) {
+      bridge.updateStreaming({ streamingText: String(++n) } as any);
+      await sleep(4);
+    }
+    // debounce 实现在持续输入下会是 0 帧；固定窗口至少 3 帧
+    expect(emitted.length).toBeGreaterThanOrEqual(3);
+    bridge.detach();
+  });
+
+  test("普通 update 立即 emit 并带出待发流式状态，之后不再补发旧帧", async () => {
+    const { bridge, emitted } = await mk();
+    const { STREAM_FLUSH_MS } = await import("@sid-code/cli/ui/state-bridge.ts");
+    bridge.updateStreaming({ streamingText: "abc" } as any);
+    bridge.update({ isStreaming: false } as any);
+    expect(emitted).toEqual(["abc"]);
+    await sleep(STREAM_FLUSH_MS + 20);
+    // 待发定时器已被 update 取消：不会在状态切换之后又补发一帧
+    expect(emitted).toEqual(["abc"]);
+    bridge.detach();
+  });
+
+  test("detach 取消待发定时器", async () => {
+    const { bridge, emitted } = await mk();
+    const { STREAM_FLUSH_MS } = await import("@sid-code/cli/ui/state-bridge.ts");
+    bridge.updateStreaming({ streamingText: "z" } as any);
+    bridge.detach();
+    await sleep(STREAM_FLUSH_MS + 20);
+    expect(emitted).toEqual([]);
+  });
+});
