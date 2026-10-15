@@ -43,8 +43,18 @@ export async function handlePluginCommand(
     return sub ? 0 : 1;
   }
   const { PluginCommand } = await import("./plugin.ts");
-  // 参数按空格重新拼回：PluginCommand 自己按空白切分（含 --market=x / --market x 两种写法）
-  const result = await new PluginCommand().execute(args.join(" "), {} as AppContext);
+  // install / update 成功后会发 plugin_installed。快速路径不走 App，没人绑 Sink：
+  // logEvent 只进内存队列，进程退出即丢（2026-10-13 生产 3 次市场下载、0 条 plugin_installed）。
+  // 所以这两个子命令自己绑 Sink、退出前刷一次；其余只读子命令不联网上报。
+  const reports = REPORTING_SUBCOMMANDS.has(sub);
+  if (reports) await attachEventReporting();
+  let result: Awaited<ReturnType<InstanceType<typeof PluginCommand>["execute"]>>;
+  try {
+    // 参数按空格重新拼回：PluginCommand 自己按空白切分（含 --market=x / --market x 两种写法）
+    result = await new PluginCommand().execute(args.join(" "), {} as AppContext);
+  } finally {
+    if (reports) await flushEventReporting();
+  }
   // CLI 下没有 /reload-plugins 这一步：下次启动 sid-code 即重新加载，把 TUI 专用提示换掉
   const message = (result.message ?? "").replace(
     /提示: 运行 \/reload-plugins 使其生效/g,
@@ -56,4 +66,40 @@ export async function handlePluginCommand(
   }
   out.log(message);
   return 0;
+}
+
+/** 会产生 plugin_installed 的子命令 */
+const REPORTING_SUBCOMMANDS = new Set(["install", "update"]);
+
+/** 退出前刷事件的上限：丢一条遥测可接受，CLI 卡住不可接受（同 graceful-shutdown 原则） */
+const FLUSH_TIMEOUT_MS = 3000;
+
+/**
+ * 绑定与 TUI 同一套 Sink + 后端（initAnalyticsSink：隐私级别、内置 sid-backend、本地 JSONL）。
+ * 不另写一套简化版：两条入口上报口径必须一致，否则「CLI 装的」和「TUI 装的」在服务端不可比。
+ * 任何失败都吞掉——上报是旁路，不能让安装失败。
+ */
+async function attachEventReporting(): Promise<void> {
+  try {
+    const { loadConfig } = await import("@sid-code/core/config/config.ts");
+    const { generateSessionId } = await import("@sid-code/core/session/id.ts");
+    const { initAnalyticsSink } = await import("@sid-code/core/query/init-helpers.ts");
+    await initAnalyticsSink(await loadConfig({}), generateSessionId());
+  } catch {
+    /* 上报旁路，静默 */
+  }
+}
+
+async function flushEventReporting(): Promise<void> {
+  try {
+    const { shutdownBackends } = await import("@sid-code/core/analytics/sink.ts");
+    const { shutdownFeatureFlags } = await import("@sid-code/core/analytics/feature-flags.ts");
+    shutdownFeatureFlags();
+    await Promise.race([
+      shutdownBackends(),
+      new Promise<void>((r) => setTimeout(r, FLUSH_TIMEOUT_MS).unref?.()),
+    ]);
+  } catch {
+    /* 上报旁路，静默 */
+  }
 }
