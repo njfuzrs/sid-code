@@ -33,6 +33,7 @@ import {
 } from "@sid-code/core/config/remote-policy-state.ts";
 import { PermissionChecker } from "@sid-code/core/permission/checker.ts";
 import { defaultConfig } from "@sid-code/core/config/config.ts";
+import { getLogger } from "@sid-code/core/debug/logger.ts";
 
 let tmpDir: string;
 let prevConfigDir: string | undefined;
@@ -292,6 +293,34 @@ describe("RemotePolicyLoader.load", () => {
     const got = await new RemotePolicyLoader().load();
     expect(fetchMock).not.toHaveBeenCalled();
     expect(got?.permissions?.deny).toEqual(["Bash(curl *)"]);
+  });
+
+  // 未登录是正常状态：logger 未启用时 WARN 会兜底写 stderr，出现在 CLI 首屏之前。
+  test("无凭据且无缓存 → 不打 POLICY WARN（只走 debug）", async () => {
+    process.env.SID_CODE_POLICY_ENDPOINT = "http://127.0.0.1:8900/api/v1/ctl/policy";
+    installFetch(mock(async () => emptyResponse(200)) as unknown as typeof fetch);
+    const warnSpy = spyOn(getLogger(), "warn");
+    try {
+      expect(await new RemotePolicyLoader().load()).toBeNull();
+      const policyWarns = warnSpy.mock.calls.filter((c) => c[0] === "POLICY");
+      expect(policyWarns).toEqual([]);
+    } finally {
+      warnSpy.mockRestore();
+    }
+  });
+
+  test("已登录但网络失败且无缓存 → 仍然 WARN（真异常不能被一起降级）", async () => {
+    enroll();
+    process.env.SID_CODE_POLICY_ENDPOINT = "http://127.0.0.1:8900/api/v1/ctl/policy";
+    installFetch(mock(async () => emptyResponse(503)) as unknown as typeof fetch);
+    const warnSpy = spyOn(getLogger(), "warn");
+    try {
+      expect(await new RemotePolicyLoader().load()).toBeNull();
+      const policyWarns = warnSpy.mock.calls.filter((c) => c[0] === "POLICY");
+      expect(policyWarns.length).toBeGreaterThan(0);
+    } finally {
+      warnSpy.mockRestore();
+    }
   });
 });
 
