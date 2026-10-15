@@ -2,6 +2,180 @@
 
 本文件由 scripts/generate-changelog.ts 自动生成，请勿手改。
 
+## v0.1.610 (2026-10-15)
+
+### 新功能
+- **command** · 新增 /login /logout /whoami 与企业登录文档 (#288) `6f2fffbc`
+  - `/login [cancel]`：立即返回授权链接，后台等浏览器回调，结果走状态栏通知；重复执行返回同一链接（只起一个回调服务器）；已登录时先确认（重新登录会吊销旧凭据）。
+  - `/logout`：确认后通知后端解绑本设备并删本地凭据，文案与 `sid-code logout` 一致。
+  - `/whoami [--verify]`：登录用户、登录时间、凭据过期时间（含滑动续期说明）、后端地址、设备 ID；默认零网络请求。
+  - `/status` 末尾加「企业登录」一行，只在配了 `backend.url` 时出现。
+  - 登录状态采集 / 渲染从 `auth.ts` 下沉到 `identity/login-status.ts`，CLI 与 TUI 共用；`auth status` 输出不变（`--verify` 额外显示组织 / 团队）。 - `credential.ts`：`onCredentialChanged`（只在凭据明文变化时触发）、`onCredentialRejected` / `reportCre…
+  - 策略 / 预算 / 账本 / 事件四条通道 401 统一上报；事件与账本的告警去重改为按凭据代数，重新登录后再失效能再看到告警。
+  - 新增 `reloadEnterprisePolicy()` / `reloadRemoteBudget()`。
+  - `bun run affected-tests:run`：4184 pass / 0 fail（cli 全包 + core analytics/config/identity/telemetry + tests/website）
+- **identity** · 启动时同步凭据过期时间 (#286) `39d920d4`
+  - 新增 `packages/core/src/identity/credential-sync.ts`：`syncCredentialFromServer()` 调 whoami，拿到能解析的 `expires_at` 就回写本地，其它字段不动
+  - `initTelemetrySystem` 里在后台调一次，不等结果，不影响启动
+  - 24 小时最多同步一次；网络错误不计入节流，下次启动会再试
+  - 发请求用凭据原文，不走 `getUsableCredentialToken()`，所以本地已过期时也能同步
+  - 旧后端没有这个字段、值无法解析、401、网络错误，这几种情况本地文件都不改；401 也不删凭据，删凭据是 logout 的事
+  - 请求过程中如果凭据被重新登录换掉了，不会用旧结果覆盖新凭据
+  - `website/use/privacy.md` 出网表里补上这次新增的 whoami 请求
+  - Agent Note：`.agents/notes/implemented/feature/2026-10-14-启动时同步凭据过期时间.md`
+- **perf** · 新增 /perf 命令与性能文档页 (#283) `86d67384`
+  - **新命令 `/perf`**（别名 `/performance`）
+  - `/perf [id|latest]`：单会话视图。展示 TTFT（按 model，带 TTFB）、生成耗时、tok/s、端到端、模型与工具的耗时占比、上下文峰值
+  - `/perf --days N`：近 N 天对比前 N 天。两侧都 ≥5 个样本才下结论；变化 <10% 记 ≈；退步 ≥20% 标 ⚠
+  - `/perf --by-version`：按版本列出
+  - `--json`：机器可读输出
+  - **计算层**：`packages/core/src/trace/perf-report.ts`，全部是纯函数。只报 p50/p95，每个数都带 n，无样本显示「无样本」而不是 0；成本只统计已计价的会话；未正常结束的会话不进趋势
+  - **采集层**：`session-index.jsonl` 新增 `tps / gen_p95 / gen_n / tool_duration_ms / context_peak_ratio` 五个字段。此前它们只存在于 `session.traj`，轨迹被 LRU 清理后趋势就断了（本机实测：索引 408 行，轨迹只剩 177 个）
+  - **文档**：新增 `website/use/performance.md`；侧栏「成本与用量」改为「成本与性能」组，下挂两页；参考页已重新生成
+- **release** · 版本清单 versions.json、update --list、I1 审计（B46 P5–P7） (#277) `b0c2bfca`
+  - `scripts/manifest-ops.sh`（ECS 上）dump 归档元数据 / publish 原子写 `versions.json`（指针层）+ OSS `manifest/` 只追加审计副本
+  - `scripts/lib/release-manifest.ts`：开发机从 dump 生成清单；`archive_since=0.1.602`，之前 20 个 tag 进 `lost`；0.1.582–0.1.599 带 `self-update-broken`；一个版本一行，install.sh 不依赖 jq
+  - `sid-code update --list`；`--version x` 先查清单（不存在 / 已丢失报错并提示 `--list`；清单拉不到直接交给 install.sh）
+  - install.sh：显式版本 404 提示 `--list`；装旧版本提示 `autoUpdate: off` 与 known_issues
+  - `release.sh --audit-archive`：`git tag ⊆ 归档 ∪ lost` + 最老已归档版本 HEAD 200
+  - `--upload` 在写 `beta.txt` 前跑审计 + 冒烟，失败即 fail；清单发布失败只 warn；新增 `--publish-manifest`
+  - `tests/release-manifest.test.ts` 27 pass（真跑 manifest-ops.sh + fake-ossutil、真跑 install-template.sh、upload 顺序契约）
+  - 全量 `bun run test` 16303 pass / 0 fail；lint、format:check、lint:boundary、docs:gen-reference-check 全绿；`make build` 自检通过；pre-push（含 website 构建）通过
+
+### 修复
+- **trace** · 关终端会话的 exit_status 按末轮推断，结束方式记在 end_source (#294) `c500386b`
+  - `collector.test.ts`：末轮 end_turn → `end_turn` + `end_source=terminal_closed`；末轮 tool_use → `user_interrupt`（反向自证）；零轮 → `terminal_closed`
+  - `bun run affected-tests:run`：818 pass / 0 fail
+  - `make build` 通过，无 undefined 警告；lint 0 错误；typecheck:gate 无新增
+- **llm** · 整体超时只计单次尝试，重试退避不再被 180s 截断 (#293) `578ad436`
+  - idle：`retry_backoff` 是首个事件，退避后新请求的等首字节改用 idle 档（60s）判，排队慢的网关会被误杀（2026-08-05 同型）。
+  - 主循环 `query/stream-processor.ts`：2026-10-12 已扣退避，但 overall 仍从整条流起算，多次尝试的耗时会累加。
+  - 调大 180s 或缩短退避阶梯：还是「次数听时间的」，换个负载形态照样撞。
+  - 去掉子代理 overall 层：失去「持续吐内容永不结束」的单次尝试兜底。
+  - [x] `bun test` 本改动范围 0 fail（剩 1 条为既有环境问题）
+  - [x] `make build` 成功
+  - [x] `bun run lint` 通过
+  - [x] `bun run format:check` 通过
+- **trace** · 空闲时关终端不再把会话记成 abort (#292) `2552d93a`
+  - 信号处理在派发 SessionEnd 前先判断当前是否有轮次在跑（`this.busy` 或未 abort 的 `abortController`，在自己调 `abort()` 之前取样）。
+  - 新增 SessionEnd reason `terminal_closed`：**空闲时收到 SIGHUP**（关终端窗口 / SSH 断连）用它。
+  - 忙时 SIGHUP、SIGINT、SIGTERM 仍记 `abort`。
+  - 判定抽成纯函数 `sessionEndReasonForSignal`（`packages/cli/src/app.ts`）。
+  - `terminal_closed` 不在 collector / digest 的 abnormal 名单里，不再计入中断。
+  - `packages/cli/tests/session-end-reason-for-signal.test.ts`：空闲 SIGHUP → terminal_closed；忙时 SIGHUP → abort（反向自证）；SIGINT/SIGTERM 恒 abort。
+  - `packages/core/tests/trace/collector.test.ts` 新增用例：terminal_closed 原样落进 `session.traj`。
+  - `bun run affected-tests:run`：3585 pass / 0 fail
+- **core** · 未登录时启动不再往 CLI 打远程策略 / 预算告警 (#291) `7afc20d4`
+  - `packages/core/src/config/policy.ts`：无凭据分支 `log.warn` → `log.debug`；`usableCachedSettings` 增加 `level` 参数，仅 `no_credential` 传 `"debug"`
+  - `packages/core/src/telemetry/remote-budget.ts`：无凭据分支 `log.warn` → `log.debug`
+  - 新增 3 条测试（含「已登录 + 503 无缓存仍 WARN」防降级过头）；两个相关测试文件 55 pass / 0 fail
+  - `bun run affected-tests:run`：1281 pass / 0 fail
+  - `make build` 通过，无 `will always be undefined` warning；`lint` / `format:check` 通过
+  - 真 pty 端到端：空 `SID_CONFIG_DIR` + 配置 policy/budget endpoint 启动，抓首屏 6s：旧二进制 3 行 `[POLICY]/[BUDGET]`，新二进制 0 行
+  - `typecheck:gate` 在 worktree 里报的新增项是 worktree 环境产物（`node_modules` 软链到主仓导致同一类型两条路径 + 本机残留 signal-exit 4.x 的 `ink.tsx` TS1192），均不在本次改动文件里；CI 是干净环境，以 CI 结论为准
+- **tui** · /login 授权面板随登录结束自动关闭，/logout 成功回执走状态栏 (#290) `11f88539`
+  - **/login 授权面板不会自动关闭**：登录成功后链接面板一直停在屏上，必须手动 Esc。 `CommandPanelSpec` 新增 `until?: Promise`，落定后 TUI 关掉由本次结果打开的面板（按对象身份判断，期间被别的命令替换或已被用户关掉则不动）。/login 绑定登录流程，成功 / 失败 / 超时 / `/login cancel` 都会关。
+  - **/login 文案误导**：原文「可以继续使用」，但面板在屏时输入框被替换，实际用不了。改为说明自动关闭、可先 Esc 关面板继续使用。
+  - **/logout 成功也弹面板**：成功回执 4 行，按 `PANEL_MIN_LINES` 进了面板，要手动 Esc。正常路径收成一行走状态栏（自动消失）；解绑失败 / 后端不支持 / 未配后端仍多行进面板，因为用户要照做。
+  - **TUI 里登录失败提示指向 CLI**：超时、登录码过期提示「请重新执行 sid-code auth login」，TUI 内替换为 `/login`。
+  - 官网 `team/login.md` 同步；Agent Note 见 `.agents/notes/implemented/bug-fix/2026-10-15-登录面板随流程结束自动关闭.md`。
+  - `bun run affected-tests:run`：2669 pass / 0 fail（237 文件）
+  - 新增用例：面板 `until` 等待期间不落定、cancel 后落定、重复 /login 同一个 `until`；文案；正常登出 1 行、后端 500 时 ≥3 行
+  - `bun run typecheck:gate`：66 / 基线 66，无新增
+- **tui** · 斜杠命令的确认提示改为可操作的确认框 (#289) `4199a939`
+  - `app.ts`：`confirm` 分支经 `interactionQueue` 弹确认框。确认后执行 `onConfirm()`，结果递归交回 `handleCommandExecutionResult`；取消时回执「已取消」，Esc 也算取消。
+  - 复用 `shellConfirmRequest` state 格子，`ShellConfirmRequestInfo` 新增可选 `message`。Esc 中断、双击 Esc 等十余处现有的「确认框在屏」判断自动生效。
+  - `DialogManager.tsx`：`ShellConfirmDialog` 新增 message 模式，只显示说明文字和「确认 / 取消」（↑↓ / Enter / y / n / Esc）。
+  - 附 Agent Note：`.agents/notes/implemented/bug-fix/2026-10-15-斜杠命令confirm结果弹确认框.md`
+  - 新增 `packages/cli/tests/ui/components/command-confirm-dialog-keys.test.tsx`（真实按键）：回车 → 确认，n / Esc → 取消，3 pass
+  - `login-commands.test.ts` 与 `approval-dialogs-keys.test.tsx` 共 18 pass
+  - `bun run affected-tests:run`：2460 pass / 0 fail
+  - `make build` 自检通过，无 `will always be undefined` 警告
+- **identity** · 本地过期不再扣下设备凭据 (#287) `cb2e4ee4`
+  - **B1**：服务端设备凭据是滑动续期，客户端本地 `expires_at` 是登录时的快照、从不更新。以前本地一过期就扣下凭据，登录满一个 TTL 的活跃用户会静默失去全部企业通道（策略 / 预算 / 账本 / 事件 / 插件市场 / `sid-backend` MCP）。现在 `getUsableCredentialToken()` 本地过期仍照常返回凭据，只打一次 debug，是否失效只认…
+  - **B2**：`performCliLogout` 直接取原始凭据，本地过期也通知后端解绑，避免换人登录撞 409。
+  - **B3**：`auth status --verify` 本地过期也调 `/ctl/whoami` 核验；本地过期不再显示成未登录。
+  - `auth status` 新增「登录时间」（`enrolled_at`）；过期行注明「本地记录，服务端每次使用自动顺延」（不写死天数）。
+  - `logout` 在没配 backend.url 时提示「未通知服务端解绑」。
+  - 事件 / 账本的 401 告警原来写「本会话不再重试」，与实际行为（这一批丢弃、下一批照发）不符，改成如实描述。
+  - `bun run affected-tests:run`（判定为全量）：16375 pass / 1 fail。唯一失败是新用例把 whoami 次数断言成恰好 1 次，而 `--verify` 的通道探测还会再调一次；改成「至少一次」后单跑 4 pass / 0 fail。
+  - 变异自证：把 B3 的核验条件改回 `!backend || !cred || expired`，`auth-status.test.ts` 变成 2 fail；恢复后 4 pass。
+- **tool** · 未读文件的 edit 改为精确命中放行、近似匹配拒绝 (#285) `0aff80d6`
+  - old_string **精确命中**（含 1:1 引号规范化）→ 放行，埋点 `allowed_unread_exact`
+  - 只能靠灵活 / 正则 / 模糊匹配命中，或完全未命中 → 拒绝，埋点 `rejected_unread` 并带 `match_strategy`
+  - `write` 覆盖已有文件、读后被外部修改、`old_string=''` 创建：**行为不变**
+  - 精确匹配：匹配不上就报错，不会改错，有兜底，read 前置多余。
+  - 模糊匹配：凭印象拼的 old_string 可能静默落到相似的错误块上，没有兜底，所以保留拦截。
+  - write 整文件覆盖：会丢掉模型没见过的内容，也没有兜底，所以保留拦截。
+  - 新增 5 条用例，并改写 2 条依赖旧行为的用例（子代理 tracker 隔离改用近似匹配，继续证明隔离成立）
+  - 变异自证：把延后判定改成恒放行后，3 条用例变红，恢复后全绿
+- **subagent** · 休眠保活缺口、重试预算与失败归因修复 (#284) `28d5d204`
+  - **A1** `prevent-sleep.ts`：单进程 `caffeinate -i -w <pid>`，去掉 `-t` 与定期重启；意外退出立即重拉（60s 内上限 3 次）；`/doctor` 新增防休眠检查
+  - **B1** 子代理不再给漏斗传 `deadlineAt`：次数 → maxRetries，卡死 → 单次尝试上限 180s，总时长 → 硬 kill（可打断退避 sleep）
+  - **B2** 子代理墙钟 / 硬 kill 定时器扣休眠（`agent/sleep-aware-timer.ts`，两条路径共用）
+  - **C1** `sleep-detect.onWake` + `fallback.ts`：唤醒后只中断「发起早于休眠」的在飞请求，固定 2s 后重开，不计重试、不退避、不记 availability 失败，发 `host_sleep_reopen` 遥测
+  - **D1** `classifySubAgentFailure`：漏斗放弃证据优先于 detached；按错误族给建议；附休眠说明；`subagent_failed` 兜底不再猜模型；`<progress>` 显式 input/output/cache 口径
+  - **E1** 规范 id `<parent>-sub-<taskId>` 统一 hook / 遥测 / sidechain（旧值保留为 `legacy_agent_id`）；`parent_session_id` 传真值、新增 `parent_tool_use_id`（执行器注入，加入 INTERNAL_FIELDS 防伪造）；`sidechain_start` 补关联键；残卷 `<output…
+  - **F1** `ModelCallUnpaired` 有效耗时 = 挂钟 − 退避 − 休眠，未到点重排
+  - **G1** 子代理单次尝试上限 = 180s 且扣休眠的哨兵测试；Agent Notes 4 implemented + 3 rejected
+- **privacy** · 配置文件里的隐私级别在 loadConfig 返回前注入 (#282) `72befcce`
+  - `settings.json` 写 `analytics.privacy_level: "essential-traffic"`：更新检查被拦，**外部模型目录同步照样出网**（4 个第三方源）
+  - 换成 `SID_CODE_DISABLE_NONESSENTIAL_TRAFFIC=1`：两者都被拦
+  - 新增 `privacy-level-early-inject.test.ts`：3 pass；把注入改成空操作后 2 fail（变异自证）
+  - `make build` 产物真实启动（只用 settings 设 essential-traffic）：日志不再出现 `[MODEL-CAP] 外部目录同步完成`，`model-capabilities.json` 未生成，出网只剩配置的模型端点
+  - config / analytics / telemetry / cli app 测试：1494 pass / 0 fail；oxfmt / oxlint 0 问题
+- **types** · 清掉生产源码与 tui 的 tsc 存量错误，基线 87 → 66 (#275) `875e2a5c`
+  - `tsconfig.json` 的 include 显式加入 `packages/tui/src/**/*`：`global.d.ts`（声明 `ink-box` / `ink-text` JSX 内置元素）不被任何文件 import，不列入就不进编译单元 → 12 条 TS2339
+  - 根 devDependencies 以精确版本补 `@types/signal-exit@3.0.4`、`@types/ws@8.18.1`、`@types/scheduler@0.26.0`（与 tui 锁定的运行时版本同代）。`bidi-js` 自带声明，原错误随之消失
+  - `use-animation-frame.ts`：`React.RefObject` → 具名导入 `RefObject`，已记入 `UPSTREAM-DIFF.md`
+  - `cli/src/ui/hooks/useFlickerDetector.ts`：同上，`React.RefObject` → `RefObject`
+  - `cli/src/utils/piped-stdin.ts`：注入的 `Readable` 没有 `isTTY`，改用 `"isTTY" in stdin` 收窄，mock 流按非 TTY 处理（与原行为一致）
+  - `core/src/checkpoint/manager.ts`：`Bun.gzipSync` 只收 ArrayBuffer 背书的 Uint8Array，做类型收窄（不拷贝，避免大文件多一次复制）
+  - `bun run typecheck:gate`：`当前 66 处错误 / 基线 66 处`、`✓ 无新增类型错误`
+  - `bun run lint` / `format:check` / `lint:boundary`：全绿
+
+### 文档
+- **changelog** · v0.1.610 用户视角更新说明 `4d281e42`
+- **home** · 首页去掉「数据不出门」「不进训练集」两处过满承诺 (#281) `c25ed4b4`
+  - 定位块和站点 `description`：「数据不出门」改为「数据归你」
+  - 首页「数据主权」卡片：去掉「不进任何人的训练集」，改为「sid-code 不向维护者回传会话内容；模型请求只发往你选的 provider」，链接改到 `/use/privacy`
+  - `website:build` 通过，没有死链
+  - `bun test ./tests/website/`：202 pass / 0 fail
+  - 全站 grep「数据不出门」「不进任何人的训练集」：剩下的都在注释里，作为历史说明保留
+- **privacy** · 出网总表补 update --list 拉取的 versions.json (#280) `5f193e4f`
+  - 核对代码：`versions.json` 只在 `packages/cli/src/command/update.ts:137,140`（`--list` / 指定版本）经 `fetchReleaseIndex()` 拉取，地址 `${RELEASE_ORIGIN}/releases/sid-code/versions.json`（`core/src/update/manifest.ts`）
+  - `website:build` 通过、无死链
+- **privacy** · 新增隐私与数据流向页，纠正数据外发承诺 (#279) `a48e990a`
+  - 新增 `website/use/privacy.md`「隐私与数据流向」，作为隐私唯一事实源：本机存储、出网总表、模型侧留存、三个隐私级别、脱敏范围、上传与补传语义、陌生仓库边界、企业锁定、FAQ
+  - 纠正过满承诺：README「不进任何人的训练集」、start「数据留在本地」
+  - `team/observability.md`：保留口径统一为 365 天 / 10GB，补脱敏、上传标识字段、补传水位、`--include-history`、env/CLI 整块替换 `trace` 的影响面、四道闸门
+  - 源码描述（参考页源头）：`trace.enabled` 默认值、`privacyLevel`、`help.ts` 隐私变量、`/debug` description；已重新生成参考页
+  - defaults / install / auto-update / memory / troubleshooting / permissions / policy / SECURITY 补隐私结论并链到隐私页；侧栏加入口
+  - 插件市场（v0.1.609 新增）是方案盘点里没有的出网，**不受 essential-traffic 控制**，文档如实写并给出 `officialMarketplace: false` 的关法
+  - 记忆写入的 secret 检测用的是另一套规则（`llm/hooks/secret-redact.ts`），不是轨迹脱敏那张表，D25 措辞相应调整
+  - `trace.recordRawPayloads` 写在 settings.json 里不生效（config 转换丢弃），文档只写 `SID_CODE_TRACE_NO_RAW=1`
+- **tool** · bash 用法说明补充超过 10 分钟的命令直接走后台 (#274) `6892aa59`
+  - 前台超时被 `FACTORY_MAX_TIMEOUT_MS = 600000`（`bash.ts:76`）截断，`bash.ts:840` 把 `timeout` 夹在 `[1s, max]`，传 900000 也只有 600s。
+  - `run_in_background` 走 `executeWithTaskSystem` → `spawnShellTask`，不读 timeout，`packages/core/src/task/` 无超时逻辑。
+  - 实测会话：跑上限 900s 的 `bun run changelog:curate` 时，模型先选前台，白等 600s 被杀后才改后台。原说明只把后台和「dev server 这类常驻进程」挂钩，没告诉模型「已知超 10 分钟的有限任务」也该走后台。
+  - `bun run affected-tests:run`：1105 pass / 0 fail（65 文件）
+  - `make build`：成功，自检通过，无 `will always be undefined` warning
+  - `bun run lint` / `bun run format:check`：0 error
+  - pre-commit（参考页对账、oxlint、oxfmt、包边界）与 pre-push 全过
+
+### 其他
+- **release** · promote v0.1.609 (#278) `38584e12`
+  - `changelog/channel.json`：稳定通道记录 0.1.608 → 0.1.609
+  - `website/.vitepress/data/changelog.json`：v0.1.609 标为稳定版
+  - promote 门禁通过：产物 commit d6cc1d5d 在 origin/main 上，服务器端 sha256 复核通过
+  - `curl …/latest.txt` 返回 0.1.609
+- release v0.1.609 (#276) `74aa5511`
+  - `bump v0.1.609`（release.sh 自动提交，tag v0.1.609 打在此提交上）
+  - v0.1.609 用户视角 changelog（`changelog/curated/v0.1.609.json`，已人工过目）
+  - northstar 指标快照（`northstar/v0.1.609.json`、`latest-delta.md`）
+  - `release.sh --upload` 全程通过：全量 bun test 门禁、5 平台构建 + 冒烟自检、服务器端 sha256 复核、OSS 归档回读校验
+  - beta.txt 已指向 0.1.609，latest.txt 仍为 0.1.608
+
 ## v0.1.609 (2026-10-14)
 
 ### 新功能
