@@ -65,6 +65,12 @@ let testHome: string;
 /** 一个不可能存在的 pid（存活判定必须判成"已死"，否则重建会被跳过） */
 const DEAD_PID = 2_147_483_600;
 
+/**
+ * 夹具里工具事件的 duration_ms。execute_tool 的 span 起点按它回填（见 runCrashedSession），
+ * 所以 fire 工具事件前必须先让会话体「跑过」这么久，否则回填起点会早于根 span 起点。
+ */
+const TOOL_DURATION_MS = 5;
+
 beforeEach(() => {
   testHome = mkdtempSync(join(tmpdir(), "sid-root-span-recovery-"));
   process.env.SID_CONFIG_DIR = testHome;
@@ -307,6 +313,15 @@ async function runCrashedSession(
       cost_usd: 0.001,
     });
   }
+  const sessionStartMs = Date.now();
+  // execute_tool 的起点按 duration_ms 回填（hook-probe.ts 的 `Date.now() - toolDuration`），
+  // 而 CI 的 macOS runner 能把 SessionStart→PostToolUse 之间的整个会话体压进 5ms 以内
+  // （PR #294 实测 4ms）——回填出的工具起点会比根 span 的 SessionStart 起点还早，
+  // 判据③报「时间错位」，一次时序 flake 被误读成回归。生产里工具真实发生在会话
+  // 开始之后，不存在这种形态；这里等会话体「跑过」工具耗时，把夹具对齐到那个事实。
+  while (Date.now() - sessionStartMs <= TOOL_DURATION_MS) {
+    await new Promise((r) => setTimeout(r, 1));
+  }
   await hookSystem.firePostToolUseEvent(
     "read",
     { file_path: "/tmp/a" },
@@ -314,7 +329,7 @@ async function runCrashedSession(
     false,
     "t1",
     {
-      duration_ms: 5,
+      duration_ms: TOOL_DURATION_MS,
     },
   );
   // ★ 刻意不 fire SessionEnd —— 这就是 kill -9 / OOM 的形态
