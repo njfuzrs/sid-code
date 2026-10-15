@@ -127,7 +127,8 @@ function parseExchangeUser(raw: unknown): CredentialUser | undefined {
   return user.id || user.name || user.unionId ? user : undefined;
 }
 
-async function readDetail(resp: Response): Promise<string> {
+/** 读 FastAPI 的错误详情（detail 字段）。enroll.ts 的注册码通道复用同一实现。 */
+export async function readDetail(resp: Response): Promise<string> {
   try {
     const body = (await resp.json()) as { detail?: unknown };
     if (typeof body?.detail === "string") return body.detail;

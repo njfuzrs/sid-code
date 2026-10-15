@@ -14,6 +14,10 @@
       "path": "/api/v1/auth/cli/logout"
     },
     {
+      "method": "POST",
+      "path": "/api/v1/ctl/enroll"
+    },
+    {
       "method": "GET",
       "path": "/api/v1/ctl/whoami"
     },
