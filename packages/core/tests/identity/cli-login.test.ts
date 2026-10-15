@@ -306,6 +306,32 @@ describe("logout / verify", () => {
     expect(getDeviceCredential()).toBeNull();
   });
 
+  // B2：本地 expiresAt 已过（服务端滑动续期后仍有效）时，logout 也必须通知后端解绑，
+  // 否则设备在服务端仍绑定原用户，换人登录撞 409
+  test("logout：本地 expiresAt 已过仍通知后端解绑", async () => {
+    saveDeviceCredential({ credential: "c-exp", expiresAt: "2020-01-01T00:00:00Z" });
+    let url = "";
+    let auth = "";
+    const fetchImpl = (async (u: any, init: any) => {
+      url = String(u);
+      auth = init.headers.Authorization;
+      return jsonResponse(200, {});
+    }) as unknown as typeof fetch;
+    const r = await performCliLogout(BACKEND, fetchImpl);
+    expect(url).toContain("/cli/logout");
+    expect(auth).toBe("Bearer c-exp");
+    expect(r).toMatchObject({ hadCredential: true, remote: "ok" });
+    expect(existsSync(sidPaths.deviceCredential())).toBe(false);
+  });
+
+  test("logout：服务端 401（凭据确已失效）→ 视为解绑完成并删本地", async () => {
+    saveDeviceCredential({ credential: "c-dead", expiresAt: "2020-01-01T00:00:00Z" });
+    const r = await performCliLogout(BACKEND, (async () =>
+      jsonResponse(401, {})) as unknown as typeof fetch);
+    expect(r.remote).toBe("ok");
+    expect(getDeviceCredential()).toBeNull();
+  });
+
   test("logout：无后端 → 只删本地", async () => {
     saveDeviceCredential({ credential: "c1" });
     const r = await performCliLogout(null);

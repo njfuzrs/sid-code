@@ -48,7 +48,11 @@ interface LoginStatus {
   backendSource: string | null;
   loggedIn: boolean;
   user: { id?: string; name?: string; unionId?: string } | null;
+  /** 登录（签发）时间，取凭据文件的 enrolled_at */
+  enrolledAt: string | null;
+  /** 本地记录的过期时间：登录时的快照，服务端滑动续期后不会更新，仅供参考 */
   expiresAt: string | null;
+  /** 本地快照已过期。不代表服务端失效，以 --verify 为准 */
   expired: boolean;
   deviceId: string;
   /** 仅 --verify：ok / unauthorized / error / skipped */
@@ -66,15 +70,18 @@ async function collectLoginStatus(verify: boolean): Promise<LoginStatus> {
   const status: LoginStatus = {
     backendUrl: backend?.url ?? null,
     backendSource: backend?.source ?? null,
-    // 注册码流程签发的凭据没有 user 段，也算「已登录（设备）」，只是没绑到人
-    loggedIn: cred !== null && !expired,
+    // 注册码流程签发的凭据没有 user 段，也算「已登录（设备）」，只是没绑到人。
+    // 本地 expiresAt 已过不算登出（B1）：服务端滑动续期，凭据仍会照常携带，失效只认服务端 401
+    loggedIn: cred !== null,
     user: cred?.user ?? null,
+    enrolledAt: cred?.enrolledAt ?? null,
     expiresAt: cred?.expiresAt ?? null,
     expired,
     deviceId: getOrCreateDeviceId(),
   };
   if (verify) {
-    if (!backend || !cred || expired) {
+    // 本地过期也要核验（B3）：本地快照过期时服务端往往仍有效，跳过核验用户就无从自查
+    if (!backend || !cred) {
       status.remote = "skipped";
     } else {
       const { verifyCredentialRemote } = await import("@sid-code/core/identity/cli-login.ts");
@@ -100,11 +107,24 @@ function printLoginStatus(st: LoginStatus): void {
   } else {
     console.log(`  登录用户:     ${st.loggedIn ? "(设备凭据未绑定到人)" : "(未登录)"}`);
   }
+  if (st.enrolledAt) {
+    console.log(`  登录时间:     ${st.enrolledAt}`);
+  }
   if (st.expiresAt) {
-    console.log(`  凭据过期:     ${st.expiresAt}${st.expired ? "  ✗ 已过期" : ""}`);
+    // 不写死天数：TTL 由企业后端配置，客户端写死就会和服务端漂移
+    const note = st.expired
+      ? "（本地记录已过；服务端每次使用自动顺延，加 --verify 确认）"
+      : "（本地记录；服务端每次使用自动顺延，以服务端为准）";
+    console.log(`  凭据过期:     ${st.expiresAt}${note}`);
   }
   console.log(`  设备 ID:      ${st.deviceId}`);
-  if (st.remote === "ok") console.log("  服务端核验:   ✓ 凭据有效");
+  if (st.remote === "ok") {
+    console.log(
+      st.expired
+        ? "  服务端核验:   ✓ 本地记录已过期，但服务端确认仍有效"
+        : "  服务端核验:   ✓ 凭据有效",
+    );
+  }
   if (st.remote === "unauthorized") console.log("  服务端核验:   ✗ 401 凭据已失效或被吊销");
   if (st.remote === "error") console.log(`  服务端核验:   ? 无法确认（${st.remoteDetail}）`);
   if (!st.loggedIn && st.backendUrl) {
@@ -177,6 +197,9 @@ async function cmdLogout(asJson: boolean): Promise<void> {
     console.log(
       `  通知后端解绑失败（${result.remoteDetail}）：换人登录若提示设备已绑定，请联系管理员。`,
     );
+  } else if (result.remote === "skipped") {
+    // 有凭据却没调后端，只可能是没配 backend.url
+    console.log("  未配置后端地址，未通知服务端解绑：换人登录若提示设备已绑定，请联系管理员。");
   }
 }
 
