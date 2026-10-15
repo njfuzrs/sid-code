@@ -588,7 +588,14 @@ export interface SessionStartInput extends HookInput {
 
 /** SessionEnd 输入 */
 export interface SessionEndInput extends HookInput {
-  reason: "exit" | "clear" | "other" | "error" | "abort";
+  /**
+   * - `abort`：真打断——Ctrl-C / SIGTERM，或关终端时**有轮次正在跑**。
+   * - `terminal_closed`：**空闲时**收到 SIGHUP（关终端窗口 / SSH 断连）。
+   *   上一轮已正常结束，这是用户结束会话的方式之一，不是中断。
+   *   实测（2026-10-15，205 个本地会话）：abort 126 个里 125 个是 SIGHUP，
+   *   有对话的 82 个里 81 个收到信号时已空闲——全记成 abort 会把中断率虚高 80 倍。
+   */
+  reason: "exit" | "clear" | "other" | "error" | "abort" | "terminal_closed";
   /**
    * sid-code 自身版本号，语义同 `SessionStartInput.app_version`。
    *

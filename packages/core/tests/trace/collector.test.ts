@@ -1039,6 +1039,18 @@ describe("TraceCollector", () => {
       expect(collector.getMetadata()!.exit_status).toBe("abort");
     });
 
+    test("空闲关终端 → terminal_closed 原样落盘（不再记成 abort）", async () => {
+      // 生产形态（会话 20261015-142158-54828b44）：上一轮 end_turn，1.5 分钟后关窗口收到 SIGHUP。
+      await fireSessionStart(hookSystem);
+      await fireModelRound(hookSystem, { stopReason: "end_turn" });
+      await hookSystem.fireSessionEndEvent("terminal_closed");
+
+      expect(collector.getMetadata()!.exit_status).toBe("terminal_closed");
+      const trajPath = join(testDir, "sessions", "sess-001", "session.traj");
+      const traj = JSON.parse(readFileSync(trajPath, "utf-8"));
+      expect(traj.metadata.exit_status).toBe("terminal_closed");
+    });
+
     test("max_turns 落进 session.traj（内存里有、落盘没有等于没采）", async () => {
       await fireSessionStart(hookSystem);
       await fireModelRound(hookSystem, { stopReason: "tool_use" });

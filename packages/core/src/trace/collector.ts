@@ -2129,7 +2129,8 @@ export class TraceCollector {
     // reason 语义：
     //   exit/other → 先看有没有 max_turns 真实信号，没有再看最后一次 stop_reason
     //   clear → /clear 上下文清除
-    //   abort → 用户主动 Ctrl-C 或外部 SIGTERM
+    //   abort → 用户主动 Ctrl-C / 外部 SIGTERM / 关终端时有轮次在跑（真打断）
+    //   terminal_closed → 空闲时关终端（SIGHUP）。上一轮已收尾，原样落盘、不算 abnormal
     //   error → runtime 抛出异常（流式中断 / API 错误 / 上下文溢出兜底失败）
     //
     // ## `max_turns` 必须先判，且必须用真实信号
