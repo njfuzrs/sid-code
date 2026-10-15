@@ -39,104 +39,16 @@ function maskKey(key?: string): string {
   return `${k.slice(0, 4)}…${k.slice(-4)}（长度 ${k.length}）`;
 }
 
-const NO_BACKEND_HINT =
-  "未配置后端地址。设置环境变量 SID_CODE_BACKEND_URL，或在 ~/.sid-code/settings.json 写\n" +
-  '  { "backend": { "url": "https://<你的后端>/traj" } }';
-
-interface LoginStatus {
-  backendUrl: string | null;
-  backendSource: string | null;
-  loggedIn: boolean;
-  user: { id?: string; name?: string; unionId?: string } | null;
-  /** 登录（签发）时间，取凭据文件的 enrolled_at */
-  enrolledAt: string | null;
-  /** 本地记录的过期时间：登录时的快照，服务端滑动续期后不会更新，仅供参考 */
-  expiresAt: string | null;
-  /** 本地快照已过期。不代表服务端失效，以 --verify 为准 */
-  expired: boolean;
-  deviceId: string;
-  /** 仅 --verify：ok / unauthorized / error / skipped */
-  remote?: string;
-  remoteDetail?: string;
-}
-
-async function collectLoginStatus(verify: boolean): Promise<LoginStatus> {
-  const { resolveBackendUrl } = await import("@sid-code/core/identity/backend-url.ts");
-  const { getDeviceCredential, isCredentialExpired, getOrCreateDeviceId } =
-    await import("@sid-code/core/identity/index.ts");
-  const backend = resolveBackendUrl();
-  const cred = getDeviceCredential();
-  const expired = cred ? isCredentialExpired(cred) : false;
-  const status: LoginStatus = {
-    backendUrl: backend?.url ?? null,
-    backendSource: backend?.source ?? null,
-    // 注册码流程签发的凭据没有 user 段，也算「已登录（设备）」，只是没绑到人。
-    // 本地 expiresAt 已过不算登出（B1）：服务端滑动续期，凭据仍会照常携带，失效只认服务端 401
-    loggedIn: cred !== null,
-    user: cred?.user ?? null,
-    enrolledAt: cred?.enrolledAt ?? null,
-    expiresAt: cred?.expiresAt ?? null,
-    expired,
-    deviceId: getOrCreateDeviceId(),
-  };
-  if (verify) {
-    // 本地过期也要核验（B3）：本地快照过期时服务端往往仍有效，跳过核验用户就无从自查
-    if (!backend || !cred) {
-      status.remote = "skipped";
-    } else {
-      const { verifyCredentialRemote } = await import("@sid-code/core/identity/cli-login.ts");
-      const r = await verifyCredentialRemote(backend.url, cred.credential);
-      status.remote = r.kind;
-      if (r.kind === "unauthorized") status.loggedIn = false;
-      if (r.kind === "error") status.remoteDetail = r.detail;
-    }
-  }
-  return status;
-}
-
-function printLoginStatus(st: LoginStatus): void {
-  console.log("企业登录:\n");
-  console.log(
-    `  后端地址:     ${st.backendUrl ? `${st.backendUrl}（来源 ${st.backendSource}）` : "(未配置)"}`,
-  );
-  if (st.user) {
-    const who = st.user.name ?? st.user.unionId ?? st.user.id;
-    console.log(
-      `  登录用户:     ${who}${st.user.unionId ? `（union_id ${st.user.unionId}）` : ""}`,
-    );
-  } else {
-    console.log(`  登录用户:     ${st.loggedIn ? "(设备凭据未绑定到人)" : "(未登录)"}`);
-  }
-  if (st.enrolledAt) {
-    console.log(`  登录时间:     ${st.enrolledAt}`);
-  }
-  if (st.expiresAt) {
-    // 不写死天数：TTL 由企业后端配置，客户端写死就会和服务端漂移
-    const note = st.expired
-      ? "（本地记录已过；服务端每次使用自动顺延，加 --verify 确认）"
-      : "（本地记录；服务端每次使用自动顺延，以服务端为准）";
-    console.log(`  凭据过期:     ${st.expiresAt}${note}`);
-  }
-  console.log(`  设备 ID:      ${st.deviceId}`);
-  if (st.remote === "ok") {
-    console.log(
-      st.expired
-        ? "  服务端核验:   ✓ 本地记录已过期，但服务端确认仍有效"
-        : "  服务端核验:   ✓ 凭据有效",
-    );
-  }
-  if (st.remote === "unauthorized") console.log("  服务端核验:   ✗ 401 凭据已失效或被吊销");
-  if (st.remote === "error") console.log(`  服务端核验:   ? 无法确认（${st.remoteDetail}）`);
-  if (!st.loggedIn && st.backendUrl) {
-    console.log("\n  提示: 请执行 sid-code auth login");
-  }
-  console.log("");
+// 登录状态的采集与渲染在 core（identity/login-status.ts），TUI 的 /whoami、/status 共用同一份
+async function loadLoginStatusModule() {
+  return import("@sid-code/core/identity/login-status.ts");
 }
 
 async function cmdLogin(asJson: boolean): Promise<void> {
   const { resolveBackendUrl } = await import("@sid-code/core/identity/backend-url.ts");
   const backend = resolveBackendUrl();
   if (!backend) {
+    const { NO_BACKEND_HINT } = await loadLoginStatusModule();
     console.error(`错误: ${NO_BACKEND_HINT}`);
     process.exit(1);
   }
@@ -204,7 +116,8 @@ async function cmdLogout(asJson: boolean): Promise<void> {
 }
 
 async function cmdStatus(asJson: boolean, verify: boolean): Promise<void> {
-  const login = await collectLoginStatus(verify);
+  const { collectLoginStatus, renderLoginStatus } = await loadLoginStatusModule();
+  const login = await collectLoginStatus({ verify });
   const { loadConfig } = await import("@sid-code/core/config/config.ts");
   const config = await loadConfig({});
   const { collectBackendChannels, renderBackendChannels } =
@@ -251,7 +164,7 @@ async function cmdStatus(asJson: boolean, verify: boolean): Promise<void> {
     return;
   }
 
-  printLoginStatus(login);
+  for (const line of renderLoginStatus(login)) console.log(line);
   for (const line of renderBackendChannels(channels)) console.log(line);
   console.log("");
   console.log("模型认证:\n");

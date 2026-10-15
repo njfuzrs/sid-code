@@ -24,7 +24,12 @@
 
 import { chmodSync, existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { dirname } from "node:path";
-import { applyDeviceAuth, getUsableCredentialToken, RELOGIN_HINT } from "../identity/credential.ts";
+import {
+  applyDeviceAuth,
+  getUsableCredentialToken,
+  RELOGIN_HINT,
+  reportCredentialRejected,
+} from "../identity/credential.ts";
 import { resolveEndpoint } from "../identity/endpoints.ts";
 import { sidPaths } from "../config/paths.ts";
 import { getLogger } from "../debug/logger.ts";
@@ -315,6 +320,7 @@ function interpret(
       "BUDGET",
       `远程预算 HTTP ${result.status}（fail-open，当没配）${result.status === 401 ? `。${RELOGIN_HINT}` : ""}`,
     );
+    if (result.status === 401) reportCredentialRejected("budget");
     lastBudget = null;
     return null;
   }
@@ -385,6 +391,20 @@ async function refreshRemoteBudgetAfterPush(): Promise<void> {
 export async function loadEnterpriseBudgetOnce(): Promise<RemoteBudget | null> {
   ensurePushHook();
   if (lastBudget !== undefined && !inFlightLoad) return lastBudget;
+  return loadRemoteBudget();
+}
+
+/**
+ * 丢弃进程内已加载的预算并重新拉取。给 TUI 内 /login、/logout 用：
+ * 登录前已按「无凭据」把 lastBudget 定成 null，不重载的话本会话一直没有预算限制。
+ * 登出后重载会因无凭据得到 null —— 预算本来就要凭据才能拉，这与启动时未登录的行为一致。
+ */
+export async function reloadRemoteBudget(): Promise<RemoteBudget | null> {
+  if (inFlightLoad) await inFlightLoad.catch(() => null);
+  lastBudget = undefined;
+  warnedNoCredential = false;
+  // 刚换了凭据，不受「推送后最短刷新间隔」限制
+  lastGetAt = 0;
   return loadRemoteBudget();
 }
 

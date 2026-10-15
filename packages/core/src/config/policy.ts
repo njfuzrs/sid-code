@@ -7,7 +7,12 @@
 import { chmodSync, existsSync, mkdirSync, readFileSync, statSync, writeFileSync } from "fs";
 import { dirname } from "path";
 import { getLogger } from "../debug/logger.ts";
-import { applyDeviceAuth, getUsableCredentialToken, RELOGIN_HINT } from "../identity/credential.ts";
+import {
+  applyDeviceAuth,
+  getUsableCredentialToken,
+  RELOGIN_HINT,
+  reportCredentialRejected,
+} from "../identity/credential.ts";
 import { resolveEndpoint } from "../identity/endpoints.ts";
 import { setModePolicy } from "../permission/mode-policy.ts";
 import { resolveManagedPolicyFile, sidPaths } from "./paths.ts";
@@ -613,6 +618,7 @@ function interpretRemoteResponse(
       "POLICY",
       `远程策略 401 elapsed_ms=${elapsedMs}：设备凭据无效或已吊销，${RELOGIN_HINT}`,
     );
+    reportCredentialRejected("policy");
     const cached = usableCachedSettings(cache, `401 elapsed_ms=${elapsedMs}`);
     rememberLoadMeta({
       source: cached ? "remote" : "none",
@@ -659,6 +665,23 @@ function interpretRemoteResponse(
   );
   rememberLoadMeta({ source: "remote", outcome: "applied", durationMs: elapsedMs });
   return settings;
+}
+
+/**
+ * 丢弃进程内已加载的默认策略，重新跑一次默认链（远程 → 本地 managed）。
+ *
+ * 给 TUI 内 /login 用：登录前进程已按「无凭据」加载过一次并缓存（loadEnterprisePolicyOnce），
+ * 不重载的话本会话一直按无远程策略运行。调用方拿到结果后自己 applyLoadedPolicy，
+ * 再刷新 permissionChecker 与 Hook 门控（那两样在 app 实例上，core 够不着）。
+ *
+ * 只重置「加载结果」，不清 warnedNoCredential 之外的告警状态：缓存损坏这类告警重复打印没有意义。
+ */
+export async function reloadEnterprisePolicy(): Promise<PolicyLoadResult> {
+  // 有在途加载时先等它落地，避免新旧两次加载结果互相覆盖
+  if (inFlightDefaultLoad) await inFlightDefaultLoad.catch(() => null);
+  defaultLoadResult = undefined;
+  warnedNoCredential = false;
+  return new PolicyManager().loadWithMeta();
 }
 
 /** 仅测试 */

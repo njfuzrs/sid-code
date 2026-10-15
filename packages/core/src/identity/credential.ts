@@ -170,8 +170,77 @@ export function applyDeviceAuth(headers: Record<string, string>): Record<string,
   return { ...headers, Authorization: `Bearer ${token}` };
 }
 
+// ── 进程内事件：凭据换了 / 凭据被服务端拒了 ─────────────────────────────
+//
+// 为什么需要：在 TUI 里 /login，当前进程已经按「没登录」初始化过策略和预算（进程内只加载一次）。
+// 不通知的话，登录成功了本会话仍按无远程策略、无预算运行。core 只负责发事件，
+// 刷新动作由持有 permissionChecker / hookSystem 的 app 层订阅（登录闭环方案 §5.6）。
+
+type CredentialChangedListener = (cred: DeviceCredential | null) => void;
+type CredentialRejectedListener = (source: string) => void;
+const changedListeners = new Set<CredentialChangedListener>();
+const rejectedListeners = new Set<CredentialRejectedListener>();
+
+/**
+ * 凭据代数：凭据明文每换一次（登录 / 登出）加一。
+ * 各通道的「401 只告警一次」标记记下告警时的代数，代数变了就允许再告警——
+ * 否则重新登录后凭据第二次失效时，用户什么提示都看不到。
+ */
+let credentialGeneration = 0;
+/** 本代凭据是否已经上报过一次 rejected（多条通道同时 401 只通知一次） */
+let rejectedReportedGeneration = -1;
+
+export function getCredentialGeneration(): number {
+  return credentialGeneration;
+}
+
+/** 订阅「凭据明文变了」（登录、登出）。只续期过期时间不触发。返回取消订阅函数。 */
+export function onCredentialChanged(listener: CredentialChangedListener): () => void {
+  changedListeners.add(listener);
+  return () => {
+    changedListeners.delete(listener);
+  };
+}
+
+/** 订阅「服务端拒绝了当前凭据（401）」。每一代凭据最多触发一次。 */
+export function onCredentialRejected(listener: CredentialRejectedListener): () => void {
+  rejectedListeners.add(listener);
+  return () => {
+    rejectedListeners.delete(listener);
+  };
+}
+
+/**
+ * 企业通道收到 401 时调用（策略 / 预算 / 账本 / 事件）。统一上报点，TUI 据此提示「请 /login」。
+ * 各通道原有的日志告警不变，这里只多一条用户看得见的通知。
+ */
+export function reportCredentialRejected(source: string): void {
+  if (rejectedReportedGeneration === credentialGeneration) return;
+  rejectedReportedGeneration = credentialGeneration;
+  for (const l of rejectedListeners) {
+    try {
+      l(source);
+    } catch {
+      /* 订阅方自己吞 */
+    }
+  }
+}
+
+function emitChanged(cred: DeviceCredential | null): void {
+  credentialGeneration++;
+  for (const l of changedListeners) {
+    try {
+      l(cred);
+    } catch {
+      /* 订阅方自己吞，不能拖垮登录 / 登出 */
+    }
+  }
+}
+
 /** 落盘凭据（enroll 成功后由调用方写入）。权限 0o600。 */
 export function saveDeviceCredential(cred: DeviceCredential): void {
+  // 先取旧值再覆盖缓存：只有凭据明文变了才算「换了凭据」，单纯同步过期时间（credential-sync）不算
+  const previous = getDeviceCredential();
   const path = sidPaths.deviceCredential();
   const dir = dirname(path);
   if (!existsSync(dir)) {
@@ -204,10 +273,12 @@ export function saveDeviceCredential(cred: DeviceCredential): void {
   cached = cred;
   loggedLocalExpired = false;
   warnedCorrupt = false;
+  if (previous?.credential !== cred.credential) emitChanged(cred);
 }
 
 /** 删除落盘凭据（登出 / 吊销后的本地清理）。失败不抛。 */
 export function clearDeviceCredential(): void {
+  const hadCredential = getDeviceCredential() !== null;
   cached = null;
   loggedLocalExpired = false;
   warnedCorrupt = false;
@@ -217,6 +288,7 @@ export function clearDeviceCredential(): void {
   } catch (err) {
     getLogger().warn("IDENTITY", `删除设备凭据失败: ${(err as Error).message}`);
   }
+  if (hadCredential) emitChanged(null);
 }
 
 /** 仅测试 */
@@ -224,4 +296,7 @@ export function __resetCredentialCacheForTest(): void {
   cached = undefined;
   loggedLocalExpired = false;
   warnedCorrupt = false;
+  changedListeners.clear();
+  rejectedListeners.clear();
+  rejectedReportedGeneration = -1;
 }

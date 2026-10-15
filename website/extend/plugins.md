@@ -154,7 +154,7 @@ sid-code --plugin-dir /tmp/plugin-a --plugin-dir /tmp/plugin-b
 | --- | --- |
 | `/plugin list` | 列出所有插件（启用 / 禁用 / 错误） |
 | `/plugin info <name>` | 看详情 |
-| `/plugin market [关键词]` | 浏览企业插件市场（需配置 `backend.url` 并 `sid-code auth login`） |
+| `/plugin market [关键词]` | 浏览企业插件市场（需配置 `backend.url` 并[企业登录](/team/login)） |
 | `/plugin install <name>@company` | 从企业市场安装：下载 → sha256 校验 → 安全解包 |
 | `/plugin update [name]` | 按市场目录更新市场插件，新包校验失败时保留旧版本 |
 | `/plugin install <path>` | 从本地目录安装（企业策略锁定时拒绝） |

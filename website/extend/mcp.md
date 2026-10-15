@@ -259,7 +259,7 @@ token 存在 `~/.sid-code/mcp-oauth.json`，权限 `0600`。access token 过期�
 - **只发往 `backend.url` 的同一个 origin**（协议 + 主机 + 端口完全一致）。
   `url` 指向别的地址时直接拒绝连接并在 `/mcp` 里显示原因，不会「不带凭据照连」。
   这是给插件用的：插件写一句 `auth: "sid-backend"` 加一个外部地址，也拿不到你的凭据。
-- 没配 `backend.url`，或者本机还没登录，连接同样会被拒绝，按提示执行 `sid-code auth login`。
+- 没配 `backend.url`，或者本机还没登录，连接同样会被拒绝，按提示执行 `sid-code auth login`（TUI 里 `/login`，见[企业登录](/team/login)）。
 - 只支持 `http` / `http-json` / `sse`。配置里自己写的 `Authorization` 头会被忽略。
 
 ## 四层作用域与优先级

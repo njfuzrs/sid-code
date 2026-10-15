@@ -2,7 +2,7 @@
 
 > 长在企业研发环境里的 coding agent —— 你能改、能量、能审、数据不出门的 agent 底座。
 
-本文件是给大模型读的全站索引（共 111 页）。
+本文件是给大模型读的全站索引（共 112 页）。
 `/ref/` 下的参考页由 `scripts/docs-gen-reference.ts` 从源码生成，与实现同源。
 
 ## 站点
@@ -56,6 +56,7 @@
 ## 团队部署
 
 - [团队默认配置分发](/team/defaults): 用 team-defaults.json 给全团队统一 provider 与默认配置，新人装完即可用。
+- [企业登录](/team/login): 用飞书身份登录企业后端：/login、/logout、/whoami，凭据存在哪、多久过期、不登录会怎样。
 - [从 Claude Code 迁移](/team/migrate): 哪些配置不用动就能用、哪些必须改结构、以及用内置 skill 半自动迁移。
 - [轨迹采集与可观测](/team/observability): 每次会话落盘了什么、能回答什么问题、怎么用一条命令做事后诊断、怎么聚合到团队。
 - [企业 policy 与安全边界](/team/policy): 企业侧能强制约束哪些行为、哪些约束用户绕不过去，以及当前的能力边界在哪。

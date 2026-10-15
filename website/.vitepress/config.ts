@@ -501,6 +501,8 @@ export default defineConfig({
           text: "管住成本与边界",
           collapsed: false,
           items: [
+            // 企业登录是配额 / policy 两页的前置步骤（远程预算与策略都要设备凭据），排在前面
+            { text: "企业登录", link: "/team/login" },
             { text: "配额与成本控制", link: "/team/quota" },
             { text: "企业 policy 与安全边界", link: "/team/policy" },
           ],

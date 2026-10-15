@@ -39,6 +39,9 @@ import color from "./color/index.ts";
 import fast from "./fast/index.ts";
 import batch from "./batch/index.ts";
 import conflict from "./conflict/index.ts";
+import login from "./login/index.ts";
+import logout from "./logout/index.ts";
+import whoami from "./whoami/index.ts";
 
 export const BUILTIN_COMMANDS: UnifiedCommand[] = [
   compact,
@@ -71,4 +74,7 @@ export const BUILTIN_COMMANDS: UnifiedCommand[] = [
   fast,
   batch,
   conflict,
+  login,
+  logout,
+  whoami,
 ];
