@@ -666,9 +666,12 @@ async function runAgentLoopInner(
     //     漏斗内部 markSuspect 已覆盖，不必在此另写一份）。
     //
     // 三层超时的分工（不要合并，见 resilient-stream.ts 的 streamTimeoutMs 注释）：
-    //   漏斗 streamTimeoutMs = **单次尝试的整体上限**（180s）→ 触发后**重试**；
-    //   processStream idle/overall = 跨重试兜底（idle 60s / overall 180s）→ 触发即结束本轮；
-    //   sub-agent.ts 的 timeoutCtrl = wall-clock 总预算硬顶。
+    //   漏斗 streamTimeoutMs = **单次尝试的内容无进展上限**（180s）→ 触发后**重试**；
+    //   processStream idle/overall = 单次尝试兜底（idle 60s / overall 180s）→ 触发即结束本轮。
+    //     **退避期停表、每次新尝试重新起表**（retry_backoff / stream_restart，见
+    //     stream-lifecycle 的 classifyRetryBoundary）。2026-10-15 前这层是「全部重试 + 退避」
+    //     的总上限：429 退避累计到 180s 必然截断，maxRetries 被时间架空（事故 20261015-114502）；
+    //   重试几次 = maxRetries；总时长失控 = sub-agent.ts 的硬 kill（timeout × 3，扣休眠）。
     //
     // P2-6：第一层原写成"单次尝试**无数据**上限"，与实现不符——漏斗那个定时器只在
     // 发起尝试时武装、收到数据不续期，所以它量的是"这次尝试跑了多久"而非"多久没数据"。

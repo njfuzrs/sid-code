@@ -10,7 +10,8 @@
  * § 三层超时（借鉴 Vercel AI SDK 的超时分级 + 本项目的事故淬炼）
  *   Layer 1  idle timeout          —— N 秒无**任何事件** → 中断（TCP 连接彻底断开）
  *   Layer 2  content progress      —— N 秒无**有效业务内容** → 中断（防 keep-alive/ping 续命）
- *   Layer 3  overall timeout       —— 整个请求从开始超过硬上限 → 中断（对齐官方 SDK request timeout）
+ *   Layer 3  overall timeout       —— 单次尝试从开始超过硬上限 → 中断（对齐官方 SDK request timeout）
+ *   retry    漏斗控制事件          —— retry_backoff 期间三层停表；新尝试三层重新起表（见 classifyRetryBoundary）
  *   signal   abort 穿透            —— 用户 ESC / 上层超时 → 立即退出
  *   telemetry stream_stall/idle/content/overall/completed —— 统一诊断事件
  *   TTFT     first-content 回调     —— 首个真实内容事件到达时回调一次（T14.6），
@@ -67,9 +68,14 @@ export interface StreamLifecycleOptions<T = unknown> {
    */
   firstByteTimeoutMs?: number;
   /**
-   * Layer 3：请求级整体超时（毫秒）。从流开始计时，**不因任何事件重置**（绝对上限）。
+   * Layer 3：**单次尝试**的整体上限（毫秒）。从尝试开始计时，**不因内容事件重置**（绝对上限）。
    * 对齐官方 SDK 的 request-level timeout，覆盖"持续吐 keep-alive 或缓慢有效内容但永不结束"
    * 的盲区。不传则不启用此层。
+   *
+   * 「单次尝试」的边界由漏斗的控制事件给出（见 {@link classifyRetryBoundary}）：
+   * `retry_backoff start` 暂停三层计时，`retry_backoff end` / `stream_restart` 起一个新尝试、
+   * 三层全部重新起表。provider 内部的流不经漏斗、没有这些事件，于是本层仍是整条流的
+   * 绝对上限，行为与改造前逐字节一致。
    */
   overallTimeoutMs?: number;
   /**
@@ -244,6 +250,39 @@ export function createStreamLifecycle<T>(opts: StreamLifecycleOptions<T>): {
 }
 
 /**
+ * 漏斗控制事件 → 本层的计时动作。
+ *
+ * ## 为什么本层必须认这三种事件（2026-10-15，事故 20261015-114502-c596be23）
+ *
+ * 子代理与 compact 类 side-call 的 lifecycle 包的是**整个漏斗**（`streamWithResilience`），
+ * 不是单个 HTTP 请求。改造前三层计时器把漏斗内的重试退避也算进去：
+ *   - overall：上游 429 饱和时退避 6s→11s→24s→43s→86s，累计到 180.0s 子代理直接报
+ *     `sub-agent stream overall timeout`，第 6 次重试还在睡就被砍 —— `maxRetries=10`
+ *     又一次被时间架空（与 2026-10-12 主循环、2026-10-14 B1 同型，只是换了一个杀手）；
+ *   - idle：`retry_backoff` 是首个事件，于是新尝试的「等首字节」改用 idle 档（60s）判，
+ *     排队稍慢的网关在退避之后必被误杀成「流卡死」（2026-08-05 事故的同型复发路径）。
+ *
+ * 动作语义（三者各管一件事，与主循环 `query/stream-processor.ts` 同口径）：
+ *   - `backoff_start`：漏斗主动等待，不是请求在卡 → 三层全部停表。
+ *   - `attempt_start`：一次**全新请求**开始（`retry_backoff end` 或 `stream_restart`；
+ *     S2 入口冷却之后没有 `stream_restart`，所以 end 也必须算） → 三层全部重新起表，
+ *     idle 层回到首字节档。
+ *   - `ignore`：退避期的进度提示（`system_api_error`），不算活动也不算进展。
+ *
+ * 判据只认 `type` 字段：provider 内部的流不会出现这三种类型，因此对它们零影响。
+ */
+type RetryBoundary = "backoff_start" | "attempt_start" | "ignore";
+
+export function classifyRetryBoundary(event: unknown): RetryBoundary | null {
+  if (event === null || typeof event !== "object") return null;
+  const { type, phase } = event as { type?: unknown; phase?: unknown };
+  if (type === "retry_backoff") return phase === "start" ? "backoff_start" : "attempt_start";
+  if (type === "stream_restart") return "attempt_start";
+  if (type === "system_api_error") return "ignore";
+  return null;
+}
+
+/**
  * 便捷函数：直接包装一个 AsyncIterable（不需要 getSnapshot 时用）。
  * 语义与 stream-guard.ts 的 guardedStream 完全一致（idle + content + stall），
  * 额外支持 overallTimeoutMs 第三层。stream-guard.ts 将 delegate 到此实现。
@@ -359,12 +398,19 @@ async function* streamLifecycleImpl<T>(
   const overallDeadline = overallEnabled ? createSleepAwareDeadline(overallTimeoutMs!) : null;
   const releaseSleepObserver = startSleepObserver();
 
+  // 本次**尝试**是否还在等首个事件。不复用 snapshot.firstEventAt：那个字段是整条流的
+  // TTFT 口径（finally 里报 ttftMs），而首字节档要按尝试重新武装 —— 退避之后的新请求
+  // 同样要经历网关鉴权 + 排队，用 idle 档卡它就是 2026-08-05 的误杀复发。
+  let attemptAwaitingFirstEvent = true;
+  // 漏斗退避中：三层停表，stall 告警也不报（主动等待不是 stall）。
+  let inBackoff = false;
+
   const resetIdle = () => {
     if (idleTimer) clearTimeout(idleTimer);
     snapshot.lastEventAt = Date.now();
-    // 首个事件尚未到达 → 用（通常更宽的）首字节阈值；到达后各次 reset 用 idle 阈值。
-    // 判据取 snapshot.firstEventAt：它在主循环收到首个事件时置值，是本层唯一的结构事实。
-    const limit = snapshot.firstEventAt === null ? effectiveFirstByteMs : idleTimeoutMs;
+    // 本次尝试的首个事件尚未到达 → 用（通常更宽的）首字节阈值；到达后各次 reset 用 idle 阈值。
+    const awaitingFirst = attemptAwaitingFirstEvent;
+    const limit = awaitingFirst ? effectiveFirstByteMs : idleTimeoutMs;
     // PR9：本层 deadline 的窗口长度是 `limit`（首字节档与 idle 档不同值），
     // 而 createSleepAwareDeadline 是按固定 timeoutMs 建的 —— 所以这里自己记窗口起点，
     // 用账本的增量做扣减，不复用 idleDeadline 的 timeoutMs。
@@ -386,7 +432,7 @@ async function* streamLifecycleImpl<T>(
         if (!fireTimeout("idle")) return;
         log.warn(
           `LLM:${label}`,
-          `流式${snapshot.firstEventAt === null ? "首字节" : "空闲"}超时 ${limit / 1000}s，中断`,
+          `流式${awaitingFirst ? "首字节" : "空闲"}超时 ${limit / 1000}s，中断`,
           { totalEvents: snapshot.totalEvents },
         );
         onTelemetry?.({
@@ -454,12 +500,15 @@ async function* streamLifecycleImpl<T>(
     armContent(contentProgressTimeoutMs!);
   };
 
-  // overall timer——请求级整体上限，从流开始计时，**不因任何事件重置**。
+  // overall timer——单次尝试的整体上限，从尝试开始计时，**不因内容事件重置**。
   // 注意"不因事件重置"≠"不扣休眠"：绝对上限说的是"业务时间的绝对上限"，
   // 而机器睡觉的那段不是业务时间（同 loop.ts 的 turn_hard 从 businessElapsedMs 里
   // 扣 sleepPause 的口径）。休眠 939s 的历史记录足以击穿任何固定绝对值。
+  // 只在尝试边界（见 classifyRetryBoundary）重新起表；退避期间不计。
   const startOverall = () => {
     if (!overallEnabled) return;
+    if (overallTimer) clearTimeout(overallTimer);
+    overallDeadline!.restart();
     const armOverall = (delayMs: number) => {
       overallTimer = setTimeout(() => {
         const remaining = overallDeadline!.remainingMs();
@@ -494,6 +543,7 @@ async function* streamLifecycleImpl<T>(
 
   // stall 心跳：每 stallWarnMs 检查一次，如果期间无事件则告警（只记不杀）。
   stallTimer = setInterval(() => {
+    if (inBackoff) return;
     const gap = Date.now() - snapshot.lastEventAt;
     if (gap >= stallWarnMs) {
       log.warn(`LLM:${label}`, `事件间隔 ${(gap / 1000).toFixed(0)}s（stall）`, {
@@ -553,8 +603,30 @@ async function* streamLifecycleImpl<T>(
       if (snapshot.timedOut) break;
       // signal 纵深防御：流消费中检查 signal，支持用户中断穿透
       if (signal?.aborted) break;
+      // 漏斗控制事件：只改计时，不算活动、不算进展、不计入 TTFT（见 classifyRetryBoundary）。
+      const boundary = classifyRetryBoundary(event);
+      if (boundary !== null) {
+        if (boundary === "backoff_start") {
+          inBackoff = true;
+          // 停表而不是标记：定时器若还挂着，退避睡到一半它照样开枪。
+          // stall interval 留着，靠 inBackoff 静音（它还要管退避结束后的告警）。
+          if (idleTimer) clearTimeout(idleTimer);
+          if (contentTimer) clearTimeout(contentTimer);
+          if (overallTimer) clearTimeout(overallTimer);
+          idleTimer = contentTimer = overallTimer = null;
+        } else if (boundary === "attempt_start") {
+          inBackoff = false;
+          attemptAwaitingFirstEvent = true;
+          resetIdle();
+          resetContentProgress();
+          startOverall();
+        }
+        yield event;
+        continue;
+      }
       snapshot.totalEvents++;
       if (snapshot.firstEventAt === null) snapshot.firstEventAt = Date.now();
+      attemptAwaitingFirstEvent = false;
       // idle timer 对任何事件都 reset（保护"TCP 连接彻底断开"场景，含 ping）
       resetIdle();
       // 「这个事件算不算业务进展」——本层的判据只有一份，两个消费方共用：

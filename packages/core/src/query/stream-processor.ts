@@ -17,6 +17,7 @@ import { accumulateUsage } from "../llm/types.ts";
 import { getLogger } from "../debug/index.ts";
 import { normalizeToolInput } from "../llm/normalize-tool-input.ts";
 import { resetOnStreamRestart, recordStreamRestart } from "../llm/stream-restart.ts";
+import { classifyRetryBoundary } from "../llm/stream-lifecycle.ts";
 import { detectUnansweredEndTurn } from "./unanswered-end-turn.ts";
 import { RequestAbortedError, LLMStreamError } from "../llm/errors.ts";
 import { resolveLoopTimeouts, resolveProviderStreamTimeouts } from "../config/network-profile.ts";
@@ -161,7 +162,8 @@ export async function processStream(
   // 检查间隔：此前硬编码 5s，heartbeatCheckIntervalMs 声明了却未接线（死选项）。
   // 接上它——生产默认仍 5s，测试可注入短值快速触发心跳/整体超时路径。
   const CHECK_INTERVAL = options?.heartbeatCheckIntervalMs ?? 5_000;
-  const startTime = Date.now();
+  // 本次尝试的起点（不是整条流的起点）：新尝试开始时重置，见主循环里的 classifyRetryBoundary。
+  let startTime = Date.now();
   let lastActivityTime = Date.now();
   let timeoutError: Error | null = null;
   // 首字节是否已到达：决定用 FIRST_BYTE_TIMEOUT 还是 HEARTBEAT_TIMEOUT 判定静默。
@@ -277,7 +279,22 @@ export async function processStream(
 
       lastActivityTime = Date.now();
       // 首个事件到达 → 后续静默改用（更严的）心跳阈值判定。
-      firstEventReceived = true;
+      // 漏斗控制事件不算「首字节」：它们是本地发出的，不代表上游已开始响应。
+      // 新尝试开始（retry_backoff end / stream_restart）→ 整体超时按尝试重新起表、
+      // 回到首字节档。与子代理侧 stream-lifecycle 的 classifyRetryBoundary 同口径
+      //（2026-10-15，事故 20261015-114502）：整体超时管「单次尝试」，次数归 maxRetries。
+      const boundary = classifyRetryBoundary(event);
+      if (boundary === "attempt_start") {
+        startTime = Date.now();
+        humanWaitAccumMs = 0;
+        backoffAccumMs = 0;
+        // 必须同时清掉退避起点：下方 switch 的 retry_backoff end 分支会把
+        // (now - backoffStartedAt) 加回 backoffAccumMs，那会让新尝试凭空多出一段豁免。
+        backoffStartedAt = null;
+        firstEventReceived = false;
+      } else if (boundary === null) {
+        firstEventReceived = true;
+      }
 
       // 关键修复：每次事件前检查超时标志，一旦超时就抛错主动退出循环
       if (timeoutError) {
