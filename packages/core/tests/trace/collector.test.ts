@@ -1039,16 +1039,36 @@ describe("TraceCollector", () => {
       expect(collector.getMetadata()!.exit_status).toBe("abort");
     });
 
-    test("空闲关终端 → terminal_closed 原样落盘（不再记成 abort）", async () => {
+    // 契约变更（2026-10-15）：terminal_closed 只描述「怎么结束的」（落 end_source），
+    // exit_status 按末轮推断。原先「原样落 exit_status=terminal_closed」的断言随之改写。
+    test("空闲关终端 + 末轮 end_turn → exit_status=end_turn，end_source=terminal_closed", async () => {
       // 生产形态（会话 20261015-142158-54828b44）：上一轮 end_turn，1.5 分钟后关窗口收到 SIGHUP。
       await fireSessionStart(hookSystem);
       await fireModelRound(hookSystem, { stopReason: "end_turn" });
       await hookSystem.fireSessionEndEvent("terminal_closed");
 
-      expect(collector.getMetadata()!.exit_status).toBe("terminal_closed");
       const trajPath = join(testDir, "sessions", "sess-001", "session.traj");
       const traj = JSON.parse(readFileSync(trajPath, "utf-8"));
-      expect(traj.metadata.exit_status).toBe("terminal_closed");
+      expect(traj.metadata.exit_status).toBe("end_turn");
+      expect(traj.metadata.end_source).toBe("terminal_closed");
+    });
+
+    test("反向自证：空闲关终端但末轮没收尾 → user_interrupt（不被算成功）", async () => {
+      // 实测 82 个空闲关终端会话里有 9 个末轮不是 end_turn（先 Esc 打断再关窗口）。
+      // 缺了这条，一个「terminal_closed 一律 end_turn」的实现也能让上面那条通过。
+      await fireSessionStart(hookSystem);
+      await fireModelRound(hookSystem, { stopReason: "tool_use" });
+      await hookSystem.fireSessionEndEvent("terminal_closed");
+
+      expect(collector.getMetadata()!.exit_status).toBe("user_interrupt");
+      expect(collector.getMetadata()!.end_source).toBe("terminal_closed");
+    });
+
+    test("开了就关（一轮都没跑）→ exit_status=terminal_closed，不落 user_interrupt", async () => {
+      await fireSessionStart(hookSystem);
+      await hookSystem.fireSessionEndEvent("terminal_closed");
+
+      expect(collector.getMetadata()!.exit_status).toBe("terminal_closed");
     });
 
     test("max_turns 落进 session.traj（内存里有、落盘没有等于没采）", async () => {

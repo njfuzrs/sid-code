@@ -2130,7 +2130,8 @@ export class TraceCollector {
     //   exit/other → 先看有没有 max_turns 真实信号，没有再看最后一次 stop_reason
     //   clear → /clear 上下文清除
     //   abort → 用户主动 Ctrl-C / 外部 SIGTERM / 关终端时有轮次在跑（真打断）
-    //   terminal_closed → 空闲时关终端（SIGHUP）。上一轮已收尾，原样落盘、不算 abnormal
+    //   terminal_closed → 空闲时关终端（SIGHUP）。结果按末轮推断（同 exit），结束方式记在 end_source；
+    //                     一轮都没跑过时才落 exit_status=terminal_closed（不算 abnormal）
     //   error → runtime 抛出异常（流式中断 / API 错误 / 上下文溢出兜底失败）
     //
     // ## `max_turns` 必须先判，且必须用真实信号
@@ -2161,7 +2162,23 @@ export class TraceCollector {
     // 就算 abnormal；预算硬停不算（见 digest.ts）。先判预算会把一次撞顶改写成
     // 一次预期收尾，abnormal 总数会静默变少。
     const lastPair = this.pairs[this.pairs.length - 1];
-    if (input.reason === "exit" || input.reason === "other") {
+    // ## `terminal_closed` 只是「怎么结束的」，不是「结果如何」
+    //
+    // 空闲关终端时上一轮已收尾，结果要看末轮本身——和 /exit 走同一套推断。
+    // 若原样落 `terminal_closed`，后端成功率（只认 end_turn）会把它算失败；
+    // 若一律当成功，又会把「Esc 打断后再关窗口」误算成功。
+    // 实测（2026-10-15）：空闲关终端的 82 个会话里，末轮 end_turn 73、abort 8、error 1。
+    // 结束方式由 `metadata.end_source = terminal_closed` 单独保留（见上面 end_source 赋值）。
+    //
+    // 一轮都没跑过（开了就关）时没有末轮可推断，保留 `terminal_closed`：
+    // 落 user_interrupt 会把「没提问」算成「被打断」，进 abnormal。
+    if (input.reason === "terminal_closed" && !lastPair) {
+      this.metadata.exit_status = "terminal_closed";
+    } else if (
+      input.reason === "exit" ||
+      input.reason === "other" ||
+      input.reason === "terminal_closed"
+    ) {
       this.metadata.exit_status = this.hitMaxTurns
         ? "max_turns"
         : this.hitBudgetExceeded
