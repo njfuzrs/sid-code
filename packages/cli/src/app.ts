@@ -365,6 +365,25 @@ export function readSdkIdleTimeoutMs(env: NodeJS.ProcessEnv = process.env): numb
 }
 
 /**
+ * 信号退出时 SessionEnd 该落哪个 reason。
+ *
+ * 只有「空闲时收到 SIGHUP」改记 `terminal_closed`：关终端窗口是日常结束会话的方式，
+ * 上一轮已正常 end_turn，记成 abort 等于把一次正常收尾算成中断。
+ * 实测（2026-10-15，本地 205 个会话）：abort 126 个里 125 个是 SIGHUP，
+ * 有对话的 82 个里 81 个收到信号时已空闲。
+ *
+ * 其余组合保持 abort：
+ * - SIGHUP + 轮次在跑：关窗口确实打断了正在干的活，是真中断；
+ * - SIGINT / SIGTERM：用户 Ctrl-C 或外部 kill（评测超时等），无论忙闲都是主动终止。
+ */
+export function sessionEndReasonForSignal(
+  signal: "SIGINT" | "SIGTERM" | "SIGHUP",
+  turnInFlight: boolean,
+): "abort" | "terminal_closed" {
+  return signal === "SIGHUP" && !turnInFlight ? "terminal_closed" : "abort";
+}
+
+/**
  * CM3/CM4：从重试错误文本推断重试种类，决定 TUI 提示语气与是否给升级建议。
  * - 限流(429 / rate limit / quota)→ rate_limit（CM4 附升级建议）
  * - 过载(529 / overloaded / 503)→ overloaded
@@ -4844,7 +4863,15 @@ export class App {
       signal === "SIGINT" ? 130 : signal === "SIGHUP" ? 129 : 143;
 
     const onSignal = async (signal: "SIGINT" | "SIGTERM" | "SIGHUP") => {
-      log.warn("APP", `收到 ${signal}，触发 SessionEnd(reason=abort) 后退出`);
+      // 必须在下面 abort() 之前取样：abort 之后 signal.aborted 恒 true，就分不出空闲与忙。
+      // busy 覆盖 TUI 轮次与 fork 型命令；abortController 覆盖 headless / `!` shell 等不置 busy 的路径。
+      const turnInFlight =
+        this.busy || (!!this.abortController && !this.abortController.signal.aborted);
+      const reason = sessionEndReasonForSignal(signal, turnInFlight);
+      log.warn(
+        "APP",
+        `收到 ${signal}（turnInFlight=${turnInFlight}），触发 SessionEnd(reason=${reason}) 后退出`,
+      );
       // 信号路径**不在退出关键路径上等上传**：这里 1.2s 后就 process.exit()，
       // 而一次上传要 10s 量级 —— 给预算等于必然被杀在半路，白建连接还多卡 1.2s。
       // 数据由下次启动的补传兜住（判据是 `.uploaded` 标记缺失，与退出路径解耦）。
@@ -4867,7 +4894,7 @@ export class App {
       try {
         // 给落盘整体一个 1.2s 上限,SessionEnd hook 卡死时不至于拖死整个退出流程(ASYNC-7)
         await Promise.race([
-          this.hookSystem.fireSessionEndEvent("abort", this.buildSessionEndStats(), {
+          this.hookSystem.fireSessionEndEvent(reason, this.buildSessionEndStats(), {
             error: { message: `process received ${signal}`, name: signal },
           }),
           new Promise((resolve) => setTimeout(resolve, 1200)),
