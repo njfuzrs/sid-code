@@ -73,8 +73,12 @@ describe("D2 脚本存在且不走 python -m http.server", () => {
     const snippet = `
 import json, sys
 sys.path.insert(0, ${JSON.stringify(LIB)})
-from importlib.machinery import SourceFileLoader
-m = SourceFileLoader("ccms", ${JSON.stringify(MIRROR_PY)}).load_module()
+import importlib.util
+# 不用 SourceFileLoader.load_module()：Python 3.15 已删除（macos-latest runner 镜像升级后实测
+# AttributeError）。spec + exec_module 是 3.5 起的标准写法，新旧版本都能跑。
+spec = importlib.util.spec_from_file_location("ccms", ${JSON.stringify(MIRROR_PY)})
+m = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(m)
 doc = {
   "name": "@anthropic-ai/claude-code-linux-x64",
   "version": "2.1.252",
