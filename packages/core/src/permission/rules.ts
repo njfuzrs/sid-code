@@ -99,7 +99,10 @@ export function matchRule(
   req: PermissionRequest,
   pathCtx?: PathRuleContext,
 ): boolean {
-  const match = rule.match(/^([*\w]+)(?:\(([^)]+)\))?$/);
+  // 工具名字符集含 `-`：插件 MCP 工具名是 mcp__plugin_<插件名>_<server>__<tool>，插件名常带连字符
+  // （与 normalizeMcpName 的 [a-zA-Z0-9_-] 对齐）。曾是 [*\w]+，这类规则整条解析失败、静默不匹配，
+  // allow 放不行、deny 也拦不住。
+  const match = rule.match(/^([*\w-]+)(?:\(([^)]+)\))?$/);
   if (!match) return false;
 
   const [, rawToolName, pattern] = match;

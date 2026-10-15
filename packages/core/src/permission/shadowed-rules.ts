@@ -102,7 +102,8 @@ function rulesOverlap(ruleA: string, ruleB: string): boolean {
 
 /** 提取规则中的工具名部分 */
 function extractToolName(rule: string): string | null {
-  const match = rule.match(/^([*\w]+)/);
+  // 与 rules.ts matchRule 同一字符集（含 `-`，插件 MCP 工具名需要）
+  const match = rule.match(/^([*\w-]+)/);
   return match ? match[1] : null;
 }
 
