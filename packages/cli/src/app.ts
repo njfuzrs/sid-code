@@ -8875,9 +8875,16 @@ export class App {
       output: string,
       panel: import("./command/types.ts").CommandPanelSpec,
     ) => {
-      updateState({
-        commandPanel: { title: panel.title ?? input, content: output },
-      });
+      const info = { title: panel.title ?? input, content: output };
+      updateState({ commandPanel: info });
+      // 后台过程结束即自动关闭（/login 授权完成后链接已无意义，此前面板一直停在屏上要手动 Esc）。
+      // 按对象身份判断：期间被别的命令换掉或用户已关掉，就不去动别人的面板。
+      // 用 then(close, close) 而非 finally：until 被 reject 时 finally 返回的 Promise 也会 reject，
+      // 没人接就是一条 unhandled rejection。
+      const close = () => {
+        if (bridge.current.commandPanel === info) updateState({ commandPanel: null });
+      };
+      panel.until?.then(close, close);
     };
     /**
      * 斜杠命令结果的唯一出口：消息流里一律不留痕（历史区只保留真实对话）。

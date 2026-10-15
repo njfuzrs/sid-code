@@ -12,10 +12,18 @@ async function doLogout(): Promise<LocalCommandResult> {
   const { performCliLogout } = await import("@sid-code/core/identity/cli-login.ts");
   const result = await performCliLogout(resolveBackendUrl()?.url ?? null);
   if (!result.hadCredential) return { type: "text", value: "本机没有登录凭据，无需登出。" };
-  const lines = ["✓ 已删除本地登录凭据。"];
   if (result.remote === "ok") {
-    lines.push("  已通知后端解绑本设备。");
-  } else if (result.remote === "unsupported") {
+    // 正常路径收成一行：TUI 里一行回执走状态栏、几秒后自己消失；多行会进命令输出面板，
+    // 登出已经做完了，还要用户按 Esc 关一个只写着「成功」的面板（此前就是这样）。
+    return {
+      type: "text",
+      value:
+        "✓ 已登出：已删除本地登录凭据，已通知后端解绑本设备。本会话已生效的企业策略不会因登出解除。",
+    };
+  }
+  // 异常路径保留多行面板：用户要读完并照做（联系管理员解绑），一闪而过的状态栏不够
+  const lines = ["✓ 已删除本地登录凭据。"];
+  if (result.remote === "unsupported") {
     lines.push("  后端不支持解绑接口：设备与用户的绑定仍在，换人登录前请联系管理员解绑。");
   } else if (result.remote === "failed") {
     lines.push(
