@@ -23,6 +23,11 @@
 //
 // 事件名集中在 EVENT_NAMES 常量表，供门禁测试双向对账（表里的名字必须有调用点，
 // 调用点用的名字必须在表里），防止再退化成「有代码无调用」的死资产。
+//
+// ⚠️ 服务端对事件名是 fail-closed 白名单：这里加 / 改名后，快照
+// `packages/core/tests/fixtures/event-names.json` 会红（`UPDATE_EVENT_NAMES=1` 重新生成），
+// 还要把它同步到 agent-backend `tests/fixtures/sid-code-event-names.json` 并放进白名单，
+// 否则新事件在服务端被记为 unknown_event_name 静默丢掉（memory_read 曾因此被拒 28 次）。
 
 import { logEvent } from "./index.ts";
 import type { EventMetadata, EventMetadataValue, VerifiedNotCodeOrFilepaths } from "./index.ts";
