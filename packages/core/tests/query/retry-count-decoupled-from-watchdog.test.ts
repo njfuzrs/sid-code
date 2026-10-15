@@ -217,6 +217,76 @@ describe("stream-processor：心跳 / 整体超时同样剔除退避", () => {
     const resp = await processStream(backoffThenOk(300, true)(), undefined, undefined, opts(200));
     expect(resp.stopReason).toBe("end_turn");
   }, 10_000);
+
+  // 2026-10-15（事故 20261015-114502）：整体超时管「单次尝试」。
+  // 只扣退避不够：两次各 150ms 的尝试（各自 < 200ms）合计 300ms 仍会被砍。
+  test("整体超时按尝试重新起表：两次尝试各 150ms（合计 > 整体 200ms）→ 完成", async () => {
+    async function* twoAttempts(): AsyncGenerator<StreamEvent> {
+      yield {
+        type: "message_start",
+        message: { usage: { inputTokens: 1, outputTokens: 0 } },
+      } as any;
+      await sleep(150);
+      yield { type: "retry_backoff", phase: "start", delayMs: 5, attempt: 1 };
+      await sleep(5);
+      yield { type: "retry_backoff", phase: "end", delayMs: 5, attempt: 1 };
+      yield { type: "stream_restart", reason: "rate_limit", attempt: 1 };
+      await sleep(150);
+      yield* backoffThenOk(0, false)();
+    }
+    const resp = await processStream(twoAttempts(), undefined, undefined, {
+      ...opts(200),
+      heartbeatTimeoutMs: 5_000,
+      firstByteTimeoutMs: 5_000,
+    });
+    expect(resp.stopReason).toBe("end_turn");
+  }, 10_000);
+
+  test("新尝试回到首字节档：退避后排队 200ms（> 心跳 60ms、< 首字节 500ms）→ 完成", async () => {
+    async function* queuedAfterBackoff(): AsyncGenerator<StreamEvent> {
+      yield {
+        type: "message_start",
+        message: { usage: { inputTokens: 1, outputTokens: 0 } },
+      } as any;
+      yield { type: "retry_backoff", phase: "start", delayMs: 5, attempt: 1 };
+      await sleep(5);
+      yield { type: "retry_backoff", phase: "end", delayMs: 5, attempt: 1 };
+      await sleep(200);
+      yield* backoffThenOk(0, false)();
+    }
+    const resp = await processStream(queuedAfterBackoff(), undefined, undefined, {
+      ...opts(),
+      firstByteTimeoutMs: 500,
+    });
+    expect(resp.stopReason).toBe("end_turn");
+  }, 10_000);
+
+  test("负向对照：单次尝试本身超整体上限 → 照样超时", async () => {
+    async function* slowAttempt(): AsyncGenerator<StreamEvent> {
+      yield { type: "retry_backoff", phase: "start", delayMs: 5, attempt: 1 };
+      await sleep(5);
+      yield { type: "retry_backoff", phase: "end", delayMs: 5, attempt: 1 };
+      for (let i = 0; i < 30; i++) {
+        await sleep(20);
+        yield {
+          type: "message_start",
+          message: { usage: { inputTokens: 1, outputTokens: 0 } },
+        } as any;
+      }
+      yield* backoffThenOk(0, false)();
+    }
+    let thrown: unknown = null;
+    try {
+      await processStream(slowAttempt(), undefined, undefined, {
+        ...opts(200),
+        heartbeatTimeoutMs: 5_000,
+        firstByteTimeoutMs: 5_000,
+      });
+    } catch (e) {
+      thrown = e;
+    }
+    expect(String(thrown)).toContain("overall timeout");
+  }, 10_000);
 });
 
 describe("漏斗：每次退避成对发信号，次数只由 maxRetries 决定", () => {

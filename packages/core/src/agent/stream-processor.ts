@@ -52,7 +52,15 @@ export interface AgentStreamOptions {
    * 被 60s idle 阈值误杀成"流卡死"，重试又重新排队，形成不停重试。
    */
   firstByteTimeoutMs?: number;
-  /** 整体超时（毫秒，默认 180000 = 3min，子代理应比主循环 300s 更短） */
+  /**
+   * **单次尝试**整体超时（毫秒，默认 180000 = 3min）。
+   *
+   * 传进来的流是整个漏斗（含重试），但本层只计每次尝试本身：漏斗的 `retry_backoff`
+   * 期间停表、新尝试重新起表（由 stream-lifecycle 实现）。重试几次只由 `maxRetries`
+   * 决定，总时长失控由 sub-agent.ts 的硬 kill 兜底 —— 三者各管一件事。
+   * 事故 20261015-114502：改造前这里是「本轮全部重试 + 退避」的总上限，持续 429 时
+   * 第 6 次重试还在退避就被 180s 砍断。
+   */
   overallTimeoutMs?: number;
   /** 心跳检查间隔（毫秒，默认 5000） */
   heartbeatCheckIntervalMs?: number;
@@ -111,7 +119,8 @@ export async function processStream(
   const thinkingStarts = new Map<number, unknown>();
 
   // ── T7：心跳 + 整体超时改由 StreamLifecycle 统一管理（替代原 setInterval 手写心跳）──
-  // idle（心跳）= 60s 无事件 → abort；overall = 180s 请求级绝对上限。子代理阈值比主循环短。
+  // idle（心跳）= 60s 无事件 → abort；overall = 180s 单次尝试绝对上限（漏斗退避不计）。
+  // 子代理阈值比主循环短。
   // 行为与迁移前 setInterval 版等价：超时触发 → abort 上游 + 返回 stopReason="error"（不抛异常）。
   const HEARTBEAT_TIMEOUT = options.heartbeatTimeoutMs ?? LIFECYCLE_PRESETS.subAgent.idleTimeoutMs;
   const OVERALL_TIMEOUT = options.overallTimeoutMs ?? LIFECYCLE_PRESETS.subAgent.overallTimeoutMs;

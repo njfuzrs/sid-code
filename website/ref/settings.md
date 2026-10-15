@@ -211,7 +211,7 @@ settings.json 的全部可配字段、类型与默认值。
 | `idleTimeoutMs` | number >0 | 档①字节级 idle：reader 收不到任何字节的上限 |
 | `contentProgressTimeoutMs` | number >0 | 档②事件级无进展：有字节但无有效内容的上限（keep-alive 不续命） |
 | `fetchAbsoluteTimeoutMs` | number ≥0 | — |
-| `overallTimeoutMs` | number >0 | ②的请求级软兜底（lifecycle Layer 3，不因事件重置） |
+| `overallTimeoutMs` | number >0 | ②的单次尝试软兜底（lifecycle Layer 3，不因内容事件重置；重试退避不计入，每次重试重新计时） |
 
 ### `permissions` {#key-permissions}
 

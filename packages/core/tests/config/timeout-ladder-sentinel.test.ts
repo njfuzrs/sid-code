@@ -168,8 +168,17 @@ describe("PR10 谓词哨兵 — 各档判据必须不同（数值哨兵拦不住
     expect(renewBody).not.toContain("new AbortController()");
   });
 
-  test("overall 层是唯一「不因事件重置」的一档（其余各档都必须可续命）", () => {
-    expect(lifecycleSrc).toContain("不因任何事件重置");
+  test("overall 层是唯一「不因内容事件重置」的一档（其余各档都必须可续命）", () => {
+    // 2026-10-15（事故 20261015-114502）：overall 从「整条流」收窄为「单次尝试」——
+    // 漏斗的尝试边界（retry_backoff end / stream_restart）重新起表，退避期停表。
+    // 要守的不变量没变：**内容事件绝不续命 overall**。原断言只认字面
+    // 「不因任何事件重置」，拦不住真正的退化形态（有人在逐事件路径里调 startOverall），
+    // 所以改成结构断言：startOverall 恰好两个调用点 —— 起流一次 + attempt_start 分支一次。
+    expect(lifecycleSrc).toContain("不因内容事件重置");
+    expect(lifecycleSrc.match(/\bstartOverall\(\);/g)?.length).toBe(2);
+    const boundaryIdx = lifecycleSrc.indexOf('boundary === "attempt_start"');
+    expect(boundaryIdx).toBeGreaterThan(-1);
+    expect(lifecycleSrc.slice(boundaryIdx, boundaryIdx + 400)).toContain("startOverall();");
     // 且它仍然扣休眠：绝对上限说的是业务时间的上限，机器睡觉不是业务时间。
     expect(lifecycleSrc).toContain("overallDeadline");
   });

@@ -282,7 +282,7 @@ export interface ProviderStreamTimeouts {
    * `TimeoutError` 归成 `RetryableError("timeout")`（见 `llm/errors.ts`）。
    */
   fetchAbsoluteTimeoutMs?: number;
-  /** ② 的请求级软兜底（lifecycle Layer 3，不因事件重置） */
+  /** ② 的单次尝试软兜底（lifecycle Layer 3，不因内容事件重置；重试退避不计入，每次重试重新计时） */
   overallTimeoutMs: number;
 }
 

@@ -294,7 +294,7 @@ const NetworkTimeoutsSchema = lazySchema(() =>
       // 但两者语义不同：省略 = 用默认（关），写 0 = 我明确要它关。用 positive 会让
       // 显式写 0 的配置被 Zod 拒掉，用户只剩"删掉这一行"一种表达方式。
       fetchAbsoluteTimeoutMs: z.number().nonnegative().optional(),
-      /** ②的请求级软兜底（lifecycle Layer 3，不因事件重置） */
+      /** ②的单次尝试软兜底（lifecycle Layer 3，不因内容事件重置；重试退避不计入，每次重试重新计时） */
       overallTimeoutMs: z.number().positive().optional(),
     })
     .passthrough(),
