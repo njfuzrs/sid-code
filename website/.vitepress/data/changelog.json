@@ -27,7 +27,7 @@
       "date": "2026-10-15",
       "highlight": "新增 /login、/logout、/whoami，TUI 内完成企业登录",
       "userFacing": true,
-      "channel": "beta",
+      "channel": "stable",
       "mergedInto": null,
       "covers": null,
       "betaNote": null,
