@@ -25,7 +25,12 @@
 
 import { existsSync, mkdirSync, readFileSync, unlinkSync, writeFileSync } from "node:fs";
 import { dirname } from "node:path";
-import { applyDeviceAuth, RELOGIN_HINT } from "../identity/credential.ts";
+import {
+  applyDeviceAuth,
+  getCredentialGeneration,
+  RELOGIN_HINT,
+  reportCredentialRejected,
+} from "../identity/credential.ts";
 import { resolveEndpoint } from "../identity/endpoints.ts";
 import { sidPaths } from "../config/paths.ts";
 import { getLogger } from "../debug/logger.ts";
@@ -67,8 +72,9 @@ export interface FailedUsageLedgerRow {
   failedAt: number;
 }
 
-let warnedSkipNoAuth = false;
-let warnedUnauthorized = false;
+// 无凭据 / 401 告警按「凭据代数」去重：重新登录后凭据再次失效，用户要能再看到一次告警
+let warnedSkipNoAuthGen = -1;
+let warnedUnauthorizedGen = -1;
 let warnedTooLarge = false;
 let warnedPrivacy = false;
 
@@ -190,11 +196,11 @@ function removeFailedSession(sessionId: string): void {
 function warnOnce(kind: "no_auth" | "401" | "too_large" | "privacy", message: string): void {
   const log = getLogger();
   if (kind === "no_auth") {
-    if (warnedSkipNoAuth) return;
-    warnedSkipNoAuth = true;
+    if (warnedSkipNoAuthGen === getCredentialGeneration()) return;
+    warnedSkipNoAuthGen = getCredentialGeneration();
   } else if (kind === "401") {
-    if (warnedUnauthorized) return;
-    warnedUnauthorized = true;
+    if (warnedUnauthorizedGen === getCredentialGeneration()) return;
+    warnedUnauthorizedGen = getCredentialGeneration();
   } else if (kind === "too_large") {
     if (warnedTooLarge) return;
     warnedTooLarge = true;
@@ -239,6 +245,7 @@ async function sendUsageLedger(entry: UsageLedgerEntry): Promise<"skipped" | "se
       signal: controller.signal,
     });
     if (response.status === 401) {
+      reportCredentialRejected("usage");
       warnOnce(
         "401",
         // 401 不写失败盘，但已有的失败盘不删（见文件头 T2），下一次 upsert 照常带凭据发。
@@ -342,8 +349,8 @@ export async function pushUsageLedgerRemote(entry: UsageLedgerEntry): Promise<vo
 
 /** 仅测试 */
 export function __resetUsageLedgerRemoteForTest(): void {
-  warnedSkipNoAuth = false;
-  warnedUnauthorized = false;
+  warnedSkipNoAuthGen = -1;
+  warnedUnauthorizedGen = -1;
   warnedTooLarge = false;
   warnedPrivacy = false;
   backoff?.reset();

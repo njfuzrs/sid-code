@@ -1298,6 +1298,8 @@ export class App {
     this.hookSystem.applyDisabledHooks(this.config.disabledHooks);
     // HC24：ConfigChange / Elicitation 接线（原为「预留」：fire 方法在、调用点为零）
     this.wireConfigAndElicitationHooks();
+    // 登录闭环 §5.5/§5.6：TUI 内 /login、/logout 后刷新进程内企业状态；401 / 未登录提示
+    this.wireEnterpriseLoginRefresh();
 
     // G13：应用企业策略 Hook 门控。必须复用 cli 已经 await 过的那一次 load
     // （loadEnterprisePolicyOnce），禁止再 new PolicyManager().load() 打第二次网。
@@ -1697,6 +1699,82 @@ export class App {
    * change-detector 里已被 consumeInternalWrite 过滤掉，不会因 /model 之类自己写盘而误触发。
    * Elicitation 走 MCPManager 注入的发射端，避免 mcp → hook 反向依赖。
    */
+  /**
+   * 登录闭环方案 §5.5 / §5.6。
+   *
+   * 在 TUI 里 /login 和在终端另开 `sid-code login` 不同：本进程启动时已按「没登录」把企业策略、
+   * 预算加载并缓存过一次（进程内只跑一次）。不刷新的话登录成功了本会话仍按无远程策略运行。
+   * 所以凭据一变：重载策略 → applyLoadedPolicy → initRules → 重新应用 Hook 门控 →
+   * 检查当前权限模式是否已被新策略禁用；预算单独重载。事件 / 账本无需重置
+   * （每批都实时取凭据，告警去重已按凭据代数），账本额外重放一次失败盘。
+   *
+   * 刻意不做的：系统提示词里的 deny 摘要不重建（会打断 prompt cache；权限检查本身已生效，
+   * 模型被拦时会收到拒绝结果）。登出也走同一条重载：远程策略有缓存兜底，登出不会让企业管控失效。
+   */
+  private wireEnterpriseLoginRefresh(): void {
+    void (async () => {
+      try {
+        const { onCredentialChanged, onCredentialRejected, getDeviceCredential } =
+          await import("@sid-code/core/identity/credential.ts");
+        const { resolveBackendUrl } = await import("@sid-code/core/identity/backend-url.ts");
+
+        onCredentialChanged(() => {
+          void this.refreshEnterpriseStateAfterLogin().catch((e) =>
+            getLogger().warn("IDENTITY", `登录态变更后刷新企业状态失败: ${e}`),
+          );
+        });
+        onCredentialRejected(() => {
+          this.notifyStatus("enterprise_login", "企业登录已失效，执行 /login 重新登录", 10000);
+        });
+
+        // 启动时配了 backend.url 却没登录：提示一次（TUI 未就绪时排队，无头模式永不消费）
+        if (resolveBackendUrl() && !getDeviceCredential()) {
+          this.notifyStatus("enterprise_login", "未登录企业后端，执行 /login", 10000);
+        }
+      } catch (e) {
+        getLogger().debug("IDENTITY", `企业登录态订阅跳过: ${e}`);
+      }
+    })();
+  }
+
+  private async refreshEnterpriseStateAfterLogin(): Promise<void> {
+    const log = getLogger();
+    const { reloadEnterprisePolicy, applyLoadedPolicy } =
+      await import("@sid-code/core/config/policy.ts");
+    const { settings: policy, meta } = await reloadEnterprisePolicy();
+    applyLoadedPolicy(policy, meta);
+
+    if (this.permissionChecker && "initRules" in this.permissionChecker) {
+      await (this.permissionChecker as any).initRules();
+    }
+    // Hook 门控是启动时单独应用的，initRules 管不到它
+    const hookPolicy = pickHookPolicy(policy);
+    this.hookSystem.applyEnterprisePolicy(hookPolicy ?? undefined);
+
+    // 新策略禁用了当前所处的权限模式：拨回默认并告知（启动时的 fail-fast 只在启动判断）
+    const mode = this.config.permissionMode;
+    if (mode && mode !== "default" && isModeDisabledByPolicy(String(mode))) {
+      this.config.permissionMode = "default";
+      this.config.skipPermissions = false;
+      this.config.yesMode = false;
+      this.tuiStateUpdater?.({ permissionMode: "default" });
+      this.notifyStatus("perm_mode_switch", "企业策略已禁用当前权限模式，已切回默认", 8000);
+    } else if (isBypassDisabledByPolicy() && this.config.skipPermissions) {
+      this.config.skipPermissions = false;
+      this.config.yesMode = false;
+      this.config.permissionMode = "default";
+      this.tuiStateUpdater?.({ permissionMode: "default" });
+      this.notifyStatus("perm_mode_switch", "企业策略已禁用 bypass 模式，已切回默认", 8000);
+    }
+
+    const { reloadRemoteBudget } = await import("@sid-code/core/telemetry/remote-budget.ts");
+    await reloadRemoteBudget().catch(() => null);
+    const { replayFailedUsageLedger } =
+      await import("@sid-code/core/telemetry/usage-ledger-remote.ts");
+    void replayFailedUsageLedger().catch(() => {});
+    log.info("IDENTITY", `登录态变更：企业策略（${meta.outcome}）与预算已重新加载`);
+  }
+
   private wireConfigAndElicitationHooks(): void {
     const ccSource: Record<
       string,

@@ -16,12 +16,16 @@ import {
   checkRemoteBudget,
   estimateRemoteBudgetUsed,
   formatRemoteBudgetWarning,
+  getLastRemoteBudget,
+  loadEnterpriseBudgetOnce,
   loadRemoteBudget,
+  reloadRemoteBudget,
   sanitizeRemoteBudget,
   type RemoteBudget,
 } from "@sid-code/core/telemetry/remote-budget.ts";
 import { __resetUsageLedgerRemoteForTest } from "@sid-code/core/telemetry/usage-ledger-remote.ts";
 import { __resetIdentityForTest, saveDeviceCredential } from "@sid-code/core/identity/index.ts";
+import { onCredentialRejected } from "@sid-code/core/identity/credential.ts";
 import { assertIsolated } from "../helpers/assert-isolated.ts";
 
 const realFetch = globalThis.fetch;
@@ -274,6 +278,35 @@ describe("RemoteBudgetLoader HTTP", () => {
       new Response(null, { status: 304, headers: { ETag: '"g1"' } })) as any;
     const b = await loadRemoteBudget();
     expect(b?.used_usd).toBeCloseTo(127.35, 10);
+  });
+
+  test("登录后 reloadRemoteBudget：丢弃「无凭据」缓存，重新拉取（登录闭环 §5.6）", async () => {
+    process.env.SID_CODE_BUDGET_ENDPOINT = "https://example.com/api/v1/ctl/budget";
+    let n = 0;
+    globalThis.fetch = (async () => {
+      n++;
+      return new Response(JSON.stringify(sample), { status: 200 });
+    }) as any;
+    // 启动时未登录：进程内定成 null，Once 之后不会再拉
+    expect(await loadEnterpriseBudgetOnce()).toBeNull();
+    saveDeviceCredential({ credential: "tok" });
+    expect(await loadEnterpriseBudgetOnce()).toBeNull();
+    expect(n).toBe(0);
+    // 登录后重载：真的发请求并生效
+    const b = await reloadRemoteBudget();
+    expect(n).toBe(1);
+    expect(b?.limit_usd).toBe(500);
+    expect(getLastRemoteBudget()?.limit_usd).toBe(500);
+  });
+
+  test("401 走统一上报点 reportCredentialRejected", async () => {
+    process.env.SID_CODE_BUDGET_ENDPOINT = "https://example.com/api/v1/ctl/budget";
+    saveDeviceCredential({ credential: "tok" });
+    const seen: string[] = [];
+    onCredentialRejected((s) => seen.push(s));
+    globalThis.fetch = (async () => new Response("no", { status: 401 })) as any;
+    await loadRemoteBudget();
+    expect(seen).toEqual(["budget"]);
   });
 });
 

@@ -78,6 +78,16 @@ const mod: LocalCommandModule = {
       // 忽略
     }
 
+    // ── 企业登录（只在配了 backend.url 时显示；不发网络请求）──
+    try {
+      const { collectLoginStatus, summarizeLoginStatus } =
+        await import("@sid-code/core/identity/login-status.ts");
+      const summary = summarizeLoginStatus(await collectLoginStatus());
+      if (summary) lines.push("", `  企业登录: ${summary}`, "  提示: /whoami 查看详情");
+    } catch {
+      // 登录态读取失败不影响其余状态展示
+    }
+
     return { type: "text", value: lines.join("\n") };
   },
 };

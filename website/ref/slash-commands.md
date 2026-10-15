@@ -18,7 +18,7 @@ description: 交互模式里可用的全部斜杠命令。
 
 <!-- AUTO-GEN:START 由 scripts/docs-gen-reference.ts 生成，勿手工编辑 -->
 
-> 共 **64** 个内置斜杠命令，从运行时命令注册表导出。
+> 共 **67** 个内置斜杠命令，从运行时命令注册表导出。
 > 在交互模式输入 `/` 会看到同一份列表（补全列表与本表同源）。
 
 | 命令 | 说明 | 别名 | 参数 |
@@ -58,6 +58,8 @@ description: 交互模式里可用的全部斜杠命令。
 | `/insights` | 生成会话分析报告（模型/成本/token/工具/异常概览） | `/analyze` | `[session-id\|latest]` |
 | `/keybindings` | 查看键位绑定 / 创建 keybindings.json 模板 | `/keys` | `[init]` |
 | `/language` | 显示或切换输出语言偏好（-p 持久化） | `/lang` | `[zh\|en\|auto\|unset\|status] [-p]` |
+| `/login` | 用飞书身份登录企业后端（浏览器授权，不阻塞输入） | — | `[cancel]` |
+| `/logout` | 登出企业后端：通知后端解绑本设备并删除本地凭据 | — | — |
 | `/loop` | 按间隔重复运行 prompt：/loop 5m &lt;任务>（固定节奏）或 /loop &lt;任务>（自适应轮询） | — | `[间隔如 5m] <要重复的任务>` |
 | `/lsp` | LSP 代码智能管理 | — | `[status\|reload]` |
 | `/mcp` | MCP 服务器管理（无参打开交互面板） | — | `[list\|add\|remove\|enable\|disable\|test\|authenticate\|approve\|reject\|prompts\|prompt\|resources] [参数]` |
@@ -85,6 +87,7 @@ description: 交互模式里可用的全部斜杠命令。
 | `/tui` | 切换全屏 TUI（Alternate Buffer）模式偏好（重启生效） | `/fullscreen` | `[on\|off]` |
 | `/undo` | 撤销最近一次文件修改（回滚到上一个 checkpoint） | — | — |
 | `/vim` | 切换 Vim 输入模式（无参 toggle；on/off；-p 持久化） | — | `[on\|off] [-p]` |
+| `/whoami` | 查看企业登录状态（--verify 向服务端核验） | — | `[--verify]` |
 | `/workflows` | 查看动态工作流 run（无参列出；带 runId 看详情） | `/wf` | `[runId\|taskId]` |
 | `/worktree` | 管理 Git Worktree (list/clean) | `/wt` | — |
 

@@ -13,7 +13,12 @@ import type { SinkBackend } from "../sink.ts";
 import type { EventMetadata } from "../index.ts";
 import { EventDiskCache, type FailedEvent } from "../disk-cache.ts";
 import { QuadraticBackoff } from "../backoff.ts";
-import { applyDeviceAuth, RELOGIN_HINT } from "../../identity/credential.ts";
+import {
+  applyDeviceAuth,
+  getCredentialGeneration,
+  RELOGIN_HINT,
+  reportCredentialRejected,
+} from "../../identity/credential.ts";
 import { isNonLocalHttp } from "../../identity/endpoints.ts";
 import { getLogger } from "../../debug/logger.ts";
 
@@ -67,9 +72,13 @@ export class HttpExporter implements SinkBackend {
   private batch: BatchedEvent[] = [];
   private flushTimer: ReturnType<typeof setTimeout> | null = null;
   private backoff = new QuadraticBackoff();
-  private warnedSkipNoAuth = false;
+  // 无凭据 / 401 告警按「凭据代数」去重而不是布尔：重新登录（代数 +1）后凭据再次失效，
+  // 用户要能再看到一次告警（登录闭环方案 §5.6）
+  private warnedSkipNoAuthGen = -1;
   private warnedSkipPlaintext = false;
-  private warnedUnauthorized = false;
+  private warnedUnauthorizedGen = -1;
+  /** 本批是否带的是设备凭据（而不是 authHeader 兜底）——只有设备凭据的 401 才算「需要重新登录」 */
+  private lastBatchUsedDeviceCredential = false;
 
   private readonly endpoint: string;
   private readonly authHeader?: string;
@@ -160,6 +169,7 @@ export class HttpExporter implements SinkBackend {
     }
 
     const headers = applyDeviceAuth({ "Content-Type": "application/json" });
+    this.lastBatchUsedDeviceCredential = Boolean(headers.Authorization);
     if (!headers.Authorization && this.authHeader) {
       headers.Authorization = this.authHeader;
     }
@@ -179,6 +189,7 @@ export class HttpExporter implements SinkBackend {
       });
 
       if (response.status === 401) {
+        if (this.lastBatchUsedDeviceCredential) reportCredentialRejected(`events:${this.name}`);
         this.failStable(new UnauthorizedExportError());
       }
       if (!response.ok) {
@@ -198,8 +209,8 @@ export class HttpExporter implements SinkBackend {
   private warnStableSkip(err: SkipRemoteExportError | UnauthorizedExportError): void {
     const log = getLogger();
     if (err instanceof UnauthorizedExportError) {
-      if (this.warnedUnauthorized) return;
-      this.warnedUnauthorized = true;
+      if (this.warnedUnauthorizedGen === getCredentialGeneration()) return;
+      this.warnedUnauthorizedGen = getCredentialGeneration();
       log.warn(
         "TELEMETRY",
         // 实际行为是「这一批丢弃，下一批照常带凭据发」（flush 没有会话级停发开关），
@@ -209,8 +220,8 @@ export class HttpExporter implements SinkBackend {
       return;
     }
     if (err.reason === "no_auth") {
-      if (this.warnedSkipNoAuth) return;
-      this.warnedSkipNoAuth = true;
+      if (this.warnedSkipNoAuthGen === getCredentialGeneration()) return;
+      this.warnedSkipNoAuthGen = getCredentialGeneration();
       log.warn(
         "TELEMETRY",
         `远程事件 ${this.name} 无可用凭据（设备凭据与 authHeader 皆空），不上报远程、不写磁盘重试`,
