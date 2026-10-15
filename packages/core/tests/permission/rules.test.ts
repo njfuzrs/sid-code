@@ -125,6 +125,46 @@ describe("matchRule", () => {
       }),
     ).toBe(false);
   });
+
+  // 插件 MCP 的工具名是 mcp__plugin_<插件名>_<server>__<tool>，插件名常带 `-`（如 feishu-docs）。
+  // 规则正则曾是 [*\w]+，不认 `-`，这类规则整条解析失败、静默不匹配：allow 放不行，deny 也拦不住。
+  describe("工具名含连字符（插件 MCP）", () => {
+    const req = { toolName: "mcp__plugin_feishu-docs_feishu__feishu_doc_read", input: {} };
+
+    test("精确规则命中", () => {
+      expect(matchRule("mcp__plugin_feishu-docs_feishu__feishu_doc_read", req)).toBe(true);
+    });
+
+    test("server 级通配命中", () => {
+      expect(matchRule("mcp__plugin_feishu-docs_feishu__*", req)).toBe(true);
+    });
+
+    test("server 级前缀命中", () => {
+      expect(matchRule("mcp__plugin_feishu-docs_feishu", req)).toBe(true);
+    });
+
+    test("不同插件不误命中", () => {
+      expect(matchRule("mcp__plugin_feishu-wiki_feishu__*", req)).toBe(false);
+      expect(matchRule("mcp__plugin_feishu-docs_other__*", req)).toBe(false);
+    });
+
+    test("带参数模式仍可解析", () => {
+      expect(
+        matchRule("mcp__plugin_feishu-docs_feishu__*(*.env)", {
+          toolName: "mcp__plugin_feishu-docs_feishu__read",
+          input: { file_path: ".env" },
+        }),
+      ).toBe(true);
+    });
+
+    test("deny 规则同样生效", () => {
+      const decision = checkRules(
+        { allow: [], deny: ["mcp__plugin_feishu-docs_feishu__*"], ask: [] },
+        req,
+      );
+      expect(decision?.allowed).toBe(false);
+    });
+  });
 });
 
 describe("checkRules", () => {

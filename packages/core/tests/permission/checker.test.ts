@@ -146,6 +146,20 @@ describe("PermissionChecker", () => {
     expect(result.allowed).toBe(true);
   });
 
+  // 2026-10-15 真实会话复现：--allowed-tools "mcp__plugin_feishu-docs_feishu__*" 不生效，
+  // headless 下 feishu_doc_read 仍被「需要用户确认」拒绝，只有 mcp__* 能放行。
+  test("预授权放行插件名含连字符的 MCP 工具", async () => {
+    const toolName = "mcp__plugin_feishu-docs_feishu__feishu_doc_read";
+    for (const rule of [toolName, "mcp__plugin_feishu-docs_feishu__*"]) {
+      const checker = new PermissionChecker({ ...defaultConfig(), allowedTools: [rule] });
+      const result = await checker.check({
+        toolName,
+        input: { url: "NWrsdpPsqoP3Ulxln0Lcat3mnsc" },
+      });
+      expect(result.allowed).toBe(true);
+    }
+  });
+
   test("skipPermissions 跳过所有检查", async () => {
     const config = { ...defaultConfig(), skipPermissions: true };
     const checker = new PermissionChecker(config);

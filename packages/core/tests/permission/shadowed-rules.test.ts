@@ -75,3 +75,17 @@ describe("getShadowedRulesForTool 按工具过滤", () => {
     expect(getShadowedRulesForTool(rules, "").length).toBe(0);
   });
 });
+
+describe("shadowed-rules 工具名含连字符（插件 MCP）", () => {
+  test("deny 遮蔽同名 allow → blocked", () => {
+    const tool = "mcp__plugin_feishu-docs_feishu__feishu_doc_read";
+    const rules: SourcedPermissionRule[] = [
+      { source: "userSettings", behavior: "allow", rawRule: tool },
+      { source: "policySettings", behavior: "deny", rawRule: tool },
+    ];
+    const result = detectShadowedRules(rules);
+    expect(result.length).toBe(1);
+    expect(result[0].severity).toBe("blocked");
+    expect(getShadowedRulesForTool(rules, tool).length).toBe(1);
+  });
+});
