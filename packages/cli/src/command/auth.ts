@@ -3,6 +3,9 @@
  *
  *   auth login    P2：用飞书身份登录企业后端（backend.url），一次完成认证 + 设备注册，
  *                 凭据落 ~/.sid-code/device-credential.json。顶层 `sid-code login` 是别名。
+ *   auth enroll   D2：注册码通道——用一次性注册码换设备凭据（没有飞书 / 无浏览器的机器，
+ *                 如 CI、共享构建机）。凭据同样落 device-credential.json，但**不带 user 段**
+ *                 （设备未绑定到人）。
  *   auth logout   通知后端解绑本设备（尽力而为），删本地凭据。
  *   auth status   三段：① 企业登录态（谁登录的、凭据是否过期、后端地址）；
  *                 ② 企业通道（策略 / 预算 / 账本 / 事件 / flag / 轨迹逐条：地址、来源、本地状态）；
@@ -87,6 +90,53 @@ async function cmdLogin(asJson: boolean): Promise<void> {
     process.exit(1);
   } finally {
     process.removeListener("SIGINT", onSigint);
+  }
+}
+
+async function cmdEnroll(args: string[], asJson: boolean): Promise<void> {
+  const { ArgParser } = await import("./args.ts");
+  // args 形如 ["enroll", "--code", "xxx", "--org", "corp"]；positional 里的 "enroll" 不影响取选项
+  const parser = new ArgParser(args.slice(1).join(" "));
+  const code = parser.string("code")?.trim();
+  const org = parser.string("org")?.trim();
+  const team = parser.string("team")?.trim();
+  if (!code || !org) {
+    console.error("用法: sid-code auth enroll --code <注册码> --org <组织ID> [--team <团队ID>]");
+    process.exit(1);
+  }
+
+  const { resolveBackendUrl } = await import("@sid-code/core/identity/backend-url.ts");
+  const backend = resolveBackendUrl();
+  if (!backend) {
+    const { NO_BACKEND_HINT } = await loadLoginStatusModule();
+    console.error(`错误: ${NO_BACKEND_HINT}`);
+    process.exit(1);
+  }
+
+  const { performCodeEnroll, EnrollError } = await import("@sid-code/core/identity/enroll.ts");
+  const { getRawVersion } = await import("@sid-code/shared/version.ts");
+  try {
+    const result = await performCodeEnroll(backend.url, {
+      code,
+      orgId: org,
+      teamId: team || undefined,
+      version: getRawVersion(),
+    });
+    if (asJson) {
+      console.log(JSON.stringify({ ok: true, ...result }, null, 2));
+      return;
+    }
+    const scope = result.teamId ? `${result.orgId} / ${result.teamId}` : result.orgId;
+    console.log(`\n✓ 注册成功：${scope}`);
+    if (result.expiresAt) console.log(`  凭据有效期至 ${result.expiresAt}`);
+  } catch (err) {
+    const reason = err instanceof EnrollError ? err.reason : "unknown";
+    if (asJson) {
+      console.log(JSON.stringify({ ok: false, reason, error: (err as Error).message }, null, 2));
+    } else {
+      console.error(`\n✗ 注册失败：${(err as Error).message}`);
+    }
+    process.exit(1);
   }
 }
 
@@ -204,11 +254,14 @@ export async function handleAuthCommand(args: string[]): Promise<void> {
     case "login":
       await cmdLogin(asJson);
       return;
+    case "enroll":
+      await cmdEnroll(args, asJson);
+      return;
     case "logout":
       await cmdLogout(asJson);
       return;
     default:
-      console.error(`错误: 未知 auth 子命令 "${sub}"。可用: login / logout / status`);
+      console.error(`错误: 未知 auth 子命令 "${sub}"。可用: login / enroll / logout / status`);
       process.exit(1);
   }
 }

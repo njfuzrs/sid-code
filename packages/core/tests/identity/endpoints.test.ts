@@ -92,6 +92,7 @@ afterEach(() => {
 
 const CHANNELS: BackendChannel[] = [
   "whoami",
+  "enroll",
   "policy",
   "budget",
   "flags",

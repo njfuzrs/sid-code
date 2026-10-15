@@ -147,7 +147,8 @@ async function main(): Promise<void> {
     return;
   }
 
-  // 快速路径 10: auth 子命令 — login / logout（P2 飞书登录）+ status（登录态 + 模型 Key 诊断）
+  // 快速路径 10: auth 子命令 — login / logout（P2 飞书登录）+ enroll（注册码通道）
+  //              + status（登录态 + 模型 Key 诊断）
   // 顶层 `sid-code login` / `sid-code logout` 是 `auth login` / `auth logout` 的别名
   if (args[0] === "auth" || args[0] === "login" || args[0] === "logout") {
     profileCheckpoint("bootstrap_route_resolved");
