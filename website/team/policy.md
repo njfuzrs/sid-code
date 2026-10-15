@@ -286,8 +286,13 @@ deny 了 `Bash(curl *)` 的前提下，加这个参数后 `curl` 和 `rm -rf /` 
 旧的 `SID_CODE_POLICY_ENDPOINT` 已弃用，只在没配 `backend.url` 时生效；两者都配且地址不同时以
 `backend.url` 为准并告警（`packages/core/src/identity/endpoints.ts`）。
 
-如实的边界：远程策略**只在启动时拉一次，不轮询**，管理员改了策略要等用户下次启动才生效
-（`packages/core/src/config/policy.ts` 的 `RemotePolicyLoader`）。非权威响应（超时 / 5xx / 401）时，
+生效时机：启动和 `/login` 时各拉一次；交互会话里另有**约 30 分钟一次（±10% 抖动）的低频轮询**，
+带 `If-None-Match`，策略没变时服务端回 304、不传 body（`packages/core/src/config/policy-poll.ts`）。
+所以管理员改完策略，正在使用的员工最迟约 33 分钟内生效，不用重启；`sid-code -p` 这类无头调用不轮询，
+下次启动生效。轮询只采纳权威响应（200 / 204 / 304）：碰上超时、5xx、401 时保留会话里现有的策略，
+不会因为一次网络抖动把 deny 撤掉。
+
+启动时碰到非权威响应（超时 / 5xx / 401），
 缓存只在「地址一致、上次权威响应是 200、未超过 10 分钟」三条同时满足才用，
 避免已撤销的 deny 靠缓存续命。
 

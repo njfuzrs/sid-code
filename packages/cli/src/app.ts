@@ -1319,6 +1319,8 @@ export class App {
     this.wireConfigAndElicitationHooks();
     // 登录闭环 §5.5/§5.6：TUI 内 /login、/logout 后刷新进程内企业状态；401 / 未登录提示
     this.wireEnterpriseLoginRefresh();
+    // D7：管理员改策略后，交互会话 30 分钟内生效，不必等员工重启
+    this.wireEnterprisePolicyPolling();
 
     // G13：应用企业策略 Hook 门控。必须复用 cli 已经 await 过的那一次 load
     // （loadEnterprisePolicyOnce），禁止再 new PolicyManager().load() 打第二次网。
@@ -1758,9 +1760,49 @@ export class App {
 
   private async refreshEnterpriseStateAfterLogin(): Promise<void> {
     const log = getLogger();
-    const { reloadEnterprisePolicy, applyLoadedPolicy } =
-      await import("@sid-code/core/config/policy.ts");
+    const { reloadEnterprisePolicy } = await import("@sid-code/core/config/policy.ts");
     const { settings: policy, meta } = await reloadEnterprisePolicy();
+    await this.applyEnterprisePolicyInSession(policy, meta);
+
+    const { reloadRemoteBudget } = await import("@sid-code/core/telemetry/remote-budget.ts");
+    await reloadRemoteBudget().catch(() => null);
+    const { replayFailedUsageLedger } =
+      await import("@sid-code/core/telemetry/usage-ledger-remote.ts");
+    void replayFailedUsageLedger().catch(() => {});
+    log.info("IDENTITY", `登录态变更：企业策略（${meta.outcome}）与预算已重新加载`);
+  }
+
+  /** D7：交互会话里低频轮询远程策略。停止函数在 finalizeSessionStore 里调。 */
+  private stopPolicyPolling: (() => void) | null = null;
+
+  private wireEnterprisePolicyPolling(): void {
+    // 无头模式一次跑完就退，轮询没有意义；定时器本身也 unref，不会拖住退出
+    if (this.config.print || this.stopPolicyPolling) return;
+    void (async () => {
+      try {
+        const { startEnterprisePolicyPolling } =
+          await import("@sid-code/core/config/policy-poll.ts");
+        this.stopPolicyPolling = startEnterprisePolicyPolling({
+          onChange: async ({ settings, meta }) => {
+            await this.applyEnterprisePolicyInSession(settings, meta);
+            this.notifyStatus("enterprise_policy", "企业策略已更新", 6000);
+          },
+        });
+      } catch (e) {
+        getLogger().debug("POLICY", `远程策略轮询未启动: ${e}`);
+      }
+    })();
+  }
+
+  /**
+   * 把一份策略结果应用到当前会话：进程内单例 + 权限规则 + Hook 门控 + 权限模式降级。
+   * /login 重载与 D7 轮询共用这一条，不要各写一份（漏刷 Hook 门控就是这么来的）。
+   */
+  private async applyEnterprisePolicyInSession(
+    policy: import("@sid-code/core/config/policy.ts").PolicySettings | null,
+    meta: import("@sid-code/core/config/policy.ts").PolicyLoadMeta,
+  ): Promise<void> {
+    const { applyLoadedPolicy } = await import("@sid-code/core/config/policy.ts");
     applyLoadedPolicy(policy, meta);
 
     if (this.permissionChecker && "initRules" in this.permissionChecker) {
@@ -1785,13 +1827,6 @@ export class App {
       this.tuiStateUpdater?.({ permissionMode: "default" });
       this.notifyStatus("perm_mode_switch", "企业策略已禁用 bypass 模式，已切回默认", 8000);
     }
-
-    const { reloadRemoteBudget } = await import("@sid-code/core/telemetry/remote-budget.ts");
-    await reloadRemoteBudget().catch(() => null);
-    const { replayFailedUsageLedger } =
-      await import("@sid-code/core/telemetry/usage-ledger-remote.ts");
-    void replayFailedUsageLedger().catch(() => {});
-    log.info("IDENTITY", `登录态变更：企业策略（${meta.outcome}）与预算已重新加载`);
   }
 
   private wireConfigAndElicitationHooks(): void {
@@ -7305,6 +7340,8 @@ export class App {
    * - 持久化失败绝不能阻断退出流程。
    */
   private finalizeSessionStore(): void {
+    this.stopPolicyPolling?.();
+    this.stopPolicyPolling = null;
     try {
       this.sessionStore?.endSession(
         this.sessionState.getEffectiveTotalCostUSD(),
