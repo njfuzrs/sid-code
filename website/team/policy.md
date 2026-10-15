@@ -42,6 +42,8 @@ sid-code auth login              # 用企业身份登录，拿到设备凭据
 sid-code auth status --verify    # 确认凭据有效、通道连通
 ```
 
+TUI 里用 `/login`、`/whoami`。凭据存在哪、多久过期、不登录会怎样，见[企业登录](/team/login)。
+
 之后每次启动会拉取 `GET <backend.url>/api/v1/ctl/policy`，细节见下文[能力边界](#能力边界-如实说)第 3 条。
 
 验证第二条真的生效——用户显式要求跳过权限时直接退出：

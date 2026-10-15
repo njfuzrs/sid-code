@@ -26,6 +26,7 @@ description: sid-code 在本机存了什么、什么会离开这台机器、每�
 | `debug.log`、`logs/`、`audit.log` | 运行日志与权限审计 |
 | `state/` | 迁移状态、项目信任记录、轨迹上传水位 |
 | `device-id` | 本机持久随机 ID，只在你配置了上传或企业后端时随请求带出 |
+| `device-credential.json` | 企业登录的设备凭据（明文，权限 0600）与登录用户；飞书 token 不在本机，见[企业登录](/team/login#凭据存在哪) |
 | `settings.json`、`managed-settings.json` | 你的配置与企业托管配置 |
 | `plugins/` | 已装插件与市场目录缓存 |
 
@@ -63,7 +64,7 @@ rm -rf ~/.sid-code/trajectories/sessions
 | 企业事件上报 `/events` | 配了 `backend.url` | 事件元数据（含 `git_head`、仓库哈希） | `no-telemetry` 起禁用 |
 | 成本账本 `/usage/ledger` | 配了 `backend.url` | 每次调用的 token 与成本 | `no-telemetry` 起禁用 |
 | 远端开关 `/ctl/flags` | 配了 `backend.url` | 拉取，不上传会话数据 | `essential-traffic` 禁用 |
-| 企业策略 `/ctl/policy`、预算 `/ctl/budget`、登录 | 配了 `backend.url` | 拉取策略与预算；登录交换设备凭据；已登录时启动后台调一次 `/ctl/whoami`（24 小时最多一次），只带设备凭据，用返回的过期时间更新本地记录 | 不受控：属于企业下行管控 |
+| 企业策略 `/ctl/policy`、预算 `/ctl/budget`、登录 | 配了 `backend.url` | 拉取策略与预算；登录交换设备凭据；已登录时启动后台调一次 `/ctl/whoami`（24 小时最多一次），只带设备凭据，用返回的过期时间更新本地记录。登录流程见[企业登录](/team/login) | 不受控：属于企业下行管控 |
 | 企业插件市场 | 配了 `backend.url` | 目录与插件包；设备凭据只发往与 `backend.url` 同源的地址 | 不受控 |
 | OTLP 导出 | `telemetry.enabled` 并配了 OTLP 端点（默认关） | Span 与指标；prompt 原文默认不导出 | `no-telemetry` 起禁用 |
 | 告警 webhook | 配了 webhook 地址 | 模型健康摘要（模型名、错误分型、延迟） | `essential-traffic` 禁用 |

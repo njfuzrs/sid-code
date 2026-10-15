@@ -167,7 +167,7 @@ RPM = Requests Per Minute（每分钟请求数），TPM = Tokens Per Minute（�
 客户端已实现远程预算（`packages/core/src/telemetry/remote-budget.ts`）：额度由企业后端下发、
 用量由服务端跨会话汇总，本地改 `settings.json` 放不宽它。
 
-- **取址**：配了 `backend.url` 并 `sid-code auth login` 后自动生效，地址是
+- **取址**：配了 `backend.url` 并[登录](/team/login)（`sid-code auth login` 或 TUI 里 `/login`）后自动生效，地址是
   `GET <backend.url>/api/v1/ctl/budget`，不需要单独配。旧的 `SID_CODE_BUDGET_ENDPOINT`
   已弃用，只在没配 `backend.url` 时生效。
 - **何时拉取**：启动时拉一次；之后每次本会话用量上报到账本成功，最多每 30 秒刷新一次。
