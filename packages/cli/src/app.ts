@@ -3173,9 +3173,41 @@ export class App {
         break;
 
       case "confirm": {
-        // 确认型结果：暂以文本提示用户（新体系 confirm 的 UI 接线后续可增强）。
-        // 当前 bundled skills 不产生 confirm，此分支为完整性兜底。
-        presentCommandResult(commandInput, result.message ?? "需要确认");
+        // 确认型结果（/login 重新登录、/logout、/goal 覆盖等）：弹确认框让用户选。
+        // 原先这里只把 message 当文本打出来，用户既确认不了也取消不了，onConfirm 永远不会被调。
+        // 复用 shellConfirmRequest 格子（带 message），经 interactionQueue 串行，
+        // 与权限框/Shell 确认框同口径：resolve 前先清 state，否则确认框残留在屏幕上。
+        const confirmed = await this.interactionQueue.run(
+          () =>
+            new Promise<boolean>((resolve) => {
+              updateState({
+                shellConfirmRequest: {
+                  commands: [],
+                  message: result.message,
+                  resolve: (ok: boolean) => {
+                    updateState({ shellConfirmRequest: null });
+                    resolve(ok);
+                  },
+                },
+              });
+            }),
+          () => false,
+        );
+        if (!confirmed) {
+          presentCommandResult(commandInput, "已取消");
+          break;
+        }
+        let next: import("./command/types.ts").CommandExecutionResult;
+        try {
+          next = await result.onConfirm();
+        } catch (err: any) {
+          presentCommandResult(commandInput, `命令执行失败: ${err?.message ?? err}`, {
+            isError: true,
+          });
+          break;
+        }
+        // onConfirm 的结果可能是任意类型（text / 再一次 confirm），递归走同一套分派
+        await this.handleCommandExecutionResult(next, deps);
         break;
       }
 
