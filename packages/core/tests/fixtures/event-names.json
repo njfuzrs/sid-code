@@ -1,0 +1,25 @@
+{
+  "events": [
+    "command_invoke",
+    "command_rejected",
+    "context_assembled",
+    "context_compact",
+    "context_compact_skipped",
+    "error_occurred",
+    "guardrail_triggered",
+    "memory_guard",
+    "memory_index_health",
+    "memory_inject",
+    "memory_read",
+    "permission_allow",
+    "permission_deny",
+    "permission_prompt",
+    "plugin_installed",
+    "policy_enforced",
+    "startup_timing",
+    "tool_call",
+    "tool_failure",
+    "tool_invoked",
+    "tool_success"
+  ]
+}
