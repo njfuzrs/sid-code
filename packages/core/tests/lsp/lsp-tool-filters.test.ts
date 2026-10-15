@@ -62,6 +62,17 @@ describe("G9：filterGitignored", () => {
     expect(ignored.size).toBe(0);
   });
 
+  // 回归：非 git 目录里 git 秒退，写 stdin 会 EPIPE；stdin 无 error 监听时变成未处理异常，
+  // CI ubuntu 上偶发把上一条用例打红（PR #300）。路径量放大到稳定撑满管道缓冲，必现。
+  // 变异自证：删掉 lsp.ts 里 child.stdin.on("error") → 本用例红（EPIPE: broken pipe）。
+  test.skipIf(!hasGit)("非 git 目录 + 大量路径：git 提前退出不抛 EPIPE", async () => {
+    const paths = Array.from({ length: 20000 }, (_, i) => join(dir, `f${i}-${"x".repeat(50)}.ts`));
+    for (let round = 0; round < 3; round++) {
+      const ignored = await filterGitignored(paths, dir);
+      expect(ignored.size).toBe(0);
+    }
+  });
+
   test("空路径列表返回空 Set（不 spawn git）", async () => {
     const ignored = await filterGitignored([], dir);
     expect(ignored.size).toBe(0);

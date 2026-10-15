@@ -21,6 +21,7 @@ import { inspectBackendUrl, normalizeBackendUrl, type BackendUrlSource } from ".
 
 export type BackendChannel =
   | "auth"
+  | "enroll"
   | "whoami"
   | "policy"
   | "budget"
@@ -42,6 +43,8 @@ export const BACKEND_API_PREFIX = "/api/v1";
  */
 export const BACKEND_PATHS: Readonly<Record<BackendChannel, string>> = {
   auth: "/auth",
+  // 一次性注册码换设备凭据（D2）：没有飞书 / 无浏览器的机器的注册通道。
+  enroll: "/ctl/enroll",
   whoami: "/ctl/whoami",
   policy: "/ctl/policy",
   budget: "/ctl/budget",
@@ -64,6 +67,8 @@ export const BACKEND_ROUTE_CONTRACT: ReadonlyArray<{ method: "GET" | "POST"; pat
   { method: "GET", path: `${BACKEND_API_PREFIX}/auth/feishu/cli/start` },
   { method: "POST", path: `${BACKEND_API_PREFIX}/auth/cli/exchange` },
   { method: "POST", path: `${BACKEND_API_PREFIX}/auth/cli/logout` },
+  // 注册码通道（D2）：一次性码换设备凭据，与 auth 并列的身份入口。
+  { method: "POST", path: `${BACKEND_API_PREFIX}/ctl/enroll` },
   { method: "GET", path: `${BACKEND_API_PREFIX}/ctl/whoami` },
   { method: "GET", path: `${BACKEND_API_PREFIX}/ctl/policy` },
   { method: "GET", path: `${BACKEND_API_PREFIX}/ctl/budget` },

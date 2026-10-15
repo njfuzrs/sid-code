@@ -153,6 +153,9 @@ export async function filterGitignored(
       child!.on("close", () => resolve());
       child!.on("error", () => resolve());
     });
+    // 非 git 目录里 git 一启动就 fatal 退出，这时写 stdin 会 EPIPE。stdin 上没有 error 监听时
+    // 它会变成未处理异常（CI ubuntu 上偶发打红 G9 用例）。吞掉即可：结论仍是「不过滤」。
+    child.stdin!.on("error", () => {});
     child.stdin!.write(paths.join("\n"));
     child.stdin!.end();
     // 5s 超时兜底：超时后 kill 子进程，防止孤儿进程占用资源

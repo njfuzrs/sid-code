@@ -136,8 +136,11 @@ commands/env/staging.md    → /my-plugin:env:staging
 
 同名时优先级：**inline > 已安装 > 内置**。
 
-目前只支持从本地目录安装，没有插件市场，也不能从 git URL 安装。
-团队分发靠把插件目录放进仓库或共享盘，再 `/plugin install <路径>` 或 `--plugin-dir <路径>`。
+安装有两条路：从插件市场装（`/plugin install <name>@<市场>`，见下文[企业插件市场](#企业插件市场)），
+或从本地目录装（`/plugin install <路径>`）。市场只支持 url 型目录，不能直接从 git URL 安装。
+`/plugin marketplaces` 列出本机已注册的市场：企业市场 `company`（由 `backend.url` 推出）、
+官方市场 `sid-code`（可用 `officialMarketplace: false` 关闭），以及 `extraKnownMarketplaces` 里配的额外市场。
+从市场装的插件标识是 `name@<市场>`，本地目录装的是 `name@local`。
 
 inline 排最高是给调试用的：改插件时不用先卸载已安装的版本，
 直接 `--plugin-dir` 指向工作副本就覆盖掉了。
@@ -152,6 +155,7 @@ sid-code --plugin-dir /tmp/plugin-a --plugin-dir /tmp/plugin-b
 
 | 命令 | 作用 |
 | --- | --- |
+| `/plugin` | 打开插件管理面板：列出已装插件，选中后可查看详情、启用 / 禁用、检查更新、卸载 |
 | `/plugin list` | 列出所有插件（启用 / 禁用 / 错误） |
 | `/plugin info <name>` | 看详情 |
 | `/plugin market [关键词]` | 浏览企业插件市场（需配置 `backend.url` 并[企业登录](/team/login)） |
@@ -165,6 +169,11 @@ sid-code --plugin-dir /tmp/plugin-a --plugin-dir /tmp/plugin-b
 
 `/plugins` 是 `/plugin` 的别名。依赖检查是双向的：卸载被依赖的插件会被拦下，
 要强行来加 `--force`。
+
+面板里的操作和对应子命令走同一套实现，规则一致：内置插件只能查看，不能启停或卸载；
+只有从市场装的插件才有「检查更新」；面板里的卸载只把插件移出注册表、保留文件，
+要删文件用 `/plugin uninstall <name> --delete`。改完状态同样要 `/reload-plugins` 才生效，
+面板底部会提示。脚本和 CI 里用 `sid-code plugin <子命令>`，它不打开面板。
 
 ## 企业插件市场
 

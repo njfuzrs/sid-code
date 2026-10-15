@@ -1,5 +1,6 @@
 /**
  * 插件管理命令
+ *   /plugin                       - 打开插件交互管理面板（查看 / 启用 / 禁用 / 更新 / 卸载）
  *   /plugin list                  - 列出所有插件（启用/禁用/错误）
  *   /plugin info <name>           - 查看插件详情
  *   /plugin market [--market <名>] [关键词] - 浏览插件市场（默认列出全部已注册市场）
@@ -73,7 +74,7 @@ export class PluginCommand implements Command {
     return ["plugins"];
   }
   description() {
-    return "插件管理";
+    return "插件管理（无参打开交互面板）";
   }
   argumentHint() {
     return "[list|market|marketplaces|info|install|update|uninstall|enable|disable] [插件名]";
@@ -81,6 +82,12 @@ export class PluginCommand implements Command {
 
   async execute(args: string, ctx: AppContext): Promise<CommandResult> {
     const { positionals, flags, values } = parseArgs(args);
+    // 无参 → 打开交互管理面板（同 /mcp、/skills）。此前无参落到 list 文本：
+    // 只有 1 个插件时结果仅 2 行，低于 PANEL_MIN_LINES，被路由到状态栏一闪而过。
+    // CLI `sid-code plugin` 无参在 plugin-cli.ts 里先打印用法，走不到这里。
+    if (positionals.length === 0 && flags.size === 0 && values.size === 0) {
+      return { kind: "dialog", dialog: "plugins" };
+    }
     const sub = positionals[0]?.toLowerCase() || "list";
 
     switch (sub) {
@@ -145,7 +152,9 @@ export class PluginCommand implements Command {
       }
     }
 
-    return { kind: "message", message: lines.join("\n") };
+    // 列表是查看型报告，行数再少也要进面板（不受 PANEL_MIN_LINES 约束），否则 1 个插件时
+    // 只有 2 行、落到状态栏一闪而过。panel 字段只影响 TUI，CLI / headless 照样输出纯文本。
+    return { kind: "message", message: lines.join("\n"), panel: { title: "/plugin list" } };
   }
 
   private async info(name?: string): Promise<CommandResult> {
