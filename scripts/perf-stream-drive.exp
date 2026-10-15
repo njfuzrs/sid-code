@@ -1,0 +1,44 @@
+#!/usr/bin/env expect
+# 驱动真实 TUI 跑一轮 mock 流式响应，用于测量流式阶段主线程开销。
+# 用法: perf-stream-drive.exp <stream_seconds> <cmd> [args...]
+# 环境变量（provider / base_url / SID_CONFIG_DIR）由调用方设置，见 perf-stream-bench.sh。
+set timeout 60
+set stream_secs [lindex $argv 0]
+set cmd [lrange $argv 1 end]
+
+spawn -noecho {*}$cmd
+# 等输入框就绪（占位文案出现），再多等 2s 让启动期异步任务落定
+expect {
+  "输入消息" {}
+  timeout { puts "TIMEOUT waiting for prompt box"; exit 1 }
+}
+sleep 2
+send -- "go"
+# 输入与回车隔开：紧跟着的回车会被粘贴检测并进同一段输入，不触发提交
+sleep 1.5
+send -- "\r"
+# 等首个思考 token 真正到达再计时：提交 → 主请求发出之间有数秒启动期工作
+# （工具延迟加载、hook、首轮 attachment），按固定 sleep 会在流式开始前就退出。
+set timeout 60
+expect {
+  "思考中" {}
+  timeout { puts "TIMEOUT waiting for thinking"; exit 1 }
+}
+# 通知外层采样器：流式窗口开始
+if {[info exists env(PERF_MARK)]} { close [open $env(PERF_MARK) w] }
+# 让流式跑完（mock 端点的总时长由 token 数 / 速率决定）。
+# ⚠️ 不能用 sleep：sleep 期间 expect 不读 PTY，缓冲区写满后 TUI 的 write() 阻塞，
+# 整条流式被背压卡住 → 测出来 CPU≈0 且 profile 72% 在 native write（实测踩过）。
+# 这里在窗口内持续消费输出，等价于真实终端在读屏。
+set timeout $stream_secs
+expect {
+  -re {.+} { exp_continue }
+  timeout {}
+  eof { puts "EOF during stream"; exit 1 }
+}
+# 两次 Ctrl+C 退出，触发 --cpu-prof 落盘
+send -- "\003"
+sleep 0.5
+send -- "\003"
+set timeout 20
+expect eof

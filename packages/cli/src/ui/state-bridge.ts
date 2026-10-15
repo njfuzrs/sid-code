@@ -14,6 +14,12 @@ import {
   offTaskChanged,
 } from "@sid-code/core/task/index.ts";
 
+/**
+ * 流式合帧窗口。32ms ≈ 30fps：逐字输出肉眼看不出差别，而 flash 类模型
+ * 150 tok/s 下每窗口约合并 5 个 token。取 16ms 只能合并约 2 个，收益减半。
+ */
+export const STREAM_FLUSH_MS = 32;
+
 export class StateBridge extends EventEmitter {
   current: TUIState;
   /** 任务变更监听器引用（用于清理） */
@@ -34,12 +40,50 @@ export class StateBridge extends EventEmitter {
       offTaskChanged(this._taskChangeHandler);
       this._taskChangeHandler = null;
     }
+    if (this._streamFlushTimer !== null) {
+      clearTimeout(this._streamFlushTimer);
+      this._streamFlushTimer = null;
+    }
   }
 
-  /** 更新状态并触发事件 */
+  /** 流式合帧定时器；非 null = 有已合并进 current、但尚未 emit 的流式状态 */
+  private _streamFlushTimer: ReturnType<typeof setTimeout> | null = null;
+
+  /** 更新状态并触发事件（立即 emit；同时带出所有待发的流式状态） */
   update(patch: Partial<TUIState>): void {
+    if (this._streamFlushTimer !== null) {
+      clearTimeout(this._streamFlushTimer);
+      this._streamFlushTimer = null;
+    }
     this.current = { ...this.current, ...patch };
     this.emit("change", this.current);
+  }
+
+  /**
+   * 流式 token 专用的合帧更新：current 同步合并，emit 合并到每 STREAM_FLUSH_MS 一次。
+   *
+   * 为什么需要：update() 每次 emit 都会 setState → 整棵 App 树 reconcile。流式回调
+   * 一个 token 调一次，实测 3600 token 的一轮触发 3615 次 update（1:1），React
+   * workLoopSync 占 profile 16.3s/57s。tui 底座的 16ms 节流只节流写屏，省不掉 reconcile。
+   *
+   * 三条不能改的约束：
+   * - **current 必须同步合并**：app.ts 里大量代码同步读 `bridge.current`（retryStatus /
+   *   displayItems 等），延后合并会让它们读到旧值。
+   * - **任何 update() 都会先带出待发状态**（它 emit 的就是含流式字段的 current），
+   *   所以流式结束、工具开始等状态切换不会被延后，也不会出现「先看到工具卡片、
+   *   后补出最后几个 token」的乱序。
+   * - **定时器是 leading-less 的固定窗口**，不是 debounce：持续流式时每个窗口必出一帧，
+   *   不会因为 token 一直来就一直不刷。
+   */
+  updateStreaming(patch: Partial<TUIState>): void {
+    this.current = { ...this.current, ...patch };
+    if (this._streamFlushTimer !== null) return;
+    this._streamFlushTimer = setTimeout(() => {
+      this._streamFlushTimer = null;
+      this.emit("change", this.current);
+    }, STREAM_FLUSH_MS);
+    // 不因合帧定时器阻止进程退出
+    this._streamFlushTimer.unref?.();
   }
 
   /** 从 Task 注册表拉取最新任务列表并更新 TUI 状态。
