@@ -8237,6 +8237,11 @@ export class App {
       });
       bridge.update(patch);
     };
+    // 流式 token 专用：emit 合帧到每 STREAM_FLUSH_MS 一次（见 StateBridge.updateStreaming）。
+    // 只给逐 token 的累积更新用；状态切换（首帧、流式结束、工具开始）一律走 updateState。
+    const updateStreamingState = (patch: Partial<import("./ui/App.tsx").TUIState>) => {
+      bridge.updateStreaming(patch);
+    };
 
     // ── P1-2：补全列表随注册表变更自动刷新 ──
     //
@@ -9327,7 +9332,9 @@ export class App {
           clearTransientErrorPanel();
         }
         streamingFullText += text;
-        updateState({
+        // 首个正文 token 立即刷（思考 → 正文的切换要即时可见），之后合帧
+        const isFirstText = streamingFullText === text;
+        (isFirstText ? updateState : updateStreamingState)({
           streamingText: streamingFullText,
           streamingThinking: streamingThinkingFull,
           streamingThinkingStartMs: undefined,
@@ -9359,7 +9366,8 @@ export class App {
         // P2-2：首帧记录起点时间戳，与 stream-processor 的 block_start 对齐，
         // 避免流式计时器与历史项 durationSeconds 因起点不同而数字跳变。
         const startMsPatch = isFirst ? { streamingThinkingStartMs: Date.now() } : {};
-        updateState({
+        // 首个思考 token 立即刷（「连接中」→「思考中」要即时切换），之后合帧
+        (isFirst ? updateState : updateStreamingState)({
           streamingThinking: streamingThinkingFull,
           isStreaming: true,
           ...startMsPatch,
