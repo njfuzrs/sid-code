@@ -358,9 +358,10 @@ export async function loadRemoteBudget(): Promise<RemoteBudget | null> {
     return null;
   }
   if (!getUsableCredentialToken()) {
+    // 未登录是预期状态：走 debug，不在 CLI 启动时往终端打 WARN（同 config/policy.ts）。
     if (!warnedNoCredential) {
       warnedNoCredential = true;
-      log.warn("BUDGET", "无设备凭据，跳过远程预算（fail-open）");
+      log.debug("BUDGET", "无设备凭据，跳过远程预算（fail-open）");
     }
     lastBudget = null;
     return null;

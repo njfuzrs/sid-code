@@ -199,11 +199,14 @@ export class RemotePolicyLoader implements PolicyLoader {
 
     const token = getUsableCredentialToken();
     if (!token) {
+      // 未登录是正常状态，不是故障：走 debug，不在 CLI 启动时往终端打 WARN。
+      // logger 未启用时 WARN 会兜底写 stderr，这几行会出现在 TUI 首屏之前。
+      // 「是否登录」由 `sid-code auth status` / 状态栏表达，不靠启动日志。
       if (!warnedNoCredential) {
         warnedNoCredential = true;
-        log.warn("POLICY", "无设备凭据，跳过远程策略（有未过期 200 缓存则用缓存）");
+        log.debug("POLICY", "无设备凭据，跳过远程策略（有未过期 200 缓存则用缓存）");
       }
-      const cached = usableCachedSettings(cache, "no_credential");
+      const cached = usableCachedSettings(cache, "no_credential", "debug");
       rememberLoadMeta({
         source: cached ? "remote" : "none",
         outcome: cached ? "cache_fallback" : "error",
@@ -502,18 +505,21 @@ function isCacheFresh(cache: PolicyCacheFile | null): boolean {
 function usableCachedSettings(
   cache: PolicyCacheFile | null,
   reason: string,
+  // 未登录（no_credential）是预期状态，调用方传 "debug"；网络错 / 5xx 等真异常保持 "warn"。
+  level: "warn" | "debug" = "warn",
 ): PolicySettings | null {
   const log = getLogger();
+  const emit = (msg: string) =>
+    level === "warn" ? log.warn("POLICY", msg) : log.debug("POLICY", msg);
   if (!cache?.settings || cache.last_status === 204) {
-    log.warn("POLICY", `远程策略 ${reason} 无可用 200 缓存 → 无远程策略`);
+    emit(`远程策略 ${reason} 无可用 200 缓存 → 无远程策略`);
     return null;
   }
   if (!isCacheFresh(cache)) {
-    log.warn("POLICY", `远程策略 ${reason} 缓存过期 fetched_at=${cache.fetched_at} 已停用约束`);
+    emit(`远程策略 ${reason} 缓存过期 fetched_at=${cache.fetched_at} 已停用约束`);
     return null;
   }
-  log.warn(
-    "POLICY",
+  emit(
     `远程策略 ${reason} 回退缓存 fetched_at=${cache.fetched_at} last_status=${cache.last_status ?? 200}`,
   );
   return cache.settings;

@@ -3,7 +3,8 @@
  *
  * 隔离：SID_CONFIG_DIR 指 tmpdir。fetch 一律 mock。
  */
-import { describe, expect, test, beforeEach, afterEach } from "bun:test";
+import { describe, expect, test, beforeEach, afterEach, spyOn } from "bun:test";
+import { getLogger } from "@sid-code/core/debug/logger.ts";
 import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -217,6 +218,17 @@ describe("RemoteBudgetLoader HTTP", () => {
     }) as any;
     expect(await loadRemoteBudget()).toBeNull();
     expect(n).toBe(0);
+  });
+
+  test("无凭据：不打 BUDGET WARN（未登录是正常状态，不能出现在 CLI 首屏）", async () => {
+    process.env.SID_CODE_BUDGET_ENDPOINT = "https://example.com/api/v1/ctl/budget";
+    const warnSpy = spyOn(getLogger(), "warn");
+    try {
+      expect(await loadRemoteBudget()).toBeNull();
+      expect(warnSpy.mock.calls.filter((c) => c[0] === "BUDGET")).toEqual([]);
+    } finally {
+      warnSpy.mockRestore();
+    }
   });
 
   test("200 写入 budget-cache.json", async () => {
