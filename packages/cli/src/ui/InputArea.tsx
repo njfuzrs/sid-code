@@ -758,7 +758,7 @@ export function InputArea({
       return true;
     }
 
-    // Shell 模式切换：! 在行首时进入 Shell 模式
+    // Shell 模式切换：输入框为空时按 ! 进入 Shell 模式
     if (key.insertable && key.sequence === "!" && tb.isEmpty()) {
       setShellModeActive(true);
       tb.insert("!");
