@@ -289,3 +289,95 @@ describe("自动更新离线安装链路", () => {
     }
   });
 });
+
+/** 与 install-template.sh 的 detect_shell_rc 对齐：SHELL=/bin/bash 时 macOS 写 ~/.bash_profile、Linux 写 ~/.bashrc。 */
+function bashRcPath(home: string): string {
+  return process.platform === "darwin" ? join(home, ".bash_profile") : join(home, ".bashrc");
+}
+
+/**
+ * 背景（2026-10-16 修复）：rc 块是"追加到文件末尾"的，zsh/bash 对同名 alias 都是
+ * 后定义生效 —— 修复前首装分支不检查已有 sc，用户自己的 sc（如截图工具）会被块尾
+ * 的 sid-code sc 静默盖掉，与脚本注释声明的安全原则 5「尊重用户配置不覆盖」相悖。
+ * 这里端到端钉住三件事：已有 sc 不覆盖（且只补 PATH）、无 sc 照常写、重复安装幂等。
+ */
+describe("注册命令：不覆盖用户已有的 sc 别名", () => {
+  test("rc 里已有用户自己的 sc 时，首装与重装都不写入 sid-code 的 sc（只补 PATH）", () => {
+    const fixture = makeRelease();
+    try {
+      const rc = bashRcPath(fixture.home);
+      writeFileSync(rc, "alias sc='echo mine'\n");
+      const first = runInstall(fixture.releaseDir, fixture.home);
+      if (first.result.status !== 0) throw new Error(first.result.stderr || first.result.stdout);
+      // 第二次走「已有块」分支：也不能因为块里缺 sc 行就补一个盖掉用户
+      const second = runInstall(fixture.releaseDir, fixture.home);
+      if (second.result.status !== 0) throw new Error(second.result.stderr || second.result.stdout);
+
+      const content = readFileSync(rc, "utf8");
+      expect(content).toContain("alias sc='echo mine'"); // 用户行原样保留
+      expect(content).not.toContain("sid-code --dangerously-skip-permissions");
+      expect(content).toContain(".local/bin"); // PATH 照写，sid-code 命令本身可用
+      expect(first.result.stdout).toContain("检测到已有 sc 别名，保留不变");
+    } finally {
+      rmSync(fixture.home, { recursive: true, force: true });
+      rmSync(fixture.releaseDir, { recursive: true, force: true });
+    }
+  });
+
+  test("rc 里没有 sc 时照常写入（对照组，防修复收窄成「永远不写」）", () => {
+    const fixture = makeRelease();
+    try {
+      const rc = bashRcPath(fixture.home);
+      writeFileSync(rc, "# 已有 rc 内容\n");
+      const { result } = runInstall(fixture.releaseDir, fixture.home);
+      if (result.status !== 0) throw new Error(result.stderr || result.stdout);
+      const content = readFileSync(rc, "utf8");
+      expect(content).toContain("alias sc='sid-code --dangerously-skip-permissions'");
+      expect(result.stdout).toContain("已写入 PATH + sc");
+    } finally {
+      rmSync(fixture.home, { recursive: true, force: true });
+      rmSync(fixture.releaseDir, { recursive: true, force: true });
+    }
+  });
+
+  test("重复安装幂等：块与 sc 都只有一份", () => {
+    const fixture = makeRelease();
+    try {
+      const rc = bashRcPath(fixture.home);
+      writeFileSync(rc, "# 已有 rc 内容\n");
+      const first = runInstall(fixture.releaseDir, fixture.home);
+      if (first.result.status !== 0) throw new Error(first.result.stderr || first.result.stdout);
+      const second = runInstall(fixture.releaseDir, fixture.home);
+      if (second.result.status !== 0) throw new Error(second.result.stderr || second.result.stdout);
+      const content = readFileSync(rc, "utf8");
+      expect((content.match(/>>> sid-code >>>/g) ?? []).length).toBe(1);
+      expect((content.match(/alias sc=/g) ?? []).length).toBe(1);
+    } finally {
+      rmSync(fixture.home, { recursive: true, force: true });
+      rmSync(fixture.releaseDir, { recursive: true, force: true });
+    }
+  });
+
+  // .bashrc 同步分支只在 macOS + bash 触发（脚本内 `uname -s` 门控）；
+  // Linux 上不注册这条，避免出现"永远通过"的假绿。
+  if (process.platform === "darwin") {
+    test("macOS：.bashrc 已有用户 sc → 同步块只写 PATH，不写 sc", () => {
+      const fixture = makeRelease();
+      try {
+        const bashrc = join(fixture.home, ".bashrc");
+        writeFileSync(join(fixture.home, ".bash_profile"), "# bp\n");
+        writeFileSync(bashrc, "alias sc='echo mine-bash'\n");
+        const { result } = runInstall(fixture.releaseDir, fixture.home);
+        if (result.status !== 0) throw new Error(result.stderr || result.stdout);
+        const content = readFileSync(bashrc, "utf8");
+        expect(content).toContain("alias sc='echo mine-bash'");
+        expect(content).not.toContain("sid-code --dangerously-skip-permissions");
+        expect(content).toContain(".local/bin");
+        expect(result.stdout).toContain(".bashrc 已有 sc 别名，保留不变");
+      } finally {
+        rmSync(fixture.home, { recursive: true, force: true });
+        rmSync(fixture.releaseDir, { recursive: true, force: true });
+      }
+    });
+  }
+});
