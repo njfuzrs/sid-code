@@ -1,4 +1,4 @@
-// sid-code（B9 / T2.2）：整文件改写，语义对齐旧底座（契约 T6 / 端口 text.ts），见 UPSTREAM-DIFF.md。
+// sid-code（B9 / T2.2）：整文件改写，语义按契约 T6（端口 text.ts），见 UPSTREAM-DIFF.md。
 // 与上游的差别：颜色名必须带 `ansi:` 前缀（端口 Color 类型就是这么定义的，裸名 `red` 原样返回）；
 // 新增 applyColor / applyTextStyles；按终端修正 chalk 的颜色级别。
 import chalk, {type BackgroundColorName, type ForegroundColorName} from 'chalk';
@@ -8,7 +8,7 @@ export type ColorType = 'foreground' | 'background';
 
 /**
  * 布尔样式，按叠加顺序从内到外排列。顺序决定字节序列：嵌套时 chalk 会在内层关闭处重开外层样式，
- * 差分测试按字节比较，所以顺序是契约的一部分（对拍旧底座得出）。类型与叠加循环都从这张表派生。
+ * 差分测试按字节比较，所以顺序是契约的一部分（对拍冻结的行为基线得出）。类型与叠加循环都从这张表派生。
  */
 const STYLE_LAYERS = [
 	'inverse',
@@ -30,7 +30,7 @@ export type TextStyles = {readonly [Flag in StyleFlag]?: boolean} & {
 type Level = typeof chalk.level;
 
 /**
- * 按终端修正 chalk 自动探测出的颜色级别（对拍旧底座的规则）：
+ * 按终端修正 chalk 自动探测出的颜色级别（对拍冻结的行为基线的规则）：
  * 1. `TERM_PROGRAM === 'vscode'`（区分大小写）且探测为 256 色 → 升到真彩。xterm.js 支持真彩，
  *    但 supports-color 在它里面常只报 256 色。
  * 2. 设置了非空的 `TMUX`、级别为真彩 → 降到 256 色。tmux 默认不透传真彩，
@@ -38,7 +38,7 @@ type Level = typeof chalk.level;
  *    设置 `SID_CODE_TMUX_TRUECOLOR`（任意非空值，`0` 也算）跳过这一步。
  * 两条按顺序执行：VS Code 里跑 tmux 时先升后降，结果是 256 色。
  *
- * 旧变量名 `CLAUDE_CODE_TMUX_TRUECOLOR` 仍然认（D125：新底座改名），T9 删除旧底座时一并去掉。
+ * 旧变量名 `CLAUDE_CODE_TMUX_TRUECOLOR` 仍然认（D125 改名）。
  */
 export function adjustColorLevel(level: Level, env: NodeJS.ProcessEnv): Level {
 	let adjusted = level;
@@ -56,7 +56,7 @@ export function adjustColorLevel(level: Level, env: NodeJS.ProcessEnv): Level {
 	return adjusted;
 }
 
-// chalk 是全进程单例（CLI 的 markdown 渲染用的也是它），所以这里改的是整个进程的颜色级别，与旧底座一致
+// chalk 是全进程单例（CLI 的 markdown 渲染用的也是它），所以这里改的是整个进程的颜色级别
 chalk.level = adjustColorLevel(chalk.level, process.env);
 
 const ANSI_PREFIX = 'ansi:';

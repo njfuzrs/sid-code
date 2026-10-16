@@ -3,7 +3,7 @@
  * monorepo 分包迁移器（P2-2 步骤4/5）—— 一次性脚本，落地后即可删除
  *
  * 做四件事：
- *   1. `git mv` 把 `src/` 下的模块搬进 `packages/{tui-renderer,shared,core,cli}/src/`
+ *   1. `git mv` 把 `src/` 下的模块搬进 `packages/{<渲染层>,shared,core,cli}/src/（渲染层现为 packages/tui）`
  *   2. 重写**跨包**的相对导入为包名导入（包内相对导入保持不动 —— 这是本方案工作量小的关键）
  *   3. 重写 `tests/` 与 `scripts/` 对 `src/` 的引用
  *   4. 生成 4 个 `package.json`
@@ -17,8 +17,8 @@
  *
  * ## 两个目录被刻意扁平化
  *
- * - `src/ink/*` → `packages/tui-renderer/src/*`：ink 就是整个包，
- *   保留 `ink/` 一层会让导入变成 `@sid-code/tui-renderer/ink/components/Box.tsx`（冗余）。
+ * - `src/ink/*` → 渲染层包的 `src/*`：ink 就是整个包，
+ *   保留 `ink/` 一层会让导入多出一段冗余的 `ink/`。
  * - `src/{utils,util,types}` **不扁平**：保留目录名。`util` 与 `utils` 是两个不同目录，
  *   扁平化会丢掉这个区分，且改写规则要多一步「去掉目录名」，容易出错。
  *   代价只是导入路径多一段（`@sid-code/shared/utils/x.ts`），换来改写规则是纯前缀替换。

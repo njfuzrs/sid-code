@@ -1,6 +1,6 @@
 #!/usr/bin/env bun
 /**
- * 键位对拍的诊断（B9 / T5.1，契约 I8）：新底座跑语料，与 input-vectors.json 比，按名字前缀统计不一致数并列出明细。
+ * 键位对拍的诊断（B9 / T5.1，契约 I8）：`packages/tui` 跑语料，与 input-vectors.json 比，按名字前缀统计不一致数并列出明细。
  * T5.1b 起 `packages/tui/tests/input.test.ts` 要求两种口径都是 0；它红了，用这里看全部明细。
  *
  * 用法：

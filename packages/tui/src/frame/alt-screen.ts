@@ -2,7 +2,7 @@
  * alt-screen 帧 diff（B9 / T6.1a，契约 R14）。纯函数，不碰流：同步包裹、隐藏光标由 ink.tsx 负责。
  *
  * 和主屏（main-screen.ts）的根本区别：alt-screen 没有 scrollback，所以用**绝对定位**——
- * 每帧从 `ESC[H` 出发，写完把光标停到视口最后一行行首（`ESC[{rows};1H`）。规则全部来自黑盒对拍旧底座：
+ * 每帧从 `ESC[H` 出发，写完把光标停到视口最后一行行首（`ESC[{rows};1H`）。规则全部来自黑盒对拍冻结的行为基线：
  * - 只画视口内的行（超出视口的内容直接丢，不进 scrollback）；
  * - 前一帧缺省时按「对一块全空白屏」做 diff：默认空白不写，样式不同的空格照写；
  * - 第一个变化在第 0 行就直接从原点往右（`CUF`）；换行用 `\r` + `CUF(x)` + `CUD(dy)`；
@@ -55,7 +55,7 @@ export function clipToViewport(screen: Screen, rows: number): Screen {
 
 /**
  * 把一帧补到视口高度（多出来的行是默认空白）；已经够高时原样返回。
- * 选区用（B9 / T6.2b）：旧底座的 alt 屏幕恒为整个视口高，拖到内容以下的空行照样高亮（探针 m15 `below`）。
+ * 选区用（B9 / T6.2b）：基线的 alt 屏幕恒为整个视口高，拖到内容以下的空行照样高亮（探针 m15 `below`）。
  */
 export function padToViewport(screen: Screen, rows: number): Screen {
 	if (screen.height >= rows) {

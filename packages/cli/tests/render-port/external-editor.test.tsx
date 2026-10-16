@@ -1,15 +1,15 @@
 /**
  * 契约 X5（B9 / T6.1b）：外部编辑器前后的 `enterAlternateScreen` / `exitAlternateScreen`。
  *
- * 期望值是 2026-10-09 对 legacy 的黑盒探针（D-5）。每个用例在子进程里跑 fixtures/external-editor-app.tsx，
- * 先断言写死的字节，再断言 next 与 T9.1 删除旧底座前冻结的 legacy 输出逐段一致（`fixtures/legacy-frozen/`）。
+ * 期望值是 2026-10-09 冻结基线的黑盒探针（D-5）。每个用例在子进程里跑 fixtures/external-editor-app.tsx，
+ * 先断言写死的字节，再断言当前实现与冻结的行为基线逐段一致（`fixtures/frozen-baseline/`）。
  * 卸载那一段（`unmount` 标记之后）不比：属于生命周期（X3，T7.1b）。
  */
 import { describe, expect, test } from "bun:test";
 import { closeSync, mkdtempSync, openSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { frozenKey, legacyFrozen } from "./fixtures/legacy-frozen.ts";
+import { frozenKey, frozenBaseline } from "./fixtures/frozen-baseline.ts";
 
 const APP = join(import.meta.dir, "fixtures/external-editor-app.tsx");
 const ESC = "\x1b";
@@ -57,13 +57,13 @@ function run(name: string, env: Record<string, string> = {}) {
 }
 
 function dual(name: string, expected: Record<string, string>, env: Record<string, string> = {}) {
-  const next = run(name, env);
-  for (const [k, v] of Object.entries(expected)) expect(next[k], `${name}「${k}」`).toBe(v);
-  // 挂载段（首帧 + raw mode 开启）不归 X5：两边隐藏光标的时机不同（I4 / X3 的事），只比之后的段
-  // 冻结时已去掉 legacy 的 mounted 段
-  const legacy = legacyFrozen<Record<string, string>>("external-editor", frozenKey(name, env));
-  delete next.mounted;
-  expect(next).toEqual(legacy);
+  const actual = run(name, env);
+  for (const [k, v] of Object.entries(expected)) expect(actual[k], `${name}「${k}」`).toBe(v);
+  // 挂载段（首帧 + raw mode 开启）不归 X5：隐藏光标的时机归 I4 / X3，只比之后的段
+  // 冻结基线里已不含 mounted 段
+  const baseline = frozenBaseline<Record<string, string>>("external-editor", frozenKey(name, env));
+  delete actual.mounted;
+  expect(actual).toEqual(baseline);
 }
 
 describe("X5 外部编辑器 handoff（主屏）", () => {
@@ -96,7 +96,7 @@ describe("X5 外部编辑器 handoff（主屏）", () => {
     });
   });
 
-  test("X5 × O5: 无障碍模式下收回终端照样隐藏光标（旧底座只在首帧与 Ctrl+Z 恢复时让步）", () => {
+  test("X5 × O5: 无障碍模式下收回终端照样隐藏光标（只在首帧与 Ctrl+Z 恢复时让步）", () => {
     dual(
       "commit",
       {
@@ -200,7 +200,7 @@ describe("X5 外部编辑器 handoff（已在 <AlternateScreen> 里）", () => {
   });
 });
 
-// T5.3c：I4 × X5。让渡期间 raw mode 计数变化时输入模式怎么开关（2026-10-09 对 legacy 黑盒探针，D-5）。
+// T5.3c：I4 × X5。让渡期间 raw mode 计数变化时输入模式怎么开关（2026-10-09 冻结基线的黑盒探针，D-5）。
 // 结论：I4 的计数规则在让渡期间照常生效（0 → 1 当场开模式、发探查；归零当场关），不推迟到收回；
 // 收回时的 `{raw:true}` 只看收回那一刻有没有人持有，`?1004h` 与扩展键重申照 X5 无条件写。CLI 在这条路径上不写模式（T5.3b）。
 const ON_MODES = `{ref}{raw:true}${ESC}[?2004h${ESC}[?1004h`;

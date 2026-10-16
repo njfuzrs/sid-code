@@ -149,7 +149,7 @@ const parseEscapeSequence = (
 	}
 
 	// sid-code（T5.1c，I8）：块尾的 `ESC` + 中间字节（0x20–0x2F，ECMA-48 nF 序列的开头）
-	// 先挂起、等冲刷超时再交出（旧底座实测：10ms 内不出，冲刷后才出）
+	// 先挂起、等冲刷超时再交出（基线实测：10ms 内不出，冲刷后才出）
 	if (escapeIndex === input.length - 2) {
 		const byte = next.charCodeAt(0);
 		if (byte >= 0x20 && byte <= 0x2f) return 'pending';
@@ -161,7 +161,7 @@ const parseEscapeSequence = (
 	return {sequence: input.slice(escapeIndex, nextIndex), nextIndex};
 };
 
-// 粘贴内容里的 DCS / OSC / APC 串会把结束标记吞进去：先跳过整个串再找 `ESC [201~`（旧底座实测，I3）。
+// 粘贴内容里的 DCS / OSC / APC 串会把结束标记吞进去：先跳过整个串再找 `ESC [201~`（基线实测，I3）。
 // 串没收齐就当粘贴没结束
 const findPasteEnd = (input: string, from: number): number => {
 	let index = from;

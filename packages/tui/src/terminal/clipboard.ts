@@ -2,7 +2,7 @@
  * 复制到剪贴板（B9 / T2.3，契约 O7 / M3）。
  *
  * `setClipboard(text)` 返回一条 OSC 52 序列（调用方负责写进终端），同时尽量把内容送进系统剪贴板。
- * 规则来自黑盒对拍旧底座（差分测试见 packages/cli/tests/render-port/contracts-termio.test.ts）：
+ * 规则来自黑盒对拍冻结的行为基线（差分测试见 packages/cli/tests/render-port/contracts-termio.test.ts）：
  * - 序列：`osc(52, 'c', base64(utf8(text)))`。
  * - 系统剪贴板（发出去不等结果，失败静默）。`SSH_CONNECTION` 非空时跳过，因为远端机器的剪贴板不是用户的：
  *   - darwin：`pbcopy`；

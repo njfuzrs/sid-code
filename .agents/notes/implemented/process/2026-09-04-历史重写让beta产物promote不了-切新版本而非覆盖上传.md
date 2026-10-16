@@ -7,7 +7,7 @@ Date: 2026-09-04
 ## 决定了什么
 
 上一轮发版(2026-09-03)因旧 GitHub 账号 `rushengzhou` 被封停而中断。迁往新账号
-`njfuzrs` 时**重写了全部 commit hash**(撤销追踪 `packages/tui-renderer/src/`,
+`njfuzrs` 时**重写了全部 commit hash**(撤销追踪一个 vendor 进来的目录,
 125 文件 / 24456 行),导致服务器上 `0.1.602` 那批 beta 产物**编自一个已不存在于任何 ref
 的 commit**:
 
@@ -59,7 +59,7 @@ $ git branch -a --contains 99e28297      # 空输出 = 任何 ref 都不含它
 $ git rev-parse 99e28297^{tree}          # 0c245bec…
 $ git rev-parse b10b75c2^{tree}          # 39e14243… 不同
 $ git diff --stat 99e28297 b10b75c2 | tail -1
-  125 files changed, 24456 deletions(-)   # 差的正是 tui-renderer/src
+  125 files changed, 24456 deletions(-)   # 差的正是被撤销追踪的那个 vendor 目录
 ```
 
 **服务器现状核过,不是照抄文档**:`beta.txt`=0.1.602 / `latest.txt`=0.1.601;

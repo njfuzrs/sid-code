@@ -7,7 +7,7 @@ import { setSuppressTerminalProbe as nextSetSuppressTerminalProbe } from "@sid-c
 import type { RenderInstance } from "../runtime.ts";
 
 /**
- * 端口的 render 是 async（旧底座在首帧前让出一个微任务），上游是同步。
+ * 端口的 render 是 async（冻结行为基线要求首帧前让出一个微任务），上游是同步。
  * 这里保留同一个微任务边界：CLI 调用点都按「await 之后才有首帧」写，契约测试也按这个时机断言。
  */
 export async function render(node: ReactNode, options?: NodeJS.WriteStream | RenderOptions) {

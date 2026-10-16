@@ -1,6 +1,6 @@
 // B9 / T6.1a：alt-screen 契约（M1 / R14）的子进程驱动，由 alt-screen.test.tsx 运行。
 //
-// 为什么是子进程、渲染到 process.stdout：旧底座的 <AlternateScreen> 只通知 process.stdout 上的实例，
+// 为什么是子进程、渲染到 process.stdout：冻结行为基线里 <AlternateScreen> 只通知 process.stdout 上的实例，
 // 渲染到 PassThrough 时出帧仍走主屏 diff，测不到真实路径（T6.1a 探针实测）。
 // fd 1 由父进程重定向到文件；步骤边界用 OSC 7777 标记写进同一字节流（同 term-bench/runner.tsx）。
 import { writeSync } from "node:fs";

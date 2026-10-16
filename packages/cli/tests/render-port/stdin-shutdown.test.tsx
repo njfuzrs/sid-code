@@ -1,9 +1,9 @@
 /**
  * 契约 I1c / I5 / X4 的边界（B9 / T5.1d）：stdin 静默后的模式重申、`drainStdin`、`detachForShutdown`。
  *
- * 主断言在 `contracts-runtime.test.tsx`，这里补探针测出的细节。两套底座都跑。
- * 期望值全部是 2026-10-08 对拍 legacy 的黑盒探针实测（`_probe_misc / w / i1c / i1c2 / i1c3 / x4 / x4b / x4c / fd`），
- * 没有读旧底座代码（设计文档 D-5）。
+ * 主断言在 `contracts-runtime.test.tsx`，这里补探针测出的细节。
+ * 期望值全部是 2026-10-08 冻结基线的黑盒探针实测（`_probe_misc / w / i1c / i1c2 / i1c3 / x4 / x4b / x4c / fd`），
+ * 没有读被对拍实现的源码（设计文档 D-5）。
  */
 import { describe, expect, spyOn, test } from "bun:test";
 import * as fs from "node:fs";

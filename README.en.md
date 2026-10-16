@@ -83,6 +83,12 @@ is structurally positioned not to offer**:
 Coming from Claude Code, migration is close to zero-cost — see the
 [migration guide](https://www.sid-code.cc/team/migrate).
 
+**Code provenance**: what's compatible with Claude Code is the interface (config file names, hook event
+names, CLI flags); the implementation is our own. Compared line by line against the Claude Code
+source: code in runs of 6+ identical lines is 0.04% (most of it upstream ink, which both projects
+share), 7 sentences match verbatim, and zero renamed leftovers. Methodology and caveats are in
+[Relationship to Claude Code](https://www.sid-code.cc/start/#代码来源) (Chinese); attribution is in [NOTICE](./NOTICE).
+
 ## Where it stands today
 
 | Item | Status |
@@ -99,10 +105,9 @@ Coming from Claude Code, migration is close to zero-cost — see the
     cases") came from static scans and didn't match the resume; the 30 eval cases were deleted
     on 2026-09-18 along with the old evals/ suites, so keeping them here would be untrue.
     The first two rows now come from one run of scripts/resume-metrics.ts (`--coverage`)
-    in the docs-research repo (2026-10-12, HEAD=cdb37f58, after B9 / T9.1 removed the old renderer):
+    in the docs-research repo (2026-10-12, HEAD=cdb37f58):
     lines of code  559,229 = 567,027 (production + tests + tooling) − 7,798 (lines in packages/tui/src
                    that git blame still attributes to the upstream ink import commit 8fd9048d); tests 234,289.
-                   The pre-T9.1 value 524,786 included the old renderer fork (19,824 lines); not comparable
     unit tests     15,911 as executed by `bun test` (includes generated cases a static grep misses)
     coverage       88.0% line coverage of packages/core/src (83,564 / 94,973); engine layer only
     built-in tools length of the `sid-code --dump-tools` array (44, same source as ref/tools.md)

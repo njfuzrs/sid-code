@@ -1,8 +1,8 @@
 /**
- * cell 级屏幕缓冲对拍旧底座首帧（B9 / T3.1，契约 R3 / R9 / T3 / T4）。
+ * cell 级屏幕缓冲对拍冻结的行为基线首帧（B9 / T3.1，契约 R3 / R9 / T3 / T4）。
  *
- * 向量由 `bun run tui:screen-vectors` 从旧底座的 TTY 首帧生成并入库；这里用新底座渲染同一棵树，
- * `serializeScreen` 的字节必须逐字节一致。只读向量与语料，不 import 旧底座。
+ * 向量由 `bun run tui:screen-vectors` 从 TTY 首帧生成并入库（冻结的行为基线）；这里用渲染底座渲染同一棵树，
+ * `serializeScreen` 的字节必须逐字节一致。只读向量与语料，不 import 生成器。
  */
 import { describe, expect, test } from "bun:test";
 import { join } from "node:path";
@@ -21,7 +21,7 @@ import {
 const PROBE = join(import.meta.dir, "fixtures", "screen-probe.tsx");
 const groups = vectors.groups as Record<string, { cols: number; frames: Record<string, string> }>;
 
-describe("屏幕缓冲首帧对拍旧底座", () => {
+describe("屏幕缓冲首帧对拍冻结的行为基线", () => {
   test("向量与语料同一批条目（语料改了要重生成向量）", () => {
     for (const [g, { cases }] of Object.entries(CORPUS_ENVS)) {
       expect(Object.keys(groups[g]!.frames)).toEqual(cases.map((c) => c.name));

@@ -19,7 +19,7 @@ const mark = (label: string) => writeSync(1, `<<@${label}>>`);
 const tick = () => new Promise((r) => setTimeout(r, 60));
 const logged: unknown[][] = [];
 const loopMode = process.env.FIXTURE_CE === "loop";
-// 挂载之后才武装 loop / throw：旧底座 debug 时 render 里还会打一条「first ink render」日志，
+// 挂载之后才武装 loop / throw：debug 时 render 里还会打一条「first ink render」日志，
 // 那条不归护栏管（不是 E1 / E2），武装早了会让两边在挂载期就分叉
 let armed = false;
 console.error = (...args: unknown[]) => {

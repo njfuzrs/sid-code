@@ -1,9 +1,9 @@
-<!-- 本文件曾由 scripts/tui-surface.ts 生成。该脚本扫描旧底座，B9 / T9.1 随旧底座删除；此后这里是 T9.1 时的冻结快照，可手改。 -->
+<!-- 本文件曾由 scripts/tui-surface.ts 生成，该脚本在 B9 / T9.1 删除；此后这里是 T9.1 时的冻结快照，可手改。 -->
 <!-- surface-signature: ff8eceb706de4a9b -->
 
 # 渲染端口面（CLI 对渲染底座的全部依赖）
 
-B9 / T0.1 产物。新底座必须提供这里列出的全部符号与 props；render-port 层覆盖的就是这个范围。
+B9 / T0.1 产物。渲染底座必须提供这里列出的全部符号与 props；render-port 层覆盖的就是这个范围。
 签名只由**集合**决定（符号 / props / 环境变量），计数是生成时快照，日常 UI 改动会让它漂移，不影响签名。
 
 - 消费底座的源码文件：**101** 个（`packages/cli/src`，不含 `ui/render-port/` 自身）
@@ -119,14 +119,14 @@ B9 / T0.1 产物。新底座必须提供这里列出的全部符号与 props；r
 
 ## 3. 底座读取的环境变量
 
-新底座逐个决定保留 / 改名 / 删除（D125，T7.2c 定论）。改名的旧名留作别名，T9 删除旧底座时一并去掉。`CLAUDE_CODE_DISABLE_MOUSE` 只出现在旧底座的注释里，从来没有代码读它，所以不在表内。
+`packages/tui` 逐个决定保留 / 改名 / 删除（D125，T7.2c 定论）。改名的旧名留作别名，T9 时一并去掉。`CLAUDE_CODE_DISABLE_MOUSE` 盘点时只出现在注释里、没有代码读它，所以不在表内。
 
-| 变量 | 读取位置（相对 tui-renderer/src） | 新底座结论 |
+| 变量 | 盘点时的读取位置 | `packages/tui` 结论 |
 | --- | --- | --- |
 | `__CFBundleIdentifier` | `_vendor/env.ts` | 保留：`terminal/extended-keys.ts` |
 | `ALACRITTY_LOG` | `_vendor/env.ts` | 保留：`terminal/extended-keys.ts` |
 | `CLAUDE_CODE_ACCESSIBILITY` | `components/App.tsx` | **改名** `SID_CODE_ACCESSIBILITY`（`cursor-helpers.ts`），功能保留；旧名留作别名到 T9，新名设置了（含空串）以新名为准 |
-| `CLAUDE_CODE_COMMIT_LOG` | `reconciler.ts` | **删除**：旧底座的临时提交计时埋点（源码注释 temp debugging），next 没有对应插桩；帧耗时看 `bun run tui:bench` |
+| `CLAUDE_CODE_COMMIT_LOG` | `reconciler.ts` | **删除**：临时提交计时埋点（源码注释 temp debugging），next 没有对应插桩；帧耗时看 `bun run tui:bench` |
 | `CLAUDE_CODE_DEBUG_REPAINTS` | `reconciler.ts` | **删除**：只给 full reset 打日志；next 的 full reset 原因已经从 `onFrame` 的 `flickers[].reason` 暴露 |
 | `CLAUDE_CODE_TMUX_TRUECOLOR` | `colorize.ts` | **改名** `SID_CODE_TMUX_TRUECOLOR`（`colorize.ts`，T2.2 已做）；旧名留作别名到 T9 |
 | `ConEmuANSI` | `_vendor/env.ts`<br>`terminal.ts` | 保留：`terminal/extended-keys.ts` |
@@ -137,9 +137,9 @@ B9 / T0.1 产物。新底座必须提供这里列出的全部符号与 props；r
 | `KITTY_WINDOW_ID` | `_vendor/env.ts`<br>`terminal.ts` | 保留：`terminal/extended-keys.ts`、`osc.ts`、`sync-output.ts` |
 | `KONSOLE_VERSION` | `_vendor/env.ts` | 保留：`terminal/extended-keys.ts` |
 | `LC_TERMINAL` | `supports-hyperlinks.ts`<br>`termio/osc.ts` | 保留：`terminal/clipboard.ts`、`hyperlinks.ts` |
-| `MSYSTEM` | `_vendor/env.ts`<br>`clearTerminal.ts` | 保留：`terminal/extended-keys.ts`。旧底座 `clearTerminal.ts` 里的 win32 清屏分支 next 没有（见 `TERM_PROGRAM_VERSION`） |
+| `MSYSTEM` | `_vendor/env.ts`<br>`clearTerminal.ts` | 保留：`terminal/extended-keys.ts`。`clearTerminal.ts` 里的 win32 清屏分支 next 没有（见 `TERM_PROGRAM_VERSION`） |
 | `NODE_ENV` | `reconciler.ts` | 保留：`frame/schedule.ts`（R13） |
-| `SESSIONNAME` | `_vendor/env.ts` | **不读**：旧底座只拿它认 cygwin，cygwin 不在扩展键白名单里，认出来与认不出来的可观察行为相同 |
+| `SESSIONNAME` | `_vendor/env.ts` | **不读**：盘点时只拿它认 cygwin，cygwin 不在扩展键白名单里，认出来与认不出来的可观察行为相同 |
 | `SID_CODE_DEBUG` | `_vendor/debug.ts` | 保留（CLI 也读，见 help）。next：`stderr-guard.ts` 加载时读，恰为 `1` / `true` 才把被吞的裸 stderr 记进 `console.error`（E1） |
 | `SID_CODE_DISABLE_MOUSE_CLICKS` | `_vendor/fullscreen.ts` | 保留。next 底座读它（T6.2b，`ink.tsx` `mouseClicksDisabled`）：`1` / `true` / `yes` 为真时 alt-screen 里的选区与链接点击都不响应；不改变底座写的鼠标模式字节（M1） |
 | `SID_DISABLE_TAB_STATUS` | `termio/osc.ts` | 保留：`hooks/use-tab-status.ts`、`ink.tsx`（O2） |
@@ -149,7 +149,7 @@ B9 / T0.1 产物。新底座必须提供这里列出的全部符号与 props；r
 | `STY` | `_vendor/env.ts`<br>`termio/osc.ts` | 保留：`terminal/extended-keys.ts`、`osc.ts`、`clipboard.ts`、`sync-output.ts` |
 | `TERM` | `_vendor/env.ts`<br>`supports-hyperlinks.ts`<br>`terminal.ts` | 保留：`terminal/*` |
 | `TERM_PROGRAM` | `_vendor/env.ts`<br>`bidi.ts`<br>`clearTerminal.ts`<br>`colorize.ts`<br>`components/App.tsx`<br>`render-node-to-output.ts`<br>`supports-hyperlinks.ts`<br>`terminal.ts` | 保留：`colorize.ts`、`text/bidi.ts`、`terminal/*` |
-| `TERM_PROGRAM_VERSION` | `clearTerminal.ts`<br>`terminal.ts` | **不读**：旧底座用它判 OSC 9;4 是否可用（CLI 不发 OSC 9;4，T7.2b）和 win32 VS Code 的清屏序列。next 清屏固定 `2J 3J H`，win32 旧控制台差异未实现，T9 前评估 |
+| `TERM_PROGRAM_VERSION` | `clearTerminal.ts`<br>`terminal.ts` | **不读**：盘点时用它判 OSC 9;4 是否可用（CLI 不发 OSC 9;4，T7.2b）和 win32 VS Code 的清屏序列。next 清屏固定 `2J 3J H`，win32 旧控制台差异未实现，T9 前评估 |
 | `TERMINAL_EMULATOR` | `_vendor/env.ts` | 保留：`terminal/extended-keys.ts` |
 | `TERMINATOR_UUID` | `_vendor/env.ts` | 保留：`terminal/extended-keys.ts` |
 | `TILIX_ID` | `_vendor/env.ts` | 保留：`terminal/extended-keys.ts` |

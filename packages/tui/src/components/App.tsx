@@ -117,7 +117,7 @@ function App({
 	// Count how many components enabled raw mode to avoid disabling
 	// raw mode until all components don't need it anymore
 	// sid-code（B9 / T5.1c，契约 I9）：计数是普通整数，多余的 `setRawMode(false)` 会把它压成负数，
-	// 之后要补回同样多次 `true` 才会真正打开（与旧底座一致）
+	// 之后要补回同样多次 `true` 才会真正打开（冻结行为基线要求如此）
 	const rawModeEnabledCount = useRef(0);
 	// Count how many components enabled bracketed paste mode
 	const bracketedPasteModeEnabledCount = useRef(0);
@@ -133,10 +133,10 @@ function App({
 	);
 	const pendingInputFlushRef = useRef<NodeJS.Timeout | undefined>(undefined);
 	// Small delay to let chunked escape sequences complete before flushing as literal input.
-	// sid-code（T5.1b，I8）：上游 20ms；旧底座在 40ms 与 60ms 之间冲刷，取 50ms
+	// sid-code（T5.1b，I8）：上游 20ms；基线在 40ms 与 60ms 之间冲刷，取 50ms
 	const pendingInputFlushDelayMilliseconds = 50;
 	// sid-code（B9 / T5.1d，契约 I1c）：stdin 静默多久之后的第一块输入要先重申终端模式
-	// （期间可能有外部程序改过）。旧底座实测：严格大于 5000ms；起点是挂载时刻而不是打开 raw mode 的时刻；
+	// （期间可能有外部程序改过）。基线实测：严格大于 5000ms；起点是挂载时刻而不是打开 raw mode 的时刻；
 	// 读到的每一块都刷新时间戳，包括重新启用时被丢弃的那块
 	const stdinResumeThresholdMilliseconds = 5000;
 	const lastStdinChunkAtRef = useRef(Date.now());
@@ -257,7 +257,7 @@ function App({
 	}, [clearPendingInputFlush, detachReadableListener]);
 
 	// sid-code（B9 / T5.3a，契约 I4）：输入相关的终端模式跟着 raw mode 计数开关，每段一次独立写入。
-	// 旧底座实测：stdout 非 TTY 也写；开在 `ref` + `setRawMode(true)` 之后，关在 `setRawMode(false)` 之前
+	// 基线实测：stdout 非 TTY 也写；开在 `ref` + `setRawMode(true)` 之后，关在 `setRawMode(false)` 之前
 	const writeModeSequences = useCallback(
 		(sequences: readonly string[]): void => {
 			for (const sequence of sequences) {
@@ -277,7 +277,7 @@ function App({
 	}, [writeModeSequences]);
 
 	// sid-code（T5.1c，I10）：计数归零时只关 raw mode、摘 readable，不清解析器状态也不取消待冲刷的 ESC ——
-	// 同一次提交里换了一个 `useInput` 组件时，切换前缓冲的半截转义仍会冲刷给新组件（旧底座如此）。
+	// 同一次提交里换了一个 `useInput` 组件时，切换前缓冲的半截转义仍会冲刷给新组件（冻结行为基线要求如此）。
 	// I4：先关模式（扩展键开没开都关）再关 raw mode
 	const releaseRawMode = useCallback((): void => {
 		writeModeSequences(disableInputModesSequences);
@@ -324,16 +324,16 @@ function App({
 	// sid-code（B9 / T5.1c，契约 I11）：解码在这里做一次，`input` 事件发的是 `InputEvent` 对象。
 	// `raw` 为真时不做按键解码、原样交出（多字符文本、粘贴内容，T5.1b / I8）。
 	// 逐个调监听者而不是 `emit`：某个监听者 `stopImmediatePropagation()` 后，后面的都不再收到
-	// Tab 焦点导航直接调，不挂在 emitter 上：旧底座的 emitter 上只有使用方自己挂的监听（I11 数过 listenerCount）
+	// Tab 焦点导航直接调，不挂在 emitter 上：基线的 emitter 上只有使用方自己挂的监听（I11 数过 listenerCount）
 	const tabNavigationRef = useRef<((event: InputEvent) => void) | undefined>(undefined);
 
-	// sid-code（B9 / T5.1e，契约 I7）：Ctrl+Z 挂起 / SIGCONT 恢复。规则全部来自旧底座黑盒探针（D-5）：
+	// sid-code（B9 / T5.1e，契约 I7）：Ctrl+Z 挂起 / SIGCONT 恢复。规则全部来自冻结行为基线的黑盒探针（D-5）：
 	// - 只认解码后 `ctrl && input === 'z'` 的按键（`\x1a`、kitty / modifyOtherKeys 的 Ctrl+Z，叠加 shift / meta /
 	//   super 也算；release / repeat 事件、文本块、粘贴里的 `\x1a` 都不算），这个按键不交给任何监听者，同块其余事件照常；
 	// - 挂起：先写关模式序列（stdout 非 TTY 也写这 4 段），再关 raw mode、`unref`、摘 readable，TTY 再补光标与鼠标跟踪，
 	//   挂一次性 SIGCONT 监听后给自己发 SIGSTOP；计数不动（组件仍"持有" raw mode）；
 	// - 恢复：先 `ref` + 开 raw mode + 挂 readable（挂起期间缓冲的字节此时交出），再写重开序列；
-	// - 挂起期间卸载：不再碰 stdin，那条一次性监听留着、触发时什么都不做（旧底座 SIGCONT 监听数只 -1）。
+	// - 挂起期间卸载：不再碰 stdin，那条一次性监听留着、触发时什么都不做（基线 SIGCONT 监听数只 -1）。
 	// 终端探查（`>0q` / DA1）在恢复路径上也会再发一次（I2，见 terminal-probe.ts）。
 	const isSuspendedRef = useRef(false);
 	const isAppUnmountedRef = useRef(false);
@@ -375,7 +375,7 @@ function App({
 			);
 		}
 
-		// I2：恢复时计数仍 > 0 才重新探查（计数为 0 时旧底座不发）
+		// I2：恢复时计数仍 > 0 才重新探查（计数为 0 时基线不发）
 		if (rawModeEnabledCount.current > 0) {
 			scheduleTerminalProbe(stdout);
 		}
@@ -459,7 +459,7 @@ function App({
 	const handleReadable = useCallback((): void => {
 		clearPendingInputFlush();
 		// sid-code（T5.1c，I1b / I8）：`useInput` 回调抛错会冒出 emit，同一块里剩下的事件（以及后面的监听者）
-		// 全部作废，只打 `[ink:error]`，不退出（旧底座实测：`x\x1b[Ab` 里 x 抛错，只有 x 被收到）
+		// 全部作废，只打 `[ink:error]`，不退出（基线实测：`x\x1b[Ab` 里 x 抛错，只有 x 被收到）
 		try {
 			let chunk;
 			let isFirstChunk = true;
@@ -534,7 +534,7 @@ function App({
 
 			stdin.setEncoding('utf8');
 
-			// I7：挂起期间只记账不碰 stdin（旧底座实测：挂起时卸载，`setRawMode` / `unref` 一次都不调）；
+			// I7：挂起期间只记账不碰 stdin（基线实测：挂起时卸载，`setRawMode` / `unref` 一次都不调）；
 			// 恢复时按计数决定要不要重开
 			if (isSuspendedRef.current) {
 				rawModeEnabledCount.current += isEnabled ? 1 : -1;
@@ -555,7 +555,7 @@ function App({
 				return;
 			}
 
-			// 同步关（旧底座实测：调用返回时 raw mode 已关；同一提交换组件会出现一次关→开）
+			// 同步关（基线实测：调用返回时 raw mode 已关；同一提交换组件会出现一次关→开）
 			if (--rawModeEnabledCount.current === 0) {
 				releaseRawMode();
 			}
@@ -646,7 +646,7 @@ function App({
 	// passive effect (parent and child), so a child that calls suspendTerminal()
 	// from its own effect always finds the input control already registered. A
 	// normal effect would run too late (child effects fire before the parent's).
-	// sid-code（B9 / T6.1b，契约 X5）：外部编辑器 handoff 的输入让渡。与 pauseInput 不同（旧底座黑盒探针，D-5）：
+	// sid-code（B9 / T6.1b，契约 X5）：外部编辑器 handoff 的输入让渡。与 pauseInput 不同（冻结行为基线的黑盒探针，D-5）：
 	// 只关 raw mode，不 `unref`、不摘 readable、不清解析器、不写 bracketed paste；期间到达的输入不丢，交还后再交出。
 	// 计数为 0（没人要 raw mode）时什么都不做。重复让渡只关一次
 	const pauseForHandoff = useCallback((): void => {
@@ -688,7 +688,7 @@ function App({
 			}
 		}
 
-		// 让渡期间缓冲的输入：异步交出（旧底座在 exitAlternateScreen 返回之后才送到 useInput）
+		// 让渡期间缓冲的输入：异步交出（基线在 exitAlternateScreen 返回之后才送到 useInput）
 		setImmediate(() => {
 			if (!isAppUnmountedRef.current && readableListenerRef.current) {
 				readableListenerRef.current();
@@ -939,7 +939,7 @@ function App({
 
 			isAppUnmountedRef.current = true;
 			if (isSuspendedRef.current) {
-				// I7：挂起时 raw mode 已关、已 unref，旧底座卸载时不再碰 stdin
+				// I7：挂起时 raw mode 已关、已 unref，基线卸载时不再碰 stdin
 				rawModeEnabledCount.current = 0;
 				clearInputState();
 			} else if (isRawModeSupported && rawModeEnabledCount.current > 0) {

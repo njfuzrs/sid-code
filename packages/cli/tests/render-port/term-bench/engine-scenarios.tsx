@@ -2,8 +2,8 @@
  * 引擎级场景 E1–E10（B9 / T3.2 起，设计文档阶段 3 出口；E8–E10 是 T3.3 的 R7 / R8 / R10）。
  *
  * 和 S1–S14 同一个测试台、同一套 xterm 判定，区别是**只用 Box / Text**，不挂 CLI 组件：
- * 阶段 3 时新底座还没有 Static / Ansi / alt-screen，S 场景跑不起来（见设计文档阶段 3 的 review 修正）。
- * 基线 `baseline/E*.json` 是 T9.1 删除旧底座前用 legacy 生成的冻结值（engine.test.ts）。
+ * 阶段 3 时 `packages/tui` 还没有 Static / Ansi / alt-screen，S 场景跑不起来（见设计文档阶段 3 的 review 修正）。
+ * 基线 `baseline/E*.json` 是冻结的行为基线（engine.test.ts）。
  */
 import React, { useSyncExternalStore } from "react";
 import { Box, Text } from "../../../src/ui/render-port/components.ts";

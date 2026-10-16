@@ -3,13 +3,13 @@
  *
  * 走生产入口 createFullScreen + 真实 KeypressProvider / MouseProvider，底座与 CLI 写同一个 process.stdout，
  * 夹具按调用栈把每次写入归给 `cli` 或 `base`（fixtures/cli-modes-app.tsx）。
- * 结论（2026-10-09 实测）：CLI 直写全部留在 CLI（归属表方案 ②），没有新增端口符号 —— next 上 CLI 那几段
- * 与 legacy 逐字节一致，夹在底座写入之间的位置也一致，移进底座反而会改写入时序。
- * 卸载之后的底座写入不比：next 用 stdout.write、legacy 用 writeSync(1) 再关一次，相对顺序归 X3（T7.1b）。
+ * 结论（2026-10-09 实测）：CLI 直写全部留在 CLI（归属表方案 ②），没有新增端口符号 —— CLI 那几段
+ * 与冻结基线逐字节一致，夹在底座写入之间的位置也一致，移进底座反而会改写入时序。
+ * 卸载之后的底座写入不比：底座此时经 stdout.write 写，冻结基线里是 writeSync(1) 再关一次，相对顺序归 X3（T7.1b）。
  */
 import { describe, expect, test } from "bun:test";
 import { join, resolve } from "node:path";
-import { frozenKey, legacyFrozen } from "./fixtures/legacy-frozen.ts";
+import { frozenKey, frozenBaseline } from "./fixtures/frozen-baseline.ts";
 
 const ROOT = resolve(import.meta.dir, "../../../..");
 const FIXTURE = join(import.meta.dir, "fixtures/cli-modes-app.tsx");
@@ -89,10 +89,10 @@ describe("I4: CLI 直写（归属表 CLI 两列）", () => {
     ["alt", PLAIN],
     ["alt-copy", KITTY],
   ] as const)(
-    "I4: %s %j —— 卸载前 CLI 与底座交错写入的完整模式序列与冻结的 legacy 逐条一致",
+    "I4: %s %j —— 卸载前 CLI 与底座交错写入的完整模式序列与冻结基线逐条一致",
     (scenario, env) => {
-      const legacy = legacyFrozen<string[]>("cli-modes", frozenKey(scenario, env));
-      expect(untilUnmount(run(scenario, env))).toEqual(legacy);
+      const baseline = frozenBaseline<string[]>("cli-modes", frozenKey(scenario, env));
+      expect(untilUnmount(run(scenario, env))).toEqual(baseline);
     },
   );
 

@@ -1,7 +1,7 @@
 /**
  * 帧对拍的驱动（B9 / T3.2）：按 frame-corpus 逐帧提交，记下每帧写出的字节与 full reset 原因。
  *
- * 不 import 任何底座：`Box` / `Text` / `renderSync` 由调用方注入（生成器注入端口 legacy，测试注入新底座）。
+ * 不 import 任何底座：`Box` / `Text` / `renderSync` 由调用方注入（测试注入渲染底座）。
  * 单进程跑：帧 diff 与环境变量无关，不需要像屏幕向量那样按环境分子进程。
  */
 import { PassThrough } from "node:stream";
@@ -21,7 +21,7 @@ type Engine = {
     rerender: (node: ReactNS.ReactElement) => void;
     unmount: () => void;
   };
-  /** 按 stdout 取渲染实例（forceRedraw 步骤用）；生成器注入端口 getRenderInstance，测试注入新底座 instances */
+  /** 按 stdout 取渲染实例（forceRedraw 步骤用）；生成器注入端口 getRenderInstance，测试注入渲染底座 instances */
   instanceOf: (stdout: NodeJS.WriteStream) => { forceRedraw(): void } | undefined;
 };
 

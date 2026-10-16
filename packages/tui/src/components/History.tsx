@@ -1,5 +1,5 @@
 // sid-code（B9 / T4.2，契约 R11，D-3 定案 A）：新写，替代上游 <Static> 在端口里的位置。
-// 规则来自黑盒对拍旧底座（packages/cli/tests/render-port/history.test.tsx），没有读旧代码。
+// 规则来自黑盒对拍冻结的行为基线（packages/cli/tests/render-port/history.test.tsx）。
 import React, {memo, type ReactNode} from 'react';
 import Box, {type Props as BoxProps} from './Box.js';
 

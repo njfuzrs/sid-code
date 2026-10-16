@@ -1,8 +1,8 @@
 /**
- * 帧间增量对拍旧底座（B9 / T3.2–T3.3，契约 R1 / R3–R8 / R10 / R12）。
+ * 帧间增量对拍冻结的行为基线（B9 / T3.2–T3.3，契约 R1 / R3–R8 / R10 / R12）。
  *
- * 向量由 `bun run tui:frame-vectors` 从旧底座 TTY 路径逐帧生成并入库；这里用新底座跑同一串帧，
- * 每帧写出的字节与 full reset 原因必须一致。只读向量与语料，不 import 旧底座。
+ * 向量由 `bun run tui:frame-vectors` 按冻结行为基线的 TTY 路径逐帧生成并入库；这里用渲染底座跑同一串帧，
+ * 每帧写出的字节与 full reset 原因必须一致。只读向量与语料，不 import 生成器。
  */
 import { describe, expect, test } from "bun:test";
 import React from "react";
@@ -22,7 +22,7 @@ const engine = {
   instanceOf: (stdout: NodeJS.WriteStream) => instances.get(stdout),
 };
 
-describe("帧 diff 对拍旧底座（frame-vectors.json）", () => {
+describe("帧 diff 对拍冻结的行为基线（frame-vectors.json）", () => {
   test("语料与向量一一对应", () => {
     expect(Object.keys(vectors)).toEqual(FRAME_CORPUS.map((c) => c.name));
   });

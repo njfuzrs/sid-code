@@ -1,7 +1,7 @@
 /**
  * R7 补充（T8.1d 人工矩阵发现）：resize 后 React 侧要拿到新宽度并重渲。
  *
- * 真实症状：next 上拖窄窗口文字被截断、拖宽不跟——CLI 的 `TerminalContext` 读
+ * 真实症状：拖窄窗口文字被截断、拖宽不跟——CLI 的 `TerminalContext` 读
  * `TerminalSizeContext`，13 个组件读 `useStdout().stdout.columns`，再用 `width={termWidth}`
  * 定死根 Box。底座不提供 Context / useStdout 不订阅尺寸时，resize 没有任何 React 值变化，
  * 根 Box 永远停在启动宽度。S6 场景用 `width="100%"` 跟着 yoga 走，所以一直没测到。

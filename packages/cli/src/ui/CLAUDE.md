@@ -364,8 +364,7 @@ L1 视觉原子    字形、颜色、主题                          ← 最小�
 ### 5.3 渲染底座：只经 `ui/render-port/` 使用，不搬 cc ✅
 
 **现状（2026-10，B9 / T9.1 起）**：渲染底座只有一套 —— `packages/tui`，以 MIT 上游 ink@7.1.1 为起点，
-相对上游的改动逐条记在 `packages/tui/UPSTREAM-DIFF.md`。旧底座 `packages/tui-renderer`（经泄露快照引入的 cc ink 衍生版）
-与 `SID_TUI_RENDERER` 开关已删除，`tests/build/no-legacy-renderer.test.ts` 防它回来。四条规则：
+相对上游的改动逐条记在 `packages/tui/UPSTREAM-DIFF.md`。`tests/build/package-boundary.test.ts` 锁住 workspace 包集合。四条规则：
 
 1. **只经端口导入**。CLI（`src` 与 `tests`）里所有渲染能力从 `ui/render-port/*.ts` 取
    （`components` / `hooks` / `measure` / `text` / `termio` / `runtime` / `testing` / `types`，分组理由见该目录 `README.md`）。
@@ -374,7 +373,7 @@ L1 视觉原子    字形、颜色、主题                          ← 最小�
    要了解某个能力该怎么表现，读 `render-port/SPEC.md` 的契约和 `SURFACE.md` 的端口面清单。
 3. **端口缺能力 → 先查 `SURFACE.md`，再在 `next/<模块>.ts` 里实现、在 `<模块>.ts` 里导出**，然后再用。
    底座本身缺的，在 `packages/tui` 里改，并在 `UPSTREAM-DIFF.md` 记一条。别为了绕开端口而在组件里直连底座。
-4. **行为基线是冻结的**。旧底座删除前的输出冻结在 `tests/render-port/term-bench/baseline/`、`tests/render-port/fixtures/legacy-frozen/`
+4. **行为基线是冻结的**。冻结的行为基线在 `tests/render-port/term-bench/baseline/`、`tests/render-port/fixtures/frozen-baseline/`
    与 `packages/tui/tests/fixtures/*-vectors.json`，**不能重生成**。有意改行为时手改基线，并在 PR 里逐项说明。
 
 当前已有、组件可以直接用的能力（都从端口取）：
@@ -389,7 +388,7 @@ L1 视觉原子    字形、颜色、主题                          ← 最小�
 | 整帧渲染测试 | `render-port/testing.ts` | ✅ 非 TTY 整帧，测不到增量 diff 与闪烁 |
 
 - 选区引擎、follow-scroll、blit 缓存这些在引擎内部，组件不直接碰，经 `AlternateScreen` / `MouseContext` / `ScrollProvider` 间接使用。
-- 历史包袱提醒：早期 memory / 文档里「`src/ink` fork 可随便读改」「cc 能力默认能搬」「`SID_TUI_RENDERER=legacy` 回退」的说法**已失效**，以本节为准。
+- 历史包袱提醒：早期 memory / 文档里「`src/ink` fork 可随便读改」「cc 能力默认能搬」的说法**已失效**，以本节为准。
 
 ---
 

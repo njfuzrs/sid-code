@@ -11,12 +11,11 @@ render-port/
   next/<模块>.ts   ← 对底座 @sid-code/tui（packages/tui，MIT ink fork）的适配：改名、补形状、收窄端口面
 ```
 
-- 渲染底座只有一套：`packages/tui`。旧底座 `tui-renderer`、legacy 分支与 `SID_TUI_RENDERER` 开关在 B9 / T9.1 删除，
-  防回退断言是 `tests/build/no-legacy-renderer.test.ts`。`next/` 这个名字是双底座时期留下的，T9.1 刻意没改名。
+- 渲染底座只有一套：`packages/tui`。`next/` 是历史目录名，T9.1 刻意没改名。
 - **少实现就该红，不做 no-op**：CLI 有大量 `?.` 可选链，空实现会把「底座少了一块」藏起来。
   `next/runtime.ts` 的 `getRenderInstance` 直接返回底座 Ink 实例、不包 adapter，方法缺失时契约 X7 红。
-- 行为基线：旧底座删除前冻结的输出在 `tests/render-port/term-bench/baseline/`、`tests/render-port/fixtures/legacy-frozen/`、
-  `packages/tui/tests/fixtures/*-vectors.json`。生成它们的旧底座已不在仓库，**不能重生成**；有意改行为时手改并在 PR 里说明。
+- 行为基线：冻结的行为基线在 `tests/render-port/term-bench/baseline/`、`tests/render-port/fixtures/frozen-baseline/`、
+  `packages/tui/tests/fixtures/*-vectors.json`。生成它们的实现已不在仓库，**不能重生成**；有意改行为时手改并在 PR 里说明。
 
 ## 为什么拆成按依赖闭包分组的多个模块，而不是一个 index.ts
 
@@ -41,7 +40,7 @@ render-port/
 ## 端口面清单
 
 `SURFACE.md` 是 T0.1 起由脚本从源码扫出的端口面盘点（符号 / props / 环境变量 / stdout 直写），
-扫描脚本扫的是旧底座，T9.1 随旧底座删除，**这份清单从此是 T9.1 时的冻结快照**。新增导出时在端口模块里加，
+扫描脚本在 T9.1 删除，**这份清单从此是 T9.1 时的冻结快照**。新增导出时在端口模块里加，
 不必改它；它回答的是「底座要提供哪些东西」，具体实现以端口模块为准。
 
 ## 实例能力面：`getRenderInstance` 而不是注册表
@@ -50,7 +49,7 @@ CLI 拿渲染实例只走 `getRenderInstance(stdout)`，返回类型是端口自
 只列真实调用点用到的方法。底座的 `instances` Map 不导出：Map 暴露的是「Ink 类的全部公开方法」，
 端口面不该跟着它变。
 
-CI 没有 `tsc`，而 CLI 的调用都是 `?.forceRedraw()` 这种可选链 —— 新底座少实现一个方法时
+CI 没有 `tsc`，而 CLI 的调用都是 `?.forceRedraw()` 这种可选链 —— 渲染底座少实现一个方法时
 **不会报错，只会静默变成 no-op**。所以方法名同时列在 `RENDER_INSTANCE_METHODS`，
 `tests/render-port/render-instance.test.tsx`（契约 X7）运行时逐个核对，并反查接口与清单一致。
 

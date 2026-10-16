@@ -18,14 +18,14 @@ export type Props = {
 /**
  * sid-code（B9 / T6.1a，契约 M1 / R14）：把子树画在终端的 alt-screen 上。
  *
- * 规则来自黑盒对拍旧底座：
+ * 规则来自黑盒对拍冻结的行为基线：
  * - 挂载时（insertion effect，早于本次提交的出帧）直写 `?1049h 2J H`，`mouseTracking` 为真再写鼠标跟踪全套；
  *   卸载时先关鼠标（开过才关）再 `?1049l`。不经帧输出，非 TTY 也照写；
  * - 子树放进一个高 = 视口行数、宽 = 视口宽的纵向容器，超出视口的内容在出帧时裁掉（alt-screen 没有 scrollback）；
- * - 挂载 / 卸载各通知实例一次 `setAltScreenActive`，嵌套或并列多个时**后写的赢**（与旧底座一致，不做计数）；
+ * - 挂载 / 卸载各通知实例一次 `setAltScreenActive`，嵌套或并列多个时**后写的赢**（冻结行为基线如此，不做计数）；
  * - `mouseTracking` 变化等于「卸载再挂载」：关鼠标、`?1049l`，再 `?1049h 2J H`（+ 鼠标），下一帧整帧重画。
  *
- * 和旧底座一处有意的不同：通知的是**渲染到同一个 stdout 的实例**。旧底座找的是 `process.stdout` 上的实例，
+ * 和基线一处有意的不同：通知的是**渲染到同一个 stdout 的实例**。基线找的是 `process.stdout` 上的实例，
  * 渲染到别的流时 alt 状态没人知道，出帧仍走主屏 diff（CLI 只用 `process.stdout`，生产上看不出差别）。
  */
 export default function AlternateScreen({
@@ -43,7 +43,7 @@ export default function AlternateScreen({
 			ink?.setAltScreenActive(false);
 			const bytes = (mouseTracking ? disableMouseTracking : '') + exitAltScreen;
 			// sid-code（B9 / T7.1b，契约 X3）：实例卸载中，交给实例在 React 清理全部跑完后再写
-			// （旧底座黑盒探针：退 alt 排在 raw mode 释放那几条之后）；平时照旧当场写
+			// （冻结行为基线的黑盒探针：退 alt 排在 raw mode 释放那几条之后）；平时照旧当场写
 			if (!ink?.deferUntilUnmounted(bytes)) write(stdout, bytes);
 		};
 	}, [stdout, mouseTracking]);

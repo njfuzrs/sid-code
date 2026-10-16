@@ -1,6 +1,6 @@
 /**
- * 新底座终端工具单测（B9 / T2.3）。与旧底座的逐字节对拍在
- * packages/cli/tests/render-port/contracts-termio.test.ts（经端口、legacy / next 子进程差分）。
+ * 渲染底座终端工具单测（B9 / T2.3）。终端字节契约测试在
+ * packages/cli/tests/render-port/contracts-termio.test.ts。
  * 这里覆盖那边不方便造的分支：注入命令执行器，钉住剪贴板的调用顺序、缓存与超时。
  */
 import { describe, expect, test } from "bun:test";
@@ -208,7 +208,7 @@ describe("supportsHyperlinks", () => {
 });
 
 describe("keepsNativeCursor（O5，D125 改名）", () => {
-  test("取值真值表与旧底座一致：非空且不是 0 / false / no（不分大小写）", () => {
+  test("取值真值表符合冻结行为基线：非空且不是 0 / false / no（不分大小写）", () => {
     for (const v of ["1", "true", "TRUE", "yes", "on", "abc", " "])
       expect(keepsNativeCursor({ CLAUDE_CODE_ACCESSIBILITY: v })).toBe(true);
     for (const v of ["", "0", "false", "False", "no", "NO"])
@@ -229,7 +229,7 @@ describe("keepsNativeCursor（O5，D125 改名）", () => {
     );
   });
 
-  test("CLI 的 SID_ACCESSIBILITY（关动画）不是这个开关，旧底座也不认", () => {
+  test("CLI 的 SID_ACCESSIBILITY（关动画）不是这个开关，这里也不认", () => {
     expect(keepsNativeCursor({ SID_ACCESSIBILITY: "1" })).toBe(false);
   });
 });

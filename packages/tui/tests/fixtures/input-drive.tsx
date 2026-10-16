@@ -1,7 +1,7 @@
 /**
  * 键位对拍的驱动（B9 / T5.1）：每条语料挂一个 `useInput` 组件，按块写 stdin，记下回调收到的 `(input, key)`。
  *
- * 不 import 任何底座：`Text` / `useInput` / `renderSync` 由调用方注入（生成器注入端口 legacy，测试注入新底座）。
+ * 不 import 任何底座：`Text` / `useInput` / `renderSync` 由调用方注入（测试注入渲染底座）。
  * key 记**完整对象**（含值为 false 的字段）：字段集合本身就是端口面，少一个多一个都要红。
  * 语料之间互不共享解析器状态，所以每条单独挂载；按批并发跑，批内每条有自己的 stdin / stdout。
  */
@@ -23,7 +23,7 @@ type Engine = {
 };
 
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
-/** 最后一块写完后的等待：要盖过 ESC 冲刷的超时（旧底座约 50ms） */
+/** 最后一块写完后的等待：要盖过 ESC 冲刷的超时（基线约 50ms） */
 const TAIL_MS = 90;
 
 async function driveOne(engine: Engine, c: InputCase): Promise<InputEventRecord[]> {

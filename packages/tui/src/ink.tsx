@@ -77,7 +77,7 @@ import {
 } from './kitty-keyboard.js';
 
 const noop = () => {};
-// OSC 9;4;0 清除进度条。旧底座这条固定 BEL 终止（kitty 下也不换 ST），对拍保持一致
+// OSC 9;4;0 清除进度条。基线这条固定 BEL 终止（kitty 下也不换 ST），对拍保持一致
 const clearProgressSequence = `\u001B]${OSC.ITERM2};4;0;\u0007`;
 const textEncoder = new TextEncoder();
 
@@ -347,7 +347,7 @@ export default class Ink {
 	 */
 	private readonly resizeScheduler: FrameScheduler;
 	private lastResizeSize: {columns: number; rows: number};
-	/** TerminalSizeContext 的值：只在尺寸变化时换对象；resize 时用它重渲最近一次的 node（与旧底座一致） */
+	/** TerminalSizeContext 的值：只在尺寸变化时换对象；resize 时用它重渲最近一次的 node（冻结行为基线要求如此） */
 	private terminalSize: TerminalSize;
 	private currentNode: ReactNode = null;
 	private hasRendered = false;
@@ -549,7 +549,7 @@ export default class Ink {
 		}
 
 		// 布局当场按新宽度重算，出帧延后：同 tick 里先到的提交 / forceRedraw 帧就已经是新宽度，
-		// resize 帧随后 diff 为空、不再写第二次 full reset（与旧底座一致）
+		// resize 帧随后 diff 为空、不再写第二次 full reset（冻结行为基线要求如此）
 		this.calculateLayout();
 		this.resizeScheduler.request();
 	};
@@ -584,7 +584,7 @@ export default class Ink {
 		}
 
 		const text = selectionText(this.selection, this.altContentScreen);
-		// M3：同时复制到剪贴板。OSC 52 序列异步拿到后再写（tmux 下要等 load-buffer，旧底座同样是异步写）
+		// M3：同时复制到剪贴板。OSC 52 序列异步拿到后再写（tmux 下要等 load-buffer，基线同样是异步写）
 		if (text !== '') {
 			void setClipboard(text).then(sequence => {
 				if (!this.isUnmounted) {
@@ -615,7 +615,7 @@ export default class Ink {
 	}
 
 	/**
-	 * sid-code（B9 / T6.2b，契约 M2–M5）：App 交来的 SGR 鼠标序列。规则来自旧底座黑盒探针（D-5）：
+	 * sid-code（B9 / T6.2b，契约 M2–M5）：App 交来的 SGR 鼠标序列。规则来自冻结行为基线的黑盒探针（D-5）：
 	 * - 只在 alt-screen 里处理；`SID_CODE_DISABLE_MOUSE_CLICKS` 为真时选区和链接点击都不响应。
 	 * - 选区变了当场重画（高亮），松开不复制（复制只在 `copySelectionNoClear` 时发生）。
 	 * - 没拖动的单击落在链接上：等 500ms（连击窗口）再调 `onHyperlinkClick`；期间的连击取消它，
@@ -626,7 +626,7 @@ export default class Ink {
 			return;
 		}
 
-		// 刚进 alt 还没出过帧：先当场画一帧（旧底座按下时同样先写整帧，探针 drag-legacy 的 press）
+		// 刚进 alt 还没出过帧：先当场画一帧（基线按下时同样先写整帧，探针 drag 的 press）
 		if (!this.altContentScreen && !this.isSuspended) {
 			this.onRender();
 		}
@@ -709,7 +709,7 @@ export default class Ink {
 
 	/**
 	 * 端口 RenderInstance.setAltScreenActive：`<AlternateScreen>` 挂载 / 卸载时调用，本身不写字节。
-	 * 离开 alt-screen 后主屏的旧帧不可信，下一帧 full reset（原因 resize，与旧底座一致）。
+	 * 离开 alt-screen 后主屏的旧帧不可信，下一帧 full reset（原因 resize，符合冻结行为基线）。
 	 */
 	/**
 	 * sid-code（B9 / T7.1b，契约 X3）：卸载进行中（React 清理阶段）时收下要写的字节、返回 true，
@@ -729,7 +729,7 @@ export default class Ink {
 			this.pendingResetReason = 'resize';
 		}
 
-		// 刚进 alt：组件已经擦过屏，下一帧对空白整帧画；已在 alt 时再置一次不作废上一帧（与旧底座一致）
+		// 刚进 alt：组件已经擦过屏，下一帧对空白整帧画；已在 alt 时再置一次不作废上一帧（冻结行为基线要求如此）
 		if (!this.altScreenActive && active) {
 			this.pendingResetReason = undefined;
 			this.altPreviousScreen = undefined;
@@ -771,7 +771,7 @@ export default class Ink {
 	 * sid-code（B9 / T5.1d，契约 X4）：信号退出路径（进程马上要退）。标记已卸载、取消排队的帧，
 	 * 把 stdin 缓冲读掉、退出 raw mode；不经 React 卸载，**不写任何终端序列**。
 	 *
-	 * 旧底座黑盒探针得来的边界（D-5）：先 drain 后关 raw mode；不 `unref`、不摘 `readable` 监听
+	 * 冻结行为基线的黑盒探针得来的边界（D-5）：先 drain 后关 raw mode；不 `unref`、不摘 `readable` 监听
 	 * （之后的输入照样送到 `useInput`）、不摘 SIGCONT / resize、不结算 exit promise；之后的提交不出帧，
 	 * `unmount()` 早退。所以这里刻意不走 App 的 `disableRawMode`（它会摘 readable、清计数）。
 	 */
@@ -791,7 +791,7 @@ export default class Ink {
 	/**
 	 * sid-code（B9 / T5.1d，契约 I1c）：stdin 静默 > 5s 后的第一块输入。外部程序（tmux 切窗、锁屏恢复）可能
 	 * 关掉了鼠标跟踪，这里重新打开；**不擦屏、不重进 alt**（静默不是 alt-screen 丢失的强信号，那是 SIGCONT 的事）。
-	 * 旧底座实测：鼠标跟踪只在 alt-screen 且开了跟踪时重写；扩展键开着时主屏也重申 kitty / modifyOtherKeys（I4）；
+	 * 基线实测：鼠标跟踪只在 alt-screen 且开了跟踪时重写；扩展键开着时主屏也重申 kitty / modifyOtherKeys（I4）；
 	 * 非 TTY 什么都不写。
 	 */
 	private readonly handleStdinResume = (): void => {
@@ -1169,11 +1169,11 @@ export default class Ink {
 			this.restoreConsole();
 		}
 
-		// sid-code（B9 / T7.1a，契约 E1）：React 清理之前还原，卸载期间 effect 清理函数写的 stderr 照常落地（旧底座如此）
+		// sid-code（B9 / T7.1a，契约 E1）：React 清理之前还原，卸载期间 effect 清理函数写的 stderr 照常落地（冻结行为基线要求如此）
 		this.restoreStderr?.();
 		this.restoreStderr = undefined;
 
-		// sid-code（B9 / T7.1b，契约 X3）：以下都在 React 清理**之前**写（旧底座黑盒探针：effect 清理里
+		// sid-code（B9 / T7.1b，契约 X3）：以下都在 React 清理**之前**写（冻结行为基线的黑盒探针：effect 清理里
 		// raw mode 释放写的 `?25h >4m <u ?1004l ?2004l` 排在它们后面，所以那几项是重复写入）。
 		// 非 TTY 每帧已经写过整帧（R12），卸载只补一个换行；TTY 先经 stdout 恢复光标（同步输出包裹），
 		// 再同步直写 fd 1 一段兜底序列（进程被信号结束、React 卸载来不及跑时也能把终端还原）。
@@ -1181,7 +1181,7 @@ export default class Ink {
 			if (!this.interactive) {
 				this.options.stdout.write(this.options.debug ? '\n' : bsu + '\n' + esu);
 			} else if (!this.options.debug) {
-				// 最后一帧是空的（动态区已擦空，CLI 退出前那一帧就是）时不写（旧底座黑盒探针：empty / toempty 变体）
+				// 最后一帧是空的（动态区已擦空，CLI 退出前那一帧就是）时不写（冻结行为基线的黑盒探针：empty / toempty 变体）
 				if (this.lastOutputHeight > 0) {
 					this.options.stdout.write(bsu + showCursorEscape + esu);
 				}
@@ -1388,7 +1388,7 @@ export default class Ink {
 	}
 
 	/**
-	 * sid-code（B9 / T6.1b，契约 X5）：外部编辑器之前调用，把终端让出去。规则全部来自旧底座黑盒探针（D-5）：
+	 * sid-code（B9 / T6.1b，契约 X5）：外部编辑器之前调用，把终端让出去。规则全部来自冻结行为基线的黑盒探针（D-5）：
 	 * - 先关 raw mode（有人持有时；不 `unref`、不摘 readable，期间的输入交还后照样送到 `useInput`）；
 	 * - 再写一段：关扩展键（`<u >4m`，开没开都写）→ 主屏进 alt（`?1049h`）/ 已在 `<AlternateScreen>` 里只关鼠标跟踪
 	 *   （开过才关，不再写 `?1049h`）→ 关 focus reporting → SGR 复位 → 显示光标 → 擦屏回原点；
@@ -1400,7 +1400,7 @@ export default class Ink {
 			return;
 		}
 
-		// 非 TTY 每帧都是整帧：让出前先把当前帧写一遍（旧底座如此）
+		// 非 TTY 每帧都是整帧：让出前先把当前帧写一遍（冻结行为基线要求如此）
 		if (!this.interactive && !this.isSuspended) {
 			this.onRender();
 		}
@@ -1426,7 +1426,7 @@ export default class Ink {
 	}
 
 	/**
-	 * sid-code（B9 / T6.1b，契约 X5）：外部程序退出后收回终端（没进过也照样执行）。旧底座黑盒探针得来的顺序：
+	 * sid-code（B9 / T6.1b，契约 X5）：外部程序退出后收回终端（没进过也照样执行）。冻结行为基线的黑盒探针得来的顺序：
 	 * - 主屏：擦屏回原点 → `?1049l` → 隐藏光标；`<AlternateScreen>` 里：重进 alt 擦屏（`?1049h 2J H`）→ 重开鼠标跟踪
 	 *   （开过的）→ 隐藏光标；
 	 * - 重开 raw mode（让渡时关过的才开）；
@@ -1547,7 +1547,7 @@ export default class Ink {
 
 	// Best-effort write: streams may already be destroyed during shutdown.
 	/**
-	 * sid-code（B9 / T7.1b，契约 X3）：卸载兜底序列，**同步写 fd 1**（不经 `options.stdout`，与旧底座一致：
+	 * sid-code（B9 / T7.1b，契约 X3）：卸载兜底序列，**同步写 fd 1**（不经 `options.stdout`，冻结行为基线如此：
 	 * stdout 换成别的 TTY 流时这段仍落在 fd 1 上）。顺序与字节来自黑盒对拍：
 	 * 退 alt（`<AlternateScreen>` 挂着时）→ 关鼠标跟踪（无条件）→ drain stdin（挂起中不 drain）→ 关 modifyOtherKeys / kitty
 	 * → 关 focus → 关 bracketed paste → 显示光标 → 清 OSC 9;4 进度（BEL、不包裹）→ 清 tab 状态
@@ -1564,7 +1564,7 @@ export default class Ink {
 			writeSync(1, head);
 		} catch {}
 
-		// 挂起中（终端已让给前台 shell）不碰 stdin（契约 I4 / I7，旧底座同）；字节照写
+		// 挂起中（终端已让给前台 shell）不碰 stdin（契约 I4 / I7，冻结行为基线同）；字节照写
 		if (!this.isSuspended && !this.isInputStopped?.()) {
 			drainStdin(this.options.stdin);
 		}
@@ -1616,7 +1616,7 @@ export default class Ink {
 	 * sid-code（B9 / T3.2，契约 R1 / R3–R6）：TTY 帧输出走 cell 级帧 diff（frame/main-screen.ts），
 	 * 取代上游 log-update 的整行字符串比较与 `shouldClearTerminalForFrame`。
 	 * 每帧一次 write，包在 DEC 2026 同步输出里；没有变化的帧一个字节都不写。
-	 * 首帧之后单独写一次隐藏光标（与旧底座同字节）。
+	 * 首帧之后单独写一次隐藏光标（与冻结行为基线同字节）。
 	 */
 	private renderInteractiveFrame(
 		screen: Screen | undefined,
@@ -1670,7 +1670,7 @@ export default class Ink {
 			this.cursorHidden = true;
 		}
 
-		// 没有变化的帧也回调（与旧底座一致：onFrame 计的是提交后的出帧次数，不是写入次数）
+		// 没有变化的帧也回调（冻结行为基线如此：onFrame 计的是提交后的出帧次数，不是写入次数）
 		this.options.onFrame?.({
 			durationMs: performance.now() - startTime,
 			flickers,
@@ -1967,7 +1967,7 @@ export default class Ink {
 	}
 }
 
-/** `SID_CODE_DISABLE_MOUSE_CLICKS`：`1` / `true` / `yes` 为真（不分大小写），`0` / `false` / 空串为假（旧底座探针 m13） */
+/** `SID_CODE_DISABLE_MOUSE_CLICKS`：`1` / `true` / `yes` 为真（不分大小写），`0` / `false` / 空串为假（冻结行为基线的探针 m13） */
 function mouseClicksDisabled(): boolean {
 	const v = process.env['SID_CODE_DISABLE_MOUSE_CLICKS']?.trim().toLowerCase();
 	return v === '1' || v === 'true' || v === 'yes';

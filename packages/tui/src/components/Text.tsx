@@ -34,7 +34,7 @@ export type Props = {
 	readonly dim?: boolean;
 
 	/**
-	sid-code（B9 / T4.1）：保留这个名字只为类型兼容，**不产生任何样式**（对拍旧底座：`<Text dimColor>` 不出 SGR）。
+	sid-code（B9 / T4.1）：保留这个名字只为类型兼容，**不产生任何样式**（对拍冻结的行为基线：`<Text dimColor>` 不出 SGR）。
 	要变暗用 `dim`。
 	*/
 	readonly dimColor?: boolean;
@@ -88,7 +88,7 @@ const textStyleContext = createContext<InheritedStyle | undefined>(undefined);
 This component can display text and change its style to make it bold, underlined, italic, or strikethrough.
 
 sid-code（B9 / T4.1）：样式叠加改走 `applyTextStyles`（由内到外 inverse → strikethrough → underline →
-italic → bold → dim → 前景 → 背景），顺序对拍旧底座首帧字节。没有显式背景时继承外层 Box 的背景。
+italic → bold → dim → 前景 → 背景），顺序对拍冻结的行为基线首帧字节。没有显式背景时继承外层 Box 的背景。
 */
 export default function Text({
 	color,

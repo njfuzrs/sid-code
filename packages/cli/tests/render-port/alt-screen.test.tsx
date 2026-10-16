@@ -1,8 +1,8 @@
 /**
  * 契约 M1 / R14（B9 / T6.1a）：`<AlternateScreen>` 的进出字节、鼠标跟踪开关、alt-screen 出帧。
  *
- * 期望值是 2026-10-08 对 legacy 的黑盒探针（D-5）。每个用例在子进程里跑 fixtures/alt-screen-app.tsx，
- * 先断言写死的字节，再断言 next 与 T9.1 删除旧底座前冻结的 legacy 输出逐段一致（`fixtures/legacy-frozen/`）。
+ * 期望值是 2026-10-08 冻结基线的黑盒探针（D-5）。每个用例在子进程里跑 fixtures/alt-screen-app.tsx，
+ * 先断言写死的字节，再断言当前实现与冻结的行为基线逐段一致（`fixtures/frozen-baseline/`）。
  *
  * 卸载那一段（`unmount` 标记之后）不比：卸载时恢复终端模式、清 OSC 进度属于生命周期（X 组，T7.1b）。
  */
@@ -10,7 +10,7 @@ import { describe, expect, test } from "bun:test";
 import { closeSync, mkdtempSync, openSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { frozenKey, legacyFrozen } from "./fixtures/legacy-frozen.ts";
+import { frozenKey, frozenBaseline } from "./fixtures/frozen-baseline.ts";
 
 const APP = join(import.meta.dir, "fixtures/alt-screen-app.tsx");
 const ESC = "\x1b";
@@ -56,14 +56,14 @@ function run(name: string, env: Record<string, string> = {}): Record<string, str
   return segs;
 }
 
-const legacyOf = (name: string, env: Record<string, string> = {}) =>
-  legacyFrozen<Record<string, string>>("alt-screen", frozenKey(name, env));
+const baselineOf = (name: string, env: Record<string, string> = {}) =>
+  frozenBaseline<Record<string, string>>("alt-screen", frozenKey(name, env));
 
-/** 满足写死的期望，且与冻结的 legacy 输出逐段一致 */
+/** 满足写死的期望，且与冻结的行为基线逐段一致 */
 function dual(name: string, expected: Record<string, string>, env?: Record<string, string>) {
-  const next = run(name, env);
-  for (const [k, v] of Object.entries(expected)) expect(next[k], `${name}「${k}」`).toBe(v);
-  expect(next).toEqual(legacyOf(name, env));
+  const actual = run(name, env);
+  for (const [k, v] of Object.entries(expected)) expect(actual[k], `${name}「${k}」`).toBe(v);
+  expect(actual).toEqual(baselineOf(name, env));
 }
 
 const VSCODE = { TERM_PROGRAM: "vscode" };

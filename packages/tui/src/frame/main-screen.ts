@@ -7,7 +7,7 @@
  * 光标约定：一帧写完后光标停在内容**下一行的行首**（每行都以 `\r\n` 结尾），所以前一帧高 p 行时，
  * 光标在第 p 行；内容超出视口时，上面的行已经滚进终端 scrollback，再也改不到了。
  *
- * 规则全部来自黑盒对拍旧底座的 TTY 字节（向量见 tests/fixtures/frame-vectors.json）：
+ * 规则全部来自黑盒对拍冻结行为基线的 TTY 字节（向量见 tests/fixtures/frame-vectors.json）：
  * - **只比两帧都有的行**（前 min(p, n) 行），逐单元比较；一行里第一个变化的单元前用
  *   `\r` + `CUF(x)` + 竖向移动（`CUU` / `CUD`）定位，然后只写变化的单元（`serializeRowDiff`）；
  *   各变化段共用一支笔：段间移光标不关样式 / 链接，最后一段之后才收笔（收缩时在回到第 n 行之后）；
@@ -32,7 +32,7 @@ const cursorUp = (n: number) => (n > 0 ? `${ESC}[${n}A` : '');
 const cursorDown = (n: number) => (n > 0 ? `${ESC}[${n}B` : '');
 const cursorForward = (n: number) => (n > 0 ? `${ESC}[${n}C` : '');
 
-/** 一次 full reset 的记录（旧底座 onFrame 事件里叫 flickers，字段名照旧）。 */
+/** 一次 full reset 的记录（基线 onFrame 事件里叫 flickers，字段名照旧）。 */
 export type FrameFlicker = {
 	desiredHeight: number;
 	availableHeight: number;
@@ -75,7 +75,7 @@ function firstChangedColumn(previous: Screen, next: Screen, y: number): number {
 /**
  * full reset：清屏 + 清 scrollback + 回原点，再按首帧口径画整帧。
  * R7（B9 / T3.3）的视口变化判定在 ink.tsx 出帧时做（它要比较的是上一帧出帧时的视口，不是上一帧的屏幕），
- * 判定成立就直接用这里，与前一帧是否存在、是否为空无关（旧底座空帧变宽也照样清屏）。
+ * 判定成立就直接用这里，与前一帧是否存在、是否为空无关（基线空帧变宽也照样清屏）。
  */
 export function resetMainScreen(
 	next: Screen,
@@ -134,7 +134,7 @@ export function diffMainScreen(
 	// 竖向移动的基准行：收缩时擦完底部光标在第 n 行，否则在第 p 行
 	let cursorRow = p;
 	if (shrinking) {
-		// 1 行收缩到空帧：旧底座只回行首再上移，不擦行（擦除由下面的空格覆盖完成）。B9 / T3.3 对拍补上
+		// 1 行收缩到空帧：基线只回行首再上移，不擦行（擦除由下面的空格覆盖完成）。B9 / T3.3 对拍补上
 		out += (p === 1 && n === 0 ? '\r' : ansiEscapes.eraseLines(p - n)) + cursorUp(1);
 		cursorRow = n;
 	}
@@ -174,7 +174,7 @@ export function diffMainScreen(
 
 /**
  * SIGCONT 之后的第一帧（B9 / T3.3，契约 R10 主屏部分）：前一帧已作废（别的程序可能动过屏幕），
- * 但旧底座并不清屏，而是**从光标处按首帧口径往下写**，只是把「前面没变的行」省成一个 `\r\n`：
+ * 但基线并不清屏，而是**从光标处按首帧口径往下写**，只是把「前面没变的行」省成一个 `\r\n`：
  * 第一个变化行之前（只看两帧都有的行）每行写 `\r\n`，从第一个变化行起逐行写整行。
  * 只在新帧不比前一帧矮、宽度相同时适用；否则调用方按首帧整帧画。规则来自黑盒对拍。
  */

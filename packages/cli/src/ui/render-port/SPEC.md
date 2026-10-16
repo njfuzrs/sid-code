@@ -1,7 +1,7 @@
 # 渲染底座行为契约（B9 / T0.3）
 
-新底座要「表现成什么样」的唯一规格。来源列指向旧底座位置，**只供写契约的任务使用**；
-实现任务只读本文件、测试、上游 ink 和公开规范，不打开旧底座源码（设计文档 D-5）。
+渲染底座要「表现成什么样」的唯一规格。来源列是写契约时的历史出处，**只供写契约的任务使用**；
+实现任务只读本文件、测试、上游 ink 和公开规范（设计文档 D-5）。
 
 `bun run tui:spec` 校验本文件（`scripts/verify-tui-spec.ts`）。表格格式是机器可读的，改格式先改脚本。
 
@@ -10,8 +10,8 @@
 每条契约一行：`| ID | 行为 | 来源 | 测试 |`
 
 - **ID**：分组字母 + 序号（`R1`、`I1b`），全文唯一。分组是闭集：R 渲染管线 / L 布局 / T 文本 / I 输入 / M 鼠标与选区 / O 终端集成 / E 错误护栏 / X 生命周期 / P 性能。
-- **来源**：旧底座或 CLI 的 `文件:行`（路径相对旧底座 `packages/tui-renderer/src`，CLI 文件写全路径）。说不出来源的契约不许写。
-  旧底座在 B9 / T9.1 删除，这些来源从此是历史出处（查 git 历史），行为以测试与冻结基线为准。
+- **来源**：写契约时的 `文件:行`（底座文件写相对路径，CLI 文件写全路径）。说不出来源的契约不许写。
+  底座侧的来源是历史出处，不一定对应 `packages/tui` 里的文件；行为以测试与冻结基线为准。
 - **测试**，三种之一：
   - `` `测试文件` 片段 `` —— 已有测试。脚本检查文件存在且包含该片段。新写的端口测试统一用 `"<ID>: "` 作测试名前缀，片段就写 `ID:`。
   - 差分测试台场景：`` `packages/cli/tests/render-port/term-bench/scenarios.tsx` S3: { ``。场景的 `covers` 与这一列必须双向一致（`term-bench/bench.test.ts` 校验）。
@@ -35,7 +35,7 @@
 | R8 | `forceRedraw`：主屏重绘并标记前帧作废；alt-screen 擦屏后对空白整帧画（R14，前帧作废、视口记录保留） | `ink.tsx:1038` | `packages/cli/tests/render-port/term-bench/scenarios.tsx` S9: { |
 | R9 | 宽字符宽度补偿：终端对某些宽字符算宽不一致时补光标位置 | `log-update.ts:583`、`log-update.ts:648` | `packages/cli/tests/render-port/term-bench/scenarios.tsx` S4: { |
 | R10 | SIGCONT 恢复：alt-screen 下内容视为过期，整屏重绘并重新打开鼠标跟踪 | `ink.tsx:218` | `packages/cli/tests/render-port/contracts-runtime.test.tsx` R10: |
-| R11 | **已完成区（端口名 `Static`，next 上是 `History`）的项可以原地重渲**：memo 浅比较 `items` / `children` / `style` 三个引用，都不变时跳过，任一变了整块重渲；项内容变了照常 reconcile。不是上游 ink 的 print-once `<Static>`（D-3 定案 A） | `_vendor/Static.tsx:21-30`、CLI `packages/cli/src/ui/components/MainScreenLayout.tsx:49-50` | `packages/cli/tests/render-port/static-reconcile.test.tsx` R11: |
+| R11 | **已完成区（端口名 `Static`，底座里是 `History`）的项可以原地重渲**：memo 浅比较 `items` / `children` / `style` 三个引用，都不变时跳过，任一变了整块重渲；项内容变了照常 reconcile。不是上游 ink 的 print-once `<Static>`（D-3 定案 A） | `_vendor/Static.tsx:21-30`、CLI `packages/cli/src/ui/components/MainScreenLayout.tsx:49-50` | `packages/cli/tests/render-port/static-reconcile.test.tsx` R11: |
 | R12 | 非 TTY 输出（`stdout.isTTY` 为假）每帧写整帧，不做增量 diff | `ink.tsx:288` | `packages/cli/tests/render-port/static-reconcile.test.tsx` R12: |
 | R13 | 测试环境默认**每次提交同步出帧**（不节流），`lastFrame()` 在 rerender 之后立即可读；只有测帧调度的用例经端口 `enableFrameThrottle()` 打开真实调度（R2） | `reconciler.ts:292`、`ink.tsx:329` | `packages/cli/tests/render-port/render-instance.test.tsx` R13: |
 | R14 | alt-screen 出帧用绝对定位：每帧从 `ESC[H` 出发只写变化的单元，收尾 `ESC[{rows};1H`；只画视口内的行；没变化不写；视口任一维变了先 `ESC[2J` 整帧重画；进 alt / SIGCONT 后对空白整帧画；从不记 full reset。同步输出包裹按终端能力判定（tmux 内一律不包），主屏不受影响 | `ink.tsx:715`、`ink.tsx:938`、`terminal.ts:75` | `packages/cli/tests/render-port/alt-screen.test.tsx` R14: |
@@ -48,7 +48,7 @@
 | L2 | 布局缓存命中后子节点仍按新宽度重新定位（flex-end / center 反复 resize 不漂移） | `layout/`（纯 TS yoga 移植） | `packages/tui/tests/yoga-layout-cache-positions.test.ts` yoga 多槽布局缓存不得跳过子节点定位 |
 | L3 | `overflow: hidden` 裁剪子内容；单轴取值优先于 `overflow`，`scroll` 在本轴上等同 `hidden`。纵向 `scroll` 只画第一个子节点（内容盒）的子项：按「在内容盒里的位置」与视口 `[0, 内框高)` 求交，有交集就整项画；内容盒自身的背景 / 边框 / 裁剪不画；不提供 scrollTop，剔除恒按滚动位置 0 —— CLI 靠上下 spacer 与负 `marginTop` 表达滚动位置（T4.3 黑盒对拍） | `render-node-to-output.ts:626-628`、CLI `packages/cli/src/ui/components/VirtualizedList.tsx:8-19` | `packages/cli/tests/render-port/contracts-layout-text.test.tsx` L3: |
 | L4 | `ResizeObserver` 轮询式：`observe` 后微任务里单独报一次当前尺寸，之后每 16ms 只比宽高、同一轮的变化合成一次回调，节点移除报 0×0，定时器 unref；`measureElement` 返回最近一次布局的宽高（已移除节点 0×0）；`getBoundingBox` 是布局树绝对坐标（累加父链，含负 margin），空参数 / 已移除节点得 `null` | `_vendor/resize-observer.ts:39`、`_vendor/resize-observer.ts:91`、`measure-element.ts:18` | `packages/cli/tests/render-port/contracts-layout-text.test.tsx` L4: |
-| L5 | 交互判定只看 `stdout.isTTY`，不看 `CI` 环境变量（上游 ink 7 会看 `is-in-ci`，新底座必须关掉或在此写明行为变化） | `ink.tsx:288` | `packages/cli/tests/render-port/contracts-runtime.test.tsx` L5: |
+| L5 | 交互判定只看 `stdout.isTTY`，不看 `CI` 环境变量（上游 ink 7 会看 `is-in-ci`，渲染底座必须关掉或在此写明行为变化） | `ink.tsx:288` | `packages/cli/tests/render-port/contracts-runtime.test.tsx` L5: |
 
 ## T 文本
 
@@ -74,15 +74,15 @@
 | I5 | `drainStdin`：非 TTY 不动；循环 `read()` 直到返回 null，丢弃读到的字节；原本不在 raw mode 的再 `setRawMode(true/false)` 走一遍，原本在的不碰；不经 fd 直读、任何一步抛错都吞掉（细节见 `stdin-shutdown.test.tsx`） | `ink.tsx:1947` | `packages/cli/tests/render-port/contracts-runtime.test.tsx` I5: |
 | I6 | `exitOnCtrlC: false` 时底座不处理 Ctrl+C，交给 `useInput` 回调 | `root.ts:31`、`hooks/use-input.ts` | `packages/cli/tests/render-port/contracts-runtime.test.tsx` I6: |
 | I7 | Ctrl+Z 挂起与恢复：解码后 `ctrl && input === 'z'` 的按键（`\x1a`、kitty / modifyOtherKeys 的 Ctrl+Z，叠加 shift / meta / super 也算；release / repeat、文本块、粘贴里的 `\x1a` 不算）不交给任何监听者，同块其余事件照常。挂起：写 `ESC[>4m ESC[<u ESC[?1004l ESC[?2004l`（stdout 非 TTY 也写），关 raw mode、`unref`、摘 `readable`，TTY 再写显示光标与关鼠标跟踪全套，挂一次性 SIGCONT 监听后 `kill(pid, 'SIGSTOP')`。恢复：alt-screen 先重进 alt 擦屏（开过鼠标跟踪的重开），`ref` + 开 raw mode + 挂 `readable`（挂起期间的缓冲字节此时交出），再同步写 `ESC[?2004h ESC[?1004h`（扩展键开着再加 `>1u >4;2m`；挂起期间计数降到 0 的不写，I4），TTY 再补 `ESC[?25l ESC[?1004h`。挂起期间卸载不碰 stdin（细节见 `stdin-suspend.test.tsx`；恢复时重发探查属 I2） | `components/App.tsx`、`ink.tsx` | `packages/cli/tests/render-port/stdin-suspend.test.tsx` I7: |
-| I8 | 键位解析：同一串 stdin 字节（C0 / meta / CSI 修饰位 / `~` 键 / SS3 / rxvt / kitty CSI u / modifyOtherKeys / SGR 与 X10 鼠标 / focus / bracketed paste / 多事件同块 / 跨块与 ESC 冲刷），`useInput` 收到的 `(input, key)` 序列与旧底座逐条一致，key 的字段集合也算在内。语料 `packages/tui/tests/fixtures/input-corpus.ts`，向量 `input-vectors.json` 由 `bun run tui:input-vectors` 从旧底座生成。运行期两条也算：`useInput` 回调抛错只打 `[ink:error]`、不退出、监听保留；单独的 ESC 在 40ms 与 60ms 之间冲刷成 Esc 键（`contracts-runtime.test.tsx` 的 I8 组） | `parse-keypress.ts`、`hooks/use-input.ts` | `packages/tui/tests/input.test.ts` I8: |
+| I8 | 键位解析：同一串 stdin 字节（C0 / meta / CSI 修饰位 / `~` 键 / SS3 / rxvt / kitty CSI u / modifyOtherKeys / SGR 与 X10 鼠标 / focus / bracketed paste / 多事件同块 / 跨块与 ESC 冲刷），`useInput` 收到的 `(input, key)` 序列与冻结向量逐条一致，key 的字段集合也算在内。语料 `packages/tui/tests/fixtures/input-corpus.ts`，向量 `input-vectors.json` 是 B9 / T5.1 生成的冻结基线（不能重生成）。运行期两条也算：`useInput` 回调抛错只打 `[ink:error]`、不退出、监听保留；单独的 ESC 在 40ms 与 60ms 之间冲刷成 Esc 键（`contracts-runtime.test.tsx` 的 I8 组） | `parse-keypress.ts`、`hooks/use-input.ts` | `packages/tui/tests/input.test.ts` I8: |
 | I9 | raw mode 引用计数：多个 `useInput` 与手动 `setRawMode` 共用一份计数，0→1 时同步 `ref()` + `setRawMode(true)` + 挂 `readable`，1→0 时同步 `setRawMode(false)` + `unref()` + 摘 `readable`（不经微任务）；多余的 `false` 把计数压成负数，要补回同样多次 `true` 才打开；同一提交换一个 `useInput` 组件 = 一次关→开，切换前缓冲的半截转义冲刷给新组件；卸载时同步关；stdin 非 TTY 时 `isRawModeSupported=false`、`setRawMode` 抛 `Raw mode is not supported on the stdin provided to Ink`；`useApp().exit(err)` 让 `waitUntilExit` reject | `components/App.tsx`、`hooks/use-input.ts` | `packages/cli/tests/render-port/stdin-ownership.test.tsx` I9: |
 | I10 | `isActive` 切换：停用即按 I9 关 raw mode、摘 `readable`。raw mode 在 layout effect 里开、handler 在 passive effect 里挂，所以停用期间留在流里的字节在重新启用时由 `readable` 交出、但 handler 还没挂上 —— **这些字节被丢弃**；首次挂载前已缓冲的字节照常送达。同一块里某个回调抛错，这块剩下的事件与排在后面的监听者都收不到（只打 `[ink:error]`） | `hooks/use-input.ts`、`components/App.tsx` | `packages/cli/tests/render-port/stdin-ownership.test.tsx` I10: |
-| I11 | `useStdin().internal_eventEmitter` 的 `input` 事件是对象：自有字段 `_didStopImmediatePropagation / keypress / key / input`，`stopImmediatePropagation()` 在原型上，调用后排在后面的监听者（含 `useInput`）都不再收到；`keypress` 的 `kind / ctrl / meta / shift / super / fn / sequence / isPasted` 与旧底座一致（`name / option / code` 新底座不提供）；监听按挂载顺序，emitter 上只有使用方挂的监听 | `input-event.ts`、`components/App.tsx` | `packages/cli/tests/render-port/stdin-ownership.test.tsx` I11: |
+| I11 | `useStdin().internal_eventEmitter` 的 `input` 事件是对象：自有字段 `_didStopImmediatePropagation / keypress / key / input`，`stopImmediatePropagation()` 在原型上，调用后排在后面的监听者（含 `useInput`）都不再收到；`keypress` 的 `kind / ctrl / meta / shift / super / fn / sequence / isPasted` 与冻结行为基线一致（`name / option / code` 不提供）；监听按挂载顺序，emitter 上只有使用方挂的监听 | `input-event.ts`、`components/App.tsx` | `packages/cli/tests/render-port/stdin-ownership.test.tsx` I11: |
 
 ### I4 模式归属表
 
-同一组终端私有模式，旧底座和 CLI 各写一遍（设计文档 §1.5）。现在能工作是因为重复写入恰好无害。
-新底座不能少写、多写或改顺序，除非在这里改表并给出理由。
+同一组终端私有模式，底座和 CLI 各写一遍（设计文档 §1.5）。现在能工作是因为重复写入恰好无害。
+渲染底座不能少写、多写或改顺序，除非在这里改表并给出理由。
 
 | 模式 | 底座：开 | 底座：关 | CLI：开 | CLI：关 | CLI 侧结论（T5.3b） |
 | --- | --- | --- | --- | --- | --- |
@@ -94,7 +94,7 @@
 | 光标显示 `?25` | — | `ink.tsx:1754` 卸载时显示 | — | — | 只归底座 |
 
 CLI 侧的写入点由 `cli-modes.test.tsx` 钉住：走生产入口 `createFullScreen` + 真实 `KeypressProvider` / `MouseProvider`，
-按调用栈把每次写入归给 CLI 或底座，与冻结的 legacy 输出逐条一致（卸载之后底座那段的相对顺序归 X3）。
+按调用栈把每次写入归给 CLI 或底座，与冻结的行为基线逐条一致（卸载之后底座那段的相对顺序归 X3）。
 另有两处 CLI 直写不属于模式、也不在本表：`terminalCapabilityManager.ts:230` 的能力查询与 `:87` 的 OSC 11 背景色查询，
 前者随 `detectCapabilities()` 一起是死代码，后者的调用方 `TerminalContext.tsx` 的 `queryTerminalBackground` 也没有使用者。
 
@@ -116,8 +116,8 @@ CLI 侧的写入点由 `cli-modes.test.tsx` 钉住：走生产入口 `createFull
 | O2 | tab 状态点（`useTabStatus`，OSC 21337，按 tmux / screen 包裹）；`null` 写清除（之前没写过则不写）；`SID_DISABLE_TAB_STATUS` 非空即关闭、每次变化时读、关闭期间不记账；组件卸载不写，进程卸载时清除（X3） | `termio/osc.ts:448-455`、`ink.tsx:1758` | `packages/cli/tests/render-port/terminal-title-tab.test.tsx` O2: |
 | O3 | 底座经 `TerminalWriteContext` 提供原始写入口：身份在实例内稳定、原样直写 stdout（不等帧、非 TTY 也写），CLI 用它写 BEL / OSC 777 / OSC 9;4。TTY 卸载时写 OSC 9;4 进度清除（固定 BEL 终止、不包裹）与 tab 状态清除（随终端终止、按 tmux / screen 包裹、`SID_DISABLE_TAB_STATUS` 非空不写），与之前写没写过无关；非 TTY 都不写；相对其余模式恢复的顺序归 X3 | `useTerminalNotification.ts:18`、`ink.tsx:1756` | `packages/cli/tests/render-port/terminal-progress.test.tsx` O3: |
 | O4 | OSC 8 超链接只在 `supportsHyperlinks()` 为真时输出 | `supports-hyperlinks.ts:26` | `packages/cli/tests/render-port/contracts-layout-text.test.tsx` O4: |
-| O5 | 终端识别读取的环境变量全集与逐个结论见 `SURFACE.md` §3（D125：`CLAUDE_CODE_*` 改名或删除，T7.2c 定论）。无障碍开关只压掉两处隐藏光标：首帧后、Ctrl+Z 挂起后 SIGCONT 恢复时；外部编辑器收回终端照样隐藏。取值非空且不是 `0` / `false` / `no`（不分大小写）即开。next 认新名 `SID_CODE_ACCESSIBILITY`，旧名 `CLAUDE_CODE_ACCESSIBILITY` 留作别名到 T9 | `SURFACE.md` §3、`components/App.tsx:230`、`components/App.tsx:488` | `packages/cli/tests/render-port/contracts-runtime.test.tsx` O5: |
-| O6 | termio 端口面（`OSC` 表、`osc`、`wrapForMultiplexer`、`setClipboard`、`supportsHyperlinks`）与冻结的 legacy 输出逐字节一致：OSC 终止符 kitty 用 ST、其余 BEL，加载时判定；`TMUX` 优先于 `STY` 包裹 DCS；剪贴板跳过 SSH、linux 依次试 wl-copy / xclip / xsel 并记住结果、tmux 等 `load-buffer`（2s，`LC_TERMINAL=iTerm2` 不带 `-w`）成功才包裹且里层固定 BEL | `termio/osc.ts:18`、`termio/osc.ts:35`、`termio/osc.ts:135`、`supports-hyperlinks.ts:26` | `packages/cli/tests/render-port/contracts-termio.test.ts` O6: |
+| O5 | 终端识别读取的环境变量全集与逐个结论见 `SURFACE.md` §3（D125：`CLAUDE_CODE_*` 改名或删除，T7.2c 定论）。无障碍开关只压掉两处隐藏光标：首帧后、Ctrl+Z 挂起后 SIGCONT 恢复时；外部编辑器收回终端照样隐藏。取值非空且不是 `0` / `false` / `no`（不分大小写）即开。`packages/tui` 读新名 `SID_CODE_ACCESSIBILITY`，旧名 `CLAUDE_CODE_ACCESSIBILITY` 仍作别名（新名设置了就以新名为准） | `SURFACE.md` §3、`components/App.tsx:230`、`components/App.tsx:488` | `packages/cli/tests/render-port/contracts-runtime.test.tsx` O5: |
+| O6 | termio 端口面（`OSC` 表、`osc`、`wrapForMultiplexer`、`setClipboard`、`supportsHyperlinks`）与冻结的行为基线逐字节一致：OSC 终止符 kitty 用 ST、其余 BEL，加载时判定；`TMUX` 优先于 `STY` 包裹 DCS；剪贴板跳过 SSH、linux 依次试 wl-copy / xclip / xsel 并记住结果、tmux 等 `load-buffer`（2s，`LC_TERMINAL=iTerm2` 不带 `-w`）成功才包裹且里层固定 BEL | `termio/osc.ts:18`、`termio/osc.ts:35`、`termio/osc.ts:135`、`supports-hyperlinks.ts:26` | `packages/cli/tests/render-port/contracts-termio.test.ts` O6: |
 
 ## E 错误与输出护栏
 
@@ -133,7 +133,7 @@ CLI 侧的写入点由 `cli-modes.test.tsx` 钉住：走生产入口 `createFull
 | --- | --- | --- | --- |
 | X1 | `render` 是 async，返回 `{ rerender, unmount, waitUntilExit, cleanup }`；`renderSync` 同步返回同样的对象 | `root.ts:46-120` | `packages/cli/tests/render-port/term-bench/scenarios.tsx` S12: { |
 | X2 | 经端口 `render` 拿到的 `unmount` **不透传参数**：`unmount(error)` 与 `unmount()` 一样，`waitUntilExit` 都 resolve（T0.4 S12 实测）。底座内部 `Ink.unmount(error)` 才会 reject，CLI 没有用到 | `root.ts:96-98`、`ink.tsx:1780-1784` | `packages/cli/tests/render-port/term-bench/scenarios.tsx` S12: { |
-| X3 | TTY 卸载顺序（2026-10-09 黑盒对拍 legacy，T7.1b）：① 经 stdout 写同步包裹的显示光标；② **同步直写 fd 1**（不经 `options.stdout`，stdout 换成别的流时仍落在 fd 1；进程被信号结束时也能还原终端）：退 alt-screen（`<AlternateScreen>` 挂着时）→ 关鼠标跟踪（无条件）→ drain stdin（Ctrl+Z 挂起中不 drain）→ 关 modifyOtherKeys 与 kitty 键盘 → 关 focus reporting → 关 bracketed paste → 显示光标 → 清 iTerm2 进度 → 清 tab 状态（`SID_DISABLE_TAB_STATUS` 时不写）；③ 之后才是 React 清理：raw mode 释放（I4 那几段，所以是重复写入）、`<AlternateScreen>` 的关鼠标 + `?1049l`。非 TTY 只写同步包裹的一个换行，不写兜底段；第二次 unmount 不写；SIGTERM 同一路径 | `ink.tsx:1734-1758` | `packages/cli/tests/render-port/unmount.test.tsx` X3: |
+| X3 | TTY 卸载顺序（2026-10-09 黑盒对拍，T7.1b）：① 经 stdout 写同步包裹的显示光标；② **同步直写 fd 1**（不经 `options.stdout`，stdout 换成别的流时仍落在 fd 1；进程被信号结束时也能还原终端）：退 alt-screen（`<AlternateScreen>` 挂着时）→ 关鼠标跟踪（无条件）→ drain stdin（Ctrl+Z 挂起中不 drain）→ 关 modifyOtherKeys 与 kitty 键盘 → 关 focus reporting → 关 bracketed paste → 显示光标 → 清 iTerm2 进度 → 清 tab 状态（`SID_DISABLE_TAB_STATUS` 时不写）；③ 之后才是 React 清理：raw mode 释放（I4 那几段，所以是重复写入）、`<AlternateScreen>` 的关鼠标 + `?1049l`。非 TTY 只写同步包裹的一个换行，不写兜底段；第二次 unmount 不写；SIGTERM 同一路径 | `ink.tsx:1734-1758` | `packages/cli/tests/render-port/unmount.test.tsx` X3: |
 | X4 | `detachForShutdown`：标记已卸载、取消待发的节流渲染、drain stdin、退出 raw mode；不经 React 卸载，不写任何终端序列；不 `unref`、不摘 `readable` / SIGCONT / resize 监听、不结算 exit promise（细节见 `stdin-shutdown.test.tsx`） | `ink.tsx:1147-1165` | `packages/cli/tests/render-port/contracts-runtime.test.tsx` X4: |
 | X5 | `enterAlternateScreen` / `exitAlternateScreen`（外部编辑器前后）：让出先关 raw mode（有人持有时；不 `unref`、不摘 readable，期间的按键收回后才交给 `useInput`），再写 `<u >4m` → 主屏 `?1049h` / 已在 `<AlternateScreen>` 里只关鼠标（开过才关）→ `?1004l` → `0m` → 显示光标 → `2J H`；让渡期间提交、resize、forceRedraw 不出帧不写字节（SIGCONT 的 alt 重进照旧）。收回：主屏 `2J H ?1049l` + 隐藏光标、alt 里 `?1049h 2J H` + 重开鼠标 + 隐藏光标 → 重开 raw mode → 当场出一帧（主屏按 R10 SIGCONT 口径、视口变了 full reset；alt 对空白整帧画）→ `?1004h` → 扩展键开着再重申 `<u >1u >4;2m`。没进过也照样执行 exit；重复调用每次整段再写；非 TTY 让出前先写当前帧、收回只写空的同步包裹。字节逐段对拍见 `external-editor.test.tsx` 的 `X5:` 用例 | `ink.tsx:509`、`ink.tsx:546` | `packages/cli/tests/render-port/external-editor.test.tsx` X5: |
 | X6 | 实例按 stdout 注册（`instances`），卸载时移除；同一 stdout 上前一个实例卸载后新实例能接手 | `root.ts:100`、`root.ts:147` | `packages/cli/tests/render-port/term-bench/scenarios.tsx` S11: { |
@@ -141,12 +141,12 @@ CLI 侧的写入点由 `cli-modes.test.tsx` 钉住：走生产入口 `createFull
 
 ## P 性能
 
-阈值是初始提案，T0.4 在旧底座上实测基线后再定。
+阈值是初始提案，T0.4 实测基线后再定。
 
 | ID | 行为 | 来源 | 测试 |
 | --- | --- | --- | --- |
 | P1 | idle 时 0% CPU：没有空转定时器。口径（T8.1b）：主屏 / alt-screen 静置 1s 内 setTimeout / setInterval / setImmediate 回调一次都不触发；已知例外：`ResizeObserver` 有观察目标时每个观察者 16ms 轮询，是窗口内唯一触发源 | `_vendor/resize-observer.ts:42`、`_vendor/resize-observer.ts:91` | `packages/cli/tests/render-port/idle-timers.test.ts` P1: |
-| P2 | 流式期间帧耗时 p95、每 token 写入字节数不高于旧底座 1.1 倍 | — （差分测试台基线） | `packages/cli/tests/render-port/term-bench/scenarios.tsx` S1: { |
-| P3 | 历史 ≥ 500 项时帧耗时不随历史线性增长（旧底座靠节点布局缓存 blit 做到 O(dirty)）。新底座口径：只改底部一行时，每帧真正遍历的节点数与历史长度无关；缓存命中的输出与冷渲染逐字节一致 | `dom.ts:6`、`dom.ts:219` | `packages/tui/tests/render-cache.test.tsx` P3: |
+| P2 | 流式期间帧耗时 p95、每 token 写入字节数不高于冻结基线 1.1 倍 | — （差分测试台基线） | `packages/cli/tests/render-port/term-bench/scenarios.tsx` S1: { |
+| P3 | 历史 ≥ 500 项时帧耗时不随历史线性增长。口径：只改底部一行时，每帧真正遍历的节点数与历史长度无关；缓存命中的输出与冷渲染逐字节一致 | `dom.ts:6`、`dom.ts:219` | `packages/tui/tests/render-cache.test.tsx` P3: |
 | P5 | `useAnimationFrame` 离屏暂停：帧高 p > 视口 H 时，动画盒底边落在帧的最后 H - 1 行之外（`y + h - 1 < p - H + 1`）就停止订阅时钟；判定只在组件重渲时做、读上一次提交的布局，所以回到视口后要再来一次父级重渲才恢复，`React.memo` 包住的则一直停着 | `hooks/use-animation-frame.ts:34`、`hooks/use-terminal-viewport.ts` | `packages/cli/tests/render-port/contracts-animation.test.tsx` P5: |
-| P4 | 长会话 RSS 不高于旧底座 1.2 倍。口径（T8.1c）：500 条带样式多行历史进 Static，next 现场采样、legacy 用 T9.1 删除前冻结的样本（`fixtures/rss-legacy-baseline.json`），峰值 RSS 比值与堆增长斜率比值都 ≤ 1.2；灵敏度只到「整段多占几十 MB」，几 MB 级的泄漏抓不到 | — （差分测试台基线） | `packages/cli/tests/render-port/rss.test.ts` P4: |
+| P4 | 长会话 RSS 不高于冻结基线 1.2 倍。口径（T8.1c）：500 条带样式多行历史进 Static，next 现场采样、对照侧用冻结样本（`fixtures/rss-frozen-baseline.json`），峰值 RSS 比值与堆增长斜率比值都 ≤ 1.2；灵敏度只到「整段多占几十 MB」，几 MB 级的泄漏抓不到 | — （差分测试台基线） | `packages/cli/tests/render-port/rss.test.ts` P4: |

@@ -78,6 +78,7 @@ import {
   HISTORY_WALK_FLAG,
 } from "./lib/changelog-git.ts";
 import { stripUrls } from "./lib/changelog-text.ts";
+import { applyDetailDrops, rewriteFor } from "./lib/changelog-rewrites.ts";
 import { resolveVersionChannel } from "./lib/changelog-stable.ts";
 import { readStableNotes } from "./changelog-stable.ts";
 import {
@@ -239,7 +240,9 @@ function extractDetails(body: string): string[] {
  */
 function collectCommits(range: string | null): ParsedCommit[] {
   let raw = "";
-  const pretty = `--pretty=format:%h${FS}%s${FS}%b${RS}`;
+  // %H 给改写表按完整 hash 匹配（见 lib/changelog-rewrites.ts 文件头）；
+  // %h 照旧用于渲染，短 hash 长度仍由 git 决定，与之前的产物字节一致。
+  const pretty = `--pretty=format:%H${FS}%h${FS}%s${FS}%b${RS}`;
   try {
     const args = range
       ? ["log", range, HISTORY_WALK_FLAG, pretty]
@@ -257,8 +260,9 @@ function collectCommits(range: string | null): ParsedCommit[] {
 
   const commits: ParsedCommit[] = [];
   for (const rec of records) {
-    const [shortHash = "", subject = "", body = ""] = rec.split(FS);
-    const subj = subject.trim();
+    const [fullHash = "", shortHash = "", subject = "", body = ""] = rec.split(FS);
+    const rw = rewriteFor(fullHash);
+    const subj = (rw?.subject ?? subject).trim();
     if (!subj) continue;
     if (isNoiseSubject(subj)) continue;
 
@@ -283,7 +287,7 @@ function collectCommits(range: string | null): ParsedCommit[] {
       // desc 与 details 都要抹 URL：两者都会进 changelog.json 并发到公网（见 stripUrls）
       desc: stripUrls(desc),
       shortHash: shortHash.trim(),
-      details: extractDetails(body).map(stripUrls),
+      details: applyDetailDrops(extractDetails(body), rw).map(stripUrls),
     });
   }
   return commits;

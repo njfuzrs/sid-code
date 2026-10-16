@@ -1,9 +1,9 @@
 /**
- * 选区引擎对拍旧底座（B9 / T6.2a，契约 M2）。
+ * 选区引擎对拍冻结的行为基线（B9 / T6.2a，契约 M2）。
  *
- * 向量由 `bun run tui:selection-vectors` 在旧底座上跑同一份语料生成并入库；这里用新底座的布局
+ * 向量由 `bun run tui:selection-vectors` 跑同一份语料生成并入库（冻结的行为基线）；这里用渲染底座的布局
  * （`renderToScreen`）出屏幕缓冲、把同一串鼠标字节喂给选区引擎，复制文本与高亮单元必须一致。
- * 只读向量与语料，不 import 旧底座（D-5）。
+ * 只读向量与语料，不 import 生成器（D-5）。
  */
 import { describe, expect, test } from "bun:test";
 import vectors from "./fixtures/selection-vectors.json";
@@ -29,7 +29,7 @@ const expected = vectors as unknown as Record<
 >;
 const cases = buildSelectionCases({ Box, Text });
 
-/** 与旧底座同一棵树：外面包一个 10 行高的根（alt-screen 视口） */
+/** 与生成向量时同一棵树：外面包一个 10 行高的根（alt-screen 视口） */
 function screenOf(node: React.ReactNode, cols: number): Screen {
   return renderToScreen(React.createElement(Box, { flexDirection: "column", height: ROWS }, node), {
     columns: cols,
@@ -61,7 +61,7 @@ function drive(seq: (string | number)[], screen: Screen) {
   return state;
 }
 
-describe("选区引擎对拍旧底座", () => {
+describe("选区引擎对拍冻结的行为基线", () => {
   test("向量与语料同一批条目（语料改了要重生成向量）", () => {
     expect(Object.keys(expected).sort()).toEqual(cases.map((c) => c.name).sort());
   });

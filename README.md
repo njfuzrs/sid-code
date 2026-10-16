@@ -70,6 +70,10 @@ Claude Code 的主要能力面这里都有（agentic loop、工具调用、权�
 
 用过 Claude Code 的话迁移成本几乎为零，见[迁移指南](https://www.sid-code.cc/team/migrate)。
 
+**代码来源**：兼容的是 Claude Code 的接口（配置文件名、Hook 事件名、CLI 参数），实现是自己写的。
+和 Claude Code 源码逐行比对：连续 6 行一致的代码占 0.04%（且大半是两边共同的上游 ink），
+逐字一致的句子 7 条，改名残留 0。口径与说明见[和 Claude Code 的关系](https://www.sid-code.cc/start/#代码来源)，归属记录见 [NOTICE](./NOTICE)。
+
 ## 现状
 
 | 项 | 现状 |
@@ -83,9 +87,8 @@ Claude Code 的主要能力面这里都有（agentic loop、工具调用、权�
   数字口径（2026-09-30 换口径，与官网首页能力条、作者简历三处同源）：
     旧值「20 万行以上 / 600+ 测试文件 / 8000+ 单测 / 32 类 Hook / 30 个 eval case」是静态扫描口径，
     与简历对不上；且 30 个 eval case 已于 2026-09-18 随 evals/ 旧题集一并删除，继续挂着就是不实陈述。
-    现在前两行的数字全部取自 docs-research 仓 scripts/resume-metrics.ts（`--coverage`）的同一次运行（2026-10-12，HEAD=cdb37f58，B9 / T9.1 删除旧渲染底座之后）：
+    现在前两行的数字全部取自 docs-research 仓 scripts/resume-metrics.ts（`--coverage`）的同一次运行（2026-10-12，HEAD=cdb37f58）：
     代码行数    559,229 = 567,027（生产 + 测试 + 工程脚本）− 7,798（packages/tui/src 里 git blame 仍归上游 ink 导入提交 8fd9048d 的行）；测试 234,289
-                T9.1 之前的旧值 524,786 含旧底座 fork 19,824 行，两者不可直接比
     单测用例    `bun test` 实际执行数 15,911（含动态生成用例，静态 grep 数不到）
     引擎覆盖率  packages/core/src 行覆盖 88.0%（83,564 / 94,973）；只报引擎层，别换成全仓口径
     内置工具    sid-code --dump-tools 数组长度（44，与脚本生成的 ref/tools.md 同源同值）

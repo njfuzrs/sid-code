@@ -1,8 +1,8 @@
 /**
  * 终端是否支持 DEC 2026 同步输出（B9 / T6.1a，契约 R14）。
  *
- * 只影响 **alt-screen** 帧要不要包 `?2026h … ?2026l`；主屏帧一律包（R1，与旧底座一致）。
- * 判定规则来自黑盒对拍旧底座（`env -i` 逐个变量起子进程看 alt 帧有没有包裹），大小写敏感：
+ * 只影响 **alt-screen** 帧要不要包 `?2026h … ?2026l`；主屏帧一律包（R1，符合冻结行为基线）。
+ * 判定规则来自黑盒对拍冻结的行为基线（`env -i` 逐个变量起子进程看 alt 帧有没有包裹），大小写敏感：
  * - `TMUX` 非空 → 不支持（tmux 不透传 2026，压过下面所有条件）；`STY`（screen）不影响；
  * - `TERM_PROGRAM` 精确等于 iTerm.app / vscode / WezTerm / ghostty / WarpTerminal / alacritty / contour；
  * - `KITTY_WINDOW_ID` / `WT_SESSION` / `ZED_TERM` 非空；

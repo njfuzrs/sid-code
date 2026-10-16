@@ -1,7 +1,7 @@
 /**
  * OSC 序列与终端多路复用器包裹（B9 / T2.3，契约 O6）。
  *
- * 规则来自黑盒对拍旧底座（经端口在 legacy / next 子进程里差分，见
+ * 规则来自黑盒对拍冻结的行为基线（见
  * packages/cli/tests/render-port/contracts-termio.test.ts）：
  * - 终止符：kitty 用 ST（`ESC \`），其余用 BEL。判定 kitty 的条件是 `TERM` 含小写 `kitty`、
  *   `TERM_PROGRAM === 'kitty'`，或 `KITTY_WINDOW_ID` 非空。**模块加载时判定一次**，之后改环境变量不影响。

@@ -1,8 +1,8 @@
 /**
- * 新底座文本工具对拍旧底座生成的向量（B9 / T2.1，契约 T1 / T2 / T3）。
+ * 渲染底座文本工具对拍冻结行为基线生成的向量（B9 / T2.1，契约 T1 / T2 / T3）。
  *
- * 向量由 `bun run tui:text-vectors` 从旧底座生成并入库（tests/fixtures/text-vectors.json），
- * 这里只读向量、不 import 旧底座 —— T9 删掉旧底座后本测试照样成立。
+ * 向量由 `bun run tui:text-vectors` 生成并入库（冻结的行为基线，tests/fixtures/text-vectors.json），
+ * 这里只读向量、不 import 生成器。
  */
 import { afterEach, describe, expect, test } from "bun:test";
 import { readdirSync, readFileSync } from "node:fs";
@@ -18,7 +18,7 @@ import {
 } from "../src/text/index.ts";
 import { resetBidiDetectionForTesting } from "../src/text/bidi.ts";
 
-describe("T1 stringWidth 对拍旧底座", () => {
+describe("T1 stringWidth 对拍冻结的行为基线", () => {
   test("全部码位（游程压缩，去代理区）逐个一致", () => {
     const runs = vectors.width.codepointRuns as [number, number][];
     expect(runs.length).toBeGreaterThan(100); // 防空向量全绿
@@ -52,7 +52,7 @@ describe("T1 stringWidth 对拍旧底座", () => {
   });
 });
 
-describe("T2 wrap / truncate 对拍旧底座", () => {
+describe("T2 wrap / truncate 对拍冻结的行为基线", () => {
   const cases = vectors.wrap as { text: string; out: Record<string, string[]> }[];
   test("向量非空", () => {
     expect(cases.length).toBeGreaterThan(10);
@@ -89,7 +89,7 @@ describe("sliceColumns", () => {
     // 恰好到 end 算截断：末尾序列只影响后面被丢掉的字符，不带出
     expect(sliceColumns("ab\x1b[31m", 0, 2)).toBe("ab");
   });
-  test("空切片：slice(0,0) 为空串，越过开头样式后的空切片输出关闭序列（对拍旧底座）", () => {
+  test("空切片：slice(0,0) 为空串，越过开头样式后的空切片输出关闭序列（对拍冻结的行为基线）", () => {
     expect(sliceColumns("\x1b[31mabc", 0, 0)).toBe("");
     expect(sliceColumns("\x1b[31mabc", 1, 1)).toBe("\x1b[39m");
   });
@@ -113,7 +113,7 @@ describe("T3 bidi", () => {
   const clusters = (s: string) =>
     [...segmenter.segment(s)].map((x, i) => ({ value: x.segment, id: i }));
 
-  test("需要软件 bidi 的终端：重排结果与旧底座一致", () => {
+  test("需要软件 bidi 的终端：重排结果与冻结行为基线一致", () => {
     process.env.WT_SESSION = "1";
     resetBidiDetectionForTesting();
     const cases = vectors.bidi as [string, number[]][];
@@ -143,9 +143,9 @@ describe("T3 bidi", () => {
   });
 });
 
-describe("向量测试不依赖旧底座", () => {
-  test("packages/tui/tests 下没有任何文件 import 旧底座或向量生成器", () => {
-    // 生成器顶层 import 旧底座；测试经它拿常量，等于间接依赖旧底座，T9 删掉后就挂（T2.2 踩过一次）
+describe("向量测试不依赖外部实现", () => {
+  test("packages/tui/tests 下没有任何文件 import 向量生成器", () => {
+    // 测试经生成器拿常量，等于间接依赖生成器所依赖的实现（T2.2 踩过一次）
     const offenders: string[] = [];
     const walk = (dir: string) => {
       for (const e of readdirSync(dir, { withFileTypes: true })) {
@@ -154,7 +154,7 @@ describe("向量测试不依赖旧底座", () => {
         else if (/\.(ts|tsx)$/.test(e.name)) {
           const src = readFileSync(p, "utf8");
           if (
-            /from\s+["'][^"']*(tui-renderer|scripts\/tui-[a-z-]+)|import\(\s*["'][^"']*(tui-renderer|scripts\/tui-[a-z-]+)/.test(
+            /from\s+["'][^"']*scripts\/tui-[a-z-]+|import\(\s*["'][^"']*scripts\/tui-[a-z-]+/.test(
               src,
             )
           )

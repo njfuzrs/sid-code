@@ -1,8 +1,8 @@
 /**
  * 契约 L1 / L3 / L4 / T1 / T2 / T5 / O4（B9 / T0.5，L3 与 L4 的细则 T4.3 补）：布局、裁剪与滚动、测量、文本宽度与截断、ANSI 组件、超链接判定。
  *
- * 期望值全部是 2026-10-03 在 legacy 上实测的输出。走 testing shim（非 TTY 整帧），
- * 比的是可视文本，不比字节 —— 新底座换了光标策略也不该让这里红。
+ * 期望值全部是 2026-10-03 冻结基线的实测输出。走 testing shim（非 TTY 整帧），
+ * 比的是可视文本，不比字节 —— 渲染底座换了光标策略也不该让这里红。
  */
 import { describe, expect, test } from "bun:test";
 import React, { useEffect, useRef, useState } from "react";
@@ -328,7 +328,7 @@ describe("L4 ResizeObserver / measureElement", () => {
   });
 });
 
-// —— L3：overflowY="scroll"（T4.3，期望值 2026-10-06 在 legacy 上实测）——
+// —— L3：overflowY="scroll"（T4.3，期望值 2026-10-06 冻结基线的实测）——
 // 只画第一个子节点（内容盒）的子项；内容盒不是 Box 就什么都不画；内容盒自己的背景 / 边框 / 裁剪不画；
 // 子项按「在内容盒里的位置」与视口 [0, 内框高) 求交，有交集就整项画，不看内容盒的偏移（滚动位置恒按 0 剔除）
 const rowsOf = (n: number, p = "r") =>

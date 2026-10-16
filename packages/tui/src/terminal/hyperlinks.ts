@@ -3,7 +3,7 @@
  *
  * 先信 npm `supports-hyperlinks` 对 stdout 的判定（它在模块加载时读一次环境）；它说不支持时，
  * 再按我们自己确认过的终端名单补判：`TERM_PROGRAM` 或 `LC_TERMINAL`（tmux 里 TERM_PROGRAM 是 tmux，
- * 外层终端名在 LC_TERMINAL）精确命中名单，或 `TERM` 含小写 `kitty`。规则来自黑盒对拍旧底座。
+ * 外层终端名在 LC_TERMINAL）精确命中名单，或 `TERM` 含小写 `kitty`。规则来自黑盒对拍冻结的行为基线。
  */
 import supportsHyperlinksLibrary from 'supports-hyperlinks';
 

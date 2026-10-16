@@ -1,4 +1,4 @@
-// sid-code（B9 / T4.3，契约 L4）：新写。规则来自黑盒对拍旧底座，没有读旧代码。
+// sid-code（B9 / T4.3，契约 L4）：新写。规则来自黑盒对拍冻结的行为基线。
 import {type DOMElement} from '../dom.js';
 import measureElement from '../measure-element.js';
 

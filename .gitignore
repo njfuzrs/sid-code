@@ -229,10 +229,3 @@ __pycache__/
 # ruff 的增量缓存（跑 `ruff check` 就会生成）。理由同上一段那条铁律：
 # 它每次都出现在 `git status` 里，而 harbor 目录下**真的**会有别人的在途文件。
 /evals/external-benchmarks/harbor/.ruff_cache/
-
-# ─── 旧终端渲染底座的残留（B9 / T9.1 已删除） ─────────────────────────────
-# 旧底座 packages/tui-renderer/ 已从仓库与构建链移除，渲染底座只剩 packages/tui。
-# 老克隆里那个 symlink 不在 git 里，切到新版本后会原样留着，需要手动 `rm -rf packages/tui-renderer`。
-# 这条规则留着，防它在删掉之前被 `git add -A` 带进库。
-# ⚠️ 不带尾斜杠：尾斜杠形态只匹配目录、**不匹配 symlink**（实测 `git check-ignore` 不命中）。
-/packages/tui-renderer/src

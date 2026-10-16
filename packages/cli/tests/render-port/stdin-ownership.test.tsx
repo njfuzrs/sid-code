@@ -1,8 +1,8 @@
 /**
  * 契约 I9 / I10 / I11（B9 / T5.1c）：stdin 所有权、raw mode 引用计数、`internal_eventEmitter` 事件形状。
  *
- * 两套底座都跑。期望值全部是 2026-10-07/08 对拍 legacy 的黑盒探针实测（`_probe_raw / raw2 / u / v / x / y / s / t`，
- * 结果备份在 `~/Backups/sid-code-t51-probe-results-20261007/`），没有读旧底座代码（设计文档 D-5）。
+ * 期望值全部是 2026-10-07/08 冻结基线的黑盒探针实测（`_probe_raw / raw2 / u / v / x / y / s / t`，
+ * 结果备份在 `~/Backups/sid-code-t51-probe-results-20261007/`），没有读被对拍实现的源码（设计文档 D-5）。
  */
 import { describe, expect, spyOn, test } from "bun:test";
 import React, { useEffect, useLayoutEffect, useState } from "react";
@@ -482,7 +482,7 @@ describe("I10 isActive 切换与缓冲字节", () => {
 });
 
 describe("I11 internal_eventEmitter 事件形状", () => {
-  // 只比 CLI 可能依赖的字段；旧底座 keypress 上还有 name / option / code，新底座不仿造（见 input-event.ts）
+  // 只比 CLI 可能依赖的字段；keypress 上的 name / option / code 不提供（见 input-event.ts）
   const pick = (e: { keypress: Record<string, unknown> }) => {
     const kp = e.keypress;
     return {

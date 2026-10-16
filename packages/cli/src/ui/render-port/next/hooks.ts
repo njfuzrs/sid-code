@@ -17,7 +17,7 @@ export { default as TerminalWriteContext } from "@sid-code/tui/components/Termin
 export { TerminalSizeContext };
 
 /**
- * 与 legacy 的 `useStdout` 同一端口面（T8.1d）：`stdout.columns / rows` 取 TerminalSizeContext，
+ * `useStdout` 端口面（T8.1d，与冻结行为基线一致）：`stdout.columns / rows` 取 TerminalSizeContext，
  * 并因为订阅了它，resize 时调用方会重渲。上游 hook 只返回裸 stdout，13 个读 `stdout.columns`
  * 的 CLI 组件（Composer / InputArea / 消息渲染…）在 resize 时没有任何值变化，宽度就停在旧值。
  * `write` / `on` 等方法照旧落在真实流上。

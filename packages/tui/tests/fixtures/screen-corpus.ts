@@ -1,9 +1,9 @@
 /**
  * 屏幕缓冲对拍语料（B9 / T3.1，契约 R3 / R9 / T3 / T4）。
  *
- * 纯数据：生成器（scripts/tui-screen-vectors.ts）用旧底座把它渲染成首帧字节，
- * 测试（tests/screen.test.ts）用新底座渲染同一棵树再序列化，逐字节比较。
- * 这个文件不 import 任何底座，所以两边共用它不会让测试间接依赖旧底座。
+ * 纯数据：生成器（scripts/tui-screen-vectors.ts）把它渲染成首帧字节（即冻结的行为基线），
+ * 测试（tests/screen.test.ts）用渲染底座渲染同一棵树再序列化，逐字节比较。
+ * 这个文件不 import 任何底座，所以测试不会经它间接依赖别的实现。
  *
  * 节点 DSL：字符串 = `<Text>` 内容；`{box, children}` = `<Box>`；`{text, children}` = 带 props 的 `<Text>`；
  * `{ansi, props}` = `<Ansi>`；`{raw, width}` = `<RawAnsi>`（T4.1）。
@@ -48,7 +48,7 @@ export const SCREEN_CORPUS: CorpusCase[] = [
   { name: "paddingLeft 偏移", node: box({ paddingLeft: 3 }, "x") },
 
   // —— SGR 切换（diffAnsiCodes 口径）——
-  // Text props 的组合顺序、`dim`（上游只有 dimColor）、旧底座 `<Text dimColor>` 不出 SGR，都属于宿主组件，留给 T4.x；
+  // Text props 的组合顺序、`dim`（上游只有 dimColor）、基线 `<Text dimColor>` 不出 SGR，都属于宿主组件，留给 T4.x；
   // 这里只钉屏幕层：给定 SGR 串，切换序列是什么
   { name: "嵌套 SGR 先开后关", node: `${E}[31mr${E}[39m${E}[31m${E}[1mrb${E}[22m${E}[39mn` },
   { name: "粗体中途换色", node: `${E}[1mx${E}[31my${E}[22mz${E}[39mw` },

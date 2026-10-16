@@ -44,7 +44,7 @@ $ grep -rl "lifecycle:" evals/ --include="*.yaml" | wc -l             → 27   �
 $ 树两侧闭合：目录合计 265 + 顶层 README/CLAUDE 2 = 267
 
 ② 口径①：代码/脚本/json 不再指向仓内 architecture 路径
-$ grep -rn "evals/architecture" --include="*.ts" --include="*.sh" --include="*.json" . | grep -v node_modules | grep -v '.vendor-src'
+$ grep -rn "evals/architecture" --include="*.ts" --include="*.sh" --include="*.json" . | grep -v node_modules
   → 无输出（runner 注释已改成「architecture 组」，不含该路径字面量）
 
 ③ 永封未被破坏

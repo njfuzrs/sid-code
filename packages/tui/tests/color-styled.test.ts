@@ -1,6 +1,6 @@
 /**
- * 新底座颜色与 styled-chars 对拍旧底座生成的向量（B9 / T2.2，契约 T6 + 端口 text.ts 的颜色三函数）。
- * 向量由 `bun run tui:text-vectors` 生成，这里不 import 旧底座。
+ * 渲染底座颜色与 styled-chars 对拍冻结行为基线生成的向量（B9 / T2.2，契约 T6 + 端口 text.ts 的颜色三函数）。
+ * 向量由 `bun run tui:text-vectors` 生成，这里不 import 生成器。
  */
 import { afterAll, describe, expect, test } from "bun:test";
 import { join } from "node:path";
@@ -15,7 +15,7 @@ import {
   wrapStyledChars,
 } from "../src/text/styled-chars.ts";
 
-// 输入随向量一起入库，不 import 生成器（它顶层 import 旧底座，T9 删掉旧底座后会挂）
+// 输入随向量一起入库，不 import 生成器
 const {
   colors: COLORS,
   texts: COLOR_TEXTS,
@@ -30,7 +30,7 @@ type ByLevel = {
   textStyles: string[][];
 };
 
-describe("colorize / applyColor / applyTextStyles 对拍旧底座（chalk 级别 0–3）", () => {
+describe("colorize / applyColor / applyTextStyles 对拍冻结的行为基线（chalk 级别 0–3）", () => {
   const saved = chalk.level;
   afterAll(() => {
     chalk.level = saved;
@@ -62,7 +62,7 @@ describe("colorize / applyColor / applyTextStyles 对拍旧底座（chalk 级别
 
 describe("颜色级别修正", () => {
   const levels = vectors.color.levels as [Record<string, string>, number][];
-  test("与旧底座的环境矩阵一致（初始级别取 FORCE_COLOR）", () => {
+  test("与冻结行为基线的环境矩阵一致（初始级别取 FORCE_COLOR）", () => {
     expect(levels.length).toBeGreaterThan(10);
     for (const [env, want] of levels) {
       const initial = Number(env.FORCE_COLOR) as typeof chalk.level;
@@ -94,7 +94,7 @@ describe("颜色级别修正", () => {
   });
 });
 
-describe("T6 styled-chars 五函数对拍旧底座", () => {
+describe("T6 styled-chars 五函数对拍冻结的行为基线", () => {
   type Case = {
     text: string;
     chars: unknown[];

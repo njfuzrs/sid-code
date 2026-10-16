@@ -3,7 +3,7 @@
  *
  * 判据是「静置 1s 内定时器回调触发次数」，不是 CPU 百分比：CPU 采样在 CI 上噪声大，而空转定时器
  * 不管周期多长都会在计数里现形。
- * 真实 PTY 下的 CPU 实测（两套底座 10s 静置 0.01–0.02s CPU，有观察者时 0.05s）记在 Agent Note T8.1b。
+ * 真实 PTY 下的 CPU 实测（10s 静置 0.01–0.02s CPU，有观察者时 0.05s）记在 Agent Note T8.1b。
  */
 import { describe, expect, test } from "bun:test";
 import { join } from "node:path";

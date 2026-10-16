@@ -1,5 +1,5 @@
 /**
- * DEC 2026 同步输出能力判定（B9 / T6.1a，契约 R14）。期望值来自对旧底座的 `env -i` 黑盒探针：
+ * DEC 2026 同步输出能力判定（B9 / T6.1a，契约 R14）。期望值来自对冻结行为基线的 `env -i` 黑盒探针：
  * 只设一个变量起子进程，看 alt-screen 帧有没有包 `?2026h … ?2026l`。
  */
 import { describe, expect, test } from "bun:test";

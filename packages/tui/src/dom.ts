@@ -262,7 +262,7 @@ const measureTextNode = function (
 	const wrapped = measureText(wrappedText);
 
 	// sid-code（B9 / T3.1，契约 T4）：换行后仍比可用宽度宽的行（宽字符被挤到 1 列、VS16 宽字符压在行尾），
-	// 按 ceil(行宽 / 可用宽) 计行数，与旧底座的布局高度一致。多出来的行是空行：
+	// 按 ceil(行宽 / 可用宽) 计行数，与基线的布局高度一致。多出来的行是空行：
 	// 屏幕缓冲写不下的宽字符整个丢掉，不劈半
 	if (width >= 1 && wrapped.width > width) {
 		let height = 0;

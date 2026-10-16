@@ -2,14 +2,14 @@
  * 软件 bidi 重排（B9 / T2.1，契约 T3）。
  *
  * 大多数终端自己做 bidi，这里什么都不做；只有不做 bidi 的终端才由我们按 Unicode UAX #9 把
- * 一行字符重排成视觉顺序。哪些终端需要是对拍旧底座得出的：
+ * 一行字符重排成视觉顺序。哪些终端需要是对拍冻结的行为基线得出的：
  * - `process.platform === 'win32'`（conhost / Windows Terminal）；
  * - 设置了 `WT_SESSION`（**有这个变量就算，空串也算**；覆盖 WSL 里的 Windows Terminal）；
  * - `TERM_PROGRAM === 'vscode'`（xterm.js）。
  * 其余（macOS / Linux 原生终端、iTerm2 等）原样返回。判定只做一次。
  *
  * 重排单位是调用方给的「字符簇」（一个可见字符及其组合附标），簇内部不拆，所以附标始终跟着基字符。
- * 段落方向用 `auto`（第一个强方向字符决定），括号不做镜像——都与旧底座一致。
+ * 段落方向用 `auto`（第一个强方向字符决定），括号不做镜像——都与冻结行为基线一致。
  */
 import bidiFactory from 'bidi-js';
 

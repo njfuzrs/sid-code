@@ -23,7 +23,7 @@ Date: 2026-09-21
 
 - `bun test ./packages/core/tests/permission/p0-safety-bypass.test.ts` → **22 pass / 0 fail**
 - `bun test ./packages/core/tests/permission/ ./packages/core/tests/tool/bash-redirect-extraction.test.ts ./packages/core/tests/tool/git-config-readonly.test.ts` → **623 pass / 0 fail**
-- `bun run affected-tests:run` → **1537 pass / 0 fail**（86 files；首次 3 fail 是 worktree 缺 `tui-renderer/src`，`make build` 拉 vendor 后归零，与本次 diff 无关）
+- `bun run affected-tests:run` → **1537 pass / 0 fail**（86 files；首次 3 fail 是 worktree 缺构建依赖导致的环境失败，`make build` 补齐后归零，与本次 diff 无关）
 - `make build` 成功，无 `will always be undefined`
 - `bun run lint` / `lint:boundary` / `format:check` 全绿
 - 附录 A 同形复现（临时目录作 workspace）：

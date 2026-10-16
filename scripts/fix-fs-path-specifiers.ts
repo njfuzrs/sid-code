@@ -48,7 +48,7 @@ for (const rel of files) {
   let idx = 0;
   let count = 0;
 
-  const re = /(["'])@sid-code\/(shared|tui-renderer|core|cli)\/([^"']+)\1/g;
+  const re = /(["'])@sid-code\/(shared|tui|core|cli)\/([^"']+)\1/g;
   for (const m of original.matchAll(re)) {
     const start = m.index!;
     // 看这个字符串字面量前面是不是导入语法

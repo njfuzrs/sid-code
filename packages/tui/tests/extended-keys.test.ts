@@ -1,9 +1,9 @@
 /**
  * 契约 I4（B9 / T5.3a）：扩展键（kitty `>1u` / modifyOtherKeys `>4;2m`）开不开的判定，纯函数逐条。
  *
- * 期望值是 2026-10-08 对拍 legacy 子进程的实测（`env -i` 下逐组环境变量跑旧底座，看挂载时写没写 `>1u >4;2m`；
- * 约 1600 组随机 + 单变量组合与 `detectExtendedKeys` 0 不一致），没有读旧底座代码（设计文档 D-5）。
- * 两套底座按判定结果写字节由 `packages/cli/tests/render-port/terminal-modes.test.tsx` 子进程抽样验证。
+ * 期望值是 2026-10-08 对拍的实测（`env -i` 下逐组环境变量跑子进程，看挂载时写没写 `>1u >4;2m`；
+ * 约 1600 组随机 + 单变量组合与 `detectExtendedKeys` 0 不一致，设计文档 D-5）。
+ * 底座按判定结果写字节由 `packages/cli/tests/render-port/terminal-modes.test.tsx` 子进程抽样验证。
  */
 import { describe, expect, test } from "bun:test";
 import { detectExtendedKeys } from "../src/terminal/extended-keys.ts";
@@ -53,7 +53,7 @@ const MATRIX: [Record<string, string>, boolean][] = [
 ];
 
 describe("I4: 扩展键判定（只看环境变量）", () => {
-  test("I4: 逐条与旧底座实测一致", () => {
+  test("I4: 逐条与基线实测一致", () => {
     for (const [env, want] of MATRIX) expect([env, detectExtendedKeys(env)]).toEqual([env, want]);
   });
 });

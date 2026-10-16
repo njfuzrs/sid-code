@@ -20,9 +20,9 @@
  *
  * 本测试用**纯 yoga**（不涉及 ink / React / 终端）钉死该行为——bug 在这一层就能复现。
  *
- * B9 / T9.1：原在旧底座侧（测它 vendored 的 yoga 移植）。新底座用 npm `yoga-layout@3.2.1`，
- * 那个多槽缓存的 bug 属于旧实现；但 Footer 右对齐这条用户可见行为与布局引擎无关，所以迁到这里，
- * 断言不变，钉住新底座的布局引擎同样不在反复 resize 后冻结子节点位置。
+ * B9 / T9.1：渲染底座用 npm `yoga-layout@3.2.1`，
+ * 那个多槽缓存的 bug 不在这个实现里；但 Footer 右对齐这条用户可见行为与布局引擎无关，所以迁到这里，
+ * 断言不变，钉住渲染底座的布局引擎同样不在反复 resize 后冻结子节点位置。
  */
 
 import { test, expect, describe } from "bun:test";
