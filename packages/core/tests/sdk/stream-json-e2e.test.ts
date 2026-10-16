@@ -537,3 +537,149 @@ describe("stdin 空闲超时（缺陷 7）", () => {
     await collected;
   });
 });
+
+/**
+ * 事故 20261016-124505-786b1586 的 stream-json 形态。
+ *
+ * 一次性输入（`echo ... | sid-code --input-format stream-json`）：主轮说「后台跑完再汇总」
+ * 就 end_turn，此时 stdin 已关闭。旧实现 `if (inputDone && queue.isEmpty()) break` 直接收尾，
+ * 后台子代理被进程退出带走、汇总永远不会发生。
+ *
+ * 用**可控的后台状态机**而不是 mock 整个队列：状态在测试里显式推进
+ * （running → 通知到达 → 无任务），断言的是 runner 在每个状态下的**行为**。
+ */
+describe("stream-json：后台任务通知续跑", () => {
+  /** 可控后台：start() 后处于 running；complete() 让通知到达；consume() 模拟续跑取走通知 */
+  function makeBackground() {
+    let running = false;
+    let pending = false;
+    const listeners = new Set<() => void>();
+    const fire = () => {
+      for (const l of [...listeners]) l();
+    };
+    return {
+      start: () => {
+        running = true;
+      },
+      complete: () => {
+        running = false;
+        pending = true;
+        fire();
+      },
+      /** 子代理失败/被杀且不发通知：只变成无任务 */
+      vanish: () => {
+        running = false;
+        fire();
+      },
+      consume: () => {
+        pending = false;
+      },
+      api: {
+        hasPendingNotifications: () => pending,
+        hasRunningBackgroundTasks: () => running,
+        subscribeBackgroundActivity: (l: () => void) => {
+          listeners.add(l);
+          return () => listeners.delete(l);
+        },
+      },
+    };
+  }
+
+  function driverWith(bg: ReturnType<typeof makeBackground>, resumed: { n: number }) {
+    const base = simpleDriver("主轮：后台跑完后汇总");
+    return {
+      ...base,
+      async *submitMessage(input: string) {
+        bg.start(); // 主轮派出后台子代理
+        yield* base.submitMessage(input);
+      },
+      async *resumeWithNotifications() {
+        resumed.n++;
+        bg.consume();
+        yield { kind: "user_message_added" } as QueryEngineEvent;
+        yield {
+          kind: "assistant_message",
+          message: { role: "assistant", content: [{ type: "text", text: "汇总：子代理结论" }] },
+        } as QueryEngineEvent;
+        yield { kind: "done", turns: 1 } as QueryEngineEvent;
+      },
+      ...bg.api,
+    } satisfies SDKQueryEngineDriver;
+  }
+
+  async function run(driver: SDKQueryEngineDriver, afterStart: () => void) {
+    const input = new PassThrough();
+    const output = new PassThrough();
+    const io = new StructuredIO(input, output);
+    const queue = new CommandQueue();
+    const engine = new SDKQueryEngine(
+      { cwd: "/tmp", sessionId: "s-bg", model: "m", now: () => 0, uuid: () => "u" },
+      driver,
+    );
+    const collected = collect(output);
+    input.end(); // 一次性输入：stdin 立即关闭
+
+    const done = runHeadless(engine, {
+      outputFormat: "stream-json",
+      initialPrompt: "派后台子代理核查，完成后汇总",
+      structuredIO: io,
+      commandQueue: queue,
+    });
+    // 让主轮跑完、runner 进入等待后再推进后台状态
+    await new Promise((r) => setTimeout(r, 30));
+    afterStart();
+    await done;
+    output.end();
+    return collected;
+  }
+
+  test("stdin 已关 + 后台任务在跑 → 不退出；通知到达后续跑一轮并出第二条 result", async () => {
+    const bg = makeBackground();
+    const resumed = { n: 0 };
+    const lines = await run(driverWith(bg, resumed), () => bg.complete());
+
+    expect(resumed.n).toBe(1);
+    const results = lines.filter((l) => l.type === "result");
+    expect(results).toHaveLength(2); // 主轮一条 + 续跑轮一条
+    expect(results.every((r) => r.subtype === "success")).toBe(true);
+    // 续跑轮没有宿主输入，不得回显 user 消息（通知不是用户说的话）
+    const userMsgs = lines.filter((l) => l.type === "user");
+    expect(userMsgs).toHaveLength(1);
+    for (const l of lines) expect(SDKMessageSchema().safeParse(l).success).toBe(true);
+  });
+
+  test("后台任务消失且无通知（被杀/失败不发通知）→ 正常收尾，不永久挂起", async () => {
+    const bg = makeBackground();
+    const resumed = { n: 0 };
+    const lines = await run(driverWith(bg, resumed), () => bg.vanish());
+
+    expect(resumed.n).toBe(0);
+    expect(lines.filter((l) => l.type === "result")).toHaveLength(1);
+  });
+
+  test("没有任何后台任务 → 行为与改动前逐字节相同（立即收尾，不多等）", async () => {
+    const input = new PassThrough();
+    const output = new PassThrough();
+    const io = new StructuredIO(input, output);
+    const queue = new CommandQueue();
+    const engine = new SDKQueryEngine(
+      { cwd: "/tmp", sessionId: "s-nobg", model: "m", now: () => 0, uuid: () => "u" },
+      simpleDriver("你好"), // 老 driver：没有任何后台能力字段
+    );
+    const collected = collect(output);
+    input.end();
+
+    const t0 = Date.now();
+    await runHeadless(engine, {
+      outputFormat: "stream-json",
+      initialPrompt: "hi",
+      structuredIO: io,
+      commandQueue: queue,
+    });
+    output.end();
+    const lines = await collected;
+
+    expect(Date.now() - t0).toBeLessThan(500);
+    expect(lines.filter((l) => l.type === "result")).toHaveLength(1);
+  });
+});
