@@ -178,6 +178,7 @@ sid-code --plugin-dir /tmp/plugin-a --plugin-dir /tmp/plugin-b
 ## 企业插件市场
 
 市场地址由 `backend.url` 推出（`<backend.url>/api/v1/ctl/marketplace/index`），请求带设备凭据。
+管理员怎么上架、发布、下架插件，见企业后端的[插件市场](/backend/marketplace)页。
 目录拉不到（网络错 / 5xx）时用上次缓存展示，已装插件照常加载；401 不退回缓存，
 凭据被吊销后目录与下载一起失效。
 
@@ -206,7 +207,7 @@ sid-code --plugin-dir /tmp/plugin-a --plugin-dir /tmp/plugin-b
 
 ## Bridge：远程控制
 
-`--bridge` 让 sid-code 连上一个 WebSocket 中继，接受远程客户端操控：
+`--bridge` 让 sid-code 连上一个 WebSocket 中继，接受远程客户端操控。管理员从管理台接管员工会话的用法见企业后端的[遥控](/backend/bridge)页：
 
 ```bash
 sid-code --bridge wss://relay.example.com/session/abc --bridge-token <token>
