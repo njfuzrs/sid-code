@@ -331,8 +331,10 @@ export default defineConfig({
      * 现在顶栏的主干（前 4 个）只回答一个问题：**你现在处于哪个阶段**，
      * 左到右就是真实时间线：
      *
-     *   开始 → 指南 → 参考 → 团队部署
-     *   评估安装  日常用与定制  查确切写法  推广给团队
+     *   开始 → 指南 → 参考 → 团队部署 → 企业后端
+     *   评估安装  日常用与定制  查确切写法  推广给团队  在服务端管住团队
+     *
+     * （「企业后端」2026-10-16 加入，接在时间线末尾，所以下文说的「前 4 格」现在是前 5 格。）
      *
      * ## 「使用」与「进阶定制」为什么必须合并
      *
@@ -394,6 +396,10 @@ export default defineConfig({
       },
       { text: "参考", link: "/ref/cli", activeMatch: "^/ref/" },
       { text: "团队部署", link: "/team/defaults", activeMatch: "^/team/" },
+      // 「企业后端」紧跟「团队部署」，仍属阶段轴的最后一段（推广给团队 → 在服务端管住团队）。
+      // 不并进「团队部署」：那边写客户端怎么对接、员工侧怎么表现，读者是员工；
+      // 这边写管理台怎么配，读者是管理员和部署运维。读者不同，并在一起两边的侧边栏都会变长。
+      { text: "企业后端", link: "/backend/", activeMatch: "^/backend/" },
       // ⚠ 博客与更新日志排在阶段轴之后，别再把它们插回前 4 格中间（理由见上）。
       { text: "博客", link: "/blog/", activeMatch: "^/blog/" },
       { text: "更新日志", link: "/changelog" },
@@ -514,6 +520,25 @@ export default defineConfig({
             { text: "轨迹采集与可观测", link: "/team/observability" },
             { text: "定时与无人值守", link: "/team/scheduled" },
           ],
+        },
+      ],
+      /**
+       * 「企业后端」写给管理员和部署运维，按「先装上 → 管人与设备 → 管住 → 看效果 → 分发能力」排。
+       * 分组口吻与 "/team/" 的「管住成本与边界」「看清实际用得怎么样」一致。
+       *
+       * ⚠ 只列已经写好的页。死链检测是构建门禁（ignoreDeadLinks: false），
+       * 其余页面写完一页加一条，不要先占位。完整清单见方案文档 §4.2。
+       */
+      "/backend/": [
+        {
+          text: "开始",
+          collapsed: false,
+          items: [{ text: "概览", link: "/backend/" }],
+        },
+        {
+          text: "管控",
+          collapsed: false,
+          items: [{ text: "策略", link: "/backend/policy" }],
         },
       ],
       /**
