@@ -8,7 +8,7 @@ description: anthropic / openai / ollama 三族各一份可直接粘的 settings
 sid-code 自己不带模型，你得告诉它去哪调、用什么 key。这页给三族（Anthropic / OpenAI / Ollama，OpenAI 族含 Chat Completions 与 Responses 两种）各一份**可直接粘**的配置。
 
 先读一句最省事的：**这里有一个 `base_url` 要不要带 `/v1` 的坑，两族协议的规则正好相反，
-配错会 404**。它是新手最大的卡点，所以放在最前面讲。
+配错会 404 或拿回 HTML 错误页**。它是新手最大的卡点，所以放在最前面讲。
 
 ## 快速上手
 
