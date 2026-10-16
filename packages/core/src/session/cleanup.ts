@@ -312,7 +312,7 @@ export async function identifySessionsToDelete(
  *   此处删不到；这类轨迹由 TraceCollector 的 LRU（maxSessionsRetained）兜底回收，不在此强删。
  * - 删除走 best-effort，失败仅告警不抛——清理不是关键路径。
  */
-async function deleteSessionArtifacts(
+export async function deleteSessionArtifacts(
   sessionId: string,
   sessionFileName: string,
   config: Config,

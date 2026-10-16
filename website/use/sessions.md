@@ -56,6 +56,7 @@ sid-code --list-sessions
 | `--fork-session` | 恢复时**分叉**：新 id，源会话一字不动 |
 | `--session-id <uuid>` | 指定会话 UUID（须合法 UUID；和 `-c` / `-r` 同用必须配 `--fork-session`） |
 | `-n, --name <name>` | 给会话起个显示名，`--list-sessions` 里好认 |
+| `--from-pr <number>` | 从 PR 恢复会话上下文（`gh pr view`；PR 描述里内嵌了会话 id 则恢复该会话，否则把 PR 上下文注入新会话） |
 | `--no-session-persistence` | 这次不落盘（一次性试探、不想留痕时用） |
 
 `-r` 的按值恢复很好用，索引直接给数字：
@@ -85,9 +86,9 @@ sid-code -r 5
 | 总体积上限 | 10GB（会话 + 轨迹合计，超了才从最旧的删） | `maxTotalSize`（如 `"20GB"`） |
 | 最短保留（防误删） | 1 天 | `minRetention` |
 
-会话被清理时，它的轨迹、检查点、进度笔记一起删；轨迹目录和 Session Memory 笔记
-也按同一个保留期过期，不会出现「会话还在、轨迹被删」的情况。自动清理真删了东西时，
-TUI 状态栏会提示删了几个，不会静默删除。
+会话被清理时，它的所有附属资源一起删：会话文件、摘要、sidechain（子代理对话）、
+轨迹目录、检查点快照、进度文件。不会留下「会话没了但附属数据还在」的孤儿。
+自动清理真删了东西时，TUI 状态栏会提示删了几个，不会静默删除。
 
 要改就写 `~/.sid-code/settings.json` 的 `sessionRetention` 段（字段类型见
 [settings.json 字段](/ref/settings)）：
