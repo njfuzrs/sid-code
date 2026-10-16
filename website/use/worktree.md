@@ -18,11 +18,17 @@ description: 在独立 worktree 里干活，含 symlink node_modules 的跨分�
 sid-code --worktree=my-feature
 ```
 
-省略名字会自动起一个可读的名字（`brave-eagle-42` 这种形态）：
+省略名字会自动起一个可读的名字（`brave-eagle-42` 这种形态），写法是**等号留空**：
 
 ```bash
-sid-code --worktree
+sid-code --worktree=
 ```
+
+::: warning 注意等号
+必须是 `--worktree=`（等号 + 空值）。裸写 `--worktree`（不带等号）当前版本会报
+`Option '--worktree <value>' argument missing` 退出——帮助文本里的 `[=<name>]` 可选值
+写法尚未实现。
+:::
 
 看现在有哪些：
 
@@ -107,18 +113,13 @@ rm node_modules        # 删掉软链
 pnpm install           # 独立安装
 ```
 
-想从一开始就不 symlink：
+想从一开始就不 symlink？**当前版本做不到**：把 `symlinkDirectories` 设成空数组
+（`[]`）会被配置读取层当成「未设置」，静默回退默认 `["node_modules"]`，创建期零告警
+——你以为切到了独立安装，实际仍在用主仓依赖，比不设这个配置更危险（缺陷已登记，
+待修复）。真要独立安装，用上面那个手动方式：创建后删掉软链、自己 install。
 
-```json
-{
-  "worktree": {
-    "symlinkDirectories": []
-  }
-}
-```
-
-代价是每个 worktree 都要装一份依赖，磁盘和时间都要花。默认 symlink 是因为大多数
-时候分支间 lockfile 是一样的，这时候 symlink 纯赚。
+至于为什么不默认独立安装：每个 worktree 都要装一份依赖，磁盘和时间都要花。
+默认 symlink 是因为大多数时候分支间 lockfile 是一样的，这时候 symlink 纯赚。
 
 ### 数据库 migration 提醒
 
@@ -164,8 +165,11 @@ pnpm install           # 独立安装
 /worktree clean
 ```
 
-只清理**临时** worktree（子代理、Workflow、Swarm 建的那些，名字形如 `agent-xxxxxxxx`、
-`wf_...`、`swarm-...`），默认阈值 30 天。**你自己命名的永远不碰**——
+只清理**临时** worktree（子代理、Workflow、Swarm、Bridge、后台 job 建的，名字形如
+`agent-xxxxxxxx`、`wf_...` / `wf-...`、`swarm-...`、`bridge-...`、`job-...`）。
+临时 worktree 的有效过期阈值是 **6 小时**（代码取 `30 天` 与 `6 小时` 两者更严的那个，
+即 6 小时；30 天阈值对临时 worktree 实际不生效——临时 worktree 正常寿命是分钟级，
+活过 6 小时的基本都是崩溃遗留的孤儿）。**你自己命名的永远不碰**——
 `/worktree` 列表里标"命名"的就是这类。
 
 <!--
@@ -180,9 +184,9 @@ pnpm install           # 独立安装
 
 | 条件 | 不满足时 |
 | --- | --- |
-| 超过阈值（默认 30 天）**且**创建满 6 小时 | 跳过。6 小时的宽限期是防「另一个进程刚建好正在用」 |
+| 最后一次活动满 6 小时 | 跳过。「活动」取目录 mtime、git 的 HEAD/index/commit 日志、改动文件 mtime 几路信号的最大值——连续几小时只改文件不提交的也算在用。宽限期是防「另一个进程刚建好正在用」 |
 | 没有未提交改动 | 跳过。**包括你新建但还没 `git add` 的文件**——这类最容易丢，所以专门扫 |
-| 没有未推送的 commit | 跳过（比对的是"推没推到任何 remote"，不是相对某个起点） |
+| 没有未推送的 commit | 跳过（口径是"这条分支之外任何 ref——本地分支、tag、远端——都够不到的 commit"，够得到的删了也不丢，不算数） |
 | 没被 `git worktree lock` 锁住、不属于活跃会话 | 跳过 |
 
 判定失败（比如那个目录 `git status` 跑不通）时按**保守处理，跳过不删**。
@@ -191,7 +195,8 @@ pnpm install           # 独立安装
 ### 和子代理并行的关系
 
 子代理可以各自跑在独立 worktree 里，这样多个 agent 同时改文件不会冲突。
-`/batch` 就是这个模式：把任务拆成独立单元，各自 worktree 并行执行。
+`/batch` 就是这个模式：把任务拆成独立单元、经 Workflow 并行编排，**会并行改文件的单元**
+各自用 worktree 隔离执行（纯读的单元不建 worktree）。
 
 ```text
 /batch 把 src/legacy/ 下每个文件的 class 组件改成函数式
@@ -232,6 +237,8 @@ sid-code --from-pr 42
   - tests/calc.test.ts
   - README.md
 ```
+
+改动文件最多列 100 个，超出会截断显示「…… 及另外 N 个文件」。
 
 依赖 `gh` CLI（`gh pr view`）。`gh` 不可用 / 未登录 / PR 不存在时**报错降级而非静默吞**
 ——PR 恢复失败用户需要知道为什么。常见错误：
@@ -332,14 +339,15 @@ worktree.commitAttribution: true
        ├─ 否（默认：主仓共享）→ 不装，只告警
        ├─ 是，但 hook 文件已存在 → 不覆盖，跳过
        └─ 是 → 装 prepare-commit-msg hook
-            └─ hook 内读 git.commitAttribution
-                 ├─ enabled: false → 跳过（hook 装了但不写内容）
+            └─ 装之前读 git.commitAttribution
+                 ├─ enabled: false → 不装 hook（归因关闭，没有可写的内容）
                  └─ enabled: true  → 写 text（或默认值）进 commit message
 ```
 
 所以：
 
-- 想全局关归因 → 设 `git.commitAttribution.enabled: false`（所有路径都关）
+- 想全局关归因 → 设 `git.commitAttribution.enabled: false`（所有路径都关）；
+  另有 settings.json 顶层的 `includeCoAuthoredBy: false` 作为全局总开关，优先级高于 `git` 段
 - 只想关 worktree 的 hook（保留 skill prompt 归因）→ 设 `worktree.commitAttribution: false`
 - 默认状态下 worktree 不装 hook（`false`），但 skill prompt 归因是开的（`git.commitAttribution.enabled` 默认 `true`）
 
