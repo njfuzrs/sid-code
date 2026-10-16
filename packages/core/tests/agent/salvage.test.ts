@@ -447,6 +447,44 @@ describe("D1 classifySubAgentFailure + 建议文案（表驱动）", () => {
   }
 });
 
+describe("S6 硬 kill 文案写实际开枪的那一层（事故 20261016-222758）", () => {
+  // 真实死法是 detach 后第 900s 硬 kill，残卷却写「达到墙钟预算 (300秒) 并已停止」——
+  // 少说了 10 分钟续跑，排查被带偏到墙钟。
+  test("hardKilled → 文案写明硬 kill 期限，不再是「并已停止」", () => {
+    const fc = classifySubAgentFailure({
+      parentAborted: false,
+      hardKilled: true,
+      detached: true,
+      canDetach: true,
+    });
+    expect(fc).toEqual({ reason: "timeout", hardKilled: true });
+    const out = buildSalvageOutput(new SalvageCollector().snapshot(), {
+      reason: fc.reason,
+      hardKilled: fc.hardKilled,
+      timeoutMs: 300_000,
+    });
+    expect(out).toContain("硬 kill 期限 (900秒)");
+    expect(out).toContain("已被终止");
+    expect(out).not.toContain("并已停止");
+  });
+
+  test("未硬 kill 的 timeout（不可转后台）文案不变", () => {
+    const fc = classifySubAgentFailure({
+      parentAborted: false,
+      hardKilled: false,
+      detached: true,
+      canDetach: false,
+    });
+    expect(fc.hardKilled).toBeUndefined();
+    const out = buildSalvageOutput(new SalvageCollector().snapshot(), {
+      reason: fc.reason,
+      timeoutMs: 300_000,
+    });
+    expect(out).toContain("达到墙钟预算 (300秒) 并已停止");
+    expect(out).not.toContain("硬 kill");
+  });
+});
+
 describe("D1 <progress> token 口径", () => {
   test("给了 usage → 显式 input/output/cache_read/cache_creation，无裸 tokens=", () => {
     const snap = new SalvageCollector().snapshot();

@@ -178,19 +178,6 @@ export interface AgentLoopConfig {
    * 证明它被执行的断言。
    */
   onTelemetry?: (event: RetryTelemetryEvent) => void;
-  /**
-   * B2：跨重试的兜底超时（毫秒），传给 `processStream`。
-   *
-   * 注意它与漏斗的 `streamTimeoutMs` 是**不同层**：漏斗那层是单次尝试的上限
-   * （触发后重试），这一层是把"重试也救不回来"兜住（触发即结束本轮）。
-   * 缺省走 `LIFECYCLE_PRESETS.subAgent`（idle 60s / overall 180s，见 stream-processor.ts:89-90）。
-   *
-   * P2-6：这一层的 idle 60s 是**对的**（它真的按事件到达续期，见 stream-lifecycle 的
-   * lastEventAt 判据），不要连带改动。被修掉的是漏斗那层——它拿同一个 60s 去做
-   * "单次尝试整体上限"，而那个定时器收到数据并不续期，两者只是数值巧合相同。
-   */
-  streamIdleTimeoutMs?: number;
-  streamOverallTimeoutMs?: number;
 }
 
 /**
@@ -665,13 +652,12 @@ async function runAgentLoopInner(
     //  ③ availability 注入共享实例，放弃时的嫌疑态跨路径共享（原 H9 的能力，
     //     漏斗内部 markSuspect 已覆盖，不必在此另写一份）。
     //
-    // 三层超时的分工（不要合并，见 resilient-stream.ts 的 streamTimeoutMs 注释）：
-    //   漏斗 streamTimeoutMs = **单次尝试的内容无进展上限**（180s）→ 触发后**重试**；
-    //   processStream idle/overall = 单次尝试兜底（idle 60s / overall 180s）→ 触发即结束本轮。
-    //     **退避期停表、每次新尝试重新起表**（retry_backoff / stream_restart，见
-    //     stream-lifecycle 的 classifyRetryBoundary）。2026-10-15 前这层是「全部重试 + 退避」
-    //     的总上限：429 退避累计到 180s 必然截断，maxRetries 被时间架空（事故 20261015-114502）；
+    // 超时分工（只有一层流超时，不要再加）：
+    //   漏斗 streamTimeoutMs = **单次尝试的内容无进展上限**（180s）→ 触发后 abort + **重试**；
     //   重试几次 = maxRetries；总时长失控 = sub-agent.ts 的硬 kill（timeout × 3，扣休眠）。
+    //   processStream 自身**不判超时**。2026-10-17 前它另挂 idle 60s / overall 180s，
+    //   到点只置标志不断流，等漏斗重试时把重试流判死（事故 20261016-224545，3 个子代理
+    //   在 attempt=1 后 4–8ms 判 error）；再往前它是「全部重试 + 退避」总上限（事故 20261015-114502）。
     //
     // P2-6：第一层原写成"单次尝试**无数据**上限"，与实现不符——漏斗那个定时器只在
     // 发起尝试时武装、收到数据不续期，所以它量的是"这次尝试跑了多久"而非"多久没数据"。
@@ -734,17 +720,9 @@ async function runAgentLoopInner(
 
     let response: StreamProcessResult;
     try {
-      response = await processStream(stream, {
-        signal,
-        heartbeatTimeoutMs: config.streamIdleTimeoutMs,
-        overallTimeoutMs: config.streamOverallTimeoutMs,
-        // P3-6：超时事件必须带与上面那些 emitStreamPhase **同一把** key 的身份，
-        // 否则 TimeoutFired 落在 index=-1 上：既 push 不进 timeoutsFired
-        //（fallback 的 reopenReason 读它），也无法按轮次聚合 —— 子代理超时在
-        // digest 里像没发生过。
-        observerIndex: agentStreamIndex,
-        observerAgentId,
-      });
+      // ⛔ 不再给 processStream 传任何超时：卡死只由漏斗断流 + 重试（见 stream-processor.ts
+      // AgentStreamOptions 注释，事故 20261016-224545）。
+      response = await processStream(stream, { signal });
     } catch (err) {
       // 漏斗只在「用户/外部 abort」时抛（可重试错误已在内部消化成重试或 error 事件）。
       const errMessage = (err as Error)?.message ?? String(err);
@@ -1407,15 +1385,7 @@ async function runAgentLoopInner(
         },
       );
 
-      const summaryResponse = await processStream(summaryStream, {
-        signal,
-        heartbeatTimeoutMs: config.streamIdleTimeoutMs,
-        overallTimeoutMs: config.streamOverallTimeoutMs,
-        // P3-6：同主流。这里用 20000 号段（与上方 emitStreamPhase 一致），
-        // 否则总结轮超时会记到主流那一格上。
-        observerIndex: summaryStreamIndex,
-        observerAgentId,
-      });
+      const summaryResponse = await processStream(summaryStream, { signal });
       accumulateUsage(totalUsage, summaryResponse.usage);
       emitStreamPhase(
         summaryStreamIndex,

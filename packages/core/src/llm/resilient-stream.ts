@@ -77,10 +77,13 @@ export interface ResilientStreamOptions {
   /**
    * 单次尝试的流超时（毫秒）。缺省用 subAgent overall 档（180s）。
    *
-   * 语义分层（三层各司其职，不要合并）：
-   *   ① 本超时 = **单次尝试的整体上限**，触发后漏斗按可重试超时**重试**；
-   *   ② 调用方 processStream 的 idle/overall = **跨重试**的兜底，触发即结束本轮（不重试）；
-   *   ③ 子代理 wall-clock（`sub-agent.ts` 的 timeoutCtrl，120–360s）= 总预算硬顶。
+   * 语义分层：
+   *   ① 本超时 = **单次尝试的整体上限**，触发后漏斗按可重试超时**重试**——子代理身上
+   *     **唯一**的流超时层；
+   *   ② 子代理 wall-clock（`sub-agent.ts` 的 timeoutCtrl，120–360s）= 总预算硬顶。
+   *   ⛔ 2026-10-17 前调用方 `agent/stream-processor` 还另挂 idle 60s / overall 180s，
+   *   到点只置标志不断流，等本层重试时把重试流判死（事故 20261016-224545），已整层删除。
+   *   别在调用方加回第二层。
    *
    * P2-6：缺省档位曾是 `subAgent.idleTimeoutMs`（60s），与本参数在漏斗里的**真实语义
    * 不匹配**。漏斗那个定时器（`fallback.ts:669` startStreamTimeout）只在发起尝试时
