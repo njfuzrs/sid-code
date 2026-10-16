@@ -22,8 +22,7 @@ import { join, relative, resolve } from "node:path";
  *
  * ⚠️ `shared` 是 rank 0（真叶子），渲染底座 `tui` 是 rank 1：底座从 shared 取 Color 类型，
  * 所以它不是叶子。顺序 shared(0) < tui(1) < core(2) < cli(3) 的目标是 core 完全不知道 TUI 的存在
- * （「core 能当库用」的前提）。分包时（P2-2）的渲染层是旧底座 `tui-renderer`，B9 / T9.1 删除，
- * 新底座 `tui` 接替同一层。
+ * （「core 能当库用」的前提）。
  */
 export const PACKAGE_RANK: Record<string, number> = {
   shared: 0,
@@ -447,16 +446,14 @@ export function scanPackageTestsMode(packagesRoot: string): {
 /**
  * 渲染端口规则（B9 / T0.2）：CLI 只能经 `packages/cli/src/ui/render-port/` 拿渲染底座。
  *
- * 为什么要这条：B9 要把旧底座整层换掉。CLI 里只要有一处绕过端口直连底座，
- * 那一处在切换时就会**静默留在旧底座上**（同一进程两套 reconciler，Box 宿主类型不同源），
- * 表现是某个组件渲染不出来或布局错乱，而 import 本身不报任何错。
+ * 为什么要这条：端口是 CLI 与底座之间唯一的接缝。CLI 里只要有一处绕过端口直连底座，
+ * 以后底座改名、改形状或收窄端口面时那一处就会漏改，而 import 本身不报任何错。
  *
  * 扫描面：`packages/cli/src` + `packages/cli/tests`（测试也只能经端口）。禁止的说明符：
- * `@sid-code/tui`，只许端口目录自己用。旧底座 `@sid-code/tui-renderer` 在 T9.1 删除后仍在禁止名单里：
- * 有人照着旧文档写出这个导入时，这里给出的报错比「模块找不到」更能指明该走端口。
+ * `@sid-code/tui`（含子路径），只许端口目录自己用。
  */
 export const RENDER_PORT_DIR = "packages/cli/src/ui/render-port";
-const RENDERER_SPEC = /^@sid-code\/(tui-renderer|tui)(?:\/|$)/;
+const RENDERER_SPEC = /^@sid-code\/tui(?:\/|$)/;
 
 export function scanRenderPortMode(repoRoot: string): {
   violations: Array<{ file: string; line: number; spec: string }>;

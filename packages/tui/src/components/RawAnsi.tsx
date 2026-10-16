@@ -1,5 +1,5 @@
 // sid-code（B9 / T4.1，契约 T5）：新写。上游没有等价物。
-// 规则来自对拍旧底座首帧字节（tests/fixtures/screen-vectors.json 的 `RawAnsi *` 条目），没有读旧代码。
+// 规则来自对拍冻结的行为基线首帧字节（tests/fixtures/screen-vectors.json 的 `RawAnsi *` 条目）。
 import {createElement, memo} from 'react';
 
 export type Props = {
@@ -24,8 +24,7 @@ function RawAnsi({lines, width}: Props) {
 		return null;
 	}
 
-	// 用 createElement 而不是 JSX：根 tsconfig 下两套底座的 global.d.ts 都在声明 `ink-text`，
-	// legacy 那份不认识 internal_raw（T9 删旧底座后可改回 JSX）
+	// 用 createElement 构造带 internal_raw 的 `ink-text`
 	return createElement(
 		'ink-text',
 		{

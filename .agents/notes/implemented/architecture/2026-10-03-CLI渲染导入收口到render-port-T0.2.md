@@ -6,20 +6,20 @@ Date: 2026-10-03
 
 ## 决定了什么
 
-- 新建 `packages/cli/src/ui/render-port/`，当前只有 legacy 实现：8 个模块全是对 `@sid-code/tui-renderer/*` 的纯 re-export
+- 新建 `packages/cli/src/ui/render-port/`，当前只有一个实现：8 个模块全是对当时底座包的纯 re-export
   （`components` / `hooks` / `measure` / `text` / `termio` / `runtime` / `testing` / `types`），分组理由写在该目录 `README.md`。
 - 一次性 codemod 把 `packages/cli/src` 与 `packages/cli/tests` 里全部底座导入改到端口：120 个文件，含 `cli.ts` / `copy.ts` / `bug.ts` 的动态 `await import()`（保持懒加载，不改成静态）。
   源码用相对路径，测试用 `@sid-code/cli/ui/render-port/*.ts`（测试跨包相对路径本来就被 lint:boundary 禁止）。
   唯一的改名：`Props as TextProps` → 端口直接导出 `TextProps`。
-- `scripts/pkg-boundary-scan.ts` 加 `scanRenderPortMode`：CLI src + tests 中，`render-port/` 之外出现 `@sid-code/tui-renderer` 或 `@sid-code/tui` 即违规。接进 `bun run lint:boundary` 的退出码，CI 的 lint job 已经在跑它。
-- `ui/CLAUDE.md` L5.3 重写：废掉「遇 cc 做法默认能搬，先去 `src/ink` 找」，改成「只经端口导入、不读旧底座、端口缺能力先在端口里加」。同文件另外 5 处指向 `src/ink` 的引导一并改掉。
+- `scripts/pkg-boundary-scan.ts` 加 `scanRenderPortMode`：CLI src + tests 中，`render-port/` 之外直接导入渲染底座包即违规。接进 `bun run lint:boundary` 的退出码，CI 的 lint job 已经在跑它。
+- `ui/CLAUDE.md` L5.3 重写：废掉「遇 cc 做法默认能搬，先去 `src/ink` 找」，改成「只经端口导入、端口缺能力先在端口里加」。同文件另外 5 处指向 `src/ink` 的引导一并改掉。
 
 ## 放弃了什么（以及为什么不选）
 
 - **单个 `index.ts` barrel**：实测 `Bun.build` metafile，`root.ts` 依赖闭包 85 个底座文件，`stringWidth.ts` 只有 2 个。
   一个 barrel 会让只要 `Text` 的组件 / 测试把整套引擎一起加载，改变模块求值顺序。T0.2 要求零行为变化，所以按闭包分组。
-  代价是 D-4 设想的「`index.ts` 顶层按 `SID_TUI_RENDERER` 一次判定」要在 T1.x 改成每个分组模块各自判定（或一个共享的 `impl.ts`）。到时再定。
-- **现在就写端口自有类型 + `satisfies`**：那是 D-4 的目标形态，但需要先有第二个实现才有意义。`types.ts` 暂时直接 re-export legacy 类型，T1.3 再替换。
+  代价是 D-4 设想的「`index.ts` 顶层一次判定用哪个实现」要在 T1.x 改成每个分组模块各自判定（或一个共享的 `impl.ts`）。到时再定。
+- **现在就写端口自有类型 + `satisfies`**：那是 D-4 的目标形态，但需要先有第二个实现才有意义。`types.ts` 暂时直接 re-export 底座包的类型，T1.3 再替换。
 - **把 `tui:surface --check` 也接进 CI**：没接。lint:boundary 管的是「有没有绕过端口」（必须拦），SURFACE 签名管的是「端口面有没有变」（变化本身合法，只需要被看见）。
   后者先靠 `tests/scripts/tui-surface.test.ts` 的签名断言在 `bun test` 里红。
 - **把 `CLAUDE.md` frontmatter 的 `src/ink/**` 路径删掉**：没动。那是旧路径的匹配规则，删了不影响行为，留给 T9 收尾一起清。

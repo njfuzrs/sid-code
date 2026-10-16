@@ -1,10 +1,10 @@
 /**
  * 超链接命中（B9 / T6.2b，契约 M4）：屏幕上 (x, y) 这一格对应的 url。
  *
- * 规则全部来自对旧底座 `getHyperlinkAt` 的黑盒探针（D-5，没读旧代码），探针结果备份在
+ * 规则全部来自对冻结行为基线 `getHyperlinkAt` 的黑盒探针（D-5），探针结果备份在
  * `~/Backups/sid-code-t67-probe-results-20261008/T6.2b/`（m11–m14）：
  * - 先看这一格的 OSC 8 链接。宽字符右半格也命中（`wide-tail`）：`Screen.putId` 写宽字符时
- *   spacer 格带着同一个链接 id，所以不用像旧底座那样回头看左半格。
+ *   spacer 格带着同一个链接 id，所以不用像基线实现那样回头看左半格。
  * - 没有就在这一行里找纯文本 url（开了鼠标跟踪后终端自己的 Cmd+点击识别不再生效，所以底座补上）：
  *   - 只认小写的 `http://`、`https://`、`file://`（`ftp`、`mailto:`、`www.`、`HTTPS://` 都不认）；
  *     前面不要求词边界（`xhttps://a.test/a` 从第 1 列起算）；只有 scheme 也算（`http://`）。

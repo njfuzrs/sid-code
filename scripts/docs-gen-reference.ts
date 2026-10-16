@@ -40,10 +40,9 @@ const REF = join(WEBSITE, "ref");
  * 分包时实测 env 扫描一度归零、整段「未列入上表的读取点」被静默删掉。
  * 新增包时同步这里。
  *
- * B9 / T9.1：渲染底座从不入库的 `tui-renderer`（当时要先取回才在）换成入库的 `tui`，
- * 扫描时目录一定存在。`CLAUDE_CODE_COMMIT_LOG` / `CLAUDE_CODE_DEBUG_REPAINTS` 只有旧底座读，
- * 随它删除从参考页消失是正确结果；`CLAUDE_CODE_ACCESSIBILITY` / `CLAUDE_CODE_TMUX_TRUECOLOR` /
- * `SID_CODE_DISABLE_MOUSE_CLICKS` / `SID_DISABLE_TAB_STATUS` 新底座照读（用方括号写法，以前的扫描认不出）。
+ * 渲染底座 `tui` 入库，扫描时目录一定存在。`CLAUDE_CODE_COMMIT_LOG` / `CLAUDE_CODE_DEBUG_REPAINTS`
+ * 已没有读取点，不出现在参考页是正确结果；`CLAUDE_CODE_ACCESSIBILITY` / `CLAUDE_CODE_TMUX_TRUECOLOR` /
+ * `SID_CODE_DISABLE_MOUSE_CLICKS` / `SID_DISABLE_TAB_STATUS` 由 `packages/tui` 读取（用方括号写法，以前的扫描认不出）。
  *
  * ⚠️ 不要改成「按目录是否存在动态过滤」：那会让取回前/取回后生成两份不同的
  * env 列表，`--check` 必然在其中一边红。要么目录一定在，要么硬排除，不能看情况。

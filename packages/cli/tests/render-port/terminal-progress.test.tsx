@@ -1,11 +1,11 @@
 /**
  * 契约 O3（B9 / T7.2b）：原始终端写入口 TerminalWriteContext，与退出时清进度条 / tab 状态点。
  *
- * 期望值是 2026-10-08 legacy 实测（探针结果备份在
+ * 期望值是 2026-10-08 冻结基线的实测（探针结果备份在
  * `~/Backups/sid-code-t67-probe-results-20261008/T7.2b/`）。每个环境起一个子进程，
  * 断言 OSC 9 / 21337 片段等于实测字节。
  * 卸载序列的其余部分（光标、鼠标、扩展键、bracketed paste）和它们与清除序列的相对顺序归 X3（T7.1b），
- * 这里不比 —— next 现在还缺那几段，整段比会让 O3 替 X3 红。
+ * 这里不比 —— 整段比会让 O3 替 X3 红。
  */
 import { describe, expect, test } from "bun:test";
 import { join, resolve } from "node:path";

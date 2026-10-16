@@ -1,7 +1,7 @@
 /**
- * 契约 I2（B9 / T5.2b）：终端探查（XTVERSION `ESC[>0q` + DA1 `ESC[c`）与 `setSuppressTerminalProbe`。两套底座都跑。
+ * 契约 I2（B9 / T5.2b）：终端探查（XTVERSION `ESC[>0q` + DA1 `ESC[c`）与 `setSuppressTerminalProbe`。
  *
- * 期望值全部是 2026-10-08 对拍 legacy 的黑盒探针实测（`_probe_i2 … i2g`），没有读旧底座代码（设计文档 D-5）。
+ * 期望值全部是 2026-10-08 冻结基线的黑盒探针实测（`_probe_i2 … i2g`），没有读被对拍实现的源码（设计文档 D-5）。
  * 只比探查本身的两段写入；raw mode 开关时旁边的 `?2004h` / `?1004h` 属于 I4（T5.3a），这里不比。
  */
 import { afterEach, describe, expect, spyOn, test } from "bun:test";
@@ -91,7 +91,7 @@ describe("I2: 何时探查", () => {
     expect(a.probes()).toEqual(PAIR);
     m.teardown();
 
-    // 挂载前就设非 TTY：挂载后再改 isTTY 时两套底座判定时机不同（legacy 调用时读、next 挂载时读），不归 I2
+    // 挂载前就设非 TTY：挂载后再改 isTTY 的判定时机不归 I2（当前实现挂载时读）
     const b = streams();
     (b.s.stdin as unknown as { isTTY: boolean }).isTTY = false;
     const m2 = mountTTY(<Raw />, b.s);

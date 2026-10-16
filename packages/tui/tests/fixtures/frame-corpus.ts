@@ -2,8 +2,8 @@
  * 帧间增量对拍语料（B9 / T3.2，契约 R1 / R3–R6 / R12）。
  *
  * 纯数据：每条是一串帧，每帧是若干行 `<Text>` 内容（一列 Box 排开），或 resize / forceRedraw / SIGCONT（见 FrameStep）。
- * 生成器（scripts/tui-frame-vectors.ts）在旧底座 TTY 路径上逐帧提交，记下每帧写出的字节与 onFrame 的 full reset 原因；
- * 测试（tests/frame.test.ts）在新底座上跑同一串帧，逐帧比较。这个文件不 import 任何底座。
+ * 生成器（scripts/tui-frame-vectors.ts）在 TTY 路径上逐帧提交，记下每帧写出的字节与 onFrame 的 full reset 原因；
+ * 测试（tests/frame.test.ts）在渲染底座上跑同一串帧，逐帧比较。这个文件不 import 任何底座。
  */
 /**
  * 一帧：若干行内容；或一次（同 tick 内可多次的）resize；或调用实例 forceRedraw；或进程收到 SIGCONT。

@@ -1,7 +1,7 @@
 /**
  * 按终端列切 ANSI 文本（B9 / T2.1，契约 T2 的基础操作）。
  *
- * 规则全部来自对旧底座输出的黑盒对拍（见 `tests/text-vectors.test.ts`）：
+ * 规则全部来自对冻结行为基线输出的黑盒对拍（见 `tests/text-vectors.test.ts`）：
  * - 只取「起始列落在 [start, end) 内」的字符。宽字符起始列 < end 就算进来，哪怕右半格超出 end
  *   （调用方按需收紧，见 truncate.ts）；起始列 < start 的宽字符整个丢掉，不劈半。
  * - 零宽字符（组合附标、`\t`、`\n` 等）跟着它前面那个有宽度的字符走：前一个取了它就取，
@@ -90,7 +90,7 @@ export function sliceColumns(text: string, start: number, end: number): string {
 		}
 	}
 
-	// 一个字符都没取到：旧底座仍会输出「关掉此刻生效样式」的序列（视觉上无影响）。
+	// 一个字符都没取到：基线仍会输出「关掉此刻生效样式」的序列（视觉上无影响）。
 	// 照做，是为了让差分测试能逐字节对拍，而不是给出一份需要解释的白名单。
 	if (!started) {
 		return ansiCodesToString(undoAnsiCodes(active));

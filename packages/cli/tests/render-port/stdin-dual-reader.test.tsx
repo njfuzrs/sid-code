@@ -10,8 +10,8 @@
  * 流处于 paused（readableFlowing=false）—— 'readable' 监听会把流从 flowing 拉回 paused，
  * 但 Node 仍会在 read() 时把同一块 emit 给 'data'。
  *
- * 新底座只要改成「只挂 data」或「先 read() 再分发」，CLI 侧就可能少收或重复收键，
- * 而布局测试全绿。所以这条契约必须在 legacy 与 next 上都跑。
+ * 渲染底座只要改成「只挂 data」或「先 read() 再分发」，CLI 侧就可能少收或重复收键，
+ * 而布局测试全绿。所以这条契约要单独钉住。
  */
 import { describe, expect, test } from "bun:test";
 import React, { useEffect } from "react";

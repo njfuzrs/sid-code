@@ -1,9 +1,9 @@
 /**
  * 差分测试台（B9 / T0.4）：S1–S14 在当前端口实现上跑，对 `baseline/*.json` 判定。
  *
- * T0.4 时端口只有 legacy，基线就是 legacy 自己 —— 这一步的价值是把旧底座的终端行为
+ * 基线在 T0.4 生成 —— 这一步的价值是把当时的终端行为
  * （网格、scrollback、模式、full reset 次数、字节数、OSC）冻成可比对的事实。
- * T1.x 起同一份场景在 next 上跑，判定口径不变（`compareToBaseline`）。
+ * 当前实现跑同一份场景，判定口径不变（`compareToBaseline`）。
  *
  * 更新基线（只在确认行为变化是有意的之后）：`UPDATE_TERM_BENCH=1 bun test ./packages/cli/tests/render-port/term-bench/`
  * 帧耗时不进基线（机器负载会让它抖），基线报告见 `bun run tui:bench`。
@@ -18,7 +18,7 @@ import { parseSpec, SPEC_PATH } from "../../../../../scripts/verify-tui-spec.ts"
 const BASELINE_DIR = join(import.meta.dir, "baseline");
 const UPDATE = process.env.UPDATE_TERM_BENCH === "1";
 
-describe("差分测试台 S1–S14（legacy 基线）", () => {
+describe("差分测试台 S1–S14（冻结基线）", () => {
   test("场景清单与设计文档首批一致：S1–S14 一个不少", () => {
     expect(Object.keys(SCENARIOS)).toEqual(Array.from({ length: 14 }, (_, i) => `S${i + 1}`));
   });

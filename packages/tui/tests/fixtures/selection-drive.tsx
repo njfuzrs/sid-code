@@ -1,7 +1,7 @@
 /**
- * 选区向量的驱动（B9 / T6.2a）：在旧底座上跑 `selection-corpus.tsx` 的每条用例，
+ * 选区向量的驱动（B9 / T6.2a）：跑 `selection-corpus.tsx` 的每条用例生成冻结的行为基线，
  * 记下 `copySelectionNoClear()` 与 xterm 无头终端里的高亮单元。不 import 任何底座，
- * 由 `scripts/tui-selection-vectors.ts` 把端口的 legacy 实现注入进来（同 input-drive.tsx）。
+ * 由调用方注入实现（同 input-drive.tsx）。
  */
 import type React from "react";
 import type { SelectionCase } from "./selection-corpus.tsx";
@@ -74,7 +74,7 @@ export async function driveSelection(
   cases: SelectionCase[],
 ): Promise<Record<string, SelectionVector>> {
   const { React: R, useInput } = deps;
-  // 挂一个 useInput：没人读 stdin 时旧底座不开 raw mode，鼠标字节也就不进选区
+  // 挂一个 useInput：没人读 stdin 时基线不开 raw mode，鼠标字节也就不进选区
   function Keys({ children }: { children: React.ReactNode }) {
     useInput(() => {});
     return R.createElement(R.Fragment, null, children);

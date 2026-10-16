@@ -4,7 +4,7 @@
 import * as impl from "./next/runtime.ts";
 
 /**
- * 渲染实例上 CLI 与契约测试会调用的方法，即新底座必须提供的实例能力（B9 / T0.5 遗留）。
+ * 渲染实例上 CLI 与契约测试会调用的方法，即渲染底座必须提供的实例能力（B9 / T0.5 遗留）。
  *
  * 只列真实调用点用到的，不是底座 Ink 类的全部公开方法：
  * - CLI 生产代码：`forceRedraw`（Ctrl+L）、`enter/exitAlternateScreen`（外部编辑器 handoff）

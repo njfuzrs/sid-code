@@ -1,7 +1,7 @@
 /**
  * 契约 M4 补充（B9 / T8.1a）：按探查回复认出 xterm.js 后，alt-screen 里单击链接不由我们打开。
  *
- * 覆盖 SSH 进 VS Code 集成终端（`TERM_PROGRAM` 不传）的情形。期望值是 2026-10-09 对 legacy 的黑盒探针
+ * 覆盖 SSH 进 VS Code 集成终端（`TERM_PROGRAM` 不传）的情形。期望值是 2026-10-09 冻结基线的黑盒探针
  * （35 个变体，D-5，没读旧代码），探针备份在 `~/Backups/sid-code-t67-probe-results-20261008/T8.1a/`。
  * 识别结果是进程级的，每条用例一个子进程。
  */

@@ -1,7 +1,7 @@
 /**
  * 契约 M3 / M4 / M5（B9 / T6.2b）：选区接入渲染、复制、超链接命中与打开。
  *
- * 期望值是 2026-10-09 对 legacy 的黑盒探针（D-5，没读旧代码），探针与原始结果备份在
+ * 期望值是 2026-10-09 冻结基线的黑盒探针（D-5，没读被对拍实现的源码），探针与原始结果备份在
  * `~/Backups/sid-code-t67-probe-results-20261008/T6.2b/`。全部经真实 SGR 鼠标字节驱动，不碰选区内部状态。
  */
 import { afterEach, describe, expect, test } from "bun:test";
@@ -13,8 +13,8 @@ import { mountTTY, tick, ttyStreams } from "./tty-streams.ts";
 
 const ESC = "\x1b";
 /**
- * 点击打开链接的用例要在独立进程里跑：旧底座把终端的 XTVERSION 回复记在进程级全局里，
- * 同一进程里前面的测试喂过 `xterm.js` 回复（如 stdin-response-fragment）之后，旧底座按 xterm.js 处理、
+ * 点击打开链接的用例要在独立进程里跑：终端的 XTVERSION 回复记在进程级状态里，
+ * 同一进程里前面的测试喂过 `xterm.js` 回复（如 stdin-response-fragment）之后，渲染底座按 xterm.js 处理、
  * 不再自己开链接——那是它的正确行为，但会让这里的期望随测试顺序变。所以这些用例只在子进程里跑，
  * 外层用一条测试拉起子进程并断言它真的跑了、全过（不是被跳过的零断言全绿）。
  */
@@ -25,7 +25,7 @@ const ESU = `${ESC}[?2026l`;
 /**
  * 剥掉帧外层的 DEC 2026 同步包裹再比。alt-screen 帧包不包由终端能力在模块加载时定（契约 R14，
  * `alt-screen.test.tsx` 覆盖），宿主是 VS Code / iTerm2 时包、CI runner 上不包。这里测的是选区字节，
- * 不剥的话本机绿、CI 两套底座一起红（B9 / T8.2 首次跑 CI 时实测）。
+ * 不剥的话本机绿、CI 红（B9 / T8.2 首次跑 CI 时实测）。
  */
 const frame = (out: string) =>
   out.startsWith(BSU) && out.endsWith(ESU) ? out.slice(BSU.length, -ESU.length) : out;
@@ -347,7 +347,7 @@ describe("SID_CODE_DISABLE_MOUSE_CLICKS", () => {
 });
 
 test.if(!ISOLATED)(
-  "M4 / 点击禁用：在独立进程里跑点击类用例（隔离旧底座的进程级 XTVERSION 状态）",
+  "M4 / 点击禁用：在独立进程里跑点击类用例（隔离进程级 XTVERSION 状态）",
   () => {
     const r = Bun.spawnSync(
       [

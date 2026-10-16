@@ -1,8 +1,8 @@
 // sid-code（B9 / T5.1b，契约 I8）：一个输入单元 → `useInput` 收到的 `(input, key)`。
 //
-// 上游这里是 enquirer 派生的解析器加 kitty 解析，key 的字段集合和取值都与旧底座不同。
-// 这里按契约 I8 重写：规则全部来自 `tests/fixtures/input-vectors.json`（旧底座黑盒向量）和
-// xterm ctlseqs / kitty keyboard protocol 公开文档，没有读旧底座代码（设计文档 D-5）。
+// 上游这里是 enquirer 派生的解析器加 kitty 解析，key 的字段集合和取值都与冻结行为基线不同。
+// 这里按契约 I8 重写：规则全部来自 `tests/fixtures/input-vectors.json`（冻结行为基线的黑盒向量）和
+// xterm ctlseqs / kitty keyboard protocol 公开文档（设计文档 D-5）。
 // 分词（一串 stdin 字节切成哪些单元）在 `input-parser.ts`。
 
 // 字段集合 = 向量里 key 的字段（按字母序，与 input-vectors.json 一致）

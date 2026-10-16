@@ -1,14 +1,14 @@
 /**
  * 选区引擎语料（B9 / T6.2a，契约 M2）。每条是一棵树 + 一串鼠标字节（数字 = 前进的毫秒数），
- * 屏幕 10 行、alt-screen。期望值是旧底座在同一输入下的实测结果，入库在 `selection-vectors.json`
- * （探针经端口实例驱动 legacy，读 `copySelectionNoClear()` 与 xterm 无头终端里的高亮单元，D-5）。
+ * 屏幕 10 行、alt-screen。期望值是冻结行为基线在同一输入下的实测结果，入库在 `selection-vectors.json`
+ * （探针读 `copySelectionNoClear()` 与 xterm 无头终端里的高亮单元，D-5）。
  *
- * 连击计数是跨用例的进程级状态：旧底座同一进程里上一条用例的点击会和下一条连上，所以探针里
+ * 连击计数是跨用例的进程级状态：基线同一进程里上一条用例的点击会和下一条连上，所以探针里
  * 每条用例前空 700ms（> MULTI_CLICK_MS）。这里每条用例用新状态，等价于那 700ms。
  */
 import React from "react";
 
-/** 端口的 Box / Text（legacy 生成向量时）或新底座的（单测时）；语料本身不 import 任何底座 */
+/** 渲染底座的 Box / Text；语料本身不 import 任何底座 */
 export type CorpusComponents = { Box: React.ComponentType<any>; Text: React.ComponentType<any> };
 
 export const ROWS = 10;
@@ -261,7 +261,7 @@ export function buildSelectionCases({ Box, Text }: CorpusComponents): SelectionC
   add("adj-nbsp-space", ["a  b"], dbl(2, 1), 30);
   add("adj-ideo-space", ["a　 b"], dbl(2, 1), 30);
 
-  // 布局：padding、并排两列、边框、背景色（probe9；旧底座这几条是在已挂载的树上 rerender 再选）
+  // 布局：padding、并排两列、边框、背景色（probe9；基线这几条是在已挂载的树上 rerender 再选）
   const pad = (
     <Box flexDirection="column">
       <Box paddingLeft={2}>

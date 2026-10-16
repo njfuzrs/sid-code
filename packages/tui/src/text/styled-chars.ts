@@ -1,7 +1,7 @@
 /**
  * 带样式字符序列的宽度与换行（B9 / T2.2，契约 T6）。TableRenderer 用它排表格单元格。
  *
- * 规则来自对旧底座的黑盒对拍（向量见 tests/fixtures/text-vectors.json 的 styledChars 段）：
+ * 规则来自对冻结行为基线的黑盒对拍（向量见 tests/fixtures/text-vectors.json 的 styledChars 段）：
  * - 字符宽度按 `stringWidth(char.value)` 算，不看 tokenizer 给的 `fullWidth`
  *   （它对天城文连字报窄，终端实占 2 格）。
  * - 分词：空格和 `\t` 算空白，其余（包括 `\n`、全角空格、不换行空格）都算词的一部分；

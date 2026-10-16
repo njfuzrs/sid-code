@@ -55,6 +55,6 @@ bun run format:check
   → All matched files use the correct format
 ```
 
-首次选测曾 46 fail / 42 error，全部是 `Cannot find module '@sid-code/tui-renderer/...'`：
-worktree 没有 `.vendor-src/`。`bun run vendor:fetch` 之后同一命令 0 fail，
+首次选测曾 46 fail / 42 error，全部是 `Cannot find module`：
+worktree 缺不入库的编译期依赖。补齐之后同一命令 0 fail，
 与本次改动无关。

@@ -1,5 +1,5 @@
 /**
- * alt-screen 与鼠标跟踪的私有模式序列（B9 / T6.1a，契约 M1）。字节与顺序来自黑盒对拍旧底座。
+ * alt-screen 与鼠标跟踪的私有模式序列（B9 / T6.1a，契约 M1）。字节与顺序来自黑盒对拍冻结的行为基线。
  * `<AlternateScreen>`、SIGCONT 恢复、stdin 静默自愈、alt 下 resize 共用这一份，避免各写一遍漂移。
  */
 

@@ -39,7 +39,7 @@ function mapSrcPath(rest: string): string | null {
   const parts = rest.split("/");
   const pkg = parts.length === 1 ? ROOT_FILE_TO_PACKAGE[parts[0]!] : MODULE_TO_PACKAGE[parts[0]!];
   if (!pkg) return null;
-  // ink 被扁平化进 tui-renderer 的 src 根
+  // ink 被扁平化进渲染层包的 src 根
   const within = parts[0] === "ink" ? parts.slice(1).join("/") : parts.join("/");
   const candidate = `packages/${pkg}/src/${within}`;
   return existsSync(join(ROOT, candidate)) ? candidate : null;

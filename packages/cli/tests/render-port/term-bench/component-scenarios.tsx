@@ -1,10 +1,10 @@
 /**
  * 组件级场景 C1–C2（B9 / T4.2，设计文档阶段 4 出口）。
  *
- * 引擎级场景（E*）只用 Box / Text；App 级场景（S*）要等阶段 5 的 stdin 就位才能在 next 上跑完整 App。
+ * 引擎级场景（E*）只用 Box / Text；App 级场景（S*）要等阶段 5 的 stdin 就位才能跑完整 App。
  * 这里介于两者之间：挂**真实的 CLI 历史项组件**（HistoryItemDisplay，含 tool_group / user / assistant），
- * 包在端口 `Static`（next 上是 History）里，按 MainScreenLayout 的结构排开：历史区 + 动态区。
- * 和 E* 一样对 T9.1 前冻结的 legacy 基线 `baseline/C*.json` 比较（component.test.ts）。
+ * 包在端口 `Static`（底座里是 History）里，按 MainScreenLayout 的结构排开：历史区 + 动态区。
+ * 和 E* 一样对冻结基线 `baseline/C*.json` 比较（component.test.ts）。
  */
 import React, { createRef, useSyncExternalStore } from "react";
 import { Box, Static, Text } from "../../../src/ui/render-port/components.ts";
@@ -171,8 +171,8 @@ export const COMPONENT_SCENARIOS: Record<string, Scenario> = {
     async run(ctx) {
       // 真实 VirtualizedList（T4.3）：容器 / 项高度靠 ResizeObserver 测，滚动位置靠 spacer 与 overflowY="scroll" 表达。
       // 主屏上跑（alt-screen 归 T6.1），项高 1 / 2 行交替，测量值回灌后才稳定。
-      // ⚠️ 实测 legacy 在主屏上滚动不改变可见行（scrollBy / scrollTo 前后网格相同，且从「项 1」起画），
-      // 所以滚动几步只证明 next 同样如此；真正让画面变化的是最后一步换数据。滚动语义的修正归 T6.x（VirtualizedList 实际只在 alt-screen 用）
+      // ⚠️ 冻结基线里主屏滚动不改变可见行（scrollBy / scrollTo 前后网格相同，且从「项 1」起画），
+      // 所以滚动几步只证明当前实现同样如此；真正让画面变化的是最后一步换数据。滚动语义的修正归 T6.x（VirtualizedList 实际只在 alt-screen 用）
       const ref = createRef<VirtualizedListRef<number>>();
       const data = store(Array.from({ length: 40 }, (_, i) => i));
       const copy = store(false);

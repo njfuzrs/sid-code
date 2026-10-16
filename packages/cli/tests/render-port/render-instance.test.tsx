@@ -1,7 +1,7 @@
 /**
  * 契约 X7 / R13（B9 / T0.5 遗留）：端口的实例能力面与测试环境的出帧方式。
  *
- * X7：CI 没有 `tsc`，`RenderInstance` 接口本身拦不住漂移 —— 新底座少实现一个方法，
+ * X7：CI 没有 `tsc`，`RenderInstance` 接口本身拦不住漂移 —— 渲染底座少实现一个方法，
  * CLI 那行 `?.forceRedraw()` 会静默变成 no-op（可选链吞掉 undefined）。所以这里在运行时
  * 逐个核对，并反查接口与方法清单一致。
  *
@@ -20,7 +20,7 @@ import {
 import { enableFrameThrottle } from "@sid-code/cli/ui/render-port/testing.ts";
 import { mountTTY, tick, ttyStreams } from "./tty-streams.ts";
 
-const RUNTIME_SRC = join(import.meta.dir, "../../src/ui/render-port/runtime.ts"); // 接口定义在切换层，不在 legacy/
+const RUNTIME_SRC = join(import.meta.dir, "../../src/ui/render-port/runtime.ts"); // 接口定义在端口层 runtime.ts，next/ 只放适配实现
 
 describe("X7 实例能力面", () => {
   test("X7: 挂载后 getRenderInstance 返回的实例上，清单里每个方法都是函数", () => {

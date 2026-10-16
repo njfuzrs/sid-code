@@ -92,11 +92,11 @@
     "evals/_reports/**",
     "evals/external-benchmarks/harbor/results/**",
     "packages/core/tests/fixtures/vcr/**",
-    //   text-vectors.json  ← scripts/tui-text-vectors.ts（B9 / T2.1，从旧底座生成，带 --check）
+    //   text-vectors.json  ← B9 / T2.1 生成的冻结向量（生成脚本已删除，不能重生成）
     "packages/tui/tests/fixtures/text-vectors.json",
-    //   screen-vectors.json  ← scripts/tui-screen-vectors.ts（B9 / T3.1，从旧底座首帧生成，带 --check）
+    //   screen-vectors.json  ← B9 / T3.1 生成的冻结向量（生成脚本已删除，不能重生成）
     "packages/tui/tests/fixtures/screen-vectors.json",
-    //   input-vectors.json  ← scripts/tui-input-vectors.ts（B9 / T5.1，从旧底座键位回调生成，带 --check）
+    //   input-vectors.json  ← B9 / T5.1 生成的冻结向量（生成脚本已删除，不能重生成）
     "packages/tui/tests/fixtures/input-vectors.json",
 
     // 快照由测试生成（当前为 0 个，先立规则免得将来有人踩）。

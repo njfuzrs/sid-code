@@ -49,7 +49,7 @@ const renderToString = (
 
 /**
 sid-code（B9 / T3.1）：同 `renderToString`，但返回动态区的 cell 级屏幕缓冲（不含 `<Static>` 输出）。
-屏幕缓冲的对拍测试用它：同一棵树在旧底座上首帧写出的字节 = `serializeScreen(renderToScreen(...))`。
+屏幕缓冲的对拍测试用它：同一棵树在冻结行为基线里的首帧字节 = `serializeScreen(renderToScreen(...))`。
 */
 export const renderToScreen = (
 	node: ReactNode,

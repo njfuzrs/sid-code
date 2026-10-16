@@ -339,7 +339,7 @@ export function estimateReadingMinutes(body: string): number {
  *
  * ⚠ **必须认 `packages/<包>/` 前缀，且必须左界锚定**（2026-09-03 修）。
  * 本仓是 monorepo，**根目录没有 `src/`**，源码全在 `packages/{core,cli,shared,
- * tui-renderer,eval-framework}/src/` 下。而上面那条正则不锚定左界，于是
+ * tui,eval-framework}/src/` 下。而上面那条正则不锚定左界，于是
  * `packages/core/src/query/loop.ts` 会被从中间切成 `src/query/loop.ts` ——
  * 一个不存在的路径，`existsSync` 静默判掉，计数记 0。
  *

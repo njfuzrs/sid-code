@@ -1,7 +1,7 @@
 /**
- * 契约 I7（B9 / T5.1e）：Ctrl+Z 挂起与 SIGCONT 恢复。两套底座都跑。
+ * 契约 I7（B9 / T5.1e）：Ctrl+Z 挂起与 SIGCONT 恢复。
  *
- * 期望值全部是 2026-10-08 对拍 legacy 的黑盒探针实测（`_probe_z / z2 … z9`），没有读旧底座代码（设计文档 D-5）。
+ * 期望值全部是 2026-10-08 冻结基线的黑盒探针实测（`_probe_z / z2 … z9`），没有读被对拍实现的源码（设计文档 D-5）。
  * 恢复路径上还会重发终端探查（`ESC[>0q` + DA1，契约 I2，见 `terminal-probe.test.tsx`），这里按原样比较、不剥。
  */
 import { afterEach, beforeEach, describe, expect, spyOn, test } from "bun:test";

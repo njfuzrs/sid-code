@@ -3,7 +3,7 @@
  * `bun runner.tsx <场景名>` 启动，fd 1 与 fd 2 都指向同一个文件 —— 模拟真实终端里
  * stdout / stderr 落在同一块屏幕上（E1 patchStderr 就靠这个才看得见）。
  *
- * 为什么必须是子进程：旧底座卸载时用 `writeSync(1, …)` 直写 fd 1（契约 X3），
+ * 为什么必须是子进程：卸载时用 `writeSync(1, …)` 直写 fd 1（契约 X3），
  * 不经过 stdout 流对象，进程内用 PassThrough 截不到。fd 级重定向才能拿到完整字节，
  * 而 `process.stdout.write` 与 `writeSync(1)` 写同一个文件时顺序保持（2026-10-03 实测）。
  *
@@ -23,7 +23,7 @@ const { ENGINE_SCENARIOS } = await import("./engine-scenarios.tsx");
 const { COMPONENT_SCENARIOS } = await import("./component-scenarios.tsx");
 
 const name = process.argv[2]!;
-// S* 是 App 级场景（基线文件），E* 是引擎级场景（T3.2）、C* 是组件级场景（T4.2），后两者两套底座当场比较
+// S* 是 App 级场景（基线文件），E* 是引擎级场景（T3.2）、C* 是组件级场景（T4.2），后两者对冻结基线比较
 const scenario = SCENARIOS[name] ?? ENGINE_SCENARIOS[name] ?? COMPONENT_SCENARIOS[name];
 const cols = Number(process.env.BENCH_COLS ?? 80);
 const rows = Number(process.env.BENCH_ROWS ?? 24);

@@ -1,7 +1,7 @@
 /**
  * 组件级场景 C1–C3（B9 / T4.2，设计文档阶段 4 出口：历史区 + MainScreenLayout 骨架，S3 的组件版）。
  *
- * 判定与引擎级场景相同（compareToBaseline），对冻结的 legacy 基线 `baseline/C*.json`：
+ * 判定与引擎级场景相同（compareToBaseline），对冻结基线 `baseline/C*.json`：
  * 网格、scrollback、光标、模式逐项一致，full reset 次数与字节数不超过基线的 1.1 倍。卸载后那一步不比。
  * 基线来源与「不能重生成」的约束见 engine.test.ts 文件头。
  */
@@ -23,7 +23,7 @@ const run = async (name: string) => {
   return { ...s, steps: s.steps.filter((st) => st.label !== EXIT_LABEL) };
 };
 
-describe("组件级场景 C1–C3（对冻结 legacy 基线）", () => {
+describe("组件级场景 C1–C3（对冻结基线）", () => {
   for (const name of Object.keys(COMPONENT_SCENARIOS)) {
     test(`${name} ${COMPONENT_SCENARIOS[name]!.covers.join(" ")}`, async () => {
       const baseline = JSON.parse(readFileSync(join(BASELINE_DIR, `${name}.json`), "utf8"));
@@ -32,8 +32,8 @@ describe("组件级场景 C1–C3（对冻结 legacy 基线）", () => {
   }
 
   test("C2：屏外项完成恰好触发一次 full reset（不多闪，也不因少闪留下残影）", async () => {
-    const next = await run("C2");
-    const last = next.steps.find((s) => s.label === "屏外项完成")!;
+    const actual = await run("C2");
+    const last = actual.steps.find((s) => s.label === "屏外项完成")!;
     expect(last.metrics.eraseScreen).toBe(1);
   }, 30_000);
 });

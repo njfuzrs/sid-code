@@ -1,12 +1,12 @@
 /**
  * 契约 P5（B9 / T3.4）：`useAnimationFrame` 的离屏暂停，只经端口驱动。
  *
- * 期望值全部是 legacy 实测（扫过 105 组「动画盒高度 h × 上方行数 y × 帧高 p」，视口 H = 10）：
+ * 期望值全部是冻结基线的实测（扫过 105 组「动画盒高度 h × 上方行数 y × 帧高 p」，视口 H = 10）：
  * - 帧不超过视口（p ≤ H）时一律在走；
  * - 帧超过视口时，视口里能看到的是帧的最后 H - 1 行；动画盒底边 y + h - 1 ≥ p - H + 1 才在走，否则暂停；
  * - 判定只在这个组件重渲时做，读上一次提交的布局：暂停后时钟不再触发重渲，要等父级重渲、
  *   且上一帧里它已经回到视口内才恢复；`React.memo` 包住、父级重渲也传不进来的，一直停着。
- * TTY 才有「视口」：非 TTY 的 stdout 同样按 rows 判（legacy 一致），这里只测 TTY。
+ * TTY 才有「视口」：非 TTY 的 stdout 同样按 rows 判，这里只测 TTY。
  */
 import { describe, expect, test } from "bun:test";
 import React, { useSyncExternalStore } from "react";

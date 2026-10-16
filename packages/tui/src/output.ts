@@ -262,7 +262,7 @@ export default class Output {
 					const end = screen.writeLine(x, y + index, line, 0, maxX);
 					const row = y + index;
 					// 只记软换行，硬换行的写入不清记录：并排两列时右列的硬换行文本写在同一行，
-					// 旧底座复制左列折行时仍按左列拼接、不带右列（探针 `two-cols`）
+					// 基线复制左列折行时仍按左列拼接、不带右列（探针 `two-cols`）
 					if (softWraps?.[index] && row >= 0 && row < screen.height) {
 						screen.wrapEnd[row] = Math.min(end, maxX);
 					}

@@ -2,14 +2,14 @@
  * 选区引擎纯逻辑（B9 / T6.2a，契约 M2）：拖选、双击选词、三击选行、取选中文本与高亮单元。
  *
  * 不读写终端、不持有定时器：鼠标事件（含时间戳）由调用方喂进来，屏幕缓冲由调用方传进来。
- * 规则全部来自对旧底座的黑盒探针（D-5，没读旧代码），每条下面注明探针用例名，
+ * 规则全部来自对冻结行为基线的黑盒探针（D-5），每条下面注明探针用例名，
  * 期望值入库在 `tests/fixtures/selection-vectors.json`。
  *
- * 坐标一律 0 起、屏幕单元坐标。锚点 / 焦点**不夹到屏幕内**：旧底座拖到屏幕外（上方、下方、左右）时，
+ * 坐标一律 0 起、屏幕单元坐标。锚点 / 焦点**不夹到屏幕内**：基线拖到屏幕外（上方、下方、左右）时，
  * 复制出的文本按真实行数带空行（`drag-ybig` 29 行、`drag-y0` 首行为空），只有高亮被屏幕裁掉。
  *
  * 选区是屏幕坐标，不跟内容：重渲染后同一位置换了内容，复制出的就是新内容（`scroll-down-1`、
- * `content-change`）。旧底座另有 ScrollBox 滚动时的选区跟随，但 CLI 不用 ScrollBox、端口不提供
+ * `content-change`）。基线另有 ScrollBox 滚动时的选区跟随，但 CLI 不用 ScrollBox、端口不提供
  * scrollTop（L3），滚动靠 spacer / 负 marginTop 即普通重渲染，所以这条在端口表面上不存在（T6.2c 判定）。
  */
 import {CellWidth, type Screen} from './screen/screen.js';
@@ -305,7 +305,7 @@ const SGR_MOUSE_RE = /^\u001B\[<(\d+);(\d+);(\d+)([Mm])$/;
 
 /**
  * 把一条 SGR 鼠标序列翻成左键选区事件；不是左键（中 / 右键、无键移动、滚轮）或不是 SGR 返回 undefined。
- * X10 编码不认（`x10-drag`：旧底座同样不建选区）。坐标转成 0 起，可以是 -1（终端报 0 时，`drag-y0`）。
+ * X10 编码不认（`x10-drag`：基线同样不建选区）。坐标转成 0 起，可以是 -1（终端报 0 时，`drag-y0`）。
  */
 export function decodeSelectionMouse(
 	sequence: string,

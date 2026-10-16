@@ -87,7 +87,7 @@ const cleanupYogaNode = (node?: YogaNode): void => {
 
 // sid-code（B9 / T4.3，契约 L4）：yoga 释放后把整棵子树的 `yogaNode` 置空。否则组件还握着的 ref
 // （ResizeObserver 的观察目标、getBoundingBox 的参数）会去读已释放的 WASM 节点；
-// 置空后 measureElement 得 0×0、getBoundingBox 得 null，与旧底座的黑盒结果一致。
+// 置空后 measureElement 得 0×0、getBoundingBox 得 null，与基线的黑盒结果一致。
 const forgetYogaNodes = (node: DOMNode): void => {
 	node.yogaNode = undefined;
 	if ('childNodes' in node) {

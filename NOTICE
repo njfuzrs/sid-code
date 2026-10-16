@@ -112,9 +112,3 @@ THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR IMPLI
           packages/tui/UPSTREAM-DIFF.md，含改动原因与对应契约
     布局：布局引擎是 npm 依赖 yoga-layout@3.2.1（MIT, Meta），未入库，
           许可以其包内声明为准（第 2 节）
-
-旧渲染底座的说明：在本节的底座之前，sid-code 用的是另一套 ink 衍生渲染底座
-（packages/tui-renderer/），它经由 2026-03-31 公开流出的 Claude Code 源码快照引入，
-其中的增量修改未获授权。该底座自 commit 5954159b（B9 / T9.1，2026-10-11）起
-已从仓库与构建产物中删除，v0.1.608 是第一个不含它的发布版本；
-在此之前的版本（含 v0.1.607 及更早）的二进制含该代码。

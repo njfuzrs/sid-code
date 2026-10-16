@@ -1,9 +1,9 @@
 /**
  * 契约 I4（B9 / T5.3a）：底座侧的输入终端模式 —— bracketed paste `?2004`、focus `?1004`、
- * 扩展键（kitty `>1u` / modifyOtherKeys `>4;2m`）跟着 raw mode 计数的开关。两套底座都跑。
+ * 扩展键（kitty `>1u` / modifyOtherKeys `>4;2m`）跟着 raw mode 计数的开关。
  *
- * 期望值全部是 2026-10-08 对拍 legacy 的黑盒探针实测（`_probe_i4*`，约 1600 组环境变量组合 + 场景矩阵，
- * 备份在 `~/Backups/sid-code-t5x-probe-results-20261008/t53a/`），没有读旧底座代码（设计文档 D-5）。
+ * 期望值全部是 2026-10-08 冻结基线的黑盒探针实测（`_probe_i4*`，约 1600 组环境变量组合 + 场景矩阵，
+ * 备份在 `~/Backups/sid-code-t5x-probe-results-20261008/t53a/`），没有读被对拍实现的源码（设计文档 D-5）。
  * 必须是子进程：扩展键开不开在底座模块加载时按环境变量判定一次。
  * 只比 I4 那几段字节与 stdin 调用记录；首帧、光标、探查（I2）、进度 / tab 清除（O3）不比，
  * 卸载时这些与「再关一次」的相对顺序归 X3（T7.1b）。CLI 自己写的模式序列归 T5.3b。
@@ -111,7 +111,7 @@ describe("I4: 跟着 raw mode 计数开关", () => {
   });
 
   test("I4: useApp().exit() 时关一次模式", () => {
-    // TTY 下 legacy 在退出路径上还多调一对 setRawMode(true/false)，那是 X 组（T7.1b）的事，这里只比非 TTY
+    // 冻结基线里 TTY 下退出路径上还多调一对 setRawMode(true/false)，那是 X 组（T7.1b）的事，这里只比非 TTY
     both("raw-exit", KITTY_PIPE, `<<mounted>> ${ON_EXT} <<on>> ${OFF} <<exited>> <<unmount>>`);
   });
 });
@@ -177,7 +177,7 @@ describe("I4: 卸载时再关一次", () => {
 });
 
 describe("I4: 扩展键判定（只看环境变量）", () => {
-  // 期望值是 legacy 子进程实测；全量矩阵（纯函数逐条）在 `packages/tui/tests/extended-keys.test.ts`，
+  // 期望值是冻结基线的子进程实测；全量矩阵（纯函数逐条）在 `packages/tui/tests/extended-keys.test.ts`，
   // 这里跑子进程抽样，确认底座真的按判定结果写字节
   const MATRIX: [Record<string, string>, boolean][] = [
     [{}, false],

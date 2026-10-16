@@ -4,7 +4,7 @@
  * ## 为什么在 shared
  *
  * core（`agent/color.ts`）与 CLI 的渲染端口（`ui/render-port/types.ts`）都要用这个类型。
- * 原先定义在 ink 里、由 agent 反向导入，形成 core → 渲染底座的依赖（P2-2 时底座叫 tui-renderer）——
+ * 原先定义在 ink 里、由 agent 反向导入，形成 core → 渲染底座的依赖 ——
  * 方向虽合法（rank 上渲染底座更低），但让 core 知道 TUI 的存在，
  * 与「core 能当库独立使用」这条价值冲突。下移到 shared 后这条依赖归零。
  *

@@ -6,7 +6,7 @@
  *
  * 存量代码里有 `import Box from "../ink/components/Box.js"` 这种写法
  * （TS NodeNext 惯例：源码是 `.tsx`，导入写 `.js`）。分包后 `src/ink` 成为
- * `@sid-code/tui-renderer`，其 `exports` 是 `{"./*": "./src/*"}` —— 导入侧必须写
+ * 独立的渲染层包，其 `exports` 是 `{"./*": "./src/*"}` —— 导入侧必须写
  * **真实扩展名**，`Box.js` 会解析失败。
  *
  * ## 为什么不用 exports 双通配绕过
@@ -57,7 +57,7 @@ interface Problem {
   detail: string;
 }
 
-/** 该说明符是否跨越 ink（tui-renderer）包边界。 */
+/** 该说明符是否跨越 ink（渲染层包）边界。 */
 function crossesInkBoundary(fileRel: string, spec: string): boolean {
   // 导入目标解析后落在 src/ink/ 内，且导入方**不在** src/ink/ 内
   const abs = resolve(join(ROOT, fileRel), "..", spec);

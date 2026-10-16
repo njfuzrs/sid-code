@@ -31,6 +31,7 @@ import {
   scanRenderPortMode,
   RENDER_PORT_DIR,
 } from "../../scripts/pkg-boundary-scan.ts";
+import { execFileSync } from "node:child_process";
 import { mkdirSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 
@@ -64,9 +65,23 @@ describe("包边界：packages/ 下的真实依赖方向", () => {
   test("rank 表自洽：shared(0) < tui(1) < core(2) < cli(3)", () => {
     // 锁住顺序本身。曾经的设计方案里 §2.1 与 §4.4 自相矛盾（渲染层到底是不是叶子），
     // 择一之后必须钉死，否则「把 rank 调一下让门禁变绿」是最省事也最有害的修法。
-    // B9 / T9.1 删除旧底座 tui-renderer 后回到 4 项。
     expect(PACKAGES.map((p) => PACKAGE_RANK[p])).toEqual([0, 1, 2, 3]);
-    expect(PACKAGE_RANK["tui-renderer"]).toBeUndefined();
+    expect(Object.keys(PACKAGE_RANK).sort()).toEqual([...PACKAGES].sort());
+  });
+
+  test("workspace 包集合是封闭的：packages/ 下恰好这几个包", () => {
+    // 渲染底座只有 `tui` 一套。新增 / 删除 workspace 包必须显式改这条断言，
+    // 同时决定它在 PACKAGE_RANK 里的层级（或像 eval-framework 那样说明为何不参与 rank）。
+    // 判据取 git 追踪的 package.json，未入库的残留目录不算。
+    const tracked = execFileSync("git", ["ls-files", "packages/*/package.json"], {
+      cwd: REPO_ROOT,
+      encoding: "utf8",
+    })
+      .split("\n")
+      .filter(Boolean)
+      .map((p) => p.split("/")[1])
+      .sort();
+    expect(tracked).toEqual(["cli", "core", "eval-framework", "shared", "tui"]);
   });
 });
 
@@ -166,7 +181,7 @@ describe("渲染端口：CLI 只能经 ui/render-port/ 拿渲染底座（B9 / T0
     const detail = rp.violations.map((v) => `  ${v.file}:${v.line}  ${v.spec}`).join("\n");
     expect(
       rp.violations.length,
-      `以下文件绕过端口直连渲染底座，切底座时会静默留在旧底座上：\n${detail}\n\n` +
+      `以下文件绕过端口直连渲染底座：\n${detail}\n\n` +
         `修法：改成从 ${RENDER_PORT_DIR}/*.ts 导入；端口缺这个符号就先在端口里加上`,
     ).toBe(0);
   });
@@ -185,23 +200,24 @@ describe("渲染端口：CLI 只能经 ui/render-port/ 拿渲染底座（B9 / T0
       mkdirSync(join(fake, "packages/cli/tests"), { recursive: true });
       writeFileSync(
         join(fake, "packages/cli/src/ui/Bad.tsx"),
-        `import Box from "@sid-code/tui-renderer/components/Box.tsx";\n` +
-          `import { X } from "@sid-code/tui/index.ts";\n` +
-          `// import Y from "@sid-code/tui-renderer/y.ts";\n`,
+        `import Box from "@sid-code/tui/components/Box.tsx";\n` +
+          `import { X } from "@sid-code/tui";\n` +
+          `// import Y from "@sid-code/tui/y.ts";\n` +
+          `import { Z } from "@sid-code/tui-extra/z.ts";\n`,
       );
       writeFileSync(
         join(fake, "packages/cli/tests/bad.test.ts"),
-        `const { render } = await import("@sid-code/tui-renderer/root.ts");\n`,
+        `const { render } = await import("@sid-code/tui/root.ts");\n`,
       );
       writeFileSync(
         join(fake, RENDER_PORT_DIR, "components.ts"),
-        `export { default as Box } from "@sid-code/tui-renderer/components/Box.tsx";\n`,
+        `export { default as Box } from "@sid-code/tui/components/Box.tsx";\n`,
       );
       const r = scanRenderPortMode(fake);
       expect(r.violations.map((v) => `${v.file}:${v.spec}`).sort()).toEqual([
-        "packages/cli/src/ui/Bad.tsx:@sid-code/tui-renderer/components/Box.tsx",
-        "packages/cli/src/ui/Bad.tsx:@sid-code/tui/index.ts",
-        "packages/cli/tests/bad.test.ts:@sid-code/tui-renderer/root.ts",
+        "packages/cli/src/ui/Bad.tsx:@sid-code/tui",
+        "packages/cli/src/ui/Bad.tsx:@sid-code/tui/components/Box.tsx",
+        "packages/cli/tests/bad.test.ts:@sid-code/tui/root.ts",
       ]);
       expect(r.portEdges).toBe(1);
     } finally {

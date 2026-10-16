@@ -2,7 +2,7 @@
  * 契约 R2 / R10 / L5 / I1b / I1c / I5 / I6 / I8 / M5 / O5 / E3 / X4（B9 / T0.5）：运行期行为。
  *
  * 这些契约都在 TTY 分支或进程级信号里，testing shim（非 TTY）覆盖不到，
- * 所以用 tty-streams.ts 的假 TTY 直接挂端口 renderSync。期望值是 2026-10-03 legacy 实测。
+ * 所以用 tty-streams.ts 的假 TTY 直接挂端口 renderSync。期望值是 2026-10-03 冻结基线的实测。
  */
 import { afterEach, describe, expect, spyOn, test } from "bun:test";
 import React, { useState } from "react";
@@ -357,9 +357,9 @@ describe("M5 选区背景色", () => {
 });
 
 describe("O5 无障碍模式保留原生光标（CLAUDE_CODE_ACCESSIBILITY）", () => {
-  // 2026-10-09 T7.2c 对 legacy 黑盒探针（D-5）：只压掉「首帧后隐藏」与「Ctrl+Z 恢复时隐藏」两处；
-  // 取值按 非空且不是 0 / false / no（不分大小写）判真。新名 SID_CODE_ACCESSIBILITY 只有 next 认，单测在 tui 包
-  // （tests/terminal.test.ts），这里只钉两套底座都认的旧名。
+  // 2026-10-09 T7.2c 冻结基线的黑盒探针（D-5）：只压掉「首帧后隐藏」与「Ctrl+Z 恢复时隐藏」两处；
+  // 取值按 非空且不是 0 / false / no（不分大小写）判真。新名 SID_CODE_ACCESSIBILITY 由 packages/tui 读取
+  // （`cursor-helpers.ts`，新名优先、旧名作别名），单测在 tui 包（tests/terminal.test.ts），这里只钉旧名。
   const mountWith = async (v: string | undefined) => {
     setEnv("SID_CODE_ACCESSIBILITY", undefined);
     setEnv("CLAUDE_CODE_ACCESSIBILITY", v);

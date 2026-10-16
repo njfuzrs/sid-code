@@ -1,7 +1,7 @@
-// sid-code（B9 / T4.3，契约 L4）：新写。规则来自黑盒对拍旧底座（时序探针见 packages/cli/tests/render-port/contracts-layout-text.test.tsx），没有读旧代码。
+// sid-code（B9 / T4.3，契约 L4）：新写。规则来自黑盒对拍冻结的行为基线（时序探针见 packages/cli/tests/render-port/contracts-layout-text.test.tsx）。
 import {type DOMElement} from '../dom.js';
 
-/** 与旧底座同形：只有尺寸，位置恒为 0 */
+/** 与冻结行为基线同形：只有尺寸，位置恒为 0 */
 export type ContentRect = {
 	width: number;
 	height: number;
@@ -25,7 +25,7 @@ type Size = {width: number; height: number};
 /** 轮询周期。对拍：每个观察者一个 16ms 定时器，尺寸变化后 2–18ms 内回调 */
 const POLL_INTERVAL_MS = 16;
 
-// 已移除的节点没有 yoga 节点，按 0×0 报一次；参数为空时读 `.yogaNode` 抛 TypeError，与旧底座一致
+// 已移除的节点没有 yoga 节点，按 0×0 报一次；参数为空时读 `.yogaNode` 抛 TypeError，符合冻结行为基线
 const sizeOf = (node: DOMElement): Size => {
 	const {yogaNode} = node;
 	return yogaNode

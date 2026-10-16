@@ -8,24 +8,24 @@ Date: 2026-10-02
 
 - `SID_CODE_DEBUG=1`（或 `true`）现在等同 `--debug`：`cli.ts` 组装 config 时
   `debug: values.debug || isDebugEnvEnabled(process.env.SID_CODE_DEBUG)`。取值口径与
-  `tui-renderer/_vendor/debug.ts` 一致，同一个变量会同时打开 debug.log 和 ink 的 stderr 日志。
+  当时渲染层包里 ink 的 debug 读取一致，同一个变量会同时打开 debug.log 和 ink 的 stderr 日志。
   `help.ts` 的描述改成写清这两种效果，`ref/env.md` 已重新生成。
 - 新门禁 `tests/scripts/help-env-consumers.test.ts`：从 `help.ts` 环境变量段解析出全部变量名
   （复用生成器的 `parseHelpEnvVars`，不另写一份解析器），逐个断言在 `packages/{shared,core,cli}/src`
   （排除 `help.ts`、**剥掉注释后**）至少出现一次。
-- 扫描范围**排除 `tui-renderer`**。只在渲染层生效、且描述的正是渲染层行为的变量放进 `TUI_ONLY`
+- 扫描范围**排除渲染层包**。只在渲染层生效、且描述的正是渲染层行为的变量放进 `TUI_ONLY`
   白名单（`SID_DISABLE_TAB_STATUS`、`SID_CODE_DISABLE_MOUSE_CLICKS`）。白名单本身也要过核验：
-  每一项必须仍在 help 里、仍被 tui-renderer 读、且主程序不读。
+  每一项必须仍在 help 里、仍被渲染层读、且主程序不读。
 - 顺带改了两处过时注释：`config/schema.ts` 的「37 个成员」改为 32（实际 `HookEventName` 枚举数）；
   `effort.ts` 的标度补上 `xhigh`。
 - 扫描结果：help 里共 123 个变量，没有消费者的只有 `SID_CODE_DEBUG` 一个（已接线）；
-  另外两个只在 tui-renderer 读、行为一致，进了白名单。
+  另外两个只在渲染层读、行为一致，进了白名单。
 
 ## 放弃了什么（以及为什么不选）
 
 - **从 help / 官网删掉 `SID_CODE_DEBUG`**：用户要的正是这个行为，同族的 `SID_CODE_DEBUG_SSE` 也已存在；
   接线只要几行，而删除要动三处文档。
-- **把 tui-renderer 算进扫描范围**：那样 `SID_CODE_DEBUG` 会被判成「有消费者」（ink 读它，但不开 debug.log），
+- **把渲染层包算进扫描范围**：那样 `SID_CODE_DEBUG` 会被判成「有消费者」（ink 读它，但不开 debug.log），
   门禁会正好漏掉它要抓的那个变量。
 - **按「作用是否与描述一致」对账**：这需要语义判断，做不成机械门禁。门禁只查有没有消费者，作用对不对靠 review。
 - **把门禁做进 `docs-gen-reference --check`**：生成器的职责是「文档 = 源码」，它目前刻意把

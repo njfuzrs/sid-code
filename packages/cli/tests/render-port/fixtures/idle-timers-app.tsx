@@ -12,7 +12,7 @@ let counting = false;
 function origin(): string {
   const frames = (new Error().stack ?? "").split("\n").slice(3);
   const frame = frames.find((l) => !l.includes("idle-timers-app.tsx")) ?? "?";
-  // 只留文件名：两套底座的路径前缀不同，测试按文件名断言
+  // 只留文件名：路径前缀随安装位置变，测试按文件名断言
   return /([\w.-]+\.tsx?):\d+/.exec(frame)?.[1] ?? "?";
 }
 

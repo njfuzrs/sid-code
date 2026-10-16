@@ -9,14 +9,8 @@ outline: [2, 3]
 
 # 终端 UI 渲染从零到一：怎么在一个只认字节的黑框里做出 Web 级的界面
 
-::: warning 按语（2026-10-12）
-文中讲的渲染底座 `packages/tui-renderer/` 已在 B9 / T9.1（commit `5954159b`，v0.1.608 起的发布版）删除。
-现在的底座是以 MIT 上游 ink@7.1.1 为起点重写的 `packages/tui/`，来源与修改记录见仓库根 `NOTICE` 第 4 节和
-`packages/tui/UPSTREAM-DIFF.md`。下文「122 个文件 / 23464 行」等数字描述的是 2026-09-02 时的旧底座，正文保持原样，不再更新。
-:::
-
 ::: info 这是一份快照
-本文的数字、常量、行数取自 **2026-09-02** 对 sid-code 源码的一次实读。
+本文的数字、常量、行数取自 **2026-09-02** 对 sid-code 源码的一次实读；渲染底座 `packages/tui/` 相关的 🔬 引用与附录 B 于 **2026-10-16** 重新实测。
 代码在动，这些数字会腐坏——引用其中任何一个之前，请按文中给出的命令在你自己的仓库里复跑一次。
 :::
 
@@ -46,9 +40,9 @@ outline: [2, 3]
 1. **数字是让你看见「真实数据长什么样」，不是让你背。**
    「120 个 markdown 块从 658ms 降到 7ms」的价值在于让你知道
    O(N²) 在终端渲染里是什么量级的体感，而不是这个具体数值。
-2. **面试引用要带出处和时间。** 说「某个 coding agent 的终端渲染底座约 2.3 万行」
-   比说「终端渲染需要 2.3 万行」强一个量级——后者是错的（上游 ink 全部源码只有 3979 行）。
-3. **引用前一律复跑。** 本文所有命令都在 2026-09-02 实跑过，附录 B 是可复跑清单。
+2. **面试引用要带出处和时间。** 说「某个 coding agent 的终端渲染底座约 1.4 万行」
+   比说「终端渲染需要 1.4 万行」强一个量级——后者是错的（这个数取决于从哪个起点出发、补了多少能力）。
+3. **引用前一律复跑。** 本文所有命令都实跑过（附录 B 最近一次是 2026-10-16），附录 B 是可复跑清单。
    但**代码每天在变**，你读到这句话时数字可能已经漂了。
 
 ### 事实分级标记
@@ -58,12 +52,12 @@ outline: [2, 3]
 - 🔬 = **源码实读**：我在写这份文档时打开文件、跑命令核对过，带 `文件:行号`。可回溯复现。
 - 📄 = **二手引用**：来自研究文档、设计文档、产品博客。可能已过期，也可能一开始就不准。
 
-> **一个活体样本，说明为什么必须分级**：本文写作时复核发现，
-> `packages/cli/src/ui/CLAUDE.md` 的 frontmatter 至今写着
+> **一个活体样本，说明为什么必须分级**：本文写作时（2026-09-02）复核发现，
+> `packages/cli/src/ui/CLAUDE.md` 的 frontmatter 当时写着
 > `paths: ["src/ui/**", "src/ink/**"]`，全文 17 处提到 `src/ink/`——
 > 但 🔬 `src/ink/` 这个目录**已经不存在了**（`ls src/ink` → No such file or directory），
-> 代码早已搬到 `packages/tui-renderer/`，组件实际 import 的是
-> `@sid-code/tui-renderer/components/Box.tsx`（`MainScreenLayout.tsx:14`）。
+> 代码早已搬进 `packages/` 下一个独立的渲染底座包，换了包名。
+> （这条 frontmatter 已于 2026-10-11 改成 `paths: ["src/ui/**"]`，复跑见附录 B.5。）
 >
 > 这份设计规范**每一条设计结论都还是对的**，只有路径漂了。
 > 如果你照着它去 `src/ink/` 找代码，会得出「这个能力不存在」的**反向结论**——
@@ -263,13 +257,14 @@ AI 回复时逐字出现
 
 **① 你要自己实现浏览器免费给你的所有东西。**
 
-🔬 复核本仓（2026-09-02）：终端渲染底座
-`packages/tui-renderer/src/` 是 **122 个文件 / 23464 行**。
+🔬 复核本仓（2026-10-16）：终端渲染底座
+`packages/tui/src/` 是 **104 个文件 / 13661 行**。
 它做的事情，在浏览器里是 `<div>` + CSS + 浏览器内核帮你做完的：
 布局引擎、事件冒泡、焦点管理、文本选择、滚动、宽字符测量、剪贴板。
 
-对照 📄 上游 `ink` 全部源码只有 **3979 行**（实测）——
-差出来的两万行不是「加功能」，绝大部分是**补齐浏览器的基础能力**。
+对照 🔬 它的起点、上游 `ink@7.1.1` 的 `src/` 是 **62 个文件 / 9188 行**（实测，见附录 B.1）——
+本仓在它之上新写了 **42 个文件 / 3687 行**（帧 diff、屏幕缓冲、选区、剪贴板、终端能力探测……），
+这部分不是「加业务功能」，绝大部分是**补齐浏览器免费给的基础能力**。
 
 **② 兼容性比浏览器碎片化更严重。**
 
@@ -294,12 +289,12 @@ AI 回复时逐字出现
 │  ③ 应用层：你的业务组件                                    │
 │     消息列表 / 输入框 / 权限确认框 / Spinner              │
 │     用 JSX 写，关心「显示什么」                            │
-│     🔬 本仓：packages/cli/src/ui/  176 文件 / 36365 行      │
+│     🔬 本仓：packages/cli/src/ui/  203 文件 / 39609 行      │
 ├─────────────────────────────────────────────────────────┤
 │  ② 框架层：终端渲染底座                                    │
 │     React Reconciler + Yoga 布局 + 屏幕缓冲 + Diff        │
 │     关心「怎么把组件树变成最少的字节」                      │
-│     🔬 本仓：packages/tui-renderer/  122 文件 / 23464 行    │
+│     🔬 本仓：packages/tui/  104 文件 / 13661 行             │
 ├─────────────────────────────────────────────────────────┤
 │  ① 协议层：ANSI 转义序列 + TTY                            │
 │     stdin 进字节，stdout 出字节                            │
@@ -374,8 +369,9 @@ AI 回复时逐字出现
 \x1b[?1000h \x1b[?1002h \x1b[?1006h    开鼠标追踪（三条一起发）
 ```
 
-🔬 本仓 `packages/tui-renderer/src/ink.tsx:520` 就是在拼这些：
-`(this.altScreenActive ? "" : "\x1b[?1049h") + ...`
+🔬 本仓 `packages/tui/src/terminal/modes.ts` 把这些写成了常量：
+`:7` 进 alt-screen 是 `'\u001B[?1049h\u001B[2J\u001B[H'`（切缓冲区 + 擦屏 + 回原点），
+`:11` 开鼠标追踪是 `?1000h ?1002h ?1003h ?1006h ?1007h` 五条一起发。
 
 **就这三条。** 剩下的都是查表。你需要背的不是序列表，
 而是**「看到 `\x1b[` 知道是 CSI、看到 `?` 知道是开关」**这个解码能力。
@@ -397,7 +393,7 @@ AI 回复时逐字出现
 
 所以框架必须做**主动降级**：检测能力 → 把 RGB 近似到能表达的档。
 
-🔬 一个反直觉的实测细节（本仓 `packages/tui-renderer/src/terminal.ts`）：
+🔬 一个反直觉的实测细节（本仓 `packages/tui/src/colorize.ts:43` 的 `adjustColorLevel`）：
 自动检测**不可信，两个方向都要人工纠偏**：
 
 ```
@@ -428,17 +424,17 @@ tmux：声称支持真彩色，但透传不可靠
 \x1b[?2026l    ← ESU: 「好了，现在刷」
 ```
 
-🔬 本仓 `terminal.ts:219` 的 `writeDiffToTerminal` 正是这个结构：
-把所有 patch **拼进一个 string**（注意：不是多次 `write`），
-前后夹 BSU/ESU，最后一次 `terminal.stdout.write(buffer)`。
+🔬 本仓 `packages/tui/src/ink.tsx:1661` 正是这个结构：
+整帧的字节先拼成一个 `bytes` 字符串（注意：不是多次 `write`），
+最后一次 `this.options.stdout.write(bsu + bytes + esu)`（BSU/ESU 常量在 `write-synchronized.ts:4-5`）。
 
 **两个容易漏的细节，都在源码注释里写着**：
 
 1. **必须攒成一次 write。** 多次 `write` 之间，事件循环可能让别的东西插进来。
-2. **tmux 是个坑**：🔬 `terminal.ts:76` 的注释直说
-   「tmux parses and proxies every byte but doesn't implement DEC 2026」——
-   **它解析你的 BSU/ESU 但不实现它**。所以对 tmux 要 `skipSyncMarkers`：
-   发了不但没用，还白付字节成本（高频 alt-screen 下这个成本是实的）。
+2. **tmux 是个坑**：它不透传 DEC 2026，**你发的 BSU/ESU 到不了外层终端**。
+   🔬 本仓 `packages/tui/src/terminal/sync-output.ts:26`：`TMUX` 非空就判「不支持」，
+   alt-screen 帧（`ink.tsx:1722`）因此不包 BSU/ESU——发了不但没用，还白付字节成本
+   （高频 alt-screen 下这个成本是实的）。主屏帧则一律包（该文件 `:4` 的注释）。
 
 **这就是「能力检测」在这个领域为什么无法省掉**：
 同一条序列，在 A 终端消灭闪烁，在 B 终端是纯开销，在 C 终端可能显示成乱码。
@@ -452,7 +448,7 @@ tmux：声称支持真彩色，但透传不可靠
 | `OSC 0` / `OSC 2` | 设置窗口标题 | 最广泛支持 |
 | `OSC 8` | **超链接**（终端里可点击的链接） | Apple Terminal 不支持 |
 | `OSC 52` | **写系统剪贴板** | iTerm2 默认关闭、tmux 要配置——**别指望它** |
-| `OSC 9;4` | 任务栏/标签页进度 | 🔬 本仓 `terminal.ts:26` `isProgressReportingAvailable()` |
+| `OSC 9;4` | 任务栏/标签页进度 | 🔬 本仓 CLI 不发；底座只在退出时清一次（`packages/tui/src/ink.tsx:81`） |
 | `OSC 133` | 标记 prompt 边界（shell 集成） | 让终端知道「一条命令从哪开始」 |
 
 📄 `OSC 52` 值得单独提醒，因为它是一个**很诱人但靠不住的方案**。
@@ -566,7 +562,7 @@ react-native     —— 负责「把差异应用到 iOS/Android 原生视图上�
 一组回调函数，告诉 React「在我这个世界里，创建节点/修改属性/插入子节点
 分别该怎么做」。
 
-**这份 config 的核心就那么几个函数**（🔬 本仓 `reconciler.ts`，488 行）：
+**这份 config 的核心就那么几个函数**（🔬 本仓 `packages/tui/src/reconciler.ts`，443 行，`createInstance` 在 `:218`、`commitUpdate` 在 `:333`）：
 
 ```typescript
 const reconciler = createReconciler({
@@ -604,7 +600,7 @@ Suspense、并发调度、错误边界——React 生态的全部。
 
 **理由一：Reconciler 需要一棵可查询、可修改的树来做 diff。**
 浏览器有真实 DOM，终端没有，所以你得自己造一个等价物。
-🔬 本仓叫它 `DOMElement`（`dom.ts`，454 行），
+🔬 本仓叫它 `DOMElement`（`packages/tui/src/dom.ts:30`，全文件 327 行），
 名字直接借了 DOM——因为它在架构里的位置就是 DOM 的位置。
 
 **理由二（更实际）：这棵树是「绕过 React 的性能后门」。**
@@ -612,10 +608,9 @@ Suspense、并发调度、错误边界——React 生态的全部。
 这一点非常关键，也是面试里的加分点。有些状态**高频到不能走 React**：
 
 ```typescript
-// 🔬 这些状态直接挂在树节点上，不进 React state
-node.scrollTop              // 滚动位置：鼠标滚轮每帧都变
-node.pendingScrollDelta
-node.dirty                  // 脏标记：每帧都在改
+// 🔬 本仓 packages/tui/src/dom.ts：这些状态直接挂在树节点上，不进 React state
+node.renderDirty            // 脏标记（:15）：子树改过就一路标到根，每帧都在改
+node.renderCache            // 上一次输出这棵子树时的操作记录（:75），干净时直接复用
 ```
 
 **为什么不用 `useState`？** 因为 `setState` 会触发
@@ -722,41 +717,36 @@ React 看到引用没变，就跳过整棵子树的 diff。
 ```
 
 框架要做的只是一个**适配层**：把自己的样式属性翻译成 Yoga 的 API 调用。
-🔬 本仓 `packages/tui-renderer/src/layout/yoga.ts`（304 行）就是这一层：
+🔬 本仓 `packages/tui/src/styles.ts`（786 行）就是这一层，按属性分组翻译（节选 `:496` 起的 `applyFlexStyles`）：
 
 ```typescript
-function applyStyles(yogaNode, style) {
-  yogaNode.setFlexDirection(style.flexDirection ?? 'column')
-  yogaNode.setAlignItems(style.alignItems ?? 'stretch')
-  yogaNode.setJustifyContent(style.justifyContent ?? 'flex-start')
-  yogaNode.setWidth(style.width)
-  yogaNode.setPadding(style.padding)
-  yogaNode.setOverflow(style.overflow)   // visible | hidden | scroll
+const applyFlexStyles = (node: YogaNode, style: Styles): void => {
+  if ('flexGrow' in style) node.setFlexGrow(style.flexGrow ?? 0);
   // ...
-}
+  if ('flexDirection' in style) {
+    if (style.flexDirection === 'row') node.setFlexDirection(Yoga.FLEX_DIRECTION_ROW);
+    if (style.flexDirection === 'column') node.setFlexDirection(Yoga.FLEX_DIRECTION_COLUMN);
+    // ...
+  }
+};
 ```
 
-> 💡 **注意默认值 `flexDirection: 'column'`**。
-> Web 的 Flexbox 默认是 `row`，终端 UI 框架普遍默认 `column`——
-> 因为终端天然是「一行一行往下」的。这是个小但真实的心智差异，
-> 从 Web 转过来的人常在这里第一次困惑。
+> 💡 **注意默认值是分层叠出来的**。
+> Web 的 Flexbox 默认 `row`；Yoga 引擎自身默认 `column`（终端天然「一行一行往下」）；
+> ink 的 `<Box>` 又显式补成 `row`（🔬 本仓 `components/Box.tsx:85` 照旧），
+> 而主屏历史区 `components/History.tsx:30` 显式写 `column`。
+> 同一个属性三层各有默认，从 Web 转过来的人常在这里第一次困惑。
 
 ### 4.3 一个真实的取舍：WASM 版 vs 纯 TS 移植
 
 📄 原始研究文档提到一个决策：用 Yoga 的 **TypeScript 移植版**而不是官方 WASM 版。
 
-🔬 本仓也是这样，而且能看到实物：
-`packages/tui-renderer/src/_vendor/yoga-layout/index.ts` 是
-**2594 行的纯 TS 移植**，文件头注释坦白得很漂亮：
+🔬 本仓现在走的是另一边：`packages/tui` 直接依赖官方 `yoga-layout@3.2.1`（`packages/tui/package.json`），
+`dom.ts:1` / `styles.ts:4` / `render-node-to-output.ts:4` 都是 `import Yoga from 'yoga-layout'`。
+这个包把 WASM 以 base64 内联在 `dist/binaries/yoga-wasm-base64-esm.js` 里，入口用顶层 `await loadYoga()` 加载——
+没有单独的 `.wasm` 文件要找，照样能打进单文件二进制。
 
-```
-Pure-TypeScript port of yoga-layout (Meta's flexbox engine).
-The upstream C++ source is ~2500 lines in CalculateLayout.cpp alone;
-this port is a simplified single-pass flexbox implementation that covers
-the subset of features Ink actually uses: ...
-```
-
-**理由**（两条，都要能说出来）：
+所以两条路要分开看。**选纯 TS 移植的理由**（研究文档给的两条，都要能说出来）：
 
 1. **启动时间和打包复杂度。** WASM 版要加载 `.wasm` 文件——
    对一个 CLI 工具，冷启动时间是核心指标，多一个异步加载步骤不划算。
@@ -765,9 +755,9 @@ the subset of features Ink actually uses: ...
    这个量级下，TS 和 WASM 的差距不构成瓶颈。
 
 **但代价必须诚实说出来**（面试里这是加分点）：
-注释里的 `a simplified ... implementation that covers the subset` 是关键——
-**它不是完整的 Flexbox**。用到未覆盖的属性时，行为可能和 Web 不一致。
+移植版通常只覆盖框架实际用到的子集——**它不是完整的 Flexbox**。用到未覆盖的属性时，行为可能和 Web 不一致。
 换句话说：**你省下了启动时间，买单方式是「布局能力有边界，而且边界在注释里而不在类型里」**。
+选官方 WASM 的代价正好反过来：多一次异步初始化，换来完整、跟上游同步的布局语义。
 
 ### 4.4 布局与「测量文本」的鸡生蛋问题
 
@@ -788,8 +778,9 @@ Yoga: 「好，那这个节点是 40×3，继续算它的兄弟节点」
 
 **为什么这个细节值得知道**：它意味着**宽度函数会在布局热路径上被反复调用**。
 一个又慢又对的宽度函数，会让整个界面卡。
-🔬 所以本仓有 `line-width-cache.ts`、`measure-text.ts`、`node-cache.ts`
-三个专门的缓存模块——不是过度设计，是这条路径真的很热。
+🔬 所以本仓有三处专门的缓存：`packages/tui/src/measure-text.ts:4`（文本 → 宽高）、
+`screen/screen.ts:69` 的 `runCache`（一行 ANSI 文本 → 字形簇序列，上限 1 万条）、
+`render-node-to-output.ts:163` 的节点输出缓存——不是过度设计，是这条路径真的很热。
 
 ### 4.5 本章自检
 
@@ -816,32 +807,32 @@ Yoga: 「好，那这个节点是 40×3，继续算它的兄弟节点」
 ┌────────────────────────────────────────────────────────┐
 │ ① Reconcile  —— React Fiber 树 → 自己的节点树           │
 │    产出：一棵带 dirty 标记的树，每个 box 挂着 Yoga 节点   │
-│    🔬 reconciler.ts (488 行) → dom.ts (454 行)          │
+│    🔬 reconciler.ts (443 行) → dom.ts (327 行)          │
 └────────────────────────┬───────────────────────────────┘
                          ↓
 ┌────────────────────────────────────────────────────────┐
 │ ② Layout  —— Yoga 算出每个节点的 (x, y, w, h)           │
 │    输入：树 + 终端宽高；输出：每个节点的矩形              │
-│    🔬 layout/yoga.ts (304 行)                          │
+│    🔬 styles.ts (786 行) → yoga-layout                 │
 └────────────────────────┬───────────────────────────────┘
                          ↓
 ┌────────────────────────────────────────────────────────┐
 │ ③ Paint  —— 遍历树，把内容「画」进内存里的屏幕缓冲        │
 │    处理：边框、背景、裁剪、滚动偏移、文本换行             │
 │    ★ 关键优化：dirty=false 的子树直接 blit 上一帧        │
-│    🔬 render-node-to-output.ts (1385 行) → screen.ts    │
+│    🔬 render-node-to-output.ts (375 行) → screen/       │
 └────────────────────────┬───────────────────────────────┘
                          ↓
 ┌────────────────────────────────────────────────────────┐
 │ ④ Diff  —— 逐 cell 比较「这一帧」和「上一帧」            │
 │    产出：一串 patch（移光标 / 换样式 / 写字符）           │
-│    🔬 log-update.ts (688 行)                            │
+│    🔬 frame/main-screen.ts (207 行)                     │
 └────────────────────────┬───────────────────────────────┘
                          ↓
 ┌────────────────────────────────────────────────────────┐
 │ ⑤ Write  —— patch 序列化成 ANSI，攒成一个 string 写出去  │
 │    包在 BSU/ESU 里（§2.3）                              │
-│    🔬 terminal.ts:219 writeDiffToTerminal               │
+│    🔬 ink.tsx:1661 write(bsu + bytes + esu)             │
 └────────────────────────┬───────────────────────────────┘
                          ↓
                      stdout（真实字节）
@@ -893,8 +884,7 @@ const cells: Cell[] = new Array(24000)
 **代价**：24000 个 JS 对象 = 24000 次分配 + GC 要追踪 24000 个引用。
 而且这些对象**散布在堆上**，diff 阶段逐个比较时缓存命中率极差。
 
-**解法：打包进一个连续的 `Int32Array`。**
-🔬 本仓 `screen.ts:317` 的注释把布局写得一清二楚：
+**解法：打包进连续的 TypedArray。** 一种做到极致的布局是：
 
 ```
 每个 cell = 2 个连续的 Int32（共 8 字节）
@@ -905,6 +895,10 @@ STYLE_SHIFT = 17, HYPERLINK_SHIFT = 2
 HYPERLINK_MASK = 0x7fff  (15 位)
 WIDTH_MASK = 3           (2 位 —— 宽度只可能是 0/1/2，两位够了)
 ```
+
+🔬 本仓 `packages/tui/src/screen/screen.ts:128-131` 选了朴素一档：不做位域，按字段拆成四个平铺数组——
+`chars` / `styles` / `links` 各一个 `Uint32Array`，`widths` 一个 `Uint8Array`。
+读写不用移位掩码，「连续内存、零对象分配、diff 比整数」这个核心收益照样拿到。
 
 **这里有三个独立的技巧，每个都能单独当面试答案：**
 
@@ -921,19 +915,13 @@ cell 里存的不是字符串，是一个**整数 ID**。
 "H" → 1,  "e" → 2,  "l" → 3,  "😀" → 4
 ```
 
-🔬 而且 ASCII 有快速路径：`screen.ts:310` 的 `initCharAscii()` 建了一个
-128 长度的 `Int32Array` 表，ASCII 字符直接用 charCode 查表，不进 Map。
-**这是「让最常见的情况最快」的典型做法**——终端里 95% 的字符是 ASCII。
+🔬 本仓是 `screen/screen.ts:55` 的 `internChar`：进程级一张表，0 号恒为空格、1 号恒为空串（宽字符的占位格）。
+更进一步的做法是给 ASCII 一条快速路径（128 长度的查表数组，不进 Map）——
+**「让最常见的情况最快」**，终端里绝大多数字符是 ASCII。
 
-同样的池化用在样式（`StylePool`）和超链接（`HyperlinkPool`）上。
+同样的池化用在样式和超链接上（🔬 `screen/pools.ts:30` 的 `StylePool`、`:140` 的 `HyperlinkPool`）。
 
-**技巧三：双视图批量清零。**
-🔬 `screen.ts:453` 的注释：
-
-```
-Allocate one buffer, two views: Int32Array for per-word access,
-BigInt64Array for bulk fill in resetScreen/clearRegion.
-```
+**技巧三：双视图批量清零**（配合技巧一的 2×Int32 布局）。
 
 同一块内存，开两个 TypedArray 视图：
 - `Int32Array` 用于**逐字段读写**（`cells[ci]`、`cells[ci+1]`）
@@ -942,14 +930,12 @@ BigInt64Array for bulk fill in resetScreen/clearRegion.
 因为一个 cell 正好是 64 位，用 64 位视图 `fill` 一次能清一个 cell，
 **清屏的循环次数减半**。
 
-> 🔬 **注释里还留了一条自我约束，很值得学**：
-> `EMPTY_CELL_VALUE = 0n` 后面写着
-> 「**Not used for comparison — BigInt element reads cause heap allocation**」。
-> 也就是说：64 位视图**只能用来 `fill`，不能用来比较**——
+> **这里有一条必须写下来的自我约束**：
+> 64 位视图**只能用来 `fill`，不能用来比较**——
 > 因为在 JS 里读一个 BigInt 元素会**在堆上分配一个 BigInt 对象**，
 > 在 diff 热路径上这是灾难。
 >
-> **这条注释是「优化必须知道自己的边界」的范本**：
+> **这是「优化必须知道自己的边界」的范本**：
 > 同一个工具在一个操作里是优化，在另一个操作里是反优化，
 > 而且**两者都能跑通、都不报错**，只有一个更慢。
 
@@ -1006,7 +992,7 @@ Diff 只在这个矩形内比较，不扫全屏。
 **③ 样式差分预计算。** 从「粗体+红」切到「粗体+蓝」，
 朴素做法是 `\x1b[0m\x1b[1m\x1b[34m`（重置再重设，11 字节），
 最优做法是 `\x1b[34m`（只改颜色，5 字节）。
-🔬 `StylePool` 提供 `transition(fromId, toId)`——**因为样式已经池化成 ID 了，
+🔬 本仓 `StylePool` 提供 `transition(from, to)`（`screen/pools.ts:59`，结果缓存在 `:34` 的 Map 里）——**因为样式已经池化成 ID 了，
 两个 ID 之间的最小差分序列可以预计算并缓存**。
 **这是池化的第二重收益，比省内存更值钱。**
 
@@ -1348,17 +1334,21 @@ Web 里浏览器会告诉你用户想要减少动画；终端里没有这个通�
 **关键收益**：需要「擦掉重画」的只有底部几行，**范围小且固定**。
 上面的历史一个字节都不动——所以**边流式输出边拖选历史文字是可行的**。
 
-🔬 本仓的实现（`Static` 组件只有 32 行，但它是整个主屏路线的支点）：
+🔬 本仓的实现（历史区组件只有 36 行，但它是整个主屏路线的支点）：
 
 ```
-packages/tui-renderer/src/_vendor/Static.tsx           32 行
-packages/cli/src/ui/components/MainScreenLayout.tsx    ← 消费方
+packages/tui/src/components/History.tsx               36 行
+packages/cli/src/ui/render-port/next/components.ts:4  ← 以 Static 的名字导出给 CLI
+packages/cli/src/ui/components/MainScreenLayout.tsx   ← 消费方
 ```
 
-**Static 的机制**：items 数组的**引用不变**时 memo 跳过重渲染。
+注意它**不是**上游 ink 那个「打印一次就忘」的 `<Static>`（`History.tsx:16-19` 的注释特意解释了为什么改名）：
+历史项是普通子树，靠帧 diff 让没变的行零写入、让滚进 scrollback 的历史自然留在终端里。
+
+**它的机制**：`items`、`children`、`style` 引用都不变时，memo 整块跳过重渲（浅比较，`History.tsx:24-25`）。
 所以应用层有一条硬约束：**「已完成区」的 items 数组必须引用稳定，
-不能每帧重建**——否则 Static 每帧都重新打印，整个机制失效
-（而且**不报错，只是变成灾难性的重复输出**）。
+不能每帧重建**——否则每次父级重渲都会重渲全部历史项
+（而且**不报错，只是悄悄变慢**：代价落在 reconcile，不落在写屏）。
 
 ### 7.5 一次真实的架构决策：本仓为什么从备用屏切到主屏
 
@@ -1393,7 +1383,7 @@ sid-code：永远进 alt-screen（硬编码 alternateBuffer: true）
 | 方案 | 否决理由 | 可迁移的教训 |
 | --- | --- | --- |
 | ① 只把 `alternateBuffer` 翻成 `false`（最小改动） | 内容区整个是虚拟列表（全动态区），**没有 Static 分层**。关掉 alt-screen 后每个 token 都 `eraseLines(整屏)` → **全屏闪烁**；且动态区永不进 scrollback → 「原生滚动看历史」也失效 | **「翻一个 flag」的最小改动，往往是最贵的**：它假设架构已经准备好了 |
-| ② 移植对照产品的自绘选择引擎到 alt-screen | 那个引擎（🔬 本仓现在 842 行）**焊死在自研渲染底座的 screen buffer 上**（直接改 frame cells）。当时用的标准 ink 不暴露 cell 级 API → 要移植就得连底座一起 fork | **能力的可移植性取决于它焊在哪一层**。焊在 cell 级的东西，不换底座搬不动 |
+| ② 移植对照产品的自绘选择引擎到 alt-screen | 那个引擎（🔬 本仓现在是 `packages/tui/src/selection.ts`，323 行）**焊死在自研渲染底座的 screen buffer 上**（直接改 frame cells）。当时用的标准 ink 不暴露 cell 级 API → 要移植就得连底座一起 fork | **能力的可移植性取决于它焊在哪一层**。焊在 cell 级的东西，不换底座搬不动 |
 | ③ 保留 alt-screen + 自绘选择 + `OSC 52` 复制 | ① 选择是程序绘制而非终端原生；② **`OSC 52` 在 iTerm2 默认关闭、tmux 要配置**，跨终端不稳 | **默认关闭的能力 = 对用户不存在**（§2.4 那条判据的实战应用） |
 | ④ 保持现状 + Copy Mode（**这是 3 个月前自己的结论**） | 用户实测判定 `Ctrl+S` 是**致命**交互缺陷；且已确认对照产品的默认就是主屏 Static，**证明这条路是成熟可交付的、不是实验性的** | **推翻自己的旧结论需要新证据，而「用户实测」和「竞品已验证」是两种不同的新证据** |
 
@@ -1483,38 +1473,37 @@ AI 一个 token 一个 token 地吐字，界面怎么不闪。
 **关键认知：闪烁 = 触发了「全屏重打」这条路径。**
 所以「防闪烁」这件事的本质，是**避免让 diff 算法走进那条路径**。
 
-🔬 本仓的源码把这件事写得极其明白——函数名本身就是文档：
+🔬 本仓的源码把这件事写进了类型——类型名本身就是文档：
 
 ```
-packages/tui-renderer/src/log-update.ts:451
-  function fullResetSequence_CAUSES_FLICKER(next, reason, stylePool, ...)
+packages/tui/src/frame/main-screen.ts:36
+  export type FrameFlicker = { desiredHeight; availableHeight; reason: 'offscreen' | 'resize' }
 ```
 
-**函数名里直接带 `_CAUSES_FLICKER`。** 它在文件里被调用 5 次
-（`:137`、`:204`、`:228`、`:251`、`:352`），每次都带一个 `reason` 参数
-（`"resize"` / `"offscreen"`）。
+**每一次全屏重打都必须产出一个 `FrameFlicker`。** 重打函数 `resetMainScreen`（`:80`）
+在帧 diff 里有 3 个触发点（`:106` resize、`:121` / `:130` offscreen），
+`ink.tsx:1754` 另有一处（终端变窄或变矮时）；每一次的 `reason` 都随该帧的
+`onFrame` 事件以 `flickers[]` 暴露出去（`ink.tsx:227-231`）。
 
 > 📌 **这个命名值得单独夸一句，也值得抄**：
-> 把「这个函数会导致用户可见的坏结果」写进函数名，
-> 意味着**任何人调用它时都无法假装不知道后果**。
-> 比写在注释里强得多——注释会被跳过，函数名不会。
+> 把「这个操作会导致用户可见的坏结果」写进类型名，
+> 意味着**任何人拿到这个返回值时都无法假装不知道后果**，而且它是数据，能被计数。
+> 比写在注释里强得多——注释会被跳过，类型不会。
 > 这是「让危险的东西看起来危险」的一个范例。
 
 ### 8.2 什么时候会触发全屏重打
 
-🔬 读 `log-update.ts` 的 5 个调用点，触发原因归成两类：
+🔬 读 `frame/main-screen.ts` 的触发点（文件头注释 `:19-22` 列全了），触发原因归成两类：
 
 **第一类：`"resize"`（终端尺寸变了）**
 没得商量，宽度变了所有换行都变了，必须全部重画。
 
 **第二类：`"offscreen"`（要改的行已经滚进 scrollback 了）**
 
-这一类是**主屏模式的固有难题**，值得看懂。🔬 源码注释解释得很清楚（`:179-199`）：
+这一类是**主屏模式的固有难题**，值得看懂。🔬 源码注释解释得很清楚（`frame/main-screen.ts:118`）：
 
 ```
-viewportY tells us how many rows are in scrollback from content overflow.
-Additionally, the cursor-restore scroll pushes 1 more row into scrollback.
-We need fullReset if any changes are to rows that are now in scrollback.
+② 变化落在已滚进 scrollback 的行上：光标最多能上移到视口顶，即第 p - (H - 1) 行
 ```
 
 翻译成人话：
@@ -1528,7 +1517,7 @@ We need fullReset if any changes are to rows that are now in scrollback.
 ```
 
 **注意这里有一个反直觉的情形（源码专门处理了）**：
-`:196` 的注释说——**「本该在 scrollback 里的内容，现在应该可见了」**
+`:125` 的注释说——**「收缩：新的底部落到视口之上，或从『占满视口』收缩到『不超过视口』」**
 （内容变短时）。终端的清屏操作**没法把 scrollback 的内容拉回视野**，
 所以这种「收缩」也要全屏重打。
 
@@ -1580,7 +1569,7 @@ We need fullReset if any changes are to rows that are now in scrollback.
 
 **核心教训（这条是通用的，值得背下来）**：
 
-> 🔬 **改底座/依赖之后，必须回头重评所有为旧底座加的 workaround。**
+> 🔬 **改底座/依赖之后，必须回头重评所有为上一个底座加的 workaround。**
 
 **为什么这个坑如此隐蔽**：
 - workaround 的代码**没有任何问题**，它在自己的假设下完全正确
@@ -1813,11 +1802,12 @@ AI 已经吐出的文本：
 - 如果 `0x1b` 之后短时间内没有更多字节 → 是 `Esc` 键
 - 如果紧跟着来了 `[A` → 是方向键
 
-🔬 本仓 `components/App.tsx:153` 就是这个超时：
+🔬 本仓 `packages/tui/src/components/App.tsx:137` 就是这个超时：
 
 ```typescript
-readonly NORMAL_TIMEOUT = 50    // 普通转义序列的短超时
-readonly PASTE_TIMEOUT  = 500   // 粘贴操作用更长的超时
+// Small delay to let chunked escape sequences complete before flushing as literal input.
+// sid-code（T5.1b，I8）：上游 20ms；基线在 40ms 与 60ms 之间冲刷，取 50ms
+const pendingInputFlushDelayMilliseconds = 50;
 ```
 
 **所以「按 Esc 到程序响应」有 50ms 的固有延迟，这是协议决定的，不是实现不好。**
@@ -1830,10 +1820,7 @@ readonly PASTE_TIMEOUT  = 500   // 粘贴操作用更长的超时
 太长（如 500ms）：用户按 Esc 要等半秒才有反应，体感迟钝
 ```
 
-🔬 而且源码里记了一个**更阴的失效情形**（`App.tsx:299` 附近的注释）：
-
-> A heavy render blocked the event loop past App's 50ms ...
-
+而且有一个**更阴的失效情形**：
 **一次很重的渲染阻塞事件循环超过 50ms，会导致这个超时误判。**
 也就是说：**渲染性能问题会伪装成输入 bug**。
 这是 §6（性能）和 §9（输入）之间一条真实的耦合，
@@ -1872,7 +1859,7 @@ modifyOtherKeys：    \x1b[27;5;99~ = Ctrl+C     （5 = ctrl，99 = 'c'）
 stdin 原始字节
    ↓
 ┌──────────────────────────────────────────────────────┐
-│ ① 分词 + 协议解析   🔬 parse-keypress.ts (808 行)      │
+│ ① 分词 + 协议解析   🔬 parse-keypress.ts (304 行)      │
 │   • 切出完整的转义序列（含不完整序列的超时处理）        │
 │   • 三套键盘协议解析                                   │
 │   • 识别「终端响应」并与用户输入分离                    │
@@ -1881,13 +1868,13 @@ stdin 原始字节
 └──────────────────────┬───────────────────────────────┘
                        ↓
 ┌──────────────────────────────────────────────────────┐
-│ ② 事件对象化   🔬 events/ (12 个文件)                  │
+│ ② 事件对象化   🔬 input-event.ts (51 行)               │
 │   ParsedKey → InputEvent / KeyboardEvent / MouseEvent │
 │   修饰键标准化、特殊键映射、鼠标坐标解析                │
 └──────────────────────┬───────────────────────────────┘
                        ↓
 ┌──────────────────────────────────────────────────────┐
-│ ③ 分发：捕获 / 冒泡两阶段   🔬 events/dispatcher.ts     │
+│ ③ 分发：捕获 / 冒泡两阶段（本仓未接线，见 §13）         │
 │   从目标节点到根收集监听器 → 捕获（外→内）→ 冒泡（内→外）│
 │   支持 stopPropagation / stopImmediatePropagation     │
 └──────────────────────┬───────────────────────────────┘
@@ -1912,7 +1899,7 @@ stdin 原始字节
 
 **这需要「内层能拦截事件、阻止外层处理」的能力**——这正是冒泡模型 + `stopPropagation`。
 
-🔬 顺带一个必须配套的机制：**焦点栈**（`focus.ts`）。
+顺带一个必须配套的机制：**焦点栈**。
 
 ```
 输入框有焦点
@@ -2096,22 +2083,21 @@ Unicode 有一份属性表标注每个字符是 Narrow / Wide / **Ambiguous**。
 **在东亚字体环境下占 2 列，在西文环境下占 1 列**——
 同一个字符，同一份 Unicode 表，**答案取决于用户的终端配置**。
 
-🔬 本仓 `stringWidth.ts` 的选择写在注释里：
+🔬 本仓 `packages/tui/src/text/width.ts` 的选择写在注释里（`:4`），落在 `:16`：
 
 ```
-The implementation uses eastAsianWidth directly with ambiguousAsWide: false,
-which correctly treats ambiguous-width characters as narrow (width 1) as
-recommended by the Unicode standard for Western contexts.
+用 Bun 内置的 `Bun.stringWidth`，并把东亚宽度为 Ambiguous 的字符按窄（1 列）算。
+const OPTIONS = {ambiguousIsNarrow: true} as const;
 ```
 
 **这是一个「必须选一边，且知道自己选了什么」的决策**——
-选 `false` 意味着在纯 CJK 环境的某些字符上会算窄，是有意识的取舍。
+选「窄」意味着在纯 CJK 环境的某些字符上会算窄，是有意识的取舍。
 
 **② Emoji 和字素簇。**
 `👨‍👩‍👧`（一家三口）是 5 个码点用零宽连接符（ZWJ）拼起来的，
 显示成 1 个 emoji、占 2 列。
 **必须先按字素簇分段，再算每段的宽度**——
-🔬 本仓用 `Intl.Segmenter`（`_vendor/intl.ts` 的 `getGraphemeSegmenter`）。
+🔬 本仓自己不建分段器：`packages/tui/src/screen/screen.ts:81` 把每行交给依赖 `@alcalzone/ansi-tokenize@0.3.0` 分词，它内部用 `Intl.Segmenter`（`granularity: "grapheme"`）切字素簇。
 
 **③ ANSI 序列不占宽度。**
 `"\x1b[31m中\x1b[0m"` 的列宽是 2，不是 11。
@@ -2134,8 +2120,8 @@ recommended by the Unicode standard for Western contexts.
 ✅ 算宽度前 strip ANSI
 ✅ 光标移动、删除「一个字」按字素簇，不按码点
 ✅ 宽度函数在布局热路径上（§4.4），必须有缓存
-   🔬 本仓：line-width-cache.ts / measure-text.ts
-✅ 纯 ASCII 快速路径（🔬 本仓 stringWidth.ts 第一步就是扫一遍是否纯 ASCII）
+   🔬 本仓：measure-text.ts / screen/screen.ts 的 runCache
+✅ 纯 ASCII 快速路径
    —— 95% 的情况能跳过全部复杂逻辑
 ```
 
@@ -2432,10 +2418,10 @@ Diff 渲染器    ──→ ANSI 字符串 ──→ <RawAnsi>  ──→ 直接
 **ANSI 作为中间格式，让这些模块保持独立可替换。**
 
 **而 `<RawAnsi>` 是一个更激进的优化**——🔬 本仓也有
-（`components/RawAnsi.tsx`，被 `DiffRenderer` 使用）：
+（`packages/tui/src/components/RawAnsi.tsx`，39 行，被 `DiffRenderer` 使用）：
 
-> 接收「已按列宽换行的 ANSI 行数组」，**单个 Yoga leaf + 常量 measure，
-> 直接 `output.write()`**，跳过
+> 接收「已按列宽换行的 ANSI 行数组」，**单个文本叶子、布局尺寸固定为 `width × lines.length`，
+> 原样写进屏幕缓冲**，跳过
 > `<Ansi> → React 树 → Yoga → squash → 重序列化` 的往返。
 
 **用在哪**：长 diff、高亮代码——这类内容**已经是终端就绪的**，
@@ -2521,7 +2507,7 @@ t4：反复「修复」B 的参数，从没质疑 B 该不该存在  ← 停在�
 
 **升级版判据**（可以直接当团队规范）：
 
-> **改底座 / 换依赖的 PR，必须附一份「为旧底座加的 workaround」清单及其重评结论。**
+> **改底座 / 换依赖的 PR，必须附一份「为上一个底座加的 workaround」清单及其重评结论。**
 
 ### 12.2 形态 2：靠引用相等的优化，会被任何自动 memo 化悄悄破坏
 
@@ -2653,10 +2639,10 @@ packages/cli/src/ui/CLAUDE.md 的 frontmatter:
     $ ls src/ink              → No such file or directory
     $ ls packages/cli/src/ink → No such file or directory
 
-代码实际位置：packages/tui-renderer/
-组件实际 import（MainScreenLayout.tsx:14）：
-    import Box from "@sid-code/tui-renderer/components/Box.tsx"
+代码实际位置：packages/ 下一个独立的渲染底座包，且换了包名
 ```
+
+（这条 frontmatter 已在 2026-10-11 修正，今天复跑的结果见附录 B.5。）
 
 **这份规范的每一条设计结论都还是对的，只有路径漂了。**
 
@@ -2692,8 +2678,8 @@ packages/cli/src/ui/CLAUDE.md 的 frontmatter:
      ④ 读类型签名和导出列表，而不是搜关键词
 ```
 
-🔬 本例正确做法的结果：`packages/tui-renderer/src/selection.ts`，**842 行**，
-能力完整存在。
+🔬 本例正确做法的结果（按今天的仓库复跑）：`packages/tui/src/selection.ts`，**323 行**，
+能力完整存在（alt-screen 选区，`ink.tsx:374` 接线）。
 
 ### 12.6 形态 6：有代码 ≠ 有能力（接线没接上）
 
@@ -2853,49 +2839,49 @@ OSC 8 超链接       → Apple Terminal 不支持 → 链接必须同时给出�
 而这两者的差别正是 §12.6 那一整节在讲的东西。
 **图例的粒度决定了你能发现什么。**
 
-### 13.2 20 项能力对照表（🔬 全部实测，2026-09-02）
+### 13.2 20 项能力对照表（🔬 全部实测，2026-10-16，底座路径相对 `packages/tui/src/`）
 
 **协议与输出层**
 
 | # | 能力 | 判定 | 证据 |
 | --- | --- | --- | --- |
-| 1 | ANSI 序列生成（CSI/SGR/OSC/DEC） | ✅ | `termio/` 5 文件：`csi.ts` 317 / `osc.ts` 476 / `sgr.ts` 294 / `esc.ts` 67 / `dec.ts` |
-| 2 | 同步输出 BSU/ESU 包帧 | ✅ | `termio/dec.ts:39-40` 定义；`terminal.ts:219` `writeDiffToTerminal` 使用 |
-| 3 | tmux 跳过 BSU/ESU | ✅ | `terminal.ts:76` 注释 + `skipSyncMarkers` 参数 |
-| 4 | 终端能力检测 + 人工纠偏 | ✅ | `terminal.ts` 6 个探测函数（`isXtermJs` / `supportsExtendedKeys` / `hasCursorUpViewportYankBug` …） |
-| 5 | 颜色三档降级（真彩/256/16） | ✅ | `colorize.ts` + xterm.js boost / tmux clamp |
+| 1 | ANSI 序列生成（CSI/SGR/OSC/DEC） | ✅ | `terminal/` 7 文件（`modes.ts` / `osc.ts` / `sync-output.ts` / `clipboard.ts` / `extended-keys.ts` / `hyperlinks.ts` / `index.ts`）+ 依赖 `ansi-escapes` |
+| 2 | 同步输出 BSU/ESU 包帧 | ✅ | `write-synchronized.ts:4-5` 定义；`ink.tsx:1661` `write(bsu + bytes + esu)` |
+| 3 | tmux 跳过 BSU/ESU | ✅ | `terminal/sync-output.ts:26`；只作用于 alt-screen 帧（`ink.tsx:1722`），主屏帧一律包 |
+| 4 | 终端能力检测 + 人工纠偏 | ✅ | `terminal-probe.ts:45` `isXtermJsTerminal`、`terminal/sync-output.ts:25`、`terminal/extended-keys.ts`、`terminal/hyperlinks.ts` |
+| 5 | 颜色三档降级（真彩/256/16） | ✅ | `colorize.ts:43` `adjustColorLevel`：VS Code boost / tmux clamp |
 
 **渲染管线层**
 
 | # | 能力 | 判定 | 证据 |
 | --- | --- | --- | --- |
-| 6 | React Reconciler 自定义宿主 | ✅ | `reconciler.ts` 488 行 → `dom.ts` 454 行 |
-| 7 | Flexbox 布局 | ⚠️ | `layout/yoga.ts` 304 行适配 + `_vendor/yoga-layout/` **纯 TS 移植 2594 行**。⚠️ 注释自陈是 `simplified single-pass`，**只覆盖 Ink 用到的子集** |
-| 8 | 屏幕缓冲（紧凑存储） | ✅ | `screen.ts` 1395 行：`Int32Array` 双视图 + 位域打包（`STYLE_SHIFT=17`） |
-| 9 | 三种池化（Char/Style/Hyperlink） | ✅ | `screen.ts:12/48/103`，ASCII 快速路径 `initCharAscii()` |
-| 10 | 帧差分 + damage 限制 | ✅ | `log-update.ts` 688 行 |
-| 11 | 全屏重打有显式命名 | ✅ | `log-update.ts:451` `fullResetSequence_CAUSES_FLICKER`，5 个调用点各带 `reason` |
-| 12 | blit / 节点缓存 | ✅ | `node-cache.ts` + `render-node-to-output.ts` 1385 行 |
+| 6 | React Reconciler 自定义宿主 | ✅ | `reconciler.ts` 443 行 → `dom.ts` 327 行 |
+| 7 | Flexbox 布局 | ✅ | `styles.ts` 786 行适配 + 官方 `yoga-layout@3.2.1`（WASM 内联 base64，完整 Flexbox 语义） |
+| 8 | 屏幕缓冲（紧凑存储） | ✅ | `screen/screen.ts` 275 行：四个平铺 TypedArray（`:128-131`），不做位域打包 |
+| 9 | 三种池化（Char/Style/Hyperlink） | ✅ | `screen/screen.ts:55` `internChar`；`screen/pools.ts:30` `StylePool` / `:140` `HyperlinkPool`。无 ASCII 快速路径 |
+| 10 | 帧差分 + damage 限制 | ⚠️ | `frame/main-screen.ts` 207 行：逐单元比较、只写变化段；**没有 damage 矩形**，每帧扫全部共有行（`:111` 循环调 `firstChangedColumn`） |
+| 11 | 全屏重打有显式命名 | ✅ | `frame/main-screen.ts:36` `FrameFlicker`，4 个触发点各带 `reason`，经 `onFrame` 的 `flickers[]` 暴露 |
+| 12 | blit / 节点缓存 | ✅ | `render-node-to-output.ts:163-173`：干净子树 `output.replay` 上一帧的输出操作（全文件 375 行） |
 
 **屏幕模式与流式**
 
 | # | 能力 | 判定 | 证据 |
 | --- | --- | --- | --- |
-| 13 | 主屏 Static 模式（默认） | ✅ | `fullscreen.ts:44` `alternateBuffer ?? false`；`_vendor/Static.tsx` 32 行；ADR-040 |
-| 14 | 备用屏全屏模式（opt-in） | ✅ | `components/AlternateScreen.tsx`；`ink.tsx:520` 拼 `?1049h` |
-| 15 | 稳定前缀切分防闪烁 | ✅ | `StreamingMarkdown.tsx` `computeStreamSplit`；三条不变量有单测 |
+| 13 | 主屏历史区模式（默认） | ✅ | `packages/cli/src/ui/fullscreen.ts:44` `alternateBuffer ?? false`；`components/History.tsx` 36 行；ADR-040 |
+| 14 | 备用屏全屏模式（opt-in） | ✅ | `components/AlternateScreen.tsx`；`terminal/modes.ts:7` `?1049h` |
+| 15 | 稳定前缀切分防闪烁 | ✅ | `StreamingMarkdown.tsx:69` `computeStreamSplit`；`packages/cli/tests/ui/streaming-markdown.test.ts` 10 个用例 |
 | 16 | Static 区同步折叠 | ✅ | `SlicingMaxSizedBox.tsx` + `DiffRenderer` `maxLines`（`DIFF_COLLAPSE_MAX_LINES=16`）；异步折叠死代码**已删** |
 
 **输入与交互**
 
 | # | 能力 | 判定 | 证据 |
 | --- | --- | --- | --- |
-| 17 | 三套键盘协议 | ✅ | `parse-keypress.ts` 808 行，`:19` CSI u / `:25` modifyOtherKeys / legacy |
-| 18 | 不完整转义序列超时 | ✅ | `components/App.tsx:153` `NORMAL_TIMEOUT=50` / `PASTE_TIMEOUT=500` |
-| 19 | 捕获/冒泡分发 + 焦点栈 | ✅ | `events/` 12 文件 + `focus.ts` |
-| 20 | 文本选择引擎 | ✅ | `selection.ts` **842 行**；`hit-test.ts` 119；`searchHighlight.ts` 83 |
+| 17 | 三套键盘协议 | ✅ | `parse-keypress.ts` 304 行，`:206` CSI u / `:207` modifyOtherKeys / legacy |
+| 18 | 不完整转义序列超时 | ✅ | `components/App.tsx:137` 50ms；粘贴走 bracketed paste（`input-parser.ts:17-18`），没有单独的粘贴超时 |
+| 19 | 捕获/冒泡分发 + 焦点栈 | 💀 | `packages/cli/src/ui/events/dispatcher.ts` 100 行 + `focus/focus-manager.ts` 106 行（`_focusStack`），生产代码零调用方，只被 `packages/cli/tests/ui/` 引用。底座这边的 `input-event.ts` 只有扁平的 `stopImmediatePropagation` |
+| 20 | 文本选择引擎 | ✅ | `selection.ts` **323 行**；`selection-highlight.ts` 74；`ink.tsx:374` 接线 |
 
-**汇总：✅ 18 / ⚠️ 1 / 🔌 0 / 💀 0 / 🔒 0 / ❌ 1**（第 20 项在主屏模式下由终端接管，见下）
+**汇总（20 项）：✅ 18 / ⚠️ 1 / 🔌 0 / 💀 1 / 🔒 0 / ❌ 0**；20 项之外另记 1 项 ❌，见 §13.4（第 20 项在主屏模式下由终端接管，也见 §13.4）
 
 ### 13.3 打分过程中抓到的三个漂移（这一节比上面那张表值钱）
 
@@ -2909,11 +2895,14 @@ OSC 8 超链接       → Apple Terminal 不支持 → 链接必须同时给出�
    全文 17 处提到 src/ink/
 
 🔬 实测（附录 B.5 的命令）：
-   ❌ src/ink         全仓无此目录 —— 能力搬到 packages/tui-renderer/ 且换了包名
+   ❌ src/ink         全仓无此目录 —— 能力搬进 packages/ 下独立的底座包，且换了包名
    ✅ src/permission  →  packages/core/src/permission    ← 目录在，但不在 cli 包下
    ✅ src/tool        →  packages/core/src/tool          ← 同上
    ✅ src/ui          →  packages/cli/src/ui             ← 只有这条对得上
 ```
+
+（以上是 2026-09-02 的实测。这条 frontmatter 已于 2026-10-11 改成 `paths: ["src/ui/**"]`，
+2026-10-16 复跑 B.5 只剩三条 ✅。）
 
 **两种失准要分开看，因为破坏力不同**：
 
@@ -2950,14 +2939,14 @@ OSC 8 超链接       → Apple Terminal 不支持 → 链接必须同时给出�
 
 第二步（换名反查，§12.5 的判据②）：
   离屏冻结靠的是「知道自己在不在视口里」
-  → 搜这个能力本身 → 找到 hooks/use-terminal-viewport.ts
+  → 搜这个能力本身 → 找到 packages/tui/src/hooks/use-animation-frame.ts:25
+     export function isInViewport(node, rows)
   ✅ 能力在
 
 第三步（三档判定，§12.6）：
-  🔬 grep 全仓调用方 → 只有一个：
-     hooks/use-animation-frame.ts:34
-     const [viewportRef, { isVisible }] = useTerminalViewport()
-  🔬 应用层（packages/cli/src/ui/）调用方：0
+  🔬 grep 全仓调用方 → 只有一个：同文件 :64
+     const visible = isInViewport(ref.current, getWindowSize(stdout).rows)
+  🔬 应用层（packages/cli/src/）调用方：0
 
   → 判定：能力在、有调用方，但调用方在框架内部，
     且只被动画 hook 用来「不可见时停动画」
@@ -2966,12 +2955,12 @@ OSC 8 超链接       → Apple Terminal 不支持 → 链接必须同时给出�
 
 **正确结论（三档里的第 ② 档，不是 ①也不是③）**：
 
-> `useTerminalViewport` 提供的视口可见性能力**在**，
+> `isInViewport` 提供的视口可见性能力**在**，
 > 且**已接线到动画节流**（这是一条真实收益：不可见时不烧 CPU），
 > 但**「离屏冻结消息子树」这个用法尚未接线**。
 >
-> 主屏 Static 模式下这个缺口影响很小——
-> 已完成消息走 `Static` 本来就不重渲（§7.4），
+> 主屏模式下这个缺口影响很小——
+> 已完成消息走历史区，引用不变时 memo 整块跳过重渲（§7.4），
 > 离屏冻结要解决的问题被另一个机制解决了。
 > **但 alt-screen 模式（虚拟列表全动态区）没有 Static，这个缺口是实的。**
 
@@ -2981,16 +2970,16 @@ OSC 8 超链接       → Apple Terminal 不支持 → 链接必须同时给出�
 
 同理，📄 原始研究文档提到的 `StickyPromptHeader` / `NewMessagesPill`
 （粘性提示头、「N 条新消息」药丸），
-🔬 在本仓**只在注释里出现**（`ink.tsx:627`、`render-node-to-output.ts:1184`）——
-渲染底座**为它们预留了处理**（不透明矩形、静态文本判定），
-**但应用层没有这两个组件**。这是「底座能力就绪、上层未建」的又一例。
+🔬 在 `packages/tui/src` 与 `packages/cli/src` 里 grep 这两个名字：**0 命中**。
+按 §12.5 的判据，这只证明「没有以这些名字实现的东西」——
+要下「能力不存在」的结论，还得从功能入口反查一遍。
 
 ### 13.4 第 20 项那个 ❌ 是怎么来的：架构选择不是缺陷
 
-上面汇总里有一个 ❌，但它需要解释——**这是评估纪律的一部分**：
+上面汇总里那 1 项另记的 ❌，以及第 20 项为什么不记 ❌，都需要解释——**这是评估纪律的一部分**：
 
 ```
-文本选择引擎：✅ 842 行，完整存在
+文本选择引擎：✅ 323 行，完整存在
 但在默认（主屏）模式下：不启用
   因为主屏模式不抢鼠标 → 终端原生选择接管 → 自绘引擎不需要
 ```
@@ -3008,7 +2997,7 @@ OSC 8 超链接       → Apple Terminal 不支持 → 链接必须同时给出�
 > 填进矩阵当缺点是**方法错误**：
 > 同一张表会因此把「刻意的取舍」和「没做完的工作」混成一档。
 
-**所以汇总那行的 ❌ 1 项**，指的是另一件事：
+**所以汇总里另记的那 1 项 ❌**，指的是 20 项之外的另一件事：
 🔬 **HITL / 权限决策的 UI 层差异化警示**（危险命令标红、
 危险确认默认聚焦「拒绝」）——设计规范里标着 ⚠️ 待补，
 且规范明说「项目已有命令危险性检测能力，但 **UI 层的差异化警示尚未接全**」。
@@ -3031,7 +3020,7 @@ OSC 8 超链接       → Apple Terminal 不支持 → 链接必须同时给出�
 **一条容易忽略的收尾**：
 
 > **一次性核查不是门禁。**
-> 这张表是 2026-09-02 的快照。它会腐坏，而且腐坏时不报错
+> 这张表是 2026-10-16 的快照。它会腐坏，而且腐坏时不报错
 > （漂移 ① 就是一份腐坏了的规范）。
 > 想让它不腐坏，要么变成 CI 检查（比如断言 `src/ink` 不存在时报错），
 > 要么在文档头写清 `last_verified` 并接受它会过期。
@@ -3237,7 +3226,7 @@ OSC 8 超链接       → Apple Terminal 不支持 → 链接必须同时给出�
 
 ### B. 可复跑命令清单
 
-**⚠️ 使用纪律**：下面每条都在 2026-09-02 于本仓实跑通过。
+**⚠️ 使用纪律**：下面每条都在本仓实跑通过（B.1 / B.2 / B.3 / B.5 最近一次是 2026-10-16）。
 但**代码每天在变**，引用任何数字前请自己跑一遍。
 路径以 sid-code 仓库根为基准。
 
@@ -3245,41 +3234,55 @@ OSC 8 超链接       → Apple Terminal 不支持 → 链接必须同时给出�
 
 ```bash
 # 渲染底座：文件数 + 行数
-find packages/tui-renderer/src \( -name '*.ts' -o -name '*.tsx' \) | wc -l
-find packages/tui-renderer/src \( -name '*.ts' -o -name '*.tsx' \) -print0 \
+find packages/tui/src \( -name '*.ts' -o -name '*.tsx' \) | wc -l
+find packages/tui/src \( -name '*.ts' -o -name '*.tsx' \) -print0 \
   | xargs -0 wc -l | tail -1
-# 实测 2026-09-02：122 文件 / 23464 行
+# 实测 2026-10-16：104 文件 / 13661 行
 
 # 应用层 UI
 find packages/cli/src/ui \( -name '*.ts' -o -name '*.tsx' \) | wc -l
 find packages/cli/src/ui \( -name '*.ts' -o -name '*.tsx' \) -print0 \
   | xargs -0 wc -l | tail -1
-# 实测：176 文件 / 36365 行
+# 实测 2026-10-16：203 文件 / 39609 行
 
-# 最大的十个文件（排除 vendor）
-find packages/tui-renderer/src \( -name '*.ts' -o -name '*.tsx' \) \
-  | grep -v _vendor | xargs wc -l | sort -rn | sed -n '2,11p'
+# 最大的十个文件
+find packages/tui/src \( -name '*.ts' -o -name '*.tsx' \) \
+  | xargs wc -l | sort -rn | sed -n '2,11p'
+# 实测 2026-10-16：ink.tsx 1981 / components/App.tsx 1070 / styles.ts 786 / ansi-tokenizer.ts 509 / …
+
+# 起点对照：上游 ink@7.1.1 的 src/，以及本仓在它之上新写的文件
+mkdir -p /tmp/ink-up && curl -fsSL https://codeload.github.com/vadimdemedes/ink/tar.gz/refs/tags/v7.1.1 \
+  | tar xz -C /tmp/ink-up
+U=/tmp/ink-up/ink-7.1.1/src
+find "$U" \( -name '*.ts' -o -name '*.tsx' \) -print0 | xargs -0 wc -l | tail -1
+# 实测：62 文件 / 9188 行
+(cd packages/tui/src && find . \( -name '*.ts' -o -name '*.tsx' \) | sed 's|^\./||' \
+  | while read -r f; do [ -f "$U/$f" ] || echo "$f"; done | xargs wc -l | tail -1)
+# 实测 2026-10-16：上游没有的 42 个文件，合计 3687 行
 ```
 
 **B.2 关键机制定位**
 
 ```bash
-# 全屏重打（闪烁）的所有触发点 —— 注意结果含 1 处定义
-grep -n 'fullResetSequence_CAUSES_FLICKER' packages/tui-renderer/src/log-update.ts
-# 实测：6 处 = 5 个调用点 + 1 个函数定义（:451）
+# 全屏重打（闪烁）的所有触发点 —— 注意结果含定义和包装
+grep -n "fullReset('\|resetMainScreen(" packages/tui/src/frame/main-screen.ts packages/tui/src/ink.tsx
+# 实测：6 行 = 1 个函数定义（main-screen.ts:80）+ 1 个闭包包装（:103）
+#        + 3 个帧 diff 触发点（:106 / :121 / :130）+ ink.tsx:1754 一处
 # ⚠️ 这就是为什么不能直接用 grep -c 当「调用点数」
 
-# cell 的位域布局
-sed -n '317,332p' packages/tui-renderer/src/screen.ts
+# cell 的存储布局（四个平铺数组）
+sed -n '124,131p' packages/tui/src/screen/screen.ts
 
-# Esc / 粘贴超时
-grep -n 'NORMAL_TIMEOUT\|PASTE_TIMEOUT' packages/tui-renderer/src/components/App.tsx
+# Esc 超时
+grep -n 'pendingInputFlushDelayMilliseconds =' packages/tui/src/components/App.tsx
+# 实测：:137，值 50
 
 # 屏幕模式默认值
 grep -n 'alternateBuffer' packages/cli/src/ui/fullscreen.ts
 
 # 同步输出常量定义
-grep -n 'BSU\s*=\|ESU\s*=' packages/tui-renderer/src/termio/dec.ts
+grep -n 'export const bsu\|export const esu' packages/tui/src/write-synchronized.ts
+# 实测：:4 / :5
 ```
 
 **B.3 §12.6 三档判定模板（最实用的一条）**
@@ -3297,13 +3300,14 @@ grep -rn 'availableHeight:' packages/cli/src | grep -v '^\s*//' | grep -v '\* '
 # → 判定第 ③ 档：死代码（本仓已删，见 CodeColorizer.tsx:200 的注释）
 
 # ⚠️ 反例：不要直接数关键词总命中
-grep -rn 'availableHeight' packages/cli/src packages/tui-renderer/src | wc -l
-# 实测 18 —— 但绝大多数是 Yoga 内部的同名变量和一个不同的
-#            availableHeightLimit。裸命中数会让你得出完全相反的结论。
+grep -rn 'availableHeight' packages/cli/src packages/tui/src | wc -l
+# 实测 2026-10-16：8 —— 其中 4 行是另一个变量 availableHeightLimit、
+#            2 行是底座帧层 FrameFlicker 的同名字段、2 行是注释。
+#            裸命中数会让你得出完全相反的结论。
 ```
 
 > 📌 **B.3 这一段本身就是 §12 的教材**：
-> 同一个能力，**三条命令给出三个不同的数字（18 / 5 / 0），
+> 同一个能力，**三条命令给出三个不同的数字（8 / 5 / 0），
 > 而只有最后一个是答案**。
 > 前两个不是「不够精确」，是**会让你得出反向结论**。
 
@@ -3345,8 +3349,10 @@ done
 ✅ src/ui          →  packages/cli/src/ui
 ```
 
+2026-10-16 复跑：`src/ink` 那行已经没有了（frontmatter 在 2026-10-11 修正），剩下三条 ✅ 与上面一致。
+
 **读法（这份输出比它看起来复杂）**：只有 `src/ink` 是真的**消失**了
-（能力搬去了 `packages/tui-renderer/`，换了包名）；
+（能力搬进了 `packages/` 下独立的底座包，换了包名）；
 另外三个是**搬了包但目录名还在**——`src/tool` 现在在 `packages/core/` 下，
 不在规范自己声明的 `packages/cli/` 下。
 所以规范的 frontmatter `paths: ["src/ui/**", "src/ink/**"]` 有两处不准：
@@ -3428,9 +3434,9 @@ done
 ---
 
 > **文档信息**
-> 撰写日期：2026-09-02 · 最后核对：2026-09-02
+> 撰写日期：2026-09-02 · 最后核对：2026-10-16（渲染底座相关引用）
 > 主要来源：`claude-code/docs/chapter-12-terminal-ui.md`（📄 二手）
-> + sid-code 源码实读（🔬 一手，`packages/tui-renderer/` 与 `packages/cli/src/ui/`）
+> + sid-code 源码实读（🔬 一手，`packages/tui/` 与 `packages/cli/src/ui/`）
 > + `adr/ADR-040` 与 `bugfixes/done/TUI渲染与交互/` 十份踩坑记录（🔬 一手）
 >
 > **本文所有 🔬 标记的数字均由附录 B 的命令实跑得出，非估算。**

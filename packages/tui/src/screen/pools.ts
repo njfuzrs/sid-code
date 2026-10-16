@@ -6,7 +6,7 @@
  * - SGR 切换序列按 (from, to) 缓存，同一对样式只算一次 `diffAnsiCodes`。
  * 池是进程级共享的：跨帧比较 id 的前提是两帧用同一个池。id 0 恒为「无样式 / 无链接」。
  *
- * 规则来自黑盒对拍旧底座（tests/fixtures/screen-vectors.json）：
+ * 规则来自黑盒对拍冻结的行为基线（tests/fixtures/screen-vectors.json）：
  * - 相邻单元之间的 SGR 切换 = `diffAnsiCodes(前, 后)`，与 ansi-tokenize 的归并口径一致；
  * - 超链接：参数为空且以 BEL 结尾的 `OSC 8 ;; url BEL` 改写为 `OSC 8 ; id=<hash> ; url`，
  *   终止符按终端（kitty 用 ST），hash 是 url 的 Java 式字符串 hash 按无符号 36 进制。
@@ -73,7 +73,7 @@ export class StylePool {
 	}
 
 	/**
-	 * 这个样式下的空格看起来是否和默认空白一样（B9 / T4.2，对拍旧底座得出）：
+	 * 这个样式下的空格看起来是否和默认空白一样（B9 / T4.2，对拍冻结的行为基线得出）：
 	 * 只有背景色（40–48、100–107）、反显 7、下划线 4、删除线 9、上划线 53 和原样留在样式里的链接码
 	 * 会让空格「可见」；前景色、粗体、暗、斜体、闪烁、隐藏、双下划线 21、下划线颜色 58 等都不会。
 	 */
@@ -115,7 +115,7 @@ export function hyperlinkId(url: string): string {
  * - `drop`：只是关闭动作（`OSC 8 ;;` 无 url，code 与 endCode 相同）；
  * - `link`：可改写的普通链接（参数为空、BEL 结尾、url 非空），进超链接池，单元上记链接 id；
  * - `style`：其余（带参数 / 已带 id / ST 结尾），**原样留在 SGR 样式里**，随 `diffAnsiCodes` 开关。
- *   旧底座就是这么分的，所以「改写链接 ↔ 原样链接」切换时会出现先开后关之类的顺序，对拍向量钉住了它。
+ *   基线就是这么分的，所以「改写链接 ↔ 原样链接」切换时会出现先开后关之类的顺序，对拍向量钉住了它。
  */
 export function classifyHyperlink(
 	code: AnsiCode,

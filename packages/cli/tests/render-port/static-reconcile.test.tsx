@@ -81,7 +81,7 @@ describe("R11 Static 项可原地重渲", () => {
 });
 
 describe("R11 memo 口径（浅比较 items / children / style）", () => {
-  test("R11: 三者引用都不变时不重渲任何项；任一引用变了全部重渲（T4.2 对拍 legacy）", async () => {
+  test("R11: 三者引用都不变时不重渲任何项；任一引用变了全部重渲（T4.2 对拍冻结基线）", async () => {
     let calls = 0;
     const items = ["a", "b"];
     const fn = (x: string) => {

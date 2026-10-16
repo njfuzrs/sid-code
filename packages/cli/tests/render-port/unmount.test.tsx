@@ -1,6 +1,6 @@
 /**
- * 契约 X3（B9 / T7.1b）：卸载时的终端恢复序列。期望值全部是 2026-10-09 对拍 legacy 的黑盒探针实测
- * （没有读旧底座代码，设计文档 D-5；探针备份在 `~/Backups/sid-code-t67-probe-results-20261008/T7.1b/`）。
+ * 契约 X3（B9 / T7.1b）：卸载时的终端恢复序列。期望值全部是 2026-10-09 冻结基线的黑盒探针实测
+ * （没有读被对拍实现的源码，设计文档 D-5；探针备份在 `~/Backups/sid-code-t67-probe-results-20261008/T7.1b/`）。
  *
  * 必须是子进程：兜底段同步直写 fd 1，进程内的流对象截不到；`<W>` 标记出每一次经 `process.stdout.write` 的写入，
  * 没有标记的那段就是直写 fd 1（stdout 换成别的流时它仍落在 fd 1 上，见 pt 变体）。
@@ -14,7 +14,7 @@
  */
 import { describe, expect, test } from "bun:test";
 import { join, resolve } from "node:path";
-import { frozenKey, legacyFrozen } from "./fixtures/legacy-frozen.ts";
+import { frozenKey, frozenBaseline } from "./fixtures/frozen-baseline.ts";
 
 const ROOT = resolve(import.meta.dir, "../../../..");
 const FIXTURE = join(import.meta.dir, "fixtures/unmount-app.tsx");
@@ -96,10 +96,10 @@ describe("X3: 卸载时的终端恢复序列", () => {
   test.each([
     ["SID_DISABLE_TAB_STATUS=1", { SID_DISABLE_TAB_STATUS: "1" }],
     ["TMUX", { TMUX: "/tmp/tmux-0/default,1,0" }],
-  ] as const)("X3: alt-mouse + %s 与冻结的 legacy 一致", (_name, env) => {
-    const next = unmountSegment("alt-mouse", env);
-    expect(next).toContain(MOUSE_OFF + "E[>4mE[<uE[?1004lE[?2004lE[?25hE]9;4;0;\x07");
-    expect(next).toBe(legacyFrozen<string>("unmount", frozenKey("alt-mouse", env)));
+  ] as const)("X3: alt-mouse + %s 与冻结基线一致", (_name, env) => {
+    const actual = unmountSegment("alt-mouse", env);
+    expect(actual).toContain(MOUSE_OFF + "E[>4mE[<uE[?1004lE[?2004lE[?25hE]9;4;0;\x07");
+    expect(actual).toBe(frozenBaseline<string>("unmount", frozenKey("alt-mouse", env)));
   });
 
   test("X3: SID_DISABLE_TAB_STATUS 时兜底段不写 tab 清除", () => {

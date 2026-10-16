@@ -7,7 +7,7 @@ Date: 2026-10-10
 ## 决定了什么
 
 `sid-code -r` 选中会话恢复后，输入框出现 `>|xterm.js(6.1.0-beta.304)1;2c`。
-来源：新底座每次 raw mode 0→1 都发 `ESC[>0q` + `ESC[c`（`packages/tui/src/terminal-probe.ts`），
+来源：渲染底座每次 raw mode 0→1 都发 `ESC[>0q` + `ESC[c`（`packages/tui/src/terminal-probe.ts`），
 终端回 `ESC P >|xterm.js(…) ESC \` 与 `ESC[?1;2c`。底座自己的解析器认得这些回复，
 但 `packages/cli/src/ui/contexts/KeypressContext.tsx` 直读 stdin 另起一套解析：
 `ESC P` 被当成 Alt+Shift+P、后面逐字成了可插入字符；`ESC[?1;2c` 的 `?` 不被识别，`1;2c` 同样漏出。

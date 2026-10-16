@@ -1,5 +1,5 @@
 // sid-code（B9 / T4.1，契约 T5）：新写。上游没有等价物（只有 Transform）。
-// 规则全部来自对拍旧底座首帧字节（tests/fixtures/screen-vectors.json 的 `Ansi *` 条目），没有读旧代码。
+// 规则全部来自对拍冻结的行为基线首帧字节（tests/fixtures/screen-vectors.json 的 `Ansi *` 条目）。
 import React, {memo} from 'react';
 import type {Color} from '@sid-code/shared/types/color.ts';
 import {tokenizeAnsi} from '../ansi-tokenizer.js';
@@ -143,7 +143,7 @@ const applySgr = (style: SpanStyle, parameterString: string): SpanStyle => {
 				i += ext.used;
 			}
 		}
-		// 其余（闪烁 5、隐藏 8、上划线 53 …）旧底座一律丢弃
+		// 其余（闪烁 5、隐藏 8、上划线 53 …）基线一律丢弃
 	}
 
 	return next;
@@ -190,7 +190,7 @@ export const parseAnsiSpans = (input: string): Span[] => {
 const encodeSpan = (span: Span, forceDim: boolean, links: boolean): string => {
 	const {style} = span;
 	const dim = forceDim || Boolean(style.dim);
-	// 暗与粗体互斥：旧底座里只要暗开着，粗体就不出 SGR
+	// 暗与粗体互斥：基线里只要暗开着，粗体就不出 SGR
 	const styled = applyTextStyles(span.text, {
 		dim,
 		bold: !dim && style.bold,

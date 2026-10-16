@@ -1,7 +1,7 @@
 /**
  * T8.1a 夹具：每个子进程跑一个用例。`XID_CASE` 是 JSON：`[[实例 1 的回复…], [实例 2 的回复…]]`，
  * 每个实例挂载 → 喂回复 → 进 alt-screen → 单击链接 → 等满连击窗口，打印 `XID [各实例打开次数]`。
- * 识别结果是进程级的（旧底座同样如此），所以必须一个用例一个进程。
+ * 识别结果是进程级的，所以必须一个用例一个进程。
  */
 import React from "react";
 import { Box, Text } from "@sid-code/cli/ui/render-port/components.ts";

@@ -2,17 +2,17 @@
  * 键位解析对拍语料（B9 / T5.1，契约 I1 / I6 / I8）。
  *
  * 纯数据：每条是写进 stdin 的若干块字节，块之间可插等待毫秒数（数字）。
- * 生成器（scripts/tui-input-vectors.ts）在旧底座上逐条挂一个 `useInput` 组件，记下回调收到的
- * `(input, key)` 序列；测试（tests/input.test.ts）在新底座上跑同一串，逐条比较。不 import 任何底座。
+ * 生成器（scripts/tui-input-vectors.ts）生成向量时逐条挂一个 `useInput` 组件，记下回调收到的
+ * `(input, key)` 序列；测试（tests/input.test.ts）在渲染底座上跑同一串，逐条比较。不 import 任何底座。
  *
  * 刻意不收的输入：
- * - `\x1a`（Ctrl+Z）：两套底座都会给进程发 SIGSTOP 挂起，生成器进程会被停住。它的行为是契约 I7，
+ * - `\x1a`（Ctrl+Z）：底座会给进程发 SIGSTOP 挂起，生成器进程会被停住。它的行为是契约 I7，
  *   在 `packages/cli/tests/render-port/stdin-suspend.test.tsx` 里 mock 掉 `process.kill` 单独对拍；
  *
  * 终端回复（契约 I3，T5.2a）收在文件末尾的 `resp` 组：完整回复、分片（切在 1、2、中间、末字节，块间隔 10 / 80ms）、
  * 冲刷后的残片、残片后紧跟按键，以及 APC / SOS / PM、粘贴里夹回复等边角。
- * 刻意不收：非私有的 `CSI …$y`（如 `ESC [2026;2$y`），旧底座把它解成 shift，这是 I8 的 rxvt `$` 边角，不是回复残片，
- * 新底座尚未对齐（2026-10-08 探针实测）。
+ * 刻意不收：非私有的 `CSI …$y`（如 `ESC [2026;2$y`），基线把它解成 shift，这是 I8 的 rxvt `$` 边角，不是回复残片，
+ * 渲染底座尚未对齐（2026-10-08 探针实测）。
  */
 
 export type InputCase = { name: string; chunks: Array<string | number> };
@@ -248,7 +248,7 @@ for (const s of [
   cases.push(one(`multi ${JSON.stringify(s)}`, s));
 }
 
-// —— 跨块与 ESC 冲刷时机（旧底座约 50ms）——
+// —— 跨块与 ESC 冲刷时机（基线约 50ms）——
 for (const [a, b] of [
   [E, "[A"],
   [E, "a"],
@@ -285,10 +285,10 @@ for (const s of [
 }
 
 // —— 终端回复与残片（契约 I3，T5.2a）：名字统一以 `resp ` 开头 ——
-// 期望值由旧底座生成：完整的 DCS / OSC / 私有与次级 CSI 回复、冲刷出来的半截都不出事件；APC 原样交出
+// 期望值由冻结行为基线生成：完整的 DCS / OSC / 私有与次级 CSI 回复、冲刷出来的半截都不出事件；APC 原样交出
 const addResp = (name: string, chunks: Array<string | number>) =>
   cases.push({ name: `resp ${name}`, chunks });
-// A. 旧底座 terminal-response-fragment.test.ts 的 10 条输入
+// A. 基线 terminal-response-fragment.test.ts 的 10 条输入
 addResp("old xtversion 分片冲刷", [`${E}P>|xterm.js(6.1.0-beta.288)`, 80]);
 addResp("old ST 残尾+DA1", [`${E}\\${E}[?1;2c`]);
 addResp("old DA1 缺 c 冲刷", [`${E}[?1;2`, 80]);

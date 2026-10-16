@@ -2,7 +2,7 @@
  * 上游 ink@7.1.1 声明 `engines.node >=22`，而 sid-code 跑在 Bun 上（B9 / T1.2）。
  *
  * 这里只核对上游源码**实际用到的** Node API 在 Bun 下存在且语义符合预期（清单由 grep `packages/tui/src` 得来），
- * 不追求覆盖 Node 22 全集。新底座以后用到新的 Node API，就补进这张表。
+ * 不追求覆盖 Node 22 全集。渲染底座以后用到新的 Node API，就补进这张表。
  */
 import { describe, expect, test } from "bun:test";
 import { PassThrough } from "node:stream";
