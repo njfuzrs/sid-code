@@ -469,7 +469,7 @@ export const SettingsSchema = lazySchema(
         // M1 身份注入（可注入，非登录）。项目级不可覆盖——见 SECURITY_SENSITIVE_FIELDS。
         identity: IdentitySettingsSchema().optional(),
 
-        // 企业后端地址（登录 / 插件市场 / 远程 MCP 共用），如 https://www.sid-code.cc/traj。项目级不可覆盖。
+        // 企业后端地址（登录 / 插件市场 / 远程 MCP 共用），如 https://agent.example.com/traj。项目级不可覆盖。
         backend: BackendSettingsSchema().optional(),
 
         // 插件市场（内置 Skill 下沉方案 P2）。三个字段都决定「从哪下载会在本机执行的东西」，

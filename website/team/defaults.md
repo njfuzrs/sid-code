@@ -323,6 +323,7 @@ sid-code auth status --verify   # 七条通道逐条显示连通结果
 ```
 
 登录细节（TUI 里的 `/login`、SSH 远程机器、换人登录）见[企业登录](/team/login)。
+后端还没搭的话，管理员从[企业后端快速上手](/backend/quickstart)开始。
 
 只填 base，不填任何 `/api/v1/...` 路径。登录、策略、预算、账本、事件、flag、轨迹上传的地址
 都由它推出，不需要再配 `SID_CODE_*_ENDPOINT` 或 `analytics.backends`。轨迹上传另需
