@@ -130,8 +130,9 @@ export PATH="$HOME/.local/bin:$PATH"
 
 **症状：鼠标划不中文字，复制不了**
 
-全屏视口吃掉了鼠标事件。`Ctrl+S` 进 Copy Mode 临时放开，或用 `--inline` 永久回到
-内联模式。细节见[交互模式与键位](/use/interactive)。
+这种情况只出现在**全屏有界视口**（`--alternate-buffer` / `/tui on`）下——全屏接管了
+鼠标事件。`Ctrl+S` 进 Copy Mode 临时放开，或切回主屏内联模式（`--inline` 单次、
+`/tui off` 持久化；内联是默认模式）。细节见[交互模式与键位](/use/interactive)。
 
 **症状：`Shift+Enter` 不换行，直接就发送了**
 
@@ -139,8 +140,8 @@ export PATH="$HOME/.local/bin:$PATH"
 
 **症状：终端里留下花屏 / 残行**
 
-用 `Ctrl+L` 清屏（保留历史）。如果是执行中工具输出留下的残留，那正是全屏视口成为
-默认要解决的问题——确认你没有用 `--inline`。
+用 `Ctrl+L` 清屏（保留历史）。执行中工具输出在 scrollback 里留下的残行，曾是主屏
+渲染路径的已知问题，现已用 Static 同步折叠收敛（大输出进 scrollback 前先裁好）。
 
 **症状：`Ctrl+B` 不起作用**
 

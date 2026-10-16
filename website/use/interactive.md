@@ -137,31 +137,26 @@ sid-code 支持把图片和 PDF 直接喂给模型——不用先存盘再 `@` �
 还在跑的任务不受影响（要停它们用 `Ctrl+F`）。划掉只是从屏幕上拿走，模型那边
 `bg_task_list` / `task_output` 照样查得到。
 
-### Copy Mode：为什么鼠标选不中文字
+### Copy Mode：鼠标选不中文字怎么办（全屏模式下）
 
-默认是**全屏有界视口**（alternate buffer）：滚动、鼠标滚轮、虚拟列表都由 sid-code
-自己接管。代价是鼠标事件被程序吃掉了，**没法用鼠标直接划选文本**。
+**默认的主屏内联模式没有这个问题**：历史直接进终端原生 scrollback，鼠标原生选中复制。
+只有用 `--alternate-buffer` 或 `/tui on` 开了**全屏有界视口**（alternate buffer）之后，
+滚动、鼠标滚轮、虚拟列表才由 sid-code 自己接管——代价是鼠标事件被程序吃掉，
+**没法用鼠标直接划选文本**。
 
 两条出路：
 
 1. **临时**：按 `Ctrl+S` 进 Copy Mode，鼠标事件被放开，正常划选复制。按任意非导航键退出。
-2. **永久**：用 `--inline` 逃生舱回到旧的主屏内联模式。
+2. **永久**：切回主屏内联模式（默认模式）：
 
 ```bash
-sid-code --inline
+sid-code --inline     # 单次启动用主屏（显式覆盖配置）
+/tui off              # 会话里切，写进 settings.json，重启后生效
 ```
 
-`--inline` 下历史直接进终端原生 scrollback，鼠标原生选中，也兼容不支持
-alternate buffer 的终端。代价是执行中的工具输出可能在 scrollback 里留下残行——
-全屏模式正是为根治这个才成了默认。
-
-要长期用内联模式，别每次带参数，写进 `~/.sid-code/settings.json`：
-
-```json
-{
-  "alternateBuffer": false
-}
-```
+主屏下历史直接进终端原生 scrollback，鼠标原生选中，也兼容不支持 alternate buffer
+的终端；执行中的工具输出在 scrollback 里留下残行的问题，已由主屏路径的 Static
+同步折叠收敛（大输出进 scrollback 前先裁好）。
 
 只想复制模型上一条回复的话，不必划选：
 
