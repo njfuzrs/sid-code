@@ -23,7 +23,7 @@ import { ModelFallback } from "../llm/fallback.ts";
 import { ThinkingManager } from "../llm/thinking.ts";
 import { SessionState } from "../session/state.ts";
 import { getLogger, getSessionMetrics } from "../debug/index.ts";
-import { queryLoop } from "./loop.ts";
+import { queryLoop, injectPendingNotifications } from "./loop.ts";
 import { extractHookContext, formatHookContextReminder } from "../hook/context-inject.ts";
 import { currentProjectSessionDir } from "../session/store.ts";
 import { join } from "node:path";
@@ -248,12 +248,9 @@ export class QueryEngine {
     },
   ): AsyncGenerator<QueryEngineEvent> {
     const log = getLogger();
-    const { config, ctxMgr, toolRegistry, sessionState, hookSystem, sessionStore } = this.deps;
+    const { config, ctxMgr, hookSystem, sessionStore } = this.deps;
 
-    log.info(
-      "ENGINE",
-      `用户输入: ${userInput.slice(0, 200)}${userInput.length > 200 ? "..." : ""}`,
-    );
+    log.info("ENGINE", `用户输入:${userInput.slice(0, 200)}${userInput.length > 200 ? "..." : ""}`);
 
     // 记录用户提示
     getSessionMetrics().recordPrompt();
@@ -371,6 +368,39 @@ export class QueryEngine {
     }
     ctxMgr.addMessage(userMessage);
     yield { kind: "user_message_added" };
+
+    yield* this.runLoop(thinking);
+  }
+
+  /**
+   * 后台任务通知到达时续跑一轮（主循环已空闲）。对标 claude-code：idle 时
+   * `useQueueProcessor` / headless `print.ts` 把 task-notification 当作一条输入执行。
+   *
+   * 与 submitMessage 的区别（都是刻意的）：
+   * - **不触发 UserPromptSubmit hook、不记 recordPrompt**：通知不是用户输入。CC 同样只在
+   *   `mode === 'prompt'` 时走这些（processUserInput.ts:145）。把它记成用户提示会让
+   *   「用户提示数」和 hook 审计都多出一条没人说过的话。
+   * - **不解析 thinking hint**：通知正文是子代理产出的不可信数据，里面出现 "ultrathink"
+   *   不该改变思考档位。思考配置走无提示的默认推荐。
+   * - 注入形状与轮中注入完全一致（共用 injectPendingNotifications，含落盘）。
+   *
+   * 队列为空（通知已被别处消费）时直接返回，不产出任何事件——调用方据此不显示空轮。
+   */
+  async *resumeWithNotifications(): AsyncGenerator<QueryEngineEvent> {
+    const { ctxMgr, sessionStore } = this.deps;
+    const injected = injectPendingNotifications(ctxMgr, sessionStore);
+    if (injected === 0) return;
+    getLogger().info("ENGINE", `空闲唤醒：${injected} 条后台任务通知，续跑一轮`);
+    yield { kind: "user_message_added" };
+    yield* this.runLoop(this.deps.thinkingMgr.getThinkingConfig(""));
+  }
+
+  /** 构建 queryLoop 依赖并消费其事件流。submitMessage 与 resumeWithNotifications 共用。 */
+  private async *runLoop(
+    thinking: { enabled: boolean; budgetTokens: number } | undefined,
+  ): AsyncGenerator<QueryEngineEvent> {
+    const log = getLogger();
+    const { config, ctxMgr, toolRegistry, sessionState, hookSystem, sessionStore } = this.deps;
 
     // ─── 构建 queryLoop 依赖 ───
     const queryDeps: QueryDeps = {

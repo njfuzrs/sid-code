@@ -319,3 +319,71 @@ describe("SDKQueryEngine.submitMessage", () => {
     expect(outB[outB.length - 1]).not.toHaveProperty("structured_output");
   });
 });
+
+/**
+ * 空闲续跑：主循环 end_turn 之后才到达的后台任务通知（事故 20261016-124505-786b1586）。
+ *
+ * 与 submitMessage 的关键差别——**不产出 `user` 消息**（通知不是宿主发来的输入），
+ * 但内核事件与 result 收尾完全一致。两条都要断言：只测"有输出"会把
+ * 「把通知当成用户输入回显给宿主」这种错误实现放过去。
+ */
+describe("SDKQueryEngine.resumeWithNotifications", () => {
+  const events: QueryEngineEvent[] = [
+    { kind: "system", level: "info", text: "已注入 2 条后台任务通知" },
+    {
+      kind: "assistant_message",
+      message: { role: "assistant", content: [{ type: "text", text: "汇总完成" }] },
+    },
+  ];
+
+  test("有通知 → 跑一轮并出 result；且不产出 user 消息", async () => {
+    let resumed = 0;
+    const engine = new SDKQueryEngine(config, {
+      ...makeDriver(events, [{ role: "assistant", content: [{ type: "text", text: "汇总完成" }] }]),
+      hasPendingNotifications: () => true,
+      async *resumeWithNotifications() {
+        resumed++;
+        for (const e of events) yield e;
+      },
+    });
+
+    expect(engine.hasPendingNotifications()).toBe(true);
+    const out: any[] = [];
+    for await (const m of engine.resumeWithNotifications()) out.push(m);
+
+    expect(resumed).toBe(1);
+    expect(out[0].type).toBe("system"); // init
+    // 通知不是宿主输入：不得回显 user 消息
+    expect(out.some((m) => m.type === "user")).toBe(false);
+    const last = out[out.length - 1];
+    expect(last.type).toBe("result");
+    expect(last.subtype).toBe("success");
+    expect(SDKMessageSchema().safeParse(last).success).toBe(true);
+  });
+
+  test("队列里没有通知 → 一个事件都不产出（调用方据此不显示空轮）", async () => {
+    const engine = new SDKQueryEngine(config, {
+      ...makeDriver(events, []),
+      hasPendingNotifications: () => false,
+      async *resumeWithNotifications() {
+        throw new Error("不该被调用");
+      },
+    });
+    const out: any[] = [];
+    for await (const m of engine.resumeWithNotifications()) out.push(m);
+    expect(out).toHaveLength(0);
+  });
+
+  test("driver 不支持（老 mock / 嵌入方）→ 不抛错、不产出（保持旧行为）", async () => {
+    const engine = new SDKQueryEngine(config, makeDriver(events, []));
+    expect(engine.hasPendingNotifications()).toBe(false);
+    expect(engine.hasRunningBackgroundTasks()).toBe(false);
+    const out: any[] = [];
+    for await (const m of engine.resumeWithNotifications()) out.push(m);
+    expect(out).toHaveLength(0);
+    // 订阅空实现可安全注销
+    const unsub = engine.subscribeBackgroundActivity(() => {});
+    expect(typeof unsub).toBe("function");
+    unsub();
+  });
+});
