@@ -41,10 +41,11 @@ $EDITOR ~/.sid-code/settings.json
 sid-code auth status
 ```
 
-配对了会输出（真实输出，地址与 key 已脱敏）：
+配对了会输出（真实输出，地址与 key 已脱敏）。完整输出分三段：`企业登录:`、`企业通道（…）:`、
+`模型认证:`；下面是第三段（没配企业后端时前两段显示「(未配置)」，不影响模型诊断）：
 
 ```text
-认证状态:
+模型认证:
 
   Provider:     openai
   主模型:       gpt-5.4
@@ -52,6 +53,7 @@ sid-code auth status
   Key 来源:     模型级 (available_models[].apiKey)
   baseURL:      https://your-gateway.example.com/v1
   经由网关:     是
+  ⚠ 注意:      经网关时 --betas 等直连专属头可能不透传（详见 anthropic.ts）。
 
   available_models（共 11 个）:
     - gpt-5.4  provider=openai  key=✓
@@ -122,7 +124,7 @@ sid-code 会识别出"Content-Type 不是 event-stream，这是伪装成成功�
 覆盖面最广：OpenAI 官方、DeepSeek、通义千问、GLM、Kimi、公司自建网关、
 以及任何声称"兼容 OpenAI 协议"的服务。
 
-同一个 openai 族下有 Chat Completions 与 Responses 两种请求形态，默认自动选：模型目录声明了 Responses 的走 Responses，非官方端点其余一律走 Chat Completions。网关不支持 `/responses` 时设 `SID_CODE_OPENAI_PROTOCOL=chat` 强制回退（`responses` 则强制走 Responses）。判定逻辑在 `packages/core/src/llm/openai.ts`。
+同一个 openai 族下有 Chat Completions 与 Responses 两种请求形态，按四级优先级自动选：① 环境变量 `SID_CODE_OPENAI_PROTOCOL`（`chat` / `responses`）强制指定，最高优先级；② 模型目录声明了 Responses 的走 Responses；③ 非官方端点其余一律走 Chat Completions；④ 官方端点（`api.openai.com`）上未注册的 `gpt-5.x` 按模型名启发式走 Responses。网关不支持 `/responses` 时设 `SID_CODE_OPENAI_PROTOCOL=chat` 强制回退。判定逻辑在 `packages/core/src/llm/openai.ts`。
 
 ```json
 {
@@ -155,7 +157,7 @@ sid-code 会识别出"Content-Type 不是 event-stream，这是伪装成成功�
 
 #### 各家官方端点速查
 
-2026-10-11 对照各家官方文档核对。安装脚本写入的默认配置就是这张表（见[团队默认配置](/team/defaults#每个模型从哪来)）：
+2026-10-11 对照各家官方文档核对。安装脚本写入的默认配置（安装时从发布服务器拉取的 `team-defaults.json`）就是这张表（见[团队默认配置](/team/defaults#每个模型从哪来)）：
 
 | 厂商 | 主力模型 | provider | 官方 base_url |
 | --- | --- | --- | --- |
@@ -232,7 +234,7 @@ sid-code 的循环要求模型能稳定输出结构化 tool call。7B 级别的�
 | 环境变量 | 当前 shell | 临时试一下，见下 |
 | 命令行参数 | 单次运行 | `--model` / `--provider` |
 
-后面的盖前面的。**API Key 只放用户级那份**，别写进项目里跟着 git 提交出去。
+后面的盖前面的。**API Key 只放用户级那份**，别写进项目里跟着 git 提交出去——事实上，模型相关的字段（`model` / `availableModels` / `baseURL` / `provider` / `apiKey`）就是**只在用户级生效**：两份项目级文件只接受界面与交互类字段（语言、主题、`effortLevel` 等），写进去的模型配置会被忽略。这不是疏漏，是刻意的安全设计：仓库文件在你确认信任之前就会被读取，不能让仓库内容把请求路由到别的端点。
 
 两份项目级文件的「项目」不是同一个目录，这是对齐 Claude Code 的刻意设计：
 
@@ -245,8 +247,9 @@ sid-code 的循环要求模型能稳定输出结构化 tool call。7B 级别的�
 
 | 基准 | 哪些东西 |
 | --- | --- |
-| 启动目录这一层 | 共享 `settings.json`、项目级 hooks、`mcp add -s project` 写入位置 |
-| git 仓库根 | `settings.local.json`、权限规则读写、工作区信任、MCP 审批 / 禁用 / local 作用域（这几项私有状态按**主仓根**记，全部 worktree 共用） |
+| 启动目录这一层 | 共享 `settings.json`、项目级 hooks、`mcp add --scope project` 写入位置 |
+| git 仓库根（linked worktree 下是**worktree 自己的根**） | `settings.local.json`、权限规则读写 |
+| 主仓根（linked worktree 归一到主 checkout） | 工作区信任、MCP 审批 / 禁用 / local 作用域（这几项私有状态按**主仓根**记，全部 worktree 共用） |
 | 启动目录 → git 仓库根逐级 | skills、commands、agents、output-styles（近的覆盖远的，仓库外上层不读） |
 | 启动目录 → 文件系统根逐级 | `CLAUDE.md`、rules 目录、`CLAUDE.local.md`、`AGENTS.md`、`.mcp.json` |
 
@@ -273,7 +276,7 @@ sid-code auth status
 | `base_url` | `baseURL` |
 | `api_key` | `apiKey` |
 
-本页统一用 snake_case，跟团队默认配置一致。
+本页统一用 snake_case；团队默认配置写的是 camelCase（`baseURL` / `apiKey`），两种写法完全等价。
 
 ### 配多个模型的好处
 
@@ -293,6 +296,7 @@ sid-code auth status
   `fallbackModel` 和 `subAgentModels` 里仍指向没 key 模型的引用会自动改到能用的模型上，
   免得主模型能用、降级和子代理却一跑就 401。其它厂商条目原样保留，以后拿到 key 再填。
 - **选「其他（手动配置）」或没有预置时**：选 provider → 填 base URL → 填模型名 → 填 key。
+  注意这条路径会把 `availableModels` 覆盖成你填的这一条，不会保留模板里的其它模型条目。
 
 向导按 Esc 可以先关掉。之后欢迎页一直显示一行引导；输入 `/model` 重新打开向导；
 没配好就发消息，会重新打开向导，刚才那句放回输入框，配好后回车就能发出去。
@@ -322,8 +326,8 @@ sid-code 会把它当"没配"处理并报错，不会拿占位符去发请求。
 
 ### 报 `model_not_found` / `Invalid model`
 
-模型名的唯一权威是**你的 provider**，不是 sid-code。sid-code 原样把
-`name` 字段发出去。所以先跟服务端要一份准确的模型名：
+模型名的唯一权威是**你的 provider**，不是 sid-code。sid-code 默认把 `name` 字段原样发出去
+（条目里另配了 `model_id` 时，发给厂商的是 `model_id`）。所以先跟服务端要一份准确的模型名：
 
 ```bash
 # openai 族通用
@@ -335,13 +339,17 @@ curl -s https://your-gateway.example.com/v1/models \
 
 ### 改了配置没生效
 
-`~/.sid-code/settings.json` 在**启动时**读一次。改完重启 sid-code，
-或者用 `/model` 在会话里热切。
+`~/.sid-code/settings.json` 在**启动时**读一次，会话中间不重读。改完重启 sid-code。
+
+注意 `/model` **不能**替代重启：它只在启动时已加载的模型清单里切换，不重读配置文件——
+清单外的新增模型、改过的 `base_url`，它都看不到。（例外：key 失效引发 401 时会自动
+重读一次凭据，不用为此重启。）
 
 ### 一直在重试然后失败
 
-日志里出现 `[FALLBACK] 流式阶段尝试 …` 这种，说明请求确实发出去了但被拒。
-先用上面的 `/v1` 规则对一遍 `base_url`，再确认 key 和网络（网关在内网的话要连 VPN）。
+开 `--debug` 后，日志里出现 `[FALLBACK] 流式阶段尝试 …` 这种，说明请求确实发出去了但被拒
+（默认审计日志只记 WARN 以上，看不到这行）。先用上面的 `/v1` 规则对一遍 `base_url`，
+再确认 key 和网络（网关在内网的话要连 VPN）。
 
 ## 相关
 
