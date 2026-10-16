@@ -132,7 +132,7 @@ curl -fsSL https://www.sid-code.cc/releases/sid-code/install.sh | SID_CODE_CHANN
 你在 beta 期跑的二进制，与之后所有人拿到的是同一份字节，没有"再构建一次"这一步。
 
 ::: tip 通道会跟着安装走
-装 beta 时安装脚本会在版本目录旁写一个通道标记，之后 `sid-code update` 和后台自动更新
+装 beta 时安装脚本会在版本目录里写一个通道标记，之后 `sid-code update` 和后台自动更新
 都**沿用 beta 通道**（读 `beta.txt`），beta 期发的修复号不用手动操作就能升上去：
 
 ```bash
@@ -142,8 +142,9 @@ SID_CODE_CHANNEL=stable sid-code update    # 退出 beta，回到稳定版
 :::
 
 beta 期发现问题时不会在原版本号里换字节，而是发下一个构建号；验收通过后促升最后那个号。
-所以稳定版的版本号可能跳号（比如 0.1.606 → 0.1.609），被跳过的中间号在
-[更新日志](/changelog)里标为「预发布」，它们的变更已合并进稳定版的说明。
+所以稳定版的版本号可能跳号——beta 期发出去的号里，只有最后验收通过的那个被促升为稳定版，
+其余只进 beta 通道。被跳过的号在[更新日志](/changelog)里标为「预发布」，它们的变更已合并
+进稳定版的说明。
 
 想退回稳定版随时可以，跑一次 `SID_CODE_CHANNEL=stable sid-code update` 即可，配置和会话都不受影响。
 
