@@ -13,7 +13,11 @@
  *   并按 now/next/later 分组给 InputArea 做分组提示（P1-G6）。
  * - drain：仅在 streamingState===Idle 时逐条取 user-input 发送。出队顺序由队列内核保证
  *   （now → next → later，同级 FIFO），本 hook 不再自行排序。
- *   task-notification 不在此 drain，仍由 queryLoop 回合边界处理，互不干扰。
+ * - task-notification：轮中到达的由 queryLoop 回合边界注入；**空闲时到达的由本 hook 触发
+ *   `onNotifications` 续跑一轮**（对标 cc `useQueueProcessor`：无查询进行中时消费队列里
+ *   所有 mode）。此前本 hook 只认 user-input，主循环 end_turn 之后才完成的后台子代理，
+ *   其通知永远没人消费——任务"跑到一半自己停了"且无报错（事故 20261016-124505-786b1586）。
+ *   取舍顺序跟队列内核走：队首是谁就先处理谁（user-input 默认 next 优先于通知的 later）。
  */
 
 import { useCallback, useEffect, useMemo, useRef, useSyncExternalStore } from "react";
@@ -25,6 +29,7 @@ import {
   getQueueSnapshot,
   subscribeQueue,
   type CommandPriority,
+  type QueuedCommand,
 } from "@sid-code/core/query/message-queue-manager.ts";
 
 /** P1-G6：按优先级分组的排队条数（供 InputArea 分组提示）。 */
@@ -63,11 +68,33 @@ interface UseMessageQueueOptions {
   streamingState: StreamingState;
   /** 发送消息的回调 */
   onSend: (text: string) => Promise<void>;
+  /**
+   * 空闲时队首是后台任务通知 → 续跑一轮让模型处理它。不传则通知仍只在回合边界注入（旧行为）。
+   * 回调负责实际出队（经 engine.resumeWithNotifications），本 hook 只决定「何时」。
+   */
+  onNotifications?: () => Promise<void>;
+  /**
+   * 为 true 时暂不自动续跑通知（对标 cc 的 hasActiveLocalJsxUI）：对话框打开时用户正在
+   * 做别的交互，突然开跑一轮会抢走焦点。关闭后依赖变化会重新触发。不影响 user-input 接续。
+   */
+  notificationsBlocked?: boolean;
+}
+
+/** 队首（下一个该处理的）命令的种类。只看本 hook 负责的两类，其余 kind 跳过。 */
+export function nextIdleAction(
+  snapshot: readonly QueuedCommand[],
+): "user-input" | "task-notification" | null {
+  for (const c of snapshot) {
+    if (c.kind === "user-input" || c.kind === "task-notification") return c.kind;
+  }
+  return null;
 }
 
 export function useMessageQueue({
   streamingState,
   onSend,
+  onNotifications,
+  notificationsBlocked = false,
 }: UseMessageQueueOptions): UseMessageQueueReturn {
   const isProcessingRef = useRef(false);
   const isProcessingStateRef = useRef(false);
@@ -102,28 +129,35 @@ export function useMessageQueue({
     return taken && typeof taken.payload === "string" ? taken.payload : null;
   }, []);
 
-  // 当 streamingState 变为 Idle 且队列有待发送 user-input 时，逐条按序发送。
-  // 逐条 drain（每次只取 1 条）保持与旧实现完全一致的接续语义，避免一次性 flush 改变行为。
+  // 当 streamingState 变为 Idle 时处理队首：user-input 逐条发送，task-notification 续跑一轮。
+  // 逐条 drain（每次只处理 1 项）保持与旧实现完全一致的接续语义，避免一次性 flush 改变行为。
+  //
+  // 依赖 snapshot 而非 queueLength：通知入队不改变 user-input 计数，只看 queueLength 的话
+  // 空闲时到达的通知不会让 effect 重跑——这正是本次要修的断链。
   useEffect(() => {
     if (streamingState !== StreamingState.Idle) return;
-    if (queueLength === 0) return;
     if (isProcessingRef.current) return;
+    const action = nextIdleAction(snapshot);
+    if (action === null) return;
+    if (action === "task-notification" && (!onNotifications || notificationsBlocked)) return;
 
     const processNext = async () => {
       isProcessingRef.current = true;
       isProcessingStateRef.current = true;
 
-      // 只取队首那条 user-input，发送后其余留待下次 effect。队列内核已按
-      // (优先级, 入队序) 排好序，故"队首"天然就是 now → next → later 中最该先发的那条。
-      // 逐条接续语义与旧实现完全一致：每次 Idle 只发一条，避免一次性 flush 改变行为。
-      const first = dequeueFirstByKind("user-input");
-
       try {
-        if (first && typeof first.payload === "string") {
-          await onSend(first.payload);
+        if (action === "user-input") {
+          // 只取队首那条 user-input，发送后其余留待下次 effect。队列内核已按
+          // (优先级, 入队序) 排好序，故"队首"天然就是 now → next → later 中最该先发的那条。
+          const first = dequeueFirstByKind("user-input");
+          if (first && typeof first.payload === "string") {
+            await onSend(first.payload);
+          }
+        } else {
+          await onNotifications!();
         }
       } catch {
-        // 发送失败不重试，丢弃
+        // 发送失败不重试，丢弃（通知续跑失败由回调自己展示错误）
       }
 
       isProcessingRef.current = false;
@@ -131,7 +165,7 @@ export function useMessageQueue({
     };
 
     processNext();
-  }, [streamingState, queueLength, onSend]);
+  }, [streamingState, snapshot, onSend, onNotifications, notificationsBlocked]);
 
   return {
     enqueue,

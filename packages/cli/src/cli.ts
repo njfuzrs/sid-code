@@ -1614,7 +1614,7 @@ export async function main(): Promise<void> {
     }
     if (cliArgs["delete-session"]) {
       const { handleDeleteSession } = await import("@sid-code/core/session/commands.ts");
-      await handleDeleteSession(cliArgs["delete-session"]);
+      await handleDeleteSession(cliArgs["delete-session"], config);
       return exitOneShot();
     }
     if (cliArgs["cleanup-sessions"]) {

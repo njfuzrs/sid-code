@@ -95,6 +95,11 @@ export interface TUICallbacks {
     },
   ) => Promise<void>;
   onSlashCommand: (cmd: string, args: string) => Promise<void>;
+  /**
+   * 主循环空闲时队列里出现后台任务通知 → 续跑一轮让模型处理（对标 cc useQueueProcessor）。
+   * 可选：未实现的宿主（测试桩）保持旧行为，通知等下一条用户输入时随回合边界注入。
+   */
+  onBackgroundNotifications?: () => Promise<void>;
   /** 直接执行交互式 Shell 命令，不经过斜杠命令注册表。 */
   onShellCommand: (command: string) => Promise<void>;
   onInterrupt: () => void;
@@ -1139,11 +1144,28 @@ function TUIAppInner({ initialState, callbacks, bridge, alternateBuffer }: AppPr
     [callbacks],
   );
 
+  // 空闲续跑后台通知：与 handleSubmit 直送同样占住提交位，防止续跑期间用户回车被当成
+  // 「空闲直送」并发开第二轮（两轮同时写 ctxMgr）。
+  const runBackgroundNotifications = useCallback(async () => {
+    if (!callbacks.onBackgroundNotifications || isSubmittingRef.current) return;
+    isSubmittingRef.current = true;
+    try {
+      await callbacks.onBackgroundNotifications();
+    } catch (err: any) {
+      log.error("UI:INPUT", `后台通知续跑异常`, { error: err?.message });
+    } finally {
+      isSubmittingRef.current = false;
+    }
+  }, [callbacks]);
+
   // 多条输入排队：流式响应中提交的普通输入入队，当前轮结束（Idle）后自动接续。
-  // 对标 cc 的 now>next>later——这里实现 next（用户输入排队），系统通知不抢占。
+  // 对标 cc 的 now>next>later——user-input 默认 next，后台通知 later 排在其后；
+  // 对话框 / 命令面板打开时不自动续跑通知（对标 cc hasActiveLocalJsxUI），关掉后自动补跑。
   const { enqueue, queueLength, queuedByPriority, popLastForEdit } = useMessageQueue({
     streamingState,
     onSend: dispatchInput,
+    onNotifications: callbacks.onBackgroundNotifications ? runBackgroundNotifications : undefined,
+    notificationsBlocked: Boolean(state.activeDialog || state.commandPanel),
   });
 
   /**

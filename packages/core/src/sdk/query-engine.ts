@@ -79,6 +79,14 @@ export interface SDKQueryEngineDriver {
    * （缺陷 4）。不实现则沿用 config.model。
    */
   getModel?(): string;
+  /**
+   * 后台任务通知续跑（即 QueryEngine.resumeWithNotifications）与配套的后台状态查询。
+   * 四个一起可选：不实现的 driver 维持旧行为——不等后台任务、不续跑。
+   */
+  resumeWithNotifications?(): AsyncGenerator<QueryEngineEvent>;
+  hasPendingNotifications?(): boolean;
+  hasRunningBackgroundTasks?(): boolean;
+  subscribeBackgroundActivity?(listener: () => void): () => void;
 }
 
 export class SDKQueryEngine {
@@ -111,6 +119,40 @@ export class SDKQueryEngine {
    * 4. yield result(success/error)（唯一终止信号）
    */
   async *submitMessage(prompt: string, options?: { uuid?: string }): AsyncGenerator<SDKMessage> {
+    yield* this.runTurn(() => this.driver.submitMessage(prompt), { prompt, uuid: options?.uuid });
+  }
+
+  /**
+   * 后台任务通知到达时续跑一轮（主循环已空闲）。对标 cc print.ts：task-notification 出队后
+   * 「fall through to ask() so the model sees the agent result and can act on it」。
+   * 不 yield `user` 消息——通知不是宿主发来的输入；其余生命周期（init / 内核事件 / result）同 submitMessage。
+   * driver 不支持（测试 mock / 嵌入方）时什么都不产出。
+   */
+  async *resumeWithNotifications(): AsyncGenerator<SDKMessage> {
+    const resume = this.driver.resumeWithNotifications;
+    if (!resume || !this.hasPendingNotifications()) return;
+    yield* this.runTurn(() => resume.call(this.driver));
+  }
+
+  /** 队列里是否有待投递的后台任务通知（driver 不支持时恒 false） */
+  hasPendingNotifications(): boolean {
+    return this.driver.hasPendingNotifications?.() ?? false;
+  }
+
+  /** 是否仍有运行中的后台任务（driver 不支持时恒 false） */
+  hasRunningBackgroundTasks(): boolean {
+    return this.driver.hasRunningBackgroundTasks?.() ?? false;
+  }
+
+  /** 订阅后台活动（任务状态变化 / 通知入队）。driver 不支持时返回空操作 */
+  subscribeBackgroundActivity(listener: () => void): () => void {
+    return this.driver.subscribeBackgroundActivity?.(listener) ?? (() => {});
+  }
+
+  private async *runTurn(
+    startDriver: () => AsyncGenerator<QueryEngineEvent>,
+    input?: { prompt: string; uuid?: string },
+  ): AsyncGenerator<SDKMessage> {
     this.startTime = this.now();
     this.turnCount = 0;
 
@@ -124,17 +166,19 @@ export class SDKQueryEngine {
       cwd: this.config.cwd,
     };
 
-    // ② user
-    const userMessage: Message = {
-      role: "user",
-      content: [{ type: "text", text: prompt }],
-    };
-    yield {
-      type: "user",
-      uuid: options?.uuid ?? this.uuid(),
-      session_id: this.config.sessionId,
-      message: userMessage,
-    };
+    // ② user（通知续跑轮没有宿主输入，不回显）
+    if (input) {
+      const userMessage: Message = {
+        role: "user",
+        content: [{ type: "text", text: input.prompt }],
+      };
+      yield {
+        type: "user",
+        uuid: input.uuid ?? this.uuid(),
+        session_id: this.config.sessionId,
+        message: userMessage,
+      };
+    }
 
     // ③ 消费内核事件流
     let terminalEmitted = false;
@@ -174,7 +218,7 @@ export class SDKQueryEngine {
     };
 
     try {
-      const driverStream = this.driver.submitMessage(prompt);
+      const driverStream = startDriver();
       // 增量与内核事件一起等，而不是「先排空再等事件」。
       //
       // 为什么不能先排空：token 回调和 done 事件经常在同一刻到达（processStream

@@ -121,6 +121,11 @@ import { mergeAnchoredItems } from "./ui/local-command-items.ts";
 import { resolvePanel } from "./command/executor.ts";
 import { buildCommandAnswerMessages, routeCommandResult } from "./ui/command-result-route.ts";
 import { startPreventSleep, stopPreventSleep } from "@sid-code/core/task/prevent-sleep.ts";
+import {
+  hasPendingNotifications,
+  hasRunningBackgroundTasks,
+  subscribeBackgroundActivity,
+} from "@sid-code/core/task/background-wake.ts";
 import { getSleepLedger } from "@sid-code/shared/utils/sleep-detect.ts";
 import {
   recordSideCall,
@@ -7659,34 +7664,59 @@ export class App {
     // P2-1：以 plan 权限模式启动（或被 CLAUDE.md 规则改成 plan）的会话在这里进入状态机。
     this.syncPlanModeFromPermissionMode();
     try {
-      for await (const event of this.submitHeadlessInput(input)) {
-        if (event.kind === "done") {
-          // 预算硬停：loop 先 yield 一条 system warning（已由 formatHeadlessEvent 打到 stderr），
-          // 再 yield 这条带 budgetExceeded 的 done。这里只记标志，退出码在收尾处决定。
-          if (event.budgetExceeded) budgetExceeded = true;
-          break;
+      // 对标 cc print.ts 的 `do { drain } while (hasRunningBg || hasQueued)`：本轮结束后若仍有
+      // 后台任务在跑，等它们的通知并续跑，直到再无后台事件才收尾。此前 -p 在首轮 done 后直接
+      // 退出，模型那句「后台子代理完成后汇总」永远兑现不了，进程退出还会把子代理一起带走。
+      // 只有「正常说完」才续等：致命错误 / 预算硬停 / 中止都直接收尾，不再开新轮。
+      let events: AsyncGenerator<import("@sid-code/core/query/types.ts").QueryEngineEvent> =
+        this.submitHeadlessInput(input);
+      // 续跑轮的答案覆盖首轮（-p 只输出最终答复，「等子代理返回」那句不是结论）；
+      // 但续跑轮若一个字都没产出，必须退回首轮内容，不能把唯一的答案清空。
+      let previousBuffer: string | null = null;
+      for (;;) {
+        let turnOk = false;
+        for await (const event of events) {
+          if (event.kind === "done") {
+            // 预算硬停：loop 先 yield 一条 system warning（已由 formatHeadlessEvent 打到 stderr），
+            // 再 yield 这条带 budgetExceeded 的 done。这里只记标志，退出码在收尾处决定。
+            if (event.budgetExceeded) budgetExceeded = true;
+            // incompleteReason：本轮不是正常说完（超时重试耗尽等），不在故障之上再开新轮。
+            turnOk = !event.budgetExceeded && !event.incompleteReason;
+            break;
+          }
+          // §3.2：queryLoop 异常现封装为 fatal_error 事件（不再穿透 for-await）。
+          // 无头模式需显式转成 runError，使 SessionEnd reason=error、错误落盘可见。
+          if (event.kind === "fatal_error") {
+            runError = new Error(event.message);
+            if (event.stack) runError.stack = event.stack;
+            process.stderr.write(
+              `\n[runHeadless] 致命错误: ${event.message}\n${event.stack ?? ""}\n`,
+            );
+            break;
+          }
+          // 静默-2 / 静默-7：非交互路径事件覆盖对齐交互式 TUI（app.ts system/tombstone/…）。
+          // 此前只认 system/warning，丢弃 system/error（超时重试耗尽的用户可见提示，紧接着
+          // done 就 break → 用户只见输出戛然而止）与 system/info（预算/压缩/续写/门禁/停滞等），
+          // 以及 tombstone/hook_blocked/max_turns/loop_detected/loop_recovery 全被静默丢。
+          // 映射逻辑收敛到 formatHeadlessEvent 纯函数：stderr 写进度/状态（不污染 stdout 答案），
+          // error 级额外拼入正文兜底可见。
+          const out = formatHeadlessEvent(event);
+          if (out) {
+            if (out.stderr) process.stderr.write(`${out.stderr}\n`);
+            if (out.appendToBuffer) streamBuffer += out.appendToBuffer;
+          }
         }
-        // §3.2：queryLoop 异常现封装为 fatal_error 事件（不再穿透 for-await）。
-        // 无头模式需显式转成 runError，使 SessionEnd reason=error、错误落盘可见。
-        if (event.kind === "fatal_error") {
-          runError = new Error(event.message);
-          if (event.stack) runError.stack = event.stack;
-          process.stderr.write(
-            `\n[runHeadless] 致命错误: ${event.message}\n${event.stack ?? ""}\n`,
-          );
-          break;
-        }
-        // 静默-2 / 静默-7：非交互路径事件覆盖对齐交互式 TUI（app.ts system/tombstone/…）。
-        // 此前只认 system/warning，丢弃 system/error（超时重试耗尽的用户可见提示，紧接着
-        // done 就 break → 用户只见输出戛然而止）与 system/info（预算/压缩/续写/门禁/停滞等），
-        // 以及 tombstone/hook_blocked/max_turns/loop_detected/loop_recovery 全被静默丢。
-        // 映射逻辑收敛到 formatHeadlessEvent 纯函数：stderr 写进度/状态（不污染 stdout 答案），
-        // error 级额外拼入正文兜底可见。
-        const out = formatHeadlessEvent(event);
-        if (out) {
-          if (out.stderr) process.stderr.write(`${out.stderr}\n`);
-          if (out.appendToBuffer) streamBuffer += out.appendToBuffer;
-        }
+        if (previousBuffer !== null && streamBuffer === "") streamBuffer = previousBuffer;
+        previousBuffer = null;
+        if (!turnOk) break;
+        const { waitForBackgroundNotification } =
+          await import("@sid-code/core/task/background-wake.ts");
+        const outcome = await waitForBackgroundNotification(this.abortController?.signal);
+        if (outcome !== "notification") break;
+        process.stderr.write("[runHeadless] 后台任务已返回，继续处理\n");
+        previousBuffer = streamBuffer;
+        streamBuffer = "";
+        events = this.queryEngine.resumeWithNotifications();
       }
     } catch (err: any) {
       runError = err instanceof Error ? err : new Error(String(err));
@@ -7849,6 +7879,9 @@ export class App {
       {
         // 远端发来的 `/xxx` 与 -p 同一分发入口（submitHeadlessInput）
         submitMessage: (input: string) => this.submitHeadlessInput(input),
+        // 远程会话空闲时到达的后台任务通知也续跑一轮（与 TUI / headless 同源）。
+        resumeWithNotifications: () => this.queryEngine.resumeWithNotifications(),
+        hasPendingNotifications: () => hasPendingNotifications(),
         setStreamTextCallback: (cb) => this.queryEngine.setStreamTextCallback(cb),
         abort: () => this.abortController?.abort(),
         setPermissionDelegate: (delegate) => {
@@ -7939,6 +7972,11 @@ export class App {
       getStructuredOutput: () => this.capturedStructuredOutput(),
       // 缺陷 4：set_model 之后 system/init 报新模型
       getModel: () => this.config.model,
+      // 后台任务通知续跑：与 -p / TUI 同源（都走 queryEngine），只是这里的消费方是流式 NDJSON。
+      resumeWithNotifications: () => this.queryEngine.resumeWithNotifications(),
+      hasPendingNotifications: () => hasPendingNotifications(),
+      hasRunningBackgroundTasks: () => hasRunningBackgroundTasks(),
+      subscribeBackgroundActivity: (listener) => subscribeBackgroundActivity(listener),
     };
   }
 
@@ -9241,7 +9279,19 @@ export class App {
     };
 
     // TUI 版本的 agentLoop（消费 QueryEngine async generator）
-    const tuiAgentLoop = async (userInput: string, displayCommand?: string) => {
+    /**
+     * 跑一轮 agent loop。`source` 决定本轮由什么驱动：
+     * - 字符串：用户输入（含斜杠命令展开），走 engine.submitMessage；
+     * - `{ kind: "notifications" }`：主循环空闲时到达的后台任务通知，走
+     *   engine.resumeWithNotifications（不触发 UserPromptSubmit、不做乐观用户气泡）。
+     * 两者共用下方整套流式渲染 / 收尾 / 异常分类，只有开轮那几步不同。
+     */
+    const tuiAgentLoop = async (
+      source: string | { kind: "notifications" },
+      displayCommand?: string,
+    ) => {
+      const userInput = typeof source === "string" ? source : "";
+      const fromNotifications = typeof source !== "string";
       // 不确定-1：会话级硬顶纳入 network-profile 统一配置（此前硬编码 30min 且无覆盖入口）。
       // 支持 SID_CODE_MAX_SESSION_DURATION_MS / settings.network.maxSessionDurationMs 覆盖。
       const {
@@ -9298,13 +9348,18 @@ export class App {
       // 时「新消息不可见、直接进思考/连接态」的体验问题。
       // syncDisplay() 在 user_message_added 事件触发时会从 ctxMgr 完整重建 historyItems，
       // 自然覆盖此处的乐观版本（historyIdCounter 重置+全量重建）。
+      // 通知驱动的轮没有用户气泡可乐观显示：通知行由 user_message_added → syncDisplay
+      // 经 history-adapter 的 task-notification 折叠路径渲染。
       const optimisticUserText = displayCommand || userInput;
-      historyIdCounter += 1;
-      const optimisticUserItem: import("./ui/types.ts").HistoryItem = displayCommand
-        ? { id: historyIdCounter, type: "command", input: displayCommand, output: null }
-        : { id: historyIdCounter, type: "user", text: optimisticUserText };
       const prevHistoryItems = bridge.current.historyItems;
-      const optimisticHistoryItems = [...prevHistoryItems, optimisticUserItem];
+      let optimisticHistoryItems = prevHistoryItems;
+      if (!fromNotifications) {
+        historyIdCounter += 1;
+        const optimisticUserItem: import("./ui/types.ts").HistoryItem = displayCommand
+          ? { id: historyIdCounter, type: "command", input: displayCommand, output: null }
+          : { id: historyIdCounter, type: "user", text: optimisticUserText };
+        optimisticHistoryItems = [...prevHistoryItems, optimisticUserItem];
+      }
 
       updateState({
         isLoading: true,
@@ -9416,10 +9471,16 @@ export class App {
         this.planManager?.endExecution();
         // P2-1：同 runHeadless。
         this.syncPlanModeFromPermissionMode();
-        for await (const event of this.queryEngine.submitMessage(
-          userInput,
-          displayCommand ? { displayCommand } : undefined,
-        )) {
+        const events = fromNotifications
+          ? this.queryEngine.resumeWithNotifications()
+          : this.queryEngine.submitMessage(
+              userInput,
+              displayCommand ? { displayCommand } : undefined,
+            );
+        // 通知已被别处消费时 resume 一个事件都不产出：这不是异常中断，循环后单独放行。
+        let sawEvent = false;
+        for await (const event of events) {
+          sawEvent = true;
           switch (event.kind) {
             case "user_message_added":
               syncDisplay();
@@ -9717,6 +9778,10 @@ export class App {
             }
           }
         }
+        if (fromNotifications && !sawEvent) {
+          completedNormally = true;
+          updateState({ isLoading: false });
+        }
       } catch (err: any) {
         // A3：区分 abort 与真异常。用户按 ESC 触发的 abort 是"主动结束"而非故障，
         // 标记 completedNormally=true 避免 finally 误报"⚠️ 任务异常中断"。
@@ -9921,6 +9986,34 @@ export class App {
     // 回调
     const callbacks: import("./ui/App.tsx").TUICallbacks = {
       onShellCommand: executeInteractiveShell,
+      // 主循环空闲时到达的后台任务通知：续跑一轮让模型处理（事故 20261016-124505-786b1586：
+      // 主代理 end_turn「等子代理返回后汇总」，子代理完成后通知无人消费，任务静默停住）。
+      // 与 onUserInput 的差别：没有用户原文 → 不登记回退点、不暂存回填、不改会话标题、
+      // 不登记 URL 来源（通知正文是子代理产出的不可信数据，绝不能成为 URL 信任起点）。
+      onBackgroundNotifications: async () => {
+        if (this.busy) return; // 另一轮正在跑：通知会在它的回合边界注入
+        this.abortController = new AbortController();
+        try {
+          await tuiAgentLoop({ kind: "notifications" });
+        } catch (err: any) {
+          // tuiAgentLoop 只在非用户取消的故障上 throw（用户 ESC 已在内层吞掉并收尾）。
+          // 这里没有可回填的输入，统一按故障持久展示，不能静默——静默正是本次事故的形态。
+          const rawMessage = err?.message ?? String(err);
+          log.error("TUI:CB", `后台通知续跑异常`, { error: rawMessage });
+          const code = inferErrorCode(rawMessage);
+          const msg = lookupErrorMessage(rawMessage, code);
+          pushErrorPanel({
+            id: code || stableErrorId("bg-notification-error", rawMessage),
+            code,
+            title: msg.title,
+            detail: rawMessage,
+            suggestion: msg.suggestion,
+            timestamp: Date.now(),
+          });
+        } finally {
+          this.abortController = null;
+        }
+      },
       onUserInput: async (text, opts) => {
         log.debug("TUI:CB", `onUserInput 被调用: "${text.slice(0, 100)}"`);
         // 还没配好 key（首次引导被 Esc 关掉）：不发请求去撞 401，重新打开配置向导，
