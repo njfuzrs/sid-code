@@ -143,6 +143,9 @@ Worktree 隔离:
                                       --max-concurrent <n> 最大并发 headless job（默认 3）
                                       --allowed-tools <a,b> 全局兜底工具白名单
   update                      下载并替换二进制到最新版（不动 ~/.sid-code/ 数据）
+                                用法: sid-code update [--version x.y.z] [--list]
+                                选项: --version x.y.z  安装指定版本
+                                      --list           列出可安装的历史版本（标注 stable / beta / 当前）
   agents                      列出所有可用子代理（内置/自定义/插件）
                                 用法: sid-code agents [--json] [--setting-sources user,project,local]
   plugin                      管理插件（与 /plugin 同一实现，不启动会话，供脚本 / CI 使用）
@@ -224,6 +227,7 @@ Worktree 隔离:
 
   安装与更新:
   SID_CODE_CHANNEL              发布通道 stable|beta（缺省沿用当前安装的通道，未装 beta 即 stable）；显式设置可切换通道
+  SID_CODE_AUTO_UPDATE          自动更新模式覆盖 off|notify|auto（优先于 settings.autoUpdate）
   SID_CODE_RELEASE_HOST         发布服务器地址覆盖（缺省 https://www.sid-code.cc；裸 host 自动补 https）
   SID_CODE_INSTALL_URL          install.sh 完整 URL 覆盖（非标准路径时用）
 
