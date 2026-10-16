@@ -68,7 +68,7 @@ description: 看懂管理台的「审计」页：员工端的事件从哪来、�
 | 策略与护栏 | `policy_enforced` | 加载企业策略一次，附带来源和结果（`applied`、`none`、`unchanged`、`cache_fallback`、`error`） |
 | | `guardrail_triggered` | 一层护栏拦了东西，附带是真报、疑似误报还是未判定 |
 | 插件 | `tool_invoked` | 调用了**企业市场**安装的插件里的工具，附带插件名、组件、工具名 |
-| | `plugin_installed` | 从企业市场装好一个插件，附带插件名和版本 |
+| | `plugin_installed` | 从企业市场装好一个插件，附带插件名和版本。v0.1.610 之后的客户端才上报，更早的版本装了插件这里也看不到 |
 | 启动 | `startup_timing` | 启动耗时。它不在客户端 `EVENT_NAMES` 常量表里，但在快照和白名单里都有 |
 
 客户端加了新事件而服务端没同步时，新事件会在这一页的「被拒的事件名」里出现，原因是 `unknown_event_name`。
