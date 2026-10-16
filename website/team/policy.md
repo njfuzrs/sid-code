@@ -43,6 +43,7 @@ sid-code auth status --verify    # 确认凭据有效、通道连通
 ```
 
 TUI 里用 `/login`、`/whoami`。凭据存在哪、多久过期、不登录会怎样，见[企业登录](/team/login)。
+管理员在管理台里怎么建策略、按组织 / 团队 / 设备分层下发、怎么预览某台设备命中哪一份，见企业后端的[策略](/backend/policy)页。本页只讲客户端怎么执行。
 
 之后每次启动会拉取 `GET <backend.url>/api/v1/ctl/policy`，细节见下文[能力边界](#能力边界-如实说)第 3 条。
 

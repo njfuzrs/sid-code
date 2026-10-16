@@ -240,7 +240,7 @@ token 存在 `~/.sid-code/mcp-oauth.json`，权限 `0600`。access token 过期�
 
 ## 公司后端提供的远程 server（`auth: "sid-backend"`）
 
-公司后端自己提供的远程 MCP（例如飞书文档 `feishu-docs`）不用配 token。写上
+公司后端自己提供的远程 MCP（例如飞书文档 `feishu-docs`，后端怎么开启见[飞书文档授权](/backend/feishu)）不用配 token。写上
 `"auth": "sid-backend"`，sid-code 就会用 `sid-code auth login` 拿到的设备凭据去连：
 
 ```json
@@ -248,7 +248,7 @@ token 存在 `~/.sid-code/mcp-oauth.json`，权限 `0600`。access token 过期�
   "mcpServers": {
     "feishu-docs": {
       "transport": "http",
-      "url": "https://www.sid-code.cc/traj/api/v1/ctl/feishu/mcp",
+      "url": "https://agent.example.com/traj/api/v1/ctl/feishu/mcp",
       "auth": "sid-backend"
     }
   }
