@@ -52,7 +52,7 @@ export const DEFAULT_BINDINGS: KeyBinding[] = [
     action: "input:shellMode",
     stroke: { name: "!" },
     display: "!",
-    description: "行首输入进入 shell 模式",
+    description: "输入框为空时进入 shell 模式",
     showInHelp: true,
     group: "input",
     fixed: true,
