@@ -169,6 +169,33 @@ async function handleControlRequest(
  * 现在每条命令独立兜底：抛异常且还没出过 result 的，补一条 error_during_execution，
  * 然后继续处理下一条。
  */
+/**
+ * 后台任务相关能力的防御式读取。
+ *
+ * 嵌入方注入的 engine 可能是鸭子类型（测试 mock / 自定义实现，只有 submitMessage）——
+ * turnErrorResult 对 errorResult 已经是同样处理。直接 `engine.hasPendingNotifications()`
+ * 会让这些嵌入方在每一轮结束后抛 TypeError，把「新增可选能力」变成「破坏既有契约」。
+ * 缺省 = 没有后台任务：行为与改动前逐字节相同。
+ */
+function backgroundOf(engine: SDKQueryEngine) {
+  const e = engine as Partial<
+    Pick<
+      SDKQueryEngine,
+      | "hasPendingNotifications"
+      | "hasRunningBackgroundTasks"
+      | "subscribeBackgroundActivity"
+      | "resumeWithNotifications"
+    >
+  >;
+  return {
+    hasPending: () => e.hasPendingNotifications?.call(engine) ?? false,
+    hasRunning: () => e.hasRunningBackgroundTasks?.call(engine) ?? false,
+    subscribe: (listener: () => void) =>
+      e.subscribeBackgroundActivity?.call(engine, listener) ?? (() => {}),
+    resume: () => e.resumeWithNotifications?.call(engine),
+  };
+}
+
 export async function* runHeadlessStreaming(
   structuredIO: StructuredIO,
   engine: SDKQueryEngine,
@@ -234,6 +261,7 @@ export async function* runHeadlessStreaming(
     }
   })();
 
+  const bg = backgroundOf(engine);
   try {
     while (true) {
       let command: QueuedCommand | undefined;
@@ -252,18 +280,50 @@ export async function* runHeadlessStreaming(
         }
         lastActivity = Date.now();
       }
-      if (inputDone && commandQueue.isEmpty()) break;
+      // 宿主命令跑完后，空闲时到达的后台任务通知续跑一轮（对标 cc print.ts drainCommandQueue
+      // 对 task-notification 的处理）。宿主命令优先：通知只在命令队列空时续跑。
+      const resumeStream = bg.hasPending() ? bg.resume() : undefined;
+      if (resumeStream) {
+        let resultEmitted = false;
+        try {
+          for await (const message of resumeStream) {
+            if ((message as { type?: unknown }).type === "result") resultEmitted = true;
+            yield message;
+          }
+        } catch (err) {
+          if (!resultEmitted) yield turnErrorResult(engine, err);
+        }
+        lastActivity = Date.now();
+        continue;
+      }
+      // stdin 关了也不能立刻退：还有后台任务在跑，就等它们的通知（对标 cc print.ts
+      // `while (hasRunningBg || hasMainThreadQueued)`）。否则 `echo ... | sid-code --input-format
+      // stream-json` 这种一次性输入，模型说「后台跑完再汇总」后进程直接退出、子代理被带走。
+      const waitingForBackground = bg.hasRunning();
+      if (inputDone && commandQueue.isEmpty() && !waitingForBackground) break;
       if (idleExpired) break;
       await new Promise<void>((resolve) => {
         let timer: ReturnType<typeof setTimeout> | null = null;
+        let unsubscribe: (() => void) | null = null;
         wake = () => {
           if (timer) clearTimeout(timer);
+          unsubscribe?.();
           resolve();
         };
-        // 等待期间泵可能已经结束或入队——复查一次，避免错过唤醒
-        if (inputDone || !commandQueue.isEmpty()) {
+        // 等待期间泵可能已经结束或入队——复查一次，避免错过唤醒。
+        // 等后台任务时 inputDone 不算唤醒条件（否则会空转），改由后台活动唤醒。
+        if ((inputDone && !waitingForBackground) || !commandQueue.isEmpty()) {
           notify();
           return;
+        }
+        if (waitingForBackground || !inputDone) {
+          unsubscribe = bg.subscribe(() => {
+            if (bg.hasPending() || !bg.hasRunning()) notify();
+          });
+          if (bg.hasPending() || (waitingForBackground && !bg.hasRunning())) {
+            notify();
+            return;
+          }
         }
         if (idleTimeoutMs > 0) {
           const remaining = Math.max(0, lastActivity + idleTimeoutMs - Date.now());

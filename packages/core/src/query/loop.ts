@@ -894,32 +894,11 @@ export async function* queryLoop(loopConfig: QueryLoopConfig): AsyncGenerator<Qu
       // 把 <task-notification> 塞进 pendingQueue，但真实主循环 queryLoop 此前从不出队，
       // 导致"完成后会通知你"成为虚假承诺。这里在每轮开头出队并作为 user 消息注入，
       // 让主代理被动收到后台子代理的结构化结果/失败信息。
-      const notifications = dequeuePendingNotifications();
-      if (notifications.length > 0) {
-        // 一次性把所有通知合成「一条」user 消息注入，而非逐条 addMessage。
-        // 原因：逐条 addMessage 会触发 ctxMgr 的「连续同 role 合并」——content 会连结，
-        // 但 _meta 是浅合并，_meta.notif 会被后一条覆盖，导致 TUI 结构化渲染只剩最后一条、
-        // 前面的通知从面板消失（回归）。这里主动聚合：content 每条一个 text 块（保留 XML
-        // 边界，LLM 侧语义不变），_meta.notif 收集为**数组**（TUI 侧遍历渲染，不丢任何一条）。
-        ctxMgr.addMessage({
-          role: "user",
-          content: notifications.map((n) => ({ type: "text" as const, text: n.content })),
-          // 多层防泄漏标记（对标 CC AttachmentMessage + isMeta + origin）：
-          // 即使 addMessage 角色交替合并把 notification 追加到 tool_result 消息，
-          // history-adapter 仍能通过 _meta.origin 快速识别并走折叠渲染路径。
-          //
-          // notif：结构化快照数组。TUI 侧优先遍历它渲染，不再对 content 文本做正则重解析——
-          // 这样子代理结论里含 </result> / </task-notification> 字面量也不会破坏解析
-          // （根治「点4」：删掉需要转义的解析路径，而非给脆弱的转义往返打补丁）。
-          // 注入 LLM 的仍是 content 里的完整 XML 文本，语义不变、字面量原样保留。
-          _meta: {
-            origin: "task-notification",
-            isMeta: true,
-            notif: notifications.map((n) => n.structured).filter(Boolean),
-          },
-        });
-        log.info("QUERY_LOOP", `注入 ${notifications.length} 条后台任务通知`);
-      }
+      //
+      // ⚠️ 这里只覆盖「通知在本轮进行中到达」。主循环 end_turn 之后才到的通知，
+      // 这里永远等不到下一轮——那条路径由 QueryEngine.resumeWithNotifications 接管
+      // （空闲唤醒，见 task/background-wake.ts）。两处共用 injectPendingNotifications。
+      injectPendingNotifications(ctxMgr, deps.sessionStore);
 
       // 通知注入后驱逐已完成且已通知的后台任务：其完成信息已进对话，面板条目即属冗余。
       // 不在此清除则「后台任务 · N 已完成」会永久驻留（evictTerminalTasks 此前从未被调用）。
@@ -5889,6 +5868,50 @@ async function recoverFromLoop(
   });
 
   return true;
+}
+
+/**
+ * 出队全部待投递的后台任务通知，合成一条 user 消息注入上下文并落盘。返回注入条数。
+ *
+ * 两个调用点：queryLoop 每轮开头（通知在轮中到达）、QueryEngine.resumeWithNotifications
+ * （通知在主循环空闲后到达）。收口在这一个函数里，保证两条路径注入形状一致。
+ *
+ * 一次性合成「一条」user 消息，而非逐条 addMessage：逐条会触发 ctxMgr 的「连续同 role
+ * 合并」——content 会连结，但 _meta 是浅合并，_meta.notif 会被后一条覆盖，TUI 结构化渲染
+ * 只剩最后一条（回归）。content 每条一个 text 块（保留 XML 边界），_meta.notif 收集为数组。
+ *
+ * 落盘：此前通知只进内存不进 sessionStore，`-c` 恢复的会话里主代理"看过"的子代理结论
+ * 凭空消失，后续回答失去依据。与 injectQueuedCommandsAsUserMessage 同样补上持久化。
+ */
+export function injectPendingNotifications(
+  ctxMgr: ContextManager,
+  sessionStore?: QueryDeps["sessionStore"],
+): number {
+  const notifications = dequeuePendingNotifications();
+  if (notifications.length === 0) return 0;
+  const message = {
+    role: "user" as const,
+    content: notifications.map((n) => ({ type: "text" as const, text: n.content })),
+    // 多层防泄漏标记（对标 CC AttachmentMessage + isMeta + origin）：
+    // 即使 addMessage 角色交替合并把 notification 追加到 tool_result 消息，
+    // history-adapter 仍能通过 _meta.origin 快速识别并走折叠渲染路径。
+    //
+    // notif：结构化快照数组。TUI 侧优先遍历它渲染，不再对 content 文本做正则重解析——
+    // 这样子代理结论里含 </result> / </task-notification> 字面量也不会破坏解析。
+    _meta: {
+      origin: "task-notification",
+      isMeta: true,
+      notif: notifications.map((n) => n.structured).filter(Boolean),
+    },
+  };
+  ctxMgr.addMessage(message);
+  try {
+    sessionStore?.appendMessage(message);
+  } catch {
+    /* 持久化失败不阻断主循环 */
+  }
+  getLogger().info("QUERY_LOOP", `注入 ${notifications.length} 条后台任务通知`);
+  return notifications.length;
 }
 
 /**

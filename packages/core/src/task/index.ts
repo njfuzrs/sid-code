@@ -66,6 +66,15 @@ export {
   hasPendingNotifications,
 } from "./notification.ts";
 
+// 空闲唤醒原语（通知到达时续跑一轮的那套等待/订阅）。集中在这里转出，
+// 消费方不必分别 import notification / registry / 队列三个入口。
+export {
+  subscribeBackgroundActivity,
+  waitForBackgroundNotification,
+  hasRunningBackgroundTasks,
+  type BackgroundWaitOutcome,
+} from "./background-wake.ts";
+
 export { spawnShellTask, adoptRunningProcessAsTask, killShellTask } from "./shell-task.ts";
 
 export {

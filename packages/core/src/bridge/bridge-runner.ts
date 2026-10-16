@@ -30,10 +30,30 @@ import {
 } from "./bridge-messaging.ts";
 import { getLogger } from "../debug/logger.ts";
 
+/**
+ * 一次空闲里最多为后台通知续跑多少轮。
+ *
+ * 存在的理由是**防死循环**，不是限流：通知能触发新一轮、新一轮又能派新的后台子代理，
+ * 理论上可以自己续下去。远程会话必须有机会回到空闲（否则远程客户端永远等不到
+ * turn_complete）。实测正常形态是 1–2 轮，8 够用；撞上限会打 warn，不会静默。
+ */
+const MAX_BACKGROUND_TURNS_PER_IDLE = 8;
+
 /** Bridge 运行器对内核的依赖（依赖反转，避免耦合 app.ts） */
 export interface BridgeRunnerDeps {
   /** 提交一条用户消息，返回事件异步流（即 QueryEngine.submitMessage） */
   submitMessage: (input: string) => AsyncGenerator<QueryEngineEvent, void, unknown>;
+  /**
+   * 后台任务通知到达时续跑一轮（即 QueryEngine.resumeWithNotifications）。
+   * 可选：不提供则远程会话里主代理 end_turn 之后完成的后台任务通知无人消费——
+   * 与 TUI / headless 同一条断链（事故 20261016-124505-786b1586）。远程客户端
+   * 只能在它下次发消息时被动收到，中间那段"跑完没人汇总"的空窗依然存在。
+   */
+  resumeWithNotifications?: () => AsyncGenerator<QueryEngineEvent, void, unknown>;
+  /** 队列里是否有待投递的后台任务通知（可选，与 resumeWithNotifications 成对） */
+  hasPendingNotifications?: () => boolean;
+  /** 主循环空闲等待期间的后台活动订阅（可选） */
+  subscribeBackgroundActivity?: (listener: () => void) => () => void;
   /** 设置流式文本回调（null 清除） */
   setStreamTextCallback: (cb: ((text: string) => void) | null) => void;
   /** 中断当前执行 */
@@ -184,14 +204,10 @@ export class BridgeRunner {
     });
 
     try {
-      for await (const event of this.deps.submitMessage(text)) {
-        if (this.stopped) break;
-        this.forwardEvent(event);
-        if (event.kind === "done") break;
-        // §3.2：queryLoop 异常现封装为 fatal_error 事件（不再穿透）。已在 forwardEvent
-        // 转发给远程，此处结束本轮（与 done 同等收尾）。
-        if (event.kind === "fatal_error") break;
-      }
+      await this.runTurn(this.deps.submitMessage(text));
+      // 远程会话空闲后，把到达的后台任务通知也跑掉（与 TUI / headless 同源）。
+      // 队列里已有新的远程消息时让给它——远程输入优先。
+      await this.drainBackgroundNotifications();
       await this.core.send(formatStatusMessage("turn_complete"));
     } catch (err: any) {
       getLogger().error("BRIDGE", `处理远程消息异常: ${err?.message ?? err}`);
@@ -202,6 +218,40 @@ export class BridgeRunner {
       // 继续消费队列中后续消息
       if (this.queue.length > 0 && !this.stopped) void this.processNext();
     }
+  }
+
+  /** 转发一轮的事件流，直到 done / fatal_error 收尾。 */
+  private async runTurn(events: AsyncGenerator<QueryEngineEvent, void, unknown>): Promise<void> {
+    for await (const event of events) {
+      if (this.stopped) break;
+      this.forwardEvent(event);
+      if (event.kind === "done") break;
+      // §3.2：queryLoop 异常现封装为 fatal_error 事件（不再穿透）。已在 forwardEvent
+      // 转发给远程，此处结束本轮（与 done 同等收尾）。
+      if (event.kind === "fatal_error") break;
+    }
+  }
+
+  /**
+   * 把当前待投递的后台任务通知跑成一轮，直到再没有可跑的通知。
+   *
+   * 循环而非只跑一次：一轮里可能又有子代理完成，通知再次入队（实测形态：
+   * 主代理派 3 个后台子代理，第一个的结果触发第二轮又派新的）。
+   * 上限防死循环——通知链自己无限续下去时不能让远程会话永远不空闲。
+   */
+  private async drainBackgroundNotifications(): Promise<void> {
+    const resume = this.deps.resumeWithNotifications;
+    const hasPending = this.deps.hasPendingNotifications;
+    if (!resume || !hasPending) return;
+    for (let i = 0; i < MAX_BACKGROUND_TURNS_PER_IDLE; i++) {
+      if (this.stopped || this.queue.length > 0) return;
+      if (!hasPending()) return;
+      await this.runTurn(resume());
+    }
+    getLogger().warn(
+      "BRIDGE",
+      `后台通知续跑达上限 ${MAX_BACKGROUND_TURNS_PER_IDLE} 轮，暂停等待下一条远程消息或新通知`,
+    );
   }
 
   /**
