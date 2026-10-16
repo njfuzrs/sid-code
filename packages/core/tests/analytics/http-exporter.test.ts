@@ -96,9 +96,16 @@ describe("HTTP 事件导出器（spec 17 §4.2）", () => {
       diskCache,
     });
     exporter.send("e1", { a: 1 });
-    await new Promise((r) => setTimeout(r, 50));
-
-    const files = readdirSync(dir).filter((f) => f.startsWith("failed_events"));
+    // 写盘是异步的（fetch throw → queueFailedEvents → appendFile），固定 50ms
+    // 在 CI 负载下会先于落盘到期：实测 ubuntu 上 Received 0。
+    // 等到文件出现再断言，超时才判失败——等的是结果，不是时长。
+    const deadline = Date.now() + 2000;
+    let files: string[] = [];
+    while (Date.now() < deadline) {
+      files = readdirSync(dir).filter((f) => f.startsWith("failed_events"));
+      if (files.length > 0) break;
+      await new Promise((r) => setTimeout(r, 10));
+    }
     expect(files.length).toBe(1);
     // 失败会 schedule 一次 QuadraticBackoff 重试，首次延迟约 0、第二次 500ms。
     // 收尾 shutdown 清掉它，不让 timer 活过本用例 —— 卫生，不是为了修 CI 那条偶发。
