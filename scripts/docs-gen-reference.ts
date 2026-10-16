@@ -1371,7 +1371,9 @@ const SECTION_NAMES: Record<string, string> = {
   start: "开始",
   use: "指南",
   extend: "指南",
-  ref: "参考（脚本生成）",
+  // 不加「（脚本生成）」后缀：/ref/ 下术语表是人工维护的，后缀会把它的归属一并说错。
+  // 生成范围在 renderLlmsTxt 的导语里逐字写明（「除术语表外由脚本生成」）。
+  ref: "参考",
   blog: "博客",
   team: "团队部署",
   "": "站点",
@@ -1400,7 +1402,7 @@ function renderLlmsTxt(pages: SitePage[]): string {
   let out = `# sid-code\n\n`;
   out += `> 长在企业研发环境里的 coding agent —— 你能改、能量、能审、数据不出门的 agent 底座。\n\n`;
   out += `本文件是给大模型读的全站索引（共 ${pages.length} 页）。\n`;
-  out += `\`/ref/\` 下的参考页由 \`scripts/docs-gen-reference.ts\` 从源码生成，与实现同源。\n\n`;
+  out += `\`/ref/\` 下的参考页除术语表外由 \`scripts/docs-gen-reference.ts\` 从源码生成，与实现同源。\n\n`;
 
   const bySection = new Map<string, SitePage[]>();
   for (const p of pages) {
@@ -1419,7 +1421,7 @@ function renderLlmsTxt(pages: SitePage[]): string {
    * 这里显式排一次，与 `config.ts` 的 `nav` 同序。不在表里的章节（新增目录忘了
    * 登记时）沉到末尾而不是被丢掉——顺序不理想好过页面在索引里消失。
    */
-  const SECTION_ORDER = ["站点", "开始", "指南", "参考（脚本生成）", "团队部署", "博客"];
+  const SECTION_ORDER = ["站点", "开始", "指南", "参考", "团队部署", "博客"];
   const ordered = [...bySection.entries()].sort((a, b) => {
     const ia = SECTION_ORDER.indexOf(a[0]);
     const ib = SECTION_ORDER.indexOf(b[0]);
