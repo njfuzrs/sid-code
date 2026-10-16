@@ -226,7 +226,8 @@ grep -A4 '"upload"' ~/.sid-code/settings.json   # 没有输出 = 不上传
 ```
 
 `url` 要**含路径前缀**（如 `/traj`），上传器会在后面拼 `/api/v1/upload/session-file`。
-上传到企业后端时可以整行不写，地址会取 `backend.url`。
+上传到企业后端时可以整行不写，地址会取 `backend.url`。管理员在管理台里怎么看这些轨迹，见[仪表盘与轨迹](/backend/trajectories)。
+注意上传用的是共享 token，轨迹上的 `user_id`、`device_id` 由客户端自报、服务端不校验，属于弱归因，不适合按人统计或追责。
 
 ::: warning token 别写明文，也别全员共用一个
 用 `${TRAJ_UPLOAD_TOKEN}` 占位符，值放环境变量。更要紧的是**别把上传配置塞进分发给别人的

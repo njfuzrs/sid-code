@@ -256,7 +256,8 @@ ok "命令入口: $BIN_SYMLINK -> $NEW_DIR/sid-code"
 # 2. 只写一个 RC 文件（zsh→.zshrc，bash→.bash_profile/.bashrc），不多写以避免重复
 # 3. 不创建用户原本不存在的文件（文件不存在则只追加到已存在的文件）
 # 4. 修改已有文件时保留原始权限（chmod 恢复）
-# 5. 如果用户已有同名 alias，尊重用户配置不覆盖
+# 5. 如果用户已有同名 alias，尊重用户配置不覆盖（每个写 sc 的位置都必须先检查目标文件——
+#    块追加在末尾，后定义的 alias 会盖掉用户自己的）
 # 6. PATH 使用追加式 $HOME/.local/bin:$PATH，不影响用户原有 PATH
 #
 # 对 zsh 独立终端找不到命令的修复：
@@ -293,8 +294,15 @@ else
             ok "已修复 PATH 配置到 $(basename "$RC_FILE")"
         fi
     else
-        # 全新写入完整块（追加到文件末尾，不影响文件前面的任何内容）
-        cat >> "$RC_FILE" <<'EOF'
+        # 全新写入块（追加到文件末尾，不影响文件前面的任何内容）。
+        # ⚠ 用户已有同名 sc 别名时块里不写 sc —— 块追加在末尾，后定义的 alias 会盖掉
+        # 用户自己的（zsh/bash 同规则，安全原则 5）。只补 PATH，sid-code 命令不受影响。
+        USER_SC_IN_RC=false
+        if grep -qF "alias sc=" "$RC_FILE"; then
+            USER_SC_IN_RC=true
+        fi
+        {
+            cat <<'EOF'
 
 # >>> sid-code >>>
 # 稳定版命令入口（sid-code / sc）。此块由安装脚本管理，`sid-code update` 会重跑安装脚本。
@@ -304,11 +312,18 @@ case ":$PATH:" in
   *":$HOME/.local/bin:"*) ;;
   *) export PATH="$HOME/.local/bin:$PATH" ;;
 esac
-alias sc='sid-code --dangerously-skip-permissions'
-# <<< sid-code <<<
 EOF
+            if [ "$USER_SC_IN_RC" = false ]; then
+                printf '%s\n' "alias sc='sid-code --dangerously-skip-permissions'"
+            fi
+            printf '%s\n' '# <<< sid-code <<<'
+        } >> "$RC_FILE"
         PATH_WRITTEN=true
-        ok "已写入 PATH + sc 到 $(basename "$RC_FILE")"
+        if [ "$USER_SC_IN_RC" = true ]; then
+            info "检测到已有 sc 别名，保留不变（sid-code 命令本身不受影响）"
+        else
+            ok "已写入 PATH + sc 到 $(basename "$RC_FILE")"
+        fi
     fi
 
     # bash 特殊处理：macOS 写了 .bash_profile，但如果用户有 .bashrc 且 .bash_profile
@@ -317,7 +332,13 @@ EOF
     if [ "$(basename "${SHELL:-}")" = "bash" ] && [ "$(uname -s)" = "Darwin" ]; then
         if [ -f "$HOME/.bashrc" ] && [ "$RC_FILE" = "$HOME/.bash_profile" ]; then
             if ! grep -qF '.local/bin' "$HOME/.bashrc" && ! grep -qF '# >>> sid-code >>>' "$HOME/.bashrc"; then
-                cat >> "$HOME/.bashrc" <<'EOF'
+                # 同主分支：.bashrc 已有用户自己的 sc 时不写我们的（会盖掉）
+                USER_SC_IN_BASHRC=false
+                if grep -qF "alias sc=" "$HOME/.bashrc"; then
+                    USER_SC_IN_BASHRC=true
+                fi
+                {
+                    cat <<'EOF'
 
 # >>> sid-code >>>
 # 稳定版命令入口（sid-code / sc）。此块由安装脚本管理，`sid-code update` 会重跑安装脚本。
@@ -327,10 +348,17 @@ case ":$PATH:" in
   *":$HOME/.local/bin:"*) ;;
   *) export PATH="$HOME/.local/bin:$PATH" ;;
 esac
-alias sc='sid-code --dangerously-skip-permissions'
-# <<< sid-code <<<
 EOF
-                ok "已同步到 .bashrc（VSCode 终端兼容）"
+                    if [ "$USER_SC_IN_BASHRC" = false ]; then
+                        printf '%s\n' "alias sc='sid-code --dangerously-skip-permissions'"
+                    fi
+                    printf '%s\n' '# <<< sid-code <<<'
+                } >> "$HOME/.bashrc"
+                if [ "$USER_SC_IN_BASHRC" = true ]; then
+                    info ".bashrc 已有 sc 别名，保留不变（仅同步 PATH）"
+                else
+                    ok "已同步到 .bashrc（VSCode 终端兼容）"
+                fi
             fi
         fi
     fi
