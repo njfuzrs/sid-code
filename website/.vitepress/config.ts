@@ -533,12 +533,33 @@ export default defineConfig({
         {
           text: "开始",
           collapsed: false,
-          items: [{ text: "概览", link: "/backend/" }],
+          items: [
+            { text: "概览", link: "/backend/" },
+            { text: "快速上手", link: "/backend/quickstart" },
+            { text: "部署与配置", link: "/backend/deploy" },
+          ],
+        },
+        {
+          text: "人与设备",
+          collapsed: false,
+          items: [
+            { text: "用户与登录", link: "/backend/users" },
+            { text: "设备与注册码", link: "/backend/devices" },
+            { text: "组织与团队", link: "/backend/org-team" },
+          ],
         },
         {
           text: "管控",
           collapsed: false,
-          items: [{ text: "策略", link: "/backend/policy" }],
+          items: [
+            { text: "策略", link: "/backend/policy" },
+            { text: "预算", link: "/backend/budget" },
+          ],
+        },
+        {
+          text: "看清用得怎么样",
+          collapsed: false,
+          items: [{ text: "成本", link: "/backend/cost" }],
         },
       ],
       /**
