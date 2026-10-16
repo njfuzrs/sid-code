@@ -113,7 +113,7 @@ description: 在管理台给组织、团队或单台设备下发企业策略：�
 | 只允许策略里的权限规则 | `allowManagedPermissionRulesOnly` | 开关 | 只认企业策略里的权限规则 |
 | 禁用 bypass 权限模式 | `disableBypassPermissionsMode: "disable"` | 开关 | `--dangerously-skip-permissions` 和 `always-allow` 直接报错退出 |
 | 禁用的权限模式 | `disabledModes` | 多选，见下 | 对应模式不可用 |
-| 禁止 Bridge 远程控制 | `bridgeEnabled: false` | 开关 | 这些设备不再接受遥控（撰写中）。不打开等于不限制 |
+| 禁止 Bridge 远程控制 | `bridgeEnabled: false` | 开关 | 这些设备不再接受遥控，见[遥控](/backend/bridge)。不打开等于不限制 |
 | 限制插件来源（strictKnownMarketplaces） | `strictKnownMarketplaces` | 开关 + 市场 index URL 列表 | 只能从列出的市场安装 / 加载插件，见下 |
 | 锁定全部定制化面 / 锁定部分定制化面 | `strictPluginOnlyCustomization` | `true`，或从 `commands` `skills` `agents` `hooks` `mcp-servers` 里多选 | 被锁的面只认企业托管、插件和内置来源，员工自带的同类扩展不加载 |
 
@@ -158,7 +158,7 @@ https://agent.example.com/traj/api/v1/ctl/marketplace/index
 漏写时保存不会被拒，但列表里这一行会出现「告警」标签，提示「白名单里没有本企业市场」。只想用官方市场、或者有意禁掉企业市场时，忽略这个告警即可。
 :::
 
-市场怎么上架插件，见插件市场（撰写中）。
+市场怎么上架插件，见[插件市场](/backend/marketplace)。
 
 ### 只能在本地文件里设的字段
 
@@ -171,7 +171,7 @@ https://agent.example.com/traj/api/v1/ctl/marketplace/index
 1. 管理台「预览命中」看这台设备命中哪一份、有没有被遮蔽的上层；
 2. 员工端执行 `sid-code auth status --verify`，「策略」一行显示通道连通；
 3. 拿一条该被拦的命令跑一次 `sid-code -p`，看是否被拒；
-4. 「**审计**」页的「策略与护栏是不是在拦东西」表格：每台设备的 `policy applied` 和 `policy none/error` 两列。`none/error` 不为零，说明这台设备有过拉不到策略的启动，按排障（撰写中）查。
+4. 「**审计**」页的「策略与护栏是不是在拦东西」表格：每台设备的 `policy applied` 和 `policy none/error` 两列。`none/error` 不为零，说明这台设备有过拉不到策略的启动，按[排障与常见问题](/backend/troubleshooting)查。
 
 ## 能力边界（如实说）
 
@@ -208,5 +208,5 @@ https://agent.example.com/traj/api/v1/ctl/marketplace/index
 - [企业 policy 与安全边界](/team/policy) —— 客户端怎么执行这些约束；本地 `managed-settings.json`
 - [预算](/backend/budget) —— 同样是 设备 > 团队 > 组织 只取一层
 - [组织与团队](/backend/org-team) —— 把设备分进团队，团队层策略才有对象
-- 插件市场（撰写中） —— 配合「限制插件来源」使用
+- [插件市场](/backend/marketplace) —— 配合「限制插件来源」使用
 - [企业后端概览](/backend/) —— 全部通道的联动总表

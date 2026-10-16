@@ -554,12 +554,34 @@ export default defineConfig({
           items: [
             { text: "策略", link: "/backend/policy" },
             { text: "预算", link: "/backend/budget" },
+            { text: "Feature Flag", link: "/backend/flags" },
           ],
         },
         {
           text: "看清用得怎么样",
           collapsed: false,
-          items: [{ text: "成本", link: "/backend/cost" }],
+          items: [
+            { text: "仪表盘与轨迹", link: "/backend/trajectories" },
+            { text: "审计", link: "/backend/audit" },
+            { text: "成本", link: "/backend/cost" },
+          ],
+        },
+        {
+          text: "分发能力",
+          collapsed: false,
+          items: [
+            { text: "插件市场", link: "/backend/marketplace" },
+            { text: "飞书文档授权", link: "/backend/feishu" },
+            { text: "遥控", link: "/backend/bridge" },
+          ],
+        },
+        {
+          text: "参考",
+          collapsed: true,
+          items: [
+            { text: "接口、鉴权与枚举", link: "/backend/reference" },
+            { text: "排障与常见问题", link: "/backend/troubleshooting" },
+          ],
         },
       ],
       /**
