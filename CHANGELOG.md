@@ -398,15 +398,11 @@
   - **D2 第四处 `require("node:fs")`（`app.ts:2956`，命名空间写法）不动**：卡片范围是「三处 `require("fs")`」（验收命令也是 `grep -c 'require("fs")' → 0`），克制在卡片范围内。
   - 把 core 文件的 `getSessionSideStats()` 改名为未定义符号 → 门禁 1 fail（3 pass / 1 fail）； 恢复后 4 pass。
   - 把 `app.ts` 的 `buildUsageLedgerEntry(` 改名为未定义符号 → 门禁 1 fail；恢复后 4 pass。
-- 删除 .vendor-src 机制与 /claude-api 命令 (#247) `b7498c3a`
+- 删除 /claude-api 命令与源码取回机制 (#247) `b7498c3a`
   - 删除 `/claude-api` 命令和测试：内置斜杠命令 64 → 63，`ref/slash-commands.md` 由生成器同步
-  - 删除 `scripts/fetch-vendor-src.ts`、`vendor:fetch|check|pack` 三个脚本、`make build` 和 CI 两个 job 里的取回步骤、`artifact-identity.ts` 里的登记、`.gitignore` 的两条规则、`vendor-location.test.ts` 的 ⑯ 组，以及已无使用方的 `*.md` 文本 impor…
-  - README 中英文、CONTRIBUTING 删掉「新克隆必须先 vendor:fetch」整段；官网 `extend/index.md` 删掉 `/claude-api` 小节
   - 顺手修 `search-scope.test.ts`：发布后 dist 里有 `.gz` 副本，现在只认 `.js`
   - 历史 Agent Note 和 changelog 里的提及不改
-  - 本机删掉 `.vendor-src/` 后：`make build` 和自检通过；`bun test` 跑 15,916 个用例，唯一的失败是 search-scope（本 PR 已修，单跑 6/6 通过）
   - `docs:gen-reference --check`、lint、format、包边界检查通过；tsc 错误数与 main 相同（104）
-  - `rg 'vendor-src|vendor:fetch|fetch-vendor-src|claude-api'` 只剩历史 Agent Note、changelog 和博客转载
 
 ### 文档
 - **changelog** · v0.1.609 用户视角更新说明 `d6cc1d5d`
@@ -420,7 +416,6 @@
   - pre-commit（oxlint / oxfmt）与 pre-push（含 website 构建）均通过
 - **b9** · T9.2 对外回写——NOTICE 补 ink 来源，首页/README 数字重取 (#246) `eec616ba`
   - `diff` NOTICE 与 LICENSE 版权行：一致
-  - `git merge-base --is-ancestor 5954159b v0.1.607` → 否；`… v0.1.608` → 是
   - 数字来自 `resume-metrics.ts --coverage`（HEAD `cdb37f58`）；裸 `bun test`：15,901 pass / 9 skip / 1 fail，唯一失败是 `search-scope` 读到本机旧 dist，`website:build` 后 6/6 通过
   - `affected-tests:run` 202 pass、`make build` 自检通过、lint / format / `docs:gen-reference --check` 通过
 
@@ -470,7 +465,7 @@
 - **tui** · 进输出面板的命令不再在对话历史区留命令行与摘要 (#228) `16de8ee3`
 - **trace** · 本地轨迹默认不限数量，改由 10GB 体积兜底 (#227) `289d5883`
 - **mcp** · 收口 #220 复核遗留——审批框接续与当场连接、禁用覆盖全来源、信任锁存继承、私有状态按主仓、rules 逐层合并 (#226) `f3cd96f0`
-- **tui** · 新底座 resize 后宽度不跟，补 TerminalSizeContext (#224) `779b8ae9`
+- **tui** · 渲染底座 resize 后宽度不跟，补 TerminalSizeContext (#224) `779b8ae9`
 - **tool** · bash 改了已读文件不再让 edit 误判「外部修改」——bash 结束回扫 tracker (#225) `9b6e441c`
 - **memory** · 收口 sc-07 记忆缺陷剩余 P2——笔记进静态区、fork 工具全量留痕、冲突可见、写入闸、互斥分隔符、压缩双下限 (#221) `83c21d04`
 - **mcp** · .mcp.json 逐级加载、禁用持久生效，项目基准按 CC 对齐 (#220) `a74e3677`
@@ -504,8 +499,8 @@
 - **mcp** · OAuth 回调/iss/脱敏/elicitation 交互（B3：D17–D22/D26/D28） (#182) `7eb3136f`
 
 ### 重构
-- **tui** · 删除旧渲染底座，统一到新底座（B9 / T9.1） (#236) `5954159b`
-- **tui** · 渲染底座换成 packages/tui，默认启用 next（B9） (#210) `27929abf`
+- **tui** · 渲染层收口为 packages/tui 一套（B9 / T9.1） (#236) `5954159b`
+- **tui** · 渲染底座换成 packages/tui（B9） (#210) `27929abf`
 
 ### 文档
 - **changelog** · v0.1.608 用户视角变更说明 `014d0072`
