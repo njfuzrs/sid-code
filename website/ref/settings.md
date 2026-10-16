@@ -39,7 +39,7 @@ settings.json 的全部可配字段、类型与默认值。
 | `autoMemory` | boolean | — | auto-memory 后台自动提取开关（settings.json autoMemory）。 默认启用（保持既有行为）——每轮 end_turn 后从对话提炼记忆写入 memory 目录。 设为 false 关闭后台提取（隐私敏感项目 / 不想消耗后台 token）。… |
 | `autoUpdate` | enum | `off` / `notify` / `auto` | 自动更新模式（缺省 = "auto"）。auto = 后台静默下载安装；notify = 只提示不下载；off = 关闭 |
 | `availableModels` | array | — | 可选模型清单（/model 切换、--fallback-model 校验都以此为范围）。每项 name 必须唯一；同一模型接多个渠道时给每条取不同 name，再各自用 model_id 指回厂商真实模型名 |
-| `backend` | object | — | 企业后端地址（登录 / 插件市场 / 远程 MCP 共用），如 https://www.sid-code.cc/traj。项目级不可覆盖。（子键见[下文](#key-backend)） |
+| `backend` | object | — | 企业后端地址（登录 / 插件市场 / 远程 MCP 共用），如 https://agent.example.com/traj。项目级不可覆盖。（子键见[下文](#key-backend)） |
 | `baseURL` | string | — | 自定义 API 基础 URL。注意 anthropic 族与 openai 族对 /v1 后缀的要求相反 |
 | `blockedDirectories` | array | — | 禁止访问的目录（黑名单优先于白名单） |
 | `bridge` | object | — | Bridge 远程控制配置（D14 准入） |
