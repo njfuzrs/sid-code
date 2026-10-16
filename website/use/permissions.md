@@ -56,7 +56,9 @@ sid-code --dangerously-skip-permissions
 ● [CONFIG] 权限规则: 2条 allow, 2条 deny, 1条 ask
 ```
 
-**这行没出现就是配置没生效**，先检查文件路径和 JSON 语法，别急着怀疑规则写错。
+这行日志走 debug 输出——`debug` 默认开，但如果你在 settings 里显式设了
+`"debug": false`，它不会出现。排除这种情况后**这行还没出现就是配置没生效**，
+先检查文件路径和 JSON 语法，别急着怀疑规则写错。
 
 ## 八种权限模式
 
@@ -120,7 +122,7 @@ plan 模式下 `read` / `grep` 放行，`edit` / `write` / `bash` 一律拒绝�
 | `Bash(*)` | 所有 bash 命令 | `*` 跨 `/`，含带路径的命令 |
 | `Bash(npm *)` | `npm run build` ✅，`npx foo` ❌ | 尾部 ` *` 是「这个命令加任意参数」 |
 | `Bash(git status)` | 只有这一条命令 | 无通配符即精确匹配 |
-| `Bash(prefix:git )` | `git` 开头的命令 | 兼容语法，等价于 `Bash(git *)` 的前缀语义 |
+| `Bash(prefix:git )` | `git ` 开头的命令 | 兼容语法，前缀语义（注意与 `Bash(git *)` 有一处差异：后者还匹配裸 `git`，`prefix:git ` 不匹配） |
 | `Read(/src/**)` | `<项目根>/src` 下任意深度 | **单前导 `/` = 项目根相对**，不是文件系统根 |
 | `Read(./.env)` | 当前目录的 `.env` | `./` 或裸路径 = cwd 相对 |
 | `Edit(~/notes/**)` | 主目录下 | `~/` = 主目录 |
@@ -172,12 +174,13 @@ allow: ["Bash(*)"] + ask: ["Bash(rm *)"]
 
 ## 配置层级
 
-规则来自 8 个来源，每个来源有一个优先级数值，**数值大的优先**
+规则来自 9 个来源，每个来源有一个优先级数值，**数值大的优先**
 （定义在 `packages/core/src/permission/types.ts` 的 `RULE_SOURCE_PRIORITY`）：
 
 | 优先级 | 来源 | 从哪来 | 典型用途 |
 | --- | --- | --- | --- |
-| 0（最低） | session | 权限弹窗里选「总是允许」 | 本次会话临时放行 |
+| -1（最低） | commandScoped | 斜杠命令 / Skill 自带的 `allowed-tools` | 只作用于触发它的那一轮，不与你的配置竞争 |
+| 0 | session | 权限弹窗里选「总是允许」 | 本次会话临时放行 |
 | 1 | command | `/allow` / `/deny`（不带 `-p`） | 会话里手动加 |
 | 2 | cliArg | `--allow-tool` / `--deny-tool` | 一次性 |
 | 3 | userSettings | `~/.sid-code/settings.json` | 你自己的习惯 |
@@ -210,7 +213,7 @@ Windows `%PROGRAMDATA%\SidCode\managed-settings.json`），
 
 ### `/permissions`：看当前生效的全部规则
 
-无参数运行打开交互式权限管理面板，能看到所有来源的规则并增删；带参数则输出文本视图：
+无参数运行打开交互式权限管理面板，看当前权限模式与规则摘要（只读展示，增删规则仍走 `/allow` / `/deny` 子命令）；带参数则输出文本视图：
 
 ```text
 /permissions
@@ -233,12 +236,12 @@ Windows `%PROGRAMDATA%\SidCode\managed-settings.json`），
 
 比手翻 `settings.json` 多两个能力：
 
-- **阴影检测**：如果某条规则被更高优先级的同类规则完全覆盖（永远匹配不到），会标出来提醒你——配得越多越容易出现，删掉就行
+- **阴影检测**：如果某条 allow 规则被更高优先级的 deny / ask 规则压制（deny 压制 = 永远拦死、ask 压制 = 永远要确认），会标出来提醒你——配得越多越容易出现，删掉就行。注意它只报**行为冲突**的遮蔽（allow 被 deny/ask 压），同类 allow 盖 allow 不在检测范围内
 - **拒绝追踪**：显示本次会话连续拒绝次数和累计拒绝次数，判断是不是卡在权限上反复撞墙
 
 ### `/add-dir`：运行时加目录到白名单
 
-默认情况下 sid-code 只能访问启动时的工作目录（及 `allowedDirectories` 配置的目录）。临时需要让它读项目外的目录（比如另一份参考代码），不想改配置重启：
+写操作默认只允许启动时的工作目录（及 `allowedDirectories` 配置的目录）；读操作没有工作区边界拦截，只有系统目录保护、symlink 逃逸检测这些安全层。临时需要让它**写**项目外的目录（或把读明确授权给它），不想改配置重启：
 
 ```text
 /add-dir /Users/me/reference-project
@@ -293,12 +296,13 @@ macOS 上 sid-code 还有一道**操作系统级**的硬隔离：[Seatbelt 沙�
 
 | 类别 | profile 规则 | 说明 |
 | --- | --- | --- |
+| 进程 | 允许 `process-exec` / `process-fork` | 不放行这个，任何命令都跑不起来 |
 | 工作目录 | 允许读写 `cwd` 子树 | 这是你让它改的代码所在 |
 | 系统工具链 | 只读 `/usr/lib` `/usr/bin` `/usr/local` `/Library/Developer` `/Applications/Xcode.app` | 跑编译/解释器需要 |
 | 临时目录 | 读写 `/tmp` `/private/tmp` | 命令临时文件 |
 | 家目录工具 | 只读 `~/.bun` `~/.nvm` `~/.npm` `~/.cargo` | 运行包管理器需要 |
 | **敏感目录** | **显式 deny** `~/.ssh` `~/.gnupg` `~/.sid-code` | SSH 密钥、GPG、sid-code 自身配置与轨迹 |
-| 网络 | 只放行 `localhost` | 防 bash 命令外发数据 |
+| 网络 | 只放行 `localhost`（profile 里写的是它解析出的 IP，如 `127.0.0.1:*`） | 防 bash 命令外发数据；主机名解析失败时该主机被丢弃并告警 |
 
 `~/.ssh`、`~/.gnupg`、`~/.sid-code` 是**显式 deny** 的——即使权限规则放行了 bash，命令也
 碰不到这三处。这层防御不依赖应用层判断，是内核强制的。
@@ -348,10 +352,11 @@ settings.json 里只有两个字段（定义在 `packages/core/src/config/config
 所以沙箱是「bash 命令的操作系统级兜底」，不是「全工具的隔离」。和前面的应用层规则是
 **互补**而非替代：应用层管「该不该调」，沙箱管「调了之后内核允不允许」。
 
-::: warning 沙箱违规不是错误，是告警
-沙箱违规（命令尝试碰被 deny 的路径/主机）会记录到 `violations` 列表并 warn，
-**不一定会让命令失败**——取决于 sandbox-exec 的处理。
-看日志里 `[SANDBOX]` 行能知道哪条命令撞了边界。
+::: warning 沙箱违规目前没有应用层观测
+命令撞到被 deny 的路径/主机时，sandbox-exec 会直接拒绝该操作（命令通常因此失败），
+但 sid-code 侧**目前不采集违规明细**——`sandbox.ts` 里的 `violations` 列表尚未接线，
+日志里也不会出现「哪条命令撞了边界」的 `[SANDBOX]` 行（该前缀目前只在网络白名单主机
+解析失败时出现）。要排查命令为什么失败，直接看命令的 stderr 输出。
 :::
 
 ## 哪些操作 `allow` 规则与 `always-allow` 都绕不过
@@ -373,14 +378,18 @@ settings.json 里只有两个字段（定义在 `packages/core/src/config/config
 high 弹确认。非交互模式（`-p`）下没人能确认，所以 high 也会落成
 `拒绝(非交互模式)`——脚本里跑这类命令必须显式放行或改写命令。
 
-敏感文件是同一层。实测 `always-allow` 模式下读这几个仍要确认：
+敏感文件是同一层，而且比危险命令更严：**命中即硬拒绝，不给确认机会**
+（`always-allow` 模式下读这几个同样被拒）：
 
 ```text
-阻止 需确认  .env                     敏感文件: …/.env
-阻止 需确认  config/credentials.json  敏感文件: …/credentials.json
-阻止 需确认  deploy.pem               敏感文件: …/deploy.pem
-允许        normal.ts
+read(...) → 拒绝(路径验证: 敏感文件（凭证类，默认拒绝）: …/.env)
 ```
+
+为什么不给弹窗出路：凭证文件被读走是**不可撤销**的损害，而弹窗确认恰恰是最容易被
+话术点穿的一环。对这类「一旦泄露无法回收」的目标，正确的默认值是不给这个选择。
+确实需要访问时（部署脚本、配置排查），在 settings.json 的 `permissions.allow` 里
+**显式**写 `Read(.env)` 这类规则——那是你离开对话、在配置文件里做的决定，
+不受当轮话术影响。
 
 命中的是一份固定模式表（`.env` / `.env.*` / `credentials` / `*.pem` / `*.key` /
 `id_rsa` / `.ssh/` / `.aws/config` / `.kube/config` / `token.json` 等）。
