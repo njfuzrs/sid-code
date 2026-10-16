@@ -3,9 +3,8 @@
  * 只包含不需要完整 CLI 初始化的轻量命令
  */
 
-import { join } from "path";
-import { unlinkSync, existsSync } from "fs";
 import { sidPaths } from "../config/paths.ts";
+import type { Config } from "../config/config.ts";
 
 /** 处理列出会话命令 */
 export async function handleListSessions(): Promise<void> {
@@ -40,7 +39,10 @@ export async function handleListSessions(): Promise<void> {
 }
 
 /** 处理删除会话命令 */
-export async function handleDeleteSession(sessionId: string): Promise<void> {
+export async function handleDeleteSession(
+  sessionId: string,
+  config: Config = {} as Config,
+): Promise<void> {
   const { SessionSelector } = await import("./utils.ts");
 
   const sessionDir = sidPaths.sessions();
@@ -48,21 +50,18 @@ export async function handleDeleteSession(sessionId: string): Promise<void> {
 
   try {
     const session = await selector.findSession(sessionId);
-    // P0-1：会话按项目分目录后，用条目自带的 dirPath 定位；回退根目录兼容未迁移的平铺文件。
-    const sessionPath = join(session.dirPath || sessionDir, session.fileName);
-
-    if (existsSync(sessionPath)) {
-      unlinkSync(sessionPath);
-      // D7/D8：`--delete-session` 是删除会话的**第二个入口**，此前它只 unlink jsonl 本体，
-      // 兄弟存储（checkpoints/<id>/、progress/<id>.md）原地留成孤儿。走与自动清理同一个
-      // helper，而不是在这里再抄一遍要删什么——抄一遍就意味着下次新增同类存储会再漏一次。
-      const { deleteSessionSiblingStores } = await import("./cleanup.ts");
-      await deleteSessionSiblingStores(session.id);
-      console.log(`已删除会话: ${session.id} (${session.displayName})`);
-    } else {
-      console.error(`错误: 会话文件不存在: ${session.fileName}`);
-      process.exit(1);
-    }
+    // D7/D8：`--delete-session` 是删除会话的**第二个入口**。此前它只 unlink jsonl 本体 +
+    // deleteSessionSiblingStores（checkpoints + progress），漏了 summaries / sidechain /
+    // trajectory 三类。现在走与自动清理同一个 deleteSessionArtifacts()，六个资源类型
+    // 单一实现点，新增同类存储只改那里一处。
+    const { deleteSessionArtifacts } = await import("./cleanup.ts");
+    await deleteSessionArtifacts(
+      session.id,
+      session.fileName,
+      config,
+      session.dirPath || sessionDir,
+    );
+    console.log(`已删除会话: ${session.id} (${session.displayName})`);
   } catch (error: any) {
     console.error(`错误: ${error.message}`);
     process.exit(1);
