@@ -7,7 +7,7 @@
  *   不再每行一个 Yoga 节点（P2-F）。
  * - 表格 token 分流到 <TableRenderer>（React flex 布局，精细列宽 + 降级），
  *   不再靠「当前行 |...| + 下一行 separator」逐行误判（P1-C）。
- * - 代码块走 colorizeCode（语法高亮 + 行号 + 高度截断），与旧组件一致。
+ * - 代码块走 colorizeCode，只做语法高亮：不画行号、不加左边距（复制即可执行，见 RenderCodeBlock）。
  * - 内联样式由 marked token → renderInline 统一生成，不再手写正则递归（P1-E）。
  * - 块间距用 <Box gap={1}> 统一提供，不再手工塞 spacer Box（P2-J）。
  *
@@ -20,7 +20,6 @@ import { Box } from "../render-port/components.ts";
 import { Ansi as AnsiRaw } from "../render-port/components.ts";
 import { colorizeCode } from "./CodeColorizer.tsx";
 import { TableRenderer } from "./TableRenderer.tsx";
-import { useSettings } from "../contexts/SettingsContext.tsx";
 import { cachedLexer, formatTokenToAnsi, isTableToken, extractTableData } from "../markdown.ts";
 
 // 渲染底座的 Ansi 经 react-compiler 编译后丢失了 props 类型（签名为 (t0)），
@@ -42,8 +41,6 @@ const MarkdownAnsiInternal: React.FC<MarkdownAnsiProps> = ({
   terminalWidth,
   renderMarkdown = true,
 }) => {
-  const settings = useSettings();
-
   // 原始 markdown 模式：整段按 markdown 语言高亮，不渲染结构（与旧组件一致）。
   const rawBlock = useMemo(() => {
     if (renderMarkdown || !text) return null;
@@ -88,7 +85,7 @@ const MarkdownAnsiInternal: React.FC<MarkdownAnsiProps> = ({
           />,
         );
       } else if (token.type === "code") {
-        // 代码块单独走 colorizeCode：语法高亮 + 行号。
+        // 代码块单独走 colorizeCode：只做语法高亮，不加行号与左边距。
         flushAnsi();
         out.push(
           <RenderCodeBlock
@@ -96,7 +93,6 @@ const MarkdownAnsiInternal: React.FC<MarkdownAnsiProps> = ({
             code={token.text ?? ""}
             lang={token.lang || null}
             terminalWidth={terminalWidth}
-            hideLineNumbers={settings.hideLineNumbers}
           />,
         );
       } else {
@@ -107,7 +103,7 @@ const MarkdownAnsiInternal: React.FC<MarkdownAnsiProps> = ({
     }
     flushAnsi();
     return out;
-  }, [renderMarkdown, text, terminalWidth, settings.hideLineNumbers]);
+  }, [renderMarkdown, text, terminalWidth]);
 
   if (!text) return null;
 
@@ -133,29 +129,28 @@ interface RenderCodeBlockProps {
   code: string;
   lang: string | null;
   terminalWidth: number;
-  hideLineNumbers: boolean;
 }
 
-const RenderCodeBlockInternal: React.FC<RenderCodeBlockProps> = ({
-  code,
-  lang,
-  terminalWidth,
-  hideLineNumbers,
-}) => {
+/**
+ * markdown 代码块：不画行号、不加左边距。
+ *
+ * 为什么：代码块的主要用途是让用户复制去执行。默认主屏模式（ADR-040）下复制走终端原生选择，
+ * 渲染层没有任何手段把 gutter 排除在选区外——画出来的行号 / 前导空格会原样进剪贴板，
+ * 多行命令粘贴即执行失败，缩进敏感内容（Python / heredoc）还会被整体右移一格。
+ * 对齐 CC：其 markdown 代码块只做高亮（utils/markdown.ts `case 'code'`），
+ * 行号只给文件内容 / diff 展示，且用 NoSelect 隔开——而 NoSelect 在主屏模式是 no-op，
+ * 所以这里唯一有效的做法就是不画。需要行号的场景走 DiffRenderer 等专用渲染器。
+ */
+const RenderCodeBlockInternal: React.FC<RenderCodeBlockProps> = ({ code, lang, terminalWidth }) => {
   const colorized = colorizeCode({
     code: code,
     language: lang,
-    maxWidth: terminalWidth - CODE_BLOCK_PREFIX_PADDING,
-    hideLineNumbers,
+    maxWidth: terminalWidth,
+    hideLineNumbers: true,
   });
 
   return (
-    <Box
-      paddingLeft={CODE_BLOCK_PREFIX_PADDING}
-      flexDirection="column"
-      width={terminalWidth}
-      flexShrink={0}
-    >
+    <Box flexDirection="column" width={terminalWidth} flexShrink={0}>
       {colorized}
     </Box>
   );

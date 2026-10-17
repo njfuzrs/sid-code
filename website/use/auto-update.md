@@ -40,7 +40,7 @@ SID_CODE_AUTO_UPDATE=off sid-code
 sid-code update                           # 沿用当前通道更新（beta 用户仍在 beta）
 SID_CODE_CHANNEL=beta sid-code update     # 加入抢先版
 SID_CODE_CHANNEL=stable sid-code update   # 退出抢先版，回到稳定版
-sid-code update --version <版本号>       # 装指定稳定版（回滚也走这条）
+sid-code update --version <版本号>           # 装指定版本（回滚也走这条）
 ```
 
 ## 详细说明
@@ -48,7 +48,7 @@ sid-code update --version <版本号>       # 装指定稳定版（回滚也走�
 ### 自动更新跟随当前安装的通道
 
 后台检查读的是**当前安装的通道**的指针：稳定版读 `latest.txt`，beta 读 `beta.txt`
-（判据是安装时写在版本目录旁的通道标记）。安装子进程会显式设置同一个通道，
+（判据是安装时写在二进制旁的通道标记）。安装子进程会显式设置同一个通道，
 把你环境里继承来的 `SID_CODE_CHANNEL` 盖掉。
 
 所以自动更新永远不会把一台机器在两个通道之间悄悄切换：稳定版只升稳定版，
@@ -129,9 +129,10 @@ CI 和脚本不会在跑任务的当口自己改二进制。要更新，显式�
 ```
 
 它怎么落到每台机器上：首次安装时整份拷贝；升级时由启动迁移把用户**缺失的**顶层键补进已有的
-`settings.json`，每台机器只补一次，**绝不覆盖已写的值**。所以自己写过 `autoUpdate` 的人不受团队默认影响，
-团队后来改了这个键的取值也不会同步过去。要强制全员统一，下发环境变量 `SID_CODE_AUTO_UPDATE`
-（优先级高于 settings）。补全的细节见[团队默认配置分发](/team/defaults)。
+`settings.json`——**每个键只会被补一次、绝不覆盖已写的值**，模板后续新增的键会在之后启动时补进来。
+所以自己写过 `autoUpdate` 的人不受团队默认影响，团队后来改了这个键的取值也不会同步过去。
+要强制全员统一，下发环境变量 `SID_CODE_AUTO_UPDATE`（优先级高于 settings）。
+补全的细节见[团队默认配置分发](/team/defaults)。
 
 开 `--debug` 时，检查 / 抢锁 / 安装的过程会进 `~/.sid-code/debug.log`，
 分类是 `AUTO_UPDATE`。
