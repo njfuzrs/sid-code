@@ -2179,7 +2179,9 @@ export class App {
     const cap = this.resolveEffortCap();
     return {
       runtime: this.runtimeThinking,
-      applied: eff.resolveThinking(cap, this.runtimeThinking, eff.getThinkingEnvOverride()),
+      // 服务端实际是否思考（恒思考模型恒 true），与状态栏同源。
+      applied: eff.resolveThinkingState(cap, this.runtimeThinking, eff.getThinkingEnvOverride())
+        .effective,
       capability: cap,
     };
   }
@@ -2780,12 +2782,16 @@ export class App {
             isAuto: eff.isEffortAuto(this.runtimeEffort, effortEnv),
           }
         : null,
-      thinkingDisplay: cap.supportsThinkingToggle
-        ? {
-            on: eff.resolveThinking(cap, this.runtimeThinking, eff.getThinkingEnvOverride()),
-            isAuto: this.runtimeThinking === undefined && eff.getThinkingEnvOverride() === null,
-          }
-        : null,
+      // 三种控制形态都显示（D6：无开关族此前不显示该列，用户把「没显示」读成「已关」）。
+      // on 取服务端实际是否思考（D5：恒思考模型此前显示「关」）。
+      thinkingDisplay: (() => {
+        const st = eff.resolveThinkingState(
+          cap,
+          this.runtimeThinking,
+          eff.getThinkingEnvOverride(),
+        );
+        return { on: st.effective, isAuto: st.intent === "auto", control: st.control };
+      })(),
     });
   }
 

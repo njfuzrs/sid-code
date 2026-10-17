@@ -75,4 +75,20 @@ describe("deriveThinking", () => {
     const off = deriveThinking({ on: false, isAuto: true }, GRAY);
     expect(off?.text).toBe("off");
   });
+
+  test("locked-on（恒思考）→ 「✻·不可关」，即使意图是 off 也不显示 ✧（D5）", () => {
+    const r = deriveThinking({ on: true, isAuto: false, control: "locked-on" }, GRAY);
+    expect(r?.glyph).toBe(`${THINKING_ON}·不可关`);
+    expect(r?.color).toBe(GRAY); // 不点睛：不是「你开的」
+  });
+
+  test("none（无独立开关）→ 「✧内置」而不是不渲染（D6：没显示被读成已关）", () => {
+    const r = deriveThinking({ on: false, isAuto: true, control: "none" }, GRAY);
+    expect(r).not.toBeNull();
+    expect(r?.glyph).toBe(`${THINKING_OFF}内置`);
+  });
+
+  test("缺省 control 按 toggle（旧调用方不受影响）", () => {
+    expect(deriveThinking({ on: true, isAuto: false }, GRAY)?.glyph).toBe(THINKING_ON);
+  });
 });

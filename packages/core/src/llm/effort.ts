@@ -21,9 +21,12 @@
 import type { SendParams } from "./types.ts";
 import { lookupCapability } from "./model-capabilities.ts";
 import { lookupModelCompat, type ModelCompat } from "./model-compat.ts";
+import { lookupCatalog } from "./model-params-catalog.ts";
+import { lookupRegistryExact } from "./model-registry.ts";
 import {
   buildDialectCatalog,
   classifyProtocolFamily,
+  isThinkingAlwaysOn,
   mapThinkingCapToEffort,
   type Dialect,
   type ProtocolFamily,
@@ -76,6 +79,15 @@ function clampToMaxWire(effort: EffortLevel): WireEffortNoXhigh {
 /** 思考开关三态。undefined = auto（跟随模型/provider 默认） */
 export type ThinkingSetting = "on" | "off" | undefined;
 
+/**
+ * 思考开关的控制形态。
+ *
+ * - `toggle`    可开可关（DeepSeek、GLM ≤5.2、Opus 5 / Sonnet 5 / Haiku 5.5、4.x、manual 模型）
+ * - `locked-on` 恒思考、关不掉（注册表 `thinkingMode:"always-on"`、GLM-5.3、compat `thinking_always_on`）
+ * - `none`      没有独立开关，推理深度只由 effort 决定（kimi / gpt-5.x / grok / o 系 / 未知族）
+ */
+export type ThinkingControl = "toggle" | "locked-on" | "none";
+
 /** 判断字符串是否为合法档位 */
 export function isEffortLevel(v: string): v is EffortLevel {
   return (EFFORT_LEVELS as readonly string[]).includes(v);
@@ -100,10 +112,23 @@ export interface EffortCapability {
   supportsEffort: boolean;
   /** 支持 max；false 时选 max 自动降 high（在 resolveAppliedEffort 钳制） */
   supportsMaxEffort: boolean;
-  /** 支持显式思考开关；false → 不显示 thinking 列 */
+  /** 支持显式思考开关；false → 状态栏 thinking 列显示「内置」 */
   supportsThinkingToggle: boolean;
-  /** thinking 默认是否开（影响 auto 态展示与下发） */
+  /**
+   * `auto` 时服务端**实际**是否思考（影响 auto 态展示与下发）。
+   *
+   * 不是族常量：Opus 5 / Sonnet 5 / Haiku 5.5「不传 = 思考」，恒思考模型关不掉，两者都为 true
+   * （见 {@link finalizeThinkingControl}）。此前取族常量 false，`auto` 态状态栏在这些模型上说谎。
+   */
   thinkingDefaultOn: boolean;
+  /**
+   * 思考开关的控制形态 —— 状态栏 / `/think` / Alt+T 据此如实展示（20261016 排查 D5 / D6）。
+   *
+   * ⚠ 与 `supportsThinkingToggle` **不等价**：`locked-on` 模型 `supportsThinkingToggle` 仍为 true。
+   * 那一位还驱动 `ThinkingManager`（`think hard` / `ultrathink` 单轮提级到 max），
+   * 恒思考模型上提级照样有意义，跟着改成 false 会把它一起关掉。
+   */
+  thinkingControl: ThinkingControl;
   /** auto 态下状态栏展示用的默认档位（对标 cc getDisplayedEffortLevel 的兜底） */
   defaultEffort: EffortLevel;
   /**
@@ -154,7 +179,12 @@ function dialectOf(kind: CapabilityKind): Dialect {
  * 包适配器只会让 `previewWireEffort` 那类「跑一次真实映射」的探测多穿一层。
  */
 function toCapability(d: Dialect): EffortCapability {
-  return { ...d.flags, applyToSendParams: d.applyToSendParams };
+  return {
+    ...d.flags,
+    // 族级初值；按模型真名的细化（locked-on、不传 = 开）在 finalizeThinkingControl 里做。
+    thinkingControl: d.flags.supportsThinkingToggle ? "toggle" : "none",
+    applyToSendParams: d.applyToSendParams,
+  };
 }
 
 // ─────────────────────────────────────────────────────────────
@@ -211,16 +241,77 @@ export function resolveEffortCapability(opts: {
 
   // 优先级 1：用户显式声明不支持思考 → 全 no-op（不下发任何字段）。
   if (opts.modelConfig?.supportsThinking === false) {
-    return applyCompatOverrides(toCapability(dialectOf("unknown")), compat);
+    return finalizeThinkingControl(
+      applyCompatOverrides(toCapability(dialectOf("unknown")), compat),
+      opts.model,
+      "unknown",
+      compat,
+    );
   }
 
   const kind = classifyCapability(opts);
   if (kind !== "unknown") {
-    return applyCompatOverrides(toCapability(dialectOf(kind)), compat);
+    return finalizeThinkingControl(
+      applyCompatOverrides(toCapability(dialectOf(kind)), compat),
+      opts.model,
+      kind,
+      compat,
+    );
   }
 
   // 优先级 2.5：协议族未知 → 查动态能力缓存（纯内存读，不触网）。
-  return applyCompatOverrides(resolveFromCapabilityCache(opts.model), compat);
+  return finalizeThinkingControl(
+    applyCompatOverrides(resolveFromCapabilityCache(opts.model), compat),
+    opts.model,
+    kind,
+    compat,
+  );
+}
+
+/**
+ * 按模型**真名**细化思考控制形态与 `auto` 默认值 —— 「展示、意图、线上」三处共用的事实源。
+ *
+ * 此前三处各算一遍（20261016 思考开关排查 §0）：展示层只看族常量，applier 把恒思考模型
+ * 强制成 true（`dialect/anthropic.ts`）、openai.ts 把 GLM-5.3 的 disabled 降级为不发，
+ * 展示层都不知情 → 状态栏「关」，模型在想。这里把那两处的判据收回来：
+ *
+ * - `locked-on`：判据与两处线格式降级**逐条同口径**——anthropic-native 看注册表
+ *   `thinkingMode:"always-on"`（同 applier 的 `lookupCatalog`），其余看
+ *   compat `thinkingAlwaysOn` > `isThinkingAlwaysOn(真名)`（同 openai.ts）。口径一旦分叉，
+ *   就会出现「展示说关不掉、线上却真关了」的反向说谎。
+ * - `thinkingDefaultOn`：`locked-on` 恒 true；anthropic-native 且注册表**精确命中**
+ *   `thinkingOmitMeans:"on"` 时为 true。精确命中与线格式层 `thinkingOffWire` 同口径：
+ *   仅模糊命中的未来小版本 `auto` 时既不显示开、`off` 时也不发 disabled，不猜。
+ *
+ * ⚠ `auto` 必须跟着改为 true：PR-1 让 `off` 在这些模型上真的发 disabled，若 `auto` 仍按族常量
+ * false 解析，`auto` 就从「服务端默认 = 思考」悄悄变成「关」。
+ */
+function finalizeThinkingControl(
+  cap: EffortCapability,
+  model: string,
+  kind: CapabilityKind,
+  compat?: ModelCompat,
+): EffortCapability {
+  // 用户显式声明恒思考 > 族推导：网关改名模型（`origin-glm-5.3`）常被判 unknown 族，
+  // 但服务端照样恒思考，展示必须说「关不掉」而不是「内置」。
+  if (compat?.thinkingAlwaysOn === true) {
+    return { ...cap, thinkingControl: "locked-on", thinkingDefaultOn: true };
+  }
+  if (!cap.supportsThinkingToggle) {
+    return { ...cap, thinkingControl: "none" };
+  }
+  const alwaysOn =
+    kind === "anthropic-native"
+      ? lookupCatalog(model)?.thinkingMode === "always-on"
+      : // compat 显式 false 可覆盖内置名单（与 openai.ts 同口径）；true 已在上面返回。
+        (compat?.thinkingAlwaysOn ?? isThinkingAlwaysOn(model));
+  if (alwaysOn) {
+    return { ...cap, thinkingControl: "locked-on", thinkingDefaultOn: true };
+  }
+  if (kind === "anthropic-native" && lookupRegistryExact(model)?.thinkingOmitMeans === "on") {
+    return { ...cap, thinkingControl: "toggle", thinkingDefaultOn: true };
+  }
+  return { ...cap, thinkingControl: "toggle" };
 }
 
 /**
@@ -335,6 +426,7 @@ function resolveFromCapabilityCache(model: string): EffortCapability {
     // 未知模型不猜「思考开关」——它比 effort 更容易 400（DeepSeek/GLM 的 thinking 结构各异）。
     supportsThinkingToggle: false,
     thinkingDefaultOn: false,
+    thinkingControl: "none",
     defaultEffort,
     applyToSendParams: (params, effort) => {
       if (effort === undefined) return;
@@ -540,8 +632,50 @@ export function reconcileEffortForModel(
   return levels.includes(wire) ? wire : cap.defaultEffort;
 }
 
+/** {@link resolveThinkingState} 的结果：意图、服务端实际是否思考、控制形态。 */
+export interface ThinkingState {
+  /** 用户意图（env > `/think`）；`auto` = 两者都未设 */
+  intent: "on" | "off" | "auto";
+  /** 服务端**实际**是否在思考（展示用）。`locked-on` 恒 true，与意图无关 */
+  effective: boolean;
+  control: ThinkingControl;
+}
+
 /**
- * thinking 是否实际开启（优先级 env > runtime > cap.thinkingDefaultOn）。
+ * 思考开关的完整状态 —— 状态栏 / `/think` / Alt+T 的唯一取数源。
+ *
+ * - `locked-on`：effective = true（无论意图）
+ * - `none`     ：effective = `cap.thinkingDefaultOn`（仅展示，不下发）
+ * - `toggle`   ：env > runtime > `cap.thinkingDefaultOn`
+ *
+ * 意图与展示分开存：`/think off` 之后切到恒思考模型，意图保留（粘性），展示态按当前模型重算，
+ * 切回可关闭的模型时 off 自动生效。
+ */
+export function resolveThinkingState(
+  cap: EffortCapability,
+  runtimeThinking: ThinkingSetting,
+  envOverride: boolean | null,
+): ThinkingState {
+  const intent: ThinkingState["intent"] =
+    envOverride !== null ? (envOverride ? "on" : "off") : (runtimeThinking ?? "auto");
+  const requested = intent === "auto" ? cap.thinkingDefaultOn : intent === "on";
+  const effective =
+    cap.thinkingControl === "locked-on"
+      ? true
+      : cap.thinkingControl === "none"
+        ? cap.thinkingDefaultOn
+        : requested;
+  return { intent, effective, control: cap.thinkingControl };
+}
+
+/**
+ * 交给 applier 的思考开关（优先级 env > runtime > cap.thinkingDefaultOn）。
+ *
+ * ⚠ 这是**下发意图**，不是展示值：`locked-on` 模型上它仍可能返回 false，由各族线格式层
+ * 自行兜底（Anthropic applier 强制 adaptive、openai.ts 对 GLM-5.3 不发 disabled）。
+ * 刻意不改成 `resolveThinkingState().effective`——那会让 GLM-5.3 在用户 `/think off` 时
+ * 改发 `enabled` + effort 档位，用户说关反而多下发一个强度。展示请用 {@link resolveThinkingState}。
+ *
  * @param envOverride getThinkingEnvOverride() 的返回值：null=env 未设；true/false=env 强制。
  */
 export function resolveThinking(

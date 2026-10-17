@@ -177,6 +177,15 @@ describe("formatCapabilityLine：详情第一段", () => {
   test("别名等于真名时不重复印（无信息量的噪音）", () => {
     expect(formatCapabilityLine(profile({ name: "x", wireModel: "x" }))).not.toContain("真名");
   });
+
+  test("思考控制形态：恒开 / 内置 / 可开关；缺省不显示", () => {
+    expect(formatCapabilityLine(profile({ thinkingControl: "locked-on" }))).toContain(
+      "思考 恒开（关不掉）",
+    );
+    expect(formatCapabilityLine(profile({ thinkingControl: "none" }))).toContain("思考 内置");
+    expect(formatCapabilityLine(profile({ thinkingControl: "toggle" }))).toContain("思考 可开关");
+    expect(formatCapabilityLine(profile({}))).not.toContain("思考");
+  });
 });
 
 describe("formatPricingLine：详情第二段必须交代来源与折算", () => {

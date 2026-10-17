@@ -282,16 +282,28 @@ export function deriveEffort(
 
 /**
  * 思考开关展示派生（thinking 列）：开/关 → 字形 + 文本 + 语义色。
- * - null（模型不支持思考开关）→ 返回 null，Footer 不渲染该列。
- * - 开启 → 实心星 ✻ + 成功色（点睛）；关闭 → 空心星 ✧ + 灰色。
- * - auto 态在文本加 (auto) 后缀，颜色保持灰（不点睛，因非用户显式开启）。
+ * - null（尚未初始化）→ 返回 null，Footer 不渲染该列。
+ * - toggle：开启 → 实心星 ✻ + 成功色（点睛）；关闭 → 空心星 ✧ + 灰色。auto 态颜色保持灰。
+ * - locked-on（恒思考，关不掉）→ `✻·不可关`，灰色：说的是「它在想且你关不掉」，不是「你开了」。
+ * - none（无独立开关）→ `✧内置`，灰色：推理深度由 effort 决定。此前这类模型不显示该列，
+ *   用户把「没显示」读成「已关」（20261016 思考开关排查 D6）。
  */
 export function deriveThinking(
-  thinkingDisplay: { on: boolean; isAuto: boolean } | null,
+  thinkingDisplay: {
+    on: boolean;
+    isAuto: boolean;
+    control?: "toggle" | "locked-on" | "none";
+  } | null,
   defaultColor: Color,
 ): { glyph: string; text: string; color: Color } | null {
   if (!thinkingDisplay) return null;
-  const { on, isAuto } = thinkingDisplay;
+  const { on, isAuto, control = "toggle" } = thinkingDisplay;
+  if (control === "locked-on") {
+    return { glyph: `${THINKING_ON}·不可关`, text: "on·locked", color: defaultColor };
+  }
+  if (control === "none") {
+    return { glyph: `${THINKING_OFF}内置`, text: "builtin", color: defaultColor };
+  }
   // 去掉 (auto) 文字后缀：字形已自解释(✻ 开 / ✧ 关)，Footer 旋钮区只渲染 glyph。
   // 保留 text 供其它场景/测试使用，但不再堆 (auto) 冗余文字。
   const text = on ? "on" : "off";
@@ -352,7 +364,7 @@ export interface StatusLineData {
   scroll: { text: string } | null;
   /** effort 列派生（null = 模型不支持档位，不渲染该列） */
   effort: { glyph: string; text: string; color: Color } | null;
-  /** thinking 列派生（null = 模型不支持思考开关，不渲染该列） */
+  /** thinking 列派生（null = 尚未初始化，不渲染该列） */
   thinking: { glyph: string; text: string; color: Color } | null;
   /** /goal 列派生（null = 无活跃目标，不渲染该列） */
   goal: { text: string; color: Color } | null;
