@@ -43,6 +43,7 @@ import {
 import { dirname, join } from "node:path";
 import { sidPaths } from "../config/paths.ts";
 import { getLogger } from "../debug/logger.ts";
+import { hasFinalUploadMarker } from "./upload-marker.ts";
 
 const STATE_VERSION = 1;
 
@@ -181,7 +182,8 @@ function earliestUnuploadedCreatedMs(outputDir: string): number | null {
     for (const e of readdirSync(sessionsDir, { withFileTypes: true })) {
       if (!e.isDirectory() || e.name.startsWith(".")) continue;
       const dir = join(sessionsDir, e.name);
-      if (existsSync(join(dir, ".uploaded"))) continue;
+      // S11：与补传同口径，只认终态标记（中途快照 final:false 仍算未上传）
+      if (hasFinalUploadMarker(dir)) continue;
       const ms = sessionCreatedAtMs(e.name, dir);
       if (ms !== null && (earliest === null || ms < earliest)) earliest = ms;
     }

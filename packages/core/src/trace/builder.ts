@@ -439,7 +439,17 @@ export interface TrajectoryMetaOutput {
    */
   model_at_start?: string;
   start_time: string;
-  end_time: string;
+  /**
+   * S12：会话**真实结束**时刻，只在 SessionEnd 写过 `metadata.end_time` 后才出现。
+   * 中途重建（节流重建 / /debug 快照）**省略**本字段——修复前这里盖的是「本次重建的现在」，
+   * 下游（digest.deriveDuration、metadata.json）据此算出的是「截至最近一次重建」的假时长。
+   * 不写 null：服务端是否接受 null 无法核实，缺席是最保守的形态。
+   */
+  end_time?: string;
+  /** S12：本份 traj 的生成时刻（ISO）。中途快照时它是唯一可用的「截至时刻」 */
+  snapshot_at: string;
+  /** S12：生成本份 traj 时会话是否已经收尾（SessionEnd 写过 end_time / end_source） */
+  session_ended: boolean;
   total_steps: number;
   total_api_calls: number;
   total_tokens_sent: number;
@@ -971,12 +981,21 @@ export function buildTrajectory(
     tokensSent = pairs[pairs.length - 1].usage.input_tokens;
   }
 
-  // 推断 exit_status
+  // S12：会话是否已收尾。SessionEnd 同时写 end_time 与 end_source（collector handleSessionEnd），
+  // 任一存在即视为已收尾——只看 end_source 会把历史上只带 end_time 的元数据误判成进行中。
+  const sessionEnded = metadata.end_time !== undefined || metadata.end_source !== undefined;
+
+  // 推断 exit_status。
+  // S12：进行中的会话（中途重建）**不推断**——修复前这里会从末轮 stop_reason 推出 "end_turn"，
+  // 把一个还在跑的会话报成正常收尾（backfill.ts 头部实测：34 个「end_turn」全是这么来的）。
+  // 进行中写 "live"；已收尾但没有显式 exit_status 的历史形态保留原推断。
   const exitStatus =
     metadata.exit_status ??
-    (pairs.length > 0 && pairs[pairs.length - 1].stop_reason === "end_turn"
-      ? "end_turn"
-      : "unknown");
+    (!sessionEnded
+      ? "live"
+      : pairs.length > 0 && pairs[pairs.length - 1].stop_reason === "end_turn"
+        ? "end_turn"
+        : "unknown");
 
   // ─── 构建 info ───
   const info: TrajectoryInfo = {
@@ -1002,7 +1021,9 @@ export function buildTrajectory(
       ? { model_at_start: metadata.model_at_start }
       : {}),
     start_time: metadata.start_time,
-    end_time: metadata.end_time ?? new Date().toISOString(),
+    ...(metadata.end_time ? { end_time: metadata.end_time } : {}),
+    snapshot_at: new Date().toISOString(),
+    session_ended: sessionEnded,
     total_steps: trajectory.length,
     total_api_calls: apiCalls,
     total_tokens_sent: tokensSent,
