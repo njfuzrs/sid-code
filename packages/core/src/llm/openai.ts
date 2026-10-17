@@ -35,6 +35,7 @@ import { guardOutgoingMessages } from "./protocol-sentinel.ts";
 import {
   recordBilledRequest,
   recordNonStreamingBilledRequest,
+  observedThinkingIntent,
   nextFetchId,
 } from "./billing-sink.ts";
 import { splitSSELines, parseSSEField, isDoneSentinel } from "./sse-line.ts";
@@ -185,6 +186,16 @@ export function mergeToolCallIdentityFragment(current: string, fragment: string)
  */
 export function getHeaderTimeoutMs(_model?: string): number {
   return resolveHeaderTimeoutMs();
+}
+
+/**
+ * PR-5：Chat Completions 请求体里线上实发的 thinking 形态（BilledRequest.thinkingWire）。
+ * 读**最终请求体**（applyDeepSeekThinking + filterParamsForModel 之后），不读 params.thinking：
+ * 恒思考模型的 `enabled:false` 在这里已被降级为不发，内部表示与线上不可互推。
+ */
+function chatThinkingWireLabel(requestBody: any): "enabled" | "disabled" | "omitted" {
+  const t = requestBody?.thinking?.type;
+  return t === "enabled" || t === "disabled" ? t : "omitted";
 }
 
 export class OpenAIProvider implements Provider {
@@ -790,6 +801,21 @@ export class OpenAIProvider implements Provider {
           if (toolCalls.length === 0 || carryOnToolCalls) {
             assistantMsg.reasoning_content = msg._meta.reasoning_content;
           }
+        } else if (
+          // D10：跨族历史降级。Claude 跑出的轮次思考存在 thinking 块里、没有 `_meta`，
+          // 切到 DeepSeek V4 后 tool-call 轮缺 reasoning_content → 思维链断（见上段注释的后果）。
+          // 三条边界，缺一不可：
+          //   ① 只在 tool-call 轮做——DeepSeek 只要求这一类回传；全量迁移会让每轮回灌整段
+          //      Claude 思考，正是「思考链回传上下文膨胀」那份报告的形态；
+          //   ② 必须过 requiresReasoningContentForToolCalls——旧 deepseek-reasoner 带它会 400；
+          //   ③ 思考文本为空（redacted / display:omitted）就跳过——空串不比缺失好，
+          //      还会让「已回传」的判定误以为链路完整（thinkingParts 只收非空文本）。
+          // signature 在 OpenAI 协议无对应字段，丢弃。
+          toolCalls.length > 0 &&
+          thinkingParts.length > 0 &&
+          this.requiresReasoningContentForToolCalls(model, alias)
+        ) {
+          assistantMsg.reasoning_content = thinkingParts.join("");
         }
 
         result.push(assistantMsg);
@@ -1304,7 +1330,10 @@ export class OpenAIProvider implements Provider {
       });
       // PR12：把渠道别名传进 parseSSE，让字节级两档能吃到 per-model 覆盖。
       for await (const event of lifecycle.guard(
-        this.parseSSE(response.body!, signal, params.model ?? this._model),
+        this.parseSSE(response.body!, signal, params.model ?? this._model, {
+          wire: chatThinkingWireLabel(requestBody),
+          intent: observedThinkingIntent(params),
+        }),
       )) {
         // Fix 1 纵深防御：每次事件到达后检查 signal（覆盖 parseSSE 内 race 的盲区）
         if (signal?.aborted) {
@@ -1871,6 +1900,7 @@ export class OpenAIProvider implements Provider {
 
     const log = getLogger();
     log.debug("LLM:OPENAI", "非流式请求", { model: requestBody.model });
+    let nonStreamSawThinking = false;
 
     // 缺陷 15：非流式同样收口计费（见 recordNonStreamingBilledRequest）。
     // 只在拿到 2xx 后记：与 digest 恒等式的分子「2xx HttpConnected」同口径。
@@ -1921,6 +1951,8 @@ export class OpenAIProvider implements Provider {
       //（思考先于答复），并在 _meta 保存原文供 convertMessages 下轮回传。
       const reasoningContent: string =
         typeof msg.reasoning_content === "string" ? msg.reasoning_content : "";
+      nonStreamSawThinking =
+        reasoningContent.length > 0 || (extractOpenAIReasoningTokens(data.usage) ?? 0) > 0;
       if (reasoningContent.length > 0) {
         content.push({ type: "thinking", thinking: reasoningContent });
       }
@@ -2020,6 +2052,9 @@ export class OpenAIProvider implements Provider {
           provider: this.name(),
           baseURL: this.baseURL,
           usage: billedUsage,
+          thinkingWire: chatThinkingWireLabel(requestBody),
+          thinkingInResponse: nonStreamSawThinking,
+          thinkingIntent: observedThinkingIntent(params),
         });
       }
     }
@@ -2132,6 +2167,8 @@ export class OpenAIProvider implements Provider {
      * 两者会分裂（本文件 :197 那条注释记的正是同型坑）。
      */
     modelName?: string,
+    /** PR-5：本次请求线上实发的 thinking 形态与调用方意图，随 BilledRequest 落盘 */
+    thinkingObs?: { wire: "enabled" | "disabled" | "omitted"; intent?: boolean },
   ): AsyncIterable<StreamEvent> {
     const reader = stream.getReader();
     const decoder = new TextDecoder();
@@ -2908,6 +2945,12 @@ export class OpenAIProvider implements Provider {
           callerLabel: dumpCtx.callerLabel,
           atMs: Date.now(),
           accounted: isMainLoop,
+          // PR-5：思考内容 = 出现过 reasoning_content，或服务端报了推理 token（隐式推理族）
+          ...(thinkingObs && {
+            thinkingWire: thinkingObs.wire,
+            thinkingInResponse: reasoningContent.length > 0 || (usage.reasoningTokens ?? 0) > 0,
+            thinkingIntent: thinkingObs.intent,
+          }),
         });
       } catch {
         /* 计费上报绝不影响流（本仓可观测性一贯口径） */

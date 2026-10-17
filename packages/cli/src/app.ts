@@ -1024,27 +1024,10 @@ export class App {
     // 判定，而非 /deepseek/i 正则——原正则把同样支持 thinking 的 GLM/Grok 静默排除，
     // 它们的思考能力被无声关闭。能力标志由 catalog(protocolKind) 精确驱动，不随模型改名漂移。
     // （见 memory feedback-no-hardcoded-model-tier-rules.md）
-    const { resolveEffortCapability } = require("@sid-code/core/llm/effort.ts");
-    const thinkingModelConfig = opts.config.availableModels?.find(
-      (m) => m.name === opts.config.model,
-    );
-    const {
-      resolveWireModel: resolveWireModelForThinking,
-    } = require("@sid-code/core/llm/wire-model.ts");
-    const thinkingCap = resolveEffortCapability({
-      // 能力判定吃**真名**（与 query/loop.ts 的 cap 解析同口径）：内部按模型名做
-      // catalog/家族/前缀匹配，喂本地别名会静默 miss → thinking 开关被无声关闭。
-      model: resolveWireModelForThinking(opts.config.model, opts.config.availableModels),
-      provider: opts.config.provider,
-      baseURL: thinkingModelConfig?.baseURL ?? opts.config.baseURL,
-      modelConfig: thinkingModelConfig
-        ? { supportsThinking: thinkingModelConfig.supportsThinking }
-        : undefined,
-      // compat 按渠道（别名）建键，与上面 model 吃真名相反 —— 漏传这里 ThinkingManager
-      // 会按内置判定初始化，用户声明的 supportsThinkingToggle:false 对状态栏不生效。
-      alias: opts.config.model,
-    });
-    this.thinkingMgr = new ThinkingManager(thinkingCap.supportsThinkingToggle);
+    // D8：启用位**现算**而非构造期快照——/model 切换后 think hard / ultrathink 的可用性
+    // 随当前模型走。resolveEffortCap 按 this.config.model 的真名 + alias 解析，与状态栏、
+    // query/loop.ts 同口径（吃真名、compat 按别名建键），见该方法注释。
+    this.thinkingMgr = new ThinkingManager(() => this.resolveEffortCap().supportsThinkingToggle);
 
     // Effort/Thinking 旋钮运行时态初值解析：env > settings(config) > undefined(auto)。
     // env 覆盖优先级最高且会被 queryLoop 每轮重新读取，这里仅解析 runtime 基线。
@@ -1160,6 +1143,24 @@ export class App {
           try {
             const { resolveMaxOutputTokensForModel } = require("@sid-code/core/config/config.ts");
             return resolveMaxOutputTokensForModel(model, this.config.availableModels);
+          } catch {
+            return undefined;
+          }
+        },
+        // D9：fallback 对备用模型重解析 thinking/effort 时，与主循环同口径（真名 + baseURL +
+        // supportsThinking + compat 别名）。读 this.config 保证 availableModels 热更新后仍对。
+        resolveEffortCapability: (model: string) => {
+          try {
+            const { resolveEffortCapability } = require("@sid-code/core/llm/effort.ts");
+            const { resolveWireModel } = require("@sid-code/core/llm/wire-model.ts");
+            const mc = this.config.availableModels?.find((m) => m.name === model);
+            return resolveEffortCapability({
+              model: resolveWireModel(model, this.config.availableModels),
+              provider: mc?.provider ?? this.config.provider,
+              baseURL: mc?.baseURL ?? this.config.baseURL,
+              modelConfig: mc ? { supportsThinking: mc.supportsThinking } : undefined,
+              alias: model,
+            });
           } catch {
             return undefined;
           }

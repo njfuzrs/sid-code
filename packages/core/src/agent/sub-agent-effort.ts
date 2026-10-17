@@ -71,5 +71,7 @@ export function buildSubAgentEffortParams(input: SubAgentEffortInput): Partial<S
   if (params.outputConfig) extra.outputConfig = params.outputConfig;
   if (params.maxThinkingTokens !== undefined) extra.maxThinkingTokens = params.maxThinkingTokens;
   if (params.thinkingBudgetCapped) extra.thinkingBudgetCapped = params.thinkingBudgetCapped;
+  // D9：子代理的意图是「按 task.effort 思考」，fallback 降级时据此对备用模型重下。
+  extra.thinkingIntent = { thinking: true, effort: input.effort };
   return extra;
 }

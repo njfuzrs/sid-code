@@ -749,6 +749,12 @@ export function emitBilledRequest(data: {
   output_tokens: number;
   cache_read_tokens?: number;
   cache_creation_tokens?: number;
+  /** PR-5：线上实发 thinking 形态（见 BilledRequest.thinkingWire） */
+  thinking_wire?: string;
+  /** PR-5：响应是否含思考内容 */
+  thinking_in_response?: boolean;
+  /** PR-5：调用方原始思考意图 */
+  thinking_intent?: boolean;
 }): void {
   try {
     if (_eventWriter && _sessionId) {

@@ -63,6 +63,10 @@ import { ModelAvailabilityService } from "./availability.ts";
 import { shouldPreserveTransientCooldownProbeSlot } from "./cooldown-probe.ts";
 import { resolveRegistryMaxOutputTokens } from "./model-lookup.ts";
 import { lookupWireModelAlias } from "./wire-model.ts";
+import {
+  reapplyThinkingForFallback,
+  type FallbackCapabilityResolver,
+} from "./fallback-thinking.ts";
 import { dispatchRetryTelemetry, type RetryTelemetryEvent } from "./retry-telemetry.ts";
 import { DEFAULTS as NETWORK_DEFAULTS } from "../config/network-profile.ts";
 import {
@@ -334,6 +338,9 @@ export interface FallbackConfig {
    *  由 app.ts 注入，内部走 resolveMaxOutputTokensForModel（availableModels > 注册表）。
    *  fallback 目标钳制 maxTokens 时用它替代「只查内置注册表」，避免注册表外的自定义模型漏钳制。 */
   resolveMaxOutputTokens?: (model: string) => number | undefined;
+  /** D9：按模型名解析 effort/thinking 能力的回调（app.ts 注入，带 availableModels 的 baseURL /
+   *  supportsThinking / compat 别名）。缺省时按进程级别名表翻译真名 + provider 名解析。 */
+  resolveEffortCapability?: FallbackCapabilityResolver;
   /** 是否禁用 keep-alive（ECONNRESET 后自动置位） */
   disableKeepAlive?: boolean;
   /** Phase 4：无人值守 persistent retry 模式 */
@@ -2093,6 +2100,13 @@ export class ModelFallback {
       );
       fallbackParams.maxTokens = fbCeiling;
     }
+    // D9：thinking / effort / outputConfig 按备用模型真名与调用方原始意图重下（先清空再重下），
+    // 不沿用主模型那一族算好的值。细节与三条约束见 fallback-thinking.ts 文件头。
+    reapplyThinkingForFallback(fallbackParams, {
+      fallbackModel,
+      providerName: safeProviderName(fallbackProvider) ?? "",
+      resolveCapability: this.config.resolveEffortCapability,
+    });
     let fbYieldedContent = false;
     let fbYieldedError = false;
     for await (const event of fallbackProvider.sendMessageStream(fallbackParams, signal)) {
