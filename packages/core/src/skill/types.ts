@@ -48,9 +48,9 @@ export interface SkillDefinition {
    * 优先级高于 mode；未指定时由 mode 推导。
    */
   context?: "inline" | "fork";
-  /** 最大轮次（delegate 模式，默认 10，最大 50） */
+  /** 最大轮次（fork 模式，可选；未声明 = 无上限） */
   maxTurns?: number;
-  /** 超时时间（分钟，delegate 模式，默认 2，最大 30） */
+  /** @deprecated PR-B（2026-10-17）起不再生效，解析到会 warn。保留字段仅为向后兼容。 */
   timeoutMins?: number;
   /** 提示词模板（markdown body） */
   prompt: string;

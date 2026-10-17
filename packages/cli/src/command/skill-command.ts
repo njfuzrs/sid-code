@@ -179,8 +179,8 @@ export class SkillCommand implements Command {
           trusted: isTrustedSkillSource(this.skill),
           agentType,
           model: this.skill.model,
-          // P2-2：与 command/executor.ts 的 fork 命令同档，默认从 10 提到 30
-          maxTurns: this.skill.maxTurns ?? 30,
+          // PR-B：未声明即无上限，对齐 CC
+          maxTurns: this.skill.maxTurns,
           effort,
           type: agentType ?? `skill:${this.skill.name}`,
           signal: run?.signal,

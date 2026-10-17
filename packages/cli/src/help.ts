@@ -243,7 +243,6 @@ Worktree 隔离:
 
   子代理/工作流:
   SID_SUBAGENT_MAX_CONCURRENT   子代理并发上限（缺省 3）
-  SID_CODE_SUBAGENT_TIMEOUT_MS  子代理超时毫秒统一覆盖（缺省按 agent 声明值与实测 p95 派生）
   SID_TOOL_MAX_CONCURRENT       工具并发上限（缺省 10）
   SID_WORKFLOW_MAX_CONCURRENT   工作流并发上限（缺省 min(16, cpu核数-2)）
   SID_WORKFLOW_SYNC_TIMEOUT_MS  工作流同步超时毫秒
