@@ -79,7 +79,9 @@ describe("resolveRegistryMaxOutputTokens — 调用契约", () => {
   test("按真名查：喂本地别名会全 miss（调用方必须先解析别名）", () => {
     // 这不是缺陷而是契约：函数不持有 availableModels，无从解析别名。
     // 三个调用点都在外面先过 resolveWireModel / lookupWireModelAlias。
-    expect(resolveRegistryMaxOutputTokens("claude-sonnet-5-gateway")).toBeUndefined();
+    // 例子用与真名不同形的别名：`claude-sonnet-5-gateway` 这类后缀式别名自注册表补了
+    // `claude-sonnet-5` 键后会经模糊前缀命中（窗口借值无害，见 model-registry.ts 5 一代注释）。
+    expect(resolveRegistryMaxOutputTokens("gw-sonnet-five")).toBeUndefined();
   });
 
   test("采集缓存键大小写不敏感（lookupCapability 内部归一化）", () => {

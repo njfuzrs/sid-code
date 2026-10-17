@@ -3,6 +3,7 @@
  * 实现 Agentic While-Loop：用户输入 → LLM 流式响应 → 工具调用 → 循环
  */
 
+import { Readable } from "node:stream";
 import type { Provider } from "@sid-code/core/llm/provider.ts";
 import type {
   ContentBlock,
@@ -2180,7 +2181,9 @@ export class App {
     const cap = this.resolveEffortCap();
     return {
       runtime: this.runtimeThinking,
-      applied: eff.resolveThinking(cap, this.runtimeThinking, eff.getThinkingEnvOverride()),
+      // 服务端实际是否思考（恒思考模型恒 true），与状态栏同源。
+      applied: eff.resolveThinkingState(cap, this.runtimeThinking, eff.getThinkingEnvOverride())
+        .effective,
       capability: cap,
     };
   }
@@ -2781,12 +2784,16 @@ export class App {
             isAuto: eff.isEffortAuto(this.runtimeEffort, effortEnv),
           }
         : null,
-      thinkingDisplay: cap.supportsThinkingToggle
-        ? {
-            on: eff.resolveThinking(cap, this.runtimeThinking, eff.getThinkingEnvOverride()),
-            isAuto: this.runtimeThinking === undefined && eff.getThinkingEnvOverride() === null,
-          }
-        : null,
+      // 三种控制形态都显示（D6：无开关族此前不显示该列，用户把「没显示」读成「已关」）。
+      // on 取服务端实际是否思考（D5：恒思考模型此前显示「关」）。
+      thinkingDisplay: (() => {
+        const st = eff.resolveThinkingState(
+          cap,
+          this.runtimeThinking,
+          eff.getThinkingEnvOverride(),
+        );
+        return { on: st.effective, isAuto: st.intent === "auto", control: st.control };
+      })(),
     });
   }
 
@@ -8017,7 +8024,13 @@ export class App {
   private async runHeadlessSDK(input: string): Promise<void> {
     this.abortController = new AbortController();
 
-    const structuredIO = new StructuredIO(process.stdin, process.stdout);
+    // D12：只有 `--input-format stream-json` 时 stdin 才是宿主的 NDJSON 命令通道。
+    // text 输入下 stdin 已被 cli.ts 的 readPipedStdin 读过（或读超时放弃），prompt 已拼好；
+    // 这里再把 process.stdin 交给 StructuredIO，泵就会一直等一个**永远不会来的 EOF** ——
+    // `sleep 120 | sid-code -p x --output-format stream-json --verbose` 实测挂满 120s，
+    // CI 继承一个不关的空管道时就是无限期挂起。给它一个已结束的空流，泵立即 inputDone。
+    const sdkInput = this.config.inputFormat === "stream-json" ? process.stdin : Readable.from([]);
+    const structuredIO = new StructuredIO(sdkInput, process.stdout);
     const commandQueue = new CommandQueue();
     const driver = this.buildSDKDriver();
 

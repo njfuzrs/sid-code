@@ -82,7 +82,7 @@ export const ThinkDialog: React.FC<ThinkDialogProps> = ({
         </Text>
         <Box marginTop={1}>
           <Text color={theme.text.secondary}>
-            当前模型不支持显式思考开关（如内置推理模型）。思考行为由模型自身决定。
+            当前模型没有独立的思考开关，推理深度由 /effort 控制（思考行为由模型自身决定）。
           </Text>
         </Box>
         <Box marginTop={1}>
@@ -101,7 +101,10 @@ export const ThinkDialog: React.FC<ThinkDialogProps> = ({
   let statusLine = "";
   if (state) {
     const runtimeText = state.runtime ?? "auto";
-    if (state.runtime === undefined) {
+    if (state.capability.thinkingControl === "locked-on") {
+      // 恒思考：意图照显示（粘性），但说清楚本模型上关不掉（20261016 排查 D5）。
+      statusLine = `当前: ${runtimeText} → on（恒思考模型，关不掉；切到可关闭的模型后 off 生效）`;
+    } else if (state.runtime === undefined) {
       statusLine = `当前: auto → ${state.applied ? "on" : "off"}（跟随默认）`;
     } else {
       statusLine = `当前: ${runtimeText}`;

@@ -32,8 +32,13 @@ export interface ConfigContextValue {
     level: import("@sid-code/core/llm/effort.ts").EffortLevel;
     isAuto: boolean;
   } | null;
-  /** 思考开关展示态（状态栏 thinking 列）。null = 模型不支持思考开关 */
-  thinkingDisplay: { on: boolean; isAuto: boolean } | null;
+  /** 思考开关展示态（状态栏 thinking 列）。null = 尚未初始化 */
+  thinkingDisplay: {
+    on: boolean;
+    isAuto: boolean;
+    /** 控制形态：locked-on → 「开·不可关」，none → 「内置」（缺省按 toggle） */
+    control?: import("@sid-code/core/llm/effort.ts").ThinkingControl;
+  } | null;
   /** /goal：目标状态展示态（状态栏 goal 列）。null = 无活跃目标 */
   goalDisplay: { turnsUsed: number; maxTurns: number; status: string } | null;
   /** Vim 输入模式开关（状态栏 ·v 标记）。由 /vim 命令经 TUIState 推送。 */

@@ -64,6 +64,9 @@ const askUserQuestionSchema = lazySchema(() =>
 );
 
 export class AskUserQuestionTool implements Tool {
+  /** D11：漏字段曾出过事故（会话 20260803-135816-8c8619e7），strict 超限时最后一个被降级（见 ToolCapabilityFields.strictPriority） */
+  readonly strictPriority = 100;
+
   readonly zodSchema = askUserQuestionSchema();
   /**
    * 首轮常驻可见（alwaysLoad），不进延迟池。
