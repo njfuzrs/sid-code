@@ -67,6 +67,10 @@ export async function readPipedStdin(opts: ReadPipedStdinOptions = {}): Promise<
       stdin.off("data", onData);
       stdin.off("end", onEnd);
       stdin.off("error", onError);
+      // D12：off() 不会让已 resume() 的流回到暂停态，fd 仍是活动句柄、撑住事件循环，
+      // 进程要等上游关闭 fd 才能退（文件头 ③ 承诺的「绝不永久挂起」此前没有兑现）。
+      // pause() 释放这份引用；Bun 1.4.2 实测上游保持打开 10s 时退出耗时 10.0s → 1.0s。
+      if (typeof stdin.pause === "function") stdin.pause();
       if (timedOut) {
         warn(
           `警告: ${timeoutMs}ms 内未收到完整的 stdin 数据，已用已收到的部分继续` +

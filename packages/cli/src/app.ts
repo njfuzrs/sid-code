@@ -3,6 +3,7 @@
  * 实现 Agentic While-Loop：用户输入 → LLM 流式响应 → 工具调用 → 循环
  */
 
+import { Readable } from "node:stream";
 import type { Provider } from "@sid-code/core/llm/provider.ts";
 import type {
   ContentBlock,
@@ -8017,7 +8018,13 @@ export class App {
   private async runHeadlessSDK(input: string): Promise<void> {
     this.abortController = new AbortController();
 
-    const structuredIO = new StructuredIO(process.stdin, process.stdout);
+    // D12：只有 `--input-format stream-json` 时 stdin 才是宿主的 NDJSON 命令通道。
+    // text 输入下 stdin 已被 cli.ts 的 readPipedStdin 读过（或读超时放弃），prompt 已拼好；
+    // 这里再把 process.stdin 交给 StructuredIO，泵就会一直等一个**永远不会来的 EOF** ——
+    // `sleep 120 | sid-code -p x --output-format stream-json --verbose` 实测挂满 120s，
+    // CI 继承一个不关的空管道时就是无限期挂起。给它一个已结束的空流，泵立即 inputDone。
+    const sdkInput = this.config.inputFormat === "stream-json" ? process.stdin : Readable.from([]);
+    const structuredIO = new StructuredIO(sdkInput, process.stdout);
     const commandQueue = new CommandQueue();
     const driver = this.buildSDKDriver();
 

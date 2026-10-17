@@ -126,6 +126,17 @@ export interface ToolCapabilityFields<Input = unknown> {
   exemptFromLoopDetection?: boolean;
 
   /**
+   * D11：单请求 strict 工具超过上游上限（Anthropic 20 个）时，谁先保住 strict。
+   *
+   * 数值越大越优先，未声明为 0。只在超限时起作用，不影响「发不发 strict」本身。
+   * 声明标准：漏发 required 字段会**静默产出错误结果**的工具（`ask_user_question`
+   * 曾因漏字段出过事故，会话 20260803-135816-8c8619e7），其次是改文件的编辑类工具。
+   * 让工具自报而不是在 `anthropic.ts` 里写名单：与 `exemptFromLoopDetection` 同一范式，
+   * 新增工具时在定义处就能看到这一项。
+   */
+  strictPriority?: number;
+
+  /**
    * P2-9：工具自报「本次调用触达了哪些文件系统路径」，供 JIT 上下文发现使用。
    *
    * ## 为什么是工具自报而不是集中式名单
