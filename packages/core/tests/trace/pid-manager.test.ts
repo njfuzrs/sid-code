@@ -281,3 +281,123 @@ describe("pid-manager · classifyStaleHeartbeats（P2-13 hang 与未正常收尾
     expect(hang.length + unfinished.length).toBe(input.length);
   });
 });
+
+/**
+ * S7：PID 复用 / 按 pid 删 / 不截断孤儿 / S8 存量 heartbeat 清扫。
+ */
+describe("pid-manager · S7 PID 复用判定", () => {
+  test("parsePsLstart 按 UTC 解析 lstart（含日期两空格对齐），与进程 TZ 无关", () => {
+    const m = PidManager.parsePsLstart(
+      "    1 Fri Oct  2 11:51:21 2026\n16875 Sun Oct 18 01:18:07 2026\ngarbage\n",
+    );
+    expect(m.get(1)).toBe(Date.UTC(2026, 9, 2, 11, 51, 21));
+    expect(m.get(16875)).toBe(Date.UTC(2026, 9, 18, 1, 18, 7));
+    expect(m.size).toBe(2);
+  });
+
+  test("isPidReused：进程启动晚于记录时刻 + 容差 才算复用；查不到 / 记录损坏按存活", () => {
+    const rec = "2026-10-18T00:00:00.000Z";
+    const recMs = Date.parse(rec);
+    expect(PidManager.isPidReused(recMs + 60_000, rec)).toBe(true);
+    // 同一进程：真实启动早于 write() 时刻
+    expect(PidManager.isPidReused(recMs - 5_000, rec)).toBe(false);
+    // 秒级截断 / 时钟微调落在容差内
+    expect(PidManager.isPidReused(recMs + 1_000, rec)).toBe(false);
+    expect(PidManager.isPidReused(undefined, rec)).toBe(false);
+    expect(PidManager.isPidReused(recMs + 60_000, "not-a-date")).toBe(false);
+  });
+
+  const created: string[] = [];
+  afterAll(() => {
+    for (const p of created) rmSync(p, { force: true, recursive: true });
+  });
+  function writeEntry(pid: number, sessionId: string, startIso: string): string {
+    mkdirSync(PIDS_DIR, { recursive: true });
+    const f = join(PIDS_DIR, `${pid}.json`);
+    writeFileSync(
+      f,
+      JSON.stringify({ pid, session_id: sessionId, start_time: startIso, process_title: "t" }),
+    );
+    created.push(f);
+    return f;
+  }
+
+  test("真进程：kill -0 通过但 pid 已被复用（记录时刻早于进程启动）→ 判孤儿", async () => {
+    const child = Bun.spawn(["sleep", "30"]);
+    try {
+      await new Promise((r) => setTimeout(r, 50));
+      // 一天前的记录指向一个刚起的活进程 = 复用
+      writeEntry(child.pid, "s7-reused", new Date(Date.now() - 86_400_000).toISOString());
+      expect(PidManager.findOrphanPids().some((o) => o.pid === child.pid)).toBe(true);
+      // 对照：记录时刻晚于进程启动（同一进程的正常形态）→ 不是孤儿
+      writeEntry(child.pid, "s7-same", new Date(Date.now() + 5_000).toISOString());
+      expect(PidManager.findOrphanPids().some((o) => o.pid === child.pid)).toBe(false);
+    } finally {
+      child.kill();
+      PidManager.removeByPid(child.pid);
+    }
+  });
+
+  test("findOrphanPids 不再截断到 10 条", () => {
+    const pids = Array.from({ length: 12 }, (_, i) => 3_999_000 + i);
+    for (const p of pids) writeEntry(p, `s7-many-${p}`, new Date().toISOString());
+    const found = PidManager.findOrphanPids().filter((o) => pids.includes(o.pid));
+    expect(found.length).toBe(12);
+    for (const p of pids) PidManager.removeByPid(p);
+  });
+
+  test("removeByPid 只删自己的文件，不误删 resume 复用同一 session_id 的活进程文件", () => {
+    const mine = writeEntry(3_998_001, "s7-shared", new Date().toISOString());
+    const other = writeEntry(3_998_002, "s7-shared", new Date().toISOString());
+    PidManager.removeByPid(3_998_002);
+    expect(existsSync(other)).toBe(false);
+    expect(existsSync(mine)).toBe(true);
+    PidManager.removeByPid(3_998_001);
+    expect(existsSync(mine)).toBe(false);
+  });
+});
+
+describe("pid-manager · S8 sweepEndedHeartbeats", () => {
+  const SESSIONS_DIR = join(BASE_DIR, "sessions");
+  const created: string[] = [];
+  afterAll(() => {
+    for (const p of created) rmSync(p, { force: true, recursive: true });
+  });
+  function mk(name: string, withEnd: boolean): string {
+    const id = `s8-${name}-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+    const dir = join(SESSIONS_DIR, id);
+    mkdirSync(dir, { recursive: true });
+    created.push(dir);
+    writeFileSync(
+      join(dir, "heartbeat.txt"),
+      JSON.stringify({ ts: new Date(Date.now() - 600_000).toISOString() }),
+    );
+    const lines = [JSON.stringify({ event: "SessionStart", session_id: id })];
+    if (withEnd) lines.push(JSON.stringify({ event: "SessionEnd", session_id: id }));
+    writeFileSync(join(dir, "events.jsonl"), lines.join("\n") + "\n");
+    return id;
+  }
+
+  test("只删「进程已死 ∧ 有 SessionEnd」；无 SessionEnd 的保留；活进程不动；dryRun 不删", () => {
+    const ended = mk("ended", true);
+    const noEnd = mk("noend", false);
+    const live = mk("live", true);
+    const stale: PidManager.StaleHeartbeatSession[] = [
+      { session_id: ended, last_heartbeat_ts: "", is_process_alive: false },
+      { session_id: noEnd, last_heartbeat_ts: "", is_process_alive: false },
+      { session_id: live, last_heartbeat_ts: "", is_process_alive: true },
+    ];
+    const hb = (id: string) => join(SESSIONS_DIR, id, "heartbeat.txt");
+
+    const dry = PidManager.sweepEndedHeartbeats(stale, { dryRun: true });
+    expect(dry.removed).toEqual([ended]);
+    expect(dry.keptNoSessionEnd).toEqual([noEnd]);
+    expect(existsSync(hb(ended))).toBe(true);
+
+    const r = PidManager.sweepEndedHeartbeats(stale);
+    expect(r.removed).toEqual([ended]);
+    expect(existsSync(hb(ended))).toBe(false);
+    expect(existsSync(hb(noEnd))).toBe(true);
+    expect(existsSync(hb(live))).toBe(true);
+  });
+});

@@ -1158,8 +1158,13 @@ function registerGlobalErrorHandlers(): void {
       return;
     }
 
-    process.stderr.write(`[sid-code] uncaughtException: ${err.message}\n`);
-    if (err.stack) process.stderr.write(`${err.stack}\n`);
+    // S15：终端已死时这两行 write 本身也会 EIO —— 包 try，别让兜底处理器自己再炸一次
+    try {
+      process.stderr.write(`[sid-code] uncaughtException: ${err.message}\n`);
+      if (err.stack) process.stderr.write(`${err.stack}\n`);
+    } catch {
+      /* stderr 不可写 */
+    }
     // 紧急 SessionEnd（在 exit 前做最后一搏）
     try {
       lastAppRef?.deref()?.emergencySessionEnd(err);
