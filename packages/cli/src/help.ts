@@ -246,7 +246,7 @@ Worktree 隔离:
   SID_CODE_REPLAY_ON_EXHAUSTED  录制耗尽后的行为 (end-turn/repeat-last/throw，缺省 end-turn)
 
   子代理/工作流:
-  SID_SUBAGENT_MAX_CONCURRENT   子代理并发上限（缺省 3）
+  SID_SUBAGENT_MAX_CONCURRENT   子代理并发上限（缺省 20，对齐 CC）
   SID_TOOL_MAX_CONCURRENT       工具并发上限（缺省 10）
   SID_WORKFLOW_MAX_CONCURRENT   工作流并发上限（缺省 min(16, cpu核数-2)）
   SID_WORKFLOW_SYNC_TIMEOUT_MS  工作流同步超时毫秒

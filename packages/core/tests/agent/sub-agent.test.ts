@@ -384,30 +384,45 @@ describe("SubAgent 中止控制", () => {
 // ─── 并发控制 ───
 
 describe("SubAgentTool 并发控制", () => {
-  test("#13：resolveMaxConcurrent 默认 3，env 可放宽，非法值回退默认", () => {
-    // 默认（未设置）
-    expect(SubAgentTool.resolveMaxConcurrent(undefined)).toBe(3);
-    expect(SubAgentTool.resolveMaxConcurrent("")).toBe(3);
-    // 显式放宽
-    expect(SubAgentTool.resolveMaxConcurrent("8")).toBe(8);
-    expect(SubAgentTool.resolveMaxConcurrent("16")).toBe(16);
-    // 非法值静默回退默认 3，绝不因配错而更严
-    expect(SubAgentTool.resolveMaxConcurrent("0")).toBe(3);
-    expect(SubAgentTool.resolveMaxConcurrent("-2")).toBe(3);
-    expect(SubAgentTool.resolveMaxConcurrent("abc")).toBe(3);
+  test("#13：resolveMaxConcurrent 缺省 20（对齐 CC），env 可调，非法值回退缺省", () => {
+    // 缺省（未设置）：对齐 CC CLAUDE_CODE_MAX_CONCURRENT_SUBAGENTS=20
+    expect(SubAgentTool.DEFAULT_MAX_CONCURRENT).toBe(20);
+    expect(SubAgentTool.resolveMaxConcurrent(undefined)).toBe(20);
+    expect(SubAgentTool.resolveMaxConcurrent("")).toBe(20);
+    // 显式调整：收紧与放宽都允许
+    expect(SubAgentTool.resolveMaxConcurrent("3")).toBe(3);
+    expect(SubAgentTool.resolveMaxConcurrent("64")).toBe(64);
+    // 非法值静默回退缺省，绝不因配错而收窄成串行
+    expect(SubAgentTool.resolveMaxConcurrent("0")).toBe(20);
+    expect(SubAgentTool.resolveMaxConcurrent("-2")).toBe(20);
+    expect(SubAgentTool.resolveMaxConcurrent("abc")).toBe(20);
+  });
+
+  test("MAX_CONCURRENT 每次读 env，启动后写入的 settings env 也能生效", () => {
+    // 回归：曾是 static readonly，模块加载时冻结；managed-env 后写 process.env 时静默无效
+    const prev = process.env.SID_SUBAGENT_MAX_CONCURRENT;
+    try {
+      delete process.env.SID_SUBAGENT_MAX_CONCURRENT;
+      expect(SubAgentTool.MAX_CONCURRENT).toBe(20);
+      process.env.SID_SUBAGENT_MAX_CONCURRENT = "5";
+      expect(SubAgentTool.MAX_CONCURRENT).toBe(5);
+    } finally {
+      if (prev === undefined) delete process.env.SID_SUBAGENT_MAX_CONCURRENT;
+      else process.env.SID_SUBAGENT_MAX_CONCURRENT = prev;
+    }
   });
 
   test("超过并发上限时排队等待而非拒绝（G1）", async () => {
     SubAgentTool.running = 0;
     SubAgentTool["waiters"] = [];
 
-    // 占满 3 个 slot
+    // 占满全部 slot
     for (let i = 0; i < SubAgentTool.MAX_CONCURRENT; i++) {
       await SubAgentTool.acquireSlot();
     }
     expect(SubAgentTool.running).toBe(SubAgentTool.MAX_CONCURRENT);
 
-    // 第 4 个 acquire 应挂起排队，而不是立即完成/拒绝
+    // 第 MAX+1 个 acquire 应挂起排队，而不是立即完成/拒绝
     let acquired = false;
     const pending = SubAgentTool.acquireSlot().then(() => {
       acquired = true;

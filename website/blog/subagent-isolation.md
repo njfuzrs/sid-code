@@ -326,4 +326,4 @@ injection/classifier/sanitize 实现。派子代理去读不可信仓库时，
 - [子代理](/extend/subagents) —— 怎么派、六个内置类型各自的工具集、按类型配便宜模型省钱
 - [JIT 上下文](/blog/jit-context) —— §4 说的「重复注入换确定性」，那套机制的实测基线在这篇
 - [worktree 隔离](/use/worktree) —— `isolation: "worktree"` 的具体行为，以及它为什么强制进程内
-- [环境变量](/ref/env) —— `SID_SUBAGENT_MAX_CONCURRENT`（并发上限，缺省 3）与 `SIDCODE_NO_SPAWN`
+- [环境变量](/ref/env) —— `SID_SUBAGENT_MAX_CONCURRENT`（并发上限，缺省 20）与 `SIDCODE_NO_SPAWN`
