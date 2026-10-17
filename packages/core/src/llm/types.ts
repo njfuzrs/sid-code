@@ -392,6 +392,8 @@ export interface ToolDefinition {
    *  仅 Anthropic Claude 4.x + firstParty 连接时生效。
    *  MCP 工具 / 动态 schema 工具（StructuredOutput）不标记。 */
   strict?: boolean;
+  /** strict 超出单请求上限时的保留优先级（越大越先保）。只供 provider 内部排序，不上线。 */
+  strictPriority?: number;
 }
 
 /** 发送消息参数 */

@@ -95,6 +95,9 @@ function findCellIndex(cells: NotebookCell[], cellId: string): number {
 }
 
 export class NotebookEditTool implements Tool {
+  /** D11：编辑类：漏 required 字段会改错 notebook，strict 超限时优先保留（见 ToolCapabilityFields.strictPriority） */
+  readonly strictPriority = 50;
+
   name(): string {
     return "notebook_edit";
   }

@@ -54,6 +54,13 @@ import {
 } from "../api/cache-strategy.ts";
 import { getEffectiveBetaHeaders } from "../api/beta-header-latch.ts";
 import { RequestAbortedError } from "./errors.ts";
+import { normalizeBaseURL } from "./endpoint-key.ts";
+import {
+  applyStrictToolBudget,
+  degradeStrictToolsOnCapacityError,
+  getStrictToolLimit,
+  MAX_STRICT_CAPACITY_RETRIES,
+} from "./strict-tool-budget.ts";
 
 /**
  * G6：把内部 tool_result 块序列化为 Anthropic SDK 的 tool_result param。
@@ -227,10 +234,18 @@ export class AnthropicProvider implements Provider {
 
     // schema 按族方言清理（见 convertAnthropicTools）。必须喂**真名** model，喂别名会静默
     // 落到 unknown 族 —— 与上面 modelSupportsStrict 同一条约束。
-    const tools = convertAnthropicTools(model, params.tools, {
-      strictOn: enableStrict,
-      eagerInputStreaming: enableFGTS,
-    });
+    // D11：strict 数收到该端点的已知上限以内（默认 20）。必须在打工具区缓存断点之前：
+    // 降级只去掉 `strict` 字段、不动顺序，断点打在降级后的数组上才是真正发出去的那份。
+    const strictEndpointKey = strictToolEndpointKey(model, this.client.baseURL);
+    const strictPriorityOf = strictPriorityLookup(params.tools);
+    let tools = applyStrictToolBudget(
+      convertAnthropicTools(model, params.tools, {
+        strictOn: enableStrict,
+        eagerInputStreaming: enableFGTS,
+      }),
+      getStrictToolLimit(strictEndpointKey),
+      strictPriorityOf,
+    ).tools;
 
     // system prompt 分区缓存：按 DYNAMIC_BOUNDARY 拆分为静态区和动态区
     // 静态区跨会话可缓存，动态区会话内缓存，分别标记 cache_control
@@ -321,19 +336,43 @@ export class AnthropicProvider implements Provider {
         ? ["token-efficient-tools-2025-02-19"]
         : [];
       const effectiveBetaHeaders = getEffectiveBetaHeaders(neededBetaHeaders);
-      const { data: rawStream, response } = await this.client.messages
-        .create(requestParams as any, {
-          headers: {
-            "x-client-request-id": clientRequestId,
-            // P2-4: Token Efficient Tools beta header（与 strict 互斥）+ G7 sticky-on
-            ...(effectiveBetaHeaders.length > 0 && {
-              "anthropic-beta": effectiveBetaHeaders.join(","),
-            }),
-          },
-          // ⭐ 关键：把 signal 透传给 SDK，使 abort() 能真正中断底层 HTTP/TCP 连接。
-          ...(signal ? { signal } : {}),
-        })
-        .withResponse();
+      const createStream = () =>
+        this.client.messages
+          .create(requestParams as any, {
+            headers: {
+              "x-client-request-id": clientRequestId,
+              // P2-4: Token Efficient Tools beta header（与 strict 互斥）+ G7 sticky-on
+              ...(effectiveBetaHeaders.length > 0 && {
+                "anthropic-beta": effectiveBetaHeaders.join(","),
+              }),
+            },
+            // ⭐ 关键：把 signal 透传给 SDK，使 abort() 能真正中断底层 HTTP/TCP 连接。
+            ...(signal ? { signal } : {}),
+          })
+          .withResponse();
+      // D11：strict 容量 400 在拿到响应头之前就抛出（还没有任何流内容），此时降 strict
+      // 重发是安全的 —— 不会重放已经 yield 出去的增量。其余错误原样交给下面的 catch。
+      let created: Awaited<ReturnType<typeof createStream>>;
+      for (let attempt = 0; ; attempt++) {
+        try {
+          created = await createStream();
+          break;
+        } catch (err) {
+          const degraded =
+            attempt < MAX_STRICT_CAPACITY_RETRIES && !signal?.aborted
+              ? degradeStrictToolsOnCapacityError(err, tools, strictEndpointKey, strictPriorityOf)
+              : null;
+          if (!degraded) throw err;
+          log.warn(
+            "LLM:ANTHROPIC",
+            `strict 容量超限（${degraded.error.kind}），strict 工具 ${degraded.from} → ${degraded.to} 后重发`,
+            { model: wireModel },
+          );
+          tools = degraded.tools;
+          requestParams.tools = tools as any;
+        }
+      }
+      const { data: rawStream, response } = created;
 
       // 从 response headers 提取速率限制状态
       try {
@@ -909,13 +948,20 @@ export class AnthropicProvider implements Provider {
     // 非流式路径同样支持 strict（对齐流式路径门控逻辑）。
     // 同流式路径：能力判定吃真名，别名会静默判 false。
     const nonStreamingModel = pickWireModel(params, this._model);
-    const tools = convertAnthropicTools(nonStreamingModel, params.tools, {
-      strictOn: !process.env.SID_DISABLE_STRICT_TOOLS && modelSupportsStrict(nonStreamingModel),
-      // ⚠ 非流式刻意**不**开 FGTS：eager_input_streaming 是流式专属语义
-      // （「生成过程中就流式发 JSON 片段」），非流式没有「过程」。
-      // 此前两处手写的 .map() 里非流式那份也没有它 —— 保持原样，不趁收敛改行为。
-      eagerInputStreaming: false,
-    });
+    // D11：同流式路径，strict 数收到端点已知上限以内。
+    const strictEndpointKey = strictToolEndpointKey(nonStreamingModel, this.client.baseURL);
+    const strictPriorityOf = strictPriorityLookup(params.tools);
+    let tools = applyStrictToolBudget(
+      convertAnthropicTools(nonStreamingModel, params.tools, {
+        strictOn: !process.env.SID_DISABLE_STRICT_TOOLS && modelSupportsStrict(nonStreamingModel),
+        // ⚠ 非流式刻意**不**开 FGTS：eager_input_streaming 是流式专属语义
+        // （「生成过程中就流式发 JSON 片段」），非流式没有「过程」。
+        // 此前两处手写的 .map() 里非流式那份也没有它 —— 保持原样，不趁收敛改行为。
+        eagerInputStreaming: false,
+      }),
+      getStrictToolLimit(strictEndpointKey),
+      strictPriorityOf,
+    ).tools;
 
     // G8: 非流式路径缓存标记对齐流式路径——
     // ① system 按 DYNAMIC_BOUNDARY 分区打 cache_control（含 G4 global scope）；
@@ -953,30 +999,51 @@ export class AnthropicProvider implements Provider {
     let billedUsage: Usage | undefined;
     let billable = false;
     try {
-      const message = await this.client.messages.create(
-        {
-          model: wireModel,
-          max_tokens: params.maxTokens,
-          messages: messages as any,
-          system: system as any,
-          tools: tools as any,
-          stream: false,
-          // OPT-2: 透传 tool_choice（与流式路径一致）
-          ...buildToolChoiceParam(params),
-          // 与流式路径一致：Extended Thinking（adaptive/manual 双模式）
-          ...(params.thinking?.enabled && buildThinkingParam(params)),
-          ...(params.outputConfig && {
-            output_config: { effort: params.outputConfig.effort },
-          }),
-          // G2: cache_edits（同流式路径门控）
-          ...(params.cacheEdits &&
-            params.cacheEdits.length > 0 &&
-            !process.env.SID_DISABLE_CACHE_EDITS && {
-              cache_edits: params.cacheEdits,
+      const createMessage = () =>
+        this.client.messages.create(
+          {
+            model: wireModel,
+            max_tokens: params.maxTokens,
+            messages: messages as any,
+            system: system as any,
+            tools: tools as any,
+            stream: false,
+            // OPT-2: 透传 tool_choice（与流式路径一致）
+            ...buildToolChoiceParam(params),
+            // 与流式路径一致：Extended Thinking（adaptive/manual 双模式）
+            ...(params.thinking?.enabled && buildThinkingParam(params)),
+            ...(params.outputConfig && {
+              output_config: { effort: params.outputConfig.effort },
             }),
-        },
-        signal ? { signal } : undefined,
-      );
+            // G2: cache_edits（同流式路径门控）
+            ...(params.cacheEdits &&
+              params.cacheEdits.length > 0 &&
+              !process.env.SID_DISABLE_CACHE_EDITS && {
+                cache_edits: params.cacheEdits,
+              }),
+          },
+          signal ? { signal } : undefined,
+        );
+      // D11：同流式路径——strict 容量 400 降 strict 重发，其余错误原样抛出。
+      let message: Awaited<ReturnType<typeof createMessage>>;
+      for (let attempt = 0; ; attempt++) {
+        try {
+          message = await createMessage();
+          break;
+        } catch (err) {
+          const degraded =
+            attempt < MAX_STRICT_CAPACITY_RETRIES && !signal?.aborted
+              ? degradeStrictToolsOnCapacityError(err, tools, strictEndpointKey, strictPriorityOf)
+              : null;
+          if (!degraded) throw err;
+          log.warn(
+            "LLM:ANTHROPIC",
+            `strict 容量超限（${degraded.error.kind}），strict 工具 ${degraded.from} → ${degraded.to} 后重发`,
+            { model: wireModel },
+          );
+          tools = degraded.tools;
+        }
+      }
       billable = true;
       emitHttpConnected(currentSseDumpContext().turnIndex, {
         status: 200,
@@ -1173,6 +1240,23 @@ function convertAnthropicTools(
       ...(opts.eagerInputStreaming && { eager_input_streaming: true as const }),
     };
   });
+}
+
+/**
+ * D11：strict 上限按「真名模型 × 归一化端点」学习。同一网关不同模型可能路由到不同上游，
+ * 同一模型走直连与网关上限也不同 —— 两个维度缺一个都会把一处学到的上限错套到另一处。
+ */
+function strictToolEndpointKey(wireModel: string, baseURL: string | undefined): string {
+  return `${wireModel}@${normalizeBaseURL(baseURL)}`;
+}
+
+/** 工具名 → strictPriority（工具元数据自报，未声明为 0）。 */
+function strictPriorityLookup(tools: SendParams["tools"]): (name: string) => number {
+  const map = new Map<string, number>();
+  for (const t of tools ?? []) {
+    if (t.strictPriority !== undefined) map.set(t.name, t.strictPriority);
+  }
+  return (name) => map.get(name) ?? 0;
 }
 
 /**
