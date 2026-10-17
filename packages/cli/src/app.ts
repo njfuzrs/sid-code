@@ -152,6 +152,7 @@ import {
   setFileFreshnessTraceSink,
   FILE_FRESHNESS_EVENT_NAME,
 } from "@sid-code/core/tool/file-read-tracker.ts";
+import { setTaskLifecycleSink, TASK_LIFECYCLE_EVENT_NAME } from "@sid-code/core/task/lifecycle.ts";
 import {
   setSkillTraceSink,
   SKILL_DEGRADATION_EVENT_NAME,
@@ -4141,6 +4142,14 @@ export class App {
     setSkillInvocationSink(
       traceCollectorInstance
         ? (data) => traceCollectorInstance.recordCustomEvent(SKILL_INVOKED_EVENT_NAME, data)
+        : null,
+    );
+    // S16：后台任务 started/completed/delivered/evicted 进轨迹，同款模块级 sink
+    // （终态写点散在 shell/agent/workflow 9 处，拿不到 collector）。不接则 S3 的
+    // 「evicted 早于 delivered」计数无从统计，按回合驱逐的修复就没有验收曲线。
+    setTaskLifecycleSink(
+      traceCollectorInstance
+        ? (data) => traceCollectorInstance.recordCustomEvent(TASK_LIFECYCLE_EVENT_NAME, data)
         : null,
     );
 

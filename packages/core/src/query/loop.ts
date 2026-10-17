@@ -180,6 +180,8 @@ import {
   evictTerminalTasks,
   hasPendingNotifications,
   hasRunningBackgroundTasks,
+  markMainTurnCompleted,
+  markNotificationsDelivered,
 } from "../task/index.ts";
 import { buildInternalMessage } from "../context/internal-message.ts";
 import {
@@ -977,11 +979,15 @@ export async function* queryLoop(loopConfig: QueryLoopConfig): AsyncGenerator<Qu
       // ⚠️ 这里只覆盖「通知在本轮进行中到达」。主循环 end_turn 之后才到的通知，
       // 这里永远等不到下一轮——那条路径由 QueryEngine.resumeWithNotifications 接管
       // （空闲唤醒，见 task/background-wake.ts）。两处共用 injectPendingNotifications。
+      //
+      // S3 回合纪元：第 2+ 轮开头 = 上一轮已完整跑完。**必须先推进、再注入**——反过来，
+      // 本轮刚送达的通知会被记成「上一轮送达」，本轮模型调用还没开始就满足驱逐条件，
+      // `.output` 在模型读之前被删（S3 事故原样重演）。
+      if (state.turnCount > 1) markMainTurnCompleted();
       injectPendingNotifications(ctxMgr, deps.sessionStore);
 
-      // 通知注入后驱逐已完成且已通知的后台任务：其完成信息已进对话，面板条目即属冗余。
-      // 不在此清除则「后台任务 · N 已完成」会永久驻留（evictTerminalTasks 此前从未被调用）。
-      // 通知队列独立于任务注册表，驱逐不会丢失任何通知。
+      // 驱逐「送达之后已过至少一个回合」的终态任务（判据见 registry `evictDecision`）。
+      // 本轮刚送达的不会在这里被删：它们的送达回合 = 当前纪元，要等本轮跑完。
       evictTerminalTasks();
 
       // ─── G4：LSP 健康告警（一次性，懒触发）───
@@ -5742,19 +5748,14 @@ export async function* queryLoop(loopConfig: QueryLoopConfig): AsyncGenerator<Qu
     // Fix 1：queryLoop 结束时批量清理本次 loopId 下所有快照残留
     clearAllSnapshots(loopId);
 
-    // 主循环终止时的收尾驱逐（尊重缓冲期，force=false）。
-    // 根因：evictTerminalTasks() 只在 while 循环每轮开头调用（上方 line ~336），是
-    // "下一轮驱动"的清除——主循环 end_turn 结束后再无下一轮循环开头触发驱逐。这里在
-    // generator 终止时（正常 end_turn / 异常 / 外部 .return() 中止都会经过 finally）
-    // 补一次收尾驱逐：把"缓冲期已过"的终止态任务立即清掉，不必等到下次用户输入才清。
+    // 主循环终止时：本次 queryLoop 的最后一轮已跑完，推进回合纪元（S3），再做一次收尾驱逐。
+    // 根因：evictTerminalTasks() 每轮开头才调用，是"下一轮驱动"的清除——end_turn 之后再无
+    // 下一轮开头。finally 覆盖正常 end_turn / 异常 / 外部 .return() 三条路径。
     //
-    // 为何 force=false（不忽略缓冲期）：缓冲期（EVICT_GRACE_MS=60s）的意义是"任务刚完成
-    // 后留一个窗口，让用户还能在面板翻看刚完成的任务"。真正根治"尾部窗口永久残留"的是
-    // TUI 侧独立于主循环的 1s 定时器（App.tsx，对标 cc CoordinatorAgentStatus），它会在
-    // 缓冲期到点后（≤1s 延迟）清掉——不依赖主循环转没转。因此这里无需 force 越过缓冲期
-    //（那会牺牲"刚完成可翻看"语义、比 cc 更激进）；缓冲期内的任务交给那个定时器即可。
-    // 安全性：只驱逐 notified=true 的终止态任务，其完成通知已原子入队 pendingQueue
-    //（独立于任务注册表），驱逐不丢任何完成信息。
+    // 收尾时推进纪元是对的：最后一轮开头送达的通知，模型已在这一轮看过并作答。
+    // 仍要等面板驻留期（completed/failed 30s、killed 3s）的，交给 TUI 的 1s 定时器
+    // （App.tsx，对标 cc CoordinatorAgentStatus）；未送达的交给 registry 的安全阀定时器。
+    markMainTurnCompleted();
     try {
       evictTerminalTasks();
     } catch {
@@ -6093,6 +6094,11 @@ export function injectPendingNotifications(
     },
   };
   ctxMgr.addMessage(message);
+  // S3：这一刻通知才真正进了模型上下文——「已送达」从这里起算，而不是入队时。
+  // 只在这里置位：两个调用点（轮中 / 空闲唤醒）都经过本函数。
+  markNotificationsDelivered(
+    notifications.map((n) => n.structured?.taskId).filter((id): id is string => !!id),
+  );
   try {
     sessionStore?.appendMessage(message);
   } catch {

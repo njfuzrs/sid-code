@@ -34,14 +34,30 @@ export {
   dismissTerminalTasks,
   hasDismissableTasks,
   graceDeadlineFor,
+  markNotificationsDelivered,
   EVICT_GRACE_MS,
   KILLED_DISPLAY_MS,
+  UNDELIVERED_SAFETY_VALVE_MS,
   clearAllTasks,
   clearInactiveTasks,
   generateTaskStatusAttachment,
   onTaskChanged,
   offTaskChanged,
 } from "./registry.ts";
+
+export {
+  TASK_LIFECYCLE_EVENT_NAME,
+  type TaskLifecyclePhase,
+  type TaskEvictReason,
+  type TaskOutputTombstone,
+  getCompletedMainTurns,
+  markMainTurnCompleted,
+  setTaskLifecycleSink,
+  getTaskOutputTombstone,
+  clearTaskOutputTombstones,
+  taskIdFromOutputPath,
+  formatTaskOutputTombstone,
+} from "./lifecycle.ts";
 
 export {
   DiskTaskOutput,
