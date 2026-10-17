@@ -140,6 +140,11 @@ export interface ResilientStreamOptions {
    * 保证至少不与主循环的轮次号相撞。
    */
   observerIndex?: number;
+  /**
+   * S13（PR-8）：本次执行持有 usage-sink 时的入账票据（见 billing-sink.ts `UsageSinkTicket`）。
+   * 写进 ALS 身份，provider 收口的 `BilledRequest` 据此判「已入账」。不传 = 旧口径。
+   */
+  usageAccounting?: RequestContext["usageAccounting"];
 }
 
 /**
@@ -222,6 +227,7 @@ export function streamWithResilience(
     turnIndex: opts.observerIndex ?? nextSideObserverIndex(),
     agentId: opts.agentId,
     callerLabel: opts.querySource,
+    ...(opts.usageAccounting && { usageAccounting: opts.usageAccounting }),
   };
   const finish = (gen: AsyncGenerator<StreamEvent>): AsyncGenerator<StreamEvent> =>
     ownsIndex ? releaseSideIndexOnFinish(gen, reqCtx.turnIndex) : gen;

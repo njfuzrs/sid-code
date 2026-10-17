@@ -741,6 +741,8 @@ export function emitBilledRequest(data: {
   caller?: string;
   /** 已由主循环入账（本事件只作核对） */
   accounted: boolean;
+  /** S13（PR-8）：`accounted=true` 时的入账方；缺省 = 主循环，`usage-sink` = 子代理链 */
+  accounted_by?: "usage-sink";
   /** 消费侧是否为它加钱（= shouldChargeBilledRequest），落盘便于离线核对双记 */
   charged: boolean;
   input_tokens: number;
@@ -1338,6 +1340,40 @@ export function emitStreamStall(
         timestamp: new Date().toISOString(),
         // PR11：补规范 chunk 字段（老 `total_chunks` 原样保留）
         data: { index, ...data, ...chunkCountFields(data.total_chunks, "chunks") },
+      });
+    }
+  } catch {
+    /* 可观测性不影响正常流程 */
+  }
+}
+
+// ─── ToolInputAliasApplied 事件（工具入参别名归一的度量） ───
+
+/**
+ * 工具入参在校验前被做了别名归一（如 `activeForm` → `active_form`）。
+ *
+ * 为什么要单独一类事件：归一本身是**静默成功**的（模型首次调用就过了），
+ * 不发事件就无法回答「还有没有别的工具存在 camel/snake 漂移」——
+ * 而「要不要把别名归一做成通用机制」正是靠这条曲线决定（先度量，不预先泛化）。
+ *
+ * - `from` / `to`：被改名的键与目标键
+ * - `count`：本次调用里命中的次数（todos[] 每项各算一次）
+ * - `dropped`：两键同时出现、丢弃 `from` 的次数（保留协议字段 `to`）
+ */
+export function emitToolInputAliasApplied(data: {
+  tool: string;
+  from: string;
+  to: string;
+  count: number;
+  dropped: number;
+}): void {
+  try {
+    if (_eventWriter && _sessionId) {
+      _eventWriter({
+        event: "ToolInputAliasApplied",
+        session_id: _sessionId,
+        timestamp: new Date().toISOString(),
+        data: { ...data },
       });
     }
   } catch {

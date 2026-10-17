@@ -124,6 +124,12 @@ export type QueryLoopYield =
        * 未设置默认为 false（沿用原有 sticky/transient 状态栏行为，不影响既有分支）。
        */
       terminal?: boolean;
+      /**
+       * S1 L1：常驻提示（写进历史区，`done` 不清、重建不丢）。
+       * 不能走 info 的 `system:transient` 状态条 —— 同一轮 `done` 会把它清掉，提示一闪即逝。
+       * 未设置 = 沿用原有状态栏行为。headless 下与普通 info 同样只写 stderr。
+       */
+      persistent?: boolean;
     }
   | {
       kind: "done";
@@ -194,6 +200,8 @@ export type ContinueReason =
   | { type: "timeout_retry" }
   | { type: "todo_gate_retry" }
   | { type: "unanswered_retry" }
+  /** S1 L2：短文本承诺未兑现 → 续跑一次（独立于 unanswered_retry，计数与配额互不影响） */
+  | { type: "promise_nudge" }
   | { type: "hypothesis_gate_retry" }
   | { type: "goal_gate_retry" }
   | { type: "goal_budget_warning" }
@@ -265,6 +273,21 @@ export interface LoopState {
    * 需要的是后者。
    */
   toolCallsDispatched?: number;
+  /**
+   * S1 L2：本 queryLoop 调用（≈一条用户 prompt）内「承诺未兑现」续跑次数。
+   *
+   * 与 `unansweredRetryCount` **刻意分开**：后者工具执行即清零、上限 2，共用会形成
+   * 「承诺 → nudge → 调一次工具（清零）→ 再承诺 → nudge …」的循环，并与思考漂移形态互吞配额。
+   * 本计数**只在新的用户 prompt 时重建**（随 LoopState 重建），任何路径都不清零。
+   */
+  promiseNudgeCount?: number;
+  /** S1 L1：上一次模型调用是否含 tool_use（本 prompt 内；首轮为 false） */
+  prevResponseHadToolUse?: boolean;
+  /** S4 可见性：本 prompt 内累计 output / reasoning token、写入类与只读类工具派发数 */
+  promptOutputTokens?: number;
+  promptReasoningTokens?: number;
+  promptEditWriteCount?: number;
+  promptReadonlyCount?: number;
   /** 最大轮次 */
   maxTurns: number;
   /** max_output_tokens 恢复次数 */

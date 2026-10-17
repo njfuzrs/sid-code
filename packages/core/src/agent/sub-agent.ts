@@ -7,6 +7,7 @@
 import type { Provider } from "../llm/provider.ts";
 import type { ContentBlock, Usage, SendParams } from "../llm/types.ts";
 import type { ProviderRegistry } from "../llm/registry.ts";
+import type { RequestContext } from "../llm/request-context.ts";
 import { Manager as ContextManager } from "../context/manager.ts";
 import { SidechainWriter } from "../session/sidechain.ts";
 import { validateToolInput } from "../tool/input-validator.ts";
@@ -496,6 +497,8 @@ export class SubAgent {
   private registry?: ProviderRegistry;
   /** 模型覆盖（自定义 Agent/Skill 指定模型时使用） */
   private modelOverride?: string;
+  /** S13：usage-sink 入账票据（见 setUsageAccounting）。 */
+  private usageAccounting?: RequestContext["usageAccounting"];
   /** 输出语言偏好（L4，从主代理配置继承） */
   /** 语言偏好（继承主代理）。含 auto 档，落到 enhanceSubAgentPrompt 时才归一化成具体语言。 */
   private language?: LanguagePref;
@@ -526,6 +529,17 @@ export class SubAgent {
   /** 设置权限检查器（dontAsk 语义，由外部工厂创建后注入） */
   setPermissionChecker(checker: Checker | null): void {
     this.permissionChecker = checker;
+  }
+
+  /**
+   * S13（20261016 方案 PR-8）：声明「本实例这次执行的成本由 usage-sink 入账」。
+   *
+   * 只由**确实持有 sink** 的调用方调用（tool.ts / custom.ts / workflow），且必须在执行
+   * 结束后 `ticket.settle(sinkCharged)`。hook 子代理执行器不经 sink，不调本方法 ——
+   * 这正是判据挂在实例而不挂在 `agent:custom` 标签上的原因（见 billing-sink.ts）。
+   */
+  setUsageAccounting(ticket: RequestContext["usageAccounting"]): void {
+    this.usageAccounting = ticket;
   }
 
   /** P2-10：设置父会话 id，启用子代理 sidechain 持久化（由 SubAgentTool 注入）。 */
@@ -648,9 +662,11 @@ export class SubAgent {
     ctxMgr: ContextManager,
   ): Pick<
     Parameters<typeof runAgentLoop>[0],
-    "hookSystem" | "permissionChecker" | "availability" | "discoverJitContext"
+    "hookSystem" | "permissionChecker" | "availability" | "discoverJitContext" | "usageAccounting"
   > {
     return {
+      // S13（PR-8）：两条路径（内置 / 自定义）都要带上票据，收进工厂才不会漏一条。
+      usageAccounting: this.usageAccounting,
       hookSystem: this.hookSystem,
       // B0：permissionChecker 从 AgentLoopConfig 的必填字段——此处必须显式传值
       // （可以是 undefined），漏传在类型层就会报错，不再是静默降级。

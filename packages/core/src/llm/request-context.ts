@@ -61,6 +61,23 @@ export interface RequestContext {
    * `undefined`）。计费事件带上它，"这笔钱是谁花的"才答得出来 —— 判据 3 就是它。
    */
   callerLabel?: string;
+  /**
+   * S13（20261016 方案 PR-8）：本调用链的成本**已由 usage-sink 入账**的票据。
+   *
+   * 只有「这次子代理执行确实持有 sink」的那条链才带它（tool.ts / custom.ts /
+   * workflow 在 sink 存在时给 SubAgent 实例挂票据，经 runAgentLoop → 漏斗写进这里）。
+   * 判据挂在**调用实例**上而不是标签上：`agent:custom` / `agent:summary` 被内置、
+   * 自定义、hook 三条链共用，而 hook 子代理不经 sink —— 按标签豁免会让它全部漏记。
+   *
+   * 类型用结构接口而不是 import billing-sink：本模块只 import node 内置（见文件头铁律）。
+   */
+  usageAccounting?: UsageAccountingTicketLike;
+}
+
+/** {@link RequestContext.usageAccounting} 的结构形态；实现在 `billing-sink.ts` 的 `UsageSinkTicket`。 */
+export interface UsageAccountingTicketLike {
+  /** 尝试把一次 fetch 认领为「由 sink 入账」。返回 false = 票据已结算，调用方按未入账处理。 */
+  claim(req: unknown): boolean;
 }
 
 const storage = new AsyncLocalStorage<RequestContext>();

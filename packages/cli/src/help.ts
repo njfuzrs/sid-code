@@ -305,6 +305,7 @@ Worktree 隔离:
   SID_DISABLE_CACHE_WARMUP      设为 1 禁用缓存预热
   SID_WARMUP_CACHE              设为 1 强制启用缓存预热
   SID_LOOP_EXHAUSTED_ACTION     循环耗尽动作（terminate 时回退旧行为）
+  SID_DISABLE_PROMISE_NUDGE     设为 1 关闭「短文本承诺未兑现」续跑（提示照常）
   SID_STRUCTURED_OUTPUT_MAX_RETRIES  结构化输出最大重试次数（缺省 5）
   SID_DISABLE_TAB_STATUS        设为 1 禁用终端 Tab 状态指示
   SID_CODE_DISABLE_MOUSE_CLICKS  设为 1 禁用鼠标点击
