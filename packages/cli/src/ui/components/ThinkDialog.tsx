@@ -3,7 +3,8 @@
  *
  * 选项固定（on/auto/off），结构同 EffortDialog 更简单。
  * - 当前生效项用 ● 标记
- * - on/off 用 ✻/✧ 同族字形，auto 用 ◌（未定）
+ * - 每项后面的「→ xxx」= 选它之后 Footer 会显示的词，与 Footer 同源（utils/thinking-label.ts），
+ *   两处说法不会再对不上。恒思考模型上 off 项标「本模型无效」（意图仍会保存，切到可关模型后生效）。
  */
 
 import React from "react";
@@ -11,13 +12,8 @@ import { Box } from "../render-port/components.ts";
 import { Text } from "../render-port/components.ts";
 import { theme } from "../semantic-colors.ts";
 import { BaseSelectionList, type SelectionListItem } from "./shared/BaseSelectionList.tsx";
-import {
-  ARROW_PROMPT,
-  TODO_COMPLETED,
-  THINKING_ON,
-  THINKING_OFF,
-  EFFORT_AUTO,
-} from "../constants/figures.ts";
+import { ARROW_PROMPT, TODO_COMPLETED } from "../constants/figures.ts";
+import { thinkingLabelForSetting, type ThinkingTone } from "../utils/thinking-label.ts";
 import { useKeypress, KeypressPriority, type Key } from "../contexts/KeypressContext.tsx";
 import type { ThinkingSetting } from "@sid-code/core/llm/effort.ts";
 
@@ -35,22 +31,20 @@ interface ThinkDialogProps {
 
 // value: "auto" 代表 undefined（跟随默认）
 interface ThinkItem extends SelectionListItem<string> {
-  glyph: string;
   label: string;
   desc: string;
 }
 
 const OPTIONS: ThinkItem[] = [
-  { value: "on", key: "on", glyph: THINKING_ON, label: "on", desc: "强制开启扩展思考" },
-  {
-    value: "auto",
-    key: "auto",
-    glyph: EFFORT_AUTO,
-    label: "auto",
-    desc: "跟随 effort 设置自动决定",
-  },
-  { value: "off", key: "off", glyph: THINKING_OFF, label: "off", desc: "关闭扩展思考" },
+  { value: "on", key: "on", label: "on", desc: "强制开启扩展思考" },
+  // auto 取的是模型默认（effort.ts resolveThinkingState 的 cap.thinkingDefaultOn），与 effort 无关；
+  // 此前文案写「跟随 effort 设置」是错的。
+  { value: "auto", key: "auto", label: "auto", desc: "跟随模型默认" },
+  { value: "off", key: "off", label: "off", desc: "关闭扩展思考" },
 ];
+
+const toSetting = (value: string): ThinkingSetting =>
+  value === "auto" ? undefined : (value as ThinkingSetting);
 
 export const ThinkDialog: React.FC<ThinkDialogProps> = ({
   onClose,
@@ -98,22 +92,26 @@ export const ThinkDialog: React.FC<ThinkDialogProps> = ({
     OPTIONS.findIndex((o) => o.value === currentValue),
   );
 
+  const cap = state?.capability;
+  const locked = cap?.thinkingControl === "locked-on";
+  // 状态行显示的就是 Footer 当前那个词（同一函数算），不再另写一套「auto → on」。
   let statusLine = "";
-  if (state) {
-    const runtimeText = state.runtime ?? "auto";
-    if (state.capability.thinkingControl === "locked-on") {
-      // 恒思考：意图照显示（粘性），但说清楚本模型上关不掉（20261016 排查 D5）。
-      statusLine = `当前: ${runtimeText} → on（恒思考模型，关不掉；切到可关闭的模型后 off 生效）`;
-    } else if (state.runtime === undefined) {
-      statusLine = `当前: auto → ${state.applied ? "on" : "off"}（跟随默认）`;
-    } else {
-      statusLine = `当前: ${runtimeText}`;
-    }
+  if (state && cap) {
+    const now = thinkingLabelForSetting(cap, state.runtime);
+    statusLine = locked
+      ? `当前: ${now.text}（恒思考模型，关不掉；切到可关闭的模型后 off 生效）`
+      : `当前: ${now.text}`;
   }
 
+  const toneColor = (tone: ThinkingTone) =>
+    tone === "active"
+      ? theme.status.success
+      : tone === "warn"
+        ? theme.status.warning
+        : theme.text.secondary;
+
   const handleSelect = (value: string) => {
-    const setting: ThinkingSetting = value === "auto" ? undefined : (value as ThinkingSetting);
-    setThinking?.(setting);
+    setThinking?.(toSetting(value));
     onClose();
   };
 
@@ -140,12 +138,30 @@ export const ThinkDialog: React.FC<ThinkDialogProps> = ({
           selectedIndicator={ARROW_PROMPT}
           renderItem={(item, { isSelected }) => {
             const isCurrent = item.value === currentValue;
+            const preview = cap ? thinkingLabelForSetting(cap, toSetting(item.value)) : null;
+            // 恒思考模型上 off 不生效：选项本身置灰，预览词转警告色并写明原因。
+            const ineffective = locked && item.value === "off";
             return (
               <Box>
-                <Text color={isSelected ? theme.ui.focus : theme.text.primary}>
-                  {item.glyph} {item.label}
+                <Text
+                  color={
+                    isSelected
+                      ? theme.ui.focus
+                      : ineffective
+                        ? theme.text.secondary
+                        : theme.text.primary
+                  }
+                >
+                  {item.label.padEnd(4)}
                 </Text>
                 <Text color={theme.text.secondary}> {item.desc}</Text>
+                {preview && (
+                  <Text color={toneColor(preview.tone)}>
+                    {" "}
+                    → {preview.text}
+                    {ineffective ? "（本模型无效）" : ""}
+                  </Text>
+                )}
                 {isCurrent && <Text color={theme.ui.active}> {TODO_COMPLETED} 当前</Text>}
               </Box>
             );

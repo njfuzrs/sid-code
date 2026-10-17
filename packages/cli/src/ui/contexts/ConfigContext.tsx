@@ -36,8 +36,10 @@ export interface ConfigContextValue {
   thinkingDisplay: {
     on: boolean;
     isAuto: boolean;
-    /** 控制形态：locked-on → 「开·不可关」，none → 「内置」（缺省按 toggle） */
+    /** 控制形态：locked-on → `always`，none → `by-model`（缺省按 toggle） */
     control?: import("@sid-code/core/llm/effort.ts").ThinkingControl;
+    /** 用户意图：locked-on 下 off → `always` 转警告色（设置在本模型上无效） */
+    intent?: "on" | "off" | "auto";
   } | null;
   /** /goal：目标状态展示态（状态栏 goal 列）。null = 无活跃目标 */
   goalDisplay: { turnsUsed: number; maxTurns: number; status: string } | null;
