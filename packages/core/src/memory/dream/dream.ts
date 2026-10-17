@@ -193,7 +193,7 @@ export function initAutoDream(ctx: DreamContext): AutoDreamHandle {
       const result = await runForkedAgent(ctx.getMainContext(), {
         promptMessages,
         canUseTool: ctx.canUseTool,
-        maxTurns: 10, // 巩固比提取需要更多轮（review → 逐条处理）
+        // 不设 maxTurns（对齐 CC autoDream）：巩固要逐条 review → 合并 / 删除，条目多时 10 轮不够。
         querySource: "auto-dream",
         timeoutMs: 120_000, // 2 分钟——巩固是重活
       });

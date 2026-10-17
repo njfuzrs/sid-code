@@ -195,3 +195,17 @@ describe("loadBundledSkills (内置注册)", () => {
     }
   });
 });
+
+// PR-B S4b 收尾：fork 子代理未声明 maxTurns 即无上限（对齐 CC）。内置 skill 一律不声明——
+// review 30 / verify 20 / simplify 30 都曾在 S4b 之后残留，复活即截断有效工作（a3v2fn6md 同型）。
+describe("内置 skill 不声明 maxTurns", () => {
+  test("bundled/*.ts 源码里没有 maxTurns: <数字>", async () => {
+    const { readdirSync, readFileSync } = await import("node:fs");
+    const { join } = await import("node:path");
+    const dir = join(import.meta.dir, "../../src/skill/bundled");
+    const offenders = readdirSync(dir)
+      .filter((f) => f.endsWith(".ts"))
+      .filter((f) => /^\s*maxTurns:\s*\d+/m.test(readFileSync(join(dir, f), "utf8")));
+    expect(offenders).toEqual([]);
+  });
+});
