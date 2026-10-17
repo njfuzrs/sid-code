@@ -13,8 +13,6 @@ export interface Settings {
   renderMarkdown: boolean;
   /** 是否限制高度（代码块等） */
   constrainHeight: boolean;
-  /** 是否隐藏行号 */
-  hideLineNumbers: boolean;
   /** 主题名称 */
   theme: string;
   /** 是否启用 Vim 模式 */
@@ -25,7 +23,6 @@ export interface Settings {
 export const DEFAULT_SETTINGS: Settings = {
   renderMarkdown: true,
   constrainHeight: true,
-  hideLineNumbers: false,
   theme: "default",
   vimMode: false,
 };
