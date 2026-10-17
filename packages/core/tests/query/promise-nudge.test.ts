@@ -7,7 +7,7 @@
  *  ③ 有 pending 通知 / 运行中后台任务时不触发。
  * 另含回放样本：9 条结构候选里词表命中恰为事故段。
  */
-import { describe, test, expect, afterEach } from "bun:test";
+import { describe, test, expect, afterEach, beforeEach } from "bun:test";
 import {
   classifyEndTurnShape,
   classifyPromiseText,
@@ -24,7 +24,11 @@ import { Manager as ContextManager } from "@sid-code/core/context/manager.ts";
 import { Registry as ToolRegistry } from "@sid-code/core/tool/registry.ts";
 import { ModelFallback } from "@sid-code/core/llm/fallback.ts";
 import { SessionState } from "@sid-code/core/session/state.ts";
-import { enqueuePendingNotification } from "@sid-code/core/task/notification.ts";
+import {
+  enqueuePendingNotification,
+  dequeuePendingNotifications,
+} from "@sid-code/core/task/notification.ts";
+import { clearAllTasks } from "@sid-code/core/task/registry.ts";
 import { clearQueue } from "@sid-code/core/query/message-queue-manager.ts";
 import { hasInternalOrigin } from "@sid-code/core/context/internal-message.ts";
 import type { Config } from "@sid-code/core/config/config.ts";
@@ -245,6 +249,14 @@ const transitions = (
   events: Array<{ event: string; data: Record<string, unknown> }>,
   type: string,
 ) => events.filter((e) => e.event === "LoopTransition" && e.data.type === type).length;
+
+// L2 的结构排除项读全局 task registry / 通知队列：同进程里先跑的测试（cli 全量）
+// 可能留下运行中的后台任务或未投递通知，导致「应触发」用例被误判为排除。每条用例前清干净。
+beforeEach(() => {
+  clearAllTasks();
+  dequeuePendingNotifications();
+  clearQueue();
+});
 
 afterEach(() => {
   clearQueue();
