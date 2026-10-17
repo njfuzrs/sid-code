@@ -30,7 +30,7 @@ sid-code 的全部命令行参数与子命令。
 |---|---|
 | `sid-code review` | 代码审查（从 stdin 或 --diff 文件读取 unified diff）（用法见[下文](#sub-review)） |
 | `sid-code daemon` | 本地调度守护进程管理（用法见[下文](#sub-daemon)） |
-| `sid-code update` | 下载并替换二进制到最新版（不动 ~/.sid-code/ 数据） |
+| `sid-code update` | 下载并替换二进制到最新版（不动 ~/.sid-code/ 数据）（用法见[下文](#sub-update)） |
 | `sid-code agents` | 列出所有可用子代理（内置/自定义/插件）（用法见[下文](#sub-agents)） |
 | `sid-code plugin` | 管理插件（与 /plugin 同一实现，不启动会话，供脚本 / CI 使用）（用法见[下文](#sub-plugin)） |
 | `sid-code mcp` | 管理 MCP 服务器配置（不启动会话）（用法见[下文](#sub-mcp)） |
@@ -52,6 +52,14 @@ sid-code 的全部命令行参数与子命令。
       --interval <ms>     调度检查间隔（默认 60000）
       --max-concurrent <n> 最大并发 headless job（默认 3）
       --allowed-tools <a,b> 全局兜底工具白名单
+```
+
+### sid-code update {#sub-update}
+
+```text
+用法: sid-code update [--version x.y.z] [--list]
+选项: --version x.y.z  安装指定版本
+      --list           列出可安装的历史版本（标注 stable / beta / 当前）
 ```
 
 ### sid-code agents {#sub-agents}
