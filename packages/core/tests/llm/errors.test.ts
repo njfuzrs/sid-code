@@ -377,8 +377,8 @@ describe("isAbortError", () => {
     // turn-timeout(单轮硬超时)、watchdog-timeout(loop.ts 看门狗)、
     // side-call-timeout(side-call-timeout.ts：auto-compact/context-collapse/recall/warmup)、
     // race-settled(loop.ts finally：每轮 race settle 后 abort turn 级子 controller 清理孤儿 fetch)、
-    // subagent-hard-kill(sub-agent.ts：P0-1 墙钟到点只 detach，仅在 detach 后又跑满硬 kill
-    // 期限才 abort；续跑发生在无前台 await 的后台，未登记即为绕过闸门的孤儿 rejection)。
+    // subagent-session-exit(task/agent-task.ts：PR-B 会话退出回收后台子代理；回收发生在
+    // 无前台 await 的后台，未登记即为绕过闸门的孤儿 rejection。取代已删除的 subagent-hard-kill)。
     // 转 string[] 断言:ABORT_REASONS 是 as const 字面量联合,直接 toEqual 会因
     // NoInfer 把期望数组收窄到该联合而报重载不匹配;比较值本身即可,不需比字面量类型。
     expect([...ABORT_REASONS].map(String).sort()).toEqual([
@@ -392,7 +392,7 @@ describe("isAbortError", () => {
       "side-call-timeout",
       "stream-heartbeat-timeout",
       "stream-overall-timeout",
-      "subagent-hard-kill",
+      "subagent-session-exit",
       "team-hard-timeout",
       "timeout",
       "turn-timeout",

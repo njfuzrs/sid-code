@@ -163,15 +163,14 @@ describe("loadBundledSkills (内置注册)", () => {
     expect(pr.userInvocable).toBe(true);
   });
 
-  test("Git/PR fork 命令配置了 timeoutMins（避免锁死 2 分钟）", () => {
+  test("PR-B：Git/PR fork 命令不再声明 timeoutMins（fork 子代理无墙钟，对齐 CC）", () => {
     const skills = loadBundledSkills();
     const byName = (n: string) => skills.find((s) => s.name === n);
-    // fork 长流程：均应显式配置 timeoutMins
     for (const name of ["review", "pr-workflow"]) {
       const cmd = byName(name);
       if (cmd?.type !== "prompt") throw new Error(`${name} 应为 prompt 命令`);
       expect(cmd.context).toBe("fork");
-      expect(cmd.timeoutMins).toBeGreaterThanOrEqual(15);
+      expect(cmd.timeoutMins).toBeUndefined();
     }
     // commit 是 inline，超时无意义，不强制配置
     const commit = byName("commit");

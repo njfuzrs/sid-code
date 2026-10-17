@@ -8,12 +8,9 @@
  * 上下文模式：fork（子代理独立执行）。
  *   选 fork 的理由：长流程多步骤，独立执行不污染主对话；allowedTools 是该子代理的免确认规则。
  *
- * ⚠️ 轮次/超时上限（见 §5.1 与 skill/types.ts:51-54）：
- *   maxTurns 最大 50、timeoutMins 最大 30（写超会被钳到上限）。这里取满。
- *   一条走完五阶段的 SOP，光逐文件自审就可能吃掉十几轮——50 轮可能不够。
- *   因此 prompt 里明确要求：自审阶段聚焦"本次变更引入的高风险点"，不做地毯式逐行
- *   通读；若变更体量大、轮次吃紧，优先保证"提交+发 PR"完成，自审降级为概要提示，
- *   并建议用户对发出的 PR 单独跑 /review 做完整审查。
+ * 轮次/超时：PR-B（2026-10-17）起 fork 子代理无轮次 / 时间上限（对齐 CC），这里不再声明。
+ *   prompt 里仍要求自审阶段聚焦"本次变更引入的高风险点"，不做地毯式逐行通读——
+ *   理由从「轮次吃紧」变成「省 token」；完整审查建议用户对发出的 PR 单独跑 /review。
  *
  * ⚠️ fork 限制（见 §4.3）：子代理看不到主对话，工作区状态全靠 git 自查。
  */
@@ -95,8 +92,8 @@ export function registerPrWorkflowSkill(): void {
     userInvocable: true,
     // 强副作用(push + 建 PR + 改代码)：禁止模型自动调用，仅用户显式 /pr-workflow 触发
     disableModelInvocation: true,
-    maxTurns: 50, // 上限（skill/types.ts:51）
-    timeoutMins: 30, // 上限：五阶段 SOP 含 push/建 PR + 自审，2 分钟远不够
+    // PR-B（2026-10-17）：不再声明 maxTurns / timeoutMins——fork 子代理默认无上限（对齐 CC），
+    // 此前的 50 / 30 是「被钳到上限只能取满」的结果，不是这个 SOP 真正需要的数字。
     async getPromptForCommand(args, context) {
       // P3-1：commit + PR 归因动态注入（settings.git.commitAttribution / prAttribution）。
       // 本 skill 同时做 commit 与建 PR，两处归因都要覆盖；各自 enabled=false → 空串。

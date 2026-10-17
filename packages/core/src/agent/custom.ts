@@ -35,8 +35,6 @@ export interface CustomAgentDefinition {
   prompt: string;
   source: ExtensionSource;
   filePath: string;
-  /** 超时时间（毫秒），默认 300_000（5 分钟，对齐 task 类型） */
-  timeout?: number;
   /** 模型覆盖（P0-2，frontmatter model；"inherit"/空 = 继承主模型） */
   model?: string;
   /** 预加载技能名列表（P1-1，frontmatter skills） */
@@ -63,62 +61,18 @@ export function parseListField(raw: unknown): string[] {
 }
 
 /**
- * frontmatter `timeout` 的合法区间（毫秒）。
+ * frontmatter `timeout`：PR-B（2026-10-17）起**不再生效**，解析到就 warn 一次并忽略。
  *
- * B5-5（§5 缺口 C）：此前 `timeout` **完全无上限**——frontmatter 写
- * `timeout: 999999999` 就能把单个子代理的最坏墙钟拉到 11 天。这不是理论风险：
- * 缺口 C 已算清退避累计（base 5s / cap 120s）第 7 次就到 395s，超时越大 = 越多次
- * 退避真的被跑完，"有界"这个安全性质是**靠外层超时提供的**，把它放开就一起没了。
- *
- * 上限取 600s：内置 agent 最长 360s（`agent-definition.ts`），留出约 1.7× 余量给
- * 自定义 agent 声明更重的任务，同时保证最坏耗时仍在"人能等"的量级。
- * 下限取 10s：比一次退避（cap 120s）还短的 timeout 会让子代理在第一次限流退避中途
- * 就被 abort，永远等不到重试结果——写这种值几乎总是笔误，钳到 10s 并 warn 比默默接受好。
- *
- * 越界不报错、不 spawn 失败，而是**钳制到边界 + warn**：与本文件其它 frontmatter
- * 字段（permissionMode / isolation 非法值 warn 跳过）的既有口径一致。
+ * 子代理没有墙钟（对齐 CC：CC frontmatter 也不支持 timeout）。不能静默忽略——
+ * 作者会以为它还在生效。B5-5 当年给它加 [10s, 600s] 钳制的理由（「有界」靠外层超时提供）
+ * 已不成立：重试有界由 maxTimeoutRetries 提供，单次卡死由漏斗 + 单轮硬超时兜底提供。
  */
-export const CUSTOM_AGENT_TIMEOUT_MIN_MS = 10_000;
-export const CUSTOM_AGENT_TIMEOUT_MAX_MS = 600_000;
-
-/**
- * 解析并钳制 frontmatter `timeout`（B5-5）。
- *
- * @returns 钳制后的毫秒值；非数字 / NaN / 非正数 → `undefined`（由调用方回落默认 300s）。
- */
-export function parseAgentTimeout(raw: unknown, agentName: string): number | undefined {
-  if (typeof raw !== "number" || !Number.isFinite(raw)) {
-    // 非数字（含 NaN / Infinity）：静默回落默认值。frontmatter 未声明是常态，不该 warn。
-    if (raw !== undefined && raw !== null) {
-      getLogger().warn(
-        "CUSTOM_AGENT",
-        `Agent ${agentName} 的 timeout=${String(raw)} 非有效数字，已忽略（回落默认 300s）`,
-      );
-    }
-    return undefined;
-  }
-  if (raw <= 0) {
-    getLogger().warn(
-      "CUSTOM_AGENT",
-      `Agent ${agentName} 的 timeout=${raw} 非正数，已忽略（回落默认 300s）`,
-    );
-    return undefined;
-  }
-  if (raw < CUSTOM_AGENT_TIMEOUT_MIN_MS) {
-    getLogger().warn(
-      "CUSTOM_AGENT",
-      `Agent ${agentName} 的 timeout=${raw}ms 小于下限，已钳制到 ${CUSTOM_AGENT_TIMEOUT_MIN_MS}ms`,
-    );
-    return CUSTOM_AGENT_TIMEOUT_MIN_MS;
-  }
-  if (raw > CUSTOM_AGENT_TIMEOUT_MAX_MS) {
-    getLogger().warn(
-      "CUSTOM_AGENT",
-      `Agent ${agentName} 的 timeout=${raw}ms 超过上限，已钳制到 ${CUSTOM_AGENT_TIMEOUT_MAX_MS}ms`,
-    );
-    return CUSTOM_AGENT_TIMEOUT_MAX_MS;
-  }
-  return raw;
+export function warnIgnoredAgentTimeout(raw: unknown, agentName: string): void {
+  if (raw === undefined || raw === null) return;
+  getLogger().warn(
+    "CUSTOM_AGENT",
+    `Agent ${agentName} 声明了 timeout=${String(raw)}，已不再生效：子代理不设时间上限（ESC / task_stop 可随时停止）`,
+  );
 }
 
 /** 合法权限模式名（P2-1 校验，对齐 src/permission/mode.ts PermissionMode）。 */
@@ -216,6 +170,7 @@ export class CustomAgentLoader {
       const tools = parseListField(fm.tools);
       const agentName = (fm.name as string) || file.name;
 
+      warnIgnoredAgentTimeout(fm.timeout, agentName);
       agents.push({
         name: agentName,
         description: (fm.description as string) || "",
@@ -223,8 +178,6 @@ export class CustomAgentLoader {
         prompt: file.body,
         source: file.source,
         filePath: file.filePath,
-        // B5-5：钳制到 [10s, 600s]。此前是裸 `typeof === "number"` 直通，无任何上限。
-        timeout: parseAgentTimeout(fm.timeout, agentName),
         // P0-2/P1-1/P1-2/P2-1：消费扩展 frontmatter 字段（model/skills/color/permissionMode/hooks/background/isolation）。
         ...parseAgentExtendedFrontmatter(fm, agentName),
       });
@@ -325,10 +278,7 @@ export class CustomAgentTool implements Tool {
           systemPrompt: this.def.prompt,
           userPrompt: task,
           allowedTools: this.def.tools,
-          // P2-2：自定义 Agent 无独立 maxTurns 声明字段，与常规非 fork 子代理同档，默认从 10 提到 30
-          maxTurns: 30,
-          // 三级回退：Frontmatter 声明 > 默认 300s（对齐 task 类型，自定义 agent 执行复杂任务）
-          timeout: this.def.timeout ?? 300_000,
+          // PR-B：自定义 Agent 无 maxTurns 声明字段 → 无上限，对齐 CC；frontmatter timeout 已不生效
           // G13：把自定义 Agent 类型透传给子代理，让 save_memory 的 agent scope 定位到该类型记忆目录
           type: this.def.name,
         },

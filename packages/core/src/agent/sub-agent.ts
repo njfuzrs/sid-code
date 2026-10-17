@@ -46,14 +46,6 @@ import {
   type FailureClass,
 } from "./salvage.ts";
 import { getSleepLedger } from "@sid-code/shared/utils/sleep-detect.ts";
-// P0-1(a)(c)：detach 语义的硬 kill 倍数 + 按实测吞吐派生墙钟预算。
-import {
-  resolveSubAgentTimeout,
-  recordTurnLatency,
-  HARD_KILL_MULTIPLIER,
-} from "./timeout-budget.ts";
-import { SUBAGENT_HARD_KILL_REASON } from "../llm/errors.ts";
-import { armSleepAwareTimer, type SleepAwareTimer } from "./sleep-aware-timer.ts";
 import {
   createAgentTask,
   completeAgentTask,
@@ -180,12 +172,10 @@ export interface SubAgentTask {
   prompt: string;
   /** 子代理可用的工具（默认继承主代理的工具） */
   tools?: ToolRegistry;
-  /** 子代理最大轮次（默认见 resolveSubAgentMaxTurns：fork 任务 200，常规任务 30） */
+  /** 子代理最大轮次（可选；未声明 = 无上限，见 resolveSubAgentMaxTurns） */
   maxTurns?: number;
   /** 子代理上下文窗口大小（默认 50000） */
   maxTokens?: number;
-  /** 超时时间（毫秒，默认 120000） */
-  timeout?: number;
   /** 外部预创建的 task ID（后台执行时由 runAsync 预先创建，内部使用） */
   _taskId?: string;
   /** 外部预创建的 AbortController（后台执行时使用） */
@@ -243,27 +233,31 @@ export interface SubAgentTask {
   _parentToolUseId?: string;
 }
 
-/** P2-2：计算子代理默认 maxTurns（未显式指定 task.maxTurns 时）。
+/** 计算子代理 maxTurns。PR-B（2026-10-17）：**未声明即无上限**，对齐 CC。
  *
- *  - fork 任务（task.forkMessages 非空，继承主对话上下文）：200，对齐 CC fork 子代理——
- *    fork 任务是「接着主对话往下钻」，复杂度按续写对话估而非按窄范围子任务估
- *    （注意继承的只是尾部若干条，不是完整父对话），200 是"几乎不会触发，只防真正
- *    无限循环"的安全阀。
- *  - 常规任务（explore/task/verify 等独立窄范围任务）：30——比旧值 10 宽松，覆盖真实
- *    存在的"复杂子任务被过早截断"场景，但不直接照搬 200：这类任务上下文独立、范围
- *    较窄，跑到 200 轮更可能是卡住而非正当进展。
+ *  CC 内置代理不声明 maxTurns（`tools/AgentTool/built-in/` grep 0 命中），`query.ts` 只有
+ *  `maxTurns &&` 为真时才检查。此前这里是「fork 200 / 常规 30」——事故 20261016-222758 里
+ *  a3v2fn6md 正是撞 30 轮被强制总结截断。fork 的 200 也一并去掉：全库从未有子代理跑到
+ *  100 轮，失控防护由 ESC / task_stop / 嵌套深度上限承载。
  *
- *  只对携带 forkMessages 字段的调用方（executeInner，进程内路径）生效 fork 档位；
- *  spawn 路径（ParentInitMessage 协议）不透传 forkMessages，跨进程边界后 fork 上下文
- *  已丢失，不适用 200 档位，调用方应始终传非 fork 语境的 task。
- *  导出供单测直接验证，避免依赖端到端跑满 30/200 轮 mock 循环。 */
-export function resolveSubAgentMaxTurns(task: {
-  maxTurns?: number;
-  forkMessages?: unknown[];
-}): number {
-  if (task.maxTurns !== undefined) return task.maxTurns;
-  const isForkTask = Boolean(task.forkMessages && task.forkMessages.length > 0);
-  return isForkTask ? 200 : 30;
+ *  ⚠️ 出口必须归一成 `Infinity`，**不能是 undefined**：`agentic-loop.ts` 是
+ *  `while (turns < maxTurns)`，`turns < undefined` 恒为 false → 子代理一轮都不跑就进强制总结。
+ *  显式声明（task.maxTurns / frontmatter maxTurns）仍然生效，达到时照旧强制总结。
+ *  非正数 / NaN 视为未声明（与主循环 `config.maxTurns || Infinity` 同口径）。 */
+export function resolveSubAgentMaxTurns(task: { maxTurns?: number }): number {
+  const n = task.maxTurns;
+  return typeof n === "number" && n > 0 ? n : Infinity;
+}
+
+/** spawn 协议用：Infinity 无法 JSON 序列化（会变 null），未声明时省略字段由子进程归一。 */
+function spawnMaxTurns(maxTurns: number | undefined): number | undefined {
+  const n = resolveSubAgentMaxTurns({ maxTurns });
+  return Number.isFinite(n) ? n : undefined;
+}
+
+/** 日志用：Infinity 打「无上限」而不是字面量 Infinity。 */
+function describeMaxTurns(maxTurns: number): string {
+  return Number.isFinite(maxTurns) ? String(maxTurns) : "无上限";
 }
 
 /** 子代理执行结果 */
@@ -441,7 +435,6 @@ export interface CustomSubAgentTask {
   toolsFromAgentType?: string;
   maxTurns?: number;
   maxTokens?: number;
-  timeout?: number;
   /** 子代理类型（G13：save_memory 的 agent scope 据此定位记忆目录；不传则 agent scope 不可用） */
   type?: string;
   /**
@@ -1190,12 +1183,10 @@ export class SubAgent {
       wire_model: wireModel,
       wire_model_aliases: wireModelAliases,
       model_compat: modelCompat,
-      // P2-2：与 executeInner 的常规子代理默认对齐为 30（旧值 10 过于保守）。
-      // 注：ParentInitMessage 协议不透传 task.forkMessages（跨进程边界），fork 模式
-      // 走 spawn 时上下文本就无法继承，不适用 fork=200 的档位，统一按非 fork 默认处理。
-      max_turns: task.maxTurns ?? 30,
+      // PR-B：与进程内路径同口径——未声明即无上限（协议里省略字段，子进程归一成 Infinity）。
+      // ⚠️ 不能写 `?? 30`：spawn 与进程内两条路径的默认值必须一致，否则同一子代理换条路径就换行为。
+      max_turns: spawnMaxTurns(task.maxTurns),
       max_tokens: task.maxTokens ?? 50000,
-      timeout: task.timeout ?? resolveAgent(task.type)?.timeout ?? 120_000,
       workdir: process.cwd(),
       provider_name: providerName,
       api_key: apiKey,
@@ -1265,10 +1256,9 @@ export class SubAgent {
       wire_model: wireModel,
       wire_model_aliases: wireModelAliases,
       model_compat: modelCompat,
-      // P2-2：与 executeCustomInner 对齐为 30（旧值 10 过于保守，CustomSubAgentTask 无 fork 概念）。
-      max_turns: task.maxTurns ?? 30,
+      // PR-B：同上，未声明即无上限。
+      max_turns: spawnMaxTurns(task.maxTurns),
       max_tokens: task.maxTokens ?? 50000,
-      timeout: task.timeout ?? 300_000, // G4：与进程内 executeCustomInner 对齐为 300s，消除同一自定义代理走 spawn/进程内两条路径超时值不一致（此前 spawn=120s、进程内=300s）
       workdir: process.cwd(),
       provider_name: providerName,
       api_key: apiKey,
@@ -1300,7 +1290,6 @@ export class SubAgent {
   ): Promise<SubAgentResult> {
     const log = getLogger();
     const startTime = Date.now();
-    const timeout = initMsg.timeout;
 
     // N3：spawn 路径的 sidechain。LLM 循环在子进程里，但**工具是父进程执行的**
     // （tool_use 经 stdout 回传），所以父进程手里有 user_prompt + 每次 tool_use/tool_result
@@ -1377,14 +1366,8 @@ export class SubAgent {
     // 发送 init 消息
     writeParentMsg(subprocess.stdin, initMsg);
 
-    // 超时控制（G3 修复）：用 timedOut 标志区分"超时 kill"与"崩溃/意外退出"，
-    // 否则超时后 result=null 会误报为"子代理意外退出 (exit code)"，模型无法得知是超时。
-    let timedOut = false;
-    const timeoutId = setTimeout(() => {
-      timedOut = true;
-      log.warn("SUBAGENT", `spawn 子进程超时 (${Math.round(timeout / 1000)}秒)，kill`);
-      if (!subprocess.killed) subprocess.kill();
-    }, timeout);
+    // PR-B：父进程不再挂墙钟 kill 定时器（子进程侧同步删掉 process.exit 定时器）。
+    // 结束出口只剩：子进程正常回 result / 父进程 abort（ESC / task_stop / 父代理取消）/ 意外退出。
 
     // 父进程 abort → kill 子进程
     const onAbort = () => {
@@ -1593,32 +1576,15 @@ export class SubAgent {
       await subprocess.exited;
 
       if (!result) {
-        // N3：超时 / 用户中止 → aborted（与 executeInner 的 isTimeout 口径一致），意外退出 → failed。
-        sidechainStatus = timedOut || signal?.aborted ? "aborted" : "failed";
-        // P0-1(b)：三条无结果出口（超时 / 被中止 / 意外退出）统一交回残卷。
+        // N3：用户中止 → aborted，意外退出 → failed。
+        sidechainStatus = signal?.aborted ? "aborted" : "failed";
+        // P0-1(b)：两条无结果出口（被中止 / 意外退出）统一交回残卷。
         //
         // 这是 §1.5(b) 四处落点的第四处。改造前三条出口都是「一句文案 + usage/turns 归零」，
         // 而 spawn 路径的工具**是父进程执行的**，父进程明明知道子代理改过哪些文件——
         // 那份信息就在手里却被丢掉，是三条出口里最可惜的一种。
         const snap = salvage.snapshot();
         const spawnUsage = { inputTokens: snap.tokenCount, outputTokens: 0 };
-        // G3：区分超时 vs 意外退出。让模型知道是"跑太久被中断"而非"子进程崩溃"，
-        // 便于决策（简化任务重试 vs 报错）。
-        if (timedOut) {
-          log.warn("SUBAGENT", `spawn 子代理墙钟到点 (${Math.round(timeout / 1000)}秒)，交回残卷`);
-          return {
-            success: false,
-            output: buildSalvageOutput(snap, {
-              reason: "timeout",
-              timeoutMs: timeout,
-              taskId,
-              ...this.traceLinks(sidechain, taskId),
-            }),
-            usage: spawnUsage,
-            turns: snap.turns,
-            toolUseCount: snap.toolUseCount,
-          };
-        }
         // 父进程主动 abort（用户取消）导致的退出。用户取消同样要交回残卷——
         // 用户按 ESC 不代表他想丢掉子代理已经改好的文件。
         if (signal?.aborted) {
@@ -1665,7 +1631,6 @@ export class SubAgent {
       } catch {
         /* 静默 */
       }
-      clearTimeout(timeoutId);
       signal?.removeEventListener("abort", onAbort);
       // 确保子进程被终止
       if (!subprocess.killed) {
@@ -1904,76 +1869,23 @@ export class SubAgent {
     const sleepLedgerAtStart = getSleepLedger().getTotalMs();
     log.info("SUBAGENT", `启动子代理 [${task.type}]: ${task.description}`);
 
-    // 超时控制：task.timeout > env > 实测派生 > AgentDefinition.timeout > 默认 120 秒。
-    // P0-1(c)：不再所有模型共用一个写死的 300s，见 timeout-budget.ts 头注释
-    // （实测同会话单轮 p50=6.1s/p95=19.1s，300s 对慢模型连"读懂上下文"都不够）。
-    const agentDefForTimeout = resolveAgent(task.type);
-    const modelForBudget =
-      task.model ?? (this.registry ? this.registry.getModelForSubAgent(task.type) : this.model);
-    const budget = resolveSubAgentTimeout({
-      definitionTimeoutMs: agentDefForTimeout?.timeout,
-      explicitTimeoutMs: task.timeout,
-      model: modelForBudget,
-      fallbackMs: 120_000,
-    });
-    const timeout = budget.timeoutMs;
-
-    // ── P0-1(a)：墙钟到点 = detach（转后台继续跑），**不是** abort ──
+    // ── PR-B（2026-10-17）：子代理**没有墙钟、没有硬 kill**，对齐 CC ──
     //
-    // 改造前这里是 `setTimeout(() => timeoutCtrl.abort(), timeout)`：到点直接掐死，
-    // 已完成的成果被下面的超时分支整句替换成一句"超时"，1.84M input token 产出归零。
+    // 此前这里有三层：墙钟（detach，120–360s）→ 硬 kill（3× 墙钟）→ 按 p95 派生预算。
+    // 事故 20261016-222758 / 224545：#284 合入后 9/9 次子代理失败全部死在超时层，
+    // 0 次是「限制救下失控子代理」。CC 前台子代理默认无墙钟（`AgentTool.tsx:72` 返回 0）。
     //
-    // 对齐 CC：`LocalAgentTask.tsx:582-606` 到点只置 `isBackgrounded` 标志位并 resolve
-    // backgroundSignal，**没有任何 abort**（在 `AgentTool/` 与 `LocalAgentTask/` 下 grep
-    // `abortController.abort()` 零命中）；且这个 auto-background 默认还是**关闭**的
-    // （`AgentTool.tsx:72` 返回 0）——CC 的前台子代理默认没有墙钟上限。
-    //
-    // 我们保留墙钟（无人值守长任务需要一个可预期的前台返回点），但把它的语义从
-    // "kill 并丢弃"改成"交回残卷 + 后台续跑"。硬 kill 只留给三种情况：
-    //   ① 用户显式 task_stop（killAgentTask → activeAgentControllers）；
-    //   ② 用户/父代理 abort（外层 signal，不经这里）；
-    //   ③ detach 之后又跑满 timeout × HARD_KILL_MULTIPLIER —— 那已是失控不是慢。
-    //
-    // 为什么 detach 只有在 `_isAsync`（后台子代理）路径上才是真"续跑"：前台
-    // `sub_agent` 的调用方（tool.ts runSync）在 await 这个 Promise，我们一旦提前
-    // return，函数栈就走完了，续跑无处附着。所以前台路径 detach 时仍要结束执行，
-    // 只是**带着残卷**结束（reason "timeout"），而后台路径能真正甩掉前台等待。
-    const timeoutCtrl = new AbortController();
-    /** detach 是否已触发（墙钟到点）。超时分支据此判定，不再看 `timeoutCtrl.signal.aborted`。 */
-    let detached = false;
-    /** detach 后的硬 kill 定时器；只有它才会真的 abort。 */
-    let hardKillTimer: SleepAwareTimer | undefined;
-    // B2（2026-10-14）：墙钟与硬 kill 都扣休眠，见 sleep-aware-timer.ts 头注释。
-    const timer = armSleepAwareTimer(timeout, () => {
-      detached = true;
-      log.warn(
-        "SUBAGENT",
-        `[${task.type}] 达到墙钟预算 ${Math.round(timeout / 1000)}s（来源 ${budget.source}），` +
-          `转 detach：交回残卷、不终止执行（硬 kill 在 ${HARD_KILL_MULTIPLIER}× 后）`,
-      );
-      // 到点**不** abort。只挂硬 kill 兜底，避免 detach 后无限跑。
-      hardKillTimer = armSleepAwareTimer(timeout * (HARD_KILL_MULTIPLIER - 1), () => {
-        log.warn(
-          "SUBAGENT",
-          `[${task.type}] detach 后仍未结束，达到硬 kill 期限（${HARD_KILL_MULTIPLIER}×${Math.round(timeout / 1000)}s），终止`,
-        );
-        // reason 必须登记于 ABORT_REASONS（历史事故：自定义 reason 绕过 isAbortError
-        // 闸门致崩溃）。detach 后的续跑没有前台 await，底层 fetch 会以这个裸字符串
-        // reject，未登记就是一条孤儿 rejection。
-        timeoutCtrl.abort(SUBAGENT_HARD_KILL_REASON);
-      });
-    });
-    const mergedSignal = signal
-      ? AbortSignal.any([signal, timeoutCtrl.signal])
-      : timeoutCtrl.signal;
+    // 现在总量控制只剩三个出口：用户 ESC / task_stop（killAgentTask）/ 父代理取消，
+    // 全部经外层 `signal` 进来。单次调用卡死由 agentic-loop 的漏斗重试 + 单轮硬超时兜底
+    // （与主循环同一个 maxTurnDurationMs）负责。⛔ 别在这里加回任何「过了多久」的计时器：
+    // 判据应是「有没有推进」，那一层已经在漏斗里。
+    const mergedSignal = signal ?? new AbortController().signal;
 
     // try 块外部声明 ctxMgr，以便 catch 块在超时时能读取部分进度信息
     let ctxMgr: ContextManager | undefined;
 
     /** P0-1(b)：残卷收集器。每轮喂 onTurnEnd 快照，超时/异常分支据此交回已完成的成果。 */
     const salvage = new SalvageCollector();
-    /** 上一轮结束的时刻，用于算单轮耗时喂给预算派生（timeout-budget.recordTurnLatency）。 */
-    let lastTurnAt = startTime;
 
     // P2-10：子代理 sidechain 持久化。仅当父会话 id 与 taskId（作 agentId）都在时启用；
     // 缺任一则 writer 为 undefined，所有写入调用经可选链安全跳过（不影响执行）。
@@ -2048,14 +1960,14 @@ export class SubAgent {
       if (structuredTool) {
         tools.register(structuredTool);
       }
-      // P2-2：fork 任务默认 200、常规任务默认 30，见 resolveSubAgentMaxTurns 注释。
+      // PR-B：未声明即无上限（Infinity），见 resolveSubAgentMaxTurns 注释。
       const maxTurns = resolveSubAgentMaxTurns(task);
       const loopDetector = new LoopDetector();
 
       const toolNames = filteredTools.map((t) => t.name());
       log.info(
         "SUBAGENT",
-        `[${task.type}] 可用工具: ${toolNames.join(", ") || "无"}, 超时: ${timeout / 1000}秒, 最大轮次: ${maxTurns}`,
+        `[${task.type}] 可用工具: ${toolNames.join(", ") || "无"}, 最大轮次: ${describeMaxTurns(maxTurns)}`,
       );
 
       // 先定模型、再按模型定 provider（registry 模式）。
@@ -2184,10 +2096,6 @@ export class SubAgent {
           } catch {
             /* 残卷收集失败不影响子代理执行 */
           }
-          // P0-1(c)：单轮耗时样本喂给预算派生（下次同模型子代理据此放宽墙钟）。
-          const now = Date.now();
-          recordTurnLatency(modelForBudget, now - lastTurnAt);
-          lastTurnAt = now;
 
           // P2-10：把本轮新增的对话消息落盘到 sidechain。用游标记录已持久化的消息数，
           // 每轮从 ctxMgr 取增量顺序追加，避免重复写。落盘失败不影响子代理执行。
@@ -2334,37 +2242,28 @@ export class SubAgent {
         // 已确认结论 / 未完成部分 / 建议的下一步）。判据："300s 改 600s 只是把同样的浪费
         // 翻倍，交回残卷才是止损。"
         //
-        // 判"是否墙钟到点"看 `detached` 标志而**不是** `timeoutCtrl.signal.aborted`：
-        // detach 语义下墙钟到点根本不 abort，signal 只在硬 kill / 外层取消时才 aborted。
-        // 这与「判超时看 abort reason 白名单而非错误文本」是同一条原则的延伸——
-        // 判据要对准真正表达该语义的那个状态位。
-        // D1：归因统一走 classifySubAgentFailure（优先级：外层 abort > 硬 kill > 漏斗放弃证据
-        // > 墙钟到点）。旧判据 `detached || hardKilled` 会把「断网后放弃」说成超时。
-        const hardKilled = timeoutCtrl.signal.reason === SUBAGENT_HARD_KILL_REASON;
+        // D1：归因统一走 classifySubAgentFailure（优先级：外层 abort > 漏斗放弃证据 > 其他错误）。
+        // PR-B：墙钟 / 硬 kill 两个分支随计时器一起删除——子代理不再有「到点」这种死法。
         const fc = classifySubAgentFailure({
           parentAborted: signal?.aborted === true,
-          hardKilled,
-          detached,
-          canDetach: task._isAsync === true,
           giveUp: loopResult.giveUp,
           lastRetryReason: loopResult.lastRetryReason,
           errorMessage: loopResult.errorMessage,
         });
-        const isTimeout = fc.reason === "timeout" || fc.reason === "detached";
-        // P2-10：超时/中断记为 aborted（可恢复），其余非成功记为 failed。
-        sidechainStatus = isTimeout || fc.reason === "aborted" ? "aborted" : "failed";
+        // P2-10：中断记为 aborted（可恢复），其余非成功记为 failed。
+        sidechainStatus = fc.reason === "aborted" ? "aborted" : "failed";
         const snap = salvage.snapshot();
-        // B5-4（缺口 D）：重试次数仍要带上（限流打满退避耗尽会被误读成"超时"，
-        // 见 formatRetryHint 注释）。非超时分支的 errorMessage 里漏斗已含重试信息，不重复拼。
-        const retryHint = isTimeout ? formatRetryHint(loopResult) : "";
+        // B5-4（缺口 D）：中断分支没有 errorMessage，重试次数靠 retryHint 带上；
+        // 错误分支的 errorMessage 里漏斗已含重试信息，不重复拼。
+        const retryHint = fc.reason === "aborted" ? formatRetryHint(loopResult) : "";
         const output = buildSalvageOutput(snap, {
           ...this.failureSalvageOpts(fc, task.type, sleepLedgerAtStart, loopResult.retryAttempts),
           usage: totalUsage,
           finalText: finalOutput,
-          timeoutMs: timeout,
-          errorMessage: isTimeout
-            ? retryHint.replace(/^，/, "") || undefined
-            : loopResult.errorMessage || "子代理执行未成功",
+          errorMessage:
+            fc.reason === "aborted"
+              ? retryHint.replace(/^，/, "") || undefined
+              : loopResult.errorMessage || "子代理执行未成功",
           taskId,
           ...this.traceLinks(sidechain, taskId),
         });
@@ -2386,28 +2285,17 @@ export class SubAgent {
       // 这个数据）。归零不是保守估计，是**假数据**——它让一次 40 万 token 的失败在账上
       // 与一次零成本失败完全同形。现在按残卷里的实际累计值回填。
       const snap = salvage.snapshot();
-      const hardKilled = timeoutCtrl.signal.reason === SUBAGENT_HARD_KILL_REASON;
       // D1：catch 分支拿不到 loopResult，只有异常消息可用于成因推断。
-      // canDetach=false：抛出意味着执行已结束，没有后台可续跑。
       const fc = classifySubAgentFailure({
         parentAborted: signal?.aborted === true,
-        hardKilled,
-        detached,
-        canDetach: false,
         errorMessage: err?.message,
       });
-      const isTimeout = fc.reason === "timeout";
-      if (isTimeout) {
-        log.warn("SUBAGENT", `[${task.type}] 墙钟到点抛出（${timeout}ms），交回残卷`);
-      } else {
-        log.error("SUBAGENT", `[${task.type}] 执行异常`, { error: err.message });
-      }
+      log.error("SUBAGENT", `[${task.type}] 执行异常`, { error: err.message });
       return {
         success: false,
         output: buildSalvageOutput(snap, {
           ...this.failureSalvageOpts(fc, task.type, sleepLedgerAtStart),
-          timeoutMs: timeout,
-          errorMessage: isTimeout ? undefined : err.message,
+          errorMessage: err.message,
           taskId,
           ...this.traceLinks(sidechain, taskId),
         }),
@@ -2437,10 +2325,6 @@ export class SubAgent {
         toolUseCount: snap.toolUseCount,
       };
     } finally {
-      timer.cancel();
-      // detach 后的硬 kill 定时器同样要清——不清会让进程多挂住 2×timeout 才退出
-      // （Node/Bun 的 pending timer 会阻止事件循环空转退出）。
-      hardKillTimer?.cancel();
       // P2-10：无论成功/失败/异常，都写 sidechain_end 收尾。sidechainStatus 默认 aborted，
       // 仅成功/明确失败分支改写——恢复扫描据此过滤已结束的 sidechain。
       sidechain?.end(sidechainStatus);
@@ -2457,42 +2341,12 @@ export class SubAgent {
     const sleepLedgerAtStart = getSleepLedger().getTotalMs();
     log.info("SUBAGENT", `启动自定义子代理`);
 
-    // 三级回退：task.timeout > env/派生 > 默认 300s（与 task 类型对齐）。
-    // P0-1(c)：与内置路径共用 resolveSubAgentTimeout，避免"两条路径各写一份预算逻辑"——
-    // buildBaseLoopConfig 的注释记录过同型教训（漏传 permissionChecker 是靠人工两处同步失败）。
-    const customBudget = resolveSubAgentTimeout({
-      definitionTimeoutMs: 300_000,
-      explicitTimeoutMs: task.timeout,
-      model: this.modelOverride ?? this.model,
-      fallbackMs: 300_000,
-    });
-    const timeout = customBudget.timeoutMs;
-    const timeoutCtrl = new AbortController();
-    /** P0-1(a)：墙钟到点标志。自定义路径同样不再到点即 abort，见 executeInner 的 detach 注释。 */
-    let detached = false;
-    let hardKillTimer: SleepAwareTimer | undefined;
-    // B2（2026-10-14）：墙钟与硬 kill 都扣休眠，见 sleep-aware-timer.ts 头注释。
-    const timer = armSleepAwareTimer(timeout, () => {
-      detached = true;
-      log.warn(
-        "SUBAGENT",
-        `[custom] 达到墙钟预算 ${Math.round(timeout / 1000)}s（来源 ${customBudget.source}），交回残卷`,
-      );
-      // 自定义路径（skill/agent 调用）**没有** taskId、不进 registry，所以"转后台续跑"
-      // 无处附着：调用方在 await 我们，提前 return 就没有栈能承载续跑。因此这里 detach
-      // 的收益只有「交回残卷」这一半，硬 kill 仍要挂——否则自定义子代理会无限跑下去。
-      hardKillTimer = armSleepAwareTimer(timeout * (HARD_KILL_MULTIPLIER - 1), () => {
-        log.warn("SUBAGENT", `[custom] detach 后仍未结束，硬 kill`);
-        timeoutCtrl.abort(SUBAGENT_HARD_KILL_REASON);
-      });
-    });
-    const mergedSignal = signal
-      ? AbortSignal.any([signal, timeoutCtrl.signal])
-      : timeoutCtrl.signal;
+    // PR-B：自定义路径同样无墙钟 / 硬 kill（见 executeInner 同位置注释）。
+    // skill / 命令 fork / 自定义代理都经这里，它们的 frontmatter timeout / timeoutMins 已不再生效。
+    const mergedSignal = signal ?? new AbortController().signal;
 
     /** P0-1(b)：自定义路径的残卷收集器（与内置路径同一实现，不另写一份）。 */
     const salvage = new SalvageCollector();
-    let lastTurnAt = startTime;
 
     // B4：观测身份必须「每次调用唯一」，而 masking 的 sessionId 刻意按 task.type
     // 复用（同类型自定义代理共用一个临时目录，见下方注释）。两者目的不同，故分开派生：
@@ -2540,14 +2394,14 @@ export class SubAgent {
         resolvedTools.length > 0
           ? this.buildIsolatedToolRegistry(resolvedTools, task.type)
           : new ToolRegistry();
-      // P2-2：CustomSubAgentTask 无 forkMessages，resolveSubAgentMaxTurns 自然落到常规档 30。
+      // PR-B：未声明 maxTurns 即无上限（skill / 命令 fork 只在显式声明时才传）。
       const maxTurns = resolveSubAgentMaxTurns(task);
       const loopDetector = new LoopDetector();
 
       log.info(
         "SUBAGENT",
         // P9：打**实际拿到**的工具，而不是声明列表——后者在名字对不上时会误导排查
-        `[custom] 可用工具: ${resolvedTools.map((t) => t.name()).join(", ") || "无"}${task.toolsFromAgentType ? `（agent 类型 ${task.toolsFromAgentType}）` : ""}, 超时: ${timeout / 1000}秒, 最大轮次: ${maxTurns}`,
+        `[custom] 可用工具: ${resolvedTools.map((t) => t.name()).join(", ") || "无"}${task.toolsFromAgentType ? `（agent 类型 ${task.toolsFromAgentType}）` : ""}, 最大轮次: ${describeMaxTurns(maxTurns)}`,
       );
 
       // 先定模型（modelOverride 或主模型）、再按该模型定 provider。
@@ -2600,15 +2454,12 @@ export class SubAgent {
           lastTextOutput = info.textOutput || lastTextOutput;
           recordLastAssistantMessage(info.textOutput);
           toolUseCount += info.tools.length;
-          // P0-1(b)(c)：与内置路径同口径地喂残卷 + 吞吐样本。
+          // P0-1(b)：与内置路径同口径地喂残卷。
           try {
             salvage.recordTurn(info);
           } catch {
             /* 残卷收集失败不影响子代理执行 */
           }
-          const now = Date.now();
-          recordTurnLatency(this.modelOverride ?? this.model, now - lastTurnAt);
-          lastTurnAt = now;
           // N3：与 executeInner 同口径——游标增量落盘本轮新增消息。
           if (sidechain) {
             try {
@@ -2654,30 +2505,23 @@ export class SubAgent {
         // 两条路径必须同时改：§1.5(b) 列了 4 处落点，只改内置那处会让 skill/自定义 agent
         // 继续丢成果，且不会有任何报错（formatRetryHint 的注释记录过同型的"两处逐字重复
         // 各改一遍必然漂移"教训）。
-        const hardKilled = timeoutCtrl.signal.reason === SUBAGENT_HARD_KILL_REASON;
-        // 自定义路径无 taskId、不进 registry，转后台无处附着 → canDetach=false（一律 "timeout"），
-        // 不谎报 "detached"（说了转后台却取不回来，比不说更坏）。见上方 detach 注释。
         const fc = classifySubAgentFailure({
           parentAborted: signal?.aborted === true,
-          hardKilled,
-          detached,
-          canDetach: false,
           giveUp: loopResult.giveUp,
           lastRetryReason: loopResult.lastRetryReason,
           errorMessage: loopResult.errorMessage,
         });
-        const isTimeout = fc.reason === "timeout";
-        sidechainStatus = isTimeout || fc.reason === "aborted" ? "aborted" : "failed";
+        sidechainStatus = fc.reason === "aborted" ? "aborted" : "failed";
         const snap = salvage.snapshot();
-        const retryHint = isTimeout ? formatRetryHint(loopResult) : "";
+        const retryHint = fc.reason === "aborted" ? formatRetryHint(loopResult) : "";
         const output = buildSalvageOutput(snap, {
           ...this.failureSalvageOpts(fc, "custom", sleepLedgerAtStart, loopResult.retryAttempts),
           usage: totalUsage,
           finalText: finalOutput,
-          timeoutMs: timeout,
-          errorMessage: isTimeout
-            ? retryHint.replace(/^，/, "") || undefined
-            : loopResult.errorMessage || "子代理执行未成功",
+          errorMessage:
+            fc.reason === "aborted"
+              ? retryHint.replace(/^，/, "") || undefined
+              : loopResult.errorMessage || "子代理执行未成功",
           ...this.traceLinks(sidechain),
         });
         return {
@@ -2693,27 +2537,17 @@ export class SubAgent {
     } catch (err: any) {
       // P0-1(b)：catch 分支同样交回残卷，usage/turns 不归零（口径说明见 executeInner 同位注释）。
       const snap = salvage.snapshot();
-      const hardKilled = timeoutCtrl.signal.reason === SUBAGENT_HARD_KILL_REASON;
       const fc = classifySubAgentFailure({
         parentAborted: signal?.aborted === true,
-        hardKilled,
-        detached,
-        canDetach: false,
         errorMessage: err?.message,
       });
-      const isTimeout = fc.reason === "timeout";
-      sidechainStatus = isTimeout || fc.reason === "aborted" ? "aborted" : "failed";
-      if (isTimeout) {
-        log.warn("SUBAGENT", `[custom] 墙钟到点抛出（${timeout}ms），交回残卷`);
-      } else {
-        log.error("SUBAGENT", `[custom] 执行异常`, { error: err.message });
-      }
+      sidechainStatus = fc.reason === "aborted" ? "aborted" : "failed";
+      log.error("SUBAGENT", `[custom] 执行异常`, { error: err.message });
       return {
         success: false,
         output: buildSalvageOutput(snap, {
           ...this.failureSalvageOpts(fc, "custom", sleepLedgerAtStart),
-          timeoutMs: timeout,
-          errorMessage: isTimeout ? undefined : err.message,
+          errorMessage: err.message,
           ...this.traceLinks(sidechain),
         }),
         usage: { inputTokens: snap.tokenCount, outputTokens: 0 },
@@ -2726,8 +2560,6 @@ export class SubAgent {
       } catch {
         /* 静默 */
       }
-      timer.cancel();
-      hardKillTimer?.cancel();
     }
   }
 
@@ -2767,7 +2599,6 @@ export class SubAgent {
     return {
       reason: fc.reason,
       cause: fc.cause,
-      hardKilled: fc.hardKilled,
       retryAttempts,
       sleptMs: Math.max(0, getSleepLedger().getTotalMs() - sleepLedgerAtStart),
       // 只读类（explore / plan …）零改动是必然的，不构成「停在读懂上下文」的信号。

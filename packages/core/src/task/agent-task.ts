@@ -13,6 +13,8 @@ import {
 import { registerTask, updateTask, getTask, graceDeadlineFor } from "./registry.ts";
 import { initTaskOutput, appendTaskOutput, flushTaskOutput } from "./disk-output.ts";
 import { enqueueTaskNotification } from "./notification.ts";
+import { registerShutdownHook } from "@sid-code/shared/utils/graceful-shutdown.ts";
+import { SUBAGENT_SESSION_EXIT_REASON } from "../llm/errors.ts";
 
 /** 活跃 Agent 的 AbortController（用于 kill） */
 const activeAgentControllers = new Map<string, AbortController>();
@@ -55,6 +57,11 @@ export function createAgentTask(opts: {
 
   registerTask(taskState);
   activeAgentControllers.set(taskId, abortController);
+  // PR-B S5：子代理已无墙钟 / 硬 kill，会话退出时仍在跑的子代理必须显式回收，
+  // 否则留下孤儿循环（继续烧 token）。按 name 去重，反复注册不堆积。
+  registerShutdownHook("agent-task-abort", "pre-flush", () => {
+    abortAllAgentTasks();
+  });
 
   return { taskState, abortController };
 }
@@ -160,6 +167,25 @@ export async function failAgentTask(
     summary: `Agent "${task.description}" 执行失败: ${error.length > 200 ? error.slice(0, 200) + "…[截断]" : error}`,
     agentType: task.agentType, // P1-2：供 TUI 取该 agent 的身份色
   });
+}
+
+/**
+ * PR-B S5：会话退出时 abort 全部仍在跑的子代理（前台 + 后台），返回被 abort 的数量。
+ *
+ * 只 abort、不改任务状态：子代理自己的出口（sub-agent.ts）看到 signal.aborted 会走
+ * 「被中止」分支，写残卷 + `SubagentStop`，收尾与 ESC / task_stop 同一条路，不另写一份。
+ * 带专属 reason（已登记 ABORT_REASONS），底层 fetch 的孤儿 rejection 能被闸门识别。
+ */
+export function abortAllAgentTasks(): number {
+  let n = 0;
+  for (const [taskId, controller] of activeAgentControllers) {
+    if (!controller.signal.aborted) {
+      controller.abort(SUBAGENT_SESSION_EXIT_REASON);
+      n++;
+    }
+    activeAgentControllers.delete(taskId);
+  }
+  return n;
 }
 
 /** 终止 Agent 任务 */

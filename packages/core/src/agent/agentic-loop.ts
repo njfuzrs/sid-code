@@ -15,6 +15,7 @@ import { Registry as ToolRegistry } from "../tool/registry.ts";
 import { getLogger } from "../debug/logger.ts";
 import {
   emitStreamPhase,
+  emitTimeoutFired,
   clearStreamSnapshot,
   cleanupAgentSnapshots,
 } from "../trace/stream-observer.ts";
@@ -34,6 +35,7 @@ import type { QuerySource } from "../llm/fallback.ts";
 // 少了它生产路径（不传 onTelemetry 的子代理）的重试遥测会整条消失。
 import { dispatchRetryTelemetry, type RetryTelemetryEvent } from "../llm/retry-telemetry.ts";
 import { resolveLoopTimeouts } from "../config/network-profile.ts";
+import { raceTurnHardTimeout } from "./turn-hard-timeout.ts";
 import { executeTools } from "./tool-executor.ts";
 import {
   MAX_EMPTY_PARAM_RETRIES,
@@ -268,7 +270,7 @@ export interface AgentLoopResult {
    * D1（2026-10-14）：漏斗最后一次 `recovery_give_up` 的结构化证据。
    *
    * 有它就说明「真正的死因」已知（断网 / 限流 / 认证…），子代理失败归因据此判 error，
-   * 不再被同时发生的墙钟 detach 盖成「超时」。只透出结构化字段，不拼字符串。
+   * 不再被猜成别的成因。只透出结构化字段，不拼字符串。
    */
   giveUp?: {
     giveUpReason: string;
@@ -465,6 +467,46 @@ async function runAgentLoopInner(
   // 在轮次循环外解析一次即可（同一子代理生命周期内配置不变）。
   const netTimeouts = resolveLoopTimeouts({});
 
+  /**
+   * PR-B S2b：单轮硬超时兜底 + 触发即重试（与主循环 turn_hard 同构，见 turn-hard-timeout.ts）。
+   *
+   * 每次触发计入同一个重试计数（retryStats），上限与漏斗同为 maxTimeoutRetries——
+   * 「次数」只有一个旋钮。外层 signal 已 abort 时不重试，交回调用方按中止处理。
+   */
+  const callWithTurnHardTimeout = async <T>(
+    run: (callSignal: AbortSignal) => Promise<T>,
+    streamIndex: number,
+  ): Promise<{ exhausted: false; value: T } | { exhausted: true; errorMessage: string }> => {
+    const timeoutMs = netTimeouts.maxTurnDurationMs;
+    const maxAttempts = (config.maxStreamRetries ?? netTimeouts.maxTimeoutRetries) + 1;
+    for (let attempt = 1; ; attempt++) {
+      const outcome = await raceTurnHardTimeout(run, {
+        timeoutMs,
+        signal,
+        onFire: () =>
+          emitTimeoutFired(
+            streamIndex,
+            "turn_hard_timeout",
+            { caller: "sub-agent", timeout_ms: timeoutMs, attempt },
+            config.agentId,
+          ),
+      });
+      if (!outcome.timedOut) return { exhausted: false, value: outcome.value };
+      log.warn(
+        "AGENT_LOOP",
+        `单轮硬超时 ${Math.round(timeoutMs / 1000)}s（流未 settle），第 ${attempt}/${maxAttempts} 次`,
+      );
+      retryStats.attempts++;
+      retryStats.lastReason = "turn_hard_timeout";
+      if (signal.aborted || attempt >= maxAttempts) {
+        return {
+          exhausted: true,
+          errorMessage: `单轮硬超时（${Math.round(timeoutMs / 1000)}s 未完成），已重试 ${attempt - 1} 次`,
+        };
+      }
+    }
+  };
+
   // ══════════════════════════════════════════════════════════════════
   // B4：本次循环的快照身份维度。
   //
@@ -658,8 +700,11 @@ async function runAgentLoopInner(
     //     漏斗内部 markSuspect 已覆盖，不必在此另写一份）。
     //
     // 超时分工（只有一层流超时，不要再加）：
-    //   漏斗 streamTimeoutMs = **单次尝试的内容无进展上限**（180s）→ 触发后 abort + **重试**；
-    //   重试几次 = maxRetries；总时长失控 = sub-agent.ts 的硬 kill（timeout × 3，扣休眠）。
+    //   漏斗 streamTimeoutMs = **单次尝试的内容无进展上限**，与主循环同一个
+    //   fallbackStreamTimeoutMs（600s，收到内容即续期）→ 触发后 abort + **重试**；
+    //   重试几次 = maxRetries；abort 链路失效（流永不 settle）= 单轮硬超时兜底
+    //   （与主循环同一个 maxTurnDurationMs，见 turn-hard-timeout.ts），触发后同样重试。
+    //   PR-B（2026-10-17）：子代理不再有墙钟 / 硬 kill，总量只由 ESC / task_stop / 父代理取消控制。
     //   processStream 自身**不判超时**。2026-10-17 前它另挂 idle 60s / overall 180s，
     //   到点只置标志不断流，等漏斗重试时把重试流判死（事故 20261016-224545，3 个子代理
     //   在 attempt=1 后 4–8ms 判 error）；再往前它是「全部重试 + 退避」总上限（事故 20261015-114502）。
@@ -676,59 +721,76 @@ async function runAgentLoopInner(
       observerAgentId,
     );
 
-    const stream = streamWithResilience(provider, sendParams, signal, {
-      querySource: config.querySource ?? "agent:builtin",
-      usageAccounting: config.usageAccounting,
-      switchMode: "auto",
-      maxRetries: config.maxStreamRetries ?? netTimeouts.maxTimeoutRetries,
-      retryBackoffBaseMs: config.retryBackoffBaseMs,
-      retryBackoffMaxMs: config.retryBackoffMaxMs,
-      availability,
-      agentId: config.agentId,
-      // PR2：把本子代理已有的号段传进漏斗，让 provider 内部的 emit 与上面这些
-      // `emitStreamPhase(agentStreamIndex, …, observerAgentId)` 落在**同一把快照键**上。
-      // 不传则漏斗自行分配一个号，同一条流会在两把键上各写一半 —— 归因被拆散，
-      // 且其中一半再也清不掉（上面 clearStreamSnapshot 只清 agentStreamIndex 那把）。
-      observerIndex: agentStreamIndex,
-      // B1（2026-10-14）：**不传 deadlineAt**——子代理墙钟只是 detach 软返回点，
-      // 次数由 maxRetries 管、总时长由 sub-agent.ts 硬 kill 管（见 buildBaseLoopConfig）。
-      // B5-4：经 tap 转发（数重试次数），行为对调用方不变。
-      onTelemetry: onTelemetryTap,
-      // 新发现 1②：快照清理必须在**退避之前**。原 R1 是 sleep 完才 clear，
-      // 整个退避期（最长 120s）那份已死流的旧快照仍然活着、lastContentProgressAt
-      // 停在两分钟前——正是 collector.ts 的 still_progressing 判据最容易误判的输入。
-      //
-      // B4：clear 必须带 observerAgentId，否则删的是「无身份」那把 key ——
-      // 自己的活快照留着不动（still_progressing 误判照旧），反而把主循环那份删了。
-      // 这正是缺口 A 的镜像：改造前是删别人的，漏传 id 就变成删错人的。
-      onRetry: (attempt: number, error: string) => {
-        clearStreamSnapshot(agentStreamIndex, undefined, observerAgentId);
-        emitStreamPhase(
-          agentStreamIndex,
-          "error",
-          {
-            caller: "sub-agent",
-            model,
-            error,
-            attempt,
-            elapsed_ms: Date.now() - turnStartTime,
-          },
-          observerAgentId,
-        );
-        emitStreamPhase(
-          agentStreamIndex,
-          "fetch_sent",
-          { caller: "sub-agent", model, attempt },
-          observerAgentId,
-        );
-      },
-    });
+    const openStream = (callSignal: AbortSignal) =>
+      streamWithResilience(provider, sendParams, callSignal, {
+        querySource: config.querySource ?? "agent:builtin",
+        usageAccounting: config.usageAccounting,
+        switchMode: "auto",
+        maxRetries: config.maxStreamRetries ?? netTimeouts.maxTimeoutRetries,
+        retryBackoffBaseMs: config.retryBackoffBaseMs,
+        retryBackoffMaxMs: config.retryBackoffMaxMs,
+        availability,
+        agentId: config.agentId,
+        // PR2：把本子代理已有的号段传进漏斗，让 provider 内部的 emit 与上面这些
+        // `emitStreamPhase(agentStreamIndex, …, observerAgentId)` 落在**同一把快照键**上。
+        // 不传则漏斗自行分配一个号，同一条流会在两把键上各写一半 —— 归因被拆散，
+        // 且其中一半再也清不掉（上面 clearStreamSnapshot 只清 agentStreamIndex 那把）。
+        observerIndex: agentStreamIndex,
+        // PR-B S2：卡死判定与主循环同源（600s 内容无进展，续期），不再用 side-call 的 180s 档。
+        streamTimeoutMs: netTimeouts.fallbackStreamTimeoutMs,
+        // B1（2026-10-14）：**不传 deadlineAt**——次数由 maxRetries 管，子代理没有总时长上限。
+        // B5-4：经 tap 转发（数重试次数），行为对调用方不变。
+        onTelemetry: onTelemetryTap,
+        // 新发现 1②：快照清理必须在**退避之前**。原 R1 是 sleep 完才 clear，
+        // 整个退避期（最长 120s）那份已死流的旧快照仍然活着、lastContentProgressAt
+        // 停在两分钟前——正是 collector.ts 的 still_progressing 判据最容易误判的输入。
+        //
+        // B4：clear 必须带 observerAgentId，否则删的是「无身份」那把 key ——
+        // 自己的活快照留着不动（still_progressing 误判照旧），反而把主循环那份删了。
+        // 这正是缺口 A 的镜像：改造前是删别人的，漏传 id 就变成删错人的。
+        onRetry: (attempt: number, error: string) => {
+          clearStreamSnapshot(agentStreamIndex, undefined, observerAgentId);
+          emitStreamPhase(
+            agentStreamIndex,
+            "error",
+            {
+              caller: "sub-agent",
+              model,
+              error,
+              attempt,
+              elapsed_ms: Date.now() - turnStartTime,
+            },
+            observerAgentId,
+          );
+          emitStreamPhase(
+            agentStreamIndex,
+            "fetch_sent",
+            { caller: "sub-agent", model, attempt },
+            observerAgentId,
+          );
+        },
+      });
 
     let response: StreamProcessResult;
     try {
       // ⛔ 不再给 processStream 传任何超时：卡死只由漏斗断流 + 重试（见 stream-processor.ts
-      // AgentStreamOptions 注释，事故 20261016-224545）。
-      response = await processStream(stream, { signal });
+      // AgentStreamOptions 注释，事故 20261016-224545）。外面这层是 S2b 单轮硬超时兜底。
+      const r = await callWithTurnHardTimeout(
+        (callSignal) => processStream(openStream(callSignal), { signal: callSignal }),
+        agentStreamIndex,
+      );
+      if (r.exhausted) {
+        return {
+          success: false,
+          turns,
+          totalUsage,
+          toolUseCount,
+          lastTextOutput,
+          messages: ctxMgr.getMessages(),
+          errorMessage: r.errorMessage,
+        };
+      }
+      response = r.value;
     } catch (err) {
       // 漏斗只在「用户/外部 abort」时抛（可重试错误已在内部消化成重试或 error 事件）。
       const errMessage = (err as Error)?.message ?? String(err);
@@ -1339,60 +1401,69 @@ async function runAgentLoopInner(
       // 这一轮此前是纯直连：一次 429 就让整个子代理白跑——前面 maxTurns 轮的工具
       // 调用与 token 全部作废，只因收尾那一次请求没有重试。它恰好是最不该失败的一轮
       // （所有产出都靠它落地成结构化结论），却是唯一完全没有韧性的一轮。
-      const summaryStream = streamWithResilience(
-        provider,
-        {
-          model,
-          messages: ctxMgr.getCleanedMessages(),
-          system: ctxMgr.getSystemPrompt(),
-          // B5-6：与主流同一常量。总结轮产出比主流更短（只是收尾陈述），
-          // 用同一个值是保守但安全的选择；分成两个常量只会多一个需要解释的数字。
-          maxTokens: SUBAGENT_DEFAULT_MAX_TOKENS,
-          // 不传 tools，禁止模型继续调工具
-          ...config.sendParamsExtra,
-        },
-        signal,
-        {
-          querySource: "agent:summary",
-          usageAccounting: config.usageAccounting,
-          switchMode: "auto",
-          maxRetries: config.maxStreamRetries ?? netTimeouts.maxTimeoutRetries,
-          retryBackoffBaseMs: config.retryBackoffBaseMs,
-          retryBackoffMaxMs: config.retryBackoffMaxMs,
-          availability,
-          agentId: config.agentId,
-          // PR2：同主流 —— 把总结轮已有的 20000 号段传进漏斗，两侧拼出同一把快照键。
-          observerIndex: summaryStreamIndex,
-          // B1（2026-10-14）：总结轮同样不传 deadlineAt，口径同主流。退避中的硬 kill
-          // 由 mergedSignal 打断（fallback 的退避 sleep 监听 signal），不会睡满 120s。
-          // B5-4：总结轮的重试同样计入。它与主流共用一个计数器是刻意的——
-          // 用户问的是"这个子代理一共重试了几次"，不区分是主流还是收尾那一次。
-          onTelemetry: onTelemetryTap,
-          onRetry: (attempt: number, error: string) => {
-            clearStreamSnapshot(summaryStreamIndex, undefined, observerAgentId);
-            emitStreamPhase(
-              summaryStreamIndex,
-              "error",
-              {
-                caller: "sub-agent-summary",
-                model,
-                error,
-                attempt,
-                elapsed_ms: Date.now() - summaryStartTime,
-              },
-              observerAgentId,
-            );
-            emitStreamPhase(
-              summaryStreamIndex,
-              "fetch_sent",
-              { caller: "sub-agent-summary", model, attempt },
-              observerAgentId,
-            );
+      const openSummaryStream = (callSignal: AbortSignal) =>
+        streamWithResilience(
+          provider,
+          {
+            model,
+            messages: ctxMgr.getCleanedMessages(),
+            system: ctxMgr.getSystemPrompt(),
+            // B5-6：与主流同一常量。总结轮产出比主流更短（只是收尾陈述），
+            // 用同一个值是保守但安全的选择；分成两个常量只会多一个需要解释的数字。
+            maxTokens: SUBAGENT_DEFAULT_MAX_TOKENS,
+            // 不传 tools，禁止模型继续调工具
+            ...config.sendParamsExtra,
           },
-        },
-      );
+          callSignal,
+          {
+            querySource: "agent:summary",
+            usageAccounting: config.usageAccounting,
+            switchMode: "auto",
+            maxRetries: config.maxStreamRetries ?? netTimeouts.maxTimeoutRetries,
+            retryBackoffBaseMs: config.retryBackoffBaseMs,
+            retryBackoffMaxMs: config.retryBackoffMaxMs,
+            availability,
+            agentId: config.agentId,
+            // PR2：同主流 —— 把总结轮已有的 20000 号段传进漏斗，两侧拼出同一把快照键。
+            observerIndex: summaryStreamIndex,
+            // PR-B S2：口径同主流（与主循环同一个 fallbackStreamTimeoutMs）。
+            streamTimeoutMs: netTimeouts.fallbackStreamTimeoutMs,
+            // B1（2026-10-14）：总结轮同样不传 deadlineAt，口径同主流。用户中止由外层 signal
+            // 打断（fallback 的退避 sleep 监听 signal），不会睡满 120s。
+            // B5-4：总结轮的重试同样计入。它与主流共用一个计数器是刻意的——
+            // 用户问的是"这个子代理一共重试了几次"，不区分是主流还是收尾那一次。
+            onTelemetry: onTelemetryTap,
+            onRetry: (attempt: number, error: string) => {
+              clearStreamSnapshot(summaryStreamIndex, undefined, observerAgentId);
+              emitStreamPhase(
+                summaryStreamIndex,
+                "error",
+                {
+                  caller: "sub-agent-summary",
+                  model,
+                  error,
+                  attempt,
+                  elapsed_ms: Date.now() - summaryStartTime,
+                },
+                observerAgentId,
+              );
+              emitStreamPhase(
+                summaryStreamIndex,
+                "fetch_sent",
+                { caller: "sub-agent-summary", model, attempt },
+                observerAgentId,
+              );
+            },
+          },
+        );
 
-      const summaryResponse = await processStream(summaryStream, { signal });
+      const summaryRace = await callWithTurnHardTimeout(
+        (callSignal) => processStream(openSummaryStream(callSignal), { signal: callSignal }),
+        summaryStreamIndex,
+      );
+      // 总结轮兜底耗尽：降级到 extractFinalText 的启发式（与下方 catch 同口径）。
+      if (summaryRace.exhausted) throw new Error(summaryRace.errorMessage);
+      const summaryResponse = summaryRace.value;
       accumulateUsage(totalUsage, summaryResponse.usage);
       emitStreamPhase(
         summaryStreamIndex,

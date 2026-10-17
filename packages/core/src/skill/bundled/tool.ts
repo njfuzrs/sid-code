@@ -94,7 +94,6 @@ export class BundledSkillTool implements Tool {
     // 本地轨迹的 skill 调用埋点（模型路径 · bundled fork skill，如 review）
     emitSkillInvoked({ name: this.cmd.name, via: "model", loadedFrom: "bundled" });
 
-    const timeoutMins = this.cmd.timeoutMins;
     // P3：统一入口——必注入 checker；工具集按 agent 类型，allowed-tools 只作本次 fork 的 allow 规则
     const result = await runForkedCommand({
       providerRegistry: this.providerRegistry,
@@ -108,9 +107,8 @@ export class BundledSkillTool implements Tool {
         : undefined,
       trusted: true, // bundled 随二进制发布，可信
       agentType: this.cmd.agent,
-      // P2-2：内置 skill 若忘记声明 maxTurns 时的兜底默认 30
-      maxTurns: this.cmd.maxTurns ?? 30,
-      timeout: timeoutMins != null ? Math.min(Math.max(timeoutMins, 1), 30) * 60_000 : undefined,
+      // PR-B：未声明即无上限，对齐 CC（不再 `?? 30` 兜底；timeoutMins 不再换算成墙钟）
+      maxTurns: this.cmd.maxTurns,
       // G13：以内置 skill 名作为 agent 类型，让同一 skill 跨会话沉淀领域经验
       type: `skill:${this.cmd.name}`,
       signal,

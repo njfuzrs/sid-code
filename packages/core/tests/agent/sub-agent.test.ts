@@ -305,74 +305,79 @@ describe("SubAgent 嵌套防护（已移除 static depth）", () => {
   });
 });
 
-// ─── 超时控制 ───
+// ─── 中止控制（PR-B：子代理无墙钟，只有 ESC / task_stop / 父代理取消）───
 
-describe("SubAgent 超时控制", () => {
+describe("SubAgent 中止控制", () => {
   /**
-   * P0-1：这条断言从「只有一句友好超时提示」改成「必须带结构化残卷」。
-   *
-   * 改断言的理由**就是本次修复的内容本身**，不是为了让测试变绿：旧行为把
-   * `finalOutput` 整句替换成 `子代理执行超时 (300秒…)`，实测代价是 4 个子代理烧掉
-   * 1,842,462 input token、主代理可用信息为零（那个 explore 子代理已经读出了 Color
-   * 类型的真实定义，一个字都没回传）。
-   *
-   * 所以「超时后返回一句友好提示」这个旧断言**保护的正是缺陷**——它绿着的那段时间里
-   * 缺陷一直存在。新断言改为验证残卷的四段结构存在。
+   * P0-1 的残卷断言保留，触发源从「墙钟到点」换成「外层 abort」——PR-B 删掉墙钟后，
+   * 中止是卡住的子代理唯一的停止出口，残卷四段结构必须照样交回。
    *
    * ⚠️ 后来者注意：如果这条测试红了，正确修法是去看残卷为什么没拼出来，
    * **不是**把 output 改回一句话让它变绿——那等于把整个 P0-1 做反。
    */
-  test("超时后交回结构化残卷（不是只有一句超时提示）", async () => {
+  test("外层 abort 后交回结构化残卷（不是只有一句提示）", async () => {
     const provider = new HangingProvider();
-    const toolRegistry = new Registry();
-    const agent = new SubAgent(provider, "test-model", toolRegistry);
+    const agent = new SubAgent(provider, "test-model", new Registry());
+    const ctrl = new AbortController();
+    setTimeout(() => ctrl.abort(), 50);
 
-    const result = await agent.execute({
-      type: "explore",
-      description: "超时测试",
-      prompt: "测试",
-      timeout: 50, // 50ms 超时
-    });
+    const result = await agent.execute(
+      { type: "explore", description: "中止测试", prompt: "测试" },
+      ctrl.signal,
+    );
 
     expect(result.success).toBe(false);
-    // 残卷骨架
     expect(result.output).toContain("<partial-result>");
-    // ① 为什么停下（仍然要让模型/用户看得出是墙钟到点）
     expect(result.output).toContain("<interrupted-because>");
-    expect(result.output).toContain("墙钟预算");
-    // ② 已改动文件清单——这一段是 §1.6 验收的核心：哪怕本例零改动，也必须显式给出
-    //    count="0"，让主代理能区分「没改」与「不知道改没改」
+    expect(result.output).toContain("被主动中止");
+    // 墙钟文案已整体删除，不得再出现（事故 20261016-222758 的错误归因）
+    expect(result.output).not.toContain("墙钟");
     expect(result.output).toContain("<changed-files");
-    // ③ 未完成部分（停在哪一步）
     expect(result.output).toContain("<incomplete>");
-    // ④ 建议的下一步（给出路而非训话）
     expect(result.output).toContain("<next-step>");
   });
 
   /**
-   * P0-1(a)：detach 语义——墙钟到点**不 abort**，任务仍在 registry 可查。
-   *
-   * 这条断言的是"detach 而非消失"（§1.6 第 2 条）。HangingProvider 零轮产出，
-   * 所以 usage/turns 本例必然是 0——那不是归零缺陷，是真的一轮都没跑完。
-   * usage 非零的断言由 salvage 的单测覆盖（那里能构造出有轮次的场景）。
+   * T2（PR-B）：无外层 abort 时，子代理**不会被任何计时器掐断**。
+   * 构造：provider 先挂起 300ms 再正常完成，期间不 abort。改造前 `timeout: 50` 会 detach；
+   * 现在 task 上已没有 timeout 字段，任何墙钟复活都会让它提前返回 → 红。
    */
-  test("超时后子代理任务仍在 registry 可查（detach 而非消失）", async () => {
-    const { getAllTasks } = await import("@sid-code/core/task/index.ts");
-    const before = new Set(getAllTasks().map((t) => t.id));
-
-    const provider = new HangingProvider();
-    const agent = new SubAgent(provider, "test-model", new Registry());
-    await agent.execute({
-      type: "explore",
-      description: "detach 可查性测试",
-      prompt: "测试",
-      timeout: 50,
-    });
-
-    const created = getAllTasks().filter((t) => !before.has(t.id));
-    expect(created.length).toBeGreaterThan(0);
-    // 任务没有被静默驱逐——主代理事后仍能用 bg_task_get 取回它
-    expect(created.some((t) => t.description.includes("detach 可查性测试"))).toBe(true);
+  test("不 abort 时慢 provider 正常完成（无墙钟）", async () => {
+    class SlowProvider implements Provider {
+      name() {
+        return "slow";
+      }
+      defaultModel() {
+        return "slow-model";
+      }
+      async *sendMessageStream(): AsyncIterable<StreamEvent> {
+        await new Promise((r) => setTimeout(r, 300));
+        yield {
+          type: "message_start",
+          message: { usage: { inputTokens: 1, outputTokens: 0 } },
+        } as any;
+        yield {
+          type: "content_block_start",
+          index: 0,
+          content_block: { type: "text", text: "" },
+        } as any;
+        yield {
+          type: "content_block_delta",
+          index: 0,
+          delta: { type: "text_delta", text: "完成" },
+        } as any;
+        yield { type: "content_block_stop", index: 0 } as any;
+        yield {
+          type: "message_delta",
+          delta: { stop_reason: "end_turn" },
+          usage: { outputTokens: 1 },
+        } as any;
+      }
+    }
+    const agent = new SubAgent(new SlowProvider(), "slow-model", new Registry());
+    const result = await agent.execute({ type: "explore", description: "慢", prompt: "测试" });
+    expect(result.success).toBe(true);
+    expect(result.output).toContain("完成");
   });
 });
 
@@ -608,27 +613,24 @@ describe("isLikelyThinking 启发式过滤（中英双语）", () => {
   });
 });
 
-// ─── P2-2: resolveSubAgentMaxTurns ───
+// ─── PR-B: resolveSubAgentMaxTurns ───
 
-describe("resolveSubAgentMaxTurns（子代理 maxTurns 默认值：fork=200，常规=30）", () => {
-  test("显式指定 task.maxTurns 时始终优先，忽略 fork 状态", () => {
+describe("resolveSubAgentMaxTurns（PR-B：未声明即无上限，对齐 CC）", () => {
+  test("显式声明的正数照旧生效", () => {
     expect(resolveSubAgentMaxTurns({ maxTurns: 20 })).toBe(20);
-    expect(
-      resolveSubAgentMaxTurns({ maxTurns: 20, forkMessages: [{ role: "user", content: [] }] }),
-    ).toBe(20);
-    expect(resolveSubAgentMaxTurns({ maxTurns: 0 })).toBe(0); // 0 是合法显式值，不应被 ?? 吞掉
+    expect(resolveSubAgentMaxTurns({ maxTurns: 1 })).toBe(1);
   });
 
-  test("无 forkMessages（常规子代理：explore/task/verify 等）默认 30", () => {
-    expect(resolveSubAgentMaxTurns({})).toBe(30);
-    expect(resolveSubAgentMaxTurns({ forkMessages: undefined })).toBe(30);
-    expect(resolveSubAgentMaxTurns({ forkMessages: [] })).toBe(30); // 空数组视为未 fork
+  test("未声明 → Infinity（⛔ 不能是 undefined：`turns < undefined` 恒 false，一轮都不跑）", () => {
+    const n = resolveSubAgentMaxTurns({});
+    expect(n).toBe(Infinity);
+    // 锁住陷阱本身：循环条件对 0 必须为真
+    expect(0 < n).toBe(true);
   });
 
-  test("forkMessages 非空（继承主对话上下文）默认 200，对齐 CC fork 子代理", () => {
-    expect(resolveSubAgentMaxTurns({ forkMessages: [{ role: "user", content: [] }] })).toBe(200);
-    expect(
-      resolveSubAgentMaxTurns({ forkMessages: [{ role: "user" }, { role: "assistant" }] }),
-    ).toBe(200);
+  test("非正数 / NaN 视为未声明（与主循环 `maxTurns || Infinity` 同口径）", () => {
+    expect(resolveSubAgentMaxTurns({ maxTurns: 0 })).toBe(Infinity);
+    expect(resolveSubAgentMaxTurns({ maxTurns: -3 })).toBe(Infinity);
+    expect(resolveSubAgentMaxTurns({ maxTurns: NaN })).toBe(Infinity);
   });
 });
