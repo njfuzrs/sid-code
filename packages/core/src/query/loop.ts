@@ -12,7 +12,7 @@
  */
 
 import type { Config } from "../config/config.ts";
-import type { SendParams } from "../llm/types.ts";
+import type { Message, SendParams } from "../llm/types.ts";
 import { normalizeCacheUsage } from "../llm/types.ts";
 import type { HookSystem } from "../hook/system.ts";
 import { fireStopFailure } from "./stop-failure.ts";
@@ -183,7 +183,7 @@ import {
   markMainTurnCompleted,
   markNotificationsDelivered,
 } from "../task/index.ts";
-import { buildInternalMessage } from "../context/internal-message.ts";
+import { buildInternalMessage, hasInternalOrigin } from "../context/internal-message.ts";
 import {
   classifyEndTurnShape,
   decidePromiseNudge,
@@ -283,6 +283,7 @@ import {
   type TurnStopReason,
 } from "./turn-complete.ts";
 import { resolveRegistryMaxOutputTokens } from "../llm/model-lookup.ts";
+import { recordContextOverflow } from "../llm/learned-window.ts";
 
 /**
  * 计算本轮请求真实携带的 beta headers（供 cache-break 检测器归因）。
@@ -1315,7 +1316,7 @@ export async function* queryLoop(loopConfig: QueryLoopConfig): AsyncGenerator<Qu
       // ─── System Reminder 注入（对标 Claude Code 每轮注入）───
       // 注意: getCleanedMessages 返回浅拷贝数组，消息对象仍是 ctxMgr 引用。
       // 这里不对 cleanedMessages 做 in-place 修改，而是构建新的 messages 数组。
-      let finalMessages = cleanedMessages;
+      let finalMessages = stripTrailingInternalAck(cleanedMessages);
 
       // 收集本轮要注入的 system-reminder 片段（plan 提醒 + todo 回注 + 背景元信息…）。
       //
@@ -2455,6 +2456,8 @@ export async function* queryLoop(loopConfig: QueryLoopConfig): AsyncGenerator<Qu
         // prompt-too-long 错误扣留：自动触发响应式压缩重试
         if (isPromptTooLongError(err) && !state.hasAttemptedReactiveCompact) {
           log.warn("QUERY_LOOP", "检测到 prompt-too-long 错误，触发响应式压缩");
+          // S6：必须在 reactiveCompact **之前**——压缩会把 lastActualInputTokens 清零。
+          learnAdmittedCeilingOnOverflow(ctxMgr, config);
           const compactResult = reactiveCompact(ctxMgr);
           if (compactResult.success) {
             // P0-2：one-shot 标志位，只在此成功路径置真；不得在任何 continue 分支重置为
@@ -3136,6 +3139,8 @@ export async function* queryLoop(loopConfig: QueryLoopConfig): AsyncGenerator<Qu
         // 流式阶段的 prompt-too-long 错误恢复（与连接阶段逻辑一致）
         if (isPromptTooLongError(err) && !state.hasAttemptedReactiveCompact) {
           log.warn("QUERY_LOOP", "流式阶段检测到 prompt-too-long 错误，触发响应式压缩");
+          // S6：必须在 reactiveCompact **之前**——压缩会把 lastActualInputTokens 清零。
+          learnAdmittedCeilingOnOverflow(ctxMgr, config);
           const compactResult = reactiveCompact(ctxMgr);
           if (compactResult.success) {
             // P0-2：one-shot 标志位，只在此成功路径置真；不得在任何 continue 分支重置为
@@ -6215,4 +6220,62 @@ function extractLastUserInput(ctxMgr: ContextManager): string {
     }
   }
   return "";
+}
+
+/**
+ * S6：prompt-too-long 时记录「已放行输入上限」，学到后**当场** `setMaxTokens`。
+ *
+ * 只写缓存不调 setMaxTokens 的话本会话阈值不变（`ctxMgr.maxTokens` 只在换模型 / 恢复 /
+ * 引导时更新），「第二次撞墙之后同会话不再撞」必然失败。用户显式配置了 contextWindow 时
+ * 不动——用户配置最高优先（与 resolveContextLimit 同口径）。全程 best-effort：
+ * 学习失败绝不能影响随后的响应式压缩恢复。
+ */
+export function learnAdmittedCeilingOnOverflow(
+  ctxMgr: Pick<ContextManager, "getLastActualInputTokens" | "getMaxTokens" | "setMaxTokens">,
+  config: Pick<Config, "model" | "baseURL" | "availableModels">,
+): void {
+  const log = getLogger();
+  try {
+    const mc = config.availableModels?.find((m) => m.name === config.model);
+    if (typeof mc?.contextWindow === "number" && mc.contextWindow > 0) return;
+    const result = recordContextOverflow({
+      model: config.model,
+      baseURL: mc?.baseURL ?? config.baseURL,
+      admittedTokens: ctxMgr.getLastActualInputTokens(),
+    });
+    if (result.status === "skipped") {
+      log.debug("CONTEXT_LEARN", `S6：跳过窗口学习（${result.reason}）`);
+      return;
+    }
+    if (result.status === "pending") {
+      log.info("CONTEXT_LEARN", `S6：记录第 ${result.overflows} 次溢出，满 2 次才写入已放行上限`);
+      return;
+    }
+    if (result.ceiling < ctxMgr.getMaxTokens()) {
+      log.warn(
+        "CONTEXT_LEARN",
+        `S6：学到本路由已放行输入上限 ${result.ceiling}（第 ${result.overflows} 次溢出），` +
+          `上下文窗口 ${ctxMgr.getMaxTokens()} → ${result.ceiling}，本会话即时生效`,
+      );
+      ctxMgr.setMaxTokens(result.ceiling);
+    }
+  } catch (e) {
+    log.debug("CONTEXT_LEARN", `S6：窗口学习失败（忽略）: ${(e as Error)?.message}`);
+  }
+}
+
+/**
+ * S5：发请求前剥掉末尾的内部 ack（压缩重注入 / 摘要的固定确认语）。
+ *
+ * reactive 压缩成功后直接 continue 重试，历史以 `assistant(ack)` 收尾——Anthropic 族会把它
+ * 当作**预填**发出，让模型以为那句话是自己已说出的前缀。只剥请求副本、不动历史：
+ * 历史仍以 ack 收尾，下一条用户输入因此不会被合并进内部消息（见 ContextManager.addMessage）。
+ * 只剥一条且只剥 assistant：剥完末尾若仍是 assistant 说明历史本身就以真实答复收尾，不该再动。
+ */
+export function stripTrailingInternalAck<T extends Message>(messages: T[]): T[] {
+  const last = messages[messages.length - 1];
+  if (messages.length > 1 && last?.role === "assistant" && hasInternalOrigin(last)) {
+    return messages.slice(0, -1);
+  }
+  return messages;
 }
