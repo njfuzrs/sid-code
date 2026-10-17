@@ -6,483 +6,105 @@
 
 ### 四大特性（能演示）
 
-1. **企业级** —— 长在企业研发环境里：内部网关（含计费取价口径）、内网 GitLab、企业 SSO、MCP、团队默认配置分发、企业 policy、缺陷系统闭环。用户收益是「装上就接得上你公司已有的那套东西，不用先改造企业来适配工具」。
-2. **可定制** —— harness 整套可改，模型任你换。三层：**配置层**（多 provider 三族协议、降级链、权限规则、团队默认值，改一行配置）/ **扩展层**（Hook、Skill、子代理、MCP、插件多种源，写一个文件）/ **源码层**（工具、上下文工程、主循环全部开源可改，提一个 PR）。
-3. **数据主权** —— 代码、对话、轨迹、评测、成本账本全部本地，不进任何人的训练集，数据在自己手上，才谈得上用它做优化。
-4. **可观测** —— 每一轮的耗时、成本、决策都留有轨迹，发布前能跑评测知道有没有退步。**它不是技术细节，是四大方向的载体**：没有轨迹就画不出那四条曲线。
+1. **企业级** —— 内部网关（含计费取价口径）、内网 GitLab、企业 SSO、MCP、团队默认配置分发、企业 policy、缺陷系统闭环。装上就接得上公司已有的那套东西。
+2. **可定制** —— 配置层（多 provider、降级链、权限规则）/ 扩展层（Hook、Skill、子代理、MCP、插件）/ 源码层（工具、上下文工程、主循环全部开源可改）。
+3. **数据主权** —— 代码、对话、轨迹、评测、成本账本全部本地，不进任何人的训练集。
+4. **可观测** —— 每一轮的耗时、成本、决策都留有轨迹，发布前能跑评测知道有没有退步。它是四大方向的载体：没有轨迹就画不出那四条曲线。
 
-### 四大方向（能复算 · 按 release 出一条曲线）
+### 四大方向：更快 / 更省 / 更准（更少返工）/ 更安全
 
-每个方向都是**一个主口径（那条曲线）+ 一组辅助口径（曲线动了要能归因到哪一层）**。
-只有主口径进 release 曲线，辅助口径是排查时的分解项——但**辅助口径缺失时主口径动了也说不清为什么**，
-所以两者都列。三档标注按事实分：**✅ 轨迹里已有**（可直接复算）/ **⚠️ 有采集但口径要小心** / **❌ 尚未采集**（想用先补埋点，别拿它当结论）。
+每个方向一个主口径进 release 曲线，加一组辅助口径用于归因。**各指标的取数源、状态（✅/⚠️/❌）与口径铁律（TTFT/TTFB 等）见 `northstar/README.md`**，改指标、加埋点、引用数字前先读它。
 
-四条**跨方向通用铁律**（都是踩出来的）：
+四条跨方向通用铁律（都是踩出来的）：
 
-1. **一律看 p95/p99，均值会骗人**。慢尾巴才是用户流失点。
-2. **每个指标必须能指到源字段**。说不出取数源的数字就是自我感觉，见自检第 2 问。
-3. **分母比分子重要**。「命中率」「成功率」「触发率」的分母口径一变，曲线就整体平移——分母必须和指标一起写死。
-4. **区分 stock 与 flow**。末次快照值（如 `total_tokens_sent`）除以累加值（如 `total_cost_usd`）得到的是错数，
-   要用累积字段（`total_cumulative_prompt_tokens`）。
+1. **一律看 p95/p99，均值会骗人**。
+2. **每个指标必须能指到源字段**。说不出取数源的数字就是自我感觉。
+3. **分母比分子重要**。分母口径一变曲线就整体平移，分母必须和指标一起写死。
+4. **区分 stock 与 flow**。末次快照值除以累加值是错数，要用累积字段（如 `total_cumulative_prompt_tokens`）。
 
-#### 更快 —— 延迟类
-
-| 层 | 指标 | 状态 / 取数源 |
-| --- | --- | --- |
-| **主口径** | **TTFT** p50/p95/p99 + **端到端耗时**（用户回车 → 最终答复） | ✅ `StreamPhase(first_content).ttft_ms` 是**唯一干净源** |
-| 归因：卡在哪一段 | **TTFB**（首字节，拆「网关握手」vs「模型 prefill」） | ⚠️ `headers_received.ttfb_ms`：协议层同口径，**语义受网关缓冲策略影响，跨路由不可比**——必须按 model 分组看（`latencyByModel`） |
-| | **纯生成耗时** gen p50/p95/p99（单次 fetch，不含重试） | ✅ `RetryTelemetry(stream_completed).elapsedMs` |
-| | **整轮 API 耗时**（含握手 + 生成 + 重试） | ⚠️ `AfterModelRaw.elapsed_ms`，**别与 TTFB 混**，渲染必须标「整轮」 |
-| | **工具执行耗时** —— 回答「慢在模型还是慢在工具」 | ✅ `PostToolUse.duration_ms` / `total_tool_duration_ms` |
-| 体感 | **tokens/sec**（输出流速，比 TTFT 更贴「生成快慢」体感） | ✅ `output_tokens_per_sec` |
-| | **TTFT 按缓存命中分桶** —— 缓存到底让首字快了多少的唯一对照口径 | ✅ `ttftByCache.hit/miss` |
-| 缺口 | **TPOT / ITL**（token 间隔，决定打字流畅感）、**Goodput**（满足 SLO 的有效吞吐） | ❌ 全仓零命中；goodput 还需先定义 SLO |
-
-**TTFT 的口径铁律**（这条有 P0 bug 教训）：必须是**首个任意内容 chunk**（含 thinking / tool_use），
-且**每次 fetch 单独计、不跨重试累计**。只在可视文本上计 → 对 thinking 模型和纯工具调用轮系统性虚高数十秒。
-
-**TTFB 的口径铁律：禁止跨网关路由汇总**（实测教训，上表那格原写「两族已同口径」是错的）。
-同一底层模型走不同网关路由，`ttfb` 的**语义不同**：一路是「模型开始出字」，另一路是
-「网关接单了」。实测 51 会话 / 1372 对：`deepseek-v4-pro` 的 `ttft − ttfb` gap 占比 p50 = **86.77%**
-（ttfb 484ms → ttft 3983ms），而 `origin-deepseek-v4-pro`（**同底层模型、同属 provider `openai`**）
-只有 **5.02%**——差 17 倍。按 provider 汇总出的 `ttfb p50 = 2665ms` 是个假数，
-它既不描述前者也不描述后者，却会让人下「首字节很快」的结论。
-
-- 判据：`(ttft − ttfb) / ttft` 的中位数就是**路由缓冲指纹**，**> 50% 即该路由在抢先回 header**。
-- 因果方向别搞反：gap 大**恰恰发生在网关响应最快的时候**（gap>50% 的样本 ttfb p50 仅 483ms），
-  所以这个差值**不是**框架开销，是「网关缓冲 + 模型 prefill」。别拿它做「框架 overhead 拆解」。
-- 落地：单一事实源在 `packages/core/src/trace/latency-by-model.ts`，`digest.ts` 与
-  `provider-health.ts` 共用。该模块**刻意不提供跨 model 汇总的 TTFB API**——提供了就会有人用。
-
-#### 更省 —— token / 成本 / 缓存 / 上下文
-
-| 层 | 指标 | 状态 / 取数源 |
-| --- | --- | --- |
-| **主口径** | **单位任务的 token 与成本** | ✅ 账本 `usage-ledger.jsonl` + `metadata.total_cost_usd` |
-| 缓存 | **cache 命中率** = cache_read ÷ 总 input | ✅ 目标 >70%（Anthropic 族显式缓存）；**OpenAI 族隐式缓存结构性上限 60–70%**，别拿同一阈值考核两族 |
-| | **cache_read / cache_creation 拆分**、**cache break 次数与归因** | ✅ 归因要分清「本地前缀断裂」vs「服务端 TTL / 路由抖动」——只有前者是我们的 bug |
-| 上下文（agent 特有） | **上下文占用率** used ÷ window（有效区 <50–65%）、**峰值与趋势** | ✅ `context_usage_peak_ratio` / `_peak_tokens` / `_trend` |
-| | **turns per task** —— **会话长度是成本最大杠杆**：2× 轮数 ≈ 3–4× 成本 | ✅ `metadata.total_steps`（后段每轮更贵，第 N 轮 input ≈ N × 第 1 轮） |
-| | **compaction 次数**（压缩丢信息 → 重读文件 → 重复付费） | ✅ `metadata.compactions` |
-| 成本结构 | **reasoning / thinking token 单独计** | ✅ `total_reasoning_tokens`（OpenAI 族 >0；Anthropic 族恒 0，靠 `has_thinking` 区分） |
-| | **side-call 成本**（标题 / 摘要 / recall 等辅助调用） | ✅ 影子调用绕过主埋点，是最易漏计的一块 |
-| | **retry 白烧占比** + 白建连接数 | ✅ `retryWastedRatio`（>20% 判病态）/ `extraConnections` |
-| 缺口 | **output ÷ input 比**（输出单价是输入的 3–8×，成本主要由输出主导） | ❌ 数据齐全，从未做除法 |
-| | **cost per successful task**（= 成本 ÷ 成功率）、**tasks-per-dollar** | ❌ 2026 公认唯一真正重要的成本指标；**需先定义「任务成功」信号**才能算 |
-
-#### 更准（内部口径叫「更少返工 / 一次做对」）
-
-**「更准」不是「模型更聪明」**（那不由我们控制），准确主语是 harness：
-**同一个模型，在 sid-code 里返工更少、一次做对的比例更高。** 四层从过程到结果：
-
-| 层 | 指标 | 状态 / 取数源 |
-| --- | --- | --- |
-| ① 过程病态率 | retry 浪费比 / 白建连接、backtrack、步数比、**空转**（最长「重复调用且返回值不变」段） | ✅ `retryWastedRatio` / `extraConnections` / `maxUnchangedObservationRun`（≥3 判病态） |
-| ② 工具层 | 工具调用成功 / 失败率 | ✅ `PostToolUse.is_error` |
-| | **tool selection accuracy**（选对工具的比例，<90% 说明工具太多或描述差）、**tool retry rate**（同一步失败重试率） | ❌ 均未派生 |
-| ③ eval 通过率 | 回归套件通过率，每次发布都跑 | ✅ `evals/` |
-| ④ 编辑一次成功率 | 首次 edit 即成功的比例（**单位：文件 × 会话**，分母 = 真实执行过 edit 的文件数，不含 write） | ✅ `session-index.edit_first_try` → northstar `edit_first_try_rate` |
-| 结果 / 归因 | 人工介入率 / 返工率、**exit status 分布**（end_turn / 中断 / 错误） | ✅ `metadata.exit_status` |
-| | 子代理成败与串并行判定 —— 消灭「全部 SUCCESS」类误判 | ✅ `SubAgentSummary`（`concurrency: serial/parallel/mixed`） |
-
-**hallucination rate（<5%）刻意不追**：在 coding agent 上没有可复算的 grounded 分母，
-追它只会得到一个自己定义、自己达标的数字。它的位置由 ② 与 ③ 顶上。
-
-#### 更安全
-
-**难点在度量**：安全是「坏事没发生」，负面事件天然稀疏，
-**用事故数当指标则分母恒 0、曲线恒平，分不清是防线起作用还是运气好**。所以一律换成正面信号：
-
-| 指标 | 状态 / 取数源 |
-| --- | --- |
-| **防线触发率** —— 分母限定在「审计核查类任务」，全量任务的分母会把信号稀释掉 | ✅ `scripts/defense-trigger-rate.ts`（实测审计类任务 0% 触发，即「防线全在、调用全 0」） |
-| **HITL 介入率**（分工具 / 分规则）与确认耗时 —— 它同时是「更安全 ↔ 更快」这个 trade-off 的计价器 | ✅ `PermissionDecision` 事件 + `session-index.permission`（分母 = 权限决策数）；⚠️ 确认耗时只在交互会话真弹窗时有样本，headless 恒 n=0 |
-| **权限规则匹配正确率**（该拦的拦住、不该拦的别拦） | ⚠️ 只有**规则命中率**（`permission.rule_hits` ÷ 决策数）与按 reason 分桶；「正确」需要标注真值，轨迹给不出，仍靠单测 / e2e 断言 |
-| **policy e2e 拦截验证**、fail-closed 路径触发计数 | ⚠️ 有 e2e 断言，无长期趋势 |
-
-**新增防线时的验收判据**：不是「build 过 + 单测过」，而是**「真实会话里被触发过」**——
-防线自己成了它当初要消灭的死功能，这事已经发生过一次。
-
-### 主指标：四条方向必然互斥，需要一个仲裁者
-
-对立关系是明确的：**更安全 ↔ 更快/更省**（HITL 确认拖慢速度；动态内容伤 cache 命中=伤省）；**更准 ↔ 更省**（多验证一步更准但更贵）。四个指标不可能同时拉满，**没有仲裁者时四条会互相欺骗**。
+四个方向必然互斥（更安全 ↔ 更快/更省；更准 ↔ 更省），改动时要点破牺牲了哪一个。
 
 ### 每次会话自检（防止方向漂移）
 
-1. 这次改动在朝哪个北极星方向走？还是跑偏了？服务的是哪一条特性？
-2. 朝向感能量出来吗？拿什么轨迹数据/信号证明「真的在进步」而非自我感觉？**它经过三问核验了吗？**
+1. 这次改动在朝哪个北极星方向走？服务的是哪一条特性？
+2. 拿什么轨迹数据/信号证明「真的在进步」而非自我感觉？
 3. 它牺牲了哪个方向来成全另一个？这个 trade-off 是否可接受、是否点破？
 4. 我引用的「现状」是回源码/轨迹核过的，还是照抄文档的？
-5. 本次有没有碰到**不属于本次任务**的文件？碰之前读过内容、问过我了吗？
-   —— 见 §0「⛔ 铁律：不删与本次任务无关的文件和代码」，这条是有过真实数据丢失事故的。
-6. 这次是非平凡改动吗？**Agent Note 写了吗**？—— 见下一节，这是第 1-4 问的落盘载体。
-   写在记忆里不算：那只有一个 harness、一台机器读得到。
+5. 本次有没有碰到**不属于本次任务**的文件？见下方「⛔ 铁律」。
+6. 这次是非平凡改动吗？**Agent Note 写了吗**？写在记忆里不算。
 
-### 决策留痕：`.agents/notes/`（防漂移的载体）
+### 决策留痕：`.agents/notes/`
 
 **非平凡改动必须在同一个 PR 内加或更新一份 Agent Note。**
 平凡 = 纯机械/局部编辑，不改行为、契约、结构、流程、理由。
 
 路径 `.agents/notes/{proposed,implemented,rejected}/{feature,architecture,bug-fix,simplification,process,testing}/yyyy-mm-dd-标题.md`，
-正文固定三段：**决定了什么 / 放弃了什么（以及为什么不选）/ 拿什么证明它生效了**。
-格式、模板与判断卡不住时的那句自问，见 `.agents/notes/README.md`。
+正文三段：**决定了什么 / 放弃了什么（以及为什么不选）/ 拿什么证明它生效了**。格式见 `.agents/notes/README.md`。
 
-**为什么必须落在仓库里而不是记忆里**：上面自检 1-4 问的答案要能被别的 agent、别的 harness、
-协作者读到，还要随 PR 进 review。`CLAUDE.md` 所有人可读但不随改动走；agent 的记忆目录
-只有那一个实例读得到。最贵的损失在 `rejected/` —— 否决论证只活在记忆里，
-下一个 agent 明天就会重新提议同一件事，而你要把整套论证重做一遍（已经发生过）。
+必须落在仓库而不是记忆里：记忆只有一个实例读得到，不随 PR 进 review。`rejected/` 最值钱——否决论证不落盘，下一个 agent 会重新提议同一件事。
+`scripts/verify-agent-note.ts` 只查形态，不查内容、不拦「该写没写」，那一层靠 review。
 
-⚠️ `scripts/verify-agent-note.ts`（pre-commit，staged 含 `.agents/notes/**` 时触发）**只查形态**：
-路径 / 闭集 / frontmatter 与目录一致 / 三段非空。**不查内容**，也**不拦「该写没写」** ——
-判断"是否非平凡"需要语义理解，硬拦只会换来一份空洞 Note 或一路 `--no-verify`。
-那一层靠人在 review 时看，是刻意的能力边界。
-
-## 与 CONTRIBUTING.md 的分工：流程在那边，别在这里重复写
+## 流程与门禁在 CONTRIBUTING.md
 
 @CONTRIBUTING.md
 
-**上面这个 `@` 引用会把 `CONTRIBUTING.md` 全文注入上下文**，所以下面这些内容
-**本文件刻意不重复**：
-
-- **分支与工作流**：GitHub Flow、不直推 `main`、分支命名、squash merge、什么时候要先开 issue
-- **五道 CI 门禁的完整列表**与两个 git hook 门禁
-- 测试落盘隔离的四个踩坑细节
-
-两份文件的受众不同、内容互补，**规则完全一致**：
-
-| | `CLAUDE.md`（本文件） | `CONTRIBUTING.md` |
-| --- | --- | --- |
-| 受众 | agent（CC / sid-code 自己） | 人类贡献者 + agent（经上面的 `@` 引用） |
-| 内容 | 北极星方向、踩坑教训、铁律、为什么这么设计 | 环境准备、分支/PR 流程、门禁清单、风格约定 |
+分支/PR 流程、CI 与 git hook 门禁清单、测试落盘隔离约定都在上面这份，本文件不重复。
+**发版、回滚、改 `release.sh` 前读 `scripts/RELEASE.md`**（双版本并存、发布通道、changelog、构建目标）。
 
 ## 全局约束（每次会话必读）
 
 - **语言**：所有回复、代码注释、文档均用中文。
 - **联网工具**：遇到不熟悉的 API / 库 / 报错信息时，主动用 tavily-mcp / context7-mcp 查最新文档，不要凭记忆猜。
 - **构建验证**：task 完成后跑 `bun run affected-tests:run`（覆盖本次 diff 的最小测试集）以及跑 `make build` 验证构建成功，**不可跳过，必须执行**。
-  - **全量 `bun test` 只在三种情况下跑**：① CI（合并前必跑，见下）；② 用户显式要求；③ `affected-tests` 自己判定为仓库级改动（此时它输出的就是全量命令）。
-  - 先看判定再跑：`bun run affected-tests` 只打印命令不执行，`:run` 才执行。实测选测耗时 **0.19s–14.5s**，全量 **127.5s**。
-  - ⚠️ **这一步拿「更安全」换「更快」，补偿是 CI 在合并前跑全量**（`ci.yml` 的 `test` job 用裸 `bun test`）。只做本地选测而不走 PR，等于把风险从本地挪到 main 上——所以**选测与 PR 化必须成对**，直推 main 时不许用选测。
-  - 判定逻辑与逃逸阀在 `scripts/affected-tests.ts`（映射依据是 `packages/core/` 的 `src/` ↔ `tests/` 目录名重名命中 33/36）。改它必须过 `tests/scripts/affected-tests.test.ts`——那里有 5 条变异自证，专防「选了个空集然后全绿」。
-  - 日常开发只用 `make build`（不动版本号）。**不要**用 `make build-bump`，它会把版本号 +1。
-  - CI（`.github/workflows/ci.yml`）除这两条外还有一个独立的 `lint` job：`bun run lint`（oxlint）与 `bun run lint:boundary`（包边界扫描）。动了跨包导入就跑一次后者，否则 PR 会在 CI 才红。
-- **改了参考页数据源要重新生成官网参考页**：动过 `packages/cli/src/help.ts`、`packages/cli/src/cli.ts`、`packages/core/src/tool/`、`packages/cli/src/command/`、`packages/core/src/config/`、`packages/core/src/hook/` 之后，跑一次 `bun run docs:gen-reference`，并把 `website/ref/` 与 `website/public/llms.txt` 的改动一并提交。
-  - `website/ref/` 下 6 页（CLI 参数 / 工具 / 斜杠命令 / Hook 事件 / settings 字段 / 环境变量）是**从源码生成**的，源码改了不重新生成就是文档骗人——用户照着文档写一个不存在的参数比没有文档更糟。
-  - pre-commit 会跑 `--check` 拦住这种漂移（未装 hook 先跑 `bun run install-hooks`）
+  - 全量 `bun test` 只在三种情况下跑：CI；用户显式要求；`affected-tests` 自己判定为仓库级改动。
+  - **选测与 PR 化必须成对**：选测的补偿是 CI 在合并前跑全量，直推 main 时不许用选测。
+  - 改 `scripts/affected-tests.ts` 必须过 `tests/scripts/affected-tests.test.ts`（防「选了个空集然后全绿」）。
+  - 日常只用 `make build`（不动版本号），**不要**用 `make build-bump`（版本号 +1）。
+  - 验证本地改动用 `sc-dev`，不是 `sc`（后者是线上稳定版）。
+  - **选测会漏掉的一类：跨域源码字面量断言**。不少测试直接 `readFileSync` 别的包/域的源码断言字面量（如 `packages/core/tests/llm/quota-effective-limit.test.ts` 读 `cli/src`），`affected-tests` 按目录名映射选不到它们。删/改字段名、参数名、字符串常量时，推送前先 `grep -rnF '<旧字面量>' tests packages/*/tests`，命中的文件一并跑。
+- **改了参考页数据源要重新生成官网参考页**：动过 `packages/cli/src/help.ts`、`packages/cli/src/cli.ts`、`packages/core/src/tool/`、`packages/cli/src/command/`、`packages/core/src/config/`、`packages/core/src/hook/` 之后，跑 `bun run docs:gen-reference`，把 `website/ref/` 与 `website/public/llms.txt` 一并提交。pre-commit 有 `--check` 拦漂移。
+- **新增门禁或回归测试必做变异自证**：先把被测代码改坏，确认对应断言变红，再恢复。恒绿的门禁比没有门禁更危险。看它**报了什么**，不只看退出码。
+- **修缺陷前先回源码核实诊断**：审计/缺陷文档给的根因和行号可能已经过期，照着文档改等于修一个不存在的 bug。
+- **长任务增量提交**：大文件重写拆成多次小 Edit，每完成一个可验证的单元就提交。请求体上限或 API 错误中断会话时，没提交的进度只能留在会话导出里。
 
-**铁律：不删与本次任务无关的文件和代码（多任务并行前提）**
+## 环境与工具陷阱（都踩过，失败形态是静默）
 
-**这个仓库里随时可能有多个任务并行执行**——人在写文档、另一个 agent 在改代码、测试在跑。
-因此 `git status` 里的「意外文件」**默认属于别人的在途工作，不是你的脏数据**。
+- **格式化只用 oxfmt**（`bun run format`），本仓没有 prettier 配置，**不要运行 prettier**，它会让 pre-commit 和契约测试变红。
+- **macOS 没有 `timeout` / `gtimeout`**。需要限时就用 Monitor/后台任务，或在 bun/node 脚本里自己计时，不要写 `timeout 60 cmd`，它会直接 command not found，产出空基线。
+- **shell 是 zsh，未加引号的 `$VAR` 不做 word splitting**。把多个参数或文件名攒进变量再展开，会整体变成**一个** argv，grep/bun test 静默匹配 0 个且退出 0。用数组 `"${arr[@]}"` 或逐个字面写出。
+- **TUI/终端相关测试会吃宿主环境变量**（`TERM_PROGRAM=vscode` 等）。本机绿不代表 CI 绿，复现 CI 用 `env -u TERM_PROGRAM -u KITTY_WINDOW_ID -u WT_SESSION -u ZED_TERM -u VTE_VERSION -u TMUX TERM=xterm-256color bun test <file>`；做旧行为探测同理。
+- **`UPDATE_TERM_BENCH=1` 会重写 term-bench 冻结基线**，只在确认行为变化是有意的之后才带它跑。
 
-禁止的操作（除非用户明确要求删除这个具体目标）：
+## ⛔ 铁律：不删与本次任务无关的文件和代码
 
-- `rm` / `rm -f` 任何不是你本次亲手创建的文件
-- `git checkout -- <dir>` / `git checkout -- <file>`、`git restore`、`git reset --hard`、`git clean`
-  —— 这类命令会**静默且不可逆地**丢弃未提交改动，没有回收站、没有 reflog 可救
+这个仓库随时有多个任务并行（人在写文档、另一个 agent 在改代码、测试在跑），`git status` 里的「意外文件」**默认属于别人的在途工作**。这条有过真实数据丢失事故。
+
+禁止（除非用户明确要求删除这个具体目标）：
+
+- `rm` 任何不是你本次亲手创建的文件
+- `git checkout -- <path>`、`git restore`、`git reset --hard`、`git clean`、`git stash` 做基线——静默且不可逆
 - 以「清理测试产物」「回到干净状态」为由批量还原目录
 
-必须遵守的判断顺序：
+判断顺序：
 
-1. **动手前先读**。要删/还原任何文件，先 `Read` 或 `head` 看一眼内容。
-   人写的文档和生成产物一眼可辨——省这一步就是在赌。
-2. **git status 快照是证据**。会话开始时的 git status 里已存在的改动，**一定不是**你或测试
-   造成的，是用户的在途工作，绝对不许动。
-3. **区分「测试写脏」与「别人在写」**。测试确实会写产物（如 `website/ref/`、`llms.txt`），
-   但产物路径是确定且可枚举的；出现在预期之外路径的新文件，按「别人的工作」处理。
-4. **不确定就问，或者干脆不动**。留着一个多余文件的代价是零；删错一个文件的代价是
-   用户几小时的工作凭空消失。工作区不干净**不影响**你交付任务。
-
-教训一句话：**归因错误 + 立即执行不可逆操作 = 数据永久丢失。
-先读再判断，不可逆操作先问，工作区脏不是理由。**
-
-## 开发 / 发布 / 更新三线流程
-
-### 本地环境：双版本并存
-
-| 命令 | 指向 | 版本 | 用途 |
-| --- | --- | --- | --- |
-| `sid-code` / `sc` | `~/.local/bin/sid-code` → 线上下载版 | 稳定版 | 验证线上版本 |
-| `sid-code-dev` / `sc-dev` | `~/bin/sid-code-dev` → 本地构建产物（仓库根） | 开发版 | 日常开发调试 |
-
-两条命令是**不同的二进制名**，不靠 PATH 优先级区分。
-
-### 日常开发
-
-```bash
-git pull          # 拉最新源码
-make build        # 构建二进制（版本号不变，日常就用这个）
-sc-dev            # 启动开发版（注意是 sc-dev，不是 sc）
-```
-
-### 发布上线
-
-**⚠️ 铁律：先提交功能代码，再发布。禁止先发布后提交。**
-发布产物必须能对应到一个确切 git commit。先发布后提交会开一个「已发布但未提交」的窗口——期间任何源码改动都会让线上二进制与 commit 对不上，出线上问题无法定位到确切代码版本。
-
-这条铁律现在由脚本**机械化执行**，不再只靠人记：
-
-- `release.sh` 开头有**工作区洁净门禁**，脏就直接拒绝发布（确认无碍加 `--allow-dirty`）。
-- bump 提交与 tag 都由 `release.sh` 自己完成，且 tag 打在 bump 提交上、当场校验对齐。以前是「tag 打在 bump 前的 HEAD、bump 提交人工补做」，导致 tag 指向的 commit 里版本号比 tag 低一位（实测 v0.1.591…v0.1.596 **六个 tag 全部错位**，`git checkout <tag>` 重建不出对应二进制）。
-
-#### 先决定走哪条路：不是每次发版都要泡 beta
-
-**`--promote` 与 `--upload` 之间没有任何时长门禁**（实测 `release.sh` 里 0 处
-`sleep`/`mtime`/`age` 判据），所以「泡多久」完全是人的判断，不是流程强制。
-两条路都合法，按**改动风险**选，别按习惯选：
-
-| | 快车道（常规） | 泡制道（高风险） |
-| --- | --- | --- |
-| 什么时候用 | 文档、CI、内部重构、单点修复 —— 即**出问题也能秒级回滚**的改动 | 动了主循环 / 权限 / 网络重试 / 上下文压缩 / TUI 渲染，或一次发很多东西 |
-| 怎么做 | 第 3 步之后直接接第 6 步 `--promote`（中间不等） | 第 6 步先装 beta 自己用一段时间，再 `--promote` |
-| 用户拿到新版 | 当次发布即可 | 你验收之后 |
-| 兜底 | `rollback.sh` 秒级回指旧版 | beta 期就发现问题，不流到 stable |
-
-**判据是「回滚够不够快」，不是「改动大不大」**：制品全在自有服务器、
-`rollback.sh` 是纯指针操作(秒级)，所以绝大多数改动的正确答案是**快车道**。
-泡制道换来的是「stable 用户一次都没踩到」，代价是发布周期从分钟级变成天级 ——
-只有当"踩到了再回滚"这件事本身不可接受时(数据损坏、权限放开、无法察觉的静默错误)
-才值得付。
-
-⚠️ **两条路的命令序列完全一样，唯一区别是第 6 步前面等不等。**
-不存在"跳过 beta 的专用命令" —— `--upload` 永远只写 `beta.txt`，
-`--promote` 永远是唯一能动 `latest.txt` 的入口，这个结构不因走哪条路而变
-（理由见下方「发布通道」三条不能改回去的设计）。
-
-⚠️ **泡制期只有真有人装 beta 才有价值。** 建好而没人装，它就退化成
-「防线全在、调用全 0」。实测：beta 通道 2026-08-25 建立，此后 v0.1.602、v0.1.603
-两次发布**都没有真实 beta 使用记录** —— 所以现在诚实的说法是
-「机制可用、尚未被真实回归验证过」，别把它当成已经在起作用的防线。
-
-标准顺序（脚本接管了 bump 与 tag，人负责前两步和收尾的 PR）：
-
-```bash
-# 1. 验证构建（全量单测由 release.sh 门禁负责，此处不重复跑）
-make build
-
-# 2. 提交功能代码（工作区必须干净，否则 release.sh 会拒绝）
-#    ⚠️ 含 changelog/curated/v<下一个版本>.json —— 缺了 release.sh 会交互确认一次，
-#    非交互环境（管道 / CI）会降级为 warn 直接过，于是官网那一版没有变更说明。
-#    先跑 `bun run changelog:curate` 起草并过目；纯内部版本写 userFacing:false 即可。
-git add <改动文件>
-git commit -m "feat: ..."
-
-# 3. 发布到 **beta 通道**：门禁(bun test) → bump → changelog → 5 平台构建 → 冒烟+自检
-#    → 自动提交 `bump vX.Y.Z` → 打 tag（对齐校验）→ 原子上传 → 服务器端 sha256 复核
-#    → 写 beta.txt → push tag → 建 GitHub Release
-#    ⚠️ 这一步**不改 latest.txt**，稳定版用户拿不到它（见下方「发布通道」）
-#    实测耗时 5m25s（其中全量 bun test 183s 占 56%）
-./scripts/release.sh --upload
-
-# 4. bump 提交走 PR 进 main（main 受 ruleset 保护，直推被 GH013 拒；见下方 ⚠）
-git switch -c chore/release-<version>
-git push -u origin chore/release-<version>
-gh pr create --base main --fill
-gh pr merge --auto --merge          # ⚠ 必须 --merge，squash 会让 tag 指向游离提交
-                                    #   CI 实测 3m52s
-
-# 5. 合并后同步 + 核验 + 清分支 + 发布官网
-git switch main && git pull
-git merge-base --is-ancestor v<version> main && echo OK   # 铁律的人肉复核（--promote 也会自己跑）
-git push origin --delete chore/release-<version>          # 删远端分支（合并后就是残留）
-git branch -d chore/release-<version>                     # 删本地分支（-d 会拒绝删未合并的）
-./scripts/website-deploy.sh   # /changelog 是站点构建期快照，release.sh 只生成数据不发站点
-
-# 6. 促升到稳定通道（纯指针，不重新构建，实测 5s）
-#    ↑ 高风险改动走泡制道时，在这一步之前先装 beta 自己用一段时间：
-#      curl -fsSL https://www.sid-code.cc/releases/sid-code/install.sh | SID_CODE_CHANNEL=beta bash
-./scripts/release.sh --promote <version>
-
-# 7. 端到端核验：稳定通道用户真能升上来（不看脚本自报，看用户链路）
-curl -fsSL https://www.sid-code.cc/releases/sid-code/latest.txt   # 应等于 <version>
-sid-code update && sid-code --version                            # 应升到 <version>
-```
-
-**⚠️ 第 4 步的 PR 必须先合并，第 6 步才能跑。** 顺序反了会被门禁拦住:
-`--promote` 的 G2 门禁问的是 **`origin/main`**，而 `release.sh` 自己提交的 `bump`
-先落在**本地** main —— PR 未合并时产物 commit「在本地 main = YES、在 origin/main = NO」。
-这个窗口是真实存在的(实测 v0.1.603:upload 结束 16:39:23、PR 合并 16:48:20，
-窗口 9 分钟)，而在 2026-09-04 修掉之前，门禁问的是本地 main，
-**那段窗口里 promote 会放行一个尚未进主线的版本，且输出是一句 ✅**。
-
-**⚠️ 第 5 步删分支不是可选的洁癖。** 合并后的 `chore/release-*` 留着就是残留,
-下次发版 `git branch` 里会堆一串同名前缀的死分支，
-而**判断"哪个是本次的"要靠版本号比对** —— 这正是 §0 铁律里「不确定就别动」
-最容易被违反的场景。用 `git branch -d`(小写)而不是 `-D`:前者会拒绝删未合并的分支,
-是免费的保险。仓库已开 `delete_branch_on_merge`，走 GitHub 网页合并会自动删远端，
-但**命令行 `gh pr merge` 之后本地那条仍要自己删**。
-
-**⚠️ 第 4 步为什么不是 `git push`**：main 受 ruleset `protect-main` 保护（要求 PR + `all-checks-passed`），直推被 **GH013** 拒（`Changes must be made through a pull request`）。而此刻**制品已上线、tag 已推送、bump 提交还在本地** —— 正是上面那条铁律要防的「已发布但未提交」窗口，只不过成因从人的疏忽变成了门禁冲突。所以这一步是**必经**的，不是可选的收尾。`release.sh` 跑完会按实际保护状态把这几条命令打出来。
-
-曾考虑给 `release.sh` 开 ruleset bypass 让它能直推，**否决**：bypass 是给「人/应用」开的口子而非给某个提交，一旦开了任何直推都能绕过汇聚门 —— 而全量 CI 与 GitHub Release 那一步都挂在那道门上。用它换掉「每次发版一个 PR」的成本不值。
-
-**⚠️ 合并必须用 merge 不能 squash**：tag 已经打在 bump 提交上。squash 会另造一个提交、原提交不进 main，于是 tag 指向一个**游离提交** —— `git checkout <tag>` 仍能用，但 `git merge-base --is-ancestor <tag> main` 会失败，「产物对应确切 commit」这条铁律就退化成「对应一个不在主线上的 commit」。核验方式：
-
-```bash
-git merge-base --is-ancestor v<version> main && echo OK
-```
-
-**这条核验现在是机械的**（2026-08-27）：`release.sh --promote` 会自己跑它，
-判据优先读**产物字节里那 40 位 commit**（`dist/release/<ver>/` 还在时），
-本地没有产物才退化到 tag 判据 —— 而退化路径会明说自己是弱判据，不冒充强判据。
-上面这条命令保留作人肉复核，但**不再是唯一防线**：一条靠人记得跑的核验，
-在忘记跑的那一次恰好是最需要它的那一次。
-
-**发版后 `git status` 会多出 `northstar/`**：那是 `release.sh` 设计上就要求入库的指标快照（见 `scripts/release.sh` 中 northstar 一节），**不是脏数据**，跟 bump 一起提交进同一个 PR。
-
-**上传凭据**：SSH 信息读自 `scripts/deploy.env`（不入库，见 `deploy.env.example` 模板）。
-配了 `DEPLOY_SSH_PASSWORD` 后用 sshpass 免交互上传，无需每次输密码。首次配置：
-`cp scripts/deploy.env.example scripts/deploy.env` 后填入真实值。
-
-#### 发布通道：beta 泡制 → promote 促升 → rollback 回滚
-
-服务器顶层有**两个指针文件**，各一行版本号，两个通道**共用同一批版本目录**：
-
-| 指针 | 通道 | 谁会改它 | 用户怎么装 |
-| --- | --- | --- | --- |
-| `beta.txt` | 抢先版 | 每次 `--upload` | `SID_CODE_CHANNEL=beta` |
-| `latest.txt` | 稳定版 | **只有** `--promote <version>` | 缺省 |
-
-```bash
-./scripts/release.sh --upload              # 发到 beta（不动 latest.txt）
-./scripts/release.sh --promote 0.1.601     # 稳定通道指过去
-                                           # 快车道：紧跟 --upload 就跑，不必等（无时长门禁）
-                                           # 泡制道：先装 beta 用一段时间再跑（高风险改动）
-./scripts/rollback.sh                      # 看两个通道现指向谁 + 有哪些版本可回
-./scripts/rollback.sh 0.1.600              # 稳定通道回指旧版（秒级）
-./scripts/rollback.sh 0.1.600 --channel beta
-```
-
-三条不能改回去的设计（改回去都**不会报错**，只会静默失去价值）：
-
-- **promote 是纯指针操作，不重新构建**。用户装到的字节 = beta 期被测的字节。给 beta
-  单独一套目录的话，promote 就要复制或重建，"泡制期测的就是要发的东西"当场失效。
-- **`--upload` 绝不写 `latest.txt`**。顺手加回那一行 = 取消整个通道机制（一发布即全量
-  放量），而发布日志与从前一模一样。反漂移断言在 `tests/release-channel.test.ts`。
-- **旧版本清理要豁免两个指针指向的版本**。beta 泡制期连发几版会把 stable 指向的那版
-  挤出 `RELEASE_KEEP_VERSIONS=5` 窗口；删掉之后 latest.txt 还指着它 ——
-  形态是**全部稳定版用户 404 装不上**，服务器端零报错。
-- **窗口外的目录要 OSS 归档当场核对通过才删**（B46 P3，`scripts/archive-ops.sh verify`）。
-  服务器只是热缓存，归档是唯一事实源；核对出错时跳过核对继续删 = 退回永久删除
-  （B46 之前已因此丢过 20 个版本）。promote / rollback 到已淘汰的版本会先从归档回暖。
-
-⚠️ **回滚不会让已装坏版本的用户自动降级**，他们要各自再跑一次 `sid-code update`。
-`rollback.sh` 挡住的只是「还没更新的人不再踩坑」，这是它能做到的全部。
-它**不碰 git**（版本号 / tag / 提交全不动）：回滚的是「用户拿到哪一版」，
-不是「仓库停在哪一版」，混在一起会让一次秒级止血变成一次要 review 的改动。
-
-⚠️ **通道靠环境变量记住，人不会记得自己上次装的是哪个**。beta 用户下次不带变量跑
-`sid-code update` 会静默回到稳定版 —— install.sh 装完 beta 会显式提示这件事。
-
-**这段泡制期只有在真有人用 beta 时才有价值。** 建好而没人装，它就退化成第二个
-「防线全在、调用全 0」。所以 A2 的验收判据不是"通道能用"，而是
-**至少有一次真实回归是在 beta 期被发现、没有流到 latest**。
-
-⚠️ **这条判据到 2026-09-04 仍未满足,如实记在这里**:beta 通道 2026-08-25 建立,
-此后发过 v0.1.602、v0.1.603 两版,**没有一次有真实 beta 使用记录**
-(v0.1.602 更是因账号封停 + 历史重写而作废)。所以现在只能说
-「机制可用、判据未验证」——不要在文档或 PR 里把它写成一道正在起作用的防线。
-
-**这不代表通道机制该撤掉**,但它确实意味着:**默认走快车道是当前的诚实选择**。
-理由是不对称的——泡制道的收益依赖"有人真的装 beta 去用"这个尚未发生的前提,
-而快车道的兜底(`rollback.sh` 秒级指针回滚)是已经实测过的。
-把每次发布都当高风险来泡,只会把流程拖长而换不到任何已验证的保护。
-真正能让这条判据被满足的动作不是「继续要求每次泡 beta」,
-而是**给 beta 找到至少一个固定的真实使用场景**(例如自己日常就用 beta 二进制),
-在那之前,泡制道留给你判断为高风险的那几次。
-
-#### Changelog + Tag
-
-release.sh 在 bump 后重建 changelog；构建与冒烟全部通过后自动提交 `bump vX.Y.Z`，再把 annotated tag `vX.Y.Z` 打在**这个提交**上（`generate-changelog.ts` 会过滤 `^bump v\d` 提交，所以它不会污染 changelog）。每次运行完整重建，确定性且幂等。两份产物各有唯一职责：
-
-| 产物 | 职责 | 内容来源 |
-| --- | --- | --- |
-| `CHANGELOG.md` | 文本事实源，给 diff / `curl` / 脚本 | git 历史（**全量原始提交**，按 feat/fix/docs/… 6 组） |
-| `website/.vitepress/data/changelog.json` | 官网 `/changelog` 页的数据源，由 `theme/Changelog.vue` 渲染 | `changelog/curated/*.json`（**用户视角文案**，4 组受控词） |
-
-**两个受众，两条渲染路径**：commit message 的读者是未来的自己，changelog 的读者是用户，靠正则做不了这个转换（实测 276 条提交里 24% 是用户完全不关心的文档/杂项）。所以官网正文来自**人工过目过的** curated 文案：
-
-```bash
-bun run changelog:curate            # 为下一个版本起草（spawn sid-code 自己读 diff 改写）
-bun run changelog:curate 0.1.601    # 指定版本 / 补跑
-bun run changelog:check             # 不调 LLM，只校验已入库的全部文案
-```
-
-产出 `changelog/curated/v<version>.json` → **读一遍**（脚本会把条目打印到终端）→ 需要就直接改 JSON → commit。发版前 release.sh 会检查该文件是否存在，缺了会交互确认一次（放在构建**之前**，此刻补还来得及）。
-
-⚠ **五条禁令**，破了就是数据错乱、内容失真或每次 commit 都红：
-
-- `release.sh` / `generate-changelog.ts` **绝不调 LLM**，只读已入库的 curated 文件 —— 发布路径必须确定性 + 离线 + 幂等，把一次 LLM 调用塞进发布链会同时破掉这三条。
-- curated 文件**必须人工过目**才提交。校验器只拦形态（词表、长度、URL、字段自洽），拦不住「把内部重构写成用户特性」「漏掉一个真实的破坏性变更」—— 这两类只有人能拦。
-- `CHANGELOG.md` **必须保持全量原始提交**（含 hash、docs/其他 分组）。curated 漏了东西时它是唯一的回溯途径。
-- `website-deploy.sh` **不得**重跑 `generate-changelog.ts` —— 会把 HEAD 上尚未发版的提交归到已发布的版本号名下。只有 `release.sh` 有资格生成这份数据。
-- changelog 产物**不纳入** `docs-gen-reference --check` 那类反漂移门禁 —— `website/ref/` 能立门禁是因为源是源码；changelog 的源是 git 历史，每提交一次就变。
-
-### 三个构建目标职责
-
-| 命令 | 版本号 | 用途 |
-| --- | --- | --- |
-| `make build` | 不变 | **日常开发（99% 的场合）**：改完 / 拉完代码重建二进制 |
-| `make build-bump` | +1 | 少见：想本地自测一个带新版本号的二进制 |
-| `./scripts/release.sh --upload` | +1 | 正式发布：构建 5 平台制品并上传到服务器 |
-
-**选哪个：默认 `make build`。** 只要你不是在专门测「版本号本身」，就用它。
-`make rebuild` 保留为 `make build` 的别名（历史文档里到处是它），敲了也不会出错，
-但新写的文档 / 命令一律用 `make build`。
-
-三条由「版本号内联进二进制」派生的规则（`bun build --compile` 编译时把 `package.json` 写进产物，git pull 更新源码不会改它）：
-
-- **源码更新后必须重新编译**，否则跑的还是旧代码。
-- **版本号只 bump 一次**：直接 `./scripts/release.sh --upload`，别先跑 `make build-bump`（它也 bump，会让版本号 +2）。已 bump 过用 `--no-bump --upload` 复用。
-- **`build-bump` / `release.sh` 之后补一次 `make build`**：发布制品是跨平台编译产物，仓库根的开发版二进制不会跟着更新，内联版本号还停在旧值 —— 不补则 `sc-dev` 显示的版本比线上低一位，容易误判。
+1. **动手前先读**内容，人写的文档和生成产物一眼可辨。
+2. **会话开始时 git status 里已有的改动一定是用户的在途工作**，绝对不许动。
+3. 测试产物路径是确定可枚举的（如 `website/ref/`、`llms.txt`）；预期外路径的新文件按「别人的工作」处理。
+4. **不确定就问，或者不动**。工作区不干净不影响交付。
 
 ## 收尾自检
 
-除了「北极星」那节的五问，收尾前再问自己：
-
-1. 这次改动解决的是用户提的问题，还是我顺手扩大/缩小了范围？
-2. 我拿什么证明它真的生效了？（跑了什么命令、看到什么输出，
-   而不是「机理上讲得通」）
-
-关于第 2 点有一条实测教训：**目标指标改善 + 测试全绿 + 机理讲得通，
-三者同时成立时结论仍然可能是错的**。收尾必须回到端到端的真实指标上验证，
-不要只看你专门优化的那个代理指标——代理指标会奖励「把浪费重新贴个标签」。
+1. 解决的是用户提的问题，还是顺手扩大/缩小了范围？
+2. 拿什么证明它真的生效了？写跑了什么命令、看到什么输出，不写「机理上讲得通」。
+   **目标指标改善 + 测试全绿 + 机理讲得通，三者同时成立时结论仍可能是错的**——回到端到端真实指标验证，代理指标会奖励「把浪费重新贴个标签」。
 
 ### 在 worktree 里跑门禁：`exit 0` 不等于可交付
 
-worktree 默认**没有自己的 `node_modules`**，`@sid-code/core` 会向上解析到主仓 checkout ——
-那里没有你本次新增的导出。症状是 `make build` 打出
-`<你的新函数名> will always be undefined`，而**构建仍然 exit 0**。
-只看退出码就交付，等于交了一个新函数在编译产物里是 `undefined` 的版本。
-
-- **新建模块 / 新增导出的改动，必须显式 grep 这条 warning**，不能只看 exit code。
-- 进 worktree 后先跑一次 `bun install`（实测：装完后 3 个失败转绿、warning 归零）。
-  `website/` 是独立包，动了它还要在 `website/` 里再装一次，否则 pre-push 的
-  `website:build` 会以 127（command not found）拒绝推送。
-- 跑过 `bun install` 后，pre-commit 里硬编码的 `./node_modules/.bin/oxlint` 也就能正常工作，
-  不必再 `--no-verify`。
+- worktree 默认没有自己的 `node_modules`，`@sid-code/core` 会向上解析到主仓 checkout，新增导出会变成 `<名字> will always be undefined` 而构建仍 exit 0。**进 worktree 先 `bun install`**（动了 `website/` 还要在那里再装一次），新增导出的改动必须 grep 这条 warning。
 
 ### 判定「这个失败与我无关」必须举证，且别叫它「既存失败」
 
-实测教训：三个并行执行分身都把 worktree 里的失败报成「既存失败」，复核后发现
-**这些测试在干净 main 上是绿的**（`plan-mode-write-plan-file` 等 4 个文件 95 pass / 0 fail）。
-「既存失败」意味着"主干本来就坏"，会让人跳过本该排查的东西；真实成因是环境。
+三条证据缺一不可：① 该测试不 import 本次改动的模块；② 在**父仓 main** 上单跑能通过；③ 能指出具体的环境成因。
 
-宣称一个失败与本次改动无关时，**三条证据缺一不可**：
-
-1. 该测试不 import 本次改动的任何模块；
-2. 在**父仓 main** 上单跑能通过（不是在你的 worktree 里跑）；
-3. 能指出具体的环境成因。
-
-已知两类 worktree 环境产物：上面那条 `node_modules` 向上解析；以及 **worktree 路径含
-`.claude/`**，命中 `packages/core/src/permission/checker.ts` 的敏感路径拦截，
-在 plan-mode 判定**之前**就返回（结论仍是 DENY，只是 reason 不同）。
-
-顺带两条同源的判读经验：
-
-- **超时类失败先看数字对不对得上**。`runSandbox` 在 CI macOS 上失败于 5002ms —— 那是
-  bun **默认的 5s 单测超时**，不是 sandbox 自己的 60s 上限。写文件 + spawn 子进程的测试
-  在慢 runner 上会踩线，是 flake；重跑即绿，不要当回归去改代码。
-- **防漂移哨兵红了，要补清单而不是删断言**。`ABORT_REASONS 覆盖所有 abort 调用点`
-  就是为了拦「新 reason 只登记进 `errors.ts`、忘了同步哨兵期望值」而存在的。
-  它红 = 它在正常工作。
+- 超时类失败先看数字：失败于约 5000ms 是 bun **默认 5s 单测超时**，慢 runner 上的 flake，重跑即绿。
+- **防漂移哨兵红了要补清单而不是删断言**，它红 = 它在正常工作。
