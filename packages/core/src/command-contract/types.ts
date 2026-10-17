@@ -407,8 +407,9 @@ export interface PromptCommand {
   allowedTools?: string[];
   /** fork 子代理的工具集来源 agent 类型（bundled skill 用；磁盘 skill 走 skill.agent） */
   agent?: string;
-  maxTurns?: number; // 最大轮次（fork 模式）
-  timeoutMins?: number; // 子代理超时(分钟，fork 模式)；默认 2，最大 30
+  maxTurns?: number; // 最大轮次（fork 模式，可选；未声明 = 无上限）
+  /** @deprecated PR-B（2026-10-17）起不再生效（fork 子代理无墙钟） */
+  timeoutMins?: number;
   /**
    * 来源 skill 定义（仅 skill 适配出的 prompt 命令有）。
    *

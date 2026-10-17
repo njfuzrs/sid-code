@@ -1354,7 +1354,7 @@ export class App {
     // agent 类型 hook 借此启动真正的只读子代理（默认 read/grep/glob）做多轮验证，
     // 而非退化为单轮 LLM 调用。无 providerRegistry（极简/测试）时不注入，runner 自动回退单轮。
     if (this.providerRegistry) {
-      this.hookSystem.setAgentHookExecutor(async ({ prompt, model, tools, timeoutMs, signal }) => {
+      this.hookSystem.setAgentHookExecutor(async ({ prompt, model, tools, signal }) => {
         const { SubAgent } = await import("@sid-code/core/agent/sub-agent.ts");
         // 防套娃：agent hook 的子代理默认只读工具集，且不再触发 agent hook（hookSystem 不透传）。
         const allowedTools = tools && tools.length > 0 ? tools : ["read", "grep", "glob"];
@@ -1375,7 +1375,8 @@ export class App {
               '- 验证失败：{"ok": false, "reason": "失败原因和修复建议"}',
             userPrompt: prompt,
             allowedTools,
-            timeout: timeoutMs,
+            // hook 自身的超时由 runner 的 controller 经 signal 下发（hook 语义，不是子代理墙钟）；
+            // PR-B 起 CustomSubAgentTask 无 timeout 字段。
             type: "custom",
           },
           signal,

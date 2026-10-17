@@ -535,13 +535,8 @@ export class CommandExecutor {
           agentType,
           model: skill?.model,
           effort,
-          // P2-2：fork 命令无 forkMessages/继承主对话概念，与常规非 fork 子代理同档 30。
-          maxTurns: cmd.maxTurns ?? 30,
-          // 超时透传：对齐磁盘 skill 的钳制（默认 2 分钟，最大 30 分钟）。
-          timeout:
-            cmd.timeoutMins != null
-              ? Math.min(Math.max(cmd.timeoutMins, 1), 30) * 60_000
-              : undefined,
+          // PR-B：maxTurns 只在显式声明时生效；timeoutMins 不再换算成墙钟（对齐 CC）。
+          maxTurns: cmd.maxTurns,
           // agent 优先作为 agent 类型（memory/system prompt 跟随）；否则沿用 skill:<name>
           type: skill ? (agentType ?? `skill:${skill.name}`) : undefined,
           signal: run?.signal,

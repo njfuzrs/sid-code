@@ -78,6 +78,14 @@ export function parseSkillFrontmatterFields(
       : typeof fm["timeoutMins"] === "number"
         ? fm["timeoutMins"]
         : undefined;
+  // PR-B（2026-10-17）：timeoutMins 不再生效（子代理无墙钟，对齐 CC）。解析到就 warn 一次——
+  // 静默忽略会让作者以为它还在生效。字段仍保留在定义上（面板展示 / 向后兼容），只是不再接线。
+  if (timeoutMins !== undefined) {
+    getLogger().warn(
+      "SKILL",
+      `skill 声明了 timeoutMins=${timeoutMins}，已不再生效：fork 子代理不设时间上限（ESC / task_stop 可随时停止）`,
+    );
+  }
 
   // user-invocable（默认 true）
   const rawUserInvocable = fm["user-invocable"] ?? fm["userInvocable"];

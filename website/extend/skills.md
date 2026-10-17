@@ -172,8 +172,8 @@ frontmatter 字段用 **kebab-case**（`when-to-use`，不是 `whenToUse`）：
 | `mode` | 否 | `activate` / `delegate`（默认 activate） |
 | `context` | 否 | `inline` / `fork`，分别等价于 `activate` / `delegate`；和 `mode` 同时写时以 `context` 为准 |
 | `allowed-tools` | 否 | 免确认 allow 规则（逗号/空格分隔，认 `Read`、`Bash(git *)` 等写法），**不裁剪工具集**，见上文。声明它会让 skill 执行前多一次确认 |
-| `max-turns` | 否 | delegate 模式最大轮次，默认 30。模型自动调用时上限 50；手动 `/name` 触发不封顶 |
-| `timeout-mins` | 否 | delegate 模式超时（分钟），默认 2，上限 30。只在模型自动调用时生效，手动 `/name` 触发不受它约束 |
+| `max-turns` | 否 | delegate 模式最大轮次。**不写就不设上限**（对齐 Claude Code）；写了才生效，到达后强制总结收尾 |
+| `timeout-mins` | 否 | **已不再生效**：fork 子代理不设时间上限，写了只会在加载时打一条 warn。要停下随时按 ESC 或用 `task_stop` |
 | `model` | 否 | 指定模型（比如让审计走更强的模型） |
 | `effort` | 否 | 推理努力程度：`low` / `medium` / `high` / `max` |
 | `disable-model-invocation` | 否 | `true` = 只能手动 `/name` 触发，模型不能自动调 |

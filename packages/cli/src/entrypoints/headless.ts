@@ -31,6 +31,8 @@ import { getLogger } from "@sid-code/core/debug/index.ts";
 import { SIDE_CALL_NO_THINK } from "@sid-code/core/llm/side-call-timeout.ts";
 import { streamWithResilience } from "@sid-code/core/llm/resilient-stream.ts";
 import { LLMStreamError } from "@sid-code/core/llm/errors.ts";
+import { resolveLoopTimeouts } from "@sid-code/core/config/network-profile.ts";
+import { raceTurnHardTimeout } from "@sid-code/core/agent/turn-hard-timeout.ts";
 
 // ============================================================
 // 主线
@@ -156,16 +158,14 @@ async function runAgentLoop(
     content: [{ type: "text", text: init.user_prompt }],
   });
 
-  // 超时定时器
-  const timeoutId = setTimeout(() => {
-    writeChildMsg({
-      type: "crash",
-      error: `子代理超时 (${Math.round(init.timeout / 1000)}秒)`,
-    });
-    process.exit(1);
-  }, init.timeout);
-  // 不让定时器阻止进程退出
-  if (timeoutId.unref) timeoutId.unref();
+  // PR-B（2026-10-17）：子进程不再挂墙钟 `process.exit` 定时器，与进程内路径同口径。
+  // max_turns 省略 = 无上限（Infinity 无法 JSON 序列化，父进程用省略表达）。
+  const maxTurns =
+    typeof init.max_turns === "number" && init.max_turns > 0 ? init.max_turns : Infinity;
+  // 重试 / 卡死判定 / 单轮兜底全部与主循环同源（env / settings 可覆盖）。
+  const net = resolveLoopTimeouts({});
+  // 子进程没有外部 abort 信号（父进程 abort 走 kill 子进程 / signal 消息），给兜底一个永不 abort 的源。
+  const neverAbort = new AbortController().signal;
 
   // P0/P1-2：初始化补齐缓存字段，回传父进程的 totalUsage 才能携带命中/写入量，
   // 否则父会话 sink 按全价计费、子代理缓存省钱失真。
@@ -195,7 +195,7 @@ async function runAgentLoop(
   };
 
   try {
-    while (turns < init.max_turns) {
+    while (turns < maxTurns) {
       turns++;
 
       // 调用 LLM
@@ -216,36 +216,51 @@ async function runAgentLoop(
       // 一次 429 就整进程失败退出，父进程只收到一句 result{success:false}。
       // switchMode 必须 auto——**绝不阻塞**：ask 会去调一个此进程里根本不存在的
       // TUI 钩子，把子进程永久挂死，比失败更糟。
-      const stream = streamWithResilience(
-        provider,
-        {
-          // 别名（归因/日志口径，与父进程一致）
-          model: init.model,
-          // 真名：本进程不读配置、别名表恒空，只能用父进程随 init 传来的值。
-          // 缺省（老版本父进程 / 无 model_id 配置）时 provider 回落 model，行为不变。
-          wireModel: init.wire_model,
-          // 发给 LLM 走 getCleanedMessages()（剪枝 + masking），对标主循环与 agentic-loop。
-          messages: ctxMgr.getCleanedMessages(),
-          system: ctxMgr.getSystemPrompt(),
-          maxTokens: 4096,
-          tools: toolDefs,
-          // H8：headless（spawn 出的独立进程子代理）入口无独立 effort 旋钮，默认关思考，
-          // 与进程内子代理/fork 收口口径一致（ParentInitMessage 不携带 effort）。
-          thinking: SIDE_CALL_NO_THINK,
-        },
-        undefined,
-        {
-          querySource: "headless",
-          switchMode: "auto",
-          // 父进程用 init.timeout 做 wall-clock 硬顶（`sub-agent.ts` 超时即 kill 子进程），
-          // 故此处上界压到 3 次，避免退避把父进程那份预算烧穿后被硬 kill——
-          // 那样重试反而**降低**成功率（连收尾的 result 消息都发不出去）。
-          maxRetries: 3,
-        },
-      );
+      const openStream = (callSignal: AbortSignal) =>
+        streamWithResilience(
+          provider,
+          {
+            // 别名（归因/日志口径，与父进程一致）
+            model: init.model,
+            // 真名：本进程不读配置、别名表恒空，只能用父进程随 init 传来的值。
+            // 缺省（老版本父进程 / 无 model_id 配置）时 provider 回落 model，行为不变。
+            wireModel: init.wire_model,
+            // 发给 LLM 走 getCleanedMessages()（剪枝 + masking），对标主循环与 agentic-loop。
+            messages: ctxMgr.getCleanedMessages(),
+            system: ctxMgr.getSystemPrompt(),
+            maxTokens: 4096,
+            tools: toolDefs,
+            // H8：headless（spawn 出的独立进程子代理）入口无独立 effort 旋钮，默认关思考，
+            // 与进程内子代理/fork 收口口径一致（ParentInitMessage 不携带 effort）。
+            thinking: SIDE_CALL_NO_THINK,
+          },
+          callSignal,
+          {
+            querySource: "headless",
+            switchMode: "auto",
+            // PR-B：此前压到 3 次，理由是「怕被父进程墙钟 kill」；墙钟已删，理由随之消失。
+            maxRetries: net.maxTimeoutRetries,
+            streamTimeoutMs: net.fallbackStreamTimeoutMs,
+          },
+        );
 
-      // 处理流式响应
-      const response = await processStream(stream);
+      // 处理流式响应（外包 S2b 单轮硬超时兜底，阈值与主循环同一个 maxTurnDurationMs，触发即重试）
+      let response: Awaited<ReturnType<typeof processStream>> | undefined;
+      for (let attempt = 0; attempt <= net.maxTimeoutRetries; attempt++) {
+        const outcome = await raceTurnHardTimeout((s) => processStream(openStream(s)), {
+          timeoutMs: net.maxTurnDurationMs,
+          signal: neverAbort,
+        });
+        if (!outcome.timedOut) {
+          response = outcome.value;
+          break;
+        }
+        logError(`[headless] 单轮硬超时，第 ${attempt + 1} 次`);
+      }
+      if (!response) {
+        emitResult(false, lastTextOutput || "单轮硬超时，重试耗尽");
+        return;
+      }
 
       // P0/P1-2：统一走 accumulateUsage，补齐 cacheRead/cacheCreation，
       // 与 query/agent/agentic-loop 三处口径一致（消灭第四套拷贝的丢字段缺陷）。
@@ -272,7 +287,8 @@ async function runAgentLoop(
         writeChildMsg({
           type: "progress",
           turn: turns,
-          max_turns: init.max_turns,
+          // 协议字段是 number：无上限时报 0（父进程只用作展示）。
+          max_turns: Number.isFinite(maxTurns) ? maxTurns : 0,
           toolUseCount: toolUseCount + turnToolUses.length,
           tokenCount: totalUsage.inputTokens + totalUsage.outputTokens,
           lastActivity: lastTool ? describeToolActivity(lastTool.name, lastTool.input) : undefined,
@@ -367,9 +383,9 @@ async function runAgentLoop(
     }
 
     // 达到最大轮次
-    emitResult(true, lastTextOutput || `已达到最大轮次 (${init.max_turns})`);
+    emitResult(true, lastTextOutput || `已达到最大轮次 (${maxTurns})`);
   } finally {
-    clearTimeout(timeoutId);
+    /* PR-B：无定时器需要清理 */
   }
 }
 
