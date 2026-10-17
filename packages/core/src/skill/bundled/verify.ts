@@ -43,7 +43,7 @@ export function registerVerifySkill(): void {
     allowedTools: ["read", "grep", "glob"],
     context: "fork",
     userInvocable: true,
-    maxTurns: 20,
+    // 不声明 maxTurns：fork 子代理未声明即无上限（对齐 CC，PR-B S4b）。
     async getPromptForCommand(args) {
       return VERIFY_PROMPT + (args.trim() ? `\n\n## 用户额外要求\n\n${args.trim()}` : "");
     },

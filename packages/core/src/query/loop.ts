@@ -2128,6 +2128,13 @@ export async function* queryLoop(loopConfig: QueryLoopConfig): AsyncGenerator<Qu
       // ─── Effort / Thinking 旋钮 → 各 provider 线格式（能力感知映射层，effort.ts）───
       // 每轮取最新运行时态（照搬 getCurrentPermissionMode 模式，保证 /effort、/think 切换当轮生效）。
       // 未注入 getter 时回退旧逻辑（thinking hint 直接写 SendParams），保证向后兼容。
+      // PR-5：意图（applier 之前）与控制形态，随 BeforeModel 入 raw.jsonl。
+      let thinkingObs:
+        | {
+            thinking_intent: "on" | "off" | "auto";
+            thinking_control: "toggle" | "locked-on" | "none";
+          }
+        | undefined;
       if (deps.getEffortSetting || deps.getThinkingSetting) {
         const modelConfig = config.availableModels?.find((m) => m.name === config.model);
         const cap = resolveEffortCapability({
@@ -2154,6 +2161,14 @@ export async function* queryLoop(loopConfig: QueryLoopConfig): AsyncGenerator<Qu
           appliedEffort = "max";
         }
 
+        // D9：记下 applier 之前的意图，fallback 据此对备用模型重解析（不读被 applier 改写过的值）。
+        sendParams.thinkingIntent = { thinking: appliedThinking, effort: appliedEffort };
+        const envThinking = getThinkingEnvOverride();
+        thinkingObs = {
+          thinking_intent:
+            envThinking !== null ? (envThinking ? "on" : "off") : (runtimeThinking ?? "auto"),
+          thinking_control: cap.thinkingControl,
+        };
         cap.applyToSendParams(sendParams, appliedEffort, appliedThinking);
 
         // §12 P2-1：思考预算被上限钳制时，一次性诚实告知用户（尤其 adaptive 模型无法精确保证）。
@@ -2212,6 +2227,7 @@ export async function* queryLoop(loopConfig: QueryLoopConfig): AsyncGenerator<Qu
             // 带偏了整整一轮。注意这是**内部表示**，线上形状由各族方言决定（见 hook/types.ts）。
             ...(sendParams.thinking ? { thinking: sendParams.thinking } : {}),
             ...(sendParams.reasoningEffort ? { reasoning_effort: sendParams.reasoningEffort } : {}),
+            ...thinkingObs,
           },
           {
             // 发现 1 修复：把 StreamPhase 快照的 key 组件（turnCount + loopId）透传给采集器，

@@ -236,6 +236,64 @@ describe("OpenAI convertMessages — reasoning_content 回传分叉 (方案⓪)"
   });
 });
 
+// ─── D10：Claude 历史（thinking 块、无 _meta）→ DeepSeek V4 的 reasoning_content 降级 ───
+// 20261016 思考开关排查 §8.3：Claude → DeepSeek 时 tool-call 轮缺 reasoning_content → 思维链断。
+describe("OpenAI convertMessages — 跨族 thinking 块降级为 reasoning_content (D10)", () => {
+  const claudeToolTurn = {
+    role: "assistant" as const,
+    content: [
+      { type: "thinking" as const, thinking: "先读文件", signature: "sig-abc" },
+      { type: "tool_use" as const, id: "toolu_1", name: "read", input: { file_path: "/a.ts" } },
+    ],
+  };
+
+  test("DeepSeek V4：tool-call 轮把 thinking 文本写进 reasoning_content，signature 不进请求体", () => {
+    const provider = new TestableOpenAIProvider("test-key", "deepseek-v4-pro");
+    const result = provider.testConvertMessages([claudeToolTurn]);
+    expect(result[0].reasoning_content).toBe("先读文件");
+    expect(JSON.stringify(result[0])).not.toContain("sig-abc");
+    // 正文不被思考文本污染（tool-call 轮 content 仍为 null）
+    expect(result[0].content).toBeNull();
+  });
+
+  test("旧 deepseek-reasoner / 非 DeepSeek：不降级（带 reasoning_content 会 400）", () => {
+    for (const model of ["deepseek-reasoner", "gpt-4o-mini"]) {
+      const provider = new TestableOpenAIProvider("test-key", model);
+      expect(provider.testConvertMessages([claudeToolTurn])[0].reasoning_content).toBeUndefined();
+    }
+  });
+
+  test("思考文本为空（redacted / omitted）就跳过，不写空串", () => {
+    const empty = {
+      role: "assistant" as const,
+      content: [
+        { type: "thinking" as const, thinking: "", signature: "sig" },
+        { type: "tool_use" as const, id: "toolu_2", name: "read", input: {} },
+      ],
+    };
+    const provider = new TestableOpenAIProvider("test-key", "deepseek-v4-pro");
+    expect("reasoning_content" in provider.testConvertMessages([empty])[0]).toBe(false);
+  });
+
+  test("无 tool_calls 的 Claude 轮不迁移（控制范围，防上下文膨胀）", () => {
+    const textTurn = {
+      role: "assistant" as const,
+      content: [
+        { type: "thinking" as const, thinking: "想了想", signature: "s" },
+        { type: "text" as const, text: "结论" },
+      ],
+    };
+    const provider = new TestableOpenAIProvider("test-key", "deepseek-v4-pro");
+    expect(provider.testConvertMessages([textTurn])[0].reasoning_content).toBeUndefined();
+  });
+
+  test("已有 _meta.reasoning_content 时以它为准，不用 thinking 块覆盖", () => {
+    const both = { ...claudeToolTurn, _meta: { reasoning_content: "原生链" } };
+    const provider = new TestableOpenAIProvider("test-key", "deepseek-v4-pro");
+    expect(provider.testConvertMessages([both])[0].reasoning_content).toBe("原生链");
+  });
+});
+
 describe("OpenAI convertMessages — 其它兜底", () => {
   const provider = new TestableOpenAIProvider("test-key", "gpt-4o-mini");
 

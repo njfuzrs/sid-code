@@ -36,6 +36,7 @@ import { currentSseDumpContext } from "./sse-chunk-dumper.ts";
 import {
   recordBilledRequest,
   recordNonStreamingBilledRequest,
+  observedThinkingIntent,
   nextFetchId,
 } from "./billing-sink.ts";
 import { normalizeToolInput } from "./normalize-tool-input.ts";
@@ -544,6 +545,8 @@ export class AnthropicProvider implements Provider {
       let emittedOutputTokens = 0;
       // PR3：本次 fetch 的计费去重键（单次 fetch 粒度，理由见 billing-sink.ts）。
       const billingFetchId = nextFetchId();
+      // PR-5：响应里是否出现思考块（关闭泄漏率 / side-call 思考率的分子）
+      let sawThinkingBlock = false;
 
       // § content block 拼接与 tool input 自管
       interface InternalBlock {
@@ -609,6 +612,9 @@ export class AnthropicProvider implements Provider {
               const idx = (event as any).index;
               const rawBlock = (event as any).content_block;
               const converted = this.convertContentBlock(rawBlock);
+              if (rawBlock?.type === "thinking" || rawBlock?.type === "redacted_thinking") {
+                sawThinkingBlock = true;
+              }
 
               // § content_block null check 策略：fail-safe + 诊断日志
               // 不 throw（支持第三方代理的跳跃 index），stream-processor 层有兜底
@@ -814,6 +820,9 @@ export class AnthropicProvider implements Provider {
             callerLabel: bctx.callerLabel,
             atMs: Date.now(),
             accounted: !bctx.agentId && !bctx.callerLabel,
+            thinkingWire: thinkingWireLabel(thinkingWire.param),
+            thinkingInResponse: sawThinkingBlock,
+            thinkingIntent: observedThinkingIntent(params),
           });
         } catch {
           /* 计费上报绝不影响流 */
@@ -1003,6 +1012,7 @@ export class AnthropicProvider implements Provider {
     let billedUsage: Usage | undefined;
     let billable = false;
     const nonStreamThinkingWire = buildThinkingWire(params, wireModel, this.client.baseURL);
+    let nonStreamSawThinking = false;
     try {
       const createMessage = () =>
         this.client.messages.create(
@@ -1058,6 +1068,9 @@ export class AnthropicProvider implements Provider {
 
       const content: ContentBlock[] = [];
       for (const block of (message as any).content ?? []) {
+        if (block?.type === "thinking" || block?.type === "redacted_thinking") {
+          nonStreamSawThinking = true;
+        }
         const converted = this.convertContentBlock(block);
         // 跳过被忽略的空块（未知类型）
         if (converted.type === "text" && converted.text === "" && block.type !== "text") {
@@ -1082,6 +1095,9 @@ export class AnthropicProvider implements Provider {
           provider: this.name(),
           baseURL: this.client.baseURL,
           usage: billedUsage,
+          thinkingWire: thinkingWireLabel(nonStreamThinkingWire.param),
+          thinkingInResponse: nonStreamSawThinking,
+          thinkingIntent: observedThinkingIntent(params),
         });
       }
     }
@@ -1154,6 +1170,17 @@ function buildThinkingParam(params: SendParams): Record<string, unknown> {
  * 实测 `disabled` + `effort:"max"` → 400。现状 `off` 路径的 applier 本就不写 outputConfig，
  * 这里再挡一次，防 fallback / 调用方残留字段。
  */
+/**
+ * PR-5：把 buildThinkingWire 的结果归一成落盘标签（BilledRequest.thinkingWire）。
+ * 读的是**真正拼进请求体**的那份 param，不是 params.thinking——后者是内部表示，两者不可互推。
+ */
+export function thinkingWireLabel(
+  param: Record<string, unknown>,
+): "enabled" | "adaptive" | "disabled" | "omitted" {
+  const t = (param.thinking as { type?: string } | undefined)?.type;
+  return t === "enabled" || t === "adaptive" || t === "disabled" ? t : "omitted";
+}
+
 export function buildThinkingWire(
   params: SendParams,
   wireModel: string,

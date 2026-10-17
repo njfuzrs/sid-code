@@ -43,18 +43,27 @@ const COMPLEXITY_PATTERNS: { complexity: Complexity; patterns: RegExp[] }[] = [
 ];
 
 export class ThinkingManager {
-  private enabled: boolean;
+  /**
+   * 启用位：布尔快照，或每次读取时现算的回调。
+   *
+   * 为什么要支持回调（D8）：App 只构造一次 ThinkingManager，若持有构造期快照，
+   * 启动在无开关族（kimi / gpt-5.x）、再切到有开关族时，`think hard` / `ultrathink`
+   * 永久失效且零日志（parseThinkingHint 在 !enabled 时静默返回）。全仓也没有任何
+   * `setEnabled` 调用点——靠「切模型时通知」要保证所有切换路径都通知到，新增一条就漏；
+   * 现算回调与状态栏（pushKnobDisplay → resolveEffortCap）同口径，天然跟着当前模型走。
+   */
+  private enabled: boolean | (() => boolean);
 
-  constructor(enabled: boolean = false) {
+  constructor(enabled: boolean | (() => boolean) = false) {
     this.enabled = enabled;
   }
 
   /** 是否启用 Extended Thinking */
   isEnabled(): boolean {
-    return this.enabled;
+    return typeof this.enabled === "function" ? this.enabled() : this.enabled;
   }
 
-  /** 设置启用状态 */
+  /** 设置启用状态（会覆盖现算回调，变为固定值） */
   setEnabled(enabled: boolean): void {
     this.enabled = enabled;
   }
@@ -78,7 +87,7 @@ export class ThinkingManager {
 
   /** 根据用户输入自动推荐 thinking 配置 */
   getThinkingConfig(userInput: string): { enabled: boolean; budgetTokens: number } | undefined {
-    if (!this.enabled) {
+    if (!this.isEnabled()) {
       return undefined;
     }
 
@@ -102,7 +111,7 @@ export class ThinkingManager {
     cleaned: string;
     config?: { enabled: boolean; budgetTokens: number };
   } {
-    if (!this.enabled) {
+    if (!this.isEnabled()) {
       return { cleaned: input };
     }
 

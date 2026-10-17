@@ -90,7 +90,7 @@ export function registerReviewSkill(): void {
     agent: "verify",
     context: "fork",
     userInvocable: true,
-    maxTurns: 30,
+    // 不声明 maxTurns：fork 子代理未声明即无上限（对齐 CC，PR-B S4b）。
     async getPromptForCommand(args) {
       const body = (await loadCodeReviewBody()) ?? FALLBACK_REVIEW_PROMPT;
       const extra = args.trim() ? `\n\n---\n\n## 用户额外要求\n\n${args.trim()}` : "";
