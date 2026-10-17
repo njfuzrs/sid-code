@@ -17,11 +17,7 @@ import { runAgentLoop } from "@sid-code/core/agent/agentic-loop.ts";
 import { Manager as ContextManager } from "@sid-code/core/context/manager.ts";
 import { Registry as ToolRegistry } from "@sid-code/core/tool/registry.ts";
 import { LoopDetector } from "@sid-code/core/agent/loop-detection.ts";
-import {
-  parseAgentTimeout,
-  CUSTOM_AGENT_TIMEOUT_MIN_MS,
-  CUSTOM_AGENT_TIMEOUT_MAX_MS,
-} from "@sid-code/core/agent/custom.ts";
+import { warnIgnoredAgentTimeout } from "@sid-code/core/agent/custom.ts";
 import type { Provider } from "@sid-code/core/llm/provider.ts";
 import type { StreamEvent, SendParams } from "@sid-code/core/llm/types.ts";
 
@@ -280,49 +276,21 @@ describe("B5-4 门槛：重试次数透出到 AgentLoopResult（§5 缺口 D）"
 });
 
 // ══════════════════════════════════════════════════════════════════════
-// B5-5：frontmatter timeout 钳制
+// PR-B（2026-10-17）：frontmatter timeout 不再生效（取代 B5-5 的钳制）
 // ══════════════════════════════════════════════════════════════════════
 
-describe("B5-5 门槛：frontmatter timeout 有上限（§5 缺口 C）", () => {
-  test("超大值被钳到上限（改造前无上限，可写成 11 天）", () => {
-    // "有界"这个安全性质是外层超时提供的；timeout 无上限 = 把它放开。
-    expect(parseAgentTimeout(999_999_999, "evil")).toBe(CUSTOM_AGENT_TIMEOUT_MAX_MS);
-  });
-
-  test("过小值被钳到下限", () => {
-    // 比一次退避（cap 120s）还短的 timeout 会让子代理在第一次限流退避中途就被 abort，
-    // 永远等不到重试结果 —— 几乎总是笔误。
-    expect(parseAgentTimeout(500, "typo")).toBe(CUSTOM_AGENT_TIMEOUT_MIN_MS);
-  });
-
-  test("区间内的值原样保留", () => {
-    expect(parseAgentTimeout(300_000, "normal")).toBe(300_000);
-    expect(parseAgentTimeout(CUSTOM_AGENT_TIMEOUT_MIN_MS, "edge")).toBe(
-      CUSTOM_AGENT_TIMEOUT_MIN_MS,
-    );
-    expect(parseAgentTimeout(CUSTOM_AGENT_TIMEOUT_MAX_MS, "edge")).toBe(
-      CUSTOM_AGENT_TIMEOUT_MAX_MS,
-    );
+describe("PR-B：frontmatter timeout 已不生效", () => {
+  test("内置 agent 定义不再声明 timeout（子代理无墙钟，对齐 CC）", async () => {
+    const { readFileSync } = await import("node:fs");
+    const src = readFileSync("packages/core/src/agent/agent-definition.ts", "utf-8");
+    expect([...src.matchAll(/^\s*timeout:\s*[0-9_]+/gm)]).toHaveLength(0);
   });
 
   test.each([
     ["未声明", undefined],
+    ["数字", 300_000],
     ["字符串", "600000"],
-    ["零", 0],
-    ["负数", -1],
-    ["NaN", NaN],
-    ["Infinity", Infinity],
-  ])("%s → undefined（由调用方回落默认 300s）", (_label, raw) => {
-    expect(parseAgentTimeout(raw, "bad")).toBeUndefined();
-  });
-
-  test("上限不低于内置 agent 的最长超时（否则自定义 agent 反而更受限）", async () => {
-    const { readFileSync } = await import("node:fs");
-    const src = readFileSync("packages/core/src/agent/agent-definition.ts", "utf-8");
-    const timeouts = [...src.matchAll(/timeout:\s*([0-9_]+)/g)]
-      .map((m) => parseInt(m[1].replace(/_/g, ""), 10))
-      .filter((n) => n > 0);
-    expect(timeouts.length).toBeGreaterThan(0);
-    expect(CUSTOM_AGENT_TIMEOUT_MAX_MS).toBeGreaterThanOrEqual(Math.max(...timeouts));
+  ])("%s → 不抛错（只 warn）", (_label, raw) => {
+    expect(() => warnIgnoredAgentTimeout(raw, "x")).not.toThrow();
   });
 });

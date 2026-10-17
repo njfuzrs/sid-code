@@ -127,7 +127,6 @@ describe("子代理通信协议", () => {
       model: "test-model",
       max_turns: 5,
       max_tokens: 50000,
-      timeout: 30000,
       workdir: "/tmp",
       provider_name: "anthropic",
       api_key: "test-key-redacted",

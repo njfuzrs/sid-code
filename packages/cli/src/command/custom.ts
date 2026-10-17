@@ -450,7 +450,7 @@ export class CustomCommand implements Command {
           trusted: this._options.trusted === true,
           agentType: agent,
           model, // 未指定则用主模型
-          maxTurns: 30,
+          // PR-B：自定义命令无 maxTurns 声明字段 → 无上限，对齐 CC
           type: "custom-command",
           signal: run?.signal,
         });

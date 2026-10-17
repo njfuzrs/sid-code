@@ -57,10 +57,8 @@ export interface AgentDefinition {
    * 结构与 settings.json hooks 一致；spawn 时注册到该子代理的 hook 系统。
    */
   hooks?: unknown;
-  /** 最大轮次（默认 10） */
+  /** 最大轮次（可选；未声明 = 无上限，对齐 CC 内置代理） */
   maxTurns?: number;
-  /** 超时时间（毫秒，默认 120000） */
-  timeout?: number;
   /** 是否只读代理（只读工具不能被误用为写操作） */
   readOnly?: boolean;
   /** 来源：built-in | userSettings | plugin（对标 cc AgentSource） */
@@ -103,9 +101,6 @@ export const BUILTIN_AGENTS: Record<string, AgentDefinition> = {
     readOnly: true,
     // P0-1：explore 是高频只读搜索代理，pin 便宜档省 token（对齐 CC 给 Explore 固定 haiku）。
     modelTier: "cheap",
-    // explore 常被派去读 7-11 个文件 + 多轮 grep，每轮都要等 LLM 响应；
-    // 慢模型（glm/deepseek 等）下 120s 明显不够，给足 300s。
-    timeout: 300_000,
     source: "built-in",
   },
 
@@ -145,8 +140,6 @@ export const BUILTIN_AGENTS: Record<string, AgentDefinition> = {
       // 否则等于把主循环 2026-08 修过的「做了一半就收尾」原样搬进子循环。
       "todo_write",
     ],
-    // task 常做多步编码 + 命令执行，比 explore 更重；给足 300s。
-    timeout: 300_000,
     source: "built-in",
   },
 
@@ -163,7 +156,6 @@ export const BUILTIN_AGENTS: Record<string, AgentDefinition> = {
     // summarize 不需要工具
     // P0-1：摘要是纯文本压缩任务，pin 便宜档省 token。
     modelTier: "cheap",
-    timeout: 180_000,
     source: "built-in",
   },
 
@@ -184,8 +176,6 @@ export const BUILTIN_AGENTS: Record<string, AgentDefinition> = {
     readOnly: true,
     // P0-1：plan 只读分析代理，pin 便宜档省 token。
     modelTier: "cheap",
-    // plan 只读但需要大量阅读代码，给足 240s。
-    timeout: 240_000,
     source: "built-in",
   },
 
@@ -202,8 +192,6 @@ export const BUILTIN_AGENTS: Record<string, AgentDefinition> = {
 - 标注置信度：对关键结论标注确定性（如「已验证」「推测，未确认」），并显式列出你没能确认的点`,
     tools: ["*"],
     disallowedTools: ["sub_agent"],
-    // 通用代理执行多步骤复杂任务，给足 360s。
-    timeout: 360_000,
     source: "built-in",
   },
 
@@ -249,8 +237,6 @@ export const BUILTIN_AGENTS: Record<string, AgentDefinition> = {
 - **严重度校准**：原定级是否准确，是否高估/低估`,
     tools: ["read", "grep", "glob", "ls", "read_many", "bash", "task_list", "task_get"],
     readOnly: true,
-    // verify 需要多轮文件读取 + grep + 逐一读码举证，与 explore 同级，给足 300s。
-    timeout: 300_000,
     source: "built-in",
   },
 };

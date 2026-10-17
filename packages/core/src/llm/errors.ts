@@ -163,17 +163,10 @@ export const ABORT_REASONS = [
   // reason 白名单而非错误文本」的口径分裂。改用 controller.abort(AGENT_STREAM_TIMEOUT_REASON)
   // 后，登记于此确保孤儿 rejection 被 isAbortError 识别、且可被 isInternalTimeoutAbortReason 命中。
   "agent-stream-timeout",
-  // P0-1：子代理墙钟**硬 kill** 兜底（detach 之后的最后一道闸）。
-  //
-  // 语义变更的落点：改造前墙钟到点即 `timeoutCtrl.abort()`，成果被整句丢弃（184 万
-  // input token 产出归零的直接原因）。改造后墙钟到点只做 **detach**（转后台继续跑、
-  // 前台交回残卷，不 abort），真正 abort 只在 detach 之后又跑满 SUBAGENT_HARD_KILL_MULTIPLIER
-  // 倍时长才发生——那已不是"跑得慢"而是"跑失控了"。
-  //
-  // 必须登记：detach 后的续跑发生在**没有前台 await 的后台**，硬 kill 时底层 fetch 会以
-  // 这个裸字符串 reject，未登记就是一条绕过 isAbortError 总闸门的孤儿 rejection（历史事故：
-  // 自定义 reason 绕过闸门致崩溃）。
-  "subagent-hard-kill",
+  // PR-B（2026-10-17）：会话退出时回收仍在跑的后台子代理（task/agent-task.ts）。
+  // 取代已删除的 "subagent-hard-kill"（子代理不再有墙钟 / 硬 kill）。必须登记：回收发生在
+  // 没有前台 await 的后台，底层 fetch 以这个裸字符串 reject，未登记即孤儿 rejection。
+  "subagent-session-exit",
   // C1（2026-10-14）：唤醒后主动回收**跨越休眠**的在飞请求（fallback.ts）。
   // 休眠前建的连接基本已死，等 OS 报错要 43–69s（半开连接甚至不报）。登记理由同上：
   // 底层 fetch 以该裸字符串 reject，未登记即孤儿 rejection。
@@ -184,13 +177,8 @@ export const ABORT_REASONS = [
 export const AGENT_STREAM_TIMEOUT_REASON = "agent-stream-timeout" as const;
 /** H10：side-call 硬超时的 abort reason（与既有 "side-call-timeout" 一致，供各 side-call 复用）。 */
 export const SIDE_CALL_TIMEOUT_REASON = "side-call-timeout" as const;
-/**
- * P0-1：子代理硬 kill 的 abort reason（单一事实源，供 sub-agent.ts 使用）。
- *
- * 只在 detach 之后又跑满硬 kill 期限时才用。墙钟到点本身**不再** abort（改为 detach），
- * 这是本次修复的语义核心——见 ABORT_REASONS 里 "subagent-hard-kill" 的说明。
- */
-export const SUBAGENT_HARD_KILL_REASON = "subagent-hard-kill" as const;
+/** PR-B：会话退出回收后台子代理的 abort reason（单一事实源，供 task/agent-task.ts 使用）。 */
+export const SUBAGENT_SESSION_EXIT_REASON = "subagent-session-exit" as const;
 
 /** C1：唤醒回收在飞请求的 abort reason（单一事实源，供 fallback.ts 使用）。 */
 export const HOST_SLEEP_REOPEN_ABORT_REASON = "host-sleep-reopen" as const;

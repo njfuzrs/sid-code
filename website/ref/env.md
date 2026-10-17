@@ -18,9 +18,9 @@ description: 全部可用环境变量及其作用。
 
 <!-- AUTO-GEN:START 由 scripts/docs-gen-reference.ts 生成，勿手工编辑 -->
 
-> 共 **125** 个环境变量，取自 `sid-code --help` 的环境变量段，
-> 并与源码里实际的 `process.env` 读取点（扫到 182 个）交叉核对。
-> 扫到的 182 个里 121 个在上表、61 个列在页尾；表里另有 4 个是扫描认不出的读法（如拼接出的变量名），仍以 help 为准。
+> 共 **124** 个环境变量，取自 `sid-code --help` 的环境变量段，
+> 并与源码里实际的 `process.env` 读取点（扫到 181 个）交叉核对。
+> 扫到的 181 个里 120 个在上表、61 个列在页尾；表里另有 4 个是扫描认不出的读法（如拼接出的变量名），仍以 help 为准。
 
 > 优先级：环境变量 > `settings.json`。`SID_*` 前缀的变量只对 sid-code 生效，
 > 不与同机的其他工具共享。
@@ -126,7 +126,6 @@ description: 全部可用环境变量及其作用。
 | 变量 | 说明 |
 |---|---|
 | `SID_SUBAGENT_MAX_CONCURRENT` | 子代理并发上限（缺省 3） |
-| `SID_CODE_SUBAGENT_TIMEOUT_MS` | 子代理超时毫秒统一覆盖（缺省按 agent 声明值与实测 p95 派生） |
 | `SID_TOOL_MAX_CONCURRENT` | 工具并发上限（缺省 10） |
 | `SID_WORKFLOW_MAX_CONCURRENT` | 工作流并发上限（缺省 min(16, cpu核数-2)） |
 | `SID_WORKFLOW_SYNC_TIMEOUT_MS` | 工作流同步超时毫秒 |
