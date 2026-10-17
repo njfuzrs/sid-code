@@ -56,21 +56,20 @@ describe("renderMarkdown", () => {
       expect(result).toMatch(/\x1b\[/);
     });
 
-    test("无语言时原文 + 2 空格缩进", () => {
+    // 代码块不加前导缩进：复制即可执行，缩进敏感内容不被整体右移（与 MarkdownAnsi 同口径）。
+    test("无语言时原文顶格输出", () => {
       const result = renderMarkdown("```\nhello world\n```");
-      const plain = stripAnsi(result);
-      expect(plain).toContain("  hello world");
+      expect(stripAnsi(result).split("\n")).toEqual(["hello world"]);
     });
 
-    test("代码块每行都有缩进", () => {
-      const result = renderMarkdown("```\nline1\nline2\nline3\n```");
-      const plain = stripAnsi(result);
-      const lines = plain.split("\n");
-      for (const line of lines) {
-        if (line.trim()) {
-          expect(line).toMatch(/^ {2}/);
-        }
-      }
+    test("多行代码块逐行原样（无前导空格），自身缩进保留", () => {
+      const result = renderMarkdown("```\nline1\n  line2\nline3\n```");
+      expect(stripAnsi(result).split("\n")).toEqual(["line1", "  line2", "line3"]);
+    });
+
+    test("列表项内的代码块仍对齐到列表文本列（结构缩进不受影响）", () => {
+      const plain = stripAnsi(renderMarkdown("1. 第一步\n   ```\n   echo hi\n   ```"));
+      expect(plain.split("\n")).toContain("   echo hi");
     });
   });
 

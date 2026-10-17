@@ -525,12 +525,20 @@ function renderLink(label: string, href: string): string {
   // 此前用 process.stdout.isTTY 判断会误伤——很多 TTY 终端并不支持 OSC 8，
   // 会把裸露的转义码显示出来。改用 supportsHyperlinks() 做真实终端兼容检测
   // （覆盖 iTerm2/Kitty/Ghostty/alacritty/Hyper + tmux 透传等），
-  // 不支持的终端降级为「颜色 + 下划线」纯文本。
   if (supportsHyperlinks()) {
     return `\x1b]8;;${href}\x1b\\${styledLabel}\x1b]8;;\x1b\\`;
-  } else {
-    return styledLabel;
   }
+  // 不支持 OSC 8 时 URL 必须以可见文本出现：此前只降级成「颜色 + 下划线」的 label，
+  // URL 整个消失——用户既点不了也复制不到（Terminal.app / 未透传的 tmux 下全部文档链接失效）。
+  // 对齐 CC createHyperlink：不支持时显示 URL 本身。label 与 URL 不同才保留 label 作说明，
+  // URL 放括号里且不加样式，保证拖选复制拿到的是干净 URL。
+  if (!label || stripAnsiText(label) === href) return chalk.hex(theme.text.link)(href);
+  return `${styledLabel} (${href})`;
+}
+
+/** 去 ANSI 后的纯文本（只用于比较 label 与 href 是否相同） */
+function stripAnsiText(s: string): string {
+  return s.replace(ANSI_RE, "");
 }
 
 // ── 内联 token 递归渲染 ─────────────────────────────────────────
@@ -687,12 +695,10 @@ export function renderTokens(tokens: any[], renderWidth?: number): string {
         break;
       }
       case "code": {
-        const highlighted = highlightCode(token.text, token.lang);
-        const indented = highlighted
-          .split("\n")
-          .map((line: string) => TAB_INDENT + line)
-          .join("\n");
-        blocks.push(indented);
+        // 不加前导缩进：代码块是给用户复制执行的，前导空格会原样进剪贴板，
+        // 缩进敏感内容（Python / heredoc）被整体右移。与 MarkdownAnsi 的 RenderCodeBlock 同口径。
+        // 列表项内的代码块由 renderList 补悬挂缩进对齐，那是 markdown 结构语义，不在此处加。
+        blocks.push(highlightCode(token.text, token.lang));
         break;
       }
       case "blockquote": {

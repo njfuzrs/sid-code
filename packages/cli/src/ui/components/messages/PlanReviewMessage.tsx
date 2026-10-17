@@ -25,14 +25,17 @@ export const PlanReviewMessage: React.FC<PlanReviewMessageProps> = ({
 }) => {
   const lineCount = planContent.split("\n").length;
   const borderColor = theme.status.success;
-  // 内容宽度 = 总宽度 - 左右边框(2) - 左右 paddingX(2)
-  const contentWidth = terminalWidth - 4;
+  // 内容宽度 = 总宽度 - 左右 paddingX(2)。不画左右竖线（L2.2）：计划里有命令和路径，
+  // 竖线与内容同行，拖选复制会带出满屏 `│ … │`。去掉竖线后只扣 paddingX，别沿用 -4。
+  const contentWidth = terminalWidth - 2;
 
   return (
     <Box
       flexDirection="column"
       width={terminalWidth}
-      borderStyle="round"
+      borderStyle="single"
+      borderLeft={false}
+      borderRight={false}
       borderColor={borderColor}
       paddingX={1}
     >
