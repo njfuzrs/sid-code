@@ -1294,6 +1294,8 @@ export class TraceCollector {
     // 拿到不同的值。只记首次等于记了一个会漂移的快照，比不记更容易误导。
     if (req.thinking !== undefined) requestSide.thinking = req.thinking;
     if (req.reasoning_effort !== undefined) requestSide.reasoning_effort = req.reasoning_effort;
+    if (req.thinking_intent !== undefined) requestSide.thinking_intent = req.thinking_intent;
+    if (req.thinking_control !== undefined) requestSide.thinking_control = req.thinking_control;
 
     if (index === 1) {
       // 首次请求保存完整数据

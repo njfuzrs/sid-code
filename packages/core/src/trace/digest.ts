@@ -376,6 +376,73 @@ export interface JitDigestStats {
  *   - `oneShotKillCount` 的分母 = `giveUps`（以失败结束的调用数）。目标恒为 0。
  *   - `recoveryByFamily[f].rate` = 救回数 ÷ 进入该族的调用数（救回 + 该族放弃）。
  */
+/**
+ * PR-5（20261016 思考开关排查 §4.7 / §8.8）：思考「关闭泄漏」口径。
+ *
+ * 取数源只有 `BilledRequest`（每次 fetch 必经、主循环与 side-call 都覆盖）。**不用 raw.jsonl**：
+ * 那里 side-call 恒 0 条（实测 12460 行），拿它算 side-call 思考率永远是 n=0 的假绿。
+ *
+ * 分母一律写死为「调用方意图 = 关思考」（`thinking_intent === false`）的 fetch：
+ * - 主循环泄漏率：`accounted === true` 的那部分；
+ * - 非主循环思考率：`accounted === false`（side-call / fork / 子代理）的那部分。
+ * 分子 = 其中 `thinking_in_response === true` 的条数。
+ *
+ * `offButSentOn` 单列：意图关、线上却发了 enabled/adaptive——只会发生在恒思考模型上，
+ * 是「关不掉」的已知代价，不算泄漏（混进分子会让 Opus 5.5 会话把泄漏率顶到 100%）。
+ *
+ * 老轨迹（埋点上线前）没有 `thinking_wire` 字段 → 整体 undefined，不报 0%。
+ */
+export interface ThinkingLeakStats {
+  main: { offRequests: number; leaked: number; rate?: number };
+  nonMain: { offRequests: number; withThinking: number; rate?: number };
+  /** 意图关但线上发了 enabled/adaptive（恒思考模型），不计入上面两项的分母 */
+  offButSentOn: number;
+  /** 按 model（渠道别名）分组——跨路由汇总会掩盖「只有某个模型关不掉」 */
+  byModel: Record<string, { offRequests: number; withThinking: number }>;
+}
+
+export function aggregateThinkingLeakStats(
+  events: Array<{ event?: string; data?: Record<string, unknown> }>,
+): ThinkingLeakStats | undefined {
+  const stats: ThinkingLeakStats = {
+    main: { offRequests: 0, leaked: 0 },
+    nonMain: { offRequests: 0, withThinking: 0 },
+    offButSentOn: 0,
+    byModel: {},
+  };
+  let instrumented = 0;
+  for (const e of events) {
+    if (e.event !== "BilledRequest") continue;
+    const d = e.data ?? {};
+    const wire = d.thinking_wire;
+    if (typeof wire !== "string") continue;
+    instrumented++;
+    if (d.thinking_intent !== false) continue;
+    if (wire === "enabled" || wire === "adaptive") {
+      stats.offButSentOn++;
+      continue;
+    }
+    const thought = d.thinking_in_response === true;
+    const bucket = d.accounted === true ? stats.main : stats.nonMain;
+    bucket.offRequests++;
+    if (d.accounted === true) {
+      if (thought) stats.main.leaked++;
+    } else if (thought) {
+      stats.nonMain.withThinking++;
+    }
+    const model = typeof d.model === "string" ? d.model : "unknown";
+    const m = (stats.byModel[model] ??= { offRequests: 0, withThinking: 0 });
+    m.offRequests++;
+    if (thought) m.withThinking++;
+  }
+  if (instrumented === 0) return undefined;
+  if (stats.main.offRequests > 0) stats.main.rate = stats.main.leaked / stats.main.offRequests;
+  if (stats.nonMain.offRequests > 0) {
+    stats.nonMain.rate = stats.nonMain.withThinking / stats.nonMain.offRequests;
+  }
+  return stats;
+}
+
 export interface RecoveryDigestStats {
   /** 以失败结束的调用数（recovery_give_up 条数） */
   giveUps: number;
@@ -765,6 +832,8 @@ export interface Digest {
   todo?: TodoDigestStats;
   /** 2026-10-08：LLM 错误恢复口径。无重试 / 放弃事件时 undefined。 */
   recovery?: RecoveryDigestStats;
+  /** PR-5：思考关闭泄漏率。无 thinking_wire 埋点（老轨迹）时 undefined。 */
+  thinkingLeak?: ThinkingLeakStats;
   /**
    * P1-8：过程病态度量（6 项）。始终产出（不像上面几项那样依赖专用事件）——
    * 六项全部从 traj + 通用事件派生，"全部健康"本身就是有意义的结论，
@@ -2280,6 +2349,9 @@ export function buildDigest(ref: SessionRef, full: boolean, paths: DigestPaths):
   // ── 2026-10-08：LLM 错误恢复口径（one_shot_kill_count 北极星 + 各族救回率）──
   const recovery = aggregateRecoveryStats(events);
 
+  // ── PR-5：思考关闭泄漏率（主循环 / 非主循环分开，分母 = 意图关的 fetch）──
+  const thinkingLeak = aggregateThinkingLeakStats(events);
+
   return {
     sessionId: ref.id,
     model: ledger?.model || meta.model || "unknown",
@@ -2323,6 +2395,7 @@ export function buildDigest(ref: SessionRef, full: boolean, paths: DigestPaths):
     prefixBreaks: prefixBreaks ?? undefined,
     todo: todo ?? undefined,
     recovery: recovery ?? undefined,
+    thinkingLeak,
     pathology,
     // P0-2：始终产出（不像 jit/todo 那样依赖专用事件）—— 样本为 0 时 n=0 是有意义的
     // 结论（"这个会话没有 TTFT 样本"），整节消失则无法区分"没样本"与"该版本没接线"
@@ -2680,6 +2753,35 @@ export function renderHuman(d: Digest, opts: RenderOptions = {}): string {
     const reasons = Object.entries(r.giveUpReasons);
     if (reasons.length > 0) {
       L.push(c("gray", "  放弃原因: ") + reasons.map(([k, v]) => `${k}×${v}`).join(", "));
+    }
+  }
+
+  // PR-5：思考关闭泄漏。只在有「意图关」的请求时出现；泄漏 > 0 标红（off 没关住）。
+  if (d.thinkingLeak) {
+    const t = d.thinkingLeak;
+    const pct = (r?: number) => (r === undefined ? "n/a" : `${(r * 100).toFixed(0)}%`);
+    if (t.main.offRequests + t.nonMain.offRequests + t.offButSentOn > 0) {
+      L.push("");
+      L.push(
+        c("bold", "思考关闭:") +
+          " " +
+          c(
+            t.main.leaked > 0 ? "red" : "green",
+            `主循环泄漏 ${t.main.leaked}/${t.main.offRequests} (${pct(t.main.rate)})`,
+          ) +
+          c(
+            "gray",
+            `  非主循环思考 ${t.nonMain.withThinking}/${t.nonMain.offRequests} (${pct(t.nonMain.rate)})`,
+          ) +
+          (t.offButSentOn > 0 ? c("yellow", `  恒思考模型关不掉 ${t.offButSentOn}`) : ""),
+      );
+      const models = Object.entries(t.byModel).filter(([, v]) => v.withThinking > 0);
+      if (models.length > 0) {
+        L.push(
+          c("gray", "  按模型: ") +
+            models.map(([m, v]) => `${m} ${v.withThinking}/${v.offRequests}`).join(", "),
+        );
+      }
     }
   }
 

@@ -468,6 +468,14 @@ export interface BeforeModelInput extends HookInput {
     thinking?: { enabled: boolean; budgetTokens?: number };
     /** 本次请求解析后的推理强度档位（内部表示，注意事项同 `thinking`） */
     reasoning_effort?: string;
+    /**
+     * PR-5（20261016 思考开关排查 §4.7）：用户意图（applier **之前**）。`on` / `off` / `auto`。
+     * 与 `thinking`（applier 之后）分开记：恒思考模型上 `thinking.enabled` 会被强制成 true，
+     * 只看它分不清「用户要开」还是「用户要关但关不掉」。
+     */
+    thinking_intent?: "on" | "off" | "auto";
+    /** PR-5：当前模型的思考控制形态（toggle / locked-on / none），见 EffortCapability.thinkingControl */
+    thinking_control?: "toggle" | "locked-on" | "none";
   };
 
   // ── Harness 扩展点 ──

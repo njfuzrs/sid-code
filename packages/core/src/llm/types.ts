@@ -457,6 +457,21 @@ export interface SendParams {
    */
   reasoningEffort?: "low" | "medium" | "high" | "xhigh" | "max";
   /**
+   * 本次调用的**原始思考意图**（applier 之前的输入），供 fallback 对备用模型重解析能力（D9）。
+   *
+   * 为什么不能让 fallback 直接读 `thinking.enabled`：恒思考模型上它已被 applier 强制成
+   * `true`，拿它当输入会把「主模型关不掉」传染给备用模型。也不能读用户 `/think`：
+   * side-call / 子代理 / fork 同样经 `streamWithResilience` 走 fallback，它们的意图不是用户开关。
+   *
+   * 由调用方写：主循环写 resolveThinking / resolveAppliedEffort 的结果，子代理写
+   * `sub-agent-effort.ts` 的结论。缺省时 fallback 按 `thinking.enabled` 推断——
+   * 只有 side-call（`SIDE_CALL_NO_THINK`，恒 false）会走到这条，方向安全。
+   */
+  thinkingIntent?: {
+    thinking: boolean;
+    effort?: "low" | "medium" | "high" | "xhigh" | "max";
+  };
+  /**
    * 用户标识（DeepSeek `user_id`，OpenAI 兼容端点请求体顶层字段）。
    * 用于 KVCache 隔离 / 调度隔离 / 内容安全隔离。须满足正则 `[a-zA-Z0-9\-*]+`、长度 ≤512。
    * 不传则不下发。其它 provider 忽略。

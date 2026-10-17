@@ -38,6 +38,10 @@ export interface RequestResponsePair {
     thinking?: { enabled: boolean; budgetTokens?: number };
     /** P1-6：本次请求解析后的推理强度档位（内部表示，注意事项同 `thinking`） */
     reasoning_effort?: string;
+    /** PR-5：用户思考意图（applier 之前），见 hook/types.ts */
+    thinking_intent?: "on" | "off" | "auto";
+    /** PR-5：当前模型思考控制形态 */
+    thinking_control?: "toggle" | "locked-on" | "none";
   };
   response: {
     content: unknown[];
