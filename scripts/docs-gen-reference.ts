@@ -922,6 +922,7 @@ export const HELP_ONLY_WHITELIST: Record<string, string> = {
   webhook: "daemon 子命令参数（packages/cli/src/command/daemon.ts）",
   interval: "daemon 子命令参数（packages/cli/src/command/daemon.ts）",
   "max-concurrent": "daemon 子命令参数（packages/cli/src/command/daemon.ts）",
+  list: "update 子命令参数（packages/cli/src/command/update.ts）",
   json: "agents / mcp / auth 子命令参数",
   verify: "auth status 子命令参数（packages/cli/src/command/auth.ts，调 /ctl/whoami 核验凭据）",
   scope: "mcp 子命令参数（packages/cli/src/command/mcp-cli.ts）",
