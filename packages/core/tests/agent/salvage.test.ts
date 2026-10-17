@@ -1,5 +1,5 @@
 /**
- * P0-1(b) 残卷 + P0-1(c) 墙钟预算派生的单测。
+ * P0-1(b) 残卷单测。（P0-1(c) 墙钟预算派生随 timeout-budget.ts 在 PR-B 删除。）
  *
  * 这两个模块是"1.84M input token 产出归零"那个缺陷的正面修复，验收口径来自方案 §1.6：
  *   - 主 agent 收到的 output **包含已改动文件清单**，而不是只有一句"超时"；
@@ -9,24 +9,11 @@
  * 端到端那条用 HangingProvider，**零轮产出**——它证明得了"残卷骨架在"，但证明不了
  * "真的把已改动文件捞回来了"。而后者恰恰是本次修复的全部意义所在。
  *
- * 落盘隔离：本文件涉及的两个模块都是**纯内存**的（salvage 无 IO；timeout-budget 的样本
- * 存在模块级 Map，见其头注释里"为什么不去查 events.jsonl"），所以不需要 SID_CONFIG_DIR
- * 重定向。timeout-budget 的模块级状态用 resetTurnLatencySamples() 在每个 test 前清，
- * 避免同进程内多文件互相污染（bun test 同批跑在一个进程里）。
+ * 落盘隔离：salvage 是纯内存模块（无 IO），不需要 SID_CONFIG_DIR 重定向。
  */
 
-import { describe, test, expect, beforeEach } from "bun:test";
+import { describe, test, expect } from "bun:test";
 import { SalvageCollector, buildSalvageOutput } from "@sid-code/core/agent/salvage.ts";
-import {
-  resolveSubAgentTimeout,
-  recordTurnLatency,
-  resetTurnLatencySamples,
-  turnLatencySampleCount,
-  MIN_SAMPLES,
-  TARGET_TURNS,
-  DERIVED_MAX_MS,
-  HARD_KILL_MULTIPLIER,
-} from "@sid-code/core/agent/timeout-budget.ts";
 
 describe("P0-1(b) 残卷收集器", () => {
   test("从 write/edit 调用里攒出已改动文件清单（去重、保序）", () => {
@@ -83,7 +70,7 @@ describe("P0-1(b) 残卷收集器", () => {
 });
 
 describe("P0-1(b) 残卷输出（§1.6 验收口径）", () => {
-  /** 复刻事故形态：跑了多轮、改过文件、有结论，然后撞墙钟。 */
+  /** 复刻事故形态：跑了多轮、改过文件、有结论，然后被中止。 */
   function accidentShapedSnapshot() {
     const c = new SalvageCollector();
     c.recordTurn({
@@ -105,9 +92,8 @@ describe("P0-1(b) 残卷输出（§1.6 验收口径）", () => {
 
   test("§1.6 核心：output 含已改动文件清单，而非只有一句超时", () => {
     const out = buildSalvageOutput(accidentShapedSnapshot(), {
-      reason: "timeout",
+      reason: "aborted",
       finalText: "",
-      timeoutMs: 300_000,
     });
     expect(out).toContain("/src/ui/theme.ts");
     expect(out).toContain('<changed-files count="1">');
@@ -117,9 +103,8 @@ describe("P0-1(b) 残卷输出（§1.6 验收口径）", () => {
 
   test("finalText 原样置顶保留（绝不被替换——这是本次修复的硬约束）", () => {
     const out = buildSalvageOutput(accidentShapedSnapshot(), {
-      reason: "timeout",
+      reason: "aborted",
       finalText: "## 发现\nColor 类型是 string 联合",
-      timeoutMs: 300_000,
     });
     // 子代理自己的结论必须在最前面、逐字保留
     expect(out.startsWith("## 发现\nColor 类型是 string 联合")).toBe(true);
@@ -129,37 +114,21 @@ describe("P0-1(b) 残卷输出（§1.6 验收口径）", () => {
 
   test("已确认的关键结论进 findings 段", () => {
     const out = buildSalvageOutput(accidentShapedSnapshot(), {
-      reason: "timeout",
-      timeoutMs: 300_000,
+      reason: "aborted",
     });
     expect(out).toContain("已确认 Color 类型定义在 ink.d.ts");
   });
 
   test("零改动时显式给 count=0（区分「没改」与「不知道改没改」）", () => {
     const out = buildSalvageOutput(new SalvageCollector().snapshot(), {
-      reason: "timeout",
-      timeoutMs: 300_000,
+      reason: "aborted",
     });
     expect(out).toContain('<changed-files count="0"/>');
   });
 
-  test("detach 的下一步建议指向阻塞等待，而不是让模型继续轮询", () => {
-    const out = buildSalvageOutput(accidentShapedSnapshot(), {
-      reason: "detached",
-      timeoutMs: 300_000,
-      taskId: "a5bag4tp2",
-    });
-    // 与 P1-3 呼应：给出具体可调用的工具与参数，消除轮询动机
-    expect(out).toContain("bg_task_get");
-    expect(out).toContain("block: true");
-    expect(out).toContain("a5bag4tp2");
-    expect(out).toContain("未被终止");
-  });
-
   test("已落盘的改动要明确告知「不要重做」", () => {
     const out = buildSalvageOutput(accidentShapedSnapshot(), {
-      reason: "timeout",
-      timeoutMs: 300_000,
+      reason: "aborted",
     });
     expect(out).toContain("已经落盘生效");
   });
@@ -175,103 +144,10 @@ describe("P0-1(b) 残卷输出（§1.6 验收口径）", () => {
 
   test("零轮产出时如实指出是起步即失败", () => {
     const out = buildSalvageOutput(new SalvageCollector().snapshot(), {
-      reason: "timeout",
-      timeoutMs: 300_000,
+      reason: "aborted",
     });
     expect(out).toContain("起步即失败");
     expect(out).toContain("尚未产生任何工具调用");
-  });
-});
-
-describe("P0-1(c) 墙钟预算按实测吞吐派生", () => {
-  beforeEach(() => {
-    resetTurnLatencySamples();
-    delete process.env.SID_CODE_SUBAGENT_TIMEOUT_MS;
-  });
-
-  test("显式 task.timeout 优先级最高（调用方比我们更清楚）", () => {
-    const r = resolveSubAgentTimeout({
-      definitionTimeoutMs: 300_000,
-      explicitTimeoutMs: 50,
-      model: "m",
-      fallbackMs: 120_000,
-    });
-    expect(r.timeoutMs).toBe(50);
-    expect(r.source).toBe("explicit");
-  });
-
-  test("env 覆盖入口生效（settings/env 覆盖是 §1.5(c) 的要求）", () => {
-    process.env.SID_CODE_SUBAGENT_TIMEOUT_MS = "77000";
-    const r = resolveSubAgentTimeout({
-      definitionTimeoutMs: 300_000,
-      model: "m",
-      fallbackMs: 120_000,
-    });
-    expect(r.timeoutMs).toBe(77_000);
-    expect(r.source).toBe("env");
-  });
-
-  test("非法 env 静默回退，绝不把 NaN 交给 setTimeout（那等价于立即触发）", () => {
-    process.env.SID_CODE_SUBAGENT_TIMEOUT_MS = "abc";
-    const r = resolveSubAgentTimeout({
-      definitionTimeoutMs: 300_000,
-      model: "m",
-      fallbackMs: 120_000,
-    });
-    expect(r.timeoutMs).toBe(300_000);
-    expect(r.source).toBe("definition");
-  });
-
-  test("样本不足时回退 AgentDefinition.timeout（行为与改造前逐字节一致）", () => {
-    recordTurnLatency("slow-model", 30_000); // 只喂 1 条，远少于 MIN_SAMPLES
-    expect(turnLatencySampleCount("slow-model")).toBe(1);
-    const r = resolveSubAgentTimeout({
-      definitionTimeoutMs: 300_000,
-      model: "slow-model",
-      fallbackMs: 120_000,
-    });
-    expect(r.timeoutMs).toBe(300_000);
-    expect(r.source).toBe("definition");
-  });
-
-  test("慢模型：样本足够时按 p95 × 目标轮数放宽（事故里 300s 连读懂上下文都不够）", () => {
-    // 单轮 30s 的慢模型：300s 只够 10 轮，而实测撞墙的子代理跑到 16 轮仍在 grep
-    for (let i = 0; i < MIN_SAMPLES; i++) recordTurnLatency("slow-model", 30_000);
-    const r = resolveSubAgentTimeout({
-      definitionTimeoutMs: 300_000,
-      model: "slow-model",
-      fallbackMs: 120_000,
-    });
-    expect(r.source).toBe("derived");
-    expect(r.timeoutMs).toBe(Math.min(DERIVED_MAX_MS, 30_000 * TARGET_TURNS));
-    expect(r.timeoutMs).toBeGreaterThan(300_000);
-    expect(r.detail?.samples).toBe(MIN_SAMPLES);
-  });
-
-  test("派生值钳到上限，不会无界放大", () => {
-    for (let i = 0; i < MIN_SAMPLES; i++) recordTurnLatency("very-slow", 600_000);
-    const r = resolveSubAgentTimeout({
-      definitionTimeoutMs: 300_000,
-      model: "very-slow",
-      fallbackMs: 120_000,
-    });
-    expect(r.timeoutMs).toBe(DERIVED_MAX_MS);
-  });
-
-  test("快模型：只放大不收缩（收缩预算会让原本能跑完的子代理提前 detach）", () => {
-    for (let i = 0; i < MIN_SAMPLES; i++) recordTurnLatency("fast-model", 1_000);
-    const r = resolveSubAgentTimeout({
-      definitionTimeoutMs: 300_000,
-      model: "fast-model",
-      fallbackMs: 120_000,
-    });
-    // 1s × 12 = 12s 远小于 300s → 保持声明值，不减预算
-    expect(r.timeoutMs).toBe(300_000);
-    expect(r.source).toBe("definition");
-  });
-
-  test("硬 kill 倍数 > 1（否则 detach 会退化成到点即 kill，等于没改）", () => {
-    expect(HARD_KILL_MULTIPLIER).toBeGreaterThan(1);
   });
 });
 
@@ -331,16 +207,11 @@ describe("D1 classifySubAgentFailure + 建议文案（表驱动）", () => {
     has: string[];
     lacks: string[];
   };
-  const base: FailureClassInput = {
-    parentAborted: false,
-    hardKilled: false,
-    detached: false,
-    canDetach: true,
-  };
+  const base: FailureClassInput = { parentAborted: false };
   const rows: Row[] = [
     {
-      name: "事故组：detached + giveUp(deadline/transient) + 休眠 181s + explore",
-      input: { detached: true, giveUp: DEADLINE_TRANSIENT },
+      name: "事故组：giveUp(deadline/transient) + 休眠 181s + explore",
+      input: { giveUp: DEADLINE_TRANSIENT },
       readOnly: true,
       sleptMs: 181_000,
       retryAttempts: 1,
@@ -349,8 +220,8 @@ describe("D1 classifySubAgentFailure + 建议文案（表驱动）", () => {
       lacks: ["墙钟预算", "读懂上下文", "模型是否可用"],
     },
     {
-      name: "detached + giveUp(rate_limit) → 上游限流",
-      input: { detached: true, giveUp: RATE, lastRetryReason: "rate_limit" },
+      name: "giveUp(rate_limit) → 上游限流",
+      input: { giveUp: RATE, lastRetryReason: "rate_limit" },
       readOnly: true,
       reason: "error",
       has: ["上游限流"],
@@ -379,44 +250,12 @@ describe("D1 classifySubAgentFailure + 建议文案（表驱动）", () => {
       lacks: ["读懂上下文"],
     },
     {
-      name: "hardKilled 压过 giveUp → timeout",
-      input: { detached: true, hardKilled: true, giveUp: DEADLINE_TRANSIENT },
-      readOnly: false,
-      reason: "timeout",
-      has: ["墙钟预算", "读懂上下文"],
-      lacks: ["网络连接中断"],
-    },
-    {
       name: "父代理 abort 压过一切 → aborted",
-      input: { parentAborted: true, detached: true, hardKilled: true, giveUp: DEADLINE_TRANSIENT },
+      input: { parentAborted: true, giveUp: DEADLINE_TRANSIENT },
       readOnly: false,
       reason: "aborted",
       has: ["被主动中止"],
       lacks: ["墙钟预算"],
-    },
-    {
-      name: "纯墙钟到点、可转后台 → detached（不给「读懂上下文」）",
-      input: { detached: true },
-      readOnly: false,
-      reason: "detached",
-      has: ["已转后台继续执行"],
-      lacks: ["读懂上下文"],
-    },
-    {
-      name: "纯墙钟到点、不可转后台、非只读 → timeout + 读懂上下文",
-      input: { detached: true, canDetach: false },
-      readOnly: false,
-      reason: "timeout",
-      has: ["墙钟预算", "读懂上下文"],
-      lacks: ["网络连接中断"],
-    },
-    {
-      name: "纯墙钟到点、只读类 → timeout，但不给「读懂上下文」",
-      input: { detached: true, canDetach: false },
-      readOnly: true,
-      reason: "timeout",
-      has: ["墙钟预算"],
-      lacks: ["读懂上下文"],
     },
     {
       name: "无 giveUp、Connection error 异常（catch 路径）→ error/网络",
@@ -425,6 +264,22 @@ describe("D1 classifySubAgentFailure + 建议文案（表驱动）", () => {
       reason: "error",
       has: ["网络连接中断"],
       lacks: ["墙钟预算", "读懂上下文"],
+    },
+    {
+      name: "PR-B：被中止 + 多轮零改动 + 非只读 → 给「读懂上下文」",
+      input: { parentAborted: true },
+      readOnly: false,
+      reason: "aborted",
+      has: ["被主动中止", "读懂上下文"],
+      lacks: ["墙钟"],
+    },
+    {
+      name: "PR-B：被中止 + 只读类 → 不给「读懂上下文」",
+      input: { parentAborted: true },
+      readOnly: true,
+      reason: "aborted",
+      has: ["被主动中止"],
+      lacks: ["读懂上下文", "墙钟"],
     },
   ];
 
@@ -438,7 +293,6 @@ describe("D1 classifySubAgentFailure + 建议文案（表驱动）", () => {
         sleptMs: r.sleptMs,
         retryAttempts: r.retryAttempts,
         readOnlyAgent: r.readOnly,
-        timeoutMs: 300_000,
         errorMessage: r.input.giveUp?.lastError ?? r.input.errorMessage,
       });
       for (const s of r.has) expect(out).toContain(s);
@@ -447,41 +301,17 @@ describe("D1 classifySubAgentFailure + 建议文案（表驱动）", () => {
   }
 });
 
-describe("S6 硬 kill 文案写实际开枪的那一层（事故 20261016-222758）", () => {
-  // 真实死法是 detach 后第 900s 硬 kill，残卷却写「达到墙钟预算 (300秒) 并已停止」——
-  // 少说了 10 分钟续跑，排查被带偏到墙钟。
-  test("hardKilled → 文案写明硬 kill 期限，不再是「并已停止」", () => {
-    const fc = classifySubAgentFailure({
-      parentAborted: false,
-      hardKilled: true,
-      detached: true,
-      canDetach: true,
-    });
-    expect(fc).toEqual({ reason: "timeout", hardKilled: true });
-    const out = buildSalvageOutput(new SalvageCollector().snapshot(), {
-      reason: fc.reason,
-      hardKilled: fc.hardKilled,
-      timeoutMs: 300_000,
-    });
-    expect(out).toContain("硬 kill 期限 (900秒)");
-    expect(out).toContain("已被终止");
-    expect(out).not.toContain("并已停止");
+describe("PR-B：「到点」类成因整体删除（事故 20261016-222758 的错误归因）", () => {
+  test("无 giveUp、无 abort、无错误 → error，不再有 timeout / detached", () => {
+    const fc = classifySubAgentFailure({ parentAborted: false });
+    expect(fc.reason).toBe("error");
   });
 
-  test("未硬 kill 的 timeout（不可转后台）文案不变", () => {
-    const fc = classifySubAgentFailure({
-      parentAborted: false,
-      hardKilled: false,
-      detached: true,
-      canDetach: false,
-    });
-    expect(fc.hardKilled).toBeUndefined();
-    const out = buildSalvageOutput(new SalvageCollector().snapshot(), {
-      reason: fc.reason,
-      timeoutMs: 300_000,
-    });
-    expect(out).toContain("达到墙钟预算 (300秒) 并已停止");
+  test.each(["aborted", "error"] as const)("%s 残卷不含任何墙钟 / 硬 kill 字样", (reason) => {
+    const out = buildSalvageOutput(new SalvageCollector().snapshot(), { reason });
+    expect(out).not.toContain("墙钟");
     expect(out).not.toContain("硬 kill");
+    expect(out).not.toContain("转后台");
   });
 });
 
@@ -532,9 +362,6 @@ describe("D1 回放：事故三个 explore 子代理（脱敏 fixture）", () =>
       }
       const fc = classifySubAgentFailure({
         parentAborted: false,
-        hardKilled: false,
-        detached: true,
-        canDetach: true,
         giveUp: {
           giveUpReason: "deadline",
           family: "transient",
@@ -547,7 +374,6 @@ describe("D1 回放：事故三个 explore 子代理（脱敏 fixture）", () =>
         cause: fc.cause,
         sleptMs: f.sleptMs,
         readOnlyAgent: true,
-        timeoutMs: 300_000,
         errorMessage: f.lastError,
       });
       expect(out).toContain("执行出错：Connection error.");

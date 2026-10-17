@@ -467,17 +467,13 @@ export const SkillsDialog: React.FC<SkillsDialogProps> = ({ onClose, registry })
       metaRows.push({ label: "强度", node: <Text color={sec}>{selected.effort}</Text> });
     if (selected.agent)
       metaRows.push({ label: "代理", node: <Text color={sec}>{selected.agent}</Text> });
-    // 轮次 / 超时仅 fork 模式有意义
+    // 轮次仅 fork 模式有意义
     if (selected.type !== "inline" && selected.maxTurns != null)
       metaRows.push({
         label: "轮次",
         node: <Text color={sec}>{`最多 ${selected.maxTurns} 轮`}</Text>,
       });
-    if (selected.type !== "inline" && selected.timeoutMins != null)
-      metaRows.push({
-        label: "超时",
-        node: <Text color={sec}>{`${selected.timeoutMins} 分钟`}</Text>,
-      });
+    // PR-B：timeoutMins 已不再生效，不展示（展示一个不起作用的数字比不展示更误导）。
     if (selected.argumentHint)
       metaRows.push({ label: "参数", node: <Text color={sec}>{selected.argumentHint}</Text> });
     if (selected.version)

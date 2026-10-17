@@ -64,6 +64,19 @@ describe("readPipedStdin", () => {
     expect(warnings[0]).toContain("SID_CODE_STDIN_TIMEOUT_MS");
     stdin.destroy();
   });
+
+  test("D12：收尾后 stdin 回到暂停态（不再撑住事件循环）", async () => {
+    // off() 掉监听器不会让已 resume() 的流暂停；不 pause 就是一个活动句柄，
+    // 进程要等上游关 fd 才退。超时与 EOF 两条收尾路径都要放手。
+    const hanging = new Readable({ read() {} });
+    await readPipedStdin({ stdin: hanging, isTTY: false, timeoutMs: 20, warn: () => {} });
+    expect(hanging.isPaused()).toBe(true);
+    hanging.destroy();
+
+    const ended = fakeStdin(["x"]);
+    await readPipedStdin({ stdin: ended, isTTY: false, timeoutMs: 1000 });
+    expect(ended.isPaused()).toBe(true);
+  });
 });
 
 describe("parseJsonSchemaArg", () => {

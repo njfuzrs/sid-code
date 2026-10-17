@@ -43,9 +43,13 @@
  * 事故 20261014-110202：三个子代理真正的死因是「休眠断网 → 漏斗放弃」，残卷却说
  * 「达到墙钟预算」「停在读懂上下文」「检查模型是否可用」——三句全错。根因是判据只有
  * `detached || hardKilled`。归因统一走 {@link classifySubAgentFailure}，四处调用点共用。
+ *
+ * ## PR-B（2026-10-17）：「到点」类成因整体删除
+ *
+ * 子代理不再有墙钟 / 硬 kill（对齐 CC），`detached` / `timeout` 两种 reason 与对应文案
+ * 随之删除。剩下的成因只有：被中止（ESC / task_stop / 父代理取消）与出错（重试耗尽 /
+ * 模型报错），残卷写的永远是**实际开枪的那一层**。⛔ 别为兼容旧文案加回「墙钟」字样。
  */
-
-import { HARD_KILL_MULTIPLIER } from "./timeout-budget.ts";
 
 /** 一次工具调用的极简记录（只留残卷需要的字段）。 */
 interface ToolCallRecord {
@@ -166,11 +170,7 @@ function describeCall(rec: ToolCallRecord): string {
 
 /** 残卷的中断成因——决定文案里"为什么停下"和"建议的下一步"怎么写。 */
 export type SalvageReason =
-  /** 墙钟到点，已转后台继续跑（detach，不是 kill）。 */
-  | "detached"
-  /** 墙钟到点且无法转后台（如自定义子代理路径），已停止。 */
-  | "timeout"
-  /** 用户/父代理主动中止。 */
+  /** 用户 / 父代理主动中止（ESC / task_stop / 父代理取消）。 */
   | "aborted"
   /** 执行抛异常。 */
   | "error";
@@ -193,12 +193,6 @@ export interface SubAgentGiveUpEvidence {
 export interface FailureClassInput {
   /** 用户 / 父代理 abort（外层 signal） */
   parentAborted: boolean;
-  /** detach 之后又跑满硬 kill 期限 */
-  hardKilled: boolean;
-  /** 墙钟到点（软返回点） */
-  detached: boolean;
-  /** 本路径能否真正转后台续跑（只有 `_isAsync` 内置子代理能） */
-  canDetach: boolean;
   /** 漏斗放弃证据；有它就说明「真正的死因」已知 */
   giveUp?: SubAgentGiveUpEvidence;
   /** 最后一次重试的分类原因（`retry` 遥测的 reopenReason） */
@@ -211,24 +205,17 @@ export interface FailureClass {
   reason: SalvageReason;
   /** 只在 reason="error" 时有意义 */
   cause?: FailureCause;
-  /**
-   * reason="timeout" 时区分「墙钟到点即停」与「detach 后又跑满硬 kill 期限」。
-   * 事故 20261016-222758：真实死法是第 900s 硬 kill，文案却写「达到墙钟预算 (300秒) 并已停止」——
-   * 少说了 10 分钟的续跑与 token 消耗，排查方向被带偏到墙钟。
-   */
-  hardKilled?: boolean;
 }
 
 /**
  * 子代理失败归因（四处调用点唯一入口）。
  *
- * 优先级：外层 abort > 硬 kill > **漏斗放弃证据** > 墙钟到点 > 其他错误。
- * 第三条是这次修复的核心：墙钟到点（detached）只是软返回点，它和「请求放弃」同时发生时，
- * 后者才是用户该看到的原因。退回 `detached || hardKilled` 就会把断网说成超时。
+ * 优先级：外层 abort > **漏斗放弃证据** > 其他错误。
+ * PR-B 之前还有「硬 kill」「墙钟到点」两档（事故 20261016-222758 的文案就是被它们带偏的），
+ * 计时器删除后这两档没有了触发源，一并删除。
  */
 export function classifySubAgentFailure(i: FailureClassInput): FailureClass {
   if (i.parentAborted) return { reason: "aborted" };
-  if (i.hardKilled) return { reason: "timeout", hardKilled: true };
   if (i.giveUp) {
     return {
       reason: "error",
@@ -239,7 +226,6 @@ export function classifySubAgentFailure(i: FailureClassInput): FailureClass {
       ),
     };
   }
-  if (i.detached) return { reason: i.canDetach ? "detached" : "timeout" };
   return {
     reason: "error",
     cause: inferFailureCause(undefined, i.lastRetryReason, i.errorMessage),
@@ -306,13 +292,9 @@ export interface BuildSalvageOptions {
   usage?: SalvageUsage;
   /** 子代理自己的最终文本输出（**必须原样保留在最前**，见模块头注释的硬约束）。 */
   finalText?: string;
-  /** 墙钟预算（毫秒），用于文案里说明"跑了多久"。 */
-  timeoutMs?: number;
-  /** 见 {@link FailureClass.hardKilled}：文案必须写实际开枪的那一层。 */
-  hardKilled?: boolean;
   /** 底层错误/中断消息（`reason: "error"` 时的真实原因，禁止丢弃）。 */
   errorMessage?: string;
-  /** detach 后可用于取回最终结果的任务 id。 */
+  /** 任务 id（追溯用）。 */
   taskId?: string;
   /** 完整输出的落盘路径（残卷是摘要，超长内容在这里）。
    *  E1：优先是 sidechain transcript（不会被驱逐），不是 `tasks/*.output`。 */
@@ -414,19 +396,7 @@ export function describeSubAgentSleep(sleptMs: number | undefined): string | nul
 }
 
 function describeReason(opts: BuildSalvageOptions): string {
-  const secs = opts.timeoutMs !== undefined ? `${Math.round(opts.timeoutMs / 1000)}秒` : "预算";
   switch (opts.reason) {
-    case "detached":
-      return `达到前台墙钟预算 (${secs})，已转后台继续执行（未被终止）。以下是截至此刻的成果。`;
-    case "timeout":
-      if (opts.hardKilled) {
-        const killSecs =
-          opts.timeoutMs !== undefined
-            ? `${Math.round((opts.timeoutMs * HARD_KILL_MULTIPLIER) / 1000)}秒`
-            : `${HARD_KILL_MULTIPLIER}× 预算`;
-        return `达到墙钟预算 (${secs}) 后继续执行，跑满硬 kill 期限 (${killSecs}) 仍未结束，已被终止。以下是截至终止时的成果。`;
-      }
-      return `达到墙钟预算 (${secs}) 并已停止。以下是截至停止时的成果。`;
     case "aborted":
       return "被主动中止。以下是中止前已完成的成果。";
     case "error":
@@ -438,15 +408,6 @@ function describeReason(opts: BuildSalvageOptions): string {
 
 function suggestNextSteps(snap: SalvageSnapshot, opts: BuildSalvageOptions): string[] {
   const lines: string[] = [];
-
-  if (opts.reason === "detached" && opts.taskId) {
-    // 给出**具体可调用的工具与参数**。只说"稍后再查"会把主代理推回轮询——正是 P1-3 修的那个病。
-    lines.push(
-      `子代理仍在后台运行。用 bg_task_get({ task_id: "${opts.taskId}", block: true }) 阻塞等待最终结果，`,
-    );
-    lines.push("不要反复以相同入参轮询状态（同参轮询会被循环检测拦下）。");
-    lines.push("等待期间可以先做**不依赖**该子代理产出的部分。");
-  }
 
   if (snap.changedFiles.length > 0) {
     lines.push(
@@ -483,11 +444,11 @@ function suggestNextSteps(snap: SalvageSnapshot, opts: BuildSalvageOptions): str
     );
   } else if (
     snap.changedFiles.length === 0 &&
-    opts.reason === "timeout" &&
+    opts.reason === "aborted" &&
     opts.readOnlyAgent !== true
   ) {
-    // 只在「墙钟停下 + 无更具体原因 + 非只读类」时给：只读类零改动是必然的，不是信号；
-    // detached 仍在后台跑，此时下结论太早。
+    // 只在「被中止 + 无更具体原因 + 非只读类」时给：只读类零改动是必然的，不是信号。
+    // PR-B 前这条挂在墙钟到点上；墙钟删除后，跑了多轮仍零改动而被用户中止是同一信号。
     lines.push(
       "子代理跑了多轮但未改动任何文件，说明它停在「读懂上下文」阶段。重派时请把已确认的结论直接写进 prompt（省掉重新探索），并把范围缩到单一具体目标。",
     );

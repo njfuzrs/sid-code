@@ -382,6 +382,9 @@ function calculateReplacement(
 // ─── EditTool 类 ──────────────────────────────────────────────────────────────
 
 export class EditTool implements Tool {
+  /** D11：编辑类：漏 required 字段会改错文件，strict 超限时优先保留（见 ToolCapabilityFields.strictPriority） */
+  readonly strictPriority = 50;
+
   private tracker: FileReadTracker | null;
 
   /** zod schema：执行器据此做运行时校验，registry 据此生成 LLM 定义 */

@@ -77,6 +77,7 @@ function toolToDefinition(t: LegacyTool, descCtx?: ToolDescriptionContext): Tool
     // MCP 工具暂不启用（schema 可能不完全符合 strict 要求）。
     // StructuredOutput 工具走 inputSchema() 路径（动态 schema），也不标记。
     strict: !t.name().startsWith("mcp__") && t.name() !== "StructuredOutput" ? true : undefined,
+    ...(t.strictPriority !== undefined && { strictPriority: t.strictPriority }),
   };
 }
 

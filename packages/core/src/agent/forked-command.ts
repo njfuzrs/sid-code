@@ -38,8 +38,8 @@ export interface ForkedCommandOptions {
   agentType?: string;
   model?: string;
   effort?: "low" | "medium" | "high" | "xhigh" | "max";
+  /** 最大轮次。PR-B：只在 skill / 命令显式声明时传，未传 = 无上限 */
   maxTurns?: number;
-  timeout?: number;
   /** 子代理类型标签（记忆目录 / 轨迹归属）；缺省同 agentType */
   type?: string;
   signal?: AbortSignal;
@@ -122,8 +122,7 @@ export async function runForkedCommand(opts: ForkedCommandOptions): Promise<SubA
       userPrompt: opts.prompt,
       allowedTools: [],
       toolsFromAgentType: agentType,
-      maxTurns: opts.maxTurns ?? 30,
-      timeout: opts.timeout,
+      maxTurns: opts.maxTurns,
       effort: opts.effort,
       type: opts.type ?? agentType,
     },
