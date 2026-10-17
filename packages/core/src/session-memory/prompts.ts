@@ -126,7 +126,8 @@ export function buildSessionMemoryUpdatePrompt(currentContent: string, template:
 
 ## 规则
 
-1. 使用 Edit 工具更新文件，不要重写整个文件
+1. 使用 Edit 工具更新文件，不要重写整个文件。**所有 Edit 调用在同一条消息里并行发出，发完即停止**，
+   不要逐个 section 一轮一轮地改，也不要调用 Edit 以外的工具
 2. 保留模板的 section 结构和斜体描述
 3. 只更新有实际内容变化的 section
 4. 不要添加新的 section

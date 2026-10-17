@@ -156,6 +156,37 @@ describe("runForkedAgent", () => {
     expect(result.turns).toBe(3);
   });
 
+  test("省略 maxTurns = 无上限：跑满 8 轮工具调用后自然收尾（不是 0 轮）", async () => {
+    // 对齐 CC runForkedAgent 的 maxTurns?。⛔ 归一必须是 Infinity：`turns < undefined` 恒 false。
+    const toolTurn = [
+      {
+        type: "content_block_start",
+        index: 0,
+        content_block: { type: "tool_use", id: "t1", name: "read" },
+      },
+      {
+        type: "content_block_delta",
+        index: 0,
+        delta: { type: "input_json_delta", partial_json: '{"file_path":"a"}' },
+      },
+      { type: "content_block_stop", index: 0 },
+      { type: "message_delta", delta: { stop_reason: "tool_use" }, usage: { outputTokens: 1 } },
+    ];
+    const done = [
+      { type: "content_block_start", index: 0, content_block: { type: "text" } },
+      { type: "content_block_delta", index: 0, delta: { type: "text_delta", text: "完成" } },
+      { type: "content_block_stop", index: 0 },
+      { type: "message_delta", delta: { stop_reason: "end_turn" }, usage: { outputTokens: 1 } },
+    ];
+    const provider = mockProvider([...Array.from({ length: 8 }, () => toolTurn), done]);
+    const result = await runForkedAgent(makeContext(provider), {
+      promptMessages: [{ role: "user", content: [{ type: "text", text: "更新笔记" }] }],
+      canUseTool: () => ({ behavior: "allow" }),
+      querySource: "test",
+    });
+    expect(result.turns).toBe(9);
+  });
+
   test("缺口 A：注入的 statefulTools 优先于主注册表（FileReadTracker 隔离）", async () => {
     // 一轮工具调用 read，随后自然结束
     const provider = mockProvider([

@@ -120,8 +120,12 @@ export interface ForkedAgentOptions {
   promptMessages: Message[];
   /** 工具权限控制函数 */
   canUseTool: CanUseToolFn;
-  /** 硬性轮次上限（防止兔子洞） */
-  maxTurns: number;
+  /**
+   * 轮次上限（防兔子洞）。省略 = 无上限（对齐 CC `runForkedAgent` 的 `maxTurns?`）。
+   * 只给「任务形态固定、轨迹证明够用」的调用方写死（memory-extract 5、btw 1）；
+   * session-memory / dream 不设——轨迹显示 session-memory 39% 的 run 恰好停在 5 轮（被截断）。
+   */
+  maxTurns?: number;
   /** 查询来源标识（用于日志和分析） */
   querySource: string;
   /** 超时（毫秒，默认 60000） */
@@ -332,7 +336,9 @@ export async function runForkedAgent(
   }
 
   try {
-    while (turns < options.maxTurns) {
+    // 归一成 Infinity 而非 undefined：`turns < undefined` 恒 false，一轮都不跑。
+    const maxTurns = options.maxTurns ?? Infinity;
+    while (turns < maxTurns) {
       if (signal.aborted) break;
       turns++;
 
