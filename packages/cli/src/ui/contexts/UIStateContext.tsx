@@ -18,12 +18,6 @@ export interface TransientMessage {
   type: TransientMessageType;
 }
 
-/** 更新通知信息 */
-export interface UpdateInfo {
-  message: string;
-  version?: string;
-}
-
 /** 工具结果阶梯式展开级别 — TO4
  * 0 = 折叠（默认行数截断）/ 1 = 展开更多（中间档）/ 2 = 全展开（不截断）。
  */
@@ -53,8 +47,6 @@ export interface UIState {
   renderMarkdown: boolean;
   /** 瞬态消息（自动消失） */
   transientMessage: TransientMessage | null;
-  /** 更新通知 */
-  updateInfo: UpdateInfo | null;
   /** 是否显示溢出提示（Ctrl+O 显示更多） */
   showIsExpandableHint: boolean;
   /** 是否限制高度（派生自 expandLevel===0，保留向后兼容） */
@@ -79,7 +71,6 @@ export interface UIActions {
   toggleRenderMarkdown: () => void;
   setTransientMessage: (message: TransientMessage | null) => void;
   showTransientMessage: (text: string, type: TransientMessageType) => void;
-  setUpdateInfo: (info: UpdateInfo | null) => void;
   setShowIsExpandableHint: (value: boolean) => void;
   setConstrainHeight: (value: boolean | ((prev: boolean) => boolean)) => void;
   /** TO4：循环切换工具结果展开级别（0→1→2→0）。 */
@@ -150,7 +141,6 @@ interface UIStateProviderProps {
 export const UIStateProvider: React.FC<UIStateProviderProps> = ({ children }) => {
   const [renderMarkdown, setRenderMarkdown] = useState(true);
   const [transientMessage, setTransientMessage] = useState<TransientMessage | null>(null);
-  const [updateInfo, setUpdateInfo] = useState<UpdateInfo | null>(null);
   const [showIsExpandableHint, setShowIsExpandableHint] = useState(false);
   const [expandLevel, setExpandLevelState] = useState<ExpandLevel>(0);
   const [ctrlCPressedOnce, setCtrlCPressedOnce] = useState(false);
@@ -178,7 +168,6 @@ export const UIStateProvider: React.FC<UIStateProviderProps> = ({ children }) =>
     () => ({
       renderMarkdown,
       transientMessage,
-      updateInfo,
       showIsExpandableHint,
       constrainHeight,
       expandLevel,
@@ -191,7 +180,6 @@ export const UIStateProvider: React.FC<UIStateProviderProps> = ({ children }) =>
     [
       renderMarkdown,
       transientMessage,
-      updateInfo,
       showIsExpandableHint,
       constrainHeight,
       expandLevel,
@@ -209,7 +197,6 @@ export const UIStateProvider: React.FC<UIStateProviderProps> = ({ children }) =>
       toggleRenderMarkdown,
       setTransientMessage,
       showTransientMessage,
-      setUpdateInfo,
       setShowIsExpandableHint,
       // TO4：兼容旧 setConstrainHeight 语义——true→级别0(折叠)，false→级别2(全展开)。
       setConstrainHeight: (value: boolean | ((prev: boolean) => boolean)) => {

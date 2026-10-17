@@ -1,7 +1,9 @@
 /**
  * 通知组件
  *
- * 显示更新通知、启动警告、初始化错误等持久性通知。
+ * 显示启动警告、初始化错误等持久性通知。
+ * （更新提示不在这里：启动时由 App.tsx 消费 pendingNotice 走 showTransientMessage。
+ *  此处曾有一个 UpdateNotification，但 setUpdateInfo 全仓零调用方，是永不渲染的死接线，已删。）
  * 参考 gemini-cli/packages/cli/src/ui/components/Notifications.tsx
  *
  * 增强：
@@ -14,26 +16,15 @@ import React, { useState, useCallback, useMemo } from "react";
 import { Box } from "../render-port/components.ts";
 import { Text } from "../render-port/components.ts";
 import { theme } from "../semantic-colors.ts";
-import { useUIState } from "../contexts/UIStateContext.tsx";
 import { useStreamingState, StreamingState } from "../contexts/StreamingContext.tsx";
 import { useKeypress, KeypressPriority } from "../contexts/KeypressContext.tsx";
-import { WARNING_MARK } from "../constants/figures.ts";
+import { ERROR_MARK, WARNING_MARK } from "../constants/figures.ts";
 
 /** 启动警告 */
 export interface StartupWarning {
   id: string;
   message: string;
 }
-
-interface UpdateNotificationProps {
-  message: string;
-}
-
-const UpdateNotification: React.FC<UpdateNotificationProps> = ({ message }) => (
-  <Box borderStyle="round" borderColor={theme.status.warning} paddingX={1} marginY={1}>
-    <Text color={theme.status.warning}>{message}</Text>
-  </Box>
-);
 
 interface NotificationsProps {
   /** 启动警告列表 */
@@ -46,7 +37,6 @@ export const Notifications: React.FC<NotificationsProps> = ({
   startupWarnings = [],
   initError,
 }) => {
-  const { updateInfo } = useUIState();
   const { streamingState } = useStreamingState();
   const [dismissed, setDismissed] = useState(false);
 
@@ -76,13 +66,12 @@ export const Notifications: React.FC<NotificationsProps> = ({
     }, [showStartupWarnings]),
   );
 
-  if (!showStartupWarnings && !showInitError && !updateInfo) {
+  if (!showStartupWarnings && !showInitError) {
     return null;
   }
 
   return (
     <>
-      {updateInfo && <UpdateNotification message={updateInfo.message} />}
       {showStartupWarnings && (
         <Box marginY={1} flexDirection="column">
           {visibleWarnings.map((warning, index) => (
@@ -107,8 +96,15 @@ export const Notifications: React.FC<NotificationsProps> = ({
         </Box>
       )}
       {showInitError && (
-        <Box borderStyle="round" borderColor={theme.status.error} paddingX={1} marginBottom={1}>
-          <Text color={theme.status.error}>初始化错误: {initError}</Text>
+        // 不画框：初始化错误里常有路径 / 报错原文，用户会复制去搜，round 框的竖线会被一并选中（L2.2）。
+        // 与启动警告同构：3 列标记列 + 正文，错误语义由 ERROR_MARK + 红色承担。
+        <Box flexDirection="row" marginBottom={1}>
+          <Box width={3}>
+            <Text color={theme.status.error}>{`${ERROR_MARK} `}</Text>
+          </Box>
+          <Box flexGrow={1}>
+            <Text color={theme.status.error}>初始化错误: {initError}</Text>
+          </Box>
         </Box>
       )}
     </>

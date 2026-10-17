@@ -3,6 +3,7 @@
  * 实现 Agentic While-Loop：用户输入 → LLM 流式响应 → 工具调用 → 循环
  */
 
+import { Readable } from "node:stream";
 import type { Provider } from "@sid-code/core/llm/provider.ts";
 import type {
   ContentBlock,
@@ -1353,7 +1354,7 @@ export class App {
     // agent 类型 hook 借此启动真正的只读子代理（默认 read/grep/glob）做多轮验证，
     // 而非退化为单轮 LLM 调用。无 providerRegistry（极简/测试）时不注入，runner 自动回退单轮。
     if (this.providerRegistry) {
-      this.hookSystem.setAgentHookExecutor(async ({ prompt, model, tools, timeoutMs, signal }) => {
+      this.hookSystem.setAgentHookExecutor(async ({ prompt, model, tools, signal }) => {
         const { SubAgent } = await import("@sid-code/core/agent/sub-agent.ts");
         // 防套娃：agent hook 的子代理默认只读工具集，且不再触发 agent hook（hookSystem 不透传）。
         const allowedTools = tools && tools.length > 0 ? tools : ["read", "grep", "glob"];
@@ -1374,7 +1375,8 @@ export class App {
               '- 验证失败：{"ok": false, "reason": "失败原因和修复建议"}',
             userPrompt: prompt,
             allowedTools,
-            timeout: timeoutMs,
+            // hook 自身的超时由 runner 的 controller 经 signal 下发（hook 语义，不是子代理墙钟）；
+            // PR-B 起 CustomSubAgentTask 无 timeout 字段。
             type: "custom",
           },
           signal,
@@ -8022,7 +8024,13 @@ export class App {
   private async runHeadlessSDK(input: string): Promise<void> {
     this.abortController = new AbortController();
 
-    const structuredIO = new StructuredIO(process.stdin, process.stdout);
+    // D12：只有 `--input-format stream-json` 时 stdin 才是宿主的 NDJSON 命令通道。
+    // text 输入下 stdin 已被 cli.ts 的 readPipedStdin 读过（或读超时放弃），prompt 已拼好；
+    // 这里再把 process.stdin 交给 StructuredIO，泵就会一直等一个**永远不会来的 EOF** ——
+    // `sleep 120 | sid-code -p x --output-format stream-json --verbose` 实测挂满 120s，
+    // CI 继承一个不关的空管道时就是无限期挂起。给它一个已结束的空流，泵立即 inputDone。
+    const sdkInput = this.config.inputFormat === "stream-json" ? process.stdin : Readable.from([]);
+    const structuredIO = new StructuredIO(sdkInput, process.stdout);
     const commandQueue = new CommandQueue();
     const driver = this.buildSDKDriver();
 

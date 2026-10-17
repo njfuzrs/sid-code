@@ -8,7 +8,8 @@
  * 保证用户在 keybindings.json 重绑该 action 后依然生效），本组件只负责展示。
  *
  * 视觉语言（遵循 src/ui/CLAUDE.md）：
- * - 红色 borderLeft 竖线（不用 round 边框盒子）
+ * - 不画竖线：detail / suggestion 常是报错原文与命令，竖线与内容同行会被一并复制（L2.2）。
+ *   错误语义由标题行 ERROR_MARK + 红色承担（字形 + 颜色双通道，L2.1），不靠边框。
  * - 标题：ERROR_MARK + theme.status.error 颜色
  * - 正文/建议：theme.text.primary（柔和，不全红）
  * - 关闭提示渐进衰减（显示 3 次后不再提示）
@@ -40,26 +41,14 @@ export const ErrorPanel: React.FC<ErrorPanelProps> = ({ items, width, showCount 
     return null;
   }
 
-  const bodyWidth = Math.max(1, width - 2);
+  const bodyWidth = Math.max(1, width - 1);
   const showDismissHint = showCount < DISMISS_HINT_MAX_SHOWS;
   // 关闭键位展示动态跟随 keybindings 配置（用户重绑后此处同步更新），
   // 找不到绑定时兜底显示默认值，避免 undefined 泄漏到 UI。
   const dismissDisplay = bindingFor("app:dismissError")?.display ?? "Ctrl+E";
 
   return (
-    <Box
-      marginLeft={1}
-      paddingLeft={1}
-      borderStyle="single"
-      borderLeft={true}
-      borderRight={false}
-      borderTop={false}
-      borderBottom={false}
-      borderColor={theme.status.error}
-      flexDirection="column"
-      width={bodyWidth}
-      marginTop={1}
-    >
+    <Box marginLeft={1} flexDirection="column" width={bodyWidth} marginTop={1}>
       {items.map((item, index) => (
         <Box key={item.id} flexDirection="column" marginBottom={index < items.length - 1 ? 1 : 0}>
           {/* 错误标题 */}

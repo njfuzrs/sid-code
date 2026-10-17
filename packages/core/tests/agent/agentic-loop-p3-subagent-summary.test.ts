@@ -299,11 +299,12 @@ describe("P3-6 → 2026-10-17 · 子代理 processStream 不再自带超时层",
   });
 
   test("生产两处 processStream 调用只传 signal（不再传任何超时阈值）", () => {
-    const callSites = [...AGENTIC_LOOP_SRC.matchAll(/await processStream\(/g)].map((m) => m.index!);
+    // PR-B：两处调用外包 S2b 单轮兜底（callWithTurnHardTimeout），signal 换成本轮合并 signal。
+    const callSites = [...AGENTIC_LOOP_SRC.matchAll(/=> processStream\(/g)].map((m) => m.index!);
     expect(callSites.length, "子代理应有两处 processStream 调用（主流 + 总结轮）").toBe(2);
     for (const i of callSites) {
-      const call = AGENTIC_LOOP_SRC.slice(i, AGENTIC_LOOP_SRC.indexOf(");", i));
-      expect(call).toContain("{ signal }");
+      const call = AGENTIC_LOOP_SRC.slice(i, AGENTIC_LOOP_SRC.indexOf("}),", i) + 2);
+      expect(call).toContain("{ signal: callSignal }");
       expect(call).not.toMatch(/TimeoutMs/);
     }
   });

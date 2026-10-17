@@ -398,9 +398,9 @@ export class SkillMetaTool implements Tool {
     const effort = normalizeSkillEffort(skill.effort);
     const agentType = await resolveSkillAgentType(skill.agent, skill.name);
 
-    const maxTurns = Math.min(skill.maxTurns || 30, 50);
-    const timeoutMins = Math.min(skill.timeoutMins || 2, 30);
-    const timeout = timeoutMins * 60_000;
+    // PR-B（2026-10-17）：对齐 CC——maxTurns 只在 skill 显式声明时生效（不再 `|| 30` 兜底、
+    // 不再钳到 50）；timeoutMins 不再换算成墙钟（加载时已 warn，见 loader.ts）。
+    // 此前没写 timeoutMins 的 skill 默认只有 2 分钟（方案 §3 L9）。
 
     // P3：统一入口——必注入 checker；工具集按 agent 类型（缺省 general-purpose），
     // allowed-tools 只作本次 fork 的 allow 规则（不再是工具白名单，也不再有只读默认集）
@@ -416,8 +416,7 @@ export class SkillMetaTool implements Tool {
       trusted: isTrustedSkillSource(skill),
       agentType,
       model: skill.model,
-      maxTurns,
-      timeout,
+      maxTurns: skill.maxTurns,
       // P1-1：effort 透传（provider reasoningEffort 生效）
       effort,
       // P1-1：agent 优先作为 agent 类型（memory/system prompt 跟随）；否则沿用 skill:<name>

@@ -4,8 +4,8 @@
  * 事故 20261014-110202-8c0ffb30：子代理墙钟 300s 被休眠吃光后，第一次 `Connection error.`
  * 就 `recovery_give_up giveUpReason=deadline attempts=1`；同一个漏斗主循环能重试 10 次。
  *
- * 场景构造：墙钟设 2s，而 recovery-policy 的 S3 判据是「剩余 ≤ 退避 + MIN_USEFUL_ATTEMPT_MS(5s)」，
- * 所以只要还传 deadlineAt，第一次错误就必然 giveUp("deadline")。退避压 0，测试不真睡。
+ * PR-B（2026-10-17）起子代理已无墙钟；本测试锁住「重试次数听 maxRetries」这条不变量。
+ * 退避压 0，测试不真睡。
  * 变异自证：把 `deadlineAt: startTime + timeout` 加回 buildBaseLoopConfig，本测试红。
  */
 
@@ -70,7 +70,7 @@ function flakyProvider(failures: number) {
 }
 
 describe("B1 — 子代理重试不被墙钟截断", () => {
-  test("前 4 次 Connection error、第 5 次成功：墙钟 2s 下仍交付，且无 giveUpReason=deadline", async () => {
+  test("前 4 次 Connection error、第 5 次成功：仍交付，且无 giveUpReason=deadline", async () => {
     const events: RetryTelemetryEvent[] = [];
     setRetryTelemetryObserver((e: RetryTelemetryEvent) => events.push(e));
     const { provider, calls } = flakyProvider(4);
@@ -80,7 +80,6 @@ describe("B1 — 子代理重试不被墙钟截断", () => {
       type: "explore",
       description: "B1",
       prompt: "x",
-      timeout: 2_000,
     });
 
     expect(result.success).toBe(true);
@@ -91,23 +90,22 @@ describe("B1 — 子代理重试不被墙钟截断", () => {
   });
 });
 
-describe("B1 — 硬 kill 能打断退避中的 sleep", () => {
-  test("永远失败 + 退避 base 60s：在 timeout×3 附近结束，不会睡满退避", async () => {
+describe("PR-B — 用户中止能打断退避中的 sleep", () => {
+  // 原「硬 kill 打断退避」：硬 kill 已删（PR-B），打断退避的唯一出口是外层 signal（ESC / task_stop）。
+  test("永远失败 + 退避 base 60s：外层 abort 后很快结束，不会睡满退避", async () => {
     process.env.SID_CODE_RETRY_BACKOFF_BASE_MS = "60000";
     process.env.SID_CODE_RETRY_BACKOFF_MAX_MS = "120000";
     const { provider } = flakyProvider(Number.POSITIVE_INFINITY);
     const agent = new SubAgent(provider, "test-model", new Registry());
-    const timeout = 200;
+    const ctrl = new AbortController();
+    setTimeout(() => ctrl.abort(), 200);
     const t0 = Date.now();
-    const result = await agent.execute({
-      type: "explore",
-      description: "B1-hardkill",
-      prompt: "x",
-      timeout,
-    });
+    const result = await agent.execute(
+      { type: "explore", description: "B1-abort", prompt: "x" },
+      ctrl.signal,
+    );
     const elapsed = Date.now() - t0;
     expect(result.success).toBe(false);
-    // 硬 kill = timeout × HARD_KILL_MULTIPLIER(3) = 600ms；给调度留余量，但远小于 60s 退避
     expect(elapsed).toBeLessThan(5_000);
   }, 15_000);
 });
