@@ -46,6 +46,7 @@ import { existsSync, readdirSync, readFileSync, statSync, type Dirent } from "no
 import { join } from "node:path";
 import { getLogger } from "../debug/logger.ts";
 import { sessionCreatedAtMs } from "./upload-watermark.ts";
+import { hasFinalUploadMarker } from "./upload-marker.ts";
 
 /** 只需要 uploadSession 的最小上传器视图（便于测试注入，无需真实网络） */
 export interface BackfillUploader {
@@ -242,8 +243,10 @@ export function scanPendingUploads(opts: BackfillOptions): ScanResult {
         continue;
       }
 
-      // ② 已上传过
-      if (existsSync(join(dir, ".uploaded"))) {
+      // ② 已上传过终态。
+      // S11：只认 final 标记——/debug 中途快照写的是 final:false，它之后的增量还没上云，
+      // 必须继续往下走判活/补传；历史标记（无 final 字段）按终态兼容，见 upload-marker.ts。
+      if (hasFinalUploadMarker(dir)) {
         stats.alreadyUploaded++;
         continue;
       }
@@ -410,6 +413,20 @@ export interface UploadBacklog {
   ghost: number;
   /** 配置上传之前产生、不会自动补传的会话数（未传 watermarkMs 时恒 0） */
   beforeWatermark: number;
+  /** S11：没有 session.traj 的空壳目录数 */
+  noTraj: number;
+  /** S11：session.traj 为 0 字节的目录数 */
+  emptyTraj: number;
+  /** S11：目录太新、本轮不动的会话数 */
+  tooNew: number;
+  /** S11：读目录/文件出错的会话数 */
+  errored: number;
+  /**
+   * S11 自检：各分类之和与 totalSessions 的差值（理应恒为 0）。
+   * 非 0 = 某个会话没落进任何一格（或扫描根目录本身读失败），调用方必须把它说出来，
+   * 不许静默——「52 个会话都在、只是没人数」正是上次事故藏九天的形态。
+   */
+  unaccounted: number;
   /** 重试队列条目数（读不到时为 null，与 0 区分） */
   queueEntries: number | null;
 }
@@ -438,6 +455,16 @@ export function getUploadBacklog(opts: BackfillOptions): UploadBacklog {
   } catch {
     queueEntries = null;
   }
+  const classified =
+    stats.alreadyUploaded +
+    pending.length +
+    stats.live +
+    stats.ghost +
+    stats.beforeWatermark +
+    stats.noTraj +
+    stats.emptyTraj +
+    stats.tooNew +
+    stats.errored;
   return {
     totalSessions: stats.scanned,
     uploaded: stats.alreadyUploaded,
@@ -445,6 +472,11 @@ export function getUploadBacklog(opts: BackfillOptions): UploadBacklog {
     live: stats.live,
     ghost: stats.ghost,
     beforeWatermark: stats.beforeWatermark,
+    noTraj: stats.noTraj,
+    emptyTraj: stats.emptyTraj,
+    tooNew: stats.tooNew,
+    errored: stats.errored,
+    unaccounted: stats.scanned - classified,
     queueEntries,
   };
 }

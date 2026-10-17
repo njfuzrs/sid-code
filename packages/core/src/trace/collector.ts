@@ -43,6 +43,12 @@ import { getBuildInfo } from "@sid-code/shared/build-info.ts";
 import { getIdentity, getGitSnapshot } from "../identity/index.ts";
 import { TraceWriter, type RawJsonlEntry, type HookEvent } from "./writer.ts";
 import { buildTrajectory, type RequestResponsePair, type TraceMetadata } from "./builder.ts";
+import { hasFinalUploadMarker } from "./upload-marker.ts";
+import {
+  EVENT_TS_SEMANTIC,
+  PAIR_INDEXED_EVENTS,
+  TS_SEMANTICS_VERSION,
+} from "./event-ts-semantics.ts";
 import { buildDigest, resolvePaths, type SessionLevelMetrics } from "./digest.ts";
 import { upsertSessionIndex, buildSessionIndexEntry } from "./session-index.ts";
 import { selectTraceDirsToPrune, type TraceDirEntry } from "./retention.ts";
@@ -89,7 +95,12 @@ import {
 // ─── 最小化上传器接口（避免循环依赖，Task 8 实现后注入） ───
 
 export interface TraceUploaderInterface {
-  uploadSession(sessionDir: string, sessionId: string): Promise<{ allConfirmed: boolean }>;
+  uploadSession(
+    sessionDir: string,
+    sessionId: string,
+    /** S11：snapshot=true 为会话中途快照（不清理本地、标记写 final:false） */
+    opts?: { snapshot?: boolean },
+  ): Promise<{ allConfirmed: boolean }>;
   /** 获取上传平台基础 URL（/debug 显示用，可选实现） */
   getBaseUrl?(): string;
   /**
@@ -338,6 +349,17 @@ export class TraceCollector {
   /** 发现 1：index → StreamPhase 快照定位信息（turn_index + loop_id）。
    * 看门狗 fire 时据此用与 emitStreamPhase 一致的 key 查快照，修复 stream_snapshot 恒 null。 */
   private streamSnapshotRefs = new Map<number, { turn_index: number; loop_id: string }>();
+  /**
+   * S14：provider 侧循环内轮次（stream_snapshot_ref.turn_index）→ 全局 pair index。
+   * 主循环 StreamPhase / HttpConnected / BilledRequest 落盘时据此补 `pair_index`
+   * （口径见 event-ts-semantics.ts）。同一 turn_index 被新 queryLoop 复用时以最近一次
+   * BeforeModel 为准——事件总是紧跟着它自己那轮的 BeforeModel 发出。
+   */
+  private turnToPairIndex = new Map<number, number>();
+  /** /debug 快照上传的等待上限（ms）。字段而非常量：单测要覆盖「超时仍在后台」分支 */
+  private snapshotWaitMs = 5_000;
+  /** S14：pair index → BeforeModel 时刻（ms），raw.jsonl 完整行据此算 elapsed_ms */
+  private pairStartedAtMs = new Map<number, number>();
   /** 配对超时阈值——作为 fallback/stream-processor abort race 都失效时的最后兜底。
    *
    * 发现 2 修复：原 120s 对慢模型（如 glm-5.2 单轮 200s+ 长响应）偏紧，会把「慢但活着」的
@@ -502,7 +524,8 @@ export class TraceCollector {
             id: e.name,
             dir,
             mtimeMs,
-            uploaded: existsSync(join(dir, ".uploaded")),
+            // S11：中途快照（final:false）不算已上传，否则淘汰会优先删掉终态还没上云的会话
+            uploaded: hasFinalUploadMarker(dir),
             bytes: needBytes ? dirBytes(dir) : undefined,
           };
         });
@@ -907,6 +930,8 @@ export class TraceCollector {
     for (const t of this.pendingModelCalls.values()) clearTimeout(t);
     this.pendingModelCalls.clear();
     this.streamSnapshotRefs.clear();
+    this.turnToPairIndex.clear();
+    this.pairStartedAtMs.clear();
     this.pairs = [];
     this.prevMessageCount = 0;
     // P1-2：新会话不与上个会话的前缀比对（否则首轮会被记成一次巨大断裂）
@@ -1126,13 +1151,15 @@ export class TraceCollector {
           ? { resumed_from: input.resumed_from, process_session_id: input.session_id }
           : {}),
         ...(input.parent_session_id ? { parent_session_id: input.parent_session_id } : {}),
+        // S14：时间戳语义表每会话写一次（不逐行加），口径见 event-ts-semantics.ts
+        ts_semantics: { version: TS_SEMANTICS_VERSION, events: EVENT_TS_SEMANTIC },
       },
     });
 
     // 缺口 1/2/3：初始化流状态观测器（注入 session_id 和事件写入器）
     initStreamObserver(traceSessionId, this.writer.getSessionDir(), (event) => {
       try {
-        this.appendHookEvent(event);
+        this.appendHookEvent(this.withPairIndex(event));
       } catch {
         /* 静默 */
       }
@@ -1217,6 +1244,25 @@ export class TraceCollector {
     this.writer.appendEvent({ ...event, ...this.identityFieldsForEvent() });
   }
 
+  /**
+   * S14：给主循环的 StreamPhase / HttpConnected / BilledRequest 补 `pair_index`
+   * （= BeforeModel / AfterModel / raw.jsonl 的全局 index）。只在 collector 侧补，
+   * 不改 provider 的 emit 点：那里拿不到全局 pair index，且 data.index（循环内轮次）
+   * 的现有语义不能动。
+   *
+   * 不补的情况（宁缺不错）：带 agent_id（子代理自己的轮次空间）、带 caller（旁路调用，
+   * 不对应任何主循环 pair）、映射里查不到。
+   */
+  private withPairIndex(event: HookEvent): HookEvent {
+    if (!PAIR_INDEXED_EVENTS.has(event.event as string)) return event;
+    const d = event.data as Record<string, unknown> | undefined;
+    if (!d || d.agent_id !== undefined || d.caller !== undefined) return event;
+    if (typeof d.index !== "number") return event;
+    const pairIndex = this.turnToPairIndex.get(d.index);
+    if (pairIndex === undefined) return event;
+    return { ...event, data: { ...d, pair_index: pairIndex } };
+  }
+
   private identityFieldsForEvent(): Pick<
     HookEvent,
     "device_id" | "user_id" | "org_id" | "team_id"
@@ -1270,6 +1316,11 @@ export class TraceCollector {
     // 发现 1：记住本轮的流快照定位信息（turn_index + loop_id），供看门狗 fire 时用一致的 key 查快照。
     if (input.stream_snapshot_ref) {
       this.streamSnapshotRefs.set(index, input.stream_snapshot_ref);
+      this.turnToPairIndex.set(input.stream_snapshot_ref.turn_index, index);
+    }
+    {
+      const startMs = Date.parse(input.timestamp);
+      this.pairStartedAtMs.set(index, Number.isNaN(startMs) ? Date.now() : startMs);
     }
 
     // 首次请求提取 system prompt
@@ -1829,6 +1880,8 @@ export class TraceCollector {
       source: e.source,
       ...(e.reasonType ? { reason_type: e.reasonType } : {}),
       execution_context: e.context,
+      // S10：fork / 子代理身份（与 StreamPhase.agent_id 同值）。主循环无此字段，形状不变
+      ...(e.agentId ? { agent_id: e.agentId } : {}),
       ...(e.durationMs !== undefined ? { duration_ms: e.durationMs } : {}),
     });
   }
@@ -1849,6 +1902,9 @@ export class TraceCollector {
         tool_name: input.tool_name,
         tool_use_id: input.tool_use_id,
         is_error: true,
+        // S17：错误分类 + 截断错误头。error_head 只留本地（上传前由 uploader 剥掉）
+        error_kind: classifyToolFailure(input),
+        ...errorHeadField(input),
       },
     });
 
@@ -3135,6 +3191,12 @@ export class TraceCollector {
    */
   async uploadSnapshot(): Promise<{
     uploaded: boolean;
+    /**
+     * S11：true = 5s 内没等到结果，但上传**仍在后台继续**（没有取消）。
+     * 与「失败」是两种相反的处境：修复前两者被渲染成同一句「上传失败」，而实测
+     * 超时的那次上传约 22s 后成功并写下了标记。
+     */
+    pending?: boolean;
     sessionId: string;
     sessionDir: string;
     error?: string;
@@ -3153,30 +3215,40 @@ export class TraceCollector {
     // 先重建 session.traj 确保包含最新数据（快照上传前强制刷）
     await this.forceRebuildTraj();
 
-    // 上传，最多等 5 秒
+    // 上传，最多等 5 秒。snapshot:true —— 中途快照不清理本地、标记写 final:false（S11）
+    let timer: ReturnType<typeof setTimeout> | undefined;
     try {
-      const uploadPromise = this.uploader.uploadSession(sessionDir, sessionId);
+      const uploadPromise = this.uploader.uploadSession(sessionDir, sessionId, { snapshot: true });
+      // 输掉 race 的上传继续在后台跑：兜住它的 rejection，避免成为未处理的 Promise 拒绝
+      uploadPromise.catch((err: any) => {
+        getLogger().warn("TRACE", `/debug 后台快照上传异常: ${err?.message ?? err}`);
+      });
       const result = await Promise.race([
         uploadPromise,
-        new Promise<null>((resolve) => setTimeout(() => resolve(null), 5_000)),
+        new Promise<null>((resolve) => {
+          timer = setTimeout(() => resolve(null), this.snapshotWaitMs);
+        }),
       ]);
 
       if (result === null) {
         return {
           uploaded: false,
+          pending: true,
           sessionId,
           sessionDir,
-          error: "上传超时（5s），将在会话结束后重试",
+          error: "5s 内未完成，上传仍在后台进行",
         };
       }
       return {
         uploaded: result.allConfirmed,
         sessionId,
         sessionDir,
-        error: result.allConfirmed ? undefined : "部分文件上传失败",
+        error: result.allConfirmed ? undefined : "部分文件上传失败，已加入重试队列",
       };
     } catch (err: any) {
       return { uploaded: false, sessionId, sessionDir, error: err.message };
+    } finally {
+      if (timer) clearTimeout(timer);
     }
   }
 
@@ -3202,6 +3274,19 @@ export class TraceCollector {
       stop_reason: pair.stop_reason,
       is_partial: pair.is_partial,
       ...(compactBoundary ? { compact_boundary: compactBoundary } : {}),
+      // S14：timestamp 是请求开始时刻（start），结束时刻另记，见 event-ts-semantics.ts
+      ...this.rawEndFields(pair.index),
+    };
+  }
+
+  /** S14：raw.jsonl 完整行的 ended_at（响应落盘时刻）与 elapsed_ms（自 BeforeModel 起） */
+  private rawEndFields(index: number): { ended_at: string; elapsed_ms?: number } {
+    const endMs = Date.now();
+    const startMs = this.pairStartedAtMs.get(index);
+    this.pairStartedAtMs.delete(index);
+    return {
+      ended_at: new Date(endMs).toISOString(),
+      ...(startMs !== undefined ? { elapsed_ms: Math.max(0, endMs - startMs) } : {}),
     };
   }
 
@@ -3457,4 +3542,40 @@ function dirBytes(dir: string): number {
     /* 目录不可读 */
   }
   return total;
+}
+
+// ─── S17：PostToolUseFailure 的错误分类 ───
+
+/** 工具失败分类（落 events.jsonl 的 `error_kind`，上传云端） */
+export type ToolErrorKind = "validation" | "permission" | "exec" | "timeout";
+
+/** error_head 截断长度：够认出错误类型，又不把整段输出（可能含密钥）落进轨迹 */
+export const ERROR_HEAD_MAX = 200;
+
+function failureText(input: PostToolUseInput): string {
+  if (typeof input.error === "string") return input.error;
+  const e = (input.tool_response as Record<string, unknown> | undefined)?.error;
+  return typeof e === "string" ? e : "";
+}
+
+/**
+ * 按现有错误来源分类，判不出用 exec。
+ * - `sid_failure_kind=validation` → validation（参数校验失败，工具没执行）；
+ * - `hook_blocked` → permission（PreToolUse hook 阻止，与权限拒绝同属「不让执行」）；
+ * - 错误文本含超时特征 → timeout；
+ * - 其余（exception / tool_error / 未知）→ exec。
+ * 权限拒绝本身走 PermissionDenied 事件（Q7），不经过这里。
+ */
+export function classifyToolFailure(input: PostToolUseInput): ToolErrorKind {
+  if (input.sid_failure_kind === "validation") return "validation";
+  if (input.sid_failure_kind === "hook_blocked") return "permission";
+  const text = failureText(input);
+  if (/timed?\s*out|timeout|ETIMEDOUT|超时/i.test(text)) return "timeout";
+  return "exec";
+}
+
+function errorHeadField(input: PostToolUseInput): { error_head?: string } {
+  const text = failureText(input);
+  if (!text) return {};
+  return { error_head: text.length > ERROR_HEAD_MAX ? text.slice(0, ERROR_HEAD_MAX) : text };
 }

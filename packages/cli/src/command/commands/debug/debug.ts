@@ -8,6 +8,7 @@ import { getVersion } from "@sid-code/shared/version.ts";
 import { getSessionMetrics } from "@sid-code/core/debug/index.ts";
 import { setClipboard } from "../../../ui/render-port/termio.ts";
 import { SessionState } from "@sid-code/core/session/state.ts";
+import { TODO_IN_PROGRESS } from "../../../ui/constants/figures.ts";
 
 const mod: LocalCommandModule = {
   async call(_args: string, ctx: CommandContext): Promise<LocalCommandResult> {
@@ -97,19 +98,17 @@ const mod: LocalCommandModule = {
       if (!uploadUrl) {
         lines.push("状态       : ⚠ 上传未配置（仅本地保留）");
       } else {
-        // 触发即时上传（最多等 5 秒）
+        // 触发即时上传（最多等 5 秒）。三态（S11）：
+        //   已上传 / 5s 内没完成但仍在后台跑 / 真失败。
+        // 修复前两者被渲染成同一句「上传失败…会话结束后自动重试」——而超时的那次上传
+        // 并没有被取消，实测约 22s 后成功落了标记，文案与事实正好相反。
         try {
           const result = await traceCollector.uploadSnapshot();
-          if (result.uploaded) {
-            lines.push("状态       : ✓ 已上传到云端");
-          } else {
-            lines.push(`状态       : ✗ 上传失败: ${result.error || "未知错误"}`);
-            lines.push("            轨迹已保存在本地，会话结束后自动重试");
-          }
+          lines.push(...renderSnapshotUploadStatus(result));
         } catch (err: unknown) {
           const msg = err instanceof Error ? err.message : String(err);
           lines.push(`状态       : ✗ 上传异常: ${msg}`);
-          lines.push("            轨迹已保存在本地，会话结束后自动重试");
+          lines.push("            轨迹已保存在本地");
         }
         lines.push(`平台地址   : ${uploadUrl}`);
       }
@@ -133,9 +132,23 @@ const mod: LocalCommandModule = {
         const b = getUploadBacklog({ outputDir, currentSessionId: sessionId, watermarkMs });
         lines.push(
           `本地会话   : ${b.totalSessions} 个（已上传 ${b.uploaded}，待补传 ${b.pending}` +
+            `，live ${b.live}` +
             (b.beforeWatermark > 0 ? `，配置上传前 ${b.beforeWatermark} 个不自动上传` : "") +
             `）`,
         );
+        // S11：其余分类只在非 0 时列出，避免主行变成一串 0
+        const minor: string[] = [];
+        if (b.noTraj > 0) minor.push(`无 traj ${b.noTraj}`);
+        if (b.emptyTraj > 0) minor.push(`空 traj ${b.emptyTraj}`);
+        if (b.tooNew > 0) minor.push(`太新 ${b.tooNew}`);
+        if (b.errored > 0) minor.push(`读错 ${b.errored}`);
+        if (minor.length > 0) lines.push(`            其余：${minor.join("，")}`);
+        // 自检：分类之和必须等于扫描总数。不等时说出来，不许静默（见 UploadBacklog.unaccounted）
+        if (b.unaccounted !== 0) {
+          lines.push(
+            `            ⚠ 计数自检不平：${b.unaccounted} 个会话未归入任何分类（口径有漏）`,
+          );
+        }
         lines.push(
           `重试队列   : ${b.queueEntries === null ? "读取失败" : `${b.queueEntries} 条`}` +
             (b.ghost > 0 ? `　幽灵目录 ${b.ghost} 个` : ""),
@@ -154,6 +167,30 @@ const mod: LocalCommandModule = {
     return { type: "text", value: lines.join("\n") };
   },
 };
+
+/**
+ * 渲染快照上传状态（S11 三态）。导出供单测直接断言文案，不必搭整套 CommandContext。
+ *
+ * 「会话结束后自动重试」这句话不再出现：它只在 auto_upload 开着、且进程走到 SessionEnd
+ * 时成立，/debug 这里判断不了，说了就是承诺一件不一定发生的事。
+ */
+export function renderSnapshotUploadStatus(result: {
+  uploaded: boolean;
+  pending?: boolean;
+  error?: string;
+}): string[] {
+  if (result.uploaded) return ["状态       : ✓ 已上传到云端"];
+  if (result.pending) {
+    return [
+      `状态       : ${TODO_IN_PROGRESS} 5s 内未完成，仍在后台上传`,
+      "            结果见 debug.log；稍后再跑 /debug 可确认",
+    ];
+  }
+  return [
+    `状态       : ✗ 上传失败: ${result.error || "未知错误"}`,
+    "            轨迹已保存在本地，失败文件已进重试队列",
+  ];
+}
 
 /** 数字千分位格式化 */
 function fmtNum(n: number): string {

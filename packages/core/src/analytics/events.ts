@@ -335,6 +335,8 @@ export function logPermissionAllow(
      * 遥测侧 permission_allow 的字段集维持原样，避免改动外发 schema。
      */
     reasonType?: PermissionDenyReasonType;
+    /** S10：fork / 子代理身份，只进本地轨迹（不进遥测，外发 schema 不变）。主循环不传 */
+    agentId?: string;
   },
 ): void {
   emit(EVENT_NAMES.PERMISSION_ALLOW, {
@@ -353,6 +355,7 @@ export function logPermissionAllow(
     source: opts.source,
     ...(opts.reasonType ? { reasonType: opts.reasonType } : {}),
     context: opts.context,
+    ...(opts.agentId ? { agentId: opts.agentId } : {}),
     ...(opts.durationMs !== undefined ? { durationMs: opts.durationMs } : {}),
   });
 }
@@ -385,6 +388,8 @@ export function logPermissionDeny(
     /** 必填，理由同 logPermissionAllow 的 context（缺陷 5） */
     context: PermissionContext;
     reasonType?: PermissionDenyReasonType;
+    /** S10：同 logPermissionAllow.agentId */
+    agentId?: string;
   },
 ): void {
   emit(EVENT_NAMES.PERMISSION_DENY, {
@@ -402,6 +407,7 @@ export function logPermissionDeny(
     source: opts.source,
     ...(opts.reasonType ? { reasonType: opts.reasonType } : {}),
     context: opts.context,
+    ...(opts.agentId ? { agentId: opts.agentId } : {}),
     ...(opts.durationMs !== undefined ? { durationMs: opts.durationMs } : {}),
   });
 }

@@ -26,6 +26,7 @@ import {
   emitStreamStall,
   armIneffectiveCheck,
   emitHttpConnected,
+  streamAttributionOf,
   emitSseAnomaly,
   cacheDimsFor,
   chunkCountFields,
@@ -1060,7 +1061,11 @@ export class OpenAIProvider implements Provider {
       // 缺口 2 进阶：header 超时 fire 后武装未生效检查；拿到响应头/失败时 disarm。
       let disarmHeaderIneffective: (() => void) | null = null;
       // 获取当前 turn index 用于可观测性事件
-      const obsIndex = currentSseDumpContext().turnIndex;
+      const obsCtx = currentSseDumpContext();
+      const obsIndex = obsCtx.turnIndex;
+      // S10：发起请求时捕获一次来源标注（fork / 子代理 / side-call 有值，主循环 undefined）。
+      // 不在定时器/回调里临时取：回调继承注册时的 ALS，跨请求复用会误标。
+      const obsAttr = streamAttributionOf(obsCtx);
       let headerTimeoutId: ReturnType<typeof setTimeout> | null = setTimeout(() => {
         headerTimedOut = true;
         log.warn(
@@ -1124,7 +1129,7 @@ export class OpenAIProvider implements Provider {
 
       let response: Response;
       // 缺口 1：记录 fetch 发出阶段
-      emitStreamPhase(obsIndex, "fetch_sent", { model: attrModel });
+      emitStreamPhase(obsIndex, "fetch_sent", { model: attrModel }, undefined, obsAttr);
       try {
         response = await fetch(`${this.baseURL}/chat/completions`, {
           method: "POST",
@@ -1166,7 +1171,13 @@ export class OpenAIProvider implements Provider {
         const error = await response.text();
         log.error("LLM:OPENAI", `API 错误: ${response.status}`, error);
         // 缺口 1：HTTP 错误也记录阶段（含状态码）
-        emitStreamPhase(obsIndex, "error", { http_status: response.status, model: attrModel });
+        emitStreamPhase(
+          obsIndex,
+          "error",
+          { http_status: response.status, model: attrModel },
+          undefined,
+          obsAttr,
+        );
         // 接入审计日志(WARN 级,fileOnly 不刷屏):API 层错误是排查会话异常的关键信号,
         // 原先只进 LLM:OPENAI 普通日志,audit.log 拿不到 HTTP 码 → 异常时定位慢。
         getLogger().warn(
@@ -1195,19 +1206,29 @@ export class OpenAIProvider implements Provider {
       // 缺口 1/6：记录 headers_received 阶段（含 HTTP 状态码、Content-Type 和 TTFB）
       const ttfbMs = Date.now() - requestStartTime;
       const contentType = response.headers.get("content-type") ?? undefined;
-      emitStreamPhase(obsIndex, "headers_received", {
-        http_status: response.status,
-        content_type: contentType,
-        ttfb_ms: ttfbMs,
-        model: attrModel,
-      });
+      emitStreamPhase(
+        obsIndex,
+        "headers_received",
+        {
+          http_status: response.status,
+          content_type: contentType,
+          ttfb_ms: ttfbMs,
+          model: attrModel,
+        },
+        undefined,
+        obsAttr,
+      );
       // 缺口 6：独立 HttpConnected 事件（按 `HttpConnected` 检索一致性；确认网络层状态）
-      emitHttpConnected(obsIndex, {
-        status: response.status,
-        content_type: contentType,
-        ttfb_ms: ttfbMs,
-        model: attrModel,
-      });
+      emitHttpConnected(
+        obsIndex,
+        {
+          status: response.status,
+          content_type: contentType,
+          ttfb_ms: ttfbMs,
+          model: attrModel,
+        },
+        obsAttr,
+      );
 
       // ─── Content-Type 守卫（fail-fast 伪装成功的错误页）───
       // 背景（事故复盘 session 20260708-102143）：网关对不可用模型/渠道有时不返回
@@ -1228,12 +1249,18 @@ export class OpenAIProvider implements Provider {
         } catch {
           /* 读 body 失败不影响判错 */
         }
-        emitStreamPhase(obsIndex, "error", {
-          http_status: response.status,
-          content_type: contentType,
-          // 归因维度用别名（AUDIT 日志里仍打真名做诊断，见下方 warn）
-          model: attrModel,
-        });
+        emitStreamPhase(
+          obsIndex,
+          "error",
+          {
+            http_status: response.status,
+            content_type: contentType,
+            // 归因维度用别名（AUDIT 日志里仍打真名做诊断，见下方 warn）
+            model: attrModel,
+          },
+          undefined,
+          obsAttr,
+        );
         getLogger().warn(
           "AUDIT:API",
           `✗ OpenAI 响应 Content-Type=${contentType}（非 SSE，疑似网关错误页）model=${effectiveModel} body=${bodySnippet}`,
@@ -1287,11 +1314,17 @@ export class OpenAIProvider implements Provider {
           if (!firstTokenTime) {
             firstTokenTime = Date.now();
             log.debug("LLM:OPENAI", `首 token 延迟: ${ttftMs}ms`);
-            emitStreamPhase(obsIndex, "first_content", {
-              ttft_ms: ttftMs,
-              model: attrModel,
-              provider: this.name(),
-            });
+            emitStreamPhase(
+              obsIndex,
+              "first_content",
+              {
+                ttft_ms: ttftMs,
+                model: attrModel,
+                provider: this.name(),
+              },
+              undefined,
+              obsAttr,
+            );
           }
         },
         // § 行为等价（T7）：abort 由 parseSSE（内部 abortPromise race）+ 下方消费循环
@@ -1338,7 +1371,13 @@ export class OpenAIProvider implements Provider {
         // Fix 1 纵深防御：每次事件到达后检查 signal（覆盖 parseSSE 内 race 的盲区）
         if (signal?.aborted) {
           // 缺口 1：用户中断记录 aborted 阶段
-          emitStreamPhase(obsIndex, "aborted", { reason: "signal_aborted", model: attrModel });
+          emitStreamPhase(
+            obsIndex,
+            "aborted",
+            { reason: "signal_aborted", model: attrModel },
+            undefined,
+            obsAttr,
+          );
           throw new Error("Request aborted");
         }
         // T14.1/T14.6：首 token 延迟（TTFT）已收敛到 lifecycle 的 onFirstContentProgress 回调，
@@ -1522,7 +1561,10 @@ export class OpenAIProvider implements Provider {
     const headerTimeoutMs = OpenAIProvider.resolveHeaderTimeoutMs(effectiveModel);
     const headerTimeoutCtl = new AbortController();
     let headerTimedOut = false;
-    const obsIndex = currentSseDumpContext().turnIndex;
+    const obsCtx = currentSseDumpContext();
+    const obsIndex = obsCtx.turnIndex;
+    // S10：同 Chat Completions 路径，发起请求时捕获来源标注
+    const obsAttr = streamAttributionOf(obsCtx);
     let disarmHeaderIneffective: (() => void) | null = null;
     let headerTimeoutId: ReturnType<typeof setTimeout> | null = setTimeout(() => {
       headerTimedOut = true;
@@ -1567,7 +1609,7 @@ export class OpenAIProvider implements Provider {
     const fetchSignal = AbortSignal.any(fetchSignals);
 
     let response: Response;
-    emitStreamPhase(obsIndex, "fetch_sent", { model: attrModel });
+    emitStreamPhase(obsIndex, "fetch_sent", { model: attrModel }, undefined, obsAttr);
     try {
       // Responses API 端点：/responses（baseURL 已含 /v1）
       response = await fetch(`${this.baseURL}/responses`, {
@@ -1598,7 +1640,7 @@ export class OpenAIProvider implements Provider {
     }
 
     // 响应头已到达。归因用别名（与 Chat Completions 路径同口径）
-    emitHttpConnected(obsIndex, { status: response.status, model: attrModel });
+    emitHttpConnected(obsIndex, { status: response.status, model: attrModel }, obsAttr);
     // G8：Responses API 路径同样提取 rate-limit header
     updateRateLimitStatus(response.headers);
     // P2-6：网关请求标识（同 Chat Completions 路径）
@@ -1666,11 +1708,17 @@ export class OpenAIProvider implements Provider {
           if (!firstTokenTime) {
             firstTokenTime = Date.now();
             log.debug("LLM:OPENAI:RESPONSES", `首 token 延迟: ${ttftMs}ms`);
-            emitStreamPhase(obsIndex, "first_content", {
-              ttft_ms: ttftMs,
-              model: attrModel,
-              provider: this.name(),
-            });
+            emitStreamPhase(
+              obsIndex,
+              "first_content",
+              {
+                ttft_ms: ttftMs,
+                model: attrModel,
+                provider: this.name(),
+              },
+              undefined,
+              obsAttr,
+            );
           }
         },
         // 三层各自上报自己的 layer 与**自己的**阈值（对齐 anthropic.ts 的写法）。
@@ -1727,7 +1775,13 @@ export class OpenAIProvider implements Provider {
       for await (const event of lifecycle.guard(parseResponsesStream(response.body, signal))) {
         // 纵深防御：signal abort 检查
         if (signal?.aborted) {
-          emitStreamPhase(obsIndex, "aborted", { reason: "signal_aborted", model: attrModel });
+          emitStreamPhase(
+            obsIndex,
+            "aborted",
+            { reason: "signal_aborted", model: attrModel },
+            undefined,
+            obsAttr,
+          );
           throw new Error("Request aborted");
         }
 
@@ -1934,11 +1988,17 @@ export class OpenAIProvider implements Provider {
         throw err;
       }
       billable = true;
-      emitHttpConnected(currentSseDumpContext().turnIndex, {
-        status: response.status,
-        content_type: response.headers.get?.("content-type") ?? undefined,
-        model: params.model || this._model,
-      });
+      // S10：非流式路径无定时器，此处仍在请求的 ALS 内，就地捕获即发起时身份
+      const ncCtx = currentSseDumpContext();
+      emitHttpConnected(
+        ncCtx.turnIndex,
+        {
+          status: response.status,
+          content_type: response.headers.get?.("content-type") ?? undefined,
+          model: params.model || this._model,
+        },
+        streamAttributionOf(ncCtx),
+      );
 
       const data: any = await response.json();
       const choice = data.choices?.[0];
@@ -2114,11 +2174,17 @@ export class OpenAIProvider implements Provider {
         throw err;
       }
       billable = true;
-      emitHttpConnected(currentSseDumpContext().turnIndex, {
-        status: response.status,
-        content_type: response.headers.get?.("content-type") ?? undefined,
-        model: params.model || this._model,
-      });
+      // S10：非流式路径无定时器，此处仍在请求的 ALS 内，就地捕获即发起时身份
+      const ncCtx = currentSseDumpContext();
+      emitHttpConnected(
+        ncCtx.turnIndex,
+        {
+          status: response.status,
+          content_type: response.headers.get?.("content-type") ?? undefined,
+          model: params.model || this._model,
+        },
+        streamAttributionOf(ncCtx),
+      );
 
       const body = (await response.json()) as ResponsesNonStreamingBody;
 
@@ -2215,6 +2281,8 @@ export class OpenAIProvider implements Provider {
     const chunkDumper = new SseChunkDumper(dumpCtx.sessionId, dumpCtx.turnIndex, requestStartAt);
     // 缺口 1：parseSSE 内的 turn index（用于 StreamPhase/TimeoutFired/StreamStall 事件）
     const parseObsIndex = dumpCtx.turnIndex;
+    // S10：parseSSE 每次调用 = 一次 fetch，在入口捕获来源标注（同 dumpCtx 一并取）
+    const parseObsAttr = streamAttributionOf(dumpCtx);
     // PR3：本次 fetch 的计费去重键。**必须在这里生成**（每次 parseSSE = 一次 fetch），
     // 不能用轮粒度：主循环的 usage 是跨 attempt 累加的，用轮粒度做键会与主循环双记。
     const billingFetchId = nextFetchId();
@@ -2431,22 +2499,28 @@ export class OpenAIProvider implements Provider {
      */
     const finishStream = (): StreamEvent[] => {
       const out = closeOpenBlocks(pendingFinishReason);
-      emitStreamPhase(parseObsIndex, "completed", {
-        chunks: totalChunks,
-        empty_chunks: emptyChunks,
-        // PR11：补规范 chunk 字段（老 `chunks` 原样保留，见 CHUNK_COUNT_FIELD）
-        ...chunkCountFields(totalChunks, "chunks"),
-        duration_ms: Date.now() - requestStartAt,
-        model: this._model,
-        // D3：两种正常出口在遥测里可区分（EOF 收尾此前连 completed 都不发）
-        end: sawDone ? "done" : "eof",
-        // P2-3：OpenAI 族的 usage 只在流**尾部**下发（上面 chunk.usage 分支），
-        // 首内容时刻拿不到命中数，所以缓存维度挂在 completed 而不是 first_content。
-        // 消费侧因此需要把 first_content(ttft) 与 completed(cache_hit) 按
-        // (session, index, 出现顺序) 配对 —— 见 digest.ts 的 TTFT 分桶实现。
-        // 第二参：OpenAI 族 prompt_tokens 含 cached 部分，可直接做命中比例分母
-        ...cacheDimsFor(usage.cacheReadInputTokens ?? 0, usage.inputTokens || undefined),
-      });
+      emitStreamPhase(
+        parseObsIndex,
+        "completed",
+        {
+          chunks: totalChunks,
+          empty_chunks: emptyChunks,
+          // PR11：补规范 chunk 字段（老 `chunks` 原样保留，见 CHUNK_COUNT_FIELD）
+          ...chunkCountFields(totalChunks, "chunks"),
+          duration_ms: Date.now() - requestStartAt,
+          model: this._model,
+          // D3：两种正常出口在遥测里可区分（EOF 收尾此前连 completed 都不发）
+          end: sawDone ? "done" : "eof",
+          // P2-3：OpenAI 族的 usage 只在流**尾部**下发（上面 chunk.usage 分支），
+          // 首内容时刻拿不到命中数，所以缓存维度挂在 completed 而不是 first_content。
+          // 消费侧因此需要把 first_content(ttft) 与 completed(cache_hit) 按
+          // (session, index, 出现顺序) 配对 —— 见 digest.ts 的 TTFT 分桶实现。
+          // 第二参：OpenAI 族 prompt_tokens 含 cached 部分，可直接做命中比例分母
+          ...cacheDimsFor(usage.cacheReadInputTokens ?? 0, usage.inputTokens || undefined),
+        },
+        undefined,
+        parseObsAttr,
+      );
       updateStreamStats(parseObsIndex, {
         chunksReceived: totalChunks,
         emptyChunks,
@@ -2485,7 +2559,13 @@ export class OpenAIProvider implements Provider {
 
     try {
       // 缺口 1：记录进入 SSE 消费阶段
-      emitStreamPhase(parseObsIndex, "sse_consuming", { model: this._model });
+      emitStreamPhase(
+        parseObsIndex,
+        "sse_consuming",
+        { model: this._model },
+        undefined,
+        parseObsAttr,
+      );
       while (true) {
         // 前置检查：循环顶部快速判断（方案 B 补充，覆盖 reader.read() settle 后的盲区）
         if (signal?.aborted) {

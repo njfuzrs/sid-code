@@ -82,6 +82,11 @@ export async function executeTools(
   onProgress?: SubAgentToolProgress,
   /** 会话 ID，超阈值结果落盘到 trajectories/sessions/{id}/tool-outputs/。缺省回退 "default"。 */
   sessionId?: string,
+  /**
+   * S10：子代理身份（= AgenticLoopConfig.agentId），写进 PermissionDecision.agent_id。
+   * 显式传参而非读 ALS：工具执行在流的 next() 之外，RequestContext 此处为空。
+   */
+  agentId?: string,
 ): Promise<ContentBlock[]> {
   const log = getLogger();
 
@@ -140,6 +145,7 @@ export async function executeTools(
                 permissionChecker,
                 onProgress,
                 sessionId,
+                agentId,
               )
                 .then((result) => ({ idx, result }))
                 .catch((err: any) => ({
@@ -168,6 +174,7 @@ export async function executeTools(
             permissionChecker,
             onProgress,
             sessionId,
+            agentId,
           );
           resultMap.set(idx, result);
         } catch (err: any) {
@@ -420,6 +427,8 @@ async function executeSingleTool(
   permissionChecker?: Checker,
   onProgress?: SubAgentToolProgress,
   sessionId?: string,
+  /** S10：子代理身份，见 executeTools 同名参数 */
+  agentId?: string,
 ): Promise<ContentBlock> {
   const log = getLogger();
   const tool = tools.get(block.name);
@@ -523,6 +532,7 @@ async function executeSingleTool(
         needsPrompt: false,
         durationMs: Date.now() - toolStartedAt,
         context: "subagent",
+        ...(agentId ? { agentId } : {}),
         reasonType: decision.decisionReason?.type,
       });
       firePermissionDenied(
@@ -548,6 +558,7 @@ async function executeSingleTool(
       needsPrompt: false,
       durationMs: Date.now() - toolStartedAt,
       context: "subagent",
+      ...(agentId ? { agentId } : {}),
       reasonType: decision.decisionReason?.type,
     });
   } else {
@@ -578,6 +589,7 @@ async function executeSingleTool(
         needsPrompt: false,
         durationMs: Date.now() - toolStartedAt,
         context: "subagent",
+        ...(agentId ? { agentId } : {}),
         reasonType: "other",
       });
       firePermissionDenied(
@@ -603,6 +615,7 @@ async function executeSingleTool(
       needsPrompt: false,
       durationMs: Date.now() - toolStartedAt,
       context: "subagent",
+      ...(agentId ? { agentId } : {}),
       reasonType: "other",
     });
   }

@@ -421,6 +421,37 @@ export function annotateIndexAges(
   return result;
 }
 
+/**
+ * S9 路径 A：把调用方传进来的 key 解析成 store 里实际使用的 key。
+ *
+ * **先精确查，未命中再剥前缀重查**——不无条件剥：`MEMORY_TYPE_PREFIX_RE` 会把合法 key
+ * `user-auth` 剥成 `auth`；且存量重名下（`x` 与 `project_x` 并存）无条件剥会让
+ * `delete("project_x")` 删到 `x`。都没命中时原样返回（新 key 照旧按调用方给的名字建）。
+ * 顺带剥 `.md` 后缀：模型照清单把文件名当 key 时常带上它。
+ */
+export function resolveMemoryKey(key: string, entries: ReadonlyMap<string, unknown>): string {
+  if (entries.has(key)) return key;
+  const bare = key.trim().replace(/\.md$/, "");
+  if (entries.has(bare)) return bare;
+  const stripped = stripMemoryTypePrefix(bare);
+  if (entries.has(stripped)) return stripped;
+  return key;
+}
+
+/** 索引保留优先级（S9）：越小越先列、越不容易被字节预算截掉。 */
+const INDEX_TYPE_RANK: Record<string, number> = { user: 0, feedback: 1, project: 2, reference: 3 };
+function indexTypeRank(t: MemoryType | undefined): number {
+  return t ? (INDEX_TYPE_RANK[t] ?? 4) : 4;
+}
+
+/** 进程内去重的 warn：同一条告警（按 id）只打一次。 */
+const warnedOnce = new Set<string>();
+function warnOnce(id: string, msg: string): void {
+  if (warnedOnce.has(id)) return;
+  warnedOnce.add(id);
+  getLogger().warn("MEMORY", msg);
+}
+
 export class MemoryStore {
   private globalDir: string;
   private projectDir: string | null;
@@ -684,11 +715,30 @@ export class MemoryStore {
     //
     // 安全约束同上：只认封闭分类法 4 个词 + 紧跟分隔符（`projection-matrix` 这类
     // 正常语义名不受影响）；单文件失败只 warn；幂等（清过一次后正则不再命中）。
+    //
+    // ─── S9 路径 A 放大器：改写前必须确认目标 name 没被别的文件占用 ───
+    //
+    // 旧实现逐个文件就地改写 `name: project_x` → `x`，**不查是否已有 `name: x`**。
+    // 而 `project_x` 与 `x` 两个文件在写入侧是合法共存的（store 视作两个 key），
+    // 改写一次就凭空造出「同 name 两个文件」——本仓记忆库 9 对重名里 7 对由此而来。
+    // 必须先**全量**收集 name 集合再判：冲突文件可能排在循环后面，逐个检查会漏。
+    // 撞了就跳过并 warn（不覆盖用户数据，与上面文件名那步 `existing.has(target)` 同口径）。
+    const fileTexts = new Map<string, string>();
+    const takenNames = new Set<string>();
     for (const filename of existing) {
       if (!filename.endsWith(".md") || filename === INDEX_FILE) continue;
+      try {
+        const text = await Bun.file(join(dir, filename)).text();
+        fileTexts.set(filename, text);
+        const n = text.match(/^name:\s*(.+)$/m)?.[1]?.trim();
+        if (n) takenNames.add(n);
+      } catch {
+        /* 读不动的文件下面也会跳过 */
+      }
+    }
+    for (const [filename, text] of fileTexts) {
       const filePath = join(dir, filename);
       try {
-        const text = await Bun.file(filePath).text();
         const nameM = text.match(/^name:\s*(.+)$/m);
         const rawName = nameM?.[1]?.trim();
         if (!rawName) continue;
@@ -696,7 +746,17 @@ export class MemoryStore {
         // 所以 `name: project` 这种 key 整体是类型词的情况天然不动）
         const cleaned = stripMemoryTypePrefix(rawName);
         if (cleaned === rawName) continue;
+        if (takenNames.has(cleaned)) {
+          warnOnce(
+            `name-clash:${dir}:${filename}`,
+            `记忆 key 归一化跳过：${filename} 的 name「${rawName}」剥前缀后「${cleaned}」` +
+              `已被另一文件占用——保留原 name，避免造出重名（需人工合并）`,
+          );
+          continue;
+        }
         await Bun.write(filePath, text.replace(/^name:\s*.+$/m, `name: ${cleaned}`));
+        takenNames.delete(rawName);
+        takenNames.add(cleaned);
         renamed = true;
         log.debug("MEMORY", `记忆 key 归一化: ${rawName} → ${cleaned}（${filename}）`);
       } catch (err) {
@@ -815,10 +875,12 @@ export class MemoryStore {
           const loser = incomingWins ? prevFile : filename;
           if (loser) {
             this.shadowedFiles.push({ dir, filename: loser, key: entry.key, scope });
-            log.warn(
-              "MEMORY",
+            // S9：按 key 去重——load 每次代数变化都会重跑，同一对重名不该每会话复读 N 遍
+            warnOnce(
+              `shadow:${dir}:${entry.key}`,
               `记忆 key 重名（${entry.key}）：保留 ${incomingWins ? filename : prevFile}、` +
-                `遮蔽 ${loser} —— 被遮蔽的文件不会进索引，需人工合并或改名（scope=${scope}）`,
+                `遮蔽 ${loser} —— 被遮蔽的文件不会进索引，需人工合并或改名（scope=${scope}）` +
+                `；对比清单：bun run scripts/memory-dup-report.ts`,
             );
             // P1-12 指标 ③：重名遮蔽计数。P0-1 那条缺陷在本仓库真实发生过，
             // 而当时唯一的发现手段是手工 `comm` 比对磁盘与索引 ——
@@ -934,6 +996,9 @@ export class MemoryStore {
     const dir = scope === "global" ? this.globalDir : this.projectDir;
     if (!dir) return;
 
+    // S9 路径 A：模型常把文件名（`project_x`）当 key 传进来，先精确查、未命中再剥前缀重查
+    key = resolveMemoryKey(key, entries);
+
     const now = Date.now();
     const existing = entries.get(key);
     const entry: MemoryEntry = {
@@ -951,6 +1016,26 @@ export class MemoryStore {
 
     // 复用已有文件名，否则按 type+slug 生成
     let filename = files.get(key);
+    if (!filename) {
+      // ─── S9 路径 B：跨进程过期快照 + 推断 type 不同 ───
+      //
+      // 另一个进程刚写过同 key（如 `feedback_x.md`，`name: x`），本进程快照过期 ⇒
+      // `files.get(key)` 为空，而本次无显式 type、`inferMemoryType` 推出另一个前缀 ⇒
+      // 拼出 `project_x.md`，下面的 `diskNameOf` 只探这一个候选，同 key 两个文件就此落盘。
+      // `memoryWriteGeneration` 是模块级变量，管不到别的进程，所以只能在这里探盘：
+      // 4 种前缀各 stat 一次，命中 `name===key` 就认领该文件（保留其前缀与 type）。
+      // 4 次 stat 比全目录扫描便宜；显式给了 type 也要探——同 key 只该有一个文件。
+      for (const t of MEMORY_TYPES) {
+        const cand = memoryFilename(t, key);
+        if ([...files.values()].includes(cand)) continue;
+        if ((await this.diskNameOf(dir, cand)) === key) {
+          filename = cand;
+          files.set(key, cand);
+          if (!opts?.type) entry.type = t;
+          break;
+        }
+      }
+    }
     if (!filename) {
       filename = memoryFilename(entry.type!, key);
       // 避免文件名冲突（不同 key 派生出同名）
@@ -1039,7 +1124,11 @@ export class MemoryStore {
   /** 获取记忆（项目优先于全局） */
   async get(key: string): Promise<MemoryEntry | null> {
     await this.load();
-    return this.projectEntries.get(key) ?? this.globalEntries.get(key) ?? null;
+    return (
+      this.projectEntries.get(resolveMemoryKey(key, this.projectEntries)) ??
+      this.globalEntries.get(resolveMemoryKey(key, this.globalEntries)) ??
+      null
+    );
   }
 
   /** 删除记忆 */
@@ -1052,8 +1141,10 @@ export class MemoryStore {
       files: Map<string, string>,
       dir: string | null,
     ) => {
-      if (!dir || !entries.has(key)) return;
-      const fn = files.get(key);
+      // S9：精确命中优先——`x` 与 `project_x` 并存时 `delete("project_x")` 只删后者
+      const k = resolveMemoryKey(key, entries);
+      if (!dir || !entries.has(k)) return;
+      const fn = files.get(k);
       if (fn) {
         try {
           await unlink(join(dir, fn));
@@ -1061,8 +1152,8 @@ export class MemoryStore {
           /* ignore */
         }
       }
-      entries.delete(key);
-      files.delete(key);
+      entries.delete(k);
+      files.delete(k);
       await this.writeIndex(dir, entries);
       deleted = true;
     };
@@ -1099,7 +1190,8 @@ export class MemoryStore {
     await this.load();
     const tryResolve = (files: Map<string, string>, dir: string | null): string | null => {
       if (!dir) return null;
-      const fn = files.get(key);
+      const entries = files === this.globalFiles ? this.globalEntries : this.projectEntries;
+      const fn = files.get(resolveMemoryKey(key, entries));
       return fn ? join(dir, fn) : null;
     };
     // 优先按传入 scope；未指定时项目覆盖全局（与 get 一致）
@@ -1263,7 +1355,13 @@ export class MemoryStore {
       return;
     }
 
-    const sorted = [...entries.values()].sort((a, b) => b.updatedAt - a.updatedAt);
+    // S9：截断的真约束是字节（25KB ≈ 78 行），纯 `updatedAt` 倒序下最久没改的先掉，
+    // 恰好是「写下来后一直有用」的 user / feedback。改为按类型优先级分组、组内仍按
+    // `updatedAt` 倒序。代价点破：截断掉的换成了 project / reference（拿「更省」侧的
+    // 召回面换「更准」侧的偏好不丢）；分组只带来一次性前缀变化，组内重排频率与现状相同。
+    const sorted = [...entries.values()].sort(
+      (a, b) => indexTypeRank(a.type) - indexTypeRank(b.type) || b.updatedAt - a.updatedAt,
+    );
     const entryLines = sorted.map((e) => {
       const fn = files.get(e.key) ?? memoryFilename(e.type || "project", e.key);
       const desc = normalizeMemoryDesc(e.description, e.value);

@@ -30,6 +30,7 @@ import {
   emitTimeoutFired,
   emitStreamPhase,
   emitHttpConnected,
+  streamAttributionOf,
   cacheDimsFor,
 } from "../trace/stream-observer.ts";
 import { currentSseDumpContext } from "./sse-chunk-dumper.ts";
@@ -273,6 +274,9 @@ export class AnthropicProvider implements Provider {
 
     try {
       const requestStartTime = Date.now();
+      // S10：发起请求时捕获一次来源标注（fork / 子代理 / side-call 有值，主循环 undefined）。
+      // first_content 在 lifecycle 回调里 emit，回调里临时取 ALS 会继承注册时的上下文，故此处先存。
+      const obsAttr = streamAttributionOf(currentSseDumpContext());
       let firstTokenTime: number | null = null;
       /**
        * P2-3：供 first_content 事件携带的缓存命中数（undefined = 尚未知）。
@@ -396,18 +400,28 @@ export class AnthropicProvider implements Provider {
         const obsIndex = currentSseDumpContext().turnIndex;
         const ttfbMs = Date.now() - requestStartTime;
         const contentType = response.headers.get?.("content-type") ?? undefined;
-        emitStreamPhase(obsIndex, "headers_received", {
-          http_status: response.status,
-          content_type: contentType,
-          ttfb_ms: ttfbMs,
-          model: params.model ?? this._model,
-        });
-        emitHttpConnected(obsIndex, {
-          status: response.status,
-          content_type: contentType,
-          ttfb_ms: ttfbMs,
-          model: params.model ?? this._model,
-        });
+        emitStreamPhase(
+          obsIndex,
+          "headers_received",
+          {
+            http_status: response.status,
+            content_type: contentType,
+            ttfb_ms: ttfbMs,
+            model: params.model ?? this._model,
+          },
+          undefined,
+          obsAttr,
+        );
+        emitHttpConnected(
+          obsIndex,
+          {
+            status: response.status,
+            content_type: contentType,
+            ttfb_ms: ttfbMs,
+            model: params.model ?? this._model,
+          },
+          obsAttr,
+        );
       } catch {
         /* 可观测性 emit 失败绝不影响主流程 */
       }
@@ -466,12 +480,18 @@ export class AnthropicProvider implements Provider {
               // Anthropic 可以在此刻拿到命中数：usage 在 message_start 就下发了
               //（见下方 case "message_start"），而 first_content 必然晚于它。
               // OpenAI 族做不到（usage 在流尾部），只能在 completed 阶段补 emit。
-              emitStreamPhase(currentSseDumpContext().turnIndex, "first_content", {
-                ttft_ms: ttftMs,
-                model: params.model ?? this._model,
-                provider: this.name(),
-                ...cacheDimsFor(ttftCacheRead),
-              });
+              emitStreamPhase(
+                currentSseDumpContext().turnIndex,
+                "first_content",
+                {
+                  ttft_ms: ttftMs,
+                  model: params.model ?? this._model,
+                  provider: this.name(),
+                  ...cacheDimsFor(ttftCacheRead),
+                },
+                undefined,
+                obsAttr,
+              );
             } catch {
               /* 可观测性不影响主流程 */
             }
@@ -1061,10 +1081,16 @@ export class AnthropicProvider implements Provider {
         }
       }
       billable = true;
-      emitHttpConnected(currentSseDumpContext().turnIndex, {
-        status: 200,
-        model: params.model ?? this._model,
-      });
+      // S10：非流式路径仍在请求的 ALS 内，就地捕获即发起时身份
+      const ncCtx = currentSseDumpContext();
+      emitHttpConnected(
+        ncCtx.turnIndex,
+        {
+          status: 200,
+          model: params.model ?? this._model,
+        },
+        streamAttributionOf(ncCtx),
+      );
 
       const content: ContentBlock[] = [];
       for (const block of (message as any).content ?? []) {
