@@ -429,11 +429,46 @@ export function resetStreamObserver(): void {
  * 记录流阶段转换事件到 events.jsonl。
  * 调用点：openai.ts 的关键阶段转换。
  */
+/**
+ * S10：流内事件的**来源标注**（只进事件 data，不进快照 key）。
+ *
+ * 为什么不直接复用 `emitStreamPhase` 的第 4 参 `agentId`：那个参数同时是快照 key 的
+ * 第三维（`makeSnapshotKey`），而 provider 侧的 `updateStreamStats` /
+ * `recordStreamProgress` 读的是**无 agentId** 的 key（见 openai.ts progressObsIndex 注释）。
+ * provider 一旦传第 4 参，同一条流的快照就被拆到两把 key 上 —— 写进去读不到，
+ * watchdog 看到的是一份永不推进的快照。所以归属信息走独立参数，只影响落盘字段。
+ *
+ * 取值约定：调用方在**发起请求时**用 {@link streamAttributionOf}（读一次
+ * `currentSseDumpContext()`）捕获并存局部变量，不要在定时器/回调里临时取 ——
+ * 定时器继承的是注册时的 ALS，跨请求复用会误标。
+ * 主循环不进 `withRequestContext` ⇒ 捕获结果为 undefined ⇒ 事件形状逐字节不变。
+ */
+export interface StreamAttribution {
+  /** fork / 子代理 / side-call 的调用链身份（= RequestContext.agentId） */
+  agentId?: string;
+  /** 调用方标签（= RequestContext.callerLabel = querySource） */
+  callerLabel?: string;
+}
+
+/** 从 `currentSseDumpContext()` 的返回值提取归属；两者都缺（主循环）时返回 undefined。 */
+export function streamAttributionOf(ctx: {
+  agentId?: string;
+  callerLabel?: string;
+}): StreamAttribution | undefined {
+  if (!ctx.agentId && !ctx.callerLabel) return undefined;
+  return {
+    ...(ctx.agentId ? { agentId: ctx.agentId } : {}),
+    ...(ctx.callerLabel ? { callerLabel: ctx.callerLabel } : {}),
+  };
+}
+
 export function emitStreamPhase(
   index: number,
   phase: StreamPhase,
   extra?: Record<string, unknown>,
   agentId?: string,
+  /** S10：仅落盘的来源标注（不参与快照 key），见 {@link StreamAttribution} */
+  attribution?: StreamAttribution,
 ): void {
   try {
     // Fix 1：使用复合 key（loopId:index）隔离跨 queryLoop 的快照
@@ -484,13 +519,22 @@ export function emitStreamPhase(
     // 那边拿得到权威值，这边只是兜底。两者语义一致，不是两套口径。
     if (_eventWriter && _sessionId) {
       const attempt = nextAttempt(key, phase);
+      // S10：显式第 4 参优先（它是 key 维度的权威值）；否则用发起请求时捕获的归属。
+      // 两者都缺 = 主循环，字段一个不加。字段顺序保持旧形态（agent_id 在 attempt 前）。
+      const aid = agentId ?? attribution?.agentId;
+      const caller = attribution?.callerLabel;
       _eventWriter({
         event: "StreamPhase",
         session_id: _sessionId,
         timestamp: new Date().toISOString(),
-        data: agentId
-          ? { index, phase, agent_id: agentId, attempt, ...extra }
-          : { index, phase, attempt, ...extra },
+        data: {
+          index,
+          phase,
+          ...(aid ? { agent_id: aid } : {}),
+          attempt,
+          ...(caller ? { caller } : {}),
+          ...extra,
+        },
       });
     }
 
@@ -704,6 +748,8 @@ export function emitHttpConnected(
     ttfb_ms?: number;
     model?: string;
   },
+  /** S10：来源标注（同 emitStreamPhase 第 5 参）；主循环为 undefined，形状不变 */
+  attribution?: StreamAttribution,
 ): void {
   try {
     if (_eventWriter && _sessionId) {
@@ -711,7 +757,12 @@ export function emitHttpConnected(
         event: "HttpConnected",
         session_id: _sessionId,
         timestamp: new Date().toISOString(),
-        data: { index, ...data },
+        data: {
+          index,
+          ...(attribution?.agentId ? { agent_id: attribution.agentId } : {}),
+          ...(attribution?.callerLabel ? { caller: attribution.callerLabel } : {}),
+          ...data,
+        },
       });
     }
   } catch {

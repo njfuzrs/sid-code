@@ -1166,6 +1166,8 @@ async function runAgentLoopInner(
         config.onToolProgress,
         // D9：落盘目录跟 masking 共用派生 sessionId，与主会话隔离。
         config.ctxMgr.getSessionId(),
+        // S10：子代理身份显式带进工具执行（PermissionDecision.agent_id），与 StreamPhase 同值
+        observerAgentId,
       );
       ctxMgr.addMessage({ role: "user", content: toolResults });
       emptyParamRetryCount = 0;

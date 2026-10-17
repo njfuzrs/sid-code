@@ -43,6 +43,12 @@ export interface PermissionDecisionEvent {
   reasonType?: string;
   /** 执行路径：main / subagent / forked */
   context: string;
+  /**
+   * S10：发起这次鉴权的 fork / 子代理身份（与 StreamPhase.agent_id 同一个值，可配对）。
+   * 主循环不填。必须由 fork / 子代理执行入口**显式传入**：工具执行在流的 next() 之外，
+   * RequestContext 的 ALS 在这里是空的，事后从 ALS 补只会补成 undefined 或误标。
+   */
+  agentId?: string;
   /** 决策耗时（含等人确认的墙钟）。未测量的分支不填，**不填 0** —— 0 会被读成"秒批" */
   durationMs?: number;
 }
