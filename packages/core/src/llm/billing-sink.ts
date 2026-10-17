@@ -111,11 +111,38 @@ export interface BilledRequest {
    */
   accounted: boolean;
   /**
+   * PR-5（20261016 思考开关排查 §4.7 / §8.8）：本次 fetch **线上实发**的 thinking 形态。
+   *
+   * 为什么挂在计费事件上：它是唯一一个「每次 fetch 必经、主循环 / side-call / 子代理都覆盖」
+   * 的落盘点。`raw.jsonl` 只有主循环（实测 12460 行里 side-call 恒 0 条），拿它算 side-call
+   * 思考率永远是 n=0 的假绿。缺省（undefined）= 该协议路径未接线，不是「没发」。
+   *   - `enabled` / `adaptive` / `disabled`：线上 thinking 字段的 type
+   *   - `omitted`：线上没带 thinking 字段（服务端默认，对 Opus 5 / Sonnet 5 即「照常思考」）
+   */
+  thinkingWire?: "enabled" | "adaptive" | "disabled" | "omitted";
+  /** 响应里是否出现过思考内容（thinking / redacted_thinking 块，或 reasoning_content） */
+  thinkingInResponse?: boolean;
+  /** 调用方的原始思考意图（`SendParams.thinkingIntent.thinking`）；调用方没表达时缺省 */
+  thinkingIntent?: boolean;
+  /**
    * S13（PR-8）：`accounted=true` 时是谁入的账。缺省 = 主循环（`updateUsage` + `AfterModelRaw`）；
    * `"usage-sink"` = 子代理链经 `createSubAgentUsageSink` 按 `SubAgentResult.usage` 入账，
    * 本事件同样只作核对（见 {@link UsageSinkTicket}）。
    */
   accountedBy?: "usage-sink";
+}
+
+/**
+ * PR-5：落盘用的调用方思考意图。优先 `thinkingIntent`（主循环 / 子代理在 applier 之前写）；
+ * 缺省时只认 `thinking.enabled === false`——那是 side-call 的 `SIDE_CALL_NO_THINK`，
+ * applier 不会把 false 改写成别的。`enabled:true` 不反推（恒思考模型上它可能是被强制的）。
+ */
+export function observedThinkingIntent(params: {
+  thinkingIntent?: { thinking: boolean };
+  thinking?: { enabled: boolean };
+}): boolean | undefined {
+  if (params.thinkingIntent) return params.thinkingIntent.thinking;
+  return params.thinking?.enabled === false ? false : undefined;
 }
 
 /** 计费观察者 */
@@ -257,6 +284,11 @@ export function recordBilledRequest(req: BilledRequest): void {
       ...(req.usage.cacheCreationInputTokens !== undefined && {
         cache_creation_tokens: req.usage.cacheCreationInputTokens,
       }),
+      ...(req.thinkingWire !== undefined && { thinking_wire: req.thinkingWire }),
+      ...(req.thinkingInResponse !== undefined && {
+        thinking_in_response: req.thinkingInResponse,
+      }),
+      ...(req.thinkingIntent !== undefined && { thinking_intent: req.thinkingIntent }),
     });
     notifyObservers(req);
   } catch {
@@ -448,6 +480,9 @@ export function recordNonStreamingBilledRequest(req: {
   provider: string;
   baseURL?: string;
   usage: Usage | undefined;
+  thinkingWire?: BilledRequest["thinkingWire"];
+  thinkingInResponse?: boolean;
+  thinkingIntent?: boolean;
 }): void {
   try {
     const bctx = currentSseDumpContext();
@@ -462,6 +497,9 @@ export function recordNonStreamingBilledRequest(req: {
       callerLabel: bctx.callerLabel,
       atMs: Date.now(),
       accounted: !bctx.agentId && !bctx.callerLabel,
+      thinkingWire: req.thinkingWire,
+      thinkingInResponse: req.thinkingInResponse,
+      thinkingIntent: req.thinkingIntent,
     });
   } catch {
     /* 计费上报绝不影响请求 */
