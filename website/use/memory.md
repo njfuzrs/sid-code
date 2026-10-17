@@ -75,7 +75,7 @@ monorepo 外层工作区的规则在仓库里同样生效）。**每一层内部
 | 项目（project / subdir） | 父目录链上每一层的 `CLAUDE.md`，最深一层标 project，外层标 subdir | 团队共享，检入代码库；越深优先级越高 |
 | 项目规则目录 | 父目录链上每一层的 `.sid-code/rules/*.md` 与 `.claude/rules/*.md`，两个都读，`.sid-code/rules` 在前 | 项目规则拆分 |
 | local | 父目录链上每一层的 `CLAUDE.local.md`（或 `.claude/CLAUDE.local.md`） | 你个人的项目内偏好，**不检入** |
-| AGENTS.md 兜底 | 父目录链上每一层的 `AGENTS.md` | 只在整条链上**没有任何** CLAUDE 系文件（含 `CLAUDE.local.md`，全局 `~/.claude/CLAUDE.md` 不算）时才读，给只写了 AGENTS.md 的仓库一个加载点 |
+| AGENTS.md 兜底 | 父目录链上每一层的 `AGENTS.md` | 只在父目录链上**没有任何项目级** CLAUDE 系文件（含 `CLAUDE.local.md`）时才读——全局 `~/.claude/CLAUDE.md` 的存在不影响兜底判定，给只写了 AGENTS.md 的仓库一个加载点 |
 
 managed 根按平台固定（企业管理员照这个放文件）：
 
@@ -212,11 +212,11 @@ CLAUDE.md 是你手写的，记忆是模型用 `save_memory` 存的，跨会话�
 
 ```text
 /memory                          无参：打开交互式记忆面板（最常用）
-/memory list                     列出记忆
+/memory list (别名 ls)           列出记忆
 /memory search <关键词>          搜
 /memory get <key>                看某条正文
 /memory set <key> <value> [--global]  手动写一条（默认项目级，--global 写全局）
-/memory delete <key>             删
+/memory delete <key> (别名 del/rm) 删（同时删项目级和全局同名 key）
 /memory show                     看当前注入系统提示词的记忆内容（不接参数）
 /memory auto on|off|status [-p]  自动记忆开关；无参是查状态，-p 持久化到 settings.json
 /memory external allow|deny|status  CLAUDE.md 里项目外 @import 的批准开关
@@ -253,7 +253,9 @@ SID_CODE_AUTO_MEMORY=false sid-code
 SID_CODE_TEAM_MEMORY='{"enabled":true,"dir":"/shared/team-memory"}' sid-code
 ```
 
-推荐写进 settings 的 `teamMemory` 段而不是每次带环境变量。
+注意 `SID_CODE_TEAM_MEMORY` 接受的是 **JSON 对象字符串**（不是一个布尔开关）。
+写 `=false` 会被 `JSON.parse` 静默忽略、回退到 settings.json 的值。
+关闭应写 `'{"enabled":false}'`，或直接改 settings.json 的 `teamMemory` 段。
 团队场景的完整做法见[团队默认配置分发](/team/defaults)。
 
 ## 常见问题
