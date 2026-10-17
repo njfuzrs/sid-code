@@ -29,6 +29,10 @@ import { join } from "node:path";
 
 const APP_SRC = readFileSync(join(import.meta.dir, "../../src/app.ts"), "utf-8");
 const CLI_SRC = readFileSync(join(import.meta.dir, "../../src/cli.ts"), "utf-8");
+const SIGNAL_TEARDOWN_SRC = readFileSync(
+  join(import.meta.dir, "../../src/signal-teardown.ts"),
+  "utf-8",
+);
 const COLLECTOR_SRC = readFileSync(
   join(import.meta.dir, "../../../core/src/trace/collector.ts"),
   "utf-8",
@@ -39,12 +43,24 @@ const INIT_HELPERS_SRC = readFileSync(
 );
 
 describe("SIGHUP 必须被处理（关终端 / SSH 断连）", () => {
-  test("app.ts 注册了 SIGHUP 处理器", () => {
-    expect(APP_SRC).toContain('process.once("SIGHUP"');
+  // S15（2026-10-18）：原断言钉的是 `process.once("SIGHUP"` —— 那正是缺陷本身：once 摘掉监听器后
+  // 第二个 SIGHUP 走默认处置杀进程，收尾整个丢失。改成钉「常驻监听 + 三个信号同一入口」。
+  test("app.ts 经 installTeardownSignalHandlers 注册三个退出信号（常驻 on，不用 once）", () => {
+    expect(APP_SRC).toContain("installTeardownSignalHandlers({");
+    // 只查 registerSignalHandlers 函数体：Bridge 模式那组 `process.once("SIGINT", shutdown)` 是常驻等待、
+    // 触发后走正常清理，不是同一缺陷，刻意保留。
+    const a = APP_SRC.indexOf("private registerSignalHandlers(): void {");
+    const body = APP_SRC.slice(a, APP_SRC.indexOf("\n  }\n", a));
+    expect(a).toBeGreaterThan(0);
+    expect(body).not.toMatch(/process\.once\(/);
+    expect(SIGNAL_TEARDOWN_SRC).toContain(
+      'for (const sig of ["SIGINT", "SIGTERM", "SIGHUP"] as const)',
+    );
+    expect(SIGNAL_TEARDOWN_SRC).toContain("target.on(sig,");
   });
 
   test("SIGHUP 走的是与 SIGINT/SIGTERM 同一个 onSignal（而不是另写一份会漂移的逻辑）", () => {
-    expect(APP_SRC).toContain('void onSignal("SIGHUP")');
+    expect(APP_SRC).toContain("run: (signal) => onSignal(signal)");
   });
 
   test("SIGHUP 有自己的退出码 129（128+signum 惯例），不与 SIGTERM 的 143 混用", () => {

@@ -7,7 +7,7 @@
  * 退出时 src/ink fork 会自动将最终帧渲染到主缓冲区（由 AlternateBufferQuittingDisplay 提供内容）
  */
 
-import { render } from "./render-port/runtime.ts";
+import { render, getRenderInstance } from "./render-port/runtime.ts";
 import { AlternateScreen } from "./render-port/components.ts";
 import React, { type ReactElement } from "react";
 import { getLogger } from "@sid-code/core/debug/logger.ts";
@@ -28,6 +28,8 @@ export interface FullScreenInstance {
   instance: Awaited<ReturnType<typeof render>>;
   start: () => Promise<void>;
   waitUntilExit: () => Promise<void>;
+  /** 终端已死时停渲染：标记卸载、退 raw mode，不写任何终端序列（契约 X4）。未挂载时空操作。 */
+  detachForShutdown: () => void;
 }
 
 export interface FullScreenOptions {
@@ -109,5 +111,6 @@ export function createFullScreen(node: ReactElement, opts?: FullScreenOptions): 
       })();
     },
     waitUntilExit: () => exitPromise,
+    detachForShutdown: () => getRenderInstance(stdout)?.detachForShutdown(),
   };
 }

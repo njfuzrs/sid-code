@@ -111,6 +111,7 @@ import {
 } from "@sid-code/core/llm/errors.ts";
 import * as CrashMarker from "@sid-code/core/trace/crash-marker.ts";
 import * as PidManager from "@sid-code/core/trace/pid-manager.ts";
+import { installTeardownSignalHandlers, watchTerminalOutputErrors } from "./signal-teardown.ts";
 import { execSync } from "child_process";
 import { existsSync, readFileSync } from "fs";
 import { readFile } from "fs/promises";
@@ -3195,7 +3196,7 @@ export class App {
             /* ignore */
           }
           try {
-            PidManager.cleanup(this.sessionState.sessionId);
+            PidManager.removeByPid(process.pid);
           } catch {
             /* ignore */
           }
@@ -4275,7 +4276,7 @@ export class App {
         // 后台清理孤儿 PID 文件
         for (const p of orphanPids) {
           try {
-            PidManager.cleanup(p.session_id);
+            PidManager.removeByPid(p.pid);
           } catch {
             /* ignore */
           }
@@ -4356,6 +4357,16 @@ export class App {
             log.warn(
               "DIAG",
               `§6.2：已为 ${backfilledCount} 个僵尸会话据 events.jsonl 重算补写 traj cost`,
+            );
+          }
+          // S8 存量：「进程已死 ∧ 已有 SessionEnd」的 heartbeat 是收尾被打断的残留，
+          // 补完 cost 之后删掉；无 SessionEnd 的保留（digest 的强杀证据）。
+          // 必须用**同一次** `stale` 扫描的判活结果，且排在 backfill 之后（它要读这批会话）。
+          const sweep = PidManager.sweepEndedHeartbeats(stale);
+          if (sweep.removed.length > 0) {
+            log.info(
+              "DIAG",
+              `S8：清扫 ${sweep.removed.length} 个已有 SessionEnd 的残留 heartbeat（保留 ${sweep.keptNoSessionEnd.length} 个无 SessionEnd 的）`,
             );
           }
           // 只在 >0 时报：损坏是稀疏事件，"本次认领 0 条损坏"每次启动打一行就是噪声，
@@ -4905,6 +4916,10 @@ export class App {
    * `events.jsonl` 完全没有 SessionEnd 事件，这是其中一个主要来源。
    */
   private signalHandlersRegistered = false;
+  /** 终端输出流已报 EIO / EPIPE：终端已死，不再写、不再渲染（S15） */
+  terminalDead = false;
+  /** TUI 渲染实例的停渲染入口（runTUI 挂载后设置；headless 恒为 null） */
+  private detachTuiForShutdown: (() => void) | null = null;
   private registerSignalHandlers(): void {
     if (this.signalHandlersRegistered) return;
     this.signalHandlersRegistered = true;
@@ -4924,6 +4939,14 @@ export class App {
         "APP",
         `收到 ${signal}（turnInFlight=${turnInFlight}），触发 SessionEnd(reason=${reason}) 后退出`,
       );
+      // S8：同步、微秒级的 heartbeat 撤销排在**第一个 await 之前**。收尾随时可能被强杀
+      // （EIO / SIGKILL / 卡死后第二个信号），能同步做完的必须先做完。
+      // PID 文件不在这里删：它是收尾那 ~1.5s 里挡住别的实例把本会话当僵尸的唯一判据。
+      try {
+        this.traceCollector?.stopHeartbeat?.();
+      } catch {
+        /* ignore */
+      }
       // 信号路径**不在退出关键路径上等上传**：这里 1.2s 后就 process.exit()，
       // 而一次上传要 10s 量级 —— 给预算等于必然被杀在半路，白建连接还多卡 1.2s。
       // 数据由下次启动的补传兜住（判据是 `.uploaded` 标记缺失，与退出路径解耦）。
@@ -4943,6 +4966,10 @@ export class App {
       } catch {
         /* ignore */
       }
+      // S15 度量：收尾进入 / 退出时刻。「信号后零日志」的会话靠这两行才分得清是死在收尾里
+      // 还是根本没进收尾（以前 149/209 个信号会话零日志，无从定论）。
+      const teardownStart = Date.now();
+      log.warn("APP", `SessionEnd 收尾进入（${signal}）`);
       try {
         // 给落盘整体一个 1.2s 上限,SessionEnd hook 卡死时不至于拖死整个退出流程(ASYNC-7)
         await Promise.race([
@@ -4954,6 +4981,7 @@ export class App {
       } catch (err: any) {
         process.stderr.write(`[signal] SessionEnd hook 失败: ${err?.message ?? err}\n`);
       }
+      log.warn("APP", `SessionEnd 收尾退出（${signal}，耗时 ${Date.now() - teardownStart}ms）`);
       // B3：信号退出也结束会话持久化（幂等）
       this.finalizeSessionStore();
       // 清理 crash marker（正常退出不残留）
@@ -4963,7 +4991,7 @@ export class App {
         /* ignore */
       }
       try {
-        PidManager.cleanup(this.sessionState.sessionId);
+        PidManager.removeByPid(process.pid);
       } catch {
         /* ignore */
       }
@@ -4972,17 +5000,53 @@ export class App {
       process.exit(exitCodeOf(signal));
     };
 
-    // 用 once 防止 SIGTERM 风暴下重入；fire-and-forget 让 process.on 不卡死
-    process.once("SIGINT", () => {
-      void onSignal("SIGINT");
+    // S15：一直挂着监听器（`on`），不用 `once`。理由与重复信号的处置见 signal-teardown.ts 头部：
+    // `once` 摘掉监听器后，第二个同类信号走默认处置直接杀进程，收尾整个丢失（实测 0/209 落盘）。
+    const controller = installTeardownSignalHandlers({
+      run: (signal) => onSignal(signal),
+      forceExit: (signal) => {
+        try {
+          log.warn("APP", `收尾中再次收到 ${signal}，强制退出`);
+        } catch {
+          /* ignore */
+        }
+        process.exit(exitCodeOf(signal));
+      },
+      onArrival: (signal, action, count) => {
+        // 信号到达计数（按类型、是否 TTY）：第一个信号由 onSignal 自己记，这里只记重复的
+        if (count > 1) {
+          log.warn(
+            "APP",
+            `信号到达 #${count}：${signal}（isTTY=${!!process.stdout.isTTY}）→ ${action}`,
+          );
+        }
+      },
     });
-    process.once("SIGTERM", () => {
-      void onSignal("SIGTERM");
+
+    // S15：终端已死（关窗口 / pty 销毁）后，写 stdout/stderr 每次都是 EIO。判据落在**流对象**上，
+    // 不在 uncaughtException 里按错误字段猜：Bun 下 `err.fd` 恒为 undefined，而只看 code
+    // 又会误吞写普通文件的 EIO。命中后停渲染、按 SIGHUP 收尾（走正常 SessionEnd，不是
+    // emergencySessionEnd + exit(1)），收尾完成后照常 process.exit —— 不变成无头常驻进程。
+    // 多数情况 SIGHUP 先到、收尾已在跑，这里的 trigger 只会被判为重复信号而忽略。
+    watchTerminalOutputErrors([process.stdout, process.stderr], (err) => {
+      this.terminalDead = true;
+      try {
+        log.warn("APP", `终端输出流 ${err.code}（${err.syscall ?? "?"}），判终端已关闭，转入收尾`);
+      } catch {
+        /* ignore */
+      }
+      try {
+        this.detachTuiForShutdown?.();
+      } catch {
+        /* ignore */
+      }
+      controller.trigger("SIGHUP");
     });
-    // SIGHUP：关终端窗口 / SSH 断连。不注册的话进程被默认处置直接终止，
-    // SessionEnd 一次都不触发 —— 轨迹连"这个会话怎么结束的"都写不下来。
-    process.once("SIGHUP", () => {
-      void onSignal("SIGHUP");
+
+    // 兜底：任何走到 process.exit 的路径都删本进程的 PID 文件（幂等、同步）。
+    // SIGHUP 默认处置不触发 `exit` 事件 —— 所以上面改 `on` 是这条兜底生效的前提。
+    process.on("exit", () => {
+      PidManager.removeByPid(process.pid);
     });
   }
 
@@ -7777,7 +7841,7 @@ export class App {
       /* ignore */
     }
     try {
-      PidManager.cleanup(this.sessionState.sessionId);
+      PidManager.removeByPid(process.pid);
     } catch {
       /* ignore */
     }
@@ -8174,7 +8238,7 @@ export class App {
       /* ignore */
     }
     try {
-      PidManager.cleanup(this.sessionState.sessionId);
+      PidManager.removeByPid(process.pid);
     } catch {
       /* ignore */
     }
@@ -10591,7 +10655,7 @@ export class App {
                 /* ignore */
               }
               try {
-                PidManager.cleanup(this.sessionState.sessionId);
+                PidManager.removeByPid(process.pid);
               } catch {
                 /* ignore */
               }
@@ -10894,6 +10958,8 @@ export class App {
       { alternateBuffer },
     );
     await app.start();
+    // 终端已死时停渲染：标记卸载、退 raw mode，**不写任何终端序列**（契约 X4）——再写只会继续 EIO
+    this.detachTuiForShutdown = () => app.detachForShutdown();
 
     // 滚动由 ScrollProvider + KeypressContext 在 React 层面处理，不再需要外部接线
 
@@ -10947,7 +11013,7 @@ export class App {
       /* ignore */
     }
     try {
-      PidManager.cleanup(this.sessionState.sessionId);
+      PidManager.removeByPid(process.pid);
     } catch {
       /* ignore */
     }

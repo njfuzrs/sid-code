@@ -326,6 +326,11 @@ export class TraceCollector {
   private heartbeatTimer: ReturnType<typeof setInterval> | null = null;
   /** 心跳文件路径 */
   private heartbeatPath: string = "";
+  /**
+   * 心跳已撤销：在途 tick 的 `setTimeout(…, 0)` 回调必须先查它 ——
+   * clearInterval 拦不住已经排进队列的那一次写，不查的话它会在 unlink 之后又写回一份。
+   */
+  private heartbeatStopped = false;
   /** §3.4：BeforeModel 配对看门狗（index → timer） */
   private pendingModelCalls = new Map<number, ReturnType<typeof setTimeout>>();
   /** F1：主循环重试退避账本（retry 遥测喂入），配对看门狗据此剔除退避时长 */
@@ -1026,6 +1031,7 @@ export class TraceCollector {
     // 启动心跳：每 10 秒写 heartbeat.txt（用于下次启动诊断 session hang）
     // 缺口 5 增强：增加 event_loop_lag_ms + active_request 快照，区分"正常等待"vs"异常 hang"
     this.heartbeatPath = join(this.writer.getSessionDir(), "heartbeat.txt");
+    this.heartbeatStopped = false;
     this.heartbeatTimer = setInterval(() => {
       try {
         const lagStart = performance.now();
@@ -1093,6 +1099,7 @@ export class TraceCollector {
               ...(staleTerminal > 0 ? { stale_terminal_snapshots: staleTerminal } : {}),
               ...(lastState ? { last_known_state: lastState } : {}),
             });
+            if (this.heartbeatStopped) return;
             writeFileSync(this.heartbeatPath, content);
           } catch {
             /* 心跳失败静默 */
@@ -1997,6 +2004,27 @@ export class TraceCollector {
 
   // ─── SessionEnd ───
 
+  /**
+   * 停止心跳并删除 heartbeat.txt。同步、幂等、绝不抛。
+   *
+   * 公开给 App 的信号处理器在**第一个 await 之前**调用：信号路径的收尾随时可能被强杀，
+   * 能同步做完的事必须先做完。
+   */
+  stopHeartbeat(): void {
+    this.heartbeatStopped = true;
+    if (this.heartbeatTimer) {
+      clearInterval(this.heartbeatTimer);
+      this.heartbeatTimer = null;
+    }
+    try {
+      if (this.heartbeatPath && existsSync(this.heartbeatPath)) {
+        unlinkSync(this.heartbeatPath);
+      }
+    } catch {
+      /* 清理失败静默 */
+    }
+  }
+
   private async handleSessionEnd(input: SessionEndInput): Promise<void> {
     if (!this.initialized) return;
     // /clear 换会话的竞态护栏：App 对 SessionEnd(clear) 只等有限时间（慢用户 hook 不能卡住 /clear），
@@ -2008,6 +2036,13 @@ export class TraceCollector {
       getLogger().warn("TRACE", `忽略 /clear 后迟到的旧会话 SessionEnd（${input.session_id}）`);
       return;
     }
+
+    // S8：心跳撤销排在收尾**最前面**（同步、微秒级）。以前它在末尾 `:2350` 附近，排在
+    // traj 重建 / digest / 上传之后 —— 收尾任何一步被打断（信号路径实测 0/209 走完），
+    // heartbeat.txt 就永久残留，下次启动被报成「未正常收尾」。末尾那段保留作幂等兜底。
+    // PID 文件**不在这里删**：backfill 靠「heartbeat 新鲜 ∨ pid 活」判活，PID 文件是收尾
+    // 那 ~1.5s 里唯一还能挡住另一实例把本会话当僵尸补传的东西，所以它必须最后删（由 App 删）。
+    this.stopHeartbeat();
 
     this.metadata.end_time = input.timestamp;
     this.metadata.end_source = input.reason;
