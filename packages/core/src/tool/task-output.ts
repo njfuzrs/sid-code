@@ -96,19 +96,13 @@ export class TaskOutputTool implements Tool {
       return { output: `任务 "${params.task_id}" 已被驱逐`, isError: true };
     }
 
-    // 访问续期（LRU "touch" 语义）：刚被 task_output 读取的终态任务，把驱逐窗口顺延，
-    // 避免活跃查询的任务在固定 60s 窗口边界被误驱逐（T0+59s 读取→T0+60s 驱逐→
-    // T0+61s 再读取失败 的竞态）。只对终态任务续期：running 任务本就不会被 evictTerminalTasks
-    // 驱逐（要求 isTerminalStatus），无需续期。直接刷新现有 evictAfter、不新增字段，
-    // 续期幂等（多次读取只是不断把 evictAfter 往后推），主代理停止查询后最后一次续期的
-    // 60s 后必被驱逐、无内存泄漏。
-    // 说明：这是消除罕见边界竞态的廉价保险（3 行、无副作用），非业界通用做法——
-    // claude-code 靠 UI holding / 用户 retain 决定生命周期，并不做「读一次续期」。
+    // 访问续期（LRU "touch" 语义）：刚被 task_output 读取的终态任务，把驱逐下限顺延一个
+    // 面板驻留期。S3 之后 evictAfter 只由这里写，是驱逐判据（registry `evictDecision`）里
+    // 「已送达且送达回合已过」之外的又一个下限——模型还在轮询就不删。只对终态任务续期：
+    // running 任务本就不会被驱逐。续期幂等（多次读取只是不断往后推）。
     //
     // 续期只延长**任务本体**的存活窗口，**不清 dismissed**：用户手动从面板划掉的条目，
-    // 不能因为模型顺手读了一次输出就重新冒回面板上——那正是"划不掉"的另一种形态。
-    // 划掉与存活是两件事（见 types.ts 的 dismissed 说明）：面板不显示它，task_output 照常读得到。
-    // 缓冲期按终态分档（killed 3s / 其余 30s），与终态写入点同口径，不再硬编码单一常量。
+    // 不能因为模型顺手读了一次输出就重新冒回面板上（见 types.ts 的 dismissed 说明）。
     if (isTerminalStatus(currentTask.status)) {
       updateTask(currentTask.id, (t) => ({ ...t, evictAfter: graceDeadlineFor(t.status) }));
     }

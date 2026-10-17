@@ -719,10 +719,11 @@ function TUIAppInner({ initialState, callbacks, bridge, alternateBuffer }: AppPr
   // 主循环生命周期约束——① 主循环卡在长工具执行（如 30s bash）时，缓冲期到点的任务
   // 要等下一轮循环开头才清（视觉延迟）；② 主循环已结束时靠 finally 的 force 兜底（已修）。
   // cc 的做法是把驱逐挂在**面板组件的独立定时器**上：只要面板还有任务就每秒检查，
-  // 完全不依赖主循环转没转。这里补齐这一层——面板有终止态任务时启动 1s tick，调用
-  // evictTerminalTasks()（非 force，尊重 60s 缓冲期），驱逐发生时 registry 的
-  // notifyTaskChanged → bridge.updateTasks 自动刷新面板。无终止态任务时不启动定时器
-  //（避免空转）。这样"缓冲期到点"与"面板消失"之间的延迟被压到 ≤1s，且不依赖主循环。
+  // 完全不依赖主循环转没转。这里补齐这一层——有「只差墙钟时间」的任务时启动 1s tick，
+  // 调用 evictTerminalTasks()，驱逐发生时 registry 的 notifyTaskChanged → bridge.updateTasks
+  // 自动刷新面板。S3 之后「只差墙钟」= 完成通知已送达且送达回合已过、只剩面板驻留期
+  //（completed/failed 30s、killed 3s）；还在等回合的任务不开定时器（回合推进时 registry
+  // 会通知、本处重新判定），未送达的由 registry 的安全阀定时器兜底，都不让这里空转。
   //
   // 开关条件问 **registry**（hasPendingEviction）而不是问面板列表（state.tasks）：
   // Ctrl+X 划掉的任务立即离开面板，却仍在 registry 里等缓冲期回收。若按面板判断，
