@@ -308,7 +308,18 @@ export class UploadManager implements TraceUploaderInterface {
    * - 逐文件独立重试，不因一个失败放弃其他
    * - 所有文件确认后才清理本地（原子性）
    */
-  async uploadSession(sessionDir: string, sessionId: string): Promise<UploadResult> {
+  async uploadSession(
+    sessionDir: string,
+    sessionId: string,
+    /**
+     * S11：`snapshot: true` = 会话**中途**快照（/debug）。两条差异必须守住：
+     * - 一律不 `cleanupLocal`：即使 deleteAfterUpload=true，运行中会话的 traj/raw/events
+     *   还在被写，删掉等于丢掉本会话后半程的全部轨迹；
+     * - `.uploaded` 写 `final:false`，补传扫描据此知道终态还没传（见 upload-marker.ts）。
+     */
+    uploadOpts: { snapshot?: boolean } = {},
+  ): Promise<UploadResult> {
+    const snapshot = uploadOpts.snapshot === true;
     // §6.4：上传前据 events.jsonl 重算校正 traj cost（修复前历史会话 cost=0 / 中断会话偏低）。
     // best-effort：失败只告警不阻断上传。
     this.recomputeCostIfNeeded(sessionDir);
@@ -347,7 +358,9 @@ export class UploadManager implements TraceUploaderInterface {
     // deleteAfterUpload=false（默认）：保留本地全量副本，云端 + 本地各一份。
     // deleteAfterUpload=true：上传确认后清理本地数据文件（保留 metadata snapshot + .uploaded 标记）。
     if (allConfirmed) {
-      if (this.opts.deleteAfterUpload) {
+      if (snapshot) {
+        this.markUploadedKeepLocal(sessionDir, sessionId, { final: false });
+      } else if (this.opts.deleteAfterUpload) {
         this.cleanupLocal(sessionDir, sessionId);
       } else {
         // 不删本地，但仍写 .uploaded 标记 + metadata snapshot，供 wrapper/评测识别"已上传"
@@ -377,6 +390,12 @@ export class UploadManager implements TraceUploaderInterface {
         // `Uint8Array<ArrayBuffer>`，类型不兼容。本文件下一行就在用 Bun.gzipSync，
         // 读侧也走 Bun API 更一致，且省掉一次 ArrayBuffer 拷贝。
         let content: Uint8Array<ArrayBuffer> = await Bun.file(filePath).bytes();
+        if (fileType === "events") {
+          // S17：error_head（工具错误原文前 200 字）只留本地排查用，云端只收 error_kind
+          content = new TextEncoder().encode(
+            stripLocalOnlyEventFields(new TextDecoder().decode(content)),
+          ) as Uint8Array<ArrayBuffer>;
+        }
         if (this.opts.redactHomeDir) {
           // 在压缩与 SHA256 之前替换：服务端校验的是「实际发出去的字节」
           content = new TextEncoder().encode(
@@ -726,6 +745,7 @@ export class UploadManager implements TraceUploaderInterface {
         JSON.stringify({
           confirmed_at: new Date().toISOString(),
           session_id: sessionId,
+          final: true,
         }),
       );
       // 删除数据文件（保留目录、标记 + metadata snapshot）
@@ -743,16 +763,24 @@ export class UploadManager implements TraceUploaderInterface {
    * 写 .uploaded 标记 + metadata snapshot，供 wrapper/评测识别该会话已同步到云端，
    * 但不删除 session.traj / raw.jsonl / events.jsonl 等数据文件——本地继续可读。
    */
-  private markUploadedKeepLocal(sessionDir: string, sessionId: string): void {
+  private markUploadedKeepLocal(
+    sessionDir: string,
+    sessionId: string,
+    opts: { final: boolean } = { final: true },
+  ): void {
     try {
       this.persistMetadataSnapshot(sessionDir);
       const marker = join(sessionDir, ".uploaded");
+      const now = new Date().toISOString();
+      // S11：中途快照写 final:false + snapshot_at，补传只认 final:true（见 upload-marker.ts）
       writeFileSync(
         marker,
         JSON.stringify({
-          confirmed_at: new Date().toISOString(),
+          confirmed_at: now,
           session_id: sessionId,
           kept_local: true,
+          final: opts.final,
+          ...(opts.final ? {} : { snapshot_at: now }),
         }),
       );
     } catch (err) {
@@ -784,7 +812,10 @@ export class UploadManager implements TraceUploaderInterface {
         ...(md.build_describe ? { build_describe: md.build_describe } : {}),
         ...(md.git_head ? { git_head: md.git_head } : {}),
         start_time: md.start_time,
-        end_time: md.end_time,
+        // S12：中途重建的 traj 不带 end_time（省略而非盖「现在」），这里同样缺席而不是写 undefined/null
+        ...(md.end_time ? { end_time: md.end_time } : {}),
+        ...(md.snapshot_at ? { snapshot_at: md.snapshot_at } : {}),
+        ...(typeof md.session_ended === "boolean" ? { session_ended: md.session_ended } : {}),
         total_steps: md.total_steps,
         total_api_calls: md.total_api_calls,
         total_tokens: md.total_tokens,
@@ -882,4 +913,33 @@ function fileNameToType(fileName: string): "traj" | "raw" | "events" | null {
   if (fileName === "raw.jsonl") return "raw";
   if (fileName === "events.jsonl") return "events";
   return null;
+}
+
+/**
+ * S17：上传 events.jsonl 前剥掉「只留本地」的字段。目前只有 PostToolUseFailure 的
+ * `data.error_head`——工具错误原文可能含路径、命令输出乃至密钥片段，云端只需要
+ * `error_kind` 做分类统计。
+ *
+ * 逐行处理：解析失败的行原样保留（损坏行不是这里该修的，丢掉它会让服务端
+ * 的行数校验与本地对不上）。只在行里出现 `"error_head"` 时才解析，其余行字节不变。
+ */
+export const LOCAL_ONLY_EVENT_DATA_FIELDS = ["error_head"] as const;
+
+export function stripLocalOnlyEventFields(text: string): string {
+  if (!text.includes('"error_head"')) return text;
+  return text
+    .split("\n")
+    .map((line) => {
+      if (!line.includes('"error_head"')) return line;
+      try {
+        const obj = JSON.parse(line) as { data?: Record<string, unknown> };
+        if (obj && obj.data && typeof obj.data === "object") {
+          for (const f of LOCAL_ONLY_EVENT_DATA_FIELDS) delete obj.data[f];
+        }
+        return JSON.stringify(obj);
+      } catch {
+        return line;
+      }
+    })
+    .join("\n");
 }

@@ -116,6 +116,13 @@ export interface RawJsonlEntry {
   stop_reason: string;
   /** 是否为不完整响应 */
   is_partial: boolean;
+  /**
+   * S14：响应落盘时刻（ISO）。`timestamp` 是请求开始时刻，两者语义不同，
+   * 见 event-ts-semantics.ts。旧行无此字段。
+   */
+  ended_at?: string;
+  /** S14：自 BeforeModel 起到响应落盘的墙钟毫秒（含 TTFB 与生成） */
+  elapsed_ms?: number;
   /** compact_boundary 信息（压缩事件发生时设置） */
   compact_boundary?: {
     summary: string;

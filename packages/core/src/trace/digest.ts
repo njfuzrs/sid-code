@@ -99,6 +99,10 @@ export interface TrajMeta {
   model?: string;
   start_time?: string | number;
   end_time?: string | number;
+  /** S12：traj 生成时刻；中途快照没有 end_time 时作「截至时刻」 */
+  snapshot_at?: string;
+  /** S12：生成时会话是否已收尾（旧 traj 无此字段） */
+  session_ended?: boolean;
   total_steps?: number;
   total_api_calls?: number;
   total_tokens_sent?: number;
@@ -787,6 +791,8 @@ export interface Digest {
   exitStatus: string;
   abnormal: boolean;
   durationMs: number;
+  /** S12：true = 会话未收尾，durationMs 是「截至快照 snapshot_at」的值而非总时长 */
+  durationInProgress?: boolean;
   apiCalls: number;
   totalSteps: number;
   costUSD: number;
@@ -1247,7 +1253,14 @@ export function cleanPrompt(p: unknown): string {
     .trim();
 }
 
-function deriveDuration(meta: TrajMeta): number {
+/**
+ * 由 traj 元数据推时长。
+ *
+ * S12：缺 `end_time`（中途快照，会话还没收尾）时回落到 `snapshot_at`，并以
+ * `inProgress: true` 报出——渲染侧据此标「进行中，截至快照」，不把截至值当成会话总时长。
+ * 两者都缺时返回 0（渲染为 `?`），绝不拿「现在」去补。
+ */
+export function deriveDuration(meta: TrajMeta): { ms: number; inProgress: boolean } {
   const toMs = (v: string | number | undefined): number | null => {
     if (v == null) return null;
     if (typeof v === "number") return v < 1e12 ? v * 1000 : v; // 秒→毫秒
@@ -1256,8 +1269,14 @@ function deriveDuration(meta: TrajMeta): number {
   };
   const start = toMs(meta.start_time);
   const end = toMs(meta.end_time);
-  if (start != null && end != null && end >= start) return end - start;
-  return 0;
+  if (start != null && end != null && end >= start) return { ms: end - start, inProgress: false };
+  if (end == null) {
+    const snap = toMs(meta.snapshot_at);
+    if (start != null && snap != null && snap >= start) {
+      return { ms: snap - start, inProgress: true };
+    }
+  }
+  return { ms: 0, inProgress: false };
 }
 
 /** 粗略匹配协议违规:本会话时间窗内的违规记录数(违规文件名含 ms 时间戳) */
@@ -1805,7 +1824,10 @@ export function buildDigest(ref: SessionRef, full: boolean, paths: DigestPaths):
     .pop();
   const costUSD =
     ledger?.costUSD ?? meta.total_cost_usd ?? traj.info?.model_stats?.total_cost_usd ?? 0;
-  const durationMs = ledger?.durationMs ?? deriveDuration(meta);
+  // S12：账本只在 SessionEnd 写，有账本条目 = 已收尾；没有时才看 traj 元数据
+  const derived = ledger?.durationMs !== undefined ? undefined : deriveDuration(meta);
+  const durationMs = ledger?.durationMs ?? derived!.ms;
+  const durationInProgress = derived?.inProgress === true;
 
   // 成本归零仅在「有账本条目且账本明确记成本为 0」时才算异常:
   // 没有 ledger 条目(会话没正常 SessionEnd / 未写账本)是数据缺失,不是成本异常,
@@ -2409,6 +2431,7 @@ export function buildDigest(ref: SessionRef, full: boolean, paths: DigestPaths):
     exitStatus,
     abnormal,
     durationMs,
+    ...(durationInProgress ? { durationInProgress: true } : {}),
     apiCalls: meta.total_api_calls ?? traj.info?.model_stats?.api_calls ?? 0,
     totalSteps: meta.total_steps ?? steps.length,
     costUSD,
@@ -2487,7 +2510,7 @@ export function renderHuman(d: Digest, opts: RenderOptions = {}): string {
   L.push(c("bold", `━━━ session ${d.sessionId}  [${c(exitColor, d.exitStatus)}] ━━━`));
   L.push(
     `  模型 ${c("cyan", d.model)}   API ${d.apiCalls} 次   步骤 ${d.totalSteps}   ` +
-      `耗时 ${fmtDuration(d.durationMs)}   成本 ${fmtUsd(d.costUSD)}   ` +
+      `耗时 ${fmtDuration(d.durationMs)}${d.durationInProgress ? "（进行中，截至快照）" : ""}   成本 ${fmtUsd(d.costUSD)}   ` +
       // stock/flow 铁律：↓ 是累计输出，↑ 必须也是累计 prompt。此前用的是
       // total_tokens_sent（末轮快照），实测 80833↑ vs 真实累计 763109，差 9.4 倍。
       (d.tokensSentCumulative !== undefined

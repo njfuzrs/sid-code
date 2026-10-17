@@ -338,6 +338,9 @@ export async function runForkedAgent(
   try {
     // 归一成 Infinity 而非 undefined：`turns < undefined` 恒 false，一轮都不跑。
     const maxTurns = options.maxTurns ?? Infinity;
+    // S10：fork 的调用链身份，流（漏斗 RequestContext）与流外事件（PermissionDecision）共用
+    // 同一个值，离线分析才能把一次 fork 的流和它的工具鉴权配上对。
+    const forkAgentId = `fork:${options.querySource}`;
     while (turns < maxTurns) {
       if (signal.aborted) break;
       turns++;
@@ -376,7 +379,7 @@ export async function runForkedAgent(
           // 有了 agentId，漏斗会用它建立请求级上下文（见 resilient-stream.ts），
           // provider 侧的计费事件与 StreamPhase 都能归到具体是哪个 fork。
           // querySource 已经带了任务标签（`agent:fork`），这里用它区分两个 fork 实例。
-          agentId: `fork:${options.querySource}`,
+          agentId: forkAgentId,
           // fork 自带 timeoutMs（默认 60s）作为 wall-clock 硬顶，退避会吃掉它的大半，
           // 故重试上界压到 2 次——给瞬时限流一个自愈机会，又不至于把整个预算烧在退避上。
           maxRetries: 2,
@@ -425,6 +428,7 @@ export async function runForkedAgent(
             needsPrompt: false,
             context: "forked",
             reasonType: "other",
+            agentId: forkAgentId,
           });
           results.push({
             type: "tool_result",
@@ -440,6 +444,7 @@ export async function runForkedAgent(
           needsPrompt: false,
           context: "forked",
           reasonType: "other",
+          agentId: forkAgentId,
         });
         const tool = statefulMap.get(tu.name) ?? mainContext.toolRegistry.get(tu.name);
         // 缺陷 30：漏斗 1 · 工具在 forked 路径上补齐（与子代理同序：权限通过之后才记 call，

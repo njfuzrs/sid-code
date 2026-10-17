@@ -246,7 +246,12 @@ export async function scanMemoryFiles(
 /**
  * 格式化记忆清单，用于提取代理和召回选择器。
  * 输出每行一个文件：
- *   filename: user_role.md | type: user | desc: 后端工程师，Go 专家
+ *   key: role | filename: user_role.md | type: user | desc: 后端工程师，Go 专家
+ *
+ * S9 路径 A：`key` 必须放进清单。提取提示词要求「如需更新，用相同的 key」，
+ * 但旧清单只给文件名 ⇒ 模型把文件名（`project_x`）当 key 传给 save_memory，
+ * store 视作新 key、落出第二个文件，下一次 load 再把 `name: project_x` 归一成 `x`
+ * ⇒ 同 name 两个文件凭空出现（实测本仓记忆库 9 对重名里 7 对出自这条路径）。
  */
 export function formatMemoryManifest(headers: MemoryHeader[]): string {
   if (headers.length === 0) return "(no memories yet)";
@@ -254,7 +259,8 @@ export function formatMemoryManifest(headers: MemoryHeader[]): string {
     .map((h) => {
       const type = h.type ?? "unknown";
       const desc = h.description ?? "(no description)";
-      return `filename: ${h.filename} | type: ${type} | desc: ${desc}`;
+      const key = h.name ?? h.filename.replace(/\.md$/, "");
+      return `key: ${key} | filename: ${h.filename} | type: ${type} | desc: ${desc}`;
     })
     .join("\n");
 }
