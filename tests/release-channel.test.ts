@@ -524,8 +524,9 @@ describe("A2/A3 文档与脚本自洽（改了一处不许漏另一处）", () =
     expect(usage).toContain("--promote");
   });
 
-  test("CLAUDE.md 的发布流程写明了通道与回滚（出事时人先看它）", () => {
-    const md = readFileSync(join(ROOT, "CLAUDE.md"), "utf8");
+  test("发布手册写明了通道与回滚，且 CLAUDE.md 指向它（出事时人先看它）", () => {
+    expect(readFileSync(join(ROOT, "CLAUDE.md"), "utf8")).toContain("scripts/RELEASE.md");
+    const md = readFileSync(join(ROOT, "scripts", "RELEASE.md"), "utf8");
     expect(md).toContain("SID_CODE_CHANNEL");
     expect(md).toContain("--promote");
     expect(md).toContain("rollback.sh");

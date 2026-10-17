@@ -191,12 +191,13 @@ describe("github-release.ts：正文取自 curated，且不建错 tag", () => {
  * 都挂在那道门上）。
  */
 describe("发布流程 ↔ 分支保护冲突（2026-08-21 裁决）", () => {
-  const CLAUDE_MD = readFileSync(join(ROOT, "CLAUDE.md"), "utf8");
+  // 发布流程 2026-10-17 从 CLAUDE.md 搬到 scripts/RELEASE.md（CLAUDE.md 只留指针）
+  const CLAUDE_MD = readFileSync(join(ROOT, "scripts", "RELEASE.md"), "utf8");
 
-  test("CLAUDE.md 的收尾步骤不再是裸 git push（那条命令在本仓必然被 GH013 拒）", () => {
+  test("发布手册的收尾步骤不再是裸 git push（那条命令在本仓必然被 GH013 拒）", () => {
     // 取「发布上线」到下一个二级标题之间那段
-    const seg = CLAUDE_MD.slice(CLAUDE_MD.indexOf("### 发布上线"));
-    const body = seg.slice(0, seg.indexOf("#### Changelog"));
+    const seg = CLAUDE_MD.slice(CLAUDE_MD.indexOf("## 发布上线"));
+    const body = seg.slice(0, seg.indexOf("### Changelog"));
     expect(body).toContain("GH013");
     expect(body).toMatch(/gh pr (create|merge)/);
     // 反向断言：不许再出现「独占一行的 git push」作为收尾指引
@@ -204,8 +205,8 @@ describe("发布流程 ↔ 分支保护冲突（2026-08-21 裁决）", () => {
   });
 
   test("文档写明必须 merge 不能 squash（tag 已打在 bump 提交上）", () => {
-    const seg = CLAUDE_MD.slice(CLAUDE_MD.indexOf("### 发布上线"));
-    const body = seg.slice(0, seg.indexOf("#### Changelog"));
+    const seg = CLAUDE_MD.slice(CLAUDE_MD.indexOf("## 发布上线"));
+    const body = seg.slice(0, seg.indexOf("### Changelog"));
     expect(body).toMatch(/squash/i);
     expect(body).toContain("--merge");
     // 必须给出可核验的判据，而不是只写一句"要用 merge"
@@ -220,8 +221,8 @@ describe("发布流程 ↔ 分支保护冲突（2026-08-21 裁决）", () => {
   });
 
   test("文档说明 northstar/ 是要求入库的产物，不是脏数据", () => {
-    const seg = CLAUDE_MD.slice(CLAUDE_MD.indexOf("### 发布上线"));
-    const body = seg.slice(0, seg.indexOf("#### Changelog"));
+    const seg = CLAUDE_MD.slice(CLAUDE_MD.indexOf("## 发布上线"));
+    const body = seg.slice(0, seg.indexOf("### Changelog"));
     expect(body).toContain("northstar/");
   });
 });

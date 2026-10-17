@@ -24,13 +24,12 @@ import type { Color } from "../render-port/types.ts";
 import { useUIState } from "../contexts/UIStateContext.tsx";
 import { useConfig } from "../contexts/ConfigContext.tsx";
 import { formatLargeNumber } from "../utils/format-number.ts";
+import { thinkingLabel } from "../utils/thinking-label.ts";
 import {
   TOKEN_IN,
   TOKEN_OUT,
   EFFORT_GLYPHS,
   EFFORT_AUTO,
-  THINKING_ON,
-  THINKING_OFF,
   GOAL_MARK,
   PAUSED_MARK,
   RETRY_MARK,
@@ -281,35 +280,30 @@ export function deriveEffort(
 }
 
 /**
- * 思考开关展示派生（thinking 列）：开/关 → 字形 + 文本 + 语义色。
+ * 思考开关展示派生（thinking 列）：词表与配色规则见 utils/thinking-label.ts（与 /think 面板同源）。
  * - null（尚未初始化）→ 返回 null，Footer 不渲染该列。
- * - toggle：开启 → 实心星 ✻ + 成功色（点睛）；关闭 → 空心星 ✧ + 灰色。auto 态颜色保持灰。
- * - locked-on（恒思考，关不掉）→ `✻·不可关`，灰色：说的是「它在想且你关不掉」，不是「你开了」。
- * - none（无独立开关）→ `✧内置`，灰色：推理深度由 effort 决定。此前这类模型不显示该列，
- *   用户把「没显示」读成「已关」（20261016 思考开关排查 D6）。
+ * - 只用词不用字形：此前 ✻ / ✧ 两个相近字形 + auto 不上色，用户把「auto 解析为开」读成「关」。
+ * - 实际在思考 → 成功色；locked-on 下意图是 off → 警告色（设置在本模型上无效）；其余灰。
  */
 export function deriveThinking(
   thinkingDisplay: {
     on: boolean;
     isAuto: boolean;
     control?: "toggle" | "locked-on" | "none";
+    intent?: "on" | "off" | "auto";
   } | null,
   defaultColor: Color,
 ): { glyph: string; text: string; color: Color } | null {
   if (!thinkingDisplay) return null;
-  const { on, isAuto, control = "toggle" } = thinkingDisplay;
-  if (control === "locked-on") {
-    return { glyph: `${THINKING_ON}·不可关`, text: "on·locked", color: defaultColor };
-  }
-  if (control === "none") {
-    return { glyph: `${THINKING_OFF}内置`, text: "builtin", color: defaultColor };
-  }
-  // 去掉 (auto) 文字后缀：字形已自解释(✻ 开 / ✧ 关)，Footer 旋钮区只渲染 glyph。
-  // 保留 text 供其它场景/测试使用，但不再堆 (auto) 冗余文字。
-  const text = on ? "on" : "off";
-  const glyph = on ? THINKING_ON : THINKING_OFF;
-  const color = on && !isAuto ? theme.status.success : defaultColor;
-  return { glyph, text, color };
+  const { text, tone } = thinkingLabel(thinkingDisplay);
+  const color =
+    tone === "active"
+      ? theme.status.success
+      : tone === "warn"
+        ? theme.status.warning
+        : defaultColor;
+  // glyph 字段保留给 Footer 旋钮区渲染（现在就是词本身），text 与之相同。
+  return { glyph: text, text, color };
 }
 
 /**

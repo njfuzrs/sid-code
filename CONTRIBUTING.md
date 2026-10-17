@@ -54,10 +54,10 @@ make build            # 构建开发版二进制（不改版本号）
 ### 贡献者不需要任何 LLM API key
 
 `evals/` 目录、`packages/eval-framework/` 依赖真实模型调用，但这**不是**外部贡献者
-提 PR 的门槛。提 PR 之前必须跑的六道 CI 门禁（见下一节）全部不需要 LLM：
+提 PR 的门槛。提 PR 之前必须跑的七道 CI 门禁（见下一节）全部不需要 LLM：
 `bun test` / `make build` / `bun run lint` / `bun run format:check` /
-`bun run lint:boundary` / `bun run typecheck:gate` 都是本地静态检查或跑固定断言，
-没有一处调真实模型。
+`bun run lint:boundary` / `bun run lint:command-system` / `bun run typecheck:gate`
+都是本地静态检查或跑固定断言，没有一处调真实模型。
 
 评测（`.github/workflows/eval-*.yml`）是维护者职责，需要仓库配好
 `DEEPSEEK_API_KEY`（judge 打分还需 `ANTHROPIC_API_KEY`）才能真正跑起来。
@@ -314,7 +314,7 @@ merge_queue 规则返回 `422 Invalid rule 'merge_queue'`，2026-08-19 实测）
 
 ## 提 PR 之前必须跑的门禁
 
-CI（`.github/workflows/ci.yml`）有 **两个 job、六道门禁**，本地全部可跑：
+CI（`.github/workflows/ci.yml`）有 **两个 job、七道门禁**，本地全部可跑：
 
 ```bash
 # test job
@@ -325,10 +325,11 @@ make build               # 构建 + 产物自检，必须成功
 bun run lint             # oxlint，只开 correctness 档
 bun run format:check     # oxfmt 排版检查（红了跑 bun run format 再 git add）
 bun run lint:boundary    # 包边界扫描，动了跨包导入必跑
+bun run lint:command-system  # 命令体系门禁：死导出棘轮 + 旧命令体系只减不增
 bun run typecheck:gate   # 类型检查棘轮：只拦新增错误（存量在 scripts/tsc-baseline.json）
 ```
 
-**六条都跑绿，CI 基本不会红。** 只跑前两条是不够的 —— lint job 是独立的，
+**七条都跑绿，CI 基本不会红。** 只跑前两条是不够的 —— lint job 是独立的，
 排版或跨包导入不合规照样拦。
 
 ### 开发过程中用选择性测试，最后一次再跑全量

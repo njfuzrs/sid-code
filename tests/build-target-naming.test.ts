@@ -111,8 +111,15 @@ describe("文档与实现一致（CLAUDE.md 是模型读到的第一手指令）
     expect(claudeMd).not.toMatch(/`make build`\s*\|\s*\+1/);
   });
 
+  // 构建目标表随发布手册搬到 scripts/RELEASE.md（2026-10-17 精简 CLAUDE.md）
+  const releaseMd = readFileSync(join(ROOT, "scripts", "RELEASE.md"), "utf8");
+
   test("Make 目标表把 build 标为版本号不变", () => {
-    expect(claudeMd).toMatch(/`make build`\s*\|\s*不变/);
+    expect(releaseMd).toMatch(/`make build`\s*\|\s*不变/);
+  });
+
+  test("发布手册也不宣称 make build 会 +1 版本号", () => {
+    expect(releaseMd).not.toMatch(/`make build`\s*\|\s*\+1/);
   });
 
   test("build-bump 已在文档中登场（否则用户找不到 bump 入口）", () => {

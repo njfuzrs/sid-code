@@ -2799,7 +2799,12 @@ export class App {
           this.runtimeThinking,
           eff.getThinkingEnvOverride(),
         );
-        return { on: st.effective, isAuto: st.intent === "auto", control: st.control };
+        return {
+          on: st.effective,
+          isAuto: st.intent === "auto",
+          control: st.control,
+          intent: st.intent,
+        };
       })(),
     });
   }
