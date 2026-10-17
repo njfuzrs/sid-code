@@ -7,7 +7,7 @@ import { spawn } from "child_process";
 import { openSync, closeSync } from "fs";
 import { platform } from "os";
 import { generateTaskId, type LocalShellTaskState, isTerminalStatus } from "./types.ts";
-import { registerTask, updateTask, getTask, graceDeadlineFor } from "./registry.ts";
+import { registerTask, updateTask, getTask } from "./registry.ts";
 import { initTaskOutput, getTaskOutputTail, getTaskOutputSize } from "./disk-output.ts";
 import { enqueueTaskNotification } from "./notification.ts";
 
@@ -65,7 +65,6 @@ function finalizeShellTaskExit(opts: {
       exitCode: code ?? -1,
       interrupted: signal !== null,
       endTime: Date.now(),
-      evictAfter: graceDeadlineFor(code === 0 ? "completed" : "failed"),
       notified: true,
     };
   });
@@ -101,7 +100,6 @@ function finalizeShellTaskError(opts: {
       ...t,
       status: "failed",
       endTime: Date.now(),
-      evictAfter: graceDeadlineFor("failed"),
       notified: true,
     };
   });
@@ -326,8 +324,6 @@ export function killShellTask(taskId: string): void {
       status: "killed",
       interrupted: true,
       endTime: Date.now(),
-      // killed 走短档（3s，对齐 CC STOPPED_DISPLAY_MS）。见 graceDeadlineFor。
-      evictAfter: graceDeadlineFor("killed"),
       notified: true,
     };
   });

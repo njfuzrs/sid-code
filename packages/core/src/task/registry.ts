@@ -12,6 +12,14 @@ import {
   isAgentTask,
 } from "./types.ts";
 import { getTaskOutputTail, evictTaskOutput } from "./disk-output.ts";
+import {
+  emitTaskLifecycle,
+  getCompletedMainTurns,
+  onMainTurnCompleted,
+  recordTaskOutputTombstone,
+  type TaskEvictReason,
+} from "./lifecycle.ts";
+import { getLogger } from "../debug/logger.ts";
 
 /** 全局任务存储 */
 const tasks = new Map<string, TaskState>();
@@ -43,7 +51,11 @@ function notifyTaskChanged(): void {
 
 /** 注册新任务 */
 export function registerTask(task: TaskState): void {
+  const isNew = !tasks.has(task.id);
   tasks.set(task.id, task);
+  // S16：生命周期事件在 registry 单点发，不在 shell / agent / workflow 的 9 个写点各发一遍
+  if (isNew) emitTaskLifecycle(task, "started");
+  if (isTerminalStatus(task.status)) scheduleSafetyValveWake();
   notifyTaskChanged();
 }
 
@@ -54,6 +66,12 @@ export function updateTask<T extends TaskState>(taskId: string, updater: (task: 
   const updated = updater(task);
   if (updated !== task) {
     tasks.set(taskId, updated);
+    if (!isTerminalStatus(task.status) && isTerminalStatus(updated.status)) {
+      emitTaskLifecycle(updated, "completed", {
+        exit_code: "exitCode" in updated ? (updated.exitCode as number | undefined) : undefined,
+      });
+    }
+    if (isTerminalStatus(updated.status)) scheduleSafetyValveWake();
     notifyTaskChanged();
   }
 }
@@ -73,65 +91,164 @@ export function getAllTasks(): TaskState[] {
   return [...tasks.values()];
 }
 
-/** 驱逐缓冲期（对齐 CC `framework.ts:28` PANEL_GRACE_MS = 30_000）。
- *  任务完成后必须等待此时长才能被驱逐，给主循环模型留足通过 task_output 查询结果的窗口。
+/** 面板驻留时长（对齐 CC `framework.ts:28` PANEL_GRACE_MS = 30_000）。
  *
- *  曾设为 60s，注释自称"比 CC 更保守"——但保守参数不是免费的，代价是用户反复报
- *  「后台任务面板不立即消失」（同一现象三次复发）。缓冲期本就有 task_output 的
- *  访问续期（`tool/task-output.ts` 的 LRU touch）兜底：模型真在轮询就会不断顺延，
- *  加倍基础窗口对"模型多轮决策"没有额外收益，只是让没人再看的条目多驻留 30s。 */
+ *  S3 之后它**只管面板显示**，不再是 `.output` 的存活判据：任务完成后至少在面板上留这么久，
+ *  给用户回看。文件能不能删由「送达回合」决定（见 `isEvictable`）。
+ *
+ *  曾设为 60s，注释自称"比 CC 更保守"——代价是用户反复报「后台任务面板不立即消失」
+ *  （同一现象三次复发），故回到 30s。 */
 const EVICT_GRACE_MS = 30_000;
 
-/** 被终止（killed）任务的驻留时长（对齐 CC `framework.ts:25` STOPPED_DISPLAY_MS = 3_000）。
+/** 被终止（killed）任务的面板驻留时长（对齐 CC `framework.ts:25` STOPPED_DISPLAY_MS = 3_000）。
  *
- *  为什么 killed 要单独一档、不跟 completed/failed 共用 30s：kill 是**用户自己刚下的指令**，
- *  他已经知道结果，条目留着只是确认"确实停了"，3s 足够；completed/failed 是任务自己到达的
- *  终态，用户可能没在看屏幕，需要更长窗口回看。`TaskRow` 早已给四种终态不同字形/配色
- *  （运行◐ / 完成● / 失败✘ / 终止⊘），驻留时长却一刀切 30s —— 视觉分级与生命周期分级
- *  不一致，这里补齐。 */
+ *  kill 是**用户自己刚下的指令**，他已经知道结果，条目留 3s 确认"确实停了"即可；
+ *  completed/failed 是任务自己到达的终态，用户可能没在看屏幕，需要更长窗口回看。 */
 const KILLED_DISPLAY_MS = 3_000;
 
 /**
- * 按终态选驱逐缓冲期：killed 用 3s，其余（completed/failed）用 30s。
+ * 完成通知**未送达**时的安全阀：任务完成后这么久仍未送达，照样驱逐（并写日志）。
  *
- * 所有设置 `evictAfter` 的终态写入点都该走这个函数，别在各自的 `updateTask` 里
- * 直接写 `Date.now() + EVICT_GRACE_MS`——那正是"字形上区分了四态、时长上没区分"的来源，
- * 且散落 8 处（agent / shell / workflow × complete/fail/kill），漏一处就是行为漂移。
+ * 送达不到的路径：主循环长时间不再转且空闲唤醒（#313）没接上；print 模式已退出。
+ * 不设安全阀则 `.output` 无限堆积；去掉驱逐本身已在方案 §4 否决。
+ * 10min 是占位值——应对照空闲唤醒的实际延迟再定，届时只改这一处。
  */
-export function graceDeadlineFor(status: TaskStatus): number {
-  return Date.now() + (status === "killed" ? KILLED_DISPLAY_MS : EVICT_GRACE_MS);
+const UNDELIVERED_SAFETY_VALVE_MS = 10 * 60_000;
+
+/** 按终态取面板驻留时长 */
+function displayGraceFor(status: TaskStatus): number {
+  return status === "killed" ? KILLED_DISPLAY_MS : EVICT_GRACE_MS;
 }
 
-/** 驱逐已完成且已通知且缓冲期已过的任务。
- *  终止态（completed/failed/killed）任务一旦其完成通知已入队（notified=true）
- *  且缓冲期（evictAfter）已过，在面板上即属冗余——通知会经 dequeuePendingNotifications
- *  注入对话，任务条目应清除。三层门控对标 CC：① isTerminalStatus ② notified ③ evictAfter。
- *  删除发生时通知监听器刷新 TUI（否则面板不会重渲、仍显示已完成条目）。
+/**
+ * 从现在起算的续期截止时间（task_output 读取续期用）。
  *
- *  @param force 忽略缓冲期（evictAfter）检查，只要求 ① isTerminalStatus ② notified。
- *    缓冲期的意义是"任务完成后留一个窗口，让主循环模型还能用 task_output 查结果"——
- *    但当主循环已经终止（end_turn 收尾）时不会再有下一轮查询，缓冲期失去意义。此时
- *    必须 force 驱逐，否则"最后完成、缓冲期还没到"的任务会因再无下一轮循环触发驱逐而
- *    永久残留在面板（现象：「后台任务 · N 已完成」不消失）。见 loop.ts 收尾块调用点。 */
-export function evictTerminalTasks(force = false): void {
+ * 终态写入点**不再**调用它：S3 之前 9 个写点各自写死 `evictAfter`，判据散落、且计时起点是
+ * 「入队」而不是「送达」。现在终态写点只记 `endTime`，驱逐判据统一在 `isEvictable` 里算。
+ */
+export function graceDeadlineFor(status: TaskStatus): number {
+  return Date.now() + displayGraceFor(status);
+}
+
+/**
+ * 驱逐判据（S3：按回合判定，不按毫秒）。`hasPendingEviction` 与安全阀定时器都走它，
+ * 三处同口径——不同口径会让 1s 定时器对未送达任务空转整个安全阀时长。
+ *
+ * - 非终态 / 终态但完成信息还没有投递通道（`notified=false`）→ 不删；
+ * - 已送达 → 送达之后主循环又**完整跑完至少一个回合**，且面板驻留期与 task_output 续期都已过；
+ * - 未送达 → 完成后过了安全阀时长。
+ */
+function evictDecision(task: TaskState, now: number): TaskEvictReason | null {
+  if (!isTerminalStatus(task.status) || !task.notified) return null;
+  const end = task.endTime ?? 0;
+  if (task.notificationDeliveredTurn !== undefined) {
+    if (getCompletedMainTurns() <= task.notificationDeliveredTurn) return null;
+    const deadline = Math.max(end + displayGraceFor(task.status), task.evictAfter ?? 0);
+    return deadline <= now ? "delivered_turn_passed" : null;
+  }
+  return end + UNDELIVERED_SAFETY_VALVE_MS <= now ? "safety_valve" : null;
+}
+
+/** 驱逐一条任务：登记墓碑（须在删文件之前）→ 落事件 → 删磁盘 `.output` 与 registry 条目 */
+function evictOne(id: string, task: TaskState, reason: TaskEvictReason): void {
+  recordTaskOutputTombstone(task, reason);
+  emitTaskLifecycle(task, "evicted", { reason });
+  if (reason === "safety_valve") {
+    getLogger().warn(
+      "TASK",
+      `后台任务 ${id} 完成 ${Math.round((Date.now() - (task.endTime ?? 0)) / 1000)}s 仍未送达模型，按安全阀驱逐`,
+    );
+  }
+  evictTaskOutput(id);
+  tasks.delete(id);
+}
+
+/** 驱逐满足 `evictDecision` 的终态任务；删除发生时通知监听器刷新 TUI（否则面板不会重渲）。
+ *
+ *  曾有 `force` 参数（忽略缓冲期），生产代码零调用方，S3 一并删除——它恰好能绕过
+ *  「送达之后至少一个回合」这道门，留着就是一个随手就能重演 S3 的开关。 */
+export function evictTerminalTasks(): void {
   const now = Date.now();
   let evicted = false;
   for (const [id, task] of tasks) {
-    if (
-      isTerminalStatus(task.status) &&
-      task.notified &&
-      (force || (task.evictAfter ?? 0) <= now) // 缓冲期检查：force 时跳过；未设置视为 0（兼容旧任务立即驱逐）
-    ) {
-      evictTaskOutput(id); // 连带清磁盘 .output 文件 + 内存 outputs 条目，避免孤儿泄露
-      tasks.delete(id);
+    const reason = evictDecision(task, now);
+    if (reason) {
+      evictOne(id, task, reason);
       evicted = true;
     }
   }
   if (evicted) notifyTaskChanged();
+  scheduleSafetyValveWake();
 }
 
-/** 获取驱逐缓冲期常量（供外部使用） */
-export { EVICT_GRACE_MS, KILLED_DISPLAY_MS };
+/**
+ * 标记这些任务的完成通知**已送达模型**（`injectPendingNotifications` 在通知进上下文时调用）。
+ *
+ * 只认 registry 里还在的终态任务；重复送达（同一 taskId 两条通知）保留第一次的回合，
+ * 否则驱逐会被一条迟到的重复通知无限推后。
+ */
+export function markNotificationsDelivered(taskIds: Iterable<string>): void {
+  const turn = getCompletedMainTurns();
+  let changed = false;
+  for (const id of taskIds) {
+    const task = tasks.get(id);
+    if (!task || task.notificationDeliveredTurn !== undefined) continue;
+    const updated = { ...task, notificationDeliveredTurn: turn };
+    tasks.set(id, updated);
+    emitTaskLifecycle(updated, "delivered");
+    changed = true;
+  }
+  if (changed) notifyTaskChanged();
+}
+
+// 回合推进可能让「已送达」的任务变为可驱逐：刷新监听器，TUI 据此重新判定 1s 定时器开关。
+onMainTurnCompleted(() => {
+  for (const task of tasks.values()) {
+    if (task.notificationDeliveredTurn !== undefined && isTerminalStatus(task.status)) {
+      notifyTaskChanged();
+      return;
+    }
+  }
+});
+
+/**
+ * 安全阀唤醒：未送达任务的驱逐不能指望 TUI 的 1s 定时器（那会让定时器空转 10min），
+ * 也不能指望主循环（安全阀要兜的恰恰是「主循环不转了」）。这里只挂一个 unref 定时器，
+ * 定在最早的那个安全阀截止点，到点直接驱逐——print 模式下也成立。
+ */
+let safetyValveTimer: ReturnType<typeof setTimeout> | null = null;
+let safetyValveAt = Infinity;
+
+function scheduleSafetyValveWake(): void {
+  let earliest = Infinity;
+  for (const task of tasks.values()) {
+    if (
+      isTerminalStatus(task.status) &&
+      task.notified &&
+      task.notificationDeliveredTurn === undefined
+    ) {
+      earliest = Math.min(earliest, (task.endTime ?? 0) + UNDELIVERED_SAFETY_VALVE_MS);
+    }
+  }
+  if (earliest === safetyValveAt) return;
+  if (safetyValveTimer) clearTimeout(safetyValveTimer);
+  safetyValveTimer = null;
+  safetyValveAt = earliest;
+  if (earliest === Infinity) return;
+  const timer = setTimeout(
+    () => {
+      safetyValveTimer = null;
+      safetyValveAt = Infinity;
+      evictTerminalTasks();
+    },
+    Math.max(0, earliest - Date.now()),
+  );
+  (timer as { unref?: () => void }).unref?.();
+  safetyValveTimer = timer;
+}
+
+/** 获取驱逐相关常量（供外部使用） */
+export { EVICT_GRACE_MS, KILLED_DISPLAY_MS, UNDELIVERED_SAFETY_VALVE_MS };
 
 /**
  * 手动把一条**终态**任务从面板划掉（Ctrl+X），面板立即不再显示它。
@@ -191,18 +308,28 @@ export function getPanelVisibleTasks(): TaskState[] {
 }
 
 /**
- * registry 里是否还有**等待驱逐**的终态任务（供 TUI 的 1s 驱逐 tick 判断是否要开定时器）。
+ * registry 里是否有**只差墙钟时间**就能驱逐的任务（供 TUI 的 1s 驱逐 tick 判断是否要开定时器）。
  *
- * 为什么不能用「面板上有没有终态条目」来判断（这曾是个真实的资源泄漏）：
- * 被 Ctrl+X 划掉的任务立即离开面板，但**仍在 registry 里**等缓冲期到点回收。若定时器的
- * 开关条件读的是面板列表，划完最后一条 → 面板空 → 定时器停 → 这些任务的 registry 条目
- * 与磁盘 `.output` 文件再没人回收，直到会话结束。所以开关必须问 registry，不是问 UI。
+ * 与 `evictDecision` 同口径（S3）：只有「已送达且送达回合已过」的任务才只差时间——剩下的
+ * 至多是面板驻留期 / task_output 续期。还没过送达回合的任务等的是回合推进，回合推进时
+ * registry 会通知监听器、让本函数被重新问一次；未送达的任务由安全阀定时器兜底。两者都不需要
+ * 1s 定时器空转。
  *
- * 同理也包含 dismissed 任务：它们照样要被 evictTerminalTasks 清掉，只是用户看不见了。
+ * 为什么问 registry 而不是问面板列表（这曾是个真实的资源泄漏）：被 Ctrl+X 划掉的任务立即离开
+ * 面板，但**仍在 registry 里**等回收。按面板判断 → 划完最后一条定时器就停 → registry 条目与
+ * 磁盘 `.output` 再没人回收。所以 dismissed 任务同样计入。
  */
 export function hasPendingEviction(): boolean {
+  const turns = getCompletedMainTurns();
   for (const task of tasks.values()) {
-    if (isTerminalStatus(task.status) && task.notified) return true;
+    if (
+      isTerminalStatus(task.status) &&
+      task.notified &&
+      task.notificationDeliveredTurn !== undefined &&
+      turns > task.notificationDeliveredTurn
+    ) {
+      return true;
+    }
   }
   return false;
 }
@@ -211,10 +338,12 @@ export function hasPendingEviction(): boolean {
  *  连带清 outputs 内存条目 + 磁盘 .output 文件，并通知监听器刷新面板——
  *  仅 tasks.clear() 会留下 outputs 孤儿（disk-output 的 Map 与磁盘文件不随之清理）。 */
 export function clearAllTasks(): void {
-  for (const id of tasks.keys()) {
+  for (const [id, task] of tasks) {
+    if (isTerminalStatus(task.status)) emitTaskLifecycle(task, "evicted", { reason: "cleared" });
     evictTaskOutput(id);
   }
   tasks.clear();
+  scheduleSafetyValveWake();
   notifyTaskChanged();
 }
 
@@ -227,12 +356,16 @@ export function clearInactiveTasks(): void {
   let cleared = false;
   for (const [id, task] of tasks) {
     if (isTerminalStatus(task.status)) {
+      emitTaskLifecycle(task, "evicted", { reason: "cleared" });
       evictTaskOutput(id);
       tasks.delete(id);
       cleared = true;
     }
   }
-  if (cleared) notifyTaskChanged();
+  if (cleared) {
+    scheduleSafetyValveWake();
+    notifyTaskChanged();
+  }
 }
 
 /** 生成任务状态附件（注入系统提示词，包含运行中 Agent 的增量输出）。

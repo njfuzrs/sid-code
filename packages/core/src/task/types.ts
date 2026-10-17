@@ -56,10 +56,20 @@ export interface TaskStateBase {
   endTime?: number;
   outputFile: string;
   outputOffset: number;
+  /** 终态已写入、完成信息已有投递通道（入队通知 / 前台 tool_result）。**不是**「已送达模型」——
+   *  送达看 `notificationDeliveredTurn`（S3：两者混为一谈正是 `.output` 被提前删的根因）。 */
   notified: boolean;
-  /** 驱逐缓冲期截止时间（对标 CC PANEL_GRACE_MS）。
-   *  evictTerminalTasks 只在 Date.now() > evictAfter 时才清除任务，
-   *  给主循环模型留足窗口通过 task_output 再次查询结果。 */
+  /**
+   * 完成通知**送达模型**时的回合纪元（registry `getTurnEpoch()`），未送达为 undefined。
+   *
+   * 由 `markNotificationsDelivered` 在 `injectPendingNotifications` 里置位；前台子代理
+   * （notify=false，结果走 tool_result）在终态写入时直接置位。驱逐判据要求
+   * 「送达之后主循环又完整跑完至少一个回合」，按回合而不是按毫秒——单次调用可长达
+   * 116s（S3 事故 call 40），任何固定毫秒窗口都会被越过。
+   */
+  notificationDeliveredTurn?: number;
+  /** task_output 读取续期截止时间（LRU touch）。**只由 task_output 写**，终态写入点不再写它：
+   *  驱逐判据由 registry 统一计算（见 `isEvictable`），散落 9 处的固定计时已收口。 */
   evictAfter?: number;
   /**
    * 用户已手动从面板划掉这条终态条目（Ctrl+X），面板**立即**不再显示它。

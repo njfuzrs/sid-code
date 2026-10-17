@@ -35,6 +35,8 @@ import {
   dismissTerminalTasks,
   hasDismissableTasks,
   hasPendingEviction,
+  markNotificationsDelivered,
+  markMainTurnCompleted,
   graceDeadlineFor,
   EVICT_GRACE_MS,
   KILLED_DISPLAY_MS,
@@ -153,26 +155,23 @@ describe("graceDeadlineFor（根因②：killed 与 completed 曾共用一档）
   });
 });
 
-describe("终态写入点统一走 graceDeadlineFor（防漂移）", () => {
-  test("killAgentTask 设的是短档（3s），不是 30s", async () => {
+describe("终态写入点不再写 evictAfter（S3：驱逐判据收口到 registry）", () => {
+  test("killAgentTask 只记 endTime，不写死 evictAfter", async () => {
     const { createAgentTask, killAgentTask } = await import("@sid-code/core/task/index.ts");
     const { taskState } = createAgentTask({ agentType: "explore", prompt: "p", description: "d" });
 
-    const before = Date.now();
     killAgentTask(taskState.id);
 
     const killed = getTask(taskState.id)!;
     expect(killed.status).toBe("killed");
-    // 短档：应落在 now+3s 附近，远早于 now+30s
-    expect(killed.evictAfter!).toBeLessThan(before + EVICT_GRACE_MS);
-    expect(killed.evictAfter!).toBeGreaterThanOrEqual(before + KILLED_DISPLAY_MS - 50);
+    expect(killed.endTime).toBeNumber();
+    expect(killed.evictAfter).toBeUndefined();
   });
 
-  test("completeAgentTask 设的是长档（30s）", async () => {
+  test("completeAgentTask（后台）只记 endTime，送达标记留给通知注入", async () => {
     const { createAgentTask, completeAgentTask } = await import("@sid-code/core/task/index.ts");
     const { taskState } = createAgentTask({ agentType: "explore", prompt: "p", description: "d" });
 
-    const before = Date.now();
     await completeAgentTask(taskState.id, {
       output: "done",
       totalToolUseCount: 0,
@@ -182,7 +181,27 @@ describe("终态写入点统一走 graceDeadlineFor（防漂移）", () => {
 
     const done = getTask(taskState.id)!;
     expect(done.status).toBe("completed");
-    expect(done.evictAfter!).toBeGreaterThanOrEqual(before + EVICT_GRACE_MS - 50);
+    expect(done.evictAfter).toBeUndefined();
+    expect(done.notificationDeliveredTurn).toBeUndefined();
+  });
+
+  test("completeAgentTask（前台，notify=false）结果走 tool_result，当场记为已送达", async () => {
+    const { createAgentTask, completeAgentTask, getCompletedMainTurns } =
+      await import("@sid-code/core/task/index.ts");
+    const { taskState } = createAgentTask({ agentType: "explore", prompt: "p", description: "d" });
+
+    await completeAgentTask(
+      taskState.id,
+      {
+        output: "done",
+        totalToolUseCount: 0,
+        totalTokens: 0,
+        usage: { inputTokens: 0, outputTokens: 0 },
+      },
+      false,
+    );
+
+    expect(getTask(taskState.id)!.notificationDeliveredTurn).toBe(getCompletedMainTurns());
   });
 });
 
@@ -359,17 +378,18 @@ describe("hasDismissableTasks（Ctrl+X 是否抢占按键）", () => {
 // ─── 划掉与驱逐的关系：不能泄漏 ───
 
 describe("dismissed 任务仍须被正常驱逐（防 registry / 磁盘泄漏）", () => {
-  test("缓冲期到点后，dismissed 任务照样被 evictTerminalTasks 清掉", () => {
+  test("可驱逐后，dismissed 任务照样被 evictTerminalTasks 清掉", () => {
     // 划掉只是"面板不显示"，回收仍走原路径。否则划掉的任务会永久占着
     // registry 条目 + 磁盘 .output 文件，直到会话结束。
     registerTask(
       makeShellTask("done", {
         status: "completed",
         notified: true,
-        endTime: Date.now(),
-        evictAfter: Date.now() - 1, // 缓冲期已过
+        endTime: Date.now() - EVICT_GRACE_MS - 1, // 面板驻留期已过
       }),
     );
+    markNotificationsDelivered(["done"]);
+    markMainTurnCompleted(); // 送达回合已过
     dismissTask("done");
     expect(getTask("done")).toBeDefined(); // 划掉后仍在
 
@@ -381,15 +401,28 @@ describe("dismissed 任务仍须被正常驱逐（防 registry / 磁盘泄漏）
     // 这是本次修复中一个真实的泄漏点：TUI 的 1s 驱逐 tick 若按"面板上有没有终态条目"
     // 开关，划完最后一条 → 面板空 → 定时器停 → 那些任务再没人回收。
     registerTask(makeCompletedTask("done"));
+    markNotificationsDelivered(["done"]);
+    expect(hasPendingEviction()).toBe(false); // 送达回合内：等的是回合，不是墙钟
+    markMainTurnCompleted();
     expect(hasPendingEviction()).toBe(true);
 
     dismissTask("done");
     expect(getPanelVisibleTasks()).toEqual([]); // 面板已空
     expect(hasPendingEviction()).toBe(true); // 但驱逐仍有待办 → 定时器必须继续转
 
-    updateTask("done", (t) => ({ ...t, evictAfter: Date.now() - 1 }));
+    updateTask("done", (t) => ({
+      ...t,
+      endTime: Date.now() - EVICT_GRACE_MS - 1,
+      evictAfter: undefined,
+    }));
     evictTerminalTasks();
     expect(hasPendingEviction()).toBe(false); // 回收完毕 → 定时器可停
+  });
+
+  test("未送达的终态任务不让 1s 定时器空转（由安全阀定时器兜底）", () => {
+    registerTask(makeCompletedTask("undelivered"));
+    markMainTurnCompleted();
+    expect(hasPendingEviction()).toBe(false);
   });
 
   test("running 任务不算待驱逐（无终态任务时不空转定时器）", () => {

@@ -18,6 +18,12 @@ import {
   clearAllTasks,
   onTaskChanged,
   offTaskChanged,
+  markNotificationsDelivered,
+  markMainTurnCompleted,
+  getCompletedMainTurns,
+  hasPendingEviction,
+  EVICT_GRACE_MS,
+  UNDELIVERED_SAFETY_VALVE_MS,
 } from "@sid-code/core/task/index.ts";
 import type { LocalShellTaskState } from "@sid-code/core/task/types.ts";
 
@@ -135,125 +141,98 @@ describe("evictTerminalTasks（终止态任务驱逐）", () => {
   });
 });
 
-// ─── Bug 3 回归：驱逐缓冲期（三层门控第三层 evictAfter）───
-// 背景：任务完成后立即被驱逐，主循环模型无法在多轮中再次 task_output 查询同一任务 →
-// "任务 xxx 不存在"。修复：completeAgentTask/failAgentTask/killAgentTask 均设
-// evictAfter = Date.now() + EVICT_GRACE_MS，evictTerminalTasks 只在 evictAfter <= now 时驱逐。
-// 这些用例显式设置 evictAfter，触达三层门控的第三层（其余用例走「未设视为 0」兼容分支）。
-describe("evictTerminalTasks（驱逐缓冲期 evictAfter）", () => {
-  test("缓冲期未过（evictAfter 在未来）→ 已完成且已通知的任务仍保留", () => {
-    registerTask(
-      makeShellTask("buffered", {
-        status: "completed",
-        notified: true,
-        endTime: Date.now(),
-        evictAfter: Date.now() + 60_000, // 60s 后才允许驱逐
-      }),
-    );
+// ─── S3：按回合驱逐（送达之后主循环又跑完至少一个回合）───
+// 事故：`.output` 在模型读到之前被删。旧判据是「入队即 notified + 30s」，通知要到下一个
+// 回合边界才进上下文，之后的模型调用可长达 116s。下面的用例全部用「刚完成」的 endTime，
+// 墙钟时间不推进，只推进回合——证明判据看的是回合，不是毫秒。
+describe("evictTerminalTasks（S3 按回合驱逐）", () => {
+  const justDone = (id: string, over: Partial<LocalShellTaskState> = {}) =>
+    makeShellTask(id, {
+      status: "completed",
+      notified: true,
+      // 面板驻留期已过，排除这个下限的干扰，只测回合门
+      endTime: Date.now() - EVICT_GRACE_MS - 1,
+      ...over,
+    });
+
+  test("已入队但未送达：再久的毫秒窗口（安全阀以内）都不删", () => {
+    registerTask(justDone("undelivered", { endTime: Date.now() - 5 * 60_000 }));
     evictTerminalTasks();
-    // 缓冲期内：模型仍能 task_output 查到，不得驱逐
-    expect(getAllTasks().map((t) => t.id)).toEqual(["buffered"]);
+    expect(getAllTasks().map((t) => t.id)).toEqual(["undelivered"]);
   });
 
-  test("缓冲期已过（evictAfter 在过去）→ 任务被驱逐", () => {
-    registerTask(
-      makeShellTask("expired", {
-        status: "completed",
-        notified: true,
-        endTime: Date.now() - 120_000,
-        evictAfter: Date.now() - 1_000, // 缓冲期已过
-      }),
-    );
-    evictTerminalTasks();
-    expect(getAllTasks().map((t) => t.id)).toEqual([]);
-  });
-
-  test("缓冲期内即使已通知也不驱逐，过期后再调用才清除", () => {
-    registerTask(
-      makeShellTask("two-phase", {
-        status: "completed",
-        notified: true,
-        endTime: Date.now(),
-        evictAfter: Date.now() + 50, // 50ms 后过期
-      }),
-    );
-    // 第一次：缓冲期内，保留
-    evictTerminalTasks();
-    expect(getAllTasks().map((t) => t.id)).toEqual(["two-phase"]);
-
-    // 手动把 evictAfter 推到过去，模拟缓冲期已过（避免测试真实 sleep）
-    updateTask<LocalShellTaskState>("two-phase", (t) => ({ ...t, evictAfter: Date.now() - 1 }));
+  test("送达后紧跟一次 >30s 的模型调用，期间 TUI 定时器 tick：文件必须仍在", () => {
+    registerTask(justDone("delivered"));
+    markNotificationsDelivered(["delivered"]);
+    // 送达回合内（模型正在跑那次长调用），1s 定时器 tick 多少次都不能删
+    for (let i = 0; i < 120; i++) evictTerminalTasks();
+    expect(getAllTasks().map((t) => t.id)).toEqual(["delivered"]);
+    // 送达回合内 hasPendingEviction 为 false：1s 定时器不该为它空转
+    expect(hasPendingEviction()).toBe(false);
+    // 主循环跑完这一轮 → 才允许删
+    markMainTurnCompleted();
+    expect(hasPendingEviction()).toBe(true);
     evictTerminalTasks();
     expect(getAllTasks().map((t) => t.id)).toEqual([]);
   });
 
-  test("evictAfter 未设置（旧任务兼容）→ 视为 0，立即可驱逐", () => {
-    registerTask(makeShellTask("legacy", { status: "completed", notified: true, endTime: 1 }));
-    // 显式确认未设 evictAfter
-    expect(getAllTasks()[0].evictAfter).toBeUndefined();
+  test("送达回合已过但面板驻留期未过：仍保留（面板回看窗口）", () => {
+    registerTask(justDone("fresh", { endTime: Date.now() }));
+    markNotificationsDelivered(["fresh"]);
+    markMainTurnCompleted();
     evictTerminalTasks();
-    expect(getAllTasks().map((t) => t.id)).toEqual([]);
+    expect(getAllTasks().map((t) => t.id)).toEqual(["fresh"]);
   });
-});
 
-// ─── force=true：忽略缓冲期的强制驱逐能力 ───
-// 背景：evictTerminalTasks() 只在 queryLoop 每轮开头 + finally 收尾调用，都受主循环
-// 生命周期约束。真正根治"最后完成任务的尾部窗口残留"的是 TUI 侧独立于主循环的 1s 定时器
-//（App.tsx，对标 cc CoordinatorAgentStatus），它尊重缓冲期、到点即清（≤1s 延迟）。
-// 因此 loop.ts 的 finally 收尾用 force=false（尊重缓冲期，只清已过期的），不越过缓冲期。
-// 这里保留并验证 force=true 这个 API 能力本身：忽略缓冲期、只保留 isTerminalStatus +
-// notified 两层门控——供确实需要"立即清空、不等缓冲期"的场景使用（当前无调用方，但 API
-// 语义需锁定，防未来误用/回归）。
-describe("evictTerminalTasks(force=true)（忽略缓冲期的强制驱逐能力）", () => {
-  test("force=true：缓冲期未过的已通知终止态任务仍被驱逐（修复尾部窗口残留）", () => {
-    registerTask(
-      makeShellTask("tail-window", {
-        status: "completed",
-        notified: true,
-        endTime: Date.now(),
-        evictAfter: Date.now() + 60_000, // 缓冲期远未到——正是本次 bug 的时序
-      }),
-    );
-    // 常规调用（下一轮驱动）：缓冲期内，保留——复现残留
+  test("task_output 续期（evictAfter 在未来）是额外下限：送达回合已过也不删", () => {
+    registerTask(justDone("renewed", { evictAfter: Date.now() + 60_000 }));
+    markNotificationsDelivered(["renewed"]);
+    markMainTurnCompleted();
     evictTerminalTasks();
-    expect(getAllTasks().map((t) => t.id)).toEqual(["tail-window"]);
-    // 收尾驱逐（force）：忽略缓冲期，清除
-    evictTerminalTasks(true);
-    expect(getAllTasks().map((t) => t.id)).toEqual([]);
+    expect(getAllTasks().map((t) => t.id)).toEqual(["renewed"]);
   });
 
-  test("force=true：运行中任务绝不被驱逐（收尾时仍在跑的后台任务要保留）", () => {
-    registerTask(makeShellTask("still-running")); // status=running
-    evictTerminalTasks(true);
-    expect(getAllTasks().map((t) => t.id)).toEqual(["still-running"]);
+  test("重复送达保留第一次的回合，不会被迟到的重复通知无限推后", () => {
+    registerTask(justDone("dup"));
+    markNotificationsDelivered(["dup"]);
+    const first = getAllTasks()[0]!.notificationDeliveredTurn;
+    markMainTurnCompleted();
+    markNotificationsDelivered(["dup"]);
+    expect(getAllTasks()[0]!.notificationDeliveredTurn).toBe(first);
+    evictTerminalTasks();
+    expect(getAllTasks()).toEqual([]);
   });
 
-  test("force=true：终止态但未通知的任务保留（通知未入队前不清，防丢完成信息）", () => {
-    registerTask(
-      makeShellTask("done-unnotified", { status: "completed", notified: false, endTime: 1 }),
-    );
-    evictTerminalTasks(true);
-    expect(getAllTasks().map((t) => t.id)).toEqual(["done-unnotified"]);
+  test("安全阀：未送达的终态任务，完成后超过安全阀时长照样驱逐", () => {
+    registerTask(justDone("stuck", { endTime: Date.now() - UNDELIVERED_SAFETY_VALVE_MS - 1 }));
+    evictTerminalTasks();
+    expect(getAllTasks()).toEqual([]);
   });
 
-  test("force=true：混合场景仅清已通知终止态，保留运行中与未通知", () => {
-    registerTask(makeShellTask("running"));
-    registerTask(
-      makeShellTask("done-notified", {
-        status: "completed",
-        notified: true,
-        endTime: Date.now(),
-        evictAfter: Date.now() + 60_000,
-      }),
-    );
-    registerTask(
-      makeShellTask("done-unnotified", { status: "completed", notified: false, endTime: 1 }),
-    );
-    evictTerminalTasks(true);
-    expect(
-      getAllTasks()
-        .map((t) => t.id)
-        .sort(),
-    ).toEqual(["done-unnotified", "running"]);
+  test("未 notified 的终态任务：送达标记与回合推进都不让它被删", () => {
+    registerTask(justDone("unnotified", { notified: false, endTime: 1 }));
+    markNotificationsDelivered(["unnotified"]);
+    markMainTurnCompleted();
+    evictTerminalTasks();
+    expect(getAllTasks().map((t) => t.id)).toEqual(["unnotified"]);
+  });
+
+  test("回合纪元单调递增", () => {
+    const a = getCompletedMainTurns();
+    markMainTurnCompleted();
+    expect(getCompletedMainTurns()).toBe(a + 1);
+  });
+
+  // 变异自证：把判据改回「入队即可删、按毫秒计」（旧实现的形态）时，上面「送达后紧跟长调用」
+  // 那条必须红。这里内联旧判据对同一状态求值，证明两个判据在这个时序上确实给出相反结论——
+  // 否则上面的用例就可能是在一个两种实现都会通过的状态上空转。
+  test("变异自证：旧的毫秒判据在同一状态下会删掉文件", () => {
+    registerTask(justDone("mut"));
+    markNotificationsDelivered(["mut"]);
+    const t = getAllTasks()[0]!;
+    const oldRule = t.notified && (t.evictAfter ?? 0) <= Date.now();
+    expect(oldRule).toBe(true); // 旧判据：此刻就删
+    evictTerminalTasks();
+    expect(getAllTasks().map((x) => x.id)).toEqual(["mut"]); // 新判据：送达回合内保留
   });
 });

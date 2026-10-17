@@ -10,7 +10,8 @@ import {
   type AgentTaskResult,
   isTerminalStatus,
 } from "./types.ts";
-import { registerTask, updateTask, getTask, graceDeadlineFor } from "./registry.ts";
+import { registerTask, updateTask, getTask } from "./registry.ts";
+import { getCompletedMainTurns } from "./lifecycle.ts";
 import { initTaskOutput, appendTaskOutput, flushTaskOutput } from "./disk-output.ts";
 import { enqueueTaskNotification } from "./notification.ts";
 import { registerShutdownHook } from "@sid-code/shared/utils/graceful-shutdown.ts";
@@ -126,8 +127,10 @@ export async function completeAgentTask(
     status: "completed",
     result,
     endTime: Date.now(),
-    evictAfter: graceDeadlineFor("completed"), // 对齐 CC PANEL_GRACE_MS: 30s 后才允许驱逐
     notified: true,
+    // 前台子代理（notify=false）的结果作为本轮 tool_result 回到模型，送达即此刻（S3）。
+    // 不置位则它只能等 10min 安全阀，前台任务的 registry 条目与 .output 白白驻留。
+    ...(notify ? {} : { notificationDeliveredTurn: getCompletedMainTurns() }),
   }));
 
   if (!notify) return;
@@ -172,8 +175,8 @@ export async function failAgentTask(
     status: "failed",
     error,
     endTime: Date.now(),
-    evictAfter: graceDeadlineFor("failed"), // 对齐 CC PANEL_GRACE_MS: 30s 后才允许驱逐
     notified: true,
+    ...(notify ? {} : { notificationDeliveredTurn: getCompletedMainTurns() }), // 同 completeAgentTask
   }));
 
   if (!notify) return;
@@ -244,9 +247,6 @@ export function killAgentTask(taskId: string): void {
       ...t,
       status: "killed",
       endTime: Date.now(),
-      // killed 走短档（3s，对齐 CC STOPPED_DISPLAY_MS）：kill 是用户刚下的指令，
-      // 他已知结果，条目留 3s 确认"确实停了"即可，不必占 30s。见 graceDeadlineFor。
-      evictAfter: graceDeadlineFor("killed"),
       notified: true,
     };
   });

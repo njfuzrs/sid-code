@@ -24,6 +24,17 @@ import { statSync } from "fs";
 import { extname } from "path";
 import { getLogger } from "../debug/logger.ts";
 import { normalizeToolPath, formatPathNotFoundError } from "./path-utils.ts";
+import { taskIdFromOutputPath, formatTaskOutputTombstone } from "../task/lifecycle.ts";
+
+/**
+ * 文件不存在时的提示。后台任务的 `.output` 走墓碑（S3）：事故里模型读一个已被驱逐的
+ * `.output`，拿到通用「文件不存在」，以为任务没产出。墓碑说明它是被生命周期清理的，
+ * 并带上清理前留存的尾部输出。其余路径照旧。
+ */
+function notFoundMessage(filePath: string): string {
+  const taskId = taskIdFromOutputPath(filePath);
+  return taskId ? formatTaskOutputTombstone(taskId, filePath) : formatPathNotFoundError(filePath);
+}
 import { pickPaths } from "./jit-affected-paths.ts";
 import {
   detectBinaryContent,
@@ -576,7 +587,7 @@ export class ReadTool implements Tool {
         fileSize = stat.size;
       } catch (err: any) {
         if (err.code === "ENOENT") {
-          return { output: formatPathNotFoundError(filePath), isError: true };
+          return { output: notFoundMessage(filePath), isError: true };
         }
         if (err.code === "EACCES") {
           return { output: `错误: 无权限读取文件: ${filePath}`, isError: true };
@@ -601,7 +612,7 @@ export class ReadTool implements Tool {
       const file = Bun.file(filePath);
       const exists = await file.exists();
       if (!exists) {
-        return { output: formatPathNotFoundError(filePath), isError: true };
+        return { output: notFoundMessage(filePath), isError: true };
       }
 
       // 读取文件内容
@@ -725,7 +736,7 @@ export class ReadTool implements Tool {
     } catch (err: any) {
       // 区分常见错误码
       if (err.code === "ENOENT") {
-        return { output: formatPathNotFoundError(filePath), isError: true };
+        return { output: notFoundMessage(filePath), isError: true };
       }
       if (err.code === "EACCES" || err.code === "EPERM") {
         return { output: `错误: 无权限读取文件: ${filePath}`, isError: true };
@@ -767,8 +778,7 @@ export class ReadTool implements Tool {
         mediaBlocks: [{ kind: "image", mediaType, data: base64 }],
       };
     } catch (err: any) {
-      if (err.code === "ENOENT")
-        return { output: formatPathNotFoundError(filePath), isError: true };
+      if (err.code === "ENOENT") return { output: notFoundMessage(filePath), isError: true };
       return { output: `读取图片失败: ${err.message}`, isError: true };
     }
   }
@@ -800,8 +810,7 @@ export class ReadTool implements Tool {
       log.info("TOOL", `✓ 读取 notebook ${filePath}`);
       return { output: rendered };
     } catch (err: any) {
-      if (err.code === "ENOENT")
-        return { output: formatPathNotFoundError(filePath), isError: true };
+      if (err.code === "ENOENT") return { output: notFoundMessage(filePath), isError: true };
       return { output: `读取 notebook 失败: ${err.message}`, isError: true };
     }
   }
@@ -876,8 +885,7 @@ export class ReadTool implements Tool {
         mediaBlocks: [{ kind: "document", mediaType: "application/pdf", data: base64 }],
       };
     } catch (err: any) {
-      if (err.code === "ENOENT")
-        return { output: formatPathNotFoundError(filePath), isError: true };
+      if (err.code === "ENOENT") return { output: notFoundMessage(filePath), isError: true };
       return { output: `读取 PDF 失败: ${err.message}`, isError: true };
     }
   }
