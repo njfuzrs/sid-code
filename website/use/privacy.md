@@ -24,7 +24,7 @@ description: sid-code 在本机存了什么、什么会离开这台机器、每�
 | `sessions/` | 会话历史，供 `--resume` 恢复 |
 | `usage-ledger.jsonl`、`session-index.jsonl`、`cache-breaks.jsonl` | 成本账本、会话索引、缓存断裂记录 |
 | `debug.log`、`logs/`、`audit.log` | 运行日志与权限审计 |
-| `state/` | 迁移状态、项目信任记录、轨迹上传水位 |
+| `state/` | 迁移状态、项目信任记录、轨迹上传水位、凭据同步节流、MCP 审批与守护进程状态等 |
 | `device-id` | 本机持久随机 ID，只在你配置了上传或企业后端时随请求带出 |
 | `device-credential.json` | 企业登录的设备凭据（明文，权限 0600）与登录用户；飞书 token 不在本机，见[企业登录](/team/login#凭据存在哪) |
 | `settings.json`、`managed-settings.json` | 你的配置与企业托管配置 |
@@ -81,7 +81,7 @@ IDE 集成与本地调试工具只连本机回环地址。
 
 ## 三个隐私级别
 
-用环境变量或 `settings.json` 的 `analytics.privacy_level` 设置。环境变量优先，多个信号时取最严的：
+用环境变量或 `settings.json` 的 `analytics.privacy_level` 设置。环境变量优先于配置文件（哪怕环境变量更宽松）；两个环境变量同时设置时取更严的那个：
 
 ```json
 {
@@ -103,7 +103,10 @@ IDE 集成与本地调试工具只连本机回环地址。
 - 插件市场：交互启动时会对已装插件所在的市场拉一次目录（带 ETag），目前不随隐私级别关闭。
   不想要这条，关掉官方市场（`officialMarketplace: false`）或不装市场插件。
 
-切到 `essential-traffic` 期间产生的会话不会登记到上传目标，切回 `default` 后也不会被补传。
+隐私级别只作用于「当下」：切到 `essential-traffic` 期间不会上传当前会话；但切回
+`default` 后，期间产生的会话仍会被启动补传上传（补传只看「配置上传之后产生」与
+`.uploaded` 标记，不回溯会话产生时的隐私级别）。要彻底不让某段会话外发，删掉对应
+目录（`~/.sid-code/trajectories/sessions/<session-id>/`）后再切回。
 
 ## 脱敏
 
