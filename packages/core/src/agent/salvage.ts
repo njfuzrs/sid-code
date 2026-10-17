@@ -45,6 +45,8 @@
  * `detached || hardKilled`。归因统一走 {@link classifySubAgentFailure}，四处调用点共用。
  */
 
+import { HARD_KILL_MULTIPLIER } from "./timeout-budget.ts";
+
 /** 一次工具调用的极简记录（只留残卷需要的字段）。 */
 interface ToolCallRecord {
   name: string;
@@ -209,6 +211,12 @@ export interface FailureClass {
   reason: SalvageReason;
   /** 只在 reason="error" 时有意义 */
   cause?: FailureCause;
+  /**
+   * reason="timeout" 时区分「墙钟到点即停」与「detach 后又跑满硬 kill 期限」。
+   * 事故 20261016-222758：真实死法是第 900s 硬 kill，文案却写「达到墙钟预算 (300秒) 并已停止」——
+   * 少说了 10 分钟的续跑与 token 消耗，排查方向被带偏到墙钟。
+   */
+  hardKilled?: boolean;
 }
 
 /**
@@ -220,7 +228,7 @@ export interface FailureClass {
  */
 export function classifySubAgentFailure(i: FailureClassInput): FailureClass {
   if (i.parentAborted) return { reason: "aborted" };
-  if (i.hardKilled) return { reason: "timeout" };
+  if (i.hardKilled) return { reason: "timeout", hardKilled: true };
   if (i.giveUp) {
     return {
       reason: "error",
@@ -300,6 +308,8 @@ export interface BuildSalvageOptions {
   finalText?: string;
   /** 墙钟预算（毫秒），用于文案里说明"跑了多久"。 */
   timeoutMs?: number;
+  /** 见 {@link FailureClass.hardKilled}：文案必须写实际开枪的那一层。 */
+  hardKilled?: boolean;
   /** 底层错误/中断消息（`reason: "error"` 时的真实原因，禁止丢弃）。 */
   errorMessage?: string;
   /** detach 后可用于取回最终结果的任务 id。 */
@@ -409,6 +419,13 @@ function describeReason(opts: BuildSalvageOptions): string {
     case "detached":
       return `达到前台墙钟预算 (${secs})，已转后台继续执行（未被终止）。以下是截至此刻的成果。`;
     case "timeout":
+      if (opts.hardKilled) {
+        const killSecs =
+          opts.timeoutMs !== undefined
+            ? `${Math.round((opts.timeoutMs * HARD_KILL_MULTIPLIER) / 1000)}秒`
+            : `${HARD_KILL_MULTIPLIER}× 预算`;
+        return `达到墙钟预算 (${secs}) 后继续执行，跑满硬 kill 期限 (${killSecs}) 仍未结束，已被终止。以下是截至终止时的成果。`;
+      }
       return `达到墙钟预算 (${secs}) 并已停止。以下是截至停止时的成果。`;
     case "aborted":
       return "被主动中止。以下是中止前已完成的成果。";

@@ -2751,6 +2751,7 @@ export class SubAgent {
     return {
       reason: fc.reason,
       cause: fc.cause,
+      hardKilled: fc.hardKilled,
       retryAttempts,
       sleptMs: Math.max(0, getSleepLedger().getTotalMs() - sleepLedgerAtStart),
       // 只读类（explore / plan …）零改动是必然的，不构成「停在读懂上下文」的信号。

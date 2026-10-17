@@ -135,10 +135,7 @@ export class RequestAbortedError extends Error {
  * abort 本轮子 controller 以终止孤儿 fetch，仅作用于 turn 级子 signal，不回写会话级)、
  * swarm team 整体硬超时("team-hard-timeout"：swarm/team.ts)、
  * 主循环流式心跳/整体超时("stream-heartbeat-timeout" / "stream-overall-timeout"：
- * query/stream-processor.ts，对齐子代理版的 agent-stream-* 命名，见下）、
- * 子代理流整体/心跳超时("agent-stream-overall-timeout" / "agent-stream-heartbeat-timeout"：
- * agent/stream-processor.ts，combinedSignal 会传给子代理 LLM SDK，超时 abort 后底层 fetch
- * 以裸字符串 reject，若成孤儿 rejection 同样会崩溃)、
+ * query/stream-processor.ts）、
  * provider 健康告警 webhook 超时/外部中断("alert-webhook-timeout" / "external-abort"：
  * telemetry/provider-health.ts，虽当前 fetch 在 try/catch 内，登记以纵深防御)。
  */
@@ -153,8 +150,9 @@ export const ABORT_REASONS = [
   "team-hard-timeout",
   "stream-heartbeat-timeout",
   "stream-overall-timeout",
-  "agent-stream-overall-timeout",
-  "agent-stream-heartbeat-timeout",
+  // 2026-10-17 删除 "agent-stream-overall-timeout" / "agent-stream-heartbeat-timeout"：
+  // agent/stream-processor.ts 不再自带超时层（只判死不断流，把漏斗重试判死，事故 20261016-224545），
+  // 两个 reason 已无 abort 调用点。别为了「历史上有过」加回来 —— 白名单只登记真实调用点。
   "alert-webhook-timeout",
   "external-abort",
   // 缺口1 h2A：mid-turn `now` 级抢占（用户显式中断/改向触发的优雅收束）。

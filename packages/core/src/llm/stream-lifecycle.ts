@@ -204,7 +204,13 @@ export const LIFECYCLE_PRESETS = {
     contentProgressTimeoutMs: BASE * 1.0,
     overallTimeoutMs: BASE * 2.0,
   },
-  /** 子代理：应比主循环短。与 BASE 解耦的显式绝对值（理由见上方注释）。 */
+  /**
+   * 子代理：应比主循环短。与 BASE 解耦的显式绝对值（理由见上方注释）。
+   *
+   * ⚠️ 2026-10-17 起生产只读 `overallTimeoutMs`（经 resilient-stream 的
+   * DEFAULT_SIDE_STREAM_TIMEOUT_MS 作为漏斗单次尝试上限）。`agent/stream-processor`
+   * 不再用这一档的 idle / overall 自建 lifecycle（只判死不断流，事故 20261016-224545）。
+   */
   subAgent: {
     idleTimeoutMs: 60_000,
     contentProgressTimeoutMs: 180_000,

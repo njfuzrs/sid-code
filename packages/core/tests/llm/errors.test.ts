@@ -382,8 +382,6 @@ describe("isAbortError", () => {
     // 转 string[] 断言:ABORT_REASONS 是 as const 字面量联合,直接 toEqual 会因
     // NoInfer 把期望数组收窄到该联合而报重载不匹配;比较值本身即可,不需比字面量类型。
     expect([...ABORT_REASONS].map(String).sort()).toEqual([
-      "agent-stream-heartbeat-timeout",
-      "agent-stream-overall-timeout",
       "agent-stream-timeout",
       "alert-webhook-timeout",
       "external-abort",

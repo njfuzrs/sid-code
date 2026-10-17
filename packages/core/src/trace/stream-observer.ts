@@ -173,6 +173,10 @@ export type TimeoutLayer =
   | "content_progress_timeout"
   | "fallback_stream_timeout"
   | "turn_hard_timeout"
+  /**
+   * ⚠️ 历史值，2026-10-17 起不再产生（agent/stream-processor 的 idle/overall 层已删，
+   * 事故 20261016-224545）。保留成员是为了让 #284 前后的轨迹基线仍能被统计脚本读出来。
+   */
   | "agent_heartbeat_timeout"
   | "agent_overall_timeout"
   /**
