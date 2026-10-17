@@ -35,19 +35,24 @@ import {
   type QuerySource,
 } from "./fallback.ts";
 import { resolveLoopTimeouts } from "../config/network-profile.ts";
-import { LIFECYCLE_PRESETS } from "./stream-lifecycle.ts";
 import { TokenEstimator } from "./token-estimator.ts";
 import { streamInRequestContext, type RequestContext } from "./request-context.ts";
 import { clearSnapshotsForIndex } from "../trace/stream-observer.ts";
 
 /**
- * 非主循环路径的单次尝试流超时缺省值（P2-6）。
+ * side-call（recall / compact / hook 等）路径的单次尝试流超时缺省值（P2-6）。
+ *
+ * 180s 沿用此前 `LIFECYCLE_PRESETS.subAgent.overallTimeoutMs` 的取值（行为不变）。
+ * 2026-10-17 起子代理显式传主循环的 `fallbackStreamTimeoutMs`，不再吃本缺省值，
+ * 那个以「子代理」命名的档位随之删除，这里改成自有常量，免得名字与实际读者错位。
+ * 取 180s 而非 sideCall 的 60s：漏斗定时器收到数据会续期，但首字节前不续期，
+ * 第三方网关慢首字节实测可达 102.8s（事故 20260811），60s 会误杀。
  *
  * 抽成导出常量 + 导出解析函数，是为了让"缺省档位取的是 overall 而不是 idle"这件事
  * 能被**直接断言**，而不是靠扫源码字符串。回归的形态是有人把它改回 idle 档，
  * 那种改动在行为上只表现为"慢首字节的子代理偶尔被杀"，没有任何断言会失败。
  */
-export const DEFAULT_SIDE_STREAM_TIMEOUT_MS = LIFECYCLE_PRESETS.subAgent.overallTimeoutMs;
+export const DEFAULT_SIDE_STREAM_TIMEOUT_MS = 180_000;
 
 /**
  * 解析单次尝试的流超时。显式传入优先，否则走 {@link DEFAULT_SIDE_STREAM_TIMEOUT_MS}。
@@ -75,7 +80,7 @@ export interface ResilientStreamOptions {
   retryBackoffBaseMs?: number;
   retryBackoffMaxMs?: number;
   /**
-   * 单次尝试的流超时（毫秒）。缺省用 subAgent overall 档（180s）。
+   * 单次尝试的流超时（毫秒）。缺省 {@link DEFAULT_SIDE_STREAM_TIMEOUT_MS}（180s，side-call 档）。
    *
    * 语义分层：
    *   ① 本超时 = **单次尝试的整体上限**，触发后漏斗按可重试超时**重试**——子代理身上

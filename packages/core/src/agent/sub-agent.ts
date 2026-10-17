@@ -666,14 +666,14 @@ export class SubAgent {
       permissionChecker: this.permissionChecker ?? undefined,
       // H9：透传共享的 availability（与主 fallback 引擎同一实例），terminal 类错误跨路径拉黑。
       availability: this.registry?.availability,
-      // B1（2026-10-14）：**不再传 deadlineAt**。墙钟 timeout 自 P0-1(a) 起只是 detach
-      // （软返回点），不是硬截止；把它当漏斗的 deadlineAt 等于让「次数听时间的」——
+      // B1（2026-10-14）：**不再传 deadlineAt**。把时间当漏斗的 deadlineAt 等于让「次数听时间的」——
       // 事故 20261014-110202 里子代理第一次可重试错误就 giveUp("deadline")（attempts=1），
-      // 而同一漏斗主循环能重试 10 次。现在三者各管一件事，与主循环 2026-10-12 解耦对齐：
-      //   次数 → maxRetries（netTimeouts.maxTimeoutRetries）；
-      //   卡死 → 漏斗单次尝试上限（LIFECYCLE_PRESETS.subAgent.overallTimeoutMs=180s，扣休眠）；
-      //   总时长失控 → 硬 kill（timeout × HARD_KILL_MULTIPLIER，扣休眠）。
-      // ⚠️ 别改成 `startTime + timeout × 3`：仍是次数听时间的，且与硬 kill 双处计时必漂移。
+      // 而同一漏斗主循环能重试 10 次。现在各管一件事，与主循环同构（PR-B，2026-10-17）：
+      //   次数 → maxRetries（netTimeouts.maxTimeoutRetries，10）；
+      //   卡死 → 漏斗内容无进展上限，主循环同一个 fallbackStreamTimeoutMs（600s，续期，扣休眠）；
+      //   abort 链路失效 → 单轮兜底（主循环同一个 maxTurnDurationMs，连续无流事件才开枪，见 turn-hard-timeout.ts）；
+      //   总时长 → **不设**，只由 ESC / task_stop / 父代理取消控制（对齐 CC，墙钟与硬 kill 已删）。
+      // ⚠️ 别加回任何「过了多久」的总量判据：事故 20261016-222758 / 224545 的 9/9 失败全死在这类层上。
       // P2-1：子代理 JIT 上下文发现（每次调用独立实例，见 createJitDiscoverer 注释）。
       // B2：`jitContext: false` 必须对子代理也生效 —— 这个第二参此前从不传值，
       // 于是开关只关得住主代理（`createJitDiscoverer` 的 `jitDisabled` 逻辑一直是对的，

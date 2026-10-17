@@ -35,7 +35,7 @@ import type { QuerySource } from "../llm/fallback.ts";
 // 少了它生产路径（不传 onTelemetry 的子代理）的重试遥测会整条消失。
 import { dispatchRetryTelemetry, type RetryTelemetryEvent } from "../llm/retry-telemetry.ts";
 import { resolveLoopTimeouts } from "../config/network-profile.ts";
-import { raceTurnHardTimeout } from "./turn-hard-timeout.ts";
+import { raceTurnHardTimeout, tapStreamActivity } from "./turn-hard-timeout.ts";
 import { executeTools } from "./tool-executor.ts";
 import {
   MAX_EMPTY_PARAM_RETRIES,
@@ -470,11 +470,13 @@ async function runAgentLoopInner(
   /**
    * PR-B S2b：单轮硬超时兜底 + 触发即重试（与主循环 turn_hard 同构，见 turn-hard-timeout.ts）。
    *
-   * 每次触发计入同一个重试计数（retryStats），上限与漏斗同为 maxTimeoutRetries——
-   * 「次数」只有一个旋钮。外层 signal 已 abort 时不重试，交回调用方按中止处理。
+   * 计时口径是「连续无流事件」（run 收到的 touch 由 tapStreamActivity 每事件调用），
+   * 不是总耗时：漏斗正常重试时一直有事件，兜底不会打断它，两层重试不相乘。
+   * 每次触发计入同一个重试计数（retryStats），上限与漏斗同为 maxTimeoutRetries。
+   * 外层 signal 已 abort 时不重试，交回调用方按中止处理。
    */
   const callWithTurnHardTimeout = async <T>(
-    run: (callSignal: AbortSignal) => Promise<T>,
+    run: (callSignal: AbortSignal, touch: () => void) => Promise<T>,
     streamIndex: number,
   ): Promise<{ exhausted: false; value: T } | { exhausted: true; errorMessage: string }> => {
     const timeoutMs = netTimeouts.maxTurnDurationMs;
@@ -494,14 +496,14 @@ async function runAgentLoopInner(
       if (!outcome.timedOut) return { exhausted: false, value: outcome.value };
       log.warn(
         "AGENT_LOOP",
-        `单轮硬超时 ${Math.round(timeoutMs / 1000)}s（流未 settle），第 ${attempt}/${maxAttempts} 次`,
+        `单轮硬超时：连续 ${Math.round(timeoutMs / 1000)}s 无任何流事件（abort 链路疑似失效），第 ${attempt}/${maxAttempts} 次`,
       );
       retryStats.attempts++;
       retryStats.lastReason = "turn_hard_timeout";
       if (signal.aborted || attempt >= maxAttempts) {
         return {
           exhausted: true,
-          errorMessage: `单轮硬超时（${Math.round(timeoutMs / 1000)}s 未完成），已重试 ${attempt - 1} 次`,
+          errorMessage: `单轮硬超时（连续 ${Math.round(timeoutMs / 1000)}s 无流事件），已重试 ${attempt - 1} 次`,
         };
       }
     }
@@ -776,7 +778,9 @@ async function runAgentLoopInner(
       // ⛔ 不再给 processStream 传任何超时：卡死只由漏斗断流 + 重试（见 stream-processor.ts
       // AgentStreamOptions 注释，事故 20261016-224545）。外面这层是 S2b 单轮硬超时兜底。
       const r = await callWithTurnHardTimeout(
-        (callSignal) => processStream(openStream(callSignal), { signal: callSignal }),
+        // tap：每个流事件重排兜底窗口（「无事件」口径，见 turn-hard-timeout.ts）。
+        (callSignal, touch) =>
+          processStream(tapStreamActivity(openStream(callSignal), touch), { signal: callSignal }),
         agentStreamIndex,
       );
       if (r.exhausted) {
@@ -1458,7 +1462,10 @@ async function runAgentLoopInner(
         );
 
       const summaryRace = await callWithTurnHardTimeout(
-        (callSignal) => processStream(openSummaryStream(callSignal), { signal: callSignal }),
+        (callSignal, touch) =>
+          processStream(tapStreamActivity(openSummaryStream(callSignal), touch), {
+            signal: callSignal,
+          }),
         summaryStreamIndex,
       );
       // 总结轮兜底耗尽：降级到 extractFinalText 的启发式（与下方 catch 同口径）。

@@ -5,7 +5,7 @@
  *   1. Layer 3 overall timeout（请求级整体超时，不因事件重置）——新增层
  *   2. 三层超时优先级（idle / content progress / overall 谁先触发谁生效）
  *   3. getSnapshot 实时反映流状态（供外层 watchdog 只读查询）
- *   4. LIFECYCLE_PRESETS 阈值分级（mainLoop > subAgent > sideCall）
+ *   4. LIFECYCLE_PRESETS 阈值分级（mainLoop > sideCall）
  *   5. signal 穿透（用户 ESC / 上层超时 → 提前退出）
  *   6. 与旧 guardedStream 行为等价（delegate 后 yield 序列 + 遥测一致）
  *
@@ -210,18 +210,14 @@ describe("T7 — getSnapshot 实时状态", () => {
 });
 
 describe("T7 — LIFECYCLE_PRESETS 阈值分级", () => {
-  test("mainLoop > subAgent > sideCall（idle / content / overall 单调递减）", () => {
-    const { mainLoop, subAgent, sideCall } = LIFECYCLE_PRESETS;
-    expect(mainLoop.idleTimeoutMs).toBeGreaterThanOrEqual(subAgent.idleTimeoutMs);
-    expect(subAgent.idleTimeoutMs).toBeGreaterThanOrEqual(sideCall.idleTimeoutMs);
+  // subAgent 档 2026-10-17 删除（子代理与主循环同源），剩两档。
+  test("mainLoop > sideCall（idle / content / overall 单调递减）", () => {
+    const { mainLoop, sideCall } = LIFECYCLE_PRESETS;
+    expect(mainLoop.idleTimeoutMs).toBeGreaterThanOrEqual(sideCall.idleTimeoutMs);
     expect(mainLoop.contentProgressTimeoutMs).toBeGreaterThanOrEqual(
-      subAgent.contentProgressTimeoutMs,
-    );
-    expect(subAgent.contentProgressTimeoutMs).toBeGreaterThanOrEqual(
       sideCall.contentProgressTimeoutMs,
     );
-    expect(mainLoop.overallTimeoutMs).toBeGreaterThanOrEqual(subAgent.overallTimeoutMs);
-    expect(subAgent.overallTimeoutMs).toBeGreaterThanOrEqual(sideCall.overallTimeoutMs);
+    expect(mainLoop.overallTimeoutMs).toBeGreaterThanOrEqual(sideCall.overallTimeoutMs);
   });
 });
 
