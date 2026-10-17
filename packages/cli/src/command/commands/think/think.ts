@@ -1,5 +1,6 @@
 import type { LocalCommandModule, LocalCommandResult, CommandContext } from "../../types.ts";
 import { getThinkingEnvOverride, type ThinkingSetting } from "@sid-code/core/llm/effort.ts";
+import { thinkingLabelForSetting } from "../../../ui/utils/thinking-label.ts";
 
 /**
  * /think 命令实现（按需加载）
@@ -8,7 +9,7 @@ import { getThinkingEnvOverride, type ThinkingSetting } from "@sid-code/core/llm
  *   /think           - 显示当前思考开关状态 + 模型能力
  *   /think on        - 开启思考
  *   /think off       - 关闭思考
- *   /think auto      - 恢复 auto（跟随模型/provider 默认）
+ *   /think auto      - 恢复 auto（跟随模型默认）
  *   /think on -p     - 切换并持久化到 settings.json（别名 --persist / save）
  *   /think help      - 显示用法
  *
@@ -46,7 +47,10 @@ const mod: LocalCommandModule = {
     }
 
     ctx.setThinking?.(setting, persist);
-    const label = setting === undefined ? "auto（跟随默认）" : setting;
+    // 回执带上 Footer 会显示的词（与 Footer、/think 面板同源），三处说法一致。
+    const shown = state ? thinkingLabelForSetting(state.capability, setting).text : null;
+    const base = setting === undefined ? "auto（跟随模型默认）" : setting;
+    const label = shown && shown !== base ? `${base}，状态栏显示 ${shown}` : base;
     const envNote = buildEnvOverrideNote();
     // 恒思考模型：意图照存（切回可关闭的模型时自动生效），但如实说这个模型上不生效。
     // 此前只打一条 warn 日志，状态栏显示「关」、模型照样在想（20261016 排查 D5）。
@@ -86,13 +90,15 @@ function buildHelp(): string {
     "  /think            显示当前思考开关状态",
     "  /think on         开启思考",
     "  /think off        关闭思考",
-    "  /think auto       恢复 auto（跟随模型/provider 默认）",
+    "  /think auto       恢复 auto（跟随模型默认）",
     "  /think on -p      切换并持久化到 settings.json（别名 --persist / save）",
     "  /think help       显示本用法",
     "",
     "说明：",
     "  · 模型不支持显式思考开关时（如 OpenAI o-series 内置推理），本命令仅提示不下发，推理深度用 /effort 调。",
-    "  · 恒思考模型（状态栏显示 ✻·不可关）上 off 不生效，切到可关闭的模型后自动生效。",
+    "  · 状态栏显示：on / off（手动）、auto·on / auto·off（跟随模型默认）、",
+    "    always（恒思考模型，关不掉）、by-model（无独立开关，由模型与 /effort 决定）。",
+    "  · 恒思考模型（状态栏 always）上 off 不生效，切到可关闭的模型后自动生效。",
     "  · 环境变量 SID_CODE_THINKING 会覆盖运行时切换。",
   ].join("\n");
 }

@@ -198,7 +198,7 @@ export const Footer = React.memo(function Footer(props: FooterProps) {
     });
   }
   if (data.thinking) {
-    // 旋钮区只渲染字形（✻/✧），字形自解释开关态。
+    // 旋钮区渲染状态词（on / auto·on / always / by-model …），词表见 utils/thinking-label.ts。
     fixedSegs.push({
       key: "thinking",
       str: data.thinking.glyph,
