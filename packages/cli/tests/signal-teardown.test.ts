@@ -108,7 +108,11 @@ describe("真进程 · 两发 SIGHUP", () => {
       process.stdout.write("ready\\n");
       setInterval(() => {}, 1000);
     `;
-    const p = Bun.spawn(["bun", "-e", script], { stdout: "pipe", stderr: "pipe" });
+    const p = Bun.spawn(["bun", "-e", script], {
+      env: { ...process.env },
+      stdout: "pipe",
+      stderr: "pipe",
+    });
     const reader = p.stdout.getReader();
     let out = "";
     const dec = new TextDecoder();
@@ -142,7 +146,11 @@ describe("watchTerminalOutputErrors", () => {
       const { watchTerminalOutputErrors } = await import(${JSON.stringify(SIGNAL_TEARDOWN_TS)});
       ${body}
     `;
-    const p = Bun.spawnSync(["bun", "-e", script], { stdout: "pipe", stderr: "pipe" });
+    const p = Bun.spawnSync(["bun", "-e", script], {
+      env: { ...process.env },
+      stdout: "pipe",
+      stderr: "pipe",
+    });
     return { code: p.exitCode, err: p.stderr.toString() };
   };
 
