@@ -210,6 +210,12 @@ export const sidPaths = {
    * 价格随渠道变 → 按「模型名 + 端点」复合键。见 model-capabilities.ts 头部注释。
    */
   modelCapabilities: () => sidHomePath("model-capabilities.json"),
+  /**
+   * S6：从 prompt-too-long 学到的「已放行输入上限」。与 modelCapabilities 刻意分开：
+   * 它是**路由**属性（同底层模型、不同网关路由的墙不同）→ 键 = (model, base_url)；
+   * 放进能力缓存会被单 model 键 + `origin-` 前缀归一串到别的路由上。
+   */
+  learnedInputCeiling: () => sidHomePath("learned-input-ceiling.json"),
 
   // ── 日志归拢：logs/ ──
   logs: () => sidHomePath("logs"),
