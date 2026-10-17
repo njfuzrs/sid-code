@@ -20,6 +20,7 @@
 
 import type { SendParams } from "../types.ts";
 import { lookupCatalog } from "../model-params-catalog.ts";
+import { pickWireModel } from "../wire-model.ts";
 import type { Dialect, DialectEffortLevel } from "./types.ts";
 
 /**
@@ -88,7 +89,9 @@ export function createAnthropicNativeDialect(
       toolChoice: "full",
     },
     applyToSendParams(params: SendParams, effort, thinking) {
-      const thinkingMode = lookupCatalog(params.model || "")?.thinkingMode;
+      // 吃**真名**：此前喂 `params.model`（别名），与真名不同形的网关别名会 miss → 走 manual 路径，
+      // 且与线格式层 `thinkingOffWire`（吃真名）对同一模型给出不同答案。
+      const thinkingMode = lookupCatalog(pickWireModel(params, params.model || ""))?.thinkingMode;
       // 思考 token 上限（env / settings）。null 表示未设。
       const maxThinking = resolveMaxThinking(params.maxThinkingTokens);
 
@@ -98,7 +101,9 @@ export function createAnthropicNativeDialect(
         const effectiveThinking = thinkingMode === "always-on" ? true : thinking;
 
         if (!effectiveThinking) {
-          // adaptive 模型显式关闭思考：不下发 thinking 参数（省略 = 不思考）。
+          // adaptive 模型关闭思考：只标 enabled:false，线上怎么写由 anthropic.ts 的线格式层按真名决定
+          // （「不传 = 思考」的 Opus 5 / Sonnet 5 / Haiku 5.5 显式发 disabled，旧模型不发）。
+          // 不写 outputConfig：Opus 5 的 disabled 要求 effort ≤ high，带 max 会 400。
           params.thinking = { enabled: false, budgetTokens: 0 };
           return;
         }

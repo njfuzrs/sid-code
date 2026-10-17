@@ -433,10 +433,15 @@ export interface TUIState {
     isAuto: boolean;
   } | null;
   /**
-   * 思考开关展示态（状态栏 thinking 列）。null = 当前模型不支持思考开关（不显示该列）。
-   * on = 实际是否开启；isAuto = 是否 auto 态（跟随 provider 默认）。
+   * 思考开关展示态（状态栏 thinking 列）。null = 尚未初始化（不显示该列）。
+   * on = 服务端实际是否在思考；isAuto = 是否 auto 态；control = 开关形态（见 ThinkingControl）。
    */
-  thinkingDisplay: { on: boolean; isAuto: boolean } | null;
+  thinkingDisplay: {
+    on: boolean;
+    isAuto: boolean;
+    /** 控制形态：locked-on → 「开·不可关」，none → 「内置」（缺省按 toggle） */
+    control?: import("@sid-code/core/llm/effort.ts").ThinkingControl;
+  } | null;
   /** /goal：目标状态展示态（状态栏 goal 列）。null = 无活跃目标 */
   goalDisplay: { turnsUsed: number; maxTurns: number; status: string } | null;
   /** P1-5 可自定义状态栏配置（来自 settings.json 的 statusLine 块）。undefined = 走内置聚合状态栏。 */
@@ -884,9 +889,16 @@ function TUIAppInner({ initialState, callbacks, bridge, alternateBuffer }: AppPr
       // 走 onNotify（app.ts 的 Map 通道），不直写 statusMessage——详见 TUICallbacks.onNotify 注释。
       callbacks.onNotify?.(
         "thinking_toggle",
-        "当前模型不支持显式思考开关（思考由模型自身决定）",
+        "当前模型没有独立的思考开关，推理深度由 /effort 控制",
         2500,
       );
+      return true;
+    }
+    // 恒思考：applied 恒 true，按它翻转只会一直写 off、提示「已关闭」而模型照样在想。
+    // 如实提示，不改意图（20261016 排查 D5）。
+    if (st && st.capability.thinkingControl === "locked-on") {
+      log.info("UI:APP", "Alt+T：当前模型恒思考，忽略");
+      callbacks.onNotify?.("thinking_toggle", "当前模型恒思考，关不掉", 2500);
       return true;
     }
 

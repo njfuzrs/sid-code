@@ -40,6 +40,7 @@ import {
 } from "./billing-sink.ts";
 import { normalizeToolInput } from "./normalize-tool-input.ts";
 import { pickWireModel } from "./wire-model.ts";
+import { thinkingOffWire } from "./dialect/thinking-off-wire.ts";
 import { resolveVisionSupport } from "./vision-capability.ts";
 import {
   classifyProtocolFamily,
@@ -296,6 +297,9 @@ export class AnthropicProvider implements Provider {
         clientRequestId,
       });
 
+      const thinkingWire = buildThinkingWire(params, wireModel, this.client.baseURL);
+      const wireEffort = thinkingWire.dropEffort ? undefined : params.outputConfig?.effort;
+
       const requestParams = {
         model: wireModel,
         max_tokens: params.maxTokens,
@@ -305,18 +309,18 @@ export class AnthropicProvider implements Provider {
         stream: true as const,
         // OPT-2: 透传 tool_choice（此前 Anthropic 两条路径均漏传，auto-compact 的 "none" 被静默丢弃）
         ...buildToolChoiceParam(params),
-        // Extended Thinking 支持：根据 outputConfig.thinkingType 分发 adaptive/manual
-        ...(params.thinking?.enabled && buildThinkingParam(params)),
+        // Extended Thinking：开 → adaptive/manual；关 → 按模型显式 disabled 或不发（见 buildThinkingWire）
+        ...thinkingWire.param,
         // output_config.effort：adaptive 模型 + DeepSeek-via-Anthropic 端点均走此字段。
         // adaptive 模型由 effort.ts 填充 params.outputConfig；DeepSeek-via-Anthropic 同理。
-        ...(params.outputConfig &&
+        ...(wireEffort &&
           !params.outputFormat && {
-            output_config: { effort: params.outputConfig.effort },
+            output_config: { effort: wireEffort },
           }),
         // P3-1: API 级结构化输出（output_config.format）— 独立于工具调用的 JSON 约束
         ...(params.outputFormat && {
           output_config: {
-            ...(params.outputConfig && { effort: params.outputConfig.effort }),
+            ...(wireEffort && { effort: wireEffort }),
             format: params.outputFormat,
           },
         }),
@@ -998,6 +1002,7 @@ export class AnthropicProvider implements Provider {
     const billingFetchId = nextFetchId();
     let billedUsage: Usage | undefined;
     let billable = false;
+    const nonStreamThinkingWire = buildThinkingWire(params, wireModel, this.client.baseURL);
     try {
       const createMessage = () =>
         this.client.messages.create(
@@ -1010,11 +1015,12 @@ export class AnthropicProvider implements Provider {
             stream: false,
             // OPT-2: 透传 tool_choice（与流式路径一致）
             ...buildToolChoiceParam(params),
-            // 与流式路径一致：Extended Thinking（adaptive/manual 双模式）
-            ...(params.thinking?.enabled && buildThinkingParam(params)),
-            ...(params.outputConfig && {
-              output_config: { effort: params.outputConfig.effort },
-            }),
+            // 与流式路径一致：Extended Thinking（开 adaptive/manual；关按模型 disabled 或不发）
+            ...nonStreamThinkingWire.param,
+            ...(params.outputConfig &&
+              !nonStreamThinkingWire.dropEffort && {
+                output_config: { effort: params.outputConfig.effort },
+              }),
             // G2: cache_edits（同流式路径门控）
             ...(params.cacheEdits &&
               params.cacheEdits.length > 0 &&
@@ -1134,6 +1140,30 @@ function buildThinkingParam(params: SendParams): Record<string, unknown> {
       budget_tokens: params.thinking!.budgetTokens,
     },
   };
+}
+
+/**
+ * thinking 的线上形态（流式 / 非流式两条路径共用，此前两处各写一遍 `enabled && build…`）。
+ *
+ * - 开：沿用 {@link buildThinkingParam}（adaptive / manual）。
+ * - 关：由 {@link thinkingOffWire} 按**真名**决定显式 `{type:"disabled"}` 还是不发。
+ *   「不传 = 思考」的模型（Opus 5 / Sonnet 5 / Haiku 5.5、DeepSeek Anthropic 端点）不发就等于没关，
+ *   side-call 的 `SIDE_CALL_NO_THINK` 也走这里（20261016 思考开关排查 D1–D3）。
+ *
+ * `dropEffort`：发 `disabled` 时不带 `output_config.effort`。Opus 5 的 `disabled` 要求 effort ≤ high，
+ * 实测 `disabled` + `effort:"max"` → 400。现状 `off` 路径的 applier 本就不写 outputConfig，
+ * 这里再挡一次，防 fallback / 调用方残留字段。
+ */
+export function buildThinkingWire(
+  params: SendParams,
+  wireModel: string,
+  baseURL?: string,
+): { param: Record<string, unknown>; dropEffort: boolean } {
+  if (params.thinking?.enabled) return { param: buildThinkingParam(params), dropEffort: false };
+  if (params.thinking && thinkingOffWire(wireModel, baseURL) === "disabled") {
+    return { param: { thinking: { type: "disabled" } }, dropEffort: true };
+  }
+  return { param: {}, dropEffort: false };
 }
 
 /**

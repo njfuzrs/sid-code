@@ -118,6 +118,21 @@ export interface ModelRegistryEntry {
   thinkingMode?: "adaptive" | "always-on";
 
   /**
+   * 请求里**不带** `thinking` 字段时服务端的行为（Anthropic 协议族专用）。
+   *
+   * - `"on"`：不传 = 自适应思考（Opus 5 / Sonnet 5 / Haiku 5.5，anthropic-api.md §6.1
+   *   「5.x 一代默认就在思考」+ 2026-10-17 企业网关实测）。这类模型的「关」必须显式发
+   *   `thinking:{type:"disabled"}`，否则状态栏说关、模型照样在想。
+   * - 缺省（= `"off"`）：旧 Claude 语义，不传 = 不思考。
+   *
+   * ⚠ 线格式层**只认精确命中**（`lookupRegistryExact`）的这一位，见 `dialect/thinking-off-wire.ts`：
+   * 模糊匹配会让 `claude-opus-5-6` 这类未来小版本继承 `"on"` → 发 `disabled`，
+   * 而 5.5 一代全是恒思考（`disabled` 必 400）。
+   * 恒思考（`thinkingMode:"always-on"`）模型不设本字段：它们根本关不掉，线上不发 `disabled`。
+   */
+  thinkingOmitMeans?: "on" | "off";
+
+  /**
    * 推理语言漂移倾向：该模型的思考过程（reasoning/thinking）在中文语境下
    * 容易自发漂移到英文，需要更强的语言约束措辞（system-prompt.ts 的「铁律级」
    * 身份指令 + `<internal_en>` 疏导）才能稳定输出中文。
@@ -191,6 +206,9 @@ const REGISTRY: Record<string, ModelRegistryEntry> = {
     supportsThinking: true,
     protocolKind: "anthropic-native",
     thinkingMode: "adaptive",
+    // 文档矩阵没有 Haiku 5.5 这一行；2026-10-17 企业网关实测：不传 n=2 都出 thinking 块，
+    // `disabled` n=2 都只出 text（20261016 思考开关排查 §8.11）。
+    thinkingOmitMeans: "on",
     // 「输入只支持文本和图片」（anthropic-api.md:982）
     supportsVision: true,
     pricing: { input: 0.1, output: 0.5, cacheRead: 0.01, cacheWrite: 0.125 },
@@ -220,6 +238,33 @@ const REGISTRY: Record<string, ModelRegistryEntry> = {
     protocolKind: "anthropic-native",
     thinkingMode: "always-on",
     pricing: { input: 10, output: 50, cacheRead: 1, cacheWrite: 12.5 },
+  },
+  // ── 5 一代（Opus 5 / Sonnet 5）──────────────────────────────────────
+  // 此前缺条目 → `lookupCatalog` 返回 null → 走 manual `budget_tokens` 路径，且 `off` 不发字段
+  // 而服务端「不传 = 自适应」，于是关不掉（20261016 思考开关排查 D1 / D4）。
+  // thinking 矩阵：不传 = 自适应、`disabled` = 关闭（Opus 5 要求 effort ≤ high），anthropic-api.md §6.1。
+  // 窗口 1M / 输出 128K、定价：Anthropic 模型表（Opus 5 $5/$25，Sonnet 5 $2/$10）；
+  // 缓存价 anthropic-api.md §15.2（Opus 5 写 $6.25 / 读 $0.50，Sonnet 5 写 $2.50 / 读 $0.20）。
+  //
+  // ⚠ 这两个键会经模糊匹配被 `claude-opus-5-6` 等未来小版本命中。窗口/定价借值无害
+  // （只是估算偏差），但 `thinkingOmitMeans` 在线格式层只认精确命中，不会被借走。
+  "claude-opus-5": {
+    contextWindow: 1_000_000,
+    maxOutputTokens: 128_000,
+    supportsThinking: true,
+    protocolKind: "anthropic-native",
+    thinkingMode: "adaptive",
+    thinkingOmitMeans: "on",
+    pricing: { input: 5, output: 25, cacheRead: 0.5, cacheWrite: 6.25 },
+  },
+  "claude-sonnet-5": {
+    contextWindow: 1_000_000,
+    maxOutputTokens: 128_000,
+    supportsThinking: true,
+    protocolKind: "anthropic-native",
+    thinkingMode: "adaptive",
+    thinkingOmitMeans: "on",
+    pricing: { input: 2, output: 10, cacheRead: 0.2, cacheWrite: 2.5 },
   },
   "claude-opus-4-8": {
     contextWindow: 1_000_000,

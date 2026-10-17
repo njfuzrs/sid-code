@@ -2181,7 +2181,9 @@ export class App {
     const cap = this.resolveEffortCap();
     return {
       runtime: this.runtimeThinking,
-      applied: eff.resolveThinking(cap, this.runtimeThinking, eff.getThinkingEnvOverride()),
+      // 服务端实际是否思考（恒思考模型恒 true），与状态栏同源。
+      applied: eff.resolveThinkingState(cap, this.runtimeThinking, eff.getThinkingEnvOverride())
+        .effective,
       capability: cap,
     };
   }
@@ -2782,12 +2784,16 @@ export class App {
             isAuto: eff.isEffortAuto(this.runtimeEffort, effortEnv),
           }
         : null,
-      thinkingDisplay: cap.supportsThinkingToggle
-        ? {
-            on: eff.resolveThinking(cap, this.runtimeThinking, eff.getThinkingEnvOverride()),
-            isAuto: this.runtimeThinking === undefined && eff.getThinkingEnvOverride() === null,
-          }
-        : null,
+      // 三种控制形态都显示（D6：无开关族此前不显示该列，用户把「没显示」读成「已关」）。
+      // on 取服务端实际是否思考（D5：恒思考模型此前显示「关」）。
+      thinkingDisplay: (() => {
+        const st = eff.resolveThinkingState(
+          cap,
+          this.runtimeThinking,
+          eff.getThinkingEnvOverride(),
+        );
+        return { on: st.effective, isAuto: st.intent === "auto", control: st.control };
+      })(),
     });
   }
 
@@ -8954,6 +8960,22 @@ export class App {
       // 每次重建时刷新后台任务面板
       bridge.updateTasks();
     };
+    /**
+     * S1 L1：把一条常驻提示写进历史区（hint 形态：`›` + 次要色斜体，见 HistoryItemDisplay）。
+     * 与命令结果同走 localCommandItems 侧表——不进 ctxMgr（不发给模型），但全量重建时不丢。
+     */
+    const appendPersistentHint = (text: string) => {
+      const item: import("./ui/types.ts").HistoryItemWithoutId = { type: "hint", text };
+      localCommandItems.push({ anchor: this.ctxMgr.getMessages().length, item });
+      historyIdCounter += 1;
+      updateState({
+        historyItems: [
+          ...bridge.current.historyItems,
+          { ...item, id: historyIdCounter } as import("./ui/types.ts").HistoryItem,
+        ],
+      });
+    };
+
     const appendCommandOutput = (input: string, output: string | null, isError = false) => {
       // 记一份到侧表：ctxMgr 里没有这条（命令结果不进对话上下文），下一次 syncDisplay
       // 从 ctxMgr 全量重建 historyItems 时它会被冲掉——此前 /status 的输出在用户发下一句话后
@@ -9682,6 +9704,11 @@ export class App {
                   suggestion: msg.suggestion,
                   timestamp: Date.now(),
                 });
+              } else if (event.persistent) {
+                // S1 L1：常驻提示（本轮以纯文本收尾）。不能走下面的 `system:transient` 状态条——
+                // 同一轮 `done` 会 removeStatusMessage("system:transient")，提示一闪即逝。
+                // 写进历史区并登记到本地侧表：syncDisplay / rebuildDisplay 从 ctxMgr 全量重建时插回原位。
+                appendPersistentHint(event.text);
               } else {
                 // 根因修复：此前 info 级别没有分支 = 被静默丢弃。看门狗/超时重试、
                 // 压缩进度、续写提示等 info 事件全部凭空消失，用户只见流式卡住无任何提示

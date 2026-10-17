@@ -155,10 +155,19 @@ export function metaSourceLabel(s: ModelMetaSource): string | undefined {
  *
  * 不支持档位的模型整段省掉「档位」而不是写「档位 无」——没有的东西不占视觉位置。
  */
+/** 思考控制形态的面板文案 */
+const THINKING_CONTROL_LABEL: Record<NonNullable<ModelProfile["thinkingControl"]>, string> = {
+  toggle: "可开关",
+  "locked-on": "恒开（关不掉）",
+  none: "内置（由档位控制）",
+};
+
 export function formatCapabilityLine(p: ModelProfile): string {
   const parts = [`上下文 ${formatTokensSourced(p.contextWindow)}`];
   if (p.maxOutputTokens) parts.push(`输出 ${formatTokensSourced(p.maxOutputTokens)}`);
   if (p.efforts.length > 0) parts.push(`档位 ${p.efforts.join("/")}`);
+  // 思考控制形态：切模型前就能看到「这个模型关不掉思考 / 没有独立开关」（20261016 排查 D5 / D6）。
+  if (p.thinkingControl) parts.push(`思考 ${THINKING_CONTROL_LABEL[p.thinkingControl]}`);
   if (p.wireModel !== p.name) parts.push(`真名 ${p.wireModel}`);
   return parts.join(" · ");
 }

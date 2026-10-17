@@ -27,12 +27,9 @@ const mod: LocalCommandModule = {
     }
 
     const state = ctx.getThinkingState?.();
-    // 能力门控：模型不支持思考开关时直接说明。
+    // 能力门控：模型没有独立思考开关时直接说明（推理深度由 /effort 决定）。
     if (state && !state.capability.supportsThinkingToggle) {
-      return {
-        type: "text",
-        value: "当前模型不支持显式思考开关（如内置推理模型）。思考行为由模型自身决定。",
-      };
+      return { type: "text", value: NO_TOGGLE_NOTE };
     }
 
     if (!arg) {
@@ -51,12 +48,26 @@ const mod: LocalCommandModule = {
     ctx.setThinking?.(setting, persist);
     const label = setting === undefined ? "auto（跟随默认）" : setting;
     const envNote = buildEnvOverrideNote();
+    // 恒思考模型：意图照存（切回可关闭的模型时自动生效），但如实说这个模型上不生效。
+    // 此前只打一条 warn 日志，状态栏显示「关」、模型照样在想（20261016 排查 D5）。
+    const lockedNote =
+      state?.capability.thinkingControl === "locked-on" && setting === "off"
+        ? `\n${LOCKED_ON_NOTE}`
+        : "";
     return {
       type: "text",
-      value: `思考开关已设为: ${label}${persist ? "，并已保存到 settings.json" : ""}${envNote}`,
+      value: `思考开关已设为: ${label}${persist ? "，并已保存到 settings.json" : ""}${envNote}${lockedNote}`,
     };
   },
 };
+
+/** 无独立开关族（kimi / gpt-5.x / grok / o 系 / 未知族）的提示：说清楚由什么控制。 */
+export const NO_TOGGLE_NOTE =
+  "当前模型没有独立的思考开关，推理深度由 /effort 控制（思考行为由模型自身决定）。";
+
+/** 恒思考模型（Opus 5.5 / Sonnet 5.5 / Fable / Mythos / GLM-5.3 等）关闭时的提示。 */
+export const LOCKED_ON_NOTE =
+  "⚠ 当前模型恒思考，服务端不接受关闭，本模型上仍会思考；切到可关闭思考的模型后 off 自动生效。";
 
 /**
  * env 覆盖提示：若 SID_CODE_THINKING 已设，运行时切换不会改变实际行为，诚实告知。
@@ -80,7 +91,8 @@ function buildHelp(): string {
     "  /think help       显示本用法",
     "",
     "说明：",
-    "  · 模型不支持显式思考开关时（如 OpenAI o-series 内置推理），本命令仅提示不下发。",
+    "  · 模型不支持显式思考开关时（如 OpenAI o-series 内置推理），本命令仅提示不下发，推理深度用 /effort 调。",
+    "  · 恒思考模型（状态栏显示 ✻·不可关）上 off 不生效，切到可关闭的模型后自动生效。",
     "  · 环境变量 SID_CODE_THINKING 会覆盖运行时切换。",
   ].join("\n");
 }

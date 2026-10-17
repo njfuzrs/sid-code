@@ -76,7 +76,7 @@ interface ZodSchemaLike {
 }
 
 /** 取 schema 的 def（兼容 `.def` 与 `._zod.def` 两种访问路径） */
-function getDef(schema: unknown): ZodDefLike | undefined {
+export function getDef(schema: unknown): ZodDefLike | undefined {
   if (schema === null || typeof schema !== "object") return undefined;
   const s = schema as ZodSchemaLike;
   return s.def ?? s._zod?.def;
@@ -91,7 +91,7 @@ const MAX_UNWRAP_DEPTH = 32;
  * - `isOptional`: 是否存在 optional 包装（即 wire 层会被 makeNullable 处理）
  * - `explicitlyNullable`: 是否存在 nullable 包装（作者有意允许 null，必须保留）
  */
-function unwrap(schema: unknown): {
+export function unwrap(schema: unknown): {
   inner: unknown;
   isOptional: boolean;
   explicitlyNullable: boolean;

@@ -102,6 +102,11 @@ export interface ModelProfile {
   effortGatedByThinking: boolean;
   /** 是否支持思考开关 */
   supportsThinkingToggle: boolean;
+  /**
+   * 思考控制形态（/model 详情行据此写「思考 可开关 / 恒开 / 内置」）。
+   * 可选：老的测试替身与外部构造点不必补齐，缺省时详情行不显示该段。
+   */
+  thinkingControl?: import("./effort.ts").ThinkingControl;
 }
 
 /** 从 availableModels 条目里取本模块需要的字段（比 ModelConfig 窄，便于测试与跨层传递）。 */
@@ -246,5 +251,6 @@ export function buildModelProfile(
     efforts: capability.supportsEffort ? getSelectableEfforts(capability) : [],
     effortGatedByThinking: isEffortGatedByThinking(capability),
     supportsThinkingToggle: capability.supportsThinkingToggle,
+    thinkingControl: capability.thinkingControl,
   };
 }

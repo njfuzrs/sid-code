@@ -14,6 +14,8 @@
 import type { LegacyTool } from "./types.ts";
 import { normalizeStrictNulls } from "./nullish-normalize.ts";
 import { normalizeNumericStrings } from "./numeric-coerce.ts";
+import { normalizeInputAliases } from "./input-alias.ts";
+import { emitToolInputAliasApplied } from "../trace/stream-observer.ts";
 
 /** 校验结果 */
 export type ToolInputValidation = { ok: true; data: unknown } | { ok: false; message: string };
@@ -68,7 +70,15 @@ export function validateToolInput(tool: LegacyTool, input: unknown): ToolInputVa
   // 这里在校验前把这类 null 翻译回 zod 的"未提供"表示法。
   // 只处理「optional 且未显式 nullable」的字段，`.nullable()` 的业务 null 不受影响；
   // 同时拦下 `z.coerce.*` 把 null 静默转成 0 的污染（详见 nullish-normalize.ts）。
-  const nullNormalized = normalizeStrictNulls(schema, input);
+  //
+  // 别名归一放在最前（S2，20261016）：模型写 `activeForm`、协议要 `active_form`。
+  // 必须先改名再做 null 回填——否则 `activeForm: null` 不会被识别为 optional 字段上的
+  // null。详见 input-alias.ts（为什么不用 zod preprocess、为什么只认登记的别名对）。
+  const aliased = normalizeInputAliases(schema, input);
+  for (const hit of aliased.hits) {
+    emitToolInputAliasApplied({ tool: tool.name(), ...hit });
+  }
+  const nullNormalized = normalizeStrictNulls(schema, aliased.value);
 
   // 数字形态字符串回填：模型逐 token 生成 JSON 时会偶发给 number 字段多打一对引号
   // （实测 read offset:"117, 130" / "1,1"，schema 明确写了 type:number 仍然发生）。

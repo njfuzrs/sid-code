@@ -171,6 +171,11 @@ export interface AgentLoopConfig {
   /** B2：发起方标识（遥测归因；B4 per-agent 状态隔离复用同一标识）。 */
   agentId?: string;
   /**
+   * S13（PR-8）：调用方持有 usage-sink 时的入账票据，主流与总结轮都透传给漏斗。
+   * 只有本次执行**确实接了 sink** 才有值（由 SubAgent 实例携带，见 `setUsageAccounting`）。
+   */
+  usageAccounting?: import("../llm/request-context.ts").RequestContext["usageAccounting"];
+  /**
    * B4：重试遥测回调（可选）。
    *
    * 生产路径**不需要**传：`fallback.ts` 的 `emitTelemetry` 在无 per-instance 回调时
@@ -721,6 +726,7 @@ async function runAgentLoopInner(
     const openStream = (callSignal: AbortSignal) =>
       streamWithResilience(provider, sendParams, callSignal, {
         querySource: config.querySource ?? "agent:builtin",
+        usageAccounting: config.usageAccounting,
         switchMode: "auto",
         maxRetries: config.maxStreamRetries ?? netTimeouts.maxTimeoutRetries,
         retryBackoffBaseMs: config.retryBackoffBaseMs,
@@ -1415,6 +1421,7 @@ async function runAgentLoopInner(
           callSignal,
           {
             querySource: "agent:summary",
+            usageAccounting: config.usageAccounting,
             switchMode: "auto",
             maxRetries: config.maxStreamRetries ?? netTimeouts.maxTimeoutRetries,
             retryBackoffBaseMs: config.retryBackoffBaseMs,
