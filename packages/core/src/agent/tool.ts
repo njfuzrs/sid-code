@@ -161,17 +161,23 @@ export class SubAgentTool implements Tool {
 
   /** 并发控制：当前占用 slot 数（同步 + 后台子代理统一计入） */
   static running = 0;
-  /** 子代理并发上限：默认 3（工程常量，与模型无关），可经 SID_SUBAGENT_MAX_CONCURRENT 放宽。
-   *  保成功：大任务需并行探索多个子任务（如同时 review + audit + governance）时,
-   *  3 的并发可能成为瓶颈。非法值（NaN/≤0）静默回退默认 3，绝不因配错而更严。 */
-  static readonly MAX_CONCURRENT = SubAgentTool.resolveMaxConcurrent();
+  /** 子代理并发上限缺省值：对齐 CC v2.1.217 的 CLAUDE_CODE_MAX_CONCURRENT_SUBAGENTS=20。
+   *  曾是 3：一次派 4+ 个子代理时后面的全部排队，且后台子代理跑完前一直占位，
+   *  实测表现为「同时最多只有 3 个在跑」。20 只为封住单条消息无界 fan-out，日常不会触顶。 */
+  static readonly DEFAULT_MAX_CONCURRENT = 20;
+
+  /** 当前生效上限。每次读 env 而非模块加载时冻结：settings.json 的 env 由 managed-env
+   *  在启动后期才写进 process.env，static readonly 求值早于它时用户配置会静默不生效。 */
+  static get MAX_CONCURRENT(): number {
+    return SubAgentTool.resolveMaxConcurrent();
+  }
 
   /**
    * 信号量等待队列（G1 修复：超上限时排队而非拒绝）。
    *
    * 对标 CC：CC 的子代理并发完全由主循环 generators.all(gens, cap=10) 统一排队治理，
    * Agent 工具层零拒绝逻辑（toolOrchestration.ts:158-176）。sid-code 主循环
-   * Promise.allSettled 无 cap 一次性全发，若工具层硬拒绝，模型一次派 >3 个只读子代理
+   * Promise.allSettled 无 cap 一次性全发，若工具层硬拒绝，模型一次派超上限个只读子代理
    * 时第 4+ 个直接失败——与 usageGuide"方向≥3 并行分治"的引导自相矛盾。
    *
    * 改为信号量排队：超上限的调用 await 一个 resolver，待有 slot 释放时按 FIFO 唤醒。
@@ -183,9 +189,11 @@ export class SubAgentTool implements Tool {
   static resolveMaxConcurrent(
     raw: string | undefined = process.env.SID_SUBAGENT_MAX_CONCURRENT,
   ): number {
-    if (raw === undefined || raw === "") return 3;
+    const fallback = SubAgentTool.DEFAULT_MAX_CONCURRENT;
+    if (raw === undefined || raw === "") return fallback;
     const n = Number.parseInt(raw, 10);
-    return Number.isFinite(n) && n > 0 ? n : 3;
+    // 非法值（NaN/≤0）回退缺省而不是更严：配错不该把并发收窄成串行
+    return Number.isFinite(n) && n > 0 ? n : fallback;
   }
 
   /**
