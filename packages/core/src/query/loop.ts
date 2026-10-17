@@ -175,7 +175,23 @@ import {
   recordScalarObservation,
   hasRealProgress,
 } from "./measured-progress.ts";
-import { dequeuePendingNotifications, evictTerminalTasks } from "../task/index.ts";
+import {
+  dequeuePendingNotifications,
+  evictTerminalTasks,
+  hasPendingNotifications,
+  hasRunningBackgroundTasks,
+} from "../task/index.ts";
+import { buildInternalMessage } from "../context/internal-message.ts";
+import {
+  classifyEndTurnShape,
+  decidePromiseNudge,
+  isPromiseNudgeDisabled,
+  reasoningShare,
+  PROMISE_NUDGE_MESSAGE,
+  PLAIN_TEXT_END_TURN_NOTICE,
+  type EndTurnShape,
+  type PromiseLang,
+} from "./promise-nudge.ts";
 import { drainByPriorityAndKind, hasPending, type QueuedCommand } from "./message-queue-manager.ts";
 import {
   measureThinkingLen,
@@ -795,6 +811,69 @@ export async function* queryLoop(loopConfig: QueryLoopConfig): AsyncGenerator<Qu
   // 具体哪条消息的第 3 轮——否则跨消息会话里 turn 回绕（实测 135709 会话
   // turn=20 之后出现 turn=3）在离线分析里无法与"真的退回第 3 轮"区分。
   const promptSeq = sessionState.nextPromptSeq();
+  /** S1 L2：已注入 nudge、等下一轮响应给出 outcome 的那一次（每 prompt 至多 1 个） */
+  let pendingPromiseNudge: { lang: PromiseLang } | undefined;
+  /** S1 L2 的验收事件：`fired` + `outcome`（触发后下一轮是否 tool_use / 未触发的原因） */
+  const emitPromiseNudge = (
+    lang: PromiseLang,
+    fired: boolean,
+    extra: { outcome: string; skip_reason?: string },
+  ): void => {
+    try {
+      deps.traceAppendEvent?.({
+        event: "PromiseNudge",
+        session_id: sessionState.sessionId,
+        timestamp: new Date().toISOString(),
+        data: { ...turnMetrics(state, sessionState, promptSeq), fired, lang, ...extra },
+      });
+    } catch {
+      /* trace 写入失败不阻断主循环 */
+    }
+  };
+  /** S1 L1：每次 end_turn 收尾的形态事实（S4 的推理占比 / 写入数 / 只读数一并落） */
+  const emitEndTurnShape = (
+    shape: EndTurnShape,
+    facts: {
+      stopReason: string | undefined;
+      outputTokens: number;
+      reasoningTokens: number;
+      prevTurnHadToolUse: boolean;
+      runningBackgroundTasks: boolean;
+      pendingNotifications: boolean;
+    },
+  ): void => {
+    try {
+      deps.traceAppendEvent?.({
+        event: "EndTurnShape",
+        session_id: sessionState.sessionId,
+        timestamp: new Date().toISOString(),
+        data: {
+          ...turnMetrics(state, sessionState, promptSeq),
+          kind: shape.kind,
+          stop_reason: facts.stopReason,
+          text_len: shape.textLen,
+          ...(shape.lang ? { lang: shape.lang } : {}),
+          output_tokens: facts.outputTokens,
+          reasoning_tokens: facts.reasoningTokens,
+          had_tool_use: false,
+          prev_turn_had_tool_use: facts.prevTurnHadToolUse,
+          // S4：本 prompt 累计口径（不是本次调用），不下结论只报事实
+          prompt_output_tokens: state.promptOutputTokens ?? 0,
+          prompt_reasoning_tokens: state.promptReasoningTokens ?? 0,
+          reasoning_share: reasoningShare(
+            state.promptReasoningTokens ?? 0,
+            state.promptOutputTokens ?? 0,
+          ),
+          prompt_edit_write_count: state.promptEditWriteCount ?? 0,
+          prompt_readonly_count: state.promptReadonlyCount ?? 0,
+          running_background_tasks: facts.runningBackgroundTasks,
+          pending_notifications: facts.pendingNotifications,
+        },
+      });
+    } catch {
+      /* trace 写入失败不阻断主循环 */
+    }
+  };
   const diminishingDetector = new DiminishingReturnsDetector();
   // P0-3：Token Budget 续写——解析本条用户消息里的 "+500k" 类预算指令（一次性，
   // 随每条新用户消息的新 state 天然重置，见 LoopState.tokenBudgetTarget 注释）。
@@ -3394,6 +3473,22 @@ export async function* queryLoop(loopConfig: QueryLoopConfig): AsyncGenerator<Qu
         log.llmResponseText(responseText);
       }
 
+      // ─── S1 / S4 可见性：本 prompt 的累计事实 + 上一次 promise nudge 的结果 ───
+      // 「上一次模型调用是否含 tool_use」必须在本轮覆盖之前取出来（L1 形态判定要用）。
+      const prevResponseHadToolUse = state.prevResponseHadToolUse === true;
+      state.prevResponseHadToolUse = response.content.some((b) => b.type === "tool_use");
+      state.promptOutputTokens =
+        (state.promptOutputTokens ?? 0) + (response.usage.outputTokens ?? 0);
+      state.promptReasoningTokens =
+        (state.promptReasoningTokens ?? 0) + ((response.usage as any).reasoningTokens ?? 0);
+      if (pendingPromiseNudge) {
+        // outcome = nudge 之后这一轮模型有没有真的调工具 —— 这就是 L2 的验收曲线
+        emitPromiseNudge(pendingPromiseNudge.lang, true, {
+          outcome: state.prevResponseHadToolUse ? "tool_use" : "text",
+        });
+        pendingPromiseNudge = undefined;
+      }
+
       // ─── 缺口3：假设纪律引导的事件驱动注入（检测端）───
       // 根因：原引导绑死 turnCount===1（任务开头），而模型在第 1 轮通常还没形成任何判断
       // ——提示到达时无对应物可登记；等到第 10-30 轮真正形成"我认为是 X"时，那条提示已被
@@ -3894,6 +3989,29 @@ export async function* queryLoop(loopConfig: QueryLoopConfig): AsyncGenerator<Qu
         );
       }
       if (isEndTurnLike && !hasPendingToolUse) {
+        // ─── S1 L1：end_turn 形态事实（每次都落，零行为）───
+        // 后台任务 / 待投递通知是 L2 的结构排除项，也一并进事实，让「为什么没拦」可复算。
+        let runningBg = false;
+        let pendingNotif = false;
+        try {
+          runningBg = hasRunningBackgroundTasks();
+          pendingNotif = hasPendingNotifications();
+        } catch {
+          /* 查询失败按「无」处理：只影响 L2 是否触发，不影响收尾 */
+        }
+        const endTurnShape = classifyEndTurnShape({
+          text: responseText,
+          hasToolUse: false,
+          prevTurnHadToolUse: prevResponseHadToolUse,
+        });
+        emitEndTurnShape(endTurnShape, {
+          stopReason: response.stopReason ?? undefined,
+          outputTokens: response.usage.outputTokens ?? 0,
+          reasoningTokens: (response.usage as any).reasoningTokens ?? 0,
+          prevTurnHadToolUse: prevResponseHadToolUse,
+          runningBackgroundTasks: runningBg,
+          pendingNotifications: pendingNotif,
+        });
         // AfterAgent hook
         //
         // P2-2：`clearContext` **推迟**到整条闸门链真正放行、`yield done` 之前才执行。
@@ -4041,6 +4159,38 @@ export async function* queryLoop(loopConfig: QueryLoopConfig): AsyncGenerator<Qu
           };
           exitedViaReturn = true;
           return;
+        }
+
+        // ─── S1 L2：短文本「承诺未兑现」→ 续跑一次（仅主循环，独立计数，每 prompt 封顶 1 次）───
+        // 判据见 promise-nudge.ts 文件头。与上面 `_unansweredEndTurn` 分支并列而不合并：
+        // 计数器、transition、文案全部独立（共用 unansweredRetryCount 会因工具执行清零而循环）。
+        // 放在 todo gate 之前：两者都只在「本轮无工具调用」时到达，而本形态的续跑更具体。
+        const promiseDecision = decidePromiseNudge(endTurnShape, {
+          nudgeCount: state.promiseNudgeCount ?? 0,
+          runningBackgroundTasks: runningBg,
+          pendingNotifications: pendingNotif,
+          disabled: isPromiseNudgeDisabled(),
+        });
+        if (promiseDecision?.fire) {
+          state.promiseNudgeCount = (state.promiseNudgeCount ?? 0) + 1;
+          // 内部 origin：TUI 隐藏；显式落盘：否则 `-c` 恢复后原 end_turn 与续跑那轮
+          // assistant 直接相邻（现有 gate 注入只改内存，见方案 §3 S1「持久化」）。
+          const nudgeMsg = buildInternalMessage("promise-nudge", "user", PROMISE_NUDGE_MESSAGE);
+          ctxMgr.addMessage(nudgeMsg);
+          deps.sessionStore?.appendMessage(nudgeMsg);
+          pendingPromiseNudge = { lang: promiseDecision.lang };
+          log.warn(
+            "QUERY_LOOP",
+            `S1 L2：短文本承诺未兑现（text_len=${endTurnShape.textLen}），注入续跑提示（本 prompt 第 ${state.promiseNudgeCount} 次）`,
+          );
+          setTransition(state, { type: "promise_nudge" }, deps, sessionState.sessionId);
+          continue;
+        }
+        if (promiseDecision) {
+          emitPromiseNudge(promiseDecision.lang, false, {
+            outcome: "not_fired",
+            skip_reason: promiseDecision.reason,
+          });
         }
 
         // ─── P0-3：end_turn 完成度硬校验（对标 claude-code stopHooks.ts）───
@@ -4507,6 +4657,18 @@ export async function* queryLoop(loopConfig: QueryLoopConfig): AsyncGenerator<Qu
         // P1-4：唯一的"模型正常说完了"出口。归一化而非透传 stopReason ——
         // end_turn / stop / stop_sequence 三值同义，透传等于把归一责任推给每个消费方。
         turnStopReason = normalizeTurnStopReason(response.stopReason);
+        // S1 L1：最终停在「承诺形」短文本上（L2 封顶 / 被后台任务或通知排除 / 英文只度量 /
+        // env 关闭）就常驻提示一句，让「说了要做却没做」不再静默。persistent：写历史区，`done` 不清。
+        // 只认承诺形、不认 short_after_tools：回放里那 8 条短完成陈述 / 求助每次都弹提示是噪声，
+        // 它们的事实已进 EndTurnShape 与 digest，不靠 TUI 提示。
+        if (endTurnShape.kind === "promise_after_tools") {
+          yield {
+            kind: "system",
+            level: "info",
+            text: PLAIN_TEXT_END_TURN_NOTICE,
+            persistent: true,
+          };
+        }
         yield {
           kind: "done",
           turns: state.turnCount,
@@ -4601,6 +4763,12 @@ export async function* queryLoop(loopConfig: QueryLoopConfig): AsyncGenerator<Qu
             // P1-4：在**实际派发**处累加，不数响应里的 tool_use 块数 —— 后者含被循环
             // 检测拦下 / 被 abort 跳过的块，数出来是"模型想调多少"而非"真调了多少"。
             state.toolCallsDispatched = (state.toolCallsDispatched ?? 0) + 1;
+            // S4 可见性：本 prompt 的写入类 / 只读类派发数（bash 改动天然不计入，事实而非判据）
+            if (FILE_MUTATING_TOOLS.has(b.name)) {
+              state.promptEditWriteCount = (state.promptEditWriteCount ?? 0) + 1;
+            } else if (isReadFamilyTool(b.name)) {
+              state.promptReadonlyCount = (state.promptReadonlyCount ?? 0) + 1;
+            }
             // 可观测性：把 hypothesis_register / hypothesis_challenge 的实际调用落成 trace 事件
             // （events.jsonl），与 HypothesisGuideInjected 配对——前者记"注入命中"、后者记"模型采纳"，
             // 两者相除即「防线采纳率」，可被 trace-digest 自动统计，无需离线 grep。
@@ -5549,6 +5717,10 @@ export async function* queryLoop(loopConfig: QueryLoopConfig): AsyncGenerator<Qu
     // 之外）**之前**。若在此处就发事件，那条路径的端到端耗时会漏掉整个强制总结轮 ——
     // 而强制总结正是发生在最长的那些轮次上，漏掉等于系统性低估最慢样本，与"只在成功
     // 路径发事件"是同一种偏差。所以命中该条件时**推迟**到下方总结轮结束后再发。
+    if (pendingPromiseNudge) {
+      emitPromiseNudge(pendingPromiseNudge.lang, true, { outcome: "no_response" });
+      pendingPromiseNudge = undefined;
+    }
     if (!willRunForcedSummary()) emitTurnCompleteHere();
 
     // Fix 1：queryLoop 结束时批量清理本次 loopId 下所有快照残留

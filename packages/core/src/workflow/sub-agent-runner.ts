@@ -25,6 +25,7 @@ import type { HookSystem } from "../hook/system.ts";
 import { WorktreeManager, findGitRootForAgent } from "../worktree/manager.ts";
 import { getCwd } from "../bootstrap/state.ts";
 import { getLogger } from "../debug/logger.ts";
+import { UsageSinkTicket } from "../llm/billing-sink.ts";
 
 /** SubAgentRunner 构造选项 */
 export interface SubAgentRunnerOptions {
@@ -38,7 +39,13 @@ export interface SubAgentRunnerOptions {
   /** 完整 usage 归集:每个 agent 跑完把完整 SubAgentResult(含 inputTokens/model/provider)
    *  回传宿主,用于归集到主会话 SessionState(计入 /cost、costLimit 守卫)。
    *  与 onUsage 分工:onUsage 只喂 budget(输出 token),onResult 喂计费(完整用量)。 */
-  onResult?: (result: SubAgentResult) => void;
+  onResult?: (result: SubAgentResult) => boolean | void;
+  /**
+   * S13（20261016 方案 PR-8）：`onResult` 是否会把成本经 usage-sink 入账。
+   * 为 true 时给每个子代理挂入账票据（provider 的 BilledRequest 不再被观察者重复计费）；
+   * `onResult` 返回 `true` 表示这次真的入了账，否则票据把认领过的 fetch 补交给观察者。
+   */
+  accountsUsage?: boolean;
   /** 默认子代理类型(opts.agentType 缺省时用) */
   defaultAgentType?: string;
 }
@@ -107,6 +114,10 @@ export class SubAgentRunner implements AgentRunner {
       opts?.model, // M4: modelOverride(第 4 参)
     );
 
+    const usageTicket = this.opts.accountsUsage ? new UsageSinkTicket() : undefined;
+    if (usageTicket) sub.setUsageAccounting(usageTicket);
+    let sinkCharged = false;
+
     try {
       const result = await sub.execute(
         {
@@ -124,7 +135,8 @@ export class SubAgentRunner implements AgentRunner {
       // 3) usage 回灌:budget(输出 token) + 完整归集(计费)
       if (result.usage) {
         this.opts.onUsage?.(result.usage.outputTokens ?? 0);
-        this.opts.onResult?.(result);
+        sinkCharged = this.opts.onResult?.(result) === true;
+        usageTicket?.settle(sinkCharged);
       }
 
       if (!result.success) {
@@ -150,6 +162,8 @@ export class SubAgentRunner implements AgentRunner {
       }
       return result.output;
     } finally {
+      // S13：未走到 onResult（无 usage / 异常）时按未入账结算，幂等。
+      usageTicket?.settle(sinkCharged);
       await worktreeCleanup?.();
     }
   }

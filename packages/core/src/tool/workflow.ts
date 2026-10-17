@@ -309,6 +309,8 @@ export class WorkflowTool implements Tool {
       onUsage: (t) => {
         outputTokens += t;
       },
+      // S13（PR-8）：持有 sink 时声明成本由它入账，runner 据此给子代理挂票据（防双记）。
+      accountsUsage: this.usageSink !== undefined,
       onResult: (result) => {
         // 累计真实用量(修复此前 inputTokens 恒为 0)
         inputTokens += result.usage?.inputTokens ?? 0;
@@ -316,10 +318,12 @@ export class WorkflowTool implements Tool {
         if (this.usageSink) {
           try {
             this.usageSink(result);
+            return true;
           } catch (err) {
             log.warn("WORKFLOW", `usage 归集失败(不影响 workflow): ${(err as Error).message}`);
           }
         }
+        return false;
       },
     });
 

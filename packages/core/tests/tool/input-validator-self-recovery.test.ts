@@ -58,21 +58,30 @@ const askLike = z.object({
 describe("命名风格写错 → 消息必须说「改名」而不是「你漏传了」", () => {
   const tool = fakeTool("todo_write", todoWriteLike);
 
-  test("实测样本：todo_write 传 camelCase activeForm（5 项全中）", () => {
-    // 取自 20260907-155904-69998cf1 toolu_bdrk_01Bu1b5yfCdPu19Nkvw8MTPj
+  test("实测样本：todo_write 传 camelCase activeForm（5 项全中）→ 现已在边界归一、首次即通过", () => {
+    // 取自 20260907-155904-69998cf1 toolu_bdrk_01Bu1b5yfCdPu19Nkvw8MTPj。
+    // S2（20261016）之后 `activeForm` 是登记过的别名，校验前就被改回 `active_form`
+    // （见 input-alias.ts）——事故会话读到精确报错仍零重试，只改文案救不了它。
+    // 「改名」文案本身仍由下方未登记的命名变体（kebab / 全大写 / 首字母大写）守护。
     const r = validateToolInput(tool, {
       todos: [
         { content: "在 apis/index.ts 新增 API 封装", activeForm: "正在新增", status: "completed" },
         { content: "新建弹窗组件", activeForm: "正在新建", status: "in_progress" },
       ],
     });
+    expect(r.ok).toBe(true);
+  });
+
+  test("未登记的命名变体仍点名改名，且明确「不要新增字段」", () => {
+    const r = validateToolInput(tool, {
+      todos: [{ content: "c", ActiveForm: "a", status: "completed" }],
+    });
     expect(r.ok).toBe(false);
     if (r.ok) return;
-    // 必须点名「传的是 activeForm、要的是 active_form」
-    expect(r.message).toContain("activeForm");
+    expect(r.message).toContain("ActiveForm");
     expect(r.message).toContain("active_form");
     expect(r.message).toContain("字段名写错了");
-    // 且必须明确"不要新增字段"——否则模型可能两个键都塞
+    // 必须明确「不要新增字段」，否则模型可能两个键都塞
     expect(r.message).toContain("不要新增字段");
     // 反例：不能再是那句会误导的「实际收到 undefined」
     expect(r.message).not.toContain("实际收到 undefined");
@@ -231,7 +240,8 @@ describe("不回归：合法输入与既有行为", () => {
   test("多字段同时出错仍逐条列出", () => {
     const tool = fakeTool("todo_write", todoWriteLike);
     const r = validateToolInput(tool, {
-      todos: [{ content: "c", activeForm: "a", status: "done" }],
+      // 用未登记的变体 ActiveForm：activeForm 已在边界归一，不再产生缺字段错误
+      todos: [{ content: "c", ActiveForm: "a", status: "done" }],
     });
     expect(r.ok).toBe(false);
     if (!r.ok) {

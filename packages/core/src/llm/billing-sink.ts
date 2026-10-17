@@ -58,6 +58,8 @@ import type { Usage } from "./types.ts";
 import { resolvePricing, priceTierAt } from "../api/cost-tracker.ts";
 import { emitBilledRequest } from "../trace/stream-observer.ts";
 import { currentSseDumpContext } from "./sse-chunk-dumper.ts";
+import { getRequestContext } from "./request-context.ts";
+import { getLogger } from "../debug/logger.ts";
 
 /** 一次真实计费请求（= 一次 fetch，无论成功失败、无论谁发起的） */
 export interface BilledRequest {
@@ -108,6 +110,12 @@ export interface BilledRequest {
    * `agentId` 是否为空，是因为将来主循环也搬过来时只需把这里改成 false。
    */
   accounted: boolean;
+  /**
+   * S13（PR-8）：`accounted=true` 时是谁入的账。缺省 = 主循环（`updateUsage` + `AfterModelRaw`）；
+   * `"usage-sink"` = 子代理链经 `createSubAgentUsageSink` 按 `SubAgentResult.usage` 入账，
+   * 本事件同样只作核对（见 {@link UsageSinkTicket}）。
+   */
+  accountedBy?: "usage-sink";
 }
 
 /** 计费观察者 */
@@ -215,6 +223,12 @@ export function recordBilledRequest(req: BilledRequest): void {
       seen = new Set();
     }
     seen.add(req.fetchId);
+    // S13（PR-8）：经 usage-sink 入账的子代理链在 ALS 里带一张票据。在这里统一认领，
+    // 而不是改 provider 里那几处 `accounted: !agentId && !callerLabel` —— 判据只留一份。
+    if (!req.accounted) {
+      const ticket = getRequestContext()?.usageAccounting;
+      if (ticket?.claim(req)) req = { ...req, accounted: true, accountedBy: "usage-sink" };
+    }
     // 时段观测在**去重之后**：同一条流被 emit 两次时不能把高峰数记两遍。
     // 放在观察者之前：它与"谁给这笔钱记账"无关，所有 fetch 都要数（见 recordPriceTier）。
     try {
@@ -233,6 +247,7 @@ export function recordBilledRequest(req: BilledRequest): void {
       ...(req.agentId && { agent_id: req.agentId }),
       ...(req.callerLabel && { caller: req.callerLabel }),
       accounted: req.accounted,
+      ...(req.accountedBy && { accounted_by: req.accountedBy }),
       charged: shouldChargeBilledRequest(req),
       input_tokens: req.usage.inputTokens ?? 0,
       output_tokens: req.usage.outputTokens ?? 0,
@@ -243,15 +258,83 @@ export function recordBilledRequest(req: BilledRequest): void {
         cache_creation_tokens: req.usage.cacheCreationInputTokens,
       }),
     });
-    for (const fn of observers) {
-      try {
-        fn(req);
-      } catch {
-        /* 单个观察者异常不影响其余观察者 */
-      }
-    }
+    notifyObservers(req);
   } catch {
     /* 计费上报绝不影响流 */
+  }
+}
+
+function notifyObservers(req: BilledRequest): void {
+  for (const fn of observers) {
+    try {
+      fn(req);
+    } catch {
+      /* 单个观察者异常不影响其余观察者 */
+    }
+  }
+}
+
+/**
+ * S13（20261016 方案 PR-8）：「本次子代理执行的成本由 usage-sink 入账」的票据。
+ *
+ * ## 它修的是什么
+ *
+ * 子代理的每次 fetch 曾经走两条入账路：① `usage-sink.ts` 按 `SubAgentResult.usage`
+ * `updateUsage` 一次；② provider 发 `BilledRequest`（`agentId`/`callerLabel` 都有值 ⇒
+ * `accounted=false`）→ app.ts 的 billing observer 再 `recordSideCall` 一次。
+ * 实测事故会话 `agent:builtin` 118 条全部双记，`/debug` / 账本高估约 10%。
+ *
+ * ## 为什么是票据而不是给白名单补 `agent:*` 标签（方案 §4 否决项）
+ *
+ * 「已入账」是**这次执行有没有接 sink** 的事实，不是标签的属性：
+ * - `agent:custom` / `agent:summary` 被内置、自定义、hook 三条链共用，hook 子代理
+ *   不经 sink（app.ts 的 agent hook 执行器丢掉了 `result.usage`）—— 按标签豁免它就全漏；
+ * - sink 有不触发的时候（usage 全 0 时 `collectUsage` 跳过、顶层异常返回零 usage）——
+ *   按标签豁免这时也漏。
+ *
+ * 所以由**持有 sink 的调用方**在发起执行前开一张票据，执行期间该链的 fetch 被它认领
+ * （消费侧不加钱）；执行结束调 {@link settle}：sink 确实入了账就什么都不做，
+ * 没入账就把认领过的 fetch **补交**给计费观察者，按旧路径计费。错向因此只剩「少一次」
+ * 而不是「多一次 / 全漏」。
+ *
+ * 结算之后到达的 fetch（极少见：detach 后又跑出来的请求）不再被认领 ——
+ * 它不在已返回的 `result.usage` 里，必须由观察者计费。
+ */
+export class UsageSinkTicket {
+  private settled = false;
+  private readonly claimed: BilledRequest[] = [];
+
+  claim(req: unknown): boolean {
+    if (this.settled) return false;
+    this.claimed.push(req as BilledRequest);
+    return true;
+  }
+
+  /** 认领过的 fetch 数（测试 / 诊断用）。 */
+  get claimedCount(): number {
+    return this.claimed.length;
+  }
+
+  /**
+   * 执行结束时调用一次（幂等）。
+   * @param sinkCharged usage-sink 是否真的为本次执行入了账
+   */
+  settle(sinkCharged: boolean): void {
+    if (this.settled) return;
+    this.settled = true;
+    if (sinkCharged) return;
+    for (const req of this.claimed) {
+      // 补交：恢复为「未入账」，观察者按 shouldChargeBilledRequest 照常计费。
+      const { accountedBy: _ignored, ...rest } = req;
+      notifyObservers({ ...rest, accounted: false });
+    }
+    if (this.claimed.length > 0) {
+      getLogger().info(
+        "BILLING",
+        `usage-sink 未入账，补交 ${this.claimed.length} 次子代理 fetch 给计费观察者`,
+      );
+    }
+    this.claimed.length = 0;
   }
 }
 
