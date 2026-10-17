@@ -145,6 +145,9 @@ export function metaSourceLabel(s: ModelMetaSource): string | undefined {
       return "按同族模型推测";
     case "fallback":
       return "未采集到，用兜底值";
+    case "learned":
+      // S6：撞过 prompt-too-long 后学到的已放行上限——说出来源，用户才知道去哪清除
+      return "本路由撞墙后学到（learned-input-ceiling.json，7 天过期）";
     default:
       return undefined;
   }

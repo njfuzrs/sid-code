@@ -25,6 +25,7 @@ import * as fs from "node:fs";
 import * as path from "node:path";
 import { ensureSidTempDir } from "@sid-code/shared/utils/temp-dir.ts";
 import { REATTACH_PLAN_PREFIX, REATTACH_ORIGIN } from "../query/compact/reattach-markers.ts";
+import { hasInternalOrigin } from "./internal-message.ts";
 
 /** 持久化输出阈值（对标 Claude Code 30000 字符，可通过 SID_OUTPUT_THRESHOLD 环境变量覆盖） */
 const OUTPUT_THRESHOLD = parseInt(process.env.SID_OUTPUT_THRESHOLD ?? "30000", 10);
@@ -779,6 +780,23 @@ export class Manager {
     // 且天然保持 tool_use→tool_result 配对顺序，零污染。
     if (this.messages.length > 0) {
       const lastMsg = this.messages[this.messages.length - 1];
+      // S5 第一层：任一方带内部 origin 就**不合并**。合并时 `_meta` 浅合并、旧值保留，
+      // 实测真实响应因此继承了 reattach ack 的 `origin:"compact-reattach"`（TUI 整条隐藏、
+      // strip 整条剥离）；反方向则是用户输入 / 任务通知被并进内部消息。改为在两者之间
+      // 补一条与内部那一方同 origin 的桥消息，既维持交替，又让桥随内部消息一起被隐藏 / 剥离。
+      if (
+        lastMsg.role === compressed.role &&
+        (hasInternalOrigin(lastMsg) || hasInternalOrigin(compressed))
+      ) {
+        const bridgeOrigin = (hasInternalOrigin(lastMsg) ? lastMsg : compressed)._meta!
+          .origin as string;
+        log.debug(
+          "CONTEXT",
+          `角色未交替: 连续 ${compressed.role} 且含内部 origin(${bridgeOrigin})，补桥而不合并`,
+        );
+        this.messages.push(buildRoleBridge(compressed.role, bridgeOrigin), compressed);
+        return;
+      }
       if (lastMsg.role === compressed.role) {
         log.debug("CONTEXT", `角色未交替: 连续 ${compressed.role}，合并到上一条消息（不再插占位）`);
         const mergedContent = [...lastMsg.content, ...compressed.content];
@@ -1473,6 +1491,14 @@ export class Manager {
     return this.memoryTokens;
   }
 
+  /**
+   * S6：上一次成功响应的真实输入 token（= 「已被服务端放行」的下界）。
+   * 任何压缩都会把它清零 —— 返回 0 时调用方必须跳过学习，0 不是一个观测值。
+   */
+  getLastActualInputTokens(): number {
+    return this.lastActualInputTokens;
+  }
+
   /** 获取上下文窗口最大 token 数 */
   getMaxTokens(): number {
     return this.maxTokens;
@@ -2050,7 +2076,23 @@ export class Manager {
    */
   appendReattachMessages(msgs: Message[]): void {
     if (!msgs || msgs.length === 0) return;
-    this.messages.push(...msgs);
+    // S5 第二层：尾部感知插桥。压缩多发生在「发请求前」，保留段几乎恒以 user[tool_result]
+    // 收尾，原先裸 push `[user(files), assistant(ack)]` 必然产生 user,user 相邻
+    // （全库 3/3 压缩会话命中 ROLE_NOT_ALTERNATING）。这里是唯一写入口，所以在这里补：
+    // 与尾部同角色就先插一条反角色桥；批内同角色相邻同样补桥。
+    // 刻意**保留**末尾 ack、不改成以 user(files) 收尾——那样下一轮无 _meta 的用户输入会被
+    // 合并进内部消息、继承 origin 后被 TUI 隐藏（见方案 §4 S5 否决项）。
+    const out: Message[] = [];
+    let prev: Message | undefined = this.messages[this.messages.length - 1];
+    for (const m of msgs) {
+      if (prev && prev.role === m.role) {
+        const origin = (m._meta?.origin as string | undefined) ?? REATTACH_ORIGIN;
+        out.push(buildRoleBridge(m.role, origin));
+      }
+      out.push(m);
+      prev = m;
+    }
+    this.messages.push(...out);
   }
 
   /**
@@ -2493,4 +2535,14 @@ export class Manager {
       log.warn("CONTEXT", `清理工具输出临时文件失败: ${err.message}`);
     }
   }
+}
+
+/**
+ * S5：同角色相邻时插入的反角色桥消息。带内部 origin ⇒ TUI 隐藏、strip 与相邻内部消息一起剥离，
+ * 不会在摘要输入里留下新的同角色相邻。文案刻意极短：它只为协议交替存在，不承载信息。
+ */
+function buildRoleBridge(nextRole: Message["role"], origin: string): Message {
+  return nextRole === "user"
+    ? { role: "assistant", content: [{ type: "text", text: "好的。" }], _meta: { origin } }
+    : { role: "user", content: [{ type: "text", text: "继续。" }], _meta: { origin } };
 }

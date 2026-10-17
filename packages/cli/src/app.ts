@@ -764,7 +764,11 @@ export class App {
     // 上下文窗口按模型实际大小初始化（deepseek-v4 为 1M，Claude 200K，gpt-4o 128K）。
     // 硬编码 200000 会让 deepseek 的 contextPercent 高估 5 倍、过早触发自动压缩。
     const estimator = new TokenEstimator();
-    const ctxWindow = estimator.getContextLimit(opts.config.model, opts.config.availableModels);
+    const ctxWindow = estimator.getContextLimit(
+      opts.config.model,
+      opts.config.availableModels,
+      opts.config.baseURL,
+    );
     // §12 P1-1：env（SID_CODE_AUTOCOMPACT_PCT / CLAUDE_AUTOCOMPACT_PCT_OVERRIDE）解析出的使用率
     // 上限透传为 compactThreshold，接活这个此前从未被注入的死参数（见 manager 构造）。
     const autoCompactPct = resolveAutoCompactPctOverride() ?? undefined;
@@ -2426,7 +2430,7 @@ export class App {
       const est = new TokenEstimator();
       // §12 P3-2：窗口与输出上限一起同步——完成缓冲区的输出预留分量依赖新模型的 maxOutputTokens。
       this.ctxMgr.setMaxTokens(
-        est.getContextLimit(model, this.config.availableModels),
+        est.getContextLimit(model, this.config.availableModels, this.config.baseURL),
         est.getMaxOutputTokens(model, this.config.availableModels),
       );
     } catch {
@@ -3398,10 +3402,10 @@ export class App {
    * 刚截断腾出的空间立刻塞回 50K 正文，下一轮必然再次截断，而截断是**有损**的
    * （直接丢历史，不留摘要）。所以这里只注入一条路径清单，代价几十 token。
    *
-   * 角色交替：`buildEmergencyFilePathReattach` 只产一条 user 消息。截断后的历史末尾
-   * 可能就是 user（保留段以 user 开头、且尚未有 assistant 回复），两条 user 相邻会撞
-   * 校验。故这里先看末尾角色，必要时补一条 assistant ack——与
-   * `emergencyTruncate` 内部对 `emergencyPrefix` 做的同一件事，同一个理由。
+   * 角色交替：`buildEmergencyFilePathReattach` 只产一条 user 消息，截断后的历史末尾
+   * 可能就是 user。交替由 `appendReattachMessages`（唯一写入口）按尾部角色插桥统一处理
+   * （S5）。此前这里自己补 ack，但 ack 被 push 在 user 清单**之后**，tail=user 时仍是
+   * `user, user, assistant` —— 注释声称的保护从未生效，所以删掉、交给 sink。
    *
    * 全程 best-effort：恢复失败绝不能影响已完成的截断（截断本身是保命操作）。
    *
@@ -3417,22 +3421,12 @@ export class App {
       const msgs = buildEmergencyFilePathReattach(this.fileReadTracker);
       if (msgs.length === 0) return 0;
 
-      const existing = this.ctxMgr.getMessages();
-      const tail = existing[existing.length - 1];
-      const toAppend = [...msgs];
-      if (tail?.role === "user") {
-        toAppend.push({
-          role: "assistant",
-          content: [{ type: "text", text: "了解，需要文件内容时我会直接读取。" }],
-          _meta: { origin: "compact-reattach" },
-        });
-      }
-      this.ctxMgr.appendReattachMessages(toAppend);
+      this.ctxMgr.appendReattachMessages(msgs);
       getLogger().info(
         "APP",
-        `${info.trigger} 截断后注入最近文件路径清单（${toAppend.length} 条消息，不含正文）`,
+        `${info.trigger} 截断后注入最近文件路径清单（${msgs.length} 条消息，不含正文）`,
       );
-      return toAppend.length;
+      return msgs.length;
     } catch (err: any) {
       getLogger().debug("APP", `紧急截断后的文件路径恢复跳过: ${err?.message ?? err}`);
       return 0;
@@ -5406,7 +5400,7 @@ export class App {
             const est = new TokenEstimator();
             // §12 P3-2：窗口与输出上限一起同步（完成缓冲区依赖 maxOutputTokens）
             this.ctxMgr.setMaxTokens(
-              est.getContextLimit(setting.model, this.config.availableModels),
+              est.getContextLimit(setting.model, this.config.availableModels, this.config.baseURL),
               est.getMaxOutputTokens(setting.model, this.config.availableModels),
             );
           } catch {
@@ -10754,7 +10748,7 @@ export class App {
           const est = new TokenEstimator();
           // §12 P3-2：窗口与输出上限一起同步（完成缓冲区依赖 maxOutputTokens）
           this.ctxMgr.setMaxTokens(
-            est.getContextLimit(result.model, this.config.availableModels),
+            est.getContextLimit(result.model, this.config.availableModels, this.config.baseURL),
             est.getMaxOutputTokens(result.model, this.config.availableModels),
           );
         } catch {

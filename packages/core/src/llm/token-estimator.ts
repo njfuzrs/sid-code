@@ -6,6 +6,7 @@
 import type { Message, ToolDefinition } from "./types.ts";
 import { lookupRegistryExact, lookupRegistryFuzzy } from "./model-registry.ts";
 import { lookupCapability } from "./model-capabilities.ts";
+import { lookupAdmittedCeiling } from "./learned-window.ts";
 import { resolveWireModel } from "./wire-model.ts";
 // 审计第 21 条：收敛到 context/token.ts 的统一块估算（补全 thinking/redacted_thinking/mediaBlocks）。
 import { estimateBlockTokens } from "../context/token.ts";
@@ -34,7 +35,13 @@ export type ModelMetaSource =
   /** 注册表模糊匹配（前缀 / 版本借用 / 家族）——**是猜的** */
   | "fuzzy"
   /** 什么都没查到，用的是兜底常量——**是猜的** */
-  | "fallback";
+  | "fallback"
+  /**
+   * S6：本路由 (model, base_url) 撞过 prompt-too-long 后学到的「已放行输入上限」，
+   * 比上面各档给的窗口更紧时生效。是观测值（不是猜的），但展示时要说出来源，
+   * 方便用户发现与清除（`~/.sid-code/learned-input-ceiling.json`）。
+   */
+  | "learned";
 
 /** 这个来源档位是不是「猜的」（展示时必须标注不确定性）。 */
 export function isGuessedMetaSource(s: ModelMetaSource): boolean {
@@ -141,9 +148,15 @@ export class TokenEstimator {
    */
   getContextLimit(
     model: string,
-    availableModels?: Array<{ name?: string; modelId?: string; contextWindow?: number }>,
+    availableModels?: Array<{
+      name?: string;
+      modelId?: string;
+      contextWindow?: number;
+      baseURL?: string;
+    }>,
+    baseURL?: string,
   ): number {
-    return this.resolveContextLimit(model, availableModels).value;
+    return this.resolveContextLimit(model, availableModels, baseURL).value;
   }
 
   /**
@@ -159,6 +172,27 @@ export class TokenEstimator {
    * 而漂移的形态是「展示的来源与实际取值的层不一致」——比没有来源标注更糟。
    */
   resolveContextLimit(
+    model: string,
+    availableModels?: Array<{
+      name?: string;
+      modelId?: string;
+      contextWindow?: number;
+      baseURL?: string;
+    }>,
+    baseURL?: string,
+  ): { value: number; source: ModelMetaSource } {
+    const base = this.resolveContextLimitBase(model, availableModels);
+    // 用户显式配置的 contextWindow 最高优先、不参与取 min（用户比运行时观测更了解自己的部署）。
+    if (base.source === "user") return base;
+    // S6：本路由学到的已放行上限。键用**原始**模型名（别名）+ 该模型条目的 baseURL，
+    // 与 loop 写入时同口径；刻意不经 wire 名 / 前缀归一（同底层模型不同路由墙不同）。
+    const endpoint = availableModels?.find((m) => m.name === model)?.baseURL ?? baseURL;
+    const learned = lookupAdmittedCeiling(model, endpoint);
+    if (learned !== undefined && learned < base.value) return { value: learned, source: "learned" };
+    return base;
+  }
+
+  private resolveContextLimitBase(
     model: string,
     availableModels?: Array<{ name?: string; modelId?: string; contextWindow?: number }>,
   ): { value: number; source: ModelMetaSource } {
