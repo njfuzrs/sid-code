@@ -12,9 +12,6 @@ import { accumulateUsage } from "../llm/types.ts";
 import { getLogger } from "../debug/index.ts";
 import { normalizeToolInput } from "../llm/normalize-tool-input.ts";
 import { resetOnStreamRestart, recordStreamRestart } from "../llm/stream-restart.ts";
-import { emitTimeoutFired } from "../trace/stream-observer.ts";
-import { createStreamLifecycle, LIFECYCLE_PRESETS } from "../llm/stream-lifecycle.ts";
-import { resolveHeaderTimeoutMs } from "../config/network-profile.ts";
 
 /** 流式处理结果 */
 export interface StreamProcessResult {
@@ -35,68 +32,27 @@ export interface StreamProcessResult {
   errorMeta?: { type?: string; statusCode?: number; streamLevel?: boolean };
 }
 
-/** 子代理流处理器配置（T4：补齐心跳 + 整体超时，对标主循环 query/stream-processor.ts） */
+/**
+ * 子代理流处理器配置。
+ *
+ * ⛔ 不要在这里加回任何超时层（idle / overall / 首字节）。2026-10-17 已整层删除：
+ * 事故 20261016-224545 里这层 idle 60s 到点只置标志、连接没断（`getAbortController`
+ * 全仓零调用方），等漏斗 180s 真正断流并重试时，重试流的首个事件被
+ * `stream-lifecycle` 的 `if (snapshot.timedOut) break` 截断 → 整个子代理判 error。
+ * 一个「只会判死、不会断流」的计时器只会把漏斗的重试变成失败。
+ * 现在超时**只**由漏斗（`streamWithResilience` → `fallback.ts` startStreamTimeout）负责，
+ * 触发即 abort + 重试，与主循环同构；本函数只消费事件。
+ */
 export interface AgentStreamOptions {
   /** 中止信号（B1 纵深防御：流消费中检查，防止 abort 无法穿透底层时挂死） */
   signal?: AbortSignal;
-  /**
-   * 获取 AbortController（用于超时时主动中断上游流）。
-   * 与主循环 query/stream-processor 的 getAbortController 同义。
-   */
-  getAbortController?: () => AbortController | null | undefined;
-  /** 心跳超时（毫秒，默认 60000 = 60s 无数据 → abort）——**已收到首个事件之后**才用此阈值 */
-  heartbeatTimeoutMs?: number;
-  /**
-   * 首字节超时（毫秒）——尚未收到任何事件时的上限，与心跳分开计。
-   * 默认 headerTimeoutMs（300s）。见 2026-08-05 事故：网关排队期的慢首字节
-   * 被 60s idle 阈值误杀成"流卡死"，重试又重新排队，形成不停重试。
-   */
-  firstByteTimeoutMs?: number;
-  /**
-   * **单次尝试**整体超时（毫秒，默认 180000 = 3min）。
-   *
-   * 传进来的流是整个漏斗（含重试），但本层只计每次尝试本身：漏斗的 `retry_backoff`
-   * 期间停表、新尝试重新起表（由 stream-lifecycle 实现）。重试几次只由 `maxRetries`
-   * 决定，总时长失控由 sub-agent.ts 的硬 kill 兜底 —— 三者各管一件事。
-   * 事故 20261015-114502：改造前这里是「本轮全部重试 + 退避」的总上限，持续 429 时
-   * 第 6 次重试还在退避就被 180s 砍断。
-   */
-  overallTimeoutMs?: number;
-  /** 心跳检查间隔（毫秒，默认 5000） */
-  heartbeatCheckIntervalMs?: number;
-  /**
-   * P3-6（2026-09-23）：本条流的观测号段（与调用方 `emitStreamPhase` 用的**同一个**值）。
-   *
-   * 此前两处 `emitTimeoutFired` 硬编码 `-1`。`-1` 拼出的快照 key（`makeSnapshotKey`
-   * 是 `loopId:agentId:index`）对不上任何一份快照，于是：
-   *   ① `snapshot.timeoutsFired` 永远 push 不进去 —— 而 `fallback.ts` 的 reopenReason
-   *      正是读这个数组来判「这条流为什么重开」；
-   *   ② 事件落到 events.jsonl 里带着 `index: -1`，与主循环 watchdog / StreamPhase
-   *      的 `turnCount`(+`loopId`/`agentId`) 口径对不上 —— 按 index 聚合时子代理超时
-   *      **像没发生过**（铁律 1「每个指标必须能指到源字段」的弱形式）。
-   *
-   * 不传则退化为旧行为（-1），但生产两条路径都必须传：主流 `10000 + turns`、
-   * 总结轮 `20000 + turns`，与各自的 `emitStreamPhase` 逐字节同源。
-   */
-  observerIndex?: number;
-  /**
-   * P3-6：本子代理的 agentId（与调用方 `emitStreamPhase` 的第四参同源）。
-   *
-   * 缺它的后果不是「少一个字段」而是**记到别人账上**：`makeSnapshotKey` 在无
-   * agentId 时拼的是主循环那把 key，子代理的超时会污染主循环快照，
-   * 同时自己的 `timeoutsFired` 恒空（B4 已在 emitStreamPhase 侧踩过这个坑）。
-   */
-  observerAgentId?: string;
 }
 
 /**
  * 处理 LLM 流式响应，累积内容块和用量信息
  * 对标 claude-code 的 accumulative stream 处理模式
  *
- * T4：补齐 setInterval 心跳（60s 无数据）+ 整体超时（180s），对标主循环
- * query/stream-processor.ts:70-100。子代理流 stall 时不再依赖外层 5min
- * Promise.race（在 Bun 事件循环阻塞时可能延迟触发），而是每 5s 主动检查
- * 并 abort 上游。超时后返回 stopReason="error"（不抛异常，与既有契约一致）。
+ * 本函数不判超时：卡死由漏斗断流并重试（见 {@link AgentStreamOptions} 注释）。
  *
  * 向后兼容：第二参可传 AbortSignal（旧签名）或 AgentStreamOptions（新签名）。
  */
@@ -118,245 +74,169 @@ export async function processStream(
   /** 思考块 SSE index → provider 发来的原块（stop 时取 signature） */
   const thinkingStarts = new Map<number, unknown>();
 
-  // ── T7：心跳 + 整体超时改由 StreamLifecycle 统一管理（替代原 setInterval 手写心跳）──
-  // idle（心跳）= 60s 无事件 → abort；overall = 180s 单次尝试绝对上限（漏斗退避不计）。
-  // 子代理阈值比主循环短。
-  // 行为与迁移前 setInterval 版等价：超时触发 → abort 上游 + 返回 stopReason="error"（不抛异常）。
-  const HEARTBEAT_TIMEOUT = options.heartbeatTimeoutMs ?? LIFECYCLE_PRESETS.subAgent.idleTimeoutMs;
-  const OVERALL_TIMEOUT = options.overallTimeoutMs ?? LIFECYCLE_PRESETS.subAgent.overallTimeoutMs;
-  // 首字节超时（2026-08-05 事故根因，与主循环 query/stream-processor 同型修复）：
-  // 「等首个事件」这段等待是网关鉴权 + 排队 + 模型冷启动，实测可达 50-60s，而子代理
-  // idle 档默认仅 60s（BASE*0.2）——用 idle 阈值卡它会把正常排队误杀成流卡死。
-  // 默认取 headerTimeoutMs（300s，与主循环同源），可经 options 覆盖。
-  const FIRST_BYTE_TIMEOUT = options.firstByteTimeoutMs ?? resolveHeaderTimeoutMs();
-  // P3-6：超时事件的观测身份。未传时退化为 -1（旧行为），生产两条路径都会传。
-  const OBSERVER_INDEX = options.observerIndex ?? -1;
-  let timeoutError: Error | null = null;
-
-  const lifecycle = createStreamLifecycle<StreamEvent>({
-    idleTimeoutMs: HEARTBEAT_TIMEOUT,
-    firstByteTimeoutMs: FIRST_BYTE_TIMEOUT,
-    overallTimeoutMs: OVERALL_TIMEOUT,
-    // stall 告警阈值——不小于心跳超时，避免超时前的噪音告警（测试短超时下亦不误报）。
-    stallWarnMs: Math.max(HEARTBEAT_TIMEOUT, 30_000),
-    label: "SUB-AGENT",
-    onTimeout: (layer) => {
-      if (layer === "overall") {
-        timeoutError = new Error(
-          `sub-agent stream overall timeout: ${OVERALL_TIMEOUT / 1000}s 总时长超限`,
-        );
-        getLogger().warn("AGENT_STREAM", `整体超时: ${OVERALL_TIMEOUT / 1000}s`);
-        emitTimeoutFired(
-          OBSERVER_INDEX,
-          "agent_overall_timeout",
-          { elapsed_ms: OVERALL_TIMEOUT },
-          options.observerAgentId,
-        );
-        options.getAbortController?.()?.abort("agent-stream-overall-timeout");
-      } else {
-        // idle 层等价于原"心跳超时"（content_progress 未启用，不会走到该分支）
-        timeoutError = new Error(
-          `sub-agent stream heartbeat timeout: ${HEARTBEAT_TIMEOUT / 1000}s 无数据`,
-        );
-        getLogger().warn("AGENT_STREAM", `心跳超时: ${HEARTBEAT_TIMEOUT / 1000}s 无数据`);
-        emitTimeoutFired(
-          OBSERVER_INDEX,
-          "agent_heartbeat_timeout",
-          { idle_ms: HEARTBEAT_TIMEOUT },
-          options.observerAgentId,
-        );
-        options.getAbortController?.()?.abort("agent-stream-heartbeat-timeout");
-      }
-    },
-  });
-
-  try {
-    for await (const event of lifecycle.guard(stream)) {
-      // T4：一旦超时标志置位，主动退出循环返回错误（不再消费残余事件）
-      if (timeoutError) {
-        return {
-          content,
-          stopReason: "error",
-          usage,
-          errorMessage: (timeoutError as Error).message,
-        };
-      }
-
-      // B1 纵深防御：子代理流消费中检查 signal，防止 abort 无法穿透到底层时挂死
-      if (signal?.aborted) {
-        return {
-          content,
-          stopReason: "error",
-          usage,
-          errorMessage: "Request aborted",
-        };
-      }
-
-      switch (event.type) {
-        case "message_start":
-          accumulateUsage(usage, event.message.usage);
-          break;
-
-        // 流重开 → 上一次尝试的内容块全部作废（2026-08-04 事故根因修复）。
-        //
-        // 子代理路径的错乱形态与主循环**不同但同源**：这里用 `content[event.index]`
-        // 直接按 index 落位（不是 push + 映射表），重开后 index 从 0 重新开始，低位块
-        // 会被覆盖，但**上一次尝试的高位块原样残留**——拼出「新响应 + 旧尾巴」。
-        // 主循环是「旧头 + 新响应」，子代理是「新头 + 旧尾」，都必须清。
-        //
-        // usage 刻意不回退：作废尝试的 token 是真实计费的（见 stream-restart.ts）。
-        case "stream_restart": {
-          const outcome = resetOnStreamRestart({
-            content,
-            jsonAccumulators,
-            indexToPosition,
-            thinkingIndexes: new Set(thinkingStarts.keys()),
-          });
-          thinkingStarts.clear();
-          recordStreamRestart(event, outcome, "subagent");
-          break;
-        }
-
-        // ⛔ 不要改回 `content[event.index] = ...` 按 SSE index 直接落位。
-        //
-        // 2026-10-11 事故：旧实现只认 text / tool_use，thinking 块被**跳过不落位**，
-        // 于是「thinking(0) + tool_use(1)」的响应产出 `[<hole>, tool_use]` 稀疏数组，
-        // 下游 agentic-loop 一遍历就崩 `undefined is not an object (evaluating 'block.type')`。
-        // always-on 思考模型（Sonnet/Opus 5.x）每个工具轮都这样，子代理第 2 轮必崩。
-        // 现与主循环 query/stream-processor 同构：index → position 映射 + push，数组恒密集；
-        // 未知块类型、跳跃 index 都不可能再造出空洞。
-        case "content_block_start": {
-          const cb = event.content_block as ContentBlock & { type: string };
-          const isThinking =
-            cb.type === "thinking" ||
-            (cb.type === "text" && (event._raw_block as { type?: string })?.type === "thinking");
-          let block: ContentBlock | undefined;
-          if (isThinking) {
-            // 思考增量以 text_delta 送达（anthropic.ts / openai.ts 均如此），先累积成 text，
-            // stop 时转型成 thinking 块——与主循环口径一致。
-            block = { type: "text", text: "" };
-            // 记住 provider 给的原块：anthropic.ts 在 stop 前会把累积的 signature 写回它。
-            thinkingStarts.set(event.index, cb);
-          } else if (cb.type === "text") {
-            block = { type: "text", text: "" };
-          } else if (cb.type === "tool_use") {
-            block = {
-              type: "tool_use",
-              id: (cb as ToolUseBlock).id,
-              name: (cb as ToolUseBlock).name,
-              input: {},
-            };
-            jsonAccumulators.set(event.index, "");
-          } else if (cb.type === "redacted_thinking") {
-            // 多轮回传必须原样保留，丢了会静默破坏推理链（anthropic-api.md:356-357）
-            block = { ...(cb as ContentBlock) };
-          }
-          // 其余未知类型（server_tool_use 等）不落位——只要不占位，就不会出空洞。
-          if (block) {
-            indexToPosition.set(event.index, content.length);
-            content.push(block);
-          }
-          break;
-        }
-
-        case "content_block_delta": {
-          const pos = indexToPosition.get(event.index);
-          if (pos === undefined) break; // 未落位的块（未知类型）的增量，忽略
-          const delta = event.delta;
-          if (delta.type === "text_delta") {
-            const block = content[pos];
-            if (block?.type === "text") {
-              block.text += delta.text;
-            }
-          } else if (delta.type === "input_json_delta") {
-            const acc = jsonAccumulators.get(event.index) ?? "";
-            jsonAccumulators.set(event.index, acc + delta.partial_json);
-          }
-          break;
-        }
-
-        case "content_block_stop": {
-          const pos = indexToPosition.get(event.index);
-          const startBlock = thinkingStarts.get(event.index);
-          if (pos !== undefined && startBlock) {
-            const block = content[pos];
-            if (block?.type === "text") {
-              const signature = (startBlock as { signature?: string }).signature;
-              content[pos] = {
-                type: "thinking",
-                thinking: block.text,
-                ...(signature ? { signature } : {}),
-              };
-            }
-            thinkingStarts.delete(event.index);
-          }
-          const jsonStr = jsonAccumulators.get(event.index);
-          if (jsonStr !== undefined && pos !== undefined) {
-            const block = content[pos];
-            // D8：provider 在 stop 时修订 tool_use 身份（OpenAI 族 id/name 可能首片缺席或被切碎），
-            // 必须先于 input 解析与 onToolUseComplete 覆盖 —— 否则下游拿到的是 start 时的空串/半截。
-            if (block?.type === "tool_use" && event.tool_use) {
-              block.id = event.tool_use.id;
-              block.name = event.tool_use.name;
-            }
-            if (block?.type === "tool_use") {
-              // O(n) 设计：拼接字符串 + 最终一次性解析，不做增量 parse（对齐 CC raw stream 策略）
-              try {
-                block.input = normalizeToolInput(jsonStr ? JSON.parse(jsonStr) : {});
-              } catch (e) {
-                // telemetry: 工具输入 JSON 解析失败（对齐 CC tengu_tool_input_json_parse_fail）
-                getLogger().warn("STREAM", `工具输入 JSON 解析失败`, {
-                  toolName: block.name,
-                  inputLength: jsonStr.length,
-                  error: e instanceof Error ? e.message : String(e),
-                  inputHead: jsonStr.slice(0, 200),
-                });
-                block.input = {};
-              }
-            }
-            jsonAccumulators.delete(event.index);
-          }
-          break;
-        }
-
-        case "message_delta":
-          stopReason = event.delta.stop_reason;
-          // 统一走 accumulateUsage：补齐此前丢弃的 inputTokens 与 cacheRead/cacheCreation 字段
-          // （子代理路径原先只加 outputTokens → 接入计费后会按全价计 + input 计 0）
-          accumulateUsage(usage, event.usage);
-          break;
-
-        case "error":
-          return {
-            content,
-            stopReason: "error",
-            usage,
-            errorMessage: `LLM 错误: ${event.error.message}`,
-            // R1：结构化字段原样带出，供调用方走 classifyStreamError 精确判定（见 errorMeta 注释）
-            errorMeta: {
-              type: event.error.type,
-              statusCode: event.error.statusCode,
-              streamLevel: event.error.streamLevel,
-            },
-          };
-
-        case "system_api_error":
-          // 子代理上下文无 TUI 渲染，静默忽略重试进度事件
-          break;
-      }
+  for await (const event of stream) {
+    // B1 纵深防御：子代理流消费中检查 signal，防止 abort 无法穿透到底层时挂死
+    if (signal?.aborted) {
+      return {
+        content,
+        stopReason: "error",
+        usage,
+        errorMessage: "Request aborted",
+      };
     }
-  } finally {
-    // T7：StreamLifecycle 在其 finally 中自清理全部定时器，此处无需额外清理。
-  }
 
-  // T4：循环正常结束后仍需检查超时标志（stream 自然 end 与超时 abort 竞态时）
-  if (timeoutError) {
-    return {
-      content,
-      stopReason: "error",
-      usage,
-      errorMessage: (timeoutError as Error).message,
-    };
+    switch (event.type) {
+      case "message_start":
+        accumulateUsage(usage, event.message.usage);
+        break;
+
+      // 流重开 → 上一次尝试的内容块全部作废（2026-08-04 事故根因修复）。
+      //
+      // 子代理路径的错乱形态与主循环**不同但同源**：这里用 `content[event.index]`
+      // 直接按 index 落位（不是 push + 映射表），重开后 index 从 0 重新开始，低位块
+      // 会被覆盖，但**上一次尝试的高位块原样残留**——拼出「新响应 + 旧尾巴」。
+      // 主循环是「旧头 + 新响应」，子代理是「新头 + 旧尾」，都必须清。
+      //
+      // usage 刻意不回退：作废尝试的 token 是真实计费的（见 stream-restart.ts）。
+      case "stream_restart": {
+        const outcome = resetOnStreamRestart({
+          content,
+          jsonAccumulators,
+          indexToPosition,
+          thinkingIndexes: new Set(thinkingStarts.keys()),
+        });
+        thinkingStarts.clear();
+        recordStreamRestart(event, outcome, "subagent");
+        break;
+      }
+
+      // ⛔ 不要改回 `content[event.index] = ...` 按 SSE index 直接落位。
+      //
+      // 2026-10-11 事故：旧实现只认 text / tool_use，thinking 块被**跳过不落位**，
+      // 于是「thinking(0) + tool_use(1)」的响应产出 `[<hole>, tool_use]` 稀疏数组，
+      // 下游 agentic-loop 一遍历就崩 `undefined is not an object (evaluating 'block.type')`。
+      // always-on 思考模型（Sonnet/Opus 5.x）每个工具轮都这样，子代理第 2 轮必崩。
+      // 现与主循环 query/stream-processor 同构：index → position 映射 + push，数组恒密集；
+      // 未知块类型、跳跃 index 都不可能再造出空洞。
+      case "content_block_start": {
+        const cb = event.content_block as ContentBlock & { type: string };
+        const isThinking =
+          cb.type === "thinking" ||
+          (cb.type === "text" && (event._raw_block as { type?: string })?.type === "thinking");
+        let block: ContentBlock | undefined;
+        if (isThinking) {
+          // 思考增量以 text_delta 送达（anthropic.ts / openai.ts 均如此），先累积成 text，
+          // stop 时转型成 thinking 块——与主循环口径一致。
+          block = { type: "text", text: "" };
+          // 记住 provider 给的原块：anthropic.ts 在 stop 前会把累积的 signature 写回它。
+          thinkingStarts.set(event.index, cb);
+        } else if (cb.type === "text") {
+          block = { type: "text", text: "" };
+        } else if (cb.type === "tool_use") {
+          block = {
+            type: "tool_use",
+            id: (cb as ToolUseBlock).id,
+            name: (cb as ToolUseBlock).name,
+            input: {},
+          };
+          jsonAccumulators.set(event.index, "");
+        } else if (cb.type === "redacted_thinking") {
+          // 多轮回传必须原样保留，丢了会静默破坏推理链（anthropic-api.md:356-357）
+          block = { ...(cb as ContentBlock) };
+        }
+        // 其余未知类型（server_tool_use 等）不落位——只要不占位，就不会出空洞。
+        if (block) {
+          indexToPosition.set(event.index, content.length);
+          content.push(block);
+        }
+        break;
+      }
+
+      case "content_block_delta": {
+        const pos = indexToPosition.get(event.index);
+        if (pos === undefined) break; // 未落位的块（未知类型）的增量，忽略
+        const delta = event.delta;
+        if (delta.type === "text_delta") {
+          const block = content[pos];
+          if (block?.type === "text") {
+            block.text += delta.text;
+          }
+        } else if (delta.type === "input_json_delta") {
+          const acc = jsonAccumulators.get(event.index) ?? "";
+          jsonAccumulators.set(event.index, acc + delta.partial_json);
+        }
+        break;
+      }
+
+      case "content_block_stop": {
+        const pos = indexToPosition.get(event.index);
+        const startBlock = thinkingStarts.get(event.index);
+        if (pos !== undefined && startBlock) {
+          const block = content[pos];
+          if (block?.type === "text") {
+            const signature = (startBlock as { signature?: string }).signature;
+            content[pos] = {
+              type: "thinking",
+              thinking: block.text,
+              ...(signature ? { signature } : {}),
+            };
+          }
+          thinkingStarts.delete(event.index);
+        }
+        const jsonStr = jsonAccumulators.get(event.index);
+        if (jsonStr !== undefined && pos !== undefined) {
+          const block = content[pos];
+          // D8：provider 在 stop 时修订 tool_use 身份（OpenAI 族 id/name 可能首片缺席或被切碎），
+          // 必须先于 input 解析与 onToolUseComplete 覆盖 —— 否则下游拿到的是 start 时的空串/半截。
+          if (block?.type === "tool_use" && event.tool_use) {
+            block.id = event.tool_use.id;
+            block.name = event.tool_use.name;
+          }
+          if (block?.type === "tool_use") {
+            // O(n) 设计：拼接字符串 + 最终一次性解析，不做增量 parse（对齐 CC raw stream 策略）
+            try {
+              block.input = normalizeToolInput(jsonStr ? JSON.parse(jsonStr) : {});
+            } catch (e) {
+              // telemetry: 工具输入 JSON 解析失败（对齐 CC tengu_tool_input_json_parse_fail）
+              getLogger().warn("STREAM", `工具输入 JSON 解析失败`, {
+                toolName: block.name,
+                inputLength: jsonStr.length,
+                error: e instanceof Error ? e.message : String(e),
+                inputHead: jsonStr.slice(0, 200),
+              });
+              block.input = {};
+            }
+          }
+          jsonAccumulators.delete(event.index);
+        }
+        break;
+      }
+
+      case "message_delta":
+        stopReason = event.delta.stop_reason;
+        // 统一走 accumulateUsage：补齐此前丢弃的 inputTokens 与 cacheRead/cacheCreation 字段
+        // （子代理路径原先只加 outputTokens → 接入计费后会按全价计 + input 计 0）
+        accumulateUsage(usage, event.usage);
+        break;
+
+      case "error":
+        return {
+          content,
+          stopReason: "error",
+          usage,
+          errorMessage: `LLM 错误: ${event.error.message}`,
+          // R1：结构化字段原样带出，供调用方走 classifyStreamError 精确判定（见 errorMeta 注释）
+          errorMeta: {
+            type: event.error.type,
+            statusCode: event.error.statusCode,
+            streamLevel: event.error.streamLevel,
+          },
+        };
+
+      case "system_api_error":
+        // 子代理上下文无 TUI 渲染，静默忽略重试进度事件
+        break;
+    }
   }
 
   return { content, stopReason, usage };

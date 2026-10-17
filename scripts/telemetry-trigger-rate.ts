@@ -83,6 +83,7 @@ const TIMEOUT_LAYERS = [
   "content_progress_timeout",
   "fallback_stream_timeout",
   "turn_hard_timeout",
+  // 历史值（2026-10-17 起不再产生，见 stream-observer.ts 同名成员注释）；保留以读旧轨迹基线。
   "agent_heartbeat_timeout",
   "agent_overall_timeout",
   // PR11（§4.5）：此前这两层开枪不留痕（watchdog 只发 WatchdogKill、

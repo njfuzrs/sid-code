@@ -13,7 +13,10 @@
  * 场景构造（等比例缩小）：overall 300ms，4 次 429 的累计退避远超 300ms，第 5 次成功。
  * 修复前：provider 被调 3 次左右、`agent_overall_timeout` 开枪、success=false。
  *
- * 负向对照（防空集全绿）：单次尝试本身跑超 overall → 仍必须开枪。
+ * 2026-10-17 更新：processStream 的 overall 层已整层删除（只判死不断流，把漏斗重试判死，
+ * 事故 20261016-224545）。原「负向对照：单次尝试跑超 overall → 仍开枪」锁的正是被删行为，
+ * 改为锁相反事实：processStream 不再截断单次尝试（那是漏斗的事），外层取消仍能穿透。
+ * 本文件对「退避不被时间截断」的断言保持不变 —— 它现在由「根本没有这一层」保证。
  *
  * fix_type: regression_guard
  */
@@ -105,10 +108,11 @@ function config(provider: Provider, overrides: Record<string, unknown> = {}) {
     availability: noCooldownAvailability(),
     permissionChecker: undefined,
     maxStreamRetries: 10,
-    // 等比例缩小的事故参数：overall 300ms；退避 base 120ms / cap 240ms，
+    // 等比例缩小的事故参数：原 overall 300ms；退避 base 120ms / cap 240ms，
     // 4 次退避累计 ≈ 120+240+240+240 = 840ms ≫ 300ms。
+    // 旧字段 streamOverallTimeoutMs 已删（无读者）；仍传 300 作变异抓手：
+    // 恢复 processStream 的 overall 层 + 透传 → 第一条用例会重新红。
     streamOverallTimeoutMs: 300,
-    streamIdleTimeoutMs: 5_000,
     retryBackoffBaseMs: 120,
     retryBackoffMaxMs: 240,
     ...overrides,
@@ -143,15 +147,23 @@ describe("事故 20261015-114502 — 子代理 overall 只计单次尝试", () =
     expect(result.errorMessage ?? "").not.toContain("overall timeout");
   }, 20_000);
 
-  test("负向对照：单次尝试本身跑超 overall → 仍开枪（overall 没被关掉）", async () => {
+  test("单次尝试持续出字、远超旧 overall → processStream 不截断；外层取消仍穿透", async () => {
     const ctl = new AbortController();
     const { provider } = makeProvider([() => neverEnding(ctl.signal)]);
+    // 旧 overall 300ms 的 3 倍后再取消：若 overall 层还在，会先以「overall timeout」失败。
+    setTimeout(() => ctl.abort(), 900);
+    const t0 = Date.now();
     const result = await runAgentLoop(
-      config(provider, { maxStreamRetries: 0, retryBackoffBaseMs: 0, retryBackoffMaxMs: 0 }),
+      config(provider, {
+        maxStreamRetries: 0,
+        retryBackoffBaseMs: 0,
+        retryBackoffMaxMs: 0,
+        signal: ctl.signal,
+      }),
     );
-    ctl.abort();
+    expect(Date.now() - t0).toBeGreaterThanOrEqual(850);
     expect(result.success).toBe(false);
-    expect(result.errorMessage).toContain("overall timeout");
+    expect(result.errorMessage ?? "").not.toContain("overall timeout");
   }, 20_000);
 
   test("退避后的新尝试重新起表：退避前已耗 200ms 的尝试不把余量带进下一次", async () => {

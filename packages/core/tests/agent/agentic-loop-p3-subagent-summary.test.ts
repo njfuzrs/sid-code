@@ -285,75 +285,50 @@ describe("P3-3 · 子代理强制总结轮：响应里的 tool_use 必须剥离"
   });
 });
 
-describe("P3-6 · 子代理 TimeoutFired 必须带真实观测身份（此前硬编码 -1）", () => {
-  test("不再有 emitTimeoutFired(-1, ...) 的硬编码调用", () => {
-    // `-1` 拼出的快照 key 对不上任何一份快照：既 push 不进 snapshot.timeoutsFired
-    //（fallback 的 reopenReason 读它），也无法按轮次聚合 → 子代理超时在 digest 里
-    // 像"没发生过"（铁律 1 的弱形式）。
-    expect(AGENT_STREAM_PROCESSOR_SRC).not.toContain(
-      'emitTimeoutFired(-1, "agent_overall_timeout"',
-    );
-    expect(AGENT_STREAM_PROCESSOR_SRC).not.toContain(
-      'emitTimeoutFired(-1, "agent_heartbeat_timeout"',
-    );
-    // 两处都改走可注入的号段 + agentId。
-    expect(AGENT_STREAM_PROCESSOR_SRC).toContain("OBSERVER_INDEX");
-    expect(AGENT_STREAM_PROCESSOR_SRC).toContain("options.observerAgentId");
+// P3-6 原先锁的是「子代理 processStream 的 TimeoutFired 带真实号段」。2026-10-17 那一层
+// （idle / overall / 首字节）整层删除：它到点只置标志不断流，把漏斗的重试判死
+// （事故 20261016-224545，见 subagent-stream-stall-retry-not-fail.test.ts）。
+// 号段身份问题随之消失（不再有 emit 点），这里改为锁住「这一层不许长回来」。
+describe("P3-6 → 2026-10-17 · 子代理 processStream 不再自带超时层", () => {
+  test("源码里没有 lifecycle 包装、没有 TimeoutFired、没有 timeoutError", () => {
+    expect(AGENT_STREAM_PROCESSOR_SRC).not.toContain("createStreamLifecycle");
+    expect(AGENT_STREAM_PROCESSOR_SRC).not.toContain("emitTimeoutFired");
+    expect(AGENT_STREAM_PROCESSOR_SRC).not.toContain("timeoutError");
+    expect(AGENT_STREAM_PROCESSOR_SRC).not.toContain("agent_heartbeat_timeout");
+    expect(AGENT_STREAM_PROCESSOR_SRC).not.toContain("agent_overall_timeout");
   });
 
-  test("生产调用方把号段/agentId 传了下去，且与 emitStreamPhase 同源", () => {
-    // 关键不是"有这个参数"，而是**与同一条流的 emitStreamPhase 用同一把 key** ——
-    // 传了但传错号段，等于把超时记到别人那一格上（B4 在 emitStreamPhase 侧踩过）。
-    // 主流：10000 + turns（agentStreamIndex）；总结轮：20000 + turns（summaryStreamIndex）。
-    //
-    // ⚠️ 必须按 `processStream(` 定位，不能直接 indexOf("observerIndex: agentStreamIndex")：
-    // `observerIndex: agentStreamIndex` 在本文件出现**两次** —— 一次给
-    // `streamWithResilience`（漏斗，刻意不带 agentId，它在 onRetry 里另行传），
-    // 一次给 `processStream`。按裸字符串找会命中漏斗那次，断言就在问错的调用点。
+  test("生产两处 processStream 调用只传 signal（不再传任何超时阈值）", () => {
     const callSites = [...AGENTIC_LOOP_SRC.matchAll(/await processStream\(/g)].map((m) => m.index!);
     expect(callSites.length, "子代理应有两处 processStream 调用（主流 + 总结轮）").toBe(2);
-
-    const blocks = callSites.map((i) => AGENTIC_LOOP_SRC.slice(i, i + 900));
-    // 主流那一处
-    expect(blocks[0]).toContain("observerIndex: agentStreamIndex");
-    expect(blocks[0], "主流超时事件必须带 agentId").toContain("observerAgentId");
-    // 总结轮那一处（20000 号段，避开主流那一格）
-    expect(blocks[1]).toContain("observerIndex: summaryStreamIndex");
-    expect(blocks[1], "总结轮超时事件必须带 agentId").toContain("observerAgentId");
+    for (const i of callSites) {
+      const call = AGENTIC_LOOP_SRC.slice(i, AGENTIC_LOOP_SRC.indexOf(");", i));
+      expect(call).toContain("{ signal }");
+      expect(call).not.toMatch(/TimeoutMs/);
+    }
   });
 
-  test("超时事件真的落在传入的号段上（而不是 -1）", async () => {
-    // 端到端验一次：注入极短心跳超时 + 一个永不产出的流，看 TimeoutFired 的 index。
+  test("长时间静默后的事件照常消费，不发 TimeoutFired", async () => {
     const { processStream } = await import("@sid-code/core/agent/stream-processor.ts");
     const observer = await import("@sid-code/core/trace/stream-observer.ts");
 
-    const captured: Array<{ event: string; data: Record<string, unknown> }> = [];
+    const captured: Array<{ event: string }> = [];
     observer.initStreamObserver("test-p3-6", "/tmp", ((ev: any) => {
-      captured.push({ event: ev.event, data: (ev.data ?? {}) as Record<string, unknown> });
+      captured.push({ event: ev.event });
     }) as never);
 
-    // 永不产出任何事件、也不结束的流 → 触发首字节/心跳超时。
-    async function* stalled(): AsyncIterable<StreamEvent> {
-      await new Promise((r) => setTimeout(r, 3_000));
+    async function* slow(): AsyncIterable<StreamEvent> {
+      await new Promise((r) => setTimeout(r, 150));
       yield { type: "message_delta", delta: { stop_reason: "end_turn" } } as StreamEvent;
     }
 
-    const res = await processStream(stalled(), {
+    // 旧签名的阈值字段：已无读者，必须不生效
+    const res = await processStream(slow(), {
       firstByteTimeoutMs: 30,
       heartbeatTimeoutMs: 30,
       overallTimeoutMs: 60,
-      heartbeatCheckIntervalMs: 10,
-      observerIndex: 10007,
-      observerAgentId: "agent-p3-6",
-    });
-    expect(res.stopReason).toBe("error");
-
-    const fired = captured.filter((e) => e.event === "TimeoutFired");
-    expect(fired.length, "超时必须发 TimeoutFired").toBeGreaterThan(0);
-    // 核心断言：index 是传入的号段，不是 -1。
-    for (const f of fired) {
-      expect(f.data.index, "TimeoutFired.index 不得是 -1（对不上任何快照）").toBe(10007);
-      expect(f.data.agent_id ?? f.data.agentId).toBe("agent-p3-6");
-    }
+    } as never);
+    expect(res.stopReason).toBe("end_turn");
+    expect(captured.filter((e) => e.event === "TimeoutFired")).toHaveLength(0);
   });
 });
