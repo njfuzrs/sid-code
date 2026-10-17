@@ -975,6 +975,7 @@ export class TraceCollector {
       total_cache_read_tokens: 0,
       total_cache_creation_tokens: 0,
       total_cost_usd: 0,
+      cost_scope: "main",
       total_api_calls: 0,
       // 缺口分析补全：派生/采集类指标（逐轮更新）
       total_reasoning_tokens: 0,
@@ -2089,7 +2090,11 @@ export class TraceCollector {
         this.metadata.total_cache_read_tokens = s.total_cache_read_tokens;
       if (s.total_cache_creation_tokens !== undefined)
         this.metadata.total_cache_creation_tokens = s.total_cache_creation_tokens;
-      if (s.total_cost_usd !== undefined) this.metadata.total_cost_usd = s.total_cost_usd;
+      if (s.total_cost_usd !== undefined) {
+        this.metadata.total_cost_usd = s.total_cost_usd;
+        // S13（PR-8）：SessionState.totalCostUSD 含经 usage-sink 的子代理成本，口径随之改变。
+        this.metadata.cost_scope = "main+subagent";
+      }
       if (s.total_api_calls !== undefined) this.metadata.total_api_calls = s.total_api_calls;
       if (s.tools_used) for (const t of s.tools_used) this.metadata.tools_used.add(t);
       if (s.files_edited) for (const f of s.files_edited) this.metadata.files_edited.add(f);
@@ -2675,6 +2680,9 @@ export class TraceCollector {
           ttft: { p50: m?.ttft_p50, p95: m?.ttft_p95, n: m?.ttft_n },
           e2e: { p50: m?.e2e_p50, p95: m?.e2e_p95, n: m?.e2e_n },
           defense_triggered: m?.defenseTriggered,
+          // S1 L1：只有本路径跑过 digest，增量路径不给（缺失 ≠ 0）
+          short_text_end_turns: m?.short_text_end_turns,
+          end_turn_n: m?.end_turn_n,
           // 这条路径**跑过** digest，所以它是唯一有资格给出损坏结论的地方。
           // `m` 为 undefined（digest 没产出 sessionMetrics）时这里也是 undefined ——
           // 那同样是「没检测」，不能兜底成 false（见 buildSessionIndexEntry 注释）。

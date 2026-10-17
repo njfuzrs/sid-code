@@ -65,21 +65,45 @@ describe("S2b 单轮硬超时兜底", () => {
 });
 
 describe("S5 会话退出回收在跑的子代理", () => {
-  test("abortAllAgentTasks 以专属 reason abort 全部未结束的子代理", () => {
+  test("abortAllAgentTasks 以专属 reason abort 全部未结束的子代理", async () => {
     const a = createAgentTask({ agentType: "explore", prompt: "p", description: "a" });
     const b = createAgentTask({ agentType: "explore", prompt: "p", description: "b" });
-    const n = abortAllAgentTasks();
+    const n = await abortAllAgentTasks(50);
     expect(n).toBeGreaterThanOrEqual(2);
     for (const t of [a, b]) {
       expect(t.abortController.signal.aborted).toBe(true);
       expect(t.abortController.signal.reason).toBe(SUBAGENT_SESSION_EXIT_REASON);
     }
     // 幂等：再调一次不重复 abort
-    expect(abortAllAgentTasks()).toBe(0);
+    expect(await abortAllAgentTasks(50)).toBe(0);
   });
 
   test("reason 已登记 ABORT_REASONS（防孤儿 rejection 崩溃）", () => {
     expect((ABORT_REASONS as readonly string[]).includes(SUBAGENT_SESSION_EXIT_REASON)).toBe(true);
+  });
+});
+
+describe("S5 回收等子代理收尾（SubagentStop 赶在 flush 之前）", () => {
+  test("abort 后等到任务进入终态才返回", async () => {
+    const { failAgentTask } = await import("@sid-code/core/task/agent-task.ts");
+    const t = createAgentTask({ agentType: "explore", prompt: "p", description: "slow-exit" });
+    let settledAt = 0;
+    // 模拟子代理出口：看到 abort 后 30ms 才走完「被中止」分支
+    t.abortController.signal.addEventListener("abort", () => {
+      setTimeout(() => {
+        settledAt = Date.now();
+        void failAgentTask(t.taskState.id, "aborted", false);
+      }, 30);
+    });
+    await abortAllAgentTasks(1_000);
+    expect(settledAt, "返回时子代理必须已收尾").toBeGreaterThan(0);
+  });
+
+  test("子代理不收尾 → 到上限即返回，不挂住关闭流程", async () => {
+    createAgentTask({ agentType: "explore", prompt: "p", description: "never-exit" });
+    const t0 = Date.now();
+    await abortAllAgentTasks(40);
+    expect(Date.now() - t0).toBeLessThan(1_000);
   });
 });
 

@@ -43,6 +43,7 @@ import {
   type ModelLatencyStats,
 } from "./latency-by-model.ts";
 import { createProviderResolver, resolveEventProvider } from "./provider-resolver.ts";
+import { calculateUSDCost, resolvePricing } from "../api/cost-tracker.ts";
 
 // ─────────────────────────── 路径 ───────────────────────────
 
@@ -383,8 +384,12 @@ export interface JitDigestStats {
  * 那里 side-call 恒 0 条（实测 12460 行），拿它算 side-call 思考率永远是 n=0 的假绿。
  *
  * 分母一律写死为「调用方意图 = 关思考」（`thinking_intent === false`）的 fetch：
- * - 主循环泄漏率：`accounted === true` 的那部分；
- * - 非主循环思考率：`accounted === false`（side-call / fork / 子代理）的那部分。
+ * - 主循环泄漏率：无 `agent_id` 且无 `caller` 的那部分；
+ * - 非主循环思考率：其余（side-call / fork / 子代理）。
+ *
+ * ⚠ 主循环判据**不能用 `accounted`**：S13 起经 usage-sink 入账的子代理链也会被改写成
+ * `accounted: true`（`accounted_by: "usage-sink"`），`accounted` 表达的是「谁记账」而不是「谁发的」。
+ * 用它分桶会把子代理请求算进主循环泄漏率。身份字段是 provider 出口从 ALS 取的，两族都齐。
  * 分子 = 其中 `thinking_in_response === true` 的条数。
  *
  * `offButSentOn` 单列：意图关、线上却发了 enabled/adaptive——只会发生在恒思考模型上，
@@ -423,9 +428,10 @@ export function aggregateThinkingLeakStats(
       continue;
     }
     const thought = d.thinking_in_response === true;
-    const bucket = d.accounted === true ? stats.main : stats.nonMain;
+    const isMain = !d.agent_id && !d.caller;
+    const bucket = isMain ? stats.main : stats.nonMain;
     bucket.offRequests++;
-    if (d.accounted === true) {
+    if (isMain) {
       if (thought) stats.main.leaked++;
     } else if (thought) {
       stats.nonMain.withThinking++;
@@ -910,6 +916,22 @@ export interface SessionLevelMetrics {
    */
   gen_p95?: number;
   gen_n: number;
+  /**
+   * S1 L1：跑过工具后以短文本收尾的 end_turn 次数（`EndTurnShape.kind` ∈
+   * short_after_tools / promise_after_tools）。分母 = 本会话 EndTurnShape 事件数（`end_turn_n`）。
+   */
+  short_text_end_turns: number;
+  end_turn_n: number;
+  /** S1 L2：`PromiseNudge.fired=true` 次数与其中 outcome=tool_use 的次数（续跑兑现率的分子分母） */
+  promise_nudge_fired: number;
+  promise_nudge_tool_use: number;
+  /** 证据指针：前几条短文本收尾的 (promptSeq, turn, text_len, kind)，只给 digest 展示用，不进索引 */
+  short_text_end_turn_samples: Array<{
+    prompt_seq?: number;
+    turn?: number;
+    text_len?: number;
+    kind: string;
+  }>;
 }
 
 export interface SessionRef {
@@ -2321,6 +2343,35 @@ export function buildDigest(ref: SessionRef, full: boolean, paths: DigestPaths):
   // 每一项都有合法豁免场景（见 ProcessPathologyStats 各字段注释）。定成 high 会让
   // P1-7 的 WARN 通道被合法长任务刷屏，重演 §8.1 那 29 行噪声的教训。
   for (const item of describePathology(pathology, ref, eventsPath)) anomalies.push(item);
+  const billingAmount = checkBillingAmountConsistency(events, ledger);
+  if (billingAmount) {
+    anomalies.push({
+      layer: "L0",
+      severity: "high",
+      kind: "billing_amount_mismatch",
+      detail:
+        `账本成本与计费事件金额不一致：账本 $${billingAmount.ledgerUSD.toFixed(4)}，` +
+        `Σ BilledRequest（按事件时刻、内置价表）$${billingAmount.billedUSD.toFixed(4)}，` +
+        `偏差 ${(billingAmount.ratio * 100).toFixed(1)}%（阈值 ${BILLING_AMOUNT_TOLERANCE * 100}%）。` +
+        `账本偏高 = 有调用链被记了两次（S13 子代理双记即此形态）；偏低 = 有链漏记`,
+      provenance: [
+        {
+          sourceFile: paths.ledgerPath,
+          lineRef: `sessionId=${ref.id} costUSD`,
+          rawValue: `ledger=${billingAmount.ledgerUSD} billed=${billingAmount.billedUSD} n=${billingAmount.count}`,
+          mtime: fileMtimeIso(paths.ledgerPath),
+        },
+        {
+          sourceFile: eventsPath,
+          lineRef: "event=BilledRequest（timestamp ≤ 账本 ts），usage × 事件时刻价",
+          rawValue: `count=${billingAmount.count}`,
+          mtime: fileMtimeIso(eventsPath),
+          // 用内置价表重算：用户自配 baseURL 价时可能与账本取价不同（事件不带 base_url）
+          lossy: true,
+        },
+      ],
+    });
+  }
 
   // 按 layer(L0 事实在前、L1 假设在后)再按严重度排序异常。
   // L0 优先:消费者应先看客观事实,再看建立在事实上的假设。
@@ -2653,6 +2704,33 @@ export function renderHuman(d: Digest, opts: RenderOptions = {}): string {
       L.push(
         c("red", `  ⚠ 口径异常: 端到端 P50 ${s(m.e2e_p50)} < 首字节 P50 ${s(m.ttft_p50)}`) +
           c("gray", " —— 两者基准点不一致，数字不可用，先查埋点"),
+      );
+    }
+  }
+
+  // ─── S1 L1：疑似静默收尾（只报事实与证据指针，不下结论）───
+  // 「跑过工具后用一句短文本 end_turn」可能是正常的完成陈述，也可能是「说了要做却没做」。
+  // 这里不替读者判断，只给次数、分母和定位到哪一轮；续跑兑现率单独一行。
+  if (d.sessionMetrics && d.sessionMetrics.short_text_end_turns > 0) {
+    const m = d.sessionMetrics;
+    L.push("");
+    const where = m.short_text_end_turn_samples
+      .map(
+        (x) =>
+          `prompt#${x.prompt_seq ?? "?"} turn${x.turn ?? "?"} len=${x.text_len ?? "?"}${x.kind === "promise_after_tools" ? "(承诺形)" : ""}`,
+      )
+      .join("，");
+    L.push(
+      c("bold", "疑似静默收尾:") +
+        ` 工具后短文本 end_turn ${m.short_text_end_turns}/${m.end_turn_n} 次` +
+        c("gray", `  证据: events.jsonl EndTurnShape —— ${where}`),
+    );
+    if (m.promise_nudge_fired > 0) {
+      L.push(
+        c(
+          "gray",
+          `  续跑提示(PromiseNudge) ${m.promise_nudge_fired} 次，其中下一轮调了工具 ${m.promise_nudge_tool_use} 次`,
+        ),
       );
     }
   }
@@ -3202,6 +3280,11 @@ export function aggregateSessionMetrics(
   let defenseTriggered = false;
   let compactions = 0;
   const gens: number[] = [];
+  let shortTextEndTurns = 0;
+  let endTurnN = 0;
+  let promiseNudgeFired = 0;
+  let promiseNudgeToolUse = 0;
+  const shortTextSamples: SessionLevelMetrics["short_text_end_turn_samples"] = [];
 
   /** 四环防线的工具信号，与 `scripts/defense-trigger-rate.ts:32` 同一口径 */
   const HYP_TOOLS = new Set(["hypothesis_register", "hypothesis_challenge"]);
@@ -3247,6 +3330,28 @@ export function aggregateSessionMetrics(
 
     if (e.event === "PreCompact") compactions++;
 
+    // S1：end_turn 形态 + 续跑结果（只计事实，不下结论）
+    if (e.event === "EndTurnShape") {
+      endTurnN++;
+      const k = e.data.kind;
+      if (k === "short_after_tools" || k === "promise_after_tools") {
+        shortTextEndTurns++;
+        if (shortTextSamples.length < 5) {
+          shortTextSamples.push({
+            prompt_seq: e.data.promptSeq as number | undefined,
+            turn: e.data.turn as number | undefined,
+            text_len: e.data.text_len as number | undefined,
+            kind: String(k),
+          });
+        }
+      }
+    }
+    if (e.event === "PromiseNudge" && e.data.fired === true) {
+      // 一次 fire 会落两条：注入时不落，outcome 出来时落一条 fired=true —— 只按 outcome 那条计
+      promiseNudgeFired++;
+      if (e.data.outcome === "tool_use") promiseNudgeToolUse++;
+    }
+
     // 与 aggregateProviderStats 同款条件：单次 fetch 的纯生成耗时
     if (e.event === "RetryTelemetry" && e.data.type === "stream_completed") {
       const gen = e.data.elapsedMs as number | undefined;
@@ -3273,6 +3378,11 @@ export function aggregateSessionMetrics(
     hitl_wait_n: sortedHitl.length,
     hitl_wait_total_ms: sortedHitl.reduce((a, b) => a + b, 0),
     hitl_wait_p95_ms: percentile(sortedHitl, 0.95),
+    short_text_end_turns: shortTextEndTurns,
+    end_turn_n: endTurnN,
+    promise_nudge_fired: promiseNudgeFired,
+    promise_nudge_tool_use: promiseNudgeToolUse,
+    short_text_end_turn_samples: shortTextSamples,
     defenseTriggered,
     trajCorrupt: opts.trajCorrupt,
     compactions,
@@ -4166,4 +4276,63 @@ export function percentile(sorted: number[], p: number): number | undefined {
   if (sorted.length === 0) return undefined;
   const idx = Math.ceil(sorted.length * p) - 1;
   return sorted[Math.max(0, Math.min(idx, sorted.length - 1))];
+}
+
+/** S13（PR-8）：账本成本与 Σ BilledRequest 金额的相对偏差容忍度。 */
+export const BILLING_AMOUNT_TOLERANCE = 0.01;
+
+/**
+ * S13（20261016 方案 PR-8）：计费**金额**一致性 —— `|账本 costUSD − Σ BilledRequest| / 总额`。
+ *
+ * B47 的恒等式只核**条数**（`HttpConnected == BilledRequest`），子代理双记时条数完全对得上
+ * （每次 fetch 仍只发一条 BilledRequest），钱却被 usage-sink 与 billing observer 各记一次 ——
+ * 只核条数的门禁对这类错恒绿。账本 `costUSD` = `getEffectiveTotalCostUSD()`，正是
+ * `/debug`、northstar 成本口径的共同来源，所以拿它对 Σ BilledRequest（每次 fetch 恰一条，
+ * 去重后落盘）做金额核对。
+ *
+ * 口径与保守退让（宁可不判也不误报）：
+ * - 只计 `timestamp ≤ 账本 ts` 的事件：账本在 turn-done upsert，其后的 fork 只被后者看到；
+ * - 按**事件时刻**取价（分时段定价，不传时刻会得出假差额，见方案 §2 S13 ④）；
+ * - 任一事件模型在内置价表里查不到 → 不判（digest 拿不到用户 availableModels）；
+ * - 无账本 / 无 BilledRequest（老轨迹）/ 总额为 0 → 不判。
+ *
+ * @returns 越过阈值时返回明细，否则 undefined
+ */
+export function checkBillingAmountConsistency(
+  events: Array<{ event?: string; timestamp?: unknown; data?: Record<string, unknown> }>,
+  ledger: { costUSD: number; ts: number } | undefined,
+): { ledgerUSD: number; billedUSD: number; ratio: number; count: number } | undefined {
+  if (!ledger || !(ledger.costUSD > 0)) return undefined;
+  const cutoffMs = ledger.ts < 1e12 ? ledger.ts * 1000 : ledger.ts;
+  let billedUSD = 0;
+  let count = 0;
+  for (const e of events) {
+    if (e.event !== "BilledRequest") continue;
+    const at = typeof e.timestamp === "string" ? Date.parse(e.timestamp) : NaN;
+    if (Number.isNaN(at)) return undefined;
+    // 账本 ts 是秒级：留 1s 余量，避免同一秒内落盘的最后一条被截掉
+    if (at > cutoffMs + 1000) continue;
+    const d = (e.data ?? {}) as Record<string, any>;
+    const model = typeof d.model === "string" ? d.model : "";
+    if (!model || !resolvePricing(model)) return undefined;
+    billedUSD += calculateUSDCost(
+      model,
+      {
+        inputTokens: Number(d.input_tokens ?? 0) || 0,
+        outputTokens: Number(d.output_tokens ?? 0) || 0,
+        cacheReadInputTokens: Number(d.cache_read_tokens ?? 0) || 0,
+        cacheCreationInputTokens: Number(d.cache_creation_tokens ?? 0) || 0,
+      },
+      undefined,
+      typeof d.provider === "string" ? d.provider : undefined,
+      undefined,
+      new Date(at),
+    );
+    count += 1;
+  }
+  if (count === 0) return undefined;
+  const denom = Math.max(ledger.costUSD, billedUSD);
+  const ratio = Math.abs(ledger.costUSD - billedUSD) / denom;
+  if (ratio <= BILLING_AMOUNT_TOLERANCE) return undefined;
+  return { ledgerUSD: ledger.costUSD, billedUSD, ratio, count };
 }

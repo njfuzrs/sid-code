@@ -19,6 +19,22 @@ import { SUBAGENT_SESSION_EXIT_REASON } from "../llm/errors.ts";
 /** 活跃 Agent 的 AbortController（用于 kill） */
 const activeAgentControllers = new Map<string, AbortController>();
 
+/**
+ * 每个任务的「已到终态」信号（complete / fail / kill 时 resolve）。
+ * 供会话退出回收 await：只 abort 不等，子代理的残卷与 SubagentStop 来不及写就被 flush 阶段越过。
+ */
+const settleResolvers = new Map<string, () => void>();
+const settledSignals = new Map<string, Promise<void>>();
+
+function markSettled(taskId: string): void {
+  settleResolvers.get(taskId)?.();
+  settleResolvers.delete(taskId);
+  settledSignals.delete(taskId);
+}
+
+/** 会话退出回收等待子代理收尾的上限。pre-flush 钩子逐个 await，failsafe 5s，故取 2s。 */
+export const SESSION_EXIT_SETTLE_TIMEOUT_MS = 2_000;
+
 /** 创建后台 Agent 任务状态并注册 */
 export function createAgentTask(opts: {
   agentType: string;
@@ -57,10 +73,12 @@ export function createAgentTask(opts: {
 
   registerTask(taskState);
   activeAgentControllers.set(taskId, abortController);
+  settledSignals.set(taskId, new Promise<void>((resolve) => settleResolvers.set(taskId, resolve)));
   // PR-B S5：子代理已无墙钟 / 硬 kill，会话退出时仍在跑的子代理必须显式回收，
   // 否则留下孤儿循环（继续烧 token）。按 name 去重，反复注册不堆积。
-  registerShutdownHook("agent-task-abort", "pre-flush", () => {
-    abortAllAgentTasks();
+  // 必须 await 收尾：pre-flush 之后就是遥测 flush，不等则 SubagentStop 赶不上落盘。
+  registerShutdownHook("agent-task-abort", "pre-flush", async () => {
+    await abortAllAgentTasks();
   });
 
   return { taskState, abortController };
@@ -94,6 +112,7 @@ export async function completeAgentTask(
 ): Promise<void> {
   await flushTaskOutput(taskId);
   activeAgentControllers.delete(taskId);
+  markSettled(taskId);
 
   const task = getTask(taskId) as LocalAgentTaskState | undefined;
   if (!task) return;
@@ -170,22 +189,40 @@ export async function failAgentTask(
 }
 
 /**
- * PR-B S5：会话退出时 abort 全部仍在跑的子代理（前台 + 后台），返回被 abort 的数量。
+ * PR-B S5：会话退出时 abort 全部仍在跑的子代理（前台 + 后台），等它们收尾后返回被 abort 的数量。
  *
  * 只 abort、不改任务状态：子代理自己的出口（sub-agent.ts）看到 signal.aborted 会走
  * 「被中止」分支，写残卷 + `SubagentStop`，收尾与 ESC / task_stop 同一条路，不另写一份。
  * 带专属 reason（已登记 ABORT_REASONS），底层 fetch 的孤儿 rejection 能被闸门识别。
+ *
+ * 等待：每个被 abort 的任务 await 其终态（complete / fail），整组共用 `settleTimeoutMs` 上限；
+ * 到终态后再让出一个宏任务，让 sub-agent.ts finally 里的 fireSubagentStopEvent 先发出去。
+ * 超时不报错：进程挂起不可接受，丢一条 SubagentStop 可接受（同 flush 阶段的原则）。
  */
-export function abortAllAgentTasks(): number {
-  let n = 0;
+export async function abortAllAgentTasks(
+  settleTimeoutMs: number = SESSION_EXIT_SETTLE_TIMEOUT_MS,
+): Promise<number> {
+  const waits: Promise<void>[] = [];
   for (const [taskId, controller] of activeAgentControllers) {
     if (!controller.signal.aborted) {
       controller.abort(SUBAGENT_SESSION_EXIT_REASON);
-      n++;
+      const settled = settledSignals.get(taskId);
+      if (settled) waits.push(settled);
     }
     activeAgentControllers.delete(taskId);
   }
-  return n;
+  if (waits.length > 0) {
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    await Promise.race([
+      Promise.all(waits),
+      new Promise<void>((resolve) => {
+        timer = setTimeout(resolve, settleTimeoutMs);
+      }),
+    ]);
+    if (timer !== undefined) clearTimeout(timer);
+    await new Promise<void>((resolve) => setTimeout(resolve, 0));
+  }
+  return waits.length;
 }
 
 /** 终止 Agent 任务 */
@@ -195,6 +232,7 @@ export function killAgentTask(taskId: string): void {
     controller.abort();
     activeAgentControllers.delete(taskId);
   }
+  markSettled(taskId);
 
   const task = getTask(taskId) as LocalAgentTaskState | undefined;
   // 已终态：仅 abort（上面已做），不重复改状态、不重复发通知（幂等）。

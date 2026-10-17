@@ -71,6 +71,12 @@ assistant
 result:success
 ```
 
+中间还可能夹着 `{"type":"system","subtype":"status","message":"…","level":"info|warning|error"}`
+进度 / 提示消息（压缩、重试、门禁等），解析时按 `type` 过滤即可。其中一条值得认识：
+模型跑完工具后只用一句「我接着做…」收尾、却没再调用工具时，会发
+`message` 为「本轮以纯文本结束（模型未调用工具）。如需继续，直接回复「继续」。」的 `info` 状态消息；
+`-p` 文本模式下同一提示只写 stderr，不污染 stdout。
+
 最后那条 `result` 才是给程序看的汇总——**它有 `text` / `json` 都没有的 `total_cost_usd`**：
 
 ```json

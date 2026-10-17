@@ -212,7 +212,7 @@ describe("PR10 谓词哨兵 — 各档判据必须不同（数值哨兵拦不住
   });
 });
 
-describe("PR10 分级解耦 — 子代理/side-call 档不随 BASE 放大", () => {
+describe("PR10 分级解耦 — side-call 档不随 BASE 放大", () => {
   test("sideCall 仍是激进档（overall ≤ 60s），不随主循环放宽而漂移", () => {
     // 改造前三档全按倍率派生：BASE 从 300s 抬到 720s 会把 sideCall.overall
     // 60s → 144s 一起放大，**方向与设计意图相反**（旁路调用本该更早放弃）。
@@ -220,21 +220,18 @@ describe("PR10 分级解耦 — 子代理/side-call 档不随 BASE 放大", () =
     expect(LIFECYCLE_PRESETS.sideCall.idleTimeoutMs).toBeLessThanOrEqual(30_000);
   });
 
-  test("subAgent 档介于 sideCall 与 mainLoop 之间", () => {
-    expect(LIFECYCLE_PRESETS.subAgent.overallTimeoutMs).toBeGreaterThan(
-      LIFECYCLE_PRESETS.sideCall.overallTimeoutMs,
-    );
-    expect(LIFECYCLE_PRESETS.subAgent.overallTimeoutMs).toBeLessThan(
-      LIFECYCLE_PRESETS.mainLoop.overallTimeoutMs,
-    );
+  // PR-B 收尾（2026-10-17）：subAgent 档已删除——子代理与主循环同源，不再有专属档。
+  // 补清单而非删断言：这里改锁「它不得长回来」。
+  test("subAgent 档已删除（子代理不再有专属超时档）", () => {
+    expect(Object.keys(LIFECYCLE_PRESETS).sort()).toEqual(["mainLoop", "sideCall"]);
   });
 
-  test("三档与 BASE 的耦合关系：只有 mainLoop 跟随", () => {
+  test("两档与 BASE 的耦合关系：只有 mainLoop 跟随", () => {
     // 这条断言的作用是**留证**：mainLoop 与 watchdog 同源是刻意的（同一条主链路），
     // 后两档解耦也是刻意的。谁想改回全派生，会先撞到这里。
     expect(LIFECYCLE_PRESETS.mainLoop.contentProgressTimeoutMs).toBe(DEFAULTS.watchdogNoProgressMs);
-    expect(LIFECYCLE_PRESETS.subAgent.overallTimeoutMs).not.toBe(
-      DEFAULTS.watchdogNoProgressMs * 0.6,
+    expect(LIFECYCLE_PRESETS.sideCall.overallTimeoutMs).not.toBe(
+      DEFAULTS.watchdogNoProgressMs * 0.2,
     );
   });
 });

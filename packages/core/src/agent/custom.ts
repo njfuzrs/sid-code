@@ -13,6 +13,7 @@ import { ExtensionLoader } from "../extension/loader.ts";
 import type { ScanOptions } from "../extension/types.ts";
 import { SubAgent } from "./sub-agent.ts";
 import { getLogger } from "../debug/logger.ts";
+import { UsageSinkTicket } from "../llm/billing-sink.ts";
 import type { ExtensionSource } from "../extension/types.ts";
 import { z } from "zod/v4";
 
@@ -267,48 +268,57 @@ export class CustomAgentTool implements Tool {
 
     const subAgent = SubAgent.fromRegistry(this.providerRegistry, this.toolRegistry);
     if (this.permissionChecker) subAgent.setPermissionChecker(this.permissionChecker);
+    // S13（PR-8）：持有 sink 才挂入账票据；executeCustom 抛异常时 finally 按未入账结算。
+    const usageTicket = this.usageSink ? new UsageSinkTicket() : undefined;
+    if (usageTicket) subAgent.setUsageAccounting(usageTicket);
+    let sinkCharged = false;
+    try {
+      const result = await subAgent.executeCustom(
+        {
+          systemPrompt: this.def.prompt,
+          userPrompt: task,
+          allowedTools: this.def.tools,
+          // PR-B：自定义 Agent 无 maxTurns 声明字段 → 无上限，对齐 CC；frontmatter timeout 已不生效
+          // G13：把自定义 Agent 类型透传给子代理，让 save_memory 的 agent scope 定位到该类型记忆目录
+          type: this.def.name,
+        },
+        signal,
+      );
 
-    const result = await subAgent.executeCustom(
-      {
-        systemPrompt: this.def.prompt,
-        userPrompt: task,
-        allowedTools: this.def.tools,
-        // PR-B：自定义 Agent 无 maxTurns 声明字段 → 无上限，对齐 CC；frontmatter timeout 已不生效
-        // G13：把自定义 Agent 类型透传给子代理，让 save_memory 的 agent scope 定位到该类型记忆目录
-        type: this.def.name,
-      },
-      signal,
-    );
-
-    // P0-1：把自定义子代理消耗的 token/费用回写主会话
-    if (this.usageSink) {
-      const u = result.usage;
-      const hasUsage =
-        (u?.inputTokens ?? 0) > 0 ||
-        (u?.outputTokens ?? 0) > 0 ||
-        (u?.cacheReadInputTokens ?? 0) > 0 ||
-        (u?.cacheCreationInputTokens ?? 0) > 0;
-      if (hasUsage) {
-        try {
-          this.usageSink(result);
-        } catch (err: any) {
-          log.warn("CUSTOM_AGENT", `usage 归集失败（不影响结果）: ${err?.message}`);
+      // P0-1：把自定义子代理消耗的 token/费用回写主会话
+      if (this.usageSink) {
+        const u = result.usage;
+        const hasUsage =
+          (u?.inputTokens ?? 0) > 0 ||
+          (u?.outputTokens ?? 0) > 0 ||
+          (u?.cacheReadInputTokens ?? 0) > 0 ||
+          (u?.cacheCreationInputTokens ?? 0) > 0;
+        if (hasUsage) {
+          try {
+            this.usageSink(result);
+            sinkCharged = true;
+          } catch (err: any) {
+            log.warn("CUSTOM_AGENT", `usage 归集失败（不影响结果）: ${err?.message}`);
+          }
         }
       }
+
+      log.info("CUSTOM_AGENT", `Agent ${this.def.name} 完成`, {
+        success: result.success,
+        turns: result.turns,
+      });
+
+      if (!result.success && this.onErrorCallback) {
+        this.onErrorCallback(result.output);
+      }
+
+      return {
+        output: result.output,
+        isError: !result.success,
+      };
+    } finally {
+      // S13：sink 没入账（usage 全 0 / sink 抛错 / executeCustom 抛异常）时补交给计费观察者。
+      usageTicket?.settle(sinkCharged);
     }
-
-    log.info("CUSTOM_AGENT", `Agent ${this.def.name} 完成`, {
-      success: result.success,
-      turns: result.turns,
-    });
-
-    if (!result.success && this.onErrorCallback) {
-      this.onErrorCallback(result.output);
-    }
-
-    return {
-      output: result.output,
-      isError: !result.success,
-    };
   }
 }

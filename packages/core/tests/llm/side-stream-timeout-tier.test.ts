@@ -25,22 +25,23 @@ import {
   DEFAULT_SIDE_STREAM_TIMEOUT_MS,
   resolveSideStreamTimeoutMs,
 } from "@sid-code/core/llm/resilient-stream.ts";
-import { LIFECYCLE_PRESETS } from "@sid-code/core/llm/stream-lifecycle.ts";
 import { DEFAULTS as NETWORK_DEFAULTS } from "@sid-code/core/config/network-profile.ts";
 
 describe("P2-6 · 子代理路径缺省流超时取 overall 档而非 idle 档", () => {
-  test("缺省值 = subAgent.overallTimeoutMs（180s），不是 idle 档的 60s", () => {
-    expect(DEFAULT_SIDE_STREAM_TIMEOUT_MS).toBe(LIFECYCLE_PRESETS.subAgent.overallTimeoutMs);
+  // 事故时的 idle 档取值（原 LIFECYCLE_PRESETS.subAgent.idleTimeoutMs，该档 2026-10-17 已删除）。
+  const OLD_IDLE_TIER_MS = 60_000;
+
+  test("缺省值 = 180s（原 subAgent overall 档），不是 idle 档的 60s", () => {
     expect(DEFAULT_SIDE_STREAM_TIMEOUT_MS).toBe(180_000);
     // 回归形态就是有人把它改回 idle 档：那种改动在行为上只表现为"慢首字节的子代理偶尔
     // 被杀"，没有任何既有断言会失败，所以必须在这里正面钉住二者不相等。
-    expect(DEFAULT_SIDE_STREAM_TIMEOUT_MS).not.toBe(LIFECYCLE_PRESETS.subAgent.idleTimeoutMs);
+    expect(DEFAULT_SIDE_STREAM_TIMEOUT_MS).not.toBe(OLD_IDLE_TIER_MS);
   });
 
   test("90s 无数据的子代理流落在缺省阈值内 → 不触发 fallback_stream_timeout", () => {
     // §6.4 的核心断言：事故里被误杀的那一档（60s < elapsed ≤ 180s）现在必须活着。
     const NINETY_SECONDS = 90_000;
-    expect(NINETY_SECONDS).toBeGreaterThan(LIFECYCLE_PRESETS.subAgent.idleTimeoutMs); // 修复前会被杀
+    expect(NINETY_SECONDS).toBeGreaterThan(OLD_IDLE_TIER_MS); // 修复前会被杀
     expect(NINETY_SECONDS).toBeLessThan(resolveSideStreamTimeoutMs()); // 修复后不会
     // 实测 max = 102.8s 那一档同样必须活着（这是事故里的真实样本，不是取整的假想值）。
     expect(102_800).toBeLessThan(resolveSideStreamTimeoutMs());

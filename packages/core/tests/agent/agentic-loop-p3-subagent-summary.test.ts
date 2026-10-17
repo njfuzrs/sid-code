@@ -29,7 +29,10 @@ import type { LegacyTool, LegacyToolResult } from "@sid-code/core/tool/types.ts"
 function makeCtxMgr(): ContextManager {
   const ctxMgr = new ContextManager({ maxTokens: 100_000 });
   ctxMgr.setSystemPrompt("test");
-  ctxMgr.addMessage({ role: "user", content: [{ type: "text", text: "任务" }] });
+  ctxMgr.addMessage({
+    role: "user",
+    content: [{ type: "text", text: "任务" }],
+  });
   return ctxMgr;
 }
 
@@ -100,7 +103,11 @@ function yieldTextAndToolUse(
       type: "message_start",
       message: { usage: { inputTokens: 10, outputTokens: 0 } },
     } as StreamEvent,
-    { type: "content_block_start", index: 0, content_block: { type: "text" } } as StreamEvent,
+    {
+      type: "content_block_start",
+      index: 0,
+      content_block: { type: "text" },
+    } as StreamEvent,
     {
       type: "content_block_delta",
       index: 0,
@@ -132,7 +139,11 @@ function yieldText(text: string, stopReason = "end_turn"): StreamEvent[] {
       type: "message_start",
       message: { usage: { inputTokens: 10, outputTokens: 0 } },
     } as StreamEvent,
-    { type: "content_block_start", index: 0, content_block: { type: "text" } } as StreamEvent,
+    {
+      type: "content_block_start",
+      index: 0,
+      content_block: { type: "text" },
+    } as StreamEvent,
     {
       type: "content_block_delta",
       index: 0,
@@ -300,11 +311,16 @@ describe("P3-6 → 2026-10-17 · 子代理 processStream 不再自带超时层",
 
   test("生产两处 processStream 调用只传 signal（不再传任何超时阈值）", () => {
     // PR-B：两处调用外包 S2b 单轮兜底（callWithTurnHardTimeout），signal 换成本轮合并 signal。
-    const callSites = [...AGENTIC_LOOP_SRC.matchAll(/=> processStream\(/g)].map((m) => m.index!);
+    // PR-B 收尾：流再经 tapStreamActivity 包一层（「无事件」计时），可能换行排版，按空白归一后比对。
+    const callSites = [...AGENTIC_LOOP_SRC.matchAll(/=>\s*processStream\(/g)].map((m) => m.index!);
     expect(callSites.length, "子代理应有两处 processStream 调用（主流 + 总结轮）").toBe(2);
     for (const i of callSites) {
-      const call = AGENTIC_LOOP_SRC.slice(i, AGENTIC_LOOP_SRC.indexOf("}),", i) + 2);
-      expect(call).toContain("{ signal: callSignal }");
+      const call = AGENTIC_LOOP_SRC.slice(i, AGENTIC_LOOP_SRC.indexOf("}),", i) + 2).replace(
+        /\s+/g,
+        " ",
+      );
+      expect(call).toContain("tapStreamActivity(");
+      expect(call).toMatch(/\{ signal: callSignal,? \}/);
       expect(call).not.toMatch(/TimeoutMs/);
     }
   });
@@ -320,7 +336,10 @@ describe("P3-6 → 2026-10-17 · 子代理 processStream 不再自带超时层",
 
     async function* slow(): AsyncIterable<StreamEvent> {
       await new Promise((r) => setTimeout(r, 150));
-      yield { type: "message_delta", delta: { stop_reason: "end_turn" } } as StreamEvent;
+      yield {
+        type: "message_delta",
+        delta: { stop_reason: "end_turn" },
+      } as StreamEvent;
     }
 
     // 旧签名的阈值字段：已无读者，必须不生效

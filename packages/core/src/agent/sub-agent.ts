@@ -7,6 +7,7 @@
 import type { Provider } from "../llm/provider.ts";
 import type { ContentBlock, Usage, SendParams } from "../llm/types.ts";
 import type { ProviderRegistry } from "../llm/registry.ts";
+import type { RequestContext } from "../llm/request-context.ts";
 import { Manager as ContextManager } from "../context/manager.ts";
 import { SidechainWriter } from "../session/sidechain.ts";
 import { validateToolInput } from "../tool/input-validator.ts";
@@ -489,6 +490,8 @@ export class SubAgent {
   private registry?: ProviderRegistry;
   /** 模型覆盖（自定义 Agent/Skill 指定模型时使用） */
   private modelOverride?: string;
+  /** S13：usage-sink 入账票据（见 setUsageAccounting）。 */
+  private usageAccounting?: RequestContext["usageAccounting"];
   /** 输出语言偏好（L4，从主代理配置继承） */
   /** 语言偏好（继承主代理）。含 auto 档，落到 enhanceSubAgentPrompt 时才归一化成具体语言。 */
   private language?: LanguagePref;
@@ -519,6 +522,17 @@ export class SubAgent {
   /** 设置权限检查器（dontAsk 语义，由外部工厂创建后注入） */
   setPermissionChecker(checker: Checker | null): void {
     this.permissionChecker = checker;
+  }
+
+  /**
+   * S13（20261016 方案 PR-8）：声明「本实例这次执行的成本由 usage-sink 入账」。
+   *
+   * 只由**确实持有 sink** 的调用方调用（tool.ts / custom.ts / workflow），且必须在执行
+   * 结束后 `ticket.settle(sinkCharged)`。hook 子代理执行器不经 sink，不调本方法 ——
+   * 这正是判据挂在实例而不挂在 `agent:custom` 标签上的原因（见 billing-sink.ts）。
+   */
+  setUsageAccounting(ticket: RequestContext["usageAccounting"]): void {
+    this.usageAccounting = ticket;
   }
 
   /** P2-10：设置父会话 id，启用子代理 sidechain 持久化（由 SubAgentTool 注入）。 */
@@ -641,23 +655,25 @@ export class SubAgent {
     ctxMgr: ContextManager,
   ): Pick<
     Parameters<typeof runAgentLoop>[0],
-    "hookSystem" | "permissionChecker" | "availability" | "discoverJitContext"
+    "hookSystem" | "permissionChecker" | "availability" | "discoverJitContext" | "usageAccounting"
   > {
     return {
+      // S13（PR-8）：两条路径（内置 / 自定义）都要带上票据，收进工厂才不会漏一条。
+      usageAccounting: this.usageAccounting,
       hookSystem: this.hookSystem,
       // B0：permissionChecker 从 AgentLoopConfig 的必填字段——此处必须显式传值
       // （可以是 undefined），漏传在类型层就会报错，不再是静默降级。
       permissionChecker: this.permissionChecker ?? undefined,
       // H9：透传共享的 availability（与主 fallback 引擎同一实例），terminal 类错误跨路径拉黑。
       availability: this.registry?.availability,
-      // B1（2026-10-14）：**不再传 deadlineAt**。墙钟 timeout 自 P0-1(a) 起只是 detach
-      // （软返回点），不是硬截止；把它当漏斗的 deadlineAt 等于让「次数听时间的」——
+      // B1（2026-10-14）：**不再传 deadlineAt**。把时间当漏斗的 deadlineAt 等于让「次数听时间的」——
       // 事故 20261014-110202 里子代理第一次可重试错误就 giveUp("deadline")（attempts=1），
-      // 而同一漏斗主循环能重试 10 次。现在三者各管一件事，与主循环 2026-10-12 解耦对齐：
-      //   次数 → maxRetries（netTimeouts.maxTimeoutRetries）；
-      //   卡死 → 漏斗单次尝试上限（LIFECYCLE_PRESETS.subAgent.overallTimeoutMs=180s，扣休眠）；
-      //   总时长失控 → 硬 kill（timeout × HARD_KILL_MULTIPLIER，扣休眠）。
-      // ⚠️ 别改成 `startTime + timeout × 3`：仍是次数听时间的，且与硬 kill 双处计时必漂移。
+      // 而同一漏斗主循环能重试 10 次。现在各管一件事，与主循环同构（PR-B，2026-10-17）：
+      //   次数 → maxRetries（netTimeouts.maxTimeoutRetries，10）；
+      //   卡死 → 漏斗内容无进展上限，主循环同一个 fallbackStreamTimeoutMs（600s，续期，扣休眠）；
+      //   abort 链路失效 → 单轮兜底（主循环同一个 maxTurnDurationMs，连续无流事件才开枪，见 turn-hard-timeout.ts）；
+      //   总时长 → **不设**，只由 ESC / task_stop / 父代理取消控制（对齐 CC，墙钟与硬 kill 已删）。
+      // ⚠️ 别加回任何「过了多久」的总量判据：事故 20261016-222758 / 224545 的 9/9 失败全死在这类层上。
       // P2-1：子代理 JIT 上下文发现（每次调用独立实例，见 createJitDiscoverer 注释）。
       // B2：`jitContext: false` 必须对子代理也生效 —— 这个第二参此前从不传值，
       // 于是开关只关得住主代理（`createJitDiscoverer` 的 `jitDisabled` 逻辑一直是对的，

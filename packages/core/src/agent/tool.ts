@@ -14,6 +14,7 @@ import {
   resolveAgent,
 } from "./agent-definition.ts";
 import { getLogger } from "../debug/logger.ts";
+import { UsageSinkTicket } from "../llm/billing-sink.ts";
 import { createAgentTask, failAgentTask } from "../task/index.ts";
 import type { HookSystem } from "../hook/system.ts";
 import { buildAgentHookSystem } from "./agent-hooks.ts";
@@ -321,20 +322,36 @@ export class SubAgentTool implements Tool {
     this.onErrorCallback = cb;
   }
 
-  /** 归集子代理 usage 到主会话（仅成功或有实际消耗时）。容错：sink 异常不影响子代理结果。 */
-  private collectUsage(result: SubAgentResult): void {
-    if (!this.usageSink) return;
+  /**
+   * S13（20261016 方案 PR-8）：本次执行持有 sink 时给子代理挂入账票据。
+   * 没有 sink 时返回 undefined —— 此时子代理成本只由 billing observer 记一次（旧口径）。
+   */
+  private openUsageTicket(subAgent: SubAgent): UsageSinkTicket | undefined {
+    if (!this.usageSink) return undefined;
+    const ticket = new UsageSinkTicket();
+    subAgent.setUsageAccounting(ticket);
+    return ticket;
+  }
+
+  /**
+   * 归集子代理 usage 到主会话（仅成功或有实际消耗时）。容错：sink 异常不影响子代理结果。
+   * 返回 sink 是否真的入了账 —— 票据据此决定要不要把认领过的 fetch 补交给计费观察者。
+   */
+  private collectUsage(result: SubAgentResult): boolean {
+    if (!this.usageSink) return false;
     const u = result.usage;
     const hasUsage =
       (u?.inputTokens ?? 0) > 0 ||
       (u?.outputTokens ?? 0) > 0 ||
       (u?.cacheReadInputTokens ?? 0) > 0 ||
       (u?.cacheCreationInputTokens ?? 0) > 0;
-    if (!hasUsage) return;
+    if (!hasUsage) return false;
     try {
       this.usageSink(result);
+      return true;
     } catch (err: any) {
       getLogger().warn("SUBAGENT", `usage 归集失败（不影响子代理结果）: ${err?.message}`);
+      return false;
     }
   }
 
@@ -652,6 +669,8 @@ ${typeLines}
     // slot 已持有，此后所有出口（含 worktree 失败 early return / 执行异常）都必须经 finally
     // 释放 slot，否则 slot 泄漏会让后续子代理永久排队饿死。
     let isolationCleanup: (() => Promise<void>) | null = null;
+    /** S13：usage-sink 入账票据；任何出口都要结算（finally 兜底 settle(false)，幂等）。 */
+    let usageTicket: UsageSinkTicket | undefined;
     try {
       // Worktree 隔离：在独立工作区执行，结束后清理无改动的 Worktree。
       // B7：通过 SubAgentTask.cwd 走 withAgentCwd（AsyncLocalStorage）而非 process.chdir，
@@ -666,6 +685,7 @@ ${typeLines}
       }
 
       const subAgent = this.createSubAgentForType(params.type);
+      usageTicket = this.openUsageTicket(subAgent);
       if (isolationCleanup && isolatedCwd) {
         await SubAgentTool.bindCheckerToWorktree(subAgent, isolatedCwd);
       }
@@ -723,7 +743,7 @@ ${typeLines}
       );
 
       // P0-1：把子代理消耗的 token/费用回写主会话
-      this.collectUsage(result);
+      usageTicket?.settle(this.collectUsage(result));
 
       const summary = [
         `[子代理完成] 类型: ${params.type}, 轮次: ${result.turns}`,
@@ -747,6 +767,8 @@ ${typeLines}
       log.error("SUBAGENT", `子代理执行失败`, { error: err.message, stack: err.stack });
       return { output: `子代理执行失败: ${err.message}`, isError: true };
     } finally {
+      // S13：异常出口没走到 collectUsage —— sink 没入账，认领过的 fetch 交回观察者计费。
+      usageTicket?.settle(false);
       // G1/G2 修复：释放 slot（有排队者则转移，否则递减 running），任何出口都必经此处。
       SubAgentTool.releaseSlot();
       if (isolationCleanup) {
@@ -841,6 +863,8 @@ ${typeLines}
     // finally 里清理（下方 isolationCleanup），任何出口都不能漏。
     let isolatedCwd: string | undefined = params.cwd;
     let isolationCleanup: (() => Promise<void>) | null = null;
+    /** S13：usage-sink 入账票据；任何出口都要结算（finally 兜底 settle(false)，幂等）。 */
+    let usageTicket: UsageSinkTicket | undefined;
     if (params.isolation === "worktree") {
       const setup = await SubAgentTool.setupIsolation(params.description);
       if (!setup.ok) {
@@ -858,6 +882,7 @@ ${typeLines}
 
     try {
       const subAgent = this.createSubAgentForType(params.type);
+      usageTicket = this.openUsageTicket(subAgent);
       if (isolationCleanup && isolatedCwd) {
         await SubAgentTool.bindCheckerToWorktree(subAgent, isolatedCwd);
       }
@@ -892,7 +917,7 @@ ${typeLines}
       );
 
       // P0-1：后台子代理同样要把 usage 回写主会话
-      this.collectUsage(result);
+      usageTicket?.settle(this.collectUsage(result));
 
       // execute() 内部 onTurnEnd 每轮已 updateAgentProgress 写入真实累计进度
       // （tokenCount 来自 totalUsage，见 sub-agent.ts），此处无需再写——
@@ -912,6 +937,8 @@ ${typeLines}
         this.onErrorCallback(err.message ?? String(err));
       }
     } finally {
+      // S13：同 runSync —— 异常出口按未入账结算。
+      usageTicket?.settle(false);
       // G2：释放 slot（有排队者则转移给它），与前台共用同一信号量。
       SubAgentTool.releaseSlot();
       // W1：与前台 runSync 的 finally 同构——无改动则删、有改动则保留。

@@ -187,6 +187,14 @@ export interface SessionIndexEntry {
   edit_first_try?: { files: number; first_try_ok: number };
 
   /**
+   * S1 L1：跑过工具后以短文本收尾的 end_turn 次数（digest `EndTurnShape` 口径）。
+   * 有值才写：只有跑过 digest 的 SessionEnd 路径给得出；键不存在 = 旧版本行或没跑 digest，不是 0。
+   * 分母 `end_turn_n` 一起写死（铁律 3：分母比分子重要）。
+   */
+  short_text_end_turns?: number;
+  end_turn_n?: number;
+
+  /**
    * /perf：会话级性能派生量。**此前只落在 session.traj**，而轨迹会被 LRU 清掉、
    * 索引不会 —— 于是这几项一清理就没了，跨会话趋势无从画起。
    *
@@ -366,6 +374,9 @@ export function buildSessionIndexEntry(
     compactions?: number;
     permission?: import("./decision-metrics.ts").PermissionDecisionStats;
     edit_first_try?: import("./decision-metrics.ts").EditFirstTryStats;
+    /** S1 L1：传了才落盘（见 SessionIndexEntry.short_text_end_turns） */
+    short_text_end_turns?: number;
+    end_turn_n?: number;
     perf?: {
       tps?: number;
       gen_p95?: number;
@@ -404,6 +415,9 @@ export function buildSessionIndexEntry(
     pathological: Array.isArray(summary.pathological) ? (summary.pathological as string[]) : [],
     compactions: num(extra.compactions),
     defense_triggered: extra.defense_triggered === true,
+    ...(extra.short_text_end_turns !== undefined
+      ? { short_text_end_turns: extra.short_text_end_turns, end_turn_n: extra.end_turn_n ?? 0 }
+      : {}),
     // traj_corrupt 与 defense_triggered 的处理**刻意相反**，别顺手改成 `=== true`：
     //
     // - `defense_triggered` 恒落 boolean：防线没触发就是没触发，`undefined` 与 `false`

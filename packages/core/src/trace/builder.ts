@@ -198,6 +198,13 @@ export interface TraceMetadata {
   total_cache_read_tokens: number;
   total_cache_creation_tokens: number;
   total_cost_usd: number;
+  /**
+   * S13（20261016 方案 PR-8）：`total_cost_usd` 的统计范围 —— 同名字段在一个会话里会换口径，必须随值落盘。
+   * - `main`：运行中逐轮累加的主循环 `AfterModel` 成本（不含子代理、fork、side-call）；
+   * - `main+subagent`：SessionEnd 用 `SessionState.totalCostUSD` 覆盖后（主循环 + 经 usage-sink 的子代理）。
+   * fork / side-call 一律在 `side_cost_usd`。缺省（老轨迹）= 未知，按 `main` 读最保守。
+   */
+  cost_scope?: "main" | "main+subagent";
   total_api_calls: number;
 
   // ── 缺口分析补全：派生/采集类指标（会话级聚合，逐轮更新） ──
@@ -448,6 +455,13 @@ export interface TrajectoryMetaOutput {
    */
   total_cumulative_prompt_tokens: number;
   total_cost_usd: number;
+  /**
+   * S13（20261016 方案 PR-8）：`total_cost_usd` 的统计范围 —— 同名字段在一个会话里会换口径，必须随值落盘。
+   * - `main`：运行中逐轮累加的主循环 `AfterModel` 成本（不含子代理、fork、side-call）；
+   * - `main+subagent`：SessionEnd 用 `SessionState.totalCostUSD` 覆盖后（主循环 + 经 usage-sink 的子代理）。
+   * fork / side-call 一律在 `side_cost_usd`。缺省（老轨迹）= 未知，按 `main` 读最保守。
+   */
+  cost_scope?: "main" | "main+subagent";
 
   // ── 缺口分析补全：派生/采集类指标（会话级，可选——旧 traj 无这些字段） ──
   /** 缺口分析二类：reasoning/thinking token 累计（仅 OpenAI 族 >0） */
@@ -999,6 +1013,7 @@ export function buildTrajectory(
     // §6.3：累计 prompt（flow），与 total_cost_usd 同口径，供外部做可比单价除法
     total_cumulative_prompt_tokens: metadata.total_cumulative_prompt_tokens,
     total_cost_usd: metadata.total_cost_usd,
+    ...(metadata.cost_scope ? { cost_scope: metadata.cost_scope } : {}),
     // 缺口分析补全：派生/采集类指标（仅在有值时输出，避免污染旧 traj 的解析预期）
     ...(metadata.total_reasoning_tokens
       ? { total_reasoning_tokens: metadata.total_reasoning_tokens }

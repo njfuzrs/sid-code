@@ -51,6 +51,8 @@ export const INTERNAL_ORIGINS = [
   "resume-summary",
   /** 压缩后重注入的文件正文 / Plan / 决策 / 原始任务锚点 + 各自 ack（= "compact-reattach"） */
   REATTACH_ORIGIN,
+  /** S1 L2：短文本承诺未兑现时主循环注入的续跑提示（query/promise-nudge.ts） */
+  "promise-nudge",
 ] as const;
 
 /**

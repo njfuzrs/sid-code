@@ -158,11 +158,8 @@ export const ABORT_REASONS = [
   // 缺口1 h2A：mid-turn `now` 级抢占（用户显式中断/改向触发的优雅收束）。
   // 登记进白名单确保抢占走 isAbortError 总闸门识别，不裸字符串 reject（不变量 2）。
   "midturn-preempt",
-  // H10：子代理流整体硬超时（agentic-loop.ts 的 5min Promise.race 兜底）。此前 reject 裸
-  // `new Error("子代理流式超时…")`，不携带 abort reason、不在任何白名单——与主路径「判超时看
-  // reason 白名单而非错误文本」的口径分裂。改用 controller.abort(AGENT_STREAM_TIMEOUT_REASON)
-  // 后，登记于此确保孤儿 rejection 被 isAbortError 识别、且可被 isInternalTimeoutAbortReason 命中。
-  "agent-stream-timeout",
+  // 2026-10-17 删除 "agent-stream-timeout"（H10 的子代理 5min Promise.race 兜底）：该兜底早已
+  // 拆除，src 下零 abort 调用点；子代理的单轮兜底复用主循环的 "turn-timeout"（turn-hard-timeout.ts）。
   // PR-B（2026-10-17）：会话退出时回收仍在跑的后台子代理（task/agent-task.ts）。
   // 取代已删除的 "subagent-hard-kill"（子代理不再有墙钟 / 硬 kill）。必须登记：回收发生在
   // 没有前台 await 的后台，底层 fetch 以这个裸字符串 reject，未登记即孤儿 rejection。
@@ -173,8 +170,6 @@ export const ABORT_REASONS = [
   "host-sleep-reopen",
 ] as const;
 
-/** H10：子代理流整体硬超时的 abort reason（单一事实源，供 agentic-loop 使用）。 */
-export const AGENT_STREAM_TIMEOUT_REASON = "agent-stream-timeout" as const;
 /** H10：side-call 硬超时的 abort reason（与既有 "side-call-timeout" 一致，供各 side-call 复用）。 */
 export const SIDE_CALL_TIMEOUT_REASON = "side-call-timeout" as const;
 /** PR-B：会话退出回收后台子代理的 abort reason（单一事实源，供 task/agent-task.ts 使用）。 */
@@ -209,11 +204,9 @@ export const INTERNAL_TIMEOUT_ABORT_REASONS: ReadonlySet<AbortReason> = new Set<
   "watchdog-timeout",
   "stream-heartbeat-timeout",
   "stream-overall-timeout",
-  // H10：子代理流整体超时也是「内部自愈机制的自我中断」，与 turn/watchdog 同类——一旦子代理
-  // 错误改为依 reason 分类（区分「内部超时可重试」vs「用户取消不重试」），需命中本白名单。
   // 注：side-call-timeout 不入此白名单——side-call 是后台任务，各自 catch 静默降级，不参与
   // 主循环的超时重试 reason 分类；登记进 ABORT_REASONS 仅为防孤儿 rejection 崩溃即可。
-  "agent-stream-timeout",
+  // （"agent-stream-timeout" 2026-10-17 随 ABORT_REASONS 一并移除，子代理兜底复用 "turn-timeout"。）
 ]);
 
 /**

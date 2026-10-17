@@ -17,7 +17,8 @@ Date: 2026-10-17
   不再吃 side-call 的 180s 缺省档。
 - **S2b 单轮硬超时兜底**（新 `agent/turn-hard-timeout.ts`）：`processStream` 外包 `Promise.race`，阈值复用主循环
   `maxTurnDurationMs`（90min），扣休眠，触发 → 计入同一重试计数并重试。它只防 abort 链路失效导致的永不 settle，
-  不是总时长限制。
+  不是总时长限制。⚠️ 计时口径已在收尾 PR 改为「连续无流事件」，见
+  `implemented/bug-fix/2026-10-17-子代理单轮兜底改无事件计时-PR-B收尾.md`。
 - **spawn 路径同口径**：父进程 kill 定时器、子进程 `process.exit` 定时器删除；`maxRetries: 3` 改为 `maxTimeoutRetries`；
   子进程同样有 S2b 兜底；`max_turns` 省略即无上限。
 - **会话退出回收**：`agent-task.ts` `abortAllAgentTasks()` 以 `subagent-session-exit` reason abort 全部在跑的子代理，

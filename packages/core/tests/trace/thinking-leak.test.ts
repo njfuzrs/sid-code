@@ -102,7 +102,7 @@ describe("aggregateThinkingLeakStats", () => {
 
   test("主循环 / 非主循环分开算，分母只含意图关的 fetch；恒思考模型单列", () => {
     const stats = aggregateThinkingLeakStats([
-      // 主循环：意图关、发了 omitted、仍思考 → 泄漏（D1 的形态）
+      // 主循环（无 agent_id / caller）：意图关、发了 omitted、仍思考 → 泄漏（D1 的形态）
       br({
         accounted: true,
         model: "claude-sonnet-5",
@@ -143,6 +143,16 @@ describe("aggregateThinkingLeakStats", () => {
         thinking_intent: false,
         thinking_in_response: false,
       }),
+      // 子代理经 usage-sink 入账（S13 把 accounted 改写成 true）：仍属非主循环
+      br({
+        accounted: true,
+        accounted_by: "usage-sink",
+        agent_id: "a1",
+        model: "claude-sonnet-5",
+        thinking_wire: "disabled",
+        thinking_intent: false,
+        thinking_in_response: true,
+      }),
       // side-call：意图关、omitted、思考了
       br({
         accounted: false,
@@ -154,7 +164,7 @@ describe("aggregateThinkingLeakStats", () => {
       }),
     ])!;
     expect(stats.main).toEqual({ offRequests: 2, leaked: 1, rate: 0.5 });
-    expect(stats.nonMain).toEqual({ offRequests: 2, withThinking: 1, rate: 0.5 });
+    expect(stats.nonMain).toEqual({ offRequests: 3, withThinking: 2, rate: 2 / 3 });
     expect(stats.offButSentOn).toBe(1);
     expect(stats.byModel["deepseek-v4-pro"]).toEqual({ offRequests: 1, withThinking: 1 });
   });
