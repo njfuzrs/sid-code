@@ -45,7 +45,7 @@ export function registerSimplifySkill(): void {
     allowedTools: ["read", "grep", "glob", "sub_agent"],
     context: "fork",
     userInvocable: true,
-    maxTurns: 30,
+    // PR-B 收尾：不声明 maxTurns（未声明即无上限，对齐 CC；review / pr-workflow 同口径）。
     async getPromptForCommand(args) {
       return SIMPLIFY_PROMPT + (args.trim() ? `\n\n## 用户额外要求\n\n${args.trim()}` : "");
     },

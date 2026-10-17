@@ -381,8 +381,8 @@ describe("isAbortError", () => {
     // 无前台 await 的后台，未登记即为绕过闸门的孤儿 rejection。取代已删除的 subagent-hard-kill)。
     // 转 string[] 断言:ABORT_REASONS 是 as const 字面量联合,直接 toEqual 会因
     // NoInfer 把期望数组收窄到该联合而报重载不匹配;比较值本身即可,不需比字面量类型。
+    // agent-stream-timeout 2026-10-17 移除（零调用点，子代理兜底复用 turn-timeout）。
     expect([...ABORT_REASONS].map(String).sort()).toEqual([
-      "agent-stream-timeout",
       "alert-webhook-timeout",
       "external-abort",
       "host-sleep-reopen",

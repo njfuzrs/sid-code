@@ -32,7 +32,7 @@ import { SIDE_CALL_NO_THINK } from "@sid-code/core/llm/side-call-timeout.ts";
 import { streamWithResilience } from "@sid-code/core/llm/resilient-stream.ts";
 import { LLMStreamError } from "@sid-code/core/llm/errors.ts";
 import { resolveLoopTimeouts } from "@sid-code/core/config/network-profile.ts";
-import { raceTurnHardTimeout } from "@sid-code/core/agent/turn-hard-timeout.ts";
+import { raceTurnHardTimeout, tapStreamActivity } from "@sid-code/core/agent/turn-hard-timeout.ts";
 
 // ============================================================
 // 主线
@@ -247,10 +247,13 @@ async function runAgentLoop(
       // 处理流式响应（外包 S2b 单轮硬超时兜底，阈值与主循环同一个 maxTurnDurationMs，触发即重试）
       let response: Awaited<ReturnType<typeof processStream>> | undefined;
       for (let attempt = 0; attempt <= net.maxTimeoutRetries; attempt++) {
-        const outcome = await raceTurnHardTimeout((s) => processStream(openStream(s)), {
-          timeoutMs: net.maxTurnDurationMs,
-          signal: neverAbort,
-        });
+        const outcome = await raceTurnHardTimeout(
+          (s, touch) => processStream(tapStreamActivity(openStream(s), touch)),
+          {
+            timeoutMs: net.maxTurnDurationMs,
+            signal: neverAbort,
+          },
+        );
         if (!outcome.timedOut) {
           response = outcome.value;
           break;

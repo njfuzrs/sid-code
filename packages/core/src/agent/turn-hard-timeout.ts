@@ -15,6 +15,14 @@
 //
 // 它不是总时长限制：只约束「一次模型调用」，且阈值远大于漏斗的内容无进展上限（600s），
 // 正常卡顿永远先被漏斗断流 + 重试，走到这里的只有 abort 链路本身失效的情形。
+//
+// ── 计时口径：**无事件**，不是总耗时（2026-10-17 PR-B 收尾）────────────────
+// PR-B 初版按「本轮已跑多久」计时。漏斗在路由挂掉时自己会重试 10 次 × 600s ≈ 110min，
+// 比 90min 还长——于是兜底会打断一个**仍在正常重试**的漏斗，再起一组 10 次，两层相乘，
+// 最坏 ≈ 11 × 90min。而它要防的「链路失效」的指纹是**一个事件都收不到**：漏斗只要
+// abort 还管用，600s 内就必然 abort → 重试 → 发 stream_restart / 新事件（退避上限 120s）。
+// 所以每收到一个流事件就 `touch()` 重排窗口；只有连续 maxTurnDurationMs 零事件才开枪。
+// ⛔ 别改回总耗时口径：那会让两层重试重新相乘（`tests/agent/subagent-no-limits-pr-b.test.ts`）。
 
 import {
   createSleepAwareDeadline,
@@ -27,8 +35,23 @@ export const TURN_HARD_TIMEOUT_REASON = "turn-timeout" as const;
 export type TurnRaceOutcome<T> = { timedOut: false; value: T } | { timedOut: true };
 
 /**
- * 让 `run` 与「扣休眠后满 `timeoutMs`」竞争。
+ * 透传流事件，每个事件调一次 `touch`（重排兜底窗口）。只观察不改写。
+ * 调用方用它包住交给 processStream 的那条流，兜底就变成「无事件」口径。
+ */
+export async function* tapStreamActivity<E>(
+  stream: AsyncIterable<E>,
+  touch: () => void,
+): AsyncGenerator<E> {
+  for await (const event of stream) {
+    touch();
+    yield event;
+  }
+}
+
+/**
+ * 让 `run` 与「扣休眠后连续 `timeoutMs` 无活动」竞争。
  *
+ * - `run` 的第二参 `touch`：每次有活动（流事件）调用一次，重排窗口。不调用则退化为总耗时口径。
  * - `run` 收到的 signal = 外层 signal ∪ 本轮专属 controller；超时先 abort 本轮 controller
  *   （尽力而为，对已 hang 的 reader 无效也无害），再让 race 立即 settle 交回控制权。
  * - 外层 signal（ESC / task_stop / 父代理取消）不经这里改写，`run` 自行感知。
@@ -36,7 +59,7 @@ export type TurnRaceOutcome<T> = { timedOut: false; value: T } | { timedOut: tru
  *   剩余量才能正确扣休眠（与 loop.ts turn_hard 同一写法）。
  */
 export async function raceTurnHardTimeout<T>(
-  run: (signal: AbortSignal) => Promise<T>,
+  run: (signal: AbortSignal, touch: () => void) => Promise<T>,
   opts: { timeoutMs: number; signal: AbortSignal; onFire?: () => void },
 ): Promise<TurnRaceOutcome<T>> {
   const turnCtrl = new AbortController();
@@ -62,7 +85,8 @@ export async function raceTurnHardTimeout<T>(
     }, checkMs);
   });
 
-  const runPromise = run(merged).then((value) => ({ timedOut: false as const, value }));
+  const touch = () => deadline.restart();
+  const runPromise = run(merged, touch).then((value) => ({ timedOut: false as const, value }));
   try {
     return await Promise.race([runPromise, timeoutPromise]);
   } finally {

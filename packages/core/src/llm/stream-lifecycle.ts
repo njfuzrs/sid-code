@@ -167,7 +167,7 @@ export interface StreamLifecycleSnapshot {
 }
 
 /**
- * 三层超时预设配置（按场景分级：主循环宽松 / 子代理适中 / side-call 激进）。
+ * 超时预设配置（按场景分级：主循环宽松 / side-call 激进）。子代理不再有专属档（见下方）。
  *
  * ## 主循环档从 network BASE 派生，子代理/side-call 档**不派生**（P0-4 的连带修正）
  *
@@ -176,24 +176,23 @@ export interface StreamLifecycleSnapshot {
  * 主链路的同一批慢流），但对另外两档是**错的耦合**：
  *
  * BASE 从 300s 抬到 720s（P0-4 的档②放宽）时，原倍率会把
- * `sideCall.overall` 60s → 144s、`subAgent.overall` 180s → 432s 一起放大 ——
+ * `sideCall.overall` 60s → 144s（当时还有 `subAgent.overall` 180s → 432s）一起放大 ——
  * **方向与设计意图相反**：side-call（压缩 / 分类 / 召回）是"锦上添花、失败即静默降级"
  * 的旁路，它本就该比主链路**更激进**地放弃；让一次工具分类调用卡 144s，
  * 是把"主循环要容忍慢思考"这条理由错误地传导给了根本不该容忍的一层。
  *
  * 所以现在的形态是：
  *   - `mainLoop`：仍从 BASE 派生（与 watchdog 同源，改基准两处同步跟随，这是想要的）。
- *   - `subAgent` / `sideCall`：**显式绝对值**，与 BASE 解耦。它们的取值依据是
+ *   - `sideCall`：**显式绝对值**，与 BASE 解耦。它们的取值依据是
  *     "这类调用多久没产出就该放弃"，与网关排队/长思考的容忍度无关。
  *     数值沿用解耦前 BASE=300s 时的实测档位（即行为不变），
  *     此后 BASE 再动也不会连带漂移。
  *
  * 派生/取值关系：
  *   mainLoop : idle 0.3×BASE / content 1.0×BASE / overall 2.0×BASE  （跟随 BASE）
- *   subAgent : idle 60s  / content 180s / overall 180s               （固定）
  *   sideCall : idle 30s  / content 60s  / overall 60s                （固定）
  *
- * ⚠️ 哨兵 `tests/config/timeout-ladder-sentinel.test.ts` 断言后两档**不随 BASE 放大**。
+ * ⚠️ 哨兵 `tests/config/timeout-ladder-sentinel.test.ts` 断言 sideCall 档**不随 BASE 放大**。
  * 它红了要补清单/改这里的显式值，不是删断言。
  */
 const BASE = NETWORK_DEFAULTS.watchdogNoProgressMs; // 保活优先基准（唯一真相源，仅主循环档用）
@@ -204,18 +203,10 @@ export const LIFECYCLE_PRESETS = {
     contentProgressTimeoutMs: BASE * 1.0,
     overallTimeoutMs: BASE * 2.0,
   },
-  /**
-   * 子代理：应比主循环短。与 BASE 解耦的显式绝对值（理由见上方注释）。
-   *
-   * ⚠️ 2026-10-17 起生产只读 `overallTimeoutMs`（经 resilient-stream 的
-   * DEFAULT_SIDE_STREAM_TIMEOUT_MS 作为漏斗单次尝试上限）。`agent/stream-processor`
-   * 不再用这一档的 idle / overall 自建 lifecycle（只判死不断流，事故 20261016-224545）。
-   */
-  subAgent: {
-    idleTimeoutMs: 60_000,
-    contentProgressTimeoutMs: 180_000,
-    overallTimeoutMs: 180_000,
-  },
+  // subAgent 档已删除（2026-10-17 PR-B 收尾）：子代理的流超时与主循环同源
+  // （漏斗 fallbackStreamTimeoutMs + 单轮兜底 maxTurnDurationMs），不再有子代理专属档。
+  // 它最后一个生产读者是 resilient-stream 的 side-call 缺省值，已改成那边的自有常量。
+  // ⛔ 别加回来：名字叫「子代理」、实际只服务 side-call 的档位，正是 L6 那类误读的温床。
   /** side-call（recall/compact 等轻量调用）：最激进。与 BASE 解耦的显式绝对值。 */
   sideCall: {
     idleTimeoutMs: 30_000,
