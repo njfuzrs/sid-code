@@ -35,7 +35,10 @@
 /** 短文本收尾的可见文本长度上限（字符数，含标点）。回放依据见文件头。 */
 export const PROMISE_NUDGE_MAX_TEXT_LEN = 80;
 
-/** 每个 queryLoop 调用（≈一条用户 prompt）最多续跑的次数。工具执行不清零。 */
+/**
+ * 每条用户 prompt 最多续跑的次数。工具执行不清零；#313 空闲唤醒续跑（`resumeWithNotifications`）
+ * 也不清零 —— 计数随 `S1_PROMPT_CARRY_KEY` 跨 queryLoop 继承，只在新的用户 prompt 时重置。
+ */
 export const MAX_PROMISE_NUDGES = 1;
 
 /** 紧急止血口：设为 `1` 关闭 L2 续跑（L1 事实与提示照常）。不是默认关。 */
@@ -121,6 +124,15 @@ export interface EndTurnShapeInput {
   hasToolUse: boolean;
   /** 上一次模型调用是否含 tool_use（本 prompt 内） */
   prevTurnHadToolUse: boolean;
+  /**
+   * 本次响应是不是在回应刚注入的 L2 续跑提醒（B1）。
+   *
+   * nudge 之后「上一次响应」正是那句不调工具的承诺，`prevTurnHadToolUse` 恒 false。
+   * 只看它会把「nudge → 再承诺」判成 `answered`：L1 提示不出、`short_text_end_turns` 不计，
+   * L2 唯一的失败路径退回静默收尾。nudge 本身就是「承诺发生在工具之后」的结构证据，
+   * 所以这一轮按「上次含 tool_use」走形态判定。
+   */
+  afterPromiseNudge?: boolean;
 }
 
 export interface EndTurnShape {
@@ -135,7 +147,8 @@ export function classifyEndTurnShape(input: EndTurnShapeInput): EndTurnShape {
   const textLen = [...input.text.trim()].length;
   if (input.hasToolUse) return { kind: "answered", textLen };
   if (textLen === 0) return { kind: "empty", textLen };
-  if (!input.prevTurnHadToolUse || textLen > PROMISE_NUDGE_MAX_TEXT_LEN) {
+  const afterTools = input.prevTurnHadToolUse || input.afterPromiseNudge === true;
+  if (!afterTools || textLen > PROMISE_NUDGE_MAX_TEXT_LEN) {
     return { kind: "answered", textLen };
   }
   const { lang, isPromise } = classifyPromiseText(input.text);
@@ -179,6 +192,36 @@ export function decidePromiseNudge(
   // 英文词表没有回放依据：先度量，不行动
   if (lang === "en") return { fire: false, lang, reason: "en_measure_only" };
   return { fire: true, lang };
+}
+
+/**
+ * M6：S1 的 per-prompt 状态挂在 SessionState 上的键。
+ *
+ * LoopState 每次 queryLoop 调用重建，而 #313 空闲唤醒（`QueryEngine.resumeWithNotifications`）
+ * 也走 queryLoop —— 同一条用户 prompt 下每来一次后台通知就多一次 nudge 配额。
+ * 计数改由 engine 区分「新 prompt / 续跑」：新 prompt 重置，续跑继承。
+ */
+export const S1_PROMPT_CARRY_KEY = "s1PromptCarry";
+
+/** 跨 queryLoop 继承的 S1 状态（同一条用户 prompt 内） */
+export interface S1PromptCarry {
+  promiseNudgeCount: number;
+  prevResponseHadToolUse: boolean;
+}
+
+/**
+ * 取本次 queryLoop 的 S1 起始状态：续跑继承上一次留下的值，新 prompt（或无记录）从零开始。
+ * 纯函数，读写 SessionState 由调用方负责。
+ */
+export function initialS1Carry(continuation: boolean, prev: unknown): S1PromptCarry {
+  if (continuation && prev && typeof prev === "object") {
+    const p = prev as Partial<S1PromptCarry>;
+    return {
+      promiseNudgeCount: typeof p.promiseNudgeCount === "number" ? p.promiseNudgeCount : 0,
+      prevResponseHadToolUse: p.prevResponseHadToolUse === true,
+    };
+  }
+  return { promiseNudgeCount: 0, prevResponseHadToolUse: false };
 }
 
 /** 读 env 止血口 */

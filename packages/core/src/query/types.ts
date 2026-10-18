@@ -274,14 +274,16 @@ export interface LoopState {
    */
   toolCallsDispatched?: number;
   /**
-   * S1 L2：本 queryLoop 调用（≈一条用户 prompt）内「承诺未兑现」续跑次数。
+   * S1 L2：本条用户 prompt 内「承诺未兑现」续跑次数。
    *
    * 与 `unansweredRetryCount` **刻意分开**：后者工具执行即清零、上限 2，共用会形成
    * 「承诺 → nudge → 调一次工具（清零）→ 再承诺 → nudge …」的循环，并与思考漂移形态互吞配额。
-   * 本计数**只在新的用户 prompt 时重建**（随 LoopState 重建），任何路径都不清零。
+   * 本计数**只在新的用户 prompt 时重置**，任何路径都不清零。注意 LoopState 每次 queryLoop
+   * 调用都重建，而 #313 空闲唤醒续跑也走 queryLoop —— 所以它不能只靠 LoopState：入口从
+   * SessionState 的 `S1_PROMPT_CARRY_KEY` 继承（`QueryLoopConfig.continuation`），见 M6。
    */
   promiseNudgeCount?: number;
-  /** S1 L1：上一次模型调用是否含 tool_use（本 prompt 内；首轮为 false） */
+  /** S1 L1：上一次模型调用是否含 tool_use（本 prompt 内；首轮为 false；续跑继承，同上） */
   prevResponseHadToolUse?: boolean;
   /** S4 可见性：本 prompt 内累计 output / reasoning token、写入类与只读类工具派发数 */
   promptOutputTokens?: number;

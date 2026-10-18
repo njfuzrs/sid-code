@@ -392,12 +392,14 @@ export class QueryEngine {
     if (injected === 0) return;
     getLogger().info("ENGINE", `空闲唤醒：${injected} 条后台任务通知，续跑一轮`);
     yield { kind: "user_message_added" };
-    yield* this.runLoop(this.deps.thinkingMgr.getThinkingConfig(""));
+    // M6：续跑属于同一条用户 prompt，S1 nudge 配额继承而非重置。
+    yield* this.runLoop(this.deps.thinkingMgr.getThinkingConfig(""), { continuation: true });
   }
 
   /** 构建 queryLoop 依赖并消费其事件流。submitMessage 与 resumeWithNotifications 共用。 */
   private async *runLoop(
     thinking: { enabled: boolean; budgetTokens: number } | undefined,
+    opts: { continuation?: boolean } = {},
   ): AsyncGenerator<QueryEngineEvent> {
     const log = getLogger();
     const { config, ctxMgr, toolRegistry, sessionState, hookSystem, sessionStore } = this.deps;
@@ -514,6 +516,7 @@ export class QueryEngine {
       budgetTracker: this.deps.budgetTracker,
       // 把解析出的 thinking 配置下传给 queryLoop → SendParams（修复 _thinking 历史断链）。
       thinking,
+      continuation: opts.continuation === true,
       deps: queryDeps,
     });
 
