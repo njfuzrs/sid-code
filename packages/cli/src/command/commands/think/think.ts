@@ -1,6 +1,14 @@
 import type { LocalCommandModule, LocalCommandResult, CommandContext } from "../../types.ts";
 import { getThinkingEnvOverride, type ThinkingSetting } from "@sid-code/core/llm/effort.ts";
-import { thinkingLabelForSetting } from "../../../ui/utils/thinking-label.ts";
+import {
+  thinkingLabelForSetting,
+  thinkingIntentOverriddenNote,
+  NO_TOGGLE_NOTE,
+  LOCKED_ON_NOTE,
+} from "../../../ui/utils/thinking-label.ts";
+
+// 文案的事实源在 thinking-label.ts（切模型 / 启动期提示与本命令共用），此处转导出保持旧引用可用。
+export { NO_TOGGLE_NOTE, LOCKED_ON_NOTE };
 
 /**
  * /think 命令实现（按需加载）
@@ -14,7 +22,7 @@ import { thinkingLabelForSetting } from "../../../ui/utils/thinking-label.ts";
  *   /think help      - 显示用法
  *
  * 思考开关与「推理强度」（/effort）正交：开关控制是否思考，强度控制思考多深。
- * 当前模型不支持显式思考开关（如 OpenAI o-series 内置推理）时，本命令会提示而不下发。
+ * 当前模型不支持显式思考开关（如 OpenAI o-series 内置推理）时，意图照存但如实提示本模型不生效。
  */
 const mod: LocalCommandModule = {
   async call(args: string, ctx: CommandContext): Promise<LocalCommandResult> {
@@ -28,12 +36,11 @@ const mod: LocalCommandModule = {
     }
 
     const state = ctx.getThinkingState?.();
-    // 能力门控：模型没有独立思考开关时直接说明（推理深度由 /effort 决定）。
-    if (state && !state.capability.supportsThinkingToggle) {
-      return { type: "text", value: NO_TOGGLE_NOTE };
-    }
+    const noToggle = !!state && !state.capability.supportsThinkingToggle;
 
     if (!arg) {
+      // 无开关族没有可选项，面板打开也是空的，直接说明（推理深度由 /effort 决定）。
+      if (noToggle) return { type: "text", value: NO_TOGGLE_NOTE };
       return { type: "dialog", dialog: "think" };
     }
 
@@ -52,26 +59,23 @@ const mod: LocalCommandModule = {
     const base = setting === undefined ? "auto（跟随模型默认）" : setting;
     const label = shown && shown !== base ? `${base}，状态栏显示 ${shown}` : base;
     const envNote = buildEnvOverrideNote();
-    // 恒思考模型：意图照存（切回可关闭的模型时自动生效），但如实说这个模型上不生效。
-    // 此前只打一条 warn 日志，状态栏显示「关」、模型照样在想（20261016 排查 D5）。
-    const lockedNote =
-      state?.capability.thinkingControl === "locked-on" && setting === "off"
-        ? `\n${LOCKED_ON_NOTE}`
-        : "";
+    // 恒思考 / 无开关族：意图照存（切到可关闭的模型时自动生效），但如实说这个模型上不生效。
+    // 无开关族此前在解析参数前就 return、不保存意图，与 locked-on 的「粘性」不一致——
+    // 切到可关模型后 off 不生效（20261018 复审 R9）。
+    // 无开关族的 on / auto 同样不改变本模型行为，也要说；locked-on 只有 off 与实际不符。
+    const control = state?.capability.thinkingControl;
+    const note =
+      control === "none"
+        ? NO_TOGGLE_NOTE
+        : control
+          ? thinkingIntentOverriddenNote(control, setting ?? "auto")
+          : null;
     return {
       type: "text",
-      value: `思考开关已设为: ${label}${persist ? "，并已保存到 settings.json" : ""}${envNote}${lockedNote}`,
+      value: `思考开关已设为: ${label}${persist ? "，并已保存到 settings.json" : ""}${envNote}${note ? `\n${note}` : ""}`,
     };
   },
 };
-
-/** 无独立开关族（kimi / gpt-5.x / grok / o 系 / 未知族）的提示：说清楚由什么控制。 */
-export const NO_TOGGLE_NOTE =
-  "当前模型没有独立的思考开关，推理深度由 /effort 控制（思考行为由模型自身决定）。";
-
-/** 恒思考模型（Opus 5.5 / Sonnet 5.5 / Fable / Mythos / GLM-5.3 等）关闭时的提示。 */
-export const LOCKED_ON_NOTE =
-  "⚠ 当前模型恒思考，服务端不接受关闭，本模型上仍会思考；切到可关闭思考的模型后 off 自动生效。";
 
 /**
  * env 覆盖提示：若 SID_CODE_THINKING 已设，运行时切换不会改变实际行为，诚实告知。
@@ -95,7 +99,7 @@ function buildHelp(): string {
     "  /think help       显示本用法",
     "",
     "说明：",
-    "  · 模型不支持显式思考开关时（如 OpenAI o-series 内置推理），本命令仅提示不下发，推理深度用 /effort 调。",
+    "  · 模型不支持显式思考开关时（如 OpenAI o-series 内置推理），意图照存但本模型不生效，推理深度用 /effort 调。",
     "  · 状态栏显示：on / off（手动）、auto·on / auto·off（跟随模型默认）、",
     "    always（恒思考模型，关不掉）、by-model（无独立开关，由模型与 /effort 决定）。",
     "  · 恒思考模型（状态栏 always）上 off 不生效，切到可关闭的模型后自动生效。",

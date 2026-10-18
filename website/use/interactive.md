@@ -300,7 +300,16 @@ operator + motion 组合、text object 的完整引擎。逐类列出**实际实
 两者正交：可以「开着思考但强度调低」，也可以「关掉思考」直接不思考。
 
 ::: tip 不是所有模型都有这个开关
-`/think` 只对支持显式思考开关的模型有意义（如带 thinking budget 的模型）。OpenAI o-series 这类**内置推理**的模型，思考行为由模型自身决定，`/think` 会直接提示「当前模型不支持显式思考开关」而不下发——这不是故障。
+`/think` 只对支持显式思考开关的模型有意义。两类模型上它不改变本模型的行为：
+
+- **无独立开关**（OpenAI o-series、gpt-5.x、kimi 等内置推理的模型，状态栏显示 `by-model`）：思考行为由模型自身决定，推理深度用 `/effort` 调。
+- **恒思考**（Opus 5.5、Sonnet 5.5、Fable、GLM-5.3 等，状态栏显示 `always`）：服务端不接受关闭。
+
+在这两类模型上 `/think off` 仍会**记住**你的设置，并如实提示本模型上不生效；切到可关闭思考的模型后 off 自动生效。意图为 off 时切到这类模型，或用 `SID_CODE_THINKING=off` 启动在这类模型上，会在消息区（`-p` 模式写 stderr）提示一次。这不是故障。
+:::
+
+::: warning 网关改名的 Claude 模型
+思考开关只对注册表里**精确命中**的模型名发 `disabled`。真名本身带后缀或前缀时（如 `claude-sonnet-5-gateway`、`gw-claude-sonnet-5`），只能模糊命中，off 时按设计**不发**关闭字段：服务端仍会照常思考，但状态栏显示「off」。这是为了防止未来小版本若恒思考时，off 请求全部 400。
 :::
 
 如果设了环境变量 `SID_CODE_THINKING=on|off`，它会覆盖运行时切换。这时 `/think on` 虽然不报错，但实际行为不会变——命令会显式提示你「环境变量正在覆盖」。取消覆盖用 `unset SID_CODE_THINKING`。

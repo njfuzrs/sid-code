@@ -461,16 +461,33 @@ export interface SendParams {
    *
    * 为什么不能让 fallback 直接读 `thinking.enabled`：恒思考模型上它已被 applier 强制成
    * `true`，拿它当输入会把「主模型关不掉」传染给备用模型。也不能读用户 `/think`：
-   * side-call / 子代理 / fork 同样经 `streamWithResilience` 走 fallback，它们的意图不是用户开关。
+   * 字段是按调用表达意图的，side-call / 子代理的意图不是用户开关。
    *
-   * 由调用方写：主循环写 resolveThinking / resolveAppliedEffort 的结果，子代理写
-   * `sub-agent-effort.ts` 的结论。缺省时 fallback 按 `thinking.enabled` 推断——
-   * 只有 side-call（`SIDE_CALL_NO_THINK`，恒 false）会走到这条，方向安全。
+   * ⚠ 生产覆盖面（20261018 复审 R4，回源码核过）：**只有主循环会真的 fallback**。
+   * side-call / 子代理 / fork 虽经 `streamWithResilience`，但 10 个生产调用点都不传
+   * `fallbackModel` 也不传共享 `fallback` 实例，`resilient-stream.ts` 现建的一次性
+   * `ModelFallback` 没有备用模型，重试耗尽直接抛错，走不到 `reapplyThinkingForFallback`。
+   * 「它们要不要接 fallback」是另一件事，不在本字段的职责里。
+   *
+   * 由调用方写：主循环（`query/loop.ts` 注入了 getEffortSetting / getThinkingSetting 时）写
+   * resolveThinking / resolveAppliedEffort 的结果，子代理写 `sub-agent-effort.ts` 的结论。
+   * 缺省时 fallback 按 `thinking.enabled` 推断：side-call（`SIDE_CALL_NO_THINK`，恒 false）
+   * 与未注入 getter 的旧主循环路径都会走到这条；前者方向安全，后者在恒思考主模型上
+   * 会把 applier 强制出的 true 带给备用模型（只影响未注入 getter 的调用方，生产 App 都注入了）。
    */
   thinkingIntent?: {
     thinking: boolean;
     effort?: "low" | "medium" | "high" | "xhigh" | "max";
   };
+  /**
+   * 观测用（只进 BilledRequest，不上线）：本次调用的思考设置三态 / 目标模型控制形态 / 展示态。
+   *
+   * 与 {@link thinkingIntent} 分开存：那个是 auto 解析后的布尔（fallback 要用），auto 在默认关的
+   * 模型上会落成 false，拿它当「意图关」的分母会把 auto 混进泄漏率（遗留清单 R6）。
+   * 由主循环写（与 BeforeModel 同一个 `cap`）；fallback 按备用模型重写；缺省时 provider 出口按
+   * 真名现算（`thinking-observation.ts`）。
+   */
+  thinkingObservation?: ThinkingObservation;
   /**
    * 用户标识（DeepSeek `user_id`，OpenAI 兼容端点请求体顶层字段）。
    * 用于 KVCache 隔离 / 调度隔离 / 内容安全隔离。须满足正则 `[a-zA-Z0-9\-*]+`、长度 ≤512。
@@ -594,4 +611,14 @@ export interface AccumulatedResponse {
    * 注意：此字段**不进** _meta，不持久化到历史，仅供本轮 loop 决策。
    */
   _unansweredEndTurn?: boolean;
+}
+
+/** 见 {@link SendParams.thinkingObservation}。 */
+export interface ThinkingObservation {
+  /** 用户层面的设置：env > `/think` > auto；side-call 的 `SIDE_CALL_NO_THINK` 记 off */
+  setting?: "on" | "off" | "auto";
+  /** 目标模型的思考控制形态（= EffortCapability.thinkingControl） */
+  control?: "toggle" | "locked-on" | "none";
+  /** 状态栏 / `/think` 展示的「是否在思考」（= resolveThinkingState().effective） */
+  shown?: boolean;
 }

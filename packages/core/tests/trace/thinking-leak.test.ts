@@ -100,81 +100,185 @@ describe("aggregateThinkingLeakStats", () => {
     expect(aggregateThinkingLeakStats([br({ accounted: true, model: "m" })])).toBeUndefined();
   });
 
-  test("主循环 / 非主循环分开算，分母只含意图关的 fetch；恒思考模型单列", () => {
+  /** 新口径记录：默认 toggle + 设置 off */
+  const off = (data: Record<string, unknown>): Ev =>
+    br({ thinking_setting: "off", thinking_control: "toggle", thinking_intent: false, ...data });
+
+  test("主循环 / 非主循环分开算，分母只含「设置 off × toggle」；恒思考 / 无开关族单列", () => {
     const stats = aggregateThinkingLeakStats([
-      // 主循环（无 agent_id / caller）：意图关、发了 omitted、仍思考 → 泄漏（D1 的形态）
-      br({
+      // 主循环（无 agent_id / caller）：设置关、发了 omitted、仍思考 → 泄漏（D1 的形态）
+      off({
         accounted: true,
         model: "claude-sonnet-5",
         thinking_wire: "omitted",
-        thinking_intent: false,
         thinking_in_response: true,
       }),
-      // 主循环：意图关、disabled、没思考
-      br({
+      // 主循环：设置关、disabled、没思考
+      off({
         accounted: true,
         model: "claude-sonnet-5",
         thinking_wire: "disabled",
-        thinking_intent: false,
         thinking_in_response: false,
       }),
-      // 主循环：意图开 → 不进分母
+      // 主循环：设置开 → 不进分母
       br({
         accounted: true,
         model: "claude-sonnet-5",
         thinking_wire: "adaptive",
+        thinking_setting: "on",
+        thinking_control: "toggle",
         thinking_intent: true,
         thinking_in_response: true,
       }),
-      // 恒思考模型：意图关但线上 adaptive → 单列，不进分母
-      br({
+      // Anthropic 恒思考：线上 adaptive → 关不掉，不进分母
+      off({
         accounted: true,
         model: "claude-opus-5-5",
+        thinking_control: "locked-on",
         thinking_wire: "adaptive",
-        thinking_intent: false,
         thinking_in_response: true,
       }),
-      // side-call：意图关、disabled、没思考
-      br({
+      // side-call：设置关、disabled、没思考
+      off({
         accounted: false,
         caller: "recall",
         model: "claude-sonnet-5",
         thinking_wire: "disabled",
-        thinking_intent: false,
         thinking_in_response: false,
       }),
       // 子代理经 usage-sink 入账（S13 把 accounted 改写成 true）：仍属非主循环
-      br({
+      off({
         accounted: true,
         accounted_by: "usage-sink",
         agent_id: "a1",
         model: "claude-sonnet-5",
         thinking_wire: "disabled",
-        thinking_intent: false,
         thinking_in_response: true,
       }),
-      // side-call：意图关、omitted、思考了
-      br({
+      // side-call：设置关、omitted、思考了
+      off({
         accounted: false,
         caller: "compact",
         model: "deepseek-v4-pro",
         thinking_wire: "omitted",
-        thinking_intent: false,
         thinking_in_response: true,
       }),
     ])!;
     expect(stats.main).toEqual({ offRequests: 2, leaked: 1, rate: 0.5 });
     expect(stats.nonMain).toEqual({ offRequests: 3, withThinking: 2, rate: 2 / 3 });
-    expect(stats.offButSentOn).toBe(1);
+    expect(stats.lockedOn).toBe(1);
     expect(stats.byModel["deepseek-v4-pro"]).toEqual({ offRequests: 1, withThinking: 1 });
   });
 
-  test("有埋点但没有意图关的请求 → rate 为 undefined（无样本不落 0）", () => {
+  test("R1：OpenAI 族恒思考（omitted + 有 reasoning）记「关不掉」，不记主循环泄漏", () => {
+    // GLM-5.3 的 off 在 openai.ts 被降级为不下发 → 线上 omitted；修前只拦 enabled/adaptive，
+    // 这条会落进主循环分母并计 1 次泄漏。
+    const stats = aggregateThinkingLeakStats([
+      off({
+        accounted: true,
+        model: "glm-5.3",
+        thinking_control: "locked-on",
+        thinking_wire: "omitted",
+        thinking_in_response: true,
+      }),
+    ])!;
+    expect(stats.main.offRequests).toBe(0);
+    expect(stats.main.leaked).toBe(0);
+    expect(stats.lockedOn).toBe(1);
+  });
+
+  test("R1：无开关族（gpt-5.x / kimi）单列，不进分母", () => {
+    const stats = aggregateThinkingLeakStats([
+      off({
+        accounted: true,
+        model: "gpt-5.6",
+        thinking_control: "none",
+        thinking_wire: "omitted",
+        thinking_in_response: true,
+      }),
+    ])!;
+    expect(stats.main.offRequests).toBe(0);
+    expect(stats.noToggle).toBe(1);
+  });
+
+  test("R6：auto 解析成关不进分母，单列参考", () => {
+    const stats = aggregateThinkingLeakStats([
+      br({
+        accounted: true,
+        model: "claude-opus-4-8",
+        thinking_wire: "omitted",
+        thinking_setting: "auto",
+        thinking_control: "toggle",
+        thinking_intent: false,
+        thinking_in_response: true,
+      }),
+    ])!;
+    expect(stats.main.offRequests).toBe(0);
+    expect(stats.autoResolvedOff).toBe(1);
+  });
+
+  test("R5：没有 thinking_wire 的记录计入 uninstrumented；老口径记录计入 legacy、不进分母", () => {
+    const stats = aggregateThinkingLeakStats([
+      br({ accounted: true, model: "gpt-5.6" }),
+      br({
+        accounted: true,
+        model: "claude-sonnet-5",
+        thinking_wire: "omitted",
+        thinking_intent: false,
+        thinking_in_response: true,
+      }),
+    ])!;
+    expect(stats.uninstrumented).toBe(1);
+    expect(stats.legacy).toBe(1);
+    expect(stats.main.offRequests).toBe(0);
+  });
+
+  test("R10：展示 ≠ 实发——两者都给出才比，omitted 且服务端默认未知记不可判", () => {
+    const stats = aggregateThinkingLeakStats([
+      // 后缀真名（M2）：展示关，线上不发、注册表无精确命中 → 不可判
+      off({
+        accounted: true,
+        model: "gw",
+        thinking_wire: "omitted",
+        thinking_shown: false,
+      }),
+      // 展示关、线上 disabled → 一致
+      off({
+        accounted: true,
+        model: "claude-sonnet-5",
+        thinking_wire: "disabled",
+        thinking_shown: false,
+        thinking_wire_thinks: false,
+      }),
+      // 展示关、线上却 adaptive → 不一致
+      off({
+        accounted: true,
+        model: "x",
+        thinking_wire: "adaptive",
+        thinking_shown: false,
+        thinking_wire_thinks: true,
+      }),
+      // none 族不比
+      off({
+        accounted: true,
+        model: "gpt-5.6",
+        thinking_control: "none",
+        thinking_wire: "omitted",
+        thinking_shown: true,
+        thinking_wire_thinks: false,
+      }),
+    ])!;
+    expect(stats.shownVsWire).toEqual({ compared: 2, mismatched: 1, unknown: 1, rate: 0.5 });
+  });
+
+  test("有埋点但没有设置关的请求 → rate 为 undefined（无样本不落 0）", () => {
     const stats = aggregateThinkingLeakStats([
       br({
         accounted: true,
         model: "m",
         thinking_wire: "adaptive",
+        thinking_setting: "on",
+        thinking_control: "toggle",
         thinking_intent: true,
         thinking_in_response: true,
       }),

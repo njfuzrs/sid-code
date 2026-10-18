@@ -83,6 +83,7 @@ import {
   resolveEffortCapability,
   resolveAppliedEffort,
   resolveThinking,
+  resolveThinkingState,
   getEffortEnvOverride,
   getThinkingEnvOverride,
 } from "../llm/effort.ts";
@@ -2180,6 +2181,10 @@ export async function* queryLoop(loopConfig: QueryLoopConfig): AsyncGenerator<Qu
           // 注意 supportsThinking 仍从 modelConfig 取（那是用户对**这条渠道**的显式声明，
           // 权威度高于按名推导，且同一真名的两个渠道支持度确实可能不同）。
           model: sendParams.wireModel ?? config.model,
+          // 取 config.provider 而不是 modelConfig?.provider：两者在生产中恒等——启动、/model、
+          // 恢复会话三条切模型路径都经 resolveCurrentModelConfig，条目带 provider 时回写
+          // config.provider（config.ts）。fallback resolver（app.ts）按备用模型自己的条目取，
+          // 因为备用模型不是 config.model，那里没有回写可依赖（20261018 复审 M1）。
           provider: config.provider,
           baseURL: modelConfig?.baseURL ?? config.baseURL,
           modelConfig: modelConfig ? { supportsThinking: modelConfig.supportsThinking } : undefined,
@@ -2205,6 +2210,12 @@ export async function* queryLoop(loopConfig: QueryLoopConfig): AsyncGenerator<Qu
           thinking_intent:
             envThinking !== null ? (envThinking ? "on" : "off") : (runtimeThinking ?? "auto"),
           thinking_control: cap.thinkingControl,
+        };
+        // R1 / R6 / R10：同一份三态 + 控制形态 + 展示态随 BilledRequest 落盘，与 BeforeModel 同口径。
+        sendParams.thinkingObservation = {
+          setting: thinkingObs.thinking_intent,
+          control: cap.thinkingControl,
+          shown: resolveThinkingState(cap, runtimeThinking, envThinking).effective,
         };
         cap.applyToSendParams(sendParams, appliedEffort, appliedThinking);
 
