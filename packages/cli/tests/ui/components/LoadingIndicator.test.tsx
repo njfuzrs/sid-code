@@ -13,6 +13,7 @@ import React from "react";
 import { render } from "@sid-code/cli/ui/render-port/testing.ts";
 import { LoadingIndicator } from "@sid-code/cli/ui/components/LoadingIndicator.tsx";
 import { StreamingState } from "@sid-code/cli/ui/types.ts";
+import { TOKEN_IN, TOKEN_OUT } from "@sid-code/cli/ui/constants/figures.ts";
 
 describe("LoadingIndicator — Connecting 态渲染", () => {
   test("Connecting 显示「连接中…」且含 spinner 字符", () => {
@@ -118,5 +119,23 @@ describe("LoadingIndicator — 工具执行态", () => {
       />,
     );
     expect(lastFrame() ?? "").toContain("已执行 8s");
+  });
+});
+
+describe("LoadingIndicator — 输出 token 箭头与 Footer 一致", () => {
+  // 回归：这里曾硬编码「↑ N tokens」，而 Footer 用 TOKEN_IN=↑ 表示输入、TOKEN_OUT=↓ 表示输出，
+  // 同一屏上同一个输出 token 数一个朝上一个朝下。断言绑定 TOKEN_OUT 常量，防止再分叉。
+  test("输出 token 用 TOKEN_OUT（↓），不用 TOKEN_IN（↑）", () => {
+    const { lastFrame } = render(
+      <LoadingIndicator
+        inline
+        streamingState={StreamingState.Responding}
+        elapsedTime={5}
+        outputTokens={142590}
+      />,
+    );
+    const frame = lastFrame() ?? "";
+    expect(frame).toContain(`${TOKEN_OUT} 142.59k tokens`);
+    expect(frame).not.toContain(`${TOKEN_IN} 142.59k`);
   });
 });
