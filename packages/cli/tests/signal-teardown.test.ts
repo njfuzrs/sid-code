@@ -238,7 +238,11 @@ describe("真进程 · 收尾异步挂起由 forceExit 兜底", () => {
       process.stdout.write("ready\\n");
       setInterval(() => {}, 1000);
     `;
-    const p = Bun.spawn(["bun", "-e", script], { stdout: "pipe", stderr: "pipe" });
+    const p = Bun.spawn(["bun", "-e", script], {
+      env: { ...process.env },
+      stdout: "pipe",
+      stderr: "pipe",
+    });
     const reader = p.stdout.getReader();
     const dec = new TextDecoder();
     let out = "";
@@ -315,7 +319,9 @@ describe("真 pty · 关闭终端后收尾落盘", () => {
           "os.kill(pid, 9); print('hung')",
         ].join("\n"),
       );
+      // pty 里的 bun 孙进程继承 python 的 env，所以这里也必须显式传（preload 的 SID_CONFIG_DIR）。
       const r = Bun.spawnSync(["python3", "-I", driver, process.execPath, child], {
+        env: { ...process.env },
         stdout: "pipe",
         stderr: "pipe",
       });
