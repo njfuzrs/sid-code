@@ -1373,6 +1373,25 @@ export function deriveDuration(meta: TrajMeta): { ms: number; inProgress: boolea
   return { ms: 0, inProgress: false };
 }
 
+/**
+ * 复审 B4：digest 的时长与「进行中」判定。
+ *
+ * - `session_ended === false`：进行中。时长优先取账本的增量 elapsed（每轮刷新，比快照时刻更新），
+ *   没有账本时按 `snapshot_at` 推。
+ * - `session_ended === true`：已收尾，账本优先，缺账本按 traj 推。
+ * - 字段缺失（旧 traj）：沿用旧口径 —— 有账本即视为已收尾，否则按 traj 推。
+ */
+export function resolveDigestDuration(
+  meta: TrajMeta,
+  ledgerDurationMs: number | undefined,
+): { ms: number; inProgress: boolean } {
+  if (meta.session_ended === false) {
+    return { ms: ledgerDurationMs ?? deriveDuration(meta).ms, inProgress: true };
+  }
+  if (ledgerDurationMs !== undefined) return { ms: ledgerDurationMs, inProgress: false };
+  return deriveDuration(meta);
+}
+
 /** 粗略匹配协议违规:本会话时间窗内的违规记录数(违规文件名含 ms 时间戳) */
 function matchViolations(ref: SessionRef, meta: TrajMeta, paths: DigestPaths): number {
   if (!existsSync(paths.violationsDir)) return 0;
@@ -1918,10 +1937,14 @@ export function buildDigest(ref: SessionRef, full: boolean, paths: DigestPaths):
     .pop();
   const costUSD =
     ledger?.costUSD ?? meta.total_cost_usd ?? traj.info?.model_stats?.total_cost_usd ?? 0;
-  // S12：账本只在 SessionEnd 写，有账本条目 = 已收尾；没有时才看 traj 元数据
-  const derived = ledger?.durationMs !== undefined ? undefined : deriveDuration(meta);
-  const durationMs = ledger?.durationMs ?? derived!.ms;
-  const durationInProgress = derived?.inProgress === true;
+  // S12 / 复审 B4：「有账本条目 = 已收尾」不成立 —— flushSessionLedgerIncremental 每轮 done
+  // 都 upsert 账本（durationMs = 当时的 elapsed），进行中会话几乎都有条目。
+  // 收尾与否只认 traj 元数据的 session_ended（builder 按 end_time/end_source 写，语义正确）；
+  // 旧 traj 没有这个字段时才退回旧口径（有账本按账本，否则按 traj 推）。
+  const { ms: durationMs, inProgress: durationInProgress } = resolveDigestDuration(
+    meta,
+    ledger?.durationMs,
+  );
 
   // 成本归零仅在「有账本条目且账本明确记成本为 0」时才算异常:
   // 没有 ledger 条目(会话没正常 SessionEnd / 未写账本)是数据缺失,不是成本异常,
