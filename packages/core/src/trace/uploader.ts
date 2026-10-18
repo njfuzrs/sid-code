@@ -925,21 +925,24 @@ function fileNameToType(fileName: string): "traj" | "raw" | "events" | null {
 }
 
 /**
- * S17：上传 events.jsonl 前剥掉「只留本地」的字段。目前只有 PostToolUseFailure 的
- * `data.error_head`——工具错误原文可能含路径、命令输出乃至密钥片段，云端只需要
- * `error_kind` 做分类统计。
+ * S17：上传 events.jsonl 前剥掉「只留本地」的字段：PostToolUseFailure 的 `data.error_head`
+ * （工具错误原文可能含路径、命令输出乃至密钥片段，云端只需要 `error_kind`），以及
+ * PreToolUse 的 `data.input_summary`（G1：文件路径 / 命令片段，同理只供本地排查）。
  *
  * 逐行处理：解析失败的行原样保留（损坏行不是这里该修的，丢掉它会让服务端
- * 的行数校验与本地对不上）。只在行里出现 `"error_head"` 时才解析，其余行字节不变。
+ * 的行数校验与本地对不上）。只在行里出现上述字段名时才解析，其余行字节不变。
  */
-export const LOCAL_ONLY_EVENT_DATA_FIELDS = ["error_head"] as const;
+export const LOCAL_ONLY_EVENT_DATA_FIELDS = ["error_head", "input_summary"] as const;
+
+const LOCAL_ONLY_NEEDLES = LOCAL_ONLY_EVENT_DATA_FIELDS.map((f) => `"${f}"`);
+const hasLocalOnlyField = (s: string) => LOCAL_ONLY_NEEDLES.some((n) => s.includes(n));
 
 export function stripLocalOnlyEventFields(text: string): string {
-  if (!text.includes('"error_head"')) return text;
+  if (!hasLocalOnlyField(text)) return text;
   return text
     .split("\n")
     .map((line) => {
-      if (!line.includes('"error_head"')) return line;
+      if (!hasLocalOnlyField(line)) return line;
       try {
         const obj = JSON.parse(line) as { data?: Record<string, unknown> };
         if (obj && obj.data && typeof obj.data === "object") {
