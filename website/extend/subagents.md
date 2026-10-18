@@ -23,7 +23,7 @@ sid-code agents --json   # 机器可读
 
 | 名字 | 干什么 | 工具集 |
 | --- | --- | --- |
-| `explore` | 快速搜索分析代码库，只返回关键发现 | 只读（read / grep / glob / ls / read_many） |
+| `explore` | 快速搜索分析代码库，只返回关键发现 | 只读（read / grep / glob / ls / read_many 等） |
 | `plan` | 分析代码库并输出结构化实现方案 | 只读，同上 |
 | `task` | 执行指定子任务 | 读写 + bash + 网络 |
 | `verify` | 对抗式验证：验证某个结论/修复是否真成立 | 只读 + bash |
@@ -156,7 +156,6 @@ export SID_STRONG_MODEL=claude-opus-5
 ---
 description: 专门找导出的常量名，只返回名字列表
 tools: read, grep, glob
-modelTier: cheap
 color: cyan
 ---
 
@@ -177,16 +176,16 @@ frontmatter 可用字段：
 
 | 字段 | 作用 |
 | --- | --- |
-| `description` | **必填**。模型据此判断什么时候该派它，写清楚触发场景 |
+| `description` | 模型据此判断什么时候该派它，写清楚触发场景。**建议必填**——空着不会被拦，但模型不知道何时派它 |
 | `tools` | 工具白名单。**收窄工具集是最有效的约束**——只给 read/grep 它就不可能改文件 |
-| `model` | 固定用某个模型；`inherit` 或留空 = 跟主模型 |
-| `modelTier` | `cheap` / `strong` / `default`，映射到 `SID_CHEAP_MODEL` / `SID_STRONG_MODEL`；没设就跟主模型 |
+| `model` | 固定用某个模型；`inherit` 或留空 = 跟主模型。想让某个自定义 agent 固定走便宜模型，用这个字段 |
 | `color` | UI 区分色 |
 | `permissionMode` | 该 agent 专用的权限模式 |
 | `background` | 是否默认后台执行 |
 | `isolation` | 是否默认用独立 worktree（并行改文件时防冲突） |
 | `skills` | 预加载的 skill 列表 |
-| `maxTurns` | 可选的轮次上限，到达后强制总结。不写就不设上限 |
+
+`modelTier` 和 `maxTurns` 只对内置 agent 生效，自定义 agent 的 frontmatter 写了会被静默忽略——自定义 agent 想分级用 `model` 字段指定具体模型。
 
 子代理**没有时间上限**，也不默认限制轮次，这点和 Claude Code 一致。一次上游卡顿只会触发重试（与主循环同一套：内容无进展 600s 断流重发，最多 10 次），不会让整个子代理判失败。要停下它，按 ESC、用 `task_stop`，或取消父代理。frontmatter 里的 `timeout` 已不再生效，写了只会在加载时打 warn。
 
@@ -259,7 +258,7 @@ sid-code agents | grep 你的agent名
 ### 子代理和主代理之间，到底哪些状态是隔开的
 
 对话历史、文件读取记录、todo 清单、权限拒绝计数都是各自独立的，abort 信号是刻意共享的
-（这样你取消主代理能连带取消子代理）。
+（取消主代理会连带取消前台子代理；后台子代理只在会话级中断时才连带，ESC 这类单轮取消不转发给它）。
 [子代理隔离：五次修复都在补同一个洞](/blog/subagent-isolation)把这份清单列全了，
 并交代了两个只能靠实测发现的边界——`isolation: worktree` 为什么反而用不上最强的那道隔离、
 以及共享黑板目录 `~/.sid-code/tasks/` 里真实输出只占 0.5%。
