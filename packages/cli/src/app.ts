@@ -2469,6 +2469,8 @@ export class App {
     }
     // 模型变了，effort/thinking 能力可能随之变（如换到不支持 max 的模型），重推展示态。
     this.pushKnobDisplay();
+    // R7：意图 off 而新模型关不掉时提示一次（/model、面板、降级链三条路径都汇合在这里）。
+    this.noteThinkingIntentIfOverridden();
     // -p 持久化：写顶层 model。必用 patchSettingsFile（禁整体覆盖，见 settings 有损 round-trip 陷阱）。
     if (opts?.persist) this.persistModelField("model", model);
     // P1-4b：落会话级 agent 设置快照，供 resume 恢复本会话使用的模型。
@@ -6828,6 +6830,47 @@ export class App {
   private readonly bypassAvailableAtLaunch: boolean = false;
 
   /**
+   * 思考意图被当前模型覆盖时的常驻提示通道（20261018 复审 R7 / R8）。
+   *
+   * 用历史区 hint 而不是状态栏瞬时提示：状态栏几秒就消失，而「我说了关、它还在想」
+   * 正是用户要回头查的那条。TUI 就绪前到达的先排队，就绪时补推；无头模式在
+   * runHeadless 里把队列写到 stderr（不污染 stdout 的结构化输出）。
+   */
+  private thinkingNoteSink: ((text: string) => void) | null = null;
+  private pendingThinkingNotes: string[] = [];
+  /** 已提示过的模型：同一模型重复切入不重复提示（R7 验收条件） */
+  private thinkingNotedModels = new Set<string>();
+
+  /**
+   * 用户意图是 off、而当前模型关不掉（locked-on 恒思考 / none 无开关族）时提示一次。
+   *
+   * 切模型（applyPrimaryModelSwitch、onboarding 配置）与启动期（env / settings 为 off）
+   * 共用这一处判定。意图本身不动——粘性是对的，切回可关模型时 off 自动生效；
+   * 缺的只是「告诉用户这个模型上不生效」。
+   */
+  private noteThinkingIntentIfOverridden(): void {
+    try {
+      const eff = require("@sid-code/core/llm/effort.ts");
+      const { thinkingIntentOverriddenNote } = require("./ui/utils/thinking-label.ts");
+      const st = eff.resolveThinkingState(
+        this.resolveEffortCap(),
+        this.runtimeThinking,
+        eff.getThinkingEnvOverride(),
+      );
+      const note: string | null = thinkingIntentOverriddenNote(st.control, st.intent);
+      if (!note) return;
+      const model = this.config.model;
+      if (this.thinkingNotedModels.has(model)) return;
+      this.thinkingNotedModels.add(model);
+      const text = `模型 ${model}：思考开关为 off，但${note.replace(/^⚠ /, "")}`;
+      if (this.thinkingNoteSink) this.thinkingNoteSink(text);
+      else this.pendingThinkingNotes.push(text);
+    } catch {
+      /* 能力解析失败不阻断切换 / 启动 */
+    }
+  }
+
+  /**
    * 状态栏瞬时通知通道（由 createFullScreen 闭包在 TUI 就绪后回填，无头模式为 null）。
    * 参照 wireToolErrorCallback 的「闭包内回填实例字段」套路，让实例方法（如
    * cyclePermissionMode）也能推送一次性状态栏提示。未就绪时安全跳过。
@@ -7689,6 +7732,10 @@ export class App {
     } catch {
       /* 不阻断 */
     }
+
+    // R8：-p 模式下 env / settings 为 off 而模型关不掉，提示写 stderr（stdout 留给结果）。
+    this.noteThinkingIntentIfOverridden();
+    for (const t of this.pendingThinkingNotes.splice(0)) process.stderr.write(`⚠ ${t}\n`);
 
     // stream-json 模式：走 SDK 编程接口（NDJSON 双向流式）。
     // P2-1 --input-format stream-json：输入侧走流式 JSON（stdin 逐条消息）也进 SDK 路径，
@@ -9048,6 +9095,12 @@ export class App {
         ],
       });
     };
+
+    // R7 / R8：思考意图被覆盖的提示走历史区 hint。先查一次启动模型（env / settings 为 off
+    // 而启动在关不掉的模型上），再补推 TUI 就绪前排队的。
+    this.noteThinkingIntentIfOverridden();
+    this.thinkingNoteSink = appendPersistentHint;
+    for (const t of this.pendingThinkingNotes.splice(0)) appendPersistentHint(t);
 
     const appendCommandOutput = (input: string, output: string | null, isError = false) => {
       // 记一份到侧表：ctxMgr 里没有这条（命令结果不进对话上下文），下一次 syncDisplay
@@ -10821,6 +10874,7 @@ export class App {
 
         // 5. 刷新状态栏
         this.pushKnobDisplay();
+        this.noteThinkingIntentIfOverridden();
         updateState({
           // 引导完成后接续首屏队列（此前直接置 null，信任框 / MCP 审批框在首次启动时整个跳过）
           activeDialog: this.nextStartupDialog("onboarding"),

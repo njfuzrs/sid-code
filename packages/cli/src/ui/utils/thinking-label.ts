@@ -60,3 +60,28 @@ export function thinkingLabelForSetting(
         : intent === "on";
   return thinkingLabel({ on, isAuto: intent === "auto", control: cap.thinkingControl, intent });
 }
+
+/** 无独立开关族（kimi / gpt-5.x / grok / o 系 / 未知族）的提示：说清楚由什么控制。 */
+export const NO_TOGGLE_NOTE =
+  "当前模型没有独立的思考开关，推理深度由 /effort 控制（思考行为由模型自身决定）。";
+
+/** 恒思考模型（Opus 5.5 / Sonnet 5.5 / Fable / Mythos / GLM-5.3 等）关闭时的提示。 */
+export const LOCKED_ON_NOTE =
+  "⚠ 当前模型恒思考，服务端不接受关闭，本模型上仍会思考；切到可关闭思考的模型后 off 自动生效。";
+
+/**
+ * 「用户想关、当前模型关不掉」时该给的提示；无需提示返回 null。
+ *
+ * 切模型（R7）与启动期 env / settings 为 off（R8）共用这一个判定，/think 回执也读同一组文案，
+ * 三处说法不分叉。只看 off：on / auto 在 locked-on 上与实际一致，在 none 族上状态栏已显示
+ * `by-model`，不算「意图被覆盖」。
+ */
+export function thinkingIntentOverriddenNote(
+  control: ThinkingControl,
+  intent: "on" | "off" | "auto",
+): string | null {
+  if (intent !== "off") return null;
+  if (control === "locked-on") return LOCKED_ON_NOTE;
+  if (control === "none") return NO_TOGGLE_NOTE;
+  return null;
+}
