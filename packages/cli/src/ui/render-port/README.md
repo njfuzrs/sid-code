@@ -28,7 +28,7 @@ render-port/
 | `components.ts` | Box / Text / Static / Ansi / RawAnsi / AlternateScreen | 24 + AlternateScreen 18 |
 | `hooks.ts` | useStdout / useStdin / useInput / useApp / … 与三个 Context | 29 |
 | `measure.ts` | measureElement / getBoundingBox / ResizeObserver | 3 |
-| `text.ts` | stringWidth、colorize 三函数、styled-chars 五函数 | 4 |
+| `text.ts` | stringWidth、colorize 三函数 + adjustColorLevel、styled-chars 五函数 | 4 |
 | `termio.ts` | OSC 工具、BEL、supportsHyperlinks | 5 |
 | `runtime.ts` | render / `getRenderInstance` + `RenderInstance` 实例能力面 / drainStdin / 探查抑制 —— **整套引擎** | 86 |
 | `testing.ts` | 测试用 render / renderSync / `enableFrameThrottle` / `forgetRenderInstance` | — |

@@ -23,6 +23,7 @@ import { getLogger } from "../debug/logger.ts";
 import type { Config } from "../config/config.ts";
 import { isReadOnlyCommand, isDestructiveCommand } from "./bash/read-only-validation.ts";
 import { interpretExitCode } from "./bash/command-semantics.ts";
+import { scanControlChars } from "./binary-detect.ts";
 import { looksLikeQuotingBreakage, quotingBreakageHint } from "./bash/quoting-diagnostics.ts";
 import { detectMergeConflictHint } from "./bash/merge-conflict.ts";
 import { normalizeToolPath } from "./path-utils.ts";
@@ -326,27 +327,25 @@ function truncateOutput(output: string): string {
   return `${head}\n\n... [输出已截断: 省略了中间 ${omitted} 字符，共 ${output.length} 字符] ...\n\n${tail}`;
 }
 
-/** 检测二进制输出 */
-function isBinaryOutput(data: string): boolean {
+/**
+ * 检测二进制输出。
+ *
+ * 与 read 共用 scanControlChars：完整 ANSI 转义序列不计入不可打印。用户自己设了
+ * FORCE_COLOR 时，彩色输出（进度条、带颜色的测试报告）里 ESC 密度可以超过 30%，
+ * 旧算法会把整段有用输出替换成「[检测到二进制输出]」。
+ */
+export function isBinaryOutput(data: string): boolean {
   if (data.length === 0) return false;
 
   // 检查是否包含 null 字节
   if (data.includes("\0")) return true;
 
-  // 检查不可打印字符比例
-  let nonPrintable = 0;
+  // 检查不可打印字符比例（采样前 1000 个 UTF-16 码元）
   const sampleSize = Math.min(data.length, 1000);
-
-  for (let i = 0; i < sampleSize; i++) {
-    const code = data.charCodeAt(i);
-    // 不可打印字符（排除常见空白字符）
-    if (code < 32 && code !== 9 && code !== 10 && code !== 13) {
-      nonPrintable++;
-    }
-  }
+  const { nonPrintableCount } = scanControlChars(sampleSize, (i) => data.charCodeAt(i));
 
   // 如果超过 30% 是不可打印字符，视为二进制
-  return nonPrintable / sampleSize > 0.3;
+  return nonPrintableCount / sampleSize > 0.3;
 }
 
 /**
