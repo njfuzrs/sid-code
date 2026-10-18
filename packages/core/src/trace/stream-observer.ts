@@ -829,6 +829,37 @@ export function emitBilledRequest(data: {
   }
 }
 
+// ─── StrictToolDegraded 事件（遗留清单 R11） ───
+
+/**
+ * strict 工具因上游容量 400 被降级重发（D11）。修前只打一行 `log.warn`，「零 strict 400」
+ * 无法从轨迹验证，一次偶发语法体积错误把端点上限锁死也没有任何信号。
+ * `learned` 区分「只降本次」与「写进端点上限」，digest 据此汇总。
+ */
+export function emitStrictToolDegraded(data: {
+  index: number;
+  model: string;
+  endpoint_key: string;
+  kind: "count" | "grammar";
+  from: number;
+  to: number;
+  learned: boolean;
+  attempt: number;
+}): void {
+  try {
+    if (_eventWriter && _sessionId) {
+      _eventWriter({
+        event: "StrictToolDegraded",
+        session_id: _sessionId,
+        timestamp: new Date().toISOString(),
+        data: data as unknown as Record<string, unknown>,
+      });
+    }
+  } catch {
+    /* 可观测性不影响正常流程 */
+  }
+}
+
 // ─── TimeoutRetry 事件（缺口 4） ───
 
 /**

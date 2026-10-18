@@ -509,6 +509,42 @@ export function aggregateThinkingLeakStats(
   return stats;
 }
 
+/**
+ * R11：strict 工具降级（D11）汇总。取数源 `StrictToolDegraded` 事件（anthropic.ts 每次降级重发一条）。
+ *
+ * - `degrades`：降级重发次数（分母不是请求数：这里只回答「发生过没有、多少次」，「零 strict 400」
+ *   的目标恒为 0，有一次就该看）；
+ * - `learnedLimits`：本会话最终写进端点上限的值（端点 → 最小 to）。只有 `learned=true` 的才算，
+ *   语法体积偶发错误只降本次，不进这里（R3）。
+ */
+export interface StrictDegradeStats {
+  degrades: number;
+  byKind: { count: number; grammar: number };
+  learnedLimits: Record<string, number>;
+}
+
+export function aggregateStrictDegradeStats(
+  events: Array<{ event?: string; data?: Record<string, unknown> }>,
+): StrictDegradeStats | undefined {
+  const stats: StrictDegradeStats = {
+    degrades: 0,
+    byKind: { count: 0, grammar: 0 },
+    learnedLimits: {},
+  };
+  for (const e of events) {
+    if (e.event !== "StrictToolDegraded") continue;
+    const d = e.data ?? {};
+    stats.degrades++;
+    if (d.kind === "count") stats.byKind.count++;
+    else if (d.kind === "grammar") stats.byKind.grammar++;
+    if (d.learned === true && typeof d.endpoint_key === "string" && typeof d.to === "number") {
+      const prev = stats.learnedLimits[d.endpoint_key];
+      if (prev === undefined || d.to < prev) stats.learnedLimits[d.endpoint_key] = d.to;
+    }
+  }
+  return stats.degrades > 0 ? stats : undefined;
+}
+
 export interface RecoveryDigestStats {
   /** 以失败结束的调用数（recovery_give_up 条数） */
   giveUps: number;
@@ -902,6 +938,8 @@ export interface Digest {
   recovery?: RecoveryDigestStats;
   /** PR-5：思考关闭泄漏率。无 thinking_wire 埋点（老轨迹）时 undefined。 */
   thinkingLeak?: ThinkingLeakStats;
+  /** R11：strict 工具降级汇总。无 StrictToolDegraded 事件时 undefined。 */
+  strictDegrade?: StrictDegradeStats;
   /**
    * P1-8：过程病态度量（6 项）。始终产出（不像上面几项那样依赖专用事件）——
    * 六项全部从 traj + 通用事件派生，"全部健康"本身就是有意义的结论，
@@ -2480,6 +2518,7 @@ export function buildDigest(ref: SessionRef, full: boolean, paths: DigestPaths):
 
   // ── PR-5：思考关闭泄漏率（主循环 / 非主循环分开，分母 = 意图关的 fetch）──
   const thinkingLeak = aggregateThinkingLeakStats(events);
+  const strictDegrade = aggregateStrictDegradeStats(events);
 
   return {
     sessionId: ref.id,
@@ -2526,6 +2565,7 @@ export function buildDigest(ref: SessionRef, full: boolean, paths: DigestPaths):
     todo: todo ?? undefined,
     recovery: recovery ?? undefined,
     thinkingLeak,
+    strictDegrade,
     pathology,
     // P0-2：始终产出（不像 jit/todo 那样依赖专用事件）—— 样本为 0 时 n=0 是有意义的
     // 结论（"这个会话没有 TTFT 样本"），整节消失则无法区分"没样本"与"该版本没接线"
@@ -2911,6 +2951,22 @@ export function renderHuman(d: Digest, opts: RenderOptions = {}): string {
     if (reasons.length > 0) {
       L.push(c("gray", "  放弃原因: ") + reasons.map(([k, v]) => `${k}×${v}`).join(", "));
     }
+  }
+
+  // R11：strict 降级。目标恒为 0，出现即标黄。
+  if (d.strictDegrade) {
+    const sd = d.strictDegrade;
+    const learned = Object.entries(sd.learnedLimits);
+    L.push("");
+    L.push(
+      c("bold", "strict 降级:") +
+        " " +
+        c("yellow", `${sd.degrades} 次`) +
+        c("gray", `（数量 ${sd.byKind.count} / 语法体积 ${sd.byKind.grammar}）`) +
+        (learned.length > 0
+          ? c("gray", "  学到的上限: ") + learned.map(([k, v]) => `${k}=${v}`).join(", ")
+          : ""),
+    );
   }
 
   // PR-5 / R1 / R5 / R10：思考关闭泄漏。只在有「设置关」或未埋点 / 老口径记录时出现；泄漏 > 0 标红。

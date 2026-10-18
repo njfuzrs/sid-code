@@ -30,6 +30,7 @@ import {
   emitTimeoutFired,
   emitStreamPhase,
   emitHttpConnected,
+  emitStrictToolDegraded,
   streamAttributionOf,
   cacheDimsFor,
 } from "../trace/stream-observer.ts";
@@ -62,9 +63,9 @@ import { RequestAbortedError } from "./errors.ts";
 import { normalizeBaseURL } from "./endpoint-key.ts";
 import {
   applyStrictToolBudget,
-  degradeStrictToolsOnCapacityError,
+  createWithStrictBudget,
   getStrictToolLimit,
-  MAX_STRICT_CAPACITY_RETRIES,
+  type StrictDegradation,
 } from "./strict-tool-budget.ts";
 
 /**
@@ -361,28 +362,20 @@ export class AnthropicProvider implements Provider {
             ...(signal ? { signal } : {}),
           })
           .withResponse();
-      // D11：strict 容量 400 在拿到响应头之前就抛出（还没有任何流内容），此时降 strict
-      // 重发是安全的 —— 不会重放已经 yield 出去的增量。其余错误原样交给下面的 catch。
-      let created: Awaited<ReturnType<typeof createStream>>;
-      for (let attempt = 0; ; attempt++) {
-        try {
-          created = await createStream();
-          break;
-        } catch (err) {
-          const degraded =
-            attempt < MAX_STRICT_CAPACITY_RETRIES && !signal?.aborted
-              ? degradeStrictToolsOnCapacityError(err, tools, strictEndpointKey, strictPriorityOf)
-              : null;
-          if (!degraded) throw err;
-          log.warn(
-            "LLM:ANTHROPIC",
-            `strict 容量超限（${degraded.error.kind}），strict 工具 ${degraded.from} → ${degraded.to} 后重发`,
-            { model: wireModel },
-          );
-          tools = degraded.tools;
-          requestParams.tools = tools as any;
-        }
-      }
+      // D11 / R12：strict 容量 400 降 strict 重发，其余错误原样交给下面的 catch（见 createWithStrictBudget）。
+      const budgeted = await createWithStrictBudget({
+        tools,
+        endpointKey: strictEndpointKey,
+        priorityOf: strictPriorityOf,
+        signal,
+        create: (t) => {
+          requestParams.tools = t as any;
+          return createStream();
+        },
+        onDegrade: (d) => reportStrictDegrade(d, wireModel, strictEndpointKey),
+      });
+      tools = budgeted.tools;
+      const created = budgeted.result;
       const { data: rawStream, response } = created;
 
       // 从 response headers 提取速率限制状态
@@ -1068,26 +1061,20 @@ export class AnthropicProvider implements Provider {
           },
           signal ? { signal } : undefined,
         );
-      // D11：同流式路径——strict 容量 400 降 strict 重发，其余错误原样抛出。
-      let message: Awaited<ReturnType<typeof createMessage>>;
-      for (let attempt = 0; ; attempt++) {
-        try {
-          message = await createMessage();
-          break;
-        } catch (err) {
-          const degraded =
-            attempt < MAX_STRICT_CAPACITY_RETRIES && !signal?.aborted
-              ? degradeStrictToolsOnCapacityError(err, tools, strictEndpointKey, strictPriorityOf)
-              : null;
-          if (!degraded) throw err;
-          log.warn(
-            "LLM:ANTHROPIC",
-            `strict 容量超限（${degraded.error.kind}），strict 工具 ${degraded.from} → ${degraded.to} 后重发`,
-            { model: wireModel },
-          );
-          tools = degraded.tools;
-        }
-      }
+      // D11 / R12：同流式路径，共用 createWithStrictBudget。
+      const message = (
+        await createWithStrictBudget({
+          tools,
+          endpointKey: strictEndpointKey,
+          priorityOf: strictPriorityOf,
+          signal,
+          create: (t) => {
+            tools = t;
+            return createMessage();
+          },
+          onDegrade: (d) => reportStrictDegrade(d, wireModel, strictEndpointKey),
+        })
+      ).result;
       billable = true;
       // S10：非流式路径仍在请求的 ALS 内，就地捕获即发起时身份
       const ncCtx = currentSseDumpContext();
@@ -1365,6 +1352,29 @@ function convertAnthropicTools(
  */
 function strictToolEndpointKey(wireModel: string, baseURL: string | undefined): string {
   return `${wireModel}@${normalizeBaseURL(baseURL)}`;
+}
+
+/**
+ * R11：strict 降级的可观测信号。修前只有一行 `log.warn`，「零 strict 400」与「上限被锁死」
+ * 都无法从轨迹验证。事件进 events.jsonl，digest 汇总次数与学到的上限。
+ */
+function reportStrictDegrade(d: StrictDegradation, wireModel: string, endpointKey: string): void {
+  getLogger().warn(
+    "LLM:ANTHROPIC",
+    `strict 容量超限（${d.kind}），strict 工具 ${d.from} → ${d.to} 后重发` +
+      (d.learned ? "（已记入端点上限）" : "（仅本次）"),
+    { model: wireModel },
+  );
+  emitStrictToolDegraded({
+    index: currentSseDumpContext().turnIndex,
+    model: wireModel,
+    endpoint_key: endpointKey,
+    kind: d.kind,
+    from: d.from,
+    to: d.to,
+    learned: d.learned,
+    attempt: d.attempt,
+  });
 }
 
 /** 工具名 → strictPriority（工具元数据自报，未声明为 0）。 */
