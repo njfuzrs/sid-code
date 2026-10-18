@@ -16,7 +16,8 @@ import {
   resolveThinkingState,
   type ThinkingSetting,
 } from "@sid-code/core/llm/effort.ts";
-import { buildThinkingWire } from "@sid-code/core/llm/anthropic.ts";
+import { buildThinkingWire, thinkingWireLabel } from "@sid-code/core/llm/anthropic.ts";
+import { wireThinks as sharedWireThinks } from "@sid-code/core/llm/thinking-observation.ts";
 import { getRegistryEntries, lookupRegistryExact } from "@sid-code/core/llm/model-registry.ts";
 import { setModelCompat, normalizeModelCompat } from "@sid-code/core/llm/model-compat.ts";
 import type { SendParams } from "@sid-code/core/llm/types.ts";
@@ -106,17 +107,23 @@ describe("③ 不变量：展示 == 实发（Anthropic 协议全部注册条目 
   /**
    * 线上是否思考：发了 adaptive/enabled → 是；disabled → 否；不发 → 看服务端默认。
    *
+   * R10：与 digest「展示≠实发」共用同一份判定（thinking-observation.ts），两处口径不会分叉。
+   *
    * ⚠ 边界（20261018 复审 T8）：「不发」时读的是注册表 `thinkingOmitMeans`，与被测代码
    * 读同一个字段。所以本不变量锁得住「展示与实发两处一致」，锁不住「注册表数据本身对」——
    * 若某模型的 `thinkingOmitMeans` 写错，两边一起错、这里照样绿。数据正确性只能靠
-   * 真网关验收（复审 V1）兜底，测试层无解。下面「显式矩阵」哨兵把期望值手写一份，
+   * 真网关验收（复审 V1）兜底。下面「显式矩阵」哨兵把期望值手写一份，
    * 至少让注册表的改动必须同时改测试、进 review。
    */
   function wireThinks(model: string, wire: { param: Record<string, any> }): boolean {
-    const t = wire.param.thinking;
-    if (t) return t.type !== "disabled";
     const e = lookupRegistryExact(model);
-    return e?.thinkingMode === "always-on" || e?.thinkingOmitMeans === "on";
+    return (
+      sharedWireThinks(
+        thinkingWireLabel(wire.param),
+        e?.thinkingMode === "always-on" ? "locked-on" : "toggle",
+        e ? (e.thinkingOmitMeans ?? "off") : "off",
+      ) ?? false
+    );
   }
 
   const anthropicModels = getRegistryEntries()

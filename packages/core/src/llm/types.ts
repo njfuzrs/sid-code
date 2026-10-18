@@ -480,6 +480,15 @@ export interface SendParams {
     effort?: "low" | "medium" | "high" | "xhigh" | "max";
   };
   /**
+   * 观测用（只进 BilledRequest，不上线）：本次调用的思考设置三态 / 目标模型控制形态 / 展示态。
+   *
+   * 与 {@link thinkingIntent} 分开存：那个是 auto 解析后的布尔（fallback 要用），auto 在默认关的
+   * 模型上会落成 false，拿它当「意图关」的分母会把 auto 混进泄漏率（遗留清单 R6）。
+   * 由主循环写（与 BeforeModel 同一个 `cap`）；fallback 按备用模型重写；缺省时 provider 出口按
+   * 真名现算（`thinking-observation.ts`）。
+   */
+  thinkingObservation?: ThinkingObservation;
+  /**
    * 用户标识（DeepSeek `user_id`，OpenAI 兼容端点请求体顶层字段）。
    * 用于 KVCache 隔离 / 调度隔离 / 内容安全隔离。须满足正则 `[a-zA-Z0-9\-*]+`、长度 ≤512。
    * 不传则不下发。其它 provider 忽略。
@@ -602,4 +611,14 @@ export interface AccumulatedResponse {
    * 注意：此字段**不进** _meta，不持久化到历史，仅供本轮 loop 决策。
    */
   _unansweredEndTurn?: boolean;
+}
+
+/** 见 {@link SendParams.thinkingObservation}。 */
+export interface ThinkingObservation {
+  /** 用户层面的设置：env > `/think` > auto；side-call 的 `SIDE_CALL_NO_THINK` 记 off */
+  setting?: "on" | "off" | "auto";
+  /** 目标模型的思考控制形态（= EffortCapability.thinkingControl） */
+  control?: "toggle" | "locked-on" | "none";
+  /** 状态栏 / `/think` 展示的「是否在思考」（= resolveThinkingState().effective） */
+  shown?: boolean;
 }

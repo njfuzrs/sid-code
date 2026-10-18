@@ -15,7 +15,7 @@
  * 3. 能力判定吃**真名**（别名经进程级别名表翻译），与主循环同口径。
  */
 
-import { resolveEffortCapability, type EffortCapability } from "./effort.ts";
+import { resolveEffortCapability, resolveThinkingState, type EffortCapability } from "./effort.ts";
 import type { SendParams } from "./types.ts";
 import { lookupWireModelAlias } from "./wire-model.ts";
 
@@ -58,4 +58,16 @@ export function reapplyThinkingForFallback(
   // 与主循环 resolveAppliedEffort 同一条钳制：备用模型不支持 max 时降到 high。
   if (effort === "max" && !cap.supportsMaxEffort) effort = "high";
   cap.applyToSendParams(params, effort, intent.thinking);
+  // 观测字段按备用模型重写：设置三态不变（那是调用方的意图），控制形态 / 展示态换成备用模型的，
+  // 否则 digest 会拿主模型的 control 给备用请求分桶（R1 同型）。
+  if (params.thinkingObservation) {
+    const setting = params.thinkingObservation.setting;
+    params.thinkingObservation = {
+      ...(setting && { setting }),
+      control: cap.thinkingControl,
+      ...(setting && {
+        shown: resolveThinkingState(cap, setting === "auto" ? undefined : setting, null).effective,
+      }),
+    };
+  }
 }

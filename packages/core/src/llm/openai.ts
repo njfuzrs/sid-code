@@ -86,6 +86,7 @@ import {
   resolveProviderStreamTimeouts,
 } from "../config/network-profile.ts";
 import { buildResponsesRequest } from "./openai-responses-request.ts";
+import { observeThinking, type ThinkingObservationFields } from "./thinking-observation.ts";
 import {
   parseResponsesStream,
   parseResponsesBody,
@@ -197,6 +198,25 @@ export function getHeaderTimeoutMs(_model?: string): number {
 function chatThinkingWireLabel(requestBody: any): "enabled" | "disabled" | "omitted" {
   const t = requestBody?.thinking?.type;
   return t === "enabled" || t === "disabled" ? t : "omitted";
+}
+
+/**
+ * R1 / R5 / R6 / R10：OpenAI 协议族的思考观测字段。`omitMeans` 恒 undefined：不发 thinking 时
+ * 服务端默认因模型而异（DeepSeek 开、GLM ≤5.2 关……），手里没有可靠数据，不猜。
+ */
+function observeOpenAIThinking(
+  params: SendParams,
+  wireModel: string,
+  baseURL: string,
+  wire: "enabled" | "disabled" | "omitted",
+): ThinkingObservationFields {
+  return observeThinking(params, {
+    wireModel,
+    provider: "openai",
+    baseURL,
+    wire,
+    omitMeans: undefined,
+  });
 }
 
 export class OpenAIProvider implements Provider {
@@ -1366,6 +1386,12 @@ export class OpenAIProvider implements Provider {
         this.parseSSE(response.body!, signal, params.model ?? this._model, {
           wire: chatThinkingWireLabel(requestBody),
           intent: observedThinkingIntent(params),
+          fields: observeOpenAIThinking(
+            params,
+            effectiveModel,
+            this.baseURL,
+            chatThinkingWireLabel(requestBody),
+          ),
         }),
       )) {
         // Fix 1 纵深防御：每次事件到达后检查 signal（覆盖 parseSSE 内 race 的盲区）
@@ -1550,6 +1576,7 @@ export class OpenAIProvider implements Provider {
 
     // 构造 Responses API 请求体
     const requestBody = buildResponsesRequest(params, effectiveModel);
+    let responsesSawThinking = false;
     log.debug("LLM:OPENAI:RESPONSES", `发送请求到 ${this.baseURL}/responses`, {
       model: requestBody.model,
       inputCount: requestBody.input.length,
@@ -1796,6 +1823,13 @@ export class OpenAIProvider implements Provider {
         if (event.type === "message_delta") {
           accumulatedUsage = event.usage;
         }
+        // R5：思考块（reasoning 摘要 / reasoning_text）出现过即记，随 BilledRequest 落盘
+        if (
+          event.type === "content_block_start" &&
+          (event.content_block as { type?: string }).type === "thinking"
+        ) {
+          responsesSawThinking = true;
+        }
 
         yield event;
       }
@@ -1841,6 +1875,12 @@ export class OpenAIProvider implements Provider {
           callerLabel: bctx.callerLabel,
           atMs: Date.now(),
           accounted: !bctx.agentId && !bctx.callerLabel,
+          // R5：Responses 路径同样埋点。请求体没有 thinking 字段（推理只走 reasoning.effort），
+          // 线上恒为 omitted；思考内容 = 出现过 reasoning 块，或服务端报了推理 token。
+          thinkingWire: "omitted",
+          thinkingInResponse: responsesSawThinking || (accumulatedUsage?.reasoningTokens ?? 0) > 0,
+          thinkingIntent: observedThinkingIntent(params),
+          ...observeOpenAIThinking(params, effectiveModel, this.baseURL, "omitted"),
         });
       } catch {
         /* 计费上报绝不影响流 */
@@ -2115,6 +2155,12 @@ export class OpenAIProvider implements Provider {
           thinkingWire: chatThinkingWireLabel(requestBody),
           thinkingInResponse: nonStreamSawThinking,
           thinkingIntent: observedThinkingIntent(params),
+          ...observeOpenAIThinking(
+            params,
+            effectiveModel,
+            this.baseURL,
+            chatThinkingWireLabel(requestBody),
+          ),
         });
       }
     }
@@ -2149,6 +2195,7 @@ export class OpenAIProvider implements Provider {
     const billingFetchId = nextFetchId();
     let billedUsage: Usage | undefined;
     let billable = false;
+    let nonStreamSawThinking = false;
     try {
       const response = await fetch(`${this.baseURL}/responses`, {
         method: "POST",
@@ -2199,6 +2246,7 @@ export class OpenAIProvider implements Provider {
       if (body.status === "failed") {
         throw new Error(`OpenAI Responses API 返回 failed: ${body.error?.message ?? "未知原因"}`);
       }
+      nonStreamSawThinking = (parsed.content as ContentBlock[]).some((b) => b.type === "thinking");
       return {
         role: "assistant",
         content: parsed.content as ContentBlock[],
@@ -2213,6 +2261,11 @@ export class OpenAIProvider implements Provider {
           provider: this.name(),
           baseURL: this.baseURL,
           usage: billedUsage,
+          // R5：与流式 Responses 同口径
+          thinkingWire: "omitted",
+          thinkingInResponse: nonStreamSawThinking || (billedUsage?.reasoningTokens ?? 0) > 0,
+          thinkingIntent: observedThinkingIntent(params),
+          ...observeOpenAIThinking(params, effectiveModel, this.baseURL, "omitted"),
         });
       }
     }
@@ -2234,7 +2287,11 @@ export class OpenAIProvider implements Provider {
      */
     modelName?: string,
     /** PR-5：本次请求线上实发的 thinking 形态与调用方意图，随 BilledRequest 落盘 */
-    thinkingObs?: { wire: "enabled" | "disabled" | "omitted"; intent?: boolean },
+    thinkingObs?: {
+      wire: "enabled" | "disabled" | "omitted";
+      intent?: boolean;
+      fields?: ThinkingObservationFields;
+    },
   ): AsyncIterable<StreamEvent> {
     const reader = stream.getReader();
     const decoder = new TextDecoder();
@@ -3030,6 +3087,7 @@ export class OpenAIProvider implements Provider {
             thinkingWire: thinkingObs.wire,
             thinkingInResponse: reasoningContent.length > 0 || (usage.reasoningTokens ?? 0) > 0,
             thinkingIntent: thinkingObs.intent,
+            ...thinkingObs.fields,
           }),
         });
       } catch {

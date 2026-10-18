@@ -5,6 +5,8 @@
  *  ① 同一 prompt 内「承诺 → nudge → tool_use → 再承诺」第二次不再 nudge（计数器工具执行不清零）；
  *  ② unanswered_retry 与 promise_nudge 配额互不影响；
  *  ③ 有 pending 通知 / 运行中后台任务时不触发。
+ *  ④（B1）承诺 → nudge → 直接再承诺：L1 提示照出、形态计入短文本收尾、不二次 nudge。
+ *  ⑤（M6）空闲唤醒续跑继承本 prompt 的 nudge 配额，新 prompt 才重置。
  * 另含回放样本：9 条结构候选里词表命中恰为事故段。
  */
 import { describe, test, expect, afterEach, beforeEach } from "bun:test";
@@ -16,6 +18,8 @@ import {
   PLAIN_TEXT_END_TURN_NOTICE,
   PROMISE_NUDGE_DISABLE_ENV,
   reasoningShare,
+  initialS1Carry,
+  S1_PROMPT_CARRY_KEY,
 } from "@sid-code/core/query/promise-nudge.ts";
 import { queryLoop } from "@sid-code/core/query/loop.ts";
 import type { QueryLoopConfig } from "@sid-code/core/query/loop.ts";
@@ -91,6 +95,17 @@ describe("形态判定（L1）", () => {
       classifyEndTurnShape({ text: INCIDENT, hasToolUse: false, prevTurnHadToolUse: false }).kind,
     ).toBe("answered");
   });
+  test("B1：nudge 之后的再承诺，即使上一次响应没调工具也是 promise_after_tools", () => {
+    expect(
+      classifyEndTurnShape({
+        text: INCIDENT,
+        hasToolUse: false,
+        prevTurnHadToolUse: false,
+        afterPromiseNudge: true,
+      }).kind,
+    ).toBe("promise_after_tools");
+  });
+
   test("超过阈值的长文本 = answered；空文本 = empty；短完成陈述 = short_after_tools", () => {
     expect(
       classifyEndTurnShape({ text: "继续".repeat(50), hasToolUse: false, prevTurnHadToolUse: true })
@@ -361,5 +376,101 @@ describe("主循环集成", () => {
       reasoning_share: 0,
     });
     expect(d.prompt_output_tokens).toBe(80);
+  });
+});
+
+describe("S1 收尾链：L2 失败路径与跨唤醒配额（复审 B1 / M6）", () => {
+  test("④ 承诺 → nudge → 直接再承诺（不调工具）：常驻提示 + 计入短文本 + 不二次 nudge", async () => {
+    const { loopConfig, events } = setup([toolResp(), textResp(INCIDENT), textResp(INCIDENT)]);
+    const yields = await drain(loopConfig);
+    expect(transitions(events, "promise_nudge")).toBe(1);
+    // 第二次 end_turn 必须仍是承诺形 —— 修复前这里是 "answered"
+    const shapes = events.filter((e) => e.event === "EndTurnShape").map((e) => e.data.kind);
+    expect(shapes).toEqual(["promise_after_tools", "promise_after_tools"]);
+    const pn = events.filter((e) => e.event === "PromiseNudge").map((e) => e.data);
+    expect(pn).toEqual([
+      expect.objectContaining({ fired: true, outcome: "text" }),
+      expect.objectContaining({ fired: false, skip_reason: "capped" }),
+    ]);
+    const notice = yields.filter((y) => y.kind === "system" && y.persistent);
+    expect(notice.map((y) => y.text)).toEqual([PLAIN_TEXT_END_TURN_NOTICE]);
+    expect(yields[yields.length - 1].kind).toBe("done");
+  });
+
+  test("⑤ 续跑（continuation）继承配额：同一 prompt 第二次承诺不再 nudge", async () => {
+    const first = setup([toolResp(), textResp(INCIDENT), toolResp()]);
+    await drain(first.loopConfig);
+    expect(transitions(first.events, "promise_nudge")).toBe(1);
+
+    // 空闲唤醒：同一 SessionState、同一 ctxMgr，再跑一次 queryLoop
+    const resumed = setup([toolResp(), textResp(INCIDENT)]);
+    resumed.loopConfig.sessionState = first.loopConfig.sessionState;
+    resumed.loopConfig.continuation = true;
+    const yields = await drain(resumed.loopConfig);
+    expect(transitions(resumed.events, "promise_nudge")).toBe(0);
+    const pn = resumed.events.find((e) => e.event === "PromiseNudge");
+    expect(pn?.data).toMatchObject({ fired: false, skip_reason: "capped" });
+    expect(yields.some((y) => y.persistent)).toBe(true);
+  });
+
+  test("⑤ 新的用户 prompt（缺省 continuation）重置配额", async () => {
+    const first = setup([toolResp(), textResp(INCIDENT), toolResp()]);
+    await drain(first.loopConfig);
+    const next = setup([toolResp(), textResp(INCIDENT), toolResp()]);
+    next.loopConfig.sessionState = first.loopConfig.sessionState;
+    await drain(next.loopConfig);
+    expect(transitions(next.events, "promise_nudge")).toBe(1);
+  });
+
+  test("⑤ 续跑继承「上一次含 tool_use」：唤醒后首轮承诺仍按工具后判定", async () => {
+    // 首个 queryLoop 停在一次工具调用之后（maxTurns 耗尽），续跑首轮就是承诺
+    const first = setup([toolResp()]);
+    first.loopConfig.config = { ...makeConfig(), maxTurns: 1 } as unknown as Config;
+    await drain(first.loopConfig);
+    const resumed = setup([textResp(INCIDENT), toolResp()]);
+    resumed.loopConfig.sessionState = first.loopConfig.sessionState;
+    resumed.loopConfig.continuation = true;
+    await drain(resumed.loopConfig);
+    const shapes = resumed.events.filter((e) => e.event === "EndTurnShape").map((e) => e.data.kind);
+    expect(shapes[0]).toBe("promise_after_tools");
+  });
+
+  test("initialS1Carry：续跑继承、新 prompt 归零、脏值兜底", () => {
+    const prev = { promiseNudgeCount: 1, prevResponseHadToolUse: true };
+    expect(initialS1Carry(true, prev)).toEqual(prev);
+    expect(initialS1Carry(false, prev)).toEqual({
+      promiseNudgeCount: 0,
+      prevResponseHadToolUse: false,
+    });
+    expect(initialS1Carry(true, undefined)).toEqual({
+      promiseNudgeCount: 0,
+      prevResponseHadToolUse: false,
+    });
+    expect(initialS1Carry(true, { promiseNudgeCount: "x" })).toEqual({
+      promiseNudgeCount: 0,
+      prevResponseHadToolUse: false,
+    });
+    expect(S1_PROMPT_CARRY_KEY).toBe("s1PromptCarry");
+  });
+});
+
+describe("M6 接线：engine 的空闲唤醒续跑必须声明 continuation", () => {
+  // engine 层没有可单测的 QueryEngine 脚手架；这里锁住唯一的续跑入口确实把 continuation 传下去。
+  // 漏了它，上面「续跑继承配额」的用例全绿，而生产里每次唤醒仍会重置配额。
+  test("resumeWithNotifications → runLoop(…, { continuation: true })；submitMessage 不带", async () => {
+    const { readFileSync } = await import("node:fs");
+    const { join } = await import("node:path");
+    const src = readFileSync(join(import.meta.dir, "../../src/query/engine.ts"), "utf8").replace(
+      /^\s*\/\/.*$/gm,
+      "",
+    );
+    const resumeAt = src.indexOf("async *resumeWithNotifications()");
+    const runLoopAt = src.indexOf("private async *runLoop(");
+    expect(resumeAt).toBeGreaterThan(0);
+    expect(runLoopAt).toBeGreaterThan(resumeAt);
+    expect(src.slice(resumeAt, runLoopAt)).toContain("{ continuation: true }");
+    const submitAt = src.indexOf("async *submitMessage(");
+    expect(src.slice(submitAt, resumeAt)).not.toContain("continuation");
+    expect(src.slice(runLoopAt)).toContain("continuation: opts.continuation === true");
   });
 });

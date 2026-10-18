@@ -83,6 +83,7 @@ import {
   resolveEffortCapability,
   resolveAppliedEffort,
   resolveThinking,
+  resolveThinkingState,
   getEffortEnvOverride,
   getThinkingEnvOverride,
 } from "../llm/effort.ts";
@@ -187,8 +188,11 @@ import { buildInternalMessage, hasInternalOrigin } from "../context/internal-mes
 import {
   classifyEndTurnShape,
   decidePromiseNudge,
+  initialS1Carry,
   isPromiseNudgeDisabled,
   reasoningShare,
+  S1_PROMPT_CARRY_KEY,
+  type S1PromptCarry,
   PROMISE_NUDGE_MESSAGE,
   PLAIN_TEXT_END_TURN_NOTICE,
   type EndTurnShape,
@@ -746,6 +750,11 @@ export interface QueryLoopConfig {
    * 此字段是修复该断链的入口，最终写入每轮的 SendParams.thinking。
    */
   thinking?: { enabled: boolean; budgetTokens: number };
+  /**
+   * M6：本次 queryLoop 是否是同一条用户 prompt 的续跑（#313 空闲唤醒 `resumeWithNotifications`）。
+   * true 时 S1 的 per-prompt 状态（nudge 计数等）从 SessionState 继承而非归零。缺省 = 新 prompt。
+   */
+  continuation?: boolean;
   deps: QueryDeps;
 }
 
@@ -814,6 +823,23 @@ export async function* queryLoop(loopConfig: QueryLoopConfig): AsyncGenerator<Qu
   // 具体哪条消息的第 3 轮——否则跨消息会话里 turn 回绕（实测 135709 会话
   // turn=20 之后出现 turn=3）在离线分析里无法与"真的退回第 3 轮"区分。
   const promptSeq = sessionState.nextPromptSeq();
+  // M6：S1 计数按「用户 prompt」而非「queryLoop 调用」计。LoopState 每次调用重建，
+  // 空闲唤醒续跑若从零开始，同一 prompt 下每来一次后台通知就多一次 nudge 配额。
+  {
+    const carry = initialS1Carry(
+      loopConfig.continuation === true,
+      sessionState.get(S1_PROMPT_CARRY_KEY),
+    );
+    state.promiseNudgeCount = carry.promiseNudgeCount;
+    state.prevResponseHadToolUse = carry.prevResponseHadToolUse;
+  }
+  const saveS1Carry = (): void => {
+    sessionState.set(S1_PROMPT_CARRY_KEY, {
+      promiseNudgeCount: state.promiseNudgeCount ?? 0,
+      prevResponseHadToolUse: state.prevResponseHadToolUse === true,
+    } satisfies S1PromptCarry);
+  };
+  saveS1Carry();
   /** S1 L2：已注入 nudge、等下一轮响应给出 outcome 的那一次（每 prompt 至多 1 个） */
   let pendingPromiseNudge: { lang: PromiseLang } | undefined;
   /** S1 L2 的验收事件：`fired` + `outcome`（触发后下一轮是否 tool_use / 未触发的原因） */
@@ -2174,6 +2200,12 @@ export async function* queryLoop(loopConfig: QueryLoopConfig): AsyncGenerator<Qu
             envThinking !== null ? (envThinking ? "on" : "off") : (runtimeThinking ?? "auto"),
           thinking_control: cap.thinkingControl,
         };
+        // R1 / R6 / R10：同一份三态 + 控制形态 + 展示态随 BilledRequest 落盘，与 BeforeModel 同口径。
+        sendParams.thinkingObservation = {
+          setting: thinkingObs.thinking_intent,
+          control: cap.thinkingControl,
+          shown: resolveThinkingState(cap, runtimeThinking, envThinking).effective,
+        };
         cap.applyToSendParams(sendParams, appliedEffort, appliedThinking);
 
         // §12 P2-1：思考预算被上限钳制时，一次性诚实告知用户（尤其 adaptive 模型无法精确保证）。
@@ -3506,8 +3538,14 @@ export async function* queryLoop(loopConfig: QueryLoopConfig): AsyncGenerator<Qu
 
       // ─── S1 / S4 可见性：本 prompt 的累计事实 + 上一次 promise nudge 的结果 ───
       // 「上一次模型调用是否含 tool_use」必须在本轮覆盖之前取出来（L1 形态判定要用）。
+      // D7：这里看的是响应 content 里有没有 tool_use 块，不是 `stop_reason === "tool_use"`。
+      // 两者只在「声称 end_turn 却带 tool_use」的 fall-through 下分叉；那种响应会照常派发工具，
+      // 对「承诺发生在工具之后」而言按块判才是事实，故刻意不跟方案字面的 stop_reason。
       const prevResponseHadToolUse = state.prevResponseHadToolUse === true;
       state.prevResponseHadToolUse = response.content.some((b) => b.type === "tool_use");
+      saveS1Carry();
+      // B1：本次响应是否在回应刚注入的 nudge —— 必须在下面清 pendingPromiseNudge 之前取。
+      const respondingToPromiseNudge = pendingPromiseNudge !== undefined;
       state.promptOutputTokens =
         (state.promptOutputTokens ?? 0) + (response.usage.outputTokens ?? 0);
       state.promptReasoningTokens =
@@ -4034,6 +4072,7 @@ export async function* queryLoop(loopConfig: QueryLoopConfig): AsyncGenerator<Qu
           text: responseText,
           hasToolUse: false,
           prevTurnHadToolUse: prevResponseHadToolUse,
+          afterPromiseNudge: respondingToPromiseNudge,
         });
         emitEndTurnShape(endTurnShape, {
           stopReason: response.stopReason ?? undefined,
@@ -4204,6 +4243,7 @@ export async function* queryLoop(loopConfig: QueryLoopConfig): AsyncGenerator<Qu
         });
         if (promiseDecision?.fire) {
           state.promiseNudgeCount = (state.promiseNudgeCount ?? 0) + 1;
+          saveS1Carry();
           // 内部 origin：TUI 隐藏；显式落盘：否则 `-c` 恢复后原 end_turn 与续跑那轮
           // assistant 直接相邻（现有 gate 注入只改内存，见方案 §3 S1「持久化」）。
           const nudgeMsg = buildInternalMessage("promise-nudge", "user", PROMISE_NUDGE_MESSAGE);
