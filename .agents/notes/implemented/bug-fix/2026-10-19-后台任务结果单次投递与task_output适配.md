@@ -52,4 +52,9 @@ Date: 2026-10-19
 
 - `bun run affected-tests:run`：7039 pass / 0 fail（585 文件）。另外 `tests/tool + tests/task` 加新测试共 1329 pass。
 - `typecheck:gate`、`lint`、`format:check`、`lint:boundary`、`lint:command-system` 全绿。`docs:gen-reference` 更新了 `website/ref/tools.md`。
-- 待做：端到端还没用 `sc-dev` 跑同一 prompt（4 个后台 explore）复测。预期修后 `dual_result_delivery` = 0，该轮注入字符量从 65,458 降到约 2.5 万以内。完成瞬间的叠印残影（文档 §6）不在本次范围内。
+- 端到端复测（本分支构建的二进制，无头模式，会话 `20261019-024840-d75dc356`）：让模型启动 3 个 `run_in_background=true` 的 explore 子代理，拿到结果后汇总。
+  - 模型启动后**零次调用 `task_output`**，转去自己跑 glob（F3 生效；基线会话 4/4 次紧接着就阻塞 600s）；
+  - `TaskLifecycle` 显示 3 个任务各有一条 `delivered via=notification`，没有第二路；
+  - `detectDualResultDelivery` 跑该会话的 messages.json，结果是 **0**（基线是 7）；通知注入共 3,028 字符。
+  - 这次场景小（每个子代理一次 glob），只证明了「不轮询 + 单次送达」，没有复现基线那种 4 个大结论的体量，65,458 → 约 2.5 万这条体量预期没有直接测到。
+- 完成瞬间的叠印残影（文档 §6）不在本次范围内。
