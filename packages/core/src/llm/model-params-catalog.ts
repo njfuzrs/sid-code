@@ -51,6 +51,8 @@ export interface ModelParamsEntry {
    * ⚠ 线格式层不读这里（这里是含模糊匹配的投影），只认 `lookupRegistryExact`。
    */
   thinkingOmitMeans?: "on" | "off";
+  /** adaptive 线格式是否认 `xhigh`。见 model-registry.ts 同名字段（线格式层只认精确命中）。 */
+  supportsXhighEffort?: boolean;
   /**
    * 推理语言漂移倾向：思考过程在中文语境下易漂移到英文，需要更强语言约束措辞。
    * 见 model-registry.ts 同名字段（必删-4：替代 system-prompt 的 model.includes("deepseek")）。

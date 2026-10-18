@@ -20,6 +20,7 @@
 
 import type { SendParams } from "../types.ts";
 import { lookupCatalog } from "../model-params-catalog.ts";
+import { lookupRegistryExact } from "../model-registry.ts";
 import { pickWireModel } from "../wire-model.ts";
 import type { Dialect, DialectEffortLevel } from "./types.ts";
 
@@ -91,7 +92,8 @@ export function createAnthropicNativeDialect(
     applyToSendParams(params: SendParams, effort, thinking) {
       // 吃**真名**：此前喂 `params.model`（别名），与真名不同形的网关别名会 miss → 走 manual 路径，
       // 且与线格式层 `thinkingOffWire`（吃真名）对同一模型给出不同答案。
-      const thinkingMode = lookupCatalog(pickWireModel(params, params.model || ""))?.thinkingMode;
+      const wireModel = pickWireModel(params, params.model || "");
+      const thinkingMode = lookupCatalog(wireModel)?.thinkingMode;
       // 思考 token 上限（env / settings）。null 表示未设。
       const maxThinking = resolveMaxThinking(params.maxThinkingTokens);
 
@@ -126,9 +128,11 @@ export function createAnthropicNativeDialect(
             };
           }
         }
-        // Anthropic adaptive 线格式官方档位为 low/medium/high/max，不含 xhigh：
-        // xhigh 钳到 max，避免未知档位触发 400。
-        const level = effectiveEffort === "xhigh" ? "max" : effectiveEffort;
+        // xhigh 只对注册表**精确命中**且声明 `supportsXhighEffort` 的模型原样下发（官方矩阵
+        // anthropic-api.md:417 列出的 5.x / 4.7+ 一代），其余钳到 max，避免未知档位触发 400。
+        // 此前一律钳 max：用户选 xhigh 实发 max，比要的高一档（20261018 effort 排查 E2）。
+        const xhighOk = lookupRegistryExact(wireModel)?.supportsXhighEffort === true;
+        const level = effectiveEffort === "xhigh" && !xhighOk ? "max" : effectiveEffort;
         // 标记为 adaptive 模式：anthropic.ts 据此下发 {type:"adaptive"} 而非 {type:"enabled"}。
         params.thinking = { enabled: true, budgetTokens: 0 };
         params.outputConfig = { effort: level, thinkingType: "adaptive" };

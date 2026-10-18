@@ -133,6 +133,22 @@ export interface ModelRegistryEntry {
   thinkingOmitMeans?: "on" | "off";
 
   /**
+   * adaptive 线格式 `output_config.effort` 是否认 `xhigh`（Anthropic 协议族专用）。
+   *
+   * 官方矩阵（anthropic-api.md:409,417）：`xhigh` 并非所有支持 `max` 的模型都有，可用于
+   * Fable 5.1 / Mythos 5.1 / Fable 5 / Mythos 5 / Opus 5.5 / Opus 5 / Opus 4.8 / Opus 4.7 /
+   * Sonnet 5.5 / Sonnet 5 / Haiku 5.5。真响应：Opus 5.5（uniapi）、Sonnet 5（ppchat，会校验
+   * 非法 effort 的渠道）xhigh 均 200（20261018 effort 排查 E2）。
+   *
+   * - `true`：xhigh 原样下发
+   * - 缺省：xhigh 钳到 max（旧行为，未知档位不冒 400）
+   *
+   * ⚠ 只认**精确命中**（`lookupRegistryExact`），同 `thinkingOmitMeans`：模糊匹配会让
+   * `claude-opus-4-6` 借到 `claude-opus-4-7` 的声明，而 4.6 不在官方矩阵里。
+   */
+  supportsXhighEffort?: boolean;
+
+  /**
    * 推理语言漂移倾向：该模型的思考过程（reasoning/thinking）在中文语境下
    * 容易自发漂移到英文，需要更强的语言约束措辞（system-prompt.ts 的「铁律级」
    * 身份指令 + `<internal_en>` 疏导）才能稳定输出中文。
@@ -185,6 +201,7 @@ const REGISTRY: Record<string, ModelRegistryEntry> = {
     supportsThinking: true,
     protocolKind: "anthropic-native",
     thinkingMode: "always-on",
+    supportsXhighEffort: true,
     // 输入/输出 anthropic-api.md:967；缓存 5m 写 $5 / 读 $0.20（anthropic-api.md:1000）
     pricing: { input: 4, output: 20, cacheRead: 0.2, cacheWrite: 5 },
   },
@@ -194,6 +211,7 @@ const REGISTRY: Record<string, ModelRegistryEntry> = {
     supportsThinking: true,
     protocolKind: "anthropic-native",
     thinkingMode: "always-on",
+    supportsXhighEffort: true,
     // 输入/输出 anthropic-api.md:968；缓存 5m 写 $2.50 / 读 $0.20（anthropic-api.md:1000）
     pricing: { input: 2, output: 10, cacheRead: 0.2, cacheWrite: 2.5 },
   },
@@ -206,6 +224,7 @@ const REGISTRY: Record<string, ModelRegistryEntry> = {
     supportsThinking: true,
     protocolKind: "anthropic-native",
     thinkingMode: "adaptive",
+    supportsXhighEffort: true,
     // 文档矩阵没有 Haiku 5.5 这一行；2026-10-17 企业网关实测：不传 n=2 都出 thinking 块，
     // `disabled` n=2 都只出 text（20261016 思考开关排查 §8.11）。
     thinkingOmitMeans: "on",
@@ -219,6 +238,7 @@ const REGISTRY: Record<string, ModelRegistryEntry> = {
     supportsThinking: true,
     protocolKind: "anthropic-native",
     thinkingMode: "always-on",
+    supportsXhighEffort: true,
     // 输入/输出 anthropic-api.md:966；5m 写 $12.50（anthropic-api.md:1000）。
     // 文档没给 Fable 5.1 的缓存读价，故不写 cacheRead（调用方按 input×0.1 近似）。
     pricing: { input: 10, output: 50, cacheWrite: 12.5 },
@@ -229,6 +249,7 @@ const REGISTRY: Record<string, ModelRegistryEntry> = {
     supportsThinking: true,
     protocolKind: "anthropic-native",
     thinkingMode: "always-on",
+    supportsXhighEffort: true,
     pricing: { input: 10, output: 50, cacheRead: 1, cacheWrite: 12.5 },
   },
   "claude-mythos-5": {
@@ -237,6 +258,7 @@ const REGISTRY: Record<string, ModelRegistryEntry> = {
     supportsThinking: true,
     protocolKind: "anthropic-native",
     thinkingMode: "always-on",
+    supportsXhighEffort: true,
     pricing: { input: 10, output: 50, cacheRead: 1, cacheWrite: 12.5 },
   },
   // ── 5 一代（Opus 5 / Sonnet 5）──────────────────────────────────────
@@ -254,6 +276,7 @@ const REGISTRY: Record<string, ModelRegistryEntry> = {
     supportsThinking: true,
     protocolKind: "anthropic-native",
     thinkingMode: "adaptive",
+    supportsXhighEffort: true,
     thinkingOmitMeans: "on",
     pricing: { input: 5, output: 25, cacheRead: 0.5, cacheWrite: 6.25 },
   },
@@ -263,6 +286,7 @@ const REGISTRY: Record<string, ModelRegistryEntry> = {
     supportsThinking: true,
     protocolKind: "anthropic-native",
     thinkingMode: "adaptive",
+    supportsXhighEffort: true,
     thinkingOmitMeans: "on",
     pricing: { input: 2, output: 10, cacheRead: 0.2, cacheWrite: 2.5 },
   },
@@ -272,6 +296,7 @@ const REGISTRY: Record<string, ModelRegistryEntry> = {
     supportsThinking: true,
     protocolKind: "anthropic-native",
     thinkingMode: "adaptive",
+    supportsXhighEffort: true,
     pricing: { input: 5, output: 25, cacheRead: 0.5, cacheWrite: 6.25 },
   },
   "claude-opus-4-7": {
@@ -280,6 +305,7 @@ const REGISTRY: Record<string, ModelRegistryEntry> = {
     supportsThinking: true,
     protocolKind: "anthropic-native",
     thinkingMode: "adaptive",
+    supportsXhighEffort: true,
     pricing: { input: 5, output: 25, cacheRead: 0.5, cacheWrite: 6.25 },
   },
   "claude-opus-4-6": {

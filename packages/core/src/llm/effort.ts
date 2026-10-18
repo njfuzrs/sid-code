@@ -140,6 +140,14 @@ export interface EffortCapability {
    * @param thinking 解析后的最终开关（已是明确 boolean，无 auto）
    */
   applyToSendParams(params: SendParams, effort: EffortSetting, thinking: boolean): void;
+  /**
+   * 解析本能力时用的模型**真名**（`resolveEffortCapability` 的 `opts.model`）。
+   *
+   * 只给档位探针（{@link previewWireEffort} / {@link isEffortGatedByThinking}）用：
+   * Anthropic applier 按真名查注册表选 adaptive / manual，探针此前喂空名 → 必 miss →
+   * 5.x Claude 全被当成 manual 旧模型（20261018 effort 排查 E0）。手搓的 cap 可不带，退回空名。
+   */
+  wireModel?: string;
 }
 
 /**
@@ -292,6 +300,8 @@ function finalizeThinkingControl(
   kind: CapabilityKind,
   compat?: ModelCompat,
 ): EffortCapability {
+  // 三个出口都经过这里，真名在此一次性挂上，探针才能和线上 applier 吃同一个名字。
+  cap = { ...cap, wireModel: model };
   // 用户显式声明恒思考 > 族推导：网关改名模型（`origin-glm-5.3`）常被判 unknown 族，
   // 但服务端照样恒思考，展示必须说「关不掉」而不是「内置」。
   if (compat?.thinkingAlwaysOn === true) {
@@ -501,6 +511,12 @@ export function isEffortAuto(
   return effective === undefined;
 }
 
+/** 档位探针的一次性 SendParams：带上解析能力时的真名（见 {@link EffortCapability.wireModel}）。 */
+function probeParams(cap: EffortCapability): SendParams {
+  const model = cap.wireModel ?? "";
+  return { model, wireModel: model || undefined, messages: [], maxTokens: 0 };
+}
+
 /**
  * 预演某显式档位经能力层 applyToSendParams 映射后「实际下发」的线格式强度档。
  *
@@ -508,15 +524,16 @@ export function isEffortAuto(
  * （如 DeepSeek 仅 high/max → low/medium 实际按 high 下发；o-series 无 max → max 按 high）。
  *
  * 设计：用一次性探针 SendParams 跑真实映射，读出 reasoningEffort（OpenAI/o-series）或
- * outputConfig.effort（deepseek-anthropic），**不写死任何 provider**——映射规则变了这里自动跟随。
- * 走 budget_tokens 路径的原生 Claude 无 reasoningEffort 下发，其 4 档与预算一一对应、无钳制概念，
- * 故返回原档（不提示钳制）。
+ * outputConfig.effort（deepseek-anthropic / adaptive Claude），**不写死任何 provider**——映射规则变了这里自动跟随。
+ * 走 budget_tokens 路径的 manual Claude 无 effort 字段下发，其 5 档与预算一一对应、无钳制概念，
+ * 故返回原档（不提示钳制）。adaptive Claude 未声明 `supportsXhighEffort` 时 xhigh → max。
  *
  * @returns 实际下发的强度档；与入参 level 不同即表示发生了钳制。
  */
 export function previewWireEffort(cap: EffortCapability, level: EffortLevel): EffortLevel {
   // 思考须开启才会下发 effort（与 applyToSendParams 内的 thinking 门控一致）。
-  const probe: SendParams = { model: "", messages: [], maxTokens: 0 };
+  // 必须带真名：空名会让 Anthropic applier 永远落到 manual 分支（E0）。
+  const probe = probeParams(cap);
   cap.applyToSendParams(probe, level, true);
   const wire = probe.reasoningEffort ?? probe.outputConfig?.effort;
   if (wire !== undefined && isEffortLevel(wire)) return wire;
@@ -537,8 +554,9 @@ export function previewWireEffort(cap: EffortCapability, level: EffortLevel): Ef
  * 这样能力矩阵（APPLIERS / 动态能力缓存）怎么变，这里自动跟随，不会漂移出第二份真相。
  *
  * 两个特例：
- * - 走 budget_tokens 的原生 Claude 无 `reasoningEffort` 下发，previewWireEffort 一律返回原档，
+ * - 走 budget_tokens 的 manual Claude 无 effort 字段下发，previewWireEffort 一律返回原档，
  *   故 5 档全保留——这是对的，它们确实各自对应不同 budget（2K/10K/20K/32K/50K）。
+ *   adaptive Claude 的 xhigh 是否保留取决于注册表 `supportsXhighEffort`。
  * - `supportsEffort=false`（unknown / 用户声明不支持思考）→ 返回空数组，UI 据此禁用切换。
  *
  * @returns 按 low→max 升序的可选档位；空数组表示该模型不支持档位切换。
@@ -585,7 +603,7 @@ export function cycleEffortForModel(
 /**
  * 该模型的 effort 下发是否被 thinking 开关「门控」——即关掉思考后档位完全不下发。
  *
- * DeepSeek / GLM 的 applier 把 reasoning_effort 挂在 thinking 分支内（思考关了就不带该字段），
+ * DeepSeek / GLM / 可关思考的 Claude 的 applier 把档位挂在 thinking 分支内（思考关了就不带该字段），
  * 而 o-series / GPT-5.x / Grok 的推理内置、不受 thinking 影响。这个差异对用户是**可见的**：
  * 在 GLM 上 `/think off` 之后，`/effort` 面板与 `/model` 面板的 ←/→ 仍在切档，但没有任何
  * 档位会真的发出去——面板在"空转"。判定方式同 previewWireEffort：跑一次真实映射对比有无
@@ -596,9 +614,12 @@ export function cycleEffortForModel(
 export function isEffortGatedByThinking(cap: EffortCapability): boolean {
   if (!cap.supportsEffort) return false;
   const probe = (thinking: boolean): string | undefined => {
-    const p: SendParams = { model: "", messages: [], maxTokens: 0 };
+    const p = probeParams(cap);
     cap.applyToSendParams(p, cap.defaultEffort, thinking);
-    return p.reasoningEffort ?? p.outputConfig?.effort;
+    // manual Claude 的强度载体是 budget_tokens 数值而不是档位字符串：只读档位字段会看不到它，
+    // 于是 Claude 上 `/think off` 后档位已不下发，面板却不提示（E4）。
+    const budget = p.thinking?.enabled && p.thinking.budgetTokens > 0 ? "budget" : undefined;
+    return p.reasoningEffort ?? p.outputConfig?.effort ?? budget;
   };
   // 思考开时会下发、关时不下发 → 被门控。
   return probe(true) !== undefined && probe(false) === undefined;
