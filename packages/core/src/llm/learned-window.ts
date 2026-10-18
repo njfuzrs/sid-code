@@ -12,9 +12,17 @@
  *
  * - **键 = (model, base_url)，不做名字归一**：同底层模型走不同网关路由，墙不同
  *   （CLAUDE.md TTFB 铁律同一类错误）。能力缓存按单 model 键 + 剥 `origin-` 前缀，放进去就会串路由。
- * - **连续 ≥2 次溢出才写入**：`isPromptTooLong` 靠措辞匹配，一次误判会把上限锁成某次很小的
+ * - **7 天内累计 ≥2 次溢出才写入**：`isPromptTooLong` 靠措辞匹配，一次误判会把上限锁成某次很小的
  *   成功请求，而压缩会让后续请求永远够不到它 —— 「出现更大的成功请求就上调」这条路等不来。
+ *   D1：原方案字面是「**连续** 2 次」，刻意不按「中间有成功请求就重置」实现——每次溢出后
+ *   reactive 压缩必然让下一个请求变小并成功，按字面重置的话第二次溢出永远计成「第 1 次」，
+ *   学习永远不发生。这里的「连续」只能落在「同一有效期内」。
  * - **TTL 7 天**：错误值最多活一周，不会永久锁小。
+ * - **待定计数与已学上限各管各的有效期**（B3）：待定计数按 `firstOverflowAt` 过期重算，
+ *   已学上限按 `learnedAt` 过期。旧实现把两者绑在一起，一条仍在有效期内的上限会被下一次
+ *   「证明它还不够紧」的溢出整条抹掉，之后要再撞两次 400 才学回来。
+ * - **已学上限有效期内再溢出 → 当场收紧**：上限本身就是从两次溢出学来的，再撞一次说明它
+ *   仍高于墙，取 min(上限, 本次已放行值) 并续期，不再等第二次。
  * - **不叠加安全系数**：下界本身就保守；再乘一个比例 = 再引入一个拍脑袋的数（禁止按模型硬编码分级）。
  *
  * 诚实边界：前两次撞墙仍会发生，之后不再撞。不是「消灭 400」。
@@ -99,14 +107,24 @@ function readAll(): Record<string, CeilingEntry> {
   }
 }
 
-function writeAll(entries: Record<string, CeilingEntry>): void {
+/**
+ * 只写一个键（L14）：写之前**重新读盘**再合并，只覆盖自己这个键；临时文件名带 pid + 随机后缀。
+ *
+ * 旧实现「调用方读全表 → 改 → 整表写回」且临时文件名固定 `${path}.tmp`：两个进程同时溢出时，
+ * 后写者把先写者的其他键整表覆盖，或两者写同一个 tmp 互相截断。现在剩下的竞态窗口只有
+ * 「重新读盘 → rename」之间的几毫秒，且只会丢**别的键**在这几毫秒里的更新。
+ * 不上文件锁：溢出一天也就几次，锁的超时 / 陈旧锁清理的复杂度不值。
+ */
+function writeEntry(key: string, entry: CeilingEntry): void {
   // 与 model-capabilities 同一守卫：测试态且未重定向时绝不写用户真实目录。
   if (process.env.NODE_ENV === "test" && isRealUserSidHome()) return;
   try {
     const path = sidPaths.learnedInputCeiling();
     mkdirSync(dirname(path), { recursive: true });
+    const entries = readAll();
+    entries[key] = entry;
     const file: CeilingFile = { schema_version: 1, entries };
-    const tmp = `${path}.tmp`;
+    const tmp = `${path}.${process.pid}.${Math.random().toString(36).slice(2, 10)}.tmp`;
     writeFileSync(tmp, JSON.stringify(file, null, 2), "utf8");
     renameSync(tmp, path);
   } catch {
@@ -149,25 +167,36 @@ export function recordContextOverflow(opts: {
   if (!isPosInt(opts.admittedTokens)) return { status: "skipped", reason: "no_admitted_sample" };
   if (!opts.model || !opts.baseURL) return { status: "skipped", reason: "no_key" };
 
-  const all = readAll();
   const key = ceilingKey(opts.model, opts.baseURL);
-  const prev = all[key];
-  // 上一轮溢出记录已过期 → 重新起算（「连续」的语义落在有效期内）。
-  const fresh = !prev || now - prev.firstOverflowAt > LEARNED_CEILING_TTL_MS;
-  const next: CeilingEntry = fresh
-    ? { overflows: 1, maxAdmitted: opts.admittedTokens, firstOverflowAt: now }
-    : {
-        ...prev,
-        overflows: prev.overflows + 1,
-        maxAdmitted: Math.max(prev.maxAdmitted, opts.admittedTokens),
-      };
-  if (next.overflows >= LEARN_MIN_OVERFLOWS) {
-    next.ceiling = next.maxAdmitted;
-    next.learnedAt = now;
-  }
-  all[key] = next;
-  writeAll(all);
+  const next = nextEntry(readAll()[key], opts.admittedTokens, now);
+  writeEntry(key, next);
   return next.ceiling
     ? { status: "learned", ceiling: next.ceiling, overflows: next.overflows }
     : { status: "pending", overflows: next.overflows };
+}
+
+/** 一次溢出后的新条目（纯函数，便于对着三天序列断言） */
+function nextEntry(prev: CeilingEntry | undefined, admitted: number, now: number): CeilingEntry {
+  // 已学上限按 learnedAt 判有效（B3：不能用待定计数的 firstOverflowAt）
+  const liveCeiling =
+    prev?.ceiling && prev.learnedAt && now - prev.learnedAt <= LEARNED_CEILING_TTL_MS
+      ? { ceiling: prev.ceiling, learnedAt: prev.learnedAt }
+      : undefined;
+  // 待定计数按 firstOverflowAt 判有效；过期只重算计数，不碰已学上限
+  const pendingFresh = !prev || now - prev.firstOverflowAt > LEARNED_CEILING_TTL_MS;
+  const counted: CeilingEntry = pendingFresh
+    ? { overflows: 1, maxAdmitted: admitted, firstOverflowAt: now }
+    : {
+        overflows: prev.overflows + 1,
+        maxAdmitted: Math.max(prev.maxAdmitted, admitted),
+        firstOverflowAt: prev.firstOverflowAt,
+      };
+  if (liveCeiling) {
+    // 有效上限下仍撞墙：上限还不够紧，取更小者并续期
+    return { ...counted, ceiling: Math.min(liveCeiling.ceiling, admitted), learnedAt: now };
+  }
+  if (counted.overflows >= LEARN_MIN_OVERFLOWS) {
+    return { ...counted, ceiling: counted.maxAdmitted, learnedAt: now };
+  }
+  return counted;
 }

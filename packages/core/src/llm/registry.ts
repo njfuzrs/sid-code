@@ -121,7 +121,12 @@ export class ProviderRegistry {
    *  优先用 availableModels 声明的 contextWindow（权威），否则按内置表/启发式推导。
    *  供子代理派生其 ContextManager 窗口使用，避免子代理被写死 50000 而对大任务过早压缩。 */
   getContextWindow(): number {
-    return new TokenEstimator().getContextLimit(this.config.model, this.config.availableModels);
+    // D4：带上 baseURL——学到的已放行上限按 (model, base_url) 存，缺它子代理窗口会比主会话宽
+    return new TokenEstimator().getContextLimit(
+      this.config.model,
+      this.config.availableModels,
+      this.config.baseURL,
+    );
   }
 
   /**

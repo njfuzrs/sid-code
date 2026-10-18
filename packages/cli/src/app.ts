@@ -1138,7 +1138,12 @@ export class App {
         // 保证主模型切换后仍按当前 model + availableModels 解析。
         resolveContextLimit: (model: string) => {
           try {
-            return new TokenEstimator().getContextLimit(model, this.config.availableModels);
+            // D4：带上 baseURL，否则学到的已放行上限（按 (model, base_url) 存）在这里读不到
+            return new TokenEstimator().getContextLimit(
+              model,
+              this.config.availableModels,
+              this.config.baseURL,
+            );
           } catch {
             return undefined;
           }
@@ -4075,6 +4080,7 @@ export class App {
           preferredLanguage: this.config.language,
           model: this.config.model,
           availableModels: this.config.availableModels,
+          baseURL: this.config.baseURL,
           // 缺口 E：CLAUDE.md 重建路径同样收集 skill 摘要，避免重建后丢失 skill 列表
           skillEntries: collectSkillListingEntries(this.toolRegistry.all()),
           // 延迟工具呈现（见 core/config/deferred-tool-view.ts）：重建路径漏传会让
@@ -5121,6 +5127,7 @@ export class App {
         preferredLanguage: this.config.language,
         model: this.config.model,
         availableModels: this.config.availableModels,
+        baseURL: this.config.baseURL,
         skillEntries: collectSkillListingEntries(this.toolRegistry.all()),
         denyRulesSummary:
           this.permissionChecker &&

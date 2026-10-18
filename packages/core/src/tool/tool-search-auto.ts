@@ -56,7 +56,9 @@ export interface AutoThresholdInput {
   /** 当前主模型名（用于查上下文窗口大小） */
   model: string;
   /** 用户配置的模型列表（可能声明 contextWindow，权威来源） */
-  availableModels?: Array<{ name?: string; contextWindow?: number }>;
+  availableModels?: Array<{ name?: string; contextWindow?: number; baseURL?: string }>;
+  /** 当前模型端点（D4：学到的已放行上限按 (model, base_url) 查） */
+  baseURL?: string;
   /** 延迟工具的定义列表（用于估算 token 总数） */
   deferredDefinitions: ToolDefinition[];
 }
@@ -70,7 +72,11 @@ export interface AutoThresholdInput {
 export function checkAutoThreshold(input: AutoThresholdInput, percentage: number): boolean {
   const estimator = new TokenEstimator();
   const deferredTokens = estimator.estimateTools(input.deferredDefinitions);
-  const contextWindow = estimator.getContextLimit(input.model, input.availableModels);
+  const contextWindow = estimator.getContextLimit(
+    input.model,
+    input.availableModels,
+    input.baseURL,
+  );
   const threshold = Math.floor((contextWindow * percentage) / 100);
   return deferredTokens >= threshold;
 }

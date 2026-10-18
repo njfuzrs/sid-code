@@ -163,6 +163,8 @@ export interface SystemPromptContext {
    * 用于动态推导系统提示词预算，以及把 `model` 别名翻成厂商真名做能力查表。
    */
   availableModels?: Array<{ name?: string; modelId?: string; contextWindow?: number }>;
+  /** 当前模型的端点（D4：学到的已放行上限按 (model, base_url) 查，缺它读不到） */
+  baseURL?: string;
 
   // 限制
   /** 系统提示词最大 token 数。
@@ -374,7 +376,11 @@ export function clearPromptCache(): void {
 export function resolvePromptMaxTokens(ctx: SystemPromptContext): number {
   if (typeof ctx.maxTokens === "number" && ctx.maxTokens > 0) return ctx.maxTokens;
   if (ctx.model) {
-    const window = new TokenEstimator().getContextLimit(ctx.model, ctx.availableModels);
+    const window = new TokenEstimator().getContextLimit(
+      ctx.model,
+      ctx.availableModels,
+      ctx.baseURL,
+    );
     if (window > 0) return Math.floor(window * 0.9);
   }
   return 180_000;
@@ -526,7 +532,7 @@ export function buildSystemPrompt(ctx: SystemPromptContext): string {
   // 预算按模型上下文窗口的 1% 控制（generateSkillListingAttachment 内部处理）。
   if (ctx.skillEntries && ctx.skillEntries.length > 0) {
     const contextWindow = ctx.model
-      ? new TokenEstimator().getContextLimit(ctx.model, ctx.availableModels)
+      ? new TokenEstimator().getContextLimit(ctx.model, ctx.availableModels, ctx.baseURL)
       : undefined;
     const skillAttachment = generateSkillListingAttachment(
       ctx.skillEntries,

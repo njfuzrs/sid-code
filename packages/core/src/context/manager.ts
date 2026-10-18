@@ -1205,8 +1205,17 @@ export class Manager {
       },
     };
 
-    this.messages.push(boundaryMsg);
     const log = getLogger();
+    // D5（S5 连带）：边界是裸 push 的 user 消息，刻意不走 addMessage——那会把它与尾部 user
+    // 合并、`_meta.compact_boundary` 浅合并进别的消息。代价是尾部为 user 时出现 user,user 相邻。
+    // 这里不改行为，只把这个事实记下来：出现了就 warn，便于在轨迹里数它（方案只要求断言）。
+    if (compactBoundaryBreaksAlternation(this.messages)) {
+      log.warn(
+        "CONTEXT",
+        `compact_boundary 接在 user 消息之后（角色不交替），messageCountBefore=${messageCountBefore}`,
+      );
+    }
+    this.messages.push(boundaryMsg);
     log.debug("CONTEXT", `插入 compact_boundary: messageCountBefore=${messageCountBefore}`);
   }
 
@@ -2535,6 +2544,11 @@ export class Manager {
       log.warn("CONTEXT", `清理工具输出临时文件失败: ${err.message}`);
     }
   }
+}
+
+/** D5：在 `messages` 末尾追加一条 user 角色的 compact_boundary 是否会破坏角色交替 */
+export function compactBoundaryBreaksAlternation(messages: readonly Message[]): boolean {
+  return messages.length > 0 && messages[messages.length - 1]!.role === "user";
 }
 
 /**
