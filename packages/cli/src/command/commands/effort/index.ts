@@ -9,7 +9,7 @@ import type { UnifiedCommand } from "../../types.ts";
 const effort: UnifiedCommand = {
   type: "local",
   name: "effort",
-  description: "显示或切换推理强度档位（low/medium/high/xhigh/max/auto）",
+  description: "打开面板或切换推理强度档位（low/medium/high/xhigh/max/auto）",
   argumentHint: "low|medium|high|xhigh|max|auto",
   source: "builtin",
   immediate: true,

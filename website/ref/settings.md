@@ -56,7 +56,7 @@ settings.json 的全部可配字段、类型与默认值。
 | `disabledHooks` | array | — | 禁用的 Hook 名列表（/hooks disable -p 持久化端） |
 | `disabledSkills` | array | — | 禁用的 Skill 名称列表 |
 | `disallowedTools` | array | — | 禁用工具名单（拒绝优先于 allowedTools） |
-| `effortLevel` | enum | `low` / `medium` / `high` / `xhigh` / `max` | 推理强度档位初值（/effort 持久化端，settings.json effortLevel）。 缺省 = auto（跟随模型默认，不显式下发）。运行时态在 App.runtimeEffort，本字段仅作启动初值。 |
+| `effortLevel` | enum | `low` / `medium` / `high` / `xhigh` / `max` | 推理强度档位初值（/effort 持久化端，settings.json effortLevel）。 缺省 = auto（不显式下发，服务端按模型默认档跑）。运行时态在 App.runtimeEffort，本字段仅作启动初值。 |
 | `enableLLMClassifier` | boolean | — | 是否启用 LLM 命令风险分类器（第二道防线，默认 false 保守） |
 | `enableSandbox` | boolean | — | 是否启用 macOS Seatbelt 沙箱（限制 bash 命令的文件系统和网络访问，默认 false） |
 | `env` | object | — | 环境变量 |
