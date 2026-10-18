@@ -111,7 +111,14 @@ import {
 } from "@sid-code/core/llm/errors.ts";
 import * as CrashMarker from "@sid-code/core/trace/crash-marker.ts";
 import * as PidManager from "@sid-code/core/trace/pid-manager.ts";
-import { installTeardownSignalHandlers, watchTerminalOutputErrors } from "./signal-teardown.ts";
+import {
+  armForceExit,
+  installTeardownSignalHandlers,
+  PIPE_CLOSED_EXIT_CODE,
+  terminalDeathCause,
+  watchTerminalOutputErrors,
+  type TerminalDeathCause,
+} from "./signal-teardown.ts";
 import { execSync } from "child_process";
 import { existsSync, readFileSync } from "fs";
 import { readFile } from "fs/promises";
@@ -4375,12 +4382,18 @@ export class App {
           // S8 存量：「进程已死 ∧ 已有 SessionEnd」的 heartbeat 是收尾被打断的残留，
           // 补完 cost 之后删掉；无 SessionEnd 的保留（digest 的强杀证据）。
           // 必须用**同一次** `stale` 扫描的判活结果，且排在 backfill 之后（它要读这批会话）。
-          const sweep = PidManager.sweepEndedHeartbeats(stale);
-          if (sweep.removed.length > 0) {
-            log.info(
-              "DIAG",
-              `S8：清扫 ${sweep.removed.length} 个已有 SessionEnd 的残留 heartbeat（保留 ${sweep.keptNoSessionEnd.length} 个无 SessionEnd 的）`,
-            );
+          // M1：删的是用户目录下的文件，所以给开关（SID_CODE_HEARTBEAT_SWEEP=off|dry-run）
+          // 并把会话 id 全量记进日志，事后能复看删了谁。
+          const sweepMode = PidManager.heartbeatSweepMode();
+          if (sweepMode !== "off") {
+            const dryRun = sweepMode === "dry-run";
+            const sweep = PidManager.sweepEndedHeartbeats(stale, { dryRun });
+            if (sweep.removed.length > 0) {
+              log.info(
+                "DIAG",
+                `S8：${dryRun ? "[dry-run] 将" : ""}清扫 ${sweep.removed.length} 个最后一段已有 SessionEnd 的残留 heartbeat（保留 ${sweep.keptNoSessionEnd.length} 个未收尾的）: ${sweep.removed.join(",")}`,
+              );
+            }
           }
           // 只在 >0 时报：损坏是稀疏事件，"本次认领 0 条损坏"每次启动打一行就是噪声，
           // 而它的长期趋势由北极星快照的损坏率负责呈现（那里 0 也会显式打印）。
@@ -4929,8 +4942,11 @@ export class App {
    * `events.jsonl` 完全没有 SessionEnd 事件，这是其中一个主要来源。
    */
   private signalHandlersRegistered = false;
-  /** 终端输出流已报 EIO / EPIPE：终端已死，不再写、不再渲染（S15） */
-  terminalDead = false;
+  /**
+   * 终端输出流已报 EIO / EPIPE 的成因（S15）；null = 没死。
+   * L5：以前是只写不读的布尔；现在由 onSignal 读，用来区分 pty 关闭与管道下游关闭（L7）。
+   */
+  private terminalDeathCause: TerminalDeathCause | null = null;
   /** TUI 渲染实例的停渲染入口（runTUI 挂载后设置；headless 恒为 null） */
   private detachTuiForShutdown: (() => void) | null = null;
   private registerSignalHandlers(): void {
@@ -4939,18 +4955,30 @@ export class App {
 
     const log = getLogger();
     /** 各信号的退出码：SIGINT=130 / SIGTERM=143 / SIGHUP=129（128+signum 惯例） */
+    // L7：管道下游关闭（EPIPE 触发的收尾）退 141，不冒充 SIGHUP 的 129。
     const exitCodeOf = (signal: "SIGINT" | "SIGTERM" | "SIGHUP"): number =>
-      signal === "SIGINT" ? 130 : signal === "SIGHUP" ? 129 : 143;
+      signal === "SIGHUP" && this.terminalDeathCause === "pipe_closed"
+        ? PIPE_CLOSED_EXIT_CODE
+        : signal === "SIGINT"
+          ? 130
+          : signal === "SIGHUP"
+            ? 129
+            : 143;
 
     const onSignal = async (signal: "SIGINT" | "SIGTERM" | "SIGHUP") => {
       // 必须在下面 abort() 之前取样：abort 之后 signal.aborted 恒 true，就分不出空闲与忙。
       // busy 覆盖 TUI 轮次与 fork 型命令；abortController 覆盖 headless / `!` shell 等不置 busy 的路径。
       const turnInFlight =
         this.busy || (!!this.abortController && !this.abortController.signal.aborted);
-      const reason = sessionEndReasonForSignal(signal, turnInFlight);
+      // L7：EPIPE 是管道下游先走了（`-p … | head`），不是用户关终端也不是中断 → `other`。
+      const reason =
+        this.terminalDeathCause === "pipe_closed"
+          ? "other"
+          : sessionEndReasonForSignal(signal, turnInFlight);
+      // L6：第一个信号的日志也带 isTTY 与成因，与重复信号同口径（以前只有重复信号带）。
       log.warn(
         "APP",
-        `收到 ${signal}（turnInFlight=${turnInFlight}），触发 SessionEnd(reason=${reason}) 后退出`,
+        `收到 ${signal}（turnInFlight=${turnInFlight}，isTTY=${!!process.stdout.isTTY}，cause=${this.terminalDeathCause ?? "signal"}），触发 SessionEnd(reason=${reason}) 后退出`,
       );
       // S8：同步、微秒级的 heartbeat 撤销排在**第一个 await 之前**。收尾随时可能被强杀
       // （EIO / SIGKILL / 卡死后第二个信号），能同步做完的必须先做完。
@@ -4972,7 +5000,8 @@ export class App {
       }
       // 兜底退出:无论落盘是否 hang,最多 1.5s 后强制退出。
       // 提前注册(在 await 之前),避免 fireSessionEndEvent 永久挂起时此兜底永远不执行(ASYNC-7)。
-      const forceExitTimer = setTimeout(() => process.exit(exitCodeOf(signal)), 1500);
+      // M3：这是异步挂起的唯一出口（「>2s 第二个信号强退」已删，理由见 signal-teardown.ts 头部）。
+      const disarmForceExit = armForceExit(exitCodeOf(signal), 1500);
       // 触发 abort 让 LLM 流式请求/工具调用尽快停下
       try {
         this.abortController?.abort();
@@ -5008,8 +5037,15 @@ export class App {
       } catch {
         /* ignore */
       }
+      // L6：logger 是 createWriteStream 异步写，紧接 process.exit 会丢缓冲里的收尾日志，
+      // 削弱「零日志会话」取证。最多等 200ms 刷盘（仍在 1.5s 兜底之内）。
+      try {
+        await Promise.race([log.flush(), new Promise((r) => setTimeout(r, 200))]);
+      } catch {
+        /* ignore */
+      }
       // 落盘已完成(或超时),清掉兜底并立即退出
-      clearTimeout(forceExitTimer);
+      disarmForceExit();
       process.exit(exitCodeOf(signal));
     };
 
@@ -5042,9 +5078,12 @@ export class App {
     // emergencySessionEnd + exit(1)），收尾完成后照常 process.exit —— 不变成无头常驻进程。
     // 多数情况 SIGHUP 先到、收尾已在跑，这里的 trigger 只会被判为重复信号而忽略。
     watchTerminalOutputErrors([process.stdout, process.stderr], (err) => {
-      this.terminalDead = true;
+      this.terminalDeathCause = terminalDeathCause(err);
       try {
-        log.warn("APP", `终端输出流 ${err.code}（${err.syscall ?? "?"}），判终端已关闭，转入收尾`);
+        log.warn(
+          "APP",
+          `终端输出流 ${err.code}（${err.syscall ?? "?"}），判 ${this.terminalDeathCause}，转入收尾`,
+        );
       } catch {
         /* ignore */
       }

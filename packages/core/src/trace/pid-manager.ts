@@ -395,11 +395,23 @@ export function classifyStaleHeartbeats(
   return { hang, unfinished };
 }
 
-/** events.jsonl 里有没有 SessionEnd：只做子串探测，不逐行 parse（大会话的 events 上 MB） */
+/**
+ * 「最后一段」会话是否已收尾：最后一个 SessionStart 之后有没有 SessionEnd。
+ *
+ * M1：resume 会把新一段事件追加到同一个 events.jsonl。只看「全文含 SessionEnd」时，
+ * 「正常结束 → resume → 被 kill -9」的会话会凭旧段的 SessionEnd 被判成已收尾，
+ * heartbeat 被删 —— 而 digest 正是靠「heartbeat 在 + 无 SessionEnd」识别强杀会话。
+ * 仍只做子串探测（大会话的 events 上 MB），比较两个事件最后一次出现的位置。
+ */
+export function lastSegmentHasSessionEnd(raw: string): boolean {
+  const lastEnd = raw.lastIndexOf('"event":"SessionEnd"');
+  if (lastEnd < 0) return false;
+  return lastEnd > raw.lastIndexOf('"event":"SessionStart"');
+}
+
 function hasSessionEnd(sessionDir: string): boolean {
   try {
-    const raw = readFileSync(join(sessionDir, "events.jsonl"), "utf-8");
-    return raw.includes('"event":"SessionEnd"');
+    return lastSegmentHasSessionEnd(readFileSync(join(sessionDir, "events.jsonl"), "utf-8"));
   } catch {
     return false;
   }
@@ -423,11 +435,24 @@ export interface HeartbeatSweepResult {
  * 只删两个条件同时成立的：
  * - `!is_process_alive`：判活与 `scanStaleHeartbeats()` 同口径（pid 文件 + kill -0 + 复用比对）；
  *   **传入的必须是孤儿 PID 清理之前或之后同一次扫描的结果**，不能混用两次扫描。
- * - events.jsonl 含 SessionEnd：没有 SessionEnd 的死会话保留 heartbeat —— `digest.ts` 靠
- *   「heartbeat 在 + 无 SessionEnd」识别被强杀的会话，删了就抹掉证据。
+ * - events.jsonl 的**最后一段**（最后一个 SessionStart 之后）含 SessionEnd：没收尾的死会话
+ *   保留 heartbeat —— `digest.ts` 靠「heartbeat 在 + 无 SessionEnd」识别被强杀的会话，
+ *   删了就抹掉证据。只看全文会误删 resume 后被强杀的会话（M1，见 {@link lastSegmentHasSessionEnd}）。
  *
- * ⚠️ 这一步删用户目录下的文件。`dryRun: true` 只列清单不删，用于人工过目。
+ * ⚠️ 这一步删用户目录下的文件。`dryRun: true` 只列清单不删，用于人工过目；
+ * 生产调用方设 `SID_CODE_HEARTBEAT_SWEEP=dry-run|off` 可降级（见 {@link heartbeatSweepMode}），
+ * 且每次都把删了哪些会话 id 写进日志，事后可复看。
  */
+/** 存量清扫开关：`off` 不扫；`dry-run` 只列清单；缺省 / 其他值照常删。 */
+export function heartbeatSweepMode(
+  env: Record<string, string | undefined> = process.env,
+): "on" | "dry-run" | "off" {
+  const v = env.SID_CODE_HEARTBEAT_SWEEP?.trim().toLowerCase();
+  if (v === "off" || v === "0" || v === "false") return "off";
+  if (v === "dry-run" || v === "dryrun") return "dry-run";
+  return "on";
+}
+
 export function sweepEndedHeartbeats(
   stale: StaleHeartbeatSession[],
   opts: { dryRun?: boolean } = {},

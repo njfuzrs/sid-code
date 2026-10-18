@@ -11,7 +11,7 @@ import { describe, test, expect, beforeEach, afterEach } from "bun:test";
 import { mkdirSync, writeFileSync, readFileSync, existsSync, rmSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
-import { TraceCollector } from "@sid-code/core/trace/collector.ts";
+import { TraceCollector, classifyToolFailure } from "@sid-code/core/trace/collector.ts";
 import { HookSystem } from "@sid-code/core/hook/system.ts";
 import { UploadManager, stripLocalOnlyEventFields } from "@sid-code/core/trace/uploader.ts";
 import { scanPendingUploads, getUploadBacklog } from "@sid-code/core/trace/backfill.ts";
@@ -192,6 +192,33 @@ describe("S11-S17 可观测性", () => {
       await mgr.uploadSession(dir, "s-final");
       expect(existsSync(join(dir, "session.traj"))).toBe(false);
       expect(JSON.parse(readFileSync(join(dir, ".uploaded"), "utf-8")).final).toBe(true);
+    });
+
+    test("复审 M4：快照上传晚于终态上传完成时不把 final:true 覆盖成 false", async () => {
+      for (const deleteAfterUpload of [false, true]) {
+        const id = `s-race-${deleteAfterUpload}`;
+        const dir = join(tmp, "sessions", id);
+        mkdirSync(dir, { recursive: true });
+        writeFileSync(join(dir, "session.traj"), '{"metadata":{"session_id":"x"}}');
+        writeFileSync(join(dir, "events.jsonl"), "{}\n");
+        globalThis.fetch = (async () => new Response("{}", { status: 200 })) as any;
+        const mgr = new UploadManager({
+          baseUrl: "http://localhost",
+          token: "t",
+          outputDir: tmp,
+          maxRetries: 1,
+          compress: false,
+          deleteAfterUpload,
+        });
+        // 时序：SessionEnd 上传先完成（final:true），在途的 /debug 快照随后才完成
+        await mgr.uploadSession(dir, id);
+        expect(hasFinalUploadMarker(dir)).toBe(true);
+        await mgr.uploadSession(dir, id, { snapshot: true });
+        expect({ deleteAfterUpload, final: hasFinalUploadMarker(dir) }).toEqual({
+          deleteAfterUpload,
+          final: true,
+        });
+      }
     });
 
     test("超时分支返回 pending:true，后台上传继续跑完", async () => {
@@ -448,5 +475,32 @@ describe("S11-S17 可观测性", () => {
       const input = ['{"event":"A","data":{"x":1}}', 'not json "error_head"', ""].join("\n");
       expect(stripLocalOnlyEventFields(input)).toBe(input);
     });
+  });
+});
+
+describe("复审 L8：classifyToolFailure 只认超时事件，不认参数里的 timeout 字样", () => {
+  const kind = (error: string) => classifyToolFailure({ error } as any);
+  test("真超时 → timeout", () => {
+    for (const e of [
+      "Command timed out after 120s",
+      "connect ETIMEDOUT 1.2.3.4:443",
+      "RipgrepTimeoutError: search",
+      "Request timeout after 30000ms",
+      "命令超时（120秒），已终止 PID 1",
+      "工具调用超时 (60000ms)",
+      "MCP 请求超时: tools/call",
+    ]) {
+      expect({ e, k: kind(e) }).toEqual({ e, k: "timeout" });
+    }
+  });
+  test("提到 timeout 的参数/校验错误 → exec", () => {
+    for (const e of [
+      "--timeout 参数非法：必须为正整数",
+      "invalid value for timeout: -1",
+      "超时时间必须为正数",
+      "unknown option --timeout-ms",
+    ]) {
+      expect({ e, k: kind(e) }).toEqual({ e, k: "exec" });
+    }
   });
 });

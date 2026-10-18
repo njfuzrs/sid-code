@@ -134,6 +134,51 @@ describe("S9 路径 A：文件名当 key", () => {
   });
 });
 
+describe("复审 M2：回退按真实文件名反查，不剥前缀", () => {
+  test("auth 已存在 → set('user-auth') / set('user_auth') 都新建独立条目，auth 不变", async () => {
+    const s = newStore();
+    await s.set("auth", "原值", "project", { type: "project" });
+    await s.set("user-auth", "新A", "project", { type: "project" });
+    await s.set("user_auth", "新B", "project", { type: "project" });
+    const s2 = newStore();
+    expect((await s2.get("auth"))?.value).toBe("原值");
+    expect((await s2.get("user-auth"))?.value).toBe("新A");
+    expect((await s2.get("user_auth"))?.value).toBe("新B");
+  });
+
+  test("x 存在（project_x.md）→ set('project_x') 与 set('project_x.md') 都更新 x，不新建", async () => {
+    const s = newStore();
+    await s.set("x", "v1", "project", { type: "project" });
+    await s.set("project_x", "v2", "project");
+    await s.set("project_x.md", "v3", "project");
+    expect(readdirSync(projDir).filter((f) => f !== "MEMORY.md")).toEqual(["project_x.md"]);
+    expect((await newStore().get("x"))?.value).toBe("v3");
+  });
+
+  test("只有 structure 时 delete('project-structure') 不删 structure", async () => {
+    const s = newStore();
+    await s.set("structure", "目录说明", "project", { type: "project" });
+    expect(await s.delete("project-structure")).toBe(false);
+    expect((await newStore().get("structure"))?.value).toBe("目录说明");
+  });
+});
+
+describe("复审 L11：已占用 name 只认 frontmatter，不认正文", () => {
+  test("正文里一行 `name: z` 不阻止 project_z 归一化成 z", async () => {
+    writeMem("project_z.md", "project_z", "project", "c");
+    writeFileSync(
+      join(projDir, "reference_other.md"),
+      // 旧写法 `/^name:/m` 取首个匹配：frontmatter 缺 name 时就落到正文这行
+      "---\ndescription: d\ntype: reference\n---\n\n示例配置：\nname: z\n",
+    );
+    const s = newStore();
+    await s.load();
+    expect(readFileSync(join(projDir, "project_z.md"), "utf8")).toContain("name: z\n");
+    // 正文那行也没被改
+    expect(readFileSync(join(projDir, "reference_other.md"), "utf8")).toContain("name: z\n");
+  });
+});
+
 describe("S9 路径 B：跨进程过期快照 + 推断 type 不同", () => {
   test("另一进程已写 feedback_x.md（name: x），本进程无 type 的 set('x') 认领它而不新建", async () => {
     const s = newStore();

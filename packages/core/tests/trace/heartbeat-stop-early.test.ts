@@ -53,6 +53,30 @@ describe("TraceCollector.stopHeartbeat", () => {
     expect(() => c.stopHeartbeat()).not.toThrow();
   });
 
+  test("T4：真跑 interval 体 —— 在途 tick 排队后 stopHeartbeat，回调不得把文件写回", async () => {
+    // 截获 setInterval 回调本体，手动触发一次，等价于「interval 已触发、setTimeout(…,0) 已排队」。
+    // 只断言 heartbeatStopped 字段的旧用例在删掉 collector.ts 的守卫后仍绿（T4），这条会红。
+    const realSetInterval = globalThis.setInterval;
+    let tick: (() => void) | undefined;
+    (globalThis as any).setInterval = (fn: () => void, ms: number) => {
+      tick = fn;
+      return realSetInterval(() => {}, ms);
+    };
+    const c = new TraceCollector({ outputDir: outDir }, null);
+    try {
+      await (c as any).handleSessionStart(start());
+    } finally {
+      globalThis.setInterval = realSetInterval;
+    }
+    const hb = (c as any).heartbeatPath as string;
+    expect(tick).toBeDefined();
+    tick!(); // 内层 setTimeout(…,0) 已排队
+    c.stopHeartbeat();
+    expect(existsSync(hb)).toBe(false);
+    await new Promise((r) => setTimeout(r, 20)); // 让排队的回调跑完
+    expect(existsSync(hb)).toBe(false);
+  });
+
   test("handleSessionEnd 在第一个 await 之前就撤销心跳（收尾中途被打断也不残留）", async () => {
     const c = new TraceCollector({ outputDir: outDir }, null);
     await (c as any).handleSessionStart(start());

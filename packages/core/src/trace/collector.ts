@@ -3577,9 +3577,18 @@ export function classifyToolFailure(input: PostToolUseInput): ToolErrorKind {
   if (input.sid_failure_kind === "validation") return "validation";
   if (input.sid_failure_kind === "hook_blocked") return "permission";
   const text = failureText(input);
-  if (/timed?\s*out|timeout|ETIMEDOUT|超时/i.test(text)) return "timeout";
+  if (TIMEOUT_EVENT_RE.test(text)) return "timeout";
   return "exec";
 }
+
+/**
+ * 复审 L8：只认「超时这件事发生了」的措辞，不认「提到 timeout 这个词」。
+ * 旧正则 `/timed?\s*out|timeout|…|超时/i` 里 `timeout` 裸词会把 `--timeout 参数非法`、
+ * `超时时间必须为正数` 这类参数错误归成 timeout，让超时率虚高。
+ * 认：timed out / time out / ETIMEDOUT / XxxTimeoutError / timeout after|exceeded / 超时（不跟时间|参数|设置）。
+ */
+const TIMEOUT_EVENT_RE =
+  /\btimed\s+out\b|\btime\s+out\b|\bETIMEDOUT\b|TimeoutError\b|\btimeout\s+(?:after|exceeded|reached|of\s+\d)|\bexceeded\b[^\n]{0,40}\btimeout\b|超时(?!时间|参数|设置|值)/i;
 
 function errorHeadField(input: PostToolUseInput): { error_head?: string } {
   const text = failureText(input);

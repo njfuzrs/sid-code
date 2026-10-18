@@ -363,7 +363,7 @@ describe("pid-manager · S8 sweepEndedHeartbeats", () => {
   afterAll(() => {
     for (const p of created) rmSync(p, { force: true, recursive: true });
   });
-  function mk(name: string, withEnd: boolean): string {
+  function mk(name: string, withEnd: boolean, resumedAfterEnd = false): string {
     const id = `s8-${name}-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
     const dir = join(SESSIONS_DIR, id);
     mkdirSync(dir, { recursive: true });
@@ -374,6 +374,8 @@ describe("pid-manager · S8 sweepEndedHeartbeats", () => {
     );
     const lines = [JSON.stringify({ event: "SessionStart", session_id: id })];
     if (withEnd) lines.push(JSON.stringify({ event: "SessionEnd", session_id: id }));
+    // M1：正常结束 → resume（追加新段）→ 被 kill -9，新段没有 SessionEnd
+    if (resumedAfterEnd) lines.push(JSON.stringify({ event: "SessionStart", session_id: id }));
     writeFileSync(join(dir, "events.jsonl"), lines.join("\n") + "\n");
     return id;
   }
@@ -399,5 +401,33 @@ describe("pid-manager · S8 sweepEndedHeartbeats", () => {
     expect(existsSync(hb(ended))).toBe(false);
     expect(existsSync(hb(noEnd))).toBe(true);
     expect(existsSync(hb(live))).toBe(true);
+  });
+
+  test("M1：resume 后被强杀（旧段有 SessionEnd、最后一段没有）→ 保留 heartbeat", () => {
+    const resumedKilled = mk("resumed-killed", true, true);
+    const stale: PidManager.StaleHeartbeatSession[] = [
+      { session_id: resumedKilled, last_heartbeat_ts: "", is_process_alive: false },
+    ];
+    const r = PidManager.sweepEndedHeartbeats(stale);
+    expect(r.removed).toEqual([]);
+    expect(r.keptNoSessionEnd).toEqual([resumedKilled]);
+    expect(existsSync(join(SESSIONS_DIR, resumedKilled, "heartbeat.txt"))).toBe(true);
+  });
+
+  test("lastSegmentHasSessionEnd：按最后一段判，不按全文", () => {
+    const S = '{"event":"SessionStart"}';
+    const E = '{"event":"SessionEnd"}';
+    expect(PidManager.lastSegmentHasSessionEnd(`${S}\n${E}\n`)).toBe(true);
+    expect(PidManager.lastSegmentHasSessionEnd(`${S}\n${E}\n${S}\n`)).toBe(false);
+    expect(PidManager.lastSegmentHasSessionEnd(`${S}\n${E}\n${S}\n${E}\n`)).toBe(true);
+    expect(PidManager.lastSegmentHasSessionEnd(`${S}\n`)).toBe(false);
+    expect(PidManager.lastSegmentHasSessionEnd("")).toBe(false);
+  });
+
+  test("heartbeatSweepMode：off / dry-run / 缺省 on", () => {
+    expect(PidManager.heartbeatSweepMode({})).toBe("on");
+    expect(PidManager.heartbeatSweepMode({ SID_CODE_HEARTBEAT_SWEEP: "off" })).toBe("off");
+    expect(PidManager.heartbeatSweepMode({ SID_CODE_HEARTBEAT_SWEEP: "0" })).toBe("off");
+    expect(PidManager.heartbeatSweepMode({ SID_CODE_HEARTBEAT_SWEEP: "dry-run" })).toBe("dry-run");
   });
 });

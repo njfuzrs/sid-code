@@ -30,7 +30,7 @@ import { memoryAge, memoryAgeDays } from "./freshness.ts";
 // P1-7：索引截断口径（条数 / 真字节 / 行边界）的单一事实源，与 agent 记忆线共用。
 import { buildTruncatedIndex } from "./index-budget.ts";
 // P1-6：记忆目录枚举口径（递归 + skip 名单）的单一事实源，与提取/dream manifest 共用。
-import { enumerateMemoryFiles, readFrontmatterFields } from "./scan.ts";
+import { enumerateMemoryFiles, readFrontmatterFields, readMemoryFrontmatter } from "./scan.ts";
 // P1-12 指标 ③：防线触发计数（遮蔽 / 写空归档 / 超限归档）。
 import { logMemoryGuard } from "../analytics/events.ts";
 
@@ -424,17 +424,25 @@ export function annotateIndexAges(
 /**
  * S9 路径 A：把调用方传进来的 key 解析成 store 里实际使用的 key。
  *
- * **先精确查，未命中再剥前缀重查**——不无条件剥：`MEMORY_TYPE_PREFIX_RE` 会把合法 key
- * `user-auth` 剥成 `auth`；且存量重名下（`x` 与 `project_x` 并存）无条件剥会让
- * `delete("project_x")` 删到 `x`。都没命中时原样返回（新 key 照旧按调用方给的名字建）。
- * 顺带剥 `.md` 后缀：模型照清单把文件名当 key 时常带上它。
+ * 顺序：精确 → 去 `.md` → **按磁盘上真实存在的文件名反查**。都没命中时原样返回
+ * （新 key 照旧按调用方给的名字建）。
+ *
+ * 为什么不再「剥类型前缀重查」（复审 M2 / 决策 1）：剥前缀判断的是「长得像不像文件名」，
+ * 会撞上合法 key —— 已有 `auth` 时 `set("user-auth")` 被剥成 `auth` 覆盖掉它，
+ * `delete("project-structure")` 删到 `structure`。换成只认 `_` 分隔也一样（`user_auth`）。
+ * 回退要解决的是「模型把文件名当 key 传」，最准的判据就是「它是不是某条记忆的真实文件名」。
+ * 剩余盲区：合法 key 恰好等于另一条记忆的文件名去 `.md`，且它自己还不存在时，会被当成那条。
  */
-export function resolveMemoryKey(key: string, entries: ReadonlyMap<string, unknown>): string {
+export function resolveMemoryKey(
+  key: string,
+  entries: ReadonlyMap<string, unknown>,
+  files: ReadonlyMap<string, string>,
+): string {
   if (entries.has(key)) return key;
   const bare = key.trim().replace(/\.md$/, "");
   if (entries.has(bare)) return bare;
-  const stripped = stripMemoryTypePrefix(bare);
-  if (entries.has(stripped)) return stripped;
+  const filename = `${bare}.md`;
+  for (const [k, fn] of files) if (fn === filename && entries.has(k)) return k;
   return key;
 }
 
@@ -730,7 +738,9 @@ export class MemoryStore {
       try {
         const text = await Bun.file(join(dir, filename)).text();
         fileTexts.set(filename, text);
-        const n = text.match(/^name:\s*(.+)$/m)?.[1]?.trim();
+        // L11：只读 frontmatter 块里的 name —— 全文 `/^name:/m` 会把正文里任一行
+        // `name: xxx` 当成已占用，误跳过本该做的改写（scan.ts 的 readMemoryFrontmatter 注释同款警告）
+        const n = readMemoryFrontmatter(text).name?.trim();
         if (n) takenNames.add(n);
       } catch {
         /* 读不动的文件下面也会跳过 */
@@ -739,8 +749,7 @@ export class MemoryStore {
     for (const [filename, text] of fileTexts) {
       const filePath = join(dir, filename);
       try {
-        const nameM = text.match(/^name:\s*(.+)$/m);
-        const rawName = nameM?.[1]?.trim();
+        const rawName = readMemoryFrontmatter(text).name?.trim();
         if (!rawName) continue;
         // 剥离规则与文件名生成共用 stripMemoryTypePrefix（剥完为空时返回原值，
         // 所以 `name: project` 这种 key 整体是类型词的情况天然不动）
@@ -754,7 +763,12 @@ export class MemoryStore {
           );
           continue;
         }
-        await Bun.write(filePath, text.replace(/^name:\s*.+$/m, `name: ${cleaned}`));
+        // 只改 frontmatter 块内的 name 行：frontmatter 无 name 时 rawName 已为空并跳过，
+        // 所以首个 `^name:` 必在块内；仍限定在块里替换，防正文同形行被改。
+        const fmEnd = text.search(/\n---/);
+        const head = fmEnd > 0 ? text.slice(0, fmEnd) : text;
+        const tail = fmEnd > 0 ? text.slice(fmEnd) : "";
+        await Bun.write(filePath, head.replace(/^name:\s*.+$/m, `name: ${cleaned}`) + tail);
         takenNames.delete(rawName);
         takenNames.add(cleaned);
         renamed = true;
@@ -996,8 +1010,8 @@ export class MemoryStore {
     const dir = scope === "global" ? this.globalDir : this.projectDir;
     if (!dir) return;
 
-    // S9 路径 A：模型常把文件名（`project_x`）当 key 传进来，先精确查、未命中再剥前缀重查
-    key = resolveMemoryKey(key, entries);
+    // S9 路径 A：模型常把文件名（`project_x`）当 key 传进来，先精确查、未命中按真实文件名反查
+    key = resolveMemoryKey(key, entries, files);
 
     const now = Date.now();
     const existing = entries.get(key);
@@ -1125,8 +1139,8 @@ export class MemoryStore {
   async get(key: string): Promise<MemoryEntry | null> {
     await this.load();
     return (
-      this.projectEntries.get(resolveMemoryKey(key, this.projectEntries)) ??
-      this.globalEntries.get(resolveMemoryKey(key, this.globalEntries)) ??
+      this.projectEntries.get(resolveMemoryKey(key, this.projectEntries, this.projectFiles)) ??
+      this.globalEntries.get(resolveMemoryKey(key, this.globalEntries, this.globalFiles)) ??
       null
     );
   }
@@ -1142,7 +1156,7 @@ export class MemoryStore {
       dir: string | null,
     ) => {
       // S9：精确命中优先——`x` 与 `project_x` 并存时 `delete("project_x")` 只删后者
-      const k = resolveMemoryKey(key, entries);
+      const k = resolveMemoryKey(key, entries, files);
       if (!dir || !entries.has(k)) return;
       const fn = files.get(k);
       if (fn) {
@@ -1191,7 +1205,7 @@ export class MemoryStore {
     const tryResolve = (files: Map<string, string>, dir: string | null): string | null => {
       if (!dir) return null;
       const entries = files === this.globalFiles ? this.globalEntries : this.projectEntries;
-      const fn = files.get(resolveMemoryKey(key, entries));
+      const fn = files.get(resolveMemoryKey(key, entries, files));
       return fn ? join(dir, fn) : null;
     };
     // 优先按传入 scope；未指定时项目覆盖全局（与 get 一致）
