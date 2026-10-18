@@ -471,6 +471,20 @@ describe("S11-S17 可观测性", () => {
       expect(readFileSync(join(dir, "events.jsonl"), "utf-8")).toBe(local);
     });
 
+    test("G1：stripLocalOnlyEventFields 剥掉 PreToolUse.input_summary，保留其余字段", () => {
+      const line = JSON.stringify({
+        event: "PreToolUse",
+        data: {
+          tool_name: "read",
+          tool_use_id: "t1",
+          agent_id: "s-sub-1",
+          input_summary: { file_path: "/secret/a" },
+        },
+      });
+      const out = JSON.parse(stripLocalOnlyEventFields(line));
+      expect(out.data).toEqual({ tool_name: "read", tool_use_id: "t1", agent_id: "s-sub-1" });
+    });
+
     test("stripLocalOnlyEventFields 保留损坏行与无关行原样", () => {
       const input = ['{"event":"A","data":{"x":1}}', 'not json "error_head"', ""].join("\n");
       expect(stripLocalOnlyEventFields(input)).toBe(input);
