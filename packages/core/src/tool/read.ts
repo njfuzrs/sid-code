@@ -37,6 +37,7 @@ function notFoundMessage(filePath: string): string {
   return taskId ? formatTaskOutputTombstone(taskId, filePath) : formatPathNotFoundError(filePath);
 }
 import { pickPaths } from "./jit-affected-paths.ts";
+import { currentHookAgentScope } from "../agent/hook-agent-context.ts";
 import {
   detectBinaryContent,
   formatBinaryRejection,
@@ -390,6 +391,36 @@ export function stripReadEfficiencyHint(output: string): string {
   return idx === -1 ? output : output.slice(0, idx);
 }
 
+/** G3：read 引导提示事件名（events.jsonl）。 */
+export const READ_HINT_EVENT_NAME = "ReadHint";
+
+/**
+ * G3：read 引导提示进轨迹的模块级通道。此前只能 grep raw.jsonl 文案统计，
+ * 且子代理侧完全看不到（raw.jsonl 只有主循环）。有了它才能算「提示后下一次读是否放大窗口」
+ * 的遵从率——遵从率低才有理由把提示升级为拦截或干脆删掉（删掉也省 token）。
+ *
+ * 与 file_freshness 同款：ReadTool 主/子代理多处创建，逐个穿线不现实。
+ * App 在 collector 就绪后注入；未注入或写入抛错一律静默。
+ */
+export type ReadHintTraceSink = (data: Record<string, unknown>) => void;
+let readHintSink: ReadHintTraceSink | null = null;
+
+/** 注入/清除 read 引导提示埋点通道（null = 关闭，测试收尾复位用） */
+export function setReadHintTraceSink(s: ReadHintTraceSink | null): void {
+  readHintSink = s;
+}
+
+function emitReadHint(data: Record<string, unknown>): void {
+  if (!readHintSink) return;
+  // 子代理身份走 hook 作用域 ALS（与 PreToolUse.agent_id 同值），主循环不带该字段
+  const agentId = currentHookAgentScope()?.agent.agent_id;
+  try {
+    readHintSink(agentId ? { ...data, agent_id: agentId } : data);
+  } catch {
+    /* 度量不影响读取 */
+  }
+}
+
 /** 发现 4：触发"重复读"引导的最少读取次数（给模型两次定向复查的余地，第 3 次才提示）。 */
 const REPEAT_READ_HINT_THRESHOLD = 3;
 /** 发现 4：每个 file_path 最多保留的近期读窗口数（防无界增长）。 */
@@ -484,10 +515,22 @@ export class ReadTool implements Tool {
 
     const readCount = updated.length;
     const hints: string[] = [];
+    // G3：事件里落窗口本身，遵从率要拿「下一次读的窗口」对比这一次
+    // 路径用专用键 hint_file_path：它在 uploader 的 LOCAL_ONLY 名单里，只留本地
+    // （与 G1 的 input_summary 同一隐私口径）。不用通用的 file_path，免得名单误剥别的事件。
+    const hintEventBase = {
+      hint_file_path: filePath,
+      read_count: readCount,
+      overlap_ratio: Math.round(maxOverlapRatio * 1000) / 1000,
+      total_lines: win.totalLines,
+      start_line: win.startLine,
+      end_line: win.endLine,
+    };
 
     // ① 重复窄读:读够多次 + 本次与历史高度重叠(>60%)
     if (readCount >= REPEAT_READ_HINT_THRESHOLD && maxOverlapRatio > 0.6) {
       const fitsInOneRead = win.totalLines <= DEFAULT_MAX_LINES && fitsInOneReadByTokens();
+      emitReadHint({ kind: "repeat_narrow", ...hintEventBase, suggest_full_read: fitsInOneRead });
       hints.push(
         `本会话已第 ${readCount} 次读取 ${filePath},且本次窗口与此前读过的区域高度重叠。` +
           (fitsInOneRead
@@ -503,6 +546,7 @@ export class ReadTool implements Tool {
       winLen < 200 &&
       fitsInOneReadByTokens()
     ) {
+      emitReadHint({ kind: "narrow_first", ...hintEventBase, suggest_full_read: true });
       hints.push(
         `该文件共 ${win.totalLines} 行,未超单次读取上限 ${DEFAULT_MAX_LINES}。若需通览,可不传 limit 一次整读,省去多次分段。`,
       );

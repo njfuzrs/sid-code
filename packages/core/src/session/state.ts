@@ -223,7 +223,13 @@ export class SessionState {
     provider?: string,
     baseURL?: string,
     discarded = false,
-  ): void {
+    /**
+     * G6：本次 usage 覆盖的真实 API 请求数。主循环每请求调一次，恒为 1；
+     * 子代理 usage-sink 在结束时一次性传入累计 usage，必须同时传真实请求数，
+     * 否则一个跑了 30 轮的子代理在 ⟳ / /stats / SessionEnd 里只算 1 次。
+     */
+    requestCount = 1,
+  ): number {
     const prov = provider ?? SessionState.inferProvider(model, this.availableModels);
     // 初始化模型统计
     if (!this.modelUsage[model]) {
@@ -268,7 +274,7 @@ export class SessionState {
     stats.outputTokens += usage.outputTokens;
     stats.cacheReadInputTokens += usage.cacheReadInputTokens ?? 0;
     stats.cacheCreationInputTokens += usage.cacheCreationInputTokens ?? 0;
-    stats.requests += 1;
+    stats.requests += Math.max(1, Math.floor(requestCount));
 
     // 计算本次成本（带 provider 口径 + 端点精确价）
     const cost = this.calculateCost(model, usage, prov, baseURL);
@@ -280,6 +286,8 @@ export class SessionState {
     // 更新全局统计
     this.totalCostUSD += cost;
     this.totalAPIDuration += durationMs;
+    // G2：返回本次入账金额，供 usage-sink 落 SubagentCost 事件（与状态栏同一个数，不重算）。
+    return cost;
   }
 
   /** 累加工具执行耗时 */
@@ -727,7 +735,8 @@ export class SessionState {
    * 口径 = **实际发出的 HTTP 请求数**，所以它**包含**：
    * - 作废重试（`updateUsage` 的 `stats.requests += 1` 落在 `if (!discarded)` **之外**，
    *   见本文件 updateUsage——prompt 已发到服务端、厂商已计费，就得算一次调用）；
-   * - 子代理调用（app.ts 的 usage sink 同样走 updateUsage）；
+   * - 子代理调用（usage-sink 同样走 updateUsage，按 `SubAgentResult.apiRequests`
+   *   累加真实请求数——G6 之前一个子代理只 +1，实测 52 vs 真实 103）；
    * - maxTurns 强制总结轮（loop.ts 收尾那次）。
    *
    * **不包含** side-call（标题生成 / 记忆召回 / bash 分类等影子调用）——那些只经

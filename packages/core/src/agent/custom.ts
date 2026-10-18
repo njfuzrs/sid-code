@@ -288,6 +288,10 @@ export class CustomAgentTool implements Tool {
       // P0-1：把自定义子代理消耗的 token/费用回写主会话
       if (this.usageSink) {
         if (hasNonZeroUsage(result.usage)) {
+          // G6：用票据认领数回填真实请求数（同 agent/tool.ts collectUsage）。
+          if (usageTicket && result.apiRequests === undefined) {
+            result.apiRequests = usageTicket.claimedCount;
+          }
           try {
             this.usageSink(result);
             sinkCharged = true;

@@ -208,6 +208,17 @@ export interface TraceMetadata {
    */
   cost_scope?: "main" | "main+subagent";
   total_api_calls: number;
+  /**
+   * G2：经 usage-sink 入账的子代理成本累计（= Σ SubagentCost.cost_usd，与状态栏同一个数）。
+   *
+   * 口径铁律：**它和 `total_cost_usd` 是否重叠取决于 `cost_scope`**——
+   * `main` 时不重叠，会话成本 = total_cost_usd + subagent_cost_usd + side_cost_usd；
+   * `main+subagent`（SessionEnd 覆盖后）时 total_cost_usd 已含它，不能再加。
+   * 不改 total_cost_usd 运行中的语义，是为了不让历史曲线断层。
+   */
+  subagent_cost_usd?: number;
+  /** G2/G6：子代理真实 API 请求数累计（= Σ SubagentCost.api_requests） */
+  subagent_api_calls?: number;
 
   // ── 缺口分析补全：派生/采集类指标（会话级聚合，逐轮更新） ──
   /**
@@ -474,6 +485,10 @@ export interface TrajectoryMetaOutput {
    * fork / side-call 一律在 `side_cost_usd`。缺省（老轨迹）= 未知，按 `main` 读最保守。
    */
   cost_scope?: "main" | "main+subagent";
+  /** G2：子代理成本累计，口径见 TraceMetadata.subagent_cost_usd */
+  subagent_cost_usd?: number;
+  /** G2/G6：子代理真实 API 请求数累计 */
+  subagent_api_calls?: number;
 
   // ── 缺口分析补全：派生/采集类指标（会话级，可选——旧 traj 无这些字段） ──
   /** 缺口分析二类：reasoning/thinking token 累计（仅 OpenAI 族 >0） */
@@ -1037,6 +1052,13 @@ export function buildTrajectory(
     total_cumulative_prompt_tokens: metadata.total_cumulative_prompt_tokens,
     total_cost_usd: metadata.total_cost_usd,
     ...(metadata.cost_scope ? { cost_scope: metadata.cost_scope } : {}),
+    // G2：无子代理的会话不落这两个字段（形状不变）
+    ...(metadata.subagent_cost_usd !== undefined || metadata.subagent_api_calls !== undefined
+      ? {
+          subagent_cost_usd: metadata.subagent_cost_usd ?? 0,
+          subagent_api_calls: metadata.subagent_api_calls ?? 0,
+        }
+      : {}),
     // 缺口分析补全：派生/采集类指标（仅在有值时输出，避免污染旧 traj 的解析预期）
     ...(metadata.total_reasoning_tokens
       ? { total_reasoning_tokens: metadata.total_reasoning_tokens }

@@ -345,9 +345,11 @@ export class SubAgentTool implements Tool {
    * 归集子代理 usage 到主会话（仅成功或有实际消耗时）。容错：sink 异常不影响子代理结果。
    * 返回 sink 是否真的入了账 —— 票据据此决定要不要把认领过的 fetch 补交给计费观察者。
    */
-  private collectUsage(result: SubAgentResult): boolean {
+  private collectUsage(result: SubAgentResult, ticket?: UsageSinkTicket): boolean {
     if (!this.usageSink) return false;
     if (!hasNonZeroUsage(result.usage)) return false;
+    // G6：票据认领的就是这条链上的每一次计费 fetch，用它回填真实请求数。
+    if (ticket && result.apiRequests === undefined) result.apiRequests = ticket.claimedCount;
     try {
       this.usageSink(result);
       return true;
@@ -745,7 +747,7 @@ ${typeLines}
       );
 
       // P0-1：把子代理消耗的 token/费用回写主会话
-      usageTicket?.settle(this.collectUsage(result));
+      usageTicket?.settle(this.collectUsage(result, usageTicket));
 
       const summary = [
         `[子代理完成] 类型: ${params.type}, 轮次: ${result.turns}`,
@@ -919,7 +921,7 @@ ${typeLines}
       );
 
       // P0-1：后台子代理同样要把 usage 回写主会话
-      usageTicket?.settle(this.collectUsage(result));
+      usageTicket?.settle(this.collectUsage(result, usageTicket));
 
       // execute() 内部 onTurnEnd 每轮已 updateAgentProgress 写入真实累计进度
       // （tokenCount 来自 totalUsage，见 sub-agent.ts），此处无需再写——

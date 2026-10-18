@@ -275,6 +275,17 @@ export interface SubAgentResult {
   model?: string;
   /** 子代理实际使用的 provider 名（计费口径区分，缺省时由 model 推断） */
   provider?: string;
+  /**
+   * G2：子代理规范 id（与 SubagentStart/Stop、BilledRequest 的 agent_id 同值）。
+   * usage-sink 落 SubagentCost 事件时用它把成本对到具体子代理；缺省只是少一个归因维度。
+   */
+  agentId?: string;
+  /**
+   * G6：本次执行真实发出的 API 请求数（含重试、强制总结轮）。由持有入账票据的调用方
+   * 按 `UsageSinkTicket.claimedCount` 回填——票据认领的正是这条链上的每一次计费 fetch。
+   * 缺省时 usage-sink 按 1 计（旧口径），不猜一个数。
+   */
+  apiRequests?: number;
 }
 
 /** 子代理系统提示词（从 AgentDefinition 注册表获取，兼容内置 + 自定义类型） */
@@ -941,6 +952,9 @@ export class SubAgent {
         })
         .catch((err) => log.error("HOOK", `subagent_stop hook 失败: ${err.message}`));
 
+      // G2：成本落盘要按子代理归因，id 与 SubagentStop 同源。
+      if (r && !r.agentId) r.agentId = agentId;
+
       // P1-2：成员结束即注销。与 hook 放同一 finally，覆盖成功、失败、顶层异常三条路径。
       if (teammateSessionId) {
         try {
@@ -1007,6 +1021,8 @@ export class SubAgent {
           ...subagentStopCcFields(hookScope),
         })
         .catch((err) => log.error("HOOK", `subagent_stop hook 失败: ${err.message}`));
+      // G2：同 execute()，成本按子代理归因。try 抛异常时 result 未赋值，跳过。
+      if (result! && !result.agentId) result.agentId = customAgentId;
     }
     return result;
   }

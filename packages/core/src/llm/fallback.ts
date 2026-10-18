@@ -699,7 +699,24 @@ export class ModelFallback {
         // B4：流内诊断事件（stream_stall / stream_*_timeout / stream_completed）同样带
         // agentId。它们是 per-attempt 的耗时/停顿数据——并行子代理下若不带身份，
         // digest 的 gen 耗时分位数会把 6 路混在一起算，看不出是哪一路在卡。
-        this.emitTelemetry({ ...sig, model: params.model }, perCall.agentId);
+        // G4：stall / completed 带观测轮次，collector 据此补 pair_index（主循环）或
+        // agent_turn（子代理）。此前 17/17 条 stall 无归属，只能按时间窗倒推，并行子代理下不可靠。
+        // 轮次取自请求上下文（子代理 = ALS 里的 10000+turns 号段；主循环 = ambient turnIndex），
+        // 旁路调用带 caller，collector 不给它补 pair（它不对应任何主循环 pair）。
+        let stamped: RetryTelemetryEvent = { ...sig, model: params.model };
+        if (sig.type === "stream_stall" || sig.type === "stream_completed") {
+          try {
+            const ctx = currentSseDumpContext();
+            stamped = {
+              ...stamped,
+              turnIndex: ctx.turnIndex,
+              ...(ctx.callerLabel ? { caller: ctx.callerLabel } : {}),
+            };
+          } catch {
+            /* 归属取不到就不带，不影响事件本身 */
+          }
+        }
+        this.emitTelemetry(stamped, perCall.agentId);
       },
     };
 

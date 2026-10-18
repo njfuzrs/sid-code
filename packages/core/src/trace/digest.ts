@@ -116,6 +116,12 @@ export interface TrajMeta {
   side_cost_usd?: number;
   side_tokens_sent?: number;
   total_cost_usd?: number;
+  /** total_cost_usd 的统计范围；main+subagent 时已含 subagent_cost_usd */
+  cost_scope?: "main" | "main+subagent";
+  /** G2：子代理成本累计（= Σ SubagentCost.cost_usd） */
+  subagent_cost_usd?: number;
+  /** G2/G6：子代理真实 API 请求数累计 */
+  subagent_api_calls?: number;
   exit_status?: string;
   /**
    * exit_status 为 budget_exceeded 时是哪一层停的（取值与写入侧 builder.ts 一致）。
@@ -902,6 +908,11 @@ export interface Digest {
   reasoningTokens?: number;
   /** 旁路调用独立账（fork / 标题 / 摘要）。costUSD 只是主循环，两者相加才是会话真实成本 */
   sideCalls?: { apiCalls: number; costUSD: number; tokensSent: number };
+  /**
+   * G2：子代理成本账。`includedInCost=true` 表示 costUSD 已含它（cost_scope=main+subagent），
+   * 渲染时不能再加一次。
+   */
+  subAgentCost?: { apiCalls: number; costUSD: number; includedInCost: boolean };
   /**
    * 进程存活核验（只在缺 SessionEnd 时做）。alive=true 时 session_end_missing 不报：
    * 会话还没结束，缺 SessionEnd 是正常状态，不是故障。
@@ -2588,6 +2599,14 @@ export function buildDigest(ref: SessionRef, full: boolean, paths: DigestPaths):
             tokensSent: meta.side_tokens_sent ?? 0,
           }
         : undefined,
+    subAgentCost:
+      meta.subagent_cost_usd !== undefined
+        ? {
+            apiCalls: meta.subagent_api_calls ?? 0,
+            costUSD: meta.subagent_cost_usd,
+            includedInCost: meta.cost_scope === "main+subagent",
+          }
+        : undefined,
     liveProcess,
     forkedToolCalls: countForkedToolCalls(events),
     cacheBreakWarnings: countCacheBreakWarnings(ref.dir),
@@ -2670,6 +2689,13 @@ export function renderHuman(d: Digest, opts: RenderOptions = {}): string {
   if (d.reasoningTokens) {
     const share = d.tokensReceived > 0 ? (d.reasoningTokens / d.tokensReceived) * 100 : 0;
     costBits.push(`推理 ${d.reasoningTokens} tok(占输出 ${share.toFixed(0)}%)`);
+  }
+  if (d.subAgentCost) {
+    // G2：cost_scope=main 时上方成本不含子代理，明说出来，否则读者会把主循环成本当会话成本
+    costBits.push(
+      `子代理 ${d.subAgentCost.apiCalls} 次请求 ${fmtUsd(d.subAgentCost.costUSD)}` +
+        (d.subAgentCost.includedInCost ? "(已含在上方成本)" : "(未计入上方成本)"),
+    );
   }
   if (d.sideCalls) {
     costBits.push(
