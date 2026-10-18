@@ -149,6 +149,17 @@ export interface ModelRegistryEntry {
   supportsXhighEffort?: boolean;
 
   /**
+   * 不发 effort 时服务端按哪一档跑（auto 态 Footer 展示用，**不影响线上请求**）。
+   *
+   * 族常量 `defaultEffort` 表达不了「同族不同模型默认不同」：Grok 4.3 默认 low、4.5+ 默认 high，
+   * kimi-k3 / GLM-5.2+ 默认 max（20261018 effort 排查 E8 / E10）。缺省时退到能力缓存、再退到族常量。
+   *
+   * ⚠ 只在 applier 对 auto **确实不发 effort** 时才被展示：adaptive Claude 的 auto 目前显式发 high，
+   * 展示跟实发走（E3，F2 再改线上），所以给 Opus 5.5 / Haiku 5.5 登记的 medium 暂不出现在 Footer。
+   */
+  defaultEffort?: "low" | "medium" | "high" | "xhigh" | "max";
+
+  /**
    * 推理语言漂移倾向：该模型的思考过程（reasoning/thinking）在中文语境下
    * 容易自发漂移到英文，需要更强的语言约束措辞（system-prompt.ts 的「铁律级」
    * 身份指令 + `<internal_en>` 疏导）才能稳定输出中文。
@@ -196,6 +207,8 @@ const REGISTRY: Record<string, ModelRegistryEntry> = {
   //
   // 窗口 1M / 输出 128k：anthropic-api.md:966-969。
   "claude-opus-5-5": {
+    // 官方默认 effort medium（anthropic-api.md，E3）；auto 仍显式发 high，见 defaultEffort 注释
+    defaultEffort: "medium",
     contextWindow: 1_000_000,
     maxOutputTokens: 128_000,
     supportsThinking: true,
@@ -219,6 +232,8 @@ const REGISTRY: Record<string, ModelRegistryEntry> = {
   // >100K 时输入/输出/缓存全部 ×5。本结构表达不了分档，这里存 ≤100K 档 ——
   // 长 prompt 会被**低估 5 倍**，用它跑长会话时成本数字要打折看。
   "claude-haiku-5-5": {
+    // 官方默认 effort medium（anthropic-api.md，E3）；auto 仍显式发 high，见 defaultEffort 注释
+    defaultEffort: "medium",
     contextWindow: 1_000_000,
     maxOutputTokens: 128_000,
     supportsThinking: true,
@@ -941,6 +956,8 @@ const REGISTRY: Record<string, ModelRegistryEntry> = {
   // kimi-k3：窗口 1,048,576；max_completion_tokens 默认 131072（kimi-api.md:87）；始终思考。
   // 缓存写只有 K3 计费（kimi-api.md:389），取 5m 档 $3（kimi-api.md:375）。K3 不分段计价（380 行）。
   "kimi-k3": {
+    // 不发 reasoning_effort 时默认 max（kimi-api.md:87,129，E8）
+    defaultEffort: "max",
     contextWindow: 1_048_576,
     maxOutputTokens: 131_072,
     supportsThinking: true,
@@ -1083,6 +1100,8 @@ const REGISTRY: Record<string, ModelRegistryEntry> = {
   // GLM-5.3 系：1M / 128K（glm-api.md:125-126；max_tokens 上限 131072，glm-api.md:172）；
   // **强制思考**，reasoning_effort 只有 low/high/max（glm-api.md:209,225）。
   "glm-5.3": {
+    // reasoning_effort 默认 max，仅 5.2 及以上（glm-api.md:221，E10）
+    defaultEffort: "max",
     contextWindow: 1_000_000,
     maxOutputTokens: 128_000,
     supportsThinking: true,
@@ -1092,6 +1111,8 @@ const REGISTRY: Record<string, ModelRegistryEntry> = {
     supportsVision: false,
   },
   "glm-5.3-flash": {
+    // reasoning_effort 默认 max，仅 5.2 及以上（glm-api.md:221，E10）
+    defaultEffort: "max",
     contextWindow: 1_000_000,
     maxOutputTokens: 128_000,
     supportsThinking: true,
@@ -1101,6 +1122,8 @@ const REGISTRY: Record<string, ModelRegistryEntry> = {
     supportsVision: true,
   },
   "glm-5.3-flashx": {
+    // reasoning_effort 默认 max，仅 5.2 及以上（glm-api.md:221，E10）
+    defaultEffort: "max",
     contextWindow: 1_000_000,
     maxOutputTokens: 128_000,
     supportsThinking: true,
@@ -1123,6 +1146,8 @@ const REGISTRY: Record<string, ModelRegistryEntry> = {
     supportsVision: true,
   },
   "glm-5.2": {
+    // reasoning_effort 默认 max，仅 5.2 及以上（glm-api.md:221，E10）
+    defaultEffort: "max",
     contextWindow: 1_000_000,
     maxOutputTokens: 128_000,
     supportsThinking: true,
@@ -1230,6 +1255,8 @@ const REGISTRY: Record<string, ModelRegistryEntry> = {
   //
   // grok-4.7 / 4.6：500K，$2.00 / 缓存 $0.50 / $6.00（grok-api.md:81-82）。
   "grok-4.7": {
+    // 4.5+ 默认 high（grok-api.md:28，E8）；4.3 默认 low 走族常量
+    defaultEffort: "high",
     contextWindow: 500_000,
     maxOutputTokens: 128_000,
     supportsThinking: true,
@@ -1240,6 +1267,8 @@ const REGISTRY: Record<string, ModelRegistryEntry> = {
     pricing: { input: 2, output: 6, cacheRead: 0.5, cacheWrite: 0 },
   },
   "grok-4.6": {
+    // 4.5+ 默认 high（grok-api.md:28，E8）；4.3 默认 low 走族常量
+    defaultEffort: "high",
     contextWindow: 500_000,
     maxOutputTokens: 128_000,
     supportsThinking: true,
@@ -1251,6 +1280,8 @@ const REGISTRY: Record<string, ModelRegistryEntry> = {
   },
   // grok-4.5：500K，$2.00 / 缓存 **$0.30** / $6.00；effort low/medium/high（grok-api.md:83）。
   "grok-4.5": {
+    // 4.5+ 默认 high（grok-api.md:28，E8）；4.3 默认 low 走族常量
+    defaultEffort: "high",
     contextWindow: 500_000,
     maxOutputTokens: 128_000,
     supportsThinking: true,

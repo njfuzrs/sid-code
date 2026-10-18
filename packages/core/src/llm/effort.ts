@@ -26,6 +26,7 @@ import { lookupRegistryExact } from "./model-registry.ts";
 import {
   buildDialectCatalog,
   classifyProtocolFamily,
+  ANTHROPIC_EFFORT_BUDGET,
   isThinkingAlwaysOn,
   mapThinkingCapToEffort,
   type Dialect,
@@ -129,7 +130,13 @@ export interface EffortCapability {
    * 恒思考模型上提级照样有意义，跟着改成 false 会把它一起关掉。
    */
   thinkingControl: ThinkingControl;
-  /** auto 态下状态栏展示用的默认档位（对标 cc getDisplayedEffortLevel 的兜底） */
+  /**
+   * auto 态下状态栏展示用的默认档位（对标 cc getDisplayedEffortLevel 的兜底）。
+   *
+   * 语义是「不发 effort 时服务端按哪档跑」：注册表精确命中的 `defaultEffort` > 能力缓存采到的
+   * 默认档（仅未知族）> 族常量（见 {@link finalizeThinkingControl}）。auto 时 applier 若**显式发了**
+   * 某档（adaptive Claude 发 high、manual Claude 发 medium 预算），展示以实发为准，不读本字段。
+   */
   defaultEffort: EffortLevel;
   /**
    * 把统一档位翻译成该模型的线格式，原地 patch 进 SendParams。
@@ -302,6 +309,10 @@ function finalizeThinkingControl(
 ): EffortCapability {
   // 三个出口都经过这里，真名在此一次性挂上，探针才能和线上 applier 吃同一个名字。
   cap = { ...cap, wireModel: model };
+  // 每模型默认档（E8 / E10）：族常量表达不了「同族不同模型默认不同」。只认精确命中，
+  // 模糊借值会让未登记的小版本继承别人的默认档；只影响展示，不影响线上请求。
+  const registryDefault = lookupRegistryExact(model)?.defaultEffort;
+  if (registryDefault) cap = { ...cap, defaultEffort: registryDefault };
   // 用户显式声明恒思考 > 族推导：网关改名模型（`origin-glm-5.3`）常被判 unknown 族，
   // 但服务端照样恒思考，展示必须说「关不掉」而不是「内置」。
   if (compat?.thinkingAlwaysOn === true) {
@@ -421,14 +432,20 @@ function resolveFromCapabilityCache(model: string): EffortCapability {
 
   const values = cap?.effortValues;
   const supportsMax = values ? values.includes("max") : true;
-  // 已知档位表里挑默认档：优先 medium（服务端最常见默认），否则退到 high，再否则第一档。
-  const defaultEffort: EffortLevel = values
-    ? values.includes("medium")
-      ? "medium"
-      : values.includes("high")
-        ? "high"
-        : ((values.find((v: string) => isEffortLevel(v)) as EffortLevel | undefined) ?? "medium")
-    : "medium";
+  // 目录源报了默认档（OpenRouter `reasoning.default_effort`）就用它；否则在档位表里猜：
+  // 优先 medium（服务端最常见默认），否则退到 high，再否则第一档。
+  const reported = cap?.defaultEffort;
+  const defaultEffort: EffortLevel =
+    reported && isEffortLevel(reported)
+      ? reported
+      : values
+        ? values.includes("medium")
+          ? "medium"
+          : values.includes("high")
+            ? "high"
+            : ((values.find((v: string) => isEffortLevel(v)) as EffortLevel | undefined) ??
+              "medium")
+        : "medium";
 
   return {
     supportsEffort: true,
@@ -495,16 +512,40 @@ export function resolveAppliedEffort(
  * runtime 是跨模型共享的用户意图，在 GLM 上钳成 max 之后切回支持 xhigh 的 Claude 就丢了 xhigh；
  * env 覆盖时 runtime 本来就改不动。展示层每次按当前模型现算，E2 / E7 和以后新增的入口一次覆盖。
  *
- * 不含 ultrathink 提级（那是单轮行为，见 loop.ts），manual Claude 的 auto 档展示见 E1（F1 另修）。
+ * 不含 ultrathink 提级（那是单轮行为，见 loop.ts）。auto 态见 {@link previewAutoWireEffort}。
  */
 export function getDisplayedEffort(
   cap: EffortCapability,
   runtimeEffort: EffortSetting,
   envOverride: EffortSetting | null,
 ): EffortLevel {
-  const applied = resolveAppliedEffort(cap, runtimeEffort, envOverride) ?? cap.defaultEffort;
-  if (!cap.supportsEffort) return applied;
+  const applied = resolveAppliedEffort(cap, runtimeEffort, envOverride);
+  if (!cap.supportsEffort) return applied ?? cap.defaultEffort;
+  // auto：applier 显式发了档就显示发的那档（manual Claude 发 medium 预算 → medium，E1）；
+  // 没发才显示服务端默认档（kimi-k3 / GLM 的 max、Grok 4.5+ 的 high，E8 / E10）。
+  if (applied === undefined) return previewAutoWireEffort(cap) ?? cap.defaultEffort;
   return previewWireEffort(cap, applied);
+}
+
+/**
+ * 预演 auto（不显式设档）时 applier 实际下发的档；没下发返回 undefined。
+ *
+ * 按思考开启预演：思考关掉后档位不生效由 Footer 的 inert 标记表达，这里只回答「生效时是哪档」。
+ * manual Claude 的载体是 `budget_tokens`，按 {@link ANTHROPIC_EFFORT_BUDGET} 反查
+ * 「预算不超过它的最高档」——思考上限把预算压低时也能落到对应的低档，而不是查不到。
+ */
+function previewAutoWireEffort(cap: EffortCapability): EffortLevel | undefined {
+  const probe = probeParams(cap);
+  cap.applyToSendParams(probe, undefined, true);
+  const wire = probe.reasoningEffort ?? probe.outputConfig?.effort;
+  if (wire !== undefined) return isEffortLevel(wire) ? wire : undefined;
+  const budget = probe.thinking?.enabled ? probe.thinking.budgetTokens : 0;
+  if (budget <= 0) return undefined;
+  let hit: EffortLevel | undefined;
+  for (const lv of EFFORT_LEVELS) {
+    if (ANTHROPIC_EFFORT_BUDGET[lv] <= budget) hit = lv;
+  }
+  return hit ?? "low";
 }
 
 /**
