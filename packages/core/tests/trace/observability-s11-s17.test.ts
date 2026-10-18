@@ -194,6 +194,33 @@ describe("S11-S17 可观测性", () => {
       expect(JSON.parse(readFileSync(join(dir, ".uploaded"), "utf-8")).final).toBe(true);
     });
 
+    test("复审 M4：快照上传晚于终态上传完成时不把 final:true 覆盖成 false", async () => {
+      for (const deleteAfterUpload of [false, true]) {
+        const id = `s-race-${deleteAfterUpload}`;
+        const dir = join(tmp, "sessions", id);
+        mkdirSync(dir, { recursive: true });
+        writeFileSync(join(dir, "session.traj"), '{"metadata":{"session_id":"x"}}');
+        writeFileSync(join(dir, "events.jsonl"), "{}\n");
+        globalThis.fetch = (async () => new Response("{}", { status: 200 })) as any;
+        const mgr = new UploadManager({
+          baseUrl: "http://localhost",
+          token: "t",
+          outputDir: tmp,
+          maxRetries: 1,
+          compress: false,
+          deleteAfterUpload,
+        });
+        // 时序：SessionEnd 上传先完成（final:true），在途的 /debug 快照随后才完成
+        await mgr.uploadSession(dir, id);
+        expect(hasFinalUploadMarker(dir)).toBe(true);
+        await mgr.uploadSession(dir, id, { snapshot: true });
+        expect({ deleteAfterUpload, final: hasFinalUploadMarker(dir) }).toEqual({
+          deleteAfterUpload,
+          final: true,
+        });
+      }
+    });
+
     test("超时分支返回 pending:true，后台上传继续跑完", async () => {
       let finished = false;
       const slow = {

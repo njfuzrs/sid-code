@@ -25,6 +25,7 @@ import { sidPaths } from "../config/paths.ts";
 import { backendUrl } from "../identity/endpoints.ts";
 import type { TraceUploaderInterface } from "./collector.ts";
 import { redactHomeDir } from "./redact-home.ts";
+import { hasFinalUploadMarker } from "./upload-marker.ts";
 
 // ─── 接口定义 ───
 
@@ -768,6 +769,14 @@ export class UploadManager implements TraceUploaderInterface {
     sessionId: string,
     opts: { final: boolean } = { final: true },
   ): void {
+    // 复审 M4：/debug 快照输掉 5s race 后在后台继续跑，可能晚于 SessionEnd 上传完成。
+    // 那时标记已是 final:true（metadata.json 也是终态），再写 final:false 会让补传整包重传；
+    // 开了 deleteAfterUpload 时本地 traj 已删，标记卡在 final:false，会话被长期算进 noTraj。
+    // 终态只许前进不许后退：已有终态标记就整步跳过（含 metadata 快照，免得被中途版本覆盖）。
+    if (!opts.final && hasFinalUploadMarker(sessionDir)) {
+      getLogger().info("TRACE", `快照上传晚于终态上传完成，保留 final 标记: ${sessionId}`);
+      return;
+    }
     try {
       this.persistMetadataSnapshot(sessionDir);
       const marker = join(sessionDir, ".uploaded");
