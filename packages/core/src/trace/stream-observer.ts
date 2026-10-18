@@ -806,11 +806,50 @@ export function emitBilledRequest(data: {
   thinking_in_response?: boolean;
   /** PR-5：调用方原始思考意图 */
   thinking_intent?: boolean;
+  /** R6：思考设置三态（on / off / auto） */
+  thinking_setting?: string;
+  /** R1：目标模型思考控制形态（toggle / locked-on / none） */
+  thinking_control?: string;
+  /** R10：展示态「在思考」 */
+  thinking_shown?: boolean;
+  /** R10：按线上实发推出的「服务端在思考」 */
+  thinking_wire_thinks?: boolean;
 }): void {
   try {
     if (_eventWriter && _sessionId) {
       _eventWriter({
         event: "BilledRequest",
+        session_id: _sessionId,
+        timestamp: new Date().toISOString(),
+        data: data as unknown as Record<string, unknown>,
+      });
+    }
+  } catch {
+    /* 可观测性不影响正常流程 */
+  }
+}
+
+// ─── StrictToolDegraded 事件（遗留清单 R11） ───
+
+/**
+ * strict 工具因上游容量 400 被降级重发（D11）。修前只打一行 `log.warn`，「零 strict 400」
+ * 无法从轨迹验证，一次偶发语法体积错误把端点上限锁死也没有任何信号。
+ * `learned` 区分「只降本次」与「写进端点上限」，digest 据此汇总。
+ */
+export function emitStrictToolDegraded(data: {
+  index: number;
+  model: string;
+  endpoint_key: string;
+  kind: "count" | "grammar";
+  from: number;
+  to: number;
+  learned: boolean;
+  attempt: number;
+}): void {
+  try {
+    if (_eventWriter && _sessionId) {
+      _eventWriter({
+        event: "StrictToolDegraded",
         session_id: _sessionId,
         timestamp: new Date().toISOString(),
         data: data as unknown as Record<string, unknown>,

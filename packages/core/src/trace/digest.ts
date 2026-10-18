@@ -382,30 +382,50 @@ export interface JitDigestStats {
  *   - `recoveryByFamily[f].rate` = 救回数 ÷ 进入该族的调用数（救回 + 该族放弃）。
  */
 /**
- * PR-5（20261016 思考开关排查 §4.7 / §8.8）：思考「关闭泄漏」口径。
+ * PR-5（20261016 思考开关排查 §4.7 / §8.8）+ 遗留清单 R1 / R5 / R6 / R10：思考「关闭泄漏」口径。
  *
  * 取数源只有 `BilledRequest`（每次 fetch 必经、主循环与 side-call 都覆盖）。**不用 raw.jsonl**：
  * 那里 side-call 恒 0 条（实测 12460 行），拿它算 side-call 思考率永远是 n=0 的假绿。
  *
- * 分母一律写死为「调用方意图 = 关思考」（`thinking_intent === false`）的 fetch：
- * - 主循环泄漏率：无 `agent_id` 且无 `caller` 的那部分；
+ * 分母写死（铁律 3）：`thinking_setting === "off"` **且** `thinking_control === "toggle"` 的 fetch。
+ * - 主循环泄漏率：其中无 `agent_id` 且无 `caller` 的部分；
  * - 非主循环思考率：其余（side-call / fork / 子代理）。
- *
- * ⚠ 主循环判据**不能用 `accounted`**：S13 起经 usage-sink 入账的子代理链也会被改写成
- * `accounted: true`（`accounted_by: "usage-sink"`），`accounted` 表达的是「谁记账」而不是「谁发的」。
- * 用它分桶会把子代理请求算进主循环泄漏率。身份字段是 provider 出口从 ALS 取的，两族都齐。
  * 分子 = 其中 `thinking_in_response === true` 的条数。
  *
- * `offButSentOn` 单列：意图关、线上却发了 enabled/adaptive——只会发生在恒思考模型上，
- * 是「关不掉」的已知代价，不算泄漏（混进分子会让 Opus 5.5 会话把泄漏率顶到 100%）。
+ * 两条修前口径错，别改回去：
+ * - R1：不能只靠 `thinking_wire` 是 enabled/adaptive 来识别「关不掉」。OpenAI 族恒思考（GLM-5.3、
+ *   compat `thinking_always_on`）的 off 被降级成不下发，线上是 `omitted`，会掉进分母被记成泄漏；
+ *   无开关族（gpt-5.x / kimi）同理。按 `thinking_control` 分桶：`locked-on` →「恒思考关不掉」，
+ *   `none` →「无开关族」，都不进分母。
+ * - R6：不能用 `thinking_intent === false` 当分母。它是 auto 解析后的布尔，auto 在默认关的模型上
+ *   会落成 false；auto 不是用户说「关」，不进分母（单列 `autoResolvedOff` 只作参考）。
  *
- * 老轨迹（埋点上线前）没有 `thinking_wire` 字段 → 整体 undefined，不报 0%。
+ * ⚠ 主循环判据**不能用 `accounted`**：S13 起经 usage-sink 入账的子代理链也会被改写成
+ * `accounted: true`，`accounted` 表达的是「谁记账」而不是「谁发的」。
+ *
+ * 没有 `thinking_setting` / `thinking_control` 的有埋点记录（R1 修前的老轨迹）记 `legacy`，
+ * 一律不进任何分母——口径不可算就不报数，不拿老口径凑一个看起来像数据的比例。
+ * 没有 `thinking_wire` 的 BilledRequest 记 `uninstrumented`（R5：以前 Responses API 两条路径整段
+ * 静默缺席），>0 时输出整节带 ⚠。
  */
 export interface ThinkingLeakStats {
   main: { offRequests: number; leaked: number; rate?: number };
   nonMain: { offRequests: number; withThinking: number; rate?: number };
-  /** 意图关但线上发了 enabled/adaptive（恒思考模型），不计入上面两项的分母 */
-  offButSentOn: number;
+  /** 设置 off、目标模型恒思考（control=locked-on）：关不掉的已知代价，不算泄漏 */
+  lockedOn: number;
+  /** 设置 off、目标模型无独立开关（control=none）：同上 */
+  noToggle: number;
+  /** auto 在默认关的模型上解析成「关」的请求数（参考，不进分母） */
+  autoResolvedOff: number;
+  /** 有 thinking_wire 但缺新口径字段的老记录（不进任何分母） */
+  legacy: number;
+  /** 没有 thinking_wire 埋点的 BilledRequest 条数（R5） */
+  uninstrumented: number;
+  /**
+   * R10「展示 ≠ 实发」：`thinking_shown` 与 `thinking_wire_thinks` 都给出的调用里两者不一致的条数。
+   * `unknown` = 线上不发且服务端默认未知（OpenAI 族 omitted），不猜、不进分母。
+   */
+  shownVsWire: { compared: number; mismatched: number; unknown: number; rate?: number };
   /** 按 model（渠道别名）分组——跨路由汇总会掩盖「只有某个模型关不掉」 */
   byModel: Record<string, { offRequests: number; withThinking: number }>;
 }
@@ -416,7 +436,12 @@ export function aggregateThinkingLeakStats(
   const stats: ThinkingLeakStats = {
     main: { offRequests: 0, leaked: 0 },
     nonMain: { offRequests: 0, withThinking: 0 },
-    offButSentOn: 0,
+    lockedOn: 0,
+    noToggle: 0,
+    autoResolvedOff: 0,
+    legacy: 0,
+    uninstrumented: 0,
+    shownVsWire: { compared: 0, mismatched: 0, unknown: 0 },
     byModel: {},
   };
   let instrumented = 0;
@@ -424,11 +449,39 @@ export function aggregateThinkingLeakStats(
     if (e.event !== "BilledRequest") continue;
     const d = e.data ?? {};
     const wire = d.thinking_wire;
-    if (typeof wire !== "string") continue;
+    if (typeof wire !== "string") {
+      stats.uninstrumented++;
+      continue;
+    }
     instrumented++;
-    if (d.thinking_intent !== false) continue;
-    if (wire === "enabled" || wire === "adaptive") {
-      stats.offButSentOn++;
+    const setting = d.thinking_setting;
+    const control = d.thinking_control;
+    if (typeof setting !== "string" || typeof control !== "string") {
+      stats.legacy++;
+      continue;
+    }
+
+    // R10：展示 vs 实发。none 族没有开关，展示只是「按模型」，不比
+    if (control !== "none" && typeof d.thinking_shown === "boolean") {
+      if (typeof d.thinking_wire_thinks === "boolean") {
+        stats.shownVsWire.compared++;
+        if (d.thinking_shown !== d.thinking_wire_thinks) stats.shownVsWire.mismatched++;
+      } else {
+        stats.shownVsWire.unknown++;
+      }
+    }
+
+    if (setting === "auto") {
+      if (d.thinking_intent === false) stats.autoResolvedOff++;
+      continue;
+    }
+    if (setting !== "off") continue;
+    if (control === "locked-on") {
+      stats.lockedOn++;
+      continue;
+    }
+    if (control !== "toggle") {
+      stats.noToggle++;
       continue;
     }
     const thought = d.thinking_in_response === true;
@@ -450,7 +503,46 @@ export function aggregateThinkingLeakStats(
   if (stats.nonMain.offRequests > 0) {
     stats.nonMain.rate = stats.nonMain.withThinking / stats.nonMain.offRequests;
   }
+  if (stats.shownVsWire.compared > 0) {
+    stats.shownVsWire.rate = stats.shownVsWire.mismatched / stats.shownVsWire.compared;
+  }
   return stats;
+}
+
+/**
+ * R11：strict 工具降级（D11）汇总。取数源 `StrictToolDegraded` 事件（anthropic.ts 每次降级重发一条）。
+ *
+ * - `degrades`：降级重发次数（分母不是请求数：这里只回答「发生过没有、多少次」，「零 strict 400」
+ *   的目标恒为 0，有一次就该看）；
+ * - `learnedLimits`：本会话最终写进端点上限的值（端点 → 最小 to）。只有 `learned=true` 的才算，
+ *   语法体积偶发错误只降本次，不进这里（R3）。
+ */
+export interface StrictDegradeStats {
+  degrades: number;
+  byKind: { count: number; grammar: number };
+  learnedLimits: Record<string, number>;
+}
+
+export function aggregateStrictDegradeStats(
+  events: Array<{ event?: string; data?: Record<string, unknown> }>,
+): StrictDegradeStats | undefined {
+  const stats: StrictDegradeStats = {
+    degrades: 0,
+    byKind: { count: 0, grammar: 0 },
+    learnedLimits: {},
+  };
+  for (const e of events) {
+    if (e.event !== "StrictToolDegraded") continue;
+    const d = e.data ?? {};
+    stats.degrades++;
+    if (d.kind === "count") stats.byKind.count++;
+    else if (d.kind === "grammar") stats.byKind.grammar++;
+    if (d.learned === true && typeof d.endpoint_key === "string" && typeof d.to === "number") {
+      const prev = stats.learnedLimits[d.endpoint_key];
+      if (prev === undefined || d.to < prev) stats.learnedLimits[d.endpoint_key] = d.to;
+    }
+  }
+  return stats.degrades > 0 ? stats : undefined;
 }
 
 export interface RecoveryDigestStats {
@@ -846,6 +938,8 @@ export interface Digest {
   recovery?: RecoveryDigestStats;
   /** PR-5：思考关闭泄漏率。无 thinking_wire 埋点（老轨迹）时 undefined。 */
   thinkingLeak?: ThinkingLeakStats;
+  /** R11：strict 工具降级汇总。无 StrictToolDegraded 事件时 undefined。 */
+  strictDegrade?: StrictDegradeStats;
   /**
    * P1-8：过程病态度量（6 项）。始终产出（不像上面几项那样依赖专用事件）——
    * 六项全部从 traj + 通用事件派生，"全部健康"本身就是有意义的结论，
@@ -2424,6 +2518,7 @@ export function buildDigest(ref: SessionRef, full: boolean, paths: DigestPaths):
 
   // ── PR-5：思考关闭泄漏率（主循环 / 非主循环分开，分母 = 意图关的 fetch）──
   const thinkingLeak = aggregateThinkingLeakStats(events);
+  const strictDegrade = aggregateStrictDegradeStats(events);
 
   return {
     sessionId: ref.id,
@@ -2470,6 +2565,7 @@ export function buildDigest(ref: SessionRef, full: boolean, paths: DigestPaths):
     todo: todo ?? undefined,
     recovery: recovery ?? undefined,
     thinkingLeak,
+    strictDegrade,
     pathology,
     // P0-2：始终产出（不像 jit/todo 那样依赖专用事件）—— 样本为 0 时 n=0 是有意义的
     // 结论（"这个会话没有 TTFT 样本"），整节消失则无法区分"没样本"与"该版本没接线"
@@ -2857,14 +2953,33 @@ export function renderHuman(d: Digest, opts: RenderOptions = {}): string {
     }
   }
 
-  // PR-5：思考关闭泄漏。只在有「意图关」的请求时出现；泄漏 > 0 标红（off 没关住）。
+  // R11：strict 降级。目标恒为 0，出现即标黄。
+  if (d.strictDegrade) {
+    const sd = d.strictDegrade;
+    const learned = Object.entries(sd.learnedLimits);
+    L.push("");
+    L.push(
+      c("bold", "strict 降级:") +
+        " " +
+        c("yellow", `${sd.degrades} 次`) +
+        c("gray", `（数量 ${sd.byKind.count} / 语法体积 ${sd.byKind.grammar}）`) +
+        (learned.length > 0
+          ? c("gray", "  学到的上限: ") + learned.map(([k, v]) => `${k}=${v}`).join(", ")
+          : ""),
+    );
+  }
+
+  // PR-5 / R1 / R5 / R10：思考关闭泄漏。只在有「设置关」或未埋点 / 老口径记录时出现；泄漏 > 0 标红。
   if (d.thinkingLeak) {
     const t = d.thinkingLeak;
     const pct = (r?: number) => (r === undefined ? "n/a" : `${(r * 100).toFixed(0)}%`);
-    if (t.main.offRequests + t.nonMain.offRequests + t.offButSentOn > 0) {
+    const offTotal = t.main.offRequests + t.nonMain.offRequests + t.lockedOn + t.noToggle;
+    if (offTotal + t.legacy + t.uninstrumented + t.shownVsWire.mismatched > 0) {
       L.push("");
+      const warn = t.uninstrumented > 0 || t.legacy > 0 ? c("yellow", "⚠ ") : "";
       L.push(
-        c("bold", "思考关闭:") +
+        warn +
+          c("bold", "思考关闭:") +
           " " +
           c(
             t.main.leaked > 0 ? "red" : "green",
@@ -2874,8 +2989,22 @@ export function renderHuman(d: Digest, opts: RenderOptions = {}): string {
             "gray",
             `  非主循环思考 ${t.nonMain.withThinking}/${t.nonMain.offRequests} (${pct(t.nonMain.rate)})`,
           ) +
-          (t.offButSentOn > 0 ? c("yellow", `  恒思考模型关不掉 ${t.offButSentOn}`) : ""),
+          (t.lockedOn > 0 ? c("yellow", `  恒思考关不掉 ${t.lockedOn}`) : "") +
+          (t.noToggle > 0 ? c("gray", `  无开关族 ${t.noToggle}`) : ""),
       );
+      const notes: string[] = [];
+      if (t.autoResolvedOff > 0) notes.push(`auto 解析为关 ${t.autoResolvedOff}（不计入分母）`);
+      if (t.shownVsWire.compared > 0 || t.shownVsWire.unknown > 0) {
+        notes.push(
+          `展示≠实发 ${t.shownVsWire.mismatched}/${t.shownVsWire.compared} (${pct(t.shownVsWire.rate)})` +
+            (t.shownVsWire.unknown > 0 ? `，不可判 ${t.shownVsWire.unknown}` : ""),
+        );
+      }
+      if (t.legacy > 0) notes.push(`老口径记录 ${t.legacy} 条口径不可算（未计入）`);
+      if (t.uninstrumented > 0) notes.push(`未埋点 ${t.uninstrumented} 条（未计入）`);
+      if (notes.length > 0) {
+        L.push(c(t.shownVsWire.mismatched > 0 ? "yellow" : "gray", "  " + notes.join("  ")));
+      }
       const models = Object.entries(t.byModel).filter(([, v]) => v.withThinking > 0);
       if (models.length > 0) {
         L.push(

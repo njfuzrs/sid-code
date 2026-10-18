@@ -83,6 +83,7 @@ import {
   resolveEffortCapability,
   resolveAppliedEffort,
   resolveThinking,
+  resolveThinkingState,
   getEffortEnvOverride,
   getThinkingEnvOverride,
 } from "../llm/effort.ts";
@@ -2194,6 +2195,12 @@ export async function* queryLoop(loopConfig: QueryLoopConfig): AsyncGenerator<Qu
           thinking_intent:
             envThinking !== null ? (envThinking ? "on" : "off") : (runtimeThinking ?? "auto"),
           thinking_control: cap.thinkingControl,
+        };
+        // R1 / R6 / R10：同一份三态 + 控制形态 + 展示态随 BilledRequest 落盘，与 BeforeModel 同口径。
+        sendParams.thinkingObservation = {
+          setting: thinkingObs.thinking_intent,
+          control: cap.thinkingControl,
+          shown: resolveThinkingState(cap, runtimeThinking, envThinking).effective,
         };
         cap.applyToSendParams(sendParams, appliedEffort, appliedThinking);
 

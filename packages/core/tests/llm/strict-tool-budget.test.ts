@@ -18,7 +18,15 @@ import {
   nextStrictToolLimit,
   parseStrictCapacityError,
   resetStrictToolLimitsForTest,
+  degradeStrictToolsOnCapacityError,
+  noteStrictRequestSucceeded,
+  setStrictBudgetClockForTest,
+  GRAMMAR_LEARN_STREAK,
+  GRAMMAR_LEARN_TTL_MS,
+  MAX_STRICT_CAPACITY_RETRIES,
 } from "@sid-code/core/llm/strict-tool-budget.ts";
+import { initStreamObserver, resetStreamObserver } from "@sid-code/core/trace/stream-observer.ts";
+import { aggregateStrictDegradeStats } from "@sid-code/core/trace/digest.ts";
 
 const COUNT_MSG = "Too many strict tools (24). The maximum number of strict tools supported is 20.";
 const GRAMMAR_MSG =
@@ -54,8 +62,15 @@ describe("parseStrictCapacityError", () => {
   test("语法体积错误", () => {
     expect(parseStrictCapacityError(apiError(GRAMMAR_MSG))).toEqual({ kind: "grammar" });
   });
-  test("只有 message 没有解析 body 也认", () => {
-    expect(parseStrictCapacityError(new Error(COUNT_MSG))?.kind).toBe("count");
+  test("只有 message 没有解析 body 也认（仍须 400）", () => {
+    const e: any = new Error(COUNT_MSG);
+    e.status = 400;
+    expect(parseStrictCapacityError(e)?.kind).toBe("count");
+  });
+  test("R13：非 400 / 无状态码时同文案不算容量错误（网关错误页转述上游文案）", () => {
+    expect(parseStrictCapacityError(apiError(COUNT_MSG, 502))).toBeNull();
+    expect(parseStrictCapacityError(apiError(GRAMMAR_MSG, 429))).toBeNull();
+    expect(parseStrictCapacityError(new Error(COUNT_MSG))).toBeNull();
   });
   test("普通 400 / 网络错误不算容量错误（不得被降 strict 重发掩盖）", () => {
     expect(parseStrictCapacityError(apiError("messages: field required"))).toBeNull();
@@ -90,6 +105,46 @@ describe("learnStrictToolLimit", () => {
     learnStrictToolLimit("m@a", 15);
     expect(getStrictToolLimit("m@a")).toBe(10);
     expect(getStrictToolLimit("m@b")).toBe(DEFAULT_STRICT_TOOL_LIMIT);
+  });
+});
+
+describe("R3：语法体积错误的学习策略", () => {
+  const key = "m@g";
+  const grammar = () => apiError(GRAMMAR_MSG);
+
+  test("偶发一次不锁死上限：只降本次，端点上限不变", () => {
+    const r = degradeStrictToolsOnCapacityError(grammar(), makeTools(20), key);
+    expect(r?.to).toBe(10);
+    expect(r?.learned).toBe(false);
+    expect(getStrictToolLimit(key)).toBe(DEFAULT_STRICT_TOOL_LIMIT);
+  });
+
+  test(`连续 ${GRAMMAR_LEARN_STREAK} 次才学；中间成功一次清零连击`, () => {
+    degradeStrictToolsOnCapacityError(grammar(), makeTools(20), key);
+    noteStrictRequestSucceeded(key);
+    expect(degradeStrictToolsOnCapacityError(grammar(), makeTools(20), key)?.learned).toBe(false);
+    const r = degradeStrictToolsOnCapacityError(grammar(), makeTools(20), key);
+    expect(r?.learned).toBe(true);
+    expect(getStrictToolLimit(key)).toBe(10);
+  });
+
+  test("学到的体积上限按 TTL 过期，回到默认上限重新试探", () => {
+    let t = 1_000;
+    setStrictBudgetClockForTest(() => t);
+    degradeStrictToolsOnCapacityError(grammar(), makeTools(20), key);
+    degradeStrictToolsOnCapacityError(grammar(), makeTools(20), key);
+    expect(getStrictToolLimit(key)).toBe(10);
+    t += GRAMMAR_LEARN_TTL_MS;
+    expect(getStrictToolLimit(key)).toBe(DEFAULT_STRICT_TOOL_LIMIT);
+  });
+
+  test("数量错误仍是一次就学、不过期", () => {
+    let t = 1_000;
+    setStrictBudgetClockForTest(() => t);
+    const r = degradeStrictToolsOnCapacityError(apiError(COUNT_MSG), makeTools(24), key);
+    expect(r?.learned).toBe(true);
+    t += GRAMMAR_LEARN_TTL_MS * 10;
+    expect(getStrictToolLimit(key)).toBe(20);
   });
 });
 
@@ -249,6 +304,82 @@ describe("AnthropicProvider 接线（非流式）", () => {
     const r = await provider.sendMessageNonStreaming(params(makeTools(24)));
     expect(r.stopReason).toBe("end_turn");
     expect(sent).toEqual([20, 15]);
+  });
+
+  test("T9：非流式语法体积 400 → 逐级减半成功，且单次体积错误不写进端点上限", async () => {
+    const { provider, sent } = makeProvider({
+      grammarAbove: 12,
+      baseURL: "https://gw-f.example.com",
+    });
+    const r = await provider.sendMessageNonStreaming(params(makeTools(24)));
+    expect(r.stopReason).toBe("end_turn");
+    expect(sent).toEqual([20, 10]);
+    // 下一个请求仍按默认 20 首发（R3：一次偶发不锁死）
+    sent.length = 0;
+    await provider.sendMessageNonStreaming(params(makeTools(24)));
+    expect(sent[0]).toBe(20);
+    // 「连续」由请求成功清零：两次请求各撞一次体积错误、中间都成功了，不算连击，第三次仍按 20 首发
+    sent.length = 0;
+    await provider.sendMessageNonStreaming(params(makeTools(24)));
+    expect(sent[0]).toBe(20);
+  });
+});
+
+describe("T9：重试边界", () => {
+  test("重试次数用完就抛出，不死循环", async () => {
+    // 只要带 strict 就回体积 400：20 → 10 → 5 → 2 后重试用完，第 4 次的错误原样抛出
+    const { provider, sent } = makeProvider({
+      grammarAbove: 0,
+      baseURL: "https://gw-g.example.com",
+    });
+    await expect(provider.sendMessageNonStreaming(params(makeTools(24)))).rejects.toThrow(
+      /grammar/,
+    );
+    expect(sent).toHaveLength(MAX_STRICT_CAPACITY_RETRIES + 1);
+  });
+
+  test("已 abort 后不再降级重发", async () => {
+    const controller = new AbortController();
+    const { provider, sent } = makeProvider({ limit: 12, baseURL: "https://gw-h.example.com" });
+    const orig = (provider as any).client.messages.create;
+    (provider as any).client.messages.create = (b: any, o: any) => {
+      controller.abort();
+      return orig(b, o);
+    };
+    await expect(
+      provider.sendMessageNonStreaming(params(makeTools(24)), controller.signal),
+    ).rejects.toThrow();
+    expect(sent).toEqual([20]);
+  });
+});
+
+describe("R11：降级落 StrictToolDegraded 事件，digest 可汇总", () => {
+  test("流式数量 400：事件带 kind/from/to/learned/attempt；digest 记下学到的上限", async () => {
+    const events: Array<{ event?: string; data?: Record<string, unknown> }> = [];
+    initStreamObserver("s-strict", "/tmp/s-strict", (e) => events.push(e as any));
+    try {
+      const { provider } = makeProvider({ limit: 12, baseURL: "https://gw-i.example.com" });
+      await drain(provider.sendMessageStream(params(makeTools(24))));
+    } finally {
+      resetStreamObserver();
+    }
+    const ev = events.filter((e) => e.event === "StrictToolDegraded");
+    expect(ev).toHaveLength(1);
+    expect(ev[0]!.data).toMatchObject({
+      model: "claude-sonnet-5",
+      kind: "count",
+      from: 20,
+      to: 12,
+      learned: true,
+      attempt: 0,
+    });
+    const stats = aggregateStrictDegradeStats(events)!;
+    expect(stats.degrades).toBe(1);
+    expect(Object.values(stats.learnedLimits)).toEqual([12]);
+  });
+
+  test("无降级事件 → undefined（不报 0 次）", () => {
+    expect(aggregateStrictDegradeStats([{ event: "BilledRequest", data: {} }])).toBeUndefined();
   });
 });
 
