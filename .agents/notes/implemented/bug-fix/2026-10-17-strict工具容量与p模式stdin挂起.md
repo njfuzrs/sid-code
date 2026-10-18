@@ -33,3 +33,5 @@ Date: 2026-10-17
 - `piped-stdin.test.ts` 新增「收尾后流处于暂停态」。**变异**：删掉 `pause()` → 只有这一条变红。
 - `packages/core/tests/llm/strict-tool-budget.test.ts` 20 例：纯函数 + provider 流式 / 非流式接线 + 真实 `Registry.definitions()` 透传 `strictPriority`。**变异 1**：发前收口改为不限 → 5 例接线测试变红。**变异 2**：容量错误不降级 → 3 例重发测试变红。
 - 未验证：真网关端到端（`sc-dev` 对 `claude-sonnet-5` 跑一轮带全部内置工具的请求）。依据是 2026-10-17 的网关矩阵（24 strict 6/6 400、20 strict 5/6 200），合入后需补跑一次确认。
+- **补记（2026-10-18 复审 T1）**：上面三条子进程 e2e 删掉 `pause()` 都不会红（text / json 靠 `process.exit`，stream-json 靠 `Readable.from([])`），「收尾后流处于暂停态」是单测，没测「进程真的能退」。新增 `packages/cli/tests/utils/piped-stdin-release.test.ts`：子进程只调 `readPipedStdin`、不调 `process.exit`，父进程持有 stdin 写端不关。**变异**：删 `pause()` → 该条在 4s 处红（`Expected: true / Received: false`），恢复后 1 pass。
+
