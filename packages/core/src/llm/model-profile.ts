@@ -208,7 +208,9 @@ export function buildModelProfile(
   const baseURL = entry.baseURL;
   const wireModel = resolveWireModel(name, availableModels);
 
-  const contextWindow = estimator.resolveContextLimit(name, availableModels);
+  // D4：带上本条目的 baseURL，`/model` 才显示得出学到的值与来源（resolveContextLimit 内部
+  // 先按同名条目取 baseURL，这里是条目本身没进 availableModels 时的兜底）
+  const contextWindow = estimator.resolveContextLimit(name, availableModels, baseURL);
   const maxOutputTokens = estimator.resolveMaxOutputTokens(name, availableModels);
 
   // 价格：先拿原样存储值（可能是人民币 / 高峰价），再一次性折平成可比 USD。

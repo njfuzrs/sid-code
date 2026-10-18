@@ -953,6 +953,7 @@ export async function* queryLoop(loopConfig: QueryLoopConfig): AsyncGenerator<Qu
     return resolveToolSearchEnabled(config.toolSearch, {
       model: config.model,
       availableModels: config.availableModels,
+      baseURL: config.baseURL,
       deferredDefinitions,
     });
   })();

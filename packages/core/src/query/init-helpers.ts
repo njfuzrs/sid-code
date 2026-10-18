@@ -606,6 +606,7 @@ export async function buildInitialSystemPrompt(
     preferredLanguage: config.language,
     model: config.model,
     availableModels: config.availableModels,
+    baseURL: config.baseURL,
     // 缺口 E：把 SkillTool 摘要收集进 system prompt（接通此前死代码 generateSkillListingAttachment）
     skillEntries: collectSkillListingEntries(tools),
     // 缺口 D：deny 规则约束摘要（前置告知模型哪些操作必被拒绝）

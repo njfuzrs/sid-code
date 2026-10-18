@@ -907,6 +907,7 @@ export class MemoryCommand implements Command {
           preferredLanguage: ctx.config.language,
           model: ctx.config.model,
           availableModels: ctx.config.availableModels,
+          baseURL: ctx.config.baseURL,
           // 延迟工具呈现（见 core/config/deferred-tool-view.ts）：/memory reload 也走
           // 完整重建，漏传会让分区标注在刷新记忆后消失
           toolSearchKeepLoaded: ctx.config.toolSearchKeepLoaded,

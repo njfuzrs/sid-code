@@ -1579,7 +1579,12 @@ export class TraceCollector {
 
     // 缺口分析五类：上下文占用率。used=完整 prompt 规模（promptTotal，厂商无关），
     // window=模型上下文窗口（TokenEstimator SSOT）。窗口未知则不落（不猜一个误导比率）。
-    const ctxUsage = this.computeContextUsage(input.llm_request.model, usage, resp.provider);
+    const ctxUsage = this.computeContextUsage(
+      input.llm_request.model,
+      usage,
+      resp.provider,
+      resp.base_url,
+    );
 
     // §3.2：AfterModelRaw 事件——processStream 返回即落盘，消除"有 Before 无 After"的诊断盲区。
     // 即使后续 pair 完成/raw.jsonl/traj 重建崩溃，排查者也能看到响应已到达。
@@ -3438,6 +3443,7 @@ export class TraceCollector {
       cacheCreationInputTokens?: number;
     },
     provider?: string,
+    baseURL?: string,
   ): { usedTokens: number; window: number; ratio: number } | null {
     try {
       // D6：AfterModel 已带 provider（主循环按产出 usage 的 provider 盖章，见 D5）；
@@ -3446,7 +3452,8 @@ export class TraceCollector {
       const normalized = normalizeCacheUsage(usage as Usage, prov);
       const usedTokens = normalized.promptTotal;
       if (!(usedTokens > 0)) return null;
-      const window = this.tokenEstimator.getContextLimit(model);
+      // D4：带端点，学到的已放行上限才进得了占用率分母（否则比率按配置窗口算，偏低）
+      const window = this.tokenEstimator.getContextLimit(model, undefined, baseURL);
       if (!(window > 0)) return null;
       // 比率封顶 1（极端情况下 prompt 超窗口时 clamp，避免 >1 的诡异值）
       const ratio = Math.min(1, usedTokens / window);
