@@ -46,6 +46,29 @@ describe("deriveEffort", () => {
   });
 });
 
+describe("deriveEffort：思考关闭导致档位不下发（inert）", () => {
+  test("inert → 划线 + 默认灰，文本保留档位名", () => {
+    const r = deriveEffort({ level: "max", isAuto: false, inert: true }, GRAY);
+    expect(r?.strikethrough).toBe(true);
+    expect(r?.text).toBe("max");
+    // max 平时用品牌色点睛；不生效时不该再点睛。
+    expect(r?.color).toBe(GRAY);
+  });
+
+  test("inert + auto → 保留 ◌ 前缀并划线", () => {
+    const r = deriveEffort({ level: "high", isAuto: true, inert: true }, GRAY);
+    expect(r?.text).toBe(`${EFFORT_AUTO} high`);
+    expect(r?.strikethrough).toBe(true);
+  });
+
+  test("非 inert 不划线", () => {
+    expect(deriveEffort({ level: "high", isAuto: false }, GRAY)?.strikethrough).toBeFalsy();
+    expect(
+      deriveEffort({ level: "high", isAuto: false, inert: false }, GRAY)?.strikethrough,
+    ).toBeFalsy();
+  });
+});
+
 describe("deriveThinking", () => {
   test("null → 不渲染该列", () => {
     expect(deriveThinking(null, GRAY)).toBeNull();
