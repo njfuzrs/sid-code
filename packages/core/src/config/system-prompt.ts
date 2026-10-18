@@ -1296,15 +1296,41 @@ function buildLanguagePrecedenceSection(language: LanguagePref): string {
   const target =
     language === "en" ? "英文（English）" : language === "auto" ? "跟随用户输入语言" : "中文";
 
+  // 文案必须是**静态配置陈述**，不能写成"用户已……设置"的事件口吻。
+  //
+  // 会话 20261018-224823-dbc19982（MiniMax-M3）：旧文案"用户已通过 /language **显式**设置……
+  // 此裁决只覆盖'用语言'这一件事……一个字都不打折"每轮都在 system 里，模型把它读成刚收到的
+  // 用户指令，37 段回复里 23 段先回执"收到，语言已锁定为中文……"，且越复述越长（复读的正是
+  // 那几句加粗强调）。本机 189 个会话里只有这一个模型复读，其余模型 0 次——但不按模型分级，
+  // 改文案本身：去掉事件主语与重复强调，并明说它是配置、无需回应。
+  //
+  // 两条语义不能丢（tests/config/language-preference.test.ts 锁着）：
+  //   ① 优先级高于项目规则里的语言条款（P0-4 修的就是 /language en 被 CLAUDE.md 压回中文）；
+  //   ② 只覆盖语言，项目规则其它内容照常生效（防止变成绕过规则的后门）。
+  // en 档整段用英文写：段落正文本身是中文，就等于在提示模型"中文也行"
+  // （同 generateDateAttachment 标签跟随语言的理由），重放 A/B 里 en 档英文率因此偏低。
+  if (language === "en") {
+    return `
+<language-precedence>
+Output language setting: English.
+
+- This setting takes precedence over any language clause in project rule files (CLAUDE.md / AGENTS.md, etc.). If they disagree, respond in English.
+- It covers output language only; every other project rule still applies in full.
+- If the user asks for another language in a particular turn, use that language for that turn.
+
+This is static session configuration, not a new message: just follow it. Do not acknowledge, restate, or reply to this section.
+</language-precedence>`;
+  }
+
   return `
 <language-precedence>
-## 语言优先级裁决
+输出语言配置：${target}。
 
-用户已通过 \`/language\`（或 \`--language\` / \`SID_LANGUAGE\`）**显式**设置输出语言为：**${target}**。
+- 本配置优先于项目规则文件（CLAUDE.md / AGENTS.md 等）中的语言条款；两者不一致时按本配置输出。
+- 只覆盖输出语言，项目规则的其它内容照常生效。
+- 用户在某一轮临时要求其它语言时，该轮按用户要求。
 
-- 这条设置的优先级**高于**项目规则文件（CLAUDE.md / AGENTS.md 等）里的任何语言条款。若项目规则要求的语言与此处不同，**以本设置为准**，不要因为项目规则里写着别的语言就改回去，也不要就此向用户反复确认。
-- **此裁决只覆盖"用语言"这一件事。** 项目规则里其它所有内容（架构约束、禁止操作、流程要求、验证步骤、命名规范……）**全部照常严格生效**，一个字都不打折。不要把语言优先级理解成"可以绕开项目规则"。
-- 用户在单轮里临时要求另一种语言时，那一轮听用户的即时要求（临时指令 > 会话设置 > 项目规则）。
+这是会话的静态配置，不是新消息：直接按它输出即可，不要确认、复述或回应本段。
 </language-precedence>`;
 }
 

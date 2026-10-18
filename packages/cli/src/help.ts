@@ -224,6 +224,7 @@ Worktree 隔离:
   SID_CODE_TMPDIR               临时目录覆盖（沙箱/测试用）
   SID_RIPGREP_PATH              指定 rg 可执行文件路径（缺省用内嵌释放的 rg，再回退系统 PATH；sid-code doctor 会显示实际来源）
   SID_GREP_TIMEOUT_SECONDS      grep/glob 搜索超时秒数（缺省 20，WSL 下 60；settings.json 的 searchTimeoutSeconds 优先）
+  SID_READ_MAX_OUTPUT_TOKENS    read 单次输出 token 上限（缺省 25000；超限报错并建议 offset/limit）
 
   安装与更新:
   SID_CODE_CHANNEL              发布通道 stable|beta（缺省沿用当前安装的通道，未装 beta 即 stable）；显式设置可切换通道

@@ -187,3 +187,26 @@ describe("修复#7：fallback 也接 signal（无 rg 时不 hang）", () => {
     expect(typeof r.output).toBe("string");
   });
 });
+
+// 会话 20261018-224823-dbc19982：glob(path="packages") 返回相对搜索根的 cli/src/ui/X.tsx，
+// 模型拼回时拼错。输出须相对 cwd（cwd 内）或绝对路径（cwd 外），可直接喂给 read。
+describe("GlobTool 输出路径基准（相对 cwd，不是相对搜索根）", () => {
+  test("搜索根是 cwd 子目录时，输出带上子目录前缀", async () => {
+    const { setCwd, getCwd } = await import("@sid-code/core/bootstrap/state.ts");
+    const prev = getCwd();
+    setCwd(root);
+    try {
+      const r = await new GlobTool().execute({ pattern: "**/b.ts", path: join(root, "src") });
+      expect(r.output).toBe(join("src", "sub", "b.ts"));
+    } finally {
+      setCwd(prev);
+    }
+  });
+
+  test("搜索根在 cwd 之外时，输出绝对路径", async () => {
+    const outside = mkdtempSync(join(tmpdir(), "glob-outside-"));
+    writeFileSync(join(outside, "x.ts"), "");
+    const r = await new GlobTool().execute({ pattern: "*.ts", path: outside });
+    expect(r.output).toBe(join(outside, "x.ts"));
+  });
+});

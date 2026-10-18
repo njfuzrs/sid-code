@@ -18,9 +18,9 @@ description: 全部可用环境变量及其作用。
 
 <!-- AUTO-GEN:START 由 scripts/docs-gen-reference.ts 生成，勿手工编辑 -->
 
-> 共 **125** 个环境变量，取自 `sid-code --help` 的环境变量段，
-> 并与源码里实际的 `process.env` 读取点（扫到 183 个）交叉核对。
-> 扫到的 183 个里 121 个在上表、62 个列在页尾；表里另有 4 个是扫描认不出的读法（如拼接出的变量名），仍以 help 为准。
+> 共 **126** 个环境变量，取自 `sid-code --help` 的环境变量段，
+> 并与源码里实际的 `process.env` 读取点（扫到 184 个）交叉核对。
+> 扫到的 184 个里 122 个在上表、62 个列在页尾；表里另有 4 个是扫描认不出的读法（如拼接出的变量名），仍以 help 为准。
 
 > 优先级：环境变量 > `settings.json`。`SID_*` 前缀的变量只对 sid-code 生效，
 > 不与同机的其他工具共享。
@@ -91,6 +91,7 @@ description: 全部可用环境变量及其作用。
 | `SID_CODE_TMPDIR` | 临时目录覆盖（沙箱/测试用） |
 | `SID_RIPGREP_PATH` | 指定 rg 可执行文件路径（缺省用内嵌释放的 rg，再回退系统 PATH；sid-code doctor 会显示实际来源） |
 | `SID_GREP_TIMEOUT_SECONDS` | grep/glob 搜索超时秒数（缺省 20，WSL 下 60；settings.json 的 searchTimeoutSeconds 优先） |
+| `SID_READ_MAX_OUTPUT_TOKENS` | read 单次输出 token 上限（缺省 25000；超限报错并建议 offset/limit） |
 
 ## 安装与更新
 
