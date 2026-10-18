@@ -46,9 +46,9 @@ describe("getSelectableEfforts：档位集合与模型配对", () => {
     expect(getSelectableEfforts(cap)).toEqual(["low", "medium", "high"]);
   });
 
-  test("DeepSeek 线格式仅认 high/max，low/medium 会被钳制故不列出", () => {
+  test("DeepSeek 线格式认 low/high/max，medium/xhigh 会被钳制故不列出（E5）", () => {
     const cap = capFor("ali-deepseek-v4-pro", "openai", "https://gw.example.com/v1");
-    expect(getSelectableEfforts(cap)).toEqual(["high", "max"]);
+    expect(getSelectableEfforts(cap)).toEqual(["low", "high", "max"]);
   });
 
   test("GLM 支持 max 但 xhigh 被钳制，故为 4 档", () => {
@@ -120,11 +120,11 @@ describe("cycleEffortForModel：在模型可选档位内循环", () => {
 
   test("永不返回模型不支持的档位", () => {
     const cap = capFor("ali-deepseek-v4-pro", "openai", "https://gw.example.com/v1");
-    // 从一个「不在可选集内」的档位起步（如刚从别的模型切过来，runtime 还是 low）
-    let cur: EffortLevel | undefined = "low";
+    // 从一个「不在可选集内」的档位起步（如刚从别的模型切过来，runtime 还是 xhigh）
+    let cur: EffortLevel | undefined = "xhigh";
     for (let i = 0; i < 6; i++) {
       cur = cycleEffortForModel(cap, cur, 1);
-      expect(["high", "max"]).toContain(cur!);
+      expect(["low", "high", "max"]).toContain(cur!);
     }
   });
 
@@ -225,13 +225,13 @@ describe("getDisplayedEffort：展示 = 实发，所选档不被改写（PR-C，
     expect(getDisplayedEffort(GLM, "xhigh", null)).toBe("max");
     expect(getDisplayedEffort(O3, "max", null)).toBe("high");
     expect(getDisplayedEffort(O3, "xhigh", null)).toBe("high");
-    expect(getDisplayedEffort(DS, "low", null)).toBe("high");
+    expect(getDisplayedEffort(DS, "xhigh", null)).toBe("high");
     expect(getDisplayedEffort(DS, "medium", null)).toBe("high");
   });
 
   test("env 覆盖同样映射成实发档（E7：env 改不了 runtime，只能在展示层修）", () => {
-    expect(getDisplayedEffort(DS, undefined, "low")).toBe("high");
-    expect(getDisplayedEffort(DS, "max", "low")).toBe("high");
+    expect(getDisplayedEffort(DS, undefined, "medium")).toBe("high");
+    expect(getDisplayedEffort(DS, "max", "xhigh")).toBe("high");
   });
 
   test("auto 显示模型默认档", () => {
@@ -263,9 +263,14 @@ describe("resolveDisplayedEffort", () => {
   });
 
   test("非 auto 态也取 applied（实发档），不取被钳制的 runtime", () => {
-    // DeepSeek 上选 low 实发 high：面板此前显示 low，与 Footer / 线上都不一致。
+    // DeepSeek 上选 medium 实发 high：面板此前显示 low，与 Footer / 线上都不一致。
     expect(
-      resolveDisplayedEffort({ runtime: "low", applied: "high", isAuto: false, capability: CAP }),
+      resolveDisplayedEffort({
+        runtime: "medium",
+        applied: "high",
+        isAuto: false,
+        capability: CAP,
+      }),
     ).toBe("high");
   });
 

@@ -8,7 +8,7 @@ B9 / T0.1 产物。渲染底座必须提供这里列出的全部符号与 props�
 
 - 消费底座的源码文件：**101** 个（`packages/cli/src`，不含 `ui/render-port/` 自身）
 - 直接 import 底座的测试文件：**45** 个（`packages/cli/tests`）
-- 符号：**44** 个；宿主组件 props：**51** 种；底座读取的环境变量：**38** 个
+- 符号：**45** 个；宿主组件 props：**51** 种；底座读取的环境变量：**38** 个
 
 ## 1. 符号（按引用文件数降序）
 
@@ -27,6 +27,7 @@ B9 / T0.1 产物。渲染底座必须提供这里列出的全部符号与 props�
 | `render` | 2 | `render-port/runtime.ts` | 含动态 import |
 | `ResizeObserver` | 2 | `render-port/measure.ts` |  |
 | `AlternateScreen` | 1 | `render-port/components.ts` |  |
+| `adjustColorLevel` | 1 | `render-port/text.ts` | 2026-10-18 手加：入口按终端算 chalk 级别（`ui/terminal-color.ts`） |
 | `AnsiColor` | 1 | `render-port/types.ts` | 仅类型 |
 | `applyColor` | 1 | `render-port/text.ts` |  |
 | `applyTextStyles` | 1 | `render-port/text.ts` |  |

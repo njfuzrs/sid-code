@@ -7,10 +7,11 @@
 import { profileCheckpoint } from "@sid-code/shared/utils/startup-profiler.ts";
 profileCheckpoint("full_cli_entry");
 
-// 强制启用终端颜色（必须在业务 import 之前）
-if (!process.env.FORCE_COLOR && !process.env.NO_COLOR) {
-  process.env.FORCE_COLOR = "3";
-}
+// 交互终端颜色：只改进程内 chalk 级别，不写 process.env.FORCE_COLOR——写 env 会被
+// bash / 后台任务 / hook / MCP / 子代理全部继承，让它们往文件和管道里吐 ANSI
+// （2026-10-18 后台 .output 被 read 判成二进制）。理由详见 terminal-color.ts 文件头。
+import { applyTerminalColorLevel } from "./ui/terminal-color.ts";
+applyTerminalColorLevel();
 
 import { parseArgs } from "node:util";
 import { loadConfig, isMissingApiKey, PLACEHOLDER_API_KEY } from "@sid-code/core/config/config.ts";

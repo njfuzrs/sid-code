@@ -30,8 +30,9 @@ const TAB_SIZE = 2;
 const TAB_INDENT = " ".repeat(TAB_SIZE);
 const MAX_CACHE_SIZE = 100;
 
-// 兜底：cli.ts 入口已在 import 前设置 FORCE_COLOR=3，
-// 这里再修正 chalk 实例的 level，确保样式正常。
+// 兜底：交互终端由 cli.ts 入口的 applyTerminalColorLevel() 设好 chalk 级别；
+// 这里只在 chalk 仍为 0 时把进程内渲染抬到真彩（测试等非 TTY 场景依赖它产出样式）。
+// 只改 chalk 实例、不写 process.env，所以不会泄漏给子进程（见 terminal-color.ts）。
 if (chalk.level === 0 && !process.env.NO_COLOR) {
   chalk.level = 3;
 }

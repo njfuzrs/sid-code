@@ -159,6 +159,23 @@ describe("formatPathNotFoundError", () => {
     expect(msg).toContain(resolve(cwd, "packages/core/src/tool/path-utils.ts"));
   });
 
+  it("段级候选替换后完整路径仍不存在 → 只报候选，不给可执行的完整路径", () => {
+    // 会话 20261018-224823-dbc19982 实例：packages/ui/components/X.tsx，ui→tui 替换后
+    // packages/tui/components/X.tsx 仍不存在。旧版照样报「可尝试完整路径」，模型照试再失败。
+    const { mkdtempSync, mkdirSync, rmSync } = require("fs") as typeof import("fs");
+    const os = require("os") as typeof import("os");
+    const base = mkdtempSync(resolve(os.tmpdir(), "pathfix-unverified-"));
+    try {
+      mkdirSync(resolve(base, "tui"));
+      const msg = formatPathNotFoundError(resolve(base, "ui/components/X.tsx"), base, 3);
+      expect(msg).toContain('路径段 "ui" 疑似应为 "tui"');
+      expect(msg).not.toContain("可尝试完整路径");
+      expect(msg).toContain("仍不存在");
+    } finally {
+      rmSync(base, { recursive: true, force: true });
+    }
+  });
+
   it("目录段被吞掉分隔符（& 被终端吞掉的症状）→ 归一后精确命中", () => {
     // 构造一个真实存在的祖先 + 一个"去掉 & 后"的错误段。
     // 用 tests 目录建一个临时子目录名带 &，再用去掉 & 的名字查询。

@@ -212,9 +212,34 @@ describe("P0-4 language 与 CLAUDE.md 语言条款的优先级", () => {
   test("裁决只覆盖语言，明确声明项目规则其它内容照旧生效（不能变成绕过规则的后门）", () => {
     const prompt = build({ language: "en", projectRules: ZH_RULES });
     const section = prompt.slice(prompt.indexOf("<language-precedence>"));
-    expect(section).toMatch(/只覆盖|照常/);
+    // en 档段落是英文正文（中文正文等于提示"中文也行"），中英两种措辞都认
+    expect(section).toMatch(/只覆盖|照常|output language only|still applies/);
     // 架构类约束不受影响——原文仍在
     expect(prompt).toContain("禁止引入新依赖");
+  });
+
+  // 会话 20261018-224823-dbc19982（MiniMax-M3）：旧文案"用户已通过 /language 显式设置……"
+  // 被读成每轮新到的用户指令，37 段回复里 23 段先回执"收到，语言已锁定为中文"。
+  test("裁决段是静态配置陈述：不用「用户已…设置」事件口吻，且明说无需回应", () => {
+    for (const language of ["zh", "en", "auto"] as const) {
+      const prompt = build({ language, projectRules: ZH_RULES });
+      const section = prompt.slice(
+        prompt.indexOf("<language-precedence>"),
+        prompt.indexOf("</language-precedence>"),
+      );
+      expect(section).not.toMatch(/用户已|显式|一个字都不打折/);
+      expect(section).toMatch(/不要确认、复述或回应|Do not acknowledge, restate, or reply/);
+    }
+  });
+
+  test("en 档裁决段正文不含中文（中文正文等于提示模型中文也行）", () => {
+    const prompt = build({ language: "en", projectRules: ZH_RULES });
+    const section = prompt.slice(
+      prompt.indexOf("<language-precedence>"),
+      prompt.indexOf("</language-precedence>"),
+    );
+    expect(section).not.toMatch(/[\u4e00-\u9fff]/);
+    expect(section).toContain("English");
   });
 
   test("未显式设置语言时不注入裁决段（无冲突可裁决，白占 token）", () => {

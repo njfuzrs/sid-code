@@ -220,13 +220,19 @@ describe("applyToSendParams：各族档位 → SendParams 的映射与重构前�
     };
   }
 
-  test("DeepSeek/OpenAI 端点：只认 high/max，低档全升 high", () => {
-    // 旧 applyDeepSeekOpenAI：clampToMaxWire(effort) === "max" ? "max" : "high"
-    expect(apply("deepseek-v9-x", "low", true).reasoningEffort).toBe("high");
+  test("DeepSeek/OpenAI 端点：low/high/max 原样，medium/xhigh → high（2026-10 官方映射）", () => {
+    // 旧映射（2026-06 文档）：low/medium/high → high，xhigh/max → max。E5 改为官方现行表。
+    expect(apply("deepseek-v9-x", "low", true).reasoningEffort).toBe("low");
     expect(apply("deepseek-v9-x", "medium", true).reasoningEffort).toBe("high");
     expect(apply("deepseek-v9-x", "high", true).reasoningEffort).toBe("high");
-    expect(apply("deepseek-v9-x", "xhigh", true).reasoningEffort).toBe("max");
+    expect(apply("deepseek-v9-x", "xhigh", true).reasoningEffort).toBe("high");
     expect(apply("deepseek-v9-x", "max", true).reasoningEffort).toBe("max");
+  });
+
+  test("DeepSeek/Anthropic 端点与 OpenAI 端点共用同一张映射表", () => {
+    const anth = { baseURL: "https://gw/anthropic/v1" };
+    expect(apply("deepseek-v9-x", "low", true, anth).outputConfig).toEqual({ effort: "low" });
+    expect(apply("deepseek-v9-x", "xhigh", true, anth).outputConfig).toEqual({ effort: "high" });
   });
 
   test("DeepSeek：思考关闭时不下发 effort，但仍下发 thinking:{enabled:false}", () => {
@@ -242,7 +248,7 @@ describe("applyToSendParams：各族档位 → SendParams 的映射与重构前�
     expect(r.reasoningEffort).toBeUndefined();
   });
 
-  test("GLM：认四档且 xhigh→max（与 DeepSeek 的 high/max 二档不同）", () => {
+  test("GLM：认四档且 xhigh→max（与 DeepSeek 的 low/high/max 三档不同）", () => {
     // 旧 applyGLMOpenAI：clampToMaxWire(effort)，即只把 xhigh 折成 max，其余原样。
     expect(apply("glm-99-x", "low", true).reasoningEffort).toBe("low");
     expect(apply("glm-99-x", "medium", true).reasoningEffort).toBe("medium");

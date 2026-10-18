@@ -14,6 +14,7 @@
 import { spawn } from "node:child_process";
 import { getLogger } from "@sid-code/core/debug/logger.ts";
 import type { StatusLineConfig } from "@sid-code/core/config/statusline-types.ts";
+import { colorEnvForTuiRenderedChild } from "../terminal-color.ts";
 
 /** 传给用户脚本的会话数据（stdin JSON）。字段对标 cc statusLine 输入。 */
 export interface StatusLineSessionData {
@@ -182,6 +183,10 @@ export async function runStatusLine(
       child = spawn(command, {
         shell: true,
         stdio: ["pipe", "pipe", "pipe"],
+        // 状态栏 stdout 是管道但会原样渲染进彩色 TUI，所以这里显式给颜色级别——旧版靠
+        // 继承入口注入的 FORCE_COLOR=3 才有颜色；入口不再写 env 之后改为按 spawn 点声明
+        // （见 terminal-color.ts）。其他子进程不该上色，不要照抄到别处。
+        env: { ...process.env, ...colorEnvForTuiRenderedChild() },
       });
     } catch (e) {
       log.warn("UI:STATUSLINE", `spawn 失败: ${String(e)}`);

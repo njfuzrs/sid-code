@@ -3,6 +3,7 @@
  */
 export {
   stringWidth,
+  adjustColorLevel,
   applyColor,
   applyTextStyles,
   colorize,

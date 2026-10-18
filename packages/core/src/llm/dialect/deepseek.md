@@ -18,14 +18,21 @@ DeepSeek 同时提供 OpenAI 兼容与 Anthropic 兼容端点，同一模型的�
 这一对是「compat 布尔位表达不了族差异」的最短证明：6 个布尔位里没有一位能表达
 「effort 该写到哪个字段」。
 
-## `reasoning_effort` 只有 high / max 两档
+## `reasoning_effort` 认 low / high / max 三档
 
-依据 `deepseek-api.md:2003-2004`。低档不会报错，但会被服务端映射为 `high`——
-即下发 `low` 与下发 `high` 等效。
+依据 `deepseek-api.md:24,1096,2268`（2026-10 复核）：`low` 从 08-13 起是真实档位；
+`medium` / `xhigh` 由服务端映射为 `high`；`max` 原样。2026-06 版文档里的「low→high」
+「xhigh→max」已作废。
 
-客户端仍做映射（`toDeepSeekWireEffort`），理由是 `previewWireEffort` 要能对用户
-诚实显示「你选了 low，实际发的是 high」。不映射的话面板显示 low、线上发 low、
-服务端按 high 跑，三者对不上。
+客户端照官方表做同样的映射（`toDeepSeekWireEffort`），理由是 `previewWireEffort` 要能对用户
+诚实显示「你选了 xhigh，实际发的是 high」，面板也据此只列 low / high / max。
+
+真响应（20261018 effort 排查 E5，OpenAI 协议，同一道难题的 reasoning_tokens 中位数）：
+xhigh 2733 ≈ high 2387，远低于 max 5522（n=10/14/10），支持 xhigh→high；
+low 1847 比 high 低约 23%，四分位区间重叠，「low 是真实档位」只算中等证据，最坏等同 high。
+Anthropic 兼容端点共用同一个映射函数，**没有真响应**，靠 `effort_wire` 埋点看。
+
+`none`（= 关思考）不接：sid 的「关思考」走 `thinking:{type:"disabled"}`，两条线不重复。
 
 ## `thinking` 开关是顶层字段，不是 `extra_body`
 
