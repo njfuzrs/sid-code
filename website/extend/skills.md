@@ -1,6 +1,6 @@
 ---
 title: Skill
-description: 把团队的流程与规范封装成可复用的 skill：8 个内置 skill 干什么、自定义怎么写、为什么写了不生效。
+description: 把团队的流程与规范封装成可复用的 skill：3 个内置 skill 干什么、自定义怎么写、为什么写了不生效。
 ---
 
 # Skill
@@ -8,7 +8,7 @@ description: 把团队的流程与规范封装成可复用的 skill：8 个内�
 Skill 是**按需加载的流程说明书**。没触发时只占一行摘要，触发了才把完整流程展开给模型。
 
 这是它和 CLAUDE.md 的核心区别：CLAUDE.md 每轮都在上下文里，写多少付多少；
-Skill 平时只有摘要（实测 8 个内置 Skill 合计约 0.5K token），用到才付全文的钱。
+Skill 平时只有摘要（当前 3 个内置 Skill 合计约 0.1K token；数字会随 `builtin-embedded.generated.ts` 增减而变），用到才付全文的钱。
 想教一整套「修 bug 的标准流程」，写 Skill 而不是塞 CLAUDE.md。
 
 ## 快速上手
