@@ -2380,6 +2380,18 @@ export class App {
    * 调用生效，从不写回 config.model，导致下一轮 params.model 又变回失败的主模型、撞回
    * terminal 拉黑。现让 decideFallback 选定后调用本方法，把降级目标真正提升为主模型。
    */
+  /**
+   * 按当前 config（已 resolveCurrentModelConfig）重建主 provider 并注入 QueryEngine。
+   * 切模型（applyPrimaryModelSwitch）与 resume 恢复快照模型（restoreSession）共用，
+   * 两处口径必须一致——resume 那处曾漏掉这一步（E11），请求被发到旧 provider 的端点。
+   */
+  private rebuildProviderForCurrentModel(): void {
+    if (!this.providerRegistry) return;
+    this.providerRegistry.clearCache();
+    this.provider = this.providerRegistry.getProvider();
+    this.queryEngine.updateProvider(this.provider);
+  }
+
   private applyPrimaryModelSwitch(
     model: string,
     opts?: { persist?: boolean; reason?: string; clearTerminal?: boolean },
@@ -2425,11 +2437,7 @@ export class App {
     this.config.model = model;
     const { resolveCurrentModelConfig } = require("@sid-code/core/config/config.ts");
     resolveCurrentModelConfig(this.config);
-    if (this.providerRegistry) {
-      this.providerRegistry.clearCache();
-      this.provider = this.providerRegistry.getProvider();
-      this.queryEngine.updateProvider(this.provider);
-    }
+    this.rebuildProviderForCurrentModel();
     // 同步上下文窗口：新模型窗口可能与旧模型不同（如 200k↔1M）。
     // 不更新会让 compact 决策与 Footer 上下文百分比沿用旧窗口作分母而失真。
     try {
@@ -5447,8 +5455,8 @@ export class App {
 
     // P1-4b：从 JSONL metadata 恢复 agent 设置（模型 / effort / thinking）。
     // 此前 resume 后这些运行时切换全部丢失、回落默认值（文档 P1-4 #6）。
-    // restoreSession 在 doInit 之前执行——此处改 this.config.model / runtimeEffort，
-    // 稍后 doInit 构建 provider 时自然采用恢复后的值，无需二次 clearCache。
+    // restoreSession 在 doInit 之前执行，但 provider 与 QueryEngine 在 App 构造期就已建好，
+    // doInit 不会重建——所以恢复出的模型必须在本分支自己重建 provider（E11）。
     // 优先级：显式 env 覆盖 > 恢复的会话快照。env 覆盖会被 queryLoop 每轮重读，天然最高优先，
     // 故仅当 env 未设时才用快照恢复，避免覆盖用户本次启动的显式意图。
     if (sessionData.metadata?.["agent_setting"]) {
@@ -5462,31 +5470,61 @@ export class App {
         const { getEffortEnvOverride, getThinkingEnvOverride } =
           await import("@sid-code/core/llm/effort.ts");
 
-        // 模型：仅当当前 config.model 与快照不同才切换。不经过 setModel 回调（provider 尚未在
-        // TUI 上下文注入），直接改 config + resolveCurrentModelConfig，让 doInit 采用。
+        // 模型：仅当当前 config.model 与快照不同才切换。不经过 applyPrimaryModelSwitch（它会触发
+        // model_switch hook、持久化等「用户显式切换」语义，恢复不是切换），直接改 config +
+        // resolveCurrentModelConfig。
+        // E11（20261018）：provider 必须在这里重建。原注释写「让 doInit 采用」与代码不符——
+        // provider 在 cli.ts 构造 App 之前就已建好，QueryEngine 在构造期拿到它，doInit 里没有
+        // 任何 getProvider / updateProvider。快照模型与启动模型分属不同 provider / baseURL 时，
+        // 不重建就会把 DeepSeek 的模型名按 Anthropic 协议发到 Claude 端点（-p 与交互式都受影响）。
         if (setting.model && setting.model !== this.config.model) {
           const prev = this.config.model;
           this.config.model = setting.model;
+          const { resolveCurrentModelConfig } = require("@sid-code/core/config/config.ts");
+          let switched = true;
           try {
-            const { resolveCurrentModelConfig } = require("@sid-code/core/config/config.ts");
             resolveCurrentModelConfig(this.config);
-            const est = new TokenEstimator();
-            // §12 P3-2：窗口与输出上限一起同步（完成缓冲区依赖 maxOutputTokens）
-            this.ctxMgr.setMaxTokens(
-              est.getContextLimit(setting.model, this.config.availableModels, this.config.baseURL),
-              est.getMaxOutputTokens(setting.model, this.config.availableModels),
+            this.rebuildProviderForCurrentModel();
+          } catch (e) {
+            // 快照模型的 provider 建不起来（如缺该族 key）：退回启动模型，而不是留下
+            // 「config.model 已是新模型、provider 还是旧端点」的错配——那正是 E11 本身。
+            switched = false;
+            log.warn(
+              "APP",
+              `恢复 agent 模型 ${setting.model} 失败，保留 ${prev}: ${(e as Error)?.message}`,
             );
-          } catch {
-            /* 模型/窗口解析失败沿用旧值，不阻断恢复 */
+            this.config.model = prev;
+            try {
+              resolveCurrentModelConfig(this.config);
+              this.rebuildProviderForCurrentModel();
+            } catch {
+              /* 回退到启动时已能构建的模型，失败概率极低；失败则沿用原 provider 对象 */
+            }
           }
-          log.info("APP", `恢复 agent 模型: ${prev} → ${setting.model}`);
+          if (switched) {
+            try {
+              const est = new TokenEstimator();
+              // §12 P3-2：窗口与输出上限一起同步（完成缓冲区依赖 maxOutputTokens）
+              this.ctxMgr.setMaxTokens(
+                est.getContextLimit(
+                  setting.model,
+                  this.config.availableModels,
+                  this.config.baseURL,
+                ),
+                est.getMaxOutputTokens(setting.model, this.config.availableModels),
+              );
+            } catch {
+              /* 窗口解析失败沿用旧值，不阻断恢复 */
+            }
+            log.info("APP", `恢复 agent 模型: ${prev} → ${setting.model}`);
+          }
         }
 
         // effort：env 未设(null) 才用快照。快照存的 null 表示 auto(undefined)。
         if (getEffortEnvOverride() === null && setting.effortLevel !== undefined) {
           this.runtimeEffort = setting.effortLevel ?? undefined;
           // 档位归正：本分支直接赋值 config.model 与 runtimeEffort（不走 applyPrimaryModelSwitch，
-          // 因为 provider 尚未在 TUI 上下文注入），所以拿不到那里的归正。若快照里的档位对
+          // 恢复不是用户显式切换），所以拿不到那里的归正。若快照里的档位对
           // 当前模型无效（如快照记于 claude 时段的 xhigh、现模型是 GLM），恢复后就会复现
           // 「状态栏显示 xhigh、实际下发 max」的矛盾——入口不同，症状与换模型时一致。
           try {
