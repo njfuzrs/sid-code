@@ -16,7 +16,12 @@
 
 ## `reasoning_effort`：none/low/medium/high，**无 max**
 
-依据 `grok-api.md:30`。`max` 与 `xhigh` 均钳到 `high`。
+依据 `grok-api.md:30`。`max` 钳到 `high`。
+
+`xhigh` 按注册表 `reasoningEffortValues` 判定：4.3 / 4.6 / 4.7 登记了 xhigh（grok-api.md §3 模型表），
+原样下发；4.5（官方无 xhigh）和未登记的模型钳到 `high`。applier 与线格式层 `filterParamsForModel`
+读同一张表。此前一律钳 high，用户选不到真实存在的最高档（20261018 effort 排查 E8，F2）。
+4.6 / 4.7 的 xhigh 目前只有文档依据，上线后看轨迹 `effort_wire` 与 400 率。
 
 `grok-4.3` 的默认档位是 `low`（`grok-api.md:277`）——比多数族的 `medium` 低一档，
 故 `defaultEffort: "low"`，状态栏 auto 态显示 low 才与实际一致。

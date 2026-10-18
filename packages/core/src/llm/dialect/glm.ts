@@ -18,7 +18,30 @@
  */
 
 import type { SendParams } from "../types.ts";
-import type { Dialect } from "./types.ts";
+import { lookupCatalog } from "../model-params-catalog.ts";
+import { pickWireModel } from "../wire-model.ts";
+import type { Dialect, DialectEffortLevel } from "./types.ts";
+
+const GLM_SCALE = ["low", "medium", "high", "max"] as const;
+type GlmWireEffort = (typeof GLM_SCALE)[number];
+
+/**
+ * 把档位落到该模型登记的真实档位上：表内原样，表外沿标度**向上**取最近的一档。
+ *
+ * 向上而不是向下，跟的是官方自己的语义：GLM-5.2 `low/medium → high`、`xhigh → max`
+ * （glm-api.md §6.2）。GLM-5.3 只认 `low/high/max`、对 medium 文档未说明，真网关静默受理
+ * （E10），这里同样按向上取整映射成 high，不把官方没列的值透传出去。
+ *
+ * 没登记档位表的 GLM 模型保持旧行为（xhigh → max，其余原样）。
+ */
+function toGlmWireEffort(effort: DialectEffortLevel, values?: readonly string[]): GlmWireEffort {
+  const base: GlmWireEffort = effort === "xhigh" ? "max" : effort;
+  if (!values || values.length === 0 || values.includes(base)) return base;
+  for (let i = GLM_SCALE.indexOf(base) + 1; i < GLM_SCALE.length; i++) {
+    if (values.includes(GLM_SCALE[i])) return GLM_SCALE[i];
+  }
+  return base;
+}
 
 export const glmOpenAIDialect: Dialect = {
   kind: "glm-openai",
@@ -43,9 +66,13 @@ export const glmOpenAIDialect: Dialect = {
   applyToSendParams(params: SendParams, effort, thinking) {
     params.thinking = { enabled: thinking, budgetTokens: 0 };
     // 思考关闭时不下发 effort（与 DeepSeek 一致，避免与 disabled 冲突）。
-    // GLM 线格式认 low/medium/high/max，不认 xhigh：xhigh 钳到 max（GLM 支持的最高档）。
+    // GLM 线格式不认 xhigh；每模型的真实档位按注册表档位表映射（见 toGlmWireEffort）。
+    // 与线格式层 filterParamsForModel 同用 lookupCatalog，两处对同一模型给同一个答案。
     if (thinking && effort !== undefined) {
-      params.reasoningEffort = effort === "xhigh" ? "max" : effort;
+      const values = lookupCatalog(
+        pickWireModel(params, params.model || ""),
+      )?.reasoningEffortValues;
+      params.reasoningEffort = toGlmWireEffort(effort, values);
     }
   },
 };

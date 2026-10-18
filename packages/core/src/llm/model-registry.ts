@@ -81,7 +81,7 @@ export interface ModelRegistryEntry {
   systemRole?: "system" | "developer";
   maxTokensField?: "max_tokens" | "max_completion_tokens";
   supportsTemperature?: boolean;
-  reasoningEffortValues?: ("low" | "medium" | "high" | "max")[];
+  reasoningEffortValues?: ("low" | "medium" | "high" | "xhigh" | "max")[];
   protocolKind?:
     | "deepseek-openai"
     | "deepseek-anthropic"
@@ -154,8 +154,9 @@ export interface ModelRegistryEntry {
    * 族常量 `defaultEffort` 表达不了「同族不同模型默认不同」：Grok 4.3 默认 low、4.5+ 默认 high，
    * kimi-k3 / GLM-5.2+ 默认 max（20261018 effort 排查 E8 / E10）。缺省时退到能力缓存、再退到族常量。
    *
-   * ⚠ 只在 applier 对 auto **确实不发 effort** 时才被展示：adaptive Claude 的 auto 目前显式发 high，
-   * 展示跟实发走（E3，F2 再改线上），所以给 Opus 5.5 / Haiku 5.5 登记的 medium 暂不出现在 Footer。
+   * ⚠ 只在 applier 对 auto **确实不发 effort** 时才被展示。adaptive Claude 的 auto 已改为不发
+   * （E3），所以 Opus 5.5 / Haiku 5.5 登记的 medium 就是 Footer auto 态显示的档；adaptive applier
+   * 也用它作思考上限降档的基准档。
    */
   defaultEffort?: "low" | "medium" | "high" | "xhigh" | "max";
 
@@ -207,7 +208,7 @@ const REGISTRY: Record<string, ModelRegistryEntry> = {
   //
   // 窗口 1M / 输出 128k：anthropic-api.md:966-969。
   "claude-opus-5-5": {
-    // 官方默认 effort medium（anthropic-api.md，E3）；auto 仍显式发 high，见 defaultEffort 注释
+    // 官方默认 effort medium（anthropic-api.md，E3）；auto 不发 effort，服务端按它跑
     defaultEffort: "medium",
     contextWindow: 1_000_000,
     maxOutputTokens: 128_000,
@@ -232,7 +233,7 @@ const REGISTRY: Record<string, ModelRegistryEntry> = {
   // >100K 时输入/输出/缓存全部 ×5。本结构表达不了分档，这里存 ≤100K 档 ——
   // 长 prompt 会被**低估 5 倍**，用它跑长会话时成本数字要打折看。
   "claude-haiku-5-5": {
-    // 官方默认 effort medium（anthropic-api.md，E3）；auto 仍显式发 high，见 defaultEffort 注释
+    // 官方默认 effort medium（anthropic-api.md，E3）；auto 不发 effort，服务端按它跑
     defaultEffort: "medium",
     contextWindow: 1_000_000,
     maxOutputTokens: 128_000,
@@ -1153,7 +1154,9 @@ const REGISTRY: Record<string, ModelRegistryEntry> = {
     supportsThinking: true,
     protocolKind: "glm-openai",
     supportsVision: false,
-    reasoningEffortValues: ["low", "medium", "high", "max"],
+    // 官方 low/medium → high、xhigh → max（glm-api.md §6.2，E10）：只有 high / max 是真实档位。
+    // 此前登记四档，面板把 low / medium 当独立档列出，用户选了实际等于 high。
+    reasoningEffortValues: ["high", "max"],
     pricing: { input: 1.4, output: 4.2, cacheRead: 0.7, cacheWrite: 0 },
   },
   "glm-5.1": {
@@ -1249,9 +1252,10 @@ const REGISTRY: Record<string, ModelRegistryEntry> = {
   //   · vision：「全部为文本 + 图片输入、文本输出」（grok-api.md:90）→ 全系 true（图片只收 jpg/png，34 行）。
   //   · maxOutputTokens 128_000 = max_completion_tokens 默认值（grok-api.md:29）。
   //   · 长上下文：prompt（含缓存）≥200K 时**整单**约 2× 计价（grok-api.md:27,77），本表不表达分层。
-  //   · effort：4.6/4.7 还有 `xhigh`、4.3 还有 `none`/`xhigh`（grok-api.md:28,81-84），
-  //     但 reasoningEffortValues 的类型只有 low/medium/high/max，表达不了这两档，只登记交集。
-  //     4.5+ 不可关推理，传 none 会报错（grok-api.md:28,382）。
+  //   · effort：4.6/4.7 还有 `xhigh`、4.3 还有 `none`/`xhigh`（grok-api.md:28,81-84）。
+  //     xhigh 登记进 reasoningEffortValues，grok applier 据此原样下发（此前一律钳 high，
+  //     用户选不到真实存在的最高档，20261018 effort 排查 E8）；4.5 官方无 xhigh，仍钳 high。
+  //     `none` 不登记：统一标度没有 none 档。4.5+ 不可关推理，传 none 会报错（grok-api.md:28,382）。
   //
   // grok-4.7 / 4.6：500K，$2.00 / 缓存 $0.50 / $6.00（grok-api.md:81-82）。
   "grok-4.7": {
@@ -1262,7 +1266,7 @@ const REGISTRY: Record<string, ModelRegistryEntry> = {
     supportsThinking: true,
     protocolKind: "grok-openai",
     maxTokensField: "max_completion_tokens",
-    reasoningEffortValues: ["low", "medium", "high"],
+    reasoningEffortValues: ["low", "medium", "high", "xhigh"],
     supportsVision: true,
     pricing: { input: 2, output: 6, cacheRead: 0.5, cacheWrite: 0 },
   },
@@ -1274,7 +1278,7 @@ const REGISTRY: Record<string, ModelRegistryEntry> = {
     supportsThinking: true,
     protocolKind: "grok-openai",
     maxTokensField: "max_completion_tokens",
-    reasoningEffortValues: ["low", "medium", "high"],
+    reasoningEffortValues: ["low", "medium", "high", "xhigh"],
     supportsVision: true,
     pricing: { input: 2, output: 6, cacheRead: 0.5, cacheWrite: 0 },
   },
@@ -1298,7 +1302,7 @@ const REGISTRY: Record<string, ModelRegistryEntry> = {
     supportsThinking: true,
     protocolKind: "grok-openai",
     maxTokensField: "max_completion_tokens",
-    reasoningEffortValues: ["low", "medium", "high"],
+    reasoningEffortValues: ["low", "medium", "high", "xhigh"],
     supportsVision: true,
     pricing: { input: 1.25, output: 2.5, cacheRead: 0.2, cacheWrite: 0 },
   },

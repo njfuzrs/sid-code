@@ -13,9 +13,9 @@ import {
  * /effort 命令实现（按需加载）
  *
  * 用法:
- *   /effort              - 显示当前推理强度档位 + 模型能力
+ *   /effort              - 打开档位面板（当前档位 + 本模型可选档）
  *   /effort <level>      - 切换档位：low / medium / high / xhigh / max
- *   /effort auto         - 恢复 auto（跟随模型默认，不显式下发）
+ *   /effort auto         - 恢复 auto（不下发档位，服务端按模型默认跑；旧 Claude 开思考时按 medium 预算）
  *   /effort <level> -p   - 切换并持久化到 settings.json（跨会话生效，别名 --persist / save）
  *   /effort help         - 显示用法
  *
@@ -54,7 +54,7 @@ const mod: LocalCommandModule = {
       const envNote = buildEnvOverrideNote();
       return {
         type: "text",
-        value: `推理强度已设为 auto（跟随模型默认）${persist ? "，并已保存到 settings.json" : ""}${envNote}`,
+        value: `推理强度已设为 auto（不下发档位，服务端按模型默认跑）${persist ? "，并已保存到 settings.json" : ""}${envNote}`,
       };
     }
 
@@ -112,14 +112,17 @@ function buildHelp(): string {
   return [
     "/effort —— 推理强度档位（统一标度，与底层模型无关）",
     "",
-    "  /effort              显示当前档位 + 模型能力",
+    "  /effort              打开档位面板（当前档位 + 本模型可选档）",
     `  /effort <level>      切换档位：${EFFORT_LEVELS.join(" / ")}（当会话生效）`,
-    "  /effort auto         恢复 auto（跟随模型默认，不显式下发）",
+    "  /effort auto         恢复 auto：不下发档位，服务端按模型默认档跑",
     "  /effort <level> -p   切换并持久化到 settings.json（别名 --persist / save）",
     "  /effort help         显示本用法",
     "",
     "说明：",
-    "  · 模型不支持某档位时（如 DeepSeek 仅 high/max），切换仍接受但会提示实际下发档。",
+    "  · 模型不支持某档位时（如 GLM-5.2 只有 high/max），切换仍接受但会提示实际下发档。",
+    "  · auto 的例外：旧版 Claude（budget_tokens 协议）开思考时按 medium 预算下发；状态栏显示的就是实发档。",
+    "  · 思考关闭时多数模型不下发档位，状态栏档位会划线。",
+    "  · 只影响主会话。子代理按任务自身的 effort，未指定则不思考。",
     "  · 环境变量 SID_CODE_EFFORT_LEVEL（兼容 CLAUDE_CODE_EFFORT_LEVEL）会覆盖运行时切换。",
   ].join("\n");
 }

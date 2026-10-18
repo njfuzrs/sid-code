@@ -241,7 +241,7 @@ export interface Config {
 
   /**
    * 推理强度档位初值（/effort 持久化端，settings.json effortLevel）。
-   * 缺省 = auto（跟随模型默认，不显式下发）。运行时态在 App.runtimeEffort，本字段仅作启动初值。
+   * 缺省 = auto（不显式下发，服务端按模型默认档跑）。运行时态在 App.runtimeEffort，本字段仅作启动初值。
    */
   effortLevel?: "low" | "medium" | "high" | "xhigh" | "max";
   /**
