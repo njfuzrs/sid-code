@@ -103,9 +103,9 @@ const MAX_ROWS = 14;
  */
 export function resolveDisplayedEffort(state: EffortState | undefined): EffortLevel | undefined {
   if (!state) return undefined;
-  return state.isAuto
-    ? state.applied
-    : ((state.runtime as EffortLevel | undefined) ?? state.applied);
+  // applied 已是线上实发档（getDisplayedEffort 按当前模型映射），与 Footer 同源。
+  // 不再优先取 runtime：runtime 是用户所选档，对当前模型可能被钳制（GLM 上的 xhigh 实发 max）。
+  return state.applied ?? (state.runtime as EffortLevel | undefined);
 }
 
 /** 计算窗口起点，保证 activeIndex 在 [start, start+MAX_ROWS) 内（纯函数，便于单测） */

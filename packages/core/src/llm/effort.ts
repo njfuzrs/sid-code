@@ -488,16 +488,23 @@ export function resolveAppliedEffort(
 }
 
 /**
- * 状态栏展示档位（auto 解析为具体档位，对标 cc getDisplayedEffortLevel）。
- * auto 态返回模型默认档（cap.defaultEffort）；含 max→high 钳制。
+ * 状态栏展示档位 = **线上实发档**（auto 解析为具体档位，对标 cc getDisplayedEffortLevel）。
+ *
+ * 先走与主循环同口径的 {@link resolveAppliedEffort}（env > runtime > auto，含 max→high），
+ * 再经 {@link previewWireEffort} 映射成 applier 真正下发的档。为什么放在展示层而不是改写 runtime：
+ * runtime 是跨模型共享的用户意图，在 GLM 上钳成 max 之后切回支持 xhigh 的 Claude 就丢了 xhigh；
+ * env 覆盖时 runtime 本来就改不动。展示层每次按当前模型现算，E2 / E7 和以后新增的入口一次覆盖。
+ *
+ * 不含 ultrathink 提级（那是单轮行为，见 loop.ts），manual Claude 的 auto 档展示见 E1（F1 另修）。
  */
 export function getDisplayedEffort(
   cap: EffortCapability,
   runtimeEffort: EffortSetting,
   envOverride: EffortSetting | null,
 ): EffortLevel {
-  const applied = resolveAppliedEffort(cap, runtimeEffort, envOverride);
-  return applied ?? cap.defaultEffort;
+  const applied = resolveAppliedEffort(cap, runtimeEffort, envOverride) ?? cap.defaultEffort;
+  if (!cap.supportsEffort) return applied;
+  return previewWireEffort(cap, applied);
 }
 
 /**
@@ -623,34 +630,6 @@ export function isEffortGatedByThinking(cap: EffortCapability): boolean {
   };
   // 思考开时会下发、关时不下发 → 被门控。
   return probe(true) !== undefined && probe(false) === undefined;
-}
-
-/**
- * 换模型后把 runtime 档位「归正」到新模型真实可选的档位上。
- *
- * 为什么必须做：档位是**跨模型共享的运行时态**（`runtimeEffort`），而可选档位集合是
- * **每模型不同**的。在 claude（支持 xhigh）上调到 xhigh 再切到 GLM（xhigh 会被钳成 max），
- * runtimeEffort 仍是 xhigh：状态栏与 /model 面板显示 xhigh，实际下发 max，且面板 hint
- * 列出的可选档位里根本没有 xhigh —— 显示、提示、实发三者互相矛盾。
- *
- * 归正规则（诚实优先，不猜用户意图）：
- * - auto（undefined）不动：它本就是"跟随新模型默认"，换模型后语义天然正确。
- * - 档位已在新模型可选集内：不动（绝不因换模型悄悄改用户显式选过的档）。
- * - 否则映射到该档**实际会被下发**的那一档（previewWireEffort），使显示 == 实发；
- *   若映射结果仍不在可选集内（理论上不该发生），退到新模型默认档。
- *
- * @returns 归正后的档位；与入参相同表示无需变更（调用方可据此决定是否提示用户）。
- */
-export function reconcileEffortForModel(
-  cap: EffortCapability,
-  runtimeEffort: EffortSetting,
-): EffortSetting {
-  if (runtimeEffort === undefined) return undefined; // auto 天然跟随新模型
-  if (!cap.supportsEffort) return runtimeEffort; // 不支持档位的模型不下发，留着旧值无害
-  const levels = getSelectableEfforts(cap);
-  if (levels.includes(runtimeEffort)) return runtimeEffort;
-  const wire = previewWireEffort(cap, runtimeEffort);
-  return levels.includes(wire) ? wire : cap.defaultEffort;
 }
 
 /** {@link resolveThinkingState} 的结果：意图、服务端实际是否思考、控制形态。 */
