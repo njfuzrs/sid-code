@@ -461,11 +461,19 @@ export interface SendParams {
    *
    * 为什么不能让 fallback 直接读 `thinking.enabled`：恒思考模型上它已被 applier 强制成
    * `true`，拿它当输入会把「主模型关不掉」传染给备用模型。也不能读用户 `/think`：
-   * side-call / 子代理 / fork 同样经 `streamWithResilience` 走 fallback，它们的意图不是用户开关。
+   * 字段是按调用表达意图的，side-call / 子代理的意图不是用户开关。
    *
-   * 由调用方写：主循环写 resolveThinking / resolveAppliedEffort 的结果，子代理写
-   * `sub-agent-effort.ts` 的结论。缺省时 fallback 按 `thinking.enabled` 推断——
-   * 只有 side-call（`SIDE_CALL_NO_THINK`，恒 false）会走到这条，方向安全。
+   * ⚠ 生产覆盖面（20261018 复审 R4，回源码核过）：**只有主循环会真的 fallback**。
+   * side-call / 子代理 / fork 虽经 `streamWithResilience`，但 10 个生产调用点都不传
+   * `fallbackModel` 也不传共享 `fallback` 实例，`resilient-stream.ts` 现建的一次性
+   * `ModelFallback` 没有备用模型，重试耗尽直接抛错，走不到 `reapplyThinkingForFallback`。
+   * 「它们要不要接 fallback」是另一件事，不在本字段的职责里。
+   *
+   * 由调用方写：主循环（`query/loop.ts` 注入了 getEffortSetting / getThinkingSetting 时）写
+   * resolveThinking / resolveAppliedEffort 的结果，子代理写 `sub-agent-effort.ts` 的结论。
+   * 缺省时 fallback 按 `thinking.enabled` 推断：side-call（`SIDE_CALL_NO_THINK`，恒 false）
+   * 与未注入 getter 的旧主循环路径都会走到这条；前者方向安全，后者在恒思考主模型上
+   * 会把 applier 强制出的 true 带给备用模型（只影响未注入 getter 的调用方，生产 App 都注入了）。
    */
   thinkingIntent?: {
     thinking: boolean;

@@ -104,10 +104,17 @@ describe("② auto 默认值按模型（D7）", () => {
 });
 
 describe("③ 不变量：展示 == 实发（Anthropic 协议全部注册条目 × on/off/auto）", () => {
-  /** 线上是否思考：发了 adaptive/enabled → 是；disabled → 否；不发 → 看服务端默认 */
-  // R10：与 digest「展示≠实发」共用同一份判定（thinking-observation.ts），两处口径不会分叉。
-  // 边界（T8）：本测试与被测代码读同一份注册表字段，锁得住「两处一致」，锁不住「数据正确」，
-  // 后者只能靠真网关验收兜底。
+  /**
+   * 线上是否思考：发了 adaptive/enabled → 是；disabled → 否；不发 → 看服务端默认。
+   *
+   * R10：与 digest「展示≠实发」共用同一份判定（thinking-observation.ts），两处口径不会分叉。
+   *
+   * ⚠ 边界（20261018 复审 T8）：「不发」时读的是注册表 `thinkingOmitMeans`，与被测代码
+   * 读同一个字段。所以本不变量锁得住「展示与实发两处一致」，锁不住「注册表数据本身对」——
+   * 若某模型的 `thinkingOmitMeans` 写错，两边一起错、这里照样绿。数据正确性只能靠
+   * 真网关验收（复审 V1）兜底。下面「显式矩阵」哨兵把期望值手写一份，
+   * 至少让注册表的改动必须同时改测试、进 review。
+   */
   function wireThinks(model: string, wire: { param: Record<string, any> }): boolean {
     const e = lookupRegistryExact(model);
     return (
@@ -126,6 +133,51 @@ describe("③ 不变量：展示 == 实发（Anthropic 协议全部注册条目 
   test("覆盖面哨兵：5 一代条目都在", () => {
     for (const m of ["claude-opus-5", "claude-sonnet-5", "claude-haiku-5-5", "claude-opus-5-5"]) {
       expect(anthropicModels).toContain(m);
+    }
+  });
+
+  /**
+   * 显式矩阵哨兵（20261018 复审 T5，原方案 §9.1）：注册表里**每个**
+   * `claude-(opus|sonnet|fable|mythos|haiku)-\d` 键都必须出现在这张手写矩阵里，
+   * 且控制形态 / 不传语义与矩阵一致。此前只硬编码 4 个键，新增 5.6 这类条目时不会红。
+   * 红了 = 注册表新增或改了条目：**补矩阵，不删断言**（并确认该模型的真实服务端行为）。
+   */
+  const CLAUDE_MATRIX: Record<string, { control: "toggle" | "locked-on"; omitMeans: "on" | null }> =
+    {
+      "claude-opus-5-5": { control: "locked-on", omitMeans: null },
+      "claude-sonnet-5-5": { control: "locked-on", omitMeans: null },
+      "claude-fable-5-1": { control: "locked-on", omitMeans: null },
+      "claude-fable-5": { control: "locked-on", omitMeans: null },
+      "claude-mythos-5": { control: "locked-on", omitMeans: null },
+      "claude-opus-5": { control: "toggle", omitMeans: "on" },
+      "claude-sonnet-5": { control: "toggle", omitMeans: "on" },
+      "claude-haiku-5-5": { control: "toggle", omitMeans: "on" },
+      "claude-opus-4-8": { control: "toggle", omitMeans: null },
+      "claude-opus-4-7": { control: "toggle", omitMeans: null },
+      "claude-opus-4-6": { control: "toggle", omitMeans: null },
+      "claude-opus-4-20250514": { control: "toggle", omitMeans: null },
+      "claude-sonnet-4-6": { control: "toggle", omitMeans: null },
+      "claude-sonnet-4-5-20250514": { control: "toggle", omitMeans: null },
+      "claude-sonnet-4-20250514": { control: "toggle", omitMeans: null },
+      "claude-haiku-4-5": { control: "toggle", omitMeans: null },
+      "claude-haiku-4-5-20251001": { control: "toggle", omitMeans: null },
+      "claude-haiku-4-20250514": { control: "toggle", omitMeans: null },
+    };
+
+  test("显式矩阵哨兵：注册表全部 Claude 键都在矩阵里且形态一致", () => {
+    const keys = getRegistryEntries()
+      .map(([k]) => k)
+      .filter((k) => /^claude-(opus|sonnet|fable|mythos|haiku)-\d/.test(k));
+    expect(keys.length).toBeGreaterThan(0);
+    const missing = keys.filter((k) => !(k in CLAUDE_MATRIX));
+    expect(missing).toEqual([]);
+    for (const k of keys) {
+      const want = CLAUDE_MATRIX[k]!;
+      expect({ k, control: anthropicCap(k).thinkingControl }).toEqual({ k, control: want.control });
+      expect({ k, omit: lookupRegistryExact(k)?.thinkingOmitMeans ?? null }).toEqual({
+        k,
+        omit: want.omitMeans,
+      });
     }
   });
 
