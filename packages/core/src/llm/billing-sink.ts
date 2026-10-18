@@ -530,3 +530,29 @@ export function recordNonStreamingBilledRequest(req: {
     /* 计费上报绝不影响请求 */
   }
 }
+
+/**
+ * S13 L12：usage 是否非 0 —— 「usage-sink 真的入了账」的唯一判据。
+ *
+ * 三个 sink 调用方（agent/tool.ts、agent/custom.ts、tool/workflow.ts）必须同源：
+ * 全 0 时 sink 调了也等于没记，必须让 {@link UsageSinkTicket.settle} 收到 false，
+ * 把认领过的 fetch 补交给观察者；否则「fetch 已计费、汇总 usage 却为 0」的那次两边都不记。
+ * workflow 曾经手抄判据漏了这一条（只要 sink 存在就报已入账）。
+ */
+export function hasNonZeroUsage(
+  usage:
+    | {
+        inputTokens?: number;
+        outputTokens?: number;
+        cacheReadInputTokens?: number;
+        cacheCreationInputTokens?: number;
+      }
+    | undefined,
+): boolean {
+  return (
+    (usage?.inputTokens ?? 0) > 0 ||
+    (usage?.outputTokens ?? 0) > 0 ||
+    (usage?.cacheReadInputTokens ?? 0) > 0 ||
+    (usage?.cacheCreationInputTokens ?? 0) > 0
+  );
+}

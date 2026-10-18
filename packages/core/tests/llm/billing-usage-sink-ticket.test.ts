@@ -14,6 +14,7 @@
 import { test, expect, describe, beforeEach, afterEach } from "bun:test";
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
+import { Glob } from "bun";
 import {
   recordBilledRequest,
   addBillingObserver,
@@ -21,6 +22,7 @@ import {
   nextFetchId,
   shouldChargeBilledRequest,
   UsageSinkTicket,
+  hasNonZeroUsage,
   type BilledRequest,
 } from "../../src/llm/billing-sink.ts";
 import { withRequestContext } from "../../src/llm/request-context.ts";
@@ -151,16 +153,48 @@ describe("UsageSinkTicket：经 usage-sink 入账的子代理链不再被观察�
  */
 describe("门禁：调用 usage-sink 的子代理链必须开入账票据", () => {
   const SRC = join(import.meta.dir, "../../src");
-  const SINK_CALLERS = ["agent/tool.ts", "agent/custom.ts", "tool/workflow.ts"];
-
-  test("三个 sink 调用方都开了票据（或经 runner 的 accountsUsage 声明）", () => {
-    for (const rel of SINK_CALLERS) {
+  /**
+   * D6：调用方清单**从源码扫出来**，不再写死。写死时新增第 4 个调用方门禁照样绿 ——
+   * 它只检查清单里的文件。形状：任何 `.usageSink(` / `usageSink?.(` 调用（声明 `setUsageSink(` 不算）。
+   */
+  const SINK_CALL = /\busageSink\??\.?\(/;
+  function scanSinkCallers(): string[] {
+    const out: string[] = [];
+    for (const rel of new Glob("**/*.{ts,tsx}").scanSync({ cwd: SRC })) {
       const src = readFileSync(join(SRC, rel), "utf-8");
-      // 前提自证：它确实调用 sink，否则这条断言是空转
-      expect(src.includes("this.usageSink(")).toBe(true);
+      const hit = src.split("\n").some((line) => {
+        const code = line.replace(/\/\/.*$/, "");
+        return SINK_CALL.test(code) && !/setUsageSink\s*\(/.test(code);
+      });
+      if (hit) out.push(rel);
+    }
+    return out.sort();
+  }
+
+  test("扫描自证：至少扫到已知的三个调用方（防扫描器失明后空集全绿）", () => {
+    const callers = scanSinkCallers();
+    for (const known of ["agent/tool.ts", "agent/custom.ts", "tool/workflow.ts"]) {
+      expect(callers).toContain(known);
+    }
+  });
+
+  test("每个 sink 调用方都开了票据（或经 runner 的 accountsUsage 声明）", () => {
+    for (const rel of scanSinkCallers()) {
+      const src = readFileSync(join(SRC, rel), "utf-8");
       const opensTicket =
         src.includes("new UsageSinkTicket()") || /accountsUsage:\s*this\.usageSink/.test(src);
       expect({ rel, opensTicket }).toEqual({ rel, opensTicket: true });
+    }
+  });
+
+  test("L12：每个 sink 调用方都用同源判据 hasNonZeroUsage 决定「是否已入账」", () => {
+    // usage 全 0 时报已入账 ⇒ 票据不补交 ⇒ 这次 fetch 两边都不记。workflow 曾手抄漏了这条。
+    for (const rel of scanSinkCallers()) {
+      const src = readFileSync(join(SRC, rel), "utf-8");
+      expect({ rel, sameSource: src.includes("hasNonZeroUsage(") }).toEqual({
+        rel,
+        sameSource: true,
+      });
     }
   });
 
@@ -180,5 +214,16 @@ describe("门禁：调用 usage-sink 的子代理链必须开入账票据", () =
     expect(start).toBeGreaterThan(0);
     const block = app.slice(start, start + 2500);
     expect(block.includes("setUsageAccounting")).toBe(false);
+  });
+});
+
+describe("L12：hasNonZeroUsage 判据", () => {
+  test("全 0 / 缺省 → false；任一维度非 0 → true", () => {
+    expect(hasNonZeroUsage(undefined)).toBe(false);
+    expect(hasNonZeroUsage({ inputTokens: 0, outputTokens: 0 })).toBe(false);
+    expect(hasNonZeroUsage({ inputTokens: 1 })).toBe(true);
+    expect(hasNonZeroUsage({ outputTokens: 1 })).toBe(true);
+    expect(hasNonZeroUsage({ cacheReadInputTokens: 1 })).toBe(true);
+    expect(hasNonZeroUsage({ cacheCreationInputTokens: 1 })).toBe(true);
   });
 });

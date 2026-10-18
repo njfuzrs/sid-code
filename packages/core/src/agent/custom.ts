@@ -13,7 +13,7 @@ import { ExtensionLoader } from "../extension/loader.ts";
 import type { ScanOptions } from "../extension/types.ts";
 import { SubAgent } from "./sub-agent.ts";
 import { getLogger } from "../debug/logger.ts";
-import { UsageSinkTicket } from "../llm/billing-sink.ts";
+import { UsageSinkTicket, hasNonZeroUsage } from "../llm/billing-sink.ts";
 import type { ExtensionSource } from "../extension/types.ts";
 import { z } from "zod/v4";
 
@@ -287,13 +287,7 @@ export class CustomAgentTool implements Tool {
 
       // P0-1：把自定义子代理消耗的 token/费用回写主会话
       if (this.usageSink) {
-        const u = result.usage;
-        const hasUsage =
-          (u?.inputTokens ?? 0) > 0 ||
-          (u?.outputTokens ?? 0) > 0 ||
-          (u?.cacheReadInputTokens ?? 0) > 0 ||
-          (u?.cacheCreationInputTokens ?? 0) > 0;
-        if (hasUsage) {
+        if (hasNonZeroUsage(result.usage)) {
           try {
             this.usageSink(result);
             sinkCharged = true;
