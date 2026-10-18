@@ -2120,8 +2120,9 @@ export class SubAgent {
           }
 
           // 实时写输出到磁盘（支持 task_output 增量读取）
-          if (taskId && info.textOutput) {
-            appendAgentOutput(taskId, `[轮次 ${info.turn}] ${info.textOutput}\n`);
+          // F5：只写**本轮**新文本。textOutput 在纯工具轮是上一轮残留，用它会把同一句话逐轮重写。
+          if (taskId && info.turnText) {
+            appendAgentOutput(taskId, `[轮次 ${info.turn}] ${info.turnText}\n`);
           }
 
           // 最近活动滑动窗口：info.tools 是**本轮**的工具（agentic-loop.ts:710 的

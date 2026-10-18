@@ -373,7 +373,7 @@ ${typeLines}
 
 派活前请按子任务是否需要写入/执行来选类型：只需搜索分析用 explore，需要改文件或跑命令用 task。
 子代理完成后只返回最终结果。
-设置 run_in_background=true 可以后台执行，立即返回 task_id，完成后通过通知告知结果。
+设置 run_in_background=true 可以后台执行，立即返回 task_id；完成后会自动以 <task-notification> 通知你——不要用 task_output 等待或轮询，继续做不重叠的工作，或简短告诉用户启动了什么并结束本轮。
 设置 isolation=worktree 可在独立 Git Worktree 中执行（文件改动隔离，与 run_in_background 可同时使用）。`;
   }
 
@@ -829,7 +829,10 @@ ${typeLines}
         task_id: taskId,
         status: "running",
         agent_type: params.type,
-        message: `子代理已在后台启动 (task_id: ${taskId})，完成后会通知你`,
+        output_file: taskState.outputFile,
+        // F3：对齐 cc AgentTool 启动返回（"Briefly tell the user what you launched and end your
+        // response"）。只说「会通知你」时，模型 4/4 次紧接着调 task_output(timeout=600000) 阻塞等待。
+        message: `子代理已在后台启动 (task_id: ${taskId})。完成后会自动通知你，不要用 task_output 等待或轮询；继续做不重叠的工作，或简短告诉用户启动了什么并结束本轮。用户要求查看进度时可 read output_file。`,
       }),
     };
   }

@@ -35,6 +35,8 @@ export {
   hasDismissableTasks,
   graceDeadlineFor,
   markNotificationsDelivered,
+  claimResultDelivery,
+  isResultDeliveredByToolResult,
   EVICT_GRACE_MS,
   KILLED_DISPLAY_MS,
   UNDELIVERED_SAFETY_VALVE_MS,
@@ -80,6 +82,9 @@ export {
   enqueuePendingNotification,
   dequeuePendingNotifications,
   hasPendingNotifications,
+  withdrawTaskNotification,
+  NOTIFICATION_OUTPUT_MAX_CHARS,
+  truncateForNotification,
 } from "./notification.ts";
 
 // 空闲唤醒原语（通知到达时续跑一轮的那套等待/订阅）。集中在这里转出，

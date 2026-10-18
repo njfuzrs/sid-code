@@ -93,8 +93,13 @@ export interface AgentLoopConfig {
   /** 每轮结束后的回调（含本轮文本和工具信息，用于磁盘输出 + 进度追踪） */
   onTurnEnd?: (info: {
     turn: number;
-    /** 本轮文本输出（完整内容） */
+    /** 截至本轮的「最后一次文本输出」：纯工具轮沿用上一轮的值（salvage / 汇总依赖这个语义） */
     textOutput: string;
+    /**
+     * **本轮**新产出的文本，没有就是空串（F5）。增量落盘（`.output`）必须用它而不是 textOutput：
+     * 后者在纯工具轮是上一轮的残留值，20261019 轨迹里一句话被重复写了 20 次。
+     */
+    turnText?: string;
     /** 本轮工具调用信息 */
     tools: Array<{ name: string; input: Record<string, unknown> }>;
     /** 截至本轮的累计真实 token 数（input + output，来自 totalUsage），供进度面板展示 */
@@ -362,6 +367,8 @@ async function runAgentLoopInner(
   let turns = 0;
   let toolUseCount = 0;
   let lastTextOutput = "";
+  /** 本轮新产出的文本（F5，每轮重置；见 onTurnEnd.turnText） */
+  let currentTurnText = "";
   let unknownStopWarning: string | undefined;
   // B5-1：`model_context_window_exceeded` 的压缩续写次数。有界（见该分支注释）——
   // 压缩没压动就不再续写，否则会在"压不动 → 再撞上限"之间空转到 maxTurns 耗尽。
@@ -524,6 +531,7 @@ async function runAgentLoopInner(
 
   while (turns < maxTurns) {
     turns++;
+    currentTurnText = "";
     log.debug("AGENT_LOOP", `轮次 ${turns}/${maxTurns}`);
 
     // 每轮开始前的回调（SendMessage 注入等）
@@ -908,8 +916,9 @@ async function runAgentLoopInner(
 
     // 提取文本输出
     const textBlocks = response.content.filter((b) => b.type === "text");
+    currentTurnText = textBlocks.map((b) => (b.type === "text" ? b.text : "")).join("\n");
     if (textBlocks.length > 0) {
-      lastTextOutput = textBlocks.map((b) => (b.type === "text" ? b.text : "")).join("\n");
+      lastTextOutput = currentTurnText;
     }
 
     // ─── F1：空参数 tool_use 退化检测（不论 stop_reason）───
@@ -991,6 +1000,7 @@ async function runAgentLoopInner(
         config.onTurnEnd?.({
           turn: turns,
           textOutput: lastTextOutput,
+          turnText: currentTurnText,
           tools: [],
           tokenCount: totalUsage.inputTokens + totalUsage.outputTokens,
           toolUseCount,
@@ -1101,6 +1111,7 @@ async function runAgentLoopInner(
       config.onTurnEnd?.({
         turn: turns,
         textOutput: lastTextOutput,
+        turnText: currentTurnText,
         tools: [],
         tokenCount: totalUsage.inputTokens + totalUsage.outputTokens,
         toolUseCount,
@@ -1206,6 +1217,7 @@ async function runAgentLoopInner(
       config.onTurnEnd?.({
         turn: turns,
         textOutput: lastTextOutput,
+        turnText: currentTurnText,
         tools: turnToolInfo,
         tokenCount: totalUsage.inputTokens + totalUsage.outputTokens,
         toolUseCount,
@@ -1220,6 +1232,7 @@ async function runAgentLoopInner(
       config.onTurnEnd?.({
         turn: turns,
         textOutput: lastTextOutput,
+        turnText: currentTurnText,
         tools: [],
         tokenCount: totalUsage.inputTokens + totalUsage.outputTokens,
         toolUseCount,
@@ -1300,6 +1313,7 @@ async function runAgentLoopInner(
       config.onTurnEnd?.({
         turn: turns,
         textOutput: lastTextOutput,
+        turnText: currentTurnText,
         tools: [],
         tokenCount: totalUsage.inputTokens + totalUsage.outputTokens,
         toolUseCount,
@@ -1483,8 +1497,9 @@ async function runAgentLoopInner(
 
       // 提取总结文本
       const summaryTexts = summaryResponse.content.filter((b) => b.type === "text");
+      currentTurnText = summaryTexts.map((b) => (b.type === "text" ? b.text : "")).join("\n");
       if (summaryTexts.length > 0) {
-        lastTextOutput = summaryTexts.map((b) => (b.type === "text" ? b.text : "")).join("\n");
+        lastTextOutput = currentTurnText;
       }
 
       // ─── P3-3：总结轮响应必须剥离 tool_use（与主循环 loop.ts 同一做法）───
@@ -1508,6 +1523,7 @@ async function runAgentLoopInner(
       config.onTurnEnd?.({
         turn: turns + 1,
         textOutput: lastTextOutput,
+        turnText: currentTurnText,
         tools: [],
         tokenCount: totalUsage.inputTokens + totalUsage.outputTokens,
         toolUseCount,

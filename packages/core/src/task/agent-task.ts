@@ -132,7 +132,13 @@ export async function completeAgentTask(
     // 不置位则它只能等 10min 安全阀，前台任务的 registry 条目与 .output 白白驻留。
     // L4：记「下一回合」而不是当前回合。tool_result 要到下一轮才进模型，而下一轮开头
     // 纪元已推进到 N+1；记 N 的话下一轮的模型调用一开始就满足驱逐条件，只剩面板驻留期在保护。
-    ...(notify ? {} : { notificationDeliveredTurn: getCompletedMainTurns() + 1 }),
+    // F1：前台结果的投递所有权同时归 tool_result，task_output 再读属于显式重读，不再认领。
+    ...(notify
+      ? {}
+      : {
+          notificationDeliveredTurn: getCompletedMainTurns() + 1,
+          resultDeliveredVia: "tool_result" as const,
+        }),
   }));
 
   if (!notify) return;
@@ -178,7 +184,13 @@ export async function failAgentTask(
     error,
     endTime: Date.now(),
     notified: true,
-    ...(notify ? {} : { notificationDeliveredTurn: getCompletedMainTurns() + 1 }), // 同 completeAgentTask（L4）
+    // 同 completeAgentTask（L4 + F1 投递所有权）
+    ...(notify
+      ? {}
+      : {
+          notificationDeliveredTurn: getCompletedMainTurns() + 1,
+          resultDeliveredVia: "tool_result" as const,
+        }),
   }));
 
   if (!notify) return;

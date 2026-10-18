@@ -1260,7 +1260,8 @@ export class BashTool implements Tool {
         task_id: taskState.id,
         status: taskState.status,
         output_file: taskState.outputFile,
-        message: `命令已作为后台任务启动 (task_id: ${taskState.id})`,
+        // F3：同 sub_agent 后台启动返回——明说不要轮询（20261019 轨迹 shell 任务也被 task_output 阻塞满 600s）
+        message: `命令已作为后台任务启动 (task_id: ${taskState.id})。完成后会自动通知你，不要用 task_output 等待或轮询；继续做不重叠的工作，需要看进度时 read output_file。`,
       }),
     };
   }
