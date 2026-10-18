@@ -16,7 +16,8 @@ import {
   resolveThinkingState,
   type ThinkingSetting,
 } from "@sid-code/core/llm/effort.ts";
-import { buildThinkingWire } from "@sid-code/core/llm/anthropic.ts";
+import { buildThinkingWire, thinkingWireLabel } from "@sid-code/core/llm/anthropic.ts";
+import { wireThinks as sharedWireThinks } from "@sid-code/core/llm/thinking-observation.ts";
 import { getRegistryEntries, lookupRegistryExact } from "@sid-code/core/llm/model-registry.ts";
 import { setModelCompat, normalizeModelCompat } from "@sid-code/core/llm/model-compat.ts";
 import type { SendParams } from "@sid-code/core/llm/types.ts";
@@ -104,11 +105,18 @@ describe("② auto 默认值按模型（D7）", () => {
 
 describe("③ 不变量：展示 == 实发（Anthropic 协议全部注册条目 × on/off/auto）", () => {
   /** 线上是否思考：发了 adaptive/enabled → 是；disabled → 否；不发 → 看服务端默认 */
+  // R10：与 digest「展示≠实发」共用同一份判定（thinking-observation.ts），两处口径不会分叉。
+  // 边界（T8）：本测试与被测代码读同一份注册表字段，锁得住「两处一致」，锁不住「数据正确」，
+  // 后者只能靠真网关验收兜底。
   function wireThinks(model: string, wire: { param: Record<string, any> }): boolean {
-    const t = wire.param.thinking;
-    if (t) return t.type !== "disabled";
     const e = lookupRegistryExact(model);
-    return e?.thinkingMode === "always-on" || e?.thinkingOmitMeans === "on";
+    return (
+      sharedWireThinks(
+        thinkingWireLabel(wire.param),
+        e?.thinkingMode === "always-on" ? "locked-on" : "toggle",
+        e ? (e.thinkingOmitMeans ?? "off") : "off",
+      ) ?? false
+    );
   }
 
   const anthropicModels = getRegistryEntries()

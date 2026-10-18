@@ -43,6 +43,8 @@ import {
 import { normalizeToolInput } from "./normalize-tool-input.ts";
 import { pickWireModel } from "./wire-model.ts";
 import { thinkingOffWire } from "./dialect/thinking-off-wire.ts";
+import { observeThinking, type ThinkingObservationFields } from "./thinking-observation.ts";
+import { lookupRegistryExact } from "./model-registry.ts";
 import { resolveVisionSupport } from "./vision-capability.ts";
 import {
   classifyProtocolFamily,
@@ -843,6 +845,12 @@ export class AnthropicProvider implements Provider {
             thinkingWire: thinkingWireLabel(thinkingWire.param),
             thinkingInResponse: sawThinkingBlock,
             thinkingIntent: observedThinkingIntent(params),
+            ...observeAnthropicThinking(
+              params,
+              pickWireModel(params, this._model),
+              this.client.baseURL,
+              thinkingWire.param,
+            ),
           });
         } catch {
           /* 计费上报绝不影响流 */
@@ -1124,6 +1132,12 @@ export class AnthropicProvider implements Provider {
           thinkingWire: thinkingWireLabel(nonStreamThinkingWire.param),
           thinkingInResponse: nonStreamSawThinking,
           thinkingIntent: observedThinkingIntent(params),
+          ...observeAnthropicThinking(
+            params,
+            wireModel,
+            this.client.baseURL,
+            nonStreamThinkingWire.param,
+          ),
         });
       }
     }
@@ -1205,6 +1219,26 @@ export function thinkingWireLabel(
 ): "enabled" | "adaptive" | "disabled" | "omitted" {
   const t = (param.thinking as { type?: string } | undefined)?.type;
   return t === "enabled" || t === "adaptive" || t === "disabled" ? t : "omitted";
+}
+
+/**
+ * R1 / R6 / R10：Anthropic 协议的思考观测字段。「不发 = 什么」只认注册表**精确命中**
+ * （与 thinkingOffWire 同口径）：未注册的名字不猜，交 digest 记「不可判」。
+ */
+function observeAnthropicThinking(
+  params: SendParams,
+  wireModel: string,
+  baseURL: string | undefined,
+  param: Record<string, unknown>,
+): ThinkingObservationFields {
+  const entry = lookupRegistryExact(wireModel);
+  return observeThinking(params, {
+    wireModel,
+    provider: "anthropic",
+    baseURL,
+    wire: thinkingWireLabel(param),
+    omitMeans: entry ? (entry.thinkingOmitMeans ?? "off") : undefined,
+  });
 }
 
 export function buildThinkingWire(

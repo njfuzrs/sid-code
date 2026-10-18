@@ -125,6 +125,17 @@ export interface BilledRequest {
   /** 调用方的原始思考意图（`SendParams.thinkingIntent.thinking`）；调用方没表达时缺省 */
   thinkingIntent?: boolean;
   /**
+   * R6：思考设置三态（auto 不解析成布尔）。泄漏率分母只取 `off`——`thinkingIntent` 是 auto 解析后的
+   * 布尔，auto 在默认关的模型上会伪装成 off（见 thinking-observation.ts）。
+   */
+  thinkingSetting?: "on" | "off" | "auto";
+  /** R1：目标模型思考控制形态。分母只取 `toggle`；`locked-on` / `none` 是「关不掉」不是「泄漏」 */
+  thinkingControl?: "toggle" | "locked-on" | "none";
+  /** R10：状态栏展示的「在思考」（= resolveThinkingState().effective） */
+  thinkingShown?: boolean;
+  /** R10：按线上实发推出的「服务端在思考」；omitted 且服务端默认未知时缺省（不猜） */
+  thinkingWireThinks?: boolean;
+  /**
    * S13（PR-8）：`accounted=true` 时是谁入的账。缺省 = 主循环（`updateUsage` + `AfterModelRaw`）；
    * `"usage-sink"` = 子代理链经 `createSubAgentUsageSink` 按 `SubAgentResult.usage` 入账，
    * 本事件同样只作核对（见 {@link UsageSinkTicket}）。
@@ -289,6 +300,12 @@ export function recordBilledRequest(req: BilledRequest): void {
         thinking_in_response: req.thinkingInResponse,
       }),
       ...(req.thinkingIntent !== undefined && { thinking_intent: req.thinkingIntent }),
+      ...(req.thinkingSetting !== undefined && { thinking_setting: req.thinkingSetting }),
+      ...(req.thinkingControl !== undefined && { thinking_control: req.thinkingControl }),
+      ...(req.thinkingShown !== undefined && { thinking_shown: req.thinkingShown }),
+      ...(req.thinkingWireThinks !== undefined && {
+        thinking_wire_thinks: req.thinkingWireThinks,
+      }),
     });
     notifyObservers(req);
   } catch {
@@ -483,6 +500,10 @@ export function recordNonStreamingBilledRequest(req: {
   thinkingWire?: BilledRequest["thinkingWire"];
   thinkingInResponse?: boolean;
   thinkingIntent?: boolean;
+  thinkingSetting?: BilledRequest["thinkingSetting"];
+  thinkingControl?: BilledRequest["thinkingControl"];
+  thinkingShown?: boolean;
+  thinkingWireThinks?: boolean;
 }): void {
   try {
     const bctx = currentSseDumpContext();
@@ -500,6 +521,10 @@ export function recordNonStreamingBilledRequest(req: {
       thinkingWire: req.thinkingWire,
       thinkingInResponse: req.thinkingInResponse,
       thinkingIntent: req.thinkingIntent,
+      thinkingSetting: req.thinkingSetting,
+      thinkingControl: req.thinkingControl,
+      thinkingShown: req.thinkingShown,
+      thinkingWireThinks: req.thinkingWireThinks,
     });
   } catch {
     /* 计费上报绝不影响请求 */

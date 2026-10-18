@@ -806,6 +806,14 @@ export function emitBilledRequest(data: {
   thinking_in_response?: boolean;
   /** PR-5：调用方原始思考意图 */
   thinking_intent?: boolean;
+  /** R6：思考设置三态（on / off / auto） */
+  thinking_setting?: string;
+  /** R1：目标模型思考控制形态（toggle / locked-on / none） */
+  thinking_control?: string;
+  /** R10：展示态「在思考」 */
+  thinking_shown?: boolean;
+  /** R10：按线上实发推出的「服务端在思考」 */
+  thinking_wire_thinks?: boolean;
 }): void {
   try {
     if (_eventWriter && _sessionId) {
