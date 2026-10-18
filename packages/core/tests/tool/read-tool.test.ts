@@ -630,3 +630,69 @@ describe("Read 工具 — 发现4:重复窄读非阻塞引导", () => {
     expect(outs[0]).not.toContain("[读取效率提示:");
   });
 });
+
+// 会话 20261018-224823-dbc19982：199 行 / 234KB 的生成文件一次读进 19 万字符。
+// 只限行数挡不住"行少但行极长"或"行多且行长"的文件。
+describe("Read 工具 — 输出体量上限", () => {
+  test("单行超过 2000 字符 → 截断显示并标注，且记为部分视图", async () => {
+    const longLine = "x".repeat(50_000);
+    const filePath = makeTmpFile(`short\n${longLine}\nend\n`);
+    const tracker = new FileReadTracker();
+    const r = await new ReadTool(tracker).execute({ file_path: filePath });
+    expect(r.isError).toBeFalsy();
+    expect(r.output).toContain("本行共 50000 字符");
+    expect(r.output).toContain("有 1 行超过 2000 字符");
+    expect(r.output.length).toBeLessThan(5_000);
+    expect(r.output).toContain("end");
+  });
+
+  test("截断后仍超过 token 上限 → 报错并给出建议 limit，不返回内容", async () => {
+    // 2000 行 × 1900 字符 ASCII ≈ 76 万 token（0.2 tok/char）
+    const body = Array.from({ length: 2000 }, (_, i) => `${i}`.padEnd(1900, "a")).join("\n");
+    const filePath = makeTmpFile(body);
+    const r = await new ReadTool(new FileReadTracker()).execute({ file_path: filePath });
+    expect(r.isError).toBe(true);
+    expect(r.output).toContain("超过单次上限 25000");
+    expect(r.output).toMatch(/limit≈\d+/);
+    expect(r.output).not.toContain("aaaaaaaaaa");
+  });
+
+  test("建议的 limit 真能读进来（报错不能是死胡同）", async () => {
+    const body = Array.from({ length: 2000 }, (_, i) => `${i}`.padEnd(1900, "a")).join("\n");
+    const filePath = makeTmpFile(body);
+    const tool = new ReadTool(new FileReadTracker());
+    const r = await tool.execute({ file_path: filePath });
+    const limit = Number(/limit≈(\d+)/.exec(r.output)?.[1]);
+    const r2 = await tool.execute({ file_path: filePath, limit });
+    expect(r2.isError).toBeFalsy();
+  });
+
+  test("常规体量文件不受影响", async () => {
+    const body = Array.from({ length: 1500 }, (_, i) => `const v${i} = ${i};`).join("\n");
+    const r = await new ReadTool(new FileReadTracker()).execute({ file_path: makeTmpFile(body) });
+    expect(r.isError).toBeFalsy();
+    expect(r.output).toContain("const v1499 = 1499;");
+  });
+
+  test("SID_READ_MAX_OUTPUT_TOKENS 可覆盖上限", async () => {
+    const prev = process.env.SID_READ_MAX_OUTPUT_TOKENS;
+    process.env.SID_READ_MAX_OUTPUT_TOKENS = "50";
+    try {
+      const body = Array.from({ length: 100 }, (_, i) => `line ${i} content`).join("\n");
+      const r = await new ReadTool(new FileReadTracker()).execute({ file_path: makeTmpFile(body) });
+      expect(r.isError).toBe(true);
+      expect(r.output).toContain("超过单次上限 50");
+    } finally {
+      if (prev === undefined) delete process.env.SID_READ_MAX_OUTPUT_TOKENS;
+      else process.env.SID_READ_MAX_OUTPUT_TOKENS = prev;
+    }
+  });
+
+  test("体量超上限的文件窄读时，不再提示「可一次整读」", async () => {
+    const body = Array.from({ length: 199 }, () => "y".repeat(1900)).join("\n");
+    const filePath = makeTmpFile(body);
+    const r = await new ReadTool(new FileReadTracker()).execute({ file_path: filePath, limit: 5 });
+    expect(r.isError).toBeFalsy();
+    expect(r.output).not.toContain("一次整读");
+  });
+});

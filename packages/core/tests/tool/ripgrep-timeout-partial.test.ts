@@ -153,7 +153,8 @@ describe("GlobTool 超时路径", () => {
 
     expect(r.isError).toBeFalsy();
     // tail.jpg 是最后一行（可能不完整）被丢弃；secret.jpg 被 deny 隐藏
-    expect(r.output.split("\n").slice(0, 2)).toEqual(["new.jpg", "old.jpg"]);
+    // 搜索根在 tmpdir（cwd 之外）→ 输出绝对路径（相对 cwd 会是 ../../ 链，模型难用）
+    expect(r.output.split("\n").slice(0, 2)).toEqual([join(dir, "new.jpg"), join(dir, "old.jpg")]);
     expect(r.output).not.toContain("secret.jpg");
     expect(r.output).not.toContain("tail.jpg");
     expect(r.output).toContain("部分结果");
@@ -210,7 +211,7 @@ describe("exit 2 + 逐路径访问错误", () => {
 
     const r = await new GlobTool().execute({ pattern: "**/*.jpg", path: dir });
     expect(r.isError).toBeFalsy();
-    expect(r.output).toBe("Desktop/pic.jpg");
+    expect(r.output).toBe(join(dir, "Desktop", "pic.jpg"));
   });
 
   test("exit 2 + 参数错误仍按失败处理", async () => {
