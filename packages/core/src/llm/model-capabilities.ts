@@ -80,6 +80,11 @@ export interface ModelCapabilityEntry {
   maxOutputTokens?: number;
   /** 服务端自报的 reasoning effort 档位（探针/外部源采得）。空数组 = 明确不支持 effort。 */
   effortValues?: string[];
+  /**
+   * 不发 effort 时服务端的默认档（外部源 `reasoning.default_effort`）。只给 auto 态展示用，
+   * 优先级低于注册表 `defaultEffort`（见 effort.ts `resolveDefaultEffort`）。
+   */
+  defaultEffort?: string;
   /** 该模型是否支持 reasoning（外部源 supports_reasoning / reasoning 字段）。 */
   supportsReasoning?: boolean;
   /** 数据来源，便于 /model list 展示与排障。 */
@@ -634,6 +639,10 @@ function sanitizeEntry(raw: unknown): ModelCapabilityEntry | null {
     }
   }
 
+  if (typeof r.defaultEffort === "string") {
+    const d = r.defaultEffort.toLowerCase();
+    if ((KNOWN_EFFORT_WORDS as readonly string[]).includes(d)) out.defaultEffort = d;
+  }
   if (typeof r.supportsReasoning === "boolean") out.supportsReasoning = r.supportsReasoning;
   if (typeof r.source === "string" && KNOWN_SOURCES.has(r.source)) {
     out.source = r.source as ModelCapabilityEntry["source"];
@@ -785,6 +794,9 @@ function parseOpenRouter(raw: unknown): Record<string, ModelCapabilityEntry[]> {
     if (cw !== undefined) entry.contextWindow = cw;
     if (mo !== undefined) entry.maxOutputTokens = mo;
     if (efforts) entry.effortValues = efforts;
+    if (typeof it.reasoning?.default_effort === "string") {
+      entry.defaultEffort = it.reasoning.default_effort;
+    }
     if (Array.isArray(it.supported_parameters)) {
       entry.supportsReasoning = (it.supported_parameters as unknown[]).includes("reasoning");
     }
@@ -1219,6 +1231,10 @@ function voteEntries(candidates: CandidateEntry[]): ModelCapabilityEntry | null 
     if (out.effortValues === undefined && entry.effortValues !== undefined) {
       out.effortValues = entry.effortValues;
     }
+    // 同 effortValues：取第一个报了的源，不投票。
+    if (out.defaultEffort === undefined && entry.defaultEffort !== undefined) {
+      out.defaultEffort = entry.defaultEffort;
+    }
     if (out.supportsReasoning === undefined && typeof entry.supportsReasoning === "boolean") {
       out.supportsReasoning = entry.supportsReasoning;
     }
@@ -1228,6 +1244,7 @@ function voteEntries(candidates: CandidateEntry[]): ModelCapabilityEntry | null 
   return out.contextWindow === undefined &&
     out.maxOutputTokens === undefined &&
     out.effortValues === undefined &&
+    out.defaultEffort === undefined &&
     out.supportsReasoning === undefined
     ? null
     : out;
