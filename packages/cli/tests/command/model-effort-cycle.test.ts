@@ -4,14 +4,15 @@
  * 覆盖「档位与模型配对」这条主线：
  *   getSelectableEfforts   —— 每个模型真实可选的档位集合（不再是全量 5 档硬编码）
  *   cycleEffortForModel    —— 在该集合内循环，每按一次必有可见变化
- *   resolveDisplayedEffort —— 面板显示哪一档（auto 态取实际生效档）
+ *   getDisplayedEffort     —— 展示档 = 线上实发档（替代已删除的 reconcileEffortForModel）
+ *   resolveDisplayedEffort —— 面板显示哪一档（取实发档，与 Footer 同源）
  */
 import { describe, test, expect } from "bun:test";
 import { resolveDisplayedEffort } from "@sid-code/cli/ui/components/ModelDialog.tsx";
 import {
   getSelectableEfforts,
   cycleEffortForModel,
-  reconcileEffortForModel,
+  getDisplayedEffort,
   isEffortGatedByThinking,
   previewWireEffort,
   resolveEffortCapability,
@@ -208,71 +209,51 @@ describe("isEffortGatedByThinking：思考关掉后档位是否失效", () => {
   });
 });
 
-describe("reconcileEffortForModel：换模型后档位归正", () => {
+describe("getDisplayedEffort：展示 = 实发，所选档不被改写（PR-C，替代 reconcileEffortForModel）", () => {
   const A = capFor("claude-opus-5", "anthropic", "https://code.ppchat.vip");
   const GLM = capFor("glm-5.2", "openai", "https://gw.example.com/v1");
   const O3 = capFor("o3-mini", "openai", "https://api.openai.com/v1");
   const DS = capFor("ali-deepseek-v4-pro", "openai", "https://gw.example.com/v1");
+  const ALL = ["low", "medium", "high", "xhigh", "max"] as EffortLevel[];
 
-  test("档位已被新模型支持时不动（不擅自改用户显式选过的档）", () => {
-    expect(reconcileEffortForModel(A, "high")).toBe("high");
-    expect(reconcileEffortForModel(GLM, "medium")).toBe("medium");
+  test("档位被新模型支持时原样显示", () => {
+    expect(getDisplayedEffort(A, "xhigh", null)).toBe("xhigh");
+    expect(getDisplayedEffort(GLM, "medium", null)).toBe("medium");
   });
 
-  test("auto 保持 auto（语义本就是跟随新模型默认）", () => {
-    expect(reconcileEffortForModel(GLM, undefined)).toBeUndefined();
-    expect(reconcileEffortForModel(O3, undefined)).toBeUndefined();
+  test("被钳制的档显示实发档（E2 / E7）", () => {
+    expect(getDisplayedEffort(GLM, "xhigh", null)).toBe("max");
+    expect(getDisplayedEffort(O3, "max", null)).toBe("high");
+    expect(getDisplayedEffort(O3, "xhigh", null)).toBe("high");
+    expect(getDisplayedEffort(DS, "low", null)).toBe("high");
+    expect(getDisplayedEffort(DS, "medium", null)).toBe("high");
   });
 
-  test("claude 的 xhigh 切到 GLM 归正为实际下发的 max", () => {
-    // 回归点：不归正会出现「状态栏显示 xhigh、实发 max、面板 hint 无 xhigh」三方矛盾
-    expect(reconcileEffortForModel(GLM, "xhigh")).toBe("max");
+  test("env 覆盖同样映射成实发档（E7：env 改不了 runtime，只能在展示层修）", () => {
+    expect(getDisplayedEffort(DS, undefined, "low")).toBe("high");
+    expect(getDisplayedEffort(DS, "max", "low")).toBe("high");
   });
 
-  test("max 切到无 max 的 o-series 归正为 high", () => {
-    expect(reconcileEffortForModel(O3, "max")).toBe("high");
-    expect(reconcileEffortForModel(O3, "xhigh")).toBe("high");
+  test("auto 显示模型默认档", () => {
+    expect(getDisplayedEffort(DS, undefined, null)).toBe(DS.defaultEffort);
   });
 
-  test("low 切到只认 high/max 的 DeepSeek 归正为 high", () => {
-    expect(reconcileEffortForModel(DS, "low")).toBe("high");
-    expect(reconcileEffortForModel(DS, "medium")).toBe("high");
-  });
-
-  test("归正结果恒在新模型可选集内", () => {
+  test("核心不变式：显示档 == 实发档，且恒在可选集内", () => {
     for (const cap of [A, GLM, O3, DS]) {
       const levels = getSelectableEfforts(cap);
-      for (const lv of ["low", "medium", "high", "xhigh", "max"] as EffortLevel[]) {
-        expect(levels).toContain(reconcileEffortForModel(cap, lv) as EffortLevel);
+      for (const lv of ALL) {
+        const shown = getDisplayedEffort(cap, lv, null);
+        expect(previewWireEffort(cap, shown)).toBe(shown);
+        expect(levels).toContain(shown);
       }
     }
   });
 
-  test("归正后「显示档位 == 实际下发档位」（核心不变式）", () => {
-    for (const cap of [A, GLM, O3, DS]) {
-      for (const lv of ["low", "medium", "high", "xhigh", "max"] as EffortLevel[]) {
-        const reconciled = reconcileEffortForModel(cap, lv) as EffortLevel;
-        expect(previewWireEffort(cap, reconciled)).toBe(reconciled);
-      }
-    }
-  });
-
-  test("归正是幂等的（再归正一次不变）", () => {
-    for (const cap of [A, GLM, O3, DS]) {
-      for (const lv of ["low", "medium", "high", "xhigh", "max"] as EffortLevel[]) {
-        const once = reconcileEffortForModel(cap, lv);
-        expect(reconcileEffortForModel(cap, once)).toBe(once);
-      }
-    }
-  });
-
-  test("不支持 effort 的模型保留旧档位（不下发，留着无害）", () => {
-    const noop: EffortCapability = {
-      ...CAP,
-      supportsEffort: false,
-      applyToSendParams: () => {},
-    } as unknown as EffortCapability;
-    expect(reconcileEffortForModel(noop, "xhigh")).toBe("xhigh");
+  test("跨模型往返不丢意图：GLM 上显示 max，同一 runtime 回到 Claude 仍是 xhigh", () => {
+    // 旧 reconcile 在切到 GLM 时把 runtime 改写成 max，切回 Claude 就只剩 max。
+    const runtime: EffortLevel = "xhigh";
+    expect(getDisplayedEffort(GLM, runtime, null)).toBe("max");
+    expect(getDisplayedEffort(A, runtime, null)).toBe("xhigh");
   });
 });
 
@@ -281,10 +262,11 @@ describe("resolveDisplayedEffort", () => {
     expect(resolveDisplayedEffort(undefined)).toBeUndefined();
   });
 
-  test("非 auto 态优先取 runtime", () => {
+  test("非 auto 态也取 applied（实发档），不取被钳制的 runtime", () => {
+    // DeepSeek 上选 low 实发 high：面板此前显示 low，与 Footer / 线上都不一致。
     expect(
       resolveDisplayedEffort({ runtime: "low", applied: "high", isAuto: false, capability: CAP }),
-    ).toBe("low");
+    ).toBe("high");
   });
 
   test("auto 态取 applied 实际档位", () => {

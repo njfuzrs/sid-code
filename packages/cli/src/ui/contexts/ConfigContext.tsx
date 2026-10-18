@@ -31,6 +31,8 @@ export interface ConfigContextValue {
   effortDisplay: {
     level: import("@sid-code/core/llm/effort.ts").EffortLevel;
     isAuto: boolean;
+    /** 思考关闭导致档位不下发（effort 被 thinking 门控的族）；缺省 false */
+    inert?: boolean;
   } | null;
   /** 思考开关展示态（状态栏 thinking 列）。null = 尚未初始化 */
   thinkingDisplay: {

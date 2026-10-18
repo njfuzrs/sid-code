@@ -333,8 +333,8 @@ describe("getDisplayedEffort / isEffortAuto", () => {
     expect(getDisplayedEffort(dsCap, undefined, null)).toBe("high");
     expect(isEffortAuto(undefined, null)).toBe(true);
   });
-  test("显式档位展示该档（基线，非服务端钳制后）", () => {
-    expect(getDisplayedEffort(dsCap, "low", null)).toBe("low"); // 展示用户设的基线 low
+  test("显式档位展示线上实发档（DeepSeek low 实发 high，PR-C / E7）", () => {
+    expect(getDisplayedEffort(dsCap, "low", null)).toBe("high");
     expect(isEffortAuto("low", null)).toBe(false);
   });
   test("env 强制 auto → isEffortAuto true", () => {
