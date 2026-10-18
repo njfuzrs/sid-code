@@ -128,9 +128,11 @@ export async function completeAgentTask(
     result,
     endTime: Date.now(),
     notified: true,
-    // 前台子代理（notify=false）的结果作为本轮 tool_result 回到模型，送达即此刻（S3）。
+    // 前台子代理（notify=false）的结果作为 tool_result 回到模型（S3）。
     // 不置位则它只能等 10min 安全阀，前台任务的 registry 条目与 .output 白白驻留。
-    ...(notify ? {} : { notificationDeliveredTurn: getCompletedMainTurns() }),
+    // L4：记「下一回合」而不是当前回合。tool_result 要到下一轮才进模型，而下一轮开头
+    // 纪元已推进到 N+1；记 N 的话下一轮的模型调用一开始就满足驱逐条件，只剩面板驻留期在保护。
+    ...(notify ? {} : { notificationDeliveredTurn: getCompletedMainTurns() + 1 }),
   }));
 
   if (!notify) return;
@@ -176,7 +178,7 @@ export async function failAgentTask(
     error,
     endTime: Date.now(),
     notified: true,
-    ...(notify ? {} : { notificationDeliveredTurn: getCompletedMainTurns() }), // 同 completeAgentTask
+    ...(notify ? {} : { notificationDeliveredTurn: getCompletedMainTurns() + 1 }), // 同 completeAgentTask（L4）
   }));
 
   if (!notify) return;

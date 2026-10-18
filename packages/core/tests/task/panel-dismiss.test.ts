@@ -185,7 +185,7 @@ describe("终态写入点不再写 evictAfter（S3：驱逐判据收口到 regis
     expect(done.notificationDeliveredTurn).toBeUndefined();
   });
 
-  test("completeAgentTask（前台，notify=false）结果走 tool_result，当场记为已送达", async () => {
+  test("completeAgentTask（前台，notify=false）结果走 tool_result，送达回合记下一回合（L4）", async () => {
     const { createAgentTask, completeAgentTask, getCompletedMainTurns } =
       await import("@sid-code/core/task/index.ts");
     const { taskState } = createAgentTask({ agentType: "explore", prompt: "p", description: "d" });
@@ -201,7 +201,8 @@ describe("终态写入点不再写 evictAfter（S3：驱逐判据收口到 regis
       false,
     );
 
-    expect(getTask(taskState.id)!.notificationDeliveredTurn).toBe(getCompletedMainTurns());
+    // L4：tool_result 下一轮才进模型，而下一轮开头纪元已推进到 N+1，故记 N+1
+    expect(getTask(taskState.id)!.notificationDeliveredTurn).toBe(getCompletedMainTurns() + 1);
   });
 });
 

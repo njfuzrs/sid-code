@@ -9,7 +9,8 @@
  * 所以驱逐判据改成**按回合**：送达之后，主循环又完整跑完至少一个回合，才允许删。
  *
  * 纪元只计「主循环完整跑完的回合数」，由 `queryLoop` 在第 2+ 轮开头与 finally 收尾各推进
- * 一次（见 `markMainTurnCompleted` 的调用点）。子代理有自己的循环、不消费通知队列，不推进它。
+ * 一次（见 `markMainTurnCompleted` 的调用点），且两处都要求**自上次推进以来模型真的返回过
+ * 一次响应**（M5）——PTL 压缩重试 / 超时重试只是 while 迭代，模型没看过通知。子代理有自己的循环、不消费通知队列，不推进它。
  *
  * ## 为什么事件走模块级 sink
  *
@@ -17,7 +18,7 @@
  * 与 `jit-telemetry.ts` 同款：App 在 collector 就绪后注入一次，模块内统一 emit。
  */
 
-import { closeSync, fstatSync, openSync, readSync } from "fs";
+import { closeSync, fstatSync, openSync, readSync, realpathSync } from "fs";
 import { basename, dirname, resolve } from "path";
 import { sidPaths } from "../config/paths.ts";
 import type { TaskState, TaskStatus } from "./types.ts";
@@ -175,6 +176,24 @@ export function clearTaskOutputTombstones(): void {
   tombstones.clear();
 }
 
+/** 大小写不敏感的文件系统（macOS 默认 APFS、Windows NTFS）上，路径比较要先折叠大小写 */
+const CASE_INSENSITIVE_FS = process.platform === "darwin" || process.platform === "win32";
+
+/**
+ * 目录的规范形式（L1）：只 `resolve` 不够。macOS 上 `/tmp` 是 `/private/tmp` 的符号链接，
+ * `SID_CONFIG_DIR=/tmp/...` 时模型常传 `/private/tmp/...`，两者 resolve 后不等，墓碑就
+ * 落回通用「文件不存在」。目录本身一般存在（`.output` 已删，目录还在），realpath 失败才退回 resolve。
+ */
+function canonicalDir(dir: string): string {
+  let p: string;
+  try {
+    p = realpathSync(dir);
+  } catch {
+    p = resolve(dir);
+  }
+  return CASE_INSENSITIVE_FS ? p.toLowerCase() : p;
+}
+
 /**
  * 若 `filePath` 是后台任务的 `.output`（位于 `sidPaths.tasks()` 下、形如 `<id>.output`），
  * 返回任务 id；否则 null。read 工具在 ENOENT 时用它判断要不要给墓碑而不是通用「文件不存在」。
@@ -182,7 +201,7 @@ export function clearTaskOutputTombstones(): void {
 export function taskIdFromOutputPath(filePath: string): string | null {
   try {
     const abs = resolve(filePath);
-    if (resolve(dirname(abs)) !== resolve(sidPaths.tasks())) return null;
+    if (canonicalDir(dirname(abs)) !== canonicalDir(sidPaths.tasks())) return null;
     const m = /^(.+)\.output$/.exec(basename(abs));
     return m ? m[1]! : null;
   } catch {
@@ -212,7 +231,9 @@ export function formatTaskOutputTombstone(taskId: string, filePath: string): str
     `，清理于 ${new Date(t.evictedAt).toISOString()}）。` +
     (t.reason === "safety_valve"
       ? "完成通知长时间未能送达，按安全阀清理。"
-      : "完成通知送达后已过至少一个回合，按生命周期清理。");
+      : t.reason === "cleared"
+        ? "会话上下文被清空（/clear）或会话结束时一并清理。"
+        : "完成通知送达后已过至少一个回合，按生命周期清理。");
   if (!t.tail) return `${head}\n清理前未留存到输出内容（输出为空或读取失败）。`;
   return `${head}\n清理前留存的输出${t.truncated ? `末尾 ${TOMBSTONE_TAIL_BYTES} 字节` : ""}:\n${t.tail}`;
 }

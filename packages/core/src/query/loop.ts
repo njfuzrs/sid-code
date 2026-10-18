@@ -182,6 +182,7 @@ import {
   hasRunningBackgroundTasks,
   markMainTurnCompleted,
   markNotificationsDelivered,
+  isTerminalStatus,
 } from "../task/index.ts";
 import { buildInternalMessage, hasInternalOrigin } from "../context/internal-message.ts";
 import {
@@ -986,6 +987,12 @@ export async function* queryLoop(loopConfig: QueryLoopConfig): AsyncGenerator<Qu
   // Fix 1：try/finally 包裹整个 while 循环，确保 queryLoop 结束时（正常/异常/
   // 外部 .return() 中止）都能批量清理本次 loopId 下的所有残留快照，避免孤儿
   // generator 写入的脏数据无限累积，也避免内存泄漏。
+  // M5：自上次推进回合纪元以来，模型是否**真的返回过一次响应**。
+  // 回合纪元的语义是「送达的通知已被模型看过一次」。while 迭代 ≠ 模型看过：PTL 压缩重试、
+  // 超时重试、fallback 换模型都会 `continue` 回到循环顶部，而这些尝试的响应从没产生过，
+  // 压缩还可能把刚注入的通知摘要掉。按迭代推进的话，一次 >30s 的重试就足以让 `.output`
+  // 在模型读到之前被删。所以只有拿到响应之后才允许推进（轮开头与 finally 两处同一判据）。
+  let modelRespondedSinceTurnMark = false;
   try {
     while (state.turnCount < state.maxTurns) {
       state.turnCount++;
@@ -1009,7 +1016,10 @@ export async function* queryLoop(loopConfig: QueryLoopConfig): AsyncGenerator<Qu
       // S3 回合纪元：第 2+ 轮开头 = 上一轮已完整跑完。**必须先推进、再注入**——反过来，
       // 本轮刚送达的通知会被记成「上一轮送达」，本轮模型调用还没开始就满足驱逐条件，
       // `.output` 在模型读之前被删（S3 事故原样重演）。
-      if (state.turnCount > 1) markMainTurnCompleted();
+      if (state.turnCount > 1 && modelRespondedSinceTurnMark) {
+        markMainTurnCompleted();
+        modelRespondedSinceTurnMark = false;
+      }
       injectPendingNotifications(ctxMgr, deps.sessionStore);
 
       // 驱逐「送达之后已过至少一个回合」的终态任务（判据见 registry `evictDecision`）。
@@ -3281,6 +3291,8 @@ export async function* queryLoop(loopConfig: QueryLoopConfig): AsyncGenerator<Qu
       // 拿到有效 response 时重置，才能同时满足"当前请求重试计数正确递增"与
       // "跨轮次不会永久丧失重试能力"（隐患 6）两个要求。
       state.timeoutRetryCount = 0;
+      // M5：模型真的返回了响应，本轮开头送达的通知它已看过——下一次推进纪元从此成立。
+      modelRespondedSinceTurnMark = true;
       // 记录本轮成功响应时刻，供下一轮 cached-microcompact 判定缓存冷热（超 5min TTL 视为已冷）。
       state.lastResponseAt = Date.now();
 
@@ -5793,7 +5805,12 @@ export async function* queryLoop(loopConfig: QueryLoopConfig): AsyncGenerator<Qu
     // 收尾时推进纪元是对的：最后一轮开头送达的通知，模型已在这一轮看过并作答。
     // 仍要等面板驻留期（completed/failed 30s、killed 3s）的，交给 TUI 的 1s 定时器
     // （App.tsx，对标 cc CoordinatorAgentStatus）；未送达的交给 registry 的安全阀定时器。
-    markMainTurnCompleted();
+    // M5：只有最后一轮模型确实返回过响应才推进。ESC 中止在流式阶段 / 调用抛错退出时，
+    // 最后一次注入的通知模型并没看到，推进纪元会让它在下一次 queryLoop 之前就可被驱逐。
+    if (modelRespondedSinceTurnMark) {
+      markMainTurnCompleted();
+      modelRespondedSinceTurnMark = false;
+    }
     try {
       evictTerminalTasks();
     } catch {
@@ -6134,8 +6151,12 @@ export function injectPendingNotifications(
   ctxMgr.addMessage(message);
   // S3：这一刻通知才真正进了模型上下文——「已送达」从这里起算，而不是入队时。
   // 只在这里置位：两个调用点（轮中 / 空闲唤醒）都经过本函数。
+  // B2：只认**终态**通知。shell 停滞检测给运行中任务发的「疑似等输入」通知也带 taskId，
+  // 它送达不代表完成通知送达；registry 侧同样按任务 status 拦了一道（两道都留）。
   markNotificationsDelivered(
-    notifications.map((n) => n.structured?.taskId).filter((id): id is string => !!id),
+    notifications
+      .filter((n) => n.structured && isTerminalStatus(n.structured.status))
+      .map((n) => n.structured!.taskId),
   );
   try {
     sessionStore?.appendMessage(message);

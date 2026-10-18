@@ -138,11 +138,26 @@ export function graceDeadlineFor(status: TaskStatus): number {
  * - 已送达 → 送达之后主循环又**完整跑完至少一个回合**，且面板驻留期与 task_output 续期都已过；
  * - 未送达 → 完成后过了安全阀时长。
  */
+/**
+ * 「已送达，且送达之后主循环又完整跑完至少一个回合」——驱逐判据里**只看回合**的那一半。
+ *
+ * `evictDecision` 与 `hasPendingEviction` 都调它（L3）：此前后者手抄一份条件，只是同口径
+ * 而非同源，改一处忘一处就会让 1s 定时器与真实驱逐判据分叉。
+ */
+function deliveredTurnPassed(task: TaskState): boolean {
+  return (
+    isTerminalStatus(task.status) &&
+    task.notified &&
+    task.notificationDeliveredTurn !== undefined &&
+    getCompletedMainTurns() > task.notificationDeliveredTurn
+  );
+}
+
 function evictDecision(task: TaskState, now: number): TaskEvictReason | null {
   if (!isTerminalStatus(task.status) || !task.notified) return null;
   const end = task.endTime ?? 0;
   if (task.notificationDeliveredTurn !== undefined) {
-    if (getCompletedMainTurns() <= task.notificationDeliveredTurn) return null;
+    if (!deliveredTurnPassed(task)) return null;
     const deadline = Math.max(end + displayGraceFor(task.status), task.evictAfter ?? 0);
     return deadline <= now ? "delivered_turn_passed" : null;
   }
@@ -184,8 +199,13 @@ export function evictTerminalTasks(): void {
 /**
  * 标记这些任务的完成通知**已送达模型**（`injectPendingNotifications` 在通知进上下文时调用）。
  *
- * 只认 registry 里还在的终态任务；重复送达（同一 taskId 两条通知）保留第一次的回合，
+ * 只认 registry 里还在的**终态**任务；重复送达（同一 taskId 两条通知）保留第一次的回合，
  * 否则驱逐会被一条迟到的重复通知无限推后。
+ *
+ * B2：终态检查必须在这里做，不能只靠注释。shell 停滞检测会给**运行中**的任务入队一条
+ * 「疑似在等输入」通知（带 taskId）。旧实现不看 status，这条通知一注入，运行中任务就记下
+ * 送达回合；任务之后完成时送达回合早已过，面板驻留期一到就删 `.output`，而真正的完成
+ * 通知还在队列里——S3 事故原样重演。调用侧也按通知自身的 status 过滤了一遍，两道都留。
  */
 export function markNotificationsDelivered(taskIds: Iterable<string>): void {
   const turn = getCompletedMainTurns();
@@ -193,6 +213,7 @@ export function markNotificationsDelivered(taskIds: Iterable<string>): void {
   for (const id of taskIds) {
     const task = tasks.get(id);
     if (!task || task.notificationDeliveredTurn !== undefined) continue;
+    if (!isTerminalStatus(task.status)) continue;
     const updated = { ...task, notificationDeliveredTurn: turn };
     tasks.set(id, updated);
     emitTaskLifecycle(updated, "delivered");
@@ -320,16 +341,8 @@ export function getPanelVisibleTasks(): TaskState[] {
  * 磁盘 `.output` 再没人回收。所以 dismissed 任务同样计入。
  */
 export function hasPendingEviction(): boolean {
-  const turns = getCompletedMainTurns();
   for (const task of tasks.values()) {
-    if (
-      isTerminalStatus(task.status) &&
-      task.notified &&
-      task.notificationDeliveredTurn !== undefined &&
-      turns > task.notificationDeliveredTurn
-    ) {
-      return true;
-    }
+    if (deliveredTurnPassed(task)) return true;
   }
   return false;
 }
@@ -339,7 +352,11 @@ export function hasPendingEviction(): boolean {
  *  仅 tasks.clear() 会留下 outputs 孤儿（disk-output 的 Map 与磁盘文件不随之清理）。 */
 export function clearAllTasks(): void {
   for (const [id, task] of tasks) {
-    if (isTerminalStatus(task.status)) emitTaskLifecycle(task, "evicted", { reason: "cleared" });
+    if (isTerminalStatus(task.status)) {
+      // L2：删文件之前留墓碑，之后再读 `.output` 拿到的是「被清理」而不是泛化的「不存在」
+      recordTaskOutputTombstone(task, "cleared");
+      emitTaskLifecycle(task, "evicted", { reason: "cleared" });
+    }
     evictTaskOutput(id);
   }
   tasks.clear();
@@ -356,6 +373,7 @@ export function clearInactiveTasks(): void {
   let cleared = false;
   for (const [id, task] of tasks) {
     if (isTerminalStatus(task.status)) {
+      recordTaskOutputTombstone(task, "cleared"); // L2：同 clearAllTasks，须在删文件之前
       emitTaskLifecycle(task, "evicted", { reason: "cleared" });
       evictTaskOutput(id);
       tasks.delete(id);
