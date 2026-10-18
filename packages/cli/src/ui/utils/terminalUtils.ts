@@ -6,12 +6,18 @@
  */
 
 import process from "node:process";
+import { isTerminalColorForced } from "../terminal-color.ts";
 
 /**
  * 返回当前终端的色深
  * 如果未知或不是 TTY，返回 24（TrueColor）
+ *
+ * sid-code 主动强制了真彩时直接报 24：旧版入口写 `FORCE_COLOR=3` 进 env，Bun 的
+ * `getColorDepth()` 读到它恒报 24；入口改为只改 chalk 级别后，xterm-256color 下它会
+ * 报 8，HalfLinePaddedBox 就会静默切到低色深背景。这里保持与 chalk 级别同一口径。
  */
 export function getColorDepth(): number {
+  if (isTerminalColorForced()) return 24;
   return process.stdout.getColorDepth ? process.stdout.getColorDepth() : 24;
 }
 
