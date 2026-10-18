@@ -35,7 +35,8 @@ import type {
 } from "./types.ts";
 import { glob } from "glob";
 import { statSync } from "fs";
-import { join, isAbsolute, sep } from "path";
+import { join, isAbsolute, sep, relative } from "path";
+import { getCwd } from "../bootstrap/state.ts";
 import { getLogger } from "../debug/logger.ts";
 import { normalizeToolPath, formatPathNotFoundError } from "./path-utils.ts";
 import { searchToolPaths } from "./jit-affected-paths.ts";
@@ -79,6 +80,20 @@ function noIgnore(): boolean {
     /* settings 未初始化时回退 env，不让 glob 因配置系统故障而失败 */
   }
   return envBool("SID_GLOB_NO_IGNORE", true);
+}
+
+/**
+ * 把「相对搜索根」的匹配结果转成「相对 cwd」的展示路径（对标 CC GlobTool 的 toRelativePath）。
+ *
+ * 旧版直接输出相对搜索根的路径：`glob(path="packages")` 返回 `cli/src/ui/X.tsx`，
+ * 模型拿去 read 时要自己把搜索根拼回去，实测拼错（会话 20261018-224823-dbc19982
+ * 拿到 cli/src/ui/... 后仍去读 packages/tui/src/ui/...）。相对 cwd 的路径可以直接用；
+ * 跳出 cwd（`..` 开头）时给绝对路径，不让模型去解析 `../../`。
+ */
+function toDisplayPath(searchRoot: string, rel: string): string {
+  const abs = join(searchRoot, rel);
+  const fromCwd = relative(getCwd(), abs);
+  return fromCwd.startsWith("..") || isAbsolute(fromCwd) ? abs : fromCwd;
 }
 
 /**
@@ -274,7 +289,7 @@ export class GlobTool implements Tool {
 
       log.info("TOOL", `✓ 匹配完成 ${files.length}个文件${truncated ? "（已截断）" : ""}`);
 
-      let output = files.join("\n");
+      let output = files.map((f) => toDisplayPath(searchRoot, f)).join("\n");
       if (truncated) {
         output += `\n\n（结果已截断至 ${DEFAULT_RESULT_LIMIT} 个。请指定更具体的 path 或 pattern 收窄搜索。）`;
       }
@@ -285,7 +300,7 @@ export class GlobTool implements Tool {
         const { files } = this.finalize(err.partialResults, searchRoot);
         if (files.length > 0) {
           return {
-            output: `${files.join("\n")}\n\n（搜索超时，以上为部分结果，可能不完整。请收窄 pattern/path。）`,
+            output: `${files.map((f) => toDisplayPath(searchRoot, f)).join("\n")}\n\n（搜索超时，以上为部分结果，可能不完整。请收窄 pattern/path。）`,
           };
         }
         return { output: err.message, isError: true };

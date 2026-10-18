@@ -23,6 +23,7 @@ import type { FileReadTracker } from "./file-read-tracker.ts";
 import { statSync } from "fs";
 import { extname } from "path";
 import { getLogger } from "../debug/logger.ts";
+import { estimateTextTokens } from "../context/token.ts";
 import { normalizeToolPath, formatPathNotFoundError } from "./path-utils.ts";
 import { taskIdFromOutputPath, formatTaskOutputTombstone } from "../task/lifecycle.ts";
 
@@ -46,6 +47,38 @@ import { lazySchema } from "../sdk/lazy-schema.ts";
 
 /** 未指定 limit 时的默认最大行数，防止超大文件撑爆上下文 */
 const DEFAULT_MAX_LINES = 2000;
+
+/**
+ * 单次读取输出的 token 上限（对标 CC FileReadTool limits.ts 的 maxTokens=25000）。
+ *
+ * 只限行数（2000）挡不住"行少但行极长"的文件：会话 20261018-224823-dbc19982 读
+ * builtin-embedded.generated.ts（199 行 / 234KB）一次塞进 19 万字符，上下文 4.8%→11.4%。
+ * 超限**报错而不截断**，理由同 CC 注释（#21841 实测）：截断会把 25k token 实打实塞进来，
+ * 报错只有约 100 字节，平均 token 反而更低。
+ *
+ * 取值依据：本机 189 个会话 2059 次 read，p99≈10.6k、p99.9≈48k token，>25k 仅 7 次，
+ * 其中 3 次就是上述生成文件——阈值只拦尾部异常，不碰常规整读。
+ * 不按模型窗口缩放：1M 窗口模型照样不该一次吞下 10 万 token 的读取。
+ * 可经 SID_READ_MAX_OUTPUT_TOKENS 覆盖。
+ */
+const DEFAULT_MAX_OUTPUT_TOKENS = 25_000;
+
+/**
+ * 单行字符上限：超出部分截断并标注。
+ *
+ * 只有 token 上限会把"单行就超限"的文件彻底锁死——limit=1 也读不进来。截断超长行后，
+ * 这类文件（生成物、压缩产物、长 JSON 行）至少能看到结构；被截断的读取记为部分视图。
+ */
+const MAX_LINE_CHARS = 2000;
+
+function resolveMaxOutputTokens(): number {
+  const raw = process.env.SID_READ_MAX_OUTPUT_TOKENS;
+  if (raw) {
+    const n = Number(raw);
+    if (Number.isFinite(n) && n > 0) return Math.floor(n);
+  }
+  return DEFAULT_MAX_OUTPUT_TOKENS;
+}
 
 /** 文件大小上限（字节）：超过此值拒绝全量读取，要求指定 offset/limit */
 const MAX_FILE_SIZE_BYTES = 10 * 1024 * 1024; // 10 MB
@@ -420,7 +453,12 @@ export class ReadTool implements Tool {
     filePath: string,
     win: ReadWindow,
     hadExplicitLimit: boolean,
+    fileTokens: () => number,
   ): string {
+    // 「建议一次整读」必须同时看行数和体量：只看行数时，199 行 / 234KB 的生成文件
+    // 也会被鼓励整读（会话 20261018-224823-dbc19982 实例），整读又会撞 token 上限。
+    // 惰性：整文件估算只在要给「整读」建议时才算，常规读取路径不付这笔开销。
+    const fitsInOneReadByTokens = () => fileTokens() <= resolveMaxOutputTokens();
     // 取本文件历史(在追加本次之前),用于判定重叠/重复
     const prior = this.readHistory.get(filePath) ?? [];
 
@@ -449,7 +487,7 @@ export class ReadTool implements Tool {
 
     // ① 重复窄读:读够多次 + 本次与历史高度重叠(>60%)
     if (readCount >= REPEAT_READ_HINT_THRESHOLD && maxOverlapRatio > 0.6) {
-      const fitsInOneRead = win.totalLines <= DEFAULT_MAX_LINES;
+      const fitsInOneRead = win.totalLines <= DEFAULT_MAX_LINES && fitsInOneReadByTokens();
       hints.push(
         `本会话已第 ${readCount} 次读取 ${filePath},且本次窗口与此前读过的区域高度重叠。` +
           (fitsInOneRead
@@ -462,7 +500,8 @@ export class ReadTool implements Tool {
       hadExplicitLimit &&
       win.totalLines <= DEFAULT_MAX_LINES &&
       winLen < win.totalLines &&
-      winLen < 200
+      winLen < 200 &&
+      fitsInOneReadByTokens()
     ) {
       hints.push(
         `该文件共 ${win.totalLines} 行,未超单次读取上限 ${DEFAULT_MAX_LINES}。若需通览,可不传 limit 一次整读,省去多次分段。`,
@@ -506,6 +545,7 @@ export class ReadTool implements Tool {
   usageGuide(): string {
     return `- 使用 read 而不是 bash cat/head/tail 来读取文件
 - 默认最多读取 2000 行，超出时输出末尾会有截断提示
+- 单次输出超过约 25000 token 会报错，需用 offset/limit 缩小范围；单行超过 2000 字符会截断显示
 - 对于大文件，使用 offset 和 limit 参数只读取需要的部分
 - 修改文件前必须先用 read 读取，确保了解当前内容
 - file_path 必须是绝对路径
@@ -650,14 +690,34 @@ export class ReadTool implements Tool {
       const isTruncated = endIdx < totalLines;
 
       // P2: CRLF → LF 规范化
-      const normalizedLines = selectedLines.map((line) =>
-        line.endsWith("\r") ? line.slice(0, -1) : line,
-      );
+      let clippedLineCount = 0;
+      const normalizedLines = selectedLines.map((raw) => {
+        const line = raw.endsWith("\r") ? raw.slice(0, -1) : raw;
+        if (line.length <= MAX_LINE_CHARS) return line;
+        clippedLineCount++;
+        return `${line.slice(0, MAX_LINE_CHARS)}… [本行共 ${line.length} 字符，已截断显示前 ${MAX_LINE_CHARS} 字符]`;
+      });
+
+      // token 上限：在记录"已读"之前判定，超限的读取不算读过（模型没拿到内容）。
+      const maxOutputTokens = resolveMaxOutputTokens();
+      const outputTokens = estimateTextTokens(normalizedLines.join("\n"));
+      if (outputTokens > maxOutputTokens) {
+        const shownEnd = startIdx + normalizedLines.length;
+        const avg = Math.max(1, outputTokens / Math.max(1, normalizedLines.length));
+        const suggestLimit = Math.max(1, Math.floor((maxOutputTokens * 0.8) / avg));
+        return {
+          output:
+            `错误: 本次读取约 ${outputTokens} token（第 ${offset}-${shownEnd} 行），超过单次上限 ${maxOutputTokens}。` +
+            `请缩小范围：用 offset/limit 分段读取（按本段平均密度，建议 limit≈${suggestLimit}），` +
+            `或先用 grep 定位需要的内容。`,
+          isError: true,
+        };
+      }
 
       // 记录文件已被读取
       const mtime = statSync(filePath).mtimeMs;
       if (this.stateCache) {
-        const isPartialView = isTruncated || startIdx > 0;
+        const isPartialView = isTruncated || startIdx > 0 || clippedLineCount > 0;
         this.stateCache.set(filePath, {
           content: text,
           mtime,
@@ -668,7 +728,7 @@ export class ReadTool implements Tool {
       } else if (this.tracker) {
         // 对标 claude-code：部分视图（分段/截断）不足以安全 edit，记录 isPartialView；
         // 完整读取时连内容一起记，供 edit 前的外部修改内容比对兜底（避免假误报）。
-        const isPartialView = isTruncated || startIdx > 0;
+        const isPartialView = isTruncated || startIdx > 0 || clippedLineCount > 0;
         this.tracker.markAsRead(filePath, mtime, {
           isPartialView,
           content: isPartialView ? null : text,
@@ -703,12 +763,17 @@ export class ReadTool implements Tool {
         output += `\n\n[文件已截断：当前显示第 ${shownStart}-${shownEnd} 行，共 ${totalLines} 行。如需读取更多，请使用 offset=${nextOffset} 继续读取。]`;
       }
 
+      if (clippedLineCount > 0) {
+        output += `\n\n[有 ${clippedLineCount} 行超过 ${MAX_LINE_CHARS} 字符，已截断显示。如需其中具体内容，请用 grep 定位。]`;
+      }
+
       // 发现 4：记录读窗口 + 追加"重复窄读"非阻塞引导（失败不影响读取结果）。
       try {
         output += this.recordReadAndBuildHint(
           filePath,
           { startLine: offset, endLine: endIdx, totalLines },
           params.limit !== undefined,
+          () => estimateTextTokens(text),
         );
       } catch {
         /* 引导是锦上添花，绝不阻断读取 */
