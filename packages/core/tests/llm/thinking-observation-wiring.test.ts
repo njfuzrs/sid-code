@@ -187,3 +187,105 @@ describe("wireThinks（R10 判定，与 thinking-state 不变量测试同一份�
     expect(wireThinks("omitted", "toggle", undefined)).toBeUndefined();
   });
 });
+
+/**
+ * E9（20261018 effort 排查 PR-A）：线上实发 effort 档位进 BilledRequest.effortWire。
+ * 判据是「与最终请求体一致」，不是「与 params 一致」——关思考的 dropEffort、能力门控都会让两者分叉。
+ */
+describe("E9：effortWire 记的是线上实发档", () => {
+  function anthropicCapture(model: string) {
+    const bodies: any[] = [];
+    const p = new AnthropicProvider("k", model, "https://gw.example.com");
+    (p as any).client.messages.create = (body: any) => {
+      bodies.push(body);
+      return {
+        content: [{ type: "text", text: "ok" }],
+        stop_reason: "end_turn",
+        usage: { input_tokens: 1, output_tokens: 1 },
+      };
+    };
+    return { p, bodies };
+  }
+
+  test("Anthropic 开思考：output_config.effort 原样落盘", async () => {
+    const { p, bodies } = anthropicCapture("claude-opus-5");
+    await p.sendMessageNonStreaming(
+      base({
+        model: "claude-opus-5",
+        thinking: { enabled: true, budgetTokens: 0 },
+        outputConfig: { effort: "high" },
+      }),
+    );
+    expect(bodies[0].output_config?.effort).toBe("high");
+    expect(billed[0]!.effortWire).toBe("high");
+  });
+
+  test("Anthropic 关思考（disabled 吞掉 effort）：params 有 effort，线上没发 → omitted", async () => {
+    const { p, bodies } = anthropicCapture("claude-sonnet-5");
+    await p.sendMessageNonStreaming(
+      base({
+        model: "claude-sonnet-5",
+        thinking: { enabled: false, budgetTokens: 0 },
+        outputConfig: { effort: "high" },
+      }),
+    );
+    expect(bodies[0].thinking).toEqual({ type: "disabled" });
+    expect(bodies[0].output_config).toBeUndefined();
+    expect(billed[0]!.effortWire).toBe("omitted");
+  });
+
+  test("Chat Completions 流式：读请求体的 reasoning_effort", async () => {
+    process.env.SID_CODE_OPENAI_PROTOCOL = "chat";
+    let body: any;
+    globalThis.fetch = (async (_u: unknown, init: any) => {
+      body = JSON.parse(init.body);
+      return sseResponse([
+        { id: "x", choices: [{ index: 0, delta: { content: "ok" }, finish_reason: "stop" }] },
+      ]);
+    }) as unknown as typeof fetch;
+    const p = new OpenAIProvider("k", "deepseek-v4-pro", "https://example.invalid/v1");
+    await drain(
+      p.sendMessageStream(
+        base({
+          model: "deepseek-v4-pro",
+          thinking: { enabled: true, budgetTokens: 0 },
+          reasoningEffort: "max",
+        }),
+      ),
+    );
+    expect(body.reasoning_effort).toBe("max");
+    expect(billed[0]!.effortWire).toBe("max");
+  });
+
+  test("Chat Completions 没发 effort → omitted（不是缺省）", async () => {
+    process.env.SID_CODE_OPENAI_PROTOCOL = "chat";
+    let body: any;
+    globalThis.fetch = (async (_u: unknown, init: any) => {
+      body = JSON.parse(init.body);
+      return sseResponse([
+        { id: "x", choices: [{ index: 0, delta: { content: "ok" }, finish_reason: "stop" }] },
+      ]);
+    }) as unknown as typeof fetch;
+    const p = new OpenAIProvider("k", "kimi-k3", "https://example.invalid/v1");
+    await drain(p.sendMessageStream(base({ model: "kimi-k3" })));
+    expect(body.reasoning_effort).toBeUndefined();
+    expect(billed[0]!.effortWire).toBe("omitted");
+  });
+
+  test("Responses 流式：读嵌套 reasoning.effort", async () => {
+    process.env.SID_CODE_OPENAI_PROTOCOL = "responses";
+    let body: any;
+    globalThis.fetch = (async (_u: unknown, init: any) => {
+      body = JSON.parse(init.body);
+      return sseResponse([
+        { type: "response.created", response: { id: "r" } },
+        { type: "response.output_text.delta", delta: "ok" },
+        { type: "response.completed", response: { usage: responsesUsage } },
+      ]);
+    }) as unknown as typeof fetch;
+    const p = new OpenAIProvider("k", "gpt-5.6", "https://example.invalid/v1");
+    await drain(p.sendMessageStream(base({ model: "gpt-5.6", reasoningEffort: "xhigh" })));
+    expect(body.reasoning?.effort).toBe("xhigh");
+    expect(billed[0]!.effortWire).toBe("xhigh");
+  });
+});

@@ -42,6 +42,8 @@ export interface RequestResponsePair {
     thinking_intent?: "on" | "off" | "auto";
     /** PR-5：当前模型思考控制形态 */
     thinking_control?: "toggle" | "locked-on" | "none";
+    /** E9：用户所选推理强度（applier 之前），见 hook/types.ts */
+    effort_intent?: string;
   };
   response: {
     content: unknown[];

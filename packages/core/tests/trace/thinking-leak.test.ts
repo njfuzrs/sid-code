@@ -40,11 +40,14 @@ describe("BilledRequest 落盘 thinking 三字段", () => {
       callerLabel: "title_generation",
       accounted: false,
       thinkingWire: "disabled",
+      effortWire: "omitted",
       thinkingInResponse: false,
       thinkingIntent: false,
     });
     const d = written.find((e) => e.event === "BilledRequest")!.data!;
     expect(d.thinking_wire).toBe("disabled");
+    // E9：线上实发 effort 档进 events.jsonl
+    expect(d.effort_wire).toBe("omitted");
     expect(d.thinking_in_response).toBe(false);
     expect(d.thinking_intent).toBe(false);
     expect(d.caller).toBe("title_generation");
@@ -62,6 +65,7 @@ describe("BilledRequest 落盘 thinking 三字段", () => {
     const d = written.find((e) => e.event === "BilledRequest")!.data!;
     expect("thinking_wire" in d).toBe(false);
     expect("thinking_intent" in d).toBe(false);
+    expect("effort_wire" in d).toBe(false);
   });
 });
 

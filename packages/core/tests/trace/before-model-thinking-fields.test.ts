@@ -58,11 +58,14 @@ describe("PR5 推理旋钮采集", () => {
       raw_messages: [{ role: "user", content: "hi" }],
       thinking: { enabled: true, budgetTokens: 0 },
       reasoning_effort: "max",
+      effort_intent: "xhigh",
     });
 
     const req = currentRequest();
     expect(req.thinking).toEqual({ enabled: true, budgetTokens: 0 });
     expect(req.reasoning_effort).toBe("max");
+    // E9：用户所选档与解析后档分开记（这里正是 E2 那种「选 xhigh、发 max」）
+    expect(req.effort_intent).toBe("xhigh");
   });
 
   test("side-call 关思考 → 采到 enabled:false（这正是当初查不到的那个值）", async () => {
@@ -114,5 +117,6 @@ describe("PR5 推理旋钮采集", () => {
     const req = currentRequest();
     expect("thinking" in req).toBe(false);
     expect("reasoning_effort" in req).toBe(false);
+    expect("effort_intent" in req).toBe(false);
   });
 });

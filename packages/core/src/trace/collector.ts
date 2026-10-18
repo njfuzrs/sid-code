@@ -1355,6 +1355,7 @@ export class TraceCollector {
     if (req.reasoning_effort !== undefined) requestSide.reasoning_effort = req.reasoning_effort;
     if (req.thinking_intent !== undefined) requestSide.thinking_intent = req.thinking_intent;
     if (req.thinking_control !== undefined) requestSide.thinking_control = req.thinking_control;
+    if (req.effort_intent !== undefined) requestSide.effort_intent = req.effort_intent;
 
     if (index === 1) {
       // 首次请求保存完整数据

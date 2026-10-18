@@ -2171,6 +2171,7 @@ export async function* queryLoop(loopConfig: QueryLoopConfig): AsyncGenerator<Qu
         | {
             thinking_intent: "on" | "off" | "auto";
             thinking_control: "toggle" | "locked-on" | "none";
+            effort_intent: string;
           }
         | undefined;
       if (deps.getEffortSetting || deps.getThinkingSetting) {
@@ -2206,10 +2207,15 @@ export async function* queryLoop(loopConfig: QueryLoopConfig): AsyncGenerator<Qu
         // D9：记下 applier 之前的意图，fallback 据此对备用模型重解析（不读被 applier 改写过的值）。
         sendParams.thinkingIntent = { thinking: appliedThinking, effort: appliedEffort };
         const envThinking = getThinkingEnvOverride();
+        const envEffort = getEffortEnvOverride();
         thinkingObs = {
           thinking_intent:
             envThinking !== null ? (envThinking ? "on" : "off") : (runtimeThinking ?? "auto"),
           thinking_control: cap.thinkingControl,
+          // E9（20261018 effort 排查 PR-A）：用户所选档位，env > runtime > auto，与
+          // resolveAppliedEffort 同口径但**不**做 auto→默认档、ultrathink 提级——那些是 applied，
+          // 不是意图。此前只能从 agent_setting 快照读，65% 请求对不上（没切换过就没快照）。
+          effort_intent: (envEffort !== null ? envEffort : runtimeEffort) ?? "auto",
         };
         // R1 / R6 / R10：同一份三态 + 控制形态 + 展示态随 BilledRequest 落盘，与 BeforeModel 同口径。
         sendParams.thinkingObservation = {

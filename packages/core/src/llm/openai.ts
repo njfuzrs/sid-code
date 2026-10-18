@@ -201,6 +201,16 @@ function chatThinkingWireLabel(requestBody: any): "enabled" | "disabled" | "omit
 }
 
 /**
+ * E9（20261018 effort 排查 PR-A）：线上实发的推理强度档位（BilledRequest.effortWire）。
+ * 同样读**最终请求体**：Chat Completions 是顶层 `reasoning_effort`，Responses 是嵌套
+ * `reasoning.effort`。max 被拒、思考门控、能力自愈剥字段都会让它与 params.reasoningEffort 不同。
+ */
+function wireEffortLabel(requestBody: any): string {
+  const e = requestBody?.reasoning_effort ?? requestBody?.reasoning?.effort;
+  return typeof e === "string" && e ? e : "omitted";
+}
+
+/**
  * R1 / R5 / R6 / R10：OpenAI 协议族的思考观测字段。`omitMeans` 恒 undefined：不发 thinking 时
  * 服务端默认因模型而异（DeepSeek 开、GLM ≤5.2 关……），手里没有可靠数据，不猜。
  */
@@ -1385,6 +1395,7 @@ export class OpenAIProvider implements Provider {
       for await (const event of lifecycle.guard(
         this.parseSSE(response.body!, signal, params.model ?? this._model, {
           wire: chatThinkingWireLabel(requestBody),
+          effortWire: wireEffortLabel(requestBody),
           intent: observedThinkingIntent(params),
           fields: observeOpenAIThinking(
             params,
@@ -1878,6 +1889,7 @@ export class OpenAIProvider implements Provider {
           // R5：Responses 路径同样埋点。请求体没有 thinking 字段（推理只走 reasoning.effort），
           // 线上恒为 omitted；思考内容 = 出现过 reasoning 块，或服务端报了推理 token。
           thinkingWire: "omitted",
+          effortWire: wireEffortLabel(requestBody),
           thinkingInResponse: responsesSawThinking || (accumulatedUsage?.reasoningTokens ?? 0) > 0,
           thinkingIntent: observedThinkingIntent(params),
           ...observeOpenAIThinking(params, effectiveModel, this.baseURL, "omitted"),
@@ -2153,6 +2165,7 @@ export class OpenAIProvider implements Provider {
           baseURL: this.baseURL,
           usage: billedUsage,
           thinkingWire: chatThinkingWireLabel(requestBody),
+          effortWire: wireEffortLabel(requestBody),
           thinkingInResponse: nonStreamSawThinking,
           thinkingIntent: observedThinkingIntent(params),
           ...observeOpenAIThinking(
@@ -2263,6 +2276,7 @@ export class OpenAIProvider implements Provider {
           usage: billedUsage,
           // R5：与流式 Responses 同口径
           thinkingWire: "omitted",
+          effortWire: wireEffortLabel(requestBody),
           thinkingInResponse: nonStreamSawThinking || (billedUsage?.reasoningTokens ?? 0) > 0,
           thinkingIntent: observedThinkingIntent(params),
           ...observeOpenAIThinking(params, effectiveModel, this.baseURL, "omitted"),
@@ -2289,6 +2303,8 @@ export class OpenAIProvider implements Provider {
     /** PR-5：本次请求线上实发的 thinking 形态与调用方意图，随 BilledRequest 落盘 */
     thinkingObs?: {
       wire: "enabled" | "disabled" | "omitted";
+      /** E9：线上实发推理强度（见 wireEffortLabel） */
+      effortWire?: string;
       intent?: boolean;
       fields?: ThinkingObservationFields;
     },
@@ -3085,6 +3101,7 @@ export class OpenAIProvider implements Provider {
           // PR-5：思考内容 = 出现过 reasoning_content，或服务端报了推理 token（隐式推理族）
           ...(thinkingObs && {
             thinkingWire: thinkingObs.wire,
+            effortWire: thinkingObs.effortWire,
             thinkingInResponse: reasoningContent.length > 0 || (usage.reasoningTokens ?? 0) > 0,
             thinkingIntent: thinkingObs.intent,
             ...thinkingObs.fields,

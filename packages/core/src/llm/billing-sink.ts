@@ -120,6 +120,16 @@ export interface BilledRequest {
    *   - `omitted`：线上没带 thinking 字段（服务端默认，对 Opus 5 / Sonnet 5 即「照常思考」）
    */
   thinkingWire?: "enabled" | "adaptive" | "disabled" | "omitted";
+  /**
+   * 20261018 effort 排查 PR-A（E9）：本次 fetch **线上实发**的推理强度档位，读最终请求体
+   * （Anthropic 的 `output_config.effort`，已扣 `dropEffort`；Chat Completions 的 `reasoning_effort`；
+   * Responses 的 `reasoning.effort`）。不读 `params.outputConfig` / `params.reasoningEffort`——
+   * 那是 applier 写的内部表示，线格式层还会再改（关思考时 dropEffort、max 被拒时不发）。
+   *   - 档位字符串：线上发了这个值
+   *   - `omitted`：线上没带 effort 字段（服务端按自己的默认）
+   *   - 缺省（undefined）：该协议路径未接线，不是「没发」
+   */
+  effortWire?: string;
   /** 响应里是否出现过思考内容（thinking / redacted_thinking 块，或 reasoning_content） */
   thinkingInResponse?: boolean;
   /** 调用方的原始思考意图（`SendParams.thinkingIntent.thinking`）；调用方没表达时缺省 */
@@ -296,6 +306,7 @@ export function recordBilledRequest(req: BilledRequest): void {
         cache_creation_tokens: req.usage.cacheCreationInputTokens,
       }),
       ...(req.thinkingWire !== undefined && { thinking_wire: req.thinkingWire }),
+      ...(req.effortWire !== undefined && { effort_wire: req.effortWire }),
       ...(req.thinkingInResponse !== undefined && {
         thinking_in_response: req.thinkingInResponse,
       }),
@@ -498,6 +509,7 @@ export function recordNonStreamingBilledRequest(req: {
   baseURL?: string;
   usage: Usage | undefined;
   thinkingWire?: BilledRequest["thinkingWire"];
+  effortWire?: string;
   thinkingInResponse?: boolean;
   thinkingIntent?: boolean;
   thinkingSetting?: BilledRequest["thinkingSetting"];
@@ -519,6 +531,7 @@ export function recordNonStreamingBilledRequest(req: {
       atMs: Date.now(),
       accounted: !bctx.agentId && !bctx.callerLabel,
       thinkingWire: req.thinkingWire,
+      effortWire: req.effortWire,
       thinkingInResponse: req.thinkingInResponse,
       thinkingIntent: req.thinkingIntent,
       thinkingSetting: req.thinkingSetting,

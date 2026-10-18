@@ -476,6 +476,11 @@ export interface BeforeModelInput extends HookInput {
     thinking_intent?: "on" | "off" | "auto";
     /** PR-5：当前模型的思考控制形态（toggle / locked-on / none），见 EffortCapability.thinkingControl */
     thinking_control?: "toggle" | "locked-on" | "none";
+    /**
+     * E9（20261018 effort 排查 PR-A）：用户所选推理强度（env > runtime > `auto`），applier **之前**。
+     * 与 `reasoning_effort`（解析后的内部表示）分开记；线上实发档在 BilledRequest.effort_wire。
+     */
+    effort_intent?: string;
   };
 
   // ── Harness 扩展点 ──
