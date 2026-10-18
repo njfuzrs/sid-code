@@ -260,16 +260,28 @@ export function deriveRequests(
  * - null（模型不支持档位）→ 返回 null，Footer 不渲染该列。
  * - auto 态 → 空心点 ◌ + 灰色，文本带 (auto) 后缀提示「跟随默认」。
  * - 显式档位 → 填充方块字形（▁▃▅█）+ 档位名；max 用品牌色点睛，其余用默认灰。
+ * - inert（思考关闭、档位不下发）→ 文本照旧、划线 + 默认灰：排版表达「不生效」，不另起警告色。
+ * level 是线上实发档（getDisplayedEffort 已按当前模型映射），不是用户所选档。
  */
 export function deriveEffort(
   effortDisplay: {
     level: import("@sid-code/core/llm/effort.ts").EffortLevel;
     isAuto: boolean;
+    inert?: boolean;
   } | null,
   defaultColor: Color,
-): { glyph: string; text: string; color: Color } | null {
+): { glyph: string; text: string; color: Color; strikethrough?: boolean } | null {
   if (!effortDisplay) return null;
   const { level, isAuto } = effortDisplay;
+  if (effortDisplay.inert) {
+    const text = isAuto ? `${EFFORT_AUTO} ${level}` : level;
+    return {
+      glyph: isAuto ? EFFORT_AUTO : EFFORT_GLYPHS[level],
+      text,
+      color: defaultColor,
+      strikethrough: true,
+    };
+  }
   if (isAuto) {
     // auto 态：空心点 ◌ 前缀 + 档位名。◌ 字形自解释「跟随默认」，不再写 (auto) 文字后缀（冗余）。
     return { glyph: EFFORT_AUTO, text: `${EFFORT_AUTO} ${level}`, color: defaultColor };
@@ -357,7 +369,7 @@ export interface StatusLineData {
   model: string;
   scroll: { text: string } | null;
   /** effort 列派生（null = 模型不支持档位，不渲染该列） */
-  effort: { glyph: string; text: string; color: Color } | null;
+  effort: { glyph: string; text: string; color: Color; strikethrough?: boolean } | null;
   /** thinking 列派生（null = 尚未初始化，不渲染该列） */
   thinking: { glyph: string; text: string; color: Color } | null;
   /** /goal 列派生（null = 无活跃目标，不渲染该列） */
