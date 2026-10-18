@@ -28,7 +28,12 @@
 沿用既有预算思路（simple 2K / medium 10K / complex 50K），补 high/xhigh 两档使 5 档
 与预算一一对应。
 
-adaptive 线格式官方档位是 `low/medium/high/max`，**不含 xhigh** → xhigh 钳到 max。
+adaptive 线格式官方档位是 `low/medium/high/xhigh/max`，但 **xhigh 并非所有模型都有**
+（anthropic-api.md:409,417）。所以按注册表 `supportsXhighEffort` 判定：**精确命中**且声明
+的模型 xhigh 原样下发，其余钳到 max。真响应：Opus 5.5、Sonnet 5 的 xhigh 均 200
+（20261018 effort 排查 E2）；其余已声明模型只有文档依据，上线后看轨迹 `effort_wire` 与 400 率。
+
+> 旧文写「官方档位不含 xhigh」，已过时（2026-10-18 更正）。
 
 ## 思考 token 上限的钳制方式随协议不同（本族最需要「算法」的一处）
 

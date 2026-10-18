@@ -30,7 +30,7 @@ function capFor(model: string, provider: string, baseURL?: string): EffortCapabi
 }
 
 describe("getSelectableEfforts：档位集合与模型配对", () => {
-  test("原生 Claude 走 budget_tokens，5 档各自对应不同预算，全部可选", () => {
+  test("原生 Claude（adaptive，注册表声明认 xhigh）5 档全部可选", () => {
     const cap = capFor("claude-opus-5", "anthropic", "https://code.ppchat.vip");
     expect(getSelectableEfforts(cap)).toEqual(["low", "medium", "high", "xhigh", "max"]);
   });
@@ -185,9 +185,16 @@ describe("isEffortGatedByThinking：思考关掉后档位是否失效", () => {
     );
   });
 
-  test("原生 Claude 走 budget_tokens、无 reasoning_effort 下发 → 不报门控", () => {
+  test("可关思考的原生 Claude：关思考后档位不下发 → 报门控（20261018 effort 排查 E4）", () => {
+    // 此前探针喂空名 + 只读档位字段，Claude 恒判 false，`/think off` 后面板在空转却不提示。
     expect(
       isEffortGatedByThinking(capFor("claude-opus-5", "anthropic", "https://code.ppchat.vip")),
+    ).toBe(true);
+  });
+
+  test("恒思考 Claude（Opus 5.5）关不掉 → 不报门控", () => {
+    expect(
+      isEffortGatedByThinking(capFor("claude-opus-5-5", "anthropic", "https://code.ppchat.vip")),
     ).toBe(false);
   });
 
