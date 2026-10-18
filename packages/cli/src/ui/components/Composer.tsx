@@ -207,7 +207,7 @@ export const Composer: React.FC<ComposerProps> = ({
   // 快捷键帮助展开状态
   const [shortcutsHelpVisible, setShortcutsHelpVisible] = useState(false);
 
-  // 本轮新增 output token（仅用于 LoadingIndicator 显示「↑ N tokens」）。
+  // 本轮新增 output token（仅用于 LoadingIndicator 显示「↓ N tokens」）。
   // ⚠️ 它只在每次 LLM response 结束后更新，不是实时的——不能拿来当静默探针。
   const turnOutputTokens = Math.max(
     0,
