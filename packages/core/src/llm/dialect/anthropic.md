@@ -35,6 +35,12 @@ adaptive 线格式官方档位是 `low/medium/high/xhigh/max`，但 **xhigh 并�
 
 > 旧文写「官方档位不含 xhigh」，已过时（2026-10-18 更正）。
 
+auto（未设档）时 adaptive 路径**不发** `output_config.effort`，只发 `thinking:{type:"adaptive"}`，
+服务端按模型默认档跑（Opus 5.5 / Haiku 5.5 默认 medium，其余 high，anthropic-api.md §6.2）。
+此前 auto 显式发 high，在 Opus 5.5 / Haiku 5.5 上比服务端默认高一档（20261018 effort 排查 E3，F2）。
+思考上限降档在 auto 下照样生效，基准档取注册表 `defaultEffort`（缺省 high），降得更低才下发。
+manual 路径不变：`budget_tokens` 必填，auto 开思考仍按 medium 预算。
+
 ## 思考 token 上限的钳制方式随协议不同（本族最需要「算法」的一处）
 
 | 协议 | 能否精确钳制 | 做法 |

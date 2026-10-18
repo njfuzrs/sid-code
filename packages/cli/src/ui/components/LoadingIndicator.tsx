@@ -2,7 +2,8 @@
  * 加载指示器组件
  *
  * 显示 spinner + 加载短语 + 计时器 + token 累计 + esc 取消提示。
- * 对标 claude-code 底部那行 `✻ Recombobulating… (18m 38s · ↑ 11.4k tokens)`。
+ * 形态对标 claude-code 底部那行 `✻ Recombobulating… (18m 38s · ↓ 11.4k tokens)`，
+ * 但箭头方向跟 Footer 的 TOKEN_IN/TOKEN_OUT 走（↓ = 输出），不照抄 cc 的 ↑。
  * 参考 gemini-cli LoadingIndicator.tsx
  */
 
@@ -13,7 +14,7 @@ import { useStdout } from "../render-port/hooks.ts";
 import { theme } from "../semantic-colors.ts";
 import { StreamingState } from "../types.ts";
 import { useIsAccessibilityEnabled } from "../accessibility/AccessibilityContext.tsx";
-import { BULLET } from "../constants/figures.ts";
+import { BULLET, TOKEN_OUT } from "../constants/figures.ts";
 import { TOOL_TIMER_THRESHOLD_SEC, formatToolElapsed } from "../constants/loading-phrases.ts";
 import { DEFAULT_TERM_WIDTH } from "../markdown.ts";
 import { formatLargeNumber } from "../utils/format-number.ts";
@@ -34,7 +35,7 @@ interface LoadingIndicatorProps {
   toolName?: string | null;
   /** L3：当前工具已执行秒数。超过阈值时在工具文案后追加「· 已执行 Xs」。 */
   toolElapsedTime?: number;
-  /** 本轮新增的输出 token 数（↑ 上行，= 会话累计 − 本轮起点）。0 或缺省时不显示 token 段。 */
+  /** 本轮新增的输出 token 数（显示为 ↓ 输出，= 会话累计 − 本轮起点）。0 或缺省时不显示 token 段。 */
   outputTokens?: number;
   /** 是否内联模式（单行） */
   inline?: boolean;
@@ -100,9 +101,13 @@ export const LoadingIndicator: React.FC<LoadingIndicatorProps> = ({
   // - 中 (40–59)：仅计时
   // - 窄 (<40)：只留动词 + spinner
   // token 仅在有实际输出（>0）且非等待态时显示。
+  // 箭头必须复用 Footer 同一个 TOKEN_OUT（↓ = 输出）：这里曾硬编码 ↑（照抄 cc 的写法），
+  // 与 Footer 的「↑ 输入 / ↓ 输出」语义相反，同一屏上同一个数一上一下，用户会读成输入 token。
   const elapsed = formatDuration(elapsedTime);
   const tokenStr =
-    !isWaiting && outputTokens > 0 ? `↑ ${formatLargeNumber(outputTokens)} tokens` : null;
+    !isWaiting && outputTokens > 0
+      ? `${TOKEN_OUT} ${formatLargeNumber(outputTokens)} tokens`
+      : null;
   let cancelAndTimer: string | null = null;
   if (showCancelAndTimer && !isWaiting) {
     if (termWidth >= 72) {

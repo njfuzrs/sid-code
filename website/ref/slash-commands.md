@@ -45,7 +45,7 @@ description: 交互模式里可用的全部斜杠命令。
 | `/deny` | 添加 deny 权限规则（默认当前会话，-p 持久化） | — | `<规则> [-p] [--scope user\|project]` |
 | `/diff` | 显示当前工作区 git diff（--staged 看已暂存改动） | — | `[--staged\|--cached]` |
 | `/doctor` | 环境自检诊断（版本/运行时/配置/git/ripgrep/模型/MCP）；--disk 看磁盘占用与保留策略 | `/checkup` | — |
-| `/effort` | 显示或切换推理强度档位（low/medium/high/xhigh/max/auto） | — | `low\|medium\|high\|xhigh\|max\|auto` |
+| `/effort` | 打开面板或切换推理强度档位（low/medium/high/xhigh/max/auto） | — | `low\|medium\|high\|xhigh\|max\|auto` |
 | `/exit` | 退出程序 | `/quit` `/q` | — |
 | `/export` | 导出对话到剪贴板或文件 | `/save` | `[clipboard\|file\|<path>] [json\|md]` |
 | `/fast` | 切换 Fast Mode 偏好（网关对等能力就绪前为预留开关） | — | `[on\|off]` |

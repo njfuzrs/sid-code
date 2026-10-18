@@ -503,8 +503,11 @@ export interface SendParams {
    * 不传则不下发。
    */
   outputConfig?: {
-    /** `xhigh` 仅对注册表声明 `supportsXhighEffort` 的 adaptive Claude 原样下发，其余钳到 max */
-    effort: "low" | "medium" | "high" | "xhigh" | "max";
+    /**
+     * `xhigh` 仅对注册表声明 `supportsXhighEffort` 的 adaptive Claude 原样下发，其余钳到 max。
+     * 缺省 = 不下发 `output_config.effort`（adaptive Claude 的 auto，服务端按模型默认档跑）。
+     */
+    effort?: "low" | "medium" | "high" | "xhigh" | "max";
     /** 区分 adaptive（Opus 4.7+）和 enabled（旧 manual 模型）两种 thinking 下发模式 */
     thinkingType?: "adaptive" | "enabled";
   };

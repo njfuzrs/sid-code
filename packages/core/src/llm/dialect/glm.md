@@ -17,6 +17,17 @@
 
 线格式认 `low/medium/high/max`，**不认 `xhigh`** → 客户端钳到 `max`（GLM 支持的最高档）。
 
+每模型的真实档位按注册表 `reasoningEffortValues` 映射，表外档位沿标度**向上**取最近一档
+（跟官方语义：GLM-5.2 `low/medium → high`，glm-api.md §6.2）：
+
+| 模型 | 登记档位 | 映射 |
+| --- | --- | --- |
+| GLM-5.2 | high / max | low、medium → high；xhigh → max |
+| GLM-5.3 系 | low / high / max | medium → high（官方未说明，真网关静默受理，不透传）；xhigh → max |
+| 未登记 | — | 旧行为：xhigh → max，其余原样 |
+
+此前 5.2 登记四档，面板把 low / medium 当独立档列出，选了实际等于 high（20261018 effort 排查 E10，F2）。
+
 ## `tool_choice`：默认且仅支持 `auto`
 
 依据 `glm-api.md:147,276,431`。`required` / `none` / 指定函数都会被拒绝。
