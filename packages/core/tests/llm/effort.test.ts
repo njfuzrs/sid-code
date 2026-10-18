@@ -197,7 +197,8 @@ describe("openai-responses 族（GPT-5.x）— effort 能力回归", () => {
     ]) {
       const cap = resolveEffortCapability({ model, provider: "openai" });
       expect(cap.supportsEffort).toBe(true);
-      expect(cap.defaultEffort).toBe("medium");
+      // kimi-k3 在注册表登记了服务端默认档 max（E8，展示用），其余无数据时乐观默认 medium。
+      expect(cap.defaultEffort).toBe(model === "kimi-k3" ? "max" : "medium");
     }
   });
 
@@ -220,7 +221,7 @@ describe("openai-responses 族（GPT-5.x）— effort 能力回归", () => {
 });
 
 describe("applyToSendParams — 线格式映射", () => {
-  test("规则1 DeepSeek OpenAI：effort→reasoningEffort 二值钳制", () => {
+  test("规则1 DeepSeek OpenAI：effort→reasoningEffort 三档（low 原样，E5）", () => {
     const cap = resolveEffortCapability({
       model: "deepseek-v4-pro",
       provider: "openai",
@@ -229,7 +230,7 @@ describe("applyToSendParams — 线格式映射", () => {
     const low = baseParams("deepseek-v4-pro");
     cap.applyToSendParams(low, "low", true);
     expect(low.thinking).toEqual({ enabled: true, budgetTokens: 0 });
-    expect(low.reasoningEffort).toBe("high"); // low→high 钳制
+    expect(low.reasoningEffort).toBe("low"); // 2026-10 起 low 是真实档位（E5）
 
     const max = baseParams("deepseek-v4-pro");
     cap.applyToSendParams(max, "max", true);
@@ -333,8 +334,10 @@ describe("getDisplayedEffort / isEffortAuto", () => {
     expect(getDisplayedEffort(dsCap, undefined, null)).toBe("high");
     expect(isEffortAuto(undefined, null)).toBe(true);
   });
-  test("显式档位展示该档（基线，非服务端钳制后）", () => {
-    expect(getDisplayedEffort(dsCap, "low", null)).toBe("low"); // 展示用户设的基线 low
+  test("显式档位展示线上实发档（DeepSeek medium/xhigh 实发 high，PR-C / E7 / E5）", () => {
+    expect(getDisplayedEffort(dsCap, "medium", null)).toBe("high");
+    expect(getDisplayedEffort(dsCap, "xhigh", null)).toBe("high");
+    expect(getDisplayedEffort(dsCap, "low", null)).toBe("low");
     expect(isEffortAuto("low", null)).toBe(false);
   });
   test("env 强制 auto → isEffortAuto true", () => {
@@ -417,16 +420,18 @@ describe("previewWireEffort — 预演实际下发档（钳制提示用）", () 
   const oCap = resolveEffortCapability({ model: "o1", provider: "openai" });
   const unknownCap = resolveEffortCapability({ model: "llama3", provider: "openai" });
 
-  test("DeepSeek OpenAI 端点：low/medium 实际下发 high（被钳制）", () => {
-    expect(previewWireEffort(dsOpenAI, "low")).toBe("high");
+  test("DeepSeek OpenAI 端点：medium/xhigh 实际下发 high（被钳制），low 原样（E5）", () => {
+    expect(previewWireEffort(dsOpenAI, "low")).toBe("low");
     expect(previewWireEffort(dsOpenAI, "medium")).toBe("high");
+    expect(previewWireEffort(dsOpenAI, "xhigh")).toBe("high");
   });
   test("DeepSeek OpenAI 端点：high/max 原样下发（无钳制）", () => {
     expect(previewWireEffort(dsOpenAI, "high")).toBe("high");
     expect(previewWireEffort(dsOpenAI, "max")).toBe("max");
   });
-  test("DeepSeek Anthropic 端点：low/medium→high（走 output_config.effort）", () => {
-    expect(previewWireEffort(dsAnthropic, "low")).toBe("high");
+  test("DeepSeek Anthropic 端点：同一张映射表（走 output_config.effort）", () => {
+    expect(previewWireEffort(dsAnthropic, "low")).toBe("low");
+    expect(previewWireEffort(dsAnthropic, "xhigh")).toBe("high");
     expect(previewWireEffort(dsAnthropic, "max")).toBe("max");
   });
   test("o-series：max 实际下发 high（被钳制），low/medium 原样", () => {

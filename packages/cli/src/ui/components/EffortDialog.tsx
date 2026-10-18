@@ -138,7 +138,11 @@ export const EffortDialog: React.FC<EffortDialogProps> = ({
   const options = buildOptions(levels);
 
   // 当前生效档位（auto 时用 "auto"）
-  const currentValue = state?.runtime ?? "auto";
+  // 所选档对本模型被钳制（不在可选集内）时光标落在实发档上，而不是退到列表首项。
+  const runtimeValue = state?.runtime ?? "auto";
+  const currentValue = options.some((o) => o.value === runtimeValue)
+    ? runtimeValue
+    : (state?.applied ?? "auto");
   const initialIndex = Math.max(
     0,
     options.findIndex((o) => o.value === currentValue),
@@ -150,6 +154,9 @@ export const EffortDialog: React.FC<EffortDialogProps> = ({
     const runtimeText = state.runtime ?? "auto";
     if (state.isAuto) {
       statusLine = `当前: auto → ${state.applied}（跟随模型默认）`;
+    } else if (state.runtime !== undefined && state.applied !== state.runtime) {
+      // 所选档对本模型被钳制：runtime 保留用户意图（切回支持的模型仍生效），这里说清实发档。
+      statusLine = `当前: ${runtimeText}（本模型按 ${state.applied} 下发）`;
     } else {
       statusLine = `当前: ${runtimeText}`;
     }

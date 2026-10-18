@@ -2,8 +2,8 @@
  * 档位探针吃真名 + adaptive Claude 按注册表透传 xhigh（20261018 effort 排查 B+D：E0 / E2 / E4）
  *
  * 两件事必须同一个 PR：探针吃真名（B）后，若 applier 仍把 xhigh 钳成 max，
- * `getSelectableEfforts` 会把 xhigh 剔出 5.x Claude 的面板、`reconcileEffortForModel`
- * 会把用户的 xhigh 改写成 max。下面第 3 组断言锁的就是这个顺序约束。
+ * `getSelectableEfforts` 会把 xhigh 剔出 5.x Claude 的面板、展示层（`getDisplayedEffort`）
+ * 会把用户的 xhigh 显示成 max。下面第 3 组断言锁的就是这个顺序约束。
  *
  * 全部走真实 `resolveEffortCapability`（与运行时同源），不手搓 cap。
  */
@@ -13,7 +13,7 @@ import {
   previewWireEffort,
   getSelectableEfforts,
   isEffortGatedByThinking,
-  reconcileEffortForModel,
+  getDisplayedEffort,
   type EffortCapability,
 } from "@sid-code/core/llm/effort.ts";
 import type { SendParams } from "@sid-code/core/llm/types.ts";
@@ -79,17 +79,17 @@ describe("B：档位探针吃真名", () => {
 });
 
 describe("B+D 顺序约束：xhigh 仍在 5.x Claude 可选集内、不被归正改写", () => {
-  test("已声明模型 5 档全可选，xhigh 不被 reconcile 改写", () => {
+  test("已声明模型 5 档全可选，xhigh 显示为 xhigh", () => {
     for (const m of ["claude-opus-5-5", "claude-sonnet-5", "claude-haiku-5-5"]) {
       const cap = claude(m);
       expect(getSelectableEfforts(cap)).toEqual(["low", "medium", "high", "xhigh", "max"]);
-      expect(reconcileEffortForModel(cap, "xhigh")).toBe("xhigh");
+      expect(getDisplayedEffort(cap, "xhigh", null)).toBe("xhigh");
     }
   });
 
-  test("未声明的 adaptive 模型剔掉 xhigh，xhigh 归正为实发的 max", () => {
+  test("未声明的 adaptive 模型剔掉 xhigh，xhigh 显示为实发的 max", () => {
     const cap = claude("claude-opus-4-6");
     expect(getSelectableEfforts(cap)).toEqual(["low", "medium", "high", "max"]);
-    expect(reconcileEffortForModel(cap, "xhigh")).toBe("max");
+    expect(getDisplayedEffort(cap, "xhigh", null)).toBe("max");
   });
 });

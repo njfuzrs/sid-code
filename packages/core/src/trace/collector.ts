@@ -34,6 +34,7 @@ import {
   type SubagentStartInput,
   type UserPromptSubmitInput,
   type PermissionDeniedInput,
+  type ModelSwitchInput,
 } from "../hook/types.ts";
 import type { HookSystem } from "../hook/system.ts";
 import { getRawVersion } from "@sid-code/shared/version.ts";
@@ -816,6 +817,10 @@ export class TraceCollector {
       HookEventName.PreCompact,
       HookEventName.SubagentStart,
       HookEventName.SubagentStop,
+      // 切模型进轨迹：此前只有 metadata.model / model_at_start 两个端点值，看不出何时、由谁、
+      // 切了几次（会话 20261018-230439-a41bcd77：启动 MiniMax、首请求已是 gpt-6-luna，
+      // 轨迹里零切换记录）。只订 Post：Pre 只通知不能拒绝，两者对轨迹信息量相同。
+      HookEventName.PostModelSwitch,
       HookEventName.SessionEnd,
     ] as const;
 
@@ -878,6 +883,9 @@ export class TraceCollector {
           break;
         case HookEventName.SubagentStop:
           this.handleSubagentStop(input);
+          break;
+        case HookEventName.PostModelSwitch:
+          this.handleModelSwitch(input as ModelSwitchInput);
           break;
         case HookEventName.SessionEnd: {
           // 记下在途收尾：/clear 换会话时 SessionStart(clear) 可能在它还没写完时到达
@@ -1300,6 +1308,29 @@ export class TraceCollector {
       });
     } catch {
       /* 事件落盘失败静默，不影响主流程 */
+    }
+  }
+
+  // ─── PostModelSwitch ───
+
+  /**
+   * 落一条 ModelSwitch 事件，并立即同步 metadata.model。
+   *
+   * 不等下一次 BeforeModel 再更新 metadata.model：切完模型就退出的会话（没发请求）
+   * 否则 metadata 仍写旧模型，与用户看到的状态栏不一致。
+   * after_request_index = 切换发生前已发出的请求数，0 表示首请求之前就切了。
+   */
+  private handleModelSwitch(input: ModelSwitchInput): void {
+    if (!this.initialized) return;
+    this.recordCustomEvent("ModelSwitch", {
+      from_model: input.from_model,
+      to_model: input.to_model,
+      trigger: input.trigger,
+      ...(input.reason ? { reason: input.reason } : {}),
+      after_request_index: this.resumedPairOffset + this.pairs.length,
+    });
+    if (input.to_model && this.metadata.model !== input.to_model) {
+      this.metadata.model = input.to_model;
     }
   }
 
@@ -1801,6 +1832,8 @@ export class TraceCollector {
       data: {
         tool_name: input.tool_name,
         tool_use_id: input.tool_use_id,
+        ...toolAgentField(input),
+        ...toolInputSummaryField(input),
       },
     });
 
@@ -1859,6 +1892,8 @@ export class TraceCollector {
         is_error: input.is_error ?? false,
         // 缺口分析（一类·工具耗时）：每次工具执行墙钟，供 digest 聚合分位/定位慢工具
         ...(toolDurationMs !== undefined ? { duration_ms: toolDurationMs } : {}),
+        ...toolAgentField(input),
+        ...toolOutputCharsField(input),
       },
     });
 
@@ -1911,6 +1946,8 @@ export class TraceCollector {
         // S17：错误分类 + 截断错误头。error_head 只留本地（上传前由 uploader 剥掉）
         error_kind: classifyToolFailure(input),
         ...errorHeadField(input),
+        ...toolAgentField(input),
+        ...toolOutputCharsField(input),
       },
     });
 
@@ -3590,6 +3627,72 @@ export function classifyToolFailure(input: PostToolUseInput): ToolErrorKind {
  */
 const TIMEOUT_EVENT_RE =
   /\btimed\s+out\b|\btime\s+out\b|\bETIMEDOUT\b|TimeoutError\b|\btimeout\s+(?:after|exceeded|reached|of\s+\d)|\bexceeded\b[^\n]{0,40}\btimeout\b|超时(?!时间|参数|设置|值)/i;
+
+/**
+ * G1：工具事件带子代理身份。hook 输入早就带 agent_id（event-handler agentFields），
+ * 此前落盘时丢了——会话 20261018-230439-a41bcd77 的 406 条工具事件里 226 条属子代理，
+ * 0 条可归属，主/子代理的工具行为混成一锅。主循环无此字段，行形状不变。
+ */
+function toolAgentField(input: PreToolUseInput | PostToolUseInput): { agent_id?: string } {
+  return input.agent_id ? { agent_id: input.agent_id } : {};
+}
+
+/** input_summary 里允许出现的入参键：够还原「读了哪、搜了什么」，不落全量入参 */
+const TOOL_INPUT_SUMMARY_KEYS = [
+  "file_path",
+  "path",
+  "offset",
+  "limit",
+  "pattern",
+  "glob",
+  "output_mode",
+  "type",
+] as const;
+/** 字符串入参截断长度（command / pattern 可能很长或含敏感内容） */
+const TOOL_INPUT_SUMMARY_STR_MAX = 200;
+
+/**
+ * G1：工具入参摘要（白名单键）。用途：重读率 / 读窗重叠 / 提示遵从率这类只要
+ * 「读了哪个文件哪一段」的统计——此前只有主循环 raw.jsonl 里有入参，子代理完全没有。
+ * 只留本地（LOCAL_ONLY_EVENT_DATA_FIELDS）：路径与命令可能含敏感信息。
+ */
+function toolInputSummaryField(input: PreToolUseInput): {
+  input_summary?: Record<string, unknown>;
+} {
+  const ti = input.tool_input;
+  if (!ti || typeof ti !== "object") return {};
+  const out: Record<string, unknown> = {};
+  const clip = (v: string) =>
+    v.length > TOOL_INPUT_SUMMARY_STR_MAX ? v.slice(0, TOOL_INPUT_SUMMARY_STR_MAX) : v;
+  for (const k of TOOL_INPUT_SUMMARY_KEYS) {
+    const v = ti[k];
+    if (typeof v === "string") out[k] = clip(v);
+    else if (typeof v === "number" || typeof v === "boolean") out[k] = v;
+  }
+  if (typeof ti.command === "string") out.command = clip(ti.command);
+  // read_many 等多路径工具：只记数量与路径（各自截断），不记内容
+  for (const k of ["paths", "file_paths"] as const) {
+    const v = ti[k];
+    if (Array.isArray(v)) {
+      out[`${k}_count`] = v.length;
+      out[k] = v.filter((x): x is string => typeof x === "string").map(clip);
+    }
+  }
+  return Object.keys(out).length > 0 ? { input_summary: out } : {};
+}
+
+/**
+ * G1：工具结果体量（字符数）。取 hook 收到的 output——即工具层截断之后、回注模型之前
+ * 的字符串，是「这次调用往上下文里塞了多少」的直接口径。本会话 6 次 >40k 结果占全部
+ * 工具输出 40%，此前只能对主循环 raw.jsonl 手算，子代理算不了。
+ */
+function toolOutputCharsField(input: PostToolUseInput): { output_chars?: number } {
+  const resp = input.tool_response as Record<string, unknown> | undefined;
+  const v = resp?.output ?? resp?.error;
+  if (v === undefined || v === null) return {};
+  const text = typeof v === "string" ? v : JSON.stringify(v);
+  return typeof text === "string" ? { output_chars: text.length } : {};
+}
 
 function errorHeadField(input: PostToolUseInput): { error_head?: string } {
   const text = failureText(input);

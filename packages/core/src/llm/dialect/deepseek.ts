@@ -11,21 +11,24 @@ import type { SendParams } from "../types.ts";
 import type { Dialect, DialectEffortLevel } from "./types.ts";
 
 /**
- * DeepSeek 仅认 `high` / `max` 两档（低档会被服务端映射为 high，见 `deepseek.md`）。
- * 故 xhigh/max → max，low/medium/high → high。
+ * DeepSeek 认 `low` / `high` / `max` 三档（2026-10 官方映射表，见 `deepseek.md`）：
+ * low 原样，medium / xhigh → high，max 原样。
  *
- * 这不是「我们钳的」而是「服务端本来就这么收敛」——下发 low 不会报错，只是无效。
- * 但仍在客户端映射，好处是 `previewWireEffort` 能对用户诚实显示「你选 low 实发 high」。
+ * 服务端本来就这么收敛（medium / xhigh 下发不会报错），仍在客户端映射，
+ * 好处是 `previewWireEffort` 能对用户诚实显示「你选 xhigh 实发 high」。
+ * 此前按 2026-06 版文档把 low 升 high、xhigh 发 max：low 选不到，xhigh 比官方语义贵一档（E5）。
  */
-function toDeepSeekWireEffort(effort: DialectEffortLevel): "high" | "max" {
-  return effort === "max" || effort === "xhigh" ? "max" : "high";
+function toDeepSeekWireEffort(effort: DialectEffortLevel): "low" | "high" | "max" {
+  if (effort === "max") return "max";
+  if (effort === "low") return "low";
+  return "high";
 }
 
 /**
  * DeepSeek · OpenAI 兼容端点（主力路径）。
  *
  * - thinking → `params.thinking`，由 `openai.ts` 转请求体顶层 `thinking:{type}`
- * - effort   → `params.reasoningEffort`（仅 high/max）
+ * - effort   → `params.reasoningEffort`（low/high/max）
  */
 export const deepseekOpenAIDialect: Dialect = {
   kind: "deepseek-openai",

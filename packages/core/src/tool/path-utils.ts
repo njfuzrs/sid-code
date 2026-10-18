@@ -188,7 +188,21 @@ function suggestNearestExistingSegment(filePath: string): string {
         best +
         (i < segments.length - 1 ? sep + segments.slice(i + 1).join(sep) : "");
       const more = hits.length > 1 ? `（其它候选: ${hits.slice(1).join(", ")}）` : "";
-      return `路径段 "${missingSeg}" 疑似应为 "${best}"${more}。可尝试完整路径: ${fullPath}`;
+      // 只纠正了第一个缺失段、其余段原样拼回，拼出来的路径**未必存在**。
+      // 不验证就报「可尝试完整路径」，模型会照着去试再失败一次（会话 20261018-224823-dbc19982：
+      // packages/ui/... → 建议 packages/tui/components/...，实际在 packages/cli/src/ui/...）。
+      // 所以只有拼出的路径真实存在时才给可执行路径，否则只报段级候选。
+      let fullPathExists = false;
+      try {
+        statSync(fullPath);
+        fullPathExists = true;
+      } catch {
+        fullPathExists = false;
+      }
+      if (fullPathExists) {
+        return `路径段 "${missingSeg}" 疑似应为 "${best}"${more}。可尝试完整路径: ${fullPath}`;
+      }
+      return `路径段 "${missingSeg}" 疑似应为 "${best}"${more}，但按此替换后的完整路径仍不存在，后续路径段可能也有误。建议用 glob 按文件名搜索确认真实位置。`;
     }
     // 找到最近存在的祖先但无相似段，无需再往上找
     return "";

@@ -211,7 +211,11 @@ export const Footer = React.memo(function Footer(props: FooterProps) {
       key: "effort",
       str: data.effort.text,
       dropOrder: -1,
-      nodes: <Text color={data.effort.color}>{data.effort.text}</Text>,
+      nodes: (
+        <Text color={data.effort.color} strikethrough={data.effort.strikethrough}>
+          {data.effort.text}
+        </Text>
+      ),
     });
   }
   if (data.isPlanMode) {

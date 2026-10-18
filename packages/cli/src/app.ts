@@ -2469,23 +2469,25 @@ export class App {
     } catch {
       /* analytics 未就绪不阻断切换 */
     }
-    // 档位归正：runtimeEffort 是跨模型共享的运行时态，可选档位却每模型不同。
-    // 不归正则出现「状态栏显示 xhigh、GLM 实际下发 max、面板 hint 又不含 xhigh」的三方矛盾
-    // （在 claude 上调到 xhigh 再切 GLM 即可复现）。归正只在档位对新模型无效时发生，
-    // 且映射到该档实际会被下发的那一档，使「显示 == 实发」。auto 不动。
+    // 档位不改写：runtimeEffort 是跨模型共享的用户意图，可选档位却每模型不同。
+    // 此前这里把「对新模型无效」的档直接改写成实发档（reconcileEffortForModel），于是在 GLM 上
+    // xhigh 被改成 max 后切回 Claude，用户的 xhigh 就丢了。现在只在展示层映射（getDisplayedEffort
+    // 按当前模型算实发档），这里仅在「所选档在新模型上实发不同」时记一条日志。auto 不提示。
     try {
       const effMod = require("@sid-code/core/llm/effort.ts");
-      const before = this.runtimeEffort;
-      const after = effMod.reconcileEffortForModel(this.resolveEffortCap(), before);
-      if (after !== before) {
-        this.runtimeEffort = after;
-        log.info(
-          "TUI:CMD",
-          `模型 ${model} 不支持档位 ${before}，已归正为 ${after}（显示与实际下发一致）`,
-        );
+      const chosen = this.runtimeEffort;
+      const cap = this.resolveEffortCap();
+      if (chosen !== undefined && cap.supportsEffort) {
+        const wire = effMod.previewWireEffort(cap, chosen);
+        if (wire !== chosen) {
+          log.info(
+            "TUI:CMD",
+            `模型 ${model} 不支持档位 ${chosen}，将按 ${wire} 下发（所选档保留）`,
+          );
+        }
       }
     } catch {
-      /* 归正失败不阻断切换，沿用旧档位（原行为） */
+      /* 预演失败不阻断切换 */
     }
     // 模型变了，effort/thinking 能力可能随之变（如换到不支持 max 的模型），重推展示态。
     this.pushKnobDisplay();
@@ -2806,11 +2808,18 @@ export class App {
     const eff = require("@sid-code/core/llm/effort.ts");
     const cap = this.resolveEffortCap();
     const effortEnv = eff.getEffortEnvOverride();
+    // 门控：effort 挂在 thinking 分支内的族（Claude / DeepSeek / GLM），思考实际关闭时档位不下发。
+    // Footer 据此划掉档位，而不是照常显示一个根本没发出去的档（E4）。
+    const effortInert =
+      cap.supportsEffort &&
+      eff.isEffortGatedByThinking(cap) &&
+      !eff.resolveThinkingState(cap, this.runtimeThinking, eff.getThinkingEnvOverride()).effective;
     this.tuiStateUpdater({
       effortDisplay: cap.supportsEffort
         ? {
             level: eff.getDisplayedEffort(cap, this.runtimeEffort, effortEnv),
             isAuto: eff.isEffortAuto(this.runtimeEffort, effortEnv),
+            inert: effortInert,
           }
         : null,
       // 三种控制形态都显示（D6：无开关族此前不显示该列，用户把「没显示」读成「已关」）。
@@ -5562,23 +5571,8 @@ export class App {
         // effort：env 未设(null) 才用快照。快照存的 null 表示 auto(undefined)。
         if (getEffortEnvOverride() === null && setting.effortLevel !== undefined) {
           this.runtimeEffort = setting.effortLevel ?? undefined;
-          // 档位归正：本分支直接赋值 config.model 与 runtimeEffort（不走 applyPrimaryModelSwitch，
-          // 恢复不是用户显式切换），所以拿不到那里的归正。若快照里的档位对
-          // 当前模型无效（如快照记于 claude 时段的 xhigh、现模型是 GLM），恢复后就会复现
-          // 「状态栏显示 xhigh、实际下发 max」的矛盾——入口不同，症状与换模型时一致。
-          try {
-            const { reconcileEffortForModel } = await import("@sid-code/core/llm/effort.ts");
-            const fixed = reconcileEffortForModel(this.resolveEffortCap(), this.runtimeEffort);
-            if (fixed !== this.runtimeEffort) {
-              log.info(
-                "APP",
-                `恢复的档位 ${this.runtimeEffort} 对模型 ${this.config.model} 无效，已归正为 ${fixed}`,
-              );
-              this.runtimeEffort = fixed;
-            }
-          } catch {
-            /* 归正失败不阻断恢复，沿用快照值（原行为） */
-          }
+          // 不归正：快照里的档是用户意图，对当前模型无效时由展示层（getDisplayedEffort）映射成
+          // 实发档，runtime 保留原值，切回支持该档的模型时意图仍在。与 applyPrimaryModelSwitch 同口径。
           log.info("APP", `恢复 agent effort: ${this.runtimeEffort ?? "auto"}`);
         }
 

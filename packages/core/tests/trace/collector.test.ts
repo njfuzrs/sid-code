@@ -381,6 +381,38 @@ describe("TraceCollector", () => {
     expect(meta.model_at_start).toBe("claude-test");
   });
 
+  test("★PostModelSwitch 落 ModelSwitch 事件并即时同步 metadata.model（首请求前切换也留痕）", async () => {
+    await fireSessionStart(hookSystem, "sess-001");
+    // 首请求之前切换：会话 20261018-230439-a41bcd77 的真实形态
+    await hookSystem.firePostModelSwitchEvent("claude-test", "gpt-6-luna", "manual");
+    expect(collector.getMetadata()!.model).toBe("gpt-6-luna");
+    await fireModelRound(hookSystem, { model: "gpt-6-luna" });
+    await hookSystem.firePostModelSwitchEvent("gpt-6-luna", "glm-5.2", "fallback", "降级：429");
+
+    const eventsPath = join(testDir, "sessions", "sess-001", "events.jsonl");
+    const switches = readFileSync(eventsPath, "utf-8")
+      .trim()
+      .split("\n")
+      .map((l) => JSON.parse(l))
+      .filter((e) => e.event === "ModelSwitch");
+    expect(switches.map((e) => e.data)).toEqual([
+      {
+        from_model: "claude-test",
+        to_model: "gpt-6-luna",
+        trigger: "manual",
+        after_request_index: 0,
+      },
+      {
+        from_model: "gpt-6-luna",
+        to_model: "glm-5.2",
+        trigger: "fallback",
+        reason: "降级：429",
+        after_request_index: 1,
+      },
+    ]);
+    expect(collector.getMetadata()!.model_at_start).toBe("claude-test");
+  });
+
   test("AfterModel 后 raw.jsonl 追加一行", async () => {
     await fireSessionStart(hookSystem);
     await fireModelRound(hookSystem);
@@ -550,6 +582,54 @@ describe("TraceCollector", () => {
     const pair2 = collector.getPairs()[1];
     // 压缩后首次请求，new_messages = 全量
     expect(pair2.request.new_messages).toHaveLength(1);
+  });
+
+  // ─── G1：工具事件带 agent_id / input_summary / output_chars ───
+
+  test("★G1 子代理工具事件带 agent_id，主循环不带；入参摘要只取白名单键；记结果体量", async () => {
+    await fireSessionStart(hookSystem);
+    const agent = { agent_id: "sess-001-sub-abc", agent_type: "explore" };
+    await hookSystem.firePreToolUseEvent(
+      "read",
+      { file_path: "/r/a.ts", offset: 10, limit: 40, secret_blob: "x".repeat(50) },
+      "t-sub",
+      { agent },
+    );
+    await hookSystem.firePostToolUseEvent(
+      "read",
+      { file_path: "/r/a.ts" },
+      { output: "abcde" },
+      false,
+      "t-sub",
+      { agent },
+    );
+    await hookSystem.firePreToolUseEvent("bash", { command: "y".repeat(500) }, "t-main");
+    await hookSystem.firePostToolUseFailureEvent("bash", {}, "boom!", "t-main", {
+      failure_kind: "tool_error",
+      tool_output: "boom!",
+    });
+
+    const rows = readFileSync(join(testDir, "sessions", "sess-001", "events.jsonl"), "utf-8")
+      .trim()
+      .split("\n")
+      .map((l) => JSON.parse(l))
+      .filter((e) => e.data?.tool_use_id);
+    const by = (ev: string, id: string) =>
+      rows.find((e) => e.event === ev && e.data.tool_use_id === id)!.data;
+
+    const preSub = by("PreToolUse", "t-sub");
+    expect(preSub.agent_id).toBe("sess-001-sub-abc");
+    expect(preSub.input_summary).toEqual({ file_path: "/r/a.ts", offset: 10, limit: 40 });
+    expect(by("PostToolUse", "t-sub")).toMatchObject({
+      agent_id: "sess-001-sub-abc",
+      output_chars: 5,
+    });
+
+    const preMain = by("PreToolUse", "t-main");
+    expect("agent_id" in preMain).toBe(false);
+    expect(preMain.input_summary.command.length).toBe(200);
+    // tool_error 走 PostToolUse 口径落盘（见 handleEvent），体量取工具原始输出
+    expect(by("PostToolUse", "t-main").output_chars).toBe(5);
   });
 
   // ─── PostToolUse 更新 metadata ───

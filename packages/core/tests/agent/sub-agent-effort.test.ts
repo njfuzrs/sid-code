@@ -30,7 +30,7 @@ describe("子代理 effort 按模型族翻译", () => {
     expect(xhigh.reasoningEffort).not.toBe(max.reasoningEffort);
   });
 
-  test("DeepSeek 把 xhigh 钳到 max、low 钳到 high", () => {
+  test("DeepSeek 把 xhigh 钳到 high、low 原样（2026-10 官方映射，E5）", () => {
     const xhigh = buildSubAgentEffortParams({
       model: "deepseek-v4",
       providerName: "openai",
@@ -41,8 +41,8 @@ describe("子代理 effort 按模型族翻译", () => {
       providerName: "openai",
       effort: "low",
     });
-    expect(xhigh.reasoningEffort).toBe("max");
-    expect(low.reasoningEffort).toBe("high");
+    expect(xhigh.reasoningEffort).toBe("high");
+    expect(low.reasoningEffort).toBe("low");
   });
 
   test("o-series 无 max：xhigh 与 max 都钳到 high", () => {
