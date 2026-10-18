@@ -836,6 +836,7 @@ export class AnthropicProvider implements Provider {
             atMs: Date.now(),
             accounted: !bctx.agentId && !bctx.callerLabel,
             thinkingWire: thinkingWireLabel(thinkingWire.param),
+            effortWire: wireEffort ?? "omitted",
             thinkingInResponse: sawThinkingBlock,
             thinkingIntent: observedThinkingIntent(params),
             ...observeAnthropicThinking(
@@ -1033,6 +1034,10 @@ export class AnthropicProvider implements Provider {
     let billedUsage: Usage | undefined;
     let billable = false;
     const nonStreamThinkingWire = buildThinkingWire(params, wireModel, this.client.baseURL);
+    // 与下面请求体 output_config 的条件同一份，落盘的就是线上发的（E9）
+    const nonStreamWireEffort = nonStreamThinkingWire.dropEffort
+      ? undefined
+      : params.outputConfig?.effort;
     let nonStreamSawThinking = false;
     try {
       const createMessage = () =>
@@ -1048,10 +1053,9 @@ export class AnthropicProvider implements Provider {
             ...buildToolChoiceParam(params),
             // 与流式路径一致：Extended Thinking（开 adaptive/manual；关按模型 disabled 或不发）
             ...nonStreamThinkingWire.param,
-            ...(params.outputConfig &&
-              !nonStreamThinkingWire.dropEffort && {
-                output_config: { effort: params.outputConfig.effort },
-              }),
+            ...(nonStreamWireEffort && {
+              output_config: { effort: nonStreamWireEffort },
+            }),
             // G2: cache_edits（同流式路径门控）
             ...(params.cacheEdits &&
               params.cacheEdits.length > 0 &&
@@ -1117,6 +1121,7 @@ export class AnthropicProvider implements Provider {
           baseURL: this.client.baseURL,
           usage: billedUsage,
           thinkingWire: thinkingWireLabel(nonStreamThinkingWire.param),
+          effortWire: nonStreamWireEffort ?? "omitted",
           thinkingInResponse: nonStreamSawThinking,
           thinkingIntent: observedThinkingIntent(params),
           ...observeAnthropicThinking(
