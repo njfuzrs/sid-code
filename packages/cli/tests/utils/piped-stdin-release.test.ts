@@ -18,6 +18,8 @@ test("上游 stdin 保持打开：读超时后子进程自然退出（不靠 pro
     stdin: "pipe",
     stdout: "pipe",
     stderr: "pipe",
+    // Bun 子进程不继承运行时 process.env，显式传入以保留 preload 设的隔离 SID_CONFIG_DIR
+    env: { ...process.env },
   });
   proc.stdin.write("partial");
   proc.stdin.flush();
