@@ -12,6 +12,7 @@ import { reapplyThinkingForFallback } from "@sid-code/core/llm/fallback-thinking
 import { buildThinkingWire } from "@sid-code/core/llm/anthropic.ts";
 import { SIDE_CALL_NO_THINK } from "@sid-code/core/llm/side-call-timeout.ts";
 import type { Provider } from "@sid-code/core/llm/provider.ts";
+import { resolveEffortCapability } from "@sid-code/core/llm/effort.ts";
 import type { SendParams, StreamEvent } from "@sid-code/core/llm/types.ts";
 
 const base = (over: Partial<SendParams>): SendParams => ({
@@ -98,6 +99,106 @@ describe("reapplyThinkingForFallback", () => {
         }) as never,
     });
     expect(seen).toBe("high");
+  });
+
+  // ── T3：降级目标补全（Opus 5 / OpenAI 族恒思考 / 无开关族） ──
+
+  test("off + 主模型 effort max → Opus 5：线上 disabled，且不带 output_config（Opus 5 带 max 必 400）", () => {
+    const p = base({
+      thinking: { enabled: false, budgetTokens: 0 },
+      reasoningEffort: "max",
+      outputConfig: { effort: "max", thinkingType: "adaptive" },
+      thinkingIntent: { thinking: false, effort: "max" },
+    });
+    reapply(p, "claude-opus-5", "anthropic");
+    expect(p.outputConfig).toBeUndefined();
+    expect(p.reasoningEffort).toBeUndefined();
+    const wire = buildThinkingWire(p, "claude-opus-5");
+    expect(wire.param).toEqual({ thinking: { type: "disabled" } });
+    expect(wire.dropEffort).toBe(true);
+  });
+
+  test("off → GLM-5.3（OpenAI 族恒思考）：只留 enabled:false 交给 openai.ts 降级为不下发，不残留 effort", () => {
+    const p = base({
+      thinking: { enabled: false, budgetTokens: 0 },
+      outputConfig: { effort: "max", thinkingType: "adaptive" },
+      thinkingIntent: { thinking: false, effort: "max" },
+    });
+    reapply(p, "glm-5.3", "openai");
+    expect(p.thinking?.enabled).toBe(false);
+    expect(p.outputConfig).toBeUndefined();
+    expect(p.reasoningEffort).toBeUndefined();
+  });
+
+  test("off / on → 无开关族（gpt-5.6）：不下 thinking 字段，推理深度只走 reasoningEffort", () => {
+    for (const thinking of [false, true]) {
+      const p = base({
+        thinking: { enabled: !thinking, budgetTokens: 0 },
+        outputConfig: { effort: "high", thinkingType: "adaptive" },
+        thinkingIntent: { thinking, effort: "high" },
+      });
+      reapply(p, "gpt-5.6", "openai");
+      expect(p.thinking).toBeUndefined();
+      expect(p.outputConfig).toBeUndefined();
+      expect(p.reasoningEffort).toBe("high");
+    }
+  });
+
+  test("观测字段按备用模型重写：control 换成备用模型的，setting 保留调用方意图", () => {
+    const p = base({
+      thinking: { enabled: false, budgetTokens: 0 },
+      thinkingIntent: { thinking: false },
+      thinkingObservation: { setting: "off", control: "toggle", shown: false },
+    });
+    reapply(p, "glm-5.3", "openai");
+    expect(p.thinkingObservation).toEqual({ setting: "off", control: "locked-on", shown: true });
+  });
+
+  test("app 注入的 resolver（availableModels 渠道声明）优先于按名推导", () => {
+    // 形态照 app.ts 的 resolveEffortCapability 注入：按备用模型自己的 availableModels 条目取
+    // baseURL / supportsThinking。用户声明这条渠道不支持思考时，Sonnet 5 不得再发 disabled。
+    const availableModels = [
+      {
+        name: "gw-sonnet",
+        modelId: "claude-sonnet-5",
+        provider: "anthropic",
+        baseURL: "https://gw.example.com",
+        supportsThinking: false,
+      },
+    ];
+    const resolveCapability = (model: string) => {
+      const mc = availableModels.find((m) => m.name === model)!;
+      return resolveEffortCapability({
+        model: mc.modelId,
+        provider: mc.provider,
+        baseURL: mc.baseURL,
+        modelConfig: { supportsThinking: mc.supportsThinking },
+        alias: model,
+      });
+    };
+    const mk = () =>
+      base({
+        thinking: { enabled: false, budgetTokens: 0 },
+        thinkingIntent: { thinking: false },
+        thinkingObservation: { setting: "off" },
+      });
+
+    const p = mk();
+    reapplyThinkingForFallback(p, {
+      fallbackModel: "gw-sonnet",
+      providerName: "anthropic",
+      resolveCapability,
+    });
+    expect(p.thinking).toBeUndefined();
+    expect(p.thinkingObservation?.control).toBe("none");
+
+    // 对照：同一真名不经 resolver（按名推导）→ toggle + disabled。两者不同，证明 resolver 真被用上
+    const q = mk();
+    reapplyThinkingForFallback(q, { fallbackModel: "claude-sonnet-5", providerName: "anthropic" });
+    expect(q.thinkingObservation?.control).toBe("toggle");
+    expect(buildThinkingWire(q, "claude-sonnet-5").param).toEqual({
+      thinking: { type: "disabled" },
+    });
   });
 
   test("调用方从未表达思考意图时不动 params（不凭空改变请求形状）", () => {
