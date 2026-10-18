@@ -737,3 +737,45 @@ describe("损坏的 session.traj 必须可见且不致命", () => {
     expect(buildDigest(ref, false, paths)).toBeNull();
   });
 });
+
+describe("复审 B4：有增量账本的进行中会话仍标「进行中」", () => {
+  function writeLedger(sessionId: string, durationMs: number) {
+    writeFileSync(
+      paths.ledgerPath,
+      JSON.stringify({ sessionId, model: "gpt", provider: "openai", costUSD: 0.1, durationMs }) +
+        "\n",
+    );
+  }
+
+  it("session_ended=false + 增量账本 → durationInProgress=true，时长取账本 elapsed", () => {
+    writeSession(
+      "liveledg",
+      normalSession({
+        session_ended: false,
+        start_time: "2026-10-18T10:00:00.000Z",
+        snapshot_at: "2026-10-18T10:00:30.000Z",
+      }),
+    );
+    writeLedger("liveledg", 45_000);
+    const d = buildDigest(listSessions(paths)[0], false, paths)!;
+    expect(d.durationInProgress).toBe(true);
+    expect(d.durationMs).toBe(45_000);
+    expect(renderHuman(d)).toContain("进行中，截至快照");
+  });
+
+  it("session_ended=true + 账本 → 不标进行中", () => {
+    writeSession("doneledg", normalSession({ session_ended: true }));
+    writeLedger("doneledg", 60_000);
+    const d = buildDigest(listSessions(paths)[0], false, paths)!;
+    expect(d.durationInProgress).toBeUndefined();
+    expect(d.durationMs).toBe(60_000);
+  });
+
+  it("旧 traj 无 session_ended + 账本 → 沿用旧口径（已收尾）", () => {
+    writeSession("oldledg0", normalSession());
+    writeLedger("oldledg0", 7_000);
+    const d = buildDigest(listSessions(paths)[0], false, paths)!;
+    expect(d.durationInProgress).toBeUndefined();
+    expect(d.durationMs).toBe(7_000);
+  });
+});

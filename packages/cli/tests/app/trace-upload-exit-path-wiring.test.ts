@@ -64,7 +64,9 @@ describe("SIGHUP 必须被处理（关终端 / SSH 断连）", () => {
   });
 
   test("SIGHUP 有自己的退出码 129（128+signum 惯例），不与 SIGTERM 的 143 混用", () => {
-    expect(APP_SRC).toMatch(/signal === "SIGHUP" \? 129/);
+    // 修-4 L7：exitCodeOf 多了 EPIPE→141 分支，oxfmt 会把三元拆行，按空白宽松匹配。
+    expect(APP_SRC).toMatch(/signal === "SIGHUP"\s*\?\s*129/);
+    expect(APP_SRC).toMatch(/pipe_closed"\s*\?\s*PIPE_CLOSED_EXIT_CODE/);
   });
 });
 

@@ -34,6 +34,7 @@ import type { ProviderRegistry } from "../llm/registry.ts";
 import type { Registry as ToolRegistry } from "./registry.ts";
 import type { HookSystem } from "../hook/system.ts";
 import type { SubAgentUsageSink } from "../agent/tool.ts";
+import { hasNonZeroUsage } from "../llm/billing-sink.ts";
 import { runInSandbox, parseAndValidateMeta } from "../workflow/sandbox.ts";
 import { WorkflowRuntime } from "../workflow/runtime.ts";
 import { SubAgentRunner } from "../workflow/sub-agent-runner.ts";
@@ -315,7 +316,8 @@ export class WorkflowTool implements Tool {
         // 累计真实用量(修复此前 inputTokens 恒为 0)
         inputTokens += result.usage?.inputTokens ?? 0;
         // 归集到主会话 SessionState(按子代理实际 model/provider 计费)
-        if (this.usageSink) {
+        // L12：usage 全 0 时 sink 等于没记，必须返回 false 让票据补交（与 agent/tool.ts 同源判据）。
+        if (this.usageSink && hasNonZeroUsage(result.usage)) {
           try {
             this.usageSink(result);
             return true;

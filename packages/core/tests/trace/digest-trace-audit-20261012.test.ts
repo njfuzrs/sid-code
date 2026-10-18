@@ -20,6 +20,8 @@ import {
   cleanPrompt,
   countForkedToolCalls,
   findSessionProcess,
+  listSessions,
+  renderList,
   type DigestPaths,
 } from "@sid-code/core/trace/digest.ts";
 import { cacheDimsFor } from "@sid-code/core/trace/stream-observer.ts";
@@ -160,6 +162,40 @@ describe("session_end_missing：活会话不报", () => {
   it("PID 文件属于别的会话 → 不认", () => {
     writePid(process.pid, "other");
     expect(findSessionProcess(paths, "mine")).toBeUndefined();
+  });
+});
+
+describe("复审 L9：traj 停在 live 时按进程存活区分 live / dead", () => {
+  const liveTraj = { trajectory: [], metadata: { session_id: "x", exit_status: "live" } };
+  const events = [ev("SessionStart"), ev("UserPromptSubmit")];
+
+  it("进程存活 → 仍显示 live，不算异常", () => {
+    const ref = writeSession("alive1", liveTraj, events);
+    writePid(process.pid, "alive1");
+    const d = buildDigest(ref, false, paths)!;
+    expect(d.exitStatus).toBe("live");
+    expect(d.abnormal).toBe(false);
+  });
+
+  it("PID 已死 → dead，算异常，头部不再显示 [live]", () => {
+    const ref = writeSession("killed1", liveTraj, events);
+    writePid(2 ** 22 + 7, "killed1");
+    const d = buildDigest(ref, false, paths)!;
+    expect(d.exitStatus).toBe("dead");
+    expect(d.abnormal).toBe(true);
+    expect(renderHuman(d, { noColor: true })).toContain("[dead]");
+  });
+
+  it("没有 PID 条目 → dead；会话列表同口径", () => {
+    writeSession("killed2", liveTraj, events);
+    const d = buildDigest(listSessions(paths)[0], false, paths)!;
+    expect(d.exitStatus).toBe("dead");
+    expect(renderList(listSessions(paths), { noColor: true })).toContain("dead");
+  });
+
+  it("非 live 的 exit_status 原样保留，不查进程", () => {
+    const ref = writeSession("normal1", { ...liveTraj, metadata: { exit_status: "end_turn" } }, []);
+    expect(buildDigest(ref, false, paths)!.exitStatus).toBe("end_turn");
   });
 });
 

@@ -14,7 +14,7 @@ import {
   resolveAgent,
 } from "./agent-definition.ts";
 import { getLogger } from "../debug/logger.ts";
-import { UsageSinkTicket } from "../llm/billing-sink.ts";
+import { UsageSinkTicket, hasNonZeroUsage } from "../llm/billing-sink.ts";
 import { createAgentTask, failAgentTask } from "../task/index.ts";
 import type { HookSystem } from "../hook/system.ts";
 import { buildAgentHookSystem } from "./agent-hooks.ts";
@@ -347,13 +347,7 @@ export class SubAgentTool implements Tool {
    */
   private collectUsage(result: SubAgentResult): boolean {
     if (!this.usageSink) return false;
-    const u = result.usage;
-    const hasUsage =
-      (u?.inputTokens ?? 0) > 0 ||
-      (u?.outputTokens ?? 0) > 0 ||
-      (u?.cacheReadInputTokens ?? 0) > 0 ||
-      (u?.cacheCreationInputTokens ?? 0) > 0;
-    if (!hasUsage) return false;
+    if (!hasNonZeroUsage(result.usage)) return false;
     try {
       this.usageSink(result);
       return true;

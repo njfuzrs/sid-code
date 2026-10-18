@@ -19,7 +19,7 @@
  */
 
 import { readFileSync, readdirSync, existsSync, statSync } from "node:fs";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 import { applyLedgerPathOverride } from "../telemetry/usage-ledger.ts";
 import { getSidHome } from "../config/paths.ts";
 // P2-20：observationEntropy 判空转阈值与运行时检测（`query/unchanged-observation.ts`）
@@ -1278,7 +1278,7 @@ function previewArgs(
  * 所以只在条目的 session_id 精确匹配时才认，并在渲染层把 PID 原样展示，供人复核。
  */
 export function findSessionProcess(
-  paths: DigestPaths,
+  paths: Pick<DigestPaths, "sessionsDir">,
   sessionId: string,
 ): { pid: number; alive: boolean } | undefined {
   const dir = join(paths.sessionsDir, "..", ".pids");
@@ -1301,6 +1301,25 @@ export function findSessionProcess(
     /* 读不到 PID 目录 → 当作无从核验，维持原判据 */
   }
   return undefined;
+}
+
+/**
+ * 异常收尾名单。`dead` 见 {@link resolveLiveExitStatus}：traj 停在 live 但进程已不在，
+ * 只能是被强杀 / 崩溃（正常退出会走 SessionEnd 把 exit_status 写实）。
+ */
+const ABNORMAL_EXIT_STATUSES = ["error", "abort", "user_interrupt", "max_turns", "dead"];
+
+/**
+ * 复审 L9：traj 的 `exit_status:"live"` 只表示「最后一次写快照时还没收尾」。
+ * 进程被强杀后不会再走 SessionEnd，traj 永远停在 live —— 读的时候必须核验进程，
+ * 否则 `[live]` 像仍在运行。进程不在（无 PID 条目或 kill(0) 失败）⇒ `dead`。
+ */
+export function resolveLiveExitStatus(exitStatus: string, ref: SessionRef): string {
+  if (exitStatus !== "live") return exitStatus;
+  // renderList 拿不到 DigestPaths：会话目录的父目录就是 sessionsDir，PID 目录据此派生
+  // （与 findSessionProcess 同一个 `<sessionsDir>/../.pids`，不会分析 A 目录却查 B 目录）。
+  const sessionsDir = dirname(ref.dir);
+  return findSessionProcess({ sessionsDir }, ref.id)?.alive ? "live" : "dead";
 }
 
 /**
@@ -1371,6 +1390,25 @@ export function deriveDuration(meta: TrajMeta): { ms: number; inProgress: boolea
     }
   }
   return { ms: 0, inProgress: false };
+}
+
+/**
+ * 复审 B4：digest 的时长与「进行中」判定。
+ *
+ * - `session_ended === false`：进行中。时长优先取账本的增量 elapsed（每轮刷新，比快照时刻更新），
+ *   没有账本时按 `snapshot_at` 推。
+ * - `session_ended === true`：已收尾，账本优先，缺账本按 traj 推。
+ * - 字段缺失（旧 traj）：沿用旧口径 —— 有账本即视为已收尾，否则按 traj 推。
+ */
+export function resolveDigestDuration(
+  meta: TrajMeta,
+  ledgerDurationMs: number | undefined,
+): { ms: number; inProgress: boolean } {
+  if (meta.session_ended === false) {
+    return { ms: ledgerDurationMs ?? deriveDuration(meta).ms, inProgress: true };
+  }
+  if (ledgerDurationMs !== undefined) return { ms: ledgerDurationMs, inProgress: false };
+  return deriveDuration(meta);
 }
 
 /** 粗略匹配协议违规:本会话时间窗内的违规记录数(违规文件名含 ms 时间戳) */
@@ -1613,8 +1651,11 @@ export function buildDigest(ref: SessionRef, full: boolean, paths: DigestPaths):
   // 预期行为，不是会话异常。放进去会让「更准」口径的异常清单把一次正常的预算停
   // 统计成故障，处置方向又错了（M5 验收 F1）。它单独计一条，回答「有多少会话是被
   // 预算停的」，不回答「有多少会话出了错」。
-  const exitStatus = meta.exit_status || traj.info?.exit_status || "unknown";
-  const abnormal = ["error", "abort", "user_interrupt", "max_turns"].includes(exitStatus);
+  const exitStatus = resolveLiveExitStatus(
+    meta.exit_status || traj.info?.exit_status || "unknown",
+    ref,
+  );
+  const abnormal = ABNORMAL_EXIT_STATUSES.includes(exitStatus);
   if (exitStatus === "budget_exceeded") {
     // 单独计、不算 abnormal（见上面名单处的注释）。severity=low：它是事实记录，
     // 不是要排查的故障。source 带上是为了分清本地规则 / 配额 / 远程，没有就只报状态。
@@ -1918,10 +1959,14 @@ export function buildDigest(ref: SessionRef, full: boolean, paths: DigestPaths):
     .pop();
   const costUSD =
     ledger?.costUSD ?? meta.total_cost_usd ?? traj.info?.model_stats?.total_cost_usd ?? 0;
-  // S12：账本只在 SessionEnd 写，有账本条目 = 已收尾；没有时才看 traj 元数据
-  const derived = ledger?.durationMs !== undefined ? undefined : deriveDuration(meta);
-  const durationMs = ledger?.durationMs ?? derived!.ms;
-  const durationInProgress = derived?.inProgress === true;
+  // S12 / 复审 B4：「有账本条目 = 已收尾」不成立 —— flushSessionLedgerIncremental 每轮 done
+  // 都 upsert 账本（durationMs = 当时的 elapsed），进行中会话几乎都有条目。
+  // 收尾与否只认 traj 元数据的 session_ended（builder 按 end_time/end_source 写，语义正确）；
+  // 旧 traj 没有这个字段时才退回旧口径（有账本按账本，否则按 traj 推）。
+  const { ms: durationMs, inProgress: durationInProgress } = resolveDigestDuration(
+    meta,
+    ledger?.durationMs,
+  );
 
   // 成本归零仅在「有账本条目且账本明确记成本为 0」时才算异常:
   // 没有 ledger 条目(会话没正常 SessionEnd / 未写账本)是数据缺失,不是成本异常,
@@ -3219,13 +3264,14 @@ export function renderList(all: SessionRef[], opts: RenderOptions = {}): string 
     const meta = traj?.metadata || {};
     // 损坏文件要在列表里就能看出来，否则与"正常但缺 exit_status"混成同一个 `?`，
     // 用户会一直挑到它、一直看不出问题在文件本身。
-    const exit = read.corrupt ? "corrupt" : meta.exit_status || traj?.info?.exit_status || "?";
+    const exit = read.corrupt
+      ? "corrupt"
+      : resolveLiveExitStatus(meta.exit_status || traj?.info?.exit_status || "?", ref);
     // 名单与上面 buildDigest 的 abnormal 判据同源（含 max_turns，见那里的注释）。
     // 两处必须一致：会话列表标红、详情页不标，用户会以为自己挑错了会话。
     // budget_exceeded 不在名单里，理由同 buildDigest：预算硬停是预期行为，标红
     // 会把人引去查中断源。
-    const abnormal =
-      read.corrupt || ["error", "abort", "user_interrupt", "max_turns"].includes(exit);
+    const abnormal = read.corrupt || ABNORMAL_EXIT_STATUSES.includes(exit);
     const when = new Date(ref.mtimeMs).toISOString().slice(5, 16).replace("T", " ");
     const prompt = read.corrupt
       ? c("gray", "session.traj 无法解析（文件损坏）")
