@@ -33,7 +33,16 @@ export const DAEMON_DEFAULTS = {
   scheduleCheckIntervalMs: 60_000, // 每分钟检查（对齐 cc Desktop）
   maxConcurrent: 3,
   jobTimeoutMs: 30 * 60_000, // 30 分钟
+  /** 待跑队列上限：入队速率由 cron 决定、出队速率由并发/耗时决定，两者无关联，必须有背压 */
+  maxQueueLength: 100,
 } as const;
+
+/** 队列项：额外记来源任务，用于周期任务按 task.id 折叠 */
+interface QueuedJob {
+  job: HeadlessJob;
+  taskId: string;
+  recurring: boolean;
+}
 
 export interface DaemonRuntimeOptions {
   /** 调度检查间隔（ms）；默认 60_000 */
@@ -42,6 +51,8 @@ export interface DaemonRuntimeOptions {
   maxConcurrent?: number;
   /** 单个 job 超时（ms） */
   jobTimeoutMs?: number;
+  /** 待跑队列上限；默认 100 */
+  maxQueueLength?: number;
   /** 全局兜底工具白名单（任务未声明 allowedTools 时使用，默认只读） */
   allowedTools?: string[];
   /** 是否启用 webhook 源（需 SID_CODE_WEBHOOK_SECRET 或显式开） */
@@ -56,7 +67,7 @@ export class Daemon {
   private storage: FileStorageAdapter;
   private sessionId: string;
   private running = 0;
-  private queue: HeadlessJob[] = [];
+  private queue: QueuedJob[] = [];
   private webhookServer: { stop: () => void } | null = null;
   private started = false;
   private shuttingDown = false;
@@ -179,8 +190,12 @@ export class Daemon {
   }
 
   /**
-   * 把调度任务转成 HeadlessJob 入队。
-   * 调度任务错过=语义损失，故排队（不丢）；并发空闲时立即抽干队列。
+   * 把调度任务转成 HeadlessJob 入队；并发空闲时立即抽干队列。
+   *
+   * 一次性任务错过 = 语义损失，故排队（不丢）。周期任务相反：只有最新一次有意义——
+   * 「每分钟检查 CI」积压 38 份 = 把同一个检查重跑 38 遍、起 38 个子进程。所以周期任务
+   * 按 task.id **折叠**：已有待跑副本就原位替换，不追加（jobId 带随机后缀，按 jobId 去重不可能生效）。
+   * 队列另有总上限，超限丢弃本次并告警，不静默无界增长。
    */
   private enqueueTask(task: CronTask): void {
     const job: HeadlessJob = {
@@ -195,7 +210,28 @@ export class Daemon {
           ? task.allowedTools
           : (this.opts.allowedTools ?? []),
     };
-    this.queue.push(job);
+    const entry: QueuedJob = { job, taskId: task.id, recurring: task.recurring };
+    if (task.recurring) {
+      const idx = this.queue.findIndex((q) => q.recurring && q.taskId === task.id);
+      if (idx !== -1) {
+        this.queue[idx] = entry;
+        getLogger().info(
+          "DAEMON",
+          `周期任务 id=${task.id} 已有待跑副本，折叠为最新一次（队列长=${this.queue.length}）`,
+        );
+        this.drainQueue();
+        return;
+      }
+    }
+    const cap = this.opts.maxQueueLength ?? DAEMON_DEFAULTS.maxQueueLength;
+    if (this.queue.length >= cap) {
+      getLogger().error(
+        "DAEMON",
+        `待跑队列已满（${cap}），丢弃任务 id=${task.id} 本次触发：job 执行速度跟不上触发频率`,
+      );
+      return;
+    }
+    this.queue.push(entry);
     getLogger().info("DAEMON", `调度任务入队 id=${task.id} 队列长=${this.queue.length}`);
     this.drainQueue();
   }
@@ -203,7 +239,7 @@ export class Daemon {
   /** 抽干队列：在并发上限内尽量多跑 */
   private drainQueue(): void {
     while (this.running < this.maxConcurrent() && this.queue.length > 0) {
-      const job = this.queue.shift()!;
+      const { job } = this.queue.shift()!;
       this.running++;
       void this.executor
         .run(job)

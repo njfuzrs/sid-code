@@ -84,3 +84,33 @@ export function cronToHuman(cronExpr: string): string {
   // 识别不了：原样回落
   return `cron: ${cronExpr}`;
 }
+
+/**
+ * 一次性绝对唤醒（schedule_wakeup 的 fireAt 任务，cron 为空串）的展示。
+ * 这类任务没有 cron 可描述，此前走 cronToHuman("") 渲染成空白——
+ * 用户排查「轮询怎么没醒」时列表里只有一条没有时间的条目。
+ */
+export function fireAtToHuman(fireAt: number, now: number = Date.now()): string {
+  const d = new Date(fireAt);
+  const at = `${pad2(d.getMonth() + 1)}-${pad2(d.getDate())} ${pad2(d.getHours())}:${pad2(d.getMinutes())}:${pad2(d.getSeconds())}`;
+  const diffSec = Math.round((fireAt - now) / 1000);
+  if (diffSec <= 0) return `${at} 唤醒（已到期，等会话空闲）`;
+  const rel =
+    diffSec < 60
+      ? `${diffSec} 秒后`
+      : diffSec < 3600
+        ? `${Math.round(diffSec / 60)} 分钟后`
+        : `${(diffSec / 3600).toFixed(1)} 小时后`;
+  return `${at} 唤醒（${rel}）`;
+}
+
+/** 任务调度列的统一展示：fireAt 任务显示触发时刻，cron 任务显示人类可读描述 + 原式 */
+export function describeTaskSchedule(
+  task: { cron: string; fireAt?: number },
+  now?: number,
+): string {
+  if (task.fireAt !== undefined) return fireAtToHuman(task.fireAt, now);
+  const human = cronToHuman(task.cron);
+  // 回落时 human 已是 "cron: ..."，避免重复展示
+  return human.startsWith("cron:") ? task.cron : `${human}（${task.cron}）`;
+}
