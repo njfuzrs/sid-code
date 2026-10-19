@@ -9,7 +9,7 @@
  *
  * 这里复用主循环 `query/loop.ts` 同一套解析：`resolveEffortCapability` 按模型定族，
  * `applyToSendParams` 按族翻译线格式。不支持的档位由各族 applier 自己钳制
- * （DeepSeek xhigh→max、o-series/Grok max/xhigh→high），不在这里写死模型名单。
+ * （DeepSeek xhigh→high、o-series max→high、Grok 未登记 xhigh 的模型 xhigh→high），不在这里写死模型名单。
  */
 
 import type { SendParams } from "../llm/types.ts";

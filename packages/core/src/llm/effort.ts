@@ -12,7 +12,7 @@
  * - 新增 provider 零侵入：只加一条 capability 分支，不动上层。
  *
  * 协议映射矩阵（详见方案 §2.3）：
- *   1. DeepSeek（OpenAI 兼容，主力）：thinking→请求体 thinking.type；effort→reasoning_effort（仅 high/max）。
+ *   1. DeepSeek（OpenAI 兼容，主力）：thinking→请求体 thinking.type；effort→reasoning_effort（low/high/max；medium、xhigh → high）。
  *   2. DeepSeek（Anthropic 兼容端点）：thinking 开关有效但 budget 被服务端忽略；effort 需 output_config.effort。
  *   3. Anthropic 原生 Claude：thinking + effort→budget_tokens（low=2K/medium=10K/high=20K/max=50K）。
  *   4. OpenAI o-series：无显式开关（内置推理）；effort→reasoning_effort（low/medium/high，无 max）。
@@ -311,9 +311,10 @@ function finalizeThinkingControl(
 ): EffortCapability {
   // 三个出口都经过这里，真名在此一次性挂上，探针才能和线上 applier 吃同一个名字。
   cap = { ...cap, wireModel: model };
-  // 每模型默认档（E8 / E10）：族常量表达不了「同族不同模型默认不同」。只认精确命中，
-  // 模糊借值会让未登记的小版本继承别人的默认档；只影响展示，不影响线上请求。
-  const registryDefault = lookupRegistryExact(model)?.defaultEffort;
+  // 每模型默认档（E8 / E10）：族常量表达不了「同族不同模型默认不同」。允许模糊命中：
+  // 网关别名（`origin-glm-5.3`）与带日期快照名是同一个模型，按精确查只会退到族常量、低报默认档。
+  // 只影响展示与降档基准，不往线上多发字段；口径理由见 model-registry.ts defaultEffort。
+  const registryDefault = lookupCatalog(model)?.defaultEffort;
   if (registryDefault) cap = { ...cap, defaultEffort: registryDefault };
   // 用户显式声明恒思考 > 族推导：网关改名模型（`origin-glm-5.3`）常被判 unknown 族，
   // 但服务端照样恒思考，展示必须说「关不掉」而不是「内置」。
@@ -571,7 +572,7 @@ function probeParams(cap: EffortCapability): SendParams {
  * 预演某显式档位经能力层 applyToSendParams 映射后「实际下发」的线格式强度档。
  *
  * 用途：命令层对比「请求档 vs 实际下发档」，对被服务端钳制的档位诚实告知用户
- * （如 DeepSeek 仅 high/max → low/medium 实际按 high 下发；o-series 无 max → max 按 high）。
+ * （如 DeepSeek 认 low/high/max → medium/xhigh 实际按 high 下发；o-series 无 max → max 按 high）。
  *
  * 设计：用一次性探针 SendParams 跑真实映射，读出 reasoningEffort（OpenAI/o-series）或
  * outputConfig.effort（deepseek-anthropic / adaptive Claude），**不写死任何 provider**——映射规则变了这里自动跟随。

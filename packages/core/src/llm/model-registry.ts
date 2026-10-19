@@ -157,6 +157,16 @@ export interface ModelRegistryEntry {
    * ⚠ 只在 applier 对 auto **确实不发 effort** 时才被展示。adaptive Claude 的 auto 已改为不发
    * （E3），所以 Opus 5.5 / Haiku 5.5 登记的 medium 就是 Footer auto 态显示的档；adaptive applier
    * 也用它作思考上限降档的基准档。
+   *
+   * ⚠ 读取走 `lookupCatalog`（**允许模糊命中**），与 `reasoningEffortValues` 同口径；
+   * `supportsXhighEffort` / `thinkingOmitMeans` 只认精确命中。分界按「写错的代价」划：
+   *   - 精确：会让线上多发一个服务端可能 400 的字段（xhigh、disabled）。未登记的小版本宁可钳。
+   *   - 模糊：本字段只决定展示与降档基准，不往线上多发东西；网关别名（`origin-glm-5.3`、
+   *     `claude-opus-5-5-20261001`）是同一个模型，按精确只会退到族常量、低报默认档。
+   *   - `reasoningEffortValues` 线格式层（filterParamsForModel）本来就模糊查，applier 跟它走，
+   *     否则两层对同一别名给不同答案。
+   * 未来小版本（`grok-4.8`）不会借到 4.7 的默认档：它只能走版本感知借用，而那一层只投影
+   * 窗口 / 输出上限（见 lookupVersionAware 末尾），不带本字段。
    */
   defaultEffort?: "low" | "medium" | "high" | "xhigh" | "max";
 
