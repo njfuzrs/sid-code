@@ -54,7 +54,7 @@ describe("auto 不发 effort 的模型：显示注册表的服务端默认档", 
     }
   });
 
-  test("只认精确命中：模糊借值的未来小版本不继承默认档", () => {
+  test("未来小版本不继承默认档（版本借用只投影窗口）", () => {
     // grok-4.8 不在表里，族常量 low，不借 4.7 的 high。
     expect(getDisplayedEffort(cap("grok-4.8"), undefined, null)).toBe("low");
   });

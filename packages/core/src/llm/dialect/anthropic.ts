@@ -114,8 +114,9 @@ export function createAnthropicNativeDialect(
         // 默认 medium、其余 high，anthropic-api.md §6.2）。此前显式发 high，Opus 5.5 / Haiku 5.5 上
         // 比服务端默认高一档，「auto = 跟随模型默认」名不副实（20261018 effort 排查 E3）。
         // 思考上限的降档仍要生效：auto 的基准档取注册表默认档（缺省 high），降得更低才下发。
+        // 与展示层（finalizeThinkingControl）同用 lookupCatalog：默认档允许模糊命中，xhigh 不允许。
         const baseline: DialectEffortLevel =
-          effort ?? lookupRegistryExact(wireModel)?.defaultEffort ?? "high";
+          effort ?? lookupCatalog(wireModel)?.defaultEffort ?? "high";
         let effectiveEffort: DialectEffortLevel | undefined = effort;
         // adaptive 模型 budget 由服务端定，客户端无法硬钳——改为按上限把 effort 降档间接压低。
         // 仅当降档结果比用户档位更低时才生效（不上调），并在 outputConfig 打标记供 UI/日志诚实告知。

@@ -591,10 +591,11 @@ export class OpenAIProvider implements Provider {
     //    `thinking:{type:"disabled"}` 冲突）。Grok 亦沿用旧代码里的 `!thinkingDisabled`
     //    守卫（虽然它无思考开关，该守卫实际很少生效）；o-series 旧代码**没有**这道守卫,
     //    故其 `effortGatedByThinking` 为 false —— 这处不对称是原样保留的，不是笔误。
-    // ⚠ 只判 `=== "max"`，**不含 xhigh** —— 旧代码两处写的都是 `effectiveEffort !== "max"`。
-    // 顺手把 xhigh 一起拦看着更「对」（Grok/o-series 都不认 xhigh），但那是改行为：
-    // 实践中 effort.ts 已把 xhigh 钳掉，走到这里的 xhigh 只可能来自不跑 cap 解析的路径，
-    // 而那正是没有回归证据的地方。原样保留。
+    // ⚠ 只判 `=== "max"`，**不能含 xhigh**：Grok 4.3 / 4.6 / 4.7 认 xhigh，grok applier
+    // 按注册表 `reasoningEffortValues` 有意原样下发（20261018 effort 排查 E8 / F2）。
+    // 在这里把 xhigh 一起拦掉，那三个模型选 xhigh 就会一个 effort 都不发。
+    // 不认 xhigh 的模型（Grok 4.5、o-series）由各自 applier 钳成 high，走不到这里的 xhigh；
+    // 绕过 cap 解析的路径再由 filterParamsForModel 按档位表兜底取整。
     const maxRejected = !wire.allowsMaxEffort && effectiveEffort === "max";
     const thinkingGated = wire.effortGatedByThinking && thinkingDisabled;
     if (wire.sendsReasoningEffort && effectiveEffort && !maxRejected && !thinkingGated) {
