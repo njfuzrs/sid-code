@@ -41,14 +41,14 @@ Date: 2026-10-19
 ## 拿什么证明它生效了
 
 - 基线：`detectDualResultDelivery` 跑会话 `20261019-002707-0d3ddd0e` 的 messages.json，检出 **7** 个任务（`set3biru7, senfhxhhe, a2rjb7yur, aslqowd4g, a1cw8bxet, ap4fn0mqo, azga4eb8b`），与文档预期的 [58] 1 + [66] 1 + [72] 4 + [90] 1 一致。
-- 新增测试（共 14 例全绿），每条都做了变异自证：
+- 新增测试（共 11 例全绿；2026-10-19 follow-up 更正：原写 14 例，实际 11 例 = result-delivery 5 + subagent 1 + digest 2 + tool-summary 3），每条都做了变异自证或明确标注：
 
   | 测试文件 | 覆盖 | 变异 → 结果 |
   |---|---|---|
   | `packages/core/tests/task/result-delivery-ownership.test.ts` | F1、F2，5 例 | 删撤回调用 → 红；`hasPendingNotifications` 不用同一过滤 → 红；撤回去掉终态判据 → 红；恢复拼接输出流 → 红 |
   | `packages/core/tests/agent/subagent-output-turn-text.test.ts` | F5 | 改回 `info.textOutput` → 红，Received: 3 |
   | `packages/cli/tests/ui/tool-summary-coverage.test.ts`（新增 3 例） | F4 | 删 header 分支 → 2 红 |
-  | `packages/core/tests/trace/digest-dual-result-delivery.test.ts` | F6 | — |
+  | `packages/core/tests/trace/digest-dual-result-delivery.test.ts` | F6 | 去掉 `viaNotification.has(id)` 交集判据 → 红（1 pass / 1 fail，2026-10-19 follow-up 补测） |
 
 - `bun run affected-tests:run`：7039 pass / 0 fail（585 文件）。另外 `tests/tool + tests/task` 加新测试共 1329 pass。
 - `typecheck:gate`、`lint`、`format:check`、`lint:boundary`、`lint:command-system` 全绿。`docs:gen-reference` 更新了 `website/ref/tools.md`。

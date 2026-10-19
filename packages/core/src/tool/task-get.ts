@@ -63,11 +63,15 @@ export class TaskGetTool implements Tool {
   }
 
   description(): string {
+    // F3 补（20261019 双投递 follow-up）：与 task_output 同一口径——完成会自动通知，
+    // 不要把 block=true 当默认等待手段。但**保留** block 原语：它是 P1-3 为治
+    // 「bg_task_list 空参轮询 49 次 / 占全部工具调用 18.8%」刻意加的，
+    // 删掉会退回轮询（见上面 schema 注释）。
     return `获取单个后台任务（Shell/Agent/Workflow）的详细信息，包含状态、进度、输出等。
 
-**要等一个后台任务完成，用 block=true（默认）问一次即可，不要反复轮询状态。**
-- block=true（默认）：阻塞直到任务进入终态或 timeout，返回 retrieval_status=success/timeout
-- block=false：立即返回当前快照，未完成时 retrieval_status=not_ready
+后台任务完成时会自动以 <task-notification> 通知你——**不要为等待完成而阻塞或轮询**；先做不重叠的工作，或简短告诉用户启动了什么并结束本轮。
+- block=false：立即返回当前快照（查看进度用这个）
+- block=true（默认）：阻塞直到任务进入终态或 timeout。仅在**用户明确要求等结果**时使用，不要用它反复轮询
 - timeout：最大等待毫秒数，默认 ${BLOCK_TIMEOUT_DEFAULT_MS}，上限 ${BLOCK_TIMEOUT_MAX_MS}
 
 注意：这是运行态后台任务查询，不是结构化任务清单（后者用 task_get）。`;

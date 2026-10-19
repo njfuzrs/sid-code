@@ -155,6 +155,18 @@ export const ToolMessage: React.FC<ToolMessageProps> = ({
   const hasResultBody = !!resultDisplay && resultDisplay.trim() !== "";
   const shouldExpandContent = hasResultBody || hasProgress || hasThinkThought;
 
+  /**
+   * 非 shell 工具的执行中进度（如 task_output 阻塞等待时的
+   * 「等待任务完成 · 已等 12s · esc 可中断」）：渲染在 header **下方一行**，
+   * 不塞进 header 尾部（header 已是「等待 · 任务描述」，再拼一段会被挤断，
+   * 也读不出"这是一条会动的进度"）。
+   *
+   * 有结构化进度的 MCP 工具（`progress !== undefined`）仍走结果区的进度条，
+   * 不进这里——否则同一条文案会在进度条和下方行各出现一次。
+   */
+  const hasProgressLine =
+    status === "executing" && !!progressMessage && !hasShellCommand && !hasProgress;
+
   // Header 行：bash 工具不显示长命令（移到下方独立区域展示），header 保持简洁。
   // shell 工具 executing 时 header 已有 ToolStatusIndicator 的状态点流转，
   // 不再叠加 TrailingIndicator（避免重复动画，下方命令区域的实时颜色已足够）。
@@ -171,9 +183,9 @@ export const ToolMessage: React.FC<ToolMessageProps> = ({
         status={status}
         emphasis={emphasis}
         // shell 工具的实时输出是多行 tail 快照，塞进单行 header 会被截断——改在命令行下方
-        // 以独立多行块展示（见 shellLiveOutputSection）。故 header 只给非 shell 工具（如
-        // MCP 工具的单行进度）显示 progressMessage。
-        progressMessage={hasShellCommand ? undefined : progressMessage}
+        // 以独立多行块展示（见 shellLiveOutputSection）。非 shell 的执行中进度同理走下方
+        // 一行（见 progressLineSection）。header 只给有结构化进度的 MCP 工具显示单行文案。
+        progressMessage={hasShellCommand || hasProgressLine ? undefined : progressMessage}
         resultSummary={shouldExpandContent ? undefined : resultSummary}
         elapsedMs={elapsedMs}
         // 把真实可用列宽交给 ToolInfo，让 description 按剩余空间收缩，而不是数据层
@@ -253,6 +265,22 @@ export const ToolMessage: React.FC<ToolMessageProps> = ({
     </Box>
   ) : null;
 
+  // 非 shell 工具的执行中进度行（仅一行）：与 shell 的实时输出区同形态（树枝缩进 + 灰色），
+  // 但只渲染一行——task_output 这类工具的进度是「已等 12s · esc 可中断」这种状态提示，
+  // 不是多行快照。
+  const progressLineSection = hasProgressLine ? (
+    <Box flexDirection="row">
+      <Box flexShrink={0}>
+        <Text color={theme.text.secondary}>{`  ${TREE_BRANCH} `}</Text>
+      </Box>
+      <Box flexGrow={1}>
+        <Text color={theme.text.secondary} wrap="truncate-end">
+          {progressMessage}
+        </Text>
+      </Box>
+    </Box>
+  ) : null;
+
   // 子代理实时进度区：治"过程黑盒"（子代理跑 1m35s，主消息流一个字都没有）。
   //
   // 三档降级对标 cc tools/AgentTool/UI.tsx，但**不嵌套真工具卡片**——那需要把子代理的
@@ -304,8 +332,8 @@ export const ToolMessage: React.FC<ToolMessageProps> = ({
   ) : null;
 
   // 无结果、无 shell 命令、无实时输出：紧凑模式只有 header
-  // 子代理进度也算"有内容"——否则执行中的 sub_agent 又退回只有一行 header 的黑盒。
-  if (!shouldExpandContent && !hasShellCommand && !hasAgentProgress) {
+  // 子代理进度/等待进度行也算"有内容"——否则执行中的卡片又退回只有一行 header 的黑盒。
+  if (!shouldExpandContent && !hasShellCommand && !hasAgentProgress && !hasProgressLine) {
     return header;
   }
 
@@ -315,6 +343,7 @@ export const ToolMessage: React.FC<ToolMessageProps> = ({
       {header}
       {shellCommandSection}
       {shellLiveOutputSection}
+      {progressLineSection}
       {agentProgressSection}
       {shouldExpandContent && (
         <Box flexDirection="row">
