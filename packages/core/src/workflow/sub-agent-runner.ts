@@ -135,6 +135,10 @@ export class SubAgentRunner implements AgentRunner {
       // 3) usage 回灌:budget(输出 token) + 完整归集(计费)
       if (result.usage) {
         this.opts.onUsage?.(result.usage.outputTokens ?? 0);
+        // G6：用票据认领数回填真实请求数（同 agent/tool.ts collectUsage）。
+        if (usageTicket && result.apiRequests === undefined) {
+          result.apiRequests = usageTicket.claimedCount;
+        }
         sinkCharged = this.opts.onResult?.(result) === true;
         usageTicket?.settle(sinkCharged);
       }

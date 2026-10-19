@@ -81,6 +81,7 @@ import { resetPriceTierCounts } from "../llm/billing-sink.ts";
 import { TokenEstimator } from "../llm/token-estimator.ts";
 import { checkMessageHistoryIntegrity } from "../agent/message-invariants.ts";
 import { resetSideCallStats, getSideStats, setSideStatsObserver } from "./side-call-sink.ts";
+import { SUBAGENT_COST_EVENT_NAME } from "../agent/usage-sink.ts";
 import { PrefixBreakTracker, fingerprintPrefix } from "./prefix-break-probe.ts";
 import { splitSystemByDynamicBoundary } from "../api/cache-strategy.ts";
 import {
@@ -1309,6 +1310,25 @@ export class TraceCollector {
     } catch {
       /* 事件落盘失败静默，不影响主流程 */
     }
+  }
+
+  // ─── G2：SubagentCost ───
+
+  /**
+   * 子代理成本进轨迹：落一条 SubagentCost 事件，并累加 metadata.subagent_cost_usd。
+   *
+   * `total_cost_usd` 的运行中语义**不动**（仍只累加主循环 AfterModel）：改成含子代理
+   * 会让历史曲线断层。消费侧要会话真实成本时显式求和
+   * `total_cost_usd(main) + subagent_cost_usd + side_cost_usd`；SessionEnd 覆盖后
+   * `cost_scope` 变 `main+subagent`，此时不能再加 subagent_cost_usd（见 builder.ts 注释）。
+   */
+  recordSubagentCost(data: Record<string, unknown>): void {
+    if (!this.initialized) return;
+    const cost = typeof data.cost_usd === "number" && data.cost_usd > 0 ? data.cost_usd : 0;
+    this.metadata.subagent_cost_usd = (this.metadata.subagent_cost_usd ?? 0) + cost;
+    const reqs = typeof data.api_requests === "number" ? data.api_requests : 0;
+    this.metadata.subagent_api_calls = (this.metadata.subagent_api_calls ?? 0) + reqs;
+    this.recordCustomEvent(SUBAGENT_COST_EVENT_NAME, data);
   }
 
   // ─── PostModelSwitch ───
@@ -3501,6 +3521,30 @@ export class TraceCollector {
     }
   }
 
+  /**
+   * G4：stall / completed 的轮次归属。
+   * - 子代理（带 agentId）：`agent_turn` = 号段内轮次（10000+turns 主流、20000+turns 总结轮，
+   *   见 agentic-loop.ts），总结轮另标 `agent_summary_turn: true`；
+   * - 主循环（无 agentId、无 caller）：经 turnToPairIndex 映射成 `pair_index`，与
+   *   BeforeModel/AfterModel/raw.jsonl 同一个 index；映射查不到就不带（宁缺不错）；
+   * - 旁路调用（带 caller）：不补，它不对应任何主循环 pair。
+   */
+  private streamAttributionFields(event: Record<string, unknown>): Record<string, unknown> {
+    if (event.type !== "stream_stall" && event.type !== "stream_completed") return {};
+    const turnIndex = event.turnIndex;
+    if (typeof turnIndex !== "number") return {};
+    if (event.agentId) {
+      if (turnIndex >= 20000 && turnIndex < 30000) {
+        return { agent_turn: turnIndex - 20000, agent_summary_turn: true };
+      }
+      if (turnIndex >= 10000 && turnIndex < 20000) return { agent_turn: turnIndex - 10000 };
+      return {};
+    }
+    if (event.caller !== undefined) return {};
+    const pairIndex = this.turnToPairIndex.get(turnIndex);
+    return pairIndex === undefined ? {} : { pair_index: pairIndex };
+  }
+
   /** T12：写入 RetryTelemetry 事件到 events.jsonl */
   writeRetryTelemetry(event: Record<string, unknown>): void {
     if (!this.initialized) return;
@@ -3518,7 +3562,11 @@ export class TraceCollector {
         // ⚠️ 口径标 `"events"` 而不是 `"chunks"` —— 这个数是解析后 yield 出的**事件数**，
         // 与快照里的 chunk 数不是一个东西（事件数 ≤ chunk 数）。标错会让按
         // `chunk_count` 汇总时把两个口径混着平均，得出一个谁也不描述的数。
-        data: { ...event, ...chunkCountFields(event.totalEvents as number | undefined, "events") },
+        data: {
+          ...event,
+          ...chunkCountFields(event.totalEvents as number | undefined, "events"),
+          ...this.streamAttributionFields(event),
+        },
       });
       // 缺口分析（一类·输出吞吐）：stream_completed.elapsedMs 是"单次 fetch 从连接到流结束
       // 的纯生成耗时"（不含握手/重试/等待），是 tokens/sec 唯一正确的分母。

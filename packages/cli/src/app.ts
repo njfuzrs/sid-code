@@ -40,7 +40,11 @@ import {
   isTransientErrorCode,
 } from "@sid-code/core/llm/error-messages.ts";
 import { SessionState } from "@sid-code/core/session/state.ts";
-import { createSubAgentUsageSink } from "@sid-code/core/agent/usage-sink.ts";
+import {
+  createSubAgentUsageSink,
+  setSubagentCostTraceSink,
+} from "@sid-code/core/agent/usage-sink.ts";
+import { READ_HINT_EVENT_NAME, setReadHintTraceSink } from "@sid-code/core/tool/read.ts";
 import { SessionStore, currentProjectSessionDir } from "@sid-code/core/session/store.ts";
 import { extractHookContext } from "@sid-code/core/hook/context-inject.ts";
 import { generateSessionId } from "@sid-code/core/session/id.ts";
@@ -4182,6 +4186,17 @@ export class App {
     setTaskLifecycleSink(
       traceCollectorInstance
         ? (data) => traceCollectorInstance.recordCustomEvent(TASK_LIFECYCLE_EVENT_NAME, data)
+        : null,
+    );
+    // G2：子代理成本进轨迹。usage-sink 在工具注册时就建好了，那时 collector 还不在，同款延迟接线。
+    // 不接则 traj 只含主循环成本（实测漏子代理 31%），北极星「更省」取数源有偏。
+    setSubagentCostTraceSink(
+      traceCollectorInstance ? (data) => traceCollectorInstance.recordSubagentCost(data) : null,
+    );
+    // G3：read 引导提示进事件，供算提示遵从率。同款模块级 sink（ReadTool 主/子代理多处创建）。
+    setReadHintTraceSink(
+      traceCollectorInstance
+        ? (data) => traceCollectorInstance.recordCustomEvent(READ_HINT_EVENT_NAME, data)
         : null,
     );
 

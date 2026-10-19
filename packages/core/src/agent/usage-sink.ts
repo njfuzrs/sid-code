@@ -17,6 +17,27 @@ export interface UsageSinkConfig {
   availableModels?: Array<PricingModelEntry & { name?: string; baseURL?: string }>;
 }
 
+/** G2：子代理成本落盘事件名（events.jsonl）。 */
+export const SUBAGENT_COST_EVENT_NAME = "SubagentCost";
+
+/**
+ * G2：子代理成本进轨迹的模块级通道。
+ *
+ * 为什么是模块级 sink：usage-sink 在 cli.ts 注册工具时就创建了，那时 TraceCollector
+ * 还不存在（与 jit / file_freshness 同款时序）。App 在 collector 就绪后注入；
+ * 未注入或写入抛错一律静默——度量不影响入账本身。
+ *
+ * 为什么新增字段而不是让 `total_cost_usd` 运行中就含子代理：历史曲线会断层。
+ * 口径铁律见 `trace/builder.ts` 的 `subagent_cost_usd` 注释。
+ */
+export type SubagentCostTraceSink = (data: Record<string, unknown>) => void;
+let costTraceSink: SubagentCostTraceSink | null = null;
+
+/** 注入/清除子代理成本埋点通道（null = 关闭，测试收尾复位用） */
+export function setSubagentCostTraceSink(s: SubagentCostTraceSink | null): void {
+  costTraceSink = s;
+}
+
 export function createSubAgentUsageSink(
   sessionState: SessionState,
   config: UsageSinkConfig,
@@ -34,7 +55,29 @@ export function createSubAgentUsageSink(
     // 配置取端点，缺省回退主模型端点（与 resolveEffortCap 同款派生）。
     const mc = config.availableModels?.find((m) => m.name === model);
     const baseURL = mc?.baseURL ?? config.baseURL;
+    // G6：请求数按真实值累加（调用方用入账票据回填）；缺省 1 = 旧口径，不猜。
+    const requests = result.apiRequests && result.apiRequests > 0 ? result.apiRequests : 1;
     // 子代理无独立 API 耗时归集口径，durationMs 计 0（费用/ token 才是归集重点）。
-    sessionState.updateUsage(model, usage, 0, provider, baseURL);
+    const costUSD = sessionState.updateUsage(model, usage, 0, provider, baseURL, false, requests);
+    // G2：落盘的金额就是刚入账、状态栏看到的那个数，不另算一遍——两边才对得上账。
+    if (costTraceSink) {
+      try {
+        costTraceSink({
+          ...(result.agentId ? { agent_id: result.agentId } : {}),
+          model,
+          provider,
+          cost_usd: costUSD,
+          input_tokens: usage.inputTokens,
+          output_tokens: usage.outputTokens,
+          cache_read_tokens: usage.cacheReadInputTokens ?? 0,
+          cache_creation_tokens: usage.cacheCreationInputTokens ?? 0,
+          api_requests: requests,
+          // false = 调用方没给真实请求数，api_requests 是兜底的 1
+          api_requests_exact: result.apiRequests !== undefined && result.apiRequests > 0,
+        });
+      } catch {
+        /* 度量不影响入账 */
+      }
+    }
   };
 }

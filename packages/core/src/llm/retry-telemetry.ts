@@ -139,6 +139,14 @@ export interface RetryTelemetryEvent {
    */
   agentId?: string;
   /**
+   * G4：`stream_stall` / `stream_completed` 专用——发起该流时的观测轮次
+   * （主循环 = loop 的 turnCount；子代理 = 10000/20000+turns 号段）。
+   * collector 据此补 `pair_index`（主循环）或 `agent_turn`（子代理）。
+   */
+  turnIndex?: number;
+  /** G4：旁路调用标签（来自请求上下文 callerLabel）。带它的流不对应任何主循环 pair。 */
+  caller?: string;
+  /**
    * B5-7：`type:"auth_refresh"` 事件专用——本次 401 是否**真刷新过凭据**。
    *
    * `true` = `onAuthRefresh` 钩子返回成功，用新凭据重试；

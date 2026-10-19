@@ -927,12 +927,18 @@ function fileNameToType(fileName: string): "traj" | "raw" | "events" | null {
 /**
  * S17：上传 events.jsonl 前剥掉「只留本地」的字段：PostToolUseFailure 的 `data.error_head`
  * （工具错误原文可能含路径、命令输出乃至密钥片段，云端只需要 `error_kind`），以及
- * PreToolUse 的 `data.input_summary`（G1：文件路径 / 命令片段，同理只供本地排查）。
+ * PreToolUse 的 `data.input_summary`（G1：文件路径 / 命令片段，同理只供本地排查），
+ * 以及 ReadHint 的 `data.hint_file_path`（G3：被读文件路径；云端靠 kind / read_count /
+ * overlap_ratio 就能算遵从率，不需要路径）。
  *
  * 逐行处理：解析失败的行原样保留（损坏行不是这里该修的，丢掉它会让服务端
  * 的行数校验与本地对不上）。只在行里出现上述字段名时才解析，其余行字节不变。
  */
-export const LOCAL_ONLY_EVENT_DATA_FIELDS = ["error_head", "input_summary"] as const;
+export const LOCAL_ONLY_EVENT_DATA_FIELDS = [
+  "error_head",
+  "input_summary",
+  "hint_file_path",
+] as const;
 
 const LOCAL_ONLY_NEEDLES = LOCAL_ONLY_EVENT_DATA_FIELDS.map((f) => `"${f}"`);
 const hasLocalOnlyField = (s: string) => LOCAL_ONLY_NEEDLES.some((n) => s.includes(n));
