@@ -60,12 +60,35 @@ export function filterParamsForModel<T extends FilterableParams>(model: string, 
     delete params.top_p;
   }
 
-  // 4. reasoning_effort 钳制：不在支持列表中的值降为最高支持值
+  // 4. reasoning_effort 钳制：不在支持列表中的值沿标度向上取最近一档（见 roundEffortToKnownValues）
   if (entry.reasoningEffortValues && params.reasoning_effort) {
-    if (!entry.reasoningEffortValues.includes(params.reasoning_effort as any)) {
-      params.reasoning_effort = entry.reasoningEffortValues[entry.reasoningEffortValues.length - 1];
-    }
+    params.reasoning_effort = roundEffortToKnownValues(
+      params.reasoning_effort,
+      entry.reasoningEffortValues,
+    );
   }
 
   return params;
+}
+
+/** 统一档位标度（升序）。与 effort.ts 的 EFFORT_LEVELS 同序，这里不 import 以免线格式层反向依赖能力层。 */
+const EFFORT_SCALE = ["low", "medium", "high", "xhigh", "max"] as const;
+
+/**
+ * 把档位落到模型登记的档位表上：表内原样；表外沿标度**向上**取最近的一档；
+ * 上面没有（如 o-series 收到 max）或档位不在标度上，取表内最高档。
+ *
+ * 向上而不是「一律取最高档」：GLM-5.2 只登记 high / max，旧写法把 low 直接抬成 max，
+ * 跳了两档，而 glm applier 与官方语义都是 low → high。applier 与线格式层共用这一个函数，
+ * 两处对同一模型、同一档给同一个答案（20261019 effort 复审）。
+ */
+export function roundEffortToKnownValues(effort: string, values: readonly string[]): string {
+  if (values.length === 0 || values.includes(effort)) return effort;
+  const idx = (EFFORT_SCALE as readonly string[]).indexOf(effort);
+  if (idx !== -1) {
+    for (let i = idx + 1; i < EFFORT_SCALE.length; i++) {
+      if (values.includes(EFFORT_SCALE[i])) return EFFORT_SCALE[i];
+    }
+  }
+  return values[values.length - 1];
 }

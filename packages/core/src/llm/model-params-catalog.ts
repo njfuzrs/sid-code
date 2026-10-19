@@ -53,6 +53,8 @@ export interface ModelParamsEntry {
   thinkingOmitMeans?: "on" | "off";
   /** adaptive 线格式是否认 `xhigh`。见 model-registry.ts 同名字段（线格式层只认精确命中）。 */
   supportsXhighEffort?: boolean;
+  /** 不发 effort 时服务端的默认档。见 model-registry.ts 同名字段（允许模糊命中）。 */
+  defaultEffort?: "low" | "medium" | "high" | "xhigh" | "max";
   /**
    * 推理语言漂移倾向：思考过程在中文语境下易漂移到英文，需要更强语言约束措辞。
    * 见 model-registry.ts 同名字段（必删-4：替代 system-prompt 的 model.includes("deepseek")）。
