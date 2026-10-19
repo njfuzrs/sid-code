@@ -26,6 +26,7 @@ import { interpretExitCode } from "./bash/command-semantics.ts";
 import { scanControlChars } from "./binary-detect.ts";
 import { looksLikeQuotingBreakage, quotingBreakageHint } from "./bash/quoting-diagnostics.ts";
 import { detectMergeConflictHint } from "./bash/merge-conflict.ts";
+import { buildTimeoutGuidance } from "./bash/timeout-diagnostics.ts";
 import { normalizeToolPath } from "./path-utils.ts";
 import { registerCleanup } from "@sid-code/shared/utils/graceful-shutdown.ts";
 import { ensureSidTempDir } from "@sid-code/shared/utils/temp-dir.ts";
@@ -1132,8 +1133,22 @@ export class BashTool implements Tool {
                   ? `\n注意：实际墙钟耗时 ${(actualMs / 1000).toFixed(0)}s 远超设定的 ${timeout / 1000}s，` +
                     `期间系统很可能进入过休眠（命令本身未必慢）。`
                   : "";
+              // 旧提示一律建议转后台，对 watch/常驻/等待输入的命令是错药（会话
+              // 20261019-163503-c0e3e484：裸 vitest 进 watch，转后台后同样挂住）。
+              // 诊断失败不能影响超时结果返回，故整体兜底回旧文案。
+              let guidance = "如需长时间运行，请用 run_in_background=true 重试。";
+              let redirectSection = "";
+              try {
+                ({ guidance, redirectSection } = buildTimeoutGuidance(
+                  params.command,
+                  output,
+                  !stdout && !stderr,
+                ));
+              } catch {
+                /* 诊断失败沿用旧文案 */
+              }
               return {
-                output: `命令执行超过 ${timeout / 1000} 秒被终止（超时）。${sleepHint}\n如需长时间运行，请用 run_in_background=true 重试。\n部分输出:\n${output}`,
+                output: `命令执行超过 ${timeout / 1000} 秒被终止（超时）。${sleepHint}\n${guidance}\n部分输出:\n${output}${redirectSection}`,
                 isError: true,
               };
             }
