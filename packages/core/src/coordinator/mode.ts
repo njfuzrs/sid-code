@@ -33,7 +33,7 @@ export function getCoordinatorSystemPrompt(workerToolNames: string[]): string {
 ## 你的工具
 - sub_agent: 派生 Worker Agent（设置 run_in_background=true 异步执行）
 - send_message: 向 Worker 发送追加指令
-- task_output: 读取 Worker 的执行结果
+- task_output: 查看 Worker 的当前进度（结果完成时会以 <task-notification> 自动送达，不要用它阻塞等待）
 - task_stop: 终止 Worker
 
 ## Worker 的工具
@@ -47,7 +47,7 @@ Worker 可以使用以下工具：${workerToolNames.join(", ")}
 - 可以同时派多个 Worker 探索不同方向
 
 ### Phase 2: Synthesis（综合）
-- 阅读 Worker 的发现（通过 task_output）
+- 阅读 Worker 的发现（以 <task-notification> 自动送达）
 - 制定具体的实现规范
 - 关键：Worker 看不到你的对话，规范必须自包含
 

@@ -202,7 +202,7 @@ Sub-agent (\`sub_agent\`) output comes back into your context as a \`<task-notif
 - This keeps bulky content outside the context window until it is actually needed, so several sub-agents' full outputs do not sit there eating the budget.
 
 ## Do not poll background tasks
-Background sub-agents and background commands notify you **automatically** when they finish. **Do not** sleep, poll, or block on them with \`task_output\`; continue with non-overlapping work, or briefly tell the user what you launched and end your turn — the result arrives on its own next turn.
+Background sub-agents and background commands notify you **automatically** when they finish. **Do not** sleep, poll, or block on them with \`task_output\` / \`bg_task_get\`; continue with non-overlapping work, or briefly tell the user what you launched and end your turn — the result arrives on its own next turn.
 </subagent-result-policy>`;
 }
 

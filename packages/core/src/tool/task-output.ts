@@ -3,7 +3,11 @@
  * 支持阻塞等待和超时
  */
 
-import type { LegacyTool as Tool, LegacyToolResult as ToolResult } from "./types.ts";
+import type {
+  LegacyTool as Tool,
+  LegacyToolResult as ToolResult,
+  ToolProgressData,
+} from "./types.ts";
 import {
   getTask,
   updateTask,
@@ -76,7 +80,11 @@ export class TaskOutputTool implements Tool {
     return true;
   }
 
-  async execute(input: unknown, signal?: AbortSignal): Promise<ToolResult> {
+  async execute(
+    input: unknown,
+    signal?: AbortSignal,
+    onProgress?: (event: ToolProgressData) => void,
+  ): Promise<ToolResult> {
     const params = input as {
       task_id: string;
       block?: boolean;
@@ -97,10 +105,25 @@ export class TaskOutputTool implements Tool {
 
     if (shouldBlock && !isTerminalStatus(task.status)) {
       const startTime = Date.now();
+      // F4（20261019 补）：阻塞等待期间每 500ms 上报一行进度，卡片下方能看到「已等多久 +
+      // esc 可中断」。不上报时，4 个并行 task_output 阻塞 3–5 分钟，屏幕上就是 4 张不动的
+      // 卡片（基线会话 20261019-002707-0d3ddd0e 的原始现象）。
+      // 文案刻意不说「正在等待 <描述>」——header 已经是「等待 · <描述>」，重复同一段文字
+      // 是 src/ui/CLAUDE.md 明令禁止的相邻两行同义。
+      const reportWait = (): void => {
+        const waitedSec = Math.round((Date.now() - startTime) / 1000);
+        onProgress?.({
+          type: "output",
+          text: `等待任务完成 · 已等 ${waitedSec}s · esc 可中断`,
+        });
+      };
+      // 上报放在终态/超时判定**之后**：放在 sleep 之后会在任务已结束（或已超时）时多报一条
+      // 「仍在等」，卡片闪一下过期状态。首轮迭代即立即上报，卡片不会空到第一个 500ms。
       while (Date.now() - startTime < timeout) {
         if (signal?.aborted) break;
         const current = getTask(params.task_id);
         if (!current || isTerminalStatus(current.status)) break;
+        reportWait();
         await new Promise((resolve) => setTimeout(resolve, 500));
       }
     }
