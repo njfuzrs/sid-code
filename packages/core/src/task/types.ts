@@ -68,6 +68,16 @@ export interface TaskStateBase {
    * 116s（S3 事故 call 40），任何固定毫秒窗口都会被越过。
    */
   notificationDeliveredTurn?: number;
+  /**
+   * 终态结果**由哪条自动通道送达**（单次所有权，`claimResultDelivery` 首次认领后不再变）。
+   *
+   * 与 `notified` 刻意分开：`notified` 表示「有了投递通道」，在入队**之前**就置位，驱逐判据
+   * 与 S3 修复都依赖这个语义，不能借用。本字段回答的是另一个问题——这份结果是否已被
+   * 某一路送进模型上下文，另一路就不该再自动送一遍（20261019 双投递：同一结论三份）。
+   * - `notification`：完成通知已注入；之后 task_output 读到属于模型的显式重读，照常返回；
+   * - `tool_result`：task_output / 前台 tool_result 已送达；队列里的终态通知须撤回 / 跳过。
+   */
+  resultDeliveredVia?: "notification" | "tool_result";
   /** task_output 读取续期截止时间（LRU touch）。**只由 task_output 写**，终态写入点不再写它：
    *  驱逐判据由 registry 统一计算（见 `isEvictable`），散落 9 处的固定计时已收口。 */
   evictAfter?: number;

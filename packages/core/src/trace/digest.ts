@@ -2048,6 +2048,32 @@ export function buildDigest(ref: SessionRef, full: boolean, paths: DigestPaths):
     });
   }
 
+  // ── F6（20261019）：后台任务结果双投递 ──
+  // 同一 taskId 的终态结果既经 task_output 的 tool_result 送达，又经 <task-notification> 送达。
+  // 只在 messages.json 存在时可判（它是唯一同时记录两路内容的快照）。
+  const dualSnapshot = readJsonSafe<{ messages?: unknown[] }>(join(ref.dir, "messages.json"));
+  const dualIds = Array.isArray(dualSnapshot?.messages)
+    ? detectDualResultDelivery(dualSnapshot.messages)
+    : [];
+  if (dualIds.length > 0) {
+    anomalies.push({
+      layer: "L0",
+      severity: "medium",
+      kind: "dual_result_delivery",
+      detail: `${dualIds.length} 个后台任务的终态结果被送达两次（task_output tool_result + task-notification）: ${dualIds.slice(0, 8).join(", ")}`,
+      provenance: [
+        {
+          sourceFile: join(ref.dir, "messages.json"),
+          lineRef:
+            "messages[].content[] tool_result(task_output, 终态) ∩ <task-notification>(终态)",
+          rawValue: `count=${dualIds.length}`,
+          mtime: fileMtimeIso(join(ref.dir, "messages.json")),
+        },
+      ],
+      pointer: `messages.json 中 task_output 的 tool_result 与 _meta.origin=task-notification 的 user 消息`,
+    });
+  }
+
   // ── §3.7：异常路径诊断信号高亮（events.jsonl + errors.jsonl）──
   const eventsPath = join(ref.dir, "events.jsonl");
   const errorsPath = join(ref.dir, "errors.jsonl");
@@ -4496,6 +4522,57 @@ function num(v: unknown): number {
 }
 
 /** 计算已排序数组的百分位数（导出供 provider-health 等模块共用，避免逻辑重复） */
+const TERMINAL_TASK_STATUSES = new Set(["completed", "failed", "killed"]);
+
+/**
+ * 找出终态结果被**两路**送达的后台任务 id（F6：`dual_result_delivery` 的判据）。
+ *
+ * 两路分别取自：
+ * - task_output 的 tool_result：按 tool_use_id 回查入参 task_id；返回体须是终态。
+ *   兼容两种形态——旧版 JSON（`{"status":"completed",...}`）与新版 `<task-output>` 标签块；
+ * - `<task-notification>` 文本块，状态为终态（取 `<task-id>` / `<status>`）。
+ *
+ * 纯函数，导出供测试。计数单位是**任务**，同一任务两路各出现多次也只算一次。
+ */
+export function detectDualResultDelivery(messages: unknown[]): string[] {
+  const outputCallTask = new Map<string, string>();
+  const viaToolResult = new Set<string>();
+  const viaNotification = new Set<string>();
+  const statusOf = (text: string): string | undefined => {
+    const tag = /<status>([^<]*)<\/status>/.exec(text)?.[1];
+    if (tag) return tag.trim();
+    try {
+      const j = JSON.parse(text.split("\n\n--- 输出 ---")[0]!);
+      return typeof j?.status === "string" ? j.status : undefined;
+    } catch {
+      return undefined;
+    }
+  };
+  for (const m of messages) {
+    const content = (m as { content?: unknown })?.content;
+    if (!Array.isArray(content)) continue;
+    for (const b of content as Array<Record<string, unknown>>) {
+      if (b?.type === "tool_use" && b.name === "task_output") {
+        const tid = (b.input as { task_id?: unknown } | undefined)?.task_id;
+        if (typeof b.id === "string" && typeof tid === "string") outputCallTask.set(b.id, tid);
+      } else if (b?.type === "tool_result" && typeof b.tool_use_id === "string") {
+        const tid = outputCallTask.get(b.tool_use_id);
+        if (!tid || b.is_error) continue;
+        const text = typeof b.content === "string" ? b.content : JSON.stringify(b.content ?? "");
+        const st = statusOf(text);
+        if (st && TERMINAL_TASK_STATUSES.has(st)) viaToolResult.add(tid);
+      } else if (b?.type === "text" && typeof b.text === "string") {
+        const text = b.text;
+        if (!text.includes("<task-notification>")) continue;
+        const tid = /<task-id>([^<]*)<\/task-id>/.exec(text)?.[1]?.trim();
+        const st = /<status>([^<]*)<\/status>/.exec(text)?.[1]?.trim();
+        if (tid && st && TERMINAL_TASK_STATUSES.has(st)) viaNotification.add(tid);
+      }
+    }
+  }
+  return [...viaToolResult].filter((id) => viaNotification.has(id));
+}
+
 export function percentile(sorted: number[], p: number): number | undefined {
   if (sorted.length === 0) return undefined;
   const idx = Math.ceil(sorted.length * p) - 1;

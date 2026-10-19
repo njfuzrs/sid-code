@@ -7,6 +7,7 @@
 import { ELLIPSIS } from "./constants/collapse.ts";
 import { stringWidth } from "./render-port/text.ts";
 import { shortenPathForDisplay, stripPathNoiseInText } from "./utils/path-display.ts";
+import { getTask } from "@sid-code/core/task/index.ts";
 
 /** 助手消息右侧留白（用于视觉区分） */
 export const ASSISTANT_PADDING_RIGHT = 10;
@@ -198,6 +199,11 @@ export function getToolSummary(name: string, input: unknown): string {
     const detail = parts.length > 0 ? ` → ${parts.join(" / ")}` : "";
     return id ? `更新任务 ${id}${detail}` : "更新任务";
   }
+  // 后台任务管理类：header 用**任务描述**而不是 task_id（20261019：4 个并行 task_output 全是
+  // 光秃秃的 `⏺ task_output`，阻塞 3–5 分钟，用户分不清在等谁）。本文件同一病灶第四次发作。
+  if (lower === "task_output" || lower === "bg_task_get" || lower === "task_stop") {
+    return taskToolSummary(lower, inp);
+  }
   if (isSubAgentToolName(lower)) {
     const agentType = inp?.type || inp?.agentType || "";
     const prompt = inp?.prompt || inp?.task || "";
@@ -211,6 +217,41 @@ export function getToolSummary(name: string, input: unknown): string {
     return agentType ? `${agentType} "${short}"` : short;
   }
   return "";
+}
+
+/** 任务描述：registry 里取得到就用描述（截断到 header 列宽），取不到（已驱逐 / 历史重放）退回 id。 */
+function taskLabel(taskId: unknown): string {
+  const id = typeof taskId === "string" ? taskId : "";
+  if (!id) return "";
+  const desc = flattenWhitespace(getTask(id)?.description || "");
+  return desc ? truncateSummaryByWidth(desc, THINK_SUMMARY_MAX_COLS) : id;
+}
+
+/** task_output / bg_task_get / task_stop 的 header：动作 · 任务描述（对标 cc 的 Task Output + non-blocking tag） */
+function taskToolSummary(lower: string, inp: any): string {
+  const label = taskLabel(inp?.task_id);
+  const verb = lower === "task_stop" ? "停止" : inp?.block === false ? "查看" : "等待";
+  return label ? `${verb} · ${label}` : verb;
+}
+
+/**
+ * task_output 结果的**展示正文**：只给 `<result>` / `<output>` / `<error>` 里的内容，
+ * 元数据标签（task-id / status / usage…）不上屏。
+ *
+ * 给模型的仍是完整标签块（与 `<task-notification>` 同源）；这里只决定用户看什么——
+ * 此前是 JSON + 输出流整段上屏，`\n` 以转义形式满屏（R3）。匹配不到标签（旧会话重放的
+ * JSON 形态）原样返回。取**最后一个**闭合标签，结论正文里含 `</result>` 字面量时不提前截断。
+ */
+export function extractTaskOutputDisplay(content: string): string {
+  for (const tag of ["result", "error", "output"]) {
+    const open = new RegExp(`<${tag}(?:\\s[^>]*)?>`).exec(content);
+    if (!open) continue;
+    const start = open.index + open[0].length;
+    const end = content.lastIndexOf(`</${tag}>`);
+    if (end < start) continue;
+    return content.slice(start, end).trim();
+  }
+  return content;
 }
 
 /**
@@ -266,6 +307,10 @@ export function getToolDetailFull(name: string, input: unknown): string {
   if (lower === "glob") return inp?.pattern || "";
   // think：完整思考正文（保留换行，由展示端 wrap 呈现），不截断
   if (lower === "think") return (inp?.thought || "").trim();
+  // 任务管理类：权限框给完整 task_id（与 header 的描述成对，见 getToolSummary）
+  if (lower === "task_output" || lower === "bg_task_get" || lower === "task_stop") {
+    return taskToolSummary(lower, inp) + (inp?.task_id ? ` (${inp.task_id})` : "");
+  }
   // lsp：权限框要看清**完整绝对路径**（授权决策依据），不能用相对化/截断后的形式。
   // 与 getToolSummary 的 lsp 分支成对——此前两个函数都缺 lsp，是同一个漏登记的两面。
   if (lower === "lsp") {
@@ -319,6 +364,13 @@ export function getResultSummary(name: string, content: string, isError?: boolea
   // LSP 各 formatter（tool/lsp-formatters.ts）的成功输出都是「一行一条结果」，
   // 空结果则是「未找到…」/「无可用…」这类整句话。按此分流。
   if (lower === "lsp") return lspResultSummary(content);
+  // task_output：「N 字符」量的是标签块长度，没有意义；用户关心的是读到了多少结论。
+  if (lower === "task_output") {
+    const body = extractTaskOutputDisplay(content);
+    const status = /<status>([^<]*)<\/status>/.exec(content)?.[1];
+    const lines = body ? body.split("\n").length : 0;
+    return status && status !== "running" ? `已读取结果 · ${lines} 行` : `当前进度 · ${lines} 行`;
+  }
   return `${content.length} 字符`;
 }
 

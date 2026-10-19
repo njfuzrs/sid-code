@@ -5,13 +5,16 @@
  * XML 结构对标 claude-code <task-notification>
  */
 
-import type { TaskStatus, AgentTaskResult } from "./types.ts";
+import { type TaskStatus, type AgentTaskResult, isTerminalStatus } from "./types.ts";
 import {
   enqueueCommand,
   drainByKind,
+  removeWhere,
   queueSize,
   getQueueSnapshot,
+  type QueuedCommand,
 } from "../query/message-queue-manager.ts";
+import { isResultDeliveredByToolResult } from "./registry.ts";
 
 /**
  * 通知正文最大字符数。
@@ -31,7 +34,7 @@ export const NOTIFICATION_ERROR_MAX_CHARS = 4_000;
  * 截断长文本：超过 max 时保留前 max 字符并追加一行提示，指向完整内容所在文件。
  * 未超长时原样返回。用码点安全切割（Array.from），避免把多字节字符切坏。
  */
-function truncateForNotification(text: string, max: number, outputFile?: string): string {
+export function truncateForNotification(text: string, max: number, outputFile?: string): string {
   const codePoints = Array.from(text);
   if (codePoints.length <= max) return text;
   const head = codePoints.slice(0, max).join("");
@@ -225,26 +228,60 @@ export function enqueuePendingNotification(
 }
 
 /**
+ * 该通知是否已**作废**：终态通知，且该任务的结果已经由 tool_result（task_output）送达。
+ *
+ * F1 第二道防线：撤回在 task_output 认领时做，这里兜住「认领之后才入队」的竞态。
+ * 出队与 `hasPendingNotifications` **必须共用这一个判据**——后者的调用方（TUI 空闲续跑、
+ * Bridge、headless/SDK、background-wake、主循环）若看到一条注定被过滤的通知，就会为它空跑一轮。
+ *
+ * 只作废终态通知：shell 停滞检测给运行中任务发的「疑似等输入」通知也带 taskId，
+ * 它不是结果，不受投递所有权约束（与 B2 的 isTerminalStatus 判据同口径）。
+ */
+function isSupersededNotification(c: QueuedCommand): boolean {
+  if (c.kind !== "task-notification") return false;
+  const st = (c.payload as NotificationPayload | undefined)?.structured;
+  if (!st || !isTerminalStatus(st.status)) return false;
+  return isResultDeliveredByToolResult(st.taskId);
+}
+
+/**
+ * 撤回某任务队列中的**终态**通知（F1：task_output 认领结果之后调用），返回撤回条数。
+ * 非终态通知（停滞提示）与其他任务的通知原位保留。
+ */
+export function withdrawTaskNotification(taskId: string): number {
+  return removeWhere((c) => {
+    if (c.kind !== "task-notification") return false;
+    const st = (c.payload as NotificationPayload | undefined)?.structured;
+    return !!st && st.taskId === taskId && isTerminalStatus(st.status);
+  }).length;
+}
+
+/**
  * 出队通知（主循环空闲时调用），携带结构化快照。
  *
  * 只取 task-notification 类命令；now/next/later 顺序由统一队列保证（通知只用 next/later）。
  * 绝不 drain user-input（那由 UI Idle-drain / loop mid-turn 处理），避免跨通道误吞。
+ * 已作废的终态通知（结果已经 task_output 送达）一并出队但不返回（F1）。
  */
 export function dequeuePendingNotifications(): DequeuedNotification[] {
   // 只取 task-notification 类（drainByKind 保证不误吞 user-input，也不重排其余命令）。
   const notifs = drainByKind("task-notification");
   if (notifs.length === 0) return [];
-  return notifs.map((c) => {
-    const p = c.payload as NotificationPayload;
-    return { content: p.content, structured: p.structured };
-  });
+  return notifs
+    .filter((c) => !isSupersededNotification(c))
+    .map((c) => {
+      const p = c.payload as NotificationPayload;
+      return { content: p.content, structured: p.structured };
+    });
 }
 
-/** 检查是否有待处理的通知（只看 task-notification 类，不含 user-input）。不出队。 */
+/** 检查是否有待处理的通知（只看 task-notification 类，不含 user-input）。不出队。
+ *  与出队同一判据（`isSupersededNotification`），否则空闲唤醒会为作废通知空跑一轮。 */
 export function hasPendingNotifications(): boolean {
   if (queueSize() === 0) return false; // 快速短路：整个统一队列为空
   // 读快照过滤 task-notification（无副作用，避免 drain/回队开销）。
   const snap = getQueueSnapshot();
-  for (const c of snap) if (c.kind === "task-notification") return true;
+  for (const c of snap)
+    if (c.kind === "task-notification" && !isSupersededNotification(c)) return true;
   return false;
 }

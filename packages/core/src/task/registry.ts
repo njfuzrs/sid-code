@@ -214,12 +214,52 @@ export function markNotificationsDelivered(taskIds: Iterable<string>): void {
     const task = tasks.get(id);
     if (!task || task.notificationDeliveredTurn !== undefined) continue;
     if (!isTerminalStatus(task.status)) continue;
-    const updated = { ...task, notificationDeliveredTurn: turn };
+    const updated = {
+      ...task,
+      notificationDeliveredTurn: turn,
+      resultDeliveredVia: task.resultDeliveredVia ?? ("notification" as const),
+    };
     tasks.set(id, updated);
-    emitTaskLifecycle(updated, "delivered");
+    emitTaskLifecycle(updated, "delivered", { via: "notification" });
     changed = true;
   }
   if (changed) notifyTaskChanged();
+}
+
+/**
+ * 认领一个**终态**任务的结果投递所有权（F1：自动通道只许送达一次）。
+ *
+ * 首次认领成功返回 true 并记下通道；已被认领（任一通道）、任务不存在或未到终态返回 false。
+ * 幂等：重复调用只会得到 false，不会改写第一次的通道。
+ *
+ * `tool_result` 认领时同时写送达回合，口径与前台子代理一致（L4：tool_result 下一轮才进模型，
+ * 记 N+1）。调用方（task_output）认领成功后负责撤回队列里该任务的终态通知；注入侧还有
+ * 第二道按本字段的过滤，兜住撤回之后才入队的竞态。
+ *
+ * 为什么不像 cc 那样复用 `notified`：sid 的 `notified` 在入队**之前**置位，表示「有投递通道」，
+ * 驱逐判据依赖它；cc 的写法只封住了「TaskOutput 先读到」一个方向，这里两个方向都封。
+ */
+export function claimResultDelivery(taskId: string, via: "notification" | "tool_result"): boolean {
+  const task = tasks.get(taskId);
+  if (!task || !isTerminalStatus(task.status)) return false;
+  if (task.resultDeliveredVia !== undefined) return false;
+  const updated: TaskState = {
+    ...task,
+    resultDeliveredVia: via,
+    ...(via === "tool_result" && task.notificationDeliveredTurn === undefined
+      ? { notificationDeliveredTurn: getCompletedMainTurns() + 1 }
+      : {}),
+  };
+  tasks.set(taskId, updated);
+  emitTaskLifecycle(updated, "delivered", { via });
+  scheduleSafetyValveWake();
+  notifyTaskChanged();
+  return true;
+}
+
+/** 该任务的终态结果是否已经经 tool_result 送达（注入侧据此跳过撤回漏网的终态通知）。 */
+export function isResultDeliveredByToolResult(taskId: string): boolean {
+  return tasks.get(taskId)?.resultDeliveredVia === "tool_result";
 }
 
 // 回合推进可能让「已送达」的任务变为可驱逐：刷新监听器，TUI 据此重新判定 1s 定时器开关。

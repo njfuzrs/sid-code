@@ -22,6 +22,7 @@ import {
   getResultSummary,
   isDiffContent,
   getFilenameFromInput,
+  extractTaskOutputDisplay,
 } from "./ui-utils.ts";
 // 直接复用产生端的 origin 常量,而非在此重复字符串字面量——避免"注入端打了 origin、
 // 隐藏端白名单漏登记"的漂移(compact-reattach 泄漏正是此类接线遗漏)。
@@ -505,7 +506,12 @@ export function buildCompletedToolCall(
   const resultDisplay: ToolResultDisplay = {
     // summary/hidden 档把正文置空：那份 content 是给模型读的提示词，不是给用户看的。
     // 保留 isError/filename 等元信息不变——只吃正文，不动语义。
-    content: suppressBody ? "" : block.content,
+    // task_output 只上屏结论 / 输出正文，元数据标签不上屏（F4，见 extractTaskOutputDisplay）。
+    content: suppressBody
+      ? ""
+      : toolName === "task_output" && !isError
+        ? extractTaskOutputDisplay(block.content)
+        : block.content,
     isError,
     // isDiff 判定喂原始 content：置空后再判会恒为 false，但 summary 档的工具本就不产 diff，
     // 这里保持用原文判定是为了「档位与 diff 判定解耦」——将来若有产 diff 的 summary 工具，
