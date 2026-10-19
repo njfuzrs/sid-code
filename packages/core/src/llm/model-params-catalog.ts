@@ -23,7 +23,7 @@ export interface ModelParamsEntry {
   /** 是否支持 temperature/top_p 采样参数。默认 true */
   supportsTemperature?: boolean;
   /** 支持的 reasoning_effort 档位。undefined = 不支持 */
-  reasoningEffortValues?: ("low" | "medium" | "high" | "max")[];
+  reasoningEffortValues?: ("low" | "medium" | "high" | "xhigh" | "max")[];
   /** 协议族标识（用于 effort.ts 分发）。undefined = 走现有 runtime 推断 */
   protocolKind?:
     | "deepseek-openai"

@@ -51,9 +51,14 @@ describe("getSelectableEfforts：档位集合与模型配对", () => {
     expect(getSelectableEfforts(cap)).toEqual(["low", "high", "max"]);
   });
 
-  test("GLM 支持 max 但 xhigh 被钳制，故为 4 档", () => {
-    const cap = capFor("glm-5.2", "openai", "https://gw.example.com/v1");
+  test("GLM 支持 max 但 xhigh 被钳制：未登记档位表的为 4 档", () => {
+    const cap = capFor("glm-5.1", "openai", "https://gw.example.com/v1");
     expect(getSelectableEfforts(cap)).toEqual(["low", "medium", "high", "max"]);
+  });
+
+  test("GLM-5.2 官方 low/medium → high，只剩 high / max（F2 / E10）", () => {
+    const cap = capFor("glm-5.2", "openai", "https://gw.example.com/v1");
+    expect(getSelectableEfforts(cap)).toEqual(["high", "max"]);
   });
 
   test("不支持 effort 的模型返回空数组（UI 据此禁用切换）", () => {
@@ -218,11 +223,12 @@ describe("getDisplayedEffort：展示 = 实发，所选档不被改写（PR-C，
 
   test("档位被新模型支持时原样显示", () => {
     expect(getDisplayedEffort(A, "xhigh", null)).toBe("xhigh");
-    expect(getDisplayedEffort(GLM, "medium", null)).toBe("medium");
+    expect(getDisplayedEffort(GLM, "high", null)).toBe("high");
   });
 
   test("被钳制的档显示实发档（E2 / E7）", () => {
     expect(getDisplayedEffort(GLM, "xhigh", null)).toBe("max");
+    expect(getDisplayedEffort(GLM, "medium", null)).toBe("high");
     expect(getDisplayedEffort(O3, "max", null)).toBe("high");
     expect(getDisplayedEffort(O3, "xhigh", null)).toBe("high");
     expect(getDisplayedEffort(DS, "xhigh", null)).toBe("high");

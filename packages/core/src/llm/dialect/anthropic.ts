@@ -110,15 +110,20 @@ export function createAnthropicNativeDialect(
           return;
         }
 
-        // auto（effort=undefined）→ 走模型默认（Opus 4.8 默认 high）。
-        let effectiveEffort: DialectEffortLevel = effort ?? "high";
+        // auto（effort=undefined）→ **不发 effort**，由服务端按模型默认档跑（Opus 5.5 / Haiku 5.5
+        // 默认 medium、其余 high，anthropic-api.md §6.2）。此前显式发 high，Opus 5.5 / Haiku 5.5 上
+        // 比服务端默认高一档，「auto = 跟随模型默认」名不副实（20261018 effort 排查 E3）。
+        // 思考上限的降档仍要生效：auto 的基准档取注册表默认档（缺省 high），降得更低才下发。
+        const baseline: DialectEffortLevel =
+          effort ?? lookupRegistryExact(wireModel)?.defaultEffort ?? "high";
+        let effectiveEffort: DialectEffortLevel | undefined = effort;
         // adaptive 模型 budget 由服务端定，客户端无法硬钳——改为按上限把 effort 降档间接压低。
         // 仅当降档结果比用户档位更低时才生效（不上调），并在 outputConfig 打标记供 UI/日志诚实告知。
         if (maxThinking !== null) {
           const capped = mapThinkingCapToEffort(maxThinking);
           if (
             capped !== null &&
-            ANTHROPIC_EFFORT_BUDGET[capped] < ANTHROPIC_EFFORT_BUDGET[effectiveEffort]
+            ANTHROPIC_EFFORT_BUDGET[capped] < ANTHROPIC_EFFORT_BUDGET[baseline]
           ) {
             effectiveEffort = capped;
             params.thinkingBudgetCapped = {
@@ -134,8 +139,12 @@ export function createAnthropicNativeDialect(
         const xhighOk = lookupRegistryExact(wireModel)?.supportsXhighEffort === true;
         const level = effectiveEffort === "xhigh" && !xhighOk ? "max" : effectiveEffort;
         // 标记为 adaptive 模式：anthropic.ts 据此下发 {type:"adaptive"} 而非 {type:"enabled"}。
+        // effort 缺省时 thinkingType 照写：它是 adaptive 协议的载体，丢了会退回 manual budget_tokens。
         params.thinking = { enabled: true, budgetTokens: 0 };
-        params.outputConfig = { effort: level, thinkingType: "adaptive" };
+        params.outputConfig =
+          level === undefined
+            ? { thinkingType: "adaptive" }
+            : { effort: level, thinkingType: "adaptive" };
       } else {
         // ── manual 路径（旧模型：Opus 4-20250514 / Sonnet 4.5 / Haiku 4.5 等）──
         if (!thinking) {

@@ -85,7 +85,7 @@ export function buildOptions(levels: EffortLevel[]): EffortItem[] {
     key: "auto",
     glyph: EFFORT_AUTO,
     label: "auto",
-    desc: "跟随模型默认",
+    desc: "不下发，按模型默认",
   });
   return items;
 }
@@ -153,7 +153,7 @@ export const EffortDialog: React.FC<EffortDialogProps> = ({
   if (state) {
     const runtimeText = state.runtime ?? "auto";
     if (state.isAuto) {
-      statusLine = `当前: auto → ${state.applied}（跟随模型默认）`;
+      statusLine = `当前: auto → ${state.applied}（不下发档位，按模型默认）`;
     } else if (state.runtime !== undefined && state.applied !== state.runtime) {
       // 所选档对本模型被钳制：runtime 保留用户意图（切回支持的模型仍生效），这里说清实发档。
       statusLine = `当前: ${runtimeText}（本模型按 ${state.applied} 下发）`;
