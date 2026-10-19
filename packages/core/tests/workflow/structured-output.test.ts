@@ -195,7 +195,143 @@ describe("M2 validator — checkSchemaShape", () => {
     expect(checkSchemaShape({})).toBe(null);
     expect(checkSchemaShape({ description: "任意" })).toBe(null);
     expect(checkSchemaShape({ anyOf: [{ type: "string" }] })).toBe(null);
-    expect(checkSchemaShape({ $ref: "#/$defs/x" })).toBe(null);
+    expect(checkSchemaShape({ $ref: "#/$defs/x", $defs: { x: { type: "string" } } })).toBe(null);
+  });
+  test("解不出的 $ref → 报错（否则该处约束静默失效）", () => {
+    expect(checkSchemaShape({ $ref: "#/$defs/x" })).toContain("$ref 无法解析");
+  });
+});
+
+// 缺陷文档 20260927-编排与调度 第三部分：P1-7 / P2-6 / P2-7 / P3-1
+describe("schema 校验器缺口 — P1-7 循环 $ref", () => {
+  const cyc = { $defs: { A: { $ref: "#/$defs/B" }, B: { $ref: "#/$defs/A" } }, $ref: "#/$defs/A" };
+  test("A→B→A 纯 schema 环：校验返回错误而不是抛 RangeError", () => {
+    const r = validateAgainstSchema(cyc, {});
+    expect(r.valid).toBe(false);
+    if (!r.valid) expect(r.errors[0].message).toContain("循环 $ref");
+  });
+  test("allOf 里藏的环也能拦住", () => {
+    const s = { $defs: { A: { allOf: [{ $ref: "#/$defs/A" }] } }, $ref: "#/$defs/A" };
+    expect(validateAgainstSchema(s, 1).valid).toBe(false);
+    expect(checkSchemaShape(s)).toContain("循环 $ref");
+  });
+  test("checkSchemaShape 静态发现环（走不可重试分支）", () => {
+    expect(checkSchemaShape(cyc)).toContain("循环 $ref");
+  });
+  test("对照：消耗数据层级的自引用（树）不是环，照常校验", () => {
+    const tree = {
+      $defs: {
+        Node: {
+          type: "object",
+          properties: { v: { type: "number" }, child: { $ref: "#/$defs/Node" } },
+        },
+      },
+      $ref: "#/$defs/Node",
+    };
+    expect(checkSchemaShape(tree)).toBe(null);
+    expect(validateAgainstSchema(tree, { v: 1, child: { v: 2, child: {} } }).valid).toBe(true);
+    expect(validateAgainstSchema(tree, { child: { child: { v: "x" } } }).valid).toBe(false);
+  });
+  test("StructuredOutputTool：环 schema 返回 isError，不抛异常", async () => {
+    const tool = new StructuredOutputTool(cyc);
+    const r = await tool.execute({});
+    expect(r.isError).toBe(true);
+    expect(r.output).toContain("schema 非法");
+  });
+});
+
+describe("schema 校验器缺口 — P2-6 组合关键字与 additionalProperties", () => {
+  test("oneOf：零个分支通过 / 多个分支通过都拒绝", () => {
+    const s = { oneOf: [{ type: "string" }, { type: "number" }] };
+    expect(validateAgainstSchema(s, "a").valid).toBe(true);
+    expect(validateAgainstSchema(s, { x: true }).valid).toBe(false);
+    const overlap = { oneOf: [{ type: "number" }, { type: "integer" }] };
+    expect(validateAgainstSchema(overlap, 1.5).valid).toBe(true);
+    expect(validateAgainstSchema(overlap, 1).valid).toBe(false);
+  });
+  test("anyOf / allOf / not 生效", () => {
+    expect(validateAgainstSchema({ anyOf: [{ type: "string" }] }, 12345).valid).toBe(false);
+    expect(
+      validateAgainstSchema({ allOf: [{ type: "object", required: ["必填"] }] }, {}).valid,
+    ).toBe(false);
+    expect(validateAgainstSchema({ not: { type: "string" } }, "s").valid).toBe(false);
+    expect(validateAgainstSchema({ not: { type: "string" } }, 1).valid).toBe(true);
+  });
+  test("if/then：critical 时 evidence 必填（§5.3 强制举证写法）", () => {
+    const s = {
+      type: "object",
+      properties: { severity: { enum: ["critical", "minor"] }, evidence: { type: "string" } },
+      required: ["severity"],
+      if: { properties: { severity: { const: "critical" } } },
+      then: { required: ["evidence"] },
+    };
+    expect(checkSchemaShape(s)).toBe(null);
+    expect(validateAgainstSchema(s, { severity: "minor" }).valid).toBe(true);
+    expect(validateAgainstSchema(s, { severity: "critical" }).valid).toBe(false);
+    expect(validateAgainstSchema(s, { severity: "critical", evidence: "a.ts:1" }).valid).toBe(true);
+  });
+  test("additionalProperties:false 无 properties ⇒ 只接受空对象", () => {
+    const s = { type: "object", additionalProperties: false };
+    expect(validateAgainstSchema(s, {}).valid).toBe(true);
+    expect(validateAgainstSchema(s, { 乱塞: 1 }).valid).toBe(false);
+  });
+  test("不实现的约束关键字在 shape 阶段明确拒绝（不再安静忽略）", () => {
+    expect(checkSchemaShape({ type: "array", uniqueItems: true })).toContain("uniqueItems");
+    expect(
+      checkSchemaShape({
+        type: "object",
+        properties: { m: { type: "object", patternProperties: { "^x": {} } } },
+      }),
+    ).toContain("patternProperties");
+  });
+  test("注解关键字照常放行", () => {
+    expect(checkSchemaShape({ type: "string", format: "uri", title: "t", examples: ["a"] })).toBe(
+      null,
+    );
+  });
+});
+
+describe("schema 校验器缺口 — P2-7 checkSchemaShape 递归", () => {
+  test("嵌套 properties / items / $defs 里的非法 type 都被拦", () => {
+    expect(checkSchemaShape({ type: "object", properties: { x: { type: "整数" } } })).toContain(
+      "/properties/x",
+    );
+    expect(
+      checkSchemaShape({
+        type: "array",
+        items: { type: "object", properties: { y: { type: "int" } } },
+      }),
+    ).toContain("/items/properties/y");
+    expect(checkSchemaShape({ $defs: { D: { type: "str" } }, type: "object" })).toContain(
+      "$defs/D",
+    );
+    expect(checkSchemaShape({ anyOf: [{ type: "bogus" }] })).toContain("anyOf/0");
+  });
+  test("StructuredOutputTool：嵌套非法 type 走「schema 非法」不可重试分支", async () => {
+    const tool = new StructuredOutputTool({ type: "object", properties: { x: { type: "整数" } } });
+    const r = await tool.execute({ x: 1 });
+    expect(r.isError).toBe(true);
+    expect(r.output).toContain("schema 非法");
+  });
+});
+
+describe("schema 校验器缺口 — P3-1 pattern ReDoS", () => {
+  test("灾难性回溯被限时截断并报错，不卡死进程", () => {
+    const s = { type: "string", pattern: "^(a+)+$" };
+    const t0 = performance.now();
+    const r = validateAgainstSchema(s, "a".repeat(40) + "b");
+    expect(performance.now() - t0).toBeLessThan(2000);
+    expect(r.valid).toBe(false);
+    if (!r.valid) expect(r.errors[0].message).toContain("灾难性回溯");
+  });
+  test("非法正则在 shape 阶段拒绝", () => {
+    expect(checkSchemaShape({ type: "string", pattern: "(" })).toContain("pattern");
+  });
+  test("正常 pattern 行为不变", () => {
+    const s = { type: "string", pattern: "^(\\d+\\.)+\\d+$" };
+    expect(checkSchemaShape(s)).toBe(null);
+    expect(validateAgainstSchema(s, "1.2.3").valid).toBe(true);
+    expect(validateAgainstSchema(s, "1.x").valid).toBe(false);
   });
 });
 
