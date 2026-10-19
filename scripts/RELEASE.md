@@ -199,7 +199,11 @@ git merge-base --is-ancestor v<version> main && echo OK
 
 ### Changelog + Tag
 
-release.sh 在 bump 后重建 changelog；构建与冒烟全部通过后自动提交 `bump vX.Y.Z`，再把 annotated tag `vX.Y.Z` 打在**这个提交**上（`generate-changelog.ts` 会过滤 `^bump v\d` 提交，所以它不会污染 changelog）。每次运行完整重建，确定性且幂等。两份产物各有唯一职责：
+release.sh 在 bump 后重建 changelog；构建与冒烟全部通过后自动提交 `bump vX.Y.Z`，再把 annotated tag `vX.Y.Z` 打在**这个提交**上（`generate-changelog.ts` 会过滤 `^bump v\d` 提交，所以它不会污染 changelog）。每次运行完整重建，确定性且幂等。
+
+**⚠️ changelog 的版本列表来自 `bump vX.Y.Z` 提交，不来自 tag**（2026-10-19 起）。tag / GitHub Release 管「这个版本还在不在架上」，changelog 管「这个版本发生过什么」：撤 tag、删 Release 不影响官网 /changelog 与 `CHANGELOG.md`。反过来，**不要改写或删掉 main 上的 `bump vX.Y.Z` 提交**，它们是 changelog 唯一的版本锚点（`listReleaseAnchors`，`scripts/lib/changelog-git.ts`）。起因：PR #304 撤了 v0.1.607 及更早的 tag，旧实现按 tag 遍历，v0.1.611 发版时官网历史从 29 版掉到 4 版，全程零报错。
+
+两份产物各有唯一职责：
 
 | 产物 | 职责 | 内容来源 |
 | --- | --- | --- |

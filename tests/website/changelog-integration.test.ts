@@ -16,13 +16,17 @@
  *   · 发布流水线的端到端串联 —— 需真实服务器
  */
 import { describe, expect, test } from "bun:test";
-import { readFileSync, existsSync } from "node:fs";
+import { readFileSync, existsSync, readdirSync } from "node:fs";
 import { execFileSync } from "node:child_process";
 import { resolve } from "node:path";
 // ⚠️ 遍历口径与噪声判据一律从生产代码 import，不在测试里复写一份。
 // 原先这里手抄了 `--no-merges` 与三条噪声 regex，于是这份对账断言有了**自己的分母**——
 // 生产改口径它就假红/假绿，而它恰恰是「CHANGELOG 条数 == 真实提交数」的唯一守卫。
-import { HISTORY_WALK_FLAG, isNoiseSubject } from "../../scripts/lib/changelog-git.ts";
+import {
+  HISTORY_WALK_FLAG,
+  isNoiseSubject,
+  listReleaseAnchors,
+} from "../../scripts/lib/changelog-git.ts";
 
 const ROOT = resolve(import.meta.dir, "..", "..");
 const DATA_PATH = resolve(ROOT, "website/.vitepress/data/changelog.json");
@@ -182,31 +186,24 @@ describe("CHANGELOG.md · 版本区间不漏提交（回归：补跑会清空当
     return (block.match(/^- /gm) ?? []).length;
   }
 
-  test("CHANGELOG.md 每个版本块的提交数与其 tag 区间的真实提交数吻合", () => {
+  test("CHANGELOG.md 每个版本块的提交数与其锚点区间的真实提交数吻合", () => {
     const md = readFileSync(MD_PATH, "utf8");
-    const tags: string[] = execFileSync("git", ["tag", "-l", "v*", "--sort=-v:refname"], {
-      cwd: ROOT,
-      encoding: "utf8",
-    })
-      .split("\n")
-      .map((s) => s.trim())
-      .filter((t) => /^v\d+\.\d+\.\d+$/.test(t));
+    const anchors = listReleaseAnchors();
 
     let checked = 0;
-    for (let i = 0; i < tags.length; i++) {
-      const tag = tags[i];
-      const prevTag = tags[i + 1];
-      if (!prevTag) continue; // 最老的 tag 是 genesis 块，刻意截断回溯条数，不适用
+    for (let i = 0; i < anchors.length; i++) {
+      const cur = anchors[i]!;
+      const prev = anchors[i + 1];
+      if (!prev) continue; // 最老的版本是 genesis 块，刻意截断回溯条数，不适用
 
-      const version = tag.replace(/^v/, "");
-      const got = countMdCommits(md, version);
+      const got = countMdCommits(md, cur.version);
       if (got === null) continue;
 
       // 真实区间提交数，扣掉生成器刻意过滤的噪声（bump / Merge / dashboard 刷盘）。
       // 遍历口径与噪声判据都走生产代码的共享源，见文件头 import 处的说明。
       const subjects = execFileSync(
         "git",
-        ["log", HISTORY_WALK_FLAG, "--format=%s", `${prevTag}..${tag}`],
+        ["log", HISTORY_WALK_FLAG, "--format=%s", `${prev.commit}..${cur.commit}`],
         { cwd: ROOT, encoding: "utf8" },
       )
         .split("\n")
@@ -233,27 +230,50 @@ describe("CHANGELOG.md · 版本区间不漏提交（回归：补跑会清空当
     expect(md).toMatch(/`[0-9a-f]{7,10}`/);
   });
 
-  test("版本日期与其 tag 的提交日一致（不受生成时机/时区影响）", () => {
-    // today() 走 toISOString()（UTC），本地 +0800 的凌晨会算成前一天。
-    // 版本日期必须锚在 tag 的提交日上，否则同一个版本在不同时刻生成会得到不同日期。
+  test("版本日期与其 bump 提交日一致（不受生成时机/时区影响）", () => {
+    // today() 若走 toISOString()（UTC），本地 +0800 的凌晨会算成前一天。
+    // 版本日期必须锚在 bump 提交日上，否则同一个版本在不同时刻生成会得到不同日期。
     const d = JSON.parse(readFileSync(DATA_PATH, "utf8"));
+    const byVersion = new Map(listReleaseAnchors().map((a) => [a.version, a.date]));
     let checked = 0;
     for (const v of d.versions) {
-      const tag = `v${v.version}`;
-      let tagDay: string;
-      try {
-        tagDay = execFileSync("git", ["log", "-1", "--format=%ad", "--date=format:%Y-%m-%d", tag], {
-          cwd: ROOT,
-          encoding: "utf8",
-        }).trim();
-      } catch {
-        continue; // 尚未打 tag
-      }
-      if (!tagDay) continue;
-      expect(v.date).toBe(tagDay);
+      const day = byVersion.get(v.version);
+      if (!day) continue; // 尚未发布（bump 还没提交）
+      expect(v.date).toBe(day);
       checked++;
     }
     expect(checked).toBeGreaterThan(0);
+  });
+});
+
+describe("changelog · 版本列表不跟随 tag（回归：撤 tag 让官网历史整块消失）", () => {
+  /**
+   * 2026-10-19：PR #304 撤回 v0.1.607 及更早的 tag 与 Release（旧渲染底座下架）。
+   * 旧生成器按 `git tag -l` 遍历版本，下一次发版就把这 26 个版本从官网 /changelog
+   * 和 CHANGELOG.md 里整块删掉；生成、站点构建、冒烟全部是绿的。
+   * tag 是「版本还在不在架上」，changelog 是「版本发生过什么」，两者不能绑定。
+   */
+  test("每份入库的 curated 文案都出现在官网数据里", () => {
+    const d = JSON.parse(readFileSync(DATA_PATH, "utf8"));
+    const onSite = new Set<string>(d.versions.map((v: { version: string }) => v.version));
+    const curated = readdirSync(resolve(ROOT, "changelog/curated"))
+      .map((f) => /^v(\d+\.\d+\.\d+)\.json$/.exec(f)?.[1])
+      .filter((v): v is string => !!v);
+    expect(curated.length).toBeGreaterThan(0);
+    expect(curated.filter((v) => !onSite.has(v))).toEqual([]);
+  });
+
+  test("区间算法不读 tag（生产代码里不得出现 git tag 遍历）", () => {
+    for (const f of [
+      "scripts/lib/changelog-git.ts",
+      "scripts/generate-changelog.ts",
+      "scripts/changelog-curate.ts",
+      "scripts/changelog-stable.ts",
+    ]) {
+      const src = readFileSync(resolve(ROOT, f), "utf8");
+      expect(src).not.toMatch(/\[\s*"tag"\s*,\s*"-l"/);
+      expect(src).not.toMatch(/listSemverTags|tagDate/);
+    }
   });
 });
 

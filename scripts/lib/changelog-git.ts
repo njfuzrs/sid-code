@@ -15,7 +15,7 @@ import { fileURLToPath } from "node:url";
 export const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..", "..");
 
 /**
- * genesis 块（最老 tag 之前的全部历史）只回溯这么多条提交。
+ * genesis 块（最老已发布版本之前的全部历史）只回溯这么多条提交。
  *
  * ⚠ 这个截断机制**必须保留**：CHANGELOG.md 要列出全量原始提交，没有它就是上千条灌爆。
  * curated 改造移除的只是**站点数据源里的 isGenesis 字段**，不是这里的算法。
@@ -30,48 +30,78 @@ export function git(args: string[]): string {
   return execFileSync("git", args, { cwd: ROOT, encoding: "utf-8" }).trim();
 }
 
-/** 所有 semver tag（vX.Y.Z），按版本号降序；排除 phase-1-done 等非 semver tag */
-export function listSemverTags(): string[] {
+/**
+ * 一个已发布版本在 git 历史里的锚点：`release.sh` 自动提交的那条 `bump vX.Y.Z`。
+ *
+ * ⚠️ changelog **只认 bump 提交，不认 tag**（2026-10-19 改）。tag 和 Release 是
+ * 「这个版本还在不在架上」，changelog 是「这个版本发生过什么」，两件事生命周期不同：
+ * PR #304 撤回 v0.1.607 及更早的 tag 和 Release（旧渲染底座下架），按 tag 遍历的旧实现
+ * 于是把这 26 个版本从官网 /changelog 整块删掉，生成、构建、冒烟全部是绿的。
+ * bump 提交在受保护的 main 上，撤 tag、删 Release 都动不了它。
+ *
+ * 一个版本只取一条锚点：同号出现多次时取最新那条（log 顺序第一个）。
+ */
+export interface ReleaseAnchor {
+  version: string;
+  /** bump 提交的完整 hash */
+  commit: string;
+  /** bump 提交的作者日期（YYYY-MM-DD，作者本地时区，与原先取 tag 提交日的口径一致） */
+  date: string;
+}
+
+const BUMP_SUBJECT_RE = /^bump v(\d+\.\d+\.\d+)$/;
+
+function cmpSemverDesc(a: string, b: string): number {
+  const pa = a.split(".").map(Number);
+  const pb = b.split(".").map(Number);
+  for (let i = 0; i < 3; i++) if (pa[i] !== pb[i]) return pb[i]! - pa[i]!;
+  return 0;
+}
+
+/** HEAD 可达历史里的全部已发布版本，按版本号降序 */
+export function listReleaseAnchors(): ReleaseAnchor[] {
   let out = "";
   try {
-    out = git(["tag", "-l", "v*", "--sort=-v:refname"]);
+    // 不加 --first-parent：bump 提交经发布 PR 以 merge 方式进 main，落在第二父链上
+    out = git([
+      "log",
+      "HEAD",
+      "-E",
+      "--grep=^bump v[0-9]+\\.[0-9]+\\.[0-9]+$",
+      `--format=%H${FS}%ad${FS}%s`,
+      "--date=short",
+    ]);
   } catch {
     return [];
   }
-  const semver = /^v\d+\.\d+\.\d+$/;
-  return out
-    .split("\n")
-    .map((l) => l.trim())
-    .filter((t) => semver.test(t));
+  const seen = new Map<string, ReleaseAnchor>();
+  for (const line of out.split("\n")) {
+    const [commit = "", date = "", subject = ""] = line.split(FS);
+    const m = BUMP_SUBJECT_RE.exec(subject.trim());
+    if (!m || seen.has(m[1]!)) continue;
+    seen.set(m[1]!, { version: m[1]!, commit: commit.trim(), date: date.trim() });
+  }
+  return [...seen.values()].sort((a, b) => cmpSemverDesc(a.version, b.version));
 }
 
 export function today(): string {
   // release.sh 在真实时钟下调用；此脚本非 workflow 沙箱，Date 可用。
-  // 必须取**本地**日期：tag 提交日按 git 的 %ad（作者本地时区）算。用 toISOString()（UTC）
-  // 时，+0800 凌晨 0–8 点发版会记成前一天，与 tag 日期错位（v0.1.606 实测 02:32 发版踩到）。
+  // 必须取**本地**日期：锚点日期按 git 的 %ad（作者本地时区）算。用 toISOString()（UTC）
+  // 时，+0800 凌晨 0–8 点发版会记成前一天（v0.1.606 实测 02:32 发版踩到）。
   const d = new Date();
   const pad = (n: number) => String(n).padStart(2, "0");
   return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}`;
 }
 
-/** tag 指向提交的日期（YYYY-MM-DD）；取不到则返回 today */
-export function tagDate(tag: string): string {
-  try {
-    return git(["log", "-1", "--format=%ai", tag]).slice(0, 10);
-  } catch {
-    return today();
-  }
-}
-
 export interface VersionRange {
-  /** git log 的 range 参数；null = 全部历史（仓库还没有任何 tag 时） */
+  /** git log 的 range 参数；null = 全部历史（仓库还没有任何已发布版本时） */
   range: string | null;
-  /** 该版本的日期（tag 存在则取 tag 提交日，否则 today） */
+  /** 该版本的日期（已发布取 bump 提交日，否则 today） */
   date: string;
   /** 是否是 genesis 块（最老的那个版本，区间被 GENESIS_LOOKBACK 截断） */
   isGenesis: boolean;
-  /** 该版本的 tag（尚未打 tag 时为 null） */
-  tag: string | null;
+  /** 该版本的锚点提交（尚未发布时为 null）；genesis 区间越过根提交时用它退化 */
+  anchor: string | null;
 }
 
 /**
@@ -79,40 +109,42 @@ export interface VersionRange {
  *
  * 两种情形，必须分开算（合并处理会丢提交，实测踩过）：
  *
- * A. 正常发布：release.sh 在 bump 之后、打 tag **之前**调用，此刻 version
- *    还没有对应 tag → 区间 = 最新 tag..HEAD。
+ * A. 正常发布：release.sh 在 bump 之后、提交 bump **之前**调用，此刻 version
+ *    还没有锚点 → 区间 = 最新锚点..HEAD。
  *
- * B. version 的 tag **已存在**：事后补跑（`generate-changelog.ts 0.1.600`）、
- *    backfill 历史版本、或 --no-bump 复用版本号。此时若仍用 `tags[0]..HEAD`，
- *    而 tags[0] 恰好就是 version 那个 tag，算出来的是「tag 之后新加的提交」——
+ * B. version 的锚点**已存在**：事后补跑（`generate-changelog.ts 0.1.600`）、
+ *    backfill 历史版本、或 --no-bump 复用版本号。此时若仍用 `最新锚点..HEAD`，
+ *    而最新锚点恰好就是 version 自己，算出来的是「发布之后新加的提交」——
  *    真正属于该版本的提交全被漏掉。
  *
- *    实测：v0.1.600 打完 tag 后补跑一次，changelog 从 276 条掉到 267 条
- *    （该版本真实 11 条提交被换成 tag 之后的 1 条），且**没有任何报错**。
+ *    实测：v0.1.600 发布后补跑一次，changelog 从 276 条掉到 267 条
+ *    （该版本真实 11 条提交被换成之后的 1 条），且**没有任何报错**。
  */
-export function versionRange(version: string, tags?: string[]): VersionRange {
-  const all = tags ?? listSemverTags();
-  const tag = all.find((t) => t.replace(/^v/, "") === version) ?? null;
+export function versionRange(version: string, anchors?: ReleaseAnchor[]): VersionRange {
+  const all = anchors ?? listReleaseAnchors();
+  const idx = all.findIndex((a) => a.version === version);
 
-  if (tag) {
-    // 情形 B：区间 = 更老的那个 tag..thisTag（与历史块算法一致）
-    const idx = all.indexOf(tag);
-    const prevTag = all[idx + 1] ?? null;
+  if (idx >= 0) {
+    // 情形 B：区间 = 更老的那个锚点..本锚点（与历史块算法一致）
+    const cur = all[idx]!;
+    const prev = all[idx + 1] ?? null;
     return {
-      range: prevTag ? `${prevTag}..${tag}` : `${tag}~${GENESIS_LOOKBACK}..${tag}`,
-      date: tagDate(tag),
-      isGenesis: !prevTag,
-      tag,
+      range: prev
+        ? `${prev.commit}..${cur.commit}`
+        : `${cur.commit}~${GENESIS_LOOKBACK}..${cur.commit}`,
+      date: cur.date,
+      isGenesis: !prev,
+      anchor: cur.commit,
     };
   }
 
-  // 情形 A：尚未打 tag，区间 = 最新 tag..HEAD
-  const newestTag = all[0] ?? null;
+  // 情形 A：尚未发布，区间 = 最新锚点..HEAD
+  const newest = all[0] ?? null;
   return {
-    range: newestTag ? `${newestTag}..HEAD` : null,
+    range: newest ? `${newest.commit}..HEAD` : null,
     date: today(),
-    isGenesis: !newestTag,
-    tag: null,
+    isGenesis: !newest,
+    anchor: null,
   };
 }
 

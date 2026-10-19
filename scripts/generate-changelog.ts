@@ -4,16 +4,17 @@
  * 用法：
  *   bun run scripts/generate-changelog.ts <version>
  *
- * 由 release.sh 在 bump 版本号之后、打 tag 之前调用。version 显式传入（与 $VERSION 同源，
+ * 由 release.sh 在 bump 版本号之后、提交 bump 之前调用。version 显式传入（与 $VERSION 同源，
  * 不自读 package.json，避免两处版本号漂移）。
  *
  * ── 设计：git 是唯一事实源，所有产物都是「渲染视图」──
  *   旧实现用「prepend/替换版本块」的累积写法，历史块与 git 会漂移。
  *   现改为每次运行都从 git 完整重建模型：
- *     - 遍历所有 semver tag（vX.Y.Z），逐个还原其提交区间 prevTag..thisTag
- *     - 正在发布的版本（<version> 参数，此刻还没打 tag）区间 = 最新 tag..HEAD
- *     - 最老的 tag 之前的历史统一并入「genesis」块（只列 subject，避免上千条灌爆）
- *   历史 tag 指向不可变提交 → 历史块稳定；只有「正在发布」块每次变化。确定性、幂等。
+ *     - 遍历所有 `bump vX.Y.Z` 提交（已发布版本的锚点），逐个还原区间 prev..this
+ *     - 正在发布的版本（<version> 参数，此刻 bump 还没提交）区间 = 最新锚点..HEAD
+ *     - 最老版本之前的历史统一并入「genesis」块（只列 subject，避免上千条灌爆）
+ *   锚点是 main 上的不可变提交 → 历史块稳定；只有「正在发布」块每次变化。确定性、幂等。
+ *   ⚠️ 不按 tag 遍历：tag 可以被撤（PR #304 撤了 v0.1.607 及更早），changelog 不能跟着丢。
  *
  * ── 两个受众，两条渲染路径（2026-08-06 curated 改造）──
  *   commit message 的读者是**未来的自己**，changelog 的读者是**用户**，这两个受众要的
@@ -68,11 +69,10 @@ import { resolve } from "node:path";
 import { execFileSync } from "node:child_process";
 import {
   ROOT,
-  GENESIS_LOOKBACK,
   FS,
   RS,
-  listSemverTags,
-  tagDate,
+  listReleaseAnchors,
+  versionRange,
   today,
   isNoiseSubject,
   HISTORY_WALK_FLAG,
@@ -154,7 +154,7 @@ const BARE_SECTION_LABEL_RE =
 
 const BULLET_RE = /^\s*(?:[-*•]|\d+[.)])\s+(.*)$/;
 
-// git / listSemverTags / tagDate / today / 区间算法都搬到了 scripts/lib/changelog-git.ts：
+// git / listReleaseAnchors / today / 区间算法都搬到了 scripts/lib/changelog-git.ts：
 // curate 脚本必须用**同一套**区间算法，否则「curate 看到的提交」与「changelog 里的提交」
 // 不是同一批，而这完全静默 —— 两边各自看起来都很正常。
 
@@ -293,90 +293,54 @@ function collectCommits(range: string | null): ParsedCommit[] {
   return commits;
 }
 
-/** 构建完整版本模型：正在发布的版本 + 所有历史 tag（含 genesis） */
+/** 构建完整版本模型：正在发布的版本 + 所有已发布版本（含 genesis） */
 function buildModel(currentVersion: string): VersionModel[] {
-  const tags = listSemverTags(); // 降序
+  // 版本列表来自 bump 提交而不是 tag：撤 tag / 删 Release 不能让历史版本从 changelog 消失
+  // （PR #304 撤了 v0.1.607 及更早的 tag，旧实现静默丢掉 26 个版本）。见 listReleaseAnchors。
+  const anchors = listReleaseAnchors(); // 降序
   const models: VersionModel[] = [];
 
-  // ── 目标版本的提交区间 ──
-  //
-  // 两种情形，必须分开算（合并处理会丢提交，实测踩过，见下）：
-  //
-  // A. 正常发布：release.sh 在 bump 之后、打 tag **之前**调用，此刻 currentVersion
-  //    还没有对应 tag → 区间 = 最新 tag..HEAD。
-  //
-  // B. currentVersion 的 tag **已存在**：事后补跑（`bun run scripts/generate-changelog.ts
-  //    0.1.600`）、或 --no-bump 复用版本号。此时若仍用 `tags[0]..HEAD`，而 tags[0]
-  //    恰好就是 currentVersion 那个 tag，算出来的是「tag 之后新加的提交」——
-  //    真正属于该版本的提交全被漏掉，而下面的历史循环又因 `version === currentVersion`
-  //    跳过了它，于是这些提交**两头都不认，彻底消失**。
-  //
-  //    实测：v0.1.600 打完 tag 后补跑一次，changelog 从 276 条掉到 267 条
-  //    （该版本真实 11 条提交被换成 tag 之后的 1 条），且历史块也拿不回来。
-  //    产物是站点数据源，静默少 9 条不会有任何报错。
-  const currentTag = tags.find((t) => t.replace(/^v/, "") === currentVersion) ?? null;
-  let currentRange: string | null;
-  let currentDate: string;
-  let currentIsGenesis: boolean;
-  if (currentTag) {
-    // 情形 B：区间 = 更老的那个 tag..currentTag（与历史块算法一致）
-    const idx = tags.indexOf(currentTag);
-    const prevTag = tags[idx + 1] ?? null;
-    currentRange = prevTag ? `${prevTag}..${currentTag}` : currentTag;
-    currentDate = tagDate(currentTag);
-    currentIsGenesis = !prevTag;
-  } else {
-    // 情形 A：尚未打 tag，区间 = 最新 tag..HEAD
-    const newestTag = tags[0] ?? null;
-    currentRange = newestTag ? `${newestTag}..HEAD` : null;
-    currentDate = today();
-    currentIsGenesis = !newestTag;
-  }
-  const currentCommits = collectCommits(currentRange);
+  // 目标版本区间分「尚未发布 / 已发布（补跑）」两种情形，算法在 versionRange 里，
+  // 合并处理会丢提交（实测 v0.1.600 补跑掉 9 条），见那里的注释。
+  const cur = versionRange(currentVersion, anchors);
+  const currentCommits = collectGenesisAware(cur.range, cur.isGenesis, cur.anchor);
   models.push({
     version: currentVersion,
-    date: currentDate,
+    date: cur.date,
     commits: currentCommits,
-    detailed: !currentIsGenesis && currentCommits.length <= MAX_DETAILED_COMMITS,
-    isGenesis: currentIsGenesis,
+    detailed: !cur.isGenesis && currentCommits.length <= MAX_DETAILED_COMMITS,
+    isGenesis: cur.isGenesis,
   });
 
-  // 历史 tag（降序遍历，逐个还原 prevTag..thisTag）
-  for (let i = 0; i < tags.length; i++) {
-    const tag = tags[i];
-    const version = tag.replace(/^v/, "");
-
-    // 若正在发布的版本号恰好等于某个已存在 tag（--no-bump 复用场景）：跳过重复
-    if (version === currentVersion) continue;
-
-    const prevTag = tags[i + 1] ?? null; // 更老的 tag
-    const isGenesis = !prevTag;
-    let range: string;
-    if (isGenesis) {
-      // 最老 tag：并入其之前的历史，但限制回溯条数，避免上千条灌爆
-      range = `${tag}~${GENESIS_LOOKBACK}..${tag}`;
-    } else {
-      range = `${prevTag}..${tag}`;
-    }
-
-    let commits: ParsedCommit[];
-    try {
-      commits = collectCommits(range);
-    } catch {
-      // genesis 的 tag~N 可能超出根提交范围，退化为「从根到 tag」
-      commits = isGenesis ? collectCommits(tag) : [];
-    }
-
+  for (const a of anchors) {
+    // 正在发布的版本号已有锚点（补跑 / --no-bump 复用）：上面已经算过，跳过重复
+    if (a.version === currentVersion) continue;
+    const vr = versionRange(a.version, anchors);
+    const commits = collectGenesisAware(vr.range, vr.isGenesis, vr.anchor);
     models.push({
-      version,
-      date: tagDate(tag),
+      version: a.version,
+      date: vr.date,
       commits,
-      detailed: !isGenesis && commits.length <= MAX_DETAILED_COMMITS,
-      isGenesis,
+      detailed: !vr.isGenesis && commits.length <= MAX_DETAILED_COMMITS,
+      isGenesis: vr.isGenesis,
     });
   }
 
   return models;
+}
+
+/** genesis 的 `anchor~N` 可能超出根提交范围，退化为「从根到 anchor」 */
+function collectGenesisAware(
+  range: string | null,
+  isGenesis: boolean,
+  anchor: string | null,
+): ParsedCommit[] {
+  try {
+    return collectCommits(range);
+  } catch (err) {
+    if (isGenesis && anchor) return collectCommits(anchor);
+    throw err;
+  }
 }
 
 // ─────────────────────── Markdown 渲染（文本事实源）───────────────────────

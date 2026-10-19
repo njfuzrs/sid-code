@@ -18,7 +18,7 @@
  */
 import { existsSync, mkdirSync, readdirSync, readFileSync, writeFileSync } from "node:fs";
 import { resolve } from "node:path";
-import { ROOT, listSemverTags } from "./lib/changelog-git.ts";
+import { ROOT, listReleaseAnchors } from "./lib/changelog-git.ts";
 import {
   validateCurated,
   toRenderSections,
@@ -99,10 +99,7 @@ function cmdMerge(argv: string[]): number {
     return 1;
   }
   const from = fromArg === "-" ? null : fromArg;
-  const candidates = [
-    ...listCuratedVersions(),
-    ...listSemverTags().map((t) => t.replace(/^v/, "")),
-  ];
+  const candidates = [...listCuratedVersions(), ...listReleaseAnchors().map((a) => a.version)];
   const range = versionsInRange(candidates, from, to);
 
   const entries: CuratedEntry[] = [];
@@ -176,10 +173,7 @@ function cmdBacklog(argv: string[]): number {
   const [s, b] = argv;
   const stable = s && s !== "-" && SEMVER_RE.test(s) ? s : null;
   const beta = b && b !== "-" && SEMVER_RE.test(b) ? b : null;
-  const candidates = [
-    ...listCuratedVersions(),
-    ...listSemverTags().map((t) => t.replace(/^v/, "")),
-  ];
+  const candidates = [...listCuratedVersions(), ...listReleaseAnchors().map((a) => a.version)];
   const lines = describeBacklog(stable, beta, candidates, (v) => {
     const e = readCurated(v);
     return typeof e === "string" ? undefined : e;
