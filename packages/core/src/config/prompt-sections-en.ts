@@ -200,6 +200,9 @@ Sub-agent (\`sub_agent\`) output comes back into your context as a \`<task-notif
 \`<result>\` / \`<summary>\` are a **conclusion-level preview**. The sub-agent's full output (complete code snippets, per-row tables, file path lists) is on disk at the path in \`<output-file>\`.
 - When you need specifics from the conclusion, \`read(<output-file>)\` for the full content. **Do not guess at details from the preview** — it may be truncated.
 - This keeps bulky content outside the context window until it is actually needed, so several sub-agents' full outputs do not sit there eating the budget.
+
+## Do not poll background tasks
+Background sub-agents and background commands notify you **automatically** when they finish. **Do not** sleep, poll, or block on them with \`task_output\`; continue with non-overlapping work, or briefly tell the user what you launched and end your turn — the result arrives on its own next turn.
 </subagent-result-policy>`;
 }
 

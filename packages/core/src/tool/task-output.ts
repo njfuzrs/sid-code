@@ -12,7 +12,13 @@ import {
   isShellTask,
   isAgentTask,
   graceDeadlineFor,
+  claimResultDelivery,
+  withdrawTaskNotification,
+  getCompletedMainTurns,
+  NOTIFICATION_OUTPUT_MAX_CHARS,
+  truncateForNotification,
 } from "../task/index.ts";
+import { getLogger } from "../debug/logger.ts";
 import { z } from "zod/v4";
 import { lazySchema } from "../sdk/lazy-schema.ts";
 
@@ -24,7 +30,12 @@ const MAX_OUTPUT_CHARS = 30000;
 const taskOutputSchema = lazySchema(() =>
   z.object({
     task_id: z.string().describe("任务 ID"),
-    block: z.boolean().optional().describe("是否阻塞等待任务完成（默认 true）"),
+    block: z
+      .boolean()
+      .optional()
+      .describe(
+        "是否阻塞到任务结束（默认 true）。查看进度请传 false；等完成不需要它，完成时会自动通知",
+      ),
     timeout: z.number().optional().describe("最大等待时间（毫秒），默认 30000"),
   }),
 );
@@ -48,10 +59,13 @@ export class TaskOutputTool implements Tool {
   }
 
   description(): string {
-    return `读取后台任务的输出内容。支持阻塞等待任务完成。
-- block=true（默认）：等待任务完成后返回输出
-- block=false：立即返回当前已有的输出
-- timeout：最大等待时间（毫秒），默认 30000`;
+    // F3：对齐 cc「do NOT poll」。旧描述第一条就是「block=true 等待完成」，等于教模型阻塞——
+    // 20261019 轨迹里每次都传 timeout=600000（上限），4 个调用把整轮占住 3–5 分钟。
+    return `查看后台任务的当前进度，或回看已完成任务的结果。
+后台任务（子代理 / 后台命令）完成时会自动以 <task-notification> 通知你——等待完成**不需要**本工具，不要用它轮询或阻塞等待；先做不重叠的工作，或简短告诉用户启动了什么并结束本轮。
+- block=false：立即返回当前已有的输出（查看进度用这个）
+- block=true（默认）：阻塞到任务结束或超时
+- timeout：block=true 时的最大等待时间（毫秒），默认 30000`;
   }
 
   inputSchema(): Record<string, unknown> {
@@ -123,30 +137,59 @@ export class TaskOutputTool implements Tool {
     // delta 为 null 表示自上次读取以来无新增输出（增量语义），非"任务无任何输出"
     const output = delta?.content ?? (currentTask.outputOffset > 0 ? "(无新增输出)" : "(无输出)");
 
-    const info: Record<string, unknown> = {
-      task_id: currentTask.id,
-      status: currentTask.status,
-      type: currentTask.type,
-    };
+    const terminal = isTerminalStatus(currentTask.status);
 
+    // F2：返回体用与 <task-notification> 同源的标签块，不再 JSON.stringify + 拼输出流。
+    // 终态 agent 任务只给 result（结论），不拼 `.output` 流：流是逐轮过程，最后一轮正是 result，
+    // 旧实现把结论放了两遍且 result 反被截在 4000（R4）。shell / 运行中任务的流就是内容本身。
+    const parts = [
+      "<task-output>",
+      `  <task-id>${currentTask.id}</task-id>`,
+      `  <task-type>${currentTask.type}</task-type>`,
+      `  <status>${currentTask.status}</status>`,
+      `  <description>${currentTask.description}</description>`,
+    ];
     if (isShellTask(currentTask)) {
-      info.command = currentTask.command;
-      if (currentTask.exitCode !== undefined) info.exit_code = currentTask.exitCode;
-    }
-    if (isAgentTask(currentTask)) {
-      info.agent_type = currentTask.agentType;
-      if (currentTask.result) {
-        info.result = currentTask.result.output.slice(0, 4000);
-        info.total_tool_uses = currentTask.result.totalToolUseCount;
-        info.total_tokens = currentTask.result.totalTokens;
-        info.usage = currentTask.result.usage;
+      parts.push(`  <command>${currentTask.command}</command>`);
+      if (currentTask.exitCode !== undefined) {
+        parts.push(`  <exit-code>${currentTask.exitCode}</exit-code>`);
       }
     }
+    const agentResult = isAgentTask(currentTask) ? currentTask.result : undefined;
+    if (isAgentTask(currentTask)) {
+      parts.push(`  <agent-type>${currentTask.agentType}</agent-type>`);
+    }
+    if (agentResult && terminal) {
+      parts.push(
+        `  <output-file>${currentTask.outputFile}</output-file>`,
+        `  <result untrusted="true">${truncateForNotification(agentResult.output, NOTIFICATION_OUTPUT_MAX_CHARS, currentTask.outputFile)}</result>`,
+        `  <usage>`,
+        `    <total_tokens>${agentResult.totalTokens}</total_tokens>`,
+        `    <input_tokens>${agentResult.usage.inputTokens}</input_tokens>`,
+        `    <output_tokens>${agentResult.usage.outputTokens}</output_tokens>`,
+        `    <tool_uses>${agentResult.totalToolUseCount}</tool_uses>`,
+        `  </usage>`,
+      );
+    } else {
+      if (isAgentTask(currentTask) && currentTask.error) {
+        parts.push(`  <error>${currentTask.error}</error>`);
+      }
+      // delta 已按 MAX_OUTPUT_BYTES 字节封顶，此处无需再 slice（旧代码的 .slice(0,30000)
+      // 是从头读的产物，会与增量语义冲突）。字符兜底仅防多字节膨胀的极端情况。
+      parts.push(`  <output>${output.slice(0, MAX_OUTPUT_CHARS)}</output>`);
+    }
+    parts.push("</task-output>");
 
-    // delta 已按 MAX_OUTPUT_BYTES 字节封顶，此处无需再 slice（旧代码的 .slice(0,30000)
-    // 是从头读的产物，会与增量语义冲突）。字符兜底仅防多字节膨胀的极端情况。
-    return {
-      output: JSON.stringify(info) + "\n\n--- 输出 ---\n" + output.slice(0, MAX_OUTPUT_CHARS),
-    };
+    // F1：终态结果经本次 tool_result 送达 → 认领投递所有权，撤回队列里该任务的终态通知。
+    // 认领失败（通知已注入过 / 前台 tool_result 已送达）= 模型的显式重读，照常返回，不拦。
+    if (terminal && claimResultDelivery(currentTask.id, "tool_result")) {
+      const withdrawn = withdrawTaskNotification(currentTask.id);
+      getLogger().info(
+        "TASK",
+        `task_output 认领任务 ${currentTask.id} 结果（turn ${getCompletedMainTurns()}），撤回通知 ${withdrawn} 条`,
+      );
+    }
+
+    return { output: parts.join("\n") };
   }
 }

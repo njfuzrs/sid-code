@@ -82,7 +82,12 @@ export function setTaskLifecycleSink(s: TaskLifecycleSink | null): void {
 export function emitTaskLifecycle(
   task: Pick<TaskState, "id" | "type" | "status"> & { isBackgrounded?: boolean },
   phase: TaskLifecyclePhase,
-  extra: { reason?: TaskEvictReason; exit_code?: number } = {},
+  extra: {
+    reason?: TaskEvictReason;
+    exit_code?: number;
+    /** delivered 阶段：结果经哪条通道送达（F6，trace-digest 据此判双投递） */
+    via?: "notification" | "tool_result";
+  } = {},
 ): void {
   if (!sink) return;
   try {

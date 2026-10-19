@@ -140,3 +140,64 @@ describe("LSP header 摘要 —— 各操作形态", () => {
     expect(d).toContain("/tmp/proj/src/a.ts");
   });
 });
+
+// ─── 第四次发作：task_output（20261019，4 个并行 task_output 全是 `⏺ task_output`） ───
+import { TaskOutputTool } from "@sid-code/core/tool/task-output.ts";
+import { TaskStopTool } from "@sid-code/core/tool/task-stop.ts";
+import { registerTask, clearAllTasks } from "@sid-code/core/task/index.ts";
+import { extractTaskOutputDisplay, getResultSummary } from "@sid-code/cli/ui/ui-utils.ts";
+
+describe("后台任务工具 header：用任务描述区分并行调用", () => {
+  test("4 个不同 task_id 的 task_output header 非空且互不相同", () => {
+    clearAllTasks();
+    const ids = ["t1", "t2", "t3", "t4"];
+    for (const id of ids) {
+      registerTask({
+        id,
+        type: "local_agent",
+        status: "running",
+        description: `排查方向 ${id}`,
+        startTime: 0,
+        outputFile: `/tmp/${id}.out`,
+        outputOffset: 0,
+        notified: false,
+        agentId: id,
+        agentType: "explore",
+        prompt: "p",
+        isBackgrounded: true,
+      });
+    }
+    const name = new TaskOutputTool().name();
+    const headers = ids.map((id) => getToolSummary(name, { task_id: id, timeout: 600000 }));
+    for (const h of headers) expect(h).toContain("排查方向");
+    expect(new Set(headers).size).toBe(4);
+    expect(getToolSummary(name, { task_id: "t1", block: false })).toStartWith("查看");
+    expect(getToolSummary(new TaskStopTool().name(), { task_id: "t1" })).toStartWith("停止");
+    expect(getToolDetailFull(name, { task_id: "t1" })).toContain("t1");
+    clearAllTasks();
+  });
+
+  test("registry 取不到（已驱逐 / 历史重放）退回 task_id", () => {
+    clearAllTasks();
+    expect(getToolSummary("task_output", { task_id: "gone" })).toContain("gone");
+  });
+
+  test("结果展示只上屏结论正文，不含元数据与 JSON", () => {
+    const content = [
+      "<task-output>",
+      "  <task-id>t1</task-id>",
+      "  <status>completed</status>",
+      '  <result untrusted="true">## 结论\n第一行\n第二行</result>',
+      "  <usage>",
+      "    <total_tokens>9</total_tokens>",
+      "  </usage>",
+      "</task-output>",
+    ].join("\n");
+    const shown = extractTaskOutputDisplay(content);
+    expect(shown).toBe("## 结论\n第一行\n第二行");
+    expect(shown).not.toContain("<task-id>");
+    expect(getResultSummary("task_output", content)).toBe("已读取结果 · 3 行");
+    // 旧会话 JSON 形态：原样返回（不吞内容）
+    expect(extractTaskOutputDisplay('{"task_id":"x"}')).toBe('{"task_id":"x"}');
+  });
+});

@@ -56,7 +56,7 @@ description: 全部内置工具的名称、用途与入参。表里的名称就�
 | `task_create` | 在结构化任务清单中新建一个任务（带 subject/description/status/依赖/owner）。用于跟踪复杂多步工作、给多 agent 派活。注意：这是结构化清单，不是后台任务（后者用 bg_task_l… | `subject` `description` | `active_form` `metadata` |
 | `task_get` | 查询结构化任务清单中某个任务的完整详情：subject/description/status/owner，以及它 blocks（下游）和 blockedBy（上游未完成依赖）。注意：这是结构化清单，不是后台任务（后者用… | `task_id` | — |
 | `task_list` | 列出结构化任务清单中的所有任务，含 id/subject/status/owner 及被哪些上游任务阻塞（blockedBy）。用于查看可开工任务（pending、无 owner、未被阻塞）与整体进度。注意：这是结构化… | — | `status` |
-| `task_output` | 读取后台任务的输出内容。支持阻塞等待任务完成。 | `task_id` | `block` `timeout` |
+| `task_output` | 查看后台任务的当前进度，或回看已完成任务的结果。 | `task_id` | `block` `timeout` |
 | `task_stop` | 终止一个正在运行的后台任务（Shell 命令、Agent 或 Workflow）。 | `task_id` | — |
 | `task_update` | 更新结构化任务清单中的一个任务：改 status（含 deleted 删除）/subject/description/owner，或用 add_blocks/add_blocked_by 建立依赖关系。开始工作时置 i… | `task_id` | `status` `subject` `description` `active_form` `owner` `metadata` `add_blocks` `add_blocked_by` |
 | `team_create` | [实验特性，当前未启用] 多代理团队协作。需设 SID_ENABLE_AGENT_TEAMS=1 才可用。 | `team_name` `members` | `shared_tasks` |

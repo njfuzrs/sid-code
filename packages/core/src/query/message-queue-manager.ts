@@ -194,6 +194,26 @@ export function drainByPriorityAndKind(
   return taken;
 }
 
+/**
+ * 按谓词移除命令，返回被移除的条目；其余命令**原位保留、顺序与序号不变**。
+ *
+ * F1：task_output 认领了某任务的结果后，要从队列里撤回**这一个任务**的终态通知。
+ * `drainByKind` 会把别的任务的通知一起取走，不能用；这里只删命中谓词的那几条。
+ */
+export function removeWhere(pred: (c: QueuedCommand) => boolean): QueuedCommand[] {
+  if (queue.length === 0) return [];
+  const removed: QueuedCommand[] = [];
+  const remaining: QueuedCommand[] = [];
+  for (const c of queue) {
+    if (pred(c)) removed.push(c);
+    else remaining.push(c);
+  }
+  if (removed.length === 0) return [];
+  queue = remaining;
+  emitChange();
+  return removed;
+}
+
 /** 查看队首命令（不出队）。用于 mid-turn 探测「是否有 now 级待处理」。 */
 export function peek(): QueuedCommand | undefined {
   return queue[0];
