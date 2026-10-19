@@ -9,6 +9,8 @@
  */
 
 import type { SendParams } from "../types.ts";
+import { lookupCatalog } from "../model-params-catalog.ts";
+import { pickWireModel } from "../wire-model.ts";
 import type { Dialect } from "./types.ts";
 
 export const grokOpenAIDialect: Dialect = {
@@ -45,8 +47,15 @@ export const grokOpenAIDialect: Dialect = {
   applyToSendParams(params: SendParams, effort) {
     // 刻意不写 params.thinking：本族无思考开关，下发一个它不认的结构是白撞 400。
     if (effort !== undefined) {
-      // Grok 无 max：max 与 xhigh 均钳到 high。
-      params.reasoningEffort = effort === "max" || effort === "xhigh" ? "high" : effort;
+      // Grok 无 max：max 钳到 high。xhigh 只对注册表档位表登记了它的模型原样下发
+      // （4.3 / 4.6 / 4.7，grok-api.md §3），其余（4.5、未登记）钳到 high。
+      // 与线格式层 filterParamsForModel 同用 lookupCatalog，两处对同一模型给同一个答案。
+      const values = lookupCatalog(
+        pickWireModel(params, params.model || ""),
+      )?.reasoningEffortValues;
+      const xhighOk = values?.includes("xhigh") === true;
+      params.reasoningEffort =
+        effort === "max" || (effort === "xhigh" && !xhighOk) ? "high" : effort;
     }
   },
 };

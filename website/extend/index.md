@@ -30,8 +30,8 @@ description: 教它新本事（CLAUDE.md / Skill / Hook / 子代理 / Workflow /
 | 让它知道项目约定（用 bun 不用 npm、注释写中文） | **CLAUDE.md** | 每轮都在上下文里，成本最低。见[记忆与 CLAUDE.md](/use/memory) |
 | 把一套多步流程教给它（修 bug 的 SOP、发版流程） | **[Skill](/extend/skills)** | 按需加载：不触发时只占一行摘要，触发了才展开全文 |
 | 在固定时机**强制**跑一段命令（提交前 lint、拦住 `git push`） | **[Hook](/extend/hooks)** | 唯一能**阻断**工具执行的机制。Skill/CLAUDE.md 都是"建议"，模型可以不听 |
-| 派人去干独立的活（并行读 20 个文件、跑一轮 review） | **[子代理](/extend/subagents)** | 独立上下文，不污染主对话；还能按类型分级到便宜模型省钱 |
-| 让多个子代理按固定编排跑（扇出 → 验证 → 汇总，不靠模型临场决定） | **[Workflow](/extend/workflows)** | 编排是**确定的代码**，不是模型每次自己想；子代理只管干活 |
+| 派人去干独立的活（并行读 20 个文件、跑一轮 review） | **[子代理](/extend/subagents)** | 独立上下文，不污染主对话；还能按类型分级到便宜模型省钱（账单仍然按子代理实际 model/provider 合到主会话） |
+| 让多个子代理按固定编排跑（扇出 → 验证 → 汇总，不靠模型临场决定） | **[Workflow](/extend/workflows)** | 编排是**确定的代码**，不是模型每次自己想；子代理只管干活；改脚本后可用 `resume_from_run_id` 只重跑改动及其之后的（**注意：脚本里不能用 `Date()` / `Date.now()` / `Math.random()`，会破坏 resume**） |
 | 接内部系统（工单、发布平台、公司知识库） | **[MCP](/extend/mcp)** | 标准协议，一次接入所有支持 MCP 的客户端都能用 |
 | 把符号级导航做准（跳定义、找引用、类型错误自动反馈） | **[LSP](/extend/lsp)** | 装好 language server 就零配置生效，不用配任何东西 |
 | 在编辑器里用（VS Code / JetBrains，共享同一份配置） | **[IDE 集成](/extend/ide)** | 终端与编辑器同一个 harness、同一份 settings，不用维护两套 |
@@ -47,7 +47,7 @@ description: 教它新本事（CLAUDE.md / Skill / Hook / 子代理 / Workflow /
 | CLAUDE.md | 能（是提示词） | 每轮注入上下文 |
 | Skill | 能（是提示词） | 模型按 description 自主判断，或用户 `/name` 手动触发 |
 | 子代理 | 能（是工具） | 模型决定调不调 |
-| Workflow | 能（是工具） | 模型决定调不调；但**一旦调起来，里面的编排是代码写死的** |
+| Workflow | 能（是工具） | 模型决定调不调；但**一旦调起来，里面的编排是代码写死的**（脚本里不能用 `Date()` / `Date.now()` / `Math.random()`，否则 `resume_from_run_id` 永远不命中缓存） |
 | MCP | 能（是工具） | 模型决定调不调 |
 | **Hook** | **不能** | 代码级：事件到了就跑，`exit 2` 直接阻断工具 |
 
@@ -61,7 +61,7 @@ description: 教它新本事（CLAUDE.md / Skill / Hook / 子代理 / Workflow /
 | 机制 | 未触发时的开销 | 说明 |
 | --- | --- | --- |
 | CLAUDE.md | 全文，每轮都在 | 写多少占多少，这是唯一无条件常驻的 |
-| Skill | 一行摘要 | 实测 8 个内置 Skill 的摘要合计约 0.5K token（启动日志：`附件: Skill 摘要列表(0.5K tok, priority=8)`） |
+| Skill | 一行摘要 | 当前 3 个内置 Skill 的摘要合计约 0.1K token（启动日志：`附件: Skill 摘要列表(0.1K tok, priority=8)`，数字会随 `builtin-embedded.generated.ts` 增减而变） |
 | Hook | 0 | 配置不进上下文，模型不知道 hook 存在 |
 | 子代理 | 0（`sub_agent` 工具本身几百 token） | 子代理的活在独立上下文里跑，只回结果 |
 | Workflow | 0（同上，一个工具的开销） | 编排脚本不进上下文；每个 agent 各自独立上下文，主对话只收最终返回值 |
@@ -102,18 +102,33 @@ sid-code --plugin-dir /tmp/demo-plugin
 | --- | --- | --- |
 | CLAUDE.md | `~/.sid-code/CLAUDE.md` | `<项目>/CLAUDE.md` |
 | Skill | `~/.sid-code/skills/<名>/SKILL.md` | `<项目>/.sid-code/skills/<名>/SKILL.md` |
-| Hook | `~/.sid-code/settings.json` 的 `hooks` | `<项目>/.sid-code/settings.json` |
+| Hook | `~/.sid-code/settings.json` 的 `hooks` | `<项目>/.sid-code/settings.json` 的 `hooks` 或 `<项目>/.sid-code/hooks/*.md`（独立文件） |
 | 子代理 | `~/.sid-code/agents/*.md` | `<项目>/.sid-code/agents/*.md` |
-| MCP | `~/.sid-code/settings.json` 的 `mcpServers` | 启动目录及每一级父目录的 `.mcp.json` |
-| 插件 | `~/.sid-code/plugins/` | `--plugin-dir <路径>`（会话级） |
+| MCP | `~/.sid-code/settings.json` 的 `mcpServers` | 启动目录到文件系统根每一级父目录的 `.mcp.json`（**上界是文件系统根**，不是 git root） |
+| 插件（已安装） | `~/.sid-code/plugins/<名>/` | — |
+| Skill / Agent / 命令 | — | `~/.claude/{skills,agents,commands}/` 与 `<项目>/.claude/{skills,agents,commands}/` 也会被自动加载（同层内 `.sid-code` 覆盖 `.claude`，用于兼容 Claude Code 迁移） |
+
+注："插件" 与"Skill / Agent / 命令"是**两套概念**。插件是 `--plugin-dir` 装入的分发包，
+含 plugin.json + commands/ + skills/ + hooks/ + mcp 配置；
+`~/.sid-code/skills/` 这类扩展目录里散落的 `.md` 走的是另一条扫描路径（`ExtensionLoader`），
+不是插件。`--plugin-dir <路径>` 是会话级、不持久化。
 
 项目级 Skill / 子代理 / 命令 / 输出风格从启动目录**逐级往上扫到 git 仓库根**，同名时离启动目录近的优先，
 仓库外的上层目录不读。各类配置的基准目录汇总见[配置](/start/configure#各类配置从哪个目录找)。
 
 ::: tip 项目级扩展有信任门槛
 项目级 Skill / 命令 / 子代理来自仓库，等于"别人的代码"，默认要确认才加载。
-交互模式下**首次加载要确认**：TUI 里弹「项目扩展信任」对话框列出这些文件，选「信任并加载」才加载并记住（当场生效，文件内容一变会再问），默认聚焦「不信任」，回车 / Esc / 拒绝本次不加载；会话中途热重载发现的新扩展也会弹同一个对话框；**`-p` 无头模式下默认直接跳过不加载**。
-CI 里要用项目级扩展，得显式打开信任——细节见 [Skill](/extend/skills#常见问题)。
+**默认 fail-closed**（`extension/trust-prompt.ts:18-19`），以下场景**不加载且不持久化**：
+**`-p` 无头模式**、**Bridge / 无 TTY 路径**、TUI 起来前后的所有路径。交互模式下
+**首次加载要确认**：TUI 里弹「项目扩展信任」对话框列出这些文件，选「信任并加载」
+才加载（落盘到 `~/.sid-code/state/trusted-extensions.json`，按内容 hash 记；
+**内容 hash 变了会再问**），默认聚焦「不信任」（`ExtensionTrustDialog.tsx:115`），
+回车 / Esc / 拒绝本次不加载；**拒绝只在本进程内记住，不落盘，下次启动会再问**；
+会话中途热重载 / 动态发现到的新扩展也会弹同一个对话框。要绕开门槛，在用户级
+`settings.json` 设 `trustProjectExtensions: true`（不走信任检查，**项目 settings.json
+不能自我信任**，`config/settings/security.ts:42`），或临时用 `--trust-workspace`
+（不持久化）。
+CI / Bridge 集成详见 [Skill](/extend/skills#常见问题)。
 :::
 
 ## 常见问题
@@ -138,6 +153,11 @@ CI 里要用项目级扩展，得显式打开信任——细节见 [Skill](/exte
 （同层内 `.sid-code` 覆盖 `.claude`），插件内部则是 inline（`--plugin-dir`）> 已安装 > 内置。
 这个顺序的意思是：企业策略压得住所有配置，仓库里的同名定义会盖掉你用户级的那份，
 `--plugin-dir` 能覆盖已安装的同名插件方便调试。
+
+> **同层兼容兜底**：`~/.claude/{skills,agents,commands}/` 与 `<项目>/.claude/{skills,agents,commands}/`
+> 会被**自动加载**（`extension/loader.ts:130-149`），用于兼容 Claude Code 迁移用户；
+> 同名时 `.sid-code` 覆盖 `.claude`。这意味着迁移用户的旧 skill 不用手搬就能用，**但项目层
+> 只扫到 git 仓库根为止**——仓库外的 `.claude/` 上层目录不会被当成本项目的扩展。
 
 ## 相关
 

@@ -5,7 +5,8 @@
  * 由本模块的「能力描述符」把统一档位翻译成各 provider / 协议的线格式。
  *
  * 设计要点（对标 claude-code src/utils/effort.ts，并扩展多协议矩阵）：
- * - 统一内部标度 low/medium/high/max + undefined(=auto，跟随模型默认、不显式下发)。
+ * - 统一内部标度 low/medium/high/xhigh/max + undefined(=auto，不显式下发、服务端按模型默认；
+ *   唯一例外是 manual Claude 开思考时 budget_tokens 必填，按 medium 预算下发)。
  * - 每个模型/协议一份 {@link EffortCapability}，其 {@link EffortCapability.applyToSendParams}
  *   是「档位 → 线格式」的**唯一翻译处**——上层（命令、状态栏、loop）只认统一档位，永不碰协议细节。
  * - 新增 provider 零侵入：只加一条 capability 分支，不动上层。
@@ -135,7 +136,8 @@ export interface EffortCapability {
    *
    * 语义是「不发 effort 时服务端按哪档跑」：注册表精确命中的 `defaultEffort` > 能力缓存采到的
    * 默认档（仅未知族）> 族常量（见 {@link finalizeThinkingControl}）。auto 时 applier 若**显式发了**
-   * 某档（adaptive Claude 发 high、manual Claude 发 medium 预算），展示以实发为准，不读本字段。
+   * 某档（manual Claude 发 medium 预算），展示以实发为准，不读本字段；adaptive Claude 的 auto 不发 effort，
+   * 展示本字段（Opus 5.5 / Haiku 5.5 = medium，E3）。
    */
   defaultEffort: EffortLevel;
   /**
