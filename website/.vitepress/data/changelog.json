@@ -27,7 +27,7 @@
       "date": "2026-10-19",
       "highlight": "后台任务与子代理更稳：完成会自动续跑，结果不再重复",
       "userFacing": true,
-      "channel": "beta",
+      "channel": "stable",
       "mergedInto": null,
       "covers": null,
       "betaNote": null,
