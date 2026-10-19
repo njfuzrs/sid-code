@@ -79,8 +79,8 @@ describe("generateGitStatusAttachment", () => {
     // 保留稳定部分：branch（会话内极少变）。
     expect(attachment!.content).toContain("Current branch:");
     // 首行仍显式声明"这是启动快照、不会更新"（弱模型的锚点）。
-    expect(attachment!.content).toContain("snapshot in time");
-    expect(attachment!.content).toContain("will not update during the conversation");
+    expect(attachment!.content).toContain("captured when this session started");
+    expect(attachment!.content).toContain("will not refresh as the session goes on");
   });
 
   // ★第一层·预防 防死锁哨兵（根治-git快照冻结死循环）：

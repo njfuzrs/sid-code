@@ -1075,7 +1075,7 @@ useCanUseTool(tool=Bash, input={command:"rm -rf /tmp/test"})
             │
             ▼
        logPermissionDecision()
-            ├─ logEvent('tengu_tool_use_rejected_in_prompt')
+            ├─ logEvent('<tool_use_rejected_in_prompt>')
             ├─ OTel counter: tool_permission_decision{decision=deny}
             └─ toolUseContext.toolDecisions.set(toolUseID, decision)
 ```
@@ -1261,7 +1261,7 @@ Stop Hooks 通过
 ```typescript
 // query/stopHooks.ts:456-472
 } catch (error) {
-  logEvent('tengu_stop_hook_error', { duration: durationMs })
+  logEvent('<stop_hook_error>', { duration: durationMs })
   yield createSystemMessage(`Stop hook failed: ${errorMessage(error)}`, 'warning')
   return { blockingErrors: [], preventContinuation: false }
 }

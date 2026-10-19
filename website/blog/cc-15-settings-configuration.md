@@ -594,7 +594,7 @@ export function saveGlobalConfig(
     const currentConfig = getConfig(...)
     if (wouldLoseAuthState(currentConfig)) {
       // Auth-Loss Guard：拒绝写入
-      logEvent('tengu_config_auth_loss_prevented', {})
+      logEvent('<config_auth_loss_prevented>', {})
       return
     }
     // 无锁写入（有竞态窗口，但比丢失数据好）

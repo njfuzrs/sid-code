@@ -303,7 +303,7 @@ export function addCacheBreakpoints(params: {
 /**
  * Anthropic 每请求最多 4 个 cache_control 断点，超限直接 400（整请求失败）。
  *
- * § 比 CC 更进一步：CC 只打点记录断点数（tengu_api_cache_breakpoints），**不做阈值保护**——
+ * § 比 CC 更进一步：CC 只打点记录断点数，**不做阈值保护**——
  * 未来某次改动多标一个断点会静默上线,到生产才 400。这里把"comment-only 不变量"升级为
  * 运行时护栏,在真正发请求前拦截。
  *

@@ -143,7 +143,7 @@ describe("buildSystemPrompt", () => {
     expect(prompt).toContain("<git-status>");
     expect(prompt).toContain("Current branch:");
     // 防死锁哨兵：git-status 块必须带"启动快照、不会更新"的仲裁锚点（对标 CC）。
-    expect(prompt).toContain("snapshot in time");
+    expect(prompt).toContain("captured when this session started");
   });
 
   test("P0-1：Git 状态落在 DYNAMIC_BOUNDARY 之前（静态缓存区）", () => {

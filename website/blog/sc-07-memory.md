@@ -1269,7 +1269,7 @@ will be truncated, so keep the index concise
 这就是为什么 `MEMORY.md` 是**索引不是内容仓库**：它一定会被加载，
 所以每一行都在花你的 token 预算。
 
-⚠️ **一个正在发生的迁移，值得知道**：源码里有个 feature flag `tengu_moth_copse`
+⚠️ **一个正在发生的迁移，值得知道**：源码里有个内部 feature flag
 （`memdir.ts:423`、`extractMemories.ts:367`、`claudemd.ts:1137-1151`、
 `attachments.ts:2367`，2026-08-29 复核仍在）。它打开时，
 **索引不再注入系统提示，全靠动态召回**。
@@ -3151,9 +3151,9 @@ function memoryAge(mtimeMs: number): string {
 function freshnessText(mtimeMs: number): string {
   const d = Math.max(0, Math.floor((Date.now() - mtimeMs) / 86_400_000));
   if (d <= 1) return "";
-  return `This memory is ${d} days old. Memories are point-in-time observations, ` +
-         `not live state — claims about code behavior or file:line citations may be ` +
-         `outdated. Verify against current code before asserting as fact.`;
+  return `This memory is ${d} days old. It records what was true when it was written; ` +
+         `file paths, line numbers and described behavior can be stale. ` +
+         `Re-check the current source before relying on it.`;
 }
 
 export interface InjectedMemory {

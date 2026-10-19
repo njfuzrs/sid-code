@@ -29,8 +29,8 @@ export function buildFreshnessWarning(mtimeMs: number, now: number = Date.now())
   if (days < 1) return null;
   return (
     `This memory is ${days} day${days === 1 ? "" : "s"} old. ` +
-    `Memories are point-in-time observations, not live state — ` +
-    `claims about code behavior or file:line citations may be outdated. ` +
-    `Verify against current code before asserting as fact.`
+    `It records what was true when it was written; the code may have moved on since, ` +
+    `so file paths, line numbers and described behavior can be stale. ` +
+    `Re-check the current source before relying on it.`
   );
 }

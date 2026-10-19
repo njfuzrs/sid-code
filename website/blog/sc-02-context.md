@@ -1130,7 +1130,7 @@ Claude Code 里有一条豁免规则：`Read` 工具的输出**永不落盘**。
 
 关键在于这个检查的**位置**【源码注释要点】：
 
-> Checked **before** the GB override so `tengu_satin_quoll` can't force it back on.
+> Checked **before** the GB override so an internal flag can't force it back on.
 
 它放在远程配置读取**之前**。也就是说，**远程 flag 也不能把它打开**。
 同一个文件里其他参数（阈值、开关）都是可远程调的，只有这一个是硬的。

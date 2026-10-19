@@ -14,34 +14,34 @@
 
 /** 10 section 默认模板 */
 export const DEFAULT_SESSION_MEMORY_TEMPLATE = `# Session Title
-_A short and distinctive 5-10 word descriptive title for the session_
+_5-10 words naming this session so it can be told apart from others_
 
 # Current State
-_What is actively being worked on right now? Pending tasks not yet completed. Next steps._
+_Where the work stands: the item in progress, open todos, and the immediate next move._
 
 # Task specification
-_What did the user ask to build? Any design decisions or other explanatory context._
+_The user's request in their terms, plus constraints and design choices agreed so far._
 
 # Files and Functions
-_What are the important files? In short, what do they contain and why are they relevant?_
+_Key files and symbols touched or relied on, one line each on their role._
 
 # Workflow
-_What bash commands are usually run and in what order?_
+_Build / test / run commands this repo uses, listed in the order they are typically invoked._
 
 # Errors & Corrections
-_Errors encountered and how they were fixed. What did the user correct? Failed approaches._
+_Failures hit with their fixes, user corrections, and approaches already ruled out._
 
 # Codebase and System Documentation
-_What are the important system components? How do they work/fit together?_
+_Modules and services involved, and how data or control flows between them._
 
 # Learnings
-_What has worked well? What has not? What to avoid?_
+_Tactics that paid off, ones that backfired, and pitfalls to steer clear of._
 
 # Key results
-_If the user asked a specific output, repeat the exact result here._
+_Exact outputs the user asked for, copied verbatim._
 
 # Worklog
-_Step by step, what was attempted, done? Very terse summary for each step._
+_Chronological list of actions taken, one short line per step._
 `;
 
 /**

@@ -213,7 +213,7 @@ function logEventImpl(eventName: string, metadata: LogEventMetadata): void {
 ```
 
 关键的路由逻辑：
-- **采样在路由前执行**：一次采样决策，两个后端共享结果。采样率通过 GrowthBook 动态配置（`tengu_event_sampling_config`），可以按事件名设置不同的采样率。
+- **采样在路由前执行**：一次采样决策，两个后端共享结果。采样率通过 GrowthBook 动态配置（一份内部采样配置），可以按事件名设置不同的采样率。
 - **Datadog 收到的是"脱敏版"**：`stripProtoFields()` 移除所有 `_PROTO_*` 前缀的字段。
 - **1P 收到的是"完整版"**：`_PROTO_*` 字段被 1P Exporter 提取并路由到 BigQuery 的特权列。
 
@@ -286,20 +286,8 @@ export function stripProtoFields<V>(
 // src/services/analytics/datadog.ts
 
 const DATADOG_ALLOWED_EVENTS = new Set([
-  'tengu_api_error',
-  'tengu_api_success',
-  'tengu_cancel',
-  'tengu_exit',
-  'tengu_init',
-  'tengu_model_fallback_triggered',
-  'tengu_oauth_error',
-  'tengu_oauth_success',
-  'tengu_query_error',
-  'tengu_started',
-  'tengu_tool_use_error',
-  'tengu_tool_use_success',
-  'tengu_uncaught_exception',
-  'tengu_unhandled_rejection',
+  // API 成功/失败、启动/退出/取消、模型降级、OAuth 成功/失败、
+  // 查询错误、工具调用成功/失败、未捕获异常/未处理 rejection 等
   // ... 约 40 个事件
 ])
 ```
@@ -882,7 +870,7 @@ GrowthBook 还控制着一个紧急开关——可以在不发版的情况下关
 // src/services/analytics/sinkKillswitch.ts
 
 // 故意使用混淆名称，避免被轻易发现和滥用
-const SINK_KILLSWITCH_CONFIG_NAME = 'tengu_frond_boric'
+const SINK_KILLSWITCH_CONFIG_NAME = '<刻意混淆过的随机词>'
 
 export function isSinkKilled(sink: SinkName): boolean {
   const config = getDynamicConfig_CACHED_MAY_BE_STALE<
@@ -892,7 +880,7 @@ export function isSinkKilled(sink: SinkName): boolean {
 }
 ```
 
-注意配置名 `tengu_frond_boric` 是故意混淆的——这是一个安全实践，避免 killswitch 的名称过于明显而被恶意利用。
+注意配置名是刻意混淆过的随机词——这是一个安全实践，避免 killswitch 的名称过于明显而被恶意利用。
 
 ### 设计决策讨论
 
@@ -1507,7 +1495,7 @@ gracefulShutdown(exitCode)
 ├─ 4. 执行 SessionEnd hooks
 │     (用户配置的关闭钩子)
 │
-├─ 5. 发送 tengu_cache_eviction_hint 事件
+├─ 5. 发送缓存回收提示事件
 │     (通知推理层可以回收缓存)
 │
 ├─ 6. 刷新遥测缓冲区 (500ms 超时) ◄── 遥测关闭
@@ -1542,7 +1530,7 @@ try {
 
 注释中的解释很直白：**丢失遥测是可接受的，进程挂起不可接受**。这体现了遥测系统的核心原则——它是"旁路"系统，绝不能影响用户体验。
 
-`tengu_cache_eviction_hint` 事件在遥测刷新之前发送，确保它能被包含在最后一批刷新的事件中。这个事件通知推理层"这个会话结束了，可以回收 KV 缓存"——是一个跨系统的资源管理信号。
+缓存回收提示事件在遥测刷新之前发送，确保它能被包含在最后一批刷新的事件中。这个事件通知推理层"这个会话结束了，可以回收 KV 缓存"——是一个跨系统的资源管理信号。
 
 ### 异常捕获与遥测
 
@@ -1550,14 +1538,14 @@ try {
 
 ```typescript
 process.on('uncaughtException', error => {
-  logEvent('tengu_uncaught_exception', {
+  logEvent('<uncaught_exception>', {
     error_name: error.name as AnalyticsMetadata_I_VERIFIED_THIS_IS_NOT_CODE_OR_FILEPATHS,
   })
 })
 
 process.on('unhandledRejection', reason => {
   const errorName = reason instanceof Error ? reason.name : 'unknown'
-  logEvent('tengu_unhandled_rejection', {
+  logEvent('<unhandled_rejection>', {
     error_name: errorName as AnalyticsMetadata_I_VERIFIED_THIS_IS_NOT_CODE_OR_FILEPATHS,
   })
 })
@@ -1575,12 +1563,12 @@ process.on('unhandledRejection', reason => {
 
 ## 17.9 数据流全景：一个事件的完整旅程
 
-为了将前面各节串联起来，让我们追踪一个具体事件——`tengu_tool_use_success`（工具执行成功）——从产生到最终落地的完整旅程：
+为了将前面各节串联起来，让我们追踪一个具体事件——工具调用成功事件——从产生到最终落地的完整旅程：
 
 ```
 1. 工具执行完成 (query.ts)
    │
-   │  logEvent('tengu_tool_use_success', {
+   │  logEvent('<tool_use_success>', {
    │    toolName: sanitizeToolNameForAnalytics('mcp__slack__read_channel'),
    │    // → toolName: 'mcp_tool' (脱敏后)
    │    duration: 1234,
@@ -1597,27 +1585,27 @@ process.on('unhandledRejection', reason => {
    ▼
 3. Sink 路由 (sink.ts)
    │
-   ├─ 采样检查: shouldSampleEvent('tengu_tool_use_success')
-   │  → GrowthBook 配置 tengu_event_sampling_config 中无此事件
+   ├─ 采样检查: shouldSampleEvent('<tool_use_success>')
+   │  → GrowthBook 采样配置中无此事件
    │  → 返回 null (不采样，100% 发送)
    │
    ├─ Datadog 路径:
    │  │  shouldTrackDatadog()? → 检查 GrowthBook gate + killswitch
    │  │  → YES
    │  │  stripProtoFields(metadata) → 移除 _PROTO_* 字段
-   │  │  trackDatadogEvent('tengu_tool_use_success', strippedMetadata)
+   │  │  trackDatadogEvent('<tool_use_success>', strippedMetadata)
    │  │  │
    │  │  ├─ 白名单检查: DATADOG_ALLOWED_EVENTS.has() → YES
    │  │  ├─ getEventMetadata() → 富化环境上下文
    │  │  ├─ getUserBucket() → 用户哈希分桶 (0-29)
    │  │  ├─ 基数压缩: toolName 'mcp_tool' 不变, model 规范化, version 截断
-   │  │  ├─ 构建 ddtags: event:tengu_tool_use_success,tool_name:mcp_tool,...
+   │  │  ├─ 构建 ddtags: event:<tool_use_success>,tool_name:mcp_tool,...
    │  │  └─ logBatch.push(log) → 等待 15s 批量刷新或 100 条满刷新
    │  │
    │  └─ POST https://http-intake.logs.us5.datadoghq.com/api/v2/logs
    │
    └─ 1P 路径:
-      │  logEventTo1P('tengu_tool_use_success', fullMetadata)
+      │  logEventTo1P('<tool_use_success>', fullMetadata)
       │  │  (保留 _PROTO_* 字段)
       │  │
       │  ├─ is1PEventLoggingEnabled()? → 检查 analytics disabled + killswitch

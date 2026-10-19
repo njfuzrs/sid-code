@@ -318,13 +318,12 @@ export function generateGitStatusAttachment(workingDir: string): SystemPromptAtt
 
     const lines: string[] = [
       // 首行=显式声明这是启动快照,并**引导**模型:工作区文件状态未包含在此,需实时获取。
-      "This is the git status at the start of the conversation. Note that this status is a snapshot in time, " +
-        "and will not update during the conversation. " +
+      "Git snapshot captured when this session started. It is frozen and will not refresh as the session goes on. " +
         "工作区文件状态(哪些文件被修改/新增/删除)未包含在此快照中(会随对话变化);" +
         "需要时请运行 `git status` 获取实时状态,不要依据此快照判断工作区是否有未提交改动。",
       `Current branch: ${branch}`,
     ];
-    if (mainBranch) lines.push(`Main branch (you will usually use this for PRs): ${mainBranch}`);
+    if (mainBranch) lines.push(`Main branch (default PR target): ${mainBranch}`);
     if (userName) lines.push(`Git user: ${userName}`);
     if (recentCommits) lines.push(`Recent commits:\n${recentCommits}`);
 
