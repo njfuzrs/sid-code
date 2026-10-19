@@ -966,7 +966,7 @@ export async function processSlashCommand(inputString, ...): Promise<ProcessUser
   const result = await getMessagesForSlashCommand(commandName, args, ...)
 
   // Step 4: 遥测
-  logEvent('tengu_input_command', { input: sanitizedCommandName, ... })
+  logEvent('<input_command>', { input: sanitizedCommandName, ... })
 
   return result
 }

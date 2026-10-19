@@ -1112,7 +1112,7 @@ A 会在自己的上下文里看到「fork B started — processing in backgroun
 - 分类 Agent 不需要示例之外的背景
 
 **但这类优化有一个必须配的东西：kill-switch。**
-源码里这两处裁剪都带开关（`tengu_slim_subagent_claudemd`，默认 true）。理由是：
+源码里这两处裁剪都带开关（一个内部 feature flag，默认 true）。理由是：
 
 > **上下文裁剪导致的是静默降级** —— 万一某个 Explore 确实需要 CLAUDE.md 里的信息，
 > 它不会报错，只是结果悄悄变差。

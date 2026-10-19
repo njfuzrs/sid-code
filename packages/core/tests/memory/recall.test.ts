@@ -124,7 +124,7 @@ describe("findRelevantMemories", () => {
   });
 });
 
-describe("isMemoryRecallEnabled — flag 门控（对齐 claude-code tengu_moth_copse）", () => {
+describe("isMemoryRecallEnabled — flag 门控（对齐 claude-code 默认关闭）", () => {
   const KEY = "SID_CODE_MEMORY_RECALL";
   let saved: string | undefined;
   beforeEach(() => {

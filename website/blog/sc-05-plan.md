@@ -394,7 +394,7 @@ return {
 **对照 claude-code 的处理（🔬 2026-08-13 实读）**，它选了另一条路：
 在 `validateInput` 里硬拦，返回 `{ result: false }`，但错误信息里同样给了正确指引
 （`If your plan was already approved, continue with implementation.`），
-并且**打点记录这件事的发生频率**（`tengu_exit_plan_mode_called_outside_plan`）。
+并且**打点记录这件事的发生频率**（一个「计划模式外调用退出计划」的内部事件）。
 
 两条路的差异值得一句评论：**claude-code 拦得更硬但会看到弹窗风险**
 （注释明写 `Reject before checkPermissions to avoid showing the approval dialog.`
@@ -2925,7 +2925,7 @@ summary — only the verifier issues a verdict.`
 
 ```
 * Primary: session-level Avg Cost — Opus output is 5× input price so cost is
-*   an output-weighted proxy. planLengthChars on tengu_plan_exit is the
+*   an output-weighted proxy. planLengthChars on the plan-exit event is the
 *   mechanism but NOT the goal — the cap arm could shrink the plan file while
 *   increasing total output via write→count→edit cycles.
 * Guardrail: feedback-bad rate, requests/session (too-thin plans →

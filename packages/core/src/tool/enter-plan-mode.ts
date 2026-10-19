@@ -49,7 +49,7 @@ export class EnterPlanModeTool implements Tool {
    *
    * 对标 cc 的处理完全一致：`EnterPlanModeTool/UI.tsx` 的 `renderToolUseMessage()` 返 `null`、
    * `renderToolResultMessage()` **不渲染 prompt 正文**，只画两行用户语言：
-   *   `● Entered plan mode` + 灰色 `Claude is now exploring and designing an implementation approach.`
+   *   一行「已进入计划模式」+ 一行灰色的进度说明。
    * 提示词本体只走 `mapToolResultToToolResultBlockParam` 那条模型侧出口。
    *
    * 不用 hidden：模式切换是**用户必须知道**的状态变化（它改变了后续所有写操作的可行性），

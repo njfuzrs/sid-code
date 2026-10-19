@@ -100,20 +100,21 @@ export function cachedLexer(content: string): Token[] {
     ];
   }
   const key = hashContent(content);
-  const hit = tokenCache.get(key);
-  if (hit) {
-    // 提升为最近使用，避免 FIFO 淘汰掉正在回看的早期消息
-    tokenCache.delete(key);
-    tokenCache.set(key, hit);
-    return hit;
-  }
-  const tokens = marked.lexer(content);
-  if (tokenCache.size >= TOKEN_CACHE_MAX) {
-    const first = tokenCache.keys().next().value;
-    if (first !== undefined) tokenCache.delete(first);
-  }
+  const cached = tokenCache.get(key);
+  // Map 按插入顺序迭代：先删后插 = 移到队尾（最近使用），避免 FIFO 淘汰掉正在回看的早期消息
+  const tokens = cached ?? marked.lexer(content);
+  tokenCache.delete(key);
   tokenCache.set(key, tokens);
+  if (!cached) evictOldestTokens();
   return tokens;
+}
+
+/** 超出容量时从队首（最久未用）逐个淘汰 */
+function evictOldestTokens(): void {
+  for (const oldest of tokenCache.keys()) {
+    if (tokenCache.size <= TOKEN_CACHE_MAX) break;
+    tokenCache.delete(oldest);
+  }
 }
 
 /** 获取终端宽度 */

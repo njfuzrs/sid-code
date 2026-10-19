@@ -70,9 +70,9 @@ Claude Code 的主要能力面这里都有（agentic loop、工具调用、权�
 
 用过 Claude Code 的话迁移成本几乎为零，见[迁移指南](https://www.sid-code.cc/team/migrate)。
 
-**代码来源**：兼容的是 Claude Code 的接口（配置文件名、Hook 事件名、CLI 参数），实现是自己写的。
-和 Claude Code 源码逐行比对：连续 6 行一致的代码占 0.04%（且大半是两边共同的上游 ink），
-逐字一致的句子 7 条，改名残留 0。口径与说明见[和 Claude Code 的关系](https://www.sid-code.cc/start/#代码来源)，归属记录见 [NOTICE](./NOTICE)。
+**代码来源**：设计参考 Claude Code、接口刻意兼容，实现自己写。与 Claude Code 源码逐字比对：
+连续 6 行一致的代码 0.03%（主要是共同上游 ink），逐字相同的文案 0 句，内部命名残留 0。
+口径见[代码来源](https://www.sid-code.cc/start/#代码来源)，归属记录见 [NOTICE](./NOTICE)。
 
 ## 现状
 

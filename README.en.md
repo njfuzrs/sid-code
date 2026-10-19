@@ -83,11 +83,10 @@ is structurally positioned not to offer**:
 Coming from Claude Code, migration is close to zero-cost — see the
 [migration guide](https://www.sid-code.cc/team/migrate).
 
-**Code provenance**: what's compatible with Claude Code is the interface (config file names, hook event
-names, CLI flags); the implementation is our own. Compared line by line against the Claude Code
-source: code in runs of 6+ identical lines is 0.04% (most of it upstream ink, which both projects
-share), 7 sentences match verbatim, and zero renamed leftovers. Methodology and caveats are in
-[Relationship to Claude Code](https://www.sid-code.cc/start/#代码来源) (Chinese); attribution is in [NOTICE](./NOTICE).
+**Code provenance**: design informed by Claude Code, interfaces kept compatible on purpose, implementation
+our own. Checked verbatim against the Claude Code source: 0.03% of code in runs of 6+ identical lines (mostly
+shared upstream ink), 0 matching sentences, no internal names carried over. Methodology is in
+[Code provenance](https://www.sid-code.cc/start/#代码来源) (Chinese); attribution is in [NOTICE](./NOTICE).
 
 ## Where it stands today
 

@@ -1545,7 +1545,7 @@ export async function runCleanupFunctions(): Promise<void> {
 
 ```typescript
 // 分析日志 — 失败不应影响主流程
-void logEventAsync('tengu_session_start', metadata)
+void logEventAsync('<session_start>', metadata)
 
 // 后台预取 — 失败不应阻塞启动
 void initUser()
@@ -2174,8 +2174,8 @@ logForDiagnosticsNoPII('api_request_duration', { ms: 1234 })
 // 写入 CLAUDE_CODE_DIAGNOSTICS_FILE，用于性能分析
 
 // 5. 分析事件
-logEvent('tengu_api_retry', { delay_ms: 500, attempt: 2 })
-logEvent('tengu_streaming_error', { error_type: 'timeout' })
+logEvent('<api_retry>', { delay_ms: 500, attempt: 2 })
+logEvent('<streaming_error>', { error_type: 'timeout' })
 ```
 
 ### 设计决策讨论

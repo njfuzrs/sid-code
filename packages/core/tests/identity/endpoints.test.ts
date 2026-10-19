@@ -293,7 +293,7 @@ describe("事件：内置 exporter（T8 / T9）", () => {
       );
       const http = sink.getBackends().filter((b) => b.name !== "local");
       expect(http.map((b) => b.name)).toEqual(["sid-backend"]);
-      for (const b of http) b.send("tengu_test", {} as any);
+      for (const b of http) b.send("sid_test_event", {} as any);
       for (const b of sink.getBackends()) await b.shutdown?.();
       sink.__clearBackendsForTest();
       expect(calls.filter((u) => u === `${BASE}/api/v1/events`).length).toBe(1);

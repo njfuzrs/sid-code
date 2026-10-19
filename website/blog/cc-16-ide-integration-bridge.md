@@ -460,7 +460,7 @@ v2 的核心优势是 **更低的延迟和更简单的架构**。但 v1 仍然�
 // src/bridge/bridgeEnabled.ts
 export function isEnvLessBridgeEnabled(): boolean {
   return feature('BRIDGE_MODE')
-    ? getFeatureValue_CACHED_MAY_BE_STALE('tengu_bridge_repl_v2', false)
+    ? getFeatureValue_CACHED_MAY_BE_STALE('<bridge_repl_v2>', false)
     : false
 }
 ```

@@ -2089,12 +2089,12 @@ jq '.metadata.total_cost_usd'         # → 17/23 有值
 
 ```bash
 # ❌ -N 只去掉行号，不去掉文件名
-rg -a -N -o 'tengu_\w+' src/ | sort -u | wc -l
-# 输出形如 "src/a.ts:tengu_foo"，同一事件名在 N 个文件里被计成 N 个
+rg -a -N -o '<内部事件前缀>_\w+' src/ | sort -u | wc -l
+# 输出形如 "src/a.ts:<内部事件前缀>_foo"，同一事件名在 N 个文件里被计成 N 个
 # 实测虚高 24%：报 1119，真值 903
 
 # ✅ -I / --no-filename
-rg -a -I -o 'tengu_\w+' src/ | sort -u | wc -l
+rg -a -I -o '<内部事件前缀>_\w+' src/ | sort -u | wc -l
 ```
 
 ⚠️ **这条 bug 命令曾经被写在方法论文档的模板里**，还被复制进了任务提示词。
@@ -2967,12 +2967,12 @@ X 在对方架构里服务什么目的？
 
 ```bash
 # ❌ 错：-N 只去掉行号，不去掉文件名
-rg -a -N -o 'tengu_\w+' src/ | sort -u | wc -l
-#    输出形如 "src/a.ts:tengu_foo"，同一个名字在 N 个文件里被计成 N 个
+rg -a -N -o '<内部事件前缀>_\w+' src/ | sort -u | wc -l
+#    输出形如 "src/a.ts:<内部事件前缀>_foo"，同一个名字在 N 个文件里被计成 N 个
 #    实测虚高 24%：报 1119，真值 903
 
 # ✅ 对：-I / --no-filename
-rg -a -I -o 'tengu_\w+' src/ | sort -u | wc -l
+rg -a -I -o '<内部事件前缀>_\w+' src/ | sort -u | wc -l
 ```
 
 **每个去重数字都要换第二种方式交叉验证一次。**
