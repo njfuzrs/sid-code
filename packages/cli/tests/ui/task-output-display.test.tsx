@@ -18,6 +18,7 @@ import {
   type ToolCallDisplay,
 } from "@sid-code/cli/ui/components/messages/ToolGroupMessage.tsx";
 import { UIStateProvider } from "@sid-code/cli/ui/contexts/UIStateContext.tsx";
+import { TREE_BRANCH } from "@sid-code/cli/ui/constants/figures.ts";
 
 /** TaskOutputTool 终态 agent 的返回体（与 task-output.ts 的 F2 标签块同形态）。 */
 const LABEL_BLOCK = [
@@ -113,10 +114,54 @@ describe("task_output 等待进度行", () => {
     expect(frame).toContain("等待任务完成");
     expect(frame).toContain("已等 3s");
     expect(frame).toContain("esc 可中断");
+    // 锁「在卡片下方一行，而非 header 尾部」：进度文字所在行必须是树枝行，且不含 header 的工具名
+    const lines = frame.split("\n");
+    const headerIdx = lines.findIndex((l) => l.includes("task_output") || l.includes("t1"));
+    const progressIdx = lines.findIndex((l) => l.includes("等待任务完成"));
+    expect(progressIdx).toBeGreaterThan(headerIdx);
+    expect(lines[progressIdx]!).toContain(TREE_BRANCH);
+    expect(lines[progressIdx]!).not.toContain("task_output");
   });
 
   test("没有 progressMessage 时不出等待行（不产生假信号）", () => {
     const frame = renderTools([waiting(undefined)]);
     expect(frame).not.toContain("等待任务完成");
+  });
+});
+
+describe("非 shell 工具的执行中进度行（推广范围）", () => {
+  // hasProgressLine 对所有无结构化进度的非 shell 工具生效，不只 task_output。
+  // LSP 的阶段文案（「等待语言服务器就绪…」）同样从 header 尾部移到下方一行——
+  // 这是有意的推广，这里锁住它，免得范围再静默漂移。
+  test("lsp 执行中的阶段文案渲染在 header 下方树枝行", () => {
+    const frame = renderTools([
+      {
+        id: "l1",
+        name: "lsp",
+        input: { operation: "hover", file_path: "/tmp/a.ts" },
+        status: "executing",
+        progressMessage: "等待语言服务器就绪…",
+      },
+    ]);
+    const lines = frame.split("\n");
+    const progressIdx = lines.findIndex((l) => l.includes("等待语言服务器就绪"));
+    expect(progressIdx).toBeGreaterThan(0);
+    expect(lines[progressIdx]!).toContain(TREE_BRANCH);
+  });
+
+  test("有结构化进度（progress 数值）的工具不走下方进度行", () => {
+    const frame = renderTools([
+      {
+        id: "m1",
+        name: "mcp__srv__tool",
+        input: {},
+        status: "executing",
+        progressMessage: "下载中",
+        progress: 3,
+        progressTotal: 10,
+      } as ToolCallDisplay,
+    ]);
+    const lines = frame.split("\n").filter((l) => l.includes("下载中"));
+    expect(lines.every((l) => !l.trimStart().startsWith(TREE_BRANCH))).toBe(true);
   });
 });

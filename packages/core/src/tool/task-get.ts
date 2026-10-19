@@ -33,7 +33,9 @@ const taskGetSchema = lazySchema(() =>
     block: z
       .boolean()
       .optional()
-      .describe("是否阻塞等待任务进入终态（默认 true）。true 时问一次即可拿到结果，无需轮询"),
+      .describe(
+        "是否阻塞等待任务进入终态（默认 true）。等待完成不需要它——完成会自动通知；仅在用户明确要求等结果时使用，查看进度传 false",
+      ),
     timeout: z
       .number()
       .optional()
@@ -198,15 +200,17 @@ export class TaskGetTool implements Tool {
 
     // P1-3：timeout / not_ready 时给出**具体下一步**，而不是让模型自己猜。
     // 不给出路就等于把它推回轮询——那正是本项修复的病灶（49 次同参 bg_task_list）。
+    // 20261019 双投递 follow-up：出路是「等通知」而不是「再阻塞一次」。旧 timeout 文案
+    // 「再次调用继续等（加大 timeout）」正是基线会话 senfhxhhe 阻塞满 600s 后再调一次的形态。
     if (retrievalStatus === "timeout") {
       lines.push(
         `<hint>等待 ${Math.round(timeout / 1000)}s 后任务仍在运行（这不是错误）。` +
-          `可以再次调用本工具继续等（可加大 timeout，上限 ${BLOCK_TIMEOUT_MAX_MS}），` +
-          `或先去做不依赖该任务的部分——任务完成时你会收到 task-notification。</hint>`,
+          `任务完成时你会自动收到 task-notification，不要再次阻塞等待；` +
+          `先做不依赖该任务的部分，或简短告诉用户进展并结束本轮。</hint>`,
       );
     } else if (retrievalStatus === "not_ready") {
       lines.push(
-        `<hint>任务尚未完成。要等它完成请用 block=true（默认），不要以相同入参反复查询状态。</hint>`,
+        `<hint>任务尚未完成。完成时会自动以 task-notification 通知你，不要以相同入参反复查询状态。</hint>`,
       );
     }
 

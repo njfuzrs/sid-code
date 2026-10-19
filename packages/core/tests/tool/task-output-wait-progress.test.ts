@@ -68,6 +68,38 @@ describe("task_output 等待进度上报", () => {
     expect(events[0]).toContain("esc 可中断");
   });
 
+  test("等待期间进度持续刷新（秒数递增），任务结束后不再多报一条「仍在等」", async () => {
+    registerTask(makeAgentTask("w3"));
+    const events: Array<{ text: string; at: number }> = [];
+    let completedAt = Infinity;
+    // 1.2s 后完成：500ms 轮询下应至少报 3 次（0s / ~1s），且秒数单调递增
+    const timer = setTimeout(() => {
+      completedAt = Date.now();
+      updateTask<LocalAgentTaskState>("w3", (t) => ({
+        ...t,
+        status: "completed",
+        endTime: Date.now(),
+        notified: true,
+      }));
+    }, 1200);
+
+    await new TaskOutputTool().execute(
+      { task_id: "w3", block: true, timeout: 5000 },
+      undefined,
+      (e) => events.push({ text: String((e as { text?: unknown }).text ?? ""), at: Date.now() }),
+    );
+    clearTimeout(timer);
+
+    // 锁「循环内刷新」：只保留首次上报时这里只有 1 条
+    expect(events.length).toBeGreaterThanOrEqual(3);
+    const secs = events.map((e) => Number(/已等 (\d+)s/.exec(e.text)?.[1]));
+    expect(secs.every((n) => Number.isFinite(n))).toBe(true);
+    for (let i = 1; i < secs.length; i++) expect(secs[i]!).toBeGreaterThanOrEqual(secs[i - 1]!);
+    expect(secs[secs.length - 1]!).toBeGreaterThan(secs[0]!);
+    // 锁上报顺序：上报在终态判定之后，任务完成后不得再出「仍在等」
+    expect(events.filter((e) => e.at > completedAt)).toEqual([]);
+  });
+
   test("block=false 不产生等待进度（没等就别说自己在等）", async () => {
     registerTask(makeAgentTask("w2"));
     const events: string[] = [];

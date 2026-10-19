@@ -117,13 +117,14 @@ export class TaskOutputTool implements Tool {
           text: `等待任务完成 · 已等 ${waitedSec}s · esc 可中断`,
         });
       };
-      reportWait(); // 先报一次，别让卡片空到第一个 500ms 轮询
+      // 上报放在终态/超时判定**之后**：放在 sleep 之后会在任务已结束（或已超时）时多报一条
+      // 「仍在等」，卡片闪一下过期状态。首轮迭代即立即上报，卡片不会空到第一个 500ms。
       while (Date.now() - startTime < timeout) {
         if (signal?.aborted) break;
         const current = getTask(params.task_id);
         if (!current || isTerminalStatus(current.status)) break;
-        await new Promise((resolve) => setTimeout(resolve, 500));
         reportWait();
+        await new Promise((resolve) => setTimeout(resolve, 500));
       }
     }
 
