@@ -486,9 +486,9 @@ audit_archive() { # [smoke]
 # 已 +1 的 package.json，用户直接重跑就再 +1：一次失败烧掉一个版本号，且那个号已经带着
 # tag 和 changelog 条目留在本地。
 #
-# 更隐蔽的连带风险：被烧掉的版本号会留下一个指向 HEAD 的 tag，而 changelog 的版本区间是
-# `最新tag..HEAD`（generate-changelog.ts）。默认重跑时这个区间算出来是空的，于是新版本的
-# changelog 是空的，本次真实提交全被记在那个从未发布的版本名下。
+# 更隐蔽的连带风险：被烧掉的版本号会留下一条 `bump vX.Y.Z` 提交，而 changelog 的版本区间是
+# `最新 bump 提交..HEAD`（generate-changelog.ts，2026-10-19 起不再按 tag）。默认重跑时这个区间
+# 算出来是空的，于是新版本的 changelog 是空的，本次真实提交全被记在那个从未发布的版本名下。
 #
 # 回滚策略：只恢复**本脚本自己改过的、且能安全恢复的**本地文件，绝不碰用户的其它改动。
 #   - package.json / changelog 产物：仅当本次运行前它们是 clean 的才 git checkout 恢复。

@@ -2,7 +2,7 @@
  * scripts/changelog-curate.ts — 生成面向**用户**的更新日志文案（dogfood sid-code）
  *
  * 用法：
- *   bun run changelog:curate                   # 为「下一个版本」生成（区间 = 最新 tag..HEAD）
+ *   bun run changelog:curate                   # 为「下一个版本」生成（区间 = 最新 bump 提交..HEAD）
  *   bun run changelog:curate 0.1.601           # 指定版本（补跑 / backfill 单个历史版本）
  *   bun run changelog:curate --backfill-all    # 全量 backfill（19 个历史版本，串行）
  *   bun run changelog:curate --backfill-missing # 只跑还没有 curated 文件的版本（可中断续跑）
@@ -50,7 +50,7 @@ import { existsSync, mkdirSync, readFileSync, writeFileSync, readdirSync } from 
 import { resolve } from "node:path";
 import {
   ROOT,
-  listSemverTags,
+  listReleaseAnchors,
   versionRange,
   collectRawCommits,
   commitStatBlock,
@@ -441,14 +441,13 @@ function isMissingFileError(errors: string[]): boolean {
 }
 
 async function curateOne(version: string, opts: CurateOptions): Promise<boolean> {
-  const tags = listSemverTags();
-  const vr = versionRange(version, tags);
+  const vr = versionRange(version);
   const rangeLabel = vr.range ?? "（全部历史）";
 
   const commits = collectRawCommits(
     vr.range,
-    // genesis 的 `tag~N` 可能超出根提交范围，退化为「从根到 tag」
-    vr.isGenesis && vr.tag ? vr.tag : undefined,
+    // genesis 的 `anchor~N` 可能超出根提交范围，退化为「从根到 anchor」
+    vr.isGenesis && vr.anchor ? vr.anchor : undefined,
   );
   const hashes = commits.map((c) => c.hash);
 
@@ -586,15 +585,16 @@ function checkAll(): number {
     console.error(`  ❌ ${CURATED_DIR} 下没有任何 curated 文件`);
     return 1;
   }
-  const tags = listSemverTags();
+  const anchors = listReleaseAnchors();
   let bad = 0;
   let warned = 0;
   for (const f of files) {
     const version = f.replace(/^v/, "").replace(/\.json$/, "");
-    const vr = versionRange(version, tags);
-    const hashes = collectRawCommits(vr.range, vr.isGenesis && vr.tag ? vr.tag : undefined).map(
-      (c) => c.hash,
-    );
+    const vr = versionRange(version, anchors);
+    const hashes = collectRawCommits(
+      vr.range,
+      vr.isGenesis && vr.anchor ? vr.anchor : undefined,
+    ).map((c) => c.hash);
     const vres = verifyCuratedFile(version, hashes);
     if (!vres.ok) {
       bad++;
@@ -663,7 +663,7 @@ function nextVersion(): string {
 function usage(): void {
   console.log(`用法:
   bun run changelog:curate [<version>]        为指定版本（默认：下一个版本）生成文案
-  bun run changelog:curate --backfill-all     全量 backfill 所有历史 tag（串行）
+  bun run changelog:curate --backfill-all     全量 backfill 所有已发布版本（串行）
   bun run changelog:curate --backfill-missing 只跑缺 curated 文件的版本（可中断续跑）
   bun run changelog:curate --check            不调 LLM，只校验已入库的全部文件
   bun run changelog:curate <version> --stub   写人工占位（不调 LLM）
@@ -709,8 +709,7 @@ async function main(): Promise<void> {
   if (backfillAll || backfillMissing) {
     // 逐版本**串行**执行。不要并发：并发会同时开 19 个 agent 各自跑 git show，
     // 既抢 CPU 又让失败难以定位。
-    const tags = listSemverTags();
-    let versions = tags.map((t) => t.replace(/^v/, ""));
+    let versions = listReleaseAnchors().map((a) => a.version);
     if (backfillMissing) {
       versions = versions.filter((v) => !existsSync(curatedPath(v)));
     }
