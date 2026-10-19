@@ -20,7 +20,7 @@ Hook 是「在固定时机自动跑一段你自己的命令」。三类典型用
 { "type": "command", "matcher": "edit|write", "command": "..." }                 // ✓ 兼容
 ```
 
-事件名两种写法等价（`PreToolUse` 与 `pre_tool_use`），工具名 CC 名与内部名都认（`Bash` 与 `bash`）。
+事件名两种写法基本等价（`PreToolUse` 与 `pre_tool_use`），但 sid-code 独有的 `AfterAgent` / `BeforeModel` / `AfterModel` 目前只认 PascalCase。工具名 CC 名与内部名都认（`Bash` 与 `bash`）。
 从 CC 搬过来的 hooks 段不用改，见[从 Claude Code 迁移](/team/migrate)。
 
 配置有问题的条目会被跳过并在启动时打一行带来源文件与原因的提示，
@@ -52,8 +52,9 @@ Hook 是「在固定时机自动跑一段你自己的命令」。三类典型用
 [hook] 改了 edit
 ```
 
-`matcher` 有三档（与 CC 一致）：只含字母、数字、`_` 和 `|` 时是**精确匹配**（`Edit|Write` 匹配这两个工具）；
-含其他字符时按正则（如 `mcp__github__.*`）；不写或写 `*` 就是该事件全部触发。
+`matcher` 有三档（与 CC 一致）：只含字母、数字、`_`、`-`、空格、`,`、`|` 时是**精确匹配**
+（`Edit|Write`、`Edit, Write` 都按精确列表拆，匹配这两个工具）；含其他字符时按正则
+（如 `mcp__github__.*`）；不写或写 `*` 就是该事件全部触发。`/pattern/` 是强制正则的旧写法。
 工具名写 CC 名（`Edit`）或内部名（`edit`）都能匹配上。环境变量 `SID_CODE_TOOL_NAME` 里是内部名。
 
 生命周期事件（`SessionStart` 等）的 `matcher` 匹配的是触发来源，同样可以用 `|` 列多个：`"startup|resume"`。
@@ -62,7 +63,7 @@ Hook 是「在固定时机自动跑一段你自己的命令」。三类典型用
 
 ## 场景一：拦住不该跑的命令
 
-用 `PreToolUse` + **退出码 2**。这是唯一的阻断信号：
+用 `PreToolUse` + **退出码 2**。退出码里只有 `2` 能阻断（stdout JSON 的 `decision:"block"` 也能拦，见下文）：
 
 ```json
 {
@@ -103,9 +104,9 @@ bash 的 `ls` 被 hook 拦截了。根据工具使用原则，列目录本来就
 
 | 退出码 | 含义 | stderr 去哪 |
 | --- | --- | --- |
-| `0` | 放行 | stdout 是 JSON 时按字段解析；`SessionStart` / `UserPromptSubmit` 的纯文本 stdout 进上下文，其余事件只作提示展示 |
+| `0` | 放行 | stdout 是 JSON 时按字段解析；`SessionStart` / `UserPromptSubmit` 的纯文本 stdout 进上下文，其余事件的纯文本 stdout 不进模型上下文 |
 | `2` | **阻断** | stderr 作为拒绝理由回传给模型（`PostToolUse` / `PostToolUseFailure` 上不阻断，但 stderr 同样回灌给模型） |
-| 其他 | 放行，但记一条告警 | stderr 前面加「警告:」展示 |
+| 其他 | 放行 | 记一条 `hook error: <stderr>` 的内部结果；这条结果目前没有接到交互界面的展示链路（已知缺口），别把它当作可靠的告警通道 |
 
 只有 `2` 是阻断。写成 `exit 1` 是常见错误——那会被当成「hook 自己出错了」，工具照样执行。
 
@@ -178,7 +179,7 @@ bash 的 `ls` 被 hook 拦截了。根据工具使用原则，列目录本来就
 输出在下一条消息前重新注入——清空或压缩会把启动时注入的内容一起丢掉。只想在启动时跑，就把 `matcher` 写成 `"startup|resume"`。
 
 ::: warning 其他事件的纯文本 stdout 不进上下文
-除这两个事件外，exit 0 的纯文本 stdout 只作为提示信息展示给你看，模型看不到。
+除这两个事件外，exit 0 的纯文本 stdout 不进模型上下文（当前也不会在交互界面展示）。
 要给模型看，用 JSON 的 `hookSpecificOutput.additionalContext`（`PostToolUse` 等支持），
 或者在 `PostToolUse` 上 `exit 2` 把 stderr 回灌给模型。
 :::
@@ -199,17 +200,17 @@ hook 命令能直接读这些（另外完整的事件载荷 JSON 会从 **stdin*
 | `SID_CODE_TOOL_OUTPUT` | 工具返回 JSON | `PostToolUse` / `PostToolUseFailure` |
 | `SID_CODE_TOOL_IS_ERROR` | 是否失败（`PostToolUse` 上恒为 `false`） | 载荷里带 `is_error` 的工具类事件 |
 | `SID_CODE_TOOL_USE_ID` | 本次工具调用的 ID | 工具类事件 |
-| `SID_CODE_USER_INPUT` | 用户原始输入 | `UserPromptSubmit` |
+| `SID_CODE_USER_INPUT` | 用户原始输入 | 载荷里带 `prompt` 的事件（`UserPromptSubmit`、`AfterAgent`） |
 | `SID_CODE_MODEL` | 模型名 | 模型类事件 |
 | `SID_CODE_STOP_REASON` | 停止原因 | `AfterModel` |
-| `SID_CODE_AGENT_ID` | 子代理 ID | 子代理类事件 |
-| `SID_CODE_AGENT_TYPE` | 子代理类型 | 子代理类事件 |
+| `SID_CODE_AGENT_ID` | 子代理 ID | 载荷里带 `agent_id` 的事件（子代理类事件，以及子代理里执行的工具事件） |
+| `SID_CODE_AGENT_TYPE` | 子代理类型 | 载荷里带 `agent_type` 的事件（同上） |
 
 完整的事件载荷（含 `session_id`、`transcript_path`、`cwd`、`permission_mode`、`hook_event_name` 等 CC 通用字段）从 stdin 以 JSON 传入。
 
 命令串会原样交给 `sh -c`，sid-code 不做任何字符串替换，`$SID_CODE_PROJECT_DIR` / `${CLAUDE_PROJECT_DIR}` 这类变量由 shell 从环境变量展开。所以按 shell 的正常规则写：要展开就用双引号（`"$SID_CODE_PROJECT_DIR"`），单引号里不会展开。目录名里有 `$(...)`、反引号、空格也安全，hook 拿到的就是原始路径。
 
-## 除了跑命令，还有四种 hook 类型
+## 除了跑命令，还有三种 hook 类型
 
 `type` 字段可选值不止 `command`：
 
@@ -222,8 +223,9 @@ hook 命令能直接读这些（另外完整的事件载荷 JSON 会从 **stdin*
 
 `prompt` 和 `agent` 会真的调模型，**要花钱也要花时间**，别挂在高频事件上。
 
-其他常用字段：`timeout`（**秒**。缺省值与 CC 相同：`command` / `url` 600、`prompt` 30、`agent` 60；`UserPromptSubmit` 与 `SessionStart` 上的 `command` / `url` 是 30。写 `5000` 是 83 分钟，不是 5 秒）、`async`（后台跑不阻塞，**不受 `timeout` 限制**；`asyncRewake` 仍受限。**代价是放弃决策权**：挂在 `PreToolUse` 这类可拦截事件上，exit 2 / deny 都赶不上本轮决策，加载时会打 warn）、`env`（额外环境变量，只对 `command` 生效）、
-`sequential`（`true` 时该事件这一批 hook 按顺序串行，默认并行）、`name`（给 hook 起名，便于 `/hooks` 面板管理）。
+其他常用字段：`timeout`（**秒**。缺省值与 CC 相同：`command` / `url` 600、`prompt` 30、`agent` 60；`UserPromptSubmit` 与 `SessionStart` 上的 `command` / `url` 是 30。`SessionEnd` 例外：该事件所有 hook 共享 1.5 秒预算，某条显式配了更长的 `timeout` 才提高，上限 60 秒——退出路径上别挂重活。写 `5000` 是 83 分钟，不是 5 秒）、`async`（后台跑不阻塞，**不受 `timeout` 限制**；`asyncRewake` 仍受限。**代价是放弃决策权**：挂在 `PreToolUse` 这类可拦截事件上，exit 2 / deny 都赶不上本轮决策，加载时会打 warn）、`env`（额外环境变量，只对 `command` 生效）、
+`sequential`（`true` 时该事件这一批 hook 按顺序串行，默认并行）、`name`（给 hook 起名，便于 `/hooks` 面板管理）、
+`args`（CC exec 形式：有 `args` 时不经 shell，`[command, ...args]` 直接 spawn，只有路径占位符会被替换）、`once`（只对 skill 来源生效，被取用一次后失效）、`statusMessage`（hook 运行期间显示在状态行的文案）。
 
 `url` 类型的请求经 SSRF 防护：内网与云元数据地址（`10.*`、`192.168.*`、`169.254.*` 等）会被拦，本机 `127.0.0.1` / `localhost` 放行。
 `headers` 里的 `$VAR` 只会替换 `allowedEnvVars` 里列出的变量，其余替换成空串：
@@ -269,12 +271,15 @@ echo '{}' | sh -c '你的 command'
    仓库任意子目录与 worktree 共用；父目录信任过，其下的仓库直接继承（家目录除外），
    `-p` 下用 `--trust-workspace` 本会话放行（SDK 宿主 spawn 时把这个参数加进命令行）
 2. **配错了文件**——sid-code 读 `~/.sid-code/settings.json`、`<启动目录>/.sid-code/settings.json`、
-   `<git 仓库根>/.sid-code/settings.local.json`，**不读** CC 的 `~/.claude/settings.json` 与 `.claude/settings.json`。
+   `<git 仓库根>/.sid-code/settings.local.json`，另有 `--settings` 指定的文件与企业策略
+   （系统级 `managed-settings.json`，见[团队默认配置分发](/team/defaults)）。
+   **不读** CC 的 `~/.claude/settings.json` 与 `.claude/settings.json`。
    注意共享的 `settings.json` 只读启动目录这一层：在仓库子目录启动，仓库根那份不生效
 3. **`matcher` 没匹配上**——先把 `matcher` 整个删掉试，能触发就是它的问题。
    纯字母数字加竖线（`Edit|Write`）是**精确匹配**而非正则；CC 名与内部名都认
 4. **事件本身还没接线**——[Hook 事件](/ref/hooks)的「会触发」列标 ✗ 的那些，
-   枚举已定义但当前没有触发点，配了也不会调。这是实现现状，不是你配错了
+   枚举已定义但当前没有触发点，配了也不会调。这是实现现状，不是你配错了。
+   特例：`WorktreeCreate` / `WorktreeRemove` 不在事件表里，但 worktree 子系统会读会执行
 
 ### hook 跑了但模型不知道
 
@@ -295,7 +300,9 @@ echo '{}' | sh -c '你的 command'
 ### 团队统一下发 hook
 
 写进项目级 `<项目>/.sid-code/settings.json` 提交 git（成员信任该工作区后加载），或用企业策略
-`/etc/sid-code/policy.json` 强制下发（用户改不掉）。见[团队默认配置分发](/team/defaults)。
+`managed-settings.json` 强制下发（Linux 在 `/etc/sid-code/`，macOS 在
+`/Library/Application Support/SidCode/`，用户改不掉）。旧路径 `policy.json` / `policy.yaml` 已废弃不读。
+见[团队默认配置分发](/team/defaults)。
 
 ## 与 Claude Code 的差异
 
@@ -320,7 +327,9 @@ echo '{}' | sh -c '你的 command'
 | 独有事件 | — | `AfterAgent` / `BeforeModel` / `AfterModel` | 主循环可观测与拦截 |
 | 独有 stdin 字段 | — | `timestamp`、`device_id` / `user_id` / `org_id` / `team_id`、`harness_context`、`SubagentStop` 的 `usage` / `turns` / `model` | 企业身份与可观测 |
 | `mcp_tool` 类型 | 支持 | 识别但不执行 | 单独立项 |
-| `FileChanged` / `Setup` / `WorktreeCreate` / `WorktreeRemove` / `MessageDisplay` | 支持 | 本轮未接线 | 没有对应场景或另行立项 |
+| `FileChanged` / `Setup` | 支持 | 本轮未接线 | 没有对应场景 |
+| `WorktreeCreate` / `WorktreeRemove` | 支持 | 已支持：由 worktree 子系统直接读 `hooks` 段执行，stdout 返回路径（不支持 JSON 输出形式） | 走独立通道，不在 Hook 事件表里 |
+| `MessageDisplay` | 支持 | 未实现：事件名未定义，配置会被判「未知事件」跳过 | 与 TUI 渲染底座重构冲突，尚未立项 |
 
 `BeforePermissionCheck` / `AfterPermissionCheck` / `BeforeHookExecution` / `AfterHookExecution` 是 trace 内部事件，
 写进用户配置会被跳过并告警。
