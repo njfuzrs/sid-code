@@ -778,7 +778,7 @@ export async function classifyYoloAction(
 // 分类器不可用时的行为取决于 feature flag
 if (classifierResult.unavailable) {
   if (getFeatureValue_CACHED_WITH_REFRESH(
-    'tengu_iron_gate_closed', true, 30 * 60 * 1000
+    '<iron_gate_closed>', true, 30 * 60 * 1000
   )) {
     // fail-closed：拒绝并引导用户重试
     return { behavior: 'deny', message: buildClassifierUnavailableMessage(...) }
@@ -800,7 +800,7 @@ if (classifierResult.transcriptTooLong) {
 
 **为什么默认 fail-closed？**
 
-`tengu_iron_gate_closed` 默认为 `true`——即当分类器不可用时，**拒绝操作**而非放行。这是一个深思熟虑的安全决策：如果用户选择了 auto 模式，意味着他们期望**所有操作都经过 AI 审查**。分类器不可用时静默放行，违反了用户的安全期望。
+这个内部 feature flag 默认为 `true`——即当分类器不可用时，**拒绝操作**而非放行。这是一个深思熟虑的安全决策：如果用户选择了 auto 模式，意味着他们期望**所有操作都经过 AI 审查**。分类器不可用时静默放行，违反了用户的安全期望。
 
 ---
 
@@ -1081,7 +1081,7 @@ if (shouldAllowManagedPermissionRulesOnly()) {
 
 ### 3. Fail-Closed 优于 Fail-Open
 
-- 分类器不可用时默认拒绝（`tengu_iron_gate_closed`）
+- 分类器不可用时默认拒绝（由一个默认 true 的内部 feature flag 控制）
 - Denial tracking 达到限制时回退到手动审批
 - 无头模式下无法弹窗时自动拒绝
 - 信任未建立时不执行危险操作

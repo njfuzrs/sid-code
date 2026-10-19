@@ -15,7 +15,7 @@
 
 `max` 档同样仅 GLM-5.2 生效（`glm-api.md:189`）。
 
-线格式认 `low/medium/high/max`，**不认 `xhigh`** → 客户端钳到 `max`（GLM 支持的最高档）。
+线格式**不认 `xhigh`** → 客户端钳到 `max`（GLM 支持的最高档）。其余档位每模型不同，见下表。
 
 每模型的真实档位按注册表 `reasoningEffortValues` 映射，表外档位沿标度**向上**取最近一档
 （跟官方语义：GLM-5.2 `low/medium → high`，glm-api.md §6.2）：

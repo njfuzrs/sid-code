@@ -898,7 +898,7 @@ export function isMcpInstructionsDeltaEnabled(): boolean {
   if (isEnvDefinedFalsy(process.env.CLAUDE_CODE_MCP_INSTR_DELTA)) return false
   return (
     process.env.USER_TYPE === 'ant' ||
-    getFeatureValue_CACHED_MAY_BE_STALE('tengu_basalt_3kr', false)
+    getFeatureValue_CACHED_MAY_BE_STALE('<basalt_3kr>', false)
   )
 }
 ```
@@ -989,7 +989,7 @@ export type ClientSideInstruction = {
 
 **为什么不直接用 Delta 模式替代内联模式？**
 
-源码中 Delta 模式通过 GrowthBook feature flag（`tengu_basalt_3kr`）控制，内部用户默认启用，外部用户逐步灰度。这说明 Anthropic 对 Delta 模式的稳定性还在验证中——Delta 模式依赖 LLM 正确"回忆"历史消息中的指令，如果 LLM 在长对话中遗忘了早期的 delta 消息，可能导致工具使用不当。内联模式虽然性能差，但每轮都能看到完整指令，更可靠。
+源码中 Delta 模式通过 一个 GrowthBook 内部 feature flag 控制，内部用户默认启用，外部用户逐步灰度。这说明 Anthropic 对 Delta 模式的稳定性还在验证中——Delta 模式依赖 LLM 正确"回忆"历史消息中的指令，如果 LLM 在长对话中遗忘了早期的 delta 消息，可能导致工具使用不当。内联模式虽然性能差，但每轮都能看到完整指令，更可靠。
 
 **Server instructions 的截断**
 

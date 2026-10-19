@@ -464,7 +464,7 @@ async function processStream(stream: AsyncIterable<StreamEvent>): Promise<{
             try {
               block.input = normalizeToolInput(jsonStr ? JSON.parse(jsonStr) : {});
             } catch (e) {
-              // telemetry: 工具输入 JSON 解析失败（对齐 CC tengu_tool_input_json_parse_fail）
+              // telemetry: 工具输入 JSON 解析失败（对齐 CC 的同类解析失败打点）
               getLogger().warn("STREAM", `工具输入 JSON 解析失败`, {
                 toolName: block.name,
                 inputLength: jsonStr.length,

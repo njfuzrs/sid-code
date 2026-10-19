@@ -257,6 +257,6 @@ describe("freshness — 新鲜度", () => {
     const w = buildFreshnessWarning(now - 3 * day, now);
     expect(w).not.toBeNull();
     expect(w).toContain("3 days old");
-    expect(w).toContain("Verify against current code");
+    expect(w).toContain("Re-check the current source");
   });
 });

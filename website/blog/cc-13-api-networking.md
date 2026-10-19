@@ -790,7 +790,7 @@ const IDLE_TIMEOUT_MS = parseInt(
 // 两个事件之间超过 30 秒视为停滞
 // 记录停滞次数和总停滞时间
 // 用于分析和诊断网络质量问题
-logEvent('tengu_streaming_stall', {
+logEvent('<streaming_stall>', {
   stall_duration_ms,
   stall_count,
   total_stall_time_ms,
@@ -821,7 +821,7 @@ try {
     max_tokens: Math.min(params.max_tokens, 64_000),  // 非流式限制 64k
   })
 
-  logEvent('tengu_streaming_fallback_to_non_streaming', { ... })
+  logEvent('<streaming_fallback_to_non_streaming>', { ... })
 }
 ```
 
@@ -1227,7 +1227,7 @@ export function checkResponseForCacheBreak(params: {
   }
 
   // 记录分析事件
-  logEvent('tengu_prompt_cache_break', {
+  logEvent('<prompt_cache_break>', {
     drop_percent: dropPercent,
     drop_tokens: previousCacheReadTokens - cacheReadTokens,
     changes: changes.join('; '),
@@ -1893,7 +1893,7 @@ if (typeof Bun !== 'undefined') {
 每次成功的 API 调用会记录以下指标到分析平台：
 
 ```typescript
-logEvent('tengu_api_success', {
+logEvent('<api_success>', {
   // 模型信息
   model: 'claude-sonnet-4-20250514',
   preNormalizedModel: 'sonnet',           // 用户输入的模型名

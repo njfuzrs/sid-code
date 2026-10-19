@@ -15,7 +15,7 @@
  *
  * 当前主循环走的是「MEMORY.md 索引全量注入 system prompt，模型按需 Read」路径
  * （见 memory/prompt.ts + query/init-helpers.ts），与 claude-code 的**默认**行为
- * 一致——claude-code 也是默认全量注入，仅在 feature flag `tengu_moth_copse` 打开时
+ * 一致——claude-code 也是默认全量注入，仅在一个内部 feature flag 打开时
  * 才切换到这里这种「Sonnet sideQuery 筛 top-5 再注入」的语义召回路径。
  *
  * 索引本身极轻（一行一指针，claude-code 实测硬截断到 200 行 / 25KB），全量注入对
@@ -39,7 +39,7 @@ import { SIDE_CALL_TIMEOUT_REASON } from "../llm/errors.ts";
 import { resolveSideCallTimeouts } from "../config/network-profile.ts";
 
 /**
- * 记忆语义召回是否启用（flag 门控的休眠能力，对齐 claude-code `tengu_moth_copse`）。
+ * 记忆语义召回是否启用（flag 门控的休眠能力，对齐 claude-code 默认关闭的召回开关）。
  *
  * 默认 **false**：走全量索引注入（memory/prompt.ts），与 claude-code 默认一致。
  * 设 `SID_CODE_MEMORY_RECALL=1` 时启用语义召回——此时应在主循环每轮（或每 N 轮）

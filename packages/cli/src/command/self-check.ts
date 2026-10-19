@@ -37,8 +37,8 @@ interface CheckResult {
  * (那是治标),而是"快照里根本没有净/脏状态,唯一来源是实时 git status"(治本)。
  */
 const GIT_STATUS_ANCHOR_MARKERS = [
-  "snapshot in time",
-  "will not update during the conversation",
+  "captured when this session started",
+  "will not refresh as the session goes on",
   "未包含在此快照中",
 ];
 

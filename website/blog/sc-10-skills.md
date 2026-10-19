@@ -1199,7 +1199,7 @@ return commands.map((c) => {
 Claude Code 在降级时会上报一个事件【CC】：
 
 ```ts
-logEvent('tengu_skill_descriptions_truncated', {
+logEvent('<skill_descriptions_truncated>', {
   skill_count, budget, full_total,        // ← 预算 vs 实际需要
   truncation_mode: 'names_only',          // ← 降到哪一级
   bundled_count, bundled_chars,           // ← 豁免部分占了多少
@@ -3028,7 +3028,7 @@ Skill 全被去重掉只剩一个。**
 
 ```ts
 for (const skill of skills) {
-  logEvent('tengu_skill_loaded', {
+  logEvent('<skill_loaded>', {
     _PROTO_skill_name: skill.name,      // ← 注意这个前缀，见下
     skill_source: skill.source,
     skill_loaded_from: skill.loadedFrom,
@@ -3376,7 +3376,7 @@ prompt 里解释了为什么：
 **所以触发准确率虽然是第一优先级指标，但它是最难拿到 ground truth 的一个。**
 
 这解释了一个我在源码里的观察：【CC】的埋点是
-"**哪些 Skill 被加载了**"（`tengu_skill_loaded`）和
+"**哪些 Skill 被加载了**"（Skill 加载事件）和
 "**哪些被调用了**"，**但没有"哪些该被调用却没有**"。
 
 **因为后者需要 ground truth，而 ground truth 不存在。**
