@@ -58,7 +58,18 @@ function makeCtx(messages: Message[], mcState?: CachedMicrocompactState) {
       msgs = m;
     },
     compactWithSummary: (summary: string) => {
+      const before = msgs.length;
       msgs = [{ role: "user", content: [{ type: "text", text: summary }] }];
+      // P0-1 契约：真实实现返回 CompactionOutcome，mock 必须同形状
+      //（兜底路径据此分支文案）。
+      return {
+        success: msgs.length < before,
+        messageCountBefore: before,
+        messageCountAfter: msgs.length,
+        tokensBefore: before * 10,
+        tokensAfter: msgs.length * 10,
+        splitPoint: before - 1,
+      };
     },
     getTranscriptPath: () => undefined,
     appendReattachMessages: (m: Message[]) => {
