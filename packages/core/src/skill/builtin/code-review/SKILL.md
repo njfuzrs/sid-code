@@ -6,7 +6,6 @@ mode: delegate
 allowed-tools: read, grep, glob
 agent: verify
 max-turns: 30
-timeout-mins: 15
 sla:
   p50_ms: 300000
   p95_ms: 900000
@@ -42,7 +41,7 @@ release_metadata:
     - RL-001                         # 不删除用户代码（执行 agent 为只读的 verify（工具集不含 edit/write））
     - RL-002                         # 不泄露凭证（case_cr_001 admin123 守护）
     - RL-003                         # 不绕过 Permission（内核保证）
-    - RL-004                         # 不无限循环（max-turns 30 / timeout-mins 15）
+    - RL-004                         # 不无限循环（max-turns 30）
     - RL-006                         # 不修改测试断言（SKILL.md §4.1 明文）
     - RL-007                         # 不编造问题（§2.4 file:line 强约束）
     - RL-008                         # Skill 不自演化（§7 明文）
@@ -201,7 +200,7 @@ Step 2.4 产出的是**候选 finding**，不是结论。AI review 的最大失�
 - **RL-001 不删除用户代码**：本 Skill 是只读 review，不调用 edit/write
 - **RL-002 不泄露凭证**：findings 中不能出现 secret / token / key 的明文值
 - **RL-003 不绕过 Permission**：所有工具调用经过 Permission 层（已由 sid-code 内核保证）
-- **RL-004 不无限循环**：max-turns: 30 + timeout-mins: 15 已在 frontmatter 限定
+- **RL-004 不无限循环**：max-turns: 30 已在 frontmatter 限定（子代理不设时间上限）
 - **RL-006 不修改测试**：发现测试问题只 flag，不改测试代码
 - **RL-007 不编造问题**：每条 finding 必须含 `file:line` 引用，且文件/行号真实存在
 - **RL-007 加固（B0-4 / 2026-05-30 paired comparison T0023 CTX-02 教训）**：finding 的 `file:line` 必须**先用 read 工具成功读到该行原文**才能产出，禁止仅凭 diff 片段、grep 摘要或 LLM 记忆推断行号；read 持续失败时（如路径 `/project/...` 误读、文件不存在）必须停下来澄清路径，**绝不允许**在未读到原文的情况下给出该位置的 finding —— 这会同时违反 RL-007（编造）和 §4.2 false_positive 控制。Step 2.2 上下文获取的 read **不是**可选步骤，是 finding 合法性的前置条件
@@ -268,7 +267,6 @@ Step 2.4 产出的是**候选 finding**，不是结论。AI review 的最大失�
 
 ## 8. Known Limitations（已知限制）
 
-- **sid-code SkillManager builtin 加载 bug**（Step 5 暴露）：`discoverBuiltin()` 把 `src/skill/builtin/` 当 projectDir 传给 ExtensionLoader，导致 builtin Skill 实际上不被加载——见 `learnings.md` 偏差 1。修复路径：ADR-025 + L3 审批。
 - **真 LLM baseline 未跑**：当前 release_metadata.baseline_after = 4.32/5 是契约估算，不是真信号。S4-T01 边界 case 加完后一次性 execute。
 - **Context Engine 缺失**：M2 前依赖 grep 兜底；> 100k LOC repo 漏检概率高
 - **多语言**：当前主测 TypeScript；Python / Go / Rust 待 F-01 tree-sitter 落地

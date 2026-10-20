@@ -191,7 +191,7 @@ function orchestrateAfterTimeout(
 }
 
 describe("code-review Skill chaos - 超时降级（混沌测试）", () => {
-  test("SLA p95 < 15min（与 timeout-mins frontmatter 一致）", () => {
+  test("SLA p95 ≤ 15min", () => {
     const sla = loadSla();
     expect(sla.p95_ms).toBeLessThanOrEqual(15 * 60_000);
     expect(sla.p95_ms).toBeGreaterThan(0);

@@ -41,11 +41,12 @@ mode: activate
 - **工具集**：用 `ask_user_question` + `multiSelect: true` 让用户勾选常用工具
   （`read` / `write` / `edit` / `bash`；grep、glob 等更多工具可让用户用"其他"补充，
   因单题最多 4 选项）
-- **轮次 / 超时**：用 `ask_user_question` 给档位化选项，别让用户手敲数字：
-  - `默认（10 轮 / 2 分钟）`（推荐，适合大多数 Skill）
-  - `复杂任务（30 轮 / 10 分钟）`
-  - `长任务（50 轮 / 30 分钟）`
-  用户没有特别要求时直接用"默认"档并注明，不必强制弹问。
+- **轮次上限**：用 `ask_user_question` 给档位化选项，别让用户手敲数字：
+  - `不设上限`（推荐，与内置 skill 一致，跑到任务完成为止）
+  - `10 轮`（短任务，防止跑偏）
+  - `30 轮`（复杂任务）
+  用户没有特别要求时直接用"不设上限"（不写 `max-turns`）并注明，不必强制弹问。
+  **不要生成 `timeout-mins`**：该字段已不再生效（子代理不设时间上限），写了只会在加载时打 warn。
 
 ### 3. 生成 Skill 文件
 
@@ -77,8 +78,7 @@ when-to-use: 触发条件
 mode: activate|delegate
 # delegate 模式专用字段
 allowed-tools: read, write, grep  # 可选
-max-turns: 10                     # 可选
-timeout-mins: 2                   # 可选
+max-turns: 10                     # 可选，不写即不设上限
 ---
 
 # Skill 标题
@@ -115,7 +115,7 @@ timeout-mins: 2                   # 可选
 1. 检查 frontmatter 格式是否正确
 2. 确保 name 字段符合 slug 格式
 3. 确保 description 字段非空
-4. 测试 Skill 是否能被正确加载（重启 sid-code）
+4. 测试 Skill 是否能被正确加载（`~/.sid-code/skills/` 有热重载，存盘即生效，用 `/skills` 确认；热重载关了或没生效时再重启）
 5. 测试 Skill 的实际功能是否符合预期
 
 ## 可用资源
@@ -178,7 +178,6 @@ when-to-use: 当用户需要分析数据、生成图表时使用
 mode: delegate
 allowed-tools: read, write, bash
 max-turns: 30
-timeout-mins: 10
 ```
 
 ## 开始创建
@@ -188,6 +187,5 @@ timeout-mins: 10
 ## Known Limitations
 
 - skill-creator 是元 Skill，只生成 SKILL.md 骨架与目录结构，不验证 SKILL.md 的运行时正确性（运行时正确性由 sid-code 内核 + Skill loader 校验）
-- 当前不支持自动注册到 system prompt——生成的 Skill 需 sid-code 重启后才被加载（运行时 reload 在 ADR-024+ 引入）
 - 不为新建 Skill 自动生成 eval case；写 Skill 必须按 08 §12.2 三轴螺旋 Step 2 自己补 eval case
 - 仅支持 activate / delegate 两种模式；MCP Server 模式（A-06）落地后再扩展模板

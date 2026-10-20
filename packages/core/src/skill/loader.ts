@@ -83,7 +83,8 @@ export function parseSkillFrontmatterFields(
   if (timeoutMins !== undefined) {
     getLogger().warn(
       "SKILL",
-      `skill 声明了 timeoutMins=${timeoutMins}，已不再生效：fork 子代理不设时间上限（ESC / task_stop 可随时停止）`,
+      // task_stop 只认后台任务 id，停不了前台 skill，不能写进提示
+      `skill 声明了 timeoutMins=${timeoutMins}，已不再生效：fork 子代理不设时间上限（要中途停下：交互模式按 Esc）`,
     );
   }
 

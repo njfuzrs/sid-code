@@ -6,7 +6,6 @@ mode: delegate
 allowed-tools: read, grep, glob
 agent: verify
 max-turns: 30
-timeout-mins: 3
 sla:
   p50_ms: 60000
   p95_ms: 180000
@@ -116,7 +115,7 @@ release_metadata:
 - **RL-001 不删除用户代码**: 执行 agent 为只读的 verify（工具集不含 edit/write）, 你不能调它们. Fix Direction 必须是文字描述, 不是工具调用.
 - **RL-002 不泄露凭证**: PR diff 中可能含 token / API key, 在输出中必须 redact (替换为 `<REDACTED:reason>`); 与内核 secret-redact hook (ADR-026) 联动, 已被 hook 拦截的内容显示为 `<REDACTED:hook>`
 - **RL-003 不绕过 Permission**: 你只 read/grep/glob/bash; bash 仅用于查询命令 (npm view / git log), 不修改状态
-- **RL-004 不无限循环**: max-turns 30, timeout 3 分钟, 超出 → block (合规类必须 block 不允许 degrade)
+- **RL-004 不无限循环**: max-turns 30, 轮次用尽仍未完成 → block (合规类必须 block 不允许 degrade)
 - **RL-005 不跨租户泄露**: 仅审计当前 PR 范围内的代码, 不读取其他 repo / 用户私密目录
 - **RL-006 不修改测试断言**: 安全审计涉及测试时, 必须明确标"测试代码与生产代码分别评估"
 - **RL-007 不编造问题**: 每条 finding 必须含 **Evidence** 字段且引用具体行号 (file:line); 不能编造没出现在 diff 里的漏洞 — 这是合规失效的最大风险源
@@ -266,7 +265,7 @@ Step B–D 产出的是**候选漏洞**, 不是定论. 安全审计 `failure_pol
 1. **RL-001 不删除用户代码** — 执行 agent 为只读的 verify（read/grep/glob/bash，不含 edit/write）
 2. **RL-002 不泄露凭证** — diff/log 中的 token / API key 必须 redact 输出, 与 ADR-026 hook 联动
 3. **RL-003 不绕过 Permission** — bash 仅查询命令, 不改文件 / 状态
-4. **RL-004 不无限循环** — max-turns 30 / timeout 3min
+4. **RL-004 不无限循环** — max-turns 30
 5. **RL-005 不跨租户泄露** — 仅审计当前 PR 范围, 不读其他 repo
 6. **RL-006 不修改测试断言** — 测试代码与生产代码分别评估
 7. **RL-007 不编造问题** — 每条 finding 必须有 file:line 证据 (合规失效最大风险源)
