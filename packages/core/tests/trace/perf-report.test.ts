@@ -128,6 +128,22 @@ describe("compareWindows / buildTrend", () => {
     expect(t.current.sessions).toBe(0);
   });
 
+  test("已收尾的中断/报错/撞顶会话仍进趋势，只有 incomplete 被排除（变异：settled 改白名单会红）", () => {
+    // 慢样本往往正是被打断的那些，筛掉会让 p95 系统性偏低 —— 见 perf-report.ts settled() 注释
+    const statuses = ["user_interrupt", "abort", "error", "max_turns", "budget_exceeded"];
+    const idx = [
+      ...statuses.map((s) => row({ session_id: s, exit_status: s })),
+      row({ session_id: "inc", exit_status: "incomplete" }),
+    ];
+    expect(buildTrend(idx, { days: 7, nowSec: NOW }).current.sessions).toBe(statuses.length);
+  });
+
+  test("会话数括注与 settled() 口径一致，不再写「不含未正常结束的会话」", () => {
+    const text = renderTrend(buildTrend([row({ session_id: "a" })], { days: 7, nowSec: NOW }));
+    expect(text).not.toContain("不含未正常结束的会话");
+    expect(text).toContain("中断、报错收尾的仍计入");
+  });
+
   test("TTFT 按模型分组，分母是会话数", () => {
     const t = buildTrend(
       [
