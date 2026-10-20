@@ -910,6 +910,9 @@ export const HELP_ONLY_WHITELIST: Record<string, string> = {
   // 可选值语义（`-r` 可不带值开选择器），parseArgs 的 type:"string" 表达不了，
   // 走 packages/cli/src/cli.ts 的 extractResumeArg 预处理
   resume: "可选值语义，走 extractResumeArg 预处理",
+  // 可选值语义（`--worktree` 可不带值自动命名），parseArgs 的 type:"string" 表达不了，
+  // 走 packages/cli/src/cli.ts 的 extractWorktreeArg 预处理（只认 --worktree[=name]）
+  worktree: "可选值语义，走 extractWorktreeArg 预处理",
   // 取反式 flag，由 allowNegative 生成，不单独声明。
   // --no-session-persistence 同理：声明名不能带 no- 前缀，bun 的 parseArgs 在
   // allowNegative 下会把「声明名以 no- 开头」直接判成未知选项（node 不判，

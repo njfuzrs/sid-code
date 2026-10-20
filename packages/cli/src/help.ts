@@ -123,7 +123,9 @@ Bridge 远程控制:
   --bridge-insecure           允许明文 ws:// 连接（远端指令与 token 会明文过网，仅限可信内网）
 
 Worktree 隔离:
-  --worktree[=<name>]         启动即创建并进入隔离 Git Worktree（省略 name 自动命名为 brave-eagle-42 形态）
+  --worktree[=<name>]         启动即创建并进入隔离 Git Worktree（仅交互模式；
+                              省略 name 自动命名为 brave-eagle-42 形态。名字用等号：
+                              --worktree=foo；裸 --worktree 后的词当提示词，不当名字）
 
 其他:
   -h, --help                  显示帮助信息

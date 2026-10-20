@@ -313,7 +313,7 @@ settings.json 的全部可配字段、类型与默认值。
 
 | 子键 | 类型 | 说明 |
 |---|---|---|
-| `symlinkDirectories` | array | 创建 worktree 时额外 symlink 的目录（默认 ["node_modules"]） |
+| `symlinkDirectories` | array | 创建 worktree 时额外 symlink 的目录（默认 ["node_modules"]；设为 [] 可完全关闭 symlink） |
 | `sparsePaths` | array | sparse-checkout 路径（monorepo 大仓只检出指定子树） |
 | `baseRef` | "fresh" \| "head" | 基准 ref：fresh=origin/&lt;default-branch>，head=当前 HEAD（默认 fresh） |
 | `commitAttribution` | boolean | 是否在 worktree 内安装 commit 归因 hook |

@@ -8,7 +8,7 @@ import { getSettings } from "../config/settings/settings.ts";
 
 /** worktree 配置（已填充默认值） */
 export interface WorktreeConfig {
-  /** 额外 symlink 的目录（默认 ["node_modules"]，向后兼容硬编码行为） */
+  /** 额外 symlink 的目录（默认 ["node_modules"]；设为 [] 可完全关闭 symlink） */
   symlinkDirectories: string[];
   /** sparse-checkout 路径（空 = 不启用） */
   sparsePaths: string[];
@@ -44,10 +44,9 @@ export function getWorktreeConfig(gitRoot?: string): WorktreeConfig {
       copyLocalSettings?: boolean;
     };
     return {
-      symlinkDirectories:
-        Array.isArray(wt.symlinkDirectories) && wt.symlinkDirectories.length > 0
-          ? wt.symlinkDirectories
-          : DEFAULT_WORKTREE_CONFIG.symlinkDirectories,
+      symlinkDirectories: Array.isArray(wt.symlinkDirectories)
+        ? wt.symlinkDirectories
+        : DEFAULT_WORKTREE_CONFIG.symlinkDirectories,
       sparsePaths: Array.isArray(wt.sparsePaths) ? wt.sparsePaths : [],
       baseRef: wt.baseRef === "head" ? "head" : DEFAULT_WORKTREE_CONFIG.baseRef,
       commitAttribution: wt.commitAttribution === true,
