@@ -146,7 +146,7 @@ export interface AuditEntry {
 
 // ── 多来源规则系统类型 ──
 
-/** 规则来源（8 种，优先级从低到高） */
+/** 规则来源（9 种，优先级从低到高；commandScoped 是唯一的负优先级档，见 RULE_SOURCE_PRIORITY） */
 export type PermissionRuleSource =
   | "commandScoped" // 斜杠命令 / skill 的 allowed-tools，仅作用于触发它的那一轮（或那一个 fork 子代理）
   | "session" // 运行时动态添加（权限弹窗 Always Allow）
