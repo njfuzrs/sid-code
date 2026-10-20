@@ -62,7 +62,7 @@ export function isRecommendedLabel(label: string): boolean {
  *
  * 原先只有字母一条路径（且 `if (!key.insertable) return false` 把方向键在第一步就挡掉了），
  * 用户必须记住三个字母才能操作；同时线上这份组件缺 `always-persist` 档，而 app.ts 的整条
- * 持久化链路（persistBashAllowRule → project settings）早已实现，只是按不出来。两者一并修掉。
+ * 持久化链路（persistBashAllowRule → local settings）早已实现，只是按不出来。两者一并修掉。
  *
  * Esc = 拒绝（保守）：与 app.ts 里 signal abort 的处理一致——不放行未确认的工具。
  */
