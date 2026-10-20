@@ -74,6 +74,11 @@ export interface BackfillOptions {
    * 创建时间的取法与「为什么不用 mtime」见 upload-watermark.ts。
    */
   watermarkMs?: number;
+  /**
+   * 显式豁免隐私级别过滤：`--upload-traces --include-history` 时由用户显式说
+   * 「连 essential-traffic 期间产生的会话一起传」，尊重用户意愿。默认 false。
+   */
+  includeHistory?: boolean;
 }
 
 /** 一个待补传的会话 */
@@ -110,6 +115,11 @@ export interface ScanStats {
    * 并触发 collector 里「积压偏多」的 WARN 升级 —— 而这些会话本来就不该传。
    */
   beforeWatermark: number;
+  /**
+   * 会话产生时是 essential-traffic（目录带 `.privacy-restricted` 标记），不自动补传。
+   * 单列一格而不并进 pending：这些会话不该传，列出来是给 `--include-history` 打印与排查用。
+   */
+  privacyRestricted: number;
   /** 读目录/文件出错 */
   errored: number;
 }
@@ -201,6 +211,7 @@ export function scanPendingUploads(opts: BackfillOptions): ScanResult {
     minAgeMs = 60_000,
     heartbeatFreshMs = 30_000,
     watermarkMs,
+    includeHistory = false,
   } = opts;
 
   const stats: ScanStats = {
@@ -212,6 +223,7 @@ export function scanPendingUploads(opts: BackfillOptions): ScanResult {
     live: 0,
     ghost: 0,
     beforeWatermark: 0,
+    privacyRestricted: 0,
     errored: 0,
   };
   const pending: PendingSession[] = [];
@@ -278,6 +290,15 @@ export function scanPendingUploads(opts: BackfillOptions): ScanResult {
       // 真实的 52 个会话 events.jsonl 齐全 52/52，所以这条判据不会误伤正常会话。
       if (!existsSync(join(dir, "events.jsonl"))) {
         stats.ghost++;
+        continue;
+      }
+
+      // ③.7 隐私级别：essential-traffic 期间产生的会话（目录带 `.privacy-restricted`
+      // 标记）不自动补传。用户切到 stricter 级别期间产生的数据，切回 default 后也不应
+      // 被批量补传——这类外发必须在产生时定死，事后无法回溯。`--include-history`
+      // 显式说「连这类一起传」时尊重用户意愿。
+      if (!includeHistory && existsSync(join(dir, ".privacy-restricted"))) {
+        stats.privacyRestricted++;
         continue;
       }
 
@@ -413,6 +434,8 @@ export interface UploadBacklog {
   ghost: number;
   /** 配置上传之前产生、不会自动补传的会话数（未传 watermarkMs 时恒 0） */
   beforeWatermark: number;
+  /** 会话产生时是 essential-traffic、不自动补传的会话数 */
+  privacyRestricted: number;
   /** S11：没有 session.traj 的空壳目录数 */
   noTraj: number;
   /** S11：session.traj 为 0 字节的目录数 */
@@ -461,6 +484,7 @@ export function getUploadBacklog(opts: BackfillOptions): UploadBacklog {
     stats.live +
     stats.ghost +
     stats.beforeWatermark +
+    stats.privacyRestricted +
     stats.noTraj +
     stats.emptyTraj +
     stats.tooNew +
@@ -472,6 +496,7 @@ export function getUploadBacklog(opts: BackfillOptions): UploadBacklog {
     live: stats.live,
     ghost: stats.ghost,
     beforeWatermark: stats.beforeWatermark,
+    privacyRestricted: stats.privacyRestricted,
     noTraj: stats.noTraj,
     emptyTraj: stats.emptyTraj,
     tooNew: stats.tooNew,

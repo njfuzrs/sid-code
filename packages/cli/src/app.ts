@@ -435,10 +435,15 @@ export function classifyRetryKind(error: string): "retry" | "rate_limit" | "over
 }
 
 /**
- * goal_state 清除哨兵：/clear 时落一条此值，覆盖 clear 前的旧目标快照。
- * restoreSession 读到它就跳过 goal 恢复，使 /clear 的目标清除语义在恢复端也生效。
+ * 旧版 goal_state 清除哨兵，**只读兼容，不再写入**。
+ *
+ * 7752ffb6 起 /clear 续写同一个 jsonl，所以要落这条哨兵覆盖 clear 前的旧目标快照。
+ * 1121f4a6（v0.1.609）把 /clear 改成「结束旧会话 + 开新会话」，写哨兵的调用随之删除：
+ * 新会话文件里本来就没有旧目标，哨兵已无用处。
+ * 读侧保留这一处比较，是因为 v0.1.609 之前写出的会话文件里仍可能有这个值。
+ * 不比较的话它会被当成 JSON 去解析，结果同样是跳过恢复，但会多打一条误导性的「恢复失败」warn。
  */
-const GOAL_STATE_CLEARED_MARKER = "__CLEARED__";
+const LEGACY_GOAL_STATE_CLEARED_MARKER = "__CLEARED__";
 
 /**
  * 审计第 11 条：把已加载的 JIT 上下文合并回一份（可能是刚重建的）系统提示词。
@@ -5495,10 +5500,10 @@ export class App {
     }
 
     // /goal：从 JSONL metadata 恢复目标状态（跨会话续做时保持目标意识不断）
-    // 边界：读到清除哨兵（/clear 落的）跳过恢复，不复活 clear 前的旧目标。
+    // 旧版会话文件可能以清除哨兵结尾（v0.1.609 前 /clear 写的），按「无目标」处理。
     if (
       sessionData.metadata?.["goal_state"] &&
-      sessionData.metadata["goal_state"] !== GOAL_STATE_CLEARED_MARKER
+      sessionData.metadata["goal_state"] !== LEGACY_GOAL_STATE_CLEARED_MARKER
     ) {
       try {
         const { deserializeGoalState } = await import("@sid-code/core/goal/state.ts");
@@ -7401,17 +7406,13 @@ export class App {
    * /goal：将当前 goalState 持久化到 session JSONL（增量 metadata 记录）。
    * 每次 goalState 变更时调用（set/update），失败不阻断。
    *
-   * 边界（clearMarker=true）：/clear 把 goalState 置 null 后，若不落任何记录，恢复端会按
-   * "取最后一条"读到 clear 前的旧目标 → 幽灵目标复活。此时落一条哨兵 __CLEARED__，
-   * restoreSession 识别到就跳过恢复，让 /clear 的目标清除语义在恢复端也生效。
+   * /clear 不调这里：它开了新会话文件，旧目标只留在旧文件里（见 LEGACY_GOAL_STATE_CLEARED_MARKER）。
+   * 不要再给 /clear 补一条哨兵：clearConversation 先 finalizeSessionStore() 把旧文件关掉
+   * （currentFile=null），之后 appendMetadata 直接 no-op，什么也写不进旧文件。
    */
-  private persistGoalState(clearMarker = false): void {
+  private persistGoalState(): void {
     if (!this.sessionStore) return;
     try {
-      if (clearMarker) {
-        this.sessionStore.appendMetadata("goal_state", GOAL_STATE_CLEARED_MARKER);
-        return;
-      }
       if (!this.goalState) return;
       // F6：落盘走裁剪版（内存仍全量）。appendMetadata 是 append 语义，用全量序列化
       // 会让第 N 轮那一次写入带 N 条证据的完整体积——150 轮实测单次 328KB / 累计 24MB。
