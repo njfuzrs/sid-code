@@ -795,14 +795,21 @@ export class MemoryCommand implements Command {
 
       case "set": {
         const key = parts[1];
-        const value = parts.slice(2).join(" ");
+        // 修复 --global 解析：先在 token 级剥离 flag 再 join，避免 value 正文里的
+        // "--global" 子串被 String.replace 误删（详见 docs/bugfixes 20261017 排查）。
+        // scope 判定与 value 清理必须用同一数据源（rest），否则 key/value 含子串时两边结论不一致。
+        const rest = parts.slice(2);
+        const scope = rest.includes("--global") ? ("global" as const) : ("project" as const);
+        const value = rest
+          .filter((p) => p !== "--global")
+          .join(" ")
+          .trim();
+        // 空值检查放在剥离之后：/memory set key --global 不再静默存入空 value
         if (!key || !value) {
           return { kind: "error", message: "用法: /memory set <key> <value> [--global]" };
         }
-        const scope = args.includes("--global") ? ("global" as const) : ("project" as const);
-        const cleanValue = value.replace("--global", "").trim();
-        await store.set(key, cleanValue, scope);
-        return { kind: "message", message: `记忆已保存: [${scope}] ${key} = ${cleanValue}` };
+        await store.set(key, value, scope);
+        return { kind: "message", message: `记忆已保存: [${scope}] ${key} = ${value}` };
       }
 
       case "get": {
