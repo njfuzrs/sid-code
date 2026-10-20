@@ -35,6 +35,8 @@ function mkSession(
     ageMs?: number;
     /** false = 不写 events.jsonl，构造「幽灵目录」（只有 traj 的空壳残骸） */
     events?: boolean;
+    /** true = 写 `.privacy-restricted` 标记（essential-traffic 期间产生的会话） */
+    privacyRestricted?: boolean;
   } = {},
 ): string {
   const dir = join(root, "sessions", id);
@@ -45,6 +47,11 @@ function mkSession(
   // 所以默认建出来 —— 缺它即为幽灵目录，另有专测。
   if (opts.events !== false) writeFileSync(join(dir, "events.jsonl"), '{"event":"SessionStart"}\n');
   if (opts.uploaded) writeFileSync(join(dir, ".uploaded"), "{}");
+  if (opts.privacyRestricted)
+    writeFileSync(
+      join(dir, ".privacy-restricted"),
+      JSON.stringify({ privacy_level: "essential-traffic" }),
+    );
   if (opts.heartbeatTs) {
     writeFileSync(join(dir, "heartbeat.txt"), JSON.stringify({ ts: opts.heartbeatTs }));
   }
@@ -96,6 +103,41 @@ describe("backfill 扫描判据", () => {
     const { pending, stats } = scanPendingUploads({ outputDir: root });
     expect(pending).toHaveLength(0);
     expect(stats.alreadyUploaded).toBe(1);
+  });
+
+  test("essential-traffic 期间产生的会话（.privacy-restricted）→ 跳过并计入 privacyRestricted", () => {
+    mkSession(root, "s1", { privacyRestricted: true });
+    const { pending, stats } = scanPendingUploads({ outputDir: root });
+    expect(pending).toHaveLength(0);
+    expect(stats.privacyRestricted).toBe(1);
+  });
+
+  test("--include-history 显式豁免 → .privacy-restricted 会话进 pending", () => {
+    mkSession(root, "s1", { privacyRestricted: true });
+    const { pending, stats } = scanPendingUploads({ outputDir: root, includeHistory: true });
+    expect(pending.map((p) => p.sessionId)).toEqual(["s1"]);
+    expect(stats.privacyRestricted).toBe(0);
+  });
+
+  test("普通会话与 .privacy-restricted 会话共存 → 只普通会话进 pending，restricted 单列", () => {
+    mkSession(root, "s-normal");
+    mkSession(root, "s-restricted", { privacyRestricted: true });
+    const { pending, stats } = scanPendingUploads({ outputDir: root });
+    expect(pending.map((p) => p.sessionId)).toEqual(["s-normal"]);
+    expect(stats.privacyRestricted).toBe(1);
+    // 自检：各分类之和 = 扫描总数，restricted 也落格，不许「悄悄没了」
+    expect(
+      stats.alreadyUploaded +
+        pending.length +
+        stats.live +
+        stats.ghost +
+        stats.beforeWatermark +
+        stats.privacyRestricted +
+        stats.noTraj +
+        stats.emptyTraj +
+        stats.tooNew +
+        stats.errored,
+    ).toBe(stats.scanned);
   });
 
   test("无 session.traj → 跳过并计入 noTraj（空壳/正在初始化）", () => {

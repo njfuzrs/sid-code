@@ -53,6 +53,7 @@ import {
 import { buildDigest, resolvePaths, type SessionLevelMetrics } from "./digest.ts";
 import { upsertSessionIndex, buildSessionIndexEntry } from "./session-index.ts";
 import { selectTraceDirsToPrune, type TraceDirEntry } from "./retention.ts";
+import { getPrivacyLevel } from "../analytics/privacy-level.ts";
 import {
   DEFAULT_SESSION_MAX_TOTAL_SIZE,
   DEFAULT_SESSION_MIN_RETENTION,
@@ -1155,6 +1156,10 @@ export class TraceCollector {
         source: input.source,
         model: input.model,
         permission_mode: input.permission_mode,
+        // 记录会话产生那一刻的隐私级别：essential-traffic 会话切回 default 后不应被补传，
+        // 而隐私级别是进程环境、会话结束后无从回溯，必须在产生时落盘。仅本地归因——
+        // 上传前由 stripLocalOnlyEventFields 剥掉（见 LOCAL_ONLY_EVENT_DATA_FIELDS）。
+        privacy_level: getPrivacyLevel(),
         // resume 续接时记录本进程真实 id，便于跨进程排查（trajectory 目录名=旧id，进程=新id）
         ...(isResume
           ? { resumed_from: input.resumed_from, process_session_id: input.session_id }
@@ -1164,6 +1169,21 @@ export class TraceCollector {
         ts_semantics: { version: TS_SEMANTICS_VERSION, events: EVENT_TS_SEMANTIC },
       },
     });
+
+    // essential-traffic 期间产生的会话：在目录里落 `.privacy-restricted` 标记，
+    // 补传扫描（backfill.ts）据此跳过——不让期间会话在切回 default 后被批量补传。
+    // 与隐私级别字段同理，必须在产生时落盘（事后无法回溯）。该文件不进 FILE_TYPE_MAP，
+    // 不会被上传。
+    if (getPrivacyLevel() === "essential-traffic") {
+      try {
+        writeFileSync(
+          join(this.writer.getSessionDir(), ".privacy-restricted"),
+          JSON.stringify({ privacy_level: "essential-traffic", created_at: input.timestamp }),
+        );
+      } catch {
+        /* 静默：标记缺失不会崩溃，只意味着该会话不享受补传豁免 */
+      }
+    }
 
     // 缺口 1/2/3：初始化流状态观测器（注入 session_id 和事件写入器）
     initStreamObserver(traceSessionId, this.writer.getSessionDir(), (event) => {
@@ -2256,7 +2276,8 @@ export class TraceCollector {
     }
 
     // 缺口分析一类：派生会话级输出吞吐 tokens/sec。
-    // 分母是纯生成耗时累计（total_gen_elapsed_ms，来自 stream_completed，不含握手/重试/等待），
+    // 分母是生成耗时累计（total_gen_elapsed_ms，来自 stream_completed：起点在响应头之后，
+    // 不含握手/TTFB/重试退避；口径细节见 writeRetryTelemetry 里 stream_completed 分支），
     // 分子取 total_tokens_received（若上面被 SessionState 覆盖，用的是权威值，口径仍是"最终输出"）。
     // 无纯生成耗时样本（gen_samples=0，如 anthropic 未接 lifecycle telemetry 的旧路径）时留 undefined，
     // 不落一个误导的 0 或 ∞——与 TTFT/Bug A 的"宁缺毋滥"philosophy 一致。
@@ -3568,11 +3589,16 @@ export class TraceCollector {
           ...this.streamAttributionFields(event),
         },
       });
-      // 缺口分析（一类·输出吞吐）：stream_completed.elapsedMs 是"单次 fetch 从连接到流结束
-      // 的纯生成耗时"（不含握手/重试/等待），是 tokens/sec 唯一正确的分母。
+      // 缺口分析（一类·输出吞吐）：stream_completed.elapsedMs 是单次 fetch 从 lifecycle 创建
+      // （**响应头之后**，见 llm/stream-lifecycle.ts 的 startedAt）到流结束的生成耗时，
+      // 不含连接握手、等响应头（TTFB）与重试退避，是 tokens/sec 的分母。
+      // ⚠ 起点不是「从连接」：若把它理解成含握手/TTFB，会把 tok/s 偏低误归因到网络；
+      // 若有人把起点前移到 fetch 之前，分母静默变大，历史曲线全部不可比。
       // 累加到会话级，SessionEnd 时与 total_tokens_received 派生 output_tokens_per_sec。
       // 每轮流内可能有多次 stream_completed（重试重连），全部累加 → 分母是"实际生成墙钟"，
-      // 分子是"最终采纳的输出 token"，二者口径一致（都只算真正产出 token 的那段时间）。
+      // 分子是 total_tokens_received。被丢弃那次流的 token 是否计入分子尚未核实
+      // （AfterModelRaw 累加 + SessionEnd 时被 SessionState 覆盖两条路径），
+      // 若不计入，重试多的会话 tok/s 会偏低。
       if (event.type === "stream_completed") {
         const elapsed = event.elapsedMs;
         if (typeof elapsed === "number" && elapsed > 0) {

@@ -1090,7 +1090,9 @@ async function handleUploadTraces(
       await import("@sid-code/core/trace/backfill.ts");
     if (opts.includeHistory) {
       const watermarkMs = await mgr.getBackfillWatermark();
-      const { pending } = scanPendingUploads({ outputDir });
+      // 隐私轴豁免：include-history 会连 essential-traffic 期间产生的会话一起传，
+      // 先扫一遍（不带隐私过滤）数清楚，执行前告诉用户放出去的是什么。
+      const { pending, stats } = scanPendingUploads({ outputDir, includeHistory: true });
       const history = pending.filter((p) => p.createdMs === null || p.createdMs < watermarkMs);
       const times = history
         .map((p) => p.createdMs)
@@ -1103,6 +1105,11 @@ async function handleUploadTraces(
       console.log(
         `--include-history：将额外上传 ${history.length} 个配置上传之前产生的会话，时间范围 ${range}`,
       );
+      if (stats.privacyRestricted > 0) {
+        console.log(
+          `--include-history：将额外上传 ${stats.privacyRestricted} 个 essential-traffic 期间产生的会话（切回 default 本不应补传，由 --include-history 显式豁免）`,
+        );
+      }
     }
     const b = await mgr.backfillPendingSessions({
       maxSessions: Number.POSITIVE_INFINITY,

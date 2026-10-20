@@ -345,8 +345,29 @@ export class CostCommand implements Command {
       // P2-2：openai 协议路径为服务端隐式缓存（无客户端主动写入 cache_control，
       // cacheCreation 恒 0），命中率结构性上限约 60-70%，不同于 anthropic 族显式缓存的 90%+。
       // 对该族标注正常上限，避免用户把 60-70% 误判为 harness bug。以协议路径为准，非按模型名单。
-      if (ctx.config.provider === "openai" && !totalUsage.cacheCreationInputTokens) {
-        lines.push("  （openai 协议为隐式缓存，60-70% 属正常上限；90%+ 需 anthropic 族显式缓存）");
+      //
+      // 判据必须与命中率同源：上面的命中率是全会话跨模型聚合（getNormalizedCacheUsage 遍历
+      // modelUsage），所以这里也遍历 modelUsage，按每条记账时的 provider 判断。
+      // 不能用 ctx.config.provider（当前模型）+ 全会话 cacheCreation：先 anthropic 后 /model 切
+      // openai、或主模型 openai + anthropic 子代理时，anthropic 那部分的写入量会让条件恒假，
+      // 提示要防的「60-70% 误判成 bug」恰好在多协议会话里重新暴露。
+      // 写入量也只看 openai 族自己的那几条：该族恒 0（见 llm/openai-usage.ts），
+      // 非 0 说明走了显式缓存，结构性上限的解释不再适用。
+      const usageList = Object.values(ss.modelUsage);
+      const implicitCacheUsage = usageList.filter(
+        (s) => s.provider === "openai" && s.cacheReadInputTokens > 0,
+      );
+      const hasImplicitOnly =
+        implicitCacheUsage.length > 0 &&
+        implicitCacheUsage.every((s) => s.cacheCreationInputTokens === 0);
+      if (hasImplicitOnly) {
+        // 混了别的协议族时，整体命中率是两族加权的结果，不能直接拿 60-70% 去套
+        const mixed = usageList.some((s) => s.provider !== "openai" && s.cacheReadInputTokens > 0);
+        lines.push(
+          mixed
+            ? "  （本会话混用多个协议族：openai 协议部分为隐式缓存，60-70% 属正常上限；上面的命中率是各族加权结果，不能直接套单一族的标准）"
+            : "  （openai 协议为隐式缓存，60-70% 属正常上限；90%+ 需 anthropic 族显式缓存）",
+        );
       }
     }
 
@@ -808,14 +829,21 @@ export class MemoryCommand implements Command {
 
       case "set": {
         const key = parts[1];
-        const value = parts.slice(2).join(" ");
+        // 修复 --global 解析：先在 token 级剥离 flag 再 join，避免 value 正文里的
+        // "--global" 子串被 String.replace 误删（详见 docs/bugfixes 20261017 排查）。
+        // scope 判定与 value 清理必须用同一数据源（rest），否则 key/value 含子串时两边结论不一致。
+        const rest = parts.slice(2);
+        const scope = rest.includes("--global") ? ("global" as const) : ("project" as const);
+        const value = rest
+          .filter((p) => p !== "--global")
+          .join(" ")
+          .trim();
+        // 空值检查放在剥离之后：/memory set key --global 不再静默存入空 value
         if (!key || !value) {
           return { kind: "error", message: "用法: /memory set <key> <value> [--global]" };
         }
-        const scope = args.includes("--global") ? ("global" as const) : ("project" as const);
-        const cleanValue = value.replace("--global", "").trim();
-        await store.set(key, cleanValue, scope);
-        return { kind: "message", message: `记忆已保存: [${scope}] ${key} = ${cleanValue}` };
+        await store.set(key, value, scope);
+        return { kind: "message", message: `记忆已保存: [${scope}] ${key} = ${value}` };
       }
 
       case "get": {
