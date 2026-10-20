@@ -28,7 +28,7 @@ description: 教它新本事（CLAUDE.md / Skill / Hook / 子代理 / Workflow /
 | 你想做的事 | 该用 | 为什么不是别的 |
 | --- | --- | --- |
 | 让它知道项目约定（用 bun 不用 npm、注释写中文） | **CLAUDE.md** | 每轮都在上下文里，成本最低。见[记忆与 CLAUDE.md](/use/memory) |
-| 把一套多步流程教给它（修 bug 的 SOP、发版流程） | **[Skill](/extend/skills)** | 按需加载：不触发时只占一行摘要，触发了才展开全文 |
+| 把一套多步流程教给它（修 bug 的 SOP、发版流程） | **[Skill](/extend/skills)** | 按需加载：没调用时通常只占一行摘要，调用时才加载正文 |
 | 在固定时机**强制**跑一段命令（提交前 lint、拦住 `git push`） | **[Hook](/extend/hooks)** | 唯一能**阻断**工具执行的机制。Skill/CLAUDE.md 都是"建议"，模型可以不听 |
 | 派人去干独立的活（并行读 20 个文件、跑一轮 review） | **[子代理](/extend/subagents)** | 独立上下文，不污染主对话；还能按类型分级到便宜模型省钱（账单仍然按子代理实际 model/provider 合到主会话） |
 | 让多个子代理按固定编排跑（扇出 → 验证 → 汇总，不靠模型临场决定） | **[Workflow](/extend/workflows)** | 编排是**确定的代码**，不是模型每次自己想；子代理只管干活；改脚本后可用 `resume_from_run_id` 只重跑改动及其之后的（**注意：脚本里不能用 `Date()` / `Date.now()` / `Math.random()`，会破坏 resume**） |
