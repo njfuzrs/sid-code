@@ -10,7 +10,9 @@
 
 import { existsSync, statSync } from "node:fs";
 import { dirname, join, isAbsolute, resolve, relative } from "node:path";
+import { homedir } from "node:os";
 import { getLogger } from "../debug/logger.ts";
+import { sidPaths } from "../config/paths.ts";
 
 /**
  * 工具 input 里承载路径的字段名（P1-5）。
@@ -64,6 +66,11 @@ export function discoverSkillDirsForPaths(
   alreadyDiscovered: Set<string>,
 ): string[] {
   const found = new Set<string>();
+  // 用户级 skills 目录（含 SID_CONFIG_DIR 重定向）由启动扫描按 user 层加载，绝不能当项目层再进信任门。
+  // 家目录本身也不参与：与启动项目层上界 getExtensionScanDirs 同口径（家目录 = 用户层）。
+  // 此前 cwd=~ 时读任意文件都会把 ~/.sid-code/skills 动态发现成「项目级」，对话中途弹信任框。
+  const userSkillsDir = resolve(sidPaths.extensionDir("skills"));
+  const home = resolve(homedir());
 
   for (const filePath of filePaths) {
     const abs = isAbsolute(filePath) ? filePath : resolve(cwd, filePath);
@@ -86,7 +93,13 @@ export function discoverSkillDirsForPaths(
       const relDir = relative(cwdResolved, resolve(dir));
       if (relDir.startsWith("..") || isAbsolute(relDir)) break;
       const skillsDir = join(dir, ".sid-code", "skills");
-      if (existsSync(skillsDir) && !alreadyDiscovered.has(skillsDir) && !found.has(skillsDir)) {
+      const isUserLayer = resolve(dir) === home || resolve(skillsDir) === userSkillsDir;
+      if (
+        !isUserLayer &&
+        existsSync(skillsDir) &&
+        !alreadyDiscovered.has(skillsDir) &&
+        !found.has(skillsDir)
+      ) {
         found.add(skillsDir);
       }
 
