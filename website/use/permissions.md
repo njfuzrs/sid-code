@@ -352,11 +352,17 @@ settings.json 里只有两个字段（定义在 `packages/core/src/config/config
 所以沙箱是「bash 命令的操作系统级兜底」，不是「全工具的隔离」。和前面的应用层规则是
 **互补**而非替代：应用层管「该不该调」，沙箱管「调了之后内核允不允许」。
 
-::: warning 沙箱违规目前没有应用层观测
-命令撞到被 deny 的路径/主机时，sandbox-exec 会直接拒绝该操作（命令通常因此失败），
-但 sid-code 侧**目前不采集违规明细**——`sandbox.ts` 里的 `violations` 列表尚未接线，
-日志里也不会出现「哪条命令撞了边界」的 `[SANDBOX]` 行（该前缀目前只在网络白名单主机
-解析失败时出现）。要排查命令为什么失败，直接看命令的 stderr 输出。
+::: warning 沙箱违规只有启发式归因，没有规则级明细
+命令撞到被 deny 的路径/主机时，sandbox-exec 会直接拒绝该操作（命令通常因此失败）。
+但 macOS 的 denial 明细只写内核统一日志（`log show` 里形如
+`Sandbox: <cmd>(pid) deny(1) file-read-data <path>`），**不写进命令的 stderr** ——
+所以 sid-code 侧没有「违规列表」这种能力，也不承诺告诉你撞了哪条规则。
+
+它能做的是：沙箱启用、命令失败、且 stderr 出现 `Operation not permitted` /
+`Permission denied` 时，在日志里打一条 `[SANDBOX]` 归因行。这是**启发式** ——
+文件权限不足、只读文件系统等非沙箱原因也会命中同一特征，所以它只能提示「可能相关」。
+要精确定位撞了哪条规则，用
+`log show --last 1m --predicate 'eventMessage CONTAINS "deny"'` 查统一日志。
 :::
 
 ## 哪些操作 `allow` 规则与 `always-allow` 都绕不过

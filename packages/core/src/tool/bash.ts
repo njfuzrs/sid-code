@@ -1160,6 +1160,17 @@ export class BashTool implements Tool {
               };
             }
 
+            // 沙箱归因（启发式，2026-10-20）：Seatbelt 的 denial 明细只写 macOS 统一日志，
+            // 子进程 stderr 里只有它自己的 `Operation not permitted`（见 sandbox.ts
+            // SANDBOX_DENIAL_STDERR_RE 的注释）。所以这里不做规则级归属，只在沙箱启用、
+            // 命令失败且 stderr 出现权限拒绝特征时打一条 [SANDBOX] 行，给排查留 grep 锚点。
+            //
+            // 只在 exitCode !== 0 时调：成功命令即便 stderr 里有 "permission denied" 字样
+            // （比如命令自己探测权限后继续走），也不该被记成沙箱相关失败。
+            if (exitCode !== 0) {
+              this.sandboxManager?.noteCommandFailure(params.command, stderr);
+            }
+
             // 退出码语义解释（缺口 4 修复）：grep 无匹配 / diff 有差异 / find 部分不可访问
             // / test 条件为假 等，退出码非 0 但不是错误，不再误标 isError。
             const interp = interpretExitCode(params.command, exitCode);
