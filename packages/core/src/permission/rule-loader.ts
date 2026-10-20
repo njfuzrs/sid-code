@@ -1,6 +1,6 @@
 /**
  * 多来源权限规则加载器
- * 从 8 种来源加载规则并按优先级合并
+ * 从 9 种来源加载规则并按优先级合并
  * 优先级（低→高）：commandScoped → session → command → cliArg → userSettings → projectSettings → localSettings → flagSettings → policySettings
  *
  * 安全约束：projectSettings 是不可信来源，某些敏感设置必须排除
