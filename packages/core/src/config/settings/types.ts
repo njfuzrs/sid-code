@@ -304,7 +304,7 @@ const NetworkTimeoutsSchema = lazySchema(() =>
 const WorktreeSettingsSchema = lazySchema(() =>
   z
     .object({
-      /** 创建 worktree 时额外 symlink 的目录（默认 ["node_modules"]） */
+      /** 创建 worktree 时额外 symlink 的目录（默认 ["node_modules"]；设为 [] 可完全关闭 symlink） */
       symlinkDirectories: z.array(z.string()).optional(),
       /** sparse-checkout 路径（monorepo 大仓只检出指定子树） */
       sparsePaths: z.array(z.string()).optional(),

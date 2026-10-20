@@ -12,23 +12,20 @@ description: 在独立 worktree 里干活，含 symlink node_modules 的跨分�
 
 ## 快速上手
 
-启动即进入一个隔离 worktree：
+启动即进入一个隔离 worktree（仅交互模式，无头 `-p` 下这个 flag 不创建）：
 
 ```bash
 sid-code --worktree=my-feature
 ```
 
-省略名字会自动起一个可读的名字（`brave-eagle-42` 这种形态），写法是**等号留空**：
+省略名字会自动起一个可读的名字（`brave-eagle-42` 这种形态）：
 
 ```bash
-sid-code --worktree=
+sid-code --worktree
 ```
 
-::: warning 注意等号
-必须是 `--worktree=`（等号 + 空值）。裸写 `--worktree`（不带等号）当前版本会报
-`Option '--worktree <value>' argument missing` 退出——帮助文本里的 `[=<name>]` 可选值
-写法尚未实现。
-:::
+名字用等号写：`--worktree=foo`。裸 `--worktree` 后面的词当提示词，不当名字
+（`sid-code --worktree 帮我修登录页` 会自动命名 worktree，提示词照常提交）。
 
 看现在有哪些：
 
@@ -113,10 +110,19 @@ rm node_modules        # 删掉软链
 pnpm install           # 独立安装
 ```
 
-想从一开始就不 symlink？**当前版本做不到**：把 `symlinkDirectories` 设成空数组
-（`[]`）会被配置读取层当成「未设置」，静默回退默认 `["node_modules"]`，创建期零告警
-——你以为切到了独立安装，实际仍在用主仓依赖，比不设这个配置更危险（缺陷已登记，
-待修复）。真要独立安装，用上面那个手动方式：创建后删掉软链、自己 install。
+想从一开始就不 symlink？把 `symlinkDirectories` 设成空数组：
+
+```json
+{
+  "worktree": {
+    "symlinkDirectories": []
+  }
+}
+```
+
+创建时一个目录都不会软链，每个 worktree 自己 install。未设置仍默认
+`["node_modules"]`。多层 settings 都写了这个字段时按读取合并（数组拼接）——
+某一层的 `[]` 清不掉另一层已经写出的名单。
 
 至于为什么不默认独立安装：每个 worktree 都要装一份依赖，磁盘和时间都要花。
 默认 symlink 是因为大多数时候分支间 lockfile 是一样的，这时候 symlink 纯赚。
@@ -151,7 +157,7 @@ pnpm install           # 独立安装
 
 | 字段 | 默认 | 说明 |
 | --- | --- | --- |
-| `symlinkDirectories` | `["node_modules"]` | 要软链的目录 |
+| `symlinkDirectories` | `["node_modules"]` | 要软链的目录；`[]` 关闭 symlink |
 | `sparsePaths` | `[]`（不启用） | sparse-checkout，只签出这几个路径。大仓库里能显著提速 |
 | `baseRef` | `fresh` | `fresh` = origin/默认分支，`head` = 当前 HEAD |
 | `commitAttribution` | `false` | 是否装 commit 归因 hook |
