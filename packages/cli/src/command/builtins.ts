@@ -397,7 +397,20 @@ export class CompactCommand implements Command {
       })
       .join("\n");
 
-    ctx.ctxMgr.compactWithSummary(summaryText.slice(0, 2000));
+    // P0-1 契约：compactWithSummary 有三条 no-op 路径（no_split_point /
+    // invalid_result_rolled_back / no_reduction），触发时消息一字不动。
+    // 此前这里不接收返回值、固定报「对话已压缩」，no-op 时用户看到
+    // 「156 → 156 条消息」的自相矛盾文案。同型修复见 commands/compact/compact.ts
+    // 的 runLocalTruncationFallback。
+    const outcome = ctx.ctxMgr.compactWithSummary(summaryText.slice(0, 2000));
+    if (!outcome.success) {
+      return {
+        kind: "message",
+        message:
+          `压缩未生效：${outcome.reason ?? "no_reduction"}，` +
+          `${before} 条消息未变。建议 /clear 或检查会话历史是否异常`,
+      };
+    }
     const after = ctx.ctxMgr.messageCount();
     return { kind: "message", message: `对话已压缩: ${before} → ${after} 条消息` };
   }

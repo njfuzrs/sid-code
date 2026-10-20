@@ -56,8 +56,11 @@ export type PermissionChoice = HotkeyChoice<PermissionAnswer>;
  * - 危险操作（破坏性命令）：`[拒绝, 允许, 本会话始终允许]`——「拒绝」提到首位，
  *   配合 initialPermissionChoiceIndex 把光标默认落在它上面（src/ui/CLAUDE.md L4-E 安全默认）。
  *   **危险操作不提供持久档**：一键把破坏性命令永久放行，代价远大于省下的确认次数。
- * - 普通 Bash：`[允许, 拒绝, 本会话始终允许, 持久化到项目配置]`——持久档由
- *   app.ts persistBashAllowRule 写进 project settings（精确匹配整条命令，不自动加 `*`）。
+ * - 普通 Bash：`[允许, 拒绝, 本会话始终允许, 持久化到本地配置]`——持久档由
+ *   app.ts persistBashAllowRule 写进 local settings（git root 的
+ *   `.sid-code/settings.local.json`，精确匹配整条命令，不自动加 `*`）。
+ *   刻意**不是** project settings：那是团队共享、会随提交分发的文件，
+ *   个人放行决定不该混进去（2026-10-16 权限页核查发现的文案漂移）。
  * - 其它工具：`[允许, 拒绝, 本会话始终允许]`——文件编辑类不给持久档（对齐 CC「Edit always 仅会话」）。
  */
 export function buildPermissionChoices(opts: {
@@ -101,9 +104,9 @@ export function buildPermissionChoices(opts: {
       {
         value: "always-persist",
         hotkey: "A",
-        label: "持久化到项目配置",
+        label: "持久化到本地配置",
         tone: "persist",
-        description: "写入 project settings，跨会话生效（Shift+A）",
+        description: "写入 settings.local.json（不入 git），跨会话生效（Shift+A）",
       },
     ];
   }

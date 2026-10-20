@@ -278,6 +278,11 @@ async function runManualPostCompact(
 /**
  * §12 P2-4：无参全量模式的本地截断兜底（LLM 摘要失败时）。
  * 沿用历史行为：把全部消息文本各取前 200 字拼成一份极简摘要，替换消息历史。有损但保证释放空间。
+ *
+ * compactWithSummary 有三条 no-op 路径（no_split_point / invalid_result_rolled_back /
+ * no_reduction），触发时消息一字不动。P0-1 契约要求调用方必须读返回值：
+ * 此前这里不接收返回值、固定报「对话已压缩」，no-op 时用户看到
+ * 「156 → 156 条消息」的自相矛盾文案，以为上下文已释放，下一次请求直接撞溢出。
  */
 function runLocalTruncationFallback(
   ctx: CommandContext,
@@ -295,7 +300,7 @@ function runLocalTruncationFallback(
     })
     .join("\n");
 
-  ctx.ctxMgr.compactWithSummary(summaryText.slice(0, 2000));
+  const outcome = ctx.ctxMgr.compactWithSummary(summaryText.slice(0, 2000));
   const after = ctx.ctxMgr.messageCount();
   // 摘要链路失败后的有损降级：上报 failed 而非 truncated，口径与 auto 路径
   // （auto-compact.ts 尾部那处 outcome:"failed"）严格一致——两条路径同一个语义
@@ -307,6 +312,17 @@ function runLocalTruncationFallback(
     tokensBefore,
     tokensAfter: ctx.ctxMgr.estimateTokens(),
   });
+  if (!outcome.success) {
+    // no-op：消息一字未动，不得宣告「已压缩」（P0-1）。此时也不 fire PostCompact——
+    // hook 语义是「压缩已完成」，收到的却是 before===after，与谎报文案同型。
+    return {
+      type: "text",
+      value:
+        `压缩未生效：${outcome.reason ?? "no_reduction"}` +
+        `（LLM 摘要失败，本地截断兜底也未压动），${before} 条消息未变。` +
+        `建议 /clear 或检查会话历史是否异常`,
+    };
+  }
   // fire-and-forget PostCompact（兜底路径不 await，避免阻断返回）
   void firePostCompact(ctx, before, after, tokensBefore);
   return {

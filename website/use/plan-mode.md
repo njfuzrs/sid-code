@@ -225,12 +225,13 @@ Todo 不只是给你看的进度条，它是模型自己的工作记忆。长任
 
 ### 目标跨会话
 
-目标状态会持久化到会话 metadata（`packages/cli/src/app.ts` 的 `persistGoalState`）。用 `--resume` 恢复会话时，
-非终态的目标（`active` / `paused` / `blocked`）会一起恢复，继续推进；`complete` 与
-`impossible` 不恢复——已经结束了，恢复没有意义。
+目标状态会持久化到会话 metadata（`packages/cli/src/app.ts` 的 `persistGoalState`）。用 `-c` / `--continue`
+或 `-r` / `--resume` 恢复会话时，非终态的目标（`active` / `paused` / `blocked`）会一起恢复，继续推进；
+`complete` 与 `impossible` 不恢复——已经结束了，恢复没有意义。
 
-`/clear` 会开一个**新会话**（新的 jsonl），目标状态随之清空，`--resume` 恢复最近会话时
-不会带回旧目标。想翻旧目标得显式 `--resume <旧会话 id>`。
+`/clear` 会结束当前会话、开一个**新会话**（新的 jsonl），当前进程里的目标随之清空。
+旧目标仍留在 clear 之前那份会话里：恢复到那份会话时（`-r <旧会话 id>`，或 clear 后没发任何消息
+就退出、再用 `-c`——新会话没落盘，最近的会话仍是旧的那份），目标会跟着那份会话的历史一起恢复。
 
 ::: warning `/goal` 与 Token Budget 续写互斥
 消息里写 `+500k` 这类预算指令会触发续写（预算没花完就让模型接着干），与 `/goal` 互斥：
