@@ -31,6 +31,56 @@ interface CacheEntry {
 /** 缓存 TTL（5 分钟） */
 const CACHE_TTL = 5 * 60 * 1000;
 
+/**
+ * 企业策略：该定制化面是否被锁定为「仅管理员可信来源」。
+ * 启动扫描与动态发现共用这一个判定，避免两处各写一份后漂移（动态入口曾完全漏掉）。
+ *
+ * 两个开关的分工：`strictPluginOnlyCustomization` 限制**来源**（只信管理员的），
+ * `policyLimits` 是**总开关**（这个面整个不要）。commands 面刻意排除在 `extensions` 之外——
+ * 它由 `custom_commands` 单独管，否则只禁 extensions 会连斜杠命令一起没了。
+ */
+function isSurfaceLocked(type: string): boolean {
+  return (
+    isRestrictedToPluginOnly(
+      type as import("../config/plugin-only-policy.ts").CustomizationSurface,
+    ) ||
+    (type !== "commands" && !isPolicyAllowed("extensions"))
+  );
+}
+
+/**
+ * 对一批项目级文件做内容信任过滤，返回可信文件（启动扫描与动态发现共用）。
+ * 未信任的交给 onUntrusted（交互 TUI 登记待确认、-p / 无界面 fail-closed），
+ * 只有回调当场确认返回的才落盘信任并放行。
+ */
+async function filterTrustedProjectFiles(
+  files: ParsedExtensionFile[],
+  projectDir: string,
+  options?: ScanOptions,
+): Promise<ParsedExtensionFile[]> {
+  if (options?.trustProjectExtensions || !options?.trustManager || files.length === 0) {
+    return files;
+  }
+  const untrustedFiles: ParsedExtensionFile[] = [];
+  const trusted: ParsedExtensionFile[] = [];
+  for (const file of files) {
+    const ok = await options.trustManager.isTrusted(file.filePath, file.rawContent, projectDir);
+    if (ok) trusted.push(file);
+    else untrustedFiles.push(file);
+  }
+  if (untrustedFiles.length > 0 && options.onUntrusted) {
+    const confirmed = await options.onUntrusted(untrustedFiles);
+    if (confirmed.length > 0) {
+      await options.trustManager.trustBatch(
+        confirmed.map((f) => ({ filePath: f.filePath, content: f.rawContent })),
+        projectDir,
+      );
+      trusted.push(...confirmed);
+    }
+  }
+  return trusted;
+}
+
 export class ExtensionLoader {
   private cache = new Map<string, CacheEntry>();
 
@@ -115,11 +165,7 @@ export class ExtensionLoader {
     // `policyLimits` 是**总开关**（这个面整个不要）。取或即可，语义不冲突。
     // commands 面刻意排除在 `extensions` 之外——它由 `custom_commands` 单独管，
     // 否则管理员只禁了 extensions 却连斜杠命令一起没了，是个意外行为。
-    const surfaceLocked =
-      isRestrictedToPluginOnly(
-        type as import("../config/plugin-only-policy.ts").CustomizationSurface,
-      ) ||
-      (type !== "commands" && !isPolicyAllowed("extensions"));
+    const surfaceLocked = isSurfaceLocked(type);
     if (surfaceLocked) {
       getLogger().debug(
         "EXTENSION",
@@ -147,37 +193,8 @@ export class ExtensionLoader {
     // 2. 扫描项目级目录（P1-6：先 {proj}/.claude 兜底，再 {proj}/.sid-code 覆盖）
     //    两个项目目录都走信任检查（项目级扩展默认不可信）。
     if (projectDir && !surfaceLocked) {
-      // 对一批项目级文件做信任过滤，返回可信文件
-      const filterTrusted = async (
-        files: ParsedExtensionFile[],
-      ): Promise<ParsedExtensionFile[]> => {
-        if (options?.trustProjectExtensions || !options?.trustManager || files.length === 0) {
-          return files;
-        }
-        const untrustedFiles: ParsedExtensionFile[] = [];
-        const trustedFilesTemp: ParsedExtensionFile[] = [];
-        for (const file of files) {
-          const isTrusted = await options.trustManager.isTrusted(
-            file.filePath,
-            file.rawContent,
-            projectDir,
-          );
-          if (isTrusted) trustedFilesTemp.push(file);
-          else untrustedFiles.push(file);
-        }
-        // 未信任文件通过回调让用户确认
-        if (untrustedFiles.length > 0 && options.onUntrusted) {
-          const confirmedFiles = await options.onUntrusted(untrustedFiles);
-          if (confirmedFiles.length > 0) {
-            await options.trustManager.trustBatch(
-              confirmedFiles.map((f) => ({ filePath: f.filePath, content: f.rawContent })),
-              projectDir,
-            );
-            trustedFilesTemp.push(...confirmedFiles);
-          }
-        }
-        return trustedFilesTemp;
-      };
+      const filterTrusted = (files: ParsedExtensionFile[]) =>
+        filterTrustedProjectFiles(files, projectDir, options);
 
       // P4/P6/P7a：项目层按 B3（cwd → git root 逐级）扫描，远者先合并、近者后合并覆盖。
       // 此前只扫 projectDir 一层，子目录启动时仓库根的 skills / commands / agents 静默消失。
@@ -286,6 +303,32 @@ export class ExtensionLoader {
   ): Promise<ParsedExtensionFile[]> {
     const { files } = await this.scanDir(dir, source);
     return files;
+  }
+
+  /**
+   * 扫描运行期动态发现的项目级扩展目录（嵌套 `.sid-code/skills/` 等）。
+   *
+   * 与 `scanSingleDir` 的区别：这里的目录来自仓库内容，等同项目层，必须过与
+   * `scanWithResult` 项目层**同一套**门——企业面锁定（strictPluginOnlyCustomization /
+   * policyLimits.extensions）+ 逐文件内容信任。此前动态发现直接调 scanSingleDir，
+   * 启动时被信任门拒掉的项目 skill，模型读一下仓库里任意文件就会被重新加载进 listing。
+   *
+   * @returns files 通过门的文件；withheld 被信任门扣下（未信任 / 待确认 / 已拒绝）的文件数，
+   *   调用方据此决定该目录是否算「已处理完」（扣下的批准后需重扫才能加载）。
+   */
+  async scanDynamicProjectDir(
+    dir: string,
+    type: string,
+    projectDir: string,
+    options?: ScanOptions,
+  ): Promise<{ files: ParsedExtensionFile[]; withheld: number }> {
+    if (isSurfaceLocked(type)) {
+      getLogger().debug("EXTENSION", `${type} 已被企业策略锁定，跳过动态发现目录 ${dir}`);
+      return { files: [], withheld: 0 };
+    }
+    const { files } = await this.scanDir(dir, "project");
+    const trusted = await filterTrustedProjectFiles(files, projectDir, options);
+    return { files: trusted, withheld: files.length - trusted.length };
   }
 
   /** 扫描单个目录下的 .md 文件和子目录中的 SKILL.md / AGENT.md / index.md */

@@ -61,8 +61,22 @@ export class BundledSkillTool implements Tool {
     this.permissionChecker = checker;
   }
 
+  /**
+   * B3：注入禁用态查询（生产传 SkillManager.isNameDisabled，与 slash 路径共享同一份名单）。
+   * 传函数而非快照：/skills disable 运行时改名单，工具须当场失效、启用后当场恢复。
+   */
+  setDisabledQuery(query: (name: string) => boolean): void {
+    this.isDisabled = query;
+  }
+  private isDisabled?: (name: string) => boolean;
+
   name(): string {
     return `skill__${this.cmd.name}`;
+  }
+
+  /** 被禁用时不进模型 schema（registry 的 isEnabled 过滤） */
+  isEnabled(): boolean {
+    return !this.isDisabled?.(this.cmd.name);
   }
 
   description(): string {
@@ -86,6 +100,12 @@ export class BundledSkillTool implements Tool {
   async execute(input: unknown, signal?: AbortSignal): Promise<ToolResult> {
     const log = getLogger();
     const args = (input as { input?: string })?.input ?? "";
+
+    // B3：isEnabled 只把工具挡出 schema；模型凭历史上下文按名直调仍会到这里，执行层再拦一次
+    //（与 SkillMetaTool 的 skill.disabled guard 同口径）。
+    if (this.isDisabled?.(this.cmd.name)) {
+      return { output: `错误：Skill "${this.cmd.name}" 已被禁用。`, isError: true };
+    }
 
     // 注：CommandContext 在工具调用场景下不可用（工具没有命令执行上下文）。
     // bundled skill 的 getPromptForCommand 仅用到 args，不依赖 ctx 字段；

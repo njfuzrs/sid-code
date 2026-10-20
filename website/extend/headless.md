@@ -341,6 +341,8 @@ CI 里要用得显式打开信任（`~/.sid-code/settings.json`）：
 { "trustProjectExtensions": true }
 ```
 
+它对这台机器上的**所有项目**生效，只建议在受控的 CI 环境里用；项目级 settings 设不了它。
+`--yes` / `--dangerously-skip-permissions` / `--trust-workspace` 不会放行未确认的项目级扩展。
 细节见 [Skill](/extend/skills#项目级-skill-写了但模型说不存在)。
 
 ### 会不会挂死

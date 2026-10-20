@@ -22,6 +22,7 @@
 import { getLogger } from "../debug/logger.ts";
 import type { SkillManager } from "./manager.ts";
 import type { SkillDefinition } from "./types.ts";
+import type { ScanOptions } from "../extension/types.ts";
 import { ConditionalSkillStore } from "./conditional.ts";
 import { extractAffectedPaths, discoverSkillDirsForPaths } from "./dynamic-discovery.ts";
 
@@ -31,12 +32,19 @@ export interface ActivationCoordinatorOptions {
   cwd: string;
   /** 是否启用动态发现（P2-2）。默认 true。 */
   enableDynamicDiscovery?: boolean;
+  /**
+   * 动态发现的项目层扫描配置（trustManager / onUntrusted / trustProjectExtensions），
+   * 须与启动扫描传给 SkillManager.discover 的是**同一份**：嵌套 skills 目录来自仓库内容，
+   * 与启动项目层同等不可信。未传 = 无信任门（仅测试场景；生产 cli.ts 必传）。
+   */
+  scanOptions?: ScanOptions;
 }
 
 export class SkillActivationCoordinator {
   private manager: SkillManager;
   private cwd: string;
   private enableDynamic: boolean;
+  private scanOptions?: ScanOptions;
   private conditional = new ConditionalSkillStore();
   /** 动态发现已扫过的 skills 目录（去重，避免重复加载） */
   private discoveredDirs = new Set<string>();
@@ -55,6 +63,7 @@ export class SkillActivationCoordinator {
     this.manager = opts.manager;
     this.cwd = opts.cwd;
     this.enableDynamic = opts.enableDynamicDiscovery ?? true;
+    this.scanOptions = opts.scanOptions;
   }
 
   /**
@@ -205,7 +214,6 @@ export class SkillActivationCoordinator {
     if (this.enableDynamic) {
       try {
         const newDirs = discoverSkillDirsForPaths(paths, this.cwd, this.discoveredDirs);
-        for (const dir of newDirs) this.discoveredDirs.add(dir);
         if (newDirs.length > 0) {
           await this.loadDiscoveredDirs(newDirs, paths);
         }
@@ -229,8 +237,20 @@ export class SkillActivationCoordinator {
     for (const dir of dirs) {
       let files;
       try {
-        files = await extLoader.scanSingleDir(dir, "project");
+        // B1：必须过启动项目层同一道门（企业面锁定 + 逐文件内容信任）。此前直接 scanSingleDir，
+        // 启动时被信任门拒掉的项目 skill（含 cwd 根目录那份）模型读一下仓库文件就会被重新加载。
+        const scanned = await extLoader.scanDynamicProjectDir(
+          dir,
+          "skills",
+          this.cwd,
+          this.scanOptions,
+        );
+        files = scanned.files;
+        // 有文件被扣下（待确认 / 已拒绝）时不登记为已发现：用户批准后下次碰到该目录才能重扫加载。
+        // 代价是被拒目录每次被碰都重扫一遍（readdir + hash），换「批准后本会话即可用」。
+        if (scanned.withheld === 0) this.discoveredDirs.add(dir);
       } catch {
+        this.discoveredDirs.add(dir);
         continue;
       }
       for (const file of files) {
