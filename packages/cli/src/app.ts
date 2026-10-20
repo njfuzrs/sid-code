@@ -6346,7 +6346,7 @@ export class App {
         }
         return true;
       }
-      // P2-3：持久化档——把命令归一为规则写入 project settings，跨会话生效，并热更新当前 checker。
+      // P2-3：持久化档——把命令归一为规则写入 local settings，跨会话生效，并热更新当前 checker。
       if (answer === "always-persist") {
         await this.persistBashAllowRule(req, toolInput);
         return true;
@@ -6359,8 +6359,10 @@ export class App {
   }
 
   /**
-   * P2-3：把 Bash 命令持久化为 project settings 的 allow 规则（跨会话生效）。
+   * P2-3：把 Bash 命令持久化为 **local settings** 的 allow 规则（跨会话生效）。
    *
+   * 写的是 git root 下的 `.sid-code/settings.local.json`（个人私有、不入 git），
+   * **不是**团队共享的 `settings.json`——一个人点「持久化」不该让全团队免确认。
    * 归一策略保守（对齐 CC「a 精确记住命令」）：默认用**精确匹配整条命令**生成
    * `Bash(<command>)` 规则，不自动追加 `*`，避免一次 always 放行过宽。
    * 写盘后热更新当前 checker（addSessionRule 立即生效 + persistRule 落盘下次会话生效）。
