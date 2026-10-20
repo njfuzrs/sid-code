@@ -46,12 +46,12 @@ describe("github-pr:comments —— 保住「禁止模型调用」", () => {
 });
 
 describe("github-pr:comments —— 与原内置版行为对齐", () => {
-  test("fork 子会话 + 原白名单 + 原轮数 / 超时", async () => {
+  test("fork 子会话 + 原白名单 + 原轮数；不声明已失效的 timeout-mins", async () => {
     const s = await loadComments();
     expect(s.context).toBe("fork");
     expect(s.allowedTools).toEqual(["bash", "read", "grep", "glob", "edit", "write"]);
     expect(s.maxTurns).toBe(30);
-    expect(s.timeoutMins).toBe(15);
+    expect(s.timeoutMins).toBeUndefined();
   });
 
   test("正文保留红线：不自动发布回复、改代码前先 read", async () => {

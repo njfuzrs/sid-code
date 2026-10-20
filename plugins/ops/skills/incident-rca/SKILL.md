@@ -6,7 +6,6 @@ mode: delegate
 allowed-tools: read, grep, glob
 agent: verify
 max-turns: 40
-timeout-mins: 3
 sla:
   p50_ms: 60000
   p95_ms: 180000

@@ -67,7 +67,6 @@ when-to-use: TODO: 说明何时使用此 Skill
 mode: delegate
 allowed-tools: read, write, grep
 max-turns: 10
-timeout-mins: 2
 ---
 
 # ${skillName}
@@ -89,8 +88,8 @@ TODO: 列出使用时的注意事项
   console.log(`✓ 已创建 Skill 文件: ${skillFile}`);
   console.log("\n下一步:");
   console.log("1. 编辑文件，填写 TODO 部分");
-  console.log("2. 根据需要调整 allowed-tools、max-turns、timeout-mins");
-  console.log("3. 重启 sid-code 以加载新 Skill");
+  console.log("2. 根据需要调整 allowed-tools、max-turns（删掉 max-turns 即不设轮次上限）");
+  console.log("3. 存盘即热重载生效（会话里 /skills 确认）；没生效时重启 sid-code");
 } else {
   // 子目录模式（activate）
   const skillDir = join(skillsDir, skillName);
@@ -195,5 +194,5 @@ TODO: 添加模板内容
   console.log("2. 在 scripts/ 中添加实际的脚本");
   console.log("3. 在 references/ 中添加参考文档");
   console.log("4. 在 assets/ 中添加模板或资源文件");
-  console.log("5. 重启 sid-code 以加载新 Skill");
+  console.log("5. 存盘即热重载生效（会话里 /skills 确认）；没生效时重启 sid-code");
 }

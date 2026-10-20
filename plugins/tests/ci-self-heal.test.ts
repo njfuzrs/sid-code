@@ -115,10 +115,9 @@ describe("ci-self-heal Skill - SKILL.md frontmatter 契约", () => {
     expect(fm["max-turns"]).toBeLessThanOrEqual(35);
   });
 
-  test("timeout-mins 与 SLA P95 一致", () => {
-    const sla = fm.sla!;
-    expect(sla.p95_ms).toBeDefined();
-    expect(fm["timeout-mins"]).toBe(Math.floor(sla.p95_ms! / 60_000));
+  test("不声明已失效的 timeout-mins（子代理无墙钟，写了只会触发授权 + warn）", () => {
+    expect(fm.sla!.p95_ms).toBeDefined();
+    expect(fm["timeout-mins"]).toBeUndefined();
   });
 
   test("sla 段含 4 个字段, 比 code-review 紧 ~10×", () => {

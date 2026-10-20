@@ -122,8 +122,8 @@ describe("incident-rca Skill - SKILL.md frontmatter 契约", () => {
     expect(fm["max-turns"]).toBeLessThanOrEqual(40);
   });
 
-  test("timeout-mins 与 SLA P95 一致 (3 分钟 = 180s)", () => {
-    expect(fm["timeout-mins"]).toBe(3);
+  test("SLA P95 = 180s，且不声明已失效的 timeout-mins", () => {
+    expect(fm["timeout-mins"]).toBeUndefined();
     expect(fm.sla?.p95_ms).toBe(180000);
   });
 

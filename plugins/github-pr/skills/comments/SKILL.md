@@ -7,8 +7,6 @@ argument-hint: "[PR 编号或 URL]"
 context: fork
 allowed-tools: bash, read, grep, glob, edit, write
 max-turns: 30
-# 多轮拉取评论 + 改代码 + 验证，2 分钟不够
-timeout-mins: 15
 user-invocable: true
 # 强副作用（改代码 + 可能发布回复）：禁止模型自动调用，仅用户显式 /github-pr:comments 触发。
 # 原内置版在 bundled/pr-comments.ts 设 disableModelInvocation: true，迁成 markdown 后

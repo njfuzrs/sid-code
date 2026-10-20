@@ -430,12 +430,12 @@ describe("ci-self-heal Skill chaos - SLA 整体一致性", () => {
     expect(fm.sla!.token_cost_usd!).toBeLessThan(0.5);
   });
 
-  test("max-turns 与 timeout-mins 匹配(25 turns / 2 min 大致协调)", () => {
+  test("max-turns = 25，且不声明已失效的 timeout-mins", () => {
     const md = readFileSync(SKILL_FILE, "utf-8");
     const match = md.match(/^---\n([\s\S]*?)\n---\n/);
     if (!match) throw new Error("no frontmatter");
     const fm = loadYaml(match[1]) as { "max-turns"?: number; "timeout-mins"?: number };
     expect(fm["max-turns"]).toBe(25);
-    expect(fm["timeout-mins"]).toBe(2);
+    expect(fm["timeout-mins"]).toBeUndefined();
   });
 });
