@@ -53,6 +53,7 @@ import {
 import { buildDigest, resolvePaths, type SessionLevelMetrics } from "./digest.ts";
 import { upsertSessionIndex, buildSessionIndexEntry } from "./session-index.ts";
 import { selectTraceDirsToPrune, type TraceDirEntry } from "./retention.ts";
+import { getPrivacyLevel } from "../analytics/privacy-level.ts";
 import {
   DEFAULT_SESSION_MAX_TOTAL_SIZE,
   DEFAULT_SESSION_MIN_RETENTION,
@@ -1155,6 +1156,10 @@ export class TraceCollector {
         source: input.source,
         model: input.model,
         permission_mode: input.permission_mode,
+        // 记录会话产生那一刻的隐私级别：essential-traffic 会话切回 default 后不应被补传，
+        // 而隐私级别是进程环境、会话结束后无从回溯，必须在产生时落盘。仅本地归因——
+        // 上传前由 stripLocalOnlyEventFields 剥掉（见 LOCAL_ONLY_EVENT_DATA_FIELDS）。
+        privacy_level: getPrivacyLevel(),
         // resume 续接时记录本进程真实 id，便于跨进程排查（trajectory 目录名=旧id，进程=新id）
         ...(isResume
           ? { resumed_from: input.resumed_from, process_session_id: input.session_id }
@@ -1164,6 +1169,21 @@ export class TraceCollector {
         ts_semantics: { version: TS_SEMANTICS_VERSION, events: EVENT_TS_SEMANTIC },
       },
     });
+
+    // essential-traffic 期间产生的会话：在目录里落 `.privacy-restricted` 标记，
+    // 补传扫描（backfill.ts）据此跳过——不让期间会话在切回 default 后被批量补传。
+    // 与隐私级别字段同理，必须在产生时落盘（事后无法回溯）。该文件不进 FILE_TYPE_MAP，
+    // 不会被上传。
+    if (getPrivacyLevel() === "essential-traffic") {
+      try {
+        writeFileSync(
+          join(this.writer.getSessionDir(), ".privacy-restricted"),
+          JSON.stringify({ privacy_level: "essential-traffic", created_at: input.timestamp }),
+        );
+      } catch {
+        /* 静默：标记缺失不会崩溃，只意味着该会话不享受补传豁免 */
+      }
+    }
 
     // 缺口 1/2/3：初始化流状态观测器（注入 session_id 和事件写入器）
     initStreamObserver(traceSessionId, this.writer.getSessionDir(), (event) => {
