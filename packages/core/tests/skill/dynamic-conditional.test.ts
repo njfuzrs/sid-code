@@ -127,6 +127,25 @@ describe("discoverSkillDirsForPaths (真实文件系统)", () => {
     expect(dirs).toContain(nestedSkillsDir);
   });
 
+  test("路径就是 cwd 本身（ls dir_path=cwd）时不越出 cwd 去扫祖先目录", () => {
+    // root/.sid-code/skills 模拟 cwd 之上的用户级 ~/.sid-code/skills
+    const outerSkills = join(root, ".sid-code", "skills");
+    mkdirSync(outerSkills, { recursive: true });
+    const cwd = join(root, "packages", "app", "src");
+    mkdirSync(cwd, { recursive: true });
+    try {
+      expect(discoverSkillDirsForPaths([cwd], cwd, new Set())).toEqual([]);
+      expect(discoverSkillDirsForPaths([join(cwd, "a.md")], cwd, new Set())).toEqual([]);
+    } finally {
+      rmSync(join(root, ".sid-code"), { recursive: true, force: true });
+    }
+  });
+
+  test("路径是目录时检查它自身的 .sid-code/skills", () => {
+    const appDir = join(root, "packages", "app");
+    expect(discoverSkillDirsForPaths([appDir], root, new Set())).toContain(nestedSkillsDir);
+  });
+
   test("已发现的目录不重复返回", () => {
     const filePath = join(root, "packages", "app", "src", "index.ts");
     const already = new Set([nestedSkillsDir]);
