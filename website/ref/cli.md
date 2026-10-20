@@ -20,9 +20,9 @@ sid-code 的全部命令行参数与子命令。
 
 > 共 **69** 个参数条目、**7** 个子命令。
 > 描述取自 `sid-code --help`，并与 `packages/cli/src/cli.ts` 的 `parseArgs` 声明
-> （**参数能不能用的唯一权威**，共 68 个 flag）交叉对账：
+> （**参数能不能用的唯一权威**，共 67 个 flag）交叉对账：
 > "能用但没写"和"写了但不能用"两类缺陷都会让对账测试失败。
-> 两个数不相等是口径不同、不是对账没对平：条目按帮助文本的行计，66 条各对应 1 个顶层 flag；3 条不对应顶层声明（`-r, --resume [值]`、`--no-session-persistence`、`--build-info [--json]`：取反式或快速路径入口）；2 个声明了但刻意不写进帮助（`--dump-tools`、`--session-persistence`）。
+> 两个数不相等是口径不同、不是对账没对平：条目按帮助文本的行计，65 条各对应 1 个顶层 flag；4 条不对应顶层声明（`-r, --resume [值]`、`--no-session-persistence`、`--worktree[=<name>]`、`--build-info [--json]`：取反式或快速路径入口）；2 个声明了但刻意不写进帮助（`--dump-tools`、`--session-persistence`）。
 
 ## 子命令
 
@@ -248,7 +248,7 @@ status 逐条列出企业通道；--verify 对每条发一次不写数据的探�
 
 | 参数 | 说明 |
 |---|---|
-| `--worktree[=<name>]` | 启动即创建并进入隔离 Git Worktree（省略 name 自动命名为 brave-eagle-42 形态） |
+| `--worktree[=<name>]` | 启动即创建并进入隔离 Git Worktree（仅交互模式； 省略 name 自动命名为 brave-eagle-42 形态。名字用等号： --worktree=foo；裸 --worktree 后的词当提示词，不当名字） |
 
 ## 其他
 
