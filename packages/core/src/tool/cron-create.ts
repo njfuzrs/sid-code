@@ -5,7 +5,7 @@
 
 import type { LegacyTool as Tool, LegacyToolResult as ToolResult } from "./types.ts";
 import { getScheduler } from "../cron/scheduler.ts";
-import { isValidCron } from "../cron/parser.ts";
+import { isValidCron, computeNextCronRun } from "../cron/parser.ts";
 import { type CronTask, isCronDisabled } from "../cron/types.ts";
 import { durableFilePath } from "../cron/durable-store.ts";
 import type { Scheduler } from "../cron/scheduler.ts";
@@ -95,6 +95,13 @@ allowed_tools: 无头执行时预授权的工具白名单（仅 durable 任务�
     if (!isValidCron(params.cron)) {
       return {
         output: `错误: 无效的 cron 表达式 "${params.cron}"（需要 5 个字段：分 时 日 月 周）`,
+        isError: true,
+      };
+    }
+    // 语法合法 ≠ 会触发：`0 0 30 2 *`（2 月 30 日）这类组合此前回「已创建」然后永不执行。
+    if (computeNextCronRun(params.cron, Date.now()) === null) {
+      return {
+        output: `错误: cron 表达式 "${params.cron}" 永远不会触发（日期组合不存在，如 2 月 30 日、4 月 31 日），任务未创建`,
         isError: true,
       };
     }

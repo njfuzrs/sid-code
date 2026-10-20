@@ -37,6 +37,15 @@ describe("/loop 间隔解析", () => {
     expect(tasks[0].recurring).toBe(true);
   });
 
+  test("亚分钟间隔：/loop 10s 文案显示实际周期并说明已调整（修复前显示「每0 分钟」）", async () => {
+    const mod = await loadCmd();
+    const r = await mod.call("10s check build", CTX);
+    const out = text(r as { type: string; value: string });
+    expect(out).not.toContain("每0 分钟");
+    expect(out).toContain("每1 分钟");
+    expect(out).toContain("已调整为每 1 分钟");
+  });
+
   test("尾随 every 的分钟单位：every 5 minutes → */5 cron", async () => {
     const mod = await loadCmd();
     const r = await mod.call("check the build every 5 minutes", CTX);

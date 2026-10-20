@@ -78,6 +78,7 @@ const mod: LocalCommandModule = {
       };
     }
     const scheduler = getScheduler();
+    const { describeTaskSchedule } = await import("@sid-code/core/cron/describe.ts");
 
     // 用法 4：空跑 → 列出当前定时任务
     if (!trimmed) {
@@ -95,7 +96,7 @@ const mod: LocalCommandModule = {
       const lines = tasks.map((t) => {
         const kind = t.recurring ? "循环" : "一次性";
         const durable = t.durable ? " [持久]" : "";
-        return `  ${t.id}  ${t.cron || "(动态)"}  ${kind}${durable}  ${t.prompt.slice(0, 50)}`;
+        return `  ${t.id}  ${describeTaskSchedule(t)}  ${kind}${durable}  ${t.prompt.slice(0, 50)}`;
       });
       return {
         type: "text",
@@ -133,11 +134,17 @@ const mod: LocalCommandModule = {
         };
       }
 
-      const mins = Math.round(result.totalSeconds / 60);
-      const everyLabel = mins >= 60 ? `${Math.round(mins / 60)} 小时` : `${mins} 分钟`;
+      // 用实际生效周期展示；发生了向上取整就明说，不让用户以为 10s 轮询生效了
+      const mins = result.effectiveSeconds / 60;
+      const everyLabel = mins >= 60 ? `${mins / 60} 小时` : `${mins} 分钟`;
+      const roundedNote =
+        result.effectiveSeconds !== result.totalSeconds
+          ? `注意：cron 最小粒度是分钟，"${fixed.interval}" 已调整为每 ${everyLabel}。\n`
+          : "";
       return {
         type: "text",
         value:
+          roundedNote +
           `已创建循环任务（每${everyLabel}，会话级，7 天后过期），ID: ${task.id}\n` +
           `cron: ${result.cron}\n任务: ${fixed.rest}\n\n` +
           `空闲时会自动触发；忙时排队。用 /loop 查看，或让我删除任务 ${task.id}。`,

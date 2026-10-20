@@ -9,8 +9,14 @@
 export interface IntervalParseResult {
   /** 对应的 cron 表达式 */
   cron: string;
-  /** 归一化后的总秒数（用于展示/校验） */
+  /** 用户输入的原始总秒数（取整前） */
   totalSeconds: number;
+  /**
+   * 实际生效的周期秒数（cron 最小粒度是分钟，不足 1 分钟会向上取整到 60）。
+   * 展示必须用它：此前文案用 totalSeconds 算分钟，`10s` 显示成「每0 分钟」，
+   * 还把「10s 被静默改成 60s」这件事藏了起来。
+   */
+  effectiveSeconds: number;
 }
 
 /** 解析间隔串为总秒数，无法解析返回 null */
@@ -24,23 +30,12 @@ export function parseIntervalToSeconds(input: string): number | null {
     return n > 0 ? n * 60 : null;
   }
 
-  // 组合单位：1h30m / 2h / 45m / 90s
-  const re = /(\d+)\s*(h|m|s)/g;
-  let total = 0;
-  let matched = false;
-  let m: RegExpExecArray | null;
-  while ((m = re.exec(s)) !== null) {
-    matched = true;
-    const value = parseInt(m[1], 10);
-    const unit = m[2];
-    if (unit === "h") total += value * 3600;
-    else if (unit === "m") total += value * 60;
-    else total += value;
-  }
-  // 确保整串都被单位 token 覆盖（拒绝 "5x" / "abc" 这类残留）
-  if (!matched) return null;
-  const stripped = s.replace(/(\d+)\s*(h|m|s)/g, "").trim();
-  if (stripped.length > 0) return null;
+  // 组合单位：1h30m / 2h / 45m / 90s。单位必须按 h → m → s 各至多出现一次：
+  // 此前逐个累加不校验，`5m5m` 被当成 10m、`3m2h` 乱序也接受。
+  const m = /^(?:(\d+)\s*h)?\s*(?:(\d+)\s*m)?\s*(?:(\d+)\s*s)?$/.exec(s);
+  if (!m || (m[1] === undefined && m[2] === undefined && m[3] === undefined)) return null;
+  const total =
+    parseInt(m[1] ?? "0", 10) * 3600 + parseInt(m[2] ?? "0", 10) * 60 + parseInt(m[3] ?? "0", 10);
 
   return total > 0 ? total : null;
 }
@@ -64,14 +59,14 @@ export function intervalToCron(input: string): IntervalParseResult | null {
   // < 60 分钟：必须能整除 60，否则周期会在每小时边界错位
   if (totalMinutes < 60) {
     if (60 % totalMinutes !== 0) return null;
-    return { cron: `*/${totalMinutes} * * * *`, totalSeconds };
+    return { cron: `*/${totalMinutes} * * * *`, totalSeconds, effectiveSeconds: totalMinutes * 60 };
   }
 
   // 整小时：必须能整除 24
   if (totalMinutes % 60 === 0) {
     const hours = totalMinutes / 60;
     if (hours <= 24 && 24 % hours === 0) {
-      return { cron: `0 */${hours} * * *`, totalSeconds };
+      return { cron: `0 */${hours} * * *`, totalSeconds, effectiveSeconds: totalMinutes * 60 };
     }
   }
 

@@ -45,6 +45,9 @@ import { readDurableTasks, mutateDurableTasks, durableFilePath } from "./durable
 import { grantDurableTask, revokeDurableTask, isDurableTaskGranted } from "./durable-grants.ts";
 import { getLogger } from "../debug/logger.ts";
 
+/** 到期后因会话忙碌被推迟超过这个时长就告警一次 */
+const OVERDUE_WARN_MS = 5 * 60_000;
+
 export interface SchedulerOptions {
   /** 触发时执行：把 prompt 注入主循环 */
   onFire: (prompt: string) => void;
@@ -210,6 +213,22 @@ export class Scheduler {
     return removed;
   }
 
+  /**
+   * 接收另一个实例的会话级任务（getScheduler 替换兜底实例时用）。
+   * durable 任务不用迁：磁盘是事实源，新实例下一轮 refresh 自然读到。
+   * @returns 迁移的任务数
+   */
+  adoptSessionTasks(from: Scheduler): number {
+    let n = 0;
+    for (const [id, task] of from.sessionTasks) {
+      if (this.sessionTasks.has(id)) continue;
+      this.sessionTasks.set(id, task);
+      this.nextFireAt.delete(id);
+      n++;
+    }
+    return n;
+  }
+
   /** 会话级任务上限（供报错文案使用，与 addSessionTask 的判据同源）。 */
   sessionCap(): number {
     return MAX_SESSION_CRON_JOBS;
@@ -243,6 +262,12 @@ export class Scheduler {
     return isSchedulerLockHeldByOther(this.opts.workspaceDir, this.opts.sessionId)
       ? "other-session"
       : "none";
+  }
+
+  /** 最近一次 refresh 读失败的项目（文件损坏等）。不暴露的话「文件坏了」与「没有任务」对用户不可区分 */
+  private lastReadErrors: Array<{ projectDir: string; message: string }> = [];
+  durableReadErrors(): Array<{ projectDir: string; message: string }> {
+    return [...this.lastReadErrors];
   }
 
   /** 本会话当前是否在驱动 durable 任务（交互模式；daemon 模式恒 true） */
@@ -332,12 +357,15 @@ export class Scheduler {
   private refreshDurable(): void {
     const next = new Map<string, CronTask>();
     const nextOrigin = new Map<string, string>();
+    this.lastReadErrors = [];
     for (const projectDir of this.durableProjects()) {
       let tasks: CronTask[];
       try {
         tasks = readDurableTasks(projectDir);
       } catch (err: any) {
-        getLogger().warn("CRON", `读取项目 ${projectDir} 的持久任务失败: ${err?.message ?? err}`);
+        const msg = err?.message ?? String(err);
+        this.lastReadErrors.push({ projectDir, message: msg });
+        getLogger().warn("CRON", `读取项目 ${projectDir} 的持久任务失败: ${msg}`);
         for (const [id, origin] of this.durableTaskOrigin) {
           if (origin === projectDir && this.durableTasks.has(id)) {
             next.set(id, this.durableTasks.get(id)!);
@@ -390,7 +418,11 @@ export class Scheduler {
   /** 核心检查循环 */
   private check(): void {
     // REPL 忙时不触发，避免上下文污染
-    if (this.opts.isLoading()) return;
+    if (this.opts.isLoading()) {
+      this.warnOverdueWhileBusy(Date.now());
+      return;
+    }
+    this.overdueWarned.clear();
 
     this.updateDriving();
     this.refreshDurable();
@@ -489,6 +521,25 @@ export class Scheduler {
     return true;
   }
 
+  /**
+   * 会话一直忙时到期任务只会无限推迟（既不过期也不触发）。此前完全静默——
+   * 用户看到的是「wakeup 没醒」。超期 OVERDUE_WARN_MS 仍未触发的任务每轮忙碌期告警一次。
+   * 只看已算出的 nextFireAt：忙时不为了告警去解析 cron。
+   */
+  private overdueWarned = new Set<string>();
+  private warnOverdueWhileBusy(now: number): void {
+    for (const task of this.sessionTasks.values()) {
+      const next = task.fireAt ?? this.nextFireAt.get(task.id);
+      if (next === undefined || !Number.isFinite(next)) continue;
+      if (now - next < OVERDUE_WARN_MS || this.overdueWarned.has(task.id)) continue;
+      this.overdueWarned.add(task.id);
+      getLogger().warn(
+        "CRON",
+        `任务 ${task.id} 已到期 ${Math.round((now - next) / 60_000)} 分钟仍未触发：会话一直忙，空闲后才会执行`,
+      );
+    }
+  }
+
   /** 未授权任务每个只告警一次（每分钟一轮，不能刷屏） */
   private warnedUngranted = new Set<string>();
   private warnUngranted(task: CronTask, origin: string | undefined): void {
@@ -552,22 +603,42 @@ export class Scheduler {
 // ── 单例 ──
 
 let instance: Scheduler | null = null;
+/** instance 是否为「未初始化就被调用」时造的兜底实例（onFire 是空函数） */
+let instanceIsFallback = false;
 
 /**
  * 获取调度器单例。
  * 首次调用必须传 opts（由 cli.ts 在启动时调用）；
  * 后续调用（如工具/命令）不传 opts 直接取已有实例。
+ *
+ * 未初始化时无参调用会得到一个兜底实例（不轮询，但 durable 写盘照常）。
+ * 之后带 opts 的调用会**替换**它，并把兜底期间建的会话级任务迁过去——
+ * 此前兜底实例被永久缓存，真实 opts 被静默丢弃：任务能建、cron_list 能看到、
+ * 到点被删，onFire 却是空函数，什么都不发生，也没有任何日志。
  */
 export function getScheduler(opts?: SchedulerOptions): Scheduler {
+  if (opts && instance && instanceIsFallback) {
+    const real = new Scheduler(opts);
+    const moved = real.adoptSessionTasks(instance);
+    instance.stop();
+    instance = real;
+    instanceIsFallback = false;
+    getLogger().info("CRON", `调度器正式初始化，替换兜底实例（迁移会话级任务 ${moved} 个）`);
+    return instance;
+  }
   if (!instance) {
     if (!opts) {
-      // 工具/命令在调度器未初始化时调用：返回一个兜底实例（不轮询，但写盘照常）
+      getLogger().warn(
+        "CRON",
+        "调度器未初始化就被调用，使用兜底实例：会话级任务到点不会注入主循环，直到宿主带 opts 初始化",
+      );
       instance = new Scheduler({
         onFire: () => {},
         isLoading: () => false,
         sessionId: "default",
         workspaceDir: process.cwd(),
       });
+      instanceIsFallback = true;
     } else {
       instance = new Scheduler(opts);
     }
@@ -579,4 +650,5 @@ export function getScheduler(opts?: SchedulerOptions): Scheduler {
 export function resetScheduler(): void {
   if (instance) instance.stop();
   instance = null;
+  instanceIsFallback = false;
 }
