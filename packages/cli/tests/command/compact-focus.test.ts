@@ -55,10 +55,21 @@ function makeCtx(messages: Message[], provider: any) {
       msgs = m;
     },
     compactWithSummary: (summary: string) => {
+      const before = msgs.length;
       msgs = [
         { role: "user", content: [{ type: "text", text: summary }] },
         { role: "assistant", content: [{ type: "text", text: "ok" }] },
       ];
+      // P0-1 契约：真实实现返回 CompactionOutcome，success 由消息数是否下降唯一决定。
+      // 兜底路径（runLocalTruncationFallback）据此分支，mock 必须同形状。
+      return {
+        success: msgs.length < before,
+        messageCountBefore: before,
+        messageCountAfter: msgs.length,
+        tokensBefore: before * 10,
+        tokensAfter: msgs.length * 10,
+        splitPoint: before - 1,
+      };
     },
     getTranscriptPath: () => undefined,
     // §12 P2-4 复审：压缩后收尾（runPostCompact）会调它把最近读过的文件重注入
