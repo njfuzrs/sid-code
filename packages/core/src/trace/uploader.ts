@@ -900,6 +900,9 @@ export class UploadManager implements TraceUploaderInterface {
     return runBackfill(this, {
       ...rest,
       watermarkMs: includeHistory ? undefined : watermarkMs,
+      // include-history 同时豁免隐私级别过滤：用户显式说「连 essential-traffic 期间
+      // 产生的会话一起传」，尊重用户意愿（backfill.ts 的 includeHistory 分支）。
+      includeHistory: includeHistory === true,
       outputDir: this.opts.outputDir,
     });
   }
@@ -938,6 +941,9 @@ export const LOCAL_ONLY_EVENT_DATA_FIELDS = [
   "error_head",
   "input_summary",
   "hint_file_path",
+  // 会话产生那一刻的隐私级别：只供本地归因（backfill 据 marker 判断期间会话不补传），
+  // 云端服务端对 SessionStart 未知字段的校验口径不明，不冒多余暴露面——上传时剥掉。
+  "privacy_level",
 ] as const;
 
 const LOCAL_ONLY_NEEDLES = LOCAL_ONLY_EVENT_DATA_FIELDS.map((f) => `"${f}"`);

@@ -118,6 +118,59 @@ describe("TraceCollector", () => {
     expect(collector.getMetadata()).toBeUndefined();
   });
 
+  // ─── essential-traffic 期间会话的隐私级别落盘 ───
+  //
+  // 用户在 stricter 级别期间产生的会话，切回 default 后不应被启动补传（backfill.ts）。
+  // 隐私级别是进程环境、会话结束后无从回溯，必须在 SessionStart 落盘：双写 events.jsonl 的
+  // privacy_level 字段（仅本地归因）+ 目录级 .privacy-restricted 标记（backfill 据此过滤）。
+  // 该标记不进 FILE_TYPE_MAP，不会被上传。
+
+  describe("essential-traffic 隐私级别落盘", () => {
+    const savedDisable = process.env.SID_CODE_DISABLE_NONESSENTIAL_TRAFFIC;
+    afterEach(() => {
+      // 存/恢复而非无条件 delete —— bun test 同进程跑多文件，delete 会抹掉别人的隔离
+      if (savedDisable === undefined) delete process.env.SID_CODE_DISABLE_NONESSENTIAL_TRAFFIC;
+      else process.env.SID_CODE_DISABLE_NONESSENTIAL_TRAFFIC = savedDisable;
+    });
+
+    test("default 级别：不写 .privacy-restricted，SessionStart 事件 privacy_level=default", async () => {
+      delete process.env.SID_CODE_DISABLE_NONESSENTIAL_TRAFFIC;
+      await fireSessionStart(hookSystem);
+      const dir = join(testDir, "sessions", "sess-001");
+      expect(existsSync(join(dir, ".privacy-restricted"))).toBe(false);
+      const eventsPath = join(dir, "events.jsonl");
+      const rows = readFileSync(eventsPath, "utf-8")
+        .trim()
+        .split("\n")
+        .map((l) => JSON.parse(l) as { event?: string; data?: Record<string, unknown> });
+      const start = rows.find((r) => r.event === "SessionStart");
+      expect(start).toBeDefined();
+      expect(start!.data?.privacy_level).toBe("default");
+    });
+
+    test("essential-traffic：写 .privacy-restricted 标记，SessionStart 事件 privacy_level=essential-traffic", async () => {
+      process.env.SID_CODE_DISABLE_NONESSENTIAL_TRAFFIC = "1";
+      await fireSessionStart(hookSystem);
+      const dir = join(testDir, "sessions", "sess-001");
+      // marker 文件存在且含隐私级别
+      const markerPath = join(dir, ".privacy-restricted");
+      expect(existsSync(markerPath)).toBe(true);
+      const marker = JSON.parse(readFileSync(markerPath, "utf-8")) as {
+        privacy_level?: string;
+      };
+      expect(marker.privacy_level).toBe("essential-traffic");
+      // events.jsonl 的 SessionStart 带 privacy_level 字段（上传前会被剥离，仅本地归因）
+      const eventsPath = join(dir, "events.jsonl");
+      const rows = readFileSync(eventsPath, "utf-8")
+        .trim()
+        .split("\n")
+        .map((l) => JSON.parse(l) as { event?: string; data?: Record<string, unknown> });
+      const start = rows.find((r) => r.event === "SessionStart");
+      expect(start).toBeDefined();
+      expect(start!.data?.privacy_level).toBe("essential-traffic");
+    });
+  });
+
   // ─── P0-1：版本号维度（四方向第 3 级「release-over-release 曲线」的唯一分组键）───
   //
   // 修复前轨迹里一个版本字段都没有（实测 session.traj 的 metadata 47 个键含 ver 的 0 个），
@@ -1606,6 +1659,7 @@ describe("TraceCollector", () => {
           live: 0,
           ghost: 0,
           beforeWatermark: 0,
+          privacyRestricted: 0,
           errored: 0,
           pending: 0,
           attempted: 0,
