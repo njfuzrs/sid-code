@@ -19,6 +19,12 @@ export class SkillManager {
    * 若不缓存，reload（P2-3 热重载）后插件/动态 skill 会丢失。reload 末尾据此重放。
    */
   private appendedSkills: SkillDefinition[] = [];
+  /**
+   * B2：当前生效的禁用名单（小写）。必须由 manager 持有，而不是只在 setDisabledSkills
+   * 调用那一刻改一遍对象：插件 / MCP / 动态发现的 skill 都晚于启动时那次调用才追加，
+   * 不持有名单就没有东西能把禁用态施加给它们，已禁用的名字会重新进 listing。
+   */
+  private disabledNames = new Set<string>();
   /** P2-3：记住上次 discover 的入参，供热重载沿用同一套扫描配置（trustManager 等）。 */
   private lastProjectDir?: string;
   private lastScanOptions?: ScanOptions;
@@ -122,6 +128,9 @@ export class SkillManager {
         }
       }
 
+      // B2：所有入口（discover / 插件 / MCP / 动态发现 / reload 重放）都汇到这里，
+      // 在此统一施加禁用名单，新来源不用再记得各自补一遍。
+      newSkill.disabled = this.disabledNames.has(key);
       skillMap.set(key, newSkill);
       accepted.push(newSkill);
     }
@@ -213,17 +222,14 @@ export class SkillManager {
       /* 缓存清理失败不阻断重载 */
     }
 
-    // 快照 reload 前的禁用集（discover 重建 skill 定义会丢失 disabled 态，需重放）。
-    const disabledNames = this.skills.filter((s) => s.disabled).map((s) => s.name);
-
+    // 禁用态跨热重载保留：disabledNames 由 manager 持有（B2），discover 与重放都经
+    // addSkillsWithPrecedence 重新施加，无需再快照对象上的 disabled 位。
     const preserved = [...this.appendedSkills];
     await this.discover(this.lastProjectDir, this.lastScanOptions);
     if (preserved.length > 0) {
       // 重放插件/动态 skill（appendedSkills 已被 discover 后仍留存，此处只是重新并入 skills 数组）
       this.addSkillsWithPrecedence(preserved);
     }
-    // 重放禁用态（/skills disable 的选择应跨热重载保留）
-    if (disabledNames.length > 0) this.setDisabledSkills(disabledNames);
     log.info(
       "SKILL",
       `Skill 热重载完成：${this.skills.length} 个（含 ${preserved.length} 个插件/动态）`,
@@ -333,6 +339,14 @@ export class SkillManager {
   }
 
   /**
+   * 该名字是否在当前禁用名单里（不要求 manager 里有同名 skill）。
+   * B3：bundled skill 不进 manager，其模型工具 `skill__<name>` 据此与 slash 路径共享禁用态。
+   */
+  isNameDisabled(name: string): boolean {
+    return this.disabledNames.has(name.toLowerCase());
+  }
+
+  /**
    * 激活 Skill（追踪状态）
    */
   activateSkill(name: string): void {
@@ -350,9 +364,9 @@ export class SkillManager {
    * 设置禁用列表
    */
   setDisabledSkills(names: string[]): void {
-    const lowercaseDisabledNames = names.map((n) => n.toLowerCase());
+    this.disabledNames = new Set(names.map((n) => n.toLowerCase()));
     for (const skill of this.skills) {
-      skill.disabled = lowercaseDisabledNames.includes(skill.name.toLowerCase());
+      skill.disabled = this.disabledNames.has(skill.name.toLowerCase());
     }
     // 启用/禁用改变了可调用集合，斜杠命令快照需刷新
     this.notifySkillsChanged();

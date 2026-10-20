@@ -1988,6 +1988,8 @@ export async function main(): Promise<void> {
     const skillActivationCoordinator = new SkillActivationCoordinator({
       manager: skillManager,
       cwd: process.cwd(),
+      // B1：动态发现的嵌套 skills 目录与启动项目层同等不可信，必须用同一份信任配置
+      scanOptions,
     });
 
     // Bundled Skill 模型调用路径（Gap 1）：把 fork 模式且未禁止模型调用的
@@ -2002,7 +2004,10 @@ export async function main(): Promise<void> {
         if (cmd.type !== "prompt") continue;
         if (cmd.context !== "fork") continue; // inline 不可包装
         if (cmd.disableModelInvocation) continue;
-        toolRegistry.register(new BundledSkillTool(cmd, providerRegistry, toolRegistry));
+        const tool = new BundledSkillTool(cmd, providerRegistry, toolRegistry);
+        // B3：与 slash 路径共享禁用名单（启动配置 + 运行时 /skills disable 都经 skillManager）
+        tool.setDisabledQuery((name) => skillManager.isNameDisabled(name));
+        toolRegistry.register(tool);
       }
     } catch (err: any) {
       getLogger().debug("SKILL", `Bundled Skill 工具注册失败: ${err?.message ?? String(err)}`);
