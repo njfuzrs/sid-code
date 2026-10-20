@@ -230,7 +230,7 @@ export interface TraceMetadata {
   total_reasoning_tokens: number;
   /**
    * 纯生成耗时累计（ms）。取自 `RetryTelemetry(stream_completed).elapsedMs`
-   * （单次 fetch 从连接到流结束的纯耗时，不含握手/重试/等待）。
+   * （单次 fetch 从 lifecycle 创建——响应头之后——到流结束，不含握手/TTFB/重试退避）。
    * 与 total_tokens_received 配对派生"输出吞吐 tokens/sec"——**分母必须是纯生成耗时**，
    * 用整轮 api_duration_ms 会重蹈 Bug A 的重试/等待污染覆辙（见排查报告 §2）。
    */

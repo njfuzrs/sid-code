@@ -243,7 +243,8 @@ export interface ProviderDigestStats {
   ttft_p95?: number;
   ttft_p99?: number;
   /**
-   * P0-1：模型生成耗时分位数（ms）。取自 RetryTelemetry.elapsedMs（单次 fetch 从连接到流结束）。
+   * P0-1：模型生成耗时分位数（ms）。取自 RetryTelemetry.elapsedMs（单次 fetch 从响应头之后到流结束，
+   * 不含 TTFB；网关等模型出字才回 header 时这个数会远小于 TTFT，是口径不是算错）。
    * 让"慢在生成"这一主因显式可见——此前 digest 只展示被污染的 TTFT，生成耗时无从体现。
    */
   gen_p50?: number;
@@ -3440,7 +3441,7 @@ export function aggregateProviderStats(
       } else if (type === "529_dropped") {
         stats.failed++;
       } else if (type === "stream_completed") {
-        // P0-1：纯生成耗时（单次 fetch 从连接到流结束）
+        // P0-1：生成耗时（单次 fetch 从响应头之后到流结束，不含 TTFB）
         const gen = e.data.elapsedMs as number | undefined;
         if (gen && gen > 0) stats.gens.push(gen);
       }

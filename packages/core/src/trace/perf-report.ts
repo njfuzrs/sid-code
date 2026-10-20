@@ -244,7 +244,15 @@ export interface TrendReport {
   ttftByModel: Array<{ model: string; sessions: number; p50?: number; n: number }>;
 }
 
-/** 增量行（还在跑 / 崩溃）只算到一半，混进来会把延迟与成本系统性拉低 */
+/**
+ * 增量行（还在跑 / 崩溃）只算到一半，混进来会把延迟与成本系统性拉低。
+ *
+ * 只排除 `incomplete`，刻意不排除 user_interrupt / abort / error / max_turns /
+ * budget_exceeded：这些会话已收尾、数据是完整的，而慢样本往往正是被打断的那些，
+ * 筛掉它们会让 p95 系统性偏低（同 query/turn-complete.ts「异常轮次也必须发」）。
+ * 渲染文案必须与这里同口径，不能写成「不含未正常结束的会话」—— 那会被读成
+ * 中断/报错会话都已剔除。
+ */
 function settled(rows: SessionIndexEntry[]): SessionIndexEntry[] {
   return rows.filter((r) => r.exit_status !== "incomplete");
 }
@@ -431,10 +439,10 @@ export function renderTrend(t: TrendReport): string {
   const lines: string[] = [
     `性能趋势 · 近 ${t.days} 天 vs 前 ${t.days} 天`,
     "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━",
-    `  会话数：本期 ${t.current.sessions} / 上期 ${t.previous.sessions}（不含未正常结束的会话）`,
+    `  会话数：本期 ${t.current.sessions} / 上期 ${t.previous.sessions}（不含还在跑或崩溃未收尾的会话；中断、报错收尾的仍计入）`,
   ];
   if (t.current.sessions === 0) {
-    lines.push("", "  本期没有已结束的会话。");
+    lines.push("", "  本期没有已收尾的会话。");
     return lines.join("\n");
   }
   lines.push("");
@@ -463,7 +471,7 @@ export function renderTrend(t: TrendReport): string {
 export function renderByVersion(v: VersionReport): string {
   const lines: string[] = ["性能 · 按版本", "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"];
   if (v.versions.length === 0) {
-    lines.push("  没有带版本号的已结束会话。");
+    lines.push("  没有带版本号的已收尾会话。");
   } else {
     lines.push(
       `  ${pad("版本", 12)}${pad("会话", 6)}${pad("TTFT P50", 16)}${pad("TTFT P95", 16)}${pad("tok/s P50", 18)}端到端 P95`,

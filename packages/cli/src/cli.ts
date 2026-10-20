@@ -222,6 +222,50 @@ export function extractResumeArg(argv: string[]): {
 }
 
 /**
+ * 预扫描 argv 抽取 `--worktree`，兑现 help 的 `[=<name>]` 可选值语义。
+ *
+ * parseArgs 的 `type: "string"` 强制带值，裸 `--worktree` 会报
+ * `Option '--worktree <value>' argument missing`。help 写的是 GNU
+ * `[=<name>]`（等号可选值），不是 resume 那种「空格分隔也算值」。
+ *
+ * 所以这里**只认等号形式**，不吃下一个 token：
+ *   - 未出现                  → { present: false }
+ *   - `--worktree`            → { present: true, value: "" }     自动命名
+ *   - `--worktree=`           → { present: true, value: "" }     自动命名
+ *   - `--worktree=foo`        → { present: true, value: "foo" }
+ *   - `--worktree foo`        → 裸 flag + 提示词留在 rest
+ *                               （避免 `sid-code --worktree 帮我修登录页` 把提示词当名字）
+ *
+ * 相关 token 从 argv 剔除后交给 parseArgs 处理其余选项。下游把空串归一成 true，
+ * 创建期走 generateWordSlug。
+ */
+export function extractWorktreeArg(argv: string[]): {
+  present: boolean;
+  value?: string;
+  rest: string[];
+} {
+  const rest: string[] = [];
+  let present = false;
+  let value: string | undefined;
+
+  for (const token of argv) {
+    if (token.startsWith("--worktree=")) {
+      present = true;
+      value = token.slice("--worktree=".length);
+      continue;
+    }
+    if (token === "--worktree") {
+      present = true;
+      value = "";
+      continue;
+    }
+    rest.push(token);
+  }
+
+  return { present, value, rest };
+}
+
+/**
  * 归一 --allow-tool / --deny-tool 规则 flag（P2-1）。
  * parseArgs multiple:true 给出 string[]（未传为 undefined）；每项再按逗号拆分并去空。
  * 返回 undefined（未传）或去重后的规则数组。
@@ -241,12 +285,13 @@ function parseCLIArgs(): CLIArgs {
   let values: Record<string, any>;
   let positionals: string[];
 
-  // 先摘掉 resume（可选值语义 parseArgs 表达不了），其余交给 parseArgs。
+  // 先摘掉 resume / worktree（可选值语义 parseArgs 表达不了），其余交给 parseArgs。
   const resumeArg = extractResumeArg(process.argv.slice(2));
+  const worktreeArg = extractWorktreeArg(resumeArg.rest);
 
   try {
     const result = parseArgs({
-      args: resumeArg.rest,
+      args: worktreeArg.rest,
       options: {
         // LLM 配置
         provider: { type: "string" },
@@ -342,8 +387,8 @@ function parseCLIArgs(): CLIArgs {
         inline: { type: "boolean" }, // 逃生舱：回退旧主屏 Static 内联模式（原生文本选择/终端 scrollback；不支持 alt-screen 的终端用）
         "alternate-buffer": { type: "boolean" }, // 显式开全屏 alt-screen（默认是主屏，此 flag 才进入全屏）
 
-        // Worktree 隔离（P1-2）：启动时直接进入 worktree
-        worktree: { type: "string" }, // --worktree[=name]；不带值时自动命名
+        // 注意：worktree 不在此声明——它是可选值语义（`--worktree` 可不带值自动命名），
+        // parseArgs 的 type:"string" 无法表达，已在 extractWorktreeArg 中预处理。
 
         // 目录授权（P1-1）：追加额外可访问目录（可重复）。映射到 config.allowedDirectories。
         "add-dir": { type: "string", multiple: true },
@@ -671,8 +716,9 @@ function parseCLIArgs(): CLIArgs {
     bridgeUrl: values.bridge,
     bridgeToken: values["bridge-token"],
     bridgeInsecure: values["bridge-insecure"] as boolean | undefined,
-    // Worktree 启动 flag（P1-2）：--worktree=name 指定名称；--worktree= 或空串则自动命名
-    worktree: values.worktree !== undefined ? values.worktree || true : undefined,
+    // Worktree 启动 flag（P1-2）：已在 extractWorktreeArg 预解析。
+    // --worktree=name 指定名称；裸 --worktree / --worktree= 走自动命名（空串 → true）。
+    worktree: worktreeArg.present ? worktreeArg.value || true : undefined,
     // UI 渲染模式：默认主屏 Static（config 默认 false），历史进终端 scrollback、原生选中复制。
     // --inline 显式主屏（false，最高优先级）；--alternate-buffer 显式全屏（true）；
     // 两者都不给 → undefined → 走 config 默认（false）。macOS Terminal.app 额外强制主屏
