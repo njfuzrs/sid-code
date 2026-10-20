@@ -305,7 +305,7 @@ describe("Seatbelt profile：路径转义与网络白名单", () => {
     expect(profile).toContain('(allow network* (remote ip "10.0.0.8:*"))');
   });
 
-  test("非 darwin 上 isEnabled() 为 false：开关打开也不等于有隔离", () => {
+  test("非 darwin 上 isEnabled() 为 false：开关打开也不等于隔离", () => {
     const sb = new SandboxManager({ ...defaultSandboxConfig(), enabled: true }, cwd);
     if (process.platform === "darwin") {
       expect(sb.isEnabled()).toBe(true);
@@ -314,5 +314,39 @@ describe("Seatbelt profile：路径转义与网络白名单", () => {
       // 未启用时 wrapCommand 必须原样返回，不能包一层不存在的 sandbox-exec
       expect(sb.wrapCommand("echo hi")).toBe("echo hi");
     }
+  });
+});
+
+describe("沙箱命令失败的归因日志（noteCommandFailure）", () => {
+  /**
+   * 为什么断言返回值而不是日志文本：`getLogger()` 没有测试注入点，spy 需要改生产接口。
+   * 返回 boolean 本身就是为可测性设计的——它同时是「是否打了一条 [SANDBOX] 行」的事实。
+   *
+   * 平台无关写法：`isEnabled()` = enabled && darwin，用真实取值分流。
+   * macOS 上 expected=true（真正验证归因逻辑），其它平台 expected=false
+   * （验证「没隔离就不该声称沙箱归因」）——两个平台都有断言在跑。
+   */
+  test("只有「沙箱启用 + stderr 出现权限拒绝」才归因", () => {
+    const sb = new SandboxManager({ ...defaultSandboxConfig(), enabled: true }, cwd);
+    const expected = sb.isEnabled();
+
+    // 命中特征：macOS 被 Seatbelt 拒绝后子进程 stderr 的真实文本就是这个
+    expect(
+      sb.noteCommandFailure(
+        "cat ~/.ssh/id_rsa",
+        "cat: /Users/x/.ssh/id_rsa: Operation not permitted",
+      ),
+    ).toBe(expected);
+    // 匹配大小写不敏感：别让归因依赖某条命令的报错大小写
+    expect(sb.noteCommandFailure("ls x", "Permission denied")).toBe(expected);
+
+    // 未命中特征：非权限类失败不该被归成沙箱相关（否则 [SANDBOX] 行会被噪声淹没）
+    expect(sb.noteCommandFailure("false", "")).toBe(false);
+    expect(sb.noteCommandFailure("grep x", "x: No such file or directory")).toBe(false);
+  });
+
+  test("沙箱未启用时恒 false（与平台无关）", () => {
+    const sb = new SandboxManager({ ...defaultSandboxConfig(), enabled: false }, cwd);
+    expect(sb.noteCommandFailure("cat ~/.ssh/id_rsa", "Operation not permitted")).toBe(false);
   });
 });

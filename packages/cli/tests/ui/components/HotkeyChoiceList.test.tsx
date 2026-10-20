@@ -138,7 +138,7 @@ describe("HotkeyChoiceList — 初始渲染", () => {
     expect(f).toContain("允许");
     expect(f).toContain("拒绝");
     expect(f).toContain("本会话始终允许");
-    expect(f).toContain("持久化到项目配置");
+    expect(f).toContain("持久化到本地配置");
     unmount();
   });
 
@@ -184,10 +184,10 @@ describe("HotkeyChoiceList — 方向键真的走通了（原缺陷的端到端�
     unmount();
   });
 
-  test("↑ 从首项环绕到末项「持久化到项目配置」", async () => {
+  test("↑ 从首项环绕到末项「持久化到本地配置」", async () => {
     const { frame, press, unmount } = mount();
     await press(KEY.up);
-    expect(focusedLine(frame())).toContain("持久化到项目配置");
+    expect(focusedLine(frame())).toContain("持久化到本地配置");
     unmount();
   });
 

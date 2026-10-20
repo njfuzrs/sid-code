@@ -99,15 +99,32 @@ export interface SandboxConfig {
   allowedHosts: string[];
 }
 
-/** 沙箱违规事件 */
-export interface SandboxViolation {
-  timestamp: string;
-  type: "fs_read" | "fs_write" | "network";
-  path?: string;
-  host?: string;
-  command: string;
-  blocked: boolean;
-}
+/**
+ * 曾经的 `SandboxViolation` / `violations` / `getViolations()` / `recordViolation()`
+ * 已于 2026-10-20 删除，**不要加回来**。
+ *
+ * 它们描述的是「哪条命令撞了哪条规则、撞的路径/主机是什么」，而 macOS 根本不把这些
+ * 交给应用层：Seatbelt 的 denial 明细只写内核统一日志
+ * （`kernel[0] (Sandbox) Sandbox: <cmd>(pid) deny(1) file-read-data <path>`），
+ * 子进程 stderr 里只有它自己被拒后的 `Operation not permitted`（2026-10-20 本机实测，
+ * 加 `(debug deny)` 也一样）。于是这几个字段没有任何真实数据来源，只能恒空——
+ * 全仓零调用点，却让读代码/写文档的人以为存在「违规列表」这个可用能力。
+ *
+ * 现在的口径见下方 `noteCommandFailure()`：只做启发式归因日志，不虚构规则级明细。
+ */
+
+/**
+ * stderr 里「权限拒绝」的可见特征。
+ *
+ * macOS 不会把 Seatbelt 的 denial 明细写进子进程 stderr（那是内核统一日志里的
+ * `kernel[0] (Sandbox) Sandbox: <cmd>(pid) deny(1) ...`，2026-10-20 本机实测，
+ * profile 里加 `(debug deny)` 也一样）。子进程能看到的只是被拒系统调用返回
+ * EPERM/EACCES 后它自己的报错文本，所以这两个词是应用层唯一可用的信号。
+ *
+ * 它们同样出现在文件权限不足、只读文件系统等非沙箱场景，因此只能做「可能相关」的
+ * 提醒，不能当成「沙箱拦截」的事实。
+ */
+const SANDBOX_DENIAL_STDERR_RE = /operation not permitted|permission denied/i;
 
 /**
  * 默认沙箱配置。
@@ -136,7 +153,6 @@ export function defaultSandboxConfig(): SandboxConfig {
 
 export class SandboxManager {
   private config: SandboxConfig;
-  private violations: SandboxViolation[] = [];
   private workspacePath: string;
 
   constructor(config: SandboxConfig, workspacePath: string) {
@@ -154,19 +170,23 @@ export class SandboxManager {
     return this.isEnabled() && this.config.autoAllowBashIfSandboxed;
   }
 
-  /** 获取违规记录 */
-  getViolations(): SandboxViolation[] {
-    return [...this.violations];
-  }
-
-  /** 记录违规事件 */
-  recordViolation(violation: SandboxViolation): void {
-    this.violations.push(violation);
-    const log = getLogger();
-    log.warn(
+  /**
+   * 命令失败时的沙箱归因日志（启发式，不做规则级归属）。
+   *
+   * 为什么不记违规对象：denial 的路径/主机/规则只在内核统一日志里，应用层拿不到；
+   * 强行记录只能靠猜，而且会重新造出一个没人读的列表。这里只回答「这条失败可能与
+   * 沙箱有关」，给排查 profile 过紧/过松留一个 `[SANDBOX]` grep 锚点。
+   *
+   * @returns 是否打了一条归因日志。返回值供单测断言，不参与业务判断。
+   */
+  noteCommandFailure(command: string, stderr: string): boolean {
+    if (!this.isEnabled()) return false;
+    if (!SANDBOX_DENIAL_STDERR_RE.test(stderr)) return false;
+    getLogger().warn(
       "SANDBOX",
-      `违规: ${violation.type} ${violation.path || violation.host || ""} (${violation.command.slice(0, 60)})`,
+      `命令在沙箱内失败，stderr 出现权限拒绝（可能是沙箱拦截，也可能是文件权限/只读文件系统）: ${command.slice(0, 80)}`,
     );
+    return true;
   }
 
   /**
