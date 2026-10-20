@@ -11,6 +11,7 @@
  */
 
 import { readFileSync } from "node:fs";
+import { checkSchemaShape } from "@sid-code/core/workflow/json-schema-validator.ts";
 
 export interface JsonSchemaParseOk {
   ok: true;
@@ -65,7 +66,7 @@ function parseInline(text: string): JsonSchemaParseResult {
       message: '错误: --json-schema 的内联 JSON 必须是对象（如 {"type":"object",...}）',
     };
   }
-  return { ok: true, schema: parsed, source: "inline" };
+  return withShapeCheck(parsed, "inline");
 }
 
 function parseFile(path: string, readFile: (path: string) => string): JsonSchemaParseResult {
@@ -95,7 +96,20 @@ function parseFile(path: string, readFile: (path: string) => string): JsonSchema
       message: `错误: --json-schema 文件 "${path}" 的内容必须是 JSON 对象`,
     };
   }
-  return { ok: true, schema: parsed, source: "file" };
+  return withShapeCheck(parsed, "file");
+}
+
+/**
+ * 启动期就跑 shape 检查:否则循环 $ref / 不支持的关键字要等模型调了 StructuredOutput 才暴露,
+ * 那时已经烧掉一整轮,且错误混在工具结果里,用户看到的是「模型没按格式输出」。
+ */
+function withShapeCheck(
+  schema: Record<string, unknown>,
+  source: JsonSchemaParseOk["source"],
+): JsonSchemaParseResult {
+  const err = checkSchemaShape(schema);
+  if (err) return { ok: false, message: `错误: --json-schema 不可用: ${err}` };
+  return { ok: true, schema, source };
 }
 
 function isSchemaObject(v: unknown): v is Record<string, unknown> {

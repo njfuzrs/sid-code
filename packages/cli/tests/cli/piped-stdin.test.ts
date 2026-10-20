@@ -125,4 +125,11 @@ describe("parseJsonSchemaArg", () => {
     const r = parseJsonSchemaArg("   ");
     expect(r.ok).toBe(false);
   });
+
+  test("启动期跑 shape 检查：循环 $ref 直接拒绝，不等模型烧一轮", () => {
+    const cyc = { $defs: { A: { $ref: "#/$defs/A" } }, $ref: "#/$defs/A" };
+    const r = parseJsonSchemaArg(JSON.stringify(cyc));
+    expect(r.ok).toBe(false);
+    if (!r.ok) expect(r.message).toContain("循环 $ref");
+  });
 });

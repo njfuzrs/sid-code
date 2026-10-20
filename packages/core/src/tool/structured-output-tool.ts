@@ -138,8 +138,20 @@ export class StructuredOutputTool implements Tool {
       };
     }
 
-    // 2) 用 schema 校验子代理给的输入
-    const result = validateAgainstSchema(this.schema, input);
+    // 2) 用 schema 校验子代理给的输入。
+    // 校验器约定不抛,但这里仍兜一层:工具 execute 抛异常会绕过 isError 回喂通道,
+    // 在 parallel 里还会被吞成没有堆栈的 null(P1-7 实测 RangeError 就是这样打穿的)。
+    let result: ReturnType<typeof validateAgainstSchema>;
+    try {
+      result = validateAgainstSchema(this.schema, input);
+    } catch (err) {
+      return {
+        output: `[StructuredOutput] schema 校验器内部错误(多半是 schema 本身的问题): ${
+          err instanceof Error ? err.message : String(err)
+        }`,
+        isError: true,
+      };
+    }
     if (!result.valid) {
       // 不合规:把错误回喂,子代理在下一轮修正后重新调用(对齐 cc 自动重试)
       return {
