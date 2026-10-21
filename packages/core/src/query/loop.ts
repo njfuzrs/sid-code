@@ -60,6 +60,7 @@ import { runBackgroundTask } from "../agent/background-task-gate.ts";
 import { getSleepLedger, describeSleep } from "@sid-code/shared/utils/sleep-detect.ts";
 import { SessionState } from "../session/state.ts";
 import { getLogger, getSessionMetrics, getPerfTimer } from "../debug/index.ts";
+import { noteStopReasonMismatch } from "../agent/stop-reason-mismatch.ts";
 import {
   LoopDetector,
   LOOP_RECOVERY_PROMPT,
@@ -4111,15 +4112,37 @@ export async function* queryLoop(loopConfig: QueryLoopConfig): AsyncGenerator<Qu
         // §2.4 / P1-4：stop_reason 与 content 不一致（end_turn/stop 或 max_tokens 仍含 tool_use）。
         // 功能上 F2 fall-through 已能正确执行工具（不漏调），这里只补一条结构化 warn
         // 遥测（不改控制流），把"被动兜住"升级为"主动暴露"。
-        log.warn(
-          "QUERY_LOOP",
-          `stop_reason 与 content 不一致：声称 ${response.stopReason} 但含 tool_use（已自动兜底执行工具）`,
-          {
-            stopReason: response.stopReason,
-            toolUseCount: response.content.filter((b) => b.type === "tool_use").length,
-            model: sendParams.model,
-          },
-        );
+        // 发现 5：按 (provider, model) 首次 warn、之后只计数，计数走 StopReasonMismatch 事件进 digest。
+        const mismatchProvider = response.usageProvider ?? config.provider;
+        const mismatchCount = noteStopReasonMismatch(mismatchProvider, sendParams.model);
+        if (mismatchCount === 1) {
+          log.warn(
+            "QUERY_LOOP",
+            `stop_reason 与 content 不一致：声称 ${response.stopReason} 但含 tool_use（已自动兜底执行工具；同一 provider/model 后续只计数不再告警）`,
+            {
+              stopReason: response.stopReason,
+              toolUseCount: response.content.filter((b) => b.type === "tool_use").length,
+              provider: mismatchProvider,
+              model: sendParams.model,
+            },
+          );
+        }
+        if (deps.traceAppendEvent) {
+          try {
+            deps.traceAppendEvent({
+              event: "StopReasonMismatch",
+              session_id: sessionState.sessionId,
+              timestamp: new Date().toISOString(),
+              data: {
+                stopReason: response.stopReason,
+                provider: mismatchProvider,
+                model: sendParams.model,
+              },
+            });
+          } catch {
+            /* trace 写入失败不阻断主循环 */
+          }
+        }
       }
       if (isEndTurnLike && !hasPendingToolUse) {
         // ─── S1 L1：end_turn 形态事实（每次都落，零行为）───

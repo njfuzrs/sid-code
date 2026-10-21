@@ -145,6 +145,8 @@ describe("T11 Responses API 解析器", () => {
 
       // usage
       const msgDelta = events.find((e) => e.type === "message_delta") as any;
+      // 发现 5：带工具的 completed 必须报 tool_use，不能写死 end_turn（曾靠 F2 兜底每轮 warn 一次）
+      expect(msgDelta.delta.stop_reason).toBe("tool_use");
       expect(msgDelta.usage.inputTokens).toBe(25);
       expect(msgDelta.usage.outputTokens).toBe(12);
 
