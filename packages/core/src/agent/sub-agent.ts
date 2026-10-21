@@ -818,6 +818,13 @@ export class SubAgent {
       taskId = created.taskState.id;
       _abortController = created.abortController;
     }
+    // 记下工作目录：send_message 续跑要回到同一个（隔离）工作区，见 LocalAgentTaskState.cwd。
+    if (task.cwd) {
+      const cwd = task.cwd;
+      updateTask<LocalAgentTaskState>(taskId, (t) =>
+        t.type === "local_agent" ? { ...t, cwd } : t,
+      );
+    }
 
     let result: SubAgentResult;
     // 稳定 agentId：贯穿 start → stop，让遥测能把一个子代理的 start/stop 配对成同一 span。

@@ -11,6 +11,7 @@ import {
   createAgentTask,
   completeAgentTask,
   failAgentTask,
+  updateTask,
 } from "../task/index.ts";
 import type { LocalAgentTaskState } from "../task/types.ts";
 import { injectMessageToAgent } from "../agent/message-queue.ts";
@@ -238,6 +239,24 @@ export class SendMessageTool implements Tool {
       message,
     ].join("\n");
 
+    // 原 agent 跑在显式工作区（典型是 isolation=worktree）时，续跑必须回到同一个目录。
+    // 不回去就落到主会话 cwd：一个声明了隔离的写类 agent 续跑一次就直接改主仓，
+    // 在本 PR 解锁子代理写能力之后这是实质风险（PR #398 review）。
+    // 工作区已被清理（无改动的隔离 worktree 跑完即删）时拒绝续跑，不降级到主仓。
+    const resumeCwd = task.cwd;
+    if (resumeCwd) {
+      const { existsSync } = await import("node:fs");
+      if (!existsSync(resumeCwd)) {
+        return {
+          output: JSON.stringify({
+            status: "cannot_resume",
+            agent_id: task.id,
+            message: `原 Agent 的工作区已不存在（${resumeCwd}，隔离 worktree 无改动时会在结束后自动清理），不能在主工作区续跑。请启动新的子代理。`,
+          }),
+        };
+      }
+    }
+
     // 创建新的后台 agent task
     const { taskState, abortController } = createAgentTask({
       agentType: task.agentType,
@@ -245,6 +264,10 @@ export class SendMessageTool implements Tool {
       description: `[Resume] ${message.slice(0, 80)}`,
     });
     const newTaskId = taskState.id;
+    // 续跑后的 task 也记下工作区：调用方拿到的是 newTaskId，再次 send_message 时同样要回到这里。
+    if (resumeCwd) {
+      updateTask<LocalAgentTaskState>(newTaskId, (t) => ({ ...t, cwd: resumeCwd }));
+    }
 
     // 后台执行（不 await）
     void (async () => {
@@ -254,6 +277,23 @@ export class SendMessageTool implements Tool {
         // P1-1：注入权限检查器。此前 resume 路径新建的 SubAgent 从不注入，
         // 恢复后的后台 agent 写类能力归零且静默（后台无弹窗通道，ask 降级 deny）。
         if (this.permissionChecker) subAgent.setPermissionChecker(this.permissionChecker);
+        // 回到原工作区时 checker 同样换成读该工作区 .sid-code/ 规则的派生版（对齐
+        // agent/tool.ts bindCheckerToWorktree / workflow runner 的 W22 处理）。派生失败回退共享的。
+        if (resumeCwd && this.permissionChecker) {
+          const current = this.permissionChecker as {
+            deriveForWorkspace?: (dir: string) => Promise<import("../permission/types.ts").Checker>;
+          };
+          if (typeof current.deriveForWorkspace === "function") {
+            try {
+              subAgent.setPermissionChecker(await current.deriveForWorkspace(resumeCwd));
+            } catch (err: any) {
+              log.warn(
+                "SUBAGENT",
+                `Resume 工作区权限规则重载失败（回退共享 checker）: ${err?.message ?? err}`,
+              );
+            }
+          }
+        }
         const result = await subAgent.execute(
           {
             type: task.agentType,
@@ -261,6 +301,7 @@ export class SendMessageTool implements Tool {
             // transcript 恢复：走 forkMessages（完整历史）；轻量续传：走拼接 prompt。
             prompt: forkMessages ? message : resumePrompt,
             forkMessages,
+            cwd: resumeCwd,
           },
           abortController.signal,
         );
