@@ -477,12 +477,19 @@ export interface Config {
 
   // 子代理注入（P1-10）
   /**
-   * CLI 注入的子代理定义（--agents <json>）：{ name: { description, prompt, tools?, model? } }。
+   * CLI 注入的子代理定义（--agents <json>）：{ name: { description, prompt, tools?, model?, modelTier?, maxTurns? } }。
    * 注册进聚合 registry，使 sub_agent 可发现。运行时字段，不落盘。
    */
   injectedAgents?: Record<
     string,
-    { description?: string; prompt: string; tools?: string[]; model?: string }
+    {
+      description?: string;
+      prompt: string;
+      tools?: string[];
+      model?: string;
+      modelTier?: import("../agent/agent-definition.ts").AgentDefinition["modelTier"];
+      maxTurns?: number;
+    }
   >;
   /**
    * 整会话使用的顶层子代理人格名（--agent <name>）。

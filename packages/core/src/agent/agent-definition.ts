@@ -57,7 +57,7 @@ export interface AgentDefinition {
    * 结构与 settings.json hooks 一致；spawn 时注册到该子代理的 hook 系统。
    */
   hooks?: unknown;
-  /** 最大轮次（可选；未声明 = 无上限，对齐 CC 内置代理） */
+  /** Agent 默认最大轮次（未声明 = 无上限；SubAgentTask.maxTurns 可按调用覆盖）。 */
   maxTurns?: number;
   /** 是否只读代理（只读工具不能被误用为写操作） */
   readOnly?: boolean;
