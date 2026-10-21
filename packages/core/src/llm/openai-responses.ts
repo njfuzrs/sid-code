@@ -37,7 +37,7 @@
  */
 
 import { splitSSELines, parseSSEField, isDoneSentinel } from "./sse-line.ts";
-import type { StreamEvent, Usage } from "./types.ts";
+import type { ProviderReasoningBlock, StreamEvent, Usage } from "./types.ts";
 import { getLogger } from "../debug/logger.ts";
 import { applyResponsesUsage } from "./openai-usage.ts";
 
@@ -107,7 +107,7 @@ export interface ResponsesUsage {
   output_tokens_details?: { reasoning_tokens?: number };
 }
 
-interface OutputItem {
+export interface OutputItem {
   id: string;
   type: "message" | "function_call" | "reasoning";
   status?: string;
@@ -119,6 +119,8 @@ interface OutputItem {
   arguments?: string;
   /** reasoning item 的摘要（流式对应 response.reasoning_summary_text.delta） */
   summary?: { type?: string; text?: string }[];
+  /** reasoning item 的密文（store:false 时默认下发，回放必需） */
+  encrypted_content?: string;
 }
 
 /**
@@ -158,6 +160,8 @@ interface ParserState {
    * 终态映射 stop_reason 要用它：Responses 的 status 在带工具调用时仍是 `completed`。
    */
   sawToolCall: boolean;
+  /** 本次请求的真实模型名，写进 provider_reasoning 块（密文绑定模型，跨模型回放要丢弃） */
+  model: string;
 }
 
 // ─── 解析器主体 ───
@@ -171,6 +175,7 @@ interface ParserState {
 export async function* parseResponsesStream(
   stream: ReadableStream<Uint8Array>,
   signal?: AbortSignal,
+  opts?: { model?: string },
 ): AsyncIterable<StreamEvent> {
   const log = getLogger();
   const state: ParserState = {
@@ -180,6 +185,7 @@ export async function* parseResponsesStream(
     started: false,
     inReasoningBlock: false,
     sawToolCall: false,
+    model: opts?.model ?? "",
   };
 
   for await (const event of readSSEEvents(stream, signal)) {
@@ -376,7 +382,18 @@ function mapResponseEvent(
 
     // ─── Output Item Done ───
     case "response.output_item.done": {
-      // item 级别完成，无需额外映射
+      // 发现 1（2026-10-21）：reasoning item 此前在这里被直接丢掉，推理链从未回传。
+      // 现在把整个 item 存成不可见的 provider_reasoning 块，下一轮由 buildResponsesRequest 原样回放。
+      const block = toProviderReasoningBlock(raw.item, state.model);
+      if (block) {
+        results.push({
+          type: "content_block_start",
+          index: state.blockIndex,
+          content_block: block,
+        } as StreamEvent);
+        results.push({ type: "content_block_stop", index: state.blockIndex } as StreamEvent);
+        state.blockIndex++;
+      }
       break;
     }
 
@@ -580,6 +597,26 @@ export interface ResponsesNonStreamingBody {
   incomplete_details?: { reason?: string };
 }
 
+/**
+ * reasoning output item → provider_reasoning 块。
+ *
+ * 没有 `encrypted_content` 就不存：store:false 下没有密文的 item 只剩一个 id，
+ * 回放它服务端会报「Item … not found」400——存了反而有害。
+ */
+export function toProviderReasoningBlock(
+  item: OutputItem | undefined,
+  model: string,
+): ProviderReasoningBlock | null {
+  if (item?.type !== "reasoning") return null;
+  if (typeof item.encrypted_content !== "string" || item.encrypted_content === "") return null;
+  return {
+    type: "provider_reasoning",
+    protocol: "openai-responses",
+    model,
+    item: { ...item } as unknown as Record<string, unknown>,
+  };
+}
+
 /** 非流式解析结果（与 AccumulatedResponse 的三个字段同形，由 provider 组装成完整对象） */
 export interface ParsedResponsesBody {
   /** thinking 块在前、text 块在后、tool_use 最后（与流式路径同序） */
@@ -587,6 +624,7 @@ export interface ParsedResponsesBody {
     | { type: "thinking"; thinking: string }
     | { type: "text"; text: string }
     | { type: "tool_use"; id: string; name: string; input: unknown }
+    | ProviderReasoningBlock
   >;
   /** 映射后的统一 stopReason（end_turn / tool_use / max_tokens / content_filter） */
   stopReason: string;
@@ -606,7 +644,10 @@ export interface ParsedResponsesBody {
  * usage 提取与流式路径共用 `applyResponsesUsage`（同一个函数，不是同一份逻辑的两份拷贝），
  * 所以两条路径的口径**不可能**再分裂。
  */
-export function parseResponsesBody(body: ResponsesNonStreamingBody): ParsedResponsesBody {
+export function parseResponsesBody(
+  body: ResponsesNonStreamingBody,
+  opts?: { model?: string },
+): ParsedResponsesBody {
   const content: ParsedResponsesBody["content"] = [];
   let sawToolCall = false;
 
@@ -618,6 +659,9 @@ export function parseResponsesBody(body: ResponsesNonStreamingBody): ParsedRespo
         .filter((t) => t !== "")
         .join("");
       if (text !== "") content.push({ type: "thinking", thinking: text });
+      // 与流式同序：摘要 thinking 在前，可回放的密文块在后
+      const replayable = toProviderReasoningBlock(item, opts?.model ?? "");
+      if (replayable) content.push(replayable);
       continue;
     }
 

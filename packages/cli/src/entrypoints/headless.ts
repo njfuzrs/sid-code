@@ -433,7 +433,10 @@ async function processStream(stream: AsyncIterable<StreamEvent>): Promise<{
       }
 
       case "content_block_start":
-        if (event.content_block.type === "text") {
+        if (event.content_block.type === "provider_reasoning") {
+          // Responses 推理项（发现 1）：原样保留以便下一轮回放
+          content[event.index] = { ...event.content_block };
+        } else if (event.content_block.type === "text") {
           content[event.index] = { type: "text", text: "" };
         } else if (event.content_block.type === "tool_use") {
           content[event.index] = {

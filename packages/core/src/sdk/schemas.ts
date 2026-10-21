@@ -43,6 +43,12 @@ export const ContentBlockSchema = lazySchema(() =>
     }),
     z.object({ type: z.literal("redacted_thinking"), data: z.string() }),
     z.object({
+      type: z.literal("provider_reasoning"),
+      protocol: z.literal("openai-responses"),
+      model: z.string(),
+      item: z.record(z.unknown()),
+    }),
+    z.object({
       type: z.literal("tool_use"),
       id: z.string(),
       name: z.string(),

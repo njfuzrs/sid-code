@@ -140,8 +140,9 @@ export async function processStream(
             input: {},
           };
           jsonAccumulators.set(event.index, "");
-        } else if (cb.type === "redacted_thinking") {
-          // 多轮回传必须原样保留，丢了会静默破坏推理链（anthropic-api.md:356-357）
+        } else if (cb.type === "redacted_thinking" || cb.type === "provider_reasoning") {
+          // 多轮回传必须原样保留，丢了会静默破坏推理链（anthropic-api.md:356-357；
+          // provider_reasoning 是 Responses 的推理项，发现 1）
           block = { ...(cb as ContentBlock) };
         }
         // 其余未知类型（server_tool_use 等）不落位——只要不占位，就不会出空洞。

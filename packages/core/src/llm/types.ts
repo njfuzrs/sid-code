@@ -99,13 +99,41 @@ export interface RedactedThinkingBlock {
   data: string;
 }
 
+/**
+ * 协议专属的不可见推理载体（2026-10-21，发现 1 / #385）。
+ *
+ * 目前只有 OpenAI Responses 的 `reasoning` output item（含 `encrypted_content`）：
+ * 官方要求带工具的多轮对话把它原样回传，否则每一轮模型都看不到自己上一轮的推理。
+ *
+ * **刻意不复用 `redacted_thinking`**：`anthropic.ts` 会把 redacted_thinking 原样发给
+ * Anthropic，复用就要在每个序列化器上加守卫，漏一处「gpt → claude」中途切模型即 400。
+ * 新块型让旧路径天然不认识它，只需在序列化入口显式过滤。
+ *
+ * - `model`：产出它的真实模型名。密文绑定模型，跨模型回放必须丢弃。
+ * - `item`：服务端下发的原始 item，回放时原样送回（只去掉 `status`）。
+ * - token 估算按 0 计：密文不进新采样的上下文，按长度估会让 masking/压缩提前触发。
+ * - 不渲染、不导出、不算「实质内容」（thinking-only 过滤与 thinking 同等对待）。
+ */
+export interface ProviderReasoningBlock {
+  type: "provider_reasoning";
+  protocol: "openai-responses";
+  model: string;
+  item: Record<string, unknown>;
+}
+
 /** 内容块类型 */
 export type ContentBlock =
   | TextBlock
   | ToolUseBlock
   | ToolResultBlock
   | ThinkingBlock
-  | RedactedThinkingBlock;
+  | RedactedThinkingBlock
+  | ProviderReasoningBlock;
+
+/** 不可见的推理块（thinking / redacted_thinking / provider_reasoning）：判「只剩推理、没有实质内容」用 */
+export function isReasoningOnlyBlock(b: { type?: string }): boolean {
+  return b.type === "thinking" || b.type === "redacted_thinking" || b.type === "provider_reasoning";
+}
 
 /** 消息 */
 export interface Message {

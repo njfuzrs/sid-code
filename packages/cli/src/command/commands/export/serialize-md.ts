@@ -109,6 +109,10 @@ function renderBlock(role: string, block: ContentBlock): string {
     case "redacted_thinking":
       return `## ${roleLabel} [thinking]\n\n> [思考内容已省略]`;
 
+    case "provider_reasoning":
+      // 加密推理项（发现 1）：不可读，导出里不占位
+      return "";
+
     default:
       return `## ${roleLabel}\n\n[未知内容块类型]`;
   }
