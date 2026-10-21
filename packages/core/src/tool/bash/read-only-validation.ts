@@ -257,6 +257,33 @@ const DANGEROUS_GIT_SUBCOMMANDS = new Set([
   "submodule",
 ]);
 
+/**
+ * gh 只读子命令：按「命令组 + 子命令」两级精确匹配，不做前缀匹配。
+ *
+ * 为什么要有：被评会话 ce7ea52e 里 `gh issue view 373 --json …` 被判非只读，
+ * 失去并发安全资格、每次都要过权限判定。
+ *
+ * 刻意不进的：
+ * - `gh api`：方法由 `-X/--method` 决定，带 `-f/-F/--input` 时会**隐式变成 POST**。
+ *   解析稍有遗漏就会把写操作判成只读并发放行，收益不值这个风险。
+ * - `gh pr checkout` 等：名字像「看」，实际改本地分支/工作区。
+ * - `--web` / `-w`：拉起浏览器，是本机副作用，不是读。
+ */
+const READ_ONLY_GH_SUBCOMMANDS: Record<string, ReadonlySet<string>> = {
+  issue: new Set(["view", "list"]),
+  pr: new Set(["view", "list", "diff", "checks"]),
+  repo: new Set(["view"]),
+};
+
+export function isReadOnlyGh(args: string[]): boolean {
+  const [group, sub] = args;
+  if (group === "--version" || group === "--help") return args.length === 1;
+  if (!group || !sub) return false;
+  const subs = READ_ONLY_GH_SUBCOMMANDS[group];
+  if (!subs || !subs.has(sub)) return false;
+  return !args.some((a) => a === "--web" || a === "-w" || a.startsWith("--web="));
+}
+
 /** 需要特殊处理的命令（看起来只读但可能有副作用） */
 const CONDITIONAL_COMMANDS: Record<string, (args: string[]) => boolean> = {
   // sed 只有不带 -i 时才是只读
@@ -293,6 +320,7 @@ const CONDITIONAL_COMMANDS: Record<string, (args: string[]) => boolean> = {
     const sub = args[0];
     return ["--version", "pm", "x"].includes(sub);
   },
+  gh: isReadOnlyGh,
 };
 
 /**

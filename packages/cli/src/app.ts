@@ -60,6 +60,7 @@ import { QuotaManager, resolveEffectiveCostLimit } from "@sid-code/core/llm/quot
 import { TokenMeter } from "@sid-code/core/telemetry/metrics/token-meter.ts";
 import { upsertUsageLedger } from "@sid-code/core/telemetry/usage-ledger.ts";
 import { buildUsageLedgerEntry } from "@sid-code/core/telemetry/usage-ledger-entry.ts";
+import { LedgerFlushThrottle } from "@sid-code/core/telemetry/ledger-flush-throttle.ts";
 import { BudgetTracker } from "@sid-code/core/telemetry/metrics/budget-tracker.ts";
 import type { BudgetRule } from "@sid-code/core/telemetry/metrics/budget-tracker.ts";
 import type { BudgetRuleConfig } from "@sid-code/core/config/config.ts";
@@ -515,6 +516,8 @@ export class App {
   private abortController: AbortController | null = null;
   /** 紧急退出防重入：emergencySessionEnd 只执行一次 */
   private emergencyEnded = false;
+  /** 发现 8：账本增量刷新的节流状态（见 flushSessionLedgerThrottled） */
+  private readonly ledgerFlushThrottle = new LedgerFlushThrottle();
   /** B1/B2/B3：会话持久化写入端（JSONL 增量写入） */
   private sessionStore: SessionStore | null = null;
   /** /clear 换会话后重置「首条消息起标题」的一次性闸门（runTUI 闭包内注入）。 */
@@ -844,6 +847,9 @@ export class App {
       });
     }
     this.sessionState = new SessionState(sessionId);
+    // 发现 8（20261020 ce7ea52e）：每次入账后节流刷新账本。此前只在每次提问的 done 刷，
+    // 一次提问跑 11 小时后被 abort 的会话 done 从未到达，账本停在 $0.17、真实 $11.2。
+    this.sessionState.setCostChangeListener((cost) => this.flushSessionLedgerThrottled(cost));
     // 注入用户配置的模型列表（含定价/provider），供计费和 provider 推断优先使用
     this.sessionState.setAvailableModels(opts.config.availableModels);
     // 网关定价启动刷新：先载入缓存供本会话计费用，再决定刷新策略（失败不阻塞启动）。
@@ -2945,6 +2951,8 @@ export class App {
     // ── 3. 换身份（对齐 CC regenerateSessionId({ setCurrentAsParent: true })） ──
     // rotate 同时归零用量计数器与轮次序号（新会话从 0 记）。
     this.sessionState.rotate(newSessionId);
+    // 新会话的账本行从头记：旧会话的刷新点不能拿来给新会话节流。
+    this.ledgerFlushThrottle.reset();
     // clear 后不再续写被 resume / fork 的旧会话：逻辑会话 id 回到本进程新 id
     this.resumedSessionId = null;
     this.forkedFromSessionId = null;
@@ -7600,7 +7608,7 @@ export class App {
   /**
    * 模块 C1：SessionEnd 时落一行用量账本汇总（~/.sid-code/usage-ledger.jsonl）。
    *
-   * - 用 upsert（按 sessionId 去重、latest-wins）落最终权威值，覆盖本会话此前的每轮增量行。
+   * - 用 upsert（按 sessionId 去重、latest-wins）落最终权威值，覆盖本会话此前的增量行（入账后节流刷新 + 每次提问 done / abort 强刷，见 flushSessionLedgerIncremental）。
    * - 跳过空会话：无任何 API 调用（promptTotal=0）不落行，避免噪声。
    */
   private appendSessionToLedger(): void {
@@ -7614,23 +7622,40 @@ export class App {
   }
 
   /**
-   * 缺陷修复：每轮 done 后把「本会话累计用量」增量 upsert 进账本。
+   * 把「本会话累计用量」增量 upsert 进账本（强刷：不过节流，但自上次刷新无新入账时跳过）。
    *
-   * 根因：账本此前只在退出路径（SessionEnd）落一行。交互式会话做完一轮仍停在 REPL 不退出 →
+   * 根因一：账本此前只在退出路径（SessionEnd）落一行。交互式会话做完一轮仍停在 REPL 不退出 →
    * SessionEnd 不触发 → 该会话在跨会话聚合（/cache）里长期计 $0，直到用户手动退出。
+   * 根因二（20261020 ce7ea52e 发现 8）：补上的刷新点挂在每次**用户提问**的 done 上，
+   * 不是每轮模型调用 —— 一次提问内跑 1300+ 轮后被 abort，done 从未到达，账本停在第 1 问。
+   * 现在三处调用：每次入账后经 {@link flushSessionLedgerThrottled} 节流刷；
+   * 提问的 done 与 abort / 异常收尾（onUserInput 内层 finally）强刷一次。
    *
-   * upsert 保证「每会话恒一行」（latest-wins），既让长驻会话的成本即时可见，又不因每轮写入而在
-   * 求和型聚合里翻倍。与 persistUsageStats/persistTodoState 同挂在每轮 done 后，best-effort、
-   * 失败不阻断主流程。
+   * upsert 保证「每会话恒一行」（latest-wins），既让长驻会话的成本即时可见，又不因多次写入而在
+   * 求和型聚合里翻倍。best-effort、失败不阻断主流程。
    */
   private flushSessionLedgerIncremental(): void {
     try {
+      const cost = this.sessionState.getEffectiveTotalCostUSD();
+      const version = this.sessionState.getUsageVersion();
+      if (!this.ledgerFlushThrottle.isDirty(version)) return;
       const entry = this.buildLedgerEntry();
       if (!entry) return;
       upsertUsageLedger(entry);
+      this.ledgerFlushThrottle.markFlushed(cost, version);
     } catch (e) {
       getLogger().warn("APP", `账本增量落盘失败（不阻断）: ${(e as Error)?.message}`);
     }
+  }
+
+  /**
+   * 发现 8：入账观察者回调（SessionState.updateUsage / addSideCost 之后同步触发）。
+   * 节流判据（≥30s 或成本增量 ≥$0.1）在 core 的 `ledger-flush-throttle.ts`，可单测。
+   * upsertUsageLedger 是全量重写，节流后每会话每分钟最多约 2 次，IO 可忽略。
+   */
+  private flushSessionLedgerThrottled(costUSD: number): void {
+    if (!this.ledgerFlushThrottle.shouldFlush(costUSD, this.sessionState.getUsageVersion())) return;
+    this.flushSessionLedgerIncremental();
   }
 
   /**
@@ -10100,6 +10125,9 @@ export class App {
         // 放在 finally 而非 done 分支——异常/中断路径同样必须放开，否则计数泄漏会
         // 让机器在任务早已结束后仍被钉醒（refCount 永不归零）。
         stopPreventSleep();
+        // 发现 8：abort / 异常收尾时强刷账本一次（done 分支已刷过则因无新入账而跳过）。
+        // 节流窗口内最后那几笔钱只有这里能落盘 —— abort 后进程可能一直活着不退出。
+        this.flushSessionLedgerIncremental();
 
         // 兜底：确保异常路径也能正确清理（回调置 null 防止 stale 闭包追加 delta）
         streamingFullText = "";

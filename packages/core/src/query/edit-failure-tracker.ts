@@ -17,8 +17,13 @@
  * 2. **升级式**提醒：达阈值先温和提示，持续失败再升级为"换策略/step back"。
  * 3. **重读自愈**：模型若照建议重新 read 了该文件，计数清零 → 给它干净重来的机会，
  *    而不是让旧计数一直累积导致提醒过早升级。
+ *    **例外：noop（old==new）与 not_found 不被 read 清零**，只被该文件的一次成功编辑清零。
+ *    被评会话 ce7ea52e 里 134/456 次 edit 失败，典型形态是「old==new → read → old==new」：
+ *    read 一次就把计数清零，阈值永远到不了，这条防线对它恰好零触发。这两类失败读完仍会再犯
+ *    （问题不在没读，而在 old_string/new_string 本身），所以 read 不算「已改正」。
  */
 
+import { readFileSync, statSync } from "node:fs";
 import { getLogger } from "../debug/logger.ts";
 
 /** 参与"连续失败计数"的编辑类工具（write/edit）。read 不计数，但成功 read 会清零对应文件的计数。 */
@@ -49,35 +54,42 @@ export interface EditFailureStore {
   set(key: string, value: any): void;
 }
 
-function getStreakMap(store: EditFailureStore): Map<string, number> {
-  let m = store.get(STREAK_KEY) as Map<string, number> | undefined;
+/**
+ * 每个文件的失败连击。`sticky` 是其中 noop / not_found 的条数：read 成功只把 count 降回 sticky
+ * （丢掉「读一下就能改正」的那几类），sticky 本身只被成功编辑清零。
+ */
+interface Streak {
+  count: number;
+  sticky: number;
+}
+
+function getStreakMap(store: EditFailureStore): Map<string, Streak> {
+  let m = store.get(STREAK_KEY) as Map<string, Streak> | undefined;
   if (!(m instanceof Map)) {
-    m = new Map<string, number>();
+    m = new Map<string, Streak>();
     store.set(STREAK_KEY, m);
   }
   return m;
 }
 
-/**
- * 从 edit/write 的错误文案分型，给出针对性的下一步建议。
- * 文案关键词对齐 src/tool/edit.ts / write.ts 的实际返回，保持同源。
- */
-function classifyAdvice(errorText: string): string {
+/** 失败分型。noop / not_found 是 sticky 型（read 不清零），见文件头注释第 3 点。 */
+export type EditFailureKind = "noop" | "not_found" | "ambiguous" | "stale" | "oversize" | "other";
+
+const STICKY_KINDS: ReadonlySet<EditFailureKind> = new Set(["noop", "not_found"]);
+
+/** 文案关键词对齐 src/tool/edit.ts / write.ts 的实际返回，保持同源。 */
+export function classifyEditFailure(errorText: string): EditFailureKind {
   const t = errorText || "";
-  // 找不到匹配（4 级策略全落空）：与磁盘内容差异较大，最可能是 old_string 已过时。
-  if (t.includes("未找到要替换的字符串") || t.includes("未匹配")) {
-    return "多次都没找到匹配串，说明你手里的 old_string 与文件当前内容已对不上。请先用 read 重新读取该文件的最新内容，再用你**从 read 结果里原样复制**的片段作为 old_string，注意保留精确缩进与空白。";
-  }
-  // 歧义 / 不唯一：old_string 太短或有重复。
+  if (t.includes("old_string 与 new_string 完全相同")) return "noop";
+  if (t.includes("未找到要替换的字符串") || t.includes("未匹配")) return "not_found";
   if (
     t.includes("模糊匹配歧义") ||
     t.includes("多个位置") ||
     t.includes("处匹配") ||
     t.includes("replace_all")
   ) {
-    return "多次都是匹配不唯一或歧义。请把 old_string 加长——多带上下几行紧邻的、能唯一定位的上下文；若你本就想改所有同名处，则显式设置 replace_all=true。";
+    return "ambiguous";
   }
-  // 被外部修改 / 未读：先读后写守卫拦下。
   if (
     t.includes("被外部修改") ||
     t.includes("已被修改") ||
@@ -85,14 +97,80 @@ function classifyAdvice(errorText: string): string {
     t.includes("没有读取") ||
     t.includes("先 read")
   ) {
-    return "文件在你读取后发生了变化，或尚未完整读取。请先重新 read 整个文件拿到最新内容，再基于最新内容编辑。";
+    return "stale";
   }
-  // 截断 / 超大文件：换分段或流式工具。
-  if (t.includes("截断") || t.includes("过大") || t.includes("输出长度上限")) {
-    return "内容疑似过大或被输出上限截断。请改用分段策略：先 write/edit 写入一部分，再用 edit 或 bash 的 cat >>、sed 逐段补齐；超大文件优先用 bash 的 sed 等流式工具处理。";
+  if (t.includes("截断") || t.includes("过大") || t.includes("输出长度上限")) return "oversize";
+  return "other";
+}
+
+/**
+ * 从 edit/write 的错误文案分型，给出针对性的下一步建议。
+ * 文案关键词对齐 src/tool/edit.ts / write.ts 的实际返回，保持同源。
+ */
+function adviceFor(kind: EditFailureKind): string {
+  switch (kind) {
+    // old==new：模型把 edit 当成了「确认这段在不在」的探针，或忘了写改后内容。
+    case "noop":
+      return "多次提交的 old_string 与 new_string 完全相同。new_string 必须是**改后**的完整内容；想确认文件内容请用 read，不要用 old==new 的 edit 当探针。";
+    // 找不到匹配（4 级策略全落空）：与磁盘内容差异较大，最可能是 old_string 已过时。
+    case "not_found":
+      return "多次都没找到匹配串，说明你手里的 old_string 与文件当前内容已对不上。请重新读取该文件的最新内容，用你**原样复制**的片段作为 old_string，注意保留精确缩进与空白（read 过一次不代表 old_string 已经对了）。";
+    // 歧义 / 不唯一：old_string 太短或有重复。
+    case "ambiguous":
+      return "多次都是匹配不唯一或歧义。请把 old_string 加长——多带上下几行紧邻的、能唯一定位的上下文；若你本就想改所有同名处，则显式设置 replace_all=true。";
+    // 被外部修改 / 未读：先读后写守卫拦下。
+    case "stale":
+      return "文件在你读取后发生了变化，或尚未完整读取。请先重新 read 整个文件拿到最新内容，再基于最新内容编辑。";
+    // 截断 / 超大文件：换分段或流式工具。
+    case "oversize":
+      return "内容疑似过大或被输出上限截断。请改用分段策略：先 write/edit 写入一部分，再用 edit 或 bash 的 cat >>、sed 逐段补齐；超大文件优先用 bash 的 sed 等流式工具处理。";
+    default:
+      return "请先 read 该文件确认最新内容，再重试；若文件很大或改动很多，考虑用 bash 的 sed/patch 等命令直接修改，避免反复整块替换。";
   }
-  // 兜底通用建议。
-  return "请先 read 该文件确认最新内容，再重试；若文件很大或改动很多，考虑用 bash 的 sed/patch 等命令直接修改，避免反复整块替换。";
+}
+
+/** 片段的引导行；测试用它判断「附没附片段」，所以 advice 正文里不许出现这句。 */
+export const SNIPPET_HEADER = "[实时片段] 该文件对应区段的当前内容（行号\\t内容）：";
+
+/** 片段只读这么大的文件；更大的文件读一次的代价不值一条提醒。 */
+const SNIPPET_MAX_FILE_BYTES = 2 * 1024 * 1024;
+/** 锚点上下各带几行。 */
+const SNIPPET_CONTEXT_LINES = 8;
+/** 太短的行（`}`、`return;`）到处都是，拿来当锚点会定位到无关位置。 */
+const SNIPPET_MIN_ANCHOR_LEN = 8;
+
+/**
+ * 按 old_string 在文件里找锚点，返回该区段的实时内容（read 的 `行号\t内容` 格式）。
+ *
+ * 为什么要附片段：noop / not_found 的模型「读过了」却仍写错，再劝它 read 是同一句话第二遍；
+ * 直接把它想改的那一段当前长什么样给它，下一次 edit 才有准确锚点。
+ * 锚点取 old_string 里第一条在文件中（去首尾空白后）出现的、足够长的行——
+ * not_found 时整段对不上，但通常仍有某几行是对的（缩进/某一行写错）。
+ * 找不到锚点就不附，不猜一个位置。
+ */
+function liveSnippet(filePath: string, oldString: string | undefined): string | undefined {
+  if (!oldString) return undefined;
+  try {
+    if (statSync(filePath).size > SNIPPET_MAX_FILE_BYTES) return undefined;
+    const lines = readFileSync(filePath, "utf8").replace(/\r\n/g, "\n").split("\n");
+    const trimmed = lines.map((l) => l.trim());
+    let anchor = -1;
+    for (const cand of oldString.split("\n")) {
+      const c = cand.trim();
+      if (c.length < SNIPPET_MIN_ANCHOR_LEN) continue;
+      anchor = trimmed.indexOf(c);
+      if (anchor >= 0) break;
+    }
+    if (anchor < 0) return undefined;
+    const start = Math.max(0, anchor - SNIPPET_CONTEXT_LINES);
+    const end = Math.min(lines.length, anchor + SNIPPET_CONTEXT_LINES + 1);
+    return lines
+      .slice(start, end)
+      .map((l, i) => `${start + i + 1}\t${l}`)
+      .join("\n");
+  } catch {
+    return undefined;
+  }
 }
 
 /**
@@ -101,7 +179,8 @@ function classifyAdvice(errorText: string): string {
  * 语义：
  * - edit/write 成功 → 清零该文件计数，无提醒。
  * - edit/write 失败 → 该文件计数 +1；达阈值后返回分型提醒；持续超阈值则升级为"换策略"。
- * - read 成功 → 清零该文件计数（模型照建议重读了，给它干净重来的机会），无提醒。
+ * - read 成功 → 清零该文件的非 sticky 计数（模型照建议重读了，给它干净重来的机会），
+ *   noop / not_found 计数保留，无提醒。
  * - 其它工具 / 无 file_path / 已关闭 → 不处理。
  *
  * @param store       会话级状态存储（SessionState）
@@ -109,6 +188,7 @@ function classifyAdvice(errorText: string): string {
  * @param filePath    工具输入里的 file_path（原样，用于按文件计数）
  * @param isError     本次是否失败
  * @param errorText   失败时的错误文案（用于分型建议）
+ * @param oldString   edit 的 old_string（noop / not_found 达阈值时用来定位实时片段）
  */
 export function recordEditOutcome(
   store: EditFailureStore,
@@ -116,15 +196,20 @@ export function recordEditOutcome(
   filePath: string | undefined,
   isError: boolean,
   errorText: string,
+  oldString?: string,
 ): string | undefined {
   if (isDisabled()) return undefined;
   if (!filePath || typeof filePath !== "string") return undefined;
 
-  // 成功 read：视作模型照"重读"建议行动，清零该文件计数（自愈）。
+  // 成功 read：视作模型照"重读"建议行动，清掉 read 能改正的那部分计数（自愈）。
   if (toolName === "read") {
     if (!isError) {
       const m = getStreakMap(store);
-      if (m.has(filePath)) m.delete(filePath);
+      const st = m.get(filePath);
+      if (st) {
+        if (st.sticky > 0) st.count = st.sticky;
+        else m.delete(filePath);
+      }
     }
     return undefined;
   }
@@ -141,12 +226,22 @@ export function recordEditOutcome(
 
   // 失败 → 累加。
   const threshold = getThreshold();
-  const count = (m.get(filePath) ?? 0) + 1;
-  m.set(filePath, count);
+  const kind = classifyEditFailure(errorText);
+  const prev = m.get(filePath) ?? { count: 0, sticky: 0 };
+  const st: Streak = {
+    count: prev.count + 1,
+    sticky: prev.sticky + (STICKY_KINDS.has(kind) ? 1 : 0),
+  };
+  m.set(filePath, st);
+  const count = st.count;
 
   if (count < threshold) return undefined;
 
-  const advice = classifyAdvice(errorText);
+  let advice = adviceFor(kind);
+  if (STICKY_KINDS.has(kind)) {
+    const snippet = liveSnippet(filePath, oldString);
+    if (snippet) advice += `\n${SNIPPET_HEADER}\n${snippet}`;
+  }
   getLogger().warn(
     "TOOL",
     `连续编辑失败提醒：${filePath} 已连续失败 ${count} 次（阈值 ${threshold}）`,

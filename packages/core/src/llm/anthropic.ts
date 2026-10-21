@@ -40,6 +40,7 @@ import {
   recordNonStreamingBilledRequest,
   observedThinkingIntent,
   nextFetchId,
+  markFetchInFlight,
 } from "./billing-sink.ts";
 import { normalizeToolInput } from "./normalize-tool-input.ts";
 import { pickWireModel } from "./wire-model.ts";
@@ -562,6 +563,20 @@ export class AnthropicProvider implements Provider {
       let emittedOutputTokens = 0;
       // PR3：本次 fetch 的计费去重键（单次 fetch 粒度，理由见 billing-sink.ts）。
       const billingFetchId = nextFetchId();
+      // 发现 13：登记在途（理由见 billing-sink.ts markFetchInFlight）。
+      const inFlightCtx = currentSseDumpContext();
+      markFetchInFlight(billingFetchId, () => ({
+        fetchId: billingFetchId,
+        model: params.model ?? this._model,
+        provider: this.name(),
+        baseURL: this.client.baseURL,
+        usage: { ...accumulatedUsage },
+        index: inFlightCtx.turnIndex,
+        agentId: inFlightCtx.agentId,
+        callerLabel: inFlightCtx.callerLabel,
+        atMs: Date.now(),
+        accounted: false,
+      }));
       // PR-5：响应里是否出现思考块（关闭泄漏率 / side-call 思考率的分子）
       let sawThinkingBlock = false;
 
