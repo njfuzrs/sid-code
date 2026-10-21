@@ -552,6 +552,31 @@ export function aggregateStrictDegradeStats(
   return stats.degrades > 0 ? stats : undefined;
 }
 
+/**
+ * 发现 5（2026-10-21）：「stop_reason 与 content 不一致」次数。取数源 `StopReasonMismatch` 事件
+ * （主循环 F2 fall-through 每次一条）。warn.log 按 (provider, model) 只告警首次，计数只在这里。
+ * 根因修掉后目标恒为 0；非 0 = 某个协议族又出现偏差，按 byModel 定位。
+ */
+export interface StopReasonMismatchStats {
+  total: number;
+  /** `provider/model` → 次数 */
+  byModel: Record<string, number>;
+}
+
+export function aggregateStopReasonMismatchStats(
+  events: Array<{ event?: string; data?: Record<string, unknown> }>,
+): StopReasonMismatchStats | undefined {
+  const stats: StopReasonMismatchStats = { total: 0, byModel: {} };
+  for (const e of events) {
+    if (e.event !== "StopReasonMismatch") continue;
+    const d = e.data ?? {};
+    stats.total++;
+    const key = `${String(d.provider ?? "?")}/${String(d.model ?? "?")}`;
+    stats.byModel[key] = (stats.byModel[key] ?? 0) + 1;
+  }
+  return stats.total > 0 ? stats : undefined;
+}
+
 export interface RecoveryDigestStats {
   /** 以失败结束的调用数（recovery_give_up 条数） */
   giveUps: number;
@@ -960,6 +985,8 @@ export interface Digest {
   thinkingLeak?: ThinkingLeakStats;
   /** R11：strict 工具降级汇总。无 StrictToolDegraded 事件时 undefined。 */
   strictDegrade?: StrictDegradeStats;
+  /** 发现 5：stop_reason 与 content 不一致次数。无 StopReasonMismatch 事件时 undefined。 */
+  stopReasonMismatch?: StopReasonMismatchStats;
   /**
    * P1-8：过程病态度量（6 项）。始终产出（不像上面几项那样依赖专用事件）——
    * 六项全部从 traj + 通用事件派生，"全部健康"本身就是有意义的结论，
@@ -2653,6 +2680,7 @@ export function buildDigest(ref: SessionRef, full: boolean, paths: DigestPaths):
   // ── PR-5：思考关闭泄漏率（主循环 / 非主循环分开，分母 = 意图关的 fetch）──
   const thinkingLeak = aggregateThinkingLeakStats(events);
   const strictDegrade = aggregateStrictDegradeStats(events);
+  const stopReasonMismatch = aggregateStopReasonMismatchStats(events);
 
   return {
     sessionId: ref.id,
@@ -2709,6 +2737,7 @@ export function buildDigest(ref: SessionRef, full: boolean, paths: DigestPaths):
     recovery: recovery ?? undefined,
     thinkingLeak,
     strictDegrade,
+    stopReasonMismatch,
     pathology,
     // P0-2：始终产出（不像 jit/todo 那样依赖专用事件）—— 样本为 0 时 n=0 是有意义的
     // 结论（"这个会话没有 TTFT 样本"），整节消失则无法区分"没样本"与"该版本没接线"
@@ -3104,6 +3133,24 @@ export function renderHuman(d: Digest, opts: RenderOptions = {}): string {
   }
 
   // R11：strict 降级。目标恒为 0，出现即标黄。
+  if (d.stopReasonMismatch) {
+    const m = d.stopReasonMismatch;
+    L.push("");
+    L.push(
+      c("bold", "协议偏差:") +
+        " " +
+        c("yellow", `stop_reason 与 content 不一致 ${m.total} 次`) +
+        c(
+          "gray",
+          "（" +
+            Object.entries(m.byModel)
+              .map(([k, v]) => `${k}=${v}`)
+              .join(", ") +
+            "；已兜底执行工具，应为 0）",
+        ),
+    );
+  }
+
   if (d.strictDegrade) {
     const sd = d.strictDegrade;
     const learned = Object.entries(sd.learnedLimits);

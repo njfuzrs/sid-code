@@ -8,6 +8,7 @@
  */
 
 import type { Provider } from "../llm/provider.ts";
+import { noteStopReasonMismatch } from "./stop-reason-mismatch.ts";
 import type { ContentBlock, Usage, SendParams } from "../llm/types.ts";
 import { accumulateUsage, normalizeCacheUsage } from "../llm/types.ts";
 import { Manager as ContextManager } from "../context/manager.ts";
@@ -1049,10 +1050,11 @@ async function runAgentLoopInner(
     const hasPendingToolUse = response.content.some((b) => b.type === "tool_use");
     const isEndTurnLike = isEndTurnLikeStopReason(response.stopReason);
     const f2FallThrough = isEndTurnLike && hasPendingToolUse;
-    if (f2FallThrough) {
+    // 发现 5：与主循环共用 (provider, model) 进程级去重，首次 warn、之后只计数
+    if (f2FallThrough && noteStopReasonMismatch(provider.name(), model) === 1) {
       log.warn(
         "AGENT_LOOP",
-        "stop_reason 与 content 不一致：声称 end_turn/stop 但含 tool_use（疑似代理协议偏差，已自动兜底执行工具）",
+        "stop_reason 与 content 不一致：声称 end_turn/stop 但含 tool_use（疑似代理协议偏差，已自动兜底执行工具；同一 provider/model 后续只计数不再告警）",
         {
           stopReason: response.stopReason,
           toolUseCount: response.content.filter((b) => b.type === "tool_use").length,

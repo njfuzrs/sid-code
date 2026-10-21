@@ -23,6 +23,7 @@ import {
 } from "@sid-code/core/agent/sub-agent-protocol.ts";
 import type { Provider } from "@sid-code/core/llm/provider.ts";
 import { describeToolActivity } from "@sid-code/core/agent/progress.ts";
+import { isEndTurnLikeStopReason } from "@sid-code/core/agent/message-invariants.ts";
 import type { ContentBlock, StreamEvent, Usage } from "@sid-code/core/llm/types.ts";
 import { accumulateUsage } from "@sid-code/core/llm/types.ts";
 import { normalizeToolInput } from "@sid-code/core/llm/normalize-tool-input.ts";
@@ -298,15 +299,24 @@ async function runAgentLoop(
         });
       }
 
-      // 检查停止原因
-      if (response.stopReason === "end_turn" || response.stopReason === "stop") {
+      // 检查停止原因。判据与主循环 / 子循环同一份（isEndTurnLikeStopReason + 是否带 tool_use）：
+      // 此前只看 stopReason==="end_turn"，协议偏差（Responses 流式曾把带工具的轮写死成
+      // end_turn，发现 5）会让这里带着未执行的工具直接收工。
+      const hasPendingToolUse = response.content.some((b) => b.type === "tool_use");
+      if (isEndTurnLikeStopReason(response.stopReason) && !hasPendingToolUse) {
         // 正常结束
         emitResult(true, lastTextOutput);
         return;
       }
 
-      // 处理工具调用
-      if (response.stopReason === "tool_use") {
+      // 处理工具调用（含 F2 fall-through：end_turn-like 或截断却带 tool_use；
+      // content_filter 等其它 reason 不进，与主循环 loop.ts 同口径）
+      const f2FallThrough =
+        hasPendingToolUse &&
+        (isEndTurnLikeStopReason(response.stopReason) ||
+          response.stopReason === "max_tokens" ||
+          response.stopReason === "length");
+      if (response.stopReason === "tool_use" || f2FallThrough) {
         // 收集所有 tool_use blocks
         const toolUses = response.content.filter(
           (b): b is ContentBlock & { type: "tool_use" } => b.type === "tool_use",

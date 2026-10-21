@@ -222,8 +222,18 @@ export interface TodoGateBudget {
    * 与 retries 同一复位口径：完成数变化才清零。
    */
   productiveNoUpdate: number;
-  /** 预算基线：上次复位时的 completed 项数 */
+  /** 最近一次观察到的 completed 项数（用于判「下降」，不是复位基线） */
   completed: number;
+  /**
+   * 复位基线：本份清单（total 不变期间）completed 的历史最高值。
+   * 只有 completed **超过它**才算推进、才复位预算——回到旧高点不算。
+   */
+  peakCompleted: number;
+  /**
+   * 振荡计数：本份清单内 completed 下降次数 + TodoReworkDetected 次数（2026-10-21，发现 2b）。
+   * 换清单（total 变化）清零。供后续升级阶梯（D2）消费，本身不改变任何行为。
+   */
+  oscillations: number;
   /** 预算基线：上次复位时的清单总项数 */
   total: number;
   /** 本基线下"续命耗尽"提示是否已呈现过（同一状态只说一次，不每轮重复红字） */
@@ -233,26 +243,51 @@ export interface TodoGateBudget {
 }
 
 /**
- * 按清单**真实推进**刷新续命预算：completed 数或总项数变了才复位，否则沿用旧预算。
+ * 按清单**真实推进**刷新续命预算：completed **创新高**或总项数变了才复位，否则沿用旧预算。
  *
  * 复位判据刻意不用 writeVersion——只改措辞的 todo_write 也会让它 +1（见 countCompleted 注释）。
- * 总项数变化通常意味着换了一份新清单（用户提了新任务），此时旧预算不该延续；
- * completed 减少是"把已完成项改回 in_progress 返工"，同样是清单的真实变化。
+ * 总项数变化通常意味着换了一份新清单（用户提了新任务），此时旧预算不该延续。
+ *
+ * ⚠️ completed **下降不复位**（2026-10-21，会话 20261020-110542-ce7ea52e 发现 2b）。
+ * 旧判据是「completed 有任何变化就复位」，把"改回 in_progress 返工"也当成推进。该会话
+ * completed 序列 `…1,0,1,0,1,1,0,1,0,0` 每次 1→0→1 都让预算回满，cap 从未真正生效，
+ * 防线到顶只会沉默、跑了 9 小时。现在下降只计入 `oscillations`，回到旧高点也不算推进。
+ * 代价：合法的「返工一次」不再续命——只是闸门不再劝"继续"，不会强停。
+ *
+ * 返回值的 `progressed` = 本次是否复位（推进 / 换清单），loop.ts 用它决定 nag 计数清零，
+ * 两处共用同一判据，避免一处看 writeVersion、一处看完成数的口径分裂。
  */
-export function refreshTodoGateBudget(
+export function advanceTodoGateBudget(
   prev: TodoGateBudget | undefined,
   todos: TodoItem[],
-): TodoGateBudget {
+): { budget: TodoGateBudget; progressed: boolean } {
   const completed = countCompleted(todos);
   const total = todos.length;
-  if (prev && prev.completed === completed && prev.total === total) return prev;
+  if (!prev || prev.total !== total || completed > prev.peakCompleted) {
+    return {
+      budget: {
+        retries: 0,
+        productiveNoUpdate: 0,
+        completed,
+        peakCompleted: completed,
+        total,
+        // 换清单才清零振荡；同一份清单创新高不抹掉此前的振荡史
+        oscillations: prev && prev.total === total ? prev.oscillations : 0,
+        exhaustedNotified: false,
+        handoffSignature: prev?.handoffSignature,
+      },
+      progressed: true,
+    };
+  }
+  if (completed === prev.completed) return { budget: prev, progressed: false };
+  // 同一份清单内的非新高变化：下降记一次振荡；回升（未超峰值）只更新观察值
   return {
-    retries: 0,
-    productiveNoUpdate: 0,
-    completed,
-    total,
-    exhaustedNotified: false,
-    handoffSignature: prev?.handoffSignature,
+    budget: {
+      ...prev,
+      completed,
+      oscillations: prev.oscillations + (completed < prev.completed ? 1 : 0),
+    },
+    progressed: false,
   };
 }
 

@@ -114,6 +114,17 @@ describe("PARITY-2 单工具调用", () => {
     }
   });
 
+  test("Responses 族工具调用轮同样归一化为 tool_use（发现 5：流式曾写死 end_turn）", async () => {
+    // responses-tool-call 夹具的参数是 {location:"Tokyo"}（早于本条入库，不改夹具），
+    // 所以不并进上面的 Paris 断言，只比下游真正分叉的那一层：stopReason。
+    for (const fixture of ["responses-tool-call.json", "responses-parallel-tools.json"]) {
+      const r = await replayFixture(fixture, "openai-responses");
+      expect(r.toolCalls.length, `${fixture} 应有工具调用`).toBeGreaterThan(0);
+      expect(r.stopReason, `${fixture} 的 stopReason`).toBe("tool_use");
+      expect(r.errorMessage, `${fixture} 不应有 error`).toBeNull();
+    }
+  });
+
   test("工具调用轮的正文为空不代表流失败（纯 tool_use 轮）", async () => {
     // 这条钉住一个真实踩过的形态：只有 tool_use、没有任何可视文本的轮，
     // 曾让"只在可视文本上计 TTFT"的口径系统性虚高数十秒。
