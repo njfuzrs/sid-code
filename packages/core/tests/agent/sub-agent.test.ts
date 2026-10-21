@@ -636,16 +636,30 @@ describe("resolveSubAgentMaxTurns（PR-B：未声明即无上限，对齐 CC）"
     expect(resolveSubAgentMaxTurns({ maxTurns: 1 })).toBe(1);
   });
 
-  test("未声明 → Infinity（⛔ 不能是 undefined：`turns < undefined` 恒 false，一轮都不跑）", () => {
+  test("未声明任务上限与 Agent 默认值 → Infinity", () => {
     const n = resolveSubAgentMaxTurns({});
     expect(n).toBe(Infinity);
-    // 锁住陷阱本身：循环条件对 0 必须为真
+    // 锁住陷阱本身：循环条件对 0 必须为真。
     expect(0 < n).toBe(true);
   });
 
-  test("非正数 / NaN 视为未声明（与主循环 `maxTurns || Infinity` 同口径）", () => {
-    expect(resolveSubAgentMaxTurns({ maxTurns: 0 })).toBe(Infinity);
-    expect(resolveSubAgentMaxTurns({ maxTurns: -3 })).toBe(Infinity);
-    expect(resolveSubAgentMaxTurns({ maxTurns: NaN })).toBe(Infinity);
+  test("调用级正数优先于 Agent 默认值", () => {
+    expect(resolveSubAgentMaxTurns({ maxTurns: 4 }, 12)).toBe(4);
+  });
+
+  test("缺少调用级上限时使用 Agent 默认值", () => {
+    expect(resolveSubAgentMaxTurns({}, 12)).toBe(12);
+  });
+
+  test("调用级非正数 / NaN 保持未声明语义", () => {
+    expect(resolveSubAgentMaxTurns({ maxTurns: 0 }, 12)).toBe(12);
+    expect(resolveSubAgentMaxTurns({ maxTurns: -3 }, 12)).toBe(12);
+    expect(resolveSubAgentMaxTurns({ maxTurns: NaN }, 12)).toBe(12);
+  });
+
+  test("Agent 默认上限非法时不生效", () => {
+    expect(resolveSubAgentMaxTurns({}, 0)).toBe(Infinity);
+    expect(resolveSubAgentMaxTurns({}, -3)).toBe(Infinity);
+    expect(resolveSubAgentMaxTurns({}, NaN)).toBe(Infinity);
   });
 });

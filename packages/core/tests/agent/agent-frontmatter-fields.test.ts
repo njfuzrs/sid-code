@@ -1,15 +1,23 @@
 /**
  * P0-2 / P1-1 / P1-2 / P2-1：自定义 agent frontmatter 扩展字段消费 单测
  *
- * 覆盖 parseAgentExtendedFrontmatter 的七个字段（model/skills/color/permissionMode/
- * hooks/background/isolation）：合法值消费、非法值 warn 跳过（不抛错）、双格式解析。
+ * 覆盖 parseAgentExtendedFrontmatter 的九个字段（model/modelTier/maxTurns/skills/color/
+ * permissionMode/hooks/background/isolation）：合法值消费、非法值 warn 跳过（不抛错）、双格式解析。
  * 以及 buildAgentHookSystem 的隔离语义（每个声明 hooks 的 agent 拿独立 HookSystem）。
  */
 
-import { describe, it, expect } from "bun:test";
+import { describe, it, expect, afterEach } from "bun:test";
 import { parseAgentExtendedFrontmatter, parseListField } from "@sid-code/core/agent/custom.ts";
 import { buildAgentHookSystem, registerAgentHooks } from "@sid-code/core/agent/agent-hooks.ts";
 import { HookSystem } from "@sid-code/core/hook/system.ts";
+import {
+  registerDynamicAgents,
+  clearDynamicAgents,
+  resolveAgent,
+} from "@sid-code/core/agent/agent-definition.ts";
+import { resolveSubAgentMaxTurns } from "@sid-code/core/agent/sub-agent.ts";
+
+afterEach(() => clearDynamicAgents());
 
 const parse = (fm: Record<string, unknown>) => parseAgentExtendedFrontmatter(fm, "test-agent");
 
@@ -40,6 +48,66 @@ describe("model（P0-2）", () => {
   it("空串/非字符串忽略", () => {
     expect(parse({ model: "  " }).model).toBeUndefined();
     expect(parse({ model: 42 }).model).toBeUndefined();
+  });
+});
+
+describe("modelTier / maxTurns（G-373）", () => {
+  it("解析合法模型档位", () => {
+    expect(parse({ modelTier: "cheap" }).modelTier).toBe("cheap");
+    expect(parse({ modelTier: "default" }).modelTier).toBe("default");
+    expect(parse({ modelTier: "strong" }).modelTier).toBe("strong");
+    expect(parse({ modelTier: " strong " }).modelTier).toBe("strong");
+  });
+
+  it("非法模型档位 warn 后忽略", () => {
+    expect(parse({ modelTier: "ultra" }).modelTier).toBeUndefined();
+    expect(parse({ modelTier: 1 }).modelTier).toBeUndefined();
+    expect(parse({ modelTier: false }).modelTier).toBeUndefined();
+    expect(parse({ modelTier: "  " }).modelTier).toBeUndefined();
+  });
+
+  it("maxTurns 只消费安全正整数", () => {
+    expect(parse({ maxTurns: 1 }).maxTurns).toBe(1);
+    expect(parse({ maxTurns: 20 }).maxTurns).toBe(20);
+    expect(parse({ maxTurns: 1.5 }).maxTurns).toBeUndefined();
+    expect(parse({ maxTurns: 0 }).maxTurns).toBeUndefined();
+    expect(parse({ maxTurns: -1 }).maxTurns).toBeUndefined();
+    expect(parse({ maxTurns: Number.MAX_SAFE_INTEGER + 1 }).maxTurns).toBeUndefined();
+    expect(parse({ maxTurns: "20" }).maxTurns).toBeUndefined();
+    expect(parse({ maxTurns: Number.POSITIVE_INFINITY }).maxTurns).toBeUndefined();
+    expect(parse({}).maxTurns).toBeUndefined();
+  });
+
+  it("调用级 maxTurns 优先，缺省时使用 Agent 默认值", () => {
+    expect(resolveSubAgentMaxTurns({ maxTurns: 3 }, 9)).toBe(3);
+    expect(resolveSubAgentMaxTurns({}, 9)).toBe(9);
+    expect(resolveSubAgentMaxTurns({ maxTurns: 0 }, 9)).toBe(9);
+    expect(resolveSubAgentMaxTurns({}, undefined)).toBe(Infinity);
+  });
+
+  it("解析后的 modelTier / maxTurns 可进入 AgentDefinition registry", () => {
+    const parsed = parse({ modelTier: "cheap", maxTurns: 7 });
+    registerDynamicAgents([
+      {
+        agentType: "frontmatter-agent",
+        description: "描述",
+        whenToUse: "使用场景",
+        systemPrompt: "提示词",
+        source: "userSettings",
+        ...parsed,
+      },
+    ]);
+
+    expect(resolveAgent("frontmatter-agent")).toMatchObject({
+      modelTier: "cheap",
+      maxTurns: 7,
+    });
+  });
+
+  it("非法 maxTurns warn 后忽略，避免将误配静默解释成无上限", () => {
+    expect(parse({ maxTurns: 1.5 }).maxTurns).toBeUndefined();
+    expect(parse({ maxTurns: "10" }).maxTurns).toBeUndefined();
+    expect(parse({ maxTurns: 0 }).maxTurns).toBeUndefined();
   });
 });
 
@@ -138,9 +206,11 @@ describe("hooks（P2-1）字段消费与隔离", () => {
 });
 
 describe("多字段组合", () => {
-  it("一次性解析全部七字段", () => {
+  it("一次性解析扩展字段，包括 modelTier / maxTurns", () => {
     const out = parse({
       model: "m1",
+      modelTier: "strong",
+      maxTurns: 9,
       skills: ["s1"],
       color: "teal",
       permissionMode: "acceptEdits",
@@ -150,6 +220,8 @@ describe("多字段组合", () => {
     });
     expect(out).toEqual({
       model: "m1",
+      modelTier: "strong",
+      maxTurns: 9,
       skills: ["s1"],
       color: "teal",
       permissionMode: "acceptEdits",
