@@ -3,6 +3,7 @@
  * 审批记录存储在 ~/.sid-code/state/mcp-approvals.json
  */
 
+import { createHash } from "crypto";
 import { existsSync, readFileSync, writeFileSync, mkdirSync, renameSync } from "fs";
 import { sidPaths } from "../config/paths.ts";
 import { getLogger } from "../debug/logger.ts";
@@ -100,8 +101,66 @@ function saveApprovals(store: ApprovalStore): void {
   corruptPending = null;
 }
 
+// ─── 内容指纹 ────────────────────────────────────────────────────────────────
+//
+// 批准记录必须绑定「批准时看到的配置内容」，不能只绑 server 名：.mcp.json 是随仓库
+// 分发的，同名 server 的 command / args / url 被人改掉（恶意 PR、被投毒的依赖仓库）后，
+// 只认名字的批准会让新命令在下次启动时**无提示执行**——用户批准的是旧命令，不是新命令。
+// 同仓的 extension/trust.ts 早就按 SHA-256 内容 hash 记信任，这里与它对齐。
+//
+// 拒绝记录刻意仍按名字记：拒绝是「这个名字我不要」，内容变了也不该自动解除（fail-closed）。
+
+/** 指纹里排除的字段：只是开关，不改变「会执行什么」。关掉一个 server 不该要求重新审批。 */
+const FINGERPRINT_EXCLUDED_KEYS = new Set(["enabled"]);
+
+/** 稳定 JSON 序列化（对象键排序），保证同一份配置在不同进程里算出同一个指纹 */
+function stableStringify(value: unknown): string {
+  if (value === null || typeof value !== "object") return JSON.stringify(value) ?? "null";
+  if (Array.isArray(value)) return `[${value.map(stableStringify).join(",")}]`;
+  const obj = value as Record<string, unknown>;
+  const keys = Object.keys(obj)
+    .filter((k) => obj[k] !== undefined)
+    .sort();
+  return `{${keys.map((k) => `${JSON.stringify(k)}:${stableStringify(obj[k])}`).join(",")}}`;
+}
+
+/**
+ * 计算项目级 server 配置的内容指纹（SHA-256 全长 hex）。
+ *
+ * 取的是 .mcp.json 里**声明的原文**（`${VAR}` 未展开）：批准的对象是仓库里写的东西，
+ * 环境变量的值是用户自己的，换个 token 不该触发重新审批。
+ */
+export function computeServerConfigFingerprint(config: unknown): string {
+  let target = config;
+  if (config && typeof config === "object" && !Array.isArray(config)) {
+    target = Object.fromEntries(
+      Object.entries(config as Record<string, unknown>).filter(
+        ([k]) => !FINGERPRINT_EXCLUDED_KEYS.has(k),
+      ),
+    );
+  }
+  return createHash("sha256").update(stableStringify(target), "utf-8").digest("hex");
+}
+
+/** 批准键：`<项目路径>:<server 名>#sha256:<指纹>` */
+function approvedKey(path: string, serverName: string, fingerprint: string): string {
+  return `${path}:${serverName}#sha256:${fingerprint}`;
+}
+
+/**
+ * 某项目下某 server 的全部批准键（含旧版无指纹的 `<path>:<name>`），写入时整体替换用：
+ * 内容变了重新批准后，旧指纹的记录不能留着——否则把配置改回旧内容会被静默放行。
+ */
+function isApprovedKeyFor(key: string, path: string, serverName: string): boolean {
+  const base = `${path}:${serverName}`;
+  return key === base || key.startsWith(`${base}#sha256:`);
+}
+
 /**
  * 检查项目级 MCP Server 的审批状态。
+ *
+ * 批准按「server 名 + 配置内容指纹」匹配：`config` 与批准时不同 → pending，重新询问。
+ * 升级前留下的无指纹批准记录一律不认（视为 pending），下次批准时被清掉。
  *
  * M4：projectPath 现在是项目身份（主仓根，linked worktree 归到主 checkout）。旧版用过两种键：
  * 启动 cwd（#220 之前）与当前工作树根（#220）。`legacyPath` 传这些旧键，新 key 没有记录时
@@ -110,14 +169,16 @@ function saveApprovals(store: ApprovalStore): void {
  */
 export function getProjectServerApproval(
   serverName: string,
+  config: unknown,
   projectPath: string,
   legacyPath?: string | readonly string[],
 ): ApprovalStatus {
   const approvals = loadApprovals();
+  const fingerprint = computeServerConfigFingerprint(config);
   const lookup = (path: string): ApprovalStatus | null => {
-    const key = `${path}:${serverName}`;
-    if (approvals.rejected?.includes(key)) return "rejected";
-    if (approvals.approved?.includes(key)) return "approved";
+    if (approvals.rejected?.includes(`${path}:${serverName}`)) return "rejected";
+    if (approvals.approved?.includes(approvedKey(path, serverName, fingerprint))) return "approved";
+    // 按项目全部批准是用户的显式选择（含之后新增 / 改动的 server），不受指纹约束
     if (approvals.approveAllProjects?.includes(path)) return "approved";
     return null;
   };
@@ -132,22 +193,24 @@ export function getProjectServerApproval(
 }
 
 /**
- * 批准项目级 MCP Server
+ * 批准项目级 MCP Server。`config` 是用户此刻看到并批准的配置，批准只对这份内容有效。
  */
 export function approveProjectServer(
   serverName: string,
+  config: unknown,
   projectPath: string,
   legacyPath?: string | readonly string[],
 ): void {
   const approvals = loadApprovals();
-  const key = `${projectPath}:${serverName}`;
-  const legacyKeys = new Set(legacyList(legacyPath).map((p) => `${p}:${serverName}`));
-  legacyKeys.delete(key);
-  approvals.approved = (approvals.approved ?? []).filter((k) => !legacyKeys.has(k));
-  if (!approvals.approved.includes(key)) {
-    approvals.approved.push(key);
-  }
-  approvals.rejected = (approvals.rejected ?? []).filter((k) => k !== key && !legacyKeys.has(k));
+  const key = approvedKey(projectPath, serverName, computeServerConfigFingerprint(config));
+  const paths = [projectPath, ...legacyList(legacyPath)];
+  // 同名 server 的旧指纹记录、无指纹旧记录、旧版路径键一并清掉，只留本次这一条
+  approvals.approved = (approvals.approved ?? []).filter(
+    (k) => !paths.some((p) => isApprovedKeyFor(k, p, serverName)),
+  );
+  approvals.approved.push(key);
+  const nameKeys = new Set(paths.map((p) => `${p}:${serverName}`));
+  approvals.rejected = (approvals.rejected ?? []).filter((k) => !nameKeys.has(k));
   saveApprovals(approvals);
 }
 
@@ -161,13 +224,17 @@ export function rejectProjectServer(
 ): void {
   const approvals = loadApprovals();
   const key = `${projectPath}:${serverName}`;
-  const legacyKeys = new Set(legacyList(legacyPath).map((p) => `${p}:${serverName}`));
+  const legacyPaths = legacyList(legacyPath);
+  const legacyKeys = new Set(legacyPaths.map((p) => `${p}:${serverName}`));
   legacyKeys.delete(key);
   approvals.rejected = (approvals.rejected ?? []).filter((k) => !legacyKeys.has(k));
   if (!approvals.rejected.includes(key)) {
     approvals.rejected.push(key);
   }
-  approvals.approved = (approvals.approved ?? []).filter((k) => k !== key && !legacyKeys.has(k));
+  // 拒绝覆盖该名字在本项目（及旧版路径键）下的全部批准，不论指纹
+  approvals.approved = (approvals.approved ?? []).filter(
+    (k) => ![projectPath, ...legacyPaths].some((p) => isApprovedKeyFor(k, p, serverName)),
+  );
   saveApprovals(approvals);
 }
 
@@ -228,7 +295,13 @@ export function getPendingApprovalServers(): { names: string[]; projectPath: str
  */
 export function approvePendingServer(serverName: string): boolean {
   if (!(serverName in pendingApproval)) return false;
-  approveProjectServer(serverName, pendingApprovalProject, pendingApprovalLegacyPath);
+  // 用快照里的配置算指纹：这正是审批框 / 面板展示给用户看的那一份
+  approveProjectServer(
+    serverName,
+    pendingApproval[serverName],
+    pendingApprovalProject,
+    pendingApprovalLegacyPath,
+  );
   delete pendingApproval[serverName];
   return true;
 }

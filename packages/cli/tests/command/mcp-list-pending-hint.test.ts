@@ -106,7 +106,7 @@ describe("mcp list 待审批提示", () => {
 /**
  * M1 / M4：CLI 与 TUI 加载共用 loadProjectMcpServers —— 子目录下 `mcp pending` 也能看到
  * 祖先目录 .mcp.json 声明的 server，且能在子目录里审批它（以前报「未在项目 .mcp.json 中声明」）。
- * 变异自证：projectDeclaredServerNames 改回只读 cwd/.mcp.json → reject 那条红。
+ * 变异自证：projectDeclaredServers 改回只读 cwd/.mcp.json → reject 那条红。
  */
 describe("子目录下 CLI 与加载侧同口径（M1/M4）", () => {
   test("子目录里 pending 能列出祖先 .mcp.json 的 server，并可直接 reject", async () => {
