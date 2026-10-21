@@ -124,10 +124,11 @@ sid-code --plugin-dir /tmp/demo-plugin
 才加载（落盘到 `~/.sid-code/state/trusted-extensions.json`，按内容 hash 记；
 **内容 hash 变了会再问**），默认聚焦「不信任」（`ExtensionTrustDialog.tsx:115`），
 回车 / Esc / 拒绝本次不加载；**拒绝只在本进程内记住，不落盘，下次启动会再问**；
-会话中途热重载 / 动态发现到的新扩展也会弹同一个对话框。要绕开门槛，在用户级
+会话中途热重载 / 动态发现到的新扩展也会弹同一个对话框。要绕开门槛只有一条路：在用户级
 `settings.json` 设 `trustProjectExtensions: true`（不走信任检查，**项目 settings.json
-不能自我信任**，`config/settings/security.ts:42`），或临时用 `--trust-workspace`
-（不持久化）。
+不能自我信任**，`config/settings/security.ts:42`）。
+`--yes` / `--dangerously-skip-permissions` / `--trust-workspace` **都不行**——它们管的是
+工具权限与危险配置（hooks / MCP）的门控，不参与项目级扩展的信任判断。
 CI / Bridge 集成详见 [Skill](/extend/skills#常见问题)。
 :::
 

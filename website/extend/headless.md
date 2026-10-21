@@ -8,7 +8,8 @@ description: 在 CI / 脚本里非交互地跑 sid-code：三种输出格式怎�
 `-p` 让 sid-code 变成一个能读代码、改文件、跑命令的 CLI 工具，
 输出可以喂给 `jq`、进 CI、被别的程序消费。
 
-这页讲三种输出格式的取舍，以及两个会让脚本静默出错的真实坑。
+这页讲三种输出格式的取舍，以及几个会让脚本静默出错的真实坑（日志走哪个流、
+`structured_output` 什么时候不存在、参数组合约束）。
 
 ## 快速上手
 
@@ -48,7 +49,10 @@ sid-code -p "calc.ts 里定义了几个顶层函数？只回一个数字。" --o
 }
 ```
 
-注意 `content` 是**数组**，里面可能混着 `thinking` 块。取最终答案要挑 `type === "text"`：
+注意 `content` 是**数组**，`type` 不止 `text`：实际可能出现 `text`、`thinking`、
+`redacted_thinking`、`provider_reasoning`、`tool_use`、`tool_result` 六种
+（见 `packages/core/src/sdk/schemas.ts` 的 `ContentBlockSchema`）。
+取最终答案要挑 `type === "text"`：
 
 ```bash
 sid-code -p "..." --output-format json | jq -r '.content[] | select(.type=="text") | .text'
@@ -107,35 +111,33 @@ sid-code -p "..." --output-format stream-json 2>/dev/null \
   | jq -r 'select(.type=="result") | .total_cost_usd'
 ```
 
-## ⚠ 坑一：debug 开着会污染 stdout
+## 日志走哪个流：stdout 是数据通道
 
-**这条会让你的 `jq` 直接炸，且原因不明显。**
+**这条搞错会让你的 `jq` 报解析失败，且原因不明显。**
 
-`debug` 开启时日志走 stdout（无头模式下 `console: true`），于是 `--output-format json`
-的输出前面会糊上一大段日志：
-
-```text
-[01:06:35] ● [CLI] 调试模式已启用
-  {
-    "level": "INFO",
-    "logFile": "/Users/you/.sid-code/debug.log"
-  }
-[01:06:35] ● [CONFIG] 加载: CLI
-  {
-    "provider": "openai",
-    ...
-```
-
-`jq` 拿到这个只会报解析失败。两种触发方式都要注意：
-
-- 命令行显式加了 `-d` / `--debug`
-- `~/.sid-code/settings.json` 里 `"debug": true`，或没写 `debug`（代码默认就是 `true`）
-
-脚本里的稳妥做法是显式确认一次：
+无头模式（`-p`）下日志**一律走 stderr**，stdout 只留结果（text / json / stream-json）。
+所以 `--output-format json` 的输出是干净的，`jq` 能直接解析——即使开着 debug：
 
 ```bash
-grep '"debug"' ~/.sid-code/settings.json
+sid-code -p "..." --output-format json -d 2>/dev/null | jq .
 ```
+
+> 历史提示：早期版本（PR #160 之前）debug 日志走 stdout，会把 JSON 糊掉，这一节就是
+> 从那个坑留下来的。现在无头模式下 `consoleToStderr` 与 `console` 一起打开
+> （`packages/cli/src/cli.ts`），日志全部落到 stderr，坑已经不存在了。
+>
+> 但**反向的坑还在**：`2>/dev/null` 丢掉的是全部调试线索，出问题时两眼一抹黑。
+> 排查时把它留到文件里：`... 2>/tmp/sid.err`。
+
+三种方式都能开 debug（后两种等价，env 优先）：
+
+- 命令行 `-d` / `--debug`
+- `~/.sid-code/settings.json` 里 `"debug": true`
+- 环境变量 `SID_CODE_DEBUG=1`（或 `true`）
+
+反过来说，**不传 `-d` 就是关的**。虽然 `defaultConfig()` 里写着 `debug: true`，但 CLI
+覆盖层算的是 `values.debug || isDebugEnvEnabled(...)`，没传就是 `false`，而它只跳过
+`undefined`——所以「什么都不写」拿不到调试日志。
 
 CI 里更彻底的隔离——用干净的配置目录：
 
@@ -149,14 +151,18 @@ sid-code -p "..." --output-format json | jq .
 `SID_CONFIG_DIR` 会顶掉 `~/.sid-code`，配置、会话、轨迹全落到新目录，
 和你日常用的环境完全隔离。
 
-::: tip 用 stderr 判断成败，不要用 stdout
-WARN / ERROR 级日志走的是 stderr（即使没开 debug，关键错误也会兜底写 stderr）。
-所以 `2>/dev/null` 丢掉 stderr 是安全的，反过来则不行。
+::: tip 用 stderr 看日志，用退出码和 result 判成败
+stdout 是数据通道，**不要**从里面找「成没成」。判断成败看两处：`$?`（非 0 即失败）
+和 `result` 里的 `is_error` / `subtype`（信息比 `$?` 多）。
+即使没开 debug，WARN / ERROR 也会兜底写 stderr（`packages/core/src/debug/logger.ts`），
+所以 `2>/dev/null` 在脚本里是安全的——只是排查时要记得把它留着。
 :::
 
 ## 用 `--json-schema` 取结构化结果
 
-`--json-schema` 用来约束模型输出成结构化 JSON：
+`--json-schema` 用来约束模型输出成结构化 JSON。参数既接受**文件路径**，也接受**内联
+JSON**（以 `{` 或 `[` 开头即按字面量解析，`packages/cli/src/utils/json-schema-arg.ts`），
+后者省掉临时文件：`--json-schema '{"type":"object","properties":{…}}'`。
 
 ```bash
 cat > /tmp/schema.json <<'EOF'
@@ -225,15 +231,18 @@ stream-json 输入下首条 prompt 可以不写在命令行上，由宿主经 st
 
 | 能力 | 方向 | 说明 |
 | --- | --- | --- |
-| 多轮对话 | 宿主 → sid-code | 持续写 `user` 消息，复用同一会话上下文；**每轮**结束各出一条 `result`（含 `total_cost_usd`） |
+| 多轮对话 | 宿主 → sid-code | 持续写 `user` 消息，复用同一会话上下文；**每轮**结束各出一条 `result`（含 `total_cost_usd`，注意它是**会话累计**值，不是本轮增量） |
 | `can_use_tool` 权限外部接管 | sid-code → 宿主 | 工具需要确认时问宿主，宿主回 `allow` / `deny` / `always_allow` |
 | `interrupt` 中断当前轮 | 宿主 → sid-code | 中止正在跑的这一轮，会话不结束，下一条 `user` 消息照常跑 |
 
 数据消息与控制消息共用一条 NDJSON 流，靠 `type` 区分。控制请求带 `request_id`，
 响应（`control_response` 的 `success` / `error`）按 id 配对。
 
-其余控制请求（`initialize` / `set_model` / `get_context_usage` / `mcp_message`）**尚未实现**，
-发过来会收到 `control_response: error`，不会被静默丢弃。
+控制请求的实现状态：`initialize` / `interrupt` / `set_model` / `get_context_usage` 都能应答。
+`initialize` 只接受启动后仍可改的字段——`system_prompt` / `json_schema` / `max_turns` /
+`max_budget_usd` 这四个启动期字段会被**明确拒绝**，并告诉你该改用哪个 CLI 参数（而不是
+假装设上了）。**只有 `mcp_message` 尚未接线**：发过来会收到 `control_response: error`，
+不会被静默丢弃。
 
 ### `can_use_tool`：权限谁来批
 
@@ -254,7 +263,9 @@ stream-json 输入下首条 prompt 可以不写在命令行上，由宿主经 st
 - 只问**需要确认**的工具。allow / deny 规则、`--permission-mode`、PreToolUse hook 照常先生效，
   命中规则的调用不会打扰宿主。
 - 宿主回 `deny`、回 `error`、**60 秒不答**、关掉 stdin、或这一轮被 `interrupt`，都按**拒绝**处理，仍然 fail-closed。
-- `always_allow` 记为本会话内的放行，同一资源不再问。
+- `always_allow` 记为本会话内的放行，同一资源不再问。**但写工具例外**：`write` / `edit` /
+  `notebook_edit` 不做会话记忆（同路径不同内容会串味——批准过改注释，再写入 hook 脚本就免确认了，
+  `packages/core/src/permission/checker.ts` 的 `extractMemoryResource`），每次仍会问宿主。
 - 只有 `--input-format stream-json` 时才会问。只开 `--output-format stream-json` 时 stdin 没有回路，行为与 `-p` 相同。
 
 ### `interrupt`
@@ -271,8 +282,8 @@ sid-code 回 `{"type":"control_response","response":{"subtype":"success","reques
 下面是 `packages/cli/tests/sdk/sdk-control-protocol-e2e.test.ts` 的消息序列（真实子进程 + 本地假模型）：
 
 ```text
-[宿主 → sid-code] control_request: set_model
-[sid-code → 宿主] control_response: error（未实现）
+[宿主 → sid-code] control_request: set_model（model="x"，不在 availableModels 里）
+[sid-code → 宿主] control_response: error（"模型 x 不在可用模型列表中"——已实现的子类型也会明确回错，不静默丢）
 [宿主 → sid-code] user：写 denied.txt
 [sid-code → 宿主] control_request: can_use_tool（write, tool_use_id=call_deny_1）
 [宿主 → sid-code] control_response: deny
@@ -351,22 +362,32 @@ CI 里要用得显式打开信任（`~/.sid-code/settings.json`）：
 
 | 防线 | 默认值 | 覆盖什么（谓词） |
 | --- | --- | --- |
-| `network.headerTimeoutMs` | 300s | 请求发出后拿不到首字节 |
+| `network.headerTimeoutMs` | 300s | 请求发出后拿不到首字节（**不在下面的递增链上**，它对齐的是 watchdog 的缺快照兜底 315s） |
 | `network.idleTimeoutMs` | 240s | 连一个字节都收不到（真半开 TCP） |
 | `network.contentProgressTimeoutMs` | 480s | 有字节但无有效内容（keep-alive / ping 续命也不算进展） |
-| `network.overallTimeoutMs` | 1500s | 单次请求的软兜底，不因事件重置 |
+| `network.fallbackStreamTimeoutMs` | 600s | 降级链里备用 provider 的流式档位 |
 | `network.watchdogNoProgressMs` | 720s | 外层复核「已建连但中途静默」，比上面 provider 层更宽 |
-| `network.maxTurnDurationMs` | 90min | 单轮硬顶，兜任何单次挂起根因（不感知进展） |
-| `network.maxTimeoutRetries` | 10 次 | 重试上限（超时与 429/5xx 同一份次数，指数退避 5s→120s）。**只由次数决定**：退避等待不计入上面任何一层的「无进展」，所以不会被看门狗提前截断 |
+| `network.overallTimeoutMs` | 1500s | 单次请求的软兜底（每次尝试重新起表），不因事件重置 |
+| `network.maxTurnDurationMs` | 90min | 单轮硬顶，兜任何单次挂起根因。**不感知内容进展**，但会扣除等用户输入与系统休眠的时长（只累计真正的业务耗时） |
+| `network.maxTimeoutRetries` | 10 次 | **超时**的重试上限，指数退避 5s→120s（±15% jitter）。只由次数决定：退避等待不计入上面任何一层的「无进展」，所以不会被看门狗提前截断 |
 
 几层的**谓词互不相同**（收不到字节 / 收到字节但没内容 / 整轮兜底），不是同一个判断
-复制几遍——所以数值上它们严格递增：越靠外的层掌握的信息越少，就该越宽松。
+复制几遍。真正构成递增链的是
+`idle 240s < contentProgress 480s < fallback 600s < watchdog 720s < overall 1500s < maxTurn 5400s`
+（相邻间距 ≥120s，有哨兵测试固定）；`headerTimeoutMs` 是并列的另一条，不与它们比大小。
+
+⚠️ **429/5xx 不走 `maxTimeoutRetries`** —— 它只管超时。429/5xx 由降级链自己的漏斗计数，
+单次调用内连接阶段 + 流式阶段共享一个上界（`maxRetriesPerCall`，默认 12）。两套计数各管
+一段，别用 10 去估算偶发 5xx 的重试总量。
+
 `network.fetchAbsoluteTimeoutMs`（整个 HTTP 请求的绝对上限）**默认关闭**：它与单轮硬顶
-判的是同一件事，且它由 runtime 直接中断、不带可归因信息，会把一条持续有输出的慢流
-一并掐断。确有需要时显式设一个毫秒值即可开启。
+判的是同一件事，会把一条持续有输出的慢流一并掐断。它由 runtime 直接中断，`TimeoutError`
+的 reason 本身不带归因——开启后这一层会补发一条 `TimeoutFired` 事件，轨迹里查得到是它开的枪。
+确有需要时显式设一个毫秒值即可开启。
 
 上面这些**都能写进 `settings.json` 的 `network` 块**，也都有对应的 `SID_CODE_*` 环境变量
-（env 优先于 settings）。
+（env 优先于 settings）。其中 `SID_CODE_MAX_TURN_DURATION_MS` 目前没进 `--help` 的环境变量
+段落，查名字请看[环境变量](/ref/env)。
 
 **会话级硬顶默认关闭**（`network.maxSessionDurationMs = 0`）。它按挂钟计「一次输入触发的连续
 自动执行」总时长，跑满即中断本轮、要人再敲一句才继续——这与无人值守跑长任务直接冲突，而且它
@@ -394,8 +415,11 @@ SID_CODE_MAX_SESSION_DURATION_MS=7200000 sid-code -p "..."   # 2 小时
 
 ### 怎么拿到这次跑的成本
 
-`--output-format stream-json` 的 `result` 消息里有 `total_cost_usd`（见上文）。
-`--output-format json` 只给 `usage` 的 token 数，没有折算好的金额。
+`--output-format stream-json` 的 `result` 消息里有 `total_cost_usd`（见上文）——它是
+**会话累计**金额（`sessionState.getEffectiveTotalCostUSD()`），多轮对话时第 N 条 `result`
+是前 N 轮的总额，不是第 N 轮的单轮增量。
+`--output-format json` 只给 `usage` 的 token 数，没有折算好的金额；唯一的例外是撞预算硬停，
+那时它会多带一个 `error.spentUsd`（以及 `error.limitUsd`）。
 
 ### 退出码可靠吗
 
