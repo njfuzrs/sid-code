@@ -79,6 +79,8 @@ interface ResponseObject {
   status: string;
   usage?: ResponsesUsage;
   output?: OutputItem[];
+  /** 终态 incomplete 时的原因（content_filter / max_output_tokens），与非流式 body 同字段 */
+  incomplete_details?: { reason?: string };
 }
 
 /**
@@ -151,6 +153,11 @@ interface ParserState {
   started: boolean;
   /** 是否在 reasoning block 中 */
   inReasoningBlock: boolean;
+  /**
+   * 本次响应是否出现过 function_call（发现 5，2026-10-21）。
+   * 终态映射 stop_reason 要用它：Responses 的 status 在带工具调用时仍是 `completed`。
+   */
+  sawToolCall: boolean;
 }
 
 // ─── 解析器主体 ───
@@ -172,6 +179,7 @@ export async function* parseResponsesStream(
     usage: { inputTokens: 0, outputTokens: 0 },
     started: false,
     inReasoningBlock: false,
+    sawToolCall: false,
   };
 
   for await (const event of readSSEEvents(stream, signal)) {
@@ -252,6 +260,7 @@ function mapResponseEvent(
       const item = raw.item;
       if (item?.type === "function_call" && item.name) {
         // 工具调用：创建 tool_use block
+        state.sawToolCall = true;
         state.toolCalls.set(item.id, {
           name: item.name,
           arguments: "",
@@ -377,9 +386,14 @@ function mapResponseEvent(
       if (usage) {
         applyResponsesUsage(state.usage, usage);
       }
+      // 发现 5（2026-10-21）：此前这里写死 end_turn，带工具的轮全被报成「回合结束」，
+      // 靠主循环 F2 兜底才没停摆，代价是 warn.log 每轮一条「声称 end_turn 但含 tool_use」，
+      // 协议偏差告警因此失去区分度。与非流式共用 mapResponsesStatus，两条路径不再各写一套。
       results.push({
         type: "message_delta",
-        delta: { stop_reason: "end_turn" },
+        delta: {
+          stop_reason: mapResponsesStatus(raw.response?.status, undefined, state.sawToolCall),
+        },
         usage: { ...state.usage },
       } as StreamEvent);
       results.push({ type: "message_stop" } as StreamEvent);
@@ -429,9 +443,17 @@ function mapResponseEvent(
       if (usage) {
         applyResponsesUsage(state.usage, usage);
       }
+      // incomplete 刻意**不**被 sawToolCall 改成 tool_use：截断时最后一个工具的参数可能残缺，
+      // 报 max_tokens 让主循环走「截断带工具」分支（P1-4），而不是当作完整工具轮直接执行。
       results.push({
         type: "message_delta",
-        delta: { stop_reason: "max_tokens" },
+        delta: {
+          stop_reason: mapResponsesStatus(
+            "incomplete",
+            raw.response?.incomplete_details?.reason,
+            false,
+          ),
+        },
         usage: { ...state.usage },
       } as StreamEvent);
       results.push({ type: "message_stop" } as StreamEvent);
@@ -636,7 +658,11 @@ export function parseResponsesBody(body: ResponsesNonStreamingBody): ParsedRespo
   const usage: Usage = { inputTokens: 0, outputTokens: 0 };
   applyResponsesUsage(usage, body.usage);
 
-  return { content, stopReason: mapResponsesStatus(body, sawToolCall), usage };
+  return {
+    content,
+    stopReason: mapResponsesStatus(body.status, body.incomplete_details?.reason, sawToolCall),
+    usage,
+  };
 }
 
 /**
@@ -644,11 +670,17 @@ export function parseResponsesBody(body: ResponsesNonStreamingBody): ParsedRespo
  *
  * 有工具调用时优先 `tool_use`：Responses 的 status 在带工具调用时仍是 `completed`，
  * 若照搬会把"要继续跑工具"报成"回合结束"，主循环就此停摆。
+ *
+ * 流式与非流式**共用这一份**（发现 5）：流式曾写死 end_turn，跟这里分裂了两套口径。
  */
-function mapResponsesStatus(body: ResponsesNonStreamingBody, sawToolCall: boolean): string {
+export function mapResponsesStatus(
+  status: string | undefined,
+  incompleteReason: string | undefined,
+  sawToolCall: boolean,
+): string {
   if (sawToolCall) return "tool_use";
-  if (body.status === "incomplete") {
-    return body.incomplete_details?.reason === "content_filter" ? "content_filter" : "max_tokens";
+  if (status === "incomplete") {
+    return incompleteReason === "content_filter" ? "content_filter" : "max_tokens";
   }
   return "end_turn";
 }
