@@ -29,6 +29,7 @@ import {
 	type FrameFlicker,
 } from './frame/main-screen.js';
 import {FrameScheduler} from './frame/scheduler.js';
+import measureElement from './measure-element.js';
 import {FRAME_INTERVAL_MS} from './frame/schedule.js';
 import {ClockContext, createClock, type Clock} from './clock.js';
 import TerminalWriteContext from './components/TerminalWriteContext.js';
@@ -192,6 +193,30 @@ const getWritableStreamState = (stdout: MaybeWritableStream) => {
 		hasWritableState,
 	};
 };
+
+/**
+ * 主屏帧里历史区（History）的下沿行号：溢出后收缩时空行补在这里（frame/main-screen.ts padInsertRow）。
+ * 深度优先找第一个 History，不进它的子树（历史项多，动态区小）；没用 History 返回 undefined。
+ */
+function historyEnd(root: dom.DOMElement): number | undefined {
+	const stack: dom.DOMElement[] = [root];
+	while (stack.length > 0) {
+		const node = stack.pop()!;
+		if (node.internal_history) {
+			const {y, height} = measureElement(node);
+			return y + height;
+		}
+
+		for (let i = node.childNodes.length - 1; i >= 0; i--) {
+			const child = node.childNodes[i]!;
+			if (child.nodeName !== '#text') {
+				stack.push(child);
+			}
+		}
+	}
+
+	return undefined;
+}
 
 /** 擦可视区并回原点（不清 scrollback）：forceRedraw 与 SIGCONT 重进 alt-screen 用 */
 const eraseScreenHome = '\u001B[2J\u001B[H';
@@ -1767,7 +1792,16 @@ export default class Ink {
 			}
 		}
 
-		return diffMainScreen(this.previousScreen, screen, viewport.rows);
+		// 只有收缩帧才用得到历史区下沿；其余帧不走树（没用 History 时要遍历整棵树）
+		const previousScreen = this.previousScreen;
+		const shrinking =
+			previousScreen !== undefined && screen.height < previousScreen.height;
+		return diffMainScreen(
+			previousScreen,
+			screen,
+			viewport.rows,
+			shrinking ? historyEnd(this.rootNode) : undefined,
+		);
 	}
 
 	private initKittyKeyboard(): void {
