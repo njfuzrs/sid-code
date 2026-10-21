@@ -92,7 +92,10 @@ describe("_meta 保真", () => {
       content: [{ type: "text", text: "y".repeat(500) }],
       _meta: { origin: "command-expansion" },
     });
-    mgr.addCompactBoundary("摘要", 1);
+    // 发现 11 之后尾部为 user 时边界会并入那条消息（边界落在下标 0 ⇒ 没有可释放的前缀），
+    // 这里补一条 assistant，让边界独立成条、落在被测消息之后。
+    mgr.addMessage({ role: "assistant", content: [{ type: "text", text: "好" }] });
+    mgr.addCompactBoundary("摘要", 2);
 
     const released = mgr.releaseBeforeBoundary();
     expect(released).toBe(1);
