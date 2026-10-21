@@ -48,6 +48,13 @@ export interface SubAgentRunnerOptions {
   accountsUsage?: boolean;
   /** 默认子代理类型(opts.agentType 缺省时用) */
   defaultAgentType?: string;
+  /**
+   * 子代理权限检查器（由宿主注入，App.wireToolPermissionChecker 派生后经 WorkflowTool 透传）。
+   * 不传则回退 B0 分级 fail-closed（只读放行、写类拒绝）——但那是漏接线时的兜底，
+   * 不是可接受的常态（P0-1：修复前 workflow 全量子代理拿不到 checker，
+   * isolation=worktree 因此是死能力）。
+   */
+  permissionChecker?: import("../permission/types.ts").Checker;
 }
 
 /** 把 worktree slug 里不安全字符扁平化 */
@@ -113,6 +120,31 @@ export class SubAgentRunner implements AgentRunner {
       this.opts.hookSystem,
       opts?.model, // M4: modelOverride(第 4 参)
     );
+    // P0-1：注入权限检查器（由宿主经 WorkflowTool 透传）。不注入时子代理回退 B0 分级
+    // fail-closed（写类全拒），isolation=worktree 因此是死能力——这正是本次修复的缺口。
+    if (this.opts.permissionChecker) {
+      sub.setPermissionChecker(this.opts.permissionChecker);
+
+      // W22 对齐（agent/tool.ts bindCheckerToWorktree）：worktree 隔离的子代理改用读它
+      // 自己 worktree 的 .sid-code/ 规则派生的 checker；解锁写能力后主仓规则的
+      // workspacePath 边界与 worktree cwd 不一致，直接沿用会让路径规则整体失真。
+      // 派生失败回退注入的这份（不比注入前更差）。
+      if (cwd) {
+        const current = this.opts.permissionChecker as {
+          deriveForWorkspace?: (dir: string) => Promise<import("../permission/types.ts").Checker>;
+        };
+        if (typeof current.deriveForWorkspace === "function") {
+          try {
+            sub.setPermissionChecker(await current.deriveForWorkspace(cwd));
+          } catch (err) {
+            log.warn(
+              "WORKFLOW",
+              `worktree 权限规则重载失败（回退共享 checker）: ${(err as Error).message}`,
+            );
+          }
+        }
+      }
+    }
 
     const usageTicket = this.opts.accountsUsage ? new UsageSinkTicket() : undefined;
     if (usageTicket) sub.setUsageAccounting(usageTicket);

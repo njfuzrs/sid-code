@@ -126,6 +126,22 @@ export interface ToolCapabilityFields<Input = unknown> {
   exemptFromLoopDetection?: boolean;
 
   /**
+   * M-1（P0-1/P1-1 防复发）：工具自报「我会构造子代理，需要权限检查器」。
+   *
+   * 背景：checker 注入是鸭子类型探测（app.ts wireToolPermissionChecker 对
+   * `setPermissionChecker` 做 `typeof === "function"` 判断）——工具不实现该方法就被
+   * **静默跳过**，没有任何告警。WorkflowTool / SendMessageTool 正是这样漏掉的（P0-1 /
+   * P1-1），症状是子代理报「权限拒绝: 未配置权限检查器」，极易被误读成模型不会用工具。
+   *
+   * 契约：声明 `needsPermissionChecker: true` 的工具**必须**同时实现
+   * `setPermissionChecker(checker)`。wire 时两侧对账，不一致就 log.warn——
+   * 「新增带子代理的工具却忘了接权限」从静默失效变成启动期可见的告警。
+   * 与 `exemptFromLoopDetection` 同一范式：工具在自身定义处自报，
+   * 单一事实源，不靠集中式名单。
+   */
+  needsPermissionChecker?: boolean;
+
+  /**
    * D11：单请求 strict 工具超过上游上限（Anthropic 20 个）时，谁先保住 strict。
    *
    * 数值越大越优先，未声明为 0。只在超限时起作用，不影响「发不发 strict」本身。

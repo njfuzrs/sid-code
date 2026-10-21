@@ -120,6 +120,12 @@ export interface LocalAgentTaskState extends TaskStateBase {
   progress?: AgentProgress;
   /** 周期性进度摘要（M5 opt-in 双轨特性） */
   progressSummary?: string;
+  /**
+   * 子代理执行时的工作目录（仅显式指定 cwd 时记录，典型是 isolation=worktree 的隔离工作区）。
+   * send_message 续跑靠它回到原工作区：不记的话续跑落到主会话 cwd，
+   * 隔离 agent 一续跑就直接写主仓（PR #398 review）。
+   */
+  cwd?: string;
 }
 
 /** Workflow 任务状态（Dynamic Workflows M6:后台运行的编排脚本） */

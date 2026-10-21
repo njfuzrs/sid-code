@@ -324,6 +324,9 @@ export class SubAgentTool implements Tool {
     this.permissionChecker = checker;
   }
 
+  /** M-1：自报需要权限检查器（契约见 tool/types.ts ToolCapabilityFields），wire 时与 setter 对账。 */
+  readonly needsPermissionChecker = true;
+
   /** 注入子代理错误回调（推入统一错误面板）。主会话 TUI 就绪后调用。 */
   private onErrorCallback?: (message: string) => void;
   setErrorCallback(cb: (message: string) => void): void {

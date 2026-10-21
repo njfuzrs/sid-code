@@ -61,6 +61,9 @@ export class BundledSkillTool implements Tool {
     this.permissionChecker = checker;
   }
 
+  /** M-1：自报需要权限检查器（契约见 tool/types.ts ToolCapabilityFields），wire 时与 setter 对账。 */
+  readonly needsPermissionChecker = true;
+
   /**
    * B3：注入禁用态查询（生产传 SkillManager.isNameDisabled，与 slash 路径共享同一份名单）。
    * 传函数而非快照：/skills disable 运行时改名单，工具须当场失效、启用后当场恢复。
