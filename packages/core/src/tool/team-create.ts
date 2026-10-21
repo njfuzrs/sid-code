@@ -86,6 +86,9 @@ export class TeamCreateTool implements Tool {
     this.permissionChecker = checker;
   }
 
+  /** M-1：自报需要权限检查器（契约见 tool/types.ts ToolCapabilityFields），wire 时与 setter 对账。 */
+  readonly needsPermissionChecker = true;
+
   /** G11：注入 Hook 系统（用于 TeammateIdle 事件） */
   setHookSystem(hookSystem: import("../hook/system.ts").HookSystem): void {
     this.hookSystem = hookSystem;

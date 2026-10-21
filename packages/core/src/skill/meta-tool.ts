@@ -96,6 +96,9 @@ export class SkillMetaTool implements Tool {
     this.permissionChecker = checker;
   }
 
+  /** M-1：自报需要权限检查器（契约见 tool/types.ts ToolCapabilityFields），wire 时与 setter 对账。 */
+  readonly needsPermissionChecker = true;
+
   /** P0-3：注入统一权限规则（含 Skill(name) 规则），由 cli 回填 */
   setPermissionRules(rules: PermissionRule): void {
     this.permissionRules = rules;

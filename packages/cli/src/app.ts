@@ -2075,7 +2075,15 @@ export class App {
     if (!this.permissionChecker) return;
     // 延迟导入工厂函数（避免循环依赖）
     const { createSubAgentChecker } = require("@sid-code/core/permission/sub-agent-checker.ts");
-    const subChecker = createSubAgentChecker(this.permissionChecker);
+    // inheritBypassMode（5.2 决策，2026-10-21）：主会话显式切到全放行档
+    // （always-allow / dangerously-skip-permissions）时，子代理跟随继承；
+    // 其余档位维持 dontAsk（ask→deny）。继承不是裸奔：deny 规则、危险命令、
+    // safetyCheck 都排在 Step 8 bypass 早退之前，照常拦截。
+    // skip 档在工厂内归一为 always-allow 并清除 skipPermissions 布尔（后者会绕过
+    // 危险命令拦截，见 sub-agent-checker.ts 的收紧注释）。
+    const subChecker = createSubAgentChecker(this.permissionChecker, undefined, {
+      inheritBypassMode: true,
+    });
     // P0-3：抽取合并后的权限规则，供 skill 元工具解析 Skill(name) 规则。
     const rawRules = this.getRawPermissionRules();
     for (const tool of this.toolRegistry.all()) {
@@ -2088,6 +2096,16 @@ export class App {
       };
       if (typeof maybe.setPermissionChecker === "function") {
         maybe.setPermissionChecker(subChecker);
+      } else if ((tool as { needsPermissionChecker?: boolean }).needsPermissionChecker === true) {
+        // M-1（防复发）：工具自报「我会构造子代理，需要 checker」却没实现 setter——
+        // 此前这种情况被鸭子类型探测静默跳过，WorkflowTool / SendMessageTool 正是这样
+        // 漏掉的（P0-1/P1-1）。现在变成启动期可见的告警而不是子代理运行期的
+        // 「权限拒绝: 未配置权限检查器」。
+        getLogger().warn(
+          "PERMISSION",
+          `工具 ${tool.name()} 声明 needsPermissionChecker 但未实现 setPermissionChecker，` +
+            `其子代理将以 fail-closed 兜底（写类全拒）`,
+        );
       }
       // P0-3：SkillMetaTool 需要原始规则（非 subChecker）来判定 Skill(name) 的 allow/deny/ask
       if (typeof maybe.setPermissionRules === "function" && rawRules) {
