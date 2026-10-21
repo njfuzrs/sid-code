@@ -271,9 +271,9 @@ async function cmdPending(asJson: boolean): Promise<void> {
  * M4：与加载侧共用 loadProjectMcpServers（cwd 向上逐级），否则子目录下 TUI 能看到的
  * server，CLI 会报「未在项目 .mcp.json 中声明」。
  */
-async function projectDeclaredServerNames(): Promise<string[]> {
+async function projectDeclaredServers(): Promise<Record<string, unknown>> {
   const { loadProjectMcpServers } = await import("@sid-code/core/mcp/project-files.ts");
-  return Object.keys(loadProjectMcpServers(process.cwd()).servers);
+  return loadProjectMcpServers(process.cwd()).servers;
 }
 
 /**
@@ -299,7 +299,8 @@ async function cmdApproveReject(args: string[], approve: boolean): Promise<void>
   await loadConfig({});
   const approval = await import("@sid-code/core/mcp/approval.ts");
   const { names: pendingNames, projectPath } = approval.getPendingApprovalServers();
-  const declared = await projectDeclaredServerNames();
+  const declaredServers = await projectDeclaredServers();
+  const declared = Object.keys(declaredServers);
 
   if (declared.length === 0) {
     console.log("当前目录及其祖先目录没有 .mcp.json，或其中未声明任何 MCP 服务器。");
@@ -326,7 +327,8 @@ async function cmdApproveReject(args: string[], approve: boolean): Promise<void>
     }
     // 直接写持久化状态（approveProjectServer/rejectProjectServer 是幂等的互斥写），
     // 再顺手把它从 pending 快照里摘掉（若在）。
-    if (approve) approval.approveProjectServer(t, cwd, legacy);
+    // 指纹取当前 .mcp.json 里声明的内容：批准的就是此刻磁盘上这一份
+    if (approve) approval.approveProjectServer(t, declaredServers[t], cwd, legacy);
     else approval.rejectProjectServer(t, cwd, legacy);
     if (approve) approval.approvePendingServer(t);
     else approval.rejectPendingServer(t);

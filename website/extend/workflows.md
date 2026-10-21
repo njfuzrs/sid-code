@@ -120,7 +120,7 @@ journal 落盘在 `~/.sid-code/workflows/journals/<runId>.jsonl`，append-only�
 - **`Math.random()` 被禁**——抛 `"[workflow] Math.random() 被禁(非确定性,破坏 resume)"`（`sandbox.ts`）。
 - **无参 `new Date()` 被禁**，但 `new Date(ts)`（带参）和 `Date.parse`/`Date.UTC` 放行——它们是确定性的纯函数（`sandbox.ts`）。
 
-原因直指 resume 语义：journal 按 `callIndex + fingerprint` 缓存 agent 结果。如果脚本里用了 `Date.now()` 或 `Math.random()`，同一 prompt 每次跑出不同结果，缓存命中但结果不一致——resume 就坏了。**确定性是可重放的前提**（`sandbox.ts` 注释）。
+原因直指 resume 语义：journal 按 `callIndex + fingerprint` 缓存 agent 结果。如果脚本里用了 `Date.now()` 或 `Math.random()`，它们的值会混进 prompt 或 opts，每次重跑算出的 fingerprint 都不一样，`resume_from_run_id` 永远不命中缓存，所有 agent 全部重跑——resume 就坏了。所以沙箱在运行时直接抛错，而不是放过去让缓存静默失效。**确定性是可重放的前提**（`sandbox.ts` 注释）。
 
 ## 一个完整脚本长什么样
 

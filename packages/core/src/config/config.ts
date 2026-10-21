@@ -1674,7 +1674,8 @@ export async function loadConfig(cliArgs: Partial<Config> = {}): Promise<Config>
       const projectPath = await getMcpProjectRoot(process.cwd());
       const legacyKeys = await getLegacyMcpProjectKeys(process.cwd());
       for (const [name, serverConfig] of Object.entries(mcpJsonServers)) {
-        const status = getProjectServerApproval(name, projectPath, legacyKeys);
+        // 按「名字 + 内容指纹」判定：同名 server 的 command/args/url 被改过 → 回到 pending
+        const status = getProjectServerApproval(name, serverConfig, projectPath, legacyKeys);
         if (status === "rejected") {
           getLogger().info("CONFIG", `项目 MCP 服务器 "${name}" 已被拒绝，跳过`);
           continue;

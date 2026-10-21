@@ -94,7 +94,11 @@ fs  [stdio]  npx -y @modelcontextprotocol/server-filesystem /tmp
   CLI 不启动会话，批准后下次启动才连接
 
 拒绝后不再询问；指名 approve / reject 可以随时改判已经批准或拒绝过的 server。
-批准记录存在 `~/.sid-code/state/mcp-approvals.json`，按 `项目身份:server 名` 记账。
+批准记录存在 `~/.sid-code/state/mcp-approvals.json`，按 `项目身份:server 名` 加**配置内容指纹**
+（SHA-256）记账：同名 server 的 `command` / `args` / `url` / `headers` / `env` 被改过，
+下次启动会回到待审批、重新询问，不会沿用旧批准执行新命令。只改 `enabled` 开关不需要重新审批；
+`${VAR}` 按原文计算指纹，换环境变量的值也不需要。拒绝按名字记，内容变了也仍是拒绝。
+「全部批准」是对整个项目的显式授权，不受指纹约束。早于此机制的批准记录没有指纹，升级后需要重新批准一次。
 项目身份是 **git 主仓根**：同一仓库的任意子目录、任意 linked worktree 共用一份审批，
 只批准一次；不在 git 仓库里时就是启动目录。旧版按启动目录记的审批仍然认，下次改判时迁移。
 同一个 server 在不同仓库里要分别批准。用户级配置不需要批准。
@@ -164,7 +168,7 @@ fs  [stdio]  npx -y @modelcontextprotocol/server-filesystem /tmp
     "tavily": {
       "transport": "stdio",
       "command": "npx",
-      "args": ["-y", "tavily-mcp@latest"],
+      "args": ["-y", "tavily-mcp@0.2.22"],
       "env": {
         "TAVILY_API_KEY": "tvly-dev-REPLACE_WITH_YOUR_KEY"
       }
@@ -189,6 +193,10 @@ fs  [stdio]  npx -y @modelcontextprotocol/server-filesystem /tmp
 `sid-code mcp list/pending/approve/reject` 与会话用的是同一套查找，列表一致。
 
 `"enabled": false` 让这个 server 默认不连接（面板里显示「已禁用」，可随时 `/mcp enable`）。
+
+模板里 `tavily-mcp` 锁到了具体版本（写本文时的最新版，用前换成你核过的版本）。
+不要写 `@latest`：`npx` 每次启动都可能拉到新代码，而审批指纹只看配置文本，
+`@latest` 这串字不变，上游换了实现也不会触发重新审批。
 
 三个只有读过源码才知道的坑：
 
