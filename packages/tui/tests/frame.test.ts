@@ -75,3 +75,75 @@ describe("diffMainScreen 单元规则", () => {
     expect(d.bytes.startsWith("\x1b[2J")).toBe(true);
   });
 });
+
+// 溢出后收缩补空行（sid-code 有意偏离冻结基线）：主屏帧高常年超视口，动态区（spinner / 流式正文）一收缩，
+// 旧行为擦掉底部 → 整帧上移，footer 下面留 p - n 行空白，输入框 / 状态栏被顶到屏幕中间。
+// 断言落在终端画面上（xterm 重放字节），不落在字节上：字节对不对只有画面说了算。
+describe("溢出后收缩：footer 钉在视口底部", () => {
+  const W = 20;
+  const H = 10;
+  const mk = (lines: string[]) => {
+    const s = new Screen(W, lines.length);
+    lines.forEach((l, y) => s.writeLine(0, y, l));
+    return s;
+  };
+  const frame = (hist: number, dyn: number) =>
+    mk([
+      ...Array.from({ length: hist }, (_, i) => `hist${i}`),
+      ...Array.from({ length: dyn }, (_, i) => `spin${i}`),
+      "[input]",
+      "[FOOTER]",
+    ]);
+
+  async function replay(frames: Screen[]) {
+    const { Terminal } = await import("@xterm/headless");
+    const term = new Terminal({ cols: W, rows: H, allowProposedApi: true });
+    const write = (s: string) => new Promise<void>((r) => term.write(s, r));
+    let prev: Screen | undefined;
+    for (const f of frames) {
+      const d = diffMainScreen(prev, f, H);
+      await write(d.bytes);
+      prev = d.screen ?? f;
+    }
+    const b = term.buffer.active;
+    const view: string[] = [];
+    for (let y = 0; y < H; y++)
+      view.push(
+        b
+          .getLine(b.viewportY + y)!
+          .translateToString(true)
+          .trimEnd(),
+      );
+    return view;
+  }
+
+  test("动态区清空后 footer 仍在最后一行内容行，下面没有空白", async () => {
+    const view = await replay([frame(20, 4), frame(20, 0)]);
+    // 光标停在内容下一行（第 H-1 行），所以 footer 在第 H-2 行、输入框在 H-3 行
+    expect(view[H - 2]).toBe("[FOOTER]");
+    expect(view[H - 3]).toBe("[input]");
+    // 空行补在消失的动态区位置（footer 上方），历史尾部仍可见
+    expect(view.slice(0, 3)).toEqual(["hist17", "hist18", "hist19"]);
+  });
+
+  test("补空行后再增长、再收缩，footer 始终不离开底部，内容不错位", async () => {
+    const view = await replay([
+      frame(20, 4),
+      frame(20, 0),
+      frame(20, 2),
+      frame(20, 6),
+      frame(21, 0),
+    ]);
+    expect(view[H - 2]).toBe("[FOOTER]");
+    expect(view[H - 3]).toBe("[input]");
+    expect(view.slice(0, 2)).toEqual(["hist19", "hist20"]);
+  });
+
+  test("补过的帧经 screen 返回，高度撑回 p；没溢出的收缩不补", () => {
+    const d = diffMainScreen(frame(20, 4), frame(20, 0), H);
+    expect(d.screen?.height).toBe(26);
+    expect(d.flicker).toBeUndefined();
+    const small = diffMainScreen(frame(2, 4), frame(2, 0), H);
+    expect(small.screen).toBeUndefined();
+  });
+});
