@@ -515,7 +515,7 @@ ${typeLines}
   }
 
   /**
-   * P2-1：按 agent 类型创建 SubAgent，并应用 frontmatter 声明的 permissionMode / hooks。
+   * P2-1：按 agent 类型创建 SubAgent，并应用定义中的 permissionMode / hooks / 默认轮次。
    *
    * - permissionMode：若 agent 声明且主 checker 支持 deriveWithPermissionMode，则派生一个
    *   覆盖该模式的独立 checker（不污染并发的其他子代理）；否则用共享 checker。

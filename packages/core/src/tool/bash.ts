@@ -17,8 +17,8 @@ import type {
 } from "./types.ts";
 import { spawn } from "bun";
 import { platform } from "os";
-import { join } from "path";
-import { readFileSync, unlinkSync, existsSync } from "fs";
+import { join, isAbsolute, resolve as resolvePath } from "path";
+import { readFileSync, unlinkSync, existsSync, realpathSync } from "fs";
 import { getLogger } from "../debug/logger.ts";
 import type { Config } from "../config/config.ts";
 import { isReadOnlyCommand, isDestructiveCommand } from "./bash/read-only-validation.ts";
@@ -26,6 +26,7 @@ import { interpretExitCode } from "./bash/command-semantics.ts";
 import { scanControlChars } from "./binary-detect.ts";
 import { looksLikeQuotingBreakage, quotingBreakageHint } from "./bash/quoting-diagnostics.ts";
 import { detectMergeConflictHint } from "./bash/merge-conflict.ts";
+import { stripTerminalControl } from "./bash/terminal-control.ts";
 import { buildTimeoutGuidance } from "./bash/timeout-diagnostics.ts";
 import { normalizeToolPath } from "./path-utils.ts";
 import { registerCleanup } from "@sid-code/shared/utils/graceful-shutdown.ts";
@@ -425,6 +426,64 @@ function cwdStaleNotice(staleCwd: string): string {
   );
 }
 
+/** realpath 失败（目录已删、权限）时退回原值 —— 比较时宁可「不等」也不抛 */
+function realpathOr(p: string): string {
+  try {
+    return realpathSync(p).normalize("NFC");
+  } catch {
+    return p;
+  }
+}
+
+/**
+ * 从 `git worktree add [<选项>] <path> [<commit-ish>]` 里取出 `<path>`（原样，未解析）。
+ * 只认命令里第一处 `git worktree add`；取不到（变量、引号拼接等）返回 undefined —— 宁漏不误。
+ */
+export function parseWorktreeAddPath(command: string): string | undefined {
+  const m = command.match(/(?:^|[\s;&|(])git\s+worktree\s+add\s+([^;&|\n]*)/);
+  if (!m) return undefined;
+  const toks = m[1].trim().split(/\s+/).filter(Boolean);
+  for (let i = 0; i < toks.length; i++) {
+    const t = toks[i];
+    if (t === "--") return toks[i + 1];
+    if (t.startsWith("-")) {
+      // 带值的选项：`-b <branch>` / `-B <branch>` / `--reason <string>`（`--reason=x` 形态不吃下一个）
+      if (t === "-b" || t === "-B" || t === "--reason") i++;
+      continue;
+    }
+    if (/[$`*?]/.test(t)) return undefined;
+    // 成对引号剥掉；残缺引号说明路径含空格被切断了（`'../w s'`），不猜
+    const unquoted = t.replace(/^(['"])(.*)\1$/, "$2");
+    return /['"]/.test(unquoted) ? undefined : unquoted;
+  }
+  return undefined;
+}
+
+/**
+ * 自建 worktree 的路径提示（20261020 会话评估发现 10）。
+ *
+ * 模型用 bash `git worktree add` 自建 worktree 而不调 enter_worktree（延迟工具，没加载）时，
+ * 会话 cwd 不会跟过去：实测之后 10 分钟内 13 次写到主仓。git 自己的输出不含路径，
+ * 所以这里补一行「去哪儿干活」。只追加提示、不拦截写主仓 —— 合法的跨目录写会被误伤。
+ *
+ * 相对路径先按启动目录解析，不存在再按命令结束后的 cwd 解析（`cd x && git worktree add ../w`）；
+ * 两处都不存在就不提示，不猜。
+ */
+function worktreeAddNotice(command: string, launchCwd: string): string {
+  const raw = parseWorktreeAddPath(command);
+  if (!raw) return "";
+  const candidates = isAbsolute(raw)
+    ? [raw]
+    : [resolvePath(launchCwd, raw), resolvePath(getCwd(), raw)];
+  const hit = candidates.find((p) => existsSync(p));
+  if (!hit) return "";
+  return (
+    `\n[已创建 worktree] ${hit}\n` +
+    `当前会话工作目录没有切过去。后续读写请使用该路径下的绝对路径，` +
+    `或调用 enter_worktree（path 参数）把会话工作目录切到它。`
+  );
+}
+
 /** 把 cwd 变更/失效告知拼到结果末尾；两者互斥，都没有时原样返回 */
 function withCwdNotice(
   output: string,
@@ -733,6 +792,7 @@ export class BashTool implements Tool {
   private applyCwdTracking(
     cwdFile: string | undefined,
     success: boolean,
+    launchCwd: string,
   ): { switched?: string; staleCwd?: string } {
     if (!cwdFile) return {};
     let switched: string | undefined;
@@ -740,7 +800,15 @@ export class BashTool implements Tool {
       if (success) {
         // 裸 readFileSync 需自行 NFC 归一化（normalizeToolPath 内部已做，但此处直读文件）
         const newCwd = readFileSync(cwdFile, "utf8").trim().normalize("NFC");
-        if (newCwd && newCwd !== getCwd() && existsSync(newCwd)) {
+        // 比较基准是**本次命令的启动目录**，不是全局 getCwd()（20261020 会话评估发现 6a）。
+        // 旧判据拿结束目录比全局 cwd：一条带显式 `cwd:<主仓>` 的非只读命令即使没有 `cd`，
+        // 结束目录（=启动目录）也 ≠ 全局 cwd，于是全局被切到主仓 —— 实测一个会话来回翻转
+        // 29 次、主仓误写 13 次。显式 cwd 只该作用于这一次调用，只有命令自己 cd 了才写回。
+        //
+        // ⚠️ 启动目录必须先 realpath：`pwd -P` 给的是物理路径，launchCwd 是 normalizeToolPath
+        // 的逻辑路径。macOS 的 /tmp→/private/tmp、/var→/private/var 以及经 symlink 进入的
+        // worktree 下两边恒不等，不 realpath 这条修复会静默失效（且把全局写成物理路径）。
+        if (newCwd && newCwd !== realpathOr(launchCwd) && existsSync(newCwd)) {
           setCwd(newCwd);
           switched = newCwd;
         }
@@ -1079,6 +1147,7 @@ export class BashTool implements Tool {
             const cwdState = this.applyCwdTracking(
               cwdFile,
               !aborted && !timedOut && exitCode === 0,
+              cwd,
             );
 
             // 方向 3（git-status 快照冻结死循环修复）：非只读命令成功执行后失效 git 状态缓存。
@@ -1117,7 +1186,13 @@ export class BashTool implements Tool {
               const byteCount = new TextEncoder().encode(output).length;
               output = `[检测到二进制输出，共 ${byteCount} 字节]`;
             } else {
-              output = truncateOutput(output);
+              // 先剥终端控制序列再截断：顺序不能颠倒，二进制判定依赖控制字符密度（见 terminal-control.ts）
+              output = truncateOutput(stripTerminalControl(output) || "(命令无输出)");
+            }
+
+            // 自建 worktree 的路径提示：只在成功时补（失败时 worktree 没建出来）
+            if (!aborted && !timedOut && exitCode === 0) {
+              output += worktreeAddNotice(params.command, cwd);
             }
 
             // 超时（缺口 1/2 修复）：杀掉进程树后给出明确的 kill 语义，

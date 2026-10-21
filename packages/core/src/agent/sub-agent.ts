@@ -233,20 +233,16 @@ export interface SubAgentTask {
   _parentToolUseId?: string;
 }
 
-/** 计算子代理 maxTurns。PR-B（2026-10-17）：**未声明即无上限**，对齐 CC。
- *
- *  CC 内置代理不声明 maxTurns（`tools/AgentTool/built-in/` grep 0 命中），`query.ts` 只有
- *  `maxTurns &&` 为真时才检查。此前这里是「fork 200 / 常规 30」——事故 20261016-222758 里
- *  a3v2fn6md 正是撞 30 轮被强制总结截断。fork 的 200 也一并去掉：全库从未有子代理跑到
- *  100 轮，失控防护由 ESC / task_stop / 嵌套深度上限承载。
- *
- *  ⚠️ 出口必须归一成 `Infinity`，**不能是 undefined**：`agentic-loop.ts` 是
- *  `while (turns < maxTurns)`，`turns < undefined` 恒为 false → 子代理一轮都不跑就进强制总结。
- *  显式声明（task.maxTurns / frontmatter maxTurns）仍然生效，达到时照旧强制总结。
- *  非正数 / NaN 视为未声明（与主循环 `config.maxTurns || Infinity` 同口径）。 */
-export function resolveSubAgentMaxTurns(task: { maxTurns?: number }): number {
-  const n = task.maxTurns;
-  return typeof n === "number" && n > 0 ? n : Infinity;
+/** 计算子代理轮次上限。调用级 maxTurns 优先于 Agent 定义默认值；两者都未声明时无上限。
+ * ⚠️ 出口必须归一为 `Infinity`，**不能是 undefined**：`agentic-loop.ts` 是
+ * `while (turns < maxTurns)`，`turns < undefined` 恒为 false，会让子代理一轮都不运行。
+ * 调用级非正数 / NaN 保持既有语义，表示不限制轮次。 */
+export function resolveSubAgentMaxTurns(
+  task: { maxTurns?: number },
+  agentMaxTurns?: number,
+): number {
+  if (typeof task.maxTurns === "number" && task.maxTurns > 0) return task.maxTurns;
+  return typeof agentMaxTurns === "number" && agentMaxTurns > 0 ? agentMaxTurns : Infinity;
 }
 
 /** spawn 协议用：Infinity 无法 JSON 序列化（会变 null），未声明时省略字段由子进程归一。 */
@@ -858,6 +854,7 @@ export class SubAgent {
       // SubagentStart hook（带预期 model/provider，供遥测按 model 分类）
       const expectedModel =
         task.model ?? (this.registry ? this.registry.getModelForSubAgent(task.type) : this.model);
+      const agentDefinition = resolveAgent(task.type);
       this.hookSystem
         ?.fireSubagentStartEvent(agentId, task.type, this.parentSessionId, {
           model: expectedModel,
@@ -872,8 +869,8 @@ export class SubAgent {
       //     必须在本进程内用 withAgentCwd 包裹才能让文件类工具以 worktree 为基准。
       const runInner = () =>
         task.cwd
-          ? withAgentCwd(task.cwd, () => this.executeInner(task, signal, taskId))
-          : this.executeInner(task, signal, taskId);
+          ? withAgentCwd(task.cwd, () => this.executeInner(task, signal, taskId, agentDefinition))
+          : this.executeInner(task, signal, taskId, agentDefinition);
 
       // P3-1：把整个子代理执行体包进「深度 +1」上下文。子代理内部若再调 sub_agent，
       // canSpawnSubAgent 读到的就是自己那一层的深度，据此裁决放行/拒绝。
@@ -887,12 +884,12 @@ export class SubAgent {
           withIncrementedDepth(async () => {
             if (this.shouldUseSpawn() && !task.cwd) {
               try {
-                const spawned = await this.executeSpawned(task, signal, taskId);
+                const spawned = await this.executeSpawned(task, signal, taskId, agentDefinition);
                 log.info("SUBAGENT", `[${task.type}] spawn 模式完成`);
                 return spawned;
               } catch (err: any) {
                 log.warn("SUBAGENT", `spawn 模式失败，回退到进程内模式: ${err.message}`);
-                return await this.executeInner(task, signal, taskId);
+                return await this.executeInner(task, signal, taskId, agentDefinition);
               }
             }
             return await runInner();
@@ -994,18 +991,19 @@ export class SubAgent {
       // 缺陷 2：同 execute()，执行体进 span 作用域，内部 span 挂到本子代理下
       result = await runInSpanScope(customAgentId, () =>
         runWithHookAgent(hookScope, async () => {
+          const agentDefinition = resolveAgent(task.type ?? task.toolsFromAgentType ?? "");
           // 尝试 spawn 模式
           if (this.shouldUseSpawn()) {
             try {
-              const spawned = await this.executeSpawnedCustom(customTask, signal);
+              const spawned = await this.executeSpawnedCustom(customTask, signal, agentDefinition);
               log.info("SUBAGENT", `[custom] spawn 模式完成`);
               return spawned;
             } catch (err: any) {
               log.warn("SUBAGENT", `spawn 模式失败，回退到进程内模式: ${err.message}`);
-              return await this.executeCustomInner(customTask, signal);
+              return await this.executeCustomInner(customTask, signal, agentDefinition);
             }
           }
-          return await this.executeCustomInner(customTask, signal);
+          return await this.executeCustomInner(customTask, signal, agentDefinition);
         }),
       );
     } finally {
@@ -1155,7 +1153,11 @@ export class SubAgent {
     task: SubAgentTask,
     signal?: AbortSignal,
     taskId?: string,
+    agentDefinition: import("./agent-definition.ts").AgentDefinition | undefined = resolveAgent(
+      task.type,
+    ),
   ): Promise<SubAgentResult> {
+    const maxTurns = resolveSubAgentMaxTurns(task, agentDefinition?.maxTurns);
     const basePrompt = getSystemPrompt(task.type);
     const systemPrompt = await enhanceSubAgentPrompt(
       basePrompt,
@@ -1199,9 +1201,8 @@ export class SubAgent {
       wire_model: wireModel,
       wire_model_aliases: wireModelAliases,
       model_compat: modelCompat,
-      // PR-B：与进程内路径同口径——未声明即无上限（协议里省略字段，子进程归一成 Infinity）。
-      // ⚠️ 不能写 `?? 30`：spawn 与进程内两条路径的默认值必须一致，否则同一子代理换条路径就换行为。
-      max_turns: spawnMaxTurns(task.maxTurns),
+      // 父进程在启动子进程前按 Agent 默认值与调用级 maxTurns 合并。
+      max_turns: spawnMaxTurns(maxTurns),
       max_tokens: task.maxTokens ?? 50000,
       workdir: process.cwd(),
       provider_name: providerName,
@@ -1230,7 +1231,11 @@ export class SubAgent {
   private async executeSpawnedCustom(
     task: CustomSubAgentTask,
     signal?: AbortSignal,
+    agentDefinition: import("./agent-definition.ts").AgentDefinition | undefined = resolveAgent(
+      task.type ?? task.toolsFromAgentType ?? "",
+    ),
   ): Promise<SubAgentResult> {
+    const maxTurns = resolveSubAgentMaxTurns(task, agentDefinition?.maxTurns);
     const enhancedSystemPrompt = await enhanceSubAgentPrompt(
       task.systemPrompt,
       this.language,
@@ -1272,8 +1277,8 @@ export class SubAgent {
       wire_model: wireModel,
       wire_model_aliases: wireModelAliases,
       model_compat: modelCompat,
-      // PR-B：同上，未声明即无上限。
-      max_turns: spawnMaxTurns(task.maxTurns),
+      // 与进程内路径同口径：Agent 默认上限与任务级上限已在父进程合并。
+      max_turns: spawnMaxTurns(maxTurns),
       max_tokens: task.maxTokens ?? 50000,
       workdir: process.cwd(),
       provider_name: providerName,
@@ -1881,6 +1886,9 @@ export class SubAgent {
     task: SubAgentTask,
     signal?: AbortSignal,
     taskId?: string,
+    agentDefinition: import("./agent-definition.ts").AgentDefinition | undefined = resolveAgent(
+      task.type,
+    ),
   ): Promise<SubAgentResult> {
     const log = getLogger();
     const startTime = Date.now();
@@ -1939,7 +1947,7 @@ export class SubAgent {
       const basePrompt = getSystemPrompt(task.type);
       // P1-1：解析 agent 定义拿到 skills（预加载技能）。resolveAgent 覆盖 built-in + custom + plugin。
       // 复用到下方 tool 过滤（agentDef.tools/disallowedTools），避免重复解析。
-      const agentDef = resolveAgent(task.type);
+      const agentDef = resolveAgent(task.type) ?? agentDefinition;
       let systemPrompt = await enhanceSubAgentPrompt(
         basePrompt,
         this.language,
@@ -1979,8 +1987,8 @@ export class SubAgent {
       if (structuredTool) {
         tools.register(structuredTool);
       }
-      // PR-B：未声明即无上限（Infinity），见 resolveSubAgentMaxTurns 注释。
-      const maxTurns = resolveSubAgentMaxTurns(task);
+      // Agent 定义的轮次是默认上限，任务调用级 maxTurns 优先。
+      const maxTurns = resolveSubAgentMaxTurns(task, agentDef?.maxTurns);
       const loopDetector = new LoopDetector();
 
       const toolNames = filteredTools.map((t) => t.name());
@@ -2355,6 +2363,9 @@ export class SubAgent {
   private async executeCustomInner(
     task: CustomSubAgentTask,
     signal?: AbortSignal,
+    agentDefinition: import("./agent-definition.ts").AgentDefinition | undefined = resolveAgent(
+      task.type ?? task.toolsFromAgentType ?? "",
+    ),
   ): Promise<SubAgentResult> {
     const log = getLogger();
     const startTime = Date.now();
@@ -2414,8 +2425,8 @@ export class SubAgent {
         resolvedTools.length > 0
           ? this.buildIsolatedToolRegistry(resolvedTools, task.type)
           : new ToolRegistry();
-      // PR-B：未声明 maxTurns 即无上限（skill / 命令 fork 只在显式声明时才传）。
-      const maxTurns = resolveSubAgentMaxTurns(task);
+      // Agent 定义的 maxTurns 是默认值；Skill / 命令调用级 maxTurns 优先。
+      const maxTurns = resolveSubAgentMaxTurns(task, agentDefinition?.maxTurns);
       const loopDetector = new LoopDetector();
 
       log.info(
