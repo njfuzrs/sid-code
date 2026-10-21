@@ -147,3 +147,119 @@ describe("溢出后收缩：footer 钉在视口底部", () => {
     expect(small.screen).toBeUndefined();
   });
 });
+
+// 2026-10-22 复现：#390 的插入点按「两帧公共尾部」猜，在真实 TUI 里两头切错组件——
+// 状态栏计费同帧变了 → 空行插进状态栏两行之间；输入框变矮 → 空行插进输入框里面。
+// 走真实 render + History，空行必须落在历史区下沿，动态区整块贴底、内部零空行。
+describe("溢出后收缩：空行补在历史区下沿，不切进动态区组件", () => {
+  const W = 30;
+  const H = 12;
+  const hist = Array.from({ length: 20 }, (_, i) => `hist${i}`);
+
+  async function drive(frames: string[][]) {
+    const { PassThrough } = await import("node:stream");
+    const { Terminal } = await import("@xterm/headless");
+    const { History } = await import("../src/index.ts");
+    const term = new Terminal({ cols: W, rows: H, allowProposedApi: true });
+    let pending = Promise.resolve();
+    const stdout = Object.assign(new PassThrough(), { columns: W, rows: H, isTTY: true });
+    stdout.on("data", (d: Buffer) => {
+      const s = d.toString();
+      pending = pending.then(() => new Promise<void>((r) => term.write(s, r)));
+    });
+    const stdin = Object.assign(new PassThrough(), {
+      isTTY: true,
+      isRaw: false,
+      setRawMode: () => stdin,
+      ref: () => stdin,
+      unref: () => stdin,
+    });
+    const h = React.createElement;
+    const renderItem = (item: string) => h(Text, { key: item }, item);
+    const tree = (dyn: string[]) =>
+      h(
+        Box,
+        { flexDirection: "column" },
+        h(History, { items: hist, children: renderItem }),
+        h(Box, { flexDirection: "column" }, ...dyn.map((l, i) => h(Text, { key: i }, l))),
+      );
+    const tick = () => new Promise((r) => setTimeout(r, 20));
+    const inst = render(tree(frames[0]!), {
+      stdout: stdout as never,
+      stdin: stdin as never,
+      patchConsole: false,
+      exitOnCtrlC: false,
+    });
+    await tick();
+    for (const f of frames.slice(1)) {
+      inst.rerender(tree(f));
+      await tick();
+    }
+    await pending;
+    const b = term.buffer.active;
+    const view: string[] = [];
+    for (let y = 0; y < H; y++)
+      view.push(
+        b
+          .getLine(b.viewportY + y)!
+          .translateToString(true)
+          .trimEnd(),
+      );
+    stdout.isTTY = false;
+    inst.unmount();
+    return view;
+  }
+
+  // 视口最后一行是光标行（内容下一行），动态区占 H-1 之上的若干行
+  const bottom = (view: string[], k: number) => view.slice(H - 1 - k, H - 1);
+
+  test("spinner 消失且状态栏同帧变化：状态栏两行之间不插空行", async () => {
+    const view = await drive([
+      ["* spin", "", "────", "> ", "────", "status $1", "sid main"],
+      ["────", "> ", "────", "status $2", "sid main"],
+    ]);
+    expect(bottom(view, 5)).toEqual(["────", ">", "────", "status $2", "sid main"]);
+    // 空 Text 高 0：两帧 26 → 25 行，补的 1 行空行落在历史尾与动态区之间
+    expect(view.slice(0, 6)).toEqual(["hist15", "hist16", "hist17", "hist18", "hist19", ""]);
+  });
+
+  test("输入框变矮：输入框内部不插空行", async () => {
+    const view = await drive([
+      ["────", "> abc", "  def", "  ghi", "────", "status", "sid main"],
+      ["────", "> abc", "────", "status", "sid main"],
+    ]);
+    expect(bottom(view, 5)).toEqual(["────", "> abc", "────", "status", "sid main"]);
+  });
+
+  test("历史区下沿已滚出视口（长流式正文）：不 full reset，空行不插进正文", async () => {
+    const W2 = 20;
+    const H2 = 8;
+    const mk = (lines: string[]) => {
+      const s = new Screen(W2, lines.length);
+      lines.forEach((l, y) => s.writeLine(0, y, l));
+      return s;
+    };
+    const head = Array.from({ length: 10 }, (_, i) => `hist${i}`);
+    const msg = Array.from({ length: 12 }, (_, i) => `msg${i}`);
+    const { Terminal } = await import("@xterm/headless");
+    const term = new Terminal({ cols: W2, rows: H2, allowProposedApi: true });
+    let prev: Screen | undefined;
+    for (const f of [
+      mk([...head, ...msg, "* spin", "> ", "status"]),
+      mk([...head, ...msg, "> ", "status"]),
+    ]) {
+      const d = diffMainScreen(prev, f, H2, head.length);
+      expect(d.flicker).toBeUndefined();
+      await new Promise<void>((r) => term.write(d.bytes, r));
+      prev = d.screen ?? f;
+    }
+    const b = term.buffer.active;
+    const view = Array.from({ length: H2 }, (_, y) =>
+      b
+        .getLine(b.viewportY + y)!
+        .translateToString(true)
+        .trimEnd(),
+    );
+    expect(view).toEqual(["msg8", "msg9", "msg10", "msg11", "", ">", "status", ""]);
+  });
+});
