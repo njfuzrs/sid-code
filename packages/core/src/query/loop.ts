@@ -132,7 +132,7 @@ import {
   countUnfinished,
   blockedTodos,
   blockedSignature,
-  refreshTodoGateBudget,
+  advanceTodoGateBudget,
   TODO_GATE_BUDGET_KEY,
   type TodoGateBudget,
 } from "./todo-reminder.ts";
@@ -600,17 +600,25 @@ function getTodoReworkState(sessionState: SessionState): TodoReworkState {
 }
 
 /**
- * 取 end_turn 兜底的会话级续命预算，并按清单**真实推进**（completed 数 / 总项数）刷新。
- * 只改措辞的 todo_write、新的一条用户消息，都不再让预算回满——见 TODO_GATE_BUDGET_KEY 注释。
+ * 推进 end_turn 兜底的会话级续命预算（按 completed **创新高** / 总项数复位），并返回本次是否算推进。
+ * 只改措辞的 todo_write、新的一条用户消息、completed 下降后回升，都不再让预算回满——
+ * 见 TODO_GATE_BUDGET_KEY 与 advanceTodoGateBudget 注释。
  */
+function advanceSessionTodoGateBudget(
+  sessionState: SessionState,
+  todos: import("../tool/todo-write.ts").TodoItem[],
+): { budget: TodoGateBudget; progressed: boolean } {
+  const prev = sessionState.get(TODO_GATE_BUDGET_KEY) as TodoGateBudget | undefined;
+  const r = advanceTodoGateBudget(prev, todos);
+  if (r.budget !== prev) sessionState.set(TODO_GATE_BUDGET_KEY, r.budget);
+  return r;
+}
+
 function getTodoGateBudget(
   sessionState: SessionState,
   todos: import("../tool/todo-write.ts").TodoItem[],
 ): TodoGateBudget {
-  const prev = sessionState.get(TODO_GATE_BUDGET_KEY) as TodoGateBudget | undefined;
-  const next = refreshTodoGateBudget(prev, todos);
-  if (next !== prev) sessionState.set(TODO_GATE_BUDGET_KEY, next);
-  return next;
+  return advanceSessionTodoGateBudget(sessionState, todos).budget;
 }
 
 function emitNagInjectedEvent(
@@ -1542,6 +1550,14 @@ export async function* queryLoop(loopConfig: QueryLoopConfig): AsyncGenerator<Qu
         const reworkReminder = drainTodoReworkReminder(getTodoReworkState(sessionState));
         if (reworkReminder) {
           reminderParts.push(reworkReminder);
+          // 返工提醒与 completed 下降同属「振荡」，并入同一个计数（发现 2b，供 D2 升级阶梯消费）
+          const gateBudget = sessionState.get(TODO_GATE_BUDGET_KEY) as TodoGateBudget | undefined;
+          if (gateBudget) {
+            sessionState.set(TODO_GATE_BUDGET_KEY, {
+              ...gateBudget,
+              oscillations: gateBudget.oscillations + 1,
+            });
+          }
           log.info("QUERY_LOOP", "清单返工提醒：已完成项对应的文件被再次修改");
           if (deps.traceAppendEvent) {
             try {
@@ -1626,11 +1642,12 @@ export async function* queryLoop(loopConfig: QueryLoopConfig): AsyncGenerator<Qu
           // 注意这里**不再**刷新回注 cadence：cadence 的基准已改为"距上次 todo_write 多少轮"，
           // 由 getTodoReminderTurnCounts 从消息历史现算（下方），不需要也不该在这里手工记基线。
           if (todoAdvanced) {
-            // 有进展 → 刷新 end_turn todo gate 预算：同一条用户消息内模型完成部分项后，
-            // gate 不该继续消耗上一段停滞攒下的续命额度。
-            state.progressNagCount = 0;
-            // end_turn gate 预算**不在这里**复位：writeVersion 变化不等于清单有推进
-            // （只改措辞也会 +1）。预算改挂 SessionState、按完成数复位，见 getTodoGateBudget。
+            // nag 计数与 end_turn gate 预算**同一判据**：completed 创新高（或换清单）才算推进。
+            // 旧实现在 writeVersion 变化时就清零——只改措辞、或 1→0→1 的返工振荡都会让
+            // work-log 封顶永不生效（会话 20261020-110542-ce7ea52e 发现 2b）。
+            if (advanceSessionTodoGateBudget(sessionState, todoState.todos).progressed) {
+              state.progressNagCount = 0;
+            }
             // P1-4 item 2：模型确实更新了清单 = 记账催促奏效了 → 清零条件封顶预算，
             // 让它在下一段"有进展但又忘记记账"时还能再催。不清零的话一个长会话里
             // 只要早期催满 2 次，后面就永久哑火。

@@ -468,7 +468,8 @@ export interface LoopState {
   /**
    * 封顶：连续注入 **work-log 摘要**催促而 todo 无进展（writeVersion 未变化）的累计次数。
    * 达 MAX_NO_PROGRESS_NAGS 后本条用户消息剩余轮次停止注入该催促。
-   * writeVersion 变化（模型确实更新了清单=有进展）时清零。
+   * completed 创新高或换清单（与 end_turn gate 预算同一判据，见 advanceTodoGateBudget）时清零；
+   * 只改措辞、completed 下降后回升都不清零（2026-10-21，发现 2b）。
    *
    * 注：原先还有一个对称的 `todoNagCount`，二者更早期共用同一个字段导致互相饿死
    * （负收益防线审计 发现 3，2026-07-30）。拆开后 todo 那一半在 2026-08-01 被整体删除
