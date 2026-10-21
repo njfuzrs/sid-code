@@ -1635,6 +1635,7 @@ export default class Ink {
 		}
 
 		let bytes: string;
+		let drawn = screen;
 		const flickers: FrameFlicker[] = [];
 
 		if (staticOutput === '') {
@@ -1643,6 +1644,9 @@ export default class Ink {
 			if (diff.flicker) {
 				flickers.push(diff.flicker);
 			}
+
+			// 溢出后收缩补了空行：终端上的是补过的那一帧，下一帧要拿它比
+			drawn = diff.screen ?? screen;
 		} else {
 			// 上游 <Static> 的新增项：擦掉动态区、写静态输出、整帧重画动态区（端口的 Static 是 T4.2，不走这里）
 			bytes =
@@ -1651,7 +1655,7 @@ export default class Ink {
 				serializeScreen(screen);
 		}
 
-		this.previousScreen = screen;
+		this.previousScreen = drawn;
 		this.frameViewport = getWindowSize(this.options.stdout);
 		this.lastOutput = output;
 		this.lastOutputToRender = output + '\n';

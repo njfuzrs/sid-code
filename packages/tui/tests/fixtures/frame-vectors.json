@@ -401,7 +401,7 @@
       "flickers": []
     },
     {
-      "bytes": "\u001b[?2026h\u001b[2K\u001b[G\u001b[1A                    \r\u001b[?2026l",
+      "bytes": "\u001b[?2026h\r\u001b[1A \r\n\u001b[?2026l",
       "flickers": []
     }
   ],
@@ -445,12 +445,12 @@
       "flickers": []
     },
     {
-      "bytes": "\u001b[?2026h\u001b[2K\u001b[G\u001b[1A                    \r\u001b[?2026l",
+      "bytes": "\u001b[?2026h\r\u001b[1A \r\n\u001b[?2026l",
       "flickers": []
     },
     {
-      "bytes": "\u001b[?2026h\r\u001b[5AX\r\n\n\n\n\n\u001b[?2026l",
-      "flickers": []
+      "bytes": "\u001b[?2026h\u001b[2J\u001b[3J\u001b[H0\r\n1\r\n2\r\n3\r\nX\r\n5\r\n6\r\n7\r\n8\r\n\u001b[?2026l",
+      "flickers": ["offscreen"]
     }
   ],
   "溢出后增长且改可视行": [
@@ -529,12 +529,12 @@
       "flickers": []
     },
     {
-      "bytes": "\u001b[?2026h\u001b[2K\u001b[1A\u001b[2K\u001b[1A\u001b[2K\u001b[1A\u001b[2K\u001b[1A\u001b[2K\u001b[G\u001b[1A                    \r\u001b[1B                    \r\u001b[1B                    \r\u001b[1B                    \r\u001b[1B                    \r\u001b[4A\u001b[?2026l",
+      "bytes": "\u001b[?2026h\r\u001b[5A  \r\u001b[1B  \r\u001b[1B  \r\u001b[1B  \r\u001b[1B  \r\n\u001b[?2026l",
       "flickers": []
     },
     {
-      "bytes": "\u001b[?2026h\r\u001b[4AX \r\n\n\n\n\u001b[?2026l",
-      "flickers": []
+      "bytes": "\u001b[?2026h\u001b[2J\u001b[3J\u001b[H0\r\n1\r\n2\r\n3\r\n4\r\n5\r\n6\r\n7\r\n8\r\n9\r\n10\r\nX\r\n12\r\n13\r\n14\r\n\u001b[?2026l",
+      "flickers": ["offscreen"]
     },
     {
       "bytes": "\u001b[?2026h\u001b[2J\u001b[3J\u001b[H0\r\n1\r\n2\r\n3\r\n4\r\n5\r\n6\r\n7\r\n8\r\nX\r\n10\r\n11\r\n12\r\n13\r\n14\r\n\u001b[?2026l",
@@ -547,11 +547,11 @@
       "flickers": []
     },
     {
-      "bytes": "\u001b[?2026h\u001b[2K\u001b[1A\u001b[2K\u001b[1A\u001b[2K\u001b[1A\u001b[2K\u001b[1A\u001b[2K\u001b[G\u001b[1A                    \r\u001b[1B                    \r\u001b[1B                    \r\u001b[1B                    \r\u001b[1B                    \r\u001b[4A\u001b[?2026l",
+      "bytes": "\u001b[?2026h\r\u001b[5A  \r\u001b[1B  \r\u001b[1B  \r\u001b[1B  \r\u001b[1B  \r\n\u001b[?2026l",
       "flickers": []
     },
     {
-      "bytes": "\u001b[?2026h15\r\n16\r\n\u001b[?2026l",
+      "bytes": "\u001b[?2026h\r\u001b[2A15\r\u001b[1B16\r\n\u001b[?2026l",
       "flickers": []
     }
   ],
@@ -621,7 +621,7 @@
       "flickers": []
     },
     {
-      "bytes": "\u001b[?2026h\u001b[2K\u001b[G\u001b[1A                    \r\u001b[?2026l",
+      "bytes": "\u001b[?2026h\r\u001b[1A \r\n\u001b[?2026l",
       "flickers": []
     }
   ],
@@ -631,7 +631,7 @@
       "flickers": []
     },
     {
-      "bytes": "\u001b[?2026h\u001b[2K\u001b[1A\u001b[2K\u001b[G\u001b[1A                    \r\u001b[1B                    \r\u001b[1A\u001b[?2026l",
+      "bytes": "\u001b[?2026h\r\u001b[2A \r\u001b[1B \r\n\u001b[?2026l",
       "flickers": []
     }
   ],
@@ -671,7 +671,7 @@
       "flickers": []
     },
     {
-      "bytes": "\u001b[?2026h\u001b[2K\u001b[1A\u001b[2K\u001b[1A\u001b[2K\u001b[G\u001b[1A                    \r\u001b[1B                    \r\u001b[1B                    \r\u001b[2A\u001b[?2026l",
+      "bytes": "\u001b[?2026h\r\u001b[3A \r\u001b[1B \r\u001b[1B \r\n\u001b[?2026l",
       "flickers": []
     }
   ],
@@ -681,7 +681,7 @@
       "flickers": []
     },
     {
-      "bytes": "\u001b[?2026h\u001b[2K\u001b[1A\u001b[2K\u001b[G\u001b[1A                    \r\u001b[1B                    \r\u001b[1A\u001b[?2026l",
+      "bytes": "\u001b[?2026h\r\u001b[2A \r\u001b[1B \r\n\u001b[?2026l",
       "flickers": []
     }
   ],
@@ -701,7 +701,7 @@
       "flickers": []
     },
     {
-      "bytes": "\u001b[?2026h\u001b[2K\u001b[1A\u001b[2K\u001b[1A\u001b[2K\u001b[1A\u001b[2K\u001b[G\u001b[1A                    \r\u001b[1B                    \r\u001b[1B                    \r\u001b[1B                    \r\u001b[3A\u001b[?2026l",
+      "bytes": "\u001b[?2026h\r\u001b[4A \r\u001b[1B \r\u001b[1B \r\u001b[1B  \r\n\u001b[?2026l",
       "flickers": []
     }
   ],
@@ -711,7 +711,7 @@
       "flickers": []
     },
     {
-      "bytes": "\u001b[?2026h\u001b[2K\u001b[1A\u001b[2K\u001b[1A\u001b[2K\u001b[1A\u001b[2K\u001b[1A\u001b[2K\u001b[G\u001b[1A                    \r\u001b[1B                    \r\u001b[1B                    \r\u001b[1B                    \r\u001b[1B                    \r\u001b[4A\u001b[?2026l",
+      "bytes": "\u001b[?2026h\r\u001b[5A \r\u001b[1B \r\u001b[1B \r\u001b[1B  \r\u001b[1B  \r\n\u001b[?2026l",
       "flickers": []
     }
   ],
@@ -761,7 +761,7 @@
       "flickers": []
     },
     {
-      "bytes": "\u001b[?2026h\u001b[2K\u001b[1A\u001b[2K\u001b[1A\u001b[2K\u001b[1A\u001b[2K\u001b[1A\u001b[2K\u001b[G\u001b[1A                    \r\u001b[1B                    \r\u001b[1B                    \r\u001b[1B                    \r\u001b[1B                    \r\u001b[4A\u001b[?2026l",
+      "bytes": "\u001b[?2026h\r\u001b[5A  \r\u001b[1B  \r\u001b[1B  \r\u001b[1B  \r\u001b[1B  \r\n\u001b[?2026l",
       "flickers": []
     }
   ],
@@ -779,7 +779,7 @@
       "flickers": []
     },
     {
-      "bytes": "\u001b[?2026h\u001b[2K\u001b[1A\u001b[2K\u001b[1A\u001b[2K\u001b[1A\u001b[2K\u001b[G\u001b[1A                    \r\u001b[1B                    \r\u001b[1B                    \r\u001b[1B                    \r\u001b[3A\u001b[?2026l",
+      "bytes": "\u001b[?2026h\r\u001b[4A  \r\u001b[1B  \r\u001b[1B  \r\u001b[1B  \r\n\u001b[?2026l",
       "flickers": []
     }
   ],
