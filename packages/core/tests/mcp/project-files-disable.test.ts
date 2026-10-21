@@ -175,9 +175,11 @@ describe("M4 审批 key 按 git root：子目录审批一次，同仓库其它�
     mkdirSync(subA, { recursive: true });
     mkdirSync(subB, { recursive: true });
     execSync("git init -q", { cwd: repo });
+    // 审批按「名字 + 内容指纹」：直接调 approveProjectServer 时要传与 .mcp.json 一致的配置
+    const S2 = { transport: "stdio", command: "two" };
     writeMcp(repo, {
       s1: { transport: "stdio", command: "one" },
-      s2: { transport: "stdio", command: "two" },
+      s2: S2,
     });
 
     const { loadConfig } = await import("@sid-code/core/config/config.ts");
@@ -196,16 +198,18 @@ describe("M4 审批 key 按 git root：子目录审批一次，同仓库其它�
     expect(cfg.mcpServers?.s1).toBeDefined();
 
     // 旧版按 cwd 记的 key：升级后仍视为已批准，不重复询问
-    approval.approveProjectServer("s2", subB);
+    approval.approveProjectServer("s2", S2, subB);
     approval.__resetPendingApproval();
     await loadConfig({});
     expect(approval.getPendingApprovalServers().names).toEqual([]);
     // 写入时迁移：对 s2 重新批准后旧 key 被清掉
-    approval.approveProjectServer("s2", realpathSync(repo), subB);
+    approval.approveProjectServer("s2", S2, realpathSync(repo), subB);
     const store = JSON.parse(
       readFileSync(join(process.env.SID_CONFIG_DIR!, "state", "mcp-approvals.json"), "utf-8"),
     );
-    expect(store.approved).not.toContain(`${subB}:s2`);
-    expect(store.approved).toContain(`${realpathSync(repo)}:s2`);
+    expect(store.approved.some((k: string) => k.startsWith(`${subB}:s2`))).toBe(false);
+    expect(store.approved).toContain(
+      `${realpathSync(repo)}:s2#sha256:${approval.computeServerConfigFingerprint(S2)}`,
+    );
   });
 });
