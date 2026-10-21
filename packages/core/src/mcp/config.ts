@@ -49,7 +49,7 @@ const SCOPE_PRIORITY: Record<ConfigScope, number> = {
 
 /**
  * 合并多源 MCP 配置
- * 去重优先级：user > local > project > dynamic
+ * 去重优先级：dynamic > user > local > project（见下方 SCOPE_PRIORITY，数字小=优先）
  */
 export function mergeMcpConfigs(
   sources: Array<{ scope: ConfigScope; servers: Record<string, MCPServerConfig> }>,
