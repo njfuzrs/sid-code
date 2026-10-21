@@ -126,8 +126,9 @@ import {
 } from "./signal-teardown.ts";
 import { execSync } from "child_process";
 import { existsSync, readFileSync } from "fs";
-import { readFile } from "fs/promises";
+import { open, stat } from "fs/promises";
 import { resolve, extname, join } from "path";
+import { BINARY_CHECK_WINDOW, isBinaryContent } from "@sid-code/core/tool/binary-detect.ts";
 import { sidPaths } from "@sid-code/core/config/paths.ts";
 import { deriveTaskTitle } from "./ui/utils/task-title.ts";
 import { buildInteractiveBashToolUse } from "./ui/shell-input.ts";
@@ -199,7 +200,25 @@ interface AtExpansionResult {
    * 修复时不能延续：拦截必须 fail-closed 且可观测，否则用户以为文件已给到模型。
    */
   blockedPaths?: Array<{ path: string; reason: string }>;
+  /**
+   * 未被拦截、但因目录 / 二进制 / 超出内联上限而没有内联的 @ 提及。
+   * 与 blockedPaths 分开：这类文件可以经 Read 工具分段读取，提示语义相反。
+   */
+  skippedPaths?: Array<{ path: string; reason: string }>;
 }
+
+/**
+ * @ 提及单文件内联上限（字节）。
+ *
+ * 2026-10-22 事故：用户输入里的 `@sid-code/`（本意是包名）被当成路径，`resolve()`
+ * 吞掉末尾 `/` 后命中仓库根 78MB 的编译产物 `sid-code`，按 utf-8 整个内联进
+ * user 消息（估算 4500 万 token）。单条 user 消息无法被任何压缩层缩小，
+ * 三轮压缩全部 no_reduction → 熔断 → 网关 413，会话直接报废。
+ *
+ * 取 100KB：约等于 Read 工具单次输出上限 25k token 的量级（中英混排 2–4 字节/token），
+ * 超出的文件交给 Read 工具按 offset/limit 读——那里有完整的分段与 token 预算。
+ */
+const AT_INLINE_MAX_BYTES = 100 * 1024;
 
 /** vision 支持的图片扩展名（与 tool/read.ts 严格一致）。图片走 Read 工具而非文本内联。 */
 const AT_IMAGE_EXTENSIONS = new Set([".png", ".jpg", ".jpeg", ".gif", ".webp"]);
@@ -240,6 +259,8 @@ export async function expandAtReferences(
   const parts: string[] = [];
   /** 被路径校验拦下的 @ 提及，用于向用户显式告知"没注入"（不能静默） */
   const blocked: Array<{ path: string; reason: string }> = [];
+  /** 因目录 / 二进制 / 超上限而未内联的 @ 提及 */
+  const skipped: Array<{ path: string; reason: string }> = [];
 
   // G1：先抽取 MCP 资源提及 @server:uri（uri 含冒号，如 @filesystem:file:///tmp/a.txt）。
   // 正则对齐 CC extractMcpResourceMentions：@ 后跟「非空白且含冒号」的 token。
@@ -310,13 +331,46 @@ export async function expandAtReferences(
         continue;
       }
     }
+    // 末尾带 `/` 是目录提及（或像 `@sid-code/` 这样的包名），`resolve()` 会吞掉这个 `/`
+    // 让它命中同名文件——事故就是这么读到 78MB 二进制的，所以必须在 resolve 之前判。
+    if (filePath.endsWith("/")) continue;
+    let size: number;
     try {
-      const content = await readFile(absPath, "utf-8");
+      const st = await stat(absPath);
+      if (!st.isFile()) continue; // 目录 / 设备文件等不内联
+      size = st.size;
+    } catch {
+      continue; // 文件不存在时跳过
+    }
+    if (size > AT_INLINE_MAX_BYTES) {
+      skipped.push({
+        path: filePath,
+        reason: `文件 ${(size / 1024).toFixed(0)}KB，超过 @ 内联上限 ${AT_INLINE_MAX_BYTES / 1024}KB`,
+      });
+      getLogger().info("AT_REF", `@${filePath} 超过内联上限未注入: ${size} 字节`);
+      continue;
+    }
+    try {
+      const fh = await open(absPath, "r");
+      let buf: Buffer;
+      try {
+        // 只读 stat 出的字节数：文件在 stat 之后被追加也不会越过上限
+        buf = Buffer.alloc(size);
+        const { bytesRead } = await fh.read(buf, 0, size, 0);
+        buf = buf.subarray(0, bytesRead);
+      } finally {
+        await fh.close();
+      }
+      if (isBinaryContent(buf.subarray(0, BINARY_CHECK_WINDOW))) {
+        skipped.push({ path: filePath, reason: "二进制文件" });
+        getLogger().info("AT_REF", `@${filePath} 是二进制文件，未注入`);
+        continue;
+      }
       fileContents.push(
-        `以下是文件 \`${filePath}\` 的内容：\n\`\`\`${extname(filePath).slice(1)}\n${content}\n\`\`\``,
+        `以下是文件 \`${filePath}\` 的内容：\n\`\`\`${extname(filePath).slice(1)}\n${buf.toString("utf-8")}\n\`\`\``,
       );
     } catch {
-      // 文件不存在时跳过
+      // 读取失败（权限/竞态删除）时跳过
     }
   }
 
@@ -327,6 +381,12 @@ export async function expandAtReferences(
     const list = blocked.map((b) => `- \`${b.path}\`：${b.reason}`).join("\n");
     parts.push(
       `以下 @ 提及的文件被权限规则拦截，内容**未注入**（请勿假设已读到，也不要改用 Read 工具绕行）：\n${list}`,
+    );
+  }
+  if (skipped.length > 0) {
+    const list = skipped.map((s) => `- \`${s.path}\`：${s.reason}`).join("\n");
+    parts.push(
+      `以下 @ 提及的文件未内联（内容**未注入**）；确有需要时用 Read 工具按 offset/limit 分段读取文本文件，二进制文件不要读取：\n${list}`,
     );
   }
   if (imagePaths.length > 0) {
@@ -340,6 +400,7 @@ export async function expandAtReferences(
     injectedContent:
       parts.length > 0 ? `<system-reminder>\n${parts.join("\n\n")}\n</system-reminder>` : null,
     blockedPaths: blocked.length > 0 ? blocked : undefined,
+    skippedPaths: skipped.length > 0 ? skipped : undefined,
   };
 }
 
@@ -10374,11 +10435,8 @@ export class App {
           this.abortController = new AbortController();
           // @ 文件注入：展开用户输入中的 @path 引用
           // 文件内容用 <system-reminder> 包裹，TUI 渲染时剥离，模型正常读取
-          const { displayText, injectedContent, blockedPaths } = await expandAtReferences(
-            text,
-            this.mcpManager,
-            this.permissionChecker,
-          );
+          const { displayText, injectedContent, blockedPaths, skippedPaths } =
+            await expandAtReferences(text, this.mcpManager, this.permissionChecker);
           // 审计第 20 条：被路径校验拦下的 @ 提及必须让用户看见——静默跳过会让用户
           // 以为文件已给到模型，而模型侧只收到"未注入"说明，两边认知错位。
           if (blockedPaths && blockedPaths.length > 0) {
@@ -10386,6 +10444,14 @@ export class App {
             addTransientStatusMessage(
               "at_ref_blocked",
               `⚠ ${summary} 被权限规则拦截，未注入（${blockedPaths[0]!.reason}）`,
+              5000,
+            );
+          }
+          if (skippedPaths && skippedPaths.length > 0) {
+            const summary = skippedPaths.map((s) => `@${s.path}`).join("、");
+            addTransientStatusMessage(
+              "at_ref_skipped",
+              `⚠ ${summary} 未内联（${skippedPaths[0]!.reason}），模型可按需用 Read 分段读取`,
               5000,
             );
           }
