@@ -16,6 +16,12 @@
  * - **收缩**（不触发 full reset 时）：`eraseLines(p - n)` 擦掉底部，`CUU 1` 回到第 n 行，
  *   再用整行宽的空格把 p - n 行盖一遍（`\r` + `CUD 1` 逐行），最后回到第 n 行；
  *   有变化的行在擦除之后、空格之前写，竖向移动以第 n 行为基准；
+ * - **溢出后收缩补空行**（sid-code 有意偏离冻结基线）：前一帧已溢出视口（p ≥ H）而新帧变矮时，
+ *   不走上面的「擦底部」——滚进 scrollback 的行拉不回来，擦掉底部只会让整帧上移、在 footer 下面留
+ *   p - n 行空白（主屏 History 在帧里，帧高几乎恒超视口，动态区每收缩一次就漏一次）。改为在新帧里
+ *   补 p - n 行空行把高度撑回 p，补在两帧公共尾部之前（没有公共尾部就补在第一个变化行），
+ *   底部的输入框 / 状态栏原地不动；之后内容增长会原地覆盖这些空行。实际画上去的帧经 `screen` 返回，
+ *   调用方必须拿它做下一帧的 previous；
  * - **full reset**（`ESC[2J ESC[3J ESC[H` + 整帧重画）在下面三种情况发生：
  *   ① 宽度变了（R7 的帧层部分；视口变矮与 resize 事件合并在 ink.tsx，见 `resetMainScreen`）；
  *   ② 有变化的行已经滚出视口：行号 y < p - H + 1（R5，原因 offscreen）；
@@ -23,7 +29,7 @@
  */
 import ansiEscapes from 'ansi-escapes';
 import {closePen, type Pen, serializeRow, serializeRowDiff} from '../screen/serialize.js';
-import {type Screen} from '../screen/screen.js';
+import {Screen} from '../screen/screen.js';
 
 const ESC = '\u001B';
 const CLEAR_TERMINAL = `${ESC}[2J${ESC}[3J${ESC}[H`;
@@ -43,6 +49,8 @@ export type FrameDiff = {
 	/** 本帧要写的字节；空串 = 不写（连同步输出包裹也不要） */
 	bytes: string;
 	flicker?: FrameFlicker;
+	/** 实际画到终端上的帧，与传入的 next 不同（溢出后收缩补了空行）时才给；调用方拿它做下一帧的 previous */
+	screen?: Screen;
 };
 
 /** 整帧：每行之后 `\r\n`。首帧、full reset、追加新行都用它。 */
@@ -72,6 +80,60 @@ function firstChangedColumn(previous: Screen, next: Screen, y: number): number {
 	return -1;
 }
 
+/** previous 第 py 行与 next 第 ny 行逐单元相同 */
+function rowsEqual(previous: Screen, py: number, next: Screen, ny: number): boolean {
+	const a = previous.index(0, py);
+	const b = next.index(0, ny);
+	for (let x = 0; x < next.width; x++) {
+		const i = a + x;
+		const j = b + x;
+		if (
+			previous.chars[i] !== next.chars[j] ||
+			previous.styles[i] !== next.styles[j] ||
+			previous.widths[i] !== next.widths[j] ||
+			previous.links[i] !== next.links[j]
+		) {
+			return false;
+		}
+	}
+
+	return true;
+}
+
+/**
+ * 溢出后收缩：在 next 里插 p - n 行空行，高度撑回 p。插入点 = 两帧公共尾部（输入框 / 状态栏这类没变的底部）之前；
+ * 没有公共尾部（比如状态栏的计费同一帧也变了）就插在第一个变化行，那里通常正是消失的那块。
+ */
+function padShrunkFrame(previous: Screen, next: Screen): Screen {
+	const p = previous.height;
+	const n = next.height;
+	let prefix = 0;
+	while (prefix < n && rowsEqual(previous, prefix, next, prefix)) {
+		prefix++;
+	}
+
+	let suffix = 0;
+	while (prefix + suffix < n && rowsEqual(previous, p - 1 - suffix, next, n - 1 - suffix)) {
+		suffix++;
+	}
+
+	const at = suffix > 0 ? n - suffix : prefix;
+	const count = p - n;
+	const padded = new Screen(next.width, p, {styles: next.stylePool, links: next.hyperlinkPool});
+	const head = at * next.width;
+	const shift = count * next.width;
+	for (const key of ['chars', 'widths', 'styles', 'links'] as const) {
+		const from = next[key];
+		const to = padded[key];
+		to.set(from.subarray(0, head), 0);
+		to.set(from.subarray(head), head + shift);
+	}
+
+	padded.wrapEnd.set(next.wrapEnd.subarray(0, at), 0);
+	padded.wrapEnd.set(next.wrapEnd.subarray(at), at + count);
+	return padded;
+}
+
 /**
  * full reset：清屏 + 清 scrollback + 回原点，再按首帧口径画整帧。
  * R7（B9 / T3.3）的视口变化判定在 ink.tsx 出帧时做（它要比较的是上一帧出帧时的视口，不是上一帧的屏幕），
@@ -90,20 +152,37 @@ export function resetMainScreen(
 
 export function diffMainScreen(
 	previous: Screen | undefined,
-	next: Screen,
+	target: Screen,
 	viewportRows: number,
 ): FrameDiff {
-	const n = next.height;
+	let next = target;
+	let n = next.height;
 	if (!previous || previous.height === 0) {
 		return {bytes: rows(next, 0, n)};
 	}
 
 	const p = previous.height;
+	// full reset 一律画原始帧（不带补的空行）：清屏之后没有 scrollback 的约束，整帧从头画即可
 	const fullReset = (reason: FrameFlicker['reason']): FrameDiff =>
-		resetMainScreen(next, viewportRows, reason);
+		resetMainScreen(target, viewportRows, reason);
 
 	if (previous.width !== next.width) {
 		return fullReset('resize');
+	}
+
+	// ③ 收缩：新的底部落到视口之上，或从「占满视口」收缩到「不超过视口」
+	if (
+		n < p &&
+		(p - n > viewportRows - 1 || (p >= viewportRows && n <= viewportRows))
+	) {
+		return fullReset('offscreen');
+	}
+
+	// 溢出后收缩：补空行撑回原高，footer 原地不动（见文件头）
+	const padded = n < p && p >= viewportRows;
+	if (padded) {
+		next = padShrunkFrame(previous, next);
+		n = p;
 	}
 
 	const shared = Math.min(p, n);
@@ -122,13 +201,6 @@ export function diffMainScreen(
 	}
 
 	const shrinking = n < p;
-	// ③ 收缩：新的底部落到视口之上，或从「占满视口」收缩到「不超过视口」
-	if (
-		shrinking &&
-		(p - n > viewportRows - 1 || (p >= viewportRows && n <= viewportRows))
-	) {
-		return fullReset('offscreen');
-	}
 
 	let out = '';
 	// 竖向移动的基准行：收缩时擦完底部光标在第 n 行，否则在第 p 行
@@ -169,7 +241,7 @@ export function diffMainScreen(
 	}
 
 	out += rows(next, p, n);
-	return {bytes: out};
+	return padded ? {bytes: out, screen: next} : {bytes: out};
 }
 
 /**
