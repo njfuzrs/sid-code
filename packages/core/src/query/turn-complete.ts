@@ -144,6 +144,8 @@ export type TurnStopReason =
   | "abort"
   /** 达到 maxTurns 硬停 */
   | "max_turns"
+  /** 停滞升级阶梯 L2 由 harness 结束本轮（stall-escalation.ts） */
+  | "stalled"
   /** 抛错终止（含超时重试耗尽） */
   | "error"
   /** 其它提前收尾（hook 阻断、空响应、未识别 stopReason 等） */

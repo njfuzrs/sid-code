@@ -137,6 +137,17 @@ import {
   type TodoGateBudget,
 } from "./todo-reminder.ts";
 import {
+  resolveStallSwitches,
+  createStallState,
+  observeStallTurn,
+  buildStallSummaryPrompt,
+  buildStallGateHandoffMessage,
+  STALL_GATE_OSCILLATION_THRESHOLD,
+  type StallTurnObservation,
+} from "./stall-escalation.ts";
+import { readFileSync } from "node:fs";
+import { isAbsolute, resolve as resolvePath } from "node:path";
+import {
   TODO_REWORK_KEY,
   createTodoReworkState,
   recordTodoWrite,
@@ -791,6 +802,12 @@ export async function* queryLoop(loopConfig: QueryLoopConfig): AsyncGenerator<Qu
 
   const loopDetector = new LoopDetector();
   const state: LoopState = createInitialLoopState(config.maxTurns || Infinity);
+  // 停滞升级阶梯（stall-escalation.ts）。headless 默认不开；settings 读不到按影子处理。
+  const stallSwitches = resolveStallSwitches(config.print === true, readStallHardStopSetting());
+  if (stallSwitches.enabled) {
+    const gb = sessionState.get(TODO_GATE_BUDGET_KEY) as TodoGateBudget | undefined;
+    state.stall = createStallState(gb?.oscillations ?? 0);
+  }
   // P1-4：端到端耗时基准 = "用户回车那一刻"，所以设在 queryLoop **入口**，
   // 不是 while 每次迭代（那是本条消息内的一次 API 往返，不是一次答复）。
   // 基准随 LoopState 每条用户消息重建而天然重设 —— 见 turn-complete.ts 文件头铁律 2。
@@ -813,8 +830,11 @@ export async function* queryLoop(loopConfig: QueryLoopConfig): AsyncGenerator<Qu
    * 没有 return）才可能落到 try 外的总结段。
    */
   let exitedViaReturn = false;
+  // L2 真停与 maxTurns 共用同一个强制总结出口（§5 决策 1 第 1 条：不新造机制）
   const willRunForcedSummary = (): boolean =>
-    !exitedViaReturn && state.turnCount >= state.maxTurns && !deps.getAbortSignal?.()?.aborted;
+    !exitedViaReturn &&
+    (state.turnCount >= state.maxTurns || state.stallStopRequested === true) &&
+    !deps.getAbortSignal?.()?.aborted;
   /**
    * P1-4：发射本轮 `TurnComplete`（幂等，重复调用只生效一次）。
    *
@@ -832,11 +852,14 @@ export async function* queryLoop(loopConfig: QueryLoopConfig): AsyncGenerator<Qu
         turnStopReason ??
         (abortedNow
           ? "abort"
-          : state.turnCount >= state.maxTurns
-            ? "max_turns"
-            : // 既没走正常收尾、也没 abort、也没到上限 —— 抛错穿透 finally 的形态。
-              // 归 error 而非 other：这是唯一能观测到"异常穿透"的位置。
-              "error"),
+          : // 与收尾处 stalledExit 同口径：同时撞 maxTurns 时事件走 max_turns，stopReason 也得是 max_turns
+            state.stallStopRequested && state.turnCount < state.maxTurns
+            ? "stalled"
+            : state.turnCount >= state.maxTurns
+              ? "max_turns"
+              : // 既没走正常收尾、也没 abort、也没到上限 —— 抛错穿透 finally 的形态。
+                // 归 error 而非 other：这是唯一能观测到"异常穿透"的位置。
+                "error"),
       toolCallsInTurn: state.toolCallsDispatched ?? 0,
     });
   };
@@ -1922,6 +1945,13 @@ export async function* queryLoop(loopConfig: QueryLoopConfig): AsyncGenerator<Qu
       // 本轮经 reminderParts 注入携带实时 git 状态的收敛提醒。走 critical 档（前置于用户
       // 指令），确保模型在被冻结快照带偏前先读到实时事实。走 reminder 通道（仅本轮注入、不落历史、缓存友好），
       // 与 pendingContradictions 同机制，注入后清空避免重复。
+      // 停滞升级 L1：上一个工具轮判定，走 ambient 档尾部通道（不动前缀，与其它 nag 同通道）
+      if (state.pendingStallReminder) {
+        reminderParts.push(state.pendingStallReminder);
+        log.info("QUERY_LOOP", "停滞升级 L1：注入收敛提示");
+        state.pendingStallReminder = undefined;
+      }
+
       if (state.pendingStuckReminder) {
         criticalReminderParts.push(state.pendingStuckReminder);
         log.info("QUERY_LOOP", "注入无进展止损收敛提醒（实时 git 状态）");
@@ -4370,7 +4400,23 @@ export async function* queryLoop(loopConfig: QueryLoopConfig): AsyncGenerator<Qu
               responseText.trim().length >= TODO_GATE_PRODUCTIVE_TEXT_MIN;
             if (producedSubstantialText) budget.productiveNoUpdate += 1;
 
-            if (budget.retries < MAX_TODO_GATE_RETRIES) {
+            // 2e：本份清单振荡超阈值时不再劝「继续」——劝回去只会再振荡一轮（ce7ea52e 11:53
+            // 那次唯一的自主收尾就是这样被劝回的）。置 exhaustedNotified 让下方耗尽提示不再重复。
+            const stallGateHandoff =
+              stallSwitches.enabled && budget.oscillations >= STALL_GATE_OSCILLATION_THRESHOLD;
+            if (stallGateHandoff && !budget.exhaustedNotified) {
+              budget.exhaustedNotified = true;
+              log.warn(
+                "QUERY_LOOP",
+                `P0-3：清单振荡 ${budget.oscillations} 次 ≥ ${STALL_GATE_OSCILLATION_THRESHOLD}，放行收尾不再续命`,
+              );
+              yield {
+                kind: "system",
+                level: "warning",
+                text: buildStallGateHandoffMessage(unfinished, budget.oscillations),
+              };
+            }
+            if (!stallGateHandoff && budget.retries < MAX_TODO_GATE_RETRIES) {
               budget.retries += 1;
               ctxMgr.addMessage({
                 role: "user",
@@ -5262,6 +5308,67 @@ export async function* queryLoop(loopConfig: QueryLoopConfig): AsyncGenerator<Qu
           });
         }
 
+        // ─── 停滞升级阶梯：每个工具轮观测一次（stall-escalation.ts）───
+        // 放在止损阀之前：止损阀的 remind 分支会 `continue`，放在后面那几轮就漏观测。
+        // 代价是 P2-20 空转计数要到下一个工具轮才被读到（同一 state 字段，滞后一轮，不丢）。
+        if (state.stall) {
+          const obs = await collectStallObservation(
+            toolBlocks,
+            resultMap,
+            state.stall.fileHashes.keys(),
+          );
+          const decision = observeStallTurn(
+            state.stall,
+            {
+              ...obs,
+              unchangedReports:
+                (state.unchangedReportsInPrompt ?? 0) - state.stall.unchangedReports,
+              oscillations:
+                (sessionState.get(TODO_GATE_BUDGET_KEY) as TodoGateBudget | undefined)
+                  ?.oscillations ?? 0,
+            },
+            stallSwitches.hardStop,
+          );
+          if (decision.level !== 0) {
+            const acted = decision.level === 1 || decision.acted;
+            emitStallEscalationEvent(deps, sessionState.sessionId, {
+              ...turnMetrics(state, sessionState, promptSeq),
+              level: decision.level,
+              acted,
+              ...decision.signals,
+            });
+            if (decision.level === 1) {
+              state.pendingStallReminder = decision.message;
+              log.warn(
+                "QUERY_LOOP",
+                `停滞升级 L1：连续 ${decision.signals.turnsSinceNewState} 个工具轮无新工作区状态，下一轮注入收敛提示`,
+              );
+            } else if (!acted) {
+              log.warn(
+                "QUERY_LOOP",
+                `停滞升级 L2（影子）：判据命中但 stallHardStop 未开启，只记事件不停（第 ${decision.signals.l2Count} 次）`,
+              );
+            } else {
+              log.warn("QUERY_LOOP", "停滞升级 L2：由 harness 结束本轮，走强制总结出口交还用户");
+              state.stallStopRequested = true;
+              // goal gate 遇 stalled 不续跑：goal 会话恰好最需要刹车，置 blocked 让后续不再自动续跑
+              const goal = deps.getGoalState?.();
+              if (goal && goal.status === "active") {
+                deps.updateGoalState?.((g) => {
+                  g.status = "blocked";
+                  g.updatedAt = Date.now();
+                });
+              }
+              yield {
+                kind: "system",
+                level: "warning",
+                text: "任务停滞（反复改动又改回 / 重复操作无新进展），已暂停并请模型总结现状，由你决定下一步",
+              };
+              break;
+            }
+          }
+        }
+
         // ─── 方向 2/4/6：无进展只读命令重复检测 + git-status 刷新止损阀 ───
         // 根因（根因分析-commit任务git状态快照冻结死循环.md）：git-status 快照冻结进 system
         // prompt 整会话不刷新，任务完成后模型被"快照说脏/实时说净"的矛盾锁死，反复空跑
@@ -5359,6 +5466,7 @@ export async function* queryLoop(loopConfig: QueryLoopConfig): AsyncGenerator<Qu
                 output: readOutput(),
               });
               if (unchanged.shouldReport) {
+                state.unchangedReportsInPrompt = (state.unchangedReportsInPrompt ?? 0) + 1;
                 log.warn(
                   "QUERY_LOOP",
                   `同参同返回值空转：\`${unchanged.tool}\` 连续 ${unchanged.run} 次入参与返回值` +
@@ -5910,14 +6018,23 @@ export async function* queryLoop(loopConfig: QueryLoopConfig): AsyncGenerator<Qu
   // 把它当结果丢给用户体验很差。这里追加一轮不带工具的调用，逼模型输出结构化总结。
   // 用 deps.sendWithRetry/processStream（而非直连 provider）保持与 loop.ts 其余部分
   // 一致的可测试性；调用失败不阻断收尾（降级为下面按 turnCount 正常提示 max_turns）。
-  if (state.turnCount >= state.maxTurns && !deps.getAbortSignal?.()?.aborted) {
-    log.info("QUERY_LOOP", `P1-1：达到最大轮次 ${state.maxTurns}，请求强制总结`);
+  // 停滞 L2 与 maxTurns 共用本出口，只有提示文本按触发原因区分。
+  const stalledExit = state.stallStopRequested === true && state.turnCount < state.maxTurns;
+  if ((state.turnCount >= state.maxTurns || stalledExit) && !deps.getAbortSignal?.()?.aborted) {
+    log.info(
+      "QUERY_LOOP",
+      stalledExit
+        ? "停滞升级 L2：请求强制总结（现状 / 卡点 / 可选方案）"
+        : `P1-1：达到最大轮次 ${state.maxTurns}，请求强制总结`,
+    );
     ctxMgr.addMessage({
       role: "user",
       content: [
         {
           type: "text",
-          text: "你已达到最大轮次限制，无法继续调用工具。请立即总结你目前为止的所有发现和已完成的工作，以及尚未完成的部分，用结构化格式（列表/表格）呈现。不要再调用任何工具。",
+          text: stalledExit
+            ? buildStallSummaryPrompt(deps.getGoalState?.()?.objective)
+            : "你已达到最大轮次限制，无法继续调用工具。请立即总结你目前为止的所有发现和已完成的工作，以及尚未完成的部分，用结构化格式（列表/表格）呈现。不要再调用任何工具。",
         },
       ],
     });
@@ -6108,7 +6225,94 @@ export async function* queryLoop(loopConfig: QueryLoopConfig): AsyncGenerator<Qu
     turns: state.turnCount,
     // §20.5：与 max_turns 路径同源同口径，见 types.ts 该字段注释。
     turnsConsumedWithoutAssistant: state.turnsConsumedWithoutAssistant,
+    // 停滞叫停不是「正常说完」：headless 据此不续等后台任务，SDK 映射 error_stalled
+    ...(stalledExit ? { incompleteReason: "stalled" as const } : {}),
   };
+}
+
+// ─── 停滞升级阶梯辅助 ───
+
+/** settings.stallHardStop；读不到按 undefined（= 影子）。与 grep.ts respectGitignore 同取法。 */
+function readStallHardStopSetting(): boolean | undefined {
+  try {
+    const { getSettings } = require("../config/settings/settings.ts");
+    const v = getSettings().settings.stallHardStop;
+    return typeof v === "boolean" ? v : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+/**
+ * 从本工具轮提取停滞观测：成功落盘的文件内容、非只读 bash 后已登记文件的最新内容、bash 输出。
+ * 读文件失败记 null（删除也是一种状态）。只读已登记 / 刚改过的文件，开销与改动量同阶。
+ */
+async function collectStallObservation(
+  toolBlocks: any[],
+  resultMap: Map<string, any>,
+  trackedFiles: Iterable<string>,
+): Promise<Omit<StallTurnObservation, "unchangedReports" | "oscillations">> {
+  const { getCwd } = await import("../bootstrap/state.ts");
+  const cwd = getCwd();
+  const read = (p: string): string | null => {
+    try {
+      return readFileSync(p, "utf-8");
+    } catch {
+      return null;
+    }
+  };
+  const abs = (p: string) => (isAbsolute(p) ? p : resolvePath(cwd, p));
+  const mutatedFiles: StallTurnObservation["mutatedFiles"] = [];
+  const bashOutputs: string[] = [];
+  let ranMutatingBash = false;
+  for (const b of toolBlocks) {
+    if (b.type !== "tool_use") continue;
+    const r = resultMap.get(b.id);
+    const failed = !!(r && r.type === "tool_result" && r.is_error);
+    if (FILE_MUTATING_TOOLS.has(b.name)) {
+      if (failed) continue;
+      for (const raw of [b.input?.file_path, b.input?.notebook_path]) {
+        if (typeof raw === "string" && raw.trim()) {
+          const p = abs(raw.trim());
+          mutatedFiles.push({ path: p, content: read(p) });
+        }
+      }
+    } else if (b.name === "bash") {
+      const cmd = b.input?.command;
+      if (typeof cmd === "string" && !isReadonlyProbeCommand(cmd)) ranMutatingBash = true;
+      bashOutputs.push(
+        r && r.type === "tool_result"
+          ? typeof r.content === "string"
+            ? r.content
+            : JSON.stringify(r.content)
+          : "",
+      );
+    }
+  }
+  // 非只读 bash（sed / git checkout / 生成器）可能改了 edit 账本里的文件：对已登记文件补算 hash，
+  // 否则「用 bash 改回去」对 hash 判据是盲的。未登记的新文件仍是盲区（见 Agent Note）。
+  const rehashedFiles = ranMutatingBash
+    ? [...trackedFiles].map((p) => ({ path: p, content: read(p) }))
+    : [];
+  return { mutatedFiles, bashOutputs, rehashedFiles };
+}
+
+function emitStallEscalationEvent(
+  deps: QueryDeps,
+  sessionId: string,
+  data: Record<string, unknown>,
+): void {
+  if (!deps.traceAppendEvent) return;
+  try {
+    deps.traceAppendEvent({
+      event: "StallEscalation",
+      session_id: sessionId,
+      timestamp: new Date().toISOString(),
+      data,
+    });
+  } catch {
+    /* trace 写入失败不阻断主循环 */
+  }
 }
 
 // ─── 辅助函数 ───

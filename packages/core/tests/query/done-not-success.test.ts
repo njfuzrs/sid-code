@@ -85,6 +85,20 @@ describe("C2 门禁①：带 incompleteReason 的 done 一律非 success", () =>
     expect(out.errors.join("\n")).toMatch(/中断/);
   });
 
+  test("stalled → error_stalled（停滞叫停单列 subtype，不混进 error_during_execution）", () => {
+    // D2：调用方要区分「出错了」和「卡住了被叫停」，后者换个提示词/拆小任务重跑有意义。
+    const out = convertToSDKMessage(
+      { kind: "done", turns: 25, incompleteReason: "stalled" },
+      CTX,
+    ) as any;
+    expect(out.subtype).toBe("error_stalled");
+    expect(out.subtype).not.toBe("success");
+    expect(out.errors.join("\n")).toMatch(/停滞/);
+    // schema 闭集不认就会被静默剥掉——新 subtype 必须同步进 SDKResultErrorSchema
+    const parsed = SDKResultErrorSchema().parse(out);
+    expect(parsed.subtype).toBe("error_stalled");
+  });
+
   test("产出物过 SDKResultErrorSchema（不过 schema 就会被静默剥掉）", () => {
     // 「死接线」的一种形态：字段发了、类型也过了，但 schema 不认 → 解析后消失，
     // 全链路零报错。turn-budget-stolen 那个文件里有同形的一条。

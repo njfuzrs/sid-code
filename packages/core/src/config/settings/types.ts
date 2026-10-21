@@ -494,6 +494,8 @@ export const SettingsSchema = lazySchema(
         respectGitignore: z.boolean().optional(),
         // searchTimeoutSeconds：grep/glob 底层 ripgrep 的超时秒数。缺省 20（WSL 60）；优先于环境变量 SID_GREP_TIMEOUT_SECONDS。
         searchTimeoutSeconds: z.number().positive().optional(),
+        // stallHardStop：任务反复改动又改回、或重复操作无新进展时，是否由系统暂停并让模型总结现状后交还给你。缺省 false（只记录事件、不暂停）；环境变量 SID_CODE_STALL_HARD_STOP=1/0 优先。
+        stallHardStop: z.boolean().optional(),
         // disableAllHooks：一键禁用全部 hook（应急/调试）。与企业策略的同名字段是两个来源，
         // 任一为 true 即禁用。见 hook/registry.ts。
         disableAllHooks: z.boolean().optional(),

@@ -18,7 +18,7 @@ settings.json 的全部可配字段、类型与默认值。
 
 <!-- AUTO-GEN:START 由 scripts/docs-gen-reference.ts 生成，勿手工编辑 -->
 
-> 共 **83** 个顶层字段，全部由 `SettingsSchema` 声明（类型/枚举/约束经运行时自省导出）。
+> 共 **84** 个顶层字段，全部由 `SettingsSchema` 声明（类型/枚举/约束经运行时自省导出）。
 > 写了表里没有的顶层键（多半是拼错）不会报错退出，但启动时会提示「未知配置项」并给出最接近的字段名。
 
 配置文件位置：`~/.sid-code/settings.json`（用户级）、`<启动目录>/.sid-code/settings.json`（项目级，优先）、
@@ -95,6 +95,7 @@ settings.json 的全部可配字段、类型与默认值。
 | `sessionRetention` | object | — | 会话自动清理配置（按保留时长 / 数量）（子键见[下文](#key-sessionretention)） |
 | `showLineNumbers` | boolean | — | 代码块是否显示行号（默认 true） |
 | `speculativeClassifier` | boolean | — | 分类器并行预启动（推测执行）。默认 false。 开启后：checker 的同步分类器**放行路径**下沉到 tool-executor 三路竞争，与 UI 弹窗并行， 分类器判定安全时提前跳过弹窗（省 1-2s）。… |
+| `stallHardStop` | boolean | — | 任务反复改动又改回、或重复操作无新进展时，是否由系统暂停并让模型总结现状后交还给你。缺省 false（只记录事件、不暂停）；环境变量 SID_CODE_STALL_HARD_STOP=1/0 优先。 |
 | `statusLine` | object | — | 可自定义状态栏（settings.json statusLine）。 { type: "command", command: "&lt;脚本>", padding?: number }。缺省 = 走内置聚合状态栏。 脚本经 stdin 收 JSON 会话数据，stdout 即状态栏内容（支持 ANSI）。（子键见[下文](#key-statusline)） |
 | `subAgentModels` | object | — | 子代理模型映射 |
 | `teamMemory` | object | — | 团队记忆同步配置（共享目录模型）（子键见[下文](#key-teammemory)） |
