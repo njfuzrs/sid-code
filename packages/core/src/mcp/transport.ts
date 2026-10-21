@@ -1,6 +1,7 @@
 /**
  * MCP 传输层
- * 支持 stdio（子进程）、HTTP 和 SSE 三种传输方式
+ * 支持五种传输：stdio（子进程）、http（Streamable HTTP）、http-json（旧的单 JSON HTTP）、
+ * sse（Server-Sent Events）、ws（WebSocket）。分支在 manager.ts 的 createTransport。
  */
 
 import type { JsonRpcRequest, JsonRpcResponse } from "./types.ts";

@@ -253,8 +253,11 @@ export function setApproveAll(value: boolean, projectPath: string): void {
 // ─── 待审批快照（SEC-AUDIT-2026-07-19 P1）────────────────────────────────────
 //
 // loadConfig 在合并 MCP 配置时把 pending 的项目级 server **排除出生效列表**，
-// 并登记到这里。/mcp 面板读它来展示"有 N 个待审批 server"，用户批准后写入
-// approved 列表，下次启动即加载。
+// 并登记到这里。启动审批框（DialogSwitch 的 mcp-approval 阶段）读它逐个询问；
+// 用户批准后写入 approved 列表。会话内 `/mcp approve` 与启动框的「批准」都走
+// approveAndConnectPendingServer 当场建连（D17），不再是「等下次启动」。
+// 注意 `/mcp` 面板（McpDialog）不读它——它只列 mcpManager 里已加载的 server，
+// 而待审批项恰恰是未加载的那批。
 //
 // 为什么用模块级单例而不挂在 Config 上：Config 会被序列化进会话快照、被 Zod
 // 校验、被项目级 settings 合并——把"本次启动的临时审批状态"塞进去会污染这些
