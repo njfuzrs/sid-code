@@ -84,12 +84,14 @@ export type QueryLoopYield =
   // 事故背景（2026-07-29）：`yield { kind: "compact" }` 原本零字段，8 处调用点任一误发就画出
   // 「对话已压缩」横幅——而那次消息历史一条都没少。字段设为必填后，「没压动却画横幅」需要
   // 调用方编造两个数字才能做到，从"靠自觉"变成"靠类型强制"（对齐 CC 的 CompactionResult 思路）。
-  // 不变式：**只有 messageCountAfter < messageCountBefore 时才允许 yield 这个事件。**
+  // 不变式：**只有 messageCountAfter < messageCountBefore，或 savedTokens > 0 时才允许 yield 这个事件。**
+  // 后一支是发现 3a（20261020 评估）补的：原地替换（toolResultBudget / microcompact）不删消息，
+  // 实测 865K → 250K 却因消息数不变被判失败。savedTokens 来自不套锚点的同源估算，同样是实据。
   | {
       kind: "compact";
       /** 压缩前消息数 */
       messageCountBefore: number;
-      /** 压缩后消息数（必须 < before，否则不该 yield 本事件） */
+      /** 压缩后消息数（不含本次新插的边界消息；< before 或 savedTokens > 0 二者至少成立一个） */
       messageCountAfter: number;
       /** 节省的估算 token 数（可选，部分路径拿不到 token 口径） */
       savedTokens?: number;

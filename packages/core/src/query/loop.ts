@@ -472,11 +472,18 @@ function settleCompaction(
   messageCountAfter: number;
   savedTokens?: number;
 } | null {
-  const success = info.messageCountAfter < info.messageCountBefore;
   const savedTokens =
     info.tokensBefore !== undefined && info.tokensAfter !== undefined
       ? info.tokensBefore - info.tokensAfter
       : undefined;
+  // 发现 3a/3c：成败判据 =「同源 token 估算真的降了」或「消息数真的减少了」。
+  // 只看消息数会漏掉原地替换（toolResultBudget / microcompact 只换内容不删消息）：
+  // 实测 input 865K → 250K 却报 success:false，横幅不画、notifyCompaction 不调，
+  // 随后的缓存脱落被误归因成服务端波动。调用方负责让 before/after 同源
+  // （都用不套锚点的 estimateTokensFor，且都不含本次新插的边界消息）。
+  const success =
+    info.messageCountAfter < info.messageCountBefore ||
+    (savedTokens !== undefined && savedTokens > 0);
 
   // P2-1：成败都落盘。此前压缩路径零结构化埋点，本次排查只能靠交叉比对 messages.json
   // 的 _meta.origin 反推「压缩到底有没有执行」——这条事件让它可被直接统计。
@@ -503,7 +510,11 @@ function settleCompaction(
   if (!success) {
     getLogger().warn(
       "QUERY_LOOP",
-      `压缩未生效（trigger=${info.trigger}）：消息数 ${info.messageCountBefore} → ${info.messageCountAfter}，不画压缩横幅`,
+      `压缩未生效（trigger=${info.trigger}）：消息数 ${info.messageCountBefore} → ${info.messageCountAfter}` +
+        (savedTokens !== undefined
+          ? `，估算 token ${info.tokensBefore} → ${info.tokensAfter}`
+          : "") +
+        `，不画压缩横幅`,
     );
     return null;
   }
@@ -1063,6 +1074,9 @@ export async function* queryLoop(loopConfig: QueryLoopConfig): AsyncGenerator<Qu
       const isBlocking = remainingTokens <= TOKEN_THRESHOLDS.blocking;
 
       const compactionLevel = ctxMgr.getCompactionLevel(toolCount);
+      // 发现 3a/3c：压缩前后比较用的同源尺子——不套 lastActualInputTokens 锚点
+      // （压缩会清零锚点，before 套、after 不套就是两把尺子）。
+      const sameSourceTokens = () => ctxMgr.estimateTokensFor(ctxMgr.getMessages(), toolCount);
 
       // M4：每轮组装快照。数字全部来自上面已经算好的局部变量，
       // 禁止再调 estimateTokens / getTokenBreakdown（热路径禁令）。
@@ -1081,7 +1095,9 @@ export async function* queryLoop(loopConfig: QueryLoopConfig): AsyncGenerator<Qu
       if (isBlocking) {
         log.warn("QUERY_LOOP", `上下文阻塞 (剩余 ${remainingTokens} tokens)，强制截断`);
         const msgCountBefore = ctxMgr.messageCount();
+        const sameSourceBefore = sameSourceTokens();
         const truncated = ctxMgr.emergencyTruncate();
+        const sameSourceAfter = sameSourceTokens();
         ctxMgr.addCompactBoundary(`阻塞级压缩：剩余 ${remainingTokens} tokens`, msgCountBefore);
         // P0-1：边界是 push 到数组末尾的。此时 i < boundaryIdx 覆盖的是整段历史，
         // 含 emergencyTruncate 特意留下的保留段。GC 会把近端 tool_result 换成
@@ -1096,8 +1112,9 @@ export async function* queryLoop(loopConfig: QueryLoopConfig): AsyncGenerator<Qu
             trigger: "threshold_blocking",
             messageCountBefore: msgCountBefore,
             messageCountAfter: truncated.messageCountAfter,
-            tokensBefore: truncated.tokensBefore,
-            tokensAfter: truncated.tokensAfter,
+            // 3c：不用 truncated.tokensBefore/After——前者套了锚点、后者锚点已清零，两者不同源。
+            tokensBefore: sameSourceBefore,
+            tokensAfter: sameSourceAfter,
           });
           if (banner) yield banner;
           // P2-22：截断真压动了才补恢复。判据与横幅同源（banner 非 null = 实测消息数减少）——
@@ -1115,7 +1132,9 @@ export async function* queryLoop(loopConfig: QueryLoopConfig): AsyncGenerator<Qu
             log.warn("QUERY_LOOP", `上下文紧急 (${usagePercent.toFixed(0)}%)，强制截断`);
             {
               const msgCountBefore = ctxMgr.messageCount();
+              const sameSourceBefore = sameSourceTokens();
               const truncated = ctxMgr.emergencyTruncate();
+              const sameSourceAfter = sameSourceTokens();
               ctxMgr.addCompactBoundary(
                 `紧急压缩：使用率 ${usagePercent.toFixed(0)}%`,
                 msgCountBefore,
@@ -1127,8 +1146,8 @@ export async function* queryLoop(loopConfig: QueryLoopConfig): AsyncGenerator<Qu
                 trigger: "threshold_emergency",
                 messageCountBefore: msgCountBefore,
                 messageCountAfter: truncated.messageCountAfter,
-                tokensBefore: truncated.tokensBefore,
-                tokensAfter: truncated.tokensAfter,
+                tokensBefore: sameSourceBefore,
+                tokensAfter: sameSourceAfter,
               });
               if (banner) yield banner;
               // P2-22：与 blocking 分支同一套轻量恢复（只给路径清单，不读盘、不带正文）。
@@ -1148,13 +1167,14 @@ export async function* queryLoop(loopConfig: QueryLoopConfig): AsyncGenerator<Qu
               `上下文接近上限 (${usagePercent.toFixed(0)}%)，启动渐进式压缩管道`,
             );
             const msgCountBefore = ctxMgr.messageCount();
+            const sameSourceBefore = sameSourceTokens();
             const pipelineResult = runCompactPipeline(ctxMgr.getMessages(), {
               currentUsageRatio: usagePercent / 100,
               maxTokens: contextMax,
               toolCount,
-              // P1-7：达标比例从 hard 档真实触发点派生，不用历史默认 0.7。
-              // 1M 窗口 hard 约在 82% 进场，压到 70% 会多丢一截历史；反过来
-              // completionBuffer 抬高时 0.7 会让管线第一步就认为"已达标"而空跑。
+              // 发现 3b：达标线 = masking 进入线再往下 5% 窗口（1.05M 窗口约 73%）。
+              // 旧值是 hard 触发点本身（约 82%），截断第一步刚好压线就退出，随后一路涨回去，
+              // 且压完仍停在 masking 区，与发现 4 的遮罩翻转叠加。派生规则见 pipelineTargetRatioFrom。
               targetUsageRatio: pipelineTargetRatioFrom(ctxMgr),
               // P1-6：管线逐步替换消息时用与 getCompactionLevel 同一把尺子
               // （CJK 区分 + calibrationFactor + system/tool schema）。此前管线内部
@@ -1236,6 +1256,10 @@ export async function* queryLoop(loopConfig: QueryLoopConfig): AsyncGenerator<Qu
               }
             }
 
+            // 发现 3a：after 在插边界**之前**取——边界是无条件追加的一条，计进去会让
+            // 「原地替换 + 边界」恒为 +1、恒判失败。token 同理用不套锚点的同源估算。
+            const msgCountAfter = ctxMgr.messageCount();
+            const sameSourceAfter = sameSourceTokens();
             ctxMgr.addCompactBoundary(
               `渐进式压缩: ${pipelineResult.steps.join(" → ")}`,
               msgCountBefore,
@@ -1252,7 +1276,9 @@ export async function* queryLoop(loopConfig: QueryLoopConfig): AsyncGenerator<Qu
               const banner = settleCompaction(deps, sessionState.sessionId, {
                 trigger: "threshold_hard",
                 messageCountBefore: msgCountBefore,
-                messageCountAfter: ctxMgr.messageCount(),
+                messageCountAfter: msgCountAfter,
+                tokensBefore: sameSourceBefore,
+                tokensAfter: sameSourceAfter,
                 strategy: pipelineResult.steps.join(" → ") || undefined,
               });
               if (banner) yield banner;
@@ -2276,6 +2302,8 @@ export async function* queryLoop(loopConfig: QueryLoopConfig): AsyncGenerator<Qu
             raw_messages: sendParams.messages,
             system: sendParams.system,
             tools: sendParams.tools,
+            // 发现 14：本轮前 ContextManager 自己改写过发送前缀的来源，随 prefix_break 落盘。
+            send_mutation_causes: ctxMgr.consumeSendMutationCauses(),
             // P1-6：把解析后的推理旋钮一并交给采集器。它们此前完全不在采集范围内，
             // 而排查 400 时「raw.jsonl 里没有 thinking 字段」被误读成「没下发 thinking」，
             // 带偏了整整一轮。注意这是**内部表示**，线上形状由各族方言决定（见 hook/types.ts）。

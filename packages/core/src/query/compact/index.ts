@@ -140,14 +140,31 @@ export function runCompactPipeline(
 }
 
 /**
- * P1-7：从 Manager 的单一事实源派生管线达标比例。
- * hard 档触发点是 compactionTriggerUsed，不是历史默认 0.7。
+ * 发现 3b：masking 进入线下方再留的滞回带（占窗口比例）。
+ * 压完要落进 level=none 区，否则会停在 masking 区边缘，与遮罩翻转叠加振荡。
+ */
+export const PIPELINE_TARGET_HYSTERESIS = 0.05;
+
+/**
+ * P1-7 + 发现 3b：从 Manager 的单一事实源派生管线达标比例。
+ *
+ * 目标 = min(hard 触发点, masking 进入线 − 5% 窗口)。
+ * - 默认 1.05M 窗口：hard ≈ 82%、masking 线 78% ⇒ 目标 73%。旧值就是 hard 触发点本身，
+ *   截断第一步刚压到线就退出，下一轮又涨回去（实测两次 hard 后上下文一路回涨）。
+ * - 取 min 是为了 `SID_CODE_AUTOCOMPACT_PCT` 把 hard 线设得比 masking 线还低时，
+ *   目标不会反而高过触发点（那会让管线一进场就判「已达标」而空跑）。
+ * - 小窗口（≤60K）没有 masking 档（maskingRemaining=0），沿用 hard/emergency 触发点。
  */
 export function pipelineTargetRatioFrom(ctxMgr: ContextManager): number {
   const maxTokens = ctxMgr.getMaxTokens();
   if (maxTokens <= 0) return 0.7;
-  const trigger = ctxMgr.getCompactionThresholds().compactionTriggerUsed;
-  return Math.min(0.95, Math.max(0.3, trigger / maxTokens));
+  const t = ctxMgr.getCompactionThresholds();
+  let ratio = t.compactionTriggerUsed / maxTokens;
+  if (!t.smallWindow && t.maskingRemaining > 0) {
+    const maskLine = (t.effectiveWindow - t.maskingRemaining) / maxTokens;
+    ratio = Math.min(ratio, maskLine - PIPELINE_TARGET_HYSTERESIS);
+  }
+  return Math.min(0.95, Math.max(0.3, ratio));
 }
 
 // 导出子模块
