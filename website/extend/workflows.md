@@ -101,10 +101,15 @@ Workflow 工具是**延迟加载**的（`shouldDefer = true`，不进首轮上�
 
 workflow 内的子代理没有弹窗通道，权限检查器由主会话统一派生注入（`packages/core/src/permission/sub-agent-checker.ts`），语义是「跟随主会话档位」：
 
-- **默认档**：子代理按 `dontAsk` 语义执行——规则里显式 allow 的操作放行，deny / 危险命令 / 安全检查照常拦截，其余需要确认的操作自动拒绝（没有弹窗可弹）。
-- **全放行档**（`always-allow` / `--dangerously-skip-permissions`）：子代理跟随继承放行面，但 deny 规则、危险命令、safetyCheck 仍然生效——继承的不是裸奔。
+- **全放行档**（`always-allow` / `--dangerously-skip-permissions`）：子代理跟随继承放行面，但 deny 规则、危险命令、safetyCheck 仍然生效——继承的不是裸奔。`--dangerously-skip-permissions` 在子代理侧按 `always-allow` 处理，不会连危险命令都跳过。
+- **其余档位**（`default`、`acceptEdits`、`auto`、`plan` 等）：子代理按 `dontAsk` 语义执行——规则里显式 allow 的操作放行，deny / 危险命令 / 安全检查照常拦截，其余需要确认的操作自动拒绝（没有弹窗可弹）。注意 `acceptEdits` **不会**被继承，主会话在这一档时子代理写文件同样会被拒。
 
-也就是说：主会话在默认档时，期望 workflow 子代理写文件的做法（`isolation:'worktree'` 并行改码）会被权限层拒绝。需要写能力的编排任务，请先把主会话切到 `acceptEdits`（写类放行）或 `always-allow`，或在项目规则里显式声明 allow。
+档位是**实时跟随**的：在会话中途 Shift+Tab 切档，或企业策略收回 bypass，已经在跑的子代理下一次权限判定就按新档位走，不需要重启。
+
+也就是说：需要写能力的编排任务（典型是 `isolation:'worktree'` 并行改码），二选一：
+
+- 把主会话切到 `always-allow`（放行面最大，危险命令与 deny 规则仍拦）；
+- 或在项目规则里对需要的操作显式声明 allow，例如 `Edit(src/**)`、`Write(src/**)`、`Bash(bun test *)`（放行面最小，推荐）。`Edit` 与 `Write` 是两个工具，规则要各写一条。
 
 ### 跑挂了怎么 resume
 

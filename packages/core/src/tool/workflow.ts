@@ -323,8 +323,6 @@ export class WorkflowTool implements Tool {
       runId,
       // P0-1：权限检查器透传（未注入时 runner 回退 B0 分级 fail-closed，写类全拒）
       permissionChecker: this.permissionChecker,
-      // P0-1：权限检查器透传（未注入时 runner 回退 B0 分级 fail-closed，写类全拒）
-
       onUsage: (t) => {
         outputTokens += t;
       },
