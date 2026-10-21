@@ -8,10 +8,11 @@
  * 4. cwd 指向已删除目录时回退
  */
 import { describe, it, expect, beforeEach, afterEach } from "bun:test";
-import { mkdtempSync, mkdirSync, writeFileSync, rmSync, existsSync } from "fs";
+import { mkdtempSync, mkdirSync, writeFileSync, rmSync, existsSync, symlinkSync } from "fs";
 import { tmpdir } from "os";
 import { join } from "path";
-import { BashTool } from "@sid-code/core/tool/bash.ts";
+import { BashTool, parseWorktreeAddPath } from "@sid-code/core/tool/bash.ts";
+import { withAgentCwd } from "@sid-code/core/bootstrap/cwd-context.ts";
 import { normalizeToolPath } from "@sid-code/core/tool/path-utils.ts";
 import { getCwd, setCwd, getOriginalCwd } from "@sid-code/core/bootstrap/state.ts";
 
@@ -232,5 +233,184 @@ describe("删掉自己站着的目录（强制 bash：zsh 下此缺陷隐身）"
     await bash.execute({ command: `cd ${alive}` });
     const r = await bash.execute({ command: "exit 42" });
     expect(r.isError).toBeTruthy();
+  });
+});
+
+// ═══════════════════════════════════════════════════════════════════════════
+// 显式 cwd 不泄漏到全局（20261020 会话评估发现 6a）
+// ═══════════════════════════════════════════════════════════════════════════
+//
+// 旧实现拿命令结束目录比**全局** cwd：带显式 `cwd:<主仓>` 的非只读命令即使没有 `cd`，
+// 结束目录（=启动目录）≠ 全局，于是全局被切到主仓。实测一个会话里翻转 29 次。
+// 上面那条「显式传 cwd 参数优先于全局 cwd」只断言了输出，没断言全局不变，所以一直绿。
+//
+// 命令一律用非只读的 `touch` / `cd`：只读命令根本不追踪 cwd，用它测等于没测。
+describe("显式 cwd 只作用于本次调用", () => {
+  it("显式 cwd + 非只读命令（不含 cd）不改全局 cwd，也不报「已切换」", async () => {
+    if (process.platform === "win32") return;
+    const home = join(tmpRoot, "home");
+    const other = join(tmpRoot, "other");
+    mkdirSync(home);
+    mkdirSync(other);
+    const bash = new BashTool();
+    setCwd(home);
+
+    const r = await bash.execute({ command: "touch marker", cwd: other, description: "建文件" });
+    expect(r.isError).toBeFalsy();
+    // 命令确实跑在显式 cwd 里
+    expect(existsSync(join(other, "marker"))).toBe(true);
+    // 核心断言：全局 cwd 原样不动
+    expect(getCwd()).toBe(home);
+    expect(String(r.output)).not.toContain("[工作目录已切换]");
+  });
+
+  it("显式 cwd + 命令自己 cd 了：照旧写回（cd 是唯一会切换目录的东西）", async () => {
+    if (process.platform === "win32") return;
+    const home = join(tmpRoot, "home2");
+    const other = join(tmpRoot, "other2");
+    mkdirSync(home);
+    mkdirSync(join(other, "inner"), { recursive: true });
+    const bash = new BashTool();
+    setCwd(home);
+
+    const r = await bash.execute({ command: "cd inner", cwd: other, description: "进 inner" });
+    expect(r.isError).toBeFalsy();
+    expect(getCwd().endsWith("/other2/inner")).toBe(true);
+    expect(String(r.output)).toContain("[工作目录已切换]");
+  });
+
+  it("启动目录经 symlink 时不误写回（pwd -P 是物理路径，比较前必须 realpath）", async () => {
+    if (process.platform === "win32") return;
+    // ⚠️ 这条在 Linux CI 上也必须能红：macOS 的 tmpdir 自带 /var→/private/var 软链，
+    // Linux 没有，所以这里显式造一个 symlink，而不是依赖宿主的 tmpdir 形态。
+    const real = join(tmpRoot, "real");
+    const link = join(tmpRoot, "link");
+    const home = join(tmpRoot, "home3");
+    mkdirSync(real);
+    mkdirSync(home);
+    symlinkSync(real, link);
+    const bash = new BashTool();
+    setCwd(home);
+
+    const r = await bash.execute({ command: "touch m", cwd: link, description: "经软链建文件" });
+    expect(r.isError).toBeFalsy();
+    expect(getCwd()).toBe(home);
+    expect(String(r.output)).not.toContain("[工作目录已切换]");
+  });
+
+  it("全局 cwd 本身经 symlink、不传 cwd 也不 cd：不被改写成物理路径", async () => {
+    if (process.platform === "win32") return;
+    // 旧实现的连带缺陷：全局是逻辑路径、pwd -P 是物理路径，两者恒不等，
+    // 于是任何一条非只读命令都会报一次假的「[工作目录已切换]」并把全局改成物理路径。
+    const real = join(tmpRoot, "real4");
+    const link = join(tmpRoot, "link4");
+    mkdirSync(real);
+    symlinkSync(real, link);
+    const bash = new BashTool();
+    setCwd(link);
+
+    const r = await bash.execute({ command: "touch m", description: "建文件" });
+    expect(r.isError).toBeFalsy();
+    expect(getCwd()).toBe(link);
+    expect(String(r.output)).not.toContain("[工作目录已切换]");
+  });
+
+  it("子代理 withAgentCwd 内：显式 cwd 不改子代理自己的 cwd，也不碰主会话", async () => {
+    if (process.platform === "win32") return;
+    const main = join(tmpRoot, "main5");
+    const agentRoot = join(tmpRoot, "agent5");
+    const other = join(tmpRoot, "other5");
+    for (const d of [main, agentRoot, join(other, "sub")]) mkdirSync(d, { recursive: true });
+    setCwd(main);
+    const bash = new BashTool();
+
+    await withAgentCwd(agentRoot, async () => {
+      const r = await bash.execute({ command: "touch m", cwd: other, description: "建文件" });
+      expect(r.isError).toBeFalsy();
+      expect(getCwd()).toBe(agentRoot);
+
+      // cd 仍然写回到子代理自己的 cwd（W16），不写主会话
+      await bash.execute({ command: "cd sub", cwd: other, description: "进 sub" });
+      expect(getCwd().endsWith("/other5/sub")).toBe(true);
+    });
+    // 主会话全程不动
+    expect(getCwd()).toBe(main);
+  });
+});
+
+// ═══════════════════════════════════════════════════════════════════════════
+// 自建 worktree 的路径提示（20261020 会话评估发现 10）
+// ═══════════════════════════════════════════════════════════════════════════
+describe("git worktree add 后提示路径", () => {
+  function initRepo(dir: string): void {
+    const run = (args: string[]) => {
+      const p = Bun.spawnSync(["git", ...args], { cwd: dir, stdout: "ignore", stderr: "pipe" });
+      if (p.exitCode !== 0) throw new Error(`git ${args.join(" ")}: ${p.stderr}`);
+    };
+    run(["init", "-q", "-b", "main"]);
+    run([
+      "-c",
+      "user.email=t@t",
+      "-c",
+      "user.name=t",
+      "commit",
+      "-q",
+      "--allow-empty",
+      "-m",
+      "init",
+    ]);
+  }
+
+  it("成功建出 worktree 时追加绝对路径与 enter_worktree 指引，且会话 cwd 不变", async () => {
+    if (process.platform === "win32") return;
+    const repo = join(tmpRoot, "repo");
+    mkdirSync(repo);
+    initRepo(repo);
+    setCwd(repo);
+    const bash = new BashTool();
+
+    const r = await bash.execute({
+      command: "git worktree add -q -b feat/x ../wt-x main",
+      description: "建 worktree",
+    });
+    expect(r.isError).toBeFalsy();
+    const out = String(r.output);
+    expect(out).toContain("[已创建 worktree]");
+    expect(out).toContain(join(tmpRoot, "wt-x"));
+    expect(out).toContain("enter_worktree");
+    expect(getCwd()).toBe(repo);
+  });
+
+  it("worktree add 失败时不提示（目录没建出来）", async () => {
+    if (process.platform === "win32") return;
+    const repo = join(tmpRoot, "repo2");
+    mkdirSync(repo);
+    initRepo(repo);
+    setCwd(repo);
+    const bash = new BashTool();
+
+    const r = await bash.execute({
+      command: "git worktree add ../wt-bad no-such-ref",
+      description: "建 worktree（会失败）",
+    });
+    expect(r.isError).toBe(true);
+    expect(String(r.output)).not.toContain("[已创建 worktree]");
+  });
+});
+
+describe("parseWorktreeAddPath", () => {
+  it.each([
+    ["git worktree add ../w", "../w"],
+    ["git worktree add -b feat/x .sid-code/worktrees/x origin/main", ".sid-code/worktrees/x"],
+    ["git worktree add --detach -B b /abs/w HEAD", "/abs/w"],
+    ["cd repo && git worktree add -q '../w'", "../w"],
+    // 引号内含空格会被按空白切断 → 不猜
+    ["git worktree add '../w s'", undefined],
+    ["git worktree add -- -weird", "-weird"],
+    ["git -C x status", undefined],
+    ["git worktree list", undefined],
+    ["git worktree add $DIR", undefined],
+  ])("%s → %s", (cmd, want) => {
+    expect(parseWorktreeAddPath(cmd)).toBe(want);
   });
 });
