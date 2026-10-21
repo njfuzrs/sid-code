@@ -357,7 +357,7 @@ describe("D17 approveAndConnectPendingServer", () => {
     });
     expect(n).toBe(3);
     expect(calls).toEqual([["proj", cfg]]);
-    expect(a.getProjectServerApproval("proj", "/p")).toBe("approved");
+    expect(a.getProjectServerApproval("proj", cfg, "/p")).toBe("approved");
     expect(a.getPendingApprovalServers().names).toEqual([]);
   });
 

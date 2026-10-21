@@ -86,17 +86,17 @@ describe("D17-3 approveAll 按项目生效", () => {
   test("在项目 A 打开，只对 A 生效，项目 B 仍 pending", async () => {
     const a = await import("@sid-code/core/mcp/approval.ts");
     a.setApproveAll(true, "/proj/A");
-    expect(a.getProjectServerApproval("s1", "/proj/A")).toBe("approved");
-    expect(a.getProjectServerApproval("s1", "/proj/B")).toBe("pending");
+    expect(a.getProjectServerApproval("s1", {}, "/proj/A")).toBe("approved");
+    expect(a.getProjectServerApproval("s1", {}, "/proj/B")).toBe("pending");
   });
 
   test("显式 rejected 优先于 approveAll；关掉后回到 pending", async () => {
     const a = await import("@sid-code/core/mcp/approval.ts");
     a.setApproveAll(true, "/proj/A");
     a.rejectProjectServer("bad", "/proj/A");
-    expect(a.getProjectServerApproval("bad", "/proj/A")).toBe("rejected");
+    expect(a.getProjectServerApproval("bad", {}, "/proj/A")).toBe("rejected");
     a.setApproveAll(false, "/proj/A");
-    expect(a.getProjectServerApproval("s1", "/proj/A")).toBe("pending");
+    expect(a.getProjectServerApproval("s1", {}, "/proj/A")).toBe("pending");
   });
 
   test("旧版全局 approveAll:true 不再放行任何项目（fail-closed），写盘时被清除", async () => {
@@ -107,8 +107,8 @@ describe("D17-3 approveAll 按项目生效", () => {
     writeFileSync(file, JSON.stringify({ approved: [], rejected: [], approveAll: true }));
     expect(file.startsWith(dir)).toBe(true);
 
-    expect(a.getProjectServerApproval("s1", "/any")).toBe("pending");
-    a.approveProjectServer("ok", "/any");
+    expect(a.getProjectServerApproval("s1", {}, "/any")).toBe("pending");
+    a.approveProjectServer("ok", {}, "/any");
     expect(JSON.parse(readFileSync(file, "utf-8")).approveAll).toBeUndefined();
   });
 });
