@@ -438,6 +438,13 @@ export interface BeforeModelInput extends HookInput {
     /** 工具定义列表（完整 tool schema） */
     tools?: unknown[];
     /**
+     * 发现 14：上一次请求以来，ContextManager **自己**改写过发送前缀的来源
+     * （compact = 历史被整体替换 / masking = 新遮罩 / cleaned = 新清理）。
+     * 采集器把它挂到 prefix_break 事件的 `cause` 上。缺省或空数组 = 本地未改写，
+     * 断裂另有来源（reminder / system_dynamic / 服务端）。只在主循环采集。
+     */
+    send_mutation_causes?: Array<"compact" | "masking" | "cleaned">;
+    /**
      * 本次请求解析后的**思考开关**（内部表示，非 wire body）。
      *
      * ## 为什么要采（2026-08-17 的教训，代价是整整一轮方向被带偏）

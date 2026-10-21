@@ -99,12 +99,16 @@ describe("P1-6 — 管线达标判据与触发判据同源", () => {
 });
 
 describe("P1-7 — 管线目标比例从真实触发点派生，不写死 0.7", () => {
-  test("1M 窗口：派生比例贴近 compactionTriggerUsed，明显高于 0.7", () => {
+  // 发现 3b（20261020 ce7ea52e 评估）改了派生口径：目标线从「hard 触发点本身」下移到
+  // 「masking 进入线 − 5% 窗口」。P1-7 的本意（不写死 0.7、从单一事实源派生）不变。
+  test("1M 窗口：派生自 masking 进入线 − 5%，低于 hard 触发点、仍高于 0.7", () => {
     const mgr = new Manager({ maxTokens: 1_000_000 });
     const derived = pipelineTargetRatioFrom(mgr);
-    const trigger = mgr.getCompactionThresholds().compactionTriggerUsed / mgr.getMaxTokens();
-    expect(derived).toBeCloseTo(trigger, 5);
-    // 缺陷文档的数字：1M 窗口 hard 约在 82% 进场，写死 0.7 会多丢一截历史
+    const t = mgr.getCompactionThresholds();
+    const maskLine = (t.effectiveWindow - t.maskingRemaining) / mgr.getMaxTokens();
+    expect(derived).toBeCloseTo(maskLine - 0.05, 5);
+    expect(derived).toBeLessThan(t.compactionTriggerUsed / mgr.getMaxTokens());
+    // 不写死 0.7：1M 窗口 masking 线 78% ⇒ 73%
     expect(derived).toBeGreaterThan(0.7);
   });
 

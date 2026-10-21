@@ -9827,7 +9827,13 @@ export class App {
                 messageCountBefore: event.messageCountBefore,
                 messageCountAfter: event.messageCountAfter,
               };
-              const compactEvidence = `${event.messageCountBefore} → ${event.messageCountAfter} 条消息`;
+              // 发现 3a：原地替换类压缩消息数不变，只靠 token 降幅成立——把它也写进实据，
+              // 否则用户看到「120 → 120 条消息」会以为横幅在撒谎。
+              const compactEvidence =
+                `${event.messageCountBefore} → ${event.messageCountAfter} 条消息` +
+                (event.savedTokens !== undefined && event.savedTokens > 0
+                  ? `，约省 ${Math.round(event.savedTokens / 1000)}K token`
+                  : "");
               const updatedHistoryItems = [...bridge.current.historyItems, compressionItem];
               const compressionDisplay = [
                 ...bridge.current.displayItems,

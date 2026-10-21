@@ -274,20 +274,23 @@ describe("§八 #5 #13 — 压缩横幅必携实据 + 压缩尝试必落事件",
     const compactEvents: Array<{
       messageCountBefore: number;
       messageCountAfter: number;
+      savedTokens?: number;
     }> = [];
     for await (const ev of queryLoop(loopConfig)) {
       if (ev.kind === "compact") {
         compactEvents.push({
           messageCountBefore: ev.messageCountBefore,
           messageCountAfter: ev.messageCountAfter,
+          savedTokens: ev.savedTokens,
         });
       }
     }
 
     // ★核心不变式：横幅只在真压动时出现，且字段必须自证
+    // （发现 3a：「真压动」= 消息数减少 或 同源 token 估算下降）
     for (const c of compactEvents) {
       expect(c.messageCountBefore).toBeGreaterThan(0);
-      expect(c.messageCountAfter).toBeLessThan(c.messageCountBefore);
+      expect(c.messageCountAfter < c.messageCountBefore || (c.savedTokens ?? 0) > 0).toBe(true);
     }
 
     // #13：只要发生过压缩尝试，就必须有结构化事件，且字段齐全可统计
@@ -299,7 +302,8 @@ describe("§八 #5 #13 — 压缩横幅必携实据 + 压缩尝试必落事件",
       expect(a.data).toHaveProperty("messageCountAfter");
       // 事件里的 success 与实测差值必须一致（不允许事件自己"宣告"成功）
       expect(a.data.success).toBe(
-        (a.data.messageCountAfter as number) < (a.data.messageCountBefore as number),
+        (a.data.messageCountAfter as number) < (a.data.messageCountBefore as number) ||
+          ((a.data.savedTokens as number | undefined) ?? 0) > 0,
       );
     }
     // 本场景确实进了 emergency 档 → 必须真的发生过压缩尝试并落盘（守 P2-1 不空转）

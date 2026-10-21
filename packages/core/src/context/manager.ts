@@ -395,6 +395,30 @@ export class Manager {
    * getCompactionLevel 从 used 里扣掉累计释放量，避免压缩产物立刻再触发压缩。
    */
   private tokenFreedTracker = new TokenFreedTracker();
+  /**
+   * 发现 4b：masking 粘滞状态（tool_use_id → 首次遮罩时发出的占位全文）。
+   *
+   * masking 原先只活在发送副本里、每轮从 `this.messages` 重算：level 一退回 none，已遮罩的
+   * 内容就恢复原文，下一轮再进 soft 又遮上——已发送前缀被来回改写（实测 15 个翻转点，
+   * cache_read 每次跌到约 6 万）。现在一旦某条被遮罩并发出，之后每轮都按这里存的**字节级同一份**
+   * 占位发送，level 回落也不撤销；只有压缩/截断/setMessages/clear（resetLocalCompactState）统一清空。
+   */
+  private maskedState = new Map<string, string>();
+  /**
+   * 发现 4a：最近一次 getCleanedMessages 的「全量历史 / 实际发送副本」快照。
+   *
+   * recordActualTokens 的分子是**发送副本**的真实 usage，分母原先却是**全量历史**的 raw 估算——
+   * 遮罩/清理越多，比值越被压低，下一轮全量估算 × 被压低的因子跌回 soft 线以下 → 不再遮罩 →
+   * 发出全量 → 因子又被拉回，形成自激振荡。快照让分子分母同源（都按发送副本算）。
+   * 只存数组引用，估算推迟到 recordActualTokens（那时才知道 toolCount）。
+   */
+  private lastSendSnapshot: { full: Message[]; sent: Message[] } | null = null;
+  /**
+   * 发现 14：自上一次 consumeSendMutationCauses 以来，本地改写发送前缀的来源。
+   * 只记三种 ContextManager 自己能确证的：compact（历史被整体替换）/ masking（本轮新遮罩）/
+   * cleaned（本轮新清理）。由主循环在 BeforeModel 前取走，随 prefix_break 事件落盘。
+   */
+  private pendingSendCauses = new Set<"compact" | "masking" | "cleaned">();
 
   /**
    * 可选 Plan 提供方（§3.3 压缩后 Plan 重注入）。
@@ -527,22 +551,37 @@ export class Manager {
    */
   recordActualTokens(actualInputTokens: number, toolCount: number = 0): void {
     if (!Number.isFinite(actualInputTokens) || actualInputTokens <= 0) return;
-    this.lastActualInputTokens = actualInputTokens;
 
-    // 用未校准的纯启发式估算作分母（rawEstimateTokens），否则 factor 会自我反馈漂移
-    const rawEstimate = this.rawEstimateTokens(toolCount);
-    if (rawEstimate <= 0) return;
+    // 发现 4a：分子是**实际发出去的那份**的 usage，分母必须是同一份的 raw 估算。
+    // 没有快照（测试直调 / 未经 getCleanedMessages 的路径）时发送副本 = 全量历史，退化为旧行为。
+    const snap = this.lastSendSnapshot;
+    this.lastSendSnapshot = null;
+    const rawFull = snap
+      ? this.rawEstimateTokensFrom(snap.full, toolCount)
+      : this.rawEstimateTokens(toolCount);
+    const rawSent = snap ? this.rawEstimateTokensFrom(snap.sent, toolCount) : rawFull;
 
-    const ratio = actualInputTokens / rawEstimate;
-    // 防御异常比值（极端短会话 / 估算为 0 边界）：钳到合理区间 [0.3, 5]
-    const clamped = Math.min(5, Math.max(0.3, ratio));
-    if (!this.calibrated) {
-      this.calibrationFactor = clamped;
-      this.calibrated = true;
-    } else {
-      // EMA 平滑，α=0.3，兼顾收敛速度与抗抖动
-      this.calibrationFactor = this.calibrationFactor * 0.7 + clamped * 0.3;
+    // 用未校准的纯启发式估算作分母，否则 factor 会自我反馈漂移
+    if (rawSent > 0) {
+      const ratio = actualInputTokens / rawSent;
+      // 防御异常比值（极端短会话 / 估算为 0 边界）：钳到合理区间 [0.3, 5]
+      const clamped = Math.min(5, Math.max(0.3, ratio));
+      if (!this.calibrated) {
+        this.calibrationFactor = clamped;
+        this.calibrated = true;
+      } else {
+        // EMA 平滑，α=0.3，兼顾收敛速度与抗抖动
+        this.calibrationFactor = this.calibrationFactor * 0.7 + clamped * 0.3;
+      }
     }
+
+    // 锚点换算回全量口径：estimateTokens 的另一支是「全量 raw × factor」，两支必须同一空间才能取 max；
+    // 本地减量随后由 getCompactionLevel 统一从 tokenFreedTracker 扣（与发送副本的差额同源）。
+    // 遮罩后的 usage 直接当锚点会把全量估算钉在遮罩后的低位——振荡的另一半成因。
+    const localReduction = Math.max(0, rawFull - rawSent);
+    this.lastActualInputTokens = Math.ceil(
+      actualInputTokens + localReduction * this.calibrationFactor,
+    );
   }
 
   /** 设置会话 ID（用于工具输出遮罩和持久化） */
@@ -628,6 +667,19 @@ export class Manager {
     this.replacementState.clear();
     this.sentIntactToolResultIds.clear();
     this.tokenFreedTracker.reset();
+    this.maskedState.clear();
+    this.lastSendSnapshot = null;
+    this.pendingSendCauses.add("compact");
+  }
+
+  /**
+   * 发现 14：取走并清空「自上次取走以来改写过发送前缀的本地来源」。
+   * 空数组 = ContextManager 没有改写前缀（断裂另有原因：reminder / system_dynamic / 服务端）。
+   */
+  consumeSendMutationCauses(): Array<"compact" | "masking" | "cleaned"> {
+    const out = [...this.pendingSendCauses].sort();
+    this.pendingSendCauses.clear();
+    return out;
   }
 
   /**
@@ -922,16 +974,15 @@ export class Manager {
     const log = getLogger();
 
     // 先应用工具输出遮罩（如果启用）
-    let cleaned = [...this.messages];
+    const full = [...this.messages];
+    let cleaned = full;
     if (this.maskingService) {
       const compactionLevel = this.getCompactionLevel();
-      if (
-        compactionLevel === "soft" ||
-        compactionLevel === "hard" ||
-        compactionLevel === "emergency"
-      ) {
-        cleaned = this.maskingService.mask(cleaned);
-      }
+      const fresh =
+        compactionLevel === "soft" || compactionLevel === "hard" || compactionLevel === "emergency"
+          ? this.maskingService.mask(full)
+          : full;
+      cleaned = this.applyStickyMasking(full, fresh);
     }
 
     // P1-3：构建 tool_use 索引 + 活跃文件集合（正在编辑的文件 read 输出豁免清理）
@@ -1017,6 +1068,7 @@ export class Manager {
         });
       }
       this.recordSentIntactToolResults(cleaned);
+      this.lastSendSnapshot = { full, sent: cleaned };
       return cleaned;
     }
 
@@ -1052,6 +1104,7 @@ export class Manager {
           if (!alreadyReplaced && saved > 0) {
             this.tokenFreedTracker.recordCompact(Math.ceil(saved / 4), "cleanedMessages");
           }
+          if (!alreadyReplaced) this.pendingSendCauses.add("cleaned");
           return {
             ...block,
             content: guidance,
@@ -1100,7 +1153,58 @@ export class Manager {
     }
 
     this.recordSentIntactToolResults(result);
+    this.lastSendSnapshot = { full, sent: result };
     return result;
+  }
+
+  /**
+   * 发现 4b + 4c：把「本轮新遮罩」与「历史上已遮罩」合成一份发送副本。
+   *
+   * - 已在 maskedState 里的 id：无论本轮 level 如何，一律贴首次那份占位（字节级不变，前缀不来回改写）。
+   * - 本轮 mask() 新遮上的 id：记入 maskedState，并把释放量记一次 tokenFreedTracker
+   *   （与 cleanedMessages 路径同口径 chars/4、只在首次记——每轮重复记会把减量算爆）。
+   *
+   * 遮罩基准永远是 `this.messages` 原文（mask() 每轮从原文重算），所以存下首次占位全文是保证
+   * 字节一致的唯一办法：占位里嵌着落盘文件名（按 msgIdx 生成），重算会随位置漂移。
+   */
+  private applyStickyMasking(full: Message[], fresh: Message[]): Message[] {
+    if (fresh === full && this.maskedState.size === 0) return full;
+    let changed = false;
+    let newlyMasked = false;
+    const out = full.map((msg, i) => {
+      const freshMsg = fresh[i];
+      let msgChanged = false;
+      const content = msg.content.map((block, j) => {
+        if (block.type !== "tool_result") return block;
+        const sticky = this.maskedState.get(block.tool_use_id);
+        if (sticky !== undefined) {
+          msgChanged = true;
+          return { ...block, content: sticky };
+        }
+        const fb = freshMsg?.content[j];
+        if (
+          fb &&
+          fb !== block &&
+          fb.type === "tool_result" &&
+          fb.tool_use_id === block.tool_use_id &&
+          fb.content !== block.content
+        ) {
+          this.maskedState.set(block.tool_use_id, fb.content);
+          const saved = block.content.length - fb.content.length;
+          if (saved > 0) this.tokenFreedTracker.recordCompact(Math.ceil(saved / 4), "masking");
+          newlyMasked = true;
+          msgChanged = true;
+          return fb;
+        }
+        return block;
+      });
+      if (!msgChanged) return msg;
+      changed = true;
+      // ⚠️ `...msg` 默认透传，不得手写字段清单（会丢 _meta，见 getCleanedMessages 同名注释）
+      return { ...msg, content };
+    });
+    if (newlyMasked) this.pendingSendCauses.add("masking");
+    return changed ? out : full;
   }
 
   /**

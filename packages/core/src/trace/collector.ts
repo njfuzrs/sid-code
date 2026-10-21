@@ -1456,7 +1456,7 @@ export class TraceCollector {
     });
 
     // P1-2：前缀断裂定位（只落结论，不落内容）
-    this.emitPrefixBreakDiagnosis(req, rawMessages, index);
+    this.emitPrefixBreakDiagnosis(req, rawMessages, index, req.send_mutation_causes);
 
     // §3.6：更新 last_known_state → before_model
     this.metadata.last_known_state = {
@@ -2994,7 +2994,12 @@ export class TraceCollector {
    *
    * 整个过程包在 try 里：可观测性绝不能影响主流程。
    */
-  private emitPrefixBreakDiagnosis(req: any, rawMessages: unknown[], index: number): void {
+  private emitPrefixBreakDiagnosis(
+    req: any,
+    rawMessages: unknown[],
+    index: number,
+    localCauses?: string[],
+  ): void {
     try {
       const fp = fingerprintPrefix(
         typeof req.system === "string"
@@ -3025,6 +3030,11 @@ export class TraceCollector {
                   ? { first_changed_message_index: d.firstChangedMessageIndex }
                   : {}),
                 wasted_ratio: Number((d.wastedRatio ?? 0).toFixed(4)),
+                // 发现 14：断裂的本地来源。只在 broken 时落，且只落主循环如实上报的那几类；
+                // 未上报（子代理 / 老版本）时字段缺失而非落 []——「没采集」与「采了但本地没改」是两回事。
+                ...(localCauses !== undefined
+                  ? { cause: localCauses.length > 0 ? localCauses : ["none_local"] }
+                  : {}),
               }
             : {}),
           prev_segments: d.prevSegmentCount,
