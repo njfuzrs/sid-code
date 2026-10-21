@@ -78,7 +78,7 @@ import { estimateTextTokens } from "../context/token.ts";
 import type { Message, Usage } from "../llm/types.ts";
 import { normalizeCacheUsage } from "../llm/types.ts";
 import { inferProviderByModelName } from "../llm/provider-infer.ts";
-import { resetPriceTierCounts } from "../llm/billing-sink.ts";
+import { resetPriceTierCounts, flushInFlightBilledRequests } from "../llm/billing-sink.ts";
 import { TokenEstimator } from "../llm/token-estimator.ts";
 import { checkMessageHistoryIntegrity } from "../agent/message-invariants.ts";
 import { resetSideCallStats, getSideStats, setSideStatsObserver } from "./side-call-sink.ts";
@@ -2182,6 +2182,13 @@ export class TraceCollector {
     // PID 文件**不在这里删**：backfill 靠「heartbeat 新鲜 ∨ pid 活」判活，PID 文件是收尾
     // 那 ~1.5s 里唯一还能挡住另一实例把本会话当僵尸补传的东西，所以它必须最后删（由 App 删）。
     this.stopHeartbeat();
+    // 发现 13（20261020 ce7ea52e）：已建连但 provider finally 永远没跑到的 fetch（abort 后生成器被丢下），
+    // 在这里补记成 BilledRequest(reason=aborted)。必须排在 resetStreamObserver 之前 —— 之后事件写不进 events.jsonl。
+    try {
+      flushInFlightBilledRequests();
+    } catch {
+      /* 计费补记失败不影响收尾 */
+    }
 
     this.metadata.end_time = input.timestamp;
     this.metadata.end_source = input.reason;

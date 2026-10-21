@@ -796,6 +796,8 @@ export function emitBilledRequest(data: {
   accounted_by?: "usage-sink";
   /** 消费侧是否为它加钱（= shouldChargeBilledRequest），落盘便于离线核对双记 */
   charged: boolean;
+  /** 发现 13：`aborted` = 会话收尾时替在途 fetch 补记（见 billing-sink flushInFlightBilledRequests） */
+  reason?: "aborted";
   input_tokens: number;
   output_tokens: number;
   cache_read_tokens?: number;
