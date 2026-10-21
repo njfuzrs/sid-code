@@ -84,6 +84,57 @@ describe("collectDiagnosticText 严重度过滤", () => {
 
     expect(collectDiagnosticText()).not.toBeNull();
   });
+
+  // 评估会话 ce7ea52e 发现 7：旧实现整批过关后把同文件 Hint 原样带出
+  test("1 Error + 5 Hint ⇒ 只出 1 行诊断 + 省略说明", async () => {
+    initializeLSP("/nonexistent-workspace-xyz");
+    await waitInitSuccess();
+
+    const reg = getDiagnosticRegistry();
+    reg!.registerPending("ts", [
+      {
+        uri: "file:///a.ts",
+        diagnostics: [
+          diag("类型错误", "Error", 1),
+          ...[2, 3, 4, 5, 6].map((l) => diag(`已弃用-${l}`, "Hint", l)),
+        ],
+      },
+    ]);
+
+    const text = collectDiagnosticText()!;
+    expect(text).toContain("类型错误");
+    expect(text).not.toContain("已弃用");
+    expect(text.split("\n").filter((l) => /^\s+(Error|Warning|Hint|Info) \(/.test(l))).toHaveLength(
+      1,
+    );
+    expect(text).toContain("另有 5 条提示（Hint/Info）已省略");
+  });
+
+  test("跨文件：只含 Hint 的文件整段不出现", async () => {
+    initializeLSP("/nonexistent-workspace-xyz");
+    await waitInitSuccess();
+
+    const reg = getDiagnosticRegistry();
+    reg!.registerPending("ts", [
+      { uri: "file:///a.ts", diagnostics: [diag("真错误", "Error")] },
+      { uri: "file:///b.ts", diagnostics: [diag("b提示", "Hint")] },
+    ]);
+
+    const text = collectDiagnosticText()!;
+    expect(text).toContain("/a.ts");
+    expect(text).not.toContain("/b.ts");
+    expect(text).toContain("另有 1 条提示");
+  });
+
+  test("没有被省略的条目时不附省略说明", async () => {
+    initializeLSP("/nonexistent-workspace-xyz");
+    await waitInitSuccess();
+
+    getDiagnosticRegistry()!.registerPending("ts", [
+      { uri: "file:///a.ts", diagnostics: [diag("真错误", "Error")] },
+    ]);
+    expect(collectDiagnosticText()).not.toContain("已省略");
+  });
 });
 
 describe("clearDiagnosticsForFile", () => {

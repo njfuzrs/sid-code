@@ -276,6 +276,8 @@ describe("formatCodeActions", () => {
     );
     expect(del).toContain("删除");
     expect(del).toContain("a.ts:42:1"); // 1-based
+    // unused 类 quickfix 附「可能尚未接线」说明（评估会话 ce7ea52e 发现 7）
+    expect(del).toContain("unused 可能只是尚未接线");
 
     const rep = formatCodeActions(
       [
@@ -298,6 +300,7 @@ describe("formatCodeActions", () => {
       WS,
     );
     expect(rep).toContain("替换");
+    expect(rep).not.toContain("尚未接线");
     expect(rep).toContain("const");
   });
 
