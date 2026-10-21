@@ -379,7 +379,11 @@ export class PermissionChecker implements Checker {
    * sessionMemory / preApproved / denialTracking 刻意不共享（各自独立会话记忆），派生实例从干净态起步。
    */
   deriveWithPermissionMode(mode: PermissionMode): PermissionChecker {
-    const derivedConfig: Config = { ...this.config, permissionMode: mode };
+    return this.deriveWithConfig({ ...this.config, permissionMode: mode });
+  }
+
+  /** 派生共用实现：按给定 config 新建实例并搬运运行期协作者。 */
+  private deriveWithConfig(derivedConfig: Config): PermissionChecker {
     const derived = new PermissionChecker(
       derivedConfig,
       this.rules ?? undefined,
@@ -422,7 +426,11 @@ export class PermissionChecker implements Checker {
    * 不改本实例（主会话、其它子代理共享它）。
    */
   async deriveForWorkspace(workspaceDir: string): Promise<PermissionChecker> {
-    const derived = this.deriveWithPermissionMode(this.config.permissionMode as PermissionMode);
+    // 共享 config 引用而不是展开快照：本实例若是子代理 checker，它的 config 是主会话的
+    // 活视图（sub-agent-checker.ts createLiveSubAgentConfig）。展开会把派生时刻的
+    // permissionMode/yesMode 冻住，worktree 子代理就跟不上主会话切档（PR #398 review 问题 1）。
+    // 不换 permissionMode 时没有理由复制；checker 从不写 config，共享是安全的。
+    const derived = this.deriveWithConfig(this.config);
     derived.ruleLoader.importFromRuleLoader(this.ruleLoader);
     await derived.reloadWorkspaceRules(workspaceDir);
     return derived;

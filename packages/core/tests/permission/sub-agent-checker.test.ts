@@ -227,3 +227,88 @@ describe("createSubAgentChecker — inheritBypassMode 与 skipPermissions 收紧
     expect(sub.getConfig().skipPermissions).toBe(false);
   });
 });
+
+describe("createSubAgentChecker — 主会话切档后子代理跟随（PR #398 review 问题 1）", () => {
+  // 背景：wire 层只在启动 / settings 重载 / 工作区切换时下发子 checker，Shift+Tab 切档与
+  // 企业策略中途收回 bypass 只改主 config。子 checker 若是快照，inheritBypassMode 开启后
+  // 主会话降回 default 时子代理仍是 always-allow 全放行（修复前实测 main:false / sub:true）。
+  // 这里模拟 cyclePermissionMode：直接改主会话 config 对象（App 与主 checker 共享同一引用）。
+  const writeReq = { toolName: "bash", input: { command: "python3 agg.py" } };
+
+  function makeLiveMain(overrides: Partial<Config>): { main: PermissionChecker; cfg: Config } {
+    const cfg = { ...defaultConfig(), ...overrides } as Config;
+    return { main: new PermissionChecker(cfg, { allow: [], deny: [], ask: [] }, workspace), cfg };
+  }
+
+  test("always-allow → default：已下发的子 checker 立即降为 dontAsk 并拒写", async () => {
+    const { main, cfg } = makeLiveMain({ permissionMode: "always-allow", yesMode: true });
+    const sub = createSubAgentChecker(main, workspace, { inheritBypassMode: true });
+    expect((await sub.check(writeReq)).allowed).toBe(true);
+
+    cfg.permissionMode = "default";
+    cfg.yesMode = false;
+    expect(sub.getConfig().permissionMode).toBe("dontAsk");
+    expect((await sub.check(writeReq)).allowed).toBe(false);
+  });
+
+  test("worktree 派生（deriveForWorkspace）同样跟随切档，不冻结派生时刻的档位", async () => {
+    const { main, cfg } = makeLiveMain({ permissionMode: "always-allow", yesMode: true });
+    const sub = createSubAgentChecker(main, workspace, { inheritBypassMode: true });
+    const wt = await sub.deriveForWorkspace(workspace);
+    expect((await wt.check(writeReq)).allowed).toBe(true);
+
+    cfg.permissionMode = "default";
+    cfg.yesMode = false;
+    expect((await wt.check(writeReq)).allowed).toBe(false);
+  });
+
+  test("企业策略收回 bypass（skip → default）：子代理同步收回", async () => {
+    const { main, cfg } = makeLiveMain({
+      skipPermissions: true,
+      permissionMode: "dangerously-skip-permissions",
+    });
+    const sub = createSubAgentChecker(main, workspace, { inheritBypassMode: true });
+    expect((await sub.check(writeReq)).allowed).toBe(true);
+
+    // 对齐 app.ts applyEnterprisePolicyInSession 的三连改
+    cfg.skipPermissions = false;
+    cfg.yesMode = false;
+    cfg.permissionMode = "default";
+    expect((await sub.check(writeReq)).allowed).toBe(false);
+  });
+
+  test("default → always-allow：升档同样跟随（与 forked-command 当前值语义一致）", async () => {
+    const { main, cfg } = makeLiveMain({ permissionMode: "default" });
+    const sub = createSubAgentChecker(main, workspace, { inheritBypassMode: true });
+    expect((await sub.check(writeReq)).allowed).toBe(false);
+    cfg.permissionMode = "always-allow";
+    expect((await sub.check(writeReq)).allowed).toBe(true);
+  });
+
+  test("视图只读：子 checker 侧写 config 抛错，不会写穿到主会话", () => {
+    const { main, cfg } = makeLiveMain({ permissionMode: "default" });
+    const sub = createSubAgentChecker(main, workspace, { inheritBypassMode: true });
+    const view = sub.getConfig() as Config;
+    expect(() => {
+      view.permissionMode = "always-allow";
+    }).toThrow(TypeError);
+    expect(cfg.permissionMode).toBe("default");
+  });
+
+  test("展开视图（{...config}）拿到的是计算值：skip 布尔不会经 deriveWithPermissionMode 泄漏", () => {
+    const { main } = makeLiveMain({
+      skipPermissions: true,
+      permissionMode: "dangerously-skip-permissions",
+    });
+    const sub = createSubAgentChecker(main, workspace, { inheritBypassMode: true });
+    const spread = { ...sub.getConfig() };
+    expect(spread.skipPermissions).toBe(false);
+    expect(spread.permissionMode).toBe("always-allow");
+    expect(sub.deriveWithPermissionMode("default").getConfig().skipPermissions).toBe(false);
+    // 反射读取路径与 get 一致（描述符 value 也是计算值）
+    expect(Object.getOwnPropertyDescriptor(sub.getConfig(), "skipPermissions")?.value).toBe(false);
+    expect(Object.getOwnPropertyDescriptor(sub.getConfig(), "permissionMode")?.value).toBe(
+      "always-allow",
+    );
+  });
+});
