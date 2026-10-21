@@ -1,6 +1,6 @@
 ---
 title: Dynamic Workflows
-description: 什么时候该用多 agent 编排、pipeline 和 parallel 怎么选、跑挂了怎么 resume。
+description: 什么时候该用多 agent 编排、pipeline 和 parallel 怎么选、跑挂了怎么 resume、结论怎么回收不撞上下文上限。
 ---
 
 # Dynamic Workflows
@@ -106,11 +106,47 @@ Workflow 工具是**延迟加载**的（`shouldDefer = true`，不进首轮上�
 3. 用 `{ script_path: "<path>", resume_from_run_id: "<runId>" }` 重跑
 4. 未改动的 `agent()` 调用直接返回缓存，只重跑改动及其之后的
 
-缓存键是 `callIndex`（全局自增序号）+ `fingerprint`（prompt + opts 的 sha256 前 16 位 hex，`packages/core/src/workflow/journal.ts`）。指纹只纳入影响结果的字段（`prompt`/`schema`/`model`/`effort`/`agentType`/`isolation`），排除展示用的 `label`/`phase`。
+#### 「保存下来」保存的是两个不同的东西
 
-**为什么不是纯 prompt hash**：避免「两个不同调用点但 prompt 恰好相同」串台（journal 注释点名这是 cc #63102 的 bug）。callIndex 区分调用点、fingerprint 区分脚本是否改过——脚本改了某格的 prompt，指纹变，触发重跑；没改的格子指纹不变，直接命中缓存。
+容易混，分开说：
 
-journal 落盘在 `~/.sid-code/workflows/journals/<runId>.jsonl`，append-only。
+- **脚本** → `~/.sid-code/workflows/scripts/<名字>-<runId>.js`。每次 run 都自动落盘一份。
+  用途是**复用与迭代**：改它、把它给同事、或下次用 `{ name: "<名字>" }` 直接加载一个跑过的脚本
+  （`packages/core/src/tool/workflow.ts` 的 `resolveScript`：`script` > `script_path` > `name`）。
+- **journal** → `~/.sid-code/workflows/journals/<runId>.jsonl`，append-only。
+  用途是**resume 缓存**：每个 `agent()` 调用的结果追加一行，重跑时命中就不真跑。
+
+两者互不依赖：删掉 journal 只是让那个 run 无法 resume（脚本还在），删掉脚本则连复用的入口都没了。
+
+#### resume 的收益，算给你看
+
+假设一个 44 文件的批量任务总共要烧 1700 万 token（实测 8 文件 321 万，按比例推），跑到第 30 个时你按了 ESC 或 API 挂了：
+
+- **不 resume**：重跑 44 个，前 30 个的约 **1160 万 token 白烧一遍**
+- **resume**：前 30 个直接返回 journal 里的结果，只跑剩下 14 个，约 **540 万 token**
+
+#### 三个边界，别理解错
+
+- **它不是自动续跑。** 挂了之后不会自己接着跑——你得**主动**发起一次重跑并传回 `runId`。
+- **只缓存成功的结果。** 失败（返回 `null`）不写盘（`packages/core/src/workflow/runtime.ts` 的 `agent()`：
+  「一次 flake 会在 resume 时被永久回放」是这里的 P0-1）。失败那一步重跑时会真的重跑。
+- **改了哪一步，从那一步之后重跑；没改的直接复用。**
+
+#### 缓存键：结构性位置 + 指纹
+
+键 = **脚本结构位置** `key` + `fingerprint`（prompt + opts 的 sha256 前 16 位 hex，
+`packages/core/src/workflow/journal.ts`）。指纹只纳入影响结果的字段
+（`prompt`/`schema`/`model`/`effort`/`agentType`/`isolation`），排除展示用的 `label`/`phase`。
+
+`key` 由调用作用域生成（`packages/core/src/workflow/runtime.ts` 的 `CallScope`）：
+顶层第 3 个位置是 `"3"`，`parallel` 里第 2 个 thunk 的第 1 格是 `"p1/0"`。
+**它与完成顺序无关**——早期版本用全局自增的 `callIndex`，`pipeline`/`parallel` 下时序一变，
+同 prompt 的并行分支就会互相拿到对方的缓存（cc #63102 那个串台形态）。
+纯串行脚本的 key 恰好是 `"0","1",…`，与老 journal 的 `callIndex` 一致，旧记录照常命中。
+
+**为什么不是纯 prompt hash**：避免「两个不同调用点但 prompt 恰好相同」串台。
+key 区分调用点、fingerprint 区分脚本是否改过——脚本改了某格的 prompt，指纹变，触发重跑；
+没改的格子指纹不变，直接命中缓存。
 
 ### 确定性守卫：为什么禁 `Date.now()` 和 `Math.random()`
 
@@ -120,7 +156,10 @@ journal 落盘在 `~/.sid-code/workflows/journals/<runId>.jsonl`，append-only�
 - **`Math.random()` 被禁**——抛 `"[workflow] Math.random() 被禁(非确定性,破坏 resume)"`（`sandbox.ts`）。
 - **无参 `new Date()` 被禁**，但 `new Date(ts)`（带参）和 `Date.parse`/`Date.UTC` 放行——它们是确定性的纯函数（`sandbox.ts`）。
 
-原因直指 resume 语义：journal 按 `callIndex + fingerprint` 缓存 agent 结果。如果脚本里用了 `Date.now()` 或 `Math.random()`，它们的值会混进 prompt 或 opts，每次重跑算出的 fingerprint 都不一样，`resume_from_run_id` 永远不命中缓存，所有 agent 全部重跑——resume 就坏了。所以沙箱在运行时直接抛错，而不是放过去让缓存静默失效。**确定性是可重放的前提**（`sandbox.ts` 注释）。
+原因直指 resume 语义：journal 按「结构位置 key + fingerprint」缓存 agent 结果。如果脚本里用了
+`Date.now()` 或 `Math.random()`，它们的值会混进 prompt 或 opts，每次重跑算出的 fingerprint 都不一样，
+`resume_from_run_id` 永远不命中缓存，所有 agent 全部重跑——resume 就坏了。
+所以沙箱在运行时直接抛错，而不是放过去让缓存静默失效。**确定性是可重放的前提**（`sandbox.ts` 注释）。
 
 ## 一个完整脚本长什么样
 
@@ -170,7 +209,10 @@ const results = await pipeline(
   }
 );
 
-// 汇总要等全部审计结果——pipeline 已经 await 完，直接调 agent() 即可，不需要再包 parallel
+// 汇总要等全部审计结果——pipeline 已经 await 完，直接调 agent() 即可，不需要再包 parallel。
+// ⚠️ 但这个写法只对「结论短 + 数量少」成立：这里 5 个模块、每份几个 issue，塞得进一个 prompt。
+//    数量上到几十、或每份结论变长，**汇总这一步会先撞上下文上限**——拆出去的部分不会撞，
+//    收回来的部分会。详见下文「结论回收：汇总那一步也会撞上限」。
 const summary = await agent(
   `把以下 ${results.length} 份审计结果合并成一份报告：${JSON.stringify(results)}`,
   { phase: "汇总" }
@@ -180,6 +222,81 @@ return summary;
 ```
 
 跑挂了想改「审计」那步的 prompt，只改脚本里那行，重跑时探查那步命中缓存、审计那步及之后重跑。
+
+## 结论回收：汇总那一步也会撞上限
+
+这是 Workflow 最容易被忽略的一处限制：**拆出去的部分不会撞上限，收回来的部分会。**
+
+### 为什么拆出去不撞、收回来撞
+
+每个 `agent()` 是**独立子代理**，有自己的上下文。它读 5000 行代码、跑十几轮 grep，都发生在自己的窗口里，
+跑完只交回**结论**。所以 44 个文件 × 每个 5000 token 原始材料 = 22 万 token，
+从头到尾**没有任何一个上下文同时装下它们**——这是 Workflow 真正治好的部分。
+
+但结论要收回来。它们全在脚本的 `results` 数组里，最后由某个 agent 汇总，
+而**汇总 agent 只有一份上下文**。上例的 `JSON.stringify(results)` 是原样全塞：
+44 个文件 × 每个结论 3000 字 ≈ 13 万 token 进一个 prompt，直接撞上限。
+
+所以判据不是「任务有多大」，而是：
+
+> **能跑的最大规模 ≈ 单上下文预算 ÷ 每个结论的 token 数。**
+> 可扩展性取决于**结论压缩比**，不取决于任务规模。
+
+### 三层解法，按优先级
+
+**第一层：把每个结论压下去。** 最有效。用 `schema` 强制 worker 只返回必要字段
+（`{file, line, reason}`），而不是整段代码或散文。44 份 × 50 token = 2200 token，汇总毫无压力。
+**结论的大小是设计出来的，不是固有的**——让 worker 报 `file:line` + 一句话，不要让 worker 复述代码。
+
+**第二层：分层归约（map-reduce 两级）。** 结论压不下去时，先分组归约再汇总：
+
+```javascript
+// 上例的变体：把「一步汇总」换成两级归约。可独立试跑（results 从 args 传入）。
+export const meta = {
+  name: "audit-modules-reduce",
+  description: "两级归约：结论装不进一个 prompt 时，先分组归约再汇总",
+  phases: [{ title: "归约" }, { title: "汇总" }],
+};
+
+const results = args ?? [];
+
+const GROUPS = 8;
+const per = Math.max(1, Math.ceil(results.length / GROUPS));
+const partials = [];
+for (let i = 0; i < results.length; i += per) {
+  const slice = results.slice(i, i + per);
+  partials.push(
+    await agent(
+      `把以下 ${slice.length} 份审计结果归约成要点清单，每条带 file:line，不要复述代码：${JSON.stringify(slice)}`,
+      { phase: "归约" }
+    )
+  );
+}
+return await agent(
+  `把以下 ${partials.length} 份要点清单合并成最终报告：${JSON.stringify(partials)}`,
+  { phase: "汇总" }
+);
+```
+
+三层四层同理，脚本里一个 `for` 循环就行。**框架不提供内置 reduce**：`parallel` / `pipeline`
+都只是 map（逐项映射），跨 item 的聚合要自己写。
+
+**第三层：兜底压缩。** 主循环撞上下文上限时有 `reactiveCompact` 会自动压缩后继续
+（`packages/core/src/query/reactive-compact.ts`）。但那是**兜底不是方案**：
+压缩会丢信息，你只是把失败推迟到了下一轮。
+
+### 判据：Workflow 治「宽」，不治「深」
+
+「复杂任务」要分两种看：
+
+- **量上的复杂**——44 个模块、300 个文件、50 个 API，每项都是独立检查。**适配**。
+  深度浅、结论能压缩、互不依赖。
+- **质上的复杂**——一个 5000 行核心模块，要理解它跟 20 个调用方的交互才能改对。**不适配**，
+  因为切不开。硬切给 5 个 worker，每个都只看得到局部，汇总时细节又装不下，
+  最终结论比一个 agent 老实读完还差。
+
+三条全满足才用：**能切开 + 结论能压 + 每项不需要全局视野**。缺任何一个，
+省下的墙钟都会在汇总那一步赔回去。
 
 ## 常见问题
 
