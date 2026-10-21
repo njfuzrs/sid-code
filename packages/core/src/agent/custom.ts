@@ -301,6 +301,9 @@ export class CustomAgentTool implements Tool {
     this.permissionChecker = checker;
   }
 
+  /** M-1：自报需要权限检查器（契约见 tool/types.ts ToolCapabilityFields），wire 时与 setter 对账。 */
+  readonly needsPermissionChecker = true;
+
   async execute(input: unknown, signal?: AbortSignal): Promise<ToolResult> {
     const log = getLogger();
     const params = input as { task: string };

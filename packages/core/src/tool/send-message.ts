@@ -101,6 +101,21 @@ export class SendMessageTool implements Tool {
     this.parentSessionId = sessionId;
   }
 
+  /**
+   * 子代理权限检查器（P1-1）。Resume 路径新建的 SubAgent 此前从不注入 checker，
+   * 恢复后的后台 agent 权限能力归零（写类全被 fail-closed 拒，且静默）。
+   * 由 app.ts 的 wireToolPermissionChecker 鸭子类型接线注入。
+   */
+  private permissionChecker?: import("../permission/types.ts").Checker;
+
+  /** 注入子代理权限检查器（app.wireToolPermissionChecker 自动调用）。 */
+  setPermissionChecker(checker: import("../permission/types.ts").Checker): void {
+    this.permissionChecker = checker;
+  }
+
+  /** M-1：自报需要权限检查器（契约见 tool/types.ts ToolCapabilityFields），wire 时与 setter 对账。 */
+  readonly needsPermissionChecker = true;
+
   name(): string {
     return "send_message";
   }
@@ -236,6 +251,9 @@ export class SendMessageTool implements Tool {
       try {
         const subAgent = SubAgent.fromRegistry(this.providerRegistry!, this.toolRegistry!);
         if (this.parentSessionId) subAgent.setParentSessionId(this.parentSessionId);
+        // P1-1：注入权限检查器。此前 resume 路径新建的 SubAgent 从不注入，
+        // 恢复后的后台 agent 写类能力归零且静默（后台无弹窗通道，ask 降级 deny）。
+        if (this.permissionChecker) subAgent.setPermissionChecker(this.permissionChecker);
         const result = await subAgent.execute(
           {
             type: task.agentType,

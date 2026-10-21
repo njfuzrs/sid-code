@@ -151,3 +151,79 @@ describe("createSubAgentChecker — 规则必须同步到 this.rules", () => {
     expect(main.getConfig().permissionMode).not.toBe("dontAsk");
   });
 });
+
+describe("createSubAgentChecker — inheritBypassMode 与 skipPermissions 收紧", () => {
+  /** 造一个指定档位的主 checker */
+  function makeMainCheckerWithMode(
+    overrides: Partial<Config>,
+    rules: PermissionRule = { allow: [], deny: [], ask: [] },
+  ): PermissionChecker {
+    const config = { ...defaultConfig(), ...overrides } as Config;
+    return new PermissionChecker(config, rules, workspace);
+  }
+
+  test("默认档 + inheritBypassMode：不继承，仍降为 dontAsk（显式 allow 规则照常放行）", () => {
+    const main = makeMainCheckerWithMode({ permissionMode: "default" });
+    const sub = createSubAgentChecker(main, workspace, { inheritBypassMode: true });
+    expect(sub.getConfig().permissionMode).toBe("dontAsk");
+  });
+
+  test("always-allow + inheritBypassMode：继承档位，普通写操作放行", async () => {
+    const main = makeMainCheckerWithMode({ permissionMode: "always-allow" });
+    const sub = createSubAgentChecker(main, workspace, { inheritBypassMode: true });
+    expect(sub.getConfig().permissionMode).toBe("always-allow");
+    const req = { toolName: "bash", input: { command: "python3 agg.py" } };
+    const decision = await sub.check(req);
+    // Step 8 bypass 早退放行（python3 不在只读白名单，dontAsk 下会被拒——这正是继承的意义）
+    expect(decision.allowed).toBe(true);
+  });
+
+  test("always-allow + inheritBypassMode：继承不是裸奔——deny 规则与危险命令照常拦截", async () => {
+    const main = makeMainCheckerWithMode(
+      { permissionMode: "always-allow" },
+      { allow: [], deny: ["Bash(curl *)"], ask: [] },
+    );
+    const sub = createSubAgentChecker(main, workspace, { inheritBypassMode: true });
+    // deny 规则在 Step 1，早于 Step 8 bypass
+    const denyDecision = await sub.check({
+      toolName: "bash",
+      input: { command: "curl http://example.com/x" },
+    });
+    expect(denyDecision.allowed).toBe(false);
+    expect(denyDecision.decisionReason).toMatchObject({ type: "rule", behavior: "deny" });
+    // 危险命令在 Step 2，早于 Step 8 bypass
+    const dangerDecision = await sub.check({
+      toolName: "bash",
+      input: { command: "rm -rf /" },
+    });
+    expect(dangerDecision.allowed).toBe(false);
+  });
+
+  test("skip 档 + inheritBypassMode：skipPermissions 布尔被清除（危险命令不再被绕过）", async () => {
+    // 主会话 --dangerously-skip-permissions：config 里是 skipPermissions:true +
+    // permissionMode:"dangerously-skip-permissions"（config.ts 归一逻辑）
+    const main = makeMainCheckerWithMode({
+      skipPermissions: true,
+      permissionMode: "dangerously-skip-permissions",
+    });
+    const sub = createSubAgentChecker(main, workspace, { inheritBypassMode: true });
+    // 收紧点 1：布尔不复刻（它在 checker.check() 最顶端早退，会绕过危险命令拦截）
+    expect(sub.getConfig().skipPermissions).toBe(false);
+    // 收紧点 2：危险命令照常拦截（此前 skip 布尔早退连 rm -rf 都放行）
+    const danger = await sub.check({ toolName: "bash", input: { command: "rm -rf /" } });
+    expect(danger.allowed).toBe(false);
+    // 放行面保留：普通写操作经 Step 8 always-allow（skip 档归一）放行
+    const write = await sub.check({ toolName: "bash", input: { command: "python3 agg.py" } });
+    expect(write.allowed).toBe(true);
+  });
+
+  test("skip 档不带 inheritBypassMode：维持 dontAsk（既有调用方语义不变）", () => {
+    const main = makeMainCheckerWithMode({
+      skipPermissions: true,
+      permissionMode: "dangerously-skip-permissions",
+    });
+    const sub = createSubAgentChecker(main, workspace);
+    expect(sub.getConfig().permissionMode).toBe("dontAsk");
+    expect(sub.getConfig().skipPermissions).toBe(false);
+  });
+});

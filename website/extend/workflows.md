@@ -97,6 +97,15 @@ Workflow 工具是**延迟加载**的（`shouldDefer = true`，不进首轮上�
 `isolation:'worktree'` 给每个 agent 一个独立工作区，代价是起 worktree 的开销 + 可能的 lockfile 风险（见[Worktree 隔离](/use/worktree)）。只有「多个 agent 同时改文件、改的路径会撞」时才值得。只读探索用 `agentType:'explore'` 就行，不需要隔离。
 :::
 
+### 子代理的权限从哪来
+
+workflow 内的子代理没有弹窗通道，权限检查器由主会话统一派生注入（`packages/core/src/permission/sub-agent-checker.ts`），语义是「跟随主会话档位」：
+
+- **默认档**：子代理按 `dontAsk` 语义执行——规则里显式 allow 的操作放行，deny / 危险命令 / 安全检查照常拦截，其余需要确认的操作自动拒绝（没有弹窗可弹）。
+- **全放行档**（`always-allow` / `--dangerously-skip-permissions`）：子代理跟随继承放行面，但 deny 规则、危险命令、safetyCheck 仍然生效——继承的不是裸奔。
+
+也就是说：主会话在默认档时，期望 workflow 子代理写文件的做法（`isolation:'worktree'` 并行改码）会被权限层拒绝。需要写能力的编排任务，请先把主会话切到 `acceptEdits`（写类放行）或 `always-allow`，或在项目规则里显式声明 allow。
+
 ### 跑挂了怎么 resume
 
 这是 Workflow 相对「派一堆子代理」的核心优势。流程：

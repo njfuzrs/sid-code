@@ -153,6 +153,20 @@ export class WorkflowTool implements Tool {
     this.hookSystem = hookSystem;
   }
 
+  /**
+   * 子代理权限检查器（P0-1）。App.wireToolPermissionChecker 经鸭子类型接线注入；
+   * 未注入时 runner 内回退 B0 分级 fail-closed（写类全拒），isolation=worktree 不可用。
+   */
+  private permissionChecker?: import("../permission/types.ts").Checker;
+
+  /** 注入子代理权限检查器（app.wireToolPermissionChecker 自动调用）。 */
+  setPermissionChecker(checker: import("../permission/types.ts").Checker): void {
+    this.permissionChecker = checker;
+  }
+
+  /** M-1：自报需要权限检查器（契约见 tool/types.ts ToolCapabilityFields），wire 时与 setter 对账。 */
+  readonly needsPermissionChecker = true;
+
   /** 注入错误回调（推入统一错误面板），由 app.ts 的 wireToolErrorCallback 鸭子类型接线注入。 */
   private onErrorCallback?: (message: string) => void;
   setErrorCallback(cb: (message: string) => void): void {
@@ -307,6 +321,10 @@ export class WorkflowTool implements Tool {
       toolRegistry: this.toolRegistry,
       hookSystem: this.hookSystem,
       runId,
+      // P0-1：权限检查器透传（未注入时 runner 回退 B0 分级 fail-closed，写类全拒）
+      permissionChecker: this.permissionChecker,
+      // P0-1：权限检查器透传（未注入时 runner 回退 B0 分级 fail-closed，写类全拒）
+
       onUsage: (t) => {
         outputTokens += t;
       },
