@@ -19,7 +19,7 @@
  * - **溢出后收缩补空行**（sid-code 有意偏离冻结基线）：前一帧已溢出视口（p ≥ H）而新帧变矮时，
  *   不走上面的「擦底部」——滚进 scrollback 的行拉不回来，擦掉底部只会让整帧上移、在 footer 下面留
  *   p - n 行空白（主屏 History 在帧里，帧高几乎恒超视口，动态区每收缩一次就漏一次）。改为在新帧里
- *   补 p - n 行空行把高度撑回 p，补在两帧公共尾部之前（没有公共尾部就补在第一个变化行），
+ *   补 p - n 行空行把高度撑回 p，补在历史区下沿（调用方传 historyEnd；不传才按内容猜，见 padInsertRow），
  *   底部的输入框 / 状态栏原地不动；之后内容增长会原地覆盖这些空行。实际画上去的帧经 `screen` 返回，
  *   调用方必须拿它做下一帧的 previous；
  * - **full reset**（`ESC[2J ESC[3J ESC[H` + 整帧重画）在下面三种情况发生：
@@ -101,10 +101,35 @@ function rowsEqual(previous: Screen, py: number, next: Screen, ny: number): bool
 }
 
 /**
- * 溢出后收缩：在 next 里插 p - n 行空行，高度撑回 p。插入点 = 两帧公共尾部（输入框 / 状态栏这类没变的底部）之前；
- * 没有公共尾部（比如状态栏的计费同一帧也变了）就插在第一个变化行，那里通常正是消失的那块。
+ * 溢出后收缩的插入点。
+ *
+ * 知道历史区（History）下沿、且下沿在视口内时插在它下面：空行落在历史区与动态区之间，动态区整体贴底，
+ * 任何组件内部都不会被插进空行。
+ *
+ * 不知道下沿（没用 History 的调用方），或下沿已滚出视口，才退回按两帧内容猜（guessInsertRow）。
+ * 这个猜法在真实 TUI 里两头都会切错组件（2026-10-22 复现）：状态栏计费同帧变了 → 公共尾部只剩最后一行，
+ * 空行插进状态栏两行之间；输入框变矮 → 公共尾部从输入框下边框起算，空行插进输入框里面。帧层看不到组件边界，猜不对。
  */
-function padShrunkFrame(previous: Screen, next: Screen): Screen {
+function padInsertRow(
+	previous: Screen,
+	next: Screen,
+	viewportRows: number,
+	historyEnd: number | undefined,
+): number {
+	const p = previous.height;
+	const n = next.height;
+	const firstVisible = Math.max(0, p - viewportRows + 1);
+	if (historyEnd !== undefined && historyEnd >= firstVisible) {
+		return Math.min(n, historyEnd);
+	}
+
+	// 下沿已滚出视口（动态区比视口高，比如长流式正文）：插在下沿会动到 scrollback 里的行而 full reset，
+	// 夹到视口顶行又会把空行插进正文中间（2026-10-22 实测）。只能退回按内容猜，再夹到视口内
+	return Math.max(guessInsertRow(previous, next), firstVisible);
+}
+
+/** 不知道组件边界时按两帧内容猜插入点：公共尾部之前，没有公共尾部就插在第一个变化行 */
+function guessInsertRow(previous: Screen, next: Screen): number {
 	const p = previous.height;
 	const n = next.height;
 	let prefix = 0;
@@ -117,7 +142,13 @@ function padShrunkFrame(previous: Screen, next: Screen): Screen {
 		suffix++;
 	}
 
-	const at = suffix > 0 ? n - suffix : prefix;
+	return suffix > 0 ? n - suffix : prefix;
+}
+
+/** 溢出后收缩：在 next 的第 at 行前插 p - n 行空行，高度撑回 p（插入点见 padInsertRow） */
+function padShrunkFrame(previous: Screen, next: Screen, at: number): Screen {
+	const p = previous.height;
+	const n = next.height;
 	const count = p - n;
 	const padded = new Screen(next.width, p, {styles: next.stylePool, links: next.hyperlinkPool});
 	const head = at * next.width;
@@ -154,6 +185,8 @@ export function diffMainScreen(
 	previous: Screen | undefined,
 	target: Screen,
 	viewportRows: number,
+	/** 新帧里历史区（History）下沿的行号；只用于溢出后收缩选插入点，缺省按内容猜 */
+	historyEnd?: number,
 ): FrameDiff {
 	let next = target;
 	let n = next.height;
@@ -181,7 +214,11 @@ export function diffMainScreen(
 	// 溢出后收缩：补空行撑回原高，footer 原地不动（见文件头）
 	const padded = n < p && p >= viewportRows;
 	if (padded) {
-		next = padShrunkFrame(previous, next);
+		next = padShrunkFrame(
+			previous,
+			next,
+			padInsertRow(previous, next, viewportRows, historyEnd),
+		);
 		n = p;
 	}
 

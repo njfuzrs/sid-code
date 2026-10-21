@@ -2,6 +2,7 @@
 // 规则来自黑盒对拍冻结的行为基线（packages/cli/tests/render-port/history.test.tsx）。
 import React, {memo, type ReactNode} from 'react';
 import Box, {type Props as BoxProps} from './Box.js';
+import {type DOMElement} from '../dom.js';
 
 export type Props<T> = {
 	/** 历史项。引用不变且 `children` / `style` 引用也不变时，整块跳过重渲。 */
@@ -10,6 +11,14 @@ export type Props<T> = {
 	readonly style?: BoxProps;
 	/** 渲染一项；根元素必须带 `key`。第二个参数是该项在 `items` 里的下标。 */
 	readonly children: (item: T, index: number) => ReactNode;
+};
+
+// 给容器节点打标记，主屏帧 diff 据此找到历史区下沿（见 dom.ts internal_history）。
+// ref 在 commit 的 layout 阶段才挂上，首帧拿不到；首帧不会是收缩帧，不影响
+const markHistory = (node: DOMElement | null) => {
+	if (node) {
+		node.internal_history = true;
+	}
 };
 
 /**
@@ -27,7 +36,7 @@ export type Props<T> = {
  */
 function History<T>({items, style, children}: Props<T>) {
 	return (
-		<Box flexDirection="column" {...style}>
+		<Box ref={markHistory} flexDirection="column" {...style}>
 			{items.map((item, index) => children(item, index))}
 		</Box>
 	);
