@@ -4,7 +4,7 @@
  * parseCLIArgs 内部走 process.exit，无法在进程内单测，故用 Bun.spawn 直接跑
  * src/entrypoints/bootstrap.ts（免 make build，始终测最新源码），断言：
  *   - 组合约束（P2-1 / P2-2）在非法组合下 exit=1 且给出中文报错
- *   - 非法 flag 值（--effort / --session-id / --input-format / --max-budget-usd）exit=1
+ *   - 非法 flag 值（--effort / --session-id / --input-format / --max-budget-usd / --agents agent fields）exit=1
  *   - 新子命令（agents / mcp / auth）正常路由并产出预期输出
  *   - --agent 指向不存在代理时 exit=1 且列出候选
  */
@@ -170,6 +170,17 @@ describe("组合约束 P2-1 / P2-2", () => {
     const stderr = await new Response(proc.stderr).text();
     await proc.exited;
     expect(stderr).not.toContain("--max-budget-usd 只在 --print 下生效");
+  });
+
+  test("--agents 内联注入校验 modelTier 并拒绝非法档位", async () => {
+    const invalidTier = await run([
+      "--agents",
+      JSON.stringify({
+        reviewer: { prompt: "审查代码", modelTier: "ultra" },
+      }),
+    ]);
+    expect(invalidTier.code).toBe(1);
+    expect(invalidTier.stderr).toContain("modelTier 须为 cheap / default / strong");
   });
 
   test("--no-session-persistence 不再是未知选项（bun allowNegative）", async () => {

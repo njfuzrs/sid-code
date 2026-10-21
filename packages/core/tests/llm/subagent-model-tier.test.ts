@@ -86,7 +86,7 @@ describe("零配置：所有内置子代理都跟主模型（价格表存在也�
     expect(sc.providerName).toBe("openai");
   });
 
-  test("自定义 agent 只声明 modelTier=cheap/strong 且无环境变量 → 主模型", () => {
+  test("动态 Agent 的 cheap / strong 档无环境变量时跟随主模型", () => {
     registerDynamicAgents([
       {
         agentType: "tier-cheap",
@@ -94,14 +94,14 @@ describe("零配置：所有内置子代理都跟主模型（价格表存在也�
         whenToUse: "w",
         systemPrompt: "s",
         modelTier: "cheap",
-      } as any,
+      },
       {
         agentType: "tier-strong",
         description: "d",
         whenToUse: "w",
         systemPrompt: "s",
         modelTier: "strong",
-      } as any,
+      },
     ]);
     const r = new ProviderRegistry(pricedConfig());
     expect(r.getModelForSubAgent("tier-cheap")).toBe("main-model");
@@ -120,14 +120,30 @@ describe("零配置：所有内置子代理都跟主模型（价格表存在也�
 });
 
 describe("档位只认显式环境变量", () => {
-  test("SID_CHEAP_MODEL 作用于 cheap 档代理（explore/plan/summarize）", () => {
+  test("SID_CHEAP_MODEL 作用于 cheap 档代理（内置与动态 Agent）", () => {
+    const original = process.env[CHEAP_KEY];
     process.env[CHEAP_KEY] = "my-tiny-model";
-    const r = new ProviderRegistry(pricedConfig());
-    for (const type of ["explore", "plan", "summarize"]) {
-      expect(r.getModelForSubAgent(type)).toBe("my-tiny-model");
+    try {
+      registerDynamicAgents([
+        {
+          agentType: "custom-cheap",
+          description: "d",
+          whenToUse: "w",
+          systemPrompt: "s",
+          modelTier: "cheap",
+        },
+      ]);
+      const r = new ProviderRegistry(pricedConfig());
+      for (const type of ["explore", "plan", "summarize", "custom-cheap"]) {
+        expect(r.getModelForSubAgent(type)).toBe("my-tiny-model");
+      }
+      // 非 cheap 档不受影响
+      expect(r.getModelForSubAgent("task")).toBe("main-model");
+    } finally {
+      if (original === undefined) delete process.env[CHEAP_KEY];
+      else process.env[CHEAP_KEY] = original;
+      clearDynamicAgents();
     }
-    // 非 cheap 档不受影响
-    expect(r.getModelForSubAgent("task")).toBe("main-model");
   });
 
   test("SID_STRONG_MODEL 只作用于 strong 档，cheap 档代理仍跟主模型", () => {
@@ -139,7 +155,7 @@ describe("档位只认显式环境变量", () => {
         whenToUse: "w",
         systemPrompt: "s",
         modelTier: "strong",
-      } as any,
+      },
     ]);
     const r = new ProviderRegistry(pricedConfig());
     expect(r.getModelForSubAgent("heavy")).toBe("my-big-model");
@@ -161,7 +177,7 @@ describe("档位只认显式环境变量", () => {
         whenToUse: "w",
         systemPrompt: "s",
         modelTier: "default",
-      } as any,
+      },
     ]);
     const r = new ProviderRegistry(pricedConfig());
     expect(r.getModelForSubAgent("plain")).toBe("main-model");
@@ -199,7 +215,7 @@ describe("五级优先级", () => {
         systemPrompt: "s",
         model: "frontmatter-model",
         modelTier: "cheap",
-      } as any,
+      },
     ]);
     const r = new ProviderRegistry(pricedConfig());
     expect(r.getModelForSubAgent("my-agent")).toBe("frontmatter-model");

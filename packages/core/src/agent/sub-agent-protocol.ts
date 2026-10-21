@@ -85,7 +85,7 @@ export interface ParentInitMessage {
    * 没配 compat 的用户此字段整个缺省，管道上零多余字节。
    */
   model_compat?: Record<string, unknown>;
-  /** 最大轮次。PR-B：**可省略 = 无上限**（Infinity 无法 JSON 序列化，故用省略表达）。 */
+  /** 最大轮次。可省略 = 无上限（Infinity 无法 JSON 序列化，故用省略表达）。 */
   max_turns?: number;
   max_tokens: number;
   workdir: string;
