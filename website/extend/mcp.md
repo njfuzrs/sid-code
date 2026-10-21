@@ -1,6 +1,6 @@
 ---
 title: MCP
-description: 接入 MCP server，把企业内部系统变成可调用的工具：三种传输方式、四层作用域、为什么工具"看不见"。
+description: 接入 MCP server，把企业内部系统变成可调用的工具：五种传输方式、四层作用域、为什么工具"看不见"。
 ---
 
 # MCP
@@ -89,13 +89,16 @@ fs  [stdio]  npx -y @modelcontextprotocol/server-filesystem /tmp
 - **启动时**：TUI 启动发现待审批 server 会弹审批框，一次一个，可选批准 / 全部批准 / 拒绝，
   光标默认停在「拒绝」；Esc 暂不决定（本会话不加载，下次启动再问）。批准后**当场连接**，不用重启。
   有信任框或外部 `@import` 审批框时，审批框排在它们之后弹。
-- 会话里：`/mcp approve <name>`、`/mcp reject <name>`，或 `/mcp` 面板
+- 会话里：`/mcp approve <name>`、`/mcp reject <name>`。注意**不带参数的 `/mcp` 面板没有审批入口**——
+  它只管理**已加载**的 server（查看工具、重连、启停、OAuth 授权），待审批项还没加载，不在面板里
 - CLI：`sid-code mcp approve <name>`（或 `--all` 批准全部待审批项），`sid-code mcp reject <name> | --all` 拒绝。
   CLI 不启动会话，批准后下次启动才连接
 
 拒绝后不再询问；指名 approve / reject 可以随时改判已经批准或拒绝过的 server。
 批准记录存在 `~/.sid-code/state/mcp-approvals.json`，按 `项目身份:server 名` 加**配置内容指纹**
-（SHA-256）记账：同名 server 的 `command` / `args` / `url` / `headers` / `env` 被改过，
+（SHA-256）记账。指纹覆盖该 server 在 `settings.json` / `.mcp.json` 里**除 `enabled` 外的全部字段**——
+`command` / `args` / `url` / `headers` / `env`，也包括 `transport` / `timeout` / `retries` /
+`includeTools` / `excludeTools` / `auth` / `oauth`。任何一处被改过，
 下次启动会回到待审批、重新询问，不会沿用旧批准执行新命令。只改 `enabled` 开关不需要重新审批；
 `${VAR}` 按原文计算指纹，换环境变量的值也不需要。拒绝按名字记，内容变了也仍是拒绝。
 「全部批准」是对整个项目的显式授权，不受指纹约束。早于此机制的批准记录没有指纹，升级后需要重新批准一次。
@@ -106,15 +109,20 @@ fs  [stdio]  npx -y @modelcontextprotocol/server-filesystem /tmp
 
 `sid-code mcp` 这套子命令**不启动会话**，只读写配置文件，所以脚本和 CI 里能直接用。
 
-## 三种传输方式
+## 五种传输方式
 
 | transport | 什么时候用 | 配置要点 |
 | --- | --- | --- |
 | `stdio` | server 是本地可执行程序（绝大多数官方 server） | 给 `command` + `args` |
-| `http` | server 是远程 HTTP 服务（内部平台常见） | 给 `url` |
+| `http` | server 是远程 HTTP 服务（内部平台常见）。走 Streamable HTTP，对齐 2025-03-26 规范 | 给 `url` |
+| `http-json` | 仅当远程 server 不支持 Streamable HTTP 时才显式指定（旧的单 JSON HTTP 传输，兼容保留） | 给 `url` |
 | `sse` | 远程 Server-Sent Events | 给 `url` |
+| `ws` | 远程 WebSocket | 给 `url` |
 
-不写 `transport` 时按有没有 `url` 推断：有 `url` → `http`，否则 `stdio`。
+在 `.mcp.json` / `mcp.local.json` 里不写 `transport` 时会推断：先看 Claude Code 风格的
+`type`（`streamable-http` 是 `http` 的别名），再按有没有 `command` / `url` 判——
+有 `command` → `stdio`，只有 `url` → `http`。**`settings.json` 里没有这层推断**：
+那里的 `transport` 是必填字段，省了会在启动横幅里报「无效值」。
 
 ## 手写配置
 
@@ -170,7 +178,7 @@ fs  [stdio]  npx -y @modelcontextprotocol/server-filesystem /tmp
       "command": "npx",
       "args": ["-y", "tavily-mcp@0.2.22"],
       "env": {
-        "TAVILY_API_KEY": "tvly-dev-REPLACE_WITH_YOUR_KEY"
+        "TAVILY_API_KEY": "${TAVILY_API_KEY}"
       }
     },
     "example-remote": {
@@ -198,16 +206,18 @@ fs  [stdio]  npx -y @modelcontextprotocol/server-filesystem /tmp
 不要写 `@latest`：`npx` 每次启动都可能拉到新代码，而审批指纹只看配置文本，
 `@latest` 这串字不变，上游换了实现也不会触发重新审批。
 
-三个只有读过源码才知道的坑：
+三个只有读过源码才知道的点：
 
-- **`env` 的值不做 `${VAR}` 展开**，只有 `command` / `args` / `url` / `headers` 会展开
-  （见 `packages/core/src/mcp/env-expansion.ts` 的 `expandConfigEnvVars`）。上面例子里
-  `TAVILY_API_KEY` 直接写死是因为它展开不了，真实使用时建议按下一条处理。
-- **推荐做法是删掉 `env` 块，改在 shell 里 `export TAVILY_API_KEY=...`**——stdio
-  子进程会继承父进程的全部环境变量（`packages/core/src/mcp/transport.ts`
-  里的 `{ ...process.env, ...env }`），照样能拿到，不用把 key 落进配置文件。
-- **远程服务器的凭据用 `headers` 里的 `${VAR}`**，因为 `headers` 会展开——不必把
-  token 明文写进 `.mcp.json` 或落到磁盘上。
+- **`${VAR}` 在五个字段里都会展开**：`command` / `args` / `url` / `headers` / `env`
+  （见 `packages/core/src/mcp/env-expansion.ts` 的 `expandConfigEnvVars`）。
+  支持 `${VAR}` 与 `${VAR:-默认值}` 两种写法，所以上面 `env` 里写的
+  `"${TAVILY_API_KEY}"` 会取到你 shell 里 export 的那个值，不用把 key 落进配置文件。
+- **`env` 里展开的另一个用途是「改名」**：stdio 子进程本就继承父进程的整个环境
+  （`packages/core/src/mcp/transport.ts` 的 `{ ...process.env, ...env }`），
+  所以这里的 `${VAR}` 价值在于把 `MY_API_KEY` 喂成 server 要的 `API_KEY`。
+  也可以索性删掉 `env` 块、直接靠继承——两种都行。
+- **远程服务器的凭据用 `headers` 里的 `${VAR}`**，不必把 token 明文写进
+  `.mcp.json` 或落到磁盘上。
 
 ## 需要登录的远程 server（OAuth）
 
@@ -354,6 +364,8 @@ MCP server 能以你的身份跑进程、访问内网，所以企业侧有三道
 MCP 已被企业策略禁用，忽略 N 个已配置的服务器
 ```
 
+这行是 **info 级**，默认不输出——用 `-d`（或 `--debug`）启动才看得见。
+
 它只关 MCP 服务器，不会连带关掉 IDE 集成。
 
 **③ 连接前最后一道闸。** `mcpPolicy` 不只在配置合并时过滤，每次真正建立连接之前还会再过一遍
@@ -430,7 +442,9 @@ ListMcpResources    列出已连接 server 暴露的资源（可按 server 过�
 ReadMcpResource     读取指定资源，参数 server + uri
 ```
 
-和 Tools 一样，这两个工具也走延迟加载——需要时让模型自己搜。典型用法是你直接说要什么，模型会自己去列、去读：
+这两个工具**不走延迟加载**——它们首轮就常驻在工具池里，模型可以直接调，用不着
+`tool_search`（`tool_search` 只搜延迟池，反而搜不到它们）。典型用法是你直接说要什么，
+模型会自己去列、去读：
 
 ```text
 看一下 git server 里有哪些资源
@@ -440,8 +454,28 @@ ReadMcpResource     读取指定资源，参数 server + uri
 
 两个设计取舍值得知道：
 
-- **文本进上下文，二进制落盘**。文本资源直接读进对话（受 token 上限约束，超长会截断）；二进制资源（图片、PDF 等）不把 base64 灌进上下文，而是落盘到临时文件、返回路径——模型再走 Read 工具的 vision 管道看它
+- **文本进上下文，二进制落盘**。文本资源直接读进对话（受下面的 token 上限约束）；二进制资源（图片、PDF 等）不把 base64 灌进上下文，而是落盘到临时文件、返回路径——模型再走 Read 工具的 vision 管道看它
 - **资源内容当数据，不当指令**。Resources 来自外部系统，sid-code 把它当**数据**处理而不是指令执行——这和[权限与人工确认](/use/permissions)的安全语义一致，防止恶意 server 用 resource 内容注入指令
+
+## 工具返回值的上限
+
+所有 MCP 工具的返回内容（不只 Resources，Tools 也一样）都按 **25000 token** 预算截断，
+超了会附一段「输出截断」的引导语，而不是把整段内容塞进上下文。要调整用
+`SID_CODE_MAX_MCP_OUTPUT_TOKENS`（也认无前缀的 `MAX_MCP_OUTPUT_TOKENS`，对齐 Claude Code），
+非法值回退默认。
+
+文本超过 **10 万字符**时还有一层字符级保护：完整结果先落盘到临时文件，工具只回
+「结果过大 (N 字符)，完整结果已保存到: <路径>」加一段预览——需要全文时再走 Read 去读那个文件。
+两层可以同时发生：落盘存完整存档，截断控喂给模型的量。
+
+## server 自带的「使用说明」（instructions）
+
+MCP server 可以在 `initialize` 时返回一段 `instructions`，用它告诉模型「我该怎么被使用」。
+sid-code 会在 server **首次连上时**把它（截断到 2048 字）注入一次：包在
+`<system-reminder>` 围栏里追加到你的消息旁边，并标明这是 harness 注入的说明、不是你的输入。
+已公告过的 server 不会重复注入。
+
+走动态注入而不是 system prompt 是刻意的：server 会中途连断，塞进静态前缀会击穿 prompt cache。
 
 ## 常见问题
 
