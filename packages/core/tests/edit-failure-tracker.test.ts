@@ -3,8 +3,13 @@
  */
 
 import { describe, test, expect, afterEach } from "bun:test";
+import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import {
+  classifyEditFailure,
   recordEditOutcome,
+  SNIPPET_HEADER,
   type EditFailureStore,
 } from "@sid-code/core/query/edit-failure-tracker.ts";
 
@@ -162,5 +167,110 @@ describe("recordEditOutcome — 边界与开关", () => {
     recordEditOutcome(s, "write", "/a.ts", true, "错误: 内容疑似被截断");
     recordEditOutcome(s, "write", "/a.ts", true, "错误: 内容疑似被截断");
     expect(recordEditOutcome(s, "write", "/a.ts", true, "错误: 内容疑似被截断")).toBeDefined();
+  });
+});
+
+describe("recordEditOutcome — noop / not_found 分型（发现 9）", () => {
+  const NOOP = "错误: old_string 与 new_string 完全相同，没有需要修改的内容。";
+  const NOT_FOUND = "错误: 未找到要替换的字符串（精确/灵活/正则/模糊匹配均未命中）。";
+
+  test("分型：noop / not_found / ambiguous 各自识别", () => {
+    expect(classifyEditFailure(NOOP)).toBe("noop");
+    expect(classifyEditFailure(NOT_FOUND)).toBe("not_found");
+    expect(classifyEditFailure("错误: 找到 3 处匹配，但 replace_all=false")).toBe("ambiguous");
+    expect(classifyEditFailure("错误: 别的")).toBe("other");
+  });
+
+  test("被评会话形态 old==new → read → old==new：read 不清零，第 3 次照样提醒", () => {
+    const s = makeStore();
+    recordEditOutcome(s, "edit", "/a.ts", true, NOOP);
+    recordEditOutcome(s, "read", "/a.ts", false, "");
+    recordEditOutcome(s, "edit", "/a.ts", true, NOOP);
+    recordEditOutcome(s, "read", "/a.ts", false, "");
+    const r = recordEditOutcome(s, "edit", "/a.ts", true, NOOP);
+    expect(r).toBeDefined();
+    expect(r).toContain("不要用 old==new 的 edit 当探针");
+  });
+
+  test("not_found 同样不被 read 清零", () => {
+    const s = makeStore();
+    recordEditOutcome(s, "edit", "/a.ts", true, NOT_FOUND);
+    recordEditOutcome(s, "edit", "/a.ts", true, NOT_FOUND);
+    recordEditOutcome(s, "read", "/a.ts", false, "");
+    expect(recordEditOutcome(s, "edit", "/a.ts", true, NOT_FOUND)).toBeDefined();
+  });
+
+  test("read 只清掉非 sticky 那部分：2 次 other + 1 次 noop → read → 再 1 次 noop 未达阈值", () => {
+    const s = makeStore();
+    recordEditOutcome(s, "edit", "/a.ts", true, "错误: 未找到");
+    recordEditOutcome(s, "edit", "/a.ts", true, "错误: 未找到");
+    recordEditOutcome(s, "edit", "/a.ts", true, NOOP); // 第 3 次达阈值
+    recordEditOutcome(s, "read", "/a.ts", false, ""); // 降回 sticky=1
+    expect(recordEditOutcome(s, "edit", "/a.ts", true, NOOP)).toBeUndefined(); // 2
+    expect(recordEditOutcome(s, "edit", "/a.ts", true, NOOP)).toBeDefined(); // 3
+  });
+
+  test("sticky 计数只被该文件的成功编辑清零", () => {
+    const s = makeStore();
+    recordEditOutcome(s, "edit", "/a.ts", true, NOOP);
+    recordEditOutcome(s, "edit", "/a.ts", true, NOOP);
+    recordEditOutcome(s, "edit", "/a.ts", false, "");
+    expect(recordEditOutcome(s, "edit", "/a.ts", true, NOOP)).toBeUndefined();
+    expect(recordEditOutcome(s, "edit", "/a.ts", true, NOOP)).toBeUndefined();
+  });
+
+  test("达阈值附上 old_string 锚点所在区段的实时内容（read 行号格式）", () => {
+    const dir = mkdtempSync(join(tmpdir(), "ef-snippet-"));
+    try {
+      const f = join(dir, "x.ts");
+      const body = Array.from({ length: 40 }, (_, i) => `const line${i + 1} = ${i + 1};`);
+      writeFileSync(f, body.join("\n"));
+      const s = makeStore();
+      // 首行缩进写错 + 第二行对得上：not_found，但锚点仍能定位到第 21 行
+      const old = "    const lineXX = 0;\n  const line21 = 21;";
+      recordEditOutcome(s, "edit", f, true, NOT_FOUND, old);
+      recordEditOutcome(s, "edit", f, true, NOT_FOUND, old);
+      const r = recordEditOutcome(s, "edit", f, true, NOT_FOUND, old)!;
+      expect(r).toContain(SNIPPET_HEADER);
+      expect(r).toContain("21\tconst line21 = 21;");
+      expect(r).toContain("13\tconst line13 = 13;");
+      expect(r).not.toContain("12\tconst line12");
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  test("太短的行（`}`）不当锚点，避免定位到无关位置", () => {
+    const dir = mkdtempSync(join(tmpdir(), "ef-snippet-"));
+    try {
+      const f = join(dir, "x.ts");
+      const body = Array.from({ length: 40 }, (_, i) => `const line${i + 1} = ${i + 1};`);
+      body[2] = "}"; // 第 3 行是一个短行，old_string 首行也是它
+      writeFileSync(f, body.join("\n"));
+      const s = makeStore();
+      const old = "}\nconst line30 = 30;";
+      for (let i = 0; i < 2; i++) recordEditOutcome(s, "edit", f, true, NOT_FOUND, old);
+      const r = recordEditOutcome(s, "edit", f, true, NOT_FOUND, old)!;
+      expect(r).toContain("30\tconst line30 = 30;");
+      expect(r).not.toContain("3\t}");
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  test("锚点找不到时不附片段（不猜位置）", () => {
+    const dir = mkdtempSync(join(tmpdir(), "ef-snippet-"));
+    try {
+      const f = join(dir, "x.ts");
+      writeFileSync(f, "const a = 1;\nconst b = 2;\n");
+      const s = makeStore();
+      const old = "totally unrelated content here";
+      for (let i = 0; i < 2; i++) recordEditOutcome(s, "edit", f, true, NOT_FOUND, old);
+      const r = recordEditOutcome(s, "edit", f, true, NOT_FOUND, old)!;
+      expect(r).toBeDefined();
+      expect(r).not.toContain(SNIPPET_HEADER);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
   });
 });

@@ -598,7 +598,11 @@ export class EditTool implements Tool {
     // 仅对非创建场景检查（oldString==='' 是创建/覆盖语义，走下方分支）。
     if (oldString !== "" && oldString === newString) {
       return {
-        output: "错误: old_string 与 new_string 完全相同，没有需要修改的内容。",
+        // 文案要点破「不要拿 old==new 当探针」：被评会话里 old==new 之后的下一步有 9 次又是 old==new，
+        // 原文案只说「没有需要修改的内容」，模型读成「这段确实在文件里」后原样再发。
+        output:
+          "错误: old_string 与 new_string 完全相同，没有需要修改的内容。" +
+          "new_string 必须是改后的完整内容；想确认文件当前内容请用 read，不要用 old_string 与 new_string 相同的 edit 当探针。",
         isError: true,
       };
     }

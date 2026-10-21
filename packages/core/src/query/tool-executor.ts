@@ -1569,6 +1569,9 @@ export async function executeSingleTool(
         typeof efPath === "string" ? efPath : undefined,
         !!result.isError,
         result.isError ? (result.output ?? "") : "",
+        typeof (block.input as any)?.old_string === "string"
+          ? (block.input as any).old_string
+          : undefined,
       );
       if (efReminder) {
         finalOutput = finalOutput + "\n\n" + efReminder;
