@@ -382,6 +382,8 @@ export default class Ink {
 	private frameViewport: {columns: number; rows: number} | undefined;
 	/** 下一帧强制 full reset 的原因（离开 alt-screen 之后，主屏的旧帧已经不可信） */
 	private pendingResetReason: FrameFlicker['reason'] | undefined;
+	/** 上一个主屏帧里有没有挂着 Transient（临时浮层）；关闭浮层的那一帧据此整帧重画，见 diffFrame */
+	private previousFrameHadTransient = false;
 	/** `<AlternateScreen>` 挂载状态（端口 setAltScreenActive，R10）；为真时出帧走 renderAltScreenFrame（R14） */
 	/** SIGCONT 作废的那一帧：下一帧按 `redrawAfterSuspend` 写（R10）；resize / forceRedraw 帧不走它 */
 	private suspendedScreen: Screen | undefined;
@@ -1773,6 +1775,9 @@ export default class Ink {
 	private diffFrame(screen: Screen): FrameDiff {
 		const viewport = getWindowSize(this.options.stdout);
 		const previous = this.frameViewport;
+		const hadTransient = this.previousFrameHadTransient;
+		const hasTransient = dom.hasMountedTransient(this.rootNode);
+		this.previousFrameHadTransient = hasTransient;
 		const forced = this.pendingResetReason;
 		this.pendingResetReason = undefined;
 		if (
@@ -1796,6 +1801,19 @@ export default class Ink {
 		const previousScreen = this.previousScreen;
 		const shrinking =
 			previousScreen !== undefined && screen.height < previousScreen.height;
+		// 关闭临时浮层（对话框 / 补全菜单）且前一帧已溢出视口：浮层打开时把同等高度的历史顶进了 scrollback，
+		// 那些行光标够不着、也没有指令能拉回视口；补空行（frame/main-screen.ts）只会留下一整块与浮层等高的空白。
+		// 只有整帧重画能复原：History 在帧里，清屏后 scrollback 照样重建。条件与补空行分支相同（n < p 且 p ≥ H），
+		// 只把「浮层消失」这一类收缩从补空行改成重画——spinner 消失、输入框变矮、TodoPanel 收起照旧补空行，不闪
+		if (
+			hadTransient &&
+			!hasTransient &&
+			shrinking &&
+			previousScreen.height >= viewport.rows
+		) {
+			return resetMainScreen(screen, viewport.rows, 'offscreen');
+		}
+
 		return diffMainScreen(
 			previousScreen,
 			screen,

@@ -17,6 +17,8 @@ type InkNode = {
 	internal_static?: boolean;
 	/** sid-code：History 的容器节点。主屏帧 diff 要知道历史区下沿，溢出后收缩时把空行补在那里（frame/main-screen.ts） */
 	internal_history?: boolean;
+	/** sid-code：Transient（临时浮层）的容器节点，见 components/Transient.tsx */
+	internal_transient?: boolean;
 	style: Styles;
 };
 
@@ -78,6 +80,12 @@ export type DOMElement = {
 	onComputeLayout?: () => void;
 	onRender?: () => void;
 	onImmediateRender?: () => void;
+	/**
+	 * sid-code：根节点上登记创建过的 Transient 容器。删除时 reconciler 只摘掉被删子树的顶层节点，
+	 * 子孙不会逐个收到回调，所以这里不维护「当前挂着几个」，出帧时再按 parentNode 链判定是否仍挂在树上
+	 * （hasMountedTransient），顺手剔掉已脱离的
+	 */
+	transientNodes?: Set<DOMElement>;
 	onStaticChange?: () => void;
 	internal_layoutListeners?: Set<LayoutListener>;
 } & InkNode;
@@ -117,6 +125,30 @@ export const createNode = (nodeName: ElementNames): DOMElement => {
 	}
 
 	return node;
+};
+
+/** 根节点下是否还挂着 Transient 容器；顺手剔掉已经脱离树的登记（O(登记数 × 深度)，不遍历整棵树） */
+export const hasMountedTransient = (root: DOMElement): boolean => {
+	const nodes = root.transientNodes;
+	if (!nodes || nodes.size === 0) {
+		return false;
+	}
+
+	let mounted = false;
+	for (const node of nodes) {
+		let cur: DOMElement | undefined = node;
+		while (cur && cur !== root) {
+			cur = cur.parentNode;
+		}
+
+		if (cur === root) {
+			mounted = true;
+		} else {
+			nodes.delete(node);
+		}
+	}
+
+	return mounted;
 };
 
 /** 节点及其全部祖先标脏。不在中途停：被 `display: none` 跳过的子树可能留着脏标记而祖先已清，提前停会漏标。 */

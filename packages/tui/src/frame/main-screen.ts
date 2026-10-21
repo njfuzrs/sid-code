@@ -22,6 +22,8 @@
  *   补 p - n 行空行把高度撑回 p，补在历史区下沿（调用方传 historyEnd；不传才按内容猜，见 padInsertRow），
  *   底部的输入框 / 状态栏原地不动；之后内容增长会原地覆盖这些空行。实际画上去的帧经 `screen` 返回，
  *   调用方必须拿它做下一帧的 previous；
+ *   例外：收缩是因为临时浮层（Transient，对话框 / 补全菜单）关闭时，ink.tsx 不调这里、直接 full reset——
+ *   浮层一次缩好几行且之后没有内容来填，补的空行会变成一整块空白；
  * - **full reset**（`ESC[2J ESC[3J ESC[H` + 整帧重画）在下面三种情况发生：
  *   ① 宽度变了（R7 的帧层部分；视口变矮与 resize 事件合并在 ink.tsx，见 `resetMainScreen`）；
  *   ② 有变化的行已经滚出视口：行号 y < p - H + 1（R5，原因 offscreen）；

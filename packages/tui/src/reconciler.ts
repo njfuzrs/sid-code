@@ -18,6 +18,7 @@ import {
 	createNode,
 	setAttribute,
 	markRenderDirty,
+	hasMountedTransient,
 	type DOMNodeAttribute,
 	type TextNode,
 	type ElementNames,
@@ -172,6 +173,10 @@ export default createReconciler<
 	preparePortalMount: () => null,
 	clearContainer: () => false,
 	resetAfterCommit(rootNode) {
+		// sid-code：剔掉已脱离树的 Transient 登记。主屏出帧时 diffFrame 也会剔，但 alt-screen 出帧不走那里，
+		// 不在这里剔的话补全菜单每开一次就多登记一个已卸载的子树，长会话里只增不减
+		hasMountedTransient(rootNode);
+
 		if (typeof rootNode.onComputeLayout === 'function') {
 			rootNode.onComputeLayout();
 		}
@@ -244,6 +249,12 @@ export default createReconciler<
 
 			if (key === 'internal_transform') {
 				node.internal_transform = value as OutputTransformer;
+				continue;
+			}
+
+			if (key === 'internal_transient') {
+				node.internal_transient = true;
+				(rootNode.transientNodes ??= new Set()).add(node);
 				continue;
 			}
 
