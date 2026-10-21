@@ -34,7 +34,7 @@ description: 教它新本事（CLAUDE.md / Skill / Hook / 子代理 / Workflow /
 | 让多个子代理按固定编排跑（扇出 → 验证 → 汇总，不靠模型临场决定） | **[Workflow](/extend/workflows)** | 编排是**确定的代码**，不是模型每次自己想；子代理只管干活；改脚本后可用 `resume_from_run_id` 只重跑改动及其之后的（**注意：脚本里不能用 `Date()` / `Date.now()` / `Math.random()`，会破坏 resume**） |
 | 接内部系统（工单、发布平台、公司知识库） | **[MCP](/extend/mcp)** | 标准协议，一次接入所有支持 MCP 的客户端都能用 |
 | 把符号级导航做准（跳定义、找引用、类型错误自动反馈） | **[LSP](/extend/lsp)** | 装好 language server 就零配置生效，不用配任何东西 |
-| 在编辑器里用（VS Code / JetBrains，共享同一份配置） | **[IDE 集成](/extend/ide)** | 终端与编辑器同一个 harness、同一份 settings，不用维护两套 |
+| 在编辑器里用（VS Code / Cursor / Windsurf，共享同一份配置） | **[IDE 集成](/extend/ide)** | 终端与编辑器同一个 harness、同一份 settings，不用维护两套 |
 | 在 CI / 脚本里非交互跑 | **[无头模式](/extend/headless)** | `-p` + `--output-format json`，当 SDK 用 |
 | 把上面几样打包分发给团队 | **[插件](/extend/plugins)** | 一个目录同时带命令 / Skill / Hook / MCP，`--plugin-dir` 一行接入 |
 
@@ -167,7 +167,7 @@ CI / Bridge 集成详见 [Skill](/extend/skills#常见问题)。
 - [Dynamic Workflows](/extend/workflows) — 用代码写死子代理的编排，可 resume
 - [MCP](/extend/mcp) — 接内部系统
 - [代码智能（LSP）](/extend/lsp) — 符号级导航与诊断注入
-- [IDE 集成](/extend/ide) — 在 VS Code / JetBrains 里用同一份配置
+- [IDE 集成](/extend/ide) — 在 VS Code / Cursor / Windsurf 里用同一份配置
 - [无头模式与脚本化](/extend/headless) — 在 CI 里跑
 - [插件与 Bridge](/extend/plugins) — 打包分发
 - [settings.json 字段](/ref/settings) — 全部配置字段的类型与默认值
