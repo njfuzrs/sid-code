@@ -18,9 +18,9 @@ description: 全部可用环境变量及其作用。
 
 <!-- AUTO-GEN:START 由 scripts/docs-gen-reference.ts 生成，勿手工编辑 -->
 
-> 共 **126** 个环境变量，取自 `sid-code --help` 的环境变量段，
-> 并与源码里实际的 `process.env` 读取点（扫到 185 个）交叉核对。
-> 扫到的 185 个里 122 个在上表、63 个列在页尾；表里另有 4 个是扫描认不出的读法（如拼接出的变量名），仍以 help 为准。
+> 共 **129** 个环境变量，取自 `sid-code --help` 的环境变量段，
+> 并与源码里实际的 `process.env` 读取点（扫到 188 个）交叉核对。
+> 扫到的 188 个里 125 个在上表、63 个列在页尾；表里另有 4 个是扫描认不出的读法（如拼接出的变量名），仍以 help 为准。
 
 > 优先级：环境变量 > `settings.json`。`SID_*` 前缀的变量只对 sid-code 生效，
 > 不与同机的其他工具共享。
@@ -77,6 +77,9 @@ description: 全部可用环境变量及其作用。
 | `SID_CODE_DISABLE_PROJECT_RULES` | 设为 1 跳过 CLAUDE.md 加载（评测隔离） |
 | `SID_CODE_DISABLE_CRON` | 设为 1 整体禁用定时任务（工具不注册、调度器不轮询、已持久化任务不触发） |
 | `SID_CODE_AUTO_MEMORY` | 后台自动提取记忆开关 (0/1，缺省启用；优先于 settings.autoMemory) |
+| `SID_CODE_STALL_ESCALATION` | 停滞升级阶梯（收敛提示 + 清单振荡时停止劝续跑），交互模式缺省启用，设为 0 关闭 |
+| `SID_CODE_STALL_HARD_STOP` | 停滞升级 L2 是否真停并交还用户（1/0，优先于 settings.stallHardStop；缺省只记事件不停） |
+| `SID_CODE_STALL_ESCALATION_HEADLESS` | 设为 1 时 -p/headless 也启用停滞升级（缺省不启用；L2 真停时 result subtype=error_stalled） |
 | `SID_MAX_TURNS` | 单条用户消息的软轮次阈值（正整数，缺省不启用）：达阈值时提醒模型收尾，不强制中断 |
 | `SID_ENABLE_LOOP_DETECTION` | 循环检测默认关闭（实测 shape 检测误判率≈100%、exact 召回≈0），设为 1 可显式开启 |
 | `SID_ENABLE_BARE_ELLIPSIS_CHECK` | 裸符号省略号检测 [...]/(...) 默认关闭（实测真阳性 0、误报高），设为 1 可显式开启 |

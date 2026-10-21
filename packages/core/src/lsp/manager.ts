@@ -211,9 +211,9 @@ export async function syncFileToLSP(filePath: string): Promise<void> {
  * 收集待投递的诊断，格式化为附件文本。
  * 供主循环每轮注入 system-reminder 使用。
  *
- * 严重度过滤（对标方案风险缓解项）：仅当本批诊断含 Error / Warning 时才注入，
- * 纯 Hint / Info 不注入——避免对模型刷无关紧要的提示、浪费 token。过滤后若只剩
- * Hint/Info 则整批跳过（返回 null），保持"有真问题才打扰"的克制。
+ * 严重度过滤（对标方案风险缓解项）：逐条只保留 Error / Warning，Hint / Info 不注入，
+ * 末尾附一行被省略的条数——避免对模型刷无关紧要的提示、浪费 token。过滤后若一条都
+ * 不剩则整批跳过（返回 null），保持"有真问题才打扰"的克制。
  *
  * @param scopeFilePaths 可选的文件作用域（绝对路径）。传入时只收集这些文件的诊断，
  *   且只清空这些文件的 pending——供并发子代理隔离消费，避免与主循环 / 其它子代理互相偷诊断。
@@ -243,13 +243,21 @@ export function collectDiagnosticText(scopeFilePaths?: Iterable<string>): string
   const files = registry.collectDiagnostics(scopeUris);
   if (files.length === 0) return null;
 
-  // 仅保留含 Error/Warning 的文件；Hint/Info 不足以构成注入理由。
-  const hasActionable = files.some((f) =>
-    f.diagnostics.some((d) => d.severity === "Error" || d.severity === "Warning"),
-  );
-  if (!hasActionable) return null;
+  // 逐条过滤而不是整批放行：旧实现只判「整批是否含 Error/Warning」，过关后把同文件的
+  // Hint 原样带出——评估会话 ce7ea52e 实测 120 次注入里 606 条 Hint（497 条是无关的
+  // deprecated 提示）混在 443 条 Error 中。只保留可操作的严重度，被略去的条数如实告知，
+  // 模型需要时可用 lsp 工具主动查全量。
+  let omitted = 0;
+  const actionable: typeof files = [];
+  for (const f of files) {
+    const kept = f.diagnostics.filter((d) => d.severity === "Error" || d.severity === "Warning");
+    omitted += f.diagnostics.length - kept.length;
+    if (kept.length > 0) actionable.push({ ...f, diagnostics: kept });
+  }
+  if (actionable.length === 0) return null;
 
-  return formatDiagnostics(files);
+  const text = formatDiagnostics(actionable);
+  return omitted > 0 ? `${text}\n（另有 ${omitted} 条提示（Hint/Info）已省略）` : text;
 }
 
 /**

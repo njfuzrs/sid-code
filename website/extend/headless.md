@@ -404,6 +404,13 @@ SID_CODE_MAX_SESSION_DURATION_MS=7200000 sid-code -p "..."   # 2 小时
 解析 `stream-json` / `json` 输出里 `result` 的 `is_error`、`subtype`，能区分是模型报错、
 超出轮次还是正常结束，比只看 `$?` 信息更多。
 
+**停滞叫停（`error_stalled`，缺省不会出现）**：`-p` 缺省完全不启用停滞升级（不注入提示、不叫停、不改收尾闸门），
+所以评测和 CI 不会因它改变行为。显式设 `SID_CODE_STALL_ESCALATION_HEADLESS=1` 并打开 `SID_CODE_STALL_HARD_STOP=1`
+（或 settings `stallHardStop: true`）后，任务反复改动又改回、或重复操作无新进展时，会被叫停并让模型
+总结现状，此时 `stream-json` 的 `result` 里 `subtype` 是 `error_stalled`（`errors` 里有原因）。
+这和 `error_during_execution` 是两回事：前者是"卡住了被叫停"，换个提示词或拆小任务重跑有意义。
+**进程退出码不会因此变成非 0**——脚本要判停滞，读 `subtype`，不要读 `$?`。
+
 ### `-p` 和交互模式的行为差异
 
 除了权限确认和项目级扩展信任，还有一处：`-p` 下 TUI 相关的东西全不生效

@@ -186,7 +186,7 @@ export type QueryLoopYield =
     };
 
 /** `kind: "done"` 上「不是正常说完」的闭集。新增取值必须同步 message-converter。 */
-export type DoneIncompleteReason = "timeout_retry_exhausted" | "aborted";
+export type DoneIncompleteReason = "timeout_retry_exhausted" | "aborted" | "stalled";
 
 // ─── 循环继续原因 ───
 
@@ -546,6 +546,20 @@ export interface LoopState {
    * 而非在此直接 addMessage（那样会永久留在上下文里，长任务持续膨胀）。注入后清空。
    */
   pendingStuckReminder?: string;
+  /**
+   * 停滞升级阶梯（stall-escalation.ts，会话 ce7ea52e 发现 2）。挂 LoopState = 每条用户消息重建，
+   * 即「用户回复后阶梯清零」。未启用（headless 默认 / 显式关）时恒为 undefined。
+   */
+  stall?: import("./stall-escalation.ts").StallState;
+  /** 本消息内 UnchangedObservationRun 上报次数（P2-20 只报不拦，停滞阶梯读它的增量） */
+  unchangedReportsInPrompt?: number;
+  /** L1 收敛提示：工具轮末尾判定，下一轮开头经 reminder 通道注入，注入后清空。 */
+  pendingStallReminder?: string;
+  /**
+   * L2 真停已触发：跳出 while 后走 P1-1 强制总结出口（与 maxTurns 共用），收尾 stopReason=stalled。
+   * 只在 `stallHardStop` 打开时置位；影子模式只落事件，不置位。
+   */
+  stallStopRequested?: boolean;
   /**
    * 环节③ 机制2：上一轮工具结果检出的、与 open 假设矛盾的命中（pending 注入）。
    * 检测发生在工具结果回流时，注入发生在下一轮循环开头的 reminder 通道——

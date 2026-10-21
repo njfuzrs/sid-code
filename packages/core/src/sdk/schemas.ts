@@ -161,7 +161,13 @@ export const SDKResultSuccessSchema = lazySchema(() =>
 export const SDKResultErrorSchema = lazySchema(() =>
   z.object({
     type: z.literal("result"),
-    subtype: z.enum(["error_during_execution", "error_max_turns", "error_max_budget_usd"]),
+    // error_stalled：停滞升级阶梯 L2 叫停（只在 headless 显式 opt-in 时出现，见 query/stall-escalation.ts）
+    subtype: z.enum([
+      "error_during_execution",
+      "error_max_turns",
+      "error_max_budget_usd",
+      "error_stalled",
+    ]),
     errors: z.array(z.string()),
     duration_ms: z.number(),
     num_turns: z.number(),

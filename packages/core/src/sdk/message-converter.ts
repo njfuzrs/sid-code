@@ -35,6 +35,8 @@ function incompleteReasonMessage(reason: DoneIncompleteReason): string {
       return "模型请求超时，重试已耗尽";
     case "aborted":
       return "请求被中断";
+    case "stalled":
+      return "任务停滞（反复改动又改回 / 重复操作无新进展），已由 harness 暂停";
   }
 }
 
@@ -164,7 +166,9 @@ export function convertToSDKMessage(
       if (event.incompleteReason) {
         return {
           type: "result",
-          subtype: "error_during_execution",
+          // 停滞单列 subtype：调用方要区分「出错了」和「卡住了被叫停」，后者换个提示词重跑有意义
+          subtype:
+            event.incompleteReason === "stalled" ? "error_stalled" : "error_during_execution",
           errors: [incompleteReasonMessage(event.incompleteReason)],
           duration_ms: nowOf(ctx) - ctx.startTime,
           num_turns: event.turns,

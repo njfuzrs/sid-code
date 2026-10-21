@@ -257,6 +257,9 @@ export function formatOutgoingCalls(result: unknown, workspaceFolder: string): s
   return out;
 }
 
+/** 识别「删除未使用成员」类 quickfix 标题（TS: Remove unused declaration / Delete 'x'... 等） */
+const UNUSED_ACTION_RE = /\bunused\b|never (?:read|used)|未使用/i;
+
 /** codeAction 展示上限：preferred 全展示，其它最多 MAX_CODE_ACTIONS 条 */
 export const MAX_CODE_ACTIONS = 10;
 /** 单条 edit 的 newText 预览上限（码点），防止大段插入撑爆上下文 */
@@ -354,6 +357,15 @@ export function formatCodeActions(result: unknown, workspaceFolder: string): str
     if (others.length > MAX_CODE_ACTIONS) {
       lines.push(`  （另有 ${others.length - MAX_CODE_ACTIONS} 条修复建议未显示）`);
     }
+  }
+
+  // unused 类 quickfix 只说明「当前没被引用」，不说明「不该存在」：评估会话 ce7ea52e 里
+  // 模型照着「Remove unused」删掉了本次设计里尚未接线的成员，随后又加回来，形成振荡。
+  if (actions.some((a) => UNUSED_ACTION_RE.test(a.title))) {
+    lines.push("");
+    lines.push(
+      "注意：unused 可能只是尚未接线。删除前确认该成员是否属于本次设计（是否即将被调用）。",
+    );
   }
 
   lines.push("");
