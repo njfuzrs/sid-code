@@ -122,6 +122,8 @@ sid-code agents --json   # 机器可读
 | 5 | 语义档位（`modelTier`） | **只**读环境变量 `SID_CHEAP_MODEL` / `SID_STRONG_MODEL` |
 | 6 | 主模型 | 以上都没配时的默认 |
 
+`modelTier` 适用于内置、自定义与插件 Agent；模型优先级仍按上表执行：显式配置 `model` 时覆盖档位。`maxTurns` 是 Agent 定义的默认轮次上限；支持任务级 `maxTurns` 的调用路径可覆盖它。未知档位或非正整数轮次在 frontmatter 中会 warn 并忽略。
+
 ### 没配就跟主模型
 
 **完全不配 `subAgentModels`、也没设档位环境变量**时，所有子代理都用主模型：
@@ -178,14 +180,19 @@ frontmatter 可用字段：
 | --- | --- |
 | `description` | 模型据此判断什么时候该派它，写清楚触发场景。**建议必填**——空着不会被拦，但模型不知道何时派它 |
 | `tools` | 工具白名单。**收窄工具集是最有效的约束**——只给 read/grep 它就不可能改文件 |
-| `model` | 固定用某个模型；`inherit` 或留空 = 跟主模型。想让某个自定义 agent 固定走便宜模型，用这个字段 |
+| `model` | 固定用某个模型；`inherit` 或留空 = 继承档位或主模型 |
+| `modelTier` | 语义模型档位：`cheap` / `default` / `strong`；cheap / strong 分别由 `SID_CHEAP_MODEL` / `SID_STRONG_MODEL` 映射模型 |
+| `maxTurns` | 该 Agent 默认最大轮次，必须是正整数；未设置时不设轮次上限 |
 | `color` | UI 区分色 |
 | `permissionMode` | 该 agent 专用的权限模式 |
 | `background` | 是否默认后台执行 |
 | `isolation` | 是否默认用独立 worktree（并行改文件时防冲突） |
 | `skills` | 预加载的 skill 列表 |
 
-`modelTier` 和 `maxTurns` 只对内置 agent 生效，自定义 agent 的 frontmatter 写了会被静默忽略——自定义 agent 想分级用 `model` 字段指定具体模型。
+`modelTier` / `maxTurns` 同样适用于自定义 Agent。模型优先级仍按上表执行：显式配置 `model` 时覆盖档位；Skill / 命令等任务路径显式指定的 `maxTurns` 覆盖 Agent 默认上限。frontmatter 中未知档位或非正整数轮次会 warn 并忽略。
+
+`--agents` 内联 JSON 也接受 `modelTier` 和 `maxTurns`，并对非法档位 / 轮次拒绝启动。
+
 
 子代理**没有时间上限**，也不默认限制轮次，这点和 Claude Code 一致。一次上游卡顿只会触发重试（与主循环同一套：内容无进展 600s 断流重发，最多 10 次），不会让整个子代理判失败。要停下它，按 ESC、用 `task_stop`，或取消父代理。frontmatter 里的 `timeout` 已不再生效，写了只会在加载时打 warn。
 

@@ -37,6 +37,10 @@ export interface CustomAgentDefinition {
   filePath: string;
   /** 模型覆盖（P0-2，frontmatter model；"inherit"/空 = 继承主模型） */
   model?: string;
+  /** frontmatter 语义模型档位，与内置 AgentDefinition 的档位一致。 */
+  modelTier?: "cheap" | "default" | "strong";
+  /** frontmatter Agent 默认最大轮次，正整数生效。 */
+  maxTurns?: number;
   /** 预加载技能名列表（P1-1，frontmatter skills） */
   skills?: string[];
   /** UI 区分色（P1-2，frontmatter color） */
@@ -96,18 +100,56 @@ export function parseAgentExtendedFrontmatter(
   agentName: string,
 ): Pick<
   CustomAgentDefinition,
-  "model" | "skills" | "color" | "permissionMode" | "hooks" | "background" | "isolation"
+  | "model"
+  | "modelTier"
+  | "maxTurns"
+  | "skills"
+  | "color"
+  | "permissionMode"
+  | "hooks"
+  | "background"
+  | "isolation"
 > {
   const log = getLogger();
   const out: Pick<
     CustomAgentDefinition,
-    "model" | "skills" | "color" | "permissionMode" | "hooks" | "background" | "isolation"
+    | "model"
+    | "modelTier"
+    | "maxTurns"
+    | "skills"
+    | "color"
+    | "permissionMode"
+    | "hooks"
+    | "background"
+    | "isolation"
   > = {};
 
-  // model（P0-2）："inherit"（大小写不敏感）视为不设。
+  // model（P0-2）:"inherit"（大小写不敏感）视为不设。
   if (typeof fm.model === "string") {
     const m = fm.model.trim();
     if (m && m.toLowerCase() !== "inherit") out.model = m;
+  }
+
+  // modelTier（G-373）：只接受 AgentDefinition 支持的语义档位。
+  if (fm.modelTier !== undefined && fm.modelTier !== null) {
+    const tier = typeof fm.modelTier === "string" ? fm.modelTier.trim() : "";
+    if (tier === "cheap" || tier === "default" || tier === "strong") {
+      out.modelTier = tier;
+    } else if (tier || typeof fm.modelTier !== "string") {
+      log.warn(
+        "CUSTOM_AGENT",
+        `Agent ${agentName} 的 modelTier="${String(fm.modelTier)}" 非法，已忽略`,
+      );
+    }
+  }
+
+  // maxTurns（G-373）：非法配置 warn 并忽略，避免误配静默地失去轮次上限。
+  if (fm.maxTurns !== undefined && fm.maxTurns !== null) {
+    if (typeof fm.maxTurns === "number" && Number.isSafeInteger(fm.maxTurns) && fm.maxTurns > 0) {
+      out.maxTurns = fm.maxTurns;
+    } else {
+      log.warn("CUSTOM_AGENT", `Agent ${agentName} 的 maxTurns 必须是正整数，已忽略`);
+    }
   }
 
   // skills（P1-1）：双格式解析。
@@ -278,8 +320,9 @@ export class CustomAgentTool implements Tool {
           systemPrompt: this.def.prompt,
           userPrompt: task,
           allowedTools: this.def.tools,
-          // PR-B：自定义 Agent 无 maxTurns 声明字段 → 无上限，对齐 CC；frontmatter timeout 已不生效
-          // G13：把自定义 Agent 类型透传给子代理，让 save_memory 的 agent scope 定位到该类型记忆目录
+          // G13：把自定义 Agent 类型透传给子代理，让 save_memory 的 agent scope 定位到该类型记忆目录。
+          // Agent 定义中的 maxTurns 在 CustomSubAgentTask resolver 中作为默认值生效。
+          maxTurns: this.def.maxTurns,
           type: this.def.name,
         },
         signal,

@@ -417,7 +417,7 @@ function parseCLIArgs(): CLIArgs {
         tools: { type: "string" }, // 逗号分隔；替换而非叠加
 
         // 子代理注入（P1-10）
-        agents: { type: "string" }, // 内联 JSON：{name:{description,prompt,tools?,model?}}
+        agents: { type: "string" }, // 内联 JSON：{name:{description,prompt,tools?,model?,modelTier?,maxTurns?}}
         agent: { type: "string" }, // 顶层子代理人格名
 
         // SDK 输入/输出格式（P2-1 / P2-2）
@@ -640,7 +640,7 @@ function parseCLIArgs(): CLIArgs {
       if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
         throw new Error("须为对象 { name: { prompt, ... } }");
       }
-      // 逐项校验 prompt 必填。
+      // 逐项校验 prompt 必填，并拒绝非法模型档位/轮次上限，避免配置被静默忽略。
       for (const [name, def] of Object.entries(parsed as Record<string, any>)) {
         if (
           !def ||
@@ -649,6 +649,18 @@ function parseCLIArgs(): CLIArgs {
           !def.prompt.trim()
         ) {
           throw new Error(`子代理 "${name}" 缺少 prompt 字段`);
+        }
+        if (
+          def.modelTier !== undefined &&
+          !["cheap", "default", "strong"].includes(def.modelTier)
+        ) {
+          throw new Error(`子代理 "${name}" 的 modelTier 须为 cheap / default / strong`);
+        }
+        if (
+          def.maxTurns !== undefined &&
+          (!Number.isSafeInteger(def.maxTurns) || def.maxTurns <= 0)
+        ) {
+          throw new Error(`子代理 "${name}" 的 maxTurns 须为正整数`);
         }
       }
       injectedAgents = parsed as Config["injectedAgents"];
@@ -2087,8 +2099,10 @@ export async function main(): Promise<void> {
           tools: def.tools.length > 0 ? def.tools : undefined,
           source: "userSettings" as const,
           filePath: def.filePath,
-          // P0-2/P1-1/P1-2/P2-1：透传扩展 frontmatter 字段到 AgentDefinition。
+          // P0-2/P1-1/P1-2/P2-1/G-373：透传扩展 frontmatter 字段到 AgentDefinition。
           model: def.model,
+          modelTier: def.modelTier,
+          maxTurns: def.maxTurns,
           skills: def.skills,
           color: def.color,
           permissionMode: def.permissionMode,
@@ -2111,6 +2125,8 @@ export async function main(): Promise<void> {
         systemPrompt: def.prompt,
         tools: def.tools && def.tools.length > 0 ? def.tools : undefined,
         model: def.model,
+        modelTier: def.modelTier,
+        maxTurns: def.maxTurns,
         source: "userSettings" as const,
       }));
       registerDynamicAgents(injected);
@@ -2162,8 +2178,10 @@ export async function main(): Promise<void> {
             tools: def.tools.length > 0 ? def.tools : undefined,
             source: "plugin" as const,
             filePath: def.filePath,
-            // P0-2/P1-1/P1-2/P2-1：透传扩展 frontmatter 字段到 AgentDefinition。
+            // P0-2/P1-1/P1-2/P2-1/G-373：透传扩展 frontmatter 字段到 AgentDefinition。
             model: def.model,
+            modelTier: def.modelTier,
+            maxTurns: def.maxTurns,
             skills: def.skills,
             color: def.color,
             permissionMode: def.permissionMode,

@@ -43,6 +43,30 @@ tools: read, grep, glob
     expect(agents[0].prompt).toContain("代码检查代理");
   });
 
+  test("加载 modelTier / maxTurns frontmatter", async () => {
+    const agentDir = join(testDir, ".sid-code", "agents");
+    mkdirSync(agentDir, { recursive: true });
+    writeFileSync(
+      join(agentDir, "budget-reviewer.md"),
+      `---
+name: budget-reviewer
+description: 低成本审查
+modelTier: cheap
+maxTurns: 8
+---
+检查代码并简洁报告。`,
+    );
+
+    const loader = new CustomAgentLoader(new ExtensionLoader());
+    const agents = await loader.loadAll(testDir);
+    expect(agents).toHaveLength(1);
+    expect(agents[0]).toMatchObject({
+      name: "budget-reviewer",
+      modelTier: "cheap",
+      maxTurns: 8,
+    });
+  });
+
   test("文件名作为默认 name", async () => {
     const agentDir = join(testDir, ".sid-code", "agents");
     mkdirSync(agentDir, { recursive: true });
