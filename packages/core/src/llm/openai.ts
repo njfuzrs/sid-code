@@ -87,6 +87,11 @@ import {
   resolveProviderStreamTimeouts,
 } from "../config/network-profile.ts";
 import { buildResponsesRequest } from "./openai-responses-request.ts";
+import {
+  shouldReplayReasoning,
+  markReasoningReplayUnsupported,
+  looksLikeReasoningReplayRejection,
+} from "./reasoning-replay.ts";
 import { observeThinking, type ThinkingObservationFields } from "./thinking-observation.ts";
 import {
   parseResponsesStream,
@@ -379,6 +384,27 @@ export class OpenAIProvider implements Provider {
    * PARSE-4：估算请求的 prompt token 数（仅在端点未返回 usage 时兜底）。
    * 把 system + 全部消息内容（文本 / tool_use 入参 JSON / tool_result）拼起来字符级估算。
    */
+  /**
+   * 回放 reasoning item 后吃到「网关不认」的 400：标记该 (endpoint, model) 不再回放，并一次性告警。
+   * 本次请求照常报错交给漏斗重试——重试时 shouldReplayReasoning 已为 false，不会再带回放。
+   */
+  private noteReasoningReplayRejection(
+    replayed: boolean,
+    status: number,
+    body: string,
+    model: string,
+  ): void {
+    if (!replayed || !looksLikeReasoningReplayRejection(status, body)) return;
+    if (markReasoningReplayUnsupported(this.baseURL, model)) {
+      getLogger().warn(
+        "LLM:OPENAI:RESPONSES",
+        `推理链无法回传：网关不支持回放 reasoning item（model=${model}，HTTP ${status}），` +
+          `本进程内对该端点停止回放。模型每轮将看不到上一轮的推理。/status 可查看。`,
+        { body: body.slice(0, 300) },
+      );
+    }
+  }
+
   private static estimatePromptTokens(params: SendParams): number {
     let text = "";
     if (typeof params.system === "string") text += params.system + "\n";
@@ -768,6 +794,9 @@ export class OpenAIProvider implements Provider {
               `[${this.name()}] convertMessages 丢弃 redacted_thinking 块（OpenAI 协议无对应字段，` +
                 `data 为密文无法降级为文本）。跨 provider 回放 Anthropic 历史时会出现，推理链在此断裂。`,
             );
+          } else if (block.type === "provider_reasoning") {
+            // Responses 推理项（发现 1）：Chat Completions 无对应字段、密文不能降级成文本。
+            // 只在 Responses ↔ Chat 降级或跨模型时出现，预期内的丢弃，不告警（否则每轮刷屏）。
           } else if (block.type === "tool_use") {
             // §2.3 fail-fast：空 id 的 tool_use 无法与后续 tool message 配对，
             // 原样转发必然触发 OpenAI 400。在转换层提前抛错，比让服务端 400 更易定位。
@@ -1587,8 +1616,9 @@ export class OpenAIProvider implements Provider {
     // 两个渠道会被聚合成一条，分渠道统计失效。请求体用 effectiveModel（真名）。
     const attrModel = params.model || this._model;
 
-    // 构造 Responses API 请求体
-    const requestBody = buildResponsesRequest(params, effectiveModel);
+    // 构造 Responses API 请求体（发现 1：同模型的 reasoning item 原样回放，开关/能力位见 reasoning-replay.ts）
+    const replayReasoning = shouldReplayReasoning(this.baseURL, effectiveModel);
+    const requestBody = buildResponsesRequest(params, effectiveModel, { replayReasoning });
     let responsesSawThinking = false;
     log.debug("LLM:OPENAI:RESPONSES", `发送请求到 ${this.baseURL}/responses`, {
       model: requestBody.model,
@@ -1691,6 +1721,12 @@ export class OpenAIProvider implements Provider {
       log.error("LLM:OPENAI:RESPONSES", `HTTP ${response.status}`, {
         body: errorBody.slice(0, 500),
       });
+      this.noteReasoningReplayRejection(
+        replayReasoning,
+        response.status,
+        errorBody,
+        effectiveModel,
+      );
       yield {
         type: "error",
         error: {
@@ -1826,7 +1862,9 @@ export class OpenAIProvider implements Provider {
       });
 
       // 消费 parseResponsesStream + StreamLifecycle 包装
-      for await (const event of lifecycle.guard(parseResponsesStream(response.body, signal))) {
+      for await (const event of lifecycle.guard(
+        parseResponsesStream(response.body, signal, { model: effectiveModel }),
+      )) {
         // 纵深防御：signal abort 检查
         if (signal?.aborted) {
           emitStreamPhase(
@@ -2211,7 +2249,8 @@ export class OpenAIProvider implements Provider {
     signal?: AbortSignal,
   ): Promise<AccumulatedResponse> {
     const log = getLogger();
-    const streamingBody = buildResponsesRequest(params, effectiveModel);
+    const replayReasoning = shouldReplayReasoning(this.baseURL, effectiveModel);
+    const streamingBody = buildResponsesRequest(params, effectiveModel, { replayReasoning });
     const requestBody = { ...streamingBody, stream: false };
 
     log.debug("LLM:OPENAI:RESPONSES", "非流式请求", {
@@ -2243,6 +2282,12 @@ export class OpenAIProvider implements Provider {
 
       if (!response.ok) {
         const errText = await response.text();
+        this.noteReasoningReplayRejection(
+          replayReasoning,
+          response.status,
+          errText,
+          effectiveModel,
+        );
         const err = new Error(`OpenAI Responses API 错误: ${response.status} ${errText}`);
         // 挂状态码：能力自愈的结构判据看 HTTP 码而非措辞（见 sendMessageNonStreaming）
         (err as any).statusCode = response.status;
@@ -2266,7 +2311,7 @@ export class OpenAIProvider implements Provider {
 
       // 顺带把 Responses 的失败态转成异常，让上层 classifyError 决定是否重试；
       // 否则 status=failed 会被当成一个内容为空的正常回合（静默截断）。
-      const parsed = parseResponsesBody(body);
+      const parsed = parseResponsesBody(body, { model: effectiveModel });
       // D4 / D9 同型（多 Provider 层审计）：usage 必须在 failed 判定**之前**取。
       // 原写法先 throw 再读 usage ⇒ finally 里的计费收口拿到 undefined、记 0 token ——
       // 与流式 `response.failed` 那条是同一个漏洞，只是换了传输方式。

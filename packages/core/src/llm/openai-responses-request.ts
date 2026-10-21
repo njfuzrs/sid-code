@@ -55,7 +55,9 @@ export type ResponsesInputItem =
   | { role: "user"; content: ResponsesContentPart[] }
   | { role: "assistant"; content: ResponsesContentPart[] }
   | { type: "function_call"; call_id: string; name: string; arguments: string }
-  | { type: "function_call_output"; call_id: string; output: string };
+  | { type: "function_call_output"; call_id: string; output: string }
+  /** 回放的推理项（发现 1）：服务端下发的原始 item，去掉 status 后原样送回 */
+  | ({ type: "reasoning" } & Record<string, unknown>);
 
 /** Responses API content part */
 export type ResponsesContentPart =
@@ -119,12 +121,18 @@ function convertTools(tools: ToolDefinition[]): ResponsesToolDef[] {
  * 拆分规则：
  * - 同一消息中的文本块合并到一个 role item 中；
  * - 遇到 tool_use / tool_result 就切分为独立 item（function_call / function_call_output）；
- * - thinking / redacted_thinking 忽略（Responses API 无对应概念）。
+ * - thinking / redacted_thinking 忽略（Responses API 无对应概念）；
+ * - provider_reasoning（同模型、开了回放）就地还原成 reasoning item，位置在它后面的
+ *   function_call 之前——这是官方要求的回传顺序。跨模型的块丢弃（密文绑定模型）。
  *
  * 顺序保持与原 content 一致：文本片段按出现位置聚合，工具 item 就地插入，
  * 保证「文本 → 工具调用 → 文本」之类的交错顺序不被打乱。
  */
-function expandMessage(message: Message, visionEnabled: boolean): ResponsesInputItem[] {
+function expandMessage(
+  message: Message,
+  visionEnabled: boolean,
+  replayModel: string | null,
+): ResponsesInputItem[] {
   const items: ResponsesInputItem[] = [];
   // 待合并的文本部分缓冲区
   let textParts: ResponsesContentPart[] = [];
@@ -189,6 +197,22 @@ function expandMessage(message: Message, visionEnabled: boolean): ResponsesInput
       case "redacted_thinking":
         // Responses API 无对应概念，忽略
         break;
+      case "provider_reasoning": {
+        // 只回放 assistant 侧、同协议、同模型的块；其余丢弃（不是错误，跨模型密文本来就不可用）
+        if (
+          replayModel === null ||
+          message.role !== "assistant" ||
+          block.protocol !== "openai-responses" ||
+          block.model !== replayModel
+        ) {
+          break;
+        }
+        flushText();
+        // status 是服务端输出态字段，作为 input 送回时不需要，部分网关会因它校验失败
+        const { status: _status, ...item } = block.item as Record<string, unknown>;
+        items.push({ ...item, type: "reasoning" });
+        break;
+      }
     }
   }
 
@@ -226,20 +250,27 @@ function convertToolChoice(
  * - assistant ToolUseBlock → { type:"function_call", call_id:block.id, name:block.name, arguments:JSON.stringify(block.input) }
  * - user ToolResultBlock → { type:"function_call_output", call_id:block.tool_use_id, output:block.content }
  * - ThinkingBlock / RedactedThinkingBlock → 忽略（Responses API 无对应概念）
+ * - ProviderReasoningBlock（同模型）→ { type:"reasoning", id, encrypted_content, summary }
  *
  * 注意：同一消息中的文本块合并到一个 role item 中；遇到 tool_use/tool_result 就切分为独立 item。
- * 不处理 thinking / reasoningEffort（GPT-5.x 不支持），请求为无状态（store: false）。
+ * 请求为无状态（store: false）；推理强度走嵌套 `reasoning.effort`（见函数末尾）。
+ * 不加 `include:["reasoning.encrypted_content"]`：store:false 下服务端默认已下发密文，
+ * include 只是被兼容接受的旧值（前置探针 r1 未带 include 也拿到了 1252 字节密文）。
+ *
+ * `opts.replayReasoning=false` 时丢弃全部 provider_reasoning（开关关 / 网关不支持）。
  */
 export function buildResponsesRequest(
   params: SendParams,
   effectiveModel: string,
+  opts: { replayReasoning?: boolean } = {},
 ): ResponsesAPIRequest {
+  const replayModel = opts.replayReasoning === false ? null : effectiveModel;
   // 展开所有消息为扁平的 input item 序列
   const input: ResponsesInputItem[] = [];
   // 图片是否随工具结果发出：按模型能力判定（vision-capability.ts），缺省不发。
   const visionEnabled = resolveVisionSupport(effectiveModel, params.model) === true;
   for (const message of params.messages) {
-    input.push(...expandMessage(message, visionEnabled));
+    input.push(...expandMessage(message, visionEnabled, replayModel));
   }
 
   const request: ResponsesAPIRequest = {

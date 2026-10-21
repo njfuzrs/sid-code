@@ -29,6 +29,7 @@ import { join, dirname } from "path";
 import { currentProjectSessionDir, resolveSessionFileAcrossProjects } from "./store.ts";
 import { getLogger } from "../debug/logger.ts";
 import type { ContentBlock } from "../llm/types.ts";
+import { isReasoningOnlyBlock } from "../llm/types.ts";
 
 /** sidechain 记录类型（子代理视角，线性顺序，无链字段）。 */
 export type SidechainRecord =
@@ -333,7 +334,7 @@ export function reconstructSidechainMessages(
     if (m.role !== "assistant") return true;
     const hasSubstantive = m.content.some((b: any) => {
       const t = b?.type;
-      return t && t !== "thinking" && t !== "redacted_thinking";
+      return t && !isReasoningOnlyBlock(b);
     });
     return hasSubstantive;
   });

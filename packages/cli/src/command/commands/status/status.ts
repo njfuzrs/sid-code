@@ -1,4 +1,8 @@
 import type { LocalCommandModule, CommandContext } from "../../types.ts";
+import {
+  reasoningReplayEnabled,
+  listReasoningReplayUnsupported,
+} from "@sid-code/core/llm/reasoning-replay.ts";
 
 /**
  * /status 命令实现（按需加载）
@@ -27,6 +31,16 @@ const mod: LocalCommandModule = {
     }
     if (ctx.config?.fallbackModel) {
       lines.push(`  Fallback 模型: ${ctx.config.fallbackModel}`);
+    }
+
+    // ── Responses 推理链回放（发现 1）：网关拒绝回放时如实标注，不静默降级 ──
+    if (!reasoningReplayEnabled()) {
+      lines.push("  推理链回放: 已关闭（SID_CODE_RESPONSES_REASONING_REPLAY=0）");
+    } else {
+      const rejected = listReasoningReplayUnsupported();
+      if (rejected.length > 0) {
+        lines.push(`  推理链回放: 网关不支持，已停止回放（${rejected.join(", ")}）`);
+      }
     }
 
     // ── 会话标识 + 目录 ──

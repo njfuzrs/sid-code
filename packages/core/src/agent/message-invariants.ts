@@ -21,6 +21,7 @@
  */
 
 import type { ContentBlock, Message, ToolResultBlock } from "../llm/types.ts";
+import { isReasoningOnlyBlock } from "../llm/types.ts";
 
 /** 一条孤儿 tool_use 记录（assistant 里有 tool_use，但后续无对应 tool_result） */
 export interface OrphanToolUse {
@@ -189,9 +190,7 @@ export function findSplitThinking(original: Message[], remaining: Message[]): Sp
     const msg = original[i];
     if (!msg || remainingSet.has(msg)) continue;
     if (msg.role !== "assistant" || !Array.isArray(msg.content)) continue;
-    const count = msg.content.filter(
-      (b) => b.type === "thinking" || b.type === "redacted_thinking",
-    ).length;
+    const count = msg.content.filter((b) => isReasoningOnlyBlock(b)).length;
     if (count > 0) out.push({ messageIndex: i, count });
   }
   return out;

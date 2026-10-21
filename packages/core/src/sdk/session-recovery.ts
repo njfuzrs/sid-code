@@ -24,6 +24,7 @@
  */
 
 import type { ContentBlock, Message } from "../llm/types.ts";
+import { isReasoningOnlyBlock } from "../llm/types.ts";
 import { getLogger } from "../debug/logger.ts";
 import { stripDanglingToolResults } from "../agent/message-invariants.ts";
 
@@ -110,9 +111,7 @@ const filterUnresolvedToolUses: MessageFilter = (messages, ctx) => {
 const filterOrphanedThinkingOnlyMessages: MessageFilter = (messages, ctx) => {
   return messages.filter((msg) => {
     if (msg.role !== "assistant" || msg.content.length === 0) return true;
-    const hasNonThinking = msg.content.some(
-      (b) => b.type !== "thinking" && b.type !== "redacted_thinking",
-    );
+    const hasNonThinking = msg.content.some((b) => !isReasoningOnlyBlock(b));
     if (!hasNonThinking) {
       ctx.log(
         "孤立thinking消息过滤",

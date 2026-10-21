@@ -108,6 +108,10 @@ export function estimateBlockTokens(block: import("../llm/types.ts").ContentBloc
     case "redacted_thinking":
       // data 是被安全系统脱敏的密文，多轮回传必需，体积不可忽略。
       return estimateTextTokens(block.data ?? "");
+    case "provider_reasoning":
+      // 发现 1：Responses 的 encrypted_content 不会被渲染进新采样（官方说明），按密文长度估
+      // 会让每轮累加几 KB base64，1300 轮下把 masking/压缩提前触发。按 0 计，真实开销由 usage 回填。
+      return 0;
     default:
       return 0;
   }

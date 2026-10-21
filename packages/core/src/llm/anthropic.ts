@@ -186,9 +186,11 @@ export class AnthropicProvider implements Provider {
     const visionSupported = resolveVisionSupport(pickWireModel(params, this._model), params.model);
 
     // 转换消息格式
+    // 发现 1：provider_reasoning 是 OpenAI Responses 的密文推理项，Anthropic 不认识
+    // （下方 map 对未知块 throw）；「gpt → claude」中途切模型时在这里丢掉。
     const messages = params.messages.map((msg) => ({
       role: msg.role,
-      content: msg.content.map((block) => {
+      content: withoutProviderReasoning(msg.content).map((block) => {
         if (block.type === "text") {
           return { type: "text" as const, text: block.text };
         } else if (block.type === "tool_use") {
@@ -963,9 +965,11 @@ export class AnthropicProvider implements Provider {
 
     const visionSupported = resolveVisionSupport(pickWireModel(params, this._model), params.model);
 
+    // 发现 1：provider_reasoning 是 OpenAI Responses 的密文推理项，Anthropic 不认识
+    // （下方 map 对未知块 throw）；「gpt → claude」中途切模型时在这里丢掉。
     const messages = params.messages.map((msg) => ({
       role: msg.role,
-      content: msg.content.map((block) => {
+      content: withoutProviderReasoning(msg.content).map((block) => {
         if (block.type === "text") {
           return { type: "text" as const, text: block.text };
         } else if (block.type === "tool_use") {
@@ -1461,4 +1465,11 @@ function isDirectAnthropicEndpoint(baseUrl?: string): boolean {
   } catch {
     return false;
   }
+}
+
+/** 去掉 provider_reasoning 块（Anthropic 协议无对应字段；跨族切模型时出现） */
+function withoutProviderReasoning(content: ContentBlock[]): ContentBlock[] {
+  return content.some((b) => b.type === "provider_reasoning")
+    ? content.filter((b) => b.type !== "provider_reasoning")
+    : content;
 }

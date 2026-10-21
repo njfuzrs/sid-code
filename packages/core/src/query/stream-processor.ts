@@ -383,6 +383,9 @@ export async function processStream(
               type: "redacted_thinking" as any,
               data: (event.content_block as any).data || "",
             });
+          } else if (event.content_block.type === "provider_reasoning") {
+            // Responses 推理项（发现 1）：原样保留，下一轮回放；不可见、无 delta
+            response.content.push({ ...event.content_block });
           }
           break;
         }
