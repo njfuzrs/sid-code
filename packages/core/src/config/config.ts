@@ -1706,7 +1706,9 @@ export async function loadConfig(cliArgs: Partial<Config> = {}): Promise<Config>
         }
         projectServers[name] = serverConfig;
       }
-      // 登记待审批快照，供 /mcp 面板展示与审批
+      // 登记待审批快照，供启动审批框（DialogSwitch 的 mcp-approval 阶段）展示与审批。
+      // 注意不是 `/mcp` 面板：McpDialog 只读 mcpManager 的已加载 server 状态，
+      // 而待审批项恰恰是未加载的那批，它看不到。
       if (Object.keys(pendingApprovalServers).length > 0) {
         const { setPendingApprovalServers } = await import("../mcp/approval.ts");
         setPendingApprovalServers(pendingApprovalServers, projectPath, legacyKeys);
