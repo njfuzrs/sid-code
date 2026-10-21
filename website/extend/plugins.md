@@ -76,7 +76,7 @@ sid-code --plugin-dir /tmp/my-plugin
 
 | 字段 | 必填 | 说明 |
 | --- | --- | --- |
-| `name` | 是 | **slug 格式**：小写字母 / 数字 / `-` / `_`，且以字母或数字开头 |
+| `name` | 是 | **slug 格式**：小写字母 / 数字 / `-` / `_`，以字母或数字开头，且 ≤ 64 字符 |
 | `version` | 是 | 版本号（semver） |
 | `description` | 是 | 一句话说明 |
 | `author` / `license` | 否 | 字符串 |
@@ -118,7 +118,8 @@ commands/env/staging.md    → /my-plugin:env:staging
 }
 ```
 
-事件名要 snake_case、hook 对象要平铺，规则和普通 Hook 完全一致——
+事件名推荐 snake_case、hook 对象推荐平铺（源码也兼容 PascalCase 事件名和嵌套组写法，
+但别在新插件里用），规则和普通 Hook 完全一致——
 细节和排错见 [Hook 指南](/extend/hooks)。
 
 ::: tip Hook 热重载是原子的
@@ -173,11 +174,14 @@ sid-code --plugin-dir /tmp/plugin-a --plugin-dir /tmp/plugin-b
 面板里的操作和对应子命令走同一套实现，规则一致：内置插件只能查看，不能启停或卸载；
 只有从市场装的插件才有「检查更新」；面板里的卸载只把插件移出注册表、保留文件，
 要删文件用 `/plugin uninstall <name> --delete`。改完状态同样要 `/reload-plugins` 才生效，
-面板底部会提示。脚本和 CI 里用 `sid-code plugin <子命令>`，它不打开面板。
+面板底部会提示。脚本和 CI 里用 `sid-code plugin <子命令>`（无头模式下斜杠形式
+`/plugin` 整条不可用，会被拒绝并提示改走这个 CLI 入口）。
 
 ## 企业插件市场
 
-市场地址由 `backend.url` 推出（`<backend.url>/api/v1/ctl/marketplace/index`），请求带设备凭据。
+市场地址由 `backend.url` 推出（`<backend.url>/api/v1/ctl/marketplace/index`）。请求只在
+目标地址与 `backend.url` 同源时才带设备凭据——企业市场天然同源；官方市场和其他
+不同源的市场永远不带凭据，凭据不会跟着请求走到别的 origin。
 管理员怎么上架、发布、下架插件，见企业后端的[插件市场](/backend/marketplace)页。
 目录拉不到（网络错 / 5xx）时用上次缓存展示，已装插件照常加载；401 不退回缓存，
 凭据被吊销后目录与下载一起失效。
@@ -204,6 +208,20 @@ sid-code --plugin-dir /tmp/plugin-a --plugin-dir /tmp/plugin-b
 `strictKnownMarketplaces: []` 表示除内置插件外全部禁用。市场插件加载前会复核目录指纹，
 装好后被改过内容（比如往里加了 `hooks.json`）的插件不会加载，需要 `/plugin update` 或重装。
 这一层防的是误装和未审计的插件被顺手加载，挡不住有本机写权限、又存心伪造 `installed.json` 的人。
+
+### 市场插件的自动更新
+
+启动时对已装的市场插件有一次后台检查（不弹窗、失败一律静默记日志）：
+
+- **官方市场 `sid-code` 默认自动升级**——内容走仓库 PR review，信任点前移到了分支保护。
+- **企业 / 额外市场默认只提示**，有新版本时状态栏提示你跑 `/plugin update`；
+  管理员可用 managed settings 的 `pluginMarketplaceAutoUpdate: { "company": true }` 按市场名打开。
+- 两条与市场无关的硬边界：**只升级已装的插件，从不新装**；新版本的 hooks / MCP
+  与已装版本不同（或市场没给组件清单、无法判断）时**不静默升级**，转为提示手动更新
+  ——hooks 会在本机执行命令，自动升级这一步不能比首次安装还宽松。
+- 只有装了市场插件时才联网，每个市场一次带 ETag 的目录请求（未变时是 304）；
+  目录拉不到时不升级（缓存里的「新版本」不可信）。企业锁定策略对它照常生效。
+- 自动升级完成后同样要 `/reload-plugins` 才生效，状态栏会提示。
 
 ## Bridge：远程控制
 
@@ -238,11 +256,12 @@ sid-code --bridge wss://relay.example.com/session/abc --bridge-token <token>
 1. **企业策略可以整体关掉 Bridge**：远程下发的 `bridgeEnabled: false` 或本机 settings 的
    `bridge.enabled: false` 都会直接拒绝（远程的 false 盖过本机配置）：
    `企业策略已禁用 Bridge 远程控制（settings 中 bridge.enabled = false）`
-2. **明文 `ws://` 默认拒绝**，要显式加 `--bridge-insecure` 才放行：
+2. **URL 必须合法**：解析不了的地址直接拒绝（非法协议在这里也会被拦）。
+3. **明文 `ws://` 默认拒绝**，要显式加 `--bridge-insecure` 才放行：
    `拒绝明文 Bridge 连接: ws://…  改用 wss:// ，或确认风险后显式加 --bridge-insecure。`
-3. **首次连某个地址要当面确认**。会弹一个 TUI 确认框列出这个地址和风险提示（与其余审批框同一套交互，默认聚焦「拒绝」，Esc 拒绝），确认后记住，下次不再问。
+4. **首次连某个地址要当面确认**。会弹一个 TUI 确认框列出这个地址和风险提示（与其余审批框同一套交互，默认聚焦「拒绝」，Esc 拒绝），确认后记住，下次不再问。
    记的是端点本身，URL 里的 query（常带 token）会被剥掉，不会落盘。
-4. **没有终端可问时 fail-closed**：首次连接却处在非交互环境（比如脚本里），直接拒绝，
+5. **没有终端可问时 fail-closed**：首次连接却处在非交互环境（比如脚本里），直接拒绝，
    要先在交互式终端里跑一次完成确认。
 
 每次准入拒绝都会记一条防线触发事件，可以在轨迹里统计。

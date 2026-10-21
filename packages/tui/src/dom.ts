@@ -15,6 +15,8 @@ type InkNode = {
 	renderDirty?: boolean;
 	yogaNode?: YogaNode;
 	internal_static?: boolean;
+	/** sid-code：History 的容器节点。主屏帧 diff 要知道历史区下沿，溢出后收缩时把空行补在那里（frame/main-screen.ts） */
+	internal_history?: boolean;
 	style: Styles;
 };
 
