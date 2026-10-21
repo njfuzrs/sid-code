@@ -38,6 +38,7 @@ import {
   recordNonStreamingBilledRequest,
   observedThinkingIntent,
   nextFetchId,
+  markFetchInFlight,
 } from "./billing-sink.ts";
 import { splitSSELines, parseSSEField, isDoneSentinel } from "./sse-line.ts";
 import { createStreamLifecycle, LIFECYCLE_PRESETS } from "./stream-lifecycle.ts";
@@ -1709,6 +1710,20 @@ export class OpenAIProvider implements Provider {
     // 提出来而不是在 finally 内重算：usage 只有流消费过程能聚合出来。
     let accumulatedUsage: Usage = { inputTokens: 0, outputTokens: 0 };
     const billingFetchId = nextFetchId();
+    // 发现 13：登记在途（理由同 parseSSE）。ce7ea52e 那次被丢下的 fetch 正是走这条 Responses 路径。
+    const inFlightCtx = currentSseDumpContext();
+    markFetchInFlight(billingFetchId, () => ({
+      fetchId: billingFetchId,
+      model: params.model ?? effectiveModel,
+      provider: this.name(),
+      baseURL: this.baseURL,
+      usage: { ...accumulatedUsage },
+      index: obsIndex,
+      agentId: inFlightCtx.agentId,
+      callerLabel: inFlightCtx.callerLabel,
+      atMs: Date.now(),
+      accounted: false,
+    }));
 
     try {
       // 累积变量
@@ -2360,6 +2375,20 @@ export class OpenAIProvider implements Provider {
     // PR3：本次 fetch 的计费去重键。**必须在这里生成**（每次 parseSSE = 一次 fetch），
     // 不能用轮粒度：主循环的 usage 是跨 attempt 累加的，用轮粒度做键会与主循环双记。
     const billingFetchId = nextFetchId();
+    // 发现 13：登记在途。生成器被丢下不再驱动时 finally 永不执行，会话收尾由 billing-sink 补记。
+    // accounted 恒 false：被丢下的这次 fetch 主循环也没拿到 usage，没人入过账。
+    markFetchInFlight(billingFetchId, () => ({
+      fetchId: billingFetchId,
+      model: modelName ?? this._model,
+      provider: this.name(),
+      baseURL: this.baseURL,
+      usage: { ...usage },
+      index: parseObsIndex,
+      agentId: dumpCtx.agentId,
+      callerLabel: dumpCtx.callerLabel,
+      atMs: Date.now(),
+      accounted: false,
+    }));
 
     // 流式看门狗阈值统一走 network-profile（必删-1/-2 + 配置-3）：
     //   - idle：N 秒内 reader 无任何 chunk → 断开（半开 TCP 兜底）

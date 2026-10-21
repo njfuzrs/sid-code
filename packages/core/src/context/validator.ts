@@ -16,8 +16,12 @@ export class MessageValidator {
    * 验证消息数组是否符合 API 规范
    * 返回错误列表，空数组表示验证通过
    */
-  static validate(messages: Message[]): ValidationError[] {
+  static validate(messages: Message[], opts: { from?: number } = {}): ValidationError[] {
     const errors: ValidationError[] = [];
+    // 发现 11：增量校验。`from` 之前的前缀调用方已校验过，逐条规则只看 [from, n)；
+    // 跨消息规则（交替看前一条、tool_result 找 tool_use）仍以整个数组为上下文，
+    // 否则「前缀里的 tool_use」会被新增的 tool_result 误报为 MISMATCH。
+    const from = Math.max(0, Math.min(opts.from ?? 0, messages.length));
 
     // 规则 1: 消息数组不能为空
     if (messages.length === 0) {
@@ -29,7 +33,7 @@ export class MessageValidator {
     }
 
     // 规则 2: 第一条消息必须是 user
-    if (messages[0].role !== "user") {
+    if (from === 0 && messages[0].role !== "user") {
       errors.push({
         code: "FIRST_MESSAGE_NOT_USER",
         message: "第一条消息必须是 user 角色",
@@ -38,7 +42,7 @@ export class MessageValidator {
     }
 
     // 规则 3: 角色必须交替
-    for (let i = 1; i < messages.length; i++) {
+    for (let i = Math.max(1, from); i < messages.length; i++) {
       const prev = messages[i - 1];
       const curr = messages[i];
       if (prev.role === curr.role) {
@@ -51,7 +55,7 @@ export class MessageValidator {
     }
 
     // 规则 4: 内容不能为空
-    for (let i = 0; i < messages.length; i++) {
+    for (let i = from; i < messages.length; i++) {
       const msg = messages[i];
       if (!msg.content || msg.content.length === 0) {
         errors.push({
@@ -71,7 +75,7 @@ export class MessageValidator {
       for (const block of msg.content) {
         if (block.type === "tool_use") {
           toolUseIds.add(block.id);
-        } else if (block.type === "tool_result") {
+        } else if (block.type === "tool_result" && i >= from) {
           toolResultIds.add(block.tool_use_id);
         }
       }
@@ -88,7 +92,7 @@ export class MessageValidator {
     }
 
     // 规则 6: JSON 必须合法（工具输入）
-    for (let i = 0; i < messages.length; i++) {
+    for (let i = from; i < messages.length; i++) {
       const msg = messages[i];
       for (const block of msg.content) {
         if (block.type === "tool_use") {

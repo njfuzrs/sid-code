@@ -117,6 +117,10 @@ export class SessionState {
   totalToolDuration: number = 0;
   /** 按模型分开的用量统计 */
   modelUsage: Record<string, ModelUsageStats> = {};
+  /** 入账观察者，见 setCostChangeListener */
+  private costChangeListener: ((effectiveCostUSD: number) => void) | null = null;
+  /** 入账版本号：每次 updateUsage / addSideCost +1。账本判脏用它而非成本（零成本 provider 也要落行）。 */
+  private usageVersion = 0;
   /** 会话级别的临时数据存储（用于命令间共享状态） */
   private sessionData = new Map<string, any>();
   /** 用户配置的模型列表（携带定价 + provider 信息），用于定价/inferProvider 优先使用 */
@@ -286,6 +290,7 @@ export class SessionState {
     // 更新全局统计
     this.totalCostUSD += cost;
     this.totalAPIDuration += durationMs;
+    this.notifyCostChanged();
     // G2：返回本次入账金额，供 usage-sink 落 SubagentCost 事件（与状态栏同一个数，不重算）。
     return cost;
   }
@@ -356,6 +361,35 @@ export class SessionState {
    */
   addSideCost(costUSD: number): void {
     this.sideCostUSD += costUSD;
+    this.notifyCostChanged();
+  }
+
+  /**
+   * 入账观察者（20261020 ce7ea52e 发现 8）：每次 updateUsage / addSideCost 之后同步回调一次。
+   *
+   * 为什么挂在这里而不是 query loop 的 AfterModel：账本要的是「钱已经记进 SessionState」
+   * 这个时刻，主循环、子代理 usage-sink、side-call 三条入账路都汇到这两个方法；挂在任一
+   * 消费侧都只覆盖一条路。单观察者够用（只有 app 的账本节流刷新在听），异常一律吞掉 ——
+   * 账本刷新失败绝不能反过来打断入账。
+   */
+  setCostChangeListener(fn: ((effectiveCostUSD: number) => void) | null): void {
+    this.costChangeListener = fn;
+  }
+
+  /** 入账版本号（单调递增，rotate 不清零也无妨：判脏只比较是否相等）。 */
+  getUsageVersion(): number {
+    return this.usageVersion;
+  }
+
+  private notifyCostChanged(): void {
+    this.usageVersion++;
+    const fn = this.costChangeListener;
+    if (!fn) return;
+    try {
+      fn(this.getEffectiveTotalCostUSD());
+    } catch {
+      /* 观察者异常不影响入账 */
+    }
   }
 
   /**

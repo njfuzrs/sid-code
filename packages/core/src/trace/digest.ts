@@ -860,6 +860,12 @@ export interface ProcessPathologyStats {
    * 此时不判恒等式：把 0 当右边会让全部历史会话报红。
    */
   billedRequests?: number;
+  /**
+   * 发现 13：其中由会话收尾补记的 `reason:"aborted"` 条数（已建连、provider 收口没跑到）。
+   * 它们是**有配对**的：补记只针对登记过的在途 fetch，所以算进右边是对的；
+   * 建连了却连补记都没有的，仍然让恒等式不成立。
+   */
+  abortedBilledRequests?: number;
   /** billedRequests 已知且 ≠ billableConnections */
   billingIdentityBroken: boolean;
 }
@@ -920,6 +926,8 @@ export interface Digest {
   apiCalls: number;
   totalSteps: number;
   costUSD: number;
+  /** 发现 8：costUSD 取自哪个源（账本 / traj 元数据 / traj 汇总），渲染时标注 */
+  costSource?: DigestCostSource;
   /** 末轮 prompt 快照（stock）。头部展示不用它，见 tokensSentCumulative */
   tokensSent: number;
   /**
@@ -1403,6 +1411,46 @@ export function cleanPrompt(p: unknown): string {
   return String(p ?? "")
     .replace(/[\u0000-\u0008\u000b\u000c\u000e-\u001f\u007f]/g, "")
     .trim();
+}
+
+export type DigestCostSource = "ledger" | "metadata" | "traj";
+
+const COST_SOURCE_LABEL: Record<DigestCostSource, string> = {
+  ledger: "账本",
+  metadata: "traj 元数据",
+  traj: "traj 汇总",
+};
+
+/**
+ * 发现 8（20261020 ce7ea52e）：digest 的成本取「账本」与「traj 元数据」里**较新**的那个。
+ *
+ * 旧口径是账本无条件优先（`ledger?.costUSD ?? meta.total_cost_usd`）。账本此前只在每次提问的
+ * done 刷新，一次提问跑 11 小时后被 abort，账本停在第 1 问结束时的 $0.17，digest 首行照抄；
+ * 而 traj 元数据的 `total_cost_usd` 每轮 AfterModel 增量累加，快照时已是 $11.1。
+ *
+ * 比较键：账本 `ts`（秒，buildUsageLedgerEntry 写）vs 元数据 `snapshot_at`（traj 生成时刻）。
+ * 同一时刻两边都写（SessionEnd 时账本只晚约 1s）取账本：它是 SessionState 权威值，含旁路调用。
+ * 任一侧时间缺失时退回旧口径（账本优先），不拿缺失当「更旧」。
+ */
+export function resolveDigestCost(
+  ledger: { costUSD: number; ts: number } | undefined,
+  meta: Pick<TrajMeta, "snapshot_at"> & { total_cost_usd?: number },
+  trajCostUSD?: number,
+): { costUSD: number; source?: DigestCostSource } {
+  const metaCost = meta.total_cost_usd;
+  if (ledger && metaCost !== undefined) {
+    const ledgerMs = ledger.ts < 1e12 ? ledger.ts * 1000 : ledger.ts;
+    const snapMs = meta.snapshot_at ? Date.parse(meta.snapshot_at) : NaN;
+    // 账本 ts 是秒级向下取整，差 1s 以内视作同一时刻（否则同秒写入会被误判成账本更旧）。
+    if (Number.isFinite(snapMs) && snapMs >= ledgerMs + 1000) {
+      return { costUSD: metaCost, source: "metadata" };
+    }
+    return { costUSD: ledger.costUSD, source: "ledger" };
+  }
+  if (ledger) return { costUSD: ledger.costUSD, source: "ledger" };
+  if (metaCost !== undefined) return { costUSD: metaCost, source: "metadata" };
+  if (trajCostUSD !== undefined) return { costUSD: trajCostUSD, source: "traj" };
+  return { costUSD: 0 };
 }
 
 /**
@@ -1996,8 +2044,11 @@ export function buildDigest(ref: SessionRef, full: boolean, paths: DigestPaths):
   const ledger = readJsonl<LedgerEntry>(paths.ledgerPath)
     .filter((e) => e.sessionId === ref.id)
     .pop();
-  const costUSD =
-    ledger?.costUSD ?? meta.total_cost_usd ?? traj.info?.model_stats?.total_cost_usd ?? 0;
+  const { costUSD, source: costSource } = resolveDigestCost(
+    ledger,
+    meta,
+    traj.info?.model_stats?.total_cost_usd,
+  );
   // S12 / 复审 B4：「有账本条目 = 已收尾」不成立 —— flushSessionLedgerIncremental 每轮 done
   // 都 upsert 账本（durationMs = 当时的 elapsed），进行中会话几乎都有条目。
   // 收尾与否只认 traj 元数据的 session_ended（builder 按 end_time/end_source 写，语义正确）；
@@ -2641,6 +2692,7 @@ export function buildDigest(ref: SessionRef, full: boolean, paths: DigestPaths):
     apiCalls: meta.total_api_calls ?? traj.info?.model_stats?.api_calls ?? 0,
     totalSteps: meta.total_steps ?? steps.length,
     costUSD,
+    costSource,
     tokensSent,
     tokensSentCumulative: meta.total_cumulative_prompt_tokens,
     tokensReceived: meta.total_tokens_received ?? traj.info?.model_stats?.tokens_received ?? 0,
@@ -2726,7 +2778,7 @@ export function renderHuman(d: Digest, opts: RenderOptions = {}): string {
   L.push(c("bold", `━━━ session ${d.sessionId}  [${c(exitColor, d.exitStatus)}] ━━━`));
   L.push(
     `  模型 ${c("cyan", d.model)}   API ${d.apiCalls} 次   步骤 ${d.totalSteps}   ` +
-      `耗时 ${fmtDuration(d.durationMs)}${d.durationInProgress ? "（进行中，截至快照）" : ""}   成本 ${fmtUsd(d.costUSD)}   ` +
+      `耗时 ${fmtDuration(d.durationMs)}${d.durationInProgress ? "（进行中，截至快照）" : ""}   成本 ${fmtUsd(d.costUSD)}${d.costSource ? `（${COST_SOURCE_LABEL[d.costSource]}）` : ""}   ` +
       // stock/flow 铁律：↓ 是累计输出，↑ 必须也是累计 prompt。此前用的是
       // total_tokens_sent（末轮快照），实测 80833↑ vs 真实累计 763109，差 9.4 倍。
       (d.tokensSentCumulative !== undefined
@@ -4297,8 +4349,10 @@ export function computeProcessPathology(
     const ct = typeof d?.content_type === "string" ? d.content_type.toLowerCase() : "";
     return !ct.includes("text/html");
   }).length;
-  const billedCount = events.filter((e) => e.event === "BilledRequest").length;
+  const billedEvents = events.filter((e) => e.event === "BilledRequest");
+  const billedCount = billedEvents.length;
   const billedRequests = billedCount > 0 ? billedCount : undefined;
+  const abortedBilled = billedEvents.filter((e) => (e.data as any)?.reason === "aborted").length;
   const billingIdentityBroken =
     billedRequests !== undefined && billedRequests !== billableConnections;
 
@@ -4330,6 +4384,7 @@ export function computeProcessPathology(
       retryWastedRatio !== undefined && retryWastedRatio > RETRY_WASTED_RATIO_THRESHOLD,
     billableConnections,
     billedRequests,
+    ...(abortedBilled > 0 ? { abortedBilledRequests: abortedBilled } : {}),
     billingIdentityBroken,
   };
 }
@@ -4452,6 +4507,7 @@ function describePathology(
       kind: "billing_identity_broken",
       detail:
         `计费恒等式不成立：可计费建连 ${p.billableConnections} 次，计费事件 ${p.billedRequests} 条` +
+        (p.abortedBilledRequests ? `（含收尾补记 aborted ${p.abortedBilledRequests} 条）` : "") +
         `（${diff < 0 ? `少 ${-diff} 条 = 有调用链的钱没记上` : `多 ${diff} 条 = 同一 fetch 被重复计费`}）`,
       provenance: [
         {

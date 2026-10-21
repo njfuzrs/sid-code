@@ -414,6 +414,16 @@ export class Manager {
    */
   private lastSendSnapshot: { full: Message[]; sent: Message[] } | null = null;
   /**
+   * 发现 11：发送前校验的增量游标。存上次校验时的全量历史（引用）；本轮与它按引用比
+   * 最长公共前缀，前缀之内已校验过、不再重复跑。尾部合并（addMessage 替换为新对象）、
+   * 压缩/截断（前缀整体换掉）都会让引用不等，游标自然回退，不需要每个写入口记得重置。
+   * 遮罩/清理只改 tool_result 的字符串内容，不动角色、块型与 id，所以按全量历史的引用判前缀
+   * 对发送副本同样成立。
+   */
+  private validatedPrefix: Message[] = [];
+  /** 发现 11：已告警过的 (code, index/文案) 签名，同一问题只告警一次。压缩后下标含义变了，随之清空。 */
+  private warnedValidationKeys = new Set<string>();
+  /**
    * 发现 14：自上一次 consumeSendMutationCauses 以来，本地改写发送前缀的来源。
    * 只记三种 ContextManager 自己能确证的：compact（历史被整体替换）/ masking（本轮新遮罩）/
    * cleaned（本轮新清理）。由主循环在 BeforeModel 前取走，随 prefix_break 事件落盘。
@@ -670,6 +680,8 @@ export class Manager {
     this.maskedState.clear();
     this.lastSendSnapshot = null;
     this.pendingSendCauses.add("compact");
+    this.validatedPrefix = [];
+    this.warnedValidationKeys.clear();
   }
 
   /**
@@ -964,6 +976,32 @@ export class Manager {
   }
 
   /**
+   * 发现 11：发送前格式校验（仅警告，不阻塞），增量 + 去重。
+   * 原先两个出口每轮对全量历史跑 validate，同一处历史问题每轮重复告警（实测一会话 897 次），
+   * 新问题淹没在旧告警里。
+   */
+  private validateSendCopy(full: Message[], sent: Message[]): void {
+    const prev = this.validatedPrefix;
+    let from = 0;
+    const limit = Math.min(prev.length, full.length);
+    while (from < limit && prev[from] === full[from]) from++;
+    this.validatedPrefix = full;
+
+    const errors = MessageValidator.validate(sent, { from });
+    const fresh = errors.filter((e) => {
+      const key = `${e.code}@${e.messageIndex ?? e.message}`;
+      if (this.warnedValidationKeys.has(key)) return false;
+      this.warnedValidationKeys.add(key);
+      return true;
+    });
+    if (fresh.length > 0) {
+      getLogger().warn("CONTEXT", `消息验证发现 ${fresh.length} 个问题:`, {
+        errors: fresh.map((e) => `[${e.code}] ${e.message}`),
+      });
+    }
+  }
+
+  /**
    * 获取清理后的消息列表（发送给 LLM 前调用）
    * 1. 应用工具输出遮罩（soft 级别压缩）
    * 2. 清理旧的大输出，只保留最近 N 个（P1-3：豁免活跃文件 + 占位符附重读指引）
@@ -971,8 +1009,6 @@ export class Manager {
    * 4. 返回深拷贝，不影响原始消息
    */
   getCleanedMessages(): Message[] {
-    const log = getLogger();
-
     // 先应用工具输出遮罩（如果启用）
     const full = [...this.messages];
     let cleaned = full;
@@ -1061,12 +1097,7 @@ export class Manager {
 
     // 本轮既没有新的清理对象，也没有上一轮留下的占位要贴回 → 原文发出。
     if (cleanMap.size === 0) {
-      const errors = MessageValidator.validate(cleaned);
-      if (errors.length > 0) {
-        log.warn("CONTEXT", `消息验证发现 ${errors.length} 个问题:`, {
-          errors: errors.map((e) => `[${e.code}] ${e.message}`),
-        });
-      }
+      this.validateSendCopy(full, cleaned);
       this.recordSentIntactToolResults(cleaned);
       this.lastSendSnapshot = { full, sent: cleaned };
       return cleaned;
@@ -1145,12 +1176,7 @@ export class Manager {
     }
 
     // 验证消息格式（仅警告，不阻塞）
-    const errors = MessageValidator.validate(result);
-    if (errors.length > 0) {
-      log.warn("CONTEXT", `消息验证发现 ${errors.length} 个问题:`, {
-        errors: errors.map((e) => `[${e.code}] ${e.message}`),
-      });
-    }
+    this.validateSendCopy(full, result);
 
     this.recordSentIntactToolResults(result);
     this.lastSendSnapshot = { full, sent: result };
@@ -1283,7 +1309,7 @@ export class Manager {
   /**
    * 插入 compact_boundary 标记
    *
-   * 在消息列表中插入一条特殊消息，标记该点之前的内容已被压缩。
+   * 标记该点之前的内容已被压缩：尾部是 user 时并入那条消息，否则追加一条 user 边界消息。
    * 使用 Message._meta 字段而非新增 ContentBlock 类型，保持向后兼容。
    *
    * @param summary 压缩摘要
@@ -1296,30 +1322,38 @@ export class Manager {
     messageCountBefore: number,
     source: CompactSource = "compact",
   ): void {
-    const boundaryMsg: Message = {
-      role: "user",
-      content: [{ type: "text", text: `[压缩边界] ${summary}` }],
-      _meta: {
-        compact_boundary: {
-          summary,
-          messageCountBefore,
-          timestamp: Date.now(),
-        },
-        compact_source: source,
-      },
-    };
+    const boundaryText = { type: "text" as const, text: `[压缩边界] ${summary}` };
+    const boundaryMeta = { summary, messageCountBefore, timestamp: Date.now(), source };
 
-    const log = getLogger();
-    // D5（S5 连带）：边界是裸 push 的 user 消息，刻意不走 addMessage——那会把它与尾部 user
-    // 合并、`_meta.compact_boundary` 浅合并进别的消息。代价是尾部为 user 时出现 user,user 相邻。
-    // 这里不改行为，只把这个事实记下来：出现了就 warn，便于在轨迹里数它（方案只要求断言）。
+    // 发现 11：尾部是 user（压缩多发生在发请求前，保留段几乎恒以 user[tool_result] 收尾）时，
+    // 边界文本并入那条 user 作为新增 text 块、`_meta.compact_boundary` 合到它身上，不再新增消息——
+    // 原先裸 push 恒产生 user,user 相邻（实测一会话 ROLE_NOT_ALTERNATING 告警 897 次）。
+    // 刻意不走 addMessage：它对内部 origin 会补桥（又多两条），且会对合并内容重跑聚合预算。
+    // 合并消息**不打顶层 compact_source**：那会让 isCompactSourceMessage 把一条真实的
+    // tool_result 消息算成压缩产物，onlyCompactSourceHistory 的 fresh 计数平白少 1、
+    // P0-5 守卫提前生效。来源改记在 compact_boundary.source 里。
+    // 不新增消息也意味着发现 3a 的「after 在插边界之前取」口径在这条路上自动成立。
     if (compactBoundaryBreaksAlternation(this.messages)) {
-      log.warn(
+      const last = this.messages[this.messages.length - 1]!;
+      // 替换为新对象而非原地改：restoreToPrefix / 发送快照靠引用相等判断前缀是否被改写。
+      this.messages[this.messages.length - 1] = {
+        ...last,
+        content: [...last.content, boundaryText],
+        _meta: { ...last._meta, compact_boundary: boundaryMeta },
+      };
+      getLogger().debug(
         "CONTEXT",
-        `compact_boundary 接在 user 消息之后（角色不交替），messageCountBefore=${messageCountBefore}`,
+        `compact_boundary 并入尾部 user 消息: messageCountBefore=${messageCountBefore}`,
       );
+      return;
     }
-    this.messages.push(boundaryMsg);
+
+    this.messages.push({
+      role: "user",
+      content: [boundaryText],
+      _meta: { compact_boundary: boundaryMeta, compact_source: source },
+    });
+    const log = getLogger();
     log.debug("CONTEXT", `插入 compact_boundary: messageCountBefore=${messageCountBefore}`);
   }
 
@@ -1331,7 +1365,7 @@ export class Manager {
    * 保留消息骨架（role）和 compact_boundary 摘要。
    *
    * ⚠️ 调用前提：边界必须插在切点（splitPoint / 管道切点），**不能**贴在数组末尾。
-   * `addCompactBoundary` 是 `this.messages.push(...)`，边界永远贴末尾；此时
+   * `addCompactBoundary` 总把边界贴在末尾（追加或并入尾部 user）；此时
    * `i < boundaryIdx` 覆盖整段历史，含 emergencyTruncate / 渐进管道特意留下的
    * 保留段。2026-09-20 实证：blocking/hard 在贴末尾后调本方法，近端
    * RECENT_TAIL 全部变成 `[已释放]` 桩发给 LLM（P0-1）。

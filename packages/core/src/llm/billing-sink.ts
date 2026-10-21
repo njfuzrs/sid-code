@@ -151,6 +151,12 @@ export interface BilledRequest {
    * 本事件同样只作核对（见 {@link UsageSinkTicket}）。
    */
   accountedBy?: "usage-sink";
+  /**
+   * 发现 13（20261020 ce7ea52e）：`"aborted"` = 这条不是 provider 收口发的，是会话收尾时
+   * 由 {@link flushInFlightBilledRequests} 替一次「已建连、provider finally 永远没跑到」的 fetch 补记的。
+   * usage 只有收尾时已聚合到的部分（常为 0）—— 「花了钱但不知道多少」必须可见，不能不存在。
+   */
+  reason?: "aborted";
 }
 
 /**
@@ -265,6 +271,7 @@ export function addBillingObserver(fn: BillingObserver): () => void {
  */
 export function recordBilledRequest(req: BilledRequest): void {
   try {
+    inFlight.delete(req.fetchId);
     if (!req.fetchId || seen.has(req.fetchId) || seenPrev.has(req.fetchId)) return;
     if (seen.size >= MAX_SEEN) {
       seenPrev = seen;
@@ -297,6 +304,7 @@ export function recordBilledRequest(req: BilledRequest): void {
       accounted: req.accounted,
       ...(req.accountedBy && { accounted_by: req.accountedBy }),
       charged: shouldChargeBilledRequest(req),
+      ...(req.reason && { reason: req.reason }),
       input_tokens: req.usage.inputTokens ?? 0,
       output_tokens: req.usage.outputTokens ?? 0,
       ...(req.usage.cacheReadInputTokens !== undefined && {
@@ -463,8 +471,58 @@ export function resetPriceTierCounts(): void {
   tieredCount = 0;
 }
 
+/**
+ * 发现 13（20261020 ce7ea52e）：已建连（2xx 响应头已到）但还没走到 provider 收口的 fetch。
+ *
+ * 根因：收口挂在 provider 生成器的 `finally`，而 `finally` 只在生成器被 return/throw 或读完时跑。
+ * 实测 index 1316：HttpConnected 200 + first_content 之后用户 abort，外层丢下这个生成器不再驱动，
+ * 进程又活了 11 小时 —— 它的 `finally` 一次都没跑，那次 fetch 在 events 里只有建连、没有计费，
+ * 恒等式少 1 条，钱也少记一笔（这一笔恰好是 80 万 token 的长上下文请求）。
+ *
+ * 修法不是在 abort 时「猜一个 usage 记进去」：abort 之后生成器仍可能被正常 return，届时
+ * 真实 usage 才到；提前补记会让真实那条被去重吃掉。所以只在**会话收尾**（之后不会再有
+ * 任何东西驱动它）把仍在途的 fetch 补记成 `reason:"aborted"`，带上收尾时已聚合的 usage。
+ */
+const inFlight = new Map<string, () => BilledRequest>();
+
+/**
+ * provider 在 2xx 建连、生成 fetchId 之后登记；`snapshot` 在补记时调用，返回当时已聚合的计费字段。
+ * 正常收口（{@link recordBilledRequest}）会自动注销。
+ */
+export function markFetchInFlight(fetchId: string, snapshot: () => BilledRequest): void {
+  try {
+    if (inFlight.size >= MAX_SEEN) inFlight.clear(); // 有界：只有泄漏才会到这里
+    inFlight.set(fetchId, snapshot);
+  } catch {
+    /* 计费观测绝不影响流 */
+  }
+}
+
+/** 会话收尾时调用：把仍在途的 fetch 补记成 `reason:"aborted"`。返回补记条数。 */
+export function flushInFlightBilledRequests(): number {
+  const pending = [...inFlight.entries()];
+  inFlight.clear();
+  let n = 0;
+  for (const [fetchId, snapshot] of pending) {
+    try {
+      recordBilledRequest({ ...snapshot(), fetchId, reason: "aborted" });
+      n++;
+    } catch {
+      /* 单条补记失败不影响其余 */
+    }
+  }
+  if (n > 0) getLogger().info("BILLING", `会话收尾补记 ${n} 次在途 fetch（reason=aborted）`);
+  return n;
+}
+
+/** 当前在途 fetch 数（测试 / 诊断用） */
+export function inFlightFetchCount(): number {
+  return inFlight.size;
+}
+
 /** 全量重置（测试用）：观察者 + 去重集合 + 时段计数。 */
 export function resetBillingSink(): void {
+  inFlight.clear();
   observers.clear();
   seen = new Set();
   seenPrev = new Set();

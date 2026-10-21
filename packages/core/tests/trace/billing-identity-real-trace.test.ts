@@ -10,7 +10,14 @@
 import { test, expect, describe, beforeEach, afterEach } from "bun:test";
 import { computeProcessPathology } from "../../src/trace/digest.ts";
 import { initStreamObserver, resetStreamObserver } from "../../src/trace/stream-observer.ts";
-import { recordBilledRequest, resetBillingSink, nextFetchId } from "../../src/llm/billing-sink.ts";
+import {
+  recordBilledRequest,
+  resetBillingSink,
+  nextFetchId,
+  markFetchInFlight,
+  flushInFlightBilledRequests,
+  inFlightFetchCount,
+} from "../../src/llm/billing-sink.ts";
 
 function ev(event: string, data: Record<string, unknown> = {}) {
   return { event, session_id: "s", timestamp: "2026-10-02T06:00:00.000Z", data };
@@ -99,5 +106,106 @@ describe("② digest 复算恒等式", () => {
     const p = computeProcessPathology([] as any, events as any);
     expect(p.billedRequests).toBeUndefined();
     expect(p.billingIdentityBroken).toBe(false);
+  });
+});
+
+/**
+ * 发现 13（20261020 ce7ea52e）：abort 后 provider 生成器被丢下、finally 永不执行，
+ * 那次已建连的 fetch 在 events 里只有 HttpConnected 没有 BilledRequest（实测 index 1316，1359 vs 1358）。
+ * 会话收尾由 flushInFlightBilledRequests 补记 `reason:"aborted"`；恒等式把它算进右边，
+ * 没登记过的建连仍判漏记。
+ */
+describe("③ 在途 fetch 收尾补记（发现 13）", () => {
+  let written: any[] = [];
+  beforeEach(() => {
+    written = [];
+    resetBillingSink();
+    initStreamObserver("s-f13", "/tmp", (e) => written.push(e));
+  });
+  afterEach(() => {
+    resetStreamObserver();
+    resetBillingSink();
+  });
+
+  const snap =
+    (fetchId: string, input = 0) =>
+    () => ({
+      fetchId,
+      model: "m",
+      provider: "openai",
+      usage: { inputTokens: input, outputTokens: 0 },
+      index: 1316,
+      accounted: false,
+    });
+
+  test("正常收口自动注销；被丢下的在收尾补记 aborted 且只记一次", () => {
+    const done = nextFetchId();
+    const dropped = nextFetchId();
+    markFetchInFlight(done, snap(done));
+    markFetchInFlight(dropped, snap(dropped, 803619));
+    recordBilledRequest({ ...snap(done)(), accounted: true });
+    expect(inFlightFetchCount()).toBe(1);
+
+    expect(flushInFlightBilledRequests()).toBe(1);
+    expect(flushInFlightBilledRequests()).toBe(0); // 幂等
+
+    const billed = written.filter((e) => e.event === "BilledRequest");
+    expect(billed.length).toBe(2);
+    const aborted = billed.find((e) => e.data.fetch_id === dropped);
+    expect(aborted.data.reason).toBe("aborted");
+    expect(aborted.data.input_tokens).toBe(803619);
+    expect(aborted.data.accounted).toBe(false);
+    expect(billed.find((e) => e.data.fetch_id === done).data.reason).toBeUndefined();
+  });
+
+  test("补记之后生成器又被正常 return：真实那条被去重吃掉，不双记", () => {
+    const fid = nextFetchId();
+    markFetchInFlight(fid, snap(fid));
+    flushInFlightBilledRequests();
+    recordBilledRequest({ ...snap(fid, 999)(), accounted: true });
+    expect(written.filter((e) => e.event === "BilledRequest").length).toBe(1);
+  });
+
+  test("digest：aborted 补记算进右边 → 恒等式成立，并单列条数", () => {
+    const conn = () => ev("HttpConnected", { status: 200 });
+    const events = [
+      conn(),
+      conn(),
+      ev("BilledRequest", { fetch_id: "a" }),
+      ev("BilledRequest", { fetch_id: "b", reason: "aborted" }),
+    ];
+    const p = computeProcessPathology([] as any, events as any);
+    expect(p.billingIdentityBroken).toBe(false);
+    expect(p.abortedBilledRequests).toBe(1);
+  });
+
+  test("digest：没有补记的建连仍判漏记（ce7ea52e 修复前的形态）", () => {
+    const conn = () => ev("HttpConnected", { status: 200 });
+    const p = computeProcessPathology(
+      [] as any,
+      [conn(), conn(), ev("BilledRequest", { fetch_id: "a" })] as any,
+    );
+    expect(p.billingIdentityBroken).toBe(true);
+    expect(p.abortedBilledRequests).toBeUndefined();
+  });
+});
+
+describe("④ 接线（源码断言）", () => {
+  const { readFileSync } = require("node:fs") as typeof import("node:fs");
+  const { join } = require("node:path") as typeof import("node:path");
+  const read = (rel: string) => readFileSync(join(import.meta.dir, "../../src", rel), "utf-8");
+
+  test("collector 收尾在 resetStreamObserver 之前补记（之后事件写不进 events.jsonl）", () => {
+    const src = read("trace/collector.ts");
+    const body = src.slice(src.indexOf("private async handleSessionEnd("));
+    const flush = body.indexOf("flushInFlightBilledRequests();");
+    const reset = body.indexOf("resetStreamObserver();");
+    expect(flush).toBeGreaterThan(0);
+    expect(reset).toBeGreaterThan(flush);
+  });
+
+  test("三条流式路径都登记在途（Chat Completions / Responses / Anthropic）", () => {
+    expect(read("llm/openai.ts").split("markFetchInFlight(billingFetchId").length - 1).toBe(2);
+    expect(read("llm/anthropic.ts").split("markFetchInFlight(billingFetchId").length - 1).toBe(1);
   });
 });
