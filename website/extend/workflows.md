@@ -97,6 +97,20 @@ Workflow 工具是**延迟加载**的（`shouldDefer = true`，不进首轮上�
 `isolation:'worktree'` 给每个 agent 一个独立工作区，代价是起 worktree 的开销 + 可能的 lockfile 风险（见[Worktree 隔离](/use/worktree)）。只有「多个 agent 同时改文件、改的路径会撞」时才值得。只读探索用 `agentType:'explore'` 就行，不需要隔离。
 :::
 
+### 子代理的权限从哪来
+
+workflow 内的子代理没有弹窗通道，权限检查器由主会话统一派生注入（`packages/core/src/permission/sub-agent-checker.ts`），语义是「跟随主会话档位」：
+
+- **全放行档**（`always-allow` / `--dangerously-skip-permissions`）：子代理跟随继承放行面，但 deny 规则、危险命令、safetyCheck 仍然生效——继承的不是裸奔。`--dangerously-skip-permissions` 在子代理侧按 `always-allow` 处理，不会连危险命令都跳过。
+- **其余档位**（`default`、`acceptEdits`、`auto`、`plan` 等）：子代理按 `dontAsk` 语义执行——规则里显式 allow 的操作放行，deny / 危险命令 / 安全检查照常拦截，其余需要确认的操作自动拒绝（没有弹窗可弹）。注意 `acceptEdits` **不会**被继承，主会话在这一档时子代理写文件同样会被拒。
+
+档位是**实时跟随**的：在会话中途 Shift+Tab 切档，或企业策略收回 bypass，已经在跑的子代理下一次权限判定就按新档位走，不需要重启。
+
+也就是说：需要写能力的编排任务（典型是 `isolation:'worktree'` 并行改码），二选一：
+
+- 把主会话切到 `always-allow`（放行面最大，危险命令与 deny 规则仍拦）；
+- 或在项目规则里对需要的操作显式声明 allow，例如 `Edit(src/**)`、`Write(src/**)`、`Bash(bun test *)`（放行面最小，推荐）。`Edit` 与 `Write` 是两个工具，规则要各写一条。
+
 ### 跑挂了怎么 resume
 
 这是 Workflow 相对「派一堆子代理」的核心优势。流程：
