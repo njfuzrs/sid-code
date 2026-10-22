@@ -100,6 +100,9 @@ export class HookAggregator {
       // HC24：ConfigChange 现在可 block（回退变更）。落在 mergeSimple 的话，后一个 hook 的 allow
       // 能冲掉前一个的 block——审计 hook 拦住的变更被另一条无关 hook 悄悄放行。
       case HookEventName.ConfigChange:
+      // UserPromptExpansion：command/executor.ts 按 isBlockingDecision 拦下本次提交，所以它是可 block 事件。
+      // 原先落在 mergeSimple，后一个 hook 的 allow 能冲掉前一个的 block（aggregator-veto 哨兵抓到）。
+      case HookEventName.UserPromptExpansion:
         return this.mergeWithOrDecision(outputs, eventName);
 
       // G4：SessionStart/SubagentStart/Setup 忽略 exit2 阻塞（对齐 CC hooksConfigManager）——

@@ -283,7 +283,6 @@ Worktree 隔离:
   SID_CODE_MCP_TOOL_TIMEOUT     MCP 工具调用超时（缺省 120000；兜底名 MCP_TOOL_TIMEOUT）
 
   旁路调用超时（失败即静默降级，仅 env 可配）:
-  SID_CODE_WARMUP_TIMEOUT_MS    缓存预热（缺省 10000）
   SID_CODE_COMPACT_TIMEOUT_MS   auto-compact 摘要（缺省 60000）
   SID_CODE_COLLAPSE_SEGMENT_TIMEOUT_MS  context-collapse 单段摘要（缺省 45000）
   SID_CODE_RECALL_TIMEOUT_MS    记忆召回初筛（缺省 15000）
@@ -307,8 +306,6 @@ Worktree 隔离:
   SID_ENABLE_TOKEN_EFFICIENT_TOOLS  设为 1 启用 token 高效工具
   SID_DISABLE_GLOBAL_CACHE      设为 1 禁用全局缓存
   SID_DISABLE_CACHE_EDITS       设为 1 禁用缓存编辑
-  SID_DISABLE_CACHE_WARMUP      设为 1 禁用缓存预热
-  SID_WARMUP_CACHE              设为 1 强制启用缓存预热
   SID_LOOP_EXHAUSTED_ACTION     循环耗尽动作（terminate 时回退旧行为）
   SID_DISABLE_PROMISE_NUDGE     设为 1 关闭「短文本承诺未兑现」续跑（提示照常）
   SID_STRUCTURED_OUTPUT_MAX_RETRIES  结构化输出最大重试次数（缺省 5）

@@ -1,9 +1,10 @@
 /**
  * Hook 上下文注入通道（§三.7 第 2 条，解决 HC16 / HC17）
  *
- * SessionStart / UserPromptSubmit（以及之后的 UserPromptExpansion / PostModelSwitch）的
- * 「exit 0 纯文本 stdout」与「JSON additionalContext」走同一个出口：独立的 `<system-reminder>`
- * 文本块，挂在本轮用户消息**之后**，**不拼进用户原文**。
+ * SessionStart / UserPromptSubmit 的「exit 0 纯文本 stdout」与「JSON additionalContext」走同一个出口：
+ * 独立的 `<system-reminder>` 文本块，挂在本轮用户消息**之后**，**不拼进用户原文**。
+ * （UserPromptExpansion 的纯文本 stdout 同样会被 runner 搬成 additionalContext，但它由
+ * command/executor.ts 追加到展开后的 prompt 末尾，不走本模块；PostModelSwitch 目前无消费方。）
  *
  * 原先 `finalInput = userInput + "\n\n" + additionalCtx` 再 `parseThinkingHint(finalInput)`：
  *   ① 模型把 hook 内容当成用户说的话（实测回答「暗号只出现在你的消息里」），不可信内容获得用户指令的权重；

@@ -47,7 +47,7 @@ describe("Q3：父进程 CLAUDE_* 不透传", () => {
       HookEventName.PostToolUse,
       baseInput(),
     );
-    const names = (r.output?.systemMessage ?? "").trim().split(" ").filter(Boolean);
+    const names = (r.stdout ?? "").trim().split(" ").filter(Boolean);
     expect(names).toEqual(["CLAUDE_PROJECT_DIR"]);
   });
 });

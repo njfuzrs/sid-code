@@ -236,13 +236,13 @@ describe("H14 cwd 不再被拼进 shell 命令串", () => {
     const { dir, r } = await runIn(`a$(touch ${pwned})b`, `printf '%s' "$SID_CODE_PROJECT_DIR"`);
     expect(existsSync(pwned)).toBe(false);
     // 「不注入」与「值正确」一起断言：只断言前者可以靠转义蒙过去，值仍可能错
-    expect(r.output?.systemMessage).toBe(dir);
+    expect(r.stdout?.trim()).toBe(dir);
   });
 
   for (const name of ["a b", "a;touch PWNED2", "a`touch PWNED3`b", "a && touch PWNED4"]) {
     test(`目录名含特殊字符 ${JSON.stringify(name)}：值原样、无副作用`, async () => {
       const { dir, r } = await runIn(name, `printf '%s' "$SID_CODE_PROJECT_DIR"`);
-      expect(r.output?.systemMessage).toBe(dir);
+      expect(r.stdout?.trim()).toBe(dir);
       for (const f of ["PWNED2", "PWNED3", "PWNED4"]) {
         expect(existsSync(join(dir, f))).toBe(false);
       }
@@ -251,7 +251,7 @@ describe("H14 cwd 不再被拼进 shell 命令串", () => {
 
   test("兼容：$SID_CODE_CWD 写法照常可用（改由环境变量提供）", async () => {
     const { dir, r } = await runIn("cwd-compat", `printf '%s' "$SID_CODE_CWD"`);
-    expect(r.output?.systemMessage).toBe(dir);
+    expect(r.stdout?.trim()).toBe(dir);
   });
 
   test("结构性：runner 里 expandCommand 已删除", () => {
