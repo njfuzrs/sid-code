@@ -5,9 +5,9 @@
  * 本适配器让每个 Skill 同时成为一个 PromptCommand，使用户可以通过 /skill-name
  * 直接调用 Skill —— 同一个 Skill，两种调用路径（用户 / 模型）。
  *
- * 上下文映射（context 优先于 mode）：
- * - context="fork" 或 mode="delegate"（默认）→ 子代理执行，带工具/轮次限制
- * - context="inline" 或 mode="activate"        → 注入当前对话上下文
+ * 上下文映射（context 优先于 mode；两者都未指定 → inline）：
+ * - context="fork" 或 mode="delegate"          → 子代理执行，带工具/轮次限制
+ * - context="inline" / mode="activate" / 都未指定 → 注入当前对话上下文
  *
  * Prompt 处理走 processSkillPrompt() 管道：
  * $ARGUMENTS / $1 / $arg_name / ${SKILL_DIR} / ${SESSION_ID} / !`shell`
@@ -29,7 +29,7 @@ export function skillToCommand(
   skill: SkillDefinition,
   isGated?: (name: string) => boolean,
 ): UnifiedCommand {
-  // P0-4：与模型路径 / SkillCommand 同一个事实源（context 优先于 mode，缺省 fork）
+  // P0-4：与模型路径 / SkillCommand 同一个事实源（context 优先于 mode，缺省 inline）
   const context = resolveSkillExecutionContext(skill);
 
   return {

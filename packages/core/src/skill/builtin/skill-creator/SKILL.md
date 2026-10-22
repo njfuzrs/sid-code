@@ -50,14 +50,15 @@ mode: activate
 
 ### 3. 生成 Skill 文件
 
-根据用户选择的模式，生成对应的文件结构：
+两种文件布局**都支持，与执行模式无关**：运行时只看有没有资源文件，`delegate` 也可以写子目录，
+`activate` 也可以写扁平单文件。
 
-**扁平文件模式**（delegate 模式，无资源文件）：
+**扁平文件**（单文件，无资源文件）：
 ```
 ~/.sid-code/skills/my-skill.md
 ```
 
-**子目录模式**（activate 模式，有资源文件）：
+**子目录**（有 scripts / references / assets 资源文件）：
 ```
 ~/.sid-code/skills/my-skill/
   SKILL.md
@@ -93,9 +94,9 @@ max-turns: 10                     # 可选，不写即不设上限
 [列出使用时的注意事项]
 ```
 
-### 5. 创建资源文件（activate 模式）
+### 5. 创建资源文件（有资源文件时，与执行模式无关）
 
-如果用户选择了 activate 模式并需要资源文件，为每个资源目录创建示例文件：
+如果这个 Skill 需要资源文件，为每个资源目录创建示例文件：
 
 **scripts/**：
 - 创建示例脚本文件（.ts/.js/.sh）
@@ -113,8 +114,8 @@ max-turns: 10                     # 可选，不写即不设上限
 
 创建完成后，提醒用户：
 1. 检查 frontmatter 格式是否正确
-2. 确保 name 字段符合 slug 格式
-3. 确保 description 字段非空
+2. 建议填 `name`（**目录型 Skill 可省略**，运行时回退目录名；填了须符合 slug 格式）
+3. 确保 description 字段非空（缺失或为空会被跳过，不加载）
 4. 测试 Skill 是否能被正确加载（`~/.sid-code/skills/` 有热重载，存盘即生效，用 `/skills` 确认；热重载关了或没生效时再重启）
 5. 测试 Skill 的实际功能是否符合预期
 
