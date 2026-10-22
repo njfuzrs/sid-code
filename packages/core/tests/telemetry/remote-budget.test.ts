@@ -449,6 +449,8 @@ describe("生产接线（防死加载器）", () => {
   test("init-helpers.ts 同时接账本重放与预算加载", () => {
     const src = readFileSync(join(import.meta.dir, "../../src/query/init-helpers.ts"), "utf-8");
     expect(/\bstartUsageLedgerRemoteRecovery\(\)/.test(src)).toBe(true);
-    expect(/\bawait loadEnterpriseBudgetOnce\(\)/.test(src)).toBe(true);
+    // 交互模式不阻塞 TUI 首屏（首轮前由 App 等），无头模式必须 await
+    expect(/\bloadEnterpriseBudgetOnce\(\)/.test(src)).toBe(true);
+    expect(/if \(config\.print\) await budgetLoad/.test(src)).toBe(true);
   });
 });

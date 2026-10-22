@@ -749,6 +749,28 @@ export function loadEnterprisePolicyOnce(): Promise<PolicySettings | null> {
 }
 
 /**
+ * 不打网的启动临时视图：未过期且 endpoint 一致的 200 缓存 → 否则本地 managed 文件。
+ *
+ * 交互模式启动不再 await 远程策略（慢握手 + 一次重试最长约 30 秒，TUI 要等这么久才出来），
+ * 先用这份视图把权限 / policyLimits / 模式禁用落进进程，远程结果到了再由 App 覆盖。
+ * 取值规则与远程超时时的非权威回退完全相同（usableCachedSettings），所以「先临时、后权威」
+ * 不会比原来「超时就用缓存」放得更宽。
+ *
+ * 必须在 loadEnterprisePolicyOnce() **之前**调用：ManagedFileLoader 会写 lastPolicyLoadMeta，
+ * 而 runLoaders 开头会清空它；顺序反了，后台链的信封可能被这里覆盖。
+ */
+export async function loadOfflineEnterprisePolicy(): Promise<PolicySettings | null> {
+  const endpoint = resolveEndpoint("policy")?.url;
+  if (endpoint) {
+    let cache = readPolicyCache();
+    if (cache && cache.endpoint !== endpoint) cache = null;
+    const cached = usableCachedSettings(cache, "启动临时视图", "debug");
+    if (cached) return cached;
+  }
+  return new ManagedFileLoader().load();
+}
+
+/**
  * 把 PolicyManager.load 的结果同步进进程内单例。
  *
  * **无论 policy 是否 null 都要跑**：204 / 超时无可用缓存 / 未配 endpoint 必须把
