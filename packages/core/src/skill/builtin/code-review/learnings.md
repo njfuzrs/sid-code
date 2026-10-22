@@ -29,6 +29,7 @@
 - **后果**：所有 builtin Skill（含已有的 skill-creator）实际上都没被加载
 - **测试证据**：tests/skill/code-review.test.ts 修改后保留了一个 sanity check（用 `.sid-code/skills/code-review/SKILL.md` 子目录路径，loader 子目录模式正常工作）
 - **fix 路径**：写 ADR-025（S3-T13）→ 修复需走 L3 内核审批，落到 S4 或 M3 Go/No-Go 评审前
+- **✅ 2026-10-20 已修复**：`SkillManager.discoverBuiltin()` 现调用 `ensureBuiltinSkillsReleased()`，把释放目录作为 `builtinDir` 加载（`packages/core/src/skill/manager.ts`）。本节保留为当时的时间线证据，不再代表当前状态。
 
 #### 偏差 2：static-contract baseline 不是真 baseline
 
@@ -46,14 +47,14 @@
 ### 设计决策（已落地）
 
 1. **mode = delegate**：Skill 是子代理执行，独立任务
-2. **max-turns = 20，timeout-mins = 15**：与 SLA P95 < 15min 一致
+2. **max-turns = 20，timeout-mins = 15**：与 SLA P95 < 15min 一致。**timeout-mins 自 PR-B（2026-10-17）起不再生效**（子代理不设时间上限），SKILL.md 已移除该字段；P95 仅作观测目标，超出只标注不中断
 3. **allowed-tools 含 read/grep/glob/bash，不含 edit/write**
 4. **bash 仅用于跑确定性脚本**（parse-diff.ts / lint-diff.ts / coverage-check.ts）
 5. **before/after 双 baseline runner**（scripts/eval/run-code-review-skill.ts）—— 同 case 两套配置同时跑，Δ 即 Skill 增益
 
 ### 已知限制（同步更新到 SKILL.md §8）
 
-- **sid-code SkillManager builtin 加载 bug**（偏差 1）
+- ~~sid-code SkillManager builtin 加载 bug~~（偏差 1）—— **2026-10-20 已修复**，见偏差 1 的更新注
 - **真 LLM baseline 未跑** —— 当前 4.32/5 是契约估算
 - Context Engine 缺失 → grep 兜底
 - 多语言：当前主测 TypeScript

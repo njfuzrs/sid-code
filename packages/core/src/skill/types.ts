@@ -40,12 +40,12 @@ export interface SkillDefinition {
   model?: string;
   /** 禁止 LLM 自动调用（仅手动触发） */
   disableModelInvocation?: boolean;
-  /** 执行模式：activate（上下文注入）或 delegate（子代理执行，默认） */
+  /** 执行模式：activate（上下文注入）或 delegate（子代理执行）。未声明时按 inline 执行，见 executor.ts 的 resolveSkillExecutionContext。 */
   mode?: "activate" | "delegate";
   /**
    * 执行上下文（对齐 Claude Code context 字段）：
    * inline（注入当前对话）或 fork（子代理执行）。
-   * 优先级高于 mode；未指定时由 mode 推导。
+   * 优先级高于 mode；未指定时由 mode 推导，两者都未指定则按 inline（P6 对齐 CC）。
    */
   context?: "inline" | "fork";
   /** 最大轮次（fork 模式，可选；未声明 = 无上限） */
@@ -73,7 +73,7 @@ export interface SkillDefinition {
   userInvocable?: boolean;
   /** 版本号 */
   version?: string;
-  /** 推理努力程度：low/medium/high/max */
+  /** 推理努力程度：low/medium/high/xhigh/max */
   effort?: string;
   /** fork 时使用的代理类型 */
   agent?: string;

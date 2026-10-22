@@ -197,7 +197,8 @@ fork 子代理默认拿 `general-purpose` 的完整工具集，`allowed-tools` �
 权限模式的继承分三种：
 
 - 主会话 `--yes`：子代理同样自动批准普通确认，但危险命令和安全类确认仍然拦；
-- 主会话 `--dangerously-skip-permissions`：子代理同样完全跳过权限检查；
+- 主会话 `--dangerously-skip-permissions`：子代理**不会**原样裸奔——`skipPermissions` 位不传递，
+  主会话的 skip 档在子代理侧归一为 `always-allow`：普通确认自动批准，但危险命令与安全类确认仍然拦；
 - 其余模式：子代理按「不弹窗、需确认即拒」处理。
 
 ### 自定义命令（`.sid-code/commands/*.md`）同一套语义
