@@ -243,11 +243,17 @@ export class DiagnosticRegistry {
    * 编辑后清除该文件的 delivered 记录，让下一轮的 publishDiagnostics 重新作为新诊断投递。
    *
    * 同时清除 pending 中该文件的待投递诊断（编辑前服务器基于旧内容推的诊断已无意义）。
+   *
+   * 还要清除 latest 快照：否则编辑后、服务器重推之前，codeAction 的 waitForDiagnostics
+   * 会因 latest.has(uri) 立即返回，再把编辑前的旧诊断塞进 context.diagnostics，
+   * 拿到针对旧内容的修复建议。清掉后 codeAction 会等新诊断到达（或按既定超时继续）。
+   * 不唤醒该 uri 的等待者：它们等的就是编辑后的新一轮 publishDiagnostics。
    */
   clearForFile(uri: string): void {
     this.delivered.delete(uri);
     const idx = this.deliveredOrder.indexOf(uri);
     if (idx >= 0) this.deliveredOrder.splice(idx, 1);
+    this.latest.delete(uri);
 
     // 清除 pending 中只属于该文件的诊断条目（保留其它文件的诊断）。
     // registerPending 以 server-seq 为 key、files 为值，需逐条目过滤其 files 数组。
