@@ -43,7 +43,7 @@ describe("CLAUDE_PROJECT_DIR / SID_CODE_CWD（HC14）", () => {
       HookEventName.PostToolUse,
       baseInput(sub), // 模拟 bash cd 之后
     );
-    expect(r.output?.systemMessage).toBe(`${proj}|${proj}|${sub}`);
+    expect(r.stdout?.trim()).toBe(`${proj}|${proj}|${sub}`);
   });
 
   test("CC 写法 ${CLAUDE_PROJECT_DIR}/... 脚本路径可用（shell 形式）", async () => {
@@ -59,7 +59,7 @@ describe("CLAUDE_PROJECT_DIR / SID_CODE_CWD（HC14）", () => {
       baseInput(proj),
     );
     expect(r.exitCode).toBe(0);
-    expect(r.output?.systemMessage).toBe("ok");
+    expect(r.stdout?.trim()).toBe("ok");
   });
 
   test("只导出三个 CLAUDE_* 变量（Q3）", async () => {
@@ -70,7 +70,10 @@ describe("CLAUDE_PROJECT_DIR / SID_CODE_CWD（HC14）", () => {
       baseInput(root),
     );
     // 非插件来源只有 CLAUDE_PROJECT_DIR（PLUGIN_* 按来源提供）。宿主环境里本来就有的 CLAUDE_* 不算我们导出的。
-    const ours = (r.output?.systemMessage ?? "").split(" ").filter((n) => n && !(n in process.env));
+    const ours = (r.stdout ?? "")
+      .trim()
+      .split(" ")
+      .filter((n) => n && !(n in process.env));
     expect(ours).toEqual(["CLAUDE_PROJECT_DIR"]);
   });
 });

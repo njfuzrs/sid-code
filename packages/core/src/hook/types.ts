@@ -93,7 +93,7 @@ export enum HookEventName {
   PreModelSwitch = "PreModelSwitch",
   /** 模型切换之后触发，含降级链自动切换（matcher：trigger = manual / fallback / config）。仅通知。 */
   PostModelSwitch = "PostModelSwitch",
-  /** 斜杠命令 / skill 展开成 prompt 之后、提交之前触发（matcher：命令名）。stdout 进上下文。 */
+  /** 斜杠命令 / skill 展开成 prompt 之后、提交之前触发（matcher：命令名）。exit 0 的纯文本 stdout 与 additionalContext 追加到展开结果后。可 block。 */
   UserPromptExpansion = "UserPromptExpansion",
   /** /add-dir 把目录加入会话白名单之后触发。仅通知。 */
   DirectoryAdded = "DirectoryAdded",
@@ -105,6 +105,11 @@ export const LEGACY_EVENT_MAP: Record<string, HookEventName> = {
   post_tool_use: HookEventName.PostToolUse,
   post_tool_use_failure: HookEventName.PostToolUseFailure,
   user_prompt_submit: HookEventName.UserPromptSubmit,
+  // B2：sid 独有的三个事件此前漏了，官网「两种写法等价」对它们不成立。
+  // 新增枚举成员时 tests/hook/hook-doc-defects-b1-b4.test.ts 的 B2 用例会逼你在这里补一条。
+  after_agent: HookEventName.AfterAgent,
+  before_model: HookEventName.BeforeModel,
+  after_model: HookEventName.AfterModel,
   session_start: HookEventName.SessionStart,
   session_end: HookEventName.SessionEnd,
   pre_compact: HookEventName.PreCompact,

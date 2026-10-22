@@ -54,3 +54,59 @@ export function reportRuntimeHookDiagnostics(origin: string, diagnostics: HookDi
 export function resetRuntimeHookDiagnosticsForTest(): void {
   reported.clear();
 }
+
+// ============================================================
+// B1：hook 的 systemMessage 用户可见出口
+// ============================================================
+//
+// runner 把「exit 1/3/… 的 stderr」「JSON 的 systemMessage」都收进 HookOutput.systemMessage，
+// aggregator 也合并好了，但此前 cli 层没有任何一处读它——官网承诺的「非阻塞告警展示给用户」
+// 是一条断头路。与上面的诊断 sink 同一个理由用模块级出口：agent 的隔离 HookSystem 也要能报。
+//
+// 与诊断不同，这里**不去重**：同一个 lint hook 每次失败都该告诉用户，去重会让第二次失败静默。
+
+export type HookSystemMessageSink = (eventName: string, text: string) => void;
+
+let messageSink: HookSystemMessageSink | undefined;
+/**
+ * sink 注册前产生的消息先缓存（SessionStart 在 TUI 注册出口之前就跑完了），注册时一次性冲出。
+ * 有上限：测试 / SDK 永远不注册 sink，不能无限攒。
+ */
+const pendingMessages: Array<[string, string]> = [];
+const MAX_PENDING_MESSAGES = 20;
+
+/** cli 层注册 systemMessage 显示出口；传 undefined 解除。返回旧 sink 便于测试恢复 */
+export function setHookSystemMessageSink(
+  next: HookSystemMessageSink | undefined,
+): HookSystemMessageSink | undefined {
+  const prev = messageSink;
+  messageSink = next;
+  if (next) {
+    for (const [ev, text] of pendingMessages.splice(0)) deliver(next, ev, text);
+  }
+  return prev;
+}
+
+function deliver(s: HookSystemMessageSink, eventName: string, text: string): void {
+  try {
+    s(eventName, text);
+  } catch {
+    /* 显示失败不影响 hook 结论 */
+  }
+}
+
+/** 把一条聚合后的 systemMessage 送到用户可见出口（无 sink 时暂存） */
+export function reportHookSystemMessage(eventName: string, text: string): void {
+  const t = text.trim();
+  if (!t) return;
+  if (messageSink) {
+    deliver(messageSink, eventName, t);
+    return;
+  }
+  if (pendingMessages.length < MAX_PENDING_MESSAGES) pendingMessages.push([eventName, t]);
+}
+
+/** 测试用：清空暂存 */
+export function resetHookSystemMessagesForTest(): void {
+  pendingMessages.length = 0;
+}
