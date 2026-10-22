@@ -101,6 +101,7 @@
 ### 在 worktree 里跑门禁：`exit 0` 不等于可交付
 
 - worktree 默认没有自己的 `node_modules`，`@sid-code/core` 会向上解析到主仓 checkout，新增导出会变成 `<名字> will always be undefined` 而构建仍 exit 0。**进 worktree 先 `bun install`**（动了 `website/` 还要在那里再装一次），新增导出的改动必须 grep 这条 warning。
+- **主仓 `node_modules` 本身也可能是旧的**：sid-code 建 worktree 默认把 `node_modules` symlink 到主仓（`worktree.symlinkDirectories`），而主仓 `node_modules/@sid-code/` 只有上次 `bun install` 时已存在的 workspace 包链接。之后新增的包（如 2026-10-04 加入的 `packages/tui`）在主仓重装前一直没有链接，表现为 `docs:gen-reference --check` 等报 `Cannot find module '@sid-code/tui/...'`（2026-10-22 实测）。lockfile 一致性告警**查不出这一类**，因为两边 lockfile 是相同的。处置：worktree 里删掉 `node_modules` 软链（它是本次建 worktree 时生成的链接，不是别人的文件）后 `bun install`；或者在主仓重装一次。
 
 ### 判定「这个失败与我无关」必须举证，且别叫它「既存失败」
 
