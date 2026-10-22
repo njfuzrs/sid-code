@@ -10,6 +10,7 @@
  */
 
 import React from "react";
+import { Transient } from "../render-port/components.ts";
 import { Composer } from "./Composer.tsx";
 import { DialogRenderer } from "./DialogManager.tsx";
 import { ModelDialog } from "./ModelDialog.tsx";
@@ -112,7 +113,21 @@ export interface DialogSwitchProps {
   isEmpty: boolean;
 }
 
-export const DialogSwitch: React.FC<DialogSwitchProps> = ({
+/**
+ * 浮层分支统一包一层 Transient：主屏关闭浮层时整帧重画，复原打开时顶进 scrollback 的历史（见底座
+ * components/Transient.tsx）。Composer 不包——它常驻，包了等于「一直有浮层」，判定永远不成立；
+ * 某些 activeDialog 缺依赖时会落回 Composer，这里按返回的元素类型判，不按 props 判，免得把 Composer 包进去。
+ * DialogSwitchBody 没有 hook，按函数调用拿元素是安全的。
+ */
+export const DialogSwitch: React.FC<DialogSwitchProps> = (props) => {
+  const body = DialogSwitchBody(props);
+  if (body === null || (React.isValidElement(body) && body.type === Composer)) {
+    return body;
+  }
+  return <Transient>{body}</Transient>;
+};
+
+const DialogSwitchBody = ({
   permissionRequest,
   shellConfirmRequest,
   planApprovalRequest,
@@ -150,7 +165,7 @@ export const DialogSwitch: React.FC<DialogSwitchProps> = ({
   onExitRequest,
   onCyclePermissionMode,
   isEmpty,
-}) => {
+}: DialogSwitchProps): React.ReactElement | null => {
   if (permissionRequest || shellConfirmRequest) {
     return (
       <DialogRenderer

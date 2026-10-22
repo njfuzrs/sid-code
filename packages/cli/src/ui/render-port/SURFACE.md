@@ -42,6 +42,7 @@ B9 / T0.1 产物。渲染底座必须提供这里列出的全部符号与 props�
 | `RawAnsi` | 1 | `render-port/components.ts` |  |
 | `setSuppressTerminalProbe` | 1 | `render-port/runtime.ts` | 含动态 import |
 | `Static` | 1 | `render-port/components.ts` |  |
+| `Transient` | 2 | `render-port/components.ts` | 2026-10-22 手加：临时浮层容器（DialogSwitch、补全菜单），主屏关闭后整帧重画 |
 | `StyledChar` | 1 | `render-port/types.ts` | 仅类型 |
 | `styledCharsWidth` | 1 | `render-port/text.ts` |  |
 | `supportsHyperlinks` | 1 | `render-port/termio.ts` |  |
