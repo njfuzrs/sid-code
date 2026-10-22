@@ -26,7 +26,7 @@ import type {
 import { z } from "zod/v4";
 import { lazySchema } from "../sdk/lazy-schema.ts";
 import { randomBytes } from "node:crypto";
-import { writeFileSync, mkdirSync, readFileSync, existsSync } from "node:fs";
+import { writeFileSync, mkdirSync, readFileSync, existsSync, readdirSync, statSync } from "node:fs";
 import { join } from "node:path";
 import { sidHomePath } from "../config/paths.ts";
 import { getLogger } from "../debug/logger.ts";
@@ -93,6 +93,60 @@ const workflowSchema = lazySchema(() =>
 /** workflow 脚本持久化目录 */
 function workflowScriptsDir(): string {
   return sidHomePath("workflows", "scripts");
+}
+
+/** 落盘文件名里的 name 段(persistScript 与按名查找共用同一份清洗规则,否则两边永远对不上) */
+function safeScriptName(name: string): string {
+  return name.replace(/[^a-zA-Z0-9_-]/g, "-").slice(0, 40);
+}
+
+/**
+ * 按名字解析已保存的 workflow 脚本路径(`{name}` 参数与内联 `workflow("name")` 共用)。
+ *
+ * 顺序:① 精确 `<name>.js`(用户手动命名的文件,优先级最高,保持旧行为);
+ *      ② 自动落盘的 `<safeName>-wf_<12hex>.js` 里取 mtime 最新的一份。
+ *
+ * 为什么需要 ②:每次 run 只落盘为 `<safeName>-<runId>.js`,旧实现只查 `<name>.js`,
+ * 于是「跑过的脚本按名字复用」这条 schema 宣称的路径实际从未打通。
+ * 为什么不在落盘时额外写一份 `<name>.js`:那会静默覆盖用户手动命名的同名脚本,
+ * 同名不同内容的脚本也会互相替换;按 mtime 回退只读不写,没有这个副作用。
+ * runId 是随机 hex,不能按它排序,只能按 mtime。
+ */
+export function resolveSavedScriptPath(
+  name: string,
+  dir: string = workflowScriptsDir(),
+): { path: string } | { error: string } {
+  const exact = join(dir, `${name}.js`);
+  if (existsSync(exact)) return { path: exact };
+
+  // safeScriptName 只留 [a-zA-Z0-9_-],拼进正则无需转义
+  const pattern = new RegExp(`^${safeScriptName(name)}-wf_[0-9a-f]{12}\\.js$`);
+  let latest: { path: string; mtime: number } | undefined;
+  try {
+    for (const f of readdirSync(dir)) {
+      if (!pattern.test(f)) continue;
+      const p = join(dir, f);
+      const mtime = statSync(p).mtimeMs;
+      if (!latest || mtime > latest.mtime) latest = { path: p, mtime };
+    }
+  } catch {
+    // 目录不存在 = 从未跑过任何 workflow,落到下面的「找不到」
+  }
+  if (latest) return { path: latest.path };
+  return {
+    error: `找不到已保存的 workflow: ${name}(期望 ${exact} 或 ${join(dir, `${safeScriptName(name)}-wf_*.js`)})`,
+  };
+}
+
+/** 成功/失败两个分支共用的 resume 提示(脚本落盘失败时无 script_path 可给,返回空串) */
+function buildResumeHint(
+  savedPath: string | undefined,
+  runId: string,
+  mode: "edit" | "fix",
+): string {
+  if (!savedPath) return "";
+  const lead = mode === "fix" ? "可续跑:修正" : "可迭代:编辑";
+  return `\n\n${lead} ${savedPath} 后用 {script_path:"${savedPath}", resume_from_run_id:"${runId}"} 重跑(已完成的 agent 走缓存)。`;
 }
 
 /** 生成 run id(wf_ + 12 位 hex) */
@@ -215,7 +269,7 @@ export class WorkflowTool implements Tool {
     return z.toJSONSchema(workflowSchema()) as Record<string, unknown>;
   }
 
-  /** 解析脚本来源:script > script_path > name */
+  /** 解析脚本来源:script_path > script > name(与 schema 描述「script_path 优先于 script」一致) */
   private resolveScript(params: {
     script?: string;
     script_path?: string;
@@ -238,10 +292,9 @@ export class WorkflowTool implements Tool {
       return { src: params.script, source: "inline" };
     }
     if (params.name) {
-      const p = join(workflowScriptsDir(), `${params.name}.js`);
-      if (!existsSync(p)) {
-        return { error: `找不到已保存的 workflow: ${params.name}(期望 ${p})` };
-      }
+      const found = resolveSavedScriptPath(params.name);
+      if ("error" in found) return { error: found.error };
+      const p = found.path;
       try {
         return { src: readFileSync(p, "utf-8"), source: `name:${params.name}` };
       } catch (err) {
@@ -256,8 +309,7 @@ export class WorkflowTool implements Tool {
     try {
       const dir = workflowScriptsDir();
       mkdirSync(dir, { recursive: true });
-      const safeName = name.replace(/[^a-zA-Z0-9_-]/g, "-").slice(0, 40);
-      const path = join(dir, `${safeName}-${runId}.js`);
+      const path = join(dir, `${safeScriptName(name)}-${runId}.js`);
       writeFileSync(path, src, "utf-8");
       return path;
     } catch (err) {
@@ -399,11 +451,12 @@ export class WorkflowTool implements Tool {
         // 解析子脚本来源
         let childSrc: string;
         if (typeof nameOrRef === "string") {
-          const p = join(workflowScriptsDir(), `${nameOrRef}.js`);
-          if (!existsSync(p)) {
-            throw new Error(`[workflow] 内联子 workflow 未找到: ${nameOrRef}(期望 ${p})`);
+          // 与 {name} 参数同一套查找(C2):精确 <name>.js 优先,否则取最新自动落盘的脚本
+          const found = resolveSavedScriptPath(nameOrRef);
+          if ("error" in found) {
+            throw new Error(`[workflow] 内联子 workflow 未找到: ${found.error}`);
           }
-          childSrc = readFileSync(p, "utf-8");
+          childSrc = readFileSync(found.path, "utf-8");
         } else if (nameOrRef && typeof nameOrRef === "object" && nameOrRef.scriptPath) {
           if (!existsSync(nameOrRef.scriptPath)) {
             throw new Error(
@@ -452,18 +505,25 @@ export class WorkflowTool implements Tool {
         `✓ workflow "${meta.name}" 完成,共 ${runtime.agentCallCount} 个 agent 调用`,
       );
 
-      const resumeHint = savedPath
-        ? `\n\n可迭代:编辑 ${savedPath} 后用 {script_path:"${savedPath}", resume_from_run_id:"${runId}"} 重跑(已完成的 agent 走缓存)。`
-        : "";
-      return { output: outputText + resumeHint, isError: false };
+      return { output: outputText + buildResumeHint(savedPath, runId, "edit"), isError: false };
     } catch (err) {
       const msg = (err as Error).message;
       await failWorkflowTask(taskId, msg);
-      log.error("WORKFLOW", `✗ workflow "${meta.name}" 失败: ${msg}`);
+      log.error("WORKFLOW", `✗ workflow "${meta.name}" 失败: ${msg} (runId=${runId})`);
       if (this.onErrorCallback) {
         this.onErrorCallback(msg);
       }
-      return { output: `[workflow] "${meta.name}" 执行失败: ${msg}`, isError: true };
+      // C3:失败恰恰是最需要 resume 的时刻——已成功的 agent() 结果已在 journal 里,
+      // 不把 runId / script_path 交给模型,它只能整脚本重跑、白烧已完成部分的 token。
+      const failInfo = JSON.stringify(
+        { workflow: meta.name, runId, script_path: savedPath, error: msg },
+        null,
+        2,
+      );
+      return {
+        output: `[workflow] "${meta.name}" 执行失败: ${msg}\n\n${failInfo}${buildResumeHint(savedPath, runId, "fix")}`,
+        isError: true,
+      };
     }
   }
 }
