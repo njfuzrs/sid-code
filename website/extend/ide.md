@@ -193,7 +193,7 @@ sid-code 通过它发现 IDE，再按 `transport`（缺省 SSE，即 `http://hos
 |---|---|---|
 | `openDiff` | `old_file_path`、`new_file_path`、`new_file_contents`、`tab_name` | 展示 diff 并**等待用户在 IDE 里表态** |
 | `close_tab` | `tab_name` | 关闭单个 diff 标签页 |
-| `closeAllDiffTabs` | `{}` | 关闭全部 diff 标签页 |
+| `closeAllDiffTabs` | `{}` | 关闭全部 diff 标签页（扩展侧契约；sid-code 当前不调用，每次只关自己开的那个 tab） |
 
 参数名是 **snake_case**（这是对端扩展的既有契约，不要改成 camelCase）。
 
@@ -249,8 +249,7 @@ IDE 集成状态:
 1. **在 IDE 的内置终端里跑吗**——外部终端（iTerm / 系统终端）不在 IDE 进程里，`TERM_PROGRAM` 不是 vscode/cursor/windsurf 不会自动触发。用 `/ide connect` 手动连
 2. **自动发现只有 30 秒窗口**——后台每秒重试、30 秒后静默放弃，不会一直等。扩展起得晚（比如先启动 sid-code 再启动 IDE）就要手动 `/ide connect`；也可以用 `settings.json` 的 `ide.discoveryTimeout` 调大
 3. **lockfile 写了吗**——IDE 侧扩展启动时会在 `~/.sid-code/ide/` 写 `<port>.lock`，没这个文件 sid-code 发现不了。这时 `/ide` 会点名正在运行的 IDE：
-   `检测到 vscode 正在运行，但没有发现 sid-code 扩展（~/.sid-code/ide/ 下没有 lockfile）`
-   （`vscode` 是内部枚举值的小写形态；lockfile 写了 `ideName` 时，其余地方显示的是扩展给的名字）
+   `检测到 VS Code 正在运行，但没有发现 sid-code 扩展（~/.sid-code/ide/ 下没有 lockfile）`
 4. **工作区目录对得上吗**——lockfile 里记的工作区目录要包含当前 cwd，跨工作区连不上
 
 ### `/ide connect` 说发现多个 IDE
@@ -277,7 +276,10 @@ IDE 集成状态:
 ### 环境变量 `SID_CODE_SSE_PORT` 设了但没连上
 
 这个变量是「端口精确指定」：sid-code 只认这个端口对应的 lockfile，**不再校验工作区目录**。
-端口写错（或写成非数字）就等于指定了一个不存在的 IDE，30 秒后静默放弃。
+端口写错就等于指定了一个不存在的 IDE，30 秒后静默放弃。
+
+取值不是 1-65535 的整数（比如 `abc`、`0`、`123abc`）时，sid-code 会忽略这个变量，
+不会因为它触发自动连接，并记一条 WARN 级日志（`SID_CODE_SSE_PORT=... 不是合法端口`）。
 
 ## 相关
 
