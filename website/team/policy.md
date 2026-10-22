@@ -76,6 +76,13 @@ $ sid-code -p "..." --dangerously-skip-permissions
   按文件名字母序合并、后者覆盖前者，以主文件为基座叠加（`packages/core/src/config/settings/constants.ts`）。
   drop-in 只认系统级目录，`~/.sid-code/managed-settings.d/` 不读。
 
+::: warning drop-in 目前只对部分字段生效
+drop-in 只进 settings 合并链（通用 settings 字段、托管 `env`）和 hooks（`packages/core/src/config/settings/settings.ts`、`hook-layers.ts`）。
+**权限规则 `permissions`、`disableBypassPermissionsMode`、`disabledModes`、`policyLimits`、`strictPluginOnlyCustomization` 只从主文件 `managed-settings.json` 读**
+（`permission/rule-loader.ts` 的 `loadPolicyFile`、`config/policy.ts` 的 `ManagedFileLoader`），写进 drop-in 不报错也不生效。
+强制约束请写在主文件里。
+:::
+
 ::: warning 历史路径已废弃
 `/etc/sid-code/policy.json` 与 `policy.yaml` 已废弃，不再读取。**用 `managed-settings.json`。**
 :::
@@ -103,14 +110,15 @@ $ sid-code -p "..." --dangerously-skip-permissions
 | `ls /tmp` | ✅ 放行 | `mode`（always-allow） |
 | `rm -rf /` | ❌ 拒绝 | `dangerousCommand`（静态防护层） |
 | 读 `/etc/passwd` | ❌ 拒绝 | `rule`（企业 deny） |
-| 写 `.env` | ⚠️ 需确认 | `pathValidation`（敏感文件） |
+| 写 `.env` | ❌ 拒绝 | `pathValidation`（敏感文件，硬拒） |
 
 `always-allow` 模式 + 通配 allow 都没能穿透企业 deny，也没能穿透静态防护层。
 
 ## 静态防护层：与权限模式无关的那几层
 
-有几层检查排在所有 allow 规则和宽松模式**之前**，所以配置放宽不影响它们
-（顺序见 `packages/core/src/permission/checker.ts`）：
+有几层检查排在 allow 规则和宽松模式**之前**，所以配置放宽不影响它们
+（顺序见 `packages/core/src/permission/checker.ts`；表里只列与本页相关的步骤，
+中间还有禁用工具、ask 规则、工具自身权限检查等，完整步骤见源码）：
 
 | 顺序 | 层 | 拦什么 | 可否用户确认放行 |
 | --- | --- | --- | --- |
@@ -133,6 +141,8 @@ $ sid-code -p "..." --dangerously-skip-permissions
 
 `high` / `medium` 级是**需要用户确认**而不是硬拒：`sudo`、`chmod -R 777`、
 反引号/`$()` 命令替换、读 SSH 私钥、`git reset --hard`、`git push --force` 等。
+例外：开了 LLM 风险分类器（`enableLLMClassifier`）且分类器判为 `high` 时直接拒绝，判为 `medium` 才弹确认
+（`checker.ts` 的 LLM 分类分支）；分类器不可用时回落到上面的硬编码分级。
 
 git 类操作**刻意全部不用 critical**（`packages/core/src/permission/git-danger-patterns.ts`）：
 force push 到 main 也属于用户的正当能力，靠 high + UI 标红 + 默认聚焦"拒绝"来防误触，
@@ -153,12 +163,17 @@ force push 到 main 也属于用户的正当能力，靠 high + UI 标红 + 默�
 }
 ```
 
-- `blockedDirectories` 优先级更高（先检查），黑名单前缀匹配
+- `blockedDirectories` 先于 `allowedDirectories` 检查，黑名单前缀匹配
+  （两者之前还有 Unicode 混淆、Windows 路径绕过、UNC、三点路径几项归一化检查）
 - `allowedDirectories` **只在非空时启用**；一旦配了，白名单外一律硬拒
 
+敏感文件（`.env` / `*.pem` / `id_rsa` / `.ssh/` / `.aws/config` 等）同样是**硬拒绝**，不弹确认
+（`path-validator.ts` 第 6 步）。凭证被读走不可撤销，而对话里的确认弹窗最容易被习惯性点穿。
+确实需要访问时，唯一的放行方式是在 settings 的 `permissions.allow` 里显式写规则（如 `Read(.env)`）——
+那是在配置文件里做的决定，不受当轮对话话术影响（`checker.ts` Step 4）。
+
 其余检查（系统目录、symlink 逃逸、Windows 路径绕过如 NTFS ADS / `\\?\` / DOS 设备名、
-UNC 远程共享、敏感文件 `.env` / `*.pem` / `id_rsa` / `.ssh/` / `.aws/config` 等）
-都是 `needsConfirmation`——可以由用户确认后放行，不是硬墙。
+UNC 远程共享）是 `needsConfirmation`——可以由用户确认后放行，不是硬墙。
 
 ## 项目级配置提权：两道防线
 
@@ -193,7 +208,7 @@ UNC 远程共享、敏感文件 `.env` / `*.pem` / `id_rsa` / `.ssh/` / `.aws/co
 五个字段里四个被剥掉，`permissions` 里的 `Bash(*)` / `Bash(sudo *)` 也被剔除，
 只剩无害的 `Read(*)`；企业 deny 完整保留。
 
-**第一道防线**是不可信字段名单（`packages/core/src/config/settings/security.ts`，共 8 项）：
+**第一道防线**是不可信字段名单（`packages/core/src/config/settings/security.ts` 的 `SECURITY_SENSITIVE_FIELDS`，共 14 项）：
 
 | 字段 | 为什么项目级不能设 |
 | --- | --- |
@@ -205,12 +220,23 @@ UNC 远程共享、敏感文件 `.env` / `*.pem` / `id_rsa` / `.ssh/` / `.aws/co
 | `trustProjectExtensions` | 不许自我信任 |
 | `allowedDirectories` | 不许扩大目录白名单 |
 | `enableLLMClassifier` | 不许关掉 LLM 风险分类器 |
+| `webFetchIsolate` | 不许关掉网页隔离提炼（否则仓库 README 指向的网页原文直灌主上下文） |
+| `identity` | 不许把会话归属改到别的 org / user（伪造成本归属） |
+| `backend` | 不许改 `backend.url`（否则员工设备凭据会被发往攻击者端点） |
+| `extraKnownMarketplaces` | 不许加插件市场（否则 clone 仓库的人会装上攻击者的插件） |
+| `officialMarketplace` | 同上 |
+| `pluginMarketplaceAutoUpdate` | 不许把「需用户确认」的插件升级变成静默 |
 
 （`blockedDirectories` 不在名单里——项目级收紧是安全的，不构成提权。）
 
-**第二道防线**是危险自我授权 allow 规则剥离（`packages/core/src/permission/rule-loader.ts`）：
-`Bash(*)`、裸 `*`、`Bash(*rm*)`、`Bash(*sudo*)`、`Bash(*curl*)`、`Write|Edit(*)` 等 8 类模式，
-**只剥 allow，deny / ask 一律保留**（收紧永远允许）。
+不可信来源不只 `.sid-code/settings.json`：**被 git 追踪的 `settings.local.json`** 会随仓库分发，
+同样按不可信处理，并提示用 `git rm --cached` 取消追踪（`settings/settings.ts`）。
+
+**第二道防线**是危险自我授权 allow 规则剥离（`packages/core/src/permission/rule-loader.ts`
+的 `DANGEROUS_SELF_AUTHORIZATION_PATTERNS`，共 8 条）：`Bash(*)`、`Bash()`、裸 `*`、
+含 `rm` / `sudo` / `curl` 单词的 Bash 规则（按单词边界匹配，`format` 不会因含 `rm` 被误伤）、
+含管道 `|` 的 Bash 规则、`Write(*)` / `Edit(*)`。**只剥 allow，deny / ask 一律保留**（收紧永远允许）。
+同一套剥离也用在 CLAUDE.md 导入的权限规则，以及未信任命令 / skill 的 `allowed-tools` 上。
 
 ## 还能强制什么
 
@@ -218,7 +244,7 @@ UNC 远程共享、敏感文件 `.env` / `*.pem` / `id_rsa` / `.ssh/` / `.aws/co
 | --- | --- | --- |
 | `disableBypassPermissionsMode: "disable"` | 禁掉 `always-allow` 与 `--dangerously-skip-permissions` | ✅ 已接线，含 fail-fast + 降级兜底 |
 | `disabledModes: ["plan", ...]` | 禁用指定权限模式 | ✅ 已接线，fail-fast |
-| `strictPluginOnlyCustomization` | 锁定定制化来源，只认 managed / plugin / builtin | ✅ 已接线（见下） |
+| `strictPluginOnlyCustomization` | 锁定定制化来源，只认 managed / plugin / builtin | ⚠️ 部分接线：skills / commands / agents 生效，hooks / mcp-servers 见下 |
 | `policyLimits` | 策略限额 | ✅ 注入生效 |
 
 `--setting-sources` 甩不掉企业策略：`policySettings` 和 `flagSettings` 会被强制加回
@@ -233,12 +259,26 @@ UNC 远程共享、敏感文件 `.env` / `*.pem` / `id_rsa` / `.ssh/` / `.aws/co
 { "strictPluginOnlyCustomization": ["skills", "agents"] }
 ```
 
-`true` 表示锁全部。门控作用在用户级、项目级、以及 `--add-dir` 授权目录三层
-（`packages/core/src/extension/loader.ts`）——`--add-dir` 不是策略绕过口。
+`true` 表示锁全部。对 `skills` / `commands` / `agents`，门控作用在用户级、项目级、以及 `--add-dir`
+授权目录三层（`packages/core/src/extension/loader.ts`）——`--add-dir` 不是策略绕过口。
 
-企业分发的扩展放 `/etc/sid-code/<type>/` 或 `~/.sid-code/managed/<type>/`
-（`packages/core/src/config/paths.ts`），这一层最后扫描、优先级最高，覆盖同名的 user / project 扩展，
-且不走项目信任确认。
+::: warning hooks / mcp-servers 面目前只锁插件来源
+锁 `hooks` 或 `mcp-servers`（含 `true`）时，当前实现只会打开插件来源门：本地目录 / `--plugin-dir`
+装的插件被拒，只放行企业市场的插件（`packages/cli/src/plugin/loader.ts`）。
+**用户级 / 项目级 settings 里的 `hooks`、`mcpServers` 和 `.mcp.json` 不受这个开关约束**，照常加载
+（项目级那部分仍有信任门 / MCP 审批）。要禁用户自带 hook，改用 `allowManagedHooksOnly` 或 `disableAllHooks`。
+:::
+
+企业分发的扩展目前**只有 skills** 支持 managed 目录（`packages/core/src/skill/loader.ts`）：
+放 `/etc/sid-code/skills/` 或 `~/.sid-code/managed/skills/`（`packages/core/src/config/paths.ts`）。
+commands / agents 没有 managed 层，要分发只能走企业插件市场。
+这一层最后扫描，覆盖同名的 user / project skill，且不走项目信任确认。
+
+两点和策略文件的口径不同，部署时注意：
+
+- 这个目录**三个平台都是 `/etc/sid-code/skills/`**，不跟策略文件走 `/Library/Application Support/SidCode`。
+- 两个目录都会扫，`~/.sid-code/managed/` 后合并，**同名时用户可写的那份覆盖系统级**。
+  所以 managed skill 防不住本机用户自己覆盖。
 
 ### 隐私级别：锁定数据外发
 
@@ -252,7 +292,8 @@ UNC 远程共享、敏感文件 `.env` / `*.pem` / `id_rsa` / `.ssh/` / `.aws/co
 ```
 
 生效后轨迹上传（含手动 `--upload-traces`）、更新检查、外部模型目录同步等非必要外发全部关闭，
-只保留模型请求与企业策略拉取；完整对照见[隐私与数据流向](/use/privacy#三个隐私级别)。
+只保留连向你自己配置端点的流量：模型请求、企业策略拉取、网关定价同步和 API 预连接
+（`packages/core/src/analytics/privacy-level.ts`）；完整对照见[隐私与数据流向](/use/privacy#三个隐私级别)。
 只想关遥测上报、保留其它功能，改用 `SID_CODE_DISABLE_TELEMETRY`。
 和其它策略一样，只有部署在系统级路径才算锁定。
 
@@ -282,23 +323,24 @@ deny 了 `Bash(curl *)` 的前提下，加这个参数后 `curl` 和 `rm -rf /` 
 
 **3. 远程策略随 `backend.url` 自动生效。** 配了企业后端地址（`backend.url` 或
 `SID_CODE_BACKEND_URL`）并执行过 `sid-code auth login` 后，启动时会拉取
-`GET <backend.url>/api/v1/ctl/policy`，不需要再单独配策略地址。拉取失败时按 fail-open 处理，
-有未过期的缓存就用缓存。用 `sid-code auth status --verify` 确认这条通道是否真的连通。
+`GET <backend.url>/api/v1/ctl/policy`，不需要再单独配策略地址。拉不到时不阻塞启动，
+是否沿用缓存有严格条件（见下文）。用 `sid-code auth status --verify` 确认这条通道是否真的连通。
 旧的 `SID_CODE_POLICY_ENDPOINT` 已弃用，只在没配 `backend.url` 时生效；两者都配且地址不同时以
 `backend.url` 为准并告警（`packages/core/src/identity/endpoints.ts`）。
 
 生效时机：启动和 `/login` 时各拉一次；交互会话里另有**约 30 分钟一次（±10% 抖动）的低频轮询**，
 带 `If-None-Match`，策略没变时服务端回 304、不传 body（`packages/core/src/config/policy-poll.ts`）。
-所以管理员改完策略，正在使用的员工最迟约 33 分钟内生效，不用重启；`sid-code -p` 这类无头调用不轮询，
+所以管理员改完策略，正在使用的员工通常约 33 分钟内生效（30 分钟 + 10% 抖动），不用重启；
+如果那一轮碰上非权威响应，要等下一轮。`sid-code -p` 这类无头调用不轮询，
 下次启动生效。轮询只采纳权威响应（200 / 204 / 304）：碰上超时、5xx、401 时保留会话里现有的策略，
 不会因为一次网络抖动把 deny 撤掉。
 
-启动时碰到非权威响应（超时 / 5xx / 401），
+启动时碰到非权威响应（超时、网络错误、5xx、401、响应体不是合法 JSON 等，即 200 / 204 / 304 以外的一切），
 缓存只在「地址一致、上次权威响应是 200、未超过 10 分钟」三条同时满足才用，
 避免已撤销的 deny 靠缓存续命。
 
 **4. `SID_CODE_DISABLE_POLICY_SKILLS=1` 能关掉 managed 层扩展**
-（`packages/core/src/extension/loader.ts`）。这是个**本地环境变量**——企业下发的 managed skill
+（`packages/core/src/extension/loader.ts`；managed 层目前只有 skills，所以实际关掉的是 managed skill）。这是个**本地环境变量**——企业下发的 managed skill
 可被任何本地用户一个 env 关掉。它是运维逃生阀，不是企业侧强制手段。
 
 **5. auto 模式下，最敏感的受保护路径分类器不能放行。**
@@ -323,12 +365,14 @@ ls -l ~/.sid-code/managed-settings.json                                # 用户�
 # 2. JSON 能不能解析（解析失败只 warn 不报错，容易漏）
 python3 -m json.tool /etc/sid-code/managed-settings.json
 
-# 3. 加载日志
-sid-code -p "ok" 2>&1 | grep -i "POLICY\|RULE_LOADER"
+# 3. 加载日志（不加 --debug 时只有 WARN / ERROR 打到 stderr，看不到「加载本地策略」这类 INFO）
+sid-code -p "ok" --debug
+grep -i "POLICY\|RULE_LOADER" ~/.sid-code/debug.log
 ```
 
-最常见的三个原因：macOS 上放进了 `/etc/sid-code/`（macOS 不读）；改的是用户级那份，
-但系统级文件也存在（用户级被忽略）；写进了已废弃的 `policy.json`。
+最常见的四个原因：macOS 上放进了 `/etc/sid-code/`（macOS 不读）；改的是用户级那份，
+但系统级文件也存在（用户级被忽略）；写进了已废弃的 `policy.json`；
+把 `permissions` 或模式开关写进了 `managed-settings.d/` drop-in（这些字段只从主文件读，见[策略文件放哪](#策略文件放哪)）。
 
 ### 企业 deny 和用户 deny 是什么关系
 
@@ -356,4 +400,4 @@ sid-code -p "ok" 2>&1 | grep -i "POLICY\|RULE_LOADER"
 - [团队默认配置分发](/team/defaults) —— 默认值（可改）vs 本页的强制约束（不可改）
 - [配额与成本控制](/team/quota) —— 花费侧的护栏
 - [Hook](/extend/hooks) —— 用 hook 做自定义门禁的补充手段
-- [settings.json 字段参考](/ref/settings) —— 全部字段
+- [settings.json 字段参考](/ref/settings) —— 普通 settings 字段（本页的企业策略键如 `disableBypassPermissionsMode`、`policyLimits` 走另一套解析，不在那页）
