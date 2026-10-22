@@ -8,7 +8,7 @@ import { mkdtempSync, writeFileSync, rmSync } from "fs";
 import { join } from "path";
 import { tmpdir } from "os";
 
-import { isSubPath, lockfileToDetectedIDE } from "@sid-code/core/ide/detect.ts";
+import { isSubPath, lockfileToDetectedIDE, parseSsePortEnv } from "@sid-code/core/ide/detect.ts";
 import { IDESelectionSync } from "@sid-code/core/ide/selection.ts";
 import { IDEMentionManager } from "@sid-code/core/ide/mention.ts";
 import { isProcessRunning, readIDELockfile } from "@sid-code/core/ide/lockfile.ts";
@@ -268,6 +268,25 @@ describe("IDEMentionManager", () => {
 
 // ───────────────────────────── shouldAutoConnect ─────────────────────────────
 
+describe("parseSsePortEnv", () => {
+  test("未设 / 空串：不是端口，也不算非法", () => {
+    expect(parseSsePortEnv(undefined)).toEqual({ port: null, invalid: false });
+    expect(parseSsePortEnv("  ")).toEqual({ port: null, invalid: false });
+  });
+
+  test("合法端口原样解析（容忍首尾空白）", () => {
+    expect(parseSsePortEnv("12345")).toEqual({ port: 12345, invalid: false });
+    expect(parseSsePortEnv(" 1 ")).toEqual({ port: 1, invalid: false });
+    expect(parseSsePortEnv("65535")).toEqual({ port: 65535, invalid: false });
+  });
+
+  test("非数字、0、越界、带后缀一律判非法（parseInt 会把 123abc 当 123）", () => {
+    for (const bad of ["abc", "0", "65536", "123abc", "-1", "1.5"]) {
+      expect(parseSsePortEnv(bad)).toEqual({ port: null, invalid: true });
+    }
+  });
+});
+
 describe("shouldAutoConnect / isSupportedTerminal", () => {
   const saved = {
     port: process.env.SID_CODE_SSE_PORT,
@@ -286,6 +305,15 @@ describe("shouldAutoConnect / isSupportedTerminal", () => {
     delete process.env.SID_CODE_AUTO_CONNECT_IDE;
     process.env.SID_CODE_SSE_PORT = "12345";
     expect(shouldAutoConnect()).toBe(true);
+  });
+
+  test("SID_CODE_SSE_PORT 非法时不触发自动连接（D6：避免白轮询 30 秒）", () => {
+    delete process.env.TERM_PROGRAM;
+    delete process.env.SID_CODE_AUTO_CONNECT_IDE;
+    for (const bad of ["abc", "0", "123abc", "70000", "-1"]) {
+      process.env.SID_CODE_SSE_PORT = bad;
+      expect(shouldAutoConnect()).toBe(false);
+    }
   });
 
   test("VS Code 终端被识别", () => {

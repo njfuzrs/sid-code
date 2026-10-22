@@ -8,7 +8,7 @@
  * - 协议复用：IDE 作为动态 MCP Server 接入，复用 MCPManager 基础设施
  */
 
-import { findAvailableIDE } from "./detect.ts";
+import { findAvailableIDE, parseSsePortEnv } from "./detect.ts";
 import type { DetectedIDE, IDEConnectionStatus } from "./types.ts";
 import { IDESelectionSync } from "./selection.ts";
 import { IDEMentionManager } from "./mention.ts";
@@ -133,6 +133,10 @@ export class IDEIntegration {
       await this.mcpManager.addServer(IDE_SERVER_NAME, config);
 
       if (!this.mcpManager.isConnected(IDE_SERVER_NAME)) {
+        // 必须在这里移除：addServer 失败时只断 client，配置仍留在 manager 里，
+        // /mcp 面板会多出一个连不上的 `ide` 条目。而 disconnect() 以 currentIDE
+        // 为清理条件，失败路径恰好不设置它，所以那边永远不会替我们收拾。
+        await this.mcpManager.removeServer(IDE_SERVER_NAME);
         this.status = "disconnected";
         log.error("IDE", `连接 ${ide.name} 失败`);
         return false;
@@ -167,6 +171,12 @@ export class IDEIntegration {
       log.info("IDE", `已连接到 ${ide.name}`);
       return true;
     } catch (err: any) {
+      // 与上面「未连上」分支同理：currentIDE 未设置，disconnect() 不会清理残留
+      try {
+        await this.mcpManager.removeServer(IDE_SERVER_NAME);
+      } catch {
+        // 清理失败不覆盖原始错误
+      }
       this.status = "disconnected";
       log.error("IDE", `连接 ${ide.name} 失败: ${err.message}`);
       return false;
@@ -196,10 +206,20 @@ export class IDEIntegration {
  * 3. 在 IDE 内置终端中运行
  */
 export function shouldAutoConnect(configAutoConnect?: boolean): boolean {
+  // 与 detectIDEs 的端口命中共用判据：非法值不算「指定了端口」，
+  // 否则会进 30 秒轮询却永远命中不了（D6）。WARN 在 audit 模式下会落盘，
+  // 是用户能发现「我设错了环境变量」的唯一途径（TUI 下 INFO 不可见）。
+  const ssePort = parseSsePortEnv(process.env.SID_CODE_SSE_PORT);
+  if (ssePort.invalid) {
+    getLogger().warn(
+      "IDE",
+      `SID_CODE_SSE_PORT=${JSON.stringify(process.env.SID_CODE_SSE_PORT)} 不是合法端口（1-65535），已忽略`,
+    );
+  }
   return !!(
     // --ide flag / settings.json ide.autoConnect 显式开启（与 env 等价，A-4 子集）
     configAutoConnect ||
-    process.env.SID_CODE_SSE_PORT ||
+    ssePort.port !== null ||
     process.env.SID_CODE_AUTO_CONNECT_IDE === "true" ||
     isSupportedTerminal()
   );
@@ -249,7 +269,8 @@ export function resetIDEIntegration(): void {
  *      而 buildInitialSystemPrompt 只在启动瞬间跑一次 → 那一刻必然还没连上；
  *   ② 缓存：选区每变一次就换一次静态前缀 → 每次都击穿 prompt cache。
  * 正路径是 {@link drainIDEContextDelta}，经 reminderParts 走 user 消息动态注入
- * （与 MCP server instructions 同一模式）。本函数保留供 /ide 状态展示与测试使用。
+ * （与 MCP server instructions 同一模式）。本函数目前**没有生产调用方**
+ * （/ide 命令也不用它），只保留给测试锁「未连接时恒为空」这条历史结论。
  */
 export function collectIDEContext(): { ideSelection?: string; ideMention?: string } {
   if (!singleton || singleton.getStatus().status !== "connected") {
