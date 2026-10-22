@@ -140,8 +140,8 @@ describe("缺陷 16：非流式影子调用无 usage 也入账", () => {
       }),
     } as any;
     await sendNonStreamingSideCall(provider, params, undefined, {
-      querySource: "cache_warmup",
-      label: "cache-warmup",
+      querySource: "tool_classifier",
+      label: "tool-classifier",
     });
     const stats = getSideStats();
     expect(stats.apiCalls).toBe(1);
@@ -149,9 +149,9 @@ describe("缺陷 16：非流式影子调用无 usage 也入账", () => {
     expect(stats.tokensSent).toBe(0);
   });
 
-  test("五个调用点的 querySource 都登记在白名单（否则消费侧会二次加钱）", () => {
+  test("非流式调用点的 querySource 都登记在白名单（否则消费侧会二次加钱）", () => {
+    // cache_warmup 随 session/warmup.ts 于 2026-10-22 下线（零调用），不再在此列
     for (const q of [
-      "cache_warmup",
       "tool_classifier",
       "bash_classifier",
       "web_fetch_extract",

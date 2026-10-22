@@ -1962,7 +1962,7 @@ export class OpenAIProvider implements Provider {
    * 复用 convertMessages，用普通 chat/completions 请求（stream:false）。
    */
   /**
-   * 非流式请求（网关不支持 SSE 时由 stream-handler 降级到此，也被 warmup / 分类器等旁路直接调用）。
+   * 非流式请求（网关不支持 SSE 时由 stream-handler 降级到此，也被分类器、标题生成等旁路直接调用）。
    *
    * 这层只做**能力自愈**，真正的请求在 sendMessageNonStreamingInner。
    * 与流式路径的 withCapabilityHealing 严格同构：首次因「我们多发了一个模型不认的能力字段」
@@ -2174,7 +2174,7 @@ export class OpenAIProvider implements Provider {
       const stopReason = OpenAIProvider.mapFinishReason(finishReason);
 
       // §4.4：DeepSeek 特有 insufficient_system_resource（deepseek-api.md:2094-2096）。
-      // 非流式路径同样须视为可重试——抛错让上层（stream-handler 降级路径 / warmup 等）经
+      // 非流式路径同样须视为可重试——抛错让上层（stream-handler 降级路径 / 旁路调用等）经
       // classifyError 归为 overloaded 触发重试，而非返回一个静默截断的 end_turn 式响应。
       if (finishReason === "insufficient_system_resource") {
         throw new Error("DeepSeek insufficient_system_resource（推理系统资源不足，可重试）");

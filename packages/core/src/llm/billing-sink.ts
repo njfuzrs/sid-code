@@ -221,7 +221,6 @@ export const BILLING_SELF_REPORTED_LABELS: ReadonlySet<string> = new Set([
   // 缺陷 15：直调 sendMessageNonStreaming 的影子调用点。它们自己 recordSideCall
   // （见 recordNonStreamingSideCall），provider 非流式收口发的事件只作恒等式核对与归因。
   // 门禁：tests/llm/billing-self-reported-labels.test.ts 的非流式那一条。
-  "cache_warmup", // session/warmup.ts
   "tool_classifier", // permission/tool-classifier.ts
   "bash_classifier", // permission/bash-classifier.ts
   "web_fetch_extract", // tool/web-fetch-extract.ts

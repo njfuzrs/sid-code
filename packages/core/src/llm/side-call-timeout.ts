@@ -1,7 +1,7 @@
 /**
  * Side-call 硬超时包裹 — side-call-timeout.ts
  *
- * 背景（T3）：auto-compact / context-collapse / memory-recall / warmup 等 side-call
+ * 背景（T3）：auto-compact / context-collapse / memory-recall 等 side-call
  * 的 LLM 调用此前只有 signal 纵深防御，无独立硬超时。若 provider 层超时机制失效
  * （如 signal 穿透失败、reader 在半开 TCP 上永不 settle），side-call 会永久阻塞，
  * 拖住主循环（auto-compact / context-collapse 在主循环 await 路径上）或后台任务。
@@ -122,7 +122,7 @@ export function mergeTimeoutSignal(
  * @returns          fn 的结果；超时则 reject SideCallTimeoutError
  *
  * 用法（非流式）：
- *   await withSideCallDeadline("warmup", 10_000, (signal) =>
+ *   await withSideCallDeadline("auto-compact", 60_000, (signal) =>
  *     provider.sendMessageNonStreaming(params, signal));
  *
  * 用法（流式消费）：把整个"建流 + for-await 消费"包进 fn，返回消费结果。

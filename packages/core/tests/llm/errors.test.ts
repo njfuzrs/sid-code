@@ -375,7 +375,7 @@ describe("isAbortError", () => {
     // 若新增/修改 abort reason，请同步更新 ABORT_REASONS 与本断言。
     // 现有 reason：user-cancel(app.ts onInterrupt)、timeout(session 超时)、
     // turn-timeout(单轮硬超时)、watchdog-timeout(loop.ts 看门狗)、
-    // side-call-timeout(side-call-timeout.ts：auto-compact/context-collapse/recall/warmup)、
+    // side-call-timeout(side-call-timeout.ts：auto-compact/context-collapse/recall)、
     // race-settled(loop.ts finally：每轮 race settle 后 abort turn 级子 controller 清理孤儿 fetch)、
     // subagent-session-exit(task/agent-task.ts：PR-B 会话退出回收后台子代理；回收发生在
     // 无前台 await 的后台，未登记即为绕过闸门的孤儿 rejection。取代已删除的 subagent-hard-kill)。

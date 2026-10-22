@@ -170,6 +170,9 @@ describe("非流式影子调用必须走 sendNonStreamingSideCall", () => {
         expect(BILLING_SELF_REPORTED_LABELS.has(label)).toBe(true);
       }
     }
-    expect(n).toBeGreaterThanOrEqual(5);
+    // 扫描器自证下限 = 当前真实调用点数：tool_classifier / bash_classifier /
+    // web_fetch_extract / title_generation。原为 5，cache_warmup 随 session/warmup.ts
+    // 于 2026-10-22 下线（零调用）后减为 4。
+    expect(n).toBeGreaterThanOrEqual(4);
   });
 });
