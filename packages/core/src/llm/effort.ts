@@ -596,7 +596,7 @@ export function previewWireEffort(cap: EffortCapability, level: EffortLevel): Ef
  * 该模型**真实可选**的档位集合（/effort 面板列表 + /model 面板左右键循环的唯一依据）。
  *
  * 为什么需要它：`EffortCapability` 此前只暴露 `supportsEffort` / `supportsMaxEffort` 两个布尔，
- * 表达不了「o-series 无 max 与 xhigh」「DeepSeek 只认 high/max」这类**档位子集**。
+ * 表达不了「o-series 无 max 与 xhigh」「DeepSeek 无 medium / xhigh」这类**档位子集**。
  * 于是 UI 只能拿全量 5 档硬编码列举，用户选了实际会被静默钳制的档（选 low 实发 high），
  * 面板显示的档位与真正下发的档位不一致——「档位应该跟模型配对」缺的就是这一层。
  *
