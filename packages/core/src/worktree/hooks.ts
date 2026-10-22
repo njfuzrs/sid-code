@@ -109,6 +109,32 @@ export function validateHookWorktreePath(raw: string, gitRoot: string): string {
   return p;
 }
 
+// eslint-disable-next-line no-control-regex
+const ANSI_RE = /\x1b\[[0-?]*[ -/]*[@-~]|\x1b\][^\x07\x1b]*(?:\x07|\x1b\\)/g;
+
+/**
+ * B5：从 WorktreeCreate hook 的 stdout 取路径（对齐 CC）。
+ * 1. 整段是一个 JSON 对象且带 `hookSpecificOutput.worktreePath` → 用它（CC 的 JSON 形式，迁移用户会这么写）；
+ * 2. 否则取**最后一个非空行**，并先去掉 ANSI 转义——shell 启动横幅 / 带颜色的日志
+ *    原先会让「最后一行」变成一个转义串，或因末尾空行取到空串。
+ * JSON 解析失败一律回落到第 2 条，不当成错误：路径本身不会以 `{` 开头，回落不会误判。
+ */
+export function parseWorktreeCreateOutput(stdout: string): string {
+  const text = stdout.replace(ANSI_RE, "").trim();
+  if (text.startsWith("{") && text.endsWith("}")) {
+    try {
+      const json = JSON.parse(text) as { hookSpecificOutput?: { worktreePath?: unknown } };
+      const p = json?.hookSpecificOutput?.worktreePath;
+      if (typeof p === "string" && p.trim()) return p.trim();
+    } catch {
+      /* 不是合法 JSON：按纯文本处理 */
+    }
+  }
+  const lines = text.split("\n").map((l) => l.trim());
+  for (let i = lines.length - 1; i >= 0; i--) if (lines[i]) return lines[i]!;
+  return "";
+}
+
 /** 是否配置了 WorktreeCreate hook */
 export function hasWorktreeCreateHook(gitRoot?: string): boolean {
   return getWorktreeHook("WorktreeCreate", gitRoot) !== null;
@@ -190,11 +216,11 @@ export async function executeWorktreeCreateHook(
     { name: slug, cwd: gitRoot, projectRoot: gitRoot },
     timeoutMs,
   );
-  const lastLine = out.split("\n").pop()?.trim() ?? "";
-  if (!lastLine) {
+  const raw = parseWorktreeCreateOutput(out);
+  if (!raw) {
     throw new Error("WorktreeCreate hook 未输出 worktree 路径");
   }
-  const worktreePath = validateHookWorktreePath(lastLine, gitRoot);
+  const worktreePath = validateHookWorktreePath(raw, gitRoot);
   log.info("WORKTREE", `Hook 创建 worktree: ${worktreePath}`);
   return { worktreePath };
 }

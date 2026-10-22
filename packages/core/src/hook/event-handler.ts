@@ -54,6 +54,20 @@ import { getLogger } from "../debug/logger.ts";
 import { getRawVersion } from "@sid-code/shared/version.ts";
 import { getIdentity } from "../identity/index.ts";
 import { finalizeGuardrailSession } from "../analytics/events.ts";
+import { reportHookSystemMessage } from "./diagnostic-sink.ts";
+
+/**
+ * B1：这些事件的 systemMessage 不展示（对齐 CC hooks 文档各事件小节的「discards systemMessage」）。
+ * 名单只收 sid 枚举里存在的事件；CC 独有的 MessageDisplay / WorktreeRemove 不在 HookSystem 里。
+ */
+const SYSTEM_MESSAGE_DISCARD_EVENTS: ReadonlySet<HookEventName> = new Set([
+  HookEventName.Setup,
+  HookEventName.InstructionsLoaded,
+  HookEventName.Notification,
+  HookEventName.ConfigChange,
+  HookEventName.PreCompact,
+  HookEventName.PostCompact,
+]);
 
 /**
  * P0-1：本进程的 sid-code 版本号（裸 x.y.z），供 SessionStart/End 两端携带。
@@ -785,6 +799,13 @@ export class HookEventHandler {
 
       // 4. 日志
       this.logExecution(eventName, results, aggregated);
+
+      // 5. B1：systemMessage 送到用户可见出口。此前它被产出、被合并，却没有任何消费点，
+      // 「exit 1 + stderr 的告警展示给用户」只停留在文档里。对齐 CC：部分事件丢弃 systemMessage。
+      const sysMsg = aggregated.finalOutput?.systemMessage;
+      if (sysMsg && !SYSTEM_MESSAGE_DISCARD_EVENTS.has(eventName)) {
+        reportHookSystemMessage(eventName, sysMsg);
+      }
 
       return aggregated;
     } catch (error) {
