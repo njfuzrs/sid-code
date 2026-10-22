@@ -47,6 +47,20 @@ export type ProcessTableRunner = () => Promise<string>;
 export type DetectableIDE = "vscode" | "cursor" | "windsurf";
 
 /**
+ * 面向用户的显示名。
+ *
+ * 枚举值是内部判据（与 `TERM_PROGRAM` 同形的小写），不能直接拼进文案：
+ * 此前 /ide 的「没有 lockfile」提示输出的是 `检测到 vscode 正在运行`，
+ * 而 lockfile 存在时显示的是扩展写入的 `ideName`（`VS Code`），同一个 IDE 两种叫法。
+ * 用 Record 而不是 switch：以后给 DetectableIDE 加成员时，这里漏写就是编译错误。
+ */
+export const DETECTABLE_IDE_DISPLAY_NAME: Readonly<Record<DetectableIDE, string>> = {
+  vscode: "VS Code",
+  cursor: "Cursor",
+  windsurf: "Windsurf",
+};
+
+/**
  * 进程命令行关键词，按 IDE 分。
  *
  * macOS 上 IDE 的真实进程名是 Helper（`Cursor Helper (Plugin)`），

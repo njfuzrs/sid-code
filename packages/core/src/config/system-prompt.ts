@@ -104,7 +104,7 @@ export interface SystemPromptContext {
    * 它们随用户在编辑器里的每次点选变化，塞进 system prompt 会每次变更都击穿
    * prompt cache 静态前缀。已改走 delta 消息通道（`drainIDEContextDelta` →
    * `reminderParts`），与 MCP server instructions 同模式。
-   * `collectIDEContext()` 仍保留，但只供 `/ide` 状态展示，不要再喂到这里。
+   * `collectIDEContext()` 仍保留（仅测试使用，无生产调用方），不要再喂到这里。
    */
   /** 诊断信息 */
   diagnostics?: string;

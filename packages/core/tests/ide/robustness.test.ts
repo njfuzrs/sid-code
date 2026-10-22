@@ -283,6 +283,30 @@ describe("D5 · 连接成功后发 ide_connected", () => {
     resetIDEIntegration();
   });
 
+  test("连接失败时把 ide server 从 manager 移除，不在 /mcp 面板留残留条目", async () => {
+    const { IDEIntegration, IDE_SERVER_NAME, resetIDEIntegration } =
+      await import("@sid-code/core/ide/integration.ts");
+    resetIDEIntegration();
+
+    const removed: string[] = [];
+    const mcpManager = {
+      addServer: async () => [],
+      isConnected: () => false, // addServer 内部吞掉了连接错误
+      getClient: () => undefined,
+      removeServer: async (name: string) => {
+        removed.push(name);
+      },
+    };
+
+    const integ = new IDEIntegration(mcpManager as never, "/tmp/ws");
+    expect(await integ.connectToIDE({ url: "ws://127.0.0.1:1", name: "Fake", port: 1 })).toBe(
+      false,
+    );
+    expect(removed).toEqual([IDE_SERVER_NAME]);
+    expect(integ.getStatus().status).toBe("disconnected");
+    resetIDEIntegration();
+  });
+
   test("传输层不支持发通知时不影响连接判定（IDE 是可选增强）", async () => {
     const { IDEIntegration, resetIDEIntegration } =
       await import("@sid-code/core/ide/integration.ts");

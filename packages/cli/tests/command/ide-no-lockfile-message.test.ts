@@ -30,6 +30,7 @@ import { tmpdir } from "os";
 
 import { IDECommand } from "@sid-code/cli/command/ide.ts";
 import { resetIDEIntegration } from "@sid-code/core/ide/integration.ts";
+import { DETECTABLE_IDE_DISPLAY_NAME } from "@sid-code/core/ide/process-tree.ts";
 import type { AppContext } from "@sid-code/cli/command/types.ts";
 
 const IDE_COMMAND_SOURCE = join(import.meta.dir, "../../src/command/ide.ts");
@@ -70,12 +71,24 @@ describe("/ide 没有 lockfile 时的提示", () => {
 
   test("点名文案拼进检测结果，检测为空时退回「未发现」，源码里不再有 install 子命令", () => {
     const source = readFileSync(IDE_COMMAND_SOURCE, "utf-8");
-    // 名字来自检测结果的拼接，而不是写死的某个 IDE
-    expect(source).toContain("running.join(");
+    // 名字来自检测结果的拼接，而不是写死的某个 IDE；
+    // 且必须先经显示名映射（D1：此前直接 join 枚举值，用户看到的是小写 `vscode`）
+    expect(source).toContain("DETECTABLE_IDE_DISPLAY_NAME[ide]");
+    expect(source).not.toContain("running.join(");
     expect(source).toContain("正在运行，但没有发现 sid-code 扩展");
     expect(source).not.toContain("/ide install");
     expect(source).not.toContain("IDEInstallCommand");
     expect(source).toContain("未发现可用 IDE");
+  });
+});
+
+describe("/ide 点名文案的显示名", () => {
+  test("每个可识别 IDE 都映射到用户熟悉的显示名，而不是内部小写枚举", () => {
+    expect(DETECTABLE_IDE_DISPLAY_NAME).toEqual({
+      vscode: "VS Code",
+      cursor: "Cursor",
+      windsurf: "Windsurf",
+    });
   });
 });
 
