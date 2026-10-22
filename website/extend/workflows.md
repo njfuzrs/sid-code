@@ -54,19 +54,18 @@ Workflow 工具是**延迟加载**的（`shouldDefer = true`，不进首轮上�
 ### 用 `/workflows` 看进度
 
 ```text
-/workflows          # 列出当前会话的 run
+/workflows          # 列出当前会话的 run + 磁盘上的历史 run
 /workflows wf_a3f2  # 看某个 run 的详情
 ```
 
 `/workflows`（别名 `/wf`）是**查看入口**，不做 resume——resume 完全由 Workflow 工具的 `resume_from_run_id` 参数提供（`packages/cli/src/command/commands/workflows/index.ts`）。
 
-数据源是**当前进程内存里的 task 注册表**（`packages/cli/src/command/commands/workflows/workflows.ts` 的 `getAllTasks().filter(isWorkflowTask)`），所以：
+它有两个数据源（`packages/cli/src/command/commands/workflows/workflows.ts`）：
 
-- 无参列出**本次会话**的 run（运行中优先、按开始时间倒序），**不是**磁盘上所有历史 run——重启会话后早先的 run 不会出现在列表里；
-- 带 runId 也只在内存注册表里精确匹配，匹配不到直接提示「未找到」，**不会**回退去读磁盘上的 journal；
-- 详情页会回放 journal 快照，含各 `agent()` 调用的结果预览——读自 `~/.sid-code/workflows/journals/<runId>.jsonl`。
+- **当前进程内存里的 task 注册表**：本次会话的 run，带实时状态、当前 phase、agent 计数（运行中优先、按开始时间倒序）；
+- **磁盘上的 journal**（`~/.sid-code/workflows/journals/<runId>.jsonl`）：不在当前会话里的 run 列在「历史（仅磁盘）」一节，按最后写入时间倒序，最多显示 20 条。
 
-也就是说 journal 文件是持久保留的，但查看入口只覆盖当前会话。
+带 runId 时先在内存里精确匹配；匹配不到就回退读磁盘 journal，显示进度树，并给出可以直接粘贴的 `{script_path, resume_from_run_id}`。历史 run 没有进程内状态，所以显示为「最终状态未知」，不会去猜它是成功还是失败。
 
 ## 详细说明
 
@@ -98,7 +97,7 @@ Workflow 工具是**延迟加载**的（`shouldDefer = true`，不进首轮上�
 | `schema` | 强制结构化输出，`agent()` 返回已校验对象（`packages/core/src/workflow/json-schema-validator.ts` 零依赖自研校验） |
 | `label` | 覆盖显示标签（展示用，不影响缓存键） |
 | `phase` | 显式归到某进度组——防 `pipeline`/`parallel` 内 `phase()` 全局态竞态 |
-| `model` | 覆盖模型；省略 = 按 **`task` 子代理类型**解析（`subAgentModels.task` > `subAgentModels.default` > agent 定义的 `model` > 语义档位 > 主模型）。注意它不是「继承主循环模型」，也与 `agentType` 无关 |
+| `model` | 覆盖模型；省略 = 按该格的 **`agentType`**（缺省为 `task`）解析：`subAgentModels.<类型>` > `subAgentModels.default` > agent 定义的 `model` > 语义档位 > 主模型。注意它不是「继承主循环模型」 |
 | `effort` | 覆盖推理强度（`low`/`medium`/`high`/`xhigh`/`max`） |
 | `isolation` | `"worktree"` = 独立 git worktree。**贵！**仅当 agent 并行改文件会冲突时用 |
 | `agentType` | 用自定义子代理类型（从[子代理](/extend/subagents)同一注册表解析，如 `explore`/`verify`） |
@@ -125,7 +124,7 @@ workflow 内的子代理没有弹窗通道，权限检查器由主会话统一�
 
 这是 Workflow 相对「派一堆子代理」的核心优势。流程：
 
-1. Workflow 工具**成功**时返回 `script_path` 和 `runId`；**失败时只返回一段错误文本，不含 runId**——此时需要先用 `/workflows` 在当前会话里找到该 run 的 runId
+1. Workflow 工具**成功和失败时都会**返回 `script_path` 和 `runId`，失败时还会附上可直接使用的 resume 参数；失败通知里也带 runId。重启会话后可以用 `/workflows` 在「历史」一节里找回
 2. 编辑脚本文件修复问题
 3. 用 `{ script_path: "<path>", resume_from_run_id: "<runId>" }` 重跑
 4. 未改动的 `agent()` 调用直接返回缓存，只重跑改动及其之后的
@@ -136,10 +135,10 @@ workflow 内的子代理没有弹窗通道，权限检查器由主会话统一�
 
 - **脚本** → `~/.sid-code/workflows/scripts/<名字>-<runId>.js`。每次 run 都自动落盘一份。
   用途是**复用与迭代**：用 `{ script_path: "<落盘路径>" }` 直接重跑、改它、或把它给同事。
-  注意 `{ name: "<名字>" }` **加载不到自动落盘的脚本**——`name` 分支读的是 `<名字>.js`
-  （`packages/core/src/tool/workflow.ts:241`），而落盘名带 `-<runId>` 后缀（`:260`）；
-  想用 `name` 得先手动把文件改名成 `<名字>.js`。三个参数的优先级是
-  `script_path` > `script` > `name`（`:224-251`，工具 schema 的描述同口径）。
+  也可以按名字复用：`{ name: "<名字>" }`（以及脚本里的 `workflow("<名字>")`）先找手动命名的
+  `<名字>.js`，找不到时取最近一次自动落盘的 `<名字>-wf_*.js`（按修改时间）
+  （`packages/core/src/tool/workflow.ts` 的 `resolveSavedScriptPath`）。落盘不会覆盖你手动命名的文件。
+  三个参数的优先级是 `script_path` > `script` > `name`（工具 schema 的描述同口径）。
 - **journal** → `~/.sid-code/workflows/journals/<runId>.jsonl`，append-only。
   用途是**resume 缓存**：每个 `agent()` 调用的结果追加一行，重跑时命中就不真跑。
 

@@ -87,6 +87,47 @@ describe("/workflows 命令", () => {
     expect(v).toContain("未找到");
   });
 
+  test("F1：列表合并磁盘上不在当前会话的历史 run，详情回退读 journal 并给 resume 参数", async () => {
+    const prev = process.env.SID_CONFIG_DIR;
+    const home = mkdtempSync(join(tmpdir(), "sid-wf-hist-"));
+    process.env.SID_CONFIG_DIR = home;
+    try {
+      makeWfTask({ runId: "wf_000000000001", workflowName: "live" });
+      const journalDir = join(home, "workflows", "journals");
+      const scriptDir = join(home, "workflows", "scripts");
+      mkdirSync(journalDir, { recursive: true });
+      mkdirSync(scriptDir, { recursive: true });
+      const entry = { callIndex: 0, fingerprint: "a", result: "旧结果", label: "old-agent" };
+      // 历史 run（只在磁盘）+ 当前会话 run 的 journal（不应在历史区重复出现）
+      writeFileSync(join(journalDir, "wf_abcdefabcdef.jsonl"), JSON.stringify(entry) + "\n");
+      writeFileSync(join(journalDir, "wf_000000000001.jsonl"), JSON.stringify(entry) + "\n");
+      writeFileSync(join(journalDir, "not-a-run.jsonl"), "x\n"); // 非 runId 形态，忽略
+      writeFileSync(join(scriptDir, "old-wf-wf_abcdefabcdef.js"), "// script");
+
+      const mod = await loadCmd();
+      const list = ((await mod.call("", EMPTY_CTX)) as { value: string }).value;
+      expect(list).toContain("历史（仅磁盘，1 个");
+      expect(list).toContain("wf_abcdefabcdef");
+      expect(list.split("wf_000000000001").length - 1).toBe(1); // 不重复
+      expect(list).not.toContain("not-a-run");
+
+      const detail = ((await mod.call("wf_abcdefabcdef", EMPTY_CTX)) as { value: string }).value;
+      expect(detail).toContain("历史（仅磁盘");
+      expect(detail).toContain("old-agent");
+      expect(detail).toContain(
+        `{script_path:"${join(scriptDir, "old-wf-wf_abcdefabcdef.js")}", resume_from_run_id:"wf_abcdefabcdef"}`,
+      );
+
+      // 路径穿越输入不读盘，按未找到处理
+      const evil = ((await mod.call("../../etc/passwd", EMPTY_CTX)) as { value: string }).value;
+      expect(evil).toContain("未找到");
+    } finally {
+      if (prev === undefined) delete process.env.SID_CONFIG_DIR;
+      else process.env.SID_CONFIG_DIR = prev;
+      rmSync(home, { recursive: true, force: true });
+    }
+  });
+
   test("详情按 phase 分组渲染进度树（P1-4）", async () => {
     // journal 落在 SID_CONFIG_DIR 下，重定向到 tmpdir，不读真实 ~/.sid-code。
     const prev = process.env.SID_CONFIG_DIR;

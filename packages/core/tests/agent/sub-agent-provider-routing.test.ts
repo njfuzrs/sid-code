@@ -263,6 +263,21 @@ describe("spawn 路径：init 消息里的连接跟着 task.model", () => {
     expect(init.base_url).toBe("https://api.deepseek.com");
     expect(init.api_key).toBe("sk-ds");
   });
+
+  test("executeSpawnedCustom：无 modelOverride → 主模型（与进程内 executeCustomInner 同口径，不读 subAgentModels.task）", async () => {
+    // 回归：旧实现按 "task" 类型解析，配了 subAgentModels.task 时 spawn 用 haiku-like、
+    // 进程内（编译二进制唯一路径）用主模型——同一个自定义代理两种模型、两种计费。
+    const reg = new ProviderRegistry(multiProviderConfig(), { task: "haiku-like" });
+    const agent = SubAgent.fromRegistry(reg, new Registry());
+    const captured = captureSpawnInit(agent);
+
+    await agent.executeCustom({ systemPrompt: "s", userPrompt: "u", allowedTools: [] });
+
+    const init = captured[0]!;
+    expect(init.model).toBe("main-model");
+    expect(init.provider_name).toBe("openai");
+    expect(init.base_url).toBe("https://gw-main/v1");
+  });
 });
 
 describe("ProviderRegistry.getSpawnConfigForModel", () => {
