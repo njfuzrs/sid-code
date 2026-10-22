@@ -344,6 +344,48 @@ describe("waitForDiagnostics（codeAction 的诊断沉降等待）", () => {
     expect(await Promise.all([a, b])).toEqual([true, true]);
   });
 
+  // ─── clearForFile 必须让 latest 快照失效（编辑后旧诊断不能冒充新诊断）───
+  // 旧实现只清 delivered/pending、漏清 latest：编辑后 waitForDiagnostics 因 latest.has(uri)
+  // 立即返回 true，codeAction 随即把编辑前的诊断塞进 context.diagnostics。
+
+  test("clearForFile 后 peek 返回空，不残留编辑前快照", () => {
+    const reg = new DiagnosticRegistry();
+    reg.registerPending("ts", [{ uri: "file:///a.ts", diagnostics: [diag("old")] }]);
+    reg.clearForFile("file:///a.ts");
+    expect(reg.peekDiagnosticsForFile("file:///a.ts")).toEqual([]);
+    expect(reg.hasPublishedFor("file:///a.ts")).toBe(false);
+  });
+
+  test("clearForFile 后 waitForDiagnostics 不因旧快照立即成功", async () => {
+    const reg = new DiagnosticRegistry();
+    reg.registerPending("ts", [{ uri: "file:///a.ts", diagnostics: [diag("old")] }]);
+    reg.clearForFile("file:///a.ts");
+    expect(await reg.waitForDiagnostics("file:///a.ts", 20)).toBe(false);
+  });
+
+  test("clearForFile 后新诊断到达 → 唤醒等待者且 peek 到新诊断", async () => {
+    const reg = new DiagnosticRegistry();
+    reg.registerPending("ts", [{ uri: "file:///a.ts", diagnostics: [diag("old")] }]);
+    reg.clearForFile("file:///a.ts");
+    const waiting = reg.waitForDiagnostics("file:///a.ts", 1000);
+    setTimeout(() => {
+      reg.registerPending("ts", [{ uri: "file:///a.ts", diagnostics: [diag("new")] }]);
+    }, 10);
+    expect(await waiting).toBe(true);
+    expect(reg.peekDiagnosticsForFile("file:///a.ts").map((d) => d.message)).toEqual(["new"]);
+  });
+
+  test("clearForFile 只清目标文件快照，其它文件快照不受影响", async () => {
+    const reg = new DiagnosticRegistry();
+    reg.registerPending("ts", [
+      { uri: "file:///a.ts", diagnostics: [diag("erra")] },
+      { uri: "file:///b.ts", diagnostics: [diag("errb")] },
+    ]);
+    reg.clearForFile("file:///a.ts");
+    expect(reg.peekDiagnosticsForFile("file:///b.ts").map((d) => d.message)).toEqual(["errb"]);
+    expect(await reg.waitForDiagnostics("file:///b.ts", 5)).toBe(true);
+  });
+
   test("hasPublishedFor 区分「服务器说没问题」与「服务器还没表态」", () => {
     const reg = new DiagnosticRegistry();
     expect(reg.hasPublishedFor("file:///a.ts")).toBe(false);
