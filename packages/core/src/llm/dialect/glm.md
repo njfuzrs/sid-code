@@ -45,7 +45,7 @@ GLM 仍允许显式 `auto` 通过。
 
 | | DeepSeek | GLM |
 | --- | --- | --- |
-| effort 值域 | 只认 high/max | 认 low/medium/high/max |
+| effort 值域 | 认 low/high/max（medium/xhigh → high） | 认 low/medium/high/max |
 | tool_choice | 思考时拒绝 | 仅认 auto |
 
 原实现合成 `if (isDeepSeek || isGLM)` 只在 thinking 那一段成立，
