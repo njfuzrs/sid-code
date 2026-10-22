@@ -123,7 +123,8 @@ export async function failWorkflowTask(taskId: string, error: string): Promise<v
     toolUseId: task.toolUseId,
     outputFile: task.outputFile,
     status: "failed",
-    summary: `Workflow "${task.workflowName}" 执行失败`,
+    // 带 runId:失败通知是模型拿到 resume 标识的另一条路(journal 里已成功的 agent 可续跑)
+    summary: `Workflow "${task.workflowName}" 执行失败(runId=${task.runId},可用 resume_from_run_id 续跑)`,
     error,
   });
 }

@@ -1252,14 +1252,16 @@ export class SubAgent {
     for (const t of this.resolveCustomTools(task)) tools.register(t);
     const toolDefs = this.getCustomToolDefs(task);
 
-    // 计费口径对齐 executeCustomInner：modelOverride 优先，否则按 "task" 类型解析。
-    // 整套连接（真名 + provider/apiKey/baseURL）都按**最终生效的 model** 解析：modelOverride
-    // 绕过 "task" 类型模型时，旧实现只重算了真名、provider 仍是 "task" 类型模型的——
-    // 模型名与连接错配，跨 provider 必然失败（2026-10-11 事故同型）。
-    const sc = this.modelOverride
-      ? this.registry?.getSpawnConfigForModel?.(this.modelOverride)
-      : this.registry?.getSpawnConfigForSubAgent?.("task");
-    const model = sc?.model ?? this.modelOverride ?? this.model;
+    // 模型口径与 executeCustomInner 同源：modelOverride 优先，否则主模型。
+    // 曾经无 override 时按 "task" 类型解析（getSpawnConfigForSubAgent("task")），而进程内路径用
+    // 主模型——配了 subAgentModels.task 的用户，同一个自定义代理在源码运行模式（spawn 可达）与
+    // 编译二进制（只走进程内）下用的是两个模型，计费随之分叉。统一到进程内（线上实际生效）的口径。
+    // 整套连接（真名 + provider/apiKey/baseURL）都按**最终生效的 model** 解析，不按类型查
+    // （2026-10-11 事故：模型名与连接错配，跨 provider 必然失败）。
+    const activeModel =
+      this.modelOverride || (this.registry ? this.registry.getCurrentModel() : this.model);
+    const sc = this.registry?.getSpawnConfigForModel?.(activeModel);
+    const model = sc?.model ?? activeModel;
     const wireModel = sc?.wireModel;
     // 整张别名表与 model 的选择无关（它是全量映射，不是"本次那条"），
     // 故 modelOverride 分支同样直接用，不需要重新解析。子进程内换模型时靠它翻译。
