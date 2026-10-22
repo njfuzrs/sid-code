@@ -256,9 +256,13 @@ describe("changelog · 版本列表不跟随 tag（回归：撤 tag 让官网历
   test("每份入库的 curated 文案都出现在官网数据里", () => {
     const d = JSON.parse(readFileSync(DATA_PATH, "utf8"));
     const onSite = new Set<string>(d.versions.map((v: { version: string }) => v.version));
+    // 只对账已有 bump 提交的版本：发版流程要求先提交下一版的 curated 再跑 release.sh，
+    // 而 release.sh 的 bun test 门禁跑在 bump 与生成 changelog 之前——不排除未发布版本，
+    // 这条断言在每次发版门禁里都必红（v0.1.612 首次撞上）。
+    const released = new Set(listReleaseAnchors().map((a) => a.version));
     const curated = readdirSync(resolve(ROOT, "changelog/curated"))
       .map((f) => /^v(\d+\.\d+\.\d+)\.json$/.exec(f)?.[1])
-      .filter((v): v is string => !!v);
+      .filter((v): v is string => !!v && released.has(v));
     expect(curated.length).toBeGreaterThan(0);
     expect(curated.filter((v) => !onSite.has(v))).toEqual([]);
   });

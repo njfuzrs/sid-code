@@ -2,6 +2,64 @@
 
 本文件由 scripts/generate-changelog.ts 自动生成，请勿手改。
 
+## v0.1.612 (2026-10-22)
+
+### 新功能
+- **query** · 停滞升级阶梯（L2 缺省影子）与 LSP 诊断逐条过滤 (#397) `4a8fdc61`
+- **agent** · 自定义 Agent 接通 modelTier 与 maxTurns frontmatter (#388) `bbbb1935`
+
+### 修复
+- **skill** · 收口文档核查残留的过时说明与 SKILL.md 失效承诺 (#411) `d1a1e07b`
+- **cli** · @ 提及内联加目录/二进制/大小三道防线 (#409) `58d207a2`
+- **tui** · 关闭对话框/补全菜单后整帧重画，不再留下空白 (#408) `8d575f40`
+- **tui** · 溢出后收缩的空行补在历史区下沿，不切进状态栏和输入框 (#402) `12e33a34`
+- **permission** · 子代理权限检查器漏注入——workflow/send-message 打通与 skip 泄漏收紧 (#398) `32ed3acf`
+- **llm** · Responses 路径捕获并回放 reasoning item (#395) `15fc8202`
+- edit 失败分型、gh 只读白名单、压缩边界并入、账本节流刷新 (#394) `f5cc7280`
+- **llm** · Responses 流式带工具的轮报 tool_use，F2 告警按模型去重 (#393) `0f5d6ae4`
+- **query** · todo 续命预算与 nag 计数只在 completed 创新高时复位 (#392) `df2508f5`
+- **context** · 压缩判据同源、目标线下移、masking 校准同源并粘滞 (#391) `a5f30b89`
+- **tui** · 主屏溢出后收缩补空行，footer 不再被顶到屏幕中间 (#390) `94a7fb62`
+- **tool** · bash 显式 cwd 不泄漏到全局 + worktree 提示 + 剥控制序列 (#389) `ca8494a3`
+- **mcp** · 项目级 MCP 审批绑定配置内容指纹 (#382) `1afebc1c`
+- **skill** · 随仓 skill 删除失效 timeout-mins 与虚构轮次预算 (#381) `c9cc3473`
+- **skill** · 动态发现越出 cwd 把用户级 skill 当项目级弹二次信任框 (#380) `e3b086e9`
+- **skill** · 动态发现补信任门，禁用名单覆盖晚到 skill，官网同步 (#379) `08e6573c`
+- **worktree** · 兑现 --worktree 可选值与 symlinkDirectories 空数组 (#378) `486e9ad0`
+- **perf** · 趋势会话数文案对齐口径，生成耗时注释校准起点 (#377) `f61b8759`
+- **cost** · 协议族提示按逐模型 provider 判断，与命中率同源 (#376) `ad60cf89`
+- **command** · /memory set 的 --global 改为 token 级剥离 (#375) `3cdfbc07`
+- **trace** · essential-traffic 期间会话切回 default 后不再被启动补传 (#372) `102178e3`
+- **compact** · 手动 /compact 兜底 no-op 时不再谎报成功 (#371) `fce1437a`
+- **permission** · 沙箱观测归因与权限页三项事实校准 (#370) `019f7fd7`
+- **cron** · 调度侧 cron/daemon/wakeup 缺陷收口 (#368) `5cc544b2`
+- **workflow** · schema 校验器四缺口（循环ref/组合关键字/shape递归/ReDoS） (#369) `d206ab70`
+- **tool** · bash 超时提示识别 watch/常驻命令并回读重定向文件尾部 (#367) `06f0af0c`
+- **changelog** · 版本列表改认 bump 提交，不再跟随 git tag (#366) `0a13c5b2`
+
+### 重构
+- **goal** · 删除 /clear 目标清除哨兵写侧死代码，读侧降级为旧版兼容 (#374) `c6faa08b`
+
+### 文档
+- **changelog** · v0.1.612 用户视角变更说明 `e1a9e6c6`
+- **claude-md** · 补 worktree 缺 workspace 包链接的症状 (#410) `e453c850`
+- **website** · 术语表按源码事实校准 3 处错误与 1 处死锚点 (#407) `fe4dd9af`
+- **website** · 排障页 Hook 排查与 /doctor 示例按代码事实校准 (#406) `1c55935c`
+- **website** · workflow 页按源码事实校准 12 处描述 (#405) `b3e204ea`
+- **lsp** · 按源码事实校准官网 LSP 指南 (#404) `a401c30a`
+- **website** · 按源码事实校准无头模式文档并修正跨页冲突 (#403) `e1e370bb`
+- **website** · 按源码审计收紧 plugins.md 口径并补自动更新一节 (#401) `911d8ced`
+- **website** · IDE 集成页按源码事实整改并补齐扩展侧 wire 契约 (#400) `cffdd9a9`
+- **mcp** · 按源码事实校准官网 MCP 文档并修正注释漂移 (#399) `87a32894`
+- **website** · 补结论回收一节并修正 workflow 文档的 resume 与汇总示例 (#396) `3a6e6723`
+- **skill** · 澄清运行中发现的同名 skill 不参与覆盖 (#383) `7d7f2e45`
+- **hooks** · 按代码事实校正 Hook 指南的事件支持与字段说明 (#363) `bed9da3f`
+
+### 其他
+- **changelog** · curated 对账只认已有 bump 提交的版本 `2cafcccf`
+- **release** · promote v0.1.611 (#365) `f29d9f5c`
+- release v0.1.611 (#364) `9ab1af00`
+
 ## v0.1.611 (2026-10-19)
 
 ### 新功能
