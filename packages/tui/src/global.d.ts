@@ -16,6 +16,8 @@ declare module 'react' {
 declare namespace Ink {
 	type Box = {
 		internal_static?: boolean;
+		// sid-code：临时浮层容器（components/Transient.tsx），主屏帧 diff 据此判定关闭后整帧重画
+		internal_transient?: boolean;
 		children?: ReactNode;
 		key?: Key;
 		ref?: Ref<DOMElement>;

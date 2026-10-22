@@ -263,3 +263,138 @@ describe("溢出后收缩：空行补在历史区下沿，不切进动态区组�
     expect(view).toEqual(["msg8", "msg9", "msg10", "msg11", "", ">", "status", ""]);
   });
 });
+
+// 2026-10-22 复现：长对话（帧已溢出视口）里打开 /model 再 Esc 关掉，打开时被顶进 scrollback 的历史拉不回来，
+// 补空行在历史尾与输入框之间留下与对话框等高的空白。浮层包在 Transient 里，关闭的那一帧整帧重画复原。
+describe("关闭临时浮层（Transient）：整帧重画复原历史，其余收缩照旧补空行", () => {
+  const W = 30;
+  const H = 12;
+  const hist = Array.from({ length: 20 }, (_, i) => `hist${i}`);
+  const base = ["────", "> ", "────", "status"];
+  const dialog = ["┌ model ┐", "a", "b", "c", "d", "e", "└───────┘"];
+  type Frame = { overlay?: string[]; plain?: string[]; dyn: string[]; short?: boolean };
+
+  async function drive(frames: Frame[]) {
+    const { PassThrough } = await import("node:stream");
+    const { Terminal } = await import("@xterm/headless");
+    const { History, Transient } = await import("../src/index.ts");
+    const term = new Terminal({ cols: W, rows: H, allowProposedApi: true });
+    let pending = Promise.resolve();
+    const stdout = Object.assign(new PassThrough(), { columns: W, rows: H, isTTY: true });
+    stdout.on("data", (d: Buffer) => {
+      const s = d.toString();
+      pending = pending.then(() => new Promise<void>((r) => term.write(s, r)));
+    });
+    const stdin = Object.assign(new PassThrough(), {
+      isTTY: true,
+      isRaw: false,
+      setRawMode: () => stdin,
+      ref: () => stdin,
+      unref: () => stdin,
+    });
+    const h = React.createElement;
+    const lines = (ls: string[], p: string) => ls.map((l, i) => h(Text, { key: p + i }, l));
+    const tree = (f: Frame) =>
+      h(
+        Box,
+        { flexDirection: "column" },
+        h(History, {
+          items: f.short ? hist.slice(0, 2) : hist,
+          children: (item: string) => h(Text, { key: item }, item),
+        }),
+        h(
+          Box,
+          { flexDirection: "column" },
+          f.overlay ? h(Transient, null, ...lines(f.overlay, "o")) : null,
+          ...(f.plain ? lines(f.plain, "p") : []),
+          ...lines(f.dyn, "d"),
+        ),
+      );
+    const flickers: unknown[] = [];
+    const tick = () => new Promise((r) => setTimeout(r, 20));
+    const inst = render(tree(frames[0]!), {
+      stdout: stdout as never,
+      stdin: stdin as never,
+      patchConsole: false,
+      exitOnCtrlC: false,
+      onFrame: (e: { flickers: unknown[] }) => flickers.push(...e.flickers),
+    } as never);
+    await tick();
+    for (const f of frames.slice(1)) {
+      inst.rerender(tree(f));
+      await tick();
+    }
+    await pending;
+    const b = term.buffer.active;
+    const view: string[] = [];
+    for (let y = 0; y < H; y++)
+      view.push(
+        b
+          .getLine(b.viewportY + y)!
+          .translateToString(true)
+          .trimEnd(),
+      );
+    const scrollback: string[] = [];
+    for (let y = 0; y < b.viewportY; y++)
+      scrollback.push(b.getLine(y)!.translateToString(true).trimEnd());
+    stdout.isTTY = false;
+    inst.unmount();
+    return { view, scrollback, flickers };
+  }
+
+  const restored = [
+    "hist13",
+    "hist14",
+    "hist15",
+    "hist16",
+    "hist17",
+    "hist18",
+    "hist19",
+    ...base.map((l) => l.trimEnd()),
+    "",
+  ];
+
+  test("打开对话框再关掉：画面回到打开前，scrollback 里历史不重复", async () => {
+    const { view, scrollback, flickers } = await drive([
+      { dyn: base },
+      { overlay: dialog, dyn: base },
+      { dyn: base },
+    ]);
+    expect(view).toEqual(restored);
+    expect(scrollback).toEqual(hist.slice(0, 13));
+    expect(flickers).toHaveLength(1);
+  });
+
+  test("对话框里内容变化（选项移动）不重画，只在关闭那一帧重画一次", async () => {
+    const moved = dialog.map((l) => (l === "a" ? "> a" : l));
+    const { view, flickers } = await drive([
+      { dyn: base },
+      { overlay: dialog, dyn: base },
+      { overlay: moved, dyn: base },
+      { overlay: dialog.slice(0, 4), dyn: base },
+      { dyn: base },
+    ]);
+    expect(view).toEqual(restored);
+    expect(flickers).toHaveLength(1);
+  });
+
+  test("同样高度的非浮层块消失（spinner / TodoPanel）照旧补空行，不重画", async () => {
+    const { view, flickers } = await drive([
+      { dyn: base },
+      { plain: dialog, dyn: base },
+      { dyn: base },
+    ]);
+    expect(flickers).toHaveLength(0);
+    expect(view.slice(0, 7)).toEqual(["", "", "", "", "", "", ""]);
+  });
+
+  test("没溢出视口的短会话关浮层：不重画（直接擦底部就对）", async () => {
+    const { view, flickers } = await drive([
+      { dyn: base, short: true },
+      { overlay: ["dlg1", "dlg2"], dyn: base, short: true },
+      { dyn: base, short: true },
+    ]);
+    expect(flickers).toHaveLength(0);
+    expect(view.slice(0, 6)).toEqual(["hist0", "hist1", ...base.map((l) => l.trimEnd())]);
+  });
+});

@@ -19,6 +19,7 @@
 import React, { useCallback, useRef, useEffect, useState } from "react";
 import { Box } from "./render-port/components.ts";
 import { Text } from "./render-port/components.ts";
+import { Transient } from "./render-port/components.ts";
 import { useStdout } from "./render-port/hooks.ts";
 import { getLogger } from "@sid-code/core/debug/logger.ts";
 import { theme } from "./semantic-colors.ts";
@@ -1311,7 +1312,14 @@ export function InputArea({
       {queueHint}
       {shellHint}
       {hasSuggestions && (
-        <SuggestionsDisplay suggestions={suggestions} activeIndex={activeIndex} width={termWidth} />
+        // 补全菜单是临时浮层：收起时主屏整帧重画，不留与菜单等高的空白（见 DialogSwitch 同款说明）
+        <Transient>
+          <SuggestionsDisplay
+            suggestions={suggestions}
+            activeIndex={activeIndex}
+            width={termWidth}
+          />
+        </Transient>
       )}
       <Box
         width={termWidth}

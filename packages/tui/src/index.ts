@@ -14,6 +14,8 @@ export type {Props as StaticProps} from './components/Static.js';
 export {default as Static} from './components/Static.js';
 export type {Props as HistoryProps} from './components/History.js';
 export {default as History} from './components/History.js';
+export type {Props as TransientProps} from './components/Transient.js';
+export {default as Transient} from './components/Transient.js';
 export type {Props as AlternateScreenProps} from './components/AlternateScreen.js';
 export {default as AlternateScreen} from './components/AlternateScreen.js';
 export type {Props as AnsiProps} from './components/Ansi.js';
