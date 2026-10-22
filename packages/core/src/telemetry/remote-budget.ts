@@ -84,6 +84,7 @@ let lastPushedCostUSD = 0;
 let inFlightLoad: Promise<RemoteBudget | null> | null = null;
 let pushHookRegistered = false;
 let lastBudget: RemoteBudget | null | undefined;
+let lastLoadError: string | null = null;
 
 function budgetEndpoint(): string | undefined {
   return resolveEndpoint("budget")?.url;
@@ -287,6 +288,7 @@ function interpret(
   const log = getLogger();
   if ("network" in result) {
     log.warn("BUDGET", `远程预算 超时/网络 ${result.network}（fail-open，当没配）`);
+    lastLoadError = `超时/网络 ${result.network}`;
     lastBudget = null;
     return null;
   }
@@ -321,17 +323,20 @@ function interpret(
       `远程预算 HTTP ${result.status}（fail-open，当没配）${result.status === 401 ? `。${RELOGIN_HINT}` : ""}`,
     );
     if (result.status === 401) reportCredentialRejected("budget");
+    lastLoadError = `HTTP ${result.status}`;
     lastBudget = null;
     return null;
   }
   if (result.status !== 200) {
     log.warn("BUDGET", `远程预算 HTTP ${result.status}（fail-open，当没配）`);
+    lastLoadError = `HTTP ${result.status}`;
     lastBudget = null;
     return null;
   }
   const budget = sanitizeRemoteBudget(result.json);
   if (!budget) {
     log.warn("BUDGET", "远程预算 200 但 body 不可解析（fail-open）");
+    lastLoadError = "200 但 body 不可解析";
     lastBudget = null;
     return null;
   }
@@ -368,6 +373,7 @@ export async function loadRemoteBudget(): Promise<RemoteBudget | null> {
   }
 
   if (inFlightLoad) return inFlightLoad;
+  lastLoadError = null;
   inFlightLoad = (async () => {
     let cache = readBudgetCache();
     if (cache && cache.endpoint !== endpoint) cache = null;
@@ -407,6 +413,14 @@ export async function reloadRemoteBudget(): Promise<RemoteBudget | null> {
   // 刚换了凭据，不受「推送后最短刷新间隔」限制
   lastGetAt = 0;
   return loadRemoteBudget();
+}
+
+/**
+ * 最近一次远程拉取的失败原因（成功 / 204 / 304 / 未拉取为 null）。
+ * 交互模式启动不再 await 预算，失败的 WARN 只进 audit.log；TUI 读它在状态栏提示一次。
+ */
+export function getLastRemoteBudgetLoadError(): string | null {
+  return lastLoadError;
 }
 
 export function getLastRemoteBudget(): RemoteBudget | null {
@@ -466,6 +480,7 @@ export function formatRemoteBudgetWarning(
 /** 仅测试 */
 export function __resetRemoteBudgetForTest(): void {
   warnedNoCredential = false;
+  lastLoadError = null;
   warnedCorruptCache = false;
   lastGetAt = 0;
   lastPushedSessionId = undefined;

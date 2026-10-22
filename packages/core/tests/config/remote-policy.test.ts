@@ -508,3 +508,72 @@ describe("M3 遗留：权威 204 压过缓存 / stale / once-load", () => {
     expect(getLastPolicyLoad()?.outcome).toBe("cache_fallback");
   });
 });
+
+/**
+ * 交互模式启动不再 await 远程策略，先套这份不打网的临时视图。
+ * 口径必须与远程超时时的非权威回退一致：只认未过期、endpoint 一致的 200 缓存，
+ * 否则退到本地 managed 文件——放宽任何一条都等于让「先临时」比原来更松。
+ */
+describe("loadOfflineEnterprisePolicy（启动临时视图）", () => {
+  const ENDPOINT = "http://127.0.0.1:8900/api/v1/ctl/policy";
+
+  async function seedCache(): Promise<void> {
+    enroll();
+    process.env.SID_CODE_POLICY_ENDPOINT = ENDPOINT;
+    installFetch(
+      mock(async () =>
+        jsonResponse({ permissions: { deny: ["Bash(curl *)"] } }, { etag: '"v1"' }),
+      ) as unknown as typeof fetch,
+    );
+    await new RemotePolicyLoader().load();
+  }
+
+  test("未过期 200 缓存 → 直接返回，零 fetch", async () => {
+    const { loadOfflineEnterprisePolicy } = await import("@sid-code/core/config/policy.ts");
+    await seedCache();
+    const fetchMock = mock(async () => emptyResponse(500));
+    installFetch(fetchMock as unknown as typeof fetch);
+    const got = await loadOfflineEnterprisePolicy();
+    expect(got?.source).toBe("remote");
+    expect(got?.permissions?.deny).toEqual(["Bash(curl *)"]);
+    expect(fetchMock).toHaveBeenCalledTimes(0);
+  });
+
+  test("缓存过期 → 不复活 deny", async () => {
+    const { loadOfflineEnterprisePolicy } = await import("@sid-code/core/config/policy.ts");
+    await seedCache();
+    const path = sidPaths.policyCache();
+    const raw = JSON.parse(readFileSync(path, "utf-8"));
+    raw.fetched_at = new Date(Date.now() - POLICY_CACHE_STALE_MS - 60_000).toISOString();
+    writeFileSync(path, JSON.stringify(raw));
+    expect(await loadOfflineEnterprisePolicy()).toBeNull();
+  });
+
+  test("endpoint 换了 → 旧缓存不算数", async () => {
+    const { loadOfflineEnterprisePolicy } = await import("@sid-code/core/config/policy.ts");
+    await seedCache();
+    process.env.SID_CODE_POLICY_ENDPOINT = "http://127.0.0.1:8901/api/v1/ctl/policy";
+    expect(await loadOfflineEnterprisePolicy()).toBeNull();
+  });
+
+  test("204 负缓存 → null", async () => {
+    const { loadOfflineEnterprisePolicy } = await import("@sid-code/core/config/policy.ts");
+    enroll();
+    process.env.SID_CODE_POLICY_ENDPOINT = ENDPOINT;
+    installFetch(mock(async () => emptyResponse(204)) as unknown as typeof fetch);
+    await new RemotePolicyLoader().load();
+    expect(await loadOfflineEnterprisePolicy()).toBeNull();
+  });
+
+  test("临时视图不吞后台链：之后的 loadEnterprisePolicyOnce 仍真的打网并给出权威结果", async () => {
+    const { loadOfflineEnterprisePolicy, loadEnterprisePolicyOnce } =
+      await import("@sid-code/core/config/policy.ts");
+    await seedCache();
+    __resetRemotePolicyLoaderForTest();
+    await loadOfflineEnterprisePolicy();
+    const fetchMock = mock(async () => emptyResponse(204));
+    installFetch(fetchMock as unknown as typeof fetch);
+    expect(await loadEnterprisePolicyOnce()).toBeNull();
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+  });
+});

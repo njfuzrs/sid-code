@@ -270,9 +270,13 @@ export async function initTelemetrySystem(
     }
 
     // M5：远程预算启动拉一次。未配 backend.url（及旧 SID_CODE_BUDGET_ENDPOINT）时零操作。
+    // 交互 TUI 不在这里等：cli.ts 已在后台发起同一次拉取（进程内去重），App 在首轮前等它落地；
+    // 这里再 await 一次就是 TUI 出现前白等最长 5 秒。无头模式没有那个首轮闸门，照旧 await。
     try {
       const { loadEnterpriseBudgetOnce } = await import("../telemetry/remote-budget.ts");
-      await loadEnterpriseBudgetOnce();
+      const budgetLoad = loadEnterpriseBudgetOnce();
+      if (config.print) await budgetLoad;
+      else void budgetLoad.catch(() => null);
     } catch (err: any) {
       log.debug("TELEMETRY", `远程预算加载跳过: ${err?.message}`);
     }

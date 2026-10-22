@@ -20,6 +20,8 @@ import {
 // 工具进度路由判定（纯函数，静态引入：onToolProgress 是同步回调，不能 await import）
 import { routeToolProgress } from "./ui/tool-progress-route.ts";
 import { formatStartupWarning } from "./ui/startup-warning.ts";
+import { isPolicyAllowed } from "@sid-code/core/config/policy-limits.ts";
+import { IDE_SERVER_NAME } from "@sid-code/core/ide/integration.ts";
 import type { ProviderRegistry } from "@sid-code/core/llm/registry.ts";
 import type { MCPManager } from "@sid-code/core/mcp/manager.ts";
 import type { PlanModeManager } from "@sid-code/core/plan/state.ts";
@@ -432,6 +434,11 @@ export interface AppOptions {
     trustManager: import("@sid-code/core/extension/trust.ts").TrustManager;
     scanOptions: import("@sid-code/core/extension/types.ts").ScanOptions;
   };
+  /**
+   * 交互模式下 cli.ts 没有 await 远程企业策略 / 预算（只套了不打网的临时视图）。
+   * 为真时 App 负责在后台结果落地后套用权威策略，并让首轮对话等它。
+   */
+  deferredEnterpriseLoad?: boolean;
 }
 
 /**
@@ -1422,6 +1429,8 @@ export class App {
     this.wireEnterpriseLoginRefresh();
     // D7：管理员改策略后，交互会话 30 分钟内生效，不必等员工重启
     this.wireEnterprisePolicyPolling();
+    // 交互模式启动不再等远程策略：后台结果到了在这里套用，失败只在 TUI 状态栏提示
+    if (opts.deferredEnterpriseLoad) this.wireDeferredEnterpriseLoad();
 
     // G13：应用企业策略 Hook 门控。必须复用 cli 已经 await 过的那一次 load
     // （loadEnterprisePolicyOnce），禁止再 new PolicyManager().load() 打第二次网。
@@ -1872,6 +1881,88 @@ export class App {
       await import("@sid-code/core/telemetry/usage-ledger-remote.ts");
     void replayFailedUsageLedger().catch(() => {});
     log.info("IDENTITY", `登录态变更：企业策略（${meta.outcome}）与预算已重新加载`);
+  }
+
+  /**
+   * 启动期远程企业策略 / 预算的后台落地点（cli.ts 交互模式不再 await 它们）。
+   *
+   * 非空 = 还没套用完。tuiAgentLoop 在每轮开头等它：远程 deny 从「TUI 出现前生效」
+   * 挪到「第一条消息前生效」，不会出现模型已经在跑、远程 deny 还没落地的窗口。
+   * 远程链自身有上限（策略 15s×2、预算 5s），所以这个等待有界。
+   */
+  private enterpriseStartupLoad: Promise<void> | null = null;
+
+  private wireDeferredEnterpriseLoad(): void {
+    this.enterpriseStartupLoad = (async () => {
+      const log = getLogger();
+      try {
+        const { PolicyManager } = await import("@sid-code/core/config/policy.ts");
+        const { loadEnterpriseBudgetOnce, getLastRemoteBudgetLoadError } =
+          await import("@sid-code/core/telemetry/remote-budget.ts");
+        // 默认链进程内去重：这里拿到的就是 cli.ts 已经发出的那一次 in-flight，不会再打一次网
+        const [policyResult] = await Promise.all([
+          new PolicyManager().loadWithMeta(),
+          loadEnterpriseBudgetOnce().catch(() => null),
+        ]);
+        await this.applyEnterprisePolicyInSession(policyResult.settings, policyResult.meta);
+        this.applyStartupPolicyLimits();
+
+        // 失败只上状态栏：终端那几行 WARN 已经去掉了，用户需要一个能看见的地方。
+        // 未登录 / 未配后端不算失败（另有「未登录企业后端」提示），所以要求「配了地址且有凭据」。
+        const { resolveEndpoint } = await import("@sid-code/core/identity/endpoints.ts");
+        const { getUsableCredentialToken } = await import("@sid-code/core/identity/credential.ts");
+        const hasCredential = !!getUsableCredentialToken();
+        if (
+          hasCredential &&
+          resolveEndpoint("policy")?.url &&
+          policyResult.remoteAuthoritative === false
+        ) {
+          this.notifyStatus(
+            "enterprise_policy_load",
+            policyResult.settings
+              ? "企业策略拉取失败，已沿用本地缓存（详见 audit.log）"
+              : "企业策略拉取失败，本次按无远程策略运行（详见 audit.log）",
+            10000,
+          );
+        }
+        const budgetError = getLastRemoteBudgetLoadError();
+        if (hasCredential && budgetError) {
+          this.notifyStatus(
+            "enterprise_budget_load",
+            `企业预算拉取失败（${budgetError}），本次不限额`,
+            10000,
+          );
+        }
+      } catch (e) {
+        log.debug("POLICY", `启动期企业策略后台套用跳过: ${e}`);
+      } finally {
+        this.enterpriseStartupLoad = null;
+      }
+    })();
+  }
+
+  /**
+   * 启动期 policyLimits 里「注册时才看」的两项补齐：sub_agent 工具、MCP 服务器。
+   *
+   * cli.ts 注册它们时读的是临时视图；远程权威结果后到，若它禁用了，在这里撤掉，
+   * 效果与启动前就拿到策略一致（不注册 / 不连接）。反方向（临时视图禁、远程放开）不补注册：
+   * 那需要重建工具与连接，留到下次启动，方向上是更严而不是更松。
+   */
+  private applyStartupPolicyLimits(): void {
+    if (!isPolicyAllowed("sub_agent")) {
+      const removed = this.toolRegistry.removeByNames(["sub_agent"]);
+      if (removed.length > 0) getLogger().info("POLICY", "企业策略禁用子代理，已移除 sub_agent");
+    }
+    if (!isPolicyAllowed("mcp") && this.mcpManager) {
+      const names = this.mcpManager
+        .getStatus()
+        .map((s) => s.name)
+        .filter((n) => n !== IDE_SERVER_NAME);
+      for (const name of names) void this.mcpManager.removeServer(name);
+      if (names.length > 0) {
+        getLogger().info("POLICY", `企业策略禁用 MCP，已断开 ${names.length} 个服务器`);
+      }
+    }
   }
 
   /** D7：交互会话里低频轮询远程策略。停止函数在 finalizeSessionStore 里调。 */
@@ -9648,6 +9739,11 @@ export class App {
     ) => {
       const userInput = typeof source === "string" ? source : "";
       const fromNotifications = typeof source !== "string";
+      // 启动期远程企业策略还没落地：先等它，保证远程 deny / 预算在本轮之前生效（有界，见字段注释）
+      if (this.enterpriseStartupLoad) {
+        this.notifyStatus("enterprise_policy_wait", "正在等待企业策略加载…", 4000);
+        await this.enterpriseStartupLoad;
+      }
       // 不确定-1：会话级硬顶纳入 network-profile 统一配置（此前硬编码 30min 且无覆盖入口）。
       // 支持 SID_CODE_MAX_SESSION_DURATION_MS / settings.network.maxSessionDurationMs 覆盖。
       const {

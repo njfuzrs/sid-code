@@ -1436,17 +1436,47 @@ export async function main(): Promise<void> {
     // P2-1 item5 + P2-2 + M3：企业策略必须 await。后续 PermissionChecker.initRules()
     // 读 remote-policy-state；改成 fire-and-forget 会让远程 deny 再次空转。
     // applyLoadedPolicy 无论 null 都跑——204 / 超时无缓存必须把 applied 拨回 false。
+    //
+    // 例外：交互 TUI 不再等远程。慢握手 + 一次重试最长约 30 秒，预算再 5 秒，用户要盯着空终端
+    // 半分钟；而且这些 WARN 早于 initLogger，会走 stderr 兜底直接打在终端上。
+    // 交互模式改为：先用不打网的临时视图（未过期 200 缓存 / 本地 managed 文件，与远程超时时的
+    // 回退口径相同）把 deny 落进进程，远程链在后台跑，App 在 TUI 就绪后套用权威结果，
+    // 并在首轮对话前等它落地（App.awaitEnterpriseStartupLoad）——所以远程 deny 不会空转，
+    // 只是从「启动前生效」挪到「第一条消息前生效」。无头 / Bridge 没有 TUI 可等，保持原样 await。
+    let startDeferredEnterpriseLoad: (() => void) | null = null;
+    const deferRemoteEnterprise =
+      !config.print &&
+      !(config.maxTurns !== undefined && config.maxTurns > 0) &&
+      !cliArgs.bridgeUrl;
     try {
-      const { PolicyManager, applyLoadedPolicy } = await import("@sid-code/core/config/policy.ts");
-      const policyManager = new PolicyManager();
-      const { settings: policy, meta } = await policyManager.loadWithMeta();
-      applyLoadedPolicy(policy, meta);
-      try {
-        const { loadEnterpriseBudgetOnce } =
-          await import("@sid-code/core/telemetry/remote-budget.ts");
-        await loadEnterpriseBudgetOnce();
-      } catch (e) {
-        getLogger().debug("BUDGET", `远程预算启动加载跳过: ${e}`);
+      const { PolicyManager, applyLoadedPolicy, loadOfflineEnterprisePolicy } =
+        await import("@sid-code/core/config/policy.ts");
+      let policy: Awaited<ReturnType<typeof loadOfflineEnterprisePolicy>>;
+      if (deferRemoteEnterprise) {
+        policy = await loadOfflineEnterprisePolicy();
+        // 不传 meta：临时视图不是一次加载结论，不发 policy_enforced 遥测（权威结果到了再发）
+        applyLoadedPolicy(policy);
+        // 顺序：临时视图读完才起后台链（见 loadOfflineEnterprisePolicy 注释）。
+        // 推迟到 initLogger 之后再发：否则一个秒回的 401 / 连接拒绝会赶在 logger 就绪前 WARN，
+        // 走 stderr 兜底打到终端上——这正是要去掉的那几行。
+        // 进程内去重，App 里 G13 / awaitEnterpriseStartupLoad 拿到的是同一个 in-flight。
+        startDeferredEnterpriseLoad = () => {
+          void new PolicyManager().load().catch(() => null);
+          void import("@sid-code/core/telemetry/remote-budget.ts")
+            .then(({ loadEnterpriseBudgetOnce }) => loadEnterpriseBudgetOnce())
+            .catch(() => null);
+        };
+      } else {
+        const loaded = await new PolicyManager().loadWithMeta();
+        policy = loaded.settings;
+        applyLoadedPolicy(policy, loaded.meta);
+        try {
+          const { loadEnterpriseBudgetOnce } =
+            await import("@sid-code/core/telemetry/remote-budget.ts");
+          await loadEnterpriseBudgetOnce();
+        } catch (e) {
+          getLogger().debug("BUDGET", `远程预算启动加载跳过: ${e}`);
+        }
       }
       if (policy) {
         const { isBypassDisabledByPolicy, isModeDisabledByPolicy } =
@@ -1583,6 +1613,9 @@ export async function main(): Promise<void> {
         append: true,
       });
     }
+
+    // 交互模式的远程企业策略 / 预算：logger 已就绪，此后的 WARN 只进 audit.log，不上终端
+    startDeferredEnterpriseLoad?.();
 
     // TUI 渲染模式判定留痕（2026-08-04 排查教训，见 resolveAlternateBufferDecision 注释）。
     // 必须放在 logger 就绪之后：判定本身发生在 parseCLIArgs（logger 尚未初始化），
@@ -2778,6 +2811,7 @@ export async function main(): Promise<void> {
       skillActivationCoordinator,
       skillManager,
       extensionTrust: { prompt: trustPrompt, trustManager, scanOptions },
+      deferredEnterpriseLoad: deferRemoteEnterprise,
     });
     // 注册全局 App 弱引用（供 uncaughtException 等异常兜底使用）
     setLastApp(app);
