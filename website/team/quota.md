@@ -72,7 +72,7 @@ export function resolveEffectiveCostLimit(quotaCostLimit, topLevelCostLimit): nu
 // 两侧正数取 min；0 / 未设 = 这一侧不限，不参与比较
 ```
 
-所以团队默认配置带了 `quota: { "costLimit": 100 }`（[模板里就有](/team/defaults#快速上手)），
+所以团队默认配置带了 `quota: { "costLimit": 100 }`（[模板里就有](/team/defaults#仓库里的模板长什么样)），
 成员传 `--max-budget-usd 0.5` 仍按 0.5 拦；反过来，成员**没法**用命令行参数把团队上限放宽。
 交互模式与 `-p` 走的是同一个值。
 
