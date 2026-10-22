@@ -20,7 +20,7 @@ Hook 是「在固定时机自动跑一段你自己的命令」。三类典型用
 { "type": "command", "matcher": "edit|write", "command": "..." }                 // ✓ 兼容
 ```
 
-事件名两种写法基本等价（`PreToolUse` 与 `pre_tool_use`），但 sid-code 独有的 `AfterAgent` / `BeforeModel` / `AfterModel` 目前只认 PascalCase。工具名 CC 名与内部名都认（`Bash` 与 `bash`）。
+事件名两种写法等价（`PreToolUse` 与 `pre_tool_use`，sid-code 独有的 `AfterAgent` 与 `after_agent` 同理）；`WorktreeCreate` / `WorktreeRemove` 只认 PascalCase。工具名 CC 名与内部名都认（`Bash` 与 `bash`）。
 从 CC 搬过来的 hooks 段不用改，见[从 Claude Code 迁移](/team/migrate)。
 
 配置有问题的条目会被跳过并在启动时打一行带来源文件与原因的提示，
@@ -104,9 +104,9 @@ bash 的 `ls` 被 hook 拦截了。根据工具使用原则，列目录本来就
 
 | 退出码 | 含义 | stderr 去哪 |
 | --- | --- | --- |
-| `0` | 放行 | stdout 是 JSON 时按字段解析；`SessionStart` / `UserPromptSubmit` 的纯文本 stdout 进上下文，其余事件的纯文本 stdout 不进模型上下文 |
+| `0` | 放行 | stdout 是 JSON 时按字段解析；`SessionStart` / `UserPromptSubmit` / `UserPromptExpansion` 的纯文本 stdout 进上下文，其余事件的纯文本 stdout 只进 debug 日志、不展示 |
 | `2` | **阻断** | stderr 作为拒绝理由回传给模型（`PostToolUse` / `PostToolUseFailure` 上不阻断，但 stderr 同样回灌给模型） |
-| 其他 | 放行 | 记一条 `hook error: <stderr>` 的内部结果；这条结果目前没有接到交互界面的展示链路（已知缺口），别把它当作可靠的告警通道 |
+| 其他 | 放行 | 以 `hook error: <stderr>` 告警展示给用户：交互模式进状态行（只显示首行，8 秒后消失），`-p` 下写 stderr。模型看不到 |
 
 只有 `2` 是阻断。写成 `exit 1` 是常见错误——那会被当成「hook 自己出错了」，工具照样执行。
 
@@ -178,8 +178,11 @@ bash 的 `ls` 被 hook 拦截了。根据工具使用原则，列目录本来就
 与 CC 一致，`SessionStart` 在 `/clear` 之后（`source` 为 `clear`）和上下文压缩之后（`source` 为 `compact`）**会再触发一次**，
 输出在下一条消息前重新注入——清空或压缩会把启动时注入的内容一起丢掉。只想在启动时跑，就把 `matcher` 写成 `"startup|resume"`。
 
+`UserPromptExpansion`（斜杠命令 / skill 展开后）的纯文本 stdout 同样进上下文，追加在展开后的 prompt 末尾。
+
 ::: warning 其他事件的纯文本 stdout 不进上下文
-除这两个事件外，exit 0 的纯文本 stdout 不进模型上下文（当前也不会在交互界面展示）。
+除上面三个事件外，exit 0 的纯文本 stdout 不进模型上下文，也不在交互界面展示。
+想给**用户**看一句提示，输出 JSON 的 `systemMessage`（`Setup` / `InstructionsLoaded` / `Notification` / `ConfigChange` / `PreCompact` / `PostCompact` 会丢弃它，与 CC 一致）。
 要给模型看，用 JSON 的 `hookSpecificOutput.additionalContext`（`PostToolUse` 等支持），
 或者在 `PostToolUse` 上 `exit 2` 把 stderr 回灌给模型。
 :::
@@ -279,11 +282,11 @@ echo '{}' | sh -c '你的 command'
    纯字母数字加竖线（`Edit|Write`）是**精确匹配**而非正则；CC 名与内部名都认
 4. **事件本身还没接线**——[Hook 事件](/ref/hooks)的「会触发」列标 ✗ 的那些，
    枚举已定义但当前没有触发点，配了也不会调。这是实现现状，不是你配错了。
-   特例：`WorktreeCreate` / `WorktreeRemove` 不在事件表里，但 worktree 子系统会读会执行
+   特例：`WorktreeCreate` / `WorktreeRemove` 不在事件表里，由 worktree 子系统读取执行；`sid-code hooks list` 会单列它们
 
 ### hook 跑了但模型不知道
 
-见场景三：只有 `SessionStart` / `UserPromptSubmit` 的纯文本 stdout 进上下文，其余事件要用 `hookSpecificOutput.additionalContext` 的 JSON 形式。
+见场景三：只有 `SessionStart` / `UserPromptSubmit` / `UserPromptExpansion` 的纯文本 stdout 进上下文，其余事件要用 `hookSpecificOutput.additionalContext` 的 JSON 形式。
 
 ### 想拦但没拦住
 
@@ -328,7 +331,7 @@ echo '{}' | sh -c '你的 command'
 | 独有 stdin 字段 | — | `timestamp`、`device_id` / `user_id` / `org_id` / `team_id`、`harness_context`、`SubagentStop` 的 `usage` / `turns` / `model` | 企业身份与可观测 |
 | `mcp_tool` 类型 | 支持 | 识别但不执行 | 单独立项 |
 | `FileChanged` / `Setup` | 支持 | 本轮未接线 | 没有对应场景 |
-| `WorktreeCreate` / `WorktreeRemove` | 支持 | 已支持：由 worktree 子系统直接读 `hooks` 段执行，stdout 返回路径（不支持 JSON 输出形式） | 走独立通道，不在 Hook 事件表里 |
+| `WorktreeCreate` / `WorktreeRemove` | 支持 | 已支持：由 worktree 子系统直接读 `hooks` 段执行，路径取 stdout 最后一个非空行（去掉 ANSI），也认 `hookSpecificOutput.worktreePath` 的 JSON 形式 | 走独立通道，不在 Hook 事件表里 |
 | `MessageDisplay` | 支持 | 未实现：事件名未定义，配置会被判「未知事件」跳过 | 与 TUI 渲染底座重构冲突，尚未立项 |
 
 `BeforePermissionCheck` / `AfterPermissionCheck` / `BeforeHookExecution` / `AfterHookExecution` 是 trace 内部事件，

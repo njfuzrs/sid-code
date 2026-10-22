@@ -1,7 +1,8 @@
 /**
  * src/query/compact/microcompact.ts 单测（活跃生产路径，对标四级压缩管道 ③）
  *
- * 覆盖：工具类型感知（可丢弃完全清空 / 不可丢弃保留摘要 / 未分类通用占位符）、
+ * 覆盖：工具类型感知（可丢弃完全清空 / 不可丢弃保留摘要 / 未分类原样保留 /
+ * bash 按命令只读判定）、
  * cache vs time 模式、保护窗口、minContentLength、不修改原数组。
  */
 
@@ -15,14 +16,14 @@ import type { Message } from "@sid-code/core/llm/types.ts";
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
 
-/** 辅助：构建含 tool_result 的消息列表（assistant tool_use(bash) + user tool_result 交替） */
+/** 辅助：构建含 tool_result 的消息列表（assistant tool_use(只读 bash) + user tool_result 交替） */
 function makeMessages(count: number, contentLength: number): Message[] {
   const msgs: Message[] = [];
   for (let i = 0; i < count; i++) {
     // assistant 消息登记 tool_use(bash，可丢弃工具)，供 findToolName 解析
     msgs.push({
       role: "assistant",
-      content: [{ type: "tool_use", id: `tool_${i}`, name: "bash", input: {} }],
+      content: [{ type: "tool_use", id: `tool_${i}`, name: "bash", input: { command: "ls -la" } }],
     });
     msgs.push({
       role: "user",
@@ -40,7 +41,7 @@ function makeMixedMessages(): Message[] {
     {
       role: "assistant",
       content: [
-        { type: "tool_use", id: "tool_bash", name: "bash", input: {} },
+        { type: "tool_use", id: "tool_bash", name: "bash", input: { command: "git status" } },
         { type: "tool_use", id: "tool_read", name: "read", input: {} },
         { type: "tool_use", id: "tool_edit", name: "edit", input: {} },
         { type: "tool_use", id: "tool_write", name: "write", input: {} },
@@ -65,9 +66,9 @@ function makeMixedMessages(): Message[] {
 }
 
 describe("isDiscardableTool", () => {
-  it("应识别 bash/read/grep 为可丢弃工具（大小写、连字符不敏感）", () => {
-    expect(isDiscardableTool("bash")).toBe(true);
-    expect(isDiscardableTool("BASH")).toBe(true);
+  it("应识别只读 bash/read/grep 为可丢弃工具（大小写、连字符不敏感）", () => {
+    expect(isDiscardableTool("bash", { command: "ls -la" })).toBe(true);
+    expect(isDiscardableTool("BASH", { command: "git log --oneline -5" })).toBe(true);
     expect(isDiscardableTool("read")).toBe(true);
     expect(isDiscardableTool("file_read")).toBe(true);
     expect(isDiscardableTool("grep")).toBe(true);
@@ -114,8 +115,28 @@ describe("isNonDiscardableTool", () => {
     }
   });
 
-  it("应识别 bash 不是不可丢弃工具", () => {
-    expect(isNonDiscardableTool("bash")).toBe(false);
+  it("只读 bash 不是不可丢弃工具", () => {
+    expect(isNonDiscardableTool("bash", { command: "git status" })).toBe(false);
+  });
+
+  it("D3：非只读 bash 归不可丢弃（输出不可靠重跑找回，重跑即重复副作用）", () => {
+    for (const command of [
+      "git commit -m x",
+      "rm -rf build",
+      "curl -X POST http://example.invalid",
+      "git log > out.txt", // 写入重定向
+      "npm publish",
+    ]) {
+      expect(isDiscardableTool("bash", { command })).toBe(false);
+      expect(isNonDiscardableTool("bash", { command })).toBe(true);
+    }
+  });
+
+  it("D3：拿不到命令的 bash 保守判为不可丢弃", () => {
+    for (const input of [undefined, null, {}, { command: 42 }]) {
+      expect(isDiscardableTool("bash", input)).toBe(false);
+      expect(isNonDiscardableTool("bash", input)).toBe(true);
+    }
   });
 
   it("P2-16：notebook_edit 归不可丢弃（不再落未知工具分支）", () => {
@@ -266,7 +287,9 @@ describe("microcompactMessages", () => {
     const msgs: Message[] = [
       {
         role: "assistant",
-        content: [{ type: "tool_use", id: "tool_bash", name: "bash", input: {} }],
+        content: [
+          { type: "tool_use", id: "tool_bash", name: "bash", input: { command: "cat a.txt" } },
+        ],
       },
       {
         role: "user",
@@ -287,6 +310,44 @@ describe("microcompactMessages", () => {
     if (compacted.type === "tool_result" && typeof compacted.content === "string") {
       expect(compacted.content).toContain("Y".repeat(100));
       expect(compacted.content).toContain("可丢弃工具输出已清空");
+    }
+  });
+
+  it("D3：写命令 bash 的旧输出保留前 200 字符摘要，不被完全清空", () => {
+    const msgs: Message[] = [
+      {
+        role: "assistant",
+        content: [
+          {
+            type: "tool_use",
+            id: "tool_commit",
+            name: "bash",
+            input: { command: 'git commit -m "feat: x"' },
+          },
+        ],
+      },
+      {
+        role: "user",
+        content: [{ type: "tool_result", tool_use_id: "tool_commit", content: "C".repeat(800) }],
+      },
+      { role: "assistant", content: [{ type: "text", text: "a" }] },
+      { role: "assistant", content: [{ type: "text", text: "b" }] },
+    ];
+
+    for (const mode of ["time", "cache"] as const) {
+      const result = microcompactMessages(msgs, {
+        preserveRecentCount: 2,
+        minContentLength: 500,
+        mode,
+      });
+      expect(result.compactedCount).toBe(1);
+      const compacted = result.messages[1].content[0];
+      expect(compacted.type).toBe("tool_result");
+      if (compacted.type === "tool_result" && typeof compacted.content === "string") {
+        expect(compacted.content).toContain("C".repeat(200));
+        expect(compacted.content).toContain("保留前 200 字符");
+        expect(compacted.content).not.toContain("可丢弃工具输出已清空");
+      }
     }
   });
 

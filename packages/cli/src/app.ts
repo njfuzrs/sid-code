@@ -3916,9 +3916,11 @@ export class App {
       }
       // skill / agent 的 hooks 运行期才注册、横幅早过了；-p 下诊断走 stderr（TUI 在 runTUI 里另行注册）
       if (this.config.print) {
-        const { setRuntimeHookDiagnosticSink } =
+        const { setRuntimeHookDiagnosticSink, setHookSystemMessageSink } =
           await import("@sid-code/core/hook/diagnostic-sink.ts");
         setRuntimeHookDiagnosticSink((line) => console.error(`  ⚠ [提示] ${line}`));
+        // B1：hook 的 systemMessage（非阻塞告警 / JSON systemMessage）在 -p 下走 stderr，不污染 stdout 结果
+        setHookSystemMessageSink((ev, text) => console.error(`  ⚠ [${ev} hook] ${text}`));
       }
       // 插件 hook 刚注册,重新应用 disabledHooks,让持久化的禁用状态覆盖插件 hook。
       this.hookSystem.applyDisabledHooks(this.config.disabledHooks);
@@ -8967,10 +8969,18 @@ export class App {
 
     // skill / agent 运行期注册 hook 的诊断：启动横幅已过，进状态行（transient，8s 后自清，
     // 不 sticky——它描述的是配置文件的问题，不是本轮状态；完整列表仍可 `sid-code hooks list` 看）。
-    void import("@sid-code/core/hook/diagnostic-sink.ts").then(({ setRuntimeHookDiagnosticSink }) =>
-      setRuntimeHookDiagnosticSink((line) =>
-        addTransientStatusMessage("hook_diagnostic", `⚠ ${line}`, 8000),
-      ),
+    void import("@sid-code/core/hook/diagnostic-sink.ts").then(
+      ({ setRuntimeHookDiagnosticSink, setHookSystemMessageSink }) => {
+        setRuntimeHookDiagnosticSink((line) =>
+          addTransientStatusMessage("hook_diagnostic", `⚠ ${line}`, 8000),
+        );
+        // B1：hook 的 systemMessage 进状态行（transient）。多行只取首行，与 CC「notice 只显示第一行」一致，
+        // 免得一段长 stderr 撑爆状态行；完整内容在 --debug 日志里。
+        setHookSystemMessageSink((ev, text) => {
+          const first = text.split("\n")[0]!.slice(0, 200);
+          addTransientStatusMessage("hook_system_message", `⚠ ${ev} hook: ${first}`, 8000);
+        });
+      },
     );
 
     /**

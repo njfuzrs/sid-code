@@ -35,7 +35,10 @@ function buildToolMessages(count: number, toolName = "read", contentLen = 2000):
 describe("isCompactableTool 工具判定（与 microcompact 单一事实源）", () => {
   it("包含可重新获取的只读类工具", () => {
     expect(isCompactableTool("read")).toBe(true);
-    expect(isCompactableTool("bash")).toBe(true);
+    expect(isCompactableTool("bash", { command: "ls -la" })).toBe(true);
+    // D3：写命令 bash 不进 cache_edits 删除名单
+    expect(isCompactableTool("bash", { command: "git commit -m x" })).toBe(false);
+    expect(isCompactableTool("bash")).toBe(false);
     expect(isCompactableTool("grep")).toBe(true);
   });
 

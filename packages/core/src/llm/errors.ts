@@ -130,7 +130,7 @@ export class RequestAbortedError extends Error {
  * tuiAgentLoop 超过 maxSessionDurationMs 上限，展示专属文案而非笼统"已取消"；旧 reason
  * "timeout" 保留登记向后兼容，不再由主路径使用)、
  * 单轮硬超时("turn-timeout")、watchdog 看门狗("watchdog-timeout")、
- * side-call 硬超时("side-call-timeout"：auto-compact / context-collapse / recall / warmup)、
+ * side-call 硬超时("side-call-timeout"：auto-compact / context-collapse / recall)、
  * 每轮 race settle 后的 turn 级子 controller 清理("race-settled"：loop.ts finally 主动
  * abort 本轮子 controller 以终止孤儿 fetch，仅作用于 turn 级子 signal，不回写会话级)、
  * swarm team 整体硬超时("team-hard-timeout"：swarm/team.ts)、

@@ -9,7 +9,11 @@
 import type { Command, AppContext, CommandResult } from "./types.ts";
 import { getIDEIntegration } from "@sid-code/core/ide/integration.ts";
 import { detectIDEs } from "@sid-code/core/ide/detect.ts";
-import { detectRunningIDEs } from "@sid-code/core/ide/process-tree.ts";
+import {
+  detectRunningIDEs,
+  DETECTABLE_IDE_DISPLAY_NAME,
+  type DetectableIDE,
+} from "@sid-code/core/ide/process-tree.ts";
 
 /** /ide 主命令 */
 export class IDECommand implements Command {
@@ -155,9 +159,10 @@ class IDEDisconnectCommand implements Command {
  * 而命令体系门禁把「零生产调用的导出」算死代码，导出会让基线 +1。
  * 空列表（没检测到，或检测本身失败）必须退回通用文案 —— 一条提示不该点名一个不存在的 IDE。
  */
-function noLockfileMessage(running: readonly string[]): string {
+function noLockfileMessage(running: readonly DetectableIDE[]): string {
   if (running.length > 0) {
-    const names = running.join("、");
+    // 必须经显示名映射：枚举值是内部判据，直接拼会输出小写的 `vscode`
+    const names = running.map((ide) => DETECTABLE_IDE_DISPLAY_NAME[ide]).join("、");
     return `检测到 ${names} 正在运行，但没有发现 sid-code 扩展（~/.sid-code/ide/ 下没有 lockfile）\n需要 IDE 侧有实现 lockfile 协议的扩展在运行，sid-code 才能发现并连接`;
   }
   return "未发现可用 IDE\n需要 IDE 侧有实现 lockfile 协议的扩展在运行（~/.sid-code/ide/ 下写 <port>.lock）";

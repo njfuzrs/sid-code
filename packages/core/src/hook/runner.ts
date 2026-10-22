@@ -45,10 +45,15 @@ export function toExternalHookPayload(input: HookInput): HookInput {
  * HC16：这些事件 exit 0 的纯文本 stdout 作为上下文给模型（对齐 CC）。
  * 原先它进 systemMessage，而引擎只读 additionalContext——用户照 CC 文档写的
  * `echo "当前分支: $(git branch --show-current)"` 跑了、模型却永远看不到。
+ *
+ * UserPromptExpansion 的消费方（command/executor.ts）读 getAdditionalContext，搬过去即生效。
+ * CC 名单里还有 PostModelSwitch，但 sid 的调用方（app.ts）不读它的结果，
+ * 加进来也没人消费，所以不列——接上消费方时再加，并同步官网退出码表。
  */
 const CONTEXT_STDOUT_EVENTS: ReadonlySet<string> = new Set([
   HookEventName.SessionStart,
   HookEventName.UserPromptSubmit,
+  HookEventName.UserPromptExpansion,
 ]);
 
 /** exit 0 + 非 JSON stdout + 上下文类事件 → 搬到 hookSpecificOutput.additionalContext */
@@ -797,9 +802,12 @@ export class HookRunner {
     // H4：这两支都**不写 decision**。exit 0 的含义是「hook 自己跑成功了」，不是「我批准这次调用」；
     // 写成 allow 会被 SDK 桥读成主动放行，纯审计 hook 就绕过了宿主 can_use_tool。
     if (exitCode === EXIT_SUCCESS) {
-      // 0：成功。stdout 作为 systemMessage（透明反馈，某些事件如 UserPromptSubmit/SessionStart
-      // 会把它注入上下文；由事件层决定，这里只承载文本）。
-      return { systemMessage: stdoutText || undefined };
+      // 0：成功。纯文本 stdout **不进 systemMessage**（对齐 CC：大多数事件的 stdout 只进 debug 日志，
+      // 不展示）。上下文类事件由 promotePlainStdoutToContext 另行搬进 additionalContext；
+      // 原始文本仍在 HookExecutionResult.stdout 上。
+      // 原先放进 systemMessage，而 systemMessage 现在会展示给用户（B1），
+      // 每个 `echo ok` 的审计 hook 都会在状态行刷一条。
+      return {};
     }
     // 其余非零（1/3/…）：非阻塞告警。stderr 展示给用户，继续执行（不 deny，对齐 CC）。
     // 文案对齐 CC「<name> hook error: …」，让照 CC 文档排错的人能对上号

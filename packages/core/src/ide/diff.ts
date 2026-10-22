@@ -13,7 +13,8 @@
  * 这条 bug 此前**零症状**，因为上游的死接线（D1：编辑工具从不调用 diff）
  * 让它根本没被执行过。**上游的死接线掩盖了下游的协议不兼容**：只验证
  * "函数被调到了"的人会宣布修好，然后 diff 全部落到 error 分支 —— 而
- * `error` 分支是静默的（`showEditDiffInIDE` 的调用方按"IDE 不可用"处理）。
+ * `error` 分支当时是静默的（调用方按"IDE 不可用"处理）。现在唯一的调用入口是
+ * tool-hooks.ts 的 `negotiateContentViaIDE`，它在 error 分支会打 warn。
  */
 
 import type { MCPManager } from "../mcp/manager.ts";
@@ -170,19 +171,6 @@ export async function closeDiffTab(mcpManager: MCPManager, tabName: string): Pro
     await callIDERpc(mcpManager, IDE_RPC.closeTab, { tab_name: tabName });
   } catch {
     // 静默忽略：清理动作失败不该影响主流程
-  }
-}
-
-/**
- * 关闭所有 diff 标签页。
- * 在 Agent 循环结束时调用，清理残留的 diff 视图。
- */
-export async function closeAllDiffTabs(mcpManager: MCPManager): Promise<void> {
-  if (!mcpManager.isConnected(IDE_SERVER_NAME)) return;
-  try {
-    await callIDERpc(mcpManager, IDE_RPC.closeAllDiffTabs, {});
-  } catch {
-    // 静默忽略
   }
 }
 

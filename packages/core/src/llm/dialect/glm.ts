@@ -10,7 +10,7 @@
  *
  * 这里仍分两个 Dialect，理由不是「将来可能不同」（那是投机），而是**它们已经不同**：
  * `toolChoice` 的约束不一样（GLM 是 `auto-only`，DeepSeek 是 `reject-when-thinking`），
- * effort 档位值域也不一样（GLM 认四档，DeepSeek 只认 high/max）。原实现把这两处差异
+ * effort 档位值域也不一样（GLM 认 low/medium/high/max 四档，DeepSeek 认 low/high/max 三档）。原实现把这两处差异
  * 拆在别的函数里写，于是「DeepSeek 和 GLM 是一回事」这个印象只在 thinking 那一段成立。
  *
  * 合并的代价是真实的：读代码的人看到 `isDeepSeek || isGLM` 会以为两族全等，

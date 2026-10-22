@@ -3,7 +3,7 @@
  *
  * 锁的是「同一个档位，子代理发出去的线格式与主循环一致」：
  * - GPT-5.6 族（openai-responses）原生认 xhigh → 原样透传，不再塌成 max；
- * - DeepSeek 只认 high/max → xhigh 钳到 max，low 钳到 high；
+ * - DeepSeek 无 medium/xhigh → 都钳到 high，low/max 原样（映射见 dialect/deepseek.ts）；
  * - o-series 无 max → xhigh/max 都钳到 high；
  * - 原生 Claude manual 路径 → xhigh 是独立预算档（32K），不并进 max（50K）；
  * - 未指定 effort → 关 thinking（子代理默认不思考，既有行为不变）。

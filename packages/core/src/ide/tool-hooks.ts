@@ -16,28 +16,11 @@
  * 现在 `negotiateContentViaIDE()` 被 `tool/edit.ts` 与 `tool/write.ts` 真实调用。
  */
 
-import type { MCPManager } from "../mcp/manager.ts";
 import { showDiffInIDE, closeDiffTab, newDiffTabName } from "./diff.ts";
 import type { DiffResult } from "./diff.ts";
 import { IDE_SERVER_NAME } from "./integration.ts";
 import { getIDEDiffRuntime } from "./runtime.ts";
 import { getLogger } from "../debug/logger.ts";
-
-/**
- * 文件编辑后在 IDE 中展示 diff（IDE 未连接时静默跳过）。
- * @returns diff 展示结果；IDE 未连接返回 unsupported
- */
-export async function showEditDiffInIDE(
-  mcpManager: MCPManager,
-  filePath: string,
-  oldContent: string,
-  newContent: string,
-): Promise<DiffResult> {
-  if (!mcpManager.isConnected(IDE_SERVER_NAME)) {
-    return { action: "unsupported" };
-  }
-  return showDiffInIDE(mcpManager, filePath, oldContent, newContent);
-}
 
 /** 内容协商结果 */
 export type ContentNegotiation =
@@ -76,14 +59,16 @@ export async function negotiateContentViaIDE(
 
   const log = getLogger();
   // 自己持有 tab 名，才能只关掉这一个（D3 补的 close_tab）；
-  // 用 closeAllDiffTabs 会把用户正在看的其他 diff 一起关掉。
+  // 「关全部」会把用户正在看的其他 diff 一起关掉，所以每轮只关自己的 tab 是唯一策略。
   const tabName = newDiffTabName();
 
   let result: DiffResult;
   try {
     result = await showDiffInIDE(mcpManager, filePath, oldContent, newContent, tabName);
   } catch (err: any) {
-    // 抛异常也不阻断编辑 —— 但要留下痕迹
+    // 抛异常也不阻断编辑 —— 但要留下痕迹。
+    // 目前这条分支实际走不到：callIDERpc 吞掉全部异常，showDiffInIDE 也把 RPC 与
+    // 路径换算整体包在 try 里。留着是防御，不需要再加一个「会话结束关全部 tab」的兜底。
     log.warn("IDE", `diff 预览异常，按原内容写入: ${err?.message ?? err}`);
     return { proceed: true, content: newContent, userEdited: false };
   }

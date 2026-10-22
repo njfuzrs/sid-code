@@ -9,6 +9,32 @@ import { resolveIDEHost } from "./wsl.ts";
 import { getAncestorPids, type AncestorLookup, type ProcessTableRunner } from "./process-tree.ts";
 
 /**
+ * 解析 `SID_CODE_SSE_PORT`。
+ *
+ * 自动连接判定（integration.ts 的 shouldAutoConnect）与端口命中（detectIDEs）
+ * 必须共用这一个判据：此前前者只看「非空」、后者 `parseInt` 出 NaN，
+ * 于是误设 `abc` / `0` 会触发自动连接，却又永远命中不了任何 lockfile，
+ * 白轮询 30 秒后静默放弃。
+ *
+ * 用整串正则而不是 parseInt：`parseInt("123abc")` 会得到 123，把一个明显的
+ * 误设当成合法端口。
+ *
+ * @returns port 为合法端口（1-65535）或 null；invalid 表示「设了值但不合法」，
+ *          调用方据此打 WARN，与「没设」区分开。
+ */
+export function parseSsePortEnv(raw: string | undefined): {
+  port: number | null;
+  invalid: boolean;
+} {
+  if (raw === undefined || raw.trim() === "") return { port: null, invalid: false };
+  const trimmed = raw.trim();
+  if (!/^\d+$/.test(trimmed)) return { port: null, invalid: true };
+  const port = Number(trimmed);
+  if (port < 1 || port > 65535) return { port: null, invalid: true };
+  return { port, invalid: false };
+}
+
+/**
  * 检测可用的 IDE
  * 匹配策略（对标 Claude Code）：
  * 1. 环境变量端口匹配：SID_CODE_SSE_PORT（命中即有效，且**不做祖先消歧** ——
@@ -44,9 +70,7 @@ export async function detectIDEs(
 
   if (lockfiles.length === 0) return [];
 
-  const envPort = process.env.SID_CODE_SSE_PORT
-    ? parseInt(process.env.SID_CODE_SSE_PORT, 10)
-    : null;
+  const envPort = parseSsePortEnv(process.env.SID_CODE_SSE_PORT).port;
 
   // 祖先链查询是懒的，而且整次检测只查一次：绝大多数 lockfile 在工作区匹配时
   // 就被排除了，只有真的重叠时才值得为它付一次 ps。

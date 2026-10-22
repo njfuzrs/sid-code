@@ -46,6 +46,8 @@ export interface CachedToolState {
   toolUseId: string;
   /** 产出该结果的工具名（用于白名单判断） */
   toolName: string;
+  /** 对应 tool_use 的 input（bash 按命令判定只读，见 microcompact.ts 的 isDiscardableTool） */
+  input?: unknown;
   /** 是否已标记为"待服务器侧删除" */
   markedForDeletion: boolean;
 }
@@ -82,6 +84,7 @@ export function registerToolUses(state: CachedMicrocompactState, messages: Messa
         state.tools.set(block.id, {
           toolUseId: block.id,
           toolName: block.name,
+          input: block.input,
           markedForDeletion: false,
         });
       }
@@ -133,7 +136,8 @@ export function createCacheEditsBlock(
 
       const toolState = state.tools.get(block.tool_use_id);
       // 白名单约束：未登记（拿不到工具名）保守跳过；不可丢弃工具跳过
-      if (!toolState || !isCompactableTool(toolState.toolName)) continue;
+      // bash 必须带 input：只读命令才删，写命令（git commit / rm 等）的输出保留在前缀里
+      if (!toolState || !isCompactableTool(toolState.toolName, toolState.input)) continue;
       if (state.deleted.has(block.tool_use_id)) continue;
 
       edits.push({ type: "delete", tool_use_id: block.tool_use_id });
