@@ -44,16 +44,22 @@ sid-code -p "重构这个模块" --max-budget-usd 1.0
 上限和当前花费一样显示到小数点后 4 位，所以不到 1 分钱的上限也能看清。
 
 "自动停止"的语义是：当前这一轮 agentic loop 就地终止（`packages/core/src/query/loop.ts`
-发一条 terminal 系统消息后 `return`），不是整个进程退出。交互模式下你还能继续对话——
-但下一次请求算完成本又会撞上限。
+发一条 terminal 系统消息后 `return`），不是整个进程退出。
+
+::: warning 交互模式下目前只拦一次
+超限判定和告警去重共用同一个状态（`packages/core/src/llm/quota.ts` 的 `check()` 只在级别升级时返回结果），
+所以 `exceeded` 触发过一次之后，同一会话里继续对话**不会再被拦**。`-p` 模式一次就退出，不受影响。
+这是已知缺陷，修复前交互模式请把 `costLimit` 当作"超支提醒 + 停一次"，不要当硬上限用。
+`budgetRules` 的 `block` 也有同样的问题。
+:::
 
 ## 四个可配字段
 
 | 字段 | 单位 | 作用 | 接线状态 |
 | --- | --- | --- | --- |
 | `quota.costLimit` | USD | 会话累计花费上限，超了终止本轮 | ✅ 生效 |
-| `quota.requestsPerMinute` | 次/分 | 每分钟请求数上限 | ⚠️ 见下文 |
-| `quota.tokensPerMinute` | token/分 | 每分钟 token 上限 | ⚠️ 见下文 |
+| `quota.requestsPerMinute` | 次/分 | 每分钟请求数上限，超了本地等待 | ✅ 生效 |
+| `quota.tokensPerMinute` | token/分 | 每分钟 token 上限，超了本地等待 | ✅ 生效 |
 | `quota.budgetRules[]` | — | 按周期/按模型的多维预算规则 | ✅ 生效 |
 
 ### costLimit 与 --max-budget-usd 的关系
@@ -70,9 +76,9 @@ export function resolveEffectiveCostLimit(quotaCostLimit, topLevelCostLimit): nu
 成员传 `--max-budget-usd 0.5` 仍按 0.5 拦；反过来，成员**没法**用命令行参数把团队上限放宽。
 交互模式与 `-p` 走的是同一个值。
 
-统计口径值得点一句：配额检查用的是 `getEffectiveTotalCostUSD()`
+统计口径值得点一句：`costLimit` 检查用的是 `getEffectiveTotalCostUSD()`
 （`packages/core/src/query/loop.ts`），**包含标题生成 / 记忆抽取 / 摘要这些影子调用**的花费。
-不然辅助调用烧钱就不受限了。
+不然辅助调用烧钱就不受限了。注意下文的 `budgetRules` **不是**这个口径，它只累加主调用的花费。
 
 ### 四级预警
 
@@ -80,13 +86,15 @@ export function resolveEffectiveCostLimit(quotaCostLimit, topLevelCostLimit): nu
 
 | 比例 | 级别 | 行为 |
 | --- | --- | --- |
-| ≥ 50% | `info` | 提示 |
+| ≥ 50% | `info` | 只计入级别，**不显示**（主循环只显示 warning / critical） |
 | ≥ 80% | `warning` | 黄色告警"请注意控制用量" |
 | ≥ 95% | `critical` | 黄色告警"即将超限！" |
 | ≥ 100% | `exceeded` | **终止本轮** |
 
 **只在级别升级时告警一次**（同一函数里的 `lastAlertLevel` 判断），不会每轮重复刷同一档。
-`/clear` 会重置告警级别（`packages/cli/src/app.ts`），所以清空上下文后又会从 info 档开始提醒。
+`exceeded` 也受这个去重影响，这就是上面说的"只拦一次"。
+`/clear` 会重置 `costLimit` 的告警级别（`packages/cli/src/app.ts`），清空上下文后会重新开始告警，
+超限后也能再拦一次。`budgetRules` 的告警级别**不随 `/clear` 重置**。
 
 ### RPM / TPM 的实际状态
 
@@ -135,7 +143,7 @@ RPM = Requests Per Minute（每分钟请求数），TPM = Tokens Per Minute（�
 | `period` | `session` / `hourly` / `daily` / `weekly` / `monthly` | 周期 |
 | `limit_usd` | 正数 | 该周期的上限 |
 | `scope.model` | 模型名 | 只统计这个模型的花费；省略则全局 |
-| `thresholds` | 0–1 小数 | 默认 `warning:0.5` / `critical:0.8` / `exceeded:1.0` |
+| `thresholds` | 0–1 小数 | 默认 `warning:0.5` / `critical:0.8` / `exceeded:1.0`。warning / critical 都会显示，比 `costLimit` 少一个 info 档 |
 | `action` | `alert` / `downgrade` / `block` | 超限动作，默认 `alert` |
 
 超限行为实测（`period: session` + `limit_usd: 0.0001` + `action: block`）：
@@ -160,6 +168,15 @@ RPM = Requests Per Minute（每分钟请求数），TPM = Tokens Per Minute（�
 
 推论很重要：`period: "daily"` 的语义是**"本进程内、今天这个日期键下的累计"**，
 不是"这台机器今天一共花了多少"。重启 sid-code 就归零，多个并行会话各算各的。
+`period: "session"` 的累计在 `/clear` 后也**不清零**，会接着上一个会话算。
+
+还有三点容易误会：
+
+- **周期按 UTC 划分**。`hourly` / `daily` / `monthly` 取自 UTC 时间，在 UTC+8 下"每日预算"到本地早上 8 点才翻天。
+- **`weekly` 不是自然周**。它按 1970-01-01 起每 7 天切一段，每段从周四 00:00 UTC 开始（北京时间周四早上 8 点）。
+- **只计主调用**。累加的是每轮主模型调用的花费，标题生成、记忆抽取、摘要这些辅助调用不计入，
+  所以和 `costLimit`（含辅助调用）设成同一个数时，`budgetRules` 会晚一点触发。
+
 跨会话的额度用下一节的远程预算；事后复盘花费用[轨迹数据](/team/observability)聚合。
 
 ## 远程预算（团队 / 组织级）
@@ -181,44 +198,53 @@ RPM = Requests Per Minute（每分钟请求数），TPM = Tokens Per Minute（�
 
 ## 配置校验会帮你抓错
 
-配错的预算规则不会静默失效——启动时会逐条报出来。实测一份故意写错的配置：
+配错的预算规则不会静默失效——启动时会逐条报出来。实测一份故意写错的配置
+（第一条合法、只把 `action` 写成 `downgrade`，第二条故意写错并复用第一条的 `id`）：
 
 ```json
 {
-  "id": "daily",
-  "name": "重复 id",
-  "period": "yearly",
-  "limit_usd": 0,
-  "action": "stop",
-  "scope": { "model": "不存在的模型" }
+  "quota": {
+    "budgetRules": [
+      { "id": "daily", "name": "ok", "period": "daily", "limit_usd": 1, "action": "downgrade" },
+      {
+        "id": "daily",
+        "name": "重复 id",
+        "period": "yearly",
+        "limit_usd": 0,
+        "action": "stop",
+        "scope": { "model": "不存在的模型" }
+      }
+    ]
+  }
 }
 ```
 
-启动输出：
+`sid-code -p "ok"` 的 stderr 输出（节选 `quota` 相关行）：
 
 ```text
-⚠ quota.budgetRules[1].id: 与其它规则重复 ("daily")
-⚠ quota.budgetRules[1].period: 无效值 "yearly"，有效值为 session/hourly/daily/weekly/monthly
-⚠ quota.budgetRules[1].limit_usd: 必须是正数，否则该预算规则无意义
-⚠ quota.budgetRules[1].action: 无效值 "stop"，有效值为 alert/downgrade/block
-⚠ quota.budgetRules[1].scope.model: 模型 "不存在的模型" 未在 availableModels 中找到，
-  此预算规则永远不会命中用量匹配，等同于已失效。如果重命名过 availableModels 条目，
-  请同步更新这里的引用
+配置检查发现 13 项提示（不影响本次启动，可能导致部分功能未按预期工作）:
+  ⚠ [提示] quota.budgetRules[0].action: "downgrade" 当前未实现，行为等同 alert（超限只告警，不切换模型）
+  ⚠ [提示] quota.budgetRules[1].id: 与其它规则重复 ("daily")
+  ⚠ [提示] quota.budgetRules[1].period: 无效值 "yearly"，有效值为 session/hourly/daily/weekly/monthly
+  ⚠ [提示] quota.budgetRules[1].limit_usd: 必须是正数，否则该预算规则无意义
+  ⚠ [提示] quota.budgetRules[1].action: 无效值 "stop"，有效值为 alert/downgrade/block
+  ⚠ [提示] quota.budgetRules[1].scope.model: 模型 "不存在的模型" 未在 availableModels 中找到，此预算规则永远不会命中用量匹配，等同于已失效。如果重命名过 availableModels 条目，请同步更新这里的引用
+  ⚠ [提示] <settings.json 路径>#quota.budgetRules.1.period: Invalid enum value. Expected 'session' | 'hourly' | 'daily' | 'weekly' | 'monthly', received 'yearly'（该值已忽略，其余配置照常生效）
+  …
 ```
 
-`action` 写成合法但未实现的 `downgrade` 时，提示是另一句：
-
-```text
-⚠ quota.budgetRules[0].action: "downgrade" 当前未实现，行为等同 alert（超限只告警，不切换模型）
-```
+同一个错误会报两遍：一遍是上面的中文语义校验，一遍是 schema 校验（带文件路径和"该值已忽略"后缀）。
+后者说明非法字段会被直接摘掉，这条规则缺了必填字段，等于没配。
+TUI 模式下这些提示显示在启动横幅里，格式是 `quota.budgetRules[1].id: …`，没有 `[提示]` 前缀。
 
 `scope.model` 那条尤其值得留意：`scope.model` 是**字符串精确匹配**用量事件的模型名
 （`budget-tracker.ts`）。改过 `availableModels` 里的模型名而忘了同步这里，
 预算规则就永久静默失效——你以为设了限额，其实从来没生效过。校验器专门为这个场景加了检查
 （`packages/core/src/config/schema.ts` 的注释把它定性为"财务/安全相关的真实风险"）。
+这个检查**只在配了 `availableModels` 时才做**；没配 `availableModels` 时写错模型名不会有任何提示。
 
 注意这些都是**警告不是错误**，启动照常继续。所以团队推配置时值得跑一次
-`sid-code -p "ok"` 看有没有 `⚠ quota.` 开头的行。
+`sid-code -p "ok" 2>&1 | grep 'quota\.'`，看有没有 `quota.` 相关的提示行。
 
 ## 常见问题
 
@@ -227,9 +253,14 @@ RPM = Requests Per Minute（每分钟请求数），TPM = Tokens Per Minute（�
 放进[团队默认配置](/team/defaults)的 `quota` 段。但记住这是**默认值不是强制值**——
 用户改自己的 `~/.sid-code/settings.json` 就能改掉。要用户改不掉的跨会话额度，用[远程预算](#远程预算-团队-组织级)。
 
-配置来源里 `quota` 是嵌套对象，合并时递归展开，`budgetRules` 作为对象数组是
-**拼接**语义（`packages/core/src/config/settings/merge.ts`）——用户加自己的规则不会覆盖团队的规则，
-两边的规则同时生效。这对配额来说方向是对的：多一条规则只会更严不会更松。
+团队默认配置不是一个独立的配置来源：它在安装或升级时被写进用户自己的 `~/.sid-code/settings.json`，
+而且**只补用户缺失的顶层键**（`packages/core/src/migrations/backfill-team-defaults.ts`）。
+用户已经有 `quota` 段（哪怕是 `{}`）时，团队的 `quota` 整段不会补进去，更不会和用户的规则合并。
+
+拼接发生在多个配置来源之间（用户级 / 项目级 / 本地级 settings）：`quota` 是嵌套对象，合并时递归展开，
+`budgetRules` 作为对象数组是**拼接**语义（`packages/core/src/config/settings/merge.ts`），
+所以项目级 `.sid-code/settings.json` 里的规则会和用户级的规则同时生效。
+想让团队规则不被个人配置挤掉，可以把它放进仓库的项目级配置。
 
 ### 想知道现在花了多少
 
