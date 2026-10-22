@@ -29,23 +29,29 @@ description: 每次会话落盘了什么、能回答什么问题、怎么用一�
 它会即时显示当前会话的 **Span 树 + Metric 汇总**（内存数据）。前提是开了 `telemetry.enabled`（默认关，
 开法见下文[开启完整遥测](#开启完整遥测与-perfetto-导出)），没开时它只提示「遥测未启用」。
 
-想知道刚才（或更早）那次会话到底发生了什么，用一条命令读落盘轨迹：
+想知道刚才（或更早）那次会话到底发生了什么，在会话里用 `/trace`（别名 `/digest`）读落盘轨迹：
 
-```bash
-bun scripts/trace-digest.ts <session-id>
+```text
+/trace                 # 当前正在跑的会话
+/trace latest          # 最近一次结束的会话
+/trace <session-id>    # 指定会话，可只写 id 前缀
+/trace --list          # 最近 20 个会话，异常的排前面
 ```
 
-session id 在会话摘要里（形如 `20261002-213607-09e2f678`），或者直接取最新一个：
+session id 在会话摘要里（形如 `20261002-213607-09e2f678`），也可以直接取最新一个：
 
 ```bash
 ls -1t ~/.sid-code/trajectories/sessions | head -1
 ```
 
+从源码仓库开发的贡献者可以用 `bun scripts/trace-digest.ts <session-id>` 在终端跑同一份摘要。
+两者共用同一套渲染逻辑，只装了二进制的用户用 `/trace` 就够了。
+
 真实输出（节选，一个撞了轮次上限的会话）：
 
 ```text
 ━━━ session 20261002-213607-09e2f678  [max_turns] ━━━
-  模型 glm-5.2   API 5 次   步骤 9   耗时 44.3s   成本 $0.1112   tok 252742↑/908↓
+  模型 glm-5.2   API 5 次   步骤 9   耗时 44.3s   成本 $0.1112   tok 252742↑/908↓（累计）
 
 用户意图:
   1. 分析 /tmp/b26e2e/calc.ts，给出语言与顶层函数个数。
@@ -95,7 +101,7 @@ Provider 健康:
 -rw-r--r--  104B  audit_range.json
 -rw-r--r--   11K  events.jsonl
 -rw-r--r--  8.6K  messages.json
--rw-r--r--  408B  metadata.json
+-rw-r--r--  408B  metadata.json        # 只在配了上传、且上传成功后才有
 -rw-r--r--  339B  raw_preview.jsonl
 -rw-r--r--  115K  raw.jsonl
 -rw-r--r--  514B  session-summary.json
@@ -105,18 +111,22 @@ Provider 健康:
 
 | 文件 | 内容 | 什么时候看它 |
 | --- | --- | --- |
-| `metadata.json` | 一行式总账：模型、起止时间、步骤数、API 次数、token、成本、退出状态、用过的工具、改过的文件 | 想快速知道"这次花了多少、干了什么" |
-| `session-summary.json` | 结构化摘要：轮数、异常计数与分类、真实错误数、top 工具、是否用了子代理 | 批量筛"哪些会话不正常" |
+| `session-summary.json` | 结构化摘要：成本（`cost_usd`）、轮数、耗时、异常计数与分类、真实错误数、top 工具、是否用了子代理 | 想快速知道"这次花了多少、正不正常"；批量筛异常会话 |
+| `metadata.json` | 精简总账：模型、起止时间、步骤数、API 次数、token、成本、退出状态、用过的工具、改过的文件。**上传成功后才生成**，用来在 `delete_after_upload` 清掉数据文件后保留终态；没配上传就没有这个文件 | 上传过的会话做事后统计 |
 | `session.traj` | 完整 TAO 步骤 + history + metadata | 回溯全过程、做 SFT 训练数据 |
 | `raw.jsonl` | **逐次 API 的 request / response / usage / stop_reason** | 排查协议或参数问题——请求体最完整的一份记录（内部表示，不含 HTTP 请求头） |
 | `events.jsonl` | 事件流，每行一个事件 | 分析决策链、统计防线触发 |
 | `messages.json` | 崩溃验尸快照，含 attribution 归因 | 会话异常终止后查死因 |
 | `warn.log` | 本次会话的告警 | 有静默失效的配置时 |
+| `raw_preview.jsonl` | 每次请求发出前写一行规模预览：序号、模型、消息数、估算 token | 进程在 API 调用中途被杀（如 OOM）时，看最后一次请求有多大 |
+| `audit_range.json` | 本会话在 `~/.sid-code/audit.log` 里的字节区间 | 想从全局审计日志里只切出这一次会话 |
 
 `raw.jsonl` 通常是最大的那个文件（这例 115K），因为它存全量报文。
 不想记原文就设 `SID_CODE_TRACE_NO_RAW=1`，`raw.jsonl` 只留计数行。
 
-上面这些文件，以及 `warn.log` 和 `~/.sid-code/` 下的日志，落盘前都经过脱敏（API key、token、私钥等）。
+装载内容的文件（`session.traj`、`raw.jsonl`、`events.jsonl`、`messages.json`、`session-summary.json`）
+以及 `warn.log` 和 `~/.sid-code/` 下的日志，落盘前都经过脱敏（API key、token、私钥等）。
+`raw_preview.jsonl`、`audit_range.json` 只有数字和路径，不走脱敏器；`metadata.json` 是从已脱敏的 `session.traj` 里抽出来的。
 脱敏只作用于落盘，不改写模型看到的内容，也不处理邮箱、手机号这类个人信息和代码原文；
 某个字段脱敏出错时只把这个字段换成占位并告警。规则类别与边界见[隐私与数据流向 · 脱敏](/use/privacy#脱敏)。
 
@@ -130,8 +140,11 @@ LoopTransition: 2    SessionEnd: 2        SessionStart: 1
 UserPromptSubmit: 1
 ```
 
-这些名字与 [Hook 事件](/ref/hooks)同源——**你能挂 hook 的地方，基本就是轨迹能看到的地方**。
+其中 `SessionStart`、`UserPromptSubmit`、`BeforeModel`、`AfterModel`、`PreToolUse`、`PostToolUse`、`SessionEnd`
+与 [Hook 事件](/ref/hooks)同名同源——**你能挂 hook 的地方，轨迹里都看得到**，
 所以「hook 没触发」这类问题可以直接在 `events.jsonl` 里对证。
+其余几类（`StreamPhase`、`HttpConnected`、`RetryTelemetry`、`AfterModelRaw`、`GatewayPricingSync`、`LoopTransition`）
+是轨迹内部事件，只用于诊断，不能挂 hook。
 
 ### 本地保留多少
 
@@ -139,10 +152,13 @@ UserPromptSubmit: 1
 
 | 规则 | 默认 | 说明 |
 | --- | --- | --- |
-| 按时间 | 365 天 | `sessionRetention.maxAge`，超期的轨迹目录在启动期清理 |
-| 按体积 | 10GB | `sessionRetention.maxTotalSize`，`trajectories/sessions/` 合计超了才从最旧的删 |
+| 按时间 | 365 天 | `sessionRetention.maxAge`，启动后后台清理过期会话时，同 id 的轨迹目录一起删 |
+| 按体积 | 10GB | `sessionRetention.maxTotalSize`，`sessions/` 与 `trajectories/sessions/` **合计**超了才从最旧的删 |
 | 保护窗口 | 1 天 | `sessionRetention.minRetention`，窗口内更新过的目录不删 |
-| 按数量 | 不限 | `trace.maxSessionsRetained`，想限再写 |
+| 按数量 | 不限 | `trace.max_sessions_retained`，想限再写 |
+
+按时间清理跟着会话走：轨迹目录随同 id 的会话一起删。没有对应会话文件的轨迹
+（比如无头评测入口产生的）不按时间删，只受体积和数量上限约束。
 
 清理有两个偏向：**优先删已上传的**（数据已在远端），未上传的即使更旧也尽量留
 （看 `.uploaded` 标记）；**正在被别的 sid-code 进程写的会话不删**，宁可暂时超限。
@@ -291,7 +307,7 @@ grep -A4 '"upload"' ~/.sid-code/settings.json   # 没有输出 = 不上传
 | --- | --- |
 | 会话结束 | `auto_upload: true` 时自动 |
 | 启动补传 | `auto_upload: true` 时每次启动自动做，最多 20 个。**只补配置上传之后产生的会话**：按会话创建时间判断，每个上传地址单独计起点，换了地址不会把旧历史发往新地址 |
-| `/debug` | 立即上传当前会话快照到你配置的地址；没配上传时只显示本地路径 |
+| `/debug` | 立即上传当前会话快照到你配置的地址；没配上传时只提示「上传未配置（仅本地保留）」并给出本地会话计数 |
 
 失败的进持久化重试队列。手动补传（`auto_upload: false` 时这是唯一的批量上传入口）：
 
@@ -313,10 +329,10 @@ sid-code --upload-traces --include-history
 | 问题 | 看哪里 |
 | --- | --- |
 | 这次花了多少钱、缓存命中多少 | `/cost` 或会话摘要（[成本与用量](/use/cost)） |
-| 首字延迟多少、哪个 provider 慢 | `trace-digest` 的 Provider 健康段（TTFT P50） |
+| 首字延迟多少、哪个 provider 慢 | `/trace` 的 Provider 健康段（TTFT P50），跨会话看 `/trace --health` |
 | 会话为什么异常终止 | `messages.json` 的 attribution + `raw.jsonl` 末行 |
 | 模型为什么发了个不合法请求 | `raw.jsonl` 的 request 体 |
-| 工具调用序列对不对 | `trace-digest` 的工具序列段 |
+| 工具调用序列对不对 | `/trace` 的工具序列段 |
 | 哪些会话不正常，批量筛 | 各会话的 `session-summary.json` 的 `abnormal` / `anomaly_kinds` |
 
 批量筛异常会话可以直接扫：
@@ -332,13 +348,14 @@ if s.get('abnormal') or s.get('real_errors',0)>0:
 done
 ```
 
-跨会话聚合成本同理——遍历 `metadata.json` 的 `total_cost_usd` 求和。
+跨会话聚合成本同理——遍历各会话 `session-summary.json` 的 `cost_usd` 求和
+（`metadata.json` 只在上传成功后才有，没配上传时别用它）。
 这也是[按天统计花费的正确做法](/team/quota#周期是进程内的-重启即清零)：
 `budgetRules` 的周期计数是进程内的，跨会话统计只能靠轨迹。
 
 ## `/telemetry`：会话内即时查看
 
-上面讲的 `trace-digest` 和轨迹文件是**事后**看的——会话已经结束，从磁盘读。
+上面讲的 `/trace` 和轨迹文件读的是**磁盘**——已结束的会话，或当前会话已落盘的部分。
 `/telemetry` 是**即时**看的——会话进行中就能看当前这一轮的调用结构，数据在内存里。
 
 ```text
@@ -347,7 +364,8 @@ done
 
 别名 `/tele`。它显示当前会话的 **Span 树 + Metric 汇总**（`packages/cli/src/command/builtins.ts`）：
 
-- **总览**：LLM 调用轮数、Token 消耗（输入/输出）、费用、缓存节省、TTFT 平均、工具调用次数
+- **总览**：LLM 调用轮数、Token（当前上下文 = 末轮输入，不累加；输出为累计）、费用、缓存节省、
+  首内容延迟 TTFT（按模型分组的 P50 / P95 与样本数 n，不报均值）、工具调用次数
 - **调用时间线**：构建 Span 树递归渲染（扁平 span 列表按 `parentSpanId` 建父子关系，
   `builtins.ts`），每行显示 kind 中文标签、时长、模型名、TTFT、Token、费用（chat）
   或工具名、时长（tool）
@@ -368,7 +386,7 @@ done
 | 持久 | 会话结束即消失（内存） | 默认保留 365 天、合计 10GB 内不删 |
 | 用途 | 看当前调用结构是否正常 | 事后诊断、跨会话统计 |
 
-想看当前会话"哪一步慢、花了多少"用 `/telemetry`；想回溯昨天那次会话用 `trace-digest` 读落盘。
+想看当前会话"哪一步慢、花了多少"用 `/telemetry`；想回溯昨天那次会话用 `/trace <id>` 读落盘。
 
 ### 命令对比
 
@@ -377,7 +395,7 @@ done
 | 命令 | 数据源 | 回答什么 |
 | --- | --- | --- |
 | `/telemetry` | 内存当前会话 Span/Metric | 当前调用结构、哪步慢 |
-| `/trace` | 磁盘历史会话轨迹 | 排查某个历史会话（见上文） |
+| `/trace` | 磁盘上的会话轨迹（不带参数 = 当前会话，`latest` / `<id>` = 历史会话） | 排查某次会话（见[快速上手](#快速上手)） |
 | `/cost` | 会话状态 | 这次花了多少、缓存命中多少（见[成本与用量](/use/cost)） |
 | `/cache` | `usage-ledger.jsonl` | 跨会话缓存命中率趋势与退化监测（见[成本与用量](/use/cost)） |
 
@@ -430,7 +448,9 @@ done
 | `OTEL_RESOURCE_ATTRIBUTES` | 额外资源属性，`k1=v1,k2=v2` | — |
 
 也可以写在导出器的 `options` 里（`endpoint` / `tracesEndpoint` / `metricsEndpoint` / `headers` / `timeoutMs` /
-`serviceName`），显式配置优先于环境变量。导出是批量异步的，失败只记一条 `[TELEMETRY] … 导出失败 (otlp)`，不影响会话。
+`serviceName`），显式配置优先于环境变量。导出是批量异步的，失败不影响会话。
+注意失败日志是 **debug 级**（`导出失败 (otlp): …` / `指标导出失败 (otlp): …`）：不开 `--debug` 时终端、
+`audit.log`、`warn.log` 里都看不到。端点配好后后端收不到数据，就带 `--debug` 跑一次，再到调试日志里找这两行。
 
 **只支持 HTTP + JSON**。后端只收 gRPC 或 protobuf 时，在中间放一个 OpenTelemetry Collector 做转换（见下文第 5 步）。
 
@@ -467,7 +487,7 @@ sid-code -p "用 bash 跑 sleep 1 && echo hi，一句话回答"
 2. 右侧每行是一次会话（标题 `invoke_agent sid-code`），点进去就是瀑布图：左列 span 树，右列时间轴
 3. 点任意 span 展开 **Tags**，看 `gen_ai.*` 属性；右上角可切 **GenAI View**
 
-终端里那条 `指标导出失败 (otlp): OTLP HTTP 404` 是**正常的**：Jaeger 只收 traces，不收 metrics。
+开了 `--debug` 时会看到 `指标导出失败 (otlp): Error: OTLP HTTP 404 Not Found`，这是**正常的**：Jaeger 只收 traces，不收 metrics。
 Jaeger 默认内存存储，进程一停数据就没了。
 
 **5.（可选）中间加一层 Collector**：metrics 也要收、或后端要 gRPC 时用。`config.yaml`：
@@ -529,7 +549,8 @@ prompt 与工具输出原文**默认不导出**。内容级 tracing 要依次过
 1. 本地开关：`SID_CODE_CONTENT_TRACING=1`，不设就是关；
 2. 隐私级别：`no-telemetry` 或 `essential-traffic` 下一律不导出；
 3. 远端 flag：只能否决、不能替你打开，拉不到 flag 时按本地开关走；
-4. 脱敏：前三道都放行后，内容在导出前先截断、脱敏再附哈希。这一道不是开关，是处理步骤。
+4. 脱敏：前三道都放行后，内容在导出前**先脱敏、再截断**（顺序反过来，横跨截断点的凭证会漏掉半截），
+   并附原文哈希用于去重。这一道不是开关，是处理步骤。
 
 企业要求「不落原文」时保持默认即可。
 
@@ -538,15 +559,15 @@ prompt 与工具输出原文**默认不导出**。内容级 tracing 要依次过
 想把会话的调用时间线用可视化工具打开，设环境变量 `SID_CODE_PERFETTO_TRACE`（`packages/core/src/telemetry/perfetto.ts`）：
 
 ```bash
-export SID_CODE_PERFETTO_TRACE=1          # 启用，落盘到默认文件名
+export SID_CODE_PERFETTO_TRACE=1          # 启用，落到 ~/.sid-code/telemetry/perfetto/sid-code-trace-<毫秒时间戳>.json
 # 或指定路径：
 export SID_CODE_PERFETTO_TRACE=/tmp/my-trace.json
 ```
 
 会话结束时（`TelemetryBus.shutdown()`，`bus.ts`）自动落盘一个 Perfetto
 Trace Event 格式的 JSON（`{ traceEvents: [{ name, cat, ph: "X", ts, dur, pid, tid, args }] }`）。
-每种 span kind 映射到不同 tid（invoke_agent/chat/execute_tool/blocked_on_user/hook_execution），
-在时间轴上分层显示。
+每种 span kind 映射到不同 tid，在时间轴上分层显示：目前实际产出的是 invoke_agent / chat / execute_tool 三层。
+`blocked_on_user`、`hook_execution` 两条轨道是预留的，当前恒为空。
 
 打开方式：
 
@@ -592,7 +613,7 @@ Trace Event 格式的 JSON（`{ traceEvents: [{ name, cat, ph: "X", ts, dur, pid
 
 ### 磁盘会不会一直涨
 
-不会无限涨。默认保留 365 天，`trajectories/sessions/` 合计超过 10GB 才从最旧的删（见上文[本地保留多少](#本地保留多少)）。
+不会无限涨。默认保留 365 天，`sessions/` 与 `trajectories/sessions/` 合计超过 10GB 才从最旧的删（见上文[本地保留多少](#本地保留多少)）。
 单会话典型体积在几百 KB 量级（上面那例全部文件加起来约 210K），一年也是 GB 级。
 想更省就开 `delete_after_upload: true`，上传成功后本地只留 metadata 快照；想限数量写 `trace.max_sessions_retained`。
 
@@ -611,7 +632,7 @@ curl -sS -o /dev/null -w '%{http_code}\n' http://your-platform.example.com/traj/
 ### session id 怎么和会话对上
 
 会话结束的摘要里就有（`Session ID: 20260728-004217-cc55cf0d`）。
-交互模式下也能用 `--list-sessions` 查历史会话，恢复用 `--resume`，
+命令行用 `sid-code --list-sessions` 列出历史会话（打印完即退出），会话里用 `/trace --list`；恢复用 `--resume`，
 见[会话管理](/use/sessions)。
 
 ## 相关
@@ -620,6 +641,6 @@ curl -sS -o /dev/null -w '%{http_code}\n' http://your-platform.example.com/traj/
 - [成本与用量](/use/cost) —— 单会话的成本口径与降本手段
 - [配额与成本控制](/team/quota) —— 花费护栏；为什么跨会话统计要靠轨迹
 - [会话管理](/use/sessions) —— session id、恢复、历史
-- [Hook 事件参考](/ref/hooks) —— 与 `events.jsonl` 同源的事件清单
+- [Hook 事件参考](/ref/hooks) —— 与 `events.jsonl` 中 hook 类事件同源的清单
 - [排查问题](/use/troubleshooting) —— 出问题时的通用排查路径
 - [settings.json 字段参考](/ref/settings) —— `trace` 段全部字段
