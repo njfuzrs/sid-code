@@ -27,7 +27,7 @@
       "date": "2026-10-22",
       "highlight": "子代理权限检查补齐：后台任务不再绕过确认与危险命令拦截",
       "userFacing": true,
-      "channel": "beta",
+      "channel": "stable",
       "mergedInto": null,
       "covers": null,
       "betaNote": null,
