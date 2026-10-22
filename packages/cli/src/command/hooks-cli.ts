@@ -13,7 +13,10 @@
 
 import { HookSystem } from "@sid-code/core/hook/system.ts";
 import { ConfigSource } from "@sid-code/core/hook/types.ts";
-import type { HookDiagnostic } from "@sid-code/core/hook/config-normalize.ts";
+import {
+  WORKTREE_CHANNEL_EVENTS,
+  type HookDiagnostic,
+} from "@sid-code/core/hook/config-normalize.ts";
 import type { HookRegistryEntry } from "@sid-code/core/hook/registry.ts";
 
 const SOURCE_OF: Record<string, ConfigSource> = {
@@ -112,16 +115,43 @@ export async function handleHooksCommand(args: string[]): Promise<void> {
     ...(e.config.type === "command" && e.config.async ? { async: true } : {}),
   }));
 
+  // B4：WorktreeCreate / WorktreeRemove 不进 HookSystem（归一化层静默跳过），由 worktree 子系统直接读。
+  // 单列出来并标明归属，否则用户在这里看不到它、又以为没生效。只列首条 command：worktree/hooks.ts 只执行它。
+  const worktreeRows: Array<{
+    event: string;
+    source: string;
+    handler: string;
+    channel: "worktree";
+  }> = [];
+  for (const l of layers) {
+    if (l.skippedByTrust) continue;
+    for (const ev of WORKTREE_CHANNEL_EVENTS) {
+      const list = (l.hooks as Record<string, unknown>)[ev];
+      if (!Array.isArray(list)) continue;
+      for (const h of list as Array<{ type?: string; command?: string }>) {
+        if (!h?.command || (h.type ?? "command") !== "command") continue;
+        worktreeRows.push({ event: ev, source: l.source, handler: h.command, channel: "worktree" });
+      }
+    }
+  }
+
   if (asJson) {
-    console.log(JSON.stringify({ hooks: rows, skipped, diagnostics }, null, 2));
+    console.log(
+      JSON.stringify({ hooks: rows, worktreeHooks: worktreeRows, skipped, diagnostics }, null, 2),
+    );
     return;
   }
 
-  if (rows.length === 0) console.log("（没有已注册的 hook）");
+  if (rows.length === 0 && worktreeRows.length === 0) console.log("（没有已注册的 hook）");
   for (const r of rows) {
     const m = r.matcher ? ` matcher=${r.matcher}` : "";
     const i = r.if ? ` if=${r.if}` : "";
     console.log(`${r.event}  [${r.source}]${m}${i}  ${r.type}: ${r.handler}`);
+  }
+  for (const w of worktreeRows) {
+    console.log(
+      `${w.event}  [${w.source}]  command: ${w.handler}  （由 worktree 子系统执行，按来源顺序取第一条）`,
+    );
   }
   for (const s of skipped) console.log(`✗ 跳过 ${s.file}（${s.count} 条）：${s.reason}`);
   for (const d of diagnostics) {

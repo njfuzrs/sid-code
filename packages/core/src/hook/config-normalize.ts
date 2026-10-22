@@ -88,6 +88,16 @@ export const INTERNAL_HOOK_EVENTS: ReadonlySet<HookEventName> = new Set([
   HookEventName.AfterHookExecution,
 ]);
 
+/**
+ * B4：由 worktree 子系统处理、不经 HookSystem 分发的事件键。
+ * 只认 PascalCase：worktree/hooks.ts 读取时就是按这个字面量取的，snake_case 写法在那边不生效，
+ * 这里也就不该替它「静默」——让它照常落到「未知事件」告警，用户才知道写法不对。
+ */
+export const WORKTREE_CHANNEL_EVENTS: ReadonlySet<string> = new Set([
+  "WorktreeCreate",
+  "WorktreeRemove",
+]);
+
 /** 解析事件名（PascalCase 或旧 snake_case）；未知返回 null */
 export function resolveHookEventName(name: string): HookEventName | null {
   const values = Object.values(HookEventName) as string[];
@@ -306,6 +316,10 @@ export function normalizeHooksConfig(
 
   for (const [eventKey, list] of Object.entries(raw)) {
     const eventPath = `${prefix}.${eventKey}`;
+    // B4：WorktreeCreate / WorktreeRemove 由 worktree 子系统（worktree/hooks.ts）直接读 settings.hooks 执行，
+    // 不进 HookSystem。此前这里判「未知事件、已跳过」，进 worktree 时 hook 却真的跑了——同一份配置两种结论。
+    // 这里静默跳过，归属说明由 `hooks list` 单列（见 hooks-cli.ts）。
+    if (WORKTREE_CHANNEL_EVENTS.has(eventKey)) continue;
     const eventName = resolveHookEventName(eventKey);
     if (!eventName) {
       diagnostics.push({
