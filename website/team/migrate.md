@@ -145,7 +145,7 @@ CC 的 `model` / `ANTHROPIC_BASE_URL` / `ANTHROPIC_AUTH_TOKEN` 这套跟 sid-cod
 - **规则语法有差异细节**：`Bash(npm *)` 的 `*` 不跨空格边界、
   `Read(/src/**)` 是**项目根相对**而 `//etc/**` 才是文件系统绝对。逐条语义见[权限系统](/use/permissions)。
 - **项目级 settings 有提权过滤**：`.sid-code/settings.json` 里的 `permissionMode` /
-  `skipPermissions` / `allowedTools` 等 8 个字段会被剥掉，危险的自我授权 allow 规则
+  `skipPermissions` / `allowedTools` 等 14 个字段会被剥掉，危险的自我授权 allow 规则
   （`Bash(*)` 之类）也会被剔除。详见[企业 policy](/team/policy)。如果你的 CC 项目配置
   依赖这些字段，迁过来会看到告警且不生效——这是刻意的。
 
