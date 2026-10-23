@@ -177,45 +177,61 @@ fi
 # 同款坑与同款修法见 scripts/release.sh 的 on_exit（那次是 `$code）`）。
 info "目标版本: v${VERSION}（通道: ${CHANNEL}）"
 
-# ─── 下载 + 校验 ───
-
-echo ""
-echo "=== 下载安装包 ==="
-
-TARBALL_NAME="sid-code-${VERSION}-${OS}-${ARCH}.tar.gz"
-TARBALL_URL="${RELEASE_BASE}/${VERSION}/${TARBALL_NAME}"
-TARBALL_PATH="$TMPDIR_DL/$TARBALL_NAME"
-
-info "下载: $TARBALL_URL"
-if ! curl -fsSL "$TARBALL_URL" -o "$TARBALL_PATH"; then
-    # 显式指定版本时最常见的失败是「这个版本不存在」：给出能查到可用版本的那条命令（B46 P5）
-    if [ -n "${SID_CODE_VERSION:-}" ]; then
-        fail "下载失败: ${TARBALL_URL}（版本 ${VERSION} 可能不存在；用 sid-code update --list 查看可安装的版本）"
-    fi
-    fail "下载失败: $TARBALL_URL"
-fi
-
-CHECKSUM_URL="${TARBALL_URL}.sha256"
-CHECKSUM_PATH="$TARBALL_PATH.sha256"
-curl -fsSL "$CHECKSUM_URL" -o "$CHECKSUM_PATH" || fail "下载校验文件失败: $CHECKSUM_URL"
-
-EXPECTED_SHA="$(awk '{print $1}' "$CHECKSUM_PATH")"
-ACTUAL_SHA="$(sha256_of "$TARBALL_PATH")"
-[ -n "$EXPECTED_SHA" ] || fail "校验文件内容异常: $CHECKSUM_PATH"
-if [ "$ACTUAL_SHA" != "$EXPECTED_SHA" ]; then
-    fail "sha256 校验失败（期望 ${EXPECTED_SHA}，实际 ${ACTUAL_SHA}），安装中止，未影响现有安装"
-fi
-ok "校验通过 (sha256)"
-
-# ─── 解压到版本化目录 ───
+# ─── 本地已有该版本：复用，不联网（回滚离线可用）───
+#
+# 显式锁版本（SID_CODE_VERSION / sid-code update --version）且版本目录里的二进制能跑通
+# --version 时直接复用。此前即便本地已有目录，也要先下载 tarball + sha256 才走到「直接复用」，
+# 回滚因此离线做不了。该目录在首次安装时已经过 sha256 校验 + 冒烟；本地二进制跑不通
+# 就不复用，退回下载并覆盖解压。未锁版本（装最新）不走这条：最新版本号本就要联网解析。
 
 NEW_DIR="$VERSIONS_DIR/$VERSION"
-if [ -d "$NEW_DIR" ]; then
-    info "版本 v$VERSION 已存在于 ${NEW_DIR}，直接复用"
-else
-    mkdir -p "$NEW_DIR"
-    tar -xzf "$TARBALL_PATH" -C "$NEW_DIR" --strip-components=1
-    ok "已解压到 $NEW_DIR"
+REUSE_LOCAL=0
+if [ -n "${SID_CODE_VERSION:-}" ] && [ -x "$NEW_DIR/sid-code" ] \
+    && "$NEW_DIR/sid-code" --version >/dev/null 2>&1; then
+    REUSE_LOCAL=1
+    info "版本 v${VERSION} 已存在于 ${NEW_DIR}，直接复用（跳过下载）"
+fi
+
+if [ "$REUSE_LOCAL" -ne 1 ]; then
+    echo ""
+    echo "=== 下载安装包 ==="
+
+    TARBALL_NAME="sid-code-${VERSION}-${OS}-${ARCH}.tar.gz"
+    TARBALL_URL="${RELEASE_BASE}/${VERSION}/${TARBALL_NAME}"
+    TARBALL_PATH="$TMPDIR_DL/$TARBALL_NAME"
+
+    info "下载: $TARBALL_URL"
+    if ! curl -fsSL "$TARBALL_URL" -o "$TARBALL_PATH"; then
+        # 显式指定版本时最常见的失败是「这个版本不存在」：给出能查到可用版本的那条命令（B46 P5）
+        if [ -n "${SID_CODE_VERSION:-}" ]; then
+            fail "下载失败: ${TARBALL_URL}（版本 ${VERSION} 可能不存在；用 sid-code update --list 查看可安装的版本）"
+        fi
+        fail "下载失败: $TARBALL_URL"
+    fi
+
+    CHECKSUM_URL="${TARBALL_URL}.sha256"
+    CHECKSUM_PATH="$TARBALL_PATH.sha256"
+    curl -fsSL "$CHECKSUM_URL" -o "$CHECKSUM_PATH" || fail "下载校验文件失败: $CHECKSUM_URL"
+
+    EXPECTED_SHA="$(awk '{print $1}' "$CHECKSUM_PATH")"
+    ACTUAL_SHA="$(sha256_of "$TARBALL_PATH")"
+    [ -n "$EXPECTED_SHA" ] || fail "校验文件内容异常: $CHECKSUM_PATH"
+    if [ "$ACTUAL_SHA" != "$EXPECTED_SHA" ]; then
+        fail "sha256 校验失败（期望 ${EXPECTED_SHA}，实际 ${ACTUAL_SHA}），安装中止，未影响现有安装"
+    fi
+    ok "校验通过 (sha256)"
+
+    # ─── 解压到版本化目录 ───
+
+    # 已有目录且二进制能跑 → 复用（未锁版本装最新时走到这里）；跑不通说明本地损坏，
+    # 用刚校验过的 tarball 覆盖解压，而不是继续复用坏目录。
+    if [ -x "$NEW_DIR/sid-code" ] && "$NEW_DIR/sid-code" --version >/dev/null 2>&1; then
+        info "版本 v$VERSION 已存在于 ${NEW_DIR}，直接复用"
+    else
+        mkdir -p "$NEW_DIR"
+        tar -xzf "$TARBALL_PATH" -C "$NEW_DIR" --strip-components=1
+        ok "已解压到 $NEW_DIR"
+    fi
 fi
 
 chmod +x "$NEW_DIR/sid-code"
