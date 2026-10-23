@@ -5,7 +5,16 @@
  */
 
 import { describe, test, expect, beforeEach, afterEach } from "bun:test";
-import { existsSync, readFileSync } from "node:fs";
+import {
+  existsSync,
+  mkdirSync,
+  mkdtempSync,
+  readFileSync,
+  readlinkSync,
+  rmSync,
+  writeFileSync,
+} from "node:fs";
+import { tmpdir } from "node:os";
 import { join, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
 
@@ -65,6 +74,11 @@ describe("sid-code update 子命令 - 文件契约", () => {
 
 describe("sid-code update 子命令 - 行为契约", () => {
   let originalEnv: NodeJS.ProcessEnv;
+  // 显式传一个不存在的安装目录：默认值指向真实 ~/.local，本地快速路径命中会切掉本机软链。
+  const noLocal = {
+    versionsDir: join(tmpdir(), "sid-update-no-local", "versions"),
+    binSymlink: join(tmpdir(), "sid-update-no-local", "bin", "sid-code"),
+  };
 
   beforeEach(() => {
     originalEnv = { ...process.env };
@@ -93,7 +107,13 @@ describe("sid-code update 子命令 - 行为契约", () => {
       return Buffer.from("");
     };
     const { handleUpdateCommand } = await import("@sid-code/cli/command/update.ts");
-    await handleUpdateCommand(["--version", "0.1.602"], execute as never, () => "stable", noIndex);
+    await handleUpdateCommand(
+      ["--version", "0.1.602"],
+      execute as never,
+      () => "stable",
+      noIndex,
+      noLocal,
+    );
     expect(calls).toHaveLength(1);
     const options = calls[0]?.[2] as { env: NodeJS.ProcessEnv };
     expect(options.env.SID_CODE_VERSION).toBe("0.1.602");
@@ -170,10 +190,16 @@ describe("sid-code update 子命令 - 行为契约", () => {
     const execute = (...args: unknown[]) => (calls.push(args), Buffer.from(""));
     const { handleUpdateCommand } = await import("@sid-code/cli/command/update.ts");
     await expect(
-      handleUpdateCommand(["--version", "9.9.9"], execute as never, () => "stable", index),
+      handleUpdateCommand(["--version", "9.9.9"], execute as never, () => "stable", index, noLocal),
     ).rejects.toThrow("sid-code update --list");
     await expect(
-      handleUpdateCommand(["--version", "0.1.585"], execute as never, () => "stable", index),
+      handleUpdateCommand(
+        ["--version", "0.1.585"],
+        execute as never,
+        () => "stable",
+        index,
+        noLocal,
+      ),
     ).rejects.toThrow("已丢失");
     expect(calls).toHaveLength(0);
   });
@@ -183,7 +209,13 @@ describe("sid-code update 子命令 - 行为契约", () => {
     const execute = (...args: unknown[]) => (calls.push(args), Buffer.from(""));
     const { handleUpdateCommand } = await import("@sid-code/cli/command/update.ts");
     const out = await capture(() =>
-      handleUpdateCommand(["--version", "0.1.590"], execute as never, () => "stable", index),
+      handleUpdateCommand(
+        ["--version", "0.1.590"],
+        execute as never,
+        () => "stable",
+        index,
+        noLocal,
+      ),
     );
     expect(out).toContain("self-update-broken");
     expect(calls).toHaveLength(1);
@@ -194,7 +226,13 @@ describe("sid-code update 子命令 - 行为契约", () => {
     const execute = (...args: unknown[]) => (calls.push(args), Buffer.from(""));
     const { handleUpdateCommand } = await import("@sid-code/cli/command/update.ts");
     await capture(() =>
-      handleUpdateCommand(["--version", "9.9.9"], execute as never, () => "stable", noIndex),
+      handleUpdateCommand(
+        ["--version", "9.9.9"],
+        execute as never,
+        () => "stable",
+        noIndex,
+        noLocal,
+      ),
     );
     expect(calls).toHaveLength(1);
     const options = calls[0]![2] as { env: NodeJS.ProcessEnv };
@@ -215,7 +253,7 @@ describe("sid-code update 子命令 - 行为契约", () => {
     console.log = (msg: string) => logs.push(String(msg));
     try {
       const { handleUpdateCommand } = await import("@sid-code/cli/command/update.ts");
-      await handleUpdateCommand([], execute as never, () => installed);
+      await handleUpdateCommand([], execute as never, () => installed, undefined, noLocal);
     } finally {
       console.log = originalLog;
     }
@@ -272,5 +310,76 @@ describe("sid-code update 子命令 - 行为契约", () => {
       console.log = originalLog;
     }
     expect(logs.join("\n")).toMatch(/sid-code update/);
+  });
+
+  // ── 回滚离线可用：本地已有版本目录时直接切软链，不跑 curl|bash ──
+  function makeLocalInstall(version: string) {
+    const root = mkdtempSync(join(tmpdir(), "sid-update-local-"));
+    const paths = {
+      versionsDir: join(root, "versions"),
+      binSymlink: join(root, "bin", "sid-code"),
+    };
+    mkdirSync(join(paths.versionsDir, version), { recursive: true });
+    mkdirSync(join(root, "bin"));
+    writeFileSync(join(paths.versionsDir, version, "sid-code"), "");
+    return { root, paths, bin: join(paths.versionsDir, version, "sid-code") };
+  }
+
+  test("--version 命中本地目录且二进制能跑 → 切软链，不查清单、不跑 install.sh", async () => {
+    const { root, paths, bin } = makeLocalInstall("0.1.602");
+    const calls: unknown[][] = [];
+    const execute = (...args: unknown[]) => (calls.push(args), Buffer.from(""));
+    let indexLoaded = false;
+    const loadIndex = async () => ((indexLoaded = true), await noIndex());
+    try {
+      delete process.env.SID_CODE_CHANNEL;
+      const { handleUpdateCommand } = await import("@sid-code/cli/command/update.ts");
+      const out = await capture(() =>
+        handleUpdateCommand(
+          ["--version", "0.1.602"],
+          execute as never,
+          () => "stable",
+          loadIndex,
+          paths,
+        ),
+      );
+      expect(out).toContain("未联网");
+      expect(readlinkSync(paths.binSymlink)).toBe(bin);
+      expect(readFileSync(join(paths.versionsDir, "0.1.602", ".channel"), "utf8").trim()).toBe(
+        "stable",
+      );
+      expect(indexLoaded).toBe(false);
+      // 唯一一次 execute 是冒烟 --version，没有 bash -c curl
+      expect(calls).toHaveLength(1);
+      expect(calls[0]![0]).toBe(bin);
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  test("本地二进制跑不通 → 不切软链，交回 install.sh 重装", async () => {
+    const { root, paths, bin } = makeLocalInstall("0.1.602");
+    const calls: unknown[][] = [];
+    const execute = (...args: unknown[]) => {
+      calls.push(args);
+      if (args[0] === bin) throw new Error("broken");
+      return Buffer.from("");
+    };
+    try {
+      const { handleUpdateCommand } = await import("@sid-code/cli/command/update.ts");
+      await capture(() =>
+        handleUpdateCommand(
+          ["--version", "0.1.602"],
+          execute as never,
+          () => "stable",
+          noIndex,
+          paths,
+        ),
+      );
+      expect(existsSync(paths.binSymlink)).toBe(false);
+      expect(calls.at(-1)![0]).toBe("bash");
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
   });
 });
