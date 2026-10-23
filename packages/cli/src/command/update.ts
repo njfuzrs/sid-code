@@ -12,6 +12,9 @@
  */
 
 import * as childProcess from "node:child_process";
+import { existsSync, renameSync, symlinkSync, writeFileSync } from "node:fs";
+import { homedir } from "node:os";
+import { join } from "node:path";
 import { INSTALL_URL } from "@sid-code/core/update/config.ts";
 import {
   describeKnownIssue,
@@ -36,6 +39,7 @@ function printHelp(): void {
   缺省从稳定版通道更新。指定版本也可以使用：
     SID_CODE_VERSION=x.y.z sid-code update
   版本清单来自服务器 versions.json（由 OSS 归档派生，0.1.602 起的版本都在归档里）。
+  本机 ~/.local/share/sid-code/versions/ 里已有的版本直接切换，不联网（离线可回滚）。
   停留在旧版本需关闭自动更新："autoUpdate": "off" 或 SID_CODE_AUTO_UPDATE=off。
 
 发布通道:
@@ -121,11 +125,56 @@ function resolveUpdateChannel(
   return { channel: undefined, inherited: false };
 }
 
+/** 与 install-template.sh 的 INSTALL_ROOT / BIN_SYMLINK 同值（两处改一处要同步）。 */
+interface InstallPaths {
+  versionsDir: string;
+  binSymlink: string;
+}
+
+function defaultInstallPaths(): InstallPaths {
+  const home = homedir();
+  return {
+    versionsDir: join(home, ".local", "share", "sid-code", "versions"),
+    binSymlink: join(home, ".local", "bin", "sid-code"),
+  };
+}
+
+/**
+ * `--version x` 且本地版本目录里已有能跑通的二进制 → 直接切软链，不联网。
+ *
+ * 此前回滚一律 `curl install.sh | bash`：离线时脚本本身就拉不下来，install.sh 里的
+ * 「直接复用」也排在下载 + 校验之后，回滚因此离线做不了。这里只做 install.sh 复用分支
+ * 的最后两步（写通道标记 + 原子切换软链），不碰下载/校验——那部分仍只有 install.sh 一份实现。
+ * 本地目录在首次安装时已过 sha256 + 冒烟；跑不通 --version 就返回 false，交回 install.sh 重装。
+ */
+function tryLocalSwitch(
+  version: string,
+  channel: string | undefined,
+  execute: typeof childProcess.execFileSync,
+  paths: InstallPaths,
+): boolean {
+  const dir = join(paths.versionsDir, version);
+  const bin = join(dir, "sid-code");
+  if (!existsSync(bin)) return false;
+  try {
+    execute(bin, ["--version"], { stdio: "ignore" });
+  } catch {
+    return false;
+  }
+  writeFileSync(join(dir, ".channel"), `${channel ?? "stable"}\n`);
+  const tmp = `${paths.binSymlink}.tmp.${process.pid}`;
+  symlinkSync(bin, tmp);
+  renameSync(tmp, paths.binSymlink);
+  console.log(`已切换到本地已有版本 v${version}（${dir}，未联网）`);
+  return true;
+}
+
 export async function handleUpdateCommand(
   args: string[],
   execute: typeof childProcess.execFileSync = childProcess.execFileSync,
   installedChannel: () => ReleaseChannel = () => getReleaseChannel(),
   loadIndex: () => Promise<ReleaseIndex> = () => fetchReleaseIndex(),
+  installPaths: InstallPaths = defaultInstallPaths(),
 ): Promise<void> {
   if (args.includes("--help") || args.includes("-h")) {
     printHelp();
@@ -137,11 +186,13 @@ export async function handleUpdateCommand(
     await printVersionList(await loadIndex());
     return;
   }
-  if (version) checkRequestedVersion(await loadIndex(), version);
   const { channel, inherited } = resolveUpdateChannel(
     process.env.SID_CODE_CHANNEL,
     installedChannel(),
   );
+  // 本地快速路径排在查清单之前：清单要联网，而这条路径存在的意义就是离线可用。
+  if (version && tryLocalSwitch(version, channel, execute, installPaths)) return;
+  if (version) checkRequestedVersion(await loadIndex(), version);
   const env: NodeJS.ProcessEnv = { ...process.env };
   if (channel) env.SID_CODE_CHANNEL = channel;
   if (version) env.SID_CODE_VERSION = version;

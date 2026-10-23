@@ -1906,6 +1906,13 @@ export async function loadConfig(cliArgs: Partial<Config> = {}): Promise<Config>
     getLogger().debug("CONFIG", `收集 hooks 层失败（回落到用户级 hooks）: ${e}`);
   }
 
+  // 项目级 / 本地级 settings 里的路由字段被 loadConfigFile 丢弃，这里补一条可见告警。
+  try {
+    await recordIgnoredProjectRoutingKeys(config);
+  } catch {
+    /* 诊断收集失败不影响启动 */
+  }
+
   // baseURL 覆盖提示放在诊断赋值之后：赋值是整体替换，放前面会被盖掉。
   // 也不放进 resolveCurrentModelConfig：那是 /model 切换的共同咽喉，运行时再调
   // 会把一条启动提示重复塞进一份不再刷新到 TUI 的列表。
@@ -2002,6 +2009,57 @@ async function recordUnknownSettingKeys(config: Config): Promise<void> {
         : "（可能是拼写错误或新版本才有的字段）";
       recordStartupWarning(config, `${file}#${u.key}`, `未知配置项「${u.key}」不会生效${hint}`);
     }
+  }
+}
+
+/**
+ * 项目级 / 本地级 settings 里会被丢弃的路由流量字段（含 snake_case 写法）。
+ *
+ * 丢弃本身是安全设计（见 loadConfigFile 注释），但此前是静默的：用户在
+ * `.sid-code/settings.json` 写了 model / baseURL，启动后发现没生效，却找不到任何提示。
+ * env 不在此列：它走 managed-env 的两阶段应用（白名单变量信任前生效），并非被丢弃。
+ */
+export const PROJECT_IGNORED_ROUTING_KEYS = [
+  "model",
+  "availableModels",
+  "available_models",
+  "baseURL",
+  "base_url",
+  "provider",
+  "apiKey",
+  "api_key",
+  "anthropicKey",
+  "anthropic_key",
+  "openaiKey",
+  "openai_api_key",
+  "fallbackModel",
+  "fallback_model",
+  "subAgentModels",
+  "sub_agent_models",
+] as const;
+
+/**
+ * 项目级 / 本地级 settings 写了路由字段时记一条启动提示，说清「被忽略 + 去哪写」。
+ * 每个文件一条（列出全部命中的键），不按键刷屏。
+ */
+async function recordIgnoredProjectRoutingKeys(config: Config): Promise<void> {
+  const { getSettingsForSource, getEnabledSettingSources } = await import("./settings/settings.ts");
+  const { getSettingsFilePath } = await import("./settings/constants.ts");
+  const enabled = new Set(getEnabledSettingSources());
+  for (const source of ["projectSettings", "localSettings"] as const) {
+    if (!enabled.has(source)) continue;
+    const { settings } = getSettingsForSource(source);
+    if (!settings) continue;
+    const raw = settings as Record<string, unknown>;
+    const hits = PROJECT_IGNORED_ROUTING_KEYS.filter((k) => raw[k] !== undefined);
+    if (hits.length === 0) continue;
+    const file = getSettingsFilePath(source) ?? source;
+    recordStartupWarning(
+      config,
+      file,
+      `项目级配置中的模型/路由字段已被忽略：${hits.join(", ")}\n` +
+        `这些字段只在用户级 ~/.sid-code/settings.json 生效（防止仓库文件在信任确认前改写请求端点）。`,
+    );
   }
 }
 
