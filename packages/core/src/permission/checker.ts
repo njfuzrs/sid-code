@@ -46,7 +46,7 @@ import type { SandboxManager } from "./sandbox.ts";
 import { BashClassifier } from "./bash-classifier.ts";
 import { GIT_DANGER_PATTERNS, normalizeGitGlobalOptions } from "./git-danger-patterns.ts";
 import * as path from "node:path";
-import { getAgentRoot, getAgentCwd } from "../bootstrap/cwd-context.ts";
+import { getAgentRoot, getAgentCwd, getIsolatedWorktree } from "../bootstrap/cwd-context.ts";
 import * as os from "node:os";
 
 /** 危险命令模式（对标 Claude Code 15 种） */
@@ -276,6 +276,22 @@ const ACCEPT_EDITS_DESTRUCTIVE_COMMANDS = new Set(["rm", "rmdir", "mv"]);
 
 /** Plan Mode 下额外允许的工具（在 READ_ONLY_TOOLS 基础上） */
 const PLAN_MODE_EXTRA_TOOLS = new Set(["enter_plan_mode", "exit_plan_mode", "sub_agent"]);
+
+/**
+ * bash 权限判定所用的工作目录：input.cwd（bash 显式参数）> getCwd()（追踪 cd，子代理里读
+ * ALS）。与 BashTool.resolveCwd 的前两级同口径；sed 目标解析与 LLM 分类器共用这一份，
+ * 曾经一处用 getCwd()、一处用 process.cwd()，隔离子代理里两者分别是 worktree 与主仓。
+ */
+async function resolveBashCwdForCheck(req: PermissionRequest): Promise<string> {
+  const inputCwd = (req.input as { cwd?: unknown } | undefined)?.cwd;
+  if (typeof inputCwd === "string" && inputCwd) return inputCwd;
+  try {
+    const { getCwd } = await import("../bootstrap/state.ts");
+    return getCwd();
+  } catch {
+    return process.cwd();
+  }
+}
 
 export class PermissionChecker implements Checker {
   private config: Config;
@@ -601,16 +617,14 @@ export class PermissionChecker implements Checker {
    * 返回拒绝原因；否则返回 null。worktree 根取进入 withAgentCwd 时绑定的目录（不随 cd 变）。
    */
   private detectWorktreeEscape(filePath: string): string | null {
-    const root = getAgentRoot();
-    if (!root) return null;
-    const marker = `${path.sep}.sid-code${path.sep}worktrees${path.sep}`;
-    const idx = root.indexOf(marker);
-    if (idx < 0) return null;
-    const mainRepo = root.slice(0, idx);
+    const iso = getIsolatedWorktree();
+    if (!iso) return null;
+    const root = getAgentRoot()!;
+    const mainRepo = iso.mainRepo;
     const real = (p: string) => normalizeCaseForComparison(this.pathValidator.resolveRealPath(p));
     const within = (p: string, dir: string) => p === dir || p.startsWith(dir + path.sep);
     const target = real(path.resolve(getAgentCwd() ?? root, filePath));
-    const wt = real(root);
+    const wt = real(iso.worktreeRoot);
     if (within(target, wt)) return null;
     if (!within(target, real(mainRepo))) return null;
     return (
@@ -1831,18 +1845,7 @@ export class PermissionChecker implements Checker {
         // 相对路径按 bash 实际 cwd 解析：优先 input.cwd（bash 显式 cwd 参数），
         // 否则用全局 getCwd()（追踪 cd 跨命令的目录），与 bash.resolveCwd 一致。
         // 避免 cd subdir 后相对目标被误按启动目录校验。
-        let baseCwd: string;
-        const inputCwd = (req.input as any)?.cwd;
-        if (typeof inputCwd === "string" && inputCwd) {
-          baseCwd = inputCwd;
-        } else {
-          try {
-            const { getCwd } = await import("../bootstrap/state.ts");
-            baseCwd = getCwd();
-          } catch {
-            baseCwd = process.cwd();
-          }
-        }
+        const baseCwd = await resolveBashCwdForCheck(req);
         const targetPath = isAbsolute(sedWrite.targetFile)
           ? sedWrite.targetFile
           : resolve(baseCwd, sedWrite.targetFile);
@@ -1879,7 +1882,9 @@ export class PermissionChecker implements Checker {
     ) {
       const classifyResult = await this.bashClassifier.classify({
         command: cmd,
-        cwd: process.cwd(),
+        // 与 bash 实际执行目录同口径（input.cwd > getCwd()，ALS 优先）：process.cwd() 在
+        // 隔离子代理里是主仓根，分类器会按错的目录评估 `rm -rf ./x` 这类相对路径命令。
+        cwd: await resolveBashCwdForCheck(req),
         description: req.description,
         signal: (req as any).signal,
       });

@@ -415,6 +415,8 @@ export class HookEventHandler {
       description?: string;
       parentToolUseId?: string;
       legacyAgentId?: string;
+      agentCwd?: string;
+      isolation?: "worktree";
     },
   ): Promise<AggregatedHookResult> {
     const input: SubagentStartInput = {
@@ -427,6 +429,8 @@ export class HookEventHandler {
       ...(extra?.description ? { description: extra.description } : {}),
       ...(extra?.model ? { model: extra.model } : {}),
       ...(extra?.provider ? { provider: extra.provider } : {}),
+      ...(extra?.agentCwd ? { agent_cwd: extra.agentCwd } : {}),
+      ...(extra?.isolation ? { isolation: extra.isolation } : {}),
     };
     return this.executeHooks(HookEventName.SubagentStart, input);
   }

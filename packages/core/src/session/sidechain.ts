@@ -46,6 +46,15 @@ export type SidechainRecord =
       parentSessionId?: string;
       parentToolUseId?: string;
       canonicalAgentId?: string;
+      /**
+       * 子代理实际收到的系统提示词与工作目录（2026-10-24 起）。
+       *
+       * 此前子代理的系统提示词在任何轨迹里都不落盘（BeforeModel 无 agent_id、raw.jsonl 只记主循环），
+       * 「它被告知的工作目录是哪」只能从工具调用行为反推 —— 隔离子代理被告知主仓目录这个缺陷
+       * 就是这样反推出来的。sidechain 只在本地，不进上传通道，整段落盘没有外泄面。
+       */
+      systemPrompt?: string;
+      cwd?: string;
     }
   | {
       type: "message";
@@ -159,7 +168,12 @@ export class SidechainWriter {
   }
 
   /** 落 sidechain_start（幂等：重复调用只写一次）。 */
-  start(agentType: string, description: string, model: string): void {
+  start(
+    agentType: string,
+    description: string,
+    model: string,
+    context: { systemPrompt?: string; cwd?: string } = {},
+  ): void {
     if (this.started) return;
     this.started = true;
     this.write({
@@ -170,6 +184,8 @@ export class SidechainWriter {
       description,
       model,
       timestamp: nowIso(),
+      ...(context.systemPrompt !== undefined ? { systemPrompt: context.systemPrompt } : {}),
+      ...(context.cwd ? { cwd: context.cwd } : {}),
       parentSessionId: this.parentSessionId,
       ...(this.links.parentToolUseId ? { parentToolUseId: this.links.parentToolUseId } : {}),
       ...(this.links.canonicalAgentId ? { canonicalAgentId: this.links.canonicalAgentId } : {}),
@@ -186,6 +202,10 @@ export class SidechainWriter {
   end(status: "completed" | "failed" | "aborted"): void {
     if (this.ended) return;
     this.ended = true;
+    // 没落过 sidechain_start 就不写：一个首行是 sidechain_end 的文件会被 store.ts 的主文件
+    // 判定（首条有效记录既非 session_start 也非 sidechain_start → 保守当主文件）误收。
+    // 进程内路径把 start 挪到了提示词定稿之后，其间抛错时 finally 仍会走到这里。
+    if (!this.started) return;
     this.write({ type: "sidechain_end", status, timestamp: nowIso() });
   }
 }

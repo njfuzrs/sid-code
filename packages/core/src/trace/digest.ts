@@ -19,7 +19,8 @@
  */
 
 import { readFileSync, readdirSync, existsSync, statSync } from "node:fs";
-import { dirname, join } from "node:path";
+import { dirname, isAbsolute, join, normalize, sep } from "node:path";
+import { splitIsolatedWorktreePath } from "../bootstrap/cwd-context.ts";
 import { applyLedgerPathOverride } from "../telemetry/usage-ledger.ts";
 import { getSidHome } from "../config/paths.ts";
 import { PlanModeManager, PLAN_STEP_PARSER_VERSION } from "../plan/state.ts";
@@ -996,6 +997,14 @@ export interface SubAgentSpan {
   inputTokens?: number;
   /** 与上一个 span 结束时间的间隔（毫秒）。<1000ms 视为串行排队的强信号。 */
   gapFromPrevMs?: number;
+  /** SubagentStart.isolation：跑在隔离 worktree 里时为 "worktree" */
+  isolation?: "worktree";
+  /** SubagentStart.agent_cwd：子代理绑定的工作目录（本地字段，上传时剥离） */
+  agentCwd?: string;
+  /** 隔离 span：带绝对路径的工具调用数（分母，取自 PreToolUse.input_summary 的路径键） */
+  isolatedPathCalls?: number;
+  /** 隔离 span：其中落在主仓、却不在本 worktree 内的调用数（分子） */
+  isolatedMainRepoPathCalls?: number;
 }
 
 /**
@@ -1014,6 +1023,18 @@ export interface SubAgentSummary {
   concurrency: "serial" | "parallel" | "mixed" | "single";
   /** 串行判定的证据文本（相邻 span 的间隔），供渲染层直接展示 */
   serialEvidence?: string;
+  /**
+   * 隔离 worktree 子代理的路径越界口径（无隔离 span 时缺省）。
+   *
+   * 分母 = 隔离子代理带**绝对路径**的工具调用；分子 = 其中落在主仓、却不在自己 worktree 内的。
+   * 相对路径不计入分母：它们按子代理 cwd 解析，不可能越界，计进去会稀释信号。
+   * 2026-10-16~22 本机修复前基线约 95%（501/529，当时按「含主仓前缀」人工统计）。
+   */
+  isolation?: {
+    spans: number;
+    absPathCalls: number;
+    mainRepoPathCalls: number;
+  };
   spans: SubAgentSpan[];
 }
 
@@ -1649,6 +1670,61 @@ function matchViolations(ref: SessionRef, meta: TrajMeta, paths: DigestPaths): n
  *
  * 返回 null 表示本会话无子代理事件。
  */
+/** input_summary 里承载路径的键（与 collector.TOOL_INPUT_SUMMARY_KEYS 中的路径类子集对齐） */
+const SUMMARY_PATH_KEYS = ["file_path", "path"] as const;
+const SUMMARY_PATH_LIST_KEYS = ["paths", "file_paths"] as const;
+
+/**
+ * 按 agent_id 把子代理的 PreToolUse 归到隔离 span，统计绝对路径里越界到主仓的比例。
+ * 只看 SubagentStart 声明了 isolation 且带 agent_cwd 的 span；一个都没有时返回 undefined。
+ */
+function countIsolatedPathEscapes(
+  events: Array<{ event?: string; data?: Record<string, unknown> }>,
+  spans: SubAgentSpan[],
+): SubAgentSummary["isolation"] {
+  const byAgent = new Map<string, { span: SubAgentSpan; worktreeRoot: string; mainRepo: string }>();
+  for (const s of spans) {
+    if (s.isolation !== "worktree" || !s.agentCwd || !s.agentId) continue;
+    const iso = splitIsolatedWorktreePath(s.agentCwd);
+    if (!iso) continue;
+    s.isolatedPathCalls = 0;
+    s.isolatedMainRepoPathCalls = 0;
+    byAgent.set(s.agentId, { span: s, ...iso });
+  }
+  if (byAgent.size === 0) return undefined;
+
+  const within = (p: string, dir: string) => p === dir || p.startsWith(dir + sep);
+  let absPathCalls = 0;
+  let mainRepoPathCalls = 0;
+  for (const e of events) {
+    if (e.event !== "PreToolUse" || !e.data) continue;
+    const owner = byAgent.get(String(e.data.agent_id ?? ""));
+    if (!owner) continue;
+    const summary = e.data.input_summary as Record<string, unknown> | undefined;
+    if (!summary || typeof summary !== "object") continue;
+    const paths: string[] = [];
+    for (const k of SUMMARY_PATH_KEYS) if (typeof summary[k] === "string") paths.push(summary[k]);
+    for (const k of SUMMARY_PATH_LIST_KEYS) {
+      const v = summary[k];
+      if (Array.isArray(v)) for (const x of v) if (typeof x === "string") paths.push(x);
+    }
+    const abs = paths.filter((p) => isAbsolute(p));
+    if (abs.length === 0) continue;
+    // 一次调用计一次：任一绝对路径越界即算越界（read_many 一次读多个文件也只是一次决策）
+    absPathCalls++;
+    owner.span.isolatedPathCalls!++;
+    const escaped = abs.some((p) => {
+      const n = normalize(p);
+      return within(n, owner.mainRepo) && !within(n, owner.worktreeRoot);
+    });
+    if (escaped) {
+      mainRepoPathCalls++;
+      owner.span.isolatedMainRepoPathCalls!++;
+    }
+  }
+  return { spans: byAgent.size, absPathCalls, mainRepoPathCalls };
+}
+
 function buildSubAgentSummary(
   events: Array<{ event?: string; data?: Record<string, unknown> }>,
 ): SubAgentSummary | null {
@@ -1665,6 +1741,8 @@ function buildSubAgentSummary(
       description: d.description != null ? String(d.description) : undefined,
       startTs: typeof (e as any).timestamp === "string" ? (e as any).timestamp : d.timestamp,
       status: "unknown" as const,
+      ...(d.isolation === "worktree" ? { isolation: "worktree" as const } : {}),
+      ...(typeof d.agent_cwd === "string" ? { agentCwd: d.agent_cwd } : {}),
     };
   });
 
@@ -1760,6 +1838,7 @@ function buildSubAgentSummary(
   const succeeded = spans.filter((s) => s.status === "completed").length;
   const failed = spans.filter((s) => s.status === "error").length;
   const unknown = spans.filter((s) => s.status === "unknown").length;
+  const isolation = countIsolatedPathEscapes(events, spans);
 
   return {
     total: spans.length,
@@ -1768,6 +1847,7 @@ function buildSubAgentSummary(
     unknown,
     concurrency,
     serialEvidence: gapTexts.length > 0 ? gapTexts.join("、") : undefined,
+    ...(isolation ? { isolation } : {}),
     spans,
   };
 }
@@ -3547,6 +3627,16 @@ export function renderHuman(d: Digest, opts: RenderOptions = {}): string {
     );
     if (sa.concurrency === "serial" && sa.total >= 2 && sa.serialEvidence) {
       L.push(c("yellow", `  ⚠ 串行排队铁证: ${sa.serialEvidence}`));
+    }
+    if (sa.isolation) {
+      const { spans: n, absPathCalls: den, mainRepoPathCalls: num } = sa.isolation;
+      const pct = den > 0 ? `${((num / den) * 100).toFixed(1)}%` : "—";
+      L.push(
+        c(
+          num > 0 ? "yellow" : "gray",
+          `  隔离子代理 ${n} 个：绝对路径调用越界到主仓 ${num}/${den}（${pct}）`,
+        ),
+      );
     }
     for (let i = 0; i < sa.spans.length; i++) {
       const s = sa.spans[i];

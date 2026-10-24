@@ -679,6 +679,12 @@ export interface SubagentStartInput extends HookInput {
   model?: string;
   /** 子代理实际使用的 provider（缺省由 model 推断） */
   provider?: string;
+  /** 子代理被绑定的工作目录（SubAgentTask.cwd，经 withAgentCwd 生效）。未绑定时缺省，
+   *  此时子代理与父会话共用工作目录。 */
+  agent_cwd?: string;
+  /** 工作目录落在隔离 worktree（`<主仓>/.sid-code/worktrees/<name>`）内时为 "worktree"。
+   *  轨迹按它筛出隔离子代理，不必再回父会话 raw.jsonl 找派发入参。 */
+  isolation?: "worktree";
 }
 
 /** SubagentStop 输入（携带子代理实际用量，供遥测单独计费 / 按 model 分类） */

@@ -613,6 +613,51 @@ describe("buildDigest 子代理 section (§9.6)", () => {
     expect(d.anomalies.map((a) => a.kind)).not.toContain("subagent_serial_execution");
   });
 
+  it("隔离子代理：统计绝对路径调用越界到主仓的比例（相对路径不进分母）", () => {
+    const dir = writeSession("iso01", normalSession({ has_sub_agent: true }));
+    const main = "/repo";
+    const wt = "/repo/.sid-code/worktrees/agent-1";
+    const pre = (agentId: string, summary: Record<string, unknown>) => ({
+      event: "PreToolUse",
+      session_id: "x",
+      timestamp: "2026-06-30T12:00:01.000Z",
+      cwd: main,
+      data: { tool_name: "read", tool_use_id: "t", agent_id: agentId, input_summary: summary },
+    });
+    writeEvents(dir, [
+      {
+        ...startEvt("2026-06-30T12:00:00.000Z", "iso-a", "explore"),
+        data: { agent_id: "iso-a", agent_type: "explore", isolation: "worktree", agent_cwd: wt },
+      },
+      startEvt("2026-06-30T12:00:00.000Z", "plain-b", "explore"),
+      pre("iso-a", { file_path: `${main}/src/a.ts` }), // 越界
+      pre("iso-a", { file_path: `${wt}/src/a.ts` }), // worktree 内
+      pre("iso-a", { path: "src" }), // 相对路径：不进分母
+      pre("iso-a", { paths: [`${wt}/x.ts`, `${main}/y.ts`] }), // 一次调用，任一越界即越界
+      pre("iso-a", { file_path: "/tmp/z.txt" }), // 主仓之外：不算越界
+      pre("plain-b", { file_path: `${main}/src/a.ts` }), // 非隔离子代理：不计入
+      stopEvt("2026-06-30T12:00:10.000Z", "iso-a", "completed"),
+      stopEvt("2026-06-30T12:00:10.000Z", "plain-b", "completed"),
+    ]);
+    const d = buildDigest(listSessions(paths)[0], false, paths)!;
+    const iso = d.subAgents!.isolation!;
+    expect(iso).toEqual({ spans: 1, absPathCalls: 4, mainRepoPathCalls: 2 });
+    const span = d.subAgents!.spans.find((s) => s.agentId === "iso-a")!;
+    expect(span.isolation).toBe("worktree");
+    expect(span.isolatedMainRepoPathCalls).toBe(2);
+    expect(renderHuman(d, { noColor: true })).toContain("越界到主仓 2/4（50.0%）");
+  });
+
+  it("无隔离子代理时不出 isolation 口径", () => {
+    const dir = writeSession("iso02", normalSession({ has_sub_agent: true }));
+    writeEvents(dir, [
+      startEvt("2026-06-30T12:00:00.000Z", "p1", "explore"),
+      stopEvt("2026-06-30T12:00:10.000Z", "p1", "completed"),
+    ]);
+    const d = buildDigest(listSessions(paths)[0], false, paths)!;
+    expect(d.subAgents!.isolation).toBeUndefined();
+  });
+
   it("缺 agent_id 的旧轨迹 → 回退到时序配对", () => {
     const dir = writeSession("legacy01", normalSession({ has_sub_agent: true }));
     writeEvents(dir, [

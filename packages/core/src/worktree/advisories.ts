@@ -21,7 +21,7 @@
 
 import { createHash } from "crypto";
 import { existsSync, readFileSync } from "fs";
-import { join } from "path";
+import { basename, dirname, join, normalize } from "path";
 
 /** 主流 JS 包管理器的 lockfile（顺序即优先级） */
 const LOCKFILES = [
@@ -43,42 +43,68 @@ function lockfileHash(dir: string, file: string): string | null {
   }
 }
 
+/** 一组 lockfile 比对结果：命中第一份两边都有的 lockfile 即定论（一致 null / 不一致文件名） */
+function compareLockfilesIn(
+  worktreeDir: string,
+  mainDir: string,
+): { decided: false } | { decided: true; mismatch: string | null } {
+  for (const file of LOCKFILES) {
+    const mainHash = lockfileHash(mainDir, file);
+    const wtHash = lockfileHash(worktreeDir, file);
+    // 只有两边都有同名 lockfile 才能比对；缺一（如 sparse-checkout 没检出）跳过该文件
+    if (mainHash === null || wtHash === null) continue;
+    return { decided: true, mismatch: mainHash !== wtHash ? file : null };
+  }
+  return { decided: false };
+}
+
 /**
  * 依赖一致性检查。
  *
- * 仅在「node_modules 被 symlink 到主仓」时才有意义——因为此时 worktree 用的是主仓依赖，
- * 若两边 lockfile 不同就会版本错乱。未 symlink（用户改了 symlinkDirectories 或 symlink 失败）
- * 则各自独立，无此问题，直接跳过。
+ * 仅对「被 symlink 到主仓的 node_modules 目录」有意义——此时 worktree 用的是主仓依赖，
+ * 若两边 lockfile 不同就会版本错乱。未 symlink 的目录各自独立，无此问题。
+ *
+ * 旧实现只认顶层的 `"node_modules"`：monorepo 用户在 symlinkDirectories 里配
+ * `packages/app/node_modules` 时这条告警整个不生效。现在对每个 basename 为 `node_modules`
+ * 的链接目录，从它的父目录（包级 lockfile）逐级向上找到仓库根（workspace 根 lockfile），
+ * 取第一层两边都有 lockfile 的目录比对 —— 与包管理器自己找 lockfile 的方向一致。
  *
  * @param worktreePath worktree 根
  * @param gitRoot 主仓根
- * @param symlinkedNodeModules 本次是否确实 symlink 了 node_modules
+ * @param symlinkedDirs 本次确实建成 symlink 的目录（相对仓库根，来自 symlinkDirectories）
  * @returns 告警字符串（无风险返回 null）
  */
 export function checkDependencyConsistency(
   worktreePath: string,
   gitRoot: string,
-  symlinkedNodeModules: boolean,
+  symlinkedDirs: readonly string[],
 ): string | null {
-  // 没 symlink node_modules → 依赖各自独立 → 无版本错乱风险
-  if (!symlinkedNodeModules) return null;
-
-  for (const file of LOCKFILES) {
-    const mainHash = lockfileHash(gitRoot, file);
-    const wtHash = lockfileHash(worktreePath, file);
-    // 只有两边都有同名 lockfile 才能比对；缺一（如 sparse-checkout 没检出）跳过该文件
-    if (mainHash === null || wtHash === null) continue;
-    if (mainHash !== wtHash) {
-      return (
-        `依赖不一致：${file} 与主仓不同，但 node_modules 是 symlink 到主仓的。\n` +
-        `   worktree 里跑的将是**主仓的依赖版本**，可能导致 module not found / 版本错乱。\n` +
-        `   建议：在此 worktree 内重装依赖（如 pnpm/bun/npm install），或删除 node_modules 软链后独立安装。`
-      );
+  const mismatches: string[] = [];
+  const seen = new Set<string>();
+  for (const dir of symlinkedDirs) {
+    const rel = normalize(dir).replace(/[\\/]+$/, "");
+    if (basename(rel) !== "node_modules") continue;
+    // 从链接所在包目录逐级向上（含仓库根），第一层可比对的 lockfile 即定论
+    let pkg = dirname(rel);
+    for (;;) {
+      if (!seen.has(pkg)) {
+        seen.add(pkg);
+        const r = compareLockfilesIn(join(worktreePath, pkg), join(gitRoot, pkg));
+        if (r.decided) {
+          if (r.mismatch) mismatches.push(pkg === "." ? r.mismatch : join(pkg, r.mismatch));
+          break;
+        }
+      } else break; // 这一层（及其上层）已被别的链接目录判过
+      if (pkg === "." || pkg === "") break;
+      pkg = dirname(pkg);
     }
-    // 找到一个可比对的 lockfile 且一致 → 无需再看其它
-    return null;
   }
-  return null;
+  if (mismatches.length === 0) return null;
+  return (
+    `依赖不一致：${mismatches.join("、")} 与主仓不同，但对应的 node_modules 是 symlink 到主仓的。\n` +
+    `   worktree 里跑的将是**主仓的依赖版本**，可能导致 module not found / 版本错乱。\n` +
+    `   建议：在此 worktree 内重装依赖（如 pnpm/bun/npm install），或删除 node_modules 软链后独立安装。`
+  );
 }
 
 /**
