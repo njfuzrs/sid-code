@@ -161,7 +161,10 @@ export class WriteTool implements Tool {
     // ⚠️ 仅对「覆盖已有文件」时检测——新建文件可能是分段写入的第一段（第一段
     // 嵌套 depth>=3 是正常的），如果此时拒绝会与分段建议自相矛盾导致死循环。
     const targetFile = Bun.file(filePath);
-    const fileAlreadyExists = await targetFile.exists();
+    // 0 字节文件按「新建」处理：没有任何内容可被冲掉，先读后写与截断检测都无从保护什么。
+    // 直接诱因是 plan 文件的原子占位（PlanModeManager.reservePlanFile 用 O_EXCL 建空文件防并发撞名）——
+    // 不这样处理，模型第一次 write 计划就会被「必须先 read」拦下。`touch` 出来的空文件同理。
+    const fileAlreadyExists = (await targetFile.exists()) && targetFile.size > 0;
     if (fileAlreadyExists) {
       const truncation = detectTruncation(params.content, filePath);
       if (truncation.isTruncated) {
