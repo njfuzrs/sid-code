@@ -37,6 +37,8 @@ function incompleteReasonMessage(reason: DoneIncompleteReason): string {
       return "请求被中断";
     case "stalled":
       return "任务停滞（反复改动又改回 / 重复操作无新进展），已由 harness 暂停";
+    case "context_window_exhausted":
+      return "上下文反复撞到模型窗口上限且压缩无法腾出空间，已停止";
   }
 }
 

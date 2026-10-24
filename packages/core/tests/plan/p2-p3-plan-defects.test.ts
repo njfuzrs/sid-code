@@ -225,21 +225,22 @@ describe("P3-1 路径在 ⇔ 有活跃计划", () => {
     expect(m.isExecuting()).toBe(false);
   });
 
-  test("执行阶段保留路径；执行结束（endExecution）后清空", () => {
+  test("执行阶段保留路径；执行完毕（completeExecution）后清空", () => {
     const m = new PlanModeManager();
     m.enter("default");
     m.submitForApproval();
     m.approve();
     expect(m.getPlanFilePath()).not.toBeNull();
-    m.endExecution();
+    expect(m.completeExecution()).toBe(true);
     expect(m.getPlanFilePath()).toBeNull();
+    expect(m.getLastOutcome()).toBe("completed");
   });
 
-  test("规划中途的 endExecution（每个用户回合开头都会调）不丢路径", () => {
+  test("规划中途的 completeExecution 是 no-op，不丢路径", () => {
     const m = new PlanModeManager();
     m.enter("default");
     const path = m.getPlanFilePath();
-    m.endExecution();
+    expect(m.completeExecution()).toBe(false);
     expect(m.getPlanFilePath()).toBe(path);
     expect(m.isPlanning()).toBe(true);
   });

@@ -85,7 +85,6 @@ describe("发现 3a — hard 档原地截断按同源 token 判成功", () => {
       processStream: async () => endTurn(),
       executeTools: async () => ({ results: [] }),
       autoCompact: async () => {},
-      handleContextOverflow: () => null,
       getAbortSignal: () => undefined,
       abortCurrentRequest: () => {},
       uuid: () => "uuid-test",

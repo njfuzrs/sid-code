@@ -110,15 +110,15 @@ describe("PlanModeManager — plan_recovery update count (W12.D2)", () => {
     expect(m.getPlanFileUpdateCount()).toBe(2);
   });
 
-  test("P1-1：执行阶段收尾后（endExecution）不再记录", () => {
+  test("P1-1：执行阶段收尾后（completeExecution）不再记录", () => {
     const m = new PlanModeManager();
     m.enter("default");
     m.submitForApproval();
     m.approve();
     expect(m.recordPlanFileWrite()).toBe(true);
 
-    // 新用户回合开始时 app.ts 会调 endExecution()，此后既非规划态也非执行阶段
-    m.endExecution();
+    // 计划派生的 todo 全部完成时 app.ts 调 completeExecution()，此后既非规划态也非执行阶段
+    m.completeExecution();
     expect(m.isActive()).toBe(false);
     expect(m.isExecuting()).toBe(false);
     expect(m.recordPlanFileWrite()).toBe(false);

@@ -88,8 +88,6 @@ export interface QueryEngineDeps {
   emergencyFileReattach?: (info: {
     trigger: "threshold_blocking" | "threshold_emergency";
   }) => number;
-  /** 处理上下文溢出 */
-  handleContextOverflow: (err: any, currentMaxTokens: number) => number | null;
   /** 获取 abort signal */
   getAbortSignal: () => AbortSignal | undefined;
   /** 主动中断当前 LLM 请求（abort 当前 AbortController）。L1 单轮硬超时配合使用。可选。 */
@@ -438,7 +436,6 @@ export class QueryEngine {
       contextCollapse: this.deps.contextCollapse,
       postCompactTail: this.deps.postCompactTail,
       emergencyFileReattach: this.deps.emergencyFileReattach,
-      handleContextOverflow: this.deps.handleContextOverflow,
       getAbortSignal: this.deps.getAbortSignal,
       abortCurrentRequest: this.deps.abortCurrentRequest,
       uuid: () => crypto.randomUUID(),

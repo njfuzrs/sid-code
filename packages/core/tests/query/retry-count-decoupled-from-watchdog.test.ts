@@ -96,7 +96,6 @@ function setup(sendWithRetry: QueryDeps["sendWithRetry"]) {
     },
     executeTools: async () => ({ results: [] }),
     autoCompact: async () => {},
-    handleContextOverflow: () => null,
     getAbortSignal: () => undefined,
     uuid: () => "u1",
     maxTurnDurationMs: 60_000,

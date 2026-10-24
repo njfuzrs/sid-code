@@ -131,7 +131,7 @@ describe("PlanModeManager：fidelity 按一份计划计", () => {
     m.recordActualToolCall("read", { file_path: "package.json" });
     expect(m.getFidelityReport().actualToolCallCount).toBe(1);
 
-    m.endExecution();
+    // 第二次 enter 本身就是上一份计划执行阶段的出口（不需要先收尾）
     m.enter("default");
     const r = m.getFidelityReport();
     expect(r.planStepCount).toBe(0);

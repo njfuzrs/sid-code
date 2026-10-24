@@ -83,7 +83,6 @@ function setup(opts: {
     },
     executeTools: async () => ({ results: [] }),
     autoCompact: async () => {},
-    handleContextOverflow: () => null,
     getAbortSignal: () => undefined,
     uuid: () => `uuid-${call}`,
     traceAppendEvent: (ev) => {

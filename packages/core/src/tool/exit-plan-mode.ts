@@ -69,24 +69,14 @@ export class ExitPlanModeTool implements Tool {
 
   async execute(input: unknown, _signal?: AbortSignal): Promise<ToolResult> {
     if (!this.planManager.isPlanning()) {
-      // 根因 3 修复（P0-1）：非 planning 状态下的 exit_plan_mode 改为**幂等成功**，
-      // 从源头切断"报错 → 重试 → 再报错"的空转循环（实测 46.9% 失败率，127 次"不在计划模式"）。
+      // 根因 3 修复（P0-1）：非 planning 状态下的 exit_plan_mode 是**幂等成功**（isError:false），
+      // 从源头切断「报错 → 重试 → 再报错」的空转循环（实测 46.9% 失败率，127 次「不在计划模式」）。
       //
-      // 两种非 planning 情形都返回成功提示（isError:false），引导模型进入/继续执行阶段，
-      // 而不是反复重复调用本工具：
-      //   - awaiting_approval：计划已提交、正等待用户审批 → 告诉模型"已提交，无需重复提交"
-      //   - inactive：计划已审批通过（或从未进入计划模式）→ 告诉模型"进入执行阶段，逐条执行，勿再调用"
-      if (this.planManager.isAwaitingApproval()) {
-        return {
-          output: "计划已提交，正在等待用户审批，无需重复调用 exit_plan_mode。请耐心等待审批结果。",
-        };
-      }
-      return {
-        output:
-          "计划已进入执行阶段（已审批通过或当前不在计划模式）。请直接开始执行计划的第一步任务，" +
-          "不要再调用 exit_plan_mode——它只用于提交新计划等待审批。" +
-          "如计划包含多个步骤，建议先用 todo_write 将计划逐条拆解为任务清单，再依次执行。",
-      };
+      // 2026-10-24：幂等不等于一律说「已批准」。从前 inactive 分支统一回答
+      // 「计划已进入执行阶段（已审批通过…）请直接开始执行」——而用户取消、拒绝超限之后
+      // state 同样是 inactive，模型据此把**用户否决的计划**带着恢复后的写权限执行了。
+      // 现在按状态机记录的真实结局回答，只有 isExecuting() 才说「已批准」。
+      return { output: this.describeNonPlanningState() };
     }
 
     const planPath = this.planManager.getPlanFilePath();
@@ -97,10 +87,13 @@ export class ExitPlanModeTool implements Tool {
       };
     }
 
-    // 读取计划文件内容
+    // 读取计划文件内容。enter() 会原子占位一个空文件，所以「存在但为空」= 还没写计划。
     const planContent = readFileSync(planPath, "utf-8");
     if (!planContent.trim()) {
-      return { output: "计划文件为空，请先写入计划内容", isError: true };
+      return {
+        output: `计划文件为空，请先用 write 工具把计划写入 ${planPath}`,
+        isError: true,
+      };
     }
 
     const params = (input ?? {}) as { summary?: string };
@@ -115,5 +108,47 @@ export class ExitPlanModeTool implements Tool {
       output: `计划已提交，等待用户审批。${summaryLine}\n\n---\n${planContent}\n---`,
     };
     // 实际的用户审批交互由 App 层的 executeTools 拦截处理
+  }
+
+  /**
+   * 非规划态下调用本工具时的如实答复。每条都以「不要再调用 exit_plan_mode」收尾，
+   * 保持 P0-1 的幂等语义；区别只在于告诉模型计划**真实**处于什么状态。
+   */
+  private describeNonPlanningState(): string {
+    const pm = this.planManager;
+    if (pm.isAwaitingApproval()) {
+      return "计划已提交，正在等待用户审批，无需重复调用 exit_plan_mode。请耐心等待审批结果。";
+    }
+    if (pm.isExecuting()) {
+      return (
+        "计划已审批通过，当前处于执行阶段。请直接按计划执行，" +
+        "不要再调用 exit_plan_mode——它只用于提交新计划等待审批。" +
+        "如计划包含多个步骤，建议先用 todo_write 将计划逐条拆解为任务清单，再依次执行。"
+      );
+    }
+    const stop = "不要再调用 exit_plan_mode。";
+    switch (pm.getLastOutcome()) {
+      case "cancelled":
+        return (
+          "用户已取消上一份计划，计划**未被批准**，不要执行它。" +
+          stop +
+          "请停下来询问用户接下来想怎么做；如需重新规划，调用 enter_plan_mode。"
+        );
+      case "rejected_limit":
+        return (
+          "上一份计划被用户拒绝次数已达上限，规划已强制结束，计划**未被批准**，不要执行它。" +
+          stop +
+          "请向用户说明情况并询问下一步。"
+        );
+      case "completed":
+        return "上一份计划已执行完毕，当前不在计划模式。" + stop;
+      case "cleared":
+        return "对话已被清空，上一份计划已作废，当前不在计划模式。" + stop;
+      default:
+        // approved 不会走到这里：approve 后 isExecuting() 为真，已在上面返回
+        return (
+          "当前不在计划模式，没有待提交的计划。" + stop + "如需先规划再执行，调用 enter_plan_mode。"
+        );
+    }
   }
 }

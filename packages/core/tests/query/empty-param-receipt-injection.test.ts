@@ -65,7 +65,6 @@ function makeLoopConfig(
     },
     executeTools: async () => ({ results: [] }),
     autoCompact: async () => {},
-    handleContextOverflow: () => null,
     getAbortSignal: () => opts?.abortController?.signal,
     abortCurrentRequest: () => {},
     uuid: () => "uuid-test",
