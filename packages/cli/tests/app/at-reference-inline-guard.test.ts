@@ -60,9 +60,10 @@ describe("@ 提及内联防线", () => {
     expect(r.injectedContent).toContain("Read");
   });
 
-  test("目录提及（无末尾 /）不内联也不报错", async () => {
+  // 契约随「目录引用注入条目列表」（对齐 CC）变更：此前目录直接跳过、injectedContent 为 null。
+  test("目录提及（无末尾 /）注入条目列表而不是文件内容", async () => {
     const r = await expandAtReferences("看下 @pkgdir");
-    expect(r.injectedContent).toBeNull();
+    expect(r.injectedContent).toContain("目录 `pkgdir` 为空");
   });
 
   test("对照：小文本文件正常内联", async () => {
