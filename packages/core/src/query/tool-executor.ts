@@ -13,7 +13,12 @@ import type { SessionState } from "../session/state.ts";
 import type { Config } from "../config/config.ts";
 import { Registry as ToolRegistry } from "../tool/registry.ts";
 import { getLogger } from "../debug/index.ts";
-import { isAbortError } from "../llm/errors.ts";
+import {
+  isAbortError,
+  abortReasonOf,
+  errorMessageOf,
+  SIBLING_BASH_ERROR_ABORT_REASON,
+} from "../llm/errors.ts";
 import { processToolResult } from "../tool/result-storage.ts";
 import { validateToolInput, buildSchemaNotSentHint } from "../tool/input-validator.ts";
 import {
@@ -76,6 +81,17 @@ export type { SingleToolOutcome };
  */
 const MAX_TOOL_CONCURRENCY = getMaxToolConcurrency();
 
+/**
+ * withConcurrencyLimit 因 sibling-abort 停止启动队列时，给未启动任务的占位错误。
+ * 用类型而不是错误文案识别它：文案是给人看的，改一个字就会让识别静默失效。
+ */
+class QueueSkippedError extends Error {
+  constructor() {
+    super("兄弟工具已中断，跳过未启动的并发任务");
+    this.name = "QueueSkippedError";
+  }
+}
+
 /** withConcurrencyLimit 可选行为钩子 */
 interface ConcurrencyLimitOptions {
   /** 某个任务 reject 时回调（在结果写入 results 之后触发） */
@@ -85,6 +101,13 @@ interface ConcurrencyLimitOptions {
    * 用于 G20 sibling-abort：一旦检测到中断，不再消费剩余队列（已在跑的由共享信号取消）。
    */
   stopOnReject?: (reason: unknown) => boolean;
+  /**
+   * 每次**启动**排队任务前检查；返回 true 即不再启动（占位为 QueueSkippedError）。
+   *
+   * stopOnReject 只在任务 reject 时才问——而 Bash 级联取消是在一个**正常返回**（fulfilled、
+   * is_error）的结果上触发的，原先队列里没启动的任务照样一个个启动，拿着已 abort 的 signal 去跑。
+   */
+  shouldStopLaunching?: () => boolean;
 }
 
 /** 信号量：限流并发工具执行 */
@@ -102,11 +125,8 @@ async function withConcurrencyLimit<T>(
       const idx = nextIdx++;
       // G20：已触发 sibling-abort 时，跳过尚未启动的队列任务（占位为 rejected，
       // 由上层协议兜底补齐 tool_result；若停止原因是 abort，上层会先向上抛不会用到占位）。
-      if (stopped) {
-        results[idx] = {
-          status: "rejected",
-          reason: new Error("sibling-abort: 兄弟工具已中断，跳过未启动的并发任务"),
-        };
+      if (stopped || opts?.shouldStopLaunching?.()) {
+        results[idx] = { status: "rejected", reason: new QueueSkippedError() };
         continue;
       }
       try {
@@ -249,6 +269,40 @@ export function interpretPreToolUse(
     modifiedInput !== undefined && hookActuallyModifiedInput(originalInput, modifiedInput);
 
   return { blocked: false, permissionDecision, modifiedInput, inputChanged };
+}
+
+/**
+ * G14：给权限层 / hook 看的「观测输入」——工具声明了 backfillObservableInput（如把 `~`、
+ * 相对路径展开成绝对路径）就用展开后的视图，否则原样。
+ *
+ * 必须对**最终要执行的那份参数**调用：hook 改写 updatedInput 之后再展开一次。原先只展开
+ * 模型原始参数，hook 改参后直接用改写值覆盖，`~/.ssh/id_rsa` 这类路径进了权限层是
+ * `cwd/~/.ssh/id_rsa`，写成绝对路径或 `~/` 前缀的 deny 规则都匹配不上。
+ * 主循环与子代理共用这一个入口（子代理原先完全不展开）。
+ */
+export function buildObservableInput(tool: Tool, input: unknown): unknown {
+  if (typeof tool.backfillObservableInput !== "function") return input;
+  try {
+    const expanded = tool.backfillObservableInput(input);
+    return expanded !== undefined ? expanded : input;
+  } catch {
+    /* 回填钩子异常静默回退原始 input */
+    return input;
+  }
+}
+
+/**
+ * 被 hook 改写过参数的调用，后续一切「执行之后才发生」的消费方（快照、LSP 同步、编辑失败计数、
+ * PostToolUse 的 tool_input、埋点里的文件路径）都必须看改写后的参数——工具实际作用在那份参数上。
+ * 返回 PreToolUse 缓存里的改写值，没有改写时返回模型原始参数。
+ */
+function effectiveInputOf(block: ToolUseBlock, deps: ToolExecutorDeps): unknown {
+  return deps.preToolUseCache?.get(block.id)?.interpretation.modifiedInput ?? block.input;
+}
+
+function filePathOf(input: unknown): string | undefined {
+  const p = (input as { file_path?: unknown } | undefined)?.file_path;
+  return typeof p === "string" ? p : undefined;
 }
 
 /** 顺序无关的结构化深比较（对象 key 排序后逐一比较，数组按序比较）。 */
@@ -455,49 +509,6 @@ export async function executeTools(
 
   if (toolBlocks.length === 0) return { results: [] };
 
-  // 收集本次工具调用会修改的文件路径（用于创建快照）
-  const affectedFiles = await getAffectedFiles(toolBlocks.map((t) => t.block));
-
-  // 在工具执行前统一创建快照
-  if (affectedFiles.length > 0) {
-    try {
-      const { getCheckpointManager } = await import("../checkpoint/manager.ts");
-      const cpMgr = await getCheckpointManager(
-        deps.checkpointSessionId ?? deps.sessionState.sessionId,
-        deps.config.checkpoint,
-      );
-      const toolNames = toolBlocks.map((t) => t.block.name).join(", ");
-      // P2-1：摘要带上触发命令。此前只有文件列表，`/checkpoints` 里看不出
-      // 「这次快照是 `git reset --hard` 之前建的」——回退时无法判断该选哪个快照。
-      // bash 工具的命令（截断）优先入摘要，其余工具沿用文件列表。
-      const toolSummary = buildSnapshotSummary(
-        toolBlocks.map((t) => t.block),
-        affectedFiles,
-      );
-      const snapshotId = await cpMgr.createSnapshot(affectedFiles, toolNames, toolSummary);
-      // P2-1：把新快照 id 回传给会话回退管理器（作为下一轮回退点的文件锚点）。
-      if (snapshotId) {
-        try {
-          deps.onSnapshotCreated?.(snapshotId);
-        } catch {
-          /* 不阻断工具执行 */
-        }
-      }
-      // P1-7：快照创建后，把文件修改摘要同步落盘到会话 JSONL（打通 Checkpoint↔Resume）。
-      // 双写：Checkpoint 存完整内容/diff 用于 undo；JSONL metadata 只存路径+工具名摘要用于
-      // resume 时重建"改过哪些文件"的上下文。落盘失败不影响工具执行。
-      // P2-1 补齐：连带落 snapshotId 锚点——此前 file_changes 只有文件名，resume 后
-      // 拿不到「这批改动对应哪个快照」，跨会话无法把文件集反查回可回退的快照。
-      try {
-        deps.recordFileChanges?.(affectedFiles, toolNames, snapshotId || undefined);
-      } catch (e: any) {
-        log.warn("CHECKPOINT", `文件修改摘要落盘失败（不阻断）: ${e?.message}`);
-      }
-    } catch (err: any) {
-      log.warn("CHECKPOINT", `创建快照失败: ${err.message}`);
-    }
-  }
-
   /**
    * 增量呈现：单工具结果落地即上报（唯一出口，幂等）。
    *
@@ -560,6 +571,26 @@ export async function executeTools(
     }
   };
 
+  /**
+   * 已进入执行编排（PreToolUse 已在预检里 fire）的工具 id。executeSingleTool 自己负责
+   * 这些工具的 Post* 收尾——包括抛中断错误那条分支。
+   */
+  const started = new Set<string>();
+  /**
+   * PreToolUse 已 fire、但工具**根本没开始执行**时的配对收尾（kind=skipped，只送 runtime hook）。
+   *
+   * 三处来源：同轮先行 Bash 失败的串行级联跳过、并发队列因中断/级联停止启动、用户中断时
+   * 还没轮到的后续批次。原先三处都只写 tool_result 不收尾——轨迹实测 23,654 个 PreToolUse 里
+   * 7 个永远等不到 Post*，核出来的 5 个全是串行级联跳过（2026-10-24）。
+   */
+  const closeUnstarted = (block: ToolUseBlock, reason: string): void => {
+    if (started.has(block.id)) return;
+    started.add(block.id);
+    // 预检写进去的缓存不会再被 executeSingleTool 取走，这里清掉，防跨轮串味。
+    deps.preToolUseCache?.delete(block.id);
+    firePostToolUseFailure(deps, block, reason, effectiveInputOf(block, deps), 0, "skipped");
+  };
+
   // 权限预检：先对所有工具做权限检查，收集通过/拒绝结果
   const checkedTools: { block: ToolUseBlock; tool: Tool; idx: number }[] = [];
 
@@ -612,6 +643,20 @@ export async function executeTools(
     checkedTools.push({ block, tool, idx });
   }
 
+  // ② 快照：放在 PreToolUse / 权限预检**之后**、任何工具执行之前。
+  //
+  // 原先排在最前面，用模型的原始参数算受影响文件——hook 用 updatedInput 把 `a.ts` 改成 `b.ts`
+  // 时，被快照的是没人碰的 a.ts，真正被写的 b.ts 没有快照，`/undo` 回不去。挪到这里有两个收益：
+  //   1. 用改写后的参数（effectiveInputOf）算受影响文件，快照对象 = 实际写入对象；
+  //   2. 只对**确实会执行**的工具建快照——被权限 / hook 拒掉的写操作不再留一份空转快照。
+  // 预检期间只有权限确认与 hook，不碰文件，所以挪后不会漏掉任何写入前的状态。
+  await createPreExecutionSnapshot(
+    checkedTools.map(
+      ({ block }) => ({ ...block, input: effectiveInputOf(block, deps) }) as ToolUseBlock,
+    ),
+    deps,
+  );
+
   // GAP-03 + GAP-10：贪心连续合并分区（算法提取到 tool-orchestration.partitionToolCalls）。
   // 将连续的并发安全工具合并为一个并行批次，非并发安全工具作为串行批次，交替执行，
   // 保留模型的隐式顺序语义（"先 Read → Edit → 再 Read"不被打乱）。
@@ -634,150 +679,178 @@ export async function executeTools(
   let bashCascadeTripped = false;
 
   // 逐批次执行：并发安全批次并行（信号量限流），非并发安全批次串行
-  for (const batch of batches) {
-    if (batch.isConcurrencySafe) {
-      // 并行批次（G1：信号量限流，默认 cap=10）
-      if (batch.items.length > MAX_TOOL_CONCURRENCY) {
-        log.debug(
-          "TOOL",
-          `并行工具 ${batch.items.length} 个超过并发上限 ${MAX_TOOL_CONCURRENCY}，超出部分排队`,
-        );
-      }
-      // G20 + GAP-02：sibling-abort controller。
-      // 触发条件：abort 错误 OR Bash 工具 is_error（级联取消兄弟工具）。
-      const { controller: siblingController, dispose: disposeSibling } =
-        createLinkedAbortController(deps.getAbortSignal());
-      try {
-        const batchResults = await withConcurrencyLimit(
-          batch.items.map(({ block, tool, idx }) => () => {
-            let behavior: "cancel" | "block" = "cancel";
-            try {
-              behavior = tool.interruptBehavior?.() ?? "cancel";
-            } catch {
-              behavior = "cancel";
-            }
-            const sig = behavior === "block" ? deps.getAbortSignal() : siblingController.signal;
-            // GAP-01：流式预执行命中则复用结果，跳过重复执行（保持编排不变）。
-            // P2-8：同步读在此处是安全的——上方预检循环已 await 过每个 id 的抢跑。
-            const precomputed = deps.getPrecomputedResult?.(block.id);
-            const exec = precomputed
-              ? Promise.resolve(precomputed)
-              : executeSingleTool(block, tool, deps, sig);
-            return exec.then((outcome) => {
-              // GAP-02：Bash 工具执行失败（is_error）时**立即**联动取消兄弟——
-              // 在 thunk 内触发（而非批次 settle 后），才能真正取消仍在跑/未启动的兄弟。
-              // Bash 有隐式依赖链（mkdir 失败 → 后续 cd 无意义），必然失败的结果是噪音。
-              // Read/WebFetch 等工具失败不级联（它们相互独立）。
-              if (
-                block.name === "bash" &&
-                (outcome.block as any).is_error &&
-                !siblingController.signal.aborted
-              ) {
-                log.info("TOOL", "Bash 失败级联：联动取消其余兄弟工具（sibling-abort-bash-error）");
-                siblingController.abort("sibling_bash_error");
+  //
+  // 外层 try：用户 / 上游中断以异常形式穿出本函数（loop.ts 据此补 cancel result 并收尾）。
+  // 那一刻还没轮到的工具——同批次串行后段、后续所有批次——PreToolUse 都已在预检里 fire 过，
+  // 必须在穿出前替它们收尾，否则每次 ESC 都会留下一串悬空的 Pre。
+  try {
+    for (const batch of batches) {
+      if (batch.isConcurrencySafe) {
+        // 并行批次（G1：信号量限流，默认 cap=10）
+        if (batch.items.length > MAX_TOOL_CONCURRENCY) {
+          log.debug(
+            "TOOL",
+            `并行工具 ${batch.items.length} 个超过并发上限 ${MAX_TOOL_CONCURRENCY}，超出部分排队`,
+          );
+        }
+        // G20 + GAP-02：sibling-abort controller。
+        // 触发条件：abort 错误 OR Bash 工具 is_error（级联取消兄弟工具）。
+        const { controller: siblingController, dispose: disposeSibling } =
+          createLinkedAbortController(deps.getAbortSignal());
+        try {
+          const batchResults = await withConcurrencyLimit(
+            batch.items.map(({ block, tool, idx }) => () => {
+              let behavior: "cancel" | "block" = "cancel";
+              try {
+                behavior = tool.interruptBehavior?.() ?? "cancel";
+              } catch {
+                behavior = "cancel";
               }
-              // 增量呈现的**关键位置**：在 thunk 内、该工具自己 settle 的那一刻上报，
-              // 而不是等 withConcurrencyLimit 返回后的收集循环——那个循环在
-              // `await Promise.all(workers)` 之后，已经是"最慢的兄弟也跑完了"，
-              // 在那里上报等于什么都没做（正是本次要治的栅栏）。
-              settle(idx, outcome.block, outcome.elapsedMs);
-              if (outcome.contextModifier) {
-                contextModifiers.push({ idx, modifier: outcome.contextModifier });
-              }
-              return { idx, result: outcome };
-            });
-          }),
-          MAX_TOOL_CONCURRENCY,
-          {
-            stopOnReject: (reason) => {
-              // abort（用户 ESC / 上游）或 bash 级联 abort 均停止启动后续排队任务
-              if (isAbortError(reason) && !siblingController.signal.aborted) {
-                log.info("TOOL", "并发工具中断：联动取消其余兄弟工具（sibling-abort）");
-                siblingController.abort((reason as any)?.reason ?? reason);
-                return true;
-              }
-              // bash 级联已在 thunk 内 abort：一旦子信号被 bash-error abort，也停止启动队列
-              return siblingController.signal.aborted;
+              const sig = behavior === "block" ? deps.getAbortSignal() : siblingController.signal;
+              // GAP-01：流式预执行命中则复用结果，跳过重复执行（保持编排不变）。
+              // P2-8：同步读在此处是安全的——上方预检循环已 await 过每个 id 的抢跑。
+              const precomputed = deps.getPrecomputedResult?.(block.id);
+              // 抢跑命中的工具，Pre/Post 已在抢跑那次执行里成对 fire，同样算 started。
+              started.add(block.id);
+              const exec = precomputed
+                ? Promise.resolve(precomputed)
+                : executeSingleTool(block, tool, deps, sig);
+              return exec.then((outcome) => {
+                // GAP-02：Bash 工具执行失败（is_error）时**立即**联动取消兄弟——
+                // 在 thunk 内触发（而非批次 settle 后），才能真正取消仍在跑/未启动的兄弟。
+                // Bash 有隐式依赖链（mkdir 失败 → 后续 cd 无意义），必然失败的结果是噪音。
+                // Read/WebFetch 等工具失败不级联（它们相互独立）。
+                if (
+                  block.name === "bash" &&
+                  (outcome.block as any).is_error &&
+                  !siblingController.signal.aborted
+                ) {
+                  log.info(
+                    "TOOL",
+                    "Bash 失败级联：联动取消其余兄弟工具（sibling-abort-bash-error）",
+                  );
+                  siblingController.abort(SIBLING_BASH_ERROR_ABORT_REASON);
+                }
+                // 增量呈现的**关键位置**：在 thunk 内、该工具自己 settle 的那一刻上报，
+                // 而不是等 withConcurrencyLimit 返回后的收集循环——那个循环在
+                // `await Promise.all(workers)` 之后，已经是"最慢的兄弟也跑完了"，
+                // 在那里上报等于什么都没做（正是本次要治的栅栏）。
+                settle(idx, outcome.block, outcome.elapsedMs);
+                if (outcome.contextModifier) {
+                  contextModifiers.push({ idx, modifier: outcome.contextModifier });
+                }
+                return { idx, result: outcome };
+              });
+            }),
+            MAX_TOOL_CONCURRENCY,
+            {
+              stopOnReject: (reason) => {
+                // abort（用户 ESC / 上游）或 bash 级联 abort 均停止启动后续排队任务
+                if (isAbortError(reason) && !siblingController.signal.aborted) {
+                  log.info("TOOL", "并发工具中断：联动取消其余兄弟工具（sibling-abort）");
+                  siblingController.abort(abortReasonOf(reason) ?? reason);
+                  return true;
+                }
+                // bash 级联已在 thunk 内 abort：一旦子信号被 bash-error abort，也停止启动队列
+                return siblingController.signal.aborted;
+              },
+              shouldStopLaunching: () => siblingController.signal.aborted,
             },
-          },
-        );
-        // abort 优先：任一工具被**用户/上游** abort 取消，立即向上抛（bash 级联 abort 不向上抛）。
-        for (const r of batchResults) {
-          if (r.status === "rejected" && isAbortError(r.reason)) {
-            const reason = (r.reason as any)?.reason ?? (r.reason as any)?.message;
-            if (reason !== "sibling_bash_error") throw r.reason;
-          }
-        }
-        for (let i = 0; i < batchResults.length; i++) {
-          const r = batchResults[i];
-          if (r.status === "fulfilled") {
-            // fulfilled 的结果与 contextModifier 已在 thunk 内即时 settle/收集（见上），
-            // 此处无需重复——重复 set 无害但 contextModifiers 会被 push 两次，
-            // 导致 permissionMode 切换等副作用应用两遍。
-          } else {
-            const { block: failBlock, idx: failIdx } = batch.items[i];
-            // GAP-02：被 bash 级联取消的兄弟（sibling_bash_error / withConcurrencyLimit 跳过占位）→
-            // 返回明确的"已取消"tool_result，而非泛化异常，让模型理解是级联取消非工具本身出错。
-            const rawReason =
-              (r.reason as any)?.reason ?? (r.reason as any)?.message ?? String(r.reason);
-            const isBashCascade = isAbortError(r.reason)
-              ? rawReason === "sibling_bash_error"
-              : String(rawReason).includes("sibling-abort");
-            if (isBashCascade) {
-              log.info("TOOL", `并行工具 ${failBlock.name} 因兄弟 Bash 失败被级联取消`);
-              settle(failIdx, {
-                type: "tool_result",
-                tool_use_id: failBlock.id,
-                content: `已取消：同批次中先行的 Bash 命令执行失败，为避免依赖链上的无效执行，本工具未运行。`,
-                is_error: true,
-              });
-            } else {
-              log.error(
-                "TOOL",
-                `并行工具 ${failBlock.name} 异常未被内部捕获: ${r.reason?.message ?? r.reason}`,
-              );
-              settle(failIdx, {
-                type: "tool_result",
-                tool_use_id: failBlock.id,
-                content: `工具执行异常: ${r.reason?.message ?? String(r.reason)}`,
-                is_error: true,
-              });
+          );
+          // abort 优先：任一工具被**用户/上游** abort 取消，立即向上抛（bash 级联 abort 不向上抛）。
+          for (const r of batchResults) {
+            if (r.status === "rejected" && isAbortError(r.reason)) {
+              // 必须用 abortReasonOf：被取消的 fetch 以**裸字符串** reason reject，
+              // 原先的 `.reason ?? .message` 对字符串取到 undefined，级联取消会被误当成用户中断向上抛。
+              if (abortReasonOf(r.reason) !== SIBLING_BASH_ERROR_ABORT_REASON) {
+                for (const it of batch.items)
+                  closeUnstarted(it.block, "工具未执行：本批次已被中断");
+                throw r.reason;
+              }
             }
           }
+          for (let i = 0; i < batchResults.length; i++) {
+            const r = batchResults[i];
+            if (r.status === "fulfilled") {
+              // fulfilled 的结果与 contextModifier 已在 thunk 内即时 settle/收集（见上），
+              // 此处无需重复——重复 set 无害但 contextModifiers 会被 push 两次，
+              // 导致 permissionMode 切换等副作用应用两遍。
+            } else {
+              const { block: failBlock, idx: failIdx } = batch.items[i];
+              // GAP-02：被 bash 级联取消的兄弟（中断 reason = sibling-bash-error，或 withConcurrencyLimit
+              // 因级联停止启动队列留下的占位）→ 返回明确的"已取消"tool_result，而非泛化异常，
+              // 让模型理解是级联取消非工具本身出错。占位用结构化标记识别，不再匹配错误文案子串。
+              const isBashCascade =
+                abortReasonOf(r.reason) === SIBLING_BASH_ERROR_ABORT_REASON ||
+                (r.reason instanceof QueueSkippedError &&
+                  abortReasonOf(siblingController.signal.reason) ===
+                    SIBLING_BASH_ERROR_ABORT_REASON);
+              // 队列占位 = 工具没开始执行，需要替它给 PreToolUse 收尾；真正执行过的工具
+              // 抛出中断错误时，executeSingleTool 已经自己收过尾（closeUnstarted 靠 started 去重）。
+              if (r.reason instanceof QueueSkippedError) {
+                closeUnstarted(failBlock, "工具未执行：同批次已中断，跳过未启动的并发任务");
+              }
+              if (isBashCascade) {
+                log.info("TOOL", `并行工具 ${failBlock.name} 因兄弟 Bash 失败被级联取消`);
+                settle(failIdx, {
+                  type: "tool_result",
+                  tool_use_id: failBlock.id,
+                  content: `已取消：同批次中先行的 Bash 命令执行失败，为避免依赖链上的无效执行，本工具未运行。`,
+                  is_error: true,
+                });
+              } else {
+                log.error(
+                  "TOOL",
+                  `并行工具 ${failBlock.name} 异常未被内部捕获: ${errorMessageOf(r.reason)}`,
+                );
+                settle(failIdx, {
+                  type: "tool_result",
+                  tool_use_id: failBlock.id,
+                  content: `工具执行异常: ${errorMessageOf(r.reason)}`,
+                  is_error: true,
+                });
+              }
+            }
+          }
+        } finally {
+          disposeSibling();
         }
-      } finally {
-        disposeSibling();
-      }
-    } else {
-      // 串行批次：逐个执行
-      for (const { block, tool, idx } of batch.items) {
-        // GAP-02：串行 Bash 级联——前序 Bash 已失败时，跳过后续 Bash（依赖链无意义）。
-        if (bashCascadeTripped && block.name === "bash") {
-          log.info("TOOL", `串行 Bash 级联：跳过 ${block.name}（同轮先行 Bash 命令已失败）`);
-          settle(idx, {
-            type: "tool_result",
-            tool_use_id: block.id,
-            content: `已取消：同一轮中先行的 Bash 命令执行失败，后续 Bash 命令通常依赖其结果，为避免无效执行已跳过。如需强制执行请单独重试。`,
-            is_error: true,
-          });
-          continue;
-        }
-        // GAP-01：流式预执行命中则复用（串行批次通常是写工具，一般不会被流式预执行，
-        // 但保留一致性检查——若命中则跳过重复执行）。
-        // P2-8：同步读在此处是安全的——上方预检循环已 await 过每个 id 的抢跑。
-        const precomputed = deps.getPrecomputedResult?.(block.id);
-        const outcome = precomputed ?? (await executeSingleTool(block, tool, deps));
-        settle(idx, outcome.block, outcome.elapsedMs);
-        if (outcome.contextModifier) {
-          contextModifiers.push({ idx, modifier: outcome.contextModifier });
-        }
-        // GAP-02：Bash 命令失败 → 触发同轮后续 Bash 级联跳过。
-        if (block.name === "bash" && (outcome.block as any).is_error) {
-          bashCascadeTripped = true;
-          log.info("TOOL", `Bash 命令失败，触发同轮串行 Bash 级联跳过`);
+      } else {
+        // 串行批次：逐个执行
+        for (const { block, tool, idx } of batch.items) {
+          // GAP-02：串行 Bash 级联——前序 Bash 已失败时，跳过后续 Bash（依赖链无意义）。
+          if (bashCascadeTripped && block.name === "bash") {
+            log.info("TOOL", `串行 Bash 级联：跳过 ${block.name}（同轮先行 Bash 命令已失败）`);
+            closeUnstarted(block, "工具未执行：同轮先行的 Bash 命令执行失败，级联跳过");
+            settle(idx, {
+              type: "tool_result",
+              tool_use_id: block.id,
+              content: `已取消：同一轮中先行的 Bash 命令执行失败，后续 Bash 命令通常依赖其结果，为避免无效执行已跳过。如需强制执行请单独重试。`,
+              is_error: true,
+            });
+            continue;
+          }
+          // GAP-01：流式预执行命中则复用（串行批次通常是写工具，一般不会被流式预执行，
+          // 但保留一致性检查——若命中则跳过重复执行）。
+          // P2-8：同步读在此处是安全的——上方预检循环已 await 过每个 id 的抢跑。
+          const precomputed = deps.getPrecomputedResult?.(block.id);
+          started.add(block.id);
+          const outcome = precomputed ?? (await executeSingleTool(block, tool, deps));
+          settle(idx, outcome.block, outcome.elapsedMs);
+          if (outcome.contextModifier) {
+            contextModifiers.push({ idx, modifier: outcome.contextModifier });
+          }
+          // GAP-02：Bash 命令失败 → 触发同轮后续 Bash 级联跳过。
+          if (block.name === "bash" && (outcome.block as any).is_error) {
+            bashCascadeTripped = true;
+            log.info("TOOL", `Bash 命令失败，触发同轮串行 Bash 级联跳过`);
+          }
         }
       }
     }
+  } catch (err) {
+    for (const { block } of checkedTools) closeUnstarted(block, "工具未执行：本轮已被中断");
+    throw err;
   }
 
   // GAP-06：按原始顺序应用 contextModifier（并发执行下仍保证确定性顺序）。
@@ -998,15 +1071,7 @@ export async function resolveToolPermission(
 
   // G14：观测输入回填——权限/hook 看到展开后的规范化视图（如 ~ → 绝对路径），
   // 工具实际执行仍用原始 input（保持 prompt cache 前缀稳定）。
-  let observableInput: unknown = block.input;
-  if (typeof tool.backfillObservableInput === "function") {
-    try {
-      const expanded = tool.backfillObservableInput(block.input);
-      if (expanded !== undefined) observableInput = expanded;
-    } catch {
-      /* 回填钩子异常静默回退原始 input */
-    }
-  }
+  let observableInput: unknown = buildObservableInput(tool, block.input);
   // ── G3：PreToolUse 先行（上移到权限检查之前）──
   // CC 规范顺序 PreToolUse → 权限：先跑 PreToolUse 拿 permissionDecision/updatedInput，
   // 再喂给权限层。fire-once：结果缓存于 deps.preToolUseCache，executeSingleTool 复用不再二次 fire。
@@ -1023,33 +1088,53 @@ export async function resolveToolPermission(
 
       // 阻塞 → 直接返回 error（不再走权限检查）
       if (interp.blocked) {
-        log.info("HOOK", `工具 ${block.name} 被 PreToolUse hook 阻止: ${interp.blockReason}`);
+        const reason = interp.blockReason ?? "无原因";
+        log.info("HOOK", `工具 ${block.name} 被 PreToolUse hook 阻止: ${reason}`);
         // Pre/Post 配对：本分支已 fire 过 PreToolUse，必须补 Failure 收尾（见
         // firePostToolUseFailure 注释），否则用户 hook 与 execute_tool span 双双悬空。
         firePostToolUseFailure(
           deps,
           block,
-          `Hook 阻止执行: ${interp.blockReason ?? "无原因"}`,
+          `Hook 阻止执行: ${reason}`,
           observableInput,
           Date.now() - permStartedAt,
           "hook_blocked",
         );
+        // 漏斗 1：hook 阻止是一次真实调度失败，call + failure 成对记（子代理同口径，
+        // agent/tool-executor.ts）。原先主循环只在 executeSingleTool 缓存未命中时记——而主循环
+        // 永远命中缓存，于是主会话被 hook 拦下的调用在 tool_call / tool_failure 里**一次都没有**，
+        // 遥测 4.5 个月 hook_blocked=0 并不代表没发生过。权限拒绝不在这里，那条走漏斗 2。
+        const fp = filePathOf(block.input);
+        logToolCall(block.name, fp);
+        logToolFailure(block.name, {
+          kind: "hook_blocked",
+          durationMs: Date.now() - permStartedAt,
+          filePath: fp,
+        });
         return {
           type: "tool_result",
           tool_use_id: block.id,
-          content: `Hook 阻止执行: ${interp.blockReason ?? "无原因"}`,
+          content: `Hook 阻止执行: ${reason}`,
           is_error: true,
         };
       }
 
       hookPermissionDecision = interp.permissionDecision;
 
-      // updatedInput：hook 改参后按新参数鉴权（对齐 CC）。观测输入同步替换。
+      // updatedInput：hook 改参后按新参数鉴权（对齐 CC）。改写值同样要过一次回填展开——
+      // 直接用改写值覆盖会让 `~/...`、相对路径原样进权限层，deny 规则匹配不上（见 buildObservableInput）。
       if (interp.modifiedInput !== undefined) {
-        observableInput = interp.modifiedInput;
+        observableInput = buildObservableInput(tool, interp.modifiedInput);
       }
     } catch (err: any) {
       log.error("HOOK", `PreToolUse hook 执行异常（继续走权限检查）: ${err?.message}`);
+      // fire-once 也要覆盖异常路径：不写缓存的话 executeSingleTool 会再 fire 一次同一个
+      // PreToolUse（用户 hook 跑两遍），而且那次调用不在任何 try 里，再抛就把整批工具炸穿。
+      // 记成「hook 没给意见」——与上面 catch 之后继续走权限检查的语义一致。
+      deps.preToolUseCache?.set(block.id, {
+        result: { success: false, allOutputs: [], errors: [err], totalDuration: 0 },
+        interpretation: { blocked: false, inputChanged: false },
+      });
     }
   }
 
@@ -1318,17 +1403,6 @@ export async function executeSingleTool(
 
   log.toolStart(block.name, block.input);
 
-  // 漏斗 1 · 工具（P0-1）：调用 / 成功 / 失败 + 失败分型。
-  // 走 analytics/events.ts 门面而非直接 logEvent —— 工具名与文件路径在门面里强制脱敏
-  // （MCP 工具名含用户私有服务名、路径含用户目录结构），业务侧拿不到裸传的接口。
-  // 每条失败分支各自给出结构化 kind，不做事后字符串猜测：调用点自己知道它是 hook 阻止
-  // 还是 zod 校验失败，这比任何 message 正则都强的信号，扔掉才是错。
-  const efFilePath =
-    typeof (block.input as any)?.file_path === "string"
-      ? ((block.input as any).file_path as string)
-      : undefined;
-  logToolCall(block.name, efFilePath);
-
   // 函数级计时锚点：覆盖**所有**返回路径，包含 hook 阻止 / 参数校验失败这类
   // 在 startTime（tool.execute 前那个锚点）之前就 return 的早退分支。
   // 下方 startTime 仍保留独立测量 tool.execute 本身的耗时——两者口径不同：
@@ -1356,6 +1430,15 @@ export async function executeSingleTool(
     );
     interp = interpretPreToolUse(preToolResult, block.input);
   }
+
+  // 漏斗 1 · 工具（P0-1）：调用 / 成功 / 失败 + 失败分型。
+  // 走 analytics/events.ts 门面而非直接 logEvent —— 工具名与文件路径在门面里强制脱敏
+  // （MCP 工具名含用户私有服务名、路径含用户目录结构），业务侧拿不到裸传的接口。
+  // 每条失败分支各自给出结构化 kind，不做事后字符串猜测：调用点自己知道它是 hook 阻止
+  // 还是 zod 校验失败，这比任何 message 正则都强的信号，扔掉才是错。
+  // 文件路径取 hook 改写后的参数：工具实际作用在那份路径上（见 effectiveInputOf）。
+  const efFilePath = filePathOf(interp.modifiedInput ?? block.input);
+  logToolCall(block.name, efFilePath);
 
   if (interp.blocked) {
     const reason = interp.blockReason ?? "无原因";
@@ -1465,6 +1548,10 @@ export async function executeSingleTool(
     effectiveInput = { ...(effectiveInput as Record<string, unknown>), _parentToolUseId: block.id };
   }
 
+  // hook 改写后、注入内部字段之前的参数：给 hook / LSP / 编辑失败计数 / 遥测看的「这次实际执行了什么」。
+  // 不用 effectiveInput：它带 _parentToolUseId 这类内部字段，不该外泄给用户 hook。
+  const executedInput = interp.modifiedInput ?? block.input;
+  const execSignal = signalOverride ?? deps.getAbortSignal();
   const startTime = Date.now();
 
   try {
@@ -1475,12 +1562,13 @@ export async function executeSingleTool(
           deps.onToolProgress!(block.name, block.id, event)
       : undefined;
     const cwdBefore = getCwd();
-    const result = await tool.execute(
-      effectiveInput,
-      signalOverride ?? deps.getAbortSignal(),
-      progressCallback,
-    );
+    const result = await tool.execute(effectiveInput, execSignal, progressCallback);
     const elapsed = Date.now() - startTime;
+    // 中断分型：工具（bash 等）在 signal 被 abort 后多半**自己收尾返回 isError**，不抛异常，
+    // 走不到下面 catch 里的 isAbortError 分支。原先这类结果一律记 tool_error——用户按 ESC
+    // 算进「工具不可靠」，遥测 4.5 个月 aborted=0，而轨迹里有真实的 ESC。
+    // 判据只看结构化信号（signal.aborted），不解析输出文案。
+    const interrupted = !!result.isError && execSignal?.aborted === true;
     // HC24：CwdChanged / TaskCreated / TaskCompleted（fire-and-forget，见 query/tool-side-events.ts）
     fireToolSideEvents(
       deps.hookSystem,
@@ -1517,7 +1605,7 @@ export async function executeSingleTool(
     // 是否 hook 改参）。经 firePostToolUseEvent 的 harness_context 透传给 TelemetryHookProbe，
     // 丰富 execute_tool span，供性能分析定位大 IO / 慢工具。
     const telemetryMeta = {
-      tool_input_size: safeInputSize(block.input),
+      tool_input_size: safeInputSize(executedInput),
       tool_output_size: result.output?.length ?? 0,
       tool_is_mcp: isMcpTool,
       tool_hook_modified: !!hookModifiedNotice,
@@ -1528,33 +1616,52 @@ export async function executeSingleTool(
     const hookOutput = isMcpTool ? result.output : normalizedOutput;
     // Q7：工具执行了但返回 isError → 只 fire PostToolUseFailure（对齐 CC）；成功才 fire PostToolUse。
     // 两条都 await，PostToolUse 的 additionalContext / 反馈与 Failure 的反馈走同一套回灌。
+    // tool_input 一律用 hook 改写后的参数：hook 看到的应是工具实际作用的对象。
     const postResult = result.isError
       ? await deps.hookSystem.firePostToolUseFailureEvent(
           block.name,
-          block.input as Record<string, unknown>,
+          executedInput as Record<string, unknown>,
           typeof hookOutput === "string" ? hookOutput : String(hookOutput ?? ""),
           block.id,
           {
             duration_ms: elapsed,
             harness_context: telemetryMeta as any,
-            failure_kind: "tool_error",
+            failure_kind: interrupted ? "aborted" : "tool_error",
+            is_interrupt: interrupted,
             tool_output: hookOutput,
           },
         )
       : await deps.hookSystem.firePostToolUseEvent(
           block.name,
-          block.input as Record<string, unknown>,
+          executedInput as Record<string, unknown>,
           { output: hookOutput, isError: false },
           false,
           block.id,
           { duration_ms: elapsed, harness_context: telemetryMeta as any },
         );
 
+    // GAP-11 补全：PostToolUse 的 updatedToolOutput / updatedMCPToolOutput 替换模型侧输出（对齐 CC）。
+    // 原先 MCP hook 能看原文却改不了模型看到的东西——「脱敏」场景实际做不到：hook 看见了
+    // 凭证，模型照样收到凭证。替换值同样过一次 processToolResult，超阈值照常落盘，不绕过大小上限。
+    // 只在成功路径生效：CC 的 PostToolUseFailure 没有这个字段。
     let finalOutput = normalizedOutput;
+    const replaced = result.isError
+      ? undefined
+      : postResult.finalOutput?.getUpdatedToolOutput?.(isMcpTool);
+    if (replaced !== undefined) {
+      log.info("HOOK", `PostToolUse hook 替换了 ${block.name} 的模型侧输出`);
+      finalOutput = processToolResult(
+        block.name,
+        block.id,
+        replaced,
+        deps.sessionState.sessionId,
+        tool.maxResultSizeChars,
+      );
+    }
     const additionalCtx = postResult.finalOutput?.getAdditionalContext();
     if (additionalCtx) {
       log.info("HOOK", `PostToolUse hook 追加上下文到 ${block.name} 结果`);
-      finalOutput = normalizedOutput + "\n\n[Hook 附加上下文]\n" + additionalCtx;
+      finalOutput = finalOutput + "\n\n[Hook 附加上下文]\n" + additionalCtx;
     }
     // HC18：PostToolUse 的 exit 2（stderr）/ decision:"block"（reason）回灌模型（对齐 CC）。
     // 工具已经执行，不撤回；只是让模型看到「lint 没过」这类反馈。原先只取 additionalContext，
@@ -1570,16 +1677,15 @@ export async function executeSingleTool(
     // 引导它重读/换策略而非原样兜圈。纯追加、不阻断、不回滚——对弱模型是确定性纯增益。
     // read 成功会清零对应文件计数（自愈），故 read/edit/write 都要过一遍。
     try {
-      const efPath = (block.input as any)?.file_path;
+      // 用 hook 改写后的参数：计数要落在实际被编辑的那个文件上。
+      const oldString = (executedInput as { old_string?: unknown } | undefined)?.old_string;
       const efReminder = recordEditOutcome(
         deps.sessionState,
         block.name,
-        typeof efPath === "string" ? efPath : undefined,
+        filePathOf(executedInput),
         !!result.isError,
         result.isError ? (result.output ?? "") : "",
-        typeof (block.input as any)?.old_string === "string"
-          ? (block.input as any).old_string
-          : undefined,
+        typeof oldString === "string" ? oldString : undefined,
       );
       if (efReminder) {
         finalOutput = finalOutput + "\n\n" + efReminder;
@@ -1596,7 +1702,8 @@ export async function executeSingleTool(
 
     // LSP 文件变更通知（write/edit 工具后异步投递，不阻塞工具返回）
     if (!result.isError && (block.name === "write" || block.name === "edit")) {
-      void notifyLSPFileChange(block.input as Record<string, unknown>);
+      // hook 改写了 file_path 时，LSP 要同步的是实际写入的那个文件。
+      void notifyLSPFileChange(executedInput as Record<string, unknown>);
     }
 
     // 漏斗 1 收尾：工具「正常返回」也分成功与 isError 两种。二者混记会让失败率失真——
@@ -1604,7 +1711,7 @@ export async function executeSingleTool(
     // 它不抛异常，不进下面的 catch，只在这里能被记到。
     if (result.isError) {
       logToolFailure(block.name, {
-        kind: "tool_error",
+        kind: interrupted ? "aborted" : "tool_error",
         durationMs: elapsed,
         filePath: efFilePath,
       });
@@ -1645,22 +1752,36 @@ export async function executeSingleTool(
     deps.sessionState.addToolDuration(elapsed);
 
     if (isAbortError(err)) {
-      log.info("TOOL", `工具 ${block.name} 被用户取消 (${elapsed}ms)`);
+      log.info(
+        "TOOL",
+        `工具 ${block.name} 执行中被中断（reason=${abortReasonOf(err) ?? "?"}，${elapsed}ms）`,
+      );
       // 取消单独分型：它不是「工具不可靠」的证据，混进 exception 会污染失败率。
-      // 注意 isAbortError 同时涵盖真用户 ESC 与内部超时 abort（见记忆「流式内部超时
-      // 被误判为用户取消」），此处只记 aborted 不细分——细分要看 abort reason 白名单，
-      // 而这一层拿不到 reason，硬猜就是重演那个反模式。
+      // isAbortError 同时涵盖用户 ESC、内部超时与同批 Bash 级联取消；reason 已经写进 hook
+      // 的 error 文本，这里不在漏斗上细分——漏斗只回答「是不是工具自己的问题」。
       logToolFailure(block.name, {
         kind: "aborted",
         durationMs: elapsed,
         filePath: efFilePath,
       });
+      // Pre/Post 配对：原先这条分支直接 rethrow，PreToolUse 永远等不到收尾——
+      // 用户 ESC 掉一个会抛中断错误的工具，execute_tool span 与用户 hook 双双悬空。
+      // 不 await：中断要尽快向上传，hook 耗时不能拖住取消。
+      firePostToolUseFailure(
+        deps,
+        block,
+        `工具执行被中断: ${abortReasonOf(err) ?? errorMessageOf(err)}`,
+        executedInput,
+        elapsed,
+        "aborted",
+      );
       throw err;
     }
 
+    const errMessage = errorMessageOf(err);
     log.error("TOOL", `执行异常: ${block.name} (${elapsed}ms)`, {
-      error: err.message,
-      stack: err.stack,
+      error: errMessage,
+      stack: err?.stack,
     });
 
     // error_code 只取结构化字段（err.code / err.status / err.errno），不解析 message 文本——
@@ -1678,12 +1799,13 @@ export async function executeSingleTool(
     try {
       const failResult = await deps.hookSystem?.firePostToolUseFailureEvent?.(
         block.name,
-        block.input as Record<string, unknown>,
-        err.message,
+        executedInput as Record<string, unknown>,
+        errMessage,
         block.id,
         // elapsed = 纯执行耗时（与成功路径 addToolDuration 同口径）。
         // 慢工具超时失败恰是最需要耗时的场景：区分"秒失败"与"卡 30s 才失败"。
-        { duration_ms: elapsed, is_interrupt: isAbortLike(err), failure_kind: "exception" },
+        // 中断已在上方单独处理，走到这里的必然不是中断。
+        { duration_ms: elapsed, is_interrupt: false, failure_kind: "exception" },
       );
       failureFeedback = hookFeedbackText(failResult);
     } catch (e: any) {
@@ -1695,7 +1817,7 @@ export async function executeSingleTool(
         type: "tool_result",
         tool_use_id: block.id,
         content:
-          `工具执行异常: ${err.message}` +
+          `工具执行异常: ${errMessage}` +
           (failureFeedback ? `\n\n[Hook 反馈]\n${failureFeedback}` : ""),
         is_error: true,
       },
@@ -1739,6 +1861,54 @@ function safeInputSize(input: unknown): number {
     return JSON.stringify(input)?.length ?? 0;
   } catch {
     return 0;
+  }
+}
+
+/**
+ * ② 写入类工具执行前统一建快照（供 `/undo`、`/checkpoints` 回退）。
+ *
+ * `blocks` 必须是**将要执行的**那批调用、且 input 已替换为 hook 改写后的参数——
+ * 见 executeTools 调用处的说明。
+ */
+async function createPreExecutionSnapshot(
+  blocks: ToolUseBlock[],
+  deps: ToolExecutorDeps,
+): Promise<void> {
+  const log = getLogger();
+  const affectedFiles = await getAffectedFiles(blocks);
+  if (affectedFiles.length === 0) return;
+  try {
+    const { getCheckpointManager } = await import("../checkpoint/manager.ts");
+    const cpMgr = await getCheckpointManager(
+      deps.checkpointSessionId ?? deps.sessionState.sessionId,
+      deps.config.checkpoint,
+    );
+    const toolNames = blocks.map((b) => b.name).join(", ");
+    // P2-1：摘要带上触发命令。此前只有文件列表，`/checkpoints` 里看不出
+    // 「这次快照是 `git reset --hard` 之前建的」——回退时无法判断该选哪个快照。
+    // bash 工具的命令（截断）优先入摘要，其余工具沿用文件列表。
+    const toolSummary = buildSnapshotSummary(blocks, affectedFiles);
+    const snapshotId = await cpMgr.createSnapshot(affectedFiles, toolNames, toolSummary);
+    // P2-1：把新快照 id 回传给会话回退管理器（作为下一轮回退点的文件锚点）。
+    if (snapshotId) {
+      try {
+        deps.onSnapshotCreated?.(snapshotId);
+      } catch {
+        /* 不阻断工具执行 */
+      }
+    }
+    // P1-7：快照创建后，把文件修改摘要同步落盘到会话 JSONL（打通 Checkpoint↔Resume）。
+    // 双写：Checkpoint 存完整内容/diff 用于 undo；JSONL metadata 只存路径+工具名摘要用于
+    // resume 时重建"改过哪些文件"的上下文。落盘失败不影响工具执行。
+    // P2-1 补齐：连带落 snapshotId 锚点——此前 file_changes 只有文件名，resume 后
+    // 拿不到「这批改动对应哪个快照」，跨会话无法把文件集反查回可回退的快照。
+    try {
+      deps.recordFileChanges?.(affectedFiles, toolNames, snapshotId || undefined);
+    } catch (e: any) {
+      log.warn("CHECKPOINT", `文件修改摘要落盘失败（不阻断）: ${e?.message}`);
+    }
+  } catch (err: any) {
+    log.warn("CHECKPOINT", `创建快照失败: ${err.message}`);
   }
 }
 
@@ -1830,12 +2000,6 @@ export function hookFeedbackText(
   if (!out?.isBlockingDecision()) return undefined;
   const reason = out.getEffectiveReason();
   return reason && reason.trim() ? reason : undefined;
-}
-
-/** 用户中断导致的失败（CC is_interrupt） */
-function isAbortLike(err: unknown): boolean {
-  const e = err as { name?: string } | undefined;
-  return e?.name === "AbortError";
 }
 
 /** Q6：PostToolBatch。is_error 取自最终 tool_result（含权限拒绝 / 校验失败的兜底结果） */

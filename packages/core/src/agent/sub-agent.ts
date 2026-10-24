@@ -28,7 +28,7 @@ import { getLogger } from "../debug/logger.ts";
 import type { HookSystem } from "../hook/system.ts";
 import type { Checker, PermissionRequest } from "../permission/types.ts";
 import { logToolCall, logToolSuccess, logToolFailure } from "../analytics/events.ts";
-import { isAbortError } from "../llm/errors.ts";
+import { isAbortError, errorMessageOf } from "../llm/errors.ts";
 import { LoopDetector } from "./loop-detection.ts";
 import { type LanguagePref, resolveEffectiveLanguage } from "../config/prompt-lang.ts";
 import { filterToolsForAgent } from "./tool-filter.ts";
@@ -1737,10 +1737,13 @@ export class SubAgent {
 
     // 权限检查（dontAsk 语义：危险命令/safetyCheck 拦截，ask→deny）
     if (this.permissionChecker) {
+      // G14：与主循环 / 进程内子代理同一入口展开观测路径（含 hook 改写后的参数）。
+      const { buildObservableInput } = await import("../query/tool-executor.ts");
+      const observableInput = buildObservableInput(tool, effectiveInput);
       const permReq: PermissionRequest = {
         toolName: name,
-        input: effectiveInput,
-        description: `${name}: ${JSON.stringify(effectiveInput).slice(0, 120)}`,
+        input: observableInput,
+        description: `${name}: ${JSON.stringify(observableInput).slice(0, 120)}`,
       };
       const decision = await this.permissionChecker.check(permReq, tool, undefined, {
         hookPermissionDecision,
@@ -1846,6 +1849,7 @@ export class SubAgent {
         tool.maxResultSizeChars,
       );
       // post_tool_use hook（驱动 execute_tool span）；与进程内路径共用 await + 反馈回灌
+      const interrupted = !!result.isError && signal?.aborted === true;
       const withHookFeedback = await runPostToolHooks(this.hookSystem, {
         toolName: name,
         toolInput: effectiveInput,
@@ -1853,10 +1857,14 @@ export class SubAgent {
         output: truncated,
         isError: !!result.isError,
         durationMs: elapsed,
+        interrupted,
+        isMcpTool: name.startsWith("mcp__"),
+        sessionId: sessionId ?? this.deriveSubAgentSessionId(),
+        maxResultSizeChars: tool.maxResultSizeChars,
       });
       if (result.isError) {
         logToolFailure(name, {
-          kind: "tool_error",
+          kind: interrupted ? "aborted" : "tool_error",
           durationMs: elapsed,
           filePath: efFilePath,
         });
@@ -1880,13 +1888,13 @@ export class SubAgent {
         signal,
       });
       logToolFailure(name, {
-        kind: isAbortError(err) ? "aborted" : "exception",
+        kind: signal?.aborted === true || isAbortError(err) ? "aborted" : "exception",
         durationMs: elapsed,
         filePath: efFilePath,
       });
       return {
         content:
-          `工具执行异常: ${err.message}` +
+          `工具执行异常: ${errorMessageOf(err)}` +
           (failureFeedback ? `\n\n[Hook 反馈]\n${failureFeedback}` : ""),
         is_error: true,
       };

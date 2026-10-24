@@ -387,8 +387,24 @@ export interface PreToolUseInput extends HookInput, HookAgentFields {
   tool_use_id?: string;
 }
 
-/** Q7：工具失败成因 */
-export type ToolFailureKind = "tool_error" | "exception" | "validation" | "hook_blocked";
+/**
+ * Q7：工具失败成因。
+ *
+ * - `aborted`：工具**开始执行后**被 signal 中断（用户 ESC / 看门狗 / 同批 Bash 失败联动取消）。
+ *   不论工具是自己捕获后返回 isError、还是抛出中断错误，都归这一类。它送达用户 hook 且
+ *   `is_interrupt: true`（CC 语义）。原先 bash 自己收尾返回 isError，被记成 tool_error，
+ *   用户按 ESC 也算进「工具不可靠」的分母（遥测 4.5 个月 aborted=0，而轨迹里有真实 ESC）。
+ * - `skipped`：PreToolUse 已经 fire、但工具**根本没开始执行**（同轮先行 Bash 失败的级联跳过、
+ *   并发队列被中断后未启动的任务、批次被用户中断时还没轮到的工具）。只送 runtime hook——
+ *   它的唯一用途是给 PreToolUse 配对收尾，用户 hook 在 CC 里也看不到这种情形。
+ */
+export type ToolFailureKind =
+  | "tool_error"
+  | "exception"
+  | "validation"
+  | "hook_blocked"
+  | "aborted"
+  | "skipped";
 
 /** PostToolUse 输入 */
 export interface PostToolUseInput extends HookInput, HookAgentFields {
@@ -989,6 +1005,32 @@ export class DefaultHookOutput implements HookOutput {
       return ctx.replace(/</g, "&lt;").replace(/>/g, "&gt;");
     }
     return undefined;
+  }
+
+  /**
+   * PostToolUse 的输出替换（对齐 CC hookSpecificOutput.updatedToolOutput / updatedMCPToolOutput）。
+   *
+   * - `updatedToolOutput` 对所有工具生效；`updatedMCPToolOutput` 只对 MCP 工具生效（CC 的旧字段，
+   *   两者同时给时以 updatedToolOutput 为准）。
+   * - sid 的工具输出是**字符串**，所以字符串原样采用；对象 / 数组按 JSON 序列化——CC 内置工具
+   *   要求对象形态与工具输出 schema 一致，sid 没有那层 schema，序列化是唯一不丢信息的做法。
+   * - 返回 undefined = hook 没要求替换。
+   */
+  getUpdatedToolOutput(isMcpTool: boolean): string | undefined {
+    const so = this.hookSpecificOutput;
+    if (!so) return undefined;
+    const pick = (v: unknown): string | undefined => {
+      if (v === undefined || v === null) return undefined;
+      if (typeof v === "string") return v;
+      try {
+        return JSON.stringify(v);
+      } catch {
+        return undefined;
+      }
+    };
+    const generic = pick(so["updatedToolOutput"]);
+    if (generic !== undefined) return generic;
+    return isMcpTool ? pick(so["updatedMCPToolOutput"]) : undefined;
   }
 
   /** 获取阻塞错误信息 */

@@ -14,6 +14,7 @@ import {
   resolveAgent,
 } from "./agent-definition.ts";
 import { getLogger } from "../debug/logger.ts";
+import { SIBLING_BASH_ERROR_ABORT_REASON } from "../llm/errors.ts";
 import { UsageSinkTicket, hasNonZeroUsage } from "../llm/billing-sink.ts";
 import { createAgentTask, failAgentTask } from "../task/index.ts";
 import type { HookSystem } from "../hook/system.ts";
@@ -125,12 +126,12 @@ export function renderAgentTypeLines(): string {
  */
 /** 只作用于「眼前这一轮」的中断 reason：不应传到后台子代理（多代理 F9）。
  *  - user-cancel：用户 ESC；midturn-preempt：用户中途改向；
- *  - sibling_bash_error：同批兄弟 Bash 失败的联动取消；race-settled：本轮孤儿清理。
+ *  - sibling-bash-error：同批兄弟 Bash 失败的联动取消；race-settled：本轮孤儿清理。
  *  其余（session-timeout、团队硬超时、未知 reason）一律转发：宁可多停，不留孤儿。 */
 const TURN_SCOPED_ABORT_REASONS: ReadonlySet<string> = new Set([
   "user-cancel",
   "midturn-preempt",
-  "sibling_bash_error",
+  SIBLING_BASH_ERROR_ABORT_REASON,
   "race-settled",
 ]);
 

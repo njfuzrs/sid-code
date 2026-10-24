@@ -18,7 +18,7 @@
 import type { ToolFailureKind } from "../hook/types.ts";
 import type { ContentBlock } from "../llm/types.ts";
 import type { Registry as ToolRegistry } from "../tool/registry.ts";
-import { isAbortError } from "../llm/errors.ts";
+import { isAbortError, errorMessageOf } from "../llm/errors.ts";
 import { getLogger } from "../debug/logger.ts";
 import { validateToolInput } from "../tool/input-validator.ts";
 import type { HookSystem } from "../hook/system.ts";
@@ -26,6 +26,7 @@ import type { Checker, PermissionRequest } from "../permission/types.ts";
 import type { ToolProgressData } from "../tool/types.ts";
 import {
   buildHookModifiedNotice,
+  buildObservableInput,
   hookFeedbackText,
   interpretPreToolUse,
 } from "../query/tool-executor.ts";
@@ -153,7 +154,7 @@ export async function executeTools(
                   result: {
                     type: "tool_result" as const,
                     tool_use_id: block.id,
-                    content: `工具执行异常: ${err?.message ?? String(err)}`,
+                    content: `工具执行异常: ${errorMessageOf(err)}`,
                     is_error: true,
                   },
                 })),
@@ -181,7 +182,7 @@ export async function executeTools(
           resultMap.set(idx, {
             type: "tool_result",
             tool_use_id: block.id,
-            content: `工具执行异常: ${err?.message ?? String(err)}`,
+            content: `工具执行异常: ${errorMessageOf(err)}`,
             is_error: true,
           });
         }
@@ -332,6 +333,16 @@ export async function runPostToolHooks(
     output: string;
     isError: boolean;
     durationMs: number;
+    /**
+     * 工具执行中 signal 已被 abort、且工具自己收尾返回 isError（bash 等的常态）。
+     * 归 aborted 而不是 tool_error，与主循环同口径（见 query/tool-executor.ts interrupted）。
+     */
+    interrupted?: boolean;
+    /** 是否 MCP 工具：决定 updatedMCPToolOutput 是否生效 */
+    isMcpTool?: boolean;
+    /** 替换输出的落盘参数（与原输出同一套 processToolResult 截断/落盘） */
+    sessionId?: string;
+    maxResultSizeChars?: number;
   },
 ): Promise<string> {
   if (!hookSystem) return args.output;
@@ -347,7 +358,8 @@ export async function runPostToolHooks(
           args.toolUseId,
           {
             duration_ms: args.durationMs,
-            failure_kind: "tool_error",
+            failure_kind: args.interrupted ? "aborted" : "tool_error",
+            is_interrupt: !!args.interrupted,
             tool_output: args.output,
             ...agent,
           },
@@ -361,6 +373,20 @@ export async function runPostToolHooks(
           { duration_ms: args.durationMs, ...agent },
         );
     let out = args.output;
+    // updatedToolOutput / updatedMCPToolOutput：与主循环同口径替换模型侧输出（只在成功路径）
+    const replaced = args.isError
+      ? undefined
+      : post?.finalOutput?.getUpdatedToolOutput?.(!!args.isMcpTool);
+    if (replaced !== undefined) {
+      log.info("SUBAGENT:HOOK", `PostToolUse hook 替换了 ${args.toolName} 的模型侧输出`);
+      out = processToolResult(
+        args.toolName,
+        args.toolUseId ?? "spawn",
+        replaced,
+        args.sessionId ?? "default",
+        args.maxResultSizeChars,
+      );
+    }
     const ctx = post?.finalOutput?.getAdditionalContext?.();
     if (ctx) out = out + "\n\n[Hook 附加上下文]\n" + ctx;
     const feedback = hookFeedbackText(post);
@@ -396,7 +422,8 @@ export async function runToolExceptionHook(
 ): Promise<string | undefined> {
   if (!hookSystem) return undefined;
   const log = getLogger();
-  const message = (args.error as { message?: string })?.message ?? String(args.error);
+  const message = errorMessageOf(args.error);
+  const isInterrupt = args.signal?.aborted === true || isAbortError(args.error);
   try {
     const r = await hookSystem.firePostToolUseFailureEvent(
       args.toolName,
@@ -404,10 +431,11 @@ export async function runToolExceptionHook(
       message,
       args.toolUseId,
       {
-        failure_kind: "exception",
+        // 中断与真异常分开：前者不是「工具不可靠」的证据（与主循环同口径）。
+        failure_kind: isInterrupt ? "aborted" : "exception",
         // 抛异常路径用纯执行耗时（与成功路径 duration_ms 同口径）：慢工具卡很久才抛，正是要看的那个数。
         duration_ms: args.durationMs,
-        is_interrupt: args.signal?.aborted === true || isAbortError(args.error),
+        is_interrupt: isInterrupt,
         ...hookAgentOptions(),
       },
     );
@@ -510,10 +538,13 @@ async function executeSingleTool(
 
   // 权限检查（子代理 dontAsk 语义：危险命令/safetyCheck 直接拦截，ask 场景自动 deny）
   if (permissionChecker) {
+    // G14：与主循环同一入口展开观测路径（`~`、相对路径 → 绝对路径），hook 改写后的参数同样展开。
+    // 原先子代理直接拿原始参数鉴权，`~/.ssh/id_rsa` 这类路径绕过写成绝对路径的 deny 规则。
+    const observableInput = buildObservableInput(tool, effectiveInput);
     const permReq: PermissionRequest = {
       toolName: block.name,
-      input: effectiveInput,
-      description: `${block.name}: ${JSON.stringify(effectiveInput).slice(0, 120)}`,
+      input: observableInput,
+      description: `${block.name}: ${JSON.stringify(observableInput).slice(0, 120)}`,
     };
     // G3：PreToolUse permissionDecision 注入（子代理无 UI，ask 在下方 needsConfirmation→deny）
     const decision = await permissionChecker.check(permReq, tool, undefined, {
@@ -683,6 +714,8 @@ async function executeSingleTool(
       progressCallback,
     );
     const elapsed = Date.now() - startTime;
+    // 中断分型：只看结构化信号（signal.aborted），与主循环同口径
+    const interrupted = !!result.isError && signal?.aborted === true;
     // HC24（子代理侧）：CwdChanged / TaskCreated / TaskCompleted。原先只在主循环发，
     // 子代理里 cd / task_create 对 hook 不可见。cwd 读 getCwd()：带 task.cwd 的子代理跑在
     // withAgentCwd 里，bash 的 cd 写回的是它自己的 ALS cwd（W16），getCwd 读到的也是它，
@@ -735,11 +768,15 @@ async function executeSingleTool(
       output: truncated,
       isError: !!result.isError,
       durationMs: elapsed,
+      interrupted,
+      isMcpTool: block.name.startsWith("mcp__"),
+      sessionId: sessionId ?? "default",
+      maxResultSizeChars: tool.maxResultSizeChars,
     });
 
     if (result.isError) {
       logToolFailure(block.name, {
-        kind: "tool_error",
+        kind: interrupted ? "aborted" : "tool_error",
         durationMs: elapsed,
         filePath: efFilePath,
       });
@@ -768,7 +805,7 @@ async function executeSingleTool(
     };
   } catch (err: any) {
     const elapsed = Date.now() - startTime;
-    log.error("SUBAGENT:TOOL", `工具执行异常: ${block.name}`, { error: err.message });
+    log.error("SUBAGENT:TOOL", `工具执行异常: ${block.name}`, { error: errorMessageOf(err) });
     // post_tool_use_failure hook（异常路径也接入 hook，await 以回灌反馈，与主循环对齐）
     const failureFeedback = await runToolExceptionHook(hookSystem, {
       toolName: block.name,
@@ -780,7 +817,7 @@ async function executeSingleTool(
     });
     // 取消单独分型：它不是「工具不可靠」的证据，混进 exception 会污染失败率。
     logToolFailure(block.name, {
-      kind: isAbortError(err) ? "aborted" : "exception",
+      kind: signal?.aborted === true || isAbortError(err) ? "aborted" : "exception",
       durationMs: elapsed,
       filePath: efFilePath,
     });
@@ -788,7 +825,7 @@ async function executeSingleTool(
       type: "tool_result",
       tool_use_id: block.id,
       content:
-        `工具执行异常: ${err.message}` +
+        `工具执行异常: ${errorMessageOf(err)}` +
         (failureFeedback ? `\n\n[Hook 反馈]\n${failureFeedback}` : ""),
       is_error: true,
     };

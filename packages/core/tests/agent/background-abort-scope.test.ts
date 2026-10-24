@@ -40,7 +40,7 @@ describe("后台子代理的中断作用域", () => {
   });
 
   test("判据：轮级 reason 不转发，其余（含未知 / 非字符串）一律转发", () => {
-    for (const r of ["user-cancel", "midturn-preempt", "sibling_bash_error", "race-settled"]) {
+    for (const r of ["user-cancel", "midturn-preempt", "sibling-bash-error", "race-settled"]) {
       expect(shouldForwardAbortToBackground(r)).toBe(false);
     }
     for (const r of [
