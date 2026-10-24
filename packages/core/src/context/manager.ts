@@ -16,6 +16,8 @@ import {
   ContentReplacementState,
 } from "./tool-result-storage.ts";
 import { applyToolResultBudgetToContent } from "../query/compact/tool-result-budget.ts";
+import { planMicrocompact } from "../query/compact/microcompact.ts";
+import type { SendMutationCause } from "../hook/types.ts";
 import { getLogger, getSessionMetrics } from "../debug/index.ts";
 import {
   checkMessageHistoryIntegrity,
@@ -428,7 +430,15 @@ export class Manager {
    * 只记三种 ContextManager 自己能确证的：compact（历史被整体替换）/ masking（本轮新遮罩）/
    * cleaned（本轮新清理）。由主循环在 BeforeModel 前取走，随 prefix_break 事件落盘。
    */
-  private pendingSendCauses = new Set<"compact" | "masking" | "cleaned">();
+  private pendingSendCauses = new Set<SendMutationCause>();
+  /**
+   * 冷缓存清理的决策冻结（tool_use_id → 清理后的完整内容）。
+   *
+   * 旧实现把冷清理只做在**本轮发送副本**上：清完不回写，下一轮又发原文 —— 前缀一来一回
+   * 改写两次，等于每次误判多付两次全量写入。现在决策落成会话状态：一旦清了，之后每轮都
+   * 逐字节贴同一份；与 masking / replacementState 同生命周期，压缩/截断/setMessages/clear 统一清空。
+   */
+  private coldClearState = new Map<string, string>();
 
   /**
    * 可选 Plan 提供方（§3.3 压缩后 Plan 重注入）。
@@ -678,6 +688,7 @@ export class Manager {
     this.sentIntactToolResultIds.clear();
     this.tokenFreedTracker.reset();
     this.maskedState.clear();
+    this.coldClearState.clear();
     this.lastSendSnapshot = null;
     this.pendingSendCauses.add("compact");
     this.validatedPrefix = [];
@@ -688,10 +699,61 @@ export class Manager {
    * 发现 14：取走并清空「自上次取走以来改写过发送前缀的本地来源」。
    * 空数组 = ContextManager 没有改写前缀（断裂另有原因：reminder / system_dynamic / 服务端）。
    */
-  consumeSendMutationCauses(): Array<"compact" | "masking" | "cleaned"> {
+  consumeSendMutationCauses(): SendMutationCause[] {
     const out = [...this.pendingSendCauses].sort();
     this.pendingSendCauses.clear();
     return out;
+  }
+
+  /**
+   * 缓存已冷时清理旧工具结果（§6.7：破坏性操作只在代价已经产生时做）。
+   *
+   * **调用方负责证明缓存已冷**（见 `api/cache-warmth.ts`）；本方法只管「清什么、清了之后
+   * 怎么保持字节稳定」。判据与 microcompact 管线同一份（`planMicrocompact`），额外豁免
+   * 已有稳定占位的块（masking / 大输出清理 / 上一次冷清理）—— 再改一次就是第二次改写前缀。
+   *
+   * 作用在**全量历史的投影**上而不是某一轮的发送副本：决策写进 coldClearState，
+   * 之后每次 getCleanedMessages 都重放，所以清理在本轮和以后各轮都成立。
+   */
+  applyColdCacheClear(): { cleared: number; savedChars: number } {
+    const plan = planMicrocompact(this.messages, {
+      mode: "time",
+      skipToolUse: (id) =>
+        this.coldClearState.has(id) || this.maskedState.has(id) || this.replacementState.has(id),
+    });
+    let savedChars = 0;
+    for (const p of plan) {
+      this.coldClearState.set(p.toolUseId, p.replacement);
+      savedChars += Math.max(0, p.originalLength - p.replacement.length);
+    }
+    if (plan.length > 0) {
+      if (savedChars > 0) {
+        this.tokenFreedTracker.recordCompact(Math.ceil(savedChars / 4), "coldCacheClear");
+      }
+      this.pendingSendCauses.add("cold_clear");
+    }
+    return { cleared: plan.length, savedChars };
+  }
+
+  /** 把冷清理决策贴到发送副本上（只替换内容，其余字段透传） */
+  private applyColdClearState(messages: Message[]): Message[] {
+    if (this.coldClearState.size === 0) return messages;
+    let changed = false;
+    const out = messages.map((msg) => {
+      if (msg.role !== "user") return msg;
+      let touched = false;
+      const content = msg.content.map((block) => {
+        if (block.type !== "tool_result") return block;
+        const frozen = this.coldClearState.get(block.tool_use_id);
+        if (frozen === undefined || block.content === frozen) return block;
+        touched = true;
+        return { ...block, content: frozen };
+      });
+      if (!touched) return msg;
+      changed = true;
+      return { ...msg, content };
+    });
+    return changed ? out : messages;
   }
 
   /**
@@ -1020,6 +1082,9 @@ export class Manager {
           : full;
       cleaned = this.applyStickyMasking(full, fresh);
     }
+    // 冷清理决策在 masking 之后、大输出清理之前贴：被冷清理的块已是短占位，
+    // 不会再进下面的大输出候选，两套占位不会叠在同一个块上。
+    cleaned = this.applyColdClearState(cleaned);
 
     // P1-3：构建 tool_use 索引 + 活跃文件集合（正在编辑的文件 read 输出豁免清理）
     const toolIndex = this.buildToolUseIndex(cleaned);

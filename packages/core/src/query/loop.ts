@@ -289,6 +289,11 @@ import {
   formatCacheBreakReport,
   notifyCompaction,
 } from "../api/cache-detection.ts";
+import {
+  MAX_PROMPT_CACHE_TTL_MS,
+  isPrefixCacheProvablyCold,
+  msSincePrefixTouch,
+} from "../api/cache-warmth.ts";
 import { getEffectiveBetaHeaders } from "../api/beta-header-latch.ts";
 import type { QueryLoopYield, QueryDeps, LoopState } from "./types.ts";
 import { createInitialLoopState } from "./types.ts";
@@ -667,6 +672,32 @@ function emitNagInjectedEvent(
       session_id: sessionId,
       timestamp: new Date().toISOString(),
       data,
+    });
+  } catch {
+    /* trace 写入失败不阻断主循环 */
+  }
+}
+
+/**
+ * 冷缓存清理落成结构化事件（`ColdCacheClear`）。
+ *
+ * 旧实现只打 log.debug，轨迹里完全看不到「清了没、清了多少、当时隔了多久」——
+ * 「热当冷」这个缺陷只能靠回放 raw.jsonl 反推。有了它，`gap_ms` 的分布直接证明
+ * 修复是否生效：修复后所有事件的 gap_ms 都 ≥ MAX_PROMPT_CACHE_TTL_MS（1h）。
+ * cleared=0 也落：说明判冷了但没东西可清，分母要包含它。
+ */
+function emitColdCacheClearEvent(
+  deps: QueryDeps,
+  sessionId: string,
+  data: { gap_ms: number; cleared: number; saved_chars: number },
+): void {
+  if (!deps.traceAppendEvent) return;
+  try {
+    deps.traceAppendEvent({
+      event: "ColdCacheClear",
+      session_id: sessionId,
+      timestamp: new Date().toISOString(),
+      data: { ...data, threshold_ms: MAX_PROMPT_CACHE_TTL_MS },
     });
   } catch {
     /* trace 写入失败不阻断主循环 */
@@ -1375,6 +1406,33 @@ export async function* queryLoop(loopConfig: QueryLoopConfig): AsyncGenerator<Qu
               "QUERY_LOOP",
               `发送前最终完整性兜底触发：backfill 后仍有配对破缺，已截断尾部 ${backfill.truncatedCount} 条消息到最后完整配对处（保证不发生 OpenAI 400）。` +
                 `这是极端兜底，正常路径不应到达——请排查产生端。`,
+            );
+          }
+        }
+      }
+
+      // ─── 冷缓存清理（§6.7：破坏性操作只在代价已经产生时做）───
+      // 只有能**证明**缓存已冷（距最后一次可能触碰前缀的请求 ≥ 最长 TTL）才清；
+      // 不知道 = 按热处理。判定是进程级的（api/cache-warmth.ts），不随 queryLoop 重建而清零 ——
+      // 旧实现用 loop 级 lastResponseAt，每条用户消息的首轮都被误判成冷（轨迹 60 次 / 41 会话）。
+      // 放在 getCleanedMessages 之前：清理决策写进 ctxMgr 会话状态，本轮发送副本、BeforeModel
+      // 采样、raw.jsonl、prefix_break 看到的都是同一份已清理的前缀，之后每轮逐字节重放。
+      // 只对 Anthropic 显式缓存做：OpenAI 族的隐式缓存 TTL 不可知，无法证明已冷。
+      if (deps.getProviderName?.() === "anthropic") {
+        const gapMs = msSincePrefixTouch();
+        if (isPrefixCacheProvablyCold()) {
+          const r = ctxMgr.applyColdCacheClear();
+          emitColdCacheClearEvent(deps, sessionState.sessionId, {
+            gap_ms: gapMs ?? -1,
+            cleared: r.cleared,
+            saved_chars: r.savedChars,
+          });
+          if (r.cleared > 0) {
+            // 本轮 cache_read 下降是预期的（缓存本来就已过期），抑制一次误报
+            notifyCompaction("main");
+            log.info(
+              "QUERY_LOOP",
+              `缓存已冷（距上次请求 ${Math.round((gapMs ?? 0) / 60000)} 分钟）：清理 ${r.cleared} 项旧工具结果，释放 ${r.savedChars} 字符`,
             );
           }
         }
@@ -2456,56 +2514,6 @@ export async function* queryLoop(loopConfig: QueryLoopConfig): AsyncGenerator<Qu
         }
       };
 
-      // ─── G2：cachedMicrocompact — 缓存友好压缩产出 cache_edits ───
-      // 每轮发送前，对当前消息执行供应商感知的"缓存友好 microcompact"：
-      // - Anthropic + 缓存温热 → 不改消息内容（保持前缀字节一致 → cache hit），产出 cache_edits
-      // - Anthropic + 缓存已冷 → direct-clear：缓存反正已过期要整段重写，趁重写前先清老工具结果，
-      //   缩小被重写的量并释放本地 token（对标 CC time-based microcompact 的核心洞察）
-      // - 其它 provider → 由上方 getProviderName 门控挡在外，走 autoCompact pipeline 处理
-      // 产出的 pendingCacheEdits 注入 sendParams.cacheEdits，由 anthropic.ts 携带到请求体。
-      try {
-        const microState = deps.getCachedMicrocompactState?.();
-        if (microState && deps.getProviderName?.() === "anthropic") {
-          const { cachedMicrocompact } = await import("./compact/cached-microcompact.ts");
-          // 缓存冷热判定：距上一轮响应超过 5min ephemeral TTL 即视为已冷。
-          // 首轮（lastResponseAt 未设）视为冷——无前缀可保，direct-clear 无损失。
-          // 此前硬编码 cacheWarm:true 让 direct-clear 分支永不触发，CC 的"冷时清理"洞察被架空。
-          const PROMPT_CACHE_TTL_MS = 5 * 60 * 1000;
-          const cacheWarm =
-            state.lastResponseAt != null && Date.now() - state.lastResponseAt < PROMPT_CACHE_TTL_MS;
-          const result = cachedMicrocompact(sendParams.messages, {
-            providerName: "anthropic",
-            cacheWarm,
-            state: microState,
-            emitCacheEdits: !process.env.SID_DISABLE_CACHE_EDITS,
-          });
-          if (result.path === "cache-preserving") {
-            if (result.pendingCacheEdits && result.pendingCacheEdits.edits.length > 0) {
-              sendParams.cacheEdits = result.pendingCacheEdits.edits;
-              log.debug("CACHE_EDITS", `注入 ${sendParams.cacheEdits.length} 条 cache_edits`);
-              // G1：cache_edits 删除后下次 cache_read 可能下降——通知检测器抑制
-              const { notifyCacheDeletion } = await import("../api/cache-detection.ts");
-              notifyCacheDeletion(sendParams.cacheEdits.length, "main");
-            }
-          } else if (result.compactedCount > 0) {
-            // direct-clear（缓存已冷）：改写后的消息必须回灌，否则清理无效（本地 token 不释放）。
-            // 前缀已因缓存过期失效，改写不额外损失命中；notifyCompaction 抑制这轮预期的 cache_read 下降。
-            sendParams.messages = result.messages;
-            finalMessages = result.messages;
-            notifyCompaction("main");
-            log.debug(
-              "CACHE_EDITS",
-              `缓存已冷 direct-clear：清理 ${result.compactedCount} 项工具结果，释放 ${result.savedChars} 字符`,
-            );
-          }
-        }
-      } catch (err: any) {
-        log.debug(
-          "CACHE_EDITS",
-          `cachedMicrocompact 失败（非阻断）: ${err?.message?.slice(0, 100)}`,
-        );
-      }
-
       // ─── F5：本地速率限制（RPM/TPM）主动节流 ───
       //
       // 缺陷形态（2026-09-03 排查）：`QuotaManager.checkRateLimit()` 的**生产调用点 = 0**。
@@ -3387,8 +3395,6 @@ export async function* queryLoop(loopConfig: QueryLoopConfig): AsyncGenerator<Qu
       state.timeoutRetryCount = 0;
       // M5：模型真的返回了响应，本轮开头送达的通知它已看过——下一次推进纪元从此成立。
       modelRespondedSinceTurnMark = true;
-      // 记录本轮成功响应时刻，供下一轮 cached-microcompact 判定缓存冷热（超 5min TTL 视为已冷）。
-      state.lastResponseAt = Date.now();
 
       // ─── A2：流式响应后检测 abort，优雅收尾 ───
       // 对标 claude-code：用户在流式输出期间按 ESC，此处已拿到 response 但尚未做任何后续处理。
