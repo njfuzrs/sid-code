@@ -22,6 +22,7 @@ import { readFileSync, readdirSync, existsSync, statSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { applyLedgerPathOverride } from "../telemetry/usage-ledger.ts";
 import { getSidHome } from "../config/paths.ts";
+import { PlanModeManager, PLAN_STEP_PARSER_VERSION } from "../plan/state.ts";
 // P2-20：observationEntropy 判空转阈值与运行时检测（`query/unchanged-observation.ts`）
 // **同源**，全仓只此一份。两侧各写一个 3 的话，任何一侧调阈值都会出现
 // 「运行时报了但周报不算病态」（或反过来），与本仓 P1-6/7「压缩决策和压缩执行
@@ -2577,20 +2578,55 @@ export function buildDigest(ref: SessionRef, full: boolean, paths: DigestPaths):
   // 从前 getFidelityReport() 生产零调用，官网写的「能看到对齐度」是空的。
   // 只报计数不下判断：偏离多是「计划写得粗」还是「执行跑偏」，轨迹给不出真值。
   for (const f of aggregatePlanFidelity(events)) {
+    const version = f.stepParserVersion ?? 1;
+    // v1 口径的步数与当前口径不可比：并列给出按当前口径对计划文件的重算值（文件还在时）
+    const recount =
+      version < PLAN_STEP_PARSER_VERSION ? recountPlanStepsWithCurrentParser(f.planFile) : null;
+    const recountNote =
+      recount !== null && recount !== f.planStepCount
+        ? `（旧口径 v${version}；按当前口径 v${PLAN_STEP_PARSER_VERSION} 重算为 ${recount} 步）`
+        : "";
     anomalies.push({
       layer: "L0",
       severity: "low",
       kind: "plan_fidelity",
-      detail: `计划 ${f.planStepCount} 步 / 实际 ${f.actualToolCallCount} 次调用 / 偏离 ${f.offPlanCount} 次`,
+      detail: `计划 ${f.planStepCount} 步 / 实际 ${f.actualToolCallCount} 次调用 / 偏离 ${f.offPlanCount} 次${recountNote}`,
       provenance: [
         {
           sourceFile: eventsPath,
           lineRef: "event=PlanFidelity（每份计划取末条快照）",
-          rawValue: `steps=${f.planStepCount} actual=${f.actualToolCallCount} off_plan=${f.offPlanCount}`,
+          rawValue:
+            `steps=${f.planStepCount} actual=${f.actualToolCallCount} off_plan=${f.offPlanCount}` +
+            ` parser=v${version}` +
+            (recount !== null ? ` recount_v${PLAN_STEP_PARSER_VERSION}=${recount}` : ""),
           mtime: fileMtimeIso(eventsPath),
         },
       ],
       ...(f.planFile ? { pointer: f.planFile } : {}),
+    });
+  }
+
+  // 计划生命周期：每份计划一行。取消 / 拒绝超限是用户否决，标 medium 便于排查时被看见。
+  for (const l of aggregatePlanLifecycle(events)) {
+    const vetoed = l.outcome === "cancel" || l.outcome === "reject_limit";
+    anomalies.push({
+      layer: "L0",
+      severity: vetoed ? "medium" : "low",
+      kind: "plan_lifecycle",
+      detail:
+        `计划 ${l.reasons.join(" → ")}（结局 ${l.outcome}，拒绝 ${l.rejections} 次，` +
+        `执行阶段跨 ${l.executingTurns} 个用户回合，压缩重注入 ${l.reattachCount} 次` +
+        (l.reattachTruncated > 0 ? `，其中截断 ${l.reattachTruncated} 次` : "") +
+        "）",
+      provenance: [
+        {
+          sourceFile: eventsPath,
+          lineRef: "event=PlanTransition / PlanReattach / UserPromptSubmit",
+          rawValue: `reasons=${l.reasons.join(",")} outcome=${l.outcome}`,
+          mtime: fileMtimeIso(eventsPath),
+        },
+      ],
+      ...(l.planFile ? { pointer: l.planFile } : {}),
     });
   }
 
@@ -4197,6 +4233,8 @@ export interface PlanFidelityStats {
   planStepCount: number;
   actualToolCallCount: number;
   offPlanCount: number;
+  /** 记录该步数时的解析器口径版本；旧事件无此字段，记为 1 */
+  stepParserVersion?: number;
 }
 
 /**
@@ -4211,12 +4249,100 @@ export function aggregatePlanFidelity(
     if (e.event !== "PlanFidelity" || !e.data) continue;
     const planFile = typeof e.data.plan_file === "string" ? e.data.plan_file : "";
     // Map.set 覆盖已有键不改变插入顺序：值取末条，位置留在首次出现处
+    const version = e.data.step_parser_version;
     byPlan.set(planFile, {
       planFile,
       planStepCount: num(e.data.plan_step_count),
       actualToolCallCount: num(e.data.actual_tool_call_count),
       offPlanCount: num(e.data.off_plan_count),
+      ...(version !== undefined ? { stepParserVersion: num(version) } : {}),
     });
+  }
+  return [...byPlan.values()];
+}
+
+/**
+ * 旧口径步数的数据层迁移：v1 事件（无 step_parser_version）的 plan_step_count 由旧解析器算出，
+ * 与 v2 不可比。计划文件还在时按**当前**口径重算一次，供 digest 并列展示「记录值 → 当前口径」。
+ * 文件已被删 / 读不到返回 null——不编一个数。
+ */
+export function recountPlanStepsWithCurrentParser(planFile: string): number | null {
+  if (!planFile) return null;
+  try {
+    if (!existsSync(planFile)) return null;
+    return PlanModeManager.extractPlanSteps(readFileSync(planFile, "utf-8")).steps.length;
+  } catch {
+    return null;
+  }
+}
+
+/** 一份计划的生命周期（`PlanTransition` 事件聚合） */
+export interface PlanLifecycleStats {
+  planFile: string;
+  /** 跃迁原因序列（按时间），如 enter → submit → reject → submit → approve → todos_completed */
+  reasons: string[];
+  rejections: number;
+  /** 最后一次跃迁后的结局：executing（仍在执行）/ approve 之后的出口 / 停在规划中 */
+  outcome: string;
+  /** 执行阶段经历了几个用户回合（approve 之后的 UserPromptSubmit 数，直到执行阶段结束） */
+  executingTurns: number;
+  /** 执行阶段内压缩重注入了几次计划 */
+  reattachCount: number;
+  /** 重注入时被截断的次数 */
+  reattachTruncated: number;
+}
+
+/**
+ * 聚合 `PlanTransition` / `PlanReattach` / `UserPromptSubmit`：每份计划一行生命周期。
+ *
+ * 这一行回答的正是 2026-10-24 那组缺陷的验收问题：
+ *   - 执行阶段是否跨过了用户回合（executingTurns > 0 = 修复前必然为 0 的场景）；
+ *   - 取消 / 拒绝超限是否以明确结局收尾（outcome）；
+ *   - 压缩时计划有没有被带回、有没有截断（reattachCount / reattachTruncated）。
+ */
+export function aggregatePlanLifecycle(
+  events: Array<{ event?: string; data?: Record<string, unknown> }>,
+): PlanLifecycleStats[] {
+  const byPlan = new Map<string, PlanLifecycleStats>();
+  let executingPlan: string | null = null;
+  for (const e of events) {
+    if (e.event === "PlanTransition" && e.data) {
+      const planFile = typeof e.data.plan_file === "string" ? e.data.plan_file : "";
+      const reason = typeof e.data.reason === "string" ? e.data.reason : "unknown";
+      let st = byPlan.get(planFile);
+      if (!st) {
+        st = {
+          planFile,
+          reasons: [],
+          rejections: 0,
+          outcome: "planning",
+          executingTurns: 0,
+          reattachCount: 0,
+          reattachTruncated: 0,
+        };
+        byPlan.set(planFile, st);
+      }
+      st.reasons.push(reason);
+      st.rejections = Math.max(st.rejections, num(e.data.rejection_count));
+      if (e.data.executing_after === true) {
+        executingPlan = planFile;
+        st.outcome = "executing";
+      } else {
+        if (executingPlan === planFile) executingPlan = null;
+        st.outcome = reason === "submit" || reason === "reject" ? "planning" : reason;
+      }
+      if (reason === "submit") st.outcome = "awaiting_approval";
+    } else if (e.event === "UserPromptSubmit" && executingPlan !== null) {
+      const st = byPlan.get(executingPlan);
+      if (st) st.executingTurns++;
+    } else if (e.event === "PlanReattach" && e.data) {
+      const planFile = typeof e.data.plan_file === "string" ? e.data.plan_file : "";
+      const st = byPlan.get(planFile);
+      if (st) {
+        st.reattachCount++;
+        if (e.data.truncated === true) st.reattachTruncated++;
+      }
+    }
   }
   return [...byPlan.values()];
 }
