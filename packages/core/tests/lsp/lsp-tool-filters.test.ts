@@ -205,3 +205,26 @@ describe("G10：文件大小保护", () => {
     expect(result).toBeDefined();
   });
 });
+
+describe("documentEnd（codeAction 整文件范围的真实末尾）", () => {
+  test("末尾无换行：最后一行长度", async () => {
+    const { documentEnd } = await import("@sid-code/core/tool/lsp.ts");
+    expect(documentEnd("ab\ncde")).toEqual({ line: 1, character: 3 });
+  });
+
+  test("末尾有换行：落在空的最后一行行首", async () => {
+    const { documentEnd } = await import("@sid-code/core/tool/lsp.ts");
+    expect(documentEnd("ab\n")).toEqual({ line: 1, character: 0 });
+  });
+
+  test("CRLF 与单独 CR 都算行分隔；空文件是 (0,0)", async () => {
+    const { documentEnd } = await import("@sid-code/core/tool/lsp.ts");
+    expect(documentEnd("a\r\nb\rcc")).toEqual({ line: 2, character: 2 });
+    expect(documentEnd("")).toEqual({ line: 0, character: 0 });
+  });
+
+  test("character 按 UTF-16 码元计（LSP 默认口径）", async () => {
+    const { documentEnd } = await import("@sid-code/core/tool/lsp.ts");
+    expect(documentEnd("中😀")).toEqual({ line: 0, character: 3 });
+  });
+});

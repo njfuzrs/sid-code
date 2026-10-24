@@ -1621,8 +1621,8 @@ export async function* queryLoop(loopConfig: QueryLoopConfig): AsyncGenerator<Qu
       // 根因修复——collectDiagnosticText() 此前定义了却无人调用，语言服务器推送的实时
       // 诊断（类型错误/未定义符号等）从未进入模型上下文，整条 LSP 被动反馈链断在最后一公里。
       // 走每轮 reminder 通道（随消息流、抗缓存、抗 compact），与 todo/pressure 提醒同机制。
-      // collectDiagnosticText 内部已做严重度过滤（仅 Error/Warning 注入）+ 跨轮次去重
-      // （已投递的诊断不重复注入），故这里直接 push 即可，无需额外节流。
+      // collectDiagnosticText 内部已做严重度过滤（仅 Error/Warning 注入）+ 跨轮次去重 + 限流，
+      // 且只取主循环名下的文件（子代理编辑的文件归子代理，结束后才转回），故这里直接 push。
       // LSP 未配置 / 未就绪 / 无诊断时返回 null，不注入、不报错（降级正常）。
       //
       // 能力对齐门控：仅当具备 edit/write 工具时才注入诊断——诊断是给"能改代码的 agent"看的。

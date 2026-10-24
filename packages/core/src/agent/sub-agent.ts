@@ -1709,6 +1709,13 @@ export class SubAgent {
       if (!subprocess.killed) {
         subprocess.kill();
       }
+      // 与 executeToolForChild 里 syncFileToLSP 的 owner 同值：子代理名下文件的诊断转给主循环
+      try {
+        const { releaseDiagnosticOwner } = await import("../lsp/manager.ts");
+        releaseDiagnosticOwner(this.deriveSubAgentSessionId(taskId));
+      } catch {
+        /* LSP 不可用：无归属可转 */
+      }
     }
   }
 
@@ -1883,6 +1890,23 @@ export class SubAgent {
         getCwd(),
         hookAgentOptions()?.agent,
       );
+      // LSP 文件变更通知（spawn 路径补齐）：工具在父进程执行，语言服务器也在父进程，
+      // 不通知的话服务器永远看不到子进程改过的内容。归属记在子代理名下，结束时
+      // 由 executeSpawnedInternal 的 finally 转给主循环（子进程收不到父进程的注入）。
+      if (!result.isError && (name === "write" || name === "edit")) {
+        const editedPath = (effectiveInput?.file_path ?? effectiveInput?.path) as
+          | string
+          | undefined;
+        if (editedPath) {
+          const owner = sessionId ?? this.deriveSubAgentSessionId();
+          void import("../lsp/manager.ts")
+            .then(({ syncFileToLSP }) => syncFileToLSP(editedPath, owner))
+            .catch(() => {
+              /* best-effort，失败不影响子代理执行 */
+            });
+        }
+      }
+
       // D9：spawn 路径工具在父进程执行，同样走 processToolResult，不要只截断丢掉原文。
       const truncated = processToolResult(
         name,

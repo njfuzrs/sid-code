@@ -7,6 +7,7 @@
  * M5 里程碑：子代理独立 Agent Loop
  */
 
+import { releaseDiagnosticOwner } from "../lsp/manager.ts";
 import type { Provider } from "../llm/provider.ts";
 import { noteStopReasonMismatch } from "./stop-reason-mismatch.ts";
 import type { ContentBlock, Usage, SendParams } from "../llm/types.ts";
@@ -304,6 +305,9 @@ export interface AgentLoopResult {
  *
  * 对标 claude-code runAgent()，一个函数同时服务于主 Agent 和子 Agent。
  */
+/** 无 agentId 的循环各自分配一个私有诊断归属者（见 runAgentLoopInner 的 diagnosticOwner） */
+let anonymousDiagnosticOwnerSeq = 0;
+
 export async function runAgentLoop(config: AgentLoopConfig): Promise<AgentLoopResult> {
   // ══════════════════════════════════════════════════════════════════
   // B4：teardown 包壳（对标 CC `promptCacheBreakDetection.ts:700` 的
@@ -325,8 +329,12 @@ export async function runAgentLoop(config: AgentLoopConfig): Promise<AgentLoopRe
   // 用共享 holder 让内部只管累加、出口统一回填，新增 return 路径不需要记得补。
   // ══════════════════════════════════════════════════════════════════
   const retryStats: RetryStats = { attempts: 0 };
+  // LSP 诊断归属者：与 agent/tool-executor 里 syncFileToLSP 的 owner 同值，否则编辑登记在
+  // 一个名下、collect 取另一个名下，诊断永远取不到。无 agentId（旧测试 / 未接线调用方）
+  // 时用本循环私有的 id：退化成「主循环」会重新打开互相偷诊断的口子。
+  const diagnosticOwner = config.agentId ?? `agent-loop-${++anonymousDiagnosticOwnerSeq}`;
   try {
-    const result = await runAgentLoopInner(config, retryStats);
+    const result = await runAgentLoopInner(config, retryStats, diagnosticOwner);
     // 0 次重试时不写字段：保持"顺利跑完"的结果形状与改造前逐字节一致，
     // 也让下游可以用 `retryAttempts ?? 0` 之外的存在性判断区分"没重试"与"未接线"。
     if (retryStats.attempts > 0) {
@@ -337,6 +345,8 @@ export async function runAgentLoop(config: AgentLoopConfig): Promise<AgentLoopRe
     return result;
   } finally {
     if (config.agentId) cleanupAgentSnapshots(config.agentId);
+    // 本循环名下文件的诊断归属转给主循环：否则它们的后续诊断再也没有消费者
+    releaseDiagnosticOwner(diagnosticOwner);
   }
 }
 
@@ -351,6 +361,7 @@ interface RetryStats {
 async function runAgentLoopInner(
   config: AgentLoopConfig,
   retryStats: RetryStats,
+  diagnosticOwner: string,
 ): Promise<AgentLoopResult> {
   const log = getLogger();
   const {
@@ -438,8 +449,9 @@ async function runAgentLoopInner(
   // hasEditCapability：能力对齐门控——只有具备 edit/write 工具的子代理才注入诊断。
   //   纯只读子代理（如 explore/summarize）不会被诊断噪音打扰。这比 CC 的"有 Bash 才注入"
   //   更贴合本意：诊断是给"能改代码的 agent"看的，而本项目靠 edit/write 修复诊断、不依赖 bash。
-  // editedFiles：本子代理累计编辑过的文件绝对路径，作为诊断收集的作用域——并发子代理共用
-  //   全局 registry，各自只消费自己编辑文件的诊断，互不偷取（作用域消费 + 作用域清空）。
+  // editedFiles：本子代理累计编辑过的文件，仅作「编辑过才去取」的廉价门控。
+  //   隔离靠的是诊断归属（registry 按最近编辑者归属文件），不是这份集合——旧实现用它当
+  //   collect 作用域，但主循环不带作用域，照样把子代理文件的诊断捞走。
   const hasEditCapability = !!(tools.get("edit") || tools.get("write"));
   const editedFiles = new Set<string>();
 
@@ -539,15 +551,13 @@ async function runAgentLoopInner(
     config.onBeforeTurn?.(turns);
 
     // LSP 诊断注入（子代理侧补齐，对标主循环 query/loop.ts 的 G1）。
-    // 上一轮若编辑过文件，此处收集这些文件的实时诊断注入为 user 消息，让子代理感知
-    // 自己编辑引入的类型/语法错误。作用域限定为本子代理编辑过的文件（editedFiles），
-    // 避免与主循环 / 并发子代理互相偷取全局 registry 里的 pending 诊断。
+    // 上一轮若编辑过文件，此处收集本子代理名下文件的实时诊断注入为 user 消息，让子代理感知
+    // 自己编辑引入的类型/语法错误。归属 = agentId，与 agent/tool-executor 的 syncFileToLSP 同值。
     // ctxMgr.addMessage 会自动合并连续同角色消息，注入 user 消息不破坏角色交替。
-    // 收集即消费（作用域清空），故无需额外去重——同一诊断不会重复注入。
     if (hasEditCapability && editedFiles.size > 0) {
       try {
         const { collectDiagnosticText } = await import("../lsp/manager.ts");
-        const diagnosticText = collectDiagnosticText(editedFiles);
+        const diagnosticText = collectDiagnosticText(diagnosticOwner);
         if (diagnosticText) {
           ctxMgr.addMessage({
             role: "user",
@@ -1181,6 +1191,8 @@ async function runAgentLoopInner(
         config.ctxMgr.getSessionId(),
         // S10：子代理身份显式带进工具执行（PermissionDecision.agent_id），与 StreamPhase 同值
         observerAgentId,
+        // LSP 诊断归属：编辑登记与本循环 collect 必须同一个名下
+        diagnosticOwner,
       );
       ctxMgr.addMessage({ role: "user", content: toolResults });
       emptyParamRetryCount = 0;

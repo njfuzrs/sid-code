@@ -18,7 +18,15 @@ import {
   getLSPHealthWarning,
   waitForLSPReady,
   getLSPInitState,
+  MAIN_DIAGNOSTIC_OWNER,
+  setLspDiagnosticsTraceSink,
+  syncFileToLSP,
+  releaseDiagnosticOwner,
 } from "@sid-code/core/lsp/manager.ts";
+import { mkdtempSync, writeFileSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import type { DiagnosticRegistry } from "@sid-code/core/lsp/diagnostic-registry.ts";
 import { pathToFileURL } from "url";
 import type { DiagnosticSeverity } from "@sid-code/core/lsp/types.ts";
 
@@ -29,6 +37,15 @@ function diag(message: string, severity: DiagnosticSeverity, line = 0) {
     range: { start: { line, character: 0 }, end: { line, character: 5 } },
     source: "test",
   };
+}
+
+/**
+ * 模拟该文件被主循环编辑过一次（syncFileToLSP 的 beginEdit/endEdit）。
+ * 没被编辑过的文件首次推送只记基线、不注入（见 DiagnosticRegistry.baselined），
+ * 所以测注入路径前必须先建立归属。
+ */
+function ownByMain(reg: DiagnosticRegistry, uri: string): void {
+  reg.endEdit(uri, reg.beginEdit(uri, MAIN_DIAGNOSTIC_OWNER));
 }
 
 /** 等待 initState 变为 success（无配置场景几乎立即完成） */
@@ -51,6 +68,7 @@ describe("collectDiagnosticText 严重度过滤", () => {
 
     const reg = getDiagnosticRegistry();
     expect(reg).toBeDefined();
+    ownByMain(reg!, "file:///a.ts");
     reg!.registerPending("ts", [
       { uri: "file:///a.ts", diagnostics: [diag("提示", "Hint"), diag("信息", "Info")] },
     ]);
@@ -63,6 +81,7 @@ describe("collectDiagnosticText 严重度过滤", () => {
     await waitInitSuccess();
 
     const reg = getDiagnosticRegistry();
+    ownByMain(reg!, "file:///a.ts");
     reg!.registerPending("ts", [
       { uri: "file:///a.ts", diagnostics: [diag("类型错误", "Error", 3)] },
     ]);
@@ -78,6 +97,7 @@ describe("collectDiagnosticText 严重度过滤", () => {
     await waitInitSuccess();
 
     const reg = getDiagnosticRegistry();
+    ownByMain(reg!, "file:///a.ts");
     reg!.registerPending("ts", [
       { uri: "file:///a.ts", diagnostics: [diag("未使用变量", "Warning")] },
     ]);
@@ -91,6 +111,7 @@ describe("collectDiagnosticText 严重度过滤", () => {
     await waitInitSuccess();
 
     const reg = getDiagnosticRegistry();
+    ownByMain(reg!, "file:///a.ts");
     reg!.registerPending("ts", [
       {
         uri: "file:///a.ts",
@@ -115,6 +136,8 @@ describe("collectDiagnosticText 严重度过滤", () => {
     await waitInitSuccess();
 
     const reg = getDiagnosticRegistry();
+    ownByMain(reg!, "file:///a.ts");
+    ownByMain(reg!, "file:///b.ts");
     reg!.registerPending("ts", [
       { uri: "file:///a.ts", diagnostics: [diag("真错误", "Error")] },
       { uri: "file:///b.ts", diagnostics: [diag("b提示", "Hint")] },
@@ -130,6 +153,7 @@ describe("collectDiagnosticText 严重度过滤", () => {
     initializeLSP("/nonexistent-workspace-xyz");
     await waitInitSuccess();
 
+    ownByMain(getDiagnosticRegistry()!, "file:///a.ts");
     getDiagnosticRegistry()!.registerPending("ts", [
       { uri: "file:///a.ts", diagnostics: [diag("真错误", "Error")] },
     ]);
@@ -146,10 +170,11 @@ describe("clearDiagnosticsForFile", () => {
     const filePath = "/tmp/foo.ts";
     const uri = pathToFileURL(filePath).href;
 
+    ownByMain(reg!, uri);
     reg!.registerPending("ts", [{ uri, diagnostics: [diag("err", "Error")] }]);
     expect(collectDiagnosticText()).not.toBeNull();
 
-    // 未清除 → 去重过滤
+    // 未清除 → 去重过滤（不经编辑同步，直接再推一次同样的诊断）
     reg!.registerPending("ts", [{ uri, diagnostics: [diag("err", "Error")] }]);
     expect(collectDiagnosticText()).toBeNull();
 
@@ -199,5 +224,91 @@ describe("waitForLSPReady", () => {
   test("not-started 立即返回 false", async () => {
     resetLSPForTest();
     expect(await waitForLSPReady()).toBe(false);
+  });
+});
+
+describe("collectDiagnosticText：截断告知 + 归属 + 埋点", () => {
+  afterEach(() => setLspDiagnosticsTraceSink(null));
+
+  test("超出单次上限 → 文本告知补发条数，下一轮补发", async () => {
+    initializeLSP("/nonexistent-workspace-xyz");
+    await waitInitSuccess();
+    const reg = getDiagnosticRegistry()!;
+    ownByMain(reg, "file:///a.ts");
+    reg.registerPending("ts", [
+      {
+        uri: "file:///a.ts",
+        diagnostics: Array.from({ length: 12 }, (_, i) => diag(`e${i}`, "Error", i)),
+      },
+    ]);
+    const first = collectDiagnosticText()!;
+    expect(first).toContain("另有 2 条 Error/Warning 超出单次上限，将在后续轮次补发");
+    const second = collectDiagnosticText()!;
+    expect(second).toContain("e10");
+    expect(second).not.toContain("超出单次上限");
+  });
+
+  test("子代理名下的诊断主循环拿不到；releaseDiagnosticOwner 后转给主循环", async () => {
+    initializeLSP("/nonexistent-workspace-xyz");
+    await waitInitSuccess();
+    const reg = getDiagnosticRegistry()!;
+    reg.endEdit("file:///s.ts", reg.beginEdit("file:///s.ts", "agent-x"));
+    reg.registerPending("ts", [{ uri: "file:///s.ts", diagnostics: [diag("sub", "Error")] }]);
+    expect(collectDiagnosticText()).toBeNull();
+    releaseDiagnosticOwner("agent-x");
+    expect(collectDiagnosticText()).toContain("sub");
+  });
+
+  test("每次 collect 写一条 LspDiagnostics：注入、被过滤为空都有记录，子代理带 agent_id", async () => {
+    initializeLSP("/nonexistent-workspace-xyz");
+    await waitInitSuccess();
+    const got: Record<string, unknown>[] = [];
+    setLspDiagnosticsTraceSink((d) => got.push(d));
+    const reg = getDiagnosticRegistry()!;
+
+    ownByMain(reg, "file:///a.ts");
+    reg.registerPending("ts", [{ uri: "file:///a.ts", diagnostics: [diag("only-hint", "Hint")] }]);
+    expect(collectDiagnosticText()).toBeNull();
+
+    reg.endEdit("file:///s.ts", reg.beginEdit("file:///s.ts", "agent-y"));
+    reg.registerPending("ts", [{ uri: "file:///s.ts", diagnostics: [diag("e", "Error")] }]);
+    expect(collectDiagnosticText("agent-y")).not.toBeNull();
+
+    // 什么都没发生的轮次不写
+    collectDiagnosticText();
+
+    expect(got).toHaveLength(2);
+    expect(got[0]).toMatchObject({ outcome: "info_only", omitted_info: 1, injected: 0 });
+    expect(got[0]).not.toHaveProperty("agent_id");
+    expect(got[1]).toMatchObject({ outcome: "injected", injected: 1, agent_id: "agent-y" });
+  });
+});
+
+describe("syncFileToLSP：旧诊断必须在第一个 await 之前清掉", () => {
+  test("fire-and-forget 调用后立即 collect，拿不到编辑前的诊断", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "lsp-sync-"));
+    try {
+      const file = join(dir, "x.ts");
+      writeFileSync(file, "const a = 1;\n");
+      initializeLSP("/nonexistent-workspace-xyz");
+      await waitInitSuccess();
+      const reg = getDiagnosticRegistry()!;
+      const uri = pathToFileURL(file).href;
+      ownByMain(reg, uri);
+      reg.registerPending("ts", [{ uri, diagnostics: [diag("before-edit", "Error")] }]);
+
+      // 与 query/tool-executor 一样不 await：下一轮 collect 可能跑在读盘之前
+      const pending = syncFileToLSP(file);
+      expect(collectDiagnosticText()).toBeNull();
+      // 同步窗口内到达的推送基于旧内容，丢弃
+      reg.registerPending("ts", [{ uri, diagnostics: [diag("during-sync", "Error")] }]);
+      await pending;
+      expect(collectDiagnosticText()).toBeNull();
+      // 窗口结束后的推送正常投递
+      reg.registerPending("ts", [{ uri, diagnostics: [diag("after-sync", "Error")] }]);
+      expect(collectDiagnosticText()).toContain("after-sync");
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
   });
 });

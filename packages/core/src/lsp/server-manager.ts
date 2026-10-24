@@ -54,10 +54,12 @@ export class LSPServerManager {
   /**
    * 通知 LSP 文件变更（write/edit 工具后调用）。
    * 首次见到文件发送 didOpen，之后发送 didChange。
+   *
+   * @returns 本次发给服务器的文档版本；无对应服务器或发送失败时 undefined
    */
-  async changeFile(filePath: string, content: string): Promise<void> {
+  async changeFile(filePath: string, content: string): Promise<number | undefined> {
     const instance = this.getServerForFile(filePath);
-    if (!instance) return; // 无对应 LSP 服务器，静默跳过
+    if (!instance) return undefined; // 无对应 LSP 服务器，静默跳过
 
     try {
       await instance.ensureStarted();
@@ -73,6 +75,7 @@ export class LSPServerManager {
         instance.sendNotification("textDocument/didOpen", {
           textDocument: { uri, languageId, version: 1, text: content },
         });
+        return 1;
       } else {
         // 后续变更
         const version = existingVersion + 1;
@@ -81,9 +84,11 @@ export class LSPServerManager {
           textDocument: { uri, version },
           contentChanges: [{ text: content }], // 全量同步
         });
+        return version;
       }
     } catch (err: any) {
       getLogger().debug("LSP", `通知文件变更失败 ${filePath}: ${err.message}`);
+      return undefined;
     }
   }
 

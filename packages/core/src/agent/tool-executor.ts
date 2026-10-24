@@ -88,6 +88,8 @@ export async function executeTools(
    * 显式传参而非读 ALS：工具执行在流的 next() 之外，RequestContext 此处为空。
    */
   agentId?: string,
+  /** LSP 诊断归属者（= runAgentLoop 的 diagnosticOwner）。缺省回退 agentId，再回退主循环。 */
+  diagnosticOwner?: string,
 ): Promise<ContentBlock[]> {
   const log = getLogger();
 
@@ -147,6 +149,7 @@ export async function executeTools(
                 onProgress,
                 sessionId,
                 agentId,
+                diagnosticOwner,
               )
                 .then((result) => ({ idx, result }))
                 .catch((err: any) => ({
@@ -176,6 +179,7 @@ export async function executeTools(
             onProgress,
             sessionId,
             agentId,
+            diagnosticOwner,
           );
           resultMap.set(idx, result);
         } catch (err: any) {
@@ -457,6 +461,8 @@ async function executeSingleTool(
   sessionId?: string,
   /** S10：子代理身份，见 executeTools 同名参数 */
   agentId?: string,
+  /** 见 executeTools 同名参数 */
+  diagnosticOwner?: string,
 ): Promise<ContentBlock> {
   const log = getLogger();
   const tool = tools.get(block.name);
@@ -739,7 +745,9 @@ async function executeSingleTool(
       const editedPath = (effectiveInput?.file_path ?? effectiveInput?.path) as string | undefined;
       if (editedPath) {
         void import("../lsp/manager.ts")
-          .then(({ syncFileToLSP }) => syncFileToLSP(editedPath))
+          .then(({ syncFileToLSP, MAIN_DIAGNOSTIC_OWNER }) =>
+            syncFileToLSP(editedPath, diagnosticOwner ?? agentId ?? MAIN_DIAGNOSTIC_OWNER),
+          )
           .catch(() => {
             /* best-effort，失败不影响子代理执行 */
           });
