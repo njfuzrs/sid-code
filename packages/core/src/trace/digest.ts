@@ -2159,6 +2159,48 @@ export function buildDigest(ref: SessionRef, full: boolean, paths: DigestPaths):
   const events = readJsonl<{ event?: string; data?: Record<string, unknown> }>(eventsPath);
   const errors = readJsonl<{ event?: string; data?: Record<string, unknown> }>(errorsPath);
 
+  // 检测未收尾的 PreToolUse：每个 fire 过 PreToolUse 的 tool_use_id 都必须有一个
+  // PostToolUse / PostToolUseFailure / PermissionDenied 收尾（tool-hook-pair-invariant 不变量）。
+  // 2026-10-24 全库扫描：23,654 个 PreToolUse 里 7 个悬空，可核的 5 个全是串行 Bash 级联跳过——
+  // 这类缺口在单测里写一个漏一个，所以在 digest 里机械地数，回归一次就亮一次。
+  const preIds = new Map<string, string>();
+  const closedIds = new Set<string>();
+  for (const e of events) {
+    const tid = (e.data as any)?.tool_use_id;
+    if (typeof tid !== "string" || !tid) continue;
+    if (e.event === "PreToolUse") preIds.set(tid, String((e.data as any)?.tool_name ?? "?"));
+    else if (
+      e.event === "PostToolUse" ||
+      e.event === "PostToolUseFailure" ||
+      e.event === "PermissionDenied"
+    ) {
+      closedIds.add(tid);
+    }
+  }
+  const unclosedPre = [...preIds].filter(([tid]) => !closedIds.has(tid));
+  if (unclosedPre.length > 0) {
+    // 进程中途被杀时末尾也会留悬空 Pre，那是 session_end_missing 的伴生症状，不另起假设；
+    // 中段出现才是收尾路径漏了。严重度只给 medium：它不影响模型，影响的是 span 与失败率口径。
+    anomalies.push({
+      layer: "L0",
+      severity: "medium",
+      kind: "unclosed_pre_tool_use",
+      detail: `${unclosedPre.length} 个 PreToolUse 在 events.jsonl 中无 PostToolUse/PostToolUseFailure/PermissionDenied 收尾`,
+      provenance: [
+        {
+          sourceFile: eventsPath,
+          lineRef: `tool_use_id: ${unclosedPre
+            .slice(0, 5)
+            .map(([tid, name]) => `${name}:${tid}`)
+            .join(", ")}${unclosedPre.length > 5 ? " …" : ""}`,
+          rawValue: `count=${unclosedPre.length}`,
+          mtime: fileMtimeIso(eventsPath),
+        },
+      ],
+      pointer: `messages.json 里同 tool_use_id 的 tool_result（看是哪条执行路径产出的）`,
+    });
+  }
+
   // 检测未配对的 BeforeModel（有 BeforeModel 但无 AfterModel/AfterModelRaw/TurnError/ModelCallUnpaired）
   const beforeModels = events.filter((e) => e.event === "BeforeModel");
   const afterEvents = events.filter(

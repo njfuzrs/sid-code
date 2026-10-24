@@ -3683,7 +3683,18 @@ function dirBytes(dir: string): number {
 // ─── S17：PostToolUseFailure 的错误分类 ───
 
 /** 工具失败分类（落 events.jsonl 的 `error_kind`，上传云端） */
-export type ToolErrorKind = "validation" | "permission" | "exec" | "timeout";
+/**
+ * aborted / skipped（2026-10-24）：中断与「没开始执行」不是工具不可靠的证据，必须能从轨迹里
+ * 单独数出来。原先它们分别被并进 exec（或经 tool_error 走 PostToolUse 路径），
+ * 轨迹里「用户按 ESC」与「命令真的失败」长得一样。
+ */
+export type ToolErrorKind =
+  | "validation"
+  | "permission"
+  | "exec"
+  | "timeout"
+  | "aborted"
+  | "skipped";
 
 /** error_head 截断长度：够认出错误类型，又不把整段输出（可能含密钥）落进轨迹 */
 export const ERROR_HEAD_MAX = 200;
@@ -3698,6 +3709,7 @@ function failureText(input: PostToolUseInput): string {
  * 按现有错误来源分类，判不出用 exec。
  * - `sid_failure_kind=validation` → validation（参数校验失败，工具没执行）；
  * - `hook_blocked` → permission（PreToolUse hook 阻止，与权限拒绝同属「不让执行」）；
+ * - `aborted` → aborted（执行中被中断）；`skipped` → skipped（Pre 已 fire 但没开始执行）；
  * - 错误文本含超时特征 → timeout；
  * - 其余（exception / tool_error / 未知）→ exec。
  * 权限拒绝本身走 PermissionDenied 事件（Q7），不经过这里。
@@ -3705,6 +3717,8 @@ function failureText(input: PostToolUseInput): string {
 export function classifyToolFailure(input: PostToolUseInput): ToolErrorKind {
   if (input.sid_failure_kind === "validation") return "validation";
   if (input.sid_failure_kind === "hook_blocked") return "permission";
+  if (input.sid_failure_kind === "aborted") return "aborted";
+  if (input.sid_failure_kind === "skipped") return "skipped";
   const text = failureText(input);
   if (TIMEOUT_EVENT_RE.test(text)) return "timeout";
   return "exec";
