@@ -220,6 +220,18 @@ export interface NorthstarSnapshot {
     prompt_duration_p95: Metric;
     /** 带 permission 字段的会话行数 —— 为 0 说明窗口内全是 B11 之前的版本，不是"没鉴权" */
     sessions_with_field: number;
+    /**
+     * 模式越权哨兵：plan / deny-write 下放行写类工具（计划文件除外）的次数之和。**恒应为 0**。
+     * 分母 n = 带 mode_guard_breaches 字段的会话数（§4 修复之前的版本行不进）。
+     */
+    mode_guard_breaches?: Metric;
+    /** 决策可归因率：带 step 的决策数 ÷ 全部决策数（只统计带 by_step 的会话行） */
+    step_attribution_rate?: Metric;
+    /**
+     * 规则暴露会话占比：会话开始时配了任一 allow/deny/ask 规则或 disallowedTools 的会话 ÷
+     * 带 permission_config 的会话。§4 四类缺陷的触发前提都在这个分子里——它是影响面分母。
+     */
+    rule_exposed_session_rate?: Metric;
   };
   /** 底座 · 可度量（含 P2-14 轨迹损坏率） */
   foundation: {
@@ -442,6 +454,28 @@ export function buildSnapshot(opts: BuildOptions = {}): NorthstarSnapshot {
     permRuleHits += p.rule_hits;
     promptDurations.push(...p.prompt_durations_ms);
   }
+  // §4 修复后新增的三项：旧版本行没有这些键，一律不进分母（缺失 ≠ 0）
+  const withGuard = withPerm.filter((e) => typeof e.permission!.mode_guard_breaches === "number");
+  const guardBreaches = withGuard.reduce((a, e) => a + e.permission!.mode_guard_breaches!, 0);
+  let stepTotal = 0;
+  let stepAttributed = 0;
+  for (const e of withPerm) {
+    const bs = e.permission!.by_step;
+    if (!bs) continue;
+    for (const [k, b] of Object.entries(bs)) {
+      stepTotal += b.n;
+      if (k !== "none") stepAttributed += b.n;
+    }
+  }
+  const withCfg = index.filter((e) => e.permission_config !== undefined);
+  const ruleExposed = withCfg.filter((e) => {
+    const c = e.permission_config!;
+    const ruleCount = (["allow", "deny", "ask"] as const).reduce(
+      (a, b) => a + Object.values(c.rules[b] ?? {}).reduce((x, y) => x + y, 0),
+      0,
+    );
+    return ruleCount > 0 || c.disallowed_tools > 0;
+  }).length;
 
   // ── 底座 ──
   const defenseCount = index.filter((e) => e.defense_triggered === true).length;
@@ -550,6 +584,24 @@ export function buildSnapshot(opts: BuildOptions = {}): NorthstarSnapshot {
         "ms",
       ),
       sessions_with_field: withPerm.length,
+      mode_guard_breaches: metric(
+        withGuard.length > 0 ? guardBreaches : null,
+        withGuard.length,
+        `${IDX}:permission.mode_guard_breaches（求和 · 分母=带该字段的会话数 · 恒应为 0）`,
+        "count",
+      ),
+      step_attribution_rate: metric(
+        stepTotal > 0 ? stepAttributed / stepTotal : null,
+        stepTotal,
+        `${IDX}:permission.by_step（step≠none 的决策 ÷ 全部决策）`,
+        "ratio",
+      ),
+      rule_exposed_session_rate: metric(
+        withCfg.length > 0 ? ruleExposed / withCfg.length : null,
+        withCfg.length,
+        `${IDX}:permission_config（有规则或黑名单的会话 ÷ 带该字段的会话）`,
+        "ratio",
+      ),
     },
     foundation: {
       defense_trigger_rate: metric(
@@ -741,6 +793,8 @@ const COMPARE_KEYS: Array<[string, (s: NorthstarSnapshot) => Metric | undefined]
   ["更安全 · HITL 介入率", (s) => s.safer?.hitl_rate],
   ["更安全 · 规则命中率", (s) => s.safer?.rule_hit_rate],
   ["更安全 · 确认耗时 p95", (s) => s.safer?.prompt_duration_p95],
+  ["更安全 · 模式越权哨兵", (s) => s.safer?.mode_guard_breaches],
+  ["更安全 · 决策可归因率", (s) => s.safer?.step_attribution_rate],
   ["底座 · 防线触发率", (s) => s.foundation.defense_trigger_rate],
   ["底座 · 轨迹损坏率", (s) => s.foundation.traj_corrupt_rate],
 ];
@@ -932,6 +986,15 @@ export function renderSnapshot(s: NorthstarSnapshot): string {
   L.push(row("规则命中率", s.safer.rule_hit_rate));
   L.push(row("确认耗时 p50", s.safer.prompt_duration_p50));
   L.push(row("确认耗时 p95", s.safer.prompt_duration_p95));
+  if (s.safer.mode_guard_breaches) L.push(row("模式越权哨兵(恒应 0)", s.safer.mode_guard_breaches));
+  if (s.safer.step_attribution_rate) L.push(row("决策可归因率", s.safer.step_attribution_rate));
+  if (s.safer.rule_exposed_session_rate)
+    L.push(row("规则暴露会话占比", s.safer.rule_exposed_session_rate));
+  if (s.safer.mode_guard_breaches?.value) {
+    L.push(
+      "  ⚠️ 模式越权哨兵非零：plan / deny-write 下有写类工具被放行，说明出现了绕过总闸的放行口",
+    );
+  }
   if (s.safer.sessions_with_field === 0) {
     // 明说：n=0 的成因是「窗口内全是 B11 之前的版本」，不是「这些会话没鉴权」
     L.push("  （无带 permission 字段的会话：窗口内的行由 B11 埋点之前的版本产生，属预期）");
