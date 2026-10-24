@@ -89,7 +89,8 @@ export class LSPServerInstance {
           capabilities: {
             textDocument: {
               synchronization: { didSave: true, dynamicRegistration: false },
-              publishDiagnostics: { relatedInformation: true },
+              // versionSupport：请服务器在推送里带文档版本，registry 据此丢弃基于旧版本的诊断
+              publishDiagnostics: { relatedInformation: true, versionSupport: true },
               // G7：声明查询能力，否则服务器可能不返回 definition/references/hover 等结果。
               hover: { contentFormat: ["markdown", "plaintext"] },
               definition: { linkSupport: true },

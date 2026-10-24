@@ -4,11 +4,15 @@
  * 对标 Claude Code 的 manager.ts：
  * - 代数计数器防止过期的异步初始化 Promise 更新状态
  * - 失败后可重试
- * - collectDiagnosticAttachment() 供 Agent 循环每轮注入诊断
+ * - collectDiagnosticText() 供 Agent 循环每轮注入诊断
  */
 
 import { LSPServerManager } from "./server-manager.ts";
-import { DiagnosticRegistry } from "./diagnostic-registry.ts";
+import {
+  DiagnosticRegistry,
+  MAIN_DIAGNOSTIC_OWNER,
+  type CollectStats,
+} from "./diagnostic-registry.ts";
 import { registerLSPNotificationHandlers, formatDiagnostics } from "./passive-feedback.ts";
 import { loadLSPConfigs } from "./config.ts";
 import { getLogger } from "../debug/logger.ts";
@@ -21,6 +25,50 @@ let initState: InitState = "not-started";
 let initGeneration = 0; // 代数计数器（对标 Claude Code）
 /** lsp.json 的配置错误摘要（面向用户），并入 getLSPHealthWarning 的一次性告警 */
 let configErrors: string[] = [];
+
+export { MAIN_DIAGNOSTIC_OWNER };
+
+/** LSP 诊断注入事件名（events.jsonl）。每次 collect 一条，无论有没有注入。 */
+export const LSP_DIAGNOSTICS_EVENT_NAME = "LspDiagnostics";
+
+/**
+ * 诊断注入进轨迹的模块级通道。
+ *
+ * 此前这条链路零埋点，只能 grep raw.jsonl 里的注入文本，看不到四件事：限流截了多少、
+ * 过滤后为空而整轮不注入、推送是不是基于旧版本、子代理有没有收到。事后翻轨迹无从证伪。
+ * 与 ReadHint 同款：主循环与子代理多处调用，App 在 collector 就绪后注入；未注入或抛错一律静默。
+ */
+export type LspDiagnosticsTraceSink = (data: Record<string, unknown>) => void;
+let diagnosticsSink: LspDiagnosticsTraceSink | null = null;
+
+/** 注入/清除诊断注入埋点通道（null = 关闭，测试收尾复位用） */
+export function setLspDiagnosticsTraceSink(s: LspDiagnosticsTraceSink | null): void {
+  diagnosticsSink = s;
+}
+
+function emitCollectStats(owner: string, stats: CollectStats): void {
+  if (!diagnosticsSink) return;
+  // 两次 collect 之间什么都没发生：不写，否则每轮都有一条全 0 的事件
+  if (stats.outcome === "empty" && stats.publishes === 0) return;
+  try {
+    diagnosticsSink({
+      ...(owner === MAIN_DIAGNOSTIC_OWNER ? {} : { agent_id: owner }),
+      outcome: stats.outcome,
+      files: stats.files,
+      actionable: stats.actionable,
+      already_delivered: stats.alreadyDelivered,
+      injected: stats.injected,
+      carried: stats.carried,
+      omitted_info: stats.omittedInfo,
+      publishes: stats.publishes,
+      publishes_with_version: stats.publishesWithVersion,
+      stale_syncing: stats.staleSyncing,
+      stale_version: stats.staleVersion,
+    });
+  } catch {
+    /* 度量不影响注入 */
+  }
+}
 
 /**
  * 初始化 LSP 系统（懒初始化）。
@@ -182,29 +230,56 @@ export async function notifyFileChanged(filePath: string, content: string): Prom
 /**
  * 编辑/写入文件后，把最新内容同步给 LSP 的完整编排（主循环与子代理共用）。
  *
- * 提取自 query/tool-executor.ts 的 notifyLSPFileChange，消除主循环与子代理两套重复实现，
- * 也让子代理路径（此前完全不通知 LSP）能复用同一套正确编排：
- *   1. clearDiagnosticsForFile：清该文件的跨轮次去重缓存，让服务器基于新内容重推的诊断
- *      能作为"新诊断"再次投递（否则修复后诊断不消失 / 过时错误驻留）。
+ * 提取自 query/tool-executor.ts 的 notifyLSPFileChange，消除主循环与子代理两套重复实现：
+ *   1. beginEdit（**同步，先于任何 await**）：登记归属者，清该文件的旧诊断，进入同步窗口。
+ *      调用方是 fire-and-forget 的，旧实现在 await readFile 之后才清，下一轮 collect
+ *      可能抢在前面，把编辑前的诊断注入给模型。
  *   2. changeFile：发 didChange（首次见到文件则 didOpen），让服务器看到最新内容。
- *   3. saveFile：补发 didSave——部分服务器（pylsp、gopls 某些配置）依赖 didSave 触发完整诊断。
+ *   3. endEdit（finally）：结束同步窗口，记下发出的版本号。
+ *   4. saveFile：补发 didSave——部分服务器（pylsp、gopls 某些配置）依赖 didSave 触发完整诊断。
  *
  * LSP 未启用时不读盘直接返回。全程 best-effort：任何失败只记 debug 日志，绝不阻断工具执行。
  *
  * @param filePath 被编辑/写入的文件绝对路径
+ * @param owner 诊断归属者：主循环传 MAIN_DIAGNOSTIC_OWNER（默认），子代理传自己的 agentId
  */
-export async function syncFileToLSP(filePath: string): Promise<void> {
+export async function syncFileToLSP(
+  filePath: string,
+  owner: string = MAIN_DIAGNOSTIC_OWNER,
+): Promise<void> {
   if (!filePath) return;
+  const manager = getLSPManager();
+  const registry = getDiagnosticRegistry();
+  if (!manager) return; // LSP 未启用，避免无谓读盘
+  let uri: string | undefined;
+  let seq = 0;
+  let sentVersion: number | undefined;
   try {
-    if (!getLSPManager()) return; // LSP 未启用，避免无谓读盘
+    const { pathToFileURL } = require("url");
+    uri = pathToFileURL(filePath).href as string;
+    if (registry) seq = registry.beginEdit(uri, owner);
+  } catch {
+    uri = undefined; // 畸形路径：不登记，照常同步
+  }
+  try {
     const { readFile } = await import("fs/promises");
     const content = await readFile(filePath, "utf-8");
-    clearDiagnosticsForFile(filePath);
-    await notifyFileChanged(filePath, content);
-    getLSPManager()?.saveFile(filePath);
+    sentVersion = await manager.changeFile(filePath, content);
   } catch (e) {
     getLogger().debug("LSP", `文件变更同步失败（不影响工具执行）: ${(e as Error)?.message}`);
+  } finally {
+    if (registry && uri) registry.endEdit(uri, seq, sentVersion);
   }
+  if (sentVersion !== undefined) manager.saveFile(filePath);
+}
+
+/**
+ * 子代理结束时把它名下文件的诊断归属转给主循环（见 DiagnosticRegistry.releaseOwner）。
+ * LSP 未就绪时静默跳过。
+ */
+export function releaseDiagnosticOwner(owner: string): void {
+  if (!owner || owner === MAIN_DIAGNOSTIC_OWNER) return;
+  getDiagnosticRegistry()?.releaseOwner(owner);
 }
 
 /**
@@ -215,57 +290,36 @@ export async function syncFileToLSP(filePath: string): Promise<void> {
  * 末尾附一行被省略的条数——避免对模型刷无关紧要的提示、浪费 token。过滤后若一条都
  * 不剩则整批跳过（返回 null），保持"有真问题才打扰"的克制。
  *
- * @param scopeFilePaths 可选的文件作用域（绝对路径）。传入时只收集这些文件的诊断，
- *   且只清空这些文件的 pending——供并发子代理隔离消费，避免与主循环 / 其它子代理互相偷诊断。
- *   不传时收集并清空全部 pending（主循环行为，保持不变）。
- * @returns 格式化文本，无诊断或仅含 Hint/Info 时返回 null
+ * 每个消费者只拿自己编辑过的文件（归属见 DiagnosticRegistry），主循环还额外拿到
+ * 已结束子代理转交的文件、以及只被 lsp 工具打开过的文件在基线之后新出现的诊断。
+ *
+ * @param owner 诊断归属者：主循环传 MAIN_DIAGNOSTIC_OWNER（默认），子代理传自己的 agentId
+ * @returns 格式化文本，无可操作诊断时返回 null
  */
-export function collectDiagnosticText(scopeFilePaths?: Iterable<string>): string | null {
+export function collectDiagnosticText(owner: string = MAIN_DIAGNOSTIC_OWNER): string | null {
   const registry = getDiagnosticRegistry();
   if (!registry) return null;
 
-  // 文件路径 → file:// URI（registry 内部以 URI 为 key）。畸形路径静默跳过。
-  let scopeUris: string[] | undefined;
-  if (scopeFilePaths) {
-    const { pathToFileURL } = require("url");
-    scopeUris = [];
-    for (const p of scopeFilePaths) {
-      try {
-        scopeUris.push(pathToFileURL(p).href);
-      } catch {
-        /* 畸形路径跳过 */
-      }
-    }
-    // 显式传了作用域但没有一个合法 URI → 不误退化为全量消费，直接返回 null。
-    if (scopeUris.length === 0) return null;
-  }
-
-  const files = registry.collectDiagnostics(scopeUris);
+  // 严重度过滤在 registry 内、**限流之前**完成：旧实现在这里过滤，Hint 已经占掉了
+  // 30 条名额。评估会话 ce7ea52e 实测 120 次注入里 606 条 Hint 混在 443 条 Error 中。
+  const { files, stats } = registry.collectDiagnostics(owner);
+  emitCollectStats(owner, stats);
   if (files.length === 0) return null;
 
-  // 逐条过滤而不是整批放行：旧实现只判「整批是否含 Error/Warning」，过关后把同文件的
-  // Hint 原样带出——评估会话 ce7ea52e 实测 120 次注入里 606 条 Hint（497 条是无关的
-  // deprecated 提示）混在 443 条 Error 中。只保留可操作的严重度，被略去的条数如实告知，
-  // 模型需要时可用 lsp 工具主动查全量。
-  let omitted = 0;
-  const actionable: typeof files = [];
-  for (const f of files) {
-    const kept = f.diagnostics.filter((d) => d.severity === "Error" || d.severity === "Warning");
-    omitted += f.diagnostics.length - kept.length;
-    if (kept.length > 0) actionable.push({ ...f, diagnostics: kept });
+  const notes: string[] = [];
+  if (stats.carried > 0) {
+    notes.push(`另有 ${stats.carried} 条 Error/Warning 超出单次上限，将在后续轮次补发`);
   }
-  if (actionable.length === 0) return null;
-
-  const text = formatDiagnostics(actionable);
-  return omitted > 0 ? `${text}\n（另有 ${omitted} 条提示（Hint/Info）已省略）` : text;
+  if (stats.omittedInfo > 0) notes.push(`另有 ${stats.omittedInfo} 条提示（Hint/Info）已省略`);
+  const text = formatDiagnostics(files);
+  return notes.length > 0 ? `${text}\n（${notes.join("；")}）` : text;
 }
 
 /**
- * 清除指定文件的已投递诊断记录（write/edit 工具编辑文件后调用）。
+ * 清除指定文件的诊断状态（pending / delivered / latest）。
  *
- * 对标 Claude Code 的 clearDeliveredDiagnosticsForFile：编辑后旧诊断可能已失效，
- * 清除 delivered 缓存让服务器重新推送的诊断能作为"新诊断"再次投递，避免
- * 修复后的诊断被跨轮次去重永久过滤、或过时错误持续驻留。LSP 未就绪时静默跳过。
+ * 对标 Claude Code 的 clearDeliveredDiagnosticsForFile。编辑路径走 syncFileToLSP 的
+ * beginEdit（它内部会清），这里留给不经编辑同步的调用方。LSP 未就绪时静默跳过。
  */
 export function clearDiagnosticsForFile(filePath: string): void {
   const registry = getDiagnosticRegistry();

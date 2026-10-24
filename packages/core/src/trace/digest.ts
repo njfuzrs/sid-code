@@ -579,6 +579,71 @@ export function aggregateStopReasonMismatchStats(
   return stats.total > 0 ? stats : undefined;
 }
 
+/**
+ * LSP 诊断注入口径（2026-10-24）。取数源：`LspDiagnostics` 事件，每次 collect 一条。
+ *
+ * 回答此前只能从 raw.jsonl 注入文本反推、且反推不出的四件事：
+ * 截断了多少（carried）、有多少轮因只剩 Hint 而不注入（info_only）、
+ * 有多少推送基于旧内容被丢弃（stale_*）、子代理收到了多少（byAgent）。
+ */
+export interface LspDiagnosticsDigestStats {
+  /** collect 次数（= 分母：有推送或有 pending 的轮次） */
+  collects: number;
+  /** outcome 分布：injected / info_only / all_delivered / empty */
+  outcomes: Record<string, number>;
+  injected: number;
+  /** 超出单次上限、留待后续补发的条数（累加） */
+  carried: number;
+  omittedInfo: number;
+  publishes: number;
+  /** 带 version 的推送占比的分子（服务器是否支持 versionSupport） */
+  publishesWithVersion: number;
+  /** 编辑同步窗口内到达、被丢弃的推送 */
+  staleSyncing: number;
+  /** 版本号落后、被丢弃的推送 */
+  staleVersion: number;
+  /** 子代理侧 collect 次数与注入条数（agent_id → …） */
+  byAgent: Record<string, { collects: number; injected: number }>;
+}
+
+export function aggregateLspDiagnosticsStats(
+  events: Array<{ event?: string; data?: Record<string, unknown> }>,
+): LspDiagnosticsDigestStats | undefined {
+  const out: LspDiagnosticsDigestStats = {
+    collects: 0,
+    outcomes: {},
+    injected: 0,
+    carried: 0,
+    omittedInfo: 0,
+    publishes: 0,
+    publishesWithVersion: 0,
+    staleSyncing: 0,
+    staleVersion: 0,
+    byAgent: {},
+  };
+  const num = (v: unknown) => (typeof v === "number" ? v : 0);
+  for (const e of events) {
+    if (e.event !== "LspDiagnostics") continue;
+    const d = e.data ?? {};
+    out.collects++;
+    const o = String(d.outcome ?? "unknown");
+    out.outcomes[o] = (out.outcomes[o] ?? 0) + 1;
+    out.injected += num(d.injected);
+    out.carried += num(d.carried);
+    out.omittedInfo += num(d.omitted_info);
+    out.publishes += num(d.publishes);
+    out.publishesWithVersion += num(d.publishes_with_version);
+    out.staleSyncing += num(d.stale_syncing);
+    out.staleVersion += num(d.stale_version);
+    if (typeof d.agent_id === "string") {
+      const a = (out.byAgent[d.agent_id] ??= { collects: 0, injected: 0 });
+      a.collects++;
+      a.injected += num(d.injected);
+    }
+  }
+  return out.collects > 0 ? out : undefined;
+}
+
 export interface RecoveryDigestStats {
   /** 以失败结束的调用数（recovery_give_up 条数） */
   giveUps: number;
@@ -1091,6 +1156,8 @@ export interface Digest {
   strictDegrade?: StrictDegradeStats;
   /** 发现 5：stop_reason 与 content 不一致次数。无 StopReasonMismatch 事件时 undefined。 */
   stopReasonMismatch?: StopReasonMismatchStats;
+  /** 2026-10-24：LSP 诊断注入口径。无 LspDiagnostics 事件（老会话 / 没用 LSP）时 undefined。 */
+  lspDiagnostics?: LspDiagnosticsDigestStats;
   /**
    * P1-8：过程病态度量（6 项）。始终产出（不像上面几项那样依赖专用事件）——
    * 六项全部从 traj + 通用事件派生，"全部健康"本身就是有意义的结论，
@@ -2823,6 +2890,7 @@ export function buildDigest(ref: SessionRef, full: boolean, paths: DigestPaths):
   const thinkingLeak = aggregateThinkingLeakStats(events);
   const strictDegrade = aggregateStrictDegradeStats(events);
   const stopReasonMismatch = aggregateStopReasonMismatchStats(events);
+  const lspDiagnostics = aggregateLspDiagnosticsStats(events);
 
   return {
     sessionId: ref.id,
@@ -2881,6 +2949,7 @@ export function buildDigest(ref: SessionRef, full: boolean, paths: DigestPaths):
     thinkingLeak,
     strictDegrade,
     stopReasonMismatch,
+    lspDiagnostics,
     pathology,
     // P0-2：始终产出（不像 jit/todo 那样依赖专用事件）—— 样本为 0 时 n=0 是有意义的
     // 结论（"这个会话没有 TTFT 样本"），整节消失则无法区分"没样本"与"该版本没接线"
@@ -3302,6 +3371,34 @@ export function renderHuman(d: Digest, opts: RenderOptions = {}): string {
     const gx = Object.entries(cp.gatesExhausted);
     if (gx.length > 0) {
       L.push(c("gray", "  闸门耗尽: ") + gx.map(([k, v]) => `${k}×${v}`).join(", "));
+    }
+  }
+
+  // LSP 诊断注入。过时推送被丢弃是闸门在工作（灰），补发条数非 0 标黄（说明单轮上限偏紧）。
+  if (d.lspDiagnostics) {
+    const ld = d.lspDiagnostics;
+    const oc = Object.entries(ld.outcomes)
+      .map(([k, v]) => `${k}×${v}`)
+      .join(", ");
+    L.push("");
+    L.push(
+      c("bold", "LSP 诊断:") +
+        ` 注入 ${ld.injected} 条 / ${ld.collects} 次 collect` +
+        " " +
+        c(ld.carried > 0 ? "yellow" : "gray", `补发 ${ld.carried}`) +
+        c("gray", `  省略 Hint/Info ${ld.omittedInfo}  (${oc})`),
+    );
+    L.push(
+      c("gray", "  推送: ") +
+        `${ld.publishes} 次（带 version ${ld.publishesWithVersion}）` +
+        c("gray", `  丢弃过时: 同步窗口 ${ld.staleSyncing} / 旧版本 ${ld.staleVersion}`),
+    );
+    const agents = Object.entries(ld.byAgent);
+    if (agents.length > 0) {
+      L.push(
+        c("gray", "  子代理: ") +
+          agents.map(([k, v]) => `${k} 注入 ${v.injected}/${v.collects} 次`).join(", "),
+      );
     }
   }
 

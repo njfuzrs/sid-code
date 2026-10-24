@@ -34,7 +34,7 @@ export function registerLSPNotificationHandlers(
     try {
       instance.onNotification("textDocument/publishDiagnostics", (params: unknown) => {
         try {
-          const p = params as { uri: string; diagnostics: any[] };
+          const p = params as { uri: string; version?: number | null; diagnostics: any[] };
           if (!p?.uri || !Array.isArray(p.diagnostics)) return;
 
           const diagnostics: Diagnostic[] = p.diagnostics.map((d) => ({
@@ -48,7 +48,9 @@ export function registerLSPNotificationHandlers(
             code: d.code,
           }));
 
-          registry.registerPending(serverName, [{ uri: p.uri, diagnostics }]);
+          // version 是协议可选字段（服务器声明了 versionSupport 才带）：带了就交给 registry
+          // 丢弃落后于已发出版本的推送；typescript-language-server 5.x 不带，靠编辑同步窗口兜底
+          registry.registerPending(serverName, [{ uri: p.uri, version: p.version, diagnostics }]);
         } catch (err: any) {
           log.error("LSP", `[${serverName}] 处理诊断通知失败: ${err.message}`);
         }

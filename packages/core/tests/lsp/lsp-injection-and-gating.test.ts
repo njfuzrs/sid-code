@@ -50,7 +50,7 @@ function agenticLoopInjectionCode(): string {
     })
     .join("\n");
   // 注入块从 collectDiagnosticText 调用起，到该 try 块结束
-  const start = codeOnly.indexOf("collectDiagnosticText(editedFiles)");
+  const start = codeOnly.indexOf("collectDiagnosticText(diagnosticOwner)");
   expect(start).toBeGreaterThan(0); // 前提成立：注入点还在（改名/删除时这里先红）
   const end = codeOnly.indexOf("注入 LSP 诊断反馈（子代理）", start);
   expect(end).toBeGreaterThan(start);

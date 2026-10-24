@@ -1,10 +1,14 @@
 /**
  * LSP 诊断注册表与被动反馈单测
- * 覆盖：批内去重 / 跨轮次去重 / 严重程度排序 / 体积限流 / 严重度映射 / 格式化
+ * 覆盖：按 uri 覆盖 / 归属隔离 / 编辑同步窗口 / 版本闸门 / 未编辑文件基线 /
+ *       严重度先于限流 / 超限补发 / 跨轮次去重 / collect 统计 / 格式化
  */
 
 import { describe, test, expect } from "bun:test";
-import { DiagnosticRegistry } from "@sid-code/core/lsp/diagnostic-registry.ts";
+import {
+  DiagnosticRegistry,
+  MAIN_DIAGNOSTIC_OWNER as MAIN,
+} from "@sid-code/core/lsp/diagnostic-registry.ts";
 import { formatDiagnostics } from "@sid-code/core/lsp/passive-feedback.ts";
 import type { Diagnostic, DiagnosticSeverity } from "@sid-code/core/lsp/types.ts";
 
@@ -18,191 +22,347 @@ function diag(message: string, severity: DiagnosticSeverity = "Error", line = 0)
   };
 }
 
-describe("DiagnosticRegistry", () => {
-  test("collectDiagnostics 返回待投递诊断后清空 pending", () => {
+/** 模拟一次完整的编辑同步（beginEdit → didChange 已发出 → endEdit） */
+function edited(reg: DiagnosticRegistry, uri: string, owner = MAIN, version?: number): void {
+  const seq = reg.beginEdit(uri, owner);
+  reg.endEdit(uri, seq, version);
+}
+
+const A = "file:///a.ts";
+const B = "file:///b.ts";
+
+describe("DiagnosticRegistry：基本投递", () => {
+  test("collect 返回待投递诊断后清空 pending", () => {
     const reg = new DiagnosticRegistry();
-    reg.registerPending("ts", [{ uri: "file:///a.ts", diagnostics: [diag("err1")] }]);
-
-    const first = reg.collectDiagnostics();
-    expect(first.length).toBe(1);
-    expect(first[0]!.diagnostics.length).toBe(1);
-
-    // 再次收集应为空（pending 已清空）
-    expect(reg.collectDiagnostics()).toEqual([]);
+    edited(reg, A);
+    reg.registerPending("ts", [{ uri: A, diagnostics: [diag("err1")] }]);
+    const { files, stats } = reg.collectDiagnostics(MAIN);
+    expect(files).toHaveLength(1);
+    expect(stats.outcome).toBe("injected");
+    expect(stats.injected).toBe(1);
+    expect(reg.collectDiagnostics(MAIN).files).toEqual([]);
   });
 
-  test("批内去重：相同诊断只保留一条", () => {
+  test("文件内去重：同一快照里的重复诊断只投一条", () => {
     const reg = new DiagnosticRegistry();
-    reg.registerPending("ts", [{ uri: "file:///a.ts", diagnostics: [diag("dup"), diag("dup")] }]);
-    const files = reg.collectDiagnostics();
-    expect(files[0]!.diagnostics.length).toBe(1);
+    edited(reg, A);
+    reg.registerPending("ts", [{ uri: A, diagnostics: [diag("dup"), diag("dup")] }]);
+    expect(reg.collectDiagnostics(MAIN).files[0]!.diagnostics).toHaveLength(1);
   });
 
-  test("跨轮次去重：已投递的诊断不再重复投递", () => {
+  test("跨轮次去重：已投递的诊断不再重复投递，outcome=all_delivered", () => {
     const reg = new DiagnosticRegistry();
-    reg.registerPending("ts", [{ uri: "file:///a.ts", diagnostics: [diag("err1")] }]);
-    expect(reg.collectDiagnostics().length).toBe(1);
+    edited(reg, A);
+    reg.registerPending("ts", [{ uri: A, diagnostics: [diag("err1")] }]);
+    reg.collectDiagnostics(MAIN);
+    reg.registerPending("ts", [{ uri: A, diagnostics: [diag("err1"), diag("err2", "Error", 2)] }]);
+    const { files, stats } = reg.collectDiagnostics(MAIN);
+    expect(files[0]!.diagnostics.map((d) => d.message)).toEqual(["err2"]);
+    expect(stats.alreadyDelivered).toBe(1);
 
-    // 同样的诊断再次注册 → 被跨轮次去重过滤
-    reg.registerPending("ts", [{ uri: "file:///a.ts", diagnostics: [diag("err1")] }]);
-    expect(reg.collectDiagnostics()).toEqual([]);
-
-    // 新诊断仍能投递
-    reg.registerPending("ts", [{ uri: "file:///a.ts", diagnostics: [diag("err2")] }]);
-    expect(reg.collectDiagnostics().length).toBe(1);
+    reg.registerPending("ts", [{ uri: A, diagnostics: [diag("err1"), diag("err2", "Error", 2)] }]);
+    const again = reg.collectDiagnostics(MAIN);
+    expect(again.files).toEqual([]);
+    expect(again.stats.outcome).toBe("all_delivered");
   });
 
-  test("严重程度排序：Error 在 Warning/Hint 之前", () => {
+  test("Error 排在 Warning 之前；Hint/Info 不注入只计数", () => {
     const reg = new DiagnosticRegistry();
+    edited(reg, A);
     reg.registerPending("ts", [
       {
-        uri: "file:///a.ts",
-        diagnostics: [diag("hint", "Hint"), diag("error", "Error"), diag("warn", "Warning")],
+        uri: A,
+        diagnostics: [diag("hint", "Hint"), diag("warn", "Warning", 1), diag("error", "Error", 2)],
       },
     ]);
-    const files = reg.collectDiagnostics();
-    const severities = files[0]!.diagnostics.map((d) => d.severity);
-    expect(severities).toEqual(["Error", "Warning", "Hint"]);
+    const { files, stats } = reg.collectDiagnostics(MAIN);
+    expect(files[0]!.diagnostics.map((d) => d.severity)).toEqual(["Error", "Warning"]);
+    expect(stats.omittedInfo).toBe(1);
   });
 
-  test("每文件最多 10 条诊断", () => {
+  test("只有 Hint/Info → outcome=info_only，不注入", () => {
     const reg = new DiagnosticRegistry();
-    const many = Array.from({ length: 15 }, (_, i) => diag(`err${i}`, "Error", i));
-    reg.registerPending("ts", [{ uri: "file:///a.ts", diagnostics: many }]);
-    const files = reg.collectDiagnostics();
-    expect(files[0]!.diagnostics.length).toBe(10);
-  });
-
-  test("总计最多 30 条诊断", () => {
-    const reg = new DiagnosticRegistry();
-    // 5 个文件，每个 10 条 = 50 条，应被限制为 30
-    const pendingFiles = Array.from({ length: 5 }, (_, f) => ({
-      uri: `file:///f${f}.ts`,
-      diagnostics: Array.from({ length: 10 }, (_, i) => diag(`f${f}-err${i}`, "Error", i)),
-    }));
-    reg.registerPending("ts", pendingFiles);
-    const files = reg.collectDiagnostics();
-    const total = files.reduce((sum, f) => sum + f.diagnostics.length, 0);
-    expect(total).toBe(30);
+    edited(reg, A);
+    reg.registerPending("ts", [{ uri: A, diagnostics: [diag("h", "Hint"), diag("i", "Info")] }]);
+    const { files, stats } = reg.collectDiagnostics(MAIN);
+    expect(files).toEqual([]);
+    expect(stats.outcome).toBe("info_only");
+    expect(stats.omittedInfo).toBe(2);
   });
 
   test("clear 重置所有状态", () => {
     const reg = new DiagnosticRegistry();
-    reg.registerPending("ts", [{ uri: "file:///a.ts", diagnostics: [diag("err1")] }]);
-    reg.collectDiagnostics();
+    edited(reg, A);
+    reg.registerPending("ts", [{ uri: A, diagnostics: [diag("err1")] }]);
+    reg.collectDiagnostics(MAIN);
     reg.clear();
-    // clear 后，之前投递过的诊断可再次投递（delivered 已清空）
-    reg.registerPending("ts", [{ uri: "file:///a.ts", diagnostics: [diag("err1")] }]);
-    expect(reg.collectDiagnostics().length).toBe(1);
+    edited(reg, A);
+    reg.registerPending("ts", [{ uri: A, diagnostics: [diag("err1")] }]);
+    expect(reg.collectDiagnostics(MAIN).files).toHaveLength(1);
+  });
+});
+
+describe("缺陷 3：publishDiagnostics 是全量快照，pending 必须按 uri 覆盖", () => {
+  test("同一轮先报错后修好 → 不注入已修好的错误", () => {
+    const reg = new DiagnosticRegistry();
+    edited(reg, A);
+    reg.registerPending("ts", [{ uri: A, diagnostics: [diag("E1")] }]);
+    reg.registerPending("ts", [{ uri: A, diagnostics: [] }]);
+    const { files, stats } = reg.collectDiagnostics(MAIN);
+    expect(files).toEqual([]);
+    expect(stats.outcome).toBe("clean");
+    // 与 latest 一致：两条链路对同一文件给出同一状态
+    expect(reg.peekDiagnosticsForFile(A)).toEqual([]);
+    expect(stats.publishes).toBe(2);
   });
 
-  test("clearForFile：清除指定文件 delivered 记录后同诊断可再投递（G3）", () => {
+  test("同一轮两次推送内容不同 → 只投最后一次", () => {
     const reg = new DiagnosticRegistry();
-    reg.registerPending("ts", [{ uri: "file:///a.ts", diagnostics: [diag("err1")] }]);
-    expect(reg.collectDiagnostics().length).toBe(1);
-
-    // 未清除时，同诊断被跨轮次去重过滤
-    reg.registerPending("ts", [{ uri: "file:///a.ts", diagnostics: [diag("err1")] }]);
-    expect(reg.collectDiagnostics()).toEqual([]);
-
-    // 清除该文件 delivered 记录后，同诊断重新作为新诊断投递
-    reg.clearForFile("file:///a.ts");
-    reg.registerPending("ts", [{ uri: "file:///a.ts", diagnostics: [diag("err1")] }]);
-    expect(reg.collectDiagnostics().length).toBe(1);
-  });
-
-  test("clearForFile：只清目标文件，其它文件 delivered 记录不受影响", () => {
-    const reg = new DiagnosticRegistry();
-    reg.registerPending("ts", [
-      { uri: "file:///a.ts", diagnostics: [diag("erra")] },
-      { uri: "file:///b.ts", diagnostics: [diag("errb")] },
+    edited(reg, A);
+    reg.registerPending("ts", [{ uri: A, diagnostics: [diag("old")] }]);
+    reg.registerPending("ts", [{ uri: A, diagnostics: [diag("new")] }]);
+    expect(reg.collectDiagnostics(MAIN).files[0]!.diagnostics.map((d) => d.message)).toEqual([
+      "new",
     ]);
-    expect(reg.collectDiagnostics().length).toBe(2);
+  });
+});
 
-    reg.clearForFile("file:///a.ts");
-    // a.ts 同诊断可再投递；b.ts 仍被去重
+describe("缺陷 1：严重度过滤必须先于限流", () => {
+  test("3 个纯 Hint 文件（30 条）+ 1 个 Error 文件 → Error 照样注入", () => {
+    const reg = new DiagnosticRegistry();
+    for (const f of ["h1", "h2", "h3"]) {
+      const uri = `file:///${f}.ts`;
+      edited(reg, uri);
+      reg.registerPending("ts", [
+        { uri, diagnostics: Array.from({ length: 10 }, (_, i) => diag(`${f}-${i}`, "Hint", i)) },
+      ]);
+    }
+    edited(reg, "file:///d.ts");
+    reg.registerPending("ts", [{ uri: "file:///d.ts", diagnostics: [diag("real-error")] }]);
+
+    const { files, stats } = reg.collectDiagnostics(MAIN);
+    expect(files.map((f) => f.uri)).toEqual(["file:///d.ts"]);
+    expect(stats.omittedInfo).toBe(30);
+  });
+
+  test("跨文件按严重度排序：总额满时 Error 先于其它文件的 Warning", () => {
+    const reg = new DiagnosticRegistry();
+    const uris = ["w1", "w2", "w3"].map((f) => `file:///${f}.ts`);
+    for (const uri of uris) {
+      edited(reg, uri);
+      reg.registerPending("ts", [
+        { uri, diagnostics: Array.from({ length: 10 }, (_, i) => diag(`w${i}`, "Warning", i)) },
+      ]);
+    }
+    edited(reg, "file:///e.ts");
+    reg.registerPending("ts", [{ uri: "file:///e.ts", diagnostics: [diag("err")] }]);
+    const { files } = reg.collectDiagnostics(MAIN);
+    expect(files.find((f) => f.uri === "file:///e.ts")?.diagnostics).toHaveLength(1);
+    expect(files.reduce((n, f) => n + f.diagnostics.length, 0)).toBe(30);
+  });
+});
+
+describe("缺陷 2：超出上限的部分留到后续轮次补发，并告知条数", () => {
+  test("单文件 15 条 Error → 第一轮 10 条 + carried=5，第二轮补发 5 条", () => {
+    const reg = new DiagnosticRegistry();
+    edited(reg, A);
     reg.registerPending("ts", [
-      { uri: "file:///a.ts", diagnostics: [diag("erra")] },
-      { uri: "file:///b.ts", diagnostics: [diag("errb")] },
+      { uri: A, diagnostics: Array.from({ length: 15 }, (_, i) => diag(`e${i}`, "Error", i)) },
     ]);
-    const files = reg.collectDiagnostics();
-    expect(files.length).toBe(1);
-    expect(files[0]!.uri).toBe("file:///a.ts");
+    const first = reg.collectDiagnostics(MAIN);
+    expect(first.files[0]!.diagnostics).toHaveLength(10);
+    expect(first.stats.carried).toBe(5);
+
+    const second = reg.collectDiagnostics(MAIN);
+    expect(second.files[0]!.diagnostics.map((d) => d.message)).toEqual([
+      "e10",
+      "e11",
+      "e12",
+      "e13",
+      "e14",
+    ]);
+    expect(second.stats.carried).toBe(0);
+    // 补发完 pending 才清空
+    expect(reg.collectDiagnostics(MAIN).stats.outcome).toBe("empty");
   });
 
-  test("clearForFile：清除 pending 中该文件的待投递诊断，保留其它文件", () => {
+  test("总额 30：5 个文件各 10 条 → 第一轮 30、carried=20", () => {
     const reg = new DiagnosticRegistry();
-    // 注册两个文件的 pending（尚未 collect）
+    for (let f = 0; f < 5; f++) {
+      const uri = `file:///f${f}.ts`;
+      edited(reg, uri);
+      reg.registerPending("ts", [
+        { uri, diagnostics: Array.from({ length: 10 }, (_, i) => diag(`f${f}-${i}`, "Error", i)) },
+      ]);
+    }
+    const { files, stats } = reg.collectDiagnostics(MAIN);
+    expect(files.reduce((n, f) => n + f.diagnostics.length, 0)).toBe(30);
+    expect(stats.carried).toBe(20);
+    expect(reg.collectDiagnostics(MAIN).stats.injected).toBe(20);
+  });
+
+  test("补发时 Hint 不重复计入「已省略」", () => {
+    const reg = new DiagnosticRegistry();
+    edited(reg, A);
     reg.registerPending("ts", [
-      { uri: "file:///a.ts", diagnostics: [diag("erra")] },
-      { uri: "file:///b.ts", diagnostics: [diag("errb")] },
+      {
+        uri: A,
+        diagnostics: [
+          ...Array.from({ length: 12 }, (_, i) => diag(`e${i}`, "Error", i)),
+          diag("h", "Hint", 99),
+        ],
+      },
     ]);
-    // 编辑 a.ts → 清除其 pending（基于旧内容的诊断已失效）
-    reg.clearForFile("file:///a.ts");
-    const files = reg.collectDiagnostics();
-    expect(files.length).toBe(1);
-    expect(files[0]!.uri).toBe("file:///b.ts");
+    expect(reg.collectDiagnostics(MAIN).stats.omittedInfo).toBe(1);
+    expect(reg.collectDiagnostics(MAIN).stats.omittedInfo).toBe(0);
+  });
+});
+
+describe("缺陷 4：归属隔离——主循环不能拿走子代理的诊断", () => {
+  test("子代理编辑的文件，主循环 collect 拿不到；子代理自己拿得到", () => {
+    const reg = new DiagnosticRegistry();
+    edited(reg, B, "agent-1");
+    reg.registerPending("ts", [{ uri: B, diagnostics: [diag("sub-err")] }]);
+    expect(reg.collectDiagnostics(MAIN).files).toEqual([]);
+    expect(reg.collectDiagnostics("agent-1").files[0]!.uri).toBe(B);
   });
 
-  // ─── 作用域消费（并发子代理隔离，修复全局单例 collect 串味）───
-
-  test("作用域 collect：只收集作用域内文件，作用域外原样保留", () => {
+  test("两个子代理互不偷取", () => {
     const reg = new DiagnosticRegistry();
+    edited(reg, A, "agent-1");
+    edited(reg, B, "agent-2");
     reg.registerPending("ts", [
-      { uri: "file:///a.ts", diagnostics: [diag("erra")] },
-      { uri: "file:///b.ts", diagnostics: [diag("errb")] },
+      { uri: A, diagnostics: [diag("a")] },
+      { uri: B, diagnostics: [diag("b")] },
     ]);
-
-    // 只消费 a.ts
-    const filesA = reg.collectDiagnostics(["file:///a.ts"]);
-    expect(filesA.length).toBe(1);
-    expect(filesA[0]!.uri).toBe("file:///a.ts");
-
-    // b.ts 的 pending 未被清空，另一消费者仍能拿到（不被 a.ts 的消费偷走）
-    const filesB = reg.collectDiagnostics(["file:///b.ts"]);
-    expect(filesB.length).toBe(1);
-    expect(filesB[0]!.uri).toBe("file:///b.ts");
+    expect(reg.collectDiagnostics("agent-1").files.map((f) => f.uri)).toEqual([A]);
+    expect(reg.collectDiagnostics("agent-2").files.map((f) => f.uri)).toEqual([B]);
   });
 
-  test("作用域 collect：只清空作用域内文件的 pending", () => {
+  test("最近编辑者取得归属", () => {
     const reg = new DiagnosticRegistry();
+    edited(reg, A, "agent-1");
+    edited(reg, A, MAIN);
+    reg.registerPending("ts", [{ uri: A, diagnostics: [diag("x")] }]);
+    expect(reg.collectDiagnostics("agent-1").files).toEqual([]);
+    expect(reg.collectDiagnostics(MAIN).files).toHaveLength(1);
+  });
+
+  test("子代理结束 releaseOwner → 未消费与后续诊断都转给主循环，已投递的不重复", () => {
+    const reg = new DiagnosticRegistry();
+    edited(reg, A, "agent-1");
+    reg.registerPending("ts", [{ uri: A, diagnostics: [diag("seen")] }]);
+    reg.collectDiagnostics("agent-1");
+    reg.registerPending("ts", [{ uri: A, diagnostics: [diag("seen"), diag("later", "Error", 3)] }]);
+    reg.releaseOwner("agent-1");
+    const { files, stats } = reg.collectDiagnostics(MAIN);
+    expect(files[0]!.diagnostics.map((d) => d.message)).toEqual(["later"]);
+    // 子代理名下未结算的推送计数一并转给主循环（第一次已在 agent-1 的 collect 里结算）
+    expect(stats.publishes).toBe(1);
+  });
+});
+
+describe("缺陷 6：编辑同步窗口与版本闸门——不注入基于旧内容的诊断", () => {
+  test("beginEdit 之后、endEdit 之前到达的推送被丢弃（计 stale_syncing）", () => {
+    const reg = new DiagnosticRegistry();
+    reg.registerPending("ts", [{ uri: A, diagnostics: [] }]); // 基线
+    const seq = reg.beginEdit(A, MAIN);
+    reg.registerPending("ts", [{ uri: A, diagnostics: [diag("stale")] }]);
+    expect(reg.peekDiagnosticsForFile(A)).toEqual([]);
+    reg.endEdit(A, seq, 2);
+    const { files, stats } = reg.collectDiagnostics(MAIN);
+    expect(files).toEqual([]);
+    expect(stats.staleSyncing).toBe(1);
+  });
+
+  test("beginEdit 同步清掉编辑前的 pending（不等异步读盘）", () => {
+    const reg = new DiagnosticRegistry();
+    edited(reg, A);
+    reg.registerPending("ts", [{ uri: A, diagnostics: [diag("before-edit")] }]);
+    reg.beginEdit(A, MAIN); // 下一次编辑开始，collect 抢在 didChange 之前
+    expect(reg.collectDiagnostics(MAIN).files).toEqual([]);
+  });
+
+  test("版本号落后于已发出版本的推送被丢弃（计 stale_version）", () => {
+    const reg = new DiagnosticRegistry();
+    edited(reg, A, MAIN, 3);
+    reg.registerPending("ts", [{ uri: A, version: 2, diagnostics: [diag("old-version")] }]);
+    reg.registerPending("ts", [{ uri: A, version: 3, diagnostics: [diag("current")] }]);
+    const { files, stats } = reg.collectDiagnostics(MAIN);
+    expect(files[0]!.diagnostics.map((d) => d.message)).toEqual(["current"]);
+    expect(stats.staleVersion).toBe(1);
+    expect(stats.publishesWithVersion).toBe(2);
+  });
+
+  test("并发编辑：只有最后一次 beginEdit 对应的 endEdit 能结束同步窗口", () => {
+    const reg = new DiagnosticRegistry();
+    const s1 = reg.beginEdit(A, MAIN);
+    const s2 = reg.beginEdit(A, MAIN);
+    reg.endEdit(A, s1, 2); // 先完成的旧编辑
+    reg.registerPending("ts", [{ uri: A, diagnostics: [diag("between")] }]);
+    expect(reg.collectDiagnostics(MAIN).stats.staleSyncing).toBe(1);
+    reg.endEdit(A, s2, 3);
+    reg.registerPending("ts", [{ uri: A, diagnostics: [diag("after")] }]);
+    expect(reg.collectDiagnostics(MAIN).files[0]!.diagnostics[0]!.message).toBe("after");
+  });
+});
+
+describe("未编辑文件（只被 lsp 工具打开）：首次推送记基线不注入", () => {
+  test("首次推送不注入；之后新出现的诊断注入给主循环", () => {
+    const reg = new DiagnosticRegistry();
+    reg.registerPending("ts", [{ uri: A, diagnostics: [diag("pre-existing")] }]);
+    expect(reg.collectDiagnostics(MAIN).files).toEqual([]);
+    // codeAction 照样能读到
+    expect(reg.peekDiagnosticsForFile(A)).toHaveLength(1);
+
     reg.registerPending("ts", [
-      { uri: "file:///a.ts", diagnostics: [diag("erra")] },
-      { uri: "file:///b.ts", diagnostics: [diag("errb")] },
+      { uri: A, diagnostics: [diag("pre-existing"), diag("new-break", "Error", 4)] },
     ]);
-
-    // 消费 a.ts 后，a.ts pending 清空、b.ts 保留
-    reg.collectDiagnostics(["file:///a.ts"]);
-    // 无作用域的全量 collect 只应剩 b.ts（a.ts 已被消费清空）
-    const rest = reg.collectDiagnostics();
-    expect(rest.length).toBe(1);
-    expect(rest[0]!.uri).toBe("file:///b.ts");
+    expect(reg.collectDiagnostics(MAIN).files[0]!.diagnostics.map((d) => d.message)).toEqual([
+      "new-break",
+    ]);
   });
 
-  test("作用域 collect：作用域内无诊断返回空，不误消费其它文件", () => {
+  test("缺陷 5：没有消费者时 pending 有界（按 uri 覆盖）", () => {
     const reg = new DiagnosticRegistry();
-    reg.registerPending("ts", [{ uri: "file:///a.ts", diagnostics: [diag("erra")] }]);
+    edited(reg, A, "agent-never-collects");
+    for (let i = 0; i < 1000; i++) {
+      reg.registerPending("ts", [{ uri: A, diagnostics: [diag(`x${i}`)] }]);
+    }
+    expect((reg as unknown as { pending: Map<string, unknown> }).pending.size).toBe(1);
+  });
+});
 
-    // 作用域是一个没有 pending 诊断的文件
-    expect(reg.collectDiagnostics(["file:///other.ts"])).toEqual([]);
-    // a.ts 的 pending 未被误清空
-    expect(reg.collectDiagnostics().length).toBe(1);
+describe("clearForFile", () => {
+  test("清除后同诊断可再投递", () => {
+    const reg = new DiagnosticRegistry();
+    edited(reg, A);
+    reg.registerPending("ts", [{ uri: A, diagnostics: [diag("err1")] }]);
+    reg.collectDiagnostics(MAIN);
+    reg.registerPending("ts", [{ uri: A, diagnostics: [diag("err1")] }]);
+    expect(reg.collectDiagnostics(MAIN).files).toEqual([]);
+    reg.clearForFile(A);
+    reg.registerPending("ts", [{ uri: A, diagnostics: [diag("err1")] }]);
+    expect(reg.collectDiagnostics(MAIN).files).toHaveLength(1);
   });
 
-  test("作用域 collect：跨轮次去重按内容生效（同作用域同诊断不重复）", () => {
+  test("只清目标文件，其它文件不受影响", () => {
     const reg = new DiagnosticRegistry();
-    reg.registerPending("ts", [{ uri: "file:///a.ts", diagnostics: [diag("err1")] }]);
-    expect(reg.collectDiagnostics(["file:///a.ts"]).length).toBe(1);
-
-    // 同诊断再注册 → 作用域消费同样被跨轮次去重过滤
-    reg.registerPending("ts", [{ uri: "file:///a.ts", diagnostics: [diag("err1")] }]);
-    expect(reg.collectDiagnostics(["file:///a.ts"])).toEqual([]);
+    edited(reg, A);
+    edited(reg, B);
+    reg.registerPending("ts", [
+      { uri: A, diagnostics: [diag("erra")] },
+      { uri: B, diagnostics: [diag("errb")] },
+    ]);
+    reg.clearForFile(A);
+    expect(reg.collectDiagnostics(MAIN).files.map((f) => f.uri)).toEqual([B]);
   });
 });
 
 describe("peekDiagnosticsForFile（非消费式只读快照）", () => {
   test("返回该文件当前全量诊断，且不消费 pending（不破坏 G1 注入链）", () => {
     const reg = new DiagnosticRegistry();
+    edited(reg, "file:///a.ts");
     reg.registerPending("ts", [
       { uri: "file:///a.ts", diagnostics: [diag("err1"), diag("err2", "Warning", 3)] },
     ]);
@@ -213,18 +373,19 @@ describe("peekDiagnosticsForFile（非消费式只读快照）", () => {
     expect(reg.peekDiagnosticsForFile("file:///a.ts").length).toBe(2);
 
     // 关键不变量：peek 之后 collect 仍能拿到诊断（peek 没偷走 pending）
-    const collected = reg.collectDiagnostics();
+    const collected = reg.collectDiagnostics(MAIN).files;
     expect(collected.length).toBe(1);
     expect(collected[0]!.diagnostics.length).toBe(2);
   });
 
   test("collect 消费 pending 后，peek 仍返回快照（两条链互不影响）", () => {
     const reg = new DiagnosticRegistry();
+    edited(reg, "file:///a.ts");
     reg.registerPending("ts", [{ uri: "file:///a.ts", diagnostics: [diag("err1")] }]);
 
     // 先 collect 消费掉 pending
-    expect(reg.collectDiagnostics().length).toBe(1);
-    expect(reg.collectDiagnostics()).toEqual([]); // pending 已空
+    expect(reg.collectDiagnostics(MAIN).files.length).toBe(1);
+    expect(reg.collectDiagnostics(MAIN).files).toEqual([]); // pending 已空
 
     // peek 仍能拿到最新快照（codeAction 需要它填 context.diagnostics）
     expect(reg.peekDiagnosticsForFile("file:///a.ts").length).toBe(1);

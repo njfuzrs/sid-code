@@ -60,6 +60,15 @@ const CODE_ACTION_DIAGNOSTIC_WAIT_MS = 1500;
  */
 const CODE_ACTION_FULL_FILE_TIMEOUT_MS = 8000;
 
+/**
+ * 文档末尾位置（LSP 0-based，character 以 UTF-16 码元计——JS 字符串长度正是这个口径）。
+ * 行分隔按 LSP 规范认 \n、\r\n、\r 三种。
+ */
+export function documentEnd(content: string): { line: number; character: number } {
+  const lines = content.split(/\r\n|\r|\n/);
+  return { line: lines.length - 1, character: lines[lines.length - 1]!.length };
+}
+
 /** 需要 line/character 定位的操作（workspaceSymbol 例外，它用 query） */
 const POSITION_OPS = new Set([
   "goToDefinition",
@@ -401,7 +410,7 @@ export class LSPTool implements Tool {
 
     onProgress?.({ type: "output", text: `查询 ${params.operation}…` });
     try {
-      return await this.dispatch(params, manager, workspaceFolder, _signal, onProgress);
+      return await this.dispatch(params, manager, workspaceFolder, _signal, onProgress, content);
     } catch (err: any) {
       log.warn("LSP", `${params.operation} 执行失败: ${err.message}`);
       return { output: `LSP ${params.operation} 失败: ${err.message}`, isError: true };
@@ -415,6 +424,8 @@ export class LSPTool implements Tool {
     workspaceFolder: string,
     signal?: AbortSignal,
     onProgress?: (event: import("./types.ts").ToolProgressData) => void,
+    /** 已读入的文件内容（didOpen 用的同一份），codeAction 整文件范围据此取真实末尾 */
+    content = "",
   ): Promise<ToolResult> {
     const { pathToFileURL } = await import("url");
     const uri = pathToFileURL(params.file_path).href;
@@ -553,8 +564,9 @@ export class LSPTool implements Tool {
             return position.line >= s && position.line <= e;
           });
         } else {
-          // 整文件范围：用第一条诊断到末尾兜底一个大范围（服务器按 context.diagnostics 决定返回）
-          range = { start: { line: 0, character: 0 }, end: { line: 999_999, character: 0 } };
+          // 整文件范围：取文件真实末尾。旧实现写死 999_999 行，越界 range 对严格校验的服务器
+          // 是非法参数（报错或回空）。行列口径与 didOpen 发出的那份内容一致。
+          range = { start: { line: 0, character: 0 }, end: documentEnd(content) };
         }
 
         // 转成 LSP 协议诊断形态（数字 severity），供服务器匹配对应 quickfix

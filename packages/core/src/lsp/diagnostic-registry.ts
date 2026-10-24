@@ -1,14 +1,16 @@
 /**
- * 诊断去重与限流注册表
+ * 诊断注册表：被动推（publishDiagnostics）与主动拉（codeAction）两条链路的唯一交汇点
  *
- * 对标 Claude Code 的 LSPDiagnosticRegistry，两层去重策略：
- * 1. 批内去重：同一批次中的重复诊断只保留一个
- * 2. 跨轮次去重：LRU 缓存记录已投递的诊断，避免重复
+ * 三份互相独立的状态：
+ * - pending：待投递给模型的诊断，**按 uri 存最新全量快照**（publishDiagnostics 语义即
+ *   「该文档的全量诊断」，后到覆盖先到）。每个文件归属于最近编辑它的消费者；
+ *   没被编辑过的文件（只被 lsp 工具打开）归主循环，且首次推送只记基线不投递。
+ * - delivered：已投递过的诊断 key（跨轮次去重，LRU）。
+ * - latest：每个文件最新全量快照，只读镜像，供 codeAction 填 `context.diagnostics`，
+ *   从不被 collect 消费。
  *
- * 体积限制：
- * - 每个文件最多 10 条诊断
- * - 总计最多 30 条诊断
- * - 按严重程度排序（Error > Warning > Info > Hint）
+ * 体积限制（对标 Claude Code）：每文件最多 10 条、单次总计最多 30 条。
+ * 只有 Error / Warning 参与限流；Hint / Info 不注入，只计数告知。
  */
 
 import type { Diagnostic, DiagnosticFile, DiagnosticSeverity } from "./types.ts";
@@ -26,22 +28,113 @@ const SEVERITY_ORDER: Record<DiagnosticSeverity, number> = {
   Hint: 3,
 };
 
+/** 主循环的诊断归属者 id。子代理用自己的 agentId。 */
+export const MAIN_DIAGNOSTIC_OWNER = "main";
+
+/** 可注入（可操作）的严重度。Hint / Info 只计数不注入。 */
+function isActionable(d: Diagnostic): boolean {
+  return d.severity === "Error" || d.severity === "Warning";
+}
+
+/** publishDiagnostics 带来的单个文件：比 DiagnosticFile 多一个可选的文档版本号 */
+export type PublishedDiagnosticFile = DiagnosticFile & { version?: number | null };
+
+/** 每个被编辑过的文件的同步状态 */
+interface DocState {
+  /** 最近一次编辑该文件的消费者（主循环 / 某个子代理）。诊断只投递给它。 */
+  owner: string;
+  /** beginEdit 之后、didChange 发出之前为 true：这段时间到达的诊断必然基于旧内容 */
+  syncing: boolean;
+  /** 同一文件可能被并发编辑，只有最后一次 beginEdit 对应的 endEdit 才能结束 syncing */
+  syncSeq: number;
+  /** 最近一次发给服务器的文档版本（didOpen=1，didChange 递增） */
+  sentVersion?: number;
+}
+
+interface PendingEntry {
+  /** 该 uri 的最新全量快照 */
+  diagnostics: Diagnostic[];
+  /** 本快照里的 Hint/Info 是否已计入过「已省略」——快照因补发留在 pending 时不重复计数 */
+  infoCounted: boolean;
+}
+
+/** 两次 collect 之间的推送计数（按归属者记，未归属的文件记到主循环名下） */
+interface PublishCounters {
+  publishes: number;
+  publishesWithVersion: number;
+  /** 编辑同步窗口内到达、被丢弃的推送 */
+  staleSyncing: number;
+  /** 版本号落后于已发出版本、被丢弃的推送 */
+  staleVersion: number;
+}
+
+function emptyCounters(): PublishCounters {
+  return { publishes: 0, publishesWithVersion: 0, staleSyncing: 0, staleVersion: 0 };
+}
+
+/** 一次 collect 的结果分类（进轨迹，用来区分「没注入」的成因） */
+export type CollectOutcome =
+  /** 有诊断注入 */
+  | "injected"
+  /** 作用域内没有任何 pending */
+  | "empty"
+  /** 作用域内文件全部零诊断（服务器说错误已清空——修复生效的信号） */
+  | "clean"
+  /** 只有 Hint/Info，被严重度过滤后为空 */
+  | "info_only"
+  /** 可操作诊断全部投递过（跨轮次去重后为空） */
+  | "all_delivered";
+
+export interface CollectStats extends PublishCounters {
+  outcome: CollectOutcome;
+  /** 作用域内有 pending 的文件数 */
+  files: number;
+  /** 作用域内 Error/Warning 条数（去重后，含已投递） */
+  actionable: number;
+  /** 其中已投递过而被跨轮次去重的条数 */
+  alreadyDelivered: number;
+  /** 本次注入条数 */
+  injected: number;
+  /** 超出单次上限、留在 pending 待后续轮次补发的条数 */
+  carried: number;
+  /** 本次新计入的 Hint/Info 条数（不注入，只告知） */
+  omittedInfo: number;
+}
+
+export interface CollectResult {
+  files: DiagnosticFile[];
+  stats: CollectStats;
+}
+
 export class DiagnosticRegistry {
-  /** 待投递的诊断 */
-  private pending = new Map<string, { files: DiagnosticFile[]; sent: boolean }>();
+  /** 待投递：uri → 最新全量快照 */
+  private pending = new Map<string, PendingEntry>();
   /** 已投递的诊断（LRU 缓存，防止无限增长） */
   private delivered = new Map<string, Set<string>>();
   private deliveredOrder: string[] = [];
-  /** 单调递增 id（不依赖 Date.now，避免同毫秒碰撞） */
-  private pendingSeq = 0;
+  /** 被编辑过的文件 → 归属者与同步状态 */
+  private docs = new Map<string, DocState>();
+  /** 归属者 → 两次 collect 之间的推送计数 */
+  private counters = new Map<string, PublishCounters>();
+  /**
+   * 已记过基线的未编辑文件。
+   *
+   * 只被 lsp 工具打开、从没被编辑的文件，首次推送里的诊断是**既有问题**，不是 agent 引入的，
+   * 旧实现照样以「你刚编辑文件」的名义注入（会话 20261022-003851-9f9e6c25 实测：
+   * 模型只用 lsp 工具看了 docs-gen-reference.ts，下一轮就收到了它的诊断）。
+   * 首次推送只把可操作诊断记为已投递（基线），之后新出现的才投递给主循环——
+   * 这保留了「改 a.ts 弄坏了已打开的 b.ts」这类跨文件信号。
+   * 代价：b.ts 若在 a.ts 编辑之后才首次推送，那次破坏会被当成基线吞掉。
+   */
+  private baselined = new Set<string>();
   /**
    * 每个文件的**最新**诊断全量快照（uri → 诊断数组）。
    *
-   * 与 pending/delivered 的"消费即清空"语义**完全独立**：pending 供 G1 每轮注入消费（collect
-   * 后清空），而 latest 是只读镜像，只被 registerPending 覆盖、被 clearForFile/clear 清除，
+   * 与 pending/delivered 的"消费即清空"语义**完全独立**：pending 供每轮注入消费，
+   * 而 latest 是只读镜像，只被 registerPending 覆盖、被 clearForFile/clear 清除，
    * 从不被 collect 消费。存在的唯一目的是给 codeAction 这类 pull 式查询提供 `context.diagnostics`——
    * 多数语言服务器在 context 无诊断时返回空 quickfix 列表，而我们不能为此去偷 pending
-   * （否则 G1 注入链断掉）。LSP publishDiagnostics 语义即"该文档的全量诊断"，故每次覆盖。
+   * （否则注入链断掉）。LSP publishDiagnostics 语义即"该文档的全量诊断"，故每次覆盖。
    */
   private latest = new Map<string, Diagnostic[]>();
 
@@ -53,18 +146,104 @@ export class DiagnosticRegistry {
    */
   private waiters = new Map<string, Set<() => void>>();
 
-  /** 注册待投递的诊断（由 LSP 通知处理器调用） */
-  registerPending(serverName: string, files: DiagnosticFile[]): void {
-    const id = `${serverName}-${++this.pendingSeq}`;
-    this.pending.set(id, { files, sent: false });
-    // 同步刷新只读快照：publishDiagnostics 给的是该 uri 的全量诊断，直接覆盖。
-    // 空数组也覆盖（表示"错误已清空"），这样 peek 到的永远是当前真实状态。
-    for (const file of files) {
-      this.latest.set(file.uri, file.diagnostics);
+  private countersFor(owner: string): PublishCounters {
+    let c = this.counters.get(owner);
+    if (!c) {
+      c = emptyCounters();
+      this.counters.set(owner, c);
     }
-    // 唤醒等待这些 uri 的 waitForDiagnostics（在覆盖 latest **之后**，确保被唤醒者
-    // 立刻 peek 就能拿到刚到的诊断）
+    return c;
+  }
+
+  /**
+   * 编辑开始：同步调用，必须先于任何 await（见 manager.syncFileToLSP）。
+   *
+   * 为什么必须同步：旧实现在 `await readFile` 之后才清该文件的旧诊断，而 edit/write 的
+   * LSP 同步是 fire-and-forget 的。主循环下一轮 collect 可能跑在清理之前，于是把编辑前
+   * 的诊断当成编辑后的注入给模型（会话 20261012-134748-9496c880 第 52 次请求实测：
+   * 模型刚把 `React.useRef` 改成 `useRef`，注入仍报 `'useRef' is declared but never read`，
+   * 模型回 "the LSP diagnostic is likely stale" 并多花一轮重读文件）。
+   *
+   * 做三件事：登记归属者；清掉该文件的 pending / delivered / latest；进入 syncing 态——
+   * 直到 didChange 发出前到达的推送都基于旧内容，一律丢弃。
+   *
+   * @returns 本次编辑序号，交给 endEdit 配对
+   */
+  beginEdit(uri: string, owner: string): number {
+    const prev = this.docs.get(uri);
+    const syncSeq = (prev?.syncSeq ?? 0) + 1;
+    this.docs.set(uri, { owner, syncing: true, syncSeq, sentVersion: prev?.sentVersion });
+    this.clearForFile(uri);
+    return syncSeq;
+  }
+
+  /**
+   * 编辑结束：didChange（或 didOpen）已发出，或同步失败。必须在 finally 里调用，
+   * 否则该文件永远停在 syncing 态、诊断永远被丢弃。
+   *
+   * @param sentVersion 本次发给服务器的文档版本；同步失败时不传
+   */
+  endEdit(uri: string, syncSeq: number, sentVersion?: number): void {
+    const doc = this.docs.get(uri);
+    if (!doc || doc.syncSeq !== syncSeq) return; // 已有更新的编辑在途，由它来结束
+    doc.syncing = false;
+    if (sentVersion !== undefined) doc.sentVersion = sentVersion;
+  }
+
+  /**
+   * 子代理结束时把它名下的文件转给主循环。
+   *
+   * 不转的话这些文件的 pending 再也没有消费者；转给主循环是因为子代理写的代码
+   * 已成为主循环工作的一部分，其后续诊断该由主循环看到。已投递过的诊断不会重复投递。
+   */
+  releaseOwner(owner: string, to: string = MAIN_DIAGNOSTIC_OWNER): void {
+    if (owner === to) return;
+    for (const doc of this.docs.values()) {
+      if (doc.owner === owner) doc.owner = to;
+    }
+    const c = this.counters.get(owner);
+    if (c) {
+      const target = this.countersFor(to);
+      target.publishes += c.publishes;
+      target.publishesWithVersion += c.publishesWithVersion;
+      target.staleSyncing += c.staleSyncing;
+      target.staleVersion += c.staleVersion;
+      this.counters.delete(owner);
+    }
+  }
+
+  /** 登记服务器推送的诊断（由 LSP 通知处理器调用） */
+  registerPending(_serverName: string, files: PublishedDiagnosticFile[]): void {
     for (const file of files) {
+      const doc = this.docs.get(file.uri);
+      const counters = this.countersFor(doc?.owner ?? MAIN_DIAGNOSTIC_OWNER);
+      counters.publishes++;
+      const version = typeof file.version === "number" ? file.version : undefined;
+      if (version !== undefined) counters.publishesWithVersion++;
+
+      // 过时推送：既不进 pending，也不覆盖 latest、不唤醒等待者——等待者等的是新内容的诊断
+      if (doc?.syncing) {
+        counters.staleSyncing++;
+        continue;
+      }
+      if (version !== undefined && doc?.sentVersion !== undefined && version < doc.sentVersion) {
+        counters.staleVersion++;
+        continue;
+      }
+
+      // 空数组也覆盖（表示"错误已清空"），这样 peek 到的永远是当前真实状态
+      this.latest.set(file.uri, file.diagnostics);
+      if (!doc && !this.baselined.has(file.uri)) {
+        // 未编辑文件的首次推送：记基线，不投递（见 baselined 注释）
+        this.baselined.add(file.uri);
+        const base = file.diagnostics.filter(isActionable);
+        if (base.length > 0) this.markDelivered(file.uri, base);
+      } else {
+        // 按 uri 覆盖：同一轮内先报错后修好，只留修好后的状态
+        this.pending.set(file.uri, { diagnostics: file.diagnostics, infoCounted: false });
+      }
+
+      // 唤醒等待者（在覆盖 latest **之后**，确保被唤醒者立刻 peek 就能拿到刚到的诊断）
       const set = this.waiters.get(file.uri);
       if (!set) continue;
       this.waiters.delete(file.uri);
@@ -136,7 +315,7 @@ export class DiagnosticRegistry {
   }
 
   /**
-   * 只读快照：返回指定文件当前的全量诊断，**不消费、不清空、不影响 G1 注入链**。
+   * 只读快照：返回指定文件当前的全量诊断，**不消费、不清空、不影响注入链**。
    *
    * 供 codeAction 这类 pull 式查询填充 LSP `context.diagnostics`。没有对应文件的诊断时返回空数组。
    * 返回浅拷贝，防止调用方意外改动内部快照。
@@ -147,78 +326,129 @@ export class DiagnosticRegistry {
   }
 
   /**
-   * 检查并收集待投递的诊断。
-   * 返回去重、限流后的诊断列表，调用后标记为已投递。
+   * 收集某个归属者名下待投递的诊断，调用后标记为已投递。
    *
-   * @param scopeUris 可选的文件作用域过滤。
-   *   - 不传（主循环行为，保持不变）：收集所有 pending 诊断，收集后清空**全部** pending。
-   *   - 传入（子代理 / 并发场景）：只收集属于这些文件的诊断，且**只清空这些文件**的 pending 条目，
-   *     其它文件的诊断原样保留给别的消费者。
+   * 归属取代了旧的「可选 scopeUris」：旧实现里主循环不带作用域、把**所有人**的 pending
+   * 捞走清空，子代理的作用域隔离只防住了子代理之间，没防住主循环。现在每个消费者只能
+   * 拿到自己编辑过的文件。
    *
-   * 作用域参数修复"全局单例 collect 串味"：registry 是进程级单例，主循环与并发子代理共用同一
-   * 实例。旧的无差别 `collectDiagnostics()` 谁先调用谁就把**所有人**的 pending 捞走并清空，
-   * 另一方永远看不到自己编辑引入的诊断。传 scopeUris 后各消费者只消费自己关心的文件，互不偷取。
+   * 顺序（每一步都有踩过的坑）：
+   * 1. 先按严重度过滤，再限流。旧实现先限流后过滤，Hint 照样占 30 条名额，
+   *    多文件时排在前面的纯 Hint 文件能把后面文件的 Error 整个挤掉，本轮注入为空。
+   * 2. 限流按严重度跨文件排序（Error 先于所有 Warning），文件内再按到达顺序。
+   * 3. 超限的部分留在 pending 待后续轮次补发，并计入 `carried` 告知模型。
+   *    旧实现把整批 pending 清空，被截掉的部分要等该文件再被编辑才会重新出现。
    */
-  collectDiagnostics(scopeUris?: Iterable<string>): DiagnosticFile[] {
-    const scope = scopeUris ? new Set(scopeUris) : null;
+  collectDiagnostics(owner: string): CollectResult {
+    const counters = this.counters.get(owner) ?? emptyCounters();
+    this.counters.delete(owner);
 
-    // 1. 收集未投递的诊断（有作用域时只收集作用域内文件）
-    const allFiles: DiagnosticFile[] = [];
-    for (const entry of this.pending.values()) {
-      if (entry.sent) continue;
-      for (const file of entry.files) {
-        if (!scope || scope.has(file.uri)) allFiles.push(file);
+    // 1. 作用域内文件 + 严重度过滤 + 文件内去重 + 跨轮次去重
+    type Candidate = { uri: string; fileIdx: number; idx: number; diag: Diagnostic };
+    const scope: Array<{ uri: string; undelivered: number }> = [];
+    const candidates: Candidate[] = [];
+    let actionable = 0;
+    let alreadyDelivered = 0;
+    let omittedInfo = 0;
+    let anyDiagnostics = false;
+    for (const [uri, entry] of this.pending) {
+      if ((this.docs.get(uri)?.owner ?? MAIN_DIAGNOSTIC_OWNER) !== owner) continue;
+      if (entry.diagnostics.length > 0) anyDiagnostics = true;
+      if (!entry.infoCounted) {
+        omittedInfo += entry.diagnostics.filter((d) => !isActionable(d)).length;
+        entry.infoCounted = true;
       }
-    }
-    if (allFiles.length === 0) return [];
-
-    // 2. 批内去重
-    const dedupedFiles = this.deduplicateWithinBatch(allFiles);
-
-    // 3. 跨轮次去重
-    const newFiles = this.deduplicateAcrossRounds(dedupedFiles);
-
-    // 4. 严重程度排序 + 体积限制
-    const limited = this.applyLimits(newFiles);
-
-    // 5. 记录已投递
-    for (const file of limited) {
-      this.markDelivered(file);
-    }
-
-    // 6. 清空 pending。无作用域：清空全部（主循环行为不变）；有作用域：只清空作用域内文件的
-    //    条目，保留其它文件的 pending 给别的消费者（并发隔离）。
-    if (scope) {
-      this.clearPendingForUris(scope);
-    } else {
-      this.pending.clear();
+      const deliveredKeys = this.delivered.get(uri);
+      const seen = new Set<string>();
+      const fileIdx = scope.length;
+      let undelivered = 0;
+      entry.diagnostics.forEach((diag, idx) => {
+        if (!isActionable(diag)) return;
+        const key = this.diagnosticKey(diag);
+        if (seen.has(key)) return;
+        seen.add(key);
+        actionable++;
+        if (deliveredKeys?.has(key)) {
+          alreadyDelivered++;
+          return;
+        }
+        undelivered++;
+        candidates.push({ uri, fileIdx, idx, diag });
+      });
+      scope.push({ uri, undelivered });
     }
 
-    return limited;
+    // 2. 跨文件按严重度排序后限流
+    candidates.sort(
+      (a, b) =>
+        SEVERITY_ORDER[a.diag.severity] - SEVERITY_ORDER[b.diag.severity] ||
+        a.fileIdx - b.fileIdx ||
+        a.idx - b.idx,
+    );
+    const perFile = new Map<string, number>();
+    const picked: Candidate[] = [];
+    for (const c of candidates) {
+      if (picked.length >= MAX_TOTAL_DIAGNOSTICS) break;
+      const n = perFile.get(c.uri) ?? 0;
+      if (n >= MAX_DIAGNOSTICS_PER_FILE) continue;
+      perFile.set(c.uri, n + 1);
+      picked.push(c);
+    }
+
+    // 3. 按文件分组输出（文件按到达顺序，文件内按严重度）
+    const byUri = new Map<string, Diagnostic[]>();
+    for (const { uri } of scope) byUri.set(uri, []);
+    for (const c of picked) byUri.get(c.uri)!.push(c.diag);
+    const files: DiagnosticFile[] = [];
+    for (const [uri, diagnostics] of byUri) {
+      if (diagnostics.length === 0) continue;
+      files.push({ uri, diagnostics });
+      this.markDelivered(uri, diagnostics);
+    }
+
+    // 4. 清 pending：全部投递完的删掉，还有剩余的留着下一轮补发
+    let carried = 0;
+    for (const { uri, undelivered } of scope) {
+      const remaining = undelivered - (perFile.get(uri) ?? 0);
+      if (remaining > 0) carried += remaining;
+      else this.pending.delete(uri);
+    }
+
+    const outcome: CollectOutcome =
+      picked.length > 0
+        ? "injected"
+        : scope.length === 0
+          ? "empty"
+          : !anyDiagnostics
+            ? "clean"
+            : actionable === 0
+              ? "info_only"
+              : "all_delivered";
+
+    return {
+      files,
+      stats: {
+        ...counters,
+        outcome,
+        files: scope.length,
+        actionable,
+        alreadyDelivered,
+        injected: picked.length,
+        carried,
+        omittedInfo,
+      },
+    };
   }
 
-  /**
-   * 从 pending 中移除指定文件集合的诊断条目（作用域消费后调用）。
-   * 逐条目过滤 files 数组：全属于作用域内则删整条，部分属于则保留其余文件的诊断。
-   * 复用与 clearForFile 一致的过滤策略。
-   */
-  private clearPendingForUris(uris: Set<string>): void {
-    for (const [id, entry] of this.pending) {
-      const remaining = entry.files.filter((f) => !uris.has(f.uri));
-      if (remaining.length === 0) {
-        this.pending.delete(id);
-      } else if (remaining.length !== entry.files.length) {
-        entry.files = remaining;
-      }
-    }
-  }
-
-  /** 清空所有状态（文件关闭/重置时） */
+  /** 清空所有状态（LSP 重置时） */
   clear(): void {
     this.pending.clear();
     this.delivered.clear();
     this.deliveredOrder = [];
     this.latest.clear();
+    this.docs.clear();
+    this.counters.clear();
+    this.baselined.clear();
     // 唤醒所有在等的 waitForDiagnostics，否则它们只能挂到各自超时——registry 已被重置，
     // 再等下去等不到任何东西了。唤醒后调用方 peek 到空、照常继续（语义见 waitForDiagnostics）。
     const pendingWaiters = [...this.waiters.values()];
@@ -235,18 +465,14 @@ export class DiagnosticRegistry {
   }
 
   /**
-   * 清除指定文件的已投递诊断记录（文件编辑后调用）。
+   * 清除指定文件的 pending / delivered / latest（beginEdit 内部调用）。
    *
-   * 对标 Claude Code 的 clearDeliveredDiagnosticsForFile：文件被编辑后，旧诊断可能
-   * 已失效（如错误已修复），但跨轮次去重缓存仍记着"这些诊断投递过"，会过滤掉服务器
-   * 重新推送的同位置诊断——导致修复后的诊断永远不再出现，或反过来过时错误一直驻留。
-   * 编辑后清除该文件的 delivered 记录，让下一轮的 publishDiagnostics 重新作为新诊断投递。
+   * - delivered：对标 Claude Code 的 clearDeliveredDiagnosticsForFile。编辑后旧诊断可能已失效，
+   *   不清的话服务器重推的同位置诊断会被跨轮次去重永久过滤。
+   * - pending：编辑前服务器基于旧内容推的诊断已无意义。
+   * - latest：否则编辑后、服务器重推之前，codeAction 的 waitForDiagnostics 会因
+   *   latest.has(uri) 立即返回，再把编辑前的旧诊断塞进 context.diagnostics。
    *
-   * 同时清除 pending 中该文件的待投递诊断（编辑前服务器基于旧内容推的诊断已无意义）。
-   *
-   * 还要清除 latest 快照：否则编辑后、服务器重推之前，codeAction 的 waitForDiagnostics
-   * 会因 latest.has(uri) 立即返回，再把编辑前的旧诊断塞进 context.diagnostics，
-   * 拿到针对旧内容的修复建议。清掉后 codeAction 会等新诊断到达（或按既定超时继续）。
    * 不唤醒该 uri 的等待者：它们等的就是编辑后的新一轮 publishDiagnostics。
    */
   clearForFile(uri: string): void {
@@ -254,90 +480,20 @@ export class DiagnosticRegistry {
     const idx = this.deliveredOrder.indexOf(uri);
     if (idx >= 0) this.deliveredOrder.splice(idx, 1);
     this.latest.delete(uri);
-
-    // 清除 pending 中只属于该文件的诊断条目（保留其它文件的诊断）。
-    // registerPending 以 server-seq 为 key、files 为值，需逐条目过滤其 files 数组。
-    for (const [id, entry] of this.pending) {
-      const remaining = entry.files.filter((f) => f.uri !== uri);
-      if (remaining.length === 0) {
-        this.pending.delete(id);
-      } else if (remaining.length !== entry.files.length) {
-        entry.files = remaining;
-      }
-    }
+    this.pending.delete(uri);
   }
 
   // ─── 内部方法 ───
 
-  /** 批内去重：合并同 uri 文件，去除重复诊断 */
-  private deduplicateWithinBatch(files: DiagnosticFile[]): DiagnosticFile[] {
-    const byUri = new Map<string, Map<string, Diagnostic>>();
-    for (const file of files) {
-      let diagMap = byUri.get(file.uri);
-      if (!diagMap) {
-        diagMap = new Map();
-        byUri.set(file.uri, diagMap);
-      }
-      for (const diag of file.diagnostics) {
-        diagMap.set(this.diagnosticKey(diag), diag);
-      }
-    }
-    return Array.from(byUri.entries()).map(([uri, diagMap]) => ({
-      uri,
-      diagnostics: Array.from(diagMap.values()),
-    }));
-  }
-
-  /** 跨轮次去重：过滤掉已投递过的诊断 */
-  private deduplicateAcrossRounds(files: DiagnosticFile[]): DiagnosticFile[] {
-    const result: DiagnosticFile[] = [];
-    for (const file of files) {
-      const deliveredKeys = this.delivered.get(file.uri);
-      const newDiagnostics = file.diagnostics.filter(
-        (diag) => !deliveredKeys?.has(this.diagnosticKey(diag)),
-      );
-      if (newDiagnostics.length > 0) {
-        result.push({ uri: file.uri, diagnostics: newDiagnostics });
-      }
-    }
-    return result;
-  }
-
-  /** 严重程度排序 + 体积限制 */
-  private applyLimits(files: DiagnosticFile[]): DiagnosticFile[] {
-    let totalCount = 0;
-    const result: DiagnosticFile[] = [];
-
-    for (const file of files) {
-      if (totalCount >= MAX_TOTAL_DIAGNOSTICS) break;
-
-      // 按严重程度排序
-      const sorted = [...file.diagnostics].sort(
-        (a, b) => SEVERITY_ORDER[a.severity] - SEVERITY_ORDER[b.severity],
-      );
-
-      // 每文件限制 + 总数限制
-      const remaining = MAX_TOTAL_DIAGNOSTICS - totalCount;
-      const limited = sorted.slice(0, Math.min(MAX_DIAGNOSTICS_PER_FILE, remaining));
-
-      if (limited.length > 0) {
-        result.push({ uri: file.uri, diagnostics: limited });
-        totalCount += limited.length;
-      }
-    }
-
-    return result;
-  }
-
   /** 记录已投递的诊断（LRU） */
-  private markDelivered(file: DiagnosticFile): void {
-    let keys = this.delivered.get(file.uri);
+  private markDelivered(uri: string, diagnostics: Diagnostic[]): void {
+    let keys = this.delivered.get(uri);
     if (!keys) {
       keys = new Set();
-      this.delivered.set(file.uri, keys);
-      this.deliveredOrder.push(file.uri);
+      this.delivered.set(uri, keys);
+      this.deliveredOrder.push(uri);
     }
-    for (const diag of file.diagnostics) {
+    for (const diag of diagnostics) {
       keys.add(this.diagnosticKey(diag));
     }
     // LRU 淘汰

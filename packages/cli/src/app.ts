@@ -48,6 +48,10 @@ import {
   setSubagentCostTraceSink,
 } from "@sid-code/core/agent/usage-sink.ts";
 import { READ_HINT_EVENT_NAME, setReadHintTraceSink } from "@sid-code/core/tool/read.ts";
+import {
+  LSP_DIAGNOSTICS_EVENT_NAME,
+  setLspDiagnosticsTraceSink,
+} from "@sid-code/core/lsp/manager.ts";
 import { SessionStore, currentProjectSessionDir } from "@sid-code/core/session/store.ts";
 import { extractHookContext } from "@sid-code/core/hook/context-inject.ts";
 import { generateSessionId } from "@sid-code/core/session/id.ts";
@@ -4444,6 +4448,13 @@ export class App {
     setReadHintTraceSink(
       traceCollectorInstance
         ? (data) => traceCollectorInstance.recordCustomEvent(READ_HINT_EVENT_NAME, data)
+        : null,
+    );
+    // LSP 诊断注入进事件：每次 collect 一条（注入 / 被过滤为空 / 全已投递），带截断与过时推送计数。
+    // 不接则这条链路只能从 raw.jsonl 的注入文本反推，「没注入」的那些轮次完全看不见。
+    setLspDiagnosticsTraceSink(
+      traceCollectorInstance
+        ? (data) => traceCollectorInstance.recordCustomEvent(LSP_DIAGNOSTICS_EVENT_NAME, data)
         : null,
     );
 
