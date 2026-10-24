@@ -19,7 +19,8 @@
  */
 
 import { readFileSync, readdirSync, existsSync, statSync } from "node:fs";
-import { dirname, join } from "node:path";
+import { dirname, isAbsolute, join, normalize, sep } from "node:path";
+import { splitIsolatedWorktreePath } from "../bootstrap/cwd-context.ts";
 import { applyLedgerPathOverride } from "../telemetry/usage-ledger.ts";
 import { getSidHome } from "../config/paths.ts";
 import { PlanModeManager, PLAN_STEP_PARSER_VERSION } from "../plan/state.ts";
@@ -1061,6 +1062,14 @@ export interface SubAgentSpan {
   inputTokens?: number;
   /** 与上一个 span 结束时间的间隔（毫秒）。<1000ms 视为串行排队的强信号。 */
   gapFromPrevMs?: number;
+  /** SubagentStart.isolation：跑在隔离 worktree 里时为 "worktree" */
+  isolation?: "worktree";
+  /** SubagentStart.agent_cwd：子代理绑定的工作目录（本地字段，上传时剥离） */
+  agentCwd?: string;
+  /** 隔离 span：带绝对路径的工具调用数（分母，取自 PreToolUse.input_summary 的路径键） */
+  isolatedPathCalls?: number;
+  /** 隔离 span：其中落在主仓、却不在本 worktree 内的调用数（分子） */
+  isolatedMainRepoPathCalls?: number;
 }
 
 /**
@@ -1079,6 +1088,18 @@ export interface SubAgentSummary {
   concurrency: "serial" | "parallel" | "mixed" | "single";
   /** 串行判定的证据文本（相邻 span 的间隔），供渲染层直接展示 */
   serialEvidence?: string;
+  /**
+   * 隔离 worktree 子代理的路径越界口径（无隔离 span 时缺省）。
+   *
+   * 分母 = 隔离子代理带**绝对路径**的工具调用；分子 = 其中落在主仓、却不在自己 worktree 内的。
+   * 相对路径不计入分母：它们按子代理 cwd 解析，不可能越界，计进去会稀释信号。
+   * 2026-10-16~22 本机修复前基线约 95%（501/529，当时按「含主仓前缀」人工统计）。
+   */
+  isolation?: {
+    spans: number;
+    absPathCalls: number;
+    mainRepoPathCalls: number;
+  };
   spans: SubAgentSpan[];
 }
 
@@ -1141,6 +1162,8 @@ export interface Digest {
   jit?: JitDigestStats;
   /** P1-2：前缀断裂定位分布。无 `prefix_break` 事件时 undefined（老会话，埋点上线前）。 */
   prefixBreaks?: PrefixBreakDigestStats;
+  /** §6：缓存断点布局 + 冷清理。两类事件全无时 undefined（老会话 / 非 Anthropic）。 */
+  promptCache?: PromptCacheDigestStats;
   /**
    * todo 清单实时性度量（2026-08-02）。三类 todo 事件全无时 undefined
    * （老会话 / 整场没建过清单）。
@@ -1716,6 +1739,61 @@ function matchViolations(ref: SessionRef, meta: TrajMeta, paths: DigestPaths): n
  *
  * 返回 null 表示本会话无子代理事件。
  */
+/** input_summary 里承载路径的键（与 collector.TOOL_INPUT_SUMMARY_KEYS 中的路径类子集对齐） */
+const SUMMARY_PATH_KEYS = ["file_path", "path"] as const;
+const SUMMARY_PATH_LIST_KEYS = ["paths", "file_paths"] as const;
+
+/**
+ * 按 agent_id 把子代理的 PreToolUse 归到隔离 span，统计绝对路径里越界到主仓的比例。
+ * 只看 SubagentStart 声明了 isolation 且带 agent_cwd 的 span；一个都没有时返回 undefined。
+ */
+function countIsolatedPathEscapes(
+  events: Array<{ event?: string; data?: Record<string, unknown> }>,
+  spans: SubAgentSpan[],
+): SubAgentSummary["isolation"] {
+  const byAgent = new Map<string, { span: SubAgentSpan; worktreeRoot: string; mainRepo: string }>();
+  for (const s of spans) {
+    if (s.isolation !== "worktree" || !s.agentCwd || !s.agentId) continue;
+    const iso = splitIsolatedWorktreePath(s.agentCwd);
+    if (!iso) continue;
+    s.isolatedPathCalls = 0;
+    s.isolatedMainRepoPathCalls = 0;
+    byAgent.set(s.agentId, { span: s, ...iso });
+  }
+  if (byAgent.size === 0) return undefined;
+
+  const within = (p: string, dir: string) => p === dir || p.startsWith(dir + sep);
+  let absPathCalls = 0;
+  let mainRepoPathCalls = 0;
+  for (const e of events) {
+    if (e.event !== "PreToolUse" || !e.data) continue;
+    const owner = byAgent.get(String(e.data.agent_id ?? ""));
+    if (!owner) continue;
+    const summary = e.data.input_summary as Record<string, unknown> | undefined;
+    if (!summary || typeof summary !== "object") continue;
+    const paths: string[] = [];
+    for (const k of SUMMARY_PATH_KEYS) if (typeof summary[k] === "string") paths.push(summary[k]);
+    for (const k of SUMMARY_PATH_LIST_KEYS) {
+      const v = summary[k];
+      if (Array.isArray(v)) for (const x of v) if (typeof x === "string") paths.push(x);
+    }
+    const abs = paths.filter((p) => isAbsolute(p));
+    if (abs.length === 0) continue;
+    // 一次调用计一次：任一绝对路径越界即算越界（read_many 一次读多个文件也只是一次决策）
+    absPathCalls++;
+    owner.span.isolatedPathCalls!++;
+    const escaped = abs.some((p) => {
+      const n = normalize(p);
+      return within(n, owner.mainRepo) && !within(n, owner.worktreeRoot);
+    });
+    if (escaped) {
+      mainRepoPathCalls++;
+      owner.span.isolatedMainRepoPathCalls!++;
+    }
+  }
+  return { spans: byAgent.size, absPathCalls, mainRepoPathCalls };
+}
+
 function buildSubAgentSummary(
   events: Array<{ event?: string; data?: Record<string, unknown> }>,
 ): SubAgentSummary | null {
@@ -1732,6 +1810,8 @@ function buildSubAgentSummary(
       description: d.description != null ? String(d.description) : undefined,
       startTs: typeof (e as any).timestamp === "string" ? (e as any).timestamp : d.timestamp,
       status: "unknown" as const,
+      ...(d.isolation === "worktree" ? { isolation: "worktree" as const } : {}),
+      ...(typeof d.agent_cwd === "string" ? { agentCwd: d.agent_cwd } : {}),
     };
   });
 
@@ -1827,6 +1907,7 @@ function buildSubAgentSummary(
   const succeeded = spans.filter((s) => s.status === "completed").length;
   const failed = spans.filter((s) => s.status === "error").length;
   const unknown = spans.filter((s) => s.status === "unknown").length;
+  const isolation = countIsolatedPathEscapes(events, spans);
 
   return {
     total: spans.length,
@@ -1835,6 +1916,7 @@ function buildSubAgentSummary(
     unknown,
     concurrency,
     serialEvidence: gapTexts.length > 0 ? gapTexts.join("、") : undefined,
+    ...(isolation ? { isolation } : {}),
     spans,
   };
 }
@@ -2329,6 +2411,48 @@ export function buildDigest(ref: SessionRef, full: boolean, paths: DigestPaths):
   const errorsPath = join(ref.dir, "errors.jsonl");
   const events = readJsonl<{ event?: string; data?: Record<string, unknown> }>(eventsPath);
   const errors = readJsonl<{ event?: string; data?: Record<string, unknown> }>(errorsPath);
+
+  // 检测未收尾的 PreToolUse：每个 fire 过 PreToolUse 的 tool_use_id 都必须有一个
+  // PostToolUse / PostToolUseFailure / PermissionDenied 收尾（tool-hook-pair-invariant 不变量）。
+  // 2026-10-24 全库扫描：23,654 个 PreToolUse 里 7 个悬空，可核的 5 个全是串行 Bash 级联跳过——
+  // 这类缺口在单测里写一个漏一个，所以在 digest 里机械地数，回归一次就亮一次。
+  const preIds = new Map<string, string>();
+  const closedIds = new Set<string>();
+  for (const e of events) {
+    const tid = (e.data as any)?.tool_use_id;
+    if (typeof tid !== "string" || !tid) continue;
+    if (e.event === "PreToolUse") preIds.set(tid, String((e.data as any)?.tool_name ?? "?"));
+    else if (
+      e.event === "PostToolUse" ||
+      e.event === "PostToolUseFailure" ||
+      e.event === "PermissionDenied"
+    ) {
+      closedIds.add(tid);
+    }
+  }
+  const unclosedPre = [...preIds].filter(([tid]) => !closedIds.has(tid));
+  if (unclosedPre.length > 0) {
+    // 进程中途被杀时末尾也会留悬空 Pre，那是 session_end_missing 的伴生症状，不另起假设；
+    // 中段出现才是收尾路径漏了。严重度只给 medium：它不影响模型，影响的是 span 与失败率口径。
+    anomalies.push({
+      layer: "L0",
+      severity: "medium",
+      kind: "unclosed_pre_tool_use",
+      detail: `${unclosedPre.length} 个 PreToolUse 在 events.jsonl 中无 PostToolUse/PostToolUseFailure/PermissionDenied 收尾`,
+      provenance: [
+        {
+          sourceFile: eventsPath,
+          lineRef: `tool_use_id: ${unclosedPre
+            .slice(0, 5)
+            .map(([tid, name]) => `${name}:${tid}`)
+            .join(", ")}${unclosedPre.length > 5 ? " …" : ""}`,
+          rawValue: `count=${unclosedPre.length}`,
+          mtime: fileMtimeIso(eventsPath),
+        },
+      ],
+      pointer: `messages.json 里同 tool_use_id 的 tool_result（看是哪条执行路径产出的）`,
+    });
+  }
 
   // 检测未配对的 BeforeModel（有 BeforeModel 但无 AfterModel/AfterModelRaw/TurnError/ModelCallUnpaired）
   const beforeModels = events.filter((e) => e.event === "BeforeModel");
@@ -2875,6 +2999,7 @@ export function buildDigest(ref: SessionRef, full: boolean, paths: DigestPaths):
 
   // ── P1-2：前缀断裂定位分布（断在哪类段 / 浪费多少）──
   const prefixBreaks = aggregatePrefixBreakStats(events);
+  const promptCache = aggregatePromptCacheStats(events);
 
   // ── 2026-08-02：todo 实时性度量（推进次数 / 回注次数 / 收尾兜底次数）──
   // 补的是"采了不看"这个缺口：三个事件此前只写不读，缺陷定性只能靠间接证据。
@@ -2943,6 +3068,7 @@ export function buildDigest(ref: SessionRef, full: boolean, paths: DigestPaths):
     subAgents: subAgents ?? undefined,
     jit: jit ?? undefined,
     prefixBreaks: prefixBreaks ?? undefined,
+    promptCache: promptCache ?? undefined,
     todo: todo ?? undefined,
     recovery: recovery ?? undefined,
     continuePaths: continuePaths ?? undefined,
@@ -3620,6 +3746,30 @@ export function renderHuman(d: Digest, opts: RenderOptions = {}): string {
     }
   }
 
+  // ── §6 缓存布局 / 冷清理（2026-10-24）：两个缺陷修复的直接验收口径 ──
+  if (d.promptCache) {
+    const pc = d.promptCache;
+    L.push("");
+    const bad = pc.breakpointOnTransient > 0;
+    L.push(
+      c("bold", "缓存断点:") +
+        " " +
+        c(
+          bad ? "red" : "green",
+          `${pc.breakpointOnTransient}/${pc.layoutRequests} 次落在 reminder 上`,
+        ) +
+        c("gray", `  （应恒为 0；含 reminder 的请求 ${pc.requestsWithTransient} 次）`),
+    );
+    if (pc.coldClears > 0 || pc.coldClearsUnderThreshold > 0) {
+      L.push(
+        `  冷清理 ${pc.coldClears} 次，清 ${pc.coldClearedItems} 项 / ${pc.coldClearedChars} 字符` +
+          (pc.coldClearsUnderThreshold > 0
+            ? c("red", `  ⚠ ${pc.coldClearsUnderThreshold} 次间隔低于阈值（热当冷回归）`)
+            : c("gray", `  最短间隔 ${Math.round((pc.minColdGapMs ?? 0) / 60000)} 分钟`)),
+      );
+    }
+  }
+
   // §9.6：子代理执行 section（几成几败 + 串行/并行 + 每个 span 明细）
   if (d.subAgents && d.subAgents.total > 0) {
     const sa = d.subAgents;
@@ -3644,6 +3794,16 @@ export function renderHuman(d: Digest, opts: RenderOptions = {}): string {
     );
     if (sa.concurrency === "serial" && sa.total >= 2 && sa.serialEvidence) {
       L.push(c("yellow", `  ⚠ 串行排队铁证: ${sa.serialEvidence}`));
+    }
+    if (sa.isolation) {
+      const { spans: n, absPathCalls: den, mainRepoPathCalls: num } = sa.isolation;
+      const pct = den > 0 ? `${((num / den) * 100).toFixed(1)}%` : "—";
+      L.push(
+        c(
+          num > 0 ? "yellow" : "gray",
+          `  隔离子代理 ${n} 个：绝对路径调用越界到主仓 ${num}/${den}（${pct}）`,
+        ),
+      );
     }
     for (let i = 0; i < sa.spans.length; i++) {
       const s = sa.spans[i];
@@ -4163,6 +4323,65 @@ export interface PrefixBreakDigestStats {
    * 该轮 cache_read 只剩 256 —— 3.5 万 input 全价重付，属于本地前缀断裂（我们的 bug）。
    */
   shrunkTurns: number;
+}
+
+/**
+ * §6 缓存缺陷的验收口径（2026-10-24）。
+ *
+ * 两个数都是「修复后应恒为 0」的不变量计数，不是比率：
+ *  - breakpointOnTransient：messages 区断点落在 reminder 上的次数（PromptCacheLayout）
+ *  - coldClearsUnderThreshold：冷清理发生时距上次请求 < 阈值的次数（ColdCacheClear）
+ * 分母一并给出（layoutRequests / coldClears），否则「0」分不清是修好了还是没发生。
+ */
+export interface PromptCacheDigestStats {
+  layoutRequests: number;
+  requestsWithTransient: number;
+  breakpointOnTransient: number;
+  coldClears: number;
+  coldClearedItems: number;
+  coldClearedChars: number;
+  coldClearsUnderThreshold: number;
+  minColdGapMs?: number;
+}
+
+export function aggregatePromptCacheStats(
+  events: Array<{ event?: string; data?: Record<string, unknown> }>,
+): PromptCacheDigestStats | null {
+  const s: PromptCacheDigestStats = {
+    layoutRequests: 0,
+    requestsWithTransient: 0,
+    breakpointOnTransient: 0,
+    coldClears: 0,
+    coldClearedItems: 0,
+    coldClearedChars: 0,
+    coldClearsUnderThreshold: 0,
+  };
+  let seen = false;
+  for (const e of events) {
+    const d = e.data;
+    if (!d) continue;
+    if (e.event === "PromptCacheLayout") {
+      seen = true;
+      s.layoutRequests++;
+      if (Number(d.transient_blocks) > 0) s.requestsWithTransient++;
+      if (d.message_breakpoint_on_transient === true) s.breakpointOnTransient++;
+    } else if (e.event === "ColdCacheClear") {
+      seen = true;
+      s.coldClears++;
+      s.coldClearedItems += Number(d.cleared) || 0;
+      s.coldClearedChars += Number(d.saved_chars) || 0;
+      const gap = Number(d.gap_ms);
+      const threshold = Number(d.threshold_ms);
+      if (Number.isFinite(gap) && gap >= 0) {
+        s.minColdGapMs = s.minColdGapMs === undefined ? gap : Math.min(s.minColdGapMs, gap);
+        if (Number.isFinite(threshold) && gap < threshold) s.coldClearsUnderThreshold++;
+      } else {
+        // gap 未知却清了 = 违反「不知道即热」，同样计为回归
+        s.coldClearsUnderThreshold++;
+      }
+    }
+  }
+  return seen ? s : null;
 }
 
 /** 从 events.jsonl 聚合前缀断裂分布（P1-2） */

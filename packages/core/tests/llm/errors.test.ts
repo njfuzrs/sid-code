@@ -382,6 +382,8 @@ describe("isAbortError", () => {
     // 转 string[] 断言:ABORT_REASONS 是 as const 字面量联合,直接 toEqual 会因
     // NoInfer 把期望数组收窄到该联合而报重载不匹配;比较值本身即可,不需比字面量类型。
     // agent-stream-timeout 2026-10-17 移除（零调用点，子代理兜底复用 turn-timeout）。
+    // sibling-bash-error 2026-10-24 登记（query/tool-executor.ts 并行 Bash 失败级联取消兄弟）：
+    // 旧名 sibling_bash_error 带下划线，下方字面量扫描的正则 [a-z0-9-] 看不见它，漏登记了很久。
     expect([...ABORT_REASONS].map(String).sort()).toEqual([
       "alert-webhook-timeout",
       "external-abort",
@@ -389,6 +391,7 @@ describe("isAbortError", () => {
       "midturn-preempt",
       "race-settled",
       "session-timeout",
+      "sibling-bash-error",
       "side-call-timeout",
       "stream-heartbeat-timeout",
       "stream-overall-timeout",
@@ -437,7 +440,9 @@ describe("isAbortError", () => {
     const KNOWN_NON_CALLS = new Set(["xxx"]);
     // 匹配 .abort( ... ) 整个实参串，再从中抽取字符串字面量（单/双引号）。
     const abortCallRe = /\.abort\(([^)]*)\)/g;
-    const literalRe = /["']([a-z][a-z0-9-]*)["']/g;
+    // 字符类必须含下划线：旧正则 [a-z0-9-] 看不见 "sibling_bash_error"，这个从未登记的 reason
+    // 因此逃过本门禁很久（并行 Bash 级联取消的兄弟工具全部被当成普通异常，2026-10-24 修复）。
+    const literalRe = /["']([a-z][a-z0-9_-]*)["']/g;
 
     const offenders: Array<{ file: string; reason: string }> = [];
     for (const file of tsFiles) {

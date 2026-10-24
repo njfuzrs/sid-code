@@ -149,6 +149,66 @@ describe("markLastUserMessageCacheBreakpoint（P1-4 收口）", () => {
   });
 });
 
+describe("markLastUserMessageCacheBreakpoint × transient（断点不落在下一轮不存在的字节上）", () => {
+  const T = new WeakSet<object>();
+  const t = (text: string) => {
+    const b = { type: "text", text };
+    T.add(b);
+    return b;
+  };
+  const isT = (b: object) => T.has(b);
+
+  test("ambient 在末尾 → 断点退到用户指令块", () => {
+    const user = { type: "text", text: "修一下登录超时" };
+    const amb = t("<system-reminder>todo</system-reminder>");
+    const messages: CacheableMessage[] = [{ role: "user", content: [user, amb] }];
+    expect(markLastUserMessageCacheBreakpoint(messages, isT)).toBe(0);
+    expect((user as any).cache_control).toEqual({ type: "ephemeral" });
+    expect((amb as any).cache_control).toBeUndefined();
+  });
+
+  test("critical 在开头 → 断点必须在它之前，退到上一条消息", () => {
+    const prev = { type: "text", text: "上一轮回答" };
+    const crit = t("<system-reminder>止损</system-reminder>");
+    const tr = { type: "tool_result", tool_use_id: "x", content: "ok" };
+    const messages: CacheableMessage[] = [
+      { role: "assistant", content: [prev] },
+      { role: "user", content: [crit, tr] },
+    ];
+    // tool_result 在 critical 之后：它前面那段含下一轮没有的字节，不能当断点
+    expect(markLastUserMessageCacheBreakpoint(messages, isT)).toBe(0);
+    expect((prev as any).cache_control).toEqual({ type: "ephemeral" });
+    expect((tr as any).cache_control).toBeUndefined();
+  });
+
+  test("退回时跳过 thinking 块（不可挂 cache_control）", () => {
+    const text = { type: "text", text: "答" };
+    const thinking = { type: "thinking", thinking: "…", signature: "s" };
+    const messages: CacheableMessage[] = [
+      { role: "assistant", content: [text, thinking] },
+      { role: "user", content: [t("<system-reminder>x</system-reminder>")] },
+    ];
+    expect(markLastUserMessageCacheBreakpoint(messages, isT)).toBe(0);
+    expect((text as any).cache_control).toEqual({ type: "ephemeral" });
+    expect((thinking as any).cache_control).toBeUndefined();
+  });
+
+  test("没有 transient 块时与旧行为完全一致（末块）", () => {
+    const a = [msg("assistant", "1"), msg("user", "2", "3")];
+    expect(markLastUserMessageCacheBreakpoint(a, isT)).toBe(1);
+    expect((a[1].content as any[])[1].cache_control).toEqual({ type: "ephemeral" });
+  });
+
+  test("仍只打一个断点", () => {
+    const messages: CacheableMessage[] = [
+      msg("user", "a"),
+      { role: "user", content: [{ type: "text", text: "b" }, t("r")] },
+    ];
+    markLastUserMessageCacheBreakpoint(messages, isT);
+    expect(countCacheBreakpoints(undefined, messages)).toBe(1);
+  });
+});
+
 describe("addMessageCacheBreakpoint", () => {
   test("正常模式标记最后一条", () => {
     const messages = [msg("user", "1"), msg("assistant", "2"), msg("user", "3")];
@@ -299,10 +359,14 @@ describe("markLastToolCacheBreakpoint（增强 5.1 工具区缓存断点）", ()
     expect(ts[2].cache_control).toEqual({ type: "ephemeral" });
   });
 
-  test("globalScope=true → 最后工具带 scope=global", () => {
+  test("cache_control 永不带 scope 字段（公开 API 只有 type/ttl，带了会 400）", () => {
     const ts = tools("read", "bash");
-    markLastToolCacheBreakpoint(ts, { globalScope: true });
-    expect(ts[1].cache_control).toEqual({ type: "ephemeral", scope: "global" });
+    markLastToolCacheBreakpoint(ts);
+    const system = buildSystemBlocks(`STATIC${DYNAMIC_BOUNDARY}DYNAMIC`)!;
+    for (const cc of [ts[1].cache_control, ...system.map((b) => b.cache_control)]) {
+      expect(cc).toEqual({ type: "ephemeral" });
+      expect(cc).not.toHaveProperty("scope");
+    }
   });
 
   test("工具区断点计入 countCacheBreakpoints 总数", () => {

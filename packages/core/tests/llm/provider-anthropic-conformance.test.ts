@@ -19,6 +19,7 @@ import { describe, test, expect } from "bun:test";
 import { AnthropicProvider } from "@sid-code/core/llm/anthropic.ts";
 import type { SendParams, StreamEvent } from "@sid-code/core/llm/types.ts";
 import { initStreamObserver, resetStreamObserver } from "@sid-code/core/trace/stream-observer.ts";
+import { msSincePrefixTouch, resetPrefixTouchForTests } from "@sid-code/core/api/cache-warmth.ts";
 
 // ─── 测试脚手架 ──────────────────────────────────────────────────────────
 
@@ -580,5 +581,70 @@ describe("Anthropic conformance — tool_choice 透传（OPT-2）", () => {
       }),
     );
     expect(getBody().tool_choice).toEqual({ type: "auto" });
+  });
+});
+
+// ─── §6 Prompt Cache：线上实发形态（2026-10-24）────────────────────────────
+
+describe("Anthropic conformance — 缓存断点的线上形态", () => {
+  const REMINDER_PARAMS: SendParams = {
+    ...BASE_PARAMS,
+    messages: [
+      { role: "user", content: [{ type: "text", text: "修一下登录超时" }] },
+      { role: "assistant", content: [{ type: "tool_use", id: "t1", name: "read", input: {} }] },
+      {
+        role: "user",
+        content: [
+          { type: "text", text: "<system-reminder>止损</system-reminder>", transient: true },
+          { type: "tool_result", tool_use_id: "t1", content: "ok" },
+          { type: "text", text: "<system-reminder>todo</system-reminder>", transient: true },
+        ],
+      },
+    ],
+  };
+
+  test("transient 是本地元数据：不上线", async () => {
+    const { provider, getBody } = makeCapturingProvider();
+    await drain(provider.sendMessageStream(REMINDER_PARAMS));
+    expect(JSON.stringify(getBody().messages)).not.toContain("transient");
+  });
+
+  test("断点不落在 transient 块及其之后（critical 在前 → 退到上一条消息）", async () => {
+    const { provider, getBody } = makeCapturingProvider();
+    await drain(provider.sendMessageStream(REMINDER_PARAMS));
+    const msgs = getBody().messages;
+    expect(msgs[2].content.every((b: any) => !b.cache_control)).toBe(true);
+    expect(msgs[1].content[0].cache_control).toEqual({ type: "ephemeral" });
+  });
+
+  test("请求体里没有 cache_edits，也没有 scope", async () => {
+    const { provider, getBody } = makeCapturingProvider();
+    await drain(provider.sendMessageStream({ ...REMINDER_PARAMS, system: "S" }));
+    const body = JSON.stringify(getBody());
+    expect(body).not.toContain("cache_edits");
+    expect(body).not.toContain('"scope"');
+  });
+
+  test("落 PromptCacheLayout 事件：断点不在 transient 上", async () => {
+    const captured: any[] = [];
+    initStreamObserver("sess-layout", "/tmp", (ev) => captured.push(ev));
+    try {
+      const { provider } = makeCapturingProvider();
+      await drain(provider.sendMessageStream(REMINDER_PARAMS));
+      const ev = captured.find((e) => e.event === "PromptCacheLayout");
+      expect(ev).toBeDefined();
+      expect(ev.data.message_breakpoint_on_transient).toBe(false);
+      expect(ev.data.transient_blocks).toBe(2);
+      expect(ev.data.message_breakpoint_index).toBe(1);
+    } finally {
+      resetStreamObserver();
+    }
+  });
+
+  test("每次请求都刷新前缀触碰时间（冷热判定的时间源）", async () => {
+    resetPrefixTouchForTests();
+    const { provider } = makeCapturingProvider();
+    await drain(provider.sendMessageStream(BASE_PARAMS));
+    expect(msSincePrefixTouch()).toBeLessThan(5_000);
   });
 });

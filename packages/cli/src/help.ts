@@ -304,8 +304,6 @@ Worktree 隔离:
   SID_DISABLE_STRICT_TOOLS      设为 1 禁用 strict 工具模式
   SID_DISABLE_FGTS              设为 1 禁用 First-Guess Tool Streaming
   SID_ENABLE_TOKEN_EFFICIENT_TOOLS  设为 1 启用 token 高效工具
-  SID_DISABLE_GLOBAL_CACHE      设为 1 禁用全局缓存
-  SID_DISABLE_CACHE_EDITS       设为 1 禁用缓存编辑
   SID_LOOP_EXHAUSTED_ACTION     循环耗尽动作（terminate 时回退旧行为）
   SID_DISABLE_PROMISE_NUDGE     设为 1 关闭「短文本承诺未兑现」续跑（提示照常）
   SID_STRUCTURED_OUTPUT_MAX_RETRIES  结构化输出最大重试次数（缺省 5）

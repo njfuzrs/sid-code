@@ -215,7 +215,9 @@ describe("3. 子代理异常路径 PostToolUseFailure 的 is_interrupt 按真实
     ctrl.abort("user-cancel");
     const tools = registry([abortingTool()]);
     await executeTools([use("t1", "slow")], tools, ctrl.signal, sys, allowAll);
-    expect(fail[0]).toMatchObject({ is_interrupt: true, sid_failure_kind: "exception" });
+    // 2026-10-24：中断单独分型为 aborted（不再并进 exception），与主循环同口径——
+    // 用户 ESC 不是「工具不可靠」的证据，混进 exception 会污染失败率。
+    expect(fail[0]).toMatchObject({ is_interrupt: true, sid_failure_kind: "aborted" });
   });
 
   test("进程内：普通异常 → is_interrupt=false", async () => {

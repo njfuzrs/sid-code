@@ -944,6 +944,9 @@ export const LOCAL_ONLY_EVENT_DATA_FIELDS = [
   // 会话产生那一刻的隐私级别：只供本地归因（backfill 据 marker 判断期间会话不补传），
   // 云端服务端对 SessionStart 未知字段的校验口径不明，不冒多余暴露面——上传时剥掉。
   "privacy_level",
+  // SubagentStart 的子代理工作目录（绝对路径）：只供本地判定「工具调用打在哪个目录」，
+  // 云端靠 `isolation` 就能按隔离与否分组。
+  "agent_cwd",
 ] as const;
 
 const LOCAL_ONLY_NEEDLES = LOCAL_ONLY_EVENT_DATA_FIELDS.map((f) => `"${f}"`);

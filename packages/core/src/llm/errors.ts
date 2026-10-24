@@ -168,7 +168,59 @@ export const ABORT_REASONS = [
   // 休眠前建的连接基本已死，等 OS 报错要 43–69s（半开连接甚至不报）。登记理由同上：
   // 底层 fetch 以该裸字符串 reject，未登记即孤儿 rejection。
   "host-sleep-reopen",
+  // 并行批次里 Bash 失败 → 联动取消同批兄弟（query/tool-executor.ts）。原名 "sibling_bash_error"
+  // 从未登记：兄弟工具以这个裸字符串 reject 时 isAbortError=false，被当成普通异常，模型拿到的是
+  // 「工具执行异常: undefined」，专门写的级联取消文案一次都走不到（2026-10-24 实测复现）。
+  // 改成 kebab-case 也是为了让下方哨兵测试的字面量扫描能看见它——旧名带下划线，扫描正则漏掉了。
+  "sibling-bash-error",
 ] as const;
+
+/** 并行 Bash 失败级联取消兄弟工具的 abort reason（单一事实源，tool-executor / agent/tool.ts 共用）。 */
+export const SIBLING_BASH_ERROR_ABORT_REASON = "sibling-bash-error" as const;
+
+/**
+ * 从中断错误 / AbortSignal.reason 里取出字符串 reason。
+ *
+ * 为什么要单独一个函数：`abort("xxx")` 之后，被取消的 Promise 以**裸字符串**reject，
+ * 而 DOMException / RequestAbortedError 把它放在 `.reason` 或 `.message`。调用点各写一遍
+ * `(err as any)?.reason ?? (err as any)?.message`，对裸字符串恰好取到 undefined——
+ * 并行批次里「是不是 bash 级联」的判断就是这样静默判错的。
+ */
+export function abortReasonOf(errOrReason: unknown): string | undefined {
+  if (typeof errOrReason === "string") return errOrReason;
+  if (errOrReason && typeof errOrReason === "object") {
+    const r = (errOrReason as { reason?: unknown }).reason;
+    if (typeof r === "string") return r;
+    if (r && typeof r === "object") return abortReasonOf(r);
+    const m = (errOrReason as { message?: unknown }).message;
+    if (typeof m === "string") return m;
+  }
+  return undefined;
+}
+
+/**
+ * 把中断 reason 翻译成给模型看的成因短语。
+ *
+ * 工具（bash 等）在 signal 被 abort 后自己收尾返回时，原先一律写「用户取消」——
+ * 但同一个 signal 还会被 bash 级联、看门狗、单轮硬超时 abort。模型读到「用户取消」
+ * 会以为用户不想要这一步，进而放弃整条路线；真实成因是兄弟命令失败时它应当修那条命令。
+ */
+export function describeAbortReason(reason: unknown): string {
+  const r = abortReasonOf(reason);
+  if (r === SIBLING_BASH_ERROR_ABORT_REASON) return "同批次中先行的 Bash 命令执行失败，联动取消";
+  if (r === "user-cancel") return "用户取消";
+  if (r === "midturn-preempt") return "用户中途改向";
+  if (isInternalTimeoutAbortReason(r)) return `内部超时中断（${r}）`;
+  return r ? `已中断（${r}）` : "已中断";
+}
+
+/** 错误对象 → 可读文本。非 Error 抛出值（裸字符串 reason 等）不能读 `.message`，否则得到 "undefined"。 */
+export function errorMessageOf(err: unknown): string {
+  if (err instanceof Error) return err.message;
+  const m = (err as { message?: unknown } | undefined)?.message;
+  if (typeof m === "string") return m;
+  return String(err);
+}
 
 /** H10：side-call 硬超时的 abort reason（与既有 "side-call-timeout" 一致，供各 side-call 复用）。 */
 export const SIDE_CALL_TIMEOUT_REASON = "side-call-timeout" as const;

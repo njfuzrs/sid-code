@@ -833,6 +833,47 @@ export function emitBilledRequest(data: {
   }
 }
 
+// ─── PromptCacheLayout 事件（§6 缓存缺陷修复，2026-10-24） ───
+
+/**
+ * Anthropic 请求在**线上实发形态**里的缓存断点布局。调用点：`anthropic.ts` 打完断点、发请求前。
+ *
+ * 为什么必须在 provider 侧落：`raw.jsonl` / `prefix_break` 都在 BeforeModel hook 取样，
+ * 那时 reminder 刚注入、断点还没打 —— 断点落在哪一块，此前**只能靠回放推断**。
+ * 「断点打在 transient 块上」这个缺陷的修复效果，只有这个字段能直接证明（应恒为 false）。
+ *
+ * 只落位置与计数，不落任何内容。
+ */
+export function emitPromptCacheLayout(data: {
+  index: number;
+  model: string;
+  /** 端点 host（判定 usage 是否可信要按 host 查 channel-trust） */
+  endpoint_host?: string;
+  stream: boolean;
+  /** 断点总数（system + tools + messages），≤ 4 */
+  breakpoints: number;
+  /** messages 区断点所在消息下标；-1 = 没打 */
+  message_breakpoint_index: number;
+  /** messages 区断点是否落在 transient（system-reminder）块上 —— 修复后应恒为 false */
+  message_breakpoint_on_transient: boolean;
+  /** 本次请求含多少个 transient 块 */
+  transient_blocks: number;
+  message_count: number;
+}): void {
+  try {
+    if (_eventWriter && _sessionId) {
+      _eventWriter({
+        event: "PromptCacheLayout",
+        session_id: _sessionId,
+        timestamp: new Date().toISOString(),
+        data: data as unknown as Record<string, unknown>,
+      });
+    }
+  } catch {
+    /* 可观测性不影响正常流程 */
+  }
+}
+
 // ─── StrictToolDegraded 事件（遗留清单 R11） ───
 
 /**

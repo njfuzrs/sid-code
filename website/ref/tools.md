@@ -46,7 +46,7 @@ description: 全部内置工具的名称、用途与入参。表里的名称就�
 | `notebook_edit` | 编辑 Jupyter Notebook（.ipynb）的单个 cell。支持替换、插入新 cell、删除 cell。 | `notebook_path` `edit_mode` `new_source` | `cell_id` `cell_type` |
 | `read` | 读取文件内容。支持指定行偏移和限制来读取大文件的部分内容。默认最多读取 2000 行，超出时会提示如何继续读取。 | `file_path` | `offset` `limit` `pages` |
 | `read_many` | 批量读取多个文件。通过 glob 模式匹配文件，一次性读取并拼接内容，大幅减少调用次数。 | `pattern` | `exclude` `path` |
-| `save_memory` | 保存记忆到持久化存储。用于记录用户偏好、项目约定、重要决策等信息。 | `key` `value` | `scope` |
+| `save_memory` | 保存记忆到持久化存储。用于记录用户偏好、项目约定、重要决策等信息。 | `key` `value` `type` | `scope` |
 | `schedule_wakeup` | 安排在 N 秒后唤醒一次并执行 prompt（动态自定步，一次性）。 | `delay_seconds` `prompt` | `reason` |
 | `send_message` | 向一个后台 Agent 发送消息。 | `to` `message` | `summary` |
 | `skill__review` | 对当前变更或指定 diff 做 code review，输出结构化审查意见 | `input` | — |

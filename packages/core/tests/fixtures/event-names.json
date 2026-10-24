@@ -11,6 +11,7 @@
     "memory_index_health",
     "memory_inject",
     "memory_read",
+    "memory_write",
     "permission_allow",
     "permission_deny",
     "permission_prompt",

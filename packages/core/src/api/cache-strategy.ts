@@ -3,8 +3,16 @@
  *
  * 职责（对标 Claude Code 的 addCacheBreakpoints）：
  * - 在 system / tools / 消息序列上精确放置 cache_control 标记
- * - G4 Global Scope：静态区可标记 scope=global，让所有用户共享同一份 KV Cache（SaaS 规模命中率远超 org 级）
- * - G12 四块精细分区：attribution（不缓存）/ corePrefix（global）/ staticExtensions（org）/ dynamic（会话内）
+ * - G12 分区：system 按 DYNAMIC_BOUNDARY 拆静态区（跨会话）/ 动态区（会话内）两个断点
+ *
+ * ## 不发 `scope` 字段（2026-10-24 移除 G4 global scope）
+ *
+ * 公开 Messages API 的 `cache_control` 只有 `type` 与 `ttl`（SDK 0.120 `CacheControlEphemeral`），
+ * 缓存按 workspace 隔离、从不跨组织共享。`scope:"global"` 是 Claude Code 第一方专用形态，
+ * 要配 `prompt-caching-scope-*` beta 头，本仓从未发过这个头；CC 自己在头缺失时就吃过
+ * `cache_control.ephemeral.scope: Extra inputs are not permitted` 的 400（anthropics/claude-code#41966）。
+ * 而且本仓静态区含记忆索引等用户特定内容，即使字段合法也不会跨用户命中。所以这里不是
+ * 「暂时关掉」，是这个字段对本仓没有成立的前提。
  *
  * 设计为纯函数，操作"已转换为 API 格式的载荷"（带 content 数组的对象），
  * 不耦合 SDK 类型 —— Provider 在转换完消息后调用本模块统一打标。
@@ -44,13 +52,9 @@
  * 不必要，是因为每轮数组是新建的；哪天改成复用同一份 messages，就必须重新引入清场。**
  */
 
-/** 缓存作用域（G4）。global 让所有用户共享 KV Cache，org 为组织级（默认）。 */
-export type CacheScope = "global" | "org";
-
-/** cache_control 标记（G4：可选 scope） */
+/** cache_control 标记（形状与公开 API 一致，不带 scope，理由见文件头） */
 export interface CacheControl {
   type: "ephemeral";
-  scope?: CacheScope;
 }
 
 /** 可被打标的 content block（鸭子类型） */
@@ -88,18 +92,7 @@ export interface CacheStrategyOptions {
   skipCacheWrite?: boolean;
 }
 
-/** buildSystemBlocks 选项（G4） */
-export interface BuildSystemBlocksOptions {
-  /**
-   * 是否对静态区启用 global scope（G4）。
-   * 仅当静态区内容确实跨用户一致（无组织/用户特定内容注入）时才应开启。
-   * 动态区始终 org 级（含用户特定内容）。
-   */
-  globalScopeEnabled?: boolean;
-}
-
 const EPHEMERAL: CacheControl = { type: "ephemeral" };
-const EPHEMERAL_GLOBAL: CacheControl = { type: "ephemeral", scope: "global" };
 
 /** system prompt 静态/动态分区边界（与 anthropic.ts 现状一致） */
 export const DYNAMIC_BOUNDARY = "\n\n<!-- DYNAMIC_BOUNDARY -->\n\n";
@@ -126,26 +119,18 @@ export function splitSystemByDynamicBoundary(system: string): {
 /**
  * 将 system prompt 字符串拆分为带 cache_control 的 SystemBlock 数组。
  * 含 DYNAMIC_BOUNDARY 时拆静态/动态两区，分别打标（跨会话缓存 + 会话内缓存）。
- *
- * G4：globalScopeEnabled 时，静态区标记 scope=global（跨用户共享 KV Cache）；
- * 动态区始终 org 级（不带 scope）。
  */
-export function buildSystemBlocks(
-  system: string | undefined,
-  options?: BuildSystemBlocksOptions,
-): SystemBlock[] | undefined {
+export function buildSystemBlocks(system: string | undefined): SystemBlock[] | undefined {
   if (!system) return undefined;
-  const staticControl = options?.globalScopeEnabled ? EPHEMERAL_GLOBAL : EPHEMERAL;
   const { staticContent, dynamicContent } = splitSystemByDynamicBoundary(system);
   if (dynamicContent !== undefined) {
     return [
-      { type: "text", text: staticContent, cache_control: staticControl },
-      // 动态区始终 org 级（含用户特定内容），不用 global scope
+      { type: "text", text: staticContent, cache_control: EPHEMERAL },
       { type: "text", text: dynamicContent, cache_control: EPHEMERAL },
     ];
   }
   // 无边界：整段视为静态区
-  return [{ type: "text", text: staticContent, cache_control: staticControl }];
+  return [{ type: "text", text: staticContent, cache_control: EPHEMERAL }];
 }
 
 /** 可被打标的工具定义（鸭子类型；只关心 cache_control 字段是否可挂） */
@@ -161,19 +146,14 @@ export interface CacheableTool {
  * 为什么放最后一个：tools 数组整体在 system 之前、messages 之后被服务端处理，
  * 在末尾工具打一个断点 = 把"整个工具区"纳入前缀缓存的一个独立分层，
  * 工具定义每请求稳定 → 高命中。放最后一个而非每个，保证只 +1 个断点（守住 ≤4 上限）。
- *
- * scope：仅直连 Anthropic 且工具区确实跨用户一致时才用 global（与 system 静态区同策略）；
- * 走网关时降级为普通 ephemeral（org 级）或由调用方直接不打（见 anthropic.ts 门控）。
+ * 走网关时由调用方直接不打（见 anthropic.ts 门控）。
  *
  * @returns 是否成功打标（空数组返回 false）
  */
-export function markLastToolCacheBreakpoint(
-  tools: CacheableTool[] | undefined,
-  options?: { globalScope?: boolean },
-): boolean {
+export function markLastToolCacheBreakpoint(tools: CacheableTool[] | undefined): boolean {
   if (!tools || tools.length === 0) return false;
   const last = tools[tools.length - 1];
-  last.cache_control = options?.globalScope ? EPHEMERAL_GLOBAL : EPHEMERAL;
+  last.cache_control = EPHEMERAL;
   return true;
 }
 
@@ -207,6 +187,11 @@ export function clearCacheBreakpoints(messages: CacheableMessage[]): void {
   }
 }
 
+/** 服务端不允许挂 cache_control 的块（thinking 类只能随消息隐式缓存） */
+function canCarryCacheControl(block: CacheableBlock): boolean {
+  return block.type !== "thinking" && block.type !== "redacted_thinking";
+}
+
 /**
  * 在**最后一条 `role === "user"` 的消息**末块放 cache breakpoint（P1-4 收口）。
  *
@@ -214,19 +199,54 @@ export function clearCacheBreakpoints(messages: CacheableMessage[]): void {
  * 那个函数打的是最后一条消息（不论 role），本函数倒序找最后一条 user 消息。
  * **assistant / `role: "tool"` 结尾时两者落点不同。**
  *
- * 这是 anthropic 生产路径（流式 + 非流式）此前各自手写倒序循环的行为，
- * 收口时刻意**保留**它而不是换成 `addMessageCacheBreakpoint` —— 后者是行为变更。
- * 上一版博客把这处重复描述为"功能上没错、只是三种写法"，实测是语义分叉。
+ * ## isTransient：断点不能落在「下一轮不会再发」的字节上
  *
+ * system-reminder 只进发送副本、不写回历史（reminder-inject.ts 不变量 3）。服务端只在
+ * 断点处写缓存，断点若打在 reminder 块上，写进去的是一段下一轮请求里根本不存在的前缀；
+ * 下一轮只能回落到上上轮的断点，中间一整轮的增量按全价重写。轨迹实测 13% 的请求断点
+ * 落在 reminder 上（2026-10-24，5182 次请求里 691 次）。
+ *
+ * critical reminder 插在用户指令**之前**，所以不能只「跳过末尾的 transient 块」：
+ * 断点必须落在**第一个** transient 块之前，否则同一条消息里它前面那段也含下一轮没有的字节。
+ * 第一个 transient 就在消息开头时，退到上一条消息（不论 role）的最后一个可打标块。
+ *
+ * @param isTransient 判定某个已转换的块是否只存在于本轮发送副本
  * @returns 被打标的消息索引（-1 表示未打标）
  */
-export function markLastUserMessageCacheBreakpoint(messages: CacheableMessage[]): number {
+export function markLastUserMessageCacheBreakpoint(
+  messages: CacheableMessage[],
+  isTransient?: (block: CacheableBlock) => boolean,
+): number {
   for (let i = messages.length - 1; i >= 0; i--) {
     const msg = messages[i];
     if (msg?.role !== "user") continue;
     // 空 content 的 user 消息跳过继续往前找 —— 与手写循环一致
     // （它要求 content.length > 0 才打标并 break）
-    if (markLastContentBlock(msg)) return i;
+    if (!Array.isArray(msg.content) || msg.content.length === 0) continue;
+    const firstTransient = isTransient ? msg.content.findIndex(isTransient) : -1;
+    if (firstTransient === -1) return markLastContentBlock(msg) ? i : -1;
+    // 只往前找：transient 之前的块与更早的消息都是下一轮仍会原样发送的前缀
+    return markLastEligibleBlockBefore(messages, i, firstTransient);
+  }
+  return -1;
+}
+
+/** 从 (msgIdx, blockIdx) 之前（不含）倒序找第一个可挂 cache_control 的块并打标 */
+function markLastEligibleBlockBefore(
+  messages: CacheableMessage[],
+  msgIdx: number,
+  blockIdx: number,
+): number {
+  for (let i = msgIdx; i >= 0; i--) {
+    const content = messages[i]?.content;
+    if (!Array.isArray(content)) continue;
+    const start = i === msgIdx ? blockIdx - 1 : content.length - 1;
+    for (let j = start; j >= 0; j--) {
+      if (canCarryCacheControl(content[j])) {
+        content[j].cache_control = EPHEMERAL;
+        return i;
+      }
+    }
   }
   return -1;
 }
@@ -291,11 +311,9 @@ export function addCacheBreakpoints(params: {
   messages: CacheableMessage[];
   system?: string;
   options?: CacheStrategyOptions;
-  /** G4：静态区是否用 global scope */
-  buildOptions?: BuildSystemBlocksOptions;
 }): { system?: SystemBlock[]; markedMessageIndex: number } {
   clearCacheBreakpoints(params.messages);
-  const system = buildSystemBlocks(params.system, params.buildOptions);
+  const system = buildSystemBlocks(params.system);
   const markedMessageIndex = addMessageCacheBreakpoint(params.messages, params.options);
   return { system, markedMessageIndex };
 }

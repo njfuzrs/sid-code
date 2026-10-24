@@ -18,7 +18,7 @@
  * 在此是安全的；测试用 `setJitTraceSink(null)` 复位。
  */
 
-import { basename, relative } from "path";
+import { basename, relative, resolve } from "path";
 
 /** JIT 埋点写入通道（由 App 注入，指向 `TraceCollector.recordCustomEvent`） */
 export type JitEventSink = (data: Record<string, unknown>) => void;
@@ -63,11 +63,22 @@ export function buildJitEventData(opts: {
   cumulativeBytes: number;
   /** 哪条通道触发的 —— 主循环还是子代理 */
   source: "main" | "subagent";
+  /**
+   * 本次发现的项目根是否是隔离 worktree。缺省不写字段（主循环）。
+   *
+   * 为什么要它：`accessed_path` 只记相对段，看不出「相对谁」。子代理 JIT 曾以主仓为根
+   * 解析隔离 worktree 里的访问（加载主仓那份规则），事件里没有任何字段能把这种错位
+   * 和正常命中分开 —— 只能回源码推断。有了它，`source=subagent ∧ isolated_worktree=false`
+   * 而 SubagentStart.isolation=worktree 就是一条可直接计数的错位信号。
+   */
+  isolatedWorktree?: boolean;
 }): Record<string, unknown> {
   const { accessedPath, projectRoot, discovery: r, cumulativeBytes, source } = opts;
   const rel = (p: string) => {
     try {
-      const r2 = relative(projectRoot, p);
+      // 相对路径必须按 projectRoot 解析：`relative()` 会把相对入参按 process.cwd() 补全，
+      // 隔离子代理里那是主仓根，worktree 内的 `src/a.ts` 会被判成项目外、只剩文件名。
+      const r2 = relative(projectRoot, resolve(projectRoot, p));
       // 项目外路径（不该出现，出现即边界判定有问题）只记文件名，不泄露绝对路径
       return !r2 || r2.startsWith("..") ? basename(p) : r2;
     } catch {
@@ -77,6 +88,7 @@ export function buildJitEventData(opts: {
 
   return {
     source,
+    ...(opts.isolatedWorktree !== undefined ? { isolated_worktree: opts.isolatedWorktree } : {}),
     accessed_path: rel(accessedPath),
     hit: r.loaded.length > 0,
     loaded_count: r.loaded.length,

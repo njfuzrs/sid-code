@@ -79,3 +79,26 @@ export function toInternalToolName(name: string): string {
 export function toCcToolName(internalName: string): string | undefined {
   return INTERNAL_TO_CC.get(internalName);
 }
+
+/**
+ * 工具名黑名单是否命中（`disallowedTools` 的唯一比较口径）。
+ *
+ * 名单项可以是 CC 名（`Bash` / `WebFetch`）、内部名、任意大小写，或带括号的规则写法
+ * （`Bash(curl *)` —— 黑名单是**工具级**的，括号部分不参与比较，按整个工具禁用）。
+ *
+ * 为什么必须有这一处：权限层 Step 3 曾是 `disallowedTools.includes(req.toolName)`
+ * 精确比较，`["Bash"]` / `["WebFetch"]` 对不上 `bash` / `web_fetch` → 静默不生效
+ * （2026-10-24 实测 always-allow 下直接放行）。CLI 入口的 registry.removeByNames 自带归一，
+ * 掩盖了这个问题；会话中途从 CLAUDE.md 合并进来的黑名单只经过权限层，正好踩中。
+ * 子代理 tool-filter 的 Layer 3 有同一个精确比较，一起收口到这里。
+ */
+export function isToolNameListed(list: readonly string[] | undefined, toolName: string): boolean {
+  if (!list || list.length === 0) return false;
+  const target = toInternalToolName(toolName).toLowerCase();
+  return list.some((raw) => {
+    if (typeof raw !== "string") return false;
+    const paren = raw.indexOf("(");
+    const base = (paren >= 0 ? raw.slice(0, paren) : raw).trim();
+    return base !== "" && toInternalToolName(base).toLowerCase() === target;
+  });
+}

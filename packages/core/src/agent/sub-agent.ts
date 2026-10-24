@@ -28,7 +28,7 @@ import { getLogger } from "../debug/logger.ts";
 import type { HookSystem } from "../hook/system.ts";
 import type { Checker, PermissionRequest } from "../permission/types.ts";
 import { logToolCall, logToolSuccess, logToolFailure } from "../analytics/events.ts";
-import { isAbortError } from "../llm/errors.ts";
+import { isAbortError, errorMessageOf } from "../llm/errors.ts";
 import { LoopDetector } from "./loop-detection.ts";
 import { type LanguagePref, resolveEffectiveLanguage } from "../config/prompt-lang.ts";
 import { filterToolsForAgent } from "./tool-filter.ts";
@@ -70,11 +70,10 @@ import { getTeamMemberContext } from "../swarm/team-context.ts";
 import { registerSession, unregisterSession } from "../session/concurrent.ts";
 import { getAgentSystemPrompt, resolveAgent, BUILTIN_AGENTS } from "./agent-definition.ts";
 import { platform, homedir } from "os";
-import { cwd } from "process";
-import { dirname, join, sep } from "path";
+import { dirname, join } from "path";
 import { fileURLToPath } from "url";
 import { existsSync } from "fs";
-import { withAgentCwd } from "../bootstrap/cwd-context.ts";
+import { withAgentCwd, getAgentRoot, splitIsolatedWorktreePath } from "../bootstrap/cwd-context.ts";
 import { withIncrementedDepth, getAgentDepth, AGENT_DEPTH_ENV } from "./depth-context.ts";
 import { runInSpanScope } from "../telemetry/span-scope.ts";
 import {
@@ -284,6 +283,17 @@ export interface SubAgentResult {
   apiRequests?: number;
 }
 
+/** SubagentStart 的工作目录 / 隔离字段（无绑定目录时为空对象，事件形状不变）。 */
+function subAgentCwdFields(cwd: string | undefined): {
+  agentCwd?: string;
+  isolation?: "worktree";
+} {
+  if (!cwd) return {};
+  return splitIsolatedWorktreePath(cwd)
+    ? { agentCwd: cwd, isolation: "worktree" }
+    : { agentCwd: cwd };
+}
+
 /** 子代理系统提示词（从 AgentDefinition 注册表获取，兼容内置 + 自定义类型） */
 function getSystemPrompt(type: string): string {
   return (
@@ -361,7 +371,7 @@ async function enhanceSubAgentPrompt(
   );
 
   // 环境信息
-  const dir = workingDir ?? cwd();
+  const dir = workingDir ?? getCwd();
   const home = homedir();
   const os = platform();
   const date = new Date().toISOString().split("T")[0];
@@ -378,15 +388,25 @@ async function enhanceSubAgentPrompt(
   }
 
   // D13：若工作目录落在隔离 worktree 内，明确告知子代理，避免它输出主仓路径或误判仓库状态。
-  if (dir.includes(`${sep}.sid-code${sep}worktrees${sep}`)) {
+  //
+  // ⚠️ `dir` 必须来自 getCwd()（ALS 优先）而不是 process.cwd()：withAgentCwd 不 chdir，
+  // process.cwd() 在隔离子代理里恒为主仓根。旧实现四个调用点都传 process.cwd()，
+  // 于是「当前工作目录」写的是主仓、这条提示永远不出现 —— 2026-10-16~22 本机 11 个隔离
+  // 子代理 529 次带路径工具调用里 501 次打在主仓绝对路径上（轨迹实测）。
+  // 点名主仓根：只说「别用主仓路径」而不给出是哪个路径，模型无从判断自己写的是不是。
+  const isolated = splitIsolatedWorktreePath(dir);
+  if (isolated) {
     notes.push(
       isEn
-        ? "[ISOLATED ENVIRONMENT] You are running inside an isolated Git worktree (a separate working tree sharing the main repo's object store). " +
-            "Your file changes affect only this working tree and will not pollute the main repo. Use the working directory above as the project root; " +
-            "do not assume you are in the main repository directory, and do not reference the main repo's absolute paths."
-        : "【隔离环境提示】你当前运行在一个隔离的 Git Worktree 中（独立工作区，与主仓共享对象库）。" +
-            "你的文件改动只影响此工作区，不会污染主仓。请使用上面的「当前工作目录」作为项目根，" +
-            "不要假设自己在主仓库目录下，也不要引用主仓的绝对路径。",
+        ? "[ISOLATED ENVIRONMENT] You are running inside an isolated Git worktree " +
+            `(root: ${isolated.worktreeRoot}; it shares the object store of the main repo at ${isolated.mainRepo}). ` +
+            "Use the worktree root as the project root: prefer relative paths, and prefix any absolute path with the worktree root. " +
+            `Never read or write paths under ${isolated.mainRepo} outside this worktree — writes there are rejected, ` +
+            "and reads see another checkout, not your branch."
+        : "【隔离环境提示】你当前运行在一个隔离的 Git Worktree 中" +
+            `（根目录: ${isolated.worktreeRoot}；与位于 ${isolated.mainRepo} 的主仓共享对象库）。` +
+            "请以该 worktree 根作为项目根：优先使用相对路径，绝对路径一律以 worktree 根为前缀。" +
+            `不要读写 ${isolated.mainRepo} 下、本 worktree 之外的路径——写入会被拒绝，读到的也是另一份检出、不是你所在的分支。`,
     );
   }
 
@@ -450,6 +470,12 @@ export interface CustomSubAgentTask {
    * 显式指定即开 thinking 并下发该族的线格式；不传则关 thinking。
    */
   effort?: "low" | "medium" | "high" | "xhigh" | "max";
+  /**
+   * 工作目录（与 {@link SubAgentTask.cwd} 同语义）。设置时执行体包在 withAgentCwd 里、
+   * 强制进程内执行（ALS 不跨进程）。此前自定义路径没有这个字段：既不包 ALS、又优先 spawn
+   * （子进程 cwd 恒为父进程目录），想让 fork 命令 / agent hook 跑在隔离 worktree 里没有任何入口。
+   */
+  cwd?: string;
   /** E1（内部使用）：executeCustom 分配的「类型 + 调用序号」后缀。三处（hook agent_id /
    *  观测身份 / sidechain）共用它，才不会各自 ++_customAgentSeq 得出三个不同序号。
    *  直接调 executeCustomInner / executeSpawnedCustom 的测试不传时各自现场分配。 */
@@ -591,9 +617,15 @@ export class SubAgent {
     let queue: Promise<void> = Promise.resolve();
 
     return (toolBlocks) => {
+      // JIT 的项目根 = 本子代理的隔离边界（withAgentCwd 进入时的 root，不随 cd 变），
+      // 无绑定时与主循环同口径取 process.cwd()（app.ts runJitDiscovery）。
+      // 旧实现取 process.cwd()：隔离子代理里那是主仓根，相对路径被按主仓解析、
+      // 加载的是主仓那份规则文件（另一份检出），worktree 里的规则一份都进不来。
+      // 在调用时（仍处于子代理的异步上下文里）同步取值，不依赖队列回调里 ALS 的传播。
+      const projectRoot = getAgentRoot() ?? process.cwd();
       const paths = collectJitAccessedPaths(
         toolBlocks as Array<{ name: string; input: unknown }> as any,
-        process.cwd(),
+        projectRoot,
         (name) => {
           const tool = this.toolRegistry.get(name) as
             | { jitAffectedPaths?: (input: unknown) => string[] }
@@ -608,8 +640,7 @@ export class SubAgent {
           const log = getLogger();
           for (const p of paths) {
             try {
-              const cwd = process.cwd();
-              const r = await mgr.discoverDetailed(p, cwd);
+              const r = await mgr.discoverDetailed(p, projectRoot);
 
               // 第 5 批：子代理侧也要打点。此前只有主循环打，子代理这条通道
               // （P2-1 接的独立 manager）完全不进统计 —— 用到子代理的会话，
@@ -619,10 +650,11 @@ export class SubAgent {
               emitJitEvent(
                 buildJitEventData({
                   accessedPath: p,
-                  projectRoot: cwd,
+                  projectRoot,
                   discovery: r,
                   cumulativeBytes: mgr.getLoadedBytes(),
                   source: "subagent",
+                  isolatedWorktree: splitIsolatedWorktreePath(projectRoot) !== null,
                 }),
               );
 
@@ -849,7 +881,7 @@ export class SubAgent {
         sessionId: teammateSessionId,
         pid: process.pid,
         kind: "teammate",
-        cwd: task.cwd ?? process.cwd(),
+        cwd: task.cwd ?? getCwd(),
         startedAt,
         team: teamCtx.teamName,
         model: task.model,
@@ -868,6 +900,7 @@ export class SubAgent {
           description: task.description,
           parentToolUseId: task._parentToolUseId,
           legacyAgentId,
+          ...subAgentCwdFields(task.cwd),
         })
         .catch((err) => log.error("HOOK", `subagent_start hook 失败: ${err.message}`));
 
@@ -992,6 +1025,7 @@ export class SubAgent {
         ?.fireSubagentStartEvent(customAgentId, "custom", this.parentSessionId, {
           description: task.userPrompt?.slice(0, 120),
           legacyAgentId: legacyCustomAgentId,
+          ...subAgentCwdFields(task.cwd),
         })
         .catch((err) => log.error("HOOK", `subagent_start hook 失败: ${err.message}`));
 
@@ -999,6 +1033,12 @@ export class SubAgent {
       result = await runInSpanScope(customAgentId, () =>
         runWithHookAgent(hookScope, async () => {
           const agentDefinition = resolveAgent(task.type ?? task.toolsFromAgentType ?? "");
+          if (task.cwd) {
+            const cwd = task.cwd;
+            return await withAgentCwd(cwd, () =>
+              this.executeCustomInner(customTask, signal, agentDefinition),
+            );
+          }
           // 尝试 spawn 模式
           if (this.shouldUseSpawn()) {
             try {
@@ -1169,7 +1209,7 @@ export class SubAgent {
     const systemPrompt = await enhanceSubAgentPrompt(
       basePrompt,
       this.language,
-      process.cwd(),
+      getCwd(),
       task.type,
     );
     const toolDefs = this.getToolDefs(task);
@@ -1211,7 +1251,7 @@ export class SubAgent {
       // 父进程在启动子进程前按 Agent 默认值与调用级 maxTurns 合并。
       max_turns: spawnMaxTurns(maxTurns),
       max_tokens: task.maxTokens ?? 50000,
-      workdir: process.cwd(),
+      workdir: getCwd(),
       provider_name: providerName,
       api_key: apiKey,
       base_url: baseURL,
@@ -1246,7 +1286,7 @@ export class SubAgent {
     const enhancedSystemPrompt = await enhanceSubAgentPrompt(
       task.systemPrompt,
       this.language,
-      process.cwd(),
+      getCwd(),
     );
     const tools = new ToolRegistry();
     for (const t of this.resolveCustomTools(task)) tools.register(t);
@@ -1289,7 +1329,7 @@ export class SubAgent {
       // 与进程内路径同口径：Agent 默认上限与任务级上限已在父进程合并。
       max_turns: spawnMaxTurns(maxTurns),
       max_tokens: task.maxTokens ?? 50000,
-      workdir: process.cwd(),
+      workdir: getCwd(),
       provider_name: providerName,
       api_key: apiKey,
       base_url: baseURL,
@@ -1341,7 +1381,10 @@ export class SubAgent {
     };
     if (sidechain) {
       try {
-        sidechain.start(sidechainMeta!.agentType, sidechainMeta!.description, initMsg.model);
+        sidechain.start(sidechainMeta!.agentType, sidechainMeta!.description, initMsg.model, {
+          systemPrompt: initMsg.system_prompt,
+          cwd: initMsg.workdir,
+        });
       } catch {
         /* 同上 */
       }
@@ -1387,7 +1430,7 @@ export class SubAgent {
       stdin: "pipe",
       stdout: "pipe",
       stderr: "inherit",
-      cwd: process.cwd(),
+      cwd: getCwd(),
       // F8：把本子代理的深度带进子进程（此处已在 withIncrementedDepth 内，getAgentDepth()
       // 即子代理自身深度），否则子进程从 0 起算，嵌套上限每跨一次进程就失效。
       env: { ...process.env, [AGENT_DEPTH_ENV]: String(getAgentDepth()) },
@@ -1744,10 +1787,13 @@ export class SubAgent {
 
     // 权限检查（dontAsk 语义：危险命令/safetyCheck 拦截，ask→deny）
     if (this.permissionChecker) {
+      // G14：与主循环 / 进程内子代理同一入口展开观测路径（含 hook 改写后的参数）。
+      const { buildObservableInput } = await import("../query/tool-executor.ts");
+      const observableInput = buildObservableInput(tool, effectiveInput);
       const permReq: PermissionRequest = {
         toolName: name,
-        input: effectiveInput,
-        description: `${name}: ${JSON.stringify(effectiveInput).slice(0, 120)}`,
+        input: observableInput,
+        description: `${name}: ${JSON.stringify(observableInput).slice(0, 120)}`,
       };
       const decision = await this.permissionChecker.check(permReq, tool, undefined, {
         hookPermissionDecision,
@@ -1766,6 +1812,8 @@ export class SubAgent {
           // S10：spawn 路径的 sessionId 就是 deriveSubAgentSessionId(taskId)，即子代理规范 id
           ...(sessionId ? { agentId: sessionId } : {}),
           reasonType: decision.decisionReason?.type,
+          step: decision.step,
+          mode: decision.mode,
         });
         // B33：spawn 路径同样 fire PermissionDenied，直接复用进程内那个 helper（同口径、同吞错）。
         // 必须带 tool_use_id：Q7 后权限拒绝只 fire PermissionDenied，runtime 消费者按它关
@@ -1788,6 +1836,8 @@ export class SubAgent {
         context: "subagent",
         ...(sessionId ? { agentId: sessionId } : {}),
         reasonType: decision.decisionReason?.type,
+        step: decision.step,
+        mode: decision.mode,
       });
     }
 
@@ -1866,6 +1916,7 @@ export class SubAgent {
         tool.maxResultSizeChars,
       );
       // post_tool_use hook（驱动 execute_tool span）；与进程内路径共用 await + 反馈回灌
+      const interrupted = !!result.isError && signal?.aborted === true;
       const withHookFeedback = await runPostToolHooks(this.hookSystem, {
         toolName: name,
         toolInput: effectiveInput,
@@ -1873,10 +1924,14 @@ export class SubAgent {
         output: truncated,
         isError: !!result.isError,
         durationMs: elapsed,
+        interrupted,
+        isMcpTool: name.startsWith("mcp__"),
+        sessionId: sessionId ?? this.deriveSubAgentSessionId(),
+        maxResultSizeChars: tool.maxResultSizeChars,
       });
       if (result.isError) {
         logToolFailure(name, {
-          kind: "tool_error",
+          kind: interrupted ? "aborted" : "tool_error",
           durationMs: elapsed,
           filePath: efFilePath,
         });
@@ -1900,13 +1955,13 @@ export class SubAgent {
         signal,
       });
       logToolFailure(name, {
-        kind: isAbortError(err) ? "aborted" : "exception",
+        kind: signal?.aborted === true || isAbortError(err) ? "aborted" : "exception",
         durationMs: elapsed,
         filePath: efFilePath,
       });
       return {
         content:
-          `工具执行异常: ${err.message}` +
+          `工具执行异常: ${errorMessageOf(err)}` +
           (failureFeedback ? `\n\n[Hook 反馈]\n${failureFeedback}` : ""),
         is_error: true,
       };
@@ -1974,9 +2029,6 @@ export class SubAgent {
       // 既占窗口又会诱导它去做计划里别的步骤。以后若要让子代理按主计划执行，
       // 应显式传「本子任务对应的那一段」，而不是在这里补一行 provider。
 
-      // P2-10：落 sidechain_start（记录子代理身份，供恢复时展示）。
-      sidechain?.start(task.type, task.description, this.modelOverride || this.model);
-
       const basePrompt = getSystemPrompt(task.type);
       // P1-1：解析 agent 定义拿到 skills（预加载技能）。resolveAgent 覆盖 built-in + custom + plugin。
       // 复用到下方 tool 过滤（agentDef.tools/disallowedTools），避免重复解析。
@@ -1984,7 +2036,7 @@ export class SubAgent {
       let systemPrompt = await enhanceSubAgentPrompt(
         basePrompt,
         this.language,
-        process.cwd(),
+        getCwd(),
         task.type,
         agentDef?.skills,
       );
@@ -1996,6 +2048,12 @@ export class SubAgent {
         systemPrompt += structuredOutputPromptSuffix();
       }
       ctxMgr.setSystemPrompt(systemPrompt);
+      // P2-10：落 sidechain_start（记录子代理身份，供恢复时展示）。放在提示词定稿之后，
+      // 让实际下发的系统提示词与工作目录一并落盘（之前子代理提示词在任何轨迹里都看不到）。
+      sidechain?.start(task.type, task.description, this.modelOverride || this.model, {
+        systemPrompt,
+        cwd: getCwd(),
+      });
 
       // 添加任务提示。Fork 模式：先把继承自主对话的消息序列灌入上下文
       // （buildForkMessages 已保证以 user 开头、只保留已配对的 tool 块），让子代理接续父对话；
@@ -2435,7 +2493,7 @@ export class SubAgent {
       const systemPrompt = await enhanceSubAgentPrompt(
         task.systemPrompt,
         this.language,
-        process.cwd(),
+        getCwd(),
         task.type,
       );
       ctxMgr.setSystemPrompt(systemPrompt);
@@ -2448,6 +2506,7 @@ export class SubAgent {
           task.type ?? "custom",
           task.userPrompt?.slice(0, 120) ?? "",
           this.modelOverride || this.model,
+          { systemPrompt, cwd: getCwd() },
         );
       } catch {
         /* sidechain 落盘失败静默 */
