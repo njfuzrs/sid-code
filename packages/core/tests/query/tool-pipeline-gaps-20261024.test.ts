@@ -352,19 +352,27 @@ describe("4. 主循环 PreToolUse hook 阻止 → 漏斗 1 记 call + hook_block
 // ─── 5. hook 改写路径后，执行后的消费方跟着改写值走 ────────────
 
 describe("5. hook 改写 file_path → 快照与 PostToolUse 的 tool_input 都用改写后的路径", () => {
-  // 真实 CheckpointManager：快照目录落在 preload 设的临时 SID_CONFIG_DIR 下，不碰 ~/.sid-code。
-  // 被快照的文件放进本用例自己的临时目录，跑完删除。
+  // 真实 CheckpointManager 会写 sidPaths.checkpoints(sessionId)。本文件显式把 SID_CONFIG_DIR
+  // 指向自己的临时目录（no-real-path-writes 哨兵要求每个文件自己声明隔离，不能只靠 preload 兜底），
+  // 跑完存/恢复原值——不无条件 delete，免得抹掉 preload 或同进程其他文件的设置。
+  // 被快照的文件也放在同一个临时目录里，跑完一起删除。
   let dir: string;
   let modelPath: string;
   let realPath: string;
+  const savedConfigDir = process.env.SID_CONFIG_DIR;
   beforeEach(() => {
     dir = mkdtempSync(join(tmpdir(), "sid-pipeline-snap-"));
+    process.env.SID_CONFIG_DIR = join(dir, "sid-home");
     modelPath = join(dir, "model.ts");
     realPath = join(dir, "real.ts");
     writeFileSync(modelPath, "model");
     writeFileSync(realPath, "real");
   });
-  afterEach(() => rmSync(dir, { recursive: true, force: true }));
+  afterEach(() => {
+    if (savedConfigDir === undefined) delete process.env.SID_CONFIG_DIR;
+    else process.env.SID_CONFIG_DIR = savedConfigDir;
+    rmSync(dir, { recursive: true, force: true });
+  });
 
   const snapDeps = (
     log: Log,
