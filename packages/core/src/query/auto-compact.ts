@@ -89,11 +89,6 @@ export interface AutoCompactDeps {
    */
   isMainAgent?: boolean;
   /**
-   * §5 压缩通知重置 MC state：缓存 microcompact 状态机。
-   * 压缩成功后重置——压缩重组了消息历史，旧的"已删除 tool_use_id"映射全部失效。
-   */
-  cachedMicrocompactState?: import("./compact/cached-microcompact.ts").CachedMicrocompactState;
-  /**
    * 会话级临时目录（§4.1 质量报告 / §4.3 决策外化落盘）。不传则跳过落盘。
    */
   sessionDir?: string;
@@ -715,7 +710,6 @@ async function postCompactReattachAndNotify(
     ctxMgr: deps.ctxMgr,
     hookSystem: deps.hookSystem,
     fileReadTracker: deps.fileReadTracker,
-    cachedMicrocompactState: deps.cachedMicrocompactState,
     sessionDir: deps.sessionDir,
     originalMessages,
     summary,
@@ -727,45 +721,4 @@ async function postCompactReattachAndNotify(
     // P2-17：约束升级为常驻附件，绕开「消息流里的约束只活一代」。
     onCriticalConstraints: deps.onCriticalConstraints,
   });
-}
-
-/**
- * 处理上下文溢出错误，尝试自动缩小 max_tokens
- * 返回调整后的 maxTokens，无法恢复时返回 null
- */
-export function handleContextOverflow(
-  err: any,
-  _currentMaxTokens: number,
-  ctxMgr: ContextManager,
-  toolCount: number,
-): number | null {
-  const msg = err.message || String(err);
-  const overflowMatch = msg.match(/(\d+)\s*\+\s*(\d+)\s*>\s*(\d+)/);
-  if (
-    !overflowMatch &&
-    !msg.toLowerCase().includes("context") &&
-    !msg.toLowerCase().includes("token")
-  ) {
-    return null;
-  }
-
-  // 解析不出报错文本里的具体上限时，回退到 ctxMgr 的真实上下文窗口
-  // （由当前模型按 availableModels/内置 registry 推导，非硬编码 200000）。
-  // 硬编码 200000 会让 1M 窗口模型的可用空间被严重低估，错误地放弃本可恢复的溢出。
-  let contextLimit = ctxMgr.getMaxTokens();
-  let inputTokens = 0;
-
-  if (overflowMatch) {
-    inputTokens = parseInt(overflowMatch[1], 10);
-    contextLimit = parseInt(overflowMatch[3], 10);
-  } else {
-    inputTokens = ctxMgr.estimateTokens(toolCount);
-  }
-
-  const available = Math.max(0, contextLimit - inputTokens - 1000);
-  if (available < 3000) {
-    return null;
-  }
-
-  return available;
 }

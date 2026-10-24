@@ -213,7 +213,6 @@ function makeHarness(opts: { throwOnSend?: number; preload?: Message[] }): {
       };
     },
     autoCompact: async () => {},
-    handleContextOverflow: () => null,
     getAbortSignal: () => undefined,
     abortCurrentRequest: () => {},
     uuid: () => "u",
@@ -280,7 +279,6 @@ describe("M5：回合只在模型真的返回响应后推进", () => {
       processStream: async () => endTurnResp(),
       executeTools: async () => ({ results: [] }),
       autoCompact: async () => {},
-      handleContextOverflow: () => null,
       getAbortSignal: () => undefined,
       abortCurrentRequest: () => {},
       uuid: () => "u",

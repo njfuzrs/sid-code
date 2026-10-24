@@ -16,6 +16,8 @@ import {
   ContentReplacementState,
 } from "./tool-result-storage.ts";
 import { applyToolResultBudgetToContent } from "../query/compact/tool-result-budget.ts";
+import { planMicrocompact } from "../query/compact/microcompact.ts";
+import type { SendMutationCause } from "../hook/types.ts";
 import { getLogger, getSessionMetrics } from "../debug/index.ts";
 import {
   checkMessageHistoryIntegrity,
@@ -25,6 +27,7 @@ import * as fs from "node:fs";
 import * as path from "node:path";
 import { ensureSidTempDir } from "@sid-code/shared/utils/temp-dir.ts";
 import { REATTACH_PLAN_PREFIX, REATTACH_ORIGIN } from "../query/compact/reattach-markers.ts";
+import { buildPlanReattachBody } from "../plan/prompt.ts";
 import { hasInternalOrigin } from "./internal-message.ts";
 
 /** 持久化输出阈值（对标 Claude Code 30000 字符，可通过 SID_OUTPUT_THRESHOLD 环境变量覆盖） */
@@ -161,6 +164,24 @@ export interface CompactionThresholds {
  * 本类型是我们的等价物：压缩方法一律返回它，`success` 由 `messageCountAfter <
  * messageCountBefore` 唯一决定，调用方不得再自行宣告成功。
  */
+/** §3.3：压缩时由上层提供的活跃计划快照 */
+export interface ActivePlanSnapshot {
+  /** 计划文件路径——重注入必须带上，模型才能 read 全文 / edit 这个文件 */
+  path: string;
+  phase: "planning" | "awaiting_approval" | "executing";
+  /** 完整正文（截断由 buildPlanReattachBody 统一处理） */
+  content: string;
+}
+
+/** 一次压缩的计划重注入统计，进 PostCompactReattach 埋点 */
+export interface PlanReattachStats {
+  planFilePath: string;
+  phase: ActivePlanSnapshot["phase"];
+  /** 计划原文字符数（截断前） */
+  planChars: number;
+  truncated: boolean;
+}
+
 export interface CompactionOutcome {
   /** 是否真的压缩了（唯一判据：messageCountAfter < messageCountBefore） */
   success: boolean;
@@ -428,14 +449,32 @@ export class Manager {
    * 只记三种 ContextManager 自己能确证的：compact（历史被整体替换）/ masking（本轮新遮罩）/
    * cleaned（本轮新清理）。由主循环在 BeforeModel 前取走，随 prefix_break 事件落盘。
    */
-  private pendingSendCauses = new Set<"compact" | "masking" | "cleaned">();
+  private pendingSendCauses = new Set<SendMutationCause>();
+  /**
+   * 冷缓存清理的决策冻结（tool_use_id → 清理后的完整内容）。
+   *
+   * 旧实现把冷清理只做在**本轮发送副本**上：清完不回写，下一轮又发原文 —— 前缀一来一回
+   * 改写两次，等于每次误判多付两次全量写入。现在决策落成会话状态：一旦清了，之后每轮都
+   * 逐字节贴同一份；与 masking / replacementState 同生命周期，压缩/截断/setMessages/clear 统一清空。
+   */
+  private coldClearState = new Map<string, string>();
 
   /**
    * 可选 Plan 提供方（§3.3 压缩后 Plan 重注入）。
-   * 由上层注入；提供时 compactWithSummary 会把活跃 Plan 正文重注入为消息，
+   * 由上层注入；提供时 compactWithSummary 会把活跃 Plan（路径 + 阶段 + 正文）重注入为消息，
    * 避免压缩后模型只剩 reminder 提示却看不到 Plan 具体步骤而偏离计划。
    */
-  private planContentProvider: (() => string | null) | null = null;
+  private planContentProvider: (() => ActivePlanSnapshot | null) | null = null;
+  /** 本次压缩构造的计划重注入统计（提交成功才上报，回滚时清掉） */
+  private lastPlanReattach: PlanReattachStats | null = null;
+  /**
+   * 计划重注入观察者（由 App 接到轨迹事件 `PlanReattach`）。
+   * 挂在 ContextManager 而不是各条压缩调用链上：自动 / 响应式 / 手动 `/compact` / 紧急截断
+   * 都经这里重注入，在这一处上报才不会漏掉某一条路径（与 compactObserver 同一理由）。
+   */
+  private planReattachObserver:
+    | ((stats: PlanReattachStats & { source: "summary" | "emergency" }) => void)
+    | null = null;
 
   constructor(opts: ManagerOptions) {
     this.maxTokens = opts.maxTokens;
@@ -482,8 +521,27 @@ export class Manager {
    * §3.3：注入 Plan 正文提供方。返回当前活跃 Plan 的正文（无活跃 Plan 返回 null）。
    * 由 App 接线（读 planManager 状态 + plan 文件）。压缩时用于把 Plan 正文重注入消息历史。
    */
-  setPlanContentProvider(provider: (() => string | null) | null): void {
+  setPlanContentProvider(provider: (() => ActivePlanSnapshot | null) | null): void {
     this.planContentProvider = provider;
+  }
+
+  /** 注入计划重注入观察者（null 取消） */
+  setPlanReattachObserver(
+    observer: ((stats: PlanReattachStats & { source: "summary" | "emergency" }) => void) | null,
+  ): void {
+    this.planReattachObserver = observer;
+  }
+
+  /** 压缩已提交：上报本次计划重注入（如有）。观察者抛错不影响已完成的压缩 */
+  private reportPlanReattach(source: "summary" | "emergency"): void {
+    const stats = this.lastPlanReattach;
+    this.lastPlanReattach = null;
+    if (!stats || !this.planReattachObserver) return;
+    try {
+      this.planReattachObserver({ ...stats, source });
+    } catch {
+      /* 埋点旁路 */
+    }
   }
 
   /**
@@ -678,6 +736,7 @@ export class Manager {
     this.sentIntactToolResultIds.clear();
     this.tokenFreedTracker.reset();
     this.maskedState.clear();
+    this.coldClearState.clear();
     this.lastSendSnapshot = null;
     this.pendingSendCauses.add("compact");
     this.validatedPrefix = [];
@@ -688,10 +747,61 @@ export class Manager {
    * 发现 14：取走并清空「自上次取走以来改写过发送前缀的本地来源」。
    * 空数组 = ContextManager 没有改写前缀（断裂另有原因：reminder / system_dynamic / 服务端）。
    */
-  consumeSendMutationCauses(): Array<"compact" | "masking" | "cleaned"> {
+  consumeSendMutationCauses(): SendMutationCause[] {
     const out = [...this.pendingSendCauses].sort();
     this.pendingSendCauses.clear();
     return out;
+  }
+
+  /**
+   * 缓存已冷时清理旧工具结果（§6.7：破坏性操作只在代价已经产生时做）。
+   *
+   * **调用方负责证明缓存已冷**（见 `api/cache-warmth.ts`）；本方法只管「清什么、清了之后
+   * 怎么保持字节稳定」。判据与 microcompact 管线同一份（`planMicrocompact`），额外豁免
+   * 已有稳定占位的块（masking / 大输出清理 / 上一次冷清理）—— 再改一次就是第二次改写前缀。
+   *
+   * 作用在**全量历史的投影**上而不是某一轮的发送副本：决策写进 coldClearState，
+   * 之后每次 getCleanedMessages 都重放，所以清理在本轮和以后各轮都成立。
+   */
+  applyColdCacheClear(): { cleared: number; savedChars: number } {
+    const plan = planMicrocompact(this.messages, {
+      mode: "time",
+      skipToolUse: (id) =>
+        this.coldClearState.has(id) || this.maskedState.has(id) || this.replacementState.has(id),
+    });
+    let savedChars = 0;
+    for (const p of plan) {
+      this.coldClearState.set(p.toolUseId, p.replacement);
+      savedChars += Math.max(0, p.originalLength - p.replacement.length);
+    }
+    if (plan.length > 0) {
+      if (savedChars > 0) {
+        this.tokenFreedTracker.recordCompact(Math.ceil(savedChars / 4), "coldCacheClear");
+      }
+      this.pendingSendCauses.add("cold_clear");
+    }
+    return { cleared: plan.length, savedChars };
+  }
+
+  /** 把冷清理决策贴到发送副本上（只替换内容，其余字段透传） */
+  private applyColdClearState(messages: Message[]): Message[] {
+    if (this.coldClearState.size === 0) return messages;
+    let changed = false;
+    const out = messages.map((msg) => {
+      if (msg.role !== "user") return msg;
+      let touched = false;
+      const content = msg.content.map((block) => {
+        if (block.type !== "tool_result") return block;
+        const frozen = this.coldClearState.get(block.tool_use_id);
+        if (frozen === undefined || block.content === frozen) return block;
+        touched = true;
+        return { ...block, content: frozen };
+      });
+      if (!touched) return msg;
+      changed = true;
+      return { ...msg, content };
+    });
+    return changed ? out : messages;
   }
 
   /**
@@ -1020,6 +1130,9 @@ export class Manager {
           : full;
       cleaned = this.applyStickyMasking(full, fresh);
     }
+    // 冷清理决策在 masking 之后、大输出清理之前贴：被冷清理的块已是短占位，
+    // 不会再进下面的大输出候选，两套占位不会叠在同一个块上。
+    cleaned = this.applyColdClearState(cleaned);
 
     // P1-3：构建 tool_use 索引 + 活跃文件集合（正在编辑的文件 read 输出豁免清理）
     const toolIndex = this.buildToolUseIndex(cleaned);
@@ -2047,7 +2160,11 @@ export class Manager {
         _meta: { origin: "compact-summary" },
       },
     ];
-    // P0-5 配套：切点可能落在 assistant 上，此时丢掉前缀的 ack 以保持角色交替（详见
+    // 2026-10-24：紧急截断同样要重注入活跃计划。从前只有 compactWithSummary 做这件事，
+    // 紧急截断丢掉 70% 历史后，执行阶段的计划正文与路径（只在批准消息里出现过）一并消失。
+    // 正文上限 PLAN_REATTACH_MAX_CHARS，量级有界，不会让紧急截断失去意义。
+    emergencyPrefix.push(...this.buildPlanReattachMessages());
+    // P0-5 配套：切点可能落在 assistant 上，此时丢掉前缀末尾的 ack 以保持角色交替（详见
     // compactWithSummary 里同一处理的注释）。
     if (keptTail.length > 0 && keptTail[0].role === "assistant") {
       emergencyPrefix.pop();
@@ -2065,6 +2182,7 @@ export class Manager {
         : structural.map((e) => `${e.code}@${e.messageIndex}`).join(", ");
       log.warn("CONTEXT", `紧急截断已回滚：切分后序列非法（${why}），${before} 条消息未变`);
       this.messages = snapshot;
+      this.lastPlanReattach = null;
       return {
         success: false,
         messageCountBefore: before,
@@ -2104,6 +2222,8 @@ export class Manager {
       source: "emergency",
       summaryIsRestorable: false,
     });
+    if (after < before) this.reportPlanReattach("emergency");
+    else this.lastPlanReattach = null;
     return {
       success: after < before,
       messageCountBefore: before,
@@ -2493,6 +2613,7 @@ export class Manager {
           `保持原 ${messageCountBefore} 条历史不变（splitPoint=${splitPoint}）`,
       );
       this.messages = snapshot;
+      this.lastPlanReattach = null;
       return noop("invalid_result_rolled_back", splitPoint);
     }
 
@@ -2516,6 +2637,7 @@ export class Manager {
         `压缩未生效：重注入后消息数未下降（${messageCountBefore} → ${messageCountAfter}），已回滚`,
       );
       this.messages = snapshot;
+      this.lastPlanReattach = null;
       this.resetLocalCompactState();
       this.invalidateActualTokenAnchor();
       return noop("no_reduction", splitPoint);
@@ -2542,6 +2664,7 @@ export class Manager {
       source: "summary",
       summaryIsRestorable: true,
     });
+    this.reportPlanReattach("summary");
 
     return {
       success: true,
@@ -2554,27 +2677,36 @@ export class Manager {
   }
 
   /**
-   * §3.3：构造活跃 Plan 正文的重注入消息对（无活跃 Plan 返回空数组）。
-   * Plan 内容不限制预算（Plan 文件通常几百到几千字）。
+   * §3.3：构造活跃 Plan 的重注入消息对（无活跃 Plan 返回空数组）。
+   * 正文、路径、截断标注由 plan/prompt.ts 的 buildPlanReattachBody 统一生成（单一事实源）。
+   * 统计写入 lastPlanReattach，由 compactWithSummary 在提交成功后保留、回滚时清掉。
    */
   private buildPlanReattachMessages(): Message[] {
+    this.lastPlanReattach = null;
     if (!this.planContentProvider) return [];
-    let planContent: string | null = null;
+    let plan: ActivePlanSnapshot | null = null;
     try {
-      planContent = this.planContentProvider();
+      plan = this.planContentProvider();
     } catch {
       return [];
     }
-    if (!planContent || !planContent.trim()) return [];
+    if (!plan || !plan.content.trim()) return [];
 
+    const { text, truncated } = buildPlanReattachBody(plan.path, plan.content, plan.phase);
+    this.lastPlanReattach = {
+      planFilePath: plan.path,
+      phase: plan.phase,
+      planChars: plan.content.length,
+      truncated,
+    };
     const planUserMsg: Message = {
       role: "user",
-      content: [{ type: "text", text: `${REATTACH_PLAN_PREFIX}\n${planContent}` }],
+      content: [{ type: "text", text: `${REATTACH_PLAN_PREFIX}\n${text}` }],
       _meta: { origin: REATTACH_ORIGIN },
     };
     const planAckMsg: Message = {
       role: "assistant",
-      content: [{ type: "text", text: "好的，已重新加载当前 Plan，我会继续按计划执行。" }],
+      content: [{ type: "text", text: "好的，已重新加载当前 Plan。" }],
       _meta: { origin: REATTACH_ORIGIN },
     };
     return [planUserMsg, planAckMsg];

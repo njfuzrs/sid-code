@@ -173,6 +173,9 @@ export enum HookType {
  * 顶层决策类型（老式 decision 字段）
  * CC utils/hooks.ts:525-543：`approve` 等价 allow（放行），`block`/`deny` 阻塞。
  */
+/** ContextManager 自己改写发送前缀的来源（落 prefix_break.cause，见 BeforeModel 的 send_mutation_causes） */
+export type SendMutationCause = "compact" | "masking" | "cleaned" | "cold_clear";
+
 export type HookDecision = "allow" | "approve" | "deny" | "block" | undefined;
 
 /**
@@ -460,11 +463,12 @@ export interface BeforeModelInput extends HookInput {
     tools?: unknown[];
     /**
      * 发现 14：上一次请求以来，ContextManager **自己**改写过发送前缀的来源
-     * （compact = 历史被整体替换 / masking = 新遮罩 / cleaned = 新清理）。
+     * （compact = 历史被整体替换 / masking = 新遮罩 / cleaned = 新清理 /
+     * cold_clear = 缓存已冷时的旧工具结果清理）。
      * 采集器把它挂到 prefix_break 事件的 `cause` 上。缺省或空数组 = 本地未改写，
      * 断裂另有来源（reminder / system_dynamic / 服务端）。只在主循环采集。
      */
-    send_mutation_causes?: Array<"compact" | "masking" | "cleaned">;
+    send_mutation_causes?: SendMutationCause[];
     /**
      * 本次请求解析后的**思考开关**（内部表示，非 wire body）。
      *

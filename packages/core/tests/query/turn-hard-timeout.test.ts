@@ -61,7 +61,6 @@ function makeLoopConfig(overrides: Partial<QueryDeps>): {
     },
     executeTools: async () => ({ results: [] }),
     autoCompact: async () => {},
-    handleContextOverflow: () => null,
     getAbortSignal: () => undefined,
     uuid: () => "uuid-test",
     ...overrides,

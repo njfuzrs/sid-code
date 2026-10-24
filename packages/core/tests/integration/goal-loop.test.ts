@@ -118,7 +118,6 @@ function makeGoalLoop(opts: {
       return { results: [bashResult(output)] };
     },
     autoCompact: async () => {},
-    handleContextOverflow: () => null,
     getAbortSignal: () => undefined,
     uuid: () => `uuid-${respIdx}`,
     getGoalState: () => goal,

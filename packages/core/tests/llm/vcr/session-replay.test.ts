@@ -176,7 +176,6 @@ async function runSession(fx: SessionFixture, at: Date): Promise<RunResult> {
       });
     },
     autoCompact: async () => {},
-    handleContextOverflow: () => null,
     getAbortSignal: () => undefined,
     uuid: () => "uuid",
   };

@@ -88,8 +88,6 @@ export interface QueryEngineDeps {
   emergencyFileReattach?: (info: {
     trigger: "threshold_blocking" | "threshold_emergency";
   }) => number;
-  /** 处理上下文溢出 */
-  handleContextOverflow: (err: any, currentMaxTokens: number) => number | null;
   /** 获取 abort signal */
   getAbortSignal: () => AbortSignal | undefined;
   /** 主动中断当前 LLM 请求（abort 当前 AbortController）。L1 单轮硬超时配合使用。可选。 */
@@ -115,11 +113,7 @@ export interface QueryEngineDeps {
   getHypothesisLedger?: () => import("./hypothesis-ledger.ts").HypothesisLedger | null;
   /** §3.1/§3.3：轨迹采集器（用于异常路径持久化 errors.jsonl + TurnError 事件） */
   traceCollector?: import("../trace/collector.ts").TraceCollector;
-  /** G2：获取 cachedMicrocompact 状态机（缓存友好压缩产出 cache_edits）。可选 */
-  getCachedMicrocompactState?: () =>
-    | import("./compact/cached-microcompact.ts").CachedMicrocompactState
-    | undefined;
-  /** G2：当前 provider 名称（用于 cachedMicrocompact 路径判断）。可选 */
+  /** 当前 provider 名称（冷缓存清理只对 Anthropic 显式缓存做）。可选 */
   getProviderName?: () => string;
   /** MCP server instructions 增量拉取（新连接 server 的使用说明，经 reminderParts 注入）。可选 */
   getMcpInstructionsDelta?: () => string[] | null;
@@ -438,7 +432,6 @@ export class QueryEngine {
       contextCollapse: this.deps.contextCollapse,
       postCompactTail: this.deps.postCompactTail,
       emergencyFileReattach: this.deps.emergencyFileReattach,
-      handleContextOverflow: this.deps.handleContextOverflow,
       getAbortSignal: this.deps.getAbortSignal,
       abortCurrentRequest: this.deps.abortCurrentRequest,
       uuid: () => crypto.randomUUID(),
@@ -452,8 +445,6 @@ export class QueryEngine {
       getTodoTerminalState: this.deps.getTodoTerminalState,
       getHypothesisLedger: this.deps.getHypothesisLedger,
       sessionStore: this.deps.sessionStore,
-      // G2：cachedMicrocompact 状态机 + provider 名称（缓存友好压缩产出 cache_edits）
-      getCachedMicrocompactState: this.deps.getCachedMicrocompactState,
       getProviderName: this.deps.getProviderName,
       getMcpInstructionsDelta: this.deps.getMcpInstructionsDelta,
       // 审计第 22 条：IDE 选区/@提及 增量注入（与上面 MCP instructions 同一模式）

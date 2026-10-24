@@ -64,7 +64,6 @@ function makeHarness(
     },
     executeTools: async () => ({ results: [] }),
     autoCompact: async () => {},
-    handleContextOverflow: () => null,
     getAbortSignal: () => undefined,
     abortCurrentRequest: () => {},
     uuid: () => "uuid-test",
@@ -188,7 +187,6 @@ describe("§八 #14 — 连续压缩失败达阈值后必须熔断，不再空�
       processStream: async () => endTurnResponse(),
       executeTools: async () => ({ results: [] }),
       autoCompact: async () => {}, // 也压不动：不改变消息数
-      handleContextOverflow: () => null, // 无法调 maxTokens → 必然走到压缩兜底
       getAbortSignal: () => undefined,
       abortCurrentRequest: () => {},
       uuid: () => "u",

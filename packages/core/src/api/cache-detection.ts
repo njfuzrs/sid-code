@@ -6,8 +6,8 @@
  * - 当缓存命中骤降时，归因到具体原因：模型变化 / system prompt 变化 /
  *   工具增删改 / 工具顺序变化 / 缓存策略变化 / Beta headers 变化 /
  *   消息数量骤减（compact） / TTL 过期
- * - 假阳性抑制（G1）：compact / cache_edits 删除后下一次 cache_read 下降是预期的，
- *   通过 notifyCompaction / notifyCacheDeletion 通知检测器跳过紧接的一次检测。
+ * - 假阳性抑制（G1）：compact / 冷缓存清理后下一次 cache_read 下降是预期的，
+ *   通过 notifyCompaction 通知检测器跳过紧接的一次检测。
  * - 子代理隔离（G10）：每个 agentId 维护独立基线，子代理的 break 不污染主循环。
  *
  * 实现为可实例化的 CacheBreakDetector（便于单测隔离），
@@ -179,14 +179,6 @@ export class CacheBreakDetector {
     this.suppressNext = { active: true, reason: "compaction" };
   }
 
-  /**
-   * G1：通知检测器已通过 cache_edits 删除了缓存内容。
-   * cache_read 可能下降（服务端删除了部分 KV），不应报警。
-   */
-  notifyCacheDeletion(deletedCount: number): void {
-    this.suppressNext = { active: true, reason: `cache_edits deleted ${deletedCount} items` };
-  }
-
   private snapshot(params: CacheCheckParams): PromptState {
     const toolOrder = params.toolSchemas.map((t) => t.name).join(",");
     return {
@@ -218,7 +210,7 @@ export class CacheBreakDetector {
    * 返回 null 表示无显著失效（首次请求 / 命中正常 / 下降未达阈值 / 被抑制）。
    */
   checkResponse(params: CacheCheckParams): CacheBreakReport | null {
-    // G1：抑制本次检测（compact / cache_edits 删除后的预期下降），重置基线而非告警
+    // G1：抑制本次检测（compact / 冷缓存清理后的预期下降），重置基线而非告警
     if (this.suppressNext.active) {
       getLogger().debug("CACHE_DETECT", `抑制本次检测: ${this.suppressNext.reason}`);
       this.suppressNext = { active: false, reason: "" };
@@ -410,10 +402,6 @@ export class MultiSourceCacheDetector {
     this.get(agentId).notifyCompaction();
   }
 
-  notifyCacheDeletion(deletedCount: number, agentId = "main"): void {
-    this.get(agentId).notifyCacheDeletion(deletedCount);
-  }
-
   reset(): void {
     this.detectors.clear();
   }
@@ -439,11 +427,6 @@ export function checkResponseForCacheBreak(params: CacheCheckParams): CacheBreak
 /** G1：通知检测器即将 compact，抑制紧接的一次检测（默认主循环源） */
 export function notifyCompaction(agentId = "main"): void {
   defaultDetector.notifyCompaction(agentId);
-}
-
-/** G1：通知检测器 cache_edits 已删除内容，抑制紧接的一次检测 */
-export function notifyCacheDeletion(deletedCount: number, agentId = "main"): void {
-  defaultDetector.notifyCacheDeletion(deletedCount, agentId);
 }
 
 export function resetCacheDetection(): void {

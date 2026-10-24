@@ -89,7 +89,6 @@ function makeLoopConfig(responses: AccumulatedResponse[]): {
     },
     executeTools: async () => ({ results: [] }),
     autoCompact: async () => {},
-    handleContextOverflow: () => null,
     getAbortSignal: () => undefined,
     uuid: () => "uuid-test",
     // 关键：writeVersion 恒为 1，模拟模型始终不再更新清单

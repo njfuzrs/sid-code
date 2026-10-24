@@ -51,6 +51,18 @@ export interface PermissionDecisionEvent {
   agentId?: string;
   /** 决策耗时（含等人确认的墙钟）。未测量的分支不填，**不填 0** —— 0 会被读成"秒批" */
   durationMs?: number;
+  /**
+   * 做出决策的管线位置（`Decision.step`：Step 编号或后处理名，固定枚举）。
+   * 没有它时 reasonType 为空的那一大桶（2026-10-24 本机 22409/25933 条）分不出是
+   * Step 5.5 工具放行、Step 10 只读、Step 12 预授权还是 skip 早退。
+   */
+  step?: string;
+  /**
+   * 决策时的 sid 原生权限模式（`Decision.mode`）。SessionStart 的 permission_mode 是 CC 映射值
+   * （always-allow 与 skip 合并成 bypassPermissions，deny-write 记成 default），且只记一次，
+   * 会话中途 Shift+Tab / enter_plan_mode 切换后就失真——逐条带上才能按模式切片。
+   */
+  mode?: string;
 }
 
 let _observer: ((event: PermissionDecisionEvent) => void) | null = null;
@@ -104,5 +116,48 @@ export function recordCommandAllowedTools(event: CommandAllowedToolsEvent): void
     _commandObserver?.(event);
   } catch {
     /* 度量失败不影响主流程 */
+  }
+}
+
+// ─── 权限配置形态快照（2026-10-24 §4 审计 · 可观测性缺口 3）───
+
+/**
+ * 会话开始时「这个会话的权限配置长什么样」——只有计数与开关，**不含规则文本**
+ * （规则串含命令片段与路径）。
+ *
+ * ## 为什么需要
+ *
+ * §4 审计发现的四类绕过，每一类的触发前提都是某种配置（有 allow 规则 / 有 deny 规则 /
+ * 有 disallowedTools / 处于某个模式）。轨迹此前不记配置，于是「影响面有多大」
+ * 这个问题没有分母：数不出「有规则的会话」有多少，修复前后也就无从比较暴露面。
+ */
+export interface PermissionConfigShape {
+  /** sid 原生权限模式（会话开始时） */
+  mode: string;
+  skip_permissions: boolean;
+  yes_mode: boolean;
+  /** 按 behavior × 来源的规则条数，如 { allow: { userSettings: 2 }, deny:  } */
+  rules: Record<"allow" | "deny" | "ask", Record<string, number>>;
+  /** 预授权（--allowed-tools / config.allowedTools / CLAUDE.md 白名单）条数 */
+  allowed_tools: number;
+  disallowed_tools: number;
+  sandbox_auto_allow: boolean;
+}
+
+let _configProvider: (() => PermissionConfigShape | undefined) | null = null;
+
+/** cli 在主 checker 建好后注入；collector 在 SessionStart 读取。传 null 解除 */
+export function setPermissionConfigProvider(
+  fn: (() => PermissionConfigShape | undefined) | null,
+): void {
+  _configProvider = fn;
+}
+
+/** 读当前配置形态；未注入或取值抛错时返回 undefined（度量永不阻断主流程） */
+export function readPermissionConfigShape(): PermissionConfigShape | undefined {
+  try {
+    return _configProvider?.() ?? undefined;
+  } catch {
+    return undefined;
   }
 }

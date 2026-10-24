@@ -186,7 +186,16 @@ export type QueryLoopYield =
     };
 
 /** `kind: "done"` 上「不是正常说完」的闭集。新增取值必须同步 message-converter。 */
-export type DoneIncompleteReason = "timeout_retry_exhausted" | "aborted" | "stalled";
+export type DoneIncompleteReason =
+  | "timeout_retry_exhausted"
+  | "aborted"
+  | "stalled"
+  /**
+   * 撞模型 context window 上限（`model_context_window_exceeded`）且压缩救不回来：
+   * 压不动，或压动了仍连续撞上限达 `MAX_CTX_WINDOW_RECOVERIES` 次。
+   * 与子代理（agent/agentic-loop.ts `MAX_CTX_WINDOW_RECOVERY`）同一封顶取向。
+   */
+  | "context_window_exhausted";
 
 // ─── 循环继续原因 ───
 
@@ -208,7 +217,13 @@ export type ContinueReason =
   | { type: "goal_gate_retry" }
   | { type: "goal_budget_warning" }
   | { type: "empty_param_retry" }
-  | { type: "token_budget_continuation" };
+  | { type: "token_budget_continuation" }
+  /**
+   * 撞模型 context window 上限（stopReason=`model_context_window_exceeded`）→ 压缩后续写。
+   * 此前借用 `max_tokens_continuation`，按 type 统计时与「输出截断续写」混在一起，
+   * 而两者成因（输入撑满 vs 输出上限）与封顶方式完全不同。
+   */
+  | { type: "context_window_recovery" };
 
 // ─── 循环状态 ───
 
@@ -330,13 +345,6 @@ export interface LoopState {
   consecutiveCompactFailures?: number;
   /** 上一次 continue 的原因 */
   transition: ContinueReason | undefined;
-  /**
-   * 上一轮成功拿到响应的时刻（epoch ms）。用于 cached-microcompact 的缓存冷热判定：
-   * 距上次响应超过 prompt cache 的 5min ephemeral TTL 时，视为缓存已冷，改走 direct-clear
-   * 真正释放本地 token（对标 CC time-based microcompact：缓存反正要重写，趁机清老工具结果）。
-   * 0/undefined 表示尚无上一轮（首轮），此时视为缓存冷（无前缀可保）。
-   */
-  lastResponseAt?: number;
   /** Stop Hook 重试次数 */
   stopHookRetryCount?: number;
   /**
@@ -679,6 +687,26 @@ export interface LoopState {
    * queryLoop 每条用户消息新建 state，随新消息天然重置。
    */
   softTurnLimitReminded?: boolean;
+  /**
+   * 本条用户消息内撞 `model_context_window_exceeded` 后压缩续写的次数。
+   * 上限 `MAX_CTX_WINDOW_RECOVERIES`（loop.ts）。queryLoop 每条用户消息新建 state，天然重置。
+   */
+  ctxWindowRecoveryCount?: number;
+  /**
+   * 本条用户消息内各 continue 理由的次数（`setTransition` 唯一写入点维护）。
+   * 随 `TurnComplete.continue_counts` 落盘——「某条 continue 路径停不下来」这类缺陷
+   * 在数据上的直接信号，不必再靠读代码逐条排查。
+   */
+  continueCounts?: Partial<Record<ContinueReason["type"], number>>;
+  /** 当前「同一 continue 理由连续出现」的游程（理由 + 长度），供 maxContinueStreak 计算 */
+  continueStreak?: { type: ContinueReason["type"]; length: number };
+  /** 本条用户消息内同一 continue 理由的最长连续游程（`tool_use` 除外，见 transition.ts） */
+  maxContinueStreak?: { type: ContinueReason["type"]; length: number };
+  /**
+   * 本条用户消息内续命预算耗尽过的闸门（去重，按首次耗尽顺序）。
+   * 由 gate-exhaustion.ts `emitGateExhausted` 唯一写入，随 `TurnComplete.gates_exhausted` 落盘。
+   */
+  gatesExhausted?: string[];
 }
 
 /** 创建初始循环状态 */
@@ -757,7 +785,7 @@ export interface QueryDeps {
    * 用户体感就是「报了个超长、压完断片」。
    *
    * 走 deps 而不是在 loop 里直接 import runPostCompact：收尾要的 fileReadTracker /
-   * cachedMicrocompactState / sessionDir 都是 App 持有的会话级实例，QueryDeps 里一个都没有。
+   * sessionDir 都是 App 持有的会话级实例，QueryDeps 里一个都没有。
    * 可选——未注入则这两条路径只埋点（退回当前行为），不会报错。
    */
   postCompactTail?: (info: {
@@ -788,8 +816,6 @@ export interface QueryDeps {
     /** 触发来源，仅用于日志区分（两条路径都调同一套 truncate） */
     trigger: "threshold_blocking" | "threshold_emergency";
   }) => number;
-  /** 处理上下文溢出，返回调整后的 maxTokens 或 null */
-  handleContextOverflow: (err: any, currentMaxTokens: number) => number | null;
   /** 获取 abort signal */
   getAbortSignal: () => AbortSignal | undefined;
   /**
@@ -895,15 +921,7 @@ export interface QueryDeps {
    */
   getProviderForModel?: (model: string) => import("../llm/provider.ts").Provider | undefined;
   /**
-   * G2：获取 cachedMicrocompact 状态机（provider 感知的缓存友好压缩）。
-   * queryLoop 每轮发送前调用 cachedMicrocompact(messages, {state, ...})，
-   * 将产出的 pendingCacheEdits 注入 sendParams.cacheEdits。可选——未注入则跳过。
-   */
-  getCachedMicrocompactState?: () =>
-    | import("./compact/cached-microcompact.ts").CachedMicrocompactState
-    | undefined;
-  /**
-   * G2：当前 provider 名称（用于 cachedMicrocompact 路径判断）。可选。
+   * 当前 provider 名称（冷缓存清理只对 anthropic 生效，见 loop.ts）。可选。
    */
   getProviderName?: () => string;
   /**
@@ -983,12 +1001,12 @@ export interface QueryDeps {
    * 优化 1：把 queryLoop 内层 catch 捕获的异常持久化到 errors.jsonl。
    * 此前 recordError 只在 engine.ts 最外层 catch 调用；loop.ts 里降级/重试（如超时重试
    * continue、上下文溢出响应式压缩 continue）与观测类 warn 吞掉的异常，engine 层看不到，
-   * 排查时只见「重试后成功」而看不到最初为什么失败。用 phase 区分层级（connection/stream/
-   * post_stream…），context.willRetry 标注是否会被重试，让间歇性故障可复盘。
+   * 排查时只见「重试后成功」而看不到最初为什么失败。用 phase 区分层级（stream/
+   * post_stream…；发送错误也在 stream 阶段冒出，没有独立的 connection 阶段），context.willRetry 标注是否会被重试，让间歇性故障可复盘。
    * 可选——未注入（如无头模式无 collector）则跳过，不影响主流程。
    */
   recordError?: (input: {
-    phase: "connection" | "stream" | "post_stream" | "tool_execution" | "hook" | "engine";
+    phase: "stream" | "post_stream" | "tool_execution" | "hook" | "engine";
     index: number;
     error: string;
     stack?: string;

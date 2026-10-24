@@ -155,8 +155,10 @@ export class EnterPlanModeTool implements Tool {
     // 复活完整工作流引导（缺陷修复）：原先这段引导通过重建 system prompt 注入，
     // 重建逻辑删除后丢失。现作为 tool_result 返回——走消息通道不破坏 Prompt Caching，
     // 同时保留阶段 1-5 工作流、决策记录防漂移、以及回应用户的"不清空上下文"说明。
-    const { existsSync } = await import("fs");
-    const planExists = planPath ? existsSync(planPath) : false;
+    // enter() 会原子占位一个空文件（防并发会话撞名覆盖），所以「存在」不再等于「已有计划」，
+    // 判据是「有内容」。从前用 existsSync，而 enter() 每次都生成新路径，这个分支实际永远为 false。
+    const { PlanModeManager } = await import("../plan/state.ts");
+    const planExists = PlanModeManager.hasPlanContent(planPath);
     const { buildPlanModePrompt } = await import("../plan/prompt.ts");
     const base = buildPlanModePrompt(planPath || "", planExists);
     return {

@@ -565,6 +565,8 @@ async function executeSingleTool(
         context: "subagent",
         ...(agentId ? { agentId } : {}),
         reasonType: decision.decisionReason?.type,
+        step: decision.step,
+        mode: decision.mode,
       });
       firePermissionDenied(
         hookSystem,
@@ -591,6 +593,8 @@ async function executeSingleTool(
       context: "subagent",
       ...(agentId ? { agentId } : {}),
       reasonType: decision.decisionReason?.type,
+      step: decision.step,
+      mode: decision.mode,
     });
   } else {
     // B0（分级 fail-closed）：未配置权限检查器时，只读工具放行，写类工具直接拒绝。

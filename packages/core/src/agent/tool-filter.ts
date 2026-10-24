@@ -15,6 +15,7 @@
 import type { LegacyTool as Tool } from "../tool/types.ts";
 import { isNestedSubAgentEnabled } from "./depth-context.ts";
 import { BUILTIN_AGENTS } from "./agent-definition.ts";
+import { isToolNameListed } from "../tool/tool-name-aliases.ts";
 
 /** 所有子代理都不能使用的工具（硬性禁止） */
 const ALL_AGENT_DISALLOWED_TOOLS = new Set([
@@ -196,7 +197,8 @@ export function filterToolsForAgent(allTools: Tool[], options: ToolFilterOptions
 
     // Layer 3: Agent 定义级
     // 黑名单
-    if (options.disallowedTools?.includes(name)) return false;
+    // 与权限层 Step 3 同一口径（CC 名 / 大小写 / 规则写法都认），见 isToolNameListed
+    if (isToolNameListed(options.disallowedTools, name)) return false;
     // 白名单（如果指定了且不是 ["*"]）
     // F7（2026-10-07）：此前这里是 `!isMcp && ...`，MCP 被白名单短路 —— 用户写
     // `tools: read, grep` 以为是只读代理，会话连了 playwright 时它照样拿到浏览器工具。

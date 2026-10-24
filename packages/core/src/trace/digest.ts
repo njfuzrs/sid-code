@@ -22,12 +22,14 @@ import { readFileSync, readdirSync, existsSync, statSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { applyLedgerPathOverride } from "../telemetry/usage-ledger.ts";
 import { getSidHome } from "../config/paths.ts";
+import { PlanModeManager, PLAN_STEP_PARSER_VERSION } from "../plan/state.ts";
 // P2-20：observationEntropy 判空转阈值与运行时检测（`query/unchanged-observation.ts`）
 // **同源**，全仓只此一份。两侧各写一个 3 的话，任何一侧调阈值都会出现
 // 「运行时报了但周报不算病态」（或反过来），与本仓 P1-6/7「压缩决策和压缩执行
 // 用两套尺子」同型。方向是离线模块 import 轻模块（那个文件零依赖），
 // 反过来会把 3400 行 + node:fs 的离线 digest 拖进主循环。
 import { UNCHANGED_OBSERVATION_THRESHOLD } from "../query/unchanged-observation.ts";
+import { CONTINUE_STREAK_CAPS } from "../query/transition.ts";
 // P2-3：TTFT×缓存分桶的单一事实源，与 provider-health.ts 共用（详见该模块头注释）
 import {
   TtftCacheBucketer,
@@ -662,6 +664,106 @@ export function aggregateRecoveryStats(
   return out;
 }
 
+/**
+ * continue 路径收敛度（2026-10-24）。
+ *
+ * 回答「有没有哪条 continue 路径在一条用户消息里停不下来」。此前这只能靠读代码一条条排查
+ * （`model_context_window_exceeded` 无封顶、闸门耗尽后被下一道门续命都是这样找到的）。
+ * 取数源：`TurnComplete.continue_counts` / `max_continue_streak` / `gates_exhausted`。
+ */
+export interface ContinuePathDigestStats {
+  /** 带 continue 计数字段的 TurnComplete 条数（= 分母：多少条用户消息有可比数据） */
+  prompts: number;
+  /** 全会话各 continue 理由总次数（tool_use 含在内） */
+  totals: Record<string, number>;
+  /** 全会话最长同理由连续游程 */
+  maxStreak?: { type: string; length: number };
+  /**
+   * 游程超过该理由封顶的消息条数（`CONTINUE_STREAK_CAPS`）。**北极星：恒为 0**——
+   * 非 0 即某条路径的封顶没生效。
+   */
+  overCapPrompts: number;
+  /** 超封顶明细（理由 → 最长游程） */
+  overCap: Record<string, number>;
+  /** 各闸门耗尽次数（来自 GateExhausted 事件） */
+  gatesExhausted: Record<string, number>;
+  /**
+   * 退化类闸门（effect=chain_ends）耗尽后同一条消息里仍出现闸门 continue 的次数。
+   * **恒为 0**：非 0 即「整条链收尾」被打穿（P1-3 那类缺陷复发）。
+   */
+  continuedAfterChainEnd: number;
+}
+
+/** 视为「闸门续命」的 continue 理由（end_turn 闸门链产生的那几种） */
+const GATE_CONTINUE_TYPES = new Set([
+  "stop_hook_retry",
+  "unanswered_retry",
+  "promise_nudge",
+  "todo_gate_retry",
+  "hypothesis_gate_retry",
+  "token_budget_continuation",
+  "goal_gate_retry",
+  "goal_budget_warning",
+]);
+
+export function aggregateContinuePathStats(
+  events: Array<{ event?: string; data?: Record<string, unknown> }>,
+): ContinuePathDigestStats | null {
+  const out: ContinuePathDigestStats = {
+    prompts: 0,
+    totals: {},
+    overCapPrompts: 0,
+    overCap: {},
+    gatesExhausted: {},
+    continuedAfterChainEnd: 0,
+  };
+  // promptSeq → 已发生 chain_ends 耗尽
+  const chainEnded = new Set<unknown>();
+  let currentPrompt: unknown;
+  for (const e of events) {
+    const d = e.data;
+    if (!d) continue;
+    if (e.event === "GateExhausted") {
+      const g = String(d.gate ?? "unknown");
+      out.gatesExhausted[g] = (out.gatesExhausted[g] ?? 0) + 1;
+      currentPrompt = d.promptSeq;
+      if (d.effect === "chain_ends") chainEnded.add(d.promptSeq);
+      continue;
+    }
+    if (e.event === "LoopTransition") {
+      if (
+        currentPrompt !== undefined &&
+        chainEnded.has(currentPrompt) &&
+        GATE_CONTINUE_TYPES.has(String(d.type))
+      ) {
+        out.continuedAfterChainEnd++;
+      }
+      continue;
+    }
+    if (e.event !== "TurnComplete") continue;
+    // TurnComplete 标志一条用户消息结束：之后的 LoopTransition 属于下一条消息
+    currentPrompt = undefined;
+    const counts = d.continue_counts as Record<string, number> | undefined;
+    const streak = d.max_continue_streak as { type: string; length: number } | undefined;
+    if (!counts && !streak) continue;
+    out.prompts++;
+    for (const [k, v] of Object.entries(counts ?? {})) {
+      out.totals[k] = (out.totals[k] ?? 0) + (typeof v === "number" ? v : 0);
+    }
+    if (streak && typeof streak.length === "number") {
+      if (!out.maxStreak || streak.length > out.maxStreak.length) out.maxStreak = { ...streak };
+      const cap = CONTINUE_STREAK_CAPS[streak.type as keyof typeof CONTINUE_STREAK_CAPS];
+      if (cap !== undefined && streak.length > cap) {
+        out.overCapPrompts++;
+        out.overCap[streak.type] = Math.max(out.overCap[streak.type] ?? 0, streak.length);
+      }
+    }
+  }
+  const any =
+    out.prompts > 0 || Object.keys(out.gatesExhausted).length > 0 || out.continuedAfterChainEnd > 0;
+  return any ? out : null;
+}
+
 export interface TodoDigestStats {
   /** 清单被推进的次数（`TodoProgressAdvanced` 条数 = writeVersion 增长次数） */
   advances: number;
@@ -974,6 +1076,8 @@ export interface Digest {
   jit?: JitDigestStats;
   /** P1-2：前缀断裂定位分布。无 `prefix_break` 事件时 undefined（老会话，埋点上线前）。 */
   prefixBreaks?: PrefixBreakDigestStats;
+  /** §6：缓存断点布局 + 冷清理。两类事件全无时 undefined（老会话 / 非 Anthropic）。 */
+  promptCache?: PromptCacheDigestStats;
   /**
    * todo 清单实时性度量（2026-08-02）。三类 todo 事件全无时 undefined
    * （老会话 / 整场没建过清单）。
@@ -981,6 +1085,8 @@ export interface Digest {
   todo?: TodoDigestStats;
   /** 2026-10-08：LLM 错误恢复口径。无重试 / 放弃事件时 undefined。 */
   recovery?: RecoveryDigestStats;
+  /** 2026-10-24：continue 路径收敛度。无 continue 计数字段 / GateExhausted 时 undefined（老会话）。 */
+  continuePaths?: ContinuePathDigestStats;
   /** PR-5：思考关闭泄漏率。无 thinking_wire 埋点（老轨迹）时 undefined。 */
   thinkingLeak?: ThinkingLeakStats;
   /** R11：strict 工具降级汇总。无 StrictToolDegraded 事件时 undefined。 */
@@ -2516,20 +2622,55 @@ export function buildDigest(ref: SessionRef, full: boolean, paths: DigestPaths):
   // 从前 getFidelityReport() 生产零调用，官网写的「能看到对齐度」是空的。
   // 只报计数不下判断：偏离多是「计划写得粗」还是「执行跑偏」，轨迹给不出真值。
   for (const f of aggregatePlanFidelity(events)) {
+    const version = f.stepParserVersion ?? 1;
+    // v1 口径的步数与当前口径不可比：并列给出按当前口径对计划文件的重算值（文件还在时）
+    const recount =
+      version < PLAN_STEP_PARSER_VERSION ? recountPlanStepsWithCurrentParser(f.planFile) : null;
+    const recountNote =
+      recount !== null && recount !== f.planStepCount
+        ? `（旧口径 v${version}；按当前口径 v${PLAN_STEP_PARSER_VERSION} 重算为 ${recount} 步）`
+        : "";
     anomalies.push({
       layer: "L0",
       severity: "low",
       kind: "plan_fidelity",
-      detail: `计划 ${f.planStepCount} 步 / 实际 ${f.actualToolCallCount} 次调用 / 偏离 ${f.offPlanCount} 次`,
+      detail: `计划 ${f.planStepCount} 步 / 实际 ${f.actualToolCallCount} 次调用 / 偏离 ${f.offPlanCount} 次${recountNote}`,
       provenance: [
         {
           sourceFile: eventsPath,
           lineRef: "event=PlanFidelity（每份计划取末条快照）",
-          rawValue: `steps=${f.planStepCount} actual=${f.actualToolCallCount} off_plan=${f.offPlanCount}`,
+          rawValue:
+            `steps=${f.planStepCount} actual=${f.actualToolCallCount} off_plan=${f.offPlanCount}` +
+            ` parser=v${version}` +
+            (recount !== null ? ` recount_v${PLAN_STEP_PARSER_VERSION}=${recount}` : ""),
           mtime: fileMtimeIso(eventsPath),
         },
       ],
       ...(f.planFile ? { pointer: f.planFile } : {}),
+    });
+  }
+
+  // 计划生命周期：每份计划一行。取消 / 拒绝超限是用户否决，标 medium 便于排查时被看见。
+  for (const l of aggregatePlanLifecycle(events)) {
+    const vetoed = l.outcome === "cancel" || l.outcome === "reject_limit";
+    anomalies.push({
+      layer: "L0",
+      severity: vetoed ? "medium" : "low",
+      kind: "plan_lifecycle",
+      detail:
+        `计划 ${l.reasons.join(" → ")}（结局 ${l.outcome}，拒绝 ${l.rejections} 次，` +
+        `执行阶段跨 ${l.executingTurns} 个用户回合，压缩重注入 ${l.reattachCount} 次` +
+        (l.reattachTruncated > 0 ? `，其中截断 ${l.reattachTruncated} 次` : "") +
+        "）",
+      provenance: [
+        {
+          sourceFile: eventsPath,
+          lineRef: "event=PlanTransition / PlanReattach / UserPromptSubmit",
+          rawValue: `reasons=${l.reasons.join(",")} outcome=${l.outcome}`,
+          mtime: fileMtimeIso(eventsPath),
+        },
+      ],
+      ...(l.planFile ? { pointer: l.planFile } : {}),
     });
   }
 
@@ -2711,6 +2852,7 @@ export function buildDigest(ref: SessionRef, full: boolean, paths: DigestPaths):
 
   // ── P1-2：前缀断裂定位分布（断在哪类段 / 浪费多少）──
   const prefixBreaks = aggregatePrefixBreakStats(events);
+  const promptCache = aggregatePromptCacheStats(events);
 
   // ── 2026-08-02：todo 实时性度量（推进次数 / 回注次数 / 收尾兜底次数）──
   // 补的是"采了不看"这个缺口：三个事件此前只写不读，缺陷定性只能靠间接证据。
@@ -2718,6 +2860,9 @@ export function buildDigest(ref: SessionRef, full: boolean, paths: DigestPaths):
 
   // ── 2026-10-08：LLM 错误恢复口径（one_shot_kill_count 北极星 + 各族救回率）──
   const recovery = aggregateRecoveryStats(events);
+
+  // ── 2026-10-24：continue 路径收敛度（超封顶游程 / 退化门耗尽后仍续命，两者恒为 0）──
+  const continuePaths = aggregateContinuePathStats(events);
 
   // ── PR-5：思考关闭泄漏率（主循环 / 非主循环分开，分母 = 意图关的 fetch）──
   const thinkingLeak = aggregateThinkingLeakStats(events);
@@ -2775,8 +2920,10 @@ export function buildDigest(ref: SessionRef, full: boolean, paths: DigestPaths):
     subAgents: subAgents ?? undefined,
     jit: jit ?? undefined,
     prefixBreaks: prefixBreaks ?? undefined,
+    promptCache: promptCache ?? undefined,
     todo: todo ?? undefined,
     recovery: recovery ?? undefined,
+    continuePaths: continuePaths ?? undefined,
     thinkingLeak,
     strictDegrade,
     stopReasonMismatch,
@@ -3174,6 +3321,36 @@ export function renderHuman(d: Digest, opts: RenderOptions = {}): string {
     }
   }
 
+  // 2026-10-24：continue 路径收敛度。超封顶 / 退化门被打穿非 0 标红：那就是某条路径没封住。
+  if (d.continuePaths) {
+    const cp = d.continuePaths;
+    L.push("");
+    L.push(
+      c("bold", "continue 路径:") +
+        " " +
+        c(cp.overCapPrompts > 0 ? "red" : "green", `超封顶 ${cp.overCapPrompts}`) +
+        " " +
+        c(
+          cp.continuedAfterChainEnd > 0 ? "red" : "green",
+          `收尾后续命 ${cp.continuedAfterChainEnd}`,
+        ) +
+        c("gray", ` / ${cp.prompts} 条消息`) +
+        (cp.maxStreak ? c("gray", `  最长游程 ${cp.maxStreak.type}×${cp.maxStreak.length}`) : ""),
+    );
+    const nonTool = Object.entries(cp.totals).filter(([k]) => k !== "tool_use");
+    if (nonTool.length > 0) {
+      L.push(c("gray", "  非工具续命: ") + nonTool.map(([k, v]) => `${k}×${v}`).join(", "));
+    }
+    const over = Object.entries(cp.overCap);
+    if (over.length > 0) {
+      L.push(c("red", "  超封顶: ") + over.map(([k, v]) => `${k} 最长 ${v}`).join(", "));
+    }
+    const gx = Object.entries(cp.gatesExhausted);
+    if (gx.length > 0) {
+      L.push(c("gray", "  闸门耗尽: ") + gx.map(([k, v]) => `${k}×${v}`).join(", "));
+    }
+  }
+
   // R11：strict 降级。目标恒为 0，出现即标黄。
   if (d.stopReasonMismatch) {
     const m = d.stopReasonMismatch;
@@ -3389,6 +3566,30 @@ export function renderHuman(d: Digest, opts: RenderOptions = {}): string {
     if (p.charJudgeMissingTurns > 0) {
       // 与"判据矛盾"分开说：这是历史空档，不是冲突
       L.push(c("gray", `  （${p.charJudgeMissingTurns} 轮无字符级数据：埋点上线前的轨迹）`));
+    }
+  }
+
+  // ── §6 缓存布局 / 冷清理（2026-10-24）：两个缺陷修复的直接验收口径 ──
+  if (d.promptCache) {
+    const pc = d.promptCache;
+    L.push("");
+    const bad = pc.breakpointOnTransient > 0;
+    L.push(
+      c("bold", "缓存断点:") +
+        " " +
+        c(
+          bad ? "red" : "green",
+          `${pc.breakpointOnTransient}/${pc.layoutRequests} 次落在 reminder 上`,
+        ) +
+        c("gray", `  （应恒为 0；含 reminder 的请求 ${pc.requestsWithTransient} 次）`),
+    );
+    if (pc.coldClears > 0 || pc.coldClearsUnderThreshold > 0) {
+      L.push(
+        `  冷清理 ${pc.coldClears} 次，清 ${pc.coldClearedItems} 项 / ${pc.coldClearedChars} 字符` +
+          (pc.coldClearsUnderThreshold > 0
+            ? c("red", `  ⚠ ${pc.coldClearsUnderThreshold} 次间隔低于阈值（热当冷回归）`)
+            : c("gray", `  最短间隔 ${Math.round((pc.minColdGapMs ?? 0) / 60000)} 分钟`)),
+      );
     }
   }
 
@@ -3937,6 +4138,65 @@ export interface PrefixBreakDigestStats {
   shrunkTurns: number;
 }
 
+/**
+ * §6 缓存缺陷的验收口径（2026-10-24）。
+ *
+ * 两个数都是「修复后应恒为 0」的不变量计数，不是比率：
+ *  - breakpointOnTransient：messages 区断点落在 reminder 上的次数（PromptCacheLayout）
+ *  - coldClearsUnderThreshold：冷清理发生时距上次请求 < 阈值的次数（ColdCacheClear）
+ * 分母一并给出（layoutRequests / coldClears），否则「0」分不清是修好了还是没发生。
+ */
+export interface PromptCacheDigestStats {
+  layoutRequests: number;
+  requestsWithTransient: number;
+  breakpointOnTransient: number;
+  coldClears: number;
+  coldClearedItems: number;
+  coldClearedChars: number;
+  coldClearsUnderThreshold: number;
+  minColdGapMs?: number;
+}
+
+export function aggregatePromptCacheStats(
+  events: Array<{ event?: string; data?: Record<string, unknown> }>,
+): PromptCacheDigestStats | null {
+  const s: PromptCacheDigestStats = {
+    layoutRequests: 0,
+    requestsWithTransient: 0,
+    breakpointOnTransient: 0,
+    coldClears: 0,
+    coldClearedItems: 0,
+    coldClearedChars: 0,
+    coldClearsUnderThreshold: 0,
+  };
+  let seen = false;
+  for (const e of events) {
+    const d = e.data;
+    if (!d) continue;
+    if (e.event === "PromptCacheLayout") {
+      seen = true;
+      s.layoutRequests++;
+      if (Number(d.transient_blocks) > 0) s.requestsWithTransient++;
+      if (d.message_breakpoint_on_transient === true) s.breakpointOnTransient++;
+    } else if (e.event === "ColdCacheClear") {
+      seen = true;
+      s.coldClears++;
+      s.coldClearedItems += Number(d.cleared) || 0;
+      s.coldClearedChars += Number(d.saved_chars) || 0;
+      const gap = Number(d.gap_ms);
+      const threshold = Number(d.threshold_ms);
+      if (Number.isFinite(gap) && gap >= 0) {
+        s.minColdGapMs = s.minColdGapMs === undefined ? gap : Math.min(s.minColdGapMs, gap);
+        if (Number.isFinite(threshold) && gap < threshold) s.coldClearsUnderThreshold++;
+      } else {
+        // gap 未知却清了 = 违反「不知道即热」，同样计为回归
+        s.coldClearsUnderThreshold++;
+      }
+    }
+  }
+  return seen ? s : null;
+}
+
 /** 从 events.jsonl 聚合前缀断裂分布（P1-2） */
 export function aggregatePrefixBreakStats(
   events: Array<{ event?: string; data?: Record<string, unknown> }>,
@@ -4102,6 +4362,8 @@ export interface PlanFidelityStats {
   planStepCount: number;
   actualToolCallCount: number;
   offPlanCount: number;
+  /** 记录该步数时的解析器口径版本；旧事件无此字段，记为 1 */
+  stepParserVersion?: number;
 }
 
 /**
@@ -4116,12 +4378,100 @@ export function aggregatePlanFidelity(
     if (e.event !== "PlanFidelity" || !e.data) continue;
     const planFile = typeof e.data.plan_file === "string" ? e.data.plan_file : "";
     // Map.set 覆盖已有键不改变插入顺序：值取末条，位置留在首次出现处
+    const version = e.data.step_parser_version;
     byPlan.set(planFile, {
       planFile,
       planStepCount: num(e.data.plan_step_count),
       actualToolCallCount: num(e.data.actual_tool_call_count),
       offPlanCount: num(e.data.off_plan_count),
+      ...(version !== undefined ? { stepParserVersion: num(version) } : {}),
     });
+  }
+  return [...byPlan.values()];
+}
+
+/**
+ * 旧口径步数的数据层迁移：v1 事件（无 step_parser_version）的 plan_step_count 由旧解析器算出，
+ * 与 v2 不可比。计划文件还在时按**当前**口径重算一次，供 digest 并列展示「记录值 → 当前口径」。
+ * 文件已被删 / 读不到返回 null——不编一个数。
+ */
+export function recountPlanStepsWithCurrentParser(planFile: string): number | null {
+  if (!planFile) return null;
+  try {
+    if (!existsSync(planFile)) return null;
+    return PlanModeManager.extractPlanSteps(readFileSync(planFile, "utf-8")).steps.length;
+  } catch {
+    return null;
+  }
+}
+
+/** 一份计划的生命周期（`PlanTransition` 事件聚合） */
+export interface PlanLifecycleStats {
+  planFile: string;
+  /** 跃迁原因序列（按时间），如 enter → submit → reject → submit → approve → todos_completed */
+  reasons: string[];
+  rejections: number;
+  /** 最后一次跃迁后的结局：executing（仍在执行）/ approve 之后的出口 / 停在规划中 */
+  outcome: string;
+  /** 执行阶段经历了几个用户回合（approve 之后的 UserPromptSubmit 数，直到执行阶段结束） */
+  executingTurns: number;
+  /** 执行阶段内压缩重注入了几次计划 */
+  reattachCount: number;
+  /** 重注入时被截断的次数 */
+  reattachTruncated: number;
+}
+
+/**
+ * 聚合 `PlanTransition` / `PlanReattach` / `UserPromptSubmit`：每份计划一行生命周期。
+ *
+ * 这一行回答的正是 2026-10-24 那组缺陷的验收问题：
+ *   - 执行阶段是否跨过了用户回合（executingTurns > 0 = 修复前必然为 0 的场景）；
+ *   - 取消 / 拒绝超限是否以明确结局收尾（outcome）；
+ *   - 压缩时计划有没有被带回、有没有截断（reattachCount / reattachTruncated）。
+ */
+export function aggregatePlanLifecycle(
+  events: Array<{ event?: string; data?: Record<string, unknown> }>,
+): PlanLifecycleStats[] {
+  const byPlan = new Map<string, PlanLifecycleStats>();
+  let executingPlan: string | null = null;
+  for (const e of events) {
+    if (e.event === "PlanTransition" && e.data) {
+      const planFile = typeof e.data.plan_file === "string" ? e.data.plan_file : "";
+      const reason = typeof e.data.reason === "string" ? e.data.reason : "unknown";
+      let st = byPlan.get(planFile);
+      if (!st) {
+        st = {
+          planFile,
+          reasons: [],
+          rejections: 0,
+          outcome: "planning",
+          executingTurns: 0,
+          reattachCount: 0,
+          reattachTruncated: 0,
+        };
+        byPlan.set(planFile, st);
+      }
+      st.reasons.push(reason);
+      st.rejections = Math.max(st.rejections, num(e.data.rejection_count));
+      if (e.data.executing_after === true) {
+        executingPlan = planFile;
+        st.outcome = "executing";
+      } else {
+        if (executingPlan === planFile) executingPlan = null;
+        st.outcome = reason === "submit" || reason === "reject" ? "planning" : reason;
+      }
+      if (reason === "submit") st.outcome = "awaiting_approval";
+    } else if (e.event === "UserPromptSubmit" && executingPlan !== null) {
+      const st = byPlan.get(executingPlan);
+      if (st) st.executingTurns++;
+    } else if (e.event === "PlanReattach" && e.data) {
+      const planFile = typeof e.data.plan_file === "string" ? e.data.plan_file : "";
+      const st = byPlan.get(planFile);
+      if (st) {
+        st.reattachCount++;
+        if (e.data.truncated === true) st.reattachTruncated++;
+      }
+    }
   }
   return [...byPlan.values()];
 }

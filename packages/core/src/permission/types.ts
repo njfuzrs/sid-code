@@ -27,6 +27,15 @@ export interface Decision {
   decisionReason?: PermissionDecisionReason;
   /** 元数据（传递给上层的额外信息） */
   metadata?: Record<string, unknown>;
+  /**
+   * 做出本决策的管线位置：阶段一的 Step 编号（"1" / "3.5" / "8-rule" / "14" …）或阶段二的
+   * 后处理名（"skip" / "memory" / "hook-allow" / "yes" / "auto" / "headless" / "fuse" / "mode-gate" …）。
+   * 固定枚举，不含入参。进本地轨迹 PermissionDecision.step —— 此前 22409/25933 条决策
+   * 不带 reason_type，Step 5.5 工具放行 / Step 10 只读 / Step 12 预授权 / skip 早退混在一起分不开。
+   */
+  step?: string;
+  /** 决策时的生效权限模式（sid 原值；skipPermissions 记为 dangerously-skip-permissions） */
+  mode?: string;
 }
 
 /** 权限请求 */
