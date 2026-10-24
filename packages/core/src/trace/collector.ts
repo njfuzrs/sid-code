@@ -2112,6 +2112,11 @@ export class TraceCollector {
         ...(input.legacy_agent_id ? { legacy_agent_id: input.legacy_agent_id } : {}),
         // §9.2：写入派活意图，排查时无需回 raw.jsonl 找原始 prompt
         description: input.description ?? null,
+        // 隔离子代理的身份与边界。此前这两项只存在于父会话 raw.jsonl 的派发入参里
+        // （PreToolUse.input_summary 不含 isolation），筛「哪些子代理是隔离的」要跨文件关联，
+        // 而「它的工作目录是哪」任何事件都没有 —— 子代理工具调用打在哪个目录无从判定。
+        ...(input.isolation ? { isolation: input.isolation } : {}),
+        ...(input.agent_cwd ? { agent_cwd: input.agent_cwd } : {}),
       },
     });
   }

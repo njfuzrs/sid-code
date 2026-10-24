@@ -682,7 +682,6 @@ export class WorktreeManager {
     const cfg = getWorktreeConfig(this.gitRoot);
 
     // 1. symlink 可配置目录（P1-6，默认 node_modules）
-    let symlinkedNodeModules = false;
     const symlinkedDirs: string[] = [];
     for (const dir of cfg.symlinkDirectories) {
       // W11：名单来自 settings（项目级 .sid-code/settings.json 也能设），而 symlinkSync 对
@@ -700,7 +699,6 @@ export class WorktreeManager {
         try {
           symlinkSync(src, dest, "dir");
           symlinkedDirs.push(dir);
-          if (dir === "node_modules") symlinkedNodeModules = true;
         } catch (err: any) {
           // B4：失败不阻断，但记录 warning
           log.warn("WORKTREE", `symlink ${dir} 失败（非关键）: ${err.message}`);
@@ -758,7 +756,7 @@ export class WorktreeManager {
     // 6. 创建期告警（比 CC 更进一步：把 symlink node_modules 的静默版本错乱 + DB 冲突
     //    变成显式提示；条件不成立时零输出，无噪音）。best-effort，异常不阻断。
     try {
-      const depWarn = checkDependencyConsistency(worktreePath, this.gitRoot, symlinkedNodeModules);
+      const depWarn = checkDependencyConsistency(worktreePath, this.gitRoot, symlinkedDirs);
       if (depWarn) warnings.push(depWarn);
     } catch {
       /* 告警逻辑绝不阻断创建 */

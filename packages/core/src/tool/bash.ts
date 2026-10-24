@@ -33,6 +33,7 @@ import { normalizeToolPath } from "./path-utils.ts";
 import { registerCleanup } from "@sid-code/shared/utils/graceful-shutdown.ts";
 import { ensureSidTempDir } from "@sid-code/shared/utils/temp-dir.ts";
 import { getCwd, setCwd, getOriginalCwd } from "../bootstrap/state.ts";
+import { getAgentRoot } from "../bootstrap/cwd-context.ts";
 import { createAndSaveSnapshot, escapeForShell } from "./bash/shell-snapshot.ts";
 import { z } from "zod/v4";
 import { lazySchema } from "../sdk/lazy-schema.ts";
@@ -419,9 +420,11 @@ function cwdChangeNotice(newCwd: string): string {
  * 后者会让模型原地重试同一条命令。
  */
 function cwdStaleNotice(staleCwd: string): string {
+  // 子代理上下文里 resolveCwd 回退到的是它自己的边界（进入时的 root），不是主会话启动目录
+  const fallback = getAgentRoot() !== undefined ? "本子代理的工作区根目录" : "启动目录";
   return (
     `\n[工作目录已失效] 当前工作目录 ${staleCwd} 已不存在（很可能是刚才的命令把它删掉了）。\n` +
-    `上面这条命令本身已执行完成。但后续 bash 会静默跑在启动目录，` +
+    `上面这条命令本身已执行完成。但后续 bash 会静默跑在${fallback}，` +
     `而 read/edit/grep/glob/ls 的相对路径仍以这个已删除的路径为基准 —— 两者不一致。\n` +
     `请显式 \`cd\` 到一个存在的目录，把两套路径基准对齐。`
   );
@@ -680,12 +683,23 @@ export class BashTool implements Tool {
    * 优先级：显式 params.cwd > 全局 cwd（getCwd()）> 原始启动目录（兜底）。
    * 若目标目录已被删除（如 rm -rf 之后），回退到原始启动目录，对标 claude-code Shell.ts:222-238。
    */
-  private resolveCwd(rawCwd: string | undefined): string {
-    let cwd = rawCwd ? normalizeToolPath(rawCwd) : getCwd();
-    if (!existsSync(cwd)) {
-      cwd = getOriginalCwd();
+  private resolveCwd(rawCwd: string | undefined): { cwd: string } | { error: string } {
+    const cwd = rawCwd ? normalizeToolPath(rawCwd) : getCwd();
+    if (existsSync(cwd)) return { cwd };
+    // 子代理上下文（withAgentCwd）里**不许**回退到 getOriginalCwd()：那是主会话的启动目录，
+    // 对隔离 worktree 里的子代理而言就是主仓 —— 旧实现在这里静默把命令挪进主仓执行，
+    // 而 bash 不经过 W12 的越界写拦截。回退只能落在本子代理自己的边界（进入时的 root）内；
+    // 边界本身也没了（worktree 被清理）就报错，不找替身目录。
+    const agentRoot = getAgentRoot();
+    if (agentRoot !== undefined) {
+      if (existsSync(agentRoot)) return { cwd: agentRoot };
+      return {
+        error:
+          `执行命令失败: 子代理工作目录 "${agentRoot}" 已不存在（隔离 worktree 可能已被清理）。` +
+          `为避免在其它目录执行，本命令未运行。`,
+      };
     }
-    return cwd;
+    return { cwd: getOriginalCwd() };
   }
 
   /**
@@ -911,7 +925,9 @@ export class BashTool implements Tool {
     // 下限恒为 1 秒。未传 timeout 用默认值，传了则夹在 [1s, max] 内。
     const { defaultMs, maxMs } = resolveTimeoutBounds();
     const timeout = Math.min(Math.max(params.timeout || defaultMs, TIMEOUT_FLOOR_MS), maxMs);
-    const cwd = this.resolveCwd(params.cwd);
+    const resolved = this.resolveCwd(params.cwd);
+    if ("error" in resolved) return { output: resolved.error, isError: true };
+    const { cwd } = resolved;
     const { shell, args } = getPlatformShell({ login: !this.snapshotFilePath });
 
     // CWD 追踪范围（缺口 5 并发竞态处理）：只读命令不含 cd，跳过写回。
@@ -1347,7 +1363,9 @@ export class BashTool implements Tool {
   ): Promise<ToolResult> {
     const { spawnShellTask } = require("../task/index.ts");
     await this.snapshotReady;
-    const cwd = this.resolveCwd(params.cwd);
+    const resolved = this.resolveCwd(params.cwd);
+    if ("error" in resolved) return { output: resolved.error, isError: true };
+    const { cwd } = resolved;
     // 后台任务：注入快照但不追踪 cwd
     const { commandString: rawTaskCommand } = this.buildCommand(params.command, {
       trackCwd: false,

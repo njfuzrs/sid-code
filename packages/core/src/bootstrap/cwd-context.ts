@@ -20,6 +20,28 @@
  */
 
 import { AsyncLocalStorage } from "node:async_hooks";
+import { sep } from "node:path";
+
+/** 隔离 worktree 的固定落点：`<主仓>/.sid-code/worktrees/<name>`（见 worktree/manager.ts）。 */
+const ISOLATED_WORKTREE_MARKER = `${sep}.sid-code${sep}worktrees${sep}`;
+
+/**
+ * 把一个路径拆成「所属隔离 worktree 根 + 它的主仓根」；不在隔离 worktree 内返回 null。
+ *
+ * 曾经有三处各写一份 marker 判定（权限 W12、子代理提示词 D13、bash），口径一漂就是
+ * 「提示词说在隔离区、权限按主仓判」这类自相矛盾。统一到这里。
+ */
+export function splitIsolatedWorktreePath(
+  p: string,
+): { worktreeRoot: string; mainRepo: string } | null {
+  const idx = p.indexOf(ISOLATED_WORKTREE_MARKER);
+  if (idx < 0) return null;
+  const nameStart = idx + ISOLATED_WORKTREE_MARKER.length;
+  const nameEnd = p.indexOf(sep, nameStart);
+  const worktreeRoot = nameEnd < 0 ? p : p.slice(0, nameEnd);
+  if (worktreeRoot.length === nameStart) return null; // `.../worktrees/` 本身不是某个 worktree
+  return { worktreeRoot, mainRepo: p.slice(0, idx) };
+}
 
 interface AgentCwdBox {
   /** 进入 withAgentCwd 时绑定的目录（隔离边界，W12 用它判「写没写出自己的 worktree」） */
@@ -43,6 +65,15 @@ export function getAgentCwd(): string | undefined {
 /** 取当前异步上下文进入时绑定的根目录(不随 cd 变化);不在上下文内返回 undefined。 */
 export function getAgentRoot(): string | undefined {
   return cwdStorage.getStore()?.root;
+}
+
+/**
+ * 当前异步上下文是否绑定在某个隔离 worktree 上；是则返回其根与主仓根。
+ * 判据取进入时的 root（不随 cd 变），cd 出去不等于离开了隔离边界。
+ */
+export function getIsolatedWorktree(): { worktreeRoot: string; mainRepo: string } | null {
+  const root = getAgentRoot();
+  return root ? splitIsolatedWorktreePath(root) : null;
 }
 
 /**
