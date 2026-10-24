@@ -96,7 +96,7 @@ describe("denial-tracking 纯逻辑（新判据：按操作签名的连续拒绝
 });
 
 describe("熔断可达性（发现 1 的核心：旧实现在这两条路上都不可达）", () => {
-  test("hard deny 路径：同一危险命令连续 3 次 → 第 4 次熔断为人工确认", async () => {
+  test("hard deny 路径：同一危险命令连续 3 次 → 第 4 次熔断，但**保持硬拒**（不转确认）", async () => {
     const checker = new PermissionChecker(defaultConfig());
     const req = { toolName: "bash", input: { command: "rm -rf /" } };
 
@@ -104,15 +104,17 @@ describe("熔断可达性（发现 1 的核心：旧实现在这两条路上都�
     for (let i = 0; i < DENIAL_LIMITS.maxConsecutive; i++) {
       const r = await checker.check(req);
       expect(r.allowed).toBe(false);
-      expect(r.decisionReason?.type).not.toBe("denialTracking");
+      expect(r.metadata?.denialTrackingTriggered).toBeFalsy();
     }
 
-    // 第 4 次：达阈值 → 熔断。旧实现在此永远返回 dangerousCommand，denialTracking 永不出现。
+    // 第 4 次：达阈值 → 熔断可达（旧实现永不可达），但硬拒绝来自配置级约束，
+    // 熔断只把「停止重试」说破，不给弹窗推翻的机会（2026-10-24：修前第 4 次 rm -rf / 弹确认）。
     const fused = await checker.check(req);
     expect(fused.allowed).toBe(false);
-    expect(fused.needsConfirmation).toBe(true);
-    expect(fused.decisionReason?.type).toBe("denialTracking");
+    expect(fused.needsConfirmation).toBeFalsy();
+    expect(fused.decisionReason?.type).toBe("dangerousCommand");
     expect(fused.metadata?.denialTrackingTriggered).toBe(true);
+    expect(fused.reason).toContain("重试相同输入不会改变结果");
     expect(checker.getDenialTracking().consecutiveDenials).toBeGreaterThanOrEqual(
       DENIAL_LIMITS.maxConsecutive,
     );

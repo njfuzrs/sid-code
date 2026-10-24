@@ -2641,6 +2641,12 @@ export async function main(): Promise<void> {
     const permissionRules = await loadPermissionRules();
     const permissionChecker = new PermissionChecker(config, permissionRules);
     permissionChecker.setPlanManager(planManager);
+    // 轨迹 SessionStart 记录权限配置形态（影响面分母）。取值函数：/clear 换会话时按当时配置重取
+    {
+      const { setPermissionConfigProvider } =
+        await import("@sid-code/core/permission/decision-telemetry.ts");
+      setPermissionConfigProvider(() => permissionChecker.describeConfigShape());
+    }
 
     // G21 / P1-1：deny 规则 + 敏感文件接入 glob/ls/grep/read_many 列举过滤。
     // 被 deny 的敏感文件（.env / secrets/**）和 SENSITIVE_FILES 命中项

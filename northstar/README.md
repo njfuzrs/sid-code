@@ -92,6 +92,18 @@
 | **HITL 介入率**（分工具 / 分规则）与确认耗时 —— 它同时是「更安全 ↔ 更快」这个 trade-off 的计价器 | ✅ `PermissionDecision` 事件 + `session-index.permission`（分母 = 权限决策数）；⚠️ 确认耗时只在交互会话真弹窗时有样本，headless 恒 n=0 |
 | **权限规则匹配正确率**（该拦的拦住、不该拦的别拦） | ⚠️ 只有**规则命中率**（`permission.rule_hits` ÷ 决策数）与按 reason 分桶；「正确」需要标注真值，轨迹给不出，仍靠单测 / e2e 断言 |
 | **policy e2e 拦截验证**、fail-closed 路径触发计数 | ⚠️ 有 e2e 断言，无长期趋势 |
+| **模式越权哨兵**（plan / deny-write 下写类工具被放行的次数，计划文件除外）—— **恒应为 0**，防回归不证修复 | ✅ `session-index.permission.mode_guard_breaches`（求和；分母 = 带该字段的会话数）；源头是 checker 出口总闸 `enforceModeHardConstraint` |
+| **决策可归因率**（带管线位置 step 的决策占比）—— 归因口径本身的健康度 | ✅ `session-index.permission.by_step`（分母 = 带 by_step 行的决策数）；逐条在 `PermissionDecision.data.step` / `.mode` |
+| **规则暴露会话占比**（会话开始时配了 allow/deny/ask 规则或 disallowedTools）—— 规则类缺陷的**影响面分母** | ✅ `session-index.permission_config` / `SessionStart.data.permission_config`（只有条数 × 来源与开关，不含规则文本） |
+
+**口径铁律（§4 审计踩出来的）**：
+
+- **模式看 `sid_permission_mode` / `PermissionDecision.mode`，不看 `permission_mode`**。后者是 CC 映射值：
+  always-allow 与 `--dangerously-skip-permissions` 合并成 `bypassPermissions`，deny-write 记成 `default`，
+  且只在 SessionStart 记一次，会话中途切 plan 之后就失真。
+- **规则类权限缺陷不靠轨迹证明存在**。2026-10-24 本机 400 会话里四类缺陷触发 0 次，原因是触发前提
+  （有规则 / 处于 plan）本身不存在，不是缺陷不存在。存在性靠 `tests/permission/pipeline-order-matrix.test.ts`
+  的「模式 × 规则 × 路径」矩阵；轨迹负责的是暴露面（规则暴露会话占比）与回归哨兵。
 
 **新增防线时的验收判据**：不是「build 过 + 单测过」，而是**「真实会话里被触发过」**——
 防线自己成了它当初要消灭的死功能，这事已经发生过一次。

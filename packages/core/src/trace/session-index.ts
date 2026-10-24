@@ -177,7 +177,19 @@ export interface SessionIndexEntry {
     prompt_durations_ms: number[];
     by_tool: Record<string, { n: number; prompted: number }>;
     by_reason: Record<string, { n: number; prompted: number }>;
+    /** 按管线位置（Decision.step）分桶。旧版本行无此键 */
+    by_step?: Record<string, { n: number; prompted: number }>;
+    /** 按决策时 sid 原生权限模式分桶。旧版本行无此键 */
+    by_mode?: Record<string, { n: number; prompted: number }>;
+    /** 哨兵：plan / deny-write 下放行写类工具（计划文件除外）的次数，恒应为 0。旧版本行无此键 */
+    mode_guard_breaches?: number;
   };
+
+  /**
+   * 会话开始时的权限配置形态（规则条数 / 开关，不含规则文本）。影响面分母：
+   * 「有 allow 规则的会话」「处于 plan 的会话」等切片都从这里取。键不存在 = 旧版本行。
+   */
+  permission_config?: import("../permission/decision-telemetry.ts").PermissionConfigShape;
 
   /**
    * B12：「一次 edit 成功」——单位是**文件 × 会话**，不是调用次数。
@@ -373,6 +385,7 @@ export function buildSessionIndexEntry(
     traj_corrupt_detected_by?: "session_end" | "startup_scan";
     compactions?: number;
     permission?: import("./decision-metrics.ts").PermissionDecisionStats;
+    permission_config?: import("../permission/decision-telemetry.ts").PermissionConfigShape;
     edit_first_try?: import("./decision-metrics.ts").EditFirstTryStats;
     /** S1 L1：传了才落盘（见 SessionIndexEntry.short_text_end_turns） */
     short_text_end_turns?: number;
@@ -443,8 +456,14 @@ export function buildSessionIndexEntry(
             prompt_durations_ms: [...extra.permission.promptDurationsMs],
             by_tool: structuredClone(extra.permission.byTool),
             by_reason: structuredClone(extra.permission.byReason),
+            by_step: structuredClone(extra.permission.byStep),
+            by_mode: structuredClone(extra.permission.byMode),
+            mode_guard_breaches: extra.permission.modeGuardBreaches,
           },
         }
+      : {}),
+    ...(extra.permission_config
+      ? { permission_config: structuredClone(extra.permission_config) }
       : {}),
     ...(extra.edit_first_try
       ? {
