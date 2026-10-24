@@ -21,6 +21,7 @@
  * 3. **样本不足必须被标记**。两个 n=3 的快照之间能算出几十个百分点的"改善"。
  */
 
+import type { PermissionConfigShape } from "@sid-code/core/permission/decision-telemetry.ts";
 import { describe, test, expect, beforeAll, afterAll } from "bun:test";
 import { mkdtempSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -914,6 +915,60 @@ describe("B11 / B12 · 更安全与一次 edit 成功率", () => {
     expect(s.safer.prompt_duration_p50.value).toBe(4000);
     expect(s.safer.prompt_duration_p50.n).toBe(3);
     expect(s.safer.sessions_with_field).toBe(2);
+  });
+
+  test("§4 新指标：哨兵求和、可归因率按决策数、规则暴露按会话数；旧行一律不进分母", () => {
+    const cfg = (allow: number, disallowed = 0): PermissionConfigShape => ({
+      mode: "default",
+      skip_permissions: false,
+      yes_mode: false,
+      rules: {
+        allow: allow ? ({ userSettings: allow } as Record<string, number>) : {},
+        deny: {},
+        ask: {},
+      },
+      allowed_tools: 0,
+      disallowed_tools: disallowed,
+      sandbox_auto_allow: false,
+    });
+    const s = snap(
+      [
+        idx({
+          permission: {
+            ...perm(10, 0, 0),
+            by_step: { "10": { n: 6, prompted: 0 }, none: { n: 4, prompted: 0 } },
+            mode_guard_breaches: 0,
+          },
+          permission_config: cfg(2),
+        }),
+        idx({
+          permission: {
+            ...perm(5, 0, 0),
+            by_step: { "8-mode": { n: 5, prompted: 0 } },
+            mode_guard_breaches: 1,
+          },
+          permission_config: cfg(0, 1),
+        }),
+        idx({ permission: perm(100, 0, 0), permission_config: cfg(0) }),
+        idx({ permission: perm(7, 0, 0) }),
+      ],
+      [],
+    );
+    expect(s.safer.mode_guard_breaches?.value).toBe(1);
+    expect(s.safer.mode_guard_breaches?.n).toBe(2);
+    // 分母只含带 by_step 的行：(6+5) / (10+5)，不把第三、四行的 107 条拉进来
+    expect(s.safer.step_attribution_rate?.value).toBeCloseTo(11 / 15);
+    expect(s.safer.step_attribution_rate?.n).toBe(15);
+    // 有规则或黑名单的会话 2 ÷ 带 permission_config 的会话 3
+    expect(s.safer.rule_exposed_session_rate?.value).toBeCloseTo(2 / 3);
+    expect(s.safer.rule_exposed_session_rate?.n).toBe(3);
+  });
+
+  test("§4 新指标在全是旧版本行时为 null（不是 0）", () => {
+    const s = snap([idx({ permission: perm(3, 0, 0) })], []);
+    expect(s.safer.mode_guard_breaches?.value).toBeNull();
+    expect(s.safer.step_attribution_rate?.value).toBeNull();
+    expect(s.safer.rule_exposed_session_rate?.value).toBeNull();
   });
 
   test("旧版本行（无 permission 键）不进分母，全是旧行时值为 null 而非 0%", () => {

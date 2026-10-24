@@ -1759,6 +1759,8 @@ export class SubAgent {
           // S10：spawn 路径的 sessionId 就是 deriveSubAgentSessionId(taskId)，即子代理规范 id
           ...(sessionId ? { agentId: sessionId } : {}),
           reasonType: decision.decisionReason?.type,
+          step: decision.step,
+          mode: decision.mode,
         });
         // B33：spawn 路径同样 fire PermissionDenied，直接复用进程内那个 helper（同口径、同吞错）。
         // 必须带 tool_use_id：Q7 后权限拒绝只 fire PermissionDenied，runtime 消费者按它关
@@ -1781,6 +1783,8 @@ export class SubAgent {
         context: "subagent",
         ...(sessionId ? { agentId: sessionId } : {}),
         reasonType: decision.decisionReason?.type,
+        step: decision.step,
+        mode: decision.mode,
       });
     }
 
