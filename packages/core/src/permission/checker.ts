@@ -589,6 +589,31 @@ export class PermissionChecker implements Checker {
     }
   }
 
+  /**
+   * 权限配置形态（只有计数与开关，不含规则文本），供轨迹 SessionStart 记录影响面分母。
+   * 口径见 decision-telemetry.ts PermissionConfigShape。
+   */
+  describeConfigShape(): import("./decision-telemetry.ts").PermissionConfigShape {
+    const rules: Record<"allow" | "deny" | "ask", Record<string, number>> = {
+      allow: {},
+      deny: {},
+      ask: {},
+    };
+    for (const r of this.ruleLoader.getAllRules()) {
+      const bucket = rules[r.behavior];
+      bucket[r.source] = (bucket[r.source] ?? 0) + 1;
+    }
+    return {
+      mode: this.effectiveMode(),
+      skip_permissions: this.config.skipPermissions === true,
+      yes_mode: this.config.yesMode === true,
+      rules,
+      allowed_tools: this.config.allowedTools?.length ?? 0,
+      disallowed_tools: this.config.disallowedTools?.length ?? 0,
+      sandbox_auto_allow: this.sandboxManager?.shouldAutoAllowBash() === true,
+    };
+  }
+
   /** 获取多来源规则加载器（供外部集成） */
   getRuleLoader(): RuleLoader {
     return this.ruleLoader;

@@ -1074,6 +1074,8 @@ export async function resolveToolPermission(
       context: "main",
       // B11：放行成因（rule / mode / sessionMemory …）。规则命中率的分子就是 reasonType="rule"。
       reasonType: decision.decisionReason?.type,
+      step: decision.step,
+      mode: decision.mode,
     });
     return null;
   }
@@ -1220,6 +1222,8 @@ export async function resolveToolPermission(
         // 这一路的成因来自**弹窗前**那次 check（是它判定要确认的），
         // 不是三路竞争的结果 —— 拒绝动作由谁做在 source 里，为什么要问在这里。
         reasonType: decision.decisionReason?.type,
+        step: decision.step,
+        mode: decision.mode,
       });
       const denyContent = `${result.source === "user" ? "用户" : result.source === "timeout" ? "超时" : result.source}拒绝执行工具 "${block.name}"`;
       // B33：PermissionDenied hook 接线（此前 15 个预留事件之一，有 fire 方法无调用点）。
@@ -1251,6 +1255,8 @@ export async function resolveToolPermission(
       context: "main",
       // 与拒绝分支同口径：成因取弹窗前那次 check（"为什么要问"），不是谁批的。
       reasonType: decision.decisionReason?.type,
+      step: decision.step,
+      mode: decision.mode,
     });
     return null;
   }
@@ -1275,6 +1281,8 @@ export async function resolveToolPermission(
     durationMs: Date.now() - permStartedAt,
     context: "main",
     reasonType: decision.decisionReason?.type,
+    step: decision.step,
+    mode: decision.mode,
   });
   // B33：规则直拒同样 fire PermissionDenied。headless 把 ask 自动拒（reasonType="other"）
   // 记作 auto，deny 规则命中记作 rule —— 两者处置相反，hook 侧需要能分开。
