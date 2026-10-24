@@ -100,7 +100,6 @@ function setup(opts: {
       };
     },
     autoCompact: async () => {},
-    handleContextOverflow: () => null,
     getAbortSignal: () => undefined,
     uuid: () => `uuid-${call}`,
     traceAppendEvent: (ev) => {

@@ -233,7 +233,6 @@ function setup(responses: AccumulatedResponse[], onCall?: (n: number) => void) {
         .map((b) => ({ type: "tool_result" as const, tool_use_id: b.id, content: "ok" })),
     }),
     autoCompact: async () => {},
-    handleContextOverflow: () => null,
     getAbortSignal: () => undefined,
     uuid: () => `uuid-${call}`,
     traceAppendEvent: (ev) => {

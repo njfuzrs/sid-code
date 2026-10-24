@@ -81,7 +81,6 @@ describe("P2-6 · 连接阶段压缩成功要清零连续失败计数", () => {
           ctxMgr.setMessages(msgs.slice(2));
         }
       },
-      handleContextOverflow: () => null,
       getAbortSignal: () => undefined,
       abortCurrentRequest: () => {},
       uuid: () => "u",
@@ -138,7 +137,6 @@ describe("P2-6 · 连接阶段压缩成功要清零连续失败计数", () => {
       autoCompact: async () => {
         compactCalls++; // 永不压动
       },
-      handleContextOverflow: () => null,
       getAbortSignal: () => undefined,
       abortCurrentRequest: () => {},
       uuid: () => "u",

@@ -159,7 +159,6 @@ describe("真实 queryLoop 事件序列 → app 路由 → syncDisplay 重建（
           .map((b) => ({ type: "tool_result" as const, tool_use_id: b.id, content: "ok" })),
       }),
       autoCompact: async () => {},
-      handleContextOverflow: () => null,
       getAbortSignal: () => undefined,
       uuid: () => `uuid-${call}`,
     };

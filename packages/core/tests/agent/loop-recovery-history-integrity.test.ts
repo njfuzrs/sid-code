@@ -79,7 +79,6 @@ function makeLoopConfig(opts: {
     processStream,
     executeTools: opts.executeTools,
     autoCompact: async () => {},
-    handleContextOverflow: () => null,
     getAbortSignal: () => undefined,
     uuid: () => "uuid-test",
   };

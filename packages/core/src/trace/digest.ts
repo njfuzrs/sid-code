@@ -28,6 +28,7 @@ import { getSidHome } from "../config/paths.ts";
 // 用两套尺子」同型。方向是离线模块 import 轻模块（那个文件零依赖），
 // 反过来会把 3400 行 + node:fs 的离线 digest 拖进主循环。
 import { UNCHANGED_OBSERVATION_THRESHOLD } from "../query/unchanged-observation.ts";
+import { CONTINUE_STREAK_CAPS } from "../query/transition.ts";
 // P2-3：TTFT×缓存分桶的单一事实源，与 provider-health.ts 共用（详见该模块头注释）
 import {
   TtftCacheBucketer,
@@ -662,6 +663,106 @@ export function aggregateRecoveryStats(
   return out;
 }
 
+/**
+ * continue 路径收敛度（2026-10-24）。
+ *
+ * 回答「有没有哪条 continue 路径在一条用户消息里停不下来」。此前这只能靠读代码一条条排查
+ * （`model_context_window_exceeded` 无封顶、闸门耗尽后被下一道门续命都是这样找到的）。
+ * 取数源：`TurnComplete.continue_counts` / `max_continue_streak` / `gates_exhausted`。
+ */
+export interface ContinuePathDigestStats {
+  /** 带 continue 计数字段的 TurnComplete 条数（= 分母：多少条用户消息有可比数据） */
+  prompts: number;
+  /** 全会话各 continue 理由总次数（tool_use 含在内） */
+  totals: Record<string, number>;
+  /** 全会话最长同理由连续游程 */
+  maxStreak?: { type: string; length: number };
+  /**
+   * 游程超过该理由封顶的消息条数（`CONTINUE_STREAK_CAPS`）。**北极星：恒为 0**——
+   * 非 0 即某条路径的封顶没生效。
+   */
+  overCapPrompts: number;
+  /** 超封顶明细（理由 → 最长游程） */
+  overCap: Record<string, number>;
+  /** 各闸门耗尽次数（来自 GateExhausted 事件） */
+  gatesExhausted: Record<string, number>;
+  /**
+   * 退化类闸门（effect=chain_ends）耗尽后同一条消息里仍出现闸门 continue 的次数。
+   * **恒为 0**：非 0 即「整条链收尾」被打穿（P1-3 那类缺陷复发）。
+   */
+  continuedAfterChainEnd: number;
+}
+
+/** 视为「闸门续命」的 continue 理由（end_turn 闸门链产生的那几种） */
+const GATE_CONTINUE_TYPES = new Set([
+  "stop_hook_retry",
+  "unanswered_retry",
+  "promise_nudge",
+  "todo_gate_retry",
+  "hypothesis_gate_retry",
+  "token_budget_continuation",
+  "goal_gate_retry",
+  "goal_budget_warning",
+]);
+
+export function aggregateContinuePathStats(
+  events: Array<{ event?: string; data?: Record<string, unknown> }>,
+): ContinuePathDigestStats | null {
+  const out: ContinuePathDigestStats = {
+    prompts: 0,
+    totals: {},
+    overCapPrompts: 0,
+    overCap: {},
+    gatesExhausted: {},
+    continuedAfterChainEnd: 0,
+  };
+  // promptSeq → 已发生 chain_ends 耗尽
+  const chainEnded = new Set<unknown>();
+  let currentPrompt: unknown;
+  for (const e of events) {
+    const d = e.data;
+    if (!d) continue;
+    if (e.event === "GateExhausted") {
+      const g = String(d.gate ?? "unknown");
+      out.gatesExhausted[g] = (out.gatesExhausted[g] ?? 0) + 1;
+      currentPrompt = d.promptSeq;
+      if (d.effect === "chain_ends") chainEnded.add(d.promptSeq);
+      continue;
+    }
+    if (e.event === "LoopTransition") {
+      if (
+        currentPrompt !== undefined &&
+        chainEnded.has(currentPrompt) &&
+        GATE_CONTINUE_TYPES.has(String(d.type))
+      ) {
+        out.continuedAfterChainEnd++;
+      }
+      continue;
+    }
+    if (e.event !== "TurnComplete") continue;
+    // TurnComplete 标志一条用户消息结束：之后的 LoopTransition 属于下一条消息
+    currentPrompt = undefined;
+    const counts = d.continue_counts as Record<string, number> | undefined;
+    const streak = d.max_continue_streak as { type: string; length: number } | undefined;
+    if (!counts && !streak) continue;
+    out.prompts++;
+    for (const [k, v] of Object.entries(counts ?? {})) {
+      out.totals[k] = (out.totals[k] ?? 0) + (typeof v === "number" ? v : 0);
+    }
+    if (streak && typeof streak.length === "number") {
+      if (!out.maxStreak || streak.length > out.maxStreak.length) out.maxStreak = { ...streak };
+      const cap = CONTINUE_STREAK_CAPS[streak.type as keyof typeof CONTINUE_STREAK_CAPS];
+      if (cap !== undefined && streak.length > cap) {
+        out.overCapPrompts++;
+        out.overCap[streak.type] = Math.max(out.overCap[streak.type] ?? 0, streak.length);
+      }
+    }
+  }
+  const any =
+    out.prompts > 0 || Object.keys(out.gatesExhausted).length > 0 || out.continuedAfterChainEnd > 0;
+  return any ? out : null;
+}
+
 export interface TodoDigestStats {
   /** 清单被推进的次数（`TodoProgressAdvanced` 条数 = writeVersion 增长次数） */
   advances: number;
@@ -983,6 +1084,8 @@ export interface Digest {
   todo?: TodoDigestStats;
   /** 2026-10-08：LLM 错误恢复口径。无重试 / 放弃事件时 undefined。 */
   recovery?: RecoveryDigestStats;
+  /** 2026-10-24：continue 路径收敛度。无 continue 计数字段 / GateExhausted 时 undefined（老会话）。 */
+  continuePaths?: ContinuePathDigestStats;
   /** PR-5：思考关闭泄漏率。无 thinking_wire 埋点（老轨迹）时 undefined。 */
   thinkingLeak?: ThinkingLeakStats;
   /** R11：strict 工具降级汇总。无 StrictToolDegraded 事件时 undefined。 */
@@ -2680,6 +2783,9 @@ export function buildDigest(ref: SessionRef, full: boolean, paths: DigestPaths):
   // ── 2026-10-08：LLM 错误恢复口径（one_shot_kill_count 北极星 + 各族救回率）──
   const recovery = aggregateRecoveryStats(events);
 
+  // ── 2026-10-24：continue 路径收敛度（超封顶游程 / 退化门耗尽后仍续命，两者恒为 0）──
+  const continuePaths = aggregateContinuePathStats(events);
+
   // ── PR-5：思考关闭泄漏率（主循环 / 非主循环分开，分母 = 意图关的 fetch）──
   const thinkingLeak = aggregateThinkingLeakStats(events);
   const strictDegrade = aggregateStrictDegradeStats(events);
@@ -2739,6 +2845,7 @@ export function buildDigest(ref: SessionRef, full: boolean, paths: DigestPaths):
     promptCache: promptCache ?? undefined,
     todo: todo ?? undefined,
     recovery: recovery ?? undefined,
+    continuePaths: continuePaths ?? undefined,
     thinkingLeak,
     strictDegrade,
     stopReasonMismatch,
@@ -3133,6 +3240,36 @@ export function renderHuman(d: Digest, opts: RenderOptions = {}): string {
     const reasons = Object.entries(r.giveUpReasons);
     if (reasons.length > 0) {
       L.push(c("gray", "  放弃原因: ") + reasons.map(([k, v]) => `${k}×${v}`).join(", "));
+    }
+  }
+
+  // 2026-10-24：continue 路径收敛度。超封顶 / 退化门被打穿非 0 标红：那就是某条路径没封住。
+  if (d.continuePaths) {
+    const cp = d.continuePaths;
+    L.push("");
+    L.push(
+      c("bold", "continue 路径:") +
+        " " +
+        c(cp.overCapPrompts > 0 ? "red" : "green", `超封顶 ${cp.overCapPrompts}`) +
+        " " +
+        c(
+          cp.continuedAfterChainEnd > 0 ? "red" : "green",
+          `收尾后续命 ${cp.continuedAfterChainEnd}`,
+        ) +
+        c("gray", ` / ${cp.prompts} 条消息`) +
+        (cp.maxStreak ? c("gray", `  最长游程 ${cp.maxStreak.type}×${cp.maxStreak.length}`) : ""),
+    );
+    const nonTool = Object.entries(cp.totals).filter(([k]) => k !== "tool_use");
+    if (nonTool.length > 0) {
+      L.push(c("gray", "  非工具续命: ") + nonTool.map(([k, v]) => `${k}×${v}`).join(", "));
+    }
+    const over = Object.entries(cp.overCap);
+    if (over.length > 0) {
+      L.push(c("red", "  超封顶: ") + over.map(([k, v]) => `${k} 最长 ${v}`).join(", "));
+    }
+    const gx = Object.entries(cp.gatesExhausted);
+    if (gx.length > 0) {
+      L.push(c("gray", "  闸门耗尽: ") + gx.map(([k, v]) => `${k}×${v}`).join(", "));
     }
   }
 

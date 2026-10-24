@@ -98,7 +98,6 @@ function makeHarness(opts: {
         .map((b: any) => ({ type: "tool_result" as const, tool_use_id: b.id, content: "ok" })),
     }),
     autoCompact: async () => {},
-    handleContextOverflow: () => null,
     getAbortSignal: () => undefined,
     uuid: () => "uuid-test",
     getTodoState: () => ({
@@ -246,7 +245,6 @@ describe("状态位置：writeVersion 基线必须跨用户消息持久（2026-0
       processStream: async () => finalResp(),
       executeTools: async () => ({ results: [] }),
       autoCompact: async () => {},
-      handleContextOverflow: () => null,
       getAbortSignal: () => undefined,
       uuid: () => "u",
       // writeVersion 恒定 = 模型全程没碰过清单 = 真实推进次数 0
@@ -300,7 +298,6 @@ describe("状态位置：writeVersion 基线必须跨用户消息持久（2026-0
       processStream: async () => finalResp(),
       executeTools: async () => ({ results: [] }),
       autoCompact: async () => {},
-      handleContextOverflow: () => null,
       getAbortSignal: () => undefined,
       uuid: () => "u",
       getTodoState: () => ({ todos: stalled, writeVersion: version }),

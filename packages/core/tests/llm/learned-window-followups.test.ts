@@ -183,7 +183,6 @@ function makeLoop(opts: {
     },
     executeTools: async () => ({ results: [] }),
     autoCompact: async () => {},
-    handleContextOverflow: () => null,
     getAbortSignal: () => undefined,
     abortCurrentRequest: () => {},
     uuid: () => "u",

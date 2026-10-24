@@ -128,6 +128,23 @@ export interface TurnCompletePayload {
   elapsed_ms_since_prompt?: number;
   /** 本轮是否发生过需用户确认的权限弹窗。消费侧据此决定是否排除含人等待的样本 */
   had_hitl: boolean;
+  /**
+   * 本条用户消息内各 continue 理由的次数（键为 `ContinueReason.type`）。
+   * 一次都没 continue（首轮即收尾）时不落字段。口径与 `LoopTransition` 逐条同源
+   * （同由 `setTransition` 维护），可互相核对。
+   */
+  continue_counts?: Record<string, number>;
+  /**
+   * 同一 continue 理由的最长连续游程（`tool_use` 不计、且会打断游程，见 transition.ts）。
+   * 每条路径都有自己的封顶，所以健康值 ≤ 该路径的封顶次数；超过即「这条路径没封住」。
+   */
+  max_continue_streak?: { type: string; length: number };
+  /**
+   * 本条用户消息内续命预算耗尽过的闸门（见 gate-exhaustion.ts 的语义表）。
+   * 与 `continue_counts` 一起读：耗尽了 `todo` 而后仍有 `goal_gate_retry`，是「质量门耗尽、
+   * 用户授权门接着续跑」的设计行为；耗尽了 `unanswered` 之后还有任何闸门 continue 则是缺陷。
+   */
+  gates_exhausted?: string[];
 }
 
 /**
@@ -213,6 +230,13 @@ export function emitTurnComplete(
       // 而缺失会被 digest 侧原样跳过（它只收 > 0 的值）。
       ...(typeof startedAt === "number" ? { elapsed_ms_since_prompt: Date.now() - startedAt } : {}),
       had_hitl: hadHitl,
+      ...(state.continueCounts && Object.keys(state.continueCounts).length > 0
+        ? { continue_counts: { ...state.continueCounts } as Record<string, number> }
+        : {}),
+      ...(state.maxContinueStreak ? { max_continue_streak: { ...state.maxContinueStreak } } : {}),
+      ...(state.gatesExhausted && state.gatesExhausted.length > 0
+        ? { gates_exhausted: [...state.gatesExhausted] }
+        : {}),
     };
     deps.traceAppendEvent({
       event: "TurnComplete",

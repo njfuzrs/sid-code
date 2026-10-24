@@ -203,6 +203,7 @@ import {
   decidePromiseNudge,
   initialS1Carry,
   isPromiseNudgeDisabled,
+  MAX_PROMISE_NUDGES,
   reasoningShare,
   S1_PROMPT_CARRY_KEY,
   type S1PromptCarry,
@@ -298,6 +299,8 @@ import { getEffectiveBetaHeaders } from "../api/beta-header-latch.ts";
 import type { QueryLoopYield, QueryDeps, LoopState } from "./types.ts";
 import { createInitialLoopState } from "./types.ts";
 import { setTransition } from "./transition.ts";
+import { emitGateExhausted, type ExhaustibleGate } from "./gate-exhaustion.ts";
+import { MAX_STOP_HOOK_RETRIES } from "./stop-hooks.ts";
 import {
   beginTurn,
   emitTurnComplete,
@@ -400,6 +403,15 @@ export function sleepUnlessAborted(ms: number, signal?: AbortSignal | null): Pro
  * 达到该次数后停止自动压缩尝试，改为如实提示用户手动 /compact 或开新会话。
  */
 const MAX_CONSECUTIVE_COMPACT_FAILURES = 3;
+/**
+ * 撞 `model_context_window_exceeded` 后「压缩 → 续写」的每条用户消息上限（2026-10-24）。
+ *
+ * 与子代理 `MAX_CTX_WINDOW_RECOVERY = 2`（agent/agentic-loop.ts）同值同取向：
+ * 压不动立即收尾（再来一轮必撞同一上限）；压得动也只给有限次，防「压一点、又撞上限」的慢速空转。
+ * 主循环此前**没有任何封顶**：失败只给 consecutiveCompactFailures +1 却从不检查熔断，
+ * 交互模式 maxTurns=Infinity 下会一直空烧到用户 ESC。
+ */
+export const MAX_CTX_WINDOW_RECOVERIES = 2;
 
 /**
  * 「压缩救不了」的判据：常驻开销（系统提示词 + 工具定义）占**本次请求估算总量**的比例。
@@ -898,6 +910,16 @@ export async function* queryLoop(loopConfig: QueryLoopConfig): AsyncGenerator<Qu
   // 具体哪条消息的第 3 轮——否则跨消息会话里 turn 回绕（实测 135709 会话
   // turn=20 之后出现 turn=3）在离线分析里无法与"真的退回第 3 轮"区分。
   const promptSeq = sessionState.nextPromptSeq();
+  /** 某道闸门续命预算耗尽 → 落 GateExhausted（语义见 gate-exhaustion.ts 文件头） */
+  const noteGateExhausted = (gate: ExhaustibleGate, retries: number, cap: number): void =>
+    emitGateExhausted(state, deps, {
+      sessionId: sessionState.sessionId,
+      absoluteTurn: sessionState.getAbsoluteTurn(),
+      promptSeq,
+      gate,
+      retries,
+      cap,
+    });
   // M6：S1 计数按「用户 prompt」而非「queryLoop 调用」计。LoopState 每次调用重建，
   // 空闲唤醒续跑若从零开始，同一 prompt 下每来一次后台通知就多一次 nudge 配额。
   {
@@ -2569,142 +2591,28 @@ export async function* queryLoop(loopConfig: QueryLoopConfig): AsyncGenerator<Qu
         /* 快照失败绝不影响主循环 */
       }
 
+      // 5.2：登记当前会话 id + 轮次 + loopId，供 provider 的 SSE 逐 chunk 采样落盘定位
+      //（默认关闭，SID_CODE_DEBUG_SSE_DUMP=1 才真正落盘）。
+      // Fix 1：loopId 传入 ambientCtx，使 emitStreamPhase 写入的快照带有正确的 namespace。
+      setSseDumpContext(sessionState.sessionId, state.turnCount, loopId);
+      // ─── 发送错误只有一个处理入口：下方流式阶段的 catch（2026-10-24）───
+      //
+      // 此前这里包着一个「连接阶段」try/catch（PTL 响应式压缩 / handleContextOverflow 调
+      // maxTokens / autoCompact + 熔断），但它**结构上不可达**：`sendWithRetry` 的生产实现
+      // 是 `async *executeWithFallback`，调用只返回迭代器、不会同步抛错，一切发送错误都在
+      // processStream 迭代时冒出、被流式 catch 接住。本机 39 条 errors.jsonl 的 phase 只有
+      // stream / engine，connection 恒为 0；而两份 catch 的逻辑长期分叉（P2-6 就是"只修了
+      // 一半"），死的那份还让人以为 handleContextOverflow 在起作用。
+      //
+      // 非生成器实现（测试替身、未来改写）可能同步抛错：这里只**捕获**，在下方流式 try 的
+      // 第一行原样重抛，让它走同一个 catch。不能把它推迟到"首次迭代"——那依赖消费方真的去
+      // 迭代 stream，而替身 processStream 往往不迭代，错误会凭空消失。
+      let sendError: { err: unknown } | undefined;
       try {
-        // 5.2：登记当前会话 id + 轮次 + loopId，供 provider 的 SSE 逐 chunk 采样落盘定位
-        //（默认关闭，SID_CODE_DEBUG_SSE_DUMP=1 才真正落盘）。
-        // Fix 1：loopId 传入 ambientCtx，使 emitStreamPhase 写入的快照带有正确的 namespace。
-        setSseDumpContext(sessionState.sessionId, state.turnCount, loopId);
         stream = deps.sendWithRetry(sendParams, composedSignal);
-      } catch (err: any) {
-        // 优化 1：连接阶段异常落 errors.jsonl。此 catch 的所有处理路径都是降级重试
-        //（prompt-too-long 响应式压缩 continue / 上下文溢出调 maxTokens 或 autoCompact continue），
-        // 异常被吞不会冒泡到 engine 层——此前排查只见"重试后成功"，看不到最初为何失败。
-        deps.recordError?.({
-          phase: "connection",
-          index: state.turnCount,
-          error: (err as Error)?.message ?? String(err),
-          stack: (err as Error)?.stack?.split("\n").slice(0, 5).join("\n"),
-          context: {
-            willRetry: true,
-            promptTooLong: isPromptTooLongError(err),
-            attemptedReactiveCompact: state.hasAttemptedReactiveCompact,
-          },
-        });
-        // prompt-too-long 错误扣留：自动触发响应式压缩重试
-        if (isPromptTooLongError(err) && !state.hasAttemptedReactiveCompact) {
-          log.warn("QUERY_LOOP", "检测到 prompt-too-long 错误，触发响应式压缩");
-          // S6：必须在 reactiveCompact **之前**——压缩会把 lastActualInputTokens 清零。
-          learnAdmittedCeilingOnOverflow(ctxMgr, config);
-          const compactResult = reactiveCompact(ctxMgr);
-          if (compactResult.success) {
-            // P0-2：one-shot 标志位，只在此成功路径置真；不得在任何 continue 分支重置为
-            // false（见 types.ts LoopState.hasAttemptedReactiveCompact 注释的 CC 教训）。
-            state.hasAttemptedReactiveCompact = true;
-            setTransition(state, { type: "reactive_compact" }, deps, sessionState.sessionId);
-            state.goalReminderPendingAfterCompact = true;
-            state.todoReminderPendingAfterCompact = true;
-            state.deferredToolsPendingAfterCompact = true;
-            // P2-6：成功即清零（熔断只针对"**连续**"失败）——与流式阶段同一行。
-            // 此前只有流式阶段清零，连接阶段这条成功路径漏了，于是「失败2次 → 连接阶段
-            // 压缩成功 → 再失败1次」会命中 >= 3 熔断，并告诉用户"连续 3 次自动压缩都未能
-            // 减少历史"——其中一次其实成功了。计数器名字里的"连续"被实现悄悄改成了"累计"。
-            state.consecutiveCompactFailures = 0;
-            // notifyCompaction 已由 settleCompaction 在确认真压动后统一调用（P1-4）
-            const banner = settleCompaction(deps, sessionState.sessionId, {
-              trigger: "prompt_too_long",
-              messageCountBefore: compactResult.messageCountBefore,
-              messageCountAfter: compactResult.messageCountAfter,
-              tokensBefore: compactResult.tokensBefore,
-              tokensAfter: compactResult.tokensAfter,
-              strategy: compactResult.strategy,
-            });
-            if (banner) yield banner;
-            // P1-13：reactiveCompact 此前完全绕过压缩后收尾（只埋点 + 抑制 cache-break 误报）。
-            // PTL 恰恰是「窗口已经爆了」的恢复路径，压完模型最需要最近文件，
-            // 偏偏这条路不重注入——用户体感就是「报了个超长、压完断片」。
-            // 放在 banner 之后：settleCompaction 返回非 null 就等于「实测真压动了」，
-            // 是这条路径上唯一可靠的「压缩真的发生了」信号。
-            if (banner) {
-              await deps.postCompactTail?.({
-                trigger: "reactive",
-                messagesBefore: compactResult.messageCountBefore,
-                tokensBefore: compactResult.tokensBefore,
-              });
-            }
-            yield {
-              kind: "system",
-              level: "info",
-              text: `响应式压缩: ${compactResult.messageCountBefore} → ${compactResult.messageCountAfter} 条消息`,
-            };
-            continue; // 重试
-          }
-          // P2-2：压缩失败计入会话级熔断计数（连续失败达阈值后不再尝试注定失败的压缩）
-          state.consecutiveCompactFailures = (state.consecutiveCompactFailures ?? 0) + 1;
-          log.warn("QUERY_LOOP", "响应式压缩失败，尝试 maxTokens 调整");
-        }
-
-        const adjusted = deps.handleContextOverflow(err, sendParams.maxTokens);
-        if (adjusted !== null) {
-          log.info(
-            "QUERY_LOOP",
-            `上下文溢出，自动调整 maxTokens: ${sendParams.maxTokens} → ${adjusted}`,
-          );
-          sendParams.maxTokens = adjusted;
-          stream = deps.sendWithRetry(sendParams, composedSignal);
-        } else {
-          // P2-2 熔断（连接阶段）：与流式阶段同一道闸。此前本分支既不计失败也不看熔断计数，
-          // 于是「压不动 + 无法调 maxTokens」会一路 continue 到 max_turns 才停——每轮都白发
-          // 一次注定失败的请求（CC 前车之鉴：单会话空烧 3272 次）。
-          if ((state.consecutiveCompactFailures ?? 0) >= MAX_CONSECUTIVE_COMPACT_FAILURES) {
-            log.error(
-              "QUERY_LOOP",
-              `连续 ${state.consecutiveCompactFailures} 次压缩失败（连接阶段），触发熔断`,
-            );
-            yield {
-              kind: "system",
-              level: "error",
-              terminal: true,
-              text: buildCompactCircuitBreakerText(state.consecutiveCompactFailures ?? 0, {
-                fixedTokens: ctxMgr.estimateFixedOverheadTokens(toolRegistry.size()),
-                totalTokens: ctxMgr.estimateTokens(toolRegistry.size()),
-                memoryTokens: ctxMgr.getMemoryTokens(),
-                maxTokens: ctxMgr.getMaxTokens(),
-              }),
-            };
-            yield {
-              kind: "done",
-              turns: state.turnCount,
-              // §20.5：与 max_turns 路径同源同口径，见 types.ts 该字段注释。
-              turnsConsumedWithoutAssistant: state.turnsConsumedWithoutAssistant,
-            };
-            exitedViaReturn = true;
-            return;
-          }
-          log.warn("QUERY_LOOP", "上下文溢出且无法调整 maxTokens，触发自动压缩");
-          const beforeOverflow = ctxMgr.messageCount();
-          await deps.autoCompact();
-          state.goalReminderPendingAfterCompact = true;
-          state.todoReminderPendingAfterCompact = true;
-          state.deferredToolsPendingAfterCompact = true;
-          {
-            const banner = settleCompaction(deps, sessionState.sessionId, {
-              trigger: "context_overflow",
-              messageCountBefore: beforeOverflow,
-              messageCountAfter: ctxMgr.messageCount(),
-            });
-            // P2-6：banner 非 null ⟺ settleCompaction 确认"真压动了"，是这条路径上唯一
-            // 可靠的成功信号 → 与 reactiveCompact 成功路径同口径清零。只补失败不清成功，
-            // 会把"连续失败"counter 变成"累计失败"counter（见上方连接阶段那段注释）。
-            if (banner) {
-              yield banner;
-              state.consecutiveCompactFailures = 0;
-            }
-            // autoCompact 也没压动 → 计入连续失败，让熔断器最终收敛
-            else state.consecutiveCompactFailures = (state.consecutiveCompactFailures ?? 0) + 1;
-          }
-          setTransition(state, { type: "context_overflow_retry" }, deps, sessionState.sessionId);
-          continue;
-        }
+      } catch (err) {
+        sendError = { err };
+        stream = (async function* () {})();
       }
 
       // ─── 处理流式响应 ───
@@ -2722,6 +2630,8 @@ export async function* queryLoop(loopConfig: QueryLoopConfig): AsyncGenerator<Qu
       let humanInputPauseAccumMs = 0; // 已结束的「等用户输入」段累计总时长
       let sleepPauseAccumMs = 0; // 系统休眠累计时长（进程被冻结，定时器不 tick）
       try {
+        // 发送阶段的同步抛错在这里重抛，与流式错误共用下方唯一的 catch（见 sendWithRetry 调用处）
+        if (sendError) throw sendError.err;
         // ─── L1：单轮硬超时兜底（治本，对所有挂起根因成立）───
         // 根因：底层 generator 链（processStream → fallback for-await → openai parseSSE）
         // 任一层因 reader.read() 在半开 TCP 上永不 settle、且 reader.cancel() 同样 hang 时，
@@ -3953,6 +3863,7 @@ export async function* queryLoop(loopConfig: QueryLoopConfig): AsyncGenerator<Qu
         }
 
         // 重试耗尽：sanitized 后入历史 + 如实呈现退化 + 硬停本轮（理由见上方 ③ 的 P2-7 注释）
+        noteGateExhausted("empty_param", MAX_EMPTY_PARAM_RETRIES, MAX_EMPTY_PARAM_RETRIES);
         log.error(
           "QUERY_LOOP",
           `F1：空参数重试已达上限 ${MAX_EMPTY_PARAM_RETRIES}，工具「${names}」仍参数为空，硬停本轮并如实呈现退化`,
@@ -4288,6 +4199,11 @@ export async function* queryLoop(loopConfig: QueryLoopConfig): AsyncGenerator<Qu
             state.stopHookRetryCount = 0;
           }
 
+          // 质量闸门：耗尽只是本门不再续命，后续闸门照常判定（gate-exhaustion.ts）。
+          if (stopResult?.exhausted) {
+            noteGateExhausted("stop_hook", state.stopHookRetryCount ?? 0, MAX_STOP_HOOK_RETRIES);
+          }
+
           if (stopResult?.forceStop) {
             // P1-1：forceStop 必须立刻收尾。此前只打日志，后面 Todo/Goal/`+k` 闸门照跑，
             // Stop Hook 明确说停仍会被续到 maxTurns。
@@ -4332,9 +4248,10 @@ export async function* queryLoop(loopConfig: QueryLoopConfig): AsyncGenerator<Qu
           }
           // P1-3：耗尽后必须直接收尾。旧实现只 yield 警告再 fall-through 到 Goal /
           // Token Budget，后者会 continue，把「放行结束」做成「放行给下一道续命门」。
+          noteGateExhausted("unanswered", retries, MAX_UNANSWERED_RETRIES);
           log.warn(
             "QUERY_LOOP",
-            `方案②：未答复续命已达上限 ${MAX_UNANSWERED_RETRIES}，放行但如实呈现`,
+            `方案②：未答复续命已达上限 ${MAX_UNANSWERED_RETRIES}，整条闸门链收尾并如实呈现`,
           );
           yield {
             kind: "system",
@@ -4380,6 +4297,9 @@ export async function* queryLoop(loopConfig: QueryLoopConfig): AsyncGenerator<Qu
           setTransition(state, { type: "promise_nudge" }, deps, sessionState.sessionId);
           continue;
         }
+        if (promiseDecision?.reason === "capped") {
+          noteGateExhausted("promise_nudge", state.promiseNudgeCount ?? 0, MAX_PROMISE_NUDGES);
+        }
         if (promiseDecision) {
           emitPromiseNudge(promiseDecision.lang, false, {
             outcome: "not_fired",
@@ -4412,6 +4332,7 @@ export async function* queryLoop(loopConfig: QueryLoopConfig): AsyncGenerator<Qu
               stallSwitches.enabled && budget.oscillations >= STALL_GATE_OSCILLATION_THRESHOLD;
             if (stallGateHandoff && !budget.exhaustedNotified) {
               budget.exhaustedNotified = true;
+              noteGateExhausted("todo", budget.retries, MAX_TODO_GATE_RETRIES);
               log.warn(
                 "QUERY_LOOP",
                 `P0-3：清单振荡 ${budget.oscillations} 次 ≥ ${STALL_GATE_OSCILLATION_THRESHOLD}，放行收尾不再续命`,
@@ -4455,6 +4376,8 @@ export async function* queryLoop(loopConfig: QueryLoopConfig): AsyncGenerator<Qu
             // 而实际是"同一份清单、什么都没变"。
             if (!budget.exhaustedNotified) {
               budget.exhaustedNotified = true;
+              // 质量闸门：只是本门不再续命，后续 hypothesis / token_budget / goal 照常判定。
+              noteGateExhausted("todo", budget.retries, MAX_TODO_GATE_RETRIES);
               // 区分两种外部观测相同、本质不同的收尾：
               const forgotMark = budget.productiveNoUpdate >= TODO_GATE_FORGOT_MARK_THRESHOLD;
               if (forgotMark) {
@@ -4474,7 +4397,7 @@ export async function* queryLoop(loopConfig: QueryLoopConfig): AsyncGenerator<Qu
                 // A) 真没做完：放行但如实呈现未完成项，不假装完成。
                 log.warn(
                   "QUERY_LOOP",
-                  `P0-3：完成度续命已达上限 ${MAX_TODO_GATE_RETRIES}，放行但仍有 ${unfinished} 项未完成`,
+                  `P0-3：完成度续命已达上限 ${MAX_TODO_GATE_RETRIES}，本门放行（后续闸门照常判定），仍有 ${unfinished} 项未完成`,
                 );
                 yield {
                   kind: "system",
@@ -4564,9 +4487,10 @@ export async function* queryLoop(loopConfig: QueryLoopConfig): AsyncGenerator<Qu
               setTransition(state, { type: "hypothesis_gate_retry" }, deps, sessionState.sessionId);
               continue;
             }
+            noteGateExhausted("hypothesis", retries, MAX_HYPOTHESIS_GATE_RETRIES);
             log.warn(
               "QUERY_LOOP",
-              `环节③ 交付门禁续命已达上限 ${MAX_HYPOTHESIS_GATE_RETRIES}，放行（模型应已在交付物中如实降级未确认假设）`,
+              `环节③ 交付门禁续命已达上限 ${MAX_HYPOTHESIS_GATE_RETRIES}，本门放行（后续闸门照常判定；模型应已在交付物中如实降级未确认假设）`,
             );
           } else if (ledger && (state.hypothesisGateRetryCount ?? 0) > 0) {
             // P2-3：登记表**已结清**（无 unsettled、无"确认后被打脸"）→ 清零续命预算，
@@ -5848,54 +5772,119 @@ export async function* queryLoop(loopConfig: QueryLoopConfig): AsyncGenerator<Qu
 
       // ─── model_context_window_exceeded（撞模型 context window 上限，Claude 4.5+ 新增）───
       // 区别于 max_tokens（主动设的输出上限），这是输入+输出总和撞到模型硬上限。
-      // 处理策略：压缩上下文后续写。[来源: anthropic-api.md:553,559]
+      // 处理策略：压缩上下文后续写，**有界**。[来源: anthropic-api.md:553,559]
+      //
+      // 2026-10-24：此前本分支无任何封顶——压缩失败只给 consecutiveCompactFailures +1、
+      // 从不检查熔断，也不走递减收益检测；transition 借用 max_tokens_continuation，还顺手
+      // `maxOutputTokensRecoveryCount++`，让之后真正的 max_tokens 失去「先提高上限」那一档
+      // （Stage 1 只在计数为 0 时尝试）。历史压不动 + 服务端持续返回该 stopReason 时，
+      // 交互模式（maxTurns=Infinity）会一轮轮空烧到用户 ESC。
+      //
+      // 封顶与子代理同一取向（agent/agentic-loop.ts B5-1）：
+      //   ① 压不动 → 立即收尾：已无可裁剪空间，再来一轮必然撞同一个上限；
+      //   ② 压得动也只给 MAX_CTX_WINDOW_RECOVERIES 次 → 防「压一点、又撞上限」的慢速空转。
+      // 两种收尾都带 incompleteReason，SDK / 无头不会把它记成 success。
       if (response.stopReason === "model_context_window_exceeded") {
-        log.warn("QUERY_LOOP", "撞到模型 context window 上限，触发上下文压缩后续写");
-        yield {
-          kind: "system",
-          level: "info",
-          text: "输出因撞到模型上下文窗口上限被中断，正在压缩上下文后续写",
+        // 截断的那一轮内容已在上方入历史；它可能带着未执行的 tool_use，收尾前必须补占位
+        // tool_result，否则下一条用户消息发送时 tool_use/tool_result 不配对（OpenAI 400）。
+        const settleOrphanToolUses = (): void => {
+          const orphans = buildPendingToolResults(
+            ctxMgr.getMessages(),
+            "[系统] 上下文已撞到模型窗口上限，此工具调用未执行。",
+          );
+          if (orphans.length > 0) ctxMgr.addMessage({ role: "user", content: orphans });
+        };
+        const exhaust = (detail: string): void => {
+          noteGateExhausted("context_window", used, MAX_CTX_WINDOW_RECOVERIES);
+          log.error("QUERY_LOOP", `context window 恢复终止：${detail}`);
+          settleOrphanToolUses();
+          turnStopReason = "other";
         };
 
-        // 尝试压缩上下文释放空间。
+        const used = state.ctxWindowRecoveryCount ?? 0;
+        if (used >= MAX_CTX_WINDOW_RECOVERIES) {
+          exhaust(`压缩续写已达 ${MAX_CTX_WINDOW_RECOVERIES} 次上限仍撞窗口上限`);
+          yield {
+            kind: "system",
+            level: "error",
+            terminal: true,
+            text:
+              `上下文反复撞到模型窗口上限（已压缩续写 ${MAX_CTX_WINDOW_RECOVERIES} 次仍未脱离），本轮已停止。\n` +
+              `建议执行 /compact 或开新会话后再继续。`,
+          };
+          yield {
+            kind: "done",
+            turns: state.turnCount,
+            turnsConsumedWithoutAssistant: state.turnsConsumedWithoutAssistant,
+            incompleteReason: "context_window_exhausted",
+          };
+          exitedViaReturn = true;
+          return;
+        }
+
+        log.warn("QUERY_LOOP", "撞到模型 context window 上限，触发上下文压缩后续写");
         // 这条路径不加占用率门禁：服务端已明确拒绝（撞到窗口硬上限），是"真溢出"的确凿证据，
         // 此时无论本地估算多少都该压——与空参数路径（无证据的猜测）性质完全不同。
         const compactResult = reactiveCompact(ctxMgr);
-        if (compactResult.success) {
-          log.info(
-            "QUERY_LOOP",
-            `context_window_exceeded 压缩成功: ${compactResult.messageCountBefore} → ${compactResult.messageCountAfter} 条`,
-          );
-          state.consecutiveCompactFailures = 0;
-          const banner = settleCompaction(deps, sessionState.sessionId, {
-            trigger: "ctx_window_exceeded",
-            messageCountBefore: compactResult.messageCountBefore,
-            messageCountAfter: compactResult.messageCountAfter,
-            tokensBefore: compactResult.tokensBefore,
-            tokensAfter: compactResult.tokensAfter,
-            strategy: compactResult.strategy,
-          });
-          // 此前这条路径压缩成功也**不画横幅**（8 处 yield 里独缺这处）——用户看不到上下文
-          // 已被压缩，属于反向的"该报不报"。现与其它路径统一：真压动就如实告知。
-          if (banner) yield banner;
-          // P1-13：同上，走与 auto/manual 同一套压缩后收尾。
-          if (banner) {
-            await deps.postCompactTail?.({
-              trigger: "reactive",
-              messagesBefore: compactResult.messageCountBefore,
-              tokensBefore: compactResult.tokensBefore,
-            });
-          }
-        } else {
+        // 成败都经 settleCompaction 落 CompactionAttempt（此前失败分支只写 warn.log，
+        // 事件里看不到这条路径压没压动）。banner 非 null ⟺ 实测真压动了。
+        const banner = settleCompaction(deps, sessionState.sessionId, {
+          trigger: "ctx_window_exceeded",
+          messageCountBefore: compactResult.messageCountBefore,
+          messageCountAfter: compactResult.messageCountAfter,
+          tokensBefore: compactResult.tokensBefore,
+          tokensAfter: compactResult.tokensAfter,
+          strategy: compactResult.strategy,
+        });
+
+        if (!compactResult.success || !banner) {
           state.consecutiveCompactFailures = (state.consecutiveCompactFailures ?? 0) + 1;
-          log.warn(
-            "QUERY_LOOP",
-            `context_window_exceeded 压缩未生效（${compactResult.messageCountBefore} 条未变）`,
-          );
+          exhaust(`压缩未生效（${compactResult.messageCountBefore} 条未变）`);
+          yield {
+            kind: "system",
+            level: "error",
+            terminal: true,
+            text: buildCompactCircuitBreakerText(state.consecutiveCompactFailures, {
+              fixedTokens: ctxMgr.estimateFixedOverheadTokens(toolRegistry.size()),
+              totalTokens: ctxMgr.estimateTokens(toolRegistry.size()),
+              memoryTokens: ctxMgr.getMemoryTokens(),
+              maxTokens: ctxMgr.getMaxTokens(),
+            }),
+          };
+          yield {
+            kind: "done",
+            turns: state.turnCount,
+            turnsConsumedWithoutAssistant: state.turnsConsumedWithoutAssistant,
+            incompleteReason: "context_window_exhausted",
+          };
+          exitedViaReturn = true;
+          return;
         }
 
-        state.maxOutputTokensRecoveryCount++;
-        setTransition(state, { type: "max_tokens_continuation" }, deps, sessionState.sessionId);
+        state.ctxWindowRecoveryCount = used + 1;
+        state.consecutiveCompactFailures = 0;
+        state.goalReminderPendingAfterCompact = true;
+        state.todoReminderPendingAfterCompact = true;
+        state.deferredToolsPendingAfterCompact = true;
+        log.info(
+          "QUERY_LOOP",
+          `context_window_exceeded 压缩续写（第 ${state.ctxWindowRecoveryCount}/${MAX_CTX_WINDOW_RECOVERIES} 次）：` +
+            `${compactResult.messageCountBefore} → ${compactResult.messageCountAfter} 条`,
+        );
+        yield banner;
+        // P1-13：走与 auto/manual 同一套压缩后收尾。
+        await deps.postCompactTail?.({
+          trigger: "reactive",
+          messagesBefore: compactResult.messageCountBefore,
+          tokensBefore: compactResult.tokensBefore,
+        });
+        yield {
+          kind: "system",
+          level: "info",
+          text: `输出因撞到模型上下文窗口上限被中断，已压缩上下文后续写 (${state.ctxWindowRecoveryCount}/${MAX_CTX_WINDOW_RECOVERIES})`,
+        };
+        settleOrphanToolUses();
+        setTransition(state, { type: "context_window_recovery" }, deps, sessionState.sessionId);
         continue;
       }
 

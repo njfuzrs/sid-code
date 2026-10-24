@@ -61,7 +61,6 @@ function makeLoop(abortReason: string): QueryLoopConfig {
     },
     executeTools: async () => ({ results: [] }),
     autoCompact: async () => {},
-    handleContextOverflow: () => null,
     getAbortSignal: () => sessionAbort.signal,
     uuid: () => "uuid-test",
   };
