@@ -25,6 +25,7 @@ import { IDE_SERVER_NAME } from "@sid-code/core/ide/integration.ts";
 import type { ProviderRegistry } from "@sid-code/core/llm/registry.ts";
 import type { MCPManager } from "@sid-code/core/mcp/manager.ts";
 import type { PlanModeManager } from "@sid-code/core/plan/state.ts";
+import { PLAN_STEP_PARSER_VERSION } from "@sid-code/core/plan/state.ts";
 import { Manager as ContextManager } from "@sid-code/core/context/manager.ts";
 import { resolveAutoCompactPctOverride } from "@sid-code/core/context/auto-compact.ts";
 import { Registry as ToolRegistry } from "@sid-code/core/tool/registry.ts";
@@ -679,10 +680,6 @@ export class App {
   private skillManager?: import("@sid-code/core/skill/manager.ts").SkillManager;
   /** P2-3：Skill 文件热重载监听器（退出时 stop()）。 */
   private skillChangeDetector?: import("@sid-code/core/skill/change-detector.ts").SkillChangeDetector;
-  /** §5：共享 cached microcompact 状态机，压缩后重置。延迟创建。 */
-  private cachedMicrocompactState:
-    | import("@sid-code/core/query/compact/cached-microcompact.ts").CachedMicrocompactState
-    | null = null;
   /** 已播报过 instructions 的 MCP server 名（去重集，避免每轮重复注入同一 server 说明）。 */
   private announcedMcpServers = new Set<string>();
   /**
@@ -870,6 +867,10 @@ export class App {
     // §3.3：注入 Plan 正文提供方——压缩时把活跃 Plan 正文重注入消息历史。
     // 仅在 plan 执行/规划阶段返回正文，否则返回 null（不注入）。
     this.ctxMgr.setPlanContentProvider(() => this.readActivePlanContent());
+    // 计划生命周期可观测（2026-10-24）：状态跃迁与压缩重注入落成轨迹事件。
+    // 从前跃迁只写 log.info，执行阶段被回合边界清掉、用户取消计划这两类缺陷在轨迹里零痕迹。
+    // traceCollector 晚于构造初始化，监听器在触发时才取它。
+    this.wirePlanLifecycleTelemetry();
     // P2-1：会话回退管理器。注入 ctxMgr 取/设消息 + CheckpointManager 恢复，
     // 二者解耦于 RewindManager 内部逻辑（便于单测，且不与 ctxMgr/checkpoint 内部实现耦合）。
     //
@@ -1516,7 +1517,7 @@ export class App {
       autoCompact: () => this.autoCompact(),
       contextCollapse: (ratio) => this.contextCollapse(ratio),
       // P1-13/14：reactive（prompt-too-long 恢复）与 collapse（分段摘要）也走压缩后收尾。
-      // 收尾要的三个会话级实例（fileReadTracker / cachedMicrocompactState / sessionDir）
+      // 收尾要的会话级实例（fileReadTracker / sessionDir）
       // 只有 App 持有，所以由这里注入，loop 侧只负责在「确认压动了」之后调一次。
       postCompactTail: (info) => this.runNonSummaryPostCompact(info),
       emergencyFileReattach: (info) => this.runEmergencyFileReattach(info),
@@ -1571,16 +1572,6 @@ export class App {
           | import("@sid-code/core/tool/hypothesis.ts").HypothesisRegisterTool
           | undefined;
         return regTool?.getLedger() ?? null;
-      },
-      // G2：暴露 cachedMicrocompact 状态机给 queryLoop，让主循环每轮可产出 cache_edits。
-      getCachedMicrocompactState: () => {
-        if (!this.cachedMicrocompactState) {
-          const {
-            createCachedMicrocompactState,
-          } = require("@sid-code/core/query/compact/cached-microcompact.ts");
-          this.cachedMicrocompactState = createCachedMicrocompactState();
-        }
-        return this.cachedMicrocompactState ?? undefined;
       },
       getProviderName: () => this.provider.name(),
       // MCP server instructions 增量注入（对标 CC mcp_instructions_delta）：
@@ -3087,6 +3078,7 @@ export class App {
     this.quotaManager?.resetAlertLevel();
     this.fallback.reset();
     this.resetTodoTool();
+    await this.resetPlanStateForClear();
     this.resetHypothesisLedger();
     // 负收益防线审计发现 1：resetDenialTracking() 此前**只有定义、无任何生产调用方**，
     // /clear 是"新一轮对话"的确切时机，在此归零（与 todo/假设登记表等会话级状态同批重置）。
@@ -3212,6 +3204,23 @@ export class App {
    * UI 层 todos 由 getConversationClearedPatch 清空，但工具内部 currentTodos 是
    * 模块级私有状态、不随 ctxMgr.clear() 重置——不清会导致 /clear 后 TodoPanel 残留旧清单"幽灵"。
    */
+  /**
+   * /clear：作废当前计划（规划中 / 待审批 / 执行阶段）。
+   *
+   * 2026-10-24：从前 /clear 不碰 planManager。执行阶段不再随回合边界结束之后，
+   * 不清就会把上一段对话的计划带进新对话：压缩时重注入、计划文件持续放行、Recovery Hook
+   * 对新任务的失败提示「先更新旧计划」。
+   * 只有经 enter_plan_mode 进入的规划才恢复权限模式；以 `--permission-mode plan` 启动的会话
+   * 权限模式本来就是 plan，保持不变，下一个回合 syncPlanModeFromPermissionMode 会开一份新计划。
+   */
+  private async resetPlanStateForClear(): Promise<void> {
+    const pm = this.planManager;
+    if (!pm || (!pm.isActive() && !pm.isExecuting())) return;
+    const restorePermission = pm.isActive() && pm.getEntrySource() === "tool";
+    pm.forceExit("clear", { source: "command" });
+    if (restorePermission) await this.deactivatePlanMode();
+  }
+
   private resetTodoTool(): void {
     const todoTool = this.toolRegistry.get("todo_write") as
       | import("@sid-code/core/tool/todo-write.ts").TodoWriteTool
@@ -3527,24 +3536,70 @@ export class App {
   }
 
   /**
-   * §3.3：读取当前活跃 Plan 的正文（仅 planning / executing 阶段；否则 null）。
-   * 供 ctxMgr.setPlanContentProvider 在压缩时重注入 Plan 内容。
+   * §3.3：读取当前活跃 Plan 的快照（规划中 / 待审批 / 执行阶段；否则 null）。
+   * 供 ctxMgr.setPlanContentProvider 在压缩时重注入 Plan。
+   *
+   * 2026-10-24：返回路径与阶段，不再只返回正文——重注入必须带路径，模型才能 read 全文、
+   * 才知道失败守则要它 edit 哪个文件。门控从 isPlanning() || isExecuting() 扩到含待审批
+   * （isActive()）：审批框打开期间触发压缩时计划同样不能丢。截断统一在 buildPlanReattachBody。
    */
-  private readActivePlanContent(): string | null {
+  private readActivePlanContent():
+    | import("@sid-code/core/context/manager.ts").ActivePlanSnapshot
+    | null {
     try {
       const pm = this.planManager;
       if (!pm) return null;
-      if (!pm.isPlanning() && !pm.isExecuting()) return null;
+      if (!pm.isActive() && !pm.isExecuting()) return null;
       const planPath = pm.getPlanFilePath();
       if (!planPath) return null;
       const fs = require("node:fs");
       if (!fs.existsSync(planPath)) return null;
-      const content = fs.readFileSync(planPath, "utf-8");
-      // 限制 Plan 注入上限，避免异常大的 plan 文件撑爆压缩后空间
-      return content.length > 20_000 ? content.slice(0, 20_000) + "\n\n[Plan 内容已截断]" : content;
+      const content: string = fs.readFileSync(planPath, "utf-8");
+      const phase = pm.isExecuting()
+        ? "executing"
+        : pm.isAwaitingApproval()
+          ? "awaiting_approval"
+          : "planning";
+      return { path: planPath, phase, content };
     } catch {
       return null;
     }
+  }
+
+  /**
+   * 计划生命周期埋点：`PlanTransition`（每次状态跃迁）与 `PlanReattach`（压缩重注入了计划）。
+   *
+   * 口径：
+   * - 执行阶段时长 = reason=approve 到同一 plan_file 下一条 executing_before=true 的事件；
+   * - 「执行阶段被提前清掉」不再可能静默发生：执行阶段的每个出口都会发一条带 reason 的事件；
+   * - 修改意见只记字符数，不落正文（可能含用户隐私 / 内部信息）。
+   */
+  private wirePlanLifecycleTelemetry(): void {
+    const pm = this.planManager;
+    if (pm) {
+      pm.onStateChange((e) => {
+        this.traceCollector?.recordCustomEvent?.("PlanTransition", {
+          from: e.from,
+          to: e.to,
+          reason: e.reason,
+          executing_before: e.executingBefore,
+          executing_after: e.executingAfter,
+          plan_file: e.planFilePath ?? "",
+          rejection_count: e.rejectionCount,
+          ...(e.meta?.source ? { decision_source: e.meta.source } : {}),
+          ...(e.meta?.feedbackChars !== undefined ? { feedback_chars: e.meta.feedbackChars } : {}),
+        });
+      });
+    }
+    this.ctxMgr.setPlanReattachObserver((r) => {
+      this.traceCollector?.recordCustomEvent?.("PlanReattach", {
+        plan_file: r.planFilePath,
+        phase: r.phase,
+        plan_chars: r.planChars,
+        truncated: r.truncated,
+        compaction_source: r.source,
+      });
+    });
   }
 
   /**
@@ -3683,9 +3738,6 @@ export class App {
         ctxMgr: this.ctxMgr,
         hookSystem: this.hookSystem,
         fileReadTracker: this.fileReadTracker ?? undefined,
-        // 与 /compact 同理：为 null 说明本会话没跑过 microcompact，两个 Map/Set 本就是空的，
-        // 为了重置它而新建一个对象是纯噪音。
-        cachedMicrocompactState: this.cachedMicrocompactState ?? undefined,
         sessionDir: this.resolveSessionDir(),
         messagesBefore: info.messagesBefore,
         // 缺 tokensBefore 时退回「压缩后的当前估算」→ savedRatio 算成 0，
@@ -3713,12 +3765,6 @@ export class App {
     // §12.3：摘要走低成本模型（subAgentModels.summarize），未配则跟主模型。
     const compactModel =
       this.config.subAgentModels?.summarize || this.config.subAgentModels?.default;
-    // §5：延迟创建共享 cached microcompact 状态机
-    if (!this.cachedMicrocompactState) {
-      const { createCachedMicrocompactState } =
-        await import("@sid-code/core/query/compact/cached-microcompact.ts");
-      this.cachedMicrocompactState = createCachedMicrocompactState();
-    }
     // §4.1/§4.3：会话级落盘目录
     let sessionDir: string | undefined;
     try {
@@ -3738,7 +3784,6 @@ export class App {
       compactModel: compactModel || undefined,
       fileReadTracker: this.fileReadTracker ?? undefined,
       isMainAgent: true,
-      cachedMicrocompactState: this.cachedMicrocompactState ?? undefined,
       sessionDir,
       // P2-21：转交给 runPostCompact，落 PostCompactReattach 事件。
       traceAppendEvent: this.postCompactTraceSink(),
@@ -6822,7 +6867,7 @@ export class App {
         const hook = getSharedRecoveryHook();
         const planFilePath = this.planManager.getPlanFilePath() || "";
         // 执行阶段 plan 文件路径仍保留（approve 不清空）。P3-1：清空只发生在 forceExit()
-        // （含拒绝超限）与非规划态的 endExecution()；不变量见 PlanModeManager 头注释。
+        // （含拒绝超限 / /clear）与 completeExecution()；不变量见 PlanModeManager 头注释。
         // 防御：路径为空时跳过（hook 的 isValidContext 也会拒，这里提前 continue 省一次 import）。
         if (!planFilePath) continue;
         const ctx = {
@@ -6879,6 +6924,12 @@ export class App {
         const fp = input?.file_path;
         if (fp && this.planManager.isPlanFile(fp)) {
           this.planManager.recordPlanFileWrite(Date.now());
+          // 执行守则要求「失败先改计划再继续」。改完不重新解析，fidelity 会一直拿批准那一刻的
+          // 旧步骤对齐（修订后的计划在报告里不存在）。规划态不解析：批准时会解析一次。
+          if (this.planManager.isExecuting()) {
+            this.countPlanSteps(fp);
+            fidelityTouched = true;
+          }
           log.info(
             "PLAN",
             `plan 文件 ${block.name} 成功 → update_count=${this.planManager.getPlanFileUpdateCount()}`,
@@ -6888,6 +6939,22 @@ export class App {
     }
 
     if (fidelityTouched) this.recordPlanFidelitySnapshot();
+
+    // 执行阶段的出口之一：执行期间写下的 todo 清单全部完成。
+    // 只认「批开始时已在执行阶段」那批里的 todo_write——与 exit_plan_mode 同批、排在它前面的
+    // todo_write 是规划态下执行的，不是计划派生的清单。快照必须先落：结束后路径就清空了。
+    if (
+      executingAtBatchStart &&
+      this.planManager.isExecuting() &&
+      toolBlocks.some(({ block, idx }) => {
+        const r = resultMap.get(idx);
+        return block.name === "todo_write" && !(r && r.type === "tool_result" && r.is_error);
+      }) &&
+      this.lastWrittenTodosAllCompleted()
+    ) {
+      this.planManager.completeExecution();
+      log.info("PLAN", "计划派生的 todo 清单已全部完成，执行阶段结束");
+    }
 
     return followup.length > 0 ? { followup } : {};
   }
@@ -6905,7 +6972,20 @@ export class App {
       plan_step_count: r.planStepCount,
       actual_tool_call_count: r.actualToolCallCount,
       off_plan_count: r.offPlanCount,
+      // 口径随数字一起落盘：v1（无此字段）只排除非步骤章节，v2 步骤章节优先 + 围栏隔离。
+      // 不同口径的 plan_step_count 不能直接比较（铁律 3：分母口径一变曲线整体平移）。
+      step_parser_version: PLAN_STEP_PARSER_VERSION,
+      step_source: this.planManager.getPlanStepSource(),
     });
+  }
+
+  /** 最近一次写入的 todo 清单非空且全部 completed（事实语义，不受 TUI 清空影响） */
+  private lastWrittenTodosAllCompleted(): boolean {
+    const todoTool = this.toolRegistry.get("todo_write") as
+      | import("@sid-code/core/tool/todo-write.ts").TodoWriteTool
+      | undefined;
+    const todos = todoTool?.getLastWrittenTodos?.() ?? [];
+    return todos.length > 0 && todos.every((t) => t.status === "completed");
   }
 
   /**
@@ -7011,78 +7091,65 @@ export class App {
   private async handlePlanApproval(): Promise<ContentBlock[] | null> {
     if (!this.planManager) return null;
     const log = getLogger();
+    const prompt = await import("@sid-code/core/plan/prompt.ts");
+    const planPath = this.planManager.getPlanFilePath() || "";
+    const wrap = (text: string): ContentBlock[] => [
+      { type: "text", text: `<system-reminder>\n${text}\n</system-reminder>` },
+    ];
 
-    // 审批结果由 TUI 层或 REPL 层处理
-    // 这里通过 tuiPlanApprovalCallback 获取用户决策
-    if (this.tuiPlanApprovalCallback) {
-      const planPath = this.planManager.getPlanFilePath();
-      const decision = await this.tuiPlanApprovalCallback(planPath || "");
+    // 审批结果由 TUI 层处理；无回调（headless）时自动批准
+    const source: "tui" | "headless" = this.tuiPlanApprovalCallback ? "tui" : "headless";
+    const decision = this.tuiPlanApprovalCallback
+      ? await this.tuiPlanApprovalCallback(planPath)
+      : "approve";
 
-      if (decision === "approve") {
-        this.planManager.approve();
-        await this.deactivatePlanMode();
-        log.info("PLAN", "用户批准计划，退出 Plan Mode");
-        // 注入批准反馈，让 LLM 知道可以开始执行
-        // W12.D2 / ADR-017：批准消息嵌入失败更新执行守则
-        // 因为 deactivatePlanMode 后系统提示词的 plan prompt（含阶段 5）会被移除，
-        // 批准消息是 LLM 进入执行阶段唯一保留的"plan 上下文锚点"
-        // 用 <system-reminder> 包裹，阻止 TUI 渲染（isInternalOnlyText 识别）
-        const { buildPlanApprovedMessage } = await import("@sid-code/core/plan/prompt.ts");
-        return [
-          {
-            type: "text",
-            text: `<system-reminder>\n${buildPlanApprovedMessage(planPath || "", this.countPlanSteps(planPath))}\n</system-reminder>`,
-          },
-        ];
-      } else if (decision === "cancel") {
-        // 用户取消：退出 plan mode，不注入任何 followup
-        this.planManager.forceExit();
-        await this.deactivatePlanMode();
-        log.info("PLAN", "用户取消计划，退出 Plan Mode");
-        return null;
-      } else {
-        // reject（可能带 feedback）
-        const feedback =
-          typeof decision === "string" && decision.startsWith("reject:")
-            ? decision.slice("reject:".length).trim()
-            : "";
-        const canContinue = this.planManager.reject();
-        if (canContinue) {
-          const count = this.planManager.getRejectionCount();
-          log.info("PLAN", `用户拒绝计划 (${count}/5)，继续修改`);
-          // 注入拒绝反馈，让 LLM 知道需要修改计划
-          const feedbackLine = feedback ? `\n\n用户的修改意见：${feedback}` : "";
-          return [
-            {
-              type: "text",
-              text: `<system-reminder>\n用户拒绝了你的计划（第 ${count} 次）。请根据用户反馈修改计划文件，然后再次调用 exit_plan_mode 提交审批。${feedbackLine}\n</system-reminder>`,
-            },
-          ];
-        } else {
-          await this.deactivatePlanMode();
-          log.info("PLAN", "拒绝次数超限，强制退出 Plan Mode");
-          return null;
-        }
-      }
-    } else {
-      // 非 TUI 模式（headless）：自动批准
-      // W12.D3 修正：headless 也注入执行守则（否则 plan_recovery capability eval 永远拿不到指令）
-      const planPath = this.planManager.getPlanFilePath();
-      this.planManager.approve();
+    if (decision === "approve") {
+      // 步数在批准前解析：approve 的事件与紧接着的 PlanFidelity 快照都要带上这一刻的口径
+      const stepCount = this.countPlanSteps(planPath);
+      this.planManager.approve({ source });
       await this.deactivatePlanMode();
-      log.info("PLAN", "非交互模式，自动批准计划");
-      const { buildPlanApprovedMessage } = await import("@sid-code/core/plan/prompt.ts");
-      return [
-        {
-          type: "text",
-          text: `<system-reminder>\n${buildPlanApprovedMessage(planPath || "", this.countPlanSteps(planPath))}\n</system-reminder>`,
-        },
-      ];
+      log.info(
+        "PLAN",
+        source === "tui" ? "用户批准计划，退出 Plan Mode" : "非交互模式，自动批准计划",
+      );
+      // W12.D2 / ADR-017：批准消息是 LLM 进入执行阶段唯一保留的「plan 上下文锚点」
+      // （deactivatePlanMode 后 plan prompt 不再注入），嵌入失败更新执行守则。
+      // W12.D3：headless 也注入（否则 plan_recovery capability eval 永远拿不到指令）。
+      return wrap(prompt.buildPlanApprovedMessage(planPath, stepCount));
     }
+
+    if (decision === "cancel") {
+      this.planManager.forceExit("cancel", { source });
+      await this.deactivatePlanMode();
+      log.info("PLAN", "用户取消计划，退出 Plan Mode");
+      // 2026-10-24：从前这里返回 null。模型只看到「计划已提交，等待用户审批」，
+      // 随后把被取消的计划当成已批准执行（详见 buildPlanCancelledMessage）。
+      return wrap(prompt.buildPlanCancelledMessage(planPath));
+    }
+
+    // reject（可能带 feedback）
+    const feedback =
+      typeof decision === "string" && decision.startsWith("reject:")
+        ? decision.slice("reject:".length).trim()
+        : "";
+    const meta = { source, feedbackChars: feedback.length };
+    const countBefore = this.planManager.getRejectionCount();
+    const canContinue = this.planManager.reject(meta);
+    const max = this.planManager.getMaxRejections();
+    if (canContinue) {
+      const count = this.planManager.getRejectionCount();
+      log.info("PLAN", `用户拒绝计划 (${count}/${max})，继续修改`);
+      return wrap(prompt.buildPlanRejectedMessage(planPath, count, max, feedback));
+    }
+    // 超限：状态机已强制退出（计数已清零，取拒绝前的值 + 1）
+    await this.deactivatePlanMode();
+    log.info("PLAN", "拒绝次数超限，强制退出 Plan Mode");
+    // 2026-10-24：从前返回 null——最后一次的修改意见被丢掉，模型也不知道规划已结束。
+    return wrap(prompt.buildPlanRejectLimitMessage(planPath, countBefore + 1, feedback));
   }
 
   /**
-   * P1-1（全集锚点）：解析计划文件得到顶层步骤数，供 buildPlanApprovedMessage 生成
+   * P1-1（全集锚点）：解析计划文件得到步骤数，供 buildPlanApprovedMessage 生成
    * "todo 必须覆盖全部 N 步"的硬约束。解析失败/无文件返回 0（退化为通用约束）。
    */
   private countPlanSteps(planPath: string | null): number {
@@ -8069,9 +8136,9 @@ export class App {
           }, sessionTimeoutMs)
         : null;
     if (sessionTimer?.unref) sessionTimer.unref();
-    // 新用户回合开始：清执行阶段标志。approve 永远发生在 run 中途（exit_plan_mode 工具执行时），
-    // 故 submitMessage 开始时上一轮执行阶段必已收尾，此处清理不会误清刚 approve 的标志。
-    this.planManager?.endExecution();
+    // 2026-10-24：这里曾在每个用户回合开头结束执行阶段（旧 endExecution 方法），理由是「新回合开始时
+    // 上一轮执行阶段必已收尾」——不成立：用户插话、ESC 后「继续」、回答模型的提问都是新回合。
+    // 执行阶段的出口见 PlanModeManager 文件头注释，回合边界不在其中。不要加回来。
     // P2-1：以 plan 权限模式启动（或被 CLAUDE.md 规则改成 plan）的会话在这里进入状态机。
     this.syncPlanModeFromPermissionMode();
     try {
@@ -9919,8 +9986,8 @@ export class App {
       });
 
       try {
-        // 新用户回合开始：清执行阶段标志（同 runHeadless，详见该处注释）。
-        this.planManager?.endExecution();
+        // 不在回合边界结束执行阶段（同 runHeadless，详见该处注释）。后台子代理完成通知
+        // （fromNotifications）尤其不能清：批准消息本身就建议用 sub_agent 委托子任务。
         // P2-1：同 runHeadless。
         this.syncPlanModeFromPermissionMode();
         const events = fromNotifications
@@ -10902,10 +10969,6 @@ export class App {
           // 与自动压缩共用 query/compact/post-compact.ts。漏传会让手动压缩后模型"忘掉"刚读的文件。
           fileReadTracker: this.fileReadTracker ?? undefined,
           sessionDir: this.resolveSessionDir(),
-          // P1-11：手动 /compact 的收尾也要重置 microcompact 状态机。这里刻意**不**延迟创建
-          // （不写 `?? createCachedMicrocompactState()`）：为 null 说明本会话一次 microcompact
-          // 都没跑过，两个 Map/Set 本就是空的，造一个新对象只为把它重置一遍是纯噪音。
-          cachedMicrocompactState: this.cachedMicrocompactState ?? undefined,
           // G25：权限检查器实例注入命令上下文（/allow /deny /add-dir /permissions 使用）。
           // P0-3 追加用途：fork skill 的子代理内工具权限沿用主会话 checker（经 toCommandContext 桥接）。
           permissionChecker: this.permissionChecker,

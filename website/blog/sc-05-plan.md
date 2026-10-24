@@ -374,12 +374,10 @@ sid-code 的修复正是这么做的（🔬 `packages/core/src/tool/exit-plan-mo
 if (this.planManager.isAwaitingApproval()) {
   return { output: "计划已提交，正在等待用户审批，无需重复调用 exit_plan_mode。请耐心等待审批结果。" };
 }
-return {
-  output:
-    "计划已进入执行阶段（已审批通过或当前不在计划模式）。请直接开始执行计划的第一步任务，" +
-    "不要再调用 exit_plan_mode——它只用于提交新计划等待审批。" +
-    "如计划包含多个步骤，建议先用 todo_write 将计划逐条拆解为任务清单，再依次执行。",
-};
+// 2026-10-24：幂等不等于一律说「已批准」——按状态机记录的真实结局回答。
+// 用户取消 / 拒绝超限之后 state 同样是 inactive，从前这里统一说「已审批通过」，
+// 模型据此执行了用户否决的计划。
+return { output: this.describeNonPlanningState() };
 ```
 
 注意这段代码里三个刻意的选择，每一个都有理由：
@@ -711,18 +709,21 @@ export function getPlanFilePath(agentId?: AgentId): string {
 **sid-code**（🔬 本仓 `packages/core/src/plan/state.ts:359-371`）：**项目 / 时间-主题**
 
 ```ts
-private generatePlanFilePath(topic?: string): string {
+private reservePlanFile(topic?: string): string {
   const project = resolvePlanProject(getCwd());     // git 根目录的 basename
   const time = formatPlanTime();                    // YYYYMMDD-HHmm
   const safeTopic = sanitizePlanTopic(topic);       // 中文主题，限长 40
   const base = safeTopic ? `${time}-${safeTopic}` : time;
-  // 去重：同项目同分钟内多次进入 plan（或兜底时间戳）避免覆盖
+  // 去重 + 原子占位：O_EXCL 把「检查」和「占用」合成一个系统调用。
+  // 2026-10-24 前用 existsSync，而文件要等模型 write 才存在——两个并发会话
+  // 同分钟同主题会拿到同一个路径，后写覆盖前写。
   let candidate = sidPaths.plan(project, base);
-  let n = 2;
-  while (existsSync(candidate)) {
-    candidate = sidPaths.plan(project, `${base}-${n++}`);
+  for (let n = 2; ; n++) {
+    try { closeSync(openSync(candidate, "wx")); return candidate; }
+    catch (err) { if (err.code !== "EEXIST") break; }
+    candidate = sidPaths.plan(project, `${base}-${n}`);
   }
-  return candidate;
+  // …占不了位时的兜底略
 }
 ```
 

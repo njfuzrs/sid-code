@@ -41,7 +41,21 @@ export interface PermissionDecisionStats {
   byTool: Record<string, DecisionBucket>;
   /** 键是 reasonType；决策没带 reason 的进 `none` 桶 —— 不并进 other，二者含义不同 */
   byReason: Record<string, DecisionBucket>;
+  /** 键是 Decision.step（管线位置）；旧调用点没传的进 `none` 桶 */
+  byStep: Record<string, DecisionBucket>;
+  /** 键是决策时的 sid 原生权限模式；没传的进 `none` 桶 */
+  byMode: Record<string, DecisionBucket>;
+  /**
+   * 哨兵：plan / deny-write 模式下放行了写类工具（计划文件 step=3.5 除外）的次数。
+   * **恒应为 0**。模式硬约束总闸（checker.enforceModeHardConstraint）上线后，
+   * 这里出现非零 = 有一条新放行口绕过了总闸。它防的是回归，不证明修复（修前本机暴露面也是 0）。
+   */
+  modeGuardBreaches: number;
 }
+
+/** 哨兵口径里的「写类工具」：plan / deny-write 下除计划文件外一律不该放行 */
+const MODE_GUARDED_WRITE_TOOLS = new Set(["write", "edit", "notebook_edit", "bash"]);
+const READ_ONLY_MODES = new Set(["plan", "deny-write"]);
 
 export function emptyPermissionDecisionStats(): PermissionDecisionStats {
   return {
@@ -52,6 +66,9 @@ export function emptyPermissionDecisionStats(): PermissionDecisionStats {
     promptDurationsMs: [],
     byTool: {},
     byReason: {},
+    byStep: {},
+    byMode: {},
+    modeGuardBreaches: 0,
   };
 }
 
@@ -81,6 +98,17 @@ export function accumulatePermissionDecision(
   }
   bump(stats.byTool, e.tool, e.prompted);
   bump(stats.byReason, e.reasonType ?? "none", e.prompted);
+  bump(stats.byStep, e.step ?? "none", e.prompted);
+  bump(stats.byMode, e.mode ?? "none", e.prompted);
+  if (
+    e.outcome === "allow" &&
+    e.mode !== undefined &&
+    READ_ONLY_MODES.has(e.mode) &&
+    MODE_GUARDED_WRITE_TOOLS.has(e.tool) &&
+    e.step !== "3.5"
+  ) {
+    stats.modeGuardBreaches++;
+  }
 }
 
 // ─────────────────────────────────────────────────────────────

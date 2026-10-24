@@ -157,6 +157,16 @@ const DEFAULT_RETENTION_MAX_AGE_MS = 365 * 24 * 60 * 60 * 1000;
  */
 const SHELL_SNAPSHOT_MAX_AGE_MS = 24 * 60 * 60 * 1000;
 
+/**
+ * 空计划占位文件的回收阈值：1 天。
+ *
+ * PlanModeManager.reservePlanFile 进入规划时用 O_EXCL 建一个 0 字节占位（防并发会话撞名覆盖），
+ * 正常退出时由 exitPlan 回收未写入的占位；进程崩溃 / 被杀时占位会留下来。
+ * 只删 **0 字节**的 `.md`：任何有内容的计划文件都是用户的决策记录，不按时间删。
+ * 1 天远大于任何一次规划的时长，不会删掉别的会话正在用的占位。
+ */
+const EMPTY_PLAN_PLACEHOLDER_MAX_AGE_MS = 24 * 60 * 60 * 1000;
+
 /** task `.output` 文件的孤儿回收阈值：7 天（与 tool-outputs 同口径） */
 const TASK_OUTPUT_MAX_AGE_MS = 7 * 24 * 60 * 60 * 1000;
 
@@ -257,6 +267,7 @@ export function runStartupHousekeeping(
     const snapshotsCleaned = cleanupOrphanedShellSnapshots(now);
     const taskOutputsCleaned = cleanupOrphanedTaskOutputs(now);
     const checkpointsCleaned = cleanupStaleCheckpoints(now, opts.selfSessionId);
+    const planPlaceholdersCleaned = cleanupEmptyPlanPlaceholders(now);
     // 10. P0-4 的配套回收：按会话分文件后，笔记会一个会话攒一个
     const sessionMemoriesCleaned = cleanupStaleSessionMemories(now);
     // 11. D11：sessions/ 根目录的非会话裸文件移入隔离区（含用户提示词内容，不删只移）
@@ -284,6 +295,12 @@ export function runStartupHousekeeping(
       getLogger().info(
         "CLEANUP",
         `启动清理：移除 ${checkpointsCleaned} 个过期 checkpoint 会话目录`,
+      );
+    }
+    if (planPlaceholdersCleaned > 0) {
+      getLogger().info(
+        "CLEANUP",
+        `启动清理：回收 ${planPlaceholdersCleaned} 个未写入的空计划占位文件`,
       );
     }
     if (sessionMemoriesCleaned > 0) {
@@ -567,6 +584,42 @@ function cleanupOrphanedShellSnapshots(now: number): number {
  *
  * @returns 删除的文件数
  */
+/**
+ * 回收崩溃遗留的空计划占位（`~/.sid-code/plans/<project>/*.md`，0 字节且超过 1 天）。
+ * 只看项目子目录一层，不递归、不碰顶层旧命名的计划文件、不删目录。
+ *
+ * @returns 删除的文件数
+ */
+export function cleanupEmptyPlanPlaceholders(now: number): number {
+  const root = sidPaths.plans();
+  if (!existsSync(root)) return 0;
+  let removed = 0;
+  for (const proj of readdirSync(root, { withFileTypes: true })) {
+    if (!proj.isDirectory()) continue;
+    const dir = join(root, proj.name);
+    let entries;
+    try {
+      entries = readdirSync(dir, { withFileTypes: true });
+    } catch {
+      continue;
+    }
+    for (const entry of entries) {
+      if (!entry.isFile() || !entry.name.endsWith(".md")) continue;
+      const file = join(dir, entry.name);
+      try {
+        const st = statSync(file);
+        if (st.size === 0 && now - st.mtimeMs > EMPTY_PLAN_PLACEHOLDER_MAX_AGE_MS) {
+          rmSync(file, { force: true });
+          removed++;
+        }
+      } catch {
+        // 单个文件失败（并发删除、权限）不影响其余
+      }
+    }
+  }
+  return removed;
+}
+
 function cleanupOrphanedTaskOutputs(now: number): number {
   const dir = sidPaths.tasks();
   if (!existsSync(dir)) return 0;

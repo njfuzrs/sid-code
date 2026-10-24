@@ -22,6 +22,7 @@ import { readFileSync, readdirSync, existsSync, statSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { applyLedgerPathOverride } from "../telemetry/usage-ledger.ts";
 import { getSidHome } from "../config/paths.ts";
+import { PlanModeManager, PLAN_STEP_PARSER_VERSION } from "../plan/state.ts";
 // P2-20：observationEntropy 判空转阈值与运行时检测（`query/unchanged-observation.ts`）
 // **同源**，全仓只此一份。两侧各写一个 3 的话，任何一侧调阈值都会出现
 // 「运行时报了但周报不算病态」（或反过来），与本仓 P1-6/7「压缩决策和压缩执行
@@ -1075,6 +1076,8 @@ export interface Digest {
   jit?: JitDigestStats;
   /** P1-2：前缀断裂定位分布。无 `prefix_break` 事件时 undefined（老会话，埋点上线前）。 */
   prefixBreaks?: PrefixBreakDigestStats;
+  /** §6：缓存断点布局 + 冷清理。两类事件全无时 undefined（老会话 / 非 Anthropic）。 */
+  promptCache?: PromptCacheDigestStats;
   /**
    * todo 清单实时性度量（2026-08-02）。三类 todo 事件全无时 undefined
    * （老会话 / 整场没建过清单）。
@@ -2262,6 +2265,48 @@ export function buildDigest(ref: SessionRef, full: boolean, paths: DigestPaths):
   const events = readJsonl<{ event?: string; data?: Record<string, unknown> }>(eventsPath);
   const errors = readJsonl<{ event?: string; data?: Record<string, unknown> }>(errorsPath);
 
+  // 检测未收尾的 PreToolUse：每个 fire 过 PreToolUse 的 tool_use_id 都必须有一个
+  // PostToolUse / PostToolUseFailure / PermissionDenied 收尾（tool-hook-pair-invariant 不变量）。
+  // 2026-10-24 全库扫描：23,654 个 PreToolUse 里 7 个悬空，可核的 5 个全是串行 Bash 级联跳过——
+  // 这类缺口在单测里写一个漏一个，所以在 digest 里机械地数，回归一次就亮一次。
+  const preIds = new Map<string, string>();
+  const closedIds = new Set<string>();
+  for (const e of events) {
+    const tid = (e.data as any)?.tool_use_id;
+    if (typeof tid !== "string" || !tid) continue;
+    if (e.event === "PreToolUse") preIds.set(tid, String((e.data as any)?.tool_name ?? "?"));
+    else if (
+      e.event === "PostToolUse" ||
+      e.event === "PostToolUseFailure" ||
+      e.event === "PermissionDenied"
+    ) {
+      closedIds.add(tid);
+    }
+  }
+  const unclosedPre = [...preIds].filter(([tid]) => !closedIds.has(tid));
+  if (unclosedPre.length > 0) {
+    // 进程中途被杀时末尾也会留悬空 Pre，那是 session_end_missing 的伴生症状，不另起假设；
+    // 中段出现才是收尾路径漏了。严重度只给 medium：它不影响模型，影响的是 span 与失败率口径。
+    anomalies.push({
+      layer: "L0",
+      severity: "medium",
+      kind: "unclosed_pre_tool_use",
+      detail: `${unclosedPre.length} 个 PreToolUse 在 events.jsonl 中无 PostToolUse/PostToolUseFailure/PermissionDenied 收尾`,
+      provenance: [
+        {
+          sourceFile: eventsPath,
+          lineRef: `tool_use_id: ${unclosedPre
+            .slice(0, 5)
+            .map(([tid, name]) => `${name}:${tid}`)
+            .join(", ")}${unclosedPre.length > 5 ? " …" : ""}`,
+          rawValue: `count=${unclosedPre.length}`,
+          mtime: fileMtimeIso(eventsPath),
+        },
+      ],
+      pointer: `messages.json 里同 tool_use_id 的 tool_result（看是哪条执行路径产出的）`,
+    });
+  }
+
   // 检测未配对的 BeforeModel（有 BeforeModel 但无 AfterModel/AfterModelRaw/TurnError/ModelCallUnpaired）
   const beforeModels = events.filter((e) => e.event === "BeforeModel");
   const afterEvents = events.filter(
@@ -2577,20 +2622,55 @@ export function buildDigest(ref: SessionRef, full: boolean, paths: DigestPaths):
   // 从前 getFidelityReport() 生产零调用，官网写的「能看到对齐度」是空的。
   // 只报计数不下判断：偏离多是「计划写得粗」还是「执行跑偏」，轨迹给不出真值。
   for (const f of aggregatePlanFidelity(events)) {
+    const version = f.stepParserVersion ?? 1;
+    // v1 口径的步数与当前口径不可比：并列给出按当前口径对计划文件的重算值（文件还在时）
+    const recount =
+      version < PLAN_STEP_PARSER_VERSION ? recountPlanStepsWithCurrentParser(f.planFile) : null;
+    const recountNote =
+      recount !== null && recount !== f.planStepCount
+        ? `（旧口径 v${version}；按当前口径 v${PLAN_STEP_PARSER_VERSION} 重算为 ${recount} 步）`
+        : "";
     anomalies.push({
       layer: "L0",
       severity: "low",
       kind: "plan_fidelity",
-      detail: `计划 ${f.planStepCount} 步 / 实际 ${f.actualToolCallCount} 次调用 / 偏离 ${f.offPlanCount} 次`,
+      detail: `计划 ${f.planStepCount} 步 / 实际 ${f.actualToolCallCount} 次调用 / 偏离 ${f.offPlanCount} 次${recountNote}`,
       provenance: [
         {
           sourceFile: eventsPath,
           lineRef: "event=PlanFidelity（每份计划取末条快照）",
-          rawValue: `steps=${f.planStepCount} actual=${f.actualToolCallCount} off_plan=${f.offPlanCount}`,
+          rawValue:
+            `steps=${f.planStepCount} actual=${f.actualToolCallCount} off_plan=${f.offPlanCount}` +
+            ` parser=v${version}` +
+            (recount !== null ? ` recount_v${PLAN_STEP_PARSER_VERSION}=${recount}` : ""),
           mtime: fileMtimeIso(eventsPath),
         },
       ],
       ...(f.planFile ? { pointer: f.planFile } : {}),
+    });
+  }
+
+  // 计划生命周期：每份计划一行。取消 / 拒绝超限是用户否决，标 medium 便于排查时被看见。
+  for (const l of aggregatePlanLifecycle(events)) {
+    const vetoed = l.outcome === "cancel" || l.outcome === "reject_limit";
+    anomalies.push({
+      layer: "L0",
+      severity: vetoed ? "medium" : "low",
+      kind: "plan_lifecycle",
+      detail:
+        `计划 ${l.reasons.join(" → ")}（结局 ${l.outcome}，拒绝 ${l.rejections} 次，` +
+        `执行阶段跨 ${l.executingTurns} 个用户回合，压缩重注入 ${l.reattachCount} 次` +
+        (l.reattachTruncated > 0 ? `，其中截断 ${l.reattachTruncated} 次` : "") +
+        "）",
+      provenance: [
+        {
+          sourceFile: eventsPath,
+          lineRef: "event=PlanTransition / PlanReattach / UserPromptSubmit",
+          rawValue: `reasons=${l.reasons.join(",")} outcome=${l.outcome}`,
+          mtime: fileMtimeIso(eventsPath),
+        },
+      ],
+      ...(l.planFile ? { pointer: l.planFile } : {}),
     });
   }
 
@@ -2772,6 +2852,7 @@ export function buildDigest(ref: SessionRef, full: boolean, paths: DigestPaths):
 
   // ── P1-2：前缀断裂定位分布（断在哪类段 / 浪费多少）──
   const prefixBreaks = aggregatePrefixBreakStats(events);
+  const promptCache = aggregatePromptCacheStats(events);
 
   // ── 2026-08-02：todo 实时性度量（推进次数 / 回注次数 / 收尾兜底次数）──
   // 补的是"采了不看"这个缺口：三个事件此前只写不读，缺陷定性只能靠间接证据。
@@ -2839,6 +2920,7 @@ export function buildDigest(ref: SessionRef, full: boolean, paths: DigestPaths):
     subAgents: subAgents ?? undefined,
     jit: jit ?? undefined,
     prefixBreaks: prefixBreaks ?? undefined,
+    promptCache: promptCache ?? undefined,
     todo: todo ?? undefined,
     recovery: recovery ?? undefined,
     continuePaths: continuePaths ?? undefined,
@@ -3487,6 +3569,30 @@ export function renderHuman(d: Digest, opts: RenderOptions = {}): string {
     }
   }
 
+  // ── §6 缓存布局 / 冷清理（2026-10-24）：两个缺陷修复的直接验收口径 ──
+  if (d.promptCache) {
+    const pc = d.promptCache;
+    L.push("");
+    const bad = pc.breakpointOnTransient > 0;
+    L.push(
+      c("bold", "缓存断点:") +
+        " " +
+        c(
+          bad ? "red" : "green",
+          `${pc.breakpointOnTransient}/${pc.layoutRequests} 次落在 reminder 上`,
+        ) +
+        c("gray", `  （应恒为 0；含 reminder 的请求 ${pc.requestsWithTransient} 次）`),
+    );
+    if (pc.coldClears > 0 || pc.coldClearsUnderThreshold > 0) {
+      L.push(
+        `  冷清理 ${pc.coldClears} 次，清 ${pc.coldClearedItems} 项 / ${pc.coldClearedChars} 字符` +
+          (pc.coldClearsUnderThreshold > 0
+            ? c("red", `  ⚠ ${pc.coldClearsUnderThreshold} 次间隔低于阈值（热当冷回归）`)
+            : c("gray", `  最短间隔 ${Math.round((pc.minColdGapMs ?? 0) / 60000)} 分钟`)),
+      );
+    }
+  }
+
   // §9.6：子代理执行 section（几成几败 + 串行/并行 + 每个 span 明细）
   if (d.subAgents && d.subAgents.total > 0) {
     const sa = d.subAgents;
@@ -4032,6 +4138,65 @@ export interface PrefixBreakDigestStats {
   shrunkTurns: number;
 }
 
+/**
+ * §6 缓存缺陷的验收口径（2026-10-24）。
+ *
+ * 两个数都是「修复后应恒为 0」的不变量计数，不是比率：
+ *  - breakpointOnTransient：messages 区断点落在 reminder 上的次数（PromptCacheLayout）
+ *  - coldClearsUnderThreshold：冷清理发生时距上次请求 < 阈值的次数（ColdCacheClear）
+ * 分母一并给出（layoutRequests / coldClears），否则「0」分不清是修好了还是没发生。
+ */
+export interface PromptCacheDigestStats {
+  layoutRequests: number;
+  requestsWithTransient: number;
+  breakpointOnTransient: number;
+  coldClears: number;
+  coldClearedItems: number;
+  coldClearedChars: number;
+  coldClearsUnderThreshold: number;
+  minColdGapMs?: number;
+}
+
+export function aggregatePromptCacheStats(
+  events: Array<{ event?: string; data?: Record<string, unknown> }>,
+): PromptCacheDigestStats | null {
+  const s: PromptCacheDigestStats = {
+    layoutRequests: 0,
+    requestsWithTransient: 0,
+    breakpointOnTransient: 0,
+    coldClears: 0,
+    coldClearedItems: 0,
+    coldClearedChars: 0,
+    coldClearsUnderThreshold: 0,
+  };
+  let seen = false;
+  for (const e of events) {
+    const d = e.data;
+    if (!d) continue;
+    if (e.event === "PromptCacheLayout") {
+      seen = true;
+      s.layoutRequests++;
+      if (Number(d.transient_blocks) > 0) s.requestsWithTransient++;
+      if (d.message_breakpoint_on_transient === true) s.breakpointOnTransient++;
+    } else if (e.event === "ColdCacheClear") {
+      seen = true;
+      s.coldClears++;
+      s.coldClearedItems += Number(d.cleared) || 0;
+      s.coldClearedChars += Number(d.saved_chars) || 0;
+      const gap = Number(d.gap_ms);
+      const threshold = Number(d.threshold_ms);
+      if (Number.isFinite(gap) && gap >= 0) {
+        s.minColdGapMs = s.minColdGapMs === undefined ? gap : Math.min(s.minColdGapMs, gap);
+        if (Number.isFinite(threshold) && gap < threshold) s.coldClearsUnderThreshold++;
+      } else {
+        // gap 未知却清了 = 违反「不知道即热」，同样计为回归
+        s.coldClearsUnderThreshold++;
+      }
+    }
+  }
+  return seen ? s : null;
+}
+
 /** 从 events.jsonl 聚合前缀断裂分布（P1-2） */
 export function aggregatePrefixBreakStats(
   events: Array<{ event?: string; data?: Record<string, unknown> }>,
@@ -4197,6 +4362,8 @@ export interface PlanFidelityStats {
   planStepCount: number;
   actualToolCallCount: number;
   offPlanCount: number;
+  /** 记录该步数时的解析器口径版本；旧事件无此字段，记为 1 */
+  stepParserVersion?: number;
 }
 
 /**
@@ -4211,12 +4378,100 @@ export function aggregatePlanFidelity(
     if (e.event !== "PlanFidelity" || !e.data) continue;
     const planFile = typeof e.data.plan_file === "string" ? e.data.plan_file : "";
     // Map.set 覆盖已有键不改变插入顺序：值取末条，位置留在首次出现处
+    const version = e.data.step_parser_version;
     byPlan.set(planFile, {
       planFile,
       planStepCount: num(e.data.plan_step_count),
       actualToolCallCount: num(e.data.actual_tool_call_count),
       offPlanCount: num(e.data.off_plan_count),
+      ...(version !== undefined ? { stepParserVersion: num(version) } : {}),
     });
+  }
+  return [...byPlan.values()];
+}
+
+/**
+ * 旧口径步数的数据层迁移：v1 事件（无 step_parser_version）的 plan_step_count 由旧解析器算出，
+ * 与 v2 不可比。计划文件还在时按**当前**口径重算一次，供 digest 并列展示「记录值 → 当前口径」。
+ * 文件已被删 / 读不到返回 null——不编一个数。
+ */
+export function recountPlanStepsWithCurrentParser(planFile: string): number | null {
+  if (!planFile) return null;
+  try {
+    if (!existsSync(planFile)) return null;
+    return PlanModeManager.extractPlanSteps(readFileSync(planFile, "utf-8")).steps.length;
+  } catch {
+    return null;
+  }
+}
+
+/** 一份计划的生命周期（`PlanTransition` 事件聚合） */
+export interface PlanLifecycleStats {
+  planFile: string;
+  /** 跃迁原因序列（按时间），如 enter → submit → reject → submit → approve → todos_completed */
+  reasons: string[];
+  rejections: number;
+  /** 最后一次跃迁后的结局：executing（仍在执行）/ approve 之后的出口 / 停在规划中 */
+  outcome: string;
+  /** 执行阶段经历了几个用户回合（approve 之后的 UserPromptSubmit 数，直到执行阶段结束） */
+  executingTurns: number;
+  /** 执行阶段内压缩重注入了几次计划 */
+  reattachCount: number;
+  /** 重注入时被截断的次数 */
+  reattachTruncated: number;
+}
+
+/**
+ * 聚合 `PlanTransition` / `PlanReattach` / `UserPromptSubmit`：每份计划一行生命周期。
+ *
+ * 这一行回答的正是 2026-10-24 那组缺陷的验收问题：
+ *   - 执行阶段是否跨过了用户回合（executingTurns > 0 = 修复前必然为 0 的场景）；
+ *   - 取消 / 拒绝超限是否以明确结局收尾（outcome）；
+ *   - 压缩时计划有没有被带回、有没有截断（reattachCount / reattachTruncated）。
+ */
+export function aggregatePlanLifecycle(
+  events: Array<{ event?: string; data?: Record<string, unknown> }>,
+): PlanLifecycleStats[] {
+  const byPlan = new Map<string, PlanLifecycleStats>();
+  let executingPlan: string | null = null;
+  for (const e of events) {
+    if (e.event === "PlanTransition" && e.data) {
+      const planFile = typeof e.data.plan_file === "string" ? e.data.plan_file : "";
+      const reason = typeof e.data.reason === "string" ? e.data.reason : "unknown";
+      let st = byPlan.get(planFile);
+      if (!st) {
+        st = {
+          planFile,
+          reasons: [],
+          rejections: 0,
+          outcome: "planning",
+          executingTurns: 0,
+          reattachCount: 0,
+          reattachTruncated: 0,
+        };
+        byPlan.set(planFile, st);
+      }
+      st.reasons.push(reason);
+      st.rejections = Math.max(st.rejections, num(e.data.rejection_count));
+      if (e.data.executing_after === true) {
+        executingPlan = planFile;
+        st.outcome = "executing";
+      } else {
+        if (executingPlan === planFile) executingPlan = null;
+        st.outcome = reason === "submit" || reason === "reject" ? "planning" : reason;
+      }
+      if (reason === "submit") st.outcome = "awaiting_approval";
+    } else if (e.event === "UserPromptSubmit" && executingPlan !== null) {
+      const st = byPlan.get(executingPlan);
+      if (st) st.executingTurns++;
+    } else if (e.event === "PlanReattach" && e.data) {
+      const planFile = typeof e.data.plan_file === "string" ? e.data.plan_file : "";
+      const st = byPlan.get(planFile);
+      if (st) {
+        st.reattachCount++;
+        if (e.data.truncated === true) st.reattachTruncated++;
+      }
+    }
   }
   return [...byPlan.values()];
 }

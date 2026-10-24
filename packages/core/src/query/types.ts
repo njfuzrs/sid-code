@@ -345,13 +345,6 @@ export interface LoopState {
   consecutiveCompactFailures?: number;
   /** 上一次 continue 的原因 */
   transition: ContinueReason | undefined;
-  /**
-   * 上一轮成功拿到响应的时刻（epoch ms）。用于 cached-microcompact 的缓存冷热判定：
-   * 距上次响应超过 prompt cache 的 5min ephemeral TTL 时，视为缓存已冷，改走 direct-clear
-   * 真正释放本地 token（对标 CC time-based microcompact：缓存反正要重写，趁机清老工具结果）。
-   * 0/undefined 表示尚无上一轮（首轮），此时视为缓存冷（无前缀可保）。
-   */
-  lastResponseAt?: number;
   /** Stop Hook 重试次数 */
   stopHookRetryCount?: number;
   /**
@@ -792,7 +785,7 @@ export interface QueryDeps {
    * 用户体感就是「报了个超长、压完断片」。
    *
    * 走 deps 而不是在 loop 里直接 import runPostCompact：收尾要的 fileReadTracker /
-   * cachedMicrocompactState / sessionDir 都是 App 持有的会话级实例，QueryDeps 里一个都没有。
+   * sessionDir 都是 App 持有的会话级实例，QueryDeps 里一个都没有。
    * 可选——未注入则这两条路径只埋点（退回当前行为），不会报错。
    */
   postCompactTail?: (info: {
@@ -928,15 +921,7 @@ export interface QueryDeps {
    */
   getProviderForModel?: (model: string) => import("../llm/provider.ts").Provider | undefined;
   /**
-   * G2：获取 cachedMicrocompact 状态机（provider 感知的缓存友好压缩）。
-   * queryLoop 每轮发送前调用 cachedMicrocompact(messages, {state, ...})，
-   * 将产出的 pendingCacheEdits 注入 sendParams.cacheEdits。可选——未注入则跳过。
-   */
-  getCachedMicrocompactState?: () =>
-    | import("./compact/cached-microcompact.ts").CachedMicrocompactState
-    | undefined;
-  /**
-   * G2：当前 provider 名称（用于 cachedMicrocompact 路径判断）。可选。
+   * 当前 provider 名称（冷缓存清理只对 anthropic 生效，见 loop.ts）。可选。
    */
   getProviderName?: () => string;
   /**

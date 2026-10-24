@@ -1,22 +1,18 @@
 /**
- * P1-11 / P1-12：手动 /compact 的压缩后收尾接线回归
+ * P1-12：手动 /compact 的压缩后收尾接线回归
  *
  * 来源：`docs-research/sid-code/bugfixes/todo/20260920-上下文工程-顺着sc-02-context核出的缺陷.md`
  *
- *   P1-11 手动路径漏传 `cachedMicrocompactState` → runPostCompact 第 2 步
- *         （重置 microcompact 状态机）永远走不到，两个 Map/Set 跨多次手动压缩无界增长。
  *   P1-12 质量校验把「完整保留、从未进摘要」的尾部原文算进锚点分母 → 覆盖率系统性偏低，
  *         本该合格的部分压缩被报成「摘要质量塌陷」。
  *
- * 断言对着「缺陷的可观察后果」写：state 是否真被清空、覆盖率分母是否只含被压段。
+ * （P1-11「手动路径漏传 cachedMicrocompactState」的用例已随该模块删除：冷清理决策
+ *  现在是 ContextManager 的会话状态，压缩时由 resetLocalCompactState 统一清空，
+ *  见 packages/core/tests/context/cold-cache-clear.test.ts。）
  */
 
 import { describe, test, expect } from "bun:test";
 import compactMod from "@sid-code/cli/command/commands/compact/compact.ts";
-import {
-  createCachedMicrocompactState,
-  type CachedMicrocompactState,
-} from "@sid-code/core/query/compact/cached-microcompact.ts";
 import { checkCompactQuality } from "@sid-code/core/query/compact/quality-check.ts";
 import { resolvePartialSplitIndex } from "@sid-code/core/query/compact/partial-compact.ts";
 import type { Message } from "@sid-code/core/llm/types.ts";
@@ -46,7 +42,7 @@ function makeMockProvider() {
   };
 }
 
-function makeCtx(messages: Message[], mcState?: CachedMicrocompactState) {
+function makeCtx(messages: Message[]) {
   let msgs = messages;
   const ctxMgr = {
     messageCount: () => msgs.length,
@@ -82,26 +78,13 @@ function makeCtx(messages: Message[], mcState?: CachedMicrocompactState) {
     config: { model: "test-model" },
     providerRegistry: undefined,
     hookSystem: undefined,
-    cachedMicrocompactState: mcState,
     getCurrentMessages: () => msgs,
   } as any;
 }
 
-describe("P1-11 — 手动 /compact 重置 microcompact 状态机", () => {
-  test("传入 state → 手动压缩后被清空（此前静默跳过，长会话里是真实内存泄漏）", async () => {
-    const state = createCachedMicrocompactState();
-    state.tools.set("toolu_old_1", { name: "read_file", tokens: 100 } as any);
-    state.deleted.add("toolu_old_2");
-
-    const result = await compactMod.call("0.5", makeCtx(buildMessages(8), state));
-
-    expect(result.type).toBe("text");
-    expect(state.tools.size).toBe(0);
-    expect(state.deleted.size).toBe(0);
-  });
-
-  test("未传 state（本会话没跑过 microcompact）→ 收尾照常完成，不抛错", async () => {
-    const result = await compactMod.call("0.5", makeCtx(buildMessages(8), undefined));
+describe("手动 /compact 收尾", () => {
+  test("收尾照常完成，不抛错", async () => {
+    const result = await compactMod.call("0.5", makeCtx(buildMessages(8)));
     expect(result.type).toBe("text");
     expect((result as any).value).not.toContain("压缩未执行");
   });

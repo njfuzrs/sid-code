@@ -339,6 +339,9 @@ export function logPermissionAllow(
     reasonType?: PermissionDenyReasonType;
     /** S10：fork / 子代理身份，只进本地轨迹（不进遥测，外发 schema 不变）。主循环不传 */
     agentId?: string;
+    /** 决策所在管线位置（Decision.step）与生效模式（Decision.mode），只进本地轨迹 */
+    step?: string;
+    mode?: string;
   },
 ): void {
   emit(EVENT_NAMES.PERMISSION_ALLOW, {
@@ -359,6 +362,8 @@ export function logPermissionAllow(
     context: opts.context,
     ...(opts.agentId ? { agentId: opts.agentId } : {}),
     ...(opts.durationMs !== undefined ? { durationMs: opts.durationMs } : {}),
+    ...(opts.step ? { step: opts.step } : {}),
+    ...(opts.mode ? { mode: opts.mode } : {}),
   });
 }
 
@@ -392,6 +397,9 @@ export function logPermissionDeny(
     reasonType?: PermissionDenyReasonType;
     /** S10：同 logPermissionAllow.agentId */
     agentId?: string;
+    /** 同 logPermissionAllow.step / mode */
+    step?: string;
+    mode?: string;
   },
 ): void {
   emit(EVENT_NAMES.PERMISSION_DENY, {
@@ -411,6 +419,8 @@ export function logPermissionDeny(
     context: opts.context,
     ...(opts.agentId ? { agentId: opts.agentId } : {}),
     ...(opts.durationMs !== undefined ? { durationMs: opts.durationMs } : {}),
+    ...(opts.step ? { step: opts.step } : {}),
+    ...(opts.mode ? { mode: opts.mode } : {}),
   });
 }
 

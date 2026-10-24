@@ -124,18 +124,6 @@ const DEFAULT_OPTIONS: Required<MicrocompactOptions> = {
 /** 可丢弃工具占位符 */
 const DISCARDABLE_PLACEHOLDER = "[可丢弃工具输出已清空，如需查看请重新执行工具]";
 
-/** 从消息历史中查找 tool_use_id 对应的工具名与 input（bash 分类要看 input.command） */
-function findToolUse(messages: Message[], toolUseId: string): { name: string; input: unknown } {
-  for (const msg of messages) {
-    for (const block of msg.content) {
-      if (block.type === "tool_use" && block.id === toolUseId) {
-        return { name: block.name, input: block.input };
-      }
-    }
-  }
-  return { name: "unknown", input: undefined };
-}
-
 /**
  * 对单个 tool_result 块按工具类型生成压缩后的内容。
  *
@@ -174,6 +162,74 @@ function compactToolResultContent(
   return null;
 }
 
+/** 一条 microcompact 改写决策：哪个块、改成什么。 */
+export interface MicrocompactPlanEntry {
+  msgIdx: number;
+  blockIdx: number;
+  toolUseId: string;
+  /** 改写后的完整内容（占位符或摘要） */
+  replacement: string;
+  /** 原始内容长度（字符），用于记账 */
+  originalLength: number;
+}
+
+/**
+ * 只算「该改哪些块、改成什么」，不动消息。
+ *
+ * 判据与 {@link microcompactMessages} 完全一致（后者就是在它之上做应用）。拆出来是为了
+ * 让 ContextManager 能把冷缓存清理**落成会话状态**而不是只改一份发送副本：
+ * 决策一旦做出，之后每轮都要逐字节一致地重放，见 `ContextManager.applyColdCacheClear`。
+ *
+ * @param skipToolUse 调用方额外豁免的 tool_use_id（已有稳定占位的块：再改一次就是第二次改写前缀）
+ */
+export function planMicrocompact(
+  messages: Message[],
+  options?: MicrocompactOptions & { skipToolUse?: (toolUseId: string) => boolean },
+): MicrocompactPlanEntry[] {
+  const opts = { ...DEFAULT_OPTIONS, ...options };
+  if (messages.length <= opts.preserveRecentCount) return [];
+
+  // 一次建好 tool_use 索引：原先每个块都 findToolUse 全量扫一遍，O(n²)
+  const toolUses = new Map<string, { name: string; input: unknown }>();
+  for (const msg of messages) {
+    for (const block of msg.content) {
+      if (block.type === "tool_use")
+        toolUses.set(block.id, { name: block.name, input: block.input });
+    }
+  }
+
+  const plan: MicrocompactPlanEntry[] = [];
+  // 只压缩 preserveRecentCount 之前的消息
+  const cutoff = messages.length - opts.preserveRecentCount;
+  for (let msgIdx = 0; msgIdx < cutoff; msgIdx++) {
+    const msg = messages[msgIdx];
+    // 只压缩 user 消息中的 tool_result 块
+    if (msg.role !== "user") continue;
+    msg.content.forEach((b, blockIdx) => {
+      if (b.type !== "tool_result" || typeof b.content !== "string") return;
+      if (b.content.length <= opts.minContentLength) return;
+      if (options?.skipToolUse?.(b.tool_use_id)) return;
+      const toolUse = toolUses.get(b.tool_use_id) ?? { name: "unknown", input: undefined };
+      const replacement = compactToolResultContent(
+        b.content,
+        toolUse.name,
+        toolUse.input,
+        opts.mode,
+      );
+      // null 表示工具不在白名单内（未知 / 自定义 / MCP）→ 跳过，原样保留
+      if (replacement === null) return;
+      plan.push({
+        msgIdx,
+        blockIdx,
+        toolUseId: b.tool_use_id,
+        replacement,
+        originalLength: b.content.length,
+      });
+    });
+  }
+  return plan;
+}
+
 /**
  * 对消息列表执行 microcompact（工具类型感知）
  *
@@ -189,64 +245,23 @@ export function microcompactMessages(
   options?: MicrocompactOptions,
 ): { messages: Message[]; compactedCount: number; savedChars: number } {
   const log = getLogger();
-  const opts = { ...DEFAULT_OPTIONS, ...options };
+  const plan = planMicrocompact(messages, options);
+  if (plan.length === 0) return { messages, compactedCount: 0, savedChars: 0 };
 
-  if (messages.length <= opts.preserveRecentCount) {
-    return { messages, compactedCount: 0, savedChars: 0 };
-  }
-
-  let compactedCount = 0;
+  const byPos = new Map(plan.map((p) => [`${p.msgIdx}:${p.blockIdx}`, p]));
+  const touched = new Set(plan.map((p) => p.msgIdx));
   let savedChars = 0;
-
-  // 只压缩 preserveRecentCount 之前的消息
-  const cutoff = messages.length - opts.preserveRecentCount;
-  const result = messages.map((msg, idx) => {
-    if (idx >= cutoff) return msg; // 保留最近的消息
-
-    // 只压缩 user 消息中的 tool_result 块
-    if (msg.role !== "user") return msg;
-
-    const hasLargeToolResult = msg.content.some(
-      (b) =>
-        b.type === "tool_result" &&
-        typeof b.content === "string" &&
-        b.content.length > opts.minContentLength,
-    );
-
-    if (!hasLargeToolResult) return msg;
-
-    const newContent: ContentBlock[] = msg.content.map((b) => {
-      if (
-        b.type === "tool_result" &&
-        typeof b.content === "string" &&
-        b.content.length > opts.minContentLength
-      ) {
-        const originalLen = b.content.length;
-        const toolUse = findToolUse(messages, b.tool_use_id);
-        const compacted = compactToolResultContent(
-          b.content,
-          toolUse.name,
-          toolUse.input,
-          opts.mode,
-        );
-
-        // null 表示工具不在白名单内（未知 / 自定义 / MCP）→ 跳过，原样保留
-        if (compacted === null) return b;
-
-        savedChars += originalLen - compacted.length;
-        compactedCount++;
-
-        return { ...b, content: compacted };
-      }
-      return b;
+  const result = messages.map((msg, msgIdx) => {
+    if (!touched.has(msgIdx)) return msg;
+    const newContent: ContentBlock[] = msg.content.map((b, blockIdx) => {
+      const p = byPos.get(`${msgIdx}:${blockIdx}`);
+      if (!p || b.type !== "tool_result") return b;
+      savedChars += p.originalLength - p.replacement.length;
+      return { ...b, content: p.replacement };
     });
-
     return { ...msg, content: newContent };
   });
 
-  if (compactedCount > 0) {
-    log.info("MICROCOMPACT", `压缩了 ${compactedCount} 个工具结果，节省 ${savedChars} 字符`);
-  }
-
-  return { messages: result, compactedCount, savedChars };
+  log.info("MICROCOMPACT", `压缩了 ${plan.length} 个工具结果，节省 ${savedChars} 字符`);
+  return { messages: result, compactedCount: plan.length, savedChars };
 }
