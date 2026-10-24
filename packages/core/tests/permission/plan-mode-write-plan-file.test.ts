@@ -12,7 +12,7 @@
  * P1-1 追加（执行阶段）：
  * - approve() 后的执行阶段 + write/edit 计划文件 → ALLOW（无头模式也不被转成拒绝）
  * - 执行阶段 + 写非计划文件 → 不因这条放行而放宽
- * - 执行阶段收尾（endExecution / forceExit）后 → 不再放行
+ * - 执行阶段收尾（completeExecution / forceExit）后 → 不再放行
  */
 
 import { describe, test, expect } from "bun:test";
@@ -241,12 +241,12 @@ describe("PermissionChecker — 执行阶段写计划文件 (P1-1)", () => {
     expect(mode).not.toBe("plan+plan-file");
   });
 
-  test("执行阶段收尾（endExecution）后 → 不再放行", async () => {
+  test("执行阶段收尾（completeExecution）后 → 不再放行", async () => {
     const { checker, planManager } = buildChecker({ executing: true, nonInteractive: true });
     const planPath = planManager.getPlanFilePath()!;
 
-    // 新用户回合开始时 app.ts 会调 endExecution()
-    planManager.endExecution();
+    // 计划派生的 todo 全部完成时 app.ts 调 completeExecution()
+    planManager.completeExecution();
     expect(planManager.isExecuting()).toBe(false);
 
     const result = await checker.check({

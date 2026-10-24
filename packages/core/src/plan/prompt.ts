@@ -56,6 +56,11 @@ ${
 ### 阶段 4：输出计划
 将最终方案写入计划文件，然后调用 exit_plan_mode 提交审批。
 
+**计划文件的格式要求**：可执行步骤必须写在一个名为"## 实施步骤"的小节里，每个步骤是一条
+**顶层**列表项（\`1. xxx\` 或 \`- xxx\`），子项缩进书写。背景、根因、影响面、验证方式、风险等
+写在各自的小节里——批准后系统会数"实施步骤"小节里的顶层项，要求你的 todo 清单逐条覆盖它们，
+写在别的小节里的列表项不会被当成要执行的步骤。
+
 **决策记录（跨会话防漂移，重要）**：如果你在计划中决定**推迟 / 跳过 / 暂不实施**某个条目，
 必须在计划文件中用一个"## 决策记录"小节写明：
 1. 推迟/跳过的**原因**（如风险过高、依赖未就绪、收益不足）
@@ -188,4 +193,78 @@ plan mode 只用于需要用户审批的新方案设计，不是执行阶段的�
 3. 然后按更新后的计划继续
 
 这是为了让计划反映真实执行过程，不停留在初版乐观估计。`;
+}
+
+/**
+ * 用户在审批框选择「取消」后注入给模型的消息。
+ *
+ * 2026-10-24：从前取消路径返回 null、不注入任何东西，模型手里只有 exit_plan_mode 的
+ * tool_result「计划已提交，等待用户审批」。它接着往下走，或再调一次 exit_plan_mode，
+ * 拿到的是「计划已进入执行阶段（已审批通过…）」——用户取消的计划被当成已批准执行，
+ * 而此时权限模式已恢复成进入前的模式，写操作可以直接落地。
+ */
+export function buildPlanCancelledMessage(planFilePath: string): string {
+  return `用户取消了计划审批，计划模式已退出。这份计划（${planFilePath}）**没有被批准**，不要执行它，也不要再调用 exit_plan_mode。
+请停下来，简短告诉用户你目前了解到的情况，然后询问用户接下来想怎么做。`;
+}
+
+/**
+ * 拒绝次数达到上限、规划被强制结束时注入给模型的消息。
+ * 最后一次拒绝的修改意见必须带上——从前这条路径返回 null，用户写的意见被直接丢掉。
+ */
+export function buildPlanRejectLimitMessage(
+  planFilePath: string,
+  rejectionCount: number,
+  feedback: string,
+): string {
+  const feedbackLine = feedback ? `\n\n用户最后一次的修改意见：${feedback}` : "";
+  return `用户已第 ${rejectionCount} 次拒绝你的计划，达到上限，计划模式已强制结束。这份计划（${planFilePath}）**没有被批准**，不要执行它，也不要再调用 exit_plan_mode。
+请向用户说明你理解的分歧点，并询问用户希望如何继续（例如由用户直接给出具体做法，或重新进入计划模式）。${feedbackLine}`;
+}
+
+/** 用户拒绝（未到上限）后注入给模型的消息 */
+export function buildPlanRejectedMessage(
+  planFilePath: string,
+  rejectionCount: number,
+  maxRejections: number,
+  feedback: string,
+): string {
+  const feedbackLine = feedback ? `\n\n用户的修改意见：${feedback}` : "";
+  return `用户拒绝了你的计划（第 ${rejectionCount} 次，上限 ${maxRejections} 次）。请根据用户反馈修改计划文件 ${planFilePath}，然后再次调用 exit_plan_mode 提交审批。${feedbackLine}`;
+}
+
+/** 压缩后重注入的计划正文上限（字符）。超出部分以文件为准，消息里写明路径与截断位置 */
+export const PLAN_REATTACH_MAX_CHARS = 20_000;
+
+/**
+ * 压缩后重注入计划的正文（REATTACH_PLAN_PREFIX 之后的部分）。
+ *
+ * 2026-10-24：从前只注入正文、不带路径，超长时截成 `[Plan 内容已截断]`。执行阶段的计划路径
+ * 只出现在批准消息里，压缩后那条消息可能已被裁掉——模型拿到半截计划，却没有路径可以
+ * read 全文，也不知道失败守则要它 edit 的是哪个文件。「可逆压缩」的要求是保留取回原文的钥匙。
+ *
+ * 文案同时提醒「已完成 / 与当前工作无关就忽略」：执行阶段不随回合边界结束，
+ * 计划可能早已做完而 todo 不归它管，重注入不能变成把模型拉回旧任务的指令。
+ */
+export function buildPlanReattachBody(
+  planFilePath: string,
+  content: string,
+  phase: "planning" | "awaiting_approval" | "executing",
+): { text: string; truncated: boolean } {
+  const truncated = content.length > PLAN_REATTACH_MAX_CHARS;
+  const body = truncated ? content.slice(0, PLAN_REATTACH_MAX_CHARS) : content;
+  const phaseLine =
+    phase === "executing"
+      ? "当前处于该计划的执行阶段（已获用户批准）。"
+      : phase === "awaiting_approval"
+        ? "该计划已提交，正在等待用户审批。"
+        : "当前处于计划模式，该计划尚在编写中，只允许编辑这个计划文件。";
+  const tail = truncated
+    ? `\n\n[计划正文过长，以上为前 ${PLAN_REATTACH_MAX_CHARS} 字符；完整内容以文件为准，需要时用 read 读取 ${planFilePath}]`
+    : "";
+  const text =
+    `计划文件：${planFilePath}\n${phaseLine}` +
+    `如果这份计划与当前工作无关或已全部完成，忽略它；否则继续按它推进，执行中遇到失败先用 edit 更新这个文件。\n\n` +
+    `${body}${tail}`;
+  return { text, truncated };
 }

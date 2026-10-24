@@ -47,13 +47,13 @@ describe("PlanModeManager — 执行阶段(executing)追踪", () => {
     expect(m.getPlanFilePath()).toBe(planPath);
   });
 
-  test("endExecution() 清执行阶段标志", () => {
+  test("completeExecution() 清执行阶段标志", () => {
     const m = new PlanModeManager();
     m.enter();
     m.submitForApproval();
     m.approve();
     expect(m.isExecuting()).toBe(true);
-    m.endExecution();
+    m.completeExecution();
     expect(m.isExecuting()).toBe(false);
   });
 

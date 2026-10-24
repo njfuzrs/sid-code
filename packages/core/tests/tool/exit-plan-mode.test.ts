@@ -13,16 +13,57 @@ import { ExitPlanModeTool } from "@sid-code/core/tool/exit-plan-mode.ts";
 import { PlanModeManager } from "@sid-code/core/plan/state.ts";
 
 describe("ExitPlanModeTool — P0-1 幂等成功", () => {
-  it("inactive 状态调用返回成功提示（非 isError），引导进入执行阶段", async () => {
+  it("从未规划（inactive）调用返回成功提示（非 isError），且不谎称「已审批」", async () => {
     const mgr = new PlanModeManager(); // 默认 inactive
     const tool = new ExitPlanModeTool(mgr);
 
     const result = await tool.execute({});
 
     expect(result.isError).not.toBe(true);
-    expect(result.output).toContain("执行阶段");
+    expect(result.output).toContain("不在计划模式");
+    expect(result.output).not.toContain("审批通过");
     // 不应再出现旧的报错文案
     expect(result.output).not.toContain("无法提交计划");
+  });
+
+  it("执行阶段（已批准）调用：如实说已批准、继续执行", async () => {
+    const mgr = new PlanModeManager();
+    mgr.enter("default");
+    mgr.submitForApproval();
+    mgr.approve();
+    const result = await new ExitPlanModeTool(mgr).execute({});
+    expect(result.isError).not.toBe(true);
+    expect(result.output).toContain("已审批通过");
+    expect(result.output).toContain("执行阶段");
+    mgr.forceExit();
+  });
+
+  // 2026-10-24 回归：取消 / 拒绝超限后 state 同样是 inactive，从前一律回答
+  // 「计划已进入执行阶段（已审批通过…）请直接开始执行」——模型据此执行了用户否决的计划。
+  it("用户取消后调用：明确未批准、不要执行，绝不出现「审批通过」", async () => {
+    const mgr = new PlanModeManager();
+    mgr.enter("default");
+    mgr.submitForApproval();
+    mgr.forceExit("cancel");
+    const result = await new ExitPlanModeTool(mgr).execute({});
+    expect(result.isError).not.toBe(true);
+    expect(result.output).toContain("未被批准");
+    expect(result.output).toContain("不要执行");
+    expect(result.output).not.toContain("审批通过");
+    expect(result.output).not.toContain("执行阶段");
+  });
+
+  it("拒绝超限后调用：明确未批准", async () => {
+    const mgr = new PlanModeManager();
+    mgr.enter("default");
+    for (let i = 0; i < mgr.getMaxRejections(); i++) {
+      mgr.submitForApproval();
+      mgr.reject();
+    }
+    expect(mgr.getLastOutcome()).toBe("rejected_limit");
+    const result = await new ExitPlanModeTool(mgr).execute({});
+    expect(result.output).toContain("未被批准");
+    expect(result.output).not.toContain("审批通过");
   });
 
   it("awaiting_approval 状态重复调用返回'已提交'提示（非 isError）", async () => {
@@ -37,9 +78,9 @@ describe("ExitPlanModeTool — P0-1 幂等成功", () => {
     expect(result.output).toContain("等待用户审批");
   });
 
-  it("planning 但计划文件不存在仍返回 isError（这是合法的引导而非空转）", async () => {
+  it("planning 但计划尚未写入仍返回 isError（这是合法的引导而非空转）", async () => {
     const mgr = new PlanModeManager();
-    mgr.enter("default"); // → planning，planFilePath 指向尚未创建的文件
+    mgr.enter("default"); // → planning，planFilePath 指向一个 0 字节占位文件
     const tool = new ExitPlanModeTool(mgr);
 
     const result = await tool.execute({});

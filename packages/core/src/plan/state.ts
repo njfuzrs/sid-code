@@ -4,13 +4,20 @@
  * 管理计划文件路径、拒绝计数、状态转换
  *
  * 计划文件路径的不变量（P3-1）：`getPlanFilePath() !== null ⇔ isActive() || isExecuting()`。
- * 路径只在 enter() 赋值，只在 forceExit() / 非规划态的 endExecution() 清空。
+ * 路径只在 enter() 赋值，只在 forceExit() / completeExecution() 清空。
+ *
+ * 执行阶段的生命周期（2026-10-24 修正）：approve() 开始，结束只有三个出口——
+ * 下一次 enter()（新计划取代旧计划）、forceExit()（取消 / 拒绝超限 / `/clear`）、
+ * completeExecution()（计划派生的 todo 清单全部完成）。**用户回合边界不是出口**：
+ * 从前每个回合开头都调 endExecution()，用户插一句话、ESC 后说「继续」、后台子代理
+ * 完成通知，都会让执行阶段在计划还没做完时被清掉，随之失效的是压缩重注入、
+ * 计划文件放行、Recovery Hook 与 fidelity 追踪——计划只在「批准那一轮」可寻址。
  *
  * S6-T07/T08 (ADR-028): 增加 fidelity 追踪 — plan 步骤解析 + actual tool call 对齐.
  */
 
 import { resolve } from "path";
-import { mkdirSync, existsSync } from "fs";
+import { mkdirSync, existsSync, openSync, closeSync, statSync, unlinkSync, readFileSync } from "fs";
 import { createHash } from "crypto";
 import { formatPlanTime, resolvePlanProject, sanitizePlanTopic } from "./slug.ts";
 import { sidPaths } from "../config/paths.ts";
@@ -19,12 +26,54 @@ import { getCwd } from "../bootstrap/state.ts";
 /** Plan Mode 状态 */
 export type PlanModeState = "inactive" | "planning" | "awaiting_approval";
 
+/**
+ * 状态跃迁的原因（`PlanTransition` 事件的 reason 字段，闭集）。
+ * 同一个 to 状态可以由不同原因到达（inactive 有 approve / cancel / reject_limit / clear 四种），
+ * 不记原因就分不清「批准后执行」与「被取消」——这正是从前取消路径无法被观测的原因。
+ */
+export type PlanTransitionReason =
+  | "enter"
+  | "enter_permission_mode"
+  | "submit"
+  | "approve"
+  | "reject"
+  | "reject_limit"
+  | "cancel"
+  | "todos_completed"
+  | "clear";
+
+/**
+ * 一份计划的最终结局。exit_plan_mode 在非规划态被调用时据此如实回答，
+ * 而不是一律说「已审批通过」——那句话曾让模型把用户取消的计划当成已批准去执行。
+ */
+export type PlanOutcome = "approved" | "cancelled" | "rejected_limit" | "completed" | "cleared";
+
+/** 跃迁附带信息（谁做的决定、用户修改意见多长），只用于可观测性 */
+export interface PlanTransitionMeta {
+  /** 决策来源：TUI 审批框 / 无头自动批准 / 工具调用 / 权限模式同步 / 命令 */
+  source?: "tui" | "headless" | "tool" | "permission_mode" | "command";
+  /** 用户修改意见的字符数（只记长度，不落正文） */
+  feedbackChars?: number;
+}
+
 /** ADR-028: plan markdown 解析后的单步 */
 export interface PlanStep {
   index: number;
   description: string;
   matchedActualIndices: number[];
 }
+
+/**
+ * 步骤计数所用的口径（见 parsePlanFromMarkdown）。随 PlanFidelity / PlanTransition 落盘，
+ * 让「这个步数是怎么数出来的」在事后可区分——口径一变曲线就整体平移，分母必须和指标一起写死。
+ */
+export type PlanStepSource = "step_sections" | "excluding_non_step" | "flat";
+
+/**
+ * 步骤解析器口径版本。2026-10-24 前的事件不带此字段（视为 v1：只排除非步骤章节、不隔离围栏）；
+ * v2 = 步骤章节优先 + 围栏隔离。跨版本对比 plan_step_count 前必须先按版本分组。
+ */
+export const PLAN_STEP_PARSER_VERSION = 2;
 
 /** ADR-028: exit_plan_mode 后实际工具调用记录 */
 export interface ActualToolCall {
@@ -47,15 +96,31 @@ export interface FidelityReport {
   offPlanCount: number;
 }
 
-/** Plan Mode 状态变更事件 */
+/**
+ * Plan Mode 状态变更事件。
+ *
+ * 执行阶段的开始与结束不改变三态（approve 到 inactive、completeExecution 停在 inactive），
+ * 所以 executingBefore / executingAfter 必须单独带出来，否则「执行阶段结束」这件事
+ * 在事件流里不存在——从前被回合边界静默清掉时，轨迹里一条痕迹都没有。
+ */
 export interface PlanModeEvent {
   from: PlanModeState;
   to: PlanModeState;
+  /** 跃迁涉及的计划文件（退出类跃迁取退出前的值） */
   planFilePath: string | null;
+  reason: PlanTransitionReason;
+  executingBefore: boolean;
+  executingAfter: boolean;
+  /** 跃迁发生时的拒绝次数（reject_limit 取清零前的值） */
+  rejectionCount: number;
+  meta?: PlanTransitionMeta;
 }
 
 /** 状态变更监听器 */
 export type PlanModeListener = (event: PlanModeEvent) => void;
+
+/** 进入规划态的入口（/clear 据此决定是否恢复权限模式） */
+export type PlanEntrySource = "tool" | "permission_mode";
 
 /** Plan Mode 状态管理器 */
 export class PlanModeManager {
@@ -73,8 +138,8 @@ export class PlanModeManager {
    * 同样恒为 null。三份里只有一份活着，另两份的读者拿到的都是空值。
    */
   private prePlanMode: string | null = null;
-  /** 缓存的计划文件所属项目名（同一会话内复用） */
-  private planProject: string | null = null;
+  /** 本份计划从哪个入口进入（null = 当前没有计划） */
+  private entrySource: PlanEntrySource | null = null;
   /** Plan Mode 提醒注入轮次计数（用于节流：每 N 轮发完整提醒） */
   private reminderTurn = 0;
   /** 完整提醒间隔（每 N 轮发一次完整提醒，其余发简短提醒） */
@@ -84,44 +149,81 @@ export class PlanModeManager {
   /**
    * 是否处于"执行阶段"——计划已被 approve、正在按计划执行。
    *
-   * 缺陷修复：Recovery Hook 的设计意图是"执行阶段工具失败时提醒先更新 plan 再继续"，
-   * 但 approve() 后状态立刻回到 inactive、isPlanning() 为 false，recovery 永远触发不到。
-   * 这里用独立标志追踪执行阶段：approve() 时置 true，下次 enter()/forceExit() 时清零。
    * 与三态状态机正交——执行阶段权限模式已恢复（非 plan），但语义上仍"在按计划干活"。
+   * 出口见文件头注释：enter() / forceExit() / completeExecution()，没有「回合边界」。
    */
   private executing = false;
+  /**
+   * 上一份计划的结局。enter() 清零，进入终态（批准 / 取消 / 超限 / 完成 / 清空）时写入。
+   * exit_plan_mode 在非规划态下据此回答「你的计划现在是什么状态」。
+   */
+  private lastOutcome: PlanOutcome | null = null;
 
   // ADR-028: fidelity 追踪字段
   /** 解析 plan markdown 拿到的步骤 */
   private planSteps: PlanStep[] = [];
+  /** 最近一次解析用的口径（见 PlanStepSource） */
+  private planStepSource: PlanStepSource = "flat";
   /** exit_plan_mode 后的工具调用记录 */
   private actualToolCalls: ActualToolCall[] = [];
+  /**
+   * 与 actualToolCalls 下标一一对应的参数值（collectArgValues 的结果）。
+   * 执行期计划被修订后要拿新步骤重新对齐历史调用，只存哈希做不到这一点；
+   * 不放进 ActualToolCall 是因为它是对外报告结构，参数值不该随报告外流。
+   */
+  private actualArgValues: string[][] = [];
 
   /** 获取进入 plan 前的权限模式 */
   getPrePlanMode(): string | null {
     return this.prePlanMode;
   }
 
+  /** 本份计划的进入入口（无计划时 null） */
+  getEntrySource(): PlanEntrySource | null {
+    return this.entrySource;
+  }
+
+  /** 上一份计划的结局（规划中 / 从未有过计划时为 null） */
+  getLastOutcome(): PlanOutcome | null {
+    return this.lastOutcome;
+  }
+
   /**
    * 进入 Plan Mode
    * @param currentPermissionMode 进入前的权限模式；传 "plan" 视同未知（不能「恢复成 plan」）
+   * @param source 进入入口。enter_plan_mode 工具为 "tool"，权限模式同步为 "permission_mode"
    */
-  enter(currentPermissionMode?: string, topic?: string): boolean {
+  enter(currentPermissionMode?: string, topic?: string, source: PlanEntrySource = "tool"): boolean {
     if (this.state !== "inactive") return false;
     const from = this.state;
+    const executingBefore = this.executing;
     this.state = "planning";
     this.rejectionCount = 0;
     this.reminderTurn = 0;
+    // 进入新计划 = 上一份计划的执行阶段被取代（这是执行阶段的出口之一）
     this.executing = false;
+    this.lastOutcome = null;
+    this.entrySource = source;
     // B17：fidelity 追踪按「一份计划」计。同一会话第二次进入规划时不清，
     // 上一份计划执行期的调用会被算进这一份的「实际调用数 / 偏离数」。
     this.planSteps = [];
+    this.planStepSource = "flat";
     this.actualToolCalls = [];
+    this.actualArgValues = [];
+    this.planFileUpdates = [];
     this.prePlanMode =
       currentPermissionMode && currentPermissionMode !== "plan" ? currentPermissionMode : null;
-    this.planFilePath = this.generatePlanFilePath(topic);
-    this.ensurePlanDir();
-    this.emit({ from, to: this.state, planFilePath: this.planFilePath });
+    this.planFilePath = this.reservePlanFile(topic);
+    this.emit({
+      from,
+      to: this.state,
+      planFilePath: this.planFilePath,
+      reason: source === "permission_mode" ? "enter_permission_mode" : "enter",
+      executingBefore,
+      executingAfter: false,
+      rejectionCount: 0,
+      meta: { source },
+    });
     return true;
   }
 
@@ -141,7 +243,7 @@ export class PlanModeManager {
    */
   syncWithPermissionMode(permissionMode: string | undefined): boolean {
     if (permissionMode !== "plan" || this.isActive()) return false;
-    return this.enter(undefined);
+    return this.enter(undefined, undefined, "permission_mode");
   }
 
   /** 提交计划等待审批 */
@@ -149,19 +251,38 @@ export class PlanModeManager {
     if (this.state !== "planning") return false;
     const from = this.state;
     this.state = "awaiting_approval";
-    this.emit({ from, to: this.state, planFilePath: this.planFilePath });
+    this.emit({
+      from,
+      to: this.state,
+      planFilePath: this.planFilePath,
+      reason: "submit",
+      executingBefore: false,
+      executingAfter: false,
+      rejectionCount: this.rejectionCount,
+      meta: { source: "tool" },
+    });
     return true;
   }
 
   /** 用户批准计划 → 退出 Plan Mode，进入执行阶段 */
-  approve(): boolean {
+  approve(meta?: PlanTransitionMeta): boolean {
     if (this.state !== "awaiting_approval") return false;
     const from = this.state;
     this.state = "inactive";
-    // 缺陷修复：进入执行阶段。此后权限模式已恢复（非 plan），但语义上在按计划执行，
-    // Recovery Hook 据 isExecuting() 在执行阶段工具失败时触发"先更新 plan 再继续"。
+    // 进入执行阶段。此后权限模式已恢复（非 plan），但语义上在按计划执行，
+    // Recovery Hook / 权限链 Step 3.5 / 压缩重注入都据 isExecuting() 判断。
     this.executing = true;
-    this.emit({ from, to: this.state, planFilePath: this.planFilePath });
+    this.lastOutcome = "approved";
+    this.emit({
+      from,
+      to: this.state,
+      planFilePath: this.planFilePath,
+      reason: "approve",
+      executingBefore: false,
+      executingAfter: true,
+      rejectionCount: this.rejectionCount,
+      ...(meta ? { meta } : {}),
+    });
     return true;
   }
 
@@ -173,61 +294,99 @@ export class PlanModeManager {
    * 改 state、不清 planFilePath，于是超限退出后路径残留，与「路径在 = 有活跃计划」
    * 的语义不符（今天没出错只是因为消费方另有 isPlanning/isExecuting 的门）。
    */
-  reject(): boolean {
+  reject(meta?: PlanTransitionMeta): boolean {
     if (this.state !== "awaiting_approval") return false;
     this.rejectionCount++;
     if (this.rejectionCount >= this.maxRejections) {
-      this.forceExit();
+      this.exitPlan("reject_limit", "rejected_limit", meta);
       return false;
     }
     const from = this.state;
     this.state = "planning";
-    this.emit({ from, to: this.state, planFilePath: this.planFilePath });
+    this.emit({
+      from,
+      to: this.state,
+      planFilePath: this.planFilePath,
+      reason: "reject",
+      executingBefore: false,
+      executingAfter: false,
+      rejectionCount: this.rejectionCount,
+      ...(meta ? { meta } : {}),
+    });
+    return true;
+  }
+
+  /** 拒绝上限（拒绝消息里告诉模型「第 n / N 次」用） */
+  getMaxRejections(): number {
+    return this.maxRejections;
+  }
+
+  /**
+   * 强制退出 Plan Mode：用户取消（默认）或 `/clear`。
+   *
+   * P1-1：`state === "inactive"` 时不无条件 return——执行阶段的 state 正是
+   * inactive 而 isExecuting() 为真，「用户取消」必须真的关掉执行阶段
+   * （它是权限链 Step 3.5 的放行条件之一）。
+   *
+   * P3-1：退出时同时清 planFilePath。不变量是
+   * `getPlanFilePath() !== null ⇔ isActive() || isExecuting()`。
+   * 事件里的 planFilePath 取退出前的值，监听方仍能知道退出的是哪份计划。
+   */
+  forceExit(reason: "cancel" | "clear" = "cancel", meta?: PlanTransitionMeta): void {
+    this.exitPlan(reason, reason === "clear" ? "cleared" : "cancelled", meta);
+  }
+
+  /**
+   * 计划执行完毕（计划派生的 todo 清单全部完成）→ 结束执行阶段。
+   * 只在执行阶段生效；规划中 / 待审批 / 无计划时是 no-op，返回是否真的结束了。
+   */
+  completeExecution(): boolean {
+    if (!this.executing || this.isActive()) return false;
+    this.exitPlan("todos_completed", "completed");
     return true;
   }
 
   /**
-   * 强制退出 Plan Mode（用户取消）。
-   *
-   * P1-1：`state === "inactive"` 时不再无条件 return——执行阶段的 state 正是
-   * inactive 而 isExecuting() 为真，从前那个早退让 forceExit 在**唯一需要它
-   * 收尾执行阶段**的时刻变成 no-op（旧测试甚至把这件事写成了预期）。
-   * 在 isExecuting() 只被 Recovery Hook 读的年代这无害；它现在还是权限链
-   * Step 3.5 的放行条件之一，于是「用户取消」必须真的关掉执行阶段。
-   *
-   * P3-1：退出时同时清 planFilePath。不变量是
-   * `getPlanFilePath() !== null ⇔ isActive() || isExecuting()`——
-   * 从前 forceExit 清了 planSteps / executing 唯独留着路径，
-   * 下一个按「路径在 = 有活跃计划」写代码的人就会拿到一个已作废的计划文件。
-   * 事件里的 planFilePath 取退出前的值，监听方仍能知道退出的是哪份计划。
+   * 所有「退出计划」的唯一出口（取消 / 清空 / 拒绝超限 / 执行完毕）。
+   * 收在一处是为了让清理范围、占位文件回收、事件形态不会在四条路径上各写一份然后漂移。
    */
-  forceExit(): void {
+  private exitPlan(
+    reason: "cancel" | "clear" | "reject_limit" | "todos_completed",
+    outcome: PlanOutcome,
+    meta?: PlanTransitionMeta,
+  ): void {
     if (this.state === "inactive" && !this.executing) return;
     const from = this.state;
+    const executingBefore = this.executing;
     const exitedPlanFilePath = this.planFilePath;
+    const rejectionCount = this.rejectionCount;
     this.state = "inactive";
     this.rejectionCount = 0;
     this.reminderTurn = 0;
-    this.planFileUpdates = [];
+    // 正常执行完毕时保留更新次数：plan_recovery 评测在会话收尾后读它，
+    // 清掉就等于把「执行期按守则改过几次计划」这个被测量本身抹掉。下一次 enter() 会清。
+    // 取消 / 清空 / 超限是作废，计数随计划一起作废（既有契约）。
+    if (reason !== "todos_completed") this.planFileUpdates = [];
     this.planSteps = [];
+    this.planStepSource = "flat";
     this.actualToolCalls = [];
+    this.actualArgValues = [];
     this.executing = false;
     this.planFilePath = null;
-    this.emit({ from, to: this.state, planFilePath: exitedPlanFilePath });
-  }
-
-  /**
-   * 结束执行阶段（清 executing 标志）。
-   * 当一轮按计划执行彻底收尾、或用户开启新一轮 plan 时调用。
-   * 注意 enter() 已会清零，此方法供"执行完成但未进入新 plan"的显式收尾场景。
-   *
-   * P3-1：执行阶段结束且不在规划态时一并清 planFilePath，维持 forceExit 注释里那条不变量。
-   * 必须判 state：app 在**每个**用户回合开始时调本方法，规划中途用户回一句话
-   * 也会走到这里——那时清路径就把正在写的计划弄丢了。
-   */
-  endExecution(): void {
-    this.executing = false;
-    if (this.state === "inactive") this.planFilePath = null;
+    this.entrySource = null;
+    this.lastOutcome = outcome;
+    // 占位文件从没被写入过 → 回收。有内容的计划文件是用户的决策记录，一律保留。
+    if (exitedPlanFilePath) PlanModeManager.removeIfEmpty(exitedPlanFilePath);
+    this.emit({
+      from,
+      to: this.state,
+      planFilePath: exitedPlanFilePath,
+      reason,
+      executingBefore,
+      executingAfter: false,
+      rejectionCount,
+      ...(meta ? { meta } : {}),
+    });
   }
 
   // ── 查询方法 ──
@@ -310,105 +469,166 @@ export class PlanModeManager {
   // ── ADR-028 fidelity 追踪 ──
 
   /**
-   * 解析 plan markdown 拿到顶层步骤列表 (1. xxx / - xxx).
-   * 支持: 中文/英文编号 + 顶层 dash 项. 嵌套子步骤不计 step.
-   * 解析后存入 this.planSteps 供后续对齐使用.
-   * 多次调用以最后一次为准 (plan 文件更新).
+   * 解析 plan markdown 拿到步骤列表，存入 this.planSteps（多次调用以最后一次为准）。
    *
-   * P1-2：**非步骤章节下的列表项不计入步骤**。
+   * 只认**顶层**列表项（`1. xxx` / `1) xxx` / `- xxx` / `* xxx`），缩进子项与代码围栏内的
+   * 内容一律不计。哪些章节算步骤，按三档口径依次取（见 PlanStepSource）：
    *
-   * 从前这个解析器对每一行只做一件事——排除缩进行，不排除任何章节。于是
-   * buildPlanModePrompt 自己教模型写的「## 决策记录」小节里那几条
-   * 「推迟 X / 替代方案 Y」，以及「## 风险」下的风险描述，全部被数成步骤。
-   * 后果不只是数字难看：countPlanSteps 的结果喂给 buildPlanApprovedMessage，
-   * 而那条「todo 清单必须覆盖全部 N 步」的强制令只在 planStepCount >= 3 时下达——
-   * 口径虚高会**改变是否下达这条指令**，一份只有 1 个真步骤的计划只要写了两条
-   * 决策记录就会触发它。更糟的是同一条批准消息里两条指令互相矛盾：
-   * 一条要求这 N 项都要做，另一条（尊重既有决策）要求其中的决策记录项不许重做。
+   *   1. step_sections —— 存在「步骤类」标题（实施步骤 / 修改方案 / Steps …）且其下有列表项：
+   *      **只数这些章节**。这是 buildPlanModePrompt 要求模型写的形态，也是唯一不靠猜的口径。
+   *   2. excluding_non_step —— 有标题但没有步骤类标题：排除「非步骤」章节后计数。
+   *   3. flat —— 一个标题都没有的朴素计划：全部计数。
+   *
+   * 2026-10-24 为什么从「只排除非步骤章节」改成「步骤章节优先」：否定口径要求关键词表
+   * 穷举模型可能起的所有非步骤标题，而模型的标题是开放集。实测本机全部 7 份真实计划
+   * （缺陷单只读分析）都用「结论 / 根因 / 修改方案 / 影响面 / 自测方式 / 需要补充」，
+   * 词表只认得「结论」，于是 plan_step_count 记成 11–20，真实修改项只有 3–5，
+   * 7/7 跨过 >= 3 的「todo 必须覆盖全部 N 步」强制令门槛。肯定口径只需要认得
+   * 少数几种「步骤」标题，否定口径退为兜底。
+   *
+   * 代码围栏必须隔离：围栏里的 `- name: x` 会被数成步骤，围栏里的 `# 注释` 会被当成标题
+   * 改写章节归属（实测一条 bash 注释能让其后整节「风险」被数成步骤）。
    */
   parsePlanFromMarkdown(md: string): PlanStep[] {
     if (typeof md !== "string") {
       this.planSteps = [];
+      this.planStepSource = "flat";
+      this.realignActualCalls();
       return [];
     }
-    const steps: PlanStep[] = [];
-    const lines = md.split(/\r?\n/);
-    // 仅匹配顶层 (没有 leading 空格 / tab) 的有序项 "1. xxx" / "1) xxx" 或顶层 "- xxx" / "* xxx".
-    const orderedRe = /^(\d+)[.)]\s+(.+)$/;
+    const { steps, source } = PlanModeManager.extractPlanSteps(md);
+    this.planSteps = steps;
+    this.planStepSource = source;
+    // 执行期计划被修订（失败守则要求先改计划再继续）后，已发生的调用要按新步骤重新对齐，
+    // 否则 fidelity 一直拿批准那一刻的旧步骤算，修订后的计划在报告里不存在。
+    this.realignActualCalls();
+    return steps;
+  }
+
+  /** 最近一次解析所用的步骤口径（PlanFidelity / PlanTransition 埋点用） */
+  getPlanStepSource(): PlanStepSource {
+    return this.planStepSource;
+  }
+
+  /**
+   * 纯函数版解析：不改实例状态。digest 用它按**当前口径**重算历史计划文件的步数，
+   * 与事件里记录的旧口径对照（数据层面的口径迁移，见 PLAN_STEP_PARSER_VERSION）。
+   */
+  static extractPlanSteps(md: string): { steps: PlanStep[]; source: PlanStepSource } {
+    type Section = { kind: "step" | "non_step" | "neutral"; items: string[] };
+    // 第一个「章节」是标题之前的前言，按中性处理（向后兼容不写标题的朴素计划）
+    const sections: Section[] = [{ kind: "neutral", items: [] }];
+    let sawHeading = false;
+    let fence: string | null = null;
+    const orderedRe = /^\d+[.)]\s+(.+)$/;
     const dashRe = /^[-*]\s+(.+)$/;
     const headingRe = /^#{1,6}\s+(.+)$/;
-    let idx = 0;
-    // 当前所在标题是否是「非步骤章节」。文件开头（无标题）视为步骤区，
-    // 保持对不写任何标题的朴素计划的向后兼容。
-    let inNonStepSection = false;
-    for (const raw of lines) {
+    // CommonMark：围栏最多缩进 3 格；用 ``` 开的只能用 ``` 关（~~~ 同理）
+    const fenceRe = /^ {0,3}(`{3,}|~{3,})/;
+    for (const raw of md.split(/\r?\n/)) {
+      const fm = raw.match(fenceRe);
+      if (fm) {
+        const marker = fm[1];
+        if (fence === null) fence = marker;
+        else if (marker[0] === fence[0] && marker.length >= fence.length) fence = null;
+        continue;
+      }
+      if (fence !== null) continue;
       const hm = raw.match(headingRe);
       if (hm) {
-        inNonStepSection = PlanModeManager.isNonStepHeading(hm[1]);
+        sawHeading = true;
+        sections.push({ kind: PlanModeManager.classifyHeading(hm[1]), items: [] });
         continue;
       }
       // 跳过被缩进的子项
       if (/^\s/.test(raw)) continue;
-      // 非步骤章节下的列表项不是步骤
-      if (inNonStepSection) continue;
-      const om = raw.match(orderedRe);
-      const dm = !om && raw.match(dashRe);
-      if (om) {
-        idx += 1;
-        steps.push({
-          index: idx,
-          description: om[2].trim(),
-          matchedActualIndices: [],
-        });
-      } else if (dm) {
-        idx += 1;
-        steps.push({
-          index: idx,
-          description: dm[1].trim(),
-          matchedActualIndices: [],
-        });
+      const m = raw.match(orderedRe) ?? raw.match(dashRe);
+      if (m) sections[sections.length - 1].items.push(m[1].trim());
+    }
+
+    let source: PlanStepSource;
+    let picked: Section[];
+    if (sections.some((s) => s.kind === "step" && s.items.length > 0)) {
+      source = "step_sections";
+      picked = sections.filter((s) => s.kind === "step");
+    } else if (sawHeading) {
+      source = "excluding_non_step";
+      picked = sections.filter((s) => s.kind !== "non_step");
+    } else {
+      source = "flat";
+      picked = sections;
+    }
+    const steps: PlanStep[] = [];
+    for (const s of picked) {
+      for (const description of s.items) {
+        steps.push({ index: steps.length + 1, description, matchedActualIndices: [] });
       }
     }
-    this.planSteps = steps;
-    return steps;
+    return { steps, source };
   }
 
   /**
-   * 判断一个 markdown 标题是否属于「非步骤章节」——其下的列表项不该被数成步骤。
-   *
-   * 关键词表刻意只收**计划文件里真实会出现**的那几类，判据是
-   * `plan/prompt.ts` 自己教模型写什么：buildPlanModePrompt 明确要求
-   * 「## 决策记录」（含原因 / 替代方案 / 重新评估条件），阶段 2 要求考虑
-   * 「潜在风险和边界情况」。剩下的是通用非步骤段落（背景 / 现状 / 参考 / 附录…）。
-   *
-   * 不做成「只数 `## 步骤` 章节内的项」的反向口径，理由是向后兼容：
-   * 大量既有计划不写「## 步骤」这个标题，反向口径会让它们的步骤数直接归零，
-   * 把一个虚高的数字换成一个恒为 0 的数字——那会让 >= 3 的强制令永不下达。
+   * 标题分类。顺序有讲究：
+   *   ① 强非步骤词（决策记录 / 风险 / 替代方案）先判——「## 三、风险与回滚步骤」仍是风险节，
+   *      「替代方案」含「方案」但不是要执行的方案；
+   *   ② 再判步骤词——「## 实施步骤与目标」含弱非步骤词「目标」，但它是步骤节；
+   *   ③ 最后判弱非步骤词（背景 / 根因 / 影响面 / 验证 …）。
+   * 都不命中为中性：在 excluding_non_step 口径下照常计数。
    */
-  private static isNonStepHeading(title: string): boolean {
+  private static classifyHeading(title: string): "step" | "non_step" | "neutral" {
     // 去掉 markdown 强调符与前后空白，统一小写便于匹配英文标题
     const t = title
       .replace(/[*_`#]/g, "")
       .trim()
       .toLowerCase();
-    return PlanModeManager.NON_STEP_HEADING_KEYWORDS.some((kw) => t.includes(kw));
+    const has = (kws: readonly string[]) => kws.some((kw) => t.includes(kw));
+    if (has(PlanModeManager.STRONG_NON_STEP_KEYWORDS)) return "non_step";
+    if (has(PlanModeManager.STEP_HEADING_KEYWORDS)) return "step";
+    if (has(PlanModeManager.NON_STEP_HEADING_KEYWORDS)) return "non_step";
+    return "neutral";
   }
 
   /**
-   * 非步骤章节的标题关键词（子串匹配，中英各一组）。
-   * 用子串而非全等：实际标题常带编号或后缀（「## 三、风险与回滚」「## 决策记录（防漂移）」）。
+   * 步骤类标题关键词（子串匹配）。buildPlanModePrompt 要求写「## 实施步骤」，
+   * 其余是真实计划里出现过的同义写法（「修改方案」来自本机 7 份真实计划）。
    */
-  private static readonly NON_STEP_HEADING_KEYWORDS: readonly string[] = [
-    // buildPlanModePrompt 明确要求写的两类
+  private static readonly STEP_HEADING_KEYWORDS: readonly string[] = [
+    "步骤",
+    "实施",
+    "执行计划",
+    "修改方案",
+    "改动方案",
+    "修复方案",
+    "实现方案",
+    "改动清单",
+    "任务清单",
+    "todo",
+    "step",
+    "implementation",
+    "action plan",
+    "changes",
+    "tasks",
+  ];
+
+  /** 强非步骤词：命中即非步骤，优先级高于步骤词 */
+  private static readonly STRONG_NON_STEP_KEYWORDS: readonly string[] = [
     "决策记录",
     "风险",
+    "替代",
     "decision",
     "risk",
-    // 通用非步骤段落
+    "alternative",
+  ];
+
+  /**
+   * 弱非步骤词（子串匹配，中英各一组）：只在没命中步骤词时生效。
+   * 后半段（根因 / 影响面 / 自测 / 置信度 / 需要补充）来自本机真实计划的章节结构——
+   * 旧词表一个都不认得，那 7 份计划的步数因此虚高 3–5 倍。
+   */
+  private static readonly NON_STEP_HEADING_KEYWORDS: readonly string[] = [
     "背景",
     "现状",
     "目标",
-    "非目标",
     "参考",
     "附录",
     "备注",
@@ -416,10 +636,22 @@ export class PlanModeManager {
     "验收",
     "边界情况",
     "未决问题",
+    "根因",
+    "原因",
+    "分析",
+    "影响",
+    "自测",
+    "测试方式",
+    "验证",
+    "置信度",
+    "需要补充",
+    "待确认",
+    "问题",
+    "概述",
+    "摘要",
     "background",
     "context",
     "goal",
-    "non-goal",
     "reference",
     "appendix",
     "note",
@@ -427,7 +659,14 @@ export class PlanModeManager {
     "acceptance",
     "trade-off",
     "tradeoff",
-    "alternative",
+    "root cause",
+    "analysis",
+    "impact",
+    "verification",
+    "testing",
+    "confidence",
+    "summary",
+    "overview",
   ];
 
   /**
@@ -436,19 +675,40 @@ export class PlanModeManager {
    */
   recordActualToolCall(toolName: string, args: unknown): ActualToolCall {
     const argsHash = this.hashArgs(args);
+    const argValues = PlanModeManager.collectArgValues(args);
     const next: ActualToolCall = {
       index: this.actualToolCalls.length + 1,
       toolName,
       argsHash,
-      matchedPlanStepIndex: this.matchAgainstPlan(toolName, args),
+      matchedPlanStepIndex: this.matchAgainstPlan(toolName, argValues),
       timestamp: this.now(),
     };
     this.actualToolCalls.push(next);
+    this.actualArgValues.push(argValues);
     if (next.matchedPlanStepIndex !== null) {
       const step = this.planSteps.find((s) => s.index === next.matchedPlanStepIndex);
       if (step) step.matchedActualIndices.push(next.index);
     }
     return next;
+  }
+
+  /**
+   * 按当前 planSteps 从头重放已记录的调用。必须按原顺序逐条重放：
+   * matchAgainstPlan 的同分裁决看「该步骤是否已被命中」，一次性并行算会改变结果。
+   */
+  private realignActualCalls(): void {
+    for (const s of this.planSteps) s.matchedActualIndices = [];
+    for (let i = 0; i < this.actualToolCalls.length; i++) {
+      const call = this.actualToolCalls[i];
+      call.matchedPlanStepIndex = this.matchAgainstPlan(
+        call.toolName,
+        this.actualArgValues[i] ?? [],
+      );
+      if (call.matchedPlanStepIndex !== null) {
+        const step = this.planSteps.find((s) => s.index === call.matchedPlanStepIndex);
+        if (step) step.matchedActualIndices.push(call.index);
+      }
+    }
   }
 
   /** ADR-028 §3.1: 内核权威 fidelity 报告 */
@@ -471,7 +731,9 @@ export class PlanModeManager {
   /** 单测/runner 注入用 — 重置 fidelity 追踪状态 */
   resetFidelity(): void {
     this.planSteps = [];
+    this.planStepSource = "flat";
     this.actualToolCalls = [];
+    this.actualArgValues = [];
   }
 
   // ── 事件监听 ──
@@ -483,33 +745,77 @@ export class PlanModeManager {
     };
   }
 
+  /** 监听方抛错不得打断状态机（埋点是旁路，跃迁已经发生） */
   private emit(event: PlanModeEvent): void {
     for (const listener of this.listeners) {
-      listener(event);
+      try {
+        listener(event);
+      } catch {
+        /* 旁路失败不影响状态机 */
+      }
     }
   }
 
   // ── 内部方法 ──
 
-  private generatePlanFilePath(topic?: string): string {
+  /**
+   * 生成计划文件路径并**原子占位**（O_EXCL 创建空文件），返回占到的路径。
+   *
+   * 2026-10-24：从前只算路径、不建文件，去重靠 `existsSync`——文件要等模型 write 才存在。
+   * 同一分钟、同项目、同主题进入规划的两个会话（多 agent 并行 / 多终端 / 批量评测）
+   * 都看见「不存在」，拿到同一个路径，后写的那份静默覆盖前一份。`existsSync` + 之后再写
+   * 是典型的 check-then-act 竞态；`openSync(path, "wx")` 把「检查」和「占用」合成一个
+   * 系统调用，EEXIST 时序号 +1 重试。
+   *
+   * 占位的空文件有三处配套：write 工具把「已存在但 0 字节」当新建处理（无内容可冲掉，
+   * 不要求先 read）；exitPlan 回收从未写入的占位；startup-housekeeping 回收崩溃遗留的
+   * 空占位。占位失败（只读文件系统等）退回只算路径，行为同从前。
+   */
+  private reservePlanFile(topic?: string): string {
     const project = resolvePlanProject(getCwd());
-    this.planProject = project;
+    const dir = sidPaths.plansForProject(project);
+    try {
+      mkdirSync(dir, { recursive: true });
+    } catch {
+      /* 目录建不出来时下面的 openSync 会失败，走兜底 */
+    }
     const time = formatPlanTime();
     const safeTopic = sanitizePlanTopic(topic);
     const base = safeTopic ? `${time}-${safeTopic}` : time;
-    // 去重：同项目同分钟内多次进入 plan（或兜底时间戳）避免覆盖
     let candidate = sidPaths.plan(project, base);
-    let n = 2;
-    while (existsSync(candidate)) {
-      candidate = sidPaths.plan(project, `${base}-${n++}`);
+    for (let n = 2; n < 10_000; n++) {
+      try {
+        closeSync(openSync(candidate, "wx"));
+        return candidate;
+      } catch (err: any) {
+        if (err?.code !== "EEXIST") break;
+      }
+      candidate = sidPaths.plan(project, `${base}-${n}`);
     }
-    return candidate;
+    // 兜底：占不了位（只读 FS / 权限）时至少别撞已存在的文件
+    let fallback = sidPaths.plan(project, base);
+    let n = 2;
+    while (existsSync(fallback)) fallback = sidPaths.plan(project, `${base}-${n++}`);
+    return fallback;
   }
 
-  private ensurePlanDir(): void {
-    const dir = sidPaths.plansForProject(this.planProject ?? "default");
-    if (!existsSync(dir)) {
-      mkdirSync(dir, { recursive: true });
+  /** 计划文件是否已有内容（占位的空文件 / 只有空白都算「尚未写」） */
+  static hasPlanContent(filePath: string | null): boolean {
+    if (!filePath) return false;
+    try {
+      if (statSync(filePath).size === 0) return false;
+      return readFileSync(filePath, "utf-8").trim().length > 0;
+    } catch {
+      return false;
+    }
+  }
+
+  /** 0 字节的占位文件才删；任何有内容的计划文件都是用户资产，不碰 */
+  private static removeIfEmpty(filePath: string): void {
+    try {
+      if (statSync(filePath).size === 0) unlinkSync(filePath);
+    } catch {
+      /* 不存在 / 无权限：无事可做 */
     }
   }
 
@@ -545,9 +851,8 @@ export class PlanModeManager {
    *
    * 注意: 一个 step 可被多个 actual 命中 (matchedActualIndices 是 list).
    */
-  private matchAgainstPlan(toolName: string, args: unknown): number | null {
+  private matchAgainstPlan(toolName: string, argValues: string[]): number | null {
     if (this.planSteps.length === 0) return null;
-    const argValues = PlanModeManager.collectArgValues(args);
     if (argValues.length === 0) return null;
     const lowerTool = toolName.toLowerCase();
     const verbs = PlanModeManager.TOOL_VERBS[lowerTool] ?? [];
