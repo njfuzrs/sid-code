@@ -133,7 +133,7 @@ import {
 } from "./signal-teardown.ts";
 import { execSync } from "child_process";
 import { existsSync, readFileSync } from "fs";
-import { open, stat } from "fs/promises";
+import { open, readdir, stat } from "fs/promises";
 import { resolve, extname, join } from "path";
 import { BINARY_CHECK_WINDOW, isBinaryContent } from "@sid-code/core/tool/binary-detect.ts";
 import { sidPaths } from "@sid-code/core/config/paths.ts";
@@ -212,6 +212,72 @@ interface AtExpansionResult {
    * 与 blockedPaths 分开：这类文件可以经 Read 工具分段读取，提示语义相反。
    */
   skippedPaths?: Array<{ path: string; reason: string }>;
+  /** 自上次注入后未改动、且原注入内容仍在上下文里，因此本次没有重复注入的 @ 提及 */
+  dedupedPaths?: string[];
+}
+
+/**
+ * @ 提及去重所需的会话状态（由 App 持有，expandAtReferences 读写）。
+ *
+ * 不复用 FileReadTracker 判「已在上下文」：tracker 只记「读过 + 当时的 mtime」，
+ * 不知道内容是否还在上下文里——压缩、旧工具结果清理、/clear、撤回未发送轮次都会
+ * 把内容拿掉而 tracker 不变，据它去重会让模型以为看过、实际看不到。这里改为记下
+ * 注入时的标题行（marker），每次去重前确认它仍在当前上下文的 user 消息里。
+ */
+export interface AtDedupContext {
+  /** key（绝对路径 + 行范围）→ 注入时的 mtime 与标题行 */
+  inlined: Map<string, { mtimeMs: number; marker: string }>;
+  /** 判断某个标题行是否仍在当前上下文中 */
+  hasInContext: (marker: string) => boolean;
+}
+
+/**
+ * 一条消息里所有 @ 内联内容的总字节预算。
+ *
+ * 单文件上限防不住数量：粘贴 30 个各 99KB 的路径就是约 3MB，照样撑爆窗口。
+ * CC 只有单文件上限，这里更严一层。取 256KB：约等于两三次 Read 满额输出，
+ * 正常的多文件引用够用，超出的按出现顺序跳过并告知，模型可以再用 Read 按需读取。
+ */
+const AT_INLINE_TOTAL_MAX_BYTES = 256 * 1024;
+
+/**
+ * 带行范围（`@f.ts#L10-20`）时允许读取的源文件上限。
+ * 最终注入量仍受单文件上限和总预算约束；这里只是不为截一小段去把超大文件整份读进内存。
+ */
+const AT_RANGE_SOURCE_MAX_BYTES = 10 * 1024 * 1024;
+
+/** 目录提及最多列出的条目数（对齐 CC processAtMentionedFiles 的 1000） */
+const AT_DIR_MAX_ENTRIES = 1000;
+
+/** `#L10` / `#L10-20` 行范围后缀 */
+const AT_RANGE_SUFFIX = /#L(\d+)(?:-(\d+))?$/;
+
+/** 读文件开头 size 字节：只读 stat 出的字节数，文件在 stat 之后被追加也不会越过上限 */
+async function readHeadBytes(absPath: string, size: number): Promise<Buffer> {
+  const fh = await open(absPath, "r");
+  try {
+    const buf = Buffer.alloc(size);
+    const { bytesRead } = await fh.read(buf, 0, size, 0);
+    return buf.subarray(0, bytesRead);
+  } finally {
+    await fh.close();
+  }
+}
+
+/** 目录条目列表（只有名字、不递归，子目录带 `/` 后缀），超过上限截断并注明剩余数量 */
+async function listDirectoryForAt(absPath: string, displayPath: string): Promise<string> {
+  const entries = await readdir(absPath, { withFileTypes: true });
+  const names = entries
+    .map((e) => (e.isDirectory() ? `${e.name}/` : e.name))
+    .sort((a, b) => a.localeCompare(b));
+  if (names.length === 0) return `目录 \`${displayPath}\` 为空。`;
+  const shown = names.slice(0, AT_DIR_MAX_ENTRIES);
+  const rest = names.length - shown.length;
+  return (
+    `以下是目录 \`${displayPath}\` 的条目（不递归，共 ${names.length} 项）：\n` +
+    shown.map((n) => `- ${n}`).join("\n") +
+    (rest > 0 ? `\n… 另有 ${rest} 项未列出` : "")
+  );
 }
 
 /**
@@ -262,6 +328,7 @@ export async function expandAtReferences(
   input: string,
   mcpManager?: MCPManager,
   permissionChecker?: Checker | null,
+  dedup?: AtDedupContext,
 ): Promise<AtExpansionResult> {
   const parts: string[] = [];
   /** 被路径校验拦下的 @ 提及，用于向用户显式告知"没注入"（不能静默） */
@@ -302,7 +369,17 @@ export async function expandAtReferences(
   }
 
   // 两种形态：@"带空格的路径" 或 @无空格路径。前者支持 P2-6/P2-7 的临时图片路径（可能含空格）。
-  const AT_PATTERN = /@"([^"]+)"|@([\w./\-]+)/g;
+  //
+  // 左边界 `(?<!\w)`：没有它时 `foo@bar.com` 里的 `@` 也会进入文件解析。
+  // 不照搬 CC 的 `(^|\s)`：输入框的 @ 补全（ui/hooks/useAtCompletion.ts extractAtPattern）
+  // 只在 `@` 前是 \w 时不触发，`看下@src/a.ts` 这种中文紧贴写法能弹补全；展开若要求空白，
+  // 用户选了补全项文件却不注入。两处判据必须一致。
+  // 局限（与 CC 相同）：空白后的 `@scope/pkg` 与 `@src/a.ts` 语法上分不开，仍会匹配，
+  // 只是当前目录没有同名路径时 stat 不命中、静默跳过。
+  // 也不照抄 CC 结尾的 `\b`：它会吃掉末尾 `/`，而末尾 `/` 正是目录提及的标志。
+  // 无引号形态允许 `#L10` / `#L10-20` 行范围后缀：此前 `#` 不在字符类里，
+  // `@f.ts#L10-20` 被截成 `f.ts` 后整份注入，与「只给一小段」的意图正好相反。
+  const AT_PATTERN = /(?<!\w)@"([^"]+)"|(?<!\w)@([\w./\-]+(?:#L\d+(?:-\d+)?)?)/g;
   const matches = [...working.matchAll(AT_PATTERN)];
   if (matches.length === 0 && parts.length === 0) {
     return { displayText: input, injectedContent: null };
@@ -310,9 +387,26 @@ export async function expandAtReferences(
 
   const fileContents: string[] = [];
   const imagePaths: string[] = [];
+  const deduped: string[] = [];
+  /** 本条消息已内联的字节数（第 2 项总预算） */
+  let inlinedBytes = 0;
+  /** 同一条消息里重复提及的同一目标只处理一次 */
+  const seenKeys = new Set<string>();
+  const overBudget = (bytes: number): boolean => inlinedBytes + bytes > AT_INLINE_TOTAL_MAX_BYTES;
+  const budgetReason = `本条消息 @ 内联总量超过 ${AT_INLINE_TOTAL_MAX_BYTES / 1024}KB`;
   for (const match of matches) {
-    const filePath = match[1] ?? match[2]; // 引号组优先
+    const token = match[1] ?? match[2]; // 引号组优先
+    if (!token) continue;
+    // 行范围后缀：引号形态里也认（`@"a b.ts#L3-5"`）。范围非法（0 行、倒序）时按升序夹紧。
+    const rangeMatch = AT_RANGE_SUFFIX.exec(token);
+    const filePath = rangeMatch ? token.slice(0, rangeMatch.index) : token;
     if (!filePath) continue;
+    let range: { start: number; end: number } | null = null;
+    if (rangeMatch) {
+      const a = Math.max(1, Number(rangeMatch[1]));
+      const b = Math.max(1, Number(rangeMatch[2] ?? rangeMatch[1]));
+      range = { start: Math.min(a, b), end: Math.max(a, b) };
+    }
     const ext = extname(filePath).toLowerCase();
     // 图片：不内联字节（会损坏），改为提示模型用 Read 工具读取（走 vision 多模态管道）。
     if (AT_IMAGE_EXTENSIONS.has(ext)) {
@@ -338,50 +432,110 @@ export async function expandAtReferences(
         continue;
       }
     }
-    // 末尾带 `/` 是目录提及（或像 `@sid-code/` 这样的包名），`resolve()` 会吞掉这个 `/`
-    // 让它命中同名文件——事故就是这么读到 78MB 二进制的，所以必须在 resolve 之前判。
-    if (filePath.endsWith("/")) continue;
-    let size: number;
+    const rangeLabel = range ? `#L${range.start}-${range.end}` : "";
+    const key = `${absPath}${rangeLabel}`;
+    if (seenKeys.has(key)) continue;
+    seenKeys.add(key);
+    let st: Awaited<ReturnType<typeof stat>>;
     try {
-      const st = await stat(absPath);
-      if (!st.isFile()) continue; // 目录 / 设备文件等不内联
-      size = st.size;
+      st = await stat(absPath);
     } catch {
       continue; // 文件不存在时跳过
     }
-    if (size > AT_INLINE_MAX_BYTES) {
+
+    // 目录（第 5 项，对齐 CC）：注入条目名列表，不递归、最多 AT_DIR_MAX_ENTRIES 条。
+    // `@dir` 与 `@dir/` 同等对待；包名形态（`@sid-code/`）恰好撞上同名目录时也会注入列表，
+    // 列表有上限、体积可控，这是可以接受的。
+    if (st.isDirectory()) {
+      if (range) continue; // 目录没有行可截
+      try {
+        const listing = await listDirectoryForAt(absPath, filePath);
+        const bytes = Buffer.byteLength(listing, "utf-8");
+        if (overBudget(bytes)) {
+          skipped.push({ path: filePath, reason: budgetReason });
+          continue;
+        }
+        inlinedBytes += bytes;
+        fileContents.push(listing);
+      } catch {
+        // 无权限列目录等：跳过
+      }
+      continue;
+    }
+    // 末尾带 `/` 却不是目录（如包名 `@sid-code/` 撞上仓库根同名二进制）：`resolve()` 会吞掉
+    // 这个 `/` 让它命中同名文件——事故就是这么读到 78MB 二进制的，必须拦住。
+    if (filePath.endsWith("/")) continue;
+    if (!st.isFile()) continue; // 设备文件等不内联
+    const size = st.size;
+    const sizeLimit = range ? AT_RANGE_SOURCE_MAX_BYTES : AT_INLINE_MAX_BYTES;
+    if (size > sizeLimit) {
       skipped.push({
         path: filePath,
-        reason: `文件 ${(size / 1024).toFixed(0)}KB，超过 @ 内联上限 ${AT_INLINE_MAX_BYTES / 1024}KB`,
+        reason: `文件 ${(size / 1024).toFixed(0)}KB，超过 @ 内联上限 ${sizeLimit / 1024}KB`,
       });
       getLogger().info("AT_REF", `@${filePath} 超过内联上限未注入: ${size} 字节`);
       continue;
     }
+
+    // 去重（第 4 项）：同一目标自上次注入后未改动、且那次的内容仍在上下文里，就不再整份注入。
+    // 两个条件缺一不可，判据为什么不用 FileReadTracker 见 AtDedupContext 注释。
+    const prev = dedup?.inlined.get(key);
+    if (prev && prev.mtimeMs === st.mtimeMs && dedup!.hasInContext(prev.marker)) {
+      deduped.push(`${filePath}${rangeLabel}`);
+      getLogger().info("AT_REF", `@${filePath}${rangeLabel} 未改动且已在上下文中，未重复注入`);
+      continue;
+    }
+
     try {
-      const fh = await open(absPath, "r");
-      let buf: Buffer;
-      try {
-        // 只读 stat 出的字节数：文件在 stat 之后被追加也不会越过上限
-        buf = Buffer.alloc(size);
-        const { bytesRead } = await fh.read(buf, 0, size, 0);
-        buf = buf.subarray(0, bytesRead);
-      } finally {
-        await fh.close();
-      }
+      const buf = await readHeadBytes(absPath, size);
       if (isBinaryContent(buf.subarray(0, BINARY_CHECK_WINDOW))) {
         skipped.push({ path: filePath, reason: "二进制文件" });
         getLogger().info("AT_REF", `@${filePath} 是二进制文件，未注入`);
         continue;
       }
-      fileContents.push(
-        `以下是文件 \`${filePath}\` 的内容：\n\`\`\`${extname(filePath).slice(1)}\n${buf.toString("utf-8")}\n\`\`\``,
-      );
+      let text = buf.toString("utf-8");
+      let header = `以下是文件 \`${filePath}\` 的内容：`;
+      if (range) {
+        const lines = text.split("\n");
+        if (range.start > lines.length) {
+          skipped.push({
+            path: `${filePath}${rangeLabel}`,
+            reason: `行范围超出文件总行数 ${lines.length}`,
+          });
+          continue;
+        }
+        const end = Math.min(range.end, lines.length);
+        text = lines.slice(range.start - 1, end).join("\n");
+        header = `以下是文件 \`${filePath}\` 第 ${range.start}-${end} 行（共 ${lines.length} 行）的内容：`;
+      }
+      const bytes = Buffer.byteLength(text, "utf-8");
+      if (range && bytes > AT_INLINE_MAX_BYTES) {
+        skipped.push({
+          path: `${filePath}${rangeLabel}`,
+          reason: `所选行 ${(bytes / 1024).toFixed(0)}KB，超过 @ 内联上限 ${AT_INLINE_MAX_BYTES / 1024}KB`,
+        });
+        continue;
+      }
+      if (overBudget(bytes)) {
+        skipped.push({ path: `${filePath}${rangeLabel}`, reason: budgetReason });
+        getLogger().info("AT_REF", `@${filePath}${rangeLabel} 超出本条消息内联总预算，未注入`);
+        continue;
+      }
+      inlinedBytes += bytes;
+      fileContents.push(`${header}\n\`\`\`${extname(filePath).slice(1)}\n${text}\n\`\`\``);
+      dedup?.inlined.set(key, { mtimeMs: st.mtimeMs, marker: header });
     } catch {
       // 读取失败（权限/竞态删除）时跳过
     }
   }
 
   if (fileContents.length > 0) parts.push(fileContents.join("\n\n"));
+  if (deduped.length > 0) {
+    const list = deduped.map((p) => `- \`${p}\``).join("\n");
+    parts.push(
+      `以下 @ 提及的文件自上次注入后未改动，内容已在上文中，本次未重复注入（以上文为准）：\n${list}`,
+    );
+  }
   if (blocked.length > 0) {
     // 告知**模型**这些提及未注入——否则模型会以为用户给了文件却看不到内容，
     // 转而用 read 工具重试（同样会被拦），白烧一轮。用户侧的可见提示由调用方给。
@@ -408,6 +562,7 @@ export async function expandAtReferences(
       parts.length > 0 ? `<system-reminder>\n${parts.join("\n\n")}\n</system-reminder>` : null,
     blockedPaths: blocked.length > 0 ? blocked : undefined,
     skippedPaths: skipped.length > 0 ? skipped : undefined,
+    dedupedPaths: deduped.length > 0 ? deduped : undefined,
   };
 }
 
@@ -560,6 +715,8 @@ export class App {
   private providerRegistry?: ProviderRegistry;
   private mcpManager?: MCPManager;
   private ctxMgr: ContextManager;
+  /** @ 提及去重：本会话已内联过的目标（key → mtime + 标题行），/clear 时清空 */
+  private atInlined = new Map<string, { mtimeMs: number; marker: string }>();
   /** P2-1 会话回退管理器（Esc+Esc rewind）。每轮输入前登记回退点，UI 选中后截断对话/回滚文件。 */
   private rewindManager: import("@sid-code/core/session/rewind-manager.ts").RewindManager | null =
     null;
@@ -3112,6 +3269,8 @@ export class App {
     // 统一消息队列清空（缺口1 h2A）：排队中的用户输入 / 未出队的后台任务通知不应跨会话残留。
     clearMessageQueue();
     this.announcedMcpServers.clear();
+    // @ 去重记录属于旧对话（去重时本就会核对内容是否还在上下文里，这里清掉是省一次扫描）
+    this.atInlined.clear();
 
     // ── 3. 换身份（对齐 CC regenerateSessionId({ setCurrentAsParent: true })） ──
     // rotate 同时归零用量计数器与轮次序号（新会话从 0 记）。
@@ -10613,7 +10772,19 @@ export class App {
           // @ 文件注入：展开用户输入中的 @path 引用
           // 文件内容用 <system-reminder> 包裹，TUI 渲染时剥离，模型正常读取
           const { displayText, injectedContent, blockedPaths, skippedPaths } =
-            await expandAtReferences(text, this.mcpManager, this.permissionChecker);
+            await expandAtReferences(text, this.mcpManager, this.permissionChecker, {
+              inlined: this.atInlined,
+              // 只认 user 消息里的文本块：@ 注入只会落在那里。压缩 / 撤回 / 截断拿掉了
+              // 原注入内容时这里返回 false，去重自然失效、重新整份注入。
+              hasInContext: (marker) =>
+                this.ctxMgr
+                  .getMessages()
+                  .some(
+                    (m) =>
+                      m.role === "user" &&
+                      m.content.some((b) => b.type === "text" && b.text.includes(marker)),
+                  ),
+            });
           // 审计第 20 条：被路径校验拦下的 @ 提及必须让用户看见——静默跳过会让用户
           // 以为文件已给到模型，而模型侧只收到"未注入"说明，两边认知错位。
           if (blockedPaths && blockedPaths.length > 0) {
