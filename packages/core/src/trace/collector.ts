@@ -3453,7 +3453,7 @@ export class TraceCollector {
    * 确保排查时 `cat errors.jsonl` 直接看到崩溃现场，无需翻全局 audit.log。
    */
   recordError(input: {
-    phase: "connection" | "stream" | "post_stream" | "tool_execution" | "hook" | "engine";
+    phase: "stream" | "post_stream" | "tool_execution" | "hook" | "engine";
     index: number;
     error: string;
     stack?: string;

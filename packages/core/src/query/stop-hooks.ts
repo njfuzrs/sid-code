@@ -48,10 +48,15 @@ export interface StopHookResult {
    * 只有第一种才该清零。混在一起的话，失败耗尽也会被当成"通过"而重置预算。
    */
   passed: boolean;
+  /**
+   * 续命预算已耗尽且验证仍未通过（本次放行但不再自动修复）。
+   * 调用方据此发 `GateExhausted`；与 `passed` 互斥。
+   */
+  exhausted?: boolean;
 }
 
 /** Stop Hooks 最大重试次数 */
-const MAX_STOP_HOOK_RETRIES = 3;
+export const MAX_STOP_HOOK_RETRIES = 3;
 
 /**
  * 执行 Stop Hooks 并处理结果
@@ -132,7 +137,13 @@ export async function* handleStopHooks(
           level: "warning",
           text: `Stop Hook 检查仍未通过（自动修复已达上限 ${MAX_STOP_HOOK_RETRIES} 次，不再重试）：\n${reason}`,
         };
-        return { shouldContinue: false, forceStop: false, errorMessages, passed: false };
+        return {
+          shouldContinue: false,
+          forceStop: false,
+          errorMessages,
+          passed: false,
+          exhausted: true,
+        };
       }
 
       const errorMsg = `<system-reminder>\n[Stop Hook 检查失败]\n${reason}\n\n请修复上述问题。\n</system-reminder>`;

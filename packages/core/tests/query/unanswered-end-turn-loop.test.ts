@@ -76,7 +76,6 @@ function makeLoopConfig(
     },
     executeTools: async () => ({ results: [] }),
     autoCompact: async () => {},
-    handleContextOverflow: () => null,
     getAbortSignal: () => undefined,
     uuid: () => "uuid-test",
     // 注意：故意不提供 getTodoState —— 模拟「模型从不建 todo」

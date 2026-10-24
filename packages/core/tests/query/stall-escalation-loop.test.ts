@@ -156,7 +156,6 @@ async function run(opts: {
         })),
     }),
     autoCompact: async () => {},
-    handleContextOverflow: () => null,
     getAbortSignal: () => undefined,
     uuid: () => "uuid-test",
     traceAppendEvent: (e: any) => {
@@ -352,7 +351,6 @@ describe("2e：todo 收尾闸门在清单振荡超阈值时不再劝「继续」
       },
       executeTools: async () => ({ results: [] }),
       autoCompact: async () => {},
-      handleContextOverflow: () => null,
       getAbortSignal: () => undefined,
       uuid: () => "uuid-test",
       getTodoState: () => ({ todos, writeVersion: 1 }),
