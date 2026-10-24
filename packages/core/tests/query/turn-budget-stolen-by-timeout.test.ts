@@ -90,7 +90,6 @@ function setup({ maxTurns, timeoutTurns = [] }: { maxTurns: number; timeoutTurns
     },
     executeTools: async () => ({ results: [] }),
     autoCompact: async () => {},
-    handleContextOverflow: () => null,
     getAbortSignal: () => undefined,
     uuid: () => `uuid-${call}`,
     // ⚠️ 退避配置**只能放 config.network**（`loop.ts` 走

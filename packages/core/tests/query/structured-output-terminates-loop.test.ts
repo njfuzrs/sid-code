@@ -72,7 +72,6 @@ async function run(inputs: unknown[]) {
       return { results };
     },
     autoCompact: async () => {},
-    handleContextOverflow: () => null,
     getAbortSignal: () => undefined,
     uuid: () => `uuid-${call}`,
   } as unknown as QueryDeps;

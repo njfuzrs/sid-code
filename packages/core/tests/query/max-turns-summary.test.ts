@@ -93,7 +93,6 @@ function setup({
     },
     executeTools: async () => ({ results: [] }),
     autoCompact: async () => {},
-    handleContextOverflow: () => null,
     getAbortSignal: () => undefined,
     uuid: () => `uuid-${call}`,
     ...(onRecordError ? { recordError: onRecordError } : {}),

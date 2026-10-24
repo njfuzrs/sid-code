@@ -70,6 +70,7 @@
 | 层 | 指标 | 状态 / 取数源 |
 | --- | --- | --- |
 | ① 过程病态率 | retry 浪费比 / 白建连接、backtrack、步数比、**空转**（最长「重复调用且返回值不变」段） | ✅ `retryWastedRatio` / `extraConnections` / `maxUnchangedObservationRun`（≥3 判病态） |
+| | **continue 路径收敛**：同一 continue 理由的连续游程是否超出该路径封顶；退化门（unanswered / empty_param / context_window）耗尽后是否仍被闸门续命。两项**恒为 0**，非 0 即某条路径没封住。分母 = 带 `continue_counts` 的 `TurnComplete` 条数（2026-10-24 起） | ✅ `TurnComplete.continue_counts` / `max_continue_streak` / `gates_exhausted` + `GateExhausted` → digest `continuePaths.overCapPrompts` / `continuedAfterChainEnd` |
 | ② 工具层 | 工具调用成功 / 失败率 | ✅ `PostToolUse.is_error` |
 | | **tool selection accuracy**（选对工具的比例，<90% 说明工具太多或描述差）、**tool retry rate**（同一步失败重试率） | ❌ 均未派生 |
 | ③ eval 通过率 | 回归套件通过率，每次发布都跑 | ✅ `evals/` |

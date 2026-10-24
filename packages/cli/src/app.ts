@@ -1520,7 +1520,6 @@ export class App {
       // 只有 App 持有，所以由这里注入，loop 侧只负责在「确认压动了」之后调一次。
       postCompactTail: (info) => this.runNonSummaryPostCompact(info),
       emergencyFileReattach: (info) => this.runEmergencyFileReattach(info),
-      handleContextOverflow: (err, max) => this.handleContextOverflow(err, max),
       getAbortSignal: () => this.abortController?.signal,
       // L1 单轮硬超时触发时主动 abort 上游 fetch（尽力而为的资源释放，配合 loop.ts 的 Promise.race）。
       abortCurrentRequest: (reason) => {
@@ -3525,12 +3524,6 @@ export class App {
         presentCommandResult(commandInput, (result as { value?: string }).value);
         break;
     }
-  }
-
-  /** 处理上下文溢出错误，委托给 auto-compact 模块 */
-  private handleContextOverflow(err: any, currentMaxTokens: number): number | null {
-    const { handleContextOverflow: impl } = require("@sid-code/core/query/auto-compact.ts");
-    return impl(err, currentMaxTokens, this.ctxMgr, this.toolRegistry.size());
   }
 
   /**
@@ -10216,7 +10209,10 @@ export class App {
                 if (this.abortController?.signal?.reason === "user-cancel") {
                   probe.userCanceled = true;
                 }
-              } else if (event.incompleteReason === "timeout_retry_exhausted") {
+              } else if (
+                event.incompleteReason === "timeout_retry_exhausted" ||
+                event.incompleteReason === "context_window_exhausted"
+              ) {
                 probe.failed = true;
               }
               streamingFullText = "";

@@ -95,7 +95,6 @@ function makeLoopConfig(
       };
     },
     autoCompact: async () => {},
-    handleContextOverflow: () => null,
     getAbortSignal: () => undefined,
     uuid: () => "uuid-test",
     ...overrides,
