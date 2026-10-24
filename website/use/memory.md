@@ -202,8 +202,20 @@ CLAUDE.md 是你手写的，记忆是模型用 `save_memory` 存的，跨会话�
 
 - 能从代码 / git / 文件内容直接推导的事实
 - 临时会话状态、当前任务进展
+- 进度 / PR 状态这类快照，以及调试过程与修复配方（即使你说了"记住"，也只留其中非显而易见的那一点）
 - API Key、token、密码等凭证明文
 - 已经在 CLAUDE.md 里的规则
+
+`save_memory` 的 `type` 是必填参数，由模型显式给出四类之一，不再按关键词猜。
+保存成功后工具会回一组**写入质量提示**（不拒绝，模型可用同一个 key 覆盖修正）：
+相对日期（含"周四"这类星期）、`feedback` / `project` 缺 `Why:` 或 `How to apply:` 标签、
+`reference` 正文没有 URL、内容像进度快照。四个范围（project / global / team / agent）同一套判据。
+
+想看本机记忆库的质量读数：
+
+```bash
+bun run scripts/memory-quality-report.ts     # 存量（磁盘）+ 增量（memory_write 埋点）
+```
 
 存储在 `~/.sid-code/projects/<项目键>/memory/` 下。项目键用**主仓根目录**派生（`git rev-parse --git-common-dir`），
 所以同一个仓库的多个 worktree 共享同一份记忆——在 worktree 里攒的记忆回主仓照样在。
@@ -248,6 +260,9 @@ SID_CODE_AUTO_MEMORY=false sid-code
 
 **前提是启用 `teamMemory` 并配了合法的共享目录 `teamMemory.dir`（绝对路径）**。
 没配共享目录时团队记忆只存在本机，不跨成员同步。
+
+团队记忆只由**主会话**写入（模型显式传 `scope=team`）。后台记忆提取代理无人监督，
+只能写当前项目的私有记忆——团队记忆会同步给所有人，误判的代价需要人在场兜住。
 
 ```bash
 SID_CODE_TEAM_MEMORY='{"enabled":true,"dir":"/shared/team-memory"}' sid-code

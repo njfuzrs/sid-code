@@ -17,6 +17,7 @@
 import type { CanUseToolFn } from "../../agent/forked-agent.ts";
 import type { PermissionResult } from "../../tool/types.ts";
 import { isAutoMemPath } from "../paths.ts";
+import { isMemoryType } from "../types.ts";
 import {
   parseBashCommand,
   extractSimpleCommands,
@@ -174,6 +175,17 @@ export function createExtractPermissions(memoryDir: string): CanUseToolFn {
       const scope = extractMemoryScope(input);
       if (scope === undefined || scope === "project") {
         return { behavior: "allow" };
+      }
+      // 类型名填进了 scope：参数语义混淆，不是越权。单独计数并给出能直接改对的提示——
+      // 笼统的「只能写 project」会让模型以为类型本身不被允许，下一轮干脆不存。
+      if (isMemoryType(scope)) {
+        logMemoryGuard({ kind: "scope_type_confusion", via: "save_memory", scope });
+        return {
+          behavior: "deny",
+          message:
+            `scope 不接受记忆类型「${scope}」：类型请填 type 参数（type="${scope}"），` +
+            `scope 留空（默认 project）后重试。`,
+        };
       }
       // P1-12 指标 ③：越权拒绝计数。这条线恒 0 也要存在 ——
       // 「后台代理从没试过越权」与「越权拦不住」在轨迹里必须可分。

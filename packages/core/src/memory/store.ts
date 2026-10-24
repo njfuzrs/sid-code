@@ -260,10 +260,27 @@ export function normalizeMemoryDesc(description: string | undefined, value: stri
   return redactInfraCoordinates(cleaned).slice(0, MEMORY_DESC_MAX_LEN);
 }
 
-/** 根据 key/value 启发式推断记忆类型（迁移与 legacy set 使用） */
+/**
+ * reference 的判据：正文里有真 URL，或 key 本身点名外部系统。
+ *
+ * ⚠️ 不要再把「文档 / 地址 / 链接」这类**普通名词**放回来，也不要拿正文去匹配系统名。
+ * 旧规则 `/(http|url|…|链接|地址|文档|wiki)/` 匹配 `key + value` 整串且排在第一位，
+ * 正文提一句「同步更新官网文档」就判 reference。2026-10-24 本机实测：磁盘 408 条记忆里
+ * 202 条 reference，其中 172 条正文没有任何 URL；save_memory 43 次调用里 19 次判 reference、
+ * 17 次没有 URL。误判的连带后果是 feedback / project 的 Why 提示整条被跳过。
+ */
+const REFERENCE_URL_RE = /\bhttps?:\/\//i;
+const REFERENCE_KEY_RE = /(dashboard|grafana|jira|ticket|wiki|linear|看板|面板)/i;
+
+/**
+ * 根据 key/value 启发式推断记忆类型。
+ *
+ * 只服务**没有显式 type 的兜底路径**：旧 JSON 迁移、`/memory` 斜杠命令、frontmatter 缺 type
+ * 的历史文件。save_memory 工具自 2026-10-24 起要求模型显式给 type，不再走这里。
+ */
 export function inferMemoryType(key: string, value: string): MemoryType {
+  if (REFERENCE_URL_RE.test(value) || REFERENCE_KEY_RE.test(key)) return "reference";
   const hay = `${key} ${value}`.toLowerCase();
-  if (/(http|url|dashboard|ticket|jira|链接|地址|文档|wiki)/.test(hay)) return "reference";
   if (/(偏好|喜欢|不要|always|prefer|纠正|反馈|以后都|风格|约定)/.test(hay)) return "feedback";
   if (/(用户|我是|角色|工程师|expert|新手|背景|profile)/.test(hay)) return "user";
   return "project";

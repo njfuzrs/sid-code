@@ -33,6 +33,7 @@ describe("MemoryTool save_memory — ADR-026 secret 拦截", () => {
   test("正常 value 可以保存", async () => {
     const tool = makeTool();
     const r = await tool.execute({
+      type: "project",
       key: "coding_style",
       value: "prefer 2-space indent in TypeScript",
       scope: "project",
@@ -44,6 +45,7 @@ describe("MemoryTool save_memory — ADR-026 secret 拦截", () => {
   test("含 GitHub Token 的 value 被拒绝写入", async () => {
     const tool = makeTool();
     const r = await tool.execute({
+      type: "project",
       key: "my_token",
       value: "我的 token 是 ghp_AbCdEfGhIjKlMnOpQrStUvWxYz0123456789",
       scope: "project",
@@ -58,6 +60,7 @@ describe("MemoryTool save_memory — ADR-026 secret 拦截", () => {
   test("含 OpenAI API Key 被拒绝", async () => {
     const tool = makeTool();
     const r = await tool.execute({
+      type: "project",
       key: "openai_key",
       value: "OPENAI_API_KEY=sk-proj-abcdefghijklmnopqrstuvwxyz012345",
       scope: "global",
@@ -69,6 +72,7 @@ describe("MemoryTool save_memory — ADR-026 secret 拦截", () => {
   test("含 DB connection string 被拒绝", async () => {
     const tool = makeTool();
     const r = await tool.execute({
+      type: "project",
       key: "db",
       value: "数据库地址 postgres://admin:supersecret123@db.example.com/mydb",
       scope: "project",
@@ -80,6 +84,7 @@ describe("MemoryTool save_memory — ADR-026 secret 拦截", () => {
   test("含 Bearer token 被拒绝", async () => {
     const tool = makeTool();
     const r = await tool.execute({
+      type: "project",
       key: "auth",
       value: "Authorization: Bearer eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.aaa.bbb",
       scope: "project",
@@ -91,6 +96,7 @@ describe("MemoryTool save_memory — ADR-026 secret 拦截", () => {
   test("代码标识符 (process.env) 不被误判", async () => {
     const tool = makeTool();
     const r = await tool.execute({
+      type: "project",
       key: "code_pattern",
       value: "在配置加载层用 const apiKey = process.env.API_KEY_FOR_GITHUB",
       scope: "project",
@@ -101,6 +107,7 @@ describe("MemoryTool save_memory — ADR-026 secret 拦截", () => {
   test("含 EXAMPLE 占位的 token-like 字符串不被误判", async () => {
     const tool = makeTool();
     const r = await tool.execute({
+      type: "project",
       key: "doc_example",
       value: "AWS 文档示例: AKIAIOSFODNN7EXAMPLE",
       scope: "global",
@@ -129,7 +136,7 @@ describe("MemoryTool save_memory — G13 agent scope", () => {
 
   test("主会话（无 agentType）用 agent scope 被引导改用 project/global", async () => {
     const tool = new MemoryTool(new MemoryStore(tmpHome));
-    const r = await tool.execute({ key: "k", value: "v", scope: "agent" });
+    const r = await tool.execute({ type: "project", key: "k", value: "v", scope: "agent" });
     expect(r.isError).toBe(true);
     expect(r.output).toContain("agent 范围仅在子代理内可用");
   });
@@ -137,6 +144,7 @@ describe("MemoryTool save_memory — G13 agent scope", () => {
   test("子代理（有 agentType）用 agent scope 成功写入并可读回", async () => {
     const tool = new MemoryTool(new MemoryStore(tmpHome), "code-review");
     const r = await tool.execute({
+      type: "project",
       key: "review-habit",
       value: "本仓 review 关注错误处理路径的覆盖",
       scope: "agent",
@@ -152,6 +160,7 @@ describe("MemoryTool save_memory — G13 agent scope", () => {
   test("agent scope 仍走 secret 拦截（含 token 被拒）", async () => {
     const tool = new MemoryTool(new MemoryStore(tmpHome), "security-audit");
     const r = await tool.execute({
+      type: "project",
       key: "leak",
       value: "token 是 ghp_AbCdEfGhIjKlMnOpQrStUvWxYz0123456789",
       scope: "agent",
@@ -165,6 +174,7 @@ describe("缺陷 12：写入质量软提示（不拒绝）", () => {
   test("相对日期 → 保存成功但回提示", async () => {
     const tool = makeTool();
     const r = await tool.execute({
+      type: "project",
       key: "freeze",
       value: "下周开始冻结合并，Why: 发版",
       scope: "project",
@@ -176,6 +186,7 @@ describe("缺陷 12：写入质量软提示（不拒绝）", () => {
   test("feedback 类缺 Why → 提示补 Why", async () => {
     const tool = makeTool();
     const r = await tool.execute({
+      type: "project",
       key: "no_mock",
       value: "以后都不要 mock 数据库",
       scope: "project",
@@ -187,6 +198,7 @@ describe("缺陷 12：写入质量软提示（不拒绝）", () => {
   test("带 Why 的绝对日期记忆 → 无提示", async () => {
     const tool = makeTool();
     const r = await tool.execute({
+      type: "project",
       key: "no_mock",
       value: "以后都不要 mock 数据库。Why: 2026-09-01 mock 掩盖过迁移事故。How to apply: 集成测试",
       scope: "project",

@@ -4771,9 +4771,6 @@ export class App {
         }),
         memoryDir,
         canUseTool: createExtractPermissions(memoryDir),
-        // 团队记忆启用时，提取 prompt 追加 team scope 的保守分流指引（比 claude-code
-        // 门槛更高：默认私有，仅显然的团队级约定才自动进 team）。未启用时只写私有。
-        teamMemoryEnabled: !!this.config.teamMemory?.enabled,
         // 提取保存记忆后，把摘要回注主上下文（作为 system-reminder），让模型知晓已记忆。
         appendSystemMessage: (msg) => {
           try {

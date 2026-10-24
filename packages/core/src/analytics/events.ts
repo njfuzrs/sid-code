@@ -74,6 +74,8 @@ export const EVENT_NAMES = {
   MEMORY_INJECT: "memory_inject",
   MEMORY_READ: "memory_read",
   MEMORY_GUARD: "memory_guard",
+  // 写进去的记忆质量如何：类型分布、Why/How 缺失率、reference 无 URL、快照形态（§3 拒绝器的曲线）
+  MEMORY_WRITE: "memory_write",
 
   // ── 漏斗 7 · 企业策略：远程策略到底有没有在拦东西（M4）──
   POLICY_ENFORCED: "policy_enforced",
@@ -695,10 +697,59 @@ export function logMemoryRead(opts: {
   });
 }
 
-/** 记忆防线触发（secret 拒绝 / scope 越权拒绝 / 超限归档 / 写空归档） */
+/**
+ * save_memory 成功写入一条记忆（四个 scope 同口径）。
+ *
+ * 回答的问题：§3「拒绝器比提取器重要」在真实会话里执行得怎么样。此前这件事
+ * **没有任何信号**——PostToolUse 只有 tool_name/is_error，type 与 scope 要回读
+ * raw.jsonl 才拿得到（而 raw.jsonl 只覆盖约 79% 的会话），质量问题只能离线审计磁盘。
+ *
+ * 主口径（写死分母）：分母 = 本事件条数；分子分别是
+ * `missing_why`（仅 feedback/project 有意义）、`reference_no_url`、`looks_snapshot`、
+ * `relative_date`。`hint_count > 0` 的比例即「模型被提示修正」的比例。
+ *
+ * 同漏斗纪律：不记 key、不记内容、不记路径，只记枚举与布尔。
+ */
+export function logMemoryWrite(opts: {
+  scope: string;
+  type: string;
+  /** main / forked（后台提取等）/ subagent */
+  via: string;
+  quality: {
+    hasWhy: boolean;
+    hasHow: boolean;
+    hasUrl: boolean;
+    relativeDate: string | null;
+    looksSnapshot: boolean;
+  };
+  hintCount: number;
+}): void {
+  const needsWhy = opts.type === "feedback" || opts.type === "project";
+  emit(EVENT_NAMES.MEMORY_WRITE, {
+    memory_scope: v(opts.scope),
+    memory_type: v(opts.type),
+    write_via: v(opts.via),
+    missing_why: needsWhy && !opts.quality.hasWhy,
+    missing_how: needsWhy && !opts.quality.hasHow,
+    reference_no_url: opts.type === "reference" && !opts.quality.hasUrl,
+    relative_date: opts.quality.relativeDate !== null,
+    looks_snapshot: opts.quality.looksSnapshot,
+    hint_count: opts.hintCount,
+  });
+}
+
+/**
+ * 记忆防线触发（secret 拒绝 / scope 越权拒绝 / 超限归档 / 写空归档）。
+ *
+ * `scope_type_confusion` 单列而不并进 `scope_denied`：后台代理把记忆类型
+ * （feedback/user/…）填进 scope 是**参数语义混淆**，不是越权意图。2026-10-24 本机
+ * 遥测 28 次 scope_denied 里 20 次是这一类；两类混在一个计数里，修好 type 参数后
+ * 曲线降了多少说不清是哪一类在降。
+ */
 export type MemoryGuardKind =
   | "secret_rejected"
   | "scope_denied"
+  | "scope_type_confusion"
   | "evicted_to_archive"
   | "empty_archived"
   | "shadowed";
