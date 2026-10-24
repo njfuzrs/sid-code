@@ -32,8 +32,10 @@
  * 边界彻底消失）。也不照搬 CC 的"独立 message"——本项目 `Message.role` 只有
  * `"user" | "assistant"`（无 system role），且 OpenAI 路径连续 user 消息会被合并、
  * 部分网关直接拒。同 message 内多 block 是跨 provider 最稳的形态：
- *   - Anthropic：多 text block 原生支持；`anthropic.ts:167-173` 在最后一条 user 的
- *     **末块**打 cache_control → ambient 落在末尾正好成为缓存断点，顺带改善缓存；
+ *   - Anthropic：多 text block 原生支持。注入块带 `transient: true`，`anthropic.ts` 把
+ *     messages 区缓存断点打在**第一个** transient 块之前 —— reminder 下一轮不会原样再发，
+ *     断点落在它上面等于把这一轮的缓存写进一段下一轮不存在的前缀（此前注释说这样
+ *     「顺带改善缓存」，方向反了：实测 13% 请求的断点白写）；
  *   - OpenAI 族：`openai.ts:568-573` 把多 text block `join("\n")` 成单 string，
  *     block 边界在 wire 上丢失 → 此时唯一残存的语义边界就是围栏标签文本本身。
  */
@@ -119,10 +121,10 @@ export function injectReminders(messages: Message[], parts: ReminderTiers | stri
       // 先插 ambient（在用户 block 之后），再插 critical（在用户 block 之前），
       // 顺序很关键：先插前面的会让 textIdx 失效。
       if (ambient) {
-        newContent.splice(textIdx + 1, 0, { type: "text", text: ambient });
+        newContent.splice(textIdx + 1, 0, { type: "text", text: ambient, transient: true });
       }
       if (critical) {
-        newContent.splice(textIdx, 0, { type: "text", text: critical });
+        newContent.splice(textIdx, 0, { type: "text", text: critical, transient: true });
       }
     } else {
       // 无 text block（纯 tool_result 轮）：本轮没有用户指令可被淹没，
@@ -135,7 +137,7 @@ export function injectReminders(messages: Message[], parts: ReminderTiers | stri
       // 反复出现会教模型在空尾部提前吐 stop sequence（A/B 实测 92%→0%）。
       // 本项目该改造牵涉 provider 转换层与工具结果保真，已单独立项，不在本次范围。
       const merged = [critical, ambient].filter(Boolean).join("\n\n");
-      newContent.push({ type: "text", text: merged });
+      newContent.push({ type: "text", text: merged, transient: true });
     }
 
     result = [...result];

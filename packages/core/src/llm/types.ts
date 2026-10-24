@@ -12,6 +12,14 @@ export type Role = "user" | "assistant";
 export interface TextBlock {
   type: "text";
   text: string;
+  /**
+   * 只存在于本轮发送副本、下一轮不会原样再发的块（system-reminder 注入产物）。
+   *
+   * 本地元数据，**不上线**：各 provider 序列化文本块时只取 `text`。Anthropic 据它把
+   * messages 区的缓存断点挪到这类块之前（见 `markLastUserMessageCacheBreakpoint`）——
+   * 断点写在下一轮不存在的字节上，等于这一轮的缓存写入白付。
+   */
+  transient?: true;
 }
 
 /** 工具调用块 */
@@ -553,10 +561,8 @@ export interface SendParams {
     };
   };
   /**
-   * G2：cache_edits 删除指令（Anthropic 私有字段）。
-   * cachedMicrocompact 走缓存友好路径时产出的"服务器侧删除旧工具结果"指令，
-   * 由 anthropic.ts 在 provider.name()==="anthropic" 时携带到请求体顶层 `cache_edits`。
-   * 其它 provider 完全忽略（不下发）。不传则不下发。
+   * @deprecated 2026-10-24 起不再发送（字段不在公开 API）。保留类型仅为兼容外部插件构造的 SendParams。
+   * 原为 cache_edits 删除指令（非公开字段）。任何 provider 都不再读取它。
    */
   cacheEdits?: { type: "delete"; tool_use_id: string }[];
   /**

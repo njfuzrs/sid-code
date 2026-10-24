@@ -300,14 +300,6 @@ describe("G1 suppressNext 抑制机制", () => {
     expect(report).toBeNull();
   });
 
-  test("notifyCacheDeletion 抑制下一次检测", () => {
-    const d = new CacheBreakDetector();
-    d.checkResponse(params({ cacheReadTokens: 50000 }));
-    d.notifyCacheDeletion(3);
-    const report = d.checkResponse(params({ cacheReadTokens: 5000 }));
-    expect(report).toBeNull();
-  });
-
   test("抑制仅作用一次，下次恢复正常检测", () => {
     const d = new CacheBreakDetector();
     d.checkResponse(params({ cacheReadTokens: 50000 }));

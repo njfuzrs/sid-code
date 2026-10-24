@@ -183,8 +183,8 @@ sid-code 会替你判断并在 `/cost` 里标注，就是那行括号里的提�
 所以这里该做的是监测而不是排查**。
 
 ::: tip compact 会触发一次中断，但会被抑制
-`/compact` 会让消息数量骤减，正常应该报一次中断。但 `notifyCompaction()` /
-`notifyCacheDeletion()` 会跳过紧接的那次检测（假阳性抑制），所以 compact 后看到命中率
+`/compact` 会让消息数量骤减，正常应该报一次中断。但 `notifyCompaction()`
+会跳过紧接的那次检测（假阳性抑制），所以 compact 后看到命中率
 下降是正常的，不会在 `--breaks` 里报成异常。
 :::
 

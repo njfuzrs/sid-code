@@ -1097,6 +1097,8 @@ export interface Digest {
   jit?: JitDigestStats;
   /** P1-2：前缀断裂定位分布。无 `prefix_break` 事件时 undefined（老会话，埋点上线前）。 */
   prefixBreaks?: PrefixBreakDigestStats;
+  /** §6：缓存断点布局 + 冷清理。两类事件全无时 undefined（老会话 / 非 Anthropic）。 */
+  promptCache?: PromptCacheDigestStats;
   /**
    * todo 清单实时性度量（2026-08-02）。三类 todo 事件全无时 undefined
    * （老会话 / 整场没建过清单）。
@@ -2343,6 +2345,48 @@ export function buildDigest(ref: SessionRef, full: boolean, paths: DigestPaths):
   const events = readJsonl<{ event?: string; data?: Record<string, unknown> }>(eventsPath);
   const errors = readJsonl<{ event?: string; data?: Record<string, unknown> }>(errorsPath);
 
+  // 检测未收尾的 PreToolUse：每个 fire 过 PreToolUse 的 tool_use_id 都必须有一个
+  // PostToolUse / PostToolUseFailure / PermissionDenied 收尾（tool-hook-pair-invariant 不变量）。
+  // 2026-10-24 全库扫描：23,654 个 PreToolUse 里 7 个悬空，可核的 5 个全是串行 Bash 级联跳过——
+  // 这类缺口在单测里写一个漏一个，所以在 digest 里机械地数，回归一次就亮一次。
+  const preIds = new Map<string, string>();
+  const closedIds = new Set<string>();
+  for (const e of events) {
+    const tid = (e.data as any)?.tool_use_id;
+    if (typeof tid !== "string" || !tid) continue;
+    if (e.event === "PreToolUse") preIds.set(tid, String((e.data as any)?.tool_name ?? "?"));
+    else if (
+      e.event === "PostToolUse" ||
+      e.event === "PostToolUseFailure" ||
+      e.event === "PermissionDenied"
+    ) {
+      closedIds.add(tid);
+    }
+  }
+  const unclosedPre = [...preIds].filter(([tid]) => !closedIds.has(tid));
+  if (unclosedPre.length > 0) {
+    // 进程中途被杀时末尾也会留悬空 Pre，那是 session_end_missing 的伴生症状，不另起假设；
+    // 中段出现才是收尾路径漏了。严重度只给 medium：它不影响模型，影响的是 span 与失败率口径。
+    anomalies.push({
+      layer: "L0",
+      severity: "medium",
+      kind: "unclosed_pre_tool_use",
+      detail: `${unclosedPre.length} 个 PreToolUse 在 events.jsonl 中无 PostToolUse/PostToolUseFailure/PermissionDenied 收尾`,
+      provenance: [
+        {
+          sourceFile: eventsPath,
+          lineRef: `tool_use_id: ${unclosedPre
+            .slice(0, 5)
+            .map(([tid, name]) => `${name}:${tid}`)
+            .join(", ")}${unclosedPre.length > 5 ? " …" : ""}`,
+          rawValue: `count=${unclosedPre.length}`,
+          mtime: fileMtimeIso(eventsPath),
+        },
+      ],
+      pointer: `messages.json 里同 tool_use_id 的 tool_result（看是哪条执行路径产出的）`,
+    });
+  }
+
   // 检测未配对的 BeforeModel（有 BeforeModel 但无 AfterModel/AfterModelRaw/TurnError/ModelCallUnpaired）
   const beforeModels = events.filter((e) => e.event === "BeforeModel");
   const afterEvents = events.filter(
@@ -2888,6 +2932,7 @@ export function buildDigest(ref: SessionRef, full: boolean, paths: DigestPaths):
 
   // ── P1-2：前缀断裂定位分布（断在哪类段 / 浪费多少）──
   const prefixBreaks = aggregatePrefixBreakStats(events);
+  const promptCache = aggregatePromptCacheStats(events);
 
   // ── 2026-08-02：todo 实时性度量（推进次数 / 回注次数 / 收尾兜底次数）──
   // 补的是"采了不看"这个缺口：三个事件此前只写不读，缺陷定性只能靠间接证据。
@@ -2955,6 +3000,7 @@ export function buildDigest(ref: SessionRef, full: boolean, paths: DigestPaths):
     subAgents: subAgents ?? undefined,
     jit: jit ?? undefined,
     prefixBreaks: prefixBreaks ?? undefined,
+    promptCache: promptCache ?? undefined,
     todo: todo ?? undefined,
     recovery: recovery ?? undefined,
     continuePaths: continuePaths ?? undefined,
@@ -3603,6 +3649,30 @@ export function renderHuman(d: Digest, opts: RenderOptions = {}): string {
     }
   }
 
+  // ── §6 缓存布局 / 冷清理（2026-10-24）：两个缺陷修复的直接验收口径 ──
+  if (d.promptCache) {
+    const pc = d.promptCache;
+    L.push("");
+    const bad = pc.breakpointOnTransient > 0;
+    L.push(
+      c("bold", "缓存断点:") +
+        " " +
+        c(
+          bad ? "red" : "green",
+          `${pc.breakpointOnTransient}/${pc.layoutRequests} 次落在 reminder 上`,
+        ) +
+        c("gray", `  （应恒为 0；含 reminder 的请求 ${pc.requestsWithTransient} 次）`),
+    );
+    if (pc.coldClears > 0 || pc.coldClearsUnderThreshold > 0) {
+      L.push(
+        `  冷清理 ${pc.coldClears} 次，清 ${pc.coldClearedItems} 项 / ${pc.coldClearedChars} 字符` +
+          (pc.coldClearsUnderThreshold > 0
+            ? c("red", `  ⚠ ${pc.coldClearsUnderThreshold} 次间隔低于阈值（热当冷回归）`)
+            : c("gray", `  最短间隔 ${Math.round((pc.minColdGapMs ?? 0) / 60000)} 分钟`)),
+      );
+    }
+  }
+
   // §9.6：子代理执行 section（几成几败 + 串行/并行 + 每个 span 明细）
   if (d.subAgents && d.subAgents.total > 0) {
     const sa = d.subAgents;
@@ -4156,6 +4226,65 @@ export interface PrefixBreakDigestStats {
    * 该轮 cache_read 只剩 256 —— 3.5 万 input 全价重付，属于本地前缀断裂（我们的 bug）。
    */
   shrunkTurns: number;
+}
+
+/**
+ * §6 缓存缺陷的验收口径（2026-10-24）。
+ *
+ * 两个数都是「修复后应恒为 0」的不变量计数，不是比率：
+ *  - breakpointOnTransient：messages 区断点落在 reminder 上的次数（PromptCacheLayout）
+ *  - coldClearsUnderThreshold：冷清理发生时距上次请求 < 阈值的次数（ColdCacheClear）
+ * 分母一并给出（layoutRequests / coldClears），否则「0」分不清是修好了还是没发生。
+ */
+export interface PromptCacheDigestStats {
+  layoutRequests: number;
+  requestsWithTransient: number;
+  breakpointOnTransient: number;
+  coldClears: number;
+  coldClearedItems: number;
+  coldClearedChars: number;
+  coldClearsUnderThreshold: number;
+  minColdGapMs?: number;
+}
+
+export function aggregatePromptCacheStats(
+  events: Array<{ event?: string; data?: Record<string, unknown> }>,
+): PromptCacheDigestStats | null {
+  const s: PromptCacheDigestStats = {
+    layoutRequests: 0,
+    requestsWithTransient: 0,
+    breakpointOnTransient: 0,
+    coldClears: 0,
+    coldClearedItems: 0,
+    coldClearedChars: 0,
+    coldClearsUnderThreshold: 0,
+  };
+  let seen = false;
+  for (const e of events) {
+    const d = e.data;
+    if (!d) continue;
+    if (e.event === "PromptCacheLayout") {
+      seen = true;
+      s.layoutRequests++;
+      if (Number(d.transient_blocks) > 0) s.requestsWithTransient++;
+      if (d.message_breakpoint_on_transient === true) s.breakpointOnTransient++;
+    } else if (e.event === "ColdCacheClear") {
+      seen = true;
+      s.coldClears++;
+      s.coldClearedItems += Number(d.cleared) || 0;
+      s.coldClearedChars += Number(d.saved_chars) || 0;
+      const gap = Number(d.gap_ms);
+      const threshold = Number(d.threshold_ms);
+      if (Number.isFinite(gap) && gap >= 0) {
+        s.minColdGapMs = s.minColdGapMs === undefined ? gap : Math.min(s.minColdGapMs, gap);
+        if (Number.isFinite(threshold) && gap < threshold) s.coldClearsUnderThreshold++;
+      } else {
+        // gap 未知却清了 = 违反「不知道即热」，同样计为回归
+        s.coldClearsUnderThreshold++;
+      }
+    }
+  }
+  return seen ? s : null;
 }
 
 /** 从 events.jsonl 聚合前缀断裂分布（P1-2） */

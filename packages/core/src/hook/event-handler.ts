@@ -260,7 +260,8 @@ export class HookEventHandler {
     // Q7：CC 只在「工具执行了但失败」时触发 PostToolUseFailure。校验失败 / PreToolUse 阻止
     // 在 CC 里不触发它，但 sid 的 runtime 消费者（execute_tool span、轨迹）要靠它收尾，
     // 所以只送 runtime hook——用户 hook 看到的触发语义与 CC 一致。
-    const runtimeOnly = kind === "validation" || kind === "hook_blocked";
+    // skipped（工具没开始执行，只为 Pre 配对收尾）同理只送 runtime。
+    const runtimeOnly = kind === "validation" || kind === "hook_blocked" || kind === "skipped";
     return this.executeHooks(
       HookEventName.PostToolUseFailure,
       input,

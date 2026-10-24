@@ -18,7 +18,9 @@ export function buildDreamPrompt(existingMemoriesManifest: string): string {
    - 与其它记忆重复/高度重叠 → 合并
    - 已过时/被后续对话推翻/自相矛盾 → 删除
    - 冗长啰嗦 → 精炼
-3. **consolidate（合并）**：把重复或相关的多条记忆合并成一条更清晰的（用 save_memory 覆盖同 key）
+3. **consolidate（合并）**：把重复或相关的多条记忆合并成一条更清晰的（用 save_memory 覆盖同 key）。
+   save_memory 的 **type 必填**：沿用原记忆的类型；只有一种情况要改——标成 reference 但正文没有任何 URL、
+   内容其实是约定或决策的，改成 feedback / project 并补上行首的 Why: 与 How to apply:
 4. **prune（剪枝）**：删除过时、错误、无价值的记忆 —— 用 write 把该文件写成**空内容**。
    写空即视为删除：该条会被移出索引、并归档到 archive/ 子目录（字节保留，可人工恢复），
    下次巩固的清单里不再出现它。**不要**用 edit 删掉正文里的部分行来表达"删除整条"——

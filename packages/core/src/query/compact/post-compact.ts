@@ -35,8 +35,6 @@ export interface PostCompactOptions {
   hookSystem?: HookSystem;
   /** §2.1 文件重注入依赖；未提供则跳过 */
   fileReadTracker?: import("../../tool/file-read-tracker.ts").FileReadTracker;
-  /** §5 microcompact 状态机；未提供则跳过重置 */
-  cachedMicrocompactState?: import("./cached-microcompact.ts").CachedMicrocompactState;
   /** §4.1 质量报告落盘目录；未提供则只算覆盖率不落盘 */
   sessionDir?: string;
   /**
@@ -119,16 +117,8 @@ export async function runPostCompact(opts: PostCompactOptions): Promise<void> {
     }
   }
 
-  // 2. §5：压缩重组了消息历史，microcompact 的"已删除 tool_use_id"映射全部失效
-  if (opts.cachedMicrocompactState) {
-    try {
-      const { resetCachedMicrocompactState } = await import("./cached-microcompact.ts");
-      resetCachedMicrocompactState(opts.cachedMicrocompactState);
-      log.debug("COMPACT", "已重置 cached microcompact 状态机");
-    } catch {
-      /* 忽略 */
-    }
-  }
+  // 2.（原「重置 cached microcompact 状态机」已随该模块删除：冷清理决策现在是
+  //    ContextManager 的会话状态，压缩走 resetLocalCompactState 一并清空。）
 
   // 3. G1：抑制紧接的一次 cache break 检测，避免误报淹没真实告警
   try {

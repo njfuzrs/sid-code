@@ -35,9 +35,11 @@ ${typeList}
 - 已存在于 CLAUDE.md 的规则
 
 写法要求：
-- 相对日期（今天、昨天、下周、上个月）一律改写成绝对日期（YYYY-MM-DD）再保存——
+- save_memory 的 **type 必填**（上面 4 类之一）。reference 只用于外部系统指针，正文要有 URL；
+  约定、决策、踩坑结论属于 feedback / project，哪怕正文里提到了某份文档
+- 相对日期（今天、昨天、下周、上个月、周四）一律改写成绝对日期（YYYY-MM-DD）再保存——
   记忆会在很久之后被读到，"下周"届时已无意义
-- feedback / project 类正文必须带 **Why:**（为什么）与 **How to apply:**（何时、怎么用）两行
+- feedback / project 类正文必须带行首的 **Why:**（为什么）与 **How to apply:**（何时、怎么用）两行
 
 ## 依据记忆给建议之前
 

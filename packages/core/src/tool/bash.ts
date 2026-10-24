@@ -20,6 +20,7 @@ import { platform } from "os";
 import { join, isAbsolute, resolve as resolvePath } from "path";
 import { readFileSync, unlinkSync, existsSync, realpathSync } from "fs";
 import { getLogger } from "../debug/logger.ts";
+import { describeAbortReason } from "../llm/errors.ts";
 import type { Config } from "../config/config.ts";
 import { isReadOnlyCommand, isDestructiveCommand } from "./bash/read-only-validation.ts";
 import { interpretExitCode } from "./bash/command-semantics.ts";
@@ -898,7 +899,10 @@ export class BashTool implements Tool {
     // 否则 addEventListener("abort") 晚于 abort 事件 → handler 永不触发 → 命令照常执行
     // （已复现：用户 ESC 后排队的 bash 调用会无视取消）。
     if (signal?.aborted) {
-      return { output: "命令已取消（执行前 signal 已中止）", isError: true };
+      return {
+        output: `命令已取消，未执行（${describeAbortReason(signal.reason)}，执行前 signal 已中止）`,
+        isError: true,
+      };
     }
 
     // 确保快照创建完成（首条命令可能赶在快照就绪前；snapshotReady 永不 reject）
@@ -1245,8 +1249,11 @@ export class BashTool implements Tool {
             }
 
             if (aborted) {
+              // 成因按 signal.reason 写，不再一律「用户取消」：同一个 signal 还会被同批 Bash 失败
+              // 联动取消、看门狗、单轮硬超时 abort。模型读到「用户取消」会以为用户否决了这一步、
+              // 放弃整条路线——真实成因是兄弟命令失败时，它该做的是修那条命令。
               return {
-                output: `用户取消，已终止命令。\n部分输出:\n${output}`,
+                output: `命令已取消并终止（${describeAbortReason(signal?.reason)}）。\n部分输出:\n${output}`,
                 isError: true,
               };
             }

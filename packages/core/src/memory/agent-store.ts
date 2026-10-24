@@ -23,7 +23,7 @@ import {
   stripMemoryTypePrefix,
 } from "./paths.ts";
 import { MEMORY_LIMITS, isMemoryType, type MemoryType } from "./types.ts";
-import { normalizeMemoryDesc } from "./store.ts";
+import { inferMemoryType, normalizeMemoryDesc } from "./store.ts";
 // P1-7：索引截断口径的单一事实源（此前这里有一份同样三处口径错的副本）。
 import { buildTruncatedIndex } from "./index-budget.ts";
 // P1-8：agent 记忆线此前整条无 secret 闸门；判据与 save_memory / 私有记忆守卫同源。
@@ -104,14 +104,17 @@ interface AgentMemoryEntry {
   filename: string;
 }
 
-/** 启发式推断记忆类型（与 store.inferMemoryType 同口径，避免跨模块耦合单独维护一份） */
+/**
+ * 启发式推断 agent 记忆类型：在 `store.inferMemoryType` 之上只多一条——
+ * 「坑 / 注意」是子代理领域经验的典型措辞，落到 project 兜底时改判 feedback。
+ *
+ * 旧实现在这里抄了一整份正则（注释写「同口径」，实际多两个词），于是 reference
+ * 误判规则修一处漏一处。现在底层判据只有一份。
+ */
 function inferAgentMemoryType(key: string, value: string): MemoryType {
-  const hay = `${key} ${value}`.toLowerCase();
-  if (/(http|url|dashboard|ticket|jira|链接|地址|文档|wiki)/.test(hay)) return "reference";
-  if (/(偏好|喜欢|不要|always|prefer|纠正|反馈|以后都|风格|约定|坑|注意)/.test(hay))
-    return "feedback";
-  if (/(用户|我是|角色|工程师|expert|新手|背景|profile)/.test(hay)) return "user";
-  return "project";
+  const base = inferMemoryType(key, value);
+  if (base === "project" && /(坑|注意)/.test(`${key} ${value}`)) return "feedback";
+  return base;
 }
 
 /** 从记忆 .md 文件正文解析出 description / type / name（供重建索引） */

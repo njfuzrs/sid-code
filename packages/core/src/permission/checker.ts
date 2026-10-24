@@ -28,6 +28,8 @@ import type { PathRuleContext } from "./path-rule-matching.ts";
 import { AuditLogger } from "./audit.ts";
 import { getLogger } from "../debug/logger.ts";
 import { splitCompoundCommand, hasSensitiveRedirection } from "./shell-parser.ts";
+import { expandShellCommand, extractBashWriteTargets } from "./shell-command-variants.ts";
+import { isToolNameListed } from "../tool/tool-name-aliases.ts";
 import { checkInjectionPatterns } from "./bash-security.ts";
 import { PathValidator, normalizeCaseForComparison } from "./path-validator.ts";
 import { SAFETY_PROTECTED_PATHS, stripWorktreeContainerPrefix } from "./safety-protected-paths.ts";
@@ -37,6 +39,7 @@ import {
   recordDenial,
   recordSuccess,
   shouldFuse,
+  denialSignature,
   DENIAL_LIMITS,
 } from "./denial-tracking.ts";
 import { recordDefenseTrigger } from "../telemetry/metrics/defense-metrics.ts";
@@ -556,6 +559,31 @@ export class PermissionChecker implements Checker {
     return decision;
   }
 
+  /**
+   * 硬拒绝路径的熔断：保持拒绝，只把「重试不会改变结果」说破（理由见 check() 硬拒绝分支注释）。
+   * 防线触发照记（outcome=blocked：防线挡下了一次请求，而不是进入了可放行态）。
+   */
+  private hardDenyFuseNotice(req: PermissionRequest, resource: string, result: Decision): Decision {
+    const consecutive =
+      (this.denialTracking.bySignature[denialSignature(req.toolName, String(resource))]
+        ?.consecutive ?? DENIAL_LIMITS.maxConsecutive) + 1;
+    getLogger().warn(
+      "PERMISSION",
+      `同一操作（${req.toolName} ${String(resource).slice(0, 60)}）连续被硬拒绝，熔断→保持拒绝并提示停止重试`,
+    );
+    recordDefenseTrigger("denial_tracking", "blocked", {
+      tool: req.toolName,
+      count: consecutive,
+      threshold: DENIAL_LIMITS.maxConsecutive,
+    });
+    return {
+      ...result,
+      reason: `${result.reason ?? "操作被拒绝"}（同一操作已被同一条约束连续拒绝，重试相同输入不会改变结果，请换一种做法或请用户调整配置）`,
+      metadata: { ...result.metadata, denialTrackingTriggered: true },
+      step: result.step,
+    };
+  }
+
   constructor(config: Config, rules?: PermissionRule, workspacePath?: string) {
     this.config = config;
     this.rules = rules || null;
@@ -575,6 +603,31 @@ export class PermissionChecker implements Checker {
     if (rules) {
       this.ruleLoader.importFromPermissionRule(rules, "projectSettings");
     }
+  }
+
+  /**
+   * 权限配置形态（只有计数与开关，不含规则文本），供轨迹 SessionStart 记录影响面分母。
+   * 口径见 decision-telemetry.ts PermissionConfigShape。
+   */
+  describeConfigShape(): import("./decision-telemetry.ts").PermissionConfigShape {
+    const rules: Record<"allow" | "deny" | "ask", Record<string, number>> = {
+      allow: {},
+      deny: {},
+      ask: {},
+    };
+    for (const r of this.ruleLoader.getAllRules()) {
+      const bucket = rules[r.behavior];
+      bucket[r.source] = (bucket[r.source] ?? 0) + 1;
+    }
+    return {
+      mode: this.effectiveMode(),
+      skip_permissions: this.config.skipPermissions === true,
+      yes_mode: this.config.yesMode === true,
+      rules,
+      allowed_tools: this.config.allowedTools?.length ?? 0,
+      disallowed_tools: this.config.disallowedTools?.length ?? 0,
+      sandbox_auto_allow: this.sandboxManager?.shouldAutoAllowBash() === true,
+    };
   }
 
   /** 获取多来源规则加载器（供外部集成） */
@@ -952,10 +1005,24 @@ export class PermissionChecker implements Checker {
     tool?: Tool,
     toolContext?: ToolUseContext,
   ): Promise<Decision> {
+    // 每一步进入前把位置写进 st，命中即返回时由这里统一贴到 Decision.step（见 types.ts）。
+    // 不在三十多个 return 处逐个填：新加一步只要照抄 `st.step = …`，漏了也只是归到上一步。
+    const st = { step: "0" };
+    const decision = await this.hasPermissionsInnerSteps(req, st, tool, toolContext);
+    return decision.step ? decision : { ...decision, step: st.step };
+  }
+
+  private async hasPermissionsInnerSteps(
+    req: PermissionRequest,
+    st: { step: string },
+    tool?: Tool,
+    toolContext?: ToolUseContext,
+  ): Promise<Decision> {
     const log = getLogger();
     const filePath = extractFilePath(req);
     const resource = filePath || (req.input as any)?.command || "";
 
+    st.step = "1";
     // Step 1: deny 规则（工具级）
     //
     // bash 复合命令需逐子命令拆分匹配（对称于 Step 8 的 checkAllowRules）：
@@ -976,6 +1043,7 @@ export class PermissionChecker implements Checker {
       }
     }
 
+    st.step = "2";
     // Step 2: 危险命令拦截（硬编码 25 种模式 + 结构性注入防护 + 复合命令拆分 + 重定向检测 + LLM 风险分类）
     //   ⚠️ checkDangerousCommand 已为 async（内含 LLM 分类器调用），调用点必须 await——
     //   否则返回的 Promise 恒为 truthy，危险命令检测会被错误短路。
@@ -984,8 +1052,11 @@ export class PermissionChecker implements Checker {
       if (dangerResult) return dangerResult;
     }
 
+    st.step = "3";
     // Step 3: 禁用工具检查
-    if (this.config.disallowedTools.includes(req.toolName)) {
+    // 名单项按工具名归一比较（`Bash` / `WebFetch` / `Bash(curl *)` 都认），见 isToolNameListed。
+    // 精确 includes 曾让 CLAUDE.md 里 CC 风格的黑名单静默不生效。
+    if (isToolNameListed(this.config.disallowedTools, req.toolName)) {
       log.info("PERMISSION", `${req.toolName}(${resource.slice(0, 80)}) → 拒绝(工具已禁用)`);
       return {
         allowed: false,
@@ -994,6 +1065,7 @@ export class PermissionChecker implements Checker {
       };
     }
 
+    st.step = "3.5";
     // Step 3.5: 计划文件提前放行（W11.D4：解锁 plan capability eval）
     //
     // 背景：src/plan/prompt.ts 教 LLM 用 write 写计划文件到 ~/.sid-code/plans/plan-*.md，
@@ -1026,6 +1098,7 @@ export class PermissionChecker implements Checker {
       return { allowed: true, decisionReason: { type: "mode", mode: "plan+plan-file" } };
     }
 
+    st.step = "3.8";
     // Step 3.8（W12）：隔离 worktree 里的子代理不许把写工具打回主仓。
     //
     // 工作区边界（workspacePath）在 checker 构造时冻结为主仓根，子代理派生 checker 时原样复制，
@@ -1050,6 +1123,7 @@ export class PermissionChecker implements Checker {
       }
     }
 
+    st.step = "4";
     // Step 4: 统一路径验证（目录黑白名单 + symlink 解析 + 工作区边界 + 系统目录 + 敏感文件）
     // P1-1：grep / read_many 的 path 指向敏感文件或敏感目录时走硬 deny（与 read 同口径）。
     // 普通目录作搜索根不在这里拦——全树命中由工具层 isSensitivePath 过滤。
@@ -1106,6 +1180,7 @@ export class PermissionChecker implements Checker {
       }
     }
 
+    st.step = "5";
     // Step 5: ask 规则（工具级）
     //
     // bash 复合命令同样要逐子命令拆分（对称于 checkDenyRules / checkAllowRules）。
@@ -1126,6 +1201,7 @@ export class PermissionChecker implements Checker {
       }
     }
 
+    st.step = "5.5";
     // Step 5.5: 工具级 checkPermissions（passthrough 语义）
     if (tool?.checkPermissions) {
       const toolPermResult = await tool.checkPermissions(req.input, toolContext!);
@@ -1181,13 +1257,25 @@ export class PermissionChecker implements Checker {
       // passthrough: 工具没有意见，继续后续检查
     }
 
+    st.step = "6";
     // Step 6: safetyCheck（bypass-immune，即使 always-allow 也不可绕过）
-    if (WRITE_TOOLS.has(req.toolName) && filePath) {
-      const safetyResult = this.safetyCheck(filePath);
+    //
+    // 覆盖两类写入：文件工具的目标路径，以及 bash 命令的写入目标（cp/tee/sed -i/curl -o/
+    // dd of=/重定向，含 sh -c 内层）。后者此前只有 Step 2 的「敏感重定向」一道，
+    // `cp x .git/hooks/pre-commit` / `tee .git/hooks/pre-commit` 在 always-allow 下静默放行
+    // （2026-10-24 实测）。bash 的相对路径按 bash 实际 cwd 解析（与 sed -i 校验同口径）。
+    const safetyTargets: string[] =
+      WRITE_TOOLS.has(req.toolName) && filePath
+        ? [filePath]
+        : req.toolName === "bash"
+          ? await this.resolveBashWriteTargets(req)
+          : [];
+    for (const target of safetyTargets) {
+      const safetyResult = this.safetyCheck(target);
       if (!safetyResult.safe) {
         log.info(
           "PERMISSION",
-          `${req.toolName}(${filePath.slice(0, 80)}) → 需确认(safetyCheck: ${safetyResult.reason})`,
+          `${req.toolName}(${target.slice(0, 80)}) → 需确认(safetyCheck: ${safetyResult.reason})`,
         );
         return {
           allowed: false,
@@ -1203,6 +1291,7 @@ export class PermissionChecker implements Checker {
       }
     }
 
+    st.step = "7";
     // Step 7: 沙箱自动放行（沙箱启用时 bash 命令可自动放行，减少弹窗）
     //
     // P2-3（2026-09-22）：这一步此前是「沙箱开了 = bash 跳过一切后续判定」。
@@ -1246,12 +1335,14 @@ export class PermissionChecker implements Checker {
       return { allowed: true, decisionReason: { type: "other", reason: "沙箱保护下自动放行" } };
     }
 
+    st.step = "8-mode";
     // Step 8: bypass/always-allow 模式（safetyCheck 之后才检查，确保关键路径不被绕过）
     if (this.config.permissionMode === "always-allow") {
       log.info("PERMISSION", `${req.toolName}(${resource.slice(0, 80)}) → 允许(always-allow模式)`);
       return { allowed: true, decisionReason: { type: "mode", mode: "always-allow" } };
     }
 
+    st.step = "8-rule";
     // Step 8: allow 规则（工具级）
     if (this.rules) {
       const allowDecision = this.checkAllowRules(req);
@@ -1264,17 +1355,20 @@ export class PermissionChecker implements Checker {
       }
     }
 
+    st.step = "9";
     // Step 9: plan 模式（代码级强制只读，计划文件例外）
     if (this.config.permissionMode === "plan") {
       return this.checkPlanMode(req, filePath, resource);
     }
 
+    st.step = "10";
     // Step 10: 读操作自动放行
     if (READ_ONLY_TOOLS.has(req.toolName)) {
       log.info("PERMISSION", `${req.toolName}(${resource.slice(0, 80)}) → 允许(只读工具)`);
       return { allowed: true };
     }
 
+    st.step = "11";
     // Step 11: acceptEdits 模式（自动接受文件操作，其他仍需检查）
     if (this.config.permissionMode === "acceptEdits") {
       if (FILE_TOOLS.has(req.toolName)) {
@@ -1295,6 +1389,7 @@ export class PermissionChecker implements Checker {
       }
     }
 
+    st.step = "12";
     // Step 12: 预授权工具放行（`--allowed-tools` / config.allowedTools / CLAUDE.md 工具白名单）
     //
     // P7：此前是 `preApproved.has(req.toolName)` 精确比较——`--allowed-tools Read` 对不上 `read`，
@@ -1306,6 +1401,7 @@ export class PermissionChecker implements Checker {
       return { allowed: true };
     }
 
+    st.step = "13";
     // Step 13: deny-write 模式
     if (this.config.permissionMode === "deny-write") {
       log.info("PERMISSION", `${req.toolName}(${resource.slice(0, 80)}) → 拒绝(deny-write模式)`);
@@ -1316,6 +1412,7 @@ export class PermissionChecker implements Checker {
       };
     }
 
+    st.step = "13.5";
     // Step 13.5（D16）：工具自报破坏性（MCP destructiveHint: true）→ 安全类确认。
     // 与普通 ask 的区别只在下游：yesMode / auto 分类器 / PreToolUse hook allow 都不能放行它
     // （isSafetyConfirmation）。用户显式 allow 规则、always-allow、预授权在上面已经生效，不受影响——
@@ -1332,6 +1429,7 @@ export class PermissionChecker implements Checker {
       };
     }
 
+    st.step = "14";
     // Step 14: passthrough → ask（默认需要用户确认）
     log.info("PERMISSION", `${req.toolName}(${resource.slice(0, 80)}) → 需确认(默认策略)`);
     return {
@@ -1346,6 +1444,95 @@ export class PermissionChecker implements Checker {
    * 这是对外暴露的 check() 方法
    */
   async check(
+    req: PermissionRequest,
+    tool?: Tool,
+    toolContext?: ToolUseContext,
+    options?: PermissionCheckOptions,
+  ): Promise<Decision> {
+    const decision = await this.checkUngated(req, tool, toolContext, options);
+    const gated = decision.allowed ? this.enforceModeHardConstraint(req, decision) : null;
+    const final = gated ?? decision;
+    return { ...final, mode: final.mode ?? this.effectiveMode() };
+  }
+
+  /** 当前生效的权限模式（skipPermissions 是与 permissionMode 正交的布尔，单独标出） */
+  private effectiveMode(): string {
+    return this.config.skipPermissions
+      ? "dangerously-skip-permissions"
+      : String(this.config.permissionMode ?? "default");
+  }
+
+  /**
+   * 模式硬约束总闸：plan / deny-write 是**代码级只读**，任何放行都必须过这一道。
+   *
+   * ## 为什么是总闸而不是在各 Step 里补判断
+   *
+   * 「谁说安全都不能越过模式硬约束」（P0-3）此前是在 Step 5.5（工具级 allow）与
+   * Step 7（沙箱）里**逐处**补的，于是漏掉的放行口各自成了一条绕过路径——2026-10-24 实测：
+   *
+   * | 放行口 | 修前 |
+   * | --- | --- |
+   * | Step 8 allow 规则 `Bash(npm *)` / `Write(*)` | plan 下放行 npm install、写任意文件 |
+   * | Step 4 敏感文件逃生舱 `Write(.env)` | plan 下写 .env |
+   * | Step 12 预授权 `--allowed-tools write` | deny-write 下放行写入 |
+   * | 会话记忆（切 plan 前点过「总是允许」） | plan 下放行 |
+   * | yesMode 自动批准普通 ask | plan 下写工作区外文件 |
+   * | PreToolUse hook allow | plan 下放行 ask 规则命中的写 |
+   * | skipPermissions 早退 + enter_plan_mode | plan 下全放行 |
+   *
+   * 所有放行最终都从 check() 出去，所以把约束挂在出口：放行面再增加一条，也绕不过它。
+   * 阶段一里的逐处判断保留（它们给出更具体的日志），总闸是兜底且是唯一事实源。
+   *
+   * 计划文件（Step 3.5，精确匹配 getPlanFilePath）是唯一豁免——那是 plan 模式本身要写的东西。
+   * 返回 null = 不拦。
+   */
+  private enforceModeHardConstraint(req: PermissionRequest, decision: Decision): Decision | null {
+    const mode = this.config.permissionMode;
+    if (mode !== "plan" && mode !== "deny-write") return null;
+    if (decision.step === "3.5") return null;
+    const filePath = extractFilePath(req);
+    const resource = filePath || (req.input as { command?: string })?.command || "";
+    let blocked: Decision | null = null;
+    if (mode === "plan") {
+      const verdict = this.checkPlanMode(req, filePath, resource);
+      if (!verdict.allowed) {
+        blocked = {
+          ...verdict,
+          decisionReason: verdict.decisionReason ?? { type: "mode", mode: "plan" },
+        };
+      }
+    } else if (!READ_ONLY_TOOLS.has(req.toolName)) {
+      blocked = {
+        allowed: false,
+        reason: "deny-write 模式下不允许写操作",
+        decisionReason: { type: "mode", mode: "deny-write" },
+      };
+    }
+    if (!blocked) return null;
+    getLogger().info(
+      "PERMISSION",
+      `${req.toolName}(${String(resource).slice(0, 80)}) → 拒绝(${mode}模式硬约束总闸，覆盖 step=${decision.step ?? "?"} 的放行)`,
+    );
+    this.denialTracking = recordDenial(
+      this.denialTracking,
+      req.toolName,
+      blocked.reason || "",
+      resource,
+    );
+    this.auditLogger.log({
+      timestamp: new Date().toISOString(),
+      type: "tool_use",
+      tool: req.toolName,
+      resource,
+      decision: "deny",
+      reason: `${blocked.reason}（覆盖 step=${decision.step ?? "?"} 的放行）`,
+      decisionReason: blocked.decisionReason,
+    });
+    return { ...blocked, step: "mode-gate", metadata: { overriddenStep: decision.step } };
+  }
+
+  /** check() 的主体：阶段一 + 阶段二后处理。放行结果出去之前还要过 enforceModeHardConstraint。 */
+  private async checkUngated(
     req: PermissionRequest,
     tool?: Tool,
     toolContext?: ToolUseContext,
@@ -1370,7 +1557,7 @@ export class PermissionChecker implements Checker {
         reason: "skipPermissions",
         ...(options?.auditSource ? { source: options.auditSource } : {}),
       });
-      return { allowed: true };
+      return { allowed: true, step: "skip" };
     }
 
     // 会话记忆快速路径（空 key 不命中：写工具 / 无 path 的 grep / 无 url 的 web_fetch）
@@ -1395,11 +1582,11 @@ export class PermissionChecker implements Checker {
       this.denialTracking = allowed
         ? recordSuccess(this.denialTracking, req.toolName, resource)
         : recordDenial(this.denialTracking, req.toolName, "会话记忆拒绝", resource);
-      return { allowed, decisionReason: { type: "sessionMemory" } };
+      return { allowed, decisionReason: { type: "sessionMemory" }, step: "memory" };
     }
 
-    // 运行阶段 1 内部检查
-    const result = await this.hasPermissionsInner(req, tool, toolContext);
+    // 运行阶段 1 内部检查（硬拒绝熔断会就地改写 reason，见下方 hardDenyFuseNotice）
+    let result = await this.hasPermissionsInner(req, tool, toolContext);
 
     // ── G2/G3：PreToolUse hook 权限决策注入 ──
     // 安全护栏（对齐 CC toolHooks.ts:386 + 我们既有 yesMode 语义）：
@@ -1432,6 +1619,7 @@ export class PermissionChecker implements Checker {
         return {
           allowed: true,
           decisionReason: { type: "other", reason: "PreToolUse hook allow" },
+          step: "hook-allow",
         };
       }
       if (!result.allowed) {
@@ -1452,6 +1640,7 @@ export class PermissionChecker implements Checker {
           allowed: false,
           reason: "PreToolUse hook 要求确认，但当前为非交互模式，自动拒绝",
           decisionReason: { type: "other", reason: "PreToolUse hook ask (non-interactive)" },
+          step: "hook-ask",
         };
       }
       log.info(
@@ -1463,6 +1652,7 @@ export class PermissionChecker implements Checker {
         needsConfirmation: true,
         reason: "PreToolUse hook 要求用户确认",
         decisionReason: { type: "other", reason: "PreToolUse hook ask" },
+        step: "hook-ask",
       };
     }
 
@@ -1496,13 +1686,20 @@ export class PermissionChecker implements Checker {
       // 若先记账再判定，第 3 次尝试本身就会变成确认弹窗——那时模型只被拒过 2 次，属提前打扰
       // （也与 denial-tracking.ts 文件头反事实表的口径不一致，那张表就是先判定后记账）。
       //
-      // dontAsk / 非交互无 UI 通道，熔断成确认等于必然失败，故这两种情形维持原硬拒。
-      if (
-        shouldFuse(this.denialTracking, req.toolName, resource) &&
-        this.config.permissionMode !== "dontAsk" &&
-        !this.isNonInteractive()
-      ) {
-        return this.fuseDecision(req, resource);
+      // ⚠️ 2026-10-24 改：硬拒绝**不再**熔断成确认，只升级成「停止重试」的明确信号。
+      //
+      // 硬拒绝来自 deny 规则、critical 危险命令、敏感凭证文件、plan / deny-write、
+      // 禁用工具、worktree 越界——全部是「配置里的决定，对话中不给推翻机会」。
+      // 熔断成确认等于给了推翻机会，而且推翻的条件是**模型重试三次**：
+      // 修前实测第 4 次读 `.env` / 第 4 次 `rm -rf /` / 第 4 次撞 `Bash(curl *)` 都弹出确认，
+      // speculative 分类器还会因为 decisionReason 变成 denialTracking 而不再被
+      // dangerousCommand 护栏挡住。path-validator 把凭证文件收紧成硬 deny 的理由
+      // （「弹窗是最容易被点穿的一环」）在这里被原样绕回去了。
+      //
+      // 熔断要解决的是「模型对同一面墙反复撞」——解法是把墙说清楚让它换路，不是开门。
+      // 所以：保留原 decisionReason（成因口径不变），reason 加一句停止重试，记一次防线触发。
+      if (shouldFuse(this.denialTracking, req.toolName, resource)) {
+        result = this.hardDenyFuseNotice(req, resource, result);
       }
       this.denialTracking = recordDenial(
         this.denialTracking,
@@ -1549,7 +1746,7 @@ export class PermissionChecker implements Checker {
           reason: "yesMode 自动批准",
           user_confirmed: false,
         });
-        return { allowed: true, decisionReason: { type: "mode", mode: "yesMode" } };
+        return { allowed: true, decisionReason: { type: "mode", mode: "yesMode" }, step: "yes" };
       }
       // 危险来源的确认：yesMode 不放行，落到下方非交互/熔断/正常确认流程（高风险仍拦）
       log.info(
@@ -1604,7 +1801,11 @@ export class PermissionChecker implements Checker {
                 decision: "allow",
                 reason: `auto 模式分类器批准: ${classifyResult.reason}`,
               });
-              return { allowed: true, decisionReason: { type: "mode", mode: "auto" } };
+              return {
+                allowed: true,
+                decisionReason: { type: "mode", mode: "auto" },
+                step: "auto",
+              };
             }
             // 分类器判不安全或不可用：落到下方正常确认流程（needsConfirmation）
             log.info(
@@ -1635,6 +1836,7 @@ export class PermissionChecker implements Checker {
         allowed: false,
         reason: `dontAsk 模式下自动拒绝: ${result.reason}`,
         decisionReason: { type: "mode", mode: "dontAsk" },
+        step: "dontAsk",
       };
       this.auditLogger.log({
         timestamp: new Date().toISOString(),
@@ -1695,6 +1897,8 @@ export class PermissionChecker implements Checker {
           // 会把静默拒绝当成偶发失败。说破它，等于把一次白烧的轮次换成一次改道。
           reason: `非交互模式下自动拒绝（无人可确认，重试相同输入不会改变结果）：${result.reason}`,
         },
+        // 成因步骤沿用阶段一（「为什么要问」），headless 只是把 ask 落成 deny
+        step: `headless:${result.step ?? "?"}`,
       };
       this.auditLogger.log({
         timestamp: new Date().toISOString(),
@@ -1723,6 +1927,34 @@ export class PermissionChecker implements Checker {
   }
 
   /**
+   * bash 命令的写入目标 → 绝对路径（供 Step 6 safetyCheck）。
+   * 相对路径按 bash 实际 cwd 解析：input.cwd > 全局 getCwd()（追踪 cd）> 工作区根，
+   * 与 checkDangerousCommand 里 sed -i 的目标校验同一口径。
+   */
+  private async resolveBashWriteTargets(req: PermissionRequest): Promise<string[]> {
+    const cmd = (req.input as { command?: string })?.command;
+    if (typeof cmd !== "string" || !cmd.trim()) return [];
+    const targets = extractBashWriteTargets(cmd);
+    if (targets.length === 0) return [];
+    let baseCwd: string = this.workspacePath;
+    const inputCwd = (req.input as { cwd?: unknown })?.cwd;
+    if (typeof inputCwd === "string" && inputCwd) {
+      baseCwd = inputCwd;
+    } else {
+      try {
+        const { getCwd } = await import("../bootstrap/state.ts");
+        baseCwd = getCwd();
+      } catch {
+        /* 无全局 cwd（测试 / 嵌入）：退回工作区根 */
+      }
+    }
+    return targets.map((t) => {
+      const expanded = t === "~" || t.startsWith("~/") ? path.join(os.homedir(), t.slice(1)) : t;
+      return path.isAbsolute(expanded) ? expanded : path.resolve(baseCwd, expanded);
+    });
+  }
+
+  /**
    * safetyCheck：bypass-immune 的关键路径保护
    * 即使在 always-allow 模式下也不可绕过
    */
@@ -1731,10 +1963,39 @@ export class PermissionChecker implements Checker {
     reason?: string;
     classifierApprovable: boolean;
   } {
+    // 判定对象 = 字面路径 + symlink 解析链上的每一环 + 最终 realpath，任一命中即不安全。
+    //
+    // 只看字面路径时，`innocent -> .git/hooks` 之后写 `innocent/pre-commit` 在
+    // always-allow / acceptEdits 下静默放行（2026-10-24 实测）：真正落盘的是 hook。
+    // Step 4 的 symlink 检测拦不住它——那一步只管「逃出工作区」，`.git/hooks` 本就在工作区内。
+    // 取整条解析链而非只取 realpath：中间一级指向受保护目录、最终又被链回别处的形态同样要拦，
+    // 与 PathValidator 的 symlink 逃逸检测是同一个理由（getAllResolvedPaths 注释）。
+    const candidates = new Set<string>([path.resolve(filePath)]);
+    for (const p of this.pathValidator.getAllResolvedPaths(filePath)) candidates.add(p);
+    // 取**最严格**的命中，而不是第一个：`innocent -> .git/hooks` 的解析链里，中间一环
+    // `<ws>/.git/hooks`（目录本身）只命中宽泛的 `.git/`（classifierApprovable: true），
+    // 最终 realpath `<ws>/.git/hooks/pre-commit` 才命中 `.git/hooks/`（false）。
+    // 取第一个会让 auto 分类器有权放行一个 hook 写入。
+    let worst: { safe: boolean; reason?: string; classifierApprovable: boolean } | null = null;
+    for (const candidate of candidates) {
+      const hit = this.safetyCheckResolved(candidate);
+      if (hit.safe) continue;
+      if (!hit.classifierApprovable) return hit;
+      worst ??= hit;
+    }
+    return worst ?? { safe: true, classifierApprovable: true };
+  }
+
+  /** safetyCheck 对单个已解析绝对路径的判定（受保护路径表匹配） */
+  private safetyCheckResolved(absolutePath: string): {
+    safe: boolean;
+    reason?: string;
+    classifierApprovable: boolean;
+  } {
     // W4：先剥掉 worktree 容器前缀，再判定。worktree 的物理路径本身就含
     // `.sid-code/worktrees/<slug>/`，不剥的话里面每一个普通源码文件都会被
     // 下面的 ".sid-code/" 一条命中（理由详见 stripWorktreeContainerPrefix）。
-    const resolved = stripWorktreeContainerPrefix(path.resolve(filePath));
+    const resolved = stripWorktreeContainerPrefix(absolutePath);
     // 大小写归一化比较：macOS/Windows 大小写不敏感文件系统下，
     // ".ClAuDe/settings.json" 与 ".claude/settings.json" 指向同一文件，
     // 必须归一化后再比对（对标 path-validator normalizeCaseForComparison）。
@@ -1981,17 +2242,12 @@ export class PermissionChecker implements Checker {
       return checkRules(askRules, req, pathCtx);
     }
 
+    // 与 deny 同口径：逐「等价执行形态」匹配（见 checkDenyRules 注释与 shell-command-variants.ts）
     const command = (req.input as { command?: string })?.command ?? "";
-    const subCommands = splitCompoundCommand(command);
-
-    if (subCommands.length <= 1) {
-      return checkRules(askRules, req, pathCtx);
-    }
-
-    for (const sub of subCommands) {
+    for (const variant of expandShellCommand(command).variants) {
       const subReq: PermissionRequest = {
         ...req,
-        input: { ...(req.input as object), command: sub },
+        input: { ...(req.input as object), command: variant },
       };
       const subDecision = checkRules(askRules, subReq, pathCtx);
       if (subDecision && !subDecision.allowed && subDecision.needsConfirmation) {
@@ -2025,26 +2281,24 @@ export class PermissionChecker implements Checker {
     }
 
     const command = (req.input as { command?: string })?.command ?? "";
-    const subCommands = splitCompoundCommand(command);
 
-    // 单命令（无 &&/||/;/| 复合）：等价于原逻辑，直接整条匹配
-    if (subCommands.length <= 1) {
-      return checkRules(denyRules, req, pathCtx);
-    }
-
-    // 复合命令：逐子命令校验，任一子命令命中 deny 即整体拒绝（some(deny)）
-    for (const sub of subCommands) {
+    // 逐「等价执行形态」校验，任一形态命中 deny 即整体拒绝（some(deny)）。
+    //
+    // 形态 = 复合命令拆分出的每个子命令（已 trim）+ 命令头规范化形态（剥环境变量前缀 /
+    // env·command·nohup·timeout·xargs 等包装命令、去转义去引号、绝对路径取 basename）
+    // + sh -c / eval / 命令替换里的内层脚本（递归）。修前只做了第一项，
+    // `  curl x` / `/usr/bin/curl x` / `env curl x` / `sh -c 'curl x'` 全部绕过 `Bash(curl *)`
+    // （2026-10-24 实测 always-allow 下放行）。展开只用于「拦」，allow 不用（见模块头注释）。
+    for (const variant of expandShellCommand(command).variants) {
       const subReq: PermissionRequest = {
         ...req,
-        input: { ...(req.input as object), command: sub },
+        input: { ...(req.input as object), command: variant },
       };
       const subDecision = checkRules(denyRules, subReq, pathCtx);
       if (subDecision && !subDecision.allowed) {
-        // 命中的 deny 规则针对的是子命令，reason 里带上原始命令上下文更可读
         return subDecision;
       }
     }
-    // 没有任何子命令命中 deny
     return null;
   }
 
@@ -2125,8 +2379,13 @@ export class PermissionChecker implements Checker {
         dp.name.includes("解码执行") ||
         dp.name.includes("下载并执行"),
     );
+    //
+    // 整段匹配的对象除原命令外，还包括每一层 sh -c / eval / 命令替换的内层脚本：
+    // `sh -c 'curl x | sh'` 的管道在引号里，对原文做跨管道匹配同样能命中，但
+    // `eval "$(echo Y3VybCB4fHNo | base64 -d)"` 这类只有展开后才露出形态。
+    const { scripts, variants: expandedSubs } = expandShellCommand(cmd);
     for (const dp of pipelinePatterns) {
-      if (dp.pattern.test(cmd)) {
+      if (scripts.some((sc) => dp.pattern.test(sc))) {
         return { name: dp.name, severity: dp.severity };
       }
     }
@@ -2138,9 +2397,11 @@ export class PermissionChecker implements Checker {
     // （`git -c core.pager=cat reset --hard`），这会把子命令与 `git` 撑开，使所有
     // `\bgit\s+<子命令>` 形态的正则失配 → 危险命令在 acceptEdits/yesMode 下被静默放行。
     // 归一化后双重匹配即可覆盖该绕过（对齐 CC gitCmdRe 的全局选项容错）。
-    const subCommands = splitCompoundCommand(cmd);
+    //
+    // 子命令取「等价执行形态」全集（shell-command-variants.ts）：修前只拆复合命令，
+    // `sh -c 'rm -rf /'` 与 `r\m -rf /` 在 always-allow 下直接放行（2026-10-24 实测）。
     const nonPipelinePatterns = DANGEROUS_PATTERNS.filter((dp) => !pipelinePatterns.includes(dp));
-    for (const subCmd of subCommands) {
+    for (const subCmd of expandedSubs) {
       const normalized = normalizeGitGlobalOptions(subCmd);
       const variants = normalized === subCmd ? [subCmd] : [subCmd, normalized];
       for (const dp of nonPipelinePatterns) {

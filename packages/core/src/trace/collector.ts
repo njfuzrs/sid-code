@@ -63,6 +63,8 @@ import {
 import { listActiveSessions } from "../session/concurrent.ts";
 import {
   setPermissionDecisionObserver,
+  readPermissionConfigShape,
+  type PermissionConfigShape,
   setCommandAllowedToolsObserver,
   type PermissionDecisionEvent,
 } from "../permission/decision-telemetry.ts";
@@ -422,6 +424,8 @@ export class TraceCollector {
 
   // ── B11 / B12：会话级权限决策与「一次 edit 成功」累加器（口径见 decision-metrics.ts）──
   private permissionStats: PermissionDecisionStats = emptyPermissionDecisionStats();
+  /** SessionStart 时的权限配置形态，随 session-index 落盘（影响面分母） */
+  private permissionConfig: PermissionConfigShape | undefined;
   private readonly editFirstTry = new EditFirstTryTracker();
 
   // 缺口分析五类：上下文窗口查询（TokenEstimator 是窗口大小的 SSOT，避免另建静态表漂移）
@@ -1147,6 +1151,8 @@ export class TraceCollector {
     // unref 确保心跳定时器不阻止进程退出
     this.heartbeatTimer.unref();
 
+    const permissionConfig = readPermissionConfigShape();
+    this.permissionConfig = permissionConfig;
     this.appendHookEvent({
       event: HookEventName.SessionStart,
       session_id: traceSessionId,
@@ -1156,6 +1162,11 @@ export class TraceCollector {
         source: input.source,
         model: input.model,
         permission_mode: input.permission_mode,
+        // permission_mode 是 CC 映射值（always-allow 与 skip 合并、deny-write 记成 default），
+        // sid 原值另记一份才能按真实档位切片（§4 审计可观测性缺口 2）
+        ...(input.sid_permission_mode ? { sid_permission_mode: input.sid_permission_mode } : {}),
+        // 权限配置形态（规则条数 / 开关，不含规则文本）= 影响面分母（缺口 3）
+        ...(permissionConfig ? { permission_config: permissionConfig } : {}),
         // 记录会话产生那一刻的隐私级别：essential-traffic 会话切回 default 后不应被补传，
         // 而隐私级别是进程环境、会话结束后无从回溯，必须在产生时落盘。仅本地归因——
         // 上传前由 stripLocalOnlyEventFields 剥掉（见 LOCAL_ONLY_EVENT_DATA_FIELDS）。
@@ -1964,6 +1975,8 @@ export class TraceCollector {
       // S10：fork / 子代理身份（与 StreamPhase.agent_id 同值）。主循环无此字段，形状不变
       ...(e.agentId ? { agent_id: e.agentId } : {}),
       ...(e.durationMs !== undefined ? { duration_ms: e.durationMs } : {}),
+      ...(e.step ? { step: e.step } : {}),
+      ...(e.mode ? { mode: e.mode } : {}),
     });
   }
 
@@ -2877,6 +2890,7 @@ export class TraceCollector {
           traj_corrupt_detected_by: "session_end",
           compactions: this.metadata.compactions.length,
           permission: this.permissionStats,
+          permission_config: this.permissionConfig,
           edit_first_try: this.editFirstTry.stats(),
           perf: { ...this.perfIndexFields(), gen_p95: m?.gen_p95, gen_n: m?.gen_n },
         }),
@@ -3212,6 +3226,7 @@ export class TraceCollector {
             // 与 compactions 同理：这两项是 collector 自己累计的事实，增量行也能如实给出
             //（不像 real_errors 要等 digest），崩溃会话的样本因此不丢
             permission: this.permissionStats,
+            permission_config: this.permissionConfig,
             edit_first_try: this.editFirstTry.stats(),
             // 增量行同样给：这几项是 collector 自己累计的事实（gen_p95 要 digest，留给权威行）
             perf: this.perfIndexFields(),
@@ -3688,7 +3703,18 @@ function dirBytes(dir: string): number {
 // ─── S17：PostToolUseFailure 的错误分类 ───
 
 /** 工具失败分类（落 events.jsonl 的 `error_kind`，上传云端） */
-export type ToolErrorKind = "validation" | "permission" | "exec" | "timeout";
+/**
+ * aborted / skipped（2026-10-24）：中断与「没开始执行」不是工具不可靠的证据，必须能从轨迹里
+ * 单独数出来。原先它们分别被并进 exec（或经 tool_error 走 PostToolUse 路径），
+ * 轨迹里「用户按 ESC」与「命令真的失败」长得一样。
+ */
+export type ToolErrorKind =
+  | "validation"
+  | "permission"
+  | "exec"
+  | "timeout"
+  | "aborted"
+  | "skipped";
 
 /** error_head 截断长度：够认出错误类型，又不把整段输出（可能含密钥）落进轨迹 */
 export const ERROR_HEAD_MAX = 200;
@@ -3703,6 +3729,7 @@ function failureText(input: PostToolUseInput): string {
  * 按现有错误来源分类，判不出用 exec。
  * - `sid_failure_kind=validation` → validation（参数校验失败，工具没执行）；
  * - `hook_blocked` → permission（PreToolUse hook 阻止，与权限拒绝同属「不让执行」）；
+ * - `aborted` → aborted（执行中被中断）；`skipped` → skipped（Pre 已 fire 但没开始执行）；
  * - 错误文本含超时特征 → timeout；
  * - 其余（exception / tool_error / 未知）→ exec。
  * 权限拒绝本身走 PermissionDenied 事件（Q7），不经过这里。
@@ -3710,6 +3737,8 @@ function failureText(input: PostToolUseInput): string {
 export function classifyToolFailure(input: PostToolUseInput): ToolErrorKind {
   if (input.sid_failure_kind === "validation") return "validation";
   if (input.sid_failure_kind === "hook_blocked") return "permission";
+  if (input.sid_failure_kind === "aborted") return "aborted";
+  if (input.sid_failure_kind === "skipped") return "skipped";
   const text = failureText(input);
   if (TIMEOUT_EVENT_RE.test(text)) return "timeout";
   return "exec";
