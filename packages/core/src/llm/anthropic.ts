@@ -31,9 +31,11 @@ import {
   emitStreamPhase,
   emitHttpConnected,
   emitStrictToolDegraded,
+  emitPromptCacheLayout,
   streamAttributionOf,
   cacheDimsFor,
 } from "../trace/stream-observer.ts";
+import { recordPrefixTouch } from "../api/cache-warmth.ts";
 import { currentSseDumpContext } from "./sse-chunk-dumper.ts";
 import {
   recordBilledRequest,
@@ -58,6 +60,8 @@ import {
   assertCacheBreakpointBudget,
   markLastToolCacheBreakpoint,
   markLastUserMessageCacheBreakpoint,
+  countCacheBreakpoints,
+  type SystemBlock,
 } from "../api/cache-strategy.ts";
 import { getEffectiveBetaHeaders } from "../api/beta-header-latch.ts";
 import { RequestAbortedError } from "./errors.ts";
@@ -188,11 +192,14 @@ export class AnthropicProvider implements Provider {
     // 转换消息格式
     // 发现 1：provider_reasoning 是 OpenAI Responses 的密文推理项，Anthropic 不认识
     // （下方 map 对未知块 throw）；「gpt → claude」中途切模型时在这里丢掉。
+    const transientBlocks = new WeakSet<object>();
     const messages = params.messages.map((msg) => ({
       role: msg.role,
       content: withoutProviderReasoning(msg.content).map((block) => {
         if (block.type === "text") {
-          return { type: "text" as const, text: block.text };
+          const wire = { type: "text" as const, text: block.text };
+          if (block.transient) transientBlocks.add(wire);
+          return wire;
         } else if (block.type === "tool_use") {
           return {
             type: "tool_use" as const,
@@ -222,10 +229,12 @@ export class AnthropicProvider implements Provider {
       }),
     }));
 
-    // Prompt Caching：在最后一条用户消息的最后一个 content block 上标记 cache_control
-    // 这样 system prompt + 工具定义 + 历史消息都能被缓存，只有新增部分需要计算
+    // Prompt Caching：messages 区唯一断点打在「下一轮仍会原样发送」的最后一个块上。
+    // transient（system-reminder）块不落断点，理由见 markLastUserMessageCacheBreakpoint。
     // P1-4：与非流式路径共用同一函数（此前两处各手写一遍倒序循环）
-    markLastUserMessageCacheBreakpoint(messages);
+    const msgBreakpoint = markLastUserMessageCacheBreakpoint(messages, (b) =>
+      transientBlocks.has(b),
+    );
 
     // 转换工具定义
     // P1-3: strict 模式（Constrained Decoding）— 仅 Claude 4.x 模型支持
@@ -257,26 +266,30 @@ export class AnthropicProvider implements Provider {
     ).tools;
 
     // system prompt 分区缓存：按 DYNAMIC_BOUNDARY 拆分为静态区和动态区
-    // 静态区跨会话可缓存，动态区会话内缓存，分别标记 cache_control
-    // G4：Anthropic 直连且未禁用时，静态区用 global scope（跨用户共享 KV Cache）。
-    const useGlobalScope =
-      isDirectAnthropicEndpoint(this.client.baseURL) && !process.env.SID_DISABLE_GLOBAL_CACHE;
-    const system = buildSystemBlocks(params.system, { globalScopeEnabled: useGlobalScope });
+    // 静态区跨会话可缓存，动态区会话内缓存，分别标记 cache_control（不带 scope，见 cache-strategy.ts 头）
+    const system = buildSystemBlocks(params.system);
 
     // 增强 5.1：工具区缓存断点（对齐 CC toolToAPISchema cacheControl）。
     // 仅直连 Anthropic 且未禁用时，在最后一个工具上打一个断点，把整个工具区纳入前缀缓存分层。
-    // 走网关时降级不打（网关对 scope/beta 字段兼容性差，且收益仅直连链路）。
-    // SID_DISABLE_TOOL_CACHE=1 可一键关闭降级。
+    // 走网关时降级不打（收益仅直连链路）。SID_DISABLE_TOOL_CACHE=1 可一键关闭降级。
     const enableToolCache =
       isDirectAnthropicEndpoint(this.client.baseURL) && !process.env.SID_DISABLE_TOOL_CACHE;
     if (enableToolCache) {
-      markLastToolCacheBreakpoint(tools, { globalScope: useGlobalScope });
+      markLastToolCacheBreakpoint(tools);
     }
 
     // 比 CC 更进一步：发请求前断言 cache_control 断点数未超 Anthropic 上限(4)，
     // 把"comment-only 不变量"升级为运行时护栏(dev 抛错暴露 / prod 打日志容错)。
     // tools 一并计入(增强 5.1 新增工具区断点后总数不得超 4)。
     assertCacheBreakpointBudget(system, messages as any, getLogger(), tools as any);
+    recordPromptCacheLayout(
+      messages,
+      system,
+      tools,
+      msgBreakpoint,
+      { model, baseURL: this.client.baseURL, stream: true },
+      (b) => transientBlocks.has(b),
+    );
 
     try {
       const requestStartTime = Date.now();
@@ -335,13 +348,10 @@ export class AnthropicProvider implements Provider {
             format: params.outputFormat,
           },
         }),
-        // G2: cache_edits — 服务器侧删除旧工具结果（Anthropic 私有字段，缓存友好压缩产出）。
-        // SID_DISABLE_CACHE_EDITS=1 时一键关闭降级（见方案 §12 风险表）。
-        ...(params.cacheEdits &&
-          params.cacheEdits.length > 0 &&
-          !process.env.SID_DISABLE_CACHE_EDITS && {
-            cache_edits: params.cacheEdits,
-          }),
+        // 不发 `cache_edits`（2026-10-24 移除）：它不在公开 Messages API 里（SDK 无此字段），
+        // 网关静默接受不等于服务端执行了删除。公开的等价能力是 context_management +
+        // beta 头，而官方文档写明 clear_tool_uses 会使缓存前缀失效 —— 与「热时删且保缓存」
+        // 的前提相反。见 .agents/notes 里本次的决策记录。
       };
 
       // § 关键改动：create({stream:true}) 替代 messages.stream()
@@ -967,11 +977,14 @@ export class AnthropicProvider implements Provider {
 
     // 发现 1：provider_reasoning 是 OpenAI Responses 的密文推理项，Anthropic 不认识
     // （下方 map 对未知块 throw）；「gpt → claude」中途切模型时在这里丢掉。
+    const transientBlocks = new WeakSet<object>();
     const messages = params.messages.map((msg) => ({
       role: msg.role,
       content: withoutProviderReasoning(msg.content).map((block) => {
         if (block.type === "text") {
-          return { type: "text" as const, text: block.text };
+          const wire = { type: "text" as const, text: block.text };
+          if (block.transient) transientBlocks.add(wire);
+          return wire;
         } else if (block.type === "tool_use") {
           return {
             type: "tool_use" as const,
@@ -1018,26 +1031,33 @@ export class AnthropicProvider implements Provider {
     ).tools;
 
     // G8: 非流式路径缓存标记对齐流式路径——
-    // ① system 按 DYNAMIC_BOUNDARY 分区打 cache_control（含 G4 global scope）；
-    // ② 在最后一条 user 消息末块打 cache_control（与流式路径同策略）；
-    // ③ 携带 cache_edits（G2）。否则非流式降级路径完全不命中缓存，每次全价重算前缀。
-    const useGlobalScope =
-      isDirectAnthropicEndpoint(this.client.baseURL) && !process.env.SID_DISABLE_GLOBAL_CACHE;
-    const system = buildSystemBlocks(params.system, { globalScopeEnabled: useGlobalScope });
+    // ① system 按 DYNAMIC_BOUNDARY 分区打 cache_control；
+    // ② messages 区断点避开 transient 块（与流式路径同策略）。
+    // 否则非流式降级路径完全不命中缓存，每次全价重算前缀。
+    const system = buildSystemBlocks(params.system);
 
-    // 在最后一条 user 消息的最后一个 content block 上标记 cache_control（与流式路径一致）
     // P1-4：与流式路径共用同一函数，消除"同一件事两处手写"的漂移面
-    markLastUserMessageCacheBreakpoint(messages);
+    const msgBreakpoint = markLastUserMessageCacheBreakpoint(messages, (b) =>
+      transientBlocks.has(b),
+    );
 
     // 增强 5.1：工具区缓存断点（与流式路径同策略，仅直连 Anthropic 且未禁用时打）。
     const enableToolCache =
       isDirectAnthropicEndpoint(this.client.baseURL) && !process.env.SID_DISABLE_TOOL_CACHE;
     if (enableToolCache) {
-      markLastToolCacheBreakpoint(tools, { globalScope: useGlobalScope });
+      markLastToolCacheBreakpoint(tools);
     }
 
     // 与流式路径一致：发请求前断言 cache_control 断点数未超上限（tools 一并计入）。
     assertCacheBreakpointBudget(system, messages as any, getLogger(), tools as any);
+    recordPromptCacheLayout(
+      messages,
+      system,
+      tools,
+      msgBreakpoint,
+      { model: pickWireModel(params, this._model), baseURL: this.client.baseURL, stream: false },
+      (b) => transientBlocks.has(b),
+    );
 
     const log = getLogger();
     // 与流式路径同源：发线上的是真名，不是本地别名（见 wire-model.ts）
@@ -1075,12 +1095,6 @@ export class AnthropicProvider implements Provider {
             ...(nonStreamWireEffort && {
               output_config: { effort: nonStreamWireEffort },
             }),
-            // G2: cache_edits（同流式路径门控）
-            ...(params.cacheEdits &&
-              params.cacheEdits.length > 0 &&
-              !process.env.SID_DISABLE_CACHE_EDITS && {
-                cache_edits: params.cacheEdits,
-              }),
           },
           signal ? { signal } : undefined,
         );
@@ -1464,6 +1478,54 @@ function isDirectAnthropicEndpoint(baseUrl?: string): boolean {
     return url.hostname.endsWith("anthropic.com");
   } catch {
     return false;
+  }
+}
+
+/**
+ * 发请求前的缓存侧收口：①记一次前缀触碰（冷热判定的时间源，见 cache-warmth.ts）
+ * ②落 PromptCacheLayout 事件（断点到底落在哪，此前轨迹里看不到）。
+ *
+ * 两件事放一处是因为它们的调用时机是同一个：断点已经打完、请求即将发出。
+ * 流式与非流式两条路径各调一次，避免「一处接了一处漏」的老问题。
+ */
+function recordPromptCacheLayout(
+  messages: Array<{ role: string; content: any[] }>,
+  system: SystemBlock[] | undefined,
+  tools: unknown[] | undefined,
+  messageBreakpointIndex: number,
+  meta: { model: string; baseURL?: string; stream: boolean },
+  isTransient: (block: object) => boolean,
+): void {
+  recordPrefixTouch();
+  try {
+    let transient = 0;
+    let onTransient = false;
+    for (const m of messages) {
+      for (const b of m.content) {
+        if (!isTransient(b)) continue;
+        transient++;
+        if (b.cache_control) onTransient = true;
+      }
+    }
+    let host: string | undefined;
+    try {
+      host = meta.baseURL ? new URL(meta.baseURL).hostname : "api.anthropic.com";
+    } catch {
+      host = undefined;
+    }
+    emitPromptCacheLayout({
+      index: currentSseDumpContext().turnIndex,
+      model: meta.model,
+      ...(host && { endpoint_host: host }),
+      stream: meta.stream,
+      breakpoints: countCacheBreakpoints(system, messages as any, tools as any),
+      message_breakpoint_index: messageBreakpointIndex,
+      message_breakpoint_on_transient: onTransient,
+      transient_blocks: transient,
+      message_count: messages.length,
+    });
+  } catch {
+    /* 可观测性不影响请求 */
   }
 }
 

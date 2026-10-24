@@ -680,10 +680,6 @@ export class App {
   private skillManager?: import("@sid-code/core/skill/manager.ts").SkillManager;
   /** P2-3：Skill 文件热重载监听器（退出时 stop()）。 */
   private skillChangeDetector?: import("@sid-code/core/skill/change-detector.ts").SkillChangeDetector;
-  /** §5：共享 cached microcompact 状态机，压缩后重置。延迟创建。 */
-  private cachedMicrocompactState:
-    | import("@sid-code/core/query/compact/cached-microcompact.ts").CachedMicrocompactState
-    | null = null;
   /** 已播报过 instructions 的 MCP server 名（去重集，避免每轮重复注入同一 server 说明）。 */
   private announcedMcpServers = new Set<string>();
   /**
@@ -1521,7 +1517,7 @@ export class App {
       autoCompact: () => this.autoCompact(),
       contextCollapse: (ratio) => this.contextCollapse(ratio),
       // P1-13/14：reactive（prompt-too-long 恢复）与 collapse（分段摘要）也走压缩后收尾。
-      // 收尾要的三个会话级实例（fileReadTracker / cachedMicrocompactState / sessionDir）
+      // 收尾要的会话级实例（fileReadTracker / sessionDir）
       // 只有 App 持有，所以由这里注入，loop 侧只负责在「确认压动了」之后调一次。
       postCompactTail: (info) => this.runNonSummaryPostCompact(info),
       emergencyFileReattach: (info) => this.runEmergencyFileReattach(info),
@@ -1576,16 +1572,6 @@ export class App {
           | import("@sid-code/core/tool/hypothesis.ts").HypothesisRegisterTool
           | undefined;
         return regTool?.getLedger() ?? null;
-      },
-      // G2：暴露 cachedMicrocompact 状态机给 queryLoop，让主循环每轮可产出 cache_edits。
-      getCachedMicrocompactState: () => {
-        if (!this.cachedMicrocompactState) {
-          const {
-            createCachedMicrocompactState,
-          } = require("@sid-code/core/query/compact/cached-microcompact.ts");
-          this.cachedMicrocompactState = createCachedMicrocompactState();
-        }
-        return this.cachedMicrocompactState ?? undefined;
       },
       getProviderName: () => this.provider.name(),
       // MCP server instructions 增量注入（对标 CC mcp_instructions_delta）：
@@ -3752,9 +3738,6 @@ export class App {
         ctxMgr: this.ctxMgr,
         hookSystem: this.hookSystem,
         fileReadTracker: this.fileReadTracker ?? undefined,
-        // 与 /compact 同理：为 null 说明本会话没跑过 microcompact，两个 Map/Set 本就是空的，
-        // 为了重置它而新建一个对象是纯噪音。
-        cachedMicrocompactState: this.cachedMicrocompactState ?? undefined,
         sessionDir: this.resolveSessionDir(),
         messagesBefore: info.messagesBefore,
         // 缺 tokensBefore 时退回「压缩后的当前估算」→ savedRatio 算成 0，
@@ -3782,12 +3765,6 @@ export class App {
     // §12.3：摘要走低成本模型（subAgentModels.summarize），未配则跟主模型。
     const compactModel =
       this.config.subAgentModels?.summarize || this.config.subAgentModels?.default;
-    // §5：延迟创建共享 cached microcompact 状态机
-    if (!this.cachedMicrocompactState) {
-      const { createCachedMicrocompactState } =
-        await import("@sid-code/core/query/compact/cached-microcompact.ts");
-      this.cachedMicrocompactState = createCachedMicrocompactState();
-    }
     // §4.1/§4.3：会话级落盘目录
     let sessionDir: string | undefined;
     try {
@@ -3807,7 +3784,6 @@ export class App {
       compactModel: compactModel || undefined,
       fileReadTracker: this.fileReadTracker ?? undefined,
       isMainAgent: true,
-      cachedMicrocompactState: this.cachedMicrocompactState ?? undefined,
       sessionDir,
       // P2-21：转交给 runPostCompact，落 PostCompactReattach 事件。
       traceAppendEvent: this.postCompactTraceSink(),
@@ -10996,10 +10972,6 @@ export class App {
           // 与自动压缩共用 query/compact/post-compact.ts。漏传会让手动压缩后模型"忘掉"刚读的文件。
           fileReadTracker: this.fileReadTracker ?? undefined,
           sessionDir: this.resolveSessionDir(),
-          // P1-11：手动 /compact 的收尾也要重置 microcompact 状态机。这里刻意**不**延迟创建
-          // （不写 `?? createCachedMicrocompactState()`）：为 null 说明本会话一次 microcompact
-          // 都没跑过，两个 Map/Set 本就是空的，造一个新对象只为把它重置一遍是纯噪音。
-          cachedMicrocompactState: this.cachedMicrocompactState ?? undefined,
           // G25：权限检查器实例注入命令上下文（/allow /deny /add-dir /permissions 使用）。
           // P0-3 追加用途：fork skill 的子代理内工具权限沿用主会话 checker（经 toCommandContext 桥接）。
           permissionChecker: this.permissionChecker,

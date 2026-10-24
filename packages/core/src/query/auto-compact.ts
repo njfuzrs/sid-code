@@ -89,11 +89,6 @@ export interface AutoCompactDeps {
    */
   isMainAgent?: boolean;
   /**
-   * §5 压缩通知重置 MC state：缓存 microcompact 状态机。
-   * 压缩成功后重置——压缩重组了消息历史，旧的"已删除 tool_use_id"映射全部失效。
-   */
-  cachedMicrocompactState?: import("./compact/cached-microcompact.ts").CachedMicrocompactState;
-  /**
    * 会话级临时目录（§4.1 质量报告 / §4.3 决策外化落盘）。不传则跳过落盘。
    */
   sessionDir?: string;
@@ -715,7 +710,6 @@ async function postCompactReattachAndNotify(
     ctxMgr: deps.ctxMgr,
     hookSystem: deps.hookSystem,
     fileReadTracker: deps.fileReadTracker,
-    cachedMicrocompactState: deps.cachedMicrocompactState,
     sessionDir: deps.sessionDir,
     originalMessages,
     summary,
