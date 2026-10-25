@@ -17,7 +17,7 @@ import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { Manager } from "@sid-code/core/context/manager.ts";
-import { pipelineTargetRatioFrom } from "@sid-code/core/query/compact/index.ts";
+import { pipelineTargetRatioFrom, runCompactPipeline } from "@sid-code/core/query/compact/index.ts";
 import type { Message } from "@sid-code/core/llm/types.ts";
 
 // masking 会把被遮罩的原文落到会话临时目录；重定向到 tmpdir，不碰真实路径。
@@ -190,11 +190,37 @@ describe("发现 3b — 管线目标线落在 masking 线下方 5%", () => {
     expect(pipelineTargetRatioFrom(mgr)).toBeLessThanOrEqual(t.compactionTriggerUsed / WINDOW);
   });
 
+  test("override 低于 30%（如 8%）时，目标仍不高于触发点——管线不得一进场就判达标", () => {
+    // 旧写法 Math.max(0.3, ratio) 把目标抬到 30%：hard 档在 8% 触发，管线见 8% < 30%
+    // 直接返回 steps=[] / needsAutoCompact=false，压缩永不生效（harness-bench L1 连续 6 次）。
+    for (const pct of [0.08, 0.25]) {
+      const mgr = new Manager({ maxTokens: WINDOW });
+      (mgr as any).autoCompactPctOverride = pct;
+      const t = mgr.getCompactionThresholds();
+      const trigger = t.compactionTriggerUsed / WINDOW;
+      const target = pipelineTargetRatioFrom(mgr);
+      expect(target, `pct=${pct}`).toBeLessThanOrEqual(trigger);
+      // 刚过触发线时，管线必须判「未达标」并要求 autoCompact
+      const usage = trigger + 0.005;
+      const r = runCompactPipeline([], {
+        currentUsageRatio: usage,
+        maxTokens: WINDOW,
+        toolCount: 0,
+        targetUsageRatio: target,
+        estimateTokens: () => usage * WINDOW,
+      });
+      expect(r.needsAutoCompact, `pct=${pct}`).toBe(true);
+    }
+  });
+
   test("小窗口（≤60K）没有 masking 档，目标线沿用触发点", () => {
     const mgr = new Manager({ maxTokens: 32_000 });
     const t = mgr.getCompactionThresholds();
     expect(pipelineTargetRatioFrom(mgr)).toBeCloseTo(
-      Math.min(0.95, Math.max(0.3, t.compactionTriggerUsed / 32_000)),
+      Math.min(
+        0.95,
+        Math.max(Math.min(0.3, t.compactionTriggerUsed / 32_000), t.compactionTriggerUsed / 32_000),
+      ),
       5,
     );
   });

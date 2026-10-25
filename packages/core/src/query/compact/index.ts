@@ -154,17 +154,22 @@ export const PIPELINE_TARGET_HYSTERESIS = 0.05;
  * - 取 min 是为了 `SID_CODE_AUTOCOMPACT_PCT` 把 hard 线设得比 masking 线还低时，
  *   目标不会反而高过触发点（那会让管线一进场就判「已达标」而空跑）。
  * - 小窗口（≤60K）没有 masking 档（maskingRemaining=0），沿用 hard/emergency 触发点。
+ * - 下限 0.3 不得高过触发点：`SID_CODE_AUTOCOMPACT_PCT` < 30 时（如 8），旧写法
+ *   `Math.max(0.3, ratio)` 把目标抬到 30%，hard 档一触发管线就判「已达标」空跑，
+ *   消息数不变、下一轮再触发，压缩永不生效（2026-10-25 harness-bench L1 实测连续 6 次 success=false）。
  */
 export function pipelineTargetRatioFrom(ctxMgr: ContextManager): number {
   const maxTokens = ctxMgr.getMaxTokens();
   if (maxTokens <= 0) return 0.7;
   const t = ctxMgr.getCompactionThresholds();
-  let ratio = t.compactionTriggerUsed / maxTokens;
+  const triggerRatio = t.compactionTriggerUsed / maxTokens;
+  let ratio = triggerRatio;
   if (!t.smallWindow && t.maskingRemaining > 0) {
     const maskLine = (t.effectiveWindow - t.maskingRemaining) / maxTokens;
     ratio = Math.min(ratio, maskLine - PIPELINE_TARGET_HYSTERESIS);
   }
-  return Math.min(0.95, Math.max(0.3, ratio));
+  const floor = Math.min(0.3, triggerRatio);
+  return Math.min(0.95, Math.max(floor, ratio));
 }
 
 // 导出子模块
