@@ -65,6 +65,7 @@ import { extractHTTPStatus } from "../api/error-utils.ts";
 import { splitSystemByDynamicBoundary } from "../api/cache-strategy.ts";
 import { updateRateLimitStatus } from "../api/rate-limit.ts";
 import { recordRequestId } from "../api/request-id.ts";
+import { generateClientRequestId } from "../api/api-log.ts";
 import { estimateTextTokens } from "../context/token.ts";
 import { sanitizeStrings } from "./sanitize-unicode.ts";
 import { getKeepAliveFetchOptions } from "./keepalive.ts";
@@ -1099,6 +1100,10 @@ export class OpenAIProvider implements Provider {
     // PR11：提到 try 之外，好让 finally 能 disarm（见那里的注释）。
     // 声明在这里而不是赋值：真正的构造在拿到 streamTimeouts 之后。
     let fetchAbs: { signal: AbortSignal; disarm: () => void } | undefined;
+    // 客户端请求 ID：发请求前就定下，超时 / 断流 / 用户中断这类拿不到响应头
+    // （也就没有网关 x-*-request-id）的失败里，它是唯一能拿去找网关方对账的标识。
+    // 声明在 try 外，catch 的失败日志才能带上它。只用于关联日志，不是幂等键。
+    const clientRequestId = generateClientRequestId();
     try {
       const log = getLogger();
       const requestStartTime = Date.now();
@@ -1109,6 +1114,7 @@ export class OpenAIProvider implements Provider {
         messageCount: requestBody.messages.length,
         toolCount: requestBody.tools?.length ?? 0,
         maxTokens: requestBody.max_completion_tokens ?? requestBody.max_tokens,
+        clientRequestId,
       });
 
       // ── 响应头超时（纵深防御，见文件顶部 RESPONSE_HEADER_TIMEOUT_MS 注释）──
@@ -1197,6 +1203,7 @@ export class OpenAIProvider implements Provider {
           headers: {
             "Content-Type": "application/json",
             Authorization: `Bearer ${this.apiKey}`,
+            "x-client-request-id": clientRequestId,
           },
           body: JSON.stringify(sanitizeStrings(requestBody)),
           signal: fetchSignal,
@@ -1230,7 +1237,7 @@ export class OpenAIProvider implements Provider {
 
       if (!response.ok) {
         const error = await response.text();
-        log.error("LLM:OPENAI", `API 错误: ${response.status}`, error);
+        log.error("LLM:OPENAI", `API 错误: ${response.status}`, { body: error, clientRequestId });
         // 缺口 1：HTTP 错误也记录阶段（含状态码）
         emitStreamPhase(
           obsIndex,
@@ -1243,7 +1250,7 @@ export class OpenAIProvider implements Provider {
         // 原先只进 LLM:OPENAI 普通日志,audit.log 拿不到 HTTP 码 → 异常时定位慢。
         getLogger().warn(
           "AUDIT:API",
-          `✗ OpenAI HTTP ${response.status} model=${effectiveModel} body=${(error ?? "").slice(0, 200)}`,
+          `✗ OpenAI HTTP ${response.status} model=${effectiveModel} clientReqId=${clientRequestId} body=${(error ?? "").slice(0, 200)}`,
         );
         yield {
           type: "error",
@@ -1503,11 +1510,16 @@ export class OpenAIProvider implements Provider {
       });
     } catch (err: any) {
       const log = getLogger();
-      log.error("LLM:OPENAI", `请求异常`, { error: err.message, stack: err.stack });
+      log.error("LLM:OPENAI", `请求异常`, {
+        error: err.message,
+        stack: err.stack,
+        clientRequestId,
+      });
       // 接入审计日志:连接/流式异常(含超时中断、ECONNRESET)是会话 hang/中断的关键信号。
+      // clientReqId 必须带：这类失败恰恰拿不到响应头，没有网关 request-id 可对账。
       log.warn(
         "AUDIT:API",
-        `✗ OpenAI 请求异常 model=${effectiveModel} err=${(err?.message ?? String(err)).slice(0, 200)}`,
+        `✗ OpenAI 请求异常 model=${effectiveModel} clientReqId=${clientRequestId} err=${(err?.message ?? String(err)).slice(0, 200)}`,
       );
       // ⚠️ statusCode 必须透传 —— 与 anthropic.ts 的 catch 分支同一个坑。
       //
@@ -1620,11 +1632,14 @@ export class OpenAIProvider implements Provider {
     const replayReasoning = shouldReplayReasoning(this.baseURL, effectiveModel);
     const requestBody = buildResponsesRequest(params, effectiveModel, { replayReasoning });
     let responsesSawThinking = false;
+    // 客户端请求 ID（同 Chat Completions 路径：拿不到响应头时唯一可对账的标识）
+    const clientRequestId = generateClientRequestId();
     log.debug("LLM:OPENAI:RESPONSES", `发送请求到 ${this.baseURL}/responses`, {
       model: requestBody.model,
       inputCount: requestBody.input.length,
       toolCount: requestBody.tools?.length ?? 0,
       maxOutputTokens: requestBody.max_output_tokens,
+      clientRequestId,
     });
 
     // ── 响应头超时（对标 Chat Completions 路径） ──
@@ -1687,6 +1702,7 @@ export class OpenAIProvider implements Provider {
         headers: {
           "Content-Type": "application/json",
           Authorization: `Bearer ${this.apiKey}`,
+          "x-client-request-id": clientRequestId,
         },
         body: JSON.stringify(sanitizeStrings(requestBody)),
         signal: fetchSignal,
@@ -1694,6 +1710,13 @@ export class OpenAIProvider implements Provider {
         ...getKeepAliveFetchOptions(),
       });
     } catch (err: any) {
+      // fetch 在拿到响应头前就失败（响应头超时 / 连接失败 / 中断）：这一段在下方主 try
+      // 之外，不经它的 catch，所以 clientReqId 要在这里单独落一条，否则恰好是最需要
+      // 对账的那类失败里没有任何标识。
+      log.warn(
+        "AUDIT:API",
+        `✗ OpenAI Responses API 未收到响应头 model=${effectiveModel} clientReqId=${clientRequestId} err=${(err?.message ?? String(err)).slice(0, 200)}`,
+      );
       if (headerTimedOut) {
         (disarmHeaderIneffective as (() => void) | null)?.();
         throw new Error(
@@ -1720,6 +1743,7 @@ export class OpenAIProvider implements Provider {
       const errorBody = await response.text().catch(() => "");
       log.error("LLM:OPENAI:RESPONSES", `HTTP ${response.status}`, {
         body: errorBody.slice(0, 500),
+        clientRequestId,
       });
       this.noteReasoningReplayRejection(
         replayReasoning,
@@ -1904,10 +1928,14 @@ export class OpenAIProvider implements Provider {
         usage: accumulatedUsage,
       });
     } catch (err: any) {
-      log.error("LLM:OPENAI:RESPONSES", `请求异常`, { error: err.message, stack: err.stack });
+      log.error("LLM:OPENAI:RESPONSES", `请求异常`, {
+        error: err.message,
+        stack: err.stack,
+        clientRequestId,
+      });
       log.warn(
         "AUDIT:API",
-        `✗ OpenAI Responses API 请求异常 model=${effectiveModel} err=${(err?.message ?? String(err)).slice(0, 200)}`,
+        `✗ OpenAI Responses API 请求异常 model=${effectiveModel} clientReqId=${clientRequestId} err=${(err?.message ?? String(err)).slice(0, 200)}`,
       );
       // 与上面 Chat Completions 的 catch 同口径透传 statusCode。
       // 三条协议路径（Chat Completions / Responses / Anthropic）必须全带，
@@ -2059,7 +2087,9 @@ export class OpenAIProvider implements Provider {
     filterParamsForModel(effectiveModel, requestBody);
 
     const log = getLogger();
-    log.debug("LLM:OPENAI", "非流式请求", { model: requestBody.model });
+    // 客户端请求 ID：非流式是流式失败后的降级路径，同样可能拿不到响应头
+    const clientRequestId = generateClientRequestId();
+    log.debug("LLM:OPENAI", "非流式请求", { model: requestBody.model, clientRequestId });
     let nonStreamSawThinking = false;
 
     // 缺陷 15：非流式同样收口计费（见 recordNonStreamingBilledRequest）。
@@ -2073,6 +2103,7 @@ export class OpenAIProvider implements Provider {
         headers: {
           "Content-Type": "application/json",
           Authorization: `Bearer ${this.apiKey}`,
+          "x-client-request-id": clientRequestId,
         },
         body: JSON.stringify(sanitizeStrings(requestBody)),
         signal,
@@ -2210,6 +2241,13 @@ export class OpenAIProvider implements Provider {
         //（与流式路径 stream-processor 的 response._meta 同源）。
         ...(reasoningContent.length > 0 ? { _meta: { reasoning_content: reasoningContent } } : {}),
       };
+    } catch (err: any) {
+      // 只留痕、原样抛出：错误分类与重试仍由上层 classifyError 决定。
+      log.warn(
+        "AUDIT:API",
+        `✗ OpenAI 非流式请求失败 model=${effectiveModel} clientReqId=${clientRequestId} err=${(err?.message ?? String(err)).slice(0, 200)}`,
+      );
+      throw err;
     } finally {
       if (billable) {
         recordNonStreamingBilledRequest({
@@ -2253,10 +2291,13 @@ export class OpenAIProvider implements Provider {
     const streamingBody = buildResponsesRequest(params, effectiveModel, { replayReasoning });
     const requestBody = { ...streamingBody, stream: false };
 
+    // 客户端请求 ID（同 Chat 非流式路径）
+    const clientRequestId = generateClientRequestId();
     log.debug("LLM:OPENAI:RESPONSES", "非流式请求", {
       model: requestBody.model,
       inputCount: requestBody.input.length,
       toolCount: requestBody.tools?.length ?? 0,
+      clientRequestId,
     });
 
     // 缺陷 15：与 Chat 非流式同口径收口计费
@@ -2270,6 +2311,7 @@ export class OpenAIProvider implements Provider {
         headers: {
           "Content-Type": "application/json",
           Authorization: `Bearer ${this.apiKey}`,
+          "x-client-request-id": clientRequestId,
         },
         body: JSON.stringify(sanitizeStrings(requestBody)),
         signal,
@@ -2327,6 +2369,13 @@ export class OpenAIProvider implements Provider {
         stopReason: parsed.stopReason,
         usage: parsed.usage,
       };
+    } catch (err: any) {
+      // 只留痕、原样抛出（同 Chat 非流式路径）
+      log.warn(
+        "AUDIT:API",
+        `✗ OpenAI Responses API 非流式请求失败 model=${effectiveModel} clientReqId=${clientRequestId} err=${(err?.message ?? String(err)).slice(0, 200)}`,
+      );
+      throw err;
     } finally {
       if (billable) {
         recordNonStreamingBilledRequest({
