@@ -685,6 +685,16 @@ export class PermissionChecker implements Checker {
   }
 
   /**
+   * 获取工作区路径（已 realpath 归一化）。
+   *
+   * `/add-dir --list` 用它把「工作区（始终可访问）」列进可访问集合：白名单是追加语义，
+   * 工作区不在 `allowedDirectories` 数组里，命令层没有别的入口能拿到它。
+   */
+  getWorkspacePath(): string {
+    return this.workspacePath;
+  }
+
+  /**
    * W12：当前异步链若绑定在某个隔离 worktree 上，而写目标落在它所属主仓的 worktree 之外，
    * 返回拒绝原因；否则返回 null。worktree 根取进入 withAgentCwd 时绑定的目录（不随 cd 变）。
    */

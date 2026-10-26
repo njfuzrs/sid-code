@@ -195,19 +195,27 @@ export class AddDirCommand implements Command {
     const tokens = args.trim().split(/\s+/).filter(Boolean);
     const first = tokens[0];
 
-    // /add-dir --list：展示当前白名单
+    // /add-dir --list：展示当前可访问集合（工作区 + 追加目录）
+    //
+    // 白名单是**追加**语义，工作区不在 allowedDirectories 数组里也不该被挤出去。
+    // 所以列表必须把工作区显式列出来——否则用户看到「只有一个目录」，
+    // 会合理推断工作区已经不在了（这正是修复前那次采集事故的现场感受）。
     if (!first || first === "--list" || first === "-l") {
       const dirs = checker.getAllowedDirectories();
+      const workspaceLine = `  · ${checker.getWorkspacePath()}  （工作区，始终可访问）`;
       if (dirs.length === 0) {
         return {
           kind: "message",
           message:
-            "当前会话未配置目录白名单（未限制到特定目录）。\n用法: /add-dir <目录路径>  将目录加入白名单（仅本会话生效）",
+            `当前会话未追加可访问目录（未限制到特定目录）:\n${workspaceLine}\n` +
+            "用法: /add-dir <目录路径>  追加目录（仅本会话生效）",
         };
       }
       return {
         kind: "message",
-        message: `当前会话可访问目录白名单（${dirs.length} 个）:\n${dirs.map((d) => `  · ${d}`).join("\n")}`,
+        message:
+          `当前会话可访问目录（工作区 + ${dirs.length} 个追加目录）:\n` +
+          `${workspaceLine}\n${dirs.map((d) => `  · ${d}`).join("\n")}`,
       };
     }
 

@@ -43,6 +43,19 @@ export function normalizeCaseForComparison(p: string): string {
   return p.toLowerCase();
 }
 
+/**
+ * 判断（已归一化小写的）路径是否落在某目录内，含目录本身。
+ *
+ * 为什么不直接用 `startsWith(dir + "/")`：`dir === "/"` 时前缀拼成 `"//"`，
+ * 任何绝对路径都不匹配 —— `--add-dir /` 会变成一个永远不生效的白名单项，
+ * `blockedDirectories: ["/"]` 也永不拦截（fail-open）。这里先归一化尾斜杠，
+ * 根目录退化成 `startsWith("/")`，仍然只匹配绝对路径。
+ */
+function isPathWithinDir(pathLower: string, dirLower: string): boolean {
+  const prefix = dirLower.endsWith("/") ? dirLower : `${dirLower}/`;
+  return pathLower === dirLower || pathLower.startsWith(prefix);
+}
+
 /** 系统目录保护（写入拦截）— 包含 macOS /private 前缀 */
 const PROTECTED_WRITE_DIRS = [
   "/etc/",
@@ -156,11 +169,36 @@ export function matchesSensitivePath(realPath: string, realPathLower?: string): 
   return false;
 }
 
+/**
+ * 白名单目录的两种写法。
+ *
+ * 为什么要存两份：`validateAccess` 里同时存在两种口径的路径——
+ * `resolved = path.resolve(filePath)`（**未** realpath）与 `realPath = resolveRealPath(...)`
+ * （已 realpath）。而工作区/白名单在构造时是 realpath 过的。macOS 上 `/var → /private/var`、
+ * `/tmp → /private/tmp`，`os.tmpdir()` 返回的正是 `/var/folders/…/T`，于是同一个物理目录
+ * 有了两种写法：拿未 realpath 的 `resolved` 去比已 realpath 的白名单，恒为 false ——
+ * symlink 逃逸检测（第 4 步）的入口条件因此整体失效，检测形同不存在。
+ *
+ * 两种形态指向**同一个物理位置**，双形态比较只是消除写法差异，不引入集合外的路径：
+ * 任何既不在真实前缀、也不在其别名前缀下的路径仍然判为集合外。
+ */
+interface AllowedDirEntry {
+  /** realpath 形态（存在则 realpathSync，否则 resolve） */
+  real: string;
+  /** path.resolve 原样形态（未 realpath） */
+  resolved: string;
+}
+
 export class PathValidator {
   private workspacePath: string;
   /** 工作区路径的归一化（全小写）形式，供大小写不敏感文件系统比较使用 */
   private workspacePathLower: string;
-  private allowedDirectories: string[];
+  /**
+   * 工作区在 `path.resolve` 口径下的小写形态（未 realpath）。
+   * 与 workspacePathLower 是同一目录的两种写法，见 AllowedDirEntry 的注释。
+   */
+  private workspaceResolvedLower: string;
+  private allowedDirectories: AllowedDirEntry[];
   private blockedDirectories: string[];
 
   constructor(
@@ -176,14 +214,8 @@ export class PathValidator {
       this.workspacePath = resolved;
     }
     this.workspacePathLower = normalizeCaseForComparison(this.workspacePath);
-    this.allowedDirectories = allowedDirectories.map((d) => {
-      const r = path.resolve(d);
-      try {
-        return fs.existsSync(r) ? fs.realpathSync(r) : r;
-      } catch {
-        return r;
-      }
-    });
+    this.workspaceResolvedLower = normalizeCaseForComparison(resolved);
+    this.allowedDirectories = allowedDirectories.map((d) => this.normalizeDirEntry(d));
     this.blockedDirectories = blockedDirectories.map((d) => {
       const r = path.resolve(d);
       try {
@@ -250,7 +282,7 @@ export class PathValidator {
     const realPathLower = normalizeCaseForComparison(realPath);
     for (const blocked of this.blockedDirectories) {
       const blockedLower = normalizeCaseForComparison(blocked);
-      if (realPathLower.startsWith(blockedLower + "/") || realPathLower === blockedLower) {
+      if (isPathWithinDir(realPathLower, blockedLower)) {
         return {
           allowed: false,
           reason: `目录被禁止访问: ${blocked}`,
@@ -260,14 +292,22 @@ export class PathValidator {
     }
 
     // 2. 目录白名单（如果配置了，大小写归一化比较）
+    //
+    // 判据是「工作目录集合」= 工作区 ∪ 白名单，而不是「白名单」本身。
+    // 白名单语义是**追加**（--add-dir / /add-dir 的文案都是「追加可访问目录」），
+    // 若只查白名单，加了第一个目录就等于把工作区从可访问集合里挤出去：
+    // 工作区路径在这里被硬拒（needsConfirmation 未设，不转确认），
+    // 交互里敲一次 /add-dir 会让下一轮连自己的工作区都读不了。
+    //
+    // 外层 length > 0 必须保留：白名单为空时这条整体不生效，维持
+    // 「未配置白名单 → 工作区外可读」的现状（收紧它是另一个安全面，不在本修复范围）。
     if (this.allowedDirectories.length > 0) {
-      const inAllowed = this.allowedDirectories.some((dir) => {
-        const dirLower = normalizeCaseForComparison(dir);
-        return realPathLower.startsWith(dirLower + "/") || realPathLower === dirLower;
-      });
-      if (!inAllowed) {
+      if (!this.isWithinWorkingDirectories(realPath)) {
         return {
           allowed: false,
+          // 文案保持「不在白名单中」：触发时 realPath 确实既不在工作区、也不在白名单，
+          // 这句话不失真。改措辞会连带打断三处既有断言（含「拒绝原因须说给模型」那条），
+          // 与本修复无关。
           reason: "目录不在白名单中",
           resolvedPath: realPath,
         };
@@ -299,15 +339,24 @@ export class PathValidator {
       }
     }
 
-    // 4. symlink 多路径链逃逸检测：原始路径在工作区内，但解析链上任一环逃逸到工作区外
+    // 4. symlink 多路径链逃逸检测：原始路径在工作目录集合内，但解析链上任一环逃逸到集合外
     //    （对标 claude-code getPathsForPermissionCheck —— 不止检查最终 realpath，
     //     还要检查从原始路径到 realpath 的每一个中间解析环节，
     //     防止 workdir/safe → symlink → /etc/passwd 这种中间环节逃逸）
+    //
+    // 判据是「工作目录集合」而不是「工作区」：追加目录（--add-dir）里的文件同样允许写入，
+    // 从它出发的 symlink 必须进这道检测；反过来，工作区里指向追加目录的 symlink
+    // 也不该被误判成逃逸。
     if (resolved !== realPath) {
-      const originalInWorkspace = this.isWithinWorkspace(resolved);
-      if (originalInWorkspace) {
+      const originalInWorkingDirs = this.isWithinWorkingDirectories(resolved);
+      if (originalInWorkingDirs) {
         const chain = this.getAllResolvedPaths(filePath);
-        const escaped = chain.find((p) => !this.isWithinWorkspace(p));
+        // 逃逸 = 链上某一环既不在工作目录集合内，也不是集合的祖先。
+        // 祖先豁免是必需的：macOS 上 `/var → /private/var` 会把工作区的祖先
+        // `/private/var` 塞进解析链（见 isAncestorOfWorkingDirs）。
+        const escaped = chain.find(
+          (p) => !this.isWithinWorkingDirectories(p) && !this.isAncestorOfWorkingDirs(p),
+        );
         if (escaped) {
           return {
             allowed: false,
@@ -319,8 +368,12 @@ export class PathValidator {
       }
     }
 
-    // 5. 工作区边界检查（仅写操作）
-    if (operation === "write" && !this.isWithinWorkspace(realPath)) {
+    // 5. 工作目录边界检查（仅写操作）
+    //
+    // 用工作目录集合（工作区 ∪ 白名单）而不是工作区：--add-dir / settings.allowedDirectories
+    // 是用户显式授权的目录，语义与 Claude Code 的 additional working directories 一致
+    // （可读**也可编辑**，不再弹确认）。
+    if (operation === "write" && !this.isWithinWorkingDirectories(realPath)) {
       return {
         allowed: false,
         reason: `写入路径在工作区外: ${realPath}`,
@@ -439,26 +492,86 @@ export class PathValidator {
     return Array.from(paths);
   }
 
-  /** 检查路径是否在工作区内（大小写归一化比较，防大小写不敏感文件系统绕过） */
+  /**
+   * 检查路径是否在工作区内（大小写归一化比较，防大小写不敏感文件系统绕过）。
+   *
+   * 同时认 realpath 形态与 `path.resolve` 原形态：二者是同一物理目录的两种写法
+   * （macOS `/var → /private/var`），只认其中一种会让另一种写法的路径被误判成区外。
+   * 详见 AllowedDirEntry 的注释。
+   */
   isWithinWorkspace(resolvedPath: string): boolean {
+    return this.isWithinWorkspaceLower(normalizeCaseForComparison(resolvedPath));
+  }
+
+  /** isWithinWorkspace 的内部实现：入参已是小写形态，避免重复归一化 */
+  private isWithinWorkspaceLower(lower: string): boolean {
+    return (
+      isPathWithinDir(lower, this.workspacePathLower) ||
+      isPathWithinDir(lower, this.workspaceResolvedLower)
+    );
+  }
+
+  /**
+   * p 是否是某个工作目录（工作区或白名单项）的祖先（或它本身）。
+   *
+   * 为什么逃逸检测需要这条豁免：路径解析链里会出现**系统别名的真实目标**。
+   * macOS 上 `/var → /private/var`，用户写的 `/var/…/ws/a.ts` 的链上有 `/private/var`；
+   * 而工作区是 `/private/var/…/ws`，于是 `/private/var` 是工作区的**祖先**，
+   * 必然不在工作区「内部」。把它判成逃逸是误报 —— 向上走到祖先并没有越界，
+   * 最终目标仍然受第 2 步（白名单）/ 第 5 步（工作目录边界）约束。
+   *
+   * 不豁免会怎样：入口条件一旦认了别名写法（见 AllowedDirEntry），
+   * 凡是 tmpdir（`/var/folders/…`）下的工作区，读写一律被判「symlink 逃逸」。
+   */
+  private isAncestorOfWorkingDirs(p: string): boolean {
+    const lower = normalizeCaseForComparison(p);
+    if (isPathWithinDir(this.workspacePathLower, lower)) return true;
+    if (isPathWithinDir(this.workspaceResolvedLower, lower)) return true;
+    return this.allowedDirectories.some(
+      (dir) =>
+        isPathWithinDir(normalizeCaseForComparison(dir.real), lower) ||
+        isPathWithinDir(normalizeCaseForComparison(dir.resolved), lower),
+    );
+  }
+
+  /**
+   * 检查路径是否落在「工作目录集合」内：工作区 ∪ 白名单目录。
+   *
+   * 白名单（`--add-dir` / `/add-dir` / settings.allowedDirectories）是**追加**语义，
+   * 不是替换：启动目录永远在集合里，和白名单一起构成用户可读写的工作目录集合
+   * （对标 claude-code filesystem.ts 的 allWorkingDirectories = cwd ∪ additionalWorkingDirectories）。
+   *
+   * 与 isWithinWorkspace 的区别只在「白名单算不算工作目录」；两者共用同一个前缀判定，
+   * 走同一套大小写归一化、根目录特判与双形态比较。
+   */
+  isWithinWorkingDirectories(resolvedPath: string): boolean {
     const lower = normalizeCaseForComparison(resolvedPath);
-    return lower === this.workspacePathLower || lower.startsWith(this.workspacePathLower + "/");
+    if (this.isWithinWorkspaceLower(lower)) return true;
+    return this.allowedDirectories.some(
+      (dir) =>
+        isPathWithinDir(lower, normalizeCaseForComparison(dir.real)) ||
+        isPathWithinDir(lower, normalizeCaseForComparison(dir.resolved)),
+    );
+  }
+
+  /** 获取工作区路径（已 realpath 归一化）。命令层 /add-dir --list 用它展示完整集合。 */
+  getWorkspacePath(): string {
+    return this.workspacePath;
   }
 
   // ── G25：运行时动态增删目录白名单（对标 claude-code /add-dir 扩展工作目录）──
   //
   // 构造时 allowedDirectories 一次性归一化后固定，无运行时入口。下列方法让 /add-dir
   // 这类"用户主动交互授权"能在会话内扩展白名单。归一化口径与构造函数完全一致
-  // （path.resolve → realpathSync，失败回退 resolve），确保与 validateAccess 的
-  // startsWith 比较一致；去重防重复 push。
+  // （real 形态 + resolved 形态，见 AllowedDirEntry），去重按 real 形态防重复 push。
 
   /** 归一化单个目录路径（与构造函数口径一致） */
-  private normalizeDir(dir: string): string {
-    const r = path.resolve(dir);
+  private normalizeDirEntry(dir: string): AllowedDirEntry {
+    const resolved = path.resolve(dir);
     try {
-      return fs.existsSync(r) ? fs.realpathSync(r) : r;
+      return { real: fs.existsSync(resolved) ? fs.realpathSync(resolved) : resolved, resolved };
     } catch {
-      return r;
+      return { real: resolved, resolved };
     }
   }
 
@@ -467,9 +580,9 @@ export class PathValidator {
    * 归一化后若已在白名单则不重复添加。
    */
   addAllowedDirectory(dir: string): void {
-    const normalized = this.normalizeDir(dir);
-    if (!this.allowedDirectories.includes(normalized)) {
-      this.allowedDirectories.push(normalized);
+    const entry = this.normalizeDirEntry(dir);
+    if (!this.allowedDirectories.some((d) => d.real === entry.real)) {
+      this.allowedDirectories.push(entry);
     }
   }
 
@@ -478,15 +591,19 @@ export class PathValidator {
    * @returns 是否命中并移除（未找到返回 false）
    */
   removeAllowedDirectory(dir: string): boolean {
-    const normalized = this.normalizeDir(dir);
-    const idx = this.allowedDirectories.indexOf(normalized);
+    const entry = this.normalizeDirEntry(dir);
+    // 两种形态任一命中即移除：用户可能用别名写法（/var/…）去移除一个按真实路径
+    // （/private/var/…）登记的目录，反之亦然。
+    const idx = this.allowedDirectories.findIndex(
+      (d) => d.real === entry.real || d.resolved === entry.resolved,
+    );
     if (idx === -1) return false;
     this.allowedDirectories.splice(idx, 1);
     return true;
   }
 
-  /** 获取当前允许目录白名单（返回副本，防外部篡改内部数组） */
+  /** 获取当前允许目录白名单（返回 realpath 形态副本，防外部篡改内部数组） */
   getAllowedDirectories(): string[] {
-    return [...this.allowedDirectories];
+    return this.allowedDirectories.map((d) => d.real);
   }
 }
