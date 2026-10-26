@@ -25,6 +25,8 @@
  *   调用方（checker.ts）据此映射为 needsConfirmation 决策。
  */
 
+import { extractHeredocBlocks } from "./shell-structure.ts";
+
 /** 校验器命中结果 */
 export interface InjectionFinding {
   /** 校验器标识（用于日志/审计/测试断言，避免日志泄漏完整命令） */
@@ -231,8 +233,13 @@ export function validateCarriageReturn(command: string): InjectionFinding | null
  *   都需要拦截。
  */
 export function validateNewlines(command: string): InjectionFinding | null {
+  // heredoc 正文先剥离：它是数据（或整体交给 shell 的脚本），不是「换行分隔出的第二条命令」。
+  // 不剥离时 `cat > notes.md <<'EOF'`⏎`rm -rf / is dangerous`⏎`EOF` 这类最普通的写文件
+  // 形态每次都要求确认——同一根因（正文被当成命令文本）的另一层表现。
+  // 正文给 shell 的形态（`bash <<EOF`）本来就没有「两条命令」的问题，剥离同样正确。
+  const { stripped } = extractHeredocBlocks(command);
   // 用 fullyUnquoted（剥离引号），引号内的换行是合法数据
-  const { fullyUnquoted } = extractQuotedContent(command);
+  const { fullyUnquoted } = extractQuotedContent(stripped);
   const preStrip = fullyUnquoted;
 
   if (!/[\n\r]/.test(preStrip)) return null;

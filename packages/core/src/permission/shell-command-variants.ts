@@ -32,7 +32,12 @@
  */
 
 import * as path from "node:path";
-import { splitCompoundCommand, detectRedirections } from "./shell-parser.ts";
+import {
+  extractHeredocBlocks,
+  isShellLikeProgram,
+  splitCommandStructure,
+} from "./shell-structure.ts";
+import { detectRedirections } from "./shell-parser.ts";
 
 /** 带原文位置的 token（value 是去引号 / 去转义之后的值） */
 interface PositionedToken {
@@ -278,8 +283,14 @@ export interface ShellCommandExpansion {
   variants: string[];
   /** 整段脚本：原命令 + 每一层 sh -c / eval / 命令替换的内层脚本（跨管道模式要整段匹配） */
   scripts: string[];
-  /** 逐子命令的规范化程序名与参数（写入目标提取用） */
-  commands: Array<{ program: string; args: string[] }>;
+  /** 逐子命令的规范化程序名与参数（写入目标提取、结构化危险判定用） */
+  commands: Array<{ program: string; args: string[]; text: string }>;
+  /**
+   * 按管道分组的程序名与参数：`curl x | sh` 是 `[[curl], [sh]]`。
+   * 「下载并执行」「base64 解码执行」判的就是**同一条管道**里的前后段关系，
+   * 扁平的 commands 里看不出谁和谁在同一个管道。
+   */
+  pipelines: Array<Array<{ program: string; args: string[]; text: string }>>;
 }
 
 /** 递归深度上限：`sh -c "bash -c 'eval …'"` 嵌套到这一层已远超正常用法 */
@@ -293,26 +304,54 @@ const MAX_VARIANTS = 128;
 export function expandShellCommand(cmd: string): ShellCommandExpansion {
   const variants = new Set<string>();
   const scripts = new Set<string>();
-  const commands: Array<{ program: string; args: string[] }> = [];
+  const commands: Array<{ program: string; args: string[]; text: string }> = [];
+  const pipelines: Array<Array<{ program: string; args: string[]; text: string }>> = [];
 
   const visit = (script: string, depth: number) => {
     const trimmed = script.trim();
-    if (!trimmed || scripts.has(trimmed) || variants.size >= MAX_VARIANTS) return;
-    scripts.add(trimmed);
-    const nested: string[] = [...extractSubstitutionBodies(trimmed)];
-    for (const sub of splitCompoundCommand(trimmed)) {
-      if (variants.size >= MAX_VARIANTS) break;
-      variants.add(sub.trim());
-      const c = canonicalizeSimpleCommand(sub);
-      if (c.canonical) variants.add(c.canonical);
-      if (c.program) commands.push({ program: c.program, args: c.args });
-      nested.push(...c.innerScripts);
+    if (!trimmed || variants.size >= MAX_VARIANTS) return;
+    // heredoc 正文不参与「整段匹配」：它是数据，修前 `cat > f <<EOF` 的正文会被
+    // 跨管道正则（`curl x | sh` 之类）当成命令。正文是否当脚本由接收者决定，见下。
+    const { stripped, blocks } = extractHeredocBlocks(trimmed);
+    const source = stripped.trim() === "" ? trimmed : stripped.trim();
+    if (scripts.has(source)) return;
+    scripts.add(source);
+
+    const nested: string[] = [...extractSubstitutionBodies(source)];
+    for (const pipeline of splitCommandStructure(source)) {
+      const parsed: Array<{ program: string; args: string[]; text: string }> = [];
+      for (const stage of pipeline.stages) {
+        if (variants.size >= MAX_VARIANTS) break;
+        variants.add(stage);
+        const c = canonicalizeSimpleCommand(stage);
+        if (c.canonical) variants.add(c.canonical);
+        if (c.program) {
+          const entry = { program: c.program, args: c.args, text: stage };
+          commands.push(entry);
+          parsed.push(entry);
+        }
+        nested.push(...c.innerScripts);
+      }
+      // heredoc 正文的归属：接收者是解释器（`bash <<EOF`）或管道下游是解释器
+      // （`cat <<EOF | bash`）时正文是脚本，要递归判危险；接收者是文件时正文是数据，丢弃。
+      for (const block of blocks) {
+        const placeholder = `<<${block.placeholder}`;
+        const ownerIdx = parsed.findIndex((p) => p.args.some((a) => a.includes(placeholder)));
+        if (ownerIdx < 0) continue;
+        const downstreamShell = parsed
+          .slice(ownerIdx + 1)
+          .some((p) => isShellLikeProgram(p.program));
+        if (isShellLikeProgram(parsed[ownerIdx].program) || downstreamShell) {
+          nested.push(block.body);
+        }
+      }
+      pipelines.push(parsed);
     }
     if (depth < MAX_DEPTH) for (const n of nested) visit(n, depth + 1);
   };
   visit(cmd, 0);
 
-  return { variants: [...variants], scripts: [...scripts], commands };
+  return { variants: [...variants], scripts: [...scripts], commands, pipelines };
 }
 
 /** 参数即写入目标的命令（全部非选项参数） */

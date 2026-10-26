@@ -5,6 +5,7 @@
  */
 
 import { SAFETY_PROTECTED_PATHS, stripWorktreeContainerPrefix } from "./safety-protected-paths.ts";
+import { extractHeredocBlocks } from "./shell-structure.ts";
 
 /** 重定向检测结果 */
 export interface RedirectionInfo {
@@ -34,6 +35,10 @@ export interface RedirectionInfo {
  * - `2>&1` / `>&2` 这类 fd 复制里的 `&` 前面是数字或 `>`，不是命令边界。
  */
 export function splitCompoundCommand(cmd: string): string[] {
+  // heredoc 正文是数据（或整体交给 shell 的脚本），不是子命令：先剥离再拆。
+  // 不剥离时 `cat > notes.md <<'EOF'`⏎`rm -rf / is dangerous`⏎`EOF` 会拆出
+  // 一条 `rm -rf / is dangerous`，危险检测与 deny 规则都会把它当命令。
+  cmd = extractHeredocBlocks(cmd).stripped;
   const parts: string[] = [];
   let current = "";
   let i = 0;

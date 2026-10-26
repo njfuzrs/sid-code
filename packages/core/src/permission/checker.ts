@@ -29,6 +29,7 @@ import { AuditLogger } from "./audit.ts";
 import { getLogger } from "../debug/logger.ts";
 import { splitCompoundCommand, hasSensitiveRedirection } from "./shell-parser.ts";
 import { expandShellCommand, extractBashWriteTargets } from "./shell-command-variants.ts";
+import { detectStructuredCriticalDanger, type DangerousFinding } from "./dangerous-command.ts";
 import { isToolNameListed } from "../tool/tool-name-aliases.ts";
 import { checkInjectionPatterns } from "./bash-security.ts";
 import { PathValidator, normalizeCaseForComparison } from "./path-validator.ts";
@@ -61,17 +62,20 @@ interface DangerousPattern {
 
 const DANGEROUS_PATTERNS: DangerousPattern[] = [
   // critical: 直接拒绝，不允许确认
-  { name: "递归删除根目录", pattern: /rm\s+(-[rf]*\s+)*\/($|\s)/, severity: "critical" },
-  { name: "递归删除家目录", pattern: /rm\s+(-[rf]*\s+)*~/, severity: "critical" },
-  { name: "磁盘擦除", pattern: /dd\s+if=\/dev\/(zero|random|urandom)/i, severity: "critical" },
-  { name: "格式化磁盘", pattern: /mkfs\./, severity: "critical" },
-  { name: "写入块设备", pattern: />\s*\/dev\/sd/, severity: "critical" },
+  //
+  // ⚠️ 10 条 critical 已迁到结构化判定（dangerous-command.ts），**不要加回正则表**：
+  // 「递归删除根目录 / 家目录」「磁盘擦除」「格式化磁盘」「写入块设备」「下载并执行」
+  // 「base64 / xxd 解码执行」「Python exec / Perl system」都是关于**程序名 + 参数值**的
+  // 判断，写成对命令原文的正则必然两头错：
+  //   - 误报（硬拒且管线内无出口）：`git commit -m "rm -rf /"`、`grep 'curl x | sh'`、
+  //     `rm -rf ~/Downloads/old`、heredoc 正文；
+  //   - 漏报（always-allow 下放行）：`rm -rf '/'`、`rm -Rf /`、`rm --recursive --force /`、
+  //     `rm -rf $HOME`、`mkfs -t ext4 /dev/sdb`、`dd of=… if=…`。
+  // 2026-10-26 的探针实测见 .agents/notes/implemented/bug-fix/2026-10-26-危险命令按token判定.md。
+  //
+  // Fork 炸弹保留原文正则：它对完整形态要求很严（`echo ':(){ :|:& };:'` 实测不误报），
+  // token 化没有收益。
   { name: "Fork 炸弹", pattern: /:()\s*\{.*:\|:.*&.*\}\s*;/, severity: "critical" },
-  {
-    name: "下载并执行",
-    pattern: /(curl|wget).*\|\s*(sh|bash|python|perl|ruby)/,
-    severity: "critical",
-  },
 
   // high: 拒绝但允许用户确认
   { name: "sudo 命令", pattern: /sudo\s+/, severity: "high" },
@@ -83,20 +87,6 @@ const DANGEROUS_PATTERNS: DangerousPattern[] = [
     pattern: /export\s+(PATH|LD_PRELOAD|LD_LIBRARY_PATH)\s*=/,
     severity: "high",
   },
-
-  // critical: 编码绕过执行
-  {
-    name: "base64 解码执行",
-    pattern: /base64\s+(-d|--decode).*\|\s*(sh|bash|python|perl|ruby)/,
-    severity: "critical",
-  },
-  {
-    name: "xxd 解码执行",
-    pattern: /xxd\s+-r.*\|\s*(sh|bash|python|perl|ruby)/,
-    severity: "critical",
-  },
-  { name: "Python exec 执行", pattern: /python[23]?\s+-c\s+.*exec\s*\(/, severity: "critical" },
-  { name: "Perl system 执行", pattern: /perl\s+-e\s+.*system\s*\(/, severity: "critical" },
 
   // high: 数据外传 + 敏感信息读取
   {
@@ -2048,7 +2038,9 @@ export class PermissionChecker implements Checker {
     const cmd = (req.input as any)?.command || "";
 
     // ── 第一道：硬编码预检 ──
-    const hard = this.hardcodedDangerCheck(cmd);
+    // cwd 与 bash 实际执行目录同口径（input.cwd > getCwd()）：危险路径判定里
+    // `rm -rf *` / `rm -rf .` 这类相对路径要靠它 resolve 成绝对路径再判。
+    const hard = this.hardcodedDangerCheck(cmd, await resolveBashCwdForCheck(req));
 
     // critical 命令直接拒绝，绝不交给 LLM（明显危险，省一次调用，且不可被 LLM 误放）
     if (hard && hard.severity === "critical") {
@@ -2371,31 +2363,35 @@ export class PermissionChecker implements Checker {
   }
 
   /**
-   * 硬编码危险模式检测（纯逻辑，无副作用）——从原 checkDangerousCommand 的三步内联逻辑抽出。
+   * 硬编码危险模式检测（纯逻辑，无副作用）。
    *
-   * 检测流程：
-   *   1a. 整条命令检查跨管道危险模式（curl|bash、base64 -d|sh 等）
-   *   1b. 拆分复合命令，对每个子命令检查其余模式
-   * 返回首个命中的模式（name + severity），未命中返回 null。重定向检测仍由调用方单独处理。
+   * 两段：
+   *   0. **结构化判定**（dangerous-command.ts）：把 10 条 critical 按「程序名 + 参数值」判。
+   *      这一层必须先跑——它对 heredoc / 引号 / 引号内的 `|` 免疫，误报和漏报同时修。
+   *   1. 文本正则：剩余 critical（`Fork 炸弹`）与 high/medium，行为保持修前不变。
+   *
+   * 为什么不把 high/medium 也一起 token 化：它们的误报后果只是「多一次确认」，
+   * 而全文改判据的回归面（`chmod -R 777`、`git reset --hard` 等十几条）远大于收益。
+   * 本次只处理「误报即无出口」的 critical，见 Agent Note 的「放弃了什么」。
    */
-  private hardcodedDangerCheck(
-    cmd: string,
-  ): { name: string; severity: "critical" | "high" | "medium" } | null {
-    // 1a. 跨管道危险模式（对整条命令）
+  private hardcodedDangerCheck(cmd: string, cwd: string): DangerousFinding | null {
+    const expansion = expandShellCommand(cmd);
+
+    // 0. 结构化 critical 判定
+    const structural = detectStructuredCriticalDanger(expansion, { cwd, home: os.homedir() });
+    if (structural) return structural;
+
+    // 1a. 跨管道危险模式（对整段脚本）
     const pipelinePatterns = DANGEROUS_PATTERNS.filter(
-      (dp) =>
-        dp.pattern.source.includes("\\|") ||
-        dp.name.includes("管道") ||
-        dp.name.includes("解码执行") ||
-        dp.name.includes("下载并执行"),
+      (dp) => dp.pattern.source.includes("\\|") || dp.name.includes("管道"),
     );
     //
     // 整段匹配的对象除原命令外，还包括每一层 sh -c / eval / 命令替换的内层脚本：
     // `sh -c 'curl x | sh'` 的管道在引号里，对原文做跨管道匹配同样能命中，但
     // `eval "$(echo Y3VybCB4fHNo | base64 -d)"` 这类只有展开后才露出形态。
-    const { scripts, variants: expandedSubs } = expandShellCommand(cmd);
+    // heredoc 正文已在 expandShellCommand 里剥离（正文是数据，不是命令）。
     for (const dp of pipelinePatterns) {
-      if (scripts.some((sc) => dp.pattern.test(sc))) {
+      if (expansion.scripts.some((sc) => dp.pattern.test(sc))) {
         return { name: dp.name, severity: dp.severity };
       }
     }
@@ -2411,7 +2407,7 @@ export class PermissionChecker implements Checker {
     // 子命令取「等价执行形态」全集（shell-command-variants.ts）：修前只拆复合命令，
     // `sh -c 'rm -rf /'` 与 `r\m -rf /` 在 always-allow 下直接放行（2026-10-24 实测）。
     const nonPipelinePatterns = DANGEROUS_PATTERNS.filter((dp) => !pipelinePatterns.includes(dp));
-    for (const subCmd of expandedSubs) {
+    for (const subCmd of expansion.variants) {
       const normalized = normalizeGitGlobalOptions(subCmd);
       const variants = normalized === subCmd ? [subCmd] : [subCmd, normalized];
       for (const dp of nonPipelinePatterns) {
