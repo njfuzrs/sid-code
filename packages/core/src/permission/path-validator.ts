@@ -5,7 +5,12 @@
  *
  * 纵深防御（对标 claude-code filesystem.ts / pathValidation.ts）：
  *   Unicode 净化 → 大小写归一化 → Windows 绕过 → UNC 拦截 → 三点路径 →
- *   目录黑白名单 → 系统目录 → symlink 多路径链逃逸 → 工作区边界 → 敏感文件
+ *   目录黑名单 → 目录白名单 → 系统目录 → symlink 多路径链逃逸 →
+ *   敏感文件 → 工作目录边界
+ *
+ * ⚠️ 末尾两步的顺序不能对调：敏感文件必须是硬 deny，排在「工作目录边界」之前。
+ * 反过来的话，工作区外的 `.env` / `*.pem` 会先落到边界分支拿到 needsConfirmation，
+ * 从「不可放行」退化成「点一下允许就能读」——那是把 SEC-AUDIT-2026-07-19 P2 的收紧退回去。
  */
 
 import * as path from "node:path";
@@ -236,8 +241,8 @@ export class PathValidator {
 
   /**
    * 验证文件路径访问权限
-   * 综合检查：Unicode → Windows 绕过 → UNC → 三点路径 → 目录黑白名单
-   *   → symlink 多路径链逃逸 → 系统目录 → 工作区边界 → 敏感文件
+   * 综合检查：Unicode → Windows 绕过 → UNC → 三点路径 → 目录黑名单 → 目录白名单
+   *   → 系统目录 → symlink 多路径链逃逸 → 敏感文件 → 工作目录边界
    */
   validateAccess(filePath: string, operation: "read" | "write"): PathValidationResult {
     const resolved = path.resolve(filePath);
@@ -307,8 +312,13 @@ export class PathValidator {
     // 工作区路径在这里被硬拒（needsConfirmation 未设，不转确认），
     // 交互里敲一次 /add-dir 会让下一轮连自己的工作区都读不了。
     //
-    // 外层 length > 0 必须保留：白名单为空时这条整体不生效，维持
-    // 「未配置白名单 → 工作区外可读」的现状（收紧它是另一个安全面，不在本修复范围）。
+    // 外层 length > 0 必须保留，但理由不是「维持区外可读」—— 那是本修复之前的
+    // 注释口径，读边界后来由「工作目录边界」那一步统一管（读也查，返回
+    // needsConfirmation）。这里保留外层判断的真实差别是**拒绝强度**：
+    //   · 白名单非空：落在集合外 → 硬拒（needsConfirmation 未设，无头/交互都不可放行）
+    //   · 白名单为空：这一步不生效，集合外的路径由后面的边界检查返回 needsConfirmation
+    // 用户既然用 --add-dir / settings 显式限定了可访问目录，集合外就不该留
+    // 「点一下就放行」的口子。反过来，无条件走集合判断会把这个强度差别抹平。
     if (this.allowedDirectories.length > 0) {
       if (!this.isWithinWorkingDirectories(realPath)) {
         return {
