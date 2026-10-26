@@ -198,3 +198,55 @@ describe("PermissionChecker：/add-dir 运行时追加不锁死工作区", () =>
     expect(checker.getWorkspacePath()).toBe(fs.realpathSync(ws));
   });
 });
+
+describe("工作区经 symlink 别名写法传入时，第 4 步逃逸检测不得整体失效（§2.2 A）", () => {
+  // 现场还原：macOS 上 `/var → /private/var`、`/tmp → /private/tmp`，`os.tmpdir()` 返回的正是
+  // `/var/folders/…`。构造函数把工作区 realpath 成 `/private/var/…`，而调用方传进来的
+  // filePath 仍是 `/var/…` 写法 —— 用「未 realpath 的 resolved」去比「已 realpath 的工作区」
+  // 恒为 false，symlink 逃逸检测的入口条件整体不成立（检测形同不存在）。
+  //
+  // 这里用自己造的 symlink 别名复现，不依赖平台：Linux 上同样能验证到。
+  let alias: string;
+  let outside: string;
+  let linkOutside: string;
+
+  beforeAll(() => {
+    alias = path.join(base, "alias");
+    outside = path.join(base, "outside");
+    try {
+      fs.symlinkSync(base, alias);
+    } catch {
+      // 某些环境不支持 symlink：用例内部会跳过
+    }
+    fs.mkdirSync(outside, { recursive: true });
+    fs.writeFileSync(path.join(outside, "secret.ts"), "// outside");
+    linkOutside = path.join(ws, "link-outside");
+    fs.symlinkSync(outside, linkOutside);
+  });
+
+  afterAll(() => {
+    fs.rmSync(linkOutside, { force: true });
+    fs.rmSync(outside, { recursive: true, force: true });
+    fs.rmSync(alias, { force: true });
+  });
+
+  test("别名写法下指向集合外的 symlink 仍判逃逸", () => {
+    if (!fs.existsSync(alias)) return; // 环境不支持 symlink
+    const wsAlias = path.join(alias, "ws");
+    // 别名写法构造：内部 realpath 成 base/ws，但调用方路径仍是 alias 写法
+    const v = new PathValidator(wsAlias);
+    const r = v.validateAccess(path.join(wsAlias, "link-outside", "secret.ts"), "read");
+    expect(r.allowed).toBe(false);
+    // 关键：不能被第 2/5 步的别的理由满足（白名单为空时第 2 步不生效、
+    // 读操作第 5 步不生效），必须真的是第 4 步检出。
+    expect(r.reason).toContain("symlink 逃逸检测");
+  });
+
+  test("别名写法下区内普通文件仍可读（祖先豁免不误伤）", () => {
+    if (!fs.existsSync(alias)) return;
+    const wsAlias = path.join(alias, "ws");
+    const v = new PathValidator(wsAlias);
+    const r = v.validateAccess(path.join(wsAlias, "a.ts"), "read");
+    expect(r.allowed).toBe(true);
+  });
+});
