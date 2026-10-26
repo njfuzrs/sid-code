@@ -39,11 +39,13 @@ describe("PermissionChecker", () => {
     expect(result.reason).toBeDefined();
   });
 
-  test("读操作自动放行", async () => {
+  test("读操作自动放行（工作区内）", async () => {
     const checker = new PermissionChecker(defaultConfig());
+    // 工作区内读仍免确认；工作区外读改为需确认（对齐 Claude Code，
+    // 见 read-outside-working-dirs.test.ts）。这里用相对路径，落在 cwd 内。
     const result = await checker.check({
       toolName: "read",
-      input: { file_path: "/tmp/test.txt" },
+      input: { file_path: "package.json" },
     });
     expect(result.allowed).toBe(true);
   });
@@ -454,10 +456,11 @@ describe("PermissionChecker", () => {
 
   test("正常路径不被路径校验拦截", async () => {
     const checker = new PermissionChecker(defaultConfig());
-    // read 是只读工具，正常路径应该放行
+    // 「正常路径」= 工作目录集合内。工作区外的读现在要确认，不再直接放行，
+    // 所以基线取工作区内的文件（否则这条验的就不是「不被拦截」而是「区外该不该拦」）。
     const result = await checker.check({
       toolName: "read",
-      input: { file_path: "/tmp/normal-file.txt" },
+      input: { file_path: "package.json" },
     });
     expect(result.allowed).toBe(true);
   });

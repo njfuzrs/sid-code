@@ -6,8 +6,11 @@
  * 一个 `@../outside/.env` 就能把密钥明文注入上下文并随请求发往模型服务端，
  * 而同一路径经 `read` 工具会被 checker.ts Step 4 直接拦下。
  *
- * 本测试固化四个用例（与发现清单第 20 条表格一致），关键是最后一个"应当放行"的
- * 对照：修复必须是"该拦的拦住"，而不是一刀切把工作区外全拦（那会砍掉正常用法）。
+ * 本测试固化两组用例：
+ *   1. 「该拦的必须拦住」——敏感文件（硬 deny）与工作区外路径（需确认，@ 展开因无
+ *      交互确认落点而 fail-closed）；
+ *   2. 「不是一刀切」的对照——把区外目录加进 `--add-dir` 之后照常注入内容，证明
+ *      收紧没有砍掉正常用法。
  */
 
 import { describe, test, expect, beforeAll, afterAll } from "bun:test";
@@ -23,9 +26,12 @@ let proj: string;
 let outside: string;
 let originalCwd: string;
 
-/** 只实现 getPathValidator 的最小 Checker：本条修复只消费这一个方法 */
-function makeChecker(workspacePath: string): Checker {
-  const validator = new PathValidator(workspacePath, [], []);
+/**
+ * 只实现 getPathValidator 的最小 Checker：本条修复只消费这一个方法。
+ * `extraDirs` 对应 `--add-dir` 追加目录（PathValidator 的 allowedDirectories）。
+ */
+function makeChecker(workspacePath: string, extraDirs: string[] = []): Checker {
+  const validator = new PathValidator(workspacePath, extraDirs, []);
   return {
     check: async () => ({ allowed: true }),
     getPathValidator: () => validator,
@@ -72,8 +78,26 @@ describe("@ 提及展开的路径权限校验（审计第 20 条）", () => {
     expect(r.blockedPaths?.length).toBe(1);
   });
 
-  test("工作区外的非敏感文件仍放行（防一刀切全拦）", async () => {
+  test("工作区外的非敏感文件同样拦下：读边界收紧后 @ 展开没有确认落点", async () => {
     const r = await expandAtReferences("看下 @../outside/notes.txt", undefined, makeChecker(proj));
+
+    // 2026-10-26 契约变更：读操作也查工作目录边界，工作区外读返回 needsConfirmation
+    // （见 path-validator.ts 第 6 步）。@ 提及在用户输入阶段就把内容注入上下文，
+    // 没有「当轮确认」的落点，只能 fail-closed —— 否则这条路径就是确认机制的后门。
+    expect(r.injectedContent ?? "").not.toContain("plain notes, not sensitive");
+    expect(r.blockedPaths?.length).toBe(1);
+    expect(r.blockedPaths![0]!.reason).toContain("工作区外");
+    expect(r.injectedContent).toContain("未注入");
+  });
+
+  test("加进 --add-dir 的区外目录仍正常注入（防一刀切全拦）", async () => {
+    // 保留原用例的对照意图：区外读不是「一律拦死」，用户有配置途径。
+    // 与 Read 工具同口径 —— 目录进工作目录集合（--add-dir / settings.allowedDirectories）后照常注入。
+    const r = await expandAtReferences(
+      "看下 @../outside/notes.txt",
+      undefined,
+      makeChecker(proj, [outside]),
+    );
 
     expect(r.injectedContent).toContain("plain notes, not sensitive");
     expect(r.blockedPaths).toBeUndefined();
