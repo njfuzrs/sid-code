@@ -478,6 +478,6 @@ describe("可观测性", () => {
     expect(row!.stepParserVersion).toBeUndefined();
     expect(recountPlanStepsWithCurrentParser(f)).toBe(3);
     expect(recountPlanStepsWithCurrentParser(join(dir, "gone.md"))).toBeNull();
-    expect(PLAN_STEP_PARSER_VERSION).toBe(2);
+    expect(PLAN_STEP_PARSER_VERSION).toBe(3);
   });
 });

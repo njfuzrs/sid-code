@@ -307,6 +307,10 @@ function parseCLIArgs(): CLIArgs {
 
         // 权限配置
         "permission-mode": { type: "string" },
+        // 无头会话里计划批准后切到的权限模式（2026-10-26）。
+        // 默认（不传）= 无头不自动批准：`-p` 下没有审批人，批准了也执行不了，
+        // 从前自动批准 + 恢复 default + ask→deny 三条叠加，让整个执行阶段报废。
+        "plan-exec-mode": { type: "string" },
         "dangerously-skip-permissions": { type: "boolean" },
         yes: { type: "boolean", short: "y" },
         // Q2：仅本会话信任当前工作区（项目级 hooks / MCP 照常加载），不写入信任记录
@@ -676,6 +680,7 @@ function parseCLIArgs(): CLIArgs {
     model: values.model,
     maxTokens: values["max-tokens"] ? parseInt(values["max-tokens"]) : undefined,
     permissionMode: values["permission-mode"],
+    planExecMode: values["plan-exec-mode"],
     skipPermissions: values["dangerously-skip-permissions"],
     yesMode: values.yes,
     trustWorkspace: values["trust-workspace"],

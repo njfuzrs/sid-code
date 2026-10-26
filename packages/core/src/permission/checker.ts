@@ -268,6 +268,25 @@ const READ_ONLY_TOOLS = new Set([
 const MAX_SESSION_MEMORY = 1000;
 
 /**
+ * 无头会话的**本地记账工具**白名单：只写本地进度/任务账本，不碰工作区、网络、子进程。
+ *
+ * 2026-10-26：`todo_write` 此前在无头模式被拒（`isNonInteractive()` 把 ask 落成 deny），
+ * 而计划批准消息（`plan/prompt.ts` 的 `buildPlanApprovedMessage`）**强制**要求第一步调它。
+ * 两处规则在 `-p` 下直接矛盾：每一份计划进入执行阶段的第一步必然失败，
+ * 实测一次 plan 无头实跑就此把整个执行阶段报废（`todo_write` 被拒 → 模型转成只读交付）。
+ * 不止 plan：`acceptEdits` 无头会话同样被拒（acceptEdits 分支只放行 `FILE_TOOLS`）。
+ *
+ * 为什么**不复用** `READ_ONLY_TOOLS`：那个集合被三处共用——主链 Step 10、
+ * plan 模式（`checkPlanMode`）、deny-write 模式（Step 13）。往里加 `todo_write`
+ * 会同时放宽 plan 与 deny-write 两条语义，副作用面远超「无头会话」这一条。
+ * 本集合只在「无头 + 已经走到 ask」这一条路径上生效，其余模式一条都没变。
+ *
+ * 判据（加新工具到本表前逐条核）：① 不写工作区文件；② 不出网；③ 不起子进程；
+ * ④ 只改进程内账本或 `~/.sid-code/` 下的进度文件。任一条不满足就**不要**加。
+ */
+const HEADLESS_LOCAL_LEDGER_TOOLS = new Set(["todo_write", "task_create", "task_update"]);
+
+/**
  * acceptEdits 模式下自动放行的文件系统命令（对齐 CC modeValidation.ts ACCEPT_EDITS_ALLOWED_COMMANDS）。
  * 仅当命令的路径参数都在 cwd 内才自动放行。
  * P1-3：`rm`/`rmdir`/`mv` 不在白名单——`rm -rf .` 的 `.` resolve 后就是 cwd，
@@ -1849,6 +1868,15 @@ export class PermissionChecker implements Checker {
         ...(options?.auditSource ? { source: options.auditSource } : {}),
       });
       return dontAskDecision;
+    }
+
+    // 无头会话的本地记账工具：不放行就等于「批准了计划却不允许记进度」。
+    // 位置刻意在 isNonInteractive 之前、dontAsk 之后：dontAsk 是用户显式选的
+    // 「一切需确认的都拒」，本表只豁免「无人可问」这一种处境，不改 dontAsk 的语义。
+    // 也不放在阶段一的 Step 10：那会同时放宽 plan 与 deny-write（见集合注释）。
+    if (this.isNonInteractive() && HEADLESS_LOCAL_LEDGER_TOOLS.has(req.toolName)) {
+      log.info("PERMISSION", `${req.toolName}(${resource.slice(0, 80)}) → 允许(无头+本地记账)`);
+      return { allowed: true, decisionReason: { type: "other", reason: "无头会话的本地记账工具" } };
     }
 
     // 非交互模式：ask → deny

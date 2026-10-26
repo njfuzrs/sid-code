@@ -2777,18 +2777,25 @@ export function buildDigest(ref: SessionRef, full: boolean, paths: DigestPaths):
       recount !== null && recount !== f.planStepCount
         ? `（旧口径 v${version}；按当前口径 v${PLAN_STEP_PARSER_VERSION} 重算为 ${recount} 步）`
         : "";
+    // 被权限拒绝的调用单列：它进 actual 但不进 off_plan（harness 的决定 ≠ 模型的偏离）。
+    // 只在非 0 时出现，旧事件（无该字段）的文案一字不变。
+    const deniedNote = f.deniedCount ? `（其中被权限拒绝 ${f.deniedCount} 次，不计偏离）` : "";
     anomalies.push({
       layer: "L0",
       severity: "low",
       kind: "plan_fidelity",
-      detail: `计划 ${f.planStepCount} 步 / 实际 ${f.actualToolCallCount} 次调用 / 偏离 ${f.offPlanCount} 次${recountNote}`,
+      detail: `计划 ${f.planStepCount} 步 / 实际 ${f.actualToolCallCount} 次调用 / 偏离 ${f.offPlanCount} 次${deniedNote}${recountNote}`,
       provenance: [
         {
           sourceFile: eventsPath,
           lineRef: "event=PlanFidelity（每份计划取末条快照）",
           rawValue:
             `steps=${f.planStepCount} actual=${f.actualToolCallCount} off_plan=${f.offPlanCount}` +
+            (f.deniedCount !== undefined ? ` denied=${f.deniedCount}` : "") +
             ` parser=v${version}` +
+            (f.fidelityIndicatorVersion !== undefined
+              ? ` indicator=v${f.fidelityIndicatorVersion}`
+              : "") +
             (recount !== null ? ` recount_v${PLAN_STEP_PARSER_VERSION}=${recount}` : ""),
           mtime: fileMtimeIso(eventsPath),
         },
@@ -4551,6 +4558,16 @@ export interface PlanFidelityStats {
   offPlanCount: number;
   /** 记录该步数时的解析器口径版本；旧事件无此字段，记为 1 */
   stepParserVersion?: number;
+  /**
+   * 其中被**权限层**拒绝的调用数（2026-10-26 起落盘）。旧事件无此字段。
+   * 与 `offPlanCount` 互斥：被拒调用计入 actual、不计入偏离。
+   */
+  deniedCount?: number;
+  /**
+   * 指标口径版本（匹配规则或分母规则任一变化就 +1）。旧事件无此字段 = v0。
+   * 与 `stepParserVersion` 是两个维度：后者管「步数怎么数」，本字段管「分母与匹配规则」。
+   */
+  fidelityIndicatorVersion?: number;
 }
 
 /**
@@ -4566,12 +4583,19 @@ export function aggregatePlanFidelity(
     const planFile = typeof e.data.plan_file === "string" ? e.data.plan_file : "";
     // Map.set 覆盖已有键不改变插入顺序：值取末条，位置留在首次出现处
     const version = e.data.step_parser_version;
+    // 新字段按需带出（旧事件没有就不出现），避免给既有消费者伪造一个 0 / v0 值
+    const denied = e.data.denied_count;
+    const indicatorVersion = e.data.fidelity_indicator_version;
     byPlan.set(planFile, {
       planFile,
       planStepCount: num(e.data.plan_step_count),
       actualToolCallCount: num(e.data.actual_tool_call_count),
       offPlanCount: num(e.data.off_plan_count),
       ...(version !== undefined ? { stepParserVersion: num(version) } : {}),
+      ...(denied !== undefined ? { deniedCount: num(denied) } : {}),
+      ...(indicatorVersion !== undefined
+        ? { fidelityIndicatorVersion: num(indicatorVersion) }
+        : {}),
     });
   }
   return [...byPlan.values()];

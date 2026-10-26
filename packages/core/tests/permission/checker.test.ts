@@ -76,9 +76,63 @@ describe("PermissionChecker", () => {
       });
     }
 
-    test("对照：todo_write 的 readOnly() 为 false，无头模式被拒是符合设计的", async () => {
+    /**
+     * 契约变更（2026-10-26）：这条断言从前是 `allowed === false`。
+     *
+     * 旧理由写在 READ_ONLY_TOOLS 的注释里——「todo_write 的 readOnly() 为 false（会落盘
+     * progress 文件），无头被拒符合设计」。那条理由漏了一件事：**计划批准消息强制要求
+     * 第一步调 todo_write**（`plan/prompt.ts` 的 buildPlanApprovedMessage），两处规则在
+     * `-p` 下直接矛盾，每一份计划进入执行阶段的第一步必然失败。一次无头 plan 实跑里，
+     * 整个执行阶段就此报废（todo_write 被拒 → edit math.js 被拒 → 模型转成只读交付）。
+     *
+     * 现改为独立的 `HEADLESS_LOCAL_LEDGER_TOOLS` 白名单放行（只写本地进度账本，
+     * 不碰工作区/网络/子进程）。**READ_ONLY_TOOLS 本身没动**，所以 plan 模式与
+     * deny-write 的只读语义一字未变——下面两条对照用例就是机械证据。
+     */
+    test("todo_write 在无头模式放行（本地记账白名单）", async () => {
       const checker = new PermissionChecker({ ...defaultConfig(), print: true });
       const r = await checker.check({ toolName: "todo_write", input: { todos: [] } });
+      expect(r.allowed).toBe(true);
+    });
+
+    test("acceptEdits + 无头：todo_write 放行（此前落在 isNonInteractive 被拒）", async () => {
+      // acceptEdits 分支只放行 FILE_TOOLS 与 cwd 内 fs 命令，todo_write 不在其中，
+      // 于是继续下落到 isNonInteractive() 被拒——与 plan 模式无关，是同一处的另一面。
+      const checker = new PermissionChecker({
+        ...defaultConfig(),
+        print: true,
+        permissionMode: "acceptEdits",
+      });
+      const r = await checker.check({ toolName: "todo_write", input: { todos: [] } });
+      expect(r.allowed).toBe(true);
+    });
+
+    test("对照：白名单不在阶段一，plan 模式仍拒 todo_write", async () => {
+      const checker = new PermissionChecker({
+        ...defaultConfig(),
+        print: true,
+        permissionMode: "plan",
+      });
+      const r = await checker.check({ toolName: "todo_write", input: { todos: [] } });
+      expect(r.allowed).toBe(false);
+    });
+
+    test("对照：白名单不在阶段一，deny-write 模式仍拒 todo_write", async () => {
+      const checker = new PermissionChecker({
+        ...defaultConfig(),
+        print: true,
+        permissionMode: "deny-write",
+      });
+      const r = await checker.check({ toolName: "todo_write", input: { todos: [] } });
+      expect(r.allowed).toBe(false);
+    });
+
+    test("对照：白名单只含记账工具，无头下 edit 仍被拒", async () => {
+      const checker = new PermissionChecker({ ...defaultConfig(), print: true });
+      const r = await checker.check({
+        toolName: "edit",
+        input: { file_path: "/tmp/x", old_string: "a", new_string: "b" },
+      });
       expect(r.allowed).toBe(false);
     });
 

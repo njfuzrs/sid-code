@@ -82,6 +82,22 @@ export interface ToolResultBlock {
    * 缺省（`undefined`）= 原样展示 content，是绝大多数工具的行为，字段不出现、零破坏。
    */
   resultDisplayMode?: "hidden" | "summary";
+  /**
+   * 本次结果是否是**权限层拒绝**（不是工具执行失败）。
+   *
+   * 与 `is_error` 的区别是两者的归因完全相反：`is_error` 是「模型让工具做这件事，
+   * 工具没做成」，权限拒绝是「harness 不让做」——模型的偏离程度不该被后者污染。
+   * fidelity 的 `off_plan_count` 据此把被拒调用排除在外（见 plan/state.ts 的
+   * `recordActualToolCall` 与 app.ts 的 `handlePlanModeTransitions`）。
+   *
+   * 为什么不复用 `content` 的 `权限拒绝:` 前缀：那是**给人看的文案**，
+   * 产品侧改一次措辞，所有按字符串判定口径的消费方就会静默归零，而报告照样显示
+   * 「0 次」——`analytics/events.ts` 已经为同一形态留下过教训。
+   *
+   * 与 `structuredPatch` / `resultDisplayMode` 同一范式：**不回传给 LLM**
+   * （provider 序列化 tool_result 时逐字段读取 content/is_error），随 Message 持久化。
+   */
+  permissionDenied?: boolean;
 }
 
 /** 思考块（对标 Claude Code ThinkingBlock） */

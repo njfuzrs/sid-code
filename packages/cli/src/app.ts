@@ -25,7 +25,7 @@ import { IDE_SERVER_NAME } from "@sid-code/core/ide/integration.ts";
 import type { ProviderRegistry } from "@sid-code/core/llm/registry.ts";
 import type { MCPManager } from "@sid-code/core/mcp/manager.ts";
 import type { PlanModeManager } from "@sid-code/core/plan/state.ts";
-import { PLAN_STEP_PARSER_VERSION } from "@sid-code/core/plan/state.ts";
+import { FIDELITY_INDICATOR_VERSION, PLAN_STEP_PARSER_VERSION } from "@sid-code/core/plan/state.ts";
 import { Manager as ContextManager } from "@sid-code/core/context/manager.ts";
 import { resolveAutoCompactPctOverride } from "@sid-code/core/context/auto-compact.ts";
 import { Registry as ToolRegistry } from "@sid-code/core/tool/registry.ts";
@@ -7013,15 +7013,34 @@ export class App {
     for (const { block, idx } of toolBlocks) {
       const result = resultMap.get(idx);
 
-      // 失败的调用也算「实际调用」：对齐度问的是它做了什么，不是做成了什么。
-      // 规划态自身的两个工具不算执行动作。
-      if (
-        executingAtBatchStart &&
-        block.name !== "exit_plan_mode" &&
-        block.name !== "enter_plan_mode"
-      ) {
-        this.planManager.recordActualToolCall(block.name, block.input);
-        fidelityTouched = true;
+      // 执行阶段的调用计入 fidelity 分母。**三类不算执行动作**：
+      //   ① 规划态自身的两个工具（enter/exit_plan_mode）——白名单外，见 ③；
+      //   ② **计划文件自身的写入**：那是计划维护，不是执行计划步骤。
+      //      必须复用 planManager.isPlanFile，不能新写一套路径比较——它与
+      //      recordPlanFileWrite（plan_recovery 计数）共用同一份 resolve() 口径，
+      //      新写一套必然漂移。
+      //      ⚠️ 这个排除必须**先于**动作词扩展：edit 的参数含 old_string / new_string
+      //      （也就是计划正文本身），天然含步骤描述里的词，扩词后「编辑计划文件」
+      //      极易被误锚定成某一步（实测第二次 edit 计划文件会命中 step2）——
+      //      不先排除就是从漏报直接跳到误报。
+      //   ③ 记账 / 检索类工具：白名单在 state.ts 的 FIDELITY_TRACKED_TOOLS，
+      //      recordActualToolCall 对白名单外的工具返回 null（未记录）。
+      if (executingAtBatchStart) {
+        const filePath =
+          block.name === "write" || block.name === "edit"
+            ? (block.input as { file_path?: unknown } | undefined)?.file_path
+            : undefined;
+        const isPlanFileWrite =
+          typeof filePath === "string" && this.planManager.isPlanFile(filePath);
+        if (!isPlanFileWrite) {
+          // 失败执行仍算「实际调用」（对齐度问的是它做了什么），但**权限拒绝**不算偏离：
+          // 那是 harness 的决定，不是模型的偏离。结构化标记来自 tool-executor
+          // 的 permissionDenied 字段——不按 content 的「权限拒绝:」文案判定。
+          const denied = result?.type === "tool_result" && result.permissionDenied === true;
+          if (this.planManager.recordActualToolCall(block.name, block.input, { denied })) {
+            fidelityTouched = true;
+          }
+        }
       }
 
       // 工具执行失败 + (planning 探索阶段 或 执行阶段) → 触发 Recovery Hook
@@ -7142,10 +7161,18 @@ export class App {
       plan_step_count: r.planStepCount,
       actual_tool_call_count: r.actualToolCallCount,
       off_plan_count: r.offPlanCount,
-      // 口径随数字一起落盘：v1（无此字段）只排除非步骤章节，v2 步骤章节优先 + 围栏隔离。
-      // 不同口径的 plan_step_count 不能直接比较（铁律 3：分母口径一变曲线整体平移）。
+      // 被权限层拒绝的调用单独上报：它们进 actualToolCallCount（模型确实发起了），
+      // 但不进 offPlanCount（那是 harness 的决定，不是模型的偏离）。
+      denied_count: r.deniedCount,
+      // 口径随数字一起落盘：v1（无此字段）只排除非步骤章节，v2 步骤章节优先 + 围栏隔离，
+      // v3 缩进续行并入父步骤描述。不同口径的 plan_step_count 不能直接比较
+      // （铁律 3：分母口径一变曲线整体平移）。
       step_parser_version: PLAN_STEP_PARSER_VERSION,
       step_source: this.planManager.getPlanStepSource(),
+      // **第二个**口径维度：匹配规则或分母规则（哪些调用进分母、被拒的算不算偏离）
+      // 任一变化就 +1。与 step_parser_version 各自单调递增、互不覆盖——
+      // 只看解析器版本会出现「版本没变、分母却变了」的不可比数据。
+      fidelity_indicator_version: FIDELITY_INDICATOR_VERSION,
     });
   }
 
@@ -7234,15 +7261,21 @@ export class App {
     // 对标 Claude Code：system prompt 不变 + 工具集不变 = Prompt Caching 不中断
   }
 
-  /** 退出 Plan Mode：恢复权限模式（不重建 system prompt，对标 Claude Code） */
-  private async deactivatePlanMode(): Promise<void> {
+  /**
+   * 退出 Plan Mode：恢复权限模式（不重建 system prompt，对标 Claude Code）
+   *
+   * override：批准路径专用。无头会话批准后要切到调用方声明的 `--plan-exec-mode`，
+   * 而「进入之前的模式」对 `--permission-mode plan` 启动的会话不存在（prePlanMode 为 null）。
+   * 取消 / 拒绝超限不传它——那些路径没有「批准后要执行」这件事。
+   */
+  private async deactivatePlanMode(override?: string): Promise<void> {
     const log = getLogger();
     log.info("PLAN", "退出 Plan Mode");
 
     // 恢复进入前的权限模式。P2-1：从前这里读 App 自己的 _originalPermissionMode，
     // 与 planManager.prePlanMode、checker.prePlanMode 共三份，只有这一份被赋过值。
     // 以 plan 模式启动的会话没有「之前」，getPrePlanMode() 为 null → 恢复成 default。
-    const restored = this.planManager?.getPrePlanMode() || "default";
+    const restored = override || this.planManager?.getPrePlanMode() || "default";
     this.config.permissionMode = restored;
 
     // 同步 TUI 状态
@@ -7267,8 +7300,30 @@ export class App {
       { type: "text", text: `<system-reminder>\n${text}\n</system-reminder>` },
     ];
 
-    // 审批结果由 TUI 层处理；无回调（headless）时自动批准
+    // 审批结果由 TUI 层处理；无回调（headless）且调用方声明了 --plan-exec-mode
+    // 才自动批准。两者都不成立时**不假装批准**（见下面的无审批人分支）。
     const source: "tui" | "headless" = this.tuiPlanApprovalCallback ? "tui" : "headless";
+
+    // 无头会话没有审批人：批准了也执行不了，就别演那一出。
+    //
+    // 2026-10-26：从前的链路是三条各自合理的规则叠加——自动批准 → 恢复成
+    // `prePlanMode || "default"`（`--permission-mode plan` 启动的会话没有「之前」，
+    // 于是恢复 default）→ `-p` 下 default 的 ask 全部被 `isNonInteractive()` 落成 deny。
+    // 净效果：harness 先自动批准，紧接着拒绝每一个写类调用，一次无头实跑里
+    // 「计划第 1 步 edit math.js」直接被拒，模型只好把改动写成文字交付。
+    // 现在的语义是：没有审批人就不批准，计划文件作为交付物，模型把计划要点作为最终输出。
+    // 要真的执行，调用方显式传 `--plan-exec-mode <mode>`（下一分支）。
+    if (!this.tuiPlanApprovalCallback && !this.config.planExecMode) {
+      // 快照必须在 endWithoutApproval 之前落：exitPlan 会清空步数与路径，
+      // 退出后就只剩「计划 0 步 / 实际 0 次」，那等于把这次规划从数据里抹掉。
+      const stepCount = this.countPlanSteps(planPath);
+      this.recordPlanFidelitySnapshot();
+      this.planManager.endWithoutApproval({ source: "headless" });
+      await this.deactivatePlanMode();
+      log.info("PLAN", "无头会话没有审批人：计划产出后收尾，不自动批准");
+      return wrap(prompt.buildHeadlessPlanOnlyMessage(planPath, stepCount));
+    }
+
     const decision = this.tuiPlanApprovalCallback
       ? await this.tuiPlanApprovalCallback(planPath)
       : "approve";
@@ -7277,10 +7332,14 @@ export class App {
       // 步数在批准前解析：approve 的事件与紧接着的 PlanFidelity 快照都要带上这一刻的口径
       const stepCount = this.countPlanSteps(planPath);
       this.planManager.approve({ source });
-      await this.deactivatePlanMode();
+      // 无头批准后切到调用方声明的执行模式：这条入口没有「进入之前的模式」，
+      // 恢复成 default 会让批准落空（default + 无头 = 全部 ask 变 deny）。
+      await this.deactivatePlanMode(source === "headless" ? this.config.planExecMode : undefined);
       log.info(
         "PLAN",
-        source === "tui" ? "用户批准计划，退出 Plan Mode" : "非交互模式，自动批准计划",
+        source === "tui"
+          ? "用户批准计划，退出 Plan Mode"
+          : `无头会话按 --plan-exec-mode=${this.config.planExecMode} 批准计划`,
       );
       // W12.D2 / ADR-017：批准消息是 LLM 进入执行阶段唯一保留的「plan 上下文锚点」
       // （deactivatePlanMode 后 plan prompt 不再注入），嵌入失败更新执行守则。

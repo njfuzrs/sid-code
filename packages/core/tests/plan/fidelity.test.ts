@@ -83,23 +83,23 @@ describe("PlanModeManager — recordActualToolCall + matching", () => {
     const m = new PlanModeManager();
     m.parsePlanFromMarkdown("1. read package.json\n2. write cli.ts");
     const c1 = m.recordActualToolCall("read", { file_path: "package.json" });
-    expect(c1.matchedPlanStepIndex).toBe(1);
+    expect(c1!.matchedPlanStepIndex).toBe(1);
   });
 
   test("中文动作词 '读' + args 路径锚定 → matched", () => {
     const m = new PlanModeManager();
     m.parsePlanFromMarkdown("1. 读 package.json\n2. 改 cli.ts");
     const c1 = m.recordActualToolCall("read", { file_path: "/repo/package.json" });
-    expect(c1.matchedPlanStepIndex).toBe(1);
+    expect(c1!.matchedPlanStepIndex).toBe(1);
     const c2 = m.recordActualToolCall("edit", { file_path: "/repo/src/cli.ts" });
-    expect(c2.matchedPlanStepIndex).toBe(2);
+    expect(c2!.matchedPlanStepIndex).toBe(2);
   });
 
   test("完全 off-plan: tool 与所有 step 都对不上", () => {
     const m = new PlanModeManager();
     m.parsePlanFromMarkdown("1. 读 package.json\n2. 改 cli.ts");
     const c = m.recordActualToolCall("bash", { command: "git status" });
-    expect(c.matchedPlanStepIndex).toBeNull();
+    expect(c!.matchedPlanStepIndex).toBeNull();
   });
 
   test("一个 step 可被多次 actual 命中 (matchedActualIndices 累加)", () => {
@@ -115,7 +115,7 @@ describe("PlanModeManager — recordActualToolCall + matching", () => {
     m.parsePlanFromMarkdown("1. 读 a");
     const a = m.recordActualToolCall("read", { file_path: "/x" });
     const b = m.recordActualToolCall("read", { file_path: "/x" });
-    expect(a.argsHash).toBe(b.argsHash);
+    expect(a!.argsHash).toBe(b!.argsHash);
   });
 });
 

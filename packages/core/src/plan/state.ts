@@ -40,13 +40,23 @@ export type PlanTransitionReason =
   | "reject_limit"
   | "cancel"
   | "todos_completed"
+  | "no_approver"
   | "clear";
 
 /**
  * 一份计划的最终结局。exit_plan_mode 在非规划态被调用时据此如实回答，
  * 而不是一律说「已审批通过」——那句话曾让模型把用户取消的计划当成已批准去执行。
+ *
+ * `plan_only`（2026-10-26）是「计划已产出、但没有任何人批准过」：无头会话没有审批人，
+ * 它既不是批准也不是用户取消，用一个独立取值避免让模型把两种情况混为一谈。
  */
-export type PlanOutcome = "approved" | "cancelled" | "rejected_limit" | "completed" | "cleared";
+export type PlanOutcome =
+  | "approved"
+  | "cancelled"
+  | "rejected_limit"
+  | "completed"
+  | "cleared"
+  | "plan_only";
 
 /** 跃迁附带信息（谁做的决定、用户修改意见多长），只用于可观测性 */
 export interface PlanTransitionMeta {
@@ -71,9 +81,52 @@ export type PlanStepSource = "step_sections" | "excluding_non_step" | "flat";
 
 /**
  * 步骤解析器口径版本。2026-10-24 前的事件不带此字段（视为 v1：只排除非步骤章节、不隔离围栏）；
- * v2 = 步骤章节优先 + 围栏隔离。跨版本对比 plan_step_count 前必须先按版本分组。
+ * v2 = 步骤章节优先 + 围栏隔离；v3（2026-10-26）= 缩进续行并入父步骤描述（**步数不变**，
+ * 但续行里的路径/命令 token 从此参与锚定，匹配结果会变）。跨版本对比前必须先按版本分组。
  */
-export const PLAN_STEP_PARSER_VERSION = 2;
+export const PLAN_STEP_PARSER_VERSION = 3;
+
+/**
+ * fidelity 指标口径版本：**匹配规则或分母规则任一变化就 +1**。
+ *
+ * 为什么不能只用 `PLAN_STEP_PARSER_VERSION`：那只管「步数怎么数出来」，
+ * 而 `off_plan_count` 还取决于两件它管不到的事——
+ *   ① 匹配规则（动作词表、锚定阈值、同分裁决）；
+ *   ② **分母规则**（哪些调用进 `actualToolCalls`、被权限拒绝的算不算）。
+ * 只提升解析器版本会出现「解析器版本没变、分母却变了」的不可比数据：
+ * 修复前后混在一起看，就像「偏离率突然下降」，而真实原因只是口径换了。
+ *
+ * v0（无此字段的历史事件）：记账类工具与被拒调用都计入分母、动作词表不含「新增/增加/添加」；
+ * v1（2026-10-26）：记账类与计划文件写入不计入、被拒调用单独计 `denied_count` 且不算偏离、
+ *                   edit 动作词补「新增/增加/添加」。
+ */
+export const FIDELITY_INDICATOR_VERSION = 1;
+
+/**
+ * 会计入 fidelity 分母的工具（「会产生计划步骤」的那一类）。
+ *
+ * 为什么是白名单而不是「排除 todo_write」：`recordActualToolCall` 对所有工具一视同仁
+ * （只看工具名与入参、**不看结果**），所以 `task_create` / `task_update` / `save_memory` /
+ * `tool_search` 这些记账与检索工具同样会被记成一次偏离——计划里根本没有对应的步骤。
+ * 只特判 `todo_write` 的话，下一种记账工具出现就要再改一次，而且漏改的形态是静默的
+ * （曲线只是平白多出几个 off-plan）。
+ *
+ * 白名单的另一面是「宁可漏记也不虚报」（P2-3 的底线）：探索性 `ls` / `tool_search`
+ * 不进分母，不产生任何偏离记录。计划文件的写入在 app 层按 `isPlanFile` 另行排除
+ * （它需要路径上下文，且要与 plan_recovery 的计数共用同一份口径）。
+ */
+const FIDELITY_TRACKED_TOOLS = new Set([
+  "edit",
+  "write",
+  "notebook_edit",
+  "bash",
+  "read",
+  "grep",
+  "glob",
+  "ls",
+  "read_many",
+  "sub_agent",
+]);
 
 /** ADR-028: exit_plan_mode 后实际工具调用记录 */
 export interface ActualToolCall {
@@ -82,6 +135,14 @@ export interface ActualToolCall {
   argsHash: string;
   matchedPlanStepIndex: number | null;
   timestamp: number;
+  /**
+   * 这次调用被**权限层**拒绝（不是工具执行失败）。
+   *
+   * 单列的理由是可归因性：fidelity 问的是「模型有没有按计划走」，而权限拒绝是
+   * harness 的决定。把它算成偏离的话，权限层一修，偏离率就会「莫名改善」——
+   * 两个改动的效果混在一个指标里，谁也说不清是谁的功劳。
+   */
+  denied?: boolean;
 }
 
 /** ADR-028: fidelity 报告 (内核权威信号) */
@@ -92,8 +153,10 @@ export interface FidelityReport {
   stepRatio: number;
   /** matched (matchedPlanStepIndex !== null) 的 actual 占 plan 比例 */
   matchedRatio: number;
-  /** matchedPlanStepIndex===null 的 actual 数 */
+  /** matchedPlanStepIndex===null 的 actual 数（不含被权限拒绝的调用） */
   offPlanCount: number;
+  /** 其中被权限层拒绝的调用数。单独上报，不进 offPlanCount */
+  deniedCount: number;
 }
 
 /**
@@ -337,6 +400,24 @@ export class PlanModeManager {
   }
 
   /**
+   * 无头会话里计划已产出、但**没有任何审批人**时收尾。
+   *
+   * 2026-10-26：从前无头会话一律自动 approve，而 `--permission-mode plan` 启动的会话
+   * 没有「进入之前的模式」，`deactivatePlanMode` 恢复成 default，`-p` 下 default 的 ask
+   * 全部被 `isNonInteractive()` 落成 deny——harness 先自动批准、紧接着拒绝执行，
+   * 批准等于白做。现在的语义是：没有审批人就不假装批准，把计划留在磁盘上作为交付物，
+   * 用独立的 outcome（`plan_only`）让 `exit_plan_mode` 能如实回答「这份计划没被批准过」。
+   *
+   * 只在待审批态生效。刻意复用 `exitPlan` 这个唯一出口：清理范围（占位文件回收、
+   * fidelity 归零）与其他四条退出路径保持一致，不会各写一份然后漂移。
+   */
+  endWithoutApproval(meta?: PlanTransitionMeta): boolean {
+    if (this.state !== "awaiting_approval") return false;
+    this.exitPlan("no_approver", "plan_only", meta);
+    return true;
+  }
+
+  /**
    * 计划执行完毕（计划派生的 todo 清单全部完成）→ 结束执行阶段。
    * 只在执行阶段生效；规划中 / 待审批 / 无计划时是 no-op，返回是否真的结束了。
    */
@@ -351,7 +432,7 @@ export class PlanModeManager {
    * 收在一处是为了让清理范围、占位文件回收、事件形态不会在四条路径上各写一份然后漂移。
    */
   private exitPlan(
-    reason: "cancel" | "clear" | "reject_limit" | "todos_completed",
+    reason: "cancel" | "clear" | "reject_limit" | "todos_completed" | "no_approver",
     outcome: PlanOutcome,
     meta?: PlanTransitionMeta,
   ): void {
@@ -540,8 +621,26 @@ export class PlanModeManager {
         sections.push({ kind: PlanModeManager.classifyHeading(hm[1]), items: [] });
         continue;
       }
-      // 跳过被缩进的子项
-      if (/^\s/.test(raw)) continue;
+      // 缩进续行：不产生新步骤，但**并入上一条列表项的描述**。
+      //
+      // 2026-10-26：从前这里是 `continue`——续行里的路径、命令、文件名全部被丢掉，
+      // 锚定只能靠第一行的 token。真实计划经常把「改哪个文件」写在子项里
+      // （`1. 修复登录\n   - 改 src/auth.ts`），那一步就永远锚定不上任何调用。
+      //
+      // 选「并入」而不是「算新步骤」：**步数是分母**，并入不改分母（既有测试契约不变，
+      // 「嵌套子项不计 step」仍然成立），只让匹配多一分依据；算新步骤会把一步拆成两步，
+      // 等于悄悄改了分母口径——那正是「分母比分子重要」这条铁律要防的事。
+      if (/^\s/.test(raw)) {
+        const text = raw
+          .trim()
+          .replace(/^(?:\d+[.)]|[-*])\s+/, "")
+          .trim();
+        const items = sections[sections.length - 1].items;
+        if (text && items.length > 0) {
+          items[items.length - 1] = `${items[items.length - 1]} ${text}`;
+        }
+        continue;
+      }
       const m = raw.match(orderedRe) ?? raw.match(dashRe);
       if (m) sections[sections.length - 1].items.push(m[1].trim());
     }
@@ -672,8 +771,24 @@ export class PlanModeManager {
   /**
    * 记录一次 actual 工具调用 (在 exit_plan_mode 之后调用方负责调).
    * 用 description 中第一个名词 / 工具名做 fuzzy match — 命中算 matched, 否则 off-plan.
+   *
+   * 2026-10-26 两条口径变化（见 `FIDELITY_INDICATOR_VERSION`）：
+   *   ① **只有 `FIDELITY_TRACKED_TOOLS` 里的工具进分母**。记账类（todo_write / task_* /
+   *      save_memory）与检索类（tool_search）不是计划步骤的执行动作，从前它们会被
+   *      记成「计划外」，让曲线平白多出偏离。返回 null 表示本次调用未被记录。
+   *   ② `opts.denied` 标记**权限层拒绝**（不是工具执行失败）。这类调用仍计入
+   *      `actualToolCallCount`（它确实是模型发起的），但不计入 `offPlanCount`——
+   *      偏离问的是模型有没有按计划走，权限拒绝是 harness 的决定。
+   *
+   * 计划文件自身的写入由调用方（app.ts）按 `isPlanFile` 先行排除，不在这里判：
+   * 那需要路径上下文，且要与 plan_recovery 的计数共用同一份路径口径。
    */
-  recordActualToolCall(toolName: string, args: unknown): ActualToolCall {
+  recordActualToolCall(
+    toolName: string,
+    args: unknown,
+    opts?: { denied?: boolean },
+  ): ActualToolCall | null {
+    if (!FIDELITY_TRACKED_TOOLS.has(toolName)) return null;
     const argsHash = this.hashArgs(args);
     const argValues = PlanModeManager.collectArgValues(args);
     const next: ActualToolCall = {
@@ -682,6 +797,7 @@ export class PlanModeManager {
       argsHash,
       matchedPlanStepIndex: this.matchAgainstPlan(toolName, argValues),
       timestamp: this.now(),
+      ...(opts?.denied ? { denied: true } : {}),
     };
     this.actualToolCalls.push(next);
     this.actualArgValues.push(argValues);
@@ -711,12 +827,22 @@ export class PlanModeManager {
     }
   }
 
-  /** ADR-028 §3.1: 内核权威 fidelity 报告 */
+  /**
+   * ADR-028 §3.1: 内核权威 fidelity 报告
+   *
+   * 2026-10-26 分母口径（见 `FIDELITY_INDICATOR_VERSION`）：
+   *   · `actualToolCallCount` 含被拒调用——它们确实是模型发起的动作；
+   *   · `offPlanCount` **不含**被拒调用——权限拒绝是 harness 的决定，不是模型的偏离；
+   *   · `deniedCount` 单独上报，让「权限层拦了多少」与「模型偏离了多少」可分开归因。
+   */
   getFidelityReport(): FidelityReport {
     const planStepCount = this.planSteps.length;
     const actualToolCallCount = this.actualToolCalls.length;
-    const offPlanCount = this.actualToolCalls.filter((c) => c.matchedPlanStepIndex === null).length;
-    const matchedActualCount = actualToolCallCount - offPlanCount;
+    const deniedCount = this.actualToolCalls.filter((c) => c.denied).length;
+    const offPlanCount = this.actualToolCalls.filter(
+      (c) => !c.denied && c.matchedPlanStepIndex === null,
+    ).length;
+    const matchedActualCount = actualToolCallCount - deniedCount - offPlanCount;
     const stepRatio = planStepCount === 0 ? Number.NaN : actualToolCallCount / planStepCount;
     const matchedRatio = planStepCount === 0 ? Number.NaN : matchedActualCount / planStepCount;
     return {
@@ -725,6 +851,7 @@ export class PlanModeManager {
       stepRatio,
       matchedRatio,
       offPlanCount,
+      deniedCount,
     };
   }
 
@@ -877,10 +1004,21 @@ export class PlanModeManager {
     return best ? best.step.index : null;
   }
 
-  /** 工具 → 描述里对应的动作词（中英） */
+  /**
+   * 工具 → 描述里对应的动作词（中英）。
+   *
+   * 2026-10-26：edit 补上「新增 / 增加 / 添加」。实测证据会话里计划第 1 步写的是
+   * 「**新增 sub 函数**：在 `math.js` 中按 `add` 的现有风格新增并导出」——语义对得上，
+   * 但旧词表只有「改 / 修改 / edit」，语义门槛没过，`edit math.js` 被记成偏离，
+   * `matchedRatio` 为 0。补词后同一条调用命中 step1（已在重放脚本里逐条核对）。
+   *
+   * ⚠️ **扩词是开放集方向，与 P2-3「宁可漏记也不虚报」相反**：动词无穷，扩一次就可能
+   * 引入一类误报。所以只补有实测证据的词，且必须配反例测试——锚定（anchorScore）
+   * 仍是硬门槛，语义命中但没有参数锚定的步骤依然不会匹配。
+   */
   private static readonly TOOL_VERBS: Readonly<Record<string, readonly string[]>> = {
     read: ["读", "查看", "看", "load"],
-    edit: ["改", "修改", "edit"],
+    edit: ["改", "修改", "edit", "新增", "增加", "添加"],
     write: ["写", "创建", "新建", "write"],
     bash: ["跑", "执行", "运行", "run"],
     grep: ["搜", "查找", "grep"],
