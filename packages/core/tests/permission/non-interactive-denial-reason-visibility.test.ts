@@ -69,12 +69,18 @@ describe("非交互模式拒绝必须把成因说给模型（A11 34/66 次被拒
     mustExplain: string;
   }[] = [
     {
-      label: "heredoc 正文含 Python 三引号 → injection 启发式（原样重发过两次）",
+      label: "heredoc 正文含 Python 三引号 → 需确认（原样重发过两次）",
       tool: "bash",
       input: {
         command: "mkdir -p /app && cat << 'EOF' > /tmp/t.py\nimport re\nIPV4 = r'''x'''\nEOF",
       },
-      mustExplain: "injection",
+      // 2026-10-26：`validateNewlines` 改为先剥离 heredoc 正文——正文是数据，不是
+      // 「换行分隔出的第二条命令」，那个 injection 成因本身是误报（详见
+      // .agents/notes/implemented/bug-fix/2026-10-26-危险命令按token判定.md）。
+      // 命令仍被拒（`/app`、`/tmp/t.py` 都在工作区外，且 bash 本身需确认），
+      // 成因变成「需确认」这一类。本用例继续守「拒绝必须带可行动信息」，
+      // 只是不再把那个假成因当作期望值。
+      mustExplain: "需要用户确认",
     },
     {
       label: '环境探测里的 echo "---" → 被判带引号的 flag 混淆',
