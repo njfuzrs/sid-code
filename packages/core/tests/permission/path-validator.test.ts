@@ -202,7 +202,10 @@ describe("PathValidator - 目录黑白名单", () => {
   test("白名单外目录被拒绝", () => {
     const allowedDir = path.join(workspaceDir, "src");
     const v = new PathValidator(workspaceDir, [allowedDir], []);
-    const result = v.validateAccess(path.join(workspaceDir, "dist", "out.js"), "write");
+    // 白名单是**追加**语义（工作目录集合 = 工作区 ∪ 白名单），工作区里的其它子目录
+    // 本来就在集合内，不再被白名单排斥。这条要验的是「集合之外仍拒」，
+    // 所以目标必须落在工作区之外——旧的 workspaceDir/dist 前提已随语义变更失效。
+    const result = v.validateAccess(path.join(tmpDir, "outside", "out.js"), "write");
     expect(result.allowed).toBe(false);
     expect(result.reason).toContain("白名单");
   });
