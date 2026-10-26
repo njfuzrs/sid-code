@@ -196,6 +196,32 @@ plan mode 只用于需要用户审批的新方案设计，不是执行阶段的�
 }
 
 /**
+ * 无头会话里计划已产出、但**没有人能批准它**时注入给模型的消息。
+ *
+ * 2026-10-26：从前这条路径走的是 `buildPlanApprovedMessage`——harness 自动批准，
+ * 紧接着把权限模式恢复成 default，而 `-p` 下 default 的 ask 全部被
+ * `isNonInteractive()` 落成 deny：模型收到「开始执行」，然后每个写类调用都被拒。
+ * 一次真实无头实跑里，计划第 1 步 `edit math.js` 直接被拒，模型只好把改动写成
+ * 文字交付——那条路径上的「批准」是纯形式的，模型却为它烧掉了整个执行阶段。
+ *
+ * 现在的语义：没有审批人就不假装批准。计划文件留在磁盘上作为交付物，
+ * 模型把计划要点作为最终回答输出，不再尝试调用执行类工具。
+ */
+export function buildHeadlessPlanOnlyMessage(planFilePath: string, planStepCount = 0): string {
+  const stepLine = planStepCount > 0 ? `本计划解析出约 ${planStepCount} 个步骤，` : "";
+  return `计划已写入 ${planFilePath}，但**没有人批准它**：本次会话无人值守，没有审批人。
+
+${stepLine}因此**不要执行这份计划**，也不要调用 todo_write / edit / write / bash 等执行类工具。
+
+请这样收尾：
+1. 用一句话说明计划已写入上述路径
+2. 把计划的核心步骤作为最终回答输出，供人带着它去执行
+3. 停止，不要再调用工具
+
+（如确实需要在无人值守会话里执行计划，请由调用方显式传 \`--plan-exec-mode <mode>\`。）`;
+}
+
+/**
  * 用户在审批框选择「取消」后注入给模型的消息。
  *
  * 2026-10-24：从前取消路径返回 null、不注入任何东西，模型手里只有 exit_plan_mode 的

@@ -270,6 +270,19 @@ export interface Config {
   // 合法取值以 config/schema.ts 的 PERMISSION_MODES 为准，参考页从那里自省，这里不写数字。
   /** 默认权限模式（manual 是 default 的别名） */
   permissionMode: string;
+  /**
+   * 无头会话里计划被批准后要切换到的权限模式（`--plan-exec-mode`）。
+   *
+   * 背景（2026-10-26）：`--permission-mode plan` 启动的**无头**会话，从前
+   * `deactivatePlanMode` 一律恢复成 `prePlanMode || "default"`，而这条入口没有
+   * 「进入之前的模式」——于是自动批准之后落到 default，`-p` 下 default 的 ask 全部被
+   * `isNonInteractive()` 落成 deny，批准等于白做：模型拿到「开始执行」，紧接着每个写类
+   * 调用都被拒。现在的语义是**默认不自动批准**（无头没有审批人，不假装批准），
+   * 只有调用方显式声明本字段时才批准并切到该模式执行。
+   *
+   * 合法值与 PERMISSION_MODES 一致，但**排除 plan**（批准后再回 plan 就是死循环）。
+   */
+  planExecMode?: string;
   skipPermissions: boolean;
   /** 预授权工具名单（免确认直接执行）。与 toolsWhitelist 不同：这是权限层，不裁剪工具集 */
   allowedTools: string[];
@@ -975,6 +988,7 @@ export function defaultConfig(): Config {
     maxTokens: 32768,
     availableModels: [],
     permissionMode: "default",
+    planExecMode: undefined,
     skipPermissions: false,
     allowedTools: [],
     disallowedTools: [],

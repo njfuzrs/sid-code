@@ -157,9 +157,9 @@ describe("P2-3 保真度匹配", () => {
   test("文档实证：read /etc/hosts 不再被算成「读 package.json」", () => {
     const m = new PlanModeManager();
     m.parsePlanFromMarkdown(PLAN);
-    expect(m.recordActualToolCall("grep", { pattern: "x" }).matchedPlanStepIndex).toBeNull();
+    expect(m.recordActualToolCall("grep", { pattern: "x" })!.matchedPlanStepIndex).toBeNull();
     expect(
-      m.recordActualToolCall("read", { file_path: "/etc/hosts" }).matchedPlanStepIndex,
+      m.recordActualToolCall("read", { file_path: "/etc/hosts" })!.matchedPlanStepIndex,
     ).toBeNull();
     const r = m.getFidelityReport();
     expect(r.matchedRatio).toBe(0);
@@ -172,11 +172,11 @@ describe("P2-3 保真度匹配", () => {
       "1. 读 package.json\n2. 读 tsconfig.json\n3. 读 README.md",
     );
     expect(
-      m.recordActualToolCall("read", { file_path: "/r/tsconfig.json" }).matchedPlanStepIndex,
+      m.recordActualToolCall("read", { file_path: "/r/tsconfig.json" })!.matchedPlanStepIndex,
     ).toBe(2);
-    expect(m.recordActualToolCall("read", { file_path: "/r/README.md" }).matchedPlanStepIndex).toBe(
-      3,
-    );
+    expect(
+      m.recordActualToolCall("read", { file_path: "/r/README.md" })!.matchedPlanStepIndex,
+    ).toBe(3);
     expect(steps[0].matchedActualIndices).toEqual([]);
   });
 
@@ -184,14 +184,14 @@ describe("P2-3 保真度匹配", () => {
     const m = new PlanModeManager();
     m.parsePlanFromMarkdown("1. 跑 bun run lint\n2. 跑 bun test packages/core");
     const c = m.recordActualToolCall("bash", { command: "bun test packages/core" });
-    expect(c.matchedPlanStepIndex).toBe(2);
+    expect(c!.matchedPlanStepIndex).toBe(2);
   });
 
   test("参数键名不参与锚定（描述里的 file_path 不会匹配任何 read）", () => {
     const m = new PlanModeManager();
     m.parsePlanFromMarkdown("1. 读 file_path 相关代码");
     expect(
-      m.recordActualToolCall("read", { file_path: "/x/y.ts" }).matchedPlanStepIndex,
+      m.recordActualToolCall("read", { file_path: "/x/y.ts" })!.matchedPlanStepIndex,
     ).toBeNull();
   });
 });

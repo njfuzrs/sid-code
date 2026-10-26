@@ -147,10 +147,10 @@ describe("PlanModeManager：加粗的步骤描述也能锚定", () => {
       "## 步骤\n\n1. **读取 package.json**\n   - 使用 read 工具\n\n2. **读取 notes.txt**\n",
     );
     expect(
-      m.recordActualToolCall("read", { file_path: "/tmp/x/package.json" }).matchedPlanStepIndex,
+      m.recordActualToolCall("read", { file_path: "/tmp/x/package.json" })!.matchedPlanStepIndex,
     ).toBe(1);
     expect(
-      m.recordActualToolCall("read", { file_path: "/tmp/x/notes.txt" }).matchedPlanStepIndex,
+      m.recordActualToolCall("read", { file_path: "/tmp/x/notes.txt" })!.matchedPlanStepIndex,
     ).toBe(2);
     expect(m.getFidelityReport().offPlanCount).toBe(0);
   });

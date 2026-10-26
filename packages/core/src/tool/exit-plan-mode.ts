@@ -142,6 +142,14 @@ export class ExitPlanModeTool implements Tool {
         );
       case "completed":
         return "上一份计划已执行完毕，当前不在计划模式。" + stop;
+      case "plan_only":
+        // 无头会话没有审批人：计划产出即交付，从未被批准过。
+        // 说「已批准」会让模型去写工作区——而那条路径上的写操作会被权限层全部拒掉。
+        return (
+          "上一份计划已产出，但**没有被批准过**（本会话无人值守，没有审批人），不要执行它。" +
+          stop +
+          "请把计划的核心步骤作为最终回答输出，不要调用执行类工具。"
+        );
       case "cleared":
         return "对话已被清空，上一份计划已作废，当前不在计划模式。" + stop;
       default:

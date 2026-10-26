@@ -1328,6 +1328,9 @@ export async function resolveToolPermission(
         tool_use_id: block.id,
         content: denyContent,
         is_error: true,
+        // 结构化标记「这是权限层拒绝」，供 fidelity 把被拒调用排除在 off_plan 之外。
+        // 不复用 content 文案判定：那是给人看的措辞，改一次就会让消费方静默归零。
+        permissionDenied: true,
       };
     }
     log.info("PERMISSION", `权限批准(${result.source}): ${block.name}`);
@@ -1385,6 +1388,8 @@ export async function resolveToolPermission(
     tool_use_id: block.id,
     content: `权限拒绝: ${explanation}`,
     is_error: true,
+    // 与上面「弹窗后被拒」同一口径：结构化标记，供 fidelity 排除被拒调用。
+    permissionDenied: true,
   };
 }
 

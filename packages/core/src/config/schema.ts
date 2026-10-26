@@ -173,6 +173,21 @@ export function validateConfig(config: Config): ValidationResult {
     });
   }
 
+  // 验证 planExecMode（--plan-exec-mode）
+  // 取值与 permissionMode 同源，但**排除 plan**：批准之后又切回 plan，
+  // 下一轮就要重新规划、重新审批，无头场景下会变成死循环。
+  if (config.planExecMode !== undefined) {
+    const valid = VALID_PERMISSION_MODES.has(config.planExecMode) && config.planExecMode !== "plan";
+    if (!valid) {
+      const allowed = Array.from(VALID_PERMISSION_MODES).filter((m) => m !== "plan");
+      errors.push({
+        path: "planExecMode",
+        message: `无效值 "${config.planExecMode}"，有效值为 ${allowed.join("/")}（不含 plan）`,
+        value: config.planExecMode,
+      });
+    }
+  }
+
   // 验证 API Keys（基础检查）
   if (config.provider === "anthropic") {
     validateApiKey("anthropicKey", config.anthropicKey, errors, warnings);
