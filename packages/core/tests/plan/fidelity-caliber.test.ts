@@ -53,6 +53,54 @@ describe("fidelity 分母口径：只有会产生计划步骤的工具进 actual
     expect(m.recordActualToolCall("bash", { command: "node verify-sub.mjs" })).not.toBeNull();
     expect(m.getFidelityReport().actualToolCallCount).toBe(2);
   });
+
+  test("反例：探索性 ls 不记录（列举类不进分母，见 FIDELITY_TRACKED_TOOLS 注释）", () => {
+    const m = new PlanModeManager();
+    m.parsePlanFromMarkdown(EVIDENCE_PLAN);
+    // 从前 ls 在白名单里、却没有任何动作词 → 每次探索性列举都被记成一次偏离，
+    // 与同文件「探索性 ls 不进分母」的声明相反。
+    expect(m.recordActualToolCall("ls", { dir_path: "/tmp" })).toBeNull();
+    const r = m.getFidelityReport();
+    expect(r.actualToolCallCount).toBe(0);
+    expect(r.offPlanCount).toBe(0);
+  });
+});
+
+describe("白名单成员必须在 TOOL_VERBS 里有动作词（否则必然 off-plan）", () => {
+  test("read_many 与 read 同族：计划写「读 X」时能命中", () => {
+    const m = new PlanModeManager();
+    m.parsePlanFromMarkdown("1. 读 src/auth.ts\n2. 改 cli.ts");
+    const c = m.recordActualToolCall("read_many", { patterns: ["src/auth.ts"] });
+    expect(c?.matchedPlanStepIndex).toBe(1);
+  });
+
+  test("notebook_edit 与 edit 同族：计划写「改 X」时能命中", () => {
+    const m = new PlanModeManager();
+    m.parsePlanFromMarkdown("1. 读 a.ipynb\n2. 改 b.ipynb");
+    const c = m.recordActualToolCall("notebook_edit", { notebook_path: "b.ipynb" });
+    expect(c?.matchedPlanStepIndex).toBe(2);
+  });
+
+  test("sub_agent：计划写「派子代理…」时能命中", () => {
+    const m = new PlanModeManager();
+    m.parsePlanFromMarkdown("1. 派子代理调研 auth.ts 的登录逻辑\n2. 改 cli.ts");
+    const c = m.recordActualToolCall("sub_agent", {
+      description: "调研 auth.ts",
+      prompt: "看 auth.ts 的登录逻辑",
+    });
+    expect(c?.matchedPlanStepIndex).toBe(1);
+  });
+
+  test("反例：sub_agent 仍受锚定硬门槛约束（计划里没写子代理就不算命中）", () => {
+    const m = new PlanModeManager();
+    m.parsePlanFromMarkdown(EVIDENCE_PLAN);
+    const c = m.recordActualToolCall("sub_agent", {
+      description: "调研 unrelated.ts",
+      prompt: "看 unrelated.ts 的实现",
+    });
+    expect(c?.matchedPlanStepIndex).toBeNull();
+    expect(m.getFidelityReport().offPlanCount).toBe(1);
+  });
 });
 
 describe("fidelity 被拒口径：权限拒绝不算模型偏离", () => {
@@ -84,6 +132,24 @@ describe("fidelity 被拒口径：权限拒绝不算模型偏离", () => {
     const r = m.getFidelityReport();
     expect(r.deniedCount).toBe(1);
     expect(r.offPlanCount).toBe(0);
+    // 命中就是命中：deniedCount 是横切标签，不能再从 matched 的分子里扣一次。
+    // 从前分子写成 `actual - denied - offPlan`，plan=1 时这里是 0。
+    expect(r.matchedRatio).toBe(1);
+  });
+
+  test("证据会话重放：命中 1 + 被拒 1 + 偏离 1 时 matchedRatio 是 1/3 而不是 0", () => {
+    const m = new PlanModeManager();
+    m.parsePlanFromMarkdown(EVIDENCE_PLAN);
+    // 真实会话里的两条：edit math.js 命中 step1 且被权限拒绝；read math.js 未命中
+    m.recordActualToolCall("edit", { file_path: "math.js" }, { denied: true });
+    m.recordActualToolCall("read", { file_path: "/tmp/plan-e2e/math.js" });
+    const r = m.getFidelityReport();
+    expect(r.planStepCount).toBe(3);
+    expect(r.actualToolCallCount).toBe(2);
+    expect(r.deniedCount).toBe(1);
+    expect(r.offPlanCount).toBe(1);
+    // 这是「主口径能否区分修复前后」的回归：从前 matchedActualCount = 2-1-1 = 0。
+    expect(r.matchedRatio).toBeCloseTo(1 / 3, 5);
   });
 });
 

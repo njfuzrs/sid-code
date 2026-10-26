@@ -27,7 +27,13 @@ import { PlanModeManager } from "@sid-code/core/plan/state.ts";
 
 type Ev = { event?: string; data?: Record<string, unknown> };
 
-function snap(planFile: string, steps: number, actual: number, off: number): Ev {
+function snap(
+  planFile: string,
+  steps: number,
+  actual: number,
+  off: number,
+  extra?: { denied?: number; indicator?: number },
+): Ev {
   return {
     event: "PlanFidelity",
     data: {
@@ -35,6 +41,9 @@ function snap(planFile: string, steps: number, actual: number, off: number): Ev 
       plan_step_count: steps,
       actual_tool_call_count: actual,
       off_plan_count: off,
+      // 2026-10-26 新增的两个字段：只在显式传时落，用来同时覆盖「新事件」与「旧事件」两种形态
+      ...(extra?.denied !== undefined ? { denied_count: extra.denied } : {}),
+      ...(extra?.indicator !== undefined ? { fidelity_indicator_version: extra.indicator } : {}),
     },
   };
 }
@@ -71,6 +80,28 @@ describe("aggregatePlanFidelity", () => {
     expect(r).toEqual([
       { planFile: "", planStepCount: 0, actualToolCallCount: 0, offPlanCount: 0 },
     ]);
+  });
+
+  it("新字段按需带出：denied_count / fidelity_indicator_version 只在存在时出现", () => {
+    const r = aggregatePlanFidelity([
+      snap("/p/a.md", 3, 2, 1, { denied: 1, indicator: 1 }),
+      snap("/p/b.md", 2, 0, 0),
+    ]);
+    expect(r[0]).toEqual({
+      planFile: "/p/a.md",
+      planStepCount: 3,
+      actualToolCallCount: 2,
+      offPlanCount: 1,
+      deniedCount: 1,
+      fidelityIndicatorVersion: 1,
+    });
+    // 旧事件没有这两个字段时不能伪造 0 / v0：那会让「口径迁移前」看起来像「拒绝 0 次」
+    expect(r[1]).toEqual({
+      planFile: "/p/b.md",
+      planStepCount: 2,
+      actualToolCallCount: 0,
+      offPlanCount: 0,
+    });
   });
 });
 
@@ -118,6 +149,28 @@ describe("buildDigest + renderHuman：/insights 能看到这一行", () => {
     writeSession("fid00002", [{ event: "PreToolUse", data: { tool_name: "read" } }]);
     const d = buildDigest(listSessions(paths)[0]!, false, paths)!;
     expect(d.anomalies.some((a) => a.kind === "plan_fidelity")).toBe(false);
+  });
+
+  it("denied_count 非 0 → 文案单列「其中被权限拒绝 N 次，不计偏离」", () => {
+    writeSession("fid00003", [snap("/p/a.md", 3, 5, 3, { denied: 2, indicator: 1 })]);
+    const d = buildDigest(listSessions(paths)[0]!, false, paths)!;
+    const hit = d.anomalies.find((a) => a.kind === "plan_fidelity")!;
+    const out = renderHuman(d, { noColor: true, invocation: "/insights" });
+    expect(out).toContain("偏离 3 次（其中被权限拒绝 2 次，不计偏离）");
+    // 两个新字段都要进 rawValue：口径迁移时按它取数，缺了等于取不到
+    expect(hit.provenance![0]!.rawValue).toContain("denied=2");
+    expect(hit.provenance![0]!.rawValue).toContain("indicator=v1");
+  });
+
+  it("旧事件（无 denied_count / indicator）文案与 rawValue 一字不变", () => {
+    writeSession("fid00004", [snap("/p/a.md", 3, 4, 1)]);
+    const d = buildDigest(listSessions(paths)[0]!, false, paths)!;
+    const hit = d.anomalies.find((a) => a.kind === "plan_fidelity")!;
+    const out = renderHuman(d, { noColor: true, invocation: "/insights" });
+    expect(out).toContain("plan_fidelity: 计划 3 步 / 实际 4 次调用 / 偏离 1 次");
+    expect(out).not.toContain("被权限拒绝");
+    expect(hit.provenance![0]!.rawValue).not.toContain("denied=");
+    expect(hit.provenance![0]!.rawValue).not.toContain("indicator=");
   });
 });
 

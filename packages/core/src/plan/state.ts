@@ -113,7 +113,15 @@ export const FIDELITY_INDICATOR_VERSION = 1;
  *
  * 白名单的另一面是「宁可漏记也不虚报」（P2-3 的底线）：探索性 `ls` / `tool_search`
  * 不进分母，不产生任何偏离记录。计划文件的写入在 app 层按 `isPlanFile` 另行排除
- * （它需要路径上下文，且要与 plan_recovery 的计数共用同一份口径）。
+ * （它需要路径上下文，且要与 plan_recovery 的计数共用同一份路径口径）。
+ *
+ * ⚠️ **加进本表的工具必须在 `TOOL_VERBS` 里有动作词**（或工具名字面可能出现在步骤描述里）。
+ * `matchAgainstPlan` 的第①道门槛是「描述含工具名或动作词」，没有词表就只能靠字面工具名——
+ * 中文计划里几乎不会写 `read_many`，于是每次调用都必然落成 off-plan，方向正好与
+ * 「宁可漏记也不虚报」相反。2026-10-26 实测：白名单里 `ls` / `read_many` /
+ * `notebook_edit` / `sub_agent` 四个都没有词表，探索性调用一律被记成偏离。
+ * 处置：`ls` 移出白名单（它本就是「探索性列举，不该进分母」那一类，见上段）；
+ * 其余三个补词表，与同族工具共享，见 `TOOL_VERBS`。
  */
 const FIDELITY_TRACKED_TOOLS = new Set([
   "edit",
@@ -123,10 +131,18 @@ const FIDELITY_TRACKED_TOOLS = new Set([
   "read",
   "grep",
   "glob",
-  "ls",
   "read_many",
   "sub_agent",
 ]);
+
+/**
+ * read 类工具共享的动作词：`read` 与 `read_many` 是同一个语义（读文件内容，
+ * 只是后者一次读多个）。各写一套必然漂移，一边补了新词另一边没有，
+ * 表现是「同一步计划里 read 命中、read_many 偏离」这种没法解释的数据。
+ */
+const READ_VERBS: readonly string[] = ["读", "查看", "看", "load"];
+/** edit 类工具共享的动作词：`edit` 与 `notebook_edit` 同理（改文件内容） */
+const EDIT_VERBS: readonly string[] = ["改", "修改", "edit", "新增", "增加", "添加"];
 
 /** ADR-028: exit_plan_mode 后实际工具调用记录 */
 export interface ActualToolCall {
@@ -151,11 +167,19 @@ export interface FidelityReport {
   actualToolCallCount: number;
   /** actual / plan, plan=0 时返回 NaN */
   stepRatio: number;
-  /** matched (matchedPlanStepIndex !== null) 的 actual 占 plan 比例 */
+  /**
+   * matched (matchedPlanStepIndex !== null) 的 actual 占 plan 比例。
+   *
+   * **含被权限拒绝的调用**：一个调用可以同时「命中计划步骤」与「被 harness 拒绝」，
+   * 这两件事不互斥——`deniedCount` 是横切标签，不是与 matched / off-plan 并列的
+   * 第三类。从前把 `deniedCount` 也从分子里扣掉，结果是「命中了却因为被拒而不算命中」：
+   * 真实会话里 `edit math.js` 命中 step1 又被权限拒绝，matchedRatio 仍为 0，
+   * 修复前后看不出任何差别（2026-10-26 用该会话的真实计划与参数重放实证）。
+   */
   matchedRatio: number;
   /** matchedPlanStepIndex===null 的 actual 数（不含被权限拒绝的调用） */
   offPlanCount: number;
-  /** 其中被权限层拒绝的调用数。单独上报，不进 offPlanCount */
+  /** 其中被权限层拒绝的调用数。单独上报，不进 offPlanCount；同时**不**从 matched 里扣 */
   deniedCount: number;
 }
 
@@ -842,7 +866,11 @@ export class PlanModeManager {
     const offPlanCount = this.actualToolCalls.filter(
       (c) => !c.denied && c.matchedPlanStepIndex === null,
     ).length;
-    const matchedActualCount = actualToolCallCount - deniedCount - offPlanCount;
+    // matched 的分子**不再**扣 deniedCount：命中与被权限拒绝是两个维度。
+    // 从前写成 `actual - denied - offPlan`，等于「命中但被拒」的调用既不在 offPlan
+    // 也不在 matched 里凭空消失——真实会话里 `edit math.js` 命中 step1 又被拒，
+    // matchedRatio 仍是 0，让文档定的「主口径」失去区分修复前后的能力。
+    const matchedActualCount = actualToolCallCount - offPlanCount;
     const stepRatio = planStepCount === 0 ? Number.NaN : actualToolCallCount / planStepCount;
     const matchedRatio = planStepCount === 0 ? Number.NaN : matchedActualCount / planStepCount;
     return {
@@ -1017,12 +1045,20 @@ export class PlanModeManager {
    * 仍是硬门槛，语义命中但没有参数锚定的步骤依然不会匹配。
    */
   private static readonly TOOL_VERBS: Readonly<Record<string, readonly string[]>> = {
-    read: ["读", "查看", "看", "load"],
-    edit: ["改", "修改", "edit", "新增", "增加", "添加"],
+    read: READ_VERBS,
+    // read_many / notebook_edit 与同族共享词表：它们是 `FIDELITY_TRACKED_TOOLS`
+    // 的成员，没有词表就只能靠字面工具名过①，中文计划里永远命中不了。
+    read_many: READ_VERBS,
+    edit: EDIT_VERBS,
+    notebook_edit: EDIT_VERBS,
     write: ["写", "创建", "新建", "write"],
     bash: ["跑", "执行", "运行", "run"],
     grep: ["搜", "查找", "grep"],
     glob: ["遍历", "list"],
+    // 子代理的计划描述写的是「派子代理做 X」，不会出现字面 `sub_agent`。
+    // 只收两个明确词：「派」（派遣/派发）与「子代理」；「调研」「分析」这类太泛，
+    // 会命中几乎所有探索性步骤，与 P2-3 的底线相反。
+    sub_agent: ["派", "子代理"],
     exit_plan_mode: ["exit_plan", "完成", "提交"],
   };
 
