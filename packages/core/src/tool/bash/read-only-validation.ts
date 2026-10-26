@@ -4,6 +4,8 @@
  */
 
 import { parseBashCommand, extractSimpleCommands, extractRedirectTargets } from "./parser.ts";
+import { judgeDdCommand } from "../../permission/dangerous-command.ts";
+import { expandShellCommand } from "../../permission/shell-command-variants.ts";
 
 /** 已知的只读命令 */
 const READ_ONLY_COMMANDS = new Set([
@@ -387,13 +389,28 @@ export function isReadOnlyCommand(command: string): boolean {
 
 /**
  * 检查命令是否为破坏性操作（critical 级别）
+ *
+ * `dd` 这一支**复用权限层的 `judgeDdCommand`**，不再自己写一份正则。两处各写一份
+ * 已经漂移过一次：权限层（`permission/dangerous-command.ts`）按 `of=` / `count=`
+ * 结构化判定后放行 `dd if=/dev/zero of=/tmp/x count=1`，而这里的旧正则
+ * `/dd\s+if=\/dev\/(zero|random|urandom)/i` 仍把它标红成「高危系统操作」——
+ * 权限框红框 + Enter 默认拒绝。只要这条命令因**其它**原因弹确认，用户看到的
+ * 仍是红色高危，等于修好的误报在 UI 侧原样复现。
+ *
+ * 其余分支（rm / mkfs / fork 炸弹 / 下载并执行）保持原样：本次只收窄 dd，
+ * 连带改它们的标红面会让 review 分不清哪些行为变化是必要的（见 Agent Note）。
  */
 export function isDestructiveCommand(command: string): boolean {
   // 递归删除
   if (/rm\s+(-[rf]*\s+)*\/($|\s)/.test(command)) return true;
   if (/rm\s+(-[rf]*\s+)*~/.test(command)) return true;
-  // 磁盘操作
-  if (/dd\s+if=\/dev\/(zero|random|urandom)/i.test(command)) return true;
+  // 磁盘操作：与权限层同一判据（按 of= 去向 + count= 上限判，不是只看 if=）
+  if (/\bdd\b/.test(command)) {
+    const dangerousDd = expandShellCommand(command).commands.some(
+      (c) => c.program === "dd" && judgeDdCommand(c.args) !== null,
+    );
+    if (dangerousDd) return true;
+  }
   if (/mkfs\./.test(command)) return true;
   // Fork 炸弹（经典形式 :(){ :|:& };:）。
   // 注意旧正则写成 /:()…/，其中 () 是空捕获组而非字面括号 → 实际匹配 ":{"、漏判真正的 ":(){"。

