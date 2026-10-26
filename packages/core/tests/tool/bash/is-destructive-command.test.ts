@@ -20,6 +20,20 @@ describe("isDestructiveCommand（破坏性命令判定，驱动权限框标红 +
     expect(isDestructiveCommand("mkfs.ext4 /dev/sda1")).toBe(true);
   });
 
+  test("dd 与权限层同一口径：按 of= 去向 + count= 上限判，不是只看 if=", () => {
+    // 无害去向 / 有写入上限 → 不标红。旧正则只看 `if=/dev/zero` 会把它们标红成
+    // 「高危系统操作」，权限框 Enter 默认拒绝，等于权限层修好的误报在 UI 侧复现。
+    expect(isDestructiveCommand("dd if=/dev/zero of=/tmp/x count=1")).toBe(false);
+    expect(isDestructiveCommand("dd if=/dev/urandom of=/tmp/key bs=32 count=1")).toBe(false);
+    expect(isDestructiveCommand("dd if=/dev/zero of=/dev/null bs=1M count=1")).toBe(false);
+    expect(isDestructiveCommand("dd if=/dev/zero of=- count=1")).toBe(false);
+    // 反向白名单覆盖的块设备名（旧前缀黑名单认不出 rdisk / mapper / dm）
+    expect(isDestructiveCommand("dd if=/dev/zero of=/dev/rdisk2 count=100")).toBe(true);
+    expect(isDestructiveCommand("dd if=/dev/sdb of=/dev/mapper/vg-lv")).toBe(true);
+    // 无 count 的无限来源仍危险
+    expect(isDestructiveCommand("dd if=/dev/urandom of=x")).toBe(true);
+  });
+
   test("fork 炸弹 → 危险", () => {
     expect(isDestructiveCommand(":(){ :|:& };:")).toBe(true);
   });
