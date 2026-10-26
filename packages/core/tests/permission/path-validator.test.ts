@@ -52,10 +52,14 @@ describe("PathValidator - 工作区边界", () => {
     expect(result.reason).toContain("工作区外");
   });
 
-  test("工作区外读取允许（读取通常安全）", () => {
+  test("工作区外读取需确认（对齐 Claude Code）", () => {
     const v = new PathValidator(workspaceDir);
     const result = v.validateAccess("/tmp/outside.txt", "read");
-    expect(result.allowed).toBe(true);
+    // 读边界与写边界同口径（工作目录集合）：区外不是硬拒，是交给用户确认
+    // —— 交互可当轮允许，无头模式按既有规则降级为 deny。
+    expect(result.allowed).toBe(false);
+    expect(result.needsConfirmation).toBe(true);
+    expect(result.reason).toContain("读取路径在工作区外");
   });
 });
 
@@ -81,11 +85,13 @@ describe("PathValidator - 系统目录保护", () => {
     expect(result.needsConfirmation).toBe(true);
   });
 
-  test("读取 /etc/ 允许（不在读取保护列表中）", () => {
+  test("读取 /etc/ 不在读取保护列表，但落在工作区外 → 需确认", () => {
     const v = new PathValidator(workspaceDir);
     const result = v.validateAccess("/etc/hosts", "read");
-    // /etc/ 不在 PROTECTED_READ_DIRS 中，但在工作区外 → 读取允许
-    expect(result.allowed).toBe(true);
+    // /etc/ 不在 PROTECTED_READ_DIRS 中，所以命中的是工作目录边界（不是系统目录保护）
+    expect(result.allowed).toBe(false);
+    expect(result.needsConfirmation).toBe(true);
+    expect(result.reason).toContain("读取路径在工作区外");
   });
 });
 

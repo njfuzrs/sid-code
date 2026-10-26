@@ -27,6 +27,14 @@ export interface PathValidationResult {
    * 而系统目录/symlink 逃逸那类 deny 不可解除。
    */
   sensitiveFile?: boolean;
+  /**
+   * true 表示命中「工作目录边界」检查（工作区 ∪ `--add-dir` 追加目录之外）。
+   *
+   * 与 sensitiveFile 的区别：这一类是 **needsConfirmation**（可被用户显式 allow 规则
+   * 或当轮确认放行），不是硬 deny。checker 据此决定「这条路径拒绝是否也能走
+   * allow 规则逃生舱」——不给这个口子，用户对「工作区外读写」就没有任何配置途径。
+   */
+  outsideWorkingDirs?: boolean;
 }
 
 /**
@@ -368,21 +376,12 @@ export class PathValidator {
       }
     }
 
-    // 5. 工作目录边界检查（仅写操作）
+    // 5. 敏感文件检测（大小写归一化比较，防 .ENV / .Pem 绕过）
     //
-    // 用工作目录集合（工作区 ∪ 白名单）而不是工作区：--add-dir / settings.allowedDirectories
-    // 是用户显式授权的目录，语义与 Claude Code 的 additional working directories 一致
-    // （可读**也可编辑**，不再弹确认）。
-    if (operation === "write" && !this.isWithinWorkingDirectories(realPath)) {
-      return {
-        allowed: false,
-        reason: `写入路径在工作区外: ${realPath}`,
-        needsConfirmation: true,
-        resolvedPath: realPath,
-      };
-    }
-
-    // 6. 敏感文件检测（大小写归一化比较，防 .ENV / .Pem 绕过）
+    // ⚠️ 必须排在下面的工作目录边界检查**之前**：边界检查收紧到「读也查」以后，
+    // 工作区外的 `.env` / `*.pem` 若先落到边界分支，就变成 needsConfirmation
+    // （交互能点允许、无头直接拒）—— 那是把「硬 deny」降级成「可放行」，属安全回退。
+    // 凭证类目标永远走硬 deny，不给当轮话术留口子。
     //
     // SEC-AUDIT-2026-07-19 P2：命中即**硬 deny**（needsConfirmation: false），
     // 对齐 CC 推荐的 `deny Read(.env / *.pem / *.key)` 强度。
@@ -402,6 +401,30 @@ export class PathValidator {
         needsConfirmation: false,
         resolvedPath: realPath,
         sensitiveFile: true,
+      };
+    }
+
+    // 6. 工作目录边界检查（读也查，对齐 Claude Code）
+    //
+    // 用工作目录集合（工作区 ∪ 白名单）而不是工作区：--add-dir / settings.allowedDirectories
+    // 是用户显式授权的目录，语义与 Claude Code 的 additional working directories 一致
+    // （可读**也可编辑**）。
+    //
+    // 读操作也查：CC 对工作目录外的 Read 要确认，sid-code 此前一律 allow ——
+    // 「读通常安全」这个假设并不成立（区外可能是他人代码、系统配置、凭据）。
+    // 返回 needsConfirmation 而不是硬 deny：交互模式下用户可以当轮允许，
+    // 无头模式（-p / maxTurns>0）按既有规则降级为 deny 并把成因写进 reason。
+    // 需要长期放行时配 allow 规则（如 `Read(/data/**)`）或把目录加进 --add-dir。
+    if (!this.isWithinWorkingDirectories(realPath)) {
+      return {
+        allowed: false,
+        reason:
+          operation === "write"
+            ? `写入路径在工作区外: ${realPath}`
+            : `读取路径在工作区外: ${realPath}`,
+        needsConfirmation: true,
+        resolvedPath: realPath,
+        outsideWorkingDirs: true,
       };
     }
 

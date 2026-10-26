@@ -54,7 +54,9 @@ describe("PreToolUse hook permissionDecision 注入（G2/G3）", () => {
 
   test("hook ask 把本会放行的读操作升级为 needsConfirmation", async () => {
     const checker = new PermissionChecker(defaultConfig());
-    const req = { toolName: "read", input: { file_path: "/tmp/test.txt" } };
+    // 基线用工作区内路径：读边界收紧后，工作区外读本身就要确认，
+    // 拿区外路径做基线就验不出「hook 把它升级」这件事了。
+    const req = { toolName: "read", input: { file_path: "package.json" } };
 
     const baseline = await checker.check(req);
     expect(baseline.allowed).toBe(true); // 基线放行
