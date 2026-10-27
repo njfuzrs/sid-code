@@ -18,6 +18,7 @@ import {
   summarize,
   sidWireSystemBlocks,
   ccSystemHash,
+  classifyCcCaller,
   toTsv,
 } from "../../scripts/harness-compare.ts";
 
@@ -194,6 +195,40 @@ describe("Claude Code 解析", () => {
     // recap 的 5000 cache_read 若混进 main，命中率会被抬到 >0.9
     expect(s.main_hit_rate).toBeCloseTo(0.3, 6);
     expect(s.first_main_total_input).toBe(100);
+  });
+
+  test("计费头带 cc_is_subagent=true 的调用判成 subagent，不进 main", () => {
+    // 子代理请求形态与主代理相同（有 tools），只靠形态判会落进 main（对比 README 更正 X3）
+    const req = (head: string) => ({
+      system: [
+        { type: "text", text: head },
+        { type: "text", text: "You are an agent" },
+      ],
+      tools: [{ name: "Read" }],
+      new_messages: [{ role: "user", content: [{ type: "text", text: "读文件" }] }],
+    });
+    expect(
+      classifyCcCaller(
+        req(
+          "x-anthropic-billing-header: cc_version=2.1.310.498; cc_entrypoint=sdk-cli; cc_is_subagent=true;",
+        ),
+      ),
+    ).toBe("subagent");
+    expect(
+      classifyCcCaller(
+        req("x-anthropic-billing-header: cc_version=2.1.310.498; cc_entrypoint=sdk-cli;"),
+      ),
+    ).toBe("main");
+    // 只认计费头块，正文里出现同样字样不算
+    expect(
+      classifyCcCaller({
+        system: [
+          { type: "text", text: "x-anthropic-billing-header: cc_version=1;" },
+          { type: "text", text: "cc_is_subagent=true" },
+        ],
+        tools: [{ name: "Read" }],
+      }),
+    ).toBe("main");
   });
 
   test("system_hash 剔除计费头：只有版本后缀不同的两条 system hash 相同", () => {
