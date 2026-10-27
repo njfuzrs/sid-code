@@ -143,10 +143,11 @@ export function migrate(): void {
 
   // 必须告知用户：这两个功能此前是**静默失效**的，现在恢复了。
   // 不说的话，用户既不知道它坏过，也无法把「搜索突然又能用了」和本次升级关联起来。
-  console.log(
+  // #7（2026-10-27）：走 stderr，不污染 `-p --output-format json` 的 stdout（理由见 backfill-team-defaults.ts）
+  process.stderr.write(
     `已把失效的服务地址更新为域名（${NEW_ORIGIN}）: ${changed.join("、")}\n` +
       `  原因：发布服务器已启用 HTTPS，旧的 IP 地址会因证书不匹配而连接失败，\n` +
       `  这两项功能在此之前是静默不可用的（不报错，只是没有结果）。\n` +
-      `  若你的项目级 .sid-code/settings.json 里也写了旧 IP，需自行更新（本次只改用户全局配置）。`,
+      `  若你的项目级 .sid-code/settings.json 里也写了旧 IP，需自行更新（本次只改用户全局配置）。\n`,
   );
 }
