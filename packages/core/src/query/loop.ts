@@ -117,6 +117,7 @@ import {
   replaceEmptyParamToolUses,
   buildEmptyParamRetryMessage,
 } from "./empty-param.ts";
+import { describeUnansweredRetry, describeUnansweredExhausted } from "./unanswered-end-turn.ts";
 import {
   TODO_REMINDER_CONFIG,
   MAX_TODO_GATE_RETRIES,
@@ -920,6 +921,38 @@ export async function* queryLoop(loopConfig: QueryLoopConfig): AsyncGenerator<Qu
       retries,
       cap,
     });
+  /**
+   * 「未答复的 end_turn」每次命中落一条 `UnansweredEndTurn`（含耗尽那次），带形态与模型。
+   * digest 按形态 × 模型聚合；`unparsed_tool_call` 是协议级偏差，目标恒为 0。
+   */
+  const emitUnansweredEndTurn = (
+    shape: string | undefined,
+    attempt: number,
+    exhausted: boolean,
+    provider: string | undefined,
+    model: string | undefined,
+  ): void => {
+    if (!deps.traceAppendEvent) return;
+    try {
+      deps.traceAppendEvent({
+        event: "UnansweredEndTurn",
+        session_id: sessionState.sessionId,
+        timestamp: new Date().toISOString(),
+        data: {
+          shape: shape ?? "unknown",
+          attempt,
+          cap: MAX_UNANSWERED_RETRIES,
+          exhausted,
+          promptSeq,
+          turn: state.turnCount,
+          provider,
+          model,
+        },
+      });
+    } catch {
+      /* trace 写入失败不阻断主循环 */
+    }
+  };
   // M6：S1 计数按「用户 prompt」而非「queryLoop 调用」计。LoopState 每次调用重建，
   // 空闲唤醒续跑若从零开始，同一 prompt 下每来一次后台通知就多一次 nudge 配额。
   {
@@ -4226,22 +4259,32 @@ export async function* queryLoop(loopConfig: QueryLoopConfig): AsyncGenerator<Qu
         // 无论有没有 todo，都回注一次收敛提示并软续命——这是例③"重试无反应"的机制级破局点：
         // 完成度校验/重试链原本全以 todo 存在为前提，模型不建 todo 就彻底失效。
         // 放在 todo gate 之前，因为它不依赖 todo，且要在"假性完成"最早处拦下、驱动模型换策略。
-        if ((response as any)._unansweredEndTurn === true) {
+        if (response._unansweredEndTurn === true) {
+          const shape = response._unansweredShape;
           const retries = state.unansweredRetryCount ?? 0;
+          // 每次命中都落一条事件（含耗尽那次）：形态分布只有 warn.log 文本可查时，
+          // 「是不是误报 / 哪种形态在涨」只能逐个会话翻原始响应（2026-10-26 两例即如此）。
+          emitUnansweredEndTurn(
+            shape,
+            retries < MAX_UNANSWERED_RETRIES ? retries + 1 : retries,
+            retries >= MAX_UNANSWERED_RETRIES,
+            response.usageProvider ?? config.provider,
+            sendParams.model,
+          );
           if (retries < MAX_UNANSWERED_RETRIES) {
             state.unansweredRetryCount = retries + 1;
             ctxMgr.addMessage({
               role: "user",
-              content: [{ type: "text", text: buildUnansweredEndTurnMessage() }],
+              content: [{ type: "text", text: buildUnansweredEndTurnMessage(shape) }],
             });
             log.warn(
               "QUERY_LOOP",
-              `方案②：检测到未答复的 end_turn（思考漂移/只思考不答复），回注收敛提示并软续命 ${state.unansweredRetryCount}/${MAX_UNANSWERED_RETRIES}`,
+              `方案②：检测到未答复的 end_turn（形态 ${shape ?? "unknown"}），回注收敛提示并软续命 ${state.unansweredRetryCount}/${MAX_UNANSWERED_RETRIES}`,
             );
             yield {
               kind: "system",
               level: "warning",
-              text: `上一轮未产出有效答复（疑似思考泄漏到正文），自动引导重新推进 (${state.unansweredRetryCount}/${MAX_UNANSWERED_RETRIES})`,
+              text: `${describeUnansweredRetry(shape)} (${state.unansweredRetryCount}/${MAX_UNANSWERED_RETRIES})`,
             };
             setTransition(state, { type: "unanswered_retry" }, deps, sessionState.sessionId);
             continue;
@@ -4251,12 +4294,12 @@ export async function* queryLoop(loopConfig: QueryLoopConfig): AsyncGenerator<Qu
           noteGateExhausted("unanswered", retries, MAX_UNANSWERED_RETRIES);
           log.warn(
             "QUERY_LOOP",
-            `方案②：未答复续命已达上限 ${MAX_UNANSWERED_RETRIES}，整条闸门链收尾并如实呈现`,
+            `方案②：未答复续命已达上限 ${MAX_UNANSWERED_RETRIES}（形态 ${shape ?? "unknown"}），整条闸门链收尾并如实呈现`,
           );
           yield {
             kind: "system",
             level: "warning",
-            text: `模型连续 ${MAX_UNANSWERED_RETRIES} 次未产出有效答复（可能陷入思考发散）。建议换个更具体的提问方式，或切换模型重试。`,
+            text: describeUnansweredExhausted(shape, MAX_UNANSWERED_RETRIES),
           };
           state.unansweredRetryCount = 0;
           applyDeferredClearContext();

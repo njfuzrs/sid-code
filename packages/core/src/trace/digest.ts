@@ -581,6 +581,39 @@ export function aggregateStopReasonMismatchStats(
 }
 
 /**
+ * 「未答复的 end_turn」形态分布（2026-10-27）。取数源 `UnansweredEndTurn` 事件
+ * （loop.ts 每次命中一条，含耗尽那次）。分母 = 命中次数，不是轮数。
+ * `unparsed_tool_call` = 工具调用落进了非调用通道、没被执行，是协议级偏差，目标恒为 0；
+ * 其余形态是模型退化，看趋势。
+ */
+export interface UnansweredEndTurnStats {
+  total: number;
+  /** 形态 → 次数 */
+  byShape: Record<string, number>;
+  /** `provider/model` → 次数 */
+  byModel: Record<string, number>;
+  /** 续命耗尽次数（exhausted=true） */
+  exhausted: number;
+}
+
+export function aggregateUnansweredEndTurnStats(
+  events: Array<{ event?: string; data?: Record<string, unknown> }>,
+): UnansweredEndTurnStats | undefined {
+  const stats: UnansweredEndTurnStats = { total: 0, byShape: {}, byModel: {}, exhausted: 0 };
+  for (const e of events) {
+    if (e.event !== "UnansweredEndTurn") continue;
+    const d = e.data ?? {};
+    stats.total++;
+    const shape = String(d.shape ?? "unknown");
+    stats.byShape[shape] = (stats.byShape[shape] ?? 0) + 1;
+    const key = `${String(d.provider ?? "?")}/${String(d.model ?? "?")}`;
+    stats.byModel[key] = (stats.byModel[key] ?? 0) + 1;
+    if (d.exhausted === true) stats.exhausted++;
+  }
+  return stats.total > 0 ? stats : undefined;
+}
+
+/**
  * LSP 诊断注入口径（2026-10-24）。取数源：`LspDiagnostics` 事件，每次 collect 一条。
  *
  * 回答此前只能从 raw.jsonl 注入文本反推、且反推不出的四件事：
@@ -1179,6 +1212,8 @@ export interface Digest {
   strictDegrade?: StrictDegradeStats;
   /** 发现 5：stop_reason 与 content 不一致次数。无 StopReasonMismatch 事件时 undefined。 */
   stopReasonMismatch?: StopReasonMismatchStats;
+  /** 2026-10-27：未答复 end_turn 形态分布。无 UnansweredEndTurn 事件时 undefined。 */
+  unansweredEndTurn?: UnansweredEndTurnStats;
   /** 2026-10-24：LSP 诊断注入口径。无 LspDiagnostics 事件（老会话 / 没用 LSP）时 undefined。 */
   lspDiagnostics?: LspDiagnosticsDigestStats;
   /**
@@ -3022,6 +3057,7 @@ export function buildDigest(ref: SessionRef, full: boolean, paths: DigestPaths):
   const thinkingLeak = aggregateThinkingLeakStats(events);
   const strictDegrade = aggregateStrictDegradeStats(events);
   const stopReasonMismatch = aggregateStopReasonMismatchStats(events);
+  const unansweredEndTurn = aggregateUnansweredEndTurnStats(events);
   const lspDiagnostics = aggregateLspDiagnosticsStats(events);
 
   return {
@@ -3082,6 +3118,7 @@ export function buildDigest(ref: SessionRef, full: boolean, paths: DigestPaths):
     thinkingLeak,
     strictDegrade,
     stopReasonMismatch,
+    unansweredEndTurn,
     lspDiagnostics,
     pathology,
     // P0-2：始终产出（不像 jit/todo 那样依赖专用事件）—— 样本为 0 时 n=0 是有意义的
@@ -3551,6 +3588,34 @@ export function renderHuman(d: Digest, opts: RenderOptions = {}): string {
               .join(", ") +
             "；已兜底执行工具，应为 0）",
         ),
+    );
+  }
+
+  // 2026-10-27：未答复 end_turn 按形态分。工具调用没被解析（unparsed_tool_call）标红：
+  // 那一轮模型以为执行了的操作根本没发生；其余形态是模型退化，标黄看趋势。
+  if (d.unansweredEndTurn) {
+    const u = d.unansweredEndTurn;
+    const unparsed = u.byShape.unparsed_tool_call ?? 0;
+    L.push("");
+    L.push(
+      c("bold", "未答复 end_turn:") +
+        " " +
+        c(unparsed > 0 ? "red" : "yellow", `${u.total} 次`) +
+        c(
+          "gray",
+          "（" +
+            Object.entries(u.byShape)
+              .map(([k, v]) => `${k}=${v}`)
+              .join(", ") +
+            (u.exhausted > 0 ? `；续命耗尽 ${u.exhausted}` : "") +
+            "）",
+        ),
+    );
+    L.push(
+      c("gray", "  按模型: ") +
+        Object.entries(u.byModel)
+          .map(([k, v]) => `${k}=${v}`)
+          .join(", "),
     );
   }
 

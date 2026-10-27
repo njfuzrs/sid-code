@@ -665,7 +665,24 @@ export interface AccumulatedResponse {
    * 注意：此字段**不进** _meta，不持久化到历史，仅供本轮 loop 决策。
    */
   _unansweredEndTurn?: boolean;
+  /**
+   * 与 `_unansweredEndTurn` 同时置位：命中的是哪一种形态（见 unanswered-end-turn.ts）。
+   * loop.ts 按它选警告文案、回注提示与 trace 字段——不同形态的成因与对策相反，
+   * 共用一句「疑似思考泄漏到正文」会把「工具调用被吞进思考」报成正相反的形态。
+   */
+  _unansweredShape?: UnansweredShape;
 }
+
+/**
+ * 「未答复的 end_turn」形态（闭集）：
+ * - `text_drift`：思考漂移进 content 通道，落成超长 text 块（形态 A）；
+ * - `thinking_only`：只有思考、content 通道一字未发（形态 B）；
+ * - `unparsed_tool_call`：A/B 的特例——未答复的内容里带着模型原生工具调用标记
+ *   （DeepSeek DSML 等），即模型**以为自己调了工具**，但调用落进了 reasoning / content
+ *   通道、服务端没解析成 tool_calls，工具一次都没执行；
+ * - `empty`：什么都没有（空 content / 只有 redacted_thinking）。
+ */
+export type UnansweredShape = "text_drift" | "thinking_only" | "unparsed_tool_call" | "empty";
 
 /** 见 {@link SendParams.thinkingObservation}。 */
 export interface ThinkingObservation {

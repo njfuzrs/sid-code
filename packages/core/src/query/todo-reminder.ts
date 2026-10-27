@@ -11,6 +11,7 @@
  */
 
 import type { TodoItem } from "../tool/todo-write.ts";
+import type { UnansweredShape } from "../llm/types.ts";
 
 /**
  * P0-2：todo 回注节流配置。
@@ -60,10 +61,26 @@ export const MAX_UNANSWERED_RETRIES = 2;
 
 /**
  * 方案②：构造「未答复的 end_turn」软续命提示（不依赖 todo）。
- * 逼模型换一种方式推进：先建 todo 拆解，再逐步执行，且**不要把思考过程当正文输出**。
+ * 逼模型换一种方式推进，且**不要把思考过程当正文输出**。
  * 这是例③"请你修复→吐一堆思考→空手 end_turn→再请你修复"死循环的破局点。
+ *
+ * 按形态分两套（2026-10-27）：`unparsed_tool_call` 是模型**已经决定好动作**、只是调用没被
+ * 解析——它不缺计划，缺的是一次正式发起。旧的通用提示要它「先 todo_write 拆步骤」，
+ * 两次实测都让模型多花一整轮更新清单，且没点明「上一轮的写入根本没发生」，
+ * 模型只能自己再 bash 一轮去核实文件。所以这一形态的提示直接说清事实与对策：
+ * 没执行、先核实现状、拆小参数后用正式工具调用重发；不要求建 todo。
  */
-export function buildUnansweredEndTurnMessage(): string {
+export function buildUnansweredEndTurnMessage(shape?: UnansweredShape): string {
+  if (shape === "unparsed_tool_call") {
+    return `<system-reminder>
+上一轮你在思考或正文里写出了工具调用的标记文本，但它没有作为正式的工具调用发出——这个工具**没有被执行**，它要做的修改或命令都没有发生。
+请：
+1. 不要假设上一轮的操作已经生效；如果它要写入或修改文件，先核实文件当前状态。
+2. 用正式的工具调用重新发起，不要在思考或正文里书写调用标记。
+3. 单次工具参数过大时（例如一次追加数百行），拆成几次较小的调用分别发出。
+请勿向用户提及本提醒。
+</system-reminder>`;
+  }
   return `<system-reminder>
 上一轮没有产出面向用户的有效答复，也没有调用任何工具（疑似把内部思考过程当成了正文输出，或只思考未答复）。这不是完成任务的有效方式。
 请立即改变策略：
