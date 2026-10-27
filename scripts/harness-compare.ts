@@ -142,9 +142,28 @@ function toolUseCount(content: unknown): number | null {
   return content.filter((b: any) => b?.type === "tool_use").length;
 }
 
-function usageOf(u: any) {
+/**
+ * input_tokens 一律归一成「未命中余量」（Anthropic 口径），命中率分母 cr+cw+inp 才不会重复计数。
+ *
+ * OpenAI 协议族（deepseek 走网关时 provider=openai）的 input_tokens 是 prompt_tokens，**含命中**
+ * （packages/core/src/llm/types.ts normalizeCacheUsage）。不减的话 F0 冒烟实测一次调用
+ * cr=53248、inp=54903，命中率被算成 49%，真实是 97%。provider 取不到时按 anthropic 处理（旧数据全是 opus）。
+ */
+export function uncachedInput(
+  input: number,
+  cacheRead: number,
+  cacheWrite: number,
+  provider?: string,
+) {
+  if (!provider || provider === "anthropic") return input;
+  return Math.max(0, input - cacheRead - cacheWrite);
+}
+
+function usageOf(u: any, provider?: string) {
+  const cr = u?.cache_read_input_tokens ?? 0;
+  const cw = u?.cache_creation_input_tokens ?? 0;
   return {
-    input_tokens: u?.input_tokens ?? 0,
+    input_tokens: uncachedInput(u?.input_tokens ?? 0, cr, cw, provider),
     cache_read: u?.cache_read_input_tokens ?? 0,
     cache_write: u?.cache_creation_input_tokens ?? 0,
     cache_write_5m: u?.cache_creation?.ephemeral_5m_input_tokens ?? null,
@@ -169,6 +188,14 @@ const SID_CALLER: Record<string, Caller> = {
 
 export function parseSidSession(dir: string, sampleId: string): CallRow[] {
   const rows: CallRow[] = [];
+  const events = readJsonl(join(dir, "events.jsonl"));
+  // raw.jsonl 不记 provider；主代理调用的 provider 从同 index、无 caller 的 BilledRequest 取
+  const mainProvider = new Map<number, string>();
+  for (const e of events) {
+    const d = e.event === "BilledRequest" ? (e.data ?? {}) : null;
+    if (d && !d.caller && typeof d.provider === "string")
+      mainProvider.set(d.pair_index ?? d.index, d.provider);
+  }
   for (const r of readJsonl(join(dir, "raw.jsonl"))) {
     if (r.type === "request_sent" || !r.usage) continue;
     const req = r.request ?? {};
@@ -184,7 +211,7 @@ export function parseSidSession(dir: string, sampleId: string): CallRow[] {
       sent_ts: r.timestamp ?? null,
       returned_ts: r.ended_at ?? null,
       elapsed_ms: r.elapsed_ms ?? null,
-      ...usageOf(r.usage),
+      ...usageOf(r.usage, mainProvider.get(r.index)),
       tools_count: tools ? tools.length : null,
       tools_hash: tools ? sha(JSON.stringify(tools)) : null,
       tools_chars: tools ? JSON.stringify(tools).length : null,
@@ -197,7 +224,7 @@ export function parseSidSession(dir: string, sampleId: string): CallRow[] {
     });
   }
   // 主代理之外的调用只有计费事件；caller=undefined 的是主代理，已由 raw.jsonl 覆盖
-  for (const e of readJsonl(join(dir, "events.jsonl"))) {
+  for (const e of events) {
     if (e.event !== "BilledRequest") continue;
     const d = e.data ?? {};
     if (!d.caller) continue;
@@ -211,7 +238,12 @@ export function parseSidSession(dir: string, sampleId: string): CallRow[] {
       // BilledRequest 在流结束后发出，近似返回时刻
       returned_ts: e.timestamp ?? null,
       elapsed_ms: null,
-      input_tokens: d.input_tokens ?? 0,
+      input_tokens: uncachedInput(
+        d.input_tokens ?? 0,
+        d.cache_read_tokens ?? 0,
+        d.cache_creation_tokens ?? 0,
+        d.provider,
+      ),
       cache_read: d.cache_read_tokens ?? 0,
       cache_write: d.cache_creation_tokens ?? 0,
       cache_write_5m: null,
