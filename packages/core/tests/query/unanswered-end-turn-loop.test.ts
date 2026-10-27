@@ -172,3 +172,69 @@ describe("场景 (c) — 无 todo 连续 end_turn 空手收尾（queryLoop 集�
     expect(systemTexts.some((t) => t.includes("切换模型"))).toBe(false);
   });
 });
+
+describe("按形态分：工具调用被吞进思考（2026-10-26 两例回放）", () => {
+  function unparsedResp(): AccumulatedResponse {
+    return {
+      role: "assistant",
+      content: [{ type: "thinking", thinking: "## 3. 方案\n...\n</｜｜DSML｜｜ parameter>" }],
+      stopReason: "end_turn",
+      usage: { inputTokens: 100, outputTokens: 6000 },
+      _unansweredEndTurn: true,
+      _unansweredShape: "unparsed_tool_call",
+    } as AccumulatedResponse;
+  }
+
+  test("警告文案点明工具调用未执行，回注提示不要求 todo_write，并落 UnansweredEndTurn 事件", async () => {
+    const events: Array<{ event: string; data?: Record<string, unknown> }> = [];
+    const { loopConfig, ctxMgr } = makeLoopConfig([unparsedResp(), normalResp("已补完文档。")], {
+      traceAppendEvent: (e: any) => void events.push(e),
+    });
+
+    const systemTexts: string[] = [];
+    for await (const ev of queryLoop(loopConfig)) {
+      if (ev.kind === "system" && "text" in ev) systemTexts.push(ev.text);
+    }
+
+    const warn = systemTexts.find((t) => t.includes("自动引导重新发起"));
+    expect(warn).toBeDefined();
+    expect(warn).toContain("工具调用");
+    expect(systemTexts.some((t) => t.includes("泄漏到正文"))).toBe(false);
+
+    const injected = ctxMgr
+      .getMessages()
+      .flatMap((m) => (m.role === "user" && Array.isArray(m.content) ? m.content : []))
+      .filter((b: any) => b.type === "text" && String(b.text).includes("system-reminder"))
+      .map((b: any) => String(b.text));
+    expect(injected.some((t) => t.includes("没有被执行"))).toBe(true);
+    expect(injected.some((t) => t.includes("todo_write"))).toBe(false);
+
+    const ue = events.filter((e) => e.event === "UnansweredEndTurn");
+    expect(ue.length).toBe(1);
+    expect(ue[0]!.data).toMatchObject({
+      shape: "unparsed_tool_call",
+      attempt: 1,
+      cap: MAX_UNANSWERED_RETRIES,
+      exhausted: false,
+    });
+  });
+
+  test("连续命中到耗尽：每次一条事件，最后一条 exhausted=true，耗尽文案对应形态", async () => {
+    const events: Array<{ event: string; data?: Record<string, unknown> }> = [];
+    const { loopConfig } = makeLoopConfig(
+      Array.from({ length: 6 }, () => unparsedResp()),
+      { traceAppendEvent: (e: any) => void events.push(e) },
+    );
+    const systemTexts: string[] = [];
+    for await (const ev of queryLoop(loopConfig)) {
+      if (ev.kind === "system" && "text" in ev) systemTexts.push(ev.text);
+    }
+    const ue = events.filter((e) => e.event === "UnansweredEndTurn");
+    expect(ue.length).toBe(MAX_UNANSWERED_RETRIES + 1);
+    expect(ue.map((e) => e.data!.exhausted)).toEqual([
+      ...Array(MAX_UNANSWERED_RETRIES).fill(false),
+      true,
+    ]);
+    expect(systemTexts.some((t) => t.includes("拆成多次小改动"))).toBe(true);
+  });
+});
