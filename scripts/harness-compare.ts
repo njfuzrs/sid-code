@@ -24,7 +24,7 @@
  *   - 没有返回时刻，returned_ts 恒为 null。
  *   - caller 靠请求形态判：tools 为空且带 output_config.format → title；
  *     最后一条 user 文本以 recap 提示开头 → recap；其余 → main。
- *     本样本没有子代理，CC 子代理调用会被判成 main，用到含子代理的样本时要补判据。
+ *     子代理先于形态判：计费头带 `cc_is_subagent=true` → subagent（见 classifyCcCaller）。
  *
  * 用法：
  *   bun scripts/harness-compare.ts --sid <会话id|目录> --cc <会话id|目录>
@@ -241,7 +241,21 @@ function lastUserText(req: any): string {
   return "";
 }
 
+/**
+ * CC 子代理请求的计费头末尾带 `cc_is_subagent=true;`。子代理请求形态和主代理一样（有 tools、
+ * 无 output_config），只靠形态判会全部落进 main：S1v 实测 cc 49 次调用里 42 次是子代理，
+ * 旧判据下 S 类 cc 主调用被算成 148（应为 27，对比 README 更正 X3）。所以计费头判据排第一。
+ */
+function isCcSubagent(req: any): boolean {
+  const s = Array.isArray(req.system) ? req.system : [];
+  const head = s.find(
+    (b: any) => typeof b?.text === "string" && b.text.startsWith("x-anthropic-billing-header"),
+  );
+  return typeof head?.text === "string" && /\bcc_is_subagent=true\b/.test(head.text);
+}
+
 export function classifyCcCaller(req: any): Caller {
+  if (isCcSubagent(req)) return "subagent";
   const tools = Array.isArray(req.tools) ? req.tools : [];
   if (tools.length === 0 && req.output_config?.format) return "title";
   if (lastUserText(req).startsWith(RECAP_PREFIX)) return "recap";
