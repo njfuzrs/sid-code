@@ -254,3 +254,46 @@ test("TSV：null 输出为空格子，列数每行一致", () => {
   for (const l of lines) expect(l.split("\t").length).toBe(width);
   expect(lines).toHaveLength(rows.length + 1);
 });
+
+describe("OpenAI 协议族 usage 口径", () => {
+  test("provider=openai 时 input_tokens 含命中，归一成未命中余量后命中率不被稀释", () => {
+    const d = join(dir, "sid-oa");
+    mkdirSync(d);
+    writeJsonl(join(d, "raw.jsonl"), [
+      {
+        index: 1,
+        timestamp: "t0",
+        request: { system: "s", tools: [{ name: "read" }] },
+        // F0 冒烟真实形态：prompt_tokens=54903 其中 53248 命中
+        usage: {
+          input_tokens: 54903,
+          cache_read_input_tokens: 53248,
+          cache_creation_input_tokens: 0,
+          output_tokens: 1,
+        },
+      },
+    ]);
+    writeJsonl(join(d, "events.jsonl"), [
+      { event: "BilledRequest", data: { index: 1, pair_index: 1, provider: "openai" } },
+      {
+        event: "BilledRequest",
+        data: {
+          caller: "agent:builtin",
+          index: 1,
+          provider: "openai",
+          input_tokens: 1000,
+          cache_read_tokens: 900,
+        },
+      },
+    ]);
+    const rows = parseSidSession(d, "s");
+    expect(rows[0].input_tokens).toBe(54903 - 53248);
+    expect(rows.find((r) => r.caller === "subagent")?.input_tokens).toBe(100);
+    expect(summarize("sid-code", rows).main_hit_rate).toBeCloseTo(53248 / 54903, 6);
+  });
+
+  test("provider 缺省或 anthropic 时 input_tokens 原样保留（旧 opus 数据不变）", () => {
+    const rows = parseSidSession(plantSid(), "s");
+    expect(rows[0].input_tokens).toBe(10);
+  });
+});
