@@ -2329,8 +2329,9 @@ export async function main(): Promise<void> {
     // 后者模型仍看得见工具、仍会调用、每次换回一条拒绝 —— **一轮一轮地烧**。
     // 判据必须是"工具不可用"（schema 都不进上下文），不是"调了会被拒"。
     //
-    // 权限层那条判据保留不动：CLAUDE.md 规则可能在会话中途合并进新的 disallowedTools
-    // （app.ts applyProjectRules），那时工具已注册完，权限层是那条路径的兜底。两层都在才 fail-closed。
+    // 这里只覆盖命令行 / settings 那份名单。CLAUDE.md 的 `## Disallowed Tools` 在 App 初始化
+    // 及热重载时才合并（app.ts applyProjectRules → utils/project-rules-tool-denylist.ts），
+    // 那里同样调 removeByNames 裁剪。权限层判据保留不动作为兜底：两层都在才 fail-closed。
     if (config.disallowedTools && config.disallowedTools.length > 0) {
       const removed = toolRegistry.removeByNames(config.disallowedTools);
       getLogger().info(
