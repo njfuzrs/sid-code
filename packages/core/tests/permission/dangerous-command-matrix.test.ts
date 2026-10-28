@@ -459,7 +459,6 @@ describe("J. high / medium 仍可需确认（不是无出口的硬拒）", () =>
   const cases = [
     `git commit -m 'chmod -R 777 is bad'`,
     `git commit -m 'fix: 避免 git reset --hard 丢改动'`,
-    `echo "run sudo apt install x"`,
     `sudo apt install x`,
   ];
   for (const cmd of cases) {
@@ -470,6 +469,12 @@ describe("J. high / medium 仍可需确认（不是无出口的硬拒）", () =>
       expect(v.severity).not.toBe("critical");
     });
   }
+
+  // Q2：「sudo 命令」改按程序位置判，参数里**提到** sudo 不再命中。
+  // 修前这一条在本组里断言「需确认」，锁住的正是 P3v 无头落拒的那个误报形态。
+  test("sudo 只出现在参数里：不再命中 high（echo / grep 字面量）", async () => {
+    await expectAllowed(`echo "run sudo apt install x"`);
+  });
 });
 
 describe("K. Fork 炸弹保留原文正则（本次不动，实测不误报）", () => {
