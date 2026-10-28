@@ -7,7 +7,15 @@
  */
 
 import { describe, test, expect, beforeEach, afterEach } from "bun:test";
-import { mkdtempSync, rmSync, writeFileSync, existsSync, readFileSync, mkdirSync } from "fs";
+import {
+  mkdtempSync,
+  rmSync,
+  writeFileSync,
+  existsSync,
+  readFileSync,
+  mkdirSync,
+  utimesSync,
+} from "fs";
 import { join } from "path";
 import { tmpdir } from "os";
 import { syncTeamMemory, hashContent } from "@sid-code/core/memory/team/sync.ts";
@@ -304,5 +312,30 @@ describe("缺陷 8：冲突副本可见", () => {
     const { rebuildTeamIndex } = await import("@sid-code/core/memory/team/store.ts");
     await rebuildTeamIndex(localDir());
     expect(readFileSync(join(localDir(), "MEMORY.md"), "utf8")).not.toContain("未裁决");
+  });
+});
+
+describe("冲突副本时间戳不得按 int32 截断", () => {
+  // 旧实现 `Math.max(...) | 0`：毫秒时间戳远超 int32，约每 24.8 天翻成负数，
+  // 副本名变成 `k.conflict--2146557852.md`。用固定 mtime 钉住，不依赖跑测当天的日期。
+  test("副本名用完整毫秒 mtime", async () => {
+    writeLocal("t.md", "base");
+    await syncTeamMemory(opts(), cwd);
+    writeLocal("t.md", "local-change");
+    writeShared("t.md", "shared-change");
+    const newer = 1793156578; // 秒；×1000 后 | 0 为负数
+    utimesSync(join(localDir(), "t.md"), newer - 10, newer - 10);
+    utimesSync(join(sharedDir, "t.md"), newer, newer);
+
+    const r = await syncTeamMemory(opts(), cwd);
+    expect(r.conflictFiles).toEqual([`t.conflict-${newer * 1000}.md`]);
+  });
+
+  test("旧版写出的负数时间戳副本仍能解析出生效版本", async () => {
+    writeLocal("legacy.conflict--2146557852.md", "old");
+    const { rebuildTeamIndex } = await import("@sid-code/core/memory/team/store.ts");
+    await rebuildTeamIndex(localDir());
+    const index = readFileSync(join(localDir(), "MEMORY.md"), "utf8");
+    expect(index).toContain("当前生效版本 `legacy.md`");
   });
 });

@@ -334,7 +334,9 @@ export async function syncTeamMemory(
       // 4b. 双方都改且内容不同 → mtime 新者获胜，败者另存 .conflict 副本不丢数据
       if (local && shared) {
         conflicts++;
-        const ts = Math.max(local.mtimeMs, shared.mtimeMs) | 0;
+        // 不能用 `| 0` 取整：毫秒时间戳远超 int32，截断后约每 24.8 天翻成负数，
+        // 副本名变成 `k.conflict--2146557852.md`，索引侧的 `\d+` 解析随之失配。
+        const ts = Math.trunc(Math.max(local.mtimeMs, shared.mtimeMs));
         const conflictName = key.replace(/\.md$/, `.conflict-${ts}.md`);
         conflictFiles.push(conflictName);
         if (local.mtimeMs >= shared.mtimeMs) {
