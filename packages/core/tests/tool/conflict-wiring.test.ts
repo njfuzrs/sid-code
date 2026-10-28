@@ -14,6 +14,7 @@ import { tmpdir } from "os";
 import { declareFileIntent } from "../../src/session/file-intent.ts";
 import { FileReadTracker } from "../../src/tool/file-read-tracker.ts";
 import { EditTool } from "../../src/tool/edit.ts";
+import { WriteTool } from "../../src/tool/write.ts";
 
 describe("并发冲突检测接线", () => {
   let testDir: string;
@@ -86,6 +87,49 @@ describe("并发冲突检测接线", () => {
 
     // 无头模式降级：不阻断，继续执行
     expect(result.isError).toBeUndefined();
+    // PR-8（B10）：冲突摘要必须**进工具输出回传给模型**，而不是只进 log.warn。
+    // 此前注释声称"写入工具输出"但实现没做，模型在零警示下继续编辑。
+    expect(result.output).toContain("并发冲突");
+    expect(result.output).toContain("无头模式");
+    expect(result.output).toContain("其他会话");
+  });
+
+  it("PR-8：无头模式下 Write 工具的成功输出也应带冲突摘要", async () => {
+    const testFile = join(testDir, "w.txt");
+    writeFileSync(testFile, "old\n");
+    // 覆盖已存在文件需先读（validateForWrite），排除该守卫对冲突断言的干扰
+    tracker.markAsRead(testFile, Date.now(), { content: "old\n" });
+
+    // 模拟其他会话正在写此文件
+    declareFileIntent("other-session-w", process.pid, testDir, testFile, "write");
+
+    tracker.conflictSeverity = "warn";
+    // 不设置 conflictHandler，模拟无头模式
+
+    const writeTool = new WriteTool(tracker);
+    const result = await writeTool.execute({
+      file_path: testFile,
+      content: "new\n",
+    });
+
+    expect(result.isError).toBeUndefined();
+    expect(result.output).toContain("并发冲突");
+    expect(result.output).toContain("无头模式");
+  });
+
+  it("PR-8：无冲突时成功输出不带任何冲突摘要（空串无副作用）", async () => {
+    const testFile = join(testDir, "clean.txt");
+    writeFileSync(testFile, "original content\n");
+    tracker.markAsRead(testFile, Date.now(), { content: "original content\n" });
+
+    const result = await editTool.execute({
+      file_path: testFile,
+      old_string: "original",
+      new_string: "modified",
+    });
+
+    expect(result.isError).toBeUndefined();
+    expect(result.output).not.toContain("并发冲突");
   });
 
   it("检测到冲突 + block 模式时应直接阻止", async () => {
