@@ -148,7 +148,8 @@ async function buildConflictSection(dir: string): Promise<string | null> {
     .sort();
   if (conflicts.length === 0) return null;
   const lines = conflicts.slice(0, MAX_CONFLICT_LINES).map((rel) => {
-    const winner = rel.replace(/\.conflict-\d+\.md$/, ".md");
+    // `-?`：兼容旧版 `| 0` 截断写出的负数时间戳副本（已落盘的不会自己消失）
+    const winner = rel.replace(/\.conflict--?\d+\.md$/, ".md");
     return `- \`${rel}\` ↔ 当前生效版本 \`${winner}\``;
   });
   if (conflicts.length > MAX_CONFLICT_LINES) {

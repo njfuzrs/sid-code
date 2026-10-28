@@ -333,3 +333,15 @@ describe("缺陷 8：冲突副本可见", () => {
     expect(readFileSync(join(localDir(), "MEMORY.md"), "utf8")).not.toContain("未裁决");
   });
 });
+
+describe("旧版负数时间戳副本兼容", () => {
+  // #458 之前 `| 0` 截断会写出 `k.conflict--2146557852.md`，已落盘的副本不会自己消失，
+  // 索引侧必须仍能从它解析出生效版本，否则冲突段会把副本自己标成「当前生效版本」。
+  test("旧版写出的负数时间戳副本仍能解析出生效版本", async () => {
+    writeLocal("legacy.conflict--2146557852.md", "old");
+    const { rebuildTeamIndex } = await import("@sid-code/core/memory/team/store.ts");
+    await rebuildTeamIndex(localDir());
+    const index = readFileSync(join(localDir(), "MEMORY.md"), "utf8");
+    expect(index).toContain("当前生效版本 `legacy.md`");
+  });
+});
