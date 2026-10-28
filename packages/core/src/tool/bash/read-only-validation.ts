@@ -19,6 +19,7 @@ const READ_ONLY_COMMANDS = new Set([
   "stat",
   "du",
   "df",
+  "find",
   "locate",
   "which",
   "whereis",
@@ -57,6 +58,8 @@ const READ_ONLY_COMMANDS = new Set([
   // 数据处理（无写入）
   "jq",
   "yq",
+  "sort",
+  "uniq",
   "cut",
   "tr",
   "awk",
@@ -110,8 +113,6 @@ const READ_ONLY_GIT_SUBCOMMANDS = new Set([
   "reflog",
   "name-rev",
   "for-each-ref",
-  // merge-base 只读祖先关系（P3v#1：`git merge-base --is-ancestor` 被判非只读而白拒）
-  "merge-base",
 ]);
 
 /**
@@ -285,88 +286,12 @@ export function isReadOnlyGh(args: string[]): boolean {
   return !args.some((a) => a === "--web" || a === "-w" || a.startsWith("--web="));
 }
 
-/** find 的副作用动作：删除、执行程序、写文件 */
-const FIND_SIDE_EFFECT_ACTIONS = new Set([
-  "-delete",
-  "-exec",
-  "-execdir",
-  "-ok",
-  "-okdir",
-  "-fprint",
-  "-fprint0",
-  "-fprintf",
-  "-fls",
-]);
-
-/**
- * awk 是否只读。副作用通道有三类，都在脚本串里（不是 shell 重定向）：
- * - `system(…)`：执行命令；
- * - `getline`：可从命令（`"cmd" | getline`）或文件（`getline < f`）读；
- * - print / printf 的输出重定向：`print > "f"`、`print >> f`、`print | "sh"`。
- * 另外带 `-f`（脚本来自文件）一律非只读。
- *
- * 为什么 `>` / `|` 只在 print 语句里算：本地轨迹 300 次 awk 调用里，脚本含 `>` 或 `|`
- * 的有 212 次，其中 210 次是 `NR>=10 && NR<=20` 这类比较或 `||`，只有 2 次是真副作用。
- * 整段扫 `>` 等于把七成 awk 打成 ask（无头即拒）。awk 语法里 print 之后的未加括号的
- * `>` / `|` 恒为重定向，所以「print 到语句结束之间、去掉字符串字面量后出现 `>` 或 `|`」
- * 是精确判据；`print (a > b)` 会被保守地算成重定向，可接受。
- */
-function isReadOnlyAwk(args: string[]): boolean {
-  for (let i = 0; i < args.length; i++) {
-    const a = args[i];
-    if (a === "-f" || a.startsWith("-f") || a === "--file" || a.startsWith("--file=")) return false;
-    // -v var=val / -F sep 的值不是脚本
-    if (a === "-v" || a === "-F") {
-      i++;
-      continue;
-    }
-    if (a.startsWith("-")) continue;
-    // 第一个非选项参数是脚本，其余是文件
-    return !awkScriptHasSideEffect(a);
-  }
-  return true;
-}
-
-function awkScriptHasSideEffect(script: string): boolean {
-  if (/\b(system|getline)\b/.test(script)) return true;
-  // 去掉字符串字面量（`print "a>b"` 里的 `>` 是数据），保留引号占位
-  const code = script.replace(/"(?:\\.|[^"\\])*"/g, '""');
-  for (const m of code.matchAll(/\bprintf?\b([^;}\n]*)/g)) {
-    if (/[>|]/.test(m[1])) return true;
-  }
-  return false;
-}
-
-/** git 子命令参数里的 `--output`：diff / log / show 都接受，写文件 */
-function hasGitOutputOption(args: string[]): boolean {
-  return args.some((a) => a === "--output" || a.startsWith("--output="));
-}
-
 /** 需要特殊处理的命令（看起来只读但可能有副作用） */
 const CONDITIONAL_COMMANDS: Record<string, (args: string[]) => boolean> = {
   // sed 只有不带 -i 时才是只读
   sed: (args) => !args.some((a) => a === "-i" || a.startsWith("-i") || a === "--in-place"),
-  // awk / find / sort / uniq：副作用通道在**参数**里，不是 shell 重定向（N6）。
-  // 修前前三个在无条件只读集、awk 恒 true，`find . -delete`、`awk 'BEGIN{system("id")}'`、
-  // `sort -o /tmp/x a`、`uniq a /tmp/x` 在 default + 无头下经 Step 5.5 直接执行。
-  // 原则：看不懂就不算只读（落到 ask，不是硬拒）。
-  awk: isReadOnlyAwk,
-  gawk: isReadOnlyAwk,
-  mawk: isReadOnlyAwk,
-  find: (args) => !args.some((a) => FIND_SIDE_EFFECT_ACTIONS.has(a)),
-  sort: (args) =>
-    !args.some(
-      (a) =>
-        a === "-o" ||
-        a === "--output" ||
-        a.startsWith("--output=") ||
-        a === "--compress-program" ||
-        a.startsWith("--compress-program=") ||
-        // 组合短选项里的 o（`-uo /tmp/x`、`-o/tmp/x`）
-        (/^-[^-]/.test(a) && a.slice(1).includes("o")),
-    ),
-  // 第二个位置参数是输出文件
-  uniq: (args) => args.filter((a) => !a.startsWith("-") || a === "-").length <= 1,
+  // awk 只有不带重定向时才是只读（重定向在 AST 层处理）
+  awk: () => true,
   // tee 总是写文件
   tee: () => false,
   // curl/wget 恒非只读。
@@ -447,7 +372,6 @@ export function isReadOnlyCommand(command: string): boolean {
         continue;
       }
       if (!READ_ONLY_GIT_SUBCOMMANDS.has(subCmd)) return false; // 未知子命令默认非只读
-      if (hasGitOutputOption(gitArgs.slice(1))) return false; // `git diff --output=f` 写文件
       continue;
     }
 
