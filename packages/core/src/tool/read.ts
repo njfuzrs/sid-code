@@ -26,15 +26,19 @@ import { getLogger } from "../debug/logger.ts";
 import { estimateTextTokens } from "../context/token.ts";
 import { normalizeToolPath, formatPathNotFoundError } from "./path-utils.ts";
 import { taskIdFromOutputPath, formatTaskOutputTombstone } from "../task/lifecycle.ts";
+import { getTask } from "../task/registry.ts";
 
 /**
  * 文件不存在时的提示。后台任务的 `.output` 走墓碑（S3）：事故里模型读一个已被驱逐的
  * `.output`，拿到通用「文件不存在」，以为任务没产出。墓碑说明它是被生命周期清理的，
- * 并带上清理前留存的尾部输出。其余路径照旧。
+ * 并带上清理前留存的尾部输出。任务仍在运行时（子代理首个文本轮次前文件还没建出）
+ * 改说「尚未产出」（Q1）。其余路径照旧。
  */
 function notFoundMessage(filePath: string): string {
   const taskId = taskIdFromOutputPath(filePath);
-  return taskId ? formatTaskOutputTombstone(taskId, filePath) : formatPathNotFoundError(filePath);
+  return taskId
+    ? formatTaskOutputTombstone(taskId, filePath, getTask(taskId)?.status)
+    : formatPathNotFoundError(filePath);
 }
 import { pickPaths } from "./jit-affected-paths.ts";
 import { currentHookAgentScope } from "../agent/hook-agent-context.ts";
