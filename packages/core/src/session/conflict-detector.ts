@@ -5,7 +5,7 @@
  * 如果发现冲突，返回冲突报告供 UI 展示。
  */
 
-import { queryFileIntents } from "./file-intent.ts";
+import { queryFileIntents, resolveIntentKey } from "./file-intent.ts";
 
 export type ConflictAction = "stop" | "skip" | "continue";
 
@@ -25,11 +25,26 @@ export interface ConflictReport {
     lastAccessAt: number;
     /** 距离最近一次操作的时间（秒） */
     secondsAgo: number;
+    /**
+     * PR-1（双轨）：对方声明时的**物理路径**。与本方目标的物理路径不同
+     * = 双方在各自的 worktree 里改同一逻辑文件（分支分叉），相同 = 同一份磁盘文件。
+     * 旧意图记录（PR-1 之前写入、无 physicalPath 字段）回退为逻辑键。
+     */
+    physicalPath: string;
+    /** 该会话是否为分支分叉冲突（物理路径不同源） */
+    isBranchDivergence: boolean;
   }>;
   /** 严重程度 */
   severity: ConflictSeverity;
   /** 人类可读的摘要 */
   summary: string;
+  /**
+   * PR-1（B1）：**全部**冲突方都是 worktree 分支分叉（各自改各自的物理文件，
+   * 合并时才撞车）时为 true。语义是「不存在同一份磁盘文件被并发覆盖的风险」——
+   * PR-4 据此不弹窗、直接放行并在工具输出附说明；埋点记 branch_auto_continue（A1 契约）。
+   * 混合场景（既有分叉又有同文件冲突）为 false：同文件覆盖风险优先，必须走人工裁决。
+   */
+  isWorktreeBranchConflict: boolean;
 }
 
 /**
@@ -56,14 +71,21 @@ export function checkConflict(
   }
 
   const now = Date.now();
-  const conflictingSessions = conflicts.map((c) => ({
-    sessionId: c.sessionId,
-    pid: c.pid,
-    cwd: c.cwd,
-    lastOperation: c.intent.operation,
-    lastAccessAt: c.intent.lastAccessAt,
-    secondsAgo: Math.floor((now - c.intent.lastAccessAt) / 1000),
-  }));
+  // PR-1：本方目标的物理路径——分支分叉判定的基准（与写入侧同一解析函数，B-b 对称）
+  const targetPhysical = resolveIntentKey(targetFile).physical;
+  const conflictingSessions = conflicts.map((c) => {
+    const physicalPath = c.intent.physicalPath ?? c.intent.path;
+    return {
+      sessionId: c.sessionId,
+      pid: c.pid,
+      cwd: c.cwd,
+      lastOperation: c.intent.operation,
+      lastAccessAt: c.intent.lastAccessAt,
+      secondsAgo: Math.floor((now - c.intent.lastAccessAt) / 1000),
+      physicalPath,
+      isBranchDivergence: physicalPath !== targetPhysical,
+    };
+  });
 
   // 判断严重程度：如果其他会话正在 write/edit，则为 critical；如果只是 read，则为 warning
   const hasWriteOrEdit = conflicts.some(
@@ -71,10 +93,14 @@ export function checkConflict(
   );
   const severity: ConflictSeverity = hasWriteOrEdit ? "critical" : "warning";
 
+  // PR-1（B1）：全部分叉才是分支冲突；混合场景按同文件冲突处理（保守优先）
+  const isWorktreeBranchConflict = conflictingSessions.every((s) => s.isBranchDivergence);
+
   // 生成摘要
   const sessionCount = conflictingSessions.length;
-  const summary =
-    severity === "critical"
+  const summary = isWorktreeBranchConflict
+    ? `检测到 ${sessionCount} 个其他会话在别的 worktree 分支里改动同一逻辑文件（合并时才冲突）`
+    : severity === "critical"
       ? `检测到 ${sessionCount} 个其他会话正在编辑/写入此文件`
       : `检测到 ${sessionCount} 个其他会话最近读取过此文件`;
 
@@ -83,6 +109,7 @@ export function checkConflict(
     conflictingSessions,
     severity,
     summary,
+    isWorktreeBranchConflict,
   };
 }
 
@@ -97,6 +124,12 @@ export function formatConflictWarning(report: ConflictReport): string {
   lines.push("⚠️  并发冲突警告");
   lines.push(`文件: ${report.filePath}`);
   lines.push(report.summary);
+  // PR-1：分支分叉时"互相覆盖"的告诫不成立（各改各的物理文件），明说以免误导
+  if (report.isWorktreeBranchConflict) {
+    lines.push(
+      "（worktree 分支分叉：双方改的是各自的副本，不会互相覆盖；仅在合并回主仓时才可能冲突）",
+    );
+  }
   lines.push("");
 
   for (const session of report.conflictingSessions) {

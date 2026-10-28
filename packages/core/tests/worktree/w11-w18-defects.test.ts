@@ -292,15 +292,16 @@ describe("W12 隔离 worktree 里的写工具不能写回主仓", () => {
 });
 
 describe("W15 冲突检测的键折回主仓相对位置", () => {
-  it("两个 worktree 里同一相对路径互相可见", () => {
-    const a = join(repo, ".sid-code", "worktrees", "agent-aaaa0000", "src", "login.ts");
-    const b = join(repo, ".sid-code", "worktrees", "agent-bbbb0000", "src", "login.ts");
+  it("两个真实 worktree 里同一相对路径互相可见", async () => {
+    // PR-1 后折叠判据是 git 自己的记录（.git pointer + commondir），必须是**真实**
+    // worktree（WorktreeManager.create 走 git worktree add）才有 pointer 可回溯。
+    const m = new WorktreeManager(repo);
+    const w1 = await m.create("agent-aaaa0000");
+    const w2 = await m.create("agent-bbbb0000");
+    const a = join(w1.worktreePath, "src", "login.ts");
+    const b = join(w2.worktreePath, "src", "login.ts");
     expect(intentKeyForPath(a)).toBe(join(repo, "src", "login.ts"));
     expect(intentKeyForPath(a)).toBe(intentKeyForPath(b));
-    // 以点开头的段不当 slug（与 W4 守卫同口径）
-    expect(intentKeyForPath("/r/.sid-code/worktrees/.git/hooks/x")).toBe(
-      "/r/.sid-code/worktrees/.git/hooks/x",
-    );
 
     declareFileIntent("w15-a", process.pid, repo, a, "edit");
     try {
@@ -309,6 +310,15 @@ describe("W15 冲突检测的键折回主仓相对位置", () => {
     } finally {
       clearFileIntent("w15-a");
     }
+  });
+
+  it("B1：未经 git worktree add 的假容器路径不再折叠（普通目录剥一级会映射到主仓不存在的位置）", () => {
+    const fake = join(repo, ".sid-code", "worktrees", "not-a-worktree", "src", "x.ts");
+    expect(intentKeyForPath(fake)).toBe(fake);
+    // 纯非 git 路径原样返回（含 .git 段这类点开头名，与 W4 守卫同口径）
+    expect(intentKeyForPath("/r/.sid-code/worktrees/.git/hooks/x")).toBe(
+      "/r/.sid-code/worktrees/.git/hooks/x",
+    );
   });
 });
 
