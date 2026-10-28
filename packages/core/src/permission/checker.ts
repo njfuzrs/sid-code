@@ -28,7 +28,17 @@ import type { PathRuleContext } from "./path-rule-matching.ts";
 import { AuditLogger } from "./audit.ts";
 import { getLogger } from "../debug/logger.ts";
 import { splitCompoundCommand, hasSensitiveRedirection } from "./shell-parser.ts";
-import { expandShellCommand, extractBashWriteTargets } from "./shell-command-variants.ts";
+import { splitCommandStructure } from "./shell-structure.ts";
+import {
+  isPipelineFilterStage,
+  parseLiteralCdTarget,
+  resolveCdTarget,
+} from "./allow-composition.ts";
+import {
+  expandShellCommand,
+  extractBashWriteTargets,
+  listInvokedPrograms,
+} from "./shell-command-variants.ts";
 import { detectStructuredCriticalDanger, type DangerousFinding } from "./dangerous-command.ts";
 import { isToolNameListed } from "../tool/tool-name-aliases.ts";
 import { checkInjectionPatterns } from "./bash-security.ts";
@@ -60,6 +70,36 @@ interface DangerousPattern {
   severity: "critical" | "high" | "medium";
 }
 
+/** 提权程序：出现在程序位置即命中 high「sudo 命令」 */
+const PRIVILEGE_PROGRAMS = new Set(["sudo", "doas"]);
+/** tokenize 不可信（引号未闭合）时的回退正则，即修前的原文判据 */
+const SUDO_FALLBACK_RE = /sudo\s+/;
+
+/**
+ * 「sudo 命令」判定：子命令的**程序位置**是 sudo / doas（沿 wrapper 链与 find -exec 往下找）。
+ *
+ * 修前是对子命令原文跑 `/sudo\s+/`，`grep -n "…\|sudo 命令\|…" checker.ts`、`grep -rn sudo docs`
+ * 这类只是**提到** sudo 的命令全部命中 high。#443 认为 high 误报「只是多一次确认，有出口」，
+ * 这在无头模式下不成立：ask 直接落成 deny（harness-bench P3v 实测）。
+ *
+ * 输入是 expandShellCommand 的 variants（已展开 sh -c / eval / 命令替换内层），
+ * 所以 `bash -c "sudo id"` 照样覆盖。**不能**用 commands[].program：展开时 sudo 被当
+ * wrapper 剥掉了，commands 里看不到它。
+ *
+ * 名字与级别保持「sudo 命令」/ high 不变，遥测与既有断言都认这个名字。
+ */
+function detectPrivilegeEscalation(variants: readonly string[]): DangerousFinding | null {
+  for (const sub of variants) {
+    const programs = listInvokedPrograms(sub);
+    const hit =
+      programs === null
+        ? SUDO_FALLBACK_RE.test(sub)
+        : programs.some((p) => PRIVILEGE_PROGRAMS.has(p));
+    if (hit) return { name: "sudo 命令", severity: "high" };
+  }
+  return null;
+}
+
 const DANGEROUS_PATTERNS: DangerousPattern[] = [
   // critical: 直接拒绝，不允许确认
   //
@@ -78,7 +118,7 @@ const DANGEROUS_PATTERNS: DangerousPattern[] = [
   { name: "Fork 炸弹", pattern: /:()\s*\{.*:\|:.*&.*\}\s*;/, severity: "critical" },
 
   // high: 拒绝但允许用户确认
-  { name: "sudo 命令", pattern: /sudo\s+/, severity: "high" },
+  // 「sudo 命令」不在正则表里：按程序位置判（detectPrivilegeEscalation），见那里的注释。
   { name: "命令替换注入", pattern: /`[^`]*`|\$\([^)]*\)/, severity: "high" },
   { name: "递归权限修改", pattern: /chmod\s+-R\s+(777|666)/, severity: "high" },
   { name: "递归所有者修改", pattern: /chown\s+-R\s+/, severity: "high" },
@@ -2346,8 +2386,9 @@ export class PermissionChecker implements Checker {
    * `safe && evil` 这样的复合命令。否则 `allow: ["Bash(ls *)"]` 会因 `ls *` 的 `*` 贪婪吞掉
    * `ls && ./untrusted.sh` 的后半段而整体放行，形成 allow 越权。
    *
-   * 修复：bash 命令先 splitCompoundCommand 拆成子命令，要求**每个子命令都被 allow 覆盖**
-   * （every(allow)）才放行；任一子命令不在 allow 覆盖内 → 不放行（落到后续 ask）。
+   * 修复：bash 命令先拆成子命令，要求**至少一段命中 allow**，其余每段命中 allow 或是
+   * 「管道下游纯过滤器 / 首段工作区内 cd &&」（见 checkAllowList 与 allow-composition.ts）；
+   * 任一段都不满足 → 不放行（落到后续 ask）。`ls && ./x.sh` 照旧不放行。
    * 非 bash 工具（file_path/pattern 类）保持原逻辑，整条匹配。
    *
    * 说明：危险命令检测（Step 2）已在本步之前对复合命令拆分逐子命令查危险模式，
@@ -2381,20 +2422,72 @@ export class PermissionChecker implements Checker {
       return checkRules(allowRules, req, pathCtx);
     }
 
-    // 复合命令：逐子命令校验，全部命中 allow 才放行（every(allow)）
-    for (const sub of subCommands) {
+    // 复合命令：至少一段命中 allow，其余每段要么命中 allow，要么是「管道下游纯过滤器」
+    // 或「首段工作区内 cd &&」（Q2）。修前是 every(allow)：`bun test x 2>&1 | tail -30`
+    // 因 `tail -30` 不命中而落到 ask，无头直接落拒（harness-bench P1v/P2v 6 次误拦）。
+    //
+    // ⚠️ 「其余段」不能用 isReadOnlyCommand 判：只读集放行 `awk '{system($0)}'`、
+    // `find -delete`、`cat /etc/passwd`，借这条路会被带进组合命令。判据只认
+    // allow-composition.ts 那张逐参数约束的小白名单，见那里的文件头。
+    //
+    // Step 2 危险检测 / Step 4 路径 / Step 6 写目标都排在本步之前，照旧先跑。
+    const pipelines = splitCommandStructure(command);
+    const flatCount = pipelines.reduce((n, p) => n + p.stages.length, 0);
+    // 两种拆分口径不一致时（理论上不该发生，见 shell-structure.ts 一致性断言）回到 every(allow)
+    const structureTrusted = flatCount === subCommands.length;
+    const matchesAllow = (sub: string): boolean => {
       const subReq: PermissionRequest = {
         ...req,
         input: { ...(req.input as object), command: sub },
       };
-      const subDecision = checkRules(allowRules, subReq, pathCtx);
-      if (!subDecision || !subDecision.allowed) {
-        // 任一子命令不在 allow 覆盖内 → 整体不放行，落到后续 ask
+      return checkRules(allowRules, subReq, pathCtx)?.allowed === true;
+    };
+
+    if (!structureTrusted) {
+      return subCommands.every(matchesAllow) ? { allowed: true } : null;
+    }
+
+    let anyAllowHit = false;
+    for (let p = 0; p < pipelines.length; p++) {
+      const stages = pipelines[p].stages;
+      for (let s = 0; s < stages.length; s++) {
+        const stage = stages[s];
+        if (matchesAllow(stage)) {
+          anyAllowHit = true;
+          continue;
+        }
+        // 管道下游（s > 0）的纯过滤器：只读 stdin、无文件操作数、无写重定向
+        if (s > 0 && isPipelineFilterStage(stage)) continue;
+        // 首段 `cd <工作区或白名单内目录> &&`
+        if (
+          p === 0 &&
+          s === 0 &&
+          stages.length === 1 &&
+          this.isSafeLeadingCd(command, stage, req)
+        ) {
+          continue;
+        }
         return null;
       }
     }
-    // 所有子命令都被 allow 覆盖
-    return { allowed: true };
+    // 全是过滤器 / cd 的命令（`cd <ws> && tail -5`）不经 allow 放行：放行面必须和 allow 清单挂钩
+    return anyAllowHit ? { allowed: true } : null;
+  }
+
+  /**
+   * 首段 `cd <dir>` 是否可视为无害前缀：只认第一段、后面紧跟 `&&`（`;` / `||` 下 cd 失败
+   * 后续照跑，cwd 语义不确定），且目录解析后落在工作区或 allowedDirectories 内。
+   */
+  private isSafeLeadingCd(command: string, stage: string, req: PermissionRequest): boolean {
+    const dir = parseLiteralCdTarget(stage);
+    if (dir === null) return false;
+    const trimmed = command.trim();
+    if (!trimmed.startsWith(stage)) return false;
+    const rest = trimmed.slice(stage.length).trimStart();
+    if (!rest.startsWith("&&") || rest.startsWith("&&&")) return false;
+    const cwd = this.buildPathRuleContext(req).cwd ?? this.workspacePath;
+    const resolved = this.pathValidator.resolveRealPath(resolveCdTarget(dir, cwd));
+    return this.pathValidator.isWithinWorkingDirectories(resolved);
   }
 
   /**
@@ -2430,6 +2523,10 @@ export class PermissionChecker implements Checker {
         return { name: dp.name, severity: dp.severity };
       }
     }
+
+    // 1a'. 提权（sudo / doas）：按程序位置判，不扫原文
+    const privilege = detectPrivilegeEscalation(expansion.variants);
+    if (privilege) return privilege;
 
     // 1b. 拆分复合命令，对每个子命令检查其余模式
     //
