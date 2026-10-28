@@ -26,6 +26,12 @@ export interface HeadlessRunOutcome {
   budgetExceeded: boolean;
   /** 是否因 stdin 空闲超时（idleTimeoutMs）而结束读取（缺陷 7）。 */
   idleTimedOut: boolean;
+  /**
+   * P0 #3（2026-10-27）：**最后一条** result 是不是「未正常说完」（`error_during_execution` /
+   * `error_stalled`，即 done.incompleteReason 的映射）。取最后一条而不是「出现过」：
+   * stream-json 是多轮会话，宿主重发后成功的那一轮应当决定最终结论。
+   */
+  incomplete: boolean;
 }
 
 /** `get_context_usage` 的响应载荷 */
@@ -402,8 +408,10 @@ export async function runHeadless(
   const out: Writable = options.output ?? process.stdout;
   let budgetExceeded = false;
   let idleTimedOut = false;
+  let incomplete = false;
   const watch = (msg: StdoutMessage) => {
     if (isBudgetExceededResult(msg)) budgetExceeded = true;
+    if ((msg as SDKResultMessage).type === "result") incomplete = isIncompleteResult(msg);
   };
 
   if (outputFormat === "stream-json") {
@@ -432,7 +440,7 @@ export async function runHeadless(
       watch(msg);
       await structuredIO.write(msg);
     }
-    return { budgetExceeded, idleTimedOut };
+    return { budgetExceeded, idleTimedOut, incomplete };
   }
 
   // text / json：收集后统一输出
@@ -454,7 +462,17 @@ export async function runHeadless(
     // text
     out.write(extractResultText(messages) + "\n");
   }
-  return { budgetExceeded, idleTimedOut };
+  return { budgetExceeded, idleTimedOut, incomplete };
+}
+
+/**
+ * result 是否是 done.incompleteReason 的映射（见 message-converter.ts 的 done 分支）。
+ * `error_max_turns` / `error_max_budget_usd` 不在此列：前者是既有约定（不改其退出码），
+ * 后者由 budgetExceeded 单独承担。
+ */
+function isIncompleteResult(msg: StdoutMessage): boolean {
+  const subtype = (msg as SDKResultMessage).subtype;
+  return subtype === "error_during_execution" || subtype === "error_stalled";
 }
 
 /** result 消息里 subtype 为预算硬停。其余消息（含成功 result）返回 false。 */
