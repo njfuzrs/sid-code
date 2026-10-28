@@ -178,6 +178,10 @@ import {
 } from "@sid-code/core/tool/file-read-tracker.ts";
 import { setTaskLifecycleSink, TASK_LIFECYCLE_EVENT_NAME } from "@sid-code/core/task/lifecycle.ts";
 import {
+  setBackgroundPollSink,
+  BACKGROUND_POLL_INTERCEPTED_EVENT_NAME,
+} from "@sid-code/core/task/background-poll-guard.ts";
+import {
   setSkillTraceSink,
   SKILL_DEGRADATION_EVENT_NAME,
   setSkillInvocationSink,
@@ -4575,6 +4579,14 @@ export class App {
     setTaskLifecycleSink(
       traceCollectorInstance
         ? (data) => traceCollectorInstance.recordCustomEvent(TASK_LIFECYCLE_EVENT_NAME, data)
+        : null,
+    );
+    // Q1：后台任务轮询拦截进轨迹。F2 判据「实际执行的轮询 = 尝试数 − 本事件命中的 tool_use_id」，
+    // 不接则拦截生效与否从轨迹上分不出来。
+    setBackgroundPollSink(
+      traceCollectorInstance
+        ? (data) =>
+            traceCollectorInstance.recordCustomEvent(BACKGROUND_POLL_INTERCEPTED_EVENT_NAME, data)
         : null,
     );
     // G2：子代理成本进轨迹。usage-sink 在工具注册时就建好了，那时 collector 还不在，同款延迟接线。
