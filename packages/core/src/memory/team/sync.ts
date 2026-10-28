@@ -334,7 +334,10 @@ export async function syncTeamMemory(
       // 4b. 双方都改且内容不同 → mtime 新者获胜，败者另存 .conflict 副本不丢数据
       if (local && shared) {
         conflicts++;
-        const ts = Math.max(local.mtimeMs, shared.mtimeMs) | 0;
+        // 不能用 `| 0` 取整：它截成 int32，毫秒时间戳 > 2^31，每约 24.8 天符号翻转一次，
+        // 负半周生成 `k.conflict--2141014085.md`，store.ts 的 `/\.conflict-\d+\.md$/` 认不出它
+        // （2026-10-28T00:54Z 起实测，main 与全部 PR 的 CI 同时变红）。
+        const ts = Math.floor(Math.max(local.mtimeMs, shared.mtimeMs));
         const conflictName = key.replace(/\.md$/, `.conflict-${ts}.md`);
         conflictFiles.push(conflictName);
         if (local.mtimeMs >= shared.mtimeMs) {
