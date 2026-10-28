@@ -80,11 +80,12 @@ export function migrate(): void {
   if (moved.length > 0) {
     // 必须告知用户：① 数据换了位置；② 旧目录**可能**混有别的项目的数据，需人工确认。
     // 静默搬运会让"我的记忆里怎么有别的项目的内容"变成无法追溯的怪现象。
-    console.log(
+    // #7（2026-10-27）：走 stderr，不污染 `-p --output-format json` 的 stdout（理由见 backfill-team-defaults.ts）
+    process.stderr.write(
       `项目目录键已升级（修复非 ASCII 路径的跨项目串目录问题）：${legacyKey} → ${newKey}\n` +
         `  已复制: ${moved.join(", ")}（旧目录保留未删除）\n` +
         `  ⚠ 若旧目录曾被多个项目共用，请人工检查新目录下是否混入了其他项目的记忆：\n` +
-        `     ${join(projectsDir, newKey)}`,
+        `     ${join(projectsDir, newKey)}\n`,
     );
   }
 }

@@ -146,6 +146,23 @@ describe("墓碑", () => {
     expect(res.output).toContain("ghost123");
   });
 
+  test("Q1：运行中任务、.output 尚未建出时 read → 「尚未产出」，不说「已不存在」、不推荐阻塞式 task_output", async () => {
+    const file = join(sidPaths.tasks(), "live1.output");
+    registerTask(makeShellTask("live1", file));
+    const res = await new ReadTool().execute({ file_path: file });
+    expect(res.output).toContain("仍在运行");
+    expect(res.output).toContain("尚未产出");
+    expect(res.output).not.toContain("已不存在");
+    expect(res.output).not.toMatch(/请用 task_output/);
+  });
+
+  test("Q1：无墓碑的已清理分支不再推荐默认阻塞的 task_output，只给 block=false 快照", async () => {
+    const file = join(sidPaths.tasks(), "ghost456.output");
+    const res = await new ReadTool().execute({ file_path: file });
+    expect(res.output).toContain("block=false");
+    expect(res.output).not.toContain("请用 task_output 工具");
+  });
+
   test("taskIdFromOutputPath 只认 tasks 目录下的 <id>.output", () => {
     expect(taskIdFromOutputPath(join(sidPaths.tasks(), "abc.output"))).toBe("abc");
     expect(taskIdFromOutputPath(join(sidPaths.tasks(), "abc.txt"))).toBeNull();

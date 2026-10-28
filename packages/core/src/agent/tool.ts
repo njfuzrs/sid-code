@@ -17,6 +17,7 @@ import { getLogger } from "../debug/logger.ts";
 import { SIBLING_BASH_ERROR_ABORT_REASON } from "../llm/errors.ts";
 import { UsageSinkTicket, hasNonZeroUsage } from "../llm/billing-sink.ts";
 import { createAgentTask, failAgentTask } from "../task/index.ts";
+import { BACKGROUND_RECEIPT_NOTICE } from "../task/background-receipt.ts";
 import type { HookSystem } from "../hook/system.ts";
 import { buildAgentHookSystem } from "./agent-hooks.ts";
 import {
@@ -838,7 +839,8 @@ ${typeLines}
         output_file: taskState.outputFile,
         // F3：对齐 cc AgentTool 启动返回（"Briefly tell the user what you launched and end your
         // response"）。只说「会通知你」时，模型 4/4 次紧接着调 task_output(timeout=600000) 阻塞等待。
-        message: `子代理已在后台启动 (task_id: ${taskId})。完成后会自动通知你，不要用 task_output 等待或轮询；继续做不重叠的工作，或简短告诉用户启动了什么并结束本轮。用户要求查看进度时可 read output_file。`,
+        // Q1：不再许可运行期间读 output_file，三处回执共用 BACKGROUND_RECEIPT_NOTICE。
+        message: `子代理已在后台启动 (task_id: ${taskId})。${BACKGROUND_RECEIPT_NOTICE}`,
       }),
     };
   }

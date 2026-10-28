@@ -39,6 +39,7 @@ import { z } from "zod/v4";
 import { lazySchema } from "../sdk/lazy-schema.ts";
 import { bashWriteTargets } from "./jit-affected-paths.ts";
 import type { FileReadTracker, BashChangedFile } from "./file-read-tracker.ts";
+import { BACKGROUND_RECEIPT_NOTICE } from "../task/background-receipt.ts";
 
 /** Bash 工具输入 schema —— 运行时校验 + JSON Schema 生成的唯一真相源 */
 const bashSchema = lazySchema(() =>
@@ -1082,7 +1083,8 @@ export class BashTool implements Tool {
             task_id: adopted.taskState.id,
             status: adopted.taskState.status,
             output_file: adopted.taskState.outputFile,
-            message: `已将当前前台命令转入后台 (task_id: ${adopted.taskState.id})`,
+            // Q1：Ctrl+B 回执原先没有任何不要轮询的说明，补上同一段禁令。
+            message: `已将当前前台命令转入后台 (task_id: ${adopted.taskState.id})。${BACKGROUND_RECEIPT_NOTICE}`,
           }),
         });
         return true;
@@ -1387,7 +1389,8 @@ export class BashTool implements Tool {
         status: taskState.status,
         output_file: taskState.outputFile,
         // F3：同 sub_agent 后台启动返回——明说不要轮询（20261019 轨迹 shell 任务也被 task_output 阻塞满 600s）
-        message: `命令已作为后台任务启动 (task_id: ${taskState.id})。完成后会自动通知你，不要用 task_output 等待或轮询；继续做不重叠的工作，需要看进度时 read output_file。`,
+        // Q1：去掉运行期间读 output_file 的许可，与子代理 / Ctrl+B 回执共用同一常量。
+        message: `命令已作为后台任务启动 (task_id: ${taskState.id})。${BACKGROUND_RECEIPT_NOTICE}`,
       }),
     };
   }
