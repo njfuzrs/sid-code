@@ -119,9 +119,19 @@ describe("LY1 — deriveCacheMetrics", () => {
 });
 
 describe("P3-3 — deriveWorktree", () => {
-  test("worktree 路径提取名字", () => {
+  test(".claude worktree 路径提取名字", () => {
     expect(deriveWorktree("/home/u/proj/.claude/worktrees/feat-x")).toBe("feat-x");
     expect(deriveWorktree("/home/u/proj/.claude/worktrees/feat-x/src/a.ts")).toBe("feat-x");
+  });
+
+  test("B7：.sid-code worktree 路径同样提取名字（worktree/manager.ts 的摆放位置）", () => {
+    expect(deriveWorktree("/home/u/proj/.sid-code/worktrees/feat-x")).toBe("feat-x");
+    expect(deriveWorktree("/home/u/proj/.sid-code/worktrees/feat-x/src/a.ts")).toBe("feat-x");
+  });
+
+  test("点开头 slug 不当 worktree 名（与 WORKTREE_CONTAINER_RE 同口径，防 .git 误判）", () => {
+    expect(deriveWorktree("/r/.sid-code/worktrees/.git/hooks/x")).toBe("");
+    expect(deriveWorktree("/r/.claude/worktrees/.hidden/src")).toBe("");
   });
 
   test("非 worktree 路径返回空串", () => {
