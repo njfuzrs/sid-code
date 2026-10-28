@@ -143,6 +143,80 @@ const WRAPPERS: Readonly<Record<string, WrapperSpec>> = {
   },
 };
 
+/** find 的「执行动作」：其后第一个 token 处在程序位置 */
+const FIND_EXEC_ACTIONS = new Set(["-exec", "-execdir", "-ok", "-okdir"]);
+
+/** 引号是否闭合（反斜杠转义感知）。未闭合时分词结果与 shell 的理解可能不一致 */
+function hasBalancedQuotes(cmd: string): boolean {
+  let inSingle = false;
+  let inDouble = false;
+  for (let i = 0; i < cmd.length; i++) {
+    const ch = cmd[i];
+    if (ch === "\\" && !inSingle) {
+      i++;
+      continue;
+    }
+    if (ch === "'" && !inDouble) inSingle = !inSingle;
+    else if (ch === '"' && !inSingle) inDouble = !inDouble;
+  }
+  return !inSingle && !inDouble;
+}
+
+/**
+ * 一个简单命令里所有处在「程序位置」的名字（去引号 / 去转义 / 取 basename）：
+ * 命令头、沿 wrapper 链往下的每一层（`env FOO=1 nohup sudo id` → env、nohup、sudo、id），
+ * 以及 `find … -exec <程序>` 的程序。
+ *
+ * 用途：判「是不是在执行 X」——这是程序位置的问题，不是原文里有没有 X 字样的问题
+ * （`grep -n "sudo 命令" f` 不在执行 sudo）。
+ *
+ * 引号未闭合时返回 null，调用方应回退到原文判定（宁严勿松）。
+ */
+export function listInvokedPrograms(sub: string): string[] | null {
+  if (!hasBalancedQuotes(sub)) return null;
+  const tokens = tokenizeWithPositions(sub).map((t) => t.value);
+  const names: string[] = [];
+
+  const walk = (start: number) => {
+    let i = start;
+    while (i < tokens.length && ASSIGNMENT_RE.test(tokens[i])) i++;
+    for (let guard = 0; guard < 8 && i < tokens.length; guard++) {
+      const name = path.basename(tokens[i]);
+      names.push(name);
+      const spec = WRAPPERS[name];
+      if (!spec) break;
+      let j = i + 1;
+      let notExec = false;
+      while (j < tokens.length) {
+        const t = tokens[j];
+        if (spec.allowsAssignments && ASSIGNMENT_RE.test(t)) {
+          j++;
+          continue;
+        }
+        if (t === "--") {
+          j++;
+          break;
+        }
+        if (!t.startsWith("-") || t === "-") break;
+        if (spec.notExecIf?.has(t)) notExec = true;
+        j += spec.argOpts?.has(t) && !t.includes("=") ? 2 : 1;
+      }
+      if (notExec) break;
+      j += spec.positional ?? 0;
+      if (j >= tokens.length) break;
+      i = j;
+    }
+    // find -exec / -execdir / -ok / -okdir 之后是一个新的程序位置（可多次出现）
+    if (names[names.length - 1] === "find") {
+      for (let k = i + 1; k < tokens.length; k++) {
+        if (FIND_EXEC_ACTIONS.has(tokens[k]) && k + 1 < tokens.length) walk(k + 1);
+      }
+    }
+  };
+  walk(0);
+  return names;
+}
+
 /** 把参数当脚本执行的 shell（`sh -c '<脚本>'`） */
 const SHELLS = new Set(["sh", "bash", "zsh", "dash", "ksh", "fish", "ash", "mksh"]);
 

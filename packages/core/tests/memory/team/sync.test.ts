@@ -7,7 +7,15 @@
  */
 
 import { describe, test, expect, beforeEach, afterEach } from "bun:test";
-import { mkdtempSync, rmSync, writeFileSync, existsSync, readFileSync, mkdirSync } from "fs";
+import {
+  mkdtempSync,
+  rmSync,
+  writeFileSync,
+  existsSync,
+  readFileSync,
+  mkdirSync,
+  utimesSync,
+} from "fs";
 import { join } from "path";
 import { tmpdir } from "os";
 import { syncTeamMemory, hashContent } from "@sid-code/core/memory/team/sync.ts";
@@ -293,6 +301,25 @@ describe("缺陷 8：冲突副本可见", () => {
     expect(index).not.toMatch(/\]\(k\.conflict-/);
   });
 
+  test("mtime 落在 int32 负半周时副本名仍是非负整数（`| 0` 溢出回归）", async () => {
+    // 1793155461s ≈ 2026-10-28T03:24Z：毫秒值 `| 0` 为负。修前产出 `k.conflict--2140….md`，
+    // store.ts 的 `/\.conflict-\d+\.md$/` 认不出它，冲突段的「当前生效版本」就算错。
+    // 钉死 mtime 而不是用当前时间：否则这条只在每 24.8 天的一半时间里能红。
+    const sec = 1793155461;
+    expect((sec * 1000) | 0).toBeLessThan(0); // 前提自检：确实落在负半周
+    writeLocal("k.md", "base");
+    await syncTeamMemory(opts(), cwd);
+    writeLocal("k.md", "local-change");
+    writeShared("k.md", "shared-change");
+    utimesSync(join(localDir(), "k.md"), sec, sec);
+    utimesSync(join(sharedDir, "k.md"), sec + 1, sec + 1);
+
+    const r = await syncTeamMemory(opts(), cwd);
+    expect(r.conflictFiles).toEqual([`k.conflict-${(sec + 1) * 1000}.md`]);
+    const index = readFileSync(join(localDir(), "MEMORY.md"), "utf8");
+    expect(index).toContain("当前生效版本 `k.md`");
+  });
+
   test("副本删除后重建索引，冲突段消失", async () => {
     writeLocal("m.md", "base");
     await syncTeamMemory(opts(), cwd);
@@ -304,5 +331,17 @@ describe("缺陷 8：冲突副本可见", () => {
     const { rebuildTeamIndex } = await import("@sid-code/core/memory/team/store.ts");
     await rebuildTeamIndex(localDir());
     expect(readFileSync(join(localDir(), "MEMORY.md"), "utf8")).not.toContain("未裁决");
+  });
+});
+
+describe("旧版负数时间戳副本兼容", () => {
+  // #458 之前 `| 0` 截断会写出 `k.conflict--2146557852.md`，已落盘的副本不会自己消失，
+  // 索引侧必须仍能从它解析出生效版本，否则冲突段会把副本自己标成「当前生效版本」。
+  test("旧版写出的负数时间戳副本仍能解析出生效版本", async () => {
+    writeLocal("legacy.conflict--2146557852.md", "old");
+    const { rebuildTeamIndex } = await import("@sid-code/core/memory/team/store.ts");
+    await rebuildTeamIndex(localDir());
+    const index = readFileSync(join(localDir(), "MEMORY.md"), "utf8");
+    expect(index).toContain("当前生效版本 `legacy.md`");
   });
 });

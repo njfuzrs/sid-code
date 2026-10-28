@@ -72,7 +72,9 @@ function writeMark(template: Template): void {
 
 function announce(added: string[]): void {
   if (added.length > 0) {
-    console.log(`已补全团队默认配置字段（未覆盖任何已有配置）: ${added.join(", ")}`);
+    // #7（2026-10-27）：必须走 stderr。迁移在 `-p --output-format json` 之前跑，写 stdout 会让
+    // 新配置目录的第一次运行在 JSON 前多出这一行，严格 JSON.parse(stdout) 的调用方直接失败。
+    process.stderr.write(`已补全团队默认配置字段（未覆盖任何已有配置）: ${added.join(", ")}\n`);
   }
 }
 

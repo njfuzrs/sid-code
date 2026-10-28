@@ -212,8 +212,13 @@ describe("3. 子代理异常路径 PostToolUseFailure 的 is_interrupt 按真实
     const sys = sysWith();
     const fail = probe(sys, HookEventName.PostToolUseFailure);
     const ctrl = new AbortController();
-    ctrl.abort("user-cancel");
-    const tools = registry([abortingTool()]);
+    // N1 之后预先 abort 的工具不再启动，所以中断要发生在执行中：工具运行时用户 ESC，再以普通 Error 收尾
+    const tools = registry([
+      makeTool("slow", async () => {
+        ctrl.abort("user-cancel");
+        throw new Error("子进程被终止");
+      }),
+    ]);
     await executeTools([use("t1", "slow")], tools, ctrl.signal, sys, allowAll);
     // 2026-10-24：中断单独分型为 aborted（不再并进 exception），与主循环同口径——
     // 用户 ESC 不是「工具不可靠」的证据，混进 exception 会污染失败率。

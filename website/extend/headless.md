@@ -45,9 +45,27 @@ sid-code -p "calc.ts 里定义了几个顶层函数？只回一个数字。" --o
     "outputTokens": 227,
     "cacheCreationInputTokens": 0,
     "cacheReadInputTokens": 69632
-  }
+  },
+  "usage_normalized": {
+    "uncached": 5958,
+    "cache_read": 69632,
+    "cache_write": 0,
+    "prompt_total": 75590,
+    "output": 227
+  },
+  "model": "deepseek-v4",
+  "provider": "openai",
+  "total_cost_usd": 0.0041,
+  "num_turns": 2,
+  "duration_ms": 6410
 }
 ```
+
+（`usage_normalized` 往后几个字段是后来加的，上面数值是示意，不是同一次实测。）
+
+`usage.inputTokens` 的口径**随 provider 变**：Anthropic 下是未命中余量，OpenAI 兼容端点下是含命中的全量。
+跨 provider 统计 token 读 `usage_normalized`，它是逐模型归一化后累加的互斥分段，`prompt_total` 与用量账本同口径。
+`provider` 在会话中途 fallback 换过 provider 时是逗号拼接的多值。
 
 注意 `content` 是**数组**，`type` 不止 `text`：实际可能出现 `text`、`thinking`、
 `redacted_thinking`、`provider_reasoning`、`tool_use`、`tool_result` 六种
@@ -63,7 +81,7 @@ sid-code -p "..." --output-format json | jq -r '.content[] | select(.type=="text
 | 格式 | 输出形态 | 什么时候用 |
 | --- | --- | --- |
 | `text`（默认） | 纯文本，就是模型说的话 | 人看，或答案本身就是要的东西 |
-| `json` | 单个 JSON 对象，含 session_id / content / usage | 脚本消费，需要 token 用量或会话 ID |
+| `json` | 单个 JSON 对象，含 session_id / content / usage / 成本 | 脚本消费，需要 token 用量、成本或会话 ID |
 | `stream-json` | NDJSON 流，逐条消息 | 要实时进度，或当 SDK 用 |
 
 `stream-json` 每行一条消息，实测消息序列：
@@ -81,7 +99,7 @@ result:success
 `message` 为「本轮以纯文本结束（模型未调用工具）。如需继续，直接回复「继续」。」的 `info` 状态消息；
 `-p` 文本模式下同一提示只写 stderr，不污染 stdout。
 
-最后那条 `result` 才是给程序看的汇总——**它有 `text` / `json` 都没有的 `total_cost_usd`**：
+最后那条 `result` 才是给程序看的汇总，带 `total_cost_usd`（`json` 格式也有同名字段，`text` 没有）：
 
 ```json
 {
@@ -415,11 +433,10 @@ SID_CODE_MAX_SESSION_DURATION_MS=7200000 sid-code -p "..."   # 2 小时
 
 ### 怎么拿到这次跑的成本
 
-`--output-format stream-json` 的 `result` 消息里有 `total_cost_usd`（见上文）——它是
-**会话累计**金额（`sessionState.getEffectiveTotalCostUSD()`），多轮对话时第 N 条 `result`
-是前 N 轮的总额，不是第 N 轮的单轮增量。
-`--output-format json` 只给 `usage` 的 token 数，没有折算好的金额；唯一的例外是撞预算硬停，
-那时它会多带一个 `error.spentUsd`（以及 `error.limitUsd`）。
+`--output-format stream-json` 的 `result` 消息与 `--output-format json` 的结果对象里都有
+`total_cost_usd`（见上文），两处同源（`sessionState.getEffectiveTotalCostUSD()`，主循环 + 辅助调用）。
+它是**会话累计**金额，stream-json 多轮对话时第 N 条 `result` 是前 N 轮的总额，不是第 N 轮的单轮增量。
+撞预算硬停时 `json` 还会多带 `error.spentUsd`（以及 `error.limitUsd`）。
 
 ### 退出码可靠吗
 
@@ -428,12 +445,22 @@ SID_CODE_MAX_SESSION_DURATION_MS=7200000 sid-code -p "..."   # 2 小时
 解析 `stream-json` / `json` 输出里 `result` 的 `is_error`、`subtype`，能区分是模型报错、
 超出轮次还是正常结束，比只看 `$?` 信息更多。
 
+`-p` 的退出码约定：
+
+| 退出码 | 含义 |
+| --- | --- |
+| `0` | 正常说完 |
+| `1` | 运行时异常、预算硬停，或**没有正常说完**：超时重试耗尽、重试期间被中断、停滞叫停、上下文窗口撑爆。`json` 里 `is_error: true`，`error.reason` 是具体原因（如 `timeout_retry_exhausted`） |
+| `130` / `143` / `129` | 收到 SIGINT / SIGTERM / SIGHUP。无论信号落在请求在途还是重试退避期，都是这个值 |
+
+会话硬顶（`maxSessionDurationMs`）触发的收尾例外，仍按成功路径退 0（见上一节）。
+
 **停滞叫停（`error_stalled`，缺省不会出现）**：`-p` 缺省完全不启用停滞升级（不注入提示、不叫停、不改收尾闸门），
 所以评测和 CI 不会因它改变行为。显式设 `SID_CODE_STALL_ESCALATION_HEADLESS=1` 并打开 `SID_CODE_STALL_HARD_STOP=1`
 （或 settings `stallHardStop: true`）后，任务反复改动又改回、或重复操作无新进展时，会被叫停并让模型
 总结现状，此时 `stream-json` 的 `result` 里 `subtype` 是 `error_stalled`（`errors` 里有原因）。
 这和 `error_during_execution` 是两回事：前者是"卡住了被叫停"，换个提示词或拆小任务重跑有意义。
-**进程退出码不会因此变成非 0**——脚本要判停滞，读 `subtype`，不要读 `$?`。
+被叫停时进程以 `1` 退出；要区分「卡住被叫停」和其它失败，读 `subtype`，`$?` 分不出来。
 
 ### `-p` 和交互模式的行为差异
 
