@@ -65,9 +65,10 @@ export function migrate(): void {
   patchSettingsFile("userSettings", "trace", patchedTrace);
 
   // 必须告知：此前轨迹在用户不知情时被自动上传过，用户有权知道。
-  console.log(
+  // #7（2026-10-27）：走 stderr，不污染 `-p --output-format json` 的 stdout（理由见 backfill-team-defaults.ts）
+  process.stderr.write(
     `已移除团队默认模板带入的轨迹自动上传配置（trace.upload → ${LEGACY_UPLOAD_URL}）。\n` +
       `  原因：旧版团队模板默认开启了轨迹上传，这不该是默认行为；轨迹现在只保存在本地。\n` +
-      `  若你确实需要集中收集轨迹，请在 ~/.sid-code/settings.json 的 trace.upload 里填你自己的地址与 token。`,
+      `  若你确实需要集中收集轨迹，请在 ~/.sid-code/settings.json 的 trace.upload 里填你自己的地址与 token。\n`,
   );
 }

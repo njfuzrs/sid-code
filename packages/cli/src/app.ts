@@ -131,6 +131,8 @@ import {
   watchTerminalOutputErrors,
   type TerminalDeathCause,
 } from "./signal-teardown.ts";
+import { headlessIncomplete, resolveHeadlessExitCode } from "./headless-exit.ts";
+import { normalizeModelUsage, providersOf } from "./headless-usage.ts";
 import { execSync } from "child_process";
 import { existsSync, readFileSync } from "fs";
 import { open, readdir, stat } from "fs/promises";
@@ -175,6 +177,10 @@ import {
   FILE_FRESHNESS_EVENT_NAME,
 } from "@sid-code/core/tool/file-read-tracker.ts";
 import { setTaskLifecycleSink, TASK_LIFECYCLE_EVENT_NAME } from "@sid-code/core/task/lifecycle.ts";
+import {
+  setBackgroundPollSink,
+  BACKGROUND_POLL_INTERCEPTED_EVENT_NAME,
+} from "@sid-code/core/task/background-poll-guard.ts";
 import {
   setSkillTraceSink,
   SKILL_DEGRADATION_EVENT_NAME,
@@ -4575,6 +4581,14 @@ export class App {
         ? (data) => traceCollectorInstance.recordCustomEvent(TASK_LIFECYCLE_EVENT_NAME, data)
         : null,
     );
+    // Q1：后台任务轮询拦截进轨迹。F2 判据「实际执行的轮询 = 尝试数 − 本事件命中的 tool_use_id」，
+    // 不接则拦截生效与否从轨迹上分不出来。
+    setBackgroundPollSink(
+      traceCollectorInstance
+        ? (data) =>
+            traceCollectorInstance.recordCustomEvent(BACKGROUND_POLL_INTERCEPTED_EVENT_NAME, data)
+        : null,
+    );
     // G2：子代理成本进轨迹。usage-sink 在工具注册时就建好了，那时 collector 还不在，同款延迟接线。
     // 不接则 traj 只含主循环成本（实测漏子代理 31%），北极星「更省」取数源有偏。
     setSubagentCostTraceSink(
@@ -5370,6 +5384,16 @@ export class App {
    * L5：以前是只写不读的布尔；现在由 onSignal 读，用来区分 pty 关闭与管道下游关闭（L7）。
    */
   private terminalDeathCause: TerminalDeathCause | null = null;
+  /**
+   * 已收到的终止信号对应的退出码（P0 #3，2026-10-27）；null = 没收到信号。
+   *
+   * 收到信号后进程里同时跑着两条收尾路径：信号处理器（等 SessionEnd，上限 1.2s 后 exit）
+   * 和无头主路径（abort 让 queryLoop 返回后走正常收尾再 exit）。以前两边各自决定退出码，
+   * 谁先跑完听谁的：信号落在重试退避期时 queryLoop 是 `yield done; return`，主路径收尾更快，
+   * 抢先 `exit(0)`——被 SIGTERM 杀掉的进程报告成功（实测 4/4）。
+   * 现在信号处理器第一时间记下退出码，主路径 exit 前优先用它，结论不再取决于竞速。
+   */
+  private receivedSignalExitCode: number | null = null;
   /** TUI 渲染实例的停渲染入口（runTUI 挂载后设置；headless 恒为 null） */
   private detachTuiForShutdown: (() => void) | null = null;
   private registerSignalHandlers(): void {
@@ -5389,6 +5413,8 @@ export class App {
             : 143;
 
     const onSignal = async (signal: "SIGINT" | "SIGTERM" | "SIGHUP") => {
+      // P0 #3：同步记在一切 await / abort 之前——abort 会唤醒无头主路径，它随时可能先走到 exit。
+      this.receivedSignalExitCode = exitCodeOf(signal);
       // 必须在下面 abort() 之前取样：abort 之后 signal.aborted 恒 true，就分不出空闲与忙。
       // busy 覆盖 TUI 轮次与 fork 型命令；abortController 覆盖 headless / `!` shell 等不置 busy 的路径。
       const turnInFlight =
@@ -8353,6 +8379,9 @@ export class App {
     // （那会把 SessionEnd 标成 error、把 stderr 打成致命错误）。但它也不是成功：
     // CI 靠退出码判断要不要重跑，exit 0 会让超限的任务被当成跑完了。
     let budgetExceeded = false;
+    // P0 #3：最后一次 done 的 incompleteReason。以前只用来决定「不再续跑」，退出码与 JSON 都不看它，
+    // 于是超时重试耗尽 / 退避期被中断都以 exit 0 + 无 error 收尾。判定见 headless-exit.ts。
+    let incompleteReason: import("@sid-code/core/query/types.ts").DoneIncompleteReason | undefined;
     // 不确定-1②：headless（-p print）路径此前无会话硬顶——挂死时会无限等待。补齐与 TUI 同源的
     // 会话级硬顶（network-profile 统一配置，SID_CODE_MAX_SESSION_DURATION_MS / settings 可覆盖）。
     // 2026-08-04：默认值已改为 0（关闭，见 network-profile.ts DEFAULTS 说明）。
@@ -8399,6 +8428,8 @@ export class App {
             if (event.budgetExceeded) budgetExceeded = true;
             // incompleteReason：本轮不是正常说完（超时重试耗尽等），不在故障之上再开新轮。
             turnOk = !event.budgetExceeded && !event.incompleteReason;
+            // 每轮覆盖：续跑轮正常说完时，首轮的状态不该残留到最终结论里。
+            incompleteReason = event.incompleteReason;
             break;
           }
           // §3.2：queryLoop 异常现封装为 fatal_error 事件（不再穿透 for-await）。
@@ -8502,10 +8533,28 @@ export class App {
         ),
         role: "assistant",
         content: lastAssistant?.content || [],
+        // 原样保留（已有调用方在读）；inputTokens 口径随 provider 变，跨 provider 请读 usage_normalized。
         usage: this.sessionState.getTotalUsage(),
+        // #8 / #9：逐模型归一化后累加的互斥分段 + model/provider/成本/轮次/耗时，对齐 stream-json 的 result。
+        usage_normalized: normalizeModelUsage(this.sessionState.modelUsage),
+        model: this.config.model,
+        provider: providersOf(this.sessionState.modelUsage),
+        // 与 stream-json result 的 total_cost_usd 同源（getCostUsd 驱动：主循环 + 辅助调用）
+        total_cost_usd: this.sessionState.getEffectiveTotalCostUSD(),
+        num_turns: this.sessionState.getAbsoluteTurn(),
+        duration_ms: this.sessionState.getElapsedMs(),
       };
       if (runError) {
         result.error = { message: runError.message, name: runError.name, aborted };
+        result.is_error = true;
+      } else if (this.receivedSignalExitCode !== null) {
+        // P0 #3：被信号终止。主路径若抢在信号处理器前走到这里，JSON 也要如实写「被杀」。
+        result.error = { reason: "signal", exit_code: this.receivedSignalExitCode };
+        result.is_error = true;
+      } else if (headlessIncomplete({ incompleteReason, sessionTimedOut })) {
+        // P0 #3：超时重试耗尽 / 退避期被中断 / 停滞 / 窗口撑爆——不是正常说完。
+        result.error = { reason: incompleteReason };
+        result.is_error = true;
       }
       if (budgetExceeded) {
         // 与 stream-json 的 error_max_budget_usd 同一事实，只是 text/json 路径
@@ -8561,7 +8610,16 @@ export class App {
     await runShutdownSequence();
     // 预算硬停与运行时异常同为非 0：CI 用退出码判断要不要当失败。
     // 权限拒绝不在此列——被拒的工具已在结果里列明，任务本身可能仍然完成了。
-    process.exit(runError || budgetExceeded ? 1 : 0);
+    // P0 #3：未完成（incompleteReason）同为非 0；收到过信号则一律用信号退出码，不靠竞速。
+    process.exit(
+      resolveHeadlessExitCode({
+        signalExitCode: this.receivedSignalExitCode,
+        hasRunError: !!runError,
+        budgetExceeded,
+        incompleteReason,
+        sessionTimedOut,
+      }),
+    );
   }
 
   /**
@@ -8795,6 +8853,8 @@ export class App {
     let aborted = false;
     // B2：stream-json 的预算硬停写在结果消息的 subtype 里，进程退出码要跟着它走。
     let budgetExceeded = false;
+    // P0 #3：最后一条 result 是 incompleteReason 的映射（error_during_execution / error_stalled）
+    let sdkIncomplete = false;
     try {
       const outcome = await sdkRunHeadless(engine, {
         outputFormat: "stream-json",
@@ -8827,6 +8887,7 @@ export class App {
         idleTimeoutMs: readSdkIdleTimeoutMs(),
       });
       budgetExceeded = outcome.budgetExceeded;
+      sdkIncomplete = outcome.incomplete;
       if (outcome.idleTimedOut) {
         process.stderr.write(
           `[runHeadlessSDK] stdin 空闲超过 ${Math.round(readSdkIdleTimeoutMs() / 1000)}s，已结束会话\n`,
@@ -8898,7 +8959,16 @@ export class App {
       const summary = formatDenialSummary(this.headlessPermissionDenials());
       if (summary) process.stderr.write(`\n${summary}`);
     }
-    process.exit(runError || budgetExceeded ? 1 : 0);
+    // P0 #3：与 runHeadless 同一判定。stream-json 的 result 里已写了 error subtype，
+    // 这里让退出码跟上；会话硬顶触发的 aborted 按既有约定不算失败。
+    process.exit(
+      resolveHeadlessExitCode({
+        signalExitCode: this.receivedSignalExitCode,
+        hasRunError: !!runError,
+        budgetExceeded,
+        incompleteReason: sdkIncomplete && !sdkSessionTimedOut ? "aborted" : undefined,
+      }),
+    );
   }
 
   /** TUI 模式 */

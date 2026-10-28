@@ -26,7 +26,7 @@ import {
   CLAUDE_LOCAL_FILES,
   CLAUDE_RULES_DIR,
   parseRulesFrontmatter,
-  rulesPathsMatch,
+  rulesPathsMatchFromOwner,
   safeResolvePath,
   noteMemoryFileSize,
   recordSkippedExternalImport,
@@ -592,9 +592,11 @@ export class JitContextManager {
     const { paths, body } = parseRulesFrontmatter(rawContent);
     let effectiveReason = reason;
     if (paths && paths.length > 0) {
-      // activeFiles 用相对项目根的 posix 风格路径（与 rulesPathsMatch 的 glob 口径一致）
+      // activeFiles 用相对项目根的 posix 风格路径（与 rulesPathsMatch 的 glob 口径一致）。
+      // glob 基准沿 ownerDir → 项目根逐级尝试（rulesPathsMatchFromOwner），否则子包里
+      // 「相对本包」的写法（packages/cli/src/ui/CLAUDE.md 的 `src/ui/**`）永远不命中。
       const activeFile = relative(realRoot, activeAbsPath).split(sep).join("/");
-      if (!rulesPathsMatch(paths, [activeFile])) {
+      if (!rulesPathsMatchFromOwner(paths, [activeFile], ownerDir, realRoot)) {
         log.debug(
           "JIT",
           `规则 paths 作用域未命中，跳过: ${candidatePath} (paths=${JSON.stringify(paths)}, activeFile=${activeFile})`,

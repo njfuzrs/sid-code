@@ -22,6 +22,7 @@ import { detectUnansweredEndTurn } from "./unanswered-end-turn.ts";
 import { RequestAbortedError, LLMStreamError } from "../llm/errors.ts";
 import { resolveLoopTimeouts, resolveProviderStreamTimeouts } from "../config/network-profile.ts";
 import { isAwaitingHumanInput } from "./human-input-gate.ts";
+import { sleepGapMs } from "@sid-code/shared/utils/sleep-detect.ts";
 import { extractInternalEnTags } from "../config/prompt-lang.ts";
 
 /** 流式处理器配置 */
@@ -180,9 +181,37 @@ export async function processStream(
   // 次数上限又被时间上限架空（2026-10-12 解耦，见 query/retry-backoff-window.ts）。
   let backoffStartedAt: number | null = null;
   let backoffAccumMs = 0;
+  // ── #6（2026-10-27）：休眠不是静默 ──
+  //
+  // 本层用挂钟差值判静默/整体超时，此前不扣休眠。机器睡 975s 醒来后，第一个 tick 就看到
+  // 「975s 无数据」，于是同一时刻日志里出现三行互相矛盾的话（bug2mr P2 三个会话都是这样）：
+  //   [FALLBACK] 检测到系统休眠 975s … 主动中断并重开（不计重试次数）
+  //   [STREAM] 首字节超时: 300s 无数据
+  //   [QUERY_LOOP] 流式超时，重试 1/10
+  // 真因是休眠，fallback 层已在负责重开；本层却把它记成首字节超时并多耗一次重试名额，
+  // errors.jsonl 也落成 kind=timeout —— 排查的人会被引向「请求没有超时兜底」。
+  //
+  // 判据用本层自己的 tick 间隔（与 loop.ts / 休眠观测器同一个 isSleepGap，下限 30s，
+  // 测试注入的毫秒级 tick 不会误判）。刻意**不**调 `getSleepLedger().record()`：
+  // 账本已有观测器在记，再记一次会把同一段休眠重复计入全局累计。
+  let lastTickAt = Date.now();
+  let sleepAccumMs = 0;
 
   const checkInterval = setInterval(() => {
     const now = Date.now();
+    {
+      const slept = sleepGapMs(now - lastTickAt, CHECK_INTERVAL);
+      lastTickAt = now;
+      if (slept > 0) {
+        sleepAccumMs += slept;
+        // 静默计时整体后移休眠时长：睡着的那段不算「没数据」
+        lastActivityTime += slept;
+        log.warn(
+          "STREAM",
+          `检测到系统休眠约 ${(slept / 1000).toFixed(0)}s，已从静默/整体超时判据中剔除（重连由 fallback 层负责）`,
+        );
+      }
+    }
 
     // 闸门：正在阻塞等用户输入（如 fallback 询问弹窗）→ 本次不判超时，只记录等待起点。
     // 等待期间持续推进 lastActivityTime/扣除量，使答完后不会因"这段静默"立即被误杀。
@@ -205,7 +234,7 @@ export async function processStream(
     }
 
     // 整体超时检测（扣除累计的用户等待时段与重试退避时段）
-    if (now - startTime - humanWaitAccumMs - backoffAccumMs > OVERALL_TIMEOUT) {
+    if (now - startTime - humanWaitAccumMs - backoffAccumMs - sleepAccumMs > OVERALL_TIMEOUT) {
       timeoutError = new Error(`Stream overall timeout: ${OVERALL_TIMEOUT / 1000}s 总时长超限`);
       log.warn("STREAM", `整体超时: ${OVERALL_TIMEOUT / 1000}s`);
       // 根治（2026-07）：abort 时携带 reason。AbortSignal.reason 在首次 abort() 时被

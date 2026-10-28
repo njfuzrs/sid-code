@@ -35,6 +35,10 @@ import { recordEditOutcome } from "./edit-failure-tracker.ts";
 import { recordHitlPrompt } from "./turn-complete.ts";
 import { recordHitlWaitHistogram } from "../telemetry/metrics/latency-histograms.ts";
 import { detectSensitiveData } from "../permission/sensitive.ts";
+import {
+  checkBackgroundPoll,
+  emitBackgroundPollIntercepted,
+} from "../task/background-poll-guard.ts";
 // P0-1 漏斗 1/2：工具与权限埋点。必须走 analytics/events.ts 门面，不直接调 logEvent——
 // 门面强制脱敏工具名与文件路径，业务侧拿不到裸传接口（见该文件顶部的三条硬约束）。
 import {
@@ -1556,6 +1560,48 @@ export async function executeSingleTool(
   // hook 改写后、注入内部字段之前的参数：给 hook / LSP / 编辑失败计数 / 遥测看的「这次实际执行了什么」。
   // 不用 effectiveInput：它带 _parentToolUseId 这类内部字段，不该外泄给用户 hook。
   const executedInput = interp.modifiedInput ?? block.input;
+  // Q1：后台任务等待期的「看进度」调用（read 运行中任务的 .output、bash 看 tasks 目录、
+  // 阻塞式 task_output / bg_task_get）不执行，直接回「仍在运行，完成后自动通知」。
+  // 放在权限与 PreToolUse 之后：被 hook / 权限拒的调用照旧按原路径收尾，不在这里抢答。
+  // 只接主循环这一条路径：子代理不能派后台子代理，后台 bash 回执也只回到派发者。
+  // 非错误返回：报错会进失败计数，也会触发「换个办法再试」的倾向。
+  const poll = checkBackgroundPoll(block.name, executedInput);
+  if (poll.intercept) {
+    log.info(
+      "TOOL",
+      `Q1：拦截后台任务轮询 ${block.name}（${poll.kind}，${poll.taskIds.join(",")}）`,
+    );
+    emitBackgroundPollIntercepted({
+      tool_name: block.name,
+      tool_use_id: block.id,
+      kind: poll.kind,
+      task_ids: poll.taskIds,
+    });
+    const elapsedMs = Date.now() - toolStartedAt;
+    // Pre/Post 配对：PreToolUse 已 fire，这里以 PostToolUse 收尾（工具没报错，只是没执行）。
+    try {
+      await deps.hookSystem?.firePostToolUseEvent?.(
+        block.name,
+        executedInput as Record<string, unknown>,
+        { output: poll.output, isError: false },
+        false,
+        block.id,
+        { duration_ms: elapsedMs },
+      );
+    } catch (e: any) {
+      log.warn("HOOK", `PostToolUse（轮询拦截）执行异常（忽略）: ${e?.message ?? e}`);
+    }
+    logToolSuccess(block.name, {
+      durationMs: elapsedMs,
+      outputSize: poll.output.length,
+      filePath: efFilePath,
+    });
+    return {
+      block: { type: "tool_result", tool_use_id: block.id, content: poll.output, is_error: false },
+      elapsedMs,
+    };
+  }
+
   const execSignal = signalOverride ?? deps.getAbortSignal();
   const startTime = Date.now();
 

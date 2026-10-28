@@ -401,6 +401,65 @@ export function rulesPathsMatch(paths: string[] | undefined, activeFiles: string
   return false;
 }
 
+/**
+ * 规则文件「归属」的目录：`<dir>/CLAUDE.md` → `<dir>`；
+ * `<dir>/.claude/**` 与 `<dir>/.sid-code/**`（rules 目录、`.claude/CLAUDE.md` 等）→ `<dir>`。
+ *
+ * 判据是路径里最后一个 `.claude` / `.sid-code` 段，不数层数：`.claude/rules/a/b.md`
+ * 这种嵌套形态数层数会算错。
+ */
+export function ruleOwnerDir(sourcePath: string): string {
+  const segs = dirname(sourcePath).split(sep);
+  const idx = Math.max(segs.lastIndexOf(".claude"), segs.lastIndexOf(".sid-code"));
+  if (idx > 0) return segs.slice(0, idx).join(sep) || sep;
+  return dirname(sourcePath);
+}
+
+/**
+ * `paths:` 作用域判定，glob 基准沿「规则所在目录 → 项目根」逐级尝试，任一级命中即命中。
+ *
+ * 为什么不是只按项目根：monorepo 子包里的规则作者自然会写「相对本包」的 glob。
+ * `packages/cli/src/ui/CLAUDE.md` 的 `paths: ["src/ui/**"]` 就是这么写的（原本在仓库根
+ * `src/ui/`，`afab5725` 分包 `git mv` 后 frontmatter 没跟着改），只按根匹配时它永远是
+ * `scope_skipped`，本地 668 次 ui 访问 0 次注入。
+ *
+ * 为什么不是只按所在目录（CC 的 rules 口径）：`evals/CLAUDE.md` 的 `evals/**` 这类
+ * 根相对写法会坏掉，属于破坏性语义变更。链式尝试的第一级就是 CC 口径，最后一级是原来的
+ * 根口径，两种写法都成立。
+ *
+ * @param activeFiles 相对 `root` 的 posix 路径（与 `rulesPathsMatch` 同口径，
+ *   可含 `dir/` 形态的目录标记）。每一级只取落在该级之下的文件，去掉前缀后再匹配。
+ * @param ownerDir 规则归属目录（`ruleOwnerDir` / JIT 的遍历目录）。不在 `root` 之内时
+ *   只按 `root` 一级判定，等价于原行为。
+ */
+export function rulesPathsMatchFromOwner(
+  paths: string[] | undefined,
+  activeFiles: string[],
+  ownerDir: string,
+  root: string,
+): boolean {
+  if (!paths || paths.length === 0) return true;
+  const relOwner = relative(root, ownerDir).split(sep).join("/");
+  const ownerInside = relOwner === "" || (!relOwner.startsWith("..") && !relOwner.startsWith("/"));
+  // 从最深一级（所在目录）到根（""）的前缀序列
+  const prefixes: string[] = [];
+  if (ownerInside && relOwner) {
+    const segs = relOwner.split("/");
+    for (let i = segs.length; i > 0; i--) prefixes.push(segs.slice(0, i).join("/"));
+  }
+  prefixes.push("");
+  for (const prefix of prefixes) {
+    const files = prefix
+      ? activeFiles
+          .filter((f) => f.startsWith(prefix + "/"))
+          .map((f) => f.slice(prefix.length + 1))
+          .filter((f) => f !== "")
+      : activeFiles;
+    if (files.length > 0 && rulesPathsMatch(paths, files)) return true;
+  }
+  return false;
+}
+
 /** 按 Markdown 标题分段 */
 function splitSections(content: string): ClaudeMdSection[] {
   const lines = content.split("\n");
@@ -1033,7 +1092,18 @@ export async function loadAllCLAUDEmd(
     const needsOriginalCwdBasis =
       rules.paths && rules.paths.length > 0 && ORIGINAL_CWD_BASIS_LAYERS.has(rules.layer);
     const basis = needsOriginalCwdBasis ? getOriginalCwdActiveFiles() : activeFiles;
-    if (rulesPathsMatch(rules.paths, basis)) {
+    // Project 侧（父链 CLAUDE.md / rules 目录 / local）的 glob 基准沿规则所在目录到项目根逐级尝试，
+    // 与 JIT（jit-context.ts loadOne）同一个函数，保证同一份规则在两条路径上的判定一致。
+    // managed / user 三层不属于任何项目，仍只按 originalCwd 一级判定。
+    const inScope = needsOriginalCwdBasis
+      ? rulesPathsMatch(rules.paths, basis)
+      : rulesPathsMatchFromOwner(
+          rules.paths,
+          basis,
+          safeResolvePath(ruleOwnerDir(rules.sourcePath)),
+          safeResolvePath(projectRoot),
+        );
+    if (inScope) {
       loadedPaths.push(rules.sourcePath);
       return true;
     }
