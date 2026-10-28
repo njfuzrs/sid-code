@@ -134,6 +134,22 @@ export async function executeTools(
     `分区并发(贪心连续合并): ${batches.length} 个批次 [${batches.map((b) => `${b.isConcurrencySafe ? "‖" : "→"}${b.items.length}`).join(", ")}] cap=${maxConcurrency}`,
   );
 
+  // N1：对齐主循环（query/tool-executor.ts 的 shouldStopLaunching）。中断后剩余工具一律不启动，
+  // 否则 write/edit 会在用户 ESC 之后照样落盘（它们自身不看 signal），PreToolUse/权限也白走一遍。
+  // 不像主循环那样向上抛：agentic-loop 调用方没有接这个异常的收尾，占位结果 + 下一轮 LLM
+  // 调用因 signal 已中断自然结束，子代理的结束形态不变。
+  const isAborted = () => signal?.aborted === true;
+  const setAbortedPlaceholder = (block: { id: string }, idx: number) => {
+    resultMap.set(idx, {
+      type: "tool_result",
+      tool_use_id: block.id,
+      content: SUBAGENT_ABORTED_TOOL_RESULT,
+      is_error: true,
+    });
+  };
+
+  // 只在两处「启动工具之前」检查：串行逐个前、并发信号量取任务前。不另设批次级检查——
+  // 它被这两处完全覆盖（变异自证删掉它不变红），且这两处不依赖 partitionToolCalls 的分批形态。
   for (const batch of batches) {
     if (batch.isConcurrencySafe) {
       const settled = await runWithConcurrencyLimit(
@@ -163,12 +179,20 @@ export async function executeTools(
                 })),
         ),
         maxConcurrency,
+        isAborted,
       );
-      for (const { idx, result } of settled) {
-        resultMap.set(idx, result);
-      }
+      // 未启动的槽位为 undefined，统一补中断占位
+      batch.items.forEach(({ block, idx }, i) => {
+        const r = settled[i];
+        if (r) resultMap.set(r.idx, r.result);
+        else setAbortedPlaceholder(block, idx);
+      });
     } else {
       for (const { block, idx } of batch.items) {
+        if (isAborted()) {
+          setAbortedPlaceholder(block, idx);
+          continue;
+        }
         try {
           const result = await executeSingleTool(
             block,
@@ -213,16 +237,24 @@ export async function executeTools(
   return results;
 }
 
-/** 信号量：并行批次不超过 getMaxToolConcurrency()，超出排队 FIFO。 */
+/** 中断后未执行工具的占位结果文案（N 进 N 出；未 fire PreToolUse，故不补 Failure） */
+export const SUBAGENT_ABORTED_TOOL_RESULT = "工具未执行：子代理已被中断";
+
+/**
+ * 信号量：并行批次不超过 getMaxToolConcurrency()，超出排队 FIFO。
+ * shouldStopLaunching 为真时不再启动新任务，对应槽位留 undefined 由调用方补占位。
+ */
 async function runWithConcurrencyLimit<T>(
   tasks: Array<() => Promise<T>>,
   limit: number,
-): Promise<T[]> {
+  shouldStopLaunching?: () => boolean,
+): Promise<Array<T | undefined>> {
   if (tasks.length === 0) return [];
-  const results: T[] = new Array(tasks.length);
+  const results: Array<T | undefined> = new Array(tasks.length);
   let nextIdx = 0;
   async function worker(): Promise<void> {
     while (nextIdx < tasks.length) {
+      if (shouldStopLaunching?.()) return;
       const idx = nextIdx++;
       results[idx] = await tasks[idx]();
     }
