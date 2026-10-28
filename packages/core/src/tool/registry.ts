@@ -436,9 +436,12 @@ export class Registry {
    *    （`--tools` 刻意不碰 MCP，因为白名单枚举不到未连接的 MCP 工具，一刀切会全裁掉。）
    * 3. 走 `get()` 解析别名：用户按旧名禁用时也要真的禁掉，否则改名一次就漏一个。
    *
-   * 权限层那条判据**刻意保留**（不改成"裁剪之后就不必查了"）：`disallowedTools` 也可能
-   * 在会话中途由 CLAUDE.md 规则合并进来（`app.ts` applyProjectRules），
-   * 而那时工具已经注册完了。两层都在才是 fail-closed。
+   * 调用方有两处：`cli.ts` 启动期（命令行 / settings 名单），以及 `app.ts` applyProjectRules
+   * （CLAUDE.md 名单，启动与热重载时；见 cli 包 `utils/project-rules-tool-denylist.ts`）。
+   * 后者曾经漏调，CLAUDE.md 禁用的工具 schema 照进上下文、skip 模式下完全不拦（2026-10-27）。
+   *
+   * 权限层那条判据**刻意保留**（不改成"裁剪之后就不必查了"）：它是任何漏接裁剪的来路的
+   * 兜底。两层都在才是 fail-closed。
    *
    * @returns 实际被移除的工具名列表（原名，非用户输入的别名），供调用方日志/诊断。
    */

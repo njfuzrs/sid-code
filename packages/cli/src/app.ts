@@ -143,6 +143,7 @@ import { deriveTaskTitle } from "./ui/utils/task-title.ts";
 import { buildInteractiveBashToolUse } from "./ui/shell-input.ts";
 import { mergeAnchoredItems } from "./ui/local-command-items.ts";
 import { resolvePanel } from "./command/executor.ts";
+import { applyRuleToolDenylist } from "./utils/project-rules-tool-denylist.ts";
 import { buildCommandAnswerMessages, routeCommandResult } from "./ui/command-result-route.ts";
 import { startPreventSleep, stopPreventSleep } from "@sid-code/core/task/prevent-sleep.ts";
 import {
@@ -5773,10 +5774,19 @@ export class App {
       log.info("APP", `CLAUDE.md 工具白名单: ${rules.allowedTools.join(", ")}`);
     }
 
-    // 工具黑名单（合并）
+    // 工具黑名单（合并 + 裁剪工具集）。只追加进 config 时，被禁工具 schema 仍进上下文，
+    // 且 skip 模式下权限层早退、名单什么都不拦。语义与代价见 project-rules-tool-denylist.ts。
     if (rules.disallowedTools?.length) {
-      this.config.disallowedTools = [...this.config.disallowedTools, ...rules.disallowedTools];
-      log.info("APP", `CLAUDE.md 工具黑名单: ${rules.disallowedTools.join(", ")}`);
+      const { merged, removed } = applyRuleToolDenylist(
+        this.toolRegistry,
+        this.config.disallowedTools,
+        rules.disallowedTools,
+      );
+      this.config.disallowedTools = merged;
+      log.info(
+        "APP",
+        `CLAUDE.md 工具黑名单: ${rules.disallowedTools.join(", ")}；裁剪移除 ${removed.length} 个工具${removed.length > 0 ? `（${removed.join(", ")}）` : ""}，后续注册（含 MCP）一并拒收`,
+      );
     }
 
     // 权限模式（仅当命令行未指定时才覆盖）
