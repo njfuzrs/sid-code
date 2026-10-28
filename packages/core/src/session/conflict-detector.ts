@@ -117,3 +117,22 @@ export function formatConflictWarning(report: ConflictReport): string {
 
   return lines.join("\n");
 }
+
+/**
+ * PR-8（B10）：无头模式（SDK/Bridge/--print，conflictHandler 为 undefined）降级时
+ * 附进**工具成功输出**的一行冲突摘要。
+ *
+ * 与 formatConflictWarning 的分工：那份是给人看的终端多行警告；这份是给**模型**看的，
+ * 必须紧凑（进 LLM 上下文，逐 token 计费）且自解释——模型需要知道
+ * ①有冲突未被人工裁决 ②对方会话在做什么 ③自己的写入可能与之互相覆盖。
+ * 此前这条信息只进 log.warn，模型在无任何警示下继续编辑（B10）。
+ */
+export function formatHeadlessConflictNote(report: ConflictReport): string {
+  const others = report.conflictingSessions
+    .map((s) => `${s.sessionId.slice(-8)}(${s.lastOperation}, ${s.secondsAgo}s前)`)
+    .join("、");
+  return (
+    `\n⚠️ 并发冲突（无头模式，未经用户确认已继续执行）：${report.summary}` +
+    `［${others}］。本次写入可能与其他会话互相覆盖，后续修改此文件前建议重新读取最新内容。`
+  );
+}

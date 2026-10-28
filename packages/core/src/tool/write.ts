@@ -231,9 +231,12 @@ export class WriteTool implements Tool {
     // 并发冲突检测（Phase 2.1 + 2.4 配置化）
     const conflictEnabled = this.tracker?.conflictDetection ?? true;
     const conflictSeverity = this.tracker?.conflictSeverity ?? "warn";
+    // PR-8（B10）：无头模式降级时把冲突摘要**附进工具成功输出**（此前只进 log.warn，
+    // 模型完全看不到）。与 edit.ts 同一机制，格式共享 formatHeadlessConflictNote。
+    let headlessConflictNote = "";
 
     if (conflictEnabled && conflictSeverity !== "off" && this.tracker?.sessionId) {
-      const { checkConflict, formatConflictWarning } =
+      const { checkConflict, formatConflictWarning, formatHeadlessConflictNote } =
         await import("../session/conflict-detector.ts");
       const conflict = checkConflict(filePath, this.tracker.sessionId);
       if (conflict) {
@@ -285,14 +288,15 @@ export class WriteTool implements Tool {
           }
           // action === "continue" → 继续执行
         } else {
-          // P1-6：无头模式（SDK/Bridge/--print）下 conflictHandler 为 undefined，
-          // 显式降级：把冲突摘要写入工具输出，让模型知道有冲突但继续执行。
-          // 与 block 模式不同，不阻断操作（无头模式无法弹框等待用户决定）。
+          // P1-6 + PR-8（B10）：无头模式（SDK/Bridge/--print）下 conflictHandler 为
+          // undefined，显式降级：冲突摘要**附进本次工具的成功输出**（此前只进 log.warn，
+          // 模型看不到）。与 block 模式不同，不阻断操作（无头模式无法弹框等待用户决定）。
           const warningSummary = formatConflictWarning(conflict);
           log.warn(
             "TOOL",
             `无头模式：并发冲突降级处理，继续执行（${warningSummary.split("\n").slice(1, 4).join(" ")}）`,
           );
+          headlessConflictNote = formatHeadlessConflictNote(conflict);
           // P2-14：埋点——记录无头模式降级
           recordConflict(
             filePath,
@@ -301,7 +305,7 @@ export class WriteTool implements Tool {
             "headless_fallback",
             "write",
           );
-          // 不阻断，继续执行（模型会在输出中看到后续正常结果）
+          // 不阻断，继续执行；成功返回点会把 headlessConflictNote 拼进 output
         }
       }
     }
@@ -404,7 +408,9 @@ export class WriteTool implements Tool {
       return {
         output:
           `文件${action}: ${filePath}${lineDropWarning}` +
-          (negotiated.userEdited ? "（采用了你在 IDE 中修改后的内容）" : ""),
+          (negotiated.userEdited ? "（采用了你在 IDE 中修改后的内容）" : "") +
+          // PR-8（B10）：无头模式冲突摘要随成功输出回传给模型（空串 = 无冲突，无副作用）
+          headlessConflictNote,
         structuredPatch: buildStructuredPatch(filePath, oldContent, contentToWrite),
       };
     } catch (err: any) {
