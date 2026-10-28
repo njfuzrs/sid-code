@@ -68,12 +68,18 @@ export function deriveRepoName(cwd: string): string {
 }
 
 /**
- * P3-3：从 cwd 派生 worktree 名。约定 sid-code 的 worktree 位于 `.claude/worktrees/<name>`，
- * 非 worktree（在主仓或普通目录）返回空串（不显示 worktree 列）。
- * 与 Footer.deriveWorktreeName 同源逻辑，集中到数据层供状态栏列复用。
+ * P3-3：从 cwd 派生 worktree 名，非 worktree（在主仓或普通目录）返回空串（不显示 worktree 列）。
+ *
+ * B7：识别两种 worktree 容器 —— `.sid-code/worktrees/<name>`（worktree/manager.ts 管理的）
+ * 与 `.claude/worktrees/<name>`（CC 风格）。此前只认 `.claude`，而 sid-code 自己建的
+ * worktree 全在 `.sid-code/worktrees/` 下，状态栏 worktree 列恒为空。
+ *
+ * slug 排除点开头名（与 safety-protected-paths 的 WORKTREE_CONTAINER_RE 同口径），
+ * 但不带它的 `(?=\/)` 前探——那个前探是给「剥路径中段」用的；这里 cwd 可能恰好是
+ * worktree 根目录本身（无尾随斜杠），用途是捕获末段 slug，照抄前探会漏掉这种形态。
  */
 export function deriveWorktree(cwd: string): string {
-  const m = cwd.match(/\.claude\/worktrees\/([^/]+)/);
+  const m = cwd.match(/\.(?:sid-code|claude)\/worktrees\/(?!\.)([^/]+)/);
   return m ? m[1] : "";
 }
 
