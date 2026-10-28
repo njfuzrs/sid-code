@@ -11,8 +11,22 @@
 import { createHash } from "crypto";
 import { getLogger } from "../debug/logger.ts";
 
-/** 冲突事件类型 */
-export type ConflictAction = "stop" | "skip" | "continue" | "blocked" | "headless_fallback";
+/**
+ * 冲突事件类型。
+ *
+ * A1 契约（PR-1 定死，PR-4 消费）：`branch_auto_continue` 专指
+ * 「worktree 分支分叉冲突（isWorktreeBranchConflict=true）不弹窗自动放行」。
+ * 它**必须**与 `continue` 分开——continue 是"用户在弹窗里裁决后继续"，
+ * 而误报率代理口径 = action=continue 占比；把无人裁决的自动放行混进 continue
+ * 会把误报率算成一个自欺的数（分子里掺进了根本没问过的样本）。
+ */
+export type ConflictAction =
+  | "stop"
+  | "skip"
+  | "continue"
+  | "blocked"
+  | "headless_fallback"
+  | "branch_auto_continue";
 
 /** 冲突事件数据 */
 export interface ConflictEvent {
