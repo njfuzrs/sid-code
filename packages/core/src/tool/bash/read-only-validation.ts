@@ -19,7 +19,7 @@ const READ_ONLY_COMMANDS = new Set([
   "stat",
   "du",
   "df",
-  "find",
+  // find 不在此列：`-delete` / `-exec` / `-fprint` 等动作会写盘或执行任意命令，见 isReadOnlyFind
   "locate",
   "which",
   "whereis",
@@ -58,11 +58,9 @@ const READ_ONLY_COMMANDS = new Set([
   // 数据处理（无写入）
   "jq",
   "yq",
-  "sort",
-  "uniq",
+  // sort / uniq / awk 不在此列：它们能借参数写文件或执行命令，由 CONDITIONAL_COMMANDS 按参数判
   "cut",
   "tr",
-  "awk",
   "sed",
   "diff",
   "comm",
@@ -113,6 +111,7 @@ const READ_ONLY_GIT_SUBCOMMANDS = new Set([
   "reflog",
   "name-rev",
   "for-each-ref",
+  "merge-base",
 ]);
 
 /**
@@ -286,12 +285,99 @@ export function isReadOnlyGh(args: string[]): boolean {
   return !args.some((a) => a === "--web" || a === "-w" || a.startsWith("--web="));
 }
 
+/**
+ * find 的副作用动作：删除、执行任意命令、写文件。命中任一即非只读。
+ * 只看 token 精确相等——`-name '-delete'` 这种把它当模式值的写法会被误判成非只读，
+ * 方向是落到确认，可接受。
+ */
+const FIND_SIDE_EFFECT_ACTIONS = new Set([
+  "-delete",
+  "-exec",
+  "-execdir",
+  "-ok",
+  "-okdir",
+  "-fprint",
+  "-fprint0",
+  "-fprintf",
+  "-fls",
+]);
+
+export function isReadOnlyFind(args: string[]): boolean {
+  return !args.some((a) => FIND_SIDE_EFFECT_ACTIONS.has(a));
+}
+
+/**
+ * awk 脚本里的三条副作用通道 `system()`、`print | "cmd"` / `"cmd" | getline`、`print > "f"`
+ * 都在脚本串内部，不是 shell 重定向，AST 层看不到。这里不做 awk 语法解析，按关键字保守判：
+ * 含 `system`、`getline`、单个 `|`、不接 `=` 的 `>` 任一即非只读。
+ *
+ * `>=` 与 `||` 排除在外：它们在 awk 里只可能是比较和逻辑或，不会是重定向或管道。
+ * 本地轨迹实测（4889 条 bash 命令，2026-10-28），修前判只读的 5 条 awk 有 3 条是
+ * `NR>=12`、`a || b` 这种行号筛选，不排除就有 60% 的只读 awk 白弹确认。
+ * 剩下的代价是 `$1 > 5` 这类数值比较、`/a|b/` 这类正则交替仍会落到确认
+ * （看不懂就不算只读，落 ask 不是硬拒）。
+ */
+const AWK_SIDE_EFFECT_PATTERN = /system|getline|(?<!\|)\|(?!\|)|>(?!=)/;
+/** 带值的 awk 选项：值不是脚本。`-f` / `--file` / `-e` / `--source` 单独处理。 */
+const AWK_VALUE_OPTS = new Set(["-F", "-v", "--field-separator", "--assign"]);
+
+export function isReadOnlyAwk(args: string[]): boolean {
+  const scripts: string[] = [];
+  let i = 0;
+  for (; i < args.length; i++) {
+    const a = args[i] ?? "";
+    if (a === "--") {
+      i++;
+      break;
+    }
+    if (!a.startsWith("-") || a === "-") break;
+    // 脚本从文件读：内容看不到，按非只读
+    if (a === "-f" || a.startsWith("-f") || a === "--file" || a.startsWith("--file=")) return false;
+    // gawk 的 -e / --source 直接给脚本串
+    if (a === "-e" || a === "--source") {
+      scripts.push(args[++i] ?? "");
+      continue;
+    }
+    if (a.startsWith("--source=")) {
+      scripts.push(a.slice("--source=".length));
+      continue;
+    }
+    if (AWK_VALUE_OPTS.has(a)) {
+      i++;
+      continue;
+    }
+    // -F: / -vx=1 / --assign=x=1 等同 token 带值形态，以及其余无值选项：跳过
+  }
+  // 没有 -e / --source 时，第一个位置参数就是脚本
+  if (scripts.length === 0 && i < args.length) scripts.push(args[i] ?? "");
+  return !scripts.some((s) => AWK_SIDE_EFFECT_PATTERN.test(s));
+}
+
 /** 需要特殊处理的命令（看起来只读但可能有副作用） */
 const CONDITIONAL_COMMANDS: Record<string, (args: string[]) => boolean> = {
   // sed 只有不带 -i 时才是只读
   sed: (args) => !args.some((a) => a === "-i" || a.startsWith("-i") || a === "--in-place"),
-  // awk 只有不带重定向时才是只读（重定向在 AST 层处理）
-  awk: () => true,
+  // awk 的副作用在脚本串里，shell 重定向检查看不到，见 isReadOnlyAwk
+  awk: isReadOnlyAwk,
+  gawk: isReadOnlyAwk,
+  mawk: isReadOnlyAwk,
+  find: isReadOnlyFind,
+  // sort -o 写输出文件
+  sort: (args) =>
+    !args.some(
+      (a) =>
+        a === "-o" ||
+        (a.startsWith("-o") && !a.startsWith("--")) ||
+        a === "--output" ||
+        a.startsWith("--output="),
+    ),
+  // uniq 的第二个位置参数是输出文件（`uniq in out`）。选项一律跳过：-f/-s/-w 的数值
+  // 若写成分开的 token 会被当成位置参数，判非只读，方向是落确认
+  uniq: (args) => {
+    let positional = 0;
+    for (const a of args) if (!a.startsWith("-") || a === "-") positional++;
+    return positional <= 1;
+  },
   // tee 总是写文件
   tee: () => false,
   // curl/wget 恒非只读。
@@ -372,6 +458,8 @@ export function isReadOnlyCommand(command: string): boolean {
         continue;
       }
       if (!READ_ONLY_GIT_SUBCOMMANDS.has(subCmd)) return false; // 未知子命令默认非只读
+      // diff / log / show 都接受 --output=<file>，把结果写进文件
+      if (gitArgs.some((a) => a === "--output" || a.startsWith("--output="))) return false;
       continue;
     }
 
