@@ -21,7 +21,7 @@
 import { closeSync, fstatSync, openSync, readSync, realpathSync } from "fs";
 import { basename, dirname, resolve } from "path";
 import { sidPaths } from "../config/paths.ts";
-import type { TaskState, TaskStatus } from "./types.ts";
+import { isTerminalStatus, type TaskState, type TaskStatus } from "./types.ts";
 
 // ─────────────────────────── 回合纪元 ───────────────────────────
 
@@ -219,14 +219,29 @@ export function taskIdFromOutputPath(filePath: string): string | null {
  *
  * 诚实边界：只有走 read 工具的读取能拿到它；bash `tail` / `cat` 覆盖不到。
  * 真正让文件在模型读之前不被删的是按回合驱逐，这里只是删了之后别让模型误以为「任务没产出」。
+ *
+ * `liveStatus`：调用方从 registry 查到的任务当前状态（本模块不能 import registry，后者依赖本模块）。
+ * Q1：子代理的 `.output` 要等首个带文本的轮次落盘才建出，运行中去读同样 ENOENT。旧文案一律说
+ * 「已不存在…可能已清理」并建议用 task_output 查询（默认阻塞），S3v 里模型照做连发 3 次阻塞调用。
  */
-export function formatTaskOutputTombstone(taskId: string, filePath: string): string {
+export function formatTaskOutputTombstone(
+  taskId: string,
+  filePath: string,
+  liveStatus?: TaskStatus,
+): string {
+  if (liveStatus !== undefined && !isTerminalStatus(liveStatus)) {
+    return (
+      `任务 ${taskId} 仍在运行，尚未产出输出: ${filePath}\n` +
+      `完成后会以 <task-notification> 自动通知你，不需要查看这个文件，也不需要阻塞等待。` +
+      `继续做不依赖它的工作，或告诉用户已启动什么后结束本轮。`
+    );
+  }
   const t = tombstones.get(taskId);
   if (!t) {
     return (
       `后台任务输出文件已不存在: ${filePath}\n` +
       `这是任务 ${taskId} 的输出文件。它可能已在完成通知送达并被处理后按生命周期清理，` +
-      `或属于已结束的会话。如任务仍在本会话中，请用 task_output 工具（task_id="${taskId}"）查询。`
+      `或属于已结束的会话。如需当前快照，用 task_output（task_id="${taskId}", block=false）。`
     );
   }
   const head =

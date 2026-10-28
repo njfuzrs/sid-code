@@ -1238,9 +1238,6 @@ function buildSubagentResultBoundarySection(language?: LanguagePref): string {
 <result> / <summary> 是**结论级预览**，子代理的完整产出（完整代码片段、逐条表格、文件路径清单等）已落盘到 <output-file> 指向的文件。
 - 需要引用结论的具体细节时，用 read(<output-file>) 拉取完整内容，**不要基于预览臆测细节**（预览可能已截断）。
 - 这样重内容留在上下文窗口之外、按需才进你的上下文，避免多个子代理的全量产出常驻、挤占预算（对标 Anthropic/Vectara：父代理只看浓缩结果 + 引用指针）。
-
-## 后台任务不要轮询
-后台子代理 / 后台命令完成时会**自动**通知你。**不要**用 task_output / bg_task_get 阻塞等待或轮询它们的进度；继续做不重叠的工作，或简短告诉用户启动了什么并结束本轮，结果会在下一轮自动送达。
 </subagent-result-policy>`;
 }
 
