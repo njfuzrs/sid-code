@@ -106,29 +106,12 @@ async function runStatus(): Promise<void> {
 const STOP_WAIT_TIMEOUT_MS = 10_000;
 
 /**
- * 轮询直到旧守护进程退出（锁释放或持有者已死）。返回 false = 超时。
- * isDaemonRunning 顺带回收 stale 锁，所以「进程已死但锁没删」也算退出。
- */
-export async function waitForDaemonExit(
-  isRunning: () => boolean,
-  timeoutMs = STOP_WAIT_TIMEOUT_MS,
-  pollMs = 100,
-): Promise<boolean> {
-  const deadline = Date.now() + timeoutMs;
-  while (isRunning()) {
-    if (Date.now() >= deadline) return false;
-    await new Promise((r) => setTimeout(r, pollMs));
-  }
-  return true;
-}
-
-/**
  * 停止运行中的守护进程。
  * @param wait true = 发完 SIGTERM 后等旧进程真正退出（restart 用）；超时报错退出，
  *             不继续 start——否则抢锁失败报「已有守护进程在运行」，旧的退了新的没起，一个都没有。
  */
 async function runStop(wait = false): Promise<void> {
-  const { readDaemonLock, isDaemonRunning, releaseDaemonLock } =
+  const { readDaemonLock, isDaemonRunning, releaseDaemonLock, waitForDaemonExit } =
     await import("@sid-code/core/daemon/lock.ts");
   const lock = readDaemonLock();
   if (!lock || !isDaemonRunning()) {
@@ -138,7 +121,7 @@ async function runStop(wait = false): Promise<void> {
   try {
     process.kill(lock.pid, "SIGTERM");
     console.log(`已向守护进程 (pid=${lock.pid}) 发送 SIGTERM`);
-    if (wait && !(await waitForDaemonExit(isDaemonRunning))) {
+    if (wait && !(await waitForDaemonExit(STOP_WAIT_TIMEOUT_MS))) {
       console.error(
         `错误: 守护进程 (pid=${lock.pid}) ${STOP_WAIT_TIMEOUT_MS / 1000}s 内未退出，放弃重启（见 sid-code daemon logs）`,
       );
@@ -164,7 +147,14 @@ function runLogs(): void {
 
 /** 主入口 */
 export async function handleDaemonCommand(args: string[]): Promise<void> {
-  const { sub, opts } = parseDaemonArgs(args);
+  let parsed: ReturnType<typeof parseDaemonArgs>;
+  try {
+    parsed = parseDaemonArgs(args);
+  } catch (err: any) {
+    console.error(`错误: ${err.message}\n使用 sid-code daemon --help 查看用法`);
+    process.exit(1);
+  }
+  const { sub, opts } = parsed;
 
   if (opts.help) {
     printHelp();

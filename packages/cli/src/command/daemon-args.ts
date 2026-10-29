@@ -16,18 +16,10 @@ export interface DaemonCliOptions {
   help: boolean;
 }
 
-export const KNOWN_SUBS = new Set([
-  "start",
-  "status",
-  "stop",
-  "restart",
-  "logs",
-  "install",
-  "uninstall",
-]);
+const KNOWN_SUBS = new Set(["start", "status", "stop", "restart", "logs", "install", "uninstall"]);
 
 /**
- * 严格解析：出错抛 Error，供单测直接断言。CLI 入口走 {@link parseDaemonArgs}。
+ * 解析失败抛 Error（由 daemon.ts 入口打印并 exit 1；单测可直接断言）。
  *
  * 子命令只看 `args[0]`：
  * - 不以 `-` 开头 → 原样作为子命令返回，**不认识的也原样返回**，由 daemon.ts 走「未知子命令」。
@@ -35,7 +27,7 @@ export const KNOWN_SUBS = new Set([
  * - 为空或以 `-` 开头 → 默认 start；此时不允许再出现位置参数。
  *   否则 `--interval 5000 status` 会被当成 start（实测），想查状态却起了一个常驻进程。
  */
-export function parseDaemonArgsStrict(args: string[]): { sub: string; opts: DaemonCliOptions } {
+export function parseDaemonArgs(args: string[]): { sub: string; opts: DaemonCliOptions } {
   const first = args[0];
   const hasSub = first !== undefined && !first.startsWith("-");
   const sub = hasSub ? first : "start";
@@ -77,14 +69,4 @@ export function parseDaemonArgsStrict(args: string[]): { sub: string; opts: Daem
       help: !!values.help,
     },
   };
-}
-
-/** CLI 入口：解析失败打印错误并 exit 1 */
-export function parseDaemonArgs(args: string[]): { sub: string; opts: DaemonCliOptions } {
-  try {
-    return parseDaemonArgsStrict(args);
-  } catch (err: any) {
-    console.error(`错误: ${err.message}\n使用 sid-code daemon --help 查看用法`);
-    process.exit(1);
-  }
 }

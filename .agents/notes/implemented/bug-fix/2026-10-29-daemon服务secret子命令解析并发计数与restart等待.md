@@ -22,6 +22,6 @@ Date: 2026-10-29
 
 ## 拿什么证明它生效了
 
-- 新增测试：`packages/core/tests/daemon/daemon-scheduled-defects.test.ts`、`packages/cli/tests/command/{daemon-args,daemon-restart-wait,loop-wakeup-param-names}.test.ts`。
+- 新增测试：`packages/core/tests/daemon/daemon-scheduled-defects.test.ts`、`packages/core/tests/daemon/daemon-restart-wait.test.ts`、`packages/cli/tests/command/{daemon-args,loop-wakeup-param-names}.test.ts`。
 - 变异自证：逐条恢复成旧行为，包括 secret 文件不读、不写 SID_CONFIG_DIR、`--webhook` 不拒装、未知子命令当 start、`createDaemonServer(config)` 不传闸门、release 不减计数、不轮询、写死版本、`delaySeconds`。每条都有对应断言变红，恢复后全绿。第一版测试漏掉了「daemon 没把自己传给 server」这一条，变异照样全绿，所以补了一条从 `maybeStartWebhook` 走端到端的 429 用例。
 - 没有在真机上 `launchctl load` 或 `systemctl enable` 验证服务拉起，只断言了生成的服务文件内容和 secret 文件权限。
