@@ -123,3 +123,21 @@ function safeVersion(): string {
     return "unknown";
   }
 }
+
+/**
+ * 轮询直到守护进程退出（锁释放或持有者已死）。返回 false = 超时。
+ * isDaemonRunning 顺带回收 stale 锁，所以「进程已死但锁没删」也算退出。
+ * restart 用：此前固定等 1s，旧进程慢一点新进程就抢锁失败，结果一个 daemon 都没有。
+ */
+export async function waitForDaemonExit(
+  timeoutMs: number,
+  pollMs = 100,
+  isRunning: () => boolean = isDaemonRunning,
+): Promise<boolean> {
+  const deadline = Date.now() + timeoutMs;
+  while (isRunning()) {
+    if (Date.now() >= deadline) return false;
+    await new Promise((r) => setTimeout(r, pollMs));
+  }
+  return true;
+}
