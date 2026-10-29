@@ -68,6 +68,7 @@ import { drainAgentMessages } from "./message-queue.ts";
 // 且 spawn 回退、异常兜底都在这里，注册/注销包住整个执行体才不会漏。
 import { getTeamMemberContext } from "../swarm/team-context.ts";
 import { registerSession, unregisterSession } from "../session/concurrent.ts";
+import { clearFileIntent } from "../session/file-intent.ts";
 import { getAgentSystemPrompt, resolveAgent, BUILTIN_AGENTS } from "./agent-definition.ts";
 import { platform, homedir } from "os";
 import { dirname, join } from "path";
@@ -1000,6 +1001,11 @@ export class SubAgent {
           /* 注销失败只留 stale 文件，探活会清 */
         }
       }
+
+      // PR-2：子代理退出即清理自己的意图文件。子代理与父会话同 pid，读侧的
+      // isProcessAlive 探活清不掉它——不显式清理，残留意图会继续拦其它会话
+      // 直到 5 分钟过期。与 unregisterSession 同一 finally，覆盖成功/失败/异常三条路径。
+      clearFileIntent(agentId);
     }
     return result;
   }
@@ -1068,6 +1074,8 @@ export class SubAgent {
         .catch((err) => log.error("HOOK", `subagent_stop hook 失败: ${err.message}`));
       // G2：同 execute()，成本按子代理归因。try 抛异常时 result 未赋值，跳过。
       if (result! && !result.agentId) result.agentId = customAgentId;
+      // PR-2：同 execute()，退出即清理自己的意图文件（与父会话同 pid，探活清不掉）。
+      clearFileIntent(customAgentId);
     }
     return result;
   }
@@ -2073,7 +2081,11 @@ export class SubAgent {
       // 消除此前「进程内/spawn 两处并列调用 filterToolsForAgent、其中 spawn 那处
       // 忘记传 agentDef.tools/disallowedTools」的结构性缺陷（审计第 2 条）。
       const filteredTools = this.resolveFilteredToolsForTask(task, agentDef);
-      const tools = this.buildIsolatedToolRegistry(filteredTools, task.type);
+      const tools = this.buildIsolatedToolRegistry(
+        filteredTools,
+        task.type,
+        this.deriveSubAgentSessionId(taskId),
+      );
       // M2: 把 StructuredOutput 工具挂进隔离工具集(在过滤之后,确保不被裁剪掉)
       if (structuredTool) {
         tools.register(structuredTool);
@@ -2515,7 +2527,7 @@ export class SubAgent {
       const resolvedTools = this.resolveCustomTools(task);
       const tools =
         resolvedTools.length > 0
-          ? this.buildIsolatedToolRegistry(resolvedTools, task.type)
+          ? this.buildIsolatedToolRegistry(resolvedTools, task.type, observerAgentId)
           : new ToolRegistry();
       // Agent 定义的 maxTurns 是默认值；Skill / 命令调用级 maxTurns 优先。
       const maxTurns = resolveSubAgentMaxTurns(task, agentDefinition?.maxTurns);
@@ -2743,14 +2755,23 @@ export class SubAgent {
    * 对标 claude-code：普通子代理 readFileState 全新空初始化（我们无 fork 模式，
    * 故无需克隆父级，比 cc 更简单）。spawn 路径靠进程隔离天然解决，不经过此方法。
    */
-  private buildIsolatedToolRegistry(filteredTools: LegacyTool[], agentType?: string): ToolRegistry {
+  private buildIsolatedToolRegistry(
+    filteredTools: LegacyTool[],
+    agentType?: string,
+    agentId?: string,
+  ): ToolRegistry {
     const subTracker = new FileReadTracker();
-    // P1-6：子代理继承父会话的会话上下文（sessionId/pid/cwd），参与并发冲突检测
+    // P1-6：子代理继承父会话的会话上下文（pid/cwd），参与并发冲突检测。
+    // PR-2（B3）：sessionId 改用自己的 agentId——此前共用父 sessionId，
+    // queryFileIntents 按 sessionId 排除自己，兄弟子代理的声明被当成"自己"整体
+    // 排除（并行子代理互相检测不到），且同写一个意图文件读-改-写互相覆盖（C2）。
+    // parentSessionId 仅作归属展示（/conflict、冲突报告），不参与排除。
     if (this.parentSessionId && this.parentPid && this.parentCwd) {
       subTracker.applySessionContext({
-        sessionId: this.parentSessionId,
+        sessionId: agentId ?? this.parentSessionId,
         pid: this.parentPid,
         cwd: this.parentCwd,
+        ...(agentId ? { parentSessionId: this.parentSessionId } : {}),
       });
     }
     const checker = this.permissionChecker as

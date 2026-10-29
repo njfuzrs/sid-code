@@ -88,6 +88,11 @@ export class FileReadTracker {
   sessionId?: string;
   pid?: number;
   cwd?: string;
+  /**
+   * PR-2（B3）：子代理 tracker 专属——sessionId 是子代理自己的 agentId 时，
+   * 这里记父会话 ID，随 declareFileIntent 写进意图文件供归属展示。主会话不设。
+   */
+  parentSessionId?: string;
 
   /**
    * 并发冲突检测配置（Phase 2.4）。
@@ -357,12 +362,21 @@ export class FileReadTracker {
    * 统一注入会话上下文（用于并发冲突检测）。
    * 主会话和子代理都通过此方法设置 sessionId/pid/cwd，避免字段散落。
    *
-   * @param context 会话上下文（sessionId/pid/cwd）
+   * PR-2（B3）：子代理传自己的 agentId 作 sessionId + parentSessionId 作归属，
+   * 主会话不传 parentSessionId。
+   *
+   * @param context 会话上下文（sessionId/pid/cwd，可选 parentSessionId）
    */
-  applySessionContext(context: { sessionId: string; pid: number; cwd: string }): void {
+  applySessionContext(context: {
+    sessionId: string;
+    pid: number;
+    cwd: string;
+    parentSessionId?: string;
+  }): void {
     this.sessionId = context.sessionId;
     this.pid = context.pid;
     this.cwd = context.cwd;
+    this.parentSessionId = context.parentSessionId;
   }
 
   /** 清空所有记录 */

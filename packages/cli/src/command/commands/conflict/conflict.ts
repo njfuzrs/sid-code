@@ -23,7 +23,12 @@ const mod: LocalCommandModule = {
       for (const [sessionId, sessionIntent] of Object.entries(intents)) {
         const fileEntries = Object.entries(sessionIntent.files);
         if (fileEntries.length === 0) continue;
-        lines.push(`  会话 ${sessionId.slice(-8)} (PID ${sessionIntent.pid}):`);
+        // PR-2（B3）：子代理以自己的 agentId 登记，标注归属父会话，
+        // 否则用户看到一串 <parent>-sub-<taskId> 对不上是哪个窗口的活儿
+        const attribution = sessionIntent.parentSessionId
+          ? `，子代理 → 归属父会话 ${sessionIntent.parentSessionId.slice(-8)}`
+          : "";
+        lines.push(`  会话 ${sessionId.slice(-8)} (PID ${sessionIntent.pid}${attribution}):`);
         fileEntries.sort(([a], [b]) => a.localeCompare(b));
         for (const [filePath, intent] of fileEntries) {
           const secondsAgo = Math.floor((Date.now() - intent.lastAccessAt) / 1000);

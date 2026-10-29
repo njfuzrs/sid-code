@@ -365,6 +365,7 @@ export class WriteTool implements Tool {
             this.tracker.cwd,
             filePath,
             "write",
+            this.tracker.parentSessionId,
           );
         }
       }
