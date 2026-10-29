@@ -17,6 +17,11 @@ import { homedir } from "node:os";
 import { execFileSync } from "node:child_process";
 import { resolveExecutable } from "../bootstrap/resolve-executable.ts";
 import { sidPaths } from "../config/paths.ts";
+import {
+  resolveWebhookSecret,
+  writeWebhookSecretFile,
+  webhookSecretFile,
+} from "./webhook-secret.ts";
 
 /**
  * launchd 服务标签（同时是 plist 文件名）。
@@ -109,11 +114,35 @@ function logDir(): string {
   return sidPaths.logs();
 }
 
-function buildPlist(opts: ServiceInstallOptions): string {
+/**
+ * 要写进服务文件的环境变量。
+ *
+ * `SID_CONFIG_DIR`：日志目录在安装时被写死（见 logDir），但服务进程里 getSidHome() 会回落到
+ * ~/.sid-code——非默认配置目录下装的服务，日志在 A、锁/任务注册表/webhook secret 文件在 B。
+ * 所以安装时设了就原样带进去，让服务进程和安装时看到同一个配置根。
+ *
+ * **不带 SID_CODE_WEBHOOK_SECRET**：服务文件通常 644，secret 走 0600 文件（webhook-secret.ts）。
+ */
+export function serviceEnv(env: NodeJS.ProcessEnv = process.env): Record<string, string> {
+  const out: Record<string, string> = {};
+  if (env.SID_CONFIG_DIR) out.SID_CONFIG_DIR = env.SID_CONFIG_DIR;
+  return out;
+}
+
+export function buildPlist(opts: ServiceInstallOptions): string {
   const args = [bunPath(), ...daemonArgs(opts)];
   const argXml = args.map((a) => `    <string>${escapeXml(a)}</string>`).join("\n");
   const outLog = join(logDir(), "daemon.launchd.out.log");
   const errLog = join(logDir(), "daemon.launchd.err.log");
+  const envEntries = Object.entries(serviceEnv());
+  const envXml =
+    envEntries.length === 0
+      ? ""
+      : `  <key>EnvironmentVariables</key>
+  <dict>
+${envEntries.map(([k, v]) => `    <key>${escapeXml(k)}</key>\n    <string>${escapeXml(v)}</string>`).join("\n")}
+  </dict>
+`;
   return `<?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0">
@@ -134,7 +163,7 @@ ${argXml}
   <string>${escapeXml(outLog)}</string>
   <key>StandardErrorPath</key>
   <string>${escapeXml(errLog)}</string>
-</dict>
+${envXml}</dict>
 </plist>
 `;
 }
@@ -194,10 +223,13 @@ function systemdUnitPath(): string {
   return join(homedir(), ".config", "systemd", "user", "sid-code-daemon.service");
 }
 
-function buildSystemdUnit(opts: ServiceInstallOptions): string {
+export function buildSystemdUnit(opts: ServiceInstallOptions): string {
   const args = [bunPath(), ...daemonArgs(opts)];
   // systemd ExecStart 需绝对路径命令；参数用空格拼（路径无空格场景）
   const execStart = args.map((a) => (a.includes(" ") ? `"${a}"` : a)).join(" ");
+  const extraEnv = Object.entries(serviceEnv())
+    .map(([k, v]) => `\nEnvironment="${k}=${v.replace(/(["\\])/g, "\\$1")}"`)
+    .join("");
   return `[Unit]
 Description=sid-code 本地调度守护进程
 After=network.target
@@ -208,7 +240,7 @@ ExecStart=${execStart}
 Restart=always
 RestartSec=5
 WorkingDirectory=${homedir()}
-Environment=NO_COLOR=1
+Environment=NO_COLOR=1${extraEnv}
 
 [Install]
 WantedBy=default.target
@@ -259,6 +291,37 @@ function uninstallSystemd(): void {
   console.log("✅ systemd 服务已卸载");
 }
 
+// ── webhook secret ──
+
+/**
+ * install 前准备 webhook secret。返回 false = 拒绝安装（已打印原因）。
+ *
+ * 服务进程拿不到 shell 里 export 的 secret，所以：
+ * - 当前环境有 secret → 写进 0600 文件，服务进程从文件读
+ * - 没有但文件里已有（之前装过）→ 沿用
+ * - 带了 --webhook 却两者都没有 → 拒绝安装。此前会装出一个「已加载并启动」但 3847 不监听的服务，
+ *   只在 daemon 日志里留一条 warn，用户要到 GitHub 投递全部 connection refused 才发现。
+ */
+export function prepareWebhookSecretForInstall(opts: ServiceInstallOptions): boolean {
+  const fromEnv = process.env.SID_CODE_WEBHOOK_SECRET ?? "";
+  if (fromEnv !== "") {
+    const path = writeWebhookSecretFile(fromEnv);
+    console.log(`已写入 webhook secret（0600）: ${path}`);
+    return true;
+  }
+  if (!opts.webhook) return true;
+  if (resolveWebhookSecret() !== "") {
+    console.log(`沿用已有的 webhook secret 文件: ${webhookSecretFile()}`);
+    return true;
+  }
+  console.error(
+    "错误: 指定了 --webhook 但当前环境没有 SID_CODE_WEBHOOK_SECRET，也没有已保存的 secret 文件。\n" +
+      "系统服务不继承 shell 环境变量，这样装出来的服务 webhook 不会启动。\n" +
+      "请先 export SID_CODE_WEBHOOK_SECRET=<secret> 再执行 sid-code daemon install --webhook",
+  );
+  return false;
+}
+
 // ── 入口 ──
 
 export async function handleServiceCommand(
@@ -266,6 +329,10 @@ export async function handleServiceCommand(
   opts: ServiceInstallOptions,
 ): Promise<void> {
   const platform = process.platform;
+
+  if (action === "install" && (platform === "darwin" || platform === "linux")) {
+    if (!prepareWebhookSecretForInstall(opts)) process.exit(1);
+  }
 
   if (platform === "darwin") {
     if (action === "install") installLaunchd(opts);
