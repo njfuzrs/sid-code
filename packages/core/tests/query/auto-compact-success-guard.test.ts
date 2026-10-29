@@ -84,7 +84,7 @@ afterEach(() => {
 });
 
 describe("P1-5 · compactWithSummary 失败不得宣告成功", () => {
-  test("LLM 产出摘要但切点无效 → skipped，熔断器记失败不复位", async () => {
+  test("LLM 产出摘要但切点无效 → failed，熔断器记失败不复位", async () => {
     resetCircuitBreaker();
     const ctx = new NoopCompactManager(buildMessages(20));
     const outcome = await autoCompact({
@@ -96,7 +96,7 @@ describe("P1-5 · compactWithSummary 失败不得宣告成功", () => {
       isMainAgent: true,
     } as any);
 
-    expect(outcome).toBe("skipped");
+    expect(outcome).toEqual({ kind: "failed" });
     // 摘要生成成功后切点无效 → LLM 压缩 1 次 + 降级截断 1 次。若 provider 抛错只会 1 次，那是测错路径。
     expect(ctx.compactCalls).toBe(2);
     expect(ctx.messageCount()).toBe(20);
@@ -106,7 +106,7 @@ describe("P1-5 · compactWithSummary 失败不得宣告成功", () => {
     expect(br!.failures).toBeGreaterThanOrEqual(1);
   });
 
-  test("Session Memory 有内容但切点无效 → 回退 LLM；LLM 也压不动 → skipped", async () => {
+  test("Session Memory 有内容但切点无效 → 回退 LLM；LLM 也压不动 → failed", async () => {
     resetCircuitBreaker();
     const ctx = new NoopCompactManager(buildMessages(20));
     const outcome = await autoCompact({
@@ -122,7 +122,7 @@ describe("P1-5 · compactWithSummary 失败不得宣告成功", () => {
       },
     } as any);
 
-    expect(outcome).toBe("skipped");
+    expect(outcome).toEqual({ kind: "failed" });
     expect(ctx.messageCount()).toBe(20);
     // Session Memory 1 次 + LLM 摘要 1 次 + 降级截断 1 次
     expect(ctx.compactCalls).toBe(3);
@@ -156,7 +156,7 @@ describe("P1-5 · compactWithSummary 失败不得宣告成功", () => {
       isMainAgent: true,
     } as any);
 
-    expect(outcome).toBe("skipped");
+    expect(outcome).toEqual({ kind: "failed" });
     expect(peekCircuitBreaker()?.state).toBe("open");
   });
 });

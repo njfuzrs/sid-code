@@ -51,7 +51,7 @@ async function captureBeforeModel(model: string, runtime: EffortSetting): Promis
         usage: { inputTokens: 1, outputTokens: 1 },
       }) as AccumulatedResponse,
     executeTools: async () => ({ results: [] }),
-    autoCompact: async () => {},
+    autoCompact: async () => ({ kind: "skipped" as const }),
     getAbortSignal: () => undefined,
     uuid: () => "uuid-test",
     getEffortSetting: () => runtime,

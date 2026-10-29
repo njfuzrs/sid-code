@@ -60,7 +60,7 @@ function makeLoopConfig(overrides: Partial<QueryDeps>): {
       throw new Error("processStream not mocked");
     },
     executeTools: async () => ({ results: [] }),
-    autoCompact: async () => {},
+    autoCompact: async () => ({ kind: "skipped" as const }),
     getAbortSignal: () => undefined,
     uuid: () => "uuid-test",
     ...overrides,

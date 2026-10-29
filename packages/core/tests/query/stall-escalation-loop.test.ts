@@ -155,7 +155,7 @@ async function run(opts: {
           ...(b.name === "edit" && opts.edit === "fail" ? { is_error: true } : {}),
         })),
     }),
-    autoCompact: async () => {},
+    autoCompact: async () => ({ kind: "skipped" as const }),
     getAbortSignal: () => undefined,
     uuid: () => "uuid-test",
     traceAppendEvent: (e: any) => {
@@ -350,7 +350,7 @@ describe("2e：todo 收尾闸门在清单振荡超阈值时不再劝「继续」
         return textResp("先告一段落。");
       },
       executeTools: async () => ({ results: [] }),
-      autoCompact: async () => {},
+      autoCompact: async () => ({ kind: "skipped" as const }),
       getAbortSignal: () => undefined,
       uuid: () => "uuid-test",
       getTodoState: () => ({ todos, writeVersion: 1 }),

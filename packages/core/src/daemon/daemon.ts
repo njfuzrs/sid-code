@@ -18,7 +18,7 @@
 
 import { join } from "node:path";
 import type { CronTask } from "../cron/types.ts";
-import type { DaemonConfig, HeadlessJob } from "./types.ts";
+import type { ConcurrencyGate, DaemonConfig, HeadlessJob } from "./types.ts";
 import { Scheduler } from "../cron/scheduler.ts";
 import { HeadlessExecutor } from "./headless-executor.ts";
 import { FileStorageAdapter } from "./storage.ts";
@@ -27,6 +27,7 @@ import { registerSession, unregisterSession } from "../session/concurrent.ts";
 import { sidPaths } from "../config/paths.ts";
 import { getLogger } from "../debug/logger.ts";
 import { randomBytes } from "node:crypto";
+import { resolveWebhookSecret } from "./webhook-secret.ts";
 
 /** 守护进程默认配置 */
 export const DAEMON_DEFAULTS = {
@@ -61,7 +62,7 @@ export interface DaemonRuntimeOptions {
   webhookPort?: number;
 }
 
-export class Daemon {
+export class Daemon implements ConcurrencyGate {
   private scheduler: Scheduler | null = null;
   private executor: HeadlessExecutor;
   private storage: FileStorageAdapter;
@@ -185,6 +186,22 @@ export class Daemon {
     getLogger().info("DAEMON", "守护进程已停止");
   }
 
+  // ── ConcurrencyGate：webhook worker 与调度队列共用 this.running ──
+  // 此前 webhook 另有一份计数，同时有负载时子进程最多 2×max-concurrent。
+  canAccept(): boolean {
+    return this.running < this.maxConcurrent();
+  }
+
+  acquire(): void {
+    this.running++;
+  }
+
+  release(): void {
+    this.running--;
+    // webhook job 结束腾出的名额也要让给排队中的调度任务
+    this.drainQueue();
+  }
+
   private maxConcurrent(): number {
     return this.opts.maxConcurrent ?? DAEMON_DEFAULTS.maxConcurrent;
   }
@@ -259,7 +276,8 @@ export class Daemon {
 
   /** 可选启动 webhook 源（无 secret 且未显式开 → 不监听端口） */
   private maybeStartWebhook(): void {
-    const secret = process.env.SID_CODE_WEBHOOK_SECRET ?? "";
+    // 环境变量缺省时读 install 写下的 0600 secret 文件（服务进程不继承 shell 环境，见 webhook-secret.ts）
+    const secret = resolveWebhookSecret();
     const enabled = this.opts.webhookEnabled ?? secret !== "";
     if (!enabled) {
       getLogger().info("DAEMON", "webhook 源未启用（无 secret 且未显式开），纯调度模式");
@@ -269,7 +287,7 @@ export class Daemon {
       // 显式 --webhook 但没 secret：server 对所有请求 401（fail-closed），开端口没有意义
       getLogger().warn(
         "DAEMON",
-        "指定了 --webhook 但未设置 SID_CODE_WEBHOOK_SECRET：所有请求都会被拒（401），webhook 源不启动",
+        "指定了 --webhook 但未设置 SID_CODE_WEBHOOK_SECRET（也没有 secret 文件）：所有请求都会被拒（401），webhook 源不启动",
       );
       return;
     }
@@ -287,7 +305,7 @@ export class Daemon {
         job_timeout_ms: this.opts.jobTimeoutMs ?? DAEMON_DEFAULTS.jobTimeoutMs,
         allowed_tools: this.opts.allowedTools ?? [],
       };
-      this.webhookServer = createDaemonServer(config);
+      this.webhookServer = createDaemonServer(config, this);
       getLogger().info("DAEMON", `webhook 源已启动 :${config.port}`);
     } catch (err: any) {
       getLogger().warn("DAEMON", `webhook 源启动失败（继续纯调度）: ${err?.message ?? err}`);

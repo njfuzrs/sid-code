@@ -56,7 +56,7 @@ function makeSharedControllerLoopConfig(
     sendWithRetry: () => emptyStream(),
     processStream,
     executeTools,
-    autoCompact: async () => {},
+    autoCompact: async () => ({ kind: "skipped" as const }),
     // 关键：与 app.ts 一致，二者操作同一个共享 controller
     getAbortSignal: () => controller.signal,
     abortCurrentRequest: (reason) => {
