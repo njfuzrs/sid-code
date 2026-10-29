@@ -38,6 +38,7 @@ import { resolveLoopTimeouts } from "../config/network-profile.ts";
 import { TokenEstimator } from "./token-estimator.ts";
 import { streamInRequestContext, type RequestContext } from "./request-context.ts";
 import { clearSnapshotsForIndex } from "../trace/stream-observer.ts";
+import { currentSseDumpContext } from "./sse-chunk-dumper.ts";
 
 /**
  * side-call（recall / compact / hook 等）路径的单次尝试流超时缺省值（P2-6）。
@@ -230,6 +231,11 @@ export function streamWithResilience(
   // 必须由本函数在流结束（正常 / 异常 / 消费方提前 return）时清掉，见 clearSnapshotsForIndex。
   const ownsIndex = opts.observerIndex === undefined;
   const reqCtx: RequestContext = {
+    // C1（20261019 复测）：在**发起时**绑定 loopId，不让 provider 层写入随 ambient 漂移。
+    // 子代理的一次请求可能跨越主循环的 queryLoop 边界（主循环被通知唤醒会换新 loopId）：
+    // 不绑定时，同一条流前半段写进旧 namespace、后半段写进新 namespace —— 一份快照拆成
+    // 两把 key，旧那把停在非终态且已错过 clearAllSnapshots(旧loop)，成为心跳里的孤儿。
+    loopId: currentSseDumpContext().loopId,
     turnIndex: opts.observerIndex ?? nextSideObserverIndex(),
     agentId: opts.agentId,
     callerLabel: opts.querySource,

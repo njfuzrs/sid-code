@@ -685,6 +685,33 @@ describe("TraceCollector", () => {
     expect(by("PostToolUse", "t-main").output_chars).toBe(5);
   });
 
+  test("★A1 后台任务等待入参（block / timeout / task_id / run_in_background）进 input_summary", async () => {
+    await fireSessionStart(hookSystem);
+    await hookSystem.firePreToolUseEvent(
+      "task_output",
+      { task_id: "af6dzodxd", block: false, timeout: 600000 },
+      "t-wait",
+    );
+    await hookSystem.firePreToolUseEvent(
+      "sub_agent",
+      { type: "explore", prompt: "p".repeat(300), run_in_background: true },
+      "t-bg",
+    );
+    const rows = readFileSync(join(testDir, "sessions", "sess-001", "events.jsonl"), "utf-8")
+      .trim()
+      .split("\n")
+      .map((l) => JSON.parse(l))
+      .filter((e) => e.event === "PreToolUse");
+    const by = (id: string) => rows.find((e) => e.data.tool_use_id === id)!.data;
+    expect(by("t-wait").input_summary).toEqual({
+      task_id: "af6dzodxd",
+      block: false,
+      timeout: 600000,
+    });
+    // prompt 不在白名单，不落盘
+    expect(by("t-bg").input_summary).toEqual({ type: "explore", run_in_background: true });
+  });
+
   // ─── PostToolUse 更新 metadata ───
 
   test("PostToolUse 更新 tools_used", async () => {
