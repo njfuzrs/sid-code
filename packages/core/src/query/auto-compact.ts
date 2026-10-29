@@ -123,11 +123,23 @@ export interface AutoCompactDeps {
  * autoCompact 的结果，供 loop 层区分处置（静默-9）：
  *   - "summarized"：LLM 摘要压缩成功（无损语义，无需提示）
  *   - "truncated"：摘要失败/熔断，降级为简单截断（**有损**，丢弃老消息，需 yield warning 提示用户）
- *   - "skipped"：消息太少 / 已有压缩在进行 / compactWithSummary 切点无效未改消息
+ *   - "failed"：摘要失败/熔断后降级截断**也没切成**，消息未变（真失败，loop 层熔断要计数）
+ *   - "skipped"：**没事可做**——消息太少 / 已有压缩在进行 / hook 阻止，原因见 `reason`
+ *
+ * 2026-10-29：此前 "failed" 也返回 "skipped"（只为让上层别画「已截断」），一个值承载
+ * 「没事可做」与「真失败」两种相反语义；loop 层照字面映射成 noop 会把真失败漏计。
+ * 同处 logContextCompact 本来记的就是 outcome:"failed"，现在两条通道同口径。
  */
-export type AutoCompactOutcome = "summarized" | "truncated" | "skipped";
+export type AutoCompactOutcome = "summarized" | "truncated" | "failed" | "skipped";
 
-export async function autoCompact(deps: AutoCompactDeps): Promise<AutoCompactOutcome> {
+/** 返回对象而非字符串：「结局」与「为什么跳过」是两层语义，不再塞进同一个字符串 */
+export interface AutoCompactResult {
+  kind: AutoCompactOutcome;
+  /** 仅 kind === "skipped" 时有值 */
+  reason?: "too_few_messages" | "lock_held" | "hook_blocked";
+}
+
+export async function autoCompact(deps: AutoCompactDeps): Promise<AutoCompactResult> {
   const log = getLogger();
   const messages = deps.ctxMgr.getMessages();
   const circuitBreaker = getCircuitBreaker();
@@ -147,14 +159,14 @@ export async function autoCompact(deps: AutoCompactDeps): Promise<AutoCompactOut
     // 是两回事，混成一个 compact 计数会让「更省」的效果读不出来——尤其 lock_held
     // 与 circuit_open 是真实故障信号，静默 skip 掉等于把故障藏进正常路径。
     logContextCompactSkipped("too_few_messages");
-    return "skipped";
+    return { kind: "skipped", reason: "too_few_messages" };
   }
 
   // §6 压缩互斥锁：已有压缩在进行 → 跳过，避免同一消息历史被两条压缩路径竞态改写
   if (!deps.ctxMgr.acquireCompactLock()) {
     log.warn("COMPACT", "已有压缩流程在进行中，跳过本次 autoCompact");
     logContextCompactSkipped("lock_held");
-    return "skipped";
+    return { kind: "skipped", reason: "lock_held" };
   }
 
   try {
@@ -179,7 +191,7 @@ async function doAutoCompact(
   _isMainAgent: boolean,
   recordFailure: () => void,
   recordSuccess: () => void,
-): Promise<AutoCompactOutcome> {
+): Promise<AutoCompactResult> {
   const log = getLogger();
   const messagesBefore = messages.length;
   const tokensBefore = deps.ctxMgr.estimateTokens();
@@ -233,7 +245,7 @@ async function doAutoCompact(
       tokensBefore,
       tokensAfter: deps.ctxMgr.estimateTokens(),
     });
-    return truncatedOutcome.success ? "truncated" : "skipped";
+    return { kind: truncatedOutcome.success ? "truncated" : "failed" };
   }
 
   // pre_compact hook（blocking 时可阻止压缩）
@@ -241,7 +253,7 @@ async function doAutoCompact(
   if (preCompactResult.finalOutput?.isBlockingDecision()) {
     log.info("HOOK", `压缩被 hook 阻止: ${preCompactResult.finalOutput.getEffectiveReason()}`);
     logContextCompactSkipped("hook_blocked");
-    return "skipped";
+    return { kind: "skipped", reason: "hook_blocked" };
   }
   // §12 P1-3：PreCompact hook 返回的 additionalContext 作为「额外指令」注入摘要 prompt
   // （对标 CC mergeHookInstructions）。如 hook 返回「保留所有数据库 schema」，摘要器据此偏向保留。
@@ -293,7 +305,7 @@ async function doAutoCompact(
               tokensBefore,
               tokensAfter: deps.ctxMgr.estimateTokens(),
             });
-            return "summarized";
+            return { kind: "summarized" };
           }
         }
         // smResult 为 null：Session Memory 为空，回退到 LLM 摘要（不计失败）
@@ -418,7 +430,7 @@ async function doAutoCompact(
           tokensBefore,
           tokensAfter: deps.ctxMgr.estimateTokens(),
         });
-        return "summarized";
+        return { kind: "summarized" };
       }
     } else {
       // 空摘要（含 P2-18：剥离草稿后正文为空）也算失败。
@@ -472,7 +484,7 @@ async function doAutoCompact(
   // 摘要链路失败后的有损降级。上报为 failed 而非 truncated：从"是否省到"的角度它确实
   // 压了，但从"压缩质量"角度这是一次失败——把它记成 truncated 会与熔断降级混同，
   // 掩盖「摘要请求正在连续报错」这个需要立刻看见的信号。
-  // P1-5：切点无效时连消息都没少，outcome 仍是 failed，但返回 skipped 让上层别画「已截断」。
+  // P1-5：切点无效时连消息都没少，返回 failed（不是 truncated），上层不画「已截断」且计入熔断。
   logContextCompact({
     outcome: "failed",
     trigger: "auto",
@@ -480,7 +492,7 @@ async function doAutoCompact(
     tokensBefore,
     tokensAfter: deps.ctxMgr.estimateTokens(),
   });
-  return fallbackOutcome.success ? "truncated" : "skipped";
+  return { kind: fallbackOutcome.success ? "truncated" : "failed" };
 }
 
 /**

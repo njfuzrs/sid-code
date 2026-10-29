@@ -38,6 +38,11 @@ export interface ReactiveCompactResult {
   tokensAfter?: number;
   /** 实际生效的策略（失败时为 "none"） */
   strategy?: "snip" | "emergency" | "none";
+  /**
+   * 失败时「没东西可压」的原因（压缩结局三态的 noop 来源）。是否算 noop 由
+   * settleCompaction 按 trigger 决定：PTL 等恢复路径上它仍判 failed。
+   */
+  noopReason?: "too_few_messages" | "no_split_point";
 }
 
 /**
@@ -61,6 +66,7 @@ export function reactiveCompact(ctxMgr: ContextManager): ReactiveCompactResult {
       messageCountBefore,
       messageCountAfter: messageCountBefore,
       strategy: "none",
+      noopReason: "too_few_messages",
     };
   }
 
@@ -118,6 +124,9 @@ export function reactiveCompact(ctxMgr: ContextManager): ReactiveCompactResult {
     tokensBefore: emergency.tokensBefore,
     tokensAfter: emergency.tokensAfter,
     strategy: emergency.success ? "emergency" : "none",
+    ...(!emergency.success && emergency.reason === "no_split_point"
+      ? { noopReason: "no_split_point" as const }
+      : {}),
   };
 }
 

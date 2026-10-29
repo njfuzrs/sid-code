@@ -158,7 +158,7 @@ describe("真实 queryLoop 事件序列 → app 路由 → syncDisplay 重建（
           .filter((b): b is Extract<ContentBlock, { type: "tool_use" }> => b.type === "tool_use")
           .map((b) => ({ type: "tool_result" as const, tool_use_id: b.id, content: "ok" })),
       }),
-      autoCompact: async () => {},
+      autoCompact: async () => ({ kind: "skipped" as const }),
       getAbortSignal: () => undefined,
       uuid: () => `uuid-${call}`,
     };

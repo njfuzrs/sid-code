@@ -175,7 +175,7 @@ async function runSession(fx: SessionFixture, at: Date): Promise<RunResult> {
         requestUserConfirmation: async () => true,
       });
     },
-    autoCompact: async () => {},
+    autoCompact: async () => ({ kind: "skipped" as const }),
     getAbortSignal: () => undefined,
     uuid: () => "uuid",
   };
