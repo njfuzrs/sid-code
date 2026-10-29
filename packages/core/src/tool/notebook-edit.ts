@@ -17,11 +17,12 @@ import type {
   PermissionResult,
   ToolUseContext,
 } from "./types.ts";
-import { readFileSync, writeFileSync } from "fs";
+import { readFileSync, writeFileSync, statSync } from "fs";
 import { extname } from "path";
 import { getLogger } from "../debug/logger.ts";
 import { normalizeToolPath, formatPathNotFoundError } from "./path-utils.ts";
 import { pickPaths } from "./jit-affected-paths.ts";
+import type { FileReadTracker } from "./file-read-tracker.ts";
 import { z } from "zod/v4";
 import { lazySchema } from "../sdk/lazy-schema.ts";
 
@@ -97,6 +98,19 @@ function findCellIndex(cells: NotebookCell[], cellId: string): number {
 export class NotebookEditTool implements Tool {
   /** D11：编辑类：漏 required 字段会改错 notebook，strict 超限时优先保留（见 ToolCapabilityFields.strictPriority） */
   readonly strictPriority = 50;
+
+  /**
+   * PR-6（B8）：FileReadTracker——与 read/edit/write 共享同一实例。
+   * 此前 notebook-edit 完全绕过并发冲突检测（不声明意图也不查冲突），
+   * 其它会话对同一 .ipynb 的 edit/write 看不到它，它也无视别人的声明。
+   * 现在：写盘前过 conflict-gate 共享闸门，写盘后回写内容快照 + declareFileIntent。
+   * 未注入（null）时退回旧行为（不检测、不回写），保证测试与旧构造路径兼容。
+   */
+  private tracker: FileReadTracker | null;
+
+  constructor(tracker?: FileReadTracker) {
+    this.tracker = tracker ?? null;
+  }
 
   name(): string {
     return "notebook_edit";
@@ -237,16 +251,60 @@ export class NotebookEditTool implements Tool {
         return { output: `错误: 未知的 edit_mode: ${mode}`, isError: true };
     }
 
+    // PR-6（B8）：并发冲突闸门——与 edit/write 完全同口径（共享 conflict-gate.ts）：
+    // block 阻止 / worktree 分支分叉自动放行（附说明）/ 同文件冲突弹窗裁决 / 无头降级。
+    // 放在写回之前：拦下的操作不应留下半个已改的 notebook。
+    let branchConflictNote = "";
+    {
+      const { runConflictGate } = await import("./conflict-gate.ts");
+      const gate = await runConflictGate(filePath, "notebook_edit", this.tracker);
+      if (!gate.proceed) {
+        return { output: gate.output, isError: true };
+      }
+      branchConflictNote = gate.note;
+    }
+
     // 写回
     try {
       const output = JSON.stringify(notebook, null, 1) + "\n";
       writeFileSync(filePath, output, "utf-8");
+
+      // PR-6（B8）：写后回写 tracker 内容快照——notebook-edit 整文件重写 JSON，
+      // 不回写则下一次 edit/write 的新鲜度比对会拿旧内容，把「模型自己刚做的
+      // cell 编辑」误判为外部修改（对标 write.ts 的 BUG1 修复）。
+      if (this.tracker) {
+        try {
+          const mtime = statSync(filePath).mtimeMs;
+          if (this.tracker.hasBeenRead(filePath)) {
+            this.tracker.updateMtime(filePath, output);
+          } else {
+            this.tracker.markAsRead(filePath, mtime, { isPartialView: false, content: output });
+          }
+        } catch {
+          // stat 失败不阻断（文件已成功写入），仅丢失本次新鲜度记录。
+        }
+
+        // 声明编辑意图（其它会话的冲突检测据此可见本会话在改这个 notebook）
+        if (this.tracker.sessionId && this.tracker.pid && this.tracker.cwd) {
+          const { declareFileIntent } = await import("../session/file-intent.ts");
+          declareFileIntent(
+            this.tracker.sessionId,
+            this.tracker.pid,
+            this.tracker.cwd,
+            filePath,
+            "edit",
+            this.tracker.parentSessionId,
+          );
+        }
+      }
     } catch (err: any) {
       return { output: `错误: 写入 notebook 失败: ${err.message}`, isError: true };
     }
 
     const cellCount = notebook.cells.length;
     log.info("TOOL", `✓ notebook_edit ${mode} ${filePath} (${cellCount} cells)`);
-    return { output: `成功: ${mode} 操作完成，notebook 现有 ${cellCount} 个 cell。` };
+    return {
+      output: `成功: ${mode} 操作完成，notebook 现有 ${cellCount} 个 cell。${branchConflictNote}`,
+    };
   }
 }

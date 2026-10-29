@@ -40,11 +40,13 @@ afterEach(() => {
 });
 
 describe("createStatefulTools 工厂", () => {
-  test("返回 read/edit/read_many/write 四个工具，且共享同一 tracker", async () => {
+  test("返回 read/edit/read_many/write/notebook_edit 五个工具，且共享同一 tracker", async () => {
     const tracker = new FileReadTracker();
     const tools = createStatefulTools(tracker);
     const names = tools.map((t) => t.name()).sort();
-    expect(names).toEqual(["edit", "read", "read_many", "write"]);
+    // PR-6（B8）：notebook_edit 加入工厂——它现在持 tracker（冲突闸门 + 写后回写），
+    // 子代理必须用独立 tracker 重建，否则回写污染父会话状态。
+    expect(names).toEqual(["edit", "notebook_edit", "read", "read_many", "write"]);
 
     const filePath = makeTmpFile("line1\nline2\n");
     const readTool = tools.find((t) => t.name() === "read")!;
@@ -66,8 +68,14 @@ describe("createStatefulTools 工厂", () => {
     expect(tracker.hasBeenRead(filePath)).toBe(true);
   });
 
-  test("STATEFUL_TOOL_NAMES 恰好覆盖四个有状态工具", () => {
-    expect([...STATEFUL_TOOL_NAMES].sort()).toEqual(["edit", "read", "read_many", "write"]);
+  test("STATEFUL_TOOL_NAMES 恰好覆盖五个有状态工具", () => {
+    expect([...STATEFUL_TOOL_NAMES].sort()).toEqual([
+      "edit",
+      "notebook_edit",
+      "read",
+      "read_many",
+      "write",
+    ]);
   });
 });
 

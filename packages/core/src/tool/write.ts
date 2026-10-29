@@ -228,99 +228,17 @@ export class WriteTool implements Tool {
 
     log.info("TOOL", `▶ 写入 ${filePath} (${params.content.length}字符)`);
 
-    // 并发冲突检测（Phase 2.1 + 2.4 配置化）
-    const conflictEnabled = this.tracker?.conflictDetection ?? true;
-    const conflictSeverity = this.tracker?.conflictSeverity ?? "warn";
-    // 无头模式降级与 worktree 分支分叉自动放行时，将冲突提示附进成功输出。
-    let headlessConflictNote = "";
-    let branchConflictNote = "";
-
-    if (conflictEnabled && conflictSeverity !== "off" && this.tracker?.sessionId) {
-      const { checkConflict, formatConflictWarning, formatHeadlessConflictNote } =
-        await import("../session/conflict-detector.ts");
-      const conflict = checkConflict(filePath, this.tracker.sessionId);
-      if (conflict) {
-        log.warn("TOOL", formatConflictWarning(conflict));
-
-        // P2-14：埋点——记录冲突事件
-        const { recordConflict } = await import("../session/conflict-analytics.ts");
-
-        // Phase 2.4: block 模式直接阻止，不弹框
-        if (conflictSeverity === "block") {
-          recordConflict(
-            filePath,
-            conflict.conflictingSessions.length,
-            conflict.severity,
-            "blocked",
-            "write",
-          );
-          return {
-            output: `错误: 检测到并发冲突（config.conflictSeverity=block），文件 ${filePath} 正被其他会话访问，操作已阻止`,
-            isError: true,
-          };
-        }
-
-        // PR-4（B-c）：全部冲突方都是 worktree 分支分叉 → 不弹窗直接放行。
-        // 理由与埋点契约（branch_auto_continue 必须与用户裁决的 continue 分开）
-        // 见 edit.ts 同位置注释，两处必须同步改。
-        if (conflict.isWorktreeBranchConflict) {
-          recordConflict(
-            filePath,
-            conflict.conflictingSessions.length,
-            conflict.severity,
-            "branch_auto_continue",
-            "write",
-          );
-          branchConflictNote = `（并发分支提示：${conflict.summary}；各方改的是自己 worktree 里的副本，不会互相覆盖，合并回主仓时再解决冲突即可）`;
-          log.info("TOOL", "worktree 分支分叉冲突：不弹窗自动放行（branch_auto_continue）");
-        } else if (this.tracker.conflictHandler) {
-          // Phase 2.1: warn 模式弹框让用户选择（同文件冲突才走到这里）
-          const action = await this.tracker.conflictHandler(conflict);
-          log.info("TOOL", `并发冲突用户选择: ${action}`);
-
-          // P2-14：埋点——记录用户选择
-          recordConflict(
-            filePath,
-            conflict.conflictingSessions.length,
-            conflict.severity,
-            action,
-            "write",
-          );
-
-          if (action === "stop") {
-            return {
-              output: `错误: 用户选择停止（检测到并发冲突，文件 ${filePath} 正被其他会话访问）`,
-              isError: true,
-            };
-          }
-          if (action === "skip") {
-            return {
-              output: `跳过: 用户选择跳过冲突文件 ${filePath}`,
-              isError: true,
-            };
-          }
-          // action === "continue" → 继续执行
-        } else {
-          // P1-6 + PR-8（B10）：无头模式（SDK/Bridge/--print）下 conflictHandler 为
-          // undefined，显式降级：冲突摘要**附进本次工具的成功输出**（此前只进 log.warn，
-          // 模型看不到）。与 block 模式不同，不阻断操作（无头模式无法弹框等待用户决定）。
-          const warningSummary = formatConflictWarning(conflict);
-          log.warn(
-            "TOOL",
-            `无头模式：并发冲突降级处理，继续执行（${warningSummary.split("\n").slice(1, 4).join(" ")}）`,
-          );
-          headlessConflictNote = formatHeadlessConflictNote(conflict);
-          // P2-14：埋点——记录无头模式降级
-          recordConflict(
-            filePath,
-            conflict.conflictingSessions.length,
-            conflict.severity,
-            "headless_fallback",
-            "write",
-          );
-          // 不阻断，继续执行；成功返回点会把 headlessConflictNote 拼进 output
-        }
+    // 并发冲突检测（Phase 2.1 + 2.4 配置化）。
+    // PR-6：闸门逻辑提取到 conflict-gate.ts（edit/write/notebook_edit 三处共用单一实现），
+    // 语义与优先级（block > 分支分叉自动放行 > 弹窗 > 无头降级）见该文件头注释。
+    let conflictNote = "";
+    {
+      const { runConflictGate } = await import("./conflict-gate.ts");
+      const gate = await runConflictGate(filePath, "write", this.tracker);
+      if (!gate.proceed) {
+        return { output: gate.output, isError: true };
       }
+      conflictNote = gate.note;
     }
 
     try {
@@ -423,7 +341,7 @@ export class WriteTool implements Tool {
         output:
           `文件${action}: ${filePath}${lineDropWarning}` +
           (negotiated.userEdited ? "（采用了你在 IDE 中修改后的内容）" : "") +
-          headlessConflictNote + branchConflictNote,
+          conflictNote,
         structuredPatch: buildStructuredPatch(filePath, oldContent, contentToWrite),
       };
     } catch (err: any) {

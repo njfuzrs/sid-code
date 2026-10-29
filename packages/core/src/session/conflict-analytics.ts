@@ -38,11 +38,14 @@ export interface ConflictEvent {
   severity: "warning" | "critical";
   /** 用户选择（或自动决策） */
   action: ConflictAction;
-  /** 触发工具 */
-  tool: "edit" | "write";
+  /** 触发工具（PR-6：notebook_edit 接入冲突检测后加入口径） */
+  tool: ConflictTool;
   /** 时间戳 */
   timestamp: number;
 }
+
+/** 会触发冲突检测的写路径工具（与 conflict-gate.ts 的 tool 参数同口径） */
+export type ConflictTool = "edit" | "write" | "notebook_edit";
 
 /**
  * 对文件路径做哈希脱敏
@@ -90,7 +93,7 @@ export function recordConflict(
   otherSessionCount: number,
   severity: "warning" | "critical",
   action: ConflictAction,
-  tool: "edit" | "write",
+  tool: ConflictTool,
 ): void {
   emitConflictEvent({
     filePathHash: hashFilePath(filePath),
