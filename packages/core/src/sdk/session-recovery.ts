@@ -11,14 +11,13 @@
  *   4. filterOrphanedThinkingOnlyMessages —— 过滤流式中断残留的纯 thinking assistant 消息
  *   5. filterWhitespaceOnlyAssistantMessages —— 过滤内容被清空后的空白 assistant 消息
  *   6. validateContentBlockIntegrity —— 剔除缺失关键字段（id/name/tool_use_id）的不完整 block
+ *                                       （只剔 block，不丢整条消息；剥空的消息才整条删）
  *   7. stripDanglingToolResultsFilter —— 切除游离 tool_result（有结果无调用；第 3 层的反方向）
  *
  * 中断检测三态（对齐 CC 的 none / interrupted_prompt / interrupted_turn）：
- *   - none              正常结束：最后一条是 assistant 消息，或末尾 tool_result 全部
- *                        来自终结性工具（TERMINAL_TOOL_NAMES 白名单）
+ *   - none              正常结束：最后一条是 assistant 消息
  *   - interrupted_prompt 用户输入了但 Agent 还没开始回复（末尾是纯文本 user 消息）
- *   - interrupted_turn   Agent 执行完工具但还没来得及回复就被中断（末尾是非终结性
- *                        工具的 tool_result）
+ *   - interrupted_turn   Agent 执行完工具但还没来得及回复就被中断（末尾是 tool_result）
  *
  * 对齐 Claude Code deserializeMessagesWithInterruptDetection（spec §5.4）。
  */
@@ -27,6 +26,7 @@ import type { ContentBlock, Message } from "../llm/types.ts";
 import { isReasoningOnlyBlock } from "../llm/types.ts";
 import { getLogger } from "../debug/logger.ts";
 import { stripDanglingToolResults } from "../agent/message-invariants.ts";
+import { PERMISSION_MODE_VALUES } from "../permission/mode.ts";
 
 /** 中断状态 */
 export type TurnInterruptionState =
@@ -40,22 +40,14 @@ export interface DeserializeResult {
   turnInterruptionState: TurnInterruptionState;
 }
 
-/**
- * 终结性工具白名单：这些工具合法以 tool_result 结尾（不算中断）。
- * 目前为空——sid-code 尚无"调用后即合法终止对话"的工具（对标 CC 的 Brief/SendUserFile
- * 之类）。导出供未来接入此类工具时登记，也方便单测直接验证白名单生效路径。
- */
-export const TERMINAL_TOOL_NAMES = new Set<string>();
+// 缺陷 14：这里曾有一个「终结性工具白名单」TERMINAL_TOOL_NAMES（对标 CC 的 Brief/SendUserFile），
+// 恒为空集，它守护的 none 分支在生产上不可达，只有单测往里 add 过。sid-code 的主循环在工具结果
+// 之后总会再请求一次模型，不存在「调用完就合法结束」的工具。哪天真有了，在中断检测里按工具定义
+// 的属性判，不要再放一个可被任何人 add 的全局可变 Set。
 
-/** 有效的权限模式集合（P0-2 第 2 层用）。与 permission/types.ts 的模式枚举保持一致；
+/** 有效的权限模式集合（P0-2 第 2 层用）。直接取 permission/mode.ts 的枚举，不手抄（缺陷 13）；
  *  历史消息 _meta.permissionMode 若引用了不在此列表中的值，视为已下线，清理之。 */
-const VALID_PERMISSION_MODES = new Set([
-  "default",
-  "acceptEdits",
-  "bypassPermissions",
-  "plan",
-  "always-allow",
-]);
+const VALID_PERMISSION_MODES: ReadonlySet<string> = new Set(PERMISSION_MODE_VALUES);
 
 interface FilterContext {
   log: (reason: string, detail: string) => void;
@@ -136,24 +128,31 @@ const filterWhitespaceOnlyAssistantMessages: MessageFilter = (messages, ctx) => 
 };
 
 /** 第 6 层：content block 完整性校验——流式中断可能产生缺失关键字段的不完整 block，
- *  这类消息发给 API 必定 400，不如恢复阶段就主动剔除。 */
+ *  这类 block 发给 API 必定 400，不如恢复阶段就主动剔除。
+ *
+ *  只剔坏 block，不丢整条消息（缺陷 12）。以前一个坏 tool_use 就丢掉整条 assistant，连带同条里
+ *  好的 tool_use；它们的 tool_result 留在下一条 user 里成了游离结果，最后由第 7 层切掉——
+ *  历史没 400，但好工具的调用与结果一起凭空消失，末尾的说明文字也跟着丢。
+ *  剔完被剥空的消息整条删，坏 tool_use 留下的游离 tool_result 仍交第 7 层切除。 */
 const validateContentBlockIntegrity: MessageFilter = (messages, ctx) => {
-  return messages.filter((msg) => {
-    for (const block of msg.content) {
+  const out: Message[] = [];
+  for (const msg of messages) {
+    const content = msg.content.filter((block) => {
       if (block.type === "tool_use" && (!block.id || !block.name)) {
-        ctx.log("contentBlock完整性校验", "丢弃缺失 id/name 的不完整 tool_use block 所在消息");
+        ctx.log("contentBlock完整性校验", `丢弃缺失 id/name 的 tool_use block id=${block.id}`);
         return false;
       }
       if (block.type === "tool_result" && !block.tool_use_id) {
-        ctx.log(
-          "contentBlock完整性校验",
-          "丢弃缺失 tool_use_id 的不完整 tool_result block 所在消息",
-        );
+        ctx.log("contentBlock完整性校验", "丢弃缺失 tool_use_id 的 tool_result block");
         return false;
       }
-    }
-    return true;
-  });
+      return true;
+    });
+    if (content.length === msg.content.length) out.push(msg);
+    else if (content.length > 0) out.push({ ...msg, content });
+    else ctx.log("contentBlock完整性校验", `${msg.role} 消息剔除后为空，整条丢弃`);
+  }
+  return out;
 };
 
 /** 第 7 层：切除游离 tool_result（N11）——第 3 层的反方向。
@@ -236,15 +235,12 @@ export function deserializeMessagesWithInterruptDetection(
 
     // 末尾是 tool_result 且没有后续 assistant 回复 → Agent 执行完工具但被中断，
     // 还没来得及基于结果回复（P1-5：interrupted_turn）。
-    const toolNames = findToolNamesForResults(messages, lastMessage);
-    const allTerminal = toolNames.length > 0 && toolNames.every((n) => TERMINAL_TOOL_NAMES.has(n));
-    if (allTerminal) {
-      // 白名单内的终结性工具（如未来的 Brief/SendUserFile）合法以 tool_result 结尾，不算中断
-      return { messages, turnInterruptionState: { kind: "none" } };
-    }
     return {
       messages,
-      turnInterruptionState: { kind: "interrupted_turn", lastToolNames: toolNames },
+      turnInterruptionState: {
+        kind: "interrupted_turn",
+        lastToolNames: findToolNamesForResults(messages, lastMessage),
+      },
     };
   }
 

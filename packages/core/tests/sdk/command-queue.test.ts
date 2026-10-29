@@ -29,6 +29,33 @@ describe("CommandQueue 优先级", () => {
     expect(q.dequeue()?.value).toBe("b");
     expect(q.dequeue()?.value).toBe("c");
   });
+
+  test("缺陷 10：合并出的新对象重新入队，排在同优先级末尾而不是插到队首", () => {
+    const q = new CommandQueue();
+    q.enqueue(prompt("a", { workload: "w" }));
+    q.enqueue(prompt("b", { workload: "w" }));
+    const merged = q.dequeueBatch()!;
+    q.enqueue(prompt("x"));
+    q.enqueue(prompt("y"));
+    q.enqueue(merged);
+    expect([q.dequeue(), q.dequeue(), q.dequeue()].map((c) => c?.value)).toEqual([
+      "x",
+      "y",
+      "a\n\nb",
+    ]);
+  });
+
+  test("缺陷 10：交错入队多种优先级，同优先级内保持 FIFO", () => {
+    const q = new CommandQueue();
+    const order = ["l1:later", "n1:next", "w1:now", "l2:later", "n2:next", "w2:now", "n3:next"];
+    for (const s of order) {
+      const [v, p] = s.split(":");
+      q.enqueue(prompt(v, { priority: p as QueuedCommand["priority"] }));
+    }
+    const out: string[] = [];
+    while (!q.isEmpty()) out.push(q.dequeue()!.value);
+    expect(out).toEqual(["w1", "w2", "n1", "n2", "n3", "l1", "l2"]);
+  });
 });
 
 describe("CommandQueue 基本操作", () => {
@@ -91,6 +118,22 @@ describe("CommandQueue 批量合并", () => {
     q.enqueue(prompt("b", { workload: "w", uuid: "u2" }));
     const batch = q.dequeueBatch();
     expect(batch?.uuid).toBe("u2");
+  });
+
+  test("缺陷 9：合并后 mergedUuids 携带全部 uuid（按入队顺序，跳过无 uuid 的）", () => {
+    const q = new CommandQueue();
+    q.enqueue(prompt("a", { workload: "w", uuid: "A" }));
+    q.enqueue(prompt("b", { workload: "w" }));
+    q.enqueue(prompt("c", { workload: "w", uuid: "C" }));
+    const batch = q.dequeueBatch();
+    expect(batch?.mergedUuids).toEqual(["A", "C"]);
+    expect(batch?.uuid).toBe("C");
+  });
+
+  test("缺陷 9：未合并的单条命令原样返回，不带 mergedUuids", () => {
+    const q = new CommandQueue();
+    q.enqueue(prompt("a", { uuid: "A" }));
+    expect(q.dequeueBatch()).toEqual(prompt("a", { uuid: "A" }));
   });
 
   test("isMeta 不同不合并", () => {

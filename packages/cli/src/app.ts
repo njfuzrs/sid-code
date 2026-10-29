@@ -8895,7 +8895,10 @@ export class App {
       }
     } catch (err: any) {
       runError = err instanceof Error ? err : new Error(String(err));
-      aborted = runError.name === "AbortError" || /abort/i.test(runError.message ?? "");
+      // 缺陷 11：判原始 err，不判包装后的 runError——abort("user-cancel") 让 Promise 以裸字符串
+      // reject，包成 Error 后 name/message 都不含 abort，旧的 /abort/i 判不出；反过来模型错误文案里
+      // 带个 "aborted" 又会被误判成中断（endReason=abort、退出码 0）。isAbortError 看结构字段与白名单。
+      aborted = isAbortError(err);
       structuredIO.rejectAllPending("session ended");
       // 会话硬顶超时按正常自动结束处理（reason=abort 而非 error）。
       if (sdkSessionTimedOut) {
