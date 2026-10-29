@@ -7,18 +7,11 @@
  * 4. /clear 不重置 budgetRules 告警级别与 session 周期累计
  */
 
-// 周期键按本地时区算，固定一个非 UTC 时区才能让「按 UTC 算」的旧实现现形
-process.env.TZ = "Asia/Shanghai";
-
 import { describe, test, expect } from "bun:test";
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import { QuotaManager } from "@sid-code/core/llm/quota.ts";
-import {
-  BudgetTracker,
-  budgetPeriodKey,
-  type BudgetRule,
-} from "@sid-code/core/telemetry/metrics/budget-tracker.ts";
+import { BudgetTracker, type BudgetRule } from "@sid-code/core/telemetry/metrics/budget-tracker.ts";
 import { checkPreRequestBudgetStop } from "@sid-code/core/query/loop.ts";
 
 const rule = (over: Partial<BudgetRule> = {}): BudgetRule => ({
@@ -124,40 +117,71 @@ describe("缺陷 2：budgetRules 与 costLimit 同口径（含影子调用）", 
   });
 });
 
+/**
+ * 周期键必须在固定的非 UTC 时区下断言，否则「按 UTC 算」的旧实现在 UTC 的 CI runner 上照样绿。
+ *
+ * ⚠️ 不能在本文件顶部写 `process.env.TZ = ...`：bun 同批多文件跑在同一进程，时区在首次用 Date
+ * 时就定了，后改不生效（affected-tests 批跑实测前提断言红）。所以起子进程，显式传 TZ。
+ */
+function periodKeysIn(tz: string, cases: Array<[string, number[]]>): string[] {
+  const modPath = join(import.meta.dir, "../../src/telemetry/metrics/budget-tracker.ts");
+  const script = `
+    const { budgetPeriodKey } = await import(${JSON.stringify(modPath)});
+    const cases = JSON.parse(process.argv[1]);
+    const out = cases.map(([p, a]) => budgetPeriodKey(p, new Date(...a)));
+    out.unshift(String(new Date(2026, 9, 29).getTimezoneOffset()));
+    console.log(JSON.stringify(out));
+  `;
+  const r = Bun.spawnSync([process.execPath, "-e", script, JSON.stringify(cases)], {
+    env: { ...process.env, TZ: tz },
+  });
+  expect(r.exitCode).toBe(0);
+  return JSON.parse(r.stdout.toString().trim());
+}
+
 describe("缺陷 3：周期键按本地时区，weekly 按 ISO 周（周一开始）", () => {
-  test("前提：本文件跑在 UTC+8", () => {
-    expect(new Date(2026, 9, 29).getTimezoneOffset()).toBe(-480);
+  // 月份是 0 起（Date 构造参数原样传给子进程）
+  const [offset, d0759, d0801, d0030, h0030, m0030, sun, mon, nextSun, wed, thu, ny, w1] =
+    periodKeysIn("Asia/Shanghai", [
+      ["daily", [2026, 9, 29, 7, 59]],
+      ["daily", [2026, 9, 29, 8, 1]],
+      ["daily", [2026, 9, 29, 0, 30]],
+      ["hourly", [2026, 9, 29, 0, 30]],
+      ["monthly", [2026, 9, 1, 0, 30]],
+      ["weekly", [2026, 10, 1, 23, 59]], // 2026-11-01 周日
+      ["weekly", [2026, 10, 2, 0, 1]], // 2026-11-02 周一
+      ["weekly", [2026, 10, 8, 23, 59]], // 下一个周日
+      ["weekly", [2026, 10, 4, 12]], // 周三
+      ["weekly", [2026, 10, 5, 12]], // 周四
+      ["weekly", [2027, 0, 1, 12]], // 2027-01-01 周五
+      ["weekly", [2027, 0, 4, 12]], // 2027-01-04 周一
+    ]);
+
+  test("前提：子进程确实跑在 UTC+8", () => {
+    expect(offset).toBe("-480");
   });
 
   test("本地 07:59 与 08:01 的 daily 键相同（UTC 下跨天）", () => {
-    const a = new Date(2026, 9, 29, 7, 59);
-    const b = new Date(2026, 9, 29, 8, 1);
-    expect(budgetPeriodKey("daily", a)).toBe("2026-10-29");
-    expect(budgetPeriodKey("daily", b)).toBe(budgetPeriodKey("daily", a));
+    expect(d0759).toBe("2026-10-29");
+    expect(d0801).toBe(d0759);
   });
 
-  test("本地 00:30 的 daily 键是当天，不是 UTC 的前一天", () => {
-    expect(budgetPeriodKey("daily", new Date(2026, 9, 29, 0, 30))).toBe("2026-10-29");
-    expect(budgetPeriodKey("hourly", new Date(2026, 9, 29, 0, 30))).toBe("2026-10-29T00");
-    expect(budgetPeriodKey("monthly", new Date(2026, 9, 1, 0, 30))).toBe("2026-10");
+  test("本地 00:30 的键是当天/当月，不是 UTC 的前一天", () => {
+    expect(d0030).toBe("2026-10-29");
+    expect(h0030).toBe("2026-10-29T00");
+    expect(m0030).toBe("2026-10");
   });
 
   test("本地周日 23:59 与周一 00:01 的 weekly 键不同；周一到周日同键", () => {
-    const sun = new Date(2026, 10, 1, 23, 59); // 2026-11-01 周日
-    const mon = new Date(2026, 10, 2, 0, 1); // 2026-11-02 周一
-    expect(sun.getDay()).toBe(0);
-    expect(budgetPeriodKey("weekly", sun)).not.toBe(budgetPeriodKey("weekly", mon));
-    const nextSun = new Date(2026, 10, 8, 23, 59);
-    expect(budgetPeriodKey("weekly", nextSun)).toBe(budgetPeriodKey("weekly", mon));
+    expect(sun).not.toBe(mon);
+    expect(nextSun).toBe(mon);
     // 旧实现的分界在周四：周三与周四必须同键
-    const wed = new Date(2026, 10, 4, 12);
-    const thu = new Date(2026, 10, 5, 12);
-    expect(budgetPeriodKey("weekly", wed)).toBe(budgetPeriodKey("weekly", thu));
+    expect(wed).toBe(thu);
   });
 
   test("ISO 周跨年：2027-01-01（周五）属于 2026-W53", () => {
-    expect(budgetPeriodKey("weekly", new Date(2027, 0, 1, 12))).toBe("2026-W53");
-    expect(budgetPeriodKey("weekly", new Date(2027, 0, 4, 12))).toBe("2027-W01");
+    expect(ny).toBe("2026-W53");
+    expect(w1).toBe("2027-W01");
   });
 });
 
