@@ -611,30 +611,28 @@ const renderDiffContent = (
             <Text wrap="wrap">{colorizeLine(displayContent, language)}</Text>
           </>
         ) : (
-          <Text
-            backgroundColor={
-              srcLine.type === "add"
-                ? semanticTheme.background.diff.added
-                : semanticTheme.background.diff.removed
-            }
-            wrap="wrap"
-          >
-            <Text
-              bold
-              color={
-                srcLine.type === "add" ? semanticTheme.status.success : semanticTheme.status.error
-              }
-            >
-              {prefixSymbol}
-            </Text>{" "}
-            {pairMap.has(index)
-              ? renderWordDiff(
-                  srcLine.type === "del" ? displayContent : pairMap.get(index)!,
-                  srcLine.type === "del" ? pairMap.get(index)! : displayContent,
-                  srcLine.type as "del" | "add",
-                )
-              : colorizeLine(displayContent, language)}
-          </Text>
+          // 底色挂在 flexGrow 的 Box 上而不是 Text 上:Text 的底色只覆盖到最后一个字符,
+          // Box 的底色由 renderBackground 按计算宽度整块铺满,行尾才能与 terminalWidth 对齐
+          // (RawAnsi 路径用补空格达到同样效果,见 diffAnsiLines.ts)。
+          <Box flexGrow={1} backgroundColor={backgroundColor}>
+            <Text backgroundColor={backgroundColor} wrap="wrap">
+              <Text
+                bold
+                color={
+                  srcLine.type === "add" ? semanticTheme.status.success : semanticTheme.status.error
+                }
+              >
+                {prefixSymbol}
+              </Text>{" "}
+              {pairMap.has(index)
+                ? renderWordDiff(
+                    srcLine.type === "del" ? displayContent : pairMap.get(index)!,
+                    srcLine.type === "del" ? pairMap.get(index)! : displayContent,
+                    srcLine.type as "del" | "add",
+                  )
+                : colorizeLine(displayContent, language)}
+            </Text>
+          </Box>
         )}
       </Box>,
     );
