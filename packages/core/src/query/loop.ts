@@ -425,6 +425,23 @@ export const MAX_CTX_WINDOW_RECOVERIES = 2;
 const FIXED_OVERHEAD_DOMINANT_RATIO = 0.8;
 
 /**
+ * 「本轮输入自己就超窗」的判据：最新一条用户输入占**本次请求估算总量**的比例。
+ *
+ * 取 0.5 而不是常驻那条的 0.8：输入之外还有常驻开销与历史，过半就意味着把全部历史
+ * 压成零，剩下的「常驻 + 本轮输入」仍占超窗请求的一半以上——而走到熔断时历史已连压
+ * 三轮都压不动。事故现场是 4500 万 / 4500 万，远离阈值；阈值只防「长历史 + 中等输入」
+ * 被误判成输入问题。
+ */
+const USER_INPUT_DOMINANT_RATIO = 0.5;
+/**
+ * 第三态还要求输入**自己**至少占窗口这个比例。只看「占总量」会在短会话里误判：
+ * 历史只有一两条时最新输入天然占总量大半，几百 token 的输入被说成「本身超窗」
+ * （`false-compaction-banner.test.ts` §八 #14 实测）。取 0.5：输入不到半个窗口时，
+ * 超窗的主因不可能是它。
+ */
+const USER_INPUT_MIN_WINDOW_RATIO = 0.5;
+
+/**
  * 压缩失败熔断时给用户的文案。
  *
  * 两种成因的下一步动作完全不同，必须分开说：
@@ -435,9 +452,17 @@ const FIXED_OVERHEAD_DOMINANT_RATIO = 0.8;
  */
 export function buildCompactCircuitBreakerText(
   failures: number,
-  probe: { fixedTokens: number; totalTokens: number; memoryTokens: number; maxTokens: number },
+  probe: {
+    fixedTokens: number;
+    totalTokens: number;
+    memoryTokens: number;
+    maxTokens: number;
+    /** 最新一条用户输入的估算 token（缺省 0 = 不判第三态） */
+    latestUserInputTokens?: number;
+  },
 ): string {
   const { fixedTokens, totalTokens, memoryTokens, maxTokens } = probe;
+  const latestUserInputTokens = probe.latestUserInputTokens ?? 0;
   if (
     maxTokens > 0 &&
     totalTokens > 0 &&
@@ -453,6 +478,21 @@ export function buildCompactCircuitBreakerText(
       `上下文已超出模型窗口：系统提示词与工具定义本身就占了约 ${k(fixedTokens)} tokens` +
       `（窗口 ${k(maxTokens)}，${pct}%），对话历史为空也发不出去，压缩无法解决，已停止重试。` +
       memoryHint
+    );
+  }
+  // 第三态：本轮输入自己就超窗（2026-10-22 事故：@ 误命中 78MB 二进制，单条 user 消息
+  // 估算 4500 万 token）。压缩层只按消息删 / 摘要，不删本轮输入也不缩短它，
+  // /compact 必然再失败。下一步是缩小这条输入——app 层据专用码把输入退回输入框。
+  if (
+    maxTokens > 0 &&
+    totalTokens > 0 &&
+    latestUserInputTokens >= totalTokens * USER_INPUT_DOMINANT_RATIO &&
+    latestUserInputTokens >= maxTokens * USER_INPUT_MIN_WINDOW_RATIO
+  ) {
+    const k = (n: number) => `${Math.round(n / 1000)}K`;
+    return (
+      `本轮输入本身约 ${k(latestUserInputTokens)} tokens，超出模型窗口（${k(maxTokens)}），` +
+      `压缩无法缩短本轮输入，已停止重试。请缩小引用的文件 / 粘贴内容，或拆成多轮发送。`
     );
   }
   return (
@@ -3282,6 +3322,7 @@ export async function* queryLoop(loopConfig: QueryLoopConfig): AsyncGenerator<Qu
                 totalTokens: ctxMgr.estimateTokens(toolRegistry.size()),
                 memoryTokens: ctxMgr.getMemoryTokens(),
                 maxTokens: ctxMgr.getMaxTokens(),
+                latestUserInputTokens: ctxMgr.estimateLatestUserInputTokens(toolRegistry.size()),
               }),
             };
             yield {
@@ -5892,6 +5933,7 @@ export async function* queryLoop(loopConfig: QueryLoopConfig): AsyncGenerator<Qu
               totalTokens: ctxMgr.estimateTokens(toolRegistry.size()),
               memoryTokens: ctxMgr.getMemoryTokens(),
               maxTokens: ctxMgr.getMaxTokens(),
+              latestUserInputTokens: ctxMgr.estimateLatestUserInputTokens(toolRegistry.size()),
             }),
           };
           yield {
