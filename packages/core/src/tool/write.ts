@@ -231,9 +231,9 @@ export class WriteTool implements Tool {
     // 并发冲突检测（Phase 2.1 + 2.4 配置化）
     const conflictEnabled = this.tracker?.conflictDetection ?? true;
     const conflictSeverity = this.tracker?.conflictSeverity ?? "warn";
-    // PR-8（B10）：无头模式降级时把冲突摘要**附进工具成功输出**（此前只进 log.warn，
-    // 模型完全看不到）。与 edit.ts 同一机制，格式共享 formatHeadlessConflictNote。
+    // 无头模式降级与 worktree 分支分叉自动放行时，将冲突提示附进成功输出。
     let headlessConflictNote = "";
+    let branchConflictNote = "";
 
     if (conflictEnabled && conflictSeverity !== "off" && this.tracker?.sessionId) {
       const { checkConflict, formatConflictWarning, formatHeadlessConflictNote } =
@@ -260,8 +260,21 @@ export class WriteTool implements Tool {
           };
         }
 
-        // Phase 2.1: warn 模式弹框让用户选择
-        if (this.tracker.conflictHandler) {
+        // PR-4（B-c）：全部冲突方都是 worktree 分支分叉 → 不弹窗直接放行。
+        // 理由与埋点契约（branch_auto_continue 必须与用户裁决的 continue 分开）
+        // 见 edit.ts 同位置注释，两处必须同步改。
+        if (conflict.isWorktreeBranchConflict) {
+          recordConflict(
+            filePath,
+            conflict.conflictingSessions.length,
+            conflict.severity,
+            "branch_auto_continue",
+            "write",
+          );
+          branchConflictNote = `（并发分支提示：${conflict.summary}；各方改的是自己 worktree 里的副本，不会互相覆盖，合并回主仓时再解决冲突即可）`;
+          log.info("TOOL", "worktree 分支分叉冲突：不弹窗自动放行（branch_auto_continue）");
+        } else if (this.tracker.conflictHandler) {
+          // Phase 2.1: warn 模式弹框让用户选择（同文件冲突才走到这里）
           const action = await this.tracker.conflictHandler(conflict);
           log.info("TOOL", `并发冲突用户选择: ${action}`);
 
@@ -410,8 +423,7 @@ export class WriteTool implements Tool {
         output:
           `文件${action}: ${filePath}${lineDropWarning}` +
           (negotiated.userEdited ? "（采用了你在 IDE 中修改后的内容）" : "") +
-          // PR-8（B10）：无头模式冲突摘要随成功输出回传给模型（空串 = 无冲突，无副作用）
-          headlessConflictNote,
+          headlessConflictNote + branchConflictNote,
         structuredPatch: buildStructuredPatch(filePath, oldContent, contentToWrite),
       };
     } catch (err: any) {

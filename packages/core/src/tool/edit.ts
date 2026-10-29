@@ -493,10 +493,9 @@ export class EditTool implements Tool {
     // 并发冲突检测（Phase 2.1 + 2.4 配置化）
     const conflictEnabled = this.tracker?.conflictDetection ?? true;
     const conflictSeverity = this.tracker?.conflictSeverity ?? "warn";
-    // PR-8（B10）：无头模式降级时把冲突摘要**附进工具成功输出**（此前只进 log.warn，
-    // 模型完全看不到，注释声称的"写入工具输出"并未兑现）。在函数级声明，
-    // 让下方冲突块赋值、末尾成功返回点拼接。
+    // 无头模式降级与 worktree 分支分叉自动放行时，将冲突提示附进成功输出。
     let headlessConflictNote = "";
+    let branchConflictNote = "";
 
     if (conflictEnabled && conflictSeverity !== "off" && this.tracker?.sessionId) {
       const { checkConflict, formatConflictWarning, formatHeadlessConflictNote } =
@@ -523,8 +522,24 @@ export class EditTool implements Tool {
           };
         }
 
-        // Phase 2.1: warn 模式弹框让用户选择
-        if (this.tracker.conflictHandler) {
+        // PR-4（B-c）：全部冲突方都是 worktree 分支分叉 → 不弹窗直接放行。
+        // 双方各自改自己 worktree 里的物理文件，不存在「互相覆盖」风险，合并回
+        // 主仓时才真正撞车——弹窗让用户裁决一个无法当场处理的事，纯打断成本。
+        // A1 契约：埋点记 branch_auto_continue（无人裁决的自动放行），必须与
+        // 弹窗里用户裁决的 continue 分开，否则误报率代理（action=continue 占比）
+        // 的分子掺进没问过的样本，指标自欺。
+        if (conflict.isWorktreeBranchConflict) {
+          recordConflict(
+            filePath,
+            conflict.conflictingSessions.length,
+            conflict.severity,
+            "branch_auto_continue",
+            "edit",
+          );
+          branchConflictNote = `（并发分支提示：${conflict.summary}；各方改的是自己 worktree 里的副本，不会互相覆盖，合并回主仓时再解决冲突即可）`;
+          log.info("TOOL", "worktree 分支分叉冲突：不弹窗自动放行（branch_auto_continue）");
+        } else if (this.tracker.conflictHandler) {
+          // Phase 2.1: warn 模式弹框让用户选择（同文件冲突才走到这里）
           const action = await this.tracker.conflictHandler(conflict);
           log.info("TOOL", `并发冲突用户选择: ${action}`);
 
@@ -821,8 +836,7 @@ export class EditTool implements Tool {
         output:
           `文件已编辑: ${filePath}（替换了 ${result.occurrences} 处${strategyNote}）` +
           (negotiated.userEdited ? "（采用了你在 IDE 中修改后的内容）" : "") +
-          // PR-8（B10）：无头模式冲突摘要随成功输出回传给模型（空串 = 无冲突，无副作用）
-          headlessConflictNote,
+          headlessConflictNote + branchConflictNote,
         structuredPatch: buildStructuredPatch(filePath, rawContent, finalContent),
       };
     } catch (err: any) {
