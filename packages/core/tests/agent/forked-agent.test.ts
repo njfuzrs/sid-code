@@ -129,6 +129,106 @@ describe("runForkedAgent", () => {
     expect(result.deniedToolCalls).toBe(1);
   });
 
+  // ─── C2：入参被 max_tokens 截断时不得带着 {} 执行，连续失败提前结束 ───
+
+  /** 一轮被截断的 edit：stop_reason=max_tokens + 未闭合的 JSON（复刻 20261019 复测会话） */
+  function truncatedEditTurn(id: string) {
+    return [
+      {
+        type: "content_block_start",
+        index: 0,
+        content_block: { type: "tool_use", id, name: "read" },
+      },
+      {
+        type: "content_block_delta",
+        index: 0,
+        delta: {
+          type: "input_json_delta",
+          partial_json: '{"file_path":"/m/session.md","old_string":"' + "x".repeat(50),
+        },
+      },
+      { type: "content_block_stop", index: 0 },
+      {
+        type: "message_delta",
+        delta: { stop_reason: "max_tokens" },
+        usage: { outputTokens: 2048 },
+      },
+    ];
+  }
+
+  test("★C2 截断的 tool_use 不执行，tool_result 带截断提示；同一目标连续 2 次即提前结束", async () => {
+    const provider = mockProvider([
+      truncatedEditTurn("t1"),
+      truncatedEditTurn("t2"),
+      truncatedEditTurn("t3"),
+      truncatedEditTurn("t4"),
+    ]);
+    // 注入空 statefulTools：否则 "read" 会被换成真 ReadTool，绕过下面的执行探针
+    const ctx = { ...makeContext(provider), statefulTools: [] };
+    const executed: unknown[] = [];
+    (ctx.toolRegistry.get("read") as any).execute = async (input: unknown) => {
+      executed.push(input);
+      return { output: "ok" };
+    };
+    const result = await runForkedAgent(ctx, {
+      promptMessages: [{ role: "user", content: [{ type: "text", text: "更新" }] }],
+      canUseTool: () => ({ behavior: "allow" }),
+      querySource: "test",
+    });
+    // 不会用 {} 执行工具
+    expect(executed).toEqual([]);
+    // 连续 2 次就停，不是烧到第 4 次 / 超时
+    expect(result.turns).toBe(2);
+    expect(result.truncatedGiveUp).toBe(true);
+    const toolResults = result.messages
+      .filter((m) => m.role === "user" && Array.isArray(m.content))
+      .flatMap((m) => m.content as any[])
+      .filter((b) => b.type === "tool_result");
+    expect(toolResults.length).toBe(2);
+    expect(toolResults[0].is_error).toBe(true);
+    expect(toolResults[0].content).toContain("max_tokens=2048");
+    expect(toolResults[0].content).toContain("拆成多次小的 edit");
+  });
+
+  test("C2 截断一次后模型改正（正常调用）则不提前结束", async () => {
+    const goodTurn = [
+      {
+        type: "content_block_start",
+        index: 0,
+        content_block: { type: "tool_use", id: "g1", name: "read" },
+      },
+      {
+        type: "content_block_delta",
+        index: 0,
+        delta: { type: "input_json_delta", partial_json: '{"file_path":"/m/session.md"}' },
+      },
+      { type: "content_block_stop", index: 0 },
+      { type: "message_delta", delta: { stop_reason: "tool_use" }, usage: { outputTokens: 5 } },
+    ];
+    // 末轮显式给文本 end_turn：脚本缺省的空响应会被漏斗当空回复按退避重试（拖到 ~14s）
+    const doneTurn = [
+      { type: "content_block_start", index: 0, content_block: { type: "text", text: "" } },
+      { type: "content_block_delta", index: 0, delta: { type: "text_delta", text: "完成" } },
+      { type: "content_block_stop", index: 0 },
+      { type: "message_delta", delta: { stop_reason: "end_turn" }, usage: { outputTokens: 2 } },
+    ];
+    const provider = mockProvider([
+      truncatedEditTurn("t1"),
+      goodTurn,
+      truncatedEditTurn("t2"),
+      doneTurn,
+    ]);
+    const ctx = { ...makeContext(provider), statefulTools: [] };
+    const result = await runForkedAgent(ctx, {
+      promptMessages: [{ role: "user", content: [{ type: "text", text: "更新" }] }],
+      canUseTool: () => ({ behavior: "allow" }),
+      querySource: "test",
+    });
+    // 中间一次正常调用把连击清零，第 3 轮的截断只算第 1 次；第 4 轮文本 end_turn 收尾
+    expect(result.truncatedGiveUp).toBeUndefined();
+    expect(result.turns).toBe(4);
+  });
+
   test("maxTurns 硬性上限生效", async () => {
     // 每轮都返回工具调用，永不自然结束
     const toolTurn = [

@@ -712,6 +712,24 @@ describe("TraceCollector", () => {
     expect(by("t-bg").input_summary).toEqual({ type: "explore", run_in_background: true });
   });
 
+  test("★A2 PostToolUse 落 progress_events 计数；0 次不写字段", async () => {
+    await fireSessionStart(hookSystem);
+    await hookSystem.firePostToolUseEvent("task_output", {}, { output: "x" }, false, "t-p", {
+      progress_events: 7,
+    });
+    await hookSystem.firePostToolUseEvent("read", {}, { output: "x" }, false, "t-0", {
+      progress_events: 0,
+    });
+    const rows = readFileSync(join(testDir, "sessions", "sess-001", "events.jsonl"), "utf-8")
+      .trim()
+      .split("\n")
+      .map((l) => JSON.parse(l))
+      .filter((e) => e.event === "PostToolUse");
+    const by = (id: string) => rows.find((e) => e.data.tool_use_id === id)!.data;
+    expect(by("t-p").progress_events).toBe(7);
+    expect("progress_events" in by("t-0")).toBe(false);
+  });
+
   // ─── PostToolUse 更新 metadata ───
 
   test("PostToolUse 更新 tools_used", async () => {

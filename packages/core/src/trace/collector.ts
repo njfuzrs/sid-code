@@ -1941,6 +1941,8 @@ export class TraceCollector {
         ...(toolDurationMs !== undefined ? { duration_ms: toolDurationMs } : {}),
         ...toolAgentField(input),
         ...toolOutputCharsField(input),
+        // A2：执行期间进度上报次数（只在 >0 时写，见 hook/types.ts progress_events）
+        ...(input.progress_events ? { progress_events: input.progress_events } : {}),
       },
     });
 
@@ -1997,6 +1999,8 @@ export class TraceCollector {
         ...errorHeadField(input),
         ...toolAgentField(input),
         ...toolOutputCharsField(input),
+        // A2：执行期间进度上报次数（只在 >0 时写，见 hook/types.ts progress_events）
+        ...(input.progress_events ? { progress_events: input.progress_events } : {}),
       },
     });
 
