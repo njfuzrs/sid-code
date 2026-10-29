@@ -85,7 +85,7 @@ import { QueryEngine } from "@sid-code/core/query/engine.ts";
 import { resetCacheDetection, clearCacheBreaks } from "@sid-code/core/api/cache-detection.ts";
 import { resetTTLLatch } from "@sid-code/core/api/cache-ttl-latch.ts";
 import { resetBetaHeaders } from "@sid-code/core/api/beta-header-latch.ts";
-import { resetCircuitBreaker } from "@sid-code/core/query/auto-compact.ts";
+import { resetCircuitBreaker, type AutoCompactResult } from "@sid-code/core/query/auto-compact.ts";
 import { clearQueue as clearMessageQueue } from "@sid-code/core/query/message-queue-manager.ts";
 import { HookSystem } from "@sid-code/core/hook/system.ts";
 import { ConfigSource } from "@sid-code/core/hook/types.ts";
@@ -3932,7 +3932,7 @@ export class App {
     }
   }
 
-  private async autoCompact(): Promise<"summarized" | "truncated" | "skipped" | void> {
+  private async autoCompact(): Promise<AutoCompactResult> {
     const { autoCompact: impl } = await import("@sid-code/core/query/auto-compact.ts");
     // §3.1：传入主对话工具定义，让压缩请求复用主对话已缓存的工具前缀（cache hit）。
     const toolSchemas = this.toolRegistry.activeDefinitions();
