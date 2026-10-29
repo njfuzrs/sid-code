@@ -82,7 +82,7 @@ function makeLoopConfig(responses: AccumulatedResponse[]): {
         })),
       };
     },
-    autoCompact: async () => {},
+    autoCompact: async () => ({ kind: "skipped" as const }),
     getAbortSignal: () => undefined,
     uuid: () => "uuid-test",
   };

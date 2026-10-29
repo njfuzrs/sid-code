@@ -64,7 +64,7 @@ function makeLoopConfig(
       return r;
     },
     executeTools: async () => ({ results: [] }),
-    autoCompact: async () => {},
+    autoCompact: async () => ({ kind: "skipped" as const }),
     getAbortSignal: () => opts?.abortController?.signal,
     abortCurrentRequest: () => {},
     uuid: () => "uuid-test",

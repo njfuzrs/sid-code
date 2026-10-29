@@ -83,7 +83,7 @@ function makeLoopConfig(opts: {
     sendWithRetry: () => emptyStream(),
     processStream,
     executeTools,
-    autoCompact: async () => {},
+    autoCompact: async () => ({ kind: "skipped" as const }),
     getAbortSignal: () => undefined,
     uuid: () => "uuid-test",
   };

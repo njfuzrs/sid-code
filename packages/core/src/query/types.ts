@@ -339,10 +339,30 @@ export interface LoopState {
    * 「反复尝试同一个压不动的历史」——CC 踩过的坑是单会话 3,272 次。
    *
    * 与 `hasAttemptedReactiveCompact` 互补而非重复：那个是「prompt-too-long 本轮只反应式
-   * 压缩一次」的防抖（粒度=本轮）；这个是跨轮累计的失败熔断（粒度=本会话）。
-   * 任一次压缩成功即清零——熔断只针对"连续"失败。
+   * 压缩一次」的防抖；这个是跨轮累计的失败熔断（粒度=本条用户消息，LoopState 每条消息重建）。
+   * 任一次压缩 applied 即清零——熔断只针对"连续"失败。
+   *
+   * 2026-10-29：计数由 `settleCompaction` **唯一维护**，7 个 trigger 全覆盖（含阈值三档，
+   * 此前阈值档 0 处计数）。`noop`（没事可做）**不计数**；API 已拒收的恢复路径不允许判 noop。
    */
   consecutiveCompactFailures?: number;
+  /**
+   * loop 层压缩熔断已开启（2026-10-29）。由 `settleCompaction` 在计数达
+   * MAX_CONSECUTIVE_COMPACT_FAILURES 时置真，开闸后本条用户消息内不再关闭（latch）：
+   * 之后某次本地截断 applied 只清零计数，不关闸，避免开关抖动。
+   *
+   * 开闸后挡什么：阈值档的 contextCollapse + autoCompact（都调 LLM）与 PTL 兜底的 autoCompact；
+   * 零 API 成本的本地截断照做。
+   *
+   * 为什么挂 LoopState 而不是 SessionState（**有意的取舍，不是遗漏**）：
+   * - 与 `consecutiveCompactFailures` 同作用域，不会出现「计数在消息内、熔断在会话级」的口径分裂；
+   * - 跨用户消息的 LLM 摘要健康度已由进程级 `AutoCompactCircuitBreaker`（query/circuit-breaker.ts，
+   *   5 分钟恢复期）负责，这里再做一个会话级熔断就是第二个事实源；
+   * - 手动 `/compact` 后不需要跨层重置通道：下一条用户消息重建 LoopState，熔断自动解除。
+   */
+  compactCircuitOpen?: boolean;
+  /** 本条用户消息内是否已向用户提示过「已停止自动压缩」（UI 去重用，事件不受它限制） */
+  compactSkipNotified?: boolean;
   /** Stop Hook 重试次数 */
   stopHookRetryCount?: number;
   /**
@@ -763,10 +783,14 @@ export interface QueryDeps {
     /** 每个工具自身的真实耗时（tool_use_id → ms），供 tool_end 如实上报，缺省时回退批次平摊。 */
     durations?: Map<string, number>;
   }>;
-  /** 自动压缩。返回压缩结果：summarized=摘要成功 / truncated=降级为有损截断 / skipped=未压缩。
+  /** 自动压缩。返回压缩结果：summarized=摘要成功 / truncated=降级为有损截断 /
+   *  failed=降级截断也没切成（真失败，计入 loop 层熔断）/ skipped=没事可做（原因见 reason）。
    *  静默-9：loop 侧据此对 truncated 结果 yield warning 提示用户上下文有损。
-   *  用宽松的 string 返回类型以避免 types.ts 反向依赖 auto-compact.ts（保持底层模块无依赖）。 */
-  autoCompact: () => Promise<"summarized" | "truncated" | "skipped" | void>;
+   *  结构与 auto-compact.ts 的 AutoCompactResult 同形，这里内联字面量以避免 types.ts 反向依赖它。 */
+  autoCompact: () => Promise<{
+    kind: "summarized" | "truncated" | "failed" | "skipped";
+    reason?: "too_few_messages" | "lock_held" | "hook_blocked";
+  }>;
   /**
    * §2.2 Context Collapse：autoCompact 前置层（分段摘要老消息）。
    * 返回 true 表示已达目标可跳过 autoCompact。可选——不提供则 hard 级压缩直接走 autoCompact。

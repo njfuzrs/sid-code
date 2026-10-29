@@ -92,7 +92,7 @@ function setup({
       return toolUseResp(call);
     },
     executeTools: async () => ({ results: [] }),
-    autoCompact: async () => {},
+    autoCompact: async () => ({ kind: "skipped" as const }),
     getAbortSignal: () => undefined,
     uuid: () => `uuid-${call}`,
     ...(onRecordError ? { recordError: onRecordError } : {}),

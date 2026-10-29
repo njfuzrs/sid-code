@@ -91,7 +91,7 @@ function makeHarness(responses: AccumulatedResponse[], opts?: { deferredTools?: 
         .filter((b: any) => b.type === "tool_use")
         .map((b: any) => ({ type: "tool_result" as const, tool_use_id: b.id, content: "ok" })),
     }),
-    autoCompact: async () => {},
+    autoCompact: async () => ({ kind: "skipped" as const }),
     getAbortSignal: () => undefined,
     uuid: () => "uuid-test",
   };
