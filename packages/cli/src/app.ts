@@ -4625,6 +4625,23 @@ export class App {
       } catch {
         /* 采集不可用不影响启动 */
       }
+      // L2-A：子代理循环的结构化事件（SubagentLoopTurn / StopReasonMismatch / EmptyParamRetry）。
+      // 子代理实例按调用新建，拿不到主循环的 traceAppendEvent，与上面的重试观察者同一取向。
+      try {
+        const { setSubagentLoopTraceSink } = require("@sid-code/core/agent/loop-trace-sink.ts");
+        setSubagentLoopTraceSink((event: Record<string, unknown>) => {
+          try {
+            (traceCollectorInstance as any).writer?.appendEvent?.({
+              ...event,
+              session_id: this.sessionState.sessionId,
+            });
+          } catch {
+            /* 埋点失败静默 */
+          }
+        });
+      } catch {
+        /* 采集不可用不影响启动 */
+      }
       // 阶段 2.5：网关定价采集观察者 → 一条 GatewayPricingSync trace 事件。
       // 观察者模式（对齐 setSideCostObserver）避免 gateway-pricing.ts 反向依赖 collector。
       try {

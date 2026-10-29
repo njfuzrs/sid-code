@@ -108,7 +108,7 @@ describe("§八 #7 — deriveContextColor 变色点与真实档位对齐", () =>
 });
 
 describe("§八 #4 / P0-3 — 未压缩时提示文案不得声称已精简上下文", () => {
-  const hits = [{ id: "tu_1", name: "write", index: 0 }];
+  const hits = [{ id: "tu_1", name: "write", index: 0, truncated: false }];
 
   test("compacted=false 时文案不含任何「精简/压缩上下文」字样", () => {
     for (const stopReason of [undefined, "max_tokens", "end_turn"]) {

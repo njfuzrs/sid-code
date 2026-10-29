@@ -195,7 +195,20 @@ export type DoneIncompleteReason =
    * 压不动，或压动了仍连续撞上限达 `MAX_CTX_WINDOW_RECOVERIES` 次。
    * 与子代理（agent/agentic-loop.ts `MAX_CTX_WINDOW_RECOVERY`）同一封顶取向。
    */
-  | "context_window_exhausted";
+  | "context_window_exhausted"
+  /**
+   * F1 空参数重试耗尽（连续 MAX_EMPTY_PARAM_RETRIES 次吐不出完整工具参数）后硬停本轮。
+   * 此前该出口不带本字段，SDK / 无头会把「模型退化」记成 success。
+   */
+  | "empty_param_exhausted"
+  /** 空流：content 为空且 stopReason 为 null / 未识别（伪装成功的空响应） */
+  | "empty_stream"
+  /** 模型安全策略拒答（stop_reason=refusal） */
+  | "refusal"
+  /** server tool 暂停（pause_turn）：本仓未实现续接，如实收尾 */
+  | "pause_turn"
+  /** 有内容但 stopReason 未识别（含 `tool_use` 却无 tool_use 块） */
+  | "unknown_stop_reason";
 
 // ─── 循环继续原因 ───
 
@@ -707,6 +720,12 @@ export interface LoopState {
    * 由 gate-exhaustion.ts `emitGateExhausted` 唯一写入，随 `TurnComplete.gates_exhausted` 落盘。
    */
   gatesExhausted?: string[];
+  /**
+   * 本轮「不是正常说完」的原因——`yield done.incompleteReason` 与 `TurnComplete.incomplete_reason`
+   * 的**唯一写入点**。出口处先写 state 再从 state 派生 done，finally 里的 TurnComplete 读同一处；
+   * 两处各写一份必然分叉（此前 TurnComplete 877 条里 0 条带该字段）。
+   */
+  incompleteReason?: DoneIncompleteReason;
 }
 
 /** 创建初始循环状态 */

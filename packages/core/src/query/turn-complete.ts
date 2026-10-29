@@ -49,7 +49,7 @@
  * "答复完成"。消费侧展示时必须标 n，不然会被误以为两者置信度相同。
  */
 
-import type { LoopState, QueryDeps } from "./types.ts";
+import type { DoneIncompleteReason, LoopState, QueryDeps } from "./types.ts";
 import type { SessionState } from "../session/state.ts";
 import { recordTurnsHistogram } from "../telemetry/metrics/latency-histograms.ts";
 
@@ -119,6 +119,20 @@ export interface TurnCompletePayload {
    * "这一轮为什么不再继续了"，取值见 {@link TurnStopReason}。
    */
   stop_reason: TurnStopReason;
+  /**
+   * `stop_reason` 的口径标记，恒为 `"normalized"`。
+   *
+   * `AfterModelRaw.data.stop_reason` 同名但是 provider 原始值（`stop_reason_kind: "raw"`），
+   * 两者字段名相同、语义不同，离线脚本极易拿错。刻意不改名（打断所有既有脚本），
+   * 也不只加注释（注释不在数据里，读数据的人看不到），而是让数据自己说明口径。
+   */
+  stop_reason_kind: "normalized";
+  /**
+   * 本轮「不是正常说完」的原因，与 `yield done.incompleteReason` 同源（都读
+   * `LoopState.incompleteReason`）。正常收尾时**不落字段**（不是 null）。
+   * 有了它，ctx_window 耗尽 / 空参数耗尽 / 未识别停止原因不再都只是一个 `other`。
+   */
+  incomplete_reason?: DoneIncompleteReason;
   /** 本轮模型请求执行的工具调用数（无工具轮为 0） */
   tool_calls_in_turn: number;
   /**
@@ -225,6 +239,8 @@ export function emitTurnComplete(
       absoluteTurn: args.absoluteTurn,
       promptSeq: args.promptSeq,
       stop_reason: args.stopReason,
+      stop_reason_kind: "normalized",
+      ...(state.incompleteReason ? { incomplete_reason: state.incompleteReason } : {}),
       tool_calls_in_turn: args.toolCallsInTurn,
       // 基准缺失（理论上不该发生）时不落字段：落 0 会污染分位数，
       // 而缺失会被 digest 侧原样跳过（它只收 > 0 的值）。
