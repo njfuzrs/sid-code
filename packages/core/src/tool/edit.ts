@@ -806,6 +806,7 @@ export class EditTool implements Tool {
             this.tracker.cwd,
             filePath,
             "edit",
+            this.tracker.parentSessionId,
           );
         }
       }

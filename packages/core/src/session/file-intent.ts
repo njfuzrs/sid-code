@@ -57,6 +57,12 @@ export interface SessionFileIntents {
   sessionId: string;
   pid: number;
   cwd: string;
+  /**
+   * PR-2（B3）：子代理以其 agentId 作 sessionId 独立登记时，这里记父会话 ID，
+   * 仅供归属展示（/conflict 命令、冲突报告），**不参与**冲突判定与排除——
+   * 排除自己靠 sessionId 精确匹配，父子之间照常互相可见（这正是 B3 要修的漏检）。
+   */
+  parentSessionId?: string;
   files: Record<string, FileIntent>;
 }
 
@@ -225,6 +231,8 @@ export function intentKeyForPath(filePath: string): string {
  * @param cwd 当前工作目录
  * @param filePath 文件绝对路径（会被 NFC 归一化）
  * @param operation 操作类型
+ * @param parentSessionId PR-2（B3）：子代理以 agentId 作 sessionId 登记时传父会话 ID，
+ *   仅供归属展示；主会话调用不传。
  */
 export function declareFileIntent(
   sessionId: string,
@@ -232,6 +240,7 @@ export function declareFileIntent(
   cwd: string,
   filePath: string,
   operation: FileOperation,
+  parentSessionId?: string,
 ): void {
   try {
     mkdirSync(intentsDir(), { recursive: true });
@@ -254,6 +263,12 @@ export function declareFileIntent(
       } catch {
         // 损坏的文件，覆盖
       }
+    }
+
+    // PR-2：归属字段只写不清——同一子代理的每次声明都带同一父会话 ID，
+    // 不带时保留已写入的值（防某条调用路径漏传把归属抹掉）。
+    if (parentSessionId !== undefined) {
+      intents.parentSessionId = parentSessionId;
     }
 
     // B5：operation 只升不降。旧实现无条件覆盖——同一会话 edit 之后任何一次 read
@@ -383,6 +398,8 @@ export function queryFileIntents(
   sessionId: string;
   pid: number;
   cwd: string;
+  /** PR-2（B3）：对方是子代理时的父会话 ID（归属展示用，主会话声明时 undefined） */
+  parentSessionId?: string;
   intent: FileIntent;
 }> {
   // B-b 对称性：查询侧与 declareFileIntent 走**同一个** resolveIntentKey——
@@ -393,6 +410,7 @@ export function queryFileIntents(
     sessionId: string;
     pid: number;
     cwd: string;
+    parentSessionId?: string;
     intent: FileIntent;
   }> = [];
 
@@ -407,6 +425,9 @@ export function queryFileIntents(
         sessionId,
         pid: sessionIntents.pid,
         cwd: sessionIntents.cwd,
+        ...(sessionIntents.parentSessionId
+          ? { parentSessionId: sessionIntents.parentSessionId }
+          : {}),
         intent,
       });
     }

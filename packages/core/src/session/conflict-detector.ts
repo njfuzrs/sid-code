@@ -33,6 +33,11 @@ export interface ConflictReport {
     physicalPath: string;
     /** 该会话是否为分支分叉冲突（物理路径不同源） */
     isBranchDivergence: boolean;
+    /**
+     * PR-2（B3）：对方是子代理时的父会话 ID（归属展示：「子代理 xxx（归属父会话 yyy）」）。
+     * 主会话声明时 undefined。不参与冲突判定。
+     */
+    parentSessionId?: string;
   }>;
   /** 严重程度 */
   severity: ConflictSeverity;
@@ -84,6 +89,7 @@ export function checkConflict(
       secondsAgo: Math.floor((now - c.intent.lastAccessAt) / 1000),
       physicalPath,
       isBranchDivergence: physicalPath !== targetPhysical,
+      ...(c.parentSessionId ? { parentSessionId: c.parentSessionId } : {}),
     };
   });
 
@@ -137,8 +143,12 @@ export function formatConflictWarning(report: ConflictReport): string {
       session.secondsAgo < 60
         ? `${session.secondsAgo} 秒前`
         : `${Math.floor(session.secondsAgo / 60)} 分钟前`;
+    // PR-2：子代理冲突方标注归属父会话，否则用户看到一串 -sub- id 无法对应到哪个窗口
+    const parentNote = session.parentSessionId
+      ? `，归属父会话 ${session.parentSessionId.slice(-8)}`
+      : "";
     lines.push(
-      `  - 会话 ${session.sessionId.slice(-8)} (PID ${session.pid}) — ${session.lastOperation} (${timeAgo})`,
+      `  - 会话 ${session.sessionId.slice(-8)} (PID ${session.pid}${parentNote}) — ${session.lastOperation} (${timeAgo})`,
     );
   }
 

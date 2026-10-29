@@ -791,6 +791,7 @@ export class ReadTool implements Tool {
             this.tracker.cwd,
             filePath,
             "read",
+            this.tracker.parentSessionId,
           );
         }
       }
