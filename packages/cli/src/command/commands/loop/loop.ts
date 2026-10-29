@@ -158,7 +158,7 @@ const mod: LocalCommandModule = {
         `<loop-task>\n${trimmed}\n</loop-task>\n\n` +
         `用户要求以「自适应轮询」方式重复上面的任务，直到达成目标。请按如下方式工作：\n` +
         `1. 现在立即执行一次该任务，检查当前状态。\n` +
-        `2. 若目标尚未达成，调用 schedule_wakeup 工具安排下次检查：delaySeconds 自己定` +
+        `2. 若目标尚未达成，调用 schedule_wakeup 工具安排下次检查：delay_seconds 自己定` +
         `（钳制在 60~3600 秒之间），并在 reason 里说明为何选这个延迟。\n` +
         `3. 每次被唤醒后重复「检查 → 未达成则再 schedule_wakeup」，直到目标达成后停止（不再安排唤醒）。\n` +
         `延迟取舍：prompt 缓存约 5 分钟过期，优先选 <270s 或 ≥1200s，避开 300s 附近。`,
