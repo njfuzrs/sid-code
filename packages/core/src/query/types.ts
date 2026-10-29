@@ -343,8 +343,6 @@ export interface LoopState {
    * 任一次压缩成功即清零——熔断只针对"连续"失败。
    */
   consecutiveCompactFailures?: number;
-  /** 上一次 continue 的原因 */
-  transition: ContinueReason | undefined;
   /** Stop Hook 重试次数 */
   stopHookRetryCount?: number;
   /**
@@ -716,7 +714,6 @@ export function createInitialLoopState(maxTurns: number): LoopState {
     maxTurns,
     maxOutputTokensRecoveryCount: 0,
     hasAttemptedReactiveCompact: false,
-    transition: undefined,
     timeoutRetryCount: 0,
     turnsConsumedWithoutAssistant: 0,
     repeatedReadonly: { repeatCount: 0, reminderCount: 0 },
