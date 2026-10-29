@@ -141,9 +141,23 @@ export class QuotaManager {
     this.lastAlertLevel = null;
   }
 
-  /** 是否已超限 */
+  /**
+   * 是否已超限 —— **硬停判定只看它**，每轮都问。
+   *
+   * 不能拿 `check()` 的返回值当硬停：`check()` 只在告警级别升级时返回，exceeded 是最高档，
+   * 触发一次之后恒为 null —— 交互模式下第一次超限停一轮，之后再也不拦（2026-10-22 实测）。
+   * 告警需要去重，硬停不应该，两件事必须用两个判据。
+   */
   isExceeded(currentCost: number): boolean {
     if (this.costLimit <= 0) return false;
     return currentCost >= this.costLimit;
+  }
+
+  /**
+   * 已超限后再次被拦时的文案。与 `check()` 的「自动停止」区分开：
+   * 用户看到的应是「仍在拦」，而不是每轮重复播报同一句「刚刚超限」。
+   */
+  stillExceededMessage(currentCost: number): string {
+    return `本会话已超出成本配额（$${currentCost.toFixed(4)} / $${this.costLimit.toFixed(4)}），仍拦截。调高 costLimit 或 /clear 开新会话后再继续`;
   }
 }

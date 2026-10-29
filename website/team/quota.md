@@ -46,12 +46,14 @@ sid-code -p "重构这个模块" --max-budget-usd 1.0
 "自动停止"的语义是：当前这一轮 agentic loop 就地终止（`packages/core/src/query/loop.ts`
 发一条 terminal 系统消息后 `return`），不是整个进程退出。
 
-::: warning 交互模式下目前只拦一次
-超限判定和告警去重共用同一个状态（`packages/core/src/llm/quota.ts` 的 `check()` 只在级别升级时返回结果），
-所以 `exceeded` 触发过一次之后，同一会话里继续对话**不会再被拦**。`-p` 模式一次就退出，不受影响。
-这是已知缺陷，修复前交互模式请把 `costLimit` 当作"超支提醒 + 停一次"，不要当硬上限用。
-`budgetRules` 的 `block` 也有同样的问题。
-:::
+超限之后**每一轮都拦**，不是只拦一次。硬停判定（`isExceeded()`）和告警去重（`check()`）是两个判据，
+继续发消息时主循环在**发请求之前**就停下，不会先烧一次调用再停，提示变成：
+
+```text
+⚠️  本会话已超出成本配额（$0.0040 / $0.0001），仍拦截。调高 costLimit 或 /clear 开新会话后再继续
+```
+
+`budgetRules` 的 `block` 同理。
 
 ## 四个可配字段
 
@@ -78,7 +80,7 @@ export function resolveEffectiveCostLimit(quotaCostLimit, topLevelCostLimit): nu
 
 统计口径值得点一句：`costLimit` 检查用的是 `getEffectiveTotalCostUSD()`
 （`packages/core/src/query/loop.ts`），**包含标题生成 / 记忆抽取 / 摘要这些影子调用**的花费。
-不然辅助调用烧钱就不受限了。注意下文的 `budgetRules` **不是**这个口径，它只累加主调用的花费。
+不然辅助调用烧钱就不受限了。下文的 `budgetRules` 用的是同一个口径。
 
 ### 四级预警
 
@@ -92,9 +94,9 @@ export function resolveEffectiveCostLimit(quotaCostLimit, topLevelCostLimit): nu
 | ≥ 100% | `exceeded` | **终止本轮** |
 
 **只在级别升级时告警一次**（同一函数里的 `lastAlertLevel` 判断），不会每轮重复刷同一档。
-`exceeded` 也受这个去重影响，这就是上面说的"只拦一次"。
-`/clear` 会重置 `costLimit` 的告警级别（`packages/cli/src/app.ts`），清空上下文后会重新开始告警，
-超限后也能再拦一次。`budgetRules` 的告警级别**不随 `/clear` 重置**。
+去重只管告警文案，不管拦不拦：`exceeded` 之后每轮都拦。
+`/clear` 开新会话，会话花费归零，`costLimit` 和 `budgetRules` 的告警级别一起重置
+（`packages/cli/src/app.ts`），`period: "session"` 规则的累计也清零。
 
 ### RPM / TPM 的实际状态
 
@@ -164,18 +166,18 @@ RPM = Requests Per Minute（每分钟请求数），TPM = Tokens Per Minute（�
 ### 周期是进程内的，重启即清零
 
 计数存在内存 Map 里（`packages/core/src/telemetry/metrics/budget-tracker.ts`），
-周期 key 由当前时间算出（`daily` = `2026-07-27` 这样的字符串）。**没有持久化**。
+周期 key 由当前**本地时间**算出（`daily` = `2026-07-27`，`weekly` = `2026-W31`）。**没有持久化**。
 
 推论很重要：`period: "daily"` 的语义是**"本进程内、今天这个日期键下的累计"**，
 不是"这台机器今天一共花了多少"。重启 sid-code 就归零，多个并行会话各算各的。
-`period: "session"` 的累计在 `/clear` 后也**不清零**，会接着上一个会话算。
+`period: "session"` 的累计在 `/clear` 后清零（`/clear` 是开新会话）；`--resume` 恢复的会话接着算。
 
-还有三点容易误会：
+还有三点值得知道：
 
-- **周期按 UTC 划分**。`hourly` / `daily` / `monthly` 取自 UTC 时间，在 UTC+8 下"每日预算"到本地早上 8 点才翻天。
-- **`weekly` 不是自然周**。它按 1970-01-01 起每 7 天切一段，每段从周四 00:00 UTC 开始（北京时间周四早上 8 点）。
-- **只计主调用**。累加的是每轮主模型调用的花费，标题生成、记忆抽取、摘要这些辅助调用不计入，
-  所以和 `costLimit`（含辅助调用）设成同一个数时，`budgetRules` 会晚一点触发。
+- **周期按本地时区划分**。`daily` 在本地零点翻天；`weekly` 是 ISO 周，从周一 00:00 开始。
+- **含辅助调用**。和 `costLimit` 同口径（`getEffectiveTotalCostUSD()`），标题生成、记忆抽取、摘要的花费都计入，
+  两者设成同一个数时同一轮触发。
+- **`scope.model` 只计该模型的主调用**。辅助调用的花费拆不出是哪个模型的，只计入不限模型的规则。
 
 跨会话的额度用下一节的远程预算；事后复盘花费用[轨迹数据](/team/observability)聚合。
 
