@@ -44,12 +44,12 @@ import {
   detectEmptyParamToolUses,
   replaceEmptyParamToolUses,
   buildEmptyParamRetryMessage,
+  buildEmptyParamRetryData,
+  summarizeToolUseParams,
 } from "../query/empty-param.ts";
-import {
-  buildPendingToolResults,
-  finalizeMessagesForSend,
-  isEndTurnLikeStopReason,
-} from "./message-invariants.ts";
+import { buildPendingToolResults, finalizeMessagesForSend } from "./message-invariants.ts";
+import { classifyStopReason, type StopAction } from "../query/stop-reason-policy.ts";
+import { getSubagentLoopTraceSink } from "./loop-trace-sink.ts";
 // B5-1：撞 context window 上限时的压缩恢复。与主循环 query/loop.ts 用同一份实现——
 // 子代理另写一套压缩策略就是两份平行实现（本方案 §0.4 判据禁止的形态）。
 import { reactiveCompact, type ReactiveCompactResult } from "../query/reactive-compact.ts";
@@ -192,6 +192,16 @@ export interface AgentLoopConfig {
    * 证明它被执行的断言。
    */
   onTelemetry?: (event: RetryTelemetryEvent) => void;
+  /**
+   * L2-A：子循环结构化事件出口（`SubagentLoopTurn` / `StopReasonMismatch` / `EmptyParamRetry`，
+   * 均带 `agent_id`）。缺省走 app.ts 注册的进程级 sink（见 loop-trace-sink.ts）；
+   * 测试显式传入以直接断言。两者都没有时不发事件（无副作用）。
+   *
+   * ⚠️ 刻意**不**复用 `AfterModelRaw` 事件名：cost-recompute / provider-health / digest
+   * 都按 AfterModelRaw 累加成本与调用数，子代理成本已经由自己的账本路径入账，
+   * 复用同名事件会让子代理成本被重复计入。
+   */
+  traceAppendEvent?: import("./loop-trace-sink.ts").LoopTraceSink;
 }
 
 /**
@@ -285,6 +295,18 @@ export interface AgentLoopResult {
     attempts?: number;
     lastError?: string;
   };
+  /**
+   * L2-D：停止归因，供 SubagentStop 落盘。`success=false` 只说得出「没成功」，
+   * 这四个字段说得出「为什么停」。由 runAgentLoop 包壳统一回填（与 retryAttempts 同理）。
+   */
+  /** 最后一次模型响应的 provider 原始 stop_reason（未调用过模型时缺省） */
+  lastStopReason?: string | null;
+  /** 收尾归类：classifyStopReason 的 kind，或 max_turns / aborted / error 等循环自身出口 */
+  stopAction?: string;
+  /** 本次循环 F2（stop_reason 与 content 不一致）命中次数 */
+  f2MismatchCount?: number;
+  /** 本次循环 F1（空参数/截断参数）重试次数（含耗尽那一次） */
+  f1RetryCount?: number;
 }
 
 // B2：原 `sleepWithAbort`（R1 退避专用）已删除。退避现由漏斗的
@@ -328,7 +350,7 @@ export async function runAgentLoop(config: AgentLoopConfig): Promise<AgentLoopRe
   // 恰好不显示重试次数"——缺口 D 又在那条路径上复活，且没有任何报错提示。
   // 用共享 holder 让内部只管累加、出口统一回填，新增 return 路径不需要记得补。
   // ══════════════════════════════════════════════════════════════════
-  const retryStats: RetryStats = { attempts: 0 };
+  const retryStats: RetryStats = { attempts: 0, f2MismatchCount: 0, f1RetryCount: 0 };
   // LSP 诊断归属者：与 agent/tool-executor 里 syncFileToLSP 的 owner 同值，否则编辑登记在
   // 一个名下、collect 取另一个名下，诊断永远取不到。无 agentId（旧测试 / 未接线调用方）
   // 时用本循环私有的 id：退化成「主循环」会重新打开互相偷诊断的口子。
@@ -342,11 +364,31 @@ export async function runAgentLoop(config: AgentLoopConfig): Promise<AgentLoopRe
       result.lastRetryReason = retryStats.lastReason;
     }
     if (retryStats.giveUp) result.giveUp = retryStats.giveUp;
+    result.lastStopReason = retryStats.lastStopReason;
+    result.stopAction = retryStats.stopAction ?? (result.success ? "finalize" : "error");
+    result.f2MismatchCount = retryStats.f2MismatchCount;
+    result.f1RetryCount = retryStats.f1RetryCount;
     return result;
   } finally {
     if (config.agentId) cleanupAgentSnapshots(config.agentId);
     // 本循环名下文件的诊断归属转给主循环：否则它们的后续诊断再也没有消费者
     releaseDiagnosticOwner(diagnosticOwner);
+  }
+}
+
+/** StopAction → 扁平字符串（落事件 / SubagentStop 用），与主循环 incompleteReason 取值对齐 */
+function describeStopAction(a: StopAction): string {
+  switch (a.kind) {
+    case "execute_tools":
+      return `execute_tools:${a.why}`;
+    case "finalize":
+      return "finalize";
+    case "recover":
+      return `recover:${a.how}`;
+    case "terminal":
+      return a.reason;
+    case "unknown":
+      return "unknown_stop_reason";
   }
 }
 
@@ -356,6 +398,11 @@ interface RetryStats {
   lastReason?: string;
   /** D1：最后一次 recovery_give_up 证据（取最后一次，与 lastReason 同口径） */
   giveUp?: AgentLoopResult["giveUp"];
+  /** L2-D：停止归因（跨 return 点共享，出口统一回填） */
+  lastStopReason?: string | null;
+  stopAction?: string;
+  f2MismatchCount: number;
+  f1RetryCount: number;
 }
 
 async function runAgentLoopInner(
@@ -541,6 +588,21 @@ async function runAgentLoopInner(
   // 排查时更误导。漏传就该退化成旧行为，由 §5 的一致性哨兵去发现。
   // ══════════════════════════════════════════════════════════════════
   const observerAgentId = config.agentId;
+
+  // L2-A：子循环结构化事件。显式传入优先，否则走 app.ts 注册的进程级 sink。
+  const traceSink = config.traceAppendEvent ?? getSubagentLoopTraceSink();
+  const emitLoopEvent = (event: string, data: Record<string, unknown>): void => {
+    if (!traceSink) return;
+    try {
+      traceSink({
+        event,
+        timestamp: new Date().toISOString(),
+        data: { ...(observerAgentId ? { agent_id: observerAgentId } : {}), ...data },
+      });
+    } catch {
+      /* 埋点失败不影响子代理循环 */
+    }
+  };
 
   while (turns < maxTurns) {
     turns++;
@@ -946,8 +1008,42 @@ async function runAgentLoopInner(
     // 助手消息必须在本分支里以 sanitized 入历史，绝不能先把原始 tool_use 写进去再补半套 result。
     {
       const getSchema = (name: string) => tools.get(name)?.inputSchema?.();
+      // L2-A：每次模型响应落一条 SubagentLoopTurn（原始 stop_reason + 分类结果 + 参数事实），
+      // 与主循环 AfterModelRaw 的 stop_reason / tool_use_* 字段同口径。
+      retryStats.lastStopReason = response.stopReason ?? null;
+      emitLoopEvent("SubagentLoopTurn", {
+        turn: turns,
+        model,
+        stop_reason: response.stopReason ?? null,
+        stop_reason_kind: "raw",
+        stop_action: describeStopAction(
+          classifyStopReason({
+            stopReason: response.stopReason,
+            hasToolUse: response.content.some((b) => b.type === "tool_use"),
+            hasAnyContent: response.content.length > 0,
+          }),
+        ),
+        content_types: response.content.map((b) => b.type),
+        ...summarizeToolUseParams(response.content, getSchema),
+      });
       const emptyParamHits = detectEmptyParamToolUses(response.content, getSchema);
       if (emptyParamHits.length > 0) {
+        retryStats.f1RetryCount++;
+        emitLoopEvent(
+          "EmptyParamRetry",
+          buildEmptyParamRetryData({
+            turn: turns,
+            stopReason: response.stopReason,
+            hits: emptyParamHits,
+            getSchema,
+            attempt: emptyParamRetryCount + 1,
+            maxAttempts: MAX_EMPTY_PARAM_RETRIES,
+            // 子循环的压缩决策在下方；事件只记命中事实，是否压缩看日志 / CompactionAttempt
+            compacted: false,
+            compactLevel: ctxMgr.getCompactionLevel(tools.size()),
+            ...(emptyParamRetryCount >= MAX_EMPTY_PARAM_RETRIES ? { exhausted: true } : {}),
+          }),
+        );
         const names = emptyParamHits.map((h) => h.name).join("、");
         const sanitizedContent = replaceEmptyParamToolUses(response.content, getSchema);
 
@@ -1008,6 +1104,7 @@ async function runAgentLoopInner(
           `F1：空参数重试已达上限 ${MAX_EMPTY_PARAM_RETRIES}，工具「${names}」仍参数为空，放行并如实呈现退化`,
         );
         ctxMgr.addMessage({ role: "assistant", content: sanitizedContent });
+        retryStats.stopAction = "empty_param_exhausted";
         config.onTurnEnd?.({
           turn: turns,
           textOutput: lastTextOutput,
@@ -1056,15 +1153,31 @@ async function runAgentLoopInner(
     // isEndTurnLike 是白名单（不是「排除已知错误」）：未知 stopReason fail-closed，
     // 与主循环 loop.ts 的 P0-2 死亡螺旋防御同方向。stop_sequence 与 end_turn/stop
     // 同属正常终止，一并纳入——旧代码漏了它，会落到下方「未知停止原因」带警告收尾。
-    // 判据与主循环共用 isEndTurnLikeStopReason，避免子循环再抄一份后漂。
+    //
+    // 2026-10-29：判据改为与主循环共用 classifyStopReason（单一事实源）。顺带对齐了两处
+    // 此前的分叉：① max_tokens/length 带完整 tool_use 时先执行工具（P1-4，原先这里直接续写，
+    // 已入史的 tool_use 成孤儿）；② 报 tool_use 却无 tool_use 块按未知收尾，不空转。
     const hasPendingToolUse = response.content.some((b) => b.type === "tool_use");
-    const isEndTurnLike = isEndTurnLikeStopReason(response.stopReason);
-    const f2FallThrough = isEndTurnLike && hasPendingToolUse;
+    const stopAction = classifyStopReason({
+      stopReason: response.stopReason,
+      hasToolUse: hasPendingToolUse,
+      hasAnyContent: response.content.length > 0,
+    });
+    const isEndTurnLike = stopAction.kind === "finalize";
+    const f2FallThrough = stopAction.kind === "execute_tools" && stopAction.why !== "tool_use";
+    if (f2FallThrough) {
+      retryStats.f2MismatchCount++;
+      emitLoopEvent("StopReasonMismatch", {
+        stopReason: response.stopReason,
+        provider: provider.name(),
+        model,
+      });
+    }
     // 发现 5：与主循环共用 (provider, model) 进程级去重，首次 warn、之后只计数
     if (f2FallThrough && noteStopReasonMismatch(provider.name(), model) === 1) {
       log.warn(
         "AGENT_LOOP",
-        "stop_reason 与 content 不一致：声称 end_turn/stop 但含 tool_use（疑似代理协议偏差，已自动兜底执行工具；同一 provider/model 后续只计数不再告警）",
+        `stop_reason 与 content 不一致：声称 ${response.stopReason} 但含 tool_use（疑似代理协议偏差，已自动兜底执行工具；同一 provider/model 后续只计数不再告警）`,
         {
           stopReason: response.stopReason,
           toolUseCount: response.content.filter((b) => b.type === "tool_use").length,
@@ -1073,7 +1186,7 @@ async function runAgentLoopInner(
       );
     }
 
-    if (isEndTurnLike && !hasPendingToolUse) {
+    if (isEndTurnLike) {
       // P1-3：end_turn 完成度门禁（子代理侧，对标主循环 query/loop.ts 的 P0-3）。
       //
       // 从前子代理提前收尾时没有任何东西拦它——主循环 2026-08 修过的根因 2
@@ -1119,6 +1232,7 @@ async function runAgentLoopInner(
         );
       }
       emptyParamRetryCount = 0;
+      retryStats.stopAction = "finalize";
       log.info("AGENT_LOOP", `完成，共 ${turns} 轮`);
       config.onTurnEnd?.({
         turn: turns,
@@ -1138,8 +1252,8 @@ async function runAgentLoopInner(
       };
     }
 
-    // 工具调用：stop_reason=tool_use，或 F2 fall-through（end_turn 仍含未执行 tool_use）
-    if (response.stopReason === "tool_use" || f2FallThrough) {
+    // 工具调用：stop_reason=tool_use，或 F2 fall-through（end_turn / max_tokens 仍含未执行 tool_use）
+    if (stopAction.kind === "execute_tools") {
       // 工具调用循环检测
       let loopDetected = false;
       for (const block of response.content) {
@@ -1175,7 +1289,7 @@ async function runAgentLoopInner(
           .filter(Boolean);
         log.info(
           "AGENT_LOOP",
-          `F2：end_turn(${response.stopReason}) 含未执行 tool_use，兜底执行: ${toolNames.join(", ")}`,
+          `F2：${response.stopReason} 含未执行 tool_use，兜底执行: ${toolNames.join(", ")}`,
         );
       }
 
@@ -1241,7 +1355,7 @@ async function runAgentLoopInner(
     }
 
     // max_tokens 续写
-    if (response.stopReason === "max_tokens" || response.stopReason === "length") {
+    if (stopAction.kind === "recover" && stopAction.how === "max_tokens") {
       log.info("AGENT_LOOP", `输出达到 token 上限，自动续写 (轮次 ${turns})`);
       config.onTurnEnd?.({
         turn: turns,
@@ -1271,7 +1385,7 @@ async function runAgentLoopInner(
     //   ① 压缩没压动（success=false）→ 立即如实失败，不再续写。压不动意味着已无可裁剪
     //      空间，再来一轮必然撞同一个上限，纯烧 token；
     //   ② 压得动也只给 MAX 次机会 → 防"压一点点、又撞上限"的慢速空转。
-    if (response.stopReason === "model_context_window_exceeded") {
+    if (stopAction.kind === "recover" && stopAction.how === "ctx_window") {
       const MAX_CTX_WINDOW_RECOVERY = 2;
       const compactResult = reactiveCompact(ctxMgr);
 
@@ -1280,6 +1394,7 @@ async function runAgentLoopInner(
           "AGENT_LOOP",
           `撞模型 context window 上限且压缩未生效（${compactResult.messageCountBefore} 条未变），子代理终止`,
         );
+        retryStats.stopAction = "context_window_exhausted";
         return {
           success: false,
           turns,
@@ -1304,6 +1419,7 @@ async function runAgentLoopInner(
           "AGENT_LOOP",
           `context window 压缩续写已达 ${MAX_CTX_WINDOW_RECOVERY} 次上限，子代理终止`,
         );
+        retryStats.stopAction = "context_window_exhausted";
         return {
           success: false,
           turns,
@@ -1347,6 +1463,7 @@ async function runAgentLoopInner(
         "AGENT_LOOP",
         `空响应且停止原因异常（stopReason=${response.stopReason}），判定为伪装成功的空流，子代理中断`,
       );
+      retryStats.stopAction = "empty_stream";
       return {
         success: false,
         turns,
@@ -1361,6 +1478,7 @@ async function runAgentLoopInner(
     // 交给下方强制总结收尾。但必须设 errorMessage 让父级感知"异常收尾"——此前只 log.warn
     // 就 break，父级（sub-agent.ts）无法区分"正常完成"和"异常停止"。
     log.warn("AGENT_LOOP", `未知停止原因: ${response.stopReason}`);
+    retryStats.stopAction = describeStopAction(stopAction);
     unknownStopWarning = `模型以未识别的停止原因结束（stopReason: ${response.stopReason ?? "null"}）`;
     break;
   }
@@ -1559,6 +1677,8 @@ async function runAgentLoopInner(
     }
   }
 
+  // L2-D：走到这里只有两种来源——未知停止原因 break（已标）或 while 条件打满 maxTurns
+  if (!retryStats.stopAction) retryStats.stopAction = signal.aborted ? "aborted" : "max_turns";
   return {
     success: true,
     turns,

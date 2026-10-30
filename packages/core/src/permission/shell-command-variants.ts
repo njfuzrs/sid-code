@@ -365,11 +365,17 @@ export interface ShellCommandExpansion {
    * 扁平的 commands 里看不出谁和谁在同一个管道。
    */
   pipelines: Array<Array<{ program: string; args: string[]; text: string }>>;
+  /**
+   * 展开没走完：形态数撞上 MAX_VARIANTS 后还有没处理的子命令，或嵌套深度用完时还有内层脚本。
+   * 上面四个字段只覆盖已展开的部分，拦截方看到 true 必须按「看不全」保守处理——
+   * 修前超出部分静默丢弃，`echo 0 && … && echo 199 && rm -rf /` 在 always-allow 下直接放行。
+   */
+  truncated: boolean;
 }
 
 /** 递归深度上限：`sh -c "bash -c 'eval …'"` 嵌套到这一层已远超正常用法 */
 const MAX_DEPTH = 4;
-/** 形态数上限：防病态输入把展开撑爆（超出部分丢弃，已收集的照常参与匹配） */
+/** 形态数上限：防病态输入把展开撑爆（超出部分不再展开，并置 truncated，拦截方据此 fail-closed） */
 const MAX_VARIANTS = 128;
 
 /**
@@ -380,10 +386,15 @@ export function expandShellCommand(cmd: string): ShellCommandExpansion {
   const scripts = new Set<string>();
   const commands: Array<{ program: string; args: string[]; text: string }> = [];
   const pipelines: Array<Array<{ program: string; args: string[]; text: string }>> = [];
+  let truncated = false;
 
   const visit = (script: string, depth: number) => {
     const trimmed = script.trim();
-    if (!trimmed || variants.size >= MAX_VARIANTS) return;
+    if (!trimmed) return;
+    if (variants.size >= MAX_VARIANTS) {
+      truncated = true;
+      return;
+    }
     // heredoc 正文不参与「整段匹配」：它是数据，修前 `cat > f <<EOF` 的正文会被
     // 跨管道正则（`curl x | sh` 之类）当成命令。正文是否当脚本由接收者决定，见下。
     const { stripped, blocks } = extractHeredocBlocks(trimmed);
@@ -395,7 +406,10 @@ export function expandShellCommand(cmd: string): ShellCommandExpansion {
     for (const pipeline of splitCommandStructure(source)) {
       const parsed: Array<{ program: string; args: string[]; text: string }> = [];
       for (const stage of pipeline.stages) {
-        if (variants.size >= MAX_VARIANTS) break;
+        if (variants.size >= MAX_VARIANTS) {
+          truncated = true;
+          break;
+        }
         variants.add(stage);
         const c = canonicalizeSimpleCommand(stage);
         if (c.canonical) variants.add(c.canonical);
@@ -421,11 +435,15 @@ export function expandShellCommand(cmd: string): ShellCommandExpansion {
       }
       pipelines.push(parsed);
     }
-    if (depth < MAX_DEPTH) for (const n of nested) visit(n, depth + 1);
+    if (depth < MAX_DEPTH) {
+      for (const n of nested) visit(n, depth + 1);
+    } else if (nested.some((n) => n.trim() !== "")) {
+      truncated = true;
+    }
   };
   visit(cmd, 0);
 
-  return { variants: [...variants], scripts: [...scripts], commands, pipelines };
+  return { variants: [...variants], scripts: [...scripts], commands, pipelines, truncated };
 }
 
 /** 参数即写入目标的命令（全部非选项参数） */

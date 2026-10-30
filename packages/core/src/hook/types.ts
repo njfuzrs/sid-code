@@ -436,6 +436,12 @@ export interface PostToolUseInput extends HookInput, HookAgentFields {
   verify_triggered?: boolean;
   /** Harness 每轮上下文 */
   harness_context?: HarnessHookContext;
+  /**
+   * A2（20261019 复测）：执行期间工具经 onProgress 上报的进度事件数（sid 内部字段，>0 才有）。
+   * 进度行是纯 UI 侧信道、不进轨迹；全量落盘会把 events.jsonl 放大到每 500ms 一条，
+   * 所以只在收尾记一个计数，回答「执行期间到底有没有上报进度」。
+   */
+  progress_events?: number;
 }
 
 /** UserPromptSubmit 输入 */
@@ -587,6 +593,11 @@ export interface AfterModelInput extends HookInput {
      * 缺席 = 该端点没下发这类头（合法情况，不要填空串）。
      */
     gateway_request_id?: { header: string; value: string };
+    /**
+     * 本轮 tool_use 参数质量事实（见 query/empty-param.ts `summarizeToolUseParams`），
+     * collector 平铺进 AfterModelRaw。只有聚合整数，不含 input 本身。
+     */
+    tool_use_facts?: import("../query/empty-param.ts").ToolUseParamFacts;
   };
 
   // ── Harness 扩展点 ──

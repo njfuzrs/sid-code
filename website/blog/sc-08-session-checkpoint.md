@@ -3056,18 +3056,16 @@ fileRestoreSkipped: boolean;
 
 ### 11.2 三态判定：sid-code 的实现
 
-🔬 `sdk/session-recovery.ts:16-22` 的注释定义了三种状态：
+🔬 `sdk/session-recovery.ts:17-20` 的注释定义了三种状态：
 
 ```
 中断检测三态（对齐 CC 的 none / interrupted_prompt / interrupted_turn）：
-  - none               正常结束：最后一条是 assistant 消息，或末尾 tool_result 全部
-                       来自终结性工具（TERMINAL_TOOL_NAMES 白名单）
+  - none               正常结束：最后一条是 assistant 消息
   - interrupted_prompt 用户输入了但 Agent 还没开始回复（末尾是纯文本 user 消息）
-  - interrupted_turn   Agent 执行完工具但还没来得及回复就被中断（末尾是非终结性
-                       工具的 tool_result）
+  - interrupted_turn   Agent 执行完工具但还没来得及回复就被中断（末尾是 tool_result）
 ```
 
-🔬 判定逻辑（`session-recovery.ts:207-236`，几乎是原文）：
+🔬 判定逻辑（`session-recovery.ts:224-248`，几乎是原文）：
 
 ```ts
 const lastMessage = messages[messages.length - 1];
@@ -3083,12 +3081,13 @@ if (lastMessage.role === "user") {
   }
 
   // ② 末尾是 tool_result 且没有后续 assistant 回复 → 工具执行完但被中断
-  const toolNames = findToolNamesForResults(messages, lastMessage);
-  const allTerminal = toolNames.length > 0 && toolNames.every(n => TERMINAL_TOOL_NAMES.has(n));
-  if (allTerminal) {
-    return { messages, turnInterruptionState: { kind: "none" } };
-  }
-  return { messages, turnInterruptionState: { kind: "interrupted_turn", lastToolNames: toolNames } };
+  return {
+    messages,
+    turnInterruptionState: {
+      kind: "interrupted_turn",
+      lastToolNames: findToolNamesForResults(messages, lastMessage),
+    },
+  };
 }
 
 // ③ 末尾是 assistant 消息 → 正常结束

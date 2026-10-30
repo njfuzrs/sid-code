@@ -39,6 +39,16 @@ function incompleteReasonMessage(reason: DoneIncompleteReason): string {
       return "任务停滞（反复改动又改回 / 重复操作无新进展），已由 harness 暂停";
     case "context_window_exhausted":
       return "上下文反复撞到模型窗口上限且压缩无法腾出空间，已停止";
+    case "empty_param_exhausted":
+      return "模型连续多次生成不出完整的工具调用参数，已停止重试";
+    case "empty_stream":
+      return "模型返回空响应（疑似模型不可用或网关返回非流式错误页）";
+    case "refusal":
+      return "模型基于安全策略拒绝回答";
+    case "pause_turn":
+      return "上游 server tool 暂停（本地未实现续接），本轮已收尾";
+    case "unknown_stop_reason":
+      return "模型以未识别的停止原因结束本轮";
   }
 }
 

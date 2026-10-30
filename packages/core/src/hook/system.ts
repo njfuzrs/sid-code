@@ -278,6 +278,7 @@ export class HookSystem {
       verify_triggered?: boolean;
       harness_context?: import("./types.ts").HarnessHookContext;
       agent?: import("./types.ts").HookAgentRef;
+      progress_events?: number;
     },
   ): Promise<AggregatedHookResult> {
     return this.eventHandler.firePostToolUseEvent(
@@ -303,6 +304,7 @@ export class HookSystem {
       failure_kind?: import("./types.ts").ToolFailureKind;
       tool_output?: unknown;
       agent?: import("./types.ts").HookAgentRef;
+      progress_events?: number;
     },
   ): Promise<AggregatedHookResult> {
     return this.eventHandler.firePostToolUseFailureEvent(

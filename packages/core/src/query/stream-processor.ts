@@ -687,7 +687,11 @@ export async function processStream(
           // 半截 JSON 解不开是预期情形，不是异常
         }
       }
+      // 解出对象也不代表参数完整（可能刚好停在某个字段之后），所以另打 `_partial`：
+      // F1（empty-param.ts isTruncatedToolUse）把两种标记都判为退化，不执行半截参数。
+      // `_truncated` 的既有语义（=input 仍是 {}）保持不变，归因文案依赖它。
       (block as ToolUseBlock & { _truncated?: boolean })._truncated = !recovered;
+      if (recovered) (block as ToolUseBlock & { _partial?: boolean })._partial = true;
       log.warn(
         "STREAM",
         `工具 ${block.name} 的 content_block_stop 未到达（流被截断）：` +
