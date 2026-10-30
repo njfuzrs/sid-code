@@ -38,6 +38,7 @@ import {
   expandShellCommand,
   extractBashWriteTargets,
   listInvokedPrograms,
+  type ShellCommandExpansion,
 } from "./shell-command-variants.ts";
 import { detectStructuredCriticalDanger, type DangerousFinding } from "./dangerous-command.ts";
 import { isToolNameListed } from "../tool/tool-name-aliases.ts";
@@ -2115,7 +2116,8 @@ export class PermissionChecker implements Checker {
     // ── 第一道：硬编码预检 ──
     // cwd 与 bash 实际执行目录同口径（input.cwd > getCwd()）：危险路径判定里
     // `rm -rf *` / `rm -rf .` 这类相对路径要靠它 resolve 成绝对路径再判。
-    const hard = this.hardcodedDangerCheck(cmd, await resolveBashCwdForCheck(req));
+    const expansion = expandShellCommand(cmd);
+    const hard = this.hardcodedDangerCheck(expansion, await resolveBashCwdForCheck(req));
 
     // critical 命令直接拒绝，绝不交给 LLM（明显危险，省一次调用，且不可被 LLM 误放）
     if (hard && hard.severity === "critical") {
@@ -2124,6 +2126,24 @@ export class PermissionChecker implements Checker {
         allowed: false,
         reason: `[critical] 危险命令被拦截 (${hard.name}): ${cmd.slice(0, 80)}`,
         decisionReason: { type: "dangerousCommand", pattern: hard.name, severity: "critical" },
+        metadata: { classifiedBy: "hardcoded" },
+      };
+    }
+
+    // ── 第 1.2 道：展开超限 → fail-closed 到危险类确认 ──
+    // deny / ask 规则、危险检测、写目标提取都只看已展开的部分，展开没走完就是「看不全」。
+    // 修前超出部分静默丢弃：200 段 `echo n &&` 之后接 `rm -rf /`、深于 MAX_DEPTH 的
+    // `sh -c` 嵌套，在 always-allow / yesMode 下直接放行，deny `Bash(curl *)` 也失效。
+    // 放在 critical 之后：已展开部分里真命中的 critical 照常硬拒，不降级成确认。
+    // 不硬拒：上限误伤合法长命令时用户要有出口（本机 5626 条真实 bash 调用的形态数最大 46，
+    // 上限 128）。类型记 dangerousCommand，isSafetyConfirmation 生效，yesMode / hook allow 越不过。
+    if (expansion.truncated) {
+      log.info("PERMISSION", `${req.toolName}(${cmd.slice(0, 80)}) → 需确认(展开超限)`);
+      return {
+        allowed: false,
+        reason: `[high] 命令过长或嵌套过深，权限检查无法看全，需要确认: ${cmd.slice(0, 80)}`,
+        needsConfirmation: true,
+        decisionReason: { type: "dangerousCommand", pattern: "展开超限", severity: "high" },
         metadata: { classifiedBy: "hardcoded" },
       };
     }
@@ -2502,9 +2522,10 @@ export class PermissionChecker implements Checker {
    * 而全文改判据的回归面（`chmod -R 777`、`git reset --hard` 等十几条）远大于收益。
    * 本次只处理「误报即无出口」的 critical，见 Agent Note 的「放弃了什么」。
    */
-  private hardcodedDangerCheck(cmd: string, cwd: string): DangerousFinding | null {
-    const expansion = expandShellCommand(cmd);
-
+  private hardcodedDangerCheck(
+    expansion: ShellCommandExpansion,
+    cwd: string,
+  ): DangerousFinding | null {
     // 0. 结构化 critical 判定
     const structural = detectStructuredCriticalDanger(expansion, { cwd, home: os.homedir() });
     if (structural) return structural;

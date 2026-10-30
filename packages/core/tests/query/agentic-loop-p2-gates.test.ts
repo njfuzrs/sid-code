@@ -99,7 +99,7 @@ function setup(opts: {
         })),
       };
     },
-    autoCompact: async () => {},
+    autoCompact: async () => ({ kind: "skipped" as const }),
     getAbortSignal: () => undefined,
     uuid: () => `uuid-${call}`,
     traceAppendEvent: (ev) => {

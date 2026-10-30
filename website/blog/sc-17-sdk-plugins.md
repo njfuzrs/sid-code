@@ -1294,26 +1294,28 @@ const PRIORITY_ORDER = { now: 0, next: 1, later: 2 }
 用户新敲的消息应该比"后台任务完成通知"先处理——
 否则用户会觉得"我说了话它不理我，在忙别的"。
 
-🔬 而这里有一个非常值得学的实现细节（`command-queue.ts:34-36`）：
+🔬 同优先级必须 FIFO：用户连着说了三句话，agent 不能按 2、1、3 的顺序处理。
+这个约束早期的实现是「push + 全量 sort + `WeakMap` 记入队序号」，理由是
+「`Array.sort` 跨引擎不保证稳定」。
+
+**这个理由已经过时**：ES2019 起规范要求 `sort` 稳定，V8 / JSC / SpiderMonkey 都已实现。
+而那套序号自己带了一个隐式契约：查不到序号的对象按 `?? 0` 算，
+会被插到同优先级的**最前面**（比如合并出来的新对象被重新入队）。
+为一个已不存在的问题付成本，还顺手埋了一个方向错误的兜底。
+
+现在的实现（`command-queue.ts` 的 `enqueue`）是按位置插入，不需要任何旁路状态：
 
 ```typescript
-/** 单调递增序号，保证同优先级稳定 FIFO（Array.sort 在跨引擎下不保证稳定） */
-private seq = 0;
-private seqMap = new WeakMap<QueuedCommand, number>();
+enqueue(command: QueuedCommand): void {
+  const rank = PRIORITY_ORDER[command.priority];
+  let i = this.queue.length;
+  while (i > 0 && PRIORITY_ORDER[this.queue[i - 1].priority] > rank) i--;
+  this.queue.splice(i, 0, command);   // 插到最后一个优先级 ≤ 它的命令之后
+}
 ```
 
-**问题**：`Array.prototype.sort` 的稳定性，在旧的 JS 引擎里**不保证**。
-（ES2019 之后规范要求稳定，但跨运行时/旧版本仍有风险。）
-
-**后果**：三条同为 `next` 优先级的消息，排序后顺序可能变。
-用户连着说了三句话，agent 按第 2、1、3 的顺序处理了——
-**这是一个"偶发的、不可复现的、看起来像模型在犯傻"的 bug。**
-
-**修法**：给每条命令配一个单调递增序号，
-同优先级时按序号排。这样排序结果完全确定，不依赖引擎实现。
-
-> 💡 这是一个很好的面试素材：它展示了"依赖语言实现的未定义行为"这类 bug，
-> 症状离根因极远（表现是"agent 反应错乱"，根因在排序稳定性）。
+> 💡 面试素材：「注释里写的理由」本身也会过期。改代码之前先核一遍理由还成立不成立，
+> 比照着注释加固更重要。
 
 ### 7.3 决策二：批量合并，一次调用处理多条
 

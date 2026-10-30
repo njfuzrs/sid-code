@@ -145,6 +145,10 @@ export interface TurnCompletePayload {
    * 用户授权门接着续跑」的设计行为；耗尽了 `unanswered` 之后还有任何闸门 continue 则是缺陷。
    */
   gates_exhausted?: string[];
+  /** 本条用户消息结束时的连续压缩失败数，仅 > 0 时落（与 continue_counts 同风格：0 不占字段） */
+  consecutive_compact_failures?: number;
+  /** 本条用户消息内 loop 层压缩熔断开过（见 LoopState.compactCircuitOpen），仅开闸时落 */
+  compact_circuit_open?: true;
 }
 
 /**
@@ -237,6 +241,10 @@ export function emitTurnComplete(
       ...(state.gatesExhausted && state.gatesExhausted.length > 0
         ? { gates_exhausted: [...state.gatesExhausted] }
         : {}),
+      ...((state.consecutiveCompactFailures ?? 0) > 0
+        ? { consecutive_compact_failures: state.consecutiveCompactFailures }
+        : {}),
+      ...(state.compactCircuitOpen ? { compact_circuit_open: true as const } : {}),
     };
     deps.traceAppendEvent({
       event: "TurnComplete",

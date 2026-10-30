@@ -164,6 +164,11 @@ export class TelemetryBus {
   private config: TelemetryConfig;
   private traceContext?: TraceContext;
   private _shutdownRegistered = false;
+  /** 导出失败节流状态，key = `导出器名/信号`（见 noteExportFailure） */
+  private exportFailures = new Map<
+    string,
+    { failing: boolean; count: number; lastError: string }
+  >();
 
   /** 会话内已完成的 span 历史（供 /telemetry 命令查询） */
   private spanHistory: SpanData[] = [];
@@ -351,9 +356,10 @@ export class TelemetryBus {
     const batch = this.spanQueue.splice(0, this.config.batchSize);
     await Promise.allSettled(
       this.exporters.map((e) =>
-        e.exportSpans(batch).catch((err) => {
-          getLogger().debug("TELEMETRY", `导出失败 (${e.name}): ${err}`);
-        }),
+        e.exportSpans(batch).then(
+          () => this.noteExportSuccess(e.name, "traces"),
+          (err) => this.noteExportFailure(e.name, "traces", err),
+        ),
       ),
     );
   }
@@ -365,9 +371,10 @@ export class TelemetryBus {
       this.exporters
         .filter((e) => e.exportMetrics)
         .map((e) =>
-          e.exportMetrics!(batch).catch((err) => {
-            getLogger().debug("TELEMETRY", `指标导出失败 (${e.name}): ${err}`);
-          }),
+          e.exportMetrics!(batch).then(
+            () => this.noteExportSuccess(e.name, "metrics"),
+            (err) => this.noteExportFailure(e.name, "metrics", err),
+          ),
         ),
     );
   }
@@ -410,6 +417,41 @@ export class TelemetryBus {
     }
   }
 
+  /**
+   * 导出失败告警节流（20261022 官网 observability 页核查 D2）。
+   *
+   * 原先失败只打 debug：非 --debug 时 logger 是 WARN + fileOnly，debug 既不进终端也不进
+   * audit.log / warn.log —— 用户配错 OTLP 端点、缺认证头、被系统代理截走时**零痕迹**。
+   *
+   * 为什么不直接全改 warn：导出器每 5s flush 一次，端点长期不通会刷满 warn.log；
+   * 且 Jaeger 不收 metrics，`/v1/metrics` 持续 404 是官网教程里的**预期失败**。
+   * 所以按「导出器 × 信号」只在首次失败、以及由成功转为失败时打 WARN，其余保持 debug；
+   * shutdown 时若有累计失败再汇总一条（次数 + 最后一次错误）。
+   */
+  private noteExportFailure(name: string, signal: "traces" | "metrics", err: unknown): void {
+    const key = `${name}/${signal}`;
+    const st = this.exportFailures.get(key) ?? { failing: false, count: 0, lastError: "" };
+    st.count++;
+    st.lastError = String(err);
+    if (!st.failing) {
+      st.failing = true;
+      getLogger().warn(
+        "TELEMETRY",
+        `${signal === "traces" ? "span" : "指标"}导出失败 (${name})：${st.lastError}` +
+          `（后续同类失败只记 debug，会话结束时汇总）`,
+      );
+    } else {
+      getLogger().debug("TELEMETRY", `${signal}导出失败 (${name}): ${st.lastError}`);
+    }
+    this.exportFailures.set(key, st);
+  }
+
+  private noteExportSuccess(name: string, signal: "traces" | "metrics"): void {
+    const st = this.exportFailures.get(`${name}/${signal}`);
+    // 只清 failing，不清累计次数：汇总要报整个会话的失败量
+    if (st) st.failing = false;
+  }
+
   /** 登记一次后台 flush，供 drain 等待（见 drain 注释） */
   private track(p: Promise<void>): void {
     this.inFlight.add(p);
@@ -443,6 +485,15 @@ export class TelemetryBus {
     } catch {
       // Perfetto 输出失败不影响关闭
     }
+
+    for (const [key, st] of this.exportFailures) {
+      if (st.count === 0) continue;
+      getLogger().warn(
+        "TELEMETRY",
+        `本会话导出失败汇总 (${key})：共 ${st.count} 次，最后一次：${st.lastError}`,
+      );
+    }
+    this.exportFailures.clear();
 
     await Promise.allSettled(this.exporters.map((e) => e.shutdown()));
   }

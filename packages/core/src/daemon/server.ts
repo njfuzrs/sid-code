@@ -10,8 +10,9 @@
  */
 
 import { createHmac, timingSafeEqual } from "node:crypto";
-import type { DaemonConfig, GitHubPREvent } from "./types.ts";
+import type { ConcurrencyGate, DaemonConfig, GitHubPREvent } from "./types.ts";
 import { DaemonWorker } from "./worker.ts";
+import { getVersion } from "@sid-code/shared/version.ts";
 
 const DEFAULT_CONFIG: DaemonConfig = {
   port: 3847,
@@ -59,8 +60,8 @@ function parseGitHubPREvent(body: Record<string, unknown>): GitHubPREvent | null
   };
 }
 
-export function createDaemonServer(config: DaemonConfig = DEFAULT_CONFIG) {
-  const worker = new DaemonWorker(config);
+export function createDaemonServer(config: DaemonConfig = DEFAULT_CONFIG, gate?: ConcurrencyGate) {
+  const worker = new DaemonWorker(config, gate);
 
   const server = Bun.serve({
     port: config.port,
@@ -71,7 +72,9 @@ export function createDaemonServer(config: DaemonConfig = DEFAULT_CONFIG) {
 
       // 健康检查
       if (req.method === "GET" && url.pathname === "/health") {
-        return Response.json({ status: "ok", version: "daemon-mvp-0.1.0" });
+        // 与 daemon.lock 记的版本同源（lock.ts 也用 getVersion），探活能判断部署的是不是新版本。
+        // 此前是写死的 "daemon-mvp-0.1.0"，和二进制版本无关。
+        return Response.json({ status: "ok", version: getVersion() });
       }
 
       // GitHub webhook

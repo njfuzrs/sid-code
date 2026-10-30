@@ -112,6 +112,13 @@ import {
 } from "./output-stall.ts";
 import { runCompactPipeline, pipelineTargetRatioFrom } from "./compact/index.ts";
 import {
+  judgeCompaction,
+  type CompactionJudgement,
+  type CompactionOutcomeKind,
+  type CompactionTrigger,
+  type CompactNoopReason,
+} from "./compact/outcome.ts";
+import {
   MAX_EMPTY_PARAM_RETRIES,
   detectEmptyParamToolUses,
   replaceEmptyParamToolUses,
@@ -501,62 +508,84 @@ export function buildCompactCircuitBreakerText(
   );
 }
 
+/** settleCompaction 产出的横幅（= 要 yield 的那条 compact 事件） */
+type CompactBanner = {
+  kind: "compact";
+  messageCountBefore: number;
+  messageCountAfter: number;
+  savedTokens?: number;
+};
+
+interface SettleCompactionResult {
+  /** 仅 outcome === "applied" 时非 null */
+  banner: CompactBanner | null;
+  outcome: CompactionOutcomeKind;
+  judgedBy: CompactionJudgement["judgedBy"];
+  noopReason?: CompactNoopReason;
+  /** 本次调用是否**新开启**了 loop 层熔断 */
+  circuitOpened: boolean;
+}
+
 /**
- * P1-3 + P2-1：把一次压缩尝试收敛成「唯一的横幅判据 + 唯一的埋点出口」。
+ * P1-3 + P2-1：把一次压缩尝试收敛成「唯一的结局判定 + 唯一的计数/熔断写入点 + 唯一的埋点出口」。
  *
  * 事故背景（2026-07-29 假压缩误报）：`yield { kind: "compact" }` 是与消息数组**完全解耦**的
  * 独立 UI 信号，8 处调用点任一误发就画出「对话已压缩」横幅。那次消息历史一条都没少，横幅
  * 却照画，还顺带给模型注入了「系统已为你精简对话上下文」——模型随后 30 条回复自我否定。
  *
- * 本函数把「压缩到底成没成」的判定收成一处：调用方给出压缩前后的消息数，由这里决定
- * ①要不要 yield 横幅（`after < before` 才 yield）②往 events.jsonl 落一条什么样的
- * CompactionAttempt 事件（成败都落，这样「压缩了几次、成了几次」可直接统计）。
+ * 本函数做三件事：
+ * ①结局判定（judgeCompaction）：`after < before` 或 `savedTokens > 0` 为 `applied`（实测证据优先）；
+ *   否则主动压缩类 trigger 带 `noopReason` 为 `noop`，其余为 `failed`。只有 applied 才给横幅。
+ * ②维护失败计数与 loop 层熔断（唯一写入点，2026-10-29）：applied 清零、failed +1、noop 不动；
+ *   计数达阈值时置 `state.compactCircuitOpen` 并落 CompactionCircuitBreaker。此前计数只手写在
+ *   流内 4 条恢复路径上，阈值三档 0 处计数；收进这里后新增 trigger 也自动覆盖。
+ * ③往 events.jsonl 落 CompactionAttempt（成败都落），放在②之后，带的计数是判定后的值。
  *
- * 返回 null 表示「没压动」，调用方据此跳过横幅；返回事件对象则由调用方 yield 出去
- * （generator 的 yield 不能跨函数边界，所以这里只造事件不 yield）。
+ * generator 的 yield 不能跨函数边界，所以这里只造事件不 yield。
  */
 function settleCompaction(
   deps: QueryDeps,
   sessionId: string,
+  scope: { state: LoopState; promptSeq: number },
   info: {
     /** 触发来源，用于区分「阈值压缩」与「错误恢复」两类性质完全不同的压缩 */
-    trigger:
-      | "threshold_blocking"
-      | "threshold_emergency"
-      | "threshold_hard"
-      | "prompt_too_long"
-      | "prompt_too_long_stream"
-      | "context_overflow"
-      | "empty_param_retry"
-      | "ctx_window_exceeded";
+    trigger: CompactionTrigger;
     messageCountBefore: number;
     messageCountAfter: number;
     tokensBefore?: number;
     tokensAfter?: number;
     /** 生效策略（reactiveCompact 会给出 snip/emergency/none） */
     strategy?: string;
+    /** 本次尝试中**最后执行的那个动作**报告的「没事可做」原因（是否采信由 trigger 决定） */
+    noopReason?: CompactNoopReason;
   },
-): {
-  kind: "compact";
-  messageCountBefore: number;
-  messageCountAfter: number;
-  savedTokens?: number;
-} | null {
+): SettleCompactionResult {
+  const { state, promptSeq } = scope;
   const savedTokens =
     info.tokensBefore !== undefined && info.tokensAfter !== undefined
       ? info.tokensBefore - info.tokensAfter
       : undefined;
-  // 发现 3a/3c：成败判据 =「同源 token 估算真的降了」或「消息数真的减少了」。
-  // 只看消息数会漏掉原地替换（toolResultBudget / microcompact 只换内容不删消息）：
-  // 实测 input 865K → 250K 却报 success:false，横幅不画、notifyCompaction 不调，
-  // 随后的缓存脱落被误归因成服务端波动。调用方负责让 before/after 同源
-  // （都用不套锚点的 estimateTokensFor，且都不含本次新插的边界消息）。
-  const success =
-    info.messageCountAfter < info.messageCountBefore ||
-    (savedTokens !== undefined && savedTokens > 0);
+  // 发现 3a/3c：调用方负责让 before/after 同源（都用不套锚点的 estimateTokensFor，
+  // 且都不含本次新插的边界消息）。只看消息数会漏掉原地替换（toolResultBudget /
+  // microcompact）：实测 input 865K → 250K 却报失败。
+  const judgement = judgeCompaction({
+    trigger: info.trigger,
+    messageCountBefore: info.messageCountBefore,
+    messageCountAfter: info.messageCountAfter,
+    savedTokens,
+    noopReason: info.noopReason,
+  });
+  const { outcome } = judgement;
 
-  // P2-1：成败都落盘。此前压缩路径零结构化埋点，本次排查只能靠交叉比对 messages.json
-  // 的 _meta.origin 反推「压缩到底有没有执行」——这条事件让它可被直接统计。
+  // ② 按 outcome 维护计数。noop 不改变计数——「无事可做不该熔断」的唯一实现处。
+  if (outcome === "applied") state.consecutiveCompactFailures = 0;
+  else if (outcome === "failed")
+    state.consecutiveCompactFailures = (state.consecutiveCompactFailures ?? 0) + 1;
+  const failures = state.consecutiveCompactFailures ?? 0;
+  // 开闸后 latch：applied 只清零计数、不关闸，避免开关抖动。
+  const circuitOpened = failures >= MAX_CONSECUTIVE_COMPACT_FAILURES && !state.compactCircuitOpen;
+  if (circuitOpened) state.compactCircuitOpen = true;
+
   if (deps.traceAppendEvent) {
     try {
       deps.traceAppendEvent({
@@ -565,28 +594,64 @@ function settleCompaction(
         timestamp: new Date().toISOString(),
         data: {
           trigger: info.trigger,
-          success,
+          // 兼容字段：恒等于 outcome === "applied"
+          success: outcome === "applied",
+          outcome,
+          judged_by: judgement.judgedBy,
+          ...(judgement.noopReason ? { noop_reason: judgement.noopReason } : {}),
+          prompt_seq: promptSeq,
+          turn: state.turnCount,
+          // 判定**之后**的值：离线验收逐条比对，不让脚本拿被测规则自己重算
+          consecutive_failures: failures,
+          circuit_open: state.compactCircuitOpen === true,
           messageCountBefore: info.messageCountBefore,
           messageCountAfter: info.messageCountAfter,
           ...(savedTokens !== undefined ? { savedTokens } : {}),
           ...(info.strategy ? { strategy: info.strategy } : {}),
         },
       });
+      if (circuitOpened) {
+        deps.traceAppendEvent({
+          event: "CompactionCircuitBreaker",
+          session_id: sessionId,
+          timestamp: new Date().toISOString(),
+          data: {
+            prompt_seq: promptSeq,
+            turn: state.turnCount,
+            failure_count: failures,
+            last_trigger: info.trigger,
+          },
+        });
+      }
     } catch {
       /* 埋点失败绝不阻断主循环 */
     }
   }
+  if (circuitOpened) {
+    getLogger().error(
+      "QUERY_LOOP",
+      `连续 ${failures} 次压缩失败（最后一次 trigger=${info.trigger}），loop 层压缩熔断开启`,
+    );
+  }
 
-  if (!success) {
+  if (outcome !== "applied") {
     getLogger().warn(
       "QUERY_LOOP",
-      `压缩未生效（trigger=${info.trigger}）：消息数 ${info.messageCountBefore} → ${info.messageCountAfter}` +
+      `压缩未生效（trigger=${info.trigger}，outcome=${outcome}` +
+        (judgement.noopReason ? `/${judgement.noopReason}` : "") +
+        `）：消息数 ${info.messageCountBefore} → ${info.messageCountAfter}` +
         (savedTokens !== undefined
           ? `，估算 token ${info.tokensBefore} → ${info.tokensAfter}`
           : "") +
         `，不画压缩横幅`,
     );
-    return null;
+    return {
+      banner: null,
+      outcome,
+      judgedBy: judgement.judgedBy,
+      ...(judgement.noopReason ? { noopReason: judgement.noopReason } : {}),
+      circuitOpened,
+    };
   }
 
   // 压缩真的发生了 → 前缀必然改变、cache 必然脱落，这是预期而非异常。
@@ -595,11 +660,46 @@ function settleCompaction(
   notifyCompaction("main");
 
   return {
-    kind: "compact",
-    messageCountBefore: info.messageCountBefore,
-    messageCountAfter: info.messageCountAfter,
-    ...(savedTokens !== undefined ? { savedTokens } : {}),
+    banner: {
+      kind: "compact",
+      messageCountBefore: info.messageCountBefore,
+      messageCountAfter: info.messageCountAfter,
+      ...(savedTokens !== undefined ? { savedTokens } : {}),
+    },
+    outcome,
+    judgedBy: judgement.judgedBy,
+    circuitOpened,
   };
+}
+
+/**
+ * loop 层熔断开着时，跳过一个花钱的压缩动作并落一条 CompactionSkipped（每次跳过都发：
+ * 「熔断挡掉了多少次 LLM 调用」正是熔断省下的成本，只发一次就丢了这个口径）。
+ */
+function recordCompactionSkipped(
+  deps: QueryDeps,
+  sessionId: string,
+  scope: { state: LoopState; promptSeq: number },
+  skipped: "context_collapse" | "auto_compact",
+  trigger: "threshold_hard" | "context_overflow",
+): void {
+  if (!deps.traceAppendEvent) return;
+  try {
+    deps.traceAppendEvent({
+      event: "CompactionSkipped",
+      session_id: sessionId,
+      timestamp: new Date().toISOString(),
+      data: {
+        prompt_seq: scope.promptSeq,
+        turn: scope.state.turnCount,
+        reason: "circuit_open",
+        skipped,
+        trigger,
+      },
+    });
+  } catch {
+    /* 埋点失败绝不阻断主循环 */
+  }
 }
 
 /**
@@ -880,6 +980,32 @@ export interface QueryLoopConfig {
  * 每次 yield 一个 QueryLoopYield 事件给上层消费。
  * 上层通过 for await...of 消费，天然支持背压。
  */
+/**
+ * 请求前的本地预算硬停判定（导出供测试）。返回 null = 放行。
+ *
+ * 只看「已经超限」这一事实，不看告警升级事件：后者 exceeded 只报一次，
+ * 拿它当判据就是「超限只拦一次」那个缺陷（2026-10-22）。
+ */
+export function checkPreRequestBudgetStop(
+  loopConfig: Pick<QueryLoopConfig, "budgetTracker" | "quotaManager">,
+  effectiveCostUSD: number,
+): { source: "budget_rule" | "quota"; text: string } | null {
+  const blocking = loopConfig.budgetTracker?.findBlockingRule();
+  if (blocking) {
+    return {
+      source: "budget_rule",
+      text: `预算规则 "${blocking.rule.name}" 本周期已超限（$${formatBudgetUsd(blocking.currentUSD, 4)} / $${formatBudgetUsd(blocking.rule.limitUSD, 2)}），仍拦截`,
+    };
+  }
+  if (loopConfig.quotaManager?.isExceeded(effectiveCostUSD)) {
+    return {
+      source: "quota",
+      text: loopConfig.quotaManager.stillExceededMessage(effectiveCostUSD),
+    };
+  }
+  return null;
+}
+
 export async function* queryLoop(loopConfig: QueryLoopConfig): AsyncGenerator<QueryLoopYield> {
   const log = getLogger();
   const { config, ctxMgr, toolRegistry, sessionState, hookSystem, thinking, deps } = loopConfig;
@@ -951,6 +1077,8 @@ export async function* queryLoop(loopConfig: QueryLoopConfig): AsyncGenerator<Qu
   // 具体哪条消息的第 3 轮——否则跨消息会话里 turn 回绕（实测 135709 会话
   // turn=20 之后出现 turn=3）在离线分析里无法与"真的退回第 3 轮"区分。
   const promptSeq = sessionState.nextPromptSeq();
+  /** settleCompaction 的作用域：失败计数与熔断都按「本条用户消息」算（见 LoopState.compactCircuitOpen） */
+  const compactScope = { state, promptSeq };
   /** 某道闸门续命预算耗尽 → 落 GateExhausted（语义见 gate-exhaustion.ts 文件头） */
   const noteGateExhausted = (gate: ExhaustibleGate, retries: number, cap: number): void =>
     emitGateExhausted(state, deps, {
@@ -1266,13 +1394,14 @@ export async function* queryLoop(loopConfig: QueryLoopConfig): AsyncGenerator<Qu
         state.deferredToolsPendingAfterCompact = true;
         {
           // P1-3：横幅只在真压动时画。addCompactBoundary 会插入边界消息，故 after 取实测值。
-          const banner = settleCompaction(deps, sessionState.sessionId, {
+          const { banner } = settleCompaction(deps, sessionState.sessionId, compactScope, {
             trigger: "threshold_blocking",
             messageCountBefore: msgCountBefore,
             messageCountAfter: truncated.messageCountAfter,
             // 3c：不用 truncated.tokensBefore/After——前者套了锚点、后者锚点已清零，两者不同源。
             tokensBefore: sameSourceBefore,
             tokensAfter: sameSourceAfter,
+            ...(truncated.reason === "no_split_point" ? { noopReason: "no_split_point" } : {}),
           });
           if (banner) yield banner;
           // P2-22：截断真压动了才补恢复。判据与横幅同源（banner 非 null = 实测消息数减少）——
@@ -1300,12 +1429,13 @@ export async function* queryLoop(loopConfig: QueryLoopConfig): AsyncGenerator<Qu
               state.goalReminderPendingAfterCompact = true;
               state.todoReminderPendingAfterCompact = true;
               state.deferredToolsPendingAfterCompact = true;
-              const banner = settleCompaction(deps, sessionState.sessionId, {
+              const { banner } = settleCompaction(deps, sessionState.sessionId, compactScope, {
                 trigger: "threshold_emergency",
                 messageCountBefore: msgCountBefore,
                 messageCountAfter: truncated.messageCountAfter,
                 tokensBefore: sameSourceBefore,
                 tokensAfter: sameSourceAfter,
+                ...(truncated.reason === "no_split_point" ? { noopReason: "no_split_point" } : {}),
               });
               if (banner) yield banner;
               // P2-22：与 blocking 分支同一套轻量恢复（只给路径清单，不读盘、不带正文）。
@@ -1357,7 +1487,40 @@ export async function* queryLoop(loopConfig: QueryLoopConfig): AsyncGenerator<Qu
               };
             }
 
-            if (pipelineResult.needsAutoCompact) {
+            // 结局三态 R2：noopReason 只由本次尝试中**最后执行的那个动作**给出。
+            // 管线的 already_below_target 只在不再往下跑 collapse/autoCompact 时有效。
+            let hardNoopReason: CompactNoopReason | undefined = pipelineResult.needsAutoCompact
+              ? undefined
+              : pipelineResult.noopReason;
+
+            if (pipelineResult.needsAutoCompact && state.compactCircuitOpen) {
+              // loop 层熔断开着：只跳过花钱的两个动作（collapse 与 autoCompact 都调 LLM），
+              // 上面的本地管线照做、主循环继续。若上下文涨到 API 拒收，自然进流内路径按既有语义收尾。
+              if (deps.contextCollapse) {
+                recordCompactionSkipped(
+                  deps,
+                  sessionState.sessionId,
+                  compactScope,
+                  "context_collapse",
+                  "threshold_hard",
+                );
+              }
+              recordCompactionSkipped(
+                deps,
+                sessionState.sessionId,
+                compactScope,
+                "auto_compact",
+                "threshold_hard",
+              );
+              if (!state.compactSkipNotified) {
+                state.compactSkipNotified = true;
+                yield {
+                  kind: "system",
+                  level: "warning",
+                  text: "连续压缩失败已达上限，本条消息内不再尝试 LLM 摘要压缩（可执行 /compact 或开新会话）。",
+                };
+              }
+            } else if (pipelineResult.needsAutoCompact) {
               // §2.2：autoCompact 前先尝试 Context Collapse（分段摘要老消息，中等成本）。
               // collapse 成功（usage 降到目标）→ 跳过昂贵的全量 autoCompact；不够 → 继续 autoCompact。
               let collapsed = false;
@@ -1401,10 +1564,11 @@ export async function* queryLoop(loopConfig: QueryLoopConfig): AsyncGenerator<Qu
               }
               if (!collapsed) {
                 log.warn("QUERY_LOOP", "轻量压缩不足，触发 LLM 摘要压缩");
-                const outcome = await deps.autoCompact();
+                const autoResult = await deps.autoCompact();
+                if (autoResult.kind === "skipped") hardNoopReason = autoResult.reason;
                 // 静默-9：LLM 摘要失败/熔断降级为简单截断时（有损，丢弃老消息），
                 // 原来无声无息——用户观感是"上下文突然失忆"却无提示。这里 yield warning 显式告知。
-                if (outcome === "truncated") {
+                if (autoResult.kind === "truncated") {
                   yield {
                     kind: "system",
                     level: "warning",
@@ -1413,6 +1577,10 @@ export async function* queryLoop(loopConfig: QueryLoopConfig): AsyncGenerator<Qu
                 }
               }
             }
+
+            // 熔断状态下管线也一步没做：本轮什么都没发生，就不是一次「尝试」——不调
+            // settleCompaction、不插边界、不置三个重注入标志，否则每轮多一条边界和三条提醒。
+            if (state.compactCircuitOpen && pipelineResult.steps.length === 0) break;
 
             // 发现 3a：after 在插边界**之前**取——边界是无条件追加的一条，计进去会让
             // 「原地替换 + 边界」恒为 +1、恒判失败。token 同理用不套锚点的同源估算。
@@ -1431,13 +1599,14 @@ export async function* queryLoop(loopConfig: QueryLoopConfig): AsyncGenerator<Qu
             {
               // hard 档走的是「渐进式管道 + 可选 autoCompact/collapse」，压缩量不由单个函数返回，
               // 故 after 取实测消息数——这条路径同样必须满足「没压动就不画横幅」。
-              const banner = settleCompaction(deps, sessionState.sessionId, {
+              const { banner } = settleCompaction(deps, sessionState.sessionId, compactScope, {
                 trigger: "threshold_hard",
                 messageCountBefore: msgCountBefore,
                 messageCountAfter: msgCountAfter,
                 tokensBefore: sameSourceBefore,
                 tokensAfter: sameSourceAfter,
                 strategy: pipelineResult.steps.join(" → ") || undefined,
+                ...(hardNoopReason ? { noopReason: hardNoopReason } : {}),
               });
               if (banner) yield banner;
             }
@@ -2609,6 +2778,29 @@ export async function* queryLoop(loopConfig: QueryLoopConfig): AsyncGenerator<Qu
         }
       };
 
+      // ─── 请求前预算硬停：已超限就不再发请求 ───
+      // 响应后的硬停（见下方「预算追踪器检查」「成本配额检查」）只能在钱花掉之后拦；
+      // 超限后用户再发一条消息，没有这一道就会先烧一次 API 调用再停。这里每轮发请求前问一次，
+      // 判据与响应后同源（findBlockingRule / isExceeded），不依赖告警去重状态。
+      {
+        const preStop = checkPreRequestBudgetStop(
+          loopConfig,
+          sessionState.getEffectiveTotalCostUSD(),
+        );
+        if (preStop) {
+          log.info("BUDGET", `请求前硬停（${preStop.source}）：${preStop.text}`);
+          yield { kind: "system", level: "warning", terminal: true, text: preStop.text };
+          yield {
+            kind: "done",
+            turns: state.turnCount,
+            turnsConsumedWithoutAssistant: state.turnsConsumedWithoutAssistant,
+            budgetExceeded: { source: preStop.source },
+          };
+          exitedViaReturn = true;
+          return;
+        }
+      }
+
       // ─── F5：本地速率限制（RPM/TPM）主动节流 ───
       //
       // 缺陷形态（2026-09-03 排查）：`QuotaManager.checkRateLimit()` 的**生产调用点 = 0**。
@@ -3270,9 +3462,8 @@ export async function* queryLoop(loopConfig: QueryLoopConfig): AsyncGenerator<Qu
             state.goalReminderPendingAfterCompact = true;
             state.todoReminderPendingAfterCompact = true;
             state.deferredToolsPendingAfterCompact = true;
-            state.consecutiveCompactFailures = 0; // 成功即清零（熔断只针对"连续"失败）
-            // notifyCompaction 已由 settleCompaction 在确认真压动后统一调用（P1-4）
-            const banner = settleCompaction(deps, sessionState.sessionId, {
+            // 计数清零与 notifyCompaction 都由 settleCompaction 在确认真压动后统一做
+            const { banner } = settleCompaction(deps, sessionState.sessionId, compactScope, {
               trigger: "prompt_too_long_stream",
               messageCountBefore: compactResult.messageCountBefore,
               messageCountAfter: compactResult.messageCountAfter,
@@ -3300,7 +3491,17 @@ export async function* queryLoop(loopConfig: QueryLoopConfig): AsyncGenerator<Qu
             };
             continue;
           }
-          state.consecutiveCompactFailures = (state.consecutiveCompactFailures ?? 0) + 1;
+          // 失败也必须过 settleCompaction：此前这里手写 +1，这次失败不落 CompactionAttempt。
+          // trigger 是 API 已拒收的恢复路径，too_few_messages / no_split_point 在这里仍判 failed（R1）。
+          settleCompaction(deps, sessionState.sessionId, compactScope, {
+            trigger: "prompt_too_long_stream",
+            messageCountBefore: compactResult.messageCountBefore,
+            messageCountAfter: compactResult.messageCountAfter,
+            tokensBefore: compactResult.tokensBefore,
+            tokensAfter: compactResult.tokensAfter,
+            strategy: compactResult.strategy,
+            ...(compactResult.noopReason ? { noopReason: compactResult.noopReason } : {}),
+          });
           log.warn("QUERY_LOOP", "响应式压缩失败，尝试 autoCompact");
         }
 
@@ -3308,10 +3509,13 @@ export async function* queryLoop(loopConfig: QueryLoopConfig): AsyncGenerator<Qu
         if (isPromptTooLongError(err)) {
           // P2-2 熔断：连续压缩失败达阈值 → 不再尝试注定失败的压缩，如实告知用户并结束本轮。
           // 不熔断的后果（CC 前车之鉴）：同一个压不动的历史每轮重试，单会话烧掉数千次调用。
-          if ((state.consecutiveCompactFailures ?? 0) >= MAX_CONSECUTIVE_COMPACT_FAILURES) {
+          // 判据读 settleCompaction 唯一维护的状态位：阈值档在本条消息内已开闸时，
+          // 同一段历史已证明压不动，这里不再给 LLM 摘要一次机会。
+          // 语义保持「终止本轮」：API 已拒收，跳过压缩再发同一个请求只会无限空转。
+          if (state.compactCircuitOpen) {
             log.error(
               "QUERY_LOOP",
-              `连续 ${state.consecutiveCompactFailures} 次压缩失败，触发熔断，停止自动压缩尝试`,
+              `连续 ${state.consecutiveCompactFailures ?? 0} 次压缩失败，熔断已开启，停止自动压缩尝试`,
             );
             yield {
               kind: "system",
@@ -3335,21 +3539,30 @@ export async function* queryLoop(loopConfig: QueryLoopConfig): AsyncGenerator<Qu
             return;
           }
           const beforeFallback = ctxMgr.messageCount();
+          // 同源 token（不套锚点）：此前这是唯一只传消息数的调用点，原地替换类压缩会被判失败。
+          const overflowTokensBefore = ctxMgr.estimateTokensFor(
+            ctxMgr.getMessages(),
+            toolRegistry.size(),
+          );
           await deps.autoCompact();
+          const overflowTokensAfter = ctxMgr.estimateTokensFor(
+            ctxMgr.getMessages(),
+            toolRegistry.size(),
+          );
           state.goalReminderPendingAfterCompact = true;
           state.todoReminderPendingAfterCompact = true;
           state.deferredToolsPendingAfterCompact = true;
           {
-            const banner = settleCompaction(deps, sessionState.sessionId, {
+            // 计数（P2-6 的清零 / +1）由 settleCompaction 唯一维护。恢复路径不许 noop，
+            // 所以 autoCompact 的 skipped 原因不传进来——在这里没压动就是失败。
+            const { banner } = settleCompaction(deps, sessionState.sessionId, compactScope, {
               trigger: "context_overflow",
               messageCountBefore: beforeFallback,
               messageCountAfter: ctxMgr.messageCount(),
+              tokensBefore: overflowTokensBefore,
+              tokensAfter: overflowTokensAfter,
             });
-            // P2-6：同上——真压动了就清零，否则 counter 名不副实。
-            if (banner) {
-              yield banner;
-              state.consecutiveCompactFailures = 0;
-            } else state.consecutiveCompactFailures = (state.consecutiveCompactFailures ?? 0) + 1;
+            if (banner) yield banner;
           }
           setTransition(state, { type: "context_overflow_retry" }, deps, sessionState.sessionId);
           continue;
@@ -3510,59 +3723,77 @@ export async function* queryLoop(loopConfig: QueryLoopConfig): AsyncGenerator<Qu
       }
 
       // ─── 预算追踪器检查 ───
+      // 告警与硬停是两个判据（2026-10-22 修「超限只拦一次」）：
+      // - recordTurn 返回的是**告警升级事件**，exceeded 触发一次之后恒为 undefined，只用于播报；
+      // - 硬停每轮都问 findBlockingRule()，超限后每一轮都拦，直到 /clear 或周期翻篇。
+      // 记账口径是会话有效总花费的增量（含影子调用），与下面 costLimit 同口径。
       if (loopConfig.budgetTracker) {
-        const budgetAlert = loopConfig.budgetTracker.recordCost(thisCost, {
-          model: config.model,
-        });
-        if (budgetAlert) {
-          if (budgetAlert.level === "exceeded" && budgetAlert.action === "block") {
-            yield {
-              kind: "system",
-              level: "warning",
-              terminal: true,
-              text: `预算规则 "${budgetAlert.ruleName}" 已超限（$${formatBudgetUsd(budgetAlert.currentUSD, 4)} / $${formatBudgetUsd(budgetAlert.limitUSD, 2)}），自动停止`,
-            };
-            yield {
-              kind: "done",
-              turns: state.turnCount,
-              // §20.5：与 max_turns 路径同源同口径，见 types.ts 该字段注释。
-              turnsConsumedWithoutAssistant: state.turnsConsumedWithoutAssistant,
-              // F1：硬停必须显式声明，否则收尾落 user_interrupt（见 types.ts）。
-              budgetExceeded: { source: "budget_rule" },
-            };
-            exitedViaReturn = true;
-            return;
-          } else if (budgetAlert.level === "critical" || budgetAlert.level === "warning") {
-            const pct = (budgetAlert.percentage * 100).toFixed(0);
-            yield {
-              kind: "system",
-              level: "warning",
-              text: `预算规则 "${budgetAlert.ruleName}" 已达 ${pct}%（$${formatBudgetUsd(budgetAlert.currentUSD, 4)} / $${formatBudgetUsd(budgetAlert.limitUSD, 2)}）`,
-            };
-          }
+        const budgetAlert = loopConfig.budgetTracker.recordTurn(
+          sessionState.getEffectiveTotalCostUSD(),
+          thisCost,
+          { model: config.model },
+        );
+        const blocking = loopConfig.budgetTracker.findBlockingRule();
+        if (blocking) {
+          // 刚升级到 exceeded 才说「自动停止」；之后每轮说「仍拦截」，不重复播报同一句
+          const justExceeded =
+            budgetAlert?.level === "exceeded" && budgetAlert.ruleId === blocking.rule.id;
+          const amounts = `$${formatBudgetUsd(blocking.currentUSD, 4)} / $${formatBudgetUsd(blocking.rule.limitUSD, 2)}`;
+          yield {
+            kind: "system",
+            level: "warning",
+            terminal: true,
+            text: justExceeded
+              ? `预算规则 "${blocking.rule.name}" 已超限（${amounts}），自动停止`
+              : `预算规则 "${blocking.rule.name}" 本周期已超限（${amounts}），仍拦截`,
+          };
+          yield {
+            kind: "done",
+            turns: state.turnCount,
+            // §20.5：与 max_turns 路径同源同口径，见 types.ts 该字段注释。
+            turnsConsumedWithoutAssistant: state.turnsConsumedWithoutAssistant,
+            // F1：硬停必须显式声明，否则收尾落 user_interrupt（见 types.ts）。
+            budgetExceeded: { source: "budget_rule" },
+          };
+          exitedViaReturn = true;
+          return;
+        }
+        if (budgetAlert && budgetAlert.level !== "exceeded") {
+          const pct = (budgetAlert.percentage * 100).toFixed(0);
+          yield {
+            kind: "system",
+            level: "warning",
+            text: `预算规则 "${budgetAlert.ruleName}" 已达 ${pct}%（$${formatBudgetUsd(budgetAlert.currentUSD, 4)} / $${formatBudgetUsd(budgetAlert.limitUSD, 2)}）`,
+          };
         }
       }
 
       // ─── 成本配额检查 ───
       if (loopConfig.quotaManager) {
         // 纳入辅助调用花费（标题/记忆/分类/摘要/预热等），避免影子调用烧钱不受限。
-        const quotaResult = loopConfig.quotaManager.check(sessionState.getEffectiveTotalCostUSD());
-        if (quotaResult) {
-          if (quotaResult.level === "exceeded") {
-            yield { kind: "system", level: "warning", terminal: true, text: quotaResult.message };
-            yield {
-              kind: "done",
-              turns: state.turnCount,
-              // §20.5：与 max_turns 路径同源同口径，见 types.ts 该字段注释。
-              turnsConsumedWithoutAssistant: state.turnsConsumedWithoutAssistant,
-              // F1：与本地预算硬停同一条归因通道（见 types.ts budgetExceeded）。
-              budgetExceeded: { source: "quota" },
-            };
-            exitedViaReturn = true;
-            return;
-          } else if (quotaResult.level === "critical" || quotaResult.level === "warning") {
-            yield { kind: "system", level: "warning", text: quotaResult.message };
-          }
+        const effectiveCost = sessionState.getEffectiveTotalCostUSD();
+        // check() 只在级别升级时返回（告警去重）；硬停另问 isExceeded()，每轮都拦。
+        // 两者共用一个判据时，exceeded 触发一次后恒为 null，costLimit 名存实亡（2026-10-22 实测）。
+        const quotaResult = loopConfig.quotaManager.check(effectiveCost);
+        if (loopConfig.quotaManager.isExceeded(effectiveCost)) {
+          const text =
+            quotaResult?.level === "exceeded"
+              ? quotaResult.message
+              : loopConfig.quotaManager.stillExceededMessage(effectiveCost);
+          yield { kind: "system", level: "warning", terminal: true, text };
+          yield {
+            kind: "done",
+            turns: state.turnCount,
+            // §20.5：与 max_turns 路径同源同口径，见 types.ts 该字段注释。
+            turnsConsumedWithoutAssistant: state.turnsConsumedWithoutAssistant,
+            // F1：与本地预算硬停同一条归因通道（见 types.ts budgetExceeded）。
+            budgetExceeded: { source: "quota" },
+          };
+          exitedViaReturn = true;
+          return;
+        }
+        if (quotaResult && (quotaResult.level === "critical" || quotaResult.level === "warning")) {
+          yield { kind: "system", level: "warning", text: quotaResult.message };
         }
       }
 
@@ -3882,8 +4113,7 @@ export async function* queryLoop(loopConfig: QueryLoopConfig): AsyncGenerator<Qu
               state.goalReminderPendingAfterCompact = true;
               state.todoReminderPendingAfterCompact = true;
               state.deferredToolsPendingAfterCompact = true;
-              state.consecutiveCompactFailures = 0;
-              const banner = settleCompaction(deps, sessionState.sessionId, {
+              const { banner } = settleCompaction(deps, sessionState.sessionId, compactScope, {
                 trigger: "empty_param_retry",
                 messageCountBefore: compactResult.messageCountBefore,
                 messageCountAfter: compactResult.messageCountAfter,
@@ -3901,7 +4131,17 @@ export async function* queryLoop(loopConfig: QueryLoopConfig): AsyncGenerator<Qu
                 });
               }
             } else {
-              state.consecutiveCompactFailures = (state.consecutiveCompactFailures ?? 0) + 1;
+              // 失败也落 CompactionAttempt（此前只手写 +1）。空参数重试是主动压缩（API 没拒收），
+              // 消息太少 / 无安全分割点判 noop、不计失败。
+              settleCompaction(deps, sessionState.sessionId, compactScope, {
+                trigger: "empty_param_retry",
+                messageCountBefore: compactResult.messageCountBefore,
+                messageCountAfter: compactResult.messageCountAfter,
+                tokensBefore: compactResult.tokensBefore,
+                tokensAfter: compactResult.tokensAfter,
+                strategy: compactResult.strategy,
+                ...(compactResult.noopReason ? { noopReason: compactResult.noopReason } : {}),
+              });
             }
           }
 
@@ -5912,23 +6152,28 @@ export async function* queryLoop(loopConfig: QueryLoopConfig): AsyncGenerator<Qu
         const compactResult = reactiveCompact(ctxMgr);
         // 成败都经 settleCompaction 落 CompactionAttempt（此前失败分支只写 warn.log，
         // 事件里看不到这条路径压没压动）。banner 非 null ⟺ 实测真压动了。
-        const banner = settleCompaction(deps, sessionState.sessionId, {
-          trigger: "ctx_window_exceeded",
-          messageCountBefore: compactResult.messageCountBefore,
-          messageCountAfter: compactResult.messageCountAfter,
-          tokensBefore: compactResult.tokensBefore,
-          tokensAfter: compactResult.tokensAfter,
-          strategy: compactResult.strategy,
-        });
+        const { banner, outcome: ctxWindowOutcome } = settleCompaction(
+          deps,
+          sessionState.sessionId,
+          compactScope,
+          {
+            trigger: "ctx_window_exceeded",
+            messageCountBefore: compactResult.messageCountBefore,
+            messageCountAfter: compactResult.messageCountAfter,
+            tokensBefore: compactResult.tokensBefore,
+            tokensAfter: compactResult.tokensAfter,
+            strategy: compactResult.strategy,
+          },
+        );
 
-        if (!compactResult.success || !banner) {
-          state.consecutiveCompactFailures = (state.consecutiveCompactFailures ?? 0) + 1;
+        // 恢复路径不许 noop：这里非 applied 即 failed，计数已由 settleCompaction 维护。
+        if (ctxWindowOutcome !== "applied") {
           exhaust(`压缩未生效（${compactResult.messageCountBefore} 条未变）`);
           yield {
             kind: "system",
             level: "error",
             terminal: true,
-            text: buildCompactCircuitBreakerText(state.consecutiveCompactFailures, {
+            text: buildCompactCircuitBreakerText(state.consecutiveCompactFailures ?? 0, {
               fixedTokens: ctxMgr.estimateFixedOverheadTokens(toolRegistry.size()),
               totalTokens: ctxMgr.estimateTokens(toolRegistry.size()),
               memoryTokens: ctxMgr.getMemoryTokens(),
@@ -5947,7 +6192,6 @@ export async function* queryLoop(loopConfig: QueryLoopConfig): AsyncGenerator<Qu
         }
 
         state.ctxWindowRecoveryCount = used + 1;
-        state.consecutiveCompactFailures = 0;
         state.goalReminderPendingAfterCompact = true;
         state.todoReminderPendingAfterCompact = true;
         state.deferredToolsPendingAfterCompact = true;
@@ -5956,7 +6200,7 @@ export async function* queryLoop(loopConfig: QueryLoopConfig): AsyncGenerator<Qu
           `context_window_exceeded 压缩续写（第 ${state.ctxWindowRecoveryCount}/${MAX_CTX_WINDOW_RECOVERIES} 次）：` +
             `${compactResult.messageCountBefore} → ${compactResult.messageCountAfter} 条`,
         );
-        yield banner;
+        if (banner) yield banner;
         // P1-13：走与 auto/manual 同一套压缩后收尾。
         await deps.postCompactTail?.({
           trigger: "reactive",

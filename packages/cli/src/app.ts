@@ -85,7 +85,7 @@ import { QueryEngine } from "@sid-code/core/query/engine.ts";
 import { resetCacheDetection, clearCacheBreaks } from "@sid-code/core/api/cache-detection.ts";
 import { resetTTLLatch } from "@sid-code/core/api/cache-ttl-latch.ts";
 import { resetBetaHeaders } from "@sid-code/core/api/beta-header-latch.ts";
-import { resetCircuitBreaker } from "@sid-code/core/query/auto-compact.ts";
+import { resetCircuitBreaker, type AutoCompactResult } from "@sid-code/core/query/auto-compact.ts";
 import { clearQueue as clearMessageQueue } from "@sid-code/core/query/message-queue-manager.ts";
 import { HookSystem } from "@sid-code/core/hook/system.ts";
 import { ConfigSource } from "@sid-code/core/hook/types.ts";
@@ -3263,6 +3263,10 @@ export class App {
     clearPromptCache();
     this.resetRecallState();
     this.quotaManager?.resetAlertLevel();
+    // budgetRules 与 costLimit 同批重置：告警级别 + session 周期累计（硬停每轮都问，
+    // 不清 session 累计的话 /clear 后第一条消息就会被旧会话的花费拦住）
+    this.budgetTracker?.resetAlertLevels();
+    this.budgetTracker?.resetSessionPeriod();
     this.fallback.reset();
     this.resetTodoTool();
     await this.resetPlanStateForClear();
@@ -3947,7 +3951,7 @@ export class App {
     }
   }
 
-  private async autoCompact(): Promise<"summarized" | "truncated" | "skipped" | void> {
+  private async autoCompact(): Promise<AutoCompactResult> {
     const { autoCompact: impl } = await import("@sid-code/core/query/auto-compact.ts");
     // §3.1：传入主对话工具定义，让压缩请求复用主对话已缓存的工具前缀（cache hit）。
     const toolSchemas = this.toolRegistry.activeDefinitions();
@@ -6066,6 +6070,8 @@ export class App {
             "usage_stats"
           ] as import("@sid-code/core/session/state.ts").UsageSnapshot,
         );
+        // budgetRules 增量记账的基线跟着回灌值走，否则下一轮把全部历史花费当新钱记一遍
+        this.budgetTracker?.hydrateSessionBaseline(this.sessionState.getEffectiveTotalCostUSD());
         log.info(
           "APP",
           `恢复用量统计: cost=$${this.sessionState.getEffectiveTotalCostUSD().toFixed(4)}, ` +
@@ -8914,7 +8920,10 @@ export class App {
       }
     } catch (err: any) {
       runError = err instanceof Error ? err : new Error(String(err));
-      aborted = runError.name === "AbortError" || /abort/i.test(runError.message ?? "");
+      // 缺陷 11：判原始 err，不判包装后的 runError——abort("user-cancel") 让 Promise 以裸字符串
+      // reject，包成 Error 后 name/message 都不含 abort，旧的 /abort/i 判不出；反过来模型错误文案里
+      // 带个 "aborted" 又会被误判成中断（endReason=abort、退出码 0）。isAbortError 看结构字段与白名单。
+      aborted = isAbortError(err);
       structuredIO.rejectAllPending("session ended");
       // 会话硬顶超时按正常自动结束处理（reason=abort 而非 error）。
       if (sdkSessionTimedOut) {

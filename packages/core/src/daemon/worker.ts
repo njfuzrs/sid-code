@@ -7,7 +7,13 @@
  * 而非返回 diff 摘要。这是 C1 与 ADR-030 的核心汇合：一份执行器，两个触发源。
  */
 
-import type { GitHubPREvent, WorkerResult, DaemonConfig, HeadlessJob } from "./types.ts";
+import type {
+  GitHubPREvent,
+  WorkerResult,
+  DaemonConfig,
+  HeadlessJob,
+  ConcurrencyGate,
+} from "./types.ts";
 import { GitCloneWorkspaceProvider } from "./workspace.ts";
 import { FileStorageAdapter } from "./storage.ts";
 import { HeadlessExecutor } from "./headless-executor.ts";
@@ -17,22 +23,28 @@ export class DaemonWorker {
   private config: DaemonConfig;
   private storage: FileStorageAdapter;
   private executor: HeadlessExecutor;
-  private running = 0;
+  private gate: ConcurrencyGate;
 
-  constructor(config: DaemonConfig) {
+  /**
+   * @param gate 并发闸门。daemon 传入自己的（与调度源共用计数）；裸起 server 时缺省为
+   *             本地计数，上限 config.max_concurrent。
+   */
+  constructor(config: DaemonConfig, gate?: ConcurrencyGate) {
     this.config = config;
+    this.gate = gate ?? localGate(config.max_concurrent);
     this.storage = new FileStorageAdapter(config.storage_path ?? "/tmp/sid-code-daemon/sessions");
     this.executor = new HeadlessExecutor({ storage: this.storage });
   }
 
   canAccept(): boolean {
-    return this.running < this.config.max_concurrent;
+    return this.gate.canAccept();
   }
 
   async handlePR(event: GitHubPREvent): Promise<WorkerResult> {
     const eventId = `pr-${event.owner}-${event.repo}-${event.number}-${randomBytes(3).toString("hex")}`;
     const start = Date.now();
-    this.running++;
+    // 必须在第一个 await 之前占名额：server 先 canAccept 再调本函数，中间不能让出事件循环
+    this.gate.acquire();
 
     const workspace = new GitCloneWorkspaceProvider(this.config.workspace_base);
 
@@ -94,10 +106,26 @@ export class DaemonWorker {
         error: err instanceof Error ? err.message : String(err),
       };
     } finally {
-      await workspace.cleanup();
-      this.running--;
+      try {
+        await workspace.cleanup();
+      } finally {
+        this.gate.release();
+      }
     }
   }
+}
+
+function localGate(max: number): ConcurrencyGate {
+  let running = 0;
+  return {
+    canAccept: () => running < max,
+    acquire: () => {
+      running++;
+    },
+    release: () => {
+      running--;
+    },
+  };
 }
 
 /** 拼 code-review 的 prompt：激活 Skill + 注入 PR diff */
