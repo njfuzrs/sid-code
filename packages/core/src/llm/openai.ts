@@ -32,7 +32,8 @@ import {
   chunkCountFields,
   makeFetchAbsoluteTimeoutSignal,
 } from "../trace/stream-observer.ts";
-import { guardOutgoingMessages } from "./protocol-sentinel.ts";
+import { guardOutgoingMessages, dumpToolMarkupResidue } from "./protocol-sentinel.ts";
+import { splitToolMarkupHoldback, stripTrailingToolMarkupResidue } from "./tool-markup-residue.ts";
 import {
   recordBilledRequest,
   recordNonStreamingBilledRequest,
@@ -2201,6 +2202,33 @@ export class OpenAIProvider implements Provider {
         }
       }
 
+      // 工具调用标记残片（如 GLM 的 `</arg_value>`）：与流式路径同一口径——
+      // 仅无结构化 tool_calls 时，剥掉末尾文本块里孤立的残片闭合标签，并落盘 + 遥测。
+      const hasToolUse = content.some((b) => b.type === "tool_use");
+      const lastBlock = content[content.length - 1];
+      if (!hasToolUse && lastBlock?.type === "text") {
+        const residue = stripTrailingToolMarkupResidue(lastBlock.text);
+        if (residue) {
+          const model = params.model || this._model;
+          dumpToolMarkupResidue({
+            providerName: this.name(),
+            model,
+            tag: residue.tag,
+            textTail: residue.text,
+            stripped: true,
+            path: "non_stream",
+          });
+          emitSseAnomaly(ncCtx.turnIndex, {
+            kind: "tool_markup_residue",
+            tag: residue.tag,
+            path: "non_stream",
+            model,
+          });
+          if (residue.text) lastBlock.text = residue.text;
+          else content.pop();
+        }
+      }
+
       const finishReason = choice?.finish_reason;
       const stopReason = OpenAIProvider.mapFinishReason(finishReason);
 
@@ -2425,6 +2453,10 @@ export class OpenAIProvider implements Provider {
     let nextContentIndex = 0;
     let textBlockStarted = false;
     let textBlockIndex = -1;
+    /** 文本块里已经 yield 出去的正文（判残片是否「孤立」要看它里面有没有开标签） */
+    let emittedText = "";
+    /** 暂扣的文本尾巴：可能发展成工具调用标记残片（见 tool-markup-residue.ts） */
+    let heldText = "";
     // 多工具并行追踪：key 是 OpenAI 的 tool_call index
     const toolCalls = new Map<number, ToolCallState>();
     const usage: Usage = { inputTokens: 0, outputTokens: 0 };
@@ -2606,6 +2638,35 @@ export class OpenAIProvider implements Provider {
       (usage.cacheReadInputTokens ?? 0) > 0 ||
       (usage.reasoningTokens ?? 0) > 0;
 
+    /** 把暂扣的文本尾巴原样放回正文（它后面又来了内容，或本响应有 tool_calls） */
+    const releaseHeldText = (): StreamEvent[] => {
+      if (!heldText) return [];
+      const text = heldText;
+      heldText = "";
+      emittedText += text;
+      return [
+        { type: "content_block_delta", index: textBlockIndex, delta: { type: "text_delta", text } },
+      ];
+    };
+
+    /** 残片命中：落 protocol-violation + SseAnomaly（不能只剥不记，见 tool-markup-residue.ts） */
+    const reportToolMarkupResidue = (
+      tag: string,
+      textBefore: string,
+      path: "stream" | "non_stream",
+    ): void => {
+      const model = modelName ?? this._model;
+      dumpToolMarkupResidue({
+        providerName: this.name(),
+        model,
+        tag,
+        textTail: textBefore,
+        stripped: true,
+        path,
+      });
+      emitSseAnomaly(parseObsIndex, { kind: "tool_markup_residue", tag, path, model });
+    };
+
     /**
      * 关闭所有还开着的块（reasoning / 文本 / 工具），返回应 yield 的事件。
      *
@@ -2619,6 +2680,17 @@ export class OpenAIProvider implements Provider {
         reasoningBlockStarted = false;
       }
       if (textBlockStarted) {
+        // 残片最终判定：无结构化 tool_calls、暂扣的尾巴恰好是孤立的残片闭合标签 → 记录并剥掉
+        const residue =
+          toolCalls.size === 0 && heldText
+            ? stripTrailingToolMarkupResidue(emittedText + heldText)
+            : null;
+        if (residue && heldText.trimEnd() === residue.tag) {
+          heldText = "";
+          reportToolMarkupResidue(residue.tag, emittedText, "stream");
+        } else {
+          out.push(...releaseHeldText());
+        }
         out.push({ type: "content_block_stop", index: textBlockIndex });
         textBlockStarted = false;
       }
@@ -2999,11 +3071,17 @@ export class OpenAIProvider implements Provider {
                 };
                 nextContentIndex++;
               }
-              yield {
-                type: "content_block_delta",
-                index: textBlockIndex,
-                delta: { type: "text_delta", text: delta.content },
-              };
+              // 残片暂扣：可能发展成 `</arg_value>` 的尾巴先不放，收尾时再判（见 closeOpenBlocks）
+              const { emit, hold } = splitToolMarkupHoldback(heldText + delta.content);
+              heldText = hold;
+              if (emit) {
+                emittedText += emit;
+                yield {
+                  type: "content_block_delta",
+                  index: textBlockIndex,
+                  delta: { type: "text_delta", text: emit },
+                };
+              }
             }
 
             // §2.1：流式内容审查拒绝。模型触发安全策略时在 delta.refusal 推送拒绝理由
@@ -3024,6 +3102,8 @@ export class OpenAIProvider implements Provider {
                 };
                 nextContentIndex++;
               }
+              // 后面接了别的文本，暂扣的尾巴就不再是「末尾」了，按原样先放出去
+              for (const ev of releaseHeldText()) yield ev;
               yield {
                 type: "content_block_delta",
                 index: textBlockIndex,
@@ -3054,8 +3134,11 @@ export class OpenAIProvider implements Provider {
                   }
                 } else {
                   // 新工具调用开始
-                  // 如果文本块已开始，先关闭它
+                  // 如果文本块已开始，先关闭它。
+                  // 有结构化 tool_calls 时不做残片剥离（语义不同，见 tool-markup-residue.ts），
+                  // 暂扣的尾巴原样放回正文。
                   if (textBlockStarted) {
+                    for (const ev of releaseHeldText()) yield ev;
                     yield { type: "content_block_stop", index: textBlockIndex };
                     textBlockStarted = false;
                   }

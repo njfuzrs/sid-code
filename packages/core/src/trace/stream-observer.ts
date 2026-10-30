@@ -1498,11 +1498,17 @@ export const TIMER_DRIFT_RATIO = 3;
  * - `eof_without_done`：流以 EOF 结束、没有 `[DONE]` 哨兵（已走统一收尾补发）
  * - `tool_identity_revised`：tool_call 的 id/name 在 start 之后才补全或被切碎，已经 stop 修订
  * - `tool_identity_missing`：收尾时 tool_call 仍无 id（已合成）或无 name
+ * - `tool_markup_residue`：无结构化 tool_calls，正文末尾却是工具调用标记残片（如 GLM 的
+ *   `</arg_value>`），已剥离并落 protocol-violation（见 llm/tool-markup-residue.ts）
  */
 export function emitSseAnomaly(
   index: number,
   data: {
-    kind: "eof_without_done" | "tool_identity_revised" | "tool_identity_missing";
+    kind:
+      | "eof_without_done"
+      | "tool_identity_revised"
+      | "tool_identity_missing"
+      | "tool_markup_residue";
     model?: string;
     [k: string]: unknown;
   },

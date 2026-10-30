@@ -174,6 +174,60 @@ export function dumpProtocolViolation(
   }
 }
 
+/**
+ * 正文末尾混入工具调用标记残片（如 GLM 的 `</arg_value>`）时落一条违例现场。
+ *
+ * 与上面的消息历史违例共用目录与 LRU 上限：两者都是「上游/历史违反了协议形态」的验尸样本，
+ * 分目录只会让人漏查一边。文件名带 `-tool-markup-residue` 后缀，与 tool_use 配对违例区分，
+ * 也避免同一毫秒两类违例互相覆盖。
+ *
+ * best-effort：落盘失败只记日志，不影响主流程。
+ *
+ * @returns 落盘文件绝对路径；落盘失败返回 null
+ */
+export function dumpToolMarkupResidue(info: {
+  providerName: string;
+  model: string;
+  tag: string;
+  /** 命中标签前的一段正文（截断），用于判断残片前面接的是什么 */
+  textTail: string;
+  /** 是否已从正文剥掉该标签 */
+  stripped: boolean;
+  /** 来源路径：流式 / 非流式 */
+  path: "stream" | "non_stream";
+  dumpDir?: string;
+  now?: number;
+}): string | null {
+  const log = getLogger();
+  try {
+    const dumpDir = info.dumpDir ?? sidHomePath("protocol-violations");
+    if (!existsSync(dumpDir)) mkdirSync(dumpDir, { recursive: true });
+    const ts = info.now ?? Date.now();
+    const snapshot = {
+      kind: "tool-markup-residue",
+      provider: info.providerName,
+      model: info.model,
+      path: info.path,
+      timestamp: new Date(ts).toISOString(),
+      tag: info.tag,
+      stripped: info.stripped,
+      text_tail: info.textTail.slice(-200),
+    };
+    const filePath = join(dumpDir, `protocol-violation-${ts}-tool-markup-residue.json`);
+    writeFileSync(filePath, maskSensitiveJson(JSON.stringify(snapshot, null, 2), 2));
+    pruneOldViolationDumps(dumpDir);
+    log.warn(
+      "LLM:PROTOCOL",
+      `[${info.providerName}] 正文末尾出现工具调用标记残片 ${info.tag}（无结构化 tool_calls，` +
+        `model=${info.model}），${info.stripped ? "已剥离" : "未剥离"}；现场已落盘: ${filePath}`,
+    );
+    return filePath;
+  } catch (err: any) {
+    log.warn("LLM:PROTOCOL", `工具标记残片落盘失败（不影响主流程）: ${err?.message ?? err}`);
+    return null;
+  }
+}
+
 /** 把单条消息的 content 概要化（只留类型 + id + 文本截断），用于诊断落盘 */
 function summarizeBlocks(msg: Message): Array<Record<string, unknown>> {
   if (!Array.isArray(msg.content)) return [];
