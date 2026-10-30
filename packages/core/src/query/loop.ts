@@ -940,6 +940,32 @@ export interface QueryLoopConfig {
  * 每次 yield 一个 QueryLoopYield 事件给上层消费。
  * 上层通过 for await...of 消费，天然支持背压。
  */
+/**
+ * 请求前的本地预算硬停判定（导出供测试）。返回 null = 放行。
+ *
+ * 只看「已经超限」这一事实，不看告警升级事件：后者 exceeded 只报一次，
+ * 拿它当判据就是「超限只拦一次」那个缺陷（2026-10-22）。
+ */
+export function checkPreRequestBudgetStop(
+  loopConfig: Pick<QueryLoopConfig, "budgetTracker" | "quotaManager">,
+  effectiveCostUSD: number,
+): { source: "budget_rule" | "quota"; text: string } | null {
+  const blocking = loopConfig.budgetTracker?.findBlockingRule();
+  if (blocking) {
+    return {
+      source: "budget_rule",
+      text: `预算规则 "${blocking.rule.name}" 本周期已超限（$${formatBudgetUsd(blocking.currentUSD, 4)} / $${formatBudgetUsd(blocking.rule.limitUSD, 2)}），仍拦截`,
+    };
+  }
+  if (loopConfig.quotaManager?.isExceeded(effectiveCostUSD)) {
+    return {
+      source: "quota",
+      text: loopConfig.quotaManager.stillExceededMessage(effectiveCostUSD),
+    };
+  }
+  return null;
+}
+
 export async function* queryLoop(loopConfig: QueryLoopConfig): AsyncGenerator<QueryLoopYield> {
   const log = getLogger();
   const { config, ctxMgr, toolRegistry, sessionState, hookSystem, thinking, deps } = loopConfig;
@@ -2712,6 +2738,29 @@ export async function* queryLoop(loopConfig: QueryLoopConfig): AsyncGenerator<Qu
         }
       };
 
+      // ─── 请求前预算硬停：已超限就不再发请求 ───
+      // 响应后的硬停（见下方「预算追踪器检查」「成本配额检查」）只能在钱花掉之后拦；
+      // 超限后用户再发一条消息，没有这一道就会先烧一次 API 调用再停。这里每轮发请求前问一次，
+      // 判据与响应后同源（findBlockingRule / isExceeded），不依赖告警去重状态。
+      {
+        const preStop = checkPreRequestBudgetStop(
+          loopConfig,
+          sessionState.getEffectiveTotalCostUSD(),
+        );
+        if (preStop) {
+          log.info("BUDGET", `请求前硬停（${preStop.source}）：${preStop.text}`);
+          yield { kind: "system", level: "warning", terminal: true, text: preStop.text };
+          yield {
+            kind: "done",
+            turns: state.turnCount,
+            turnsConsumedWithoutAssistant: state.turnsConsumedWithoutAssistant,
+            budgetExceeded: { source: preStop.source },
+          };
+          exitedViaReturn = true;
+          return;
+        }
+      }
+
       // ─── F5：本地速率限制（RPM/TPM）主动节流 ───
       //
       // 缺陷形态（2026-09-03 排查）：`QuotaManager.checkRateLimit()` 的**生产调用点 = 0**。
@@ -3633,59 +3682,77 @@ export async function* queryLoop(loopConfig: QueryLoopConfig): AsyncGenerator<Qu
       }
 
       // ─── 预算追踪器检查 ───
+      // 告警与硬停是两个判据（2026-10-22 修「超限只拦一次」）：
+      // - recordTurn 返回的是**告警升级事件**，exceeded 触发一次之后恒为 undefined，只用于播报；
+      // - 硬停每轮都问 findBlockingRule()，超限后每一轮都拦，直到 /clear 或周期翻篇。
+      // 记账口径是会话有效总花费的增量（含影子调用），与下面 costLimit 同口径。
       if (loopConfig.budgetTracker) {
-        const budgetAlert = loopConfig.budgetTracker.recordCost(thisCost, {
-          model: config.model,
-        });
-        if (budgetAlert) {
-          if (budgetAlert.level === "exceeded" && budgetAlert.action === "block") {
-            yield {
-              kind: "system",
-              level: "warning",
-              terminal: true,
-              text: `预算规则 "${budgetAlert.ruleName}" 已超限（$${formatBudgetUsd(budgetAlert.currentUSD, 4)} / $${formatBudgetUsd(budgetAlert.limitUSD, 2)}），自动停止`,
-            };
-            yield {
-              kind: "done",
-              turns: state.turnCount,
-              // §20.5：与 max_turns 路径同源同口径，见 types.ts 该字段注释。
-              turnsConsumedWithoutAssistant: state.turnsConsumedWithoutAssistant,
-              // F1：硬停必须显式声明，否则收尾落 user_interrupt（见 types.ts）。
-              budgetExceeded: { source: "budget_rule" },
-            };
-            exitedViaReturn = true;
-            return;
-          } else if (budgetAlert.level === "critical" || budgetAlert.level === "warning") {
-            const pct = (budgetAlert.percentage * 100).toFixed(0);
-            yield {
-              kind: "system",
-              level: "warning",
-              text: `预算规则 "${budgetAlert.ruleName}" 已达 ${pct}%（$${formatBudgetUsd(budgetAlert.currentUSD, 4)} / $${formatBudgetUsd(budgetAlert.limitUSD, 2)}）`,
-            };
-          }
+        const budgetAlert = loopConfig.budgetTracker.recordTurn(
+          sessionState.getEffectiveTotalCostUSD(),
+          thisCost,
+          { model: config.model },
+        );
+        const blocking = loopConfig.budgetTracker.findBlockingRule();
+        if (blocking) {
+          // 刚升级到 exceeded 才说「自动停止」；之后每轮说「仍拦截」，不重复播报同一句
+          const justExceeded =
+            budgetAlert?.level === "exceeded" && budgetAlert.ruleId === blocking.rule.id;
+          const amounts = `$${formatBudgetUsd(blocking.currentUSD, 4)} / $${formatBudgetUsd(blocking.rule.limitUSD, 2)}`;
+          yield {
+            kind: "system",
+            level: "warning",
+            terminal: true,
+            text: justExceeded
+              ? `预算规则 "${blocking.rule.name}" 已超限（${amounts}），自动停止`
+              : `预算规则 "${blocking.rule.name}" 本周期已超限（${amounts}），仍拦截`,
+          };
+          yield {
+            kind: "done",
+            turns: state.turnCount,
+            // §20.5：与 max_turns 路径同源同口径，见 types.ts 该字段注释。
+            turnsConsumedWithoutAssistant: state.turnsConsumedWithoutAssistant,
+            // F1：硬停必须显式声明，否则收尾落 user_interrupt（见 types.ts）。
+            budgetExceeded: { source: "budget_rule" },
+          };
+          exitedViaReturn = true;
+          return;
+        }
+        if (budgetAlert && budgetAlert.level !== "exceeded") {
+          const pct = (budgetAlert.percentage * 100).toFixed(0);
+          yield {
+            kind: "system",
+            level: "warning",
+            text: `预算规则 "${budgetAlert.ruleName}" 已达 ${pct}%（$${formatBudgetUsd(budgetAlert.currentUSD, 4)} / $${formatBudgetUsd(budgetAlert.limitUSD, 2)}）`,
+          };
         }
       }
 
       // ─── 成本配额检查 ───
       if (loopConfig.quotaManager) {
         // 纳入辅助调用花费（标题/记忆/分类/摘要/预热等），避免影子调用烧钱不受限。
-        const quotaResult = loopConfig.quotaManager.check(sessionState.getEffectiveTotalCostUSD());
-        if (quotaResult) {
-          if (quotaResult.level === "exceeded") {
-            yield { kind: "system", level: "warning", terminal: true, text: quotaResult.message };
-            yield {
-              kind: "done",
-              turns: state.turnCount,
-              // §20.5：与 max_turns 路径同源同口径，见 types.ts 该字段注释。
-              turnsConsumedWithoutAssistant: state.turnsConsumedWithoutAssistant,
-              // F1：与本地预算硬停同一条归因通道（见 types.ts budgetExceeded）。
-              budgetExceeded: { source: "quota" },
-            };
-            exitedViaReturn = true;
-            return;
-          } else if (quotaResult.level === "critical" || quotaResult.level === "warning") {
-            yield { kind: "system", level: "warning", text: quotaResult.message };
-          }
+        const effectiveCost = sessionState.getEffectiveTotalCostUSD();
+        // check() 只在级别升级时返回（告警去重）；硬停另问 isExceeded()，每轮都拦。
+        // 两者共用一个判据时，exceeded 触发一次后恒为 null，costLimit 名存实亡（2026-10-22 实测）。
+        const quotaResult = loopConfig.quotaManager.check(effectiveCost);
+        if (loopConfig.quotaManager.isExceeded(effectiveCost)) {
+          const text =
+            quotaResult?.level === "exceeded"
+              ? quotaResult.message
+              : loopConfig.quotaManager.stillExceededMessage(effectiveCost);
+          yield { kind: "system", level: "warning", terminal: true, text };
+          yield {
+            kind: "done",
+            turns: state.turnCount,
+            // §20.5：与 max_turns 路径同源同口径，见 types.ts 该字段注释。
+            turnsConsumedWithoutAssistant: state.turnsConsumedWithoutAssistant,
+            // F1：与本地预算硬停同一条归因通道（见 types.ts budgetExceeded）。
+            budgetExceeded: { source: "quota" },
+          };
+          exitedViaReturn = true;
+          return;
+        }
+        if (quotaResult && (quotaResult.level === "critical" || quotaResult.level === "warning")) {
+          yield { kind: "system", level: "warning", text: quotaResult.message };
         }
       }
 

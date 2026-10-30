@@ -3244,6 +3244,10 @@ export class App {
     clearPromptCache();
     this.resetRecallState();
     this.quotaManager?.resetAlertLevel();
+    // budgetRules 与 costLimit 同批重置：告警级别 + session 周期累计（硬停每轮都问，
+    // 不清 session 累计的话 /clear 后第一条消息就会被旧会话的花费拦住）
+    this.budgetTracker?.resetAlertLevels();
+    this.budgetTracker?.resetSessionPeriod();
     this.fallback.reset();
     this.resetTodoTool();
     await this.resetPlanStateForClear();
@@ -6047,6 +6051,8 @@ export class App {
             "usage_stats"
           ] as import("@sid-code/core/session/state.ts").UsageSnapshot,
         );
+        // budgetRules 增量记账的基线跟着回灌值走，否则下一轮把全部历史花费当新钱记一遍
+        this.budgetTracker?.hydrateSessionBaseline(this.sessionState.getEffectiveTotalCostUSD());
         log.info(
           "APP",
           `恢复用量统计: cost=$${this.sessionState.getEffectiveTotalCostUSD().toFixed(4)}, ` +
