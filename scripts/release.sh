@@ -122,10 +122,15 @@
 #   不动版本号，先跑它验证构建是安全的；但若你显式跑过 `make build-bump`（它会 bump），
 #   再直接 release 会导致版本号 +2 —— 此时加 --no-bump 复用现有版本号。
 #
-# 中途失败怎么办：直接重跑，**不需要** --no-bump。
-#   脚本装了 EXIT trap，非正常退出时会把 package.json 与 changelog 产物回滚到运行前的
-#   状态（仅回滚运行前本就 clean 的文件，绝不吃掉你自己的改动），并在 stderr 打印回滚结果。
-#   所以失败不再消耗版本号。已成功创建的本地 tag 刻意不删（创建是幂等的），重跑会复用。
+# 中途失败怎么办：**看失败时 stderr 最后打印的那条提示**，它按失败点给出唯一正确的重跑方式。
+#   · bump 提交**之前**失败（门禁 / 构建 / 冒烟）：EXIT trap 把 package.json 与 changelog
+#     产物回滚到运行前状态（仅回滚运行前本就 clean 的文件），直接重跑，不需要 --no-bump。
+#   · bump 提交**之后**、beta.txt 写入之前失败（上传 / 归档 / 审计）：版本号**不会**回滚，
+#     bump 提交和 tag 都留在本地。直接重跑会再 bump 一个号，--no-bump 重跑会被 G2 拦
+#     （构建时 HEAD 变成 bump 提交本身，不再是 v<ver>^）。要先撤掉本地 bump 再重跑，
+#     trap 会打印具体命令（v0.1.613 实测两条错路都踩过）。
+#   · beta.txt 已写入之后失败（tag 推送 / Release）：版本已对外，不要重跑、不要撤 bump，
+#     补完那一步后照常走 PR。
 #
 # 环境变量（--upload 时使用）：
 #   DEPLOY_SSH_HOST         SSH 上传目标（必填，无默认值；IP 或域名均可，只用于 scp/ssh，
@@ -504,6 +509,14 @@ RELEASE_OK=false
 ROLLBACK_FILES=()      # 本次运行前是 clean、因此可安全 git checkout 恢复的文件
 BETA_NOTE_CREATED=""   # --beta-note 本次新建的 curated 文件（失败时删除）
 BUMP_APPLIED=false
+# bump 提交已落进本地历史（尚未上传成功）。这之后失败，package.json 不会被回滚，
+# 「直接重跑」会再 bump 一次（白烧一个号）、「--no-bump 重跑」又会被 G2 拦下
+# （构建时 HEAD = bump 提交本身，而 G2 期望的是 v<ver>^）。v0.1.613 发版实测两条都踩到。
+# 唯一能通过的是：撤掉本地 bump 提交与 tag，从干净状态重跑。所以 on_exit 要按这个标记换提示。
+BUMP_COMMITTED=false
+# beta.txt 已指向本版本 = 对外已发布。此后哪怕某步失败，也绝不能再提示「撤掉 bump 重跑」——
+# 那会让线上版本对应的提交从历史里消失（先发布后提交的反面，同样违反铁律）。
+BETA_PUBLISHED=false
 
 # 记录某个文件在"被本脚本修改之前"是否干净；只有干净的才登记进回滚清单。
 track_for_rollback() {
@@ -580,12 +593,26 @@ on_exit() {
         echo "  版本号已恢复为 v${now_ver}（本次未发布成功，版本号不该被消耗）" >&2
     fi
 
-    if [ -n "${TAG:-}" ] && git rev-parse -q --verify "refs/tags/$TAG" >/dev/null 2>&1; then
+    # bump 已提交时「复用这个 tag」恰恰是错的（它指着要撤掉的 bump 提交），下面那条提示负责
+    if [ "$BUMP_COMMITTED" != true ] && [ -n "${TAG:-}" ] && git rev-parse -q --verify "refs/tags/$TAG" >/dev/null 2>&1; then
         echo "  ⓘ 本地 tag $TAG 仍存在（未自动删除，创建是幂等的）。" >&2
         echo "    重跑本脚本会复用它；确认不需要可手动 git tag -d $TAG" >&2
     fi
 
-    echo "  修复问题后直接重跑即可（版本号已回滚，无需 --no-bump）。" >&2
+    if [ "$BETA_PUBLISHED" = true ]; then
+        echo "  ⚠️  v${VERSION} 已上线 beta 通道，**不要**重跑或撤 bump 提交。" >&2
+        echo "    补完失败的那一步后，bump 提交照常走 PR 进 main（见 scripts/RELEASE.md 第 4 步）。" >&2
+    elif [ "$BUMP_COMMITTED" = true ]; then
+        # 只打印命令不代为执行：reset 动的是用户的 HEAD，由人确认后再跑
+        echo "  ⚠️  本地已有 bump 提交，版本号**没有**回滚（package.json 仍是 v${VERSION}）。" >&2
+        echo "    直接重跑会 bump 成下一个号；--no-bump 重跑会被 G2 拦（产物 commit ≠ v<ver>^）。" >&2
+        echo "    确认 $TAG 未推送（git ls-remote --tags origin $TAG 为空）后，撤掉本地 bump 再重跑：" >&2
+        echo "      git tag -d $TAG 2>/dev/null; git reset --keep HEAD^ && ./scripts/release.sh --upload" >&2
+    elif [ "$DO_BUMP" = false ]; then
+        echo "  修复问题后重跑时仍加 --no-bump（本次本来就没有 bump）。" >&2
+    else
+        echo "  修复问题后直接重跑即可（版本号已回滚，无需 --no-bump）。" >&2
+    fi
 }
 
 trap on_exit EXIT
@@ -1246,6 +1273,7 @@ else
         ROLLBACK_FILES=()
         BUMP_APPLIED=false
         BETA_NOTE_CREATED=""   # 已进 bump 提交，失败回滚不能再删它
+        BUMP_COMMITTED=true
         ok "已提交 bump ${TAG}（$(git rev-parse --short HEAD)）"
     fi
 fi
@@ -1492,6 +1520,7 @@ fi"
         || fail "归档审计未通过 —— beta.txt 未改动（v${VERSION} 已归档、目录已在服务器上；修复后 --no-bump --upload 重跑，或先单独跑 --audit-archive 排查）"
 
     run_scp "$RELEASE_DIR/beta.txt" "${DEPLOY_SSH_USER}@${DEPLOY_SSH_HOST}:${DEPLOY_PATH}/beta.txt"
+    BETA_PUBLISHED=true
     ok "beta 通道已指向 v${VERSION}（稳定通道未改动，需 --promote 显式促升）"
 
     # ─── 服务器端清理旧版本：保留最近 RELEASE_KEEP_VERSIONS 个版本目录 ───
