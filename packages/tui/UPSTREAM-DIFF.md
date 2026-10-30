@@ -53,6 +53,7 @@ diff -r /tmp/ink-v711/src packages/tui/src   # 导入提交上应无输出
 | T3.4 | `src/dom.ts`、`src/reconciler.ts` | 节点新增 `renderDirty` / `renderCache`；文本、子节点增删、样式、属性、transform、显隐的每个变更入口把节点及全部祖先标脏 | 节点级输出缓存的失效信号 | P3 |
 | T3.4 | `src/render-node-to-output.ts`、`src/output.ts` | 节点级输出缓存：子树没标脏、横坐标 / 尺寸 / 外层 transformer / skipStatic 都没变时，回放上次的输出操作（按纵向位移平移），不再遍历子树、不读 yoga；`Output` 新增 `mark` / `since` / `replay` | 历史越长、每帧全树遍历越贵（P3）；横坐标要比，因为 `\t` 对齐屏幕绝对列 | P3 |
 | T3.4 | `src/screen/screen.ts`、`src/screen/serialize.ts`、`src/frame/main-screen.ts` | 单元字形簇改存整数 id（`Uint32Array`，进程级驻留表，0 = 空格、1 = spacer），`charAt` 取字符串；帧 diff 的行比较直接比四个平铺数组 | 整屏分配从逐格字符串数组变成一次清零；diff 去掉每格函数调用 | P3 |
+| fix | `src/screen/screen.ts`、`src/renderer.ts` | 行 → 字形簇缓存从「定长 1 万 + 满了整表 clear」改为按帧两代（`beginRunCacheFrame` 在 renderer 每帧切代，本帧命中的行保留、连续两帧没用到的释放） | 主屏 History 每帧重写全部历史，历史过 1 万行后每帧都填满→清空，命中率归零，单帧 ~8ms→~135ms，输入框打字 / 粘贴卡顿 | P3 |
 | T3.4 | `src/renderer.ts`、`src/ink.tsx` | TTY 交互帧不生成纯文本 `output`（只有 debug / 非 TTY / 读屏路径要） | 交互路径只比屏幕缓冲，纯文本是整屏再序列化一遍，没人读 | P3 |
 | T3.4 | `src/hooks/use-animation-frame.ts` | 离屏暂停：渲染时按上一次提交的布局判断 ref 盒是否在主屏视口内（帧的最后 H - 1 行），不在就不订阅时钟 | 冻结行为基线（黑盒扫描 105 组位置得出），滚进 scrollback 的动画不再每 tick 重渲出帧 | P5 |
 | T4.1 | `src/components/Text.tsx` | 样式叠加改走 `applyTextStyles`（inverse → strikethrough → underline → italic → bold → dim → 前景 → 背景）；新增 `dim` prop；`dimColor` 只留名字不出 SGR；嵌套 `<Text>` 经 context 继承外层样式，内层把合并后的整套样式重新编码 | 对拍冻结的行为基线首帧字节：叠加顺序决定字节；基线 `<Text dimColor>` 不出 SGR；`<Text inverse>a<Text underline>b` 里 b 的关闭顺序只有「内层重编整套样式」才对得上 | L1、T5 |
