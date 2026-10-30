@@ -274,6 +274,10 @@ describe.if(HAS_PYTHON3)("L1 静态契约(无需 harbor)", () => {
     expect(facts!.string_consts).toContain("--print");
   });
 
+  test("--verbose 在命令里(09-25 起 --print + stream-json 缺它直接 exit 1,0 次模型调用)", () => {
+    expect(facts!.string_consts).toContain("--verbose");
+  });
+
   test("不声明 MODEL_CONNECTION —— 它的作用恰恰是把 key 注入容器", () => {
     expect(facts!.class_attrs).not.toContain("MODEL_CONNECTION");
   });
