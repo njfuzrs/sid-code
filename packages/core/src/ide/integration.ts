@@ -12,7 +12,7 @@ import { findAvailableIDE, parseSsePortEnv } from "./detect.ts";
 import type { DetectedIDE, IDEConnectionStatus } from "./types.ts";
 import { IDESelectionSync } from "./selection.ts";
 import { IDEMentionManager } from "./mention.ts";
-import type { MCPManager } from "../mcp/manager.ts";
+import { BUILTIN_MCP_SERVER, type MCPManager } from "../mcp/manager.ts";
 import type { MCPServerConfig } from "../config/config.ts";
 import { getLogger } from "../debug/logger.ts";
 import { AGENT_NOTIFY } from "./protocol.ts";
@@ -130,6 +130,8 @@ export class IDEIntegration {
         timeout: IDE_RPC_TIMEOUT_MS,
       };
 
+      // D1：内置集成标记，plugin-only 锁住 mcp-servers 时 IDE 集成照常可用
+      (config as { [BUILTIN_MCP_SERVER]?: boolean })[BUILTIN_MCP_SERVER] = true;
       await this.mcpManager.addServer(IDE_SERVER_NAME, config);
 
       if (!this.mcpManager.isConnected(IDE_SERVER_NAME)) {

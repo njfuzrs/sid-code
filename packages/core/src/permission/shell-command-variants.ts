@@ -466,6 +466,58 @@ const REDIRECT_TOKEN_RE = /^(\d*|&)?(<|>{1,2}\|?|<<<?)/;
 /** 最后一个非选项参数是写入目标 */
 const LAST_ARG_WRITE = new Set(["cp", "mv", "install", "ln", "rsync", "scp"]);
 
+/** git 全局选项里带独立取值的那几个（`git -C dir diff`），取值不是子命令 */
+const GIT_GLOBAL_OPTS_WITH_VALUE = new Set([
+  "-C",
+  "-c",
+  "--git-dir",
+  "--work-tree",
+  "--namespace",
+  "--config-env",
+]);
+
+/**
+ * git 的写文件参数。修前 `extractBashWriteTargets` 没有 git 分支：
+ * `git diff --output=.git/hooks/pre-commit`、`git format-patch -o .git/hooks`
+ * 在 always-allow 下绕过 safetyCheck 的 hook 目录保护（`cp` 写同一路径会被拦）。
+ *
+ * - `--output=<f>` / `--output <f>`：diff 族选项，diff / log / show / format-patch / range-diff
+ *   都接受。不按子命令限定——git 不认的组合自己会报错，这里宁多勿少（见下方函数头）。
+ * - format-patch 的 `-o <dir>` / `--output-directory[=]<dir>`：写的是目录。目录本身只命中宽泛的
+ *   `.git/`，safetyCheck 的目录模式要求路径「包含 /<dir>/」，所以另加 `<dir>/_` 占位，
+ *   让目录下的文件（真正落盘的 0001-*.patch）也能被判到。
+ * - `--` 之后是路径参数，不是选项（`git diff -- --output=x` 里的 x 是被比较的文件）。
+ *
+ * 已知局限：`-C <dir>` 改变的是写目标的相对基准，这里不修正，仍按调用方 cwd 解析。
+ */
+function gitOutputTargets(args: string[]): string[] {
+  const out: string[] = [];
+  let k = 0;
+  // 跳过全局选项，找子命令
+  while (k < args.length && args[k].startsWith("-")) {
+    if (GIT_GLOBAL_OPTS_WITH_VALUE.has(args[k])) k++;
+    k++;
+  }
+  const sub = args[k];
+  const addDir = (d: string) => {
+    if (!d) return;
+    out.push(d);
+    out.push(`${d.replace(/\/+$/, "")}/_`);
+  };
+  for (k = k + 1; k < args.length; k++) {
+    const a = args[k];
+    if (a === "--") break;
+    if (a.startsWith("--output=")) out.push(a.slice("--output=".length));
+    else if (a === "--output" && args[k + 1]) out.push(args[++k]);
+    else if (sub === "format-patch") {
+      if (a.startsWith("--output-directory=")) addDir(a.slice("--output-directory=".length));
+      else if ((a === "-o" || a === "--output-directory") && args[k + 1]) addDir(args[++k]);
+      else if (/^-o.+/.test(a)) addDir(a.slice(2));
+    }
+  }
+  return out;
+}
+
 /**
  * 提取 bash 命令可能写入的文件路径（供 safetyCheck 对 `.git/hooks` 等可执行路径做保护）。
  *
@@ -506,6 +558,7 @@ export function extractBashWriteTargets(cmd: string): string[] {
         targets.add(a.slice("--output-document=".length));
       if (!a.startsWith("-")) nonOpt.push(a);
     }
+    if (program === "git") for (const t of gitOutputTargets(args)) targets.add(t);
     if (ALL_ARGS_WRITE.has(program)) for (const a of nonOpt) targets.add(a);
     if (LAST_ARG_WRITE.has(program) && nonOpt.length >= 2) targets.add(nonOpt[nonOpt.length - 1]);
   }

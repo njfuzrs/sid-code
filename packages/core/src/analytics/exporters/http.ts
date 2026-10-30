@@ -5,8 +5,9 @@
 // 非特权后端(默认 stripProtected=true):只看脱敏数据。
 // fire-and-forget:发送失败 → 写入磁盘缓存 + 调度退避重试,绝不阻塞主流程。
 //
-// M4 PR-4.1：远程上报带设备凭据（applyDeviceAuth），静态 authHeader 仅作回落
-// （企业自建 collector 不认本平台凭据）。无身份 / 明文非本地 / 401 是稳定不发，
+// M4 PR-4.1：内置 sid-backend 上报带设备凭据（applyDeviceAuth），静态 authHeader 仅作回落。
+// 设备凭据只在构造时显式 attachDeviceCredential 才带：analytics.backends[] 的第三方 collector
+// 不认本平台凭据，带过去既是凭据外泄（违背「只发往 backend.url 同源」），又会顶掉它自己的 authHeader。无身份 / 明文非本地 / 401 是稳定不发，
 // 必须 throw 而不是 return——disk-cache 把 resolve 当成功并 unlink（见 disk-cache.ts T2）。
 
 import type { SinkBackend } from "../sink.ts";
@@ -29,6 +30,12 @@ export interface HttpExporterConfig {
   endpoint: string;
   /** 认证头(可选)。无设备凭据时回落用；OTLP / 自建 collector 走这条 */
   authHeader?: string;
+  /**
+   * 是否携带设备凭据。默认 false：只有内置 sid-backend（地址由 backend.url 派生）可以打开。
+   * 默认关而不是默认开，是为了让「新增一个 exporter」不会悄悄把凭据带出 backend.url 的同源边界
+   * （同类防线：mcp/backend-auth.ts、cli 的 plugin/market.ts）。
+   */
+  attachDeviceCredential?: boolean;
   /** 事件白名单(为空则接受所有事件) */
   allowedEvents?: Set<string>;
   /** 批量大小 */
@@ -82,6 +89,7 @@ export class HttpExporter implements SinkBackend {
 
   private readonly endpoint: string;
   private readonly authHeader?: string;
+  private readonly attachDeviceCredential: boolean;
   private readonly allowedEvents?: Set<string>;
   private readonly batchSize: number;
   private readonly flushIntervalMs: number;
@@ -93,6 +101,7 @@ export class HttpExporter implements SinkBackend {
     this.stripProtected = config.stripProtected ?? true;
     this.endpoint = config.endpoint;
     this.authHeader = config.authHeader;
+    this.attachDeviceCredential = config.attachDeviceCredential ?? false;
     this.allowedEvents = config.allowedEvents;
     this.batchSize = config.batchSize ?? 100;
     this.flushIntervalMs = config.flushIntervalMs ?? 15_000;
@@ -168,7 +177,11 @@ export class HttpExporter implements SinkBackend {
       this.failStable(new SkipRemoteExportError("plaintext_http"));
     }
 
-    const headers = applyDeviceAuth({ "Content-Type": "application/json" });
+    const base = { "Content-Type": "application/json" };
+    const headers: Record<string, string> = this.attachDeviceCredential
+      ? applyDeviceAuth(base)
+      : base;
+    // 只有带了设备凭据的 401 才上报「企业登录失效」：第三方 collector 的 401 与企业登录无关
     this.lastBatchUsedDeviceCredential = Boolean(headers.Authorization);
     if (!headers.Authorization && this.authHeader) {
       headers.Authorization = this.authHeader;

@@ -256,6 +256,30 @@ function describeMaxTurns(maxTurns: number): string {
 }
 
 /** 子代理执行结果 */
+/** SubagentStop 上的停止归因（L2-D） */
+export interface SubAgentStopAttribution {
+  /** 最后一次模型响应的 provider 原始 stop_reason */
+  last_stop_reason?: string | null;
+  /** 收尾归类（finalize / max_turns / context_window_exhausted / empty_param_exhausted / …） */
+  stop_action?: string;
+  f2_mismatch_count?: number;
+  f1_retry_count?: number;
+}
+
+function stopAttributionOf(r: {
+  lastStopReason?: string | null;
+  stopAction?: string;
+  f2MismatchCount?: number;
+  f1RetryCount?: number;
+}): SubAgentStopAttribution {
+  return {
+    ...(r.lastStopReason !== undefined ? { last_stop_reason: r.lastStopReason } : {}),
+    ...(r.stopAction ? { stop_action: r.stopAction } : {}),
+    f2_mismatch_count: r.f2MismatchCount ?? 0,
+    f1_retry_count: r.f1RetryCount ?? 0,
+  };
+}
+
 export interface SubAgentResult {
   success: boolean;
   output: string;
@@ -281,6 +305,11 @@ export interface SubAgentResult {
    * 缺省时 usage-sink 按 1 计（旧口径），不猜一个数。
    */
   apiRequests?: number;
+  /**
+   * L2-D：停止归因（来自 AgentLoopResult，原样透传给 SubagentStop）。
+   * `success=false` 只说得出「没成功」，这组字段说得出「为什么停」。
+   */
+  stopAttribution?: SubAgentStopAttribution;
 }
 
 /** SubagentStart 的工作目录 / 隔离字段（无绑定目录时为空对象，事件形状不变）。 */
@@ -985,6 +1014,7 @@ export class SubAgent {
           tool_use_count: r?.toolUseCount,
           usage: r?.usage,
           duration_ms: Date.now() - startedAt,
+          ...(r?.stopAttribution ?? {}),
           ...subagentStopCcFields(hookScope),
         })
         .catch((err) => log.error("HOOK", `subagent_stop hook 失败: ${err.message}`));
@@ -1054,6 +1084,8 @@ export class SubAgent {
         }),
       );
     } finally {
+      // try 抛异常时 result 未赋值（与下方 G2 同理），此处显式收窄成可空
+      const customDone = result! as SubAgentResult | undefined;
       // subagent_stop hook（非阻塞）。带 agent_id：曾不带，探针按 id 配对不上，
       // custom 子代理的 invoke_agent span 永不 end（与缺陷 3 同形）。
       this.hookSystem
@@ -1063,6 +1095,14 @@ export class SubAgent {
           agent_type: "custom",
           ...(this.parentSessionId ? { parent_session_id: this.parentSessionId } : {}),
           toolName: "subagent:custom",
+          // custom 路径此前不带任何结果字段（success/turns 都没有），一并补上停止归因
+          ...(customDone
+            ? {
+                success: customDone.success,
+                turns: customDone.turns,
+                ...customDone.stopAttribution,
+              }
+            : {}),
           ...subagentStopCcFields(hookScope),
         })
         .catch((err) => log.error("HOOK", `subagent_stop hook 失败: ${err.message}`));
@@ -2348,6 +2388,7 @@ export class SubAgent {
           toolUseCount,
           model: activeModel,
           provider: activeProvider.name(),
+          stopAttribution: stopAttributionOf(loopResult),
         };
       } else {
         // ── P0-1(b)：超时/失败分支**不得替换** finalOutput，改为交回结构化残卷 ──
@@ -2394,6 +2435,7 @@ export class SubAgent {
           toolUseCount,
           model: activeModel,
           provider: activeProvider.name(),
+          stopAttribution: stopAttributionOf(loopResult),
         };
       }
     } catch (err: any) {
@@ -2622,6 +2664,7 @@ export class SubAgent {
           toolUseCount,
           model: activeModel,
           provider: activeProvider.name(),
+          stopAttribution: stopAttributionOf(loopResult),
         };
       } else {
         // P0-1(b)：与内置路径同口径交回残卷，不再把 finalOutput 替换成一句"超时"。
@@ -2655,6 +2698,7 @@ export class SubAgent {
           toolUseCount,
           model: activeModel,
           provider: activeProvider.name(),
+          stopAttribution: stopAttributionOf(loopResult),
         };
       }
     } catch (err: any) {

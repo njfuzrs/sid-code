@@ -5,6 +5,7 @@
  */
 
 import type { Command, AppContext, CommandResult } from "./types.ts";
+import { sidPaths } from "@sid-code/core/config/paths.ts";
 import { ExtensionLoader } from "@sid-code/core/extension/loader.ts";
 import type { ScanOptions } from "@sid-code/core/extension/types.ts";
 import { getLogger } from "@sid-code/core/debug/logger.ts";
@@ -90,8 +91,15 @@ export function parseCustomCommandOptions(
   return opts;
 }
 
-/** 文件注入单文件读取上限（与 shell 注入 maxBuffer 同口径）；超出部分截断并提示（D15） */
-const FILE_INJECTION_MAX_BYTES = 10 * 1024 * 1024;
+/**
+ * 文件注入单文件读取上限；超出部分截断并提示（D15）。
+ *
+ * 此前是 10MB（约百万 token，与 shell 注入 maxBuffer 同口径），一个 `@{大日志}` 就能让本轮
+ * 输入自己超窗——压缩层只按消息删 / 摘要，缩短不了本轮输入，结局是连压三轮熔断。
+ * 降到与 @ 内联总预算同量级（app.ts AT_INLINE_TOTAL_MAX_BYTES = 256KB）：命令模板是用户
+ * 自己写的，比随手 @ 更可信，所以取总预算而不是单文件 100KB。
+ */
+const FILE_INJECTION_MAX_BYTES = 256 * 1024;
 
 /**
  * 文件注入 `@{path}` 的放行判定（D15）。
@@ -500,11 +508,12 @@ export class CustomCommandLoader {
       log.info("CUSTOM_CMD", "自定义命令已被企业策略禁用，跳过加载");
       return [];
     }
-    const files = await this.extensionLoader.scan(
-      "commands",
-      projectDir ?? process.cwd(),
-      scanOptions,
-    );
+    // D5：与 skills 同口径注入企业 managed 目录（调用方未显式指定时）。此前只有 skills 接了，
+    // plugin-only 锁住 commands 后企业唯一的分发途径只剩插件市场。
+    const files = await this.extensionLoader.scan("commands", projectDir ?? process.cwd(), {
+      ...scanOptions,
+      managedDirs: scanOptions?.managedDirs ?? sidPaths.managedExtensionDirs("commands"),
+    });
     const results: Array<{ cmd: CustomCommand; source: "user" | "project" }> = [];
 
     for (const file of files) {

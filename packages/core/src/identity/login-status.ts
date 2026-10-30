@@ -6,7 +6,7 @@
  * 渲染只返回行数组，不直接 console.log：TUI 要把它放进命令结果，CLI 自己逐行打印。
  */
 
-import { resolveBackendUrl } from "./backend-url.ts";
+import { inspectBackendUrl, resolveBackendUrl } from "./backend-url.ts";
 import { verifyCredentialRemote } from "./cli-login.ts";
 import { getDeviceCredential, isCredentialExpired } from "./credential.ts";
 import { getOrCreateDeviceId } from "./device-id.ts";
@@ -15,6 +15,28 @@ import { getOrCreateDeviceId } from "./device-id.ts";
 export const NO_BACKEND_HINT =
   "未配置后端地址。设置环境变量 SID_CODE_BACKEND_URL，或在 ~/.sid-code/settings.json 写\n" +
   '  { "backend": { "url": "https://<你的后端>/traj" } }';
+
+const BACKEND_SOURCE_LABEL = {
+  env: "环境变量 SID_CODE_BACKEND_URL",
+  managed: "managed 策略文件",
+  user: "用户级 settings.json",
+} as const;
+
+/**
+ * 登录入口拿不到可用后端时的提示。「配了但不合法」与「没配」必须分开说：
+ * resolveBackendUrl() 对两者都返回 null，统一报「未配置」会让配了地址的用户反复检查有没有写对文件。
+ * 不回显原始值：不合法的一种就是 URL 里带了用户名密码，回显等于把它打到终端 / 会话里。
+ */
+export function backendUnavailableHint(): string {
+  const r = inspectBackendUrl();
+  if (r.kind === "invalid") {
+    return (
+      `backend.url（来源 ${BACKEND_SOURCE_LABEL[r.source]}）不合法：` +
+      "只允许 https://，或 http://127.0.0.1 / http://localhost，且不能带用户名密码"
+    );
+  }
+  return NO_BACKEND_HINT;
+}
 
 export interface LoginStatus {
   backendUrl: string | null;

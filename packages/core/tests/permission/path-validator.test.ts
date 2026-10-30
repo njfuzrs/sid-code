@@ -148,6 +148,67 @@ describe("PathValidator - 敏感文件检测（默认硬 deny）", () => {
   });
 });
 
+// F1-E1：名字类规则（secret / password / credentials / token.json）对整条路径做子串匹配，
+// 曾把 `secret-guard.ts` 这类做凭证防护的源码本身当凭证硬拒。现在名字类规则对
+// 源码/文档扩展名豁免，格式/固定位置类规则（.env / .pem / .ssh / .aws/credentials）不受影响。
+describe("PathValidator - 名字类敏感规则豁免源码扩展名（F1-E1）", () => {
+  const read = (rel: string) =>
+    new PathValidator(workspaceDir).validateAccess(path.join(workspaceDir, rel), "read");
+
+  test.each([
+    "memory/team/secret-guard.ts",
+    "llm/hooks/secret-redact.ts",
+    "tests/secret-scanner.test.ts",
+    "docs/password-policy.md",
+    "auth/credentials-loader.py",
+    "secrets-docs/README.md",
+  ])("源码/文档不再误拦: %s", (rel) => {
+    const result = read(rel);
+    expect(result.allowed).toBe(true);
+    expect(result.sensitiveFile).toBeFalsy();
+  });
+
+  test.each([
+    "credentials.json",
+    "secrets.yaml",
+    "client_secret.json",
+    "password.txt",
+    "secret",
+    "token.json",
+    "config/secret.key",
+  ])("凭证数据文件照拒: %s", (rel) => {
+    const result = read(rel);
+    expect(result.allowed).toBe(false);
+    expect(result.needsConfirmation).toBe(false);
+    expect(result.sensitiveFile).toBe(true);
+  });
+
+  test.each([
+    ".env",
+    "a.pem",
+    ".ssh/id_rsa",
+    ".aws/credentials",
+    ".aws/credentials.ts",
+    ".ssh/config.ts",
+  ])("格式/固定位置类不受豁免影响: %s", (rel) => {
+    const result = read(rel);
+    expect(result.allowed).toBe(false);
+    expect(result.sensitiveFile).toBe(true);
+  });
+
+  test("扩展名判断不区分大小写: Secret-Guard.TS 放行", () => {
+    const result = read("memory/Secret-Guard.TS");
+    expect(result.allowed).toBe(true);
+    expect(result.sensitiveFile).toBeFalsy();
+  });
+
+  test("isSensitivePath 与 validateAccess 同口径（grep / read_many 列举过滤共用）", () => {
+    const v = new PathValidator(workspaceDir);
+    expect(v.isSensitivePath(path.join(workspaceDir, "secret-guard.ts"))).toBe(false);
+    expect(v.isSensitivePath(path.join(workspaceDir, "secrets.yaml"))).toBe(true);
+  });
+});
+
 describe("PathValidator - symlink 解析", () => {
   test("symlink 指向工作区外被检测", () => {
     // 创建一个 symlink 指向工作区外

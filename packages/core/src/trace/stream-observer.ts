@@ -210,6 +210,23 @@ export interface StreamSnapshot {
    * 6 条快照在心跳里长得一模一样，隔离做了也看不出来。
    */
   agentId?: string;
+  /**
+   * C1（20261019 复测）：建快照时所在的 queryLoop namespace。
+   *
+   * 心跳挑「主循环快照」时要校验它等于当前 ambient loopId：旧 namespace 下的无身份
+   * 快照是孤儿（写入方跨越 queryLoop 边界、在 `clearAllSnapshots` 之后把 key 重新建出来），
+   * 不是主循环的在途请求。实测 `loop1:10008` 停在 `fetch_sent`，心跳把它报成
+   * 「主循环卡了 228s」—— 假 hang。
+   */
+  loopId: string;
+  /**
+   * C1：发起调用链的身份（ALS `RequestContext.agentId`），**只用于归属，不进 key**。
+   *
+   * provider 层写快照时第 4 参恒为 undefined（理由见 {@link StreamAttribution}），于是
+   * 子代理 / fork 的 provider 层快照 `agentId` 为空，长得和主循环那份一模一样。
+   * 这个字段让心跳能认出「无 key 身份、但确实属于某个子代理」的快照。
+   */
+  ownerAgentId?: string;
   model: string;
   phase: StreamPhase;
   startedAt: number;
@@ -473,13 +490,17 @@ export function emitStreamPhase(
   try {
     // Fix 1：使用复合 key（loopId:index）隔离跨 queryLoop 的快照
     // B4：带 agentId 时再加一层身份维度，隔离并行子代理（见 makeSnapshotKey 注释）
-    const { loopId } = currentSseDumpContext();
+    const dumpCtx = currentSseDumpContext();
+    const { loopId } = dumpCtx;
     const key = makeSnapshotKey(loopId, index, agentId);
     let snapshot = _snapshots.get(key);
     if (!snapshot) {
+      const ownerAgentId = agentId ?? attribution?.agentId ?? dumpCtx.agentId;
       snapshot = {
         index,
         agentId,
+        loopId,
+        ...(ownerAgentId ? { ownerAgentId } : {}),
         model: "",
         phase: "fetch_sent",
         startedAt: Date.now(),
@@ -1125,6 +1146,50 @@ export function getActiveStreamSnapshots(): StreamSnapshot[] {
 }
 
 /**
+ * 心跳 `active_request` 的选取（collector heartbeat 唯一调用方，抽出来是为了可单测）。
+ *
+ * 规则（B4 + 终态过滤 + C1）：
+ *   1. 终态快照（completed / aborted / error）不是活跃请求，只计数；
+ *   2. 优先主循环那份；主循环无活流时退到最早开始的子代理那份（带 agent_id）；
+ *   3. **C1：「无 agentId」≠「主循环」**。provider 层写快照 key 不带身份，子代理请求也会
+ *      落出一份无 agentId 快照（{@link StreamSnapshot.ownerAgentId} 记它真正属于谁）。
+ *      另一类是孤儿：无任何归属、且 loopId 不是当前主循环登记的 —— 写入方跨越 queryLoop
+ *      边界、在 `clearAllSnapshots(旧loop)` 之后把 key 重新建出来，phase 停在非终态再没人碰。
+ *      实测会话 20261019-114231-fe220250 心跳把 `loop1:10008`（fetch_sent）报成主循环
+ *      卡了 228s。孤儿不进 active_request，单独计数。
+ */
+export function pickHeartbeatSnapshot(
+  all: StreamSnapshot[],
+  currentLoopId: string,
+): {
+  picked: StreamSnapshot | undefined;
+  activeSnapshots: StreamSnapshot[];
+  liveCount: number;
+  orphanCount: number;
+  ownerOf: (s: StreamSnapshot) => string | undefined;
+} {
+  const isTerminal = (p: string) => p === "completed" || p === "aborted" || p === "error";
+  const live = all.filter((s) => !isTerminal(s.phase));
+  const ownerOf = (s: StreamSnapshot) => s.agentId ?? s.ownerAgentId;
+  const isOrphan = (s: StreamSnapshot) => ownerOf(s) === undefined && s.loopId !== currentLoopId;
+  const activeSnapshots = live.filter((s) => !isOrphan(s));
+  const main = activeSnapshots.find((s) => ownerOf(s) === undefined);
+  const oldestAgent = activeSnapshots
+    .filter((s) => ownerOf(s) !== undefined)
+    .reduce<StreamSnapshot | undefined>(
+      (acc, s) => (!acc || s.startedAt < acc.startedAt ? s : acc),
+      undefined,
+    );
+  return {
+    picked: main ?? oldestAgent,
+    activeSnapshots,
+    liveCount: live.length,
+    orphanCount: live.length - activeSnapshots.length,
+    ownerOf,
+  };
+}
+
+/**
  * 清除指定 index 的快照（AfterModel 正常完成后 / 看门狗启动前 / 重试前）。
  * loopId 可选——不传时使用当前 ambient context 的 loopId。
  *
@@ -1207,8 +1272,11 @@ export function clearSnapshotsForIndex(index: number): void {
 export function cleanupAgentSnapshots(agentId: string): void {
   if (!agentId) return;
   const marker = `:${agentId}:`;
-  for (const key of _snapshots.keys()) {
-    if (key.includes(marker)) {
+  for (const [key, snap] of _snapshots) {
+    // C1：provider 层那份快照 key 里没有 agentId（见 StreamAttribution），只能按
+    // ownerAgentId 认领。不清它，子代理跨越主循环 queryLoop 边界时写进旧 namespace
+    // 的那把 key 就永远没人清（clearAllSnapshots(旧loop) 已经跑过了）。
+    if (key.includes(marker) || snap.ownerAgentId === agentId) {
       _snapshots.delete(key);
     }
   }

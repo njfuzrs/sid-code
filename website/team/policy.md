@@ -76,12 +76,10 @@ $ sid-code -p "..." --dangerously-skip-permissions
   按文件名字母序合并、后者覆盖前者，以主文件为基座叠加（`packages/core/src/config/settings/constants.ts`）。
   drop-in 只认系统级目录，`~/.sid-code/managed-settings.d/` 不读。
 
-::: warning drop-in 目前只对部分字段生效
-drop-in 只进 settings 合并链（通用 settings 字段、托管 `env`）和 hooks（`packages/core/src/config/settings/settings.ts`、`hook-layers.ts`）。
-**权限规则 `permissions`、`disableBypassPermissionsMode`、`disabledModes`、`policyLimits`、`strictPluginOnlyCustomization` 只从主文件 `managed-settings.json` 读**
-（`permission/rule-loader.ts` 的 `loadPolicyFile`、`config/policy.ts` 的 `ManagedFileLoader`），写进 drop-in 不报错也不生效。
-强制约束请写在主文件里。
-:::
+drop-in 对所有消费方都生效：settings 合并链、hooks、权限规则 `permissions`、`disableBypassPermissionsMode`、
+`disabledModes`、`policyLimits`、`strictPluginOnlyCustomization` 都读「主文件 + drop-in」合并后的结果
+（`packages/core/src/config/managed-policy-file.ts`）。合并语义与 settings 链一致：字符串数组（如 `deny`）拼接去重，
+标量以字母序靠后的为准。主文件可以不放，只放 drop-in 也生效。
 
 ::: warning 历史路径已废弃
 `/etc/sid-code/policy.json` 与 `policy.yaml` 已废弃，不再读取。**用 `managed-settings.json`。**
@@ -244,7 +242,7 @@ UNC 远程共享）是 `needsConfirmation`——可以由用户确认后放行�
 | --- | --- | --- |
 | `disableBypassPermissionsMode: "disable"` | 禁掉 `always-allow` 与 `--dangerously-skip-permissions` | ✅ 已接线，含 fail-fast + 降级兜底 |
 | `disabledModes: ["plan", ...]` | 禁用指定权限模式 | ✅ 已接线，fail-fast |
-| `strictPluginOnlyCustomization` | 锁定定制化来源，只认 managed / plugin / builtin | ⚠️ 部分接线：skills / commands / agents 生效，hooks / mcp-servers 见下 |
+| `strictPluginOnlyCustomization` | 锁定定制化来源，只认 managed / plugin / builtin | ✅ 已接线，5 个面都生效 |
 | `policyLimits` | 策略限额 | ✅ 注入生效 |
 
 `--setting-sources` 甩不掉企业策略：`policySettings` 和 `flagSettings` 会被强制加回
@@ -262,23 +260,28 @@ UNC 远程共享）是 `needsConfirmation`——可以由用户确认后放行�
 `true` 表示锁全部。对 `skills` / `commands` / `agents`，门控作用在用户级、项目级、以及 `--add-dir`
 授权目录三层（`packages/core/src/extension/loader.ts`）——`--add-dir` 不是策略绕过口。
 
-::: warning hooks / mcp-servers 面目前只锁插件来源
-锁 `hooks` 或 `mcp-servers`（含 `true`）时，当前实现只会打开插件来源门：本地目录 / `--plugin-dir`
-装的插件被拒，只放行企业市场的插件（`packages/cli/src/plugin/loader.ts`）。
-**用户级 / 项目级 settings 里的 `hooks`、`mcpServers` 和 `.mcp.json` 不受这个开关约束**，照常加载
-（项目级那部分仍有信任门 / MCP 审批）。要禁用户自带 hook，改用 `allowManagedHooksOnly` 或 `disableAllHooks`。
-:::
+锁 `hooks` 时，执行期只保留 managed（策略文件里的 hooks）、企业插件和内部 runtime hook，
+用户级 / 项目级 / local settings 里的 hooks 不执行（`packages/core/src/hook/registry.ts`）。
+它和 `allowManagedHooksOnly` 是两个独立开关、取并集：后者更严，连插件 hook 也拒。
 
-企业分发的扩展目前**只有 skills** 支持 managed 目录（`packages/core/src/skill/loader.ts`）：
-放 `/etc/sid-code/skills/` 或 `~/.sid-code/managed/skills/`（`packages/core/src/config/paths.ts`）。
-commands / agents 没有 managed 层，要分发只能走企业插件市场。
-这一层最后扫描，覆盖同名的 user / project skill，且不走项目信任确认。
+锁 `mcp-servers` 时，所有连接入口（settings、`.mcp.json`、local、`--mcp-config`、运行时添加）都只放行
+企业插件提供的 server，以及 IDE 集成这类内置 server（`packages/core/src/mcp/manager.ts`）。
 
-两点和策略文件的口径不同，部署时注意：
+两个面被锁时，插件来源门同样打开：本地目录 / `--plugin-dir` 装的插件被拒，只放行企业市场的插件
+（`packages/cli/src/plugin/loader.ts`）。
 
-- 这个目录**三个平台都是 `/etc/sid-code/skills/`**，不跟策略文件走 `/Library/Application Support/SidCode`。
-- 两个目录都会扫，`~/.sid-code/managed/` 后合并，**同名时用户可写的那份覆盖系统级**。
-  所以 managed skill 防不住本机用户自己覆盖。
+企业分发的 skills / commands / agents 都可以放 managed 目录（`packages/core/src/config/paths.ts` 的 `managedExtensionDirs`），
+系统级目录和策略文件在同一个平台目录下：
+
+| 平台 | 系统级 | 用户级（回退） |
+| --- | --- | --- |
+| Linux | `/etc/sid-code/<type>/` | `~/.sid-code/managed/<type>/` |
+| macOS | `/Library/Application Support/SidCode/<type>/` | `~/.sid-code/managed/<type>/` |
+| Windows | `%PROGRAMDATA%\SidCode\<type>\` | `~/.sid-code/managed/<type>/` |
+
+`<type>` 是 `skills`、`commands` 或 `agents`。这一层最后扫描，覆盖同名的 user / project 扩展，且不走项目信任确认。
+同名时**系统级覆盖用户级**，所以本机用户没法用 `~/.sid-code/managed/` 盖掉企业下发的版本。
+macOS 上旧的 `/etc/sid-code/<type>/` 仍会扫描以兼容已有部署，命中时打弃用告警，请迁到上表的目录。
 
 ### 隐私级别：锁定数据外发
 
@@ -340,7 +343,7 @@ deny 了 `Bash(curl *)` 的前提下，加这个参数后 `curl` 和 `rm -rf /` 
 避免已撤销的 deny 靠缓存续命。
 
 **4. `SID_CODE_DISABLE_POLICY_SKILLS=1` 能关掉 managed 层扩展**
-（`packages/core/src/extension/loader.ts`；managed 层目前只有 skills，所以实际关掉的是 managed skill）。这是个**本地环境变量**——企业下发的 managed skill
+（`packages/core/src/extension/loader.ts`，skills / commands / agents 三个面一起关）。这是个**本地环境变量**——企业下发的 managed 扩展
 可被任何本地用户一个 env 关掉。它是运维逃生阀，不是企业侧强制手段。
 
 **5. auto 模式下，最敏感的受保护路径分类器不能放行。**
@@ -372,7 +375,7 @@ grep -i "POLICY\|RULE_LOADER" ~/.sid-code/debug.log
 
 最常见的四个原因：macOS 上放进了 `/etc/sid-code/`（macOS 不读）；改的是用户级那份，
 但系统级文件也存在（用户级被忽略）；写进了已废弃的 `policy.json`；
-把 `permissions` 或模式开关写进了 `managed-settings.d/` drop-in（这些字段只从主文件读，见[策略文件放哪](#策略文件放哪)）。
+drop-in 放进了 `~/.sid-code/managed-settings.d/`（只认系统级目录，见[策略文件放哪](#策略文件放哪)）。
 
 ### 企业 deny 和用户 deny 是什么关系
 

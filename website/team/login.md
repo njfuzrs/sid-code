@@ -33,8 +33,8 @@ export SID_CODE_BACKEND_URL=https://<你的后端>/traj
 没配时 `/login` 会直接提示怎么配，不会打开浏览器。
 
 地址只接受 `https://`，或本机调试用的 `http://127.0.0.1` / `http://localhost`，URL 里也不能带用户名密码。
-写成别的形式（比如内网的 `http://` 地址）会被当作没配，`/login` 同样提示「未配置后端地址」。
-这时执行 `/doctor`，它会指出是哪个来源的地址不合法。
+写成别的形式（比如内网的 `http://` 地址）不会生效，`/login` 与 `sid-code login` 会提示「backend.url（来源 X）不合法」，
+并指出是环境变量、`managed-settings.json` 还是用户级 `settings.json` 里的那一个。`/doctor` 同样会报。
 
 ## 登录
 

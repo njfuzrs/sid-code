@@ -72,3 +72,34 @@ describe("@ 提及内联防线", () => {
     expect(r.skippedPaths).toBeUndefined();
   });
 });
+
+describe("MCP 资源 @server:uri 内联上限", () => {
+  // 只用到 readResource：按 uri 返回固定大小的文本
+  const fakeMcp = (sizes: Record<string, number>) =>
+    ({
+      readResource: async (_server: string, uri: string) => "r".repeat(sizes[uri] ?? 0),
+    }) as unknown as Parameters<typeof expandAtReferences>[1];
+
+  test("单个资源超过单条上限：不注入内容，告知用户并引导 ReadMcpResource", async () => {
+    const r = await expandAtReferences("看下 @srv:big", fakeMcp({ big: 200 * 1024 }));
+    expect((r.injectedContent ?? "").length).toBeLessThan(2000);
+    expect(r.skippedPaths?.[0]?.path).toBe("srv:big");
+    expect(r.skippedPaths?.[0]?.reason).toContain("超过 @ 内联上限");
+    expect(r.injectedContent).toContain("ReadMcpResource");
+  });
+
+  test("多个资源累计超过总预算：超出的那个不注入", async () => {
+    const r = await expandAtReferences(
+      "看 @srv:a @srv:b @srv:c",
+      fakeMcp({ a: 90 * 1024, b: 90 * 1024, c: 90 * 1024 }),
+    );
+    expect(r.skippedPaths?.map((s) => s.path)).toEqual(["srv:c"]);
+    expect(r.skippedPaths?.[0]?.reason).toContain("总量");
+  });
+
+  test("对照：小资源正常注入", async () => {
+    const r = await expandAtReferences("看 @srv:s", fakeMcp({ s: 10 }));
+    expect(r.injectedContent).toContain("rrrrrrrrrr");
+    expect(r.skippedPaths).toBeUndefined();
+  });
+});
