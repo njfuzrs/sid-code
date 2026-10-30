@@ -348,3 +348,95 @@ describe("可观测性：每个决策都带 step 与 mode", () => {
     expect(r3.mode).toBe("default");
   });
 });
+
+/**
+ * F. git 的写文件参数进写目标（2026-10-30，bench_fix E4）
+ *
+ * 修前 extractBashWriteTargets 没有 git 分支：`git diff --output=.git/hooks/pre-commit`、
+ * `git format-patch -o .git/hooks` 在 always-allow 下绕过 safetyCheck（A 组的 `cp` 同路径会被拦）。
+ * allow 规则 `Bash(git diff *)` 放行 `--output` 写**普通**路径是有意保留的（同 `Bash(cp *)` 口径，
+ * 见 Agent Note「放弃了什么」），这里只钉受保护路径。
+ */
+describe("F. git 输出选项 × safetyCheck", () => {
+  const gitWrites = [
+    `git diff --output=<ws>/.git/hooks/pre-commit`,
+    `git diff --output <ws>/.git/hooks/pre-commit`,
+    `git log -p --output=<ws>/.git/hooks/post-checkout`,
+    `git -C <ws> -c core.quotepath=off show --output=<ws>/.git/hooks/pre-push HEAD`,
+    `git format-patch -o <ws>/.git/hooks HEAD~1`,
+    `git format-patch --output-directory=<ws>/.git/hooks HEAD~1`,
+    `git format-patch -o<ws>/.git/hooks HEAD~1`,
+  ];
+  const modes: Array<[string, Record<string, unknown>, PermissionRule | undefined]> = [
+    ["always-allow", { permissionMode: "always-allow" }, undefined],
+    ["yesMode", { yesMode: true }, undefined],
+    [
+      "default + allow 规则",
+      { permissionMode: "default" },
+      rules({ allow: ["Bash(git diff *)", "Bash(git log *)", "Bash(git *)"] }),
+    ],
+  ];
+  for (const [label, over, r] of modes) {
+    for (const cmd of gitWrites) {
+      test(`${label}：\`${cmd.replaceAll("<ws>", "…")}\` 需确认（safetyCheck）`, async () => {
+        const d = await checker(over, r).check({
+          toolName: "bash",
+          input: { command: cmd.replaceAll("<ws>", ws) },
+        });
+        expect(d.allowed).toBe(false);
+        expect(d.decisionReason?.type).toBe("safetyCheck");
+        expect((d.decisionReason as { classifierApprovable?: boolean }).classifierApprovable).toBe(
+          false,
+        );
+      });
+    }
+  }
+
+  test("allow 规则下 --output 写普通路径照旧放行（有意保留）", async () => {
+    const d = await checker(
+      { permissionMode: "default" },
+      rules({ allow: ["Bash(git diff *)"] }),
+    ).check({
+      toolName: "bash",
+      input: { command: `git diff --output=${ws}/out.patch` },
+    });
+    expect(d.allowed).toBe(true);
+  });
+
+  test("写目标提取形态", () => {
+    expect(extractBashWriteTargets("git diff --output=a.patch")).toEqual(["a.patch"]);
+    expect(extractBashWriteTargets("git diff --output a.patch")).toEqual(["a.patch"]);
+    expect(extractBashWriteTargets("git -C x -c k=v log --output=a")).toEqual(["a"]);
+    expect(extractBashWriteTargets("git format-patch -o out HEAD~1")).toEqual(["out", "out/_"]);
+    expect(extractBashWriteTargets("git format-patch --output-directory=out/ HEAD~1")).toEqual([
+      "out/",
+      "out/_",
+    ]);
+    // `--` 之后是路径参数
+    expect(extractBashWriteTargets("git diff -- --output=x")).toEqual([]);
+    // 没有输出选项不误加
+    expect(extractBashWriteTargets("git diff")).toEqual([]);
+    expect(extractBashWriteTargets("git log -p -o x")).toEqual([]);
+    expect(extractBashWriteTargets("git show HEAD:a.txt")).toEqual([]);
+  });
+});
+
+describe("G. 多个写目标取最严格的 safetyCheck 命中（与解析链同口径）", () => {
+  // 修前首中即返：先写 .git/config（classifierApprovable: true）再写 hook，
+  // auto 分类器就有权放行这次 hook 写入；参数换个顺序结果就变。
+  for (const cmd of [
+    `tee <ws>/.git/config <ws>/.git/hooks/pre-commit`,
+    `tee <ws>/.git/hooks/pre-commit <ws>/.git/config`,
+  ]) {
+    test(`\`${cmd.replaceAll("<ws>", "…")}\` → classifierApprovable=false`, async () => {
+      const d = await checker({ permissionMode: "always-allow" }).check({
+        toolName: "bash",
+        input: { command: cmd.replaceAll("<ws>", ws) },
+      });
+      expect(d.decisionReason?.type).toBe("safetyCheck");
+      expect((d.decisionReason as { classifierApprovable?: boolean }).classifierApprovable).toBe(
+        false,
+      );
+    });
+  }
+});

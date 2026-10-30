@@ -1337,25 +1337,40 @@ export class PermissionChecker implements Checker {
         : req.toolName === "bash"
           ? await this.resolveBashWriteTargets(req)
           : [];
+    // 多个写目标取**最严格**的命中，与 safetyCheck() 内部对解析链的取法同一理由：
+    // 修前按顺序首中即返，`tee .git/config .git/hooks/pre-commit` 先命中宽泛的 `.git/`
+    // （classifierApprovable: true），auto 分类器就有权放行一个 hook 写入；参数换个顺序
+    // 结果就变成 false。format-patch -o .git/hooks 的目录目标同样会先命中 `.git/`。
+    let worstTarget: {
+      target: string;
+      result: ReturnType<PermissionChecker["safetyCheck"]>;
+    } | null = null;
     for (const target of safetyTargets) {
-      const safetyResult = this.safetyCheck(target);
-      if (!safetyResult.safe) {
-        log.info(
-          "PERMISSION",
-          `${req.toolName}(${target.slice(0, 80)}) → 需确认(safetyCheck: ${safetyResult.reason})`,
-        );
-        return {
-          allowed: false,
-          needsConfirmation: true,
-          reason: `[安全检查] ${safetyResult.reason}`,
-          decisionReason: {
-            type: "safetyCheck",
-            reason: safetyResult.reason!,
-            classifierApprovable: safetyResult.classifierApprovable,
-          },
-          metadata: { classifierApprovable: safetyResult.classifierApprovable },
-        };
+      const r = this.safetyCheck(target);
+      if (r.safe) continue;
+      if (!r.classifierApprovable) {
+        worstTarget = { target, result: r };
+        break;
       }
+      worstTarget ??= { target, result: r };
+    }
+    if (worstTarget) {
+      const { target, result: safetyResult } = worstTarget;
+      log.info(
+        "PERMISSION",
+        `${req.toolName}(${target.slice(0, 80)}) → 需确认(safetyCheck: ${safetyResult.reason})`,
+      );
+      return {
+        allowed: false,
+        needsConfirmation: true,
+        reason: `[安全检查] ${safetyResult.reason}`,
+        decisionReason: {
+          type: "safetyCheck",
+          reason: safetyResult.reason!,
+          classifierApprovable: safetyResult.classifierApprovable,
+        },
+        metadata: { classifierApprovable: safetyResult.classifierApprovable },
+      };
     }
 
     st.step = "7";
