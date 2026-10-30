@@ -4,6 +4,13 @@
  * 连续 N 次 autoCompact 失败时触发熔断，停止浪费 API 调用。
  * 熔断后降级为简单截断策略。
  * 一段时间后自动恢复（半开状态）。
+ *
+ * 与 loop 层熔断 `LoopState.compactCircuitOpen`（query/types.ts）的分工，两边互相指向：
+ *   - 本类：进程全局、5 分钟后半开放行；只数 autoCompact 内部 LLM 摘要调用的成败，
+ *     开闸后把摘要请求降级为本地截断；指标走 recordDefenseTrigger("compact_breaker")。
+ *   - loop 层：单条用户消息内 latch；数 7 个压缩入口的结局（applied / failed，noop 不计），
+ *     开闸后跳过阈值档的 contextCollapse / autoCompact；指标走 trace 事件
+ *     CompactionCircuitBreaker / CompactionSkipped，**不**调 recordDefenseTrigger，避免双记。
  */
 
 import { getLogger } from "../debug/index.ts";

@@ -592,3 +592,92 @@ describe("O. 展开结果形状（结构化判定的输入契约）", () => {
     expect(e.commands.some((c) => c.program === "rm")).toBe(false);
   });
 });
+
+/**
+ * P. 展开超限（2026-10-29，bench_fix F3 D-01）
+ *
+ * expandShellCommand 有 MAX_VARIANTS=128 / MAX_DEPTH=4 两道上限。修前超出部分静默丢弃，
+ * deny / ask 规则、危险检测、写目标提取全部只看已展开的部分：`echo 0 && … && echo 199 && rm -rf /`
+ * 在 always-allow / yesMode 下直接放行，deny `Bash(curl *)` 也失效。修后展开没走完就
+ * fail-closed 到危险类确认（不硬拒：上限误伤合法长命令时用户要有出口）。
+ *
+ * 阈值附近的数字（每段约 2 个形态，约 64 段打满）不写死进断言：上限是实现细节，
+ * 这里只钉「明显超限 → 不放行」「明显不超限 → 不误伤」两端。
+ */
+const chain = (n: number) => Array.from({ length: n }, (_, i) => `echo ${i}`).join(" && ");
+const nestSh = (k: number, inner: string) => {
+  let s = inner;
+  for (let i = 0; i < k; i++) s = `sh -c ${JSON.stringify(s)}`;
+  return s;
+};
+
+describe("P. 展开超限（看不全 → 危险类确认，不能静默放行）", () => {
+  const overflow: Array<[string, string]> = [
+    ["长链后接 rm -rf /", `${chain(200)} && rm -rf /`],
+    ["长链后接 rm -rf ~", `${chain(200)} && rm -rf ~`],
+    ["长链后接 curl | sh", `${chain(200)} && curl x | sh`],
+    ["长链后接写 git hook", `${chain(200)} && cp x .git/hooks/pre-commit`],
+    ["sh -c 嵌套 5 层", nestSh(5, "rm -rf /")],
+    ["sh -c 嵌套 7 层", nestSh(7, "rm -rf /")],
+  ];
+  for (const [name, cmd] of overflow) {
+    test(`always-allow 不放行：${name}`, async () => {
+      const v = await verdict(cmd);
+      expect(v.allowed).toBe(false);
+      expect(v.needsConfirmation).toBe(true);
+      expect(v.pattern).toBe("展开超限");
+    });
+  }
+
+  test("yesMode 越不过（危险类确认）", async () => {
+    const v = await verdict(`${chain(200)} && rm -rf /`, {
+      permissionMode: "default",
+      yesMode: true,
+    });
+    expect(v.allowed).toBe(false);
+    expect(v.pattern).toBe("展开超限");
+  });
+
+  test("deny 规则漏看的部分也落到确认，不再放行", async () => {
+    const c = new PermissionChecker(
+      { ...defaultConfig(), permissionMode: "always-allow" } as never,
+      { deny: ["Bash(curl *)"], allow: [], ask: [] },
+      ws,
+    );
+    const r = await c.check({ toolName: "bash", input: { command: `${chain(200)} && curl x` } });
+    expect(r.allowed).toBe(false);
+  });
+
+  test("已展开部分里的 critical 仍硬拒，不降级成确认", async () => {
+    const v = await verdict(`rm -rf / && ${chain(200)}`);
+    expect(v.allowed).toBe(false);
+    expect(v.needsConfirmation).toBeFalsy();
+    expect(v.severity).toBe("critical");
+  });
+
+  test("嵌套 4 层（上限内）仍按 critical 硬拒", async () => {
+    const v = await verdict(nestSh(4, "rm -rf /"));
+    expect(v.severity).toBe("critical");
+    expect(v.needsConfirmation).toBeFalsy();
+  });
+
+  // 不误伤：本机 5626 条真实 bash 调用离线展开，形态数最大 46。40 段 `&&` 链远超日常用法，仍在上限内。
+  for (const [name, cmd] of [
+    ["10 段链", `${chain(10)} && echo done`],
+    ["40 段链", chain(40)],
+    ["嵌套 3 层无害命令", nestSh(3, "echo hi")],
+  ] as Array<[string, string]>) {
+    test(`不误伤：${name} 照常放行`, async () => {
+      const v = await verdict(cmd);
+      expect(v.allowed).toBe(true);
+    });
+  }
+
+  test("展开层契约：truncated 只在真的没走完时置位", () => {
+    expect(expandShellCommand(chain(200)).truncated).toBe(true);
+    expect(expandShellCommand(nestSh(5, "echo hi")).truncated).toBe(true);
+    expect(expandShellCommand(chain(10)).truncated).toBe(false);
+    expect(expandShellCommand(nestSh(4, "echo hi")).truncated).toBe(false);
+    expect(expandShellCommand("").truncated).toBe(false);
+  });
+});

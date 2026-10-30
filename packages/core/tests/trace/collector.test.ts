@@ -1461,7 +1461,9 @@ describe("TraceCollector", () => {
     expect(alert).toBeDefined();
     expect(alert).toContain("sess-001");
     // 必须给出下一步动作，否则用户看到告警也不知道能做什么
-    expect(alert).toContain("trace-digest");
+    // 且必须是二进制里能跑的入口：用户没有仓库，`bun scripts/trace-digest.ts` 跑不了
+    expect(alert).toContain("/trace sess-001");
+    expect(alert).not.toContain("scripts/trace-digest");
   });
 
   test("P1-7 反向验收：正常会话不产生 [高] 级告警（防误报刷屏）", async () => {

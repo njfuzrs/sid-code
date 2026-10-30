@@ -75,7 +75,7 @@ function makeLoopConfig(
       return r;
     },
     executeTools: async () => ({ results: [] }),
-    autoCompact: async () => {},
+    autoCompact: async () => ({ kind: "skipped" as const }),
     getAbortSignal: () => undefined,
     uuid: () => "uuid-test",
     // 注意：故意不提供 getTodoState —— 模拟「模型从不建 todo」
