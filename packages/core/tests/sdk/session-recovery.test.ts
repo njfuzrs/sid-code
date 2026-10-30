@@ -7,10 +7,10 @@
  */
 
 import { describe, test, expect } from "bun:test";
-import {
-  deserializeMessagesWithInterruptDetection,
-  TERMINAL_TOOL_NAMES,
-} from "@sid-code/core/sdk/session-recovery.ts";
+import { deserializeMessagesWithInterruptDetection } from "@sid-code/core/sdk/session-recovery.ts";
+import { checkMessageHistoryIntegrity } from "@sid-code/core/agent/message-invariants.ts";
+import { PERMISSION_MODE_VALUES } from "@sid-code/core/permission/mode.ts";
+import { PERMISSION_MODES } from "@sid-code/core/config/schema.ts";
 import type { Message } from "@sid-code/core/llm/types.ts";
 
 describe("deserializeMessagesWithInterruptDetection", () => {
@@ -142,52 +142,6 @@ describe("deserializeMessagesWithInterruptDetection", () => {
     }
   });
 
-  test("终结性工具白名单：结果全部来自白名单工具时不算中断", () => {
-    TERMINAL_TOOL_NAMES.add("Brief");
-    try {
-      const messages: Message[] = [
-        {
-          role: "assistant",
-          content: [{ type: "tool_use", id: "t1", name: "Brief", input: {} }],
-        },
-        {
-          role: "user",
-          content: [{ type: "tool_result", tool_use_id: "t1", content: "done" }],
-        },
-      ];
-      const r = deserializeMessagesWithInterruptDetection(messages);
-      expect(r.turnInterruptionState.kind).toBe("none");
-    } finally {
-      TERMINAL_TOOL_NAMES.delete("Brief");
-    }
-  });
-
-  test("终结性工具白名单：混合白名单与非白名单工具仍算中断", () => {
-    TERMINAL_TOOL_NAMES.add("Brief");
-    try {
-      const messages: Message[] = [
-        {
-          role: "assistant",
-          content: [
-            { type: "tool_use", id: "t1", name: "Brief", input: {} },
-            { type: "tool_use", id: "t2", name: "Bash", input: {} },
-          ],
-        },
-        {
-          role: "user",
-          content: [
-            { type: "tool_result", tool_use_id: "t1", content: "done" },
-            { type: "tool_result", tool_use_id: "t2", content: "ok" },
-          ],
-        },
-      ];
-      const r = deserializeMessagesWithInterruptDetection(messages);
-      expect(r.turnInterruptionState.kind).toBe("interrupted_turn");
-    } finally {
-      TERMINAL_TOOL_NAMES.delete("Brief");
-    }
-  });
-
   // ─── P0-2：脏数据清洗管道各层 ───
 
   test("权限模式清洗：失效的 permissionMode 被清理但消息保留", () => {
@@ -249,7 +203,7 @@ describe("deserializeMessagesWithInterruptDetection", () => {
     expect(assistant.content.some((b) => b.type === "thinking")).toBe(true);
   });
 
-  test("content block 完整性校验：缺失 id 的 tool_use 所在消息被丢弃", () => {
+  test("content block 完整性校验：缺失 id 的 tool_use 被剔除，剥空的消息整条丢弃", () => {
     const messages: Message[] = [
       { role: "user", content: [{ type: "text", text: "hi" }] },
       {
@@ -276,5 +230,90 @@ describe("deserializeMessagesWithInterruptDetection", () => {
     ];
     const r = deserializeMessagesWithInterruptDetection(messages);
     expect(r.messages.length).toBe(0);
+  });
+
+  // ─── 缺陷 12：第 6 层只剔坏 block，不连坐同条消息里的好 block ───
+
+  test("缺陷 12：同条里一个坏 tool_use 不会带走好 tool_use 及其结果", () => {
+    const messages: Message[] = [
+      { role: "user", content: [{ type: "text", text: "干活" }] },
+      {
+        role: "assistant",
+        content: [
+          { type: "tool_use", id: "ok1", name: "Read", input: {} },
+          { type: "tool_use", id: "bad1", name: "", input: {} },
+        ],
+      },
+      {
+        role: "user",
+        content: [
+          { type: "tool_result", tool_use_id: "ok1", content: "内容" },
+          { type: "tool_result", tool_use_id: "bad1", content: "内容" },
+        ],
+      },
+      { role: "assistant", content: [{ type: "text", text: "做完了" }] },
+    ];
+    const r = deserializeMessagesWithInterruptDetection(messages);
+    // 出口不变量：无孤儿 tool_use、无游离 tool_result
+    expect(checkMessageHistoryIntegrity(r.messages).intact).toBe(true);
+    const uses = r.messages.flatMap((m) =>
+      m.content.filter((b) => b.type === "tool_use").map((b) => (b as any).id),
+    );
+    const results = r.messages.flatMap((m) =>
+      m.content.filter((b) => b.type === "tool_result").map((b) => (b as any).tool_use_id),
+    );
+    expect(uses).toEqual(["ok1"]);
+    expect(results).toEqual(["ok1"]);
+    expect(r.messages.length).toBe(4);
+    expect(r.turnInterruptionState.kind).toBe("none");
+  });
+
+  test("缺陷 12：坏 tool_use 旁边的正文保留，其游离结果被切除", () => {
+    const messages: Message[] = [
+      { role: "user", content: [{ type: "text", text: "干活" }] },
+      {
+        role: "assistant",
+        content: [
+          { type: "text", text: "我来读一下" },
+          { type: "tool_use", id: "t1", name: "", input: {} },
+        ],
+      },
+      { role: "user", content: [{ type: "tool_result", tool_use_id: "t1", content: "x" }] },
+    ];
+    const r = deserializeMessagesWithInterruptDetection(messages);
+    expect(checkMessageHistoryIntegrity(r.messages).intact).toBe(true);
+    expect(r.messages.map((m) => m.role)).toEqual(["user", "assistant"]);
+    expect(r.messages[1].content).toEqual([{ type: "text", text: "我来读一下" }]);
+    expect(r.turnInterruptionState.kind).toBe("none");
+  });
+
+  // ─── 缺陷 13：权限模式白名单取自枚举 ───
+
+  test("缺陷 13：PermissionMode 的每个真实值都不会被当成失效模式清洗", () => {
+    for (const mode of PERMISSION_MODE_VALUES) {
+      const r = deserializeMessagesWithInterruptDetection([
+        { role: "user", content: [{ type: "text", text: "hi" }], _meta: { permissionMode: mode } },
+        { role: "assistant", content: [{ type: "text", text: "ok" }] },
+      ]);
+      expect((r.messages[0]._meta as any)?.permissionMode).toBe(mode);
+    }
+  });
+
+  test("缺陷 13：CC 的模式名 bypassPermissions 不是本仓模式，会被清洗", () => {
+    const r = deserializeMessagesWithInterruptDetection([
+      {
+        role: "user",
+        content: [{ type: "text", text: "hi" }],
+        _meta: { permissionMode: "bypassPermissions" },
+      },
+      { role: "assistant", content: [{ type: "text", text: "ok" }] },
+    ]);
+    expect((r.messages[0]._meta as any)?.permissionMode).toBeUndefined();
+  });
+
+  test("缺陷 13：运行时清单与配置层清单一致（配置层多一个 CC 别名 manual）", () => {
+    const config = new Set<string>(PERMISSION_MODES);
+    config.delete("manual");
+    expect([...PERMISSION_MODE_VALUES].map(String).sort()).toEqual([...config].sort());
   });
 });

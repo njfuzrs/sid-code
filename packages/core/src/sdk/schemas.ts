@@ -82,6 +82,12 @@ export const SDKUserMessageSchema = lazySchema(() =>
     session_id: z.string(),
     message: MessageSchema(),
     timestamp: z.string().optional(),
+    /**
+     * 缺陷 9：连续到达的 prompt 被 dequeueBatch 合并成一轮时，这一轮回应了哪几条输入的 uuid
+     * （按入队顺序）。`uuid` 只装得下一个（取最后一条），其余的不在这里出现，宿主就会
+     * 永久等它们的回应。只在合并 ≥2 条时出现；入站（宿主发来的 user）不需要带。
+     */
+    merged_uuids: z.array(z.string()).optional(),
   }),
 );
 

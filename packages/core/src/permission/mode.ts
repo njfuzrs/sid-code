@@ -14,6 +14,28 @@ export type PermissionMode =
   | "auto"
   | "dangerously-skip-permissions";
 
+/**
+ * PermissionMode 的运行时清单。需要「判断一个字符串是不是合法模式」的地方从这里取，不要手抄。
+ * 缺陷 13：session-recovery 的白名单是照着 Claude Code 的枚举抄的，漏了 4 个真模式、多了一个
+ * 本仓不存在的 `bypassPermissions`，枚举变了也没有任何东西会红。
+ * 下面的 `_ExhaustiveModes` 让「类型里加了模式、这里没加」变成类型错误（typecheck:gate 拦）。
+ */
+export const PERMISSION_MODE_VALUES = [
+  "default",
+  "always-allow",
+  "deny-write",
+  "acceptEdits",
+  "plan",
+  "dontAsk",
+  "auto",
+  "dangerously-skip-permissions",
+] as const satisfies readonly PermissionMode[];
+
+type _ExhaustiveModes =
+  Exclude<PermissionMode, (typeof PERMISSION_MODE_VALUES)[number]> extends never ? true : never;
+const _exhaustiveModes: _ExhaustiveModes = true;
+void _exhaustiveModes;
+
 /** 权限模式上下文 */
 export interface PermissionModeContext {
   mode: PermissionMode;
