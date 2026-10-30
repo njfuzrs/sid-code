@@ -83,7 +83,7 @@ function makeHarness(initial: TodoItem[]): Harness {
           return shortResp();
         },
         executeTools: async () => ({ results: [] }),
-        autoCompact: async () => {},
+        autoCompact: async () => ({ kind: "skipped" as const }),
         getAbortSignal: () => undefined,
         uuid: () => "uuid-test",
         getTodoState: () => ({ todos, writeVersion }),

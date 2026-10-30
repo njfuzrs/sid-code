@@ -94,7 +94,7 @@ function makeLoopConfig(
         })),
       };
     },
-    autoCompact: async () => {},
+    autoCompact: async () => ({ kind: "skipped" as const }),
     getAbortSignal: () => undefined,
     uuid: () => "uuid-test",
     ...overrides,

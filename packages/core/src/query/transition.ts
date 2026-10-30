@@ -1,8 +1,10 @@
 /**
  * setTransition — 记录循环 continue 原因并发射 trace 事件
  *
- * 解决 transition 字段"只写不读"问题：通过 traceAppendEvent 让测试和可观测性系统
- * 都能断言/追踪恢复路径的触发。
+ * 可测试性落在**事件**而不是字段：逐条追踪走 `LoopTransition` 事件（读入参 `reason`），
+ * 统计走 `continueCounts` / `maxContinueStreak`。原先的 `LoopState.transition` 字段
+ * 写 1 读 0，已于 2026-10-29 删除——不要让事件改读字段：那样事件报告的是「状态里存的值」
+ * 而非「本次传了什么」，写入路径一出错事件就会滞后错位。
  *
  * ## 本条用户消息内的 continue 计数（2026-10-24）
  *
@@ -24,7 +26,6 @@ export function setTransition(
   deps: Pick<QueryDeps, "traceAppendEvent">,
   sessionId?: string,
 ): void {
-  state.transition = reason;
   recordContinue(state, reason.type);
   try {
     deps.traceAppendEvent?.({
