@@ -32,6 +32,7 @@
     "changelog:check": "bun run scripts/changelog-curate.ts --check",
     "install-hooks": "sh scripts/install-git-hooks.sh",
     "verify:agent-note": "bun run scripts/verify-agent-note.ts",
+    "verify:doc-claims": "bun run scripts/verify-doc-claims.ts",
     "catalog:coverage": "bun run scripts/catalog-coverage.ts",
     "pr-batch": "bash scripts/pr-batch.sh",
     "pr:merge-chain": "bash scripts/pr-merge-chain.sh",

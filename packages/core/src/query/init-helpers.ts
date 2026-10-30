@@ -421,6 +421,8 @@ export async function initAnalyticsSink(config: Config, sessionId: string): Prom
           const exporter = new HttpExporter({
             name: BUILTIN_EVENTS_BACKEND,
             endpoint: builtinEventsUrl,
+            // 只有内置后端带设备凭据；下面 analytics.backends[] 的第三方 http 后端不带（同源边界）
+            attachDeviceCredential: true,
             stripProtected: true,
             diskCache: new EventDiskCache({
               cacheDir: sidPaths.telemetry(),

@@ -22,6 +22,12 @@ export interface QueuedCommand {
   workload?: string;
   /** 是否为元消息（不记录到 transcript） */
   isMeta?: boolean;
+  /**
+   * 批量合并时被合并进来的**全部** uuid（按入队顺序，只在合并 ≥2 条时出现）。
+   * `uuid` 只能放一个值（保留最后一条，向后兼容），其余的必须另有落点，
+   * 否则宿主「发了 A、等 A 的回应」会永久等待——A 已经被合进这一轮了，但输出里找不到它。
+   */
+  mergedUuids?: string[];
 }
 
 const PRIORITY_ORDER: Record<QueuedCommand["priority"], number> = {
@@ -32,20 +38,20 @@ const PRIORITY_ORDER: Record<QueuedCommand["priority"], number> = {
 
 export class CommandQueue {
   private queue: QueuedCommand[] = [];
-  /** 单调递增序号，保证同优先级稳定 FIFO（Array.sort 在跨引擎下不保证稳定） */
-  private seq = 0;
-  private seqMap = new WeakMap<QueuedCommand, number>();
 
-  /** 入队 */
+  /**
+   * 入队：插到「最后一个优先级 ≤ 它的命令」之后，同优先级天然 FIFO。
+   *
+   * 以前是 push + 全量 sort + WeakMap 记入队序号，理由是「Array.sort 跨引擎不保证稳定」——
+   * ES2019 起规范要求稳定，这个理由已不成立。而那套序号有个隐式契约：查不到序号的对象
+   * （比如 dequeueBatch 合出来的新对象被重新入队）按 `?? 0` 算，会插到同优先级**最前面**。
+   * 按位置插入不需要任何旁路状态，也就没有「查不到」这一格。
+   */
   enqueue(command: QueuedCommand): void {
-    this.seqMap.set(command, this.seq++);
-    this.queue.push(command);
-    this.queue.sort((a, b) => {
-      const byPriority = PRIORITY_ORDER[a.priority] - PRIORITY_ORDER[b.priority];
-      if (byPriority !== 0) return byPriority;
-      // 同优先级按入队顺序
-      return (this.seqMap.get(a) ?? 0) - (this.seqMap.get(b) ?? 0);
-    });
+    const rank = PRIORITY_ORDER[command.priority];
+    let i = this.queue.length;
+    while (i > 0 && PRIORITY_ORDER[this.queue[i - 1].priority] > rank) i--;
+    this.queue.splice(i, 0, command);
   }
 
   /** 出队（可选过滤器） */
@@ -75,11 +81,14 @@ export class CommandQueue {
 
     if (batch.length === 1) return head;
 
-    // 合并多条 prompt 为一条；uuid 取最后一条有 uuid 的命令
+    // 合并多条 prompt 为一条。uuid 保留最后一条有 uuid 的（既有契约，宿主可能按它对齐），
+    // 全部 uuid 进 mergedUuids——单个 uuid 字段装不下「这一轮回应了哪几条」。
+    const uuids = batch.map((c) => c.uuid).filter((u): u is string => !!u);
     return {
       ...head,
       value: batch.map((c) => c.value).join("\n\n"),
-      uuid: batch.filter((c) => c.uuid).pop()?.uuid ?? head.uuid,
+      uuid: uuids[uuids.length - 1] ?? head.uuid,
+      ...(uuids.length > 0 ? { mergedUuids: uuids } : {}),
     };
   }
 

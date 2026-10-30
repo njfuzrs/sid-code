@@ -13,6 +13,15 @@ import {
 } from "./types.ts";
 import { getLogger } from "../debug/logger.ts";
 
+/**
+ * 单条 hook additionalContext 的字符上限，超出截断并注明。
+ *
+ * additionalContext 会拼进本轮 user 消息（UserPromptSubmit 等），此前不设上限、多 hook 直接 join。
+ * 一个失控的 hook（如把整份日志 echo 出来）就能让本轮输入自己超窗——压缩层只按消息删 / 摘要，
+ * 缩短不了本轮输入，结局是连压三轮熔断。取 100K 字符：与 @ 内联单文件上限同量级。
+ */
+export const ADDITIONAL_CONTEXT_MAX_CHARS = 100 * 1024;
+
 export class HookAggregator {
   /** 聚合多个 hook 执行结果 */
   aggregateResults(results: HookExecutionResult[], eventName: HookEventName): AggregatedHookResult {
@@ -293,7 +302,18 @@ export class HookAggregator {
     const specific = output.hookSpecificOutput;
     if (!specific) return;
     if ("additionalContext" in specific && typeof specific["additionalContext"] === "string") {
-      contexts.push(specific["additionalContext"]);
+      const text = specific["additionalContext"];
+      if (text.length <= ADDITIONAL_CONTEXT_MAX_CHARS) {
+        contexts.push(text);
+        return;
+      }
+      getLogger().warn(
+        "HOOK",
+        `additionalContext 共 ${text.length} 字符，超过上限 ${ADDITIONAL_CONTEXT_MAX_CHARS}，已截断`,
+      );
+      contexts.push(
+        `${text.slice(0, ADDITIONAL_CONTEXT_MAX_CHARS)}\n... [hook additionalContext 共 ${text.length} 字符，已截断到前 ${ADDITIONAL_CONTEXT_MAX_CHARS} 字符]`,
+      );
     }
   }
 }

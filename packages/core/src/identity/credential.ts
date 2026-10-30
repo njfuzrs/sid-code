@@ -202,6 +202,20 @@ export function onCredentialChanged(listener: CredentialChangedListener): () => 
   };
 }
 
+/**
+ * 只订阅「拿到了新凭据」（登录 / 换人登录），登出（cred=null）不触发。
+ *
+ * 企业状态刷新必须走这个而不是 onCredentialChanged：登出后重载策略时远程 loader 没有凭据，
+ * 只能用缓存兜底，而缓存超过 POLICY_CACHE_STALE_MS（10 分钟）就不再采信，交互会话的轮询间隔
+ * 却是 30 分钟——于是登出大概率把远程 deny / bridge 开关清掉，登出成了绕过企业管控的办法
+ * （企业登录缺陷 D1）。预算同理。所以登出时本会话已生效的企业状态冻结到会话结束。
+ */
+export function onCredentialAcquired(listener: (cred: DeviceCredential) => void): () => void {
+  return onCredentialChanged((cred) => {
+    if (cred) listener(cred);
+  });
+}
+
 /** 订阅「服务端拒绝了当前凭据（401）」。每一代凭据最多触发一次。 */
 export function onCredentialRejected(listener: CredentialRejectedListener): () => void {
   rejectedListeners.add(listener);

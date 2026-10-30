@@ -94,7 +94,6 @@ export class SDKQueryEngine {
   private driver: SDKQueryEngineDriver;
   private startTime = 0;
   private turnCount = 0;
-  private aborted = false;
 
   constructor(config: SDKQueryEngineConfig, driver: SDKQueryEngineDriver) {
     this.config = config;
@@ -118,8 +117,15 @@ export class SDKQueryEngine {
    * 3. 消费 driver 事件流 → 转换 yield assistant/tool_progress/...
    * 4. yield result(success/error)（唯一终止信号）
    */
-  async *submitMessage(prompt: string, options?: { uuid?: string }): AsyncGenerator<SDKMessage> {
-    yield* this.runTurn(() => this.driver.submitMessage(prompt), { prompt, uuid: options?.uuid });
+  async *submitMessage(
+    prompt: string,
+    options?: { uuid?: string; mergedUuids?: string[] },
+  ): AsyncGenerator<SDKMessage> {
+    yield* this.runTurn(() => this.driver.submitMessage(prompt), {
+      prompt,
+      uuid: options?.uuid,
+      mergedUuids: options?.mergedUuids,
+    });
   }
 
   /**
@@ -151,7 +157,7 @@ export class SDKQueryEngine {
 
   private async *runTurn(
     startDriver: () => AsyncGenerator<QueryEngineEvent>,
-    input?: { prompt: string; uuid?: string },
+    input?: { prompt: string; uuid?: string; mergedUuids?: string[] },
   ): AsyncGenerator<SDKMessage> {
     this.startTime = this.now();
     this.turnCount = 0;
@@ -177,6 +183,10 @@ export class SDKQueryEngine {
         uuid: input.uuid ?? this.uuid(),
         session_id: this.config.sessionId,
         message: userMessage,
+        // 只在真合并（≥2 条）时带：单条输入的 user 消息与改动前逐字节相同
+        ...(input.mergedUuids && input.mergedUuids.length > 1
+          ? { merged_uuids: input.mergedUuids }
+          : {}),
       };
     }
 
@@ -280,8 +290,10 @@ export class SDKQueryEngine {
         yield sdkMsg;
       }
     } catch (err) {
+      // 缺陷 11：这里曾顺手算一个 this.aborted（/abort/i 裸子串）并暴露 wasAborted()，全仓零调用者，
+      // 编排层（app.ts runHeadlessSDK）又抄了一份同样的判据。删掉这份，中断判定只留编排层一处，
+      // 且改走 llm/errors.ts 的 isAbortError（结构字段 + ABORT_REASONS 白名单）。
       runError = err instanceof Error ? err : new Error(String(err));
-      this.aborted = runError.name === "AbortError" || /abort/i.test(runError.message);
     } finally {
       // 解除回调：否则下一次 submitMessage 会把增量写进这次已经结束的队列。
       // 同时放掉还挂着的等待——driver 抛错时 deltaNotify 可能正握着一个永远
@@ -425,10 +437,5 @@ export class SDKQueryEngine {
   /** 当前累计用量 */
   getUsage(): Usage {
     return this.driver.getUsage();
-  }
-
-  /** 是否被中断 */
-  wasAborted(): boolean {
-    return this.aborted;
   }
 }

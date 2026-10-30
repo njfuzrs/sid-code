@@ -141,6 +141,11 @@ export interface ForkedAgentResult {
   turns: number;
   /** 被 canUseTool 拒绝的工具调用次数 */
   deniedToolCalls: number;
+  /**
+   * C2：同一目标的工具入参连续被截断、提前结束时为 true（缺省不写）。
+   * 调用方据此区分「fork 正常收尾」与「因输出上限放弃」，后者本次没有落地任何改动。
+   */
+  truncatedGiveUp?: boolean;
 }
 
 /**
@@ -164,6 +169,45 @@ export function buildToolDefinitions(registry: ToolRegistry): ToolDefinition[] {
   return registry.definitions();
 }
 
+/** fork 单次请求的输出上限（session-memory / 记忆提取都是短输出任务） */
+const FORK_MAX_TOKENS = 2048;
+/** C2：同一 (工具, 目标文件) 入参连续被截断几次就放弃本次 fork */
+const MALFORMED_SAME_TARGET_LIMIT = 2;
+
+interface MalformedToolInput {
+  toolName: string;
+  inputLength: number;
+  /** 从未闭合的 JSON 里尽力嗅出的 file_path（嗅不到为 undefined） */
+  filePath?: string;
+}
+
+/** 连续失败的归并键：同一工具打同一文件 */
+function malformedKey(m: MalformedToolInput): string {
+  return `${m.toolName}\u0000${m.filePath ?? ""}`;
+}
+
+/** 截断的 JSON 解析不了，但 file_path 通常在前面、已经完整，正则取出来做失败归并键 */
+function sniffFilePath(raw: string): string | undefined {
+  const m = /"file_path"\s*:\s*"((?:[^"\\]|\\.)*)"/.exec(raw);
+  return m?.[1];
+}
+
+/**
+ * C2：入参解析失败时回给模型的 tool_result。
+ *
+ * 原先带着 `{}` 照常执行：模型拿到一个「缺参数」的失败，不知道是自己的输出被截断，
+ * 于是再发一次同样大的 edit、再被截断——实测会话 20261019-114231-fe220250 的
+ * session-memory fork 这样循环 4 次（output_tokens 恰好 2048 ×3），直到 60s 墙钟 abort。
+ * 明说「被截断 + 上限多少 + 怎么拆」，模型才有改正的信息。
+ */
+function malformedToolResult(m: MalformedToolInput, stopReason: string | null): string {
+  const truncated = stopReason === "max_tokens" || stopReason === "length";
+  const why = truncated
+    ? `你的输出达到了 max_tokens=${FORK_MAX_TOKENS} 上限，工具入参 JSON 被截断（已收到 ${m.inputLength} 字符）`
+    : `工具入参 JSON 不完整，无法解析（已收到 ${m.inputLength} 字符）`;
+  return `${why}，本次 ${m.toolName} 调用未执行。请把改动拆成多次小的 edit（每次只替换一小段），不要一次改写大段内容。`;
+}
+
 /** 累积一次流式响应 */
 async function accumulate(
   stream: AsyncIterable<any>,
@@ -172,8 +216,11 @@ async function accumulate(
   content: ContentBlock[];
   stopReason: string | null;
   usage: Usage;
+  /** C2：入参 JSON 解析失败的 tool_use（id → 失败信息），这些调用**不得执行** */
+  malformed: Map<string, MalformedToolInput>;
 }> {
   const content: ContentBlock[] = [];
+  const malformed = new Map<string, MalformedToolInput>();
   let stopReason: string | null = null;
   // §5.2.2 ③ 顺带修：cache 字段此前**全部丢弃**（只累加 in/out）。
   // 计费已由发生侧负责（llm/billing-sink.ts），所以这个值只用于日志与返回值；
@@ -191,7 +238,7 @@ async function accumulate(
     // B3 纵深防御：forked-agent 流消费中检查 signal，防止 abort 无法穿透底层时挂死
     // （对齐 agent/stream-processor.ts 的 B1 模式）
     if (signal?.aborted) {
-      return { content: content.filter(Boolean), stopReason: "error", usage };
+      return { content: content.filter(Boolean), stopReason: "error", usage, malformed };
     }
     switch (event.type) {
       case "message_start": {
@@ -256,6 +303,11 @@ async function accumulate(
               inputHead: raw.slice(0, 200),
             });
             block.input = {};
+            malformed.set(block.id, {
+              toolName: block.name,
+              inputLength: raw.length,
+              filePath: sniffFilePath(raw),
+            });
           }
         }
         break;
@@ -266,7 +318,7 @@ async function accumulate(
         break;
     }
   }
-  return { content: content.filter(Boolean), stopReason, usage };
+  return { content: content.filter(Boolean), stopReason, usage, malformed };
 }
 
 /**
@@ -310,6 +362,7 @@ export async function runForkedAgent(
   const totalUsage = { inputTokens: 0, outputTokens: 0 };
   let turns = 0;
   let deniedToolCalls = 0;
+  let truncatedGiveUp = false;
 
   const toolDefs = buildToolDefinitions(mainContext.toolRegistry);
 
@@ -341,6 +394,8 @@ export async function runForkedAgent(
     // S10：fork 的调用链身份，流（漏斗 RequestContext）与流外事件（PermissionDecision）共用
     // 同一个值，离线分析才能把一次 fork 的流和它的工具鉴权配上对。
     const forkAgentId = `fork:${options.querySource}`;
+    /** C2：(工具, 目标文件) → 连续入参截断次数 */
+    const malformedStreak = new Map<string, number>();
     while (turns < maxTurns) {
       if (signal.aborted) break;
       turns++;
@@ -357,7 +412,7 @@ export async function runForkedAgent(
           model: mainContext.model,
           system: mainContext.systemPrompt,
           messages: conversation,
-          maxTokens: 2048,
+          maxTokens: FORK_MAX_TOKENS,
           tools: toolDefs,
           // H8：fork agent 执行窄范围任务（querySource 标注），无独立 effort 旋钮，默认关思考，
           // 与子代理收口口径一致（thinking 是受控旋钮，不放任沿用思考模型服务端默认 enabled）。
@@ -389,7 +444,7 @@ export async function runForkedAgent(
         },
       );
 
-      const { content, stopReason, usage } = await accumulate(stream, signal);
+      const { content, stopReason, usage, malformed } = await accumulate(stream, signal);
       totalUsage.inputTokens += usage.inputTokens;
       totalUsage.outputTokens += usage.outputTokens;
 
@@ -407,7 +462,32 @@ export async function runForkedAgent(
 
       // 执行工具（受 canUseTool 约束）
       const results: ContentBlock[] = [];
+      let giveUpOnMalformed = false;
       for (const tu of toolUses) {
+        // C2：入参解析失败的调用不执行，回明确的截断提示；同一目标连续失败则放弃本次 fork，
+        // 不把剩余预算烧在「再发一次同样大的 edit、再被截断」上。
+        const bad = malformed.get(tu.id);
+        if (bad) {
+          const target = malformedKey(bad);
+          const n = (malformedStreak.get(target) ?? 0) + 1;
+          malformedStreak.set(target, n);
+          log.warn("FORKED", `fork (${options.querySource}) 工具入参被截断，未执行`, {
+            toolName: bad.toolName,
+            filePath: bad.filePath,
+            inputLength: bad.inputLength,
+            stopReason,
+            streak: n,
+          });
+          logToolFailure(tu.name, { kind: "invalid_input", durationMs: 0, filePath: bad.filePath });
+          results.push({
+            type: "tool_result",
+            tool_use_id: tu.id,
+            content: malformedToolResult(bad, stopReason),
+            is_error: true,
+          });
+          if (n >= MALFORMED_SAME_TARGET_LIMIT) giveUpOnMalformed = true;
+          continue;
+        }
         const decision = await options.canUseTool(tu.name, tu.input);
         if (decision.behavior !== "allow") {
           deniedToolCalls++;
@@ -553,6 +633,19 @@ export async function runForkedAgent(
       const toolResultMsg: Message = { role: "user", content: results };
       conversation.push(toolResultMsg);
       appended.push(toolResultMsg);
+      // 本轮没有截断的目标清零连击：只有「连续」失败才算陷入循环
+      const hitThisTurn = new Set([...malformed.values()].map(malformedKey));
+      for (const key of [...malformedStreak.keys()]) {
+        if (!hitThisTurn.has(key)) malformedStreak.delete(key);
+      }
+      if (giveUpOnMalformed) {
+        truncatedGiveUp = true;
+        log.warn(
+          "FORKED",
+          `fork (${options.querySource}) 同一目标入参连续 ${MALFORMED_SAME_TARGET_LIMIT} 次被截断，提前结束`,
+        );
+        break;
+      }
     }
   } catch (err: any) {
     if (err?.name !== "AbortError") {
@@ -568,5 +661,11 @@ export async function runForkedAgent(
       `${totalUsage.inputTokens}/${totalUsage.outputTokens} tokens`,
   );
 
-  return { messages: appended, usage: totalUsage, turns, deniedToolCalls };
+  return {
+    messages: appended,
+    usage: totalUsage,
+    turns,
+    deniedToolCalls,
+    ...(truncatedGiveUp ? { truncatedGiveUp } : {}),
+  };
 }

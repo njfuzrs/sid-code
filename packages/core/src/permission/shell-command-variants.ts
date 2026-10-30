@@ -365,11 +365,17 @@ export interface ShellCommandExpansion {
    * 扁平的 commands 里看不出谁和谁在同一个管道。
    */
   pipelines: Array<Array<{ program: string; args: string[]; text: string }>>;
+  /**
+   * 展开没走完：形态数撞上 MAX_VARIANTS 后还有没处理的子命令，或嵌套深度用完时还有内层脚本。
+   * 上面四个字段只覆盖已展开的部分，拦截方看到 true 必须按「看不全」保守处理——
+   * 修前超出部分静默丢弃，`echo 0 && … && echo 199 && rm -rf /` 在 always-allow 下直接放行。
+   */
+  truncated: boolean;
 }
 
 /** 递归深度上限：`sh -c "bash -c 'eval …'"` 嵌套到这一层已远超正常用法 */
 const MAX_DEPTH = 4;
-/** 形态数上限：防病态输入把展开撑爆（超出部分丢弃，已收集的照常参与匹配） */
+/** 形态数上限：防病态输入把展开撑爆（超出部分不再展开，并置 truncated，拦截方据此 fail-closed） */
 const MAX_VARIANTS = 128;
 
 /**
@@ -380,10 +386,15 @@ export function expandShellCommand(cmd: string): ShellCommandExpansion {
   const scripts = new Set<string>();
   const commands: Array<{ program: string; args: string[]; text: string }> = [];
   const pipelines: Array<Array<{ program: string; args: string[]; text: string }>> = [];
+  let truncated = false;
 
   const visit = (script: string, depth: number) => {
     const trimmed = script.trim();
-    if (!trimmed || variants.size >= MAX_VARIANTS) return;
+    if (!trimmed) return;
+    if (variants.size >= MAX_VARIANTS) {
+      truncated = true;
+      return;
+    }
     // heredoc 正文不参与「整段匹配」：它是数据，修前 `cat > f <<EOF` 的正文会被
     // 跨管道正则（`curl x | sh` 之类）当成命令。正文是否当脚本由接收者决定，见下。
     const { stripped, blocks } = extractHeredocBlocks(trimmed);
@@ -395,7 +406,10 @@ export function expandShellCommand(cmd: string): ShellCommandExpansion {
     for (const pipeline of splitCommandStructure(source)) {
       const parsed: Array<{ program: string; args: string[]; text: string }> = [];
       for (const stage of pipeline.stages) {
-        if (variants.size >= MAX_VARIANTS) break;
+        if (variants.size >= MAX_VARIANTS) {
+          truncated = true;
+          break;
+        }
         variants.add(stage);
         const c = canonicalizeSimpleCommand(stage);
         if (c.canonical) variants.add(c.canonical);
@@ -421,11 +435,15 @@ export function expandShellCommand(cmd: string): ShellCommandExpansion {
       }
       pipelines.push(parsed);
     }
-    if (depth < MAX_DEPTH) for (const n of nested) visit(n, depth + 1);
+    if (depth < MAX_DEPTH) {
+      for (const n of nested) visit(n, depth + 1);
+    } else if (nested.some((n) => n.trim() !== "")) {
+      truncated = true;
+    }
   };
   visit(cmd, 0);
 
-  return { variants: [...variants], scripts: [...scripts], commands, pipelines };
+  return { variants: [...variants], scripts: [...scripts], commands, pipelines, truncated };
 }
 
 /** 参数即写入目标的命令（全部非选项参数） */
@@ -447,6 +465,58 @@ const ALL_ARGS_WRITE = new Set([
 const REDIRECT_TOKEN_RE = /^(\d*|&)?(<|>{1,2}\|?|<<<?)/;
 /** 最后一个非选项参数是写入目标 */
 const LAST_ARG_WRITE = new Set(["cp", "mv", "install", "ln", "rsync", "scp"]);
+
+/** git 全局选项里带独立取值的那几个（`git -C dir diff`），取值不是子命令 */
+const GIT_GLOBAL_OPTS_WITH_VALUE = new Set([
+  "-C",
+  "-c",
+  "--git-dir",
+  "--work-tree",
+  "--namespace",
+  "--config-env",
+]);
+
+/**
+ * git 的写文件参数。修前 `extractBashWriteTargets` 没有 git 分支：
+ * `git diff --output=.git/hooks/pre-commit`、`git format-patch -o .git/hooks`
+ * 在 always-allow 下绕过 safetyCheck 的 hook 目录保护（`cp` 写同一路径会被拦）。
+ *
+ * - `--output=<f>` / `--output <f>`：diff 族选项，diff / log / show / format-patch / range-diff
+ *   都接受。不按子命令限定——git 不认的组合自己会报错，这里宁多勿少（见下方函数头）。
+ * - format-patch 的 `-o <dir>` / `--output-directory[=]<dir>`：写的是目录。目录本身只命中宽泛的
+ *   `.git/`，safetyCheck 的目录模式要求路径「包含 /<dir>/」，所以另加 `<dir>/_` 占位，
+ *   让目录下的文件（真正落盘的 0001-*.patch）也能被判到。
+ * - `--` 之后是路径参数，不是选项（`git diff -- --output=x` 里的 x 是被比较的文件）。
+ *
+ * 已知局限：`-C <dir>` 改变的是写目标的相对基准，这里不修正，仍按调用方 cwd 解析。
+ */
+function gitOutputTargets(args: string[]): string[] {
+  const out: string[] = [];
+  let k = 0;
+  // 跳过全局选项，找子命令
+  while (k < args.length && args[k].startsWith("-")) {
+    if (GIT_GLOBAL_OPTS_WITH_VALUE.has(args[k])) k++;
+    k++;
+  }
+  const sub = args[k];
+  const addDir = (d: string) => {
+    if (!d) return;
+    out.push(d);
+    out.push(`${d.replace(/\/+$/, "")}/_`);
+  };
+  for (k = k + 1; k < args.length; k++) {
+    const a = args[k];
+    if (a === "--") break;
+    if (a.startsWith("--output=")) out.push(a.slice("--output=".length));
+    else if (a === "--output" && args[k + 1]) out.push(args[++k]);
+    else if (sub === "format-patch") {
+      if (a.startsWith("--output-directory=")) addDir(a.slice("--output-directory=".length));
+      else if ((a === "-o" || a === "--output-directory") && args[k + 1]) addDir(args[++k]);
+      else if (/^-o.+/.test(a)) addDir(a.slice(2));
+    }
+  }
+  return out;
+}
 
 /**
  * 提取 bash 命令可能写入的文件路径（供 safetyCheck 对 `.git/hooks` 等可执行路径做保护）。
@@ -488,6 +558,7 @@ export function extractBashWriteTargets(cmd: string): string[] {
         targets.add(a.slice("--output-document=".length));
       if (!a.startsWith("-")) nonOpt.push(a);
     }
+    if (program === "git") for (const t of gitOutputTargets(args)) targets.add(t);
     if (ALL_ARGS_WRITE.has(program)) for (const a of nonOpt) targets.add(a);
     if (LAST_ARG_WRITE.has(program) && nonOpt.length >= 2) targets.add(nonOpt[nonOpt.length - 1]);
   }

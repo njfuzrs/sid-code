@@ -6,7 +6,7 @@
  * - 外部 estimatedItemHeight 回调
  * - anchor-based 定位 + sticky-to-bottom
  * - 双 ResizeObserver（容器 + 项目）
- * - Ink fork 的 overflowY="scroll"（滚动位置由 spacer 高度 + copyMode 的 marginTop 表达）
+ * - overflowY="hidden" 裁剪 + spacer 高度与内容盒负 marginTop 表达滚动位置
  * - useBatchedScroll 批量滚动
  *
  * ⚠️ 曾经这里还写着 `+ scrollTop + scrollbarThumbColor`，并真的往 <Box> 上传了这两个
@@ -16,7 +16,7 @@
  *     applyStyles() 也没有处理这个 key。
  *   - `scrollbarThumbColor` 在整个 src/ink/ 里零命中，fork 不画滚动条。
  * 传了等于没传，所以移除它们是行为等价的（tsc 报错正是这么暴露出来的）。真正生效的
- * 滚动位置表达是下面的 topSpacerHeight / bottomSpacerHeight 与 copyMode 的 marginTop。
+ * 滚动位置表达是下面的 topSpacerHeight / bottomSpacerHeight 与内容盒的 marginTop。
  */
 
 import {
@@ -372,7 +372,8 @@ function VirtualizedList<T>(props: VirtualizedListProps<T>, ref: React.Ref<Virtu
     for (let i = startIndex; i <= endIndex; i++) {
       const node = itemRefs.current[i];
       const item = data[i];
-      if (node && item) {
+      // 判 undefined 而非真值：泛型 T 可能是 0 / "" 这类假值，真值判断会把它静默跳过
+      if (node && item !== undefined) {
         currentNodes.add(node);
         const key = keyExtractor(item, i);
         nodeToKeyRef.current.set(node, key);
@@ -394,7 +395,7 @@ function VirtualizedList<T>(props: VirtualizedListProps<T>, ref: React.Ref<Virtu
   const renderedItems = [];
   for (let i = startIndex; i <= endIndex; i++) {
     const item = data[i];
-    if (item) {
+    if (item !== undefined) {
       renderedItems.push(
         <Box
           key={keyExtractor(item, i)}
@@ -529,26 +530,26 @@ function VirtualizedList<T>(props: VirtualizedListProps<T>, ref: React.Ref<Virtu
     ],
   );
 
-  // Copy Mode：禁用 Ink 滚动管理，改用 marginTop 偏移
-  // 这样终端可以原生选中文本（Ink 的 overflowY="scroll" 会接管渲染区域导致无法选中）
+  // 滚动位置一律用内容盒的负 marginTop 表达，外层 overflowY="hidden" 只负责裁剪。
+  // 曾经只有 Copy Mode 这么做，普通模式用 overflowY="scroll" 且 marginTop 恒 0：
+  // 但渲染底座的 renderScrollContent 按「滚动位置为 0」剔除、不看内容盒偏移，
+  // 视口于是永远停在 top spacer 上——虚拟化窗口滑到末尾后 spacer 比视口高，粘底时整屏空白，
+  // 条数少时停在开头不跟随（全屏模式「内容整个消失」）。视口外的剔除由本组件的窗口化承担。
+  // 下限钳到 0：内容不满一屏时 SCROLL_TO_ITEM_END 算出负值，不能把内容往下推。
   const copyMode = props.copyModeEnabled ?? false;
+  const contentMarginTop = -Math.max(0, actualScrollTop);
 
   return (
     <Box
       ref={containerRefCallback}
-      overflowY={copyMode ? "hidden" : "scroll"}
+      overflowY="hidden"
       overflowX="hidden"
       width="100%"
       height="100%"
       flexDirection="column"
       paddingRight={copyMode ? 0 : 1}
     >
-      <Box
-        flexShrink={0}
-        width="100%"
-        flexDirection="column"
-        marginTop={copyMode ? -actualScrollTop : 0}
-      >
+      <Box flexShrink={0} width="100%" flexDirection="column" marginTop={contentMarginTop}>
         <Box height={topSpacerHeight} flexShrink={0} />
         {renderedItems}
         <Box height={bottomSpacerHeight} flexShrink={0} />

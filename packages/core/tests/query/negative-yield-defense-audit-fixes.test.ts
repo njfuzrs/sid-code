@@ -260,7 +260,7 @@ describe("发现 1：repeated-readonly-guard 触发埋点", () => {
     //
     // ⚠️ 判据要锚在**这个分支自己的唯一串**上，不能「从埋点往后找最近的 yield done」。
     // 后者有两处退化，都实测过：
-    //   ① `loop.ts` 里有 22 处 `yield done`，无界搜索让断言退化成
+    //   ① `loop.ts` 里有 20+ 处 `yield done`（具体数随出口演进变化，区间门禁见 done-exit-count.test.ts），无界搜索让断言退化成
     //      「文件里存在 yield done」——那恒为真；
     //   ② 把埋点挪到 `return;` 之后（正是本条要拦的回归），`indexOf` 会重新锚到
     //      挪动后的那个字面量，再往后又能匹配到**别的分支**的 yield done，于是照样通过。
