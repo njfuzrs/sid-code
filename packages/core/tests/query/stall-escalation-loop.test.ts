@@ -34,6 +34,8 @@ import type { Config } from "@sid-code/core/config/config.ts";
 import type { StreamEvent, AccumulatedResponse } from "@sid-code/core/llm/types.ts";
 import type { TodoItem } from "@sid-code/core/tool/todo-write.ts";
 import { createGoal, type GoalState } from "@sid-code/core/goal/state.ts";
+import { registerTask, clearAllTasks } from "@sid-code/core/task/index.ts";
+import type { LocalShellTaskState } from "@sid-code/core/task/types.ts";
 
 const SUMMARY_MARKER = "现状：A；卡点：B；可选方案：C";
 /** 兜底：任何场景最多这么多次 API 调用就收尾，防止判据坏了变成死循环把测试挂住 */
@@ -291,6 +293,40 @@ describe("停滞升级阶梯：hardStop 打开", () => {
     // 总结提示带上 goal 目标，用户能看到当前目标状态
     const prompt = JSON.stringify(r.ctxMgr.getMessages());
     expect(prompt).toContain("把问题彻底搞定");
+  });
+});
+
+describe("停滞升级阶梯：等后台任务的轮次不计入 L2", () => {
+  // 注册表是进程级单例：每例前后清空，防止运行中的假任务串到别的测试
+  beforeEach(() => clearAllTasks());
+  afterEach(() => clearAllTasks());
+
+  test("一直有运行中的后台 shell：hardStop 打开也不升 L2，L1 照发，事件带 bgWaitTurns", async () => {
+    process.env.SID_CODE_STALL_HARD_STOP = "1";
+    const bg: LocalShellTaskState = {
+      id: "bg-bun-test",
+      type: "local_shell",
+      status: "running",
+      description: "全量 bun test",
+      startTime: 0,
+      outputFile: "/tmp/bg-bun-test.out",
+      outputOffset: 0,
+      notified: false,
+      command: "bun test",
+      interrupted: false,
+      isBackgrounded: true,
+    };
+    registerTask(bg);
+    const r = await run({});
+
+    const ev = stallEvents(r);
+    expect(ev.filter((e) => e.level === 1)).toHaveLength(1);
+    expect(ev.filter((e) => e.level === 2)).toHaveLength(0);
+    expect(ev[0].bgWaitTurns).toBeGreaterThan(0);
+    // 没停：跑满兜底，收尾不是 stalled
+    expect(r.llmCalls).toBeGreaterThanOrEqual(SAFETY_CALLS);
+    const done = r.events.find((e) => e.kind === "done");
+    expect(done.incompleteReason).not.toBe("stalled");
   });
 });
 

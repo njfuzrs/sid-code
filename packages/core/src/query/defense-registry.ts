@@ -293,6 +293,7 @@ export const DEFENSES = {
     },
     metricSource: { event: "StallEscalation" },
     triage: "active",
+    // L2 判据已排除「有运行中后台任务」的轮次（影子样本 84f153dd 的误伤形态），事件带 bgWaitTurns
     retireWhen: "L2 影子期抽检误报率决定 stallHardStop 默认值（T7）",
   },
   no_progress_nag: {

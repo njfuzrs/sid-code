@@ -22,6 +22,11 @@
  * - **L2 只能从 L1 升上来**，且只认已确证的信号：2b 振荡计数、UnchangedObservationRun、
  *   K 轮内无新文件改动。hash 回退与绿点回归**只喂 L1**，没验证过之前不许触发强停。
  * - **回退单独不升级**：「试一个方案 → 撤销」是合法实验，只计入信号，不单独构成 L1 理由。
+ * - **等后台任务的轮次不计入 L2**：有运行中的后台任务（`run_in_background` 的 bash / 子代理）时，
+ *   「工作区没变」是在等合法结果，不是原地打转。影子样本 `20261026-105558-84f153dd` 的 L2 正是
+ *   命中在 29 轮轮询全量 bun test 的那一段，测试跑完后任务正常交付——那次真停就是误伤。
+ *   这类轮次照样推进 L1 与停滞窗口（L1 只是一句提示，误发代价低），只是不计入 L2 的「L1 后满 K 轮」，
+ *   本身也不触发 L2。等待轮数随事件落 `bgWaitTurns`，影子数据能复算排除前后的差。
  * - **默认影子**：L2 只落 `StallEscalation{level:2, acted:false}`，不真停；`stallHardStop`
  *   打开才真停（D3 按影子期抽检结论再决定默认值）。
  * - **只开在交互主循环**：headless 默认整套不开（评测基线可比性依赖行为不变），子代理走
@@ -104,10 +109,12 @@ export interface StallState {
   oscillationsInPrompt: number;
   /** L1 发出时的工具轮（undefined = 还没发过） */
   l1Turn?: number;
-  /** 上一次 L2（含影子）或 L1 的基准：工具轮 + 当时的确证信号快照 */
+  /** 上一次 L2（含影子）或 L1 的基准：计入 L2 的工具轮（扣掉等后台轮）+ 当时的确证信号快照 */
   l2Base?: { turn: number; confirmed: number; mutationTurn: number };
   /** 本消息内升过几次 L2（含影子），用于阈值翻倍 */
   l2Count: number;
+  /** 本消息内有运行中后台任务的工具轮数（不计入 L2 的轮数要求） */
+  bgWaitTurns: number;
 }
 
 export function createStallState(currentOscillations: number): StallState {
@@ -123,6 +130,7 @@ export function createStallState(currentOscillations: number): StallState {
     lastOscillationsObserved: currentOscillations,
     oscillationsInPrompt: 0,
     l2Count: 0,
+    bgWaitTurns: 0,
   };
 }
 
@@ -175,6 +183,8 @@ export interface StallTurnObservation {
   unchangedReports: number;
   /** 当前 2b 振荡计数（会话级，来自 TodoGateBudget.oscillations） */
   oscillations: number;
+  /** 本轮结束时是否有运行中的后台任务（缺省视为没有） */
+  backgroundRunning?: boolean;
 }
 
 export type StallDecision =
@@ -191,6 +201,7 @@ export interface StallSignals {
   lastGreenTurn?: number;
   toolTurns: number;
   l2Count: number;
+  bgWaitTurns: number;
 }
 
 function signalsOf(s: StallState): StallSignals {
@@ -203,7 +214,13 @@ function signalsOf(s: StallState): StallSignals {
     lastGreenTurn: s.lastGreen?.turn,
     toolTurns: s.toolTurns,
     l2Count: s.l2Count,
+    bgWaitTurns: s.bgWaitTurns,
   };
+}
+
+/** 计入 L2 轮数要求的工具轮（扣掉等后台任务的轮次）。 */
+function l2Turns(s: StallState): number {
+  return s.toolTurns - s.bgWaitTurns;
 }
 
 /** L2 只认的确证信号总量（2b 振荡 + 空转）。hash 回退 / 绿点回归不在其中。 */
@@ -222,6 +239,7 @@ export function observeStallTurn(
   hardStop: boolean,
 ): StallDecision {
   s.toolTurns++;
+  if (obs.backgroundRunning) s.bgWaitTurns++;
   s.unchangedReports += obs.unchangedReports;
   s.oscillationsInPrompt += Math.max(0, obs.oscillations - s.lastOscillationsObserved);
   s.lastOscillationsObserved = obs.oscillations;
@@ -268,7 +286,7 @@ export function observeStallTurn(
     if (total >= STALL_L1_SIGNAL_THRESHOLD && nonRollback >= 1) {
       s.l1Turn = s.toolTurns;
       s.l2Base = {
-        turn: s.toolTurns,
+        turn: l2Turns(s),
         confirmed: confirmedSignals(s),
         mutationTurn: s.lastMutationTurn,
       };
@@ -277,17 +295,18 @@ export function observeStallTurn(
     return { level: 0 };
   }
 
-  // ── L2：只能从 L1 升上来，只认确证信号 ──
+  // ── L2：只能从 L1 升上来，只认确证信号；等后台任务的轮次既不计数也不触发 ──
+  if (obs.backgroundRunning) return { level: 0 };
   const base = s.l2Base!;
   const need = STALL_L2_AFTER_L1_TURNS * 2 ** s.l2Count;
-  if (s.toolTurns - base.turn < need) return { level: 0 };
+  if (l2Turns(s) - base.turn < need) return { level: 0 };
   const newConfirmed = confirmedSignals(s) - base.confirmed;
   const noMutationSinceBase = s.lastMutationTurn === base.mutationTurn;
   if (newConfirmed < 1 && !noMutationSinceBase) return { level: 0 };
 
   s.l2Count++;
   s.l2Base = {
-    turn: s.toolTurns,
+    turn: l2Turns(s),
     confirmed: confirmedSignals(s),
     mutationTurn: s.lastMutationTurn,
   };
