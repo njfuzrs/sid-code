@@ -403,14 +403,16 @@ describe("D2/D3 接线哨兵（防再抄一份）", () => {
     expect(src).toContain("MAX_EMPTY_PARAM_RETRIES");
   });
 
-  test("F2 白名单走共享 isEndTurnLikeStopReason，且 end_turn 不再无条件 return", () => {
+  test("F2 白名单走共享分类器 classifyStopReason，且 end_turn 不再无条件 return", () => {
     // 判据必须与主循环共用一份，不能在子循环再抄 end_turn/stop/stop_sequence。
-    expect(src).toContain("isEndTurnLikeStopReason(");
+    // 2026-10-29：共享点从 isEndTurnLikeStopReason 上移到 classifyStopReason（它内部调前者）。
+    expect(src).toContain("classifyStopReason(");
+    expect(src).not.toMatch(/stopReason === "(end_turn|stop|stop_sequence)"/);
     expect(src).toContain("f2FallThrough");
     // 旧代码：`if (end_turn || stop) { return { success: true } }` 无 tool_use 守卫。
-    // 新代码必须在收工前看 hasPendingToolUse。
-    expect(src).toContain("hasPendingToolUse");
-    expect(src).toContain("isEndTurnLike && !hasPendingToolUse");
+    // 现在 tool_use 守卫在分类器里：hasToolUse=true 时 end_turn 判 execute_tools 而不是 finalize。
+    expect(src).toContain("hasToolUse: hasPendingToolUse");
+    expect(src).toContain('stopAction.kind === "finalize"');
   });
 
   test("不再手写「只给退化块补 error tool_result」", () => {

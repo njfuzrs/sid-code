@@ -69,11 +69,7 @@ import {
   LOOP_RECOVERY_POLLING_PROMPT,
 } from "../agent/loop-detection.ts";
 import type { LLMLoopCheckResult } from "../agent/loop-detection.ts";
-import {
-  buildPendingToolResults,
-  finalizeMessagesForSend,
-  isEndTurnLikeStopReason,
-} from "../agent/message-invariants.ts";
+import { buildPendingToolResults, finalizeMessagesForSend } from "../agent/message-invariants.ts";
 import {
   isAbortError,
   isInternalTimeoutAbortReason,
@@ -120,6 +116,9 @@ import {
 } from "./compact/outcome.ts";
 import {
   MAX_EMPTY_PARAM_RETRIES,
+  summarizeToolUseParams,
+  buildEmptyParamRetryData,
+  type EmptyParamHit,
   detectEmptyParamToolUses,
   replaceEmptyParamToolUses,
   buildEmptyParamRetryMessage,
@@ -307,6 +306,8 @@ import { getEffectiveBetaHeaders } from "../api/beta-header-latch.ts";
 import type { QueryLoopYield, QueryDeps, LoopState } from "./types.ts";
 import { createInitialLoopState } from "./types.ts";
 import { setTransition } from "./transition.ts";
+import { classifyStopReason } from "./stop-reason-policy.ts";
+import { settleOrphanToolUses } from "./terminal-finalize.ts";
 import { emitGateExhausted, type ExhaustibleGate } from "./gate-exhaustion.ts";
 import { MAX_STOP_HOOK_RETRIES } from "./stop-hooks.ts";
 import {
@@ -2831,7 +2832,7 @@ export async function* queryLoop(loopConfig: QueryLoopConfig): AsyncGenerator<Qu
               kind: "done",
               turns: state.turnCount,
               turnsConsumedWithoutAssistant: state.turnsConsumedWithoutAssistant,
-              incompleteReason: "aborted",
+              incompleteReason: (state.incompleteReason = "aborted"),
             };
             exitedViaReturn = true;
             return;
@@ -3407,7 +3408,7 @@ export async function* queryLoop(loopConfig: QueryLoopConfig): AsyncGenerator<Qu
                 turns: state.turnCount,
                 // §20.5：与 max_turns 路径同源同口径，见 types.ts 该字段注释。
                 turnsConsumedWithoutAssistant: state.turnsConsumedWithoutAssistant,
-                incompleteReason: "aborted",
+                incompleteReason: (state.incompleteReason = "aborted"),
               };
               exitedViaReturn = true;
               return;
@@ -3442,7 +3443,7 @@ export async function* queryLoop(loopConfig: QueryLoopConfig): AsyncGenerator<Qu
             turns: state.turnCount,
             // §20.5：与 max_turns 路径同源同口径，见 types.ts 该字段注释。
             turnsConsumedWithoutAssistant: state.turnsConsumedWithoutAssistant,
-            incompleteReason: "timeout_retry_exhausted",
+            incompleteReason: (state.incompleteReason = "timeout_retry_exhausted"),
           };
           exitedViaReturn = true;
           return;
@@ -3636,7 +3637,7 @@ export async function* queryLoop(loopConfig: QueryLoopConfig): AsyncGenerator<Qu
             turns: state.turnCount,
             // §20.5：与 max_turns 路径同源同口径，见 types.ts 该字段注释。
             turnsConsumedWithoutAssistant: state.turnsConsumedWithoutAssistant,
-            incompleteReason: "aborted",
+            incompleteReason: (state.incompleteReason = "aborted"),
           };
           exitedViaReturn = true;
           return;
@@ -3980,6 +3981,10 @@ export async function* queryLoop(loopConfig: QueryLoopConfig): AsyncGenerator<Qu
             // 取走时机必须是**本轮组装 AfterModel 时**：早了拿不到（响应头还没来），
             // 晚了会被下一轮的请求覆盖。
             gateway_request_id: takeLastRequestId(),
+            // L3-A：工具参数质量事实（聚合整数），让 F1 判定可从 events.jsonl 离线复算。
+            tool_use_facts: summarizeToolUseParams(response.content, (name) =>
+              toolRegistry.get(name)?.inputSchema(),
+            ),
           },
         );
         if (afterModelResult.finalOutput?.isBlockingDecision()) {
@@ -4172,11 +4177,29 @@ export async function* queryLoop(loopConfig: QueryLoopConfig): AsyncGenerator<Qu
             level: "warning",
             text: `检测到工具调用参数为空（模型退化），自动重试 (${state.emptyParamRetryCount}/${MAX_EMPTY_PARAM_RETRIES})`,
           };
+          emitEmptyParamRetry(deps, sessionState.sessionId, {
+            turn: state.turnCount,
+            stopReason: response.stopReason,
+            hits: emptyParamHits,
+            getSchema,
+            attempt: state.emptyParamRetryCount,
+            compacted: compactResult.success,
+            compactLevel: levelBeforeRetry,
+          });
           setTransition(state, { type: "empty_param_retry" }, deps, sessionState.sessionId);
           continue;
         }
 
         // 重试耗尽：sanitized 后入历史 + 如实呈现退化 + 硬停本轮（理由见上方 ③ 的 P2-7 注释）
+        emitEmptyParamRetry(deps, sessionState.sessionId, {
+          turn: state.turnCount,
+          stopReason: response.stopReason,
+          hits: emptyParamHits,
+          getSchema,
+          attempt: retries + 1,
+          compacted: false,
+          exhausted: true,
+        });
         noteGateExhausted("empty_param", MAX_EMPTY_PARAM_RETRIES, MAX_EMPTY_PARAM_RETRIES);
         log.error(
           "QUERY_LOOP",
@@ -4215,11 +4238,14 @@ export async function* queryLoop(loopConfig: QueryLoopConfig): AsyncGenerator<Qu
         // 选 `other` 而非 `end_turn`：本轮并没有正常说完（见 TurnStopReason 各档注释），
         // 归 end_turn 会把退化算进正常收尾样本，那是反方向的错账。
         turnStopReason = "other";
+        // 硬停不是「正常说完」：带 incompleteReason，SDK / 无头不再把模型退化记成 success。
+        state.incompleteReason = "empty_param_exhausted";
         yield {
           kind: "done",
           turns: state.turnCount,
           // §20.5：与 max_turns 路径同源同口径，见 types.ts 该字段注释。
           turnsConsumedWithoutAssistant: state.turnsConsumedWithoutAssistant,
+          incompleteReason: state.incompleteReason,
         };
         exitedViaReturn = true;
         return;
@@ -4362,13 +4388,19 @@ export async function* queryLoop(loopConfig: QueryLoopConfig): AsyncGenerator<Qu
       // 而不是落到下方"未识别停止原因"分支弹 terminal 警告并跳过全部收尾。
       // 对齐 CC：stop_sequence 在 CC 全源码零特殊处理，直接 fall-through 当正常结束。
       // 白名单方向不变（fail-closed 防死亡螺旋，见上方 P0-2 注释），这里只是补齐一个已知的正常终止 reason。
-      const isEndTurnLike = isEndTurnLikeStopReason(response.stopReason);
-      // P1-4：max_tokens/length 带着非空 tool_use 时先执行工具，截断续写只留给纯文本截断。
-      // F1 已在上方拦空参数，走到这里的 tool_use 参数非空。content_filter 仍不进 F2。
-      const isTruncatedWithTools =
-        hasPendingToolUse &&
-        (response.stopReason === "max_tokens" || response.stopReason === "length");
-      const f2FallThrough = (isEndTurnLike || isTruncatedWithTools) && hasPendingToolUse;
+      //
+      // 2026-10-29：判据收敛到 stop-reason-policy.ts 的 classifyStopReason（单一事实源，
+      // 子循环 agentic-loop.ts 调同一份）。下方各分支的进入条件都从 stopAction 派生，
+      // 不再各自比较 stopReason 字面量——新增一种 stopReason 只改分类器一处。
+      // P1-4：max_tokens/length 带着非空 tool_use 时先执行工具（why=f2_truncated），
+      // 截断续写只留给纯文本截断。content_filter 等白名单外取值不进 F2。
+      const stopAction = classifyStopReason({
+        stopReason: response.stopReason,
+        hasToolUse: hasPendingToolUse,
+        hasAnyContent: response.content.length > 0,
+      });
+      const isEndTurnLike = stopAction.kind === "finalize";
+      const f2FallThrough = stopAction.kind === "execute_tools" && stopAction.why !== "tool_use";
       if (f2FallThrough) {
         // §2.4 / P1-4：stop_reason 与 content 不一致（end_turn/stop 或 max_tokens 仍含 tool_use）。
         // 功能上 F2 fall-through 已能正确执行工具（不漏调），这里只补一条结构化 warn
@@ -4405,7 +4437,7 @@ export async function* queryLoop(loopConfig: QueryLoopConfig): AsyncGenerator<Qu
           }
         }
       }
-      if (isEndTurnLike && !hasPendingToolUse) {
+      if (isEndTurnLike) {
         // ─── S1 L1：end_turn 形态事实（每次都落，零行为）───
         // 后台任务 / 待投递通知是 L2 的结构排除项，也一并进事实，让「为什么没拦」可复算。
         let runningBg = false;
@@ -5140,7 +5172,9 @@ export async function* queryLoop(loopConfig: QueryLoopConfig): AsyncGenerator<Qu
       // ─── 处理工具调用 ───
       // 进入条件：stop_reason=tool_use（正常路径），或 F2 fall-through——
       // stop_reason=end_turn/stop 或 max_tokens/length 但 content 仍有（非空参数）tool_use 未执行。
-      if (response.stopReason === "tool_use" || f2FallThrough) {
+      // 报 tool_use 却一个 tool_use 块都没有的不进这里（分类器判 unknown，见下方如实收尾）：
+      // 旧条件 `stopReason === "tool_use"` 会让它 executeTools([]) 后 continue，白烧一次往返。
+      if (stopAction.kind === "execute_tools") {
         const toolBlocks = response.content.filter((b) => b.type === "tool_use");
         const toolNames = toolBlocks
           .map((b) => (b.type === "tool_use" ? b.name : ""))
@@ -5312,7 +5346,7 @@ export async function* queryLoop(loopConfig: QueryLoopConfig): AsyncGenerator<Qu
               turns: state.turnCount,
               // §20.5：与 max_turns 路径同源同口径，见 types.ts 该字段注释。
               turnsConsumedWithoutAssistant: state.turnsConsumedWithoutAssistant,
-              incompleteReason: "aborted",
+              incompleteReason: (state.incompleteReason = "aborted"),
             };
             exitedViaReturn = true;
             return;
@@ -5945,7 +5979,7 @@ export async function* queryLoop(loopConfig: QueryLoopConfig): AsyncGenerator<Qu
       }
 
       // ─── max_tokens 续写（含递减收益检测 + 分级恢复）───
-      if (response.stopReason === "max_tokens" || response.stopReason === "length") {
+      if (stopAction.kind === "recover" && stopAction.how === "max_tokens") {
         diminishingDetector.record(response.usage.outputTokens);
 
         if (diminishingDetector.shouldStop()) {
@@ -6070,7 +6104,7 @@ export async function* queryLoop(loopConfig: QueryLoopConfig): AsyncGenerator<Qu
 
       // ─── refusal（模型安全策略拒答，Opus 4.7+ 新增）───
       // [来源: anthropic-api.md:556,752]
-      if (response.stopReason === "refusal") {
+      if (stopAction.kind === "terminal" && stopAction.reason === "refusal") {
         const refusalText =
           response.content
             .filter((b) => b.type === "text")
@@ -6078,6 +6112,10 @@ export async function* queryLoop(loopConfig: QueryLoopConfig): AsyncGenerator<Qu
             .join("")
             .trim() || "模型基于安全策略拒绝回答";
         log.warn("QUERY_LOOP", `模型安全拒答: ${refusalText.slice(0, 200)}`);
+        // refusal 在工具分支之后，content 里的 tool_use 不会执行——就地结算（见 terminal-finalize.ts）
+        state.incompleteReason = "refusal";
+        settleOrphanToolUses(ctxMgr, state.incompleteReason);
+        turnStopReason = "other";
         yield {
           kind: "system",
           level: "warning",
@@ -6089,6 +6127,7 @@ export async function* queryLoop(loopConfig: QueryLoopConfig): AsyncGenerator<Qu
           turns: state.turnCount,
           // §20.5：与 max_turns 路径同源同口径，见 types.ts 该字段注释。
           turnsConsumedWithoutAssistant: state.turnsConsumedWithoutAssistant,
+          incompleteReason: state.incompleteReason,
         };
         exitedViaReturn = true;
         return;
@@ -6108,20 +6147,17 @@ export async function* queryLoop(loopConfig: QueryLoopConfig): AsyncGenerator<Qu
       //   ① 压不动 → 立即收尾：已无可裁剪空间，再来一轮必然撞同一个上限；
       //   ② 压得动也只给 MAX_CTX_WINDOW_RECOVERIES 次 → 防「压一点、又撞上限」的慢速空转。
       // 两种收尾都带 incompleteReason，SDK / 无头不会把它记成 success。
-      if (response.stopReason === "model_context_window_exceeded") {
+      if (stopAction.kind === "recover" && stopAction.how === "ctx_window") {
         // 截断的那一轮内容已在上方入历史；它可能带着未执行的 tool_use，收尾前必须补占位
         // tool_result，否则下一条用户消息发送时 tool_use/tool_result 不配对（OpenAI 400）。
-        const settleOrphanToolUses = (): void => {
-          const orphans = buildPendingToolResults(
-            ctxMgr.getMessages(),
-            "[系统] 上下文已撞到模型窗口上限，此工具调用未执行。",
-          );
-          if (orphans.length > 0) ctxMgr.addMessage({ role: "user", content: orphans });
+        // 与其它 terminal 出口共用 terminal-finalize.ts（续写路径同样要结算，故不只在收尾时调）。
+        const settleCtxOrphans = (): void => {
+          settleOrphanToolUses(ctxMgr, "context_window_exhausted");
         };
         const exhaust = (detail: string): void => {
           noteGateExhausted("context_window", used, MAX_CTX_WINDOW_RECOVERIES);
           log.error("QUERY_LOOP", `context window 恢复终止：${detail}`);
-          settleOrphanToolUses();
+          settleCtxOrphans();
           turnStopReason = "other";
         };
 
@@ -6140,7 +6176,7 @@ export async function* queryLoop(loopConfig: QueryLoopConfig): AsyncGenerator<Qu
             kind: "done",
             turns: state.turnCount,
             turnsConsumedWithoutAssistant: state.turnsConsumedWithoutAssistant,
-            incompleteReason: "context_window_exhausted",
+            incompleteReason: (state.incompleteReason = "context_window_exhausted"),
           };
           exitedViaReturn = true;
           return;
@@ -6185,7 +6221,7 @@ export async function* queryLoop(loopConfig: QueryLoopConfig): AsyncGenerator<Qu
             kind: "done",
             turns: state.turnCount,
             turnsConsumedWithoutAssistant: state.turnsConsumedWithoutAssistant,
-            incompleteReason: "context_window_exhausted",
+            incompleteReason: (state.incompleteReason = "context_window_exhausted"),
           };
           exitedViaReturn = true;
           return;
@@ -6212,7 +6248,7 @@ export async function* queryLoop(loopConfig: QueryLoopConfig): AsyncGenerator<Qu
           level: "info",
           text: `输出因撞到模型上下文窗口上限被中断，已压缩上下文后续写 (${state.ctxWindowRecoveryCount}/${MAX_CTX_WINDOW_RECOVERIES})`,
         };
-        settleOrphanToolUses();
+        settleCtxOrphans();
         setTransition(state, { type: "context_window_recovery" }, deps, sessionState.sessionId);
         continue;
       }
@@ -6237,7 +6273,7 @@ export async function* queryLoop(loopConfig: QueryLoopConfig): AsyncGenerator<Qu
       // 正确行为是**如实收尾**（下方分支会 yield 一条 terminal 提示 + done），而不是
       // 假装推进。真要支持 server tool，改动点是 anthropic.ts 保留 `server_tool_use`
       // 块 + 此处回传续接，两者缺一不可 —— 届时再开分支，别复活这个 `continue`。
-      if (response.stopReason === "pause_turn") {
+      if (stopAction.kind === "terminal" && stopAction.reason === "pause_turn") {
         log.warn(
           "QUERY_LOOP",
           "收到 pause_turn（server tool 暂停）：本仓未实现 server-tool 续接，如实收尾不伪装 tool_use 续接",
@@ -6253,7 +6289,19 @@ export async function* queryLoop(loopConfig: QueryLoopConfig): AsyncGenerator<Qu
       // 此前本分支只写 warn.log + 静默 yield done——用户界面毫无提示，表现为"任务
       // 一闪而过就没了"。现在必须把这类静默失败暴露给用户（yield system error），
       // 且区分"空响应"（真故障）与"非空但停止原因未识别"（罕见，可能是新协议字段）。
+      //
+      // 走到这里的只有三种分类：terminal(pause_turn / empty_stream) 与 unknown（含报 tool_use
+      // 却无 tool_use 块）。三者都带 incompleteReason，并就地结算孤儿 tool_use——此前这里
+      // 不结算，靠下次发送前的 finalizeMessagesForSend 事后补占位。
       const hasAnyContent = response.content.length > 0;
+      state.incompleteReason =
+        stopAction.kind === "terminal" && stopAction.reason === "pause_turn"
+          ? "pause_turn"
+          : hasAnyContent
+            ? "unknown_stop_reason"
+            : "empty_stream";
+      settleOrphanToolUses(ctxMgr, state.incompleteReason);
+      turnStopReason = "other";
       if (!hasAnyContent) {
         // 空响应 + 未知/空停止原因 = 伪装成功的空流。如实报错，不假装完成。
         log.error(
@@ -6291,6 +6339,7 @@ export async function* queryLoop(loopConfig: QueryLoopConfig): AsyncGenerator<Qu
         turns: state.turnCount,
         // §20.5：与 max_turns 路径同源同口径，见 types.ts 该字段注释。
         turnsConsumedWithoutAssistant: state.turnsConsumedWithoutAssistant,
+        incompleteReason: state.incompleteReason,
       };
       exitedViaReturn = true;
       return;
@@ -6344,6 +6393,8 @@ export async function* queryLoop(loopConfig: QueryLoopConfig): AsyncGenerator<Qu
   // 一致的可测试性；调用失败不阻断收尾（降级为下面按 turnCount 正常提示 max_turns）。
   // 停滞 L2 与 maxTurns 共用本出口，只有提示文本按触发原因区分。
   const stalledExit = state.stallStopRequested === true && state.turnCount < state.maxTurns;
+  // 与其它出口同一写入点：下方 emitTurnCompleteHere 读 state.incompleteReason
+  if (stalledExit) state.incompleteReason = "stalled";
   if ((state.turnCount >= state.maxTurns || stalledExit) && !deps.getAbortSignal?.()?.aborted) {
     log.info(
       "QUERY_LOOP",
@@ -6550,8 +6601,45 @@ export async function* queryLoop(loopConfig: QueryLoopConfig): AsyncGenerator<Qu
     // §20.5：与 max_turns 路径同源同口径，见 types.ts 该字段注释。
     turnsConsumedWithoutAssistant: state.turnsConsumedWithoutAssistant,
     // 停滞叫停不是「正常说完」：headless 据此不续等后台任务，SDK 映射 error_stalled
-    ...(stalledExit ? { incompleteReason: "stalled" as const } : {}),
+    ...(state.incompleteReason ? { incompleteReason: state.incompleteReason } : {}),
   };
+}
+
+// ─── F1 结构化事件 ───
+
+/**
+ * L2-C：F1 每次命中（重试或耗尽）落一条 `EmptyParamRetry`。
+ *
+ * 此前判定依据（命中哪个工具、是否截断、schema 有没有 required、压没压、为什么没压）
+ * 只在 warn.log 一行文本里；而 warn.log 自 2026-10-21 起同类只首次告警，F1 的频次与形态
+ * 会彻底失去统计口径。`compact_level` 记的是**决策依据**：`none` 解释了「为什么没压」。
+ */
+function emitEmptyParamRetry(
+  deps: Pick<QueryDeps, "traceAppendEvent">,
+  sessionId: string,
+  args: {
+    turn: number;
+    stopReason: string | null | undefined;
+    hits: EmptyParamHit[];
+    getSchema: (name: string) => unknown;
+    attempt: number;
+    compacted: boolean;
+    compactLevel?: string;
+    exhausted?: boolean;
+    agentId?: string;
+  },
+): void {
+  if (!deps.traceAppendEvent) return;
+  try {
+    deps.traceAppendEvent({
+      event: "EmptyParamRetry",
+      session_id: sessionId,
+      timestamp: new Date().toISOString(),
+      data: buildEmptyParamRetryData({ ...args, maxAttempts: MAX_EMPTY_PARAM_RETRIES }),
+    });
+  } catch {
+    /* 埋点失败不阻断主循环 */
+  }
 }
 
 // ─── 停滞升级阶梯辅助 ───

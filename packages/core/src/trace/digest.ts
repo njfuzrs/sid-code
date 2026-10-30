@@ -581,6 +581,60 @@ export function aggregateStopReasonMismatchStats(
 }
 
 /**
+ * 停止归因（2026-10-29）。取数源：
+ *   - `TurnComplete.incomplete_reason`（主循环，与 done.incompleteReason 同源）
+ *   - `EmptyParamRetry`（主/子循环 F1 每次命中一条，子循环带 agent_id）
+ *   - `SubagentLoopTurn.stop_action`（子循环每次模型响应一条）
+ *   - `SessionStart.trace_schema_version`
+ *
+ * ⚠️ 缺字段 ≠ 0：`schemaVersion` 缺失（v1 老会话）时 incomplete_reason / SubagentLoopTurn 本来就
+ * 不存在，消费方要据此把它当「无数据」而非「真没有非正常收尾」。
+ */
+export interface StopAttributionStats {
+  /** SessionStart.trace_schema_version；老会话无此字段时 undefined（= v1） */
+  schemaVersion?: number;
+  /** 主循环 TurnComplete 按 incomplete_reason 计数（正常收尾不计） */
+  incompleteByReason: Record<string, number>;
+  /** F1 命中次数（主 + 子），其中截断参数命中的次数，以及耗尽次数 */
+  emptyParam: { hits: number; truncatedHits: number; exhausted: number; subagent: number };
+  /** 子循环按 stop_action 计数 */
+  subagentStopActions: Record<string, number>;
+}
+
+export function aggregateStopAttributionStats(
+  events: Array<{ event?: string; data?: Record<string, unknown> }>,
+): StopAttributionStats | undefined {
+  const stats: StopAttributionStats = {
+    incompleteByReason: {},
+    emptyParam: { hits: 0, truncatedHits: 0, exhausted: 0, subagent: 0 },
+    subagentStopActions: {},
+  };
+  let any = false;
+  for (const e of events) {
+    const d = e.data ?? {};
+    if (e.event === "SessionStart" && typeof d.trace_schema_version === "number") {
+      stats.schemaVersion = d.trace_schema_version;
+    } else if (e.event === "TurnComplete" && typeof d.incomplete_reason === "string") {
+      stats.incompleteByReason[d.incomplete_reason] =
+        (stats.incompleteByReason[d.incomplete_reason] ?? 0) + 1;
+      any = true;
+    } else if (e.event === "EmptyParamRetry") {
+      stats.emptyParam.hits++;
+      const hits = Array.isArray(d.hits) ? (d.hits as Array<{ truncated?: boolean }>) : [];
+      if (hits.some((h) => h.truncated === true)) stats.emptyParam.truncatedHits++;
+      if (d.exhausted === true) stats.emptyParam.exhausted++;
+      if (d.agent_id) stats.emptyParam.subagent++;
+      any = true;
+    } else if (e.event === "SubagentLoopTurn" && typeof d.stop_action === "string") {
+      stats.subagentStopActions[d.stop_action] =
+        (stats.subagentStopActions[d.stop_action] ?? 0) + 1;
+      any = true;
+    }
+  }
+  return any ? stats : undefined;
+}
+
+/**
  * 「未答复的 end_turn」形态分布（2026-10-27）。取数源 `UnansweredEndTurn` 事件
  * （loop.ts 每次命中一条，含耗尽那次）。分母 = 命中次数，不是轮数。
  * `unparsed_tool_call` = 工具调用落进了非调用通道、没被执行，是协议级偏差，目标恒为 0；
@@ -1212,6 +1266,8 @@ export interface Digest {
   strictDegrade?: StrictDegradeStats;
   /** 发现 5：stop_reason 与 content 不一致次数。无 StopReasonMismatch 事件时 undefined。 */
   stopReasonMismatch?: StopReasonMismatchStats;
+  /** 2026-10-29：停止归因（incomplete_reason / F1 / 子循环 stop_action）。全无时 undefined。 */
+  stopAttribution?: StopAttributionStats;
   /** 2026-10-27：未答复 end_turn 形态分布。无 UnansweredEndTurn 事件时 undefined。 */
   unansweredEndTurn?: UnansweredEndTurnStats;
   /** 2026-10-24：LSP 诊断注入口径。无 LspDiagnostics 事件（老会话 / 没用 LSP）时 undefined。 */
@@ -3057,6 +3113,7 @@ export function buildDigest(ref: SessionRef, full: boolean, paths: DigestPaths):
   const thinkingLeak = aggregateThinkingLeakStats(events);
   const strictDegrade = aggregateStrictDegradeStats(events);
   const stopReasonMismatch = aggregateStopReasonMismatchStats(events);
+  const stopAttribution = aggregateStopAttributionStats(events);
   const unansweredEndTurn = aggregateUnansweredEndTurnStats(events);
   const lspDiagnostics = aggregateLspDiagnosticsStats(events);
 
@@ -3118,6 +3175,7 @@ export function buildDigest(ref: SessionRef, full: boolean, paths: DigestPaths):
     thinkingLeak,
     strictDegrade,
     stopReasonMismatch,
+    ...(stopAttribution ? { stopAttribution } : {}),
     unansweredEndTurn,
     lspDiagnostics,
     pathology,
@@ -3589,6 +3647,27 @@ export function renderHuman(d: Digest, opts: RenderOptions = {}): string {
             "；已兜底执行工具，应为 0）",
         ),
     );
+  }
+
+  // 2026-10-29：非正常收尾归因。F1 截断命中单独列：那是「半截参数差点被执行」的形态。
+  if (d.stopAttribution) {
+    const a = d.stopAttribution;
+    const inc = Object.entries(a.incompleteByReason);
+    const sub = Object.entries(a.subagentStopActions).filter(
+      ([k]) => !k.startsWith("execute_tools"),
+    );
+    const parts: string[] = [];
+    if (inc.length > 0) parts.push("主循环 " + inc.map(([k, v]) => `${k}=${v}`).join(", "));
+    if (a.emptyParam.hits > 0) {
+      parts.push(
+        `F1 ${a.emptyParam.hits} 次（截断 ${a.emptyParam.truncatedHits}、耗尽 ${a.emptyParam.exhausted}、子代理 ${a.emptyParam.subagent}）`,
+      );
+    }
+    if (sub.length > 0) parts.push("子代理 " + sub.map(([k, v]) => `${k}=${v}`).join(", "));
+    if (parts.length > 0) {
+      L.push("");
+      L.push(c("bold", "停止归因:") + " " + parts.join("；"));
+    }
   }
 
   // 2026-10-27：未答复 end_turn 按形态分。工具调用没被解析（unparsed_tool_call）标红：

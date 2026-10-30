@@ -593,6 +593,11 @@ export interface AfterModelInput extends HookInput {
      * 缺席 = 该端点没下发这类头（合法情况，不要填空串）。
      */
     gateway_request_id?: { header: string; value: string };
+    /**
+     * 本轮 tool_use 参数质量事实（见 query/empty-param.ts `summarizeToolUseParams`），
+     * collector 平铺进 AfterModelRaw。只有聚合整数，不含 input 本身。
+     */
+    tool_use_facts?: import("../query/empty-param.ts").ToolUseParamFacts;
   };
 
   // ── Harness 扩展点 ──

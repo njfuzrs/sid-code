@@ -51,7 +51,7 @@ describe("empty-param — detectEmptyParamToolUses", () => {
     ];
     const hits = detectEmptyParamToolUses(content);
     expect(hits.length).toBe(1);
-    expect(hits[0]).toEqual({ id: "t1", name: "write", index: 1 });
+    expect(hits[0]).toEqual({ id: "t1", name: "write", index: 1, truncated: false });
   });
 
   it("非空参数 tool_use 不命中", () => {
@@ -157,7 +157,7 @@ describe("empty-param — replaceEmptyParamToolUses", () => {
 });
 
 describe("empty-param — buildEmptyParamRetryMessage", () => {
-  const hits = [{ id: "t1", name: "write", index: 1 }];
+  const hits = [{ id: "t1", name: "write", index: 1, truncated: false }];
 
   it("含工具名 + 重试计数 + 完整参数要求 + system-reminder 包裹 + 未落地回执", () => {
     const msg = buildEmptyParamRetryMessage(hits, 1, MAX_EMPTY_PARAM_RETRIES, false);
