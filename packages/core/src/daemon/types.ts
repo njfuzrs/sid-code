@@ -73,6 +73,17 @@ export interface DaemonConfig {
 }
 
 /**
+ * 并发名额闸门。webhook worker 与 daemon 调度源共用一份，才能让 `--max-concurrent`
+ * 是「全 daemon 的子进程上限」，而不是每个源各一份（此前实际上限是 2×）。
+ * acquire 与 canAccept 必须在同一同步段内调用（中间不能 await），否则会超发。
+ */
+export interface ConcurrencyGate {
+  canAccept(): boolean;
+  acquire(): void;
+  release(): void;
+}
+
+/**
  * 缺口 C1：无头执行任务（webhook worker 与 daemon 调度源共用）。
  * 一份执行器，两个触发源——这是 C1 与 ADR-030 的核心汇合点。
  */

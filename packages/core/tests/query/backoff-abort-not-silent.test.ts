@@ -60,7 +60,7 @@ function makeLoop(abortReason: string): QueryLoopConfig {
       throw err;
     },
     executeTools: async () => ({ results: [] }),
-    autoCompact: async () => {},
+    autoCompact: async () => ({ kind: "skipped" as const }),
     getAbortSignal: () => sessionAbort.signal,
     uuid: () => "uuid-test",
   };

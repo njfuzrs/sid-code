@@ -137,6 +137,60 @@ describe("runHeadless stream-json", () => {
     expect(lines.filter((l) => l.type === "result").length).toBeGreaterThanOrEqual(1);
     expect(lines.some((l) => l.type === "system" && l.subtype === "init")).toBe(true);
   });
+
+  test("缺陷 9：合并成一轮的多条输入，user 消息带 merged_uuids 列出全部 uuid", async () => {
+    const input = new PassThrough();
+    const output = new PassThrough();
+    const io = new StructuredIO(input, output);
+    const queue = new CommandQueue();
+    // 直接预置队列：三条同 workload 的 prompt 必然被 dequeueBatch 合成一轮（不依赖读泵时序）
+    for (const id of ["A", "B", "C"]) {
+      queue.enqueue({ mode: "prompt", value: id, uuid: id, priority: "next" });
+    }
+    input.end();
+    const engine = new SDKQueryEngine(
+      { cwd: "/tmp", sessionId: "s-merge", model: "m", now: () => 0, uuid: () => "u" },
+      simpleDriver("回复"),
+    );
+    const collected = collect(output);
+    await runHeadless(engine, {
+      outputFormat: "stream-json",
+      structuredIO: io,
+      commandQueue: queue,
+    });
+    output.end();
+
+    const lines = await collected;
+    const users = lines.filter((l) => l.type === "user");
+    expect(users.length).toBe(1);
+    expect(users[0].uuid).toBe("C");
+    expect(users[0].merged_uuids).toEqual(["A", "B", "C"]);
+    expect(SDKMessageSchema().safeParse(users[0]).success).toBe(true);
+    expect(lines.filter((l) => l.type === "result").length).toBe(1);
+  });
+
+  test("缺陷 9：单条输入的 user 消息不带 merged_uuids", async () => {
+    const input = new PassThrough();
+    const output = new PassThrough();
+    const io = new StructuredIO(input, output);
+    const queue = new CommandQueue();
+    queue.enqueue({ mode: "prompt", value: "x", uuid: "X", priority: "next" });
+    input.end();
+    const engine = new SDKQueryEngine(
+      { cwd: "/tmp", sessionId: "s-single", model: "m", now: () => 0, uuid: () => "u" },
+      simpleDriver("回复"),
+    );
+    const collected = collect(output);
+    await runHeadless(engine, {
+      outputFormat: "stream-json",
+      structuredIO: io,
+      commandQueue: queue,
+    });
+    output.end();
+    const user = (await collected).find((l) => l.type === "user");
+    expect(user.uuid).toBe("X");
+    expect("merged_uuids" in user).toBe(false);
+  });
 });
 
 describe("runHeadless text/json", () => {

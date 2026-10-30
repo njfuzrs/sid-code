@@ -53,12 +53,12 @@ describe("autoCompact — 返回压缩结果（静默-9）", () => {
   test("消息太少 → skipped", async () => {
     const ctx = buildCtx(2);
     const outcome = await autoCompact(buildDeps(ctx));
-    expect(outcome).toBe("skipped");
+    expect(outcome).toEqual({ kind: "skipped", reason: "too_few_messages" });
   });
 
   test("LLM 摘要失败 → 降级简单截断 → truncated", async () => {
     const ctx = buildCtx(20);
     const outcome = await autoCompact(buildDeps(ctx));
-    expect(outcome).toBe("truncated");
+    expect(outcome).toEqual({ kind: "truncated" });
   });
 });

@@ -2850,7 +2850,9 @@ export class TraceCollector {
           "TRACE",
           `会话 ${digest.sessionId} 检出 ${highs.length} 条[高]级异常：${preview}` +
             `${highs.length > 3 ? ` 等 ${highs.length} 条` : ""}。` +
-            `详情：bun scripts/trace-digest.ts ${digest.sessionId}`,
+            // 给 `/trace <id>` 而非仓库脚本：用户手上只有发行二进制，没有仓库
+            // （与 builtins.ts /trace 命令注释同一类问题）。
+            `详情：会话内运行 /trace ${digest.sessionId}`,
         );
       }
     } catch (err: any) {
