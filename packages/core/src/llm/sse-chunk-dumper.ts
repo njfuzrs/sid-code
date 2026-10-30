@@ -68,6 +68,16 @@ export function setSseDumpContext(
 }
 
 /**
+ * C1：当前主循环登记的 loopId（**只读全局量，不看 ALS**）。
+ *
+ * 心跳用它判「这份无身份快照是不是当前 queryLoop 的」。必须绕开 ALS：心跳定时器
+ * 若恰好在某条 fork 链里注册，`currentSseDumpContext()` 会返回 fork 绑定的 loopId。
+ */
+export function ambientLoopId(): string {
+  return ambientCtx.loopId;
+}
+
+/**
  * parseSSE 内构造采样器时读取当前环境上下文。
  *
  * ## PR2：优先读请求级 ALS 身份，其次才是这个模块级全局量

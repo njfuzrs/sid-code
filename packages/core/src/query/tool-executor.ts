@@ -1608,9 +1608,13 @@ export async function executeSingleTool(
   try {
     // G5 修复：把 onProgress 桥接给 tool.execute，让长跑工具能在执行中报告进度。
     // deps.onToolProgress 由 App 注入（路由到状态栏/TUI），无头模式下为 undefined → 无副作用。
+    // A2：顺手计数，收尾时作为 PostToolUse.progress_events 落轨迹（不逐条落盘，见 hook/types.ts）。
+    let progressEvents = 0;
     const progressCallback = deps.onToolProgress
-      ? (event: import("../tool/types.ts").ToolProgressData) =>
-          deps.onToolProgress!(block.name, block.id, event)
+      ? (event: import("../tool/types.ts").ToolProgressData) => {
+          progressEvents++;
+          deps.onToolProgress!(block.name, block.id, event);
+        }
       : undefined;
     const cwdBefore = getCwd();
     const result = await tool.execute(effectiveInput, execSignal, progressCallback);
@@ -1680,6 +1684,7 @@ export async function executeSingleTool(
             failure_kind: interrupted ? "aborted" : "tool_error",
             is_interrupt: interrupted,
             tool_output: hookOutput,
+            progress_events: progressEvents,
           },
         )
       : await deps.hookSystem.firePostToolUseEvent(
@@ -1688,7 +1693,11 @@ export async function executeSingleTool(
           { output: hookOutput, isError: false },
           false,
           block.id,
-          { duration_ms: elapsed, harness_context: telemetryMeta as any },
+          {
+            duration_ms: elapsed,
+            harness_context: telemetryMeta as any,
+            progress_events: progressEvents,
+          },
         );
 
     // GAP-11 补全：PostToolUse 的 updatedToolOutput / updatedMCPToolOutput 替换模型侧输出（对齐 CC）。
