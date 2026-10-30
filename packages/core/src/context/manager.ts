@@ -1746,6 +1746,28 @@ export class Manager {
     return this.estimateTokensFor([], toolCount);
   }
 
+  /**
+   * 最新一条「真实用户输入」消息的 token 估算（只计非 tool_result 块，与 estimateTokensFor 同源校准）。
+   *
+   * 用途：压缩失败熔断时判断「本轮输入自己就超窗」。所有压缩层都以消息为单位删 / 摘要，
+   * 而最新那条 user 消息是本轮输入，任何一层都不会删它、也不会缩短它的内容
+   * （truncateToolOutput 只管 tool_result）。它本身逼近窗口时，压缩必然 no_reduction。
+   * tool_result 块不计：那部分有 toolResultBudget / microcompact 管，压得动。
+   */
+  estimateLatestUserInputTokens(toolCount: number = 0): number {
+    for (let i = this.messages.length - 1; i >= 0; i--) {
+      const m = this.messages[i];
+      if (m.role !== "user") continue;
+      const blocks = m.content.filter((b) => b.type !== "tool_result");
+      if (blocks.length === 0) continue;
+      return (
+        this.estimateTokensFor([{ ...m, content: blocks }], toolCount) -
+        this.estimateFixedOverheadTokens(toolCount)
+      );
+    }
+    return 0;
+  }
+
   /** 系统提示词里记忆 / CLAUDE.md 部分的 token 数（与 /context 的 memoryFiles 同源，未校准） */
   getMemoryTokens(): number {
     return this.memoryTokens;
