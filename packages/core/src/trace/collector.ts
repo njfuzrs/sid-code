@@ -95,7 +95,9 @@ import {
   clearStreamSnapshot,
   chunkCountFields,
   snapshotStaleness,
+  pickHeartbeatSnapshot,
 } from "./stream-observer.ts";
+import { ambientLoopId } from "../llm/sse-chunk-dumper.ts";
 
 // ─── 最小化上传器接口（避免循环依赖，Task 8 实现后注入） ───
 
@@ -260,6 +262,9 @@ function buildIdentityFields(): Record<string, string | boolean> {
     return {};
   }
 }
+
+/** 轨迹 schema 版本（落 SessionStart.data.trace_schema_version）。字段集变化时 +1。 */
+export const TRACE_SCHEMA_VERSION = 2;
 
 export class TraceCollector {
   private pairs: RequestResponsePair[] = [];
@@ -1092,18 +1097,11 @@ export class TraceCollector {
             // 恰好命中 /trace 提示里的「elapsed_ms 大且仍在跳 = hang」—— 假 hang。
             // 所以终态快照一律不作为 active_request（没有活流时 active_request=null，走下方
             // last_known_state 兜底），残留条数单独落 `stale_terminal_snapshots`。
+            // C1（20261019 复测）：选取逻辑抽成纯函数 pickHeartbeatSnapshot（可单测），
+            // 「无 agentId ≠ 主循环」与孤儿快照的判据见该函数注释。
             const allSnapshots = getActiveStreamSnapshots();
-            const isTerminal = (p: string) => p === "completed" || p === "aborted" || p === "error";
-            const liveSnapshots = allSnapshots.filter((s) => !isTerminal(s.phase));
-            const activeSnapshots = liveSnapshots;
-            const mainSnapshot = activeSnapshots.find((s) => s.agentId === undefined);
-            const oldestAgent = activeSnapshots
-              .filter((s) => s.agentId !== undefined)
-              .reduce<(typeof activeSnapshots)[number] | undefined>(
-                (acc, s) => (!acc || s.startedAt < acc.startedAt ? s : acc),
-                undefined,
-              );
-            const picked = mainSnapshot ?? oldestAgent;
+            const { picked, activeSnapshots, liveCount, orphanCount, ownerOf } =
+              pickHeartbeatSnapshot(allSnapshots, ambientLoopId());
             const activeRequest = picked
               ? {
                   index: picked.index,
@@ -1119,12 +1117,12 @@ export class TraceCollector {
                   ...chunkCountFields(picked.chunksReceived, "chunks"),
                   snapshot_age_ms: snapshotStaleness(picked).ageMs,
                   timeouts_fired: picked.timeoutsFired,
-                  ...(picked.agentId ? { agent_id: picked.agentId } : {}),
+                  ...(ownerOf(picked) ? { agent_id: ownerOf(picked) } : {}),
                   ...(activeSnapshots.length > 1 ? { active_count: activeSnapshots.length } : {}),
                 }
               : null;
             // 残留的终态快照数单独落一格：它是「快照泄漏」的信号，而不是 hang 的信号。
-            const staleTerminal = allSnapshots.length - liveSnapshots.length;
+            const staleTerminal = allSnapshots.length - liveCount;
             // 优化 3：stream-observer 快照仅覆盖流式阶段；工具执行/后处理等非流式阶段
             // activeRequest 为 null，此前心跳就只剩时间戳，进程 hang 时看不出卡在哪。
             // 兜底塞入 last_known_state（§3.6 已维护 phase/turn/model），让 tool_exec
@@ -1136,6 +1134,7 @@ export class TraceCollector {
               event_loop_lag_ms: lagMs,
               active_request: activeRequest,
               ...(staleTerminal > 0 ? { stale_terminal_snapshots: staleTerminal } : {}),
+              ...(orphanCount > 0 ? { stale_orphan_snapshots: orphanCount } : {}),
               ...(lastState ? { last_known_state: lastState } : {}),
             });
             if (this.heartbeatStopped) return;
@@ -1159,6 +1158,10 @@ export class TraceCollector {
       timestamp: input.timestamp,
       cwd: input.cwd,
       data: {
+        // L3-C：轨迹 schema 版本。v2 起 TurnComplete 带 stop_reason_kind / incomplete_reason，
+        // AfterModelRaw 带 stop_reason_kind 与 tool_use_* 聚合字段，子代理循环落
+        // SubagentLoopTurn。离线脚本据此区分「字段缺失 = 老版本」与「值为 0 = 真没有」。
+        trace_schema_version: TRACE_SCHEMA_VERSION,
         source: input.source,
         model: input.model,
         permission_mode: input.permission_mode,
@@ -1682,6 +1685,8 @@ export class TraceCollector {
           index: currentIndex,
           model: input.llm_request.model,
           stop_reason: stopReason,
+          // provider 原始值；TurnComplete.stop_reason 同名但是归一值（"normalized"）
+          stop_reason_kind: "raw",
           usage: {
             input_tokens: inputTokens,
             output_tokens: outputTokens,
@@ -1707,6 +1712,8 @@ export class TraceCollector {
               }
             : {}),
           ttft_ms: (resp as any).ttft_ms, // T14.4：TTFT 持久化
+          // L3-A：工具参数质量事实（4 个聚合整数），F1 判据可离线复算
+          ...(resp.tool_use_facts ? resp.tool_use_facts : {}),
           // 缺口分析二类：推理 token 落盘（仅 OpenAI 族 >0，供 digest 拆解思考成本）
           ...(reasoningTokens > 0 ? { reasoning_tokens: reasoningTokens } : {}),
           // 缺口分析五类：上下文占用率（used=完整 prompt 规模 / 模型上下文窗口）。
@@ -1945,6 +1952,8 @@ export class TraceCollector {
         ...(toolDurationMs !== undefined ? { duration_ms: toolDurationMs } : {}),
         ...toolAgentField(input),
         ...toolOutputCharsField(input),
+        // A2：执行期间进度上报次数（只在 >0 时写，见 hook/types.ts progress_events）
+        ...(input.progress_events ? { progress_events: input.progress_events } : {}),
       },
     });
 
@@ -2001,6 +2010,8 @@ export class TraceCollector {
         ...errorHeadField(input),
         ...toolAgentField(input),
         ...toolOutputCharsField(input),
+        // A2：执行期间进度上报次数（只在 >0 时写，见 hook/types.ts progress_events）
+        ...(input.progress_events ? { progress_events: input.progress_events } : {}),
       },
     });
 
@@ -2149,6 +2160,17 @@ export class TraceCollector {
         output_tokens: stopInput.usage?.outputTokens ?? null,
         input_tokens: stopInput.usage?.inputTokens ?? null,
         turns: stopInput.turns ?? null,
+        // L2-D：停止归因（缺失 = 老版本或该路径未经 runAgentLoop，如 spawn 模式）
+        ...(stopInput.stop_action ? { stop_action: stopInput.stop_action } : {}),
+        ...(stopInput.last_stop_reason !== undefined
+          ? { last_stop_reason: stopInput.last_stop_reason }
+          : {}),
+        ...(typeof stopInput.f2_mismatch_count === "number"
+          ? { f2_mismatch_count: stopInput.f2_mismatch_count }
+          : {}),
+        ...(typeof stopInput.f1_retry_count === "number"
+          ? { f1_retry_count: stopInput.f1_retry_count }
+          : {}),
         status:
           stopInput.success === true
             ? "completed"
@@ -3774,6 +3796,13 @@ const TOOL_INPUT_SUMMARY_KEYS = [
   "glob",
   "output_mode",
   "type",
+  // 后台任务等待口径：task_output / bg_task_get 的阻塞与上限、sub_agent / bash 的后台启动。
+  // 回答「模型有没有阻塞、阻塞多久、上限给多少」，也是北极星「后台阻塞等待」的过滤键；
+  // 此前只能从主循环 messages.json 手工统计，子代理一侧完全拿不到。都不含敏感内容。
+  "block",
+  "timeout",
+  "task_id",
+  "run_in_background",
 ] as const;
 /** 字符串入参截断长度（command / pattern 可能很长或含敏感内容） */
 const TOOL_INPUT_SUMMARY_STR_MAX = 200;

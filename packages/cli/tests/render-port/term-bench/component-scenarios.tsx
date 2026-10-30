@@ -169,10 +169,11 @@ export const COMPONENT_SCENARIOS: Record<string, Scenario> = {
   C3: {
     covers: ["L3", "L4"],
     async run(ctx) {
-      // 真实 VirtualizedList（T4.3）：容器 / 项高度靠 ResizeObserver 测，滚动位置靠 spacer 与 overflowY="scroll" 表达。
+      // 真实 VirtualizedList（T4.3）：容器 / 项高度靠 ResizeObserver 测，滚动位置靠 spacer 与内容盒负 marginTop 表达。
       // 主屏上跑（alt-screen 归 T6.1），项高 1 / 2 行交替，测量值回灌后才稳定。
-      // ⚠️ 冻结基线里主屏滚动不改变可见行（scrollBy / scrollTo 前后网格相同，且从「项 1」起画），
-      // 所以滚动几步只证明当前实现同样如此；真正让画面变化的是最后一步换数据。滚动语义的修正归 T6.x（VirtualizedList 实际只在 alt-screen 用）
+      // 2026-10-29 基线有意改过：旧冻结基线里滚动不改变可见行、粘底时也停在「项 1」（且漏画数值 0 的首项），
+      // 那是全屏「内容整个消失」的同一个缺陷（普通模式 marginTop 恒 0 + renderScrollContent 不看偏移）。
+      // 现在每一步滚动都应改变网格：粘底见末项、上滚 5 行、回到顶部从「项 0」起画、回到底部见新追加的项。
       const ref = createRef<VirtualizedListRef<number>>();
       const data = store(Array.from({ length: 40 }, (_, i) => i));
       const copy = store(false);
