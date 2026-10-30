@@ -125,9 +125,9 @@ const mod: LocalCommandModule = {
     if (pending) return linkResult(pending, true);
 
     const { resolveBackendUrl } = await import("@sid-code/core/identity/backend-url.ts");
-    const { NO_BACKEND_HINT } = await import("@sid-code/core/identity/login-status.ts");
+    const { backendUnavailableHint } = await import("@sid-code/core/identity/login-status.ts");
     const backend = resolveBackendUrl();
-    if (!backend) return { type: "text", value: NO_BACKEND_HINT };
+    if (!backend) return { type: "text", value: backendUnavailableHint() };
 
     const { getDeviceCredential } = await import("@sid-code/core/identity/credential.ts");
     const cred = getDeviceCredential();

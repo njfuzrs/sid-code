@@ -152,6 +152,9 @@ export function isInsideSidHome(absolutePath: string): boolean {
  * - state/  ：散落的运行时状态（app.json / command-usage / trusted-extensions 等）
  * - 其余按职责分目录（checkpoints / sessions / projects / trajectories / ...）
  */
+/** D3：macOS 上已弃用的 managed 扩展根目录（旧实现三平台写死 /etc，兼容既有部署） */
+export const LEGACY_MANAGED_EXTENSION_ROOT = "/etc/sid-code";
+
 /**
  * 企业管控文件的平台系统目录（对齐 CC managedPath）。
  * - macOS：/Library/Application Support/SidCode
@@ -311,13 +314,23 @@ export const sidPaths = {
   skills: () => sidHomePath("skills"),
   extensionDir: (type: string) => sidHomePath(type),
   /**
-   * P2-1：企业 managed 扩展目录候选（first-exists 全扫，优先级最高）。
-   * 与 managedPolicyCandidates 同源约定：系统级 /etc/sid-code/{type} + 用户级回退 ~/.sid-code/managed/{type}。
+   * P2-1：企业 managed 扩展目录（全部扫描，**数组顺序即合并顺序，后者覆盖前者**）。
+   *
+   * D3：系统级目录跟策略文件走同一个平台目录（managedSettingsSystemDir）。此前写死
+   * `/etc/sid-code/{type}`，macOS 上管理员把 skills 和策略文件一起放进
+   * `/Library/Application Support/SidCode/` 不生效，Windows 上没有可用的系统级目录。
+   * macOS 仍扫旧的 `/etc/sid-code/{type}` 兼容既有部署（ExtensionLoader 命中时打弃用告警）。
+   *
+   * D4：系统级排**最后**，同名以系统级为准。此前用户可写的 `~/.sid-code/managed/{type}`
+   * 排在后面，普通用户放一个同名 skill 就能覆盖企业下发的版本，而且不走项目信任确认。
+   * 用户级目录保留（个人试用 / 未部署系统级时的回退），只是不再能盖过系统级。
+   *
    * managed 层扩展覆盖同名 user/project。SID_CODE_DISABLE_POLICY_SKILLS=1 可整体关闭。
    */
   managedExtensionDirs: (type: string): string[] => [
-    `/etc/sid-code/${type}`,
     sidHomePath("managed", type),
+    ...(process.platform === "darwin" ? [join(LEGACY_MANAGED_EXTENSION_ROOT, type)] : []),
+    join(managedSettingsSystemDir(), type),
   ],
 
   // ── 自带二进制（编译期嵌入、运行时释放的工具，如 ripgrep）──

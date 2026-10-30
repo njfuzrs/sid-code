@@ -196,6 +196,7 @@ export class HookEventHandler {
       verify_triggered?: boolean;
       harness_context?: import("./types.ts").HarnessHookContext;
       agent?: HookAgentRef;
+      progress_events?: number;
     },
   ): Promise<AggregatedHookResult> {
     const input: PostToolUseInput = {
@@ -210,6 +211,7 @@ export class HookEventHandler {
       edit_meta: options?.edit_meta,
       verify_triggered: options?.verify_triggered,
       harness_context: options?.harness_context,
+      ...(options?.progress_events ? { progress_events: options.progress_events } : {}),
     };
     return this.executeHooks(HookEventName.PostToolUse, input, { toolName, toolInput });
   }
@@ -238,6 +240,7 @@ export class HookEventHandler {
       /** tool_error 时工具的原始输出（tool_response.output） */
       tool_output?: unknown;
       agent?: HookAgentRef;
+      progress_events?: number;
     },
   ): Promise<AggregatedHookResult> {
     const kind = options?.failure_kind ?? "exception";
@@ -256,6 +259,7 @@ export class HookEventHandler {
       tool_use_id: toolUseId,
       duration_ms: options?.duration_ms,
       harness_context: options?.harness_context,
+      ...(options?.progress_events ? { progress_events: options.progress_events } : {}),
     };
     // Q7：CC 只在「工具执行了但失败」时触发 PostToolUseFailure。校验失败 / PreToolUse 阻止
     // 在 CC 里不触发它，但 sid 的 runtime 消费者（execute_tool span、轨迹）要靠它收尾，

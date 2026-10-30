@@ -5,6 +5,7 @@
  */
 
 import type { Command, AppContext, CommandResult } from "./types.ts";
+import { sidPaths } from "@sid-code/core/config/paths.ts";
 import { ExtensionLoader } from "@sid-code/core/extension/loader.ts";
 import type { ScanOptions } from "@sid-code/core/extension/types.ts";
 import { getLogger } from "@sid-code/core/debug/logger.ts";
@@ -507,11 +508,12 @@ export class CustomCommandLoader {
       log.info("CUSTOM_CMD", "自定义命令已被企业策略禁用，跳过加载");
       return [];
     }
-    const files = await this.extensionLoader.scan(
-      "commands",
-      projectDir ?? process.cwd(),
-      scanOptions,
-    );
+    // D5：与 skills 同口径注入企业 managed 目录（调用方未显式指定时）。此前只有 skills 接了，
+    // plugin-only 锁住 commands 后企业唯一的分发途径只剩插件市场。
+    const files = await this.extensionLoader.scan("commands", projectDir ?? process.cwd(), {
+      ...scanOptions,
+      managedDirs: scanOptions?.managedDirs ?? sidPaths.managedExtensionDirs("commands"),
+    });
     const results: Array<{ cmd: CustomCommand; source: "user" | "project" }> = [];
 
     for (const file of files) {

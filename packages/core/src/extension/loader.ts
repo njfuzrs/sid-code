@@ -9,7 +9,12 @@ import { readdir, readFile } from "fs/promises";
 import { join, basename } from "path";
 import { parseFrontmatter } from "./frontmatter.ts";
 import { getLogger } from "../debug/logger.ts";
-import { sidPaths, getClaudeHome } from "../config/paths.ts";
+import {
+  sidPaths,
+  getClaudeHome,
+  LEGACY_MANAGED_EXTENSION_ROOT,
+  managedSettingsSystemDir,
+} from "../config/paths.ts";
 import { isRestrictedToPluginOnly } from "../config/plugin-only-policy.ts";
 import { isPolicyAllowed } from "../config/policy-limits.ts";
 import { getExtensionScanDirs } from "../config/project-bases.ts";
@@ -232,6 +237,7 @@ export class ExtensionLoader {
     }
 
     // 3. P2-1：企业 managed 层（最高优先级，最后扫描）。managed 扩展覆盖同名 user/project，
+    //    managedDirs 内部也按顺序后者覆盖前者（sidPaths.managedExtensionDirs 把系统级排最后，D4），
     //    且不受项目信任检查约束（企业下发本就是可信源）。SID_CODE_DISABLE_POLICY_SKILLS=1 时跳过。
     const policyDisabled = process.env.SID_CODE_DISABLE_POLICY_SKILLS === "1";
     if (options?.managedDirs && options.managedDirs.length > 0 && !policyDisabled) {
@@ -240,6 +246,16 @@ export class ExtensionLoader {
           managedDir,
           "managed",
         );
+        if (
+          managedFiles.length > 0 &&
+          process.platform === "darwin" &&
+          managedDir.startsWith(`${LEGACY_MANAGED_EXTENSION_ROOT}/`)
+        ) {
+          getLogger().warn(
+            "EXTENSION",
+            `${managedDir} 已弃用：macOS 上 managed 扩展请放到 ${join(managedSettingsSystemDir(), type)}（与策略文件同目录）`,
+          );
+        }
         mergeFiles(managedFiles);
         errors.push(...managedErrors);
       }

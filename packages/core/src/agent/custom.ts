@@ -9,6 +9,7 @@ import type { Checker } from "../permission/types.ts";
 import type { LegacyTool as Tool, LegacyToolResult as ToolResult } from "../tool/types.ts";
 import type { ProviderRegistry } from "../llm/registry.ts";
 import type { Registry as ToolRegistry } from "../tool/registry.ts";
+import { sidPaths } from "../config/paths.ts";
 import { ExtensionLoader } from "../extension/loader.ts";
 import type { ScanOptions } from "../extension/types.ts";
 import { SubAgent } from "./sub-agent.ts";
@@ -198,11 +199,12 @@ export class CustomAgentLoader {
   /** 加载所有自定义 Agent 定义 */
   async loadAll(projectDir?: string, scanOptions?: ScanOptions): Promise<CustomAgentDefinition[]> {
     const log = getLogger();
-    const files = await this.extensionLoader.scan(
-      "agents",
-      projectDir ?? process.cwd(),
-      scanOptions,
-    );
+    // D5：与 skills 同口径注入企业 managed 目录（调用方未显式指定时）。此前只有 skills 接了，
+    // plugin-only 锁住 agents 后企业唯一的分发途径只剩插件市场。
+    const files = await this.extensionLoader.scan("agents", projectDir ?? process.cwd(), {
+      ...scanOptions,
+      managedDirs: scanOptions?.managedDirs ?? sidPaths.managedExtensionDirs("agents"),
+    });
     const agents: CustomAgentDefinition[] = [];
 
     for (const file of files) {
