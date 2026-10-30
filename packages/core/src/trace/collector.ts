@@ -263,6 +263,9 @@ function buildIdentityFields(): Record<string, string | boolean> {
   }
 }
 
+/** 轨迹 schema 版本（落 SessionStart.data.trace_schema_version）。字段集变化时 +1。 */
+export const TRACE_SCHEMA_VERSION = 2;
+
 export class TraceCollector {
   private pairs: RequestResponsePair[] = [];
   private metadata!: TraceMetadata;
@@ -1155,6 +1158,10 @@ export class TraceCollector {
       timestamp: input.timestamp,
       cwd: input.cwd,
       data: {
+        // L3-C：轨迹 schema 版本。v2 起 TurnComplete 带 stop_reason_kind / incomplete_reason，
+        // AfterModelRaw 带 stop_reason_kind 与 tool_use_* 聚合字段，子代理循环落
+        // SubagentLoopTurn。离线脚本据此区分「字段缺失 = 老版本」与「值为 0 = 真没有」。
+        trace_schema_version: TRACE_SCHEMA_VERSION,
         source: input.source,
         model: input.model,
         permission_mode: input.permission_mode,
@@ -1678,6 +1685,8 @@ export class TraceCollector {
           index: currentIndex,
           model: input.llm_request.model,
           stop_reason: stopReason,
+          // provider 原始值；TurnComplete.stop_reason 同名但是归一值（"normalized"）
+          stop_reason_kind: "raw",
           usage: {
             input_tokens: inputTokens,
             output_tokens: outputTokens,
@@ -1703,6 +1712,8 @@ export class TraceCollector {
               }
             : {}),
           ttft_ms: (resp as any).ttft_ms, // T14.4：TTFT 持久化
+          // L3-A：工具参数质量事实（4 个聚合整数），F1 判据可离线复算
+          ...(resp.tool_use_facts ? resp.tool_use_facts : {}),
           // 缺口分析二类：推理 token 落盘（仅 OpenAI 族 >0，供 digest 拆解思考成本）
           ...(reasoningTokens > 0 ? { reasoning_tokens: reasoningTokens } : {}),
           // 缺口分析五类：上下文占用率（used=完整 prompt 规模 / 模型上下文窗口）。
@@ -2149,6 +2160,17 @@ export class TraceCollector {
         output_tokens: stopInput.usage?.outputTokens ?? null,
         input_tokens: stopInput.usage?.inputTokens ?? null,
         turns: stopInput.turns ?? null,
+        // L2-D：停止归因（缺失 = 老版本或该路径未经 runAgentLoop，如 spawn 模式）
+        ...(stopInput.stop_action ? { stop_action: stopInput.stop_action } : {}),
+        ...(stopInput.last_stop_reason !== undefined
+          ? { last_stop_reason: stopInput.last_stop_reason }
+          : {}),
+        ...(typeof stopInput.f2_mismatch_count === "number"
+          ? { f2_mismatch_count: stopInput.f2_mismatch_count }
+          : {}),
+        ...(typeof stopInput.f1_retry_count === "number"
+          ? { f1_retry_count: stopInput.f1_retry_count }
+          : {}),
         status:
           stopInput.success === true
             ? "completed"

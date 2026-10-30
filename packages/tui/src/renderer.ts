@@ -3,7 +3,7 @@ import renderNodeToOutput, {
 } from './render-node-to-output.js';
 import Output from './output.js';
 import {type DOMElement} from './dom.js';
-import {type Screen} from './screen/screen.js';
+import {beginRunCacheFrame, type Screen} from './screen/screen.js';
 
 type Result = {
 	output: string;
@@ -48,6 +48,9 @@ const renderer = (
 			};
 		}
 
+		// 行缓存按帧切代（见 screen.ts）。放在这里而不是 Output.getScreen：一帧可能有动态区 + 上游 Static
+		// 两个 Output，每个 getScreen 都切代会让后一个把前一个刚写的行降成旧代，下一帧整批丢掉
+		beginRunCacheFrame();
 		const output = new Output({
 			width: node.yogaNode.getComputedWidth(),
 			height: node.yogaNode.getComputedHeight(),

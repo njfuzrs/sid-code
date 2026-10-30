@@ -13,6 +13,7 @@ import {
 import { getLogger } from "../debug/logger.ts";
 import { ALL_HOOK_HANDLER_TYPES } from "./handler-types.ts";
 import { isInternalRuntimeHook } from "./enterprise-policy.ts";
+import { isRestrictedToPluginOnly } from "../config/plugin-only-policy.ts";
 
 /**
  * H18：声明「可 block」的事件（与 types.ts 枚举注释一致，aggregator 对它们走一票否决）。
@@ -189,6 +190,29 @@ export class HookRegistry {
     } else if (this.policyGate?.isDisabled) {
       const kept = entries.filter(isInternalRuntimeHook).length;
       this.reportDisableAllHooks("企业策略", entries.length - kept, kept);
+    }
+
+    // D1：strictPluginOnlyCustomization 锁住 hooks 面时，只认管理员可信来源（managed / plugin /
+    // 内部 runtime）。放在执行期而不是 collectHookLayers：hook 层在 loadConfig 里收集，
+    // 早于 applyLoadedPolicy 注入锁，加载期判定读到的是空集；执行期判定也覆盖策略轮询中途改锁。
+    // 与 allowManagedHooksOnly 是两个独立开关、取并集：后者连 plugin hook 也拒，更严。
+    if (isRestrictedToPluginOnly("hooks")) {
+      const before = entries.length;
+      entries = entries.filter((e) => {
+        const src = e.config.source ?? e.source;
+        return (
+          src === ConfigSource.Managed ||
+          src === ConfigSource.Plugin ||
+          src === ConfigSource.Runtime ||
+          isInternalRuntimeHook(e)
+        );
+      });
+      if (entries.length < before) {
+        getLogger().debug(
+          "HOOK",
+          `${eventName}: 企业策略 strictPluginOnlyCustomization 锁定 hooks，跳过 ${before - entries.length} 个用户/项目级 hook`,
+        );
+      }
     }
 
     // G13：企业策略门控——disableAllHooks / allowManagedHooksOnly / blockedCommands 等。

@@ -208,39 +208,40 @@ export class RuleLoader {
 
     const log = getLogger();
 
-    for (const filePath of sidPaths.managedPolicyCandidates()) {
-      if (!existsSync(filePath)) continue;
+    // D2：主文件 + managed-settings.d/*.json 合并后取 permissions（readManagedPolicyDocument）。
+    // 此前只读主文件，写进 drop-in 的 deny 加载不报错、规则不生效。
+    const { readManagedPolicyDocument } = await import("../config/managed-policy-file.ts");
+    const doc = readManagedPolicyDocument();
+    if (!doc) return;
 
-      // 权限校验：企业策略文件应为 600（仅所有者可写），防篡改
+    // 权限校验：企业策略文件应为 600（仅所有者可写），防篡改
+    const { statSync } = await import("fs");
+    for (const f of doc.mainFile ? [doc.mainFile, ...doc.dropIns] : doc.dropIns) {
       try {
-        const { statSync } = await import("fs");
-        const mode = statSync(filePath).mode & 0o777;
+        const mode = statSync(f).mode & 0o777;
         if (mode !== 0o600) {
           log.warn(
             "RULE_LOADER",
-            `企业策略文件 ${filePath} 权限不安全 (${mode.toString(8)})，建议设为 600`,
+            `企业策略文件 ${f} 权限不安全 (${mode.toString(8)})，建议设为 600`,
           );
         }
       } catch {
         /* 权限检查失败不阻塞加载 */
       }
-
-      try {
-        const content = await Bun.file(filePath).text();
-        const settings: SettingsFile = JSON.parse(content);
-        if (!settings.permissions) return; // 命中候选文件即停（first-exists-wins），即使无 permissions
-        // 可信源：不做 filterUntrustedProjectRules 剥离
-        const rules = this.parsePermissions(settings.permissions, "policySettings");
-        this.sources.set("policySettings", rules);
-        log.info(
-          "RULE_LOADER",
-          `policySettings: ${filePath} → ${rules.length} 条规则（企业策略，最高优先级）`,
-        );
-      } catch (err: any) {
-        log.warn("RULE_LOADER", `读取企业策略文件 ${filePath} 失败: ${err.message}`);
-      }
-      return; // first-exists-wins：命中第一个存在的候选就停
     }
+    for (const e of doc.errors) {
+      log.warn("RULE_LOADER", `读取企业策略文件 ${e.file} 失败: ${e.message}`);
+    }
+
+    const permissions = doc.settings.permissions as SettingsFile["permissions"] | undefined;
+    if (!permissions) return;
+    // 可信源：不做 filterUntrustedProjectRules 剥离
+    const rules = this.parsePermissions(permissions, "policySettings");
+    this.sources.set("policySettings", rules);
+    log.info(
+      "RULE_LOADER",
+      `policySettings: ${[doc.mainFile, ...doc.dropIns].filter(Boolean).join(", ")} → ${rules.length} 条规则（企业策略，最高优先级）`,
+    );
   }
 
   /**

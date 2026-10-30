@@ -15,11 +15,14 @@ import {
 } from "@sid-code/core/identity/index.ts";
 import {
   getCredentialGeneration,
+  onCredentialAcquired,
   onCredentialChanged,
   onCredentialRejected,
   reportCredentialRejected,
 } from "@sid-code/core/identity/credential.ts";
 import {
+  backendUnavailableHint,
+  NO_BACKEND_HINT,
   collectLoginStatus,
   renderLoginStatus,
   summarizeLoginStatus,
@@ -98,6 +101,45 @@ describe("onCredentialChanged", () => {
     off();
     saveDeviceCredential(CRED);
     expect(n).toBe(0);
+  });
+});
+
+// 企业登录缺陷 D1：TUI 的企业状态刷新订阅它。登出若也触发，重载策略时缓存过 10 分钟即不采信，
+// 远程 deny 被清掉——登出成了绕过企业管控的办法。
+describe("onCredentialAcquired", () => {
+  test("登录、换凭据触发；登出不触发", () => {
+    const seen: string[] = [];
+    // 不能写 c.credential：登出时若误传 null，这里会抛错而 emitChanged 吞掉订阅方异常，
+    // 断言照样绿（变异自证实测踩到）。显式记下 null 才能让误触发现形。
+    onCredentialAcquired((c) => seen.push(c ? c.credential : "<null>"));
+    saveDeviceCredential(CRED);
+    saveDeviceCredential({ ...CRED, credential: "cred-new" });
+    clearDeviceCredential();
+    expect(seen).toEqual(["cred-abc", "cred-new"]);
+  });
+});
+
+// 企业登录缺陷 D4：resolveBackendUrl() 对「没配」与「配了但不合法」都返回 null，
+// 登录入口曾统一报「未配置后端地址」。
+describe("backendUnavailableHint", () => {
+  test("没配 → NO_BACKEND_HINT", () => {
+    delete process.env.SID_CODE_BACKEND_URL;
+    expect(backendUnavailableHint()).toBe(NO_BACKEND_HINT);
+  });
+
+  test("配了非 loopback 明文 http → 报不合法并指出来源，不说「未配置」", () => {
+    process.env.SID_CODE_BACKEND_URL = "http://10.0.0.8/traj";
+    const hint = backendUnavailableHint();
+    expect(hint).toContain("不合法");
+    expect(hint).toContain("SID_CODE_BACKEND_URL");
+    expect(hint).not.toContain("未配置");
+  });
+
+  test("URL 带用户名密码 → 报不合法且不回显密码", () => {
+    process.env.SID_CODE_BACKEND_URL = "https://alice:s3cret@backend.example.com/traj";
+    const hint = backendUnavailableHint();
+    expect(hint).toContain("不合法");
+    expect(hint).not.toContain("s3cret");
   });
 });
 

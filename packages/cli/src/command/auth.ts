@@ -51,8 +51,8 @@ async function cmdLogin(asJson: boolean): Promise<void> {
   const { resolveBackendUrl } = await import("@sid-code/core/identity/backend-url.ts");
   const backend = resolveBackendUrl();
   if (!backend) {
-    const { NO_BACKEND_HINT } = await loadLoginStatusModule();
-    console.error(`错误: ${NO_BACKEND_HINT}`);
+    const { backendUnavailableHint } = await loadLoginStatusModule();
+    console.error(`错误: ${backendUnavailableHint()}`);
     process.exit(1);
   }
   const { performCliLogin, CliLoginError } = await import("@sid-code/core/identity/cli-login.ts");
@@ -108,8 +108,8 @@ async function cmdEnroll(args: string[], asJson: boolean): Promise<void> {
   const { resolveBackendUrl } = await import("@sid-code/core/identity/backend-url.ts");
   const backend = resolveBackendUrl();
   if (!backend) {
-    const { NO_BACKEND_HINT } = await loadLoginStatusModule();
-    console.error(`错误: ${NO_BACKEND_HINT}`);
+    const { backendUnavailableHint } = await loadLoginStatusModule();
+    console.error(`错误: ${backendUnavailableHint()}`);
     process.exit(1);
   }
 

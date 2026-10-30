@@ -10,6 +10,8 @@ import type { MCPServerConfig } from "../config/config.ts";
 import type { LegacyTool as Tool, LegacyToolResult as ToolResult } from "../tool/types.ts";
 import type { MCPToolDefinition, MCPResource, MCPPrompt, McpPolicy } from "./types.ts";
 import { isMcpServerAllowed } from "./policy.ts";
+import { isRestrictedToPluginOnly } from "../config/plugin-only-policy.ts";
+import { PLUGIN_MCP_SERVER_PREFIX } from "../analytics/plugin-attribution.ts";
 import { MCPConnectionStatus } from "./types.ts";
 import { MCPClient } from "./client.ts";
 import {
@@ -307,6 +309,12 @@ function truncateInstructions(raw: string | undefined): string | undefined {
   return raw;
 }
 
+/**
+ * D1：内置 MCP 集成（IDE 动态注册）的标记。strictPluginOnlyCustomization 锁住 mcp-servers 时
+ * 只有带它的非插件 server 能连。Symbol 键不会出现在任何 JSON 配置里，用户无法伪造。
+ */
+export const BUILTIN_MCP_SERVER: unique symbol = Symbol("sid-code.builtin-mcp-server");
+
 export class MCPManager {
   private clients = new Map<string, MCPClient>();
   private serverConfigs = new Map<string, MCPServerConfig>();
@@ -376,6 +384,24 @@ export class MCPManager {
 
   /** 连接前的最后一道策略闸（D13）；被拒时记日志并返回 false */
   private passesPolicy(name: string, config: MCPServerConfig): boolean {
+    // D1：strictPluginOnlyCustomization 锁住 mcp-servers 面时，只放行插件作用域 server
+    // （插件来源本身已由 evaluatePluginOrigin 收到企业市场）与 IDE 动态注册的内置集成。
+    // 内置集成用 Symbol 标记而不是 `scope: "dynamic"`：scope 是普通字段，用户在 settings.json
+    // 里写一个就能冒充；Symbol 键 JSON 产生不出来。
+    // settings / .mcp.json / local / --mcp-config / 运行时手动添加一律拒。放在这里而不是
+    // config 合并层，理由同 D13：所有连接路径都经过 manager；且合并发生在 loadConfig，
+    // 早于 applyLoadedPolicy 注入锁。
+    if (
+      isRestrictedToPluginOnly("mcp-servers") &&
+      !name.startsWith(PLUGIN_MCP_SERVER_PREFIX) &&
+      !(config as { [BUILTIN_MCP_SERVER]?: boolean })[BUILTIN_MCP_SERVER]
+    ) {
+      getLogger().info(
+        "MCP",
+        `策略过滤: ${name} 被 strictPluginOnlyCustomization 拒绝（mcp-servers 面只接受企业插件），不建立连接`,
+      );
+      return false;
+    }
     if (!this.policy) return true;
     if (isMcpServerAllowed(name, config, this.policy)) return true;
     getLogger().info("MCP", `策略过滤: ${name} 被 mcpPolicy 拒绝，不建立连接`);

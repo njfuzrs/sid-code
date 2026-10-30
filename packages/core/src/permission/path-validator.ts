@@ -89,11 +89,15 @@ const PROTECTED_WRITE_DIRS = [
 /** 系统目录保护（读取拦截）— 包含 macOS /private 前缀 */
 const PROTECTED_READ_DIRS = ["/proc/", "/sys/", "/dev/"];
 
-/** 敏感文件模式 */
+/**
+ * 敏感文件模式 —— 格式 / 固定位置类（任何扩展名都拦）。
+ *
+ * 名字类规则（secret / password / credentials / token.json）单列在
+ * SENSITIVE_NAME_PATTERNS，二者语义不同，见那里的注释。
+ */
 export const SENSITIVE_FILES = [
   /\.env$/,
   /\.env\..+/,
-  /credentials/i,
   /\.pem$/,
   /\.key$/,
   /\.p12$/,
@@ -101,11 +105,9 @@ export const SENSITIVE_FILES = [
   /id_rsa/,
   /id_ed25519/,
   /\.ssh\//,
-  /password/i,
-  /secret/i,
   /\.aws\/config/,
-  // .aws/credentials 单列（SEC-AUDIT-2026-07-19 P2）：虽然通用 /credentials/i 已能覆盖，
-  // 但显式列出让「云厂商凭证」这条意图在清单里可见，也防后续有人收窄通用模式时误伤。
+  // .aws/credentials 单列（SEC-AUDIT-2026-07-19 P2）：通用 /credentials/i 是名字类规则，
+  // 会被源码扩展名豁免；这一条是固定位置规则，`.aws/credentials.ts` 这种构造也照样拦。
   /\.aws\/credentials/,
   /\.kube\/config/,
   /\.docker\/config\.json/,
@@ -113,8 +115,53 @@ export const SENSITIVE_FILES = [
   /\.pypirc$/,
   /\.netrc$/,
   /\.git-credentials/,
-  /token\.json/i,
 ];
+
+/**
+ * 敏感文件模式 —— 名字类（对整条路径做子串匹配，大小写不敏感）。
+ *
+ * 意图是拦「存凭证的数据文件」：`credentials.json`、`secrets.yaml`、`client_secret.json`、
+ * `password.txt`、`token.json`、无扩展名的 `secret`。但子串匹配不看扩展名，于是
+ * `memory/team/secret-guard.ts`、`secret-scanner.ts` 这类**做凭证防护的源码本身**
+ * 也被当凭证硬拒（本机审计日志 10 条「敏感文件」拒绝里 9 条是这种误拦）。
+ *
+ * 所以名字类规则只在文件名**不是源码/文档扩展名**时生效（见 SOURCE_EXTENSIONS）。
+ * 剩余风险：硬编码在源码里的密钥（`config/secrets.ts`）因此可读——这一类本来就防不住
+ * （文件叫 `config.ts` 照样能读），不属于文件名层的职责。
+ */
+export const SENSITIVE_NAME_PATTERNS = [/credentials/i, /password/i, /secret/i, /token\.json/i];
+
+/**
+ * 豁免名字类规则的扩展名（小写比较）。凭证文件几乎都是 json/yaml/toml/ini/txt/conf/
+ * properties/env 或无扩展名，不会是这些——刻意**不**收 json/yaml 等数据格式。
+ */
+const SOURCE_EXTENSIONS = new Set([
+  ".ts",
+  ".tsx",
+  ".js",
+  ".jsx",
+  ".mjs",
+  ".cjs",
+  ".py",
+  ".go",
+  ".rs",
+  ".java",
+  ".kt",
+  ".rb",
+  ".php",
+  ".swift",
+  ".c",
+  ".h",
+  ".cpp",
+  ".cs",
+  ".md",
+  ".mdx",
+]);
+
+/** 文件名是否带源码/文档扩展名（大小写不敏感，`Secret-Guard.TS` 也算） */
+function hasSourceExtension(p: string): boolean {
+  return SOURCE_EXTENSIONS.has(path.extname(p).toLowerCase());
+}
 
 /**
  * Windows 路径绕过模式（跨平台防御）。
@@ -178,6 +225,13 @@ export function matchesSensitivePath(realPath: string, realPathLower?: string): 
     const fallback = pattern.flags.includes("i") ? null : realPath;
     if (pattern.test(target) || (fallback !== null && pattern.test(fallback))) return true;
     if (pattern.test(withSlash)) return true;
+  }
+  // 名字类规则：源码/文档扩展名豁免（理由见 SENSITIVE_NAME_PATTERNS）。
+  // 格式类规则在上面已判完，豁免条件只作用于这一组。
+  if (!hasSourceExtension(realPath)) {
+    for (const pattern of SENSITIVE_NAME_PATTERNS) {
+      if (pattern.test(realPath)) return true;
+    }
   }
   return false;
 }

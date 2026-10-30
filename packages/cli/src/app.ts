@@ -2019,16 +2019,18 @@ export class App {
    * （每批都实时取凭据，告警去重已按凭据代数），账本额外重放一次失败盘。
    *
    * 刻意不做的：系统提示词里的 deny 摘要不重建（会打断 prompt cache；权限检查本身已生效，
-   * 模型被拦时会收到拒绝结果）。登出也走同一条重载：远程策略有缓存兜底，登出不会让企业管控失效。
+   * 模型被拦时会收到拒绝结果）。登出**不**走这条重载（只订阅 onCredentialAcquired）：登出后远程
+   * loader 没有凭据，只能靠缓存，而缓存过 10 分钟就不采信，重载会把远程 deny 清掉（企业登录缺陷 D1）。
+   * 登出后本会话已生效的企业策略与预算冻结到会话结束，与 /logout 回执的承诺一致。
    */
   private wireEnterpriseLoginRefresh(): void {
     void (async () => {
       try {
-        const { onCredentialChanged, onCredentialRejected, getDeviceCredential } =
+        const { onCredentialAcquired, onCredentialRejected, getDeviceCredential } =
           await import("@sid-code/core/identity/credential.ts");
         const { resolveBackendUrl } = await import("@sid-code/core/identity/backend-url.ts");
 
-        onCredentialChanged(() => {
+        onCredentialAcquired(() => {
           void this.refreshEnterpriseStateAfterLogin().catch((e) =>
             getLogger().warn("IDENTITY", `登录态变更后刷新企业状态失败: ${e}`),
           );
@@ -4645,6 +4647,23 @@ export class App {
         const { setRetryTelemetryObserver } = require("@sid-code/core/llm/retry-telemetry.ts");
         setRetryTelemetryObserver((event: Record<string, unknown>) => {
           traceCollectorInstance.writeRetryTelemetry(event);
+        });
+      } catch {
+        /* 采集不可用不影响启动 */
+      }
+      // L2-A：子代理循环的结构化事件（SubagentLoopTurn / StopReasonMismatch / EmptyParamRetry）。
+      // 子代理实例按调用新建，拿不到主循环的 traceAppendEvent，与上面的重试观察者同一取向。
+      try {
+        const { setSubagentLoopTraceSink } = require("@sid-code/core/agent/loop-trace-sink.ts");
+        setSubagentLoopTraceSink((event: Record<string, unknown>) => {
+          try {
+            (traceCollectorInstance as any).writer?.appendEvent?.({
+              ...event,
+              session_id: this.sessionState.sessionId,
+            });
+          } catch {
+            /* 埋点失败静默 */
+          }
         });
       } catch {
         /* 采集不可用不影响启动 */

@@ -20,9 +20,15 @@
  *   详见 replaceEmptyParamToolUses 的注释）
  * - 构造给模型的"参数为空请重试"提示
  *
- * 重试策略（在 loop.ts 中编排）：每次重试前先压缩上下文（reactiveCompact），
- * 让 input tokens 单调下降，直接打击"大上下文"这个根因——而非原样追加提示重发
- * （后者只会让上下文更饱和，加剧退化）。
+ * 重试策略（在 loop.ts 中编排）：重试前**仅当上下文占用已达 soft 档及以上**才压缩
+ * （reactiveCompact，P0-2 占用率门禁，`level=none` 时跳过）。低占用下空参数是偶发退化/截断，
+ * 压缩既无收益又会误导模型（2026-07-29 事故）。最多重试 MAX_EMPTY_PARAM_RETRIES 次，
+ * 耗尽后硬停本轮（`incompleteReason: "empty_param_exhausted"`，不跑闸门链）。
+ *
+ * 「截断」也算退化（2026-10-29）：stream-processor 对未收尾的 tool_use 会尽力解析半截 JSON，
+ * 解出非空对象时 input 非空、`_truncated=false`——旧判据只看 input 是否为空，于是缺字段的
+ * 参数被当完整参数执行（write 缺 content 尾部、bash 缺半条 command 会「看起来成功但残缺」）。
+ * 现在以 `_truncated` 标记**或** stream-processor 新增的 `_partial` 标记为硬信号判退化。
  */
 
 import type { ContentBlock } from "../llm/types.ts";
@@ -41,6 +47,21 @@ export interface EmptyParamHit {
   name: string;
   /** 在 content 数组中的下标 */
   index: number;
+  /** 参数是否在传输中被截断（content_block_stop 未到达），区别于模型真吐了空参数 */
+  truncated: boolean;
+}
+
+/**
+ * tool_use 块的参数是否被截断：content_block_stop 从未到达（stream-processor 打标）。
+ *
+ * `_truncated` / `_partial` 是 stream-processor 打在块上的**内部字段**，刻意不进
+ * `ContentBlock` 公共类型——它绝不能随请求发给 provider。
+ *   - `_truncated=true`：半截 JSON 解不出，input 维持 {}
+ *   - `_partial=true`：半截 JSON 侥幸解出了非空对象（可能停在合法边界，但字段可能不全）
+ */
+export function isTruncatedToolUse(block: ContentBlock): boolean {
+  const b = block as { _truncated?: boolean; _partial?: boolean };
+  return b._truncated === true || b._partial === true;
 }
 
 /**
@@ -87,6 +108,9 @@ function isDegradedToolUse(
   block: Extract<ContentBlock, { type: "tool_use" }>,
   getSchema?: SchemaLookup,
 ): boolean {
+  // 截断优先：它是结构事实（收尾帧没到），不依赖 schema——即使工具无必填参数，
+  // 一个没传完的调用也不能当完整调用执行。
+  if (isTruncatedToolUse(block)) return true;
   if (!isEmptyToolInput(block.input)) return false;
   // 不传 getSchema：维持旧逻辑（任何空参数即退化），保证既有调用方/测试不变
   if (!getSchema) return true;
@@ -108,7 +132,7 @@ export function detectEmptyParamToolUses(
   for (let i = 0; i < content.length; i++) {
     const block = content[i];
     if (block.type === "tool_use" && isDegradedToolUse(block, getSchema)) {
-      hits.push({ id: block.id, name: block.name, index: i });
+      hits.push({ id: block.id, name: block.name, index: i, truncated: isTruncatedToolUse(block) });
     }
   }
   return hits;
@@ -175,7 +199,7 @@ export function replaceEmptyParamToolUses(
       // 不能一律说成"模型生成了空参数"。`_truncated` 由 stream-processor 依据
       // "content_block_stop 未到达"这一硬信号打上——那证明是传输被截断，
       // 模型侧完全可能生成了完整参数。事故里报错的正是这一支，却被写成模型退化。
-      const truncated = (block as { _truncated?: boolean })._truncated === true;
+      const truncated = isTruncatedToolUse(block);
       return {
         type: "text" as const,
         text: truncated
@@ -263,4 +287,75 @@ export function buildEmptyParamRetryMessage(
     `(自动重试 ${attempt}/${maxAttempts})\n` +
     `</system-reminder>`
   );
+}
+
+/** AfterModelRaw 上的工具参数事实（聚合整数，不落 input 本身——体积 + 数据主权）。 */
+export interface ToolUseParamFacts {
+  /** 本轮 tool_use 块总数 */
+  tool_use_total: number;
+  /** input 为空（{} / null）的个数 */
+  tool_use_empty_params: number;
+  /** 参数在传输中被截断（`_truncated` 或 `_partial`）的个数 */
+  tool_use_truncated: number;
+  /** schema 声明了必填参数、但 input 为空的个数 */
+  tool_use_missing_required: number;
+}
+
+/**
+ * 统计本轮 tool_use 的参数质量事实，让 F1「该不该触发」可以从 events.jsonl 离线复算：
+ * `tool_use_truncated + tool_use_missing_required > 0` ⟺ `detectEmptyParamToolUses` 非空
+ * （判据与 isDegradedToolUse 同源，一个块同时截断且缺必填只在 truncated 计一次的语义下除外，
+ * 复算时用 `> 0` 判定即可）。
+ */
+export function summarizeToolUseParams(
+  content: ContentBlock[],
+  getSchema?: SchemaLookup,
+): ToolUseParamFacts {
+  const facts: ToolUseParamFacts = {
+    tool_use_total: 0,
+    tool_use_empty_params: 0,
+    tool_use_truncated: 0,
+    tool_use_missing_required: 0,
+  };
+  for (const block of content) {
+    if (block.type !== "tool_use") continue;
+    facts.tool_use_total++;
+    const empty = isEmptyToolInput(block.input);
+    if (empty) facts.tool_use_empty_params++;
+    if (isTruncatedToolUse(block)) facts.tool_use_truncated++;
+    if (empty && (!getSchema || toolHasRequiredParams(getSchema(block.name)))) {
+      facts.tool_use_missing_required++;
+    }
+  }
+  return facts;
+}
+
+/** `EmptyParamRetry` 事件的 data（主循环与子循环共用同一份组装，保证同口径）。 */
+export function buildEmptyParamRetryData(args: {
+  turn: number;
+  stopReason: string | null | undefined;
+  hits: EmptyParamHit[];
+  getSchema?: SchemaLookup;
+  attempt: number;
+  maxAttempts: number;
+  compacted: boolean;
+  compactLevel?: string;
+  exhausted?: boolean;
+  agentId?: string;
+}): Record<string, unknown> {
+  return {
+    turn: args.turn,
+    stop_reason: args.stopReason ?? null,
+    hits: args.hits.map((h) => ({
+      name: h.name,
+      truncated: h.truncated,
+      has_required_params: args.getSchema ? toolHasRequiredParams(args.getSchema(h.name)) : true,
+    })),
+    attempt: args.attempt,
+    max_attempts: args.maxAttempts,
+    compacted: args.compacted,
+    ...(args.compactLevel !== undefined ? { compact_level: args.compactLevel } : {}),
+    ...(args.exhausted ? { exhausted: true } : {}),
+    ...(args.agentId ? { agent_id: args.agentId } : {}),
+  };
 }

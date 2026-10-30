@@ -65,17 +65,59 @@ export function internChar(value: string): number {
 
 const SPACER_CHAR = 1;
 
-/** 一行 ANSI 文本 → 字形簇序列（带样式 / 链接 id）。同一行文本反复出现（每帧都写），结果缓存。 */
-const runCache = new Map<string, Run[]>();
-const RUN_CACHE_LIMIT = 10_000;
+/**
+ * 一行 ANSI 文本 → 字形簇序列（带样式 / 链接 id）。同一行文本反复出现（每帧都写），结果缓存。
+ *
+ * 按帧分两代（`beginRunCacheFrame` 在每次出帧落屏前切代）：本帧用到的行留在 `currentRuns`，
+ * 上一帧用过、本帧还没用到的在 `previousRuns`，命中就提升到本帧。容量因此随「一帧实际写多少行」伸缩。
+ *
+ * 不能改回「定长上限 + 满了整表 clear」：主屏的 History 每帧都把全部历史重写进屏幕缓冲，
+ * 历史行数一过上限（原 1 万），每帧都在填满 → 清空 → 重新 tokenize 之间循环，命中率归零，
+ * 单帧从 ~8ms 跳到 ~135ms（输入框每个按键都要等这一帧，表现为打字 / 粘贴卡半天）。
+ * 换成 LRU 也一样：每帧按同一顺序扫一遍、工作集大于容量的循环访问，LRU 每次都淘汰下一个要用的。
+ */
+let currentRuns = new Map<string, Run[]>();
+let previousRuns = new Map<string, Run[]>();
+/** 兜底：长时间不出帧却一直写屏（非主循环的调用方）时也要切代，免得本代无限增长 */
+const RUN_CACHE_GENERATION_CAP = 200_000;
+
+/** 出帧前调用：上一帧的缓存降为旧代，本帧没再用到的行在下一次切代时释放。 */
+export function beginRunCacheFrame(): void {
+	previousRuns = currentRuns;
+	currentRuns = new Map();
+}
+
+/** 测试用：未命中缓存（真正走 tokenize）的次数与两代当前大小。 */
+let runCacheMisses = 0;
+export function runCacheStats(): {misses: number; size: number} {
+	return {misses: runCacheMisses, size: currentRuns.size + previousRuns.size};
+}
+
+function getCachedRuns(line: string): Run[] | undefined {
+	const hit = currentRuns.get(line);
+	if (hit) {
+		return hit;
+	}
+
+	const old = previousRuns.get(line);
+	if (old) {
+		currentRuns.set(line, old);
+	}
+
+	return old;
+}
 
 function toRuns(line: string, styles: StylePool, links: HyperlinkPool): Run[] {
 	const shared = styles === stylePool && links === hyperlinkPool;
 	if (shared) {
-		const cached = runCache.get(line);
+		const cached = getCachedRuns(line);
 		if (cached) {
 			return cached;
 		}
+	}
+
+	if (shared) {
+		runCacheMisses++;
 	}
 
 	const chars = reorderBidi(styledCharsFromTokens(tokenize(line)));
@@ -111,11 +153,11 @@ function toRuns(line: string, styles: StylePool, links: HyperlinkPool): Run[] {
 	}
 
 	if (shared) {
-		if (runCache.size >= RUN_CACHE_LIMIT) {
-			runCache.clear();
+		if (currentRuns.size >= RUN_CACHE_GENERATION_CAP) {
+			beginRunCacheFrame();
 		}
 
-		runCache.set(line, runs);
+		currentRuns.set(line, runs);
 	}
 
 	return runs;
