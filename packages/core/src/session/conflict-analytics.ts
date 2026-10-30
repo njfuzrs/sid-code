@@ -40,6 +40,14 @@ export interface ConflictEvent {
   action: ConflictAction;
   /** 触发工具（PR-6：notebook_edit 接入冲突检测后加入口径） */
   tool: ConflictTool;
+  /**
+   * B11（PR-7）：弹窗等人的墙钟毫秒数。**只有走 conflictHandler 弹窗的分支才有**——
+   * blocked / branch_auto_continue / headless_fallback 都没有等人，不填（不填 0，
+   * 0 会被读成"秒批"，与 decision-telemetry 的 durationMs 同一条口径）。
+   * 没有它，冲突弹窗的等待会被整段算进工具耗时（436bfce5 实测 edit p95 = 428,400ms
+   * 而同会话 PermissionDecision(prompted=true) = 0——人的犹豫被误归到工具层）。
+   */
+  hitlMs?: number;
   /** 时间戳 */
   timestamp: number;
 }
@@ -56,10 +64,34 @@ export function hashFilePath(filePath: string): string {
 }
 
 /**
+ * 模块级观察者（B9 / PR-7）—— 与 `permission/decision-telemetry.ts`、
+ * `tool/git-operation-tracking.ts` 同一模式。
+ *
+ * ## 为什么是观察者而不是直接 import collector
+ *
+ * 冲突闸门（conflict-gate.ts）不持有 TraceCollector，为一个度量把 collector 穿透
+ * 传参改面太大（decision-telemetry 头注释同一理由）。collector 在 `registerHooks`
+ * 时把自己注入进来；未注入（测试 / 无轨迹模式）时静默 no-op，冲突检测照常工作。
+ *
+ * ## 为什么不只靠 log.debug("CONFLICT", ...)
+ *
+ * debug 日志受日志级别管辖、不带会话维度进 session-index，无法按 release 复算
+ * 「误报率代理」（continue 占比）与「冲突触发率」。轨迹是本地数据、不外发，
+ * 该进 session-index 让 northstar 快照能画出曲线。
+ */
+let _observer: ((event: ConflictEvent) => void) | null = null;
+
+/** collector 注入；传 null 解除（测试收尾用） */
+export function setConflictEventObserver(fn: ((event: ConflictEvent) => void) | null): void {
+  _observer = fn;
+}
+
+/**
  * 记录冲突事件
  *
- * 当前实现：写入 debug 日志（后续可接入 trace 系统）
- * TODO: 接入 src/trace/collector.ts 的 appendEvent，写入 raw.jsonl
+ * 两条通道并行：① debug 日志（人排查用，JSON 格式）；② 模块级观察者 →
+ * TraceCollector（进 events.jsonl 的 ConflictDetected + session-index 累加，B9）。
+ * 观察者异常一律吞掉——度量永不阻断写路径主流程。
  */
 export function emitConflictEvent(event: Omit<ConflictEvent, "timestamp">): void {
   const log = getLogger();
@@ -71,12 +103,12 @@ export function emitConflictEvent(event: Omit<ConflictEvent, "timestamp">): void
   // 写入 debug 日志（JSON 格式，便于后续解析）
   log.debug("CONFLICT", JSON.stringify(fullEvent));
 
-  // TODO: 接入 trace 系统
-  // import { getTraceCollector } from "../trace/collector.ts";
-  // getTraceCollector()?.appendEvent({
-  //   event: "ConflictDetected",
-  //   data: fullEvent,
-  // });
+  // B9：进轨迹系统（collector 注入的观察者）。异常吞掉，不阻断工具执行。
+  try {
+    _observer?.(fullEvent);
+  } catch {
+    /* 度量失败不影响主流程 */
+  }
 }
 
 /**
@@ -87,6 +119,8 @@ export function emitConflictEvent(event: Omit<ConflictEvent, "timestamp">): void
  * @param severity 严重程度
  * @param action 用户选择（或自动决策）
  * @param tool 触发工具
+ * @param hitlMs B11：弹窗等人的墙钟毫秒数（仅 conflictHandler 弹窗分支传；
+ *   自动放行 / block / 无头降级都没有等人，不传——不填 0，见 ConflictEvent.hitlMs）
  */
 export function recordConflict(
   filePath: string,
@@ -94,6 +128,7 @@ export function recordConflict(
   severity: "warning" | "critical",
   action: ConflictAction,
   tool: ConflictTool,
+  hitlMs?: number,
 ): void {
   emitConflictEvent({
     filePathHash: hashFilePath(filePath),
@@ -101,5 +136,6 @@ export function recordConflict(
     severity,
     action,
     tool,
+    ...(hitlMs !== undefined ? { hitlMs } : {}),
   });
 }

@@ -95,11 +95,17 @@ export async function runConflictGate(
 
   if (tracker.conflictHandler) {
     // Phase 2.1: warn 模式弹框让用户选择（同文件冲突才走到这里）
+    // B11（PR-7）：弹窗会阻塞工具执行，等人的墙钟此前被整段算进工具耗时
+    // （436bfce5 实测 edit p95=428,400ms 而 PermissionDecision(prompted=true)=0）。
+    // 在这里插桩，把这段等待单独记进 ConflictEvent.hitlMs，digest 的 HITL 汇总
+    // 与权限弹窗等待合并口径——量的是"人在犹豫"，不是"工具在跑"。
+    const hitlStart = Date.now();
     const action = await tracker.conflictHandler(conflict);
+    const hitlMs = Date.now() - hitlStart;
     log.info("TOOL", `并发冲突用户选择: ${action}`);
 
-    // P2-14：埋点——记录用户选择
-    recordConflict(filePath, sessionCount, conflict.severity, action, tool);
+    // P2-14：埋点——记录用户选择（hitlMs 仅弹窗分支有，见 recordConflict 注释）
+    recordConflict(filePath, sessionCount, conflict.severity, action, tool, hitlMs);
 
     if (action === "stop") {
       return {

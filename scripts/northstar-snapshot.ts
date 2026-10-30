@@ -232,6 +232,17 @@ export interface NorthstarSnapshot {
      * 带 permission_config 的会话。§4 四类缺陷的触发前提都在这个分子里——它是影响面分母。
      */
     rule_exposed_session_rate?: Metric;
+    /**
+     * 并发冲突检测（B9 / PR-7）。全部取自 session-index 的 `conflict` 字段；
+     * 旧版本行（键不存在）不进分母。
+     * - `conflict_count` = 冲突事件总数（触发率分子；分母是工具调用数，不在本索引里）
+     * - `conflict_false_positive_proxy` = 弹窗裁决 continue ÷ count（误报率代理，A1 契约：
+     *   `branch_auto_continue` 是无人裁决的自动放行，**不进分子**）
+     */
+    conflict_count?: Metric;
+    conflict_false_positive_proxy?: Metric;
+    /** 带 conflict 字段的会话行数 —— 为 0 说明窗口内全是 B9 之前的版本，不是"没冲突" */
+    conflict_sessions_with_field?: number;
   };
   /** 底座 · 可度量（含 P2-14 轨迹损坏率） */
   foundation: {
@@ -477,6 +488,21 @@ export function buildSnapshot(opts: BuildOptions = {}): NorthstarSnapshot {
     return ruleCount > 0 || c.disallowed_tools > 0;
   }).length;
 
+  // ── 更安全 · 并发冲突（B9 / PR-7）──
+  // 键不存在的旧版本行不进分母（缺失 ≠ 0，与 permission 同一条三态规则）。
+  // 触发率的分母（edit/write 次数）不在 session-index 里，这里只出**绝对计数**与
+  // 误报率代理（continue ÷ count）——分母口径留给消费侧结合工具计数复算，不硬凑。
+  const withConflict = index.filter((e) => e.conflict !== undefined);
+  let conflictCount = 0;
+  let conflictContinue = 0;
+  let conflictBlocked = 0;
+  for (const e of withConflict) {
+    const cf = e.conflict!;
+    conflictCount += cf.count;
+    conflictContinue += cf.by_action.continue ?? 0;
+    conflictBlocked += cf.by_action.blocked ?? 0;
+  }
+
   // ── 底座 ──
   const defenseCount = index.filter((e) => e.defense_triggered === true).length;
 
@@ -609,6 +635,21 @@ export function buildSnapshot(opts: BuildOptions = {}): NorthstarSnapshot {
         `${IDX}:permission_config（有规则或黑名单的会话 ÷ 带该字段的会话）`,
         "ratio",
       ),
+      // B9（PR-7）：冲突绝对计数 + 误报率代理。count 恒报（有字段行求和，0 也是事实）；
+      // 代理比率只在 count>0 时有定义，否则 null（没冲突谈不上误报率）。
+      conflict_count: metric(
+        withConflict.length > 0 ? conflictCount : null,
+        withConflict.length,
+        `${IDX}:conflict.count（求和 · 分母=带 conflict 字段的会话数）`,
+        "count",
+      ),
+      conflict_false_positive_proxy: metric(
+        conflictCount > 0 ? conflictContinue / conflictCount : null,
+        conflictCount,
+        `${IDX}:conflict.by_action.continue ÷ conflict.count（branch_auto_continue 不进分子，A1 契约）`,
+        "ratio",
+      ),
+      conflict_sessions_with_field: withConflict.length,
     },
     foundation: {
       defense_trigger_rate: metric(
@@ -802,6 +843,9 @@ const COMPARE_KEYS: Array<[string, (s: NorthstarSnapshot) => Metric | undefined]
   ["更安全 · 确认耗时 p95", (s) => s.safer?.prompt_duration_p95],
   ["更安全 · 模式越权哨兵", (s) => s.safer?.mode_guard_breaches],
   ["更安全 · 决策可归因率", (s) => s.safer?.step_attribution_rate],
+  // B9（PR-7）：冲突计数与误报率代理。同样可选链——旧快照 JSON 没有 conflict 字段
+  ["更安全 · 并发冲突计数", (s) => s.safer?.conflict_count],
+  ["更安全 · 冲突误报率代理", (s) => s.safer?.conflict_false_positive_proxy],
   ["底座 · 防线触发率", (s) => s.foundation.defense_trigger_rate],
   ["底座 · 轨迹损坏率", (s) => s.foundation.traj_corrupt_rate],
 ];
@@ -1010,6 +1054,15 @@ export function renderSnapshot(s: NorthstarSnapshot): string {
   } else if (s.safer.prompt_duration_p50.n === 0) {
     L.push("  （确认耗时 n=0：没有一次真弹过窗 —— 本机多跑在免确认档位上，属预期，不是接线缺陷）");
   }
+  // B9（PR-7）：并发冲突。有字段行才打印——旧版本行没有 conflict 键，0 行时说明
+  // 窗口内全是 B9 之前的版本，与「没有冲突」是两件事，必须分开说。
+  if (s.safer.conflict_sessions_with_field && s.safer.conflict_sessions_with_field > 0) {
+    L.push("");
+    L.push("更安全（并发冲突 · B9）:");
+    if (s.safer.conflict_count) L.push(row("冲突计数", s.safer.conflict_count));
+    if (s.safer.conflict_false_positive_proxy)
+      L.push(row("误报率代理(continue÷count)", s.safer.conflict_false_positive_proxy));
+  }
   L.push("");
 
   L.push("底座（可度量）:");
@@ -1090,6 +1143,9 @@ export function renderMarkdown(s: NorthstarSnapshot): string {
   L.push(r("更少返工", "一次 edit 成功率", s.fewerRedos.edit_first_try_rate));
   L.push(r("更安全", "HITL 介入率", s.safer.hitl_rate));
   L.push(r("更安全", "规则命中率", s.safer.rule_hit_rate));
+  // B9（PR-7）：冲突计数进生成块。可选字段——旧快照 JSON 没有 conflict_count，
+  // 有值才落一行，避免把「该版本没这指标」写成「冲突 0 次」。
+  if (s.safer.conflict_count) L.push(r("更安全", "并发冲突计数", s.safer.conflict_count));
   L.push(r("底座", "防线触发率", s.foundation.defense_trigger_rate));
   L.push(r("底座", "轨迹损坏率", s.foundation.traj_corrupt_rate));
   L.push("");
