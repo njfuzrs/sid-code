@@ -767,6 +767,11 @@ class SidCodeAgent(BaseInstalledAgent):
             # (配对约束是单向的:input 要求 output,反向不要求)。
             "--output-format",
             "stream-json",
+            # **必须**:`fa54a325`(2026-09-25)起 `--print` + stream-json 不带 `--verbose`
+            # 直接 exit 1(`cli.ts` 组合约束 ③,对齐 CC)。pin 的 30586ff 早于它所以没暴露;
+            # 换任何更新的二进制,每个 trial 都在第 0 轮死掉,形态是 0 次模型调用 + reward 0。
+            # stream-json 下 --verbose 不改输出内容。
+            "--verbose",
         ]
         flags = self.build_cli_flags()
         if flags:
