@@ -56,7 +56,7 @@ import { recordTurnsHistogram } from "../telemetry/metrics/latency-histograms.ts
 /**
  * HITL（需用户确认的权限弹窗）**累计**次数在 SessionState 上的键。
  *
- * 为什么是累计计数而不是布尔标志：`hadHitlThisTurn` 必须由**前后差值**判定。
+ * 为什么是累计计数而不是布尔标志：「本轮有没有 HITL」必须由**前后差值**判定。
  * 布尔标志一旦被某轮置真，后续每轮都会被误标成"有 HITL"（同 `LoopState` 上那些
  * 一次性标志位踩过的坑）。计数器 + 轮首快照 + 轮末比较，才能如实回答"本轮有没有"。
  *
@@ -100,7 +100,6 @@ export function readHitlPromptCount(sessionState: SessionState | undefined): num
  */
 export function beginTurn(state: LoopState, sessionState: SessionState | undefined): void {
   state.turnStartedAtMs = Date.now();
-  state.hadHitlThisTurn = false;
   state.hitlCountAtTurnStart = readHitlPromptCount(sessionState);
   state.turnCompleteEmitted = false;
   state.toolCallsDispatched = 0;
@@ -224,8 +223,7 @@ export function emitTurnComplete(
   state.turnCompleteEmitted = true;
   try {
     const hitlNow = readHitlPromptCount(sessionState);
-    const hadHitl =
-      state.hadHitlThisTurn === true || hitlNow > (state.hitlCountAtTurnStart ?? hitlNow);
+    const hadHitl = hitlNow > (state.hitlCountAtTurnStart ?? hitlNow);
 
     // P1（turns Histogram）：**必须在下面 traceAppendEvent 的早退之前**记录。
     // metric 与 events.jsonl 是两条独立通道 —— 放到早退之后，任何没接 trace sink 的
