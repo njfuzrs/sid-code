@@ -319,8 +319,12 @@ export const DEFENSES = {
     endTurnChain: false,
     toggle: NO_TOGGLE,
     metricSource: { event: "RepeatedReadonlyGuardTriggered" },
-    triage: "untriaged",
-    retireWhen: "先过 T2 判据：git-status 刷新修复后前置形态是否还出现",
+    // 10-30 回放 341 会话 / 11,959 工具轮：同签名只读探查最长连续 2 次（阈值 3）
+    triage: "B",
+    precondition:
+      "messages.json 回放：同一用户消息内同签名只读探查连续 ≥ STUCK_REPEAT_THRESHOLD 次的轮数 > 0",
+    retireWhen:
+      "git-status 冻结根因已由 bash.ts 非只读命令后 clearGitStatusCache 缓解；前置形态在 deepseek 臂上也持续不出现再议",
   },
   low_yield_spin: {
     assumption: "反复跑同参同返回值的单标量命令（`grep -c` / `wc -l`）空转",
@@ -331,8 +335,11 @@ export const DEFENSES = {
     endTurnChain: false,
     toggle: NO_TOGGLE,
     metricSource: { event: "LowYieldSpinIntervened" },
-    triage: "untriaged",
-    retireWhen: "先过 T2 判据：前置形态（连续同参单标量命令）是否出现过",
+    // 10-30 回放：低信息量形态轮仅 2 个，最长连续 1 次（阈值 5）
+    triage: "B",
+    precondition:
+      "messages.json 回放：同参同返回值的单标量 bash 连续 ≥ LOW_YIELD_SPIN_THRESHOLD 轮的次数 > 0",
+    retireWhen: "前置形态在 deepseek 臂上也持续不出现再议",
   },
   unchanged_observation: {
     assumption: "同指纹同返回值重复调用，重复劳动未产出新信息",
@@ -379,7 +386,9 @@ export const DEFENSES = {
     endTurnChain: false,
     toggle: NO_TOGGLE,
     metricSource: { event: "StopReasonMismatch" },
-    triage: "untriaged",
+    // 10-30：前置形态 2160 次全在 10-18/10-20（gpt-6-luna），早于 df051724（10-21）加此事件；
+    // 之后 luna 182 次带工具调用不一致 0 次
+    triage: "A",
     retireWhen: "不拆：环境不可靠点，没触发只说明当前 provider 合规",
   },
   thinking_divergence: {
@@ -430,9 +439,10 @@ export const DEFENSES = {
     authorizedByUser: false,
     endTurnChain: false,
     toggle: { env: ["SID_DISABLE_EDIT_FAILURE_REMINDER", "SID_EDIT_FAILURE_REMINDER_THRESHOLD"] },
-    metricSource: { none: "走 PostToolUse 回注通道，没有 trace 事件" },
-    triage: "untriaged",
-    retireWhen: "先补埋点再判",
+    metricSource: { event: "EditFailureReminder" },
+    // 10-30：tool_result 里 4 条真实提醒、事件 0 条（「触发了没记」），本次补上埋点
+    triage: "active",
+    retireWhen: "按模型拆开后某模型 EditFailureReminder 长期为 0，只对该模型关",
   },
 } as const satisfies Record<string, DefenseDef>;
 
@@ -478,7 +488,7 @@ export const INCOMPLETE_ANCHORS: Record<DoneIncompleteReason, DefenseAnchor> = {
 };
 
 /**
- * 锚点 3：`packages/core/src/query/` 内发射的 trace 事件名。键集合由门禁从源码解析对账
+ * 锚点 3：`packages/core/src/query/` 内发射的 trace 事件名（含模块级 sink 的 `*_EVENT_NAME` 常量）。键集合由门禁从源码解析对账
  * （多一个、少一个都红），所以新增发射点必须到这里登记。
  */
 export const EVENT_ANCHORS: Record<string, DefenseAnchor> = {
@@ -510,6 +520,7 @@ export const EVENT_ANCHORS: Record<string, DefenseAnchor> = {
   TodoReworkDetected: { defenseId: "todo_rework" },
   HypothesisGuideInjected: { defenseId: "hypothesis_guide" },
   StopReasonMismatch: { defenseId: "stop_reason_mismatch" },
+  EditFailureReminder: { defenseId: "edit_failure_reminder" },
 };
 
 /** `ContinueReason["type"]` 全集（报告列顺序 = 锚点表声明顺序） */

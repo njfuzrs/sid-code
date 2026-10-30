@@ -9,6 +9,7 @@ import { join } from "node:path";
 import {
   classifyEditFailure,
   recordEditOutcome,
+  setEditFailureReminderSink,
   SNIPPET_HEADER,
   type EditFailureStore,
 } from "@sid-code/core/query/edit-failure-tracker.ts";
@@ -272,5 +273,52 @@ describe("recordEditOutcome — noop / not_found 分型（发现 9）", () => {
     } finally {
       rmSync(dir, { recursive: true, force: true });
     }
+  });
+});
+
+describe("EditFailureReminder 事件（T4 补分诊：此前触发了没记）", () => {
+  const got: Array<Record<string, unknown>> = [];
+  afterEach(() => {
+    setEditFailureReminderSink(null);
+    got.length = 0;
+  });
+
+  test("每追加一次提醒落一条事件，未达阈值不落；字段与提醒一致", () => {
+    setEditFailureReminderSink((d) => got.push(d));
+    const s = makeStore();
+    recordEditOutcome(s, "edit", "/x/a.ts", true, "错误: 未找到要替换的字符串");
+    recordEditOutcome(s, "edit", "/x/a.ts", true, "错误: 未找到要替换的字符串");
+    expect(got).toHaveLength(0);
+    const r3 = recordEditOutcome(s, "edit", "/x/a.ts", true, "错误: 未找到要替换的字符串");
+    expect(r3).toBeDefined();
+    expect(got).toHaveLength(1);
+    expect(got[0]).toMatchObject({
+      tool_name: "edit",
+      file: "a.ts",
+      kind: "not_found",
+      count: 3,
+      threshold: 3,
+      escalated: false,
+    });
+    recordEditOutcome(s, "edit", "/x/a.ts", true, "错误: 未找到要替换的字符串");
+    recordEditOutcome(s, "edit", "/x/a.ts", true, "错误: 未找到要替换的字符串");
+    expect(got.map((e) => e.escalated)).toEqual([false, false, true]);
+  });
+
+  test("开关关闭时不落事件；sink 抛错不影响提醒返回", () => {
+    process.env.SID_DISABLE_EDIT_FAILURE_REMINDER = "1";
+    setEditFailureReminderSink((d) => got.push(d));
+    const s = makeStore();
+    for (let i = 0; i < 4; i++) recordEditOutcome(s, "edit", "/a.ts", true, "错误: 未找到");
+    expect(got).toHaveLength(0);
+    delete process.env.SID_DISABLE_EDIT_FAILURE_REMINDER;
+
+    setEditFailureReminderSink(() => {
+      throw new Error("sink 坏了");
+    });
+    const s2 = makeStore();
+    recordEditOutcome(s2, "edit", "/a.ts", true, "错误: 未找到");
+    recordEditOutcome(s2, "edit", "/a.ts", true, "错误: 未找到");
+    expect(recordEditOutcome(s2, "edit", "/a.ts", true, "错误: 未找到")).toBeDefined();
   });
 });

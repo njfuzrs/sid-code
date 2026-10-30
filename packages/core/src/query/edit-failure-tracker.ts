@@ -48,6 +48,34 @@ function isDisabled(): boolean {
   return v === "1" || v === "true";
 }
 
+// ─────────────────────────── EditFailureReminder 事件 ───────────────────────────
+
+/**
+ * 提醒每追加一次落一条事件（T4 补分诊，2026-10-30）。
+ *
+ * 这道防线默认开启，此前只有一行 `log.warn`：本地 tool_result 里能找到 4 条真实提醒，
+ * 事件 0 条，触发率从轨迹上算不出来，也就进不了关闭 A/B。走模块级 sink 而不是穿
+ * `traceAppendEvent`：调用方是 tool-executor（主循环与子代理共用），不持有 collector。
+ */
+export const EDIT_FAILURE_REMINDER_EVENT_NAME = "EditFailureReminder";
+
+type EditFailureSink = (data: Record<string, unknown>) => void;
+let sink: EditFailureSink | null = null;
+
+/** 注入/清除事件通道（App 在 collector 就绪后调用；测试收尾传 null 复位） */
+export function setEditFailureReminderSink(s: EditFailureSink | null): void {
+  sink = s;
+}
+
+function emitEditFailureReminder(data: Record<string, unknown>): void {
+  if (!sink) return;
+  try {
+    sink({ ...data, ts: Date.now() });
+  } catch {
+    /* 埋点失败不影响工具结果 */
+  }
+}
+
 /** 最小 session 存储接口（SessionState 满足；测试可传轻量 mock）。 */
 export interface EditFailureStore {
   get(key: string): any;
@@ -250,6 +278,15 @@ export function recordEditOutcome(
   // 升级式：达阈值后再连续失败 2 次（含），升级为"停下来换策略"（对齐系统提示的
   // failure-loop 认知——同一路子失败多次应诊断根因、换根本不同的做法，而非继续微调）。
   const escalated = count >= threshold + 2;
+  emitEditFailureReminder({
+    tool_name: toolName,
+    // 只留文件名：归类失败形态用不到完整路径
+    file: filePath.split("/").pop() ?? filePath,
+    kind,
+    count,
+    threshold,
+    escalated,
+  });
   if (escalated) {
     return (
       `<system-reminder>\n` +
