@@ -103,7 +103,7 @@ function setup(opts: {
       return r;
     },
     executeTools: async () => ({ results: [] }),
-    autoCompact: async () => {},
+    autoCompact: async () => ({ kind: "skipped" as const }),
     getAbortSignal: () => undefined,
     uuid: () => `uuid-${call}`,
     traceAppendEvent: (ev) => {

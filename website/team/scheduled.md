@@ -143,16 +143,15 @@ durable 任务——它没有把提示词送进主循环的能力，抢到驱动
 sid-code daemon start     # 前台启动
 sid-code daemon status    # 看 pid / 启动时间 / 版本
 sid-code daemon stop      # 发 SIGTERM 优雅停机
-sid-code daemon restart   # stop + 1s 等待 + start
+sid-code daemon restart   # stop，等旧进程退出（最多 10s）后 start
 sid-code daemon logs      # 看 ~/.sid-code/logs/daemon.log
 ```
 
 裸 `sid-code daemon` 等同于 `start`。另外有 `install` / `uninstall` 两个子命令，见下文「装成系统服务」。
 
 ::: warning 子命令写在最前面
-当前的参数解析会把**不认识的子命令**（如拼错的 `stauts`），以及**选项写在子命令前面**的情况
-（如 `daemon --interval 5000 status`）都当成 `start`，直接前台起一个 daemon，不会报错。
-请始终写成 `sid-code daemon <子命令> [选项]`。
+写成 `sid-code daemon <子命令> [选项]`。拼错的子命令（如 `stauts`）会报「未知子命令」；
+选项写在子命令前面（如 `daemon --interval 5000 status`）或带多余参数会直接报错退出，不会被当成 `start`。
 :::
 
 `start` / `restart` / `install` 的选项（`packages/cli/src/command/daemon-args.ts`；`install` 会把它们写进服务的启动命令）：
@@ -226,11 +225,13 @@ sid-code daemon uninstall
 
 装完开机自启，进程退出会被系统自动拉起。
 
-::: warning 服务模式下 webhook 起不来
-生成的 plist / systemd unit 里**不带 `SID_CODE_WEBHOOK_SECRET`**（systemd 只设了 `NO_COLOR=1`），
-系统拉起的进程也不继承你 shell 里 export 的变量。所以装成服务后 daemon 只做定时调度，
-加了 `--webhook` 也一样（没有 secret 时 webhook 源不启动，只在 daemon 日志里留一条 warn）。
-要接 webhook，目前请在终端里 export secret 后前台 `sid-code daemon start`。
+::: tip 服务模式下的 webhook secret
+系统拉起的服务进程不继承你 shell 里 export 的变量，secret 也不会明文写进 plist / unit（这两处文件通常是 644）。
+`install` 时如果当前环境有 `SID_CODE_WEBHOOK_SECRET`，会把它写进 `~/.sid-code/state/daemon-webhook-secret`（权限 0600），
+daemon 在环境变量缺省时读这个文件。带 `--webhook` 安装但环境变量和文件都没有时，`install` 直接报错拒绝安装。
+换 secret：重新 export 后再执行一次 `install`。
+
+安装时设了 `SID_CONFIG_DIR` 的，会一并写进服务文件，服务进程和安装时用同一个配置目录。
 :::
 
 ## GitHub webhook 触发
@@ -248,7 +249,7 @@ webhook server（`packages/core/src/daemon/server.ts`）监听 `127.0.0.1:3847`�
 CLI 和环境变量都改不了（`daemon.ts` 的 `maybeStartWebhook`）：
 
 - `POST /webhook/github` —— 解析 PR event，验签 `x-hub-signature-256`（HMAC-SHA256，`server.ts`）
-- `GET /health` —— 健康检查，返回 `{"status":"ok"}`
+- `GET /health` —— 健康检查，返回 `{"status":"ok","version":"<sid-code 版本>"}`，版本与 `daemon status` 打印的一致
 - 其它路径返回 404
 
 ::: warning 不配 secret 不监听
@@ -313,8 +314,8 @@ webhook 触发的任务在本机跑真实命令。配置前确认：
 - 队列上限 100，满了丢弃本次触发并记一条 error
 - 循环任务在队列里按任务 ID 折叠，积压时只保留最新一次，不会把同一个检查重跑一串
 
-webhook 的 job 不进这个队列，按同一个 `--max-concurrent` 单独计数，满了直接 429。
-所以调度和 webhook 同时有负载时，子进程总数最多可能是 `--max-concurrent` 的两倍。
+webhook 的 job 不进这个队列，但和调度 job **共用同一份并发计数**：名额满了 webhook 直接 429，
+webhook job 结束腾出的名额会让给排队中的调度任务。`--max-concurrent` 是整个 daemon 的子进程上限。
 
 ### 上限与开关
 

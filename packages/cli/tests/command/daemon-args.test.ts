@@ -16,3 +16,26 @@ describe("daemon CLI 参数", () => {
     expect(parseDaemonArgs(["start", "--webhook"]).opts.webhook).toBe(true);
   });
 });
+
+/**
+ * D2：拼错的子命令、选项写在子命令前面，曾被当成 start 直接前台起 daemon（实测）。
+ */
+describe("daemon 子命令解析", () => {
+  it("拼错的子命令原样返回，交给「未知子命令」分支", () => {
+    expect(parseDaemonArgs(["stauts"]).sub).toBe("stauts");
+  });
+  it("选项写在子命令前面 → 报错，不当成 start", () => {
+    expect(() => parseDaemonArgs(["--interval", "5000", "status"])).toThrow("子命令必须写在最前面");
+  });
+  it("多余的位置参数 → 报错", () => {
+    expect(() => parseDaemonArgs(["status", "extra"])).toThrow("多余的参数");
+  });
+  it("正常形态不回归", () => {
+    expect(parseDaemonArgs([]).sub).toBe("start");
+    expect(parseDaemonArgs(["--webhook"]).sub).toBe("start");
+    expect(parseDaemonArgs(["--webhook"]).opts.webhook).toBe(true);
+    const r = parseDaemonArgs(["status", "--interval", "5000"]);
+    expect(r.sub).toBe("status");
+    expect(r.opts.interval).toBe(5000);
+  });
+});

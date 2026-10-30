@@ -685,6 +685,51 @@ describe("TraceCollector", () => {
     expect(by("PostToolUse", "t-main").output_chars).toBe(5);
   });
 
+  test("★A1 后台任务等待入参（block / timeout / task_id / run_in_background）进 input_summary", async () => {
+    await fireSessionStart(hookSystem);
+    await hookSystem.firePreToolUseEvent(
+      "task_output",
+      { task_id: "af6dzodxd", block: false, timeout: 600000 },
+      "t-wait",
+    );
+    await hookSystem.firePreToolUseEvent(
+      "sub_agent",
+      { type: "explore", prompt: "p".repeat(300), run_in_background: true },
+      "t-bg",
+    );
+    const rows = readFileSync(join(testDir, "sessions", "sess-001", "events.jsonl"), "utf-8")
+      .trim()
+      .split("\n")
+      .map((l) => JSON.parse(l))
+      .filter((e) => e.event === "PreToolUse");
+    const by = (id: string) => rows.find((e) => e.data.tool_use_id === id)!.data;
+    expect(by("t-wait").input_summary).toEqual({
+      task_id: "af6dzodxd",
+      block: false,
+      timeout: 600000,
+    });
+    // prompt 不在白名单，不落盘
+    expect(by("t-bg").input_summary).toEqual({ type: "explore", run_in_background: true });
+  });
+
+  test("★A2 PostToolUse 落 progress_events 计数；0 次不写字段", async () => {
+    await fireSessionStart(hookSystem);
+    await hookSystem.firePostToolUseEvent("task_output", {}, { output: "x" }, false, "t-p", {
+      progress_events: 7,
+    });
+    await hookSystem.firePostToolUseEvent("read", {}, { output: "x" }, false, "t-0", {
+      progress_events: 0,
+    });
+    const rows = readFileSync(join(testDir, "sessions", "sess-001", "events.jsonl"), "utf-8")
+      .trim()
+      .split("\n")
+      .map((l) => JSON.parse(l))
+      .filter((e) => e.event === "PostToolUse");
+    const by = (id: string) => rows.find((e) => e.data.tool_use_id === id)!.data;
+    expect(by("t-p").progress_events).toBe(7);
+    expect("progress_events" in by("t-0")).toBe(false);
+  });
+
   // ─── PostToolUse 更新 metadata ───
 
   test("PostToolUse 更新 tools_used", async () => {
@@ -1416,7 +1461,9 @@ describe("TraceCollector", () => {
     expect(alert).toBeDefined();
     expect(alert).toContain("sess-001");
     // 必须给出下一步动作，否则用户看到告警也不知道能做什么
-    expect(alert).toContain("trace-digest");
+    // 且必须是二进制里能跑的入口：用户没有仓库，`bun scripts/trace-digest.ts` 跑不了
+    expect(alert).toContain("/trace sess-001");
+    expect(alert).not.toContain("scripts/trace-digest");
   });
 
   test("P1-7 反向验收：正常会话不产生 [高] 级告警（防误报刷屏）", async () => {

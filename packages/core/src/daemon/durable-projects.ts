@@ -9,8 +9,10 @@
  * 守护进程启动时读该清单，逐个项目加载其 scheduled_tasks.json 合并调度。
  * 项目被删 / json 不存在时从清单剔除（自愈）。
  *
- * 登记发生在 Scheduler.addDurableTask 写盘成功之后（B43：此前在 cron_create 里登记，
- * 且失败被吞；任何其他入口建的 durable 任务都不会被 daemon 发现）。
+ * 登记发生在 Scheduler.addDurableTask 里、**写盘之前**（B43：此前在 cron_create 里登记，
+ * 且失败被吞；任何其他入口建的 durable 任务都不会被 daemon 发现）。先登记再写盘的理由见
+ * addDurableTask 的注释：反过来会留下「在盘上但 daemon 永远发现不了」的任务；
+ * 写盘失败留下的多余登记项由 listDurableProjects 自愈剔除。
  * 注册表是多进程读改写的，一律包在文件互斥里并原子写，否则两个项目同时登记会互相覆盖。
  */
 

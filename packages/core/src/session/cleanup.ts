@@ -308,8 +308,9 @@ export async function identifySessionsToDelete(
  * 保守边界（避免误删评测/训练资产）：
  * - 只删与被清理「交互会话」**同 id** 的 trajectory 目录。SWE-bench / SFT 等无头评测入口
  *   通常不写 SessionStore（不会出现在 sessions/ 目录），其 id 不会进入本清理流程，天然隔离。
- * - resume 场景下 trajectory 写在本进程新 id 下（见 Bug3 桥接），与旧会话 id 不同，
- *   此处删不到；这类轨迹由 TraceCollector 的 LRU（maxSessionsRetained）兜底回收，不在此强删。
+ * - resume 场景下 TraceCollector 续写的是**旧会话 id** 的 trajectory 目录（collector.ts
+ *   `traceSessionId = resumed_from`），所以清理旧会话时这份续写过的轨迹会被一并删除，
+ *   与普通会话一样受 maxAge 约束；正在被恢复的会话由上文的 D3 保护跳过。
  * - 删除走 best-effort，失败仅告警不抛——清理不是关键路径。
  */
 export async function deleteSessionArtifacts(

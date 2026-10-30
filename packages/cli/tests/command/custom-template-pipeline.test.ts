@@ -13,7 +13,7 @@ import { join } from "path";
 import { CustomCommand } from "@sid-code/cli/command/custom.ts";
 
 /** 与 custom.ts 的 FILE_INJECTION_MAX_BYTES 同值（该常量不导出，避免只为测试留死导出） */
-const FILE_INJECTION_MAX_BYTES = 10 * 1024 * 1024;
+const FILE_INJECTION_MAX_BYTES = 256 * 1024;
 
 /** 只做参数替换：无注入的模板 + 空 ctx（不需要任何确认通道） */
 async function substituteArgs(tpl: string, args: string): Promise<string> {

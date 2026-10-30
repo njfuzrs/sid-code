@@ -117,7 +117,7 @@ function makeGoalLoop(opts: {
       toolIdx++;
       return { results: [bashResult(output)] };
     },
-    autoCompact: async () => {},
+    autoCompact: async () => ({ kind: "skipped" as const }),
     getAbortSignal: () => undefined,
     uuid: () => `uuid-${respIdx}`,
     getGoalState: () => goal,

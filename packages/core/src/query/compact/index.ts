@@ -26,6 +26,11 @@ export interface CompactPipelineResult {
   totalSavedChars: number;
   /** 是否需要继续执行 autoCompact（LLM 摘要） */
   needsAutoCompact: boolean;
+  /**
+   * 仅「进来时就已达标、一步没做」时为 already_below_target（压缩结局三态的 noop 来源）。
+   * 「三步都无动作但仍超标」不填：那时 hard 档还会接着跑 collapse / autoCompact，不是最终结局。
+   */
+  noopReason?: "already_below_target";
 }
 
 /** 压缩管道配置 */
@@ -77,7 +82,13 @@ export function runCompactPipeline(
 
   // 如果已经低于目标，不需要压缩
   if (currentRatio <= targetRatio) {
-    return { messages: currentMessages, steps, totalSavedChars, needsAutoCompact: false };
+    return {
+      messages: currentMessages,
+      steps,
+      totalSavedChars,
+      needsAutoCompact: false,
+      noopReason: "already_below_target",
+    };
   }
 
   // ① applyToolResultBudget — 超大工具结果替换为占位符
