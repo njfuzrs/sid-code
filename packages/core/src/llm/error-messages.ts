@@ -164,6 +164,13 @@ export const ERROR_USER_MESSAGES: Record<string, ErrorUserMessage> = {
       "用 /context 查看明细，精简规则文件或禁用部分 MCP 服务器；或换一个上下文窗口更大的模型",
   },
 
+  context_input_overflow: {
+    title: "本轮输入超出模型窗口",
+    suggestion:
+      "这条输入（含 @ 引用 / 粘贴内容）本身就超出窗口，/compact 压不掉它。" +
+      "原文已放回输入框：去掉过大的引用、改用 Read 分段读取，或拆成多轮发送",
+  },
+
   // ─── 自定义扩展码（非 errors.ts 枚举，但实际出现的场景）───
   subagent_failed: {
     title: "子代理执行失败",
