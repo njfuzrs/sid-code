@@ -460,6 +460,33 @@ describe("P2-13 · 三个会话数分母与一致性断言", () => {
     expect(a?.ok).toBe(false);
   });
 
+  test("【回归】按版本过滤时，账本/索引分母仍取全部本地行（与轨迹目录数同一总体）", () => {
+    // v0.1.613 发版快照实测：--version 过滤后账本/索引各剩 1 个会话，却拿去比
+    // 不分版本的轨迹目录数 577，两条一致性断言恒红。之前几版新版本 0 会话，断言被静默跳过。
+    // 这里只注入盘上目录类分母（active / trajValid），账本/索引分母必须由数据推出。
+    const index = Array.from({ length: 40 }, (_, i) =>
+      idx({ session_id: `s${i}`, app_version: i === 0 ? "0.1.613" : "0.1.612" }),
+    );
+    const ledger = Array.from({ length: 40 }, (_, i) =>
+      led({ sessionId: `s${i}`, appVersion: i === 0 ? "0.1.613" : "0.1.612" }),
+    );
+    const s = buildSnapshot({
+      data: { index, ledger },
+      denominators: { activeSessions: 100, trajValidSessions: 20 },
+      appVersion: "0.1.613",
+      onlyVersion: "0.1.613",
+      now: NOW,
+    });
+    expect(s.scope).toBe("version");
+    expect(s.denominators.ledgerSessions).toBe(40);
+    expect(s.denominators.indexSessions).toBe(40);
+    for (const prefix of ["账本会话数", "索引会话数"]) {
+      expect(s.assertions.find((x) => x.name.startsWith(prefix))?.ok).toBe(true);
+    }
+    // 指标本身仍按版本过滤：只有 v0.1.613 那 1 行进分布
+    expect(s.faster.e2e_p50.n).toBe(1);
+  });
+
   test("数据源为空时不产出假 pass 断言（报 skip 比报 pass 诚实）", () => {
     const s = snap([], [], {
       denominators: {
