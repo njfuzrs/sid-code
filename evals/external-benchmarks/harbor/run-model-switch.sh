@@ -124,6 +124,18 @@ COMMON=(-d "$DATASET" -m "$HARBOR_MODEL" -n "${SID_MODELSWITCH_N:-6}" -k 1
         --verifier-timeout-multiplier 6 --agent-timeout-multiplier 4
         --environment-build-timeout-multiplier 3 -y)
 
+# ── 容器内存上限覆盖（2026-10-31 T7 实测后加）──────────────────────────────────
+#
+# 任务默认 2GiB。T7 用 27df03bf 跑同一批题时，被 memcg OOM 杀掉的是 **sid-code 自己**
+# （dmesg：`Killed process … (sid-code) anon-rss 1.2–1.4GiB`），不是任务进程；
+# 容器峰值 p95 从上轮（30586ff）的 1439MiB 涨到 1836MiB。被杀的 trial 形态是
+# `NonZeroAgentExitCodeError` + reward 0 —— **与「没解出来」不可区分**。
+# 默认不传（与历史 run 等价）；要覆盖时显式设，且并发 × 上限不要超过 colima VM 内存。
+if [ -n "${SID_HARBOR_OVERRIDE_MEMORY_MB:-}" ]; then
+  COMMON+=(--override-memory-mb "$SID_HARBOR_OVERRIDE_MEMORY_MB")
+  echo "    ⚠️ 容器内存上限覆盖为 ${SID_HARBOR_OVERRIDE_MEMORY_MB}MB（与默认 2GiB 的 run 不可直接并排）"
+fi
+
 # ── E1：verifier 的 uv 走宿主本地镜像（2026-09-02 接入）───────────────────────
 #
 # 为什么：`runs/modelswitch-base` 里 **5/10 题的 reward=0 是假 0** —— verifier 没判分，
