@@ -27,7 +27,7 @@
       "date": "2026-10-30",
       "highlight": "工作区外读取改为需确认，一批权限误判与绕过一并修好",
       "userFacing": true,
-      "channel": "beta",
+      "channel": "stable",
       "mergedInto": null,
       "covers": null,
       "betaNote": null,
