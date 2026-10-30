@@ -276,6 +276,7 @@ export async function* runHeadlessStreaming(
         try {
           for await (const message of engine.submitMessage(command.value, {
             uuid: command.uuid,
+            mergedUuids: command.mergedUuids,
           })) {
             if ((message as { type?: unknown }).type === "result") resultEmitted = true;
             yield message;
