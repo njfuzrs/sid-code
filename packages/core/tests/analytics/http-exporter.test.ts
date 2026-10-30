@@ -164,6 +164,8 @@ describe("HTTP 事件导出器（spec 17 §4.2）", () => {
   });
 });
 
+// 本组的 exporter 都代表内置 sid-backend（init-helpers 只给它打开 attachDeviceCredential）。
+// 第三方 collector（不开）的口径见文件末尾「第三方 collector 不带设备凭据」组。
 describe("设备鉴权与稳定不发（M4 PR-4.1）", () => {
   let dir: string;
   let cacheDir: string;
@@ -225,6 +227,7 @@ describe("设备鉴权与稳定不发（M4 PR-4.1）", () => {
     const fetched = stubFetch();
     const exporter = new HttpExporter({
       name: "ev",
+      attachDeviceCredential: true,
       endpoint: EVENTS_URL,
       batchSize: 1,
     });
@@ -240,6 +243,7 @@ describe("设备鉴权与稳定不发（M4 PR-4.1）", () => {
     const fetched = stubFetch();
     const exporter = new HttpExporter({
       name: "ev",
+      attachDeviceCredential: true,
       endpoint: EVENTS_URL,
       authHeader: STATIC_AUTH,
       batchSize: 1,
@@ -253,6 +257,7 @@ describe("设备鉴权与稳定不发（M4 PR-4.1）", () => {
     const fetched = stubFetch();
     const exporter = new HttpExporter({
       name: "ev",
+      attachDeviceCredential: true,
       endpoint: EVENTS_URL,
       authHeader: STATIC_AUTH,
       batchSize: 1,
@@ -272,6 +277,7 @@ describe("设备鉴权与稳定不发（M4 PR-4.1）", () => {
     const fetched = stubFetch();
     const exporter = new HttpExporter({
       name: "ev",
+      attachDeviceCredential: true,
       endpoint: EVENTS_URL,
       batchSize: 1,
     });
@@ -288,6 +294,7 @@ describe("设备鉴权与稳定不发（M4 PR-4.1）", () => {
     const diskCache = new EventDiskCache({ cacheDir, sessionId: "s-exp", maxRetries: 8 });
     const exporter = new HttpExporter({
       name: "ev",
+      attachDeviceCredential: true,
       endpoint: EVENTS_URL,
       batchSize: 1,
       diskCache,
@@ -303,6 +310,7 @@ describe("设备鉴权与稳定不发（M4 PR-4.1）", () => {
     const diskCache = new EventDiskCache({ cacheDir, sessionId: "s1", maxRetries: 8 });
     const exporter = new HttpExporter({
       name: "ev",
+      attachDeviceCredential: true,
       endpoint: EVENTS_URL,
       batchSize: 1,
       diskCache,
@@ -320,6 +328,7 @@ describe("设备鉴权与稳定不发（M4 PR-4.1）", () => {
     const diskCache = new EventDiskCache({ cacheDir, sessionId: "s2", maxRetries: 8 });
     const exporter = new HttpExporter({
       name: "ev",
+      attachDeviceCredential: true,
       endpoint: plaintextUrl,
       batchSize: 1,
       diskCache,
@@ -336,6 +345,7 @@ describe("设备鉴权与稳定不发（M4 PR-4.1）", () => {
     const fetched = stubFetch();
     const exporter = new HttpExporter({
       name: "ev",
+      attachDeviceCredential: true,
       endpoint: loopbackUrl,
       batchSize: 1,
     });
@@ -352,6 +362,7 @@ describe("设备鉴权与稳定不发（M4 PR-4.1）", () => {
     const diskCache = new EventDiskCache({ cacheDir, sessionId: "s3", maxRetries: 8 });
     const exporter = new HttpExporter({
       name: "ev",
+      attachDeviceCredential: true,
       endpoint: EVENTS_URL,
       batchSize: 1,
       diskCache,
@@ -367,6 +378,7 @@ describe("设备鉴权与稳定不发（M4 PR-4.1）", () => {
     stubFetch(401);
     const exporter = new HttpExporter({
       name: "ev",
+      attachDeviceCredential: true,
       endpoint: EVENTS_URL,
       batchSize: 1,
     });
@@ -397,6 +409,7 @@ describe("设备鉴权与稳定不发（M4 PR-4.1）", () => {
 
     const exporter = new HttpExporter({
       name: "ev",
+      attachDeviceCredential: true,
       endpoint: EVENTS_URL,
       batchSize: 1,
       diskCache,
@@ -421,6 +434,7 @@ describe("设备鉴权与稳定不发（M4 PR-4.1）", () => {
 
     const exporter = new HttpExporter({
       name: "ev",
+      attachDeviceCredential: true,
       endpoint: EVENTS_URL,
       batchSize: 1,
       diskCache,
@@ -428,5 +442,89 @@ describe("设备鉴权与稳定不发（M4 PR-4.1）", () => {
     await exporter.recoverFromDisk();
     expect(fetched.to(EVENTS_URL).length).toBe(1);
     expect(existsSync(leftover)).toBe(false);
+  });
+});
+
+/**
+ * 企业登录缺陷 D2/D3（2026-10-22 核查）：analytics.backends[] 里 type:"http" 的第三方 collector
+ * 曾经和内置后端共用同一条「先带设备凭据」路径——凭据离开 backend.url 同源边界、
+ * 用户配的 authHeader 被顶掉，collector 回 401 时 TUI 还误报「企业登录已失效」。
+ */
+describe("第三方 collector 不带设备凭据（D2/D3）", () => {
+  const COLLECTOR_URL = "https://collector.example.org/e";
+  const COLLECTOR_AUTH = "Bearer probe-token";
+  let dir: string;
+  let prevConfigDir: string | undefined;
+
+  beforeEach(() => {
+    prevConfigDir = process.env.SID_CONFIG_DIR;
+    dir = mkdtempSync(join(tmpdir(), "sid-http-3p-"));
+    process.env.SID_CONFIG_DIR = dir;
+    assertIsolated();
+    __resetIdentityForTest();
+    // 前提：本机已登录企业后端
+    saveDeviceCredential({ credential: "dev-cred-secret" });
+  });
+  afterEach(() => {
+    globalThis.fetch = realFetch;
+    __resetIdentityForTest();
+    if (prevConfigDir === undefined) delete process.env.SID_CONFIG_DIR;
+    else process.env.SID_CONFIG_DIR = prevConfigDir;
+    rmSync(dir, { recursive: true, force: true });
+  });
+
+  function stub(status: number): () => Array<Record<string, string>> {
+    const calls: Array<{ url: string; headers: Record<string, string> }> = [];
+    globalThis.fetch = (async (url: any, opts: any) => {
+      calls.push({ url: String(url), headers: opts.headers as Record<string, string> });
+      return new Response("{}", { status });
+    }) as any;
+    return () => calls.filter((c) => c.url === COLLECTOR_URL).map((c) => c.headers);
+  }
+
+  test("已登录时第三方 collector 收到的是自己的 authHeader，不是设备凭据", async () => {
+    const calls = stub(200);
+    const exporter = new HttpExporter({
+      name: "probe",
+      endpoint: COLLECTOR_URL,
+      authHeader: COLLECTOR_AUTH,
+      batchSize: 1,
+    });
+    exporter.send("e1", {});
+    await new Promise((r) => setTimeout(r, 20));
+    const got = calls();
+    expect(got.length).toBe(1);
+    expect(got[0].Authorization).toBe(COLLECTOR_AUTH);
+    // 任何一个头都不能带出设备凭据明文
+    expect(JSON.stringify(got[0])).not.toContain("dev-cred-secret");
+  });
+
+  test("没配 authHeader 的第三方 collector：稳定不发，不拿设备凭据兜底", async () => {
+    const calls = stub(200);
+    const exporter = new HttpExporter({ name: "probe", endpoint: COLLECTOR_URL, batchSize: 1 });
+    exporter.send("e1", {});
+    await new Promise((r) => setTimeout(r, 20));
+    expect(calls().length).toBe(0);
+  });
+
+  test("第三方 collector 回 401 不上报「企业登录已失效」", async () => {
+    const { onCredentialRejected } = await import("@sid-code/core/identity/credential.ts");
+    const rejected: string[] = [];
+    const off = onCredentialRejected((src) => rejected.push(src));
+    try {
+      const calls = stub(401);
+      const exporter = new HttpExporter({
+        name: "probe",
+        endpoint: COLLECTOR_URL,
+        authHeader: COLLECTOR_AUTH,
+        batchSize: 1,
+      });
+      exporter.send("e1", {});
+      await new Promise((r) => setTimeout(r, 20));
+      expect(calls().length).toBe(1);
+      expect(rejected).toEqual([]);
+    } finally {
+      off();
+    }
   });
 });
