@@ -277,14 +277,13 @@ export interface LoopState {
    */
   turnStartedAtMs?: number;
   /**
-   * P1-4：本轮是否发生过 HITL（需用户确认的权限弹窗）。
+   * P1-4：轮首的 HITL 累计计数快照，轮末与当前值比较得出"本轮有没有"。
    *
-   * 由 `tool-executor` 经 `sessionState` 的计数器回传（见 `HITL_PROMPT_COUNT_KEY`），
-   * queryLoop 在轮末取差值判定 —— 不直接传布尔，因为"本轮有没有"必须是
-   * **前后差值**而非累计标志：累计标志一旦置真，后面每轮都会被标成有 HITL。
+   * 计数由 `tool-executor` 经 `sessionState` 回传（见 `HITL_PROMPT_COUNT_KEY`）。
+   * 不用布尔，因为"本轮有没有"必须是**前后差值**而非累计标志：累计标志一旦置真，
+   * 后面每轮都会被标成有 HITL。（曾有个 `hadHitlThisTurn` 布尔字段，全仓零置真点，
+   * 2026-10-30 T3a 作为死字段删除。）
    */
-  hadHitlThisTurn?: boolean;
-  /** P1-4：轮首的 HITL 累计计数快照，轮末与当前值比较得出"本轮有没有" */
   hitlCountAtTurnStart?: number;
   /**
    * P1-4：本轮的 `TurnComplete` 是否已发射（幂等位）。
@@ -745,6 +744,49 @@ export interface LoopState {
    */
   incompleteReason?: DoneIncompleteReason;
 }
+
+/**
+ * `LoopState` 布尔字段的写入方式分类（T3a）。门禁在
+ * `packages/core/tests/query/one-shot-flag-invariant.test.ts`，扫 `packages/core/src/` 全部源码：
+ *
+ * - `set_only`：只许置真。`LoopState` 每次 queryLoop 调用重建，一次调用内一旦置真就不能回落 ——
+ *   回落等于重新发一份配额（P0-2 `hasAttemptedReactiveCompact` 在 continue 分支被清零就是这个形态）。
+ * - `entry_reset`：`= false` 只许出现在 `beginTurn` 函数体内（每次调用入口复位一次）。
+ * - `pending_consume`：挂起后消费。置真不限，`= false` / `= undefined` 全仓恰好一处（消费点）；
+ *   出现第二处就是有人在别处偷偷吞掉了挂起的提醒。
+ * - `tracking`：普通跟踪值，不约束。
+ *
+ * 新增布尔字段必须在这里分类，否则完备性断言变红（`Record` 也会让 tsc 报错）。
+ * 注意：跨续跑（`resumeWithNotifications` 整体重建 state）这一类失败不写任何赋值，
+ * 本门禁拦不住，见方案 T3b。
+ */
+export type LoopStateFlagKind = "set_only" | "entry_reset" | "pending_consume" | "tracking";
+
+type LoopStateBooleanKey = {
+  [K in keyof LoopState]-?: NonNullable<LoopState[K]> extends boolean ? K : never;
+}[keyof LoopState];
+
+export const LOOP_STATE_FLAG_KIND: Record<LoopStateBooleanKey, LoopStateFlagKind> = {
+  diminishingReturnsHandoffDone: "set_only",
+  hasAttemptedReactiveCompact: "set_only",
+  compactCircuitOpen: "set_only",
+  compactSkipNotified: "set_only",
+  stallStopRequested: "set_only",
+  pendingRefutedReuseCleared: "set_only",
+  hypothesisEventGuideInjected: "set_only",
+  hypothesisGuideInjected: "set_only",
+  lspHealthWarned: "set_only",
+  thinkingBudgetCapNotified: "set_only",
+  softTurnLimitReminded: "set_only",
+  turnCompleteEmitted: "entry_reset",
+  pendingThinkingDivergenceReminder: "pending_consume",
+  pendingOutputStallReminder: "pending_consume",
+  pendingJudgmentGuide: "pending_consume",
+  goalReminderPendingAfterCompact: "pending_consume",
+  todoReminderPendingAfterCompact: "pending_consume",
+  deferredToolsPendingAfterCompact: "pending_consume",
+  prevResponseHadToolUse: "tracking",
+};
 
 /** 创建初始循环状态 */
 export function createInitialLoopState(maxTurns: number): LoopState {
