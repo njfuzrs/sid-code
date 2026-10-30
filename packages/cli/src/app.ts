@@ -99,6 +99,7 @@ import {
   createSDKCanUseTool,
   classifyHeadlessStreamText,
   formatHeadlessEvent,
+  collectTurnAssistantText,
 } from "@sid-code/core/sdk/index.ts";
 import {
   summarizeDenials,
@@ -8405,6 +8406,9 @@ export class App {
     }
 
     let streamBuffer = "";
+    // F1-D04：json 输出的答案按本轮 assistant_message 事件收集，与 streamBuffer 同口径
+    // （门禁/续写让一轮产生多条带文本的 assistant 时，旧实现只取最后一条，报告丢失）。
+    let turnAssistants: import("@sid-code/core/llm/types.ts").Message[] = [];
     this.queryEngine.setStreamTextCallback((text) => {
       // 静默-3：重试进度消息（stream-processor 的 `[重试中] …`）不能拼进最终答案，
       // 否则会污染 headless/管道消费者的结构化输出。与 TUI 回调对齐：分流到 stderr。
@@ -8463,6 +8467,7 @@ export class App {
       // 续跑轮的答案覆盖首轮（-p 只输出最终答复，「等子代理返回」那句不是结论）；
       // 但续跑轮若一个字都没产出，必须退回首轮内容，不能把唯一的答案清空。
       let previousBuffer: string | null = null;
+      let previousAssistants: typeof turnAssistants | null = null;
       for (;;) {
         let turnOk = false;
         for await (const event of events) {
@@ -8478,6 +8483,7 @@ export class App {
           }
           // §3.2：queryLoop 异常现封装为 fatal_error 事件（不再穿透 for-await）。
           // 无头模式需显式转成 runError，使 SessionEnd reason=error、错误落盘可见。
+          if (event.kind === "assistant_message") turnAssistants.push(event.message);
           if (event.kind === "fatal_error") {
             runError = new Error(event.message);
             if (event.stack) runError.stack = event.stack;
@@ -8500,6 +8506,11 @@ export class App {
         }
         if (previousBuffer !== null && streamBuffer === "") streamBuffer = previousBuffer;
         previousBuffer = null;
+        // 与 streamBuffer 同一续跑口径：续跑轮有文本就覆盖首轮，一个字都没有就退回首轮。
+        if (previousAssistants !== null && collectTurnAssistantText(turnAssistants).text === "") {
+          turnAssistants = previousAssistants;
+        }
+        previousAssistants = null;
         if (!turnOk) break;
         const { waitForBackgroundNotification } =
           await import("@sid-code/core/task/background-wake.ts");
@@ -8508,6 +8519,8 @@ export class App {
         process.stderr.write("[runHeadless] 后台任务已返回，继续处理\n");
         previousBuffer = streamBuffer;
         streamBuffer = "";
+        previousAssistants = turnAssistants;
+        turnAssistants = [];
         events = this.queryEngine.resumeWithNotifications();
       }
     } catch (err: any) {
@@ -8564,8 +8577,17 @@ export class App {
 
     // 输出结果（即使出错也输出已收到的内容，便于诊断）
     if (this.config.outputFormat === "json") {
-      const messages = this.ctxMgr.getMessages();
-      const lastAssistant = messages.filter((m) => m.role === "assistant").pop();
+      // F1-D04：content 保持 ContentBlock 数组形状，但改成本轮全部 assistant 的 text block；
+      // result 是拼接文本，与 stream-json 的 result 同口径。本轮没有 assistant_message 事件时
+      // （无头斜杠命令的 output 分支直接写历史），退回历史最后一条 assistant 的 text。
+      let turnText = collectTurnAssistantText(turnAssistants);
+      if (turnAssistants.length === 0) {
+        const lastAssistant = this.ctxMgr
+          .getMessages()
+          .filter((m) => m.role === "assistant")
+          .pop();
+        if (lastAssistant) turnText = collectTurnAssistantText([lastAssistant]);
+      }
       const traceOutputDir = this.config.trace?.outputDir ?? sidPaths.trajectories();
       const result: Record<string, unknown> = {
         session_id: this.sessionState.sessionId,
@@ -8576,7 +8598,8 @@ export class App {
           "session.traj",
         ),
         role: "assistant",
-        content: lastAssistant?.content || [],
+        content: turnText.blocks,
+        result: turnText.text,
         // 原样保留（已有调用方在读）；inputTokens 口径随 provider 变，跨 provider 请读 usage_normalized。
         usage: this.sessionState.getTotalUsage(),
         // #8 / #9：逐模型归一化后累加的互斥分段 + model/provider/成本/轮次/耗时，对齐 stream-json 的 result。

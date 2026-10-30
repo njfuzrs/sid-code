@@ -51,3 +51,5 @@ export {
   RETRY_TEXT_PREFIX,
 } from "./headless-event-format.ts";
 export type { HeadlessEventOutput } from "./headless-event-format.ts";
+export { collectTurnAssistantText } from "./turn-text.ts";
+export type { TurnAssistantText } from "./turn-text.ts";

@@ -32,14 +32,8 @@ sid-code -p "calc.ts 里定义了几个顶层函数？只回一个数字。" --o
   "session_id": "20260728-004418-1c608aba",
   "trajectory_path": "/tmp/cleancfg/trajectories/sessions/20260728-004418-1c608aba/session.traj",
   "role": "assistant",
-  "content": [
-    {
-      "type": "thinking",
-      "thinking": "文件内容已经读出来了。看一下顶层函数：\n\n1. `add` - 第1行，export function\n2. `total` - 第5行，export function\n3. `bad` - 第9行，const，不是函数\n\n所以有 2 个顶层函数。",
-      "durationMs": 1828
-    },
-    { "type": "text", "text": "2" }
-  ],
+  "content": [{ "type": "text", "text": "2" }],
+  "result": "2",
   "usage": {
     "inputTokens": 75590,
     "outputTokens": 227,
@@ -67,14 +61,22 @@ sid-code -p "calc.ts 里定义了几个顶层函数？只回一个数字。" --o
 跨 provider 统计 token 读 `usage_normalized`，它是逐模型归一化后累加的互斥分段，`prompt_total` 与用量账本同口径。
 `provider` 在会话中途 fallback 换过 provider 时是逗号拼接的多值。
 
-注意 `content` 是**数组**，`type` 不止 `text`：实际可能出现 `text`、`thinking`、
-`redacted_thinking`、`provider_reasoning`、`tool_use`、`tool_result` 六种
-（见 `packages/core/src/sdk/schemas.ts` 的 `ContentBlockSchema`）。
-取最终答案要挑 `type === "text"`：
+取最终答案直接读 `result`，它是本次 `-p` 调用里模型全部回答文本按顺序拼接的结果，
+与 `text` 格式的输出、`stream-json` 最后那条 `result` 消息的 `result` 字段同口径：
 
 ```bash
-sid-code -p "..." --output-format json | jq -r '.content[] | select(.type=="text") | .text'
+sid-code -p "..." --output-format json | jq -r '.result'
 ```
+
+`content` 是同一份内容的分块形式：本次调用里每条 assistant 消息的 `text` 块按顺序排成的数组，
+不含 `thinking` / `tool_use` 等块。一次调用可能产生多条带文本的 assistant 消息
+（比如模型先写完报告、调一次工具、再补一句收尾），这时 `content` 有多块，
+只读 `content[0]` 会漏掉后面的内容。
+
+::: warning 0.1.612 及之前的行为
+旧版本 `content` 只取历史里**最后一条** assistant 消息的全部块（含 `thinking`），
+也没有 `result` 字段。模型「报告 → 工具调用 → 一句话收尾」时，`content` 只剩那句收尾。
+:::
 
 ## 三种输出格式
 

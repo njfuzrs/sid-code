@@ -20,6 +20,7 @@ import type { Message, Usage } from "../llm/types.ts";
 import type { QueryEngineEvent } from "../query/types.ts";
 import type { SDKMessage, SDKResultMessage } from "./types.ts";
 import { convertToSDKMessage, type ConvertContext } from "./message-converter.ts";
+import { collectTurnAssistantText } from "./turn-text.ts";
 
 export interface SDKQueryEngineConfig {
   cwd: string;
@@ -193,6 +194,8 @@ export class SDKQueryEngine {
     // ③ 消费内核事件流
     let terminalEmitted = false;
     let runError: Error | null = null;
+    // F1-D04：本轮 assistant 消息按事件收集，result 取它们的全部文本（见 turn-text.ts）。
+    const turnAssistants: Message[] = [];
 
     // G4：token 增量在生产路径上不走事件流。queryLoop 的 processStream 是 Promise，
     // 文本通过 onText 回调桥接（engine.ts 的 setStreamTextCallback），事件流里
@@ -268,6 +271,7 @@ export class SDKQueryEngine {
         const event = winner.step.value;
         if (event.kind === "assistant_message") {
           this.turnCount++;
+          turnAssistants.push(event.message);
         }
 
         const ctx = this.buildCtx();
@@ -282,7 +286,7 @@ export class SDKQueryEngine {
 
         // 终止消息（result）单独处理：补齐文本/API 耗时后 yield，然后结束
         if (sdkMsg.type === "result") {
-          yield this.finalizeResult(sdkMsg as SDKResultMessage);
+          yield this.finalizeResult(sdkMsg as SDKResultMessage, turnAssistants);
           terminalEmitted = true;
           return;
         }
@@ -316,36 +320,42 @@ export class SDKQueryEngine {
       if (runError) {
         // 走 finalizeResult：错误结果同样要带上权限拒绝清单（D1）。
         // 不走的话，异常收尾的会话在 stream-json 里看不到哪些工具被拒了。
-        yield this.finalizeResult({
-          type: "result",
-          subtype: "error_during_execution",
-          errors: [runError.message],
-          duration_ms: this.now() - this.startTime,
-          num_turns: this.turnCount,
-          // 同 message-converter：非 max_turns 路径恒 0，但字段必须在（见那里的注释）。
-          num_turns_without_model_interaction: 0,
-          total_cost_usd: this.driver.getCostUsd(),
-          usage: this.driver.getUsage(),
-          session_id: this.config.sessionId,
-        });
+        yield this.finalizeResult(
+          {
+            type: "result",
+            subtype: "error_during_execution",
+            errors: [runError.message],
+            duration_ms: this.now() - this.startTime,
+            num_turns: this.turnCount,
+            // 同 message-converter：非 max_turns 路径恒 0，但字段必须在（见那里的注释）。
+            num_turns_without_model_interaction: 0,
+            total_cost_usd: this.driver.getCostUsd(),
+            usage: this.driver.getUsage(),
+            session_id: this.config.sessionId,
+          },
+          turnAssistants,
+        );
       } else {
         // 正常结束但无 done 事件（如 hook_blocked 提前 return）
-        yield this.finalizeResult({
-          type: "result",
-          subtype: "success",
-          duration_ms: this.now() - this.startTime,
-          duration_api_ms: this.driver.getApiDurationMs?.() ?? 0,
-          is_error: false,
-          num_turns: this.turnCount,
-          result: "",
-          stop_reason: "end_turn",
-          // §20.5：这条是"没有 done 事件"的合成路径，拿不到 LoopState，故恒 0。
-          // 填 0 而不是省略 —— 字段必须在所有 result 上结构性存在（同下方那条注释）。
-          num_turns_without_model_interaction: 0,
-          total_cost_usd: this.driver.getCostUsd(),
-          usage: this.driver.getUsage(),
-          session_id: this.config.sessionId,
-        });
+        yield this.finalizeResult(
+          {
+            type: "result",
+            subtype: "success",
+            duration_ms: this.now() - this.startTime,
+            duration_api_ms: this.driver.getApiDurationMs?.() ?? 0,
+            is_error: false,
+            num_turns: this.turnCount,
+            result: "",
+            stop_reason: "end_turn",
+            // §20.5：这条是"没有 done 事件"的合成路径，拿不到 LoopState，故恒 0。
+            // 填 0 而不是省略 —— 字段必须在所有 result 上结构性存在（同下方那条注释）。
+            num_turns_without_model_interaction: 0,
+            total_cost_usd: this.driver.getCostUsd(),
+            usage: this.driver.getUsage(),
+            session_id: this.config.sessionId,
+          },
+          turnAssistants,
+        );
       }
     }
   }
@@ -357,7 +367,10 @@ export class SDKQueryEngine {
    * denial tracking；而每一条 result（含合成的那条）都经过 finalizeResult。
    * 空清单不写字段——没有拒绝的会话，结果消息与改动前逐字节相同。
    */
-  private finalizeResult(result: SDKResultMessage): SDKResultMessage {
+  private finalizeResult(
+    result: SDKResultMessage,
+    turnAssistants: readonly Message[],
+  ): SDKResultMessage {
     const denials = this.driver.getPermissionDenials?.() ?? [];
     const withDenials = denials.length > 0 ? { ...result, permission_denials: denials } : result;
     if (withDenials.subtype !== "success") return withDenials;
@@ -367,15 +380,27 @@ export class SDKQueryEngine {
     return {
       ...withDenials,
       ...(structured !== undefined ? { structured_output: structured } : {}),
-      result: withDenials.result || this.extractFinalText(),
+      result: withDenials.result || this.turnFinalText(turnAssistants),
       duration_api_ms: withDenials.duration_api_ms || (this.driver.getApiDurationMs?.() ?? 0),
       usage: this.driver.getUsage(),
       total_cost_usd: this.driver.getCostUsd(),
     };
   }
 
+  /**
+   * 本轮最终文本（F1-D04）：本轮全部 assistant 的 text 按顺序拼接，与 text 输出同口径。
+   *
+   * 本轮一条 assistant_message 事件都没有时（无头斜杠命令的 output 分支直接写历史、
+   * 鸭子类型 driver 只实现 getMessages），退回「历史里最后一条 assistant」的旧口径——
+   * 那条路径上历史末尾就是本轮唯一的回答。
+   */
+  private turnFinalText(turnAssistants: readonly Message[]): string {
+    if (turnAssistants.length > 0) return collectTurnAssistantText(turnAssistants).text;
+    return this.lastHistoryAssistantText();
+  }
+
   /** 从消息历史提取最后一条助手消息的文本 */
-  private extractFinalText(): string {
+  private lastHistoryAssistantText(): string {
     const messages = this.driver.getMessages();
     for (let i = messages.length - 1; i >= 0; i--) {
       const m = messages[i];
