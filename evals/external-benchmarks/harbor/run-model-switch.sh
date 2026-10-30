@@ -86,8 +86,10 @@ esac
 # （那是 VM 内的 docker bridge，宿主服务不在上面；实测容器侧 connection refused）。
 export SID_HARBOR_GATEWAY_URL="http://192.168.5.2:${GW_PORT}"
 # ⚠️ 见头注释「二进制」一节：刻意仍用 30586ff（与 HEAD 产品代码等价）。
-export SID_HARBOR_BINARY_ARM64=~/.local/share/sid-harbor-gateway/bins/sid-code-arm64-30586ff003c9
-export SID_HARBOR_BINARY_X64=~/.local/share/sid-harbor-gateway/bins/sid-code-x64-30586ff003c9
+# 外部已点名就沿用（T7 停滞阶梯需要 10-21 之后的产物，30586ff 不含 stall-escalation.ts）；
+# 闸 0 照样读字节核 commit，覆盖不会绕过它。
+export SID_HARBOR_BINARY_ARM64="${SID_HARBOR_BINARY_ARM64:-$HOME/.local/share/sid-harbor-gateway/bins/sid-code-arm64-30586ff003c9}"
+export SID_HARBOR_BINARY_X64="${SID_HARBOR_BINARY_X64:-$HOME/.local/share/sid-harbor-gateway/bins/sid-code-x64-30586ff003c9}"
 # provider 由 -m 的前缀段解析（harbor base.py 的 _init_model_info），
 # 这里**仍显式写一遍**：`_render_settings` 的回落值是硬编码的 "openai"，
 # 只靠解析的话，-m 写错格式时会静默落到 openai 而不是报错。
