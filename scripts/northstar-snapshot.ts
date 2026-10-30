@@ -500,12 +500,19 @@ export function buildSnapshot(opts: BuildOptions = {}): NorthstarSnapshot {
     (e) => typeof e.traj_corrupt === "boolean" && e.traj_corrupt_detected_by === undefined,
   ).length;
 
+  // 四个分母必须是**同一总体**（整个本地存储），否则 buildAssertions 的跨源比较没有意义。
+  // active / trajValid 是数盘上目录，天然不分版本、不分窗口；所以账本 / 索引也必须取
+  // 过滤前的 raw 行，不能用上面按窗口 + 版本过滤过的 ledger / index。
+  // 曾经用的是过滤后的：release.sh 带 --version 生成快照时，新版本刚发出只有 0–1 个会话，
+  // 于是 v0.1.610–612 账本/索引都是 0（断言被静默跳过），v0.1.613 是 1 vs 轨迹 577（断言红）。
+  // 两种都不是漏采，是拿「本版本会话数」去比「全部版本的轨迹目录数」。
   const denominators: SessionDenominators = {
     activeSessions: opts.denominators?.activeSessions ?? countActiveSessions(),
     trajValidSessions: opts.denominators?.trajValidSessions ?? countTrajValidSessions(),
     ledgerSessions:
-      opts.denominators?.ledgerSessions ?? new Set(ledger.map((e) => e.sessionId)).size,
-    indexSessions: opts.denominators?.indexSessions ?? new Set(index.map((e) => e.session_id)).size,
+      opts.denominators?.ledgerSessions ?? new Set(rawLedger.map((e) => e.sessionId)).size,
+    indexSessions:
+      opts.denominators?.indexSessions ?? new Set(rawIndex.map((e) => e.session_id)).size,
   };
 
   const IDX = "session-index.jsonl";
@@ -935,6 +942,8 @@ export function renderSnapshot(s: NorthstarSnapshot): string {
   // P2-13：三个分母固定打印在最前面。任何覆盖率都必须标注用的是哪个 ——
   // 分子分母取自不同源会算出荒谬结果，而这三个数互不一致是**口径不同**、不是 bug。
   L.push("会话数的三个口径（互不一致是正常的，口径不同）:");
+  // 分母取整个本地存储，不随 scope 变：不写出来，读者会把它当成「本版本的会话数」
+  L.push("  （分母统计整个本地存储，不随 --version / --days 过滤）");
   L.push(
     `  active-sessions/      ${s.denominators.activeSessions}  进程级会话（含从未调 LLM 的），无 LRU`,
   );
