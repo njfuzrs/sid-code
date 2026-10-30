@@ -2,6 +2,85 @@
 
 本文件由 scripts/generate-changelog.ts 自动生成，请勿手改。
 
+## v0.1.613 (2026-10-30)
+
+### 新功能
+- **scripts** · 新增 harness-compare 两边轨迹统一解析与逐调用宽表 (#436) `0f0da041`
+
+### 修复
+- **sdk** · 无头 json/stream-json 结果取本轮全部 assistant 文本 (#478) `6c800019`
+- **tui** · 长会话输入框打字/粘贴卡顿——行缓存过 1 万行每帧清空 (#477) `89309a93`
+- **permission** · 敏感文件名字类规则豁免源码扩展名 (#476) `65c7f2d3`
+- **policy** · plugin-only 锁接到 hooks/MCP，drop-in 进执行层，managed 目录跟平台 (#475) `bec51979`
+- **permission** · git 输出选项进写目标，多写目标取最严 safetyCheck (#474) `4dc81f54`
+- **identity** · 登出不再解除企业策略，设备凭据不发往第三方 collector (#473) `9a8ebb7c`
+- **query** · 停止判据单一事实源 + terminal 孤儿结算 + 子循环可观测性 (#470) `054339c3`
+- **trace** · 修复心跳孤儿快照与 fork 截断循环，补后台等待可观测 (#469) `541ebf57`
+- **tui** · 全屏模式粘底时内容区整块空白 (#468) `486cd3cb`
+- **context** · 单条超大输入熔断说实话并退回输入框，收紧注入面 (#467) `0fe2ed0e`
+- **quota** · 超限后每轮都拦，budgetRules 含影子调用并按本地时区分周期 (#466) `20390083`
+- **permission** · 命令展开超限时 fail-closed 到危险类确认 (#471) `8d4f54a9`
+- **sdk** · 修复 SDK 缺陷 9–14（合并轮 uuid / 恢复清洗 / 权限白名单） (#472) `85517013`
+- **query** · 压缩结局三态化，计数与熔断归一到 settleCompaction (#465) `77c9a65f`
+- **daemon** · 服务模式 webhook secret、子命令解析、并发计数与 restart 等待 (#464) `2cd6718d`
+- **trace** · 高危异常告警改指 /trace，OTLP 导出失败节流告警 (#463) `b0deda5b`
+- **tui** · diff 增删行底色铺满整行而非止于最后一个词 (#462) `587eac5c`
+- **permission** · 只读集按参数收紧 find/awk/sort/uniq 与 git --output (#459) `3e555757`
+- **permission** · allow 组合放行管道过滤器，sudo 按程序位置判定 (#461) `aa8c1836`
+- **memory** · 团队记忆索引兼容旧版负数时间戳冲突副本名 (#460) `c6adbcf4`
+- **cli** · -p 退出码与 JSON 结果按实际结局如实报告 (#454) `91090055`
+- **task** · 后台任务等待期轮询改禁令并在主循环拦截 (#457) `eb3dd45f`
+- **config** · paths 作用域沿规则所在目录到项目根逐级判定 (#455) `06729c8a`
+- **agent** · 子代理批次循环在 abort 后停止启动剩余工具 (#456) `50416ed9`
+- **memory** · 团队记忆冲突副本时间戳不再截成 int32 (#458) `dd68cba4`
+- **permission** · CLAUDE.md 禁用工具同步裁剪工具集 (#453) `d7f7b855`
+- **query** · 未答复 end_turn 按形态分报，识别未被解析的工具调用 (#452) `6da95ce6`
+- **scripts** · harness-compare 按 provider 把 input_tokens 归一成未命中余量 (#451) `52133acf`
+- **scripts** · harness-compare 按计费头判 cc 子代理调用 (#450) `87ee25dd`
+- **permission** · dd 判据改看 of= 去向与 count= 上限，块设备判定改反向白名单 (#449) `9176f7fb`
+- **plan** · fidelity 口径三处收口（matchedRatio 双扣 / ls 虚报 / 白名单缺词表） (#448) `c50eda91`
+- **plan** · 无头会话不再假装批准计划；fidelity 口径改白名单与被拒单列 (#446) `b938a9db`
+- **permission** · 工作区外读取改为需确认 (#444) `9b765c43`
+- **permission** · 危险命令改按 token 判定，修 critical 误报与漏报 (#443) `51e61a1f`
+- **permission** · 修复 symlink 逃逸检测在别名路径下整体失效 (#441) `1fcec776`
+- **permission** · --add-dir 改为追加工作目录，不再挤出工作区 (#440) `292e5bd5`
+- **context** · 压缩管线目标线下限不得高过触发点 (#439) `b250db4e`
+- **llm** · OpenAI 兼容路径注入 x-client-request-id (#438) `fa366dc0`
+- **cli** · @ 提及补齐左边界、多文件总预算、行范围去重与目录列表 (#437) `f3c15266`
+- **lsp** · 诊断 push 链路语义修正与 LspDiagnostics 埋点 (#435) `7b2912d7`
+- **worktree** · 隔离子代理按自己的工作目录取值，越界可观测 (#434) `819ee54b`
+- **memory** · save_memory 显式 type，写入质量闸门与埋点 (#431) `6a76c41d`
+- **tools** · 工具管线级联取消、Pre/Post 收尾、中断分型与 hook 改参跟随 (#430) `b231e727`
+- **cache** · 修复热缓存误判冷、断点落在 reminder，删除 cache_edits/scope (#429) `cc96fbb8`
+- **permission** · 模式总闸、safetyCheck 跟随 symlink、deny 覆盖命令等价形态 (#432) `7e434ae3`
+- **plan** · 计划生命周期五项缺陷与可观测性 (#433) `d340f59d`
+- **query** · continue 路径封顶、发送错误单入口、闸门耗尽语义可观测 (#428) `c94bac9c`
+- **config** · 项目级路由字段告警，update --version 离线回滚 (#426) `de494315`
+- **ide** · 修复核查官网发现的六处 IDE 集成代码缺陷 (#418) `3ad4203d`
+- 术语表核验缺陷：bash 压缩按只读判定、下线零调用的缓存预热 (#417) `c3a8f619`
+- **hook** · systemMessage 接上用户可见出口，补齐事件名映射与 worktree 诊断 (#416) `af4e91f8`
+- **workflow** · 按名复用落盘脚本、失败回传 runId、历史 run 可见 (#414) `40009be3`
+- **lsp** · 文件编辑后清除诊断快照，避免 codeAction 读到旧诊断 (#415) `8048bc8a`
+
+### 性能
+- **scripts** · 新增端到端按键延迟探针 perf-keystroke-latency (#479) `65bef2be`
+- **cli** · 交互启动不再等远程企业策略与预算 (#419) `ac3ca907`
+
+### 文档
+- **changelog** · v0.1.613 用户视角变更说明 `f5062e68`
+- **permission** · 校正 path-validator 步骤顺序与白名单判断的注释 (#447) `cd9d8994`
+- **team** · 迁移页不可信字段数改为 14，与源码一致 (#427) `df457d72`
+- **team** · 轨迹采集与可观测页按当前代码校准 (#425) `4aa6b70d`
+- **team** · 定时与无人值守页按当前代码校准 (#424) `beccb984`
+- **team** · 企业登录页按代码校准 (#423) `b5602582`
+- **team** · 配额页按代码校准超限、预算规则口径与校验输出 (#422) `b9fa62cc`
+- **team** · 企业 policy 页按源码校准 (#421) `9d3249c6`
+- **team** · 团队默认配置页按当前代码校准 (#420) `c7dcda7d`
+
+### 其他
+- **release** · promote v0.1.612 (#413) `0350d17d`
+- **release** · v0.1.612 (#412) `4145b2a1`
+
 ## v0.1.612 (2026-10-22)
 
 ### 新功能
