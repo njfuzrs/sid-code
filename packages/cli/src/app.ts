@@ -183,6 +183,10 @@ import {
   BACKGROUND_POLL_INTERCEPTED_EVENT_NAME,
 } from "@sid-code/core/task/background-poll-guard.ts";
 import {
+  setEditFailureReminderSink,
+  EDIT_FAILURE_REMINDER_EVENT_NAME,
+} from "@sid-code/core/query/edit-failure-tracker.ts";
+import {
   setSkillTraceSink,
   SKILL_DEGRADATION_EVENT_NAME,
   setSkillInvocationSink,
@@ -4613,6 +4617,12 @@ export class App {
       traceCollectorInstance
         ? (data) =>
             traceCollectorInstance.recordCustomEvent(BACKGROUND_POLL_INTERCEPTED_EVENT_NAME, data)
+        : null,
+    );
+    // T4 补分诊：连续编辑失败提醒进轨迹。这道防线默认开启，不接则触发率恒 0（实测真实触发 4 次、事件 0 条）。
+    setEditFailureReminderSink(
+      traceCollectorInstance
+        ? (data) => traceCollectorInstance.recordCustomEvent(EDIT_FAILURE_REMINDER_EVENT_NAME, data)
         : null,
     );
     // G2：子代理成本进轨迹。usage-sink 在工具注册时就建好了，那时 collector 还不在，同款延迟接线。

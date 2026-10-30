@@ -58,7 +58,10 @@ function emittedEventNames(): Map<string, string[]> {
   const found = new Map<string, string[]>();
   for (const { path, text } of querySources) {
     const re = /traceAppendEvent(?:\?\.)?\(\s*\{\s*event:\s*"([A-Za-z_]+)"/g;
-    for (const m of text.matchAll(re)) {
+    // 模块级 sink 发射（调用方不持有 collector，如 edit-failure-tracker）：事件名是导出常量，
+    // 由 App 在 collector 就绪后 recordCustomEvent(常量, …)。只认 traceAppendEvent 会漏掉这一类。
+    const sinkRe = /export const [A-Z_]+_EVENT_NAME\s*=\s*"([A-Za-z_]+)"/g;
+    for (const m of [...text.matchAll(re), ...text.matchAll(sinkRe)]) {
       const line = text.slice(0, m.index).split("\n").length;
       const where = `${relative(SRC, path)}:${line}`;
       found.set(m[1]!, [...(found.get(m[1]!) ?? []), where]);
