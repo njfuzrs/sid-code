@@ -31,6 +31,8 @@ import { PlanModeManager, PLAN_STEP_PARSER_VERSION } from "../plan/state.ts";
 // 反过来会把 3400 行 + node:fs 的离线 digest 拖进主循环。
 import { UNCHANGED_OBSERVATION_THRESHOLD } from "../query/unchanged-observation.ts";
 import { CONTINUE_STREAK_CAPS } from "../query/transition.ts";
+// 视为「闸门续命」的 continue 理由：从防线注册表派生（endTurnChain），不再手写一份清单
+import { GATE_CONTINUE_TYPES } from "../query/defense-registry.ts";
 // P2-3：TTFT×缓存分桶的单一事实源，与 provider-health.ts 共用（详见该模块头注释）
 import {
   TtftCacheBucketer,
@@ -846,18 +848,6 @@ export interface ContinuePathDigestStats {
    */
   continuedAfterChainEnd: number;
 }
-
-/** 视为「闸门续命」的 continue 理由（end_turn 闸门链产生的那几种） */
-const GATE_CONTINUE_TYPES = new Set([
-  "stop_hook_retry",
-  "unanswered_retry",
-  "promise_nudge",
-  "todo_gate_retry",
-  "hypothesis_gate_retry",
-  "token_budget_continuation",
-  "goal_gate_retry",
-  "goal_budget_warning",
-]);
 
 export function aggregateContinuePathStats(
   events: Array<{ event?: string; data?: Record<string, unknown> }>,

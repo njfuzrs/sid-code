@@ -35,33 +35,16 @@ import { existsSync, readFileSync, readdirSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { resolvePaths } from "@sid-code/core/trace/digest.ts";
+import { CONTINUE_TYPES as REGISTRY_CONTINUE_TYPES } from "@sid-code/core/query/defense-registry.ts";
 
 export const KNOWN_FLAGS = new Set(["--json", "--since", "--by"]);
 
 /**
- * `ContinueReason["type"]` 的全集（`packages/core/src/query/types.ts`）。
+ * `ContinueReason["type"]` 的全集，从防线注册表的锚点表派生（`Record` 保证不漏项）。
  * 必须列全：零触发的理由也要出现在报告里，否则「0 次」和「没统计」分不开。
- * `tests/scripts/defense-trigger-report.test.ts` 读源码联合类型对账，漏一个就红。
+ * `tests/scripts/defense-trigger-report.test.ts` 仍读源码联合类型对账。
  */
-export const CONTINUE_TYPES = [
-  "tool_use",
-  "max_tokens_continuation",
-  "max_tokens_escalate",
-  "reactive_compact",
-  "loop_recovery",
-  "context_overflow_retry",
-  "stop_hook_retry",
-  "timeout_retry",
-  "todo_gate_retry",
-  "unanswered_retry",
-  "promise_nudge",
-  "hypothesis_gate_retry",
-  "goal_gate_retry",
-  "goal_budget_warning",
-  "empty_param_retry",
-  "token_budget_continuation",
-  "context_window_recovery",
-] as const;
+export const CONTINUE_TYPES = REGISTRY_CONTINUE_TYPES;
 
 /** 覆盖期探测：字段名 → 判定该事件「带了这个字段」的谓词。报告里给出各自最早出现日期。 */
 const COVERAGE_PROBES: Record<string, (e: TraceEvent) => boolean> = {
