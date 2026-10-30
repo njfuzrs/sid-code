@@ -1,0 +1,179 @@
+{
+  "appVersion": "0.1.613",
+  "scope": "version",
+  "generatedAt": "2026-10-30T07:21:50.894Z",
+  "windowDays": null,
+  "denominators": {
+    "activeSessions": 1,
+    "trajValidSessions": 577,
+    "ledgerSessions": 1,
+    "indexSessions": 1
+  },
+  "faster": {
+    "e2e_p50": {
+      "value": null,
+      "n": 0,
+      "source": "session-index.jsonl:e2e_p50",
+      "unit": "ms"
+    },
+    "e2e_p95": {
+      "value": null,
+      "n": 0,
+      "source": "session-index.jsonl:e2e_p95",
+      "unit": "ms"
+    },
+    "ttft_p50": {
+      "value": null,
+      "n": 0,
+      "source": "session-index.jsonl:ttft_p50",
+      "unit": "ms"
+    },
+    "ttft_p95": {
+      "value": null,
+      "n": 0,
+      "source": "session-index.jsonl:ttft_p95",
+      "unit": "ms"
+    }
+  },
+  "cheaper": {
+    "cost_per_session": {
+      "value": 0.016957200000000002,
+      "n": 1,
+      "source": "usage-ledger.jsonl:costUSD",
+      "unit": "usd"
+    },
+    "cache_hit_rate": {
+      "value": null,
+      "n": 0,
+      "source": "usage-ledger.jsonl:cacheHit÷promptTotal（按 sessionId 去重 · 排除 untrusted 渠道 · 排除无 appVersion 存量行）",
+      "unit": "ratio"
+    },
+    "turns_per_session": {
+      "value": 1,
+      "n": 1,
+      "source": "session-index.jsonl:turns",
+      "unit": "count"
+    },
+    "compactions_per_session": {
+      "value": 0,
+      "n": 1,
+      "source": "session-index.jsonl:compactions",
+      "unit": "count"
+    }
+  },
+  "cacheHitCaliber": {
+    "cleanPromptTotal": 0,
+    "cleanCacheHit": 0,
+    "hitRateIncludingLegacy": null,
+    "legacyHitRate": null,
+    "duplicateRows": 0,
+    "untrustedRows": 1,
+    "rowsWithoutHost": 0,
+    "legacyRows": 0,
+    "countedSessions": 0
+  },
+  "fewerRedos": {
+    "real_errors_per_session": {
+      "value": null,
+      "n": 0,
+      "source": "session-index.jsonl:real_errors（仅有终态会话）",
+      "unit": "count"
+    },
+    "pathological_session_rate": {
+      "value": null,
+      "n": 0,
+      "source": "session-index.jsonl:pathological（仅有终态会话）",
+      "unit": "ratio"
+    },
+    "edit_first_try_rate": {
+      "value": null,
+      "n": 0,
+      "source": "session-index.jsonl:edit_first_try（文件×会话 · 分母=执行过 edit 的文件数 · 不含 write）",
+      "unit": "ratio"
+    }
+  },
+  "safer": {
+    "hitl_rate": {
+      "value": null,
+      "n": 0,
+      "source": "session-index.jsonl:permission.prompted（分母=权限决策数）",
+      "unit": "ratio"
+    },
+    "rule_hit_rate": {
+      "value": null,
+      "n": 0,
+      "source": "session-index.jsonl:permission.rule_hits（分母=权限决策数）",
+      "unit": "ratio"
+    },
+    "prompt_duration_p50": {
+      "value": null,
+      "n": 0,
+      "source": "session-index.jsonl:permission.prompt_durations_ms",
+      "unit": "ms"
+    },
+    "prompt_duration_p95": {
+      "value": null,
+      "n": 0,
+      "source": "session-index.jsonl:permission.prompt_durations_ms",
+      "unit": "ms"
+    },
+    "sessions_with_field": 1,
+    "mode_guard_breaches": {
+      "value": 0,
+      "n": 1,
+      "source": "session-index.jsonl:permission.mode_guard_breaches（求和 · 分母=带该字段的会话数 · 恒应为 0）",
+      "unit": "count"
+    },
+    "step_attribution_rate": {
+      "value": null,
+      "n": 0,
+      "source": "session-index.jsonl:permission.by_step（step≠none 的决策 ÷ 全部决策）",
+      "unit": "ratio"
+    },
+    "rule_exposed_session_rate": {
+      "value": 0,
+      "n": 1,
+      "source": "session-index.jsonl:permission_config（有规则或黑名单的会话 ÷ 带该字段的会话）",
+      "unit": "ratio"
+    }
+  },
+  "foundation": {
+    "defense_trigger_rate": {
+      "value": 0,
+      "n": 1,
+      "source": "session-index.jsonl:defense_triggered",
+      "unit": "ratio"
+    },
+    "traj_corrupt_rate": {
+      "value": null,
+      "n": 0,
+      "source": "session-index.jsonl:traj_corrupt（仅已检测行 · 排除增量行与无 detected_by 的存量行）",
+      "unit": "ratio"
+    },
+    "rows_without_version": 0
+  },
+  "trajCorruptCaliber": {
+    "detectedRows": 0,
+    "corruptRows": 0,
+    "undetectedRows": 1,
+    "legacyUnattributedRows": 0,
+    "rateCountingUndetectedAsClean": 0
+  },
+  "assertions": [
+    {
+      "name": "账本会话数 >= 轨迹有效会话数",
+      "ok": false,
+      "detail": "账本 1 vs 轨迹有效 577"
+    },
+    {
+      "name": "索引会话数 >= 轨迹有效会话数（索引不受 LRU 影响）",
+      "ok": false,
+      "detail": "索引 1 vs 轨迹有效 577"
+    },
+    {
+      "name": "轨迹损坏率的 n 与已检测行数自洽（不虚报样本量）",
+      "ok": true,
+      "detail": "n=0，已检测 0 行，未检测 1 行被排除"
+    }
+  ]
+}
