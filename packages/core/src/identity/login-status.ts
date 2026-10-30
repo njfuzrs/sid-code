@@ -19,7 +19,7 @@ export const NO_BACKEND_HINT =
 const BACKEND_SOURCE_LABEL = {
   env: "环境变量 SID_CODE_BACKEND_URL",
   managed: "managed 策略文件",
-  user: "~/.sid-code/settings.json",
+  user: "用户级 settings.json",
 } as const;
 
 /**
