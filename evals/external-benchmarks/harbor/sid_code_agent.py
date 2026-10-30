@@ -332,7 +332,43 @@ class SidCodeAgent(BaseInstalledAgent):
         ),
     ]
 
+    #: 停滞升级阶梯(`packages/core/src/query/stall-escalation.ts`)的评测档。
+    #:
+    #: ## 为什么要这个旋钮
+    #:
+    #: 阶梯在 headless 下**默认整套不开**(`resolveStallSwitches` 要求
+    #: `SID_CODE_STALL_ESCALATION_HEADLESS=1`),理由正是「评测基线可比性依赖行为不变」。
+    #: 所以默认 `off` = 不往容器传任何东西,与历史 run 逐字等价。
+    #: T7(L2 影子验收)要在评测里开它,而本类只往容器传 `SID_CONFIG_DIR` ——
+    #: 宿主 `export` 进不了容器,`--ae` 也只进 harbor 的 env 解析,不保证进 sid-code 进程。
+    #: 所以由本类**显式**映射成容器内 env,并把档位落 metadata(同权限档:必控变量要自带)。
+    #:
+    #: - `off`:不传(默认)
+    #: - `shadow`:开阶梯,L2 只落事件不停
+    #: - `hard`:开阶梯,L2 真停走强制总结出口
+    #:
+    #: ⚠️ 这是一个**改变 agent 行为**的档,`hard` 跑出来的 reward 不能和 `off` 的基线直接比。
+    STALL_ESCALATION_CHOICES = ("off", "shadow", "hard")
+
+    def _stall_env(self) -> dict[str, str]:
+        """把 `stall_escalation` 档映射成容器内 sid-code 读的 env。`off` 返回空 dict。"""
+        mode = self._stall_mode
+        if mode == "off":
+            return {}
+        return {
+            "SID_CODE_STALL_ESCALATION_HEADLESS": "1",
+            "SID_CODE_STALL_HARD_STOP": "1" if mode == "hard" else "0",
+        }
+
     def __init__(self, *args: Any, **kwargs: Any) -> None:
+        # 不做成 CliFlag:它不是命令行 flag,是容器 env。先从 kwargs 摘掉(`--ak stall_escalation=hard`),
+        # 否则基类会把未知 kwarg 往上抛。回落到宿主 env 便于 driver 脚本统一设置。
+        stall = kwargs.pop("stall_escalation", None) or _env("SID_HARBOR_STALL_ESCALATION", "off")
+        if stall not in self.STALL_ESCALATION_CHOICES:
+            raise ValueError(
+                f"stall_escalation={stall!r} 不在 {self.STALL_ESCALATION_CHOICES} 内"
+            )
+        self._stall_mode: str = stall
         super().__init__(*args, **kwargs)
         self._assert_permission_flags_coherent()
         self._home: str = "/root"
@@ -747,7 +783,10 @@ class SidCodeAgent(BaseInstalledAgent):
             command=command,
             # 轨迹落到挂载目录 → 宿主侧当场可读。SID_CONFIG_DIR 是权威覆盖变量
             # (SID_CODE_HOME 只是兼容别名,新代码一律用前者)。
-            env={"SID_CONFIG_DIR": f"{self.environment_logs_dir}/{SID_HOME_DIRNAME}"},
+            env={
+                "SID_CONFIG_DIR": f"{self.environment_logs_dir}/{SID_HOME_DIRNAME}",
+                **self._stall_env(),
+            },
         )
 
     # ──────────────────────────────────────────── 宿主侧回填(日志同步之后)
@@ -776,6 +815,8 @@ class SidCodeAgent(BaseInstalledAgent):
                 if self._resolved_flags.get("skip_permissions")
                 else self._resolved_flags.get("permission_mode") or "default"
             ),
+            # 停滞阶梯档:改变 agent 行为的必控变量,与权限档同理每个 trial 自带
+            "sid_stall_escalation": self._stall_mode,
         }
         # 观测值:None 表示日志缺失(≠ 零拒绝),所以只在拿到时才写这几格。
         decisions = self._count_permission_decisions()

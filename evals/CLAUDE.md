@@ -90,7 +90,7 @@ skip 必须是 bool `CliFlag` / `permission_mode` 的 choices 不含 skip 名与
 
 ⛔ `n_input_tokens` **绝不能取 `total_tokens_sent`** —— 那是**末次快照值**，
 除以累加的 `total_cost_usd` 得到的是错数。要用累积字段
-`total_cumulative_prompt_tokens`（`external-benchmarks/harbor/sid_code_agent.py:1001-1056`）。
+`total_cumulative_prompt_tokens`（`external-benchmarks/harbor/sid_code_agent.py:1042-1097`）。
 
 ### 1.7 每个数字必须能指到源字段
 
@@ -157,7 +157,7 @@ grep -c '"decision":"deny"' <run>/<task>/agent/sid-home/logs/permissions-audit.l
 ### 2.3 提示模板不一致 → 跨 agent 对照失效
 
 Harbor 侧 `instruction` 透传，模板顺序反了**不会报错，只是模板静默失效**
-（`external-benchmarks/harbor/sid_code_agent.py:714`）。
+（`external-benchmarks/harbor/sid_code_agent.py:750`）。
 swe-bench 侧用 `prompt-v1.txt`。**跨链路比较前先 diff 这两份提示。**
 
 ---
@@ -175,7 +175,7 @@ swe-bench 侧用 `prompt-v1.txt`。**跨链路比较前先 diff 这两份提示�
 | --- | --- |
 | **失效形态** | 容器里跑的是上一版字节，结果与修复前**逐字节一样**，而人会读成「修复没效果」 |
 | **判据** | `jq -r '.agent_result.metadata \| [.sid_commit, .sid_commit_source] \| @tsv' runs/<run>/*/result.json \| sort -u` —— 期望是**新** commit + `artifact-bytes` |
-| **出处** | `external-benchmarks/harbor/sid_code_agent.py:665-669` |
+| **出处** | `external-benchmarks/harbor/sid_code_agent.py:701-705` |
 
 ⚠️ **这是「代码在≠生效」的第三种断点**（见 §1.4）。它比另两种更隐蔽：
 测试全绿、二进制存在、`sid_commit` 字段也**有值** —— 只是那个值是旧的。
@@ -188,7 +188,7 @@ swe-bench 侧用 `prompt-v1.txt`。**跨链路比较前先 diff 这两份提示�
 | --- | --- |
 | **失效形态** | `if not commit` 对 `"unknown"` 是 False → 退化路径**永不触发** → 写下 `commit="unknown"` 却自称 `commit_source="artifact-bytes"`。**这层保护恰好在最需要它时失效** |
 | **判据** | 门禁断言 `identity.get(...)` 的每个实参都在脚本输出键集合里，且源码里有 `[0-9a-f]{40}` 形态判定 |
-| **出处** | `sid_code_agent.py:658-669`；门禁 `tests/eval/harbor-agent-contract.test.ts` |
+| **出处** | `sid_code_agent.py:694-705`；门禁 `tests/eval/harbor-agent-contract.test.ts` |
 
 ⚠️ 同型错误已发生两次（`artifact_commit` / `artifact_dirty` 键名错配）。
 `artifact_dirty` 那格更隐蔽：**它本来就允许是 null**，「恒 null」看起来像正常缺省值。
@@ -201,7 +201,7 @@ swe-bench 侧用 `prompt-v1.txt`。**跨链路比较前先 diff 这两份提示�
 | --- | --- |
 | **失效形态** | `build-branch-artifact.sh` 输出目录名 `<branch-slug>-<commit12>` **不含架构**，同一 commit 编 arm64/x64 会互相覆盖。于是「按 commit 匹配」拿到的是「上次编的那个架构」→ 容器里 `exit 127: not found`，而 `build.json` 写着期望的架构 |
 | **判据** | `_elf_arch()` 读 ELF：`x86-64 = 62 (0x3E)`、`AArch64 = 183 (0xB7)` |
-| **出处** | `sid_code_agent.py:431-448` |
+| **出处** | `sid_code_agent.py:467-484` |
 
 ### 3.4 🔴 `-n`（并发）直接决定 verifier 坏掉比例，且**伪装成能力差**
 
@@ -250,7 +250,7 @@ swe-bench 侧用 `prompt-v1.txt`。**跨链路比较前先 diff 这两份提示�
 | --- | --- |
 | **失效形态** | sid-code 只在**成功**路径发 `is_error: false`；`error_during_execution` 那条事件的键只有 `{duration_ms, errors, num_turns, session_id, subtype, total_cost_usd, type, usage}`。于是 `sid_is_error` 变成 `None` → 下游当"不是错误" → **一个失败的 trial 被记成正常的 0 分**，直接污染分母 |
 | **判据** | `subtype` 在错误路径**一定有**（`error_during_execution` / `error_max_turns` / `error_max_budget_usd`）。`is_error` 有就用，没有从 subtype 推 |
-| **出处** | `sid_code_agent.py:896`（判据），`:952`（`_derive_is_error` 定义） |
+| **出处** | `sid_code_agent.py:937`（判据），`:993`（`_derive_is_error` 定义） |
 
 ### 3.8 ⛔ 输出格式必须是 `stream-json`，不是 `json`
 
@@ -259,7 +259,7 @@ swe-bench 侧用 `prompt-v1.txt`。**跨链路比较前先 diff 这两份提示�
 | | |
 | --- | --- |
 | **失效形态** | 两者是**分叉的两条实现**：只有 stream-json 的 result 事件带 `total_cost_usd` / `num_turns` / `subtype`。用 `json` 则成本与轮数**全部拿不到**，而不报错 |
-| **出处** | `sid_code_agent.py:729-733`、README 第 3 条；门禁锁死这一项 |
+| **出处** | `sid_code_agent.py:765-769`、README 第 3 条；门禁锁死这一项 |
 
 ### 3.9 ⛔ 团队默认模板会补 `costLimit=100`，撞上就**静默结束整轮**
 
@@ -416,8 +416,8 @@ harbor run -a sid_code_agent:SidCodeAgent \
 | --- | --- |
 | 权限档三个坑（`bypassPermissions` 不合法 / `always-allow` 不够 / 必须布尔 flag） | `external-benchmarks/swe-bench/exec-swebench.sh:106-150` |
 | 113 次拒绝实测与归因 | `exec-swebench.sh:1255-1280` |
-| Harbor 侧权限档（✅ 2026-08-30 已修） | `external-benchmarks/harbor/sid_code_agent.py:303-382` |
-| 产物身份 / ELF 架构 / `is_error` / stock-flow | `sid_code_agent.py:431`、`:594-598`、`:825`、`:930-985` |
+| Harbor 侧权限档（✅ 2026-08-30 已修） | `external-benchmarks/harbor/sid_code_agent.py:303-418` |
+| 产物身份 / ELF 架构 / `is_error` / stock-flow | `sid_code_agent.py:467`、`:630-634`、`:866`、`:971-1026` |
 | `-n` 与 verifier 坏掉率四轮对照 | `external-benchmarks/harbor/README.md:278-302` |
 | L1/L2 双层门禁与变异自证 | `tests/eval/harbor-agent-contract.test.ts:1-46` |
 | 横评 provider 不对称（⛔ 现存缺陷） | `providers/claude-code.ts:27`、`providers/sid-code-live.ts:28-30` |

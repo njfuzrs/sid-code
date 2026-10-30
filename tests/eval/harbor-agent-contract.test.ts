@@ -1455,6 +1455,68 @@ describe.if(HAS_HARBOR)("L2 真实导入契约(需要 harbor)", () => {
   });
 });
 
+describe("停滞阶梯评测档(T7):默认不改基线,开了才真进容器", () => {
+  const src = readFileSync(AGENT_PY, "utf-8");
+  // `_run` 的方法体:从 `async def run(` 到下一个同级 def
+  const runBody = /async def run\([\s\S]*?\n    (?:@|def )/.exec(src)?.[0] ?? "";
+
+  test("run 的容器 env 合入了 _stall_env()(否则开关停在宿主,容器里仍是基线)", () => {
+    expect(runBody.length).toBeGreaterThan(0);
+    expect(stripComments(runBody)).toContain("**self._stall_env()");
+  });
+
+  test("档位落 metadata(改变 agent 行为的必控变量要每个 trial 自带)", () => {
+    expect(stripComments(src)).toContain('"sid_stall_escalation": self._stall_mode');
+  });
+
+  test.if(HAS_HARBOR)("off 默认不传任何 env;shadow / hard 映射正确;非法值拒绝启动", () => {
+    const snippet = [
+      "import json, tempfile, os",
+      "from pathlib import Path",
+      "os.environ.pop('SID_HARBOR_STALL_ESCALATION', None)",
+      "from sid_code_agent import SidCodeAgent as A",
+      "d = Path(tempfile.mkdtemp())",
+      "out = {}",
+      "for m in [None, 'shadow', 'hard']:",
+      "    kw = {} if m is None else {'stall_escalation': m}",
+      "    a = A(logs_dir=d, model_name='openai/x', **kw)",
+      "    out[str(m)] = [a._stall_mode, a._stall_env()]",
+      "try:",
+      "    A(logs_dir=d, model_name='openai/x', stall_escalation='on'); out['bad'] = 'accepted'",
+      "except ValueError:",
+      "    out['bad'] = 'rejected'",
+      "os.environ['SID_HARBOR_STALL_ESCALATION'] = 'hard'",
+      "out['env_fallback'] = A(logs_dir=d, model_name='openai/x')._stall_mode",
+      "print(json.dumps(out))",
+    ].join("\n");
+    const proc = Bun.spawnSync({
+      cmd: [HARBOR_PYTHON!, "-c", snippet],
+      env: {
+        ...process.env,
+        PYTHONPATH: join(import.meta.dir, "..", "..", "evals", "external-benchmarks", "harbor"),
+      },
+      stdout: "pipe",
+      stderr: "pipe",
+    });
+    expect(proc.stderr?.toString() ?? "").toBe("");
+    expect(proc.exitCode).toBe(0);
+    const r = JSON.parse(proc.stdout!.toString());
+    // 默认 off 且 env 为空:历史 run 与新 run 逐字等价,基线不动
+    expect(r["None"]).toEqual(["off", {}]);
+    expect(r.shadow).toEqual([
+      "shadow",
+      { SID_CODE_STALL_ESCALATION_HEADLESS: "1", SID_CODE_STALL_HARD_STOP: "0" },
+    ]);
+    expect(r.hard).toEqual([
+      "hard",
+      { SID_CODE_STALL_ESCALATION_HEADLESS: "1", SID_CODE_STALL_HARD_STOP: "1" },
+    ]);
+    // sid-code 侧只认字面 "1"/"0",传 "on" 这类会被静默当成默认 ⇒ 在宿主侧就拒绝
+    expect(r.bad).toBe("rejected");
+    expect(r.env_fallback).toBe("hard");
+  });
+});
+
 // ─────────────────────────────────────────────────────────────────────────────
 // 元断言:让「本次到底跑了哪几层」出现在测试输出里。
 // ─────────────────────────────────────────────────────────────────────────────
