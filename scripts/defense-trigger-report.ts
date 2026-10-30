@@ -68,7 +68,9 @@ const COVERAGE_PROBES: Record<string, (e: TraceEvent) => boolean> = {
   LoopTransition: (e) => e.event === "LoopTransition",
   TurnComplete: (e) => e.event === "TurnComplete",
   "TurnComplete.continue_counts": (e) => e.event === "TurnComplete" && !!e.data?.continue_counts,
-  "AfterModel.tool_use_facts": (e) => e.event === "AfterModel" && !!e.data?.tool_use_facts,
+  // tool_use_facts 是平铺进 AfterModelRaw 的（trace/collector.ts），不在 AfterModel 上，也没有嵌套键
+  "AfterModelRaw.tool_use_total": (e) =>
+    e.event === "AfterModelRaw" && typeof e.data?.tool_use_total === "number",
   GateExhausted: (e) => e.event === "GateExhausted",
   StallEscalation: (e) => e.event === "StallEscalation",
   EndTurnShape: (e) => e.event === "EndTurnShape",

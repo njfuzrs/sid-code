@@ -102,7 +102,18 @@ describe("defense-trigger-report", () => {
     const all = aggregateDefenseReport([sessionA], { tmpRoots: [] });
     expect(all.coverage["TurnComplete.continue_counts"]).toBe("2026-10-25");
     expect(all.coverage["LoopTransition"]).toBe("2026-10-20");
-    expect(all.coverage["AfterModel.tool_use_facts"]).toBeNull();
+    expect(all.coverage["AfterModelRaw.tool_use_total"]).toBeNull();
+    // 平铺在 AfterModelRaw 上的 tool_use_total 才算覆盖（曾误探 AfterModel.tool_use_facts，恒报从未出现）
+    const withFacts = aggregateDefenseReport(
+      [
+        [
+          ...sessionA,
+          ev("AfterModelRaw", "2026-10-29T00:00:00Z", { tool_use_total: 1, tool_use_truncated: 0 }),
+        ],
+      ],
+      { tmpRoots: [] },
+    );
+    expect(withFacts.coverage["AfterModelRaw.tool_use_total"]).toBe("2026-10-29");
     const r = aggregateDefenseReport([sessionA], { tmpRoots: [], since: "2026-10-24" });
     expect(r.total.continue.todo_gate_retry.count).toBe(1);
     expect(r.total.stop_max_tokens.count).toBe(0);
