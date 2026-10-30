@@ -95,7 +95,9 @@ import {
   clearStreamSnapshot,
   chunkCountFields,
   snapshotStaleness,
+  pickHeartbeatSnapshot,
 } from "./stream-observer.ts";
+import { ambientLoopId } from "../llm/sse-chunk-dumper.ts";
 
 // ─── 最小化上传器接口（避免循环依赖，Task 8 实现后注入） ───
 
@@ -1092,18 +1094,11 @@ export class TraceCollector {
             // 恰好命中 /trace 提示里的「elapsed_ms 大且仍在跳 = hang」—— 假 hang。
             // 所以终态快照一律不作为 active_request（没有活流时 active_request=null，走下方
             // last_known_state 兜底），残留条数单独落 `stale_terminal_snapshots`。
+            // C1（20261019 复测）：选取逻辑抽成纯函数 pickHeartbeatSnapshot（可单测），
+            // 「无 agentId ≠ 主循环」与孤儿快照的判据见该函数注释。
             const allSnapshots = getActiveStreamSnapshots();
-            const isTerminal = (p: string) => p === "completed" || p === "aborted" || p === "error";
-            const liveSnapshots = allSnapshots.filter((s) => !isTerminal(s.phase));
-            const activeSnapshots = liveSnapshots;
-            const mainSnapshot = activeSnapshots.find((s) => s.agentId === undefined);
-            const oldestAgent = activeSnapshots
-              .filter((s) => s.agentId !== undefined)
-              .reduce<(typeof activeSnapshots)[number] | undefined>(
-                (acc, s) => (!acc || s.startedAt < acc.startedAt ? s : acc),
-                undefined,
-              );
-            const picked = mainSnapshot ?? oldestAgent;
+            const { picked, activeSnapshots, liveCount, orphanCount, ownerOf } =
+              pickHeartbeatSnapshot(allSnapshots, ambientLoopId());
             const activeRequest = picked
               ? {
                   index: picked.index,
@@ -1119,12 +1114,12 @@ export class TraceCollector {
                   ...chunkCountFields(picked.chunksReceived, "chunks"),
                   snapshot_age_ms: snapshotStaleness(picked).ageMs,
                   timeouts_fired: picked.timeoutsFired,
-                  ...(picked.agentId ? { agent_id: picked.agentId } : {}),
+                  ...(ownerOf(picked) ? { agent_id: ownerOf(picked) } : {}),
                   ...(activeSnapshots.length > 1 ? { active_count: activeSnapshots.length } : {}),
                 }
               : null;
             // 残留的终态快照数单独落一格：它是「快照泄漏」的信号，而不是 hang 的信号。
-            const staleTerminal = allSnapshots.length - liveSnapshots.length;
+            const staleTerminal = allSnapshots.length - liveCount;
             // 优化 3：stream-observer 快照仅覆盖流式阶段；工具执行/后处理等非流式阶段
             // activeRequest 为 null，此前心跳就只剩时间戳，进程 hang 时看不出卡在哪。
             // 兜底塞入 last_known_state（§3.6 已维护 phase/turn/model），让 tool_exec
@@ -1136,6 +1131,7 @@ export class TraceCollector {
               event_loop_lag_ms: lagMs,
               active_request: activeRequest,
               ...(staleTerminal > 0 ? { stale_terminal_snapshots: staleTerminal } : {}),
+              ...(orphanCount > 0 ? { stale_orphan_snapshots: orphanCount } : {}),
               ...(lastState ? { last_known_state: lastState } : {}),
             });
             if (this.heartbeatStopped) return;
@@ -1945,6 +1941,8 @@ export class TraceCollector {
         ...(toolDurationMs !== undefined ? { duration_ms: toolDurationMs } : {}),
         ...toolAgentField(input),
         ...toolOutputCharsField(input),
+        // A2：执行期间进度上报次数（只在 >0 时写，见 hook/types.ts progress_events）
+        ...(input.progress_events ? { progress_events: input.progress_events } : {}),
       },
     });
 
@@ -2001,6 +1999,8 @@ export class TraceCollector {
         ...errorHeadField(input),
         ...toolAgentField(input),
         ...toolOutputCharsField(input),
+        // A2：执行期间进度上报次数（只在 >0 时写，见 hook/types.ts progress_events）
+        ...(input.progress_events ? { progress_events: input.progress_events } : {}),
       },
     });
 
@@ -3774,6 +3774,13 @@ const TOOL_INPUT_SUMMARY_KEYS = [
   "glob",
   "output_mode",
   "type",
+  // 后台任务等待口径：task_output / bg_task_get 的阻塞与上限、sub_agent / bash 的后台启动。
+  // 回答「模型有没有阻塞、阻塞多久、上限给多少」，也是北极星「后台阻塞等待」的过滤键；
+  // 此前只能从主循环 messages.json 手工统计，子代理一侧完全拿不到。都不含敏感内容。
+  "block",
+  "timeout",
+  "task_id",
+  "run_in_background",
 ] as const;
 /** 字符串入参截断长度（command / pattern 可能很长或含敏感内容） */
 const TOOL_INPUT_SUMMARY_STR_MAX = 200;
