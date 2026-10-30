@@ -5605,6 +5605,13 @@ export async function* queryLoop(loopConfig: QueryLoopConfig): AsyncGenerator<Qu
             resultMap,
             state.stall.fileHashes.keys(),
           );
+          // 等后台任务的轮次不计入 L2（stall-escalation.ts 判据边界）。查询失败按「无」：退回旧判据，不会多停
+          let backgroundRunning = false;
+          try {
+            backgroundRunning = hasRunningBackgroundTasks();
+          } catch {
+            /* 同上 */
+          }
           const decision = observeStallTurn(
             state.stall,
             {
@@ -5614,6 +5621,7 @@ export async function* queryLoop(loopConfig: QueryLoopConfig): AsyncGenerator<Qu
               oscillations:
                 (sessionState.get(TODO_GATE_BUDGET_KEY) as TodoGateBudget | undefined)
                   ?.oscillations ?? 0,
+              backgroundRunning,
             },
             stallSwitches.hardStop,
           );

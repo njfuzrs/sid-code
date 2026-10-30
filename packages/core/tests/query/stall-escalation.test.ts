@@ -345,6 +345,61 @@ describe("升级阶梯（2d）：L1 → L2", () => {
     expect(s.l2Count).toBe(2);
   });
 
+  test("等后台任务的轮次不计入 L2：影子样本 84f153dd 那种「轮询全量 bun test」不升 L2", () => {
+    const s = createStallState(0);
+    idle(s, STALL_WINDOW_TURNS, { unchangedReports: 1 }, true); // L1
+    expect(s.l1Turn).toBeDefined();
+    // L1 之后一直在等后台任务：轮数远超 K，仍不升 L2（hardStop 打开也不行）
+    expect(idle(s, STALL_L2_AFTER_L1_TURNS * 3, { backgroundRunning: true }, true).level).toBe(0);
+    expect(s.l2Count).toBe(0);
+    expect(s.bgWaitTurns).toBe(STALL_L2_AFTER_L1_TURNS * 3);
+    // 后台任务结束后仍原地不动：从零开始数满 K 轮才升（等待轮不预支）
+    expect(idle(s, STALL_L2_AFTER_L1_TURNS - 1, {}, true).level).toBe(0);
+    const d = idle(s, 1, {}, true);
+    expect(d.level).toBe(2);
+    if (d.level === 2) expect(d.signals.bgWaitTurns).toBe(STALL_L2_AFTER_L1_TURNS * 3);
+  });
+
+  test("等后台任务的轮次照样推进 L1（L1 只是一句提示，不排除）", () => {
+    const s = createStallState(0);
+    const d = idle(s, STALL_WINDOW_TURNS, { unchangedReports: 1, backgroundRunning: true }, true);
+    expect(d.level).toBe(1);
+  });
+
+  test("等待轮本身不触发 L2：轮数已够、确证信号恰好落在等待轮上也不升", () => {
+    const s = createStallState(0);
+    seedAB(s);
+    idle(s, STALL_WINDOW_TURNS, { unchangedReports: 1 }, true); // L1
+    // K 个普通轮：一直在 A↔B 间改（有 mutation、无新确证信号）⇒ 轮数够了但不升
+    for (let i = 0; i < STALL_L2_AFTER_L1_TURNS; i++) {
+      const d = observeStallTurn(
+        s,
+        turn({ mutatedFiles: [{ path: "/a", content: i % 2 ? "B" : "A" }] }),
+        true,
+      );
+      expect(d.level).toBe(0);
+    }
+    // 新的空转信号出现在等待轮上：不升
+    expect(
+      observeStallTurn(s, turn({ unchangedReports: 1, backgroundRunning: true }), true).level,
+    ).toBe(0);
+    // 后台结束后的下一个普通轮：信号仍在，升
+    expect(observeStallTurn(s, turn(), true).level).toBe(2);
+  });
+
+  test("等待轮与普通轮交错：只数普通轮", () => {
+    const s = createStallState(0);
+    idle(s, STALL_WINDOW_TURNS, { unchangedReports: 1 }, true); // L1
+    let d: ReturnType<typeof observeStallTurn> = { level: 0 };
+    for (let i = 0; i < STALL_L2_AFTER_L1_TURNS * 2 - 1; i++) {
+      d = observeStallTurn(s, turn({ backgroundRunning: i % 2 === 0 }), true);
+      expect(d.level).toBe(0);
+    }
+    // 上面 2K-1 轮里普通轮只有 K-1 个；再来一个普通轮正好满 K
+    d = observeStallTurn(s, turn(), true);
+    expect(d.level).toBe(2);
+  });
+
   test("新状态出现 ⇒ 停滞计数复位（用户/模型真的在推进就不打扰）", () => {
     const s = createStallState(0);
     idle(s, STALL_WINDOW_TURNS - 1, { unchangedReports: 1 });
@@ -364,6 +419,7 @@ describe("文案", () => {
       greenRegressions: 1,
       toolTurns: 20,
       l2Count: 0,
+      bgWaitTurns: 0,
     };
     expect(buildStallL1Message(s, sig)).toContain("还没有观察到一次全绿");
     s.lastGreen = { turn: 7, stateHash: "abcdef0123456789" };
