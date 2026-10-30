@@ -166,9 +166,17 @@ export function managedSettingsPath(): string {
   return join(managedSettingsSystemDir(), "managed-settings.json");
 }
 
+/** 测试注入的 drop-in 目录。刻意是进程内变量而不是环境变量：env 能被本机用户设置，等于让用户改策略来源 */
+let dropInDirOverrideForTest: string | undefined;
+
+/** 测试用：把 drop-in 目录指到 tmpdir（系统级目录在测试里不可写）。传 undefined 恢复。 */
+export function __setManagedSettingsDropInDirForTest(dir: string | undefined): void {
+  dropInDirOverrideForTest = dir;
+}
+
 /** 企业管控 drop-in 目录：managed-settings.d/*.json，字母序后者覆盖前者。只认系统级目录。 */
 export function managedSettingsDropInDir(): string {
-  return join(managedSettingsSystemDir(), "managed-settings.d");
+  return dropInDirOverrideForTest ?? join(managedSettingsSystemDir(), "managed-settings.d");
 }
 
 /**

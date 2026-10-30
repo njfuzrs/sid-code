@@ -15,7 +15,8 @@ import {
 } from "../identity/credential.ts";
 import { resolveEndpoint } from "../identity/endpoints.ts";
 import { setModePolicy } from "../permission/mode-policy.ts";
-import { resolveManagedPolicyFile, sidPaths } from "./paths.ts";
+import { sidPaths } from "./paths.ts";
+import { readManagedPolicyDocument } from "./managed-policy-file.ts";
 import {
   setKnownMarketplacesPolicy,
   setPluginOnlyPolicy,
@@ -148,31 +149,33 @@ export class ManagedFileLoader implements PolicyLoader {
     // D6/D7：走与 settings 链、rule-loader 相同的候选链（系统级优先）。此前只读
     // ~/.sid-code/managed-settings.json——用户自己可写的位置，policyLimits /
     // disableBypassPermissionsMode 这类最强档管控在任何平台都能被用户删文件绕过。
-    const filePath = resolveManagedPolicyFile();
-    if (!filePath) return null;
+    // D2：主文件 + managed-settings.d/*.json 一起读（readManagedPolicyDocument）。此前只读主文件，
+    // 写进 drop-in 的 disableBypassPermissionsMode / disabledModes / policyLimits 静默不生效。
+    const doc = readManagedPolicyDocument();
+    if (!doc) return null;
+    const filePath = doc.mainFile;
 
     // 安全检查：文件权限应为 600（只有所有者可读写）
-    try {
-      const stats = statSync(filePath);
-      const mode = stats.mode & 0o777;
-      if (mode !== 0o600) {
-        log.warn("POLICY", `${filePath} 权限不安全 (${mode.toString(8)})，建议设为 600`);
+    for (const f of filePath ? [filePath, ...doc.dropIns] : doc.dropIns) {
+      try {
+        const mode = statSync(f).mode & 0o777;
+        if (mode !== 0o600) {
+          log.warn("POLICY", `${f} 权限不安全 (${mode.toString(8)})，建议设为 600`);
+        }
+      } catch {
+        // 权限检查失败不阻塞加载
       }
-    } catch {
-      // 权限检查失败不阻塞加载
     }
 
-    try {
-      const content = await Bun.file(filePath).text();
-      const parsed = JSON.parse(content);
-      log.info("POLICY", `加载本地策略: ${filePath}`);
-      rememberLoadMeta({ source: "managed_file", outcome: "applied", durationMs: 0 });
-      return { source: "managed_file", ...parsed };
-    } catch (err: any) {
-      log.warn("POLICY", `读取策略文件失败: ${err.message}`);
+    for (const e of doc.errors) log.warn("POLICY", `读取策略文件失败: ${e.file}: ${e.message}`);
+    // 主文件坏掉：保持原口径整体判错（不拿残缺的 drop-in 当完整策略）
+    if (filePath && doc.errors.some((e) => e.file === filePath)) {
       rememberLoadMeta({ source: "managed_file", outcome: "error", durationMs: 0 });
       return null;
     }
+    log.info("POLICY", `加载本地策略: ${[filePath, ...doc.dropIns].filter(Boolean).join(", ")}`);
+    rememberLoadMeta({ source: "managed_file", outcome: "applied", durationMs: 0 });
+    return { source: "managed_file", ...doc.settings } as PolicySettings;
   }
 }
 
