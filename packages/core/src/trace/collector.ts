@@ -1986,6 +1986,17 @@ export class TraceCollector {
       ...(e.durationMs !== undefined ? { duration_ms: e.durationMs } : {}),
       ...(e.step ? { step: e.step } : {}),
       ...(e.mode ? { mode: e.mode } : {}),
+      ...(e.denyKind ? { deny_kind: e.denyKind } : {}),
+      ...(e.pathMismatch
+        ? {
+            path_mismatch: {
+              same_basename: e.pathMismatch.sameBasename,
+              same_dir: e.pathMismatch.sameDir,
+              is_relative: e.pathMismatch.isRelative,
+              under_authorized_root: e.pathMismatch.underAuthorizedRoot,
+            },
+          }
+        : {}),
     });
   }
 
