@@ -230,6 +230,11 @@ export default class Output {
 							const width = this.caches.getStringWidth(line);
 							const to = x + width > clip.x2! ? clip.x2! - x : width;
 
+							// sid-code：不裁就原样返回。工具标题行都包在 `overflow="hidden" height={1}` 里，
+							// 每行都处在横向 clip 中但一列都不裁；sliceColumns 仍会整行 tokenize + 逐字符
+							// stringWidth，长会话 blit replay 每帧上千行，实测占按键延迟一半以上（p50 46→19ms）。
+							if (from === 0 && to >= width) return line;
+
 							return sliceColumns(line, from, to);
 						});
 

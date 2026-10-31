@@ -16,7 +16,8 @@
  */
 
 import { dirname, join, relative, sep } from "path";
-import { existsSync, statSync } from "fs";
+import { existsSync, readFileSync, statSync } from "fs";
+import { createHash } from "crypto";
 import { getLogger } from "../debug/logger.ts";
 import { normalizeToolPath } from "../tool/path-utils.ts";
 // P2-3：顶层静态 import 替代函数内 await import()，消除首次 JIT 的模块加载抖动
@@ -126,6 +127,16 @@ interface LoadedEntry {
   mtimeMs: number;
   /** 读盘时的字节数（mtime 精度不足时的第二判据） */
   size: number;
+  /**
+   * 读盘时原始内容的 sha256（null = 未能取到，退化为只按 stamp 判定）。
+   *
+   * 为什么 mtime+size 不够：git checkout / switch / merge / pull / worktree 会改写
+   * 工作区文件的 mtime，内容却完全没变。只看 stamp 时 JIT 会把首轮已在 system
+   * `# claudeMd` 段里的根 CLAUDE.md 再注入一遍 —— 实测主循环 113 次 JIT 命中全是这一形态，
+   * 并贡献了 10-04 以来 125 次 `system_dynamic` 前缀断裂中的 124 次。
+   * stamp 仍是快速路径；只有 stamp 变了才读盘比 hash。
+   */
+  contentHash: string | null;
   /** 相对项目根路径（埋点/日志用） */
   relPath: string;
 }
@@ -163,6 +174,18 @@ function fileStamp(path: string): { mtimeMs: number; size: number } {
     return { mtimeMs: st.mtimeMs, size: st.size };
   } catch {
     return { mtimeMs: 0, size: 0 };
+  }
+}
+
+/** 内容 sha256；读不到返回 null（调用方按「无法证明未变」处理） */
+function hashText(text: string): string {
+  return createHash("sha256").update(text).digest("hex");
+}
+function fileContentHash(path: string): string | null {
+  try {
+    return hashText(readFileSync(path, "utf8"));
+  } catch {
+    return null;
   }
 }
 
@@ -365,6 +388,30 @@ export class JitContextManager {
   }
 
   /**
+   * 判定已登记条目的磁盘内容是否仍与快照一致。三条判据依次：
+   *   1. stamp 取不到（mtimeMs=0）→ 返回 `"missing"`，由调用方决定（各处退化策略不同）
+   *   2. mtime + size 都没变 → 一致（快速路径，不读盘）
+   *   3. 任一变了 → 读盘比 sha256；hash 相同说明只是 mtime 被改写（git 操作的典型形态），
+   *      就地刷新 stamp 并判一致，下一次重新回到快速路径
+   *
+   * 第 3 条保住了 P1-2「文件真改了就重新加载」的能力，只是不再被 mtime 误触发。
+   */
+  private checkFresh(key: string, entry: LoadedEntry): "fresh" | "stale" | "missing" {
+    const stamp = fileStamp(key);
+    if (stamp.mtimeMs === 0) return "missing";
+    if (entry.mtimeMs === stamp.mtimeMs && entry.size === stamp.size) return "fresh";
+    if (entry.contentHash !== null && entry.size === stamp.size) {
+      // size 不同时内容必然不同，省掉一次读盘
+      if (fileContentHash(key) === entry.contentHash) {
+        entry.mtimeMs = stamp.mtimeMs;
+        getLogger().debug("JIT", `规则文件仅 mtime 变化、内容未变，不重新注入: ${entry.relPath}`);
+        return "fresh";
+      }
+    }
+    return "stale";
+  }
+
+  /**
    * 目录链上是否存在「磁盘已变更 / 已消失」的已加载规则（P1-2 的短路豁免判据）。
    *
    * 只看**本次会走到的那条目录链**（targetDir 逐级上溯到项目根），不是全量扫 `loaded`
@@ -392,12 +439,10 @@ export class JitContextManager {
     for (const [key, entry] of this.loaded) {
       // 只关心归属在本条链上的规则。`ownerDir` 为空串是旧快照（不应出现）→ 保守跳过。
       if (!entry.ownerDir || !chain.has(entry.ownerDir)) continue;
-      const stamp = fileStamp(key);
-      // mtimeMs=0 表示 stat 失败 / 文件消失。此处**不**当作 stale：
+      // "missing"（stat 失败 / 文件消失）**不**当作 stale：
       // 与 `loadOne` 的退化策略保持一致（那里 stamp=0 判 unchanged），否则文件被删后
       // 每次访问都放行、每次又读不到，白扫一遍还刷日志。删除场景由 `pruneStale` 负责。
-      if (stamp.mtimeMs === 0) continue;
-      if (entry.mtimeMs !== stamp.mtimeMs || entry.size !== stamp.size) return true;
+      if (this.checkFresh(key, entry) === "stale") return true;
     }
     return false;
   }
@@ -548,19 +593,21 @@ export class JitContextManager {
     const key = safeResolvePath(candidatePath);
 
     // ── P1-2 新鲜度校验 ──
-    // 已加载过时不是无条件跳过：比对 mtime + size，磁盘上变了就重新读盘并更新快照。
+    // 已加载过时不是无条件跳过：比对 mtime + size，变了再比内容 hash（见 checkFresh），
+    // 内容真的变了才重新读盘并更新快照。
     // 这保住了「压缩后即时回灌」这一对 CC 的真实领先（不必等下次触达才重读），
     // 同时消除陈旧快照 —— 即 §3 建议的 A+B 混合中的 A 半。
     const prev = this.loaded.get(key);
-    const stamp = fileStamp(candidatePath);
     if (prev) {
-      const unchanged =
-        // stamp 取不到（mtimeMs=0）时退化为「不重读」，避免 stat 失败导致每轮重复注入
-        stamp.mtimeMs === 0 || (prev.mtimeMs === stamp.mtimeMs && prev.size === stamp.size);
-      if (unchanged) return { kind: "already" };
+      // stamp 取不到（"missing"）时退化为「不重读」，避免 stat 失败导致每轮重复注入
+      if (this.checkFresh(key, prev) !== "stale") return { kind: "already" };
       log.info("JIT", `规则文件已变更，重新加载: ${candidatePath}`);
     }
 
+    // stamp 必须在读盘**之前**取：两步之间若有写入，快照记下的是「旧 stamp + 新内容 hash」，
+    // 下次 stamp 不同 → 比 hash → 与新内容一致 → 正确判为未变。反过来先读后 stat 会记成
+    // 「新 stamp + 旧内容 hash」，下次 stamp 相同走快速路径，这次写入就永久漏掉了。
+    const stamp = fileStamp(candidatePath);
     let rawContent: string;
     try {
       rawContent = await Bun.file(candidatePath).text();
@@ -580,6 +627,7 @@ export class JitContextManager {
       }
       return { kind: "failed" };
     }
+    const contentHash = hashText(rawContent);
 
     // frontmatter `paths:` 作用域判定（与主加载路径 loadAllCLAUDEmd 同语义）。
     //
@@ -661,6 +709,7 @@ export class JitContextManager {
       ownerDir,
       mtimeMs: stamp.mtimeMs,
       size: stamp.size,
+      contentHash,
       relPath,
     });
 
@@ -746,8 +795,8 @@ export class JitContextManager {
     const log = getLogger();
     let pruned = 0;
     for (const [key, entry] of [...this.loaded.entries()]) {
-      const stamp = fileStamp(key);
-      if (stamp.mtimeMs === 0) {
+      const fresh = this.checkFresh(key, entry);
+      if (fresh === "missing") {
         // 文件已删除 / 不可 stat：注入内容已无对应磁盘事实，丢弃（不回灌陈旧规则）
         this.loaded.delete(key);
         this.scannedDirs.delete(safeResolvePath(dirname(key)));
@@ -755,7 +804,7 @@ export class JitContextManager {
         log.info("JIT", `规则文件已消失，丢弃其缓存: ${entry.relPath}`);
         continue;
       }
-      if (entry.mtimeMs !== stamp.mtimeMs || entry.size !== stamp.size) {
+      if (fresh === "stale") {
         this.loaded.delete(key);
         this.scannedDirs.delete(safeResolvePath(dirname(key)));
         pruned++;
@@ -799,7 +848,12 @@ export class JitContextManager {
    * 注意：这里登记的是「已在别处注入」的占位条目——`formatted` 为空串，
    * 故不会出现在 `getLoadedContexts()` / `getLoadedBytes()` 的统计里
    * （那些内容由系统提示词主体承载，重复记账会让压缩阈值虚高）。
-   * mtime 仍然记录，使会话中途修改这些文件时 JIT 能接手重新注入。
+   * mtime 与内容 hash 仍然记录，使会话中途**真正修改**这些文件时 JIT 能接手重新注入；
+   * 只改 mtime（git checkout 等）不会触发 —— 否则首轮已在 system 里的根 CLAUDE.md
+   * 会被再注入一遍（前缀断裂 + 内容翻倍）。
+   *
+   * 已知残余：hash 取的是**此刻**的磁盘内容，而 system 里那份是 loadAllCLAUDEmd 读的。
+   * 两次读之间文件若被改写，会把新内容误记为「已注入」。窗口是启动期的毫秒级，接受。
    */
   markLoaded(filePaths: string[]): void {
     for (const p of filePaths) {
@@ -820,6 +874,7 @@ export class JitContextManager {
         ownerDir: ownerDirOf(key),
         mtimeMs: stamp.mtimeMs,
         size: stamp.size,
+        contentHash: stamp.mtimeMs === 0 ? null : fileContentHash(key),
         relPath: p,
       });
     }
