@@ -26,6 +26,19 @@
  * 才安全。破坏它会同时引发：TUI 泄漏内部文本、压缩把工具列表当"用户最初的请求"、
  * reminder 在历史里逐轮累积。哨兵测试见 tests/query/reminder-inject-invariant.test.ts。
  *
+ * **不变量 3 的例外：「只播一次」档（persistent）写进历史**（2026-10-31）。
+ * MCP 说明 / 延迟工具增量 / skill listing 增量 / IDE 增量由去重集合保证只播一次。
+ * 它们若也走 transient，第 2 轮就从请求里消失：前缀在最后一条消息上少一整块
+ * （实测 10-21 后 137 次 message 段断裂全部断在这里，丢失字符中位数 7,597），
+ * 模型也从第 2 轮起看不到 MCP 说明和延迟工具清单。CC 的 delta 是持久化附件，
+ * 本项目此前只对标了「增量」，漏了「持久化」。
+ * 写回历史的这一档由 `buildPersistentReminderBlocks` 产出，块上带 `persistentReminder`
+ * 标记；原来不变量 3 防的三件事各自的处理：
+ *   - TUI 泄漏：块以 `<system-reminder>` 开头，history-adapter 逐块剥离；
+ *   - 压缩误取「用户最初的请求」：auto-compact / reactive-compact 逐块剔除带标记的块；
+ *   - 逐轮累积：去重集合保证同一内容只写一次，不会累积。
+ * 每轮重新计算的内容（todo、上下文压力、权限模式、诊断…）仍然是 transient。
+ *
  * ─── 承载形态：同一条 user message 内的独立 text block ───
  *
  * 不做字符串拼接（旧实现把 reminder 拼进用户的 text block，两种语义熔成一块、
@@ -40,7 +53,7 @@
  *     block 边界在 wire 上丢失 → 此时唯一残存的语义边界就是围栏标签文本本身。
  */
 
-import type { Message } from "../llm/types.ts";
+import type { Message, TextBlock } from "../llm/types.ts";
 
 /** 分级 reminder 输入。critical 前置于用户指令、ambient 后置。 */
 export interface ReminderTiers {
@@ -92,6 +105,43 @@ function normalizeTiers(parts: ReminderTiers | string[]): {
 }
 
 /**
+ * 把「只播一次」档的片段做成持久 text block（逐片段过围栏，带 `persistentReminder` 标记）。
+ *
+ * 调用方（loop）同时把这批 block 追加进 ctxMgr 最后一条 user 消息与本轮发送副本，
+ * 之后每轮由 ctxMgr 原样重放。见文件头「不变量 3 的例外」。
+ */
+export function buildPersistentReminderBlocks(parts: string[]): TextBlock[] {
+  return parts
+    .map(ensureFenced)
+    .filter((s) => s.length > 0)
+    .map((text) => ({ type: "text" as const, text, persistentReminder: true as const }));
+}
+
+/**
+ * 把持久块追加到 messages **最后一条**消息末尾（必须是 user）。不改入参。
+ *
+ * 只认最后一条：持久块必须是尾部追加，挂到更早的消息上就是一次真正的前缀断裂。
+ * 最后一条不是 user 时返回 null，调用方降级为 transient 注入。
+ */
+export function appendPersistentBlocks(messages: Message[], blocks: TextBlock[]): Message[] | null {
+  if (blocks.length === 0) return messages;
+  const last = messages[messages.length - 1];
+  if (!last || last.role !== "user") return null;
+  const result = [...messages];
+  result[result.length - 1] = { ...last, content: [...last.content, ...blocks] };
+  return result;
+}
+
+/** 是否为「只播一次」档写进历史的持久注入块。 */
+export function isPersistentReminderBlock(block: unknown): boolean {
+  return (
+    !!block &&
+    (block as { type?: unknown }).type === "text" &&
+    (block as { persistentReminder?: unknown }).persistentReminder === true
+  );
+}
+
+/**
  * 把分级 reminder 注入到 messages 最后一条 user 消息。
  *
  * 不修改入参（in-place 安全）：仅当需要改动时，浅拷贝 messages 数组 + 目标消息 + 其 content。
@@ -112,7 +162,10 @@ export function injectReminders(messages: Message[], parts: ReminderTiers | stri
     if (msg.role !== "user") continue;
 
     const content = msg.content as any[];
-    const textIdx = content.findIndex((c: any) => c.type === "text");
+    // 持久块不是用户指令，不能当「用户 block」来夹。
+    const textIdx = content.findIndex(
+      (c: any) => c.type === "text" && !isPersistentReminderBlock(c),
+    );
     const newContent = [...content];
 
     if (textIdx >= 0) {
@@ -120,8 +173,15 @@ export function injectReminders(messages: Message[], parts: ReminderTiers | stri
       // 不做字符串拼接——用户指令保持为一个独立、边界清晰的 block。
       // 先插 ambient（在用户 block 之后），再插 critical（在用户 block 之前），
       // 顺序很关键：先插前面的会让 textIdx 失效。
+      //
+      // ambient 必须排在本消息全部持久块**之后**：transient 下一轮会撤掉，夹在用户 block
+      // 与持久块之间的话，撤掉它就是在持久块之前断前缀——正是持久档要消除的那次断裂。
       if (ambient) {
-        newContent.splice(textIdx + 1, 0, { type: "text", text: ambient, transient: true });
+        let ambientAt = textIdx + 1;
+        for (let j = 0; j < content.length; j++) {
+          if (isPersistentReminderBlock(content[j])) ambientAt = Math.max(ambientAt, j + 1);
+        }
+        newContent.splice(ambientAt, 0, { type: "text", text: ambient, transient: true });
       }
       if (critical) {
         newContent.splice(textIdx, 0, { type: "text", text: critical, transient: true });
