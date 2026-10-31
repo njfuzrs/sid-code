@@ -29,6 +29,7 @@
 // 还要把它同步到 agent-backend `tests/fixtures/sid-code-event-names.json` 并放进白名单，
 // 否则新事件在服务端被记为 unknown_event_name 静默丢掉（memory_read 曾因此被拒 28 次）。
 
+import type { PathMismatchShape } from "../tool/types.ts";
 import { logEvent } from "./index.ts";
 import type { EventMetadata, EventMetadataValue, VerifiedNotCodeOrFilepaths } from "./index.ts";
 import { PROTECTED_PREFIX } from "./privacy.ts";
@@ -400,6 +401,9 @@ export function logPermissionDeny(
     /** 同 logPermissionAllow.step / mode */
     step?: string;
     mode?: string;
+    /** forked 拒绝类别与路径形状，只进本地轨迹（不进遥测，外发 schema 不变） */
+    denyKind?: string;
+    pathMismatch?: PathMismatchShape;
   },
 ): void {
   emit(EVENT_NAMES.PERMISSION_DENY, {
@@ -421,6 +425,8 @@ export function logPermissionDeny(
     ...(opts.durationMs !== undefined ? { durationMs: opts.durationMs } : {}),
     ...(opts.step ? { step: opts.step } : {}),
     ...(opts.mode ? { mode: opts.mode } : {}),
+    ...(opts.denyKind ? { denyKind: opts.denyKind } : {}),
+    ...(opts.pathMismatch ? { pathMismatch: opts.pathMismatch } : {}),
   });
 }
 

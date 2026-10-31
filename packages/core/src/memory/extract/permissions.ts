@@ -15,7 +15,8 @@
  */
 
 import type { CanUseToolFn } from "../../agent/forked-agent.ts";
-import type { PermissionResult } from "../../tool/types.ts";
+import { basename, dirname, isAbsolute, resolve, sep } from "node:path";
+import type { PathMismatchShape, PermissionResult } from "../../tool/types.ts";
 import { isAutoMemPath } from "../paths.ts";
 import { isMemoryType } from "../types.ts";
 import {
@@ -125,6 +126,32 @@ export function isReadonlyBash(input: unknown): boolean {
 }
 
 /**
+ * 被拒路径与授权路径的形状差异（只出布尔，不出原文，理由见 `PathMismatchShape`）。
+ *
+ * 为什么要有：04 剖析核出 session-memory fork 的 edit 拒绝率 43%，假设是更新提示词
+ * 没给笔记路径、模型靠猜。fork 的请求正文不落盘，没有这组布尔就只能推断，坐实不了。
+ *
+ * @param authorized 授权的文件（kind="file"）或目录（kind="dir"）
+ */
+export function describePathMismatch(
+  target: string,
+  authorized: string,
+  kind: "file" | "dir",
+): PathMismatchShape {
+  const t = resolve(target);
+  const a = resolve(authorized);
+  // 文件授权时，「授权根」取文件所在目录的上一级：笔记在 `<项目>/session-memory/<sid>.md`，
+  // 模型写到 `<项目>/.session_memory.md` 这类旧路径时 underAuthorizedRoot=true。
+  const root = kind === "file" ? dirname(dirname(a)) : a;
+  return {
+    sameBasename: kind === "file" ? basename(t) === basename(a) : false,
+    sameDir: kind === "file" ? dirname(t) === dirname(a) : t.startsWith(a + sep),
+    isRelative: !isAbsolute(target),
+    underAuthorizedRoot: t === root || t.startsWith(root + sep),
+  };
+}
+
+/**
  * 创建提取代理的工具权限函数。
  * @param memoryDir 允许写入的记忆目录（绝对路径）
  */
@@ -139,7 +166,11 @@ export function createExtractPermissions(memoryDir: string): CanUseToolFn {
     if (toolName === "bash") {
       return isReadonlyBash(input)
         ? { behavior: "allow" }
-        : { behavior: "deny", message: "提取代理只能运行只读 bash 命令" };
+        : {
+            behavior: "deny",
+            message: "提取代理只能运行只读 bash 命令",
+            denyKind: "bash_not_readonly",
+          };
     }
 
     // ─── P1-9：save_memory 按 scope 收窄，不再无条件放行 ───
@@ -182,6 +213,7 @@ export function createExtractPermissions(memoryDir: string): CanUseToolFn {
         logMemoryGuard({ kind: "scope_type_confusion", via: "save_memory", scope });
         return {
           behavior: "deny",
+          denyKind: "scope_denied",
           message:
             `scope 不接受记忆类型「${scope}」：类型请填 type 参数（type="${scope}"），` +
             `scope 留空（默认 project）后重试。`,
@@ -192,6 +224,7 @@ export function createExtractPermissions(memoryDir: string): CanUseToolFn {
       logMemoryGuard({ kind: "scope_denied", via: "save_memory", scope });
       return {
         behavior: "deny",
+        denyKind: "scope_denied",
         message:
           `后台记忆代理只能写 project scope（授权目录 ${memoryDir}），不允许 scope=${scope}。` +
           `global 会污染所有项目、team 会同步给全体协作者，两者都需要人在场判断；` +
@@ -203,16 +236,25 @@ export function createExtractPermissions(memoryDir: string): CanUseToolFn {
     if (WRITE_TOOLS.has(toolName)) {
       const target = extractTargetPath(input);
       if (!target) {
-        return { behavior: "deny", message: "无法解析目标路径" };
+        return { behavior: "deny", message: "无法解析目标路径", denyKind: "no_target_path" };
       }
       if (isAutoMemPath(target, memoryDir)) {
         return { behavior: "allow" };
       }
-      return { behavior: "deny", message: `提取代理只能写入记忆目录: ${memoryDir}` };
+      return {
+        behavior: "deny",
+        message: `提取代理只能写入记忆目录: ${memoryDir}`,
+        denyKind: "path_mismatch",
+        pathMismatch: describePathMismatch(target, memoryDir, "dir"),
+      };
     }
 
     // 其他所有工具：拒绝
-    return { behavior: "deny", message: `提取代理不允许使用工具: ${toolName}` };
+    return {
+      behavior: "deny",
+      message: `提取代理不允许使用工具: ${toolName}`,
+      denyKind: "tool_not_allowed",
+    };
   };
 }
 
@@ -229,18 +271,31 @@ export function createSessionMemoryPermissions(sessionMemoryFile: string): CanUs
     if (toolName === "bash") {
       return isReadonlyBash(input)
         ? { behavior: "allow" }
-        : { behavior: "deny", message: "Session Memory 代理只能运行只读 bash 命令" };
+        : {
+            behavior: "deny",
+            message: "Session Memory 代理只能运行只读 bash 命令",
+            denyKind: "bash_not_readonly",
+          };
     }
     if (toolName === "write" || toolName === "edit") {
       const target = extractTargetPath(input);
-      if (
-        target &&
-        require("path").resolve(target) === require("path").resolve(sessionMemoryFile)
-      ) {
+      if (!target) {
+        return { behavior: "deny", message: "无法解析目标路径", denyKind: "no_target_path" };
+      }
+      if (resolve(target) === resolve(sessionMemoryFile)) {
         return { behavior: "allow" };
       }
-      return { behavior: "deny", message: `Session Memory 代理只能编辑: ${sessionMemoryFile}` };
+      return {
+        behavior: "deny",
+        message: `Session Memory 代理只能编辑: ${sessionMemoryFile}`,
+        denyKind: "path_mismatch",
+        pathMismatch: describePathMismatch(target, sessionMemoryFile, "file"),
+      };
     }
-    return { behavior: "deny", message: `Session Memory 代理不允许使用工具: ${toolName}` };
+    return {
+      behavior: "deny",
+      message: `Session Memory 代理不允许使用工具: ${toolName}`,
+      denyKind: "tool_not_allowed",
+    };
   };
 }

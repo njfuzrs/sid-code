@@ -503,12 +503,21 @@ export async function runForkedAgent(
           // （记忆提取 / dream / session-memory / `/btw`），拒绝来自调用方注入的工具裁剪，
           // 是设计内行为而非用户的权限策略生效 —— fire 出去会让「权限被拒通知到 IM」
           // 被内部 side-call 刷屏（`/btw` 每次都全拒）。主循环与子代理两条路径已接。
+          //
+          // denyKind / pathMismatch：拒绝类别由注入的权限函数**自己报**（它知道为什么拒），
+          // 这里只转发，仍然不猜。没报的（`/btw` 等）就不带，轨迹里与旧数据同形。
           logPermissionDeny(tu.name, {
             source: "other",
             needsPrompt: false,
             context: "forked",
             reasonType: "other",
             agentId: forkAgentId,
+            ...(decision.behavior === "deny" && decision.denyKind
+              ? { denyKind: decision.denyKind }
+              : {}),
+            ...(decision.behavior === "deny" && decision.pathMismatch
+              ? { pathMismatch: decision.pathMismatch }
+              : {}),
           });
           results.push({
             type: "tool_result",

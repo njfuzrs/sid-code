@@ -371,9 +371,51 @@ export interface ToolResult<T = string> {
 /** 权限检查结果 */
 export type PermissionResult =
   | { behavior: "allow"; updatedInput?: unknown }
-  | { behavior: "deny"; message: string }
+  | {
+      behavior: "deny";
+      message: string;
+      /**
+       * 拒绝类别（闭集），由**做出拒绝的那个函数**自己报，埋点只转发不推断。
+       * forked 路径的 `canUseTool` 拿不到 `PermissionDecisionReason`，没有它时
+       * 轨迹里 forked 拒绝只能记 `other`，1,069 次拒绝拆不出原因（04 剖析 5.3 ④）。
+       */
+      denyKind?: ForkedDenyKind;
+      /** `denyKind === "path_mismatch"` 时的路径比较结果：只有布尔，不含路径原文 */
+      pathMismatch?: PathMismatchShape;
+    }
   | { behavior: "ask"; message: string }
   | { behavior: "passthrough" }; // 工具没有意见，交给权限系统决定
+
+/**
+ * forked 代理（记忆提取 / session-memory 等）的拒绝类别。
+ * - `path_mismatch`：写类工具的目标路径不在授权范围内
+ * - `no_target_path`：写类工具入参里取不到路径
+ * - `bash_not_readonly`：bash 命令不是只读
+ * - `scope_denied`：save_memory 的 scope 越权或填错
+ * - `tool_not_allowed`：这个代理根本不给用这个工具
+ */
+export type ForkedDenyKind =
+  | "path_mismatch"
+  | "no_target_path"
+  | "bash_not_readonly"
+  | "scope_denied"
+  | "tool_not_allowed";
+
+/**
+ * 被拒路径与授权路径的形状差异。路径原文含用户目录与项目名，不进轨迹
+ * （与 `decision-telemetry.ts`「不含规则文本与入参片段」同一口径），只记四个布尔，
+ * 足够区分「猜错文件名」「给了相对路径」「写到了别的目录」。
+ */
+export interface PathMismatchShape {
+  /** 文件名相同（只是目录不同） */
+  sameBasename: boolean;
+  /** 父目录相同（只是文件名不同） */
+  sameDir: boolean;
+  /** 模型给的是相对路径 */
+  isRelative: boolean;
+  /** 目标在授权路径的祖先目录之下（如同一项目目录里的另一个文件） */
+  underAuthorizedRoot: boolean;
+}
 
 /** 输入校验结果 */
 export type ValidationResult = { result: true } | { result: false; message: string };
