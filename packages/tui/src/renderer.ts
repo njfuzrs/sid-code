@@ -1,9 +1,15 @@
 import renderNodeToOutput, {
 	renderNodeToScreenReaderOutput,
 } from './render-node-to-output.js';
-import Output from './output.js';
+import Output, {type ScreenReuse} from './output.js';
 import {type DOMElement} from './dom.js';
 import {beginRunCacheFrame, type Screen} from './screen/screen.js';
+
+/**
+ * sid-code（长会话按键延迟 PR3）：每个根节点一份跨帧行复用状态（见 Output.getScreen）。
+ * 只给动态区用；上游 Static 每次是一段新内容，没有可复用的上一帧。
+ */
+const screenReuse = new WeakMap<DOMElement, ScreenReuse>();
 
 type Result = {
 	output: string;
@@ -73,7 +79,13 @@ const renderer = (
 			});
 		}
 
-		const screen = output.getScreen();
+		let reuse = screenReuse.get(node);
+		if (!reuse) {
+			reuse = {};
+			screenReuse.set(node, reuse);
+		}
+
+		const screen = output.getScreen(reuse);
 		const {output: generatedOutput, height: outputHeight} = withText
 			? output.get(screen)
 			: {output: '', height: output.height};
