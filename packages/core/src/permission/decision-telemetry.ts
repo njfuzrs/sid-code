@@ -22,6 +22,8 @@
  * collector 在 `registerHooks` 时注入自己；未注入（测试 / 无轨迹模式）时静默 no-op。
  */
 
+import type { PathMismatchShape } from "../tool/types.ts";
+
 /** 最终判定。`ask` 不是终态：弹窗之后一定落到 allow / deny 之一，用 `prompted` 表达"问过人" */
 export type PermissionOutcome = "allow" | "deny";
 
@@ -63,6 +65,13 @@ export interface PermissionDecisionEvent {
    * 会话中途 Shift+Tab / enter_plan_mode 切换后就失真——逐条带上才能按模式切片。
    */
   mode?: string;
+  /**
+   * forked 拒绝的类别（`ForkedDenyKind`），由注入的 `canUseTool` 自己报。只进本地轨迹。
+   * 不并进 reasonType：那是外发遥测的固定枚举，且语义是「哪条管线规则」，这里是「哪类越权」。
+   */
+  denyKind?: string;
+  /** `denyKind === "path_mismatch"` 时的路径形状（只有布尔，不含路径原文） */
+  pathMismatch?: PathMismatchShape;
 }
 
 let _observer: ((event: PermissionDecisionEvent) => void) | null = null;
