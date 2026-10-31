@@ -8,7 +8,21 @@ import { describe, test, expect } from "bun:test";
 import { mkdirSync, writeFileSync, existsSync, readdirSync, rmSync, utimesSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
-import { TraceCollector } from "@sid-code/core/trace/collector.ts";
+import { pruneOldTraceSessions } from "@sid-code/core/trace/startup-prune.ts";
+import { parseRetentionPeriod, parseRetentionSize } from "@sid-code/core/session/retention.ts";
+
+/**
+ * 原先这些用例 `new TraceCollector(...)` 触发构造函数里的淘汰；2026-11-01 淘汰迁入维护子进程
+ * （trace/startup-prune.ts），这里按原构造函数的默认值口径直接调，判据不变。
+ */
+function prune(opts: { outputDir: string; maxTotalBytes?: number; minRetentionMs?: number }) {
+  const bytes = opts.maxTotalBytes ?? parseRetentionSize("10GB");
+  pruneOldTraceSessions({
+    outputDir: opts.outputDir,
+    maxTotalBytes: bytes > 0 ? bytes : undefined,
+    minRetentionMs: opts.minRetentionMs ?? parseRetentionPeriod("1d"),
+  });
+}
 import { selectTraceDirsToPrune, type TraceDirEntry } from "@sid-code/core/trace/retention.ts";
 
 const e = (id: string, mtimeMs: number, opts: Partial<TraceDirEntry> = {}): TraceDirEntry => ({
@@ -86,7 +100,7 @@ describe("TraceCollector 启动清理", () => {
   test("反向门禁：默认不按数量删 —— 150 个旧目录全部保留（旧默认会删 50 个）", () => {
     const root = freshDir();
     for (let i = 0; i < 150; i++) makeSession(root, `s${String(i).padStart(3, "0")}`, 10, 1000 + i);
-    new TraceCollector({ outputDir: root });
+    prune({ outputDir: root });
     expect(readdirSync(join(root, "sessions"))).toHaveLength(150);
     rmSync(root, { recursive: true, force: true });
   });
@@ -96,7 +110,7 @@ describe("TraceCollector 启动清理", () => {
     const oldest = makeSession(root, "a", 1000, 100);
     const mid = makeSession(root, "b", 1000, 200);
     const newest = makeSession(root, "c", 1000, 300);
-    new TraceCollector({ outputDir: root, maxTotalBytes: 2500, minRetentionMs: 0 });
+    prune({ outputDir: root, maxTotalBytes: 2500, minRetentionMs: 0 });
     expect(existsSync(oldest)).toBe(false);
     expect(existsSync(mid)).toBe(true);
     expect(existsSync(newest)).toBe(true);
@@ -106,7 +120,7 @@ describe("TraceCollector 启动清理", () => {
   test("maxTotalBytes=0（sessionRetention.enabled:false）→ 不按体积删", () => {
     const root = freshDir();
     const a = makeSession(root, "a", 1000, 100);
-    new TraceCollector({ outputDir: root, maxTotalBytes: 0, minRetentionMs: 0 });
+    prune({ outputDir: root, maxTotalBytes: 0, minRetentionMs: 0 });
     expect(existsSync(a)).toBe(true);
     rmSync(root, { recursive: true, force: true });
   });
@@ -116,7 +130,7 @@ describe("TraceCollector 启动清理", () => {
     const dir = join(root, "sessions", "fresh");
     mkdirSync(dir, { recursive: true });
     writeFileSync(join(dir, "session.traj"), "x".repeat(1000));
-    new TraceCollector({ outputDir: root, maxTotalBytes: 10 });
+    prune({ outputDir: root, maxTotalBytes: 10 });
     expect(existsSync(dir)).toBe(true);
     rmSync(root, { recursive: true, force: true });
   });

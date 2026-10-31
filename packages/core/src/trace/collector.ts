@@ -17,7 +17,6 @@ import {
   unlinkSync,
   writeFileSync,
   readFileSync,
-  readdirSync,
   statSync,
   rmSync,
 } from "node:fs";
@@ -44,7 +43,6 @@ import { getBuildInfo } from "@sid-code/shared/build-info.ts";
 import { getIdentity, getGitSnapshot } from "../identity/index.ts";
 import { TraceWriter, type RawJsonlEntry, type HookEvent } from "./writer.ts";
 import { buildTrajectory, type RequestResponsePair, type TraceMetadata } from "./builder.ts";
-import { hasFinalUploadMarker } from "./upload-marker.ts";
 import {
   EVENT_TS_SEMANTIC,
   PAIR_INDEXED_EVENTS,
@@ -52,15 +50,7 @@ import {
 } from "./event-ts-semantics.ts";
 import { buildDigest, resolvePaths, type SessionLevelMetrics } from "./digest.ts";
 import { upsertSessionIndex, buildSessionIndexEntry } from "./session-index.ts";
-import { selectTraceDirsToPrune, type TraceDirEntry } from "./retention.ts";
 import { getPrivacyLevel } from "../analytics/privacy-level.ts";
-import {
-  DEFAULT_SESSION_MAX_TOTAL_SIZE,
-  DEFAULT_SESSION_MIN_RETENTION,
-  parseRetentionPeriod,
-  parseRetentionSize,
-} from "../session/retention.ts";
-import { listActiveSessions } from "../session/concurrent.ts";
 import {
   setPermissionDecisionObserver,
   readPermissionConfigShape,
@@ -132,18 +122,6 @@ export interface TraceUploaderInterface {
 export interface CollectorOptions {
   /** 本地输出目录（默认 ~/.sid-code/trajectories） */
   outputDir?: string;
-  /**
-   * 本地最大保留会话数。默认不限（undefined）—— 防盘满靠 {@link maxTotalBytes}，
-   * 不靠数量（理由见 `trace/retention.ts`）。显式配置时仍生效。
-   */
-  maxSessionsRetained?: number;
-  /**
-   * 轨迹目录总体积上限（字节）。默认取 `sessionRetention.maxTotalSize` 的默认值（10GB）；
-   * 传 0 / 负数 = 不按体积删（`sessionRetention.enabled: false` 时由调用方传 0）。
-   */
-  maxTotalBytes?: number;
-  /** 更新时间在此窗口内的目录不删（毫秒，默认 1 天，对齐 `sessionRetention.minRetention`） */
-  minRetentionMs?: number;
   /**
    * 是否把请求/响应原文写进 `raw.jsonl`（默认 true）。
    * 不传时由 {@link resolveRecordRawPayloads} 解析 env 兜底。
@@ -286,11 +264,6 @@ export class TraceCollector {
   /** 见 CollectorOptions.autoUpload */
   private readonly autoUpload: boolean;
   private readonly outputDir: string;
-  /** 本地最大保留会话数（默认不限） */
-  private readonly maxSessionsRetained: number | undefined;
-  /** 轨迹目录总体积上限（字节）；undefined = 不按体积删 */
-  private readonly maxTotalBytes: number | undefined;
-  private readonly minRetentionMs: number;
   /**
    * SessionEnd 里等待上传的时间预算（毫秒）。0 = 不在退出路径等上传。
    *
@@ -436,31 +409,14 @@ export class TraceCollector {
   // 缺口分析五类：上下文窗口查询（TokenEstimator 是窗口大小的 SSOT，避免另建静态表漂移）
   private readonly tokenEstimator = new TokenEstimator();
 
-  /**
-   * P2-11：最近一次启动清理的结果（两类删除数 + 清理后盘上目录数）。
-   * 暴露给 `getLastBlankPruneResult()`，供「同时报两个分母」的指标输出消费。
-   */
-  private lastBlankPrune: StaleBlankPruneResult = {
-    removedBlank: 0,
-    removedEmpty: 0,
-    remaining: 0,
-  };
-
   constructor(options: CollectorOptions = {}, uploader: TraceUploaderInterface | null = null) {
     this.outputDir = options.outputDir ?? sidPaths.trajectories();
-    this.maxSessionsRetained = options.maxSessionsRetained;
-    const maxTotalBytes =
-      options.maxTotalBytes ?? parseRetentionSize(DEFAULT_SESSION_MAX_TOTAL_SIZE);
-    this.maxTotalBytes = maxTotalBytes > 0 ? maxTotalBytes : undefined;
-    this.minRetentionMs =
-      options.minRetentionMs ?? parseRetentionPeriod(DEFAULT_SESSION_MIN_RETENTION);
     this.recordRawPayloads = resolveRecordRawPayloads(options.recordRawPayloads);
     this.uploader = uploader;
     this.autoUpload = options.autoUpload !== false;
-    // 启动时做一次体积兜底清理，防止本地无限堆积（默认不按数量删）
-    this.pruneOldSessions();
-    // 启动时补清理「历史遗留空壳」——SessionEnd 没跑到时 cleanupIfBlankSession 从未执行
-    this.lastBlankPrune = this.pruneStaleBlankSessions();
+    // T1/T2：体积兜底淘汰与历史空壳清理**不在这里跑**——它们耗时随轨迹目录数增长，
+    // 构造发生在 TUI 首帧之前。已迁入维护子进程（trace/startup-prune.ts，由
+    // maintenance/runner.ts 调用），构造函数里一行都不留。
     // 辅助调用（标题生成/记忆召回等）用量落定的瞬间即同步进 trajectory，
     // 不必等待（可能因崩溃/被杀而永远不会到来的）SessionEnd——见 syncSideCallMetadata 注释。
     // 用 forceRebuildTraj（非节流版）——side-call 稀少（一两次/会话），崩溃安全优先。
@@ -500,249 +456,8 @@ export class TraceCollector {
     this.uploadBudgetMs = Number.isFinite(ms) && ms > 0 ? ms : 0;
   }
 
-  /**
-   * 本地轨迹淘汰：默认**不限数量**，只在总体积超过 `maxTotalBytes`（默认 10GB）时删。
-   * 优先删已上传的（含 .uploaded 标记）——它们的数据已安全落到远端；
-   * 未上传的目录（重试队列待传）即使较旧也尽量保留。活着的进程正在写的会话、
-   * `minRetention` 窗口内更新过的目录永不删。选择逻辑在 `trace/retention.ts`（纯函数）。
-   * 失败静默：清理不是关键路径，不能阻塞采集。
-   *
-   * ⚠ 2026-10-10 推翻了此前「默认 100 个、不要调大」的定案：那条论证的前提是
-   * 「原始轨迹 ≈45MB/会话」，实测开发者本机 100 个目录合计 37MB（p95 1.3MB）。
-   * 一天几十个会话时 100 个只够两三周，调试要的 raw.jsonl / events.jsonl 早被删了。
-   * 防盘满改由体积上限承担，与会话保留（PR #218）同口径。
-   *
-   * 指标的长期留存仍由 `trace/session-index.ts` 承担（P0-2）——本函数删掉目录时
-   * `session-summary.json` 一起消失，曲线不能依赖原始轨迹活着。
-   */
-  private pruneOldSessions(): void {
-    try {
-      const sessionsDir = join(this.outputDir, "sessions");
-      if (!existsSync(sessionsDir)) return;
-      if (this.maxSessionsRetained === undefined && this.maxTotalBytes === undefined) return;
-
-      const needBytes = this.maxTotalBytes !== undefined;
-      const entries: TraceDirEntry[] = readdirSync(sessionsDir, { withFileTypes: true })
-        .filter((e) => e.isDirectory())
-        .map((e) => {
-          const dir = join(sessionsDir, e.name);
-          let mtimeMs = 0;
-          try {
-            mtimeMs = statSync(dir).mtimeMs;
-          } catch {
-            /* 忽略 */
-          }
-          return {
-            id: e.name,
-            dir,
-            mtimeMs,
-            // S11：中途快照（final:false）不算已上传，否则淘汰会优先删掉终态还没上云的会话
-            uploaded: hasFinalUploadMarker(dir),
-            bytes: needBytes ? dirBytes(dir) : undefined,
-          };
-        });
-
-      // 跨进程保护：隔壁 sid-code 正在写的会话（resume 时目录名是被恢复的旧 id）
-      const protectedIds = new Set<string>();
-      try {
-        for (const a of listActiveSessions()) {
-          protectedIds.add(a.sessionId);
-          if (a.logicalSessionId) protectedIds.add(a.logicalSessionId);
-        }
-      } catch {
-        /* 读不到活跃表时只靠 minRetention 窗口保护 */
-      }
-
-      const deletable = selectTraceDirsToPrune(entries, {
-        maxCount: this.maxSessionsRetained,
-        maxTotalBytes: this.maxTotalBytes,
-        protectAfterMs: Date.now() - this.minRetentionMs,
-        protectedIds,
-      });
-
-      let removed = 0;
-      for (const e of deletable) {
-        try {
-          rmSync(e.dir, { recursive: true, force: true });
-          removed++;
-        } catch {
-          /* 单个删除失败不影响其余 */
-        }
-      }
-      if (removed > 0) {
-        getLogger().info(
-          "TRACE",
-          `轨迹清理：本地 ${entries.length} 个会话目录，已删除最旧 ${removed} 个` +
-            `（上限：数量 ${this.maxSessionsRetained ?? "不限"}，体积 ${this.maxTotalBytes ?? "不限"} 字节）`,
-        );
-      }
-    } catch (err) {
-      getLogger().warn("TRACE", `轨迹清理失败（不影响采集）: ${err}`);
-    }
-  }
-
-  /**
-   * 启动时清理「历史遗留空壳会话」——打开即退、从未发生任何 LLM 调用的空目录。
-   *
-   * 为什么需要它（2026-08-07 实测）：空壳本该在 SessionEnd 由 `cleanupIfBlankSession()`
-   * 删掉，但实测 `SessionStart` 75 次 : `SessionEnd` 9 次 —— **绝大多数进程根本走不到
-   * SessionEnd**（Ctrl-C / kill / 终端直接关掉都不会触发）。于是清理逻辑虽然正确，
-   * 却几乎从不执行，盘上堆了 42 个只含 SessionStart 的空目录。
-   *
-   * 这些空壳造成的真实伤害不是占磁盘，而是**污染度量口径**：按目录数算
-   * 「session.traj 覆盖率」得到 33%，看起来像个 P0 采集缺陷；按「有真实 LLM 调用的
-   * 会话」算则是 100%。分母被空壳灌水，一个健康指标就长得像故障。
-   *
-   * ⚠ 删除判据必须极度保守——删错等于毁掉用户的排查现场。四个条件全部满足才删：
-   *   1. 有 events.jsonl（否则可能是正在初始化的新会话，交给 LRU 管）
-   *   2. events.jsonl 里**只有** SessionStart / GatewayPricingSync 这类"未开工"事件；
-   *      出现任何一条工作类事件（BeforeModel / PreToolUse / UserPromptSubmit …）即保留
-   *   3. 目录里没有任何数据文件（session.traj / raw.jsonl / messages.json / crash.json …）
-   *   4. 目录 mtime 超过 STALE_BLANK_AGE_MS（默认 1 小时）——避免误删**当前正在运行**
-   *      的其它 sid-code 进程刚建的目录（多开终端是常态）
-   *
-   * 条件 2 用**白名单**而非黑名单：新增事件类型时，未知事件默认被当作"有活动"从而
-   * 保留目录。判据宁可漏删，绝不能误删。
-   *
-   * ── P2-11：另有一条**独立**判据分支（2026-08-14 实测）──
-   *
-   * 上面四个条件有个缝：条件 1 要求「有 events.jsonl」，而实测 82 个目录里有 24 个
-   * **完全为空**（`ls -A` 无任何内容），连 events.jsonl 都没有 → 被条件 1 直接排除；
-   * LRU 那道机制也没删（82 < 100 未触发上限）。它们正好掉在两道清理机制之间。
-   *
-   * 修法是**新增一条独立分支**，而不是放宽条件 1 —— 条件 1 保护的是"正在初始化的
-   * 新会话"（目录已建、events.jsonl 还没写第一行），放宽它会误删并发 sid-code 进程
-   * 刚建的目录，而多开终端是常态。独立分支 + 更长的静置阈值（24h vs 1h）风险最小：
-   * 一个已经空了整天的目录不可能还是"正在初始化"。
-   */
-  private pruneStaleBlankSessions(): StaleBlankPruneResult {
-    /** "未开工"事件白名单：只出现这些 = 会话从未真正开始工作 */
-    const IDLE_ONLY_EVENTS = new Set(["SessionStart", "SessionEnd", "GatewayPricingSync"]);
-    /** 除 events.jsonl / warn.log / heartbeat.txt 外，任何文件存在即视为有数据，保留 */
-    const IGNORABLE_FILES = new Set(["events.jsonl", "warn.log", "heartbeat.txt"]);
-    /** 目录至少静置这么久才考虑删除（防误删其它进程正在用的目录） */
-    const STALE_BLANK_AGE_MS = 60 * 60 * 1000;
-    /** P2-11 独立分支：完全为空的目录需要静置更久才删（阈值刻意比上面长一个量级） */
-    const EMPTY_DIR_AGE_MS = 24 * 60 * 60 * 1000;
-
-    let removed = 0;
-    let removedEmpty = 0;
-    try {
-      const sessionsDir = join(this.outputDir, "sessions");
-      if (!existsSync(sessionsDir)) return { removedBlank: 0, removedEmpty: 0, remaining: 0 };
-
-      const now = Date.now();
-
-      for (const e of readdirSync(sessionsDir, { withFileTypes: true })) {
-        if (!e.isDirectory() || e.name.startsWith(".")) continue;
-        const dir = join(sessionsDir, e.name);
-        try {
-          // 目录静置时长——两条分支共用这一次 statSync。
-          // ⚠ mtimeMs 是浮点数，对刚建的目录 now - mtimeMs 可能算出**负数**
-          // （见 MEMORY mtime-float-breaks-maxage-zero）。用 `<` 比较天然把负数
-          // 判成"太新，不动"，方向是安全的；但阈值两侧都必须有测试锁死。
-          const ageMs = now - statSync(dir).mtimeMs;
-
-          const files = readdirSync(dir, { withFileTypes: true });
-
-          // ── P2-11 独立分支：目录完全为空（ls -A 无内容）且静置 > 24h → 删 ──
-          // 放在条件 1 之前，因为条件 1（必须有 events.jsonl）恰好会把这类目录排除掉。
-          if (files.length === 0) {
-            if (ageMs >= EMPTY_DIR_AGE_MS) {
-              rmSync(dir, { recursive: true, force: true });
-              removedEmpty++;
-            }
-            continue;
-          }
-
-          // 条件 4：太新的目录不动（可能是别的进程正在跑）
-          if (ageMs < STALE_BLANK_AGE_MS) continue;
-
-          // 条件 3：除 events/warn/heartbeat 外有任何文件 → 有数据，保留
-          if (files.some((f) => !IGNORABLE_FILES.has(f.name))) continue;
-
-          // 条件 1：必须有 events.jsonl
-          const eventsPath = join(dir, "events.jsonl");
-          if (!existsSync(eventsPath)) continue;
-
-          // 条件 2：只含"未开工"事件（白名单外的任何事件 → 保留）
-          const raw = readFileSync(eventsPath, "utf-8");
-          let hasWork = false;
-          let hasAny = false;
-          for (const line of raw.split("\n")) {
-            if (!line.trim()) continue;
-            hasAny = true;
-            let name: unknown;
-            try {
-              name = (JSON.parse(line) as { event?: unknown }).event;
-            } catch {
-              // 坏行无法判定 → 按"有活动"处理，保留目录
-              hasWork = true;
-              break;
-            }
-            if (typeof name !== "string" || !IDLE_ONLY_EVENTS.has(name)) {
-              hasWork = true;
-              break;
-            }
-          }
-          if (hasWork || !hasAny) continue;
-
-          rmSync(dir, { recursive: true, force: true });
-          removed++;
-        } catch {
-          /* 单个目录失败不影响其余 */
-        }
-      }
-
-      if (removed > 0 || removedEmpty > 0) {
-        getLogger().info(
-          "TRACE",
-          `清理历史空壳会话 ${removed} 个（只含 SessionStart、无任何 LLM 调用）` +
-            `+ 完全空目录 ${removedEmpty} 个——` +
-            `它们会把"traj 覆盖率"这类指标的分母灌水`,
-        );
-      }
-      return {
-        removedBlank: removed,
-        removedEmpty,
-        remaining: this.countSessionDirs(),
-      };
-    } catch (err) {
-      getLogger().warn("TRACE", `空壳会话清理失败（不影响采集）: ${err}`);
-      return { removedBlank: removed, removedEmpty, remaining: this.countSessionDirs() };
-    }
-  }
-
-  /**
-   * 数一下 sessions/ 下还剩多少目录（不含隐藏项）。
-   *
-   * 只用于清理结果的 `remaining` 字段——它是「盘上目录数」这个**分母口径**的取数源。
-   * P2-11 要求指标输出同时报两个分母（有效会话数 / 盘上目录数），避免只给一个数字
-   * 然后被质疑口径。消费端（session-index.jsonl + northstar-snapshot，属 PR-2/PR-5）
-   * 尚未合并，本函数先把数据备好。
-   */
-  private countSessionDirs(): number {
-    try {
-      const sessionsDir = join(this.outputDir, "sessions");
-      if (!existsSync(sessionsDir)) return 0;
-      return readdirSync(sessionsDir, { withFileTypes: true }).filter(
-        (e) => e.isDirectory() && !e.name.startsWith("."),
-      ).length;
-    } catch {
-      return 0;
-    }
-  }
-
-  /**
-   * P2-11：读取本次启动清理的结果，供指标输出「同时报两个分母」。
-   *
-   * 期望的渲染形态（消费方在 PR-2 / PR-5）：
-   *   `会话终态覆盖率 45.5%（25/55 有效会话）｜盘上目录 82 个，含 26 个无数据目录`
-   * 两个分母都给，比只给一个然后被质疑口径更好。
-   */
-  getLastBlankPruneResult(): StaleBlankPruneResult {
-    return { ...this.lastBlankPrune };
-  }
+  // P2-11 的两个分母（删除数 + 盘上目录数）原由 getLastBlankPruneResult() 给出；
+  // 清理迁入维护子进程后改为 trace/startup-prune.ts 的 pruneStaleBlankTraceSessions 返回值。
 
   /**
    * 修复问题一：统计已存在历史「完整轮次」数（resume 续接时用，使新轮 index 接续）。
@@ -3715,24 +3430,6 @@ export class TraceCollector {
       /* 采集遥测写入失败不影响主流程 */
     }
   }
-}
-
-/** 目录递归字节数（单项失败忽略） */
-function dirBytes(dir: string): number {
-  let total = 0;
-  try {
-    for (const e of readdirSync(dir, { withFileTypes: true })) {
-      const full = join(dir, e.name);
-      try {
-        total += e.isDirectory() ? dirBytes(full) : statSync(full).size;
-      } catch {
-        /* 忽略 */
-      }
-    }
-  } catch {
-    /* 目录不可读 */
-  }
-  return total;
 }
 
 // ─── S17：PostToolUseFailure 的错误分类 ───

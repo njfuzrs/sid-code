@@ -21,7 +21,7 @@ describe("T12: RetryTelemetry 事件落盘", () => {
   });
 
   it("writeRetryTelemetry 写入 events.jsonl", () => {
-    const collector = new TraceCollector({ outputDir: tempDir, maxSessionsRetained: 10 });
+    const collector = new TraceCollector({ outputDir: tempDir });
     // 手动模拟初始化状态
     const sessionId = "test-session-001";
     (collector as any).initialized = true;
@@ -68,7 +68,7 @@ describe("T12: RetryTelemetry 事件落盘", () => {
   });
 
   it("未初始化时 writeRetryTelemetry 静默忽略", () => {
-    const collector = new TraceCollector({ outputDir: tempDir, maxSessionsRetained: 10 });
+    const collector = new TraceCollector({ outputDir: tempDir });
     // 不初始化，直接写
     expect(() => collector.writeRetryTelemetry({ type: "retry", model: "test" })).not.toThrow();
   });
