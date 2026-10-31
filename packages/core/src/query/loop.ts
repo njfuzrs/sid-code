@@ -228,7 +228,12 @@ import {
   MAX_THINKING_DIVERGENCE_INTERVENTIONS,
   isThinkingDivergenceDetectionEnabled,
 } from "./thinking-divergence.ts";
-import { injectReminders } from "./reminder-inject.ts";
+import {
+  injectReminders,
+  buildPersistentReminderBlocks,
+  appendPersistentBlocks,
+  isPersistentReminderBlock,
+} from "./reminder-inject.ts";
 import {
   decideNagInjection,
   decideTodoNagInjection,
@@ -1742,6 +1747,11 @@ export async function* queryLoop(loopConfig: QueryLoopConfig): AsyncGenerator<Qu
       // 2026-07-29 实测事故：所有片段一律前置时，真实 /commit 指令被顶到 user message 的
       // 40% 偏移，模型第一眼看到的是工具列表和 MCP 说明，转而抓记忆索引标题当用户意图。
       const reminderParts: string[] = [];
+      // persistent 档：「只播一次」的内容（MCP 说明 / 延迟工具增量 / skill listing / IDE 增量）。
+      // 由去重集合保证只出现一次，所以必须写进 ctxMgr 历史、之后每轮原样重放——
+      // 走 transient 的话第 2 轮就从请求里消失：前缀在最后一条消息上少一整块，
+      // 模型也从此看不到这些说明（见 reminder-inject.ts「不变量 3 的例外」）。
+      const persistentReminderParts: string[] = [];
       // critical 档：止损阀，保持前置（"必须在被冻结快照带偏前先读到实时事实"）。
       // 只在 tool_result 轮触发、彼时无用户新指令，故前置不会淹没任何东西。
       // ⚠️ 新增成员前先读 reminder-inject.ts 的 ReminderTiers.critical 注释。
@@ -2376,7 +2386,7 @@ export async function* queryLoop(loopConfig: QueryLoopConfig): AsyncGenerator<Qu
           // 截断保护不在这里：instructions 在连接时已由 mcp/manager.ts 的
           // MAX_INSTRUCTIONS_LENGTH（2048）截过，那是唯一的事实源（D29）。
           // 此处原有一道 4000 的二次截断，永远走不到，已删除——要调上限去改那个常量。
-          reminderParts.push(
+          persistentReminderParts.push(
             `<system-reminder>\n` +
               `MCP Server Instructions（harness 注入的服务器使用说明，非用户输入）：\n\n` +
               `以下 MCP 服务器提供了使用说明，请在使用对应工具时遵循这些指令。\n` +
@@ -2427,7 +2437,7 @@ export async function* queryLoop(loopConfig: QueryLoopConfig): AsyncGenerator<Qu
         try {
           const ideDelta = deps.drainIDEContextDelta();
           if (ideDelta) {
-            reminderParts.push(ideDelta);
+            persistentReminderParts.push(ideDelta);
             log.info("QUERY_LOOP", "注入 IDE 上下文增量（选区/@提及）");
           }
         } catch (e) {
@@ -2458,7 +2468,7 @@ export async function* queryLoop(loopConfig: QueryLoopConfig): AsyncGenerator<Qu
       if (deps.drainSkillListingDelta) {
         try {
           const skillDelta = deps.drainSkillListingDelta();
-          if (skillDelta) reminderParts.push(skillDelta);
+          if (skillDelta) persistentReminderParts.push(skillDelta);
         } catch (e) {
           log.warn(
             "QUERY_LOOP",
@@ -2509,7 +2519,7 @@ export async function* queryLoop(loopConfig: QueryLoopConfig): AsyncGenerator<Qu
           // 显式带围栏（P0-a）：`<available-deferred-tools>` 是三处裸注入里字节量最大的一条，
           // 实测在 2026-07-29 那条轨迹里正好落在偏移 0（用户指令之前 1075 字符处）——
           // 模型第一眼看到的就是它。裸标签不足以表达"这不是人说的"，必须套 system-reminder。
-          reminderParts.push(
+          persistentReminderParts.push(
             `<system-reminder>\n` +
               `<available-deferred-tools>\n${added.join("\n")}\n</available-deferred-tools>\n` +
               (isFull
@@ -2538,6 +2548,27 @@ export async function* queryLoop(loopConfig: QueryLoopConfig): AsyncGenerator<Qu
       //
       // critical 前置于用户指令、ambient 后置，每个片段强制 <system-reminder> 围栏，
       // 且各自成独立 text block（不与用户指令做字符串拼接）——详见 reminder-inject.ts。
+      // 持久档先落：写进 ctxMgr 最后一条 user 消息，并同步追加到本轮发送副本。
+      // 两边都必须成功才算持久化（ctxMgr 尾部被剥掉了内部 ack、或最后一条不是 user 时
+      // 写不进去），否则整批降级为 transient——宁可下一轮少一块，也不能让发送副本
+      // 与历史分叉，那会让下一轮的前缀和这一轮对不上。
+      if (persistentReminderParts.length > 0) {
+        const blocks = buildPersistentReminderBlocks(persistentReminderParts);
+        const sendCopy = appendPersistentBlocks(finalMessages, blocks);
+        // 长度相等 = 发送副本与历史逐条对齐（没被剥尾部 ack），两边的「最后一条」是同一条。
+        if (
+          sendCopy &&
+          finalMessages.length === ctxMgr.getMessages().length &&
+          ctxMgr.appendPersistentBlocksToLastMessage(blocks)
+        ) {
+          finalMessages = sendCopy;
+          log.info("QUERY_LOOP", `写入 ${blocks.length} 个持久 reminder 块（只播一次档）`);
+        } else {
+          reminderParts.push(...persistentReminderParts);
+          log.warn("QUERY_LOOP", "持久 reminder 写入历史失败（末条非 user），本轮降级为 transient");
+        }
+      }
+
       if (criticalReminderParts.length > 0 || reminderParts.length > 0) {
         finalMessages = injectReminders(finalMessages, {
           critical: criticalReminderParts,
@@ -6977,7 +7008,10 @@ function extractLastUserInput(ctxMgr: ContextManager): string {
   for (let i = messages.length - 1; i >= 0; i--) {
     const msg = messages[i];
     if (msg.role === "user") {
-      const textBlocks = msg.content.filter((b) => b.type === "text");
+      // 持久 reminder 块不是用户输入，不能进召回查询
+      const textBlocks = msg.content.filter(
+        (b) => b.type === "text" && !isPersistentReminderBlock(b),
+      );
       if (textBlocks.length > 0) {
         return textBlocks.map((b) => (b.type === "text" ? b.text : "")).join("\n");
       }

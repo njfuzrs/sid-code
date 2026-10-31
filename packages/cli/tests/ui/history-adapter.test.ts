@@ -1089,3 +1089,32 @@ describe("后台任务通知（<task-notification>）→ task_notification 历�
     }
   });
 });
+
+describe("持久 reminder 块（只播一次档，写进历史）不进 TUI", () => {
+  test("用户原文 + 持久块：只显示用户原文", () => {
+    const msgs: Message[] = [
+      {
+        role: "user",
+        content: [
+          { type: "text", text: "修一下登录页" },
+          {
+            type: "text",
+            text: "<system-reminder>\nMCP Server Instructions：demo_init\n</system-reminder>",
+            persistentReminder: true,
+          },
+          {
+            type: "text",
+            text: "<system-reminder>\n<available-deferred-tools>\nmcp__a__b\n</available-deferred-tools>\n</system-reminder>",
+            persistentReminder: true,
+          },
+        ],
+      },
+    ];
+    const items = messagesToHistoryItems(msgs);
+    const users = items.filter((i) => i.type === "user") as { type: "user"; text: string }[];
+    expect(users.length).toBe(1);
+    expect(users[0].text).toBe("修一下登录页");
+    expect(JSON.stringify(items)).not.toContain("demo_init");
+    expect(JSON.stringify(items)).not.toContain("available-deferred-tools");
+  });
+});
