@@ -16,6 +16,9 @@ import { SessionState } from "@sid-code/core/session/state.ts";
 import type { Config } from "@sid-code/core/config/config.ts";
 import type { StreamEvent, AccumulatedResponse } from "@sid-code/core/llm/types.ts";
 import type { TodoItem } from "@sid-code/core/tool/todo-write.ts";
+import { createAgentTask } from "@sid-code/core/task/agent-task.ts";
+import { getTask } from "@sid-code/core/task/registry.ts";
+import { __resetForTest as __resetQueueForTest } from "@sid-code/core/query/message-queue-manager.ts";
 
 async function* emptyStream(): AsyncIterable<StreamEvent> {}
 
@@ -115,5 +118,69 @@ describe("TodoReworkDetected 接线（T1）", () => {
     expect(rework.length).toBe(1);
     expect(rework[0]!.data.hitCount).toBe(1);
     expect(rework[0]!.data.hits).toEqual([{ item: "改 a", file: FILE }]);
+  });
+});
+
+describe("todo_gate 排除后台任务（T2）", () => {
+  function setup() {
+    const ctxMgr = new ContextManager({ maxTokens: 200000 });
+    ctxMgr.setSystemPrompt("test");
+    ctxMgr.addMessage({ role: "user", content: [{ type: "text", text: "跑 CI" }] });
+    const events: Array<{ event: string; data: any }> = [];
+    const outputs: string[] = [];
+    const deps: QueryDeps = {
+      sendWithRetry: () => emptyStream(),
+      processStream: async () => finalResp(),
+      executeTools: async () => ({ results: [] }),
+      autoCompact: async () => ({ kind: "skipped" as const }),
+      getAbortSignal: () => undefined,
+      uuid: () => "uuid-test",
+      getTodoState: () => ({
+        todos: [t("改代码", "completed"), t("等 CI 通过", "in_progress")],
+        writeVersion: 1,
+      }),
+      traceAppendEvent: (e: any) => {
+        events.push({ event: e.event, data: e.data });
+      },
+    };
+    const cfg: QueryLoopConfig = {
+      config: {
+        model: "deepseek-v4-pro",
+        provider: "openai",
+        maxTurns: 10,
+        toolSearch: false,
+      } as unknown as Config,
+      ctxMgr,
+      toolRegistry: new ToolRegistry(),
+      sessionState: new SessionState("test-bg-gate"),
+      fallback: new ModelFallback(),
+      deps,
+    };
+    return { cfg, events, outputs };
+  }
+  const gateRetries = (events: Array<{ event: string; data: any }>) =>
+    events.filter((e) => e.event === "LoopTransition" && e.data?.type === "todo_gate_retry").length;
+
+  test("有运行中的后台任务 → 不发 todo_gate_retry；任务结束后照常拦", async () => {
+    __resetQueueForTest();
+    const { taskState } = createAgentTask({
+      agentType: "explore",
+      prompt: "跑 CI",
+      description: "CI",
+      isBackgrounded: true,
+    });
+    try {
+      const a = setup();
+      await drain(a.cfg);
+      expect(gateRetries(a.events)).toBe(0);
+    } finally {
+      const task = getTask(taskState.id);
+      if (task) task.status = "completed";
+      __resetQueueForTest();
+    }
+
+    const b = setup();
+    await drain(b.cfg);
+    expect(gateRetries(b.events)).toBeGreaterThan(0);
   });
 });

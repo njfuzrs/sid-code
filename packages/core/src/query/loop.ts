@@ -139,6 +139,8 @@ import {
   countUnfinished,
   blockedTodos,
   blockedSignature,
+  unfinishedSignature,
+  buildTodoBackgroundWaitMessage,
   advanceTodoGateBudget,
   TODO_GATE_BUDGET_KEY,
   type TodoGateBudget,
@@ -4703,7 +4705,26 @@ export async function* queryLoop(loopConfig: QueryLoopConfig): AsyncGenerator<Qu
           // 预算挂 SessionState、按完成数复位（2026-10-06）：旧实现挂 LoopState，
           // 每条用户消息归零 + 每次 todo_write（哪怕只改措辞）归零，同一份停滞清单可被无限次拦截。
           const budget = todoState ? getTodoGateBudget(sessionState, todoState.todos) : null;
-          if (todoState && budget && unfinished > 0) {
+          if (todoState && budget && unfinished > 0 && (runningBg || pendingNotif)) {
+            // T2（进度清单第五部分）：有运行中的后台任务 / 待投递通知时**不续跑**。
+            // 实测 15 次有 EndTurnShape 的续跑里 6 次触发时 running_background_tasks=true，
+            // 模型的反应是把「等 CI / 等构建」标成 blocked——闸门在逼它对清单撒谎。
+            // 后台任务完成时通知会把循环叫醒，那时闸门还会再判一次，所以这里漏拦的代价有界。
+            // 写法同下方「只剩 blocked」分支：中性说明 + 按清单签名去重，不消耗续命预算。
+            const sig = unfinishedSignature(todoState.todos);
+            if (budget.bgWaitSignature !== sig) {
+              budget.bgWaitSignature = sig;
+              log.info(
+                "QUERY_LOOP",
+                `P0-3：end_turn 放行——仍有 ${unfinished} 项未完成，但有后台任务运行中/通知待投递，等其回报`,
+              );
+              yield {
+                kind: "system",
+                level: "info",
+                text: buildTodoBackgroundWaitMessage(unfinished),
+              };
+            }
+          } else if (todoState && budget && unfinished > 0) {
             // 误判自愈信号：本轮"有实质产出"（写了一段实质文字，如输出了完整报告）却试图收尾。
             // 本 gate 只在 `isEndTurnLike && !hasPendingToolUse` 分支到达，即本轮没有工具调用，
             // todo_write 本轮必然没执行，于是"有产出却不翻状态位"= producedSubstantialText。
