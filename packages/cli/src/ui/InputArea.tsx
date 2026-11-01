@@ -1227,6 +1227,7 @@ export function InputArea({
     tb.state.cursorRow,
     displayCursorCol,
     availableWidth,
+    visualLines,
   );
 
   // Viewport 滚动
@@ -1312,8 +1313,10 @@ export function InputArea({
       {queueHint}
       {shellHint}
       {hasSuggestions && (
-        // 补全菜单是临时浮层：收起时主屏整帧重画，不留与菜单等高的空白（见 DialogSwitch 同款说明）
-        <Transient>
+        // 补全菜单是临时浮层。float：长会话（帧已溢出视口）里叠画在输入框上方的历史行上，不占帧高，
+        // 关闭只是视口内几行的普通 diff；否则每次关菜单都要整帧重画全部历史（ce7 实测 763KB + 清 scrollback）。
+        // 短会话（帧未溢出）照旧在流布局，字节与改前相同。判定在底座 ink.tsx layoutFloatingTransients
+        <Transient float>
           <SuggestionsDisplay
             suggestions={suggestions}
             activeIndex={activeIndex}
