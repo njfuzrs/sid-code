@@ -840,6 +840,10 @@ export class ReadTool implements Tool {
         if (hit) {
           const { logMemoryRead } = await import("../analytics/events.ts");
           logMemoryRead(hit);
+          // T1.1：本地逐条读计数（事件不记路径，答不了「哪条从没被读过」）。
+          // 落旁路文件而非回写 frontmatter，理由见 memory/read-stats.ts 头注释。
+          const { recordMemoryRead } = await import("../memory/read-stats.ts");
+          await recordMemoryRead(filePath, hit);
         }
       } catch {
         /* 埋点失败静默 */

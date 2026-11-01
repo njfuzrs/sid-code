@@ -393,13 +393,15 @@ export type PermissionResult =
  * - `bash_not_readonly`：bash 命令不是只读
  * - `scope_denied`：save_memory 的 scope 越权或填错
  * - `tool_not_allowed`：这个代理根本不给用这个工具
+ * - `index_full`：记忆索引已截断，后台代理想新建 key（横向剖析 T3；不是越权，单列不并进 scope_denied）
  */
 export type ForkedDenyKind =
   | "path_mismatch"
   | "no_target_path"
   | "bash_not_readonly"
   | "scope_denied"
-  | "tool_not_allowed";
+  | "tool_not_allowed"
+  | "index_full";
 
 /**
  * 被拒路径与授权路径的形状差异。路径原文含用户目录与项目名，不进轨迹

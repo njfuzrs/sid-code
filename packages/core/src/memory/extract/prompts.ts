@@ -28,7 +28,23 @@ import { MEMORY_TYPE_DESCRIPTIONS } from "../types.ts";
  *
  * @param existingMemoriesManifest 现有记忆清单（避免重复保存）
  */
-export function buildExtractPrompt(existingMemoriesManifest: string): string {
+export function buildExtractPrompt(
+  existingMemoriesManifest: string,
+  /**
+   * 横向剖析 T3：索引容量状态一行（`formatIndexCapacity` 产出）。截断时模型要知道
+   * 新建的条目进不了索引、且后台路径会被权限层拒绝，只能更新已有 key。
+   */
+  capacityLine?: string,
+): string {
+  const truncated = capacityLine?.includes("已截断") ?? false;
+  const capacitySection = capacityLine
+    ? `${capacityLine}\n${
+        truncated
+          ? "索引已满：新建的记忆进不了索引，后台路径**不允许新建 key**（会被拒绝）。" +
+            "只在能更新清单里已有条目时保存，用该条的原 key 覆盖。\n"
+          : ""
+      }\n`
+    : "";
   const typeList = Object.entries(MEMORY_TYPE_DESCRIPTIONS)
     .map(([k, v]) => `- **${k}**: ${v}`)
     .join("\n");
@@ -66,6 +82,8 @@ ${typeList}
 5. 检查现有记忆清单，避免重复保存已有内容；如需更新，用清单里该条「key:」后的原值（不是文件名）
 
 ## 现有记忆清单
+
+${capacitySection}按索引保留优先级排序（user → feedback → project → reference），前面的条目先进索引。
 
 ${existingMemoriesManifest}
 

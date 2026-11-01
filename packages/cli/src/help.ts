@@ -217,6 +217,7 @@ Worktree 隔离:
   SID_CODE_DISABLE_PROJECT_RULES  设为 1 跳过 CLAUDE.md 加载（评测隔离）
   SID_CODE_DISABLE_CRON     设为 1 整体禁用定时任务（工具不注册、调度器不轮询、已持久化任务不触发）
   SID_CODE_AUTO_MEMORY          后台自动提取记忆开关 (0/1，缺省启用；优先于 settings.autoMemory)
+  SID_CODE_MEMORY_EXTRACT_INTERVAL  后台记忆提取每 N 个 end_turn 跑一次（正整数，缺省 1；优先于 settings.memoryExtractInterval）
   SID_CODE_STALL_ESCALATION     停滞升级阶梯（收敛提示 + 清单振荡时停止劝续跑），交互模式缺省启用，设为 0 关闭
   SID_CODE_STALL_HARD_STOP      停滞升级 L2 是否真停并交还用户（1/0，优先于 settings.stallHardStop；缺省只记事件不停）
   SID_CODE_STALL_ESCALATION_HEADLESS  设为 1 时 -p/headless 也启用停滞升级（缺省不启用；L2 真停时 result subtype=error_stalled）

@@ -18,7 +18,7 @@ settings.json 的全部可配字段、类型与默认值。
 
 <!-- AUTO-GEN:START 由 scripts/docs-gen-reference.ts 生成，勿手工编辑 -->
 
-> 共 **84** 个顶层字段，全部由 `SettingsSchema` 声明（类型/枚举/约束经运行时自省导出）。
+> 共 **85** 个顶层字段，全部由 `SettingsSchema` 声明（类型/枚举/约束经运行时自省导出）。
 > 写了表里没有的顶层键（多半是拼错）不会报错退出，但启动时会提示「未知配置项」并给出最接近的字段名。
 
 配置文件位置：`~/.sid-code/settings.json`（用户级）、`<启动目录>/.sid-code/settings.json`（项目级，优先）、
@@ -76,6 +76,7 @@ settings.json 的全部可配字段、类型与默认值。
 | `maxTokens` | number | ≥1000 | 单次响应最大输出 token 数（≥1000） |
 | `mcpPolicy` | object | — | MCP 安全策略（denylist/allowlist）。合并多源 MCP 配置时按此过滤， 命中 deniedServers 的 server 直接剔除并留痕。默认 undefined（不过滤）。（子键见[下文](#key-mcppolicy)） |
 | `mcpServers` | object | — | MCP 服务器 |
+| `memoryExtractInterval` | number | 整数 >0 | 记忆横向剖析 T2：后台记忆提取节流——每 N 个 end_turn 才跑一次（缺省 1 = 每轮都跑）。 优先级：env SID_CODE_MEMORY_EXTRACT_INTERVAL > settings memoryExtractInterval > 1。 被节流的轮次在会话收尾补跑一次，不会整段会话都不抽。 |
 | `model` | string | — | 主模型名（须在 availableModels 中；/model 可运行时切换） |
 | `network` | object | — | 网络超时/重试配置（统一单套保活优先默认值）（子键见[下文](#key-network)） |
 | `officialMarketplace` | boolean | — | 是否默认注册官方市场 sid-code（缺省 true，对齐 CC 首次启动自动注册官方市场） |

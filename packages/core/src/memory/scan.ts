@@ -183,15 +183,21 @@ export async function enumerateMemoryFiles(memoryDir: string): Promise<string[]>
   } catch {
     return [];
   }
-  return entries.filter((rel) => {
-    if (!rel.endsWith(".md")) return false;
-    const segments = rel.split(/[\\/]/);
-    const base = segments[segments.length - 1];
-    if (SKIP_NAMES.has(base)) return false;
-    // 任一层目录命中 skip 名单即整条排除（`archive/a/b.md` 也要排除）
-    if (segments.slice(0, -1).some((s) => SKIP_DIRS.has(s))) return false;
-    return true;
-  });
+  return entries.filter(isEnumerableMemoryPath);
+}
+
+/**
+ * 相对路径是否算一条记忆条目 —— `enumerateMemoryFiles` 的过滤判据单独导出，
+ * 给需要**同步**枚举的调用方（T3 抽取权限在工具鉴权热路径上，不能 await）复用同一口径。
+ */
+export function isEnumerableMemoryPath(rel: string): boolean {
+  if (!rel.endsWith(".md")) return false;
+  const segments = rel.split(/[\\/]/);
+  const base = segments[segments.length - 1];
+  if (SKIP_NAMES.has(base)) return false;
+  // 任一层目录命中 skip 名单即整条排除（`archive/a/b.md` 也要排除）
+  if (segments.slice(0, -1).some((s) => SKIP_DIRS.has(s))) return false;
+  return true;
 }
 
 /**

@@ -123,6 +123,19 @@ export interface UsageLedgerEntry {
   userId?: string;
   orgId?: string;
   teamId?: string;
+
+  /**
+   * 记忆横向剖析 T1.2：主循环之外各调用方（`fork:memory-extract` / `fork:session-memory-update`
+   * / 子代理…）的会话累计用量。键与 `BilledRequest.agent_id` 同源。**旧数据无此字段。**
+   *
+   * 为什么是表而不是单个 `agentId`：账本是每会话一行（upsert），一行里混着多个调用方。
+   * 主循环不进表（它就是行上的 promptTotal / costUSD）。缺失 = 本会话没有非主循环请求，
+   * 或这行是加字段前写的。取数源见 `telemetry/agent-usage.ts`。
+   */
+  byAgent?: Record<
+    string,
+    { requests: number; inputTokens: number; outputTokens: number; costUSD: number }
+  >;
 }
 
 /**

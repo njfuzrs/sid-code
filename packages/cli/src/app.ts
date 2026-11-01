@@ -167,6 +167,12 @@ import {
 } from "@sid-code/core/llm/billing-sink.ts";
 import { sendNonStreamingSideCall } from "@sid-code/core/llm/side-call-nonstreaming.ts";
 import {
+  setAgentUsageCostCalculator,
+  hydrateAgentUsageBaseline,
+  getSessionAgentUsage,
+  resetAgentUsageSession,
+} from "@sid-code/core/telemetry/agent-usage.ts";
+import {
   buildJitEventData,
   emitJitEvent,
   setJitTraceSink,
@@ -1178,6 +1184,17 @@ export class App {
     // 注册辅助调用成本观察者：实时累加到 SessionState.sideCostUSD，
     // 使 TUI 费用列 / /cost 命令 / quota 守卫看到主+辅助的真实总花费
     setSideCostObserver((costUSD) => this.sessionState.addSideCost(costUSD));
+    // 记忆横向剖析 T1.2：账本 `byAgent` 的计价与账本 costUSD 同口径（同一个 calculateCost，
+    // 按请求发生时刻取价）。不注入时 byAgent 只有 token 与请求数，costUSD 恒 0。
+    setAgentUsageCostCalculator((req) =>
+      this.sessionState.calculateCost(
+        req.model,
+        req.usage,
+        req.provider,
+        req.baseURL,
+        req.atMs ? new Date(req.atMs) : undefined,
+      ),
+    );
     // ─── PR3（档 A）：计费发生侧入账 —— D2「22 次真实计费请求完全未入账」的根治点 ───
     //
     // provider 每完成一次 fetch 就发一条权威计费事件（见 llm/billing-sink.ts）。
@@ -3263,6 +3280,8 @@ export class App {
     this.ctxMgr.clear();
     // N12：影子调用会话维度与 sideCostUSD 同批归零（rotate → resetCounters 已清 sideCostUSD）。
     resetSessionSideStats();
+    // T1.2：按调用方聚合与影子调用同批归零（新会话 id 的账本行不该带上旧会话的 byAgent）
+    resetAgentUsageSession();
     // /clear 后模型对"已播报过的延迟工具/权限提醒"完全失忆，去重键必须一并归零，
     // 否则新一轮对话永远不再播报延迟工具列表（详见 resetReminderDedupKeys 注释）。
     this.sessionState.resetReminderDedupKeys();
@@ -4978,7 +4997,8 @@ export class App {
   private async wireExtractMemories(): Promise<void> {
     const log = getLogger();
     try {
-      const { initExtractMemories } = await import("@sid-code/core/memory/extract/extractor.ts");
+      const { initExtractMemories, resolveMemoryExtractInterval } =
+        await import("@sid-code/core/memory/extract/extractor.ts");
       const { createExtractPermissions } =
         await import("@sid-code/core/memory/extract/permissions.ts");
       const { ensureAutoMemPath, isAutoMemoryEnabled } =
@@ -5008,6 +5028,8 @@ export class App {
         }),
         memoryDir,
         canUseTool: createExtractPermissions(memoryDir),
+        // 横向剖析 T2：节流间隔（缺省 1 = 行为不变）
+        interval: resolveMemoryExtractInterval(this.config.memoryExtractInterval),
         // 提取保存记忆后，把摘要回注主上下文（作为 system-reminder），让模型知晓已记忆。
         appendSystemMessage: (msg) => {
           try {
@@ -6116,6 +6138,12 @@ export class App {
     // byLabel 归因从零开始，下一轮 persistUsageStats 还会用「只含本进程」的值覆盖旧快照。
     // 回灌成会话基线（不回灌 costUSD 进 SessionState：它已经经上面 usage_stats.sideCostUSD
     // 回灌过一次，两条路径都喂会让影子成本翻倍）。失败不阻断恢复。
+    // T1.2：按调用方用量基线（落盘见 persistUsageStats）。形态不合法忽略，不阻断恢复。
+    if (sessionData.metadata?.["agent_usage"]) {
+      if (!hydrateAgentUsageBaseline(sessionData.metadata["agent_usage"])) {
+        log.warn("APP", "调用方用量快照形态不合法，忽略（不阻断）");
+      }
+    }
     if (sessionData.metadata?.["side_call_stats"]) {
       try {
         if (hydrateSideCallBaseline(sessionData.metadata["side_call_stats"])) {
@@ -8018,6 +8046,14 @@ export class App {
       }
     } catch (e) {
       getLogger().warn("APP", `影子调用用量落盘失败（不阻断）: ${(e as Error)?.message}`);
+    }
+    // T1.2：按调用方聚合同频落盘（会话维度），resume 时回灌为基线 —— 与 side_call_stats 同口径，
+    // 否则恢复后账本行 byAgent 只剩本进程的量，而同一行 costUSD 却含历史（stock/flow 混用）。
+    try {
+      const byAgent = getSessionAgentUsage();
+      if (byAgent) this.sessionStore.appendMetadata("agent_usage", byAgent);
+    } catch (e) {
+      getLogger().warn("APP", `调用方用量落盘失败（不阻断）: ${(e as Error)?.message}`);
     }
   }
 
