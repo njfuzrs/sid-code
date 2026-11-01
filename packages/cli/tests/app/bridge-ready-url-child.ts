@@ -13,6 +13,7 @@ import { mkdtempSync, rmSync } from "fs";
 import { join } from "path";
 import { tmpdir } from "os";
 import { App } from "@sid-code/cli/app.ts";
+import { UnifiedCommandRegistry } from "@sid-code/cli/command/unified-registry.ts";
 import { defaultConfig } from "@sid-code/core/config/config.ts";
 import type { Config } from "@sid-code/core/config/config.ts";
 import { PermissionChecker } from "@sid-code/core/permission/checker.ts";
@@ -68,6 +69,7 @@ const config = {
 } as unknown as Config;
 const checker = new PermissionChecker(config, undefined, dir);
 const app = new App({
+  unifiedRegistry: new UnifiedCommandRegistry(),
   config,
   provider: {} as never,
   mcpManager: { closeAll() {} } as never,

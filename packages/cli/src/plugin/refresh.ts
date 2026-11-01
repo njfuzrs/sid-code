@@ -13,7 +13,6 @@
  */
 
 import { getLogger } from "@sid-code/core/debug/logger.ts";
-import type { Registry as CommandRegistry } from "../command/registry.ts";
 import type { Registry as ToolRegistry } from "@sid-code/core/tool/registry.ts";
 import type { HookSystem } from "@sid-code/core/hook/system.ts";
 import type { MCPManager } from "@sid-code/core/mcp/manager.ts";
@@ -23,7 +22,6 @@ import type { MCPManager } from "@sid-code/core/mcp/manager.ts";
 import type { UnifiedCommandRegistryContract } from "@sid-code/core/command-contract/types.ts";
 import { clearAllPluginCaches } from "./caches.ts";
 import { loadAllPlugins } from "./loader.ts";
-import { mergePluginCommands } from "./merge.ts";
 import { loadPluginHooks } from "./loadPluginHooks.ts";
 import { collectPluginMcpServers } from "./loadPluginMcp.ts";
 import { PLUGIN_MCP_PREFIX } from "./scope.ts";
@@ -32,13 +30,11 @@ import type { PluginLoadResult } from "./types.ts";
 /** 刷新时可用的运行时系统句柄 */
 export interface RefreshContext {
   /**
-   * 命令刷新目标（二选一，优先 unifiedRegistry）：
-   * - unifiedRegistry: 新命令体系（清缓存后已由 clearAllPluginCaches 完成，
-   *   这里调 reloadPlugins 重新拉取插件命令快照）
-   * - commandRegistry: 旧命令体系（bridge/headless 等仍用旧 Registry 的路径）
+   * 命令刷新目标：缓存已由 clearAllPluginCaches 清除，这里调 reloadPlugins 重新拉取插件命令快照。
+   * 旧 Registry 分支已删除：唯一调用方 /reload-plugins 总会传 unifiedRegistry，
+   * 注释里说的「bridge/headless 仍用旧 Registry」的调用方并不存在。
    */
   unifiedRegistry?: UnifiedCommandRegistryContract;
-  commandRegistry?: CommandRegistry;
   toolRegistry?: ToolRegistry;
   hookSystem?: HookSystem;
   mcpManager?: MCPManager;
@@ -75,17 +71,8 @@ export async function refreshActivePlugins(ctx: RefreshContext): Promise<Refresh
   // 2. 命令
   let commandsLoaded = 0;
   if (ctx.unifiedRegistry) {
-    // 新命令体系：缓存已由 clearAllPluginCaches 清除，重新拉取插件命令快照
     try {
       commandsLoaded = await ctx.unifiedRegistry.reloadPlugins();
-    } catch (err: any) {
-      componentErrors.push(`命令刷新失败: ${err.message}`);
-      log.error("PLUGIN", `命令刷新失败: ${err.message}`);
-    }
-  } else if (ctx.commandRegistry) {
-    // 旧命令体系（bridge/headless 等路径）
-    try {
-      commandsLoaded = await mergePluginCommands(ctx.commandRegistry);
     } catch (err: any) {
       componentErrors.push(`命令刷新失败: ${err.message}`);
       log.error("PLUGIN", `命令刷新失败: ${err.message}`);
