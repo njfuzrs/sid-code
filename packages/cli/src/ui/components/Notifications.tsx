@@ -17,7 +17,7 @@ import { Box } from "../render-port/components.ts";
 import { Text } from "../render-port/components.ts";
 import { theme } from "../semantic-colors.ts";
 import { useStreamingState, StreamingState } from "../contexts/StreamingContext.tsx";
-import { useKeypress, KeypressPriority } from "../contexts/KeypressContext.tsx";
+import { useKeypress, KeypressPriority, type Key } from "../contexts/KeypressContext.tsx";
 import { ERROR_MARK, WARNING_MARK } from "../constants/figures.ts";
 
 /** 启动警告 */
@@ -54,16 +54,22 @@ export const Notifications: React.FC<NotificationsProps> = ({
 
   const showStartupWarnings = visibleWarnings.length > 0;
 
-  // 按任意键关闭启动警告
+  // 按任意键关闭启动警告。
+  // 可插入字符（字母、空格、粘贴）关闭后继续传给 InputArea：消费掉它等于吞掉用户的第一个键，
+  // 用户看到「打了字没上屏」只能重打，违反 ui/CLAUDE.md L4-A「永不丢失用户输入」。
+  // 非插入键（Esc / 方向键 / 回车等）照旧消费，只关警告，避免误触发提交或其他动作。
   useKeypress(
     KeypressPriority.Critical,
-    useCallback(() => {
-      if (showStartupWarnings) {
-        setDismissed(true);
-        return true;
-      }
-      return false;
-    }, [showStartupWarnings]),
+    useCallback(
+      (key: Key) => {
+        if (showStartupWarnings) {
+          setDismissed(true);
+          return !key.insertable;
+        }
+        return false;
+      },
+      [showStartupWarnings],
+    ),
   );
 
   if (!showStartupWarnings && !showInitError) {

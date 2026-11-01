@@ -53,7 +53,11 @@ import { getSubagentLoopTraceSink } from "./loop-trace-sink.ts";
 // B5-1：撞 context window 上限时的压缩恢复。与主循环 query/loop.ts 用同一份实现——
 // 子代理另写一套压缩策略就是两份平行实现（本方案 §0.4 判据禁止的形态）。
 import { reactiveCompact, type ReactiveCompactResult } from "../query/reactive-compact.ts";
-import { injectReminders } from "../query/reminder-inject.ts";
+import {
+  injectReminders,
+  buildPersistentReminderBlocks,
+  appendPersistentBlocks,
+} from "../query/reminder-inject.ts";
 // P1-3：子代理侧的 todo 回注与 end_turn 完成度门禁。
 // 复用主循环那份文案构造器（`query/todo-reminder.ts`），不在子循环另写一套——
 // 子代理只是拿不到主循环的**触发机制**，文案语义本身与主代理完全一致，
@@ -713,8 +717,9 @@ async function runAgentLoopInner(
       }
     }
 
-    // D8：延迟工具名单只进发送副本，永不写回 ctxMgr（reminder-inject 不变量 3）。
-    // 写回去会让压缩把工具列表当用户请求、TUI 泄漏内部文本、reminder 逐轮累积。
+    // D8：延迟工具名单是「只播一次」档，写进 ctxMgr 历史（reminder-inject「不变量 3 的例外」）。
+    // 原先只进发送副本，第 2 轮起就从请求里消失：前缀在最后一条消息上断一整块，
+    // 子代理也再看不到延迟工具清单。持久块带 persistentReminder 标记，压缩 / TUI 逐块剔除。
     let messagesForSend = ctxMgr.getCleanedMessages();
     if (toolSearchEnabled) {
       const deferredNames = tools.deferredToolNames();
@@ -727,18 +732,27 @@ async function runAgentLoopInner(
       const vanished = [...announcedDeferredTools].filter((n) => !current.has(n));
       if (added.length > 0) {
         const isFull = announcedDeferredTools.size === 0;
-        messagesForSend = injectReminders(messagesForSend, {
-          ambient: [
-            `<system-reminder>\n` +
-              `<available-deferred-tools>\n${added.join("\n")}\n</available-deferred-tools>\n` +
-              (isFull
-                ? `以上工具尚未加载到上下文。`
-                : `以上工具**新增**为可延迟加载（此前已播报过的仍然有效）。`) +
-              `需要时用 tool_search 工具按名称（select:<工具名>，多个用逗号分隔）` +
-              `或关键词调出，激活后即可在后续轮次正常调用。\n` +
-              `</system-reminder>`,
-          ],
-        });
+        const announcement =
+          `<system-reminder>\n` +
+          `<available-deferred-tools>\n${added.join("\n")}\n</available-deferred-tools>\n` +
+          (isFull
+            ? `以上工具尚未加载到上下文。`
+            : `以上工具**新增**为可延迟加载（此前已播报过的仍然有效）。`) +
+          `需要时用 tool_search 工具按名称（select:<工具名>，多个用逗号分隔）` +
+          `或关键词调出，激活后即可在后续轮次正常调用。\n` +
+          `</system-reminder>`;
+        const blocks = buildPersistentReminderBlocks([announcement]);
+        const sendCopy = appendPersistentBlocks(messagesForSend, blocks);
+        if (
+          sendCopy &&
+          messagesForSend.length === ctxMgr.getMessages().length &&
+          ctxMgr.appendPersistentBlocksToLastMessage(blocks)
+        ) {
+          messagesForSend = sendCopy;
+        } else {
+          // 末条不是 user（理论上发送前总是 user）：降级为 transient，不让副本与历史分叉
+          messagesForSend = injectReminders(messagesForSend, { ambient: [announcement] });
+        }
         log.info(
           "AGENT_LOOP",
           `注入延迟工具${isFull ? "全量" : "增量"}播报（新增 ${added.length}，已播报 ${announcedDeferredTools.size}）`,

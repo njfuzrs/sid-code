@@ -3,7 +3,7 @@
  * 管理对话消息历史、token 估算、自动压缩、持久化输出管理
  */
 
-import type { Message } from "../llm/types.ts";
+import type { Message, TextBlock } from "../llm/types.ts";
 import { MessageValidator } from "./validator.ts";
 // P1-5 ②：压缩来源守卫与 TokenFreedTracker 必须有生产消费方（P0-5），
 // 否则测试绿、主循环零调用，就是「防线全在、调用全 0」。
@@ -992,6 +992,22 @@ export class Manager {
     }
 
     this.messages.push(compressed);
+  }
+
+  /**
+   * 「只播一次」的 harness 注入块写回历史（见 query/reminder-inject.ts「不变量 3 的例外」）。
+   *
+   * 只追加到**最后一条**消息、且它必须是 user：尾部追加不构成前缀断裂，挂到更早的
+   * 消息上就是一次真断裂。不走 addMessage——持久块不该新开一条 user 消息
+   * （OpenAI 族连续 user 会被合并、部分网关直接拒）。返回是否写入成功，
+   * 失败时调用方降级为 transient 注入。
+   */
+  appendPersistentBlocksToLastMessage(blocks: TextBlock[]): boolean {
+    if (blocks.length === 0) return true;
+    const last = this.messages[this.messages.length - 1];
+    if (!last || last.role !== "user") return false;
+    this.messages[this.messages.length - 1] = { ...last, content: [...last.content, ...blocks] };
+    return true;
   }
 
   /** 获取所有消息（发送给 LLM 前调用，会自动清理旧的大输出） */
@@ -2272,8 +2288,9 @@ export class Manager {
           if (fp) files.add(fp);
         } else if (block.type === "text" && msg.role === "user") {
           const t = block.text.trim();
-          // 跳过内部摘要/占位消息，只取真实用户意图
-          if (t && !t.startsWith("[") && !msg._meta?.origin) lastUserText = t;
+          // 跳过内部摘要/占位消息与写进历史的持久 reminder 块，只取真实用户意图
+          if (t && !t.startsWith("[") && !block.persistentReminder && !msg._meta?.origin)
+            lastUserText = t;
         }
       }
     }

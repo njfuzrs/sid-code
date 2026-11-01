@@ -1,6 +1,11 @@
 /**
  * Reminder 注入不变量哨兵（queryLoop 集成）
  *
+ * 2026-10-31 分档：不变量 3 只约束 **transient 档**（每轮重算的内容）。「只播一次」的
+ * persistent 档（MCP 说明 / 延迟工具增量 / skill listing / IDE 增量）改为写进历史、
+ * 每轮原样重放——它们走 transient 时第 2 轮就从请求里消失，前缀在最后一条消息上断一整块，
+ * 模型也再看不到这些说明。persistent 档的验收见下方同名 describe。
+ *
  * 守卫两条不变量 + 一个量化闸门，全部有实测事故背书：
  *
  * **不变量 3「注入产物永不写回 ctxMgr」** —— 此前**完全无测试守卫**。
@@ -148,8 +153,29 @@ function historyUserTexts(ctxMgr: ContextManager): string[] {
   return out;
 }
 
-describe("不变量 3：注入产物永不写回 ctxMgr", () => {
-  test("跑完多轮后，历史里不含任何注入通道产物", async () => {
+/** 每次发送的完整 messages（深拷贝，供前缀比对） */
+function captureFullSends(loopConfig: QueryLoopConfig): any[][] {
+  const sends: any[][] = [];
+  const orig = loopConfig.deps.sendWithRetry;
+  loopConfig.deps.sendWithRetry = (params: any) => {
+    sends.push(JSON.parse(JSON.stringify(params?.messages ?? [])));
+    return (orig as any)(params);
+  };
+  return sends;
+}
+
+/** 一次性 MCP 说明 dep：首次调用返回说明块，之后返回 null（同 app.ts 的 announcedMcpServers 去重） */
+function onceMcpDelta() {
+  let announced = false;
+  return () => {
+    if (announced) return null;
+    announced = true;
+    return ["## demo-server\n使用 demo 工具前先调用 demo_init。"];
+  };
+}
+
+describe("不变量 3：transient 档注入产物永不写回 ctxMgr", () => {
+  test("每轮重算类（LSP 诊断等）不落历史；用户原文完好", async () => {
     const { loopConfig, ctxMgr } = makeHarness(
       [toolUseResp("t1"), toolUseResp("t2"), finalResp()],
       { deferredTools: ["mcp__foo__bar", "mcp__baz__qux"] },
@@ -159,15 +185,11 @@ describe("不变量 3：注入产物永不写回 ctxMgr", () => {
     }
 
     const history = historyUserTexts(ctxMgr).join("\n");
-    // 三类注入产物一个都不许落历史
-    expect(history).not.toContain("<available-deferred-tools>");
-    expect(history).not.toContain("MCP Server Instructions");
     expect(history).not.toContain("LSP 诊断");
-    // 用户原始指令必须完好无损（未被注入内容污染 / 未被替换）
     expect(history).toContain("# Commit: 生成提交信息并提交");
   });
 
-  test("用户消息在历史里保持为单一未污染的 text block", async () => {
+  test("用户原文 block 逐字节不变，注入内容都是独立 block", async () => {
     const { loopConfig, ctxMgr } = makeHarness([finalResp()], {
       deferredTools: ["mcp__foo__bar"],
     });
@@ -177,8 +199,90 @@ describe("不变量 3：注入产物永不写回 ctxMgr", () => {
 
     const first = ctxMgr.getMessages().find((m) => m.role === "user");
     const blocks = (first!.content as any[]).filter((b) => b.type === "text");
-    expect(blocks.length).toBe(1);
-    expect(blocks[0].text).toBe(USER_INSTRUCTION); // 逐字节等于原文
+    expect(blocks[0].text).toBe(USER_INSTRUCTION);
+    // 第一个之外的 block 只能是持久档（带标记），不能有 transient 块落历史
+    for (const b of blocks.slice(1)) {
+      expect(b.persistentReminder).toBe(true);
+      expect(b.transient).toBeUndefined();
+    }
+  });
+});
+
+describe("persistent 档：只播一次的内容写进历史、之后每轮原样重放", () => {
+  test("首轮注入的 MCP 说明与延迟工具清单，第 2、3 轮请求里仍在且位置不变", async () => {
+    const { loopConfig, ctxMgr } = makeHarness(
+      [toolUseResp("t1"), toolUseResp("t2"), finalResp()],
+      { deferredTools: ["mcp__foo__bar"] },
+    );
+    loopConfig.deps.getMcpInstructionsDelta = onceMcpDelta();
+    const sends = captureFullSends(loopConfig);
+    for await (const _ of queryLoop(loopConfig)) {
+      /* drain */
+    }
+
+    expect(sends.length).toBeGreaterThanOrEqual(3);
+    // 首轮：msg[0] = [用户原文, 持久块...]
+    const firstMsg0 = sends[0][0];
+    const persisted = firstMsg0.content.filter((b: any) => b.persistentReminder);
+    expect(persisted.map((b: any) => b.text).join("\n")).toContain("MCP Server Instructions");
+    expect(persisted.map((b: any) => b.text).join("\n")).toContain("<available-deferred-tools>");
+    // 后续每轮：msg[0] 与首轮逐字节相同（前缀不断）
+    for (const later of sends.slice(1)) {
+      expect(later[0]).toEqual(firstMsg0);
+    }
+    // 终态历史也留着它（对应文档「终态 messages.json 含 MCP 说明」）
+    expect(historyUserTexts(ctxMgr).join("\n")).toContain("MCP Server Instructions");
+  });
+
+  test("前缀不断：每轮 messages 都是上一轮实际发送内容的前缀扩展", async () => {
+    // 不剥 transient：缓存前缀比的是上一轮**实际发出**的字节。本 harness 里没有每轮重算类
+    // 注入，所以任何一块在下一轮消失都是真断裂——修复前 MCP 说明 / 延迟工具清单正是这样丢的。
+    const { loopConfig } = makeHarness([toolUseResp("t1"), toolUseResp("t2"), finalResp()], {
+      deferredTools: ["mcp__foo__bar"],
+    });
+    loopConfig.deps.getMcpInstructionsDelta = onceMcpDelta();
+    const sends = captureFullSends(loopConfig);
+    for await (const _ of queryLoop(loopConfig)) {
+      /* drain */
+    }
+    expect(sends.length).toBeGreaterThanOrEqual(3);
+    for (let i = 1; i < sends.length; i++) {
+      const prev = sends[i - 1];
+      const cur = sends[i];
+      for (let k = 0; k < prev.length - 1; k++) expect(cur[k]).toEqual(prev[k]);
+      const last = prev.length - 1;
+      expect(cur[last].content.slice(0, prev[last].content.length)).toEqual(prev[last].content);
+    }
+  });
+
+  test("不逐轮累积：持久块在历史里各只出现一次", async () => {
+    const { loopConfig, ctxMgr } = makeHarness(
+      [toolUseResp("t1"), toolUseResp("t2"), toolUseResp("t3"), finalResp()],
+      { deferredTools: ["mcp__foo__bar"] },
+    );
+    loopConfig.deps.getMcpInstructionsDelta = onceMcpDelta();
+    for await (const _ of queryLoop(loopConfig)) {
+      /* drain */
+    }
+    const texts = historyUserTexts(ctxMgr);
+    expect(texts.filter((t) => t.includes("MCP Server Instructions")).length).toBe(1);
+    expect(texts.filter((t) => t.includes("<available-deferred-tools>")).length).toBe(1);
+  });
+
+  test("transient 块排在持久块之后（撤掉 transient 只在消息尾部变化）", async () => {
+    const { loopConfig } = makeHarness([finalResp()], { deferredTools: ["mcp__foo__bar"] });
+    loopConfig.deps.getMcpInstructionsDelta = onceMcpDelta();
+    // 造一个每轮重算的 ambient：drainAsyncHookRewakes 走 transient
+    loopConfig.deps.drainAsyncHookRewakes = () => ["hook 反馈 x"];
+    const sends = captureFullSends(loopConfig);
+    for await (const _ of queryLoop(loopConfig)) {
+      /* drain */
+    }
+    const content = sends[0][0].content as any[];
+    const lastPersist = content.map((b) => !!b.persistentReminder).lastIndexOf(true);
+    const firstTransient = content.findIndex((b) => b.transient);
+    expect(lastPersist).toBeGreaterThan(0);
+    expect(firstTransient).toBeGreaterThan(lastPersist);
   });
 });
 

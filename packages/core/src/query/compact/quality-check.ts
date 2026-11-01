@@ -43,7 +43,7 @@ export function extractAnchors(messages: Message[]): string[] {
         const input = (block.input ?? {}) as { file_path?: string; path?: string };
         const fp = input.file_path ?? input.path;
         if (fp) anchors.add(fp);
-      } else if (block.type === "text" && msg.role === "user") {
+      } else if (block.type === "text" && msg.role === "user" && !block.persistentReminder) {
         const t = block.text.trim();
         if (!t || t.startsWith("[")) continue;
         // 提取路径样式 token（含 / 或 . 的）作为高价值锚点

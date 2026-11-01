@@ -199,7 +199,9 @@ function getMessageContent(message: Message): string {
         // `"text" in block` 已覆盖 TextBlock；余下成员（tool_use / tool_result /
         // thinking / redacted_thinking）都不带 type: "text"，原先那条
         // `block.type === "text"` 兜底是死分支。
-        if ("text" in block) return block.text;
+        // 持久 reminder 块（harness 注入，写进了历史）不是用户输入，不进会话标题
+        if ("text" in block)
+          return "persistentReminder" in block && block.persistentReminder ? "" : block.text;
         return "";
       })
       .join(" ");

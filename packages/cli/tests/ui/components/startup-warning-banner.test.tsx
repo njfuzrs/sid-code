@@ -14,11 +14,18 @@ import React from "react";
 import { mkdtempSync, writeFileSync, rmSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
-import { render } from "@sid-code/cli/ui/render-port/testing.ts";
+import { PassThrough } from "node:stream";
+import { render, renderSync } from "@sid-code/cli/ui/render-port/testing.ts";
 import { Notifications } from "@sid-code/cli/ui/components/Notifications.tsx";
 import { UIStateProvider } from "@sid-code/cli/ui/contexts/UIStateContext.tsx";
 import { StreamingProvider, StreamingState } from "@sid-code/cli/ui/contexts/StreamingContext.tsx";
-import { KeypressProvider } from "@sid-code/cli/ui/contexts/KeypressContext.tsx";
+import {
+  KeypressProvider,
+  KeypressPriority,
+  useKeypress,
+  ESC_TIMEOUT,
+  type Key,
+} from "@sid-code/cli/ui/contexts/KeypressContext.tsx";
 import { loadConfig } from "@sid-code/core/config/config.ts";
 
 function renderBanner(warnings: { id: string; message: string }[]) {
@@ -89,5 +96,85 @@ describe("启动警告横幅", () => {
   test("没有警告时不渲染", () => {
     const { lastFrame } = renderBanner([]);
     expect((lastFrame() ?? "").trim()).toBe("");
+  });
+});
+
+// ── 关闭警告的那一键不能被吞掉（排查报告 #5） ──
+// 经真实 KeypressProvider 解析链驱动，stdin harness 沿用 keypress-empty-paste.test.tsx。
+
+function mountWithProbe() {
+  const got: Key[] = [];
+  const stdout = new PassThrough() as unknown as NodeJS.WriteStream & {
+    columns: number;
+    rows: number;
+  };
+  stdout.columns = 80;
+  stdout.rows = 24;
+  (stdout as unknown as { isTTY: boolean }).isTTY = false;
+  stdout.on("data", () => {});
+
+  const stdin = new PassThrough() as unknown as NodeJS.ReadStream;
+  const stdinAny = stdin as unknown as Record<string, unknown>;
+  stdinAny.isTTY = true;
+  stdinAny.setRawMode = () => stdin;
+  stdinAny.setEncoding = () => stdin;
+  stdinAny.ref = () => stdin;
+  stdinAny.unref = () => stdin;
+
+  // 代表 InputArea：Normal 优先级，排在 Notifications（Critical）之后
+  function Probe() {
+    useKeypress(KeypressPriority.Normal, (key) => {
+      got.push(key);
+      return true;
+    });
+    return null;
+  }
+
+  const instance = renderSync(
+    <KeypressProvider>
+      <UIStateProvider>
+        <StreamingProvider
+          streamingState={StreamingState.Idle}
+          streamingText=""
+          streamingThinking=""
+          toolName={null}
+          toolInput={undefined}
+          isToolExecuting={false}
+          lastToolResult={null}
+          statusMessage=""
+        >
+          <Notifications startupWarnings={[{ id: "w", message: "配置警告" }]} />
+          <Probe />
+        </StreamingProvider>
+      </UIStateProvider>
+    </KeypressProvider>,
+    { stdout, stdin, patchConsole: false, exitOnCtrlC: false },
+  );
+
+  return {
+    got,
+    send: async (seq: string) => {
+      stdin.emit("data", seq);
+      await new Promise((r) => setTimeout(r, ESC_TIMEOUT * 2));
+    },
+    unmount: () => instance.unmount(),
+  };
+}
+
+describe("启动警告关闭键", () => {
+  test("可插入字符关闭警告后继续传给输入框", async () => {
+    const m = mountWithProbe();
+    await m.send("z");
+    expect(m.got.map((k) => k.sequence)).toEqual(["z"]);
+    m.unmount();
+  });
+
+  test("Esc 只关警告，不传给输入框；之后的键照常到达", async () => {
+    const m = mountWithProbe();
+    await m.send("\x1b");
+    expect(m.got.length).toBe(0);
+    await m.send("q");
+    expect(m.got.map((k) => k.sequence)).toEqual(["q"]);
+    m.unmount();
   });
 });
