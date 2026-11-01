@@ -163,6 +163,7 @@ import {
   reworkEventData,
   type TodoReworkState,
 } from "./todo-rework.ts";
+import { markPostCompactReinject, consumeSessionCompactMark } from "./post-compact-flags.ts";
 import {
   getTodoReminderTurnCounts,
   shouldInjectTodoReminder,
@@ -1019,6 +1020,10 @@ export async function* queryLoop(loopConfig: QueryLoopConfig): AsyncGenerator<Qu
 
   const loopDetector = new LoopDetector();
   const state: LoopState = createInitialLoopState(config.maxTurns || Infinity);
+  // T6：上一条消息之后用户手动 /compact 过 → 本条消息补置三个重注入标志（见 post-compact-flags.ts）
+  if (consumeSessionCompactMark(sessionState, state)) {
+    log.info("QUERY_LOOP", "检测到 loop 外的手动压缩，补置压缩后重注入标志");
+  }
   // 停滞升级阶梯（stall-escalation.ts）。headless 默认不开；settings 读不到按影子处理。
   const stallSwitches = resolveStallSwitches(config.print === true, readStallHardStopSetting());
   if (stallSwitches.enabled) {
@@ -1396,9 +1401,7 @@ export async function* queryLoop(loopConfig: QueryLoopConfig): AsyncGenerator<Qu
         // 含 emergencyTruncate 特意留下的保留段。GC 会把近端 tool_result 换成
         // `[已释放]` 桩发给 LLM，长会话一压就失忆。emergency 档同套 truncate
         // 却不 GC——blocking 必须与它对齐，不得在「边界贴末尾」时释放保留段。
-        state.goalReminderPendingAfterCompact = true;
-        state.todoReminderPendingAfterCompact = true;
-        state.deferredToolsPendingAfterCompact = true;
+        markPostCompactReinject(state);
         {
           // P1-3：横幅只在真压动时画。addCompactBoundary 会插入边界消息，故 after 取实测值。
           const { banner } = settleCompaction(deps, sessionState.sessionId, compactScope, {
@@ -1433,9 +1436,7 @@ export async function* queryLoop(loopConfig: QueryLoopConfig): AsyncGenerator<Qu
                 `紧急压缩：使用率 ${usagePercent.toFixed(0)}%`,
                 msgCountBefore,
               );
-              state.goalReminderPendingAfterCompact = true;
-              state.todoReminderPendingAfterCompact = true;
-              state.deferredToolsPendingAfterCompact = true;
+              markPostCompactReinject(state);
               const { banner } = settleCompaction(deps, sessionState.sessionId, compactScope, {
                 trigger: "threshold_emergency",
                 messageCountBefore: msgCountBefore,
@@ -1600,9 +1601,7 @@ export async function* queryLoop(loopConfig: QueryLoopConfig): AsyncGenerator<Qu
             // P0-1：同上，边界贴在末尾。管道即便 steps=[]（什么都没压）原先也会
             // 把保留段整段 GC 掉；用户侧表现为「没压缩、模型突然失忆」。
             // 近端必须留给模型，旧内容已由 snip/microcompact 原地处理。
-            state.goalReminderPendingAfterCompact = true;
-            state.todoReminderPendingAfterCompact = true;
-            state.deferredToolsPendingAfterCompact = true;
+            markPostCompactReinject(state);
             {
               // hard 档走的是「渐进式管道 + 可选 autoCompact/collapse」，压缩量不由单个函数返回，
               // 故 after 取实测消息数——这条路径同样必须满足「没压动就不画横幅」。
@@ -2031,7 +2030,8 @@ export async function* queryLoop(loopConfig: QueryLoopConfig): AsyncGenerator<Qu
             // 不变量 3 有三处实测事故背书 + 哨兵测试：注入产物写回 ctxMgr 会同时引发 TUI 泄漏、
             // 压缩把工具列表当"用户最初的请求"、reminder 逐轮累积）。
             // 我们把注入锚点放在 SessionState，它**不会**被压缩清掉——所以"压缩后自动重注"这个
-            // 属性拿不到，仍需那 8 处显式置位兜住：压缩把 todo 清单从上下文里抹掉后，
+            // 属性拿不到，仍需显式置位兜住（loop 内 7 处 + 手动 /compact 经会话标记补置，
+            // 统一走 post-compact-flags.ts）：压缩把 todo 清单从上下文里抹掉后，
             // `turnsSinceLastReminder` 可能还没到期，此时不强制重注，清单就在模型视野里永久消失。
             const counts = getTodoReminderTurnCounts(cleanedMessages, {
               absoluteTurn: sessionState.getAbsoluteTurn(),
@@ -3496,9 +3496,7 @@ export async function* queryLoop(loopConfig: QueryLoopConfig): AsyncGenerator<Qu
             // false（见 types.ts LoopState.hasAttemptedReactiveCompact 注释的 CC 教训）。
             state.hasAttemptedReactiveCompact = true;
             setTransition(state, { type: "reactive_compact" }, deps, sessionState.sessionId);
-            state.goalReminderPendingAfterCompact = true;
-            state.todoReminderPendingAfterCompact = true;
-            state.deferredToolsPendingAfterCompact = true;
+            markPostCompactReinject(state);
             // 计数清零与 notifyCompaction 都由 settleCompaction 在确认真压动后统一做
             const { banner } = settleCompaction(deps, sessionState.sessionId, compactScope, {
               trigger: "prompt_too_long_stream",
@@ -3586,9 +3584,7 @@ export async function* queryLoop(loopConfig: QueryLoopConfig): AsyncGenerator<Qu
             ctxMgr.getMessages(),
             toolRegistry.size(),
           );
-          state.goalReminderPendingAfterCompact = true;
-          state.todoReminderPendingAfterCompact = true;
-          state.deferredToolsPendingAfterCompact = true;
+          markPostCompactReinject(state);
           {
             // 计数（P2-6 的清零 / +1）由 settleCompaction 唯一维护。恢复路径不许 noop，
             // 所以 autoCompact 的 skipped 原因不传进来——在这里没压动就是失败。
@@ -4151,9 +4147,7 @@ export async function* queryLoop(loopConfig: QueryLoopConfig): AsyncGenerator<Qu
                 "QUERY_LOOP",
                 `F1：空参数重试前压缩上下文 ${compactResult.messageCountBefore} → ${compactResult.messageCountAfter} 条（level=${levelBeforeRetry}）`,
               );
-              state.goalReminderPendingAfterCompact = true;
-              state.todoReminderPendingAfterCompact = true;
-              state.deferredToolsPendingAfterCompact = true;
+              markPostCompactReinject(state);
               const { banner } = settleCompaction(deps, sessionState.sessionId, compactScope, {
                 trigger: "empty_param_retry",
                 messageCountBefore: compactResult.messageCountBefore,
@@ -6272,9 +6266,7 @@ export async function* queryLoop(loopConfig: QueryLoopConfig): AsyncGenerator<Qu
         }
 
         state.ctxWindowRecoveryCount = used + 1;
-        state.goalReminderPendingAfterCompact = true;
-        state.todoReminderPendingAfterCompact = true;
-        state.deferredToolsPendingAfterCompact = true;
+        markPostCompactReinject(state);
         log.info(
           "QUERY_LOOP",
           `context_window_exceeded 压缩续写（第 ${state.ctxWindowRecoveryCount}/${MAX_CTX_WINDOW_RECOVERIES} 次）：` +
