@@ -29,7 +29,7 @@
  * 生产用的那条判据，不是一个只在测试里成立的特例。
  */
 
-import { describe, test, expect, beforeEach, afterEach } from "bun:test";
+import { describe, test, expect, beforeEach, afterEach, setSystemTime } from "bun:test";
 import {
   mkdtempSync,
   mkdirSync,
@@ -539,11 +539,21 @@ describe("D11：sessions 根目录裸文件隔离", () => {
     const sessions = sidPaths.sessions();
     mkdirSync(sessions, { recursive: true });
 
-    writeFileSync(join(sessions, "第"), "first");
-    runHousekeepingCleanup(Date.now());
-    // 水位线已写入 → 第二轮需要跳过节流，用一天后的时间戳
-    writeFileSync(join(sessions, "第"), "second");
-    runHousekeepingCleanup(Date.now() + 25 * 3600_000);
+    // 冻结系统时钟：隔离区文件名的时间戳取自 new Date()，只到毫秒。不冻结时，
+    // 两轮清理落不落在同一毫秒取决于机器快慢 —— macOS CI 快到会撞上（稳定红），
+    // 本机慢到撞不上（恒绿），于是这条用例对「同毫秒覆盖」是盲的。冻结后两轮的
+    // 时间戳必然相同，直接压在最坏情形上。
+    const frozen = Date.now();
+    setSystemTime(new Date(frozen));
+    try {
+      writeFileSync(join(sessions, "第"), "first");
+      runHousekeepingCleanup(frozen);
+      // 水位线已写入 → 第二轮需要跳过节流，传一天后的 now（只影响节流判断，不影响文件名时间戳）
+      writeFileSync(join(sessions, "第"), "second");
+      runHousekeepingCleanup(frozen + 25 * 3600_000);
+    } finally {
+      setSystemTime();
+    }
 
     const moved = quarantined();
     expect(moved.length).toBe(2);

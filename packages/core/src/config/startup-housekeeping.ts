@@ -814,8 +814,15 @@ function quarantineStraySessionFiles(): number {
       mkdirSync(quarantineDir, { recursive: true });
       // 目标名带时间戳前缀：同名裸文件可能被多次写出，直接 rename 会互相覆盖 ——
       // 那等于一边隔离一边丢物证。
+      // 时间戳只到毫秒，不能单靠它防撞：两轮清理落在同一毫秒内（快机器上实测发生，
+      // macOS CI 因此稳定红）时目标名完全相同，renameSync 会静默覆盖前一份。
+      // 所以目标已存在时追加序号，直到找到空位。
       const stamp = new Date().toISOString().replace(/[:.]/g, "-");
-      renameSync(src, join(quarantineDir, `${stamp}-${entry.name}`));
+      let dest = join(quarantineDir, `${stamp}-${entry.name}`);
+      for (let seq = 1; existsSync(dest); seq++) {
+        dest = join(quarantineDir, `${stamp}-${seq}-${entry.name}`);
+      }
+      renameSync(src, dest);
       moved++;
     } catch (err: any) {
       log.debug(
