@@ -167,6 +167,11 @@ import {
 } from "./todo-rework.ts";
 import { markPostCompactReinject, consumeSessionCompactMark } from "./post-compact-flags.ts";
 import {
+  isTodoGateDisabled,
+  isTodoNagDisabled,
+  isTodoReworkDisabled,
+} from "./todo-defense-toggles.ts";
+import {
   getTodoReminderTurnCounts,
   shouldInjectTodoReminder,
   LAST_TODO_REMINDER_TURN_KEY,
@@ -1907,7 +1912,9 @@ export async function* queryLoop(loopConfig: QueryLoopConfig): AsyncGenerator<Qu
       {
         const rework = drainTodoRework(getTodoReworkState(sessionState));
         if (rework) {
-          reminderParts.push(rework.reminder);
+          // T3：SID_DISABLE_TODO_REWORK=1 只压掉提醒，检测、振荡计数与事件照常（关闭臂仍能数分母）
+          const reworkSuppressed = isTodoReworkDisabled();
+          if (!reworkSuppressed) reminderParts.push(rework.reminder);
           // 返工提醒与 completed 下降同属「振荡」，并入同一个计数（发现 2b，供 D2 升级阶梯消费）
           const gateBudget = sessionState.get(TODO_GATE_BUDGET_KEY) as TodoGateBudget | undefined;
           if (gateBudget) {
@@ -1927,6 +1934,7 @@ export async function* queryLoop(loopConfig: QueryLoopConfig): AsyncGenerator<Qu
                 data: {
                   ...turnMetrics(state, sessionState, promptSeq),
                   ...reworkEventData(rework.hits),
+                  ...(reworkSuppressed ? { suppressed: true } : {}),
                 },
               });
             } catch {
@@ -2062,7 +2070,11 @@ export async function* queryLoop(loopConfig: QueryLoopConfig): AsyncGenerator<Qu
               hasRealProgress: hasRealProgress(measuredForNag),
               bookkeepingNagCount,
             });
-            if ((throttleSaysYes && todoNagDecision.inject) || afterCompact) {
+            // T3：SID_DISABLE_TODO_NAG=1 只关节流催更；afterCompact 是信息丢失兜底，不受开关管辖
+            if (
+              (throttleSaysYes && todoNagDecision.inject && !isTodoNagDisabled()) ||
+              afterCompact
+            ) {
               reminderParts.push(buildTodoReminder(todoState.todos));
               state.todoReminderPendingAfterCompact = false;
               if (todoNagDecision.countedAsNoProgress) {
@@ -2147,7 +2159,7 @@ export async function* queryLoop(loopConfig: QueryLoopConfig): AsyncGenerator<Qu
               lastInjectedText: state.lastInjectedProgressReminderText,
               noProgressNagCount: state.progressNagCount ?? 0,
             });
-            if (decision.inject && progressReminder) {
+            if (decision.inject && progressReminder && !isTodoNagDisabled()) {
               reminderParts.push(progressReminder);
               state.lastProgressReminderTurn = state.turnCount;
               state.lastInjectedProgressReminderText = progressReminder;
@@ -4699,7 +4711,8 @@ export async function* queryLoop(loopConfig: QueryLoopConfig): AsyncGenerator<Qu
         // 根因 1、2 修复——模型常"做了一半就 end_turn"。这里在收尾前查 todo：
         // 仍有 pending/in_progress 项 → 注入提醒并软续命（最多 MAX_TODO_GATE_RETRIES 次），
         // 把"人肉完成度校验器"内置进 harness。续命耗尽后放行，但如实列出未完成项，不假装完成。
-        if (deps.getTodoState) {
+        // T3：SID_DISABLE_TODO_GATE=1 整道闸门不判（T8 关闭臂）
+        if (deps.getTodoState && !isTodoGateDisabled()) {
           const todoState = deps.getTodoState();
           const unfinished = todoState ? countUnfinished(todoState.todos) : 0;
           // 预算挂 SessionState、按完成数复位（2026-10-06）：旧实现挂 LoopState，

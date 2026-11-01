@@ -184,3 +184,114 @@ describe("todo_gate 排除后台任务（T2）", () => {
     expect(gateRetries(b.events)).toBeGreaterThan(0);
   });
 });
+
+describe("清单防线开关（T3）", () => {
+  function withEnv(key: string, fn: () => Promise<void>) {
+    return async () => {
+      const prev = process.env[key];
+      process.env[key] = "1";
+      try {
+        await fn();
+      } finally {
+        if (prev === undefined) delete process.env[key];
+        else process.env[key] = prev;
+      }
+    };
+  }
+
+  test(
+    "SID_DISABLE_TODO_GATE=1 → 有未完成项也不发 todo_gate_retry",
+    withEnv("SID_DISABLE_TODO_GATE", async () => {
+      const ctxMgr = new ContextManager({ maxTokens: 200000 });
+      ctxMgr.setSystemPrompt("test");
+      ctxMgr.addMessage({ role: "user", content: [{ type: "text", text: "干活" }] });
+      const events: Array<{ event: string; data: any }> = [];
+      await drain({
+        config: {
+          model: "deepseek-v4-pro",
+          provider: "openai",
+          maxTurns: 10,
+          toolSearch: false,
+        } as unknown as Config,
+        ctxMgr,
+        toolRegistry: new ToolRegistry(),
+        sessionState: new SessionState("test-gate-off"),
+        fallback: new ModelFallback(),
+        deps: {
+          sendWithRetry: () => emptyStream(),
+          processStream: async () => finalResp(),
+          executeTools: async () => ({ results: [] }),
+          autoCompact: async () => ({ kind: "skipped" as const }),
+          getAbortSignal: () => undefined,
+          uuid: () => "uuid-test",
+          getTodoState: () => ({ todos: [t("改代码", "in_progress")], writeVersion: 1 }),
+          traceAppendEvent: (e: any) => events.push({ event: e.event, data: e.data }),
+        } as QueryDeps,
+      });
+      expect(
+        events.filter((e) => e.event === "LoopTransition" && e.data?.type === "todo_gate_retry")
+          .length,
+      ).toBe(0);
+    }),
+  );
+
+  test(
+    "SID_DISABLE_TODO_REWORK=1 → 提醒不进发送副本，事件照发且带 suppressed",
+    withEnv("SID_DISABLE_TODO_REWORK", async () => {
+      const ctxMgr = new ContextManager({ maxTokens: 200000 });
+      ctxMgr.setSystemPrompt("test");
+      ctxMgr.addMessage({ role: "user", content: [{ type: "text", text: "改个文件" }] });
+      let todoState = { todos: [t("改 a", "in_progress"), t("验证", "pending")], writeVersion: 1 };
+      const responses = [editResp("e1"), editResp("e2"), finalResp()];
+      let call = 0;
+      let exec = 0;
+      const events: Array<{ event: string; data: any }> = [];
+      const wire: string[] = [];
+      await drain({
+        config: {
+          model: "deepseek-v4-pro",
+          provider: "openai",
+          maxTurns: 10,
+          toolSearch: false,
+        } as unknown as Config,
+        ctxMgr,
+        toolRegistry: new ToolRegistry(),
+        sessionState: new SessionState("test-rework-off"),
+        fallback: new ModelFallback(),
+        deps: {
+          sendWithRetry: (params: any) => {
+            wire.push(JSON.stringify(params?.messages ?? []));
+            return emptyStream();
+          },
+          processStream: async () => responses[call++] ?? finalResp(),
+          executeTools: async (content: any[]) => {
+            exec++;
+            if (exec === 1)
+              todoState = {
+                todos: [t("改 a", "completed"), t("验证", "in_progress")],
+                writeVersion: 2,
+              };
+            return {
+              results: content
+                .filter((b: any) => b.type === "tool_use")
+                .map((b: any) => ({
+                  type: "tool_result" as const,
+                  tool_use_id: b.id,
+                  content: "ok",
+                })),
+            };
+          },
+          autoCompact: async () => ({ kind: "skipped" as const }),
+          getAbortSignal: () => undefined,
+          uuid: () => "uuid-test",
+          getTodoState: () => todoState,
+          traceAppendEvent: (e: any) => events.push({ event: e.event, data: e.data }),
+        } as QueryDeps,
+      });
+      const rework = events.filter((e) => e.event === "TodoReworkDetected");
+      expect(rework.length).toBe(1);
+      expect(rework[0]!.data.suppressed).toBe(true);
+      expect(wire.some((w) => w.includes("已标 completed，但你随后又修改了"))).toBe(false);
+    }),
+  );
+});
