@@ -23,7 +23,7 @@ LLM 配置:
   --permission-mode <mode>    权限模式 (default/always-allow/deny-write/acceptEdits/plan/dontAsk/auto/dangerously-skip-permissions；manual 为 default 的别名)
   --plan-exec-mode <mode>     无头会话里计划被批准后切换到的权限模式（不含 plan）。
                               不传则无头会话**不自动批准**：没有审批人，批准了也执行不了
-  --dangerously-skip-permissions  跳过所有权限检查（仅限沙箱环境）
+  --dangerously-skip-permissions  跳过权限检查，deny 规则与禁用工具仍生效（仅限沙箱环境）
   -y, --yes                   自动批准需确认的操作（危险命令仍拦截；跳过全部检查用 --dangerously-skip-permissions）
   --trust-workspace           仅本会话信任当前工作区（项目级 hooks / MCP 照常加载，不写入信任记录）
   --allowed-tools <list>      免确认工具规则（逗号/空格分隔，认 CC 名与模式，如 "Read,Bash(git *)"）

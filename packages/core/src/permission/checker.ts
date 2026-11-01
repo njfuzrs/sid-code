@@ -1629,6 +1629,13 @@ export class PermissionChecker implements Checker {
     //   （见 config/attachments.ts yesMode 提示词）。早退会跳过 hasPermissionsInner 的危险命令
     //   检测与 LLM 风险分类，违背该语义。yesMode 改为在下方 ask 阶段对"普通 ask"自动批准。
     if (this.config.skipPermissions) {
+      // skip 档只跳过「系统认定的危险」，不跳过「用户写下的拒绝」（04 剖析 5.7 第 2 条，用户拍板选项 B）。
+      // 修前这里排在 Step 1 deny 规则之前，于是 `--dangerously-skip-permissions` 让用户 / 项目 / 企业
+      // 配的 deny、`disallowedTools`、弹窗里点过的「拒绝并记住」全部失效；而子代理上 skip 归一成
+      // always-allow、排在 Step 1–6 之后——主会话的保护反而比它派出去的子代理少。
+      // 危险命令、敏感路径、safetyCheck 仍跳过：那是 skip 档本来的语义（无人值守、用户自负）。
+      const userDeny = this.checkUserDenyUnderSkip(req, resource, options);
+      if (userDeny) return userDeny;
       log.info("PERMISSION", `${req.toolName}(${resource.slice(0, 80)}) → 允许(skipPermissions)`);
       this.auditLogger.log({
         timestamp: new Date().toISOString(),
@@ -2382,6 +2389,66 @@ export class PermissionChecker implements Checker {
    * 说明：内置危险模式检测（Step 2 hardcodedDangerCheck）本就复合命令感知，故 `ls && curl|sh`
    * 这类内置模式不受影响；本修复补的是"用户自定义 deny 规则"对复合命令后段的覆盖缺口。
    */
+  /**
+   * skip 档下仍然生效的「用户写下的拒绝」：deny 规则 → `disallowedTools` → 会话记忆里的 deny。
+   * 三者都是人明确表达过的意图；命中返回 deny（`mode` 由 check() 出口统一补成 skip），否则 null。
+   * 刻意**不**含 Step 2 危险命令 / Step 4 敏感路径 / Step 6 safetyCheck——见调用处注释。
+   */
+  private checkUserDenyUnderSkip(
+    req: PermissionRequest,
+    resource: string,
+    options?: PermissionCheckOptions,
+  ): Decision | null {
+    let denied: Decision | null = null;
+    const ruleDecision = this.checkDenyRules(req);
+    if (ruleDecision && !ruleDecision.allowed) {
+      denied = {
+        ...ruleDecision,
+        decisionReason: { type: "rule", rule: ruleDecision.reason || "", behavior: "deny" },
+        step: "skip-deny-rule",
+      };
+    } else if (isToolNameListed(this.config.disallowedTools, req.toolName)) {
+      denied = {
+        allowed: false,
+        reason: `工具 "${req.toolName}" 已被禁用`,
+        decisionReason: { type: "other", reason: "工具已被禁用" },
+        step: "skip-disallowed",
+      };
+    } else {
+      const memKey = this.getMemoryKey(req);
+      if (memKey && this.sessionMemory.get(memKey) === false) {
+        denied = {
+          allowed: false,
+          reason: "会话内已拒绝过同一操作",
+          decisionReason: { type: "sessionMemory" },
+          step: "skip-memory-deny",
+        };
+      }
+    }
+    if (!denied) return null;
+    getLogger().info(
+      "PERMISSION",
+      `${req.toolName}(${resource.slice(0, 80)}) → 拒绝(skipPermissions 下仍尊重用户拒绝: ${denied.step})`,
+    );
+    this.denialTracking = recordDenial(
+      this.denialTracking,
+      req.toolName,
+      denied.reason || "",
+      resource,
+    );
+    this.auditLogger.log({
+      timestamp: new Date().toISOString(),
+      type: "tool_use",
+      tool: req.toolName,
+      resource,
+      decision: "deny",
+      reason: denied.reason,
+      decisionReason: denied.decisionReason,
+      ...(options?.auditSource ? { source: options.auditSource } : {}),
+    });
+    return denied;
+  }
+
   private checkDenyRules(req: PermissionRequest): Decision | null {
     if (!this.rules) return null;
     const denyRules = { deny: this.rules.deny, allow: [], ask: [] };
