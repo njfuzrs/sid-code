@@ -174,6 +174,7 @@ import {
 import {
   getTodoReminderTurnCounts,
   shouldInjectTodoReminder,
+  isPostCompactTodoReinjectRedundant,
   LAST_TODO_REMINDER_TURN_KEY,
   LAST_TODO_WRITE_VERSION_KEY,
 } from "./todo-reminder-scan.ts";
@@ -2049,7 +2050,28 @@ export async function* queryLoop(loopConfig: QueryLoopConfig): AsyncGenerator<Qu
                 | number
                 | undefined,
             });
-            const afterCompact = state.todoReminderPendingAfterCompact === true;
+            // T5：压缩后补贴只在「清单原文已不在视野里」时才有意义。核实过 microcompact /
+            // masking 只改 tool_result、不动 tool_use.input，snip / 截断是整条删——所以只要
+            // 最近一次 todo_write 还在发送副本里（扫描得到的距离有限且 < 阈值），清单原文就在
+            // 模型眼前，补贴是重复注入。本地轨迹 69 次补贴里 24 次属于这一形态。
+            //
+            // 标志在这里**唯一一次**消费（T3a 门禁：pending_consume 只许一处回落）。原先消费点在
+            // 注入分支里，但 afterCompact 为真时必注入，所以挪到读取处与旧行为等价。
+            const pendingAfterCompact = state.todoReminderPendingAfterCompact === true;
+            state.todoReminderPendingAfterCompact = false;
+            const compactReinjectRedundant =
+              pendingAfterCompact &&
+              isPostCompactTodoReinjectRedundant(
+                counts.turnsSinceLastTodoWrite,
+                TODO_REMINDER_CONFIG.TURNS_SINCE_WRITE,
+              );
+            if (compactReinjectRedundant) {
+              log.info(
+                "QUERY_LOOP",
+                `T5：压缩后跳过 todo 重注入——最近一次 todo_write 仍在视野内（距今 ${counts.turnsSinceLastTodoWrite} 轮）`,
+              );
+            }
+            const afterCompact = pendingAfterCompact && !compactReinjectRedundant;
             const throttleSaysYes = shouldInjectTodoReminder(counts, {
               turnsSinceWrite: TODO_REMINDER_CONFIG.TURNS_SINCE_WRITE,
               turnsBetweenReminders: TODO_REMINDER_CONFIG.TURNS_BETWEEN_REMINDERS,
@@ -2076,7 +2098,6 @@ export async function* queryLoop(loopConfig: QueryLoopConfig): AsyncGenerator<Qu
               afterCompact
             ) {
               reminderParts.push(buildTodoReminder(todoState.todos));
-              state.todoReminderPendingAfterCompact = false;
               if (todoNagDecision.countedAsNoProgress) {
                 sessionState.set(TODO_BOOKKEEPING_NAG_COUNT_KEY, bookkeepingNagCount + 1);
               }

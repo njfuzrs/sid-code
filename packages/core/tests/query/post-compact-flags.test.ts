@@ -18,6 +18,7 @@ import {
 } from "@sid-code/core/query/post-compact-flags.ts";
 import { createInitialLoopState } from "@sid-code/core/query/types.ts";
 import { SessionState } from "@sid-code/core/session/state.ts";
+import { isPostCompactTodoReinjectRedundant } from "@sid-code/core/query/todo-reminder-scan.ts";
 
 const ROOT = join(import.meta.dir, "../../../..");
 const loopSrc = readFileSync(join(ROOT, "packages/core/src/query/loop.ts"), "utf8");
@@ -72,5 +73,23 @@ describe("哨兵：所有压缩出口都经单一入口置位", () => {
 
   test("手动 /compact 的两条成功路径都打会话标记", () => {
     expect(compactSrc.match(/markSessionCompacted\(ctx\.sessionState\)/g)?.length).toBe(2);
+  });
+});
+
+describe("压缩后 todo 重注入冗余判定（T5）", () => {
+  test("todo_write 仍在视野且距离 < 阈值 → 冗余；被删掉（Infinity）或已超阈值 → 不冗余", () => {
+    expect(isPostCompactTodoReinjectRedundant(0, 8)).toBe(true);
+    expect(isPostCompactTodoReinjectRedundant(7, 8)).toBe(true);
+    expect(isPostCompactTodoReinjectRedundant(8, 8)).toBe(false);
+    expect(isPostCompactTodoReinjectRedundant(Number.POSITIVE_INFINITY, 8)).toBe(false);
+  });
+
+  test("loop.ts 在 afterCompact 判定之前先做冗余跳过", () => {
+    const skip = loopSrc.indexOf("isPostCompactTodoReinjectRedundant(");
+    const after = loopSrc.indexOf(
+      "const afterCompact = pendingAfterCompact && !compactReinjectRedundant",
+    );
+    expect(skip).toBeGreaterThan(0);
+    expect(after).toBeGreaterThan(skip);
   });
 });

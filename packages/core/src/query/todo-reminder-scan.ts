@@ -138,6 +138,23 @@ export function shouldInjectTodoReminder(
   );
 }
 
+/**
+ * 压缩后的 todo 重注入是否冗余（T5，2026-11-01）。
+ *
+ * 前置核实：microcompact / masking 只改写 tool_result，不动 tool_use.input；snip / 截断 /
+ * 摘要是整条删除。所以「扫描还能找到 todo_write」⟺「清单原文仍在发送副本里」。
+ * 距离有限且低于回注阈值时，模型眼前就有完整清单，再补一次是重复注入。
+ * `Infinity`（压缩把它删掉了 / 从未写过）一律判不冗余，保住信息丢失兜底。
+ */
+export function isPostCompactTodoReinjectRedundant(
+  turnsSinceLastTodoWrite: number,
+  turnsSinceWriteThreshold: number,
+): boolean {
+  return (
+    Number.isFinite(turnsSinceLastTodoWrite) && turnsSinceLastTodoWrite < turnsSinceWriteThreshold
+  );
+}
+
 /** SessionState 键名：上次注入 todo reminder 时的会话累计轮次（跨用户消息持久）。 */
 export const LAST_TODO_REMINDER_TURN_KEY = "lastTodoReminderAbsoluteTurn";
 
