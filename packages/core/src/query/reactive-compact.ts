@@ -225,6 +225,7 @@ function extractRealUserText(content: any[]): string {
   const texts: string[] = [];
   for (const block of content) {
     if (block.type !== "text" || !block.text) continue;
+    if (block.persistentReminder === true) continue;
     if (isInternalTextBlock(block.text)) continue;
     texts.push(block.text);
   }

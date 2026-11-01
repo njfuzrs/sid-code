@@ -675,8 +675,10 @@ async function buildExtraReattach(
       (m) => m.role === "user" && m.content.some((b) => b.type === "text") && !isInternalUserMsg(m),
     );
     if (firstUserMsg) {
+      // 持久 reminder 块（MCP 说明 / 延迟工具清单）挂在用户消息末尾、写进了历史，
+      // 必须逐块剔除，否则会被当成「用户最初的请求」重注入。
       const userText = firstUserMsg.content
-        .filter((b) => b.type === "text")
+        .filter((b) => b.type === "text" && !b.persistentReminder)
         .map((b) => (b as { type: "text"; text: string }).text)
         .join("\n");
       // 截断到 2000 字符，避免超长用户消息占满恢复预算

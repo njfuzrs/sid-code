@@ -253,9 +253,26 @@ export function runStartupHousekeeping(
     getLogger().debug("CLEANUP", `运行时文件 gitignore 注册跳过: ${err}`);
   }
 
-  // 4. 按水位线节流的过期清理
+  // 4. 随数据量增长的过期清理（H1）**不在这里跑**——已迁入维护子进程
+  //    （maintenance/runner.ts → runHousekeepingCleanup）。这里只留 O(1) 的幂等操作。
+}
+
+/**
+ * H1：启动期管家里随数据量增长的那部分（扫轨迹 / checkpoint / tool-outputs / 记忆笔记…）。
+ *
+ * 2026-11-01 从 runStartupHousekeeping 拆出来，只由**维护子进程**调用：它原先有 24h 水位线节流，
+ * 但命中那一次仍在 TUI 主线程同步跑，耗时随数据总量增长。判据与水位线语义逐字未改。
+ *
+ * @param opts.selfSessionId 发起维护的那个 TUI 会话 id（跨进程传进来）。子进程拉起时该会话
+ *   已 registerSession()，活跃表本身就能保护它；仍显式传，防活跃表读失败时退化。
+ */
+export function runHousekeepingCleanup(
+  now: number = Date.now(),
+  opts: { selfSessionId?: string; retention?: SessionRetentionSettings; force?: boolean } = {},
+): void {
+  retentionOverride = opts.retention ?? null;
   try {
-    if (!shouldRunCleanup(now)) return;
+    if (!opts.force && !shouldRunCleanup(now)) return;
     const removed = cleanupStaleTrajectories(now);
     // 5. 精细文件级清理：对未过期的 session 中的 tool-outputs 文件按 7 天阈值清理
     const outputsCleaned = cleanupStaleToolOutputs();
@@ -321,8 +338,11 @@ export function runStartupHousekeeping(
   }
 }
 
-/** 距上次清理是否已超过间隔（水位线不存在视为需要清理） */
-function shouldRunCleanup(now: number): boolean {
+/**
+ * 距上次清理是否已超过间隔（水位线不存在视为需要清理）。
+ * 导出给维护子进程的拉起判断用：只读一个小文件，O(1)，可以留在 TUI 进程里判。
+ */
+export function shouldRunCleanup(now: number): boolean {
   try {
     const path = sidPaths.lastCleanup();
     if (!existsSync(path)) return true;

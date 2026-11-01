@@ -24,7 +24,7 @@ import {
 } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
-import { TraceCollector } from "@sid-code/core/trace/collector.ts";
+import { pruneStaleBlankTraceSessions } from "@sid-code/core/trace/startup-prune.ts";
 
 let root: string;
 let sessionsDir: string;
@@ -59,9 +59,9 @@ function makeSession(
   return dir;
 }
 
-/** 构造 collector 触发启动清理 */
+/** 触发启动清理（2026-11-01 起由维护子进程调，原在 TraceCollector 构造函数里） */
 function runPrune(): void {
-  new TraceCollector({ outputDir: join(root, "trajectories") }, null);
+  pruneStaleBlankTraceSessions(join(root, "trajectories"));
 }
 
 const evt = (...names: string[]) =>
@@ -216,8 +216,7 @@ describe("P2-11 完全空目录的独立判据分支", () => {
       "session.traj": "{}",
     });
 
-    const collector = new TraceCollector({ outputDir: join(root, "trajectories") }, null);
-    const result = collector.getLastBlankPruneResult();
+    const result = pruneStaleBlankTraceSessions(join(root, "trajectories"));
 
     expect(result.removedEmpty).toBe(2); // 两个 30h 的空目录
     expect(result.removedBlank).toBe(1); // 一个只含 SessionStart 的

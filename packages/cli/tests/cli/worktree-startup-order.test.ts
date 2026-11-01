@@ -7,7 +7,7 @@
  *   ③ 才解析「本次要恢复哪个会话」，做归属复核 —— 可能得出「这份状态不该进入」
  * ② 拿着一个**马上要被推翻**的事实当 skipPath 跑出去，且与会话选择器并发。
  *
- * 修法与紧邻的会话清理（D3 的 startBackgroundSessionCleanup）同构：
+ * 修法与紧邻的会话清理（D3，2026-11-01 起并入维护子进程调度 startBackgroundMaintenance）同构：
  * 不是「多传一个参数」，而是把**启动时机**挪到判据齐了之后。
  * 恢复那段只登记 gitRoot 与候选 worktree，GC 在归属复核之后才启动。
  * 复核通过才 chdir；不通过则不进入、状态保留，skipPath 仍指向它（留给拥有者回来）。
@@ -82,7 +82,7 @@ describe("持久化 worktree 只在归属复核通过后才 chdir（不再先进
   test("不进入时不清持久化状态（留给下次 resume 拥有者）", () => {
     const section = CLI_SRC.slice(
       idx("if (shouldAutoEnterWorktree(wt, resumedSessionIdForCleanup)) {"),
-      idx("await startBackgroundSessionCleanup();"),
+      idx("await startBackgroundMaintenance();"),
     );
     expect(section).not.toContain("clearWorktreeState(");
   });
@@ -105,7 +105,7 @@ describe("持久化 worktree 只在归属复核通过后才 chdir（不再先进
 
 describe("与会话清理保持同一范式（D3 的先例）", () => {
   test("两个延迟启动器都在归属复核之后依次启动", () => {
-    const sessionCleanup = idx("await startBackgroundSessionCleanup();");
+    const sessionCleanup = idx("await startBackgroundMaintenance();");
     const worktreeCleanup = idx("await startWorktreeCleanup();");
     const ownershipCheck = idx("shouldAutoEnterWorktree(wt, resumedSessionIdForCleanup)");
 
@@ -116,7 +116,7 @@ describe("与会话清理保持同一范式（D3 的先例）", () => {
   test("GC 仍是后台 fire-and-forget（改的是启动时机，不是把它变成阻塞步骤）", () => {
     const launcher = CLI_SRC.slice(
       idx("const startWorktreeCleanup"),
-      idx("const startBackgroundSessionCleanup"),
+      idx("const startBackgroundMaintenance"),
     );
     // .then/.catch 形态 = 不 await 内部 promise
     expect(launcher).toContain(".then((n) =>");
@@ -127,7 +127,7 @@ describe("与会话清理保持同一范式（D3 的先例）", () => {
   test("没有登记过 gitRoot（非 git 目录 / print 模式）时 GC 不跑", () => {
     const launcher = CLI_SRC.slice(
       idx("const startWorktreeCleanup"),
-      idx("const startBackgroundSessionCleanup"),
+      idx("const startBackgroundMaintenance"),
     );
     expect(launcher).toContain("if (!worktreeCleanupGitRoot) return;");
   });

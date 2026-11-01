@@ -20,6 +20,17 @@ export interface TextBlock {
    * 断点写在下一轮不存在的字节上，等于这一轮的缓存写入白付。
    */
   transient?: true;
+  /**
+   * 「只播一次」的 harness 注入块（MCP 说明 / 延迟工具增量 / skill listing / IDE 增量），
+   * 写进 ctxMgr 历史、之后每轮原样重放。与 `transient` 互斥。
+   *
+   * 本地元数据，**不上线**（同 `transient`）。它存在的理由：
+   *   - `injectReminders` 把 transient 块排在它**之后**——transient 下一轮撤掉时，
+   *     前缀断点只能落在消息尾部，不会断在持久块前面；
+   *   - 压缩抽「用户最初的请求」、TUI 渲染、记忆召回取查询文本时按它逐块剔除。
+   * 随 messages.json 落盘，resume 后依然可识别。
+   */
+  persistentReminder?: true;
 }
 
 /** 工具调用块 */

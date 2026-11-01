@@ -199,7 +199,9 @@ function getMessageContent(message: Message): string {
         // `"text" in block` 已覆盖 TextBlock；余下成员（tool_use / tool_result /
         // thinking / redacted_thinking）都不带 type: "text"，原先那条
         // `block.type === "text"` 兜底是死分支。
-        if ("text" in block) return block.text;
+        // 持久 reminder 块（harness 注入，写进了历史）不是用户输入，不进会话标题
+        if ("text" in block)
+          return "persistentReminder" in block && block.persistentReminder ? "" : block.text;
         return "";
       })
       .join(" ");
@@ -284,6 +286,159 @@ export function shortenModel(model: string | undefined): string {
   return m;
 }
 
+/**
+ * 由会话文件**全文**判定条目（D4/D9/N1 的全部判据都在这里，单一实现点）。
+ *
+ * 抽成导出函数是为了让轻量扫描器（`light-scan.ts`，供启动清理用）对小文件走**完全同一套**
+ * 判据，而不是另写一份——两份判据迟早漂移，而这里漂移的代价是删错用户会话。
+ * 读文件抛异常（`read-error`）由调用方负责，本函数只处理已读到的内容；
+ * 解析过程中抛异常同样归 `read-error`（与原 scanSessionDir 的 catch 口径一致）。
+ */
+export function buildSessionFileEntry(
+  file: string,
+  sessionDir: string,
+  content: string,
+  currentSessionId?: string,
+  options: GetSessionOptions = {},
+): SessionFileEntry {
+  try {
+    // ─────────────────────────────────────────────────────────────
+    // D9：sidechain 文件（子代理对话，`<sessionId>-<agentId>.jsonl`）必须在**解析之前**
+    // 就被判出来，因为它根本不是主会话格式：没有 session_start 记录，于是
+    // parseSessionJsonl 返回 null → 落到 `parse-error`，而 parse-error 在
+    // DELETABLE_EXCLUDE_REASONS 白名单里 ⇒ **被自动清理当成损坏文件删除**。
+    //
+    // 这与文档 D9 的原判断（「当前危害为零，只是 kind 过滤空转」）不同，实测确认危害
+    // 已在发生：造一个 20 天前的主会话 + 它的 sidechain（两者 mtime 都过 minRetention），
+    // 清理输出是「父会话保留，sidechain 进待删清单」—— 一个**活着的**会话的子代理
+    // 对话记录被静默删掉，而删除理由是「文件损坏」。它没坏，只是格式不同。
+    //
+    // 原先那道 `data.kind === "subagent"` 判据接不上这条路径，有两层原因：
+    //   1. `appendMetadata("kind", …)` 全仓零调用点 ⇒ `data.kind` 恒 undefined（断线）；
+    //   2. 即便补上写入端也救不了 sidechain —— 它压根走不到那个 if，
+    //      前面的 `!data` 判空就已经把它拦成 parse-error 了。
+    // 所以修法不是「补 kind 的写入端」，而是**在解析前按内容识别 sidechain**。
+    // kind 判据保留在下方：它是为「主会话格式但标记为子代理」这另一种形态留的位置。
+    // ─────────────────────────────────────────────────────────────
+    if (file.endsWith(".jsonl") && isSidechainContent(content)) {
+      return {
+        fileName: file,
+        dirPath: sessionDir,
+        sessionInfo: null,
+        excludeReason: "sidechain",
+      };
+    }
+
+    // jsonl 是多行事件流，不能用 JSON.parse 整体解析——走逐行解析器。
+    const data = file.endsWith(".jsonl")
+      ? parseSessionJsonl(content)
+      : (JSON.parse(content) as SessionData);
+
+    // 验证必需字段
+    if (
+      !data ||
+      !data.id ||
+      !data.messages ||
+      !Array.isArray(data.messages) ||
+      !data.createdAt ||
+      !data.updatedAt
+    ) {
+      // ─────────────────────────────────────────────────────────────
+      // N1：`data === null` 要再分一档。返回 null 只说明「拿不到 session_start ⇒
+      // 组装不出 SessionData」，**不等于这个文件的内容没了**。
+      //
+      // 实测形态：一个 200 条消息、内容完全健康的长会话，只要 session_start 那一行坏了
+      // （首行写入中断 / 坏块），解析就返回 null ⇒ 判成 `parse-error` ⇒ 而 parse-error 在
+      // DELETABLE_EXCLUDE_REASONS 白名单里 ⇒ 下次启动自动清理**把文件永久删除**。
+      // 用户视角：一个聊了几百条的会话先从 --list-sessions 里消失，过一天文件也没了。
+      //
+      // 所以这里按「文件里还有没有可解析的真实对话记录」分流：
+      //   - 有  ⇒ `chain-broken`（**不可删**，等人工/迁移脚本救援）
+      //   - 没有 ⇒ `parse-error`（真损坏，可删，语义与 D4 原意一致）
+      // 判据函数与解析器同源（store.ts），不在本文件复刻第二套判据。
+      // ─────────────────────────────────────────────────────────────
+      let excludeReason: SessionExcludeReason = data ? "missing-fields" : "parse-error";
+      if (!data && file.endsWith(".jsonl") && hasParsableMessageRecords(content)) {
+        excludeReason = "chain-broken";
+      }
+      return {
+        fileName: file,
+        dirPath: sessionDir,
+        sessionInfo: null,
+        excludeReason,
+      };
+    }
+
+    // 跳过空会话（只有系统消息）
+    const hasUserOrAssistant = data.messages.some(
+      (msg) => msg.role === "user" || msg.role === "assistant",
+    );
+    if (!hasUserOrAssistant) {
+      // D4：空会话**不是损坏**，只是不进列表。带上成因让 cleanup 不把它当损坏文件删。
+      return { fileName: file, dirPath: sessionDir, sessionInfo: null, excludeReason: "empty" };
+    }
+
+    // 跳过子代理会话
+    if (data.kind === "subagent") {
+      // D4：子代理会话是**刻意跳过**，不是损坏。同上，成因必须传出去。
+      return {
+        fileName: file,
+        dirPath: sessionDir,
+        sessionInfo: null,
+        excludeReason: "subagent",
+      };
+    }
+
+    const firstUserMessage = extractFirstUserMessage(data.messages);
+    // 是否当前会话：按解析出的 data.id 精确相等判断。
+    // 旧实现 file.includes(currentSessionId.slice(0,8)) 依赖「id 恒为 8 位 hex」，
+    // 新 id 格式为 YYYYMMDD-HHMMSS-<hex>，截前 8 位会得到日期串（如 20260627）
+    // 从而把「同一天的所有会话」全部误判为当前会话。改用 id 相等彻底规避。
+    const isCurrentSession = currentSessionId ? data.id === currentSessionId : false;
+
+    let fullContent: string | undefined;
+    let messages: Array<{ role: "user" | "assistant"; content: string }> | undefined;
+
+    if (options.includeFullContent) {
+      fullContent = data.messages.map((msg) => getMessageContent(msg)).join(" ");
+      messages = data.messages.map((msg) => ({
+        role: msg.role === "user" ? ("user" as const) : ("assistant" as const),
+        content: getMessageContent(msg),
+      }));
+    }
+
+    const sessionInfo: SessionInfo = {
+      id: data.id,
+      file: file.replace(/\.(json|jsonl)$/, ""),
+      fileName: file,
+      startTime: data.createdAt,
+      lastUpdated: data.updatedAt,
+      messageCount: data.messages.length,
+      // P2-5：用户经 --name/-n 指定的显示名（session_name 元数据）优先，其次摘要，最后首条用户消息。
+      displayName:
+        (typeof data.metadata?.session_name === "string" && data.metadata.session_name.trim()
+          ? data.metadata.session_name
+          : undefined) ||
+        data.summary ||
+        firstUserMessage,
+      firstUserMessage,
+      isCurrentSession,
+      index: 0, // 排序后设置
+      summary: data.summary,
+      fullContent,
+      messages,
+      // 优先 session_start.cwd（几乎所有会话都有），退回 directories[0]（早期少数会话）
+      cwd: data.cwd || data.directories?.[0],
+      model: data.model || undefined,
+      dirPath: sessionDir,
+    };
+
+    return { fileName: file, dirPath: sessionDir, sessionInfo };
+  } catch {
+    return { fileName: file, dirPath: sessionDir, sessionInfo: null, excludeReason: "read-error" };
+  }
+}
+
 /** 扫描单个会话目录，返回其中所有会话文件条目（不递归子目录，summaries/ 由调用方排除）。 */
 async function scanSessionDir(
   sessionDir: string,
@@ -311,139 +466,7 @@ async function scanSessionDir(
         };
       }
       const content = await Bun.file(filePath).text();
-
-      // ─────────────────────────────────────────────────────────────
-      // D9：sidechain 文件（子代理对话，`<sessionId>-<agentId>.jsonl`）必须在**解析之前**
-      // 就被判出来，因为它根本不是主会话格式：没有 session_start 记录，于是
-      // parseSessionJsonl 返回 null → 落到 `parse-error`，而 parse-error 在
-      // DELETABLE_EXCLUDE_REASONS 白名单里 ⇒ **被自动清理当成损坏文件删除**。
-      //
-      // 这与文档 D9 的原判断（「当前危害为零，只是 kind 过滤空转」）不同，实测确认危害
-      // 已在发生：造一个 20 天前的主会话 + 它的 sidechain（两者 mtime 都过 minRetention），
-      // 清理输出是「父会话保留，sidechain 进待删清单」—— 一个**活着的**会话的子代理
-      // 对话记录被静默删掉，而删除理由是「文件损坏」。它没坏，只是格式不同。
-      //
-      // 原先那道 `data.kind === "subagent"` 判据接不上这条路径，有两层原因：
-      //   1. `appendMetadata("kind", …)` 全仓零调用点 ⇒ `data.kind` 恒 undefined（断线）；
-      //   2. 即便补上写入端也救不了 sidechain —— 它压根走不到那个 if，
-      //      前面的 `!data` 判空就已经把它拦成 parse-error 了。
-      // 所以修法不是「补 kind 的写入端」，而是**在解析前按内容识别 sidechain**。
-      // kind 判据保留在下方：它是为「主会话格式但标记为子代理」这另一种形态留的位置。
-      // ─────────────────────────────────────────────────────────────
-      if (file.endsWith(".jsonl") && isSidechainContent(content)) {
-        return {
-          fileName: file,
-          dirPath: sessionDir,
-          sessionInfo: null,
-          excludeReason: "sidechain",
-        };
-      }
-
-      // jsonl 是多行事件流，不能用 JSON.parse 整体解析——走逐行解析器。
-      const data = file.endsWith(".jsonl")
-        ? parseSessionJsonl(content)
-        : (JSON.parse(content) as SessionData);
-
-      // 验证必需字段
-      if (
-        !data ||
-        !data.id ||
-        !data.messages ||
-        !Array.isArray(data.messages) ||
-        !data.createdAt ||
-        !data.updatedAt
-      ) {
-        // ─────────────────────────────────────────────────────────────
-        // N1：`data === null` 要再分一档。返回 null 只说明「拿不到 session_start ⇒
-        // 组装不出 SessionData」，**不等于这个文件的内容没了**。
-        //
-        // 实测形态：一个 200 条消息、内容完全健康的长会话，只要 session_start 那一行坏了
-        // （首行写入中断 / 坏块），解析就返回 null ⇒ 判成 `parse-error` ⇒ 而 parse-error 在
-        // DELETABLE_EXCLUDE_REASONS 白名单里 ⇒ 下次启动自动清理**把文件永久删除**。
-        // 用户视角：一个聊了几百条的会话先从 --list-sessions 里消失，过一天文件也没了。
-        //
-        // 所以这里按「文件里还有没有可解析的真实对话记录」分流：
-        //   - 有  ⇒ `chain-broken`（**不可删**，等人工/迁移脚本救援）
-        //   - 没有 ⇒ `parse-error`（真损坏，可删，语义与 D4 原意一致）
-        // 判据函数与解析器同源（store.ts），不在本文件复刻第二套判据。
-        // ─────────────────────────────────────────────────────────────
-        let excludeReason: SessionExcludeReason = data ? "missing-fields" : "parse-error";
-        if (!data && file.endsWith(".jsonl") && hasParsableMessageRecords(content)) {
-          excludeReason = "chain-broken";
-        }
-        return {
-          fileName: file,
-          dirPath: sessionDir,
-          sessionInfo: null,
-          excludeReason,
-        };
-      }
-
-      // 跳过空会话（只有系统消息）
-      const hasUserOrAssistant = data.messages.some(
-        (msg) => msg.role === "user" || msg.role === "assistant",
-      );
-      if (!hasUserOrAssistant) {
-        // D4：空会话**不是损坏**，只是不进列表。带上成因让 cleanup 不把它当损坏文件删。
-        return { fileName: file, dirPath: sessionDir, sessionInfo: null, excludeReason: "empty" };
-      }
-
-      // 跳过子代理会话
-      if (data.kind === "subagent") {
-        // D4：子代理会话是**刻意跳过**，不是损坏。同上，成因必须传出去。
-        return {
-          fileName: file,
-          dirPath: sessionDir,
-          sessionInfo: null,
-          excludeReason: "subagent",
-        };
-      }
-
-      const firstUserMessage = extractFirstUserMessage(data.messages);
-      // 是否当前会话：按解析出的 data.id 精确相等判断。
-      // 旧实现 file.includes(currentSessionId.slice(0,8)) 依赖「id 恒为 8 位 hex」，
-      // 新 id 格式为 YYYYMMDD-HHMMSS-<hex>，截前 8 位会得到日期串（如 20260627）
-      // 从而把「同一天的所有会话」全部误判为当前会话。改用 id 相等彻底规避。
-      const isCurrentSession = currentSessionId ? data.id === currentSessionId : false;
-
-      let fullContent: string | undefined;
-      let messages: Array<{ role: "user" | "assistant"; content: string }> | undefined;
-
-      if (options.includeFullContent) {
-        fullContent = data.messages.map((msg) => getMessageContent(msg)).join(" ");
-        messages = data.messages.map((msg) => ({
-          role: msg.role === "user" ? ("user" as const) : ("assistant" as const),
-          content: getMessageContent(msg),
-        }));
-      }
-
-      const sessionInfo: SessionInfo = {
-        id: data.id,
-        file: file.replace(/\.(json|jsonl)$/, ""),
-        fileName: file,
-        startTime: data.createdAt,
-        lastUpdated: data.updatedAt,
-        messageCount: data.messages.length,
-        // P2-5：用户经 --name/-n 指定的显示名（session_name 元数据）优先，其次摘要，最后首条用户消息。
-        displayName:
-          (typeof data.metadata?.session_name === "string" && data.metadata.session_name.trim()
-            ? data.metadata.session_name
-            : undefined) ||
-          data.summary ||
-          firstUserMessage,
-        firstUserMessage,
-        isCurrentSession,
-        index: 0, // 排序后设置
-        summary: data.summary,
-        fullContent,
-        messages,
-        // 优先 session_start.cwd（几乎所有会话都有），退回 directories[0]（早期少数会话）
-        cwd: data.cwd || data.directories?.[0],
-        model: data.model || undefined,
-        dirPath: sessionDir,
-      };
-
-      return { fileName: file, dirPath: sessionDir, sessionInfo };
+      return buildSessionFileEntry(file, sessionDir, content, currentSessionId, options);
     } catch {
       // D4：读取/解析抛异常。**可能是瞬时故障**（被并发写入、NFS 抖动、权限抖动），
       // 故归为 read-error（不可删），而非与「解析器明确判损」混为一谈。
