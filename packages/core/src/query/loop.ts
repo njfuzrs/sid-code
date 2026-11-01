@@ -163,6 +163,7 @@ import {
   recordFileEditForRework,
   drainTodoRework,
   reworkEventData,
+  todoWriteDelta,
   type TodoReworkState,
 } from "./todo-rework.ts";
 import { markPostCompactReinject, consumeSessionCompactMark } from "./post-compact-flags.ts";
@@ -900,6 +901,13 @@ function emitTodoProgressEvent(
     unfinished: number;
     /** 等待用户 / 外部条件的项（2026-10-06 新增；老事件无此字段） */
     blocked: number;
+    /**
+     * 相对上一次写入的 completed 增量，可为负（返工改回）。2026-11-01 新增，老事件无此字段。
+     * ⚠️ 本事件**每次成功写入都发**，不代表有推进；量推进请看本字段，不要数事件条数。
+     */
+    completedDelta: number;
+    /** 条目文本集合是否变了（增删 / 改措辞）。只改措辞的写入：completedDelta=0、本字段 true */
+    contentChanged: boolean;
   },
 ): void {
   if (!deps.traceAppendEvent) return;
@@ -2002,6 +2010,8 @@ export async function* queryLoop(loopConfig: QueryLoopConfig): AsyncGenerator<Qu
               completed: todoFactState.todos.filter((t) => t.status === "completed").length,
               unfinished: countUnfinished(todoFactState.todos),
               blocked: blockedTodos(todoFactState.todos).length,
+              // T7：基线是上一次写入，必须在下方 recordTodoWrite 之前算
+              ...todoWriteDelta(getTodoReworkState(sessionState), todoFactState.todos),
             });
             // 返工检测：把上次写入以来落盘的文件归到本次新完成的项上（见 todo-rework.ts）
             recordTodoWrite(getTodoReworkState(sessionState), todoFactState.todos);

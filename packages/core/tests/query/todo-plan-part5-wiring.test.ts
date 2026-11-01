@@ -295,3 +295,55 @@ describe("清单防线开关（T3）", () => {
     }),
   );
 });
+
+describe("TodoProgressAdvanced 推进量字段（T7）", () => {
+  test("只改措辞的第二次写入 → completedDelta=0、contentChanged=true", async () => {
+    const ctxMgr = new ContextManager({ maxTokens: 200000 });
+    ctxMgr.setSystemPrompt("test");
+    ctxMgr.addMessage({ role: "user", content: [{ type: "text", text: "干活" }] });
+    let todoState = { todos: [t("改 a", "completed"), t("验证", "in_progress")], writeVersion: 1 };
+    const responses = [editResp("e1"), finalResp()];
+    let call = 0;
+    const events: Array<{ event: string; data: any }> = [];
+    await drain({
+      config: {
+        model: "deepseek-v4-pro",
+        provider: "openai",
+        maxTurns: 10,
+        toolSearch: false,
+      } as unknown as Config,
+      ctxMgr,
+      toolRegistry: new ToolRegistry(),
+      sessionState: new SessionState("test-progress-delta"),
+      fallback: new ModelFallback(),
+      deps: {
+        sendWithRetry: () => emptyStream(),
+        processStream: async () => responses[call++] ?? finalResp(),
+        executeTools: async (content: any[]) => {
+          todoState = {
+            todos: [t("改 a", "completed"), t("跑测试验证", "in_progress")],
+            writeVersion: 2,
+          };
+          return {
+            results: content
+              .filter((b: any) => b.type === "tool_use")
+              .map((b: any) => ({
+                type: "tool_result" as const,
+                tool_use_id: b.id,
+                content: "ok",
+              })),
+          };
+        },
+        autoCompact: async () => ({ kind: "skipped" as const }),
+        getAbortSignal: () => undefined,
+        uuid: () => "uuid-test",
+        getTodoState: () => todoState,
+        traceAppendEvent: (e: any) => events.push({ event: e.event, data: e.data }),
+      } as QueryDeps,
+    });
+    const adv = events.filter((e) => e.event === "TodoProgressAdvanced");
+    expect(adv.length).toBe(2);
+    expect(adv[0]!.data).toMatchObject({ completedDelta: 1, contentChanged: true });
+    expect(adv[1]!.data).toMatchObject({ completedDelta: 0, contentChanged: true });
+  });
+});

@@ -54,6 +54,28 @@ export function createTodoReworkState(): TodoReworkState {
 }
 
 /**
+ * 本次写入相对上一次写入的推进量（2026-11-01，进度清单第五部分 T7）。
+ *
+ * `TodoProgressAdvanced` 每次成功写入都发，只改措辞也发——它量的是「碰了几次清单」，
+ * 不是推进量。这两个字段让分析脚本能把两者分开，而不用改事件名打断已有脚本。
+ *
+ * 基线取 `state.lastStatuses`：**必须在 `recordTodoWrite` 之前调用**，那时它还是上一次写入。
+ * 会话首次写入时基线为空，`completedDelta` = 当前 completed 数、`contentChanged` = true。
+ */
+export function todoWriteDelta(
+  state: TodoReworkState,
+  todos: TodoItem[],
+): { completedDelta: number; contentChanged: boolean } {
+  const prev = state.lastStatuses;
+  let prevCompleted = 0;
+  for (const s of prev.values()) if (s === "completed") prevCompleted++;
+  const completed = todos.filter((t) => t.status === "completed").length;
+  const contents = new Set(todos.map((t) => t.content));
+  const contentChanged = contents.size !== prev.size || [...contents].some((c) => !prev.has(c));
+  return { completedDelta: completed - prevCompleted, contentChanged };
+}
+
+/**
  * 记一次 todo_write 后的清单：把期间落盘的文件归到新完成项上，被改回未完成的项撤销归属。
  * 调用时机：queryLoop 观察到 writeVersion 变化时（每次写入恰好调用一次）。
  */

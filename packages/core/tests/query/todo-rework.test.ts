@@ -16,6 +16,7 @@ import {
   drainTodoRework,
   reworkEventData,
   REWORK_EVENT_ITEM_MAX,
+  todoWriteDelta,
 } from "@sid-code/core/query/todo-rework.ts";
 import type { TodoItem } from "@sid-code/core/tool/todo-write.ts";
 
@@ -106,5 +107,32 @@ describe("TodoReworkDetected 事件明细（T1）", () => {
     expect(data.hits[0]).toEqual({ item: "改脚本", file: SCRIPT });
     expect(data.hits[1]!.item.length).toBe(REWORK_EVENT_ITEM_MAX);
     expect(data.hits[1]!.file).toBe(longFile);
+  });
+});
+
+describe("todoWriteDelta（T7）", () => {
+  test("只改措辞的写入 → completedDelta=0、contentChanged=true", () => {
+    const s = createTodoReworkState();
+    recordTodoWrite(s, [t("改脚本", "completed"), t("同步", "in_progress")]);
+    const reworded = [t("改脚本", "completed"), t("同步脚本到服务器", "in_progress")];
+    expect(todoWriteDelta(s, reworded)).toEqual({ completedDelta: 0, contentChanged: true });
+  });
+
+  test("完成一项 → +1；改回 in_progress → -1；文本不变 → contentChanged=false", () => {
+    const s = createTodoReworkState();
+    recordTodoWrite(s, [t("a", "in_progress"), t("b", "pending")]);
+    const done = [t("a", "completed"), t("b", "in_progress")];
+    expect(todoWriteDelta(s, done)).toEqual({ completedDelta: 1, contentChanged: false });
+    recordTodoWrite(s, done);
+    const reopened = [t("a", "in_progress"), t("b", "in_progress")];
+    expect(todoWriteDelta(s, reopened)).toEqual({ completedDelta: -1, contentChanged: false });
+  });
+
+  test("首次写入：基线为空", () => {
+    const s = createTodoReworkState();
+    expect(todoWriteDelta(s, [t("a", "completed"), t("b", "pending")])).toEqual({
+      completedDelta: 1,
+      contentChanged: true,
+    });
   });
 });
