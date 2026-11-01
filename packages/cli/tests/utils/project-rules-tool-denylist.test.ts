@@ -2,7 +2,9 @@
  * CLAUDE.md `## Disallowed Tools` 必须裁剪工具集，不能只进权限层。
  *
  * 判据落在 registry（schema 是否进上下文），不落在「调用会不会被拒」：
- * skip 模式下权限层在 Step 3 之前早退，只靠权限层的名单什么都不拦（第 4 条把这个前提钉住）。
+ * 权限层只能在调用发生后拒绝，schema 仍然进了上下文、模型仍会尝试调用、每次都白费一轮。
+ * 2026-11-01 起 skip 档下权限层也会拒绝禁用工具（04 剖析 5.7 第 2 条，选项 B），
+ * 两层是「裁剪为主、权限层兜底」，第 4 条钉住兜底这一层。
  */
 
 import { describe, test, expect } from "bun:test";
@@ -63,14 +65,15 @@ describe("applyRuleToolDenylist（CLAUDE.md 禁用工具裁剪）", () => {
     expect(second.removed).toEqual([]);
   });
 
-  test("前提：skipPermissions=true 时权限层对禁用名单直接放行（所以必须裁剪）", async () => {
+  test("兜底：skipPermissions=true 时权限层仍拒绝禁用名单里的工具（裁剪漏掉时不至于放行）", async () => {
     const checker = new PermissionChecker({
       ...defaultConfig(),
       disallowedTools: ["web_fetch"],
       skipPermissions: true,
     });
     const r = await checker.check({ toolName: "web_fetch", input: {} });
-    expect(r.allowed).toBe(true);
+    expect(r.allowed).toBe(false);
+    expect(r.step).toBe("skip-disallowed");
   });
 
   test("接线：app.ts applyProjectRules 走裁剪函数，而不是只追加进 config", () => {

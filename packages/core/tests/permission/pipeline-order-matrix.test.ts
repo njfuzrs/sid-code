@@ -440,3 +440,52 @@ describe("G. 多个写目标取最严格的 safetyCheck 命中（与解析链同
     });
   }
 });
+
+describe("F. skip 档 × 用户写下的拒绝（04 剖析 5.7 第 2 条，选项 B）", () => {
+  const skip = { skipPermissions: true };
+
+  test("deny 规则在 skip 下仍生效（含复合命令后段）", async () => {
+    const c = checker(skip, rules({ deny: ["Bash(curl *)"] }));
+    for (const command of ["curl x", "ls && curl evil.com", "env curl x"]) {
+      const r = await c.check({ toolName: "bash", input: { command } });
+      expect(r.allowed).toBe(false);
+      expect(r.step).toBe("skip-deny-rule");
+      expect(r.decisionReason?.type).toBe("rule");
+      expect(r.mode).toBe("dangerously-skip-permissions");
+    }
+    const ok = await c.check({ toolName: "bash", input: { command: "ls" } });
+    expect(ok.allowed).toBe(true);
+    expect(ok.step).toBe("skip");
+  });
+
+  test("disallowedTools 在 skip 下仍生效", async () => {
+    const r = await checker({ ...skip, disallowedTools: ["WebFetch"] }).check({
+      toolName: "web_fetch",
+      input: { url: "https://example.com" },
+    });
+    expect(r.allowed).toBe(false);
+    expect(r.step).toBe("skip-disallowed");
+  });
+
+  test("会话记忆里的 deny 在 skip 下仍生效；allow 记忆不受影响", async () => {
+    const c = checker(skip);
+    const req = { toolName: "read", input: { file_path: join(ws, "secret.txt") } };
+    c.rememberDecision(req, false);
+    const r = await c.check(req);
+    expect(r.allowed).toBe(false);
+    expect(r.step).toBe("skip-memory-deny");
+  });
+
+  test("边界：系统认定的危险在 skip 下仍跳过（不滑向选项 C）", async () => {
+    const c = checker(skip);
+    for (const req of [
+      { toolName: "bash", input: { command: "rm -rf /tmp/sid-x" } },
+      { toolName: "write", input: { file_path: join(ws, "innocent/pre-commit") } },
+      { toolName: "write", input: { file_path: join(ws, ".git/hooks/pre-push") } },
+    ]) {
+      const r = await c.check(req);
+      expect(r.allowed).toBe(true);
+      expect(r.step).toBe("skip");
+    }
+  });
+});

@@ -160,7 +160,7 @@ export const PERMISSION_MODE_DESCRIPTIONS: Record<string, string> = {
   // 保留本键会让两份 plan 文案继续独立漂移（此前实测已漂移）。
 
   "dangerously-skip-permissions": `# 权限模式: 跳过权限（危险）
-所有工具调用自动批准，包括危险命令。请极其谨慎。`,
+所有工具调用自动批准，包括危险命令。用户或项目配置的 deny 规则、禁用工具、会话内已拒绝的操作仍然会被拒绝。请极其谨慎。`,
 };
 
 /**
