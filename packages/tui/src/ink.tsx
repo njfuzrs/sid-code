@@ -881,7 +881,85 @@ export default class Ink {
 			undefined,
 			Yoga.DIRECTION_LTR,
 		);
+		this.layoutFloatingTransients();
 	};
+
+	/**
+	 * sid-code（长会话按键延迟 PR4）：`<Transient float>` 在「帧不算浮层已铺满视口」时改为叠画。
+	 *
+	 * 为什么：浮层在流布局时把同等高度的历史顶进 scrollback，关闭时只能整帧重画（diffFrame 的 offscreen reset），
+	 * 长会话一次关菜单写出 76 万字节、清掉 scrollback 重建。叠画不改帧高，关闭只是视口内几行的普通 diff。
+	 *
+	 * 判定只用当前布局就能算（两种形态下「不算浮层的帧高 n」与浮层高 h 相同），所以只在形态需要翻转时多算一次布局，
+	 * 稳态零额外开销。三个条件缺一不可：
+	 * - n ≥ 视口行数：帧没溢出时（短会话）保持原样，字节与改前完全相同；
+	 * - 叠画区 [锚点 - h, 锚点) 整块在视口内：落进 scrollback 的行光标够不着，帧 diff 会退成 full reset，比不叠画还糟；
+	 * - 锚点 - h ≥ 0。
+	 * 只在主屏交互模式生效：alt-screen 只画视口、本来就不 reset；非交互 / 读屏输出是线性文本，叠画没有意义。
+	 */
+	private layoutFloatingTransients(): void {
+		const nodes = this.rootNode.transientNodes;
+		if (!nodes || nodes.size === 0) {
+			return;
+		}
+
+		const enabled =
+			this.interactive && !this.altScreenActive && !this.isScreenReaderEnabled;
+		const rows = getWindowSize(this.options.stdout).rows;
+		const rootHeight = this.rootNode.yogaNode!.getComputedHeight();
+		let changed = false;
+		for (const anchor of nodes) {
+			const inner = anchor.childNodes[0] as dom.DOMElement | undefined;
+			if (!anchor.internal_float || !anchor.yogaNode || !inner?.yogaNode) {
+				continue;
+			}
+
+			let top = 0;
+			let cur: dom.DOMElement | undefined = anchor;
+			for (; cur && cur !== this.rootNode; cur = cur.parentNode) {
+				top += cur.yogaNode?.getComputedTop() ?? 0;
+			}
+
+			if (cur !== this.rootNode) {
+				continue; // 已脱离树
+			}
+
+			const h = inner.yogaNode.getComputedHeight();
+			const n = anchor.internal_floating ? rootHeight : rootHeight - h;
+			const shouldFloat =
+				enabled && h > 0 && n >= rows && top - h >= 0 && top - h >= n - rows;
+			if (shouldFloat === Boolean(anchor.internal_floating)) {
+				continue;
+			}
+
+			anchor.internal_floating = shouldFloat;
+			if (shouldFloat) {
+				anchor.yogaNode.setHeight(0);
+				inner.yogaNode.setPositionType(Yoga.POSITION_TYPE_ABSOLUTE);
+				inner.yogaNode.setPosition(Yoga.EDGE_BOTTOM, 0);
+				inner.yogaNode.setPosition(Yoga.EDGE_LEFT, 0);
+				inner.yogaNode.setPosition(Yoga.EDGE_RIGHT, 0);
+			} else {
+				anchor.yogaNode.setHeightAuto();
+				inner.yogaNode.setPositionType(Yoga.POSITION_TYPE_RELATIVE);
+				inner.yogaNode.setPositionAuto(Yoga.EDGE_BOTTOM);
+				inner.yogaNode.setPositionAuto(Yoga.EDGE_LEFT);
+				inner.yogaNode.setPositionAuto(Yoga.EDGE_RIGHT);
+			}
+
+			// 铺空白与否取决于形态，节点缓存要失效
+			dom.markRenderDirty(inner);
+			changed = true;
+		}
+
+		if (changed) {
+			this.rootNode.yogaNode!.calculateLayout(
+				undefined,
+				undefined,
+				Yoga.DIRECTION_LTR,
+			);
+		}
+	}
 
 	// Resets `fullStaticOutput` when the <Static> identity changes so stale items from a previous instance are not replayed on future rewrites.
 	handleStaticChange = (): void => {
@@ -1776,7 +1854,9 @@ export default class Ink {
 		const viewport = getWindowSize(this.options.stdout);
 		const previous = this.frameViewport;
 		const hadTransient = this.previousFrameHadTransient;
-		const hasTransient = dom.hasMountedTransient(this.rootNode);
+		// 叠画态的浮层不算（见 hasMountedTransient 的 inFlowOnly）：它关闭时帧可能因别的原因变矮（输入框提示行），
+		// 算进去就会把一次几十字节的 diff 变成整帧重画（长会话 76 万字节 + 清 scrollback，PR4 实测）
+		const hasTransient = dom.hasMountedTransient(this.rootNode, {inFlowOnly: true});
 		this.previousFrameHadTransient = hasTransient;
 		const forced = this.pendingResetReason;
 		this.pendingResetReason = undefined;

@@ -258,6 +258,11 @@ export default createReconciler<
 				continue;
 			}
 
+			if (key === 'internal_float') {
+				node.internal_float = true;
+				continue;
+			}
+
 			if (key === 'internal_static') {
 				currentRootNode = rootNode;
 				node.internal_static = true;
