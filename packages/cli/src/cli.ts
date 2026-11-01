@@ -1529,15 +1529,16 @@ export async function main(): Promise<void> {
     const { checkCoordinatorEnv } = await import("@sid-code/core/coordinator/mode.ts");
     checkCoordinatorEnv();
 
-    // 启动期管家：生成配置目录 .gitignore + 按水位线节流的过期清理（幂等、不阻塞）
+    // 启动期管家：只剩 O(1) 的幂等操作（配置目录 .gitignore 等）。随数据量增长的过期清理（H1）
+    // 已迁入维护子进程（startBackgroundMaintenance → runHousekeepingCleanup）。
     //
-    // ⚠ 必须传 selfSessionId：清理会 rmSync 过期的 checkpoint 会话目录，而本会话自己的
+    // ⚠ 仍传 selfSessionId（静态门禁锁着这个参数）：清理会 rmSync 过期的 checkpoint 会话目录，而本会话自己的
     // registerSession() 在下面 :2212 才跑 —— 这中间本会话不在活跃注册表里。平时无害，
     // 但 `--resume` 一个 30 天前的旧会话时会把用户正要恢复的那个会话的 checkpoint 删掉。
     try {
       const { runStartupHousekeeping } =
         await import("@sid-code/core/config/startup-housekeeping.ts");
-      // retention 与下面 startBackgroundSessionCleanup 用同一个解析入口：会话 / 轨迹 / 笔记
+      // retention 与下面 startBackgroundMaintenance 用同一个解析入口：会话 / 轨迹 / 笔记
       // 三处的保留期必须是同一个生效值（此前两条路径各读各的，曾出现会话 30d、轨迹 365d）。
       const { getRetentionSettings } = await import("@sid-code/core/session/cleanup.ts");
       runStartupHousekeeping(Date.now(), {
@@ -2941,33 +2942,60 @@ export async function main(): Promise<void> {
         });
     };
 
-    const startBackgroundSessionCleanup = async (): Promise<void> => {
-      if (config.print) return;
-      const { cleanupExpiredSessions, getRetentionSettings } =
-        await import("@sid-code/core/session/cleanup.ts");
-      const retentionSettings = getRetentionSettings(config);
-      if (!retentionSettings.enabled) return;
-      const protectedIds = resumedSessionIdForCleanup ? [resumedSessionIdForCleanup] : undefined;
-      cleanupExpiredSessions(config, retentionSettings, config.sessionId, protectedIds)
-        .then((result) => {
-          if (result.deleted > 0) {
-            // 删用户数据必须让人看见：此前只在 --debug 下记一行日志，用户直到想 --resume
-            // 时才发现会话没了（Claude Code#64999 投诉的正是这种「静默删除」）。
-            // 提示里直接给出关掉/调大的位置，看见的人不用再去翻文档。
-            getLogger().info("CLEANUP", `自动清理: 删除 ${result.deleted} 个过期会话`);
+    // C1/T1/T2/H1：启动期维护任务（会话清理、轨迹淘汰、管家清理）迁入维护子进程。
+    // 这里只登记「要不要跑、跑哪些」，真正的拉起在 TUI 首帧之后（见 runTUI 前）。
+    // 判到期只读几个小水位文件（O(1)）；全部没到期时连子进程都不拉起。
+    //
+    // 删除结论的提示：子进程把「删了 N 个」写进 state/maintenance-result.json，由**下一次**
+    // 启动读出并提示（删用户数据必须让人看见，Claude Code#64999）——只是晚一次启动出现。
+    const startBackgroundMaintenance = async (): Promise<void> => {
+      try {
+        const { getRetentionSettings } = await import("@sid-code/core/session/cleanup.ts");
+        const { consumeSessionCleanupNotice } = await import("@sid-code/core/maintenance/state.ts");
+        const retentionSettings = getRetentionSettings(config);
+
+        if (!config.print) {
+          const notice = consumeSessionCleanupNotice();
+          if (notice) {
             app.notifyStatus(
               "session_cleanup",
-              `已按保留策略清理 ${result.deleted} 个旧会话（保留 ${retentionSettings.maxAge}；` +
+              `已按保留策略清理 ${notice.deleted} 个旧会话（保留 ${notice.maxAge ?? retentionSettings.maxAge}；` +
                 `可在 settings.json 的 sessionRetention 调整或关闭）`,
               10000,
             );
           }
-        })
-        .catch((err: any) => {
-          if (config.debug) {
-            getLogger().error("CLEANUP", `自动清理失败: ${err.message}`);
-          }
+        }
+
+        const { dueMaintenanceTasks, launchMaintenance } =
+          await import("@sid-code/core/maintenance/launcher.ts");
+        const { sidPaths } = await import("@sid-code/core/config/paths.ts");
+        // -p 保持原语义：无头不做会话清理；轨迹/管家清理照常（原先它们在 collector 构造与
+        // runStartupHousekeeping 里，无头同样会跑）
+        const tasks = await dueMaintenanceTasks({
+          sessionCleanup: !config.print && retentionSettings.enabled,
         });
+        if (tasks.length === 0) return;
+        const launch = () =>
+          launchMaintenance({
+            tasks,
+            retention: retentionSettings,
+            selfSessionId: config.sessionId,
+            protectedSessionIds: resumedSessionIdForCleanup
+              ? [resumedSessionIdForCleanup]
+              : undefined,
+            traceOutputDir: config.trace?.outputDir ?? sidPaths.trajectories(),
+            maxSessionsRetained: config.trace?.maxSessionsRetained,
+          });
+        if (config.print) {
+          launch();
+        } else {
+          // 首帧之后再 fork：spawn 本身也有几毫秒，不该挡在首帧前面
+          const { whenFirstFrame } = await import("./ui/first-frame.ts");
+          void whenFirstFrame().then(launch);
+        }
+      } catch (err: any) {
+        getLogger().warn("MAINTENANCE", `启动维护调度失败（不阻断）: ${err?.message ?? err}`);
+      }
     };
 
     // 启动时恢复并清理 Worktree（P0-1 / P1-9 / D16），以及 --worktree 启动 flag（P1-2）
@@ -3035,7 +3063,7 @@ export async function main(): Promise<void> {
           // W2：**只登记，不在这里启动**。持久化的候选 worktree 要到下方归属复核
           // （会话 id 解析完）才知道进不进；在这里 fire-and-forget 会让 GC 与会话选择器
           // 并发，且 skipPath 用的不是最终事实。此刻 activeWtPath 只来自 --worktree。
-          // 这与上面 startBackgroundSessionCleanup 是同一个时序问题、同一个修法——
+          // 这与上面 startBackgroundMaintenance 是同一个时序问题、同一个修法——
           // 不是「多传一个参数」，而是把启动时机挪到判据齐了之后。
           worktreeCleanupGitRoot = gitRoot;
           activeWorktreePathForCleanup = activeWtPath;
@@ -3211,8 +3239,9 @@ export async function main(): Promise<void> {
       }
     }
 
-    // D3：恢复目标已确定（或本次不恢复），此刻才启动后台清理。
-    await startBackgroundSessionCleanup();
+    // D3：恢复目标已确定（或本次不恢复），此刻才登记后台维护（受保护 id 已知；
+    // 本会话的 registerSession() 在上方已完成，子进程读活跃表能看到它）。
+    await startBackgroundMaintenance();
 
     // W2：归属复核已给出结论，worktree GC 此刻才启动——skipPath 用的是复核后的事实。
     await startWorktreeCleanup();

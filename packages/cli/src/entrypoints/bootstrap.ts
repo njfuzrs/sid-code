@@ -8,8 +8,11 @@ import {
   profileCheckpoint,
   profileReport,
   isProfilingEnabled,
+  startLoopBlockProbe,
 } from "@sid-code/shared/utils/startup-profiler.ts";
 profileCheckpoint("bootstrap_entry");
+// G1：从入口起就观测事件循环阻塞（只在 profiling 开启时生效）
+startLoopBlockProbe();
 
 // 启动性能剖析：进程退出时输出报告
 if (isProfilingEnabled()) {
@@ -56,6 +59,16 @@ async function main(): Promise<void> {
         ? formatBuildInfoJson(info, version)
         : formatBuildInfoText(info, version),
     );
+    return;
+  }
+
+  // 快速路径 1.8: __maintenance — 启动维护子进程（内部子命令，不出现在 --help）。
+  // 由 TUI 首帧后 detached 拉起，承接会话清理 / 轨迹清理 / 管家清理这些耗时随数据量增长的任务。
+  // 放在零导入快速路径里：不加载完整 CLI、不 loadConfig，参数由父进程算好通过 argv 传入。
+  if (args[0] === "__maintenance") {
+    profileCheckpoint("bootstrap_route_resolved");
+    const { runMaintenanceMain } = await import("@sid-code/core/maintenance/runner.ts");
+    await runMaintenanceMain(args.slice(1));
     return;
   }
 

@@ -8,6 +8,7 @@ import { existsSync, unlinkSync, rmSync, statSync, readdirSync } from "fs";
 import type { Config } from "../config/config.ts";
 import type { SessionFileEntry } from "./utils.ts";
 import { getAllSessionFiles, isDeletableExcludeReason } from "./utils.ts";
+import { lightScanSessionFiles } from "./light-scan.ts";
 import { getLogger } from "../debug/logger.ts";
 import { sidPaths } from "../config/paths.ts";
 import { listActiveSessions } from "./concurrent.ts";
@@ -413,6 +414,14 @@ export async function cleanupExpiredSessions(
   retentionConfig: SessionRetentionSettings,
   currentSessionId?: string,
   protectedSessionIds?: readonly string[],
+  opts: {
+    /**
+     * C1：扫描器。`light`（维护子进程用）只取判删所需信息，不组装完整 SessionInfo；
+     * `full`（默认，`--cleanup-sessions` 手动命令用）走列表扫描器。两者判据同源，
+     * 一致性由 light-scan.test.ts 的对照测试锁住。
+     */
+    scanner?: "full" | "light";
+  } = {},
 ): Promise<CleanupResult> {
   const log = getLogger();
 
@@ -443,7 +452,10 @@ export async function cleanupExpiredSessions(
   }
 
   // 扫描所有会话文件
-  const allFiles = await getAllSessionFiles(sessionDir, currentSessionId);
+  const allFiles =
+    opts.scanner === "light"
+      ? await lightScanSessionFiles(sessionDir, currentSessionId)
+      : await getAllSessionFiles(sessionDir, currentSessionId);
   const scanned = allFiles.length;
 
   // 识别待删除会话

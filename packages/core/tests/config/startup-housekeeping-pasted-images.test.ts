@@ -22,7 +22,9 @@ import {
 } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
-import { runStartupHousekeeping } from "@sid-code/core/config/startup-housekeeping.ts";
+// H1（2026-11-01）：随数据量增长的清理从 runStartupHousekeeping 拆到 runHousekeepingCleanup，
+// 只在维护子进程里跑；行为用例直接测后者，判据与水位线语义未变。
+import { runHousekeepingCleanup } from "@sid-code/core/config/startup-housekeeping.ts";
 import { getSidTempDir, __resetSidTempDirCache } from "@sid-code/shared/utils/temp-dir.ts";
 
 let tmpHome: string;
@@ -75,7 +77,7 @@ describe("粘贴截图回收（阈值 7 天，按 mtime 判）", () => {
     ageBy(stale, 8);
     ageBy(fresh, 6);
 
-    runStartupHousekeeping(Date.now());
+    runHousekeepingCleanup(Date.now());
 
     expect(existsSync(stale)).toBe(false);
     expect(existsSync(fresh), "7 天内的截图被删了 —— 用户可能还要在本周会话里引用").toBe(true);
@@ -91,13 +93,13 @@ describe("粘贴截图回收（阈值 7 天，按 mtime 判）", () => {
     ageBy(inner, 30);
     ageBy(sub, 30);
 
-    runStartupHousekeeping(Date.now());
+    runHousekeepingCleanup(Date.now());
 
     expect(existsSync(inner)).toBe(true);
   });
 
   test("目录不存在时不抛异常", () => {
     expect(existsSync(join(getSidTempDir(), "pasted-images"))).toBe(false);
-    expect(() => runStartupHousekeeping(Date.now())).not.toThrow();
+    expect(() => runHousekeepingCleanup(Date.now())).not.toThrow();
   });
 });

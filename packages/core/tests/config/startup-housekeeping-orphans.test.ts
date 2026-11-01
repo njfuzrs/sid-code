@@ -42,7 +42,9 @@ import {
 } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
-import { runStartupHousekeeping } from "@sid-code/core/config/startup-housekeeping.ts";
+// H1（2026-11-01）：随数据量增长的清理从 runStartupHousekeeping 拆到 runHousekeepingCleanup，
+// 只在维护子进程里跑；行为用例直接测后者，判据与水位线语义未变。
+import { runHousekeepingCleanup } from "@sid-code/core/config/startup-housekeeping.ts";
 import { sidPaths } from "@sid-code/core/config/paths.ts";
 import { resetSettingsCache } from "@sid-code/core/config/settings/cache.ts";
 
@@ -86,7 +88,7 @@ describe("孤儿 shell 快照回收（阈值 24h，按 mtime 判）", () => {
     writeFileSync(fresh, "# new\n");
     ageBy(stale, 3);
 
-    runStartupHousekeeping(Date.now());
+    runHousekeepingCleanup(Date.now());
 
     expect(existsSync(stale)).toBe(false);
     expect(existsSync(fresh), "未超期的快照被删了 —— 可能有活跃会话正在 source 它").toBe(true);
@@ -102,7 +104,7 @@ describe("孤儿 shell 快照回收（阈值 24h，按 mtime 判）", () => {
     ageBy(other, 30);
     ageBy(sub, 30);
 
-    runStartupHousekeeping(Date.now());
+    runHousekeepingCleanup(Date.now());
 
     // 限定后缀：将来有人往该目录放别的东西时不该被连带删掉
     expect(existsSync(other)).toBe(true);
@@ -112,7 +114,7 @@ describe("孤儿 shell 快照回收（阈值 24h，按 mtime 判）", () => {
 
   test("目录不存在时不抛异常（首次启动路径）", () => {
     expect(existsSync(sidPaths.shellSnapshots())).toBe(false);
-    expect(() => runStartupHousekeeping(Date.now())).not.toThrow();
+    expect(() => runHousekeepingCleanup(Date.now())).not.toThrow();
   });
 });
 
@@ -127,7 +129,7 @@ describe("孤儿 task 输出回收（阈值 7 天）", () => {
     writeFileSync(fresh, "new output\n");
     ageBy(stale, 10);
 
-    runStartupHousekeeping(Date.now());
+    runHousekeepingCleanup(Date.now());
 
     expect(existsSync(stale)).toBe(false);
     expect(existsSync(fresh)).toBe(true);
@@ -140,7 +142,7 @@ describe("孤儿 task 输出回收（阈值 7 天）", () => {
     writeFileSync(other, "{}\n");
     ageBy(other, 90);
 
-    runStartupHousekeeping(Date.now());
+    runHousekeepingCleanup(Date.now());
 
     expect(existsSync(other)).toBe(true);
   });
@@ -157,7 +159,7 @@ describe("过期 checkpoints 兜底回收（阈值 30 天 + 并行安全）", ()
     writeFileSync(join(fresh, "index.json"), "{}\n");
     ageBy(stale, 40);
 
-    runStartupHousekeeping(Date.now());
+    runHousekeepingCleanup(Date.now());
 
     expect(existsSync(stale)).toBe(false);
     expect(existsSync(fresh)).toBe(true);
@@ -187,7 +189,7 @@ describe("过期 checkpoints 兜底回收（阈值 30 天 + 并行安全）", ()
       }),
     );
 
-    runStartupHousekeeping(Date.now());
+    runHousekeepingCleanup(Date.now());
 
     expect(
       existsSync(activeDir),
@@ -210,7 +212,7 @@ describe("过期 checkpoints 兜底回收（阈值 30 天 + 并行安全）", ()
     // 刻意**不**写 active-sessions 注册文件 —— 复现"还没注册"的那一段时序
     expect(existsSync(join(sidPaths.activeSessions(), `${resumedId}.json`))).toBe(false);
 
-    runStartupHousekeeping(Date.now(), { selfSessionId: resumedId });
+    runHousekeepingCleanup(Date.now(), { selfSessionId: resumedId });
 
     expect(
       existsSync(resumedDir),
@@ -233,7 +235,7 @@ describe("过期 checkpoints 兜底回收（阈值 30 天 + 并行安全）", ()
       JSON.stringify({ sessionId: deadId, pid: 999_999, startedAt: Date.now(), cwd: tmpHome }),
     );
 
-    runStartupHousekeeping(Date.now());
+    runHousekeepingCleanup(Date.now());
 
     expect(existsSync(deadDir)).toBe(false);
   });
@@ -252,7 +254,7 @@ describe("水位线节流对新增的三项同样生效", () => {
     writeFileSync(stale, "# old\n");
     ageBy(stale, 30);
 
-    runStartupHousekeeping(now);
+    runHousekeepingCleanup(now);
 
     expect(existsSync(stale), "水位线未到期却扫了盘 —— 节流失效会让每次启动都遍历几千个文件").toBe(
       true,
@@ -270,14 +272,14 @@ describe("水位线节流对新增的三项同样生效", () => {
     writeFileSync(stale, "# old\n");
     ageBy(stale, 30);
 
-    runStartupHousekeeping(now);
+    runHousekeepingCleanup(now);
     expect(existsSync(stale)).toBe(false);
 
     // 第二轮：水位线已刷新，新造的超期文件不该被删
     const stale2 = join(snapDir, "snapshot-zsh-55555.sh");
     writeFileSync(stale2, "# old2\n");
     ageBy(stale2, 30);
-    runStartupHousekeeping(now);
+    runHousekeepingCleanup(now);
     expect(existsSync(stale2)).toBe(true);
   });
 });
@@ -358,7 +360,7 @@ describe("不越界：本模块不碰 settings 与记忆", () => {
     ageBy(memFile, 365);
     ageBy(memDir, 365);
 
-    runStartupHousekeeping(Date.now());
+    runHousekeepingCleanup(Date.now());
 
     // 这两类是用户资产，不是可重建的运行时数据 —— 由各自模块管理，本模块一概不碰
     expect(existsSync(settings)).toBe(true);
@@ -391,7 +393,7 @@ describe("过期 Session Memory 会话笔记回收（阈值 = 会话保留期，
     // 旧默认值（30 天）下会被删的那一档：新口径下必须留着
     const month = seedSessionMemory("proj-a", "20260801-000000-dddddddd", 40);
 
-    runStartupHousekeeping(Date.now());
+    runHousekeepingCleanup(Date.now());
 
     expect(existsSync(stale)).toBe(false);
     // 未超期的必须留着 —— 只断言"删了"的测试对"删太多"是盲的
@@ -408,7 +410,7 @@ describe("过期 Session Memory 会话笔记回收（阈值 = 会话保留期，
     const month = seedSessionMemory("proj-a", "20260801-000000-dddddddd", 40);
     const fresh = seedSessionMemory("proj-a", "20260906-000000-bbbbbbbb", 3);
 
-    runStartupHousekeeping(Date.now());
+    runHousekeepingCleanup(Date.now());
 
     expect(existsSync(month)).toBe(false);
     expect(existsSync(fresh)).toBe(true);
@@ -422,7 +424,7 @@ describe("过期 Session Memory 会话笔记回收（阈值 = 会话保留期，
     resetSettingsCache();
     const ancient = seedSessionMemory("proj-a", "20200101-000000-aaaaaaaa", 2000);
 
-    runStartupHousekeeping(Date.now());
+    runHousekeepingCleanup(Date.now());
 
     expect(existsSync(ancient)).toBe(true);
   });
@@ -431,7 +433,7 @@ describe("过期 Session Memory 会话笔记回收（阈值 = 会话保留期，
     const a = seedSessionMemory("proj-a", "20250101-000000-aaaaaaaa", 400);
     const b = seedSessionMemory("proj-b", "20250101-000000-cccccccc", 400);
 
-    runStartupHousekeeping(Date.now());
+    runHousekeepingCleanup(Date.now());
 
     expect(existsSync(a)).toBe(false);
     expect(existsSync(b)).toBe(false);
@@ -445,7 +447,7 @@ describe("过期 Session Memory 会话笔记回收（阈值 = 会话保留期，
     writeFileSync(legacy, "# 旧的项目级笔记\n");
     ageBy(legacy, 400);
 
-    runStartupHousekeeping(Date.now());
+    runHousekeepingCleanup(Date.now());
 
     expect(existsSync(legacy)).toBe(true);
   });
@@ -457,7 +459,7 @@ describe("过期 Session Memory 会话笔记回收（阈值 = 会话保留期，
     writeFileSync(other, "x");
     ageBy(other, 400);
 
-    runStartupHousekeeping(Date.now());
+    runHousekeepingCleanup(Date.now());
 
     expect(existsSync(other)).toBe(true);
   });
@@ -489,7 +491,7 @@ describe("D11：sessions 根目录裸文件隔离", () => {
     writeFileSync(join(sessions, "只有第"), strayBody);
     writeFileSync(join(sessions, "第"), "");
 
-    runStartupHousekeeping(Date.now());
+    runHousekeepingCleanup(Date.now());
 
     // 原位置清空
     expect(existsSync(join(sessions, "只有第"))).toBe(false);
@@ -513,7 +515,7 @@ describe("D11：sessions 根目录裸文件隔离", () => {
     mkdirSync(join(sessions, "summaries"), { recursive: true });
     mkdirSync(join(sessions, "_legacy"), { recursive: true });
 
-    runStartupHousekeeping(Date.now());
+    runHousekeepingCleanup(Date.now());
 
     expect(existsSync(realSession)).toBe(true);
     expect(existsSync(join(sessions, "summaries"))).toBe(true);
@@ -527,7 +529,7 @@ describe("D11：sessions 根目录裸文件隔离", () => {
     const dsStore = join(sessions, ".DS_Store");
     writeFileSync(dsStore, "x");
 
-    runStartupHousekeeping(Date.now());
+    runHousekeepingCleanup(Date.now());
 
     expect(existsSync(dsStore)).toBe(true);
     expect(quarantined().length).toBe(0);
@@ -538,10 +540,10 @@ describe("D11：sessions 根目录裸文件隔离", () => {
     mkdirSync(sessions, { recursive: true });
 
     writeFileSync(join(sessions, "第"), "first");
-    runStartupHousekeeping(Date.now());
+    runHousekeepingCleanup(Date.now());
     // 水位线已写入 → 第二轮需要跳过节流，用一天后的时间戳
     writeFileSync(join(sessions, "第"), "second");
-    runStartupHousekeeping(Date.now() + 25 * 3600_000);
+    runHousekeepingCleanup(Date.now() + 25 * 3600_000);
 
     const moved = quarantined();
     expect(moved.length).toBe(2);
@@ -551,6 +553,6 @@ describe("D11：sessions 根目录裸文件隔离", () => {
 
   test("sessions 目录不存在时不抛异常（首次启动路径）", () => {
     expect(existsSync(sidPaths.sessions())).toBe(false);
-    expect(() => runStartupHousekeeping(Date.now())).not.toThrow();
+    expect(() => runHousekeepingCleanup(Date.now())).not.toThrow();
   });
 });
