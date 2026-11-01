@@ -622,15 +622,17 @@ export function getVisualLines(lines: string[], width: number): VisualLine[] {
 }
 
 /**
- * 计算光标在视觉行中的位置
+ * 计算光标在视觉行中的位置。
+ * `visualLines`：调用方已按同一 lines/width 算好的视觉行。两个调用点（useTextBuffer、InputArea）都先算过一遍，
+ * 不传就再折一次行，是 O(全文) 的重复工作（5,000 字符时每键约 1.3ms，长会话按键延迟排查线索 C）。
  */
 export function getCursorVisualPosition(
   lines: string[],
   cursorRow: number,
   cursorCol: number,
   width: number,
+  visualLines: VisualLine[] = getVisualLines(lines, width),
 ): { visualRow: number; visualCol: number } {
-  const visualLines = getVisualLines(lines, width);
   for (let i = 0; i < visualLines.length; i++) {
     const vl = visualLines[i];
     if (vl.logicalRow === cursorRow && cursorCol >= vl.start && cursorCol <= vl.end) {
@@ -753,8 +755,9 @@ export function useTextBuffer(props: UseTextBufferProps) {
   const { height: vpHeight, width: vpWidth } = props.viewport;
   const visualLines = useMemo(() => getVisualLines(state.lines, vpWidth), [state.lines, vpWidth]);
   const cursorVisual = useMemo(
-    () => getCursorVisualPosition(state.lines, state.cursorRow, state.cursorCol, vpWidth),
-    [state.lines, state.cursorRow, state.cursorCol, vpWidth],
+    () =>
+      getCursorVisualPosition(state.lines, state.cursorRow, state.cursorCol, vpWidth, visualLines),
+    [state.lines, state.cursorRow, state.cursorCol, vpWidth, visualLines],
   );
 
   // 计算 scrollTop：确保光标可见
