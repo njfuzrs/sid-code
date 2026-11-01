@@ -513,6 +513,13 @@ export class MemoryStore {
 
   /** 本次 load 中有空文件被归档的目录（缺陷 3：据此重建索引）。 */
   private archivedDuringLoad = new Set<string>();
+  /**
+   * M1（PR-D）：本次 load 内的文件文本缓存（绝对路径 → {mtimeMs, text}）。
+   * migrateDoublePrefixNames 第二步要全量读一遍收集 name，紧接着 loadDir 又全量读一遍——
+   * 约 400 个文件每次启动读两遍。迁移读到的文本放这里，loadDir 按 mtime 校验后直接用。
+   * 只在一次 load 内有效，load 结束清空。
+   */
+  private loadTextCache = new Map<string, { mtimeMs: number; text: string }>();
 
   constructor(
     projectRoot?: string,
@@ -589,6 +596,7 @@ export class MemoryStore {
     if (this.projectDir) {
       await this.loadDir(this.projectDir, "project", this.projectEntries, this.projectFiles);
     }
+    this.loadTextCache.clear();
     this.loaded = true;
     // P1-11：记住「这份快照对应哪一代磁盘状态」。必须在**本次加载读盘之后**取，
     // 而不是函数开头 —— 否则加载途中别人写盘会让这份快照冒充新代数，永不重读。
@@ -753,8 +761,11 @@ export class MemoryStore {
     for (const filename of existing) {
       if (!filename.endsWith(".md") || filename === INDEX_FILE) continue;
       try {
-        const text = await Bun.file(join(dir, filename)).text();
+        const fp = join(dir, filename);
+        const st = await stat(fp);
+        const text = await Bun.file(fp).text();
         fileTexts.set(filename, text);
+        this.loadTextCache.set(fp, { mtimeMs: st.mtimeMs, text });
         // L11：只读 frontmatter 块里的 name —— 全文 `/^name:/m` 会把正文里任一行
         // `name: xxx` 当成已占用，误跳过本该做的改写（scan.ts 的 readMemoryFrontmatter 注释同款警告）
         const n = readMemoryFrontmatter(text).name?.trim();
@@ -786,6 +797,8 @@ export class MemoryStore {
         const head = fmEnd > 0 ? text.slice(0, fmEnd) : text;
         const tail = fmEnd > 0 ? text.slice(fmEnd) : "";
         await Bun.write(filePath, head.replace(/^name:\s*.+$/m, `name: ${cleaned}`) + tail);
+        // 改写过的文件缓存作废，loadDir 重读（这类文件极少）
+        this.loadTextCache.delete(filePath);
         takenNames.delete(rawName);
         takenNames.add(cleaned);
         renamed = true;
@@ -846,7 +859,12 @@ export class MemoryStore {
       try {
         const st = await stat(filePath);
         if (!st.isFile()) continue;
-        const text = await Bun.file(filePath).text();
+        // M1：迁移那步已读过且 mtime 未变 → 复用，不再读第二遍
+        const cachedText = this.loadTextCache.get(filePath);
+        const text =
+          cachedText && cachedText.mtimeMs === st.mtimeMs
+            ? cachedText.text
+            : await Bun.file(filePath).text();
         const parseInfo: { emptyBody?: boolean } = {};
         const entry = parseMemoryFile(text, filename, scope, st.mtimeMs, parseInfo);
         if (!entry) {

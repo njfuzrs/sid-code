@@ -38,7 +38,48 @@ function collect(): GitSnapshot {
   }
 }
 
+/** 异步跑一条 git，失败返回 null（与同步版 fail-open 同口径） */
+async function gitAsync(args: string[]): Promise<{ code: number; out: string } | null> {
+  try {
+    const proc = Bun.spawn(["git", ...args], { stdout: "pipe", stderr: "ignore" });
+    const timer = setTimeout(() => proc.kill(), 3000);
+    const [out, code] = await Promise.all([new Response(proc.stdout).text(), proc.exited]);
+    clearTimeout(timer);
+    return { code, out };
+  } catch {
+    return null;
+  }
+}
+
+let prefetching: Promise<void> | null = null;
+
+/**
+ * X1（PR-D）：启动早期调一次，把 git 快照异步算好写进缓存。之后 collector / 埋点元数据的
+ * 同步 `getGitSnapshot()` 直接命中缓存，不再在首帧前同步 fork 两次 git（`status --porcelain`
+ * 本仓实测 ~30–50ms，随工作区文件数增长）。
+ *
+ * 预取没跑完时同步读取仍按旧路径现算（结果一致，只是没省下时间）——不让正确性依赖时序。
+ */
+export function prefetchGitSnapshot(): Promise<void> {
+  if (cached) return Promise.resolve();
+  if (prefetching) return prefetching;
+  prefetching = (async () => {
+    const [head, status] = await Promise.all([
+      gitAsync(["rev-parse", "HEAD"]),
+      gitAsync(["status", "--porcelain"]),
+    ]);
+    if (cached) return; // 同步路径已经抢先算过
+    const h = head && head.code === 0 ? head.out.trim() : "";
+    cached =
+      h && status && status.code === 0
+        ? { head: h, dirty: status.out.trim() !== "" }
+        : { head: null, dirty: null };
+  })().catch(() => {});
+  return prefetching;
+}
+
 /** 仅测试 */
 export function __resetGitSnapshotForTest(): void {
   cached = null;
+  prefetching = null;
 }

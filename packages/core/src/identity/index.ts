@@ -110,7 +110,12 @@ export function __resetIdentityForTest(): void {
 }
 
 export { getOrCreateDeviceId, __resetDeviceIdCacheForTest } from "./device-id.ts";
-export { getGitSnapshot, __resetGitSnapshotForTest, type GitSnapshot } from "./git-snapshot.ts";
+export {
+  getGitSnapshot,
+  prefetchGitSnapshot,
+  __resetGitSnapshotForTest,
+  type GitSnapshot,
+} from "./git-snapshot.ts";
 export {
   getDeviceCredential,
   getUsableCredentialToken,

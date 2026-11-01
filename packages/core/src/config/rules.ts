@@ -1024,13 +1024,21 @@ export async function loadAllCLAUDEmd(
   // 为什么改默认值而不是让 5 个调用点各自传：调用点手传要求每个入口自己算一次
   // projectRoot（还得跟这里的算法保持一致），且新增入口必然漏传——这正是本缺陷的成因。
   // 默认即采集后，"忘记传"不再是一种可能的错误。
-  const activeFiles = opts?.activeFiles ?? collectActiveScopeFiles(projectRoot, startDir);
-  if (!opts?.activeFiles) {
-    log.debug(
-      "RULES",
-      `自动采集作用域活动文件 ${activeFiles.length} 个（projectRoot=${projectRoot}）`,
-    );
-  }
+  //
+  // X1（PR-D）：惰性。采集是一次同步 `git status -uall`（本仓实测 40–80ms，随工作区文件数增长），
+  // 而它**只**被带非空 `paths:` 的规则用到（rulesPathsMatch 对空 paths 直接返回 true）。
+  // 绝大多数会话没有这类规则，原先每次 loadAllCLAUDEmd 都白跑一遍、挡在首帧前（启动两次 ≈ 88ms）。
+  let activeFilesCache: string[] | undefined = opts?.activeFiles;
+  const getActiveFiles = (): string[] => {
+    if (activeFilesCache === undefined) {
+      activeFilesCache = collectActiveScopeFiles(projectRoot, startDir);
+      log.debug(
+        "RULES",
+        `自动采集作用域活动文件 ${activeFilesCache.length} 个（projectRoot=${projectRoot}）`,
+      );
+    }
+    return activeFilesCache;
+  };
 
   // 第 7 批：`paths:` glob 基准目录按层分层，对齐 CC（`claudemd.ts:1376-1380`）——
   // Project 层用 `projectRoot`（本函数已如此实现，无需改动）；
@@ -1068,7 +1076,7 @@ export async function loadAllCLAUDEmd(
     if (cachedOriginalCwdActiveFiles === undefined) {
       cachedOriginalCwdActiveFiles =
         opts?.activeFiles !== undefined || originalCwd === projectRoot
-          ? activeFiles
+          ? getActiveFiles()
           : collectActiveScopeFiles(originalCwd, originalCwd);
     }
     return cachedOriginalCwdActiveFiles;
@@ -1091,7 +1099,12 @@ export async function loadAllCLAUDEmd(
   const keepInScope = (rules: ProjectRules): boolean => {
     const needsOriginalCwdBasis =
       rules.paths && rules.paths.length > 0 && ORIGINAL_CWD_BASIS_LAYERS.has(rules.layer);
-    const basis = needsOriginalCwdBasis ? getOriginalCwdActiveFiles() : activeFiles;
+    // 无 paths 的规则恒在作用域内：直接放行，不触发采集（X1 惰性的关键）
+    if (!rules.paths || rules.paths.length === 0) {
+      loadedPaths.push(rules.sourcePath);
+      return true;
+    }
+    const basis = needsOriginalCwdBasis ? getOriginalCwdActiveFiles() : getActiveFiles();
     // Project 侧（父链 CLAUDE.md / rules 目录 / local）的 glob 基准沿规则所在目录到项目根逐级尝试，
     // 与 JIT（jit-context.ts loadOne）同一个函数，保证同一份规则在两条路径上的判定一致。
     // managed / user 三层不属于任何项目，仍只按 originalCwd 一级判定。

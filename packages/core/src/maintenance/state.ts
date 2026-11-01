@@ -13,7 +13,12 @@ import { dirname } from "node:path";
 import { sidPaths } from "../config/paths.ts";
 
 /** 维护任务闭集。新增任务要同时给出间隔（{@link TASK_INTERVAL_MS}） */
-export type MaintenanceTask = "session-cleanup" | "trace-prune" | "housekeeping";
+export type MaintenanceTask =
+  | "session-cleanup"
+  | "trace-prune"
+  | "housekeeping"
+  | "trace-upload"
+  | "worktree-gc";
 
 /**
  * 各任务的最小间隔。housekeeping 不在这里：它沿用自己既有的 `.last-cleanup` 水位线
@@ -22,6 +27,12 @@ export type MaintenanceTask = "session-cleanup" | "trace-prune" | "housekeeping"
 export const TASK_INTERVAL_MS: Record<Exclude<MaintenanceTask, "housekeeping">, number> = {
   "session-cleanup": 24 * 60 * 60 * 1000,
   "trace-prune": 24 * 60 * 60 * 1000,
+  // U1–U4（PR-C）：补传 + 重试队列。单个会话的失败另有跨进程退避（trace/upload-attempts.ts），
+  // 这里只限「多久扫一次」。1h 而不是 24h：补传是轨迹上云唯一真正生效的自动路径（0/52 事故）。
+  "trace-upload": 60 * 60 * 1000,
+  // X1（PR-D）：过期临时 worktree 清理。判据是 30 天未活动，一天扫一次足够；
+  // 原先每次启动都在 TUI 进程里同步 `git worktree prune`（本仓实测 30–80ms）。
+  "worktree-gc": 24 * 60 * 60 * 1000,
 };
 
 interface WatermarkFile {
@@ -137,6 +148,8 @@ export interface MaintenanceResult {
   /** 子进程自身的内存峰值（字节，来自 process.resourceUsage().maxRSS） */
   peakRssBytes?: number;
   tasks: Partial<Record<MaintenanceTask, MaintenanceTaskResult>>;
+  /** 补传结果摘要（formatBackfillResult / formatQueueResult 同口径，排查用） */
+  traceUpload?: { backfill: string; queue: string; newlyFailedTerminal: number };
   /** 会话清理删除数（> 0 时下次启动要提示用户，Claude Code#64999「删用户数据必须让人看见」） */
   sessionCleanup?: { deleted: number; maxAge?: string };
 }

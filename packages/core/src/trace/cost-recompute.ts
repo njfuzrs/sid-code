@@ -16,10 +16,19 @@
  * 补偿（总比 cost=0 准）。重算值会标注 source="events-recompute" 以便消费者区分于权威值。
  */
 
-import { existsSync, readFileSync } from "node:fs";
+import {
+  closeSync,
+  existsSync,
+  openSync,
+  readFileSync,
+  readSync,
+  statSync,
+  writeFileSync,
+} from "node:fs";
 import { calculateUSDCost, type PricingModelEntry } from "../api/cost-tracker.ts";
 import type { Usage } from "../llm/types.ts";
 import { getLogger } from "../debug/logger.ts";
+import { preservingDirMtime } from "./upload-attempts.ts";
 
 /** 单条 AfterModelRaw 重算结果 */
 
@@ -71,6 +80,73 @@ export interface RecomputedCost {
  * @param availableModels 用户配置的模型列表（携带权威 pricing/provider），可选
  * @returns 重算结果；events.jsonl 不存在 / 无 AfterModelRaw 时返回 null
  */
+/** 每次 readSync 的块大小 */
+const READ_CHUNK_BYTES = 1024 * 1024;
+/**
+ * 超过这个长度的行只在**行首**含 `"AfterModelRaw"` 时才保留。AfterModelRaw 行只有 usage 等
+ * 小字段（实测 < 2KB），且 `event` 是对象首个键（writer.appendEvent 直接 JSON.stringify 事件对象），
+ * 所以巨型行（被内联进消息的二进制，10-22 那条 178MB）必然不是它，可以不进内存、不 parse。
+ */
+const LARGE_LINE_BYTES = 1024 * 1024;
+const PREFIX_PROBE_BYTES = 4096;
+const AFTER_MODEL_RAW_NEEDLE = Buffer.from('"AfterModelRaw"');
+
+/**
+ * 逐行产出 events.jsonl 里**可能是** AfterModelRaw 的行（预筛；判定仍以 parse 后的 evt.event 为准）。
+ * 内存上界 ≈ max(块大小, LARGE_LINE_BYTES)，不随文件或单行大小增长。
+ */
+export function* iterateAfterModelRawLines(eventsPath: string): Generator<string> {
+  const fd = openSync(eventsPath, "r");
+  try {
+    const buf = Buffer.allocUnsafe(READ_CHUNK_BYTES);
+    let parts: Buffer[] = [];
+    let partsLen = 0;
+    /** 本行已判定为巨型且非目标：后续字节直接丢 */
+    let skipping = false;
+    const takeLine = (): string | null => {
+      if (skipping || partsLen === 0) return null;
+      const line = Buffer.concat(parts, partsLen);
+      return line.includes(AFTER_MODEL_RAW_NEEDLE) ? line.toString("utf-8") : null;
+    };
+    const resetLine = () => {
+      parts = [];
+      partsLen = 0;
+      skipping = false;
+    };
+    for (;;) {
+      const n = readSync(fd, buf, 0, READ_CHUNK_BYTES, null);
+      if (n <= 0) break;
+      let start = 0;
+      while (start <= n) {
+        const nlRaw = buf.indexOf(10, start);
+        const nl = nlRaw >= 0 && nlRaw < n ? nlRaw : -1;
+        const end = nl < 0 ? n : nl;
+        if (!skipping && end > start) {
+          parts.push(Buffer.from(buf.subarray(start, end)));
+          partsLen += end - start;
+          if (partsLen > LARGE_LINE_BYTES) {
+            const head = Buffer.concat(parts, partsLen).subarray(0, PREFIX_PROBE_BYTES);
+            if (!head.includes(AFTER_MODEL_RAW_NEEDLE)) {
+              skipping = true;
+              parts = [];
+              partsLen = 0;
+            }
+          }
+        }
+        if (nl < 0) break;
+        const line = takeLine();
+        resetLine();
+        if (line !== null && line.trim()) yield line;
+        start = nl + 1;
+      }
+    }
+    const last = takeLine();
+    if (last !== null && last.trim()) yield last;
+  } finally {
+    closeSync(fd);
+  }
+}
+
 export function recomputeCostFromEvents(
   sessionDir: string,
   availableModels?: PricingModelEntry[],
@@ -78,15 +154,9 @@ export function recomputeCostFromEvents(
   const eventsPath = `${sessionDir}/events.jsonl`;
   if (!existsSync(eventsPath)) return null;
 
-  let raw: string;
-  try {
-    raw = readFileSync(eventsPath, "utf-8");
-  } catch {
-    return null;
-  }
-
-  const lines = raw.trim().split("\n").filter(Boolean);
-  if (lines.length === 0) return null;
+  // U2：按块读、按行切，内存只随最长一行增长。旧实现 readFileSync 整份 + split，
+  // 10-22 那份 events.jsonl 有一条 178MB 的单行，光 parse 它就 338ms。
+  const lines = iterateAfterModelRawLines(eventsPath);
 
   const calls: RecomputedCall[] = [];
   const modelCounts = new Map<string, number>();
@@ -97,61 +167,67 @@ export function recomputeCostFromEvents(
   let totalCacheCreationTokens = 0;
   let lastInputTokens = 0;
 
-  for (const line of lines) {
-    let evt: any;
-    try {
-      evt = JSON.parse(line);
-    } catch {
-      continue; // 损坏行跳过
+  try {
+    for (const line of lines) {
+      let evt: any;
+      try {
+        evt = JSON.parse(line);
+      } catch {
+        continue; // 损坏行跳过
+      }
+      if (!evt || evt.event !== "AfterModelRaw") continue;
+
+      const data = evt.data ?? {};
+      const u = data.usage ?? {};
+      const model = data.model ?? "";
+      const inputTokens = Number(u.input_tokens ?? 0) || 0;
+      const outputTokens = Number(u.output_tokens ?? 0) || 0;
+      // cache_read / cache_creation：兼容两种键名（AfterModelRaw 用短名，历史/raw 用长名）。
+      // cache_creation 自 2026-07 补落；补落前的历史会话该字段缺失 → 取 0（重算仍偏低，best-effort）。
+      const cacheReadTokens = Number(u.cache_read ?? u.cache_read_input_tokens ?? 0) || 0;
+      const cacheCreationTokens =
+        Number(u.cache_creation ?? u.cache_creation_input_tokens ?? 0) || 0;
+      // provider / base_url：AfterModelRaw 已落盘（provider 自 T12.4、base_url 自本次改造）。
+      // provider 影响 normalizeCacheUsage 三段拆分；base_url 使 (model, endpoint) 复合键精确匹配
+      // （修正同名不同渠道重算错价）。历史会话缺这两字段 → undefined，退回 model-only（best-effort）。
+      const provider = typeof data.provider === "string" ? data.provider : undefined;
+      const baseURL = typeof data.base_url === "string" ? data.base_url : undefined;
+
+      // 重算单次 cost：用 cost-tracker 的独立函数（不依赖 SessionState 实例），
+      // 与主循环 / SessionState.calculateCost 同口径（都走 normalizeCacheUsage + resolvePricing）。
+      const usage: Usage = {
+        inputTokens,
+        outputTokens,
+        cacheReadInputTokens: cacheReadTokens,
+        cacheCreationInputTokens: cacheCreationTokens,
+      };
+      // 缺陷 36：按**请求发生那一刻**取价（分时段定价）。缺省"现在"会让空闲时段的历史请求
+      // 在白天重算出高峰价（差 2 倍），而 backfillTrajCost 会把这个错数写回 traj。
+      // 时刻是事件顶层的 `timestamp`（ISO 串，collector.ts 的 AfterModelRaw 落盘）；
+      // 缺失或无法解析时退回"现在"（与旧行为一致，best-effort）。
+      const at = parseEventTime(evt.timestamp);
+      const costUSD = calculateUSDCost(model, usage, availableModels, provider, baseURL, at);
+
+      calls.push({
+        index: Number(data.index ?? calls.length + 1),
+        model,
+        inputTokens,
+        outputTokens,
+        cacheReadTokens,
+        cacheCreationTokens,
+        costUSD,
+      });
+      totalCostUSD += costUSD;
+      cumulativeInputTokens += inputTokens;
+      totalOutputTokens += outputTokens;
+      totalCacheReadTokens += cacheReadTokens;
+      totalCacheCreationTokens += cacheCreationTokens;
+      lastInputTokens = inputTokens; // 末次覆盖（stock）
+      if (model) modelCounts.set(model, (modelCounts.get(model) ?? 0) + 1);
     }
-    if (!evt || evt.event !== "AfterModelRaw") continue;
-
-    const data = evt.data ?? {};
-    const u = data.usage ?? {};
-    const model = data.model ?? "";
-    const inputTokens = Number(u.input_tokens ?? 0) || 0;
-    const outputTokens = Number(u.output_tokens ?? 0) || 0;
-    // cache_read / cache_creation：兼容两种键名（AfterModelRaw 用短名，历史/raw 用长名）。
-    // cache_creation 自 2026-07 补落；补落前的历史会话该字段缺失 → 取 0（重算仍偏低，best-effort）。
-    const cacheReadTokens = Number(u.cache_read ?? u.cache_read_input_tokens ?? 0) || 0;
-    const cacheCreationTokens = Number(u.cache_creation ?? u.cache_creation_input_tokens ?? 0) || 0;
-    // provider / base_url：AfterModelRaw 已落盘（provider 自 T12.4、base_url 自本次改造）。
-    // provider 影响 normalizeCacheUsage 三段拆分；base_url 使 (model, endpoint) 复合键精确匹配
-    // （修正同名不同渠道重算错价）。历史会话缺这两字段 → undefined，退回 model-only（best-effort）。
-    const provider = typeof data.provider === "string" ? data.provider : undefined;
-    const baseURL = typeof data.base_url === "string" ? data.base_url : undefined;
-
-    // 重算单次 cost：用 cost-tracker 的独立函数（不依赖 SessionState 实例），
-    // 与主循环 / SessionState.calculateCost 同口径（都走 normalizeCacheUsage + resolvePricing）。
-    const usage: Usage = {
-      inputTokens,
-      outputTokens,
-      cacheReadInputTokens: cacheReadTokens,
-      cacheCreationInputTokens: cacheCreationTokens,
-    };
-    // 缺陷 36：按**请求发生那一刻**取价（分时段定价）。缺省"现在"会让空闲时段的历史请求
-    // 在白天重算出高峰价（差 2 倍），而 backfillTrajCost 会把这个错数写回 traj。
-    // 时刻是事件顶层的 `timestamp`（ISO 串，collector.ts 的 AfterModelRaw 落盘）；
-    // 缺失或无法解析时退回"现在"（与旧行为一致，best-effort）。
-    const at = parseEventTime(evt.timestamp);
-    const costUSD = calculateUSDCost(model, usage, availableModels, provider, baseURL, at);
-
-    calls.push({
-      index: Number(data.index ?? calls.length + 1),
-      model,
-      inputTokens,
-      outputTokens,
-      cacheReadTokens,
-      cacheCreationTokens,
-      costUSD,
-    });
-    totalCostUSD += costUSD;
-    cumulativeInputTokens += inputTokens;
-    totalOutputTokens += outputTokens;
-    totalCacheReadTokens += cacheReadTokens;
-    totalCacheCreationTokens += cacheCreationTokens;
-    lastInputTokens = inputTokens; // 末次覆盖（stock）
-    if (model) modelCounts.set(model, (modelCounts.get(model) ?? 0) + 1);
+  } catch {
+    // 生成器在首次 next() 才 open/read：读失败在这里兜住，保持「读不了返回 null」的旧语义
+    return null;
   }
 
   if (calls.length === 0) return null;
@@ -244,6 +320,77 @@ export interface BackfillResult {
  * @returns 补写结果
  */
 export function backfillTrajCost(
+  sessionDir: string,
+  availableModels?: PricingModelEntry[],
+  opts?: { deviationThreshold?: number },
+): BackfillResult {
+  // U2：去重判据移出 traj 本体。旧判据 `metadata.cost_recomputed_from_events` 在 traj 里，
+  // 不 parse 全文（10-22 那份 357MB 字符串，698ms）就判断不了要不要做。sidecar 只要一次 stat。
+  const fp = eventsFingerprint(sessionDir);
+  if (fp && sidecarMatches(sessionDir, fp)) {
+    // 没读 traj → 不给损坏结论（undefined，不是 false），口径同下面「无可重算事件」
+    return { backfilled: false, reason: "已检查过（sidecar 幂等跳过）" };
+  }
+  const result = backfillTrajCostInner(sessionDir, availableModels, opts);
+  // 只在「判定已经完整做完」时落 sidecar：写回失败 / 重建失败要留给下次再试
+  if (fp && !/失败/.test(result.reason)) {
+    // 情形 A 会新建 traj，而 Bun.write 是异步的（下面三处都没 await），此刻 existsSync 还可能是
+    // false——按「写完之后」的状态记，否则下次会因 trajExists 翻转再重判一遍
+    writeSidecar(sessionDir, { ...fp, trajExists: fp.trajExists || result.backfilled });
+  }
+  return result;
+}
+
+/** cost 重算 sidecar 标记文件名（在会话目录内） */
+export const COST_RECOMPUTED_SIDECAR = ".cost-recomputed";
+
+interface EventsFingerprint {
+  eventsSize: number;
+  eventsMtimeMs: number;
+  trajExists: boolean;
+}
+
+function eventsFingerprint(sessionDir: string): EventsFingerprint | null {
+  try {
+    const st = statSync(`${sessionDir}/events.jsonl`);
+    return {
+      eventsSize: st.size,
+      eventsMtimeMs: st.mtimeMs,
+      // traj 被删（或首次出现）也要重判：情形 A 补写依赖它
+      trajExists: existsSync(`${sessionDir}/session.traj`),
+    };
+  } catch {
+    return null;
+  }
+}
+
+function sidecarMatches(sessionDir: string, fp: EventsFingerprint): boolean {
+  try {
+    const p = `${sessionDir}/${COST_RECOMPUTED_SIDECAR}`;
+    if (!existsSync(p)) return false;
+    const m = JSON.parse(readFileSync(p, "utf-8")) as Partial<EventsFingerprint>;
+    return (
+      m.eventsSize === fp.eventsSize &&
+      m.eventsMtimeMs === fp.eventsMtimeMs &&
+      m.trajExists === fp.trajExists
+    );
+  } catch {
+    return false;
+  }
+}
+
+function writeSidecar(sessionDir: string, fp: EventsFingerprint): void {
+  try {
+    // 保持会话目录 mtime：sidecar 是旁路记账，不该改变淘汰 / 补传时间闸（见 preservingDirMtime）
+    preservingDirMtime(sessionDir, () =>
+      writeFileSync(`${sessionDir}/${COST_RECOMPUTED_SIDECAR}`, JSON.stringify(fp)),
+    );
+  } catch {
+    /* 写不了只意味着下次再判一遍 */
+  }
+}
+
+function backfillTrajCostInner(
   sessionDir: string,
   availableModels?: PricingModelEntry[],
   opts?: { deviationThreshold?: number },

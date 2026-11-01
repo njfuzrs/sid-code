@@ -42,6 +42,34 @@ export interface MaintenancePayload {
   maxSessionsRetained?: number;
   /** 测试用：忽略 housekeeping 自身的 24h 水位线 */
   forceHousekeeping?: boolean;
+  /**
+   * U1–U4（PR-C）：补传参数。父进程已经做完「配没配上传 / 隐私级别 / auto_upload」的判定，
+   * 只有真要自动补传时才带这一段（tasks 里同时有 "trace-upload"）。
+   * token 走 argv：与父进程同一用户、子进程 detached 且 stdio ignore；argv 对同机同用户
+   * 本就可见（ps），而 settings.json 里的同一个 token 对同一用户也是可读的，不扩大暴露面。
+   */
+  upload?: MaintenanceUploadPayload;
+  /**
+   * X1（PR-D）：worktree GC 参数。W2 约束：skipPath 必须是**归属复核之后**的结论，
+   * 所以由 cli 在复核完成后（startBackgroundMaintenance 调用点）填入，子进程不自己推断。
+   */
+  worktreeGc?: { gitRoot: string; skipPath?: string };
+}
+
+export interface MaintenanceUploadPayload {
+  baseUrl: string;
+  token: string;
+  toolSource?: string;
+  userId?: string;
+  deviceId?: string;
+  maxRetries?: number;
+  retryBaseMs?: number;
+  compress?: boolean;
+  deleteAfterUpload?: boolean;
+  maxQueueRetries?: number;
+  redactHomeDir?: boolean;
+  /** 只带定价需要的字段，不带 api_key（PricingModelEntry 的子集） */
+  availableModels?: import("../api/cost-tracker.ts").PricingModelEntry[];
 }
 
 export function parseMaintenancePayload(raw: string | undefined): MaintenancePayload | null {
@@ -134,6 +162,38 @@ export async function runMaintenance(
         ),
       );
       pruneStaleBlankTraceSessions(payload.traceOutputDir);
+    });
+
+    // U1–U4（PR-C）：补传 + 持久化重试队列。原在 collector 的 SessionStart 里 fire-and-forget，
+    // 445MB traj 在 TUI 主线程 gzipSync 3s × 最多 5 次、上传期间事件循环卡 54s。
+    // 子进程可以活过 TUI 退出，补传因此能跑完，不再「一退就中断、下次从头」。
+    await run("trace-upload", async () => {
+      const up = payload.upload;
+      if (!up) return;
+      const { UploadManager } = await import("../trace/uploader.ts");
+      const { formatBackfillResult } = await import("../trace/backfill.ts");
+      const mgr = new UploadManager({ ...up, outputDir: payload.traceOutputDir });
+      const q = await mgr.processRetryQueue();
+      const b = await mgr.backfillPendingSessions({
+        currentSessionId: payload.selfSessionId,
+        protectedSessionIds: payload.protectedSessionIds,
+      });
+      result.traceUpload = {
+        backfill: formatBackfillResult(b),
+        queue: UploadManager.formatQueueResult(q),
+        newlyFailedTerminal: b.newlyFailedTerminal,
+      };
+      getLogger().info("MAINTENANCE", `补传：${result.traceUpload.backfill}`);
+    });
+
+    // X1（PR-D）：过期临时 worktree 清理，原在 TUI 进程里 fire-and-forget，
+    // 但内部是逐个 worktree 的同步 git 调用 + `git worktree prune`，挡在首帧前。
+    await run("worktree-gc", async () => {
+      const wt = payload.worktreeGc;
+      if (!wt) return;
+      const { cleanupStaleWorktrees } = await import("../worktree/cleanup.ts");
+      const n = await cleanupStaleWorktrees(wt.gitRoot, 30, wt.skipPath);
+      if (n > 0) getLogger().info("MAINTENANCE", `worktree GC：删除 ${n} 个过期临时 worktree`);
     });
 
     // H1：管家里随数据量增长的清理（自带 .last-cleanup 24h 水位线）

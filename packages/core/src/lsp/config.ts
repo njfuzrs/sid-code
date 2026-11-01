@@ -132,13 +132,16 @@ async function mergeConfigFile(
   }
 }
 
-/** 检查命令是否可用 */
+/**
+ * 检查命令是否可用。
+ *
+ * X1（PR-D）：用 `Bun.which()` 做纯 PATH 查找，不 fork 进程。旧实现 `execSync("which x")`
+ * 每次 ~6ms 的**同步**子进程，启动时探测 10 个内置 language server 合计 ~60ms 挡在首帧前
+ * （外层的 Promise.all 并行不了同步调用）。顺带去掉了把 cmd 拼进 shell 字符串的注入面。
+ */
 export async function isCommandAvailable(cmd: string): Promise<boolean> {
   try {
-    const { execSync } = await import("child_process");
-    const which = process.platform === "win32" ? "where" : "which";
-    execSync(`${which} ${cmd}`, { stdio: "pipe", timeout: 5000 });
-    return true;
+    return Bun.which(cmd) !== null;
   } catch {
     return false;
   }

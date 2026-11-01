@@ -100,19 +100,6 @@ export interface TraceUploaderInterface {
   ): Promise<{ allConfirmed: boolean }>;
   /** 获取上传平台基础 URL（/debug 显示用，可选实现） */
   getBaseUrl?(): string;
-  /**
-   * 启动补传：扫描缺 `.uploaded` 标记的历史会话并补传（可选实现）。
-   * 由 collector 在 SessionStart 末尾 fire-and-forget 触发 —— 只有那里才有
-   * resume 感知的权威 trace session id 可以传给 `currentSessionId`。
-   *
-   * 返回类型写全 `BackfillResult`，不是只列前三个字段：调用方要读
-   * `failed` / `errors` / `deferred` 判「传了但没传上去」（见下方积压告警），
-   * 声明成子集会把这些字段从类型里抹掉，而运行时它们一直都在。
-   */
-  backfillPendingSessions?(opts: {
-    currentSessionId?: string;
-    signal?: AbortSignal;
-  }): Promise<import("./backfill.ts").BackfillResult>;
   /** 停止周期性队列扫描（可选实现，退出时清理定时器） */
   stopQueueScan?(): void;
 }
@@ -940,53 +927,12 @@ export class TraceCollector {
       /* 静默：索引是辅助功能 */
     }
 
-    // ── P0 最后一道防线：启动补传缺 `.uploaded` 标记的历史会话 ──
+    // ── P0 最后一道防线（启动补传）已迁入维护子进程（PR-C，maintenance/runner.ts 的 trace-upload）──
     //
-    // 为什么补传必须存在（2026-09-16 实测 52 个本机会话）：
-    //   - 上传成功 0/52，`.uploaded` 标记 0/52；
-    //   - `events.jsonl` 里有 SessionEnd 的只有 13/52，且**全是 reason=error**（崩溃兜底）；
-    //   - `messages.json`（handleSessionEnd 在上传**之前**写）0/52 —— 连上传前的落盘都没到；
-    //   - `heartbeat.txt`（SessionEnd 末尾会删）残留 52/52 —— 独立佐证收尾从未完成。
-    // 也就是说「退出时上传」这条唯一自动路径，在日常交互里**基本不执行**。
-    // 补传只依赖磁盘现状（目录在、traj 在、标记缺），与退出路径是否跑到完全解耦。
-    //
-    // 这里是唯一正确的触发点：`traceSessionId` 已做过 resume 归一（isResume 时等于
-    // `resumed_from`，即真实轨迹目录名）。用进程 id 当护栏会空转 —— 见 init-helpers 注释。
-    //
-    // fire-and-forget + 全量 catch：采集永不阻塞主循环（不变量 1）。
-    if (this.autoUpload && this.uploader?.backfillPendingSessions) {
-      void this.uploader
-        .backfillPendingSessions({ currentSessionId: traceSessionId })
-        .then((r) => {
-          if (!r || r.pending === 0) return;
-          getLogger().info(
-            "TRACE",
-            `启动补传：待补传 ${r.pending}，本轮尝试 ${r.attempted}，成功 ${r.uploaded}`,
-          );
-          // 积压偏多时升级为 WARN。
-          //
-          // ⚠️ 判据是**补传后仍未成功的数量**，不是补传前的待传数 —— 后者在正常恢复
-          // 期（比如这次修复上线后第一次启动，盘上躺着 51 个历史会话）也会很大，
-          // 拿它告警等于在"系统正在自愈"时刷红，几次之后就没人看了。
-          // 真正值得报的是「传了但没传上去」：那才说明通道有问题。
-          //
-          // 这条告警存在的理由：上一次事故里告警系统**已经看见了**症状，却把它判成
-          // 无害 —— warn.log 里写着「发现 51 个未正常收尾的历史会话（…非 hang）」。
-          // 「非 hang」是对的，但它同时也是「51 个会话没上传」，那句话把唯一的线索
-          // 标成了背景噪音。所以这里必须说出"没上云"这个后果，而不只是描述现象。
-          const stuck = r.failed + r.errors + r.deferred;
-          if (stuck > 10) {
-            getLogger().warn(
-              "TRACE",
-              `有 ${stuck} 个会话的轨迹仍未上云（失败 ${r.failed}、异常 ${r.errors}、` +
-                `顺延 ${r.deferred}）。数据仍在本地，可运行 sid-code --upload-traces 立即补传。`,
-            );
-          }
-        })
-        .catch((err) => {
-          getLogger().warn("TRACE", `启动补传失败（不影响会话）: ${err}`);
-        });
-    }
+    // 补传本身仍是唯一真正生效的自动上传路径（2026-09-16 实测退出时上传 0/52），所以它没删，
+    // 只是不再在 TUI 进程里跑：445MB traj 在这里 gzipSync 3s × 最多 5 次、上传期间事件循环卡 54s。
+    // 「别碰当前会话」的护栏改由 cli.ts 拉起子进程时传入：本进程会话 id + 被恢复的会话 id
+    // （resume 时轨迹目录名 = resumed_from = 被恢复的会话 id，与这里的 traceSessionId 同一个值）。
   }
 
   /**

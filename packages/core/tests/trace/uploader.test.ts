@@ -14,6 +14,13 @@ import { join } from "node:path";
 import { mkdirSync, rmSync, existsSync, readFileSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 
+/** U3：上传体改为流式 multipart（不再是 FormData 对象），断言前先解析回 FormData */
+async function parseUploadBody(init: any): Promise<FormData> {
+  return new Response(init.body, {
+    headers: { "content-type": init.headers["Content-Type"] },
+  }).formData();
+}
+
 // ─── 辅助：创建临时目录 ───
 
 function makeTmpDir(prefix: string): string {
@@ -278,7 +285,7 @@ describe("UploadManager", () => {
 
     const origFetch = globalThis.fetch;
     globalThis.fetch = (async (_url: string, init?: RequestInit) => {
-      captured.formData = init?.body as FormData;
+      captured.formData = await parseUploadBody(init);
       return new Response(JSON.stringify({ status: "saved" }), { status: 200 });
     }) as any;
 
@@ -811,7 +818,7 @@ describe("UploadManager", () => {
     let capturedFileType: string | null = null;
     const origFetch = globalThis.fetch;
     globalThis.fetch = (async (_url: string, init?: RequestInit) => {
-      capturedFileType = (init?.body as FormData)?.get("file_type") as string | null;
+      capturedFileType = (await parseUploadBody(init)).get("file_type") as string | null;
       return new Response(JSON.stringify({ status: "saved" }), { status: 200 });
     }) as any;
 

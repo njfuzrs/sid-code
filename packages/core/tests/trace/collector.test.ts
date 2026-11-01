@@ -1693,29 +1693,11 @@ describe("TraceCollector", () => {
         calls.upload++;
         return { allConfirmed: true };
       },
+      // PR-C：启动补传已迁入维护子进程，collector 不再调它。mock 仍挂着这个方法，
+      // 用来断言「collector 一次都没调」——有人把补传搬回 TUI 进程时这里会变红。
       backfillPendingSessions: async () => {
         calls.backfill++;
-        // 返回类型是 backfill.ts 的 BackfillResult（ScanStats + 本轮统计），
-        // 字段必须逐一对齐：缺一格这个 mock 就不再兼容 TraceUploaderInterface。
-        return {
-          scanned: 0,
-          alreadyUploaded: 0,
-          noTraj: 0,
-          emptyTraj: 0,
-          tooNew: 0,
-          live: 0,
-          ghost: 0,
-          beforeWatermark: 0,
-          privacyRestricted: 0,
-          errored: 0,
-          pending: 0,
-          attempted: 0,
-          uploaded: 0,
-          failed: 0,
-          errors: 0,
-          deferred: 0,
-          aborted: false,
-        };
+        return {} as never;
       },
     };
     const c = new TraceCollector({ outputDir: testDir, autoUpload }, mockUploader);
@@ -1740,10 +1722,10 @@ describe("TraceCollector", () => {
     expect(calls.backfill).toBe(0);
   });
 
-  test("autoUpload 未设置（默认 true）：两条自动路径都照常触发", async () => {
+  test("autoUpload 未设置（默认 true）：SessionEnd 照常上传；启动补传不在 collector 里跑（PR-C 迁入维护子进程）", async () => {
     const calls = await runSessionWithUploader(undefined);
     expect(calls.upload).toBe(1);
-    expect(calls.backfill).toBe(1);
+    expect(calls.backfill).toBe(0);
   });
 
   // ─── Harness 数据消费 ───
