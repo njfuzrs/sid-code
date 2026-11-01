@@ -13,11 +13,50 @@ import type {
   Tool,
   LegacyTool,
   LegacyToolResult,
+  ToolCapabilityFields,
   ToolProgressData,
   ToolDescriptionContext,
   ToolUseContext,
   PermissionResult,
 } from "./types.ts";
+
+/** 形态在两个接口上完全一致、可以原样透传的字段 */
+type ForwardedKey = keyof ToolCapabilityFields | "isDestructive";
+
+/**
+ * 透传字段的唯一事实源。类型是 `Record<ForwardedKey, true>`：
+ * - `ToolCapabilityFields` 新增一个键而这里没加 → tsc 报「缺少属性」；
+ * - 这里写了一个接口上不存在的键 → tsc 报「对象字面量只能指定已知属性」。
+ *
+ * 为什么不是逐行 `if (tool.x) legacy.x = tool.x`：那种写法漏了 `isDestructive` 和 5 个
+ * 能力字段（exemptFromLoopDetection / needsPermissionChecker / strictPriority /
+ * jitAffectedPaths / resultDisplayMode），而文件头注释还写着「全部透传」。其中
+ * `isDestructive` 漏传会让 checker Step 13.5 的安全类确认对新接口工具静默失效
+ * （yesMode / auto 分类器下直接放行）。
+ *
+ * 为什么不是 `...tool` 整体展开：Tool 上有 `name`（字符串，LegacyTool 是方法）、`call`、
+ * `isReadOnly`、`serializeResult` 等形态不同或 Legacy 侧没有的成员，展开会把它们原样
+ * 带过去，而方法的 `this` 也要逐个处理。用键表等于「只展开确认过语义的那部分」。
+ */
+const FORWARDED_KEYS: Record<ForwardedKey, true> = {
+  zodSchema: true,
+  searchHint: true,
+  shouldDefer: true,
+  alwaysLoad: true,
+  interruptBehavior: true,
+  maxResultSizeChars: true,
+  toAutoClassifierInput: true,
+  backfillObservableInput: true,
+  exemptFromLoopDetection: true,
+  needsPermissionChecker: true,
+  strictPriority: true,
+  jitAffectedPaths: true,
+  resultDisplayMode: true,
+  isDestructive: true,
+};
+
+/** 测试与审计用：bridge 透传的全部键 */
+export const BRIDGE_FORWARDED_KEYS = Object.keys(FORWARDED_KEYS) as ForwardedKey[];
 
 /**
  * 将新版 Tool<Input, Output> 适配为 LegacyTool，可直接 registry.register()。
@@ -30,7 +69,8 @@ import type {
  * - isReadOnly(input) → readOnly()（无参回退 isReadOnly()）
  * - isConcurrencySafe(input) → isConcurrencySafe(input)（透传）
  * - checkPermissions → checkPermissions（透传）
- * - ToolCapabilityFields 全部透传（zodSchema/searchHint/shouldDefer/interruptBehavior/...）
+ * - ToolCapabilityFields 与 isDestructive：按 FORWARDED_KEYS 全部透传（编译期穷举，
+ *   方法绑定到原 tool，保证 `this` 指向不变）
  */
 export function toLegacyTool<Input = unknown, Output = string>(
   tool: Tool<Input, Output>,
@@ -92,17 +132,14 @@ export function toLegacyTool<Input = unknown, Output = string>(
     },
   };
 
-  // 透传 ToolCapabilityFields
-  if (tool.zodSchema) legacy.zodSchema = tool.zodSchema;
-  if (tool.searchHint) legacy.searchHint = tool.searchHint;
-  if (tool.shouldDefer) legacy.shouldDefer = tool.shouldDefer;
-  if (tool.alwaysLoad) legacy.alwaysLoad = tool.alwaysLoad;
-  if (tool.interruptBehavior) legacy.interruptBehavior = tool.interruptBehavior;
-  if (tool.maxResultSizeChars !== undefined) legacy.maxResultSizeChars = tool.maxResultSizeChars;
-  if (tool.toAutoClassifierInput)
-    legacy.toAutoClassifierInput = tool.toAutoClassifierInput.bind(tool);
-  if (tool.backfillObservableInput)
-    legacy.backfillObservableInput = tool.backfillObservableInput.bind(tool);
+  // 透传 ToolCapabilityFields + isDestructive（键表见 FORWARDED_KEYS）。
+  // 判 undefined 而非真值：`shouldDefer: false` / `strictPriority: 0` 也是有意义的声明。
+  const target = legacy as unknown as Record<ForwardedKey, unknown>;
+  for (const key of BRIDGE_FORWARDED_KEYS) {
+    const value: unknown = tool[key];
+    if (value === undefined) continue;
+    target[key] = typeof value === "function" ? value.bind(tool) : value;
+  }
 
   // 权限检查透传
   if (tool.checkPermissions) {
