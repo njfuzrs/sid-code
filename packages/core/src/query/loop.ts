@@ -159,7 +159,8 @@ import {
   createTodoReworkState,
   recordTodoWrite,
   recordFileEditForRework,
-  drainTodoReworkReminder,
+  drainTodoRework,
+  reworkEventData,
   type TodoReworkState,
 } from "./todo-rework.ts";
 import {
@@ -1903,9 +1904,9 @@ export async function* queryLoop(loopConfig: QueryLoopConfig): AsyncGenerator<Qu
       // 「标了 completed 又返工」提醒（todo-rework.ts）：上一轮工具执行时登记、这里消费。
       // 走 reminder 通道而不是写进 tool_result——命中在执行完之后才判定，且不该污染工具输出。
       {
-        const reworkReminder = drainTodoReworkReminder(getTodoReworkState(sessionState));
-        if (reworkReminder) {
-          reminderParts.push(reworkReminder);
+        const rework = drainTodoRework(getTodoReworkState(sessionState));
+        if (rework) {
+          reminderParts.push(rework.reminder);
           // 返工提醒与 completed 下降同属「振荡」，并入同一个计数（发现 2b，供 D2 升级阶梯消费）
           const gateBudget = sessionState.get(TODO_GATE_BUDGET_KEY) as TodoGateBudget | undefined;
           if (gateBudget) {
@@ -1921,7 +1922,11 @@ export async function* queryLoop(loopConfig: QueryLoopConfig): AsyncGenerator<Qu
                 event: "TodoReworkDetected",
                 session_id: sessionState.sessionId,
                 timestamp: new Date().toISOString(),
-                data: { ...turnMetrics(state, sessionState, promptSeq) },
+                // hits/hitCount：返工的是哪一项、哪个文件（T1，此前 drain 后被丢掉）
+                data: {
+                  ...turnMetrics(state, sessionState, promptSeq),
+                  ...reworkEventData(rework.hits),
+                },
               });
             } catch {
               /* trace 写入失败不阻断主循环 */
