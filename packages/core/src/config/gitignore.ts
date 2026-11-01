@@ -17,7 +17,6 @@
  * 项目级配置（同 claude-code），刻意不加入 gitignore，详见 cron/lock.ts 文件头注。
  */
 
-import { spawnSync } from "child_process";
 import { mkdirSync } from "fs";
 import { appendFile, readFile } from "fs/promises";
 import { homedir } from "os";
@@ -29,37 +28,46 @@ export function getGlobalGitignorePath(): string {
   return join(homedir(), ".config", "git", "ignore");
 }
 
-/** 当前目录是否在 git 仓库内（fail-open：出错视为否） */
-function dirIsInGitRepo(cwd: string): boolean {
+/**
+ * 异步跑一条 git 命令，返回 {code, stdout}。失败（没装 git / 超时）返回 code=-1。
+ *
+ * X1（PR-D）：原先是 spawnSync。启动时 ensureRuntimeFilesGitignored 对 6 个文件各做
+ * rev-parse + check-ignore，12 次同步 fork 合计 ~50ms，是首帧前最早的阻塞源（80ms 处）。
+ * 调用方本来就是 fire-and-forget（void），改成异步后不再占事件循环。
+ */
+async function runGit(args: string[], cwd: string): Promise<{ code: number; stdout: string }> {
   try {
-    const r = spawnSync("git", ["rev-parse", "--is-inside-work-tree"], {
-      cwd,
-      stdio: ["ignore", "pipe", "ignore"],
-      timeout: 3000,
-      encoding: "utf-8",
-    });
-    return r.status === 0 && r.stdout.trim() === "true";
+    const proc = Bun.spawn(["git", ...args], { cwd, stdout: "pipe", stderr: "ignore" });
+    const timer = setTimeout(() => proc.kill(), 3000);
+    const [stdout, code] = await Promise.all([new Response(proc.stdout).text(), proc.exited]);
+    clearTimeout(timer);
+    return { code, stdout };
   } catch {
-    return false;
+    return { code: -1, stdout: "" };
   }
+}
+
+/** 「cwd 是否在 git 仓库内」的进程内缓存：启动时 6 个文件共用同一个答案，不必各问一次 */
+const inRepoCache = new Map<string, Promise<boolean>>();
+
+/** 当前目录是否在 git 仓库内（fail-open：出错视为否） */
+function dirIsInGitRepo(cwd: string): Promise<boolean> {
+  let p = inRepoCache.get(cwd);
+  if (!p) {
+    p = runGit(["rev-parse", "--is-inside-work-tree"], cwd).then(
+      (r) => r.code === 0 && r.stdout.trim() === "true",
+    );
+    inRepoCache.set(cwd, p);
+  }
+  return p;
 }
 
 /**
  * 某路径是否已被现有 gitignore 规则覆盖（含全局 / 项目 / .git/info/exclude）。
  * `git check-ignore` 退出码：0=被忽略，1=未被忽略，128=非 git 仓库。
  */
-function isPathGitignored(testPath: string, cwd: string): boolean {
-  try {
-    const r = spawnSync("git", ["check-ignore", testPath], {
-      cwd,
-      stdio: ["ignore", "pipe", "ignore"],
-      timeout: 3000,
-      encoding: "utf-8",
-    });
-    return r.status === 0;
-  } catch {
-    return false;
-  }
+async function isPathGitignored(testPath: string, cwd: string): Promise<boolean> {
+  return (await runGit(["check-ignore", testPath], cwd)).code === 0;
 }
 
 /**
@@ -75,11 +83,11 @@ export async function addFileGlobRuleToGitignore(
 ): Promise<void> {
   const log = getLogger();
   try {
-    if (!dirIsInGitRepo(cwd)) return;
+    if (!(await dirIsInGitRepo(cwd))) return;
 
     // 目录规则（以 / 结尾）用一个示例文件来判重
     const testPath = filename.endsWith("/") ? `${filename}sample-file.txt` : filename;
-    if (isPathGitignored(testPath, cwd)) {
+    if (await isPathGitignored(testPath, cwd)) {
       // 已被某个 gitignore（全局或项目）覆盖，无需重复添加
       return;
     }

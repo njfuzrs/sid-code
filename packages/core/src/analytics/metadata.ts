@@ -178,7 +178,43 @@ function detectCI(): boolean {
   );
 }
 
+/**
+ * X1（PR-D）：vcs_type / repo_hash 的异步预取结果。collectMetadata（首次 getEventMetadata，
+ * 在 initTelemetrySystem 里、首帧前）原先同步 fork 两次 git；预取完成后直接取值。
+ * 预取未完成时仍走同步现算（结果一致），不让正确性依赖时序。
+ */
+let prefetchedVcs: { vcs: string | null; repoHash: string | null } | null = null;
+let vcsPrefetching: Promise<void> | null = null;
+
+async function gitOut(args: string[]): Promise<{ code: number; out: string } | null> {
+  try {
+    const proc = Bun.spawn(["git", ...args], { stdout: "pipe", stderr: "ignore" });
+    const [out, code] = await Promise.all([new Response(proc.stdout).text(), proc.exited]);
+    return { code, out };
+  } catch {
+    return null;
+  }
+}
+
+export function prefetchMetadataVcs(): Promise<void> {
+  if (prefetchedVcs) return Promise.resolve();
+  if (vcsPrefetching) return vcsPrefetching;
+  vcsPrefetching = (async () => {
+    const [inside, remote] = await Promise.all([
+      gitOut(["rev-parse", "--is-inside-work-tree"]),
+      gitOut(["remote", "get-url", "origin"]),
+    ]);
+    const url = remote && remote.code === 0 ? remote.out.trim() : "";
+    prefetchedVcs = {
+      vcs: inside && inside.code === 0 ? "git" : null,
+      repoHash: url ? createHash("sha256").update(url).digest("hex").slice(0, 16) : null,
+    };
+  })().catch(() => {});
+  return vcsPrefetching;
+}
+
 function detectVCS(): string | null {
+  if (prefetchedVcs) return prefetchedVcs.vcs;
   try {
     execFileSync("git", ["rev-parse", "--is-inside-work-tree"], { stdio: "ignore" });
     return "git";
@@ -192,6 +228,7 @@ function detectVCS(): string | null {
  * 只取前 16 字符——足以关联同一仓库的事件,但无法反推 URL。
  */
 function computeRepoHash(): string | null {
+  if (prefetchedVcs) return prefetchedVcs.repoHash;
   try {
     const remote = execFileSync("git", ["remote", "get-url", "origin"], {
       encoding: "utf-8",

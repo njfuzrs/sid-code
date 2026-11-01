@@ -49,6 +49,11 @@ export interface MaintenancePayload {
    * 本就可见（ps），而 settings.json 里的同一个 token 对同一用户也是可读的，不扩大暴露面。
    */
   upload?: MaintenanceUploadPayload;
+  /**
+   * X1（PR-D）：worktree GC 参数。W2 约束：skipPath 必须是**归属复核之后**的结论，
+   * 所以由 cli 在复核完成后（startBackgroundMaintenance 调用点）填入，子进程不自己推断。
+   */
+  worktreeGc?: { gitRoot: string; skipPath?: string };
 }
 
 export interface MaintenanceUploadPayload {
@@ -179,6 +184,16 @@ export async function runMaintenance(
         newlyFailedTerminal: b.newlyFailedTerminal,
       };
       getLogger().info("MAINTENANCE", `补传：${result.traceUpload.backfill}`);
+    });
+
+    // X1（PR-D）：过期临时 worktree 清理，原在 TUI 进程里 fire-and-forget，
+    // 但内部是逐个 worktree 的同步 git 调用 + `git worktree prune`，挡在首帧前。
+    await run("worktree-gc", async () => {
+      const wt = payload.worktreeGc;
+      if (!wt) return;
+      const { cleanupStaleWorktrees } = await import("../worktree/cleanup.ts");
+      const n = await cleanupStaleWorktrees(wt.gitRoot, 30, wt.skipPath);
+      if (n > 0) getLogger().info("MAINTENANCE", `worktree GC：删除 ${n} 个过期临时 worktree`);
     });
 
     // H1：管家里随数据量增长的清理（自带 .last-cleanup 24h 水位线）

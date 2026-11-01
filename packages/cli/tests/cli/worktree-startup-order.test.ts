@@ -10,6 +10,10 @@
  * 修法与紧邻的会话清理（D3，2026-11-01 起并入维护子进程调度 startBackgroundMaintenance）同构：
  * 不是「多传一个参数」，而是把**启动时机**挪到判据齐了之后。
  * 恢复那段只登记 gitRoot 与候选 worktree，GC 在归属复核之后才启动。
+ *
+ * PR-D 起 GC 并入维护子进程（maintenance/runner.ts 的 worktree-gc 任务）：cli.ts 里不再直接调
+ * cleanupStaleWorktrees，而是在 startBackgroundMaintenance（归属复核之后调用）里把
+ * gitRoot / skipPath 填进 payload。时序判据不变，锚点从 startWorktreeCleanup 换成它。
  * 复核通过才 chdir；不通过则不进入、状态保留，skipPath 仍指向它（留给拥有者回来）。
  *
  * 为什么用静态门禁而不是行为测试：这段逻辑在 cli.ts 的 main() 里，
@@ -33,20 +37,17 @@ function idx(needle: string): number {
 }
 
 describe("GC 不再在归属复核之前启动", () => {
-  test("worktree 启动恢复那段只登记，不直接调 cleanupStaleWorktrees", () => {
-    // 登记点在恢复段内
-    const register = idx("worktreeCleanupGitRoot = gitRoot;");
-    // 真正的调用点只有一处，且在 startWorktreeCleanup 这个延迟启动器里面
-    const callSites = CLI_SRC.split("cleanupStaleWorktrees(").length - 1;
-    expect(callSites).toBe(1);
-    expect(idx("cleanupStaleWorktrees(")).toBeLessThan(register);
-    expect(idx("const startWorktreeCleanup")).toBeLessThan(register);
+  test("worktree 启动恢复那段只登记，cli.ts 里不直接调 cleanupStaleWorktrees", () => {
+    idx("worktreeCleanupGitRoot = gitRoot;");
+    // GC 在维护子进程里跑；cli.ts 只负责把判据放进 payload
+    expect(CLI_SRC).not.toContain("cleanupStaleWorktrees(");
+    expect(CLI_SRC).toContain("worktreeGc: !!worktreeCleanupGitRoot");
   });
 
   test("登记 → 归属复核 → 启动 GC，三者顺序固定", () => {
     const register = idx("worktreeCleanupGitRoot = gitRoot;");
     const ownershipCheck = idx("if (shouldAutoEnterWorktree(wt, resumedSessionIdForCleanup)) {");
-    const launch = idx("await startWorktreeCleanup();");
+    const launch = idx("await startBackgroundMaintenance();");
 
     expect(register).toBeLessThan(ownershipCheck);
     expect(ownershipCheck).toBeLessThan(launch);
@@ -54,7 +55,7 @@ describe("GC 不再在归属复核之前启动", () => {
 
   test("GC 启动排在「被恢复会话 id 已知」之后（复核的输入）", () => {
     expect(idx("resumedSessionIdForCleanup = session.id;")).toBeLessThan(
-      idx("await startWorktreeCleanup();"),
+      idx("await startBackgroundMaintenance();"),
     );
   });
 });
@@ -76,7 +77,7 @@ describe("持久化 worktree 只在归属复核通过后才 chdir（不再先进
     const enter = idx("await enterWorktreeCwd(wt.worktreePath);");
     expect(resolved).toBeLessThan(check);
     expect(check).toBeLessThan(enter);
-    expect(enter).toBeLessThan(idx("await startWorktreeCleanup();"));
+    expect(enter).toBeLessThan(idx("await startBackgroundMaintenance();"));
   });
 
   test("不进入时不清持久化状态（留给下次 resume 拥有者）", () => {
@@ -98,37 +99,36 @@ describe("持久化 worktree 只在归属复核通过后才 chdir（不再先进
 
   test("GC 读的是变量而非恢复期的局部值（否则撤销无效）", () => {
     expect(CLI_SRC).toContain(
-      "cleanupStaleWorktrees(worktreeCleanupGitRoot, 30, activeWorktreePathForCleanup)",
+      "{ gitRoot: worktreeCleanupGitRoot, skipPath: activeWorktreePathForCleanup }",
     );
+    // payload 在 startBackgroundMaintenance 内部构造，而它在归属复核之后才被调用
+    const launcher = CLI_SRC.slice(
+      idx("const startBackgroundMaintenance"),
+      idx("await startBackgroundMaintenance();"),
+    );
+    expect(launcher).toContain("skipPath: activeWorktreePathForCleanup");
   });
 });
 
 describe("与会话清理保持同一范式（D3 的先例）", () => {
-  test("两个延迟启动器都在归属复核之后依次启动", () => {
-    const sessionCleanup = idx("await startBackgroundMaintenance();");
-    const worktreeCleanup = idx("await startWorktreeCleanup();");
+  test("维护调度（含 worktree GC）在归属复核之后启动", () => {
     const ownershipCheck = idx("shouldAutoEnterWorktree(wt, resumedSessionIdForCleanup)");
-
-    expect(ownershipCheck).toBeLessThan(sessionCleanup);
-    expect(ownershipCheck).toBeLessThan(worktreeCleanup);
+    expect(ownershipCheck).toBeLessThan(idx("await startBackgroundMaintenance();"));
   });
 
-  test("GC 仍是后台 fire-and-forget（改的是启动时机，不是把它变成阻塞步骤）", () => {
-    const launcher = CLI_SRC.slice(
-      idx("const startWorktreeCleanup"),
-      idx("const startBackgroundMaintenance"),
+  test("GC 在子进程里跑，不阻塞启动（cli.ts 不 await 任何 GC 调用）", () => {
+    expect(CLI_SRC).not.toContain("await cleanupStaleWorktrees");
+    const runner = readFileSync(
+      join(import.meta.dir, "../../../core/src/maintenance/runner.ts"),
+      "utf-8",
     );
-    // .then/.catch 形态 = 不 await 内部 promise
-    expect(launcher).toContain(".then((n) =>");
-    expect(launcher).toContain(".catch(");
-    expect(launcher).not.toContain("await cleanupStaleWorktrees");
+    expect(runner).toContain('run("worktree-gc"');
+    expect(runner).toContain("cleanupStaleWorktrees(wt.gitRoot, 30, wt.skipPath)");
   });
 
-  test("没有登记过 gitRoot（非 git 目录 / print 模式）时 GC 不跑", () => {
-    const launcher = CLI_SRC.slice(
-      idx("const startWorktreeCleanup"),
-      idx("const startBackgroundMaintenance"),
-    );
-    expect(launcher).toContain("if (!worktreeCleanupGitRoot) return;");
+  test("没有登记过 gitRoot（非 git 目录 / print 模式）时 GC 不排", () => {
+    // 两处都以 worktreeCleanupGitRoot 是否登记为条件：排任务、填 payload
+    expect(CLI_SRC).toContain("worktreeGc: !!worktreeCleanupGitRoot");
+    expect(CLI_SRC).toMatch(/worktreeGc: worktreeCleanupGitRoot\s*\?/);
   });
 });

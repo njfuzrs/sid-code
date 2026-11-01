@@ -275,8 +275,8 @@ export function generateGitStatusAttachment(workingDir: string): SystemPromptAtt
     // 获取当前分支
     const branch = runGit(["branch", "--show-current"], workingDir) || "unknown";
 
-    // 获取简短状态（对标 CC context.ts:64 —— git status --short）
-    const status = runGit(["status", "--short"], workingDir);
+    // X1（PR-D）：不再跑 `git status --short`。它的结果自 P0-1 起就不进快照（见下方「第一层·预防」），
+    // 却是这里最贵的一条（本仓实测 ~47ms，随工作区文件数增长），白白挡在首帧前。
 
     // 获取最近 5 条提交（对标 CC context.ts:68 —— git log --oneline -n 5）
     // 新仓库可能没有提交 → runGit 返回空串
@@ -313,8 +313,7 @@ export function generateGitStatusAttachment(workingDir: string): SystemPromptAtt
     // 完全对齐 CC 的思路:CC 在只读子代理里直接删掉整段 gitStatus(runAgent.ts:400-410,
     //   注释 "explicitly labeled stale"、"dead weight"),我们更温和——只删最毒的 volatile 部分。
     //
-    // 注:`status` 变量仍保留采集(供缓存键/未来诊断),但不再拼进快照文本。
-    void status; // 明确标注:采集了但刻意不进快照(避免"未使用变量"误删)
+    // 注:`git status` 已不再采集(PR-D)——它从不进快照文本,采了只是付首帧前的同步 fork 成本。
 
     const lines: string[] = [
       // 首行=显式声明这是启动快照,并**引导**模型:工作区文件状态未包含在此,需实时获取。

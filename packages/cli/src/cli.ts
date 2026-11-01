@@ -1327,6 +1327,11 @@ export async function main(): Promise<void> {
       getLogger().debug("STARTUP", `运行目录 .env 提示检测失败（不阻塞启动）: ${err}`);
     }
 
+    // X1（PR-D）：首帧前要用到的几条 git 结果异步并发预取（git 快照、埋点 vcs/repo_hash）。
+    // loadConfig 期间它们在后台跑完，之后的同步读取直接命中缓存；没跑完也能同步现算，结果一致。
+    void import("@sid-code/core/identity/git-snapshot.ts").then((m) => m.prefetchGitSnapshot());
+    void import("@sid-code/core/analytics/metadata.ts").then((m) => m.prefetchMetadataVcs());
+
     profileCheckpoint("config_load_start");
     const config = await loadConfig(cliArgs);
     profileCheckpoint("config_load_end");
@@ -2931,27 +2936,13 @@ export async function main(): Promise<void> {
     let resumedSessionIdForCleanup: string | undefined;
 
     // W2：worktree GC 的启动也要等判据齐（与上面这段同一个时序问题，见下方登记处注释）。
-    // 这两个变量由 worktree 启动恢复那段登记，由归属复核之后的 startWorktreeCleanup 消费。
+    // 这两个变量由 worktree 启动恢复那段登记，由归属复核之后的 startBackgroundMaintenance
+    // 放进维护子进程的 payload（PR-D 起 GC 在子进程里跑）。
     let worktreeCleanupGitRoot: string | undefined;
     let activeWorktreePathForCleanup: string | undefined;
     // 启动恢复读到的持久化 worktree：只是候选，归属复核（会话 id 解析完之后）通过才进入。
     let pendingWorktreeRestore: import("@sid-code/core/worktree/types.ts").WorktreeSession | null =
       null;
-    const startWorktreeCleanup = async (): Promise<void> => {
-      if (!worktreeCleanupGitRoot) return;
-      const { cleanupStaleWorktrees } = await import("@sid-code/core/worktree/cleanup.ts");
-      // 清理本身仍是后台 fire-and-forget（不是关键路径，不该拖慢启动）；
-      // 变的只是它**什么时候**开始跑，以及 skipPath 是不是复核后的事实。
-      cleanupStaleWorktrees(worktreeCleanupGitRoot, 30, activeWorktreePathForCleanup)
-        .then((n) => {
-          if (n > 0 && config.debug) {
-            getLogger().info("WORKTREE", `自动清理: 删除 ${n} 个过期临时 Worktree`);
-          }
-        })
-        .catch(() => {
-          /* 忽略 */
-        });
-    };
 
     // C1/T1/T2/H1：启动期维护任务（会话清理、轨迹淘汰、管家清理）迁入维护子进程。
     // 这里只登记「要不要跑、跑哪些」，真正的拉起在 TUI 首帧之后（见 runTUI 前）。
@@ -2996,6 +2987,8 @@ export async function main(): Promise<void> {
         const tasks = await dueMaintenanceTasks({
           sessionCleanup: !config.print && retentionSettings.enabled,
           traceUpload: autoUploadOn,
+          // W2：worktreeCleanupGitRoot 只在 worktree 启动恢复段登记（非 git 目录 / -p 时为空）
+          worktreeGc: !!worktreeCleanupGitRoot,
         });
         if (tasks.length === 0) return;
         const launch = () =>
@@ -3008,6 +3001,11 @@ export async function main(): Promise<void> {
               : undefined,
             traceOutputDir: config.trace?.outputDir ?? sidPaths.trajectories(),
             maxSessionsRetained: config.trace?.maxSessionsRetained,
+            // X1（PR-D）：worktree GC 并入维护子进程。W2：skipPath 读的是变量——本函数在
+            // 归属复核之后才被调用，此刻 activeWorktreePathForCleanup 已是复核后的事实。
+            worktreeGc: worktreeCleanupGitRoot
+              ? { gitRoot: worktreeCleanupGitRoot, skipPath: activeWorktreePathForCleanup }
+              : undefined,
             upload: autoUploadOn
               ? {
                   baseUrl: up!.url!,
@@ -3287,10 +3285,8 @@ export async function main(): Promise<void> {
 
     // D3：恢复目标已确定（或本次不恢复），此刻才登记后台维护（受保护 id 已知；
     // 本会话的 registerSession() 在上方已完成，子进程读活跃表能看到它）。
+    // W2：worktree GC 也在这里随维护子进程一起排——归属复核已给出结论，skipPath 是复核后的事实。
     await startBackgroundMaintenance();
-
-    // W2：归属复核已给出结论，worktree GC 此刻才启动——skipPath 用的是复核后的事实。
-    await startWorktreeCleanup();
 
     // 根据模式路由
     if (cliArgs.bridgeUrl) {

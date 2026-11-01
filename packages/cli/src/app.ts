@@ -134,7 +134,6 @@ import {
 } from "./signal-teardown.ts";
 import { headlessIncomplete, resolveHeadlessExitCode } from "./headless-exit.ts";
 import { normalizeModelUsage, providersOf } from "./headless-usage.ts";
-import { execSync } from "child_process";
 import { existsSync, readFileSync } from "fs";
 import { open, readdir, stat } from "fs/promises";
 import { resolve, extname, join } from "path";
@@ -9117,15 +9116,9 @@ export class App {
       ...this.contextDisplayState(),
       permissionMode: this.config.permissionMode || "default",
       isPlanMode: false,
-      gitBranch: (() => {
-        try {
-          return execSync("git rev-parse --abbrev-ref HEAD 2>/dev/null", {
-            encoding: "utf-8",
-          }).trim();
-        } catch {
-          return "";
-        }
-      })(),
+      // X1（PR-D）：首帧先给空串，异步取到后再 update（见下方 updateState 定义之后）。
+      // 原先这里是 execSync 一次 shell + git（~10ms），挡在 StateBridge 构造、即首帧之前。
+      gitBranch: "",
       // effort/thinking 展示态初值置 null，doInit 末尾 pushKnobDisplay() 会按当前模型能力填充。
       effortDisplay: null,
       thinkingDisplay: null,
@@ -9185,6 +9178,21 @@ export class App {
       });
       bridge.update(patch);
     };
+    // X1：状态栏分支名异步取，不 fork 同步子进程。失败 / 非 git 仓库保持空串（与旧行为一致）。
+    void (async () => {
+      try {
+        const proc = Bun.spawn(["git", "rev-parse", "--abbrev-ref", "HEAD"], {
+          cwd: process.cwd(),
+          stdout: "pipe",
+          stderr: "ignore",
+        });
+        const [out, code] = await Promise.all([new Response(proc.stdout).text(), proc.exited]);
+        const branch = code === 0 ? out.trim() : "";
+        if (branch) updateState({ gitBranch: branch });
+      } catch {
+        /* 没装 git：保持空串 */
+      }
+    })();
     // 流式 token 专用：emit 合帧到每 STREAM_FLUSH_MS 一次（见 StateBridge.updateStreaming）。
     // 只给逐 token 的累积更新用；状态切换（首帧、流式结束、工具开始）一律走 updateState。
     const updateStreamingState = (patch: Partial<import("./ui/App.tsx").TUIState>) => {
