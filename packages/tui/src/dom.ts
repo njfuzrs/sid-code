@@ -19,6 +19,9 @@ type InkNode = {
 	internal_history?: boolean;
 	/** sid-code：Transient（临时浮层）的容器节点，见 components/Transient.tsx */
 	internal_transient?: boolean;
+	/** sid-code：可叠画的 Transient 锚点（`<Transient float>`）与它当前是否处于叠画态，见 ink.tsx `layoutFloatingTransients` */
+	internal_float?: boolean;
+	internal_floating?: boolean;
 	style: Styles;
 };
 
@@ -128,7 +131,14 @@ export const createNode = (nodeName: ElementNames): DOMElement => {
 };
 
 /** 根节点下是否还挂着 Transient 容器；顺手剔掉已经脱离树的登记（O(登记数 × 深度)，不遍历整棵树） */
-export const hasMountedTransient = (root: DOMElement): boolean => {
+/**
+ * `inFlowOnly`：只算在流布局的浮层。叠画态（`<Transient float>` 且 `internal_floating`）不占帧高、没把历史顶进
+ * scrollback，关闭时普通 diff 就能复原，不该触发 diffFrame 的整帧重画（PR4）。
+ */
+export const hasMountedTransient = (
+	root: DOMElement,
+	{inFlowOnly = false}: {inFlowOnly?: boolean} = {},
+): boolean => {
 	const nodes = root.transientNodes;
 	if (!nodes || nodes.size === 0) {
 		return false;
@@ -142,7 +152,9 @@ export const hasMountedTransient = (root: DOMElement): boolean => {
 		}
 
 		if (cur === root) {
-			mounted = true;
+			if (!inFlowOnly || !node.internal_floating) {
+				mounted = true;
+			}
 		} else {
 			nodes.delete(node);
 		}

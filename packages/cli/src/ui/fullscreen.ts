@@ -13,6 +13,7 @@ import React, { type ReactElement } from "react";
 import { getLogger } from "@sid-code/core/debug/logger.ts";
 import { registerProcessOutputErrorHandlers } from "@sid-code/shared/utils/process.ts";
 import { installTUIConsoleGuard, uninstallTUIConsoleGuard } from "./console-guard.ts";
+import { installFirstFrameProbe } from "./first-frame.ts";
 
 /** 禁用终端行自动换行（防止长行折行导致布局溢出） */
 function disableLineWrapping() {
@@ -76,6 +77,9 @@ export function createFullScreen(node: ReactElement, opts?: FullScreenOptions): 
         exitOnCtrlC: false,
         patchConsole: false,
       };
+
+      // 首帧探测（G1 + 维护子进程拉起时机）：必须在 render 之前装，render 一开始就可能写 stdout
+      installFirstFrameProbe(stdout);
 
       // vendored ink 的 render 是 async(返回 Promise<Instance>)。
       instance = await render(rootNode, options);

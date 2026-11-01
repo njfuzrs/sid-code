@@ -2205,7 +2205,18 @@ describe("TraceCollector — §3.4 审计日志覆盖", () => {
   });
 });
 
-describe("TraceCollector — maxSessionsRetained LRU 清理", () => {
+// 2026-11-01：淘汰从 TraceCollector 构造函数迁入维护子进程（trace/startup-prune.ts），
+// 用例按原构造函数默认口径（10GB / 1d）直接调 pruneOldTraceSessions，判据不变。
+describe("轨迹启动淘汰 — maxSessionsRetained LRU 清理", () => {
+  const { pruneOldTraceSessions } =
+    require("@sid-code/core/trace/startup-prune.ts") as typeof import("@sid-code/core/trace/startup-prune.ts");
+  const lru = (outputDir: string, maxSessionsRetained: number) =>
+    pruneOldTraceSessions({
+      outputDir,
+      maxSessionsRetained,
+      maxTotalBytes: 10 * 1024 ** 3,
+      minRetentionMs: 24 * 3600_000,
+    });
   const { writeFileSync, rmSync, utimesSync } = require("node:fs") as typeof import("node:fs");
 
   /** 在 outputDir/sessions 下造一个 session 目录，可选 .uploaded 标记与 mtime */
@@ -2235,7 +2246,7 @@ describe("TraceCollector — maxSessionsRetained LRU 清理", () => {
     const dir = freshDir();
     const a = makeSession(dir, "s1", { mtimeSec: 100 });
     const b = makeSession(dir, "s2", { mtimeSec: 200 });
-    new TraceCollector({ outputDir: dir, maxSessionsRetained: 5 });
+    lru(dir, 5);
     expect(existsSync(a)).toBe(true);
     expect(existsSync(b)).toBe(true);
     rmSync(dir, { recursive: true, force: true });
@@ -2247,7 +2258,7 @@ describe("TraceCollector — maxSessionsRetained LRU 清理", () => {
     const old2 = makeSession(dir, "old2", { uploaded: true, mtimeSec: 200 });
     const recent = makeSession(dir, "recent", { uploaded: true, mtimeSec: 300 });
     // 上限 1 → 应删 2 个最旧，保留最新
-    new TraceCollector({ outputDir: dir, maxSessionsRetained: 1 });
+    lru(dir, 1);
     expect(existsSync(old1)).toBe(false);
     expect(existsSync(old2)).toBe(false);
     expect(existsSync(recent)).toBe(true);
@@ -2260,7 +2271,7 @@ describe("TraceCollector — maxSessionsRetained LRU 清理", () => {
     const notUploadedOldest = makeSession(dir, "pending", { uploaded: false, mtimeSec: 100 });
     const uploadedMid = makeSession(dir, "up-mid", { uploaded: true, mtimeSec: 200 });
     const uploadedNew = makeSession(dir, "up-new", { uploaded: true, mtimeSec: 300 });
-    new TraceCollector({ outputDir: dir, maxSessionsRetained: 2 });
+    lru(dir, 2);
     // 未上传的即使最旧也保留（数据未安全落远端）
     expect(existsSync(notUploadedOldest)).toBe(true);
     // 已上传中最旧的被删
@@ -2272,7 +2283,7 @@ describe("TraceCollector — maxSessionsRetained LRU 清理", () => {
   test("sessions 目录不存在 → 安全无操作", () => {
     const dir = freshDir();
     // 不创建 sessions 子目录
-    expect(() => new TraceCollector({ outputDir: dir, maxSessionsRetained: 1 })).not.toThrow();
+    expect(() => lru(dir, 1)).not.toThrow();
     rmSync(dir, { recursive: true, force: true });
   });
 });

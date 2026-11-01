@@ -252,6 +252,14 @@ const renderLaidOutNode = (
 		const overflowY = node.style.overflowY ?? node.style.overflow;
 
 		if (node.nodeName === 'ink-box') {
+			// sid-code（PR4）：叠画态的浮层先用空白铺满自己的矩形，盖住底下的历史行（内容不满一行时不露出历史字符）
+			if (node.parentNode?.internal_floating) {
+				const blank = ' '.repeat(Math.max(0, yogaNode.getComputedWidth()));
+				for (let row = 0; row < yogaNode.getComputedHeight(); row++) {
+					output.write(x, y + row, blank, {transformers: []});
+				}
+			}
+
 			renderBackground(x, y, node, output);
 			renderBorder(x, y, node, output);
 
