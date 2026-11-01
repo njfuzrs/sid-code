@@ -146,7 +146,7 @@ export interface ModelConfig {
    *
    * 三层优先级（`compat` 最高）：**用户声明 > 内置注册表按名匹配 > 400 自愈兜底**。
    * ⚠ 它**不替代**自愈——私有网关上的私有模型名注册表必然 miss，只有用户知道它认什么；
-   * 但用户也会配错，配错了仍要靠 `withCapabilityHealing`（`llm/openai.ts:650`）救回来。
+   * 但用户也会配错，配错了仍要靠 `OpenAIProvider.withCapabilityHealing`（`llm/openai.ts`）救回来。
    *
    * 按**渠道**（name）而非模型真名生效：同一真名接官方端点与公司网关，网关那条可能因为
    * 自己做了参数透传过滤而不认某些字段。与 `supportsThinking` 的既有口径一致。

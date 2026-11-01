@@ -59,8 +59,9 @@ import {
 import {
   learnFromError,
   shouldRetryWithoutEffort,
-  recordEffortRejected,
+  recordHealOutcome,
 } from "./model-capabilities.ts";
+import { recordCapabilityHealed, type CapabilityHealTrigger } from "./capability-heal-telemetry.ts";
 // 状态码提取（非流式自愈的结构判据用）——兼容 status / statusCode / response.status 多种形态
 import { extractHTTPStatus } from "../api/error-utils.ts";
 import { splitSystemByDynamicBoundary } from "../api/cache-strategy.ts";
@@ -988,6 +989,9 @@ export class OpenAIProvider implements Provider {
     // 重新踩一遍 400（学不到彼此的经验），也会污染 lookupCapability 的前缀/家族匹配。
     const model = pickWireModel(params, this._model);
     let healed = false;
+    // 首轮是谁触发的自愈：措辞点名才算强证据，结构兜底只重试、按进程内连续次数决定记不记账
+    let trigger: CapabilityHealTrigger = "structural";
+    let firstStatus: number | undefined;
 
     for (const attempt of [0, 1]) {
       let capabilityError: string | null = null;
@@ -1009,6 +1013,8 @@ export class OpenAIProvider implements Provider {
           });
           if (advice.dropEffort || structural) {
             capabilityError = msg;
+            trigger = advice.dropEffort ? "wording" : "structural";
+            firstStatus = ev.error?.statusCode;
             break;
           }
         }
@@ -1016,9 +1022,20 @@ export class OpenAIProvider implements Provider {
       }
 
       if (capabilityError === null) {
-        // 第二轮（已剥掉 effort）且本轮**没有任何错误** → 重试确实成功，记账让下次不再多这一跳。
+        // 第二轮（已剥掉 effort）：本轮**没有任何错误**才算重试成功。
         // 必须校 sawError：若剥掉仍失败，真因不是这个字段，记账会把一个支持 effort 的模型冤枉成不支持。
-        if (attempt === 1 && !sawError) recordEffortRejected(model);
+        if (attempt === 1) {
+          const retryOk = !sawError;
+          const recorded = recordHealOutcome(model, trigger, retryOk);
+          recordCapabilityHealed({
+            model,
+            trigger,
+            ...(firstStatus !== undefined ? { statusCode: firstStatus } : {}),
+            stripped: ["reasoning_effort"],
+            recorded,
+            retryOk,
+          });
+        }
         return; // 正常完成或不可自愈的错误（已 yield 出去）
       }
 
@@ -2017,23 +2034,39 @@ export class OpenAIProvider implements Provider {
       const msg = err instanceof Error ? err.message : String(err);
       // 与流式路径同一套判据：措辞匹配（顺带学档位）**或** 结构匹配（HTTP 4xx 兜底）。
       const advice = learnFromError(model, msg);
-      const structural = shouldRetryWithoutEffort({
-        statusCode: extractHTTPStatus(err),
-        errorMessage: msg,
-      });
+      const statusCode = extractHTTPStatus(err);
+      const structural = shouldRetryWithoutEffort({ statusCode, errorMessage: msg });
       if (!advice.dropEffort && !structural) throw err;
+      // 与流式同一套归因：措辞点名才立即记账，结构兜底按进程内连续次数决定
+      const trigger: CapabilityHealTrigger = advice.dropEffort ? "wording" : "structural";
+      const emitHealed = (retryOk: boolean): void => {
+        const recorded = recordHealOutcome(model, trigger, retryOk);
+        recordCapabilityHealed({
+          model,
+          trigger,
+          ...(statusCode !== undefined ? { statusCode } : {}),
+          stripped: ["reasoning_effort"],
+          recorded,
+          retryOk,
+        });
+      };
       getLogger().debug(
         "LLM:OPENAI",
         `能力自愈（非流式）：${model} 拒绝 reasoning_effort，剥离该字段重试`,
         { error: msg.slice(0, 160) },
       );
-      const healed = await this.sendMessageNonStreamingInner(
-        { ...params, reasoningEffort: undefined },
-        signal,
-      );
-      // 走到这里说明重试**没有抛错**即成功——记账让下次不再多这一跳。
-      // （抛错会直接冒泡出去，不会执行到这行，天然满足「只在成功后记」。）
-      recordEffortRejected(model);
+      let healed: AccumulatedResponse;
+      try {
+        healed = await this.sendMessageNonStreamingInner(
+          { ...params, reasoningEffort: undefined },
+          signal,
+        );
+      } catch (retryErr) {
+        // 剥掉仍失败：真因不是这个字段，不记账（并打断结构兜底的连续计数）
+        emitHealed(false);
+        throw retryErr;
+      }
+      emitHealed(true);
       getLogger().debug("LLM:OPENAI", `能力自愈完成（非流式）：${model}`);
       return healed;
     }

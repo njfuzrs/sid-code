@@ -168,6 +168,48 @@ function resolveCatalogTtlMs(): number {
   return Number.isFinite(raw) && raw > 0 ? raw : DEFAULT_CATALOG_TTL_MS;
 }
 
+/**
+ * 运行时学到的能力（`source: "healed"` / `"probe"`）压过目录的有效期：**7 天**。
+ *
+ * 为什么需要：目录 TTL 是 1 天，原先 `mergeEntry` 是 `{...base, ...clean}` 不看来源，
+ * 于是自愈刚学到的「不支持 effort」/「服务端自报的更严档位」，最多一天就被下一次目录同步
+ * 冲回目录值，模型又撞一次 400 再学一遍（剖析 21/1 §5.3 场景 C、E）。
+ *
+ * 为什么是 7 天、而不是永久：学到的东西也可能错（措辞点名但真因是档位），过期后目录
+ * 重新说了算，这是「学错了能撤回」的唯一路径。取值 = 目录 TTL 的 7 倍，**没有实测依据**，
+ * 只是让学到的结论至少活过几轮目录同步。
+ */
+const LEARNED_PRECEDENCE_MS = 7 * 24 * 60 * 60 * 1000;
+
+/** 学习路径（自愈/探针）会写的字段 —— 有效期内目录不得覆盖它们，只能补空缺。 */
+const LEARNED_FIELDS = ["effortValues", "supportsReasoning", "maxOutputTokens"] as const;
+
+/**
+ * 判断「已有条目是有效期内的学习结果、而进来的是目录数据」。
+ * `persist()` 的跨进程合并与 `mergeEntry` 的进程内合并共用这一个判据，两处不得分叉。
+ */
+function learnedOutranksCatalog(
+  prev: ModelCapabilityEntry | undefined,
+  incomingSource: ModelCapabilityEntry["source"],
+  now: number,
+): prev is ModelCapabilityEntry {
+  if (!prev || incomingSource !== "catalog") return false;
+  if (prev.source !== "healed" && prev.source !== "probe") return false;
+  return typeof prev.fetchedAt === "number" && now - prev.fetchedAt < LEARNED_PRECEDENCE_MS;
+}
+
+/** 把学习字段与来源/时间戳从 prev 还原到 next（prev 没有的字段保留目录补上的值）。 */
+function restoreLearnedFields(next: ModelCapabilityEntry, prev: ModelCapabilityEntry): void {
+  const out = next as Record<string, unknown>;
+  const src = prev as Record<string, unknown>;
+  for (const f of LEARNED_FIELDS) {
+    if (src[f] !== undefined) out[f] = src[f];
+  }
+  next.source = prev.source;
+  // fetchedAt 保留学习时刻：有效期从学到的那一刻起算，不被目录同步续期
+  next.fetchedAt = prev.fetchedAt;
+}
+
 /** 同步失败退避基数（指数退避，封顶 24h）——对齐 gateway-pricing 的负缓存策略。 */
 const FAIL_BACKOFF_BASE_MS = 30 * 60 * 1000;
 const FAIL_BACKOFF_MAX_MS = 24 * 60 * 60 * 1000;
@@ -475,6 +517,12 @@ function persist(): void {
       for (const [field, value] of Object.entries(mine)) {
         if (value !== undefined) merged[field] = value;
       }
+      // 「内存盖磁盘」对学习结果的例外（与 mergeEntry 同一判据）：别的进程刚自愈/探针学到、
+      // 写在磁盘上的结论，不能被本进程一份目录来源的旧条目在落盘时冲掉。
+      const diskEntry = models[key];
+      if (learnedOutranksCatalog(diskEntry, mine.source, Date.now())) {
+        restoreLearnedFields(merged as ModelCapabilityEntry, diskEntry);
+      }
       models[key] = merged as ModelCapabilityEntry;
     }
 
@@ -555,6 +603,11 @@ function mergeEntry(model: string, patch: ModelCapabilityEntry): void {
   }
   const next: ModelCapabilityEntry = { ...base, ...clean };
   next.fetchedAt = clean.fetchedAt ?? Date.now();
+  // 有效期内的学习结果压过目录：目录只能补学习字段的空缺，不改来源（见 LEARNED_PRECEDENCE_MS）。
+  // contextWindow 等学习路径不写的字段照常随目录更新。
+  if (learnedOutranksCatalog(memModels[key], clean.source, Date.now())) {
+    restoreLearnedFields(next, memModels[key]!);
+  }
   memModels[key] = next;
 }
 
@@ -1562,12 +1615,12 @@ export function shouldRetryWithoutEffort(opts: {
  * ⚠ 只在重试**成功**后调用。若剥掉 effort 仍失败，说明真因不是这个字段，
  * 记账就会冤枉它：那个模型可能明明支持 effort，却被永久标记为不支持。
  */
-export function recordEffortRejected(model: string): void {
+export function recordEffortRejected(model: string): boolean {
   // 已有非空档位列表（来自用户配置/目录/探针的可信数据）→ 不覆盖。
   // 那种情况下的 400 更可能是「我们发的那一档不在列表里」，而非「完全不支持」，
   // 抹成 [] 会把一个支持 effort 的模型永久降级。
   const existing = lookupCapability(model);
-  if (existing?.effortValues && existing.effortValues.length > 0) return;
+  if (existing?.effortValues && existing.effortValues.length > 0) return false;
 
   mergeEntry(model, {
     effortValues: [],
@@ -1577,6 +1630,57 @@ export function recordEffortRejected(model: string): void {
   });
   persist();
   log().debug("MODEL-CAP", `自愈记账：${model} 不接受 reasoning_effort，后续不再下发`);
+  return true;
+}
+
+/**
+ * 结构兜底连续成功多少次才升级为落盘记账。
+ *
+ * 结构兜底只凭「HTTP 4xx + 我们发了 effort」触发，不看措辞，**归因证据是弱的**：
+ * 轨迹里两例（glm-5.3-uniapi 的 MaaS 400、gpt-6-luna 的推理回放解密失败）都是与 effort
+ * 无关的偶发 400，剥掉 effort 重试恰好成功，下一轮带 effort 照常成功。单次就记账会把这类
+ * 模型永久记成「不支持 effort」（那两例只是碰巧被 recordEffortRejected 的非空档位守卫挡住）。
+ * 连续 3 次 = 同一进程内反复复现，偶发网关错误很难做到。取值没有实测依据。
+ */
+const STRUCTURAL_HEALS_BEFORE_RECORD = 3;
+
+/** 进程内：每个模型结构兜底连续成功的次数。刻意不落盘——弱证据不该跨进程累积。 */
+const structuralHealStreak = new Map<string, number>();
+
+/**
+ * 自愈重试结束后的记账入口（流式 / 非流式两条路径共用，判据不得分叉）。
+ *
+ * - 措辞点名（`wording`）+ 重试成功 → 立即记账：服务端明说了字段，证据充分。
+ * - 结构兜底（`structural`）+ 重试成功 → 只累加进程内计数，连续达到阈值才记账。
+ * - 重试失败 → 不记账，并清零该模型的计数：真因不是这个字段，「连续」被打断。
+ *
+ * @returns 本次是否把「不支持 effort」写进了缓存（供轨迹事件的 `recorded` 字段）
+ */
+export function recordHealOutcome(
+  model: string,
+  trigger: "wording" | "structural",
+  retryOk: boolean,
+): boolean {
+  const key = model.trim().toLowerCase();
+  if (!retryOk) {
+    structuralHealStreak.delete(key);
+    return false;
+  }
+  if (trigger === "wording") {
+    structuralHealStreak.delete(key);
+    return recordEffortRejected(model);
+  }
+  const streak = (structuralHealStreak.get(key) ?? 0) + 1;
+  if (streak < STRUCTURAL_HEALS_BEFORE_RECORD) {
+    structuralHealStreak.set(key, streak);
+    log().debug(
+      "MODEL-CAP",
+      `结构兜底自愈：${model} 第 ${streak}/${STRUCTURAL_HEALS_BEFORE_RECORD} 次，暂不记账`,
+    );
+    return false;
+  }
+  structuralHealStreak.delete(key);
+  return recordEffortRejected(model);
 }
 
 /** 自愈动作建议——调用方据此决定「剥掉哪个字段重试」。 */
@@ -1676,6 +1780,7 @@ export function learnFromError(model: string, errorMessage: string): HealAdvice 
 export function __resetCapabilityCacheForTest(seed?: Record<string, ModelCapabilityEntry>): void {
   memModels = seed ? { ...seed } : {};
   memMeta = {};
+  structuralHealStreak.clear();
 }
 
 /** 读当前内存态（仅测试/诊断用）。 */
