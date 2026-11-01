@@ -1019,6 +1019,16 @@ describe("TraceCollector", () => {
     expect(meta.user_prompts).toContain("请帮我修复这个 bug");
   });
 
+  test("R3：巨型 prompt 经 UserPromptSubmit 进 metadata 时被截断", async () => {
+    await fireSessionStart(hookSystem);
+    const big = "z".repeat(200_000);
+    await hookSystem.fireUserPromptSubmitEvent(big);
+    const meta = collector.getMetadata()!;
+    expect(meta.user_prompts).toHaveLength(1);
+    expect(meta.user_prompts[0].length).toBeLessThan(10_000);
+    expect(meta.user_prompts[0]).toContain("原长 200000");
+  });
+
   test("空白 prompt 不追加", async () => {
     await fireSessionStart(hookSystem);
 
@@ -2394,5 +2404,27 @@ describe("TraceCollector — 辅助调用(side-call)增量同步", () => {
     expect(collector.getMetadata()!.side_api_calls).toBe(2);
     expect(collector.getMetadata()!.side_tokens_sent).toBe(60);
     expect(collector.getMetadata()!.side_tokens_received).toBe(13);
+  });
+});
+
+// ─── R3：metadata.user_prompts 不再复制巨型输入全文 ───
+import {
+  capUserPromptForMetadata,
+  USER_PROMPT_METADATA_MAX_CHARS,
+} from "@sid-code/core/trace/collector.ts";
+
+describe("R3：user_prompts 截断", () => {
+  test("短输入原样保留", () => {
+    expect(capUserPromptForMetadata("修个 bug")).toBe("修个 bug");
+    const edge = "a".repeat(USER_PROMPT_METADATA_MAX_CHARS);
+    expect(capUserPromptForMetadata(edge)).toBe(edge);
+  });
+
+  test("巨型输入只留前缀 + 写明原长", () => {
+    const big = "b".repeat(USER_PROMPT_METADATA_MAX_CHARS * 100);
+    const out = capUserPromptForMetadata(big);
+    expect(out.length).toBeLessThan(USER_PROMPT_METADATA_MAX_CHARS + 100);
+    expect(out.startsWith("b".repeat(USER_PROMPT_METADATA_MAX_CHARS))).toBe(true);
+    expect(out).toContain(`原长 ${big.length}`);
   });
 });

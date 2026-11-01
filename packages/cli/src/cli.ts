@@ -3153,6 +3153,42 @@ export async function main(): Promise<void> {
       const store = new SessionStore();
       let session: import("@sid-code/core/session/store.ts").SessionData | null = null;
 
+      // R2：恢复巨型会话前先 stat，超阈值给出可见提示（体积 + 预计耗时 + 可取消）。
+      // 以前 222MB 的会话 load 期间没有任何输出，用户以为卡死。提示写 stderr，
+      // 加载完在 TTY 上擦掉这一行，不在 banner 上方的 scrollback 里留游离文字。
+      const { largeSessionLoadHint } = await import("@sid-code/core/session/large-load-hint.ts");
+      const loadWithHint = async (id: string) => {
+        const hint = config.print ? null : largeSessionLoadHint(id);
+        // 提示里说了「Ctrl+C 取消」就必须真能取消：`-r <id>` 路径上 early-input 仍在捕获
+        // （它对 0x03 直接 exit 130）；选择器路径上捕获已被 consumeEarlyInput 停掉，
+        // raw 模式下 Ctrl+C 不产生 SIGINT ⇒ 没人读 stdin 就按不掉。这里只在加载窗口内补一个监听。
+        let cancelGuard: ((d: Buffer | string) => void) | null = null;
+        if (hint) {
+          getLogger().info("CLI", `恢复大会话: ${id} (${hint.bytes} bytes)`);
+          process.stderr.write(hint.message);
+          const { isCapturing } = await import("./ui/early-input.ts");
+          if (process.stdin.isTTY && !isCapturing()) {
+            cancelGuard = (d) => {
+              if (String(d).includes("\x03")) {
+                process.stderr.write("\n已取消\n");
+                process.exit(130);
+              }
+            };
+            process.stdin.setRawMode(true);
+            process.stdin.on("data", cancelGuard);
+          }
+        }
+        try {
+          return await store.load(id);
+        } finally {
+          if (cancelGuard) {
+            process.stdin.off("data", cancelGuard);
+            process.stdin.pause();
+          }
+          if (hint) process.stderr.write(process.stderr.isTTY ? "\r\x1b[2K" : "\n");
+        }
+      };
+
       // 无头模式（--print）不能弹交互选择器：缺 stdin 无法选择。
       if (cliArgs.resumePicker && config.print) {
         console.error(
@@ -3169,7 +3205,7 @@ export async function main(): Promise<void> {
           getLogger().info("CLI", "用户取消会话选择");
           process.exit(0);
         }
-        session = await store.load(selectedId);
+        session = await loadWithHint(selectedId);
         if (!session) {
           console.error(`错误: 无法加载会话 ${selectedId}`);
           process.exit(1);
@@ -3186,7 +3222,7 @@ export async function main(): Promise<void> {
         }
 
         if (resolvedId) {
-          session = await store.load(resolvedId);
+          session = await loadWithHint(resolvedId);
         }
 
         if (!session) {
@@ -3203,7 +3239,7 @@ export async function main(): Promise<void> {
             getLogger().info("CLI", "用户取消会话选择");
             process.exit(0);
           }
-          session = await store.load(selectedId);
+          session = await loadWithHint(selectedId);
           if (!session) {
             console.error(`错误: 无法加载会话 ${selectedId}`);
             process.exit(1);

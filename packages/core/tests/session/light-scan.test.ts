@@ -189,3 +189,137 @@ describe("轻量扫描器 ↔ 全量扫描器对照", () => {
     expect(fromLight.length).toBe(6);
   });
 });
+
+// ─────────────────────────────────────────────────────────────
+// R1：会话选择器 / --list-sessions 改走轻量列表扫描器
+// ─────────────────────────────────────────────────────────────
+import { getSessionFiles } from "@sid-code/core/session/utils.ts";
+import {
+  lightListSessions,
+  OVERSIZED_TITLE_PLACEHOLDER,
+} from "@sid-code/core/session/light-scan.ts";
+
+describe("R1：轻量列表扫描器 ↔ getSessionFiles", () => {
+  const listShape = (xs: Awaited<ReturnType<typeof getSessionFiles>>) =>
+    xs.map((s) => ({
+      id: s.id,
+      index: s.index,
+      start: s.startTime,
+      last: s.lastUpdated,
+      count: s.messageCount,
+      name: s.displayName,
+      first: s.firstUserMessage,
+      summary: s.summary,
+      cwd: s.cwd,
+      model: s.model,
+    }));
+
+  test("小文件：列表逐字段一致（含 includeFullContent 的正文）", async () => {
+    const dir = join(sidPaths.sessions(), "proj-a");
+    writeFileSync(
+      join(dir, "a.jsonl"),
+      [start("a", 1), user("/help", 1, 1), user("修 bug", 1, 2), assistant("ok", 1, 3)].join("\n"),
+    );
+    writeFileSync(
+      join(dir, "b.jsonl"),
+      [
+        start("b", 2),
+        user("q", 2, 1),
+        assistant("a", 2, 2),
+        meta("session_name", "命名", 2, 3),
+      ].join("\n"),
+    );
+    const root = sidPaths.sessions();
+    expect(listShape(await lightListSessions(root))).toEqual(
+      listShape(await getSessionFiles(root)),
+    );
+    const full = await getSessionFiles(root, undefined, { includeFullContent: true });
+    const light = await lightListSessions(root, undefined, { includeFullContent: true });
+    expect(light.map((s) => s.messages)).toEqual(full.map((s) => s.messages));
+  });
+
+  test("大文件：首条是短行时标题与全量一致", async () => {
+    const dir = join(sidPaths.sessions(), "proj-a");
+    writeFileSync(
+      join(dir, "big.jsonl"),
+      [
+        start("big", 1),
+        user("/clear", 1, 1),
+        user("真正的首条", 1, 2),
+        user(BIG, 1, 3),
+        assistant("a", 1, 4),
+      ].join("\n"),
+    );
+    const root = sidPaths.sessions();
+    expect(listShape(await lightListSessions(root))).toEqual(
+      listShape(await getSessionFiles(root)),
+    );
+    expect((await lightListSessions(root))[0].displayName).toBe("真正的首条");
+  });
+
+  test("大文件：首条就是巨型行 → 占位标题，session_name 仍优先", async () => {
+    const dir = join(sidPaths.sessions(), "proj-a");
+    writeFileSync(
+      join(dir, "huge.jsonl"),
+      [start("huge", 1), user(BIG, 1, 1), assistant("a", 1, 2)].join("\n"),
+    );
+    writeFileSync(
+      join(dir, "named.jsonl"),
+      [
+        start("named", 2),
+        user(BIG, 2, 1),
+        assistant("a", 2, 2),
+        meta("session_name", "我的会话", 2, 3),
+      ].join("\n"),
+    );
+    const byId = new Map((await lightListSessions(sidPaths.sessions())).map((s) => [s.id, s]));
+    expect(byId.get("huge")!.firstUserMessage).toBe(OVERSIZED_TITLE_PLACEHOLDER);
+    expect(byId.get("huge")!.displayName).toBe(OVERSIZED_TITLE_PLACEHOLDER);
+    expect(byId.get("named")!.displayName).toBe("我的会话");
+    // 计数、时间与全量一致：列表排序 / 「消息数」列不因轻量化漂移
+    const full = new Map((await getSessionFiles(sidPaths.sessions())).map((s) => [s.id, s]));
+    for (const id of ["huge", "named"]) {
+      expect(byId.get(id)!.messageCount).toBe(full.get(id)!.messageCount);
+      expect(byId.get(id)!.lastUpdated).toBe(full.get(id)!.lastUpdated);
+    }
+  });
+
+  test("撤回会把标题素材一起弹掉（首条被撤回后取下一条）", async () => {
+    const dir = join(sidPaths.sessions(), "proj-a");
+    writeFileSync(
+      join(dir, "r.jsonl"),
+      [
+        start("r", 1),
+        user(BIG, 1, 1),
+        retract(1, 1, 2),
+        user("重新问", 1, 3),
+        assistant("a", 1, 4),
+      ].join("\n"),
+    );
+    const [s] = await lightListSessions(sidPaths.sessions());
+    expect(s.firstUserMessage).toBe("重新问");
+  });
+});
+
+describe("R1：巨型工具结果行不挡标题", () => {
+  test("首条合格输入排在巨型 tool_result 之后 → 取到真实标题（实测 2/517 会话）", async () => {
+    const dir = join(sidPaths.sessions(), "proj-a");
+    const toolResult = JSON.stringify({
+      type: "user_message",
+      message: {
+        role: "user",
+        content: [{ type: "tool_result", tool_use_id: "t1", content: BIG }],
+      },
+      timestamp: ts(1, 1),
+    });
+    writeFileSync(
+      join(dir, "tr.jsonl"),
+      [start("tr", 1), toolResult, user("真实问题", 1, 2), assistant("a", 1, 3)].join("\n"),
+    );
+    const root = sidPaths.sessions();
+    const [light] = await lightListSessions(root);
+    const [full] = await getSessionFiles(root);
+    expect(light.firstUserMessage).toBe("真实问题");
+    expect(light.displayName).toBe(full.displayName);
+  });
+});

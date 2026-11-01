@@ -1723,7 +1723,7 @@ export class TraceCollector {
     if (!this.initialized) return;
 
     if (typeof input.prompt === "string" && input.prompt.trim()) {
-      this.metadata.user_prompts.push(input.prompt);
+      this.metadata.user_prompts.push(capUserPromptForMetadata(input.prompt));
     }
 
     this.appendHookEvent({
@@ -3508,4 +3508,25 @@ function errorHeadField(input: PostToolUseInput): { error_head?: string } {
   const text = failureText(input);
   if (!text) return {};
   return { error_head: text.length > ERROR_HEAD_MAX ? text.slice(0, ERROR_HEAD_MAX) : text };
+}
+
+/**
+ * R3：`metadata.user_prompts` 每条的最大字符数。
+ *
+ * 用户输入的全文已经在 traj 的 `history`（user 条目）里，metadata 再存一份全量就是纯复制。
+ * 10-22 的会话一次粘贴了 7700 万字符：history 178MB + metadata 178MB，traj 445MB 里一半是这份副本，
+ * 补传的压缩 / 成本重算 / 上传都按两倍体积付费。
+ *
+ * 读方只拿它当摘要：digest 截到 160/300 字，verify-hypothesis-guide 读首条做触发判据（几 KB 足够）。
+ * 所以留前 8K 字符 + 一个写明原长的尾注，而不是删字段——旧读方与旧 traj 的格式契约都不变
+ * （仍是 string[]），旧文件里的全量副本照常可读。
+ */
+export const USER_PROMPT_METADATA_MAX_CHARS = 8 * 1024;
+
+export function capUserPromptForMetadata(prompt: string): string {
+  if (prompt.length <= USER_PROMPT_METADATA_MAX_CHARS) return prompt;
+  return (
+    prompt.slice(0, USER_PROMPT_METADATA_MAX_CHARS) +
+    `…[已截断：原长 ${prompt.length} 字符，全文见 history]`
+  );
 }

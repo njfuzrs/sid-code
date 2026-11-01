@@ -165,12 +165,7 @@ export function cleanMessage(message: string): string {
  */
 export function extractFirstUserMessage(messages: Message[]): string {
   // 过滤掉斜杠命令
-  const userMessage = messages
-    .filter((msg) => {
-      const content = getMessageContent(msg);
-      return !content.startsWith("/") && !content.startsWith("?") && content.trim().length > 0;
-    })
-    .find((msg) => msg.role === "user");
+  const userMessage = messages.filter(isTitleCandidateMessage).find((msg) => msg.role === "user");
 
   let content: string;
 
@@ -184,6 +179,15 @@ export function extractFirstUserMessage(messages: Message[]): string {
   }
 
   return content;
+}
+
+/**
+ * 能否作会话标题：非空、不是斜杠命令 / `?` 帮助。
+ * 导出给轻量列表扫描器（light-scan.ts）按同一规则逐条判断，规则只有这一处。
+ */
+export function isTitleCandidateMessage(msg: Message): boolean {
+  const content = getMessageContent(msg);
+  return !content.startsWith("/") && !content.startsWith("?") && content.trim().length > 0;
 }
 
 /**
@@ -521,8 +525,14 @@ export async function getSessionFiles(
   currentSessionId?: string,
   options: GetSessionOptions = {},
 ): Promise<SessionInfo[]> {
-  const allFiles = await getAllSessionFiles(sessionDir, currentSessionId, options);
+  return finalizeSessionList(await getAllSessionFiles(sessionDir, currentSessionId, options));
+}
 
+/**
+ * 条目 → 列表：过滤排除项、按 id 去重、按开始时间排序并编 1-based 索引。
+ * 全量扫描器与轻量列表扫描器（light-scan.ts 的 lightListSessions）共用，列表口径只有一处。
+ */
+export function finalizeSessionList(allFiles: SessionFileEntry[]): SessionInfo[] {
   // 过滤损坏文件
   const validSessions = allFiles
     .filter(
@@ -668,9 +678,16 @@ export function sortSessions(
 export class SessionSelector {
   constructor(private sessionDir: string) {}
 
-  /** 列出所有会话 */
+  /**
+   * 列出所有会话。
+   *
+   * R1：走轻量列表扫描器。`--list-sessions`、`-r <id>` 解析 id 都经过这里，
+   * 列表只要元数据，全量扫描器会把巨型会话整份读入并 parse（实测 222MB 单文件 RSS +1.1GB）。
+   * 动态 import：light-scan.ts 依赖本文件，静态互引会形成循环。
+   */
   async listSessions(): Promise<SessionInfo[]> {
-    return getSessionFiles(this.sessionDir);
+    const { lightListSessions } = await import("./light-scan.ts");
+    return lightListSessions(this.sessionDir);
   }
 
   /** 查找会话（按 ID 或索引） */

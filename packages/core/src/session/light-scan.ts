@@ -1,5 +1,6 @@
 /**
  * 会话轻量扫描器（C1）：只为自动清理取「判删所需的最少信息」，不组装完整 SessionInfo。
+ * R1：同一套回放也供会话列表用（{@link lightListSessions}），大文件的标题只从短行里取。
  *
  * ## 为什么不能直接复用 getAllSessionFiles
  *
@@ -34,8 +35,19 @@
 
 import { statSync, readdirSync } from "node:fs";
 import { join } from "node:path";
-import type { SessionFileEntry, SessionInfo, SessionExcludeReason } from "./utils.ts";
-import { buildSessionFileEntry } from "./utils.ts";
+import type {
+  SessionFileEntry,
+  SessionInfo,
+  SessionExcludeReason,
+  GetSessionOptions,
+} from "./utils.ts";
+import {
+  buildSessionFileEntry,
+  extractFirstUserMessage,
+  finalizeSessionList,
+  isTitleCandidateMessage,
+} from "./utils.ts";
+import type { Message } from "../llm/types.ts";
 import { flushPendingSessionWrites, listAllSessionDirs } from "./store.ts";
 import { sidPaths } from "../config/paths.ts";
 
@@ -43,8 +55,11 @@ import { sidPaths } from "../config/paths.ts";
 export const FULL_READ_MAX_BYTES = 1024 * 1024;
 /** 大文件里，不超过它的行才整行 JSON.parse；更长的行只看行首与行尾 */
 const SMALL_LINE_MAX_BYTES = 64 * 1024;
-/** 长行保留的行首字节数：足够容纳 `{"type":"assistant_message",` */
-const LINE_HEAD_BYTES = 64;
+/**
+ * 长行保留的行首字节数：要容纳 `{"type":"user_message","message":{"role":"user","content":[{"type":"tool_result"`
+ * （R1 据此认出「工具结果开头」的巨型行，见 TOOL_RESULT_HEAD_RE）。
+ */
+const LINE_HEAD_BYTES = 256;
 /**
  * 长行保留的行尾字节数。消息记录的键序是 type/message/timestamp/…/uuid/parentUuid
  * （store.ts appendRecord 的 `{ ...partial, uuid, parentUuid }`），timestamp 之后只剩
@@ -53,6 +68,13 @@ const LINE_HEAD_BYTES = 64;
 const LINE_TAIL_BYTES = 4096;
 
 const TYPE_RE = /^\{"type":"([a-z_]+)"/;
+/**
+ * R1：巨型 user_message 行的首个内容块是 tool_result ⇒ 它是工具结果回传，不是用户输入，
+ * 不可能当标题（getMessageContent 只取 text 块）。实测 2/517 个会话的首条合格输入排在一条
+ * 巨型工具结果之后，不认出它就会把本可取到的标题判成占位。
+ * ⚠️ 近似：同一条消息若在工具结果后面又带 text 块，这里会漏掉它——只影响列表标题，不影响判删。
+ */
+const TOOL_RESULT_HEAD_RE = /"content":\[\{"type":"tool_result"/;
 // 行尾里最后一个 `"timestamp":"…"`。消息正文里的同名串在 JSON 字符串内会被转义成
 // `\"timestamp\":\"`，不会匹配这个未转义形态。
 const TS_RE = /"timestamp":"([^"\\]+)"/g;
@@ -62,6 +84,13 @@ interface LineView {
   full?: string;
   head: string;
   tail: string;
+}
+
+/** 一条 user_message 的标题素材：短行给消息体；巨型工具结果行给空消息（非候选）；其余巨型行 null（未知） */
+function titleSource(rec: Record<string, any> | undefined, v: LineView): Message | null {
+  if (rec) return rec.message && typeof rec.message === "object" ? rec.message : null;
+  if (TOOL_RESULT_HEAD_RE.test(v.head)) return { role: "user", content: [] } as Message;
+  return null;
 }
 
 /** 大文件线性回放的累积状态 */
@@ -77,6 +106,15 @@ interface ReplayState {
   sawMessage: boolean;
   /** 未被撤回的消息记录类型栈（只存类型，不存内容） */
   stack: string[];
+  /**
+   * R1：与 stack 一一对应的「列表标题素材」。只有**短行**的 user_message 存消息体
+   * （≤ SMALL_LINE_MAX_BYTES，已经 parse 过，不额外付出成本）；巨型行存 null，
+   * 永远不为一个标题去读全文。其余类型存 undefined。
+   */
+  titles: Array<Message | null | undefined>;
+  /** metadata 里的 summary / session_name（都是短行） */
+  summary?: string;
+  sessionName?: string;
 }
 
 function lineType(v: LineView): string | undefined {
@@ -121,15 +159,21 @@ function applyLine(st: ReplayState, v: LineView): void {
     case "tool_result":
       st.sawMessage = true;
       st.stack.push(type);
+      st.titles.push(type === "user_message" ? titleSource(rec, v) : undefined);
       if (ts) st.updatedAt = ts;
       return;
     case "metadata":
       if (rec?.key === "kind") st.kind = rec.value;
+      if (rec?.key === "summary" && typeof rec.value === "string") st.summary = rec.value;
+      if (rec?.key === "session_name" && typeof rec.value === "string") st.sessionName = rec.value;
       if (ts) st.updatedAt = ts;
       return;
     case "prompt_retracted": {
       const n = Math.min(Math.max(0, Math.floor(rec?.dropCount) || 0), st.stack.length);
-      if (n > 0) st.stack.splice(st.stack.length - n, n);
+      if (n > 0) {
+        st.stack.splice(st.stack.length - n, n);
+        st.titles.splice(st.titles.length - n, n);
+      }
       if (ts) st.updatedAt = ts;
       return;
     }
@@ -153,6 +197,7 @@ async function replayLargeFile(filePath: string): Promise<ReplayState> {
     updatedAt: "",
     sawMessage: false,
     stack: [],
+    titles: [],
   };
   const decoder = new TextDecoder();
   // 当前行的累积：短行时攒全文（chunks），超过阈值后丢弃中段，只留 head + 滚动 tail
@@ -251,6 +296,24 @@ function concat(parts: Uint8Array[], total: number): Uint8Array {
   return out;
 }
 
+/** 巨型首条输入的占位标题（R1：不为一个标题读全文） */
+export const OVERSIZED_TITLE_PLACEHOLDER = "（首条消息内容过大）";
+
+/**
+ * R1：按 extractFirstUserMessage 的同一规则选首条用户消息，只是候选里的巨型行没有正文。
+ * 按顺序走：先遇到巨型行 ⇒ 它可能就是首条，内容不可知 → 占位，不猜；
+ * 先遇到合格短行 ⇒ 就是它。全都不合格 ⇒ 与原函数同样回退到第一条（巨型则占位）。
+ */
+function replayFirstUserMessage(st: ReplayState): string {
+  const users = st.titles.filter((t) => t !== undefined);
+  if (users.length === 0) return "空对话";
+  for (const t of users) {
+    if (t === null) return OVERSIZED_TITLE_PLACEHOLDER;
+    if (isTitleCandidateMessage(t)) return extractFirstUserMessage([t]);
+  }
+  return extractFirstUserMessage(users as Message[]);
+}
+
 /** 把大文件的回放结果翻译成与 buildSessionFileEntry 同形的条目 */
 function entryFromReplay(
   file: string,
@@ -272,8 +335,7 @@ function entryFromReplay(
   }
   if (st.kind === "subagent") return excluded("subagent");
 
-  // ⚠️ 只填清理用得到的字段。displayName / firstUserMessage 刻意留空：
-  // 轻量条目**不供展示**，拿它渲染列表会出现一排空标题。
+  const firstUserMessage = replayFirstUserMessage(st);
   const sessionInfo: SessionInfo = {
     id: st.sessionId,
     file: file.replace(/\.(json|jsonl)$/, ""),
@@ -281,8 +343,11 @@ function entryFromReplay(
     startTime: st.createdAt,
     lastUpdated: st.updatedAt,
     messageCount: st.stack.length,
-    displayName: "",
-    firstUserMessage: "",
+    // 与 buildSessionFileEntry 同优先级：session_name → summary → 首条用户消息
+    displayName:
+      (st.sessionName?.trim() ? st.sessionName : undefined) || st.summary || firstUserMessage,
+    firstUserMessage,
+    summary: st.summary,
     isCurrentSession: currentSessionId ? st.sessionId === currentSessionId : false,
     index: 0,
     cwd: st.cwd,
@@ -293,7 +358,11 @@ function entryFromReplay(
 }
 
 /** 扫一个会话目录（与 utils.ts scanSessionDir 的文件筛选口径一致） */
-async function lightScanDir(dir: string, currentSessionId?: string): Promise<SessionFileEntry[]> {
+async function lightScanDir(
+  dir: string,
+  currentSessionId?: string,
+  options: GetSessionOptions = {},
+): Promise<SessionFileEntry[]> {
   let files: string[];
   try {
     files = readdirSync(dir)
@@ -315,7 +384,7 @@ async function lightScanDir(dir: string, currentSessionId?: string): Promise<Ses
       // 旧 .json 是整份 JSON，只能全文解析；它们都是迁移前的小文件
       if (st.size <= FULL_READ_MAX_BYTES || file.endsWith(".json")) {
         const content = await Bun.file(filePath).text();
-        out.push(buildSessionFileEntry(file, dir, content, currentSessionId));
+        out.push(buildSessionFileEntry(file, dir, content, currentSessionId, options));
         continue;
       }
       out.push(entryFromReplay(file, dir, await replayLargeFile(filePath), currentSessionId));
@@ -334,10 +403,29 @@ async function lightScanDir(dir: string, currentSessionId?: string): Promise<Ses
 export async function lightScanSessionFiles(
   sessionDir: string,
   currentSessionId?: string,
+  options: GetSessionOptions = {},
 ): Promise<SessionFileEntry[]> {
   flushPendingSessionWrites();
   const dirs = sessionDir === sidPaths.sessions() ? listAllSessionDirs() : [sessionDir];
   const out: SessionFileEntry[] = [];
-  for (const d of dirs) out.push(...(await lightScanDir(d, currentSessionId)));
+  for (const d of dirs) out.push(...(await lightScanDir(d, currentSessionId, options)));
   return out;
+}
+
+/**
+ * R1：轻量版 getSessionFiles，供会话选择器 / `--list-sessions` / `-r <id>` 解析使用。
+ *
+ * 与全量版的差异只在 > FULL_READ_MAX_BYTES 的文件：
+ * - 标题来自 session_name / summary / 短行里的首条用户消息；首条是巨型行时显示
+ *   {@link OVERSIZED_TITLE_PLACEHOLDER}，不读全文；
+ * - `includeFullContent`（选择器的全文搜索）对它们**不加载正文**，只能按标题 / id 命中。
+ *   为了搜一个关键词把 222MB 整份读入 + parse，正是 R1 要消掉的冻结。
+ * 小文件走同一个 buildSessionFileEntry，列表和搜索结果与全量版逐字段一致。
+ */
+export async function lightListSessions(
+  sessionDir: string,
+  currentSessionId?: string,
+  options: GetSessionOptions = {},
+): Promise<SessionInfo[]> {
+  return finalizeSessionList(await lightScanSessionFiles(sessionDir, currentSessionId, options));
 }

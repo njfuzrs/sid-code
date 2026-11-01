@@ -17,8 +17,8 @@ import { useInput } from "./render-port/hooks.ts";
 import { useStdout } from "./render-port/hooks.ts";
 import type { Config } from "@sid-code/core/config/config.ts";
 import type { SessionInfo } from "@sid-code/core/session/utils.ts";
+import { lightListSessions } from "@sid-code/core/session/light-scan.ts";
 import {
-  getSessionFiles,
   formatRelativeTime,
   formatAbsoluteTime,
   shortenModel,
@@ -241,9 +241,11 @@ function useLoadSessions(
   useEffect(() => {
     const loadSessions = async () => {
       try {
-        // P0-1：传 sessions 根目录 → getSessionFiles 跨所有项目子目录聚合（选择器默认「全部项目」视图）。
+        // P0-1：传 sessions 根目录 → 跨所有项目子目录聚合（选择器默认「全部项目」视图）。
+        // R1：列表只要元数据，走轻量扫描器——全量扫描器会把巨型会话整份读入并 parse，
+        // 选择器打开时冻结（本机 222MB 单文件 RSS +1.1GB）。
         const sessionDir = sidPaths.sessions();
-        const sessionData = await getSessionFiles(sessionDir, currentSessionId);
+        const sessionData = await lightListSessions(sessionDir, currentSessionId);
         setSessions(sessionData);
         setLoading(false);
       } catch (err: any) {
@@ -261,7 +263,9 @@ function useLoadSessions(
       if (isSearchMode && !hasLoadedFullContent) {
         try {
           const sessionDir = sidPaths.sessions();
-          const sessionData = await getSessionFiles(sessionDir, currentSessionId, {
+          // R1：全文搜索同样走轻量扫描器——小文件加载正文，超过 1MB 的只按标题 / id 命中。
+          // `-r` 选择器一进来就是搜索模式，用全量扫描器等于每次打开都整份 parse 全部会话。
+          const sessionData = await lightListSessions(sessionDir, currentSessionId, {
             includeFullContent: true,
           });
           setSessions(sessionData);
