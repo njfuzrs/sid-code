@@ -11,7 +11,9 @@ import { z } from "zod/v4";
 import { Registry } from "@sid-code/core/tool/registry.ts";
 import type { LegacyTool } from "@sid-code/core/tool/types.ts";
 import { buildTool } from "@sid-code/core/tool/types.ts";
-import { toLegacyTool } from "@sid-code/core/tool/bridge.ts";
+import { toLegacyTool, BRIDGE_FORWARDED_KEYS } from "@sid-code/core/tool/bridge.ts";
+import { PermissionChecker } from "@sid-code/core/permission/checker.ts";
+import { defaultConfig } from "@sid-code/core/config/config.ts";
 
 function mkTool(name: string, extra: Partial<LegacyTool> = {}): LegacyTool {
   return {
@@ -200,6 +202,60 @@ describe("Registry — G19 bridge (toLegacyTool)", () => {
     const r = new Registry();
     r.register(legacy);
     expect(r.definitions().map((d) => d.name)).not.toContain("gated");
+  });
+
+  test("B1：isDestructive 经 bridge 后 yesMode 仍要求安全类确认", async () => {
+    const newTool = buildTool({
+      name: "nuke",
+      description: () => "删库",
+      inputSchema: () => ({ type: "object", properties: {} }),
+      call: async () => ({ data: "" }),
+      isDestructive: () => true,
+    });
+    const legacy = toLegacyTool(newTool);
+    const checker = new PermissionChecker({ ...defaultConfig(), yesMode: true });
+    // checker.check 签名收的是新 Tool；运行时只鸭子类型读 isDestructive，与生产注册形态一致
+    const d = await checker.check({ toolName: "nuke", input: {} }, legacy as any);
+    expect(d.allowed).toBe(false);
+    expect(d.needsConfirmation).toBe(true);
+    expect(d.decisionReason?.type).toBe("destructiveTool");
+  });
+
+  test("B1：此前漏传的 5 个能力字段经 bridge 后都在，方法 this 指向原工具", () => {
+    const newTool = buildTool({
+      name: "full",
+      description: () => "full",
+      inputSchema: () => ({ type: "object", properties: {} }),
+      call: async () => ({ data: "" }),
+      exemptFromLoopDetection: true,
+      needsPermissionChecker: true,
+      strictPriority: 0,
+      resultDisplayMode: "hidden" as const,
+      prefix: "/p",
+      jitAffectedPaths(this: { prefix: string }, input: unknown) {
+        return [`${this.prefix}/${(input as { f: string }).f}`];
+      },
+    } as Parameters<typeof buildTool>[0]);
+    const legacy = toLegacyTool(newTool);
+    expect(legacy.exemptFromLoopDetection).toBe(true);
+    expect(legacy.needsPermissionChecker).toBe(true);
+    // 0 是有意义的声明，不能因假值被丢
+    expect(legacy.strictPriority).toBe(0);
+    expect(legacy.resultDisplayMode).toBe("hidden");
+    expect(legacy.jitAffectedPaths?.({ f: "a.ts" })).toEqual(["/p/a.ts"]);
+  });
+
+  test("B1：BRIDGE_FORWARDED_KEYS 覆盖 isDestructive 与此前漏传的字段", () => {
+    for (const k of [
+      "isDestructive",
+      "exemptFromLoopDetection",
+      "needsPermissionChecker",
+      "strictPriority",
+      "jitAffectedPaths",
+      "resultDisplayMode",
+    ]) {
+      expect(BRIDGE_FORWARDED_KEYS as string[]).toContain(k);
+    }
   });
 });
 
