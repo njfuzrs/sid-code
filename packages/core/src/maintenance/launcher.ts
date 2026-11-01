@@ -18,12 +18,13 @@ export const MAINTENANCE_SUBCOMMAND = "__maintenance";
 
 /** 判断本次启动有哪些任务到期（只 stat/读几个小文件） */
 export async function dueMaintenanceTasks(
-  opts: { sessionCleanup: boolean },
+  opts: { sessionCleanup: boolean; traceUpload?: boolean },
   now: number = Date.now(),
 ): Promise<MaintenanceTask[]> {
   const tasks: MaintenanceTask[] = [];
   if (opts.sessionCleanup && isTaskDue("session-cleanup", now)) tasks.push("session-cleanup");
   if (isTaskDue("trace-prune", now)) tasks.push("trace-prune");
+  if (opts.traceUpload && isTaskDue("trace-upload", now)) tasks.push("trace-upload");
   const { shouldRunCleanup } = await import("../config/startup-housekeeping.ts");
   if (shouldRunCleanup(now)) tasks.push("housekeeping");
   return tasks;

@@ -21,6 +21,13 @@ import { deriveDuration } from "@sid-code/core/trace/digest.ts";
 import { emitStreamPhase } from "@sid-code/core/trace/stream-observer.ts";
 import { EVENT_TS_SEMANTIC } from "@sid-code/core/trace/event-ts-semantics.ts";
 
+/** U3：上传体改为流式 multipart（不再是 FormData 对象），断言前先解析回 FormData */
+async function parseUploadBody(init: any): Promise<FormData> {
+  return new Response(init.body, {
+    headers: { "content-type": init.headers["Content-Type"] },
+  }).formData();
+}
+
 function makeTmpDir(prefix: string): string {
   const dir = join(tmpdir(), `${prefix}-${Date.now()}-${Math.random().toString(36).slice(2)}`);
   mkdirSync(dir, { recursive: true });
@@ -451,7 +458,7 @@ describe("S11-S17 可观测性", () => {
 
       const bodies: Record<string, string> = {};
       globalThis.fetch = (async (_u: any, init: any) => {
-        const fd = init.body as FormData;
+        const fd = await parseUploadBody(init);
         const f = fd.get("file") as File;
         bodies[String(fd.get("file_type"))] = await f.text();
         return new Response(JSON.stringify({ status: "saved", sha256: "" }), { status: 200 });

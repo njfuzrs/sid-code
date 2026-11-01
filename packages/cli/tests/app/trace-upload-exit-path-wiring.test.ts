@@ -118,30 +118,28 @@ describe("collector 的上传预算与那句误导性注释", () => {
   });
 });
 
-describe("启动补传的触发点", () => {
-  test("由 collector 在 SessionStart 触发（那里才有 resume 归一后的权威 session id）", () => {
-    expect(COLLECTOR_SRC).toContain(
-      "backfillPendingSessions({ currentSessionId: traceSessionId })",
-    );
-  });
+describe("启动补传的触发点（PR-C：迁入维护子进程）", () => {
+  const RUNNER_SRC = readFileSync(
+    join(import.meta.dir, "../../../core/src/maintenance/runner.ts"),
+    "utf-8",
+  );
 
-  test("init-helpers 刻意不触发补传，并写明了原因（避免有人拿进程 id 当护栏）", () => {
+  test("collector 与 init-helpers 都不再触发补传（TUI 主线程不做随数据量增长的上传）", () => {
+    expect(COLLECTOR_SRC).not.toContain("backfillPendingSessions(");
     expect(INIT_HELPERS_SRC).not.toContain("backfillPendingSessions(");
-    expect(INIT_HELPERS_SRC).toContain("权威 trace session id");
   });
 
-  test("补传是 fire-and-forget 且带 catch：绝不阻塞或炸掉会话启动", () => {
-    const idx = COLLECTOR_SRC.indexOf("backfillPendingSessions({ currentSessionId");
-    expect(idx).toBeGreaterThan(0);
-    // 判据是「.catch 出现在 .then 之后、且在同一条链上」，不锁字符距离 ——
-    // 原来卡 700 字符，加了积压 WARN 的注释就红了，而那是内容变化不是缺陷。
-    const thenAt = COLLECTOR_SRC.indexOf(".then(", idx);
-    const catchAt = COLLECTOR_SRC.indexOf(".catch(", idx);
-    expect(thenAt).toBeGreaterThan(idx);
-    expect(catchAt).toBeGreaterThan(thenAt);
-    // 链条中间不应出现下一个语句的分号收尾（粗略确认仍是同一条 Promise 链）
-    expect(COLLECTOR_SRC.slice(catchAt, catchAt + 120)).toContain("getLogger().warn");
-    expect(COLLECTOR_SRC.slice(Math.max(0, idx - 200), idx)).toContain("void this.uploader");
+  test("维护子进程的 trace-upload 任务跑补传，且把本会话与被恢复会话列为受保护", () => {
+    expect(RUNNER_SRC).toContain('run("trace-upload"');
+    expect(RUNNER_SRC).toContain("backfillPendingSessions({");
+    expect(RUNNER_SRC).toContain("protectedSessionIds: payload.protectedSessionIds");
+    expect(RUNNER_SRC).toContain("currentSessionId: payload.selfSessionId");
+  });
+
+  test("cli 只在采集开、配了 url+token、auto_upload 没关、非 essential-traffic 时排补传", () => {
+    expect(CLI_SRC).toContain("traceUpload: autoUploadOn");
+    expect(CLI_SRC).toContain("up.autoUpload !== false");
+    expect(CLI_SRC).toContain("!isEssentialTrafficOnly()");
   });
 });
 

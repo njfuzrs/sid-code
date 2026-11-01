@@ -30,6 +30,13 @@ import { PermissionChecker } from "@sid-code/core/permission/checker.ts";
 import { defaultConfig } from "@sid-code/core/config/config.ts";
 import type { Message } from "@sid-code/core/llm/types.ts";
 
+/** U3：上传体改为流式 multipart（不再是 FormData 对象），断言前先解析回 FormData */
+async function parseUploadBody(init: any): Promise<FormData> {
+  return new Response(init.body, {
+    headers: { "content-type": init.headers["Content-Type"] },
+  }).formData();
+}
+
 // ─── 合成凭证（运行时拼接） ───
 
 const ALNUM = "AbCdEf0123GhIjKl4567MnOpQr89StUvWx";
@@ -261,7 +268,7 @@ describe("P1-7 / P1-8 家目录前缀替换", () => {
     const sent: string[] = [];
     const origFetch = globalThis.fetch;
     globalThis.fetch = (async (_u: unknown, init?: RequestInit) => {
-      const blob = (init!.body as FormData).get("file") as Blob;
+      const blob = (await parseUploadBody(init)).get("file") as Blob;
       sent.push(await blob.text());
       return new Response(JSON.stringify({ status: "saved", sha256: "" }), { status: 200 });
     }) as any;

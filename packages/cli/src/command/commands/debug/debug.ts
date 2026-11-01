@@ -142,6 +142,13 @@ const mod: LocalCommandModule = {
         if (b.emptyTraj > 0) minor.push(`空 traj ${b.emptyTraj}`);
         if (b.tooNew > 0) minor.push(`太新 ${b.tooNew}`);
         if (b.errored > 0) minor.push(`读错 ${b.errored}`);
+        // U4：退避中 / 已达失败上限。后者不再自动重试，必须点名（补传绝不能悄悄丢）
+        if (b.backoff > 0) minor.push(`上传失败退避中 ${b.backoff}`);
+        if (b.uploadFailed > 0) {
+          minor.push(
+            `⚠ 已达失败上限不再自动重试 ${b.uploadFailed}（sid-code --upload-traces 手动重传）`,
+          );
+        }
         if (minor.length > 0) lines.push(`            其余：${minor.join("，")}`);
         // 自检：分类之和必须等于扫描总数。不等时说出来，不许静默（见 UploadBacklog.unaccounted）
         if (b.unaccounted !== 0) {

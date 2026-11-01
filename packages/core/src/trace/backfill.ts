@@ -47,10 +47,20 @@ import { join } from "node:path";
 import { getLogger } from "../debug/logger.ts";
 import { sessionCreatedAtMs } from "./upload-watermark.ts";
 import { hasFinalUploadMarker } from "./upload-marker.ts";
+import {
+  clearUploadAttempts,
+  isInBackoff,
+  readUploadFailed,
+  recordUploadFailure,
+} from "./upload-attempts.ts";
+import { clearUploadCache } from "./upload-compress.ts";
 
 /** 只需要 uploadSession 的最小上传器视图（便于测试注入，无需真实网络） */
 export interface BackfillUploader {
-  uploadSession(sessionDir: string, sessionId: string): Promise<{ allConfirmed: boolean }>;
+  uploadSession(
+    sessionDir: string,
+    sessionId: string,
+  ): Promise<{ allConfirmed: boolean; reason?: string }>;
 }
 
 export interface BackfillOptions {
@@ -79,6 +89,16 @@ export interface BackfillOptions {
    * 「连 essential-traffic 期间产生的会话一起传」，尊重用户意愿。默认 false。
    */
   includeHistory?: boolean;
+  /**
+   * 额外按「有进程在写」处理的会话 id（U4/PR-C）。补传搬进维护子进程后，子进程自己不是
+   * 任何会话，由发起的 TUI 进程把本进程会话 id 与被恢复的会话 id 传进来。
+   */
+  protectedSessionIds?: string[];
+  /**
+   * 无视跨进程退避与终态（U4）。只有 `--upload-traces` 手动命令传 true：用户显式要传，
+   * 终态会话也要再试一次。默认 false。
+   */
+  ignoreBackoff?: boolean;
 }
 
 /** 一个待补传的会话 */
@@ -122,6 +142,13 @@ export interface ScanStats {
   privacyRestricted: number;
   /** 读目录/文件出错 */
   errored: number;
+  /** U4：上次失败后仍在退避窗口内，本轮不碰 */
+  backoff: number;
+  /**
+   * U4：累计失败达上限、已写 `.upload-failed` 终态，不再自动重试。
+   * 单列一格且在 `/debug`、`--upload-traces` 输出里点名——补传绝不能悄悄丢。
+   */
+  uploadFailed: number;
 }
 
 export interface ScanResult {
@@ -145,6 +172,8 @@ export interface BackfillResult extends ScanStats {
   deferred: number;
   /** 是否被 AbortSignal 中止 */
   aborted: boolean;
+  /** U4：本轮失败后达到上限、新进入终态的会话数 */
+  newlyFailedTerminal: number;
 }
 
 /** 读 heartbeat.txt 的 ts，取不到返回 null（损坏/空文件/无字段都算取不到） */
@@ -212,7 +241,10 @@ export function scanPendingUploads(opts: BackfillOptions): ScanResult {
     heartbeatFreshMs = 30_000,
     watermarkMs,
     includeHistory = false,
+    protectedSessionIds = [],
+    ignoreBackoff = false,
   } = opts;
+  const protectedIds = new Set(protectedSessionIds);
 
   const stats: ScanStats = {
     scanned: 0,
@@ -225,6 +257,8 @@ export function scanPendingUploads(opts: BackfillOptions): ScanResult {
     beforeWatermark: 0,
     privacyRestricted: 0,
     errored: 0,
+    backoff: 0,
+    uploadFailed: 0,
   };
   const pending: PendingSession[] = [];
 
@@ -250,7 +284,7 @@ export function scanPendingUploads(opts: BackfillOptions): ScanResult {
 
     try {
       // ① 当前会话：还在写，永不补传
-      if (currentSessionId && sessionId === currentSessionId) {
+      if ((currentSessionId && sessionId === currentSessionId) || protectedIds.has(sessionId)) {
         stats.live++;
         continue;
       }
@@ -311,6 +345,20 @@ export function scanPendingUploads(opts: BackfillOptions): ScanResult {
         continue;
       }
 
+      // ③.8 U4：跨进程退避与终态。必须排在 ④ 时间闸**之前**：记失败时往会话目录写
+      // `.upload-attempts` 会刷新目录 mtime，排在后面的话刚失败的会话一律先落进 tooNew，
+      // 退避那一格永远是 0（单测抓到的）。
+      if (!ignoreBackoff) {
+        if (readUploadFailed(dir)) {
+          stats.uploadFailed++;
+          continue;
+        }
+        if (isInBackoff(dir, now)) {
+          stats.backoff++;
+          continue;
+        }
+      }
+
       // ④ 时间闸：目录太新一律不动。
       // ⚠️ mtimeMs 是浮点数，刚建的目录 now - mtimeMs 可能是**负数**；用 `<` 比较
       // 天然把负数判成"太新，不动"，方向是安全的（见 MEMORY mtime-float-breaks-maxage-zero）。
@@ -367,6 +415,7 @@ export async function runBackfill(
     errors: 0,
     deferred: Math.max(0, pending.length - maxSessions),
     aborted: false,
+    newlyFailedTerminal: 0,
   };
 
   if (pending.length === 0 || maxSessions === 0) return result;
@@ -384,13 +433,35 @@ export async function runBackfill(
       if (idx >= batch.length) return;
       const item = batch[idx]!;
       result.attempted++;
+      let failure: string | null = null;
       try {
         const r = await uploader.uploadSession(item.dir, item.sessionId);
-        if (r?.allConfirmed) result.uploaded++;
-        else result.failed++;
+        if (r?.allConfirmed) {
+          result.uploaded++;
+          // 成功：清掉退避/终态与压缩缓存（手动重传成功也走这里）
+          clearUploadAttempts(item.dir);
+          clearUploadCache(item.dir);
+        } else {
+          result.failed++;
+          failure = r?.reason ?? "部分文件未确认";
+        }
       } catch (err) {
         result.errors++;
+        failure = String(err);
         getLogger().warn("TRACE", `启动补传异常 ${item.sessionId}: ${err}`);
+      }
+      // U4：失败记进会话目录，下次按指数退避；累计到上限写终态。
+      // 被中止（退出）的那一次不算失败：没传完不等于传不上。
+      if (failure !== null && !opts.signal?.aborted) {
+        if (recordUploadFailure(item.dir, failure)) {
+          result.newlyFailedTerminal++;
+          clearUploadCache(item.dir);
+          getLogger().warn(
+            "TRACE",
+            `会话 ${item.sessionId} 轨迹累计上传失败已达上限，不再自动重试（${failure}）。` +
+              `数据仍在本地，可运行 sid-code --upload-traces 手动重传。`,
+          );
+        }
       }
     }
   };
@@ -414,7 +485,9 @@ export function formatBackfillResult(r: BackfillResult): string {
     `未确认 ${r.failed}，异常 ${r.errors}）；` +
     `顺延 ${r.deferred}，跳过：已上传 ${r.alreadyUploaded}、无 traj ${r.noTraj}、` +
     `空 traj ${r.emptyTraj}、太新 ${r.tooNew}、进程在写 ${r.live}、` +
-    `幽灵目录 ${r.ghost}、配置上传前 ${r.beforeWatermark}、读错 ${r.errored}` +
+    `幽灵目录 ${r.ghost}、配置上传前 ${r.beforeWatermark}、读错 ${r.errored}、` +
+    `退避中 ${r.backoff}、已达失败上限 ${r.uploadFailed}` +
+    (r.newlyFailedTerminal > 0 ? `；本轮新增失败终态 ${r.newlyFailedTerminal}` : "") +
     (r.aborted ? "；已被中止" : "")
   );
 }
@@ -444,6 +517,10 @@ export interface UploadBacklog {
   tooNew: number;
   /** S11：读目录/文件出错的会话数 */
   errored: number;
+  /** U4：退避窗口内的会话数 */
+  backoff: number;
+  /** U4：已达失败上限、不再自动重试的会话数 */
+  uploadFailed: number;
   /**
    * S11 自检：各分类之和与 totalSessions 的差值（理应恒为 0）。
    * 非 0 = 某个会话没落进任何一格（或扫描根目录本身读失败），调用方必须把它说出来，
@@ -488,7 +565,9 @@ export function getUploadBacklog(opts: BackfillOptions): UploadBacklog {
     stats.noTraj +
     stats.emptyTraj +
     stats.tooNew +
-    stats.errored;
+    stats.errored +
+    stats.backoff +
+    stats.uploadFailed;
   return {
     totalSessions: stats.scanned,
     uploaded: stats.alreadyUploaded,
@@ -501,6 +580,8 @@ export function getUploadBacklog(opts: BackfillOptions): UploadBacklog {
     emptyTraj: stats.emptyTraj,
     tooNew: stats.tooNew,
     errored: stats.errored,
+    backoff: stats.backoff,
+    uploadFailed: stats.uploadFailed,
     unaccounted: stats.scanned - classified,
     queueEntries,
   };

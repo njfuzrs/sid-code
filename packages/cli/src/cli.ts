@@ -1128,10 +1128,21 @@ async function handleUploadTraces(
         );
       }
     }
+    // U4：手动命令无视跨进程退避与终态——用户显式要传，已达失败上限的会话也再试一次。
+    // 先点名有多少个处于终态，免得「这次又失败了」被当成新问题。
+    {
+      const { stats } = scanPendingUploads({ outputDir });
+      if (stats.uploadFailed > 0 || stats.backoff > 0) {
+        console.log(
+          `其中 ${stats.uploadFailed} 个会话已达自动重试上限、${stats.backoff} 个在退避中，本次手动一并重试`,
+        );
+      }
+    }
     const b = await mgr.backfillPendingSessions({
       maxSessions: Number.POSITIVE_INFINITY,
       concurrency: 3,
       includeHistory: opts.includeHistory === true,
+      ignoreBackoff: true,
     });
     console.log(formatBackfillResult(b));
     if (!opts.includeHistory && b.beforeWatermark > 0) {
@@ -2971,8 +2982,20 @@ export async function main(): Promise<void> {
         const { sidPaths } = await import("@sid-code/core/config/paths.ts");
         // -p 保持原语义：无头不做会话清理；轨迹/管家清理照常（原先它们在 collector 构造与
         // runStartupHousekeeping 里，无头同样会跑）
+        // U1–U4（PR-C）：补传原在 collector 的 SessionStart 里跑（无头与 TUI 都会触发），
+        // 迁入子进程后判定条件逐条照搬：采集开着、配了 url+token、不是 essential-traffic、
+        // auto_upload 没关。任一不满足就不带 upload 段，子进程里该任务直接空跑。
+        const up = config.trace?.upload;
+        const { isEssentialTrafficOnly } =
+          await import("@sid-code/core/analytics/privacy-level.ts");
+        const autoUploadOn =
+          !!config.trace?.enabled &&
+          !!(up?.url && up?.token) &&
+          up.autoUpload !== false &&
+          !isEssentialTrafficOnly();
         const tasks = await dueMaintenanceTasks({
           sessionCleanup: !config.print && retentionSettings.enabled,
+          traceUpload: autoUploadOn,
         });
         if (tasks.length === 0) return;
         const launch = () =>
@@ -2985,6 +3008,29 @@ export async function main(): Promise<void> {
               : undefined,
             traceOutputDir: config.trace?.outputDir ?? sidPaths.trajectories(),
             maxSessionsRetained: config.trace?.maxSessionsRetained,
+            upload: autoUploadOn
+              ? {
+                  baseUrl: up!.url!,
+                  token: up!.token!,
+                  toolSource: up!.toolSource,
+                  userId: up!.userId,
+                  deviceId: up!.deviceId,
+                  maxRetries: up!.maxRetries,
+                  retryBaseMs: up!.retryBaseMs,
+                  compress: up!.compress,
+                  deleteAfterUpload: up!.deleteAfterUpload,
+                  maxQueueRetries: up!.maxQueueRetries,
+                  redactHomeDir: up!.redactHomeDir,
+                  // 只传定价相关字段：api_key 不该出现在子进程 argv 里
+                  availableModels: config.availableModels?.map((m: any) => ({
+                    name: m.name,
+                    modelId: m.modelId,
+                    provider: m.provider,
+                    baseURL: m.baseURL,
+                    pricing: m.pricing,
+                  })),
+                }
+              : undefined,
           });
         if (config.print) {
           launch();

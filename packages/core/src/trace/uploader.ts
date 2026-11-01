@@ -24,7 +24,7 @@ import { getLogger } from "../debug/logger.ts";
 import { sidPaths } from "../config/paths.ts";
 import { backendUrl } from "../identity/endpoints.ts";
 import type { TraceUploaderInterface } from "./collector.ts";
-import { redactHomeDir } from "./redact-home.ts";
+import { prepareUploadFile } from "./upload-compress.ts";
 import { hasFinalUploadMarker } from "./upload-marker.ts";
 
 // ─── 接口定义 ───
@@ -96,6 +96,8 @@ export interface UploadResult {
   files: FileUploadResult[];
   /** 所有文件都上传成功（uploaded 或 skipped） */
   allConfirmed: boolean;
+  /** 未全部确认时的失败摘要（U4：写进 `.upload-attempts` 的 lastError） */
+  reason?: string;
 }
 
 /**
@@ -333,7 +335,7 @@ export class UploadManager implements TraceUploaderInterface {
           this.appendToRetryQueue(sessionId, fileName);
         }
       }
-      return { sessionId, files: [], allConfirmed: false };
+      return { sessionId, files: [], allConfirmed: false, reason: "服务端不可达" };
     }
 
     const results: FileUploadResult[] = [];
@@ -369,7 +371,13 @@ export class UploadManager implements TraceUploaderInterface {
       }
     }
 
-    return { sessionId, files: results, allConfirmed };
+    const reason = allConfirmed
+      ? undefined
+      : results
+          .filter((r) => r.status === "failed")
+          .map((r) => `${r.fileType}: ${r.reason ?? "unknown"}`)
+          .join("; ");
+    return { sessionId, files: results, allConfirmed, reason };
   }
 
   /**
@@ -385,39 +393,38 @@ export class UploadManager implements TraceUploaderInterface {
 
     for (let attempt = 0; attempt < this.opts.maxRetries; attempt++) {
       try {
-        // 读取 + 压缩 + 计算 SHA256（对齐 claude-trace 的 compress_and_hash）
-        // 用 Bun.file().bytes() 而不是 node 的 readFile：后者返回 Buffer
-        // （`Uint8Array<ArrayBufferLike>`），而 Bun.gzipSync 与 Blob 都只接受
-        // `Uint8Array<ArrayBuffer>`，类型不兼容。本文件下一行就在用 Bun.gzipSync，
-        // 读侧也走 Bun API 更一致，且省掉一次 ArrayBuffer 拷贝。
-        let content: Uint8Array<ArrayBuffer> = await Bun.file(filePath).bytes();
-        if (fileType === "events") {
-          // S17：error_head（工具错误原文前 200 字）只留本地排查用，云端只收 error_kind
-          content = new TextEncoder().encode(
-            stripLocalOnlyEventFields(new TextDecoder().decode(content)),
-          ) as Uint8Array<ArrayBuffer>;
+        // U1：流式变换 + 压缩，产物落盘缓存（upload-compress.ts）。
+        // 旧实现整份 bytes() → TextDecoder → replace → Bun.gzipSync，445MB 每次 3s+ 同步 CPU，
+        // 且**每次重试重压一遍**。现在只在第一次（或源文件变了）时压，重试与下次启动直接复用；
+        // 内存只随最长一行增长。SHA256 仍对实际发出去的字节算（压缩之后），口径不变。
+        const prepared = await prepareUploadFile(filePath, {
+          compress: this.opts.compress,
+          redactHomeDir: this.opts.redactHomeDir,
+          // S17：error_head 等字段只留本地（逐行剥，与 stripLocalOnlyEventFields 同一实现）
+          stripLocalOnly: fileType === "events" ? stripLocalOnlyEventFields : undefined,
+        });
+        const sha256 = prepared.sha256;
+        if (prepared.cacheHit) {
+          getLogger().debug("TRACE", `上传复用压缩缓存 ${sessionId}/${fileType}`);
         }
-        if (this.opts.redactHomeDir) {
-          // 在压缩与 SHA256 之前替换：服务端校验的是「实际发出去的字节」
-          content = new TextEncoder().encode(
-            redactHomeDir(new TextDecoder().decode(content)),
-          ) as Uint8Array<ArrayBuffer>;
-        }
-        if (this.opts.compress) {
-          content = Bun.gzipSync(content, { level: 6 });
-        }
-        const sha256 = this.computeSha256(content);
 
-        // 构建 FormData（对齐 claude-trace uploader.py 的 _upload_single_file）
-        const formData = new FormData();
+        // 构建 multipart 请求体（字段与 claude-trace uploader.py 的 _upload_single_file 对齐）
         const uploadName = this.opts.compress ? `${basename(filePath)}.gz` : basename(filePath);
         const contentType = this.opts.compress ? "application/gzip" : "application/octet-stream";
-        formData.append("file", new Blob([content], { type: contentType }), uploadName);
-        formData.append("session_id", sessionId);
-        formData.append("file_type", fileType);
-        formData.append("tool_source", this.opts.toolSource);
-        if (this.opts.userId) formData.append("user_id", this.opts.userId);
-        if (this.opts.deviceId) formData.append("device_id", this.opts.deviceId);
+        const fields: Array<[string, string]> = [
+          ["session_id", sessionId],
+          ["file_type", fileType],
+          ["tool_source", this.opts.toolSource],
+        ];
+        if (this.opts.userId) fields.push(["user_id", this.opts.userId]);
+        if (this.opts.deviceId) fields.push(["device_id", this.opts.deviceId]);
+        const multipart = buildStreamingMultipart(fields, {
+          name: "file",
+          filename: uploadName,
+          contentType,
+          path: prepared.path,
+          size: prepared.bytes,
+        });
 
         // 发送请求（30 秒超时）
         const response = await fetch(backendUrl(this.opts.baseUrl, "upload", "/session-file"), {
@@ -425,8 +432,10 @@ export class UploadManager implements TraceUploaderInterface {
           headers: {
             "X-Upload-Token": this.opts.token,
             "X-Content-SHA256": sha256,
+            "Content-Type": multipart.contentType,
+            "Content-Length": String(multipart.length),
           },
-          body: formData,
+          body: multipart.body as unknown as BodyInit,
           signal: AbortSignal.timeout(30_000),
         });
 
@@ -843,12 +852,6 @@ export class UploadManager implements TraceUploaderInterface {
 
   // ─── 辅助 ───
 
-  private computeSha256(data: Uint8Array): string {
-    const hasher = new Bun.CryptoHasher("sha256");
-    hasher.update(data);
-    return hasher.digest("hex");
-  }
-
   /** 当前服务端可达性状态（供测试和调试使用） */
   isServerReachable(): boolean {
     return this.serverReachable;
@@ -915,6 +918,55 @@ export class UploadManager implements TraceUploaderInterface {
 }
 
 // ─── 辅助函数 ───
+
+/**
+ * U3：手拼 multipart/form-data，文件部分从磁盘流式读出。
+ *
+ * 为什么不用 FormData：Bun 的 fetch 会把 FormData（哪怕文件部分是 Bun.file 懒引用）**整份物化**
+ * 进内存再发。实测 300MB 文件 FormData 客户端 RSS 峰值 +631MB，本函数（async generator 作 body
+ * + 显式 Content-Length）+41MB。另外两条试过不行的路：`new Blob([head, Bun.file(), tail])`
+ * 作 body 只发出 148 字节（BunFile 片段被当成空）；ReadableStream 作 body 在本地 server 上
+ * 收到 0 字节。所以必须是 generator + 显式长度，单测里用 multipart 解析锁住字节正确性。
+ *
+ * 显式 Content-Length：生成器 body 默认走 chunked，部分网关不接受 chunked 上传。
+ */
+export function buildStreamingMultipart(
+  fields: Array<[string, string]>,
+  file: { name: string; filename: string; contentType: string; path: string; size: number },
+): { body: AsyncGenerator<Uint8Array>; contentType: string; length: number } {
+  const boundary = `----sid-code-${crypto.randomUUID()}`;
+  const enc = new TextEncoder();
+  // 字段值是 session id / 文件类型 / 来源标识这类短 ASCII；仍去掉换行与引号防 header 注入
+  const safe = (v: string) => v.replace(/[\r\n"]/g, "_");
+  const pre: Uint8Array[] = fields.map(([k, v]) =>
+    enc.encode(
+      `--${boundary}\r\nContent-Disposition: form-data; name="${safe(k)}"\r\n\r\n${v.replace(/[\r\n]/g, " ")}\r\n`,
+    ),
+  );
+  pre.push(
+    enc.encode(
+      `--${boundary}\r\nContent-Disposition: form-data; name="${safe(file.name)}"; filename="${safe(file.filename)}"\r\n` +
+        `Content-Type: ${file.contentType}\r\n\r\n`,
+    ),
+  );
+  const tail = enc.encode(`\r\n--${boundary}--\r\n`);
+  const length = pre.reduce((n, b) => n + b.byteLength, 0) + file.size + tail.byteLength;
+  async function* gen(): AsyncGenerator<Uint8Array> {
+    for (const b of pre) yield b;
+    const reader = Bun.file(file.path).stream().getReader();
+    try {
+      for (;;) {
+        const { done, value } = await reader.read();
+        if (done) break;
+        if (value) yield value;
+      }
+    } finally {
+      reader.releaseLock();
+    }
+    yield tail;
+  }
+  return { body: gen(), contentType: `multipart/form-data; boundary=${boundary}`, length };
+}
 
 function sleep(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms));
