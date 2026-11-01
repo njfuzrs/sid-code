@@ -14,7 +14,7 @@
  *
  * ## 字段从「我们真正踩过的差异」挑，不照抄
  *
- * 参照实现（openclaw）有 24 位。这里只有 6 位，每一位都能指到本仓已有的一处族分支
+ * 参照实现（openclaw）有 36 位（21/10/5，另 3 位工具 schema）。这里只有 8 位，每一位都能指到本仓已有的一处族分支
  * 与一份厂商文档依据（见各字段注释）。**没踩过的差异不预先加位**：一个没人配、
  * 没人读的布尔位是死字段，而死字段会让人误以为这层已经覆盖了它其实没覆盖的事。
  *
@@ -26,7 +26,7 @@
  * | `model-registry.ts` | 内置注册表按模型名前缀/家族匹配 | 中 | 只覆盖已登记的模型 |
  * | `withCapabilityHealing` + `model-capabilities.ts` | 真实请求 400 反推 | 兜底 | 全部模型 |
  *
- * ⚠ **`compat` 不替代自愈，`withCapabilityHealing`（`openai.ts:650`）不能因为有了它就删。**
+ * ⚠ **`compat` 不替代自愈，`withCapabilityHealing`（`openai.ts` 的 `OpenAIProvider.withCapabilityHealing`）不能因为有了它就删。**
  * 恰恰相反，两者互补且叠加后比任何单独一层都强：`compat` 给先验（企业自建网关上的私有
  * 模型名，注册表按名匹配必然 miss，只有用户自己知道它认什么），自愈修正先验（用户也会
  * 配错，配错了仍然自愈到能跑）。参照实现有 compat 无自愈——新模型 compat 猜错就是错；
