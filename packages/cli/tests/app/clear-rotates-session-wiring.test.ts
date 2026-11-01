@@ -23,9 +23,11 @@ function body(marker: string, len = 12_000): string {
 }
 
 describe("/clear 换会话接线", () => {
-  test("两条命令入口都只调用 clearConversation", () => {
+  test("命令入口只调用 clearConversation", () => {
+    // 2026-11-01（#514）：旧 Registry 执行回退分支删除后，`case "clear"` 只剩新体系
+    // handleCommandExecutionResult 这一处（此前为 2：新体系 + 旧回退）。
     const cases = appSrc.split('case "clear":').slice(1);
-    expect(cases.length).toBe(2);
+    expect(cases.length).toBe(1);
     for (const c of cases) {
       const head = c.slice(0, 400);
       expect(head).toContain("await this.clearConversation();");

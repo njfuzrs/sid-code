@@ -27,6 +27,8 @@ import {
   findChainBreaks,
   collectG3Sources,
   G3_COMPLETION_CHAIN,
+  findShadowedNames,
+  collectG4Names,
 } from "../../scripts/command-system-gate.ts";
 
 const ROOT = join(import.meta.dir, "../..");
@@ -250,3 +252,31 @@ function existsSyncSafe(p: string): boolean {
     return false;
   }
 }
+
+describe("G4 新旧体系同名命令", () => {
+  test("纯函数：交集去重排序，空交集返回空", () => {
+    expect(findShadowedNames(["b", "a", "a", "x"], ["a", "b", "c"])).toEqual(["a", "b"]);
+    expect(findShadowedNames(["x"], ["y"])).toEqual([]);
+  });
+
+  test("真实注册表：两边都非空（排除「取不到名 → 恒空交集 → 全绿」）", async () => {
+    const { legacy, unified } = await collectG4Names();
+    expect(legacy.length).toBeGreaterThan(10);
+    expect(unified.length).toBeGreaterThan(10);
+  });
+
+  test("按真实 name() 取名而非类名推导：MCPEnhancedCommand → mcp、AddDirCommand → add-dir", async () => {
+    const { legacy } = await collectG4Names();
+    expect(legacy).toContain("mcp");
+    expect(legacy).toContain("add-dir");
+    expect(legacy).not.toContain("mcpenhanced");
+  });
+
+  test("当前真实源码：交集为空；旧 compact / model 已删", async () => {
+    const { legacy, unified } = await collectG4Names();
+    expect(findShadowedNames(legacy, unified)).toEqual([]);
+    expect(legacy).not.toContain("compact");
+    expect(legacy).not.toContain("model");
+    expect(unified).toEqual(expect.arrayContaining(["compact", "model"]));
+  });
+});

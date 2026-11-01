@@ -233,8 +233,6 @@ export interface CommandContext {
    * permissionRules 用于 skill 自身的 allow/deny/ask 判定（需要原始规则，不能被 checker 降级）。
    */
   permissionChecker?: import("../permission/types.ts").Checker | null;
-  /** 自定义命令摘要（/help 显示用） */
-  customCommands?: Array<{ name: string; description: string }>;
   /**
    * 统一命令注册表引用（/reload-plugins 刷新插件命令用）。
    * 类型是 core 侧的结构化契约，不是 cli 的 class —— 见 `UnifiedCommandRegistryContract`。

@@ -45,7 +45,6 @@ export function toAppContext(ctx: CommandContext): AppContext {
     sendToLLM: ctx.sendToLLM,
     beginForkedRun: ctx.beginForkedRun,
     notify: ctx.notify,
-    customCommands: ctx.customCommands,
     confirmShellCommands: ctx.confirmShellCommands,
     // P0-3：skill 权限判定所需的确认通道 / 原始规则 / checker（双向桥接保持一致）
     requestUserConfirmation: ctx.requestUserConfirmation,
@@ -134,7 +133,6 @@ export function toCommandContext(appCtx: AppContext): CommandContext {
     sendToLLM: appCtx.sendToLLM,
     beginForkedRun: appCtx.beginForkedRun,
     notify: appCtx.notify,
-    customCommands: appCtx.customCommands,
     confirmShellCommands: appCtx.confirmShellCommands,
     // P0-3：skill 权限 ask 的确认通道 + 原始权限规则。缺任一项时 ask 决策保守拒绝。
     requestUserConfirmation: appCtx.requestUserConfirmation,

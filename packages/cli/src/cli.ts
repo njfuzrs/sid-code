@@ -2030,18 +2030,12 @@ export async function main(): Promise<void> {
     const { WorkflowTool } = await import("@sid-code/core/tool/workflow.ts");
     toolRegistry.register(new WorkflowTool(providerRegistry, toolRegistry));
 
-    // 注册内置命令
-    const { Registry: CommandRegistry } = await import("./command/registry.ts");
-    const { registerBuiltins } = await import("./command/builtins.ts");
-    const commandRegistry = new CommandRegistry();
-    await registerBuiltins(commandRegistry);
+    // 斜杠命令（内置 / 自定义 / Skill / 插件）全部由下方 UnifiedCommandRegistry 承载，
+    // 这里不再另建旧 Registry：它只喂给已删除的回退路径和无人读取的 customCommands。
+    // 自定义命令的信任扫描（onUntrusted 登记待确认项）由统一注册表按同一份 scanOptions
+    // 在首屏 loadCommandList 时完成，早于首屏对话框队列的计算。
 
-    // 注：Bundled Skills（/commit /review 等）不再桥接进旧 Registry。
-    // 它们由新命令体系（UnifiedCommandRegistry → loadSkillCommands → loadBundledSkills）
-    // 原生加载，App 的 TUI 命令获取/执行走新体系。旧 Registry 仅作回退路径。
-
-    // 加载自定义命令（带信任检查）
-    const { CustomCommandLoader } = await import("./command/custom.ts");
+    // 扩展信任配置（命令 / skill / agent 共用）
     const { TrustManager } = await import("@sid-code/core/extension/trust.ts");
     const trustManager = new TrustManager();
     // B20：交互模式此前直接返回全部文件 + 持久化，等于打开任何目录都静默信任它带的扩展。
@@ -2063,13 +2057,9 @@ export async function main(): Promise<void> {
       // 文件访问白名单，授权目录自带的 skill 加载不进来。
       additionalDirs: config.allowedDirectories,
     };
-    const customCmds = await new CustomCommandLoader().loadAll(undefined, scanOptions);
-    for (const { cmd, source } of customCmds) commandRegistry.register(cmd, source);
-
     // 加载 Skills（通过 SkillManager 统一管理）
     const { SkillManager } = await import("@sid-code/core/skill/manager.ts");
     const { SkillMetaTool } = await import("@sid-code/core/skill/meta-tool.ts");
-    const { SkillCommand } = await import("./command/skill-command.ts");
     const skillManager = new SkillManager();
     await skillManager.discover(process.cwd(), scanOptions);
 
@@ -2084,15 +2074,6 @@ export async function main(): Promise<void> {
     // 权限规则/hookSystem/permissionChecker 统一由 app.ts 的 wireTool* setter 回填。
     const skillMetaTool = new SkillMetaTool(skillManager, providerRegistry, toolRegistry);
     toolRegistry.register(skillMetaTool);
-
-    const skills = skillManager.getSkills();
-    for (const skill of skills) {
-      // 用户调用路径：注册为斜杠命令 /skill-name（除非显式禁止用户调用）
-      // 此前缺失此步骤,导致 /bug-fix 等 skill 命令报"未知命令"。
-      if (skill.userInvocable !== false) {
-        commandRegistry.register(new SkillCommand(skill), "user");
-      }
-    }
 
     // P1-2/P2-2/P3-2：Skill 运行时激活协调器。init() 延后到插件 skills 也加载完毕后调用
     // （下方插件块），以便条件激活门控覆盖插件 skill。
@@ -2198,24 +2179,20 @@ export async function main(): Promise<void> {
       import("@sid-code/core/config/config.ts").MCPServerConfig
     > = {};
     try {
-      const { mergePluginCommands, loadPluginAgents, collectPluginMcpServers } =
-        await import("./plugin/index.ts");
+      const { loadPluginAgents, collectPluginMcpServers } = await import("./plugin/index.ts");
 
-      // 插件命令（带 pluginName: 前缀，与内置/自定义命令隔离）
-      const pluginCmdCount = await mergePluginCommands(commandRegistry);
+      // 插件命令（带 pluginName: 前缀）只用于下方日志计数；注册由 unifiedRegistry.loadPlugins 完成
+      // （getPluginCommands 是 memoize 的，两处共享同一次加载）。
+      const { getPluginCommands } = await import("./plugin/loadPluginCommands.ts");
+      const pluginCmdCount = (await getPluginCommands()).length;
 
-      // P0-4：插件 Skills（带 pluginName: 前缀）。注入同一 skillManager（元工具据此分发），
-      // 并把 userInvocable 的注册为 /pluginName:skill 斜杠命令。
+      // P0-4：插件 Skills（带 pluginName: 前缀）。注入同一 skillManager（元工具据此分发）；
+      // /pluginName:skill 斜杠命令由 addPluginSkills → onSkillsChanged → 统一注册表失效重投影。
       try {
         const { getPluginSkills } = await import("./plugin/loadPluginSkills.ts");
         const pluginSkills = await getPluginSkills();
         if (pluginSkills.length > 0) {
           skillManager.addPluginSkills(pluginSkills);
-          for (const skill of pluginSkills) {
-            if (skill.userInvocable !== false) {
-              commandRegistry.register(new SkillCommand(skill), "user");
-            }
-          }
         }
       } catch (err: any) {
         getLogger().warn("PLUGIN", `插件 Skills 加载失败: ${err?.message ?? String(err)}`);
@@ -2566,11 +2543,6 @@ export async function main(): Promise<void> {
                 // 声明了 paths 的 MCP skill 先过条件门，再进 manager（顺序见 gateLateConditionalSkills）
                 skillActivationCoordinator.gateLateConditionalSkills(mcpSkills);
                 skillManager.addPluginSkills(mcpSkills); // 复用 precedence 追加 + 热重载重放登记
-                for (const skill of mcpSkills) {
-                  if (skill.userInvocable !== false) {
-                    commandRegistry.register(new SkillCommand(skill), "user");
-                  }
-                }
                 // 新 skill 进 listing：走增量注入路径（system prompt 已在启动时建好、
                 // 来不及含这些迟到 skill，故必须经 reminder 增量提醒，否则模型看不到）。
                 skillActivationCoordinator.enqueueListingForNewSkills(
@@ -2791,7 +2763,7 @@ export async function main(): Promise<void> {
     profileCheckpoint("init_end");
 
     // 创建统一命令注册表（新体系）：承载 custom/skill(含 bundled)/builtin/plugin 四来源。
-    // App 的 TUI 命令获取/执行走此注册表；旧 commandRegistry 仍传入作回退 + /help 摘要数据源。
+    // App 的 TUI 补全、命令执行、无头斜杠分发都只走此注册表。
     const { UnifiedCommandRegistry } = await import("./command/unified-registry.ts");
     const unifiedRegistry = new UnifiedCommandRegistry({
       scanOptions,
@@ -2831,7 +2803,6 @@ export async function main(): Promise<void> {
       provider,
       providerRegistry,
       toolRegistry,
-      commandRegistry,
       unifiedRegistry,
       permissionChecker,
       mcpManager,

@@ -13,6 +13,7 @@ import { tmpdir } from "os";
 import { SessionStore } from "@sid-code/core/session/store.ts";
 import type { SessionData } from "@sid-code/core/session/store.ts";
 import { App } from "@sid-code/cli/app.ts";
+import { UnifiedCommandRegistry } from "@sid-code/cli/command/unified-registry.ts";
 import { defaultConfig } from "@sid-code/core/config/config.ts";
 import type { Config } from "@sid-code/core/config/config.ts";
 import type { Message } from "@sid-code/core/llm/types.ts";
@@ -71,6 +72,7 @@ describe("App.restoreSession（缺口 B 三条路径）", () => {
       permissionMode: "default",
     } as unknown as Config;
     return new App({
+      unifiedRegistry: new UnifiedCommandRegistry(),
       config,
       provider: {} as any,
       mcpManager: {} as any,
@@ -332,7 +334,12 @@ describe("App.restoreSession（缺口 B 三条路径）", () => {
       availableModels: [],
       permissionMode: "acceptEdits", // CLI 显式指定（loadConfig 阶段生效）
     } as unknown as Config;
-    const app = new App({ config, provider: {} as any, mcpManager: {} as any });
+    const app = new App({
+      unifiedRegistry: new UnifiedCommandRegistry(),
+      config,
+      provider: {} as any,
+      mcpManager: {} as any,
+    });
 
     const data: SessionData = {
       id: "perm-cli-explicit",
