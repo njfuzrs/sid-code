@@ -5,8 +5,9 @@
  * 显式写下来，不产生任何副作用（不读文件、不改状态、不发网络）。用途是让模型在复杂
  * 多步任务里"想清楚再动手"，思考内容记入对话历史供后续步骤参考。
  *
- * 这是全仓**第一个用新泛型 `buildTool()` 定义、经 `toLegacyTool()` bridge 注册到产线
- * registry 的工具**（G19：此前 buildTool/bridge 只有定义、零采用）。它同时行使了新接口
+ * 这是全仓**第一个用新泛型 `buildTool()` 定义并注册到产线 registry 的工具**
+ * （G19：此前 buildTool/bridge 只有定义、零采用）。注册时直接 `registry.register(thinkTool)`，
+ * 由 registry 入口经 bridge 归一——新工具不需要自己调 `toLegacyTool`。它同时行使了新接口
  * 的核心能力字段——zodSchema（运行时校验 + JSON Schema 生成）、isReadOnly / isConcurrencySafe
  * （纯思考无副作用，读写并发都安全）、toAutoClassifierInput（对安全分类器自报"与安全无关"）——
  * 验证 bridge 的能力透传链路真实可用。
@@ -14,8 +15,6 @@
 
 import { z } from "zod/v4";
 import { buildTool, type Tool } from "./types.ts";
-import { toLegacyTool } from "./bridge.ts";
-import type { LegacyTool } from "./types.ts";
 
 /** think 输入 schema —— 运行时校验 + JSON Schema 生成的唯一真相源 */
 const thinkSchema = z.object({
@@ -71,11 +70,3 @@ export const thinkTool: Tool<ThinkInput, string> = buildTool<ThinkInput, string>
     return { data: "已记录思考。" };
   },
 });
-
-/**
- * 经 bridge 适配为 LegacyTool，可直接 registry.register()。
- * 这是 G19 的落地点：新泛型 Tool → toLegacyTool → 产线 registry。
- */
-export function createThinkTool(): LegacyTool {
-  return toLegacyTool(thinkTool);
-}

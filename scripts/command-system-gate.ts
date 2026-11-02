@@ -57,10 +57,9 @@
  * 但代码还在、测试还在，有人会去修它：`627d3bda` 修 /compact 谎报成功时，就对着这份
  * 死实现同时改了一遍。所以「迁完一条命令」必须同时删掉旧版，交集不为空就报错。
  *
- * 取名**必须用运行时真实的 `name()`**（实例化 `registerBuiltins` 灌进一个旧 Registry），
- * 不能用类名推导：按「去掉 Command 后缀转小写」推，36 条里有 4 条会推错
- * （`MCPEnhancedCommand` 实际是 `mcp`、`AddDirCommand` 是 `add-dir` 等），交集会静默漏判。
- * 接入时（2026-11-01）删掉旧 compact / model 之后交集为空，没有存量要豁免。
+ * 接入时（2026-11-01）删掉旧 compact / model 之后交集为空。2026-11-02 旧体系整体删除后，
+ * 交集恒空，G4 改查后继形态：内置命令之间名字 / 别名被两条命令同时占用（同样是「一条被另一条
+ * 遮蔽、补全可见却执行不到」）。取名读运行时 BUILTIN_COMMANDS 对象，不按文件名推导。
  *
  * ## 用法
  *
@@ -72,12 +71,20 @@
  * 棘轮就成了摆设 —— 加一条死代码顺手把基线调高，门禁全程绿。
  */
 
-import { readdirSync, readFileSync, statSync, writeFileSync } from "node:fs";
+import { existsSync, readdirSync, readFileSync, statSync, writeFileSync } from "node:fs";
 import { join, relative } from "node:path";
 
 const ROOT = join(import.meta.dir, "..");
 const COMMAND_DIR = join(ROOT, "packages/cli/src/command");
-const BUILTINS = join(ROOT, "packages/cli/src/command/builtins.ts");
+/**
+ * 旧命令体系的文件（2026-11-02 收口时全部删除）。G2 数它们里的 registry.register，
+ * 并要求文件本身不复活 —— 文件不存在时计 0，存在即违规（基线已收紧到 0）。
+ */
+export const LEGACY_FILES = [
+  "packages/cli/src/command/builtins.ts",
+  "packages/cli/src/command/adapter.ts",
+  "packages/cli/src/command/registry.ts",
+] as const;
 const BASELINE_PATH = join(import.meta.dir, "command-system-gate.baseline.json");
 
 /**
@@ -206,10 +213,20 @@ export function findDeadExports(): DeadExport[] {
   return dead;
 }
 
-/** G2：数 builtins.ts 里的 registry.register 条数。 */
+/**
+ * G2：旧体系残留计数 = 旧文件里的 registry.register 条数 + 复活的旧文件数。
+ *
+ * 收口前数的是 builtins.ts 的 registry.register（36 → 34 → 0）。文件删掉之后
+ * 如果只数 register，有人把 adapter.ts 加回来也是 0、恒绿，所以复活的文件本身也计数。
+ */
 export function countLegacyBuiltins(): number {
-  const src = readFileSync(BUILTINS, "utf8");
-  return (src.match(/registry\.register/g) ?? []).length;
+  let n = 0;
+  for (const rel of LEGACY_FILES) {
+    const p = join(ROOT, rel);
+    if (!existsSync(p)) continue;
+    n += 1 + (readFileSync(p, "utf8").match(/registry\.register/g) ?? []).length;
+  }
+  return n;
 }
 
 // ============================================================
@@ -310,26 +327,30 @@ export interface UnconsumedField {
 // G4：新旧体系同名命令
 // ─────────────────────────────────────────────
 
-/** G4 纯函数：旧体系与新体系命令名的交集（排序后返回，便于报错与断言）。 */
-export function findShadowedNames(
-  legacyNames: readonly string[],
-  unifiedNames: readonly string[],
-): string[] {
-  const unified = new Set(unifiedNames);
-  return [...new Set(legacyNames.filter((n) => unified.has(n)))].sort();
+/**
+ * G4 纯函数：一组命令里被两条命令同时占用的名字（名字或别名），排序去重。
+ *
+ * 收口前 G4 查的是「旧体系与新体系同名」；旧体系删除后那个交集恒空，改查它的
+ * 后继形态：内置命令之间名字 / 别名撞车。dedupe 会静默保留先出现的那条，
+ * 后一条在补全里看得见、却永远执行不到 —— 与旧版被遮蔽是同一种失败形态。
+ */
+export function findShadowedNames(cmds: readonly { name: string; aliases?: string[] }[]): string[] {
+  const owner = new Map<string, string>();
+  const dup = new Set<string>();
+  for (const c of cmds) {
+    for (const key of new Set([c.name, ...(c.aliases ?? [])])) {
+      const prev = owner.get(key);
+      if (prev !== undefined && prev !== c.name) dup.add(key);
+      else owner.set(key, c.name);
+    }
+  }
+  return [...dup].sort();
 }
 
-/** G4：从真实注册表取两边的命令名（旧体系走 name()，新体系走 name 字段）。 */
-export async function collectG4Names(): Promise<{ legacy: string[]; unified: string[] }> {
-  const { Registry } = await import("../packages/cli/src/command/registry.ts");
-  const { registerBuiltins } = await import("../packages/cli/src/command/builtins.ts");
+/** G4：真实的内置命令表（name + aliases，按运行时对象取，不按文件名推导）。 */
+export async function collectG4Commands(): Promise<{ name: string; aliases?: string[] }[]> {
   const { BUILTIN_COMMANDS } = await import("../packages/cli/src/command/commands/index.ts");
-  const reg = new Registry();
-  await registerBuiltins(reg);
-  return {
-    legacy: reg.all().map((c) => c.name()),
-    unified: BUILTIN_COMMANDS.map((c) => c.name),
-  };
+  return BUILTIN_COMMANDS.map((c) => ({ name: c.name, aliases: c.aliases }));
 }
 
 /** G3a：声明 > 0 且消费 = 0 的字段。 */
@@ -380,7 +401,7 @@ export function collectG3Sources(): {
   chain: SourceFile[];
 } {
   const commandFiles = listSourceFiles(COMMAND_DIR);
-  // 声明面：新体系命令定义 + legacy 门控表（loaders.ts 的 LEGACY_BUILTIN_GATES）
+  // 声明面：命令定义（commands/*/index.ts）+ loaders.ts
   const decl = commandFiles
     .filter((p) => /\/commands\/[^/]+\/index\.ts$/.test(p) || p.endsWith("command/loaders.ts"))
     .map(readSource);
@@ -410,9 +431,8 @@ async function main(): Promise<void> {
   const breaks = findChainBreaks(G3_COMPLETION_CHAIN, g3.chain);
   console.log(`  G3a 门控字段声明无消费: ${unconsumed.length}  （硬门禁，须为 0）`);
   console.log(`  G3b 补全链路断跳: ${breaks.length}  （硬门禁，须为 0）`);
-  const g4 = await collectG4Names();
-  const shadowed = findShadowedNames(g4.legacy, g4.unified);
-  console.log(`  G4 新旧体系同名命令: ${shadowed.length}  （硬门禁，须为 0）`);
+  const shadowed = findShadowedNames(await collectG4Commands());
+  console.log(`  G4 内置命令名/别名冲突: ${shadowed.length}  （硬门禁，须为 0）`);
   for (const u of unconsumed) console.log(`    - ${u.field}：声明 ${u.declared} / 消费 0`);
   for (const b of breaks) console.log(`    - ${b.field} 在 ${b.file} 断了`);
   if (dead.length > 0) {
@@ -449,9 +469,8 @@ async function main(): Promise<void> {
   }
   if (legacy > baseline.legacyBuiltins) {
     console.error(
-      `\n✗ G2：旧体系命令从 ${baseline.legacyBuiltins} 增至 ${legacy}。` +
-        `\n  新命令请加到 packages/cli/src/command/commands/<name>/ 新体系。` +
-        `\n  边迁边往旧体系加新东西 = 永远迁不完。`,
+      `\n✗ G2：旧命令体系残留从 ${baseline.legacyBuiltins} 增至 ${legacy}（${LEGACY_FILES.join(" / ")}）。` +
+        `\n  旧体系已于 2026-11-02 整体删除。新命令请加到 packages/cli/src/command/commands/<name>/。`,
     );
     failed = true;
   }
@@ -471,8 +490,8 @@ async function main(): Promise<void> {
   }
   if (shadowed.length > 0) {
     console.error(
-      `\n✗ G4：旧体系 builtins.ts 与新体系 commands/ 同名：${shadowed.join(", ")}。` +
-        `\n  旧版被新版遮蔽、主路径走不到，却还会被人对着修（627d3bda）。迁完一条就删掉旧版。`,
+      `\n✗ G4：内置命令名/别名被两条命令同时占用：${shadowed.join(", ")}。` +
+        `\n  dedupe 只留先出现的那条，另一条补全里可见却永远执行不到（同 627d3bda 的遮蔽形态）。`,
     );
     failed = true;
   }

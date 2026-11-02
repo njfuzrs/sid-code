@@ -278,6 +278,12 @@ jobs:
       - name: 命令体系门禁
         run: bun run lint:command-system
 
+      # 工具接口棘轮：引用旧接口 LegacyTool 的生产文件数只降不升（方案 §3.3 P4）。
+      # 与命令体系门禁同理：迁移停滞时没有门禁，新工具会照抄 `LegacyTool as Tool`，
+      # 旧接口的面只会变大。几百毫秒的静态扫描，放在同一个 job。
+      - name: 工具接口棘轮
+        run: bun run lint:legacy-tool
+
       # 类型检查棘轮：存量错误进 scripts/tsc-baseline.json，只拦新增、允许收紧。
       # 不直接跑裸 tsc：存量错误会让它恒红，恒红的门禁等于没有门禁。
       - name: 类型检查（只拦新增）

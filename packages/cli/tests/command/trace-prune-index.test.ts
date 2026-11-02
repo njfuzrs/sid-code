@@ -14,8 +14,8 @@ import { describe, test, expect, beforeEach, afterEach } from "bun:test";
 import { mkdtempSync, mkdirSync, rmSync, writeFileSync, readFileSync, existsSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
-import { TraceCommand } from "@sid-code/cli/command/builtins.ts";
-import type { AppContext } from "@sid-code/cli/command/types.ts";
+import { TraceCommand } from "@sid-code/cli/command/commands/trace/trace.ts";
+import type { CommandContext } from "@sid-code/cli/command/types.ts";
 
 let dir: string;
 let indexPath: string;
@@ -31,7 +31,7 @@ function seed(n: number): void {
   writeFileSync(indexPath, lines.join("\n") + "\n", "utf-8");
 }
 
-const ctx = { sessionId: undefined } as unknown as AppContext;
+const ctx = { sessionId: undefined } as unknown as CommandContext;
 
 beforeEach(() => {
   dir = mkdtempSync(join(tmpdir(), "sid-trace-prune-"));
@@ -52,10 +52,10 @@ afterEach(() => {
 describe("/trace --prune-index", () => {
   test("正常裁剪：10 行保留最近 5 行，且真的落盘", async () => {
     seed(10);
-    const res = await new TraceCommand().execute("--prune-index 5", ctx);
+    const res = await new TraceCommand().call("--prune-index 5", ctx);
 
-    expect(res.kind).toBe("message");
-    expect((res as { message: string }).message).toContain("保留最近 5 行");
+    expect(res.type).toBe("text");
+    expect((res as { value: string }).value).toContain("保留最近 5 行");
 
     // 断言落盘内容，而不只是返回文案 —— 文案对而没写盘是这类命令最容易出的错
     const kept = readFileSync(indexPath, "utf-8").trim().split("\n");
@@ -67,15 +67,15 @@ describe("/trace --prune-index", () => {
 
   test("裁剪到 0 行是合法操作，与'索引不存在'文案可区分", async () => {
     seed(3);
-    const res = await new TraceCommand().execute("--prune-index 0", ctx);
-    expect((res as { message: string }).message).toContain("保留最近 0 行");
-    expect((res as { message: string }).message).not.toContain("不存在");
+    const res = await new TraceCommand().call("--prune-index 0", ctx);
+    expect((res as { value: string }).value).toContain("保留最近 0 行");
+    expect((res as { value: string }).value).not.toContain("不存在");
   });
 
   test("N 大于现有行数时不报错、不丢行", async () => {
     seed(3);
-    const res = await new TraceCommand().execute("--prune-index 100", ctx);
-    expect((res as { message: string }).message).toContain("保留最近 3 行");
+    const res = await new TraceCommand().call("--prune-index 100", ctx);
+    expect((res as { value: string }).value).toContain("保留最近 3 行");
     expect(readFileSync(indexPath, "utf-8").trim().split("\n")).toHaveLength(3);
   });
 
@@ -90,9 +90,9 @@ describe("/trace --prune-index", () => {
     ]) {
       test(arg, async () => {
         seed(4);
-        const res = await new TraceCommand().execute(arg, ctx);
-        expect(res.kind).toBe("error");
-        expect((res as { message: string }).message).toContain("--prune-index 需要一个非负整数");
+        const res = await new TraceCommand().call(arg, ctx);
+        expect((res as { value: string }).value).toStartWith("错误: ");
+        expect((res as { value: string }).value).toContain("--prune-index 需要一个非负整数");
         // 参数校验失败必须零副作用
         expect(readFileSync(indexPath, "utf-8").trim().split("\n")).toHaveLength(4);
       });
@@ -101,10 +101,10 @@ describe("/trace --prune-index", () => {
 
   test("索引不存在时给出专属文案，不渲染成'已裁剪 0 行'", async () => {
     expect(existsSync(indexPath)).toBe(false);
-    const res = await new TraceCommand().execute("--prune-index 5", ctx);
-    expect(res.kind).toBe("message");
-    expect((res as { message: string }).message).toContain("会话索引不存在");
-    expect((res as { message: string }).message).not.toContain("已裁剪");
+    const res = await new TraceCommand().call("--prune-index 5", ctx);
+    expect(res.type).toBe("text");
+    expect((res as { value: string }).value).toContain("会话索引不存在");
+    expect((res as { value: string }).value).not.toContain("已裁剪");
   });
 
   test("pruneSessionIndex 返回 -1（写盘失败）渲染成失败，不是'保留 -1 行'", async () => {
@@ -117,9 +117,9 @@ describe("/trace --prune-index", () => {
     mkdirSync(asDir, { recursive: true });
     process.env.SID_CODE_SESSION_INDEX = asDir;
 
-    const res = await new TraceCommand().execute("--prune-index 5", ctx);
-    expect(res.kind).toBe("message");
-    expect((res as { message: string }).message).toContain("裁剪失败");
-    expect((res as { message: string }).message).not.toContain("-1 行");
+    const res = await new TraceCommand().call("--prune-index 5", ctx);
+    expect(res.type).toBe("text");
+    expect((res as { value: string }).value).toContain("裁剪失败");
+    expect((res as { value: string }).value).not.toContain("-1 行");
   });
 });

@@ -16,16 +16,18 @@ import { describe, test, expect, afterEach } from "bun:test";
 import { readFileSync } from "fs";
 import { join, dirname } from "path";
 import { fileURLToPath } from "url";
-import { LSPCommand } from "@sid-code/cli/command/lsp.ts";
-import type { AppContext } from "@sid-code/cli/command/types.ts";
+import { LSPCommand, LSPReloadCommand } from "@sid-code/cli/command/commands/lsp/lsp.ts";
+import lspCmd from "@sid-code/cli/command/commands/lsp/index.ts";
+import { BUILTIN_COMMANDS } from "@sid-code/cli/command/commands/index.ts";
+import type { CommandContext } from "@sid-code/cli/command/types.ts";
 import { initializeLSP, getLSPInitState, resetLSPForTest } from "@sid-code/core/lsp/manager.ts";
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 const REPO = join(HERE, "..", "..", "..", "..");
 
 /** /lsp 的两个子命令都不读 ctx，给一个最小壳即可 */
-function ctx(): AppContext {
-  return {} as unknown as AppContext;
+function ctx(): CommandContext {
+  return {} as unknown as CommandContext;
 }
 
 function readSrc(rel: string): string {
@@ -45,24 +47,24 @@ describe("D15 · reinitializeLSP 有真实调用方", () => {
   test("门禁：src 里存在 reinitializeLSP 的生产调用点（不含定义与测试）", () => {
     // 这条断言直接对着 D15 的实证命令：修复前它的结果是 0 行。
     const callers = [
-      "packages/cli/src/command/lsp.ts",
-      "packages/cli/src/command/plugin.ts",
+      "packages/cli/src/command/commands/lsp/lsp.ts",
+      "packages/cli/src/command/commands/reload-plugins/reload-plugins.ts",
     ].filter((f) => stripComments(readSrc(f)).includes("reinitializeLSP"));
 
     expect(callers.length).toBeGreaterThan(0);
     // 专门的入口必须存在 —— 只挂在 /reload-plugins 上等于让用户猜：
     // 触发重载的真实场景是"我刚改了 lsp.json"，不是"我刚装了插件"。
-    expect(callers).toContain("packages/cli/src/command/lsp.ts");
+    expect(callers).toContain("packages/cli/src/command/commands/lsp/lsp.ts");
   });
 
-  test("/lsp 命令已注册进 builtins", () => {
-    const code = stripComments(readSrc("packages/cli/src/command/builtins.ts"));
-    expect(code).toContain("LSPCommand");
-    expect(code).toContain("registry.register(new LSPCommand())");
+  test("/lsp 命令已注册进内置命令表", () => {
+    expect(BUILTIN_COMMANDS).toContain(lspCmd);
   });
 
   test("/reload-plugins 也会重载 LSP（插件可能带来新语言/文件）", () => {
-    const code = stripComments(readSrc("packages/cli/src/command/plugin.ts"));
+    const code = stripComments(
+      readSrc("packages/cli/src/command/commands/reload-plugins/reload-plugins.ts"),
+    );
     expect(code).toContain("reinitializeLSP");
     // 必须先判 initState：未启动时 reinitializeLSP 是空操作，
     // 但打出"LSP 配置已重载"会是假消息。
@@ -72,9 +74,8 @@ describe("D15 · reinitializeLSP 有真实调用方", () => {
 
 describe("/lsp 命令行为", () => {
   test("name/description/子命令齐全", () => {
-    const cmd = new LSPCommand();
-    expect(cmd.name()).toBe("lsp");
-    const subs = cmd.subCommands().map((c) => c.name());
+    expect(lspCmd.name).toBe("lsp");
+    const subs = lspCmd.subCommands!().map((c) => c.name);
     expect(subs).toEqual(["status", "reload"]);
   });
 
@@ -82,9 +83,9 @@ describe("/lsp 命令行为", () => {
     resetLSPForTest();
     expect(getLSPInitState()).toBe("not-started");
 
-    const r = await new LSPCommand().execute("", ctx());
-    expect(r.kind).toBe("message");
-    const msg = (r as { message: string }).message;
+    const r = await new LSPCommand().call("", ctx());
+    expect(r.type).toBe("text");
+    const msg = (r as { value: string }).value;
     // 关键：not-started 不是异常。不说清楚会让用户以为 LSP 坏了。
     expect(msg).toContain("未启动");
     expect(msg).toContain("--print");
@@ -93,10 +94,10 @@ describe("/lsp 命令行为", () => {
 
   test("未启动时 reload 明确说明是空操作，而不是假装重载了", async () => {
     resetLSPForTest();
-    const reload = new LSPCommand().subCommands().find((c) => c.name() === "reload")!;
+    const reload = new LSPReloadCommand();
 
-    const r = await reload.execute("", ctx());
-    const msg = (r as { message: string }).message;
+    const r = await reload.call("", ctx());
+    const msg = (r as { value: string }).value;
     expect(msg).toContain("无需重载");
     // 用户敲了命令却什么都没发生会很困惑 —— 必须给出原因
     expect(msg).toContain("交互式");
@@ -108,11 +109,11 @@ describe("/lsp 命令行为", () => {
     await new Promise((r) => setTimeout(r, 50));
     expect(getLSPInitState()).not.toBe("not-started");
 
-    const reload = new LSPCommand().subCommands().find((c) => c.name() === "reload")!;
-    const r = await reload.execute("", ctx());
-    const msg = (r as { message: string }).message;
+    const reload = new LSPReloadCommand();
+    const r = await reload.call("", ctx());
+    const msg = (r as { value: string }).value;
 
-    expect(r.kind).toBe("message");
+    expect(r.type).toBe("text");
     // 走到了真实重载分支（而非 not-started 的早退分支）
     expect(msg).not.toContain("无需重载");
     expect(msg).toContain("配置来源");
@@ -122,8 +123,8 @@ describe("/lsp 命令行为", () => {
     initializeLSP("/nonexistent-workspace-for-lsp-status-test");
     await new Promise((r) => setTimeout(r, 50));
 
-    const r = await new LSPCommand().execute("", ctx());
-    const msg = (r as { message: string }).message;
+    const r = await new LSPCommand().call("", ctx());
+    const msg = (r as { value: string }).value;
     expect(msg).toContain("LSP 代码智能状态");
     expect(msg).not.toContain("未启动");
   });

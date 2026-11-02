@@ -27,10 +27,10 @@ import {
   toPluginRows,
   type PluginRow,
 } from "@sid-code/cli/ui/components/PluginsDialog.tsx";
-import { PluginCommand } from "@sid-code/cli/command/plugin.ts";
+import { PluginCommand } from "@sid-code/cli/command/commands/plugin/plugin.ts";
 import { setInlinePluginDirs } from "@sid-code/cli/plugin/loader.ts";
 import { clearAllPluginCaches } from "@sid-code/cli/plugin/caches.ts";
-import type { AppContext } from "@sid-code/cli/command/types.ts";
+import type { CommandContext } from "@sid-code/cli/command/types.ts";
 import type { LoadedPlugin } from "@sid-code/cli/plugin/types.ts";
 
 const SYNC_START = "\x1b[?2026h";
@@ -131,15 +131,15 @@ afterEach(() => {
 
 describe("/plugin 命令路由", () => {
   test("无参打开 plugins 面板（不再回一段会一闪而过的文本）", async () => {
-    const r = await new PluginCommand().execute("", {} as AppContext);
-    expect(r).toEqual({ kind: "dialog", dialog: "plugins" });
+    const r = await new PluginCommand().call("", {} as CommandContext);
+    expect(r).toEqual({ type: "dialog", dialog: "plugins" });
   });
 
   test("list 只有一个插件时也强制进面板", async () => {
-    const r = await new PluginCommand().execute("list", {} as AppContext);
-    expect(r.kind).toBe("message");
-    expect(r.message).toContain("demo-plugin@2.3.4");
-    expect(r.message!.trimEnd().split("\n").length).toBeLessThan(3); // 低于 PANEL_MIN_LINES
+    const r = await new PluginCommand().call("list", {} as CommandContext);
+    if (r.type !== "text") throw new Error("expected text");
+    expect(r.value).toContain("demo-plugin@2.3.4");
+    expect(r.value.trimEnd().split("\n").length).toBeLessThan(3); // 低于 PANEL_MIN_LINES
     expect(r.panel).toBeDefined();
   });
 });

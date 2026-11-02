@@ -17,10 +17,10 @@ const FILE_INJECTION_MAX_BYTES = 256 * 1024;
 
 /** 只做参数替换：无注入的模板 + 空 ctx（不需要任何确认通道） */
 async function substituteArgs(tpl: string, args: string): Promise<string> {
-  const r = await new CustomCommand("t", "d", tpl).execute(args, {} as AppContext);
+  const r = await new CustomCommand("t", "d", tpl).call(args, {} as CommandContext);
   return (r as { prompt: string }).prompt;
 }
-import type { AppContext } from "@sid-code/cli/command/types.ts";
+import type { CommandContext } from "@sid-code/cli/command/types.ts";
 
 let root: string;
 let proj: string;
@@ -57,15 +57,15 @@ function ctx(opts: { file?: boolean; shell?: boolean } = {}) {
       asked.shell.push(cmds);
       return opts.shell ?? true;
     },
-  } as unknown as AppContext;
+  } as unknown as CommandContext;
   return { c, asked };
 }
 
-async function run(tpl: string, args: string, c: AppContext) {
-  return (await new CustomCommand("t", "d", tpl).execute(args, c)) as {
-    kind: string;
+async function run(tpl: string, args: string, c: CommandContext) {
+  return (await new CustomCommand("t", "d", tpl).call(args, c)) as {
+    type: string;
     prompt?: string;
-    message?: string;
+    value?: string;
   };
 }
 
@@ -73,7 +73,7 @@ describe("D14 用户参数不参与注入扫描", () => {
   test("参数里的 !{...} 不执行，连确认框都不弹，按字面量进 prompt", async () => {
     const { c, asked } = ctx();
     const r = await run("请分析：$ARGUMENTS", "!{echo PWNED_MARKER}", c);
-    expect(r.kind).toBe("submit_prompt");
+    expect(r.type).toBe("submit_prompt");
     expect(r.prompt).toBe("请分析：!{echo PWNED_MARKER}");
     expect(asked.shell).toEqual([]);
   });
@@ -123,8 +123,8 @@ describe("D15 文件注入：边界 / 确认 / 上限", () => {
   test("用户拒绝 → 不读、返回已取消，内容不进 prompt", async () => {
     const { c } = ctx({ file: false });
     const r = await run("@{../outside/x.txt}", "", c);
-    expect(r.kind).toBe("message");
-    expect(r.message).toMatch(/拒绝注入文件/);
+    expect(r.type).toBe("text");
+    expect(r.value).toMatch(/拒绝注入文件/);
     expect(JSON.stringify(r)).not.toContain("OUTSIDE_CONTENT");
   });
 
@@ -136,8 +136,8 @@ describe("D15 文件注入：边界 / 确认 / 上限", () => {
   });
 
   test("无确认通道 → fail-closed 拒绝（与 shell 注入同取向）", async () => {
-    const r = await run("@{.env}", "", {} as AppContext);
-    expect(r.kind).toBe("message");
+    const r = await run("@{.env}", "", {} as CommandContext);
+    expect(r.type).toBe("text");
     expect(JSON.stringify(r)).not.toContain("SECRET=1");
   });
 
@@ -146,9 +146,9 @@ describe("D15 文件注入：边界 / 确认 / 上限", () => {
       requestUserConfirmation: async () => {
         throw new Error("弹窗失败");
       },
-    } as unknown as AppContext;
+    } as unknown as CommandContext;
     const r = await run("@{.env}", "", c);
-    expect(r.kind).toBe("message");
+    expect(r.type).toBe("text");
   });
 
   test("超过上限的文件被截断并提示，而非整文件塞进上下文", async () => {

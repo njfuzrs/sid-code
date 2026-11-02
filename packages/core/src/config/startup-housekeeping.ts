@@ -42,7 +42,7 @@
  *    `getCheckpointManager()` 首次创建实例时跑（`manager.ts:1031`）。那个工厂的生产
  *    触发点全是懒加载的：`query/tool-executor.ts:444`（仅当本轮真要改文件）、
  *    `cli/app.ts:573`（仅 rewind）、`cli/app.ts:2694`（仅分叉）、
- *    `command/builtins.ts:483/534/600`（仅 /undo、/restore、/checkpoints）。
+ *    `command/commands/{undo,restore,checkpoints}/`（仅 /undo、/restore、/checkpoints）。
  *    于是**一个只读会话（问答、看代码、跑测试）从头到尾不触发清理**。
  *    实测 651 个超 30 天的目录躺在盘上没被删。
  *    （另一个默认值 `maxTotalSizeMb=200` 也永不触发：盘上只有 34MB。）

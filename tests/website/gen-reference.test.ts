@@ -79,13 +79,7 @@ function tableRowKeys(body: string): string[] {
     if (cells.length < 2) continue;
     const first = cells[0].trim();
     if (!first || /^-+$/.test(first) || !first.startsWith("`")) continue;
-    keys.push(
-      first
-        .replace(/`/g, "")
-        .replace(/\\/g, "")
-        .replace(/\s*⚠$/, "")
-        .trim(),
-    );
+    keys.push(first.replace(/`/g, "").replace(/\\/g, "").replace(/\s*⚠$/, "").trim());
   }
   return keys;
 }
@@ -737,7 +731,7 @@ describe("参考页生成器 · pre-commit 接线", () => {
       "packages/cli/src/help.ts",
       "packages/cli/src/cli.ts",
       "packages/core/src/tool/read.ts",
-      "packages/cli/src/command/lsp.ts",
+      "packages/cli/src/command/commands/lsp/lsp.ts",
       "packages/core/src/config/config.ts",
       "packages/core/src/hook/types.ts",
       // fire*Event 调用点（hooks.md「是否会触发」）

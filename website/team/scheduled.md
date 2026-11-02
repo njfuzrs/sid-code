@@ -115,7 +115,7 @@ cron: 12 14 03 10 *
 
 ### `/cron` 斜杠命令：管理面板
 
-查看和删除定时任务用 `/cron`（别名 `/schedule`，`packages/cli/src/command/advanced.ts`）：
+查看和删除定时任务用 `/cron`（别名 `/schedule`，`packages/cli/src/command/commands/cron/cron.ts`）：
 
 ```text
 /cron              # 列出所有任务（等同 /cron list）

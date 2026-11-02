@@ -4,7 +4,14 @@
  * 支持：$1/$@/{{args}} 参数替换、@{path} 文件注入、!{cmd} Shell 注入
  */
 
-import type { Command, AppContext, CommandResult } from "./types.ts";
+import type {
+  CommandContext,
+  CommandSource,
+  LocalCommandModule,
+  LocalCommandResult,
+  UnifiedCommand,
+} from "./types.ts";
+import { errorText } from "./result.ts";
 import { sidPaths } from "@sid-code/core/config/paths.ts";
 import { ExtensionLoader } from "@sid-code/core/extension/loader.ts";
 import type { ScanOptions } from "@sid-code/core/extension/types.ts";
@@ -20,8 +27,7 @@ import { isAbsolute, relative, resolve, sep } from "path";
 
 /**
  * 保护命令名：单一事实源已下沉到 core（D7），注册表 dedupe 对所有非内置来源统一拦截。
- * 这里保留加载期的早拦，是为了 legacy 回退路径（cli.ts 直接 register 进旧 Registry，
- * 不经 UnifiedCommandRegistry）也受保护。
+ * 这里保留加载期的早拦：在加载阶段就跳过并告警，比进注册表后再被 dedupe 拦下更早给出提示。
  */
 const PROTECTED_NAMES = PROTECTED_COMMAND_NAMES;
 
@@ -175,7 +181,7 @@ function splitTemplate(template: string): TemplateSegment[] {
  */
 async function processFileInjections(
   segments: TemplateSegment[],
-  ctx: AppContext,
+  ctx: CommandContext,
 ): Promise<Map<TemplateSegment, string> | null> {
   const log = getLogger();
   const out = new Map<TemplateSegment, string>();
@@ -240,7 +246,7 @@ async function processFileInjections(
  */
 async function processShellInjections(
   segments: TemplateSegment[],
-  ctx: AppContext,
+  ctx: CommandContext,
 ): Promise<Map<TemplateSegment, string> | null> {
   const out = new Map<TemplateSegment, string>();
   const shells = segments.filter(
@@ -332,7 +338,7 @@ function substituteArgs(text: string, args: string): string {
 async function processTemplate(
   template: string,
   args: string,
-  ctx: AppContext,
+  ctx: CommandContext,
 ): Promise<{ text: string; confirmed: boolean; rejected?: "file" | "shell" }> {
   const segments = splitTemplate(template);
 
@@ -354,7 +360,7 @@ async function processTemplate(
 }
 
 /** 自定义命令实现 */
-export class CustomCommand implements Command {
+export class CustomCommand implements LocalCommandModule {
   private _name: string;
   private _description: string;
   private _body: string;
@@ -381,7 +387,23 @@ export class CustomCommand implements Command {
     return this._options.argumentHint ?? "";
   }
 
-  async execute(args: string, ctx: AppContext): Promise<CommandResult> {
+  /**
+   * 包装成 UnifiedCommand（local 变体）。自定义命令与插件命令都走这里进统一注册表。
+   * 实现对象就是 this（它本身满足 LocalCommandModule），load 不做额外动态加载。
+   */
+  toUnifiedCommand(source: CommandSource): UnifiedCommand {
+    return {
+      type: "local",
+      name: this.name(),
+      aliases: this.aliases(),
+      description: this.description(),
+      argumentHint: this.argumentHint(),
+      source,
+      load: () => Promise.resolve(this),
+    };
+  }
+
+  async call(args: string, ctx: CommandContext): Promise<LocalCommandResult> {
     let text: string;
     let confirmed: boolean;
     let rejected: "file" | "shell" | undefined;
@@ -389,13 +411,13 @@ export class CustomCommand implements Command {
     try {
       ({ text, confirmed, rejected } = await processTemplate(this._body, args, ctx));
     } catch (err: any) {
-      return { kind: "error", message: err.message };
+      return errorText(err.message);
     }
 
     if (!confirmed) {
       return {
-        kind: "message",
-        message:
+        type: "text",
+        value:
           rejected === "file" ? "已取消：用户拒绝注入文件内容" : "已取消：用户拒绝执行 Shell 命令",
       };
     }
@@ -421,10 +443,10 @@ export class CustomCommand implements Command {
   }
 
   /** inline：allowed-tools 作为**本轮**免确认 allow 规则随 prompt 下发，由 app 在本轮前后设置 / 清空 */
-  private inlineResult(prompt: string): CommandResult {
+  private inlineResult(prompt: string): LocalCommandResult {
     const { allowedTools } = this._options;
     return {
-      kind: "submit_prompt",
+      type: "submit_prompt",
       prompt,
       ...(allowedTools && allowedTools.length > 0
         ? { allowedTools, allowedToolsTrusted: this._options.trusted === true }
@@ -433,7 +455,7 @@ export class CustomCommand implements Command {
   }
 
   /** fork 模式：经统一入口 runForkedCommand 执行（P3：必注入 checker，allowed-tools 只作 allow 规则）。 */
-  private async executeFork(prompt: string, ctx: AppContext): Promise<CommandResult> {
+  private async executeFork(prompt: string, ctx: CommandContext): Promise<LocalCommandResult> {
     const { allowedTools, model, agent } = this._options;
     const log = getLogger();
     if (!ctx.providerRegistry) {
@@ -449,7 +471,7 @@ export class CustomCommand implements Command {
       try {
         result = await runForkedCommand({
           providerRegistry: ctx.providerRegistry,
-          toolRegistry: ctx.registry, // AppContext 的 ToolRegistry 字段名为 registry
+          toolRegistry: ctx.toolRegistry,
           hookSystem: ctx.hookSystem,
           permissionChecker: ctx.permissionChecker ?? null,
           name: this._name,
@@ -466,12 +488,12 @@ export class CustomCommand implements Command {
         run?.end();
       }
       if (run?.signal.aborted) {
-        return { kind: "error", message: `已取消 /${this._name}` };
+        return errorText(`已取消 /${this._name}`);
       }
       if (!result.success) {
-        return { kind: "error", message: result.output || "自定义命令执行失败" };
+        return errorText(result.output || "自定义命令执行失败");
       }
-      return { kind: "message", message: result.output, conversational: true };
+      return { type: "text", value: result.output, conversational: true };
     } catch (err: any) {
       log.error("CUSTOM_CMD", `fork 执行失败 /${this._name}: ${err?.message}`);
       // fork 出错兜底回 inline，避免命令完全不可用。
