@@ -3046,9 +3046,12 @@ export function buildDigest(ref: SessionRef, full: boolean, paths: DigestPaths):
       kind: "billing_amount_mismatch",
       detail:
         `账本成本与计费事件金额不一致：账本 $${billingAmount.ledgerUSD.toFixed(4)}，` +
-        `Σ BilledRequest（按事件时刻、内置价表）$${billingAmount.billedUSD.toFixed(4)}，` +
+        `Σ BilledRequest（按事件时刻、${billingAmount.baseURL ? `端点 ${billingAmount.baseURL} 的价表` : "注册表价（轨迹无端点信息）"}）$${billingAmount.billedUSD.toFixed(4)}，` +
         `偏差 ${(billingAmount.ratio * 100).toFixed(1)}%（阈值 ${BILLING_AMOUNT_TOLERANCE * 100}%）。` +
-        `账本偏高 = 有调用链被记了两次（S13 子代理双记即此形态）；偏低 = 有链漏记`,
+        `账本偏高 = 有调用链被记了两次（S13 子代理双记即此形态）；偏低 = 有链漏记。` +
+        `下结论前先排除价表不同：各类 token 逐项对得上、只有金额对不上，是两边用的单价不同，` +
+        `核对 gateway-pricing.json 里该端点该模型的四个单价`,
+      pointer: `${paths.ledgerPath}（sessionId=${ref.id}）+ events.jsonl 的 BilledRequest 与 AfterModelRaw.base_url`,
       provenance: [
         {
           sourceFile: paths.ledgerPath,
@@ -3058,10 +3061,11 @@ export function buildDigest(ref: SessionRef, full: boolean, paths: DigestPaths):
         },
         {
           sourceFile: eventsPath,
-          lineRef: "event=BilledRequest（timestamp ≤ 账本 ts），usage × 事件时刻价",
-          rawValue: `count=${billingAmount.count}`,
+          lineRef: "event=BilledRequest（timestamp ≤ 账本 ts），usage × 事件时刻 × 端点价",
+          rawValue: `count=${billingAmount.count} base_url=${billingAmount.baseURL ?? "(无)"}`,
           mtime: fileMtimeIso(eventsPath),
-          // 用内置价表重算：用户自配 baseURL 价时可能与账本取价不同（事件不带 base_url）
+          // 端点取自同 index 的 AfterModelRaw，配不上时用会话唯一端点；仍拿不到用户自配的
+          // availableModels 价（digest 读不到用户配置），那类会话可能与账本取价不同
           lossy: true,
         },
       ],
@@ -5435,17 +5439,47 @@ export const BILLING_AMOUNT_TOLERANCE = 0.01;
  * 口径与保守退让（宁可不判也不误报）：
  * - 只计 `timestamp ≤ 账本 ts` 的事件：账本在 turn-done upsert，其后的 fork 只被后者看到；
  * - 按**事件时刻**取价（分时段定价，不传时刻会得出假差额，见方案 §2 S13 ④）；
- * - 任一事件模型在内置价表里查不到 → 不判（digest 拿不到用户 availableModels）；
+ * - 任一事件模型在价表里查不到 → 不判（digest 拿不到用户 availableModels）；
  * - 无账本 / 无 BilledRequest（老轨迹）/ 总额为 0 → 不判。
+ *
+ * **必须按请求实际走的端点取价**（`baseURL`）。`BilledRequest` 不带 `base_url`，同一次调用的
+ * `AfterModelRaw` 带，按 `index` 配对；配不上的（后台任务 900000+ 段、无 AfterModelRaw 的主链调用）
+ * 用会话里唯一的那个端点。会话用过不止一个端点又配不上时不判 —— 猜错端点就是下面这个事故本身。
+ *
+ * 2026-11-02 事故：这里原先不传 `baseURL`，网关采集价一律查不到，落到注册表价。ppchat 网关
+ * `claude-opus-5-5` 的 cacheWrite 是 0、注册表不是，于是每个 ppchat 会话都「账本比计费少 77%」，
+ * 被本检测器报成 high「有链漏记」。本地 116 个命中里 109 个是这个原因（账本本身是对的）。
  *
  * @returns 越过阈值时返回明细，否则 undefined
  */
 export function checkBillingAmountConsistency(
   events: Array<{ event?: string; timestamp?: unknown; data?: Record<string, unknown> }>,
   ledger: { costUSD: number; ts: number } | undefined,
-): { ledgerUSD: number; billedUSD: number; ratio: number; count: number } | undefined {
+):
+  | {
+      ledgerUSD: number;
+      billedUSD: number;
+      ratio: number;
+      count: number;
+      /** 重算所用端点；undefined = 轨迹里没有端点信息，按注册表价重算（老轨迹） */
+      baseURL?: string;
+    }
+  | undefined {
   if (!ledger || !(ledger.costUSD > 0)) return undefined;
   const cutoffMs = ledger.ts < 1e12 ? ledger.ts * 1000 : ledger.ts;
+
+  // 端点：按 index 配对 AfterModelRaw.base_url；配不上时退回会话唯一端点
+  const baseByIndex = new Map<unknown, string>();
+  const bases = new Set<string>();
+  for (const e of events) {
+    if (e.event !== "AfterModelRaw") continue;
+    const b = (e.data as Record<string, unknown> | undefined)?.base_url;
+    if (typeof b !== "string" || !b) continue;
+    baseByIndex.set((e.data as Record<string, unknown>).index, b);
+    bases.add(b);
+  }
+  const soleBase = bases.size === 1 ? [...bases][0] : undefined;
+
   let billedUSD = 0;
   let count = 0;
   for (const e of events) {
@@ -5456,7 +5490,10 @@ export function checkBillingAmountConsistency(
     if (at > cutoffMs + 1000) continue;
     const d = (e.data ?? {}) as Record<string, any>;
     const model = typeof d.model === "string" ? d.model : "";
-    if (!model || !resolvePricing(model)) return undefined;
+    const baseURL = baseByIndex.get(d.index) ?? soleBase;
+    // 多端点会话里配不上端点：不判（见函数注释）
+    if (baseURL === undefined && bases.size > 1) return undefined;
+    if (!model || !resolvePricing(model, undefined, baseURL)) return undefined;
     billedUSD += calculateUSDCost(
       model,
       {
@@ -5467,7 +5504,7 @@ export function checkBillingAmountConsistency(
       },
       undefined,
       typeof d.provider === "string" ? d.provider : undefined,
-      undefined,
+      baseURL,
       new Date(at),
     );
     count += 1;
@@ -5476,5 +5513,5 @@ export function checkBillingAmountConsistency(
   const denom = Math.max(ledger.costUSD, billedUSD);
   const ratio = Math.abs(ledger.costUSD - billedUSD) / denom;
   if (ratio <= BILLING_AMOUNT_TOLERANCE) return undefined;
-  return { ledgerUSD: ledger.costUSD, billedUSD, ratio, count };
+  return { ledgerUSD: ledger.costUSD, billedUSD, ratio, count, baseURL: soleBase };
 }
