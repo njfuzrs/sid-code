@@ -54,6 +54,7 @@
  */
 
 import { createHash } from "node:crypto";
+import { serializeMessageForFingerprint } from "../api/message-fingerprint.ts";
 
 /** 段类型 —— 与 P1-3 的候选优化项一一对应，便于直接读出该改哪里 */
 export type PrefixSegmentKind = "system_static" | "system_dynamic" | "tools" | "message";
@@ -243,14 +244,11 @@ export function fingerprintPrefix(
   };
 }
 
-/** 序列化单条消息用于 hash。循环引用等异常降级为空串（绝不因埋点抛错）。 */
-function safeStringify(m: unknown): string {
-  try {
-    return JSON.stringify(m) ?? "";
-  } catch {
-    return "";
-  }
-}
+/**
+ * 序列化单条消息用于 hash。与账单侧检测器（`api/cache-detection.ts`）**共用同一个实现**，
+ * 两套断裂检测才会对「这条消息变没变」给出同一个答案。
+ */
+const safeStringify = serializeMessageForFingerprint;
 
 /**
  * 抽出一条消息在 **wire 上真正占字节的文本**，供字符级判据使用。

@@ -404,8 +404,10 @@ export function renderCacheSection(opts: CacheReportOptions = {}): string {
 /**
  * 给归因类别标注"能不能优化" —— 分布本身不说明该做什么。
  *
- * `server_fluctuation` 占比高是**正常**的（服务端 TTL 到期本地无法控制），
- * 不标注的话容易被读成"缓存坏了"而去改本地代码，白费力气。
+ * `server_fluctuation` 占比高很常见（服务端 TTL 到期本地无法控制），不标注的话容易被读成
+ * "缓存坏了"而去改本地代码。但它的含义是「system / tools / 消息前缀都没变」，**不等于
+ * 本地一定没问题**：走不可信中转渠道时 cache_read 本身就不准，这类记录更可能是渠道噪声；
+ * 2026-11-02 之前的旧记录不比对消息，历史改写也会落进这一类。
  */
 function categoryHint(category: string): string {
   switch (category) {
@@ -413,6 +415,8 @@ function categoryHint(category: string): string {
       return "  ← 服务端波动，本地不可控（只能监测）";
     case "prefix_break":
       return "  ← 本地前缀断裂，可优化";
+    case "message_history":
+      return "  ← 历史消息被原地改写，可优化（查 prefix_break 事件的 cause）";
     case "tool_order":
       return "  ← 工具顺序不稳定，可优化";
     case "system_prompt":

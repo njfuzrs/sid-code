@@ -16,6 +16,7 @@
 
 import { createHash } from "node:crypto";
 import { getLogger } from "../debug/logger.ts";
+import { serializeMessageForFingerprint } from "./message-fingerprint.ts";
 
 /**
  * 快速哈希（10.1 性能优化）。
@@ -60,6 +61,13 @@ interface PromptState {
   toolOrderHash: string;
   /** agentId（子代理 vs 主循环隔离追踪） */
   agentId: string;
+  /**
+   * 逐条消息的指纹（hash + 序列化长度）。调用方没传 `messages` 时为 undefined ——
+   * 表示「不可判」，**不是**「没变」。
+   */
+  messagePrints?: { hash: string; length: number }[];
+  /** system + tools 的序列化长度，算消息改写浪费比例时进分母 */
+  headLength: number;
 }
 
 /**
@@ -79,7 +87,9 @@ interface PromptState {
  * - `compact`：消息数量骤减（compact 未走 notifyCompaction 时的兜底归因）
  * - `ttl_expiry`：距上次请求间隔超过 TTL 告警阈值
  * - `prefix_break`：前缀 hash 变化，但上面各项都没匹配到（本地断裂，可优化）
- * - `server_fluctuation`：前缀 hash 未变（服务端缓存波动，本地不可控，只能监测）
+ * - `message_history`：system / tools 没变，但历史消息被原地改写，且浪费超过 1%（本地断裂，可优化）
+ * - `server_fluctuation`：system / tools / 消息前缀都没变（或调用方没传消息、不可判）。
+ *   ⚠ 走不可信渠道时 cache_read 本身就不可信，这时它更可能是渠道噪声，不是服务端缓存行为
  */
 export type CacheBreakCategory =
   | "model"
@@ -91,6 +101,7 @@ export type CacheBreakCategory =
   | "compact"
   | "ttl_expiry"
   | "prefix_break"
+  | "message_history"
   | "server_fluctuation";
 
 /** cache break 归因报告 */
@@ -122,6 +133,15 @@ export interface CacheBreakReport {
    * - 前缀未变 + 无重试   → 纯服务端缓存波动（网关 TTL 过期 / 路由换节点，本地不可控）。
    */
   precededByRetry?: boolean;
+  /**
+   * 消息前缀有没有被改写（只比到上一轮的长度，尾部追加不算）。
+   * undefined = 调用方没传 messages，不可判 —— 聚合时**不要**当成 false。
+   */
+  messagePrefixChanged?: boolean;
+  /** 改写时：第一条不一致的消息下标 */
+  firstChangedMessageIndex?: number;
+  /** 改写时：上一轮可缓存前缀里被作废的比例（0~1，按序列化字符估算，分母是上一轮总长） */
+  messageWastedRatio?: number;
 }
 
 /** 输入参数 */
@@ -138,6 +158,11 @@ export interface CacheCheckParams {
   betaHeaders?: string[];
   /** 当前消息数量 */
   messageCount?: number;
+  /**
+   * 本轮发送的完整消息数组。传了才比对消息前缀；不传时行为与旧版完全一致
+   * （兜底仍只看 system / tools / 工具顺序）。
+   */
+  messages?: unknown[];
   /** 当前 agentId（子代理隔离用；不传视为主循环 "main"） */
   agentId?: string;
   /**
@@ -146,6 +171,14 @@ export interface CacheCheckParams {
    */
   precededByRetry?: boolean;
 }
+
+/**
+ * 消息改写的显著性阈值：作废比例 ≤ 1% 不归因为 `message_history`。
+ *
+ * 与字节侧 `prefix_break` 的 `CHAR_WASTE_SIGNIFICANT` 取同一个值，两套检测才能对齐。
+ * 低于它的多是尾部 transient reminder 被撤掉，账单掉的那部分主要不是它造成的。
+ */
+const MESSAGE_WASTE_SIGNIFICANT = 0.01;
 
 /** 检测阈值 */
 const DROP_PERCENT_THRESHOLD = 0.05; // 下降 > 5%
@@ -194,6 +227,11 @@ export class CacheBreakDetector {
       messageCount: params.messageCount ?? 0,
       toolOrderHash: hashString(toolOrder),
       agentId: params.agentId ?? "main",
+      messagePrints: params.messages?.map((m) => {
+        const s = serializeMessageForFingerprint(m);
+        return { hash: hashString(s), length: s.length };
+      }),
+      headLength: params.systemPrompt.length + JSON.stringify(params.toolSchemas).length,
     };
   }
 
@@ -305,11 +343,25 @@ export class CacheBreakDetector {
       curr.toolOrderHash,
     );
 
+    // 消息前缀：上一轮的消息应当是本轮的前缀（历史只追加）。
+    // 判据不进 combinePrefixHash —— 那个 hash 会落盘、被跨会话聚合，改它的含义会让新旧记录不可比。
+    const msgDiff = diffMessagePrefix(prev, curr);
+
     if (changes.length === 0) {
       // P2-1：把前缀 hash 是否变化写进归因——hash 变=本地前缀断裂；hash 未变=服务端波动。
       // 此前一律归"未知原因"，缺的正是这个判据字段。
+      //
+      // 2026-11-02：hash 只含 system / tools / 工具顺序，**不含消息**。历史被原地改写时
+      // 它照样不变，于是本地断裂被判成服务端波动（对齐轨迹实测：10-21~10-30 有 35 次
+      // 字节侧确认断了且浪费 > 1%，账单侧全判了 server_fluctuation）。
+      // 现在只有消息前缀也没变（或不可判）才允许落到 server_fluctuation。
       const prefixChanged = prevPrefixHash !== currPrefixHash;
-      if (prefixChanged) {
+      if (!prefixChanged && msgDiff?.changed && msgDiff.wastedRatio > MESSAGE_WASTE_SIGNIFICANT) {
+        note(
+          "message_history",
+          `历史消息第 ${msgDiff.firstChangedIndex} 条被改写，约 ${(msgDiff.wastedRatio * 100).toFixed(1)}% 的已缓存前缀作废`,
+        );
+      } else if (prefixChanged) {
         note(
           "prefix_break",
           `本地前缀 hash 变化（${prevPrefixHash} → ${currPrefixHash}），命中下降由本地 prompt 前缀断裂导致`,
@@ -332,6 +384,17 @@ export class CacheBreakDetector {
       previousPrefixHash: prevPrefixHash,
       currentPrefixHash: currPrefixHash,
       precededByRetry: params.precededByRetry,
+      ...(msgDiff
+        ? {
+            messagePrefixChanged: msgDiff.changed,
+            ...(msgDiff.changed
+              ? {
+                  firstChangedMessageIndex: msgDiff.firstChangedIndex,
+                  messageWastedRatio: Number(msgDiff.wastedRatio.toFixed(4)),
+                }
+              : {}),
+          }
+        : {}),
     };
 
     // 更新状态
@@ -340,6 +403,35 @@ export class CacheBreakDetector {
 
     return report;
   }
+}
+
+/**
+ * 比对两轮的消息前缀。任一轮没有指纹（调用方没传 messages）→ 返回 null，表示不可判。
+ *
+ * 只比到上一轮的长度：本轮多出来的是尾部追加，从没被缓存过，谈不上作废。
+ * 本轮比上一轮短（被截断）时，截掉的部分也算改写。
+ *
+ * 作废比例 = 上一轮从改写点起的字符数 / 上一轮总字符数（system + tools + 消息）。
+ * 分母取上一轮而不是本轮，理由同 `prefix-break-probe.ts` 的 `charWastedRatio`：
+ * 用本轮做分母会把新增内容算成浪费。
+ */
+function diffMessagePrefix(
+  prev: PromptState,
+  curr: PromptState,
+): { changed: boolean; firstChangedIndex: number; wastedRatio: number } | null {
+  const a = prev.messagePrints;
+  const b = curr.messagePrints;
+  if (!a || !b) return null;
+  let i = 0;
+  while (i < a.length && i < b.length && a[i].hash === b[i].hash) i++;
+  if (i === a.length) return { changed: false, firstChangedIndex: -1, wastedRatio: 0 };
+  let wasted = 0;
+  let total = prev.headLength;
+  for (let k = 0; k < a.length; k++) {
+    total += a[k].length;
+    if (k >= i) wasted += a[k].length;
+  }
+  return { changed: true, firstChangedIndex: i, wastedRatio: total > 0 ? wasted / total : 0 };
 }
 
 // ─── G10：多源缓存检测器（按 agentId 隔离基线，子代理 break 不污染主循环） ───
