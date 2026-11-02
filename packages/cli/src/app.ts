@@ -11683,7 +11683,7 @@ export class App {
     const alternateBuffer = this.config.alternateBuffer === true;
     log.info(
       "TUI",
-      `开始渲染 TUI 组件（${alternateBuffer ? "Alternate Buffer 全屏有界视口" : "主屏 Static 内联（--inline）"} 模式）`,
+      `开始渲染 TUI 组件（${alternateBuffer ? "Alternate Buffer 全屏有界视口" : "主屏 Static 内联（默认）"} 模式）`,
     );
 
     const app = createFullScreen(
