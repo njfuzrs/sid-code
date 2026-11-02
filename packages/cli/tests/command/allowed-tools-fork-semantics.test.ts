@@ -11,7 +11,6 @@ import { runForkedCommand } from "@sid-code/core/agent/forked-command.ts";
 import { Registry } from "@sid-code/core/tool/registry.ts";
 import { CommandExecutor } from "@sid-code/cli/command/executor.ts";
 import { CustomCommand, parseCustomCommandOptions } from "@sid-code/cli/command/custom.ts";
-import { SkillCommand } from "@sid-code/cli/command/skill-command.ts";
 import { resolveSkillExecutionContext } from "@sid-code/core/skill/executor.ts";
 import { getBundledSkills } from "@sid-code/core/skill/bundled/registry.ts";
 import { resolveAgent } from "@sid-code/core/agent/agent-definition.ts";
@@ -52,14 +51,14 @@ describe("T3 自定义命令只写 allowed-tools → inline，不建 SubAgent", 
     const opts = parseCustomCommandOptions({ "allowed-tools": "Read, Bash(git -C*, x)" });
     const cmd = new CustomCommand("project-qa", "盘点", "盘点 $ARGUMENTS", opts);
     await withCapture(async (cap) => {
-      const r = await cmd.execute("讲稿", {
+      const r = await cmd.call("讲稿", {
         providerRegistry: {},
-        registry: {},
+        toolRegistry: {},
         permissionChecker: FAKE_CHECKER,
       } as any);
       expect(cap.built).toBe(0);
       expect(r).toMatchObject({
-        kind: "submit_prompt",
+        type: "submit_prompt",
         allowedTools: ["Read", "Bash(git -C*, x)"],
         allowedToolsTrusted: false,
       });
@@ -80,12 +79,12 @@ describe("T4 自定义命令 context: fork → fork，子代理拿到 checker", 
       allowedTools: ["Read", "Glob"],
     });
     await withCapture(async (cap) => {
-      const r = await cmd.execute("", {
+      const r = await cmd.call("", {
         providerRegistry: {},
-        registry: {},
+        toolRegistry: {},
         permissionChecker: FAKE_CHECKER,
       } as any);
-      expect(r).toMatchObject({ kind: "message", conversational: true });
+      expect(r).toMatchObject({ type: "text", conversational: true });
       expect(cap.checker).toBeDefined();
       expect(cap.task.allowedTools).toEqual([]);
       expect(cap.task.toolsFromAgentType).toBe("general-purpose");
@@ -126,19 +125,6 @@ describe("T5 fork 统一入口：主 checker 缺失时明确报错", () => {
       );
       expect(cap.built).toBe(0);
       expect(JSON.stringify(r)).toContain("无权限检查器");
-    });
-  });
-
-  test("SkillCommand fork 同样经统一入口", async () => {
-    const skill = { name: "s", description: "", prompt: "# s", source: "user", context: "fork" };
-    await withCapture(async (cap) => {
-      await new SkillCommand(skill as any).execute("", {
-        providerRegistry: {},
-        registry: {},
-        permissionChecker: FAKE_CHECKER,
-      } as any);
-      expect(cap.checker).toBeDefined();
-      expect(cap.task.toolsFromAgentType).toBe("general-purpose");
     });
   });
 });

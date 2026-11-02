@@ -18,29 +18,29 @@
 
 import { describe, test, expect } from "bun:test";
 import { CustomCommand } from "@sid-code/cli/command/custom.ts";
-import type { AppContext } from "@sid-code/cli/command/types.ts";
+import type { CommandContext } from "@sid-code/cli/command/types.ts";
 
 /** 一个会留下可观测副作用的注入体：真被执行了就能看出来。 */
 const TEMPLATE = "结果: !{echo INJECTED_MARKER}";
 
-function ctxWith(over: Partial<AppContext> = {}): AppContext {
-  return over as AppContext;
+function ctxWith(over: Partial<CommandContext> = {}): CommandContext {
+  return over as CommandContext;
 }
 
 describe("P2-3 无确认通道 → 拒绝执行", () => {
   test("未注入 confirmShellCommands 时不执行 shell，且返回已取消", async () => {
     const cmd = new CustomCommand("t", "d", TEMPLATE);
-    const r = await cmd.execute("", ctxWith()); // 刻意不给 confirmShellCommands
+    const r = await cmd.call("", ctxWith()); // 刻意不给 confirmShellCommands
 
     // 修复前：这里会是 submit_prompt，且 prompt 里含 INJECTED_MARKER（命令已被执行）
-    expect(r.kind).toBe("message");
-    expect((r as { message: string }).message).toMatch(/已取消/);
+    expect(r.type).toBe("text");
+    expect((r as { value: string }).value).toMatch(/已取消/);
     expect(JSON.stringify(r)).not.toContain("INJECTED_MARKER");
   });
 
   test("确认回调抛异常 → 保守拒绝（异常不等于放行）", async () => {
     const cmd = new CustomCommand("t", "d", TEMPLATE);
-    const r = await cmd.execute(
+    const r = await cmd.call(
       "",
       ctxWith({
         confirmShellCommands: async () => {
@@ -48,8 +48,8 @@ describe("P2-3 无确认通道 → 拒绝执行", () => {
         },
       }),
     );
-    expect(r.kind).toBe("message");
-    expect((r as { message: string }).message).toMatch(/已取消/);
+    expect(r.type).toBe("text");
+    expect((r as { value: string }).value).toMatch(/已取消/);
     expect(JSON.stringify(r)).not.toContain("INJECTED_MARKER");
   });
 });
@@ -58,7 +58,7 @@ describe("P2-3 回归：生产路径行为与修复前完全一致", () => {
   test("用户确认 → 正常执行并注入输出", async () => {
     let asked: string[] = [];
     const cmd = new CustomCommand("t", "d", TEMPLATE);
-    const r = await cmd.execute(
+    const r = await cmd.call(
       "",
       ctxWith({
         confirmShellCommands: async (commands: string[]) => {
@@ -67,7 +67,7 @@ describe("P2-3 回归：生产路径行为与修复前完全一致", () => {
         },
       }),
     );
-    expect(r.kind).toBe("submit_prompt");
+    expect(r.type).toBe("submit_prompt");
     expect((r as { prompt: string }).prompt).toContain("INJECTED_MARKER");
     // 确认弹窗拿到的是真实命令列表
     expect(asked).toEqual(["echo INJECTED_MARKER"]);
@@ -75,14 +75,14 @@ describe("P2-3 回归：生产路径行为与修复前完全一致", () => {
 
   test("用户拒绝 → 不执行", async () => {
     const cmd = new CustomCommand("t", "d", TEMPLATE);
-    const r = await cmd.execute("", ctxWith({ confirmShellCommands: async () => false }));
-    expect(r.kind).toBe("message");
+    const r = await cmd.call("", ctxWith({ confirmShellCommands: async () => false }));
+    expect(r.type).toBe("text");
     expect(JSON.stringify(r)).not.toContain("INJECTED_MARKER");
   });
 
   test("模板不含 !{} 时不需要确认通道（不误拦无 shell 的普通命令）", async () => {
     const cmd = new CustomCommand("t", "d", "普通模板，没有 shell 注入");
-    const r = await cmd.execute("", ctxWith()); // 无回调也应放行
-    expect(r.kind).toBe("submit_prompt");
+    const r = await cmd.call("", ctxWith()); // 无回调也应放行
+    expect(r.type).toBe("submit_prompt");
   });
 });

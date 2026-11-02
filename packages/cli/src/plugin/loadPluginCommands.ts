@@ -17,7 +17,6 @@ import { getLogger } from "@sid-code/core/debug/logger.ts";
 import { memoize } from "@sid-code/shared/utils/memoize.ts";
 import { parseFrontmatter } from "@sid-code/core/extension/frontmatter.ts";
 import { CustomCommand } from "../command/custom.ts";
-import type { Command } from "../command/types.ts";
 import { registerPluginCache } from "./caches.ts";
 import { loadAllPluginsCacheOnly } from "./loader.ts";
 import type { LoadedPlugin } from "./types.ts";
@@ -49,7 +48,7 @@ async function scanCommandFiles(
   dir: string,
   baseDir: string,
   pluginName: string,
-  out: Command[],
+  out: CustomCommand[],
 ): Promise<void> {
   if (!existsSync(dir)) return;
 
@@ -91,8 +90,8 @@ async function scanCommandFiles(
 }
 
 /** 加载单个插件的所有命令 */
-export async function loadCommandsForPlugin(plugin: LoadedPlugin): Promise<Command[]> {
-  const commands: Command[] = [];
+export async function loadCommandsForPlugin(plugin: LoadedPlugin): Promise<CustomCommand[]> {
+  const commands: CustomCommand[] = [];
   for (const baseDir of plugin.commandsPaths) {
     await scanCommandFiles(baseDir, baseDir, plugin.name, commands);
   }
@@ -102,9 +101,9 @@ export async function loadCommandsForPlugin(plugin: LoadedPlugin): Promise<Comma
 /**
  * 加载所有已启用插件的命令（memoized）
  */
-export const getPluginCommands = memoize(async (): Promise<Command[]> => {
+export const getPluginCommands = memoize(async (): Promise<CustomCommand[]> => {
   const { enabled } = await loadAllPluginsCacheOnly();
-  const all: Command[] = [];
+  const all: CustomCommand[] = [];
   for (const plugin of enabled) {
     const cmds = await loadCommandsForPlugin(plugin);
     all.push(...cmds);

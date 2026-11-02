@@ -168,7 +168,7 @@ sid-code --cleanup-sessions
 ### `/status` 与 `/stats`：一眼概览 vs 会话统计
 
 这两个都给你看当前会话状态，但侧重不同（`packages/cli/src/command/commands/status/status.ts`、
-`packages/cli/src/command/builtins.ts`）：
+`packages/cli/src/command/commands/stats/stats.ts`）：
 
 | 命令 | 回答什么 | 形态 |
 | --- | --- | --- |

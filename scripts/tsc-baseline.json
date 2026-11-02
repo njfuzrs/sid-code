@@ -1,9 +1,8 @@
 {
   "tscVersion": "5.9.3",
-  "total": 66,
+  "total": 64,
   "note": "tsc 存量错误基线（由 scripts/tsc-baseline.ts 维护）。门禁只拦新增、允许收紧：新增的错误必须修掉，不许调高数字；存量清理之后跑 bun run typecheck:gate --update-baseline 收紧。键 = 归一化文件路径 + 错误码 + 归一化消息（不含行列号，行号漂移不触发门禁），值 = 出现次数。换 tsc 版本或大改依赖树之后错误集合可能变，需要重新 --init 并在 PR 里说明总数变化。",
   "errors": {
-    "packages/cli/tests/command/ide-no-lockfile-message.test.ts|TS18048|'result.message' is possibly 'undefined'.": 2,
     "packages/cli/tests/render-port/fixtures/idle-timers-app.tsx|TS1375|'await' expressions are only allowed at the top level of a file when that file is a module, but this file has no imports or exports. Consider adding an empty 'export {}' to make this file a module.": 7,
     "packages/cli/tests/render-port/fixtures/idle-timers-app.tsx|TS2300|Duplicate identifier 'origin'.": 1,
     "packages/cli/tests/render-port/fixtures/idle-timers-app.tsx|TS2322|Type '{}' is not assignable to type 'string'.": 1,
