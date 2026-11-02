@@ -60,6 +60,7 @@ import { emitBilledRequest } from "../trace/stream-observer.ts";
 import { currentSseDumpContext } from "./sse-chunk-dumper.ts";
 import { getRequestContext } from "./request-context.ts";
 import { getLogger } from "../debug/logger.ts";
+import { recordAgentUsage } from "../telemetry/agent-usage.ts";
 
 /** 一次真实计费请求（= 一次 fetch，无论成功失败、无论谁发起的） */
 export interface BilledRequest {
@@ -325,6 +326,20 @@ export function recordBilledRequest(req: BilledRequest): void {
         thinking_wire_thinks: req.thinkingWireThinks,
       }),
     });
+    // 记忆横向剖析 T1.2：按调用方聚合进账本行 `byAgent`。与上面落盘同理放在去重之后——
+    // 与「谁记这笔钱」无关，所有非主循环 fetch 都要数（含已自报成本的链）。
+    try {
+      recordAgentUsage({
+        agentId: req.agentId,
+        model: req.model,
+        provider: req.provider,
+        baseURL: req.baseURL,
+        usage: req.usage,
+        atMs: req.atMs,
+      });
+    } catch {
+      /* 调用方聚合失败不影响入账 */
+    }
     notifyObservers(req);
   } catch {
     /* 计费上报绝不影响流 */

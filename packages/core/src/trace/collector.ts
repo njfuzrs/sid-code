@@ -76,6 +76,7 @@ import type { Message, Usage } from "../llm/types.ts";
 import { normalizeCacheUsage } from "../llm/types.ts";
 import { inferProviderByModelName } from "../llm/provider-infer.ts";
 import { resetPriceTierCounts, flushInFlightBilledRequests } from "../llm/billing-sink.ts";
+import { resetAgentUsageProcess } from "../telemetry/agent-usage.ts";
 import { TokenEstimator } from "../llm/token-estimator.ts";
 import { checkMessageHistoryIntegrity } from "../agent/message-invariants.ts";
 import { resetSideCallStats, getSideStats, setSideStatsObserver } from "./side-call-sink.ts";
@@ -692,6 +693,8 @@ export class TraceCollector {
     resetSideCallStats();
     // 缺陷 24：billing-sink 的时段计数同为模块级单例，不清零则 peakRatio 跨会话混算
     resetPriceTierCounts();
+    // T1.2：按调用方聚合只清本进程记录（基线由 resume 回灌，见 telemetry/agent-usage.ts）
+    resetAgentUsageProcess();
     // B11 / B12 同理：同进程内 /clear 或 resume 开新会话，上个会话的决策与 edit 结论不能串过来
     this.permissionStats = emptyPermissionDecisionStats();
     this.editFirstTry.reset();
@@ -1295,6 +1298,8 @@ export class TraceCollector {
             // F1：被剔除的退避 / 休眠时长（elapsed_ms 是「有效」耗时，挂钟 = 三者之和）
             excluded_backoff_ms: pairingDeadline.backoffMs(),
             excluded_sleep_ms: pairingDeadline.sleepMs(),
+            // 等用户在 fallback 弹窗里作答的时长（复核样本 b78ebe7f：9 分钟被算成 hang）
+            excluded_prompt_ms: pairingDeadline.promptMs(),
             // still_progressing 时是「慢响应」而非 hang，hint 相应区分，避免误导排查者。
             hint: stillProgressing
               ? "BeforeModel 发出后超时未配对，但流仍在收 chunk：慢响应而非 hang（模型长响应/网关慢）"

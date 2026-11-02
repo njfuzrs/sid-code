@@ -15,6 +15,7 @@ import { getIdentity } from "../identity/index.ts";
 import { getRawVersion } from "@sid-code/shared/version.ts";
 import { getPeakRatio } from "../llm/billing-sink.ts";
 import { getSessionSideStats } from "../trace/side-call-sink.ts";
+import { getSessionAgentUsage } from "./agent-usage.ts";
 
 /**
  * 取影子调用的聚合用量供账本使用；无影子调用时返回空对象（不落三个恒零字段）。
@@ -104,5 +105,16 @@ export function buildUsageLedgerEntry(input: {
     // `undefined` = 本会话没有任何分时段模型，此时**不落字段**（落 0 会与
     // "全部落在空闲时段"这个真实的好结果混在一起）。
     ...(getPeakRatio() !== undefined ? { peakRatio: getPeakRatio() } : {}),
+    // T1.2：按调用方聚合。空表不落字段（与上面可选字段同一缺失语义）。
+    ...buildLedgerByAgent(),
   };
+}
+
+function buildLedgerByAgent(): { byAgent?: NonNullable<UsageLedgerEntry["byAgent"]> } {
+  try {
+    const m = getSessionAgentUsage();
+    return m ? { byAgent: m } : {};
+  } catch {
+    return {};
+  }
 }

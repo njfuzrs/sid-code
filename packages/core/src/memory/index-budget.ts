@@ -28,6 +28,23 @@
 
 import { MEMORY_LIMITS } from "./types.ts";
 
+/**
+ * 索引保留优先级（S9）：越小越先列、越不容易被字节预算截掉。
+ *
+ * 放在这里而不是 store.ts：除了 `writeIndex` 排序，后台抽取的「现有记忆清单」（T3）
+ * 也按它排，让模型先看到会进索引的那部分。两处必须同一个顺序，否则清单前列的
+ * 「已在索引里」与实际索引不符。
+ */
+export const INDEX_TYPE_RANK: Readonly<Record<string, number>> = {
+  user: 0,
+  feedback: 1,
+  project: 2,
+  reference: 3,
+};
+export function indexTypeRank(t: string | undefined): number {
+  return t ? (INDEX_TYPE_RANK[t] ?? 4) : 4;
+}
+
 /** 索引表头（两行）。不占条目配额 —— 这正是 ① 修的东西。 */
 const INDEX_HEADER = ["# Memory Index", ""] as const;
 
