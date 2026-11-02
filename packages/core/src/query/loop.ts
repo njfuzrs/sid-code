@@ -139,6 +139,8 @@ import {
   countUnfinished,
   blockedTodos,
   blockedSignature,
+  unfinishedSignature,
+  buildTodoBackgroundWaitMessage,
   advanceTodoGateBudget,
   TODO_GATE_BUDGET_KEY,
   type TodoGateBudget,
@@ -159,12 +161,21 @@ import {
   createTodoReworkState,
   recordTodoWrite,
   recordFileEditForRework,
-  drainTodoReworkReminder,
+  drainTodoRework,
+  reworkEventData,
+  todoWriteDelta,
   type TodoReworkState,
 } from "./todo-rework.ts";
+import { markPostCompactReinject, consumeSessionCompactMark } from "./post-compact-flags.ts";
+import {
+  isTodoGateDisabled,
+  isTodoNagDisabled,
+  isTodoReworkDisabled,
+} from "./todo-defense-toggles.ts";
 import {
   getTodoReminderTurnCounts,
   shouldInjectTodoReminder,
+  isPostCompactTodoReinjectRedundant,
   LAST_TODO_REMINDER_TURN_KEY,
   LAST_TODO_WRITE_VERSION_KEY,
 } from "./todo-reminder-scan.ts";
@@ -890,6 +901,13 @@ function emitTodoProgressEvent(
     unfinished: number;
     /** 等待用户 / 外部条件的项（2026-10-06 新增；老事件无此字段） */
     blocked: number;
+    /**
+     * 相对上一次写入的 completed 增量，可为负（返工改回）。2026-11-01 新增，老事件无此字段。
+     * ⚠️ 本事件**每次成功写入都发**，不代表有推进；量推进请看本字段，不要数事件条数。
+     */
+    completedDelta: number;
+    /** 条目文本集合是否变了（增删 / 改措辞）。只改措辞的写入：completedDelta=0、本字段 true */
+    contentChanged: boolean;
   },
 ): void {
   if (!deps.traceAppendEvent) return;
@@ -1018,6 +1036,10 @@ export async function* queryLoop(loopConfig: QueryLoopConfig): AsyncGenerator<Qu
 
   const loopDetector = new LoopDetector();
   const state: LoopState = createInitialLoopState(config.maxTurns || Infinity);
+  // T6：上一条消息之后用户手动 /compact 过 → 本条消息补置三个重注入标志（见 post-compact-flags.ts）
+  if (consumeSessionCompactMark(sessionState, state)) {
+    log.info("QUERY_LOOP", "检测到 loop 外的手动压缩，补置压缩后重注入标志");
+  }
   // 停滞升级阶梯（stall-escalation.ts）。headless 默认不开；settings 读不到按影子处理。
   const stallSwitches = resolveStallSwitches(config.print === true, readStallHardStopSetting());
   if (stallSwitches.enabled) {
@@ -1395,9 +1417,7 @@ export async function* queryLoop(loopConfig: QueryLoopConfig): AsyncGenerator<Qu
         // 含 emergencyTruncate 特意留下的保留段。GC 会把近端 tool_result 换成
         // `[已释放]` 桩发给 LLM，长会话一压就失忆。emergency 档同套 truncate
         // 却不 GC——blocking 必须与它对齐，不得在「边界贴末尾」时释放保留段。
-        state.goalReminderPendingAfterCompact = true;
-        state.todoReminderPendingAfterCompact = true;
-        state.deferredToolsPendingAfterCompact = true;
+        markPostCompactReinject(state);
         {
           // P1-3：横幅只在真压动时画。addCompactBoundary 会插入边界消息，故 after 取实测值。
           const { banner } = settleCompaction(deps, sessionState.sessionId, compactScope, {
@@ -1432,9 +1452,7 @@ export async function* queryLoop(loopConfig: QueryLoopConfig): AsyncGenerator<Qu
                 `紧急压缩：使用率 ${usagePercent.toFixed(0)}%`,
                 msgCountBefore,
               );
-              state.goalReminderPendingAfterCompact = true;
-              state.todoReminderPendingAfterCompact = true;
-              state.deferredToolsPendingAfterCompact = true;
+              markPostCompactReinject(state);
               const { banner } = settleCompaction(deps, sessionState.sessionId, compactScope, {
                 trigger: "threshold_emergency",
                 messageCountBefore: msgCountBefore,
@@ -1599,9 +1617,7 @@ export async function* queryLoop(loopConfig: QueryLoopConfig): AsyncGenerator<Qu
             // P0-1：同上，边界贴在末尾。管道即便 steps=[]（什么都没压）原先也会
             // 把保留段整段 GC 掉；用户侧表现为「没压缩、模型突然失忆」。
             // 近端必须留给模型，旧内容已由 snip/microcompact 原地处理。
-            state.goalReminderPendingAfterCompact = true;
-            state.todoReminderPendingAfterCompact = true;
-            state.deferredToolsPendingAfterCompact = true;
+            markPostCompactReinject(state);
             {
               // hard 档走的是「渐进式管道 + 可选 autoCompact/collapse」，压缩量不由单个函数返回，
               // 故 after 取实测消息数——这条路径同样必须满足「没压动就不画横幅」。
@@ -1903,9 +1919,11 @@ export async function* queryLoop(loopConfig: QueryLoopConfig): AsyncGenerator<Qu
       // 「标了 completed 又返工」提醒（todo-rework.ts）：上一轮工具执行时登记、这里消费。
       // 走 reminder 通道而不是写进 tool_result——命中在执行完之后才判定，且不该污染工具输出。
       {
-        const reworkReminder = drainTodoReworkReminder(getTodoReworkState(sessionState));
-        if (reworkReminder) {
-          reminderParts.push(reworkReminder);
+        const rework = drainTodoRework(getTodoReworkState(sessionState));
+        if (rework) {
+          // T3：SID_DISABLE_TODO_REWORK=1 只压掉提醒，检测、振荡计数与事件照常（关闭臂仍能数分母）
+          const reworkSuppressed = isTodoReworkDisabled();
+          if (!reworkSuppressed) reminderParts.push(rework.reminder);
           // 返工提醒与 completed 下降同属「振荡」，并入同一个计数（发现 2b，供 D2 升级阶梯消费）
           const gateBudget = sessionState.get(TODO_GATE_BUDGET_KEY) as TodoGateBudget | undefined;
           if (gateBudget) {
@@ -1921,7 +1939,12 @@ export async function* queryLoop(loopConfig: QueryLoopConfig): AsyncGenerator<Qu
                 event: "TodoReworkDetected",
                 session_id: sessionState.sessionId,
                 timestamp: new Date().toISOString(),
-                data: { ...turnMetrics(state, sessionState, promptSeq) },
+                // hits/hitCount：返工的是哪一项、哪个文件（T1，此前 drain 后被丢掉）
+                data: {
+                  ...turnMetrics(state, sessionState, promptSeq),
+                  ...reworkEventData(rework.hits),
+                  ...(reworkSuppressed ? { suppressed: true } : {}),
+                },
               });
             } catch {
               /* trace 写入失败不阻断主循环 */
@@ -1987,6 +2010,8 @@ export async function* queryLoop(loopConfig: QueryLoopConfig): AsyncGenerator<Qu
               completed: todoFactState.todos.filter((t) => t.status === "completed").length,
               unfinished: countUnfinished(todoFactState.todos),
               blocked: blockedTodos(todoFactState.todos).length,
+              // T7：基线是上一次写入，必须在下方 recordTodoWrite 之前算
+              ...todoWriteDelta(getTodoReworkState(sessionState), todoFactState.todos),
             });
             // 返工检测：把上次写入以来落盘的文件归到本次新完成的项上（见 todo-rework.ts）
             recordTodoWrite(getTodoReworkState(sessionState), todoFactState.todos);
@@ -2026,7 +2051,8 @@ export async function* queryLoop(loopConfig: QueryLoopConfig): AsyncGenerator<Qu
             // 不变量 3 有三处实测事故背书 + 哨兵测试：注入产物写回 ctxMgr 会同时引发 TUI 泄漏、
             // 压缩把工具列表当"用户最初的请求"、reminder 逐轮累积）。
             // 我们把注入锚点放在 SessionState，它**不会**被压缩清掉——所以"压缩后自动重注"这个
-            // 属性拿不到，仍需那 8 处显式置位兜住：压缩把 todo 清单从上下文里抹掉后，
+            // 属性拿不到，仍需显式置位兜住（loop 内 7 处 + 手动 /compact 经会话标记补置，
+            // 统一走 post-compact-flags.ts）：压缩把 todo 清单从上下文里抹掉后，
             // `turnsSinceLastReminder` 可能还没到期，此时不强制重注，清单就在模型视野里永久消失。
             const counts = getTodoReminderTurnCounts(cleanedMessages, {
               absoluteTurn: sessionState.getAbsoluteTurn(),
@@ -2034,7 +2060,28 @@ export async function* queryLoop(loopConfig: QueryLoopConfig): AsyncGenerator<Qu
                 | number
                 | undefined,
             });
-            const afterCompact = state.todoReminderPendingAfterCompact === true;
+            // T5：压缩后补贴只在「清单原文已不在视野里」时才有意义。核实过 microcompact /
+            // masking 只改 tool_result、不动 tool_use.input，snip / 截断是整条删——所以只要
+            // 最近一次 todo_write 还在发送副本里（扫描得到的距离有限且 < 阈值），清单原文就在
+            // 模型眼前，补贴是重复注入。本地轨迹 69 次补贴里 24 次属于这一形态。
+            //
+            // 标志在这里**唯一一次**消费（T3a 门禁：pending_consume 只许一处回落）。原先消费点在
+            // 注入分支里，但 afterCompact 为真时必注入，所以挪到读取处与旧行为等价。
+            const pendingAfterCompact = state.todoReminderPendingAfterCompact === true;
+            state.todoReminderPendingAfterCompact = false;
+            const compactReinjectRedundant =
+              pendingAfterCompact &&
+              isPostCompactTodoReinjectRedundant(
+                counts.turnsSinceLastTodoWrite,
+                TODO_REMINDER_CONFIG.TURNS_SINCE_WRITE,
+              );
+            if (compactReinjectRedundant) {
+              log.info(
+                "QUERY_LOOP",
+                `T5：压缩后跳过 todo 重注入——最近一次 todo_write 仍在视野内（距今 ${counts.turnsSinceLastTodoWrite} 轮）`,
+              );
+            }
+            const afterCompact = pendingAfterCompact && !compactReinjectRedundant;
             const throttleSaysYes = shouldInjectTodoReminder(counts, {
               turnsSinceWrite: TODO_REMINDER_CONFIG.TURNS_SINCE_WRITE,
               turnsBetweenReminders: TODO_REMINDER_CONFIG.TURNS_BETWEEN_REMINDERS,
@@ -2055,9 +2102,12 @@ export async function* queryLoop(loopConfig: QueryLoopConfig): AsyncGenerator<Qu
               hasRealProgress: hasRealProgress(measuredForNag),
               bookkeepingNagCount,
             });
-            if ((throttleSaysYes && todoNagDecision.inject) || afterCompact) {
+            // T3：SID_DISABLE_TODO_NAG=1 只关节流催更；afterCompact 是信息丢失兜底，不受开关管辖
+            if (
+              (throttleSaysYes && todoNagDecision.inject && !isTodoNagDisabled()) ||
+              afterCompact
+            ) {
               reminderParts.push(buildTodoReminder(todoState.todos));
-              state.todoReminderPendingAfterCompact = false;
               if (todoNagDecision.countedAsNoProgress) {
                 sessionState.set(TODO_BOOKKEEPING_NAG_COUNT_KEY, bookkeepingNagCount + 1);
               }
@@ -2140,7 +2190,7 @@ export async function* queryLoop(loopConfig: QueryLoopConfig): AsyncGenerator<Qu
               lastInjectedText: state.lastInjectedProgressReminderText,
               noProgressNagCount: state.progressNagCount ?? 0,
             });
-            if (decision.inject && progressReminder) {
+            if (decision.inject && progressReminder && !isTodoNagDisabled()) {
               reminderParts.push(progressReminder);
               state.lastProgressReminderTurn = state.turnCount;
               state.lastInjectedProgressReminderText = progressReminder;
@@ -3491,9 +3541,7 @@ export async function* queryLoop(loopConfig: QueryLoopConfig): AsyncGenerator<Qu
             // false（见 types.ts LoopState.hasAttemptedReactiveCompact 注释的 CC 教训）。
             state.hasAttemptedReactiveCompact = true;
             setTransition(state, { type: "reactive_compact" }, deps, sessionState.sessionId);
-            state.goalReminderPendingAfterCompact = true;
-            state.todoReminderPendingAfterCompact = true;
-            state.deferredToolsPendingAfterCompact = true;
+            markPostCompactReinject(state);
             // 计数清零与 notifyCompaction 都由 settleCompaction 在确认真压动后统一做
             const { banner } = settleCompaction(deps, sessionState.sessionId, compactScope, {
               trigger: "prompt_too_long_stream",
@@ -3581,9 +3629,7 @@ export async function* queryLoop(loopConfig: QueryLoopConfig): AsyncGenerator<Qu
             ctxMgr.getMessages(),
             toolRegistry.size(),
           );
-          state.goalReminderPendingAfterCompact = true;
-          state.todoReminderPendingAfterCompact = true;
-          state.deferredToolsPendingAfterCompact = true;
+          markPostCompactReinject(state);
           {
             // 计数（P2-6 的清零 / +1）由 settleCompaction 唯一维护。恢复路径不许 noop，
             // 所以 autoCompact 的 skipped 原因不传进来——在这里没压动就是失败。
@@ -4146,9 +4192,7 @@ export async function* queryLoop(loopConfig: QueryLoopConfig): AsyncGenerator<Qu
                 "QUERY_LOOP",
                 `F1：空参数重试前压缩上下文 ${compactResult.messageCountBefore} → ${compactResult.messageCountAfter} 条（level=${levelBeforeRetry}）`,
               );
-              state.goalReminderPendingAfterCompact = true;
-              state.todoReminderPendingAfterCompact = true;
-              state.deferredToolsPendingAfterCompact = true;
+              markPostCompactReinject(state);
               const { banner } = settleCompaction(deps, sessionState.sessionId, compactScope, {
                 trigger: "empty_param_retry",
                 messageCountBefore: compactResult.messageCountBefore,
@@ -4698,13 +4742,33 @@ export async function* queryLoop(loopConfig: QueryLoopConfig): AsyncGenerator<Qu
         // 根因 1、2 修复——模型常"做了一半就 end_turn"。这里在收尾前查 todo：
         // 仍有 pending/in_progress 项 → 注入提醒并软续命（最多 MAX_TODO_GATE_RETRIES 次），
         // 把"人肉完成度校验器"内置进 harness。续命耗尽后放行，但如实列出未完成项，不假装完成。
-        if (deps.getTodoState) {
+        // T3：SID_DISABLE_TODO_GATE=1 整道闸门不判（T8 关闭臂）
+        if (deps.getTodoState && !isTodoGateDisabled()) {
           const todoState = deps.getTodoState();
           const unfinished = todoState ? countUnfinished(todoState.todos) : 0;
           // 预算挂 SessionState、按完成数复位（2026-10-06）：旧实现挂 LoopState，
           // 每条用户消息归零 + 每次 todo_write（哪怕只改措辞）归零，同一份停滞清单可被无限次拦截。
           const budget = todoState ? getTodoGateBudget(sessionState, todoState.todos) : null;
-          if (todoState && budget && unfinished > 0) {
+          if (todoState && budget && unfinished > 0 && (runningBg || pendingNotif)) {
+            // T2（进度清单第五部分）：有运行中的后台任务 / 待投递通知时**不续跑**。
+            // 实测 15 次有 EndTurnShape 的续跑里 6 次触发时 running_background_tasks=true，
+            // 模型的反应是把「等 CI / 等构建」标成 blocked——闸门在逼它对清单撒谎。
+            // 后台任务完成时通知会把循环叫醒，那时闸门还会再判一次，所以这里漏拦的代价有界。
+            // 写法同下方「只剩 blocked」分支：中性说明 + 按清单签名去重，不消耗续命预算。
+            const sig = unfinishedSignature(todoState.todos);
+            if (budget.bgWaitSignature !== sig) {
+              budget.bgWaitSignature = sig;
+              log.info(
+                "QUERY_LOOP",
+                `P0-3：end_turn 放行——仍有 ${unfinished} 项未完成，但有后台任务运行中/通知待投递，等其回报`,
+              );
+              yield {
+                kind: "system",
+                level: "info",
+                text: buildTodoBackgroundWaitMessage(unfinished),
+              };
+            }
+          } else if (todoState && budget && unfinished > 0) {
             // 误判自愈信号：本轮"有实质产出"（写了一段实质文字，如输出了完整报告）却试图收尾。
             // 本 gate 只在 `isEndTurnLike && !hasPendingToolUse` 分支到达，即本轮没有工具调用，
             // todo_write 本轮必然没执行，于是"有产出却不翻状态位"= producedSubstantialText。
@@ -6267,9 +6331,7 @@ export async function* queryLoop(loopConfig: QueryLoopConfig): AsyncGenerator<Qu
         }
 
         state.ctxWindowRecoveryCount = used + 1;
-        state.goalReminderPendingAfterCompact = true;
-        state.todoReminderPendingAfterCompact = true;
-        state.deferredToolsPendingAfterCompact = true;
+        markPostCompactReinject(state);
         log.info(
           "QUERY_LOOP",
           `context_window_exceeded 压缩续写（第 ${state.ctxWindowRecoveryCount}/${MAX_CTX_WINDOW_RECOVERIES} 次）：` +

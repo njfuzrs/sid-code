@@ -29,7 +29,8 @@
  * - **跨用户消息不失忆**：历史不会因为用户又发了一句话就归零；
  * - **压缩后自动重注**：压缩把 `todo_write` 的 tool_use 块删掉后，扫描算出"距上次写清单很久了"
  *   → 自动重注一次。旧实现要为此专门背一个 `todoReminderPendingAfterCompact` 补丁位，
- *   而那个补丁位又要在 6 处 compact 调用点手工置位——漏一处就是清单永久消失。
+ *   而那个补丁位又要在每个 compact 出口手工置位——漏一处就是清单永久消失（2026-11-01 核对：
+ *   loop 内 7 处，手动 /compact 曾漏掉，现统一走 post-compact-flags.ts）。
  *
  * ## 与对标的一处**刻意偏离**（不是没做到，是判断后选择不做）
  *
@@ -134,6 +135,23 @@ export function shouldInjectTodoReminder(
   return (
     counts.turnsSinceLastTodoWrite >= thresholds.turnsSinceWrite &&
     counts.turnsSinceLastReminder >= thresholds.turnsBetweenReminders
+  );
+}
+
+/**
+ * 压缩后的 todo 重注入是否冗余（T5，2026-11-01）。
+ *
+ * 前置核实：microcompact / masking 只改写 tool_result，不动 tool_use.input；snip / 截断 /
+ * 摘要是整条删除。所以「扫描还能找到 todo_write」⟺「清单原文仍在发送副本里」。
+ * 距离有限且低于回注阈值时，模型眼前就有完整清单，再补一次是重复注入。
+ * `Infinity`（压缩把它删掉了 / 从未写过）一律判不冗余，保住信息丢失兜底。
+ */
+export function isPostCompactTodoReinjectRedundant(
+  turnsSinceLastTodoWrite: number,
+  turnsSinceWriteThreshold: number,
+): boolean {
+  return (
+    Number.isFinite(turnsSinceLastTodoWrite) && turnsSinceLastTodoWrite < turnsSinceWriteThreshold
   );
 }
 
