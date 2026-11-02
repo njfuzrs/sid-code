@@ -79,13 +79,7 @@ function tableRowKeys(body: string): string[] {
     if (cells.length < 2) continue;
     const first = cells[0].trim();
     if (!first || /^-+$/.test(first) || !first.startsWith("`")) continue;
-    keys.push(
-      first
-        .replace(/`/g, "")
-        .replace(/\\/g, "")
-        .replace(/\s*⚠$/, "")
-        .trim(),
-    );
+    keys.push(first.replace(/`/g, "").replace(/\\/g, "").replace(/\s*⚠$/, "").trim());
   }
   return keys;
 }

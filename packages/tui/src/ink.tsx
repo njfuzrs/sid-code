@@ -2,7 +2,7 @@ import process from 'node:process';
 import React, {type ReactNode} from 'react';
 import ansiEscapes from 'ansi-escapes';
 import autoBind from 'auto-bind';
-import signalExit from 'signal-exit';
+import {onExit as signalExit} from 'signal-exit';
 import patchConsole from 'patch-console';
 import {LegacyRoot, ConcurrentRoot} from 'react-reconciler/constants.js';
 import {type FiberRoot} from 'react-reconciler';
