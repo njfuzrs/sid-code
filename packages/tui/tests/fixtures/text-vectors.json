@@ -13547,73 +13547,37 @@
      "type": "char",
      "value": " ",
      "fullWidth": false,
-     "styles": [
-      {
-       "type": "ansi",
-       "code": "\u001b]8;;\u0007",
-       "endCode": "\u001b]8;;\u0007"
-      }
-     ]
+     "styles": []
     },
     {
      "type": "char",
      "value": "a",
      "fullWidth": false,
-     "styles": [
-      {
-       "type": "ansi",
-       "code": "\u001b]8;;\u0007",
-       "endCode": "\u001b]8;;\u0007"
-      }
-     ]
+     "styles": []
     },
     {
      "type": "char",
      "value": "f",
      "fullWidth": false,
-     "styles": [
-      {
-       "type": "ansi",
-       "code": "\u001b]8;;\u0007",
-       "endCode": "\u001b]8;;\u0007"
-      }
-     ]
+     "styles": []
     },
     {
      "type": "char",
      "value": "t",
      "fullWidth": false,
-     "styles": [
-      {
-       "type": "ansi",
-       "code": "\u001b]8;;\u0007",
-       "endCode": "\u001b]8;;\u0007"
-      }
-     ]
+     "styles": []
     },
     {
      "type": "char",
      "value": "e",
      "fullWidth": false,
-     "styles": [
-      {
-       "type": "ansi",
-       "code": "\u001b]8;;\u0007",
-       "endCode": "\u001b]8;;\u0007"
-      }
-     ]
+     "styles": []
     },
     {
      "type": "char",
      "value": "r",
      "fullWidth": false,
-     "styles": [
-      {
-       "type": "ansi",
-       "code": "\u001b]8;;\u0007",
-       "endCode": "\u001b]8;;\u0007"
-      }
-     ]
+     "styles": []
     }
    ],
    "width": 15,
