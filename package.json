@@ -57,7 +57,7 @@
   },
   "dependencies": {
     "@alcalzone/ansi-tokenize": "^0.3.1",
-    "@anthropic-ai/sdk": "^0.120.0",
+    "@anthropic-ai/sdk": "^0.137.0",
     "@sid-code/cli": "workspace:*",
     "@sid-code/core": "workspace:*",
     "@sid-code/shared": "workspace:*",
