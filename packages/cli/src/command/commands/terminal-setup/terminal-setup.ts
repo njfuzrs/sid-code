@@ -41,7 +41,7 @@ interface VSCodeKeybinding {
   when?: string;
 }
 
-/** 极简 JSONC 解析：剥离 // 行注释与 /* *​/ 块注释后 JSON.parse。用户 keybindings.json 常带注释。 */
+/** 极简 JSONC 解析：剥离 // 行注释与 /* *\/ 块注释后 JSON.parse。用户 keybindings.json 常带注释。 */
 function parseJSONC(text: string): unknown {
   // 去掉块注释（非贪婪），再去行注释。字符串内的 // 场景极少见于 keybindings，容忍。
   const stripped = text.replace(/\/\*[\s\S]*?\*\//g, "").replace(/(^|[^:])\/\/.*$/gm, "$1");
