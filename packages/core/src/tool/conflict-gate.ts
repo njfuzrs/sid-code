@@ -52,11 +52,8 @@ export async function runConflictGate(
   }
 
   const log = getLogger();
-  const {
-    checkConflict,
-    formatConflictWarning,
-    formatHeadlessConflictNote,
-  } = await import("../session/conflict-detector.ts");
+  const { checkConflict, formatConflictWarning, formatHeadlessConflictNote } =
+    await import("../session/conflict-detector.ts");
   const conflict = checkConflict(filePath, tracker.sessionId);
   if (!conflict) {
     return { proceed: true, note: "" };
