@@ -823,7 +823,7 @@ export class Manager {
    * 记为已加载，再触达同目录也不重新注入 → 规则永久丢失直到进程重启）。
    *
    * App 侧曾用 `applySystemPrompt` 做唯一收口，但收口只在 App 内部有效：
-   * `/memory reload`（`command/builtins.ts`）拿到的是 `ctx.ctxMgr`，直接调裸
+   * `/memory reload`（`command/commands/memory/memory.ts`）拿到的是 `ctx.ctxMgr`，直接调裸
    * `setSystemPrompt` 就绕过了收口 —— 这正是 P1-6 的成因，也是「靠纪律维持的收口
    * 必然漏网」的又一例。把回灌放进 `setSystemPrompt` 本身后，**没有可绕过的路径**：
    * 所有写入者共享同一个不变量，新增入口不必知道 JIT 的存在。

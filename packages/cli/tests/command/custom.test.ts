@@ -28,49 +28,49 @@ describe("CustomCommand", () => {
 
   test("$1 $2 参数替换", async () => {
     const cmd = new CustomCommand("greet", "问候", "你好 $1，欢迎来到 $2");
-    const result = await cmd.execute("张三 北京", {} as any);
-    expect(result.kind).toBe("submit_prompt");
-    expect(result.prompt).toBe("你好 张三，欢迎来到 北京");
+    const result = await cmd.call("张三 北京", {} as any);
+    expect(result.type).toBe("submit_prompt");
+    expect((result as { prompt: string }).prompt).toBe("你好 张三，欢迎来到 北京");
   });
 
   test("$@ 替换为所有参数", async () => {
     const cmd = new CustomCommand("ask", "提问", "请回答: $@");
-    const result = await cmd.execute("什么是 TypeScript", {} as any);
-    expect(result.kind).toBe("submit_prompt");
-    expect(result.prompt).toBe("请回答: 什么是 TypeScript");
+    const result = await cmd.call("什么是 TypeScript", {} as any);
+    expect(result.type).toBe("submit_prompt");
+    expect((result as { prompt: string }).prompt).toBe("请回答: 什么是 TypeScript");
   });
 
   test("{{args}} 新语法替换", async () => {
     const cmd = new CustomCommand("ask", "提问", "请回答: {{args}}");
-    const result = await cmd.execute("什么是 TypeScript", {} as any);
-    expect(result.kind).toBe("submit_prompt");
-    expect(result.prompt).toBe("请回答: 什么是 TypeScript");
+    const result = await cmd.call("什么是 TypeScript", {} as any);
+    expect(result.type).toBe("submit_prompt");
+    expect((result as { prompt: string }).prompt).toBe("请回答: 什么是 TypeScript");
   });
 
   test("$ARGUMENTS 字面量替换（CC 迁移兼容）", async () => {
     const cmd = new CustomCommand("ask", "提问", "请回答: $ARGUMENTS");
-    const result = await cmd.execute("什么是 TypeScript", {} as any);
-    expect(result.kind).toBe("submit_prompt");
-    expect(result.prompt).toBe("请回答: 什么是 TypeScript");
+    const result = await cmd.call("什么是 TypeScript", {} as any);
+    expect(result.type).toBe("submit_prompt");
+    expect((result as { prompt: string }).prompt).toBe("请回答: 什么是 TypeScript");
   });
 
   test("$ARGUMENTS 与 $1 混用（\\b 边界不误伤）", async () => {
     const cmd = new CustomCommand("t", "", "全部=$ARGUMENTS 第一个=$1");
-    const result = await cmd.execute("alpha beta", {} as any);
-    expect(result.prompt).toBe("全部=alpha beta 第一个=alpha");
+    const result = await cmd.call("alpha beta", {} as any);
+    expect((result as { prompt: string }).prompt).toBe("全部=alpha beta 第一个=alpha");
   });
 
   test("$ARGUMENTS 空参数替换为空", async () => {
     const cmd = new CustomCommand("t", "", "内容:[$ARGUMENTS]");
-    const result = await cmd.execute("", {} as any);
-    expect(result.prompt).toBe("内容:[]");
+    const result = await cmd.call("", {} as any);
+    expect((result as { prompt: string }).prompt).toBe("内容:[]");
   });
 
   test("缺少的参数保留字面量（D16：不再静默变空串）", async () => {
     const cmd = new CustomCommand("test", "", "参数1=$1 参数2=$2");
-    const result = await cmd.execute("只有一个", {} as any);
-    expect(result.kind).toBe("submit_prompt");
-    expect(result.prompt).toBe("参数1=只有一个 参数2=$2");
+    const result = await cmd.call("只有一个", {} as any);
+    expect(result.type).toBe("submit_prompt");
+    expect((result as { prompt: string }).prompt).toBe("参数1=只有一个 参数2=$2");
   });
 });
 
@@ -223,16 +223,16 @@ describe("P2-2 CustomCommand 高级字段生效", () => {
 
   test("无 allowed-tools/model 走 inline submit_prompt", async () => {
     const cmd = new CustomCommand("ask", "d", "回答 $@", {});
-    const r = await cmd.execute("hi", {} as any);
-    expect(r.kind).toBe("submit_prompt");
+    const r = await cmd.call("hi", {} as any);
+    expect(r.type).toBe("submit_prompt");
   });
 
   test("声明 allowed-tools 但无 providerRegistry 时回退 inline", async () => {
     const cmd = new CustomCommand("scan", "d", "扫描 $@", { allowedTools: ["read"] });
     // ctx 无 providerRegistry → 回退 inline，保证命令可用
-    const r = await cmd.execute("src", {} as any);
-    expect(r.kind).toBe("submit_prompt");
-    expect(r.prompt).toBe("扫描 src");
+    const r = await cmd.call("src", {} as any);
+    expect(r.type).toBe("submit_prompt");
+    expect((r as { prompt: string }).prompt).toBe("扫描 src");
   });
 
   test("loadAll 应用 frontmatter 高级字段", async () => {

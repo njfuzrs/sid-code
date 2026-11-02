@@ -11,7 +11,7 @@
  */
 import { describe, test, expect } from "bun:test";
 import { SessionState } from "@sid-code/core/session/state.ts";
-import { CostCommand } from "../../src/command/builtins.ts";
+import { CostCommand } from "../../src/command/commands/cost/cost.ts";
 
 const SINGLE_HINT = "openai 协议为隐式缓存，60-70% 属正常上限";
 const MIXED_HINT = "本会话混用多个协议族";
@@ -48,8 +48,8 @@ function recordAnthropic(ss: SessionState): void {
 
 async function runCost(ss: SessionState, currentProvider: string): Promise<string> {
   const ctx = { sessionState: ss, config: { provider: currentProvider } } as any;
-  const result = (await new CostCommand().execute("", ctx)) as { message: string };
-  return result.message;
+  const result = (await new CostCommand().call("", ctx)) as { value: string };
+  return result.value;
 }
 
 describe("/cost 协议族提示：判据与命中率同源（B1）", () => {

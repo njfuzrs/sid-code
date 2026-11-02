@@ -9,7 +9,7 @@
 import { describe, test, expect, afterEach } from "bun:test";
 import { initTelemetry } from "@sid-code/core/telemetry/index.ts";
 import { ATTR } from "@sid-code/core/telemetry/types.ts";
-import { TelemetryCommand } from "../../src/command/builtins.ts";
+import { TelemetryCommand } from "../../src/command/commands/telemetry/telemetry.ts";
 
 function chat(
   bus: ReturnType<typeof initTelemetry>,
@@ -25,8 +25,8 @@ function chat(
 }
 
 async function run(): Promise<string> {
-  const r = await new TelemetryCommand().execute("", {} as never);
-  return (r as { message: string }).message;
+  const r = await new TelemetryCommand().call("", {} as never);
+  return (r as { value: string }).value;
 }
 
 let bus: ReturnType<typeof initTelemetry> | undefined;

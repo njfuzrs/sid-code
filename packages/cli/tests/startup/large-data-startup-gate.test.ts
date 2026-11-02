@@ -334,10 +334,22 @@ describeGate("大数据启动门禁（首帧与事件循环阻塞不随数据量
     upload = medianProfile(u);
   }, 400_000);
 
+  /**
+   * 清理必须给显式超时：默认 5s 删不完这一套 fixture。
+   *
+   * homes 里累积了 4 个 home 目录，其中 large / upload 两个各含 200MB 大文件，
+   * 还有 1500 个轨迹目录 × 20 个小文件（合计约 3 万个小文件、400MB）。
+   * macOS(APFS) 上 1s 内删完，ubuntu runner 的磁盘上超过 5s —— PR #521 的 CI 里
+   * 7 条子断言全过，却因这条 hook 超时把整条测试判红：
+   * `(unnamed) [5058.67ms]` + `a beforeEach/afterEach hook timed out for this test.`
+   * （5.06s 与默认超时吻合；bun 把 afterAll 的超时也归到这句措辞里）
+   *
+   * 删临时目录快慢不是这里要断言的东西，不该让它决定门禁红绿。
+   */
   afterAll(() => {
     hangServer?.stop(true);
     for (const h of homes) rmSync(h, { recursive: true, force: true });
-  });
+  }, 180_000);
 
   test("两次启动都拿到了口径（防门禁空转）", () => {
     expect(Number.isFinite(firstFrame(empty))).toBe(true);

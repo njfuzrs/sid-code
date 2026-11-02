@@ -7,7 +7,7 @@
  * 修法是在三个 fork 出口给结果打 `conversational`，app.ts 据此按一轮对话落。
  *
  * 锁四件事：
- * 1. 三个 fork 出口（executor / SkillCommand / CustomCommand）都打标记；
+ * 1. 两个 fork 出口（executor / CustomCommand）都打标记；
  * 2. 标记压过 outputPanel 声明，适配器两向透传不丢；
  * 3. 普通 local 命令的多行报告仍然不带标记（面板语义不回退）；
  * 4. 落成的消息在历史区渲染为「触发命令 + 模型回答」，不泄漏展开提示词。
@@ -16,8 +16,6 @@
 import { describe, test, expect } from "bun:test";
 import { SubAgent } from "@sid-code/core/agent/sub-agent.ts";
 import { CommandExecutor } from "@sid-code/cli/command/executor.ts";
-import { adaptLegacyCommand, convertResult } from "@sid-code/cli/command/adapter.ts";
-import { SkillCommand } from "@sid-code/cli/command/skill-command.ts";
 import { CustomCommand } from "@sid-code/cli/command/custom.ts";
 import { buildCommandAnswerMessages } from "@sid-code/cli/ui/command-result-route.ts";
 import { messagesToHistoryItems } from "@sid-code/cli/ui/history-adapter.ts";
@@ -68,47 +66,22 @@ describe("fork 出口打 conversational 标记", () => {
     expect(r).toEqual({ type: "message", value: ANSWER, conversational: true });
   });
 
-  test("SkillCommand（旧体系）fork 回答带标记", async () => {
-    const skill = {
-      name: "interview",
-      description: "口试",
-      prompt: "# interview",
-      source: "project",
-      context: "fork", // P6 起缺省 inline，fork 须显式声明
-    } as any;
-    const ctx = { providerRegistry: {}, permissionChecker: FAKE_CHECKER, registry: {} } as any;
-    const r = await withFakeSubAgent(() => new SkillCommand(skill).execute("", ctx));
-    expect(r).toMatchObject({ kind: "message", message: ANSWER, conversational: true });
-  });
-
   test("CustomCommand：带 allowed-tools 走 fork，回答带标记", async () => {
     const cmd = new CustomCommand("project-qa", "盘点 $ARGUMENTS", "", {
       allowedTools: ["read"],
       context: "fork", // P1 起只有 context: fork 才 fork（allowed-tools 不再触发）
     } as any);
-    const ctx = { providerRegistry: {}, permissionChecker: FAKE_CHECKER, registry: {} } as any;
-    const r = await withFakeSubAgent(() => cmd.execute("讲稿", ctx));
-    expect(r).toEqual({ kind: "message", message: ANSWER, conversational: true });
+    const ctx = { providerRegistry: {}, permissionChecker: FAKE_CHECKER, toolRegistry: {} } as any;
+    const r = await withFakeSubAgent(() => cmd.call("讲稿", ctx));
+    expect(r).toEqual({ type: "text", value: ANSWER, conversational: true });
   });
 });
 
 describe("标记在适配层不丢、不污染普通命令", () => {
-  test("legacy → LocalCommandResult：conversational 透传，且不附 panel", () => {
-    expect(convertResult({ kind: "message", message: ANSWER, conversational: true })).toEqual({
-      type: "text",
-      value: ANSWER,
-      conversational: true,
-    });
-  });
-
-  test("自定义命令经 adaptLegacyCommand + 执行器全链路，outputPanel 声明压不过标记", async () => {
-    const legacy = {
-      name: () => "project-qa",
-      aliases: () => [],
-      description: () => "",
-      execute: async () => ({ kind: "message" as const, message: ANSWER, conversational: true }),
-    };
-    const cmd = { ...adaptLegacyCommand(legacy as any, "project"), outputPanel: true };
+  test("自定义命令经 toUnifiedCommand + 执行器全链路，outputPanel 声明压不过标记", async () => {
+    const custom = new CustomCommand("project-qa", "", "");
+    custom.call = async () => ({ type: "text", value: ANSWER, conversational: true });
+    const cmd = { ...custom.toUnifiedCommand("project"), outputPanel: true };
     const r = await new CommandExecutor({} as CommandContext).executeSlashCommand("/project-qa", [
       cmd as UnifiedCommand,
     ]);
@@ -234,16 +207,8 @@ describe("beginForkedRun：开跑前回显，结束必收尾", () => {
     expect(log.at(-1)).toBe("end");
   });
 
-  test("SkillCommand 与 CustomCommand 同样 begin → 信号 → end", async () => {
+  test("CustomCommand 同样 begin → 信号 → end", async () => {
     for (const make of [
-      () =>
-        new SkillCommand({
-          name: "interview",
-          description: "",
-          prompt: "# x",
-          source: "project",
-          context: "fork",
-        } as any),
       () =>
         new CustomCommand("project-qa", "盘点", "", {
           allowedTools: ["read"],
@@ -255,19 +220,12 @@ describe("beginForkedRun：开跑前回显，结束必收尾", () => {
       const ctx = {
         providerRegistry: {},
         permissionChecker: FAKE_CHECKER,
-        registry: {},
+        toolRegistry: {},
         beginForkedRun: b.beginForkedRun,
       } as any;
-      const r = await withSubAgent(log, b, "ok", () => make().execute("", ctx));
+      const r = await withSubAgent(log, b, "ok", () => make().call("", ctx));
       expect(log).toEqual(["begin", "run:signal", "end"]);
       expect(r).toMatchObject({ conversational: true });
     }
-  });
-
-  test("toCommandContext / toAppContext 双向透传 beginForkedRun", async () => {
-    const { toCommandContext, toAppContext } = await import("@sid-code/cli/command/adapter.ts");
-    const fn = () => ({ signal: new AbortController().signal, end: () => {} });
-    expect(toCommandContext({ beginForkedRun: fn } as any).beginForkedRun).toBe(fn);
-    expect(toAppContext({ beginForkedRun: fn } as any).beginForkedRun).toBe(fn);
   });
 });

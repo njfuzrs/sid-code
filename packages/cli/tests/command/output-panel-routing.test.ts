@@ -10,7 +10,6 @@
 
 import { describe, test, expect } from "bun:test";
 import { CommandExecutor, resolvePanel } from "@sid-code/cli/command/executor.ts";
-import { adaptLegacyCommand, convertResult } from "@sid-code/cli/command/adapter.ts";
 import { loadBuiltinCommands } from "@sid-code/cli/command/loaders.ts";
 import { PANEL_MIN_LINES } from "@sid-code/core/command-contract/types.ts";
 import type { UnifiedCommand, CommandContext } from "@sid-code/cli/command/types.ts";
@@ -98,26 +97,6 @@ describe("CommandExecutor 路由", () => {
     const cmd = textCmd("doc", REPORT, { outputPanel: true });
     const r = await new CommandExecutor(CTX).executeImmediate(cmd, "");
     expect((r as { panel?: unknown }).panel).toEqual({});
-  });
-});
-
-describe("legacy 适配器透传", () => {
-  test("gates.outputPanel 透传到适配产物", () => {
-    const legacy = {
-      name: () => "cost",
-      aliases: () => [],
-      description: () => "",
-      execute: async () => ({ kind: "message" as const, message: REPORT }),
-    };
-    expect(adaptLegacyCommand(legacy, "builtin", { outputPanel: true }).outputPanel).toBe(true);
-  });
-
-  test("旧结果上的 panel 字段不丢", () => {
-    expect(convertResult({ kind: "message", message: "x", panel: { title: "t" } })).toEqual({
-      type: "text",
-      value: "x",
-      panel: { title: "t" },
-    });
   });
 });
 

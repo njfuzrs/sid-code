@@ -251,11 +251,9 @@ interface SlashCmd {
 /**
  * 取斜杠命令。
  *
- * ⚠ 与设计文档 T-3.1 的结论有一处修正：文档说数据源是 `BUILTIN_COMMANDS`，但实测
- * 那只是**已迁移到 commands/ 目录的 29 个**；另有 33 个仍在 builtins.ts 里由
- * `loadBuiltinCommands()` 经 adaptLegacyCommand 桥接。只读 BUILTIN_COMMANDS 会漏掉
- * 一半命令（/help /cost /clear /config /theme 这些高频命令全在 legacy 那半边），
- * 文档就成了"能用的没写全"。故改用 loadBuiltinCommands() 拿全集。
+ * 数据源 loadBuiltinCommands()。2026-11-02 命令体系收口后它就是 commands/ 下的
+ * BUILTIN_COMMANDS 全集（此前有一半命令在 builtins.ts 经 legacy 桥接，只读
+ * BUILTIN_COMMANDS 会漏掉它们）。保留经 loaders 取数，与运行时同一入口。
  */
 async function loadSlashCommands(): Promise<SlashCmd[]> {
   const { loadBuiltinCommands } = await import(join(ROOT, "packages/cli/src/command/loaders.ts"));

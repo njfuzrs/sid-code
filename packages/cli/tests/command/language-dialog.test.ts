@@ -15,8 +15,9 @@
  */
 
 import { describe, test, expect, mock } from "bun:test";
-import { LanguageCommand } from "@sid-code/cli/command/language.ts";
-import type { AppContext } from "@sid-code/cli/command/types.ts";
+import { LanguageCommand } from "@sid-code/cli/command/commands/language/language.ts";
+import languageCmd from "@sid-code/cli/command/commands/language/index.ts";
+import type { CommandContext } from "@sid-code/cli/command/types.ts";
 import type { Config } from "@sid-code/core/config/config.ts";
 import type { LanguagePref } from "@sid-code/core/config/prompt-lang.ts";
 
@@ -26,7 +27,7 @@ interface Recorded {
   calls: number;
 }
 
-function createCtx(language?: LanguagePref): { ctx: AppContext; rec: Recorded } {
+function createCtx(language?: LanguagePref): { ctx: CommandContext; rec: Recorded } {
   const rec: Recorded = { lang: undefined, persist: undefined, calls: 0 };
   const config = { language } as unknown as Config;
   const ctx = {
@@ -44,44 +45,44 @@ function createCtx(language?: LanguagePref): { ctx: AppContext; rec: Recorded } 
     }),
     exitRequested: false,
     sessionState: {} as any,
-  } as unknown as AppContext;
+  } as unknown as CommandContext;
   return { ctx, rec };
 }
 
 describe("/language 交互面板", () => {
   test("无参 → 打开 language 面板（不再回纯文本）", async () => {
     const { ctx, rec } = createCtx("zh");
-    const result = await new LanguageCommand().execute("", ctx);
+    const result = await new LanguageCommand().call("", ctx);
 
-    expect(result.kind).toBe("dialog");
-    expect(result.dialog).toBe("language");
+    expect(result.type).toBe("dialog");
+    expect((result as { dialog: string }).dialog).toBe("language");
     // 开面板本身不应改动任何偏好——切换发生在用户按 Enter 之后。
     expect(rec.calls).toBe(0);
   });
 
   test("只带 -p 也开面板（-p 由面板选定后自身携带，不算参数）", async () => {
     const { ctx } = createCtx();
-    const result = await new LanguageCommand().execute("-p", ctx);
-    expect(result.kind).toBe("dialog");
-    expect(result.dialog).toBe("language");
+    const result = await new LanguageCommand().call("-p", ctx);
+    expect(result.type).toBe("dialog");
+    expect((result as { dialog: string }).dialog).toBe("language");
   });
 
   test.each(["status", "list", "ls", "show"])(
     "/language %s → 纯文本状态（面板之外的逃生口）",
     async (token) => {
       const { ctx, rec } = createCtx("en");
-      const result = await new LanguageCommand().execute(token, ctx);
+      const result = await new LanguageCommand().call(token, ctx);
 
-      expect(result.kind).toBe("message");
-      expect(result.message).toContain("en");
+      expect(result.type).toBe("text");
+      expect((result as { value: string }).value).toContain("en");
       expect(rec.calls).toBe(0);
     },
   );
 
   test("状态文本提及面板入口（否则用户不知道有面板可用）", async () => {
     const { ctx } = createCtx();
-    const result = await new LanguageCommand().execute("status", ctx);
-    expect(result.message).toContain("面板");
+    const result = await new LanguageCommand().call("status", ctx);
+    expect((result as { value: string }).value).toContain("面板");
   });
 
   test.each([
@@ -90,18 +91,18 @@ describe("/language 交互面板", () => {
     ["auto", "auto"],
   ] as const)("面板选定 %s -p → setLanguage(%s, true)", async (choice, expected) => {
     const { ctx, rec } = createCtx();
-    const result = await new LanguageCommand().execute(`${choice} -p`, ctx);
+    const result = await new LanguageCommand().call(`${choice} -p`, ctx);
 
-    expect(result.kind).toBe("message");
+    expect(result.type).toBe("text");
     expect(rec.lang).toBe(expected);
     expect(rec.persist).toBe(true);
   });
 
   test("面板选定 unset -p → setLanguage(undefined, true)，不得落成 auto", async () => {
     const { ctx, rec } = createCtx("en");
-    const result = await new LanguageCommand().execute("unset -p", ctx);
+    const result = await new LanguageCommand().call("unset -p", ctx);
 
-    expect(result.kind).toBe("message");
+    expect(result.type).toBe("text");
     expect(rec.calls).toBe(1);
     // 关键哨兵：undefined（无偏好，回落缺省 zh）≠ "auto"（有偏好，跟随用户输入语言）。
     expect(rec.lang).toBeUndefined();
@@ -111,13 +112,13 @@ describe("/language 交互面板", () => {
 
   test("非法值仍报错，不误开面板", async () => {
     const { ctx, rec } = createCtx();
-    const result = await new LanguageCommand().execute("klingon", ctx);
+    const result = await new LanguageCommand().call("klingon", ctx);
 
-    expect(result.kind).toBe("error");
+    expect((result as { value: string }).value).toStartWith("错误: ");
     expect(rec.calls).toBe(0);
   });
 
   test("argumentHint 暴露 status 档（/commands 面板据此提示）", () => {
-    expect(new LanguageCommand().argumentHint?.()).toContain("status");
+    expect(languageCmd.argumentHint).toContain("status");
   });
 });
