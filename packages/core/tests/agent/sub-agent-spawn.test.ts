@@ -58,6 +58,10 @@ class ErrorTool implements Tool {
   inputSchema() {
     return { type: "object", properties: {} };
   }
+  // 只读：本组用例不注入权限检查器，写类工具会被 B0 fail-closed 拦在执行之前
+  readOnly() {
+    return true;
+  }
   async execute(): Promise<ToolResult> {
     throw new Error("模拟工具异常");
   }
@@ -282,6 +286,9 @@ describe("executeToolForChild", () => {
       inputSchema() {
         return { type: "object", properties: {} };
       }
+      readOnly() {
+        return true;
+      }
       async execute(): Promise<ToolResult> {
         return { output: "x".repeat(50000) };
       }
@@ -290,6 +297,9 @@ describe("executeToolForChild", () => {
     bigTools.register(new BigOutputTool());
     const sub = new SubAgent(provider, "test-model", bigTools);
     const result = await (sub as any).executeToolForChild("big_output", {}, bigTools);
+    // 先断言真的执行了：被 fail-closed 拦下时拒绝文案同样短于 50000，只看长度是假绿
+    expect(result.is_error).toBe(false);
+    expect(result.content).toContain("x".repeat(100));
     expect(result.content.length).toBeLessThan(50000);
   });
 });
