@@ -1927,10 +1927,10 @@ export async function main(): Promise<void> {
     const { NotebookEditTool } = await import("@sid-code/core/tool/notebook-edit.ts");
     toolRegistry.register(new NotebookEditTool());
 
-    // G19：注册 think 工具——全仓首个用新泛型 buildTool() 定义、经 toLegacyTool() bridge
-    // 适配到产线 registry 的工具，验证新接口 → bridge → registry 链路真实可用。
-    const { createThinkTool } = await import("@sid-code/core/tool/think.ts");
-    toolRegistry.register(createThinkTool());
+    // G19：注册 think 工具——全仓首个用新泛型 buildTool() 定义的工具。直接传新 Tool，
+    // registry.register 在入口经 bridge 归一，验证「新接口直接注册」链路真实可用。
+    const { thinkTool } = await import("@sid-code/core/tool/think.ts");
+    toolRegistry.register(thinkTool);
 
     // 注册假设登记表工具（环节③：把"怀疑自己的假设"从模型自律外化为 harness 机制）。
     // register 工具持有 ledger，challenge 工具复用同一实例；turnProvider 暂用占位（轮次仅用于

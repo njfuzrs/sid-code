@@ -300,15 +300,20 @@ export interface LegacyToolResult {
 }
 
 /**
- * 旧版工具接口。
+ * 旧版工具接口：**注册表内部存储与全部执行器消费的形态**（消费方读 `name()` / `execute()`）。
  *
- * @deprecated 自 2026-06 工具接口现代化起，新工具请使用新版泛型 `Tool<Input, Output, Progress>`。
- * 当前 25 个工具类仍是 LegacyTool 实现（渐进式迁移中，尚未完成向新版 Tool 的接口级迁移），
- * 但已全部接入 zod schema 运行时校验。待全部工具完成接口迁移后，此接口将被删除。
+ * 写新工具不要实现它：用 `buildTool()` 写成新版泛型 `Tool<Input, Output>`，直接
+ * `registry.register(tool)`。注册表入口识别新 Tool（`name` 是字符串）并经 `tool/bridge.ts`
+ * 适配；bridge 透传的能力字段见其中的 `FORWARDED_KEYS`（编译期穷举，漏一个 tsc 报错）。
+ * 已知限制：bridge 合成的 `ToolUseContext` 除 `abortSignal` 外都是占位值（见 bridge.ts），
+ * 需要真实会话状态的新工具从闭包捕获。
  *
- * G19 迁移路径：新工具直接用 `buildTool()` 写成 `Tool<Input, Output>`，再经
- * `tool/bridge.ts` 的 `toLegacyTool()` 适配后 `registry.register()`——无需等全量迁移，
- * 也无需改 registry 内部类型。既有工具改到时逐一切换，不做大爆炸重写。
+ * 迁移进度由 `scripts/legacy-tool-gate.ts` 棘轮约束：引用本接口的生产文件数只降不升，
+ * 降到 0 时把注册表内部存储换成 `Tool`，删掉本接口与 bridge。既有工具改到时逐一切换，
+ * 不做大爆炸重写。
+ *
+ * 这里刻意不再标 `@deprecated`：它是当前唯一的运行时形态，几十个文件「合法地」引用它，
+ * 编辑器满屏删除线只会让人习惯性忽略；真正约束「别再新增」的是上面那道门禁。
  */
 export interface LegacyTool extends ToolCapabilityFields {
   name(): string;

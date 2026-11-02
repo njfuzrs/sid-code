@@ -44,6 +44,7 @@
     "tui:spec": "bun run scripts/verify-tui-spec.ts",
     "tui:bench": "bun run scripts/tui-bench-report.ts",
     "lint:command-system": "bun run scripts/command-system-gate.ts",
+    "lint:legacy-tool": "bun run scripts/legacy-tool-gate.ts",
     "format": "oxfmt packages tests scripts evals website plugins",
     "format:check": "oxfmt --check packages tests scripts evals website plugins",
     "eval:run": "bun run packages/eval-framework/core/runner.ts",
