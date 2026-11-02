@@ -200,14 +200,6 @@ describe("2. 子代理内工具事件 stdin 带 agent_id / agent_type，主循�
 // ── 3. is_interrupt 按真实中断 ────────────────────────────
 
 describe("3. 子代理异常路径 PostToolUseFailure 的 is_interrupt 按真实 abort 传值", () => {
-  function abortingTool() {
-    return makeTool("slow", async (_i, signal) => {
-      // 工具以普通 Error 收尾（不是 AbortError）——只看异常名会漏判
-      if (signal?.aborted) throw new Error("子进程被终止");
-      return { output: "ok" };
-    });
-  }
-
   test("进程内：signal 已 abort → is_interrupt=true", async () => {
     const sys = sysWith();
     const fail = probe(sys, HookEventName.PostToolUseFailure);
@@ -237,12 +229,18 @@ describe("3. 子代理异常路径 PostToolUseFailure 的 is_interrupt 按真实
     expect(fail[0].is_interrupt).toBe(false);
   });
 
-  test("spawn：signal 已 abort → is_interrupt=true", async () => {
+  test("spawn：执行中 abort → is_interrupt=true", async () => {
     const sys = sysWith();
     const fail = probe(sys, HookEventName.PostToolUseFailure);
     const ctrl = new AbortController();
-    ctrl.abort("user-cancel");
-    const tools = registry([abortingTool()]);
+    // 收口到 runToolUse 后 spawn 路径也有 abort 预检：预先 abort 的工具不再启动，
+    // 中断要发生在执行中才走得到异常 hook（与进程内用例同形态）
+    const tools = registry([
+      makeTool("slow", async () => {
+        ctrl.abort("user-cancel");
+        throw new Error("子进程被终止");
+      }),
+    ]);
     const sub = new SubAgent({} as any, "m", tools, sys);
     await (sub as any).executeToolForChild("slow", {}, tools, ctrl.signal, "tu-1");
     expect(fail[0]).toMatchObject({ is_interrupt: true, tool_use_id: "tu-1" });
