@@ -11,6 +11,7 @@ import { mkdtempSync, rmSync } from "fs";
 import { join } from "path";
 import { tmpdir } from "os";
 import { App } from "@sid-code/cli/app.ts";
+import { UnifiedCommandRegistry } from "@sid-code/cli/command/unified-registry.ts";
 import { defaultConfig } from "@sid-code/core/config/config.ts";
 import type { Config } from "@sid-code/core/config/config.ts";
 import { PermissionChecker } from "@sid-code/core/permission/checker.ts";
@@ -39,6 +40,7 @@ function makeApp(mode: string, checker: PermissionChecker): App {
     permissionMode: mode,
   } as unknown as Config;
   return new App({
+    unifiedRegistry: new UnifiedCommandRegistry(),
     config,
     provider: {} as never,
     mcpManager: {} as never,
@@ -104,7 +106,12 @@ describe("App.requestUserConfirmation · Bridge delegate", () => {
       availableModels: [],
       permissionMode: "default",
     } as unknown as Config;
-    const app = new App({ config, provider: {} as never, mcpManager: {} as never });
+    const app = new App({
+      unifiedRegistry: new UnifiedCommandRegistry(),
+      config,
+      provider: {} as never,
+      mcpManager: {} as never,
+    });
     expect(await ask(app)).toBe(false);
   });
 });

@@ -13,6 +13,7 @@ import { join } from "node:path";
 import { mkdirSync, rmSync, existsSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { App } from "@sid-code/cli/app.ts";
+import { UnifiedCommandRegistry } from "@sid-code/cli/command/unified-registry.ts";
 import { defaultConfig } from "@sid-code/core/config/config.ts";
 import type { Config } from "@sid-code/core/config/config.ts";
 import thinkCmd, {
@@ -53,7 +54,12 @@ function makeApp(model: string, provider: string, thinkingEnabled?: boolean): an
     permissionMode: "default",
     ...(thinkingEnabled === undefined ? {} : { thinkingEnabled }),
   } as unknown as Config;
-  return new App({ config, provider: {} as any, mcpManager: {} as any }) as any;
+  return new App({
+    unifiedRegistry: new UnifiedCommandRegistry(),
+    config,
+    provider: {} as any,
+    mcpManager: {} as any,
+  }) as any;
 }
 
 describe("T2：ThinkingManager 的 App 接线随当前模型现算", () => {

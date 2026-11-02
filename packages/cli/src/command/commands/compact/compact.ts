@@ -12,6 +12,7 @@ import { mergeInstructions } from "@sid-code/core/query/compact/merge-instructio
 // 只采 auto 会让「用户主动压了多少」这个问题永久答不出来，
 // 且会把 compact 总量系统性低估——低估幅度恰好等于用户手动压的那部分。
 import { logContextCompact, logContextCompactSkipped } from "@sid-code/core/analytics/events.ts";
+import { markSessionCompacted } from "@sid-code/core/query/post-compact-flags.ts";
 
 /**
  * /compact 命令实现（按需加载）
@@ -189,6 +190,9 @@ async function runPartial(
   }
 
   ctx.ctxMgr.setMessages(result.messages);
+  // T6：手动压缩发生在两条用户消息之间，碰不到 LoopState；记会话标记，
+  // 让下一次 queryLoop 入口补置 todo / goal / 延迟工具的压缩后重注入（见 post-compact-flags.ts）
+  markSessionCompacted(ctx.sessionState);
 
   // §12 P2-4 复审：手动压缩走与自动压缩**同一套**收尾（文件重注入 / MC state 重置 /
   // cache break 抑制 / 质量校验 / 自适应记录 / PostCompact hook）。
@@ -319,6 +323,7 @@ function runLocalTruncationFallback(
         `建议 /clear 或检查会话历史是否异常`,
     };
   }
+  markSessionCompacted(ctx.sessionState);
   // fire-and-forget PostCompact（兜底路径不 await，避免阻断返回）
   void firePostCompact(ctx, before, after, tokensBefore);
   return {

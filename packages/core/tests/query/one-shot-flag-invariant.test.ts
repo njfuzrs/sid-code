@@ -135,9 +135,20 @@ describe("T3a LoopState 布尔标志写入门禁", () => {
 
   test("扫描面非空（防止目录或正则写错后恒绿）", () => {
     expect(fileCount).toBeGreaterThan(200);
-    // 当前至少有 11 个 set_only + 6 个 pending_consume 的置真点，外加若干消费点
-    expect(writes.length).toBeGreaterThan(40);
+    // 2026-11-01 起三个 *PendingAfterCompact 的 7×3 处字面置位收口到
+    // query/post-compact-flags.ts 的 markPostCompactReinject（3 处），总数从 45 降到 27；
+    // 下限随之下调，并改由下一条断言锁住「置真点确实在 helper 里」，防正则写窄后漏扫。
+    expect(writes.length).toBeGreaterThan(20);
     expect(byField("hasAttemptedReactiveCompact").some(isTrue)).toBe(true);
+    for (const f of [
+      "goalReminderPendingAfterCompact",
+      "todoReminderPendingAfterCompact",
+      "deferredToolsPendingAfterCompact",
+    ]) {
+      expect(
+        byField(f).some((w) => isTrue(w) && w.file.endsWith("query/post-compact-flags.ts")),
+      ).toBe(true);
+    }
   });
 
   test("完备性：LoopState 的布尔字段集合 === 分类常量的键集合", () => {

@@ -51,6 +51,17 @@
  *
  * 不用棘轮：接入时实测违规为 0，硬卡没有存量要豁免。
  *
+ * ### G4 —— 新旧体系同名命令（硬门禁，无基线）
+ *
+ * 旧体系里和新体系同名的命令会被 `loaders.ts` 的 `migratedNames` 过滤掉，主路径走不到，
+ * 但代码还在、测试还在，有人会去修它：`627d3bda` 修 /compact 谎报成功时，就对着这份
+ * 死实现同时改了一遍。所以「迁完一条命令」必须同时删掉旧版，交集不为空就报错。
+ *
+ * 取名**必须用运行时真实的 `name()`**（实例化 `registerBuiltins` 灌进一个旧 Registry），
+ * 不能用类名推导：按「去掉 Command 后缀转小写」推，36 条里有 4 条会推错
+ * （`MCPEnhancedCommand` 实际是 `mcp`、`AddDirCommand` 是 `add-dir` 等），交集会静默漏判。
+ * 接入时（2026-11-01）删掉旧 compact / model 之后交集为空，没有存量要豁免。
+ *
  * ## 用法
  *
  *   bun run scripts/command-system-gate.ts            # 校验（超基线则退 1）
@@ -295,6 +306,32 @@ export interface UnconsumedField {
   consumed: number;
 }
 
+// ─────────────────────────────────────────────
+// G4：新旧体系同名命令
+// ─────────────────────────────────────────────
+
+/** G4 纯函数：旧体系与新体系命令名的交集（排序后返回，便于报错与断言）。 */
+export function findShadowedNames(
+  legacyNames: readonly string[],
+  unifiedNames: readonly string[],
+): string[] {
+  const unified = new Set(unifiedNames);
+  return [...new Set(legacyNames.filter((n) => unified.has(n)))].sort();
+}
+
+/** G4：从真实注册表取两边的命令名（旧体系走 name()，新体系走 name 字段）。 */
+export async function collectG4Names(): Promise<{ legacy: string[]; unified: string[] }> {
+  const { Registry } = await import("../packages/cli/src/command/registry.ts");
+  const { registerBuiltins } = await import("../packages/cli/src/command/builtins.ts");
+  const { BUILTIN_COMMANDS } = await import("../packages/cli/src/command/commands/index.ts");
+  const reg = new Registry();
+  await registerBuiltins(reg);
+  return {
+    legacy: reg.all().map((c) => c.name()),
+    unified: BUILTIN_COMMANDS.map((c) => c.name),
+  };
+}
+
 /** G3a：声明 > 0 且消费 = 0 的字段。 */
 export function findUnconsumedFields(
   declFiles: SourceFile[],
@@ -356,7 +393,7 @@ export function collectG3Sources(): {
   return { decl, consumers, chain };
 }
 
-function main(): void {
+async function main(): Promise<void> {
   const args = process.argv.slice(2);
   const report = args.includes("--report");
   const update = args.includes("--update-baseline");
@@ -373,6 +410,9 @@ function main(): void {
   const breaks = findChainBreaks(G3_COMPLETION_CHAIN, g3.chain);
   console.log(`  G3a 门控字段声明无消费: ${unconsumed.length}  （硬门禁，须为 0）`);
   console.log(`  G3b 补全链路断跳: ${breaks.length}  （硬门禁，须为 0）`);
+  const g4 = await collectG4Names();
+  const shadowed = findShadowedNames(g4.legacy, g4.unified);
+  console.log(`  G4 新旧体系同名命令: ${shadowed.length}  （硬门禁，须为 0）`);
   for (const u of unconsumed) console.log(`    - ${u.field}：声明 ${u.declared} / 消费 0`);
   for (const b of breaks) console.log(`    - ${b.field} 在 ${b.file} 断了`);
   if (dead.length > 0) {
@@ -429,8 +469,15 @@ function main(): void {
     );
     failed = true;
   }
+  if (shadowed.length > 0) {
+    console.error(
+      `\n✗ G4：旧体系 builtins.ts 与新体系 commands/ 同名：${shadowed.join(", ")}。` +
+        `\n  旧版被新版遮蔽、主路径走不到，却还会被人对着修（627d3bda）。迁完一条就删掉旧版。`,
+    );
+    failed = true;
+  }
   if (failed) process.exit(1);
-  console.log("\n✓ 三道门禁通过。");
+  console.log("\n✓ 四道门禁通过。");
 }
 
-if (import.meta.main) main();
+if (import.meta.main) await main();

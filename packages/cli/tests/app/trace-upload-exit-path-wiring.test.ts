@@ -71,11 +71,12 @@ describe("SIGHUP 必须被处理（关终端 / SSH 断连）", () => {
 });
 
 describe("每条退出路径都必须显式声明上传预算", () => {
-  test("四条退出路径各有一次 setUploadBudgetMs（信号 / quit×2 / 正常退出）", () => {
+  test("三条退出路径各有一次 setUploadBudgetMs（信号 / quit / 正常退出）", () => {
     const hits = APP_SRC.match(/setUploadBudgetMs\?\.\(/g) ?? [];
-    // 精确锁 4：少于 4 说明有路径漏了预算声明（会退回"等 10s 却被 1.2s 杀掉"的老问题）；
-    // 多于 4 说明新增了退出路径 —— 那也需要人来确认它的预算取值是否正确。
-    expect(hits).toHaveLength(4);
+    // 精确锁 3：少于 3 说明有路径漏了预算声明（会退回"等 10s 却被 1.2s 杀掉"的老问题）；
+    // 多于 3 说明新增了退出路径 —— 那也需要人来确认它的预算取值是否正确。
+    // 2026-11-01（#514）：旧 Registry 执行回退分支（含第二个 quit 出口）已删除，4 → 3。
+    expect(hits).toHaveLength(3);
   });
 
   test("headless / 评测路径**不**归零预算：那是唯一一直上传成功的路径，不能被这次修复弄坏", () => {

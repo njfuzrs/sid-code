@@ -2,9 +2,8 @@
  * /model sub 与 /model fallback 的行为测试
  *
  * 针对**实际生效**的实现 `src/command/commands/model/model.ts`（迁移后的新命令体系）。
- * 注意：`builtins.ts` 里还有一个同名 legacy `ModelCommand`，被 loadBuiltinCommands 的
- * migratedNames 过滤掉、不会服务 TUI 输入（仅作旧 Registry 回退路径），
- * 因此这些用例不通过它验证——tests/command/model.test.ts 测的是那份 legacy 实现。
+ * （`builtins.ts` 里曾有一个被遮蔽的同名 legacy `ModelCommand` 及其 model.test.ts，
+ * 已随旧 Registry 回退路径一并删除；command-system-gate G4 防止同名实现再出现。）
  *
  * 覆盖两个回归点：
  *   sub      —— 类型列表从活跃 agent registry 派生（含 general-purpose / 自定义 agent），
