@@ -1,4 +1,4 @@
 {
-  "legacyToolFiles": 57,
-  "note": "2026-11-02 首次接入（方案 §3.3 P4 / §6 PR 6）。口径：packages/*/src 下非测试文件，去注释后按词边界匹配 LegacyTool / LegacyToolResult（toLegacyTool 不算、注释不算）。接入前按同口径实测 58；同一 PR 内 registry.register 改为直接接受新 Tool、删掉 think.ts 的 createThinkTool 后降为 57，基线取 57。只允许收紧：迁完工具后跑 --update-baseline。终点是 0（删 LegacyTool 与 tool/bridge.ts）。"
+  "legacyToolFiles": 58,
+  "note": "2026-11-02 首次接入（方案 §3.3 P4 / §6 PR 6）。口径：packages/*/src 下非测试文件，去注释后按词边界匹配 LegacyTool / LegacyToolResult（toLegacyTool 不算、注释不算）。按同一口径，main @ d92c990c 实测为 58；本 PR 删掉 think.ts 的 createThinkTool 后降到 57。合入 main @ b48b88b3 时，#524 新增的 query/run-tool-use.ts（import { LegacyTool as Tool }，本 PR 没有改动它）又加回 1，所以接入时刻的实测值是 58，基线取 58。这个值是门禁的存量起点，不是放宽。只允许收紧：迁完工具后跑 --update-baseline。终点是 0（删除 LegacyTool 与 tool/bridge.ts）。"
 }
