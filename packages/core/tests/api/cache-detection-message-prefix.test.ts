@@ -6,7 +6,7 @@
  * 对齐轨迹实测（10-21~10-30）：字节侧 `prefix_break` 确认断了且浪费 > 1% 的请求里，
  * 账单侧有 35 次判成了服务端波动。
  *
- * 本文件只测 CacheBreakDetector 本身（不调 recordCacheBreak，不落盘）。
+ * 本文件只测 CacheBreakDetector 本身（只调 checkResponse，不进环形缓冲、不落盘）。
  */
 import { describe, test, expect } from "bun:test";
 import { CacheBreakDetector, type CacheCheckParams } from "@sid-code/core/api/cache-detection.ts";
