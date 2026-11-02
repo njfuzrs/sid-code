@@ -81,6 +81,11 @@ async function runProbe(opts: {
   probeSource: string;
   nodeEnv?: string;
   sidConfigDir?: string | "REAL_HOME";
+  /**
+   * 设 `SID_TEST_ALLOW_REAL_HOME=1`：关掉 `getSidHome()` 的测试态兜底（第一道防线），
+   * 让「未重定向」重新解析到真实家目录，从而单独检验本文件守的第二道防线。
+   */
+  allowRealHome?: boolean;
 }): Promise<{ wroteToFakeHome: boolean; exitCode: number; stderr: string; fakeHome: string }> {
   const fakeHome = mkdtempSync(join(tmpdir(), "sid-persist-guard-home-"));
   // 探针必须落在**仓库内**：`@sid-code/core/...` 的模块解析依赖 workspace。
@@ -104,6 +109,8 @@ async function runProbe(opts: {
   // `bun test` 默认把 NODE_ENV 设成 "test"，但**尊重外部预设**（实测 NODE_ENV=production
   // 传进去就是 production）—— 场景 4 靠的正是这一点。
   if (opts.nodeEnv !== undefined) env.NODE_ENV = opts.nodeEnv;
+  if (opts.allowRealHome) env.SID_TEST_ALLOW_REAL_HOME = "1";
+  else delete env.SID_TEST_ALLOW_REAL_HOME;
 
   try {
     const proc = Bun.spawn(["bun", "test", probeFile.replace(REPO_ROOT + "/", "./")], {
@@ -156,8 +163,10 @@ function probeSource(deleteIsolation: boolean): string {
 }
 
 describe("落盘守卫：测试态 + 目标是用户真实 ~/.sid-code → 拒写", () => {
-  test("场景 1：测试态且未重定向 → 一个字节都不写进真实家目录", async () => {
-    const r = await runProbe({ probeSource: probeSource(true) });
+  test("场景 1：测试态且未重定向（关掉第一道兜底）→ 守卫拒写，一个字节都不写进真实家目录", async () => {
+    // 2026-11-02 起 `getSidHome()` 在测试态会把「未重定向」兜到临时目录（第一道防线，见场景 1b），
+    // 所以这里显式关掉它，单独检验本守卫这第二道防线仍然承重。
+    const r = await runProbe({ probeSource: probeSource(true), allowRealHome: true });
     expect(r.exitCode, `探针本应通过（它只断言 true）。stderr:\n${r.stderr}`).toBe(0);
     expect(r.stderr).toContain("BLOCKED=true");
     expect(
@@ -165,6 +174,17 @@ describe("落盘守卫：测试态 + 目标是用户真实 ~/.sid-code → 拒�
       `守卫失效：探针抹掉隔离后 persist() 写进了真实家目录路径。\n` +
         `（本次用假 HOME=${r.fakeHome} 拦下了，真实运行时写的就是用户的 ~/.sid-code/${CACHE_FILE}）`,
     ).toBe(false);
+  }, 120_000);
+
+  test("场景 1b：测试态且未重定向（第一道兜底开着）→ 落进兜底临时目录，真实家目录零写入", async () => {
+    // 第一道防线：不依赖 bun 从哪个目录启动（bunfig 的 preload 只在 cwd 有 bunfig 时生效）。
+    // 落盘照常发生（BLOCKED=false），只是去了 getSidHome() 的测试态兜底目录。
+    const r = await runProbe({ probeSource: probeSource(true) });
+    expect(r.exitCode, `探针本应通过。stderr:\n${r.stderr}`).toBe(0);
+    expect(r.stderr).toContain("BLOCKED=false");
+    expect(r.wroteToFakeHome, `第一道兜底失效：未重定向的测试态落盘写进了真实家目录路径。`).toBe(
+      false,
+    );
   }, 120_000);
 
   test("场景 2：测试态但已重定向到 tmpdir → 照常落盘（写盘路径不再需要后门）", async () => {
@@ -197,7 +217,10 @@ describe("落盘守卫：测试态 + 目标是用户真实 ~/.sid-code → 拒�
     // 这一条同时是**门禁自证**：它证明"检测假家目录里有没有 model-capabilities.json"
     // 这套逻辑真的能观察到污染。少了它，场景 1 的绿可能只是因为检测本身失效
     // （HOME 重定向没生效、getSidHome() 不再回落 homedir()、文件名写错…）。
-    const r = await runProbe({ probeSource: probeSource(true), nodeEnv: "production" });
+    const r = await runProbe({
+      probeSource: probeSource(true),
+      nodeEnv: "production",
+    });
     expect(r.exitCode, `探针本应通过。stderr:\n${r.stderr}`).toBe(0);
     expect(r.stderr).toContain("BLOCKED=false");
     expect(
