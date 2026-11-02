@@ -112,6 +112,8 @@ const WRITING_EXPORTS = [
   "upsertSessionIndex",
   "pruneSessionIndex",
   "MemoryStore",
+  // T1.1：记忆读计数写 <记忆目录>/.read-stats.json（在 ~/.sid-code/ 下）
+  "recordMemoryRead",
   "CheckpointManager",
   "getCheckpointManager",
   "writePendingRootSpan",
@@ -242,7 +244,7 @@ describe("防复发哨兵：扫描 tests/ 下所有落盘调用方", () => {
               ? ["session-index.jsonl", "SID_CODE_SESSION_INDEX"]
               : // MemoryStore / Checkpoint 两类没有专用重定向变量，只能整体改配置根目录。
                 // 指一个不存在的 SID_CODE_MEMORY_DIR 会让人白改一轮、门禁照样红。
-                v.usedExport === "MemoryStore"
+                v.usedExport === "MemoryStore" || v.usedExport === "recordMemoryRead"
                 ? ["projects/<项目哈希>/memory/", "SID_CONFIG_DIR"]
                 : v.usedExport.includes("Checkpoint")
                   ? ["checkpoints/<sessionId>/", "SID_CONFIG_DIR"]

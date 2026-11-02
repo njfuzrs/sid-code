@@ -28,7 +28,7 @@ import { memoryFilename, stripMemoryTypePrefix } from "./paths.ts";
 // 索引注入是主路径，把它接到这里，freshness 才第一次真正到达模型。
 import { memoryAge, memoryAgeDays } from "./freshness.ts";
 // P1-7：索引截断口径（条数 / 真字节 / 行边界）的单一事实源，与 agent 记忆线共用。
-import { buildTruncatedIndex } from "./index-budget.ts";
+import { buildTruncatedIndex, indexTypeRank } from "./index-budget.ts";
 // P1-6：记忆目录枚举口径（递归 + skip 名单）的单一事实源，与提取/dream manifest 共用。
 import { enumerateMemoryFiles, readFrontmatterFields, readMemoryFrontmatter } from "./scan.ts";
 // P1-12 指标 ③：防线触发计数（遮蔽 / 写空归档 / 超限归档）。
@@ -463,11 +463,7 @@ export function resolveMemoryKey(
   return key;
 }
 
-/** 索引保留优先级（S9）：越小越先列、越不容易被字节预算截掉。 */
-const INDEX_TYPE_RANK: Record<string, number> = { user: 0, feedback: 1, project: 2, reference: 3 };
-function indexTypeRank(t: MemoryType | undefined): number {
-  return t ? (INDEX_TYPE_RANK[t] ?? 4) : 4;
-}
+// 索引保留优先级（S9）已移到 index-budget.ts：抽取清单（T3）要按同一顺序排，判据只留一份。
 
 /** 进程内去重的 warn：同一条告警（按 id）只打一次。 */
 const warnedOnce = new Set<string>();

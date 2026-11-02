@@ -72,6 +72,7 @@ import type { Message, Usage } from "../llm/types.ts";
 import { normalizeCacheUsage } from "../llm/types.ts";
 import { inferProviderByModelName } from "../llm/provider-infer.ts";
 import { resetPriceTierCounts, flushInFlightBilledRequests } from "../llm/billing-sink.ts";
+import { resetAgentUsageProcess } from "../telemetry/agent-usage.ts";
 import { TokenEstimator } from "../llm/token-estimator.ts";
 import { checkMessageHistoryIntegrity } from "../agent/message-invariants.ts";
 import { resetSideCallStats, getSideStats, setSideStatsObserver } from "./side-call-sink.ts";
@@ -681,6 +682,8 @@ export class TraceCollector {
     resetSideCallStats();
     // 缺陷 24：billing-sink 的时段计数同为模块级单例，不清零则 peakRatio 跨会话混算
     resetPriceTierCounts();
+    // T1.2：按调用方聚合只清本进程记录（基线由 resume 回灌，见 telemetry/agent-usage.ts）
+    resetAgentUsageProcess();
     // B11 / B12 同理：同进程内 /clear 或 resume 开新会话，上个会话的决策与 edit 结论不能串过来
     this.permissionStats = emptyPermissionDecisionStats();
     this.editFirstTry.reset();

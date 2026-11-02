@@ -228,6 +228,12 @@ export interface Config {
    * 优先级：env SID_CODE_AUTO_MEMORY > settings autoMemory > 默认 true。
    */
   autoMemory?: boolean;
+  /**
+   * 记忆横向剖析 T2：后台记忆提取节流——每 N 个 end_turn 才跑一次（缺省 1 = 每轮都跑）。
+   * 优先级：env SID_CODE_MEMORY_EXTRACT_INTERVAL > settings memoryExtractInterval > 1。
+   * 被节流的轮次在会话收尾补跑一次，不会整段会话都不抽。
+   */
+  memoryExtractInterval?: number;
   /** UI 主题名（/theme 持久化端，settings.json theme）。不设置时用内置默认暗色主题 */
   theme?: string;
   /** Vim 输入模式开关（/vim 持久化端，settings.json vimMode）。缺省 = false */
@@ -1121,6 +1127,8 @@ const SETTINGS_KEY_ALIASES: Record<string, keyof Config> = {
   autoDream: "autoDream",
   auto_memory: "autoMemory",
   autoMemory: "autoMemory",
+  memory_extract_interval: "memoryExtractInterval",
+  memoryExtractInterval: "memoryExtractInterval",
   theme: "theme",
   vimMode: "vimMode",
   alternateBuffer: "alternateBuffer",
@@ -1362,6 +1370,7 @@ export const PROJECT_BEHAVIOR_FIELDS = [
   "outputStyle",
   "autoDream",
   "autoMemory",
+  "memoryExtractInterval",
   "effortLevel",
   "thinkingEnabled",
   "maxThinkingTokens",

@@ -15,7 +15,15 @@
  */
 
 import type { CanUseToolFn } from "../../agent/forked-agent.ts";
-import { basename, dirname, isAbsolute, resolve, sep } from "node:path";
+import { basename, dirname, isAbsolute, relative, resolve, sep } from "node:path";
+import { existsSync } from "node:fs";
+import { MEMORY_LIMITS } from "../types.ts";
+import { isEnumerableMemoryPath } from "../scan.ts";
+import {
+  isExistingMemoryKey,
+  listExistingMemoryKeys,
+  readIndexCapacity,
+} from "../index-capacity.ts";
 import type { PathMismatchShape, PermissionResult } from "../../tool/types.ts";
 import { isAutoMemPath } from "../paths.ts";
 import { isMemoryType } from "../types.ts";
@@ -59,6 +67,50 @@ function extractMemoryScope(input: unknown): string | undefined {
     if (typeof s === "string") return s;
   }
   return undefined;
+}
+
+function extractMemoryKey(input: unknown): string | undefined {
+  if (input && typeof input === "object") {
+    const k = (input as Record<string, unknown>).key;
+    if (typeof k === "string") return k;
+  }
+  return undefined;
+}
+
+/**
+ * 横向剖析 T3：索引已截断时，后台代理只能更新已有 key，不能新建。
+ *
+ * 为什么只限后台路径：截断态下新建的条目进不了索引（模型看不见），而后台代理无人监督、
+ * 每轮都跑 —— 剖析核出被截掉的 216 条大多是它写的。主模型路径有人在场，可能确有必要新建，
+ * 不在这里限（主路径不经过本函数）。
+ *
+ * `key === undefined`（write 新文件）：没有 key 可比对，截断态下直接拒绝新建。
+ * 状态读不出来时放行（fail-open）：这是容量治理，不是安全边界，读盘失败不该让抽取停摆。
+ */
+function checkIndexFull(
+  memoryDir: string,
+  key: string | undefined,
+  via: "save_memory" | "write",
+): PermissionResult {
+  let truncated = false;
+  try {
+    truncated = readIndexCapacity(memoryDir).truncated;
+  } catch {
+    return { behavior: "allow" };
+  }
+  if (!truncated) return { behavior: "allow" };
+  if (key !== undefined && isExistingMemoryKey(key, listExistingMemoryKeys(memoryDir))) {
+    return { behavior: "allow" };
+  }
+  logMemoryGuard({ kind: "index_full", via, scope: "project" });
+  return {
+    behavior: "deny",
+    denyKind: "index_full",
+    message:
+      `记忆索引已截断（超过 ${MEMORY_LIMITS.INDEX_MAX_ENTRIES} 条 / ` +
+      `${Math.round(MEMORY_LIMITS.INDEX_MAX_BYTES / 1000)}KB），新建的记忆进不了索引。` +
+      `后台代理不允许新建 key：请用现有记忆清单里某条的原 key 更新它，或不保存。`,
+  };
 }
 
 /** 从工具输入中提取目标文件路径（write/edit 用 file_path 字段） */
@@ -205,7 +257,7 @@ export function createExtractPermissions(memoryDir: string): CanUseToolFn {
     if (toolName === "save_memory") {
       const scope = extractMemoryScope(input);
       if (scope === undefined || scope === "project") {
-        return { behavior: "allow" };
+        return checkIndexFull(memoryDir, extractMemoryKey(input), "save_memory");
       }
       // 类型名填进了 scope：参数语义混淆，不是越权。单独计数并给出能直接改对的提示——
       // 笼统的「只能写 project」会让模型以为类型本身不被允许，下一轮干脆不存。
@@ -239,6 +291,12 @@ export function createExtractPermissions(memoryDir: string): CanUseToolFn {
         return { behavior: "deny", message: "无法解析目标路径", denyKind: "no_target_path" };
       }
       if (isAutoMemPath(target, memoryDir)) {
+        // T3：write 新建一个记忆文件与 save_memory 新建 key 等价，同样受截断态约束；
+        // 否则模型被 save_memory 拒绝后改用 write 就绕过去了。edit 只能改已有文件，不受影响。
+        if (toolName === "write" && !existsSync(target)) {
+          const rel = relative(resolve(memoryDir), resolve(target));
+          if (isEnumerableMemoryPath(rel)) return checkIndexFull(memoryDir, undefined, "write");
+        }
         return { behavior: "allow" };
       }
       return {

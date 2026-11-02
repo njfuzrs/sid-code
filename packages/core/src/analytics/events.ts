@@ -77,6 +77,8 @@ export const EVENT_NAMES = {
   MEMORY_GUARD: "memory_guard",
   // 写进去的记忆质量如何：类型分布、Why/How 缺失率、reference 无 URL、快照形态（§3 拒绝器的曲线）
   MEMORY_WRITE: "memory_write",
+  // 后台抽取每个 end_turn 的去向（跑了 / 被节流 / 在途跳过），节流默认值的影子数据（横向剖析 T2）
+  MEMORY_EXTRACT: "memory_extract",
 
   // ── 漏斗 7 · 企业策略：远程策略到底有没有在拦东西（M4）──
   POLICY_ENFORCED: "policy_enforced",
@@ -758,7 +760,46 @@ export type MemoryGuardKind =
   | "scope_type_confusion"
   | "evicted_to_archive"
   | "empty_archived"
-  | "shadowed";
+  | "shadowed"
+  /** 横向剖析 T3：索引已截断时后台代理想新建 key 被拒（主模型路径不受此限） */
+  | "index_full";
+
+/**
+ * 后台记忆抽取的一次 end_turn 去向（记忆横向剖析 T2）。
+ *
+ * 为什么「跑了」和「跳过」是同一个事件而不是两个：节流默认值要靠影子数据定 ——
+ * 拿 N=1 时每次真跑的 `seq` 与 `written`，离线模拟「只有 seq % 3 == 0 那几次跑」会少写几条、
+ * 少花多少 token。两类分成两个事件，seq 就要跨事件对齐，查询侧多一次 join。
+ *
+ * 口径：
+ * - `seq`：本会话第几个触发抽取的 end_turn（从 1 起），跳过的也占号
+ * - `outcome=ran`：真的跑了 fork；`written` = 本次去重后写入的记忆条数，token 取 fork 的 usage
+ * - `outcome=skipped`：`reason` ∈ interval（节流）/ in_flight（上一次还没跑完）/ main_wrote（主模型本轮已写）
+ * - `catch_up=true`：会话收尾时补跑的那次（节流后有积压）
+ *
+ * 同漏斗纪律：不记 key、不记内容、不记路径。
+ */
+export function logMemoryExtract(opts: {
+  outcome: "ran" | "skipped";
+  reason?: "interval" | "in_flight" | "main_wrote";
+  seq: number;
+  interval: number;
+  written?: number;
+  inputTokens?: number;
+  outputTokens?: number;
+  catchUp?: boolean;
+}): void {
+  emit(EVENT_NAMES.MEMORY_EXTRACT, {
+    extract_outcome: v(opts.outcome),
+    ...(opts.reason ? { skip_reason: v(opts.reason) } : {}),
+    seq: opts.seq,
+    interval: opts.interval,
+    ...(opts.written !== undefined ? { written: opts.written } : {}),
+    ...(opts.inputTokens !== undefined ? { input_tokens: opts.inputTokens } : {}),
+    ...(opts.outputTokens !== undefined ? { output_tokens: opts.outputTokens } : {}),
+    ...(opts.catchUp ? { catch_up: true } : {}),
+  });
+}
 
 export function logMemoryGuard(opts: {
   kind: MemoryGuardKind;
