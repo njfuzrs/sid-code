@@ -10,6 +10,11 @@
 import { describe, test, expect, beforeEach, afterEach, setSystemTime } from "bun:test";
 import { BackoffLedger, createPairingDeadline } from "@sid-code/core/trace/pairing-deadline.ts";
 import { getSleepLedger, __resetSleepLedgerForTest } from "@sid-code/shared/utils/sleep-detect.ts";
+import {
+  beginHumanInputWait,
+  endHumanInputWait,
+  __resetHumanInputGate,
+} from "@sid-code/core/query/human-input-gate.ts";
 
 const T = 300_000;
 let now = 0;
@@ -103,5 +108,56 @@ describe("F1 回放：会话 113129 index=23（03:49:33 BeforeModel → 03:54:33
     advance(T - at); // 03:54:33
     expect(dl.backoffMs()).toBeGreaterThan(280_000);
     expect(dl.remainingMs()).toBeGreaterThan(0);
+  });
+});
+
+describe("createPairingDeadline 扣除等用户输入（fallback 弹窗）", () => {
+  // 复核样本 b78ebe7f：鉴权失败 59s 后漏斗放弃、弹 fallback 询问，用户 9 分 08 秒后才选
+  // 「重试当前模型」，再过 27s 返回。看门狗把等用户的 548s 算成 hang。
+  beforeEach(() => __resetHumanInputGate());
+  afterEach(() => __resetHumanInputGate());
+
+  test("b78ebe7f 形态：59s 请求 + 548s 等用户 + 27s 请求 → 不判，excluded_prompt 计 548s", () => {
+    const dl = createPairingDeadline(T, new BackoffLedger());
+    advance(59_000);
+    beginHumanInputWait();
+    advance(548_000);
+    expect(dl.remainingMs()).toBeGreaterThan(0); // 等待进行中恒不判
+    endHumanInputWait();
+    advance(27_000);
+    expect(dl.promptMs()).toBe(548_000);
+    expect(dl.remainingMs()).toBe(T - (59_000 + 27_000));
+  });
+
+  test("等待期间有效耗时不增长：299s 时弹窗、等 10 分钟仍不判", () => {
+    const dl = createPairingDeadline(T, new BackoffLedger());
+    advance(299_000);
+    beginHumanInputWait();
+    advance(600_000);
+    expect(dl.remainingMs()).toBe(1_000);
+    endHumanInputWait();
+    expect(dl.remainingMs()).toBe(1_000);
+  });
+
+  test("嵌套等待段只计一次", () => {
+    const dl = createPairingDeadline(T, new BackoffLedger());
+    beginHumanInputWait();
+    advance(10_000);
+    beginHumanInputWait();
+    advance(20_000);
+    endHumanInputWait();
+    advance(5_000);
+    endHumanInputWait();
+    expect(dl.promptMs()).toBe(35_000);
+  });
+
+  test("看门狗挂上之前的等待不计入本窗口；负向对照：之后真挂满 300s 仍判", () => {
+    beginHumanInputWait();
+    advance(100_000);
+    endHumanInputWait();
+    const dl = createPairingDeadline(T, new BackoffLedger());
+    advance(T);
+    expect(dl.promptMs()).toBe(0);
+    expect(dl.remainingMs()).toBe(0);
   });
 });
