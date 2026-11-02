@@ -5,18 +5,18 @@
  * 修复前 CI 想装插件只能写 `-p "/plugin install x@market"`，而 -p 不分发斜杠命令，
  * 那句话被原样当成提示词交给模型（实测模型去翻二进制，110s 未结束）。
  *
- * 实现**完全复用** `/plugin` 斜杠命令（PluginCommand.execute）：TUI 与 CLI 两个入口，
+ * 实现**完全复用** `/plugin` 斜杠命令（PluginCommand.call）：TUI 与 CLI 两个入口，
  * 一套解析、一套市场/安装逻辑。子命令与参数同 `/plugin`：
  *   plugin list | market [关键词] [--market <名>] | marketplaces | info <name>
  *   plugin install <name>@<市场> | <本地目录> [--no-copy]
  *   plugin update [name] | uninstall <name> [--delete] [--force]
  *   plugin enable <name> | disable <name> [--force]
  *
- * `/plugin` 的子命令只读写插件目录与插件状态文件，从不读 AppContext（toggle 的 ctx 参数未使用），
+ * `/plugin` 的子命令只读写插件目录与插件状态文件，从不读 CommandContext（toggle 的 ctx 参数未使用），
  * 所以这里传一个空上下文是安全的。若将来某个子命令开始依赖 ctx，这里会在调用时抛错，而不是静默半生效。
  */
 
-import type { AppContext } from "./types.ts";
+import type { CommandContext } from "./types.ts";
 
 const USAGE = `用法: sid-code plugin <子命令> [参数]
   list                               列出已安装插件
@@ -42,25 +42,28 @@ export async function handlePluginCommand(
     out.log(USAGE);
     return sub ? 0 : 1;
   }
-  const { PluginCommand } = await import("./plugin.ts");
+  const { PluginCommand } = await import("./commands/plugin/plugin.ts");
   // install / update 成功后会发 plugin_installed。快速路径不走 App，没人绑 Sink：
   // logEvent 只进内存队列，进程退出即丢（2026-10-13 生产 3 次市场下载、0 条 plugin_installed）。
   // 所以这两个子命令自己绑 Sink、退出前刷一次；其余只读子命令不联网上报。
   const reports = REPORTING_SUBCOMMANDS.has(sub);
   if (reports) await attachEventReporting();
-  let result: Awaited<ReturnType<InstanceType<typeof PluginCommand>["execute"]>>;
+  let result: Awaited<ReturnType<InstanceType<typeof PluginCommand>["call"]>>;
   try {
     // 参数按空格重新拼回：PluginCommand 自己按空白切分（含 --market=x / --market x 两种写法）
-    result = await new PluginCommand().execute(args.join(" "), {} as AppContext);
+    result = await new PluginCommand().call(args.join(" "), {} as CommandContext);
   } finally {
     if (reports) await flushEventReporting();
   }
   // CLI 下没有 /reload-plugins 这一步：下次启动 sid-code 即重新加载，把 TUI 专用提示换掉
-  const message = (result.message ?? "").replace(
+  // 迁移前的 kind: "error" 现在是带「错误: 」前缀的文本（见 command/result.ts errorText）
+  const raw = result.type === "text" ? result.value : "";
+  const isError = raw.startsWith("错误: ");
+  const message = (isError ? raw.slice("错误: ".length) : raw).replace(
     /提示: 运行 \/reload-plugins 使其生效/g,
     "提示: 下次启动 sid-code 时生效（已在运行的 TUI 会话里执行 /reload-plugins）",
   );
-  if (result.kind === "error") {
+  if (isError) {
     out.error(message);
     return 1;
   }

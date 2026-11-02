@@ -362,7 +362,7 @@ done
 /telemetry
 ```
 
-别名 `/tele`。它显示当前会话的 **Span 树 + Metric 汇总**（`packages/cli/src/command/builtins.ts`）：
+别名 `/tele`。它显示当前会话的 **Span 树 + Metric 汇总**（`packages/cli/src/command/commands/telemetry/telemetry.ts`）：
 
 - **总览**：LLM 调用轮数、Token（当前上下文 = 末轮输入，不累加；输出为累计）、费用、缓存节省、
   首内容延迟 TTFT（按模型分组的 P50 / P95 与样本数 n，不报均值）、工具调用次数

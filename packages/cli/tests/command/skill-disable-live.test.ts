@@ -76,16 +76,16 @@ describe("W1 /skills disable|enable 走同一热更新路径", () => {
   });
 
   async function run(sub: "disable" | "enable", ctx: any) {
-    const { SkillsCommand } = await import("@sid-code/cli/command/extensions.ts");
-    const cmd = new SkillsCommand().subCommands().find((c) => c.name() === sub)!;
-    return cmd.execute("w1-x", ctx);
+    const m = await import("@sid-code/cli/command/commands/skills/skills.ts");
+    const cmd = sub === "disable" ? new m.SkillsDisableCommand() : new m.SkillsEnableCommand();
+    return cmd.call("w1-x", ctx);
   }
 
   test("有注册表：写盘后把生效列表推给注册表，文案说当前会话已生效", async () => {
     const pushed: string[][] = [];
     const ctx = { unifiedRegistry: { setDisabledSkills: (n: string[]) => pushed.push(n) } };
     const r: any = await run("disable", ctx);
-    expect(r.message).toContain("当前会话已生效");
+    expect(r.value).toContain("当前会话已生效");
     expect(pushed.at(-1)).toContain("w1-x");
     await run("enable", ctx);
     expect(pushed.at(-1)).not.toContain("w1-x");
@@ -93,6 +93,6 @@ describe("W1 /skills disable|enable 走同一热更新路径", () => {
 
   test("拿不到注册表 / manager：如实提示重启后生效", async () => {
     const r: any = await run("disable", {});
-    expect(r.message).toContain("重启会话后生效");
+    expect(r.value).toContain("重启会话后生效");
   });
 });

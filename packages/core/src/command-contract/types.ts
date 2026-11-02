@@ -7,12 +7,11 @@
  * 而契约本该由被依赖方定义。原先这三个类型（`UnifiedCommand` / `PromptCommand` /
  * `CommandContext`）住在 `command/types.ts`（cli），导致 core 反向依赖 cli。
  *
- * ## ⛔ 边界铁律：`Command` 与 `AppContext` 绝不下移到这里
+ * ## 旧体系已删除（2026-11-02）
  *
- * 旧体系的 `Command.execute(args, ctx: AppContext)` 依赖 `AppContext` —— 一个
- * **60+ 成员的 cli 风味巨型接口**，自身还指向 `ui/statusline`、`command/registry.ts` 等
- * cli 内部路径。把它拖进 core 会引入一长串新的 `core → cli` 越界。
- * 那两个类型**留在 `command/types.ts`（cli）**，本文件只收 skill 真正用到的契约闭包。
+ * 旧体系的 `Command` / `AppContext` / `CommandResult` 与 cli 的 adapter.ts 已随命令体系收口删除，
+ * 全部命令只认本文件的 `UnifiedCommand` + `CommandContext`。往 `CommandContext` 加字段时
+ * 保持本文件只依赖 core 内或纯 npm 类型（见下文闭包边界），不要引入 cli 路径。
  *
  * ## 闭包边界的验证方式
  *
@@ -246,6 +245,30 @@ export interface CommandContext {
   updateGoalState?: (updater: (goal: import("../goal/state.ts").GoalState) => void) => void;
   /** 轨迹采集器（可选，trace.enabled=false 时为 undefined）—— /debug 命令用 */
   traceCollector?: import("../trace/collector.ts").TraceCollector;
+  /*
+   * 以下 6 个字段原先只在 cli 的旧 `AppContext` 上。旧命令经 adapter 往返
+   * （app 构造 AppContext → toCommandContext → toAppContext → 旧命令）时，
+   * CommandContext 没有它们，于是在中途被静默丢弃：`/memory auto|external` 恒报
+   * 「运行环境未接线」，`/undo` `/restore` `/checkpoints` 在 `-c` 恢复后够不到
+   * resume 之前的检查点，`/reload-plugins` 不刷新插件 skill。命令体系收口为单一
+   * CommandContext 时补进来。
+   */
+  /**
+   * 逻辑会话 id（resume 时=被恢复会话 id，否则=本进程会话 id），用于 checkpoint 归属。
+   * /undo 等回滚命令须用它，才能在 `-c` 恢复后够到 resume 之前的检查点。
+   * 缺省时回退 sessionState.sessionId。
+   */
+  checkpointSessionId?: string;
+  /** auto-memory 后台提取开关 setter（/memory auto 用）。persist=true 时写 settings.json。 */
+  setAutoMemory?: (enabled: boolean, persist?: boolean) => void | Promise<void>;
+  /** 读取当前 auto-memory 运行时启用态（/memory auto status 用）。 */
+  getAutoMemoryState?: () => { enabled: boolean; source: "env" | "settings" | "default" };
+  /** CLAUDE.md 外部 @import 审批 setter（/memory external allow|deny 用）。 */
+  setExternalImportsApproved?: (approved: boolean) => void | Promise<void>;
+  /** 读取当前外部导入审批态（/memory external status 用）。undefined=尚未询问。 */
+  getExternalImportsState?: () => { approved: boolean | undefined };
+  /** Skill 管理器引用（/reload-plugins 随插件原子替换插件 skills 用）。 */
+  skillManager?: import("../skill/manager.ts").SkillManager;
 }
 
 // ============================================================

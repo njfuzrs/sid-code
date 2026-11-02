@@ -97,7 +97,7 @@ sid-code 会替你判断并在 `/cost` 里标注，就是那行括号里的提�
 **看到 70% 配这行提示，说明你已经到顶了，不用再优化**。
 
 提示的触发条件要说清楚：**本次会话里有 openai 协议的缓存命中、且 openai 协议部分没有缓存写入**时才出现
-（判断写在 `packages/cli/src/command/builtins.ts` 的 `/cost` 实现里）。
+（判断写在 `packages/cli/src/command/commands/cost/cost.ts` 的 `/cost` 实现里）。
 它和命中率同源，都按全会话里每个模型实际走的协议来算，与你当前选的是哪个模型无关。
 所以中途 `/model` 切过模型，或者子代理用了别的协议族，提示照样会出现。
 

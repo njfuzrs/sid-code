@@ -7,19 +7,18 @@
  *
  * 修复在**真正执行注入的三方**上报：
  *   ① SkillMetaTool.executeActivate（模型路径，经 setInvokedSkillSink）
- *   ② SkillCommand.execute 的 inline 分支（斜杠路径之一）
- *   ③ CommandExecutor.executePrompt 的 inline 分支（TUI 斜杠命令的真实路径）
+ *   ② CommandExecutor.executePrompt 的 inline 分支（斜杠路径，TUI 与无头共用）
+ * （原 ③ SkillCommand.execute 无生产调用，2026-11-02 随旧命令体系删除）
  * delegate / fork 分支不上报——那份 prompt 活在子代理上下文里，主对话压缩与它无关。
  */
 
 import { describe, test, expect } from "bun:test";
 import { SkillMetaTool } from "@sid-code/core/skill/meta-tool.ts";
 import { SkillManager } from "@sid-code/core/skill/manager.ts";
-import { SkillCommand } from "@sid-code/cli/command/skill-command.ts";
 import { CommandExecutor } from "@sid-code/cli/command/executor.ts";
 import { skillToCommand } from "@sid-code/core/skill/command-adapter.ts";
 import type { SkillDefinition } from "@sid-code/core/skill/types.ts";
-import type { AppContext, CommandContext } from "@sid-code/cli/command/types.ts";
+import type { CommandContext } from "@sid-code/cli/command/types.ts";
 
 function makeSkill(overrides: Partial<SkillDefinition> = {}): SkillDefinition {
   return {
@@ -110,34 +109,6 @@ describe("模型路径：SkillMetaTool.executeActivate 上报（审计第 19 条
     const res = await tool.execute({ skill: "danger" });
     expect(res.isError).toBe(true);
     expect(calls.length).toBe(0);
-  });
-});
-
-describe("斜杠路径：SkillCommand inline 分支上报（审计第 19 条）", () => {
-  test("inline 执行后 ctxMgr.addInvokedSkill 被调用", async () => {
-    const cmd = new SkillCommand(
-      makeSkill({
-        name: "inline-skill",
-        context: "inline",
-        prompt: "工作流：先 A 后 B",
-      }),
-    );
-    const { calls, mgr } = makeFakeCtxMgr();
-
-    const result = await cmd.execute("", { ctxMgr: mgr, sessionId: "s1" } as unknown as AppContext);
-    expect(result.kind).toBe("submit_prompt");
-
-    expect(calls.length).toBe(1);
-    expect(calls[0].name).toBe("inline-skill");
-    expect(calls[0].content).toContain("先 A 后 B");
-    // 上报内容 == 实际提交的 prompt
-    expect(calls[0].content).toBe((result as { kind: "submit_prompt"; prompt: string }).prompt);
-  });
-
-  test("缺少 ctxMgr 时不崩（可选依赖）", async () => {
-    const cmd = new SkillCommand(makeSkill({ name: "no-ctx", context: "inline" }));
-    const result = await cmd.execute("", { sessionId: "s1" } as unknown as AppContext);
-    expect(result.kind).toBe("submit_prompt");
   });
 });
 

@@ -17,7 +17,7 @@ import { describe, test, expect, beforeEach, afterEach } from "bun:test";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { MemoryCommand } from "../../src/command/builtins.ts";
+import { MemoryCommand } from "../../src/command/commands/memory/memory.ts";
 
 let isolatedHome: string;
 let savedConfigDir: string | undefined;
@@ -40,8 +40,8 @@ afterEach(() => {
 
 /** 执行 /memory set 并断言返回的确认消息，再用独立 store 实例读回落盘内容 */
 async function setAndReadBack(args: string): Promise<{ scope: string; value: string }> {
-  const result = await new MemoryCommand().execute(args, {} as never);
-  const message = (result as { kind: string; message: string }).message;
+  const result = await new MemoryCommand().call(args, {} as never);
+  const message = (result as { type: string; value: string }).value;
   const m = message.match(/^记忆已保存: \[(global|project)\] (.+?) = (.*)$/);
   if (!m) throw new Error(`意外的返回: ${JSON.stringify(result)}`);
 
@@ -88,8 +88,8 @@ describe("/memory set --global 解析", () => {
 
   test("value 仅剩 flag 时报用法错误，不再静默存空 value（修复点 ②）", async () => {
     // 修复前：!value 检查在剥离前，"--global" 非空通过检查，replace 后存入空串
-    const result = await new MemoryCommand().execute("set key6 --global", {} as never);
-    expect((result as { kind: string }).kind).toBe("error");
+    const result = await new MemoryCommand().call("set key6 --global", {} as never);
+    expect((result as { value: string }).value).toStartWith("错误: ");
 
     // 且真的没落盘
     const { MemoryStore } = await import("@sid-code/core/memory/store.ts");

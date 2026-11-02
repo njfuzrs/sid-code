@@ -2303,7 +2303,7 @@ export class App {
    * ctxMgr 侧的「压缩时重注入 skill 工作流」机制（buildInvokedSkillMessages）早已接线，
    * 缺的一直是喂数据这一侧——addInvokedSkill 在生产中零调用，invokedSkills 恒为空，
    * 于是压缩后模型直接遗忘 skill 工作流指令。这里补上模型路径（activate）；
-   * 用户斜杠路径（inline）由 SkillCommand 自己用 ctx.ctxMgr 上报。
+   * 用户斜杠路径（inline）由 CommandExecutor.executePrompt 用 ctx.ctxMgr 上报。
    */
   private wireSkillInvocationSink(): void {
     for (const tool of this.toolRegistry.all()) {
@@ -3796,7 +3796,7 @@ export class App {
   }
 
   /**
-   * §12 P2-4 复审：解析压缩相关的会话级落盘目录（同步版，供构造 AppContext 时取值）。
+   * §12 P2-4 复审：解析压缩相关的会话级落盘目录（同步版，供构造 CommandContext 时取值）。
    * 与 autoCompact 内的异步取法同源（ensureSessionTempDir(sessionId, "compact")），
    * 失败返回 undefined —— 落盘只是诊断增强，拿不到目录不影响压缩本身。
    */
@@ -8313,12 +8313,12 @@ export class App {
     const registry = this.unifiedRegistry;
     const { resolveHeadlessSlash } = await import("./command/headless-dispatch.ts");
     const { CommandExecutor } = await import("./command/executor.ts");
-    const { toCommandContext } = await import("./command/adapter.ts");
     const { buildMcpPromptCommands } = await import("./command/mcp-prompt-commands.ts");
 
-    const appCtx: import("./command/types.ts").AppContext = {
+    const cmdCtx: import("./command/types.ts").CommandContext = {
       ctxMgr: this.ctxMgr,
-      registry: this.toolRegistry,
+      toolRegistry: this.toolRegistry,
+      cwd: process.cwd(),
       config: this.config,
       sessionId: "",
       checkpointSessionId: this.getLogicalSessionId(),
@@ -8327,7 +8327,6 @@ export class App {
       providerRegistry: this.providerRegistry,
       mcpManager: this.mcpManager,
       setModel: (m, persist) => this.applyPrimaryModelSwitch(m, { persist, clearTerminal: true }),
-      exitRequested: false,
       sessionState: this.sessionState,
       // fork 子代理跟随本轮中断信号（会话硬顶 / SDK interrupt / Bridge abort）
       beginForkedRun: () => ({
@@ -8348,7 +8347,7 @@ export class App {
       fileReadTracker: this.fileReadTracker ?? undefined,
       sessionDir: this.resolveSessionDir(),
     };
-    const executor = new CommandExecutor(toCommandContext(appCtx));
+    const executor = new CommandExecutor(cmdCtx);
     try {
       const commands = await registry.getCommands(
         process.cwd(),
@@ -11256,9 +11255,10 @@ export class App {
         }
 
         // 构建命令上下文
-        const cmdCtx: import("./command/types.ts").AppContext = {
+        const cmdCtx: import("./command/types.ts").CommandContext = {
           ctxMgr: this.ctxMgr,
-          registry: this.toolRegistry,
+          toolRegistry: this.toolRegistry,
+          cwd: process.cwd(),
           config: this.config,
           sessionId: "",
           // checkpoint 跟随逻辑会话 id，使 `-c` 恢复后 /undo 够得到 resume 之前的检查点。
@@ -11287,7 +11287,6 @@ export class App {
           renameSession: (name?: string) => this.renameSession(name),
           getEffortState: () => this.getEffortState(),
           getThinkingState: () => this.getThinkingState(),
-          exitRequested: false,
           sessionState: this.sessionState,
           mcpManager: this.mcpManager,
           sendToLLM: async (text) => {
@@ -11377,7 +11376,7 @@ export class App {
           fileReadTracker: this.fileReadTracker ?? undefined,
           sessionDir: this.resolveSessionDir(),
           // G25：权限检查器实例注入命令上下文（/allow /deny /add-dir /permissions 使用）。
-          // P0-3 追加用途：fork skill 的子代理内工具权限沿用主会话 checker（经 toCommandContext 桥接）。
+          // P0-3 追加用途：fork skill 的子代理内工具权限沿用主会话 checker。
           permissionChecker: this.permissionChecker,
         };
 
@@ -11386,11 +11385,9 @@ export class App {
 
         // 唯一执行路径：CommandExecutor 分发 UnifiedCommand（旧 Registry 回退已删除）
         const { CommandExecutor } = await import("./command/executor.ts");
-        const { toCommandContext } = await import("./command/adapter.ts");
 
         let execResult: import("./command/types.ts").CommandExecutionResult;
         try {
-          const cmdCtxNew = toCommandContext(cmdCtx);
           // G2：动态注入 MCP prompt 命令，使 /mcp__server__prompt 可执行
           const { buildMcpPromptCommands } = await import("./command/mcp-prompt-commands.ts");
           const commands = await this.unifiedRegistry.getCommands(
@@ -11399,7 +11396,7 @@ export class App {
           );
           // setToolJSX 回调：本项目当前无真 local-jsx 命令（dialog 走 activeDialog state），
           // 但保留接线以备未来 JSX 命令；渲染交给 activeDialog 机制，这里仅兜底关闭。
-          const executor = new CommandExecutor(cmdCtxNew, {
+          const executor = new CommandExecutor(cmdCtx, {
             setToolJSX: () => {
               /* 预留：当前 dialog 走 activeDialog state，无需 JSX 挂载 */
             },

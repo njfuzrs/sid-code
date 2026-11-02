@@ -111,8 +111,8 @@ export class CommandExecutor {
   /**
    * 沿命令路径取最近一个 `outputPanel` 声明（子命令未声明则继承父命令）。
    *
-   * 必须单独走一遍而不是读 findCommand 的返回值：`/mcp list` 会解析到适配出的子命令，
-   * legacy 适配器给子命令时不带门控字段（adaptLegacyCommand 递归时没有 gates），
+   * 必须单独走一遍而不是读 findCommand 的返回值：`/mcp list` 会解析到子命令，
+   * 子命令通常不重复声明门控字段，
    * 只看叶子会让整族 `/mcp list` `/skills list` 漏掉父命令的声明。
    */
   resolveOutputPanel(name: string, commands: UnifiedCommand[]): UnifiedCommand["outputPanel"] {
@@ -438,7 +438,7 @@ export class CommandExecutor {
       // 审计第 19 条：skill 来源的 inline 注入要上报 addInvokedSkill，
       // 否则压缩丢弃旧消息后模型遗忘 skill 工作流指令（ctxMgr 侧保留机制早已接线，
       // 缺的一直是喂数据这一侧）。这条路径（UnifiedCommandRegistry → CommandExecutor）
-      // 是 TUI 斜杠命令的真实路径，与 SkillCommand.execute 并列，两者都要上报。
+      // 是斜杠命令的唯一路径（旧 SkillCommand 已删除）。
       // 非 skill 来源的 prompt 命令不上报：它们不是"工作流指令"，压缩后无需重注入。
       if (skill) {
         try {
