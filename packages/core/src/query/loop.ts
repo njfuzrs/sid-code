@@ -3766,6 +3766,8 @@ export async function* queryLoop(loopConfig: QueryLoopConfig): AsyncGenerator<Qu
           toolSchemas: (sendParams.tools ?? []).map((t) => ({ ...t, name: t.name })),
           model: config.model,
           messageCount: sendParams.messages.length,
+          // 消息前缀进判据：历史被改写时不再落进 server_fluctuation
+          messages: sendParams.messages,
           betaHeaders: currentBetaHeaders(config.provider),
           agentId: "main",
           precededByRetry: turnPrecededByRetry, // P1-2：分离重试触发脱落 vs 纯服务端波动
