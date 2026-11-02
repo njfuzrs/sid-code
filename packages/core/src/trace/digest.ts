@@ -221,6 +221,8 @@ export interface ToolStep {
   argPreview: string;
   isError: boolean;
   orphan: boolean;
+  /** 被权限层拒绝（events.jsonl 有同 tool_use_id 的 PermissionDenied）。与 isError 互斥 */
+  denied?: boolean;
   /** 该 action 派发时刻(ms epoch,解析失败为 undefined)。用于区分并行 fan-out 与串行空转。 */
   tsMs?: number;
 }
@@ -1113,6 +1115,13 @@ export interface ProcessPathologyStats {
   abortedBilledRequests?: number;
   /** billedRequests 已知且 ≠ billableConnections */
   billingIdentityBroken: boolean;
+  /**
+   * 恒等式不成立且计费事件偏少时，没有对应计费事件的建连（按 `agent_id:index` 多重集配对）。
+   * `msBeforeEnd` = SessionEnd 时刻 − 建连时刻；任一侧时间戳缺失为 undefined。
+   */
+  unbilledConnections?: Array<{ index: unknown; agentId?: string; msBeforeEnd?: number }>;
+  /** 全部缺口都是 SessionEnd 前 10 秒内建的连接：进程退出截断了流，不是计费链漏记 */
+  billingExitTruncated?: boolean;
 }
 
 /**
@@ -2166,11 +2175,33 @@ export function buildDigest(ref: SessionRef, full: boolean, paths: DigestPaths):
     });
   }
 
+  // events.jsonl / errors.jsonl 在工具序列之前读：工具序列要靠 PermissionDenied 事件
+  // 区分「权限层拒绝」和「工具执行失败」，下面 §3.7 的诊断段也用同一份。
+  const eventsPath = join(ref.dir, "events.jsonl");
+  const errorsPath = join(ref.dir, "errors.jsonl");
+  const events = readJsonl<{ event?: string; timestamp?: string; data?: Record<string, unknown> }>(
+    eventsPath,
+  );
+  const errors = readJsonl<{ event?: string; data?: Record<string, unknown> }>(errorsPath);
+  // 被权限层拒绝的 tool_use_id。只认结构化的 PermissionDenied 事件，不按 content 的
+  // 「权限拒绝:」文案判：文案是给人看的，改一次措辞判据就静默归零（见 llm/types.ts
+  // permissionDenied 字段注释）。2026-11-02 本地实测：157 条带该前缀的权限拒绝里 156 条有这个事件。
+  const deniedToolUseIds = new Set<string>();
+  for (const e of events) {
+    if (e.event !== "PermissionDenied") continue;
+    const tid = (e.data as Record<string, unknown> | undefined)?.tool_use_id;
+    if (typeof tid === "string" && tid) deniedToolUseIds.add(tid);
+  }
+
   // ── 工具序列 + 错误/孤儿检测 ──
   const toolSequence: ToolStep[] = [];
   const thinkingHighlights: string[] = [];
   let orphanCount = 0;
   let toolErrorCount = 0;
+  // 权限层拒绝单独计：它是 harness 的决定，不是工具执行失败。2026-11-02 本地实测
+  // 578 条 is_error 里 157 条（27%）是权限拒绝，35 个会话的 real_errors 只因它而 > 0。
+  let toolDeniedCount = 0;
+  const deniedReasons: string[] = [];
   // §20.3：孤儿是否**只**出现在轨迹尾部。判读需要它 —— 撞 maxTurns 时末轮 tool_use
   // 全部执行过、只是结果没机会回灌（尾部连续段）；真正的中途崩溃/协议违规则会在中间留孤儿。
   // 两者在 orphanCount 上长得一模一样，只有位置能区分，所以这个标记不能省。
@@ -2198,8 +2229,15 @@ export function buildDigest(ref: SessionRef, full: boolean, paths: DigestPaths):
         if (last) last.orphan = true;
       }
       if (s.is_error) {
-        toolErrorCount++;
-        if (last) last.isError = true;
+        if (typeof s.tool_use_id === "string" && deniedToolUseIds.has(s.tool_use_id)) {
+          toolDeniedCount++;
+          // 原因只用于展示分组，判定已经由事件做完；去掉固定前缀让分组键更短
+          deniedReasons.push(truncate(String(s.content ?? "").replace(/^权限拒绝:\s*/, ""), 80));
+          if (last) last.denied = true;
+        } else {
+          toolErrorCount++;
+          if (last) last.isError = true;
+        }
       }
       // 注:此前这里还有一条"observation 文本含 error/failed/exception/denied 关键词即判失败"的
       // 启发式,已删除——它把 ✗ 打在了成功但内容里恰好出现这些词的调用上(实测:read 一个正文含
@@ -2284,11 +2322,39 @@ export function buildDigest(ref: SessionRef, full: boolean, paths: DigestPaths):
       provenance: [
         {
           sourceFile: join(ref.dir, "session.traj"),
-          lineRef: "trajectory[].observation.is_error=true",
+          lineRef: "trajectory[].observation.is_error=true（不含权限层拒绝）",
           rawValue: `toolErrorCount=${toolErrorCount}`,
           mtime: fileMtimeIso(ref.trajPath),
         },
       ],
+    });
+  }
+  if (toolDeniedCount > 0) {
+    const byReason = new Map<string, number>();
+    for (const r of deniedReasons) byReason.set(r, (byReason.get(r) ?? 0) + 1);
+    const top = [...byReason]
+      .sort((a, b) => b[1] - a[1])
+      .slice(0, 3)
+      .map(([r, n]) => `${n}× ${r}`)
+      .join("；");
+    anomalies.push({
+      layer: "L0",
+      severity: "low",
+      kind: "tool_permission_denied",
+      detail:
+        `${toolDeniedCount} 次工具调用被权限层拒绝（harness 的决定，不是工具执行失败，` +
+        `不计入 tool_result_is_error / real_errors）：${top}`,
+      provenance: [
+        {
+          sourceFile: eventsPath,
+          lineRef: "event=PermissionDenied（按 tool_use_id 对上 traj 里 is_error 的 observation）",
+          rawValue: `count=${toolDeniedCount}`,
+          mtime: fileMtimeIso(eventsPath),
+        },
+      ],
+      pointer:
+        `events.jsonl 的 PermissionDecision（outcome=deny 的 step / reason_type）；` +
+        `非交互模式下多为启动参数没放行该工具（--allowed-tools）`,
     });
   }
 
@@ -2487,11 +2553,7 @@ export function buildDigest(ref: SessionRef, full: boolean, paths: DigestPaths):
     });
   }
 
-  // ── §3.7：异常路径诊断信号高亮（events.jsonl + errors.jsonl）──
-  const eventsPath = join(ref.dir, "events.jsonl");
-  const errorsPath = join(ref.dir, "errors.jsonl");
-  const events = readJsonl<{ event?: string; data?: Record<string, unknown> }>(eventsPath);
-  const errors = readJsonl<{ event?: string; data?: Record<string, unknown> }>(errorsPath);
+  // ── §3.7：异常路径诊断信号高亮（events.jsonl + errors.jsonl，已在工具序列之前读入）──
 
   // 检测未收尾的 PreToolUse：每个 fire 过 PreToolUse 的 tool_use_id 都必须有一个
   // PostToolUse / PostToolUseFailure / PermissionDenied 收尾（tool-hook-pair-invariant 不变量）。
@@ -2547,7 +2609,92 @@ export function buildDigest(ref: SessionRef, full: boolean, paths: DigestPaths):
   const pairedIndices = new Set(
     afterEvents.map((e) => (e.data as any)?.index ?? (e.data as any)?.turn),
   );
-  const unpairedBefores = beforeModels.filter((b) => !pairedIndices.has((b.data as any)?.index));
+  const allUnpairedBefores = beforeModels.filter((b) => !pairedIndices.has((b.data as any)?.index));
+  // 2026-11-02：退出时在途 ≠ hang。本地 15 次 unpaired_before_model 全是会话最后一个
+  // BeforeModel、且会话以中断收尾（abort 13 / user_interrupt 2）；其中 8 次连 HttpConnected
+  // 都没有（请求还没发出去就退了）。配对的「hang / 崩溃未被 catch」假设对它们不成立。
+  // 判据：会话有 SessionEnd + 退出状态是中断类 + 这些 BeforeModel 是主链**尾部**连续未配对的一段
+  // （收尾期间可能又发出一次，如 1fa54a0a 的 90→91，所以是「一段」不是「最后一个」）。
+  // SessionEnd 可能在它们之前也可能在之后，两种都算。
+  // 例外：这一段里超时 / 停滞已经触发过（TimeoutFired / TimeoutRetry / StreamStall），
+  // 说明退出之前就卡住了，是真 stall，照旧报 high（87302ec8：16 分钟无响应后超时重试）。
+  const INTERRUPTED_EXITS = new Set(["abort", "user_interrupt", "terminal_closed"]);
+  const mainBefores = beforeModels.filter((b) => {
+    const i = (b.data as any)?.index;
+    return typeof i === "number" && i < 900_000;
+  });
+  const trailingUnpaired: typeof mainBefores = [];
+  for (let k = mainBefores.length - 1; k >= 0; k--) {
+    if (!allUnpairedBefores.includes(mainBefores[k])) break;
+    trailingUnpaired.unshift(mainBefores[k]);
+  }
+  const sawSessionEnd = events.some((e) => e.event === "SessionEnd");
+  const stalledBeforeExit =
+    trailingUnpaired.length > 0 &&
+    events
+      .slice(events.indexOf(trailingUnpaired[0]))
+      .some(
+        (e) =>
+          e.event === "TimeoutFired" || e.event === "TimeoutRetry" || e.event === "StreamStall",
+      );
+  const inflightRun =
+    trailingUnpaired.length > 0 &&
+    sawSessionEnd &&
+    INTERRUPTED_EXITS.has(exitStatus) &&
+    !stalledBeforeExit
+      ? trailingUnpaired
+      : [];
+  // 报告用这一段的第一次调用：它才是用户中断时真正在途的那次
+  const inflightAtExit = inflightRun[0];
+  const unpairedBefores = allUnpairedBefores.filter((b) => !inflightRun.includes(b));
+  if (inflightAtExit) {
+    const idx = (inflightAtExit.data as any)?.index;
+    const sent = events.some(
+      (e) =>
+        e.event === "HttpConnected" &&
+        ((e.data as any)?.index === idx || (e.data as any)?.pair_index === idx),
+    );
+    // 中断前最后一次工具调用：复核样本里真正的问题都在这一步（前台长轮询 9 分钟、
+    // vitest watch 模式挂 10 分钟），而此前没有任何一条异常把它报出来。
+    const beforePos = events.indexOf(inflightAtExit);
+    let lastTool = "";
+    for (let k = beforePos - 1; k >= 0; k--) {
+      const e = events[k];
+      if (e.event !== "PostToolUse" && e.event !== "PostToolUseFailure") continue;
+      const dd = (e.data as any) ?? {};
+      const pre = events.find(
+        (p) => p.event === "PreToolUse" && (p.data as any)?.tool_use_id === dd.tool_use_id,
+      );
+      const durMs =
+        typeof dd.duration_ms === "number"
+          ? dd.duration_ms
+          : pre?.timestamp && e.timestamp
+            ? Date.parse(e.timestamp) - Date.parse(pre.timestamp)
+            : undefined;
+      lastTool =
+        `；中断前最后一次工具调用 ${dd.tool_name ?? "?"} 耗时 ${fmtDuration(durMs)}` +
+        (dd.error_kind ? `（${dd.error_kind}）` : "");
+      break;
+    }
+    anomalies.push({
+      layer: "L0",
+      severity: "low",
+      kind: "model_call_inflight_at_exit",
+      detail:
+        `会话以 ${exitStatus} 收尾时最后一次模型调用（index=${idx}）还没返回` +
+        `${inflightRun.length > 1 ? `（收尾期间又发出 ${inflightRun.length - 1} 次，同样没返回）` : ""}，` +
+        `${sent ? "请求已发出、退出前没收完" : "请求还没发出（无 HttpConnected）"}。这是中断的结果，不是 hang${lastTool}`,
+      provenance: [
+        {
+          sourceFile: eventsPath,
+          lineRef: `BeforeModel index=${idx}（最后一个主链调用）+ SessionEnd`,
+          rawValue: `exit=${exitStatus} http_connected=${sent}`,
+          mtime: fileMtimeIso(eventsPath),
+        },
+      ],
+      pointer: `events.jsonl 里该 BeforeModel 之前的 PreToolUse / PostToolUse（看用户为什么中断）`,
+    });
+  }
   if (unpairedBefores.length > 0) {
     anomalies.push({
       layer: "L0",
@@ -2673,6 +2820,53 @@ export function buildDigest(ref: SessionRef, full: boolean, paths: DigestPaths):
       // 是「慢响应」而非 hang——降级为 [低] 且改 kind，避免慢模型（如长响应）被误报 [高] 疑似 hang，
       // 也避免污染 §5 批量分诊选样（见发现 3）。真 hang（无快照/无进展/已 abort）仍报 [高]。
       const stillProgressing = snap?.still_progressing === true;
+      // 2026-11-02：看门狗只看 fire 那一刻。本地 13 个会话里 9 个，同 index 后来配对成功了
+      // ——慢，不是死。事后读轨迹时能看到结局，就按结局判。
+      const later = events.find(
+        (e) =>
+          (e.event === "AfterModel" || e.event === "AfterModelRaw" || e.event === "TurnError") &&
+          (e.data as any)?.index === d.index,
+      );
+      // 期间的重试原因（如 server_error → auth_failed）。StreamRestart 的 index 与 BeforeModel
+      // 不是同一编号空间，按时间窗取：从该 index 的 BeforeModel 到最终配对。
+      let restartNote = "";
+      if (later) {
+        const bm = beforeModels.find((b) => (b.data as any)?.index === d.index);
+        const from = bm?.timestamp ? Date.parse(bm.timestamp) : NaN;
+        const to = later.timestamp ? Date.parse(later.timestamp) : NaN;
+        if (!Number.isNaN(from) && !Number.isNaN(to)) {
+          const reasons = events
+            .filter((e) => {
+              if (e.event !== "StreamRestart" || !e.timestamp) return false;
+              const t = Date.parse(e.timestamp);
+              return t >= from && t <= to;
+            })
+            .map((e) => String((e.data as any)?.reason ?? "?"));
+          if (reasons.length)
+            restartNote = `；期间重启 ${reasons.length} 次：${reasons.join(" → ")}`;
+        }
+      }
+      if (later) {
+        const fin = (later.data as any)?.elapsed_ms;
+        anomalies.push({
+          layer: "L0",
+          severity: "medium",
+          kind: "model_call_slow_response",
+          detail:
+            `慢响应（看门狗 ${d.elapsed_ms}ms 时未配对，最终 ${later.event === "TurnError" ? "以 TurnError 结束" : "返回"}` +
+            `${typeof fin === "number" ? `，总耗时 ${fmtDuration(fin)}` : ""}）: index=${d.index} model=${d.model}${restartNote}`,
+          provenance: [
+            {
+              sourceFile: eventsPath,
+              lineRef: `event=ModelCallUnpaired index=${d.index} → ${later.event} index=${d.index}`,
+              rawValue: `watchdog_ms=${d.elapsed_ms} final_ms=${fin ?? "?"}`,
+              mtime: fileMtimeIso(eventsPath),
+            },
+          ],
+          pointer: `warn.log（FALLBACK / 重试相关 WARN）+ events.jsonl 该时段的 StreamRestart`,
+        });
+        continue;
+      }
       anomalies.push({
         layer: "L0",
         severity: stillProgressing ? "low" : "high",
@@ -3324,7 +3518,13 @@ export function renderHuman(d: Digest, opts: RenderOptions = {}): string {
     L.push(c("bold", `工具序列 (${d.toolSequence.length} 次调用):`));
     const shown = d.toolSequence.slice(0, 40);
     for (const t of shown) {
-      const mark = t.isError ? c("red", "✗") : t.orphan ? c("yellow", "○") : c("green", "·");
+      const mark = t.isError
+        ? c("red", "✗")
+        : t.denied
+          ? c("yellow", "⊘")
+          : t.orphan
+            ? c("yellow", "○")
+            : c("green", "·");
       const arg = t.argPreview ? c("gray", ` ${t.argPreview}`) : "";
       L.push(`  ${mark} ${c("cyan", t.tool)}${arg}`);
     }
@@ -4952,7 +5152,7 @@ const RETRY_WASTED_RATIO_THRESHOLD = 0.2;
  */
 export function computeProcessPathology(
   steps: TrajStep[],
-  events: Array<{ event?: string; data?: Record<string, unknown> }>,
+  events: Array<{ event?: string; timestamp?: string; data?: Record<string, unknown> }>,
   startMs?: number,
 ): ProcessPathologyStats {
   // ── 指标 1：pollRatio ──
@@ -5097,6 +5297,56 @@ export function computeProcessPathology(
   const billingIdentityBroken =
     billedRequests !== undefined && billedRequests !== billableConnections;
 
+  // 2026-11-02：恒等式不成立时，点名是哪几次建连没有计费事件，并判断是不是退出截断。
+  // 复核样本 dc48384f：少的 2 条是两个后台记忆任务，建连后 7–8 秒用户关了终端，
+  // 流没读完进程就退了 —— 不是计费链漏记。detail 原来只给差值，读的人得自己配对。
+  // 按 `agent_id:index` 做多重集配对（同一 index 的重试会有多次建连）。
+  let unbilledConnections: ProcessPathologyStats["unbilledConnections"];
+  let billingExitTruncated = false;
+  if (billingIdentityBroken && billedRequests! < billableConnections) {
+    const keyOf = (d: any) => `${d?.agent_id ?? "main"}:${d?.index}`;
+    const billedLeft = new Map<string, number>();
+    for (const e of billedEvents) {
+      const k = keyOf(e.data);
+      billedLeft.set(k, (billedLeft.get(k) ?? 0) + 1);
+    }
+    const sessionEndMs = (() => {
+      const se = events.find((e) => e.event === "SessionEnd");
+      return se?.timestamp ? Date.parse(se.timestamp) : NaN;
+    })();
+    const missing: NonNullable<ProcessPathologyStats["unbilledConnections"]> = [];
+    for (const e of events) {
+      if (e.event !== "HttpConnected") continue;
+      const d = e.data as any;
+      const status = typeof d?.status === "number" ? d.status : 200;
+      if (status < 200 || status >= 300) continue;
+      const ct = typeof d?.content_type === "string" ? d.content_type.toLowerCase() : "";
+      if (ct.includes("text/html")) continue;
+      const k = keyOf(d);
+      const left = billedLeft.get(k) ?? 0;
+      if (left > 0) {
+        billedLeft.set(k, left - 1);
+        continue;
+      }
+      const t = e.timestamp ? Date.parse(e.timestamp) : NaN;
+      missing.push({
+        index: d?.index,
+        agentId: typeof d?.agent_id === "string" ? d.agent_id : undefined,
+        msBeforeEnd: Number.isNaN(t) || Number.isNaN(sessionEndMs) ? undefined : sessionEndMs - t,
+      });
+    }
+    unbilledConnections = missing;
+    // 全部缺口都是 SessionEnd 前 EXIT_TRUNCATION_WINDOW_MS 内建的连接 → 退出截断
+    billingExitTruncated =
+      missing.length > 0 &&
+      missing.every(
+        (m) =>
+          m.msBeforeEnd !== undefined &&
+          m.msBeforeEnd >= 0 &&
+          m.msBeforeEnd <= EXIT_TRUNCATION_WINDOW_MS,
+      );
+  }
+
   return {
     pollRatio,
     pollCalls,
@@ -5127,8 +5377,16 @@ export function computeProcessPathology(
     billedRequests,
     ...(abortedBilled > 0 ? { abortedBilledRequests: abortedBilled } : {}),
     billingIdentityBroken,
+    ...(unbilledConnections ? { unbilledConnections } : {}),
+    ...(billingExitTruncated ? { billingExitTruncated } : {}),
   };
 }
+
+/**
+ * 计费缺口判为「退出截断」的时间窗：没有计费事件的建连全部发生在 SessionEnd 前这么久以内。
+ * 10 秒取自复核样本（建连后 7–8 秒关终端）留的余量，没有更多实测依据。
+ */
+const EXIT_TRUNCATION_WINDOW_MS = 10_000;
 
 /**
  * P1-8：把病态判定转成 anomaly，让指标进入既有的告警/落盘通道。
@@ -5242,14 +5500,32 @@ function describePathology(
     // 定级 high（其余病态项是 medium）：这不是"过程可疑"，是钱的账对不上 ——
     // 少了是漏记（账单会高于自报），多了是重复上报（去重失效）。两个方向都是确证缺陷。
     const diff = p.billedRequests! - p.billableConnections;
+    // 点名缺计费事件的建连（最多 5 个），读的人不用自己去配对
+    const missingNote = p.unbilledConnections?.length
+      ? `；缺计费事件的建连：${p.unbilledConnections
+          .slice(0, 5)
+          .map(
+            (m) =>
+              `${m.agentId ?? "main"}#${String(m.index)}` +
+              (m.msBeforeEnd !== undefined
+                ? `（SessionEnd 前 ${fmtDuration(m.msBeforeEnd)}）`
+                : ""),
+          )
+          .join("、")}${p.unbilledConnections.length > 5 ? " …" : ""}`
+      : "";
     out.push({
       layer: "L0",
-      severity: "high",
+      // 退出截断降为 low：流没读完进程就退了，这次调用确实可能计了费却没落账，
+      // 但它是退出时机造成的，不是计费链漏了出口，修法不在计费代码里
+      severity: p.billingExitTruncated ? "low" : "high",
       kind: "billing_identity_broken",
       detail:
         `计费恒等式不成立：可计费建连 ${p.billableConnections} 次，计费事件 ${p.billedRequests} 条` +
         (p.abortedBilledRequests ? `（含收尾补记 aborted ${p.abortedBilledRequests} 条）` : "") +
-        `（${diff < 0 ? `少 ${-diff} 条 = 有调用链的钱没记上` : `多 ${diff} 条 = 同一 fetch 被重复计费`}）`,
+        (p.billingExitTruncated
+          ? `（少 ${-diff} 条，全部是会话结束前 ${EXIT_TRUNCATION_WINDOW_MS / 1000} 秒内建的连接 = 退出截断，不是计费链漏记）`
+          : `（${diff < 0 ? `少 ${-diff} 条 = 有调用链的钱没记上` : `多 ${diff} 条 = 同一 fetch 被重复计费`}）`) +
+        missingNote,
       provenance: [
         {
           sourceFile: eventsPath,
