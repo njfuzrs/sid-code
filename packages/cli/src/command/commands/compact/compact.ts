@@ -203,7 +203,7 @@ async function runPartial(
     // partialCompact 保留了 [splitIndex, end) 的原文，那段内容摘要里天然不含——
     // 把它算进分母会让 extractAnchors 从保留段提出的路径/用户消息全部命不中，
     // 覆盖率系统性偏低，且随保留段变大而更低（/compact 0.5 这类 focus 模式失真显著）。
-    // 结果是本该合格的部分压缩被报成「摘要质量塌陷」（阈值 0.5），污染 compact-quality.jsonl。
+    // 结果是本该合格的部分压缩被报成「摘要质量塌陷」（阈值 0.5），污染 `CompactQuality` 事件。
     // auto 路径一直传的是 toSummarize，这里对齐它。
     originalMessages:
       result.splitIndex > 0 ? originalMessages.slice(0, result.splitIndex) : originalMessages,

@@ -35,7 +35,13 @@ export interface PostCompactOptions {
   hookSystem?: HookSystem;
   /** §2.1 文件重注入依赖；未提供则跳过 */
   fileReadTracker?: import("../../tool/file-read-tracker.ts").FileReadTracker;
-  /** §4.1 质量报告落盘目录；未提供则只算覆盖率不落盘 */
+  /**
+   * 会话级临时目录。
+   *
+   * ⚠ 质量报告**已不再写这里**（2026-11-02 改落 `CompactQuality` 轨迹事件，理由见
+   * `quality-check.ts` 的 `recordCompactQuality`）。字段保留是因为四个调用方仍在传，
+   * 删它属于另一个改动；本模块目前不读它。
+   */
   sessionDir?: string;
   /**
    * 压缩前的原始消息（算摘要覆盖率用）。
@@ -50,7 +56,7 @@ export interface PostCompactOptions {
    * 所以这两条路径不传它，质量校验与自适应特征记录一并跳过。
    *
    * 刻意不传空串糊过去：`checkCompactQuality("")` 会算出覆盖率 0，把「没有可测的摘要」
-   * 伪装成「摘要质量塌陷」，污染 compact-quality.jsonl 与 recommendParams 的均值——
+   * 伪装成「摘要质量塌陷」，污染 `CompactQuality` 事件与 recommendParams 的均值——
    * 这正是 P1-12 那类「分母错了，阈值再对也是假数」。
    */
   summary?: string;
@@ -178,11 +184,24 @@ export async function runPostCompact(opts: PostCompactOptions): Promise<void> {
   if (measurable) {
     try {
       const { recordCompactQuality } = await import("./quality-check.ts");
-      coverage = recordCompactQuality(
-        opts.originalMessages!,
-        opts.summary!,
-        opts.sessionDir,
-      ).coverage;
+      const report = recordCompactQuality(opts.originalMessages!, opts.summary!);
+      coverage = report.coverage;
+      // 落 events.jsonl 而不是 /tmp：随轨迹保留，可与 CompactionAttempt 按会话 join。
+      // 无锚点（totalAnchors=0）也落：「没有可测的锚点」本身是要能数出来的事实，
+      // 读的人按 totalAnchors 过滤，不要把 coverage=1 的空样本当成高质量。
+      opts.traceAppendEvent?.({
+        event: "CompactQuality",
+        timestamp: new Date().toISOString(),
+        data: {
+          trigger,
+          usedLLM: opts.usedLLM,
+          totalAnchors: report.totalAnchors,
+          coveredAnchors: report.coveredAnchors,
+          coverage: Number(report.coverage.toFixed(4)),
+          matchedBy: report.matchedBy,
+          missedSamples: report.missedSamples,
+        },
+      });
     } catch {
       /* 忽略 */
     }
