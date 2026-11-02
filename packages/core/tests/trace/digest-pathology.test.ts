@@ -94,15 +94,20 @@ describe("P1-9 · repeated_tool_shape_run 的 severity 随量级升级", () => {
     };
   }
 
-  it("run=41 定级为 high（此前固定 low，41 次与 4 次同级）", () => {
+  // 2026-11-02 改：形状段 L0 上限降为 medium（形状过粗，30+ 次也可能是 30 条不同命令），
+  // 「打转」的 L1 改按完整入参判（maxIdenticalCallRun）。P1-9 的教训保留：
+  // 41 次轮询不能在 digest 里毫无存在感 —— 它仍是 medium，只是不再叫 high「打转」。
+  it("run=41 不再是 low（P1-9 的教训），上限 medium；L1 判为轮询且仍可见（medium）", () => {
     const ref = writeSession("run41", runSession(41));
     const d = buildDigest(ref, false, paths)!;
     const a = d.anomalies.find((x) => x.kind === "repeated_tool_shape_run")!;
     expect(a).toBeDefined();
-    expect(a.severity).toBe("high");
+    expect(a.severity).toBe("medium");
     expect(a.detail).toContain("41 次");
-    // L1 假设层同步升级，否则最强的循环信号与最弱的同级
-    expect(d.anomalies.find((x) => x.kind === "hypothesis_stuck_loop")!.severity).toBe("high");
+    // 入参完全相同（bg_task_list {}）、返回值在变 → 轮询
+    const l1 = d.anomalies.find((x) => x.kind === "hypothesis_stuck_loop")!;
+    expect(l1.severity).toBe("medium");
+    expect(l1.detail).toContain("轮询");
   });
 
   it("run=5 仍为 low（反向验收：小量级不得被升级，否则分段读大文件会误报）", () => {
@@ -110,8 +115,8 @@ describe("P1-9 · repeated_tool_shape_run 的 severity 随量级升级", () => {
     const d = buildDigest(ref, false, paths)!;
     const a = d.anomalies.find((x) => x.kind === "repeated_tool_shape_run")!;
     expect(a.severity).toBe("low");
-    // L1 在小量级保持原有的 medium（"值得怀疑"而非"已确证"）
-    expect(d.anomalies.find((x) => x.kind === "hypothesis_stuck_loop")!.severity).toBe("medium");
+    // L1：5 次相同入参、返回值在变 = 短轮询，low
+    expect(d.anomalies.find((x) => x.kind === "hypothesis_stuck_loop")!.severity).toBe("low");
   });
 
   it("run=15 定级为 medium（中间档存在，不是二元跳变）", () => {
@@ -120,7 +125,7 @@ describe("P1-9 · repeated_tool_shape_run 的 severity 随量级升级", () => {
     expect(d.anomalies.find((x) => x.kind === "repeated_tool_shape_run")!.severity).toBe("medium");
   });
 
-  it("三个量级的定级严格单调（low < medium < high），量级信息不再丢失", () => {
+  it("量级单调不降（low < medium ≤ medium），量级信息不丢：41 次不低于 15 次", () => {
     const rank = { low: 0, medium: 1, high: 2 } as const;
     const sev = (n: number) => {
       const ref = writeSession(`mono${n}`, runSession(n));
@@ -128,7 +133,7 @@ describe("P1-9 · repeated_tool_shape_run 的 severity 随量级升级", () => {
       return rank[d.anomalies.find((x) => x.kind === "repeated_tool_shape_run")!.severity];
     };
     expect(sev(5)).toBeLessThan(sev(15));
-    expect(sev(15)).toBeLessThan(sev(41));
+    expect(sev(15)).toBeLessThanOrEqual(sev(41));
   });
 });
 

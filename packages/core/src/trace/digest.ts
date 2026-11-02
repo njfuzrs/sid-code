@@ -213,7 +213,38 @@ export interface Anomaly {
   /** L1 必填:证伪条件——看到什么证据就推翻此假设 */
   falsifier?: string;
   pointer?: string; // 该看哪个原始文件/行(保留,向后兼容)
+  /**
+   * 判据 id：同一个判据推出的 L0 事实与 L1 假设共用一个值，其余等于 kind。
+   * 按 kind 计数会把成对的两条算成两件事（2026-11-02：37 种 kind ≈ 30 个判据）。
+   * 由 buildDigest 在排序前按 ANOMALY_CRITERION 统一填，推入处不用管。
+   */
+  criterion?: string;
 }
+
+/**
+ * 成对推入的 L0 / L1（同一个 if 块里先事实后假设）→ 共同的判据 id。
+ * 新增成对推入时在这里登记；`digest-criterion.test.ts` 会检查每个 hypothesis_* 都有归属。
+ */
+export const ANOMALY_CRITERION: Readonly<Record<string, string>> = {
+  exit_status_error: "exit_error",
+  hypothesis_runtime_abend: "exit_error",
+  tool_use_without_result: "orphan_tool_use",
+  hypothesis_crash_or_violation: "orphan_tool_use",
+  ledger_cost_zero_with_tokens: "ledger_cost_zero",
+  hypothesis_missing_pricing: "ledger_cost_zero",
+  violation_files_in_timewindow: "protocol_violation_files",
+  hypothesis_violations_belong_to_session: "protocol_violation_files",
+  unpaired_before_model: "unpaired_before_model",
+  hypothesis_model_call_lost: "unpaired_before_model",
+  session_end_missing: "session_end_missing",
+  hypothesis_process_killed: "session_end_missing",
+  timeout_ineffective: "timeout_ineffective",
+  hypothesis_event_loop_blocked: "timeout_ineffective",
+  subagent_serial_execution: "subagent_serial",
+  hypothesis_missing_concurrency_safe: "subagent_serial",
+  // hypothesis_stuck_loop 自 2026-11-02 起按完整入参独立判定，不再与 repeated_tool_shape_run 成对
+  hypothesis_stuck_loop: "identical_call_run",
+};
 
 export interface ToolStep {
   idx: number;
@@ -2405,8 +2436,12 @@ export function buildDigest(ref: SessionRef, full: boolean, paths: DigestPaths):
     // 但没有任何合法编排需要连续 30+ 次同形状调用。定级压在 low 的直接后果是
     // 实测 41 次轮询(占全部工具调用 18.8%)在 digest 里毫无存在感,靠人工读轨迹才发现。
     // 同一个病在 evals 侧的复发见 trajectory-grader.ts 的 retry_count 连续扣分。
-    const runSeverity: Anomaly["severity"] =
-      maxRun >= 30 ? "high" : maxRun >= 10 ? "medium" : "low";
+    //
+    // 2026-11-02：上限降为 medium。形状只看工具名 + 首个参数片段，bash 的 `cd <dir> && …`
+    // 全部同形，30+ 次也可能是 30 条不同的命令（复核样本 84f153dd：38 次「打转」high，
+    // 实际是后台测试跑着、模型在轮询）。量级信息保留在 detail 里，「打转」的判断交给
+    // 下面按完整入参判的 L1。
+    const runSeverity: Anomaly["severity"] = maxRun >= 10 ? "medium" : "low";
     anomalies.push({
       layer: "L0",
       severity: runSeverity,
@@ -2421,22 +2456,31 @@ export function buildDigest(ref: SessionRef, full: boolean, paths: DigestPaths):
         },
       ],
     });
-    // L1:由它推断"原地打转",配证伪条件。
-    // 对应 memory loop-detection-false-positive-shape:大文件分段读/多点编辑/反复 bash
-    // 都会产生相同 shape 连续段,但都是合法进展,不是循环。
-    //
-    // P1-9:假设层跟着 L0 一起升级到 high,但**不下调**到 low ——
-    // run ∈ [4,10) 时保持 medium(原行为)。理由是 L1 表达的是"值得怀疑"而非"已确证",
-    // 4 次连读本就该留在雷达上;而 30+ 次时若还是 medium,等于让最强的循环信号
-    // 与最弱的同级,又回到二元化。
+  }
+
+  // L1「原地打转」不再跟着形状段推（2026-11-02，见 maxIdenticalCallRun 注释）：
+  // 只有完整入参连续相同 ≥ 3 次才推。轮询形态（返回值在变 / 有进行中状态）降为 low。
+  const identical = maxIdenticalCallRun(steps);
+  if (identical.run >= 3) {
     anomalies.push({
       layer: "L1",
-      severity: maxRun >= 30 ? "high" : "medium",
+      // 轮询 ≥ 10 次保持 medium：P1-9 的教训是 41 次轮询（占全部调用 18.8%）在 digest 里
+      // 毫无存在感。轮询不是打转，但长轮询本身是浪费，不能降到看不见
+      severity: identical.polling
+        ? identical.run >= 10
+          ? "medium"
+          : "low"
+        : identical.run >= 10
+          ? "high"
+          : "medium",
       kind: "hypothesis_stuck_loop",
-      detail: `假设:相同工具形状连续出现是 Agent 在原地打转。`,
+      detail: identical.polling
+        ? `假设:工具 "${identical.tool}" 用完全相同的入参连续调用 ${identical.run} 次，疑似轮询` +
+          `（返回值在变或含进行中状态）。不是打转，但可能该用后台任务完成通知而不是空等。`
+        : `假设:工具 "${identical.tool}" 用完全相同的入参连续调用 ${identical.run} 次且返回值不变，Agent 在原地打转。`,
       falsifier:
-        `若这些调用的参数各不相同(分段读不同 offset / 多点编辑不同位置 / bash 跑不同命令),` +
-        `则是合法进展而非循环。逐条比对参数后再判定;参考 src/agent/loop-detection.ts shape 定义。`,
+        `若被等的东西确实需要轮询（外部 CI 状态没有通知渠道），且间隔合理，则不是浪费。` +
+        `若返回值其实在推进（进度数字变化），按轮询看待。`,
     });
   }
 
@@ -3270,6 +3314,7 @@ export function buildDigest(ref: SessionRef, full: boolean, paths: DigestPaths):
   // L0 优先:消费者应先看客观事实,再看建立在事实上的假设。
   const sevRank = { high: 0, medium: 1, low: 2 } as const;
   const layerRank = { L0: 0, L1: 1 } as const;
+  for (const a of anomalies) a.criterion ??= ANOMALY_CRITERION[a.kind] ?? a.kind;
   anomalies.sort(
     (a, b) => layerRank[a.layer] - layerRank[b.layer] || sevRank[a.severity] - sevRank[b.severity],
   );
@@ -5634,6 +5679,76 @@ function stableStringify(v: unknown): string {
   if (Array.isArray(v)) return `[${v.map(stableStringify).join(",")}]`;
   const keys = Object.keys(v as Record<string, unknown>).sort();
   return `{${keys.map((k) => `${JSON.stringify(k)}:${stableStringify((v as any)[k])}`).join(",")}}`;
+}
+
+/** 返回值里出现这些词，说明调用方在等一个还没结束的东西（CI、后台测试、任务队列） */
+const IN_PROGRESS_RE =
+  /\b(pending|in_progress|in progress|running|queued)\b|仍在运行|进行中|运行中/i;
+
+/**
+ * 「同一件事重复做」的最长连续段：完整入参（`tool + stableStringify(tool_input)`）相同的
+ * 相邻调用。`hypothesis_stuck_loop` 的判据。
+ *
+ * 为什么不用工具形状（`repeated_tool_shape_run` 那套）：2026-11-02 对本地 158 次形状命中
+ * 离线重放，149 次最长段里每次调用的完整入参都不同（`cd <worktree> && …` 开头的不同命令
+ * 被截成同一个形状）。改用运行时侧 `shapeKey` 也只降到 115 次：bash 的 shapeKey 是
+ * `keys=[command,description]`，不含命令内容。完整入参连续相同 ≥ 3 的只剩 7 次。
+ *
+ * 1 秒内同指纹的调用视为并行派发，跳过不计（与形状段同一口径）。
+ *
+ * `polling`：段内返回值有变化，或返回值里有进行中状态。7 次里 5 次是这种 ——
+ * 轮询 CI / 后台测试。它不是打转，但可能是该用后台任务通知却在空等，所以降级不豁免。
+ */
+export function maxIdenticalCallRun(steps: TrajStep[]): {
+  run: number;
+  tool?: string;
+  polling: boolean;
+} {
+  // obs 用于比较「返回值变没变」，text 用于匹配进行中状态。两者分开：stableStringify 会把
+  // 字符串里的制表符转成字面量 `\t`，`gh pr checks` 的 "…\tpending\t…" 于是变成 "tpending"，
+  // `\b` 边界失效，轮询被错判成打转（本地 537e653c、dfb6475f 实测踩到）。
+  type Item = { fp: string; tool: string; obs?: string; text?: string; ts?: number };
+  const seq: Item[] = [];
+  for (let i = 0; i < steps.length; i++) {
+    const s = steps[i];
+    if (s.message_type !== "action" || !s.tool_name) continue;
+    let obs: string | undefined;
+    let text: string | undefined;
+    for (let j = i + 1; j < steps.length; j++) {
+      if (steps[j].message_type === "observation") {
+        const c = steps[j].content;
+        obs = truncate(stableStringify(c), 2000);
+        text = truncate(typeof c === "string" ? c : stableStringify(c), 2000);
+        break;
+      }
+      if (steps[j].message_type === "action") break;
+    }
+    seq.push({
+      fp: `${s.tool_name}|${stableStringify(s.tool_input)}`,
+      tool: s.tool_name,
+      obs,
+      text,
+      ts: parseStepTsMs(s.timestamp),
+    });
+  }
+  let best: Item[] = [];
+  let cur: Item[] = [];
+  for (const it of seq) {
+    const prev = cur[cur.length - 1];
+    if (prev && prev.fp === it.fp) {
+      if (it.ts !== undefined && prev.ts !== undefined && Math.abs(it.ts - prev.ts) < 1000) {
+        continue; // 并行派发
+      }
+      cur.push(it);
+    } else {
+      cur = [it];
+    }
+    if (cur.length > best.length) best = [...cur];
+  }
+  if (best.length < 2) return { run: 0, polling: false };
+  const obsChanged = best.some((x, k) => k > 0 && x.obs !== best[k - 1].obs);
+  const inProgress = best.some((x) => x.text !== undefined && IN_PROGRESS_RE.test(x.text));
+  return { run: best.length, tool: best[0].tool, polling: obsChanged || inProgress };
 }
 
 /** 事件字段取数：非有限数字统一归 0，避免 undefined 参与算术得出 NaN 污染整节 */
