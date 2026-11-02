@@ -1,9 +1,10 @@
 /**
- * 默认应用布局
+ * 全屏应用布局（`--alternate-buffer` / `/tui on`，opt-in；默认是主屏 MainScreenLayout）
  *
  * 从 TUIAppInner 提取的布局结构，负责：
- * - 消息区域（上方）：MainContent / EmptyLogo
- * - 底部固定区域：通知 / Composer 或 DialogRenderer / Footer
+ * - 消息区域（上方）：MainContent（虚拟列表 + 有界视口）/ EmptyLogo
+ * - 底部固定区域：与主屏布局共享 BottomRegion，本文件只往插槽里放全屏独有的提示
+ *   （Copy Mode 警告、已暂停跟随输出）
  *
  * 参考 gemini-cli DefaultAppLayout.tsx
  */
@@ -12,39 +13,17 @@ import React, { useRef, useCallback, useEffect } from "react";
 import { Box } from "../render-port/components.ts";
 import { Text } from "../render-port/components.ts";
 import type { DOMElement } from "../render-port/types.ts";
-import { Footer } from "./Footer.tsx";
-import { DialogSwitch } from "./DialogSwitch.tsx";
 import { MainContent } from "./MainContent.tsx";
 import { CopyModeWarning } from "./CopyModeWarning.tsx";
-import { Notifications, type StartupWarning } from "./Notifications.tsx";
-import { RetryStatus } from "./RetryStatus.tsx";
-import { ErrorPanel } from "./ErrorPanel.tsx";
-import { TodoPanel } from "./TodoPanel.tsx";
-import { useUIState } from "../contexts/UIStateContext.tsx";
-import { ToastDisplay } from "./ToastDisplay.tsx";
-import { ExitWarning } from "./ExitWarning.tsx";
 import { EmptyLogo } from "./EmptyLogo.tsx";
-import type { OnboardingResult } from "./OnboardingDialog.tsx";
+import { BottomRegion, type BottomRegionSharedProps } from "./BottomRegion.tsx";
 import type { HistoryItem } from "../types.ts";
-import type {
-  PermissionRequestInfo,
-  ShellConfirmRequestInfo,
-  PlanApprovalRequestInfo,
-  AskUserQuestionRequestInfo,
-  TaskDisplayInfo,
-  TUICallbacks,
-} from "../App.tsx";
-import type { DialogType } from "../../command/types.ts";
-import type { MCPManager } from "@sid-code/core/mcp/manager.ts";
-import type { SessionState } from "@sid-code/core/session/state.ts";
-import type { Usage } from "@sid-code/core/llm/types.ts";
-import type { TodoItem } from "@sid-code/core/tool/todo-write.ts";
 import { theme } from "../semantic-colors.ts";
 import { PAUSED_MARK } from "../constants/figures.ts";
 import { useFlickerDetector } from "../hooks/useFlickerDetector.ts";
 import { useStreamingScroll } from "../hooks/useStreamingScroll.ts";
 
-interface DefaultAppLayoutProps {
+interface DefaultAppLayoutProps extends BottomRegionSharedProps {
   // 消息区域
   listData: HistoryItem[];
   streamingText: string;
@@ -55,101 +34,12 @@ interface DefaultAppLayoutProps {
   /** v2：思考块折叠状态 */
   thinkCollapsed: boolean;
   isStreaming: boolean;
-  isEmpty: boolean;
-  termWidth: number;
   rows: number;
   estimatedItemHeight: (index: number) => number;
   keyExtractor: (item: HistoryItem, index: number) => string;
   copyModeEnabled: boolean;
-
-  // 底部区域
-  statusMessage: string;
-  /** CM3/CM4：LLM 重试/限流状态（null = 无）。 */
-  retryStatus: import("../App.tsx").RetryStatusInfo | null;
-  /** 统一错误面板条目列表 */
-  errorPanel: import("../App.tsx").ErrorPanelItem[];
-  /** 关闭错误面板回调 */
-  onDismissErrorPanel: () => void;
-  permissionRequest: PermissionRequestInfo | null;
-  shellConfirmRequest: ShellConfirmRequestInfo | null;
-  planApprovalRequest: PlanApprovalRequestInfo | null;
-  askUserQuestionRequest: AskUserQuestionRequestInfo | null;
-  conflictRequest: import("../App.tsx").ConflictRequestInfo | null;
-  isLoading: boolean;
-  commands: Array<{ name: string; aliases: string[]; description: string }>;
-  cwd: string;
-  onSubmit: (text: string) => void;
-  /** 流式中已排队待接续的输入条数 */
-  queuedCount?: number;
-  /** P1-G6：按优先级分组的排队条数，透传给 Composer→InputArea。 */
-  queuedByPriority?: { now: number; next: number; later: number };
-  /** P2-G6：↑ 弹回编辑——取队尾排队输入回输入框，透传给 Composer→InputArea。 */
-  onPopQueuedForEdit?: () => string | null;
-  /** Ctrl+D（输入框为空时）请求退出的回调，透传给 Composer→InputArea。 */
-  onExitRequest?: () => void;
-  /** Shift+Tab 权限模式循环切换回调，透传给 Composer→InputArea。 */
-  onCyclePermissionMode?: () => void;
-
-  // Footer
-  permissionMode: string;
-  isPlanMode: boolean;
-  gitBranch: string;
-  debug: boolean;
-  usage: Usage;
-  stockInputTokens: number;
-  costUSD: number;
-  /** 10.3：会话累计缓存节省金额（美元） */
-  cacheSavingsUSD?: number;
-  /** 会话累计 API 调用次数（状态栏 `⟳ N` 列）。省略 → Footer 不渲染该列。 */
-  totalRequests?: number;
-  /** 其中作废（重试白烧）的次数，是 totalRequests 的子集。 */
-  discardedRequests?: number;
-  costLimit: number;
-  contextPercent: number;
-  /** P1-2：压缩触发点百分比（Footer 显示「17%/82%」） */
-  contextTriggerPercent?: number;
-  /** P1-5：真实压缩档位（Footer 变色据此） */
-  contextLevel?: "none" | "soft" | "hard" | "emergency";
-  model: string;
-  scrollPercent?: number;
-
-  // 通用对话框系统
-  activeDialog: DialogType | null;
-  onDialogClose: () => void;
   /** 仍未完成首次配置（向导关掉后 EmptyLogo 常驻引导行） */
   needsOnboarding?: boolean;
-  /** 命令输出面板（null = 未打开），见 CommandOutputDialog */
-  commandPanel: import("./CommandOutputDialog.tsx").CommandPanelInfo | null;
-  onCommandPanelClose: () => void;
-  /** modelId = 厂商真名（缺省 = name），仅供面板族识别，见 model-grouping.ts ModelOption */
-  availableModels: Array<{
-    name: string;
-    modelId?: string;
-    provider: string;
-    description?: string;
-  }>;
-  onModelSelect: (modelName: string) => void;
-  availableThemes: Array<{ name: string; type: "light" | "dark"; description?: string }>;
-  currentTheme: string;
-  onThemeSelect: (themeName: string) => void;
-  /** /language 面板：选定语言偏好（"unset" 表示清除偏好） */
-  onLanguageSelect: (choice: import("./LanguageDialog.tsx").LanguageChoice) => void;
-  /** 首次启动引导完成回调（写 settings.json + 热加载 Provider） */
-  onCompleteOnboarding?: (result: OnboardingResult) => void;
-  /** MCP 管理器引用（/mcp 面板用） */
-  mcpManager?: MCPManager;
-  /** 会话状态引用（/mcp 面板启用/禁用用） */
-  sessionState?: SessionState;
-  /** TUI 回调集合（各交互面板所需的 setter/getter/引用，稳定引用） */
-  callbacks: TUICallbacks;
-  /** 当前 provider（/stats 面板展示用） */
-  provider: string;
-  /** 当前 todo 列表（来自 TodoWrite 工具） */
-  todos: TodoItem[];
-  /** 当前后台任务列表（Shell/Agent） */
-  tasks: TaskDisplayInfo[];
-  /** 配置校验诊断转换成的启动警告列表（App 构造时算好的一次性初始值，见 App.tsx TUIState.startupWarnings） */
-  startupWarnings?: StartupWarning[];
 }
 
 export const DefaultAppLayout: React.FC<DefaultAppLayoutProps> = ({
@@ -159,69 +49,16 @@ export const DefaultAppLayout: React.FC<DefaultAppLayoutProps> = ({
   streamingThinkingStartMs,
   thinkCollapsed,
   isStreaming,
-  isEmpty,
-  termWidth,
   rows,
   estimatedItemHeight,
   keyExtractor,
   copyModeEnabled,
-  statusMessage,
-  retryStatus,
-  errorPanel,
-  onDismissErrorPanel,
-  permissionRequest,
-  shellConfirmRequest,
-  planApprovalRequest,
-  askUserQuestionRequest,
-  conflictRequest,
-  isLoading,
-  commands,
-  cwd,
-  onSubmit,
-  queuedCount = 0,
-  queuedByPriority,
-  onPopQueuedForEdit,
-  onExitRequest,
-  onCyclePermissionMode,
-  permissionMode,
-  isPlanMode,
-  gitBranch,
-  debug,
-  usage,
-  stockInputTokens,
-  costUSD,
-  cacheSavingsUSD,
-  totalRequests,
-  discardedRequests,
-  costLimit,
-  contextPercent,
-  contextTriggerPercent,
-  contextLevel,
-  model,
-  scrollPercent,
-  activeDialog,
   needsOnboarding,
-  onDialogClose,
-  commandPanel,
-  onCommandPanelClose,
-  availableModels,
-  onModelSelect,
-  availableThemes,
-  currentTheme,
-  onThemeSelect,
-  onLanguageSelect,
-  onCompleteOnboarding,
-  mcpManager,
-  sessionState,
-  callbacks,
-  provider,
-  todos,
-  tasks,
-  startupWarnings,
+  ...bottom
 }) => {
+  const { isEmpty, termWidth, cwd, gitBranch, model, activeDialog } = bottom;
   const rootRef = useRef<DOMElement>(null);
   useFlickerDetector(rootRef, rows);
-  const { taskPanelHidden } = useUIState();
 
   // ST8：流式↔滚动协调。粘底状态来自 MainContent 的 VirtualizedList；
   // 流式期间用户滚离底部 → paused，显示「跟随已暂停」提示。
@@ -286,107 +123,21 @@ export const DefaultAppLayout: React.FC<DefaultAppLayoutProps> = ({
         />
       )}
 
-      {/* 底部固定区域：与 gemini-cli mainControlsRef 对齐
-          间距规范（src/ui/CLAUDE.md L2.2）：瞬态块 + 输入框统一由 gap={1} 提供块间 1 行留白，
-          子组件不带外部 margin；Footer / ExitWarning 紧贴输入框底部。 */}
-      <Box flexDirection="column" flexShrink={0} flexGrow={0} width={termWidth}>
-        <Box flexDirection="column" gap={1}>
-          <CopyModeWarning enabled={copyModeEnabled} />
-          <Notifications startupWarnings={startupWarnings} />
-          <TodoPanel
-            todos={todos}
-            tasks={tasks}
-            termWidth={termWidth}
-            tasksHidden={taskPanelHidden}
-          />
-          <ToastDisplay />
-
-          {/* CM3/CM4：LLM 重试/限流提示 */}
-          <RetryStatus status={retryStatus} />
-
-          {/* 统一错误面板：常驻直到 Ctrl+E 关闭 */}
-          <ErrorPanel items={errorPanel} onDismiss={onDismissErrorPanel} width={termWidth} />
-
-          {/* ST8：流式跟随已暂停提示（用户上滚阅读历史时） */}
-          {showFollowPausedHint ? (
+      {/* 底部固定区域：与 gemini-cli mainControlsRef 对齐（两套布局共享，见 BottomRegion） */}
+      <BottomRegion
+        {...bottom}
+        leading={<CopyModeWarning enabled={copyModeEnabled} />}
+        beforeStatus={
+          // ST8：流式跟随已暂停提示（用户上滚阅读历史时）
+          showFollowPausedHint ? (
             <Box paddingX={1}>
               <Text color={theme.status.warning}>
                 {`${PAUSED_MARK} 已暂停跟随输出（滚动到底部恢复）`}
               </Text>
             </Box>
-          ) : null}
-
-          {statusMessage ? (
-            <Box paddingX={1}>
-              <Text color={theme.status.warning}>{statusMessage}</Text>
-            </Box>
-          ) : null}
-
-          {/* Composer / 权限对话框 / Plan 审批对话框 / 交互式对话框 互斥显示（收口到 DialogSwitch） */}
-          <DialogSwitch
-            permissionRequest={permissionRequest}
-            shellConfirmRequest={shellConfirmRequest}
-            planApprovalRequest={planApprovalRequest}
-            askUserQuestionRequest={askUserQuestionRequest}
-            conflictRequest={conflictRequest}
-            activeDialog={activeDialog}
-            onDialogClose={onDialogClose}
-            commandPanel={commandPanel}
-            onCommandPanelClose={onCommandPanelClose}
-            availableModels={availableModels}
-            onModelSelect={onModelSelect}
-            availableThemes={availableThemes}
-            currentTheme={currentTheme}
-            onThemeSelect={onThemeSelect}
-            onLanguageSelect={onLanguageSelect}
-            onCompleteOnboarding={onCompleteOnboarding}
-            model={model}
-            mcpManager={mcpManager}
-            sessionState={sessionState}
-            callbacks={callbacks}
-            usage={usage}
-            stockInputTokens={stockInputTokens}
-            costUSD={costUSD}
-            cacheSavingsUSD={cacheSavingsUSD}
-            costLimit={costLimit}
-            contextPercent={contextPercent}
-            provider={provider}
-            onSubmit={onSubmit}
-            isLoading={isLoading}
-            commands={commands}
-            cwd={cwd}
-            queuedCount={queuedCount}
-            queuedByPriority={queuedByPriority}
-            onPopQueuedForEdit={onPopQueuedForEdit}
-            onExitRequest={onExitRequest}
-            onCyclePermissionMode={onCyclePermissionMode}
-            isEmpty={isEmpty}
-          />
-        </Box>
-
-        {/* 输入框下方紧贴：退出警告 + 状态栏，无额外空行 */}
-        <ExitWarning />
-
-        <Footer
-          permissionMode={permissionMode}
-          isPlanMode={isPlanMode}
-          gitBranch={gitBranch}
-          debug={debug}
-          usage={usage}
-          stockInputTokens={stockInputTokens}
-          costUSD={costUSD}
-          cacheSavingsUSD={cacheSavingsUSD}
-          totalRequests={totalRequests}
-          discardedRequests={discardedRequests}
-          costLimit={costLimit}
-          contextPercent={contextPercent}
-          contextTriggerPercent={contextTriggerPercent}
-          contextLevel={contextLevel}
-          model={model}
-          scrollPercent={scrollPercent}
-          termWidth={termWidth}
-        />
-      </Box>
+          ) : null
+        }
+      />
     </Box>
   );
 };
