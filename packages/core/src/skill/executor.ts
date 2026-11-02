@@ -2,7 +2,7 @@
  * Skill 执行共享内核（P0-1/P0-2/P0-3/P1-1 汇合点）
  *
  * 背景：skill 有两条调用路径——模型路径（SkillMetaTool.execute）与用户斜杠路径
- * （SkillCommand.execute）。P0-2（生命周期 hooks）、P0-3（权限判定）、P1-1（effort/agent
+ * （CommandExecutor.executePrompt）。P0-2（生命周期 hooks）、P0-3（权限判定）、P1-1（effort/agent
  * 透传）三项能力两条路径都要接。若各写一份必然漂移，故抽到本模块统一：
  *
  *   authorizeSkill()      —— P0-3：执行前权限判定（deny/ask/allow）

@@ -4,12 +4,11 @@
  * 每种来源有独立的加载逻辑，统一返回 UnifiedCommand[]：
  * - loadCustomCommands: .sid-code/commands/*.md（适配为 LocalCommand→submit_prompt）
  * - loadSkillCommands:  Skill 系统（适配为 PromptCommand）
- * - loadBuiltinCommands: 内置命令（已迁移的直接用，未迁移的通过 legacy 适配器）
+ * - loadBuiltinCommands: 内置命令（commands/ 目录）
  * - loadPluginCommands: 插件命令（带 pluginName: 前缀，适配为 LocalCommand）
  */
 
 import type { UnifiedCommand, CommandSource } from "./types.ts";
-import { adaptLegacyCommand, type LegacyCommandGates } from "./adapter.ts";
 import { skillToCommand } from "@sid-code/core/skill/command-adapter.ts";
 import type { ScanOptions } from "@sid-code/core/extension/types.ts";
 import { getLogger } from "@sid-code/core/debug/logger.ts";
@@ -22,7 +21,7 @@ export async function loadCustomCommands(
   const { CustomCommandLoader } = await import("./custom.ts");
   const loader = new CustomCommandLoader();
   const customCmds = await loader.loadAll(cwd, scanOptions);
-  return customCmds.map(({ cmd, source }) => adaptLegacyCommand(cmd, source as CommandSource));
+  return customCmds.map(({ cmd, source }) => cmd.toUnifiedCommand(source as CommandSource));
 }
 
 /**
@@ -75,93 +74,15 @@ export async function loadSkillCommands(
 }
 
 /**
- * 未迁移内置命令的门控字段表（D12 第一步，过渡手段）。
+ * 加载内置命令（延迟加载，定义在 commands/ 目录）。
  *
- * ⚠️ 随对应命令迁到 commands/ 一起删掉对应条目；全部迁完时整张表删除。
- * 迁移顺序建议按「门控缺失有多痛」排：allow / deny 排最前。
- *
- * 只收录逐条核过语义的命令，判据：
- * - `immediate`：延迟执行会让它失去价值，且**不碰模型正在读写的消息列表**。
- *   `/cost` `/stats` 纯只读；`/theme` 只改渲染；`/allow` `/deny` 改权限规则 ——
- *   模型撞上权限询问时用户正需要立刻加规则，排队到本轮结束等于没用。
- *   刻意**不**标 `/language`：它会重建系统提示词，与正在进行的这一轮请求交错。
- * - `requiresArgs`：无参时 execute 直接返回用法错误。`/allow` `/deny` 是；
- *   `/add-dir` **不是**（无参 = 列出白名单，文档初稿把它列进来是误判）。
- *
- * 刻意不导出（命令体系门禁 G1 数零生产调用的导出）；测试按名字写死期望值，
- * 不复用这张表 —— 复用的话「表里漏了字段」与「适配器没透传」会一起变绿。
- *
- * - `outputPanel`：多行诊断/查看报告进命令输出面板（Esc 关闭），不灌消息流。
- *   声明了的命令，短于 PANEL_MIN_LINES 行的回执（「已删除」「用法: …」）仍留消息流，
- *   所以 /memory /hooks /mcp 这种「既有列表又有回执」的命令也可整条声明。
- *   刻意**不**标：/compact /clear /rewind /plan /init（作用于对话本身）、
- *   /allow /deny /add-dir /theme /language（单行回执）、/exit。
- */
-const LEGACY_BUILTIN_GATES: Readonly<Record<string, LegacyCommandGates>> = {
-  cost: { immediate: true, outputPanel: true },
-  stats: { immediate: true, outputPanel: true },
-  theme: { immediate: true },
-  allow: { immediate: true, requiresArgs: true },
-  deny: { immediate: true, requiresArgs: true },
-  help: { outputPanel: true },
-  config: { outputPanel: true },
-  cache: { outputPanel: true },
-  trace: { outputPanel: true },
-  telemetry: { outputPanel: true },
-  checkpoints: { outputPanel: true },
-  memory: { outputPanel: true },
-  hooks: { outputPanel: true },
-  undo: { outputPanel: true },
-  restore: { outputPanel: true },
-  mcp: { outputPanel: true },
-  ide: { outputPanel: true },
-  lsp: { outputPanel: true },
-  skills: { outputPanel: true },
-  agents: { outputPanel: true },
-  commands: { outputPanel: true },
-  plugin: { outputPanel: true },
-  "reload-plugins": { outputPanel: true },
-  permissions: { outputPanel: true },
-  ps: { outputPanel: true },
-  worktree: { outputPanel: true },
-  cron: { outputPanel: true },
-  // 无头可用：/init 默认只是展开一段分析提示词交给模型（--dirs-only 是纯文件脚手架），
-  // 两条路径都不依赖 TUI 回调。其余 builtin 缺省拒绝，见 headless-dispatch.ts。
-  init: { headless: true },
-};
-
-/**
- * 加载内置命令
- *
- * 渐进式迁移：已迁移到 commands/ 目录的命令直接以 UnifiedCommand 返回，
- * 未迁移的命令通过临时 Registry + adaptLegacyCommand 桥接。
+ * 2026-11-02 命令体系收口：原先未迁移的命令经 builtins.ts + 旧 Registry + adaptLegacyCommand
+ * 桥接，门控字段靠这里一张按名字的表补；全部迁完后桥接、门控表一并删除，门控字段直接写在
+ * 各命令的 index.ts 上。
  */
 export async function loadBuiltinCommands(): Promise<UnifiedCommand[]> {
-  const log = getLogger();
-
-  // 1. 已迁移的命令（延迟加载，定义在 commands/ 目录）
-  let migrated: UnifiedCommand[] = [];
-  try {
-    const { BUILTIN_COMMANDS } = await import("./commands/index.ts");
-    migrated = BUILTIN_COMMANDS;
-  } catch (err: any) {
-    log.debug("COMMAND", `commands/ 目录尚未就绪: ${err?.message}`);
-  }
-  const migratedNames = new Set(migrated.map((c) => c.name));
-
-  // 2. 未迁移的命令通过 legacy Registry 桥接
-  const { Registry } = await import("./registry.ts");
-  const { registerBuiltins } = await import("./builtins.ts");
-  const legacyRegistry = new Registry();
-  await registerBuiltins(legacyRegistry);
-
-  const legacyAdapted = legacyRegistry
-    .all()
-    // 已迁移的不再用 legacy 版本（避免重复，且新版本优先）
-    .filter((cmd) => !migratedNames.has(cmd.name()))
-    .map((cmd) => adaptLegacyCommand(cmd, "builtin", LEGACY_BUILTIN_GATES[cmd.name()]));
-
-  return [...migrated, ...legacyAdapted];
+  const { BUILTIN_COMMANDS } = await import("./commands/index.ts");
+  return BUILTIN_COMMANDS;
 }
 
 /**
@@ -177,7 +98,7 @@ export async function loadPluginCommands(): Promise<UnifiedCommand[]> {
   try {
     const { getPluginCommands } = await import("../plugin/loadPluginCommands.ts");
     const pluginCmds = await getPluginCommands();
-    return pluginCmds.map((cmd) => adaptLegacyCommand(cmd, "plugin"));
+    return pluginCmds.map((cmd) => cmd.toUnifiedCommand("plugin"));
   } catch (err: any) {
     getLogger().debug("COMMAND", `加载插件命令失败: ${err?.message}`);
     return [];

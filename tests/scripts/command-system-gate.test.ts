@@ -14,7 +14,7 @@
  */
 
 import { describe, test, expect } from "bun:test";
-import { readFileSync } from "node:fs";
+import { readFileSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import {
   extractExportedSymbols,
@@ -28,7 +28,8 @@ import {
   collectG3Sources,
   G3_COMPLETION_CHAIN,
   findShadowedNames,
-  collectG4Names,
+  collectG4Commands,
+  LEGACY_FILES,
 } from "../../scripts/command-system-gate.ts";
 
 const ROOT = join(import.meta.dir, "../..");
@@ -217,15 +218,20 @@ describe("G3 变异自证：回退 D10 / D11 的修复，门禁必须红", () =>
   });
 });
 
-describe("G2 旧体系计数", () => {
-  test("数到 builtins.ts 里的 registry.register", () => {
-    expect(countLegacyBuiltins()).toBeGreaterThan(0);
+describe("G2 旧体系残留（2026-11-02 收口后应为 0）", () => {
+  test("旧体系文件全部删除，计数为 0", () => {
+    for (const p of LEGACY_FILES) expect(existsSyncSafe(join(ROOT, p))).toBe(false);
+    expect(countLegacyBuiltins()).toBe(0);
   });
 
-  test("计数与直接 grep 一致", () => {
-    const src = readFileSync(join(ROOT, "packages/cli/src/command/builtins.ts"), "utf8");
-    const grep = (src.match(/registry\.register/g) ?? []).length;
-    expect(countLegacyBuiltins()).toBe(grep);
+  test("变异自证：旧文件复活即计数 > 0（排除「文件不在就恒 0」的实现）", () => {
+    const p = join(ROOT, LEGACY_FILES[1]);
+    writeFileSync(p, "// 复活\n");
+    try {
+      expect(countLegacyBuiltins()).toBeGreaterThan(0);
+    } finally {
+      rmSync(p);
+    }
   });
 });
 
@@ -253,30 +259,27 @@ function existsSyncSafe(p: string): boolean {
   }
 }
 
-describe("G4 新旧体系同名命令", () => {
-  test("纯函数：交集去重排序，空交集返回空", () => {
-    expect(findShadowedNames(["b", "a", "a", "x"], ["a", "b", "c"])).toEqual(["a", "b"]);
-    expect(findShadowedNames(["x"], ["y"])).toEqual([]);
+describe("G4 内置命令名/别名冲突", () => {
+  test("纯函数：名字或别名被两条命令占用即报，排序去重；同一命令名=别名不误报", () => {
+    expect(
+      findShadowedNames([
+        { name: "a", aliases: ["x", "a"] },
+        { name: "b", aliases: ["x"] },
+        { name: "x" },
+        { name: "c" },
+      ]),
+    ).toEqual(["x"]);
+    expect(findShadowedNames([{ name: "a" }, { name: "b" }])).toEqual([]);
   });
 
-  test("真实注册表：两边都非空（排除「取不到名 → 恒空交集 → 全绿」）", async () => {
-    const { legacy, unified } = await collectG4Names();
-    expect(legacy.length).toBeGreaterThan(10);
-    expect(unified.length).toBeGreaterThan(10);
+  test("真实内置命令表非空，且包含原旧体系迁来的命令（排除「取不到 → 恒空 → 全绿」）", async () => {
+    const cmds = await collectG4Commands();
+    expect(cmds.length).toBeGreaterThan(60);
+    const names = cmds.map((c) => c.name);
+    expect(names).toEqual(expect.arrayContaining(["mcp", "add-dir", "compact", "model", "help"]));
   });
 
-  test("按真实 name() 取名而非类名推导：MCPEnhancedCommand → mcp、AddDirCommand → add-dir", async () => {
-    const { legacy } = await collectG4Names();
-    expect(legacy).toContain("mcp");
-    expect(legacy).toContain("add-dir");
-    expect(legacy).not.toContain("mcpenhanced");
-  });
-
-  test("当前真实源码：交集为空；旧 compact / model 已删", async () => {
-    const { legacy, unified } = await collectG4Names();
-    expect(findShadowedNames(legacy, unified)).toEqual([]);
-    expect(legacy).not.toContain("compact");
-    expect(legacy).not.toContain("model");
-    expect(unified).toEqual(expect.arrayContaining(["compact", "model"]));
+  test("当前真实源码：无冲突", async () => {
+    expect(findShadowedNames(await collectG4Commands())).toEqual([]);
   });
 });

@@ -310,8 +310,7 @@ L1 视觉原子    字形、颜色、主题                          ← 最小�
 /doctor /status /trace /mcp list 这类**输出多行、且与对话上下文无关**的命令，结果进通用的
 命令输出面板（`CommandOutputDialog`），不追加进消息流。
 
-- **命令声明，不按行数全局判定**：在命令上标 `outputPanel: true`（新体系写在 `commands/*/index.ts`，
-  旧体系写在 `loaders.ts` 的 `LEGACY_BUILTIN_GATES`）。子命令继承父命令（`/mcp list` 跟随 `/mcp`）。
+- **命令声明，不按行数全局判定**：在命令上标 `outputPanel: true`（写在 `commands/*/index.ts`）。子命令继承父命令（`/mcp list` 跟随 `/mcp`）。
 - **声明了也只有 ≥ `PANEL_MIN_LINES`(3) 行才弹**：同一命令的报告与回执长度悬殊（`/cron` 列表 vs
   「已删除任务 x」），回执和用法错误留消息流，不让用户为一行字按 Esc。判据在 `executor.ts` 的 `resolvePanel`。
 - **不标的**：作用于对话本身的（/compact /clear /rewind /btw /loop /goal）和单行回执类（/allow /theme /vim）。

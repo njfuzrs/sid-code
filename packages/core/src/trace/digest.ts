@@ -4,7 +4,7 @@
  * 把"定位 session 文件 + 解析 .traj + 找异常点 + 指出该看哪个原始文件"这件确定性的脏活
  * 从 AI 的概率推理里抽出来,固化成代码。被两处复用:
  *   - scripts/trace-digest.ts —— CLI 脚本(claude code / 终端直接跑)
- *   - src/command/builtins.ts TraceCommand —— sid-code 内置 /trace 命令
+ *   - cli/src/command/commands/trace/trace.ts TraceCommand —— sid-code 内置 /trace 命令
  *
  * 本模块是纯逻辑:不读 process.argv、不直接写 stdout/stderr、不调 process.exit。
  * 所有路径通过 resolvePaths(root) 注入(默认走 config/paths.ts 的 getSidHome()),便于测试与隔离。
