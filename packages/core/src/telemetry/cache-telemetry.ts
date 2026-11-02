@@ -57,6 +57,10 @@ export interface CacheBreakTelemetryEntry {
   currentPrefixHash?: string;
   /** P1-2：本轮响应前是否发生过重试（分离重试触发脱落 vs 纯服务端波动）。旧数据无此字段。 */
   precededByRetry?: boolean;
+  /** 请求端点 host。旧数据无此字段。 */
+  endpointHost?: string;
+  /** 渠道 usage 可信度（见 CacheBreakRecord.channelTrust）。旧数据无此字段，按 unknown 计入。 */
+  channelTrust?: "trusted" | "untrusted" | "unknown";
 }
 
 /**
@@ -216,15 +220,28 @@ export function summarizeCacheBreakHistory(limit = 500): {
   byCategory: Record<string, number>;
   structuredCount: number;
   legacyCount: number;
+  /**
+   * 走不可信渠道、被排除出 byCategory 的条数。
+   *
+   * 排除而不是丢弃：不可信渠道的 cache_read 是编造的，它的「下降」混进归因分布会把
+   * server_fluctuation 凭空抬高；但只丢不报会让人以为这个渠道没出过事。与
+   * `cache-hit-aggregate.ts` 对命中率总计的处理同一个原则。`total` 仍是全部条数。
+   */
+  excludedUntrusted: number;
 } {
   const entries = queryCacheBreakHistory(limit);
   const byCategory: Record<string, number> = {};
   let structuredCount = 0;
   let legacyCount = 0;
+  let excludedUntrusted = 0;
   const bump = (k: string) => {
     byCategory[k] = (byCategory[k] ?? 0) + 1;
   };
   for (const e of entries) {
+    if (e.channelTrust === "untrusted") {
+      excludedUntrusted++;
+      continue;
+    }
     // P0-2：优先读结构化 categories。文案匹配只是**旧数据兼容路径**，
     // 不是主判据 —— 新记录一律走上面这条，改文案不会再让统计断裂。
     if (e.categories && e.categories.length > 0) {
@@ -250,5 +267,5 @@ export function summarizeCacheBreakHistory(limit = 500): {
       else bump("unknown");
     }
   }
-  return { total: entries.length, byCategory, structuredCount, legacyCount };
+  return { total: entries.length, byCategory, structuredCount, legacyCount, excludedUntrusted };
 }

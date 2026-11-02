@@ -73,6 +73,24 @@ export function readChannelTrust(): ChannelTrustRegistry {
 /**
  * 查询某 host 的判定。host 为 undefined（旧账本行无 endpointHost）时返回 unknown。
  */
+/**
+ * 进程内缓存的登记表（主循环每次检测到缓存中断都要查一次，不该每次读盘）。
+ *
+ * 缓存 60 秒：登记表只由 `scripts/cache-trust-probe.ts` 手动更新，分钟级延迟无害；
+ * 永久缓存则会让长会话看不到新的探测结论。路径变了（测试改了 SID_CODE_CHANNEL_TRUST）立即失效。
+ */
+let cachedRegistry: { path: string; at: number; reg: ChannelTrustRegistry } | undefined;
+const REGISTRY_TTL_MS = 60_000;
+export function readChannelTrustCached(now: number = Date.now()): ChannelTrustRegistry {
+  const path = channelTrustPath();
+  if (cachedRegistry && cachedRegistry.path === path && now - cachedRegistry.at < REGISTRY_TTL_MS) {
+    return cachedRegistry.reg;
+  }
+  const reg = readChannelTrust();
+  cachedRegistry = { path, at: now, reg };
+  return reg;
+}
+
 export function lookupChannelTrust(
   host: string | undefined,
   registry?: ChannelTrustRegistry,
