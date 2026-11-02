@@ -10,8 +10,6 @@ import type { ProviderRegistry } from "../llm/registry.ts";
 import type { RequestContext } from "../llm/request-context.ts";
 import { Manager as ContextManager } from "../context/manager.ts";
 import { SidechainWriter } from "../session/sidechain.ts";
-import { validateToolInput } from "../tool/input-validator.ts";
-import { processToolResult } from "../tool/result-storage.ts";
 import type { LegacyTool } from "../tool/types.ts";
 import { Registry as ToolRegistry } from "../tool/registry.ts";
 import { FileReadTracker } from "../tool/file-read-tracker.ts";
@@ -26,9 +24,7 @@ import {
 import { validateAgainstSchema, formatSchemaErrors } from "../workflow/json-schema-validator.ts";
 import { getLogger } from "../debug/logger.ts";
 import type { HookSystem } from "../hook/system.ts";
-import type { Checker, PermissionRequest } from "../permission/types.ts";
-import { logToolCall, logToolSuccess, logToolFailure } from "../analytics/events.ts";
-import { isAbortError, errorMessageOf } from "../llm/errors.ts";
+import type { Checker } from "../permission/types.ts";
 import { LoopDetector } from "./loop-detection.ts";
 import { type LanguagePref, resolveEffectiveLanguage } from "../config/prompt-lang.ts";
 import { filterToolsForAgent } from "./tool-filter.ts";
@@ -79,16 +75,9 @@ import { runInSpanScope } from "../telemetry/span-scope.ts";
 import {
   runWithHookAgent,
   currentHookAgentScope,
-  hookAgentOptions,
   type SubAgentHookScope,
 } from "./hook-agent-context.ts";
-import {
-  firePermissionDenied,
-  firePostToolUseFailure,
-  runPostToolHooks,
-  runToolExceptionHook,
-} from "./tool-executor.ts";
-import { fireToolSideEvents } from "../query/tool-side-events.ts";
+import { runToolUse } from "../query/run-tool-use.ts";
 import { getCwd } from "../bootstrap/state.ts";
 
 /** spawn 子进程时定位 headless.ts 入口的绝对路径。
@@ -1759,7 +1748,13 @@ export class SubAgent {
     }
   }
 
-  /** 为子进程执行工具（与 executeSingleTool 类似，但输入来自 ChildToolUseMessage） */
+  /**
+   * 为子进程执行工具：输入来自 ChildToolUseMessage，单次执行走 runToolUse（与进程内路径同一实现）。
+   * 这里只做形态转换——tool_result 块 ↔ 子进程协议的 { content, is_error }。
+   *
+   * 收口前这里独立写了一份编排，相对进程内路径漏了 abort 预检、无检查器时的 fail-closed、
+   * 内部字段剥离、hook 改参告知四处（见 run-tool-use.ts 文件头）。
+   */
   private async executeToolForChild(
     name: string,
     input: Record<string, unknown>,
@@ -1768,244 +1763,16 @@ export class SubAgent {
     toolUseId?: string,
     sessionId?: string,
   ): Promise<{ content: string; is_error: boolean }> {
-    const log = getLogger();
-    const tool = tools.get(name);
-
-    if (!tool) {
-      return { content: `工具 "${name}" 未找到`, is_error: true };
-    }
-
-    // 调度器视角墙钟锚点：覆盖 hook/权限早退，与进程内 toolStartedAt 同口径。
-    const toolStartedAt = Date.now();
-
-    // pre_tool_use hook（spawn 路径同样接入 hook 链，与进程内 / 主循环对齐）。
-    let effectiveInput = input;
-    let hookPermissionDecision: "allow" | "ask" | undefined;
-    if (this.hookSystem) {
-      try {
-        // tool_use_id 与 agent 都要带：spawn 路径原先传 undefined，hook 侧 Pre/Post 配不上对
-        const pre = await this.hookSystem.firePreToolUseEvent(
-          name,
-          input,
-          toolUseId,
-          hookAgentOptions(),
-        );
-        // G3：与主循环/进程内子代理共享同一 PreToolUse 解读
-        const { interpretPreToolUse } = await import("../query/tool-executor.ts");
-        const interp = interpretPreToolUse(pre, input);
-        if (interp.blocked) {
-          log.info("SUBAGENT:HOOK", `工具 ${name} 被 hook 阻止: ${interp.blockReason}`);
-          // Pre/Post 配对：与进程内 executeSingleTool / 主循环同口径补 Failure 收尾。
-          // hook_blocked 只送 runtime hook（CC 不对 PreToolUse 拦截触发 Failure），
-          // 但 execute_tool span 靠它关闭——原先这里不补，spawn 路径被拦的工具 span 悬空。
-          firePostToolUseFailure(
-            this.hookSystem,
-            { name, id: toolUseId ?? "spawn", input },
-            `Hook 阻止执行: ${interp.blockReason ?? "无原因"}`,
-            input,
-            Date.now() - toolStartedAt,
-            "hook_blocked",
-          );
-          // 漏斗 1：hook 阻止是一次真实调度失败（与进程内 executeSingleTool / 主循环同口径）。
-          // 权限拒绝不在这里——那条走漏斗 2。call + failure 成对。
-          const hookFilePath =
-            typeof input?.file_path === "string" ? (input.file_path as string) : undefined;
-          logToolCall(name, hookFilePath);
-          logToolFailure(name, {
-            kind: "hook_blocked",
-            durationMs: Date.now() - toolStartedAt,
-            filePath: hookFilePath,
-          });
-          return { content: `Hook 阻止执行: ${interp.blockReason ?? "无原因"}`, is_error: true };
-        }
-        hookPermissionDecision = interp.permissionDecision;
-        if (interp.modifiedInput !== undefined) effectiveInput = interp.modifiedInput;
-      } catch (err: any) {
-        log.error("SUBAGENT:HOOK", `pre_tool_use hook 失败: ${err.message}`);
-      }
-    }
-
-    // 权限检查（dontAsk 语义：危险命令/safetyCheck 拦截，ask→deny）
-    if (this.permissionChecker) {
-      // G14：与主循环 / 进程内子代理同一入口展开观测路径（含 hook 改写后的参数）。
-      const { buildObservableInput } = await import("../query/tool-executor.ts");
-      const observableInput = buildObservableInput(tool, effectiveInput);
-      const permReq: PermissionRequest = {
-        toolName: name,
-        input: observableInput,
-        description: `${name}: ${JSON.stringify(observableInput).slice(0, 120)}`,
-      };
-      const decision = await this.permissionChecker.check(permReq, tool, undefined, {
-        hookPermissionDecision,
-      });
-      if (!decision.allowed) {
-        const reason = decision.reason || "子代理不允许此操作";
-        log.info("SUBAGENT:PERM", `权限拒绝 ${name}: ${reason}`);
-        // 漏斗 2：与 `agent/tool-executor.ts` 那条同源同口径（见那里的注释）。
-        // 这是子代理的第二条鉴权分支 —— 漏掉它则「走这条路的子代理」拒绝隐身，
-        // 而两条路对读报告的人是同一件事，不该只有一半可见。
-        const { logPermissionDeny } = await import("../analytics/events.ts");
-        logPermissionDeny(name, {
-          source: "rule",
-          needsPrompt: false,
-          context: "subagent",
-          // S10：spawn 路径的 sessionId 就是 deriveSubAgentSessionId(taskId)，即子代理规范 id
-          ...(sessionId ? { agentId: sessionId } : {}),
-          reasonType: decision.decisionReason?.type,
-          step: decision.step,
-          mode: decision.mode,
-        });
-        // B33：spawn 路径同样 fire PermissionDenied，直接复用进程内那个 helper（同口径、同吞错）。
-        // 必须带 tool_use_id：Q7 后权限拒绝只 fire PermissionDenied，runtime 消费者按它关
-        // execute_tool span——原先这里不传，spawn 路径被拒工具的 span 无从配对。
-        firePermissionDenied(
-          this.hookSystem,
-          name,
-          (effectiveInput ?? {}) as Record<string, unknown>,
-          reason,
-          decision.decisionReason?.type === "rule" ? "rule" : "auto",
-          toolUseId,
-        );
-        return { content: `权限拒绝: ${reason}`, is_error: true };
-      }
-      // 缺陷 5：与 deny 同路径同口径记 allow，否则这条分支的拒绝率分母缺项。
-      const { logPermissionAllow } = await import("../analytics/events.ts");
-      logPermissionAllow(name, {
-        source: "rule",
-        needsPrompt: false,
-        context: "subagent",
-        ...(sessionId ? { agentId: sessionId } : {}),
-        reasonType: decision.decisionReason?.type,
-        step: decision.step,
-        mode: decision.mode,
-      });
-    }
-
-    // 漏斗 1：权限通过之后才记 call。拒绝走上方漏斗 2，不混进 tool_failure。
-    const efFilePath =
-      typeof effectiveInput?.file_path === "string"
-        ? (effectiveInput.file_path as string)
-        : undefined;
-    logToolCall(name, efFilePath);
-
-    const startTime = Date.now();
-    try {
-      // zod 运行时校验：用注入 _agentId 之前的原始 input 校验
-      const validation = validateToolInput(tool, effectiveInput);
-      if (!validation.ok) {
-        // 与主循环/子代理 tool-executor 同源：校验失败也要 fire Failure 收尾，
-        // 否则这条路径的失败（模型漏 required 字段，最高频的真实失败）
-        // 既不进 hook 链也不产 execute_tool span，在 trace 里完全隐身。
-        // Q7：校验失败在 CC 里不触发 Failure，只送 runtime hook
-        firePostToolUseFailure(
-          this.hookSystem,
-          { name, id: toolUseId ?? "spawn", input: effectiveInput },
-          validation.message,
-          effectiveInput,
-          Date.now() - startTime,
-          "validation",
-        );
-        logToolFailure(name, {
-          kind: "invalid_input",
-          durationMs: Date.now() - startTime,
-          filePath: efFilePath,
-        });
-        return { content: validation.message, is_error: true };
-      }
-      // 注入 _agentId 标记，防止子代理调用 enter_plan_mode 形成套娃
-      const cwdBefore = getCwd();
-      const result = await tool.execute(
-        { ...(validation.data as Record<string, unknown>), _agentId: "sub-agent" },
-        signal,
-      );
-      const elapsed = Date.now() - startTime;
-      // HC24（spawn 路径）：工具在父进程执行，cwd 变化落在父进程（task.cwd 子代理不走 spawn，
-      // 见 execute() 的 M4 注释），所以 getCwd 前后对比就是真实的会话级目录变化。
-      fireToolSideEvents(
-        this.hookSystem,
-        name,
-        validation.data as Record<string, unknown>,
-        result,
-        cwdBefore,
-        getCwd(),
-        hookAgentOptions()?.agent,
-      );
-      // LSP 文件变更通知（spawn 路径补齐）：工具在父进程执行，语言服务器也在父进程，
-      // 不通知的话服务器永远看不到子进程改过的内容。归属记在子代理名下，结束时
-      // 由 executeSpawnedInternal 的 finally 转给主循环（子进程收不到父进程的注入）。
-      if (!result.isError && (name === "write" || name === "edit")) {
-        const editedPath = (effectiveInput?.file_path ?? effectiveInput?.path) as
-          | string
-          | undefined;
-        if (editedPath) {
-          const owner = sessionId ?? this.deriveSubAgentSessionId();
-          void import("../lsp/manager.ts")
-            .then(({ syncFileToLSP }) => syncFileToLSP(editedPath, owner))
-            .catch(() => {
-              /* best-effort，失败不影响子代理执行 */
-            });
-        }
-      }
-
-      // D9：spawn 路径工具在父进程执行，同样走 processToolResult，不要只截断丢掉原文。
-      const truncated = processToolResult(
-        name,
-        toolUseId ?? "spawn",
-        result.output,
-        sessionId ?? this.deriveSubAgentSessionId(),
-        tool.maxResultSizeChars,
-      );
-      // post_tool_use hook（驱动 execute_tool span）；与进程内路径共用 await + 反馈回灌
-      const interrupted = !!result.isError && signal?.aborted === true;
-      const withHookFeedback = await runPostToolHooks(this.hookSystem, {
-        toolName: name,
-        toolInput: effectiveInput,
-        toolUseId,
-        output: truncated,
-        isError: !!result.isError,
-        durationMs: elapsed,
-        interrupted,
-        isMcpTool: name.startsWith("mcp__"),
-        sessionId: sessionId ?? this.deriveSubAgentSessionId(),
-        maxResultSizeChars: tool.maxResultSizeChars,
-      });
-      if (result.isError) {
-        logToolFailure(name, {
-          kind: interrupted ? "aborted" : "tool_error",
-          durationMs: elapsed,
-          filePath: efFilePath,
-        });
-      } else {
-        logToolSuccess(name, {
-          durationMs: elapsed,
-          outputSize: result.output?.length ?? 0,
-          filePath: efFilePath,
-        });
-      }
-      return { content: withHookFeedback, is_error: result.isError ?? false };
-    } catch (err: any) {
-      const elapsed = Date.now() - startTime;
-      // 与上方成功路径 duration_ms 同口径（纯执行耗时）；is_interrupt 按真实 abort 判
-      const failureFeedback = await runToolExceptionHook(this.hookSystem, {
-        toolName: name,
-        toolInput: effectiveInput,
-        toolUseId,
-        error: err,
-        durationMs: elapsed,
-        signal,
-      });
-      logToolFailure(name, {
-        kind: signal?.aborted === true || isAbortError(err) ? "aborted" : "exception",
-        durationMs: elapsed,
-        filePath: efFilePath,
-      });
-      return {
-        content:
-          `工具执行异常: ${errorMessageOf(err)}` +
-          (failureFeedback ? `\n\n[Hook 反馈]\n${failureFeedback}` : ""),
-        is_error: true,
-      };
-    }
+    // spawn 路径的规范 id 就是 deriveSubAgentSessionId(taskId)：落盘目录、权限埋点 agentId（S10）、
+    // LSP 诊断归属三处同值，结束时由 executeSpawnedInternal 的 finally 把诊断转给主循环。
+    const id = sessionId ?? this.deriveSubAgentSessionId();
+    const r = await runToolUse(
+      { type: "tool_use", id: toolUseId ?? "spawn", name, input },
+      tools.get(name),
+      { hookSystem: this.hookSystem, permissionChecker: this.permissionChecker, signal },
+      { sessionId: id, ...(sessionId ? { agentId: sessionId } : {}), diagnosticOwner: id },
+    );
+    return { content: String(r.content), is_error: r.is_error ?? false };
   }
 
   /** 内部执行逻辑（含超时控制）

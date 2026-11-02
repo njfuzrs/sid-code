@@ -7,7 +7,7 @@ import type { ContentBlock, ToolUseBlock } from "../llm/types.ts";
 import type { LegacyTool as Tool } from "../tool/types.ts";
 import type { Checker, PermissionRequest } from "../permission/types.ts";
 import type { HookSystem } from "../hook/system.ts";
-import type { AggregatedHookResult, ToolFailureKind } from "../hook/types.ts";
+import type { AggregatedHookResult } from "../hook/types.ts";
 import { PreToolUseHookOutput } from "../hook/types.ts";
 import type { SessionState } from "../session/state.ts";
 import type { Config } from "../config/config.ts";
@@ -28,6 +28,13 @@ import {
 import { stripInternalFields } from "../tool/internal-fields.ts";
 import { getCwd } from "../bootstrap/state.ts";
 import { fireToolSideEvents } from "./tool-side-events.ts";
+import {
+  firePermissionDenied,
+  firePostToolUseFailure,
+  hookFeedbackText,
+} from "./tool-hook-lifecycle.ts";
+// 兼容既有调用方（测试与子代理曾从这里取）：唯一实现在 tool-hook-lifecycle.ts
+export { hookFeedbackText } from "./tool-hook-lifecycle.ts";
 import { resolveResultDisplayMode } from "../tool/result-display-mode.ts";
 import type { ToolUseContext } from "../tool/types.ts";
 import { partitionToolCalls, getMaxToolConcurrency } from "./tool-orchestration.ts";
@@ -592,7 +599,14 @@ export async function executeTools(
     started.add(block.id);
     // 预检写进去的缓存不会再被 executeSingleTool 取走，这里清掉，防跨轮串味。
     deps.preToolUseCache?.delete(block.id);
-    firePostToolUseFailure(deps, block, reason, effectiveInputOf(block, deps), 0, "skipped");
+    firePostToolUseFailure(
+      deps.hookSystem,
+      block,
+      reason,
+      effectiveInputOf(block, deps),
+      0,
+      "skipped",
+    );
   };
 
   // 权限预检：先对所有工具做权限检查，收集通过/拒绝结果
@@ -983,75 +997,6 @@ export async function executeTools(
  * 这一层是可观测性补齐，不能成为新的失败源——工具本来就已经失败了，不该再叠一个。
  */
 /**
- * B33：fire PermissionDenied hook。不 await、异常吞掉 —— 通知类 hook 不能拖慢或打断
- * 拒绝结果回传模型（与 firePostToolUseFailure 同策略）。
- */
-function firePermissionDenied(
-  deps: ToolExecutorDeps,
-  toolName: string,
-  toolInput: unknown,
-  reason: string,
-  source: "user" | "rule" | "hook" | "auto",
-  /** Q7：runtime 消费者靠它关闭 execute_tool span（拒绝不再 fire PostToolUseFailure） */
-  toolUseId?: string,
-): void {
-  try {
-    const fired = deps.hookSystem?.firePermissionDeniedEvent?.(
-      toolName,
-      (toolInput ?? {}) as Record<string, unknown>,
-      reason,
-      source,
-      toolUseId,
-    );
-    void fired?.catch?.((e: any) =>
-      getLogger().error("HOOK", `permission_denied hook 失败: ${e?.message ?? e}`),
-    );
-  } catch (e: any) {
-    getLogger().error("HOOK", `permission_denied hook 触发异常: ${e?.message ?? e}`);
-  }
-}
-
-function firePostToolUseFailure(
-  deps: ToolExecutorDeps,
-  block: ToolUseBlock,
-  reason: string,
-  toolInput?: unknown,
-  /**
-   * 该次调用在调度器视角的墙钟耗时（hook/权限/校验开销），由调用方传入起始锚点算差。
-   *
-   * 这些分支**工具根本没执行**，所以耗时口径只能是"从进入调度到被拒的墙钟"，
-   * 而不是成功路径的"纯执行耗时"——两者语义不同，但都答同一个排查问题：
-   * 这次调用卡了多久。缺它则失败工具的 span 一律无耗时属性，
-   * 无法区分"秒拒"与"等用户确认等了 30s 才拒"（权限拒绝尤其常见）。
-   */
-  durationMs?: number,
-  /**
-   * Q7：失败成因。validation / hook_blocked 在 CC 里不触发 PostToolUseFailure，
-   * 这里只送 runtime hook（execute_tool span 与轨迹收尾），用户 hook 收不到。
-   */
-  kind: ToolFailureKind = "exception",
-): void {
-  const log = getLogger();
-  try {
-    // hookSystem 在类型上必填，但子代理/旧测试可能传入残缺 deps——防御到底，
-    // 这条补丁绝不能因为自己 undefined 报错而掩盖真正的工具失败原因。
-    const fired = deps.hookSystem?.firePostToolUseFailureEvent?.(
-      block.name,
-      (toolInput ?? block.input) as Record<string, unknown>,
-      reason,
-      block.id,
-      { ...(durationMs !== undefined ? { duration_ms: durationMs } : {}), failure_kind: kind },
-    );
-    // 不 await：与既有调用点同策略，hook 耗时不进工具关键路径。
-    void fired?.catch?.((e: any) =>
-      log.error("HOOK", `post_tool_use_failure hook 失败: ${e?.message ?? e}`),
-    );
-  } catch (e: any) {
-    log.error("HOOK", `post_tool_use_failure 触发异常（忽略）: ${e?.message ?? e}`);
-  }
-}
-
-/**
  * GAP-01：单工具权限门（从 executeTools 的权限预检循环提取，批量/流式路径共享）。
  *
  * 对已确认存在的工具做权限检查。返回值：
@@ -1097,7 +1042,7 @@ export async function resolveToolPermission(
         // Pre/Post 配对：本分支已 fire 过 PreToolUse，必须补 Failure 收尾（见
         // firePostToolUseFailure 注释），否则用户 hook 与 execute_tool span 双双悬空。
         firePostToolUseFailure(
-          deps,
+          deps.hookSystem,
           block,
           `Hook 阻止执行: ${reason}`,
           observableInput,
@@ -1318,7 +1263,7 @@ export async function resolveToolPermission(
       // B33：PermissionDenied hook 接线（此前 15 个预留事件之一，有 fire 方法无调用点）。
       // 与 B11 同一出口：企业场景「权限被拒通知到 IM」靠它。
       firePermissionDenied(
-        deps,
+        deps.hookSystem,
         block.name,
         observableInput,
         result.decision.reason ?? denyContent,
@@ -1379,7 +1324,7 @@ export async function resolveToolPermission(
   // B33：规则直拒同样 fire PermissionDenied。headless 把 ask 自动拒（reasonType="other"）
   // 记作 auto，deny 规则命中记作 rule —— 两者处置相反，hook 侧需要能分开。
   firePermissionDenied(
-    deps,
+    deps.hookSystem,
     block.name,
     observableInput,
     explanation,
@@ -1457,7 +1402,7 @@ export async function executeSingleTool(
     // toolStartedAt = 调度器视角墙钟锚点（含 hook/权限/校验开销），与本分支返回的
     // elapsedMs 同源，保证 span 属性与 UI 展示的耗时口径一致。
     firePostToolUseFailure(
-      deps,
+      deps.hookSystem,
       block,
       `Hook 阻止执行: ${reason}`,
       undefined,
@@ -1520,7 +1465,7 @@ export async function executeSingleTool(
     // 使得"模型漏字段"这类高频真实失败在 trace 与失败率统计里彻底隐身。
     // 用 effectiveInput（hook 改参后的实际入参）上报，与鉴权口径一致。
     firePostToolUseFailure(
-      deps,
+      deps.hookSystem,
       block,
       validation.message,
       effectiveInput,
@@ -1828,7 +1773,7 @@ export async function executeSingleTool(
       // 用户 ESC 掉一个会抛中断错误的工具，execute_tool span 与用户 hook 双双悬空。
       // 不 await：中断要尽快向上传，hook 耗时不能拖住取消。
       firePostToolUseFailure(
-        deps,
+        deps.hookSystem,
         block,
         `工具执行被中断: ${abortReasonOf(err) ?? errorMessageOf(err)}`,
         executedInput,
@@ -2046,20 +1991,6 @@ async function notifyLSPFileChange(input: Record<string, unknown>): Promise<void
   if (!filePath) return;
   const { syncFileToLSP } = await import("../lsp/manager.ts");
   await syncFileToLSP(filePath);
-}
-
-/**
- * HC18：从 PostToolUse / PostToolUseFailure 的聚合结果里取要回灌模型的反馈。
- * exit 2 在 runner 里已变成 decision:"deny" + reason(stderr)；JSON decision:"block" 带 reason。
- * 两者都走 isBlockingDecision + getEffectiveReason，不另立判据。
- */
-export function hookFeedbackText(
-  result: import("../hook/types.ts").AggregatedHookResult | undefined,
-): string | undefined {
-  const out = result?.finalOutput;
-  if (!out?.isBlockingDecision()) return undefined;
-  const reason = out.getEffectiveReason();
-  return reason && reason.trim() ? reason : undefined;
 }
 
 /** Q6：PostToolBatch。is_error 取自最终 tool_result（含权限拒绝 / 校验失败的兜底结果） */
