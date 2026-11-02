@@ -15,8 +15,8 @@
  *   或 sidHomePath()，禁止再硬编码 homedir()。
  */
 
-import { existsSync } from "fs";
-import { homedir } from "os";
+import { existsSync, mkdtempSync } from "fs";
+import { homedir, tmpdir } from "os";
 import { join, resolve, sep } from "path";
 
 /**
@@ -46,7 +46,29 @@ export function getSidHome(): string {
       return override;
     }
   }
+  // 测试态兜底：三个 override 都空时不回落用户真实目录，改指向进程级临时目录。
+  //
+  // 为什么不只靠 bunfig 的 preload：bun 只读**当前工作目录**下的 bunfig.toml。
+  // 从 `packages/cli/tests`、`packages/core/src` 或仓库外用绝对路径跑 `bun test`，
+  // preload 不生效，测试直接写进真实 `~/.sid-code`（2026-11-02 用假 HOME 复现：
+  // `compact-stats.json` 50 条全是 fixture，喂给了 recommendParams）。
+  // 门禁 `test-isolation-preload-wiring` 只保证每个包根有 bunfig，管不到这些工作目录。
+  //
+  // 生产二进制 `--define process.env.NODE_ENV='"production"'`（Makefile），这一支编译期折掉。
+  // 需要断言「真实默认路径长什么样」的测试，设 SID_TEST_ALLOW_REAL_HOME=1 取回原语义。
+  if (process.env.NODE_ENV === "test" && process.env.SID_TEST_ALLOW_REAL_HOME !== "1") {
+    return testFallbackHome();
+  }
   return join(homedir(), ".sid-code");
+}
+
+/** 测试态兜底目录：首次调用时创建，进程内复用（同一进程的各次调用必须落同一处）。 */
+let testFallbackHomeDir: string | undefined;
+function testFallbackHome(): string {
+  if (!testFallbackHomeDir) {
+    testFallbackHomeDir = mkdtempSync(join(tmpdir(), "sid-code-test-fallback-home-"));
+  }
+  return testFallbackHomeDir;
 }
 
 /** 返回配置目录下的文件路径 */

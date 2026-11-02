@@ -11,7 +11,16 @@
 // collector 挂在 hook / 遥测通道上，看不到流本身；而 fallback 在**退避开始前**发 `retry`
 // 遥测并带上 effectiveDelayMs（与随后 sleep 的时长同源）。拿它累加与流事件口径一致。
 
+//
+// ── 为什么还要扣「等用户选择」（2026-11-02）──────────────────────────────
+// 复核样本 b78ebe7f：鉴权失败 59 秒后漏斗放弃，弹出 fallback 询问，用户 9 分 08 秒后才选
+// 「重试当前模型」，看门狗把这 9 分钟算成请求 hang。弹窗期间闸门（query/human-input-gate.ts）
+// 本来就开着，主循环看门狗也据此暂停；这里复用同一个闸门的累计时长，口径一致。
+// 进行中的等待段按已过去部分实时扣除，有效耗时在等待期间不增长，所以不需要像退避那样
+// 另加「进行中不判」的守卫（加了也是一条变异不会变红的死分支，2026-11-02 实测）。
+
 import { createSleepAwareDeadline } from "@sid-code/shared/utils/sleep-detect.ts";
+import { humanInputWaitElapsedMs } from "../query/human-input-gate.ts";
 
 /** 进程级退避账本（只记主循环的 retry：子代理不走 BeforeModel 配对）。 */
 export class BackoffLedger {
@@ -49,9 +58,11 @@ export interface PairingDeadline {
   backoffMs(): number;
   /** 本窗口内被剔除的休眠时长 */
   sleepMs(): number;
+  /** 本窗口内被剔除的「等用户输入」时长（fallback 弹窗等） */
+  promptMs(): number;
 }
 
-/** effective = 挂钟差值 − 休眠 − 退避；退避进行中不判。 */
+/** effective = 挂钟差值 − 休眠 − 退避 − 等用户输入；退避进行中不判。 */
 export function createPairingDeadline(
   timeoutMs: number,
   backoff: BackoffLedger,
@@ -59,16 +70,18 @@ export function createPairingDeadline(
 ): PairingDeadline {
   const sleep = createSleepAwareDeadline(timeoutMs);
   const backoffAtArm = backoff.elapsedTotalMs();
+  const promptAtArm = humanInputWaitElapsedMs();
   const armedAt = now();
   const backoffMs = (): number => Math.max(0, backoff.elapsedTotalMs() - backoffAtArm);
+  const promptMs = (): number => Math.max(0, humanInputWaitElapsedMs() - promptAtArm);
   return {
     remainingMs(): number {
-      if (backoff.isActive())
-        return Math.max(1_000, timeoutMs - (now() - armedAt - sleep.sleepMs() - backoffMs()));
-      const effective = now() - armedAt - sleep.sleepMs() - backoffMs();
+      const effective = now() - armedAt - sleep.sleepMs() - backoffMs() - promptMs();
+      if (backoff.isActive()) return Math.max(1_000, timeoutMs - effective);
       return Math.max(0, timeoutMs - effective);
     },
     backoffMs,
     sleepMs: () => sleep.sleepMs(),
+    promptMs,
   };
 }

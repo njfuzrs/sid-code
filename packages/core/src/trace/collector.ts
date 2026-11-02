@@ -1285,6 +1285,8 @@ export class TraceCollector {
             // F1：被剔除的退避 / 休眠时长（elapsed_ms 是「有效」耗时，挂钟 = 三者之和）
             excluded_backoff_ms: pairingDeadline.backoffMs(),
             excluded_sleep_ms: pairingDeadline.sleepMs(),
+            // 等用户在 fallback 弹窗里作答的时长（复核样本 b78ebe7f：9 分钟被算成 hang）
+            excluded_prompt_ms: pairingDeadline.promptMs(),
             // still_progressing 时是「慢响应」而非 hang，hint 相应区分，避免误导排查者。
             hint: stillProgressing
               ? "BeforeModel 发出后超时未配对，但流仍在收 chunk：慢响应而非 hang（模型长响应/网关慢）"

@@ -1664,8 +1664,9 @@ export class CacheCommand implements Command {
       }
       for (const e of recent) {
         const time = new Date(e.ts * 1000).toLocaleString();
+        const untrusted = e.channelTrust === "untrusted" ? " ⚠ 渠道 usage 不可信" : "";
         lines.push(
-          `  [${time}] ${e.model}: 下降 ${e.dropPercent}% (${e.dropTokens} tok): ${e.changes.join("; ")}`,
+          `  [${time}] ${e.model}: 下降 ${e.dropPercent}% (${e.dropTokens} tok): ${e.changes.join("; ")}${untrusted}`,
         );
       }
       const cats = Object.entries(summary.byCategory).sort(([, a], [, b]) => b - a);
@@ -1679,12 +1680,21 @@ export class CacheCommand implements Command {
           beta_headers: "Beta headers 变化",
           compact: "压缩(消息骤减)",
           ttl_expiry: "TTL 过期",
+          prefix_break: "本地前缀断裂",
+          message_history: "历史消息改写",
+          server_fluctuation: "服务端波动（system / tools / 消息都没变）",
           unknown: "未知",
         };
-        lines.push("", `归因分布（最近 ${summary.total} 条中断）:`);
+        const counted = summary.total - summary.excludedUntrusted;
+        lines.push("", `归因分布（最近 ${counted} 条中断）:`);
         for (const [cat, n] of cats) {
           lines.push(`  ${labelOf[cat] ?? cat}: ${n} 次`);
         }
+      }
+      if (summary.excludedUntrusted > 0) {
+        lines.push(
+          `  另有 ${summary.excludedUntrusted} 条走 usage 不可信的渠道，未计入分布（那些「下降」是渠道编造的数字，不是缓存行为）`,
+        );
       }
       return { kind: "message", message: lines.join("\n") };
     }
