@@ -59,6 +59,7 @@ import {
 import { runBackgroundTask } from "../agent/background-task-gate.ts";
 import { getSleepLedger, describeSleep } from "@sid-code/shared/utils/sleep-detect.ts";
 import { SessionState } from "../session/state.ts";
+import { lookupChannelTrust, readChannelTrustCached } from "../telemetry/channel-trust.ts";
 import { getLogger, getSessionMetrics, getPerfTimer } from "../debug/index.ts";
 import { noteStopReasonMismatch } from "../agent/stop-reason-mismatch.ts";
 import {
@@ -3772,10 +3773,19 @@ export async function* queryLoop(loopConfig: QueryLoopConfig): AsyncGenerator<Qu
           precededByRetry: turnPrecededByRetry, // P1-2：分离重试触发脱落 vs 纯服务端波动
         });
         if (breakReport) {
+          // 带上渠道与可信度：不可信渠道的 cache_read 是编造的，它的「下降」不是缓存行为。
+          // 登记表按会话缓存一次（readChannelTrustCached），不在每轮读盘。
+          const endpointHost = SessionState.hostOf(config.baseURL);
           recordCacheBreak({
             ...breakReport,
             ts: Math.floor(Date.now() / 1000),
             model: config.model,
+            ...(endpointHost
+              ? {
+                  endpointHost,
+                  channelTrust: lookupChannelTrust(endpointHost, readChannelTrustCached()).verdict,
+                }
+              : {}),
           });
           log.warn("CACHE_BREAK", formatCacheBreakReport(breakReport));
         }

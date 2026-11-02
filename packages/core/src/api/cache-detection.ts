@@ -550,6 +550,17 @@ export interface CacheBreakRecord extends CacheBreakReport {
   /** 记录时间戳（秒，Unix epoch） */
   ts: number;
   model: string;
+  /** 请求端点 host（只取 host，不留 path/query）。旧记录无此字段。 */
+  endpointHost?: string;
+  /**
+   * 该渠道 usage 的可信度（来自 `~/.sid-code/channel-trust.json`，见 telemetry/channel-trust.ts）。
+   *
+   * 为什么要随记录落：不可信渠道的 cache_read 本身是编造的，它的「命中下降」不是缓存行为，
+   * 归成 server_fluctuation 会把渠道噪声读成服务端波动。2026-11-02 对齐轨迹：10-21~10-30
+   * 账单侧 696 条「两边都说字节没变」里有 459 条走的是已判 untrusted 的渠道。
+   * 旧记录无此字段，聚合时按 unknown（计入）处理。
+   */
+  channelTrust?: "trusted" | "untrusted" | "unknown";
 }
 
 const MAX_BREAK_RECORDS = 50;
