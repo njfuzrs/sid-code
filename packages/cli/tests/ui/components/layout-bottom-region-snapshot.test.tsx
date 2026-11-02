@@ -233,6 +233,7 @@ const transientState = {
     },
   ],
   statusMessage: "状态提示：正在同步",
+  startupWarnings: [{ id: "w1", message: "启动警告：配置项 foo 已废弃" }],
 };
 const transientSeed = { toast: "这是一条 Toast 警告", ctrlC: true };
 
@@ -246,7 +247,15 @@ describe("真实布局整帧快照（底部区域）", () => {
     test(`${mode}：瞬态块齐全`, async () => {
       const frame = await renderLayout(mode, transientState, transientSeed);
       // 先确认场景真的摆出来了，避免快照锁住一张「什么都没渲染」的空帧
-      for (const s of ["跑门禁", "Toast 警告", "backup-model", "认证失败", "正在同步", "Ctrl+C"]) {
+      for (const s of [
+        "跑门禁",
+        "Toast 警告",
+        "backup-model",
+        "认证失败",
+        "正在同步",
+        "Ctrl+C",
+        "配置项 foo",
+      ]) {
         expect(frame).toContain(s);
       }
       expect(frame).toMatchSnapshot();
