@@ -9,7 +9,8 @@
  */
 
 import { describe, test, expect } from "bun:test";
-import { thinkTool, createThinkTool } from "@sid-code/core/tool/think.ts";
+import { thinkTool } from "@sid-code/core/tool/think.ts";
+import { toLegacyTool } from "@sid-code/core/tool/bridge.ts";
 import { Registry } from "@sid-code/core/tool/registry.ts";
 
 describe("G19 — think 新泛型工具", () => {
@@ -32,7 +33,7 @@ describe("G19 — think 新泛型工具", () => {
   });
 
   test("经 bridge 适配为 LegacyTool：execute 正确，能力字段透传", async () => {
-    const legacy = createThinkTool();
+    const legacy = toLegacyTool(thinkTool);
     expect(legacy.name()).toBe("think");
     expect(legacy.readOnly?.()).toBe(true);
     expect(legacy.isConcurrencySafe?.({})).toBe(true);
@@ -44,9 +45,14 @@ describe("G19 — think 新泛型工具", () => {
     expect(res.output).toContain("已记录思考");
   });
 
-  test("注册到 Registry 后 input_schema 来自 zodSchema", () => {
+  test("新 Tool 直接注册到 Registry（入口经 bridge 归一），input_schema 来自 zodSchema", async () => {
     const r = new Registry();
-    r.register(createThinkTool());
+    r.register(thinkTool);
+    // 取回的是归一后的 LegacyTool 形态：消费方读 name() / execute()
+    const got = r.get("think")!;
+    expect(got).toBeDefined();
+    expect(got.name()).toBe("think");
+    expect((await got.execute({ thought: "x" })).output).toContain("已记录思考");
     const def = r.definitions().find((d) => d.name === "think")!;
     expect(def).toBeDefined();
     const schema = def.input_schema as any;

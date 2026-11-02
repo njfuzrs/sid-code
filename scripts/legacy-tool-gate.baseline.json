@@ -1,0 +1,4 @@
+{
+  "legacyToolFiles": 57,
+  "note": "2026-11-02 首次接入（方案 §3.3 P4 / §6 PR 6）。口径：packages/*/src 下非测试文件，去注释后按词边界匹配 LegacyTool / LegacyToolResult（toLegacyTool 不算、注释不算）。接入前按同口径实测 58；同一 PR 内 registry.register 改为直接接受新 Tool、删掉 think.ts 的 createThinkTool 后降为 57，基线取 57。只允许收紧：迁完工具后跑 --update-baseline。终点是 0（删 LegacyTool 与 tool/bridge.ts）。"
+}
