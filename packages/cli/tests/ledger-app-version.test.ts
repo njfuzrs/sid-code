@@ -16,6 +16,7 @@ import { join } from "node:path";
 import { mkdirSync, rmSync, existsSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { App } from "@sid-code/cli/app.ts";
+import { UnifiedCommandRegistry } from "@sid-code/cli/command/unified-registry.ts";
 import { defaultConfig } from "@sid-code/core/config/config.ts";
 import type { Config } from "@sid-code/core/config/config.ts";
 
@@ -55,7 +56,12 @@ describe("P0-1 账本行携带 appVersion", () => {
       availableModels: [],
       permissionMode: "default",
     } as unknown as Config;
-    return new App({ config, provider: {} as any, mcpManager: {} as any });
+    return new App({
+      unifiedRegistry: new UnifiedCommandRegistry(),
+      config,
+      provider: {} as any,
+      mcpManager: {} as any,
+    });
   }
 
   /**

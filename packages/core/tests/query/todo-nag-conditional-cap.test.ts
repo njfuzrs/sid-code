@@ -108,9 +108,12 @@ describe("接线（静态断言）", () => {
 
   it("afterCompact 旁路不受封顶管辖（压缩后必须强制重注，否则清单永久消失）", async () => {
     const src = await loopSrc.text();
-    // 形态：(throttleSaysYes && todoNagDecision.inject) || afterCompact
-    // afterCompact 必须在 || 右侧、不与 inject 相 AND。
-    expect(src).toContain("(throttleSaysYes && todoNagDecision.inject) || afterCompact");
+    // 形态：(throttleSaysYes && todoNagDecision.inject [&& !isTodoNagDisabled()]) || afterCompact
+    // afterCompact 必须在 || 右侧、不与 inject 相 AND。2026-11-01 T3 在左侧括号内加了
+    // SID_DISABLE_TODO_NAG 开关（开关同样不管 afterCompact），故改为正则匹配，不锁格式化换行。
+    expect(src).toMatch(
+      /\(throttleSaysYes && todoNagDecision\.inject(?: && !isTodoNagDisabled\(\))?\)\s*\|\|\s*afterCompact/,
+    );
   });
 
   it("清单推进后清零记账预算（否则长会话里早期催满即永久哑火）", async () => {

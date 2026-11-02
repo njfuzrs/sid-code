@@ -54,6 +54,28 @@ export function createTodoReworkState(): TodoReworkState {
 }
 
 /**
+ * 本次写入相对上一次写入的推进量（2026-11-01，进度清单第五部分 T7）。
+ *
+ * `TodoProgressAdvanced` 每次成功写入都发，只改措辞也发——它量的是「碰了几次清单」，
+ * 不是推进量。这两个字段让分析脚本能把两者分开，而不用改事件名打断已有脚本。
+ *
+ * 基线取 `state.lastStatuses`：**必须在 `recordTodoWrite` 之前调用**，那时它还是上一次写入。
+ * 会话首次写入时基线为空，`completedDelta` = 当前 completed 数、`contentChanged` = true。
+ */
+export function todoWriteDelta(
+  state: TodoReworkState,
+  todos: TodoItem[],
+): { completedDelta: number; contentChanged: boolean } {
+  const prev = state.lastStatuses;
+  let prevCompleted = 0;
+  for (const s of prev.values()) if (s === "completed") prevCompleted++;
+  const completed = todos.filter((t) => t.status === "completed").length;
+  const contents = new Set(todos.map((t) => t.content));
+  const contentChanged = contents.size !== prev.size || [...contents].some((c) => !prev.has(c));
+  return { completedDelta: completed - prevCompleted, contentChanged };
+}
+
+/**
  * 记一次 todo_write 后的清单：把期间落盘的文件归到新完成项上，被改回未完成的项撤销归属。
  * 调用时机：queryLoop 观察到 writeVersion 变化时（每次写入恰好调用一次）。
  */
@@ -109,10 +131,43 @@ export function recordFileEditForRework(
   return null;
 }
 
-/** 取出并清空待注入提醒，渲染成 system-reminder；无提醒返回 null。 */
-export function drainTodoReworkReminder(state: TodoReworkState): string | null {
+/** 事件里 `item` 的截断上限：清单项文本由模型写，长度不受控，防止单条事件过大 */
+export const REWORK_EVENT_ITEM_MAX = 200;
+
+/**
+ * `TodoReworkDetected` 事件的命中明细（2026-11-01，进度清单第五部分 T1）。
+ *
+ * 此前 drain 之后 hits 被丢掉，事件里只有轮次，「返工集中在哪些文件 / 哪类项」答不了。
+ * 只截断 `item`、不截断 `file`：文件路径是归因的主键，截断后同一文件会被拆成多个桶。
+ */
+export function reworkEventData(hits: TodoReworkHit[]): {
+  hits: TodoReworkHit[];
+  hitCount: number;
+} {
+  return {
+    hits: hits.map((h) => ({
+      item: h.item.length > REWORK_EVENT_ITEM_MAX ? h.item.slice(0, REWORK_EVENT_ITEM_MAX) : h.item,
+      file: h.file,
+    })),
+    hitCount: hits.length,
+  };
+}
+
+/** 取出并清空待注入提醒，连同命中明细一起返回（明细供 trace 事件用）；无提醒返回 null。 */
+export function drainTodoRework(
+  state: TodoReworkState,
+): { reminder: string; hits: TodoReworkHit[] } | null {
   if (state.pendingHints.length === 0) return null;
   const hits = state.pendingHints.splice(0);
+  return { reminder: renderReworkReminder(hits), hits };
+}
+
+/** 取出并清空待注入提醒，渲染成 system-reminder；无提醒返回 null。 */
+export function drainTodoReworkReminder(state: TodoReworkState): string | null {
+  return drainTodoRework(state)?.reminder ?? null;
+}
+
+function renderReworkReminder(hits: TodoReworkHit[]): string {
   const lines = hits.map((h) => `- 「${h.item}」已标 completed，但你随后又修改了 ${h.file}`);
   return `<system-reminder>
 任务清单与实际进展可能不一致（请勿向用户提及本提醒）：

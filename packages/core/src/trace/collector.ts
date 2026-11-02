@@ -64,6 +64,7 @@ import {
   EditFirstTryTracker,
   type PermissionDecisionStats,
 } from "./decision-metrics.ts";
+import { setCapabilityHealedObserver } from "../llm/capability-heal-telemetry.ts";
 import { getLogger } from "../debug/logger.ts";
 import { sidPaths } from "../config/paths.ts";
 import { estimateTextTokens } from "../context/token.ts";
@@ -507,6 +508,18 @@ export class TraceCollector {
     // B11：权限决策不走 hook（鉴权点没有对应的"已决策"事件，PermissionDenied 只覆盖一半），
     // 走 decision-telemetry 的模块级观察者。与 hook 同一时机注入，保证「采集启用」⇔「决策进轨迹」。
     setPermissionDecisionObserver((e) => this.handlePermissionDecision(e));
+    // 能力自愈进轨迹：此前只能从 effort_wire=omitted 倒推，分不出触发方式与是否落盘记账
+    setCapabilityHealedObserver((e) => {
+      if (!this.initialized) return;
+      this.recordCustomEvent("CapabilityHealed", {
+        model: e.model,
+        trigger: e.trigger,
+        ...(e.statusCode !== undefined ? { status_code: e.statusCode } : {}),
+        stripped: e.stripped,
+        recorded: e.recorded,
+        retry_ok: e.retryOk,
+      });
+    });
     // 方案 G：命令 allowed-tools 下发与剥离进轨迹（可复算「多少命令声明被丢弃」）
     setCommandAllowedToolsObserver((e) => {
       if (!this.initialized) return;

@@ -119,8 +119,6 @@ export interface AppContext {
    * B16：/goal 设定时提示「评估者 = 主模型」—— submit_prompt 的提示词只喂 LLM、不上屏，需要这条旁路。
    */
   notify?: (text: string) => void;
-  /** 自定义命令列表（/help 显示用） */
-  customCommands?: Array<{ name: string; description: string }>;
   /** Shell 注入确认回调（自定义命令 !{cmd} 语法用），返回 true 表示用户确认 */
   confirmShellCommands?: (commands: string[]) => Promise<boolean>;
   /**
@@ -142,8 +140,6 @@ export interface AppContext {
   fileReadTracker?: import("@sid-code/core/tool/file-read-tracker.ts").FileReadTracker;
   /** §12 P2-4 复审：会话级临时目录（手动压缩质量报告落盘）。经 toCommandContext 桥接。 */
   sessionDir?: string;
-  /** 命令注册表引用（/reload-plugins 重新合并插件命令用） */
-  commandRegistry?: import("./registry.ts").Registry;
   /**
    * Skill 管理器引用（/reload-plugins 刷新插件 skills 用）。
    * §18.10：插件带的 skills 需随插件安装/卸载原子替换，否则装了新插件要重启才能用它的
@@ -151,7 +147,7 @@ export interface AppContext {
    */
   skillManager?: import("@sid-code/core/skill/manager.ts").SkillManager;
   /**
-   * 统一命令注册表引用（新体系 /reload-plugins 刷新插件命令用，优先于 commandRegistry）。
+   * 统一命令注册表引用（/reload-plugins 刷新插件命令用）。
    *
    * 用 core 侧的结构化契约而非 cli 的 class：`adapter.ts` 在 AppContext ↔ CommandContext
    * 之间双向桥接这个字段，两侧类型必须一致；而 `CommandContext` 属 core，只能持契约。

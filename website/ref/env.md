@@ -18,9 +18,9 @@ description: 全部可用环境变量及其作用。
 
 <!-- AUTO-GEN:START 由 scripts/docs-gen-reference.ts 生成，勿手工编辑 -->
 
-> 共 **125** 个环境变量，取自 `sid-code --help` 的环境变量段，
-> 并与源码里实际的 `process.env` 读取点（扫到 185 个）交叉核对。
-> 扫到的 185 个里 121 个在上表、64 个列在页尾；表里另有 4 个是扫描认不出的读法（如拼接出的变量名），仍以 help 为准。
+> 共 **127** 个环境变量，取自 `sid-code --help` 的环境变量段，
+> 并与源码里实际的 `process.env` 读取点（扫到 187 个）交叉核对。
+> 扫到的 187 个里 123 个在上表、64 个列在页尾；表里另有 4 个是扫描认不出的读法（如拼接出的变量名），仍以 help 为准。
 
 > 优先级：环境变量 > `settings.json`。`SID_*` 前缀的变量只对 sid-code 生效，
 > 不与同机的其他工具共享。
@@ -192,6 +192,9 @@ description: 全部可用环境变量及其作用。
 | `SID_ENABLE_TOKEN_EFFICIENT_TOOLS` | 设为 1 启用 token 高效工具 |
 | `SID_LOOP_EXHAUSTED_ACTION` | 循环耗尽动作（terminate 时回退旧行为） |
 | `SID_DISABLE_PROMISE_NUDGE` | 设为 1 关闭「短文本承诺未兑现」续跑（提示照常） |
+| `SID_DISABLE_TODO_GATE` | 设为 1 关闭「清单未完成就收尾」续跑闸门（A/B 用） |
+| `SID_DISABLE_TODO_NAG` | 设为 1 关闭清单催更回注（压缩后重注入照常） |
+| `SID_DISABLE_TODO_REWORK` | 设为 1 关闭「标完成后返工」提醒（事件照发，带 suppressed） |
 | `SID_STRUCTURED_OUTPUT_MAX_RETRIES` | 结构化输出最大重试次数（缺省 5） |
 | `SID_DISABLE_TAB_STATUS` | 设为 1 禁用终端 Tab 状态指示 |
 | `SID_CODE_DISABLE_MOUSE_CLICKS` | 设为 1 禁用鼠标点击 |

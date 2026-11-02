@@ -88,7 +88,6 @@ export { loadPluginHooks, collectPluginHooks } from "./loadPluginHooks.ts";
 export { collectPluginMcpServers, loadPluginMcpServers } from "./loadPluginMcp.ts";
 
 // 组件合并
-export { mergePluginCommands } from "./merge.ts";
 
 // ── Phase 3：生命周期与刷新 ──
 

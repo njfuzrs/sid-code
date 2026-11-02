@@ -18,6 +18,7 @@ import { mkdirSync, rmSync, existsSync } from "fs";
 import { tmpdir } from "os";
 import { SessionStore } from "@sid-code/core/session/store.ts";
 import { App } from "@sid-code/cli/app.ts";
+import { UnifiedCommandRegistry } from "@sid-code/cli/command/unified-registry.ts";
 import { defaultConfig } from "@sid-code/core/config/config.ts";
 import type { Config } from "@sid-code/core/config/config.ts";
 
@@ -50,7 +51,12 @@ describe("D2：会话摘要写入端（compactObserver → saveSummary）", () =
       availableModels: [],
       permissionMode: "default",
     } as unknown as Config;
-    return new App({ config, provider: {} as any, mcpManager: {} as any });
+    return new App({
+      unifiedRegistry: new UnifiedCommandRegistry(),
+      config,
+      provider: {} as any,
+      mcpManager: {} as any,
+    });
   }
 
   /** 等待 persistSessionSummary 的 fire-and-forget 落盘完成。 */

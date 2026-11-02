@@ -257,6 +257,8 @@ export interface TodoGateBudget {
   exhaustedNotified: boolean;
   /** 上次呈现"等你操作"说明时的 blocked 项签名（签名不变就不重复说） */
   handoffSignature?: string;
+  /** 上次呈现"等后台任务"说明时的未完成项签名（T2，签名不变就不重复说） */
+  bgWaitSignature?: string;
 }
 
 /**
@@ -309,6 +311,19 @@ export function advanceTodoGateBudget(
 }
 
 /** blocked 项签名：用于"等你操作"说明的去重（同一批 blocked 项只说一次）。 */
+/** 未完成项（pending / in_progress）的签名：内容 + 状态，用于「等后台任务」说明去重（T2） */
+export function unfinishedSignature(todos: TodoItem[]): string {
+  return todos
+    .filter((t) => t.status === "pending" || t.status === "in_progress")
+    .map((t) => `${t.status}:${t.content}`)
+    .join("\u0000");
+}
+
+/** 有后台任务在跑时的收尾说明（T2）：中性措辞，不催模型、不报错 */
+export function buildTodoBackgroundWaitMessage(unfinished: number): string {
+  return `清单还有 ${unfinished} 项未完成，正在等待后台任务回报，完成后会继续推进。`;
+}
+
 export function blockedSignature(todos: TodoItem[]): string {
   return blockedTodos(todos)
     .map((t) => t.content)

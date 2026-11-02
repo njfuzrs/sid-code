@@ -1,6 +1,7 @@
 /**
  * 内置斜杠命令
- * 提供 /help, /model, /cost, /compact, /clear, /exit, /sessions, /resume, /config
+ * 提供 /help, /cost, /clear, /exit, /sessions, /resume, /config
+ * （/model、/compact 已迁到 commands/，旧版已删，见 command-system-gate G4）
  * /rewind, /stats, /telemetry, /init
  */
 
@@ -221,83 +222,6 @@ export class HelpCommand implements Command {
   }
 }
 
-/** /model 命令 */
-export class ModelCommand implements Command {
-  name() {
-    return "model";
-  }
-  aliases() {
-    return ["m"];
-  }
-  description() {
-    return "显示或切换模型";
-  }
-
-  async execute(args: string, ctx: AppContext): Promise<CommandResult> {
-    const trimmedArgs = args.trim();
-
-    if (trimmedArgs === "list" || trimmedArgs === "ls") {
-      return { kind: "message", message: this.buildAvailableModels(ctx) };
-    }
-
-    if (trimmedArgs) {
-      return this.switchModel(trimmedArgs, ctx);
-    }
-
-    // 无参数且有可用模型时，打开交互式选择对话框
-    if (ctx.config.availableModels.length > 0) {
-      return { kind: "dialog", dialog: "model" };
-    }
-
-    return { kind: "message", message: this.buildCurrentModel(ctx) };
-  }
-
-  private buildCurrentModel(ctx: AppContext): string {
-    const lines = [`当前模型: ${ctx.config.model}`, `提供商: ${ctx.config.provider}`];
-    if (ctx.config.availableModels.length > 0) {
-      lines.push("", "可用模型:");
-      ctx.config.availableModels.forEach((m) => {
-        const current = m.name === ctx.config.model ? " (当前)" : "";
-        const provider = m.provider ? ` [${m.provider}]` : "";
-        lines.push(`  - ${m.name}${provider}${current}`);
-      });
-      lines.push("", "使用 /model <name> 切换模型");
-      lines.push("使用 /model list 查看详细信息");
-    }
-    return lines.join("\n");
-  }
-
-  private buildAvailableModels(ctx: AppContext): string {
-    if (ctx.config.availableModels.length === 0) {
-      return "未配置可用模型列表\n请在 ~/.sid-code/settings.json 中添加 availableModels 配置";
-    }
-    const lines = ["可用模型列表:"];
-    ctx.config.availableModels.forEach((m, idx) => {
-      const current = m.name === ctx.config.model ? " ✓ 当前" : "";
-      lines.push(`\n${idx + 1}. ${m.name}${current}`);
-      if (m.provider) lines.push(`   提供商: ${m.provider}`);
-      if (m.baseURL) lines.push(`   API 地址: ${m.baseURL}`);
-    });
-    return lines.join("\n");
-  }
-
-  private switchModel(modelName: string, ctx: AppContext): CommandResult {
-    if (ctx.config.availableModels.length > 0) {
-      const modelConfig = ctx.config.availableModels.find((m) => m.name === modelName);
-      if (!modelConfig) {
-        const available = ctx.config.availableModels.map((m) => `  - ${m.name}`).join("\n");
-        return {
-          kind: "error",
-          message: `模型 "${modelName}" 不在可用模型列表中\n\n可用模型:\n${available}\n\n使用 /model list 查看详细信息`,
-        };
-      }
-    }
-
-    ctx.setModel(modelName);
-    return { kind: "message", message: `模型已切换为: ${modelName}` };
-  }
-}
-
 /** /cost 命令 */
 export class CostCommand implements Command {
   name() {
@@ -386,54 +310,6 @@ export class CostCommand implements Command {
     }
 
     return { kind: "message", message: lines.join("\n") };
-  }
-}
-
-/** /compact 命令 */
-export class CompactCommand implements Command {
-  name() {
-    return "compact";
-  }
-  aliases() {
-    return [];
-  }
-  description() {
-    return "压缩对话历史";
-  }
-
-  async execute(_args: string, ctx: AppContext): Promise<CommandResult> {
-    const before = ctx.ctxMgr.messageCount();
-    if (before <= 4) {
-      return { kind: "message", message: "对话历史太短，无需压缩" };
-    }
-
-    const messages = ctx.ctxMgr.getMessages();
-    const summaryText = messages
-      .map((m) => {
-        const text = m.content
-          .filter((b) => b.type === "text")
-          .map((b) => (b as any).text)
-          .join("\n");
-        return `[${m.role}] ${text.slice(0, 200)}`;
-      })
-      .join("\n");
-
-    // P0-1 契约：compactWithSummary 有三条 no-op 路径（no_split_point /
-    // invalid_result_rolled_back / no_reduction），触发时消息一字不动。
-    // 此前这里不接收返回值、固定报「对话已压缩」，no-op 时用户看到
-    // 「156 → 156 条消息」的自相矛盾文案。同型修复见 commands/compact/compact.ts
-    // 的 runLocalTruncationFallback。
-    const outcome = ctx.ctxMgr.compactWithSummary(summaryText.slice(0, 2000));
-    if (!outcome.success) {
-      return {
-        kind: "message",
-        message:
-          `压缩未生效：${outcome.reason ?? "no_reduction"}，` +
-          `${before} 条消息未变。建议 /clear 或检查会话历史是否异常`,
-      };
-    }
-    const after = ctx.ctxMgr.messageCount();
-    return { kind: "message", message: `对话已压缩: ${before} → ${after} 条消息` };
   }
 }
 
@@ -2063,11 +1939,9 @@ export class TraceCommand implements Command {
 /** 注册所有内置命令 */
 export async function registerBuiltins(registry: import("./registry.ts").Registry): Promise<void> {
   registry.register(new HelpCommand());
-  registry.register(new ModelCommand());
   registry.register(new CostCommand());
   registry.register(new CacheCommand());
   registry.register(new TraceCommand());
-  registry.register(new CompactCommand());
   registry.register(new ClearCommand());
   registry.register(new ConfigCommand());
   registry.register(new UndoCommand());

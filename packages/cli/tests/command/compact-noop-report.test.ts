@@ -8,11 +8,9 @@
  * 固定报「对话已压缩」，no-op 时用户看到「156 → 156 条消息」的自相矛盾文案，
  * 以为上下文已释放，下一次请求直接撞溢出。
  *
- * 本文件锁两件事：
- *   1. 新版 commands/compact/compact.ts 的本地截断兜底（runLocalTruncationFallback）
- *      no-op 时文案必须如实报「未生效」，且不再 fire PostCompact hook；
- *   2. 旧版 builtins.ts 的 CompactCommand（新命令体系已迁移，仅旧 Registry 回退
- *      路径可达）同型修复——留着谎报范本等于给下一个复制粘贴的人留错误示例。
+ * 本文件锁：commands/compact/compact.ts 的本地截断兜底（runLocalTruncationFallback）
+ * no-op 时文案必须如实报「未生效」，且不再 fire PostCompact hook。
+ * （旧版 builtins.ts 的 CompactCommand 及其用例已随旧 Registry 回退路径一并删除。）
  *
  * mock 前提对齐真实契约：compactWithSummary 返回 CompactionOutcome，
  * success 由「消息数是否真的下降」唯一决定。
@@ -20,7 +18,6 @@
 
 import { describe, test, expect } from "bun:test";
 import compactMod from "@sid-code/cli/command/commands/compact/compact.ts";
-import { CompactCommand } from "@sid-code/cli/command/builtins.ts";
 import type { Message } from "@sid-code/core/llm/types.ts";
 
 /** 构造 round 边界干净的消息历史（user/assistant 交替，无工具往返） */
@@ -159,66 +156,5 @@ describe("P0-1 手动 /compact 兜底 no-op 不得谎报成功（新版命令）
     expect(value).toContain("已降级为本地截断");
     expect(value).toContain("16 → 2 条消息");
     expect(ctx.ctxMgr.messageCount()).toBe(2);
-  });
-});
-
-describe("P0-1 旧版 CompactCommand（builtins.ts 回退路径）no-op 不得谎报成功", () => {
-  /** builtins 的 execute 只依赖 ctxMgr，最小化 mock */
-  function makeLegacyCtx(messages: Message[], noopReason?: string) {
-    let msgs = messages;
-    const ctxMgr = {
-      messageCount: () => msgs.length,
-      estimateTokens: () => msgs.length * 10,
-      getMessages: () => msgs,
-      compactWithSummary: (summary: string): CompactOutcomeShape => {
-        const before = msgs.length;
-        if (noopReason) {
-          return {
-            success: false,
-            messageCountBefore: before,
-            messageCountAfter: before,
-            tokensBefore: before * 10,
-            tokensAfter: before * 10,
-            splitPoint: 0,
-            reason: noopReason,
-          };
-        }
-        msgs = [
-          { role: "user", content: [{ type: "text", text: summary }] },
-          { role: "assistant", content: [{ type: "text", text: "ok" }] },
-        ];
-        return {
-          success: msgs.length < before,
-          messageCountBefore: before,
-          messageCountAfter: msgs.length,
-          tokensBefore: before * 10,
-          tokensAfter: msgs.length * 10,
-          splitPoint: before - 1,
-        };
-      },
-    };
-    return { ctxMgr } as any;
-  }
-
-  test("no-op → 报「未生效」+ reason，不报「已压缩」，历史未变", async () => {
-    const cmd = new CompactCommand();
-    const ctx = makeLegacyCtx(buildMessages(8), "no_split_point");
-
-    const result = await cmd.execute("", ctx);
-
-    expect(result.kind).toBe("message");
-    expect(result.message).toContain("压缩未生效");
-    expect(result.message).toContain("no_split_point");
-    expect(result.message).not.toContain("已压缩");
-    expect(ctx.ctxMgr.messageCount()).toBe(16);
-  });
-
-  test("压动 → 报「对话已压缩: 16 → 2 条消息」（回归保护）", async () => {
-    const cmd = new CompactCommand();
-    const ctx = makeLegacyCtx(buildMessages(8));
-
-    const result = await cmd.execute("", ctx);
-
-    expect(result.message).toContain("对话已压缩: 16 → 2 条消息");
   });
 });

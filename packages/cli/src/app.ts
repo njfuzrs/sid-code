@@ -29,7 +29,6 @@ import { FIDELITY_INDICATOR_VERSION, PLAN_STEP_PARSER_VERSION } from "@sid-code/
 import { Manager as ContextManager } from "@sid-code/core/context/manager.ts";
 import { resolveAutoCompactPctOverride } from "@sid-code/core/context/auto-compact.ts";
 import { Registry as ToolRegistry } from "@sid-code/core/tool/registry.ts";
-import { Registry as CommandRegistry } from "./command/registry.ts";
 import { ModelFallback } from "@sid-code/core/llm/fallback.ts";
 import type { FallbackDecision } from "@sid-code/core/llm/fallback.ts";
 import type { RetryTelemetryEvent } from "@sid-code/core/llm/retry-telemetry.ts";
@@ -608,9 +607,12 @@ export interface AppOptions {
   provider: Provider;
   providerRegistry?: ProviderRegistry;
   toolRegistry?: ToolRegistry;
-  commandRegistry?: CommandRegistry;
-  /** 统一命令注册表（新体系）。TUI 命令获取/执行优先走此注册表 */
-  unifiedRegistry?: import("./command/unified-registry.ts").UnifiedCommandRegistry;
+  /**
+   * 统一命令注册表：TUI 补全、命令执行、无头斜杠分发的唯一来源。
+   * 必填：旧 Registry 回退路径已删除（生产环境 cli.ts 总会创建，回退分支只剩测试能走到，
+   * 却要人对它做修复——627d3bda 就对着它修过一次 /compact）。
+   */
+  unifiedRegistry: import("./command/unified-registry.ts").UnifiedCommandRegistry;
   permissionChecker?: Checker;
   initialPrompt?: string;
   mcpManager?: MCPManager;
@@ -762,9 +764,8 @@ export class App {
   // rewindManager.attachSnapshot() 回填「本轮首个快照」后，这个字段就只写不读了——
   // 留着等于新造一个死字段（文档 N8 批评的同一形态）。
   private toolRegistry: ToolRegistry;
-  private commandRegistry: CommandRegistry;
-  /** 统一命令注册表（新体系）。非空时 TUI 命令获取/执行走此注册表 */
-  private unifiedRegistry?: import("./command/unified-registry.ts").UnifiedCommandRegistry;
+  /** 统一命令注册表（见 AppOptions.unifiedRegistry） */
+  private unifiedRegistry: import("./command/unified-registry.ts").UnifiedCommandRegistry;
   private permissionChecker: Checker | null;
   private fallback: ModelFallback;
   private thinkingMgr: ThinkingManager;
@@ -1033,7 +1034,6 @@ export class App {
     this.providerRegistry = opts.providerRegistry;
     this.mcpManager = opts.mcpManager;
     this.toolRegistry = opts.toolRegistry ?? new ToolRegistry();
-    this.commandRegistry = opts.commandRegistry ?? new CommandRegistry();
     this.unifiedRegistry = opts.unifiedRegistry;
     this.permissionChecker = opts.permissionChecker ?? null;
     this.planManager = opts.planManager ?? null;
@@ -2498,25 +2498,6 @@ export class App {
     }
   }
 
-  /** 获取自定义命令摘要（供 /help 显示） */
-  private getCustomCommandsSummary(): Array<{ name: string; description: string }> {
-    const builtinNames = new Set([
-      "help",
-      "model",
-      "cost",
-      "compact",
-      "clear",
-      "config",
-      "exit",
-      "undo",
-      "memory",
-    ]);
-    return this.commandRegistry
-      .all()
-      .filter((cmd) => !builtinNames.has(cmd.name()))
-      .map((cmd) => ({ name: cmd.name(), description: cmd.description() }));
-  }
-
   /** 解析当前模型的 effort 能力描述符（/effort、/think 状态读取 + setter 共用）。 */
   private resolveEffortCap(): import("@sid-code/core/llm/effort.ts").EffortCapability {
     const { resolveEffortCapability } = require("@sid-code/core/llm/effort.ts");
@@ -3526,34 +3507,28 @@ export class App {
 
   /**
    * 加载命令列表（补全/帮助显示用）。
-   * 新体系优先：从 UnifiedCommandRegistry.getCommands 取（含 bundled skills、plugin 命令）；
-   * 无新注册表时回退旧 Registry.all()。
+   * 唯一来源：UnifiedCommandRegistry.getCommands（含 custom、bundled skills、plugin 命令）。
    */
   private async loadCommandList(): Promise<
     import("./command/completion-list.ts").CompletionCommandEntry[]
   > {
     // P1-8 --disable-slash-commands：禁用时补全列表为空（配合 onSlashCommand 门控，彻底关闭斜杠命令）。
     if (this.config.disableSlashCommands) return [];
-    if (this.unifiedRegistry) {
-      try {
-        // G2：动态注入 MCP prompt 命令（mcp__server__prompt），随连接状态实时变化
-        const { buildMcpPromptCommands } = await import("./command/mcp-prompt-commands.ts");
-        const cmds = await this.unifiedRegistry.getCommands(
-          process.cwd(),
-          buildMcpPromptCommands(this.mcpManager),
-        );
-        const { toCompletionEntries } = await import("./command/completion-list.ts");
-        return toCompletionEntries(cmds);
-      } catch (err: any) {
-        getLogger().warn("APP", `统一注册表加载命令列表失败，回退旧 Registry: ${err?.message}`);
-      }
+    try {
+      // G2：动态注入 MCP prompt 命令（mcp__server__prompt），随连接状态实时变化
+      const { buildMcpPromptCommands } = await import("./command/mcp-prompt-commands.ts");
+      const cmds = await this.unifiedRegistry.getCommands(
+        process.cwd(),
+        buildMcpPromptCommands(this.mcpManager),
+      );
+      const { toCompletionEntries } = await import("./command/completion-list.ts");
+      return toCompletionEntries(cmds);
+    } catch (err: any) {
+      // 旧 Registry 回退已删除：它只装着启动时的内置 + 自定义命令快照，回退过去的补全
+      // 本身就是陈旧的。空列表只影响补全，执行路径每次重新 getCommands 不受影响。
+      getLogger().warn("APP", `统一注册表加载命令列表失败: ${err?.message}`);
+      return [];
     }
-    return this.commandRegistry.all().map((cmd) => ({
-      name: cmd.name(),
-      aliases: cmd.aliases(),
-      description: cmd.description(),
-      argumentHint: cmd.argumentHint?.() || undefined,
-    }));
   }
 
   /**
@@ -5366,18 +5341,8 @@ export class App {
     scanOptions: import("@sid-code/core/extension/types.ts").ScanOptions,
   ): Promise<void> {
     const log = getLogger();
-    // 命令：旧 Registry 重注册项目级自定义命令；新体系清缓存后从磁盘重投影
-    try {
-      const { CustomCommandLoader } = await import("./command/custom.ts");
-      for (const { cmd, source } of await new CustomCommandLoader().loadAll(
-        undefined,
-        scanOptions,
-      )) {
-        this.commandRegistry.register(cmd, source);
-      }
-    } catch (e) {
-      log.warn("TRUST", `重载自定义命令失败: ${(e as Error)?.message}`);
-    }
+    // 命令：自定义命令由统一注册表按 cwd 懒加载并缓存，函数末尾 invalidateSkillCommands()
+    // 清掉整份缓存后从磁盘重投影（含刚被信任的项目级自定义命令），这里不需要单独重载。
     // skill：走热重载同一条路径（清 loader 缓存 + 重建门控 + 斜杠命令 + system prompt）
     if (this.skillManager) await this.reloadSkillsAfterChange([]);
     // agent：重新注册进聚合 registry，sub_agent 的 type 枚举随之更新
@@ -5409,7 +5374,7 @@ export class App {
     } catch (e) {
       log.warn("TRUST", `重载自定义 agent 失败: ${(e as Error)?.message}`);
     }
-    this.unifiedRegistry?.invalidateSkillCommands();
+    this.unifiedRegistry.invalidateSkillCommands();
   }
 
   async applyTrustDecision(trusted: boolean): Promise<void> {
@@ -5786,8 +5751,8 @@ export class App {
       // 2. 重建条件门控（保留已激活的动态 skill）
       this.skillActivationCoordinator?.reinit(mgr.getAllSkills(), prevActivated);
 
-      // 3. 刷新 /skill 斜杠命令：先删旧的 skill 命令，再按新集重注册
-      await this.refreshSkillCommands();
+      // 3. /skill 斜杠命令无需手动刷新：mgr.reload() 末尾 notifySkillsChanged，
+      //    cli.ts 接的 onSkillsChanged → unifiedRegistry.invalidateSkillCommands() 会让快照失效。
 
       // 4. 重建 system prompt（skill 摘要 listing 跟着刷新——单一元工具据 manager 实时取）
       await this.rebuildSystemPrompt();
@@ -5795,28 +5760,6 @@ export class App {
       log.info("SKILL", `Skill 热重载生效（${changedDirs.length} 个目录变更）`);
     } catch (e) {
       log.warn("SKILL", `Skill 热重载处理失败（不阻断）: ${(e as Error)?.message}`);
-    }
-  }
-
-  /**
-   * P2-3：热重载后刷新用户 `/skill` 斜杠命令。
-   * 删除所有 SkillCommand（source=user，且命令对象是 SkillCommand），按新 skill 集重注册。
-   */
-  private async refreshSkillCommands(): Promise<void> {
-    const mgr = this.skillManager;
-    if (!mgr) return;
-    try {
-      const { SkillCommand } = await import("./command/skill-command.ts");
-      // 删除现有 SkillCommand（避免陈旧 skill 命令残留）
-      this.commandRegistry.removeWhere((cmd) => cmd instanceof SkillCommand);
-      // 按新集重注册用户可调用的 skill
-      for (const skill of mgr.getSkills()) {
-        if (skill.userInvocable !== false) {
-          this.commandRegistry.register(new SkillCommand(skill), "user");
-        }
-      }
-    } catch (e) {
-      getLogger().debug("SKILL", `刷新 skill 斜杠命令失败: ${(e as Error)?.message}`);
     }
   }
 
@@ -8368,7 +8311,6 @@ export class App {
     input: string,
   ): Promise<import("./command/headless-dispatch.ts").HeadlessSlashOutcome> {
     const registry = this.unifiedRegistry;
-    if (!registry) return { kind: "not_command", input };
     const { resolveHeadlessSlash } = await import("./command/headless-dispatch.ts");
     const { CommandExecutor } = await import("./command/executor.ts");
     const { toCommandContext } = await import("./command/adapter.ts");
@@ -8392,7 +8334,6 @@ export class App {
         signal: this.abortController?.signal ?? new AbortController().signal,
         end: () => {},
       }),
-      customCommands: this.getCustomCommandsSummary(),
       // 自定义命令模板里的 `!{shell}` 与 skill 的 ask 决策走同一条确认通道：
       // SDK 宿主 can_use_tool / Bridge 远端 / 否则按 permissionMode（default 即 fail-closed 拒绝）
       confirmShellCommands: (commands) =>
@@ -8401,7 +8342,6 @@ export class App {
       permissionRules: this.getRawPermissionRules(),
       permissionChecker: this.permissionChecker,
       hookSystem: this.hookSystem,
-      commandRegistry: this.commandRegistry,
       unifiedRegistry: registry,
       skillManager: this.skillManager,
       traceCollector: this.traceCollector ?? undefined,
@@ -9245,19 +9185,17 @@ export class App {
     // 这里订阅注册表的广播而不是在每个变更点各自补一次 updateState：变更点会增加，
     // 靠人记就会漏，而漏掉时不会有任何东西报错。刷新是幂等的，重复广播只是多一次
     // 轻量重算（loadCommandList 走 getCommands，本身有 cwd 缓存）。
-    if (this.unifiedRegistry) {
-      this.unifiedRegistry.onCommandsChanged(() => {
-        // fire-and-forget：刷新失败不能影响触发变更的那个操作（如 /reload-plugins 本身）。
-        void this.loadCommandList()
-          .then((cmds) => {
-            updateState({ commands: cmds });
-            log.debug("TUI:CMD", `补全命令列表已刷新: ${cmds.length} 个`);
-          })
-          .catch((err: any) => {
-            log.warn("TUI:CMD", `刷新补全命令列表失败: ${err?.message}`);
-          });
-      });
-    }
+    this.unifiedRegistry.onCommandsChanged(() => {
+      // fire-and-forget：刷新失败不能影响触发变更的那个操作（如 /reload-plugins 本身）。
+      void this.loadCommandList()
+        .then((cmds) => {
+          updateState({ commands: cmds });
+          log.debug("TUI:CMD", `补全命令列表已刷新: ${cmds.length} 个`);
+        })
+        .catch((err: any) => {
+          log.warn("TUI:CMD", `刷新补全命令列表失败: ${err?.message}`);
+        });
+    });
 
     // ── 会话任务名（终端标题用）──
     // 首条用户消息时：① 本地启发式即时设标题（零延迟,多窗口立刻可区分）;
@@ -11393,7 +11331,6 @@ export class App {
           },
           // B16：命令层一次性提示走状态栏瞬态通知（8s），不进对话历史
           notify: (text) => this.statusNotifier?.("command_notice", text, 8000),
-          customCommands: this.getCustomCommandsSummary(),
           confirmShellCommands: async (commands) => {
             return this.interactionQueue.run(
               () =>
@@ -11417,7 +11354,6 @@ export class App {
           // P0-3：skill 授权判定要的是**原始规则**（Skill(name) 的 allow/deny/ask），
           // 不能用子代理 checker——那会把 ask 降级成 deny。
           permissionRules: this.getRawPermissionRules(),
-          commandRegistry: this.commandRegistry,
           unifiedRegistry: this.unifiedRegistry,
           // §18.10：/reload-plugins 刷新插件 skills 需要主 manager（原子替换 plugin 来源）
           skillManager: this.skillManager,
@@ -11448,72 +11384,28 @@ export class App {
         // 使用频率记账在 CommandExecutor.dispatch 里（D1/D2）：只记查到且过闸的命令，
         // 记 canonical name。不要在这里按原文 cmd 再记一次。
 
-        // 新体系执行路径：CommandExecutor 分发 UnifiedCommand
-        if (this.unifiedRegistry) {
-          const { CommandExecutor } = await import("./command/executor.ts");
-          const { toCommandContext } = await import("./command/adapter.ts");
+        // 唯一执行路径：CommandExecutor 分发 UnifiedCommand（旧 Registry 回退已删除）
+        const { CommandExecutor } = await import("./command/executor.ts");
+        const { toCommandContext } = await import("./command/adapter.ts");
 
-          let execResult: import("./command/types.ts").CommandExecutionResult;
-          try {
-            const cmdCtxNew = toCommandContext(cmdCtx);
-            // G2：动态注入 MCP prompt 命令，使 /mcp__server__prompt 可执行
-            const { buildMcpPromptCommands } = await import("./command/mcp-prompt-commands.ts");
-            const commands = await this.unifiedRegistry.getCommands(
-              process.cwd(),
-              buildMcpPromptCommands(this.mcpManager),
-            );
-            // setToolJSX 回调：本项目当前无真 local-jsx 命令（dialog 走 activeDialog state），
-            // 但保留接线以备未来 JSX 命令；渲染交给 activeDialog 机制，这里仅兜底关闭。
-            const executor = new CommandExecutor(cmdCtxNew, {
-              setToolJSX: () => {
-                /* 预留：当前 dialog 走 activeDialog state，无需 JSX 挂载 */
-              },
-            });
-            log.debug("TUI:CMD", `执行命令(新体系): /${cmd}`);
-            execResult = await executor.executeSlashCommand(commandInput, commands);
-            updateState({ model: this.config.model, provider: this.config.provider });
-          } catch (err: any) {
-            log.error("TUI:CMD", `命令执行失败: /${cmd}`, { error: err.message, stack: err.stack });
-            presentCommandResult(commandInput, `命令执行失败: ${err.message}`, { isError: true });
-            return;
-          }
-
-          await this.handleCommandExecutionResult(execResult, {
-            cmd,
-            commandInput,
-            callbacks,
-            updateState,
-            appendCommandOutput,
-            getConversationClearedPatch,
-            clearPromptCache,
-            presentCommandResult,
-            presentConversationalResult,
-            resetSyncState: () => {
-              lastSyncedCount = 0;
-              historyIdCounter = 0;
-              activeStatusMessages.clear();
-              localCommandItems.length = 0;
-              anchorItemCountCache.clear();
-            },
-            rebuildDisplay,
-          });
-          return;
-        }
-
-        // 旧体系回退路径（无 unifiedRegistry 时，如部分测试场景）
-        const command = this.commandRegistry.get(cmd);
-        if (!command) {
-          log.warn("TUI:CMD", `未知命令: /${cmd}`);
-          presentCommandResult(commandInput, `未知命令: /${cmd}，输入 /help 查看可用命令`, {
-            isError: true,
-          });
-          return;
-        }
-
-        let result: import("./command/types.ts").CommandResult;
+        let execResult: import("./command/types.ts").CommandExecutionResult;
         try {
-          log.debug("TUI:CMD", `执行命令: /${cmd}`);
-          result = await command.execute(args, cmdCtx);
+          const cmdCtxNew = toCommandContext(cmdCtx);
+          // G2：动态注入 MCP prompt 命令，使 /mcp__server__prompt 可执行
+          const { buildMcpPromptCommands } = await import("./command/mcp-prompt-commands.ts");
+          const commands = await this.unifiedRegistry.getCommands(
+            process.cwd(),
+            buildMcpPromptCommands(this.mcpManager),
+          );
+          // setToolJSX 回调：本项目当前无真 local-jsx 命令（dialog 走 activeDialog state），
+          // 但保留接线以备未来 JSX 命令；渲染交给 activeDialog 机制，这里仅兜底关闭。
+          const executor = new CommandExecutor(cmdCtxNew, {
+            setToolJSX: () => {
+              /* 预留：当前 dialog 走 activeDialog state，无需 JSX 挂载 */
+            },
+          });
+          log.debug("TUI:CMD", `执行命令(新体系): /${cmd}`);
+          execResult = await executor.executeSlashCommand(commandInput, commands);
           updateState({ model: this.config.model, provider: this.config.provider });
         } catch (err: any) {
           log.error("TUI:CMD", `命令执行失败: /${cmd}`, { error: err.message, stack: err.stack });
@@ -11521,85 +11413,25 @@ export class App {
           return;
         }
 
-        // 处理结构化结果
-        switch (result.kind) {
-          case "clear":
-            await this.clearConversation();
+        await this.handleCommandExecutionResult(execResult, {
+          cmd,
+          commandInput,
+          callbacks,
+          updateState,
+          appendCommandOutput,
+          getConversationClearedPatch,
+          clearPromptCache,
+          presentCommandResult,
+          presentConversationalResult,
+          resetSyncState: () => {
             lastSyncedCount = 0;
             historyIdCounter = 0;
             activeStatusMessages.clear();
             localCommandItems.length = 0;
             anchorItemCountCache.clear();
-            updateState(getConversationClearedPatch());
-            break;
-
-          case "quit":
-            presentCommandResult(commandInput, result.message ?? "再见！");
-            // D3-4：/quit 退出前必须 fireSessionEndEvent，否则跳过 line 1665 的 SessionEnd，
-            // 导致 messages.json / trajectory 不落盘（违反纪律不变量第 1 条「transcript 必落盘」）。
-            void (async () => {
-              try {
-                // 与 signal 路径不同：/quit 没有人在 1.2s 后 process.exit。但 1.2s 的
-                // race 上限仍远小于一次上传（10s 量级），所以上传不在此处硬等，
-                // 交给下次启动补传（backfill.ts）。本地落盘实测 ~30ms，预算足够。
-                this.traceCollector?.setUploadBudgetMs?.(0);
-                // hook 卡死时不阻塞退出：SessionEnd 可能跑用户命令长时间无响应。
-                await Promise.race([
-                  this.hookSystem.fireSessionEndEvent("exit", this.buildSessionEndStats()),
-                  new Promise((resolve) => setTimeout(resolve, 1200)),
-                ]);
-              } catch (err: any) {
-                process.stderr.write(`[quit] SessionEnd hook 失败: ${err?.message ?? err}\n`);
-              }
-              // B3：/quit 退出也结束会话持久化（幂等）
-              this.finalizeSessionStore();
-              // 清理 crash marker（正常退出不残留）
-              try {
-                CrashMarker.cleanup(this.sessionState.sessionId);
-              } catch {
-                /* ignore */
-              }
-              try {
-                PidManager.removeByPid(process.pid);
-              } catch {
-                /* ignore */
-              }
-              setTimeout(() => process.exit(0), 100);
-            })();
-            break;
-
-          case "submit_prompt":
-            if (result.prompt) {
-              // 同 handleCommandExecutionResult 的 submit_prompt：以 displayCommand 渲染
-              // 命令历史项，展开提示词只喂 LLM、不泄漏到屏幕（不再 appendCommandOutput，
-              // 那条项会被 syncDisplay 全量重建冲掉）。
-              await callbacks.onUserInput(result.prompt, { displayCommand: commandInput });
-            }
-            break;
-
-          case "error":
-            presentCommandResult(commandInput, `错误: ${result.message ?? ""}`, { isError: true });
-            break;
-
-          case "dialog":
-            // 打开交互式对话框（不输出命令文本）
-            if (result.dialog) {
-              log.info("TUI:CMD", `打开对话框: ${result.dialog}`);
-              updateState({ activeDialog: result.dialog });
-            }
-            break;
-
-          case "message":
-          default:
-            if (result.kind === "message" && result.conversational) {
-              presentConversationalResult(commandInput, result.message);
-              break;
-            }
-            presentCommandResult(commandInput, result.message, {
-              panel: result.kind === "message" ? result.panel : undefined,
-            });
-            break;
-        }
+          },
+          rebuildDisplay,
+        });
       },
       // UI 侧瞬态提示统一入口：让 App.tsx 的键位提示（Alt+T / Copy Mode 等）也走
       // activeStatusMessages Map，不再直写 statusMessage 覆盖 sticky 警告。
