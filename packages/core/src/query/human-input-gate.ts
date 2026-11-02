@@ -22,15 +22,33 @@
  */
 
 let awaitingCount = 0;
+// 累计等待时长：配对看门狗（trace/pairing-deadline.ts）要从「请求挂了多久」里扣掉这段。
+// 只在计数 0→1 / 1→0 的边沿记时，嵌套段不重复计入。
+let waitStartedAt: number | null = null;
+let waitTotalMs = 0;
 
 /** 进入"等待用户输入"区段（引用计数 +1）。 */
 export function beginHumanInputWait(): void {
+  if (awaitingCount === 0) waitStartedAt = Date.now();
   awaitingCount++;
 }
 
 /** 离开"等待用户输入"区段（引用计数 -1，下限 0）。 */
 export function endHumanInputWait(): void {
-  if (awaitingCount > 0) awaitingCount--;
+  if (awaitingCount === 0) return;
+  awaitingCount--;
+  if (awaitingCount === 0 && waitStartedAt !== null) {
+    waitTotalMs += Math.max(0, Date.now() - waitStartedAt);
+    waitStartedAt = null;
+  }
+}
+
+/**
+ * 进程内累计「等用户输入」的毫秒数，进行中的那段按已过去部分计入。
+ * 只增不减：调用方在计时开始时取一次快照，之后相减得到本窗口内的等待时长。
+ */
+export function humanInputWaitElapsedMs(): number {
+  return waitTotalMs + (waitStartedAt !== null ? Math.max(0, Date.now() - waitStartedAt) : 0);
 }
 
 /** 当前是否正在阻塞等待用户输入（任一区段未闭合即为 true）。 */
@@ -54,4 +72,6 @@ export async function withHumanInputWait<T>(fn: () => Promise<T>): Promise<T> {
 /** 测试用：强制清零计数（避免用例间状态泄漏）。 */
 export function __resetHumanInputGate(): void {
   awaitingCount = 0;
+  waitStartedAt = null;
+  waitTotalMs = 0;
 }

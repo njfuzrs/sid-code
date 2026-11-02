@@ -1335,14 +1335,14 @@ function TUIAppInner({ initialState, callbacks, bridge, alternateBuffer }: AppPr
     return items;
   }, [state.historyItems, state.isStreaming, state.streamingText]);
 
-  // 主屏 Static 模式（`--inline` 逃生舱专用）：全部历史项（含 app_header + 执行中的 tool_group），
-  // 不再拆静动。执行中工具作为普通 tool_group 直接进列表，完成时原地 reconcile 成终态——对齐 cc
-  // inline 路的「同一 keyed 行原地变态、不搬迁」（见根治方案 §1.5）。流式虚拟项仍不进 Static，
-  // 由 MainScreenLayout 动态区单独渲染，完成后并入 historyItems。
+  // 主屏 Static 模式（默认渲染模式，ADR-040：config.ts 默认 alternateBuffer=false）：全部历史项
+  // （含 app_header + 执行中的 tool_group），不再拆静动。执行中工具作为普通 tool_group 直接进列表，
+  // 完成时原地 reconcile 成终态——对齐 cc inline 路的「同一 keyed 行原地变态、不搬迁」（见根治方案
+  // §1.5）。流式虚拟项仍不进 Static，由 MainScreenLayout 动态区单独渲染，完成后并入 historyItems。
   //
-  // 幽灵行的物理根治靠**默认走 alt-screen 有界视口**（DefaultAppLayout，overflow=hidden），
-  // 内容进不了 scrollback。inline 路是显式 opt-in 的兼容逃生舱，不再是默认；此前自创的
-  // splitLiveToolItems/capLiveToolItems「静动拆分 + 视口封顶」缝补已删除（治标且算错对象，见 §6.3）。
+  // 全屏有界视口（DefaultAppLayout，overflow=hidden，内容进不了 scrollback）是 opt-in 模式
+  // （`--alternate-buffer` / `/tui on`），不是默认。此前自创的 splitLiveToolItems/capLiveToolItems
+  // 「静动拆分 + 视口封顶」缝补已删除（治标且算错对象，见 §6.3）。
   //
   // 引用稳定化（配合 bash 实时输出的轻量刷新路径 refreshLiveProgressInPlace）：纯进度刷新会换
   // state.historyItems 引用，但各已完成项对象引用不变。本 fork 的 <Static> 仅按 items 引用 memo，
