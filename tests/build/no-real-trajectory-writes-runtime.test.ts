@@ -81,6 +81,7 @@ const SCOPE = [
 /** 在指定 HOME 下跑一批测试，返回那个假家目录里出现的 `.sid-code/` 子路径。 */
 async function runWithFakeHome(
   targets: string[],
+  opts: { allowRealHome?: boolean } = {},
 ): Promise<{ leaked: string[]; exitCode: number; fakeHome: string }> {
   const fakeHome = mkdtempSync(join(tmpdir(), "sid-runtime-gate-home-"));
   const proc = Bun.spawn(["bun", "test", ...targets], {
@@ -95,6 +96,10 @@ async function runWithFakeHome(
       // 就是要让被测测试自己的隔离（或 preload 兜底）来决定落盘去哪。
       // 设了反而会把要检验的东西直接替被测方做掉。
       SID_CONFIG_DIR: undefined as unknown as string,
+      // 自证用例要验证「门禁抓得到污染」，就得让污染真的发生：关掉 `getSidHome()` 的
+      // 测试态兜底（2026-11-02 起它会把未重定向的测试态落盘兜到临时目录）。
+      // 主用例不设，检验的是两道防线叠加后的真实状态。
+      SID_TEST_ALLOW_REAL_HOME: opts.allowRealHome ? "1" : (undefined as unknown as string),
     },
   });
   const exitCode = await proc.exited;
@@ -180,7 +185,7 @@ describe("运行时落盘门禁：受检测试不得写真实家目录的长留 
 
     try {
       const rel = probeFile.replace(REPO_ROOT + "/", "./");
-      const { leaked, exitCode, fakeHome } = await runWithFakeHome([rel]);
+      const { leaked, exitCode, fakeHome } = await runWithFakeHome([rel], { allowRealHome: true });
       try {
         // 探针自己是**全绿**的（0 fail）—— 这正是要点：断言全过、数据照样进家目录。
         expect(exitCode, "探针本应通过（它的断言只检查落盘成功）").toBe(0);
@@ -227,7 +232,7 @@ describe("运行时落盘门禁：受检测试不得写真实家目录的长留 
 
     try {
       const rel = probeFile.replace(REPO_ROOT + "/", "./");
-      const { leaked, exitCode, fakeHome } = await runWithFakeHome([rel]);
+      const { leaked, exitCode, fakeHome } = await runWithFakeHome([rel], { allowRealHome: true });
       try {
         expect(exitCode, "探针本应通过（它根本没断言落盘位置）").toBe(0);
         expect(
