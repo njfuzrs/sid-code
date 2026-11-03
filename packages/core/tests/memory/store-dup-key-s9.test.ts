@@ -197,10 +197,13 @@ describe("S9 索引按类型优先级保留", () => {
   test("字节预算截断时 user/feedback 优先于更新的 project/reference", async () => {
     const s = newStore();
     const long = "长摘要".repeat(60);
-    // 先写 user/feedback（updatedAt 更旧），再灌大量 project 撑爆 25KB
+    // 先写 user/feedback（updatedAt 更旧），再灌大量 project 撑爆 25KB。
+    // ⚠️ 条数 180 是 C3-A（索引描述截到 40 字符）之后的重算值：150 条在描述截短后
+    // 已撑不到 25KB（约 22KB），索引不再截断，本用例会变成「没触发截断所以没东西可验」。
+    // 上限仍是 STORE_MAX_ENTRIES(200) 之内，不会触发超限归档。
     await s.set("u-pref", long, "project", { type: "user", description: long });
     await s.set("f-rule", long, "project", { type: "feedback", description: long });
-    for (let i = 0; i < 150; i++) {
+    for (let i = 0; i < 180; i++) {
       await s.set(`p-${i}`, long, "project", { type: "project", description: long });
     }
     const idx = readFileSync(join(projDir, "MEMORY.md"), "utf8");
@@ -208,7 +211,7 @@ describe("S9 索引按类型优先级保留", () => {
     expect(idx).toContain("[u-pref]");
     expect(idx).toContain("[f-rule]");
     // 组内仍按 updatedAt 倒序：最新的 project 在最旧的 project 之前
-    expect(idx.indexOf("[p-149]")).toBeGreaterThan(-1);
+    expect(idx.indexOf("[p-179]")).toBeGreaterThan(-1);
     expect(idx.indexOf("[p-0]")).toBe(-1);
   });
 });

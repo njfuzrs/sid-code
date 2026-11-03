@@ -28,7 +28,11 @@ import { memoryFilename, stripMemoryTypePrefix } from "./paths.ts";
 // 索引注入是主路径，把它接到这里，freshness 才第一次真正到达模型。
 import { memoryAge, memoryAgeDays } from "./freshness.ts";
 // P1-7：索引截断口径（条数 / 真字节 / 行边界）的单一事实源，与 agent 记忆线共用。
-import { buildTruncatedIndex, indexTypeRank } from "./index-budget.ts";
+import { buildTruncatedIndex, indexTypeRank, truncateIndexDesc } from "./index-budget.ts";
+// C3-C：索引截断时的低频归档判据（纯函数）。
+import { selectIndexArchiveCandidates, type IndexArchiveCandidate } from "./index-archive.ts";
+// C3-C：归档判据要用「这条记忆被 Read 过几次」——读统计是本地旁路文件，不写进记忆本身。
+import { READ_STATS_FILE, readMemoryReadStats } from "./read-stats.ts";
 // P1-6：记忆目录枚举口径（递归 + skip 名单）的单一事实源，与提取/dream manifest 共用。
 import { enumerateMemoryFiles, readFrontmatterFields, readMemoryFrontmatter } from "./scan.ts";
 // P1-12 指标 ③：防线触发计数（遮蔽 / 写空归档 / 超限归档）。
@@ -115,6 +119,16 @@ export function clearMemorySummaryCache(): void {
 }
 
 const FRONTMATTER_RE = /^---\s*\n([\s\S]*?)\n---/;
+
+/**
+ * 索引截断告警的「已报签名」（dir → `${entries}/${entryCount}`）。
+ *
+ * 旧实现每次 `writeIndex` 都打一条：同一次会话里 `load()` 后重建一次、`set()` 后
+ * 再重建一次，于是同一状态连打两条一模一样的 warn（2026-11-03 本机 warn.log 实测）。
+ * warn 的价值是「让人知道并跟进」，同一句话重复出现只会训练人忽略它。
+ * 签名变化（条目数或可见条数变了）才再报一次 —— 那说明截断态确实变了。
+ */
+const indexTruncationWarnSignature = new Map<string, string>();
 
 /** MEMORY.md 索引单条摘要长度上限（对标 claude-code memdir 的 ~150 字符硬约束） */
 const MEMORY_DESC_MAX_LEN = 150;
@@ -1157,7 +1171,19 @@ export class MemoryStore {
       }
     }
 
-    await this.writeIndex(dir, entries);
+    const idx = await this.writeIndex(dir, entries);
+    // ─── C3-C：索引仍然放不下 → 归档「低频且从未被读过」的记忆 ───
+    //
+    // 只跑**一轮**（不循环收敛到不截断）：一次 set 最多搬 INDEX_ARCHIVE_MAX_PER_RUN 条，
+    // 避免一次写入放大成几百次 rename + 几十条 warn；剩下的留给后续写入路径慢慢收敛。
+    //
+    // 为什么把触发点放在这里而不是 writeIndex 内部：writeIndex 是「渲染索引」的纯写函数，
+    // 而归档要动用户的记忆文件 —— 决策属于写路径，不该藏在渲染函数里（也让 load 时的
+    // 索引重建不会突然搬文件）。
+    if (idx.truncated) {
+      const archived = await this.evictLowValueForIndex(dir, entries, files, scope);
+      if (archived > 0) await this.writeIndex(dir, entries);
+    }
     // P1-11：推进写入代数（内含 clearMemorySummaryCache）——让**其它 8 个实例**的
     // 下一次 load() 重读。只清摘要缓存是旧行为，条目缓存留着陈旧的那半是本条缺陷本身。
     // 本实例自己的 loadedGeneration 一并跟上：内存已是最新，不必自我重读。
@@ -1384,8 +1410,15 @@ export class MemoryStore {
    * 格式：- [name](file.md) — description
    * 截断口径（≤200 条指针 / ≤25KB 真字节 / 只在行边界停）见 `index-budget.ts` ——
    * P1-7 修的三个错都在那里，agent 记忆线共用同一份实现，别在这里另写一份。
+   *
+   * @returns `entryCount` 实际列出的条数；`truncated` 是否发生截断。
+   *   `set()` 据此决定要不要触发低频归档（C3-C）—— 返回而不是自己归档，
+   *   是因为「要不要动用户的文件」属于写路径的决策，不该藏在渲染索引的函数里。
    */
-  private async writeIndex(dir: string, entries: Map<string, MemoryEntry>): Promise<void> {
+  private async writeIndex(
+    dir: string,
+    entries: Map<string, MemoryEntry>,
+  ): Promise<{ entryCount: number; truncated: boolean }> {
     const indexPath = join(dir, INDEX_FILE);
     const files = dir === this.globalDir ? this.globalFiles : this.projectFiles;
 
@@ -1397,7 +1430,8 @@ export class MemoryStore {
           /* ignore */
         }
       }
-      return;
+      indexTruncationWarnSignature.delete(dir);
+      return { entryCount: 0, truncated: false };
     }
 
     // S9：截断的真约束是字节（25KB ≈ 78 行），纯 `updatedAt` 倒序下最久没改的先掉，
@@ -1409,16 +1443,26 @@ export class MemoryStore {
     );
     const entryLines = sorted.map((e) => {
       const fn = files.get(e.key) ?? memoryFilename(e.type || "project", e.key);
-      const desc = normalizeMemoryDesc(e.description, e.value);
+      // C3-A：索引行描述按 INDEX_DESC_MAX_LEN 截断（不是 frontmatter 的 150）。
+      // 实测 25KB 预算的七成被描述吃掉 ⇒ 只列得下 63 条；截到 40 字符后 132 条。
+      const desc = truncateIndexDesc(normalizeMemoryDesc(e.description, e.value));
       return `- [${e.key}](${fn}) — ${desc}`;
     });
     const { content, entryCount, truncated } = buildTruncatedIndex(entryLines);
     if (truncated) {
-      getLogger().warn(
-        "MEMORY",
-        `索引已截断：${entries.size} 条记忆只列出 ${entryCount} 条（scope 目录 ${dir}）——` +
-          `未列出的记忆在磁盘上但不进上下文，模型看不见它们`,
-      );
+      // C3-C 可观测：同一截断状态只报一次（旧实现 load / set 各重建一次 → 连打两条）。
+      // 签名带上 entries 与 entryCount：归档收敛后再截断时，数字会变，值得再报一条。
+      const signature = `${entries.size}/${entryCount}`;
+      if (indexTruncationWarnSignature.get(dir) !== signature) {
+        indexTruncationWarnSignature.set(dir, signature);
+        getLogger().warn(
+          "MEMORY",
+          `索引已截断：${entries.size} 条记忆只列出 ${entryCount} 条（scope 目录 ${dir}）——` +
+            `未列出的记忆在磁盘上但不进上下文，模型看不见它们`,
+        );
+      }
+    } else {
+      indexTruncationWarnSignature.delete(dir);
     }
     await Bun.write(indexPath, content);
 
@@ -1445,6 +1489,67 @@ export class MemoryStore {
     } catch {
       /* 埋点失败不影响索引写入 */
     }
+
+    return { entryCount, truncated };
+  }
+
+  /**
+   * C3-C：索引截断时归档「低频且从未被读过」的记忆（2026-11-03）。
+   *
+   * 为什么不能只靠描述截短（C3-A）：那只是把天花板抬高一次，分母还在涨——
+   * 本机实测 201 个文件里 138 条永远进不了索引，而抽取侧还在新增。
+   * 归档让分母真正下降，且**不删除**：`archive/` 在 `scan.ts` 的 `SKIP_DIRS` 里，
+   * 文件字节还在、用户能捞回来（与 `STORE_MAX_ENTRIES` 的淘汰路径同一个去处）。
+   *
+   * 判据全在 `index-archive.ts`（纯函数，可单测）：只挑 30 天没被写过、
+   * 从未被 Read 过、且类型是 project/reference 的条目，单次最多 20 条。
+   * `.read-stats.json` 缺失时年龄门槛抬到 90 天 —— 不能把「没记录」当「没读过」，
+   * 否则一个老目录会被整批搬走。
+   *
+   * 只在**写路径**（`set`）调用：启动时（`load`）批量搬用户的文件太突然，
+   * 而且 `load` 的索引重建可能只是修复格式，不该顺带动数据。
+   *
+   * @returns 实际归档的条数（0 = 没有候选，调用方据此决定要不要重建索引）
+   */
+  private async evictLowValueForIndex(
+    dir: string,
+    entries: Map<string, MemoryEntry>,
+    files: Map<string, string>,
+    scope: "global" | "project",
+  ): Promise<number> {
+    const hasReadStats = existsSync(join(dir, READ_STATS_FILE));
+    const candidates: IndexArchiveCandidate[] = selectIndexArchiveCandidates({
+      entries: [...entries.values()].map((e) => ({
+        key: e.key,
+        filename: files.get(e.key) ?? "",
+        type: e.type,
+        updatedAt: e.updatedAt,
+      })),
+      readStats: readMemoryReadStats(dir),
+      hasReadStats,
+      now: Date.now(),
+    });
+    if (candidates.length === 0) return 0;
+
+    const log = getLogger();
+    let archivedCount = 0;
+    for (const c of candidates) {
+      // 归档失败（权限 / 文件已不在）就跳过，继续下一条：一条失败不该卡住整轮收敛
+      const archived = await this.archiveMemoryFile(dir, c.filename);
+      if (!archived) continue;
+      entries.delete(c.key);
+      files.delete(c.key);
+      archivedCount++;
+      const ageDays = Math.floor((Date.now() - c.updatedAt) / (24 * 60 * 60 * 1000));
+      log.warn(
+        "MEMORY",
+        `索引截断收敛：已归档低频记忆 ${c.key} → archive/${archived}` +
+          `（${c.type || "未分类"}，${ageDays} 天未更新、从未被 Read；未删除，可人工恢复）`,
+      );
+      // P1-12 指标 ③：与超限淘汰共用同一个计数口径，`via` 区分是哪条路径触发的
+      logMemoryGuard({ kind: "evicted_to_archive", via: "index-truncation", scope });
+    }
+    return archivedCount;
   }
 
   /** 若目录下存在旧 memories.json，迁移为 .md 文件 */

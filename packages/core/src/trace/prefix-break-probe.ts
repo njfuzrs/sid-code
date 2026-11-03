@@ -54,7 +54,10 @@
  */
 
 import { createHash } from "node:crypto";
-import { serializeMessageForFingerprint } from "../api/message-fingerprint.ts";
+import {
+  CHAR_WASTE_SIGNIFICANT,
+  serializeMessageForFingerprint,
+} from "../api/message-fingerprint.ts";
 
 /** 段类型 —— 与 P1-3 的候选优化项一一对应，便于直接读出该改哪里 */
 export type PrefixSegmentKind = "system_static" | "system_dynamic" | "tools" | "message";
@@ -154,13 +157,11 @@ export interface PrefixBreakDiagnosis {
 }
 
 /**
- * `judgeDisagreement` 的字符级显著性阈值。
- *
- * 取 1%：低于此的作废量在 128-token 粒度的服务端缓存扩展面前是噪声
- *（实测服务端按 128 token 整数倍渐进扩展前缀，见 cache-bench 报告 §2），
- * 段级却可能因为一个下标平移就报"断裂"。
+ * `judgeDisagreement` 的字符级显著性阈值 —— 用 `api/message-fingerprint.ts` 的共用常量，
+ * 不是本地再写一份 0.01：账单侧（`api/cache-detection.ts` 的 `message_history` 判据）
+ * 必须和这里判「显著」的口径完全一致，否则同一请求会出现「字节侧说显著、账单侧说不显著」的
+ * 无声分歧。为什么取 1% 见该常量的注释。
  */
-const CHAR_WASTE_SIGNIFICANT = 0.01;
 
 /**
  * 求两串的共同前缀长度（字符数）。

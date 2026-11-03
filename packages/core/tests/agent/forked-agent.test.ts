@@ -6,7 +6,11 @@ import { describe, test, expect } from "bun:test";
 import { mkdtempSync, rmSync } from "fs";
 import { join } from "path";
 import { tmpdir } from "os";
-import { runForkedAgent, type ForkedAgentContext } from "@sid-code/core/agent/forked-agent.ts";
+import {
+  runForkedAgent,
+  forkMaxTokensFor,
+  type ForkedAgentContext,
+} from "@sid-code/core/agent/forked-agent.ts";
 import { Registry as ToolRegistry } from "@sid-code/core/tool/registry.ts";
 import {
   createExtractPermissions,
@@ -617,5 +621,63 @@ describe("hasMemoryWritesSince / extractWrittenPaths", () => {
     expect(raw).toEqual(["publish-preview-history-api-doc", "publish-preview-history-api-doc"]);
     // 调用侧（extractor.ts）用 [...new Set(...)] 去重，最终提醒文案只列一次
     expect([...new Set(raw)]).toEqual(["publish-preview-history-api-doc"]);
+  });
+});
+
+// ─── C1：fork 输出上限按 querySource 取值 ───
+
+describe("C1：fork 输出上限按任务类型取值", () => {
+  /** 记录请求参数的 provider —— 断言 maxTokens 必须看真正发出去的那个值 */
+  function capturingProvider() {
+    const requests: any[] = [];
+    return {
+      requests,
+      name: () => "mock",
+      defaultModel: () => "mock-model",
+      async *sendMessageStream(req: any) {
+        requests.push(req);
+        // 必须给完整的 content block 序列：只有 message_delta 的空流会让漏斗
+        // 一直等不到结束（实测这条测试因此 5s 超时），而真实 provider 不会只发 delta。
+        yield { type: "content_block_start", index: 0, content_block: { type: "text", text: "" } };
+        yield {
+          type: "content_block_delta",
+          index: 0,
+          delta: { type: "text_delta", text: "完成" },
+        };
+        yield { type: "content_block_stop", index: 0 };
+        yield {
+          type: "message_delta",
+          delta: { stop_reason: "end_turn" },
+          usage: { outputTokens: 1 },
+        };
+      },
+    };
+  }
+
+  test("session-memory-update / memory-extract 用 8192，其他 fork 保持 2048", async () => {
+    for (const [qs, expected] of [
+      ["session-memory-update", 8192],
+      ["memory-extract", 8192],
+      ["btw", 2048],
+      ["dream", 2048],
+    ] as const) {
+      const provider = capturingProvider();
+      await runForkedAgent(makeContext(provider), {
+        promptMessages: [{ role: "user", content: [{ type: "text", text: "x" }] }],
+        canUseTool: () => ({ behavior: "allow" }),
+        maxTurns: 1,
+        querySource: qs,
+      });
+      expect(provider.requests.length).toBe(1);
+      expect((provider.requests[0] as any).maxTokens).toBe(expected);
+    }
+  });
+
+  test("forkMaxTokensFor 未登记任务一律回默认值（新增 fork 别默认拿到大预算）", () => {
+    expect(forkMaxTokensFor("session-memory-update")).toBe(8192);
+    expect(forkMaxTokensFor("memory-extract")).toBe(8192);
+    expect(forkMaxTokensFor("btw")).toBe(2048);
+    expect(forkMaxTokensFor("")).toBe(2048);
+    expect(forkMaxTokensFor("unknown-task")).toBe(2048);
   });
 });

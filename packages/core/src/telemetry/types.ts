@@ -139,6 +139,17 @@ export interface TelemetryExporter {
   exportSpans(spans: SpanData[]): Promise<void>;
   exportMetrics?(metrics: MetricPoint[]): Promise<void>;
   shutdown(): Promise<void>;
+  /**
+   * 这个导出器是否代表「数据已经落到不会丢的地方」。
+   *
+   * 只给「会话根 span 的占位标记能不能删」当判据用（见 `TelemetryBus.onSpanPersisted`）：
+   * - `jsonl` 是本地追加写，`await appendFile` 返回后数据已进内核页缓存、进程退出不丢 ⇒ true；
+   * - `otlp` 要经过网络与远端接收方，端点长期不通是**预期形态**（官网教程里 Jaeger 不收
+   *   metrics 就是这样），按它决定删标记会让每个会话都留标记、下次启动都重建一遍。
+   *
+   * 不设这个字段 = 不参与「落盘成功」判定。
+   */
+  durable?: boolean;
 }
 
 /** 遥测配置 */

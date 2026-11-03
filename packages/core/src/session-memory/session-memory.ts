@@ -111,6 +111,7 @@ export function initSessionMemory(opts: InitSessionMemoryOptions): SessionMemory
       const promptText = buildSessionMemoryUpdatePrompt(
         currentContent,
         DEFAULT_SESSION_MEMORY_TEMPLATE,
+        filePath,
       );
       const promptMessages: Message[] = [
         { role: "user", content: [{ type: "text", text: promptText }] },

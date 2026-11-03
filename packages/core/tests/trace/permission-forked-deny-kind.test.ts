@@ -78,8 +78,11 @@ describe("createSessionMemoryPermissions · denyKind", () => {
     expect(asDeny(perms("edit", {})).denyKind).toBe("no_target_path");
   });
 
-  test("非只读 bash ⇒ bash_not_readonly；其他工具 ⇒ tool_not_allowed", () => {
-    expect(asDeny(perms("bash", { command: "rm -rf x" })).denyKind).toBe("bash_not_readonly");
+  test("bash 一律 tool_not_allowed（不再留只读命令的口子）；其他工具同理", () => {
+    // C2：会话笔记代理的输入就是对话本身，没有需要命令核实的场景 —— 连 `ls` 也拒，
+    // 避免模型先试一条命令、被拒后再改用 edit（实测多跑一轮）。
+    expect(asDeny(perms("bash", { command: "rm -rf x" })).denyKind).toBe("tool_not_allowed");
+    expect(asDeny(perms("bash", { command: "ls -la" })).denyKind).toBe("tool_not_allowed");
     expect(asDeny(perms("save_memory", {})).denyKind).toBe("tool_not_allowed");
   });
 
@@ -187,6 +190,57 @@ function forkCtx(paths: string[]): ForkedAgentContext {
   };
 }
 
+/**
+ * 发一条 bash 调用的 fork context（C2-3：被拒命令的入参摘要）。
+ * 第一轮请求 bash、第二轮文本收尾；工具注册表留空 —— 拒绝发生在 canUseTool，
+ * 执行层根本走不到，注册一个 bash 反而会让「被拒后仍执行」这类错误更难被发现。
+ */
+function bashForkCtx(command: string): ForkedAgentContext {
+  let call = 0;
+  const provider = {
+    name: () => "mock",
+    defaultModel: () => "mock-model",
+    async *sendMessageStream() {
+      const n = call++;
+      if (n === 0) {
+        yield {
+          type: "content_block_start",
+          index: 0,
+          content_block: { type: "tool_use", id: "b1", name: "bash" },
+        };
+        yield {
+          type: "content_block_delta",
+          index: 0,
+          delta: { type: "input_json_delta", partial_json: JSON.stringify({ command }) },
+        };
+        yield { type: "content_block_stop", index: 0 };
+        yield {
+          type: "message_delta",
+          delta: { stop_reason: "tool_use" },
+          usage: { outputTokens: 1 },
+        };
+        return;
+      }
+      yield { type: "content_block_start", index: 0, content_block: { type: "text", text: "" } };
+      yield { type: "content_block_delta", index: 0, delta: { type: "text_delta", text: "完成" } };
+      yield { type: "content_block_stop", index: 0 };
+      yield {
+        type: "message_delta",
+        delta: { stop_reason: "end_turn" },
+        usage: { outputTokens: 1 },
+      };
+    },
+  };
+  return {
+    systemPrompt: "s",
+    messages: [{ role: "user", content: [{ type: "text", text: "x" }] }],
+    provider: provider as any,
+    toolRegistry: new ToolRegistry(),
+    model: "mock-model",
+    statefulTools: [],
+  };
+}
+
 describe("runForkedAgent · 转发 denyKind", () => {
   let got: PermissionDecisionEvent[];
   beforeEach(() => {
@@ -225,6 +279,36 @@ describe("runForkedAgent · 转发 denyKind", () => {
     const deny = got.find((e) => e.outcome === "deny")!;
     expect(Object.keys(deny)).not.toContain("denyKind");
     expect(Object.keys(deny)).not.toContain("pathMismatch");
+  });
+
+  // C2-3：forked 路径不写 PreToolUse（不 fire 用户 hook），PermissionDecision 是它的
+  // 工具调用**唯一**留痕。入参摘要必须跟上来，否则「fork 被拒/改了哪个文件」查不到。
+  test("★C2-3 allow / deny 都带 inputSummary（入参摘要）", async () => {
+    const notes = "/n/session-memory/s.md";
+    await runForkedAgent(forkCtx(["/n/.session_memory.md", notes]), {
+      promptMessages: [{ role: "user", content: [{ type: "text", text: "更新" }] }],
+      canUseTool: createSessionMemoryPermissions(notes),
+      maxTurns: 5,
+      querySource: "session-memory-update",
+    });
+    const deny = got.find((e) => e.outcome === "deny")!;
+    // 被拒的 edit 路径能直接从轨迹读出来，不必再翻模型事后叙述
+    expect(deny.inputSummary).toEqual({ file_path: "/n/.session_memory.md" });
+    const allow = got.find((e) => e.outcome === "allow")!;
+    expect(allow.inputSummary).toEqual({ file_path: notes });
+  });
+
+  test("★C2-3 被拒的 bash 命令原文进摘要（这条命令此前完全不可复盘）", async () => {
+    const notes = "/n/session-memory/s.md";
+    await runForkedAgent(bashForkCtx("cat notes.md | sh"), {
+      promptMessages: [{ role: "user", content: [{ type: "text", text: "更新" }] }],
+      canUseTool: createSessionMemoryPermissions(notes),
+      maxTurns: 3,
+      querySource: "session-memory-update",
+    });
+    const deny = got.find((e) => e.outcome === "deny")!;
+    expect(deny.denyKind).toBe("tool_not_allowed");
+    expect(deny.inputSummary).toEqual({ command: "cat notes.md | sh" });
   });
 });
 
