@@ -211,7 +211,9 @@ import {
   dequeuePendingNotifications,
   evictTerminalTasks,
   hasPendingNotifications,
-  hasRunningBackgroundTasks,
+  hasAwaitedBackgroundTasks,
+  beginMainLoopTurn,
+  endMainLoopTurn,
   markMainTurnCompleted,
   markNotificationsDelivered,
   isTerminalStatus,
@@ -1032,6 +1034,18 @@ export function checkPreRequestBudgetStop(
 }
 
 export async function* queryLoop(loopConfig: QueryLoopConfig): AsyncGenerator<QueryLoopYield> {
+  // 唤醒保证（task/background-await.ts）：收尾时登记仍值得等的后台 shell，它们之后转入静默会
+  // 投一条通知把空闲主循环叫醒。包在最外层而不是 queryLoopBody 的 finally 里：那个 finally 之后
+  // 还有 maxTurns 强制总结轮，登记必须发生在真正空闲之后（事故 20261103-130950-00ef059c）。
+  beginMainLoopTurn();
+  try {
+    yield* queryLoopBody(loopConfig);
+  } finally {
+    endMainLoopTurn();
+  }
+}
+
+async function* queryLoopBody(loopConfig: QueryLoopConfig): AsyncGenerator<QueryLoopYield> {
   const log = getLogger();
   const { config, ctxMgr, toolRegistry, sessionState, hookSystem, thinking, deps } = loopConfig;
 
@@ -2060,6 +2074,9 @@ export async function* queryLoop(loopConfig: QueryLoopConfig): AsyncGenerator<Qu
               lastReminderAbsoluteTurn: sessionState.get(LAST_TODO_REMINDER_TURN_KEY) as
                 | number
                 | undefined,
+              // C4：回看最近一个提醒间隔内的窗口，统计「有工具调用」的轮数。
+              // 省略 = 旧行为（不放宽），这里显式传才让「模型在推进」参与判定。
+              recentWindow: TODO_REMINDER_CONFIG.TURNS_BETWEEN_REMINDERS,
             });
             // T5：压缩后补贴只在「清单原文已不在视野里」时才有意义。核实过 microcompact /
             // masking 只改 tool_result、不动 tool_use.input，snip / 截断是整条删——所以只要
@@ -2083,9 +2100,18 @@ export async function* queryLoop(loopConfig: QueryLoopConfig): AsyncGenerator<Qu
               );
             }
             const afterCompact = pendingAfterCompact && !compactReinjectRedundant;
+            // C4：清单恰好一个 in_progress 时，模型大概率正推着那一项 ——
+            // 配合 counts.recentToolUseTurns（最近窗口内有工具调用）把提醒间隔放宽 2 倍。
+            // 会话 3b4f9ca7 的 4 次连发（8/16/24/32 轮）就是这一段：模型在读源码准备
+            // 派子代理，清单没过期，却被每 8 轮催一次。多个 in_progress 或没有 in_progress
+            // 时**不放宽**：那说明清单本身可能已经失真，催更有意义。
+            const inProgressCount = todoState.todos.filter(
+              (t) => t.status === "in_progress",
+            ).length;
             const throttleSaysYes = shouldInjectTodoReminder(counts, {
               turnsSinceWrite: TODO_REMINDER_CONFIG.TURNS_SINCE_WRITE,
               turnsBetweenReminders: TODO_REMINDER_CONFIG.TURNS_BETWEEN_REMINDERS,
+              relaxWhenAdvancing: inProgressCount === 1,
             });
             // ─── P1-4 item 2：条件式封顶（绑真实进展，刻意不是无条件 cap）───
             //
@@ -2108,7 +2134,13 @@ export async function* queryLoop(loopConfig: QueryLoopConfig): AsyncGenerator<Qu
               (throttleSaysYes && todoNagDecision.inject && !isTodoNagDisabled()) ||
               afterCompact
             ) {
-              reminderParts.push(buildTodoReminder(todoState.todos));
+              reminderParts.push(
+                buildTodoReminder(todoState.todos, {
+                  // C4：文案带「距上次更新清单多少轮」，让重复提醒不再是无信息量的重复
+                  // （模块注释里「给文案加轮次等自然变化量」的建议即指此处）。
+                  turnsSinceLastWrite: counts.turnsSinceLastTodoWrite,
+                }),
+              );
               if (todoNagDecision.countedAsNoProgress) {
                 sessionState.set(TODO_BOOKKEEPING_NAG_COUNT_KEY, bookkeepingNagCount + 1);
               }
@@ -4545,7 +4577,7 @@ export async function* queryLoop(loopConfig: QueryLoopConfig): AsyncGenerator<Qu
         let runningBg = false;
         let pendingNotif = false;
         try {
-          runningBg = hasRunningBackgroundTasks();
+          runningBg = hasAwaitedBackgroundTasks();
           pendingNotif = hasPendingNotifications();
         } catch {
           /* 查询失败按「无」处理：只影响 L2 是否触发，不影响收尾 */
@@ -4781,6 +4813,9 @@ export async function* queryLoop(loopConfig: QueryLoopConfig): AsyncGenerator<Qu
             // 实测 15 次有 EndTurnShape 的续跑里 6 次触发时 running_background_tasks=true，
             // 模型的反应是把「等 CI / 等构建」标成 blocked——闸门在逼它对清单撒谎。
             // 后台任务完成时通知会把循环叫醒，那时闸门还会再判一次，所以这里漏拦的代价有界。
+            // ⚠️ 这个「会被叫醒」只对**值得等**的任务成立：runningBg 已排除静默的后台 shell
+            // （常驻服务不会退出，也就不会有完成通知）；收尾时仍值得等的 shell 之后转入静默，
+            // 由 background-await 的唤醒保证补一条通知（事故 20261103-130950-00ef059c）。
             // 写法同下方「只剩 blocked」分支：中性说明 + 按清单签名去重，不消耗续命预算。
             const sig = unfinishedSignature(todoState.todos);
             if (budget.bgWaitSignature !== sig) {
@@ -5730,7 +5765,7 @@ export async function* queryLoop(loopConfig: QueryLoopConfig): AsyncGenerator<Qu
           // 等后台任务的轮次不计入 L2（stall-escalation.ts 判据边界）。查询失败按「无」：退回旧判据，不会多停
           let backgroundRunning = false;
           try {
-            backgroundRunning = hasRunningBackgroundTasks();
+            backgroundRunning = hasAwaitedBackgroundTasks();
           } catch {
             /* 同上 */
           }

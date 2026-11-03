@@ -25,7 +25,8 @@ import {
 import { MEMORY_LIMITS, isMemoryType, type MemoryType } from "./types.ts";
 import { inferMemoryType, normalizeMemoryDesc } from "./store.ts";
 // P1-7：索引截断口径的单一事实源（此前这里有一份同样三处口径错的副本）。
-import { buildTruncatedIndex } from "./index-budget.ts";
+// C3-A：索引行描述上限也走同一份（三条记忆线共用一个字节预算，见 truncateIndexDesc）。
+import { buildTruncatedIndex, truncateIndexDesc } from "./index-budget.ts";
 // P1-8：agent 记忆线此前整条无 secret 闸门；判据与 save_memory / 私有记忆守卫同源。
 import { getSharedSecretRedactHook } from "../llm/hooks/secret-redact.ts";
 // P1-12 指标 ③：防线触发计数。
@@ -202,7 +203,7 @@ async function rebuildAgentIndex(dir: string): Promise<void> {
   // 硬切出半行链接后再追加警告顶破上限）与 store.ts 一模一样。只修 store 会留下一份
   // 「已知坏的副本」，而它服务子代理跨会话记忆、更少有人看，坏得更久。
   const entryLines = heads.map((h) => {
-    const desc = (h.description || "").replace(/\n/g, " ").slice(0, 150);
+    const desc = truncateIndexDesc((h.description || "").replace(/\n/g, " "));
     return `- [${h.key}](${h.filename}) — ${desc}`;
   });
   const { content, entryCount, truncated } = buildTruncatedIndex(entryLines);
