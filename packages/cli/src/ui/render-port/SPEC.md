@@ -30,7 +30,7 @@
 | R3 | cell 级 diff：未变化的行零写入；样式切换走 style pool 最小化 SGR | `screen.ts:103`、`log-update.ts` | `packages/cli/tests/render-port/term-bench/scenarios.tsx` S1: { |
 | R4 | 主屏纯增长帧走增量追加，旧行自然进 scrollback，不 full reset | `log-update.ts` | `packages/cli/tests/render-port/term-bench/scenarios.tsx` S1: { |
 | R5 | 变化落在已进 scrollback 的行上 → full reset（原因 `offscreen`） | `frame.ts:98`、`log-update.ts:137` | `packages/cli/tests/render-port/term-bench/scenarios.tsx` S3: { |
-| R6 | 动态区从超出视口收缩回来 → full reset 恰好一次 | `frame.ts:102` | `packages/cli/tests/render-port/term-bench/scenarios.tsx` S2: { |
+| R6 | 帧已超出视口时收缩（含收缩回视口内）→ full reset 恰好一次（sid-code 扩展，见 UPSTREAM-DIFF「主屏溢出后收缩整帧重画」） | `frame.ts:102` | `packages/cli/tests/render-port/term-bench/scenarios.tsx` S2: { |
 | R7 | 视口变矮或变宽窄 → full reset（原因 `resize`）并重排；连续多次 resize 合并；**不发 `?1049h`**（iTerm2 会当清屏） | `log-update.ts:133-137`、`ink.tsx:229` | `packages/cli/tests/render-port/term-bench/scenarios.tsx` S6: { |
 | R8 | `forceRedraw`：主屏重绘并标记前帧作废；alt-screen 擦屏后对空白整帧画（R14，前帧作废、视口记录保留） | `ink.tsx:1038` | `packages/cli/tests/render-port/term-bench/scenarios.tsx` S9: { |
 | R9 | 宽字符宽度补偿：终端对某些宽字符算宽不一致时补光标位置 | `log-update.ts:583`、`log-update.ts:648` | `packages/cli/tests/render-port/term-bench/scenarios.tsx` S4: { |

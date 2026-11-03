@@ -1,4 +1,4 @@
-// sid-code：新写，上游没有等价物。主屏关闭对话框后的复原见 ink.tsx diffFrame 与 frame/main-screen.ts 文件头。
+// sid-code：新写，上游没有等价物。
 import {createElement, type ReactNode} from 'react';
 
 export type Props = {
@@ -12,13 +12,13 @@ export type Props = {
 };
 
 /**
- * 临时浮层（对话框、补全菜单这类「打开 → 关闭」的块）的容器。布局上就是一个竖排 Box，
- * 只多一个节点标记：主屏帧 diff 看到「上一帧有浮层、这一帧没有、帧变矮、上一帧已溢出视口」时
- * 整帧重画，而不是补空行——浮层打开时顶进 scrollback 的历史行拉不回来，补空行会在关闭后留下
- * 一整块与浮层等高的空白。
+ * 临时浮层（对话框、补全菜单这类「打开 → 关闭」的块）的容器。布局上就是一个竖排 Box，只多一个节点标记。
+ *
+ * 现在标记只服务 `float`（溢出时叠画，见 ink.tsx `layoutFloatingTransients`）。关闭浮层后的复原不再靠它：
+ * 主屏溢出后的任何收缩都整帧重画（frame/main-screen.ts 文件头），浮层关闭只是其中一种。
  *
  * 标记走 props（createInstance 时就在节点上），不走 ref：ref 在 commit 的 layout 阶段才挂，
- * 打开浮层的那一帧可能已经出了，帧层就会漏记「这一帧有浮层」。
+ * 打开浮层的那一帧可能已经出了。
  */
 export default function Transient({children, float = false}: Props) {
 	if (float) {

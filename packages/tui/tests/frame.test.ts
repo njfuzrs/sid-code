@@ -76,325 +76,202 @@ describe("diffMainScreen 单元规则", () => {
   });
 });
 
-// 溢出后收缩补空行（sid-code 有意偏离冻结基线）：主屏帧高常年超视口，动态区（spinner / 流式正文）一收缩，
-// 旧行为擦掉底部 → 整帧上移，footer 下面留 p - n 行空白，输入框 / 状态栏被顶到屏幕中间。
+// 溢出后收缩一律整帧重画（sid-code 有意偏离冻结基线，2026-11-03）。
 // 断言落在终端画面上（xterm 重放字节），不落在字节上：字节对不对只有画面说了算。
-describe("溢出后收缩：footer 钉在视口底部", () => {
-  const W = 20;
-  const H = 10;
-  const mk = (lines: string[]) => {
-    const s = new Screen(W, lines.length);
-    lines.forEach((l, y) => s.writeLine(0, y, l));
-    return s;
+//
+// 历史：#390 / #402 / #408 用「补空行撑高度」避免重画，结果空白只是换了位置——留在历史尾与动态区之间，
+// 之后的流式正文贴着输入框从下往上长。下面「最后一条消息」那组用例就是 2026-11-03 的用户现象。
+
+const W = 30;
+const H = 12;
+
+/** 视口逐行文本 + scrollback 逐行文本 */
+function dump(term: import("@xterm/headless").Terminal) {
+  const b = term.buffer.active;
+  const line = (y: number) => b.getLine(y)!.translateToString(true).trimEnd();
+  return {
+    view: Array.from({ length: H }, (_, y) => line(b.viewportY + y)),
+    scrollback: Array.from({ length: b.viewportY }, (_, y) => line(y)),
   };
-  const frame = (hist: number, dyn: number) =>
-    mk([
-      ...Array.from({ length: hist }, (_, i) => `hist${i}`),
-      ...Array.from({ length: dyn }, (_, i) => `spin${i}`),
-      "[input]",
-      "[FOOTER]",
-    ]);
+}
 
-  async function replay(frames: Screen[]) {
-    const { Terminal } = await import("@xterm/headless");
-    const term = new Terminal({ cols: W, rows: H, allowProposedApi: true });
-    const write = (s: string) => new Promise<void>((r) => term.write(s, r));
-    let prev: Screen | undefined;
-    for (const f of frames) {
-      const d = diffMainScreen(prev, f, H);
-      await write(d.bytes);
-      prev = d.screen ?? f;
-    }
-    const b = term.buffer.active;
-    const view: string[] = [];
-    for (let y = 0; y < H; y++)
-      view.push(
-        b
-          .getLine(b.viewportY + y)!
-          .translateToString(true)
-          .trimEnd(),
-      );
-    return view;
-  }
+type Frame = { items: string[]; dyn: string[]; overlay?: string[] };
 
-  test("动态区清空后 footer 仍在最后一行内容行，下面没有空白", async () => {
-    const view = await replay([frame(20, 4), frame(20, 0)]);
-    // 光标停在内容下一行（第 H-1 行），所以 footer 在第 H-2 行、输入框在 H-3 行
-    expect(view[H - 2]).toBe("[FOOTER]");
-    expect(view[H - 3]).toBe("[input]");
-    // 空行补在消失的动态区位置（footer 上方），历史尾部仍可见
-    expect(view.slice(0, 3)).toEqual(["hist17", "hist18", "hist19"]);
+/** 真实 render + History：历史区 + 动态区（可选 Transient 浮层），每帧后取画面 */
+async function drive(frames: Frame[]) {
+  const { PassThrough } = await import("node:stream");
+  const { Terminal } = await import("@xterm/headless");
+  const { History, Transient } = await import("../src/index.ts");
+  const term = new Terminal({ cols: W, rows: H, allowProposedApi: true });
+  let pending = Promise.resolve();
+  const stdout = Object.assign(new PassThrough(), { columns: W, rows: H, isTTY: true });
+  stdout.on("data", (d: Buffer) => {
+    const s = d.toString();
+    pending = pending.then(() => new Promise<void>((r) => term.write(s, r)));
   });
-
-  test("补空行后再增长、再收缩，footer 始终不离开底部，内容不错位", async () => {
-    const view = await replay([
-      frame(20, 4),
-      frame(20, 0),
-      frame(20, 2),
-      frame(20, 6),
-      frame(21, 0),
-    ]);
-    expect(view[H - 2]).toBe("[FOOTER]");
-    expect(view[H - 3]).toBe("[input]");
-    expect(view.slice(0, 2)).toEqual(["hist19", "hist20"]);
+  const stdin = Object.assign(new PassThrough(), {
+    isTTY: true,
+    isRaw: false,
+    setRawMode: () => stdin,
+    ref: () => stdin,
+    unref: () => stdin,
   });
-
-  test("补过的帧经 screen 返回，高度撑回 p；没溢出的收缩不补", () => {
-    const d = diffMainScreen(frame(20, 4), frame(20, 0), H);
-    expect(d.screen?.height).toBe(26);
-    expect(d.flicker).toBeUndefined();
-    const small = diffMainScreen(frame(2, 4), frame(2, 0), H);
-    expect(small.screen).toBeUndefined();
-  });
-});
-
-// 2026-10-22 复现：#390 的插入点按「两帧公共尾部」猜，在真实 TUI 里两头切错组件——
-// 状态栏计费同帧变了 → 空行插进状态栏两行之间；输入框变矮 → 空行插进输入框里面。
-// 走真实 render + History，空行必须落在历史区下沿，动态区整块贴底、内部零空行。
-describe("溢出后收缩：空行补在历史区下沿，不切进动态区组件", () => {
-  const W = 30;
-  const H = 12;
-  const hist = Array.from({ length: 20 }, (_, i) => `hist${i}`);
-
-  async function drive(frames: string[][]) {
-    const { PassThrough } = await import("node:stream");
-    const { Terminal } = await import("@xterm/headless");
-    const { History } = await import("../src/index.ts");
-    const term = new Terminal({ cols: W, rows: H, allowProposedApi: true });
-    let pending = Promise.resolve();
-    const stdout = Object.assign(new PassThrough(), { columns: W, rows: H, isTTY: true });
-    stdout.on("data", (d: Buffer) => {
-      const s = d.toString();
-      pending = pending.then(() => new Promise<void>((r) => term.write(s, r)));
-    });
-    const stdin = Object.assign(new PassThrough(), {
-      isTTY: true,
-      isRaw: false,
-      setRawMode: () => stdin,
-      ref: () => stdin,
-      unref: () => stdin,
-    });
-    const h = React.createElement;
-    const renderItem = (item: string) => h(Text, { key: item }, item);
-    const tree = (dyn: string[]) =>
+  const h = React.createElement;
+  const lines = (ls: string[], p: string) => ls.map((l, i) => h(Text, { key: p + i }, l));
+  const tree = (f: Frame) =>
+    h(
+      Box,
+      { flexDirection: "column" },
+      h(History, {
+        items: f.items,
+        children: (item: string) => h(Text, { key: item }, item),
+      }),
       h(
         Box,
         { flexDirection: "column" },
-        h(History, { items: hist, children: renderItem }),
-        h(Box, { flexDirection: "column" }, ...dyn.map((l, i) => h(Text, { key: i }, l))),
-      );
-    const tick = () => new Promise((r) => setTimeout(r, 20));
-    const inst = render(tree(frames[0]!), {
-      stdout: stdout as never,
-      stdin: stdin as never,
-      patchConsole: false,
-      exitOnCtrlC: false,
-    });
+        f.overlay ? h(Transient, null, ...lines(f.overlay, "o")) : null,
+        ...lines(f.dyn, "d"),
+      ),
+    );
+  const flickers: unknown[] = [];
+  const steps: Array<ReturnType<typeof dump>> = [];
+  const tick = () => new Promise((r) => setTimeout(r, 20));
+  const inst = render(tree(frames[0]!), {
+    stdout: stdout as never,
+    stdin: stdin as never,
+    patchConsole: false,
+    exitOnCtrlC: false,
+    onFrame: (e: { flickers: unknown[] }) => flickers.push(...e.flickers),
+  } as never);
+  await tick();
+  await pending;
+  steps.push(dump(term));
+  for (const f of frames.slice(1)) {
+    inst.rerender(tree(f));
     await tick();
-    for (const f of frames.slice(1)) {
-      inst.rerender(tree(f));
-      await tick();
-    }
     await pending;
-    const b = term.buffer.active;
-    const view: string[] = [];
-    for (let y = 0; y < H; y++)
-      view.push(
-        b
-          .getLine(b.viewportY + y)!
-          .translateToString(true)
-          .trimEnd(),
-      );
-    stdout.isTTY = false;
-    inst.unmount();
-    return view;
+    steps.push(dump(term));
   }
+  stdout.isTTY = false;
+  inst.unmount();
+  return { steps, flickers };
+}
 
-  // 视口最后一行是光标行（内容下一行），动态区占 H-1 之上的若干行
-  const bottom = (view: string[], k: number) => view.slice(H - 1 - k, H - 1);
+/** 终端里应有的全部行：帧内容 + 光标所在的空行（光标停在内容下一行） */
+const expectedLines = (f: Frame) => [...f.items, ...(f.overlay ?? []), ...f.dyn, ""];
 
-  test("spinner 消失且状态栏同帧变化：状态栏两行之间不插空行", async () => {
-    const view = await drive([
-      ["* spin", "", "────", "> ", "────", "status $1", "sid main"],
-      ["────", "> ", "────", "status $2", "sid main"],
-    ]);
-    expect(bottom(view, 5)).toEqual(["────", ">", "────", "status $2", "sid main"]);
-    // 空 Text 高 0：两帧 26 → 25 行，补的 1 行空行落在历史尾与动态区之间
-    expect(view.slice(0, 6)).toEqual(["hist15", "hist16", "hist17", "hist18", "hist19", ""]);
+/** 画面 = 目标帧的尾部 H 行，scrollback = 其余（不重复、不缺行、不夹空白） */
+function expectExact(step: ReturnType<typeof dump>, f: Frame) {
+  const all = expectedLines(f).map((l) => l.trimEnd());
+  expect(step.view).toEqual(all.slice(-H));
+  expect(step.scrollback).toEqual(all.slice(0, -H));
+}
+
+const hist = Array.from({ length: 20 }, (_, i) => `hist${i}`);
+const footer = ["────", "> ", "────", "status"];
+
+describe("溢出后收缩：整帧重画，画面与目标帧逐行一致", () => {
+  test("最后一条消息：todo 收起 → 流式逐行增长 → 并入历史，全程无空白、从上往下长", async () => {
+    const todo = ["› 任务清单 6/6", "● a", "● b", "● c", "● d", "● e"];
+    const msg = ["⏺ msg0", "msg1", "msg2", "msg3", "msg4"];
+    const frames: Frame[] = [
+      { items: hist, dyn: [...todo, "* spin", ...footer] },
+      { items: hist, dyn: ["* spin", ...footer] },
+      { items: hist, dyn: [...msg.slice(0, 1), ...footer] },
+      { items: hist, dyn: [...msg.slice(0, 3), ...footer] },
+      { items: hist, dyn: [...msg, ...footer] },
+      { items: [...hist, ...msg], dyn: footer },
+    ];
+    const { steps, flickers } = await drive(frames);
+    steps.forEach((s, i) => expectExact(s, frames[i]!));
+    // 流式第一行紧跟在历史尾之后（修复前中间隔着 todo 收起留下的 6 行空白，正文从输入框上方往上长）
+    expect(steps[2]!.view.slice(-7, -5)).toEqual(["hist19", "⏺ msg0"]);
+    // 只有 todo 收起那一帧在收缩（spinner→正文同高、并入历史帧高不变）
+    expect(flickers).toHaveLength(1);
   });
 
-  test("输入框变矮：输入框内部不插空行", async () => {
-    const view = await drive([
-      ["────", "> abc", "  def", "  ghi", "────", "status", "sid main"],
-      ["────", "> abc", "────", "status", "sid main"],
-    ]);
-    expect(bottom(view, 5)).toEqual(["────", "> abc", "────", "status", "sid main"]);
+  test("spinner 消失且状态栏同帧变化：画面逐行一致", async () => {
+    const frames: Frame[] = [
+      { items: hist, dyn: ["* spin", " ", "────", "> ", "────", "status $1", "sid main"] },
+      { items: hist, dyn: ["────", "> ", "────", "status $2", "sid main"] },
+    ];
+    const { steps } = await drive(frames);
+    steps.forEach((s, i) => expectExact(s, frames[i]!));
   });
 
-  test("历史区下沿已滚出视口（长流式正文）：不 full reset，空行不插进正文", async () => {
-    const W2 = 20;
-    const H2 = 8;
-    const mk = (lines: string[]) => {
-      const s = new Screen(W2, lines.length);
-      lines.forEach((l, y) => s.writeLine(0, y, l));
+  test("输入框变矮：画面逐行一致", async () => {
+    const frames: Frame[] = [
+      { items: hist, dyn: ["────", "> abc", "  def", "  ghi", "────", "status", "sid main"] },
+      { items: hist, dyn: ["────", "> abc", "────", "status", "sid main"] },
+    ];
+    const { steps } = await drive(frames);
+    steps.forEach((s, i) => expectExact(s, frames[i]!));
+  });
+
+  test("动态区比视口还高（长流式正文）时收缩：画面逐行一致，不把空行插进正文", async () => {
+    const msg = Array.from({ length: 14 }, (_, i) => `msg${i}`);
+    const frames: Frame[] = [
+      { items: hist.slice(0, 10), dyn: [...msg, "* spin", ...footer] },
+      { items: hist.slice(0, 10), dyn: [...msg, ...footer] },
+    ];
+    const { steps } = await drive(frames);
+    steps.forEach((s, i) => expectExact(s, frames[i]!));
+  });
+
+  test("没溢出视口的收缩照旧擦底部，不重画", async () => {
+    const frames: Frame[] = [
+      { items: hist.slice(0, 2), dyn: ["* spin", "x", ...footer] },
+      { items: hist.slice(0, 2), dyn: footer },
+    ];
+    const { steps, flickers } = await drive(frames);
+    expect(flickers).toHaveLength(0);
+    expect(steps[1]!.view.slice(0, 6)).toEqual([
+      "hist0",
+      "hist1",
+      ...footer.map((l) => l.trimEnd()),
+    ]);
+  });
+
+  test("diffMainScreen：p ≥ H 且变矮 → full reset（offscreen）；没溢出的收缩不 reset", () => {
+    const mk = (n: number) => {
+      const s = new Screen(W, n);
+      for (let y = 0; y < n; y++) s.writeLine(0, y, `r${y}`);
       return s;
     };
-    const head = Array.from({ length: 10 }, (_, i) => `hist${i}`);
-    const msg = Array.from({ length: 12 }, (_, i) => `msg${i}`);
-    const { Terminal } = await import("@xterm/headless");
-    const term = new Terminal({ cols: W2, rows: H2, allowProposedApi: true });
-    let prev: Screen | undefined;
-    for (const f of [
-      mk([...head, ...msg, "* spin", "> ", "status"]),
-      mk([...head, ...msg, "> ", "status"]),
-    ]) {
-      const d = diffMainScreen(prev, f, H2, head.length);
-      expect(d.flicker).toBeUndefined();
-      await new Promise<void>((r) => term.write(d.bytes, r));
-      prev = d.screen ?? f;
-    }
-    const b = term.buffer.active;
-    const view = Array.from({ length: H2 }, (_, y) =>
-      b
-        .getLine(b.viewportY + y)!
-        .translateToString(true)
-        .trimEnd(),
-    );
-    expect(view).toEqual(["msg8", "msg9", "msg10", "msg11", "", ">", "status", ""]);
+    const d = diffMainScreen(mk(H + 5), mk(H + 4), H);
+    expect(d.flicker?.reason).toBe("offscreen");
+    expect(d.bytes.startsWith("\x1b[2J\x1b[3J\x1b[H")).toBe(true);
+    expect(diffMainScreen(mk(H - 2), mk(H - 4), H).flicker).toBeUndefined();
   });
 });
 
-// 2026-10-22 复现：长对话（帧已溢出视口）里打开 /model 再 Esc 关掉，打开时被顶进 scrollback 的历史拉不回来，
-// 补空行在历史尾与输入框之间留下与对话框等高的空白。浮层包在 Transient 里，关闭的那一帧整帧重画复原。
-describe("关闭临时浮层（Transient）：整帧重画复原历史，其余收缩照旧补空行", () => {
-  const W = 30;
-  const H = 12;
-  const hist = Array.from({ length: 20 }, (_, i) => `hist${i}`);
-  const base = ["────", "> ", "────", "status"];
+// 2026-10-22 复现：长对话里打开 /model 再 Esc 关掉，打开时被顶进 scrollback 的历史拉不回来。
+// 当时靠 Transient 标记单独判「关浮层 → 重画」；现在任何溢出后收缩都重画，浮层关闭是其中一种，这里锁住不回退。
+describe("关闭临时浮层：画面回到打开前，scrollback 里历史不重复", () => {
   const dialog = ["┌ model ┐", "a", "b", "c", "d", "e", "└───────┘"];
-  type Frame = { overlay?: string[]; plain?: string[]; dyn: string[]; short?: boolean };
 
-  async function drive(frames: Frame[]) {
-    const { PassThrough } = await import("node:stream");
-    const { Terminal } = await import("@xterm/headless");
-    const { History, Transient } = await import("../src/index.ts");
-    const term = new Terminal({ cols: W, rows: H, allowProposedApi: true });
-    let pending = Promise.resolve();
-    const stdout = Object.assign(new PassThrough(), { columns: W, rows: H, isTTY: true });
-    stdout.on("data", (d: Buffer) => {
-      const s = d.toString();
-      pending = pending.then(() => new Promise<void>((r) => term.write(s, r)));
-    });
-    const stdin = Object.assign(new PassThrough(), {
-      isTTY: true,
-      isRaw: false,
-      setRawMode: () => stdin,
-      ref: () => stdin,
-      unref: () => stdin,
-    });
-    const h = React.createElement;
-    const lines = (ls: string[], p: string) => ls.map((l, i) => h(Text, { key: p + i }, l));
-    const tree = (f: Frame) =>
-      h(
-        Box,
-        { flexDirection: "column" },
-        h(History, {
-          items: f.short ? hist.slice(0, 2) : hist,
-          children: (item: string) => h(Text, { key: item }, item),
-        }),
-        h(
-          Box,
-          { flexDirection: "column" },
-          f.overlay ? h(Transient, null, ...lines(f.overlay, "o")) : null,
-          ...(f.plain ? lines(f.plain, "p") : []),
-          ...lines(f.dyn, "d"),
-        ),
-      );
-    const flickers: unknown[] = [];
-    const tick = () => new Promise((r) => setTimeout(r, 20));
-    const inst = render(tree(frames[0]!), {
-      stdout: stdout as never,
-      stdin: stdin as never,
-      patchConsole: false,
-      exitOnCtrlC: false,
-      onFrame: (e: { flickers: unknown[] }) => flickers.push(...e.flickers),
-    } as never);
-    await tick();
-    for (const f of frames.slice(1)) {
-      inst.rerender(tree(f));
-      await tick();
-    }
-    await pending;
-    const b = term.buffer.active;
-    const view: string[] = [];
-    for (let y = 0; y < H; y++)
-      view.push(
-        b
-          .getLine(b.viewportY + y)!
-          .translateToString(true)
-          .trimEnd(),
-      );
-    const scrollback: string[] = [];
-    for (let y = 0; y < b.viewportY; y++)
-      scrollback.push(b.getLine(y)!.translateToString(true).trimEnd());
-    stdout.isTTY = false;
-    inst.unmount();
-    return { view, scrollback, flickers };
-  }
-
-  const restored = [
-    "hist13",
-    "hist14",
-    "hist15",
-    "hist16",
-    "hist17",
-    "hist18",
-    "hist19",
-    ...base.map((l) => l.trimEnd()),
-    "",
-  ];
-
-  test("打开对话框再关掉：画面回到打开前，scrollback 里历史不重复", async () => {
-    const { view, scrollback, flickers } = await drive([
-      { dyn: base },
-      { overlay: dialog, dyn: base },
-      { dyn: base },
-    ]);
-    expect(view).toEqual(restored);
-    expect(scrollback).toEqual(hist.slice(0, 13));
+  test("打开对话框再关掉", async () => {
+    const frames: Frame[] = [
+      { items: hist, dyn: footer },
+      { items: hist, overlay: dialog, dyn: footer },
+      { items: hist, dyn: footer },
+    ];
+    const { steps, flickers } = await drive(frames);
+    steps.forEach((s, i) => expectExact(s, frames[i]!));
     expect(flickers).toHaveLength(1);
   });
 
-  test("对话框里内容变化（选项移动）不重画，只在关闭那一帧重画一次", async () => {
+  test("对话框里内容变化不重画，变矮与关闭各重画一次", async () => {
     const moved = dialog.map((l) => (l === "a" ? "> a" : l));
-    const { view, flickers } = await drive([
-      { dyn: base },
-      { overlay: dialog, dyn: base },
-      { overlay: moved, dyn: base },
-      { overlay: dialog.slice(0, 4), dyn: base },
-      { dyn: base },
-    ]);
-    expect(view).toEqual(restored);
-    expect(flickers).toHaveLength(1);
-  });
-
-  test("同样高度的非浮层块消失（spinner / TodoPanel）照旧补空行，不重画", async () => {
-    const { view, flickers } = await drive([
-      { dyn: base },
-      { plain: dialog, dyn: base },
-      { dyn: base },
-    ]);
-    expect(flickers).toHaveLength(0);
-    expect(view.slice(0, 7)).toEqual(["", "", "", "", "", "", ""]);
-  });
-
-  test("没溢出视口的短会话关浮层：不重画（直接擦底部就对）", async () => {
-    const { view, flickers } = await drive([
-      { dyn: base, short: true },
-      { overlay: ["dlg1", "dlg2"], dyn: base, short: true },
-      { dyn: base, short: true },
-    ]);
-    expect(flickers).toHaveLength(0);
-    expect(view.slice(0, 6)).toEqual(["hist0", "hist1", ...base.map((l) => l.trimEnd())]);
+    const frames: Frame[] = [
+      { items: hist, dyn: footer },
+      { items: hist, overlay: dialog, dyn: footer },
+      { items: hist, overlay: moved, dyn: footer },
+      { items: hist, overlay: dialog.slice(0, 4), dyn: footer },
+      { items: hist, dyn: footer },
+    ];
+    const { steps, flickers } = await drive(frames);
+    steps.forEach((s, i) => expectExact(s, frames[i]!));
+    expect(flickers).toHaveLength(2);
   });
 });
