@@ -147,9 +147,9 @@ import { buildCommandAnswerMessages, routeCommandResult } from "./ui/command-res
 import { startPreventSleep, stopPreventSleep } from "@sid-code/core/task/prevent-sleep.ts";
 import {
   hasPendingNotifications,
-  hasRunningBackgroundTasks,
   subscribeBackgroundActivity,
 } from "@sid-code/core/task/background-wake.ts";
+import { hasAwaitedBackgroundTasks } from "@sid-code/core/task/background-await.ts";
 import { getSleepLedger } from "@sid-code/shared/utils/sleep-detect.ts";
 import {
   recordSideCall,
@@ -8801,7 +8801,9 @@ export class App {
       // 后台任务通知续跑：与 -p / TUI 同源（都走 queryEngine），只是这里的消费方是流式 NDJSON。
       resumeWithNotifications: () => this.queryEngine.resumeWithNotifications(),
       hasPendingNotifications: () => hasPendingNotifications(),
-      hasRunningBackgroundTasks: () => hasRunningBackgroundTasks(),
+      // 「值得等」口径（background-await.ts）：headless 等待循环据此决定要不要为后台任务挂着，
+      // 静默的常驻 shell 不算——否则 stdin 关闭后进程为一个不会退出的服务永远不退。
+      hasRunningBackgroundTasks: () => hasAwaitedBackgroundTasks(),
       subscribeBackgroundActivity: (listener) => subscribeBackgroundActivity(listener),
     };
   }
