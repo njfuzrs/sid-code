@@ -4,7 +4,8 @@
  */
 
 import React from "react";
-import { Text } from "../render-port/components.ts";
+import { Box, Text } from "../render-port/components.ts";
+import { useHeldRows } from "../hooks/useHeldRows.ts";
 import { theme } from "../semantic-colors.ts";
 import { useUIState } from "../contexts/UIStateContext.tsx";
 import { TransientMessageType } from "../contexts/UIStateContext.tsx";
@@ -15,9 +16,19 @@ export function shouldShowToast(uiState: ReturnType<typeof useUIState>): boolean
   );
 }
 
-export const ToastDisplay: React.FC = () => {
+/**
+ * Toast 行出现过就占住一行到下一轮开始（useHeldRows）：Esc / Ctrl+O 提示几秒后自己消失，
+ * 消失那一帧若让主屏帧变矮，就是一次整帧重画全部历史（见 hooks/useHeldRows.ts）。
+ */
+export const ToastDisplay: React.FC<{ busy?: boolean }> = ({ busy = false }) => {
   const uiState = useUIState();
+  const content = toastContent(uiState);
+  const rows = useHeldRows(content ? 1 : 0, busy);
+  if (rows === 0) return null;
+  return <Box minHeight={rows}>{content}</Box>;
+};
 
+function toastContent(uiState: ReturnType<typeof useUIState>): React.ReactNode {
   // Ctrl+C/D 退出提示已由 ExitWarning 组件独立处理
 
   if (
@@ -46,4 +57,4 @@ export const ToastDisplay: React.FC = () => {
   }
 
   return null;
-};
+}

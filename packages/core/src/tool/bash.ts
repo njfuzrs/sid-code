@@ -116,10 +116,12 @@ const PROGRESS_THROTTLE_MS = 120;
  * 执行中的工具卡片是单行 header 下的一小块活动区，喂全量输出既无必要也会撑爆动态区高度。
  * 完整输出仍在命令结束后作为 tool_result 一次性返回，不受此截断影响。
  *
- * 取 5 行(而非更多)是为了控制执行中工具卡片实时活动区的高度：单个 shell 活项 = header + 命令行
- * + 进度行 ≈ 2 + 5 = 7 行，在默认的 alt-screen 有界视口下不会挤占过多可见空间。
+ * 取 4 行 = 命令结束后折叠态结果区的高度（ToolMessage 传 `maxLines={3}`：超出时 3 行 + 1 行
+ * `… N 行已折叠` footer，恰好多 1 行时直接显示 4 行）。执行中与完成后同高，卡片完成那一帧
+ * 帧不变矮——主屏帧已溢出视口时任何收缩都会整帧重画全部历史（packages/tui/src/frame/main-screen.ts）。
+ * 两边一起改：这里改大会让每条长输出的 bash 完成时都触发一次整帧重画。
  */
-const PROGRESS_TAIL_LINES = 5;
+const PROGRESS_TAIL_LINES = 4;
 
 /** 单行进度尾部的最大字符数（窄终端兜底，避免超长单行破坏对齐）。 */
 const PROGRESS_LINE_MAX_CHARS = 200;
