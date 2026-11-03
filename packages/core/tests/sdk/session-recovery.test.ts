@@ -424,8 +424,10 @@ describe("deserializeMessagesWithInterruptDetection", () => {
     // 末尾第二个 t1 无 result → 被剔除，整条消息被第 5 层丢弃；全历史只剩一个 tool_use
     expect(r.messages.filter((m) => m.content.some((b) => b.type === "tool_use")).length).toBe(1);
     expect(r.messages.length).toBe(4);
-    // 末尾 assistant 没有 tool_use 了 → 中断态是 none，不再误报「在跑 Bash」
-    expect(r.turnInterruptionState.kind).toBe("none");
+    // 末尾 assistant 整条被丢弃后，历史末尾回到第二轮的 user 文本「第二轮」——
+    // 用户问了但没等到回复，三态判定为 interrupted_prompt（该 user 消息被切出由调用方重挂）。
+    // 关键点是**不再误报「在跑 Bash」**：第二个 tool_use 确实被剔除了。
+    expect(r.turnInterruptionState.kind).toBe("interrupted_prompt");
   });
 
   // ─── 回归：正常形状的配对必须原样保留 ───
