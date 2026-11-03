@@ -33,6 +33,12 @@ import { UNCHANGED_OBSERVATION_THRESHOLD } from "../query/unchanged-observation.
 import { CONTINUE_STREAK_CAPS } from "../query/transition.ts";
 // 视为「闸门续命」的 continue 理由：从防线注册表派生（endTurnChain），不再手写一份清单
 import { GATE_CONTINUE_TYPES } from "../query/defense-registry.ts";
+// T3：压缩摘要覆盖率的告警阈值（`CompactQuality` 事件 → 本报告的「低于阈值」标注）。
+// 与 `quality-check.ts` 里运行时告警**共用同一个常量**：两边各写一个 0.5，
+// 任何一侧调阈值都会出现「运行时报了但周报不标」（或反过来），与本仓 P1-6/7
+// 「压缩决策和压缩执行用两套尺子」同型。方向是离线模块 import 轻模块 ——
+// quality-check 只依赖 llm/types（类型）与 debug（无 import），不会把主循环拖进 digest。
+import { COVERAGE_WARN_THRESHOLD } from "../query/compact/quality-check.ts";
 // P2-3：TTFT×缓存分桶的单一事实源，与 provider-health.ts 共用（详见该模块头注释）
 import {
   TtftCacheBucketer,
@@ -1383,6 +1389,23 @@ export interface SessionLevelMetrics {
   trajCorrupt: boolean;
   /** 上下文压缩次数 */
   compactions: number;
+  /**
+   * T3：**可测**质量的压缩次数 —— `CompactQuality` 事件里 `totalAnchors > 0` 的样本数。
+   *
+   * 与 `compactions`（`PreCompact` 计数）不是一个分母，两个都要留：
+   * 无原文+摘要配对的压缩（reactive / collapse）、抽不出锚点的压缩都不落质量事件，
+   * 差值就是「压缩了几次、其中几次真的量到了」。合成一个数会让覆盖率看起来
+   * 比实际覆盖面更宽。
+   */
+  compact_quality_n: number;
+  /**
+   * T3：本会话最低摘要覆盖率，只统计 `totalAnchors > 0` 的样本。
+   *
+   * 必须排除无锚点样本 —— `checkCompactQuality` 约定无锚点时 coverage 恒为 1，
+   * 混进来会把「摘要整块漏掉文件」的塌陷样本洗成 100%。无有效样本时留 undefined
+   * 而不是 0：0 会被读成「摘要全是垃圾」。
+   */
+  compact_coverage_min?: number;
   /**
    * /perf：纯生成耗时 p95（ms）—— 与 `aggregateProviderStats` 的 gens 同源
    *（`RetryTelemetry(stream_completed).elapsedMs`，单次 fetch，不含重试）。
@@ -3750,6 +3773,42 @@ export function renderHuman(d: Digest, opts: RenderOptions = {}): string {
     }
   }
 
+  // ─── T3：压缩摘要质量（「更准」方向的零成本兜底口径）───
+  // 只在真压缩过时打印：没压缩的会话打一行「压缩 0 次」是纯噪声，与上面几段同一取舍。
+  //
+  // 压缩次数与可测样本数**一起给**：差值就是「压了几次、其中几次真的量到了质量」。
+  // 只报覆盖率会让读者误以为它覆盖了全部压缩 —— 无原文+摘要配对的 reactive/collapse
+  // 压缩不落 CompactQuality 事件，那些次数在分母里但不在这一行里。
+  //
+  // 覆盖率本身是**字面**口径（摘要里有没有出现锚点文件名），抓的是「摘要整块漏掉文件」
+  // 这种塌陷，测不了「因果写反」。所以这里只说数字与证据指针，不下「摘要质量好」的结论。
+  if (d.sessionMetrics && d.sessionMetrics.compactions > 0) {
+    const m = d.sessionMetrics;
+    L.push("");
+    const cov =
+      m.compact_coverage_min === undefined
+        ? c("gray", "无可测样本（无原文+摘要配对，或抽不出路径锚点）")
+        : c(
+            m.compact_coverage_min < COVERAGE_WARN_THRESHOLD ? "yellow" : "green",
+            `最低覆盖率 ${(m.compact_coverage_min * 100).toFixed(0)}%`,
+          );
+    L.push(
+      c("bold", "上下文压缩:") +
+        ` ${m.compactions} 次` +
+        c("gray", `（可测质量 ${m.compact_quality_n} 次）`) +
+        `  ${cov}`,
+    );
+    if (m.compact_coverage_min !== undefined && m.compact_coverage_min < COVERAGE_WARN_THRESHOLD) {
+      L.push(
+        c(
+          "gray",
+          `  低于告警阈值 ${(COVERAGE_WARN_THRESHOLD * 100).toFixed(0)}%：摘要可能整块漏掉了文件` +
+            `  证据: events.jsonl CompactQuality.missedSamples`,
+        ),
+      );
+    }
+  }
+
   // 第 5 批：JIT 上下文 section。验收标准就是这一节能直接答出
   // 「命中率多少 / 平均注入多少字节 / 浪费率多少」，不用再手工 grep events.jsonl。
   if (d.jit) {
@@ -4493,6 +4552,10 @@ export function aggregateSessionMetrics(
   let conflictAutoContinue = 0;
   let defenseTriggered = false;
   let compactions = 0;
+  // T3：压缩摘要质量。`compactQualityN` 只数 totalAnchors>0 的样本 —— 无锚点样本
+  // coverage 恒 1，混进来会把塌陷样本洗白（见 SessionLevelMetrics 字段注释）。
+  let compactQualityN = 0;
+  let compactCoverageMin: number | undefined;
   const gens: number[] = [];
   let shortTextEndTurns = 0;
   let endTurnN = 0;
@@ -4560,6 +4623,19 @@ export function aggregateSessionMetrics(
 
     if (e.event === "PreCompact") compactions++;
 
+    // T3：压缩摘要质量。只认 totalAnchors > 0 的样本 —— 无锚点样本 coverage 恒为 1，
+    // 算进来会把「摘要整块漏掉文件」洗成 100%（见 SessionLevelMetrics 字段注释）。
+    // 事件字段名与 `post-compact.ts` 的落盘处逐字对齐，改名时两边一起改。
+    if (e.event === "CompactQuality") {
+      const totalAnchors = e.data.totalAnchors as number | undefined;
+      const coverage = e.data.coverage as number | undefined;
+      if (typeof totalAnchors === "number" && totalAnchors > 0 && typeof coverage === "number") {
+        compactQualityN++;
+        compactCoverageMin =
+          compactCoverageMin === undefined ? coverage : Math.min(compactCoverageMin, coverage);
+      }
+    }
+
     // S1：end_turn 形态 + 续跑结果（只计事实，不下结论）
     if (e.event === "EndTurnShape") {
       endTurnN++;
@@ -4620,6 +4696,8 @@ export function aggregateSessionMetrics(
     defenseTriggered,
     trajCorrupt: opts.trajCorrupt,
     compactions,
+    compact_quality_n: compactQualityN,
+    ...(compactCoverageMin !== undefined ? { compact_coverage_min: compactCoverageMin } : {}),
     gen_p95: percentile(sortedGens, 0.95),
     gen_n: sortedGens.length,
   };

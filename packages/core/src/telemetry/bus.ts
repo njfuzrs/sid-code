@@ -169,6 +169,15 @@ export class TelemetryBus {
     string,
     { failing: boolean; count: number; lastError: string }
   >();
+  /**
+   * 「这个 span 落盘成功后要做什么」的登记，key = spanId。
+   *
+   * 唯一用途是会话根 span 的占位标记要等根真的写进 traces.jsonl 再删
+   * （见 `hook-probe.ts` 的 handleSessionEnd）。**入队不等于落盘**：队列只由每 5 秒的
+   * 定时刷新和 shutdown 的 flush 阶段消费，信号退出两条都赶不上 —— 那时删标记，
+   * 根 span 就随进程一起消失，且下次启动不会重建（标记已没）。
+   */
+  private persistenceCallbacks = new Map<string, () => void>();
 
   /** 会话内已完成的 span 历史（供 /telemetry 命令查询） */
   private spanHistory: SpanData[] = [];
@@ -210,6 +219,37 @@ export class TelemetryBus {
   /** 注册导出器 */
   addExporter(exporter: TelemetryExporter): void {
     this.exporters.push(exporter);
+  }
+
+  /**
+   * 是否注册了导出器。
+   *
+   * 「没有导出器」时 `enqueueSpan` 仍然把 span 推进队列，但永远不会被导出 ⇒
+   * 依赖 {@link onSpanPersisted} 的调用方（删会话根 span 的占位标记）不能等一个
+   * 永远不会到来的回调，要退回「直接当它已落盘」。
+   */
+  hasExporters(): boolean {
+    return this.exporters.length > 0;
+  }
+
+  /**
+   * 登记「这个 span 落盘成功后要做什么」。
+   *
+   * 唯一的语义差别：**入队 ≠ 落盘**。`SpanHandle.end()` 只是把 span 推进队列
+   * （`enqueueSpan`），队列由每 5 秒的定时刷新与 shutdown 的 flush 阶段消费。信号退出
+   * （Ctrl+C / 关终端）两条都赶不上 —— 那时按「已入队」删掉会话根的占位标记，根 span
+   * 就随进程一起消失，且下次启动也不会重建（标记已经没）。
+   *
+   * 触发时机见 `settleSpanPersistence`。以下情况回调**不会**触发，调用方要按
+   * 「标记留着 → 下次启动 recoverPendingRootSpans 重建」兜底：
+   * - 导出失败 / drain 超时前没轮到这一批；
+   * - 队列溢出把该 span 挤掉（登记会被同步清掉，不泄漏）。
+   *
+   * ⚠️ 必须在对应 span `end()` **之前**登记：`end()` 可能同步触发达 batchSize 的 flush，
+   * 先 end 后登记会错过那一批，回调永远不触发。
+   */
+  onSpanPersisted(spanId: string, cb: () => void): void {
+    this.persistenceCallbacks.set(spanId, cb);
   }
 
   /** 启动定时刷新 */
@@ -338,7 +378,11 @@ export class TelemetryBus {
     // 队列溢出：丢弃最旧的 10%
     if (this.spanQueue.length >= this.config.maxQueueSize) {
       const evictCount = Math.ceil(this.config.maxQueueSize * 0.1);
-      this.spanQueue.splice(0, evictCount);
+      const evicted = this.spanQueue.splice(0, evictCount);
+      // 被挤掉的 span 永远不会进 flushSpans ⇒ 已登记的落盘回调永远不会触发。
+      // 不清登记就是 Map 泄漏，也会让调用方误以为「还在等确认」。
+      // 标记本身留着即可：下次启动 recoverPendingRootSpans 会用它重建。
+      for (const s of evicted) this.persistenceCallbacks.delete(s.spanId);
     }
     this.spanQueue.push(span);
     if (this.spanQueue.length >= this.config.batchSize) {
@@ -354,14 +398,58 @@ export class TelemetryBus {
   private async flushSpans(): Promise<void> {
     if (this.spanQueue.length === 0) return;
     const batch = this.spanQueue.splice(0, this.config.batchSize);
-    await Promise.allSettled(
+    // 用 allSettled 而不是裸 await：一个导出器失败不能挡住其余导出器写完。
+    // 失败分支要**重新抛出**，这样 settled 的 status 才反映真实成败 —— 下面
+    // settleSpanPersistence 的落盘判据读的就是它（原先失败被 then 吞成 fulfilled）。
+    const settled = await Promise.allSettled(
       this.exporters.map((e) =>
         e.exportSpans(batch).then(
-          () => this.noteExportSuccess(e.name, "traces"),
-          (err) => this.noteExportFailure(e.name, "traces", err),
+          () => {
+            this.noteExportSuccess(e.name, "traces");
+          },
+          (err) => {
+            this.noteExportFailure(e.name, "traces", err);
+            throw err;
+          },
         ),
       ),
     );
+    this.settleSpanPersistence(
+      batch,
+      settled.map((r) => r.status === "fulfilled"),
+    );
+  }
+
+  /**
+   * 一批 span 导出结束后，按「落盘成功」判据触发登记的回调（见 {@link onSpanPersisted}）。
+   *
+   * 判据取自方案文档 §二 B：
+   * - **有 durable 导出器（jsonl）时只看 durable 的** —— OTLP 端点长期不通是预期形态
+   *   （官网教程里 Jaeger 不收 metrics 就是这样），让它决定删标记，等于每个会话都留标记、
+   *   下次启动都重建一遍；
+   * - **没有 durable 导出器时看全部导出器** —— 没有本地出口，重建出来的根也只能走那条通道。
+   *
+   * 调用方已排除「一个导出器都没有」的情况（那种情况 `hasExporters()` 为 false，
+   * 直接按已落盘处理）。
+   */
+  private settleSpanPersistence(batch: SpanData[], okByExporter: boolean[]): void {
+    if (this.persistenceCallbacks.size === 0) return;
+    const durableIdx = this.exporters.flatMap((e, i) => (e.durable ? [i] : []));
+    const judged = durableIdx.length > 0 ? durableIdx : this.exporters.map((_, i) => i);
+    const persisted = judged.every((i) => okByExporter[i] === true);
+    for (const span of batch) {
+      const cb = this.persistenceCallbacks.get(span.spanId);
+      if (!cb) continue;
+      // 成功失败都摘掉登记：这批已经出队、不会再重试，留着只会在 Map 里堆到进程退出。
+      // 失败时「标记留着 → 下次启动 recoverPendingRootSpans 重建」本来就是正确归宿。
+      this.persistenceCallbacks.delete(span.spanId);
+      if (!persisted) continue;
+      try {
+        cb();
+      } catch {
+        /* 回调失败（删标记失败）不是导出故障，不能反过来影响 flush */
+      }
+    }
   }
 
   private async flushMetrics(): Promise<void> {
@@ -391,30 +479,58 @@ export class TelemetryBus {
    * 截掉了。丢的是**整批**，且同样只有 debug 级信号。所以这里先等 inFlight 全部落地。
    *
    * 总时限防导出器卡死拖住退出；超时后剩余量打 warn（不再是零信号）。
+   *
+   * @returns 是否**排空**（在途批次与两个队列都清空）。`false` = 预算内没排完，
+   *   有数据留在内存里随进程消失。调用方（信号退出路径）据此打日志，
+   *   「`telemetry drained=false` 出现了多少次」就是「450ms 预算够不够」的证据。
    */
-  async drain(budgetMs: number = SHUTDOWN_DRAIN_BUDGET_MS): Promise<void> {
+  async drain(budgetMs: number = SHUTDOWN_DRAIN_BUDGET_MS): Promise<boolean> {
     const deadline = Date.now() + budgetMs;
+    /**
+     * drain 自己发起的那次 flush。
+     *
+     * ⚠️ 必须单独记：`flush()` 是**同步**把队列 splice 走、再 await 导出的，所以超时跳出
+     * 之后 `spanQueue` 已经是空的 —— 只看队列和 `inFlight` 会把「导出还在飞、马上要被
+     * process.exit 截断」判成「已排空」，`telemetry drained=true` 就成了假信号。
+     * 它也不进 `inFlight`（那条登记只属于 `track()` 的后台 flush）。
+     */
+    let ownFlush: Promise<void> | undefined;
+    const hasPendingWork = () =>
+      ownFlush !== undefined ||
+      this.inFlight.size > 0 ||
+      this.spanQueue.length > 0 ||
+      this.metricQueue.length > 0;
     // 循环而非一次：等待期间可能又有 end() 入队触发新的在途批次
-    while (this.inFlight.size > 0 || this.spanQueue.length > 0 || this.metricQueue.length > 0) {
+    while (hasPendingWork()) {
       const remaining = deadline - Date.now();
       if (remaining <= 0) break;
+      const waits: Promise<unknown>[] = [...this.inFlight];
+      if (ownFlush) waits.push(ownFlush);
+      if (this.spanQueue.length > 0 || this.metricQueue.length > 0) {
+        ownFlush = this.flush();
+        waits.push(ownFlush);
+      }
+      if (waits.length === 0) break;
       let timer: ReturnType<typeof setTimeout> | undefined;
       const timedOut = await Promise.race([
-        Promise.allSettled([...this.inFlight, this.flush()]).then(() => false),
+        Promise.allSettled(waits).then(() => false),
         new Promise<boolean>((r) => {
           timer = setTimeout(() => r(true), remaining);
         }),
       ]);
       if (timer) clearTimeout(timer);
       if (timedOut) break;
+      ownFlush = undefined;
     }
-    if (this.inFlight.size > 0 || this.spanQueue.length > 0 || this.metricQueue.length > 0) {
+    const drained = !hasPendingWork();
+    if (!drained) {
       getLogger().warn(
         "TELEMETRY",
         `关闭时导出超时（${budgetMs}ms）：${this.inFlight.size} 批仍在途，` +
           `队列残留 ${this.spanQueue.length} 条 span / ${this.metricQueue.length} 条 metric`,
       );
     }
+    return drained;
   }
 
   /**
@@ -518,6 +634,17 @@ export class TelemetryBus {
   /** history 因上限被挤掉的 span 累计数（缺陷 19） */
   getEvictedSpanCount(): number {
     return this.evictedHistorySpans;
+  }
+
+  /**
+   * 还没等到「落盘确认」的登记数（诊断 / 门禁测试用）。
+   *
+   * 存在的意义只有一条：钉住「登记表不会泄漏」——队列溢出把 span 挤掉、
+   * 或导出失败之后，那条登记必须被清掉，不能堆到进程退出。
+   * 刻意不暴露回调本身（调用方不应能读/改别人的登记）。
+   */
+  getPendingPersistenceCount(): number {
+    return this.persistenceCallbacks.size;
   }
 
   /** 获取会话内所有已记录的 metric（供 /telemetry 命令使用） */

@@ -44,55 +44,64 @@ export interface SubAgentCheckerOptions {
  * 后台子代理还在无审批写盘。yesMode 同理（它在 dontAsk 后处理之前自动批准 ask）。
  * 每次读字段都回到主 config 现算，切档对所有已下发、甚至正在运行的子代理立即生效。
  *
- * 两个字段是计算值，其余字段直读主 config：
+ * 三个字段是计算值，其余字段直读主 config：
  * - permissionMode：主会话处于全放行档且调用方要求继承时跟随，否则 dontAsk（ask→deny）。
  *   skip 档归一为 always-allow：内层 pipeline 没有 dangerously-skip-permissions 的消费分支
  *   （Step 8 只认 always-allow），保留原字符串会让写操作落到 Step 14 ask 再被 dontAsk deny。
  * - skipPermissions：恒 false。它的消费点在 checker.check() 最顶端早退，排在危险命令 /
  *   safetyCheck 之前——复刻过去等于子代理连 `rm -rf /` 都不拦。主会话选 skip 授权的是
  *   「主循环完全跳过」，不是「派生出去的每个子代理也裸奔」。
+ * - inheritedFromSkip：主会话处于 skip 档时为 true，供 checker Step 4 放开「工作区外的
+ *   非敏感路径」。它与 permissionMode 归一是两件事：归一只决定放行发生在哪一步，
+ *   这个字段决定 Step 4 这道**排在 bypass 之前**的路径闸要不要对 skip 派生实例让路。
+ *   不加它的话，skip 档主会话对工作区外零校验、子代理却在同一位置被拒（A1）。
  *
  * 写操作一律拒绝：checker 自身从不写 config（全仓 grep 无 getConfig().x = 赋值），
  * 若将来有人写，静默写穿到主会话 config 比报错危险得多。
  */
 function createLiveSubAgentConfig(mainConfig: Config, inheritBypassMode: boolean): Config {
+  const isMainMode = (mode: string): boolean => String(mainConfig.permissionMode) === mode;
   const computeMode = (): string => {
     const mainMode = String(mainConfig.permissionMode);
     if (!inheritBypassMode || !INHERITABLE_BYPASS_MODES.has(mainMode)) return "dontAsk";
     return mainMode === "dangerously-skip-permissions" ? "always-allow" : mainMode;
   };
+  /** 主会话是否处于 skip 档（A1：子代理对工作区外非敏感路径不应比主会话更严） */
+  const computeInheritedFromSkip = (): boolean =>
+    inheritBypassMode && isMainMode("dangerously-skip-permissions");
+  /** 三个计算字段的取值器，三处反射路径（get / descriptor / ownKeys）共用，避免各写一份走样 */
+  const computed = new Map<string, () => unknown>([
+    ["permissionMode", computeMode],
+    ["skipPermissions", () => false],
+    ["inheritedFromSkip", computeInheritedFromSkip],
+  ]);
   const deny = (): boolean => {
     throw new TypeError("子代理权限 config 是主会话 config 的只读视图，禁止写入");
   };
   return new Proxy(mainConfig, {
     get(target, prop, receiver) {
-      if (prop === "permissionMode") return computeMode();
-      if (prop === "skipPermissions") return false;
+      const compute = computed.get(prop as string);
+      if (compute) return compute();
       return Reflect.get(target, prop, receiver);
     },
     // 展开（{...config}，deriveWithPermissionMode 用）与 Object.assign 取值走上面的 get trap，
     // 这里只决定「哪些键可枚举」。描述符的 value 仍改成计算值，是为了让反射读取
     // （Object.getOwnPropertyDescriptor）与 get 一致——否则反射路径能读到主会话原始 skip 布尔。
     getOwnPropertyDescriptor(target, prop) {
+      const compute = computed.get(prop as string);
       const desc = Reflect.getOwnPropertyDescriptor(target, prop);
       if (!desc) {
-        if (prop === "permissionMode" || prop === "skipPermissions") {
-          return {
-            value: prop === "permissionMode" ? computeMode() : false,
-            writable: false,
-            enumerable: true,
-            configurable: true,
-          };
+        if (compute) {
+          return { value: compute(), writable: false, enumerable: true, configurable: true };
         }
         return desc;
       }
-      if (prop === "permissionMode") return { ...desc, value: computeMode() };
-      if (prop === "skipPermissions") return { ...desc, value: false };
+      if (compute) return { ...desc, value: compute() };
       return desc;
     },
     ownKeys(target) {
       const keys = Reflect.ownKeys(target);
-      for (const k of ["permissionMode", "skipPermissions"]) if (!keys.includes(k)) keys.push(k);
+      for (const k of computed.keys()) if (!keys.includes(k)) keys.push(k);
       return keys;
     },
     set: deny,

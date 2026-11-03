@@ -623,6 +623,31 @@ function splitOutsideQuotes(
 }
 
 /**
+ * 按 shell 操作符（`&&` / `||` / `;` / `|` / 后台 `&`）在**引号外**把命令拆成子命令原文。
+ *
+ * 与 `parseBashCommand` 的区别：**保留每段的原文**（引号、转义一个都不动）。
+ * 调用方（`permission/bash-security.ts` 的 flag 混淆检测）要靠原文里的引号形态判断
+ * 混淆，而 AST 的 token 已经 unquote 过了，拼接回去也认不出 `"-"exec` 这种形态。
+ *
+ * 后顾断言 `(?<!>)` 必须靠粘性匹配在完整串上生效（见 splitOutsideQuotes 内注释）：
+ * 它把 `>|`（noclobber）与 `2>&1` 里的 `&` 排除在操作符之外。
+ */
+export function splitShellSubcommands(command: string): string[] {
+  const out: string[] = [];
+  // 先按序列操作符（&& / || / ; / 单个 &）拆，再按管道拆——两级顺序不能反：
+  // `a | b && c` 按序列先切成 [`a | b`, `c`]，管道再切第一段，与 bash 的求值结构一致。
+  const sequences = splitOutsideQuotes(command, /\s*(&&|\|\||;|(?<!>)&)\s*/);
+  for (const sequence of sequences.parts) {
+    const pipelines = splitOutsideQuotes(sequence, /\s*(?<!>)\|\s*(?!\|)\s*/);
+    for (const part of pipelines.parts) {
+      const trimmed = part.trim();
+      if (trimmed) out.push(trimmed);
+    }
+  }
+  return out;
+}
+
+/**
  * 按 shell 惯例切分参数（认单/双引号与反斜杠转义），供命令模板的 `$1..$9` 使用。
  * 与 Bash 解析共用同一个 tokenize，避免仓库里再多一套引号切分（D16）。
  */

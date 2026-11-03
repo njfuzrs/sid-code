@@ -56,6 +56,7 @@
 | 上下文（agent 特有） | **上下文占用率** used ÷ window（有效区 <50–65%）、**峰值与趋势** | ✅ `context_usage_peak_ratio` / `_peak_tokens` / `_trend` |
 | | **turns per task** —— **会话长度是成本最大杠杆**：2× 轮数 ≈ 3–4× 成本 | ✅ `metadata.total_steps`（后段每轮更贵，第 N 轮 input ≈ N × 第 1 轮） |
 | | **compaction 次数**（压缩丢信息 → 重读文件 → 重复付费） | ✅ `metadata.compactions` |
+| | **记忆索引可见率** = 索引指针数 ÷ 磁盘记忆文件数 —— 截断掉的条目在磁盘上、模型永远看不见，等于没写 | ✅ `memory_index_health` 的 `indexEntryCount` / `fileCount`（分母 = 同目录 `.md` 数，不含 `archive/`）。本机 2026-11-03 实测 63/201 = 31%；C3-A（描述截短）+ C3-C（低频归档）的验收目标 ≥ 60% |
 | 成本结构 | **reasoning / thinking token 单独计** | ✅ `total_reasoning_tokens`（OpenAI 族 >0；Anthropic 族恒 0，靠 `has_thinking` 区分） |
 | | **side-call 成本**（标题 / 摘要 / recall 等辅助调用） | ✅ 影子调用绕过主埋点，是最易漏计的一块 |
 | | **retry 白烧占比** + 白建连接数 | ✅ `retryWastedRatio`（>20% 判病态）/ `extraConnections` |

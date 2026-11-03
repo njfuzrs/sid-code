@@ -38,6 +38,15 @@ function defaultOptions(): JsonlExporterOptions {
 
 export class JsonlExporter implements TelemetryExporter {
   readonly name = "jsonl";
+  /**
+   * 本地追加写，`exportSpans` 的 await 返回即数据已进内核页缓存 —— 进程退出（含被信号杀、
+   * `process.exit`、SIGKILL）不会丢页缓存，只有内核崩溃/断电才会。所以它是「落盘已确认」
+   * 的唯一判据来源，见 `TelemetryBus.onSpanPersisted` 与 `types.ts` 的 `durable`。
+   *
+   * 刻意不做 fsync：这次要修的退出方式（Ctrl+C / 关终端）都不断电，为此改成持有文件句柄
+   * 会牵动 rotateIfNeeded，代价不划算（方案文档 §三）。
+   */
+  readonly durable = true;
   private options: JsonlExporterOptions;
   private spanFile: string;
   private metricFile: string;
