@@ -12,11 +12,45 @@ import {
   decideRepeatSignal,
   installTeardownSignalHandlers,
   PIPE_CLOSED_EXIT_CODE,
+  SIGNAL_FORCE_EXIT_MS,
+  SIGNAL_TELEMETRY_DRAIN_MAX_MS,
+  telemetryDrainBudgetMs,
   terminalDeathCause,
   watchTerminalOutputErrors,
 } from "@sid-code/cli/signal-teardown.ts";
 
 const SIGNAL_TEARDOWN_TS = join(import.meta.dir, "../src/signal-teardown.ts");
+
+/**
+ * 信号路径的遥测排空预算（2026-11-02 方案 A 拍板 450ms）。
+ *
+ * 缺陷：遥测队列只有「每 5 秒定时刷新」与「shutdown 的 flush 阶段」两个出口，
+ * 信号退出两条都赶不上 ⇒ 根 span 与最后几秒的子 span 留在内存里随进程消失。
+ * 预算必须从 1.5s 强退兜底里扣，而不是把整体退出时长拉长。
+ */
+describe("telemetryDrainBudgetMs（信号路径排空预算）", () => {
+  test("常见情况（SessionEnd 收尾约 30ms）拿满上限 450ms", () => {
+    expect(telemetryDrainBudgetMs(30)).toBe(450);
+    expect(SIGNAL_TELEMETRY_DRAIN_MAX_MS).toBe(450);
+    expect(SIGNAL_FORCE_EXIT_MS).toBe(1500);
+  });
+
+  test("SessionEnd 越慢，剩余预算越少（= 1500 − elapsed − 250 尾部预留）", () => {
+    expect(telemetryDrainBudgetMs(900)).toBe(350);
+    // SessionEnd hook 卡满 1.2s：只剩 50ms，只够排一小批 —— 这种会话靠「标记等落盘确认后再删」兜底
+    expect(telemetryDrainBudgetMs(1200)).toBe(50);
+  });
+
+  test("剩余时间不够就返回 0（不排空，也不挤掉后面 log.flush 的 200ms）", () => {
+    expect(telemetryDrainBudgetMs(1250)).toBe(0);
+    expect(telemetryDrainBudgetMs(1400)).toBe(0);
+    expect(telemetryDrainBudgetMs(1500)).toBe(0);
+  });
+
+  test("入口即调用（elapsed=0）时也不超过上限", () => {
+    expect(telemetryDrainBudgetMs(0)).toBe(450);
+  });
+});
 
 describe("decideRepeatSignal（M3：无计时分支）", () => {
   test("第一个信号开始收尾", () => {

@@ -612,19 +612,32 @@ export class TelemetryHookProbe {
         ...(this.collectEnrichedAttributes("invoke_agent", input) as Attributes),
       });
     }
+    // §三 P0-2：删标记要等**根真的落盘**，而「入队」不等于落盘。
+    //
+    // 信号退出（Ctrl+C / 关终端）时，队列只由每 5 秒的定时刷新与 shutdown 的 flush 阶段
+    // 消费 —— 两条都赶不上：`end()` 之后紧跟 `process.exit`，根 span 与最后几秒的子 span
+    // 一起留在内存里随进程消失。原先在这里直接删标记，于是下次启动也不会重建（标记已经没）。
+    // 实测 10-01 起有模型调用的 498 个会话里 283 个没有根 span，其中 276 个以
+    // terminal_closed / abort 结束。
+    //
+    // ⚠ 登记必须在 `end()` **之前**：`end()` 可能同步触发达 batchSize 的 flush，
+    // 先 end 后登记会错过那一批，回调永远不触发。
+    //
+    // bus 未启用 / 一个导出器都没有时退回旧行为（直接删）：那种情况下根 span 本来就不会
+    // 落盘，留着标记只会让下次启动白扫一遍（rebuild 也进不了同一个 bus）。
+    const rootSpanId = this.agentSpan?.spanId;
+    const pendingSid = this.pendingRootSessionId;
+    const awaitPersist =
+      this.bus.isEnabled() && this.bus.hasExporters() && !!rootSpanId && !!pendingSid;
+    if (awaitPersist) {
+      this.bus.onSpanPersisted(rootSpanId!, () => clearPendingRootSpan(pendingSid!));
+    }
+
     this.agentSpan?.end();
     this.agentSpan = undefined;
 
-    // §三 P0-2：根 span 已入队 → 删标记，下次启动无需重建。
-    //
-    // ⚠ 必须在 `end()` **之后**：end() 是入队的唯一时机（bus.ts:101），
-    // 先删标记再入队意味着「入队失败」这条路径上根 span 与标记同时消失，
-    // 那个会话就永久没有根了。反过来（先入队后删）最坏只是重复落盘一条。
-    //
-    // 这里刻意不判 `enqueueSpan` 是否真落盘：bus 未启用时 enqueueSpan 直接 return，
-    // 但那种情况下重建也不会入队（同一个 bus），留着标记只是让下次启动白扫一遍。
-    if (this.pendingRootSessionId) {
-      clearPendingRootSpan(this.pendingRootSessionId);
+    if (pendingSid) {
+      if (!awaitPersist) clearPendingRootSpan(pendingSid);
       this.pendingRootSessionId = undefined;
     }
   }

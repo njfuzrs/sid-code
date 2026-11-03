@@ -1082,6 +1082,12 @@ export class PermissionChecker implements Checker {
     const log = getLogger();
     const filePath = extractFilePath(req);
     const resource = filePath || (req.input as any)?.command || "";
+    /**
+     * A1：Step 4 因为「工作区外的非敏感路径」放过了子代理，但放行本身还没发生——
+     * 真正的放行点在 Step 8（always-allow）。这个标记只用于那一步的 decisionReason 埋点，
+     * 让这类放行在轨迹里可以和普通 always-allow 分开统计（见 PermissionDecisionReason.via）。
+     */
+    let skipInheritedOutsideWorkdir = false;
 
     st.step = "1";
     // Step 1: deny 规则（工具级）
@@ -1239,12 +1245,38 @@ export class PermissionChecker implements Checker {
           "PERMISSION",
           `${req.toolName}(${filePath.slice(0, 80)}) → ${pathResult.needsConfirmation ? "需确认" : "拒绝"}(路径验证: ${pathResult.reason})`,
         );
-        return {
-          allowed: false,
-          reason: pathResult.reason,
-          needsConfirmation: pathResult.needsConfirmation,
-          decisionReason: { type: "pathValidation", reason: pathResult.reason || "" },
-        };
+        // A1（2026-11-03 会话 3b4f9ca7 复盘）：skip 档主会话派生的子代理，
+        // 「工作区外 + 非敏感」这一类不在 Step 4 拦。
+        //
+        // 为什么必须在这一步放（而不是等 Step 8 的 always-allow）：Step 4 排在 Step 8 之前，
+        // 主会话 skip 档零校验的同一位置，子代理会先在这里被拒——轨迹里 10 次
+        // `读取路径在工作区外` + 1 次 `/tmp` 写入全来自这里，而主会话全程 0 次拒绝。
+        //
+        // 为什么只放这一类：敏感文件在 path-validator 第 5 步就硬 deny 了（排在边界检查之前，
+        // 返回对象不带 outsideWorkingDirs），系统目录 / symlink 逃逸同理不带该标记。
+        // 放行后仍要过 Step 5 ask 规则、Step 6 safetyCheck（`.git/hooks`、shell rc 照拦）
+        // 与 Step 8 模式判定——这里只回答「路径边界这一票不 veto」。
+        //
+        // 为什么规则逃生舱排在这之前：用户写的 allow 规则比模式继承更具体，命中它应当
+        // 记成 rule 而非 mode（否则轨迹里分不清「用户配了」还是「模式带的」）。
+        if (
+          pathResult.outsideWorkingDirs === true &&
+          pathResult.sensitiveFile !== true &&
+          this.config.inheritedFromSkip === true
+        ) {
+          skipInheritedOutsideWorkdir = true;
+          log.info(
+            "PERMISSION",
+            `${req.toolName}(${filePath.slice(0, 80)}) → 路径边界放行(继承 skip 档，工作区外非敏感路径，后续 safetyCheck 照常)`,
+          );
+        } else {
+          return {
+            allowed: false,
+            reason: pathResult.reason,
+            needsConfirmation: pathResult.needsConfirmation,
+            decisionReason: { type: "pathValidation", reason: pathResult.reason || "" },
+          };
+        }
       }
     }
 
@@ -1422,7 +1454,14 @@ export class PermissionChecker implements Checker {
     // Step 8: bypass/always-allow 模式（safetyCheck 之后才检查，确保关键路径不被绕过）
     if (this.config.permissionMode === "always-allow") {
       log.info("PERMISSION", `${req.toolName}(${resource.slice(0, 80)}) → 允许(always-allow模式)`);
-      return { allowed: true, decisionReason: { type: "mode", mode: "always-allow" } };
+      return {
+        allowed: true,
+        // A1：Step 4 因「继承 skip 档 + 工作区外非敏感路径」让路时单独埋点。
+        // 这条口子放宽了「更安全」，混进普通 always-allow 就再也统计不到它被用了多少次。
+        decisionReason: skipInheritedOutsideWorkdir
+          ? { type: "mode", mode: "always-allow", via: "skip-inherit-outside-workdir" }
+          : { type: "mode", mode: "always-allow" },
+      };
     }
 
     st.step = "8-rule";

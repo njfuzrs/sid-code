@@ -327,13 +327,18 @@ export function createSessionMemoryPermissions(sessionMemoryFile: string): CanUs
       return { behavior: "allow" };
     }
     if (toolName === "bash") {
-      return isReadonlyBash(input)
-        ? { behavior: "allow" }
-        : {
-            behavior: "deny",
-            message: "Session Memory 代理只能运行只读 bash 命令",
-            denyKind: "bash_not_readonly",
-          };
+      // ⛔ 不给 bash 留「只读命令」的口子。session memory 的输入就是整个对话 +
+      // 提示词里已经原样给出的当前文件内容，**没有任何需要命令核实的场景**。
+      // 实测会话 20261103-114056-3b4f9ca7：模型先试了一条 `isReadonlyBash` 不认的
+      // 组合命令，被 `bash_not_readonly` 拒掉，白跑一轮；被拒的具体命令当时也没进轨迹
+      // （forked 路径不写 PreToolUse，见 forked-agent 对 PermissionDecision 的入参补录）。
+      // 归成 `tool_not_allowed` 而不是继续维持「只读白名单」：模型看到的是一句
+      // 「不允许用这个工具」，比「你的命令不够只读」更容易让它直接走 edit。
+      return {
+        behavior: "deny",
+        message: "Session Memory 代理不需要运行 bash：输入就是本对话，请直接编辑会话笔记文件。",
+        denyKind: "tool_not_allowed",
+      };
     }
     if (toolName === "write" || toolName === "edit") {
       const target = extractTargetPath(input);
