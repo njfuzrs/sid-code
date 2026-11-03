@@ -143,11 +143,17 @@ describe("Transient float：溢出时叠画，关闭不整帧重画", () => {
 
   // 真实 TUI 里关菜单的同一帧输入区还会少一行提示（帧变矮）。叠画态的浮层若仍算作「在流浮层」，
   // diffFrame 会把这次收缩判成「关浮层」走整帧重画——ce7 实测 763,855 字节，单测里帧高不变时测不出来
-  test("关菜单同一帧输入区变矮：仍不整帧重画", async () => {
+  // 2026-11-03 起溢出后的任何收缩都整帧重画（frame/main-screen.ts 文件头）：输入区少一行也是收缩，
+  // 不重画就只剩「擦底部 → footer 上移」或「补空行」两种必然留空白的写法。这里锁住画面正确、恰好重画一次。
+  test("关菜单同一帧输入区变矮：重画一次，画面与 scrollback 无重复无空白", async () => {
     const hint = ["(提示行)", ...base];
     const r = await drive([{ hist: 40 }, { hist: 40, menu, dyn: hint }, { hist: 40 }], true);
-    expect(r.flickers).toHaveLength(0);
-    expect(r.frameWrites[2]).not.toContain("\x1b[2J");
+    expect(r.flickers).toHaveLength(1);
+    const all = [...Array.from({ length: 40 }, (_, i) => `hist${i}`), ...base, ""].map((l) =>
+      l.trimEnd(),
+    );
+    expect(r.view).toEqual(all.slice(-H));
+    expect(r.scrollback).toEqual(all.slice(0, -H));
   });
 
   test("菜单比视口还高：不叠画（退回在流布局，关闭时照旧整帧重画）", async () => {

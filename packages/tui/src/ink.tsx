@@ -29,7 +29,6 @@ import {
 	type FrameFlicker,
 } from './frame/main-screen.js';
 import {FrameScheduler} from './frame/scheduler.js';
-import measureElement from './measure-element.js';
 import {FRAME_INTERVAL_MS} from './frame/schedule.js';
 import {ClockContext, createClock, type Clock} from './clock.js';
 import TerminalWriteContext from './components/TerminalWriteContext.js';
@@ -193,30 +192,6 @@ const getWritableStreamState = (stdout: MaybeWritableStream) => {
 		hasWritableState,
 	};
 };
-
-/**
- * 主屏帧里历史区（History）的下沿行号：溢出后收缩时空行补在这里（frame/main-screen.ts padInsertRow）。
- * 深度优先找第一个 History，不进它的子树（历史项多，动态区小）；没用 History 返回 undefined。
- */
-function historyEnd(root: dom.DOMElement): number | undefined {
-	const stack: dom.DOMElement[] = [root];
-	while (stack.length > 0) {
-		const node = stack.pop()!;
-		if (node.internal_history) {
-			const {y, height} = measureElement(node);
-			return y + height;
-		}
-
-		for (let i = node.childNodes.length - 1; i >= 0; i--) {
-			const child = node.childNodes[i]!;
-			if (child.nodeName !== '#text') {
-				stack.push(child);
-			}
-		}
-	}
-
-	return undefined;
-}
 
 /** 擦可视区并回原点（不清 scrollback）：forceRedraw 与 SIGCONT 重进 alt-screen 用 */
 const eraseScreenHome = '\u001B[2J\u001B[H';
@@ -382,8 +357,6 @@ export default class Ink {
 	private frameViewport: {columns: number; rows: number} | undefined;
 	/** 下一帧强制 full reset 的原因（离开 alt-screen 之后，主屏的旧帧已经不可信） */
 	private pendingResetReason: FrameFlicker['reason'] | undefined;
-	/** 上一个主屏帧里有没有挂着 Transient（临时浮层）；关闭浮层的那一帧据此整帧重画，见 diffFrame */
-	private previousFrameHadTransient = false;
 	/** `<AlternateScreen>` 挂载状态（端口 setAltScreenActive，R10）；为真时出帧走 renderAltScreenFrame（R14） */
 	/** SIGCONT 作废的那一帧：下一帧按 `redrawAfterSuspend` 写（R10）；resize / forceRedraw 帧不走它 */
 	private suspendedScreen: Screen | undefined;
@@ -1740,7 +1713,6 @@ export default class Ink {
 		}
 
 		let bytes: string;
-		let drawn = screen;
 		const flickers: FrameFlicker[] = [];
 
 		if (staticOutput === '') {
@@ -1749,9 +1721,6 @@ export default class Ink {
 			if (diff.flicker) {
 				flickers.push(diff.flicker);
 			}
-
-			// 溢出后收缩补了空行：终端上的是补过的那一帧，下一帧要拿它比
-			drawn = diff.screen ?? screen;
 		} else {
 			// 上游 <Static> 的新增项：擦掉动态区、写静态输出、整帧重画动态区（端口的 Static 是 T4.2，不走这里）
 			bytes =
@@ -1760,7 +1729,7 @@ export default class Ink {
 				serializeScreen(screen);
 		}
 
-		this.previousScreen = drawn;
+		this.previousScreen = screen;
 		this.frameViewport = getWindowSize(this.options.stdout);
 		this.lastOutput = output;
 		this.lastOutputToRender = output + '\n';
@@ -1853,11 +1822,6 @@ export default class Ink {
 	private diffFrame(screen: Screen): FrameDiff {
 		const viewport = getWindowSize(this.options.stdout);
 		const previous = this.frameViewport;
-		const hadTransient = this.previousFrameHadTransient;
-		// 叠画态的浮层不算（见 hasMountedTransient 的 inFlowOnly）：它关闭时帧可能因别的原因变矮（输入框提示行），
-		// 算进去就会把一次几十字节的 diff 变成整帧重画（长会话 76 万字节 + 清 scrollback，PR4 实测）
-		const hasTransient = dom.hasMountedTransient(this.rootNode, {inFlowOnly: true});
-		this.previousFrameHadTransient = hasTransient;
 		const forced = this.pendingResetReason;
 		this.pendingResetReason = undefined;
 		if (
@@ -1877,29 +1841,8 @@ export default class Ink {
 			}
 		}
 
-		// 只有收缩帧才用得到历史区下沿；其余帧不走树（没用 History 时要遍历整棵树）
-		const previousScreen = this.previousScreen;
-		const shrinking =
-			previousScreen !== undefined && screen.height < previousScreen.height;
-		// 关闭临时浮层（对话框 / 补全菜单）且前一帧已溢出视口：浮层打开时把同等高度的历史顶进了 scrollback，
-		// 那些行光标够不着、也没有指令能拉回视口；补空行（frame/main-screen.ts）只会留下一整块与浮层等高的空白。
-		// 只有整帧重画能复原：History 在帧里，清屏后 scrollback 照样重建。条件与补空行分支相同（n < p 且 p ≥ H），
-		// 只把「浮层消失」这一类收缩从补空行改成重画——spinner 消失、输入框变矮、TodoPanel 收起照旧补空行，不闪
-		if (
-			hadTransient &&
-			!hasTransient &&
-			shrinking &&
-			previousScreen.height >= viewport.rows
-		) {
-			return resetMainScreen(screen, viewport.rows, 'offscreen');
-		}
-
-		return diffMainScreen(
-			previousScreen,
-			screen,
-			viewport.rows,
-			shrinking ? historyEnd(this.rootNode) : undefined,
-		);
+		// 溢出后收缩（含关闭对话框 / 补全菜单）一律由帧 diff 判 full reset，见 frame/main-screen.ts 文件头
+		return diffMainScreen(this.previousScreen, screen, viewport.rows);
 	}
 
 	private initKittyKeyboard(): void {
