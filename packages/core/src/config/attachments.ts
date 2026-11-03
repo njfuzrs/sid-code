@@ -326,13 +326,22 @@ export function generateGitStatusAttachment(workingDir: string): SystemPromptAtt
     if (userName) lines.push(`Git user: ${userName}`);
     if (recentCommits) lines.push(`Recent commits:\n${recentCommits}`);
 
-    // P0-1：Status: 文件列表已物理删除，剩下 branch / 最近提交会话内极少变，进静态区。
-    // 工作区实时状态走 reminder 通道的 freshGitStatus，不靠这块快照。
+    // 缓存属性：**必须 dynamic**（2026-10-30 定案，原为 stable）。
+    //
+    // 这块内容含 `git branch --show-current`，而进入 worktree 后该命令返回的是
+    // worktree 自己的分支名（主仓 `main` → `worktree-xxx`）。留在静态区 =
+    // 「每进/出一次 worktree，整条 system 前缀作废」，与工作目录本身同源同因
+    // （实测 133 次 system_static 断裂里 104 次紧跟 enter/exit_worktree）。
+    //
+    // Status: 文件列表此前已物理删除，工作区实时状态走 reminder 通道的 freshGitStatus。
+    // 代价：动态区每轮多约 200 字符。OpenAI 族它落在尾部 user 消息（不影响前缀缓存），
+    // Anthropic 族动态区本就不进 cache_control 段 —— 换来 branch 始终正确，划算。
     const result: SystemPromptAttachment = {
-      ...stableAttachment(
+      ...DANGEROUS_dynamicAttachment(
         "gitStatus",
         `<git-status>\n${lines.join("\n\n")}\n</git-status>`,
         PRIORITY.GIT_STATUS,
+        "branch 随 worktree 切换变化，留在静态区会击穿 prompt cache 前缀",
       ),
       label: `Git 状态 (${branch})`,
     };
@@ -451,23 +460,39 @@ export function generateDiagnosticsAttachment(diagnostics: string): Attachment {
 }
 
 /**
- * 生成当前日期附件（动态区）。
+ * 生成「当前日期 + 工作目录」附件（动态区）。
  *
- * 日期每天变化，绝不能进静态核心区（coreParts）——否则跨天首次请求会让整个静态
- * 前缀缓存失效、cache_creation 全价重算。本附件经 DYNAMIC_BOUNDARY 之后注入，
- * 跨天只击穿动态区（本就是会话内缓存），静态前缀缓存得以跨会话保全。
+ * 两个值都**绝不能**进静态核心区（coreParts），理由各一条、都实测过：
+ * - 日期每天变化 —— 跨天首次请求让整个静态前缀缓存失效，cache_creation 全价重算；
+ * - 工作目录随 worktree 进出变化 —— 它留在静态区意味着**每进/出一次 worktree 就整条前缀作废**。
+ *   2026-10-30 轨迹实测：133 次 `system_static` 断裂里 104 次紧跟 enter/exit_worktree 的
+ *   PostToolUse，字符级浪费中位数 0.997（几乎等于全部重算）。
+ *
+ * 为什么合并进同一个附件而不是各占一段：两者同属「本轮会话环境事实」，同排动态区最前部，
+ * 拆开只多一次数组 push 与一次 `\n\n` 拼接，没有别的收益。标签仍各自独立 ——
+ * 模型侧按标签取值的习惯已经建立（`<current-date>` 被多处引用），不要合并语义。
  *
  * @param date YYYY-MM-DD 格式日期字符串（由调用方传入，便于测试与避免本模块直接读时钟）。
+ * @param workingDir 当前工作目录。缺省时不输出该行（纯日期调用保持原行为）。
  */
-export function generateDateAttachment(date: string, language?: "zh" | "en" | "auto"): Attachment {
+export function generateDateAttachment(
+  date: string,
+  language?: "zh" | "en" | "auto",
+  workingDir?: string,
+): Attachment {
   // G6：日期每天变化，放进静态区会跨天击穿缓存。用 DANGEROUS_ 工厂标记为动态。
   // 标签跟随语言：en 模式下这是仅剩的几处中文之一，留着就是在提示模型"中文也行"。
-  const label = language === "en" ? "Today's date" : "当前日期";
+  const dateLabel = language === "en" ? "Today's date" : "当前日期";
+  const cwdLabel = language === "en" ? "Working directory" : "工作目录";
+  const parts = [`<current-date>\n${dateLabel}: ${date}\n</current-date>`];
+  if (workingDir) {
+    parts.push(`<working-directory>\n${cwdLabel}: ${workingDir}\n</working-directory>`);
+  }
   return DANGEROUS_dynamicAttachment(
     "date",
-    `<current-date>\n${label}: ${date}\n</current-date>`,
+    parts.join("\n\n"),
     PRIORITY.DATE_CONTEXT,
-    "日期每天变化，放入静态区会击穿 prompt cache 前缀",
+    "日期每天变化、工作目录随 worktree 进出变化，放入静态区都会击穿 prompt cache 前缀",
   );
 }
 

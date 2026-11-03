@@ -115,3 +115,31 @@ describe("不变量：system 动态区在 OpenAI 族会落成一条 user 消息"
     // 由 tests/api/cache-strategy.test.ts 与 anthropic 侧测试覆盖。
   });
 });
+
+/**
+ * 守卫：工作目录必须落在**动态区**。
+ *
+ * 它曾经在静态核心区（`buildEnvironmentSection`），后果是每进/出一次 worktree
+ * 整条 system 前缀作废——2026-10-30 轨迹实测 133 次 `system_static` 断裂里
+ * 104 次紧跟 enter/exit_worktree 的 PostToolUse，字符级浪费中位数 0.997。
+ *
+ * 这条断言锁死新契约：静态区出现工作目录字符串即回归。
+ */
+describe("不变量：工作目录落在动态区（静态前缀不随 worktree 切换变化）", () => {
+  test("静态区不含工作目录，动态区含", () => {
+    const dir = process.cwd();
+    const system = buildSystemPrompt({ tools: [], workingDir: dir, gitStatus: false });
+    const { staticContent, dynamicContent } = splitSystemByDynamicBoundary(system);
+
+    expect(staticContent).not.toContain(dir);
+    expect(dynamicContent).toBeDefined();
+    expect(dynamicContent!).toContain(dir);
+  });
+
+  test("静态区也不含「git 仓库」判定（它依赖 cwd，同源）", () => {
+    const system = buildSystemPrompt({ tools: [], workingDir: process.cwd(), gitStatus: false });
+    const { staticContent } = splitSystemByDynamicBoundary(system);
+    expect(staticContent).not.toContain("Is directory a git repo");
+    expect(staticContent).not.toContain("是否 git 仓库");
+  });
+});

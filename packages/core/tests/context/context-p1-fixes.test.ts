@@ -142,17 +142,28 @@ describe("P1-8 — 动态块不再混入本该静态的内容", () => {
    * `buildSystemBlocks` 只切一个 DYNAMIC_BOUNDARY，动态区内部 join("\n\n") 成一整块，
    * 所以 CLAUDE.md 一旦（因 P0-1 漏标）掉进动态区，git 变一个字节就得连它一起重算。
    *
-   * 修法是 P0-1：把 CLAUDE.md / deny 规则 / Skill 摘要标回静态区——**不是**把 git 挪去动态区。
-   * 挪 git 只是换个方向踩同一个坑（每次新提交都击穿整块动态区），而且会掉进
-   * 「git 快照冻结死循环」那段【关键决策】已经处理过的老问题里。
-   * 这里守的就是这个方向性结论，防后人（包括修 P1-8 的人）把 git 改成 dynamic。
+   * ⛔ 2026-10-30 方向变更：原结论是「git 快照留在静态区」，现改为 **dynamic**。
+   * 这一格的旧注释明确写着「防后人把 git 改成 dynamic」，所以变更理由必须留在这里，
+   * 否则下一个人会以为是误改：
+   *
+   * 原理由（"挪 git 只是换个方向踩同一个坑：每次新提交都击穿整块动态区"）在当时成立，
+   * 但它依赖一个**已经消失的前提** —— 那时快照里含 `git status --short` 的文件列表，
+   * 提交一次就变一次。X1（PR-D）已把 Status 块物理删除，现在只剩
+   * branch / 最近 5 条提交 / user.name，其中**只有 branch 会变，且是随
+   * enter/exit_worktree 变**（worktree 检出独立分支：main → worktree-xxx）。
+   *
+   * 于是留在静态区的代价从「每次提交」变成「每次进/出 worktree 整条 system 前缀作废」
+   * ——轨迹实测 133 次 `system_static` 断裂里 104 次紧跟 enter/exit_worktree，
+   * 字符级浪费中位数 0.997。挪进动态区的代价只有 ~200 字符/轮，且 OpenAI 族落在
+   * 尾部 user 消息、不伤前缀缓存。两害相权取动态区：**这不是回退 P1-8，是它的前提变了**。
    */
-  test("git 快照留在静态区（volatile 的 Status 块已物理删除，故它确实稳定）", () => {
+  test("git 快照在动态区（branch 随 worktree 切换变化，留静态区会击穿前缀）", () => {
     const att = generateGitStatusAttachment(process.cwd());
     // 非 git 仓库返回 null；本仓库是 git 仓库，必须拿到附件
     expect(att).not.toBeNull();
-    expect(att!.cacheStability).toBe("stable");
-    // 之所以敢进静态区，前提是最毒的 volatile 块不在里面——这条是那个前提的守卫
+    expect(att!.cacheStability).toBe("dynamic");
+    // 变 dynamic 的**前提**没变：最毒的 volatile 块（Status 文件列表）仍不许回来。
+    // 它才是"提交一次就变一次"的源；它一旦回来，动态区每轮都要重算这份内容。
     expect(att!.content).not.toContain("Status:");
   });
 
