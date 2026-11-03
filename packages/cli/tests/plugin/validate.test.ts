@@ -66,7 +66,34 @@ describe("插件 Manifest 验证", () => {
   });
 
   test("dependencies 合法数组通过", () => {
-    expect(validateManifest({ ...valid, dependencies: ["a", "b"] }).valid).toBe(true);
+    expect(validateManifest({ ...valid, dependencies: ["foo", "bar-baz", "a1"] }).valid).toBe(true);
+  });
+
+  test("dependencies 元素非合法插件名失败", () => {
+    for (const dep of ["../../evil", "A@B@C", ""]) {
+      const r = validateManifest({ ...valid, dependencies: [dep] });
+      expect(r.valid).toBe(false);
+      expect(r.errors.some((e) => e.includes("dependencies") && e.includes("slug"))).toBe(true);
+    }
+  });
+
+  test("version 非 semver 格式失败", () => {
+    for (const version of ["1.0", "随便写", ""]) {
+      const r = validateManifest({ ...valid, version });
+      expect(r.valid).toBe(false);
+      expect(r.errors.some((e) => e.includes("version"))).toBe(true);
+    }
+  });
+
+  test("version 合法 semver 通过", () => {
+    for (const version of ["1.0.0", "1.0.0-beta.1", "1.0.0+build.7"]) {
+      expect(validateManifest({ ...valid, version }).valid).toBe(true);
+    }
+  });
+
+  test("验证结果只有 valid 与 errors，没有 warnings 通道", () => {
+    const r = validateManifest(valid);
+    expect(Object.keys(r).sort()).toEqual(["errors", "valid"]);
   });
 
   test("commands 接受字符串或数组", () => {

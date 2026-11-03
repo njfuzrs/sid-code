@@ -27,7 +27,7 @@ export { parsePluginId, buildPluginId } from "./identifier.ts";
 export type { ParsedPluginId } from "./identifier.ts";
 
 // 验证
-export { validateManifest, parseAndValidateManifest } from "./validate.ts";
+export { validateManifest } from "./validate.ts";
 export type { ManifestValidationResult } from "./validate.ts";
 
 // 注册表

@@ -47,4 +47,32 @@ describe("memoize 增强", () => {
     expect(await fn(99)).toBe(10); // 仍返回首次结果
     expect(calls).toBe(1);
   });
+
+  test("失败后驱逐缓存，第二次调用能重新执行并成功", async () => {
+    let calls = 0;
+    const fn = memoize(async () => {
+      calls++;
+      if (calls === 1) throw new Error("首次失败");
+      return "ok";
+    });
+
+    await expect(fn()).rejects.toThrow("首次失败");
+    expect(calls).toBe(1);
+    expect(fn.cache.size).toBe(0); // 失败未留在缓存里
+
+    expect(await fn()).toBe("ok");
+    expect(calls).toBe(2);
+  });
+
+  test("首次错误原样抛出", async () => {
+    const fn = memoize(async () => {
+      throw new Error("磁盘错误 EACCES");
+    });
+    await expect(fn()).rejects.toThrow("磁盘错误 EACCES");
+    try {
+      await fn();
+    } catch (err) {
+      expect((err as Error).message).toBe("磁盘错误 EACCES");
+    }
+  });
 });

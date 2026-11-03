@@ -19,6 +19,7 @@ import { ExtensionLoader } from "@sid-code/core/extension/loader.ts";
 import { SkillLoader } from "@sid-code/core/skill/loader.ts";
 import type { SkillDefinition } from "@sid-code/core/skill/types.ts";
 import { registerPluginCache } from "./caches.ts";
+import { recordComponentLoadError } from "./component-errors.ts";
 import { loadAllPluginsCacheOnly } from "./loader.ts";
 import type { LoadedPlugin } from "./types.ts";
 
@@ -35,6 +36,13 @@ export async function loadSkillsForPlugin(plugin: LoadedPlugin): Promise<SkillDe
       files = await extLoader.scanSingleDir(dir, "project");
     } catch (err: any) {
       log.warn("PLUGIN", `扫描插件 skills 目录失败 ${dir}: ${err?.message ?? String(err)}`);
+      // 该目录下的 skill 全部缺失，只留 warn 的话用户只会觉得"skill 少了几个"
+      recordComponentLoadError({
+        type: "component-load-failed",
+        source: plugin.source,
+        component: "skills",
+        error: `扫描目录 ${dir} 失败: ${err?.message ?? String(err)}`,
+      });
       continue;
     }
 

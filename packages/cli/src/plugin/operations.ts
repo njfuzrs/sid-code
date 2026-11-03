@@ -25,6 +25,7 @@ import { clearAllPluginCaches } from "./caches.ts";
 import { resolveDependencyClosure, findReverseDependents } from "./dependency.ts";
 import { loadAllPlugins } from "./loader.ts";
 import type { PluginError } from "./types.ts";
+import { formatPluginError } from "./types.ts";
 import { evaluatePluginOrigin } from "@sid-code/core/config/plugin-only-policy.ts";
 
 /** 操作结果 */
@@ -133,7 +134,11 @@ export async function uninstallPlugin(
   const registry = await readInstalledPlugins();
   const entry = registry.plugins[name];
   if (!entry) {
-    return { ok: false, error: `插件 "${name}" 未安装` };
+    // 走结构化错误：生命周期操作的失败要能按类型归因（OperationResult 仍是字符串契约）
+    return {
+      ok: false,
+      error: formatPluginError({ type: "plugin-not-found", source: name, pluginId: name }),
+    };
   }
 
   // 反向依赖检查
@@ -169,7 +174,10 @@ export async function enablePlugin(name: string): Promise<OperationResult> {
   const registry = await readInstalledPlugins();
   const entry = registry.plugins[name];
   if (!entry) {
-    return { ok: false, error: `插件 "${name}" 未安装` };
+    return {
+      ok: false,
+      error: formatPluginError({ type: "plugin-not-found", source: name, pluginId: name }),
+    };
   }
   if (entry.enabled) {
     return { ok: true, message: `插件 "${name}" 已经是启用状态` };
@@ -216,7 +224,10 @@ export async function disablePlugin(
   const registry = await readInstalledPlugins();
   const entry = registry.plugins[name];
   if (!entry) {
-    return { ok: false, error: `插件 "${name}" 未安装` };
+    return {
+      ok: false,
+      error: formatPluginError({ type: "plugin-not-found", source: name, pluginId: name }),
+    };
   }
   if (!entry.enabled) {
     return { ok: true, message: `插件 "${name}" 已经是禁用状态` };

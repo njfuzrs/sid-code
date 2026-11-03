@@ -4,13 +4,16 @@
  * 不依赖 Zod，使用轻量级手动验证（与 config/schema.ts 风格一致）。
  */
 
-import type { PluginManifest } from "./types.ts";
+/** 插件名 slug 规则（name 与 dependencies 元素共用同一口径） */
+const PLUGIN_NAME_SLUG = /^[a-z0-9][a-z0-9-_]*$/;
+
+/** semver 规则：主.次.修订，可选预发布与构建元数据 */
+const SEMVER = /^\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?(?:\+[0-9A-Za-z.-]+)?$/;
 
 /** Manifest 验证结果 */
 export interface ManifestValidationResult {
   valid: boolean;
   errors: string[];
-  warnings: string[];
 }
 
 /**
@@ -19,10 +22,9 @@ export interface ManifestValidationResult {
  */
 export function validateManifest(manifest: unknown): ManifestValidationResult {
   const errors: string[] = [];
-  const warnings: string[] = [];
 
   if (!manifest || typeof manifest !== "object" || Array.isArray(manifest)) {
-    return { valid: false, errors: ["plugin.json 必须是 JSON 对象"], warnings };
+    return { valid: false, errors: ["plugin.json 必须是 JSON 对象"] };
   }
 
   const m = manifest as Record<string, unknown>;
@@ -31,7 +33,7 @@ export function validateManifest(manifest: unknown): ManifestValidationResult {
   if (!m.name || typeof m.name !== "string") {
     errors.push("name 字段必填且必须是字符串");
   } else {
-    if (!/^[a-z0-9][a-z0-9-_]*$/.test(m.name)) {
+    if (!PLUGIN_NAME_SLUG.test(m.name)) {
       errors.push("name 必须是 slug 格式（小写字母、数字、-、_，且以字母或数字开头）");
     }
     if (m.name.length > 64) {
@@ -39,9 +41,11 @@ export function validateManifest(manifest: unknown): ManifestValidationResult {
     }
   }
 
-  // 必填字段：version
+  // 必填字段：version（types.ts 约定为 semver 格式）
   if (!m.version || typeof m.version !== "string") {
     errors.push("version 字段必填且必须是字符串");
+  } else if (!SEMVER.test(m.version)) {
+    errors.push("version 必须是 semver 格式（如 1.0.0）");
   }
 
   // 必填字段：description
@@ -87,6 +91,8 @@ export function validateManifest(manifest: unknown): ManifestValidationResult {
       for (const dep of m.dependencies) {
         if (typeof dep !== "string") {
           errors.push(`dependencies 中的每个元素必须是字符串，发现: ${typeof dep}`);
+        } else if (!PLUGIN_NAME_SLUG.test(dep)) {
+          errors.push(`dependencies 中的 "${dep}" 不是合法插件名（slug 格式）`);
         }
       }
     }
@@ -98,18 +104,5 @@ export function validateManifest(manifest: unknown): ManifestValidationResult {
     }
   }
 
-  return { valid: errors.length === 0, errors, warnings };
-}
-
-/**
- * 验证并规范化 Manifest（验证通过后返回类型化对象，否则返回 null）
- */
-export function parseAndValidateManifest(
-  manifest: unknown,
-): { manifest: PluginManifest; warnings: string[] } | { errors: string[] } {
-  const result = validateManifest(manifest);
-  if (!result.valid) {
-    return { errors: result.errors };
-  }
-  return { manifest: manifest as PluginManifest, warnings: result.warnings };
+  return { valid: errors.length === 0, errors };
 }

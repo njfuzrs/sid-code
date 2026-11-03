@@ -111,6 +111,7 @@ export type PluginError =
     }
   | { type: "plugin-not-found"; source: string; pluginId: string }
   | { type: "path-not-found"; source: string; path: string; component: PluginComponent }
+  | { type: "path-escape"; source: string; path: string; component: PluginComponent }
   | { type: "duplicate-name"; source: string; existingSource: string }
   | { type: "trust-rejected"; source: string; path: string }
   | { type: "policy-blocked"; source: string; reason: string }
@@ -209,6 +210,8 @@ export function formatPluginError(err: PluginError): string {
       return `[${err.source}] 未找到插件: ${err.pluginId}`;
     case "path-not-found":
       return `[${err.source}] 组件 ${err.component} 路径不存在: ${err.path}`;
+    case "path-escape":
+      return `[${err.source}] 组件 ${err.component} 路径越出插件目录: ${err.path}`;
     case "duplicate-name":
       return `[${err.source}] 插件名重复（已存在来源: ${err.existingSource}）`;
     case "trust-rejected":

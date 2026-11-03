@@ -7,7 +7,7 @@
  *
  * 命名空间隔离保证：
  *   - 不同插件的命令不冲突（plugin-a:deploy vs plugin-b:deploy）
- *   - 内置命令优先：插件命令不能覆盖 /help 等核心命令（在 merge.ts 处理）
+ *   - 内置命令优先：插件命令不能覆盖 /help 等核心命令（由 UnifiedCommandRegistry 注册时去重）
  */
 
 import { existsSync } from "fs";
@@ -18,6 +18,7 @@ import { memoize } from "@sid-code/shared/utils/memoize.ts";
 import { parseFrontmatter } from "@sid-code/core/extension/frontmatter.ts";
 import { CustomCommand } from "../command/custom.ts";
 import { registerPluginCache } from "./caches.ts";
+import { recordComponentLoadError } from "./component-errors.ts";
 import { loadAllPluginsCacheOnly } from "./loader.ts";
 import type { LoadedPlugin } from "./types.ts";
 
@@ -43,11 +44,16 @@ function getCommandName(filePath: string, baseDir: string, pluginName: string): 
   return `${pluginName}:${namespace}`;
 }
 
-/** 递归扫描目录下所有 .md 命令文件 */
+/**
+ * 递归扫描目录下所有 .md 命令文件
+ *
+ * @param source 插件标识符（my-plugin@local），失败时写进 component-load-failed 便于归因
+ */
 async function scanCommandFiles(
   dir: string,
   baseDir: string,
   pluginName: string,
+  source: string,
   out: CustomCommand[],
 ): Promise<void> {
   if (!existsSync(dir)) return;
@@ -57,6 +63,13 @@ async function scanCommandFiles(
     entries = await readdir(dir, { withFileTypes: true });
   } catch (err: any) {
     getLogger().warn("PLUGIN", `扫描插件命令目录失败 ${dir}: ${err.message}`);
+    // 目录读不了 = 该插件这一整块命令缺失，必须让用户看见（只打 warn 等于没提示）
+    recordComponentLoadError({
+      type: "component-load-failed",
+      source,
+      component: "commands",
+      error: `扫描目录 ${dir} 失败: ${err.message}`,
+    });
     return;
   }
 
@@ -65,7 +78,7 @@ async function scanCommandFiles(
     const fullPath = join(dir, entry.name);
 
     if (entry.isDirectory()) {
-      await scanCommandFiles(fullPath, baseDir, pluginName, out);
+      await scanCommandFiles(fullPath, baseDir, pluginName, source, out);
     } else if (entry.isFile() && entry.name.endsWith(".md")) {
       try {
         const raw = await readFile(fullPath, "utf-8");
@@ -76,6 +89,13 @@ async function scanCommandFiles(
             "PLUGIN",
             `插件命令 frontmatter 格式错误，已跳过 ${fullPath}: ${fmError}`,
           );
+          // 跳过是 fail-closed 的正确行为，但用户得知道自己少了一条命令（否则只看到"命令变少"）
+          recordComponentLoadError({
+            type: "component-load-failed",
+            source,
+            component: "commands",
+            error: `${fullPath} frontmatter 格式错误，已跳过: ${fmError}`,
+          });
           continue;
         }
         const name = getCommandName(fullPath, baseDir, pluginName);
@@ -84,6 +104,12 @@ async function scanCommandFiles(
         out.push(new CustomCommand(name, description, body));
       } catch (err: any) {
         getLogger().warn("PLUGIN", `加载插件命令失败 ${fullPath}: ${err.message}`);
+        recordComponentLoadError({
+          type: "component-load-failed",
+          source,
+          component: "commands",
+          error: `加载 ${fullPath} 失败: ${err.message}`,
+        });
       }
     }
   }
@@ -93,7 +119,7 @@ async function scanCommandFiles(
 export async function loadCommandsForPlugin(plugin: LoadedPlugin): Promise<CustomCommand[]> {
   const commands: CustomCommand[] = [];
   for (const baseDir of plugin.commandsPaths) {
-    await scanCommandFiles(baseDir, baseDir, plugin.name, commands);
+    await scanCommandFiles(baseDir, baseDir, plugin.name, plugin.source, commands);
   }
   return commands;
 }

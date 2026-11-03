@@ -5,7 +5,7 @@
  *   1. clearAllPluginCaches()  — 清除所有 memoize 缓存
  *   2. loadAllPlugins()        — 完整重新加载（验证 manifest、依赖降级）
  *   3. 重新合并各组件到运行时系统：
- *      - Commands → CommandRegistry.replacePluginCommands
+ *      - Commands → UnifiedCommandRegistry.reloadPlugins
  *      - Hooks    → HookSystem.replacePluginHooks
  *      - MCP      → MCPManager.reconnectPluginServers + ToolRegistry 重注册
  *
@@ -21,11 +21,13 @@ import type { MCPManager } from "@sid-code/core/mcp/manager.ts";
 // 实际注入的仍是 cli 的 UnifiedCommandRegistry 实例。
 import type { UnifiedCommandRegistryContract } from "@sid-code/core/command-contract/types.ts";
 import { clearAllPluginCaches } from "./caches.ts";
+import { listComponentLoadErrors } from "./component-errors.ts";
 import { loadAllPlugins } from "./loader.ts";
 import { loadPluginHooks } from "./loadPluginHooks.ts";
 import { collectPluginMcpServers } from "./loadPluginMcp.ts";
 import { PLUGIN_MCP_PREFIX } from "./scope.ts";
 import type { PluginLoadResult } from "./types.ts";
+import { formatPluginError } from "./types.ts";
 
 /** 刷新时可用的运行时系统句柄 */
 export interface RefreshContext {
@@ -74,7 +76,10 @@ export async function refreshActivePlugins(ctx: RefreshContext): Promise<Refresh
     try {
       commandsLoaded = await ctx.unifiedRegistry.reloadPlugins();
     } catch (err: any) {
-      componentErrors.push(`命令刷新失败: ${err.message}`);
+      // 未预期异常 → generic-error：兜底类型也要有真实产生点，且与其余错误同一套渲染口径
+      componentErrors.push(
+        formatPluginError({ type: "generic-error", source: "命令", error: err.message }),
+      );
       log.error("PLUGIN", `命令刷新失败: ${err.message}`);
     }
   }
@@ -87,7 +92,9 @@ export async function refreshActivePlugins(ctx: RefreshContext): Promise<Refresh
       await loadPluginHooks(ctx.hookSystem);
       hooksRefreshed = true;
     } catch (err: any) {
-      componentErrors.push(`Hook 刷新失败: ${err.message}`);
+      componentErrors.push(
+        formatPluginError({ type: "generic-error", source: "Hook", error: err.message }),
+      );
       log.error("PLUGIN", `Hook 刷新失败: ${err.message}`);
     }
   }
@@ -102,7 +109,9 @@ export async function refreshActivePlugins(ctx: RefreshContext): Promise<Refresh
       // 原子替换：卸载/禁用的插件其 skill 一并移除（纯追加会永久残留）
       skillsLoaded = ctx.skillManager.replacePluginSkills(pluginSkills);
     } catch (err: any) {
-      componentErrors.push(`Skill 刷新失败: ${err.message}`);
+      componentErrors.push(
+        formatPluginError({ type: "generic-error", source: "Skill", error: err.message }),
+      );
       log.error("PLUGIN", `Skill 刷新失败: ${err.message}`);
     }
   }
@@ -125,9 +134,18 @@ export async function refreshActivePlugins(ctx: RefreshContext): Promise<Refresh
         }
       }
     } catch (err: any) {
-      componentErrors.push(`MCP 刷新失败: ${err.message}`);
+      componentErrors.push(
+        formatPluginError({ type: "generic-error", source: "MCP", error: err.message }),
+      );
       log.error("PLUGIN", `MCP 刷新失败: ${err.message}`);
     }
+  }
+
+  // 6. 组件级加载失败（命令/Skill/Agent 是延迟加载的，失败进不了 loadResult.errors）。
+  // 必须在这里才读：函数开头 clearAllPluginCaches() 已清空收集器，上面的各组件重新加载
+  // 会重新记录，所以读到的是本次刷新的真实结果。
+  for (const err of listComponentLoadErrors()) {
+    componentErrors.push(formatPluginError(err));
   }
 
   log.info(
