@@ -11,6 +11,7 @@
  * 阶段 3：resolvePermission — 交互式决策（由上层 agent loop 处理）
  */
 
+import { resolveSubAgentTypeParam } from "../agent/sub-agent-input.ts";
 import type {
   Checker,
   Decision,
@@ -2677,8 +2678,9 @@ export class PermissionChecker implements Checker {
     // Plan Mode 专用工具放行
     if (PLAN_MODE_EXTRA_TOOLS.has(req.toolName)) {
       if (req.toolName === "sub_agent") {
-        // 字段提取与 rules.ts extractMatchValue 对齐（subagent_type 优先，兼容旧 type）
-        const subType = (req.input as any)?.subagent_type || (req.input as any)?.type;
+        // 与执行层同一个取值入口（sub-agent-input.ts）：plan 模式拦的必须是实际会跑的类型，
+        // 否则 subagent_type=explore + type=general-purpose 能让写类子代理混过 plan 模式。
+        const subType = resolveSubAgentTypeParam(req.input);
         if (subType && subType !== "explore") {
           log.info(
             "PERMISSION",

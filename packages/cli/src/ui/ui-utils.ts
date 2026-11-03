@@ -8,6 +8,7 @@ import { ELLIPSIS } from "./constants/collapse.ts";
 import { stringWidth } from "./render-port/text.ts";
 import { shortenPathForDisplay, stripPathNoiseInText } from "./utils/path-display.ts";
 import { getTask } from "@sid-code/core/task/index.ts";
+import { resolveSubAgentTypeParam } from "@sid-code/core/agent/sub-agent-input.ts";
 
 /** 助手消息右侧留白（用于视觉区分） */
 export const ASSISTANT_PADDING_RIGHT = 10;
@@ -205,7 +206,7 @@ export function getToolSummary(name: string, input: unknown): string {
     return taskToolSummary(lower, inp);
   }
   if (isSubAgentToolName(lower)) {
-    const agentType = inp?.type || inp?.agentType || "";
+    const agentType = resolveSubAgentTypeParam(inp) ?? "";
     const prompt = inp?.prompt || inp?.task || "";
     // 先剥掉 prompt 里内嵌的 cwd/home 绝对路径再上限护栏：这段路径对同批 fan-out 的每个
     // 子代理都一模一样，会把 header 列宽吃光，导致 5 个并行子代理的卡片截断后长得一样、
@@ -326,7 +327,7 @@ export function getToolDetailFull(name: string, input: unknown): string {
     return `${op} ${fp}${pos}`;
   }
   if (isSubAgentToolName(lower)) {
-    const agentType = inp?.type || inp?.agentType || "";
+    const agentType = resolveSubAgentTypeParam(inp) ?? "";
     const prompt = inp?.prompt || inp?.task || "";
     return agentType ? `${agentType} "${prompt}"` : prompt;
   }
