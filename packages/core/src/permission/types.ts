@@ -8,7 +8,13 @@ import type { ShadowedRule } from "./shadowed-rules.ts";
 /** 权限决策原因（用于审计和调试） */
 export type PermissionDecisionReason =
   | { type: "rule"; rule: string; behavior: "allow" | "deny" | "ask" }
-  | { type: "mode"; mode: string }
+  /**
+   * via：同一 mode 内部的细分来源，目前只有 `skip-inherit-outside-workdir`
+   * （skip 档主会话派生的子代理读/写工作区外非敏感路径，A1）。
+   * 单独标出来的理由：这条口子放宽了「更安全」一个方向，需要能被统计到用了多少次；
+   * 混进普通 always-allow 就再也分不开了（PermissionDecision 已按 reason_type 落轨迹）。
+   */
+  | { type: "mode"; mode: string; via?: string }
   | { type: "safetyCheck"; reason: string; classifierApprovable: boolean }
   | { type: "dangerousCommand"; pattern: string; severity: string }
   /** D16：工具自报破坏性（MCP `destructiveHint: true`），确认不可被 yesMode / auto / hook 静默放行 */
