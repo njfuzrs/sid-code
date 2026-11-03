@@ -201,14 +201,16 @@ describe("P3 节点级输出缓存", () => {
           </Box>
         );
       }
-      const { inst } = mount(<App />, 80);
+      const { inst, root } = mount(<App />, 80);
       await flush();
-      const before = renderStats.walked;
+      // 读本实例根节点的分账，不读全局 walked（同进程别的实例会混进来，见 renderStats 注释）
+      const walked = () => renderStats.byRoot.get(root) ?? 0;
+      const before = walked();
       for (let k = 1; k <= 10; k++) {
         counter.set(k);
         await flush();
       }
-      const perFrame = (renderStats.walked - before) / 10;
+      const perFrame = (walked() - before) / 10;
       // 根 + 外层 Box + 底部那行 Text = 3；与 n 无关
       expect(perFrame, `n=${n}`).toBeLessThanOrEqual(3);
       inst.unmount();

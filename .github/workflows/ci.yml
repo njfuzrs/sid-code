@@ -98,12 +98,32 @@ jobs:
     # 内嵌 rg 这两个平台都已入库（packages/core/vendor/ripgrep/15.1.0/rg-linux-x64 与 rg-darwin-arm64），
     # 所以 make build 的 fetch-ripgrep 步骤不需要联网。
     # Windows 未纳入：见 docs/bugfixes/todo/高级能力/Windows系统兼容性能力补齐/
+    #
+    # ── 分片（2026-11-03）──────────────────────────────────────────────────────────
+    # 全量单测是 test job 的 97%（实测 run 里 macOS 547s / ubuntu 506s，其余步骤合计 <15s），
+    # 而 strict 把合并串行化了：每一轮 CI 的墙钟直接乘到队列里每一个 PR 上。
+    # 所以按 `bun test --shard=k/N` 拆成多个 job 并行，两个平台**仍然都跑全量**，
+    # 只是每个平台的全量摊到 N 台 runner 上 —— 不牺牲任何覆盖面。
+    #
+    # ⚠️ 两个平台分片数不同是刻意的：GitHub Free 档 macOS 并发上限 5（账户级共享）。
+    # pr-auto-update 让「push main 的 CI」与「队首 PR 的 CI」几乎总是同时在跑，
+    # macOS 3 片 × 2 个 run = 6 > 5 会排队，反而更慢。2 片 × 2 = 4 留一个余量。
+    # ubuntu 并发上限 20，3 片不受限。改分片数前先算这笔账。
+    #
+    # ⚠️ 每个平台的 shard 必须恰好覆盖 1..total，漏一片 = 那 1/N 的测试静默不跑而汇聚门照绿。
+    # 反漂移断言在 tests/release-flow-contract.test.ts「test 分片覆盖完整」。
+    name: test (${{ matrix.os }}, ${{ matrix.shard }}/${{ matrix.total }})
     runs-on: ${{ matrix.os }}
     strategy:
       # 一个平台失败不掩盖另一个平台的结果——平台相关的 bug 正是矩阵要抓的东西
       fail-fast: false
       matrix:
-        os: [ubuntu-latest, macos-latest]
+        include:
+          - { os: ubuntu-latest, shard: 1, total: 3 }
+          - { os: ubuntu-latest, shard: 2, total: 3 }
+          - { os: ubuntu-latest, shard: 3, total: 3 }
+          - { os: macos-latest, shard: 1, total: 2 }
+          - { os: macos-latest, shard: 2, total: 2 }
 
     # 本地全量约 200s（9177 test / 649 文件）；给足余量覆盖 CI 冷启动与依赖安装
     timeout-minutes: 25
@@ -199,8 +219,10 @@ jobs:
       # （tests/eval/ 下 agent-trace / raw-jsonl-to-trace / baseline-sync-holdout /
       # eval-runner-e2e，加间接经 evals/providers/sid-code-live.ts 的
       # eval-runner-trajectory-meta）在 vendor 成 workspace 后已能正常解析。
-      - name: 全量单测
-        run: bun test
+      #
+      # 分片后仍是裸 `bun test`（只多一个 --shard），[slow] 用例照样在某一片里跑。
+      - name: 全量单测（分片）
+        run: bun test --shard=${{ matrix.shard }}/${{ matrix.total }}
 
       # 测试不得改动被 git 追踪的文件。这不是洁癖：`evals/holdout/real-tasks/holdout-sids.txt`
       # 是「永封」文件，实测被测试写脏过（残留 fixture 字面量 `tampered-extra-line`，
