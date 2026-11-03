@@ -184,7 +184,8 @@ export async function processStream(
           }
           thinkingStarts.delete(event.index);
         }
-        const jsonStr = jsonAccumulators.get(event.index);
+        // input_json 存在 = provider 给出的权威完整参数，整段替换已累积增量（见 StreamEvent.content_block_stop.tool_use）
+        const jsonStr = event.tool_use?.input_json ?? jsonAccumulators.get(event.index);
         if (jsonStr !== undefined && pos !== undefined) {
           const block = content[pos];
           // D8：provider 在 stop 时修订 tool_use 身份（OpenAI 族 id/name 可能首片缺席或被切碎），
