@@ -31,8 +31,6 @@ import {
 } from "../coordinator/mode.ts";
 import { platform, homedir, type as osType, release as osRelease } from "os";
 import { cwd } from "process";
-import { existsSync } from "fs";
-import { join } from "path";
 import { estimateTokens, truncateToLimit } from "./token-utils.ts";
 import { TokenEstimator } from "../llm/token-estimator.ts";
 import {
@@ -413,7 +411,8 @@ export function buildSystemPrompt(ctx: SystemPromptContext): string {
   const coreParts: string[] = [
     // availableModels 透传：让 buildIdentitySection 能把 model 别名翻成厂商真名后查能力表
     buildIdentitySection(ctx.preferredLanguage, ctx.model, ctx.availableModels),
-    buildEnvironmentSection(ctx.workingDir, ctx.preferredLanguage),
+    // 只传语言：工作目录已移出静态区（见该函数注释与 attachments.ts 的 generateDateAttachment）
+    buildEnvironmentSection(ctx.preferredLanguage),
   ];
 
   // 延迟工具呈现判据：只取会话内不变的静态配置。**绝不读 registry 的运行时态**
@@ -485,10 +484,16 @@ export function buildSystemPrompt(ctx: SystemPromptContext): string {
   // 2. 收集动态附件
   const attachments: Attachment[] = [];
 
-  // 当前日期（P0：易变值移出静态区，消除跨天缓存击穿）。
+  // 当前日期 + 工作目录（P0：易变值移出静态区）。
+  // 日期每天变、工作目录随 worktree 进出变，两者都绝不能进静态核心区 ——
+  // 留在那里就是「跨天」或「进/出一次 worktree」整条前缀作废。
   // priority=DATE_CONTEXT(2) 让它稳定处于动态区最前部，紧跟静态前缀。
   attachments.push(
-    generateDateAttachment(new Date().toISOString().split("T")[0], ctx.preferredLanguage),
+    generateDateAttachment(
+      new Date().toISOString().split("T")[0],
+      ctx.preferredLanguage,
+      ctx.workingDir || cwd(),
+    ),
   );
 
   // G11：MCP 工具列表（动态区）。MCP 工具随 server 连接/断开动态变化，
@@ -942,24 +947,50 @@ ${buildLanguageEscapeHatch("zh")}
 }
 
 /**
- * 判断目录是否在 git 仓库内（对标 CC `<env>` 的 "Is directory a git repo: Yes/No"）。
- * 用文件系统向上查找 .git 而非执行 `git` 命令：零子进程开销、无抢锁副作用、静态可缓存。
- * .git 可能是目录（普通仓库）或文件（worktree / submodule 的 gitdir 指针），existsSync 两者都覆盖。
+ * 构建环境信息部分。
+ *
+ * ⛔ **这里只放会话内不变的字段**（home / platform / OS Version / shell）。
+ *
+ * 工作目录与「是否 git 仓库」曾经在这里，2026-10-30 移出。原因是它们随 worktree
+ * 进出而变化，而这里属于静态核心区：一变就是整条前缀作废。轨迹实测 133 次
+ * `system_static` 断裂里 104 次紧跟 enter_worktree / exit_worktree，字符级浪费
+ * 中位数 0.997（几乎全部重算）。两者现由 `generateDateAttachment` 在动态区下发
+ * （`<working-directory>` 标签），见 attachments.ts。
+ *
+ * 新增字段前先问：**它会在同一会话里变化吗？** 会变就别放这里。
  */
-function isInsideGitRepo(startDir: string): boolean {
-  try {
-    let dir = startDir;
-    // 向上逐级查找，直到文件系统根（dirname 到达自身即为根）
-    for (let i = 0; i < 100; i++) {
-      if (existsSync(join(dir, ".git"))) return true;
-      const parent = join(dir, "..");
-      if (parent === dir) break;
-      dir = parent;
-    }
-  } catch {
-    /* 权限/符号链接异常时静默判否 */
+function buildEnvironmentSection(language?: LanguagePref): string {
+  const homeDir = homedir();
+  const os = platform();
+  // OS Version：对齐 CC `<env>` 的 uname -sr（内核名 + 版本），如 "Darwin 25.5.0"。
+  const osVersion = `${osType()} ${osRelease()}`;
+  const shell = process.env.SHELL || "unknown";
+  // 注意：当前日期【刻意不在此处】注入。日期每天变化，若放进静态核心区会跨天击穿
+  // 静态前缀缓存。日期改由 generateDateAttachment 注入到 DYNAMIC_BOUNDARY 之后的动态区。
+
+  // 字段值（路径 / OS 名）本身与语言无关，但标签和那条路径提示要跟随语言：
+  // en 模式下混进中文标签，等于在告诉模型"这里可以用中文"，削弱语言约束的一致性。
+  if (language === "en") {
+    return `
+<environment>
+## Environment
+- Home directory: ${homeDir}
+- Platform: ${os}
+- OS Version: ${osVersion}
+- Shell: ${shell}
+- Path hint: if reading a file reports "file not found", first check the path is absolute and consistent with the working directory (see <working-directory>) / home directory above, then retry. Do not assume the file was deleted.
+</environment>`;
   }
-  return false;
+
+  return `
+<environment>
+## 环境信息
+- 用户主目录: ${homeDir}
+- 操作系统: ${os}
+- 系统版本 (OS Version): ${osVersion}
+- Shell: ${shell}
+- 路径提示: 如果读取文件时报告"文件不存在"，请先检查路径是否为绝对路径、是否与当前工作目录（见 <working-directory>）/主目录一致，然后重试。不要预设"文件已被删除"。
+</environment>`;
 }
 
 /**
@@ -986,47 +1017,6 @@ function buildContextManagementSection(language?: LanguagePref): string {
 - **主动落盘按需拉取**：产出的重要中间结果（长分析、清单、方案）如需跨多轮引用，优先写入文件（或记忆系统）再按需读回，而不是指望它一直留在对话历史里。这样既省上下文，又不丢信息。
 - 这些都是后台机制，**无需你手动触发压缩或清理**；按正常节奏推进任务即可。
 </context-management>`;
-}
-
-/** 构建环境信息部分 */
-function buildEnvironmentSection(workingDir?: string, language?: LanguagePref): string {
-  const workDir = workingDir || cwd();
-  const homeDir = homedir();
-  const os = platform();
-  // OS Version：对齐 CC `<env>` 的 uname -sr（内核名 + 版本），如 "Darwin 25.5.0"。
-  const osVersion = `${osType()} ${osRelease()}`;
-  const shell = process.env.SHELL || "unknown";
-  const isGitRepo = isInsideGitRepo(workDir);
-  // 注意：当前日期【刻意不在此处】注入。日期每天变化，若放进静态核心区会跨天击穿
-  // 静态前缀缓存。日期改由 generateDateAttachment 注入到 DYNAMIC_BOUNDARY 之后的动态区。
-
-  // 字段值（路径 / OS 名）本身与语言无关，但标签和那条路径提示要跟随语言：
-  // en 模式下混进中文标签，等于在告诉模型"这里可以用中文"，削弱语言约束的一致性。
-  if (language === "en") {
-    return `
-<environment>
-## Environment
-- Working directory: ${workDir}
-- Home directory: ${homeDir}
-- Is directory a git repo: ${isGitRepo ? "Yes" : "No"}
-- Platform: ${os}
-- OS Version: ${osVersion}
-- Shell: ${shell}
-- Path hint: if reading a file reports "file not found", first check the path is absolute and consistent with the working/home directory above, then retry. Do not assume the file was deleted.
-</environment>`;
-  }
-
-  return `
-<environment>
-## 环境信息
-- 工作目录: ${workDir}
-- 用户主目录: ${homeDir}
-- 是否 git 仓库 (Is directory a git repo): ${isGitRepo ? "Yes" : "No"}
-- 操作系统: ${os}
-- 系统版本 (OS Version): ${osVersion}
-- Shell: ${shell}
-- 路径提示: 如果读取文件时报告"文件不存在"，请先检查路径是否为绝对路径、是否与上述工作目录/主目录一致，然后重试。不要预设"文件已被删除"。
-</environment>`;
 }
 
 /** 一行工具摘要：`  - name: 首句`（延迟工具带 [需激活] 前缀标记） */

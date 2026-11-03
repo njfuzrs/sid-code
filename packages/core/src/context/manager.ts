@@ -451,6 +451,19 @@ export class Manager {
    */
   private pendingSendCauses = new Set<SendMutationCause>();
   /**
+   * 待注入的「工作区切换」通知（enter_worktree / exit_worktree 触发）。
+   *
+   * 为什么不在这里直接写历史：切换发生在工具 execute 内部，此刻最后一条是含 tool_use
+   * 的 assistant 消息，`appendPersistentBlocksToLastMessage` 会因「末条非 user」拒绝写入。
+   * 排队到下一轮 reminder 收集时消费，那时末条必然是 tool_result（user 角色）。
+   *
+   * 为什么需要它：工作目录已移出 system 静态区（见 config/system-prompt.ts 的
+   * `buildEnvironmentSection`）。不重建 prompt 就意味着**模型不会自动知道目录变了**，
+   * 它会继续按旧目录推相对路径。这条通知补的正是这个信息差，且因为落在消息尾部，
+   * 静态前缀一个字节都不动 —— 这正是「切换不再作废前缀」的落地方式。
+   */
+  private pendingWorkspaceNotices: string[] = [];
+  /**
    * 冷缓存清理的决策冻结（tool_use_id → 清理后的完整内容）。
    *
    * 旧实现把冷清理只做在**本轮发送副本**上：清完不回写，下一轮又发原文 —— 前缀一来一回
@@ -750,6 +763,36 @@ export class Manager {
   consumeSendMutationCauses(): SendMutationCause[] {
     const out = [...this.pendingSendCauses].sort();
     this.pendingSendCauses.clear();
+    return out;
+  }
+
+  /**
+   * 记录一条「上层改写了发送前缀」的来源（当前只有 system prompt 重建走这条）。
+   *
+   * 与 pendingSendCauses 共用同一集合、同一消费点（`consumeSendMutationCauses`），
+   * 因为下游只关心「本轮谁动了前缀」，不关心改动是由 ContextManager 自己发起
+   * 还是被上层要求 —— 分成两个集合反而会让落盘点漏取一处。
+   */
+  recordSendMutationCause(cause: SendMutationCause): void {
+    this.pendingSendCauses.add(cause);
+  }
+
+  /**
+   * 记录一条待注入的「工作区切换」通知（CLI 的 onWorkspaceChange 回调调用）。
+   *
+   * 为什么是文本而不是结构化字段：通知内容随语言偏好、是否同时重载了规则而变，
+   * 让 ContextManager 认识这些语义只会把 CLI 的决策逻辑复制一份到这里。
+   * 消费点见 query/loop.ts 的 persistent reminder 收集段。
+   */
+  recordWorkspaceNotice(text: string): void {
+    if (!text) return;
+    this.pendingWorkspaceNotices.push(text);
+  }
+
+  /** 取走并清空待注入的工作区切换通知（空数组 = 本次没有切换）。 */
+  consumeWorkspaceNotices(): string[] {
+    const out = this.pendingWorkspaceNotices;
+    this.pendingWorkspaceNotices = [];
     return out;
   }
 
@@ -1577,6 +1620,8 @@ export class Manager {
     this.messages = [];
     this.resetLocalCompactState();
     this.invalidateActualTokenAnchor();
+    // 新会话不该带着上一个会话遗留的工作区切换通知（切完立刻 /clear 会漏一条给下个会话）
+    this.pendingWorkspaceNotices = [];
   }
 
   /**
