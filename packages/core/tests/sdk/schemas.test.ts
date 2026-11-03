@@ -35,6 +35,33 @@ describe("lazySchema", () => {
     expect(calls).toBe(1);
     expect(a).toBe(b);
   });
+
+  // 回归：缓存判据若是 `cached === undefined`，工厂返回 undefined 时每次都会重新构造。
+  // 泛型 T 不约束非 undefined，公共 API 不该依赖「调用方恰好不返回 undefined」。
+  test("工厂返回 undefined 时只执行一次，且每次返回 undefined", () => {
+    let calls = 0;
+    const factory = lazySchema<undefined>(() => {
+      calls++;
+      return undefined;
+    });
+    const a = factory();
+    const b = factory();
+    expect(calls).toBe(1);
+    expect(a).toBeUndefined();
+    expect(b).toBeUndefined();
+  });
+
+  // 顺带覆盖另一个 falsy 值：防止未来有人把判据改成 `if (!cached)`。
+  test("工厂返回 null 时只执行一次", () => {
+    let calls = 0;
+    const factory = lazySchema<null>(() => {
+      calls++;
+      return null;
+    });
+    expect(factory()).toBeNull();
+    expect(factory()).toBeNull();
+    expect(calls).toBe(1);
+  });
 });
 
 describe("UsageSchema", () => {

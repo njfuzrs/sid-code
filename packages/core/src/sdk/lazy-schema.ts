@@ -14,11 +14,27 @@
  * 与 schema 内部结构无关，故放宽为版本无关泛型，运行时行为不变。
  */
 
+/**
+ * 缓存判据用独立的 hasCached 标志，而不是 `cached === undefined`。
+ *
+ * 为什么不能用值本身判断：泛型 T 并未约束为非 undefined（`() => T` 里 T 可以是
+ * `string | undefined`、`null` 等）。用「值是否为 undefined」当缓存判据，等于给
+ * 公共 API 加了一个从未声明的前提——「调用方恰好不返回 undefined」。一旦某个工厂
+ * 返回 undefined（或将来改成条件返回），缓存就永远不生效，每次调用都重新构造，
+ * 而且完全静默：不会报错，只是退化成没有缓存（解循环引用仍安全，但启动性能的
+ * 优化静默失效）。同理也不能用 `if (!cached)`，那会把 null / 0 / "" 一并当成未缓存。
+ *
+ * 这与仓库里 `explicit-undefined-punches-through-defaults` 是同一族问题：
+ * 用「值等价于缺省」来隐式表达「有没有过」，而 undefined 本来就是合法的值。
+ * 显式记录「是否已计算过」才能把两种语义分开。
+ */
 export function lazySchema<T>(factory: () => T): () => T {
-  let cached: T | undefined;
+  let cached: T;
+  let hasCached = false;
   return () => {
-    if (cached === undefined) {
+    if (!hasCached) {
       cached = factory();
+      hasCached = true;
     }
     return cached;
   };
