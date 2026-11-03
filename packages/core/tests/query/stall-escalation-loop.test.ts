@@ -48,6 +48,10 @@ const ENV_KEYS = [
 ] as const;
 let savedEnv: Record<string, string | undefined> = {};
 beforeEach(() => {
+  // 任务注册表是进程级单例。L2 判据会排除「在等后台任务」的轮次（984ef864），
+  // 同一 bun 进程里前面的测试文件若留下运行中的任务，这里的 L1/L2 就永远不触发。
+  // 2026-11-03 CI 分片后与其它文件同片实测 5 条稳定红，单跑全绿。
+  clearAllTasks();
   savedEnv = {};
   for (const k of ENV_KEYS) {
     savedEnv[k] = process.env[k];

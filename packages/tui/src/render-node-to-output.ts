@@ -29,8 +29,17 @@ type RenderCache = {
 	operations: Operation[];
 };
 
-/** 观测用（测试 P3 断言「每帧只走脏的子树」）：自进程启动以来真正遍历（未命中缓存）的节点数 */
-export const renderStats = {walked: 0};
+/**
+ * 观测用（测试 P3 断言「每帧只走脏的子树」）：真正遍历（未命中缓存）的节点数。
+ * `walked` 是进程级总数；`byRoot` 按 renderer 的根节点分账（renderer.ts 写入）。
+ * 断言必须读 byRoot：同一 bun 进程里别的测试文件留下的已挂载实例（动画 setInterval
+ * 未 unmount）会持续出帧，全局计数会把它们一起算进来——2026-11-03 CI 分片后
+ * render-cache 与 cli/tests/ui 的组件测试同片，n=200 实测每帧 7.8～13.3（上限 3）。
+ */
+export const renderStats = {
+	walked: 0,
+	byRoot: new WeakMap<DOMElement, number>(),
+};
 
 const sameTransformers = (
 	a: OutputTransformer[],

@@ -318,7 +318,8 @@ async function accumulate(
           block.name = event.tool_use.name;
         }
         if (block?.type === "tool_use") {
-          const raw = partialJson.get(event.index) ?? "";
+          // input_json 存在 = provider 给出的权威完整参数，整段替换已累积增量（见 StreamEvent.content_block_stop.tool_use）
+          const raw = event.tool_use?.input_json ?? partialJson.get(event.index) ?? "";
           // O(n) 设计：拼接字符串 + 最终一次性解析，不做增量 parse（对齐 CC raw stream 策略）
           try {
             block.input = normalizeToolInput(raw ? JSON.parse(raw) : {});

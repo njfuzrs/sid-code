@@ -144,17 +144,46 @@ interface ContentPart {
 
 // ─── 状态机 ───
 
+/**
+ * 一个 function_call output item 的累积状态。
+ *
+ * ⛔ 每个工具调用**自带** content block index，不要改回共用全局 `blockIndex`。
+ * 2026-11-03 事故（会话 20261103-153824-062a9640，gpt-6.1-sol @ code.ppchat.vip）：
+ * 并行工具调用时网关**不发** `function_call_arguments.delta`，完整参数只出现在
+ * `function_call_arguments.done.arguments` 与 `output_item.done.item.arguments`。
+ * 旧实现既不读这两个字段、又让所有块共用一个递增计数器，于是 3 个并行调用的参数
+ * 全部落成 `{}`，被 F1 空参数检测作废重试 —— 看起来像「模型退化」，实为解析器丢数据。
+ * 同一缺陷的另一形态：参数增量交错到达时，几段 JSON 会被拼进同一个块。
+ */
+interface ToolCallState {
+  /** 该调用独占的 content block index（output_item.added 时分配，终身不变） */
+  index: number;
+  /** content_block_start 时发出的身份；收尾时若与最终值不同，经 stop.tool_use 修订 */
+  startedId: string;
+  startedName: string;
+  id: string;
+  name: string;
+  /** 已经以 input_json_delta 发出的参数（= 消费方累加器里的内容） */
+  emitted: string;
+  /** 已发 content_block_stop —— 同一调用的 args.done 与 output_item.done 都会触发收尾，只收一次 */
+  closed: boolean;
+}
+
 interface ParserState {
-  /** 当前正在构建的 content block index（用于 StreamEvent 对齐） */
-  blockIndex: number;
-  /** 累积的 tool call 参数（按 item_id 分组） */
-  toolCalls: Map<string, { name: string; arguments: string; outputIndex: number }>;
+  /** 下一个可分配的 content block index（单调递增，每个块开块时取一个，块之间互不复用） */
+  nextIndex: number;
+  /** 当前打开的正文块 index（null = 没有打开的正文块） */
+  openTextIndex: number | null;
+  /** 当前打开的思考块 index（null = 不在思考块中） */
+  openReasoningIndex: number | null;
+  /** 工具调用状态（按 output item id） */
+  toolCalls: Map<string, ToolCallState>;
+  /** output_index → output item id（事件缺 item_id 时的回落路由） */
+  outputIndexToItem: Map<number, string>;
   /** usage（从 response.completed 提取） */
   usage: Usage;
   /** 是否已 yield message_start */
   started: boolean;
-  /** 是否在 reasoning block 中 */
-  inReasoningBlock: boolean;
   /**
    * 本次响应是否出现过 function_call（发现 5，2026-10-21）。
    * 终态映射 stop_reason 要用它：Responses 的 status 在带工具调用时仍是 `completed`。
@@ -179,11 +208,13 @@ export async function* parseResponsesStream(
 ): AsyncIterable<StreamEvent> {
   const log = getLogger();
   const state: ParserState = {
-    blockIndex: 0,
+    nextIndex: 0,
+    openTextIndex: null,
+    openReasoningIndex: null,
     toolCalls: new Map(),
+    outputIndexToItem: new Map(),
     usage: { inputTokens: 0, outputTokens: 0 },
     started: false,
-    inReasoningBlock: false,
     sawToolCall: false,
     model: opts?.model ?? "",
   };
@@ -209,27 +240,141 @@ export function isResponsesContentProgress(event: StreamEvent): boolean {
 // ─── 事件映射（核心逻辑） ───
 
 /**
- * 开一个思考块（置位 `inReasoningBlock` + 发 `content_block_start`）。
+ * 开一个思考块（记下 `openReasoningIndex` + 发 `content_block_start`）。
  *
- * 抽成函数是因为**两个不同的事件**都要开思考块：`content_part.added`
- * （part 为 `reasoning_text`）与 `reasoning_summary_part.added`。两处若各写一份，
+ * 抽成函数是因为**三处**都要开思考块：`content_part.added`（part 为 `reasoning_text`）、
+ * `reasoning_summary_part.added`，以及没有 part.added 就直接来的摘要增量。各写一份
  * 就又回到"同一语义两份实现、其中一份漏了"的老形态。
  *
  * 幂等：已在思考块中时不重复开块。真实流里 `reasoning_summary_part.added` 可能
- * 对同一 item 发多次（`summary_index` 递增），重复开块会让 blockIndex 与
- * `content_block_stop` 失配。
+ * 对同一 item 发多次（`summary_index` 递增），重复开块会让 start/stop 失配。
  */
 function openThinkingBlock(state: ParserState): StreamEvent[] {
-  if (state.inReasoningBlock) return [];
-  state.inReasoningBlock = true;
+  if (state.openReasoningIndex !== null) return [];
+  const index = state.nextIndex++;
+  state.openReasoningIndex = index;
   return [
     {
       type: "content_block_start",
-      index: state.blockIndex,
+      index,
       content_block: { type: "thinking", thinking: "" },
       _raw_block: { type: "thinking" },
     } as StreamEvent,
   ];
+}
+
+/** 开一个正文块（幂等：已有打开的正文块时复用） */
+function openTextBlock(state: ParserState, results: StreamEvent[]): number {
+  if (state.openTextIndex !== null) return state.openTextIndex;
+  const index = state.nextIndex++;
+  state.openTextIndex = index;
+  results.push({
+    type: "content_block_start",
+    index,
+    content_block: { type: "text", text: "" },
+  } as StreamEvent);
+  return index;
+}
+
+/**
+ * 按事件找到它所属的工具调用：优先 `item_id`，缺席时回落 `output_index`。
+ * 两者都对不上返回 undefined —— 调用方丢弃该事件，不猜「大概是最后一个」。
+ */
+function findToolCall(raw: ResponsesStreamEvent, state: ParserState): ToolCallState | undefined {
+  if (raw.item_id) {
+    const tc = state.toolCalls.get(raw.item_id);
+    if (tc) return tc;
+  }
+  if (typeof raw.output_index === "number") {
+    const id = state.outputIndexToItem.get(raw.output_index);
+    if (id) return state.toolCalls.get(id);
+  }
+  return undefined;
+}
+
+/** 登记一个工具调用并发 content_block_start（output_item.added，或 done 先于 added 时补开） */
+function openToolCall(
+  item: OutputItem,
+  outputIndex: number | undefined,
+  state: ParserState,
+  results: StreamEvent[],
+): ToolCallState {
+  state.sawToolCall = true;
+  const id = item.call_id ?? item.id ?? "";
+  const name = item.name ?? "";
+  const tc: ToolCallState = {
+    index: state.nextIndex++,
+    startedId: id,
+    startedName: name,
+    id,
+    name,
+    emitted: "",
+    closed: false,
+  };
+  state.toolCalls.set(item.id, tc);
+  if (typeof outputIndex === "number") state.outputIndexToItem.set(outputIndex, item.id);
+  results.push({
+    type: "content_block_start",
+    index: tc.index,
+    content_block: { type: "tool_use", id, name, input: {} },
+  } as StreamEvent);
+  return tc;
+}
+
+/**
+ * 收尾一个工具调用：以**权威完整参数**（done 事件携带）为准，补齐/修订后发 stop。
+ *
+ * - 权威值以已发增量为前缀（含「一个增量都没发」的网关形态）：把剩余部分作为一条
+ *   `input_json_delta` 补发 —— 所有消费方都只靠增量累加，这样无需改消费方即正确。
+ * - 不是前缀（网关增量与终值矛盾）：经 `content_block_stop.tool_use.input_json`
+ *   让消费方整段替换，并告警 —— 终值是规范定义的完整参数，增量只是流式预览。
+ * - 权威值缺席（网关连 done 都不带 arguments）：以已累积的增量为准。
+ */
+function closeToolCall(
+  tc: ToolCallState,
+  final: { arguments?: unknown; name?: string; id?: string },
+  state: ParserState,
+  results: StreamEvent[],
+  log: ReturnType<typeof getLogger>,
+): void {
+  if (tc.closed) return;
+  tc.closed = true;
+  if (final.name) tc.name = final.name;
+  if (final.id) tc.id = final.id;
+
+  let revisedJson: string | undefined;
+  if (typeof final.arguments === "string" && final.arguments !== tc.emitted) {
+    if (final.arguments.startsWith(tc.emitted)) {
+      results.push({
+        type: "content_block_delta",
+        index: tc.index,
+        delta: { type: "input_json_delta", partial_json: final.arguments.slice(tc.emitted.length) },
+      } as StreamEvent);
+    } else {
+      log.warn(
+        "RESPONSES",
+        `工具调用 ${tc.name} 的参数增量与 done 终值不一致，以终值为准` +
+          `（增量 ${tc.emitted.length} 字符，终值 ${final.arguments.length} 字符）`,
+      );
+      revisedJson = final.arguments;
+    }
+    tc.emitted = final.arguments;
+  }
+
+  const identityChanged = tc.id !== tc.startedId || tc.name !== tc.startedName;
+  results.push({
+    type: "content_block_stop",
+    index: tc.index,
+    ...(identityChanged || revisedJson !== undefined
+      ? {
+          tool_use: {
+            id: tc.id,
+            name: tc.name,
+            ...(revisedJson !== undefined ? { input_json: revisedJson } : {}),
+          },
+        }
+      : {}),
+  } as StreamEvent);
 }
 
 function mapResponseEvent(
@@ -264,24 +409,10 @@ function mapResponseEvent(
       }
 
       const item = raw.item;
-      if (item?.type === "function_call" && item.name) {
-        // 工具调用：创建 tool_use block
-        state.sawToolCall = true;
-        state.toolCalls.set(item.id, {
-          name: item.name,
-          arguments: "",
-          outputIndex: raw.output_index ?? 0,
-        });
-        results.push({
-          type: "content_block_start",
-          index: state.blockIndex,
-          content_block: {
-            type: "tool_use",
-            id: item.call_id ?? item.id,
-            name: item.name,
-            input: {},
-          },
-        } as StreamEvent);
+      // 不再要求 item.name 非空：name 缺席时照样开块，收尾经 stop.tool_use 修订。
+      // 旧判据 `&& item.name` 会让无名首片的调用连块都没有，参数全部丢失。
+      if (item?.type === "function_call" && !state.toolCalls.has(item.id)) {
+        openToolCall(item, raw.output_index, state, results);
       }
       break;
     }
@@ -290,11 +421,7 @@ function mapResponseEvent(
     case "response.content_part.added": {
       const part = raw.part;
       if (part?.type === "output_text") {
-        results.push({
-          type: "content_block_start",
-          index: state.blockIndex,
-          content_block: { type: "text", text: "" },
-        } as StreamEvent);
+        openTextBlock(state, results);
       } else if (part?.type === "reasoning_text") {
         // 规范字面量是 reasoning_text（openapi.yaml:75568-75574），不是 "reasoning"。
         results.push(...openThinkingBlock(state));
@@ -305,7 +432,7 @@ function mapResponseEvent(
     // ─── Reasoning Summary Part 添加 ───
     // 真实流里推理摘要走的是**这个**事件（openapi.yaml:68718-68768），而不是
     // content_part.added —— 此前完全没有这个 case，是推理摘要串进正文的直接原因：
-    // inReasoningBlock 永不置位 → 后续 reasoning_summary_text.delta 被当正文 text_delta。
+    // 思考块永不打开 → 后续 reasoning_summary_text.delta 被当正文 text_delta。
     case "response.reasoning_summary_part.added": {
       // part.type 恒为 summary_text（openapi.yaml:68746-68755）。这里不校验 part
       // 而是无条件开思考块：事件名本身已经确定了语义，多一层判据只会在网关
@@ -317,9 +444,11 @@ function mapResponseEvent(
     // ─── Text Delta ───
     case "response.output_text.delta": {
       if (raw.delta) {
+        // 缺了 content_part.added 的网关形态也能落位：没有打开的正文块就现开一个
+        const index = openTextBlock(state, results);
         results.push({
           type: "content_block_delta",
-          index: state.blockIndex,
+          index,
           delta: { type: "text_delta", text: raw.delta },
         } as StreamEvent);
       }
@@ -328,17 +457,20 @@ function mapResponseEvent(
 
     // ─── Text Done ───
     case "response.output_text.done": {
-      results.push({ type: "content_block_stop", index: state.blockIndex } as StreamEvent);
-      state.blockIndex++;
+      if (state.openTextIndex !== null) {
+        results.push({ type: "content_block_stop", index: state.openTextIndex } as StreamEvent);
+        state.openTextIndex = null;
+      }
       break;
     }
 
     // ─── Reasoning Delta ───
     case "response.reasoning_summary_text.delta": {
       if (raw.delta) {
+        results.push(...openThinkingBlock(state));
         results.push({
           type: "content_block_delta",
-          index: state.blockIndex,
+          index: state.openReasoningIndex!,
           delta: { type: "text_delta", text: raw.delta },
         } as StreamEvent);
       }
@@ -347,30 +479,46 @@ function mapResponseEvent(
 
     // ─── Reasoning Done ───
     case "response.reasoning_summary_text.done": {
-      state.inReasoningBlock = false;
-      results.push({ type: "content_block_stop", index: state.blockIndex } as StreamEvent);
-      state.blockIndex++;
+      if (state.openReasoningIndex !== null) {
+        results.push({
+          type: "content_block_stop",
+          index: state.openReasoningIndex,
+        } as StreamEvent);
+        state.openReasoningIndex = null;
+      }
       break;
     }
 
     // ─── Function Call Arguments Delta ───
+    // 按 item_id（回落 output_index）路由到该调用**自己的** index：并行调用的增量交错
+    // 到达时各归各位。找不到归属的增量丢弃而不是塞进「当前块」—— 塞错块比丢更糟，
+    // 而且终值会在 done 时补齐。
     case "response.function_call_arguments.delta": {
-      if (raw.delta && raw.item_id) {
-        const tc = state.toolCalls.get(raw.item_id);
-        if (tc) tc.arguments += raw.delta;
-        results.push({
-          type: "content_block_delta",
-          index: state.blockIndex,
-          delta: { type: "input_json_delta", partial_json: raw.delta },
-        } as StreamEvent);
+      if (raw.delta) {
+        const tc = findToolCall(raw, state);
+        if (tc && !tc.closed) {
+          tc.emitted += raw.delta;
+          results.push({
+            type: "content_block_delta",
+            index: tc.index,
+            delta: { type: "input_json_delta", partial_json: raw.delta },
+          } as StreamEvent);
+        } else if (!tc) {
+          log.warn("RESPONSES", `function_call_arguments.delta 找不到所属调用，已丢弃`, {
+            item_id: raw.item_id,
+            output_index: raw.output_index,
+          });
+        }
       }
       break;
     }
 
     // ─── Function Call Arguments Done ───
+    // `arguments` 是规范定义的**完整**参数（openapi：ResponseFunctionCallArgumentsDoneEvent）。
+    // 有的网关（code.ppchat.vip，2026-11-03 实测）只发 done 不发 delta，参数只在这里。
     case "response.function_call_arguments.done": {
-      results.push({ type: "content_block_stop", index: state.blockIndex } as StreamEvent);
-      state.blockIndex++;
+      const tc = findToolCall(raw, state);
+      if (tc) closeToolCall(tc, { arguments: raw.arguments, name: raw.name }, state, results, log);
       break;
     }
 
@@ -382,17 +530,37 @@ function mapResponseEvent(
 
     // ─── Output Item Done ───
     case "response.output_item.done": {
+      const item = raw.item;
+      if (item?.type === "function_call") {
+        // 第二道收尾：网关省略 arguments.done 时，item.arguments 是最后一个权威来源。
+        // 已被 arguments.done 收过的调用在 closeToolCall 里幂等跳过。
+        // done 先于 added（或 added 缺席）时补开块，参数照样不丢。
+        const tc =
+          state.toolCalls.get(item.id) ?? openToolCall(item, raw.output_index, state, results);
+        closeToolCall(
+          tc,
+          { arguments: item.arguments, name: item.name, id: item.call_id },
+          state,
+          results,
+          log,
+        );
+        break;
+      }
       // 发现 1（2026-10-21）：reasoning item 此前在这里被直接丢掉，推理链从未回传。
       // 现在把整个 item 存成不可见的 provider_reasoning 块，下一轮由 buildResponsesRequest 原样回放。
-      const block = toProviderReasoningBlock(raw.item, state.model);
+      const block = toProviderReasoningBlock(item, state.model);
       if (block) {
-        results.push({
-          type: "content_block_start",
-          index: state.blockIndex,
-          content_block: block,
-        } as StreamEvent);
-        results.push({ type: "content_block_stop", index: state.blockIndex } as StreamEvent);
-        state.blockIndex++;
+        // 推理 item 结束时若摘要块还开着（网关省略 summary_text.done），先关掉它
+        if (state.openReasoningIndex !== null) {
+          results.push({
+            type: "content_block_stop",
+            index: state.openReasoningIndex,
+          } as StreamEvent);
+          state.openReasoningIndex = null;
+        }
+        const index = state.nextIndex++;
+        results.push({ type: "content_block_start", index, content_block: block } as StreamEvent);
+        results.push({ type: "content_block_stop", index } as StreamEvent);
       }
       break;
     }
@@ -402,6 +570,11 @@ function mapResponseEvent(
       const usage = raw.response?.usage;
       if (usage) {
         applyResponsesUsage(state.usage, usage);
+      }
+      // 正常终态下仍未收尾的工具调用（网关两个 done 都省了）：以已累积增量收尾，
+      // 否则消费方永远等不到 stop，块停在初始化的 `{}`。
+      for (const tc of state.toolCalls.values()) {
+        if (!tc.closed) closeToolCall(tc, {}, state, results, log);
       }
       // 发现 5（2026-10-21）：此前这里写死 end_turn，带工具的轮全被报成「回合结束」，
       // 靠主循环 F2 兜底才没停摆，代价是 warn.log 每轮一条「声称 end_turn 但含 tool_use」，

@@ -96,6 +96,14 @@ export {
   type BackgroundWaitOutcome,
 } from "./background-wake.ts";
 
+export {
+  hasAwaitedBackgroundTasks,
+  isAwaitedBackgroundTask,
+  beginMainLoopTurn,
+  endMainLoopTurn,
+  SHELL_QUIESCENT_MS,
+} from "./background-await.ts";
+
 export { spawnShellTask, adoptRunningProcessAsTask, killShellTask } from "./shell-task.ts";
 
 export {

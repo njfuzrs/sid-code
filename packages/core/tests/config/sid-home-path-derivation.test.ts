@@ -59,6 +59,15 @@ describe("SID_CONFIG_DIR 覆盖日志落盘路径（缺陷 B 本体）", () => {
   });
 
   afterEach(() => {
+    // ⚠ 全局 logger 是**进程级单例**（logger.ts 的 `initLogger` 恒返回同一实例并原地
+    // reconfigure），一旦打开就跨测试文件生效。不在这里复位，后面任何文件只要打一条
+    // INFO 就会漏进别人的 `console.log` 捕获窗口 —— D60 的 CI flake 就是这么来的：
+    // `agents-summarize-tools.test.ts` 把整段 `console.log` 当 JSON 解析，撞上本文件
+    // 留下的 logger 打出的 ANSI 行（`\x1b` = `^[`）就抛 `Unrecognized token`。
+    //
+    // 必须写在 afterEach 而不是用例末尾：断言失败时用例末尾执行不到（同文件下方
+    // 「运行时判据」describe 的注释记录过同样的教训）。
+    initLogger({ enabled: false });
     if (prevConfigDir === undefined) delete process.env.SID_CONFIG_DIR;
     else process.env.SID_CONFIG_DIR = prevConfigDir;
     if (prevCodeHome === undefined) delete process.env.SID_CODE_HOME;
@@ -83,7 +92,15 @@ describe("SID_CONFIG_DIR 覆盖日志落盘路径（缺陷 B 本体）", () => {
   });
 
   test("logger 真的把日志写进 SID_CONFIG_DIR（不只是路径字符串对）", async () => {
-    const logger = initLogger({ enabled: true, logFile: defaultConfig().debugLogFile });
+    // `console: false`：这条用例只断言**落盘**，不需要控制台输出。更重要的是
+    // logger 的 console 默认 true（logger.ts 的 normalizeOptions），打开后非 ERROR
+    // 级别会走 `console.log`，而全局单例的状态会跨测试文件共享 —— D60 的 CI flake
+    // 就是它漏进了 `agents-summarize-tools.test.ts` 的 console 捕获窗口。
+    const logger = initLogger({
+      enabled: true,
+      console: false,
+      logFile: defaultConfig().debugLogFile,
+    });
     expect(logger.getLogFilePath()).toBe(join(TMP, "debug.log"));
     logger.info("TEST", "sid-home-derivation 探针");
     // logger 用 createWriteStream（异步），落盘不在同一 tick —— 让事件循环转一圈再断言。

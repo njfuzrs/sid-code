@@ -8,11 +8,13 @@
 
 import { describe, test, expect, afterEach } from "bun:test";
 import { writeFileSync, mkdtempSync, rmSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { tmpdir, platform } from "node:os";
 import { join } from "node:path";
 import {
   detectDroppedImagePath,
+  readClipboardImage,
   readClipboardImageToFile,
+  clipboardImageFailureHint,
   resolveCopiedImageFile,
   IMAGE_EXTS,
 } from "@sid-code/cli/ui/utils/clipboard-image.ts";
@@ -94,6 +96,45 @@ describe("readClipboardImageToFile（P2-6 契约）", () => {
     }).not.toThrow();
     // 可能为 null（无图）或极少数环境真有图返回路径——只要不抛且类型正确即通过。
     expect(result === null || typeof result === "string").toBe(true);
+  });
+});
+
+describe("readClipboardImage：区分「没有图片」与「缺工具」", () => {
+  test("返回结构化结果，绝不抛，reason 只能是 no-image / no-tool", () => {
+    let result: ReturnType<typeof readClipboardImage> | null = null;
+    expect(() => {
+      result = readClipboardImage(1234567890);
+    }).not.toThrow();
+    const r = result!;
+    if (r.ok) {
+      expect(typeof r.path).toBe("string");
+    } else {
+      expect(["no-image", "no-tool"]).toContain(r.reason);
+    }
+  });
+});
+
+describe("clipboardImageFailureHint：提示文案必须分原因、分平台", () => {
+  test("no-image 只说剪贴板里没有图片，不提任何工具名", () => {
+    const hint = clipboardImageFailureHint("no-image");
+    expect(hint).toContain("没有图片");
+    // 旧文案把三个平台的工具名并列，用户会照着去装用不上的东西（macOS 装 xclip 毫无作用）。
+    for (const tool of ["pngpaste", "xclip", "wl-paste"]) {
+      expect(hint).not.toContain(tool);
+    }
+  });
+
+  test("no-tool 只在 Linux 上给安装指引（macOS/Windows 的读图工具是系统自带）", () => {
+    const hint = clipboardImageFailureHint("no-tool");
+    if (platform() === "linux") {
+      expect(hint).toContain("wl-paste");
+      expect(hint).toContain("xclip");
+    } else {
+      // 非 Linux 平台不存在「装个工具就能读图」的选项，提示不该出现工具名。
+      for (const tool of ["pngpaste", "xclip", "wl-paste"]) {
+        expect(hint).not.toContain(tool);
+      }
+    }
   });
 });
 

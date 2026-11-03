@@ -3,7 +3,15 @@
  * 管理全局 UI 状态，包括 renderMarkdown 开关、通知消息等
  */
 
-import React, { createContext, useContext, useState, useCallback, useMemo } from "react";
+import React, {
+  createContext,
+  useContext,
+  useState,
+  useCallback,
+  useMemo,
+  useRef,
+  useEffect,
+} from "react";
 
 /** 瞬态消息类型 */
 export enum TransientMessageType {
@@ -17,6 +25,17 @@ export interface TransientMessage {
   text: string;
   type: TransientMessageType;
 }
+
+/**
+ * 瞬态消息的停留时长（ms）。
+ *
+ * 口径与 `ui/CLAUDE.md` L4-H「短回执 4s、错误 8s」一致（同族常量见
+ * `ui/command-result-route.ts` 的 COMMAND_STATUS_MS / COMMAND_ERROR_STATUS_MS）。
+ * 瞬态消息的语义就是「说完就走」——此前没有到期定时器，一旦显示就永久挂在
+ * 输入框上方，直到进程退出（2026-11-03 粘贴提示滞留实测）。
+ */
+export const TRANSIENT_MESSAGE_MS = 4000;
+export const TRANSIENT_WARNING_MS = 8000;
 
 /** 工具结果阶梯式展开级别 — TO4
  * 0 = 折叠（默认行数截断）/ 1 = 展开更多（中间档）/ 2 = 全展开（不截断）。
@@ -70,7 +89,7 @@ export interface UIActions {
   setRenderMarkdown: (value: boolean) => void;
   toggleRenderMarkdown: () => void;
   setTransientMessage: (message: TransientMessage | null) => void;
-  showTransientMessage: (text: string, type: TransientMessageType) => void;
+  showTransientMessage: (text: string, type: TransientMessageType, ttlMs?: number) => void;
   setShowIsExpandableHint: (value: boolean) => void;
   setConstrainHeight: (value: boolean | ((prev: boolean) => boolean)) => void;
   /** TO4：循环切换工具结果展开级别（0→1→2→0）。 */
@@ -140,7 +159,7 @@ interface UIStateProviderProps {
 
 export const UIStateProvider: React.FC<UIStateProviderProps> = ({ children }) => {
   const [renderMarkdown, setRenderMarkdown] = useState(true);
-  const [transientMessage, setTransientMessage] = useState<TransientMessage | null>(null);
+  const [transientMessage, setTransientMessageState] = useState<TransientMessage | null>(null);
   const [showIsExpandableHint, setShowIsExpandableHint] = useState(false);
   const [expandLevel, setExpandLevelState] = useState<ExpandLevel>(0);
   const [ctrlCPressedOnce, setCtrlCPressedOnce] = useState(false);
@@ -148,6 +167,56 @@ export const UIStateProvider: React.FC<UIStateProviderProps> = ({ children }) =>
   const [showEscapePrompt, setShowEscapePrompt] = useState(false);
   const [dialogsVisible, setDialogsVisible] = useState(false);
   const [taskPanelHidden, setTaskPanelHidden] = useState(false);
+
+  // 瞬态消息的到期定时器：新消息覆盖旧消息时必须作废旧定时器，
+  // 否则旧定时器会按「上一条」的时长把新消息提前清掉。
+  const transientTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+
+  const clearTransientTimer = useCallback(() => {
+    if (transientTimerRef.current) {
+      clearTimeout(transientTimerRef.current);
+      transientTimerRef.current = null;
+    }
+  }, []);
+
+  /**
+   * 写入 / 手动清除瞬态消息（统一入口，先作废旧定时器）。
+   *
+   * 手动清空走的是这个包装而不是裸 setState：否则「调 setTransientMessage(null)
+   * 之后又立刻 show 一条新消息」时，旧定时器仍会到点把新消息清掉。
+   */
+  const setTransientMessage = useCallback(
+    (message: TransientMessage | null) => {
+      clearTransientTimer();
+      setTransientMessageState(message);
+    },
+    [clearTransientTimer],
+  );
+
+  /**
+   * 显示一条瞬态消息，到点自动消失（Warning 8s，Hint / Info 4s，口径见
+   * {@link TRANSIENT_MESSAGE_MS}）。
+   *
+   * 此前这里只 setState 不挂定时器，全仓也没有任何一处清空 —— 消息一旦显示就永久
+   * 挂在输入框上方直到进程退出（2026-11-03 实测：粘贴一次后两行「剪贴板无图片…」
+   * 一直不消失）。「瞬态」这个名字必须由到期自动清除来实现。
+   */
+  const showTransientMessage = useCallback(
+    (text: string, type: TransientMessageType, ttlMs?: number) => {
+      setTransientMessage({ text, type });
+      const ttl =
+        ttlMs ??
+        (type === TransientMessageType.Warning ? TRANSIENT_WARNING_MS : TRANSIENT_MESSAGE_MS);
+      transientTimerRef.current = setTimeout(() => {
+        transientTimerRef.current = null;
+        setTransientMessageState(null);
+      }, ttl);
+    },
+    [setTransientMessage],
+  );
+
+  // Provider 卸载时清掉未到期的定时器，避免已销毁的组件被回调 setState。
+  useEffect(() => clearTransientTimer, [clearTransientTimer]);
 
   const toggleRenderMarkdown = useCallback(() => {
     setRenderMarkdown((prev) => !prev);
@@ -159,10 +228,6 @@ export const UIStateProvider: React.FC<UIStateProviderProps> = ({ children }) =>
 
   // TO4：constrainHeight 派生自 expandLevel（0=约束，≥1=放开），保留旧语义。
   const constrainHeight = expandLevel === 0;
-
-  const showTransientMessage = useCallback((text: string, type: TransientMessageType) => {
-    setTransientMessage({ text, type });
-  }, []);
 
   const state = useMemo<UIState>(
     () => ({

@@ -45,6 +45,39 @@ export function indexTypeRank(t: string | undefined): number {
   return t ? (INDEX_TYPE_RANK[t] ?? 4) : 4;
 }
 
+/**
+ * 索引行**描述**的字符上限（C3-A，2026-11-03）。
+ *
+ * 与 `store.ts` 的 `MEMORY_DESC_MAX_LEN`(150) **刻意分开**，别合并成一个常量：
+ * 那个值写进 frontmatter，是**磁盘数据**，截短即永久丢信息；这里只影响
+ * 每个会话全量常驻 system prompt 的**索引行**。
+ *
+ * 为什么 25KB 预算要配 40 字符：实测（2026-11-03，本机 project 记忆 201 个文件）
+ * 索引行平均 389 字节 = key 45 + 文件名 56 + 描述 277 —— 描述占七成，
+ * 于是 25KB 只列得下 63 条（判据是字节，200 条的名义上限从没生效过）。
+ * 描述截到 40 字符后同一批数据可列 132 条（实测脚本见落地方案 C3 一节）。
+ *
+ * 代价点破：摘要信息量下降，召回更依赖 key 命名 —— 这是拿「更准」（可见条数）
+ * 换「更省」（每行字节）的取舍，也是 C3 选项 A 的成本。
+ */
+export const INDEX_DESC_MAX_LEN = 40;
+
+/**
+ * 按 `INDEX_DESC_MAX_LEN` 截断索引行描述。
+ *
+ * 三条线（store 私有记忆 / agent 记忆 / team 记忆）**必须共用**：索引的字节预算
+ * 只有一份，任何一条线自己留 150 字符都会把别的线挤掉。与 `buildTruncatedIndex`
+ * 同一个理由（见文件头「为什么这段逻辑必须只有一份」）。
+ *
+ * 按 code point 切而不是 `slice`：索引含 ⭐⚠️🌐⚡，`slice` 可能把代理对切成半个字符
+ * （与 `buildTruncatedIndex` ③ 避免的事故同源）。
+ */
+export function truncateIndexDesc(desc: string): string {
+  if (!desc) return "";
+  const chars = Array.from(desc);
+  return chars.length > INDEX_DESC_MAX_LEN ? chars.slice(0, INDEX_DESC_MAX_LEN).join("") : desc;
+}
+
 /** 索引表头（两行）。不占条目配额 —— 这正是 ① 修的东西。 */
 const INDEX_HEADER = ["# Memory Index", ""] as const;
 

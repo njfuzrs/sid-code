@@ -16,6 +16,8 @@ import {
   buildTruncatedIndex,
   utf8Bytes,
   INDEX_TRUNCATION_NOTICE,
+  INDEX_DESC_MAX_LEN,
+  truncateIndexDesc,
 } from "@sid-code/core/memory/index-budget.ts";
 import { MEMORY_LIMITS } from "@sid-code/core/memory/types.ts";
 
@@ -113,5 +115,59 @@ describe("P1-7 ③ 只在行边界停，且警告文案计入预算", () => {
     expect(entryCount).toBe(0);
     expect(truncated).toBe(false);
     expect(content.trim()).toBe("# Memory Index");
+  });
+});
+
+// ────────────────────────────────────────────────────────────────────────────
+// C3-A（2026-11-03）：索引行描述截到 INDEX_DESC_MAX_LEN
+// ────────────────────────────────────────────────────────────────────────────
+describe("C3-A：索引行描述上限把字节预算还给可见条数", () => {
+  test("超长描述截到上限，短描述原样保留", () => {
+    const long = "这是一条足够长的中文摘要".repeat(10); // 130 字符
+    const cut = truncateIndexDesc(long);
+    expect(Array.from(cut).length).toBe(INDEX_DESC_MAX_LEN);
+    expect(cut).toBe(Array.from(long).slice(0, INDEX_DESC_MAX_LEN).join(""));
+
+    expect(truncateIndexDesc("短摘要")).toBe("短摘要");
+    expect(truncateIndexDesc("")).toBe("");
+  });
+
+  test("按 code point 截断，不切坏代理对（索引里含 ⭐⚠️🌐⚡）", () => {
+    // 40 个 emoji + 尾巴：若用 slice(0, 40) 按 UTF-16 code unit 切，
+    // 40 个 emoji 占 80 个 code unit，会被切在第 20 个 emoji 之后/中间。
+    const emojis = "⚠️".repeat(30); // 每个是 2 个 code point（⚠ + 变体选择符）
+    const cut = truncateIndexDesc(emojis);
+    // 不产生孤立代理项
+    expect(cut.includes("\uFFFD")).toBe(false);
+    // 每个保留的字符都能再切出同样的码点序列
+    expect(Array.from(cut).length).toBe(INDEX_DESC_MAX_LEN);
+  });
+
+  test("同一条数下，描述截短后的索引能列出更多条（字节预算的收益）", () => {
+    // 模拟真实分布：key 45 + 文件名 56 + 描述 277 字节 ≈ 389 字节/行（本机实测）。
+    // 不截断 25KB 只放得下 64 条左右；截到 40 字符后应显著更多。
+    const longDesc = "中文摘要".repeat(23) + "xx"; // ≈ 70 字符 ≈ 210 字节
+    const entries = Array.from({ length: 200 }, (_, i) => ({
+      key: `user_person_interview_prep_topic_${i}`,
+      file: `user_interview_prep_topic_${i}.md`,
+      desc: longDesc,
+    }));
+
+    const raw = entries.map((e) => line(e.key.length > 0 ? 0 : 0, e.desc) + `-${e.key}`);
+    const rawResult = buildTruncatedIndex(raw);
+    const trimmed = entries.map((e) => line(0, truncateIndexDesc(e.desc)).replace("key0", e.key));
+    const trimmedResult = buildTruncatedIndex(trimmed);
+
+    expect(trimmedResult.truncated).toBe(true); // 200 条仍超 25KB（这是预期：C3-C 负责收敛存量）
+    expect(trimmedResult.entryCount).toBeGreaterThan(rawResult.entryCount);
+    // 提升至少 30%：截 40 字符把描述从 ~450 字节压到 ~120 字节
+    expect(trimmedResult.entryCount).toBeGreaterThanOrEqual(Math.floor(rawResult.entryCount * 1.3));
+  });
+
+  test("索引行描述常量必须远小于 frontmatter 的 150（否则 A 方案没有收益）", () => {
+    expect(INDEX_DESC_MAX_LEN).toBeLessThan(150);
+    // 40 是本方案定的值：中文 1 字符 3 字节，40 字符 ≈ 120 字节，
+    // 配合 key+文件名的 ~100 字节能让 25KB 列出 130 条以上（本机实测 132）。
+    expect(INDEX_DESC_MAX_LEN).toBe(40);
   });
 });

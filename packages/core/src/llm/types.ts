@@ -421,8 +421,13 @@ export type StreamEvent =
        * 且要在解析 input / 回调 onToolUseComplete 之前覆盖。
        *
        * 不发这个字段 = start 时的身份就是最终身份（Anthropic 族恒如此）。
+       *
+       * `input_json`：该块的**完整**参数 JSON，存在时消费方必须用它**整段替换**已累积的
+       * `input_json_delta`，而不是追加。只在 provider 收到的权威终值与已发增量矛盾时出现
+       * （Responses 的 `function_call_arguments.done.arguments` 不以已发增量为前缀）；
+       * 终值与增量一致或只差后缀时，provider 直接补发增量，不走这个字段。
        */
-      tool_use?: { id: string; name: string };
+      tool_use?: { id: string; name: string; input_json?: string };
     }
   | {
       type: "message_delta";
