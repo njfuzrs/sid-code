@@ -51,6 +51,9 @@ import {
 import { buildDigest, resolvePaths, type SessionLevelMetrics } from "./digest.ts";
 import { upsertSessionIndex, buildSessionIndexEntry } from "./session-index.ts";
 import { getPrivacyLevel } from "../analytics/privacy-level.ts";
+// 工具入参摘要（白名单键 + 截断）：主循环 / 子代理的 PreToolUse 与 forked 路径的
+// PermissionDecision 共用同一套口径。见 tool/input-summary.ts 的隐私说明。
+import { summarizeToolInput } from "../tool/input-summary.ts";
 import {
   setPermissionDecisionObserver,
   readPermissionConfigShape,
@@ -1689,6 +1692,13 @@ export class TraceCollector {
             },
           }
         : {}),
+      // C2-3：入参摘要。目前只有 forked 路径会传（它不写 PreToolUse，PermissionDecision
+      // 是它的工具调用**唯一**留痕）—— 没有这一项时，「session-memory fork 被拒的那条
+      // bash 命令是什么」在轨迹里完全查不到，只能从模型事后叙述里猜。
+      // 主循环 / 子代理不传：它们的入参已经在 PreToolUse.input_summary 里，
+      // 同一次调用记两遍只会让「按字段数统计」的口径翻倍。
+      // 隐私：与 PreToolUse 同一条口径，上传前由 LOCAL_ONLY_EVENT_DATA_FIELDS 剥掉。
+      ...(e.inputSummary ? { input_summary: e.inputSummary } : {}),
     });
   }
 
@@ -3496,55 +3506,19 @@ function toolAgentField(input: PreToolUseInput | PostToolUseInput): { agent_id?:
   return input.agent_id ? { agent_id: input.agent_id } : {};
 }
 
-/** input_summary 里允许出现的入参键：够还原「读了哪、搜了什么」，不落全量入参 */
-const TOOL_INPUT_SUMMARY_KEYS = [
-  "file_path",
-  "path",
-  "offset",
-  "limit",
-  "pattern",
-  "glob",
-  "output_mode",
-  "type",
-  // 后台任务等待口径：task_output / bg_task_get 的阻塞与上限、sub_agent / bash 的后台启动。
-  // 回答「模型有没有阻塞、阻塞多久、上限给多少」，也是北极星「后台阻塞等待」的过滤键；
-  // 此前只能从主循环 messages.json 手工统计，子代理一侧完全拿不到。都不含敏感内容。
-  "block",
-  "timeout",
-  "task_id",
-  "run_in_background",
-] as const;
-/** 字符串入参截断长度（command / pattern 可能很长或含敏感内容） */
-const TOOL_INPUT_SUMMARY_STR_MAX = 200;
-
 /**
  * G1：工具入参摘要（白名单键）。用途：重读率 / 读窗重叠 / 提示遵从率这类只要
  * 「读了哪个文件哪一段」的统计——此前只有主循环 raw.jsonl 里有入参，子代理完全没有。
  * 只留本地（LOCAL_ONLY_EVENT_DATA_FIELDS）：路径与命令可能含敏感信息。
+ *
+ * 键白名单与截断口径已抽到 `tool/input-summary.ts`：forked 路径不写 PreToolUse，
+ * 它的入参改记在 PermissionDecision 上，两条路径必须共用同一套口径才不会漂。
  */
 function toolInputSummaryField(input: PreToolUseInput): {
   input_summary?: Record<string, unknown>;
 } {
-  const ti = input.tool_input;
-  if (!ti || typeof ti !== "object") return {};
-  const out: Record<string, unknown> = {};
-  const clip = (v: string) =>
-    v.length > TOOL_INPUT_SUMMARY_STR_MAX ? v.slice(0, TOOL_INPUT_SUMMARY_STR_MAX) : v;
-  for (const k of TOOL_INPUT_SUMMARY_KEYS) {
-    const v = ti[k];
-    if (typeof v === "string") out[k] = clip(v);
-    else if (typeof v === "number" || typeof v === "boolean") out[k] = v;
-  }
-  if (typeof ti.command === "string") out.command = clip(ti.command);
-  // read_many 等多路径工具：只记数量与路径（各自截断），不记内容
-  for (const k of ["paths", "file_paths"] as const) {
-    const v = ti[k];
-    if (Array.isArray(v)) {
-      out[`${k}_count`] = v.length;
-      out[k] = v.filter((x): x is string => typeof x === "string").map(clip);
-    }
-  }
-  return Object.keys(out).length > 0 ? { input_summary: out } : {};
+  const summary = summarizeToolInput(input.tool_input);
+  return summary ? { input_summary: summary } : {};
 }
 
 /**
