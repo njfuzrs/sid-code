@@ -130,6 +130,42 @@ export function watchTerminalOutputErrors(
 }
 
 /**
+ * 信号收尾的整体退出时长上限：`armForceExit` 的兜底，不因遥测排空而加长。
+ *
+ * 2026-11-02 拍板：整体上限仍是 1.5s，遥测排空只是**在这个上限内**分到的预算。
+ */
+export const SIGNAL_FORCE_EXIT_MS = 1500;
+
+/**
+ * 信号路径排空遥测的预算上限（2026-11-02 拍板 450ms）。
+ *
+ * 为什么信号路径要单独排空：遥测队列只有两个出口 —— 每 5 秒一次的定时刷新，和
+ * `runShutdownSequence` 的 flush 阶段（500ms 硬超时）。信号退出两个都赶不上，
+ * 根 span（只在 SessionEnd 才 `end()`）与最后几秒的子 span 留在内存里随进程消失。
+ * 见 `docs-research/.../20261102-信号退出丢根span-排空遥测与标记确认后删除-方案设计.md`。
+ */
+export const SIGNAL_TELEMETRY_DRAIN_MAX_MS = 450;
+
+/** 给遥测排空之后的 `finalizeSessionStore` + `log.flush`（最多 200ms）留的时间 */
+const SIGNAL_TAIL_RESERVE_MS = 250;
+
+/**
+ * 距 `onSignal` 入口已过去 `elapsedMs` 时，还给遥测排空多少毫秒。
+ *
+ * 取剩余时间而不是固定 450ms：SessionEnd hook 卡满 1.2s 时，剩余预算只有
+ * `1500 − 1200 − 250 = 50ms`，此时只排一小批，靠「占位标记等落盘确认后再删」
+ * （`hook-probe.ts` 的 handleSessionEnd）兜底 —— 标记留着，下次启动重建根。
+ * 返回 0 表示干脆不排，**不挤掉后面的日志刷盘**。
+ *
+ * @param elapsedMs 从 `onSignal` 入口算起的已耗时。不取 `teardownStart`：
+ *   1.5s 兜底计时器是从 `armForceExit` 就开始走的。
+ */
+export function telemetryDrainBudgetMs(elapsedMs: number): number {
+  const remaining = SIGNAL_FORCE_EXIT_MS - elapsedMs - SIGNAL_TAIL_RESERVE_MS;
+  return Math.max(0, Math.min(SIGNAL_TELEMETRY_DRAIN_MAX_MS, remaining));
+}
+
+/**
  * 收尾兜底退出：最多 `ms` 后以 `code` 强制退出，返回撤销函数。
  *
  * 必须在收尾的**第一个 await 之前**调用（ASYNC-7）：SessionEnd hook 永久挂起时，晚注册的兜底

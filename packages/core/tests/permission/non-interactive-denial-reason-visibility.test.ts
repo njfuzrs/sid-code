@@ -59,8 +59,13 @@ async function whatTheModelSees(
 describe("非交互模式拒绝必须把成因说给模型（A11 34/66 次被拒的直接成因）", () => {
   let ws: string;
 
-  // 这些用例**全部照 A11 真实轨迹的 audit log 逐字取**，不是构造的。
-  // 构造用例会漂移到「我以为模型会发什么命令」，而这三条是它真的发过的。
+  // 这些用例**全部照真实轨迹的 audit log 逐字取**，不是构造的。
+  // 构造用例会漂移到「我以为模型会发什么命令」，而这三条是模型真的发过的。
+  //
+  // 2026-11-03：第 2 条样本换成会话 3b4f9ca7 的真实命令——原来那条（`echo "---"`）
+  // 被判 `obfuscated-flags` 属误报，已在 A2 修复里改掉，修完它退化成「需确认」，
+  // 与第 1 条成因重复，「三类可区分」这条核心判据就失去覆盖。换样本是为了保住判据，
+  // 不是放宽断言；第 1、3 条仍是 A11 原文。
   const REAL_DENIED: {
     label: string;
     tool: string;
@@ -83,9 +88,17 @@ describe("非交互模式拒绝必须把成因说给模型（A11 34/66 次被拒
       mustExplain: "需要用户确认",
     },
     {
-      label: '环境探测里的 echo "---" → 被判带引号的 flag 混淆',
+      // 2026-11-03 换样本：原来这条样本是
+      // `which perl node grep 2>&1; grep --version 2>&1 | head -1; echo "---"`，
+      // 它被判 `obfuscated-flags` 是误报，已在同一批修复里改掉（A2：`---` 不可能构成
+      // flag，见 bash-security-obfuscated-flags.test.ts）。修完它退化成「需确认」，
+      // 与本文件第 1 条成因重复 → 「三类可区分」这条核心判据就失去覆盖了。
+      // 所以换成同批轨迹里**仍然**被判 injection 的另一条真实命令，判据不变、样本更新。
+      label: "只读检索命令 → 被判 eval 后含 shell 元字符",
       tool: "bash",
-      input: { command: 'which perl node grep 2>&1; grep --version 2>&1 | head -1; echo "---"' },
+      input: {
+        command: `cd /Users/zhourusheng/Code/person/github/codex/codex-rs/execpolicy/src && sed -n '1,70p' policy.rs && printf -- '---- eval ----\\n' && grep -n "fn evaluate\\|fn check\\|Decision::\\|Evaluation\\|Unmatched\\|unmatched" policy.rs | head -50`,
+      },
       mustExplain: "injection",
     },
     {

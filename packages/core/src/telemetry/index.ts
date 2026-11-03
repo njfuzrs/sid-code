@@ -118,3 +118,18 @@ export async function shutdownTelemetry(): Promise<void> {
     globalBus = null;
   }
 }
+
+/**
+ * 只排空、不关闭：信号退出路径专用。
+ *
+ * 与 {@link shutdownTelemetry} 的区别：那个还要跑 Perfetto 输出、导出失败汇总、
+ * `exporter.shutdown()`，加起来多长没有保证（它靠 graceful-shutdown 的 500ms 硬超时兜底）。
+ * 信号路径只缺「本地落盘」这一件事，就只补这一件 —— 预算由调用方按剩余时间给
+ * （`cli/src/signal-teardown.ts` 的 `telemetryDrainBudgetMs`）。
+ *
+ * @returns 是否排空。`false` = 预算内没排完，有数据留在内存里随进程消失，
+ *   调用方据此打 `telemetry drained=false` 日志（判断 450ms 预算够不够的依据）。
+ */
+export async function drainTelemetry(budgetMs: number): Promise<boolean> {
+  return globalBus ? globalBus.drain(budgetMs) : true;
+}
