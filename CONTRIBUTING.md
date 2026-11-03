@@ -290,6 +290,16 @@ pending）。现在加 job 只改 `all-checks-passed` 的 `needs` 一行，不�
   不用盯着 CI 等。
 - **strict 必需检查**：分支必须与 `main` 最新才能合并，所以 CI 跑的是
   「最新的 `main` + 你的改动」，而不是一个过期的 base。
+- **自动 update-branch**（`.github/workflows/pr-auto-update.yml`，2026-11-03）：
+  auto-merge 不会自己 update-branch，strict 下每合一个其余全 BEHIND。这个 workflow 在
+  push main / CI 完成 / 每 15 分钟触发，**每次只给队首一个**挂了 auto-merge 的 BEHIND PR
+  做 update（队首 = auto-merge 挂得最早的），已有 PR 在飞就不动。**所以想排队就挂
+  auto-merge，不挂就不碰你**。检查红了或冲突的 PR 会被跳过，不卡后面的。
+  它需要 secret `PR_AUTO_UPDATE_TOKEN`（fine-grained PAT，仅本仓，Contents + Pull requests
+  读写）：用 `GITHUB_TOKEN` 做 update 时，触发的 CI 会停在「待批准」，等于没省。
+- **测试分片**：`ci.yml` 的 test job 按 `bun test --shard` 拆成 ubuntu 3 片 + macOS 2 片，
+  两个平台仍各跑全量。macOS 只开 2 片是因为 Free 档 macOS 并发上限 5（账户级共享），
+  改分片数前先算「片数 × 同时在跑的 run 数」。
 
 ⚠️ **合并队列（merge queue）用不了**：GitHub 官方限制「仅**组织拥有**的公共仓库，
 或用 Enterprise Cloud 的组织的私有仓库」，本仓 owner 是个人账户（往 ruleset 加

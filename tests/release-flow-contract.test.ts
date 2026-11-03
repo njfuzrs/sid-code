@@ -375,7 +375,9 @@ describe("CI 门禁存在（全量单测前移到 PR 阶段）", () => {
   });
 
   test("跑全量 bun test 与 make build", () => {
-    expect(CI).toMatch(/run:\s*bun test\s*$/m);
+    expect(CI).toMatch(
+      /run:\s*bun test(?: --shard=\$\{\{ matrix\.shard \}\}\/\$\{\{ matrix\.total \}\})?\s*$/m,
+    );
     expect(CI).toMatch(/run:\s*make build\s*$/m);
   });
 
@@ -446,7 +448,9 @@ describe("CI 门禁存在（全量单测前移到 PR 阶段）", () => {
 
     test("rg 步骤排在全量单测之前（否则测试起手就 rg not found）", () => {
       const rgPos = CI.indexOf("挂载仓内 ripgrep 到 PATH");
-      const testPos = CI.search(/run:\s*bun test\s*$/m);
+      const testPos = CI.search(
+        /run:\s*bun test(?: --shard=\$\{\{ matrix\.shard \}\}\/\$\{\{ matrix\.total \}\})?\s*$/m,
+      );
       expect(rgPos).toBeGreaterThan(0);
       expect(testPos).toBeGreaterThan(0);
       expect(rgPos).toBeLessThan(testPos);
@@ -480,6 +484,28 @@ describe("CI 门禁存在（全量单测前移到 PR 阶段）", () => {
 
     test("汇聚 job 存在", () => {
       expect(Object.keys(jobsOf())).toContain("all-checks-passed");
+    });
+
+    // 2026-11-03 test job 改成按 --shard 分片。分片有一种不报红的失效：
+    // 某个平台少写一片（或 total 写错），那 1/N 的测试文件**静默不跑**，汇聚门照样绿。
+    // 所以断言每个平台的 shard 恰好是 1..total、total 一致，且两个平台都在。
+    test("test 分片覆盖完整（每个平台恰好 1..total，ubuntu 与 macOS 都在）", () => {
+      const matrix = (jobsOf().test?.strategy as Record<string, unknown>)?.matrix as {
+        include?: Array<{ os: string; shard: number; total: number }>;
+      };
+      const include = matrix?.include ?? [];
+      const byOs = new Map<string, Array<{ shard: number; total: number }>>();
+      for (const e of include) byOs.set(e.os, [...(byOs.get(e.os) ?? []), e]);
+
+      expect([...byOs.keys()].sort()).toEqual(["macos-latest", "ubuntu-latest"]);
+      for (const [os, entries] of byOs) {
+        const totals = new Set(entries.map((e) => e.total));
+        expect({ os, totals: [...totals] }).toEqual({ os, totals: [entries.length] });
+        const shards = entries.map((e) => e.shard).sort((a, b) => a - b);
+        expect({ os, shards }).toEqual({ os, shards: entries.map((_, i) => i + 1) });
+      }
+      // 命令真的用了 matrix 里的分片参数（写死成 1/1 等于没分片，写死 1/3 等于丢 2/3）
+      expect(CI).toMatch(/bun test --shard=\$\{\{ matrix\.shard \}\}\/\$\{\{ matrix\.total \}\}/);
     });
 
     // 这是本组最重要的一条：它把「ruleset 只绑一个检查」这个决定，
