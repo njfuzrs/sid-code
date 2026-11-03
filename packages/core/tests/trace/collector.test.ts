@@ -1441,14 +1441,25 @@ describe("TraceCollector", () => {
 
   /** 抓取本次 SessionEnd 期间 TRACE 通道的 warn 文本 */
   function captureTraceWarns(): { lines: string[]; restore: () => void } {
-    const logger = initLogger({ enabled: true, level: LogLevel.WARN });
+    // `console: false` 不是可选项：全局 logger 是进程级单例，WARN 级别会走
+    // `writeToConsole` → `console.log`（logger.ts 的 writeToConsole），把一行带 ANSI
+    // 的日志漏进别人的 `console.log` 捕获窗口。D60 的 CI flake 正是这么发生的。
+    const logger = initLogger({ enabled: true, level: LogLevel.WARN, console: false });
     const lines: string[] = [];
     const orig = logger.warn.bind(logger);
     (logger as any).warn = (mod: string, msg: string, ...rest: unknown[]) => {
       if (mod === "TRACE") lines.push(msg);
       return orig(mod, msg, ...rest);
     };
-    return { lines, restore: () => ((logger as any).warn = orig) };
+    // restore 里连 logger 一起复位：全局单例不复位会跨测试文件泄漏（同上）。
+    // 只还原 warn 方法是不够的 —— 它只收回「本函数替换的那一个方法」。
+    return {
+      lines,
+      restore: () => {
+        (logger as any).warn = orig;
+        initLogger({ enabled: false });
+      },
+    };
   }
 
   test("P1-7：异常退出（含[高]级异常）触发 WARN，且带会话 id 与复查命令", async () => {
