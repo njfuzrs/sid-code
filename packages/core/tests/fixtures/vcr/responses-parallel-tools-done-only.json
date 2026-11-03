@@ -1,0 +1,59 @@
+{
+  "description": "OpenAI Responses — 网关真实抓包（code.ppchat.vip, gpt-6.1-sol, 2026-11-03）：两个并行 function_call，只发 arguments.done、不发 arguments.delta；已裁掉网关附带的元数据字段与 response.metadata 事件，事件顺序与 function_call 字段原样保留",
+  "provider": "openai-responses",
+  "scenario": "parallel-tools-done-only",
+  "model": "gpt-6.1-sol",
+  "request": {
+    "method": "POST",
+    "url": "/v1/responses",
+    "body": {
+      "model": "gpt-6.1-sol",
+      "stream": true,
+      "parallel_tool_calls": true
+    }
+  },
+  "response": {
+    "status": 200,
+    "headers": {
+      "content-type": "text/event-stream"
+    },
+    "chunks": [
+      {
+        "data": "event: response.created\ndata: {\"type\": \"response.created\", \"sequence_number\": 0, \"response\": {\"id\": \"resp_000a3f73f8417a5b016ae99774330481989645d6ade9233736\", \"status\": \"in_progress\"}}\n\n",
+        "delayMs": 0
+      },
+      {
+        "data": "event: response.in_progress\ndata: {\"type\": \"response.in_progress\", \"sequence_number\": 1, \"response\": {\"id\": \"resp_000a3f73f8417a5b016ae99774330481989645d6ade9233736\", \"status\": \"in_progress\"}}\n\n",
+        "delayMs": 0
+      },
+      {
+        "data": "event: response.output_item.added\ndata: {\"type\": \"response.output_item.added\", \"sequence_number\": 2, \"output_index\": 0, \"item\": {\"id\": \"fc_000a3f73f8417a5b016ae99775ee1c819895633610c19f5143\", \"type\": \"function_call\", \"call_id\": \"call_ee60fad877604765be8c04a1a421255b\", \"name\": \"bash\", \"arguments\": \"\", \"status\": \"in_progress\"}}\n\n",
+        "delayMs": 0
+      },
+      {
+        "data": "event: response.function_call_arguments.done\ndata: {\"type\": \"response.function_call_arguments.done\", \"sequence_number\": 3, \"output_index\": 0, \"item_id\": \"fc_000a3f73f8417a5b016ae99775ee1c819895633610c19f5143\", \"arguments\": \"{\\\"command\\\": \\\"git status\\\"}\"}\n\n",
+        "delayMs": 0
+      },
+      {
+        "data": "event: response.output_item.done\ndata: {\"type\": \"response.output_item.done\", \"sequence_number\": 4, \"output_index\": 0, \"item\": {\"id\": \"fc_000a3f73f8417a5b016ae99775ee1c819895633610c19f5143\", \"type\": \"function_call\", \"call_id\": \"call_ee60fad877604765be8c04a1a421255b\", \"name\": \"bash\", \"arguments\": \"{\\\"command\\\": \\\"git status\\\"}\", \"status\": \"completed\"}}\n\n",
+        "delayMs": 0
+      },
+      {
+        "data": "event: response.output_item.added\ndata: {\"type\": \"response.output_item.added\", \"sequence_number\": 5, \"output_index\": 1, \"item\": {\"id\": \"fc_000a3f73f8417a5b016ae99776539481988a487f8c1296e0a1\", \"type\": \"function_call\", \"call_id\": \"call_8022ef8d444c414f8da2bba2968dc1fb\", \"name\": \"glob\", \"arguments\": \"\", \"status\": \"in_progress\"}}\n\n",
+        "delayMs": 0
+      },
+      {
+        "data": "event: response.function_call_arguments.done\ndata: {\"type\": \"response.function_call_arguments.done\", \"sequence_number\": 6, \"output_index\": 1, \"item_id\": \"fc_000a3f73f8417a5b016ae99776539481988a487f8c1296e0a1\", \"arguments\": \"{\\\"pattern\\\": \\\"*.md\\\"}\"}\n\n",
+        "delayMs": 0
+      },
+      {
+        "data": "event: response.output_item.done\ndata: {\"type\": \"response.output_item.done\", \"sequence_number\": 7, \"output_index\": 1, \"item\": {\"id\": \"fc_000a3f73f8417a5b016ae99776539481988a487f8c1296e0a1\", \"type\": \"function_call\", \"call_id\": \"call_8022ef8d444c414f8da2bba2968dc1fb\", \"name\": \"glob\", \"arguments\": \"{\\\"pattern\\\": \\\"*.md\\\"}\", \"status\": \"completed\"}}\n\n",
+        "delayMs": 0
+      },
+      {
+        "data": "event: response.completed\ndata: {\"type\": \"response.completed\", \"sequence_number\": 9, \"response\": {\"id\": \"resp_000a3f73f8417a5b016ae99774330481989645d6ade9233736\", \"status\": \"completed\", \"usage\": {\"attribution\": {\"items\": {\"fc_000a3f73f8417a5b016ae99775ee1c819895633610c19f5143\": {\"cache_write_tokens\": 0, \"cached_tokens\": 0, \"input_tokens\": 2, \"output_tokens\": 34}, \"fc_000a3f73f8417a5b016ae99776539481988a487f8c1296e0a1\": {\"cache_write_tokens\": 0, \"cached_tokens\": 0, \"input_tokens\": 0, \"output_tokens\": 15}, \"msg_000a3f73f8417a5b016ae9977433fc8198a1edaf0adb8381ac\": {\"cache_write_tokens\": 0, \"cached_tokens\": 0, \"content\": [{\"cache_write_tokens\": 0, \"cached_tokens\": 0, \"input_tokens\": 35, \"output_tokens\": 0}], \"input_tokens\": 35, \"output_tokens\": 0}}, \"request_fields\": {\"tools\": {\"cache_write_tokens\": 0, \"cached_tokens\": 0, \"input_tokens\": 48, \"output_tokens\": 0}}}, \"input_tokens\": 85, \"input_tokens_details\": {\"cache_write_tokens\": 0, \"cached_tokens\": 0}, \"output_tokens\": 49, \"output_tokens_details\": {\"reasoning_tokens\": 0}, \"total_tokens\": 134}}}\n\n",
+        "delayMs": 0
+      }
+    ]
+  }
+}

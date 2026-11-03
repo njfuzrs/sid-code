@@ -67,6 +67,17 @@ export interface TodoReminderTurnCounts {
    * 从未注入过 → `Infinity`。
    */
   turnsSinceLastReminder: number;
+  /**
+   * 最近 `recentWindow` 个 assistant 轮里，含**工具调用**（且不是 `todo_write`）的轮数。
+   *
+   * C4（2026-11-03）：用来回答「模型是不是正在推进当前项」。本会话（3b4f9ca7）
+   * 主会话 03:43–03:46 在读源码准备派子代理，清单本身没过期，却被每 8 轮催了 4 次。
+   * 判据缺的正是这一个信号 —— 只看「多久没写清单」分不清「停滞」与「在干活」。
+   *
+   * **可选**（`?? 0`）：省略等价于旧行为「不放宽」。回归哨兵
+   * 「60 轮停滞至少注入 6 次」依赖这个默认值，别把它改成"总是统计"。
+   */
+  recentToolUseTurns?: number;
 }
 
 /** 一条 assistant 消息里是否含 `todo_write` 的 tool_use 块。 */
@@ -79,37 +90,68 @@ function hasTodoWriteToolUse(msg: Message): boolean {
 }
 
 /**
- * 倒序扫描消息历史，现算两个节流计数（纯函数，无副作用）。
+ * 一条 assistant 消息里是否**含任意** tool_use 块（C4：判断「模型在不在干活」）。
+ *
+ * 不区分工具名：read / grep / bash / edit / 子代理调用都算推进。真正要排除的是
+ * `todo_write` 本身 —— 那是「更新清单」这个被判定对象，`getTodoReminderTurnCounts`
+ * 里在调用前就已经把它分流出去了。
+ */
+function hasAnyToolUse(msg: Message): boolean {
+  if (msg.role !== "assistant") return false;
+  if (!Array.isArray(msg.content)) return false;
+  return (msg.content as ContentBlock[]).some((b) => b?.type === "tool_use");
+}
+
+/**
+ * 倒序扫描消息历史，现算节流计数（纯函数，无副作用）。
  *
  * `turnsSinceLastTodoWrite` 的计法与对标一致：数"最近一次 `todo_write` 之后又出现了多少个
  * assistant 轮"。含 `todo_write` 的那一轮本身不计（它就是基准点，距离为 0）。
  *
+ * `recentToolUseTurns` 是 C4 新增的「模型在不在干活」信号：数最近 `recentWindow`
+ * 个 assistant 轮里有多少轮带了工具调用（`todo_write` 不算——那正是我们要判断的
+ * 「有没有更新清单」本身）。**`recentWindow` 省略时恒为 0**，即旧行为（不放宽），
+ * 回归哨兵「60 轮停滞至少注入 6 次」依赖这个默认值。
+ *
  * @param messages 当前消息序列（通常 `ctxMgr.getCleanedMessages()`）
  * @param opts.absoluteTurn            当前会话累计轮次（`SessionState.getAbsoluteTurn()`）
  * @param opts.lastReminderAbsoluteTurn 上次注入 todo reminder 时的累计轮次；未注过传 undefined
+ * @param opts.recentWindow            统计工具调用轮数的回看窗口；省略 = 不统计
  */
 export function getTodoReminderTurnCounts(
   messages: Message[],
-  opts: { absoluteTurn: number; lastReminderAbsoluteTurn?: number },
+  opts: {
+    absoluteTurn: number;
+    lastReminderAbsoluteTurn?: number;
+    recentWindow?: number;
+  },
 ): TodoReminderTurnCounts {
   let assistantTurnsSeen = 0;
   let turnsSinceLastTodoWrite = Number.POSITIVE_INFINITY;
+  let recentToolUseTurns = 0;
+  const window = opts.recentWindow ?? 0;
 
   for (let i = messages.length - 1; i >= 0; i--) {
     const msg = messages[i];
-    if (!msg) continue;
-    if (hasTodoWriteToolUse(msg)) {
-      turnsSinceLastTodoWrite = assistantTurnsSeen;
-      break;
+    if (!msg || msg.role !== "assistant") continue;
+    const isTodoWrite = hasTodoWriteToolUse(msg);
+    if (isTodoWrite) {
+      // 只认**最近**一次：更早的 todo_write 不再影响距离，也仍在窗口内被排除在
+      // 「工具调用」计数之外（它不是「在干活」的证据，是我们要判定的对象本身）。
+      if (turnsSinceLastTodoWrite === Number.POSITIVE_INFINITY) {
+        turnsSinceLastTodoWrite = assistantTurnsSeen;
+      }
+    } else if (assistantTurnsSeen < window && hasAnyToolUse(msg)) {
+      recentToolUseTurns++;
     }
-    if (msg.role === "assistant") assistantTurnsSeen++;
+    assistantTurnsSeen++;
   }
 
   const last = opts.lastReminderAbsoluteTurn;
   const turnsSinceLastReminder =
     last === undefined ? Number.POSITIVE_INFINITY : Math.max(0, opts.absoluteTurn - last);
 
-  return { turnsSinceLastTodoWrite, turnsSinceLastReminder };
+  return { turnsSinceLastTodoWrite, turnsSinceLastReminder, recentToolUseTurns };
 }
 
 /**
@@ -127,16 +169,50 @@ export function getTodoReminderTurnCounts(
  * （见文件头实测数据）。若落地后重新观察到弱模型把重复 reminder 误判成用户消息，
  * 正确的应对是**给文案加轮次等自然变化量**让"重复"在语义上不再重复，
  * 而不是恢复封顶——恢复封顶就是回到 60 轮响 1 次。
+ *
+ * ─── C4（2026-11-03）：模型在推进时放宽「距上次提醒」的间隔 ───
+ *
+ * 会话 3b4f9ca7 实测：主会话 03:43–03:46 正在读源码准备派子代理，清单没过期，
+ * 却在 8 / 16 / 24 / 32 轮各挨一次提醒（4 次全进上下文，0 次换来 todo_write）。
+ * 判据只看「多久没写清单」，分不清「停滞」与「在干活」。
+ *
+ * 现在由调用方传 `relaxWhenAdvancing: true`（它的判据是「清单恰好一个 in_progress」），
+ * 配合扫描出的 `recentToolUseTurns > 0`（最近窗口内有工具调用），把间隔**放宽到 2 倍**。
+ * 只是「少催一半」，不是永久静音：模型真停滞（无工具调用）时仍按原间隔响。
+ *
+ * ⚠️ 默认 `false`：不传 = 旧行为。回归哨兵「60 轮停滞至少注入 6 次」依赖这个默认值
+ * —— 那条哨兵的消息历史里每轮都有工具调用，若默认放宽，注入次数会掉到 3–4 次。
  */
 export function shouldInjectTodoReminder(
   counts: TodoReminderTurnCounts,
-  thresholds: { turnsSinceWrite: number; turnsBetweenReminders: number },
+  thresholds: {
+    turnsSinceWrite: number;
+    turnsBetweenReminders: number;
+    /**
+     * C4：模型正在推进当前项时，把「距上次提醒」的间隔放宽到 2 倍。
+     * 只有调用方能确认「清单恰好一个 in_progress」时才置 true。
+     */
+    relaxWhenAdvancing?: boolean;
+  },
 ): boolean {
+  const advancing = thresholds.relaxWhenAdvancing === true && (counts.recentToolUseTurns ?? 0) > 0;
+  const between = advancing
+    ? thresholds.turnsBetweenReminders * TODO_REMINDER_ADVANCE_RELAX_FACTOR
+    : thresholds.turnsBetweenReminders;
   return (
     counts.turnsSinceLastTodoWrite >= thresholds.turnsSinceWrite &&
-    counts.turnsSinceLastReminder >= thresholds.turnsBetweenReminders
+    counts.turnsSinceLastReminder >= between
   );
 }
+
+/**
+ * C4：「模型正在推进」时提醒间隔的放宽倍数。
+ *
+ * 2 倍而不是更大：本会话 4 次提醒里 4 次都落在「距上次写清单 8/16/24/32 轮」上，
+ * 放宽到 16 轮足以把这一段（约 40 轮探索）的提醒从 4 次压到 2 次；
+ * 再大就会让「真的忘了更新清单」的停滞段也拖长。
+ */
+export const TODO_REMINDER_ADVANCE_RELAX_FACTOR = 2;
 
 /**
  * 压缩后的 todo 重注入是否冗余（T5，2026-11-01）。

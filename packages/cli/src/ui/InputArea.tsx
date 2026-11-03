@@ -60,7 +60,8 @@ import {
   clearPastes,
 } from "./pasted-contents.ts";
 import {
-  readClipboardImageToFile,
+  readClipboardImage,
+  clipboardImageFailureHint,
   detectDroppedImagePath,
   resolveCopiedImageFile,
 } from "./utils/clipboard-image.ts";
@@ -535,21 +536,21 @@ export function InputArea({
     [tb],
   );
 
-  // P2-6：尝试读剪贴板图片 → 临时文件 → 插入 @ 引用。成功给 hint，失败给 warning（剪贴板无图/无工具）。
+  // P2-6：尝试读剪贴板图片 → 临时文件 → 插入 @ 引用。成功给 hint，失败按原因给 warning。
   const tryInsertClipboardImage = useCallback((): boolean => {
     // 用真实时钟命名临时文件（本组件运行于 node/浏览器运行时，非 workflow 沙箱，Date.now 可用）。
-    const imgPath = readClipboardImageToFile(Date.now());
-    if (imgPath) {
-      insertImageRef(imgPath);
-      log.info("UI:INPUT", `剪贴板图片已插入: ${imgPath}`);
+    const result = readClipboardImage(Date.now());
+    if (result.ok) {
+      insertImageRef(result.path);
+      log.info("UI:INPUT", `剪贴板图片已插入: ${result.path}`);
       showTransientMessage("已粘贴剪贴板图片", TransientMessageType.Hint);
       return true;
     }
-    // 剪贴板无图片或系统无读取工具——给一次轻提示，不打断输入。
-    showTransientMessage(
-      "剪贴板无图片（或缺 pngpaste/xclip/wl-paste）",
-      TransientMessageType.Warning,
-    );
+    // 失败原因必须分开说：「剪贴板里没有图片」和「系统缺读图工具」对用户是两种动作。
+    // 旧的合并文案「剪贴板无图片（或缺 pngpaste/xclip/wl-paste）」在 macOS 上是错的——
+    // 那里靠系统自带的 osascript 读图（pngpaste 只是可选优化），xclip / wl-paste 是
+    // Linux 专用工具，照着提示去装也读不出图。文案与平台判定收口在 clipboardImageFailureHint。
+    showTransientMessage(clipboardImageFailureHint(result.reason), TransientMessageType.Warning);
     return false;
   }, [insertImageRef, showTransientMessage]);
 

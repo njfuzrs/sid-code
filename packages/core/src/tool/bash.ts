@@ -125,6 +125,27 @@ const PROGRESS_TAIL_LINES = 5;
 const PROGRESS_LINE_MAX_CHARS = 200;
 
 /**
+ * 进程退出后等待输出管道 EOF 的宽限期（毫秒）。
+ *
+ * 收尾主信号是**进程退出**而不是管道 EOF：管道 EOF 要求所有持有写端的进程都关闭它，
+ * 而 setsid 脱离进程组的 daemon（nohup / setsid / `xxx --daemon` 且未重定向 stdio）
+ * 既杀不到、也不会关闭写端。旧实现先 `await Promise.all([pump...])` 再等 proc.exited，
+ * 在这类命令上永不 resolve，工具调用永久挂住（缺陷 2026-10-31，评测 2 个 trial 挂约 2 小时）。
+ *
+ * 进程退出后内核管道缓冲区里最多剩几十 KB（写端被阻塞时进程退不出去），读完是毫秒级；
+ * 取 400ms 是给解码与背压留余量，同时保证「宽限期截断」的代价可控（只丢 daemon 后续输出）。
+ */
+const PIPE_DRAIN_GRACE_MS = 400;
+
+/**
+ * 发生「管道宽限期截断」时追加到结果尾部的说明。
+ * 这既是给用户的诚实交代，也是给模型的纠偏信号——否则模型会以为自己拿到了完整输出，
+ * 或者反过来重试一条本来已经成功、只是 daemon 还在后台跑的命令。
+ */
+const PIPE_TRUNCATED_NOTICE =
+  "\n[注意] 命令已退出，但有脱离进程组的后台进程仍持有输出管道（常见于 daemon 未重定向输出），已停止读取其后续输出。如需保留请重定向到文件：`cmd > log 2>&1 &`";
+
+/**
  * 从累积的完整输出里取"最近 N 行、每行至多 M 字符"的尾部快照，作为实时进度文本。
  * 纯函数：只做字符串切分，不改状态。空输出返回空串（调用方据此跳过 emit）。
  */
@@ -1100,15 +1121,22 @@ export class BashTool implements Tool {
         //
         // 关键不变量（不能改坏）：
         // - 完整输出仍在命令结束后一次性返回（进度只是尾部预览，不替代最终 tool_result）；
-        // - 超时/abort 杀进程树后 reader 会读到 done，pump 正常收尾，不泄漏；
+        // - **收尾主信号是进程退出，不是管道 EOF**（见下方 runToCompletion 的宽限期注释）；
+        //   超时/abort 杀进程树后 proc.exited 会 resolve，管道再给 PIPE_DRAIN_GRACE_MS 读尾巴；
         // - stdout/stderr 分别累积，最终合并逻辑与旧实现一致；
         // - Ctrl+B 转后台后（detachedTaskHandle 非 null）：新增内容改写盘、不再进内存
         //   累积（避免长跑后台进程内存无界增长），也不再触发前台进度回调。
+        //
+        // reader 登记表：进程退出后宽限期到仍未 EOF 时，靠它 cancel 掉读端让 pump 收尾。
+        // 旧注释写的「杀进程树后 reader 会读到 done」只在**所有写端都在本进程组里**时成立——
+        // setsid 脱离进程组的 daemon 既打不到也不关写端，那条不变量是假的（缺陷 2026-10-31）。
+        const activePipeReaders: ReadableStreamDefaultReader<Uint8Array>[] = [];
         const pump = async (
           stream: ReadableStream<Uint8Array>,
           append: (text: string) => void,
         ): Promise<void> => {
           const reader = stream.getReader();
+          activePipeReaders.push(reader);
           const decoder = new TextDecoder();
           try {
             for (;;) {
@@ -1135,8 +1163,23 @@ export class BashTool implements Tool {
         // detachPromise 才能在它之前 settle，让 execute() 提前返回；pump/exited 不会被
         // "放弃"，Promise.race 的败者仍在事件循环里跑完，detach 后转去走 Task 收尾分支。
         const runToCompletion = (async (): Promise<ToolResult> => {
+          // 本次执行是否发生过「管道宽限期截断」（daemon 持写端，读端被我们主动 cancel）。
+          let pipesTruncated = false;
           try {
-            await Promise.all([
+            // ─── 收尾顺序：进程退出是主信号，管道 EOF 只给宽限期（缺陷 2026-10-31）───
+            //
+            // 旧实现先 `await Promise.all([pump...])` 再 `await proc.exited`，隐含假设
+            // "进程一退，管道自然 EOF"。setsid 脱离进程组的 daemon（nohup / setsid /
+            // `xxx --daemon` 且未重定向 stdio）打破这个假设：kill(-pgid) 打不到它，
+            // 它继续持有写端，pump 的 `for(;;) reader.read()` 永远等不到 done，
+            // 工具调用永久挂住（评测里 2 个 trial 挂约 2 小时，手动 kill 才结束）。
+            //
+            // 现在改成并发推进：
+            //   1. pump 立刻开跑（流式进度不受影响）；
+            //   2. 等 proc.exited（或 pump 先抛错）——命令本身结束就是收尾的发令枪；
+            //   3. 给管道 PIPE_DRAIN_GRACE_MS 把内核缓冲区里的尾巴读完；
+            //   4. 仍未 EOF → 主动 cancel 读端让 pump 收尾，并在结果尾部说明被截断。
+            const pipesDone = Promise.all([
               pump(proc.stdout, (t) => {
                 if (detachedTaskHandle) {
                   detachedTaskHandle.appendLiveOutput(t);
@@ -1152,7 +1195,65 @@ export class BashTool implements Tool {
                 stderr += t;
               }),
             ]);
-            const exitCode = await proc.exited;
+
+            // 先用 then(,onRejected) 把 rejection 接住，避免「等 proc.exited 期间 pump 抛错」
+            // 变成 unhandled rejection（旧实现是立即 await，天然不会漏）。
+            let pipesFinished = false;
+            let pipesFailure: unknown = null;
+            const pipesSettled = pipesDone.then(
+              () => {
+                pipesFinished = true;
+              },
+              (err) => {
+                pipesFinished = true;
+                pipesFailure = err;
+              },
+            );
+
+            // 进程退出 or 管道先出错，谁先给结果用谁：
+            // - 管道正常 EOF 但进程还在跑（如 daemon 自己复制了一份 stdout）：继续等进程；
+            // - 管道异常（流损坏）：立刻上抛，不等进程——保持旧实现的错误可见性。
+            const exitCode = await new Promise<number>((resolve, reject) => {
+              void proc.exited.then(resolve, reject);
+              void pipesDone.then(() => {}, reject);
+            });
+
+            if (!pipesFinished) {
+              await Promise.race([
+                pipesSettled,
+                new Promise<void>((resolve) => {
+                  const timer = setTimeout(resolve, PIPE_DRAIN_GRACE_MS);
+                  timer.unref?.();
+                }),
+              ]);
+            }
+
+            if (!pipesFinished) {
+              // 宽限期到仍无 EOF：有脱离进程组的进程仍持有写端（典型是 daemon 未重定向输出）。
+              // 取消读端让 pump 立即收尾，工具调用不再被它拖住。
+              pipesTruncated = true;
+              log.warn(
+                "BASH",
+                `命令已退出，但输出管道在 ${PIPE_DRAIN_GRACE_MS}ms 宽限期后仍未 EOF，` +
+                  `判定为有脱离进程组的后台进程持有写端，已停止读取其后续输出`,
+              );
+              for (const reader of activePipeReaders) {
+                try {
+                  void reader.cancel().catch(() => {});
+                } catch {
+                  /* 读端已释放/已关闭 */
+                }
+              }
+              // 等 pump 收尾。cancel 之后 read() 按 Web Streams 规范立刻返回 done，
+              // 这里不会久等。**故意不加「再等一会儿就放弃」的兜底**：若某个运行时上
+              // cancel 不生效，我们要的是测试立刻变红暴露它，而不是静默降级成
+              // 「工具返回了、reader 和 fd 却一直泄漏」——后者比挂死更难发现。
+              await pipesDone;
+            }
+
+            // pump 自身的异常（流损坏等）按旧语义上抛，走下面的 catch 分支。
+            if (pipesFailure) throw pipesFailure;
+
             emitProgress(true);
 
             // 已转后台：不再构造前台 ToolResult，走 Task 收尾记账（对齐 spawnShellTask 的
@@ -1211,6 +1312,11 @@ export class BashTool implements Tool {
               // 先剥终端控制序列再截断：顺序不能颠倒，二进制判定依赖控制字符密度（见 terminal-control.ts）
               output = truncateOutput(stripTerminalControl(output) || "(命令无输出)");
             }
+
+            // 管道宽限期截断说明（见 runToCompletion 顶部「收尾顺序」注释）：
+            // 必须追加在 truncateOutput 之后，否则这条提示本身会在长输出里被截掉——
+            // 那正是最需要它出现的场合。转后台的执行不会走到这里（上面已提前 return）。
+            if (pipesTruncated) output += PIPE_TRUNCATED_NOTICE;
 
             // 自建 worktree 的路径提示：只在成功时补（失败时 worktree 没建出来）
             if (!aborted && !timedOut && exitCode === 0) {

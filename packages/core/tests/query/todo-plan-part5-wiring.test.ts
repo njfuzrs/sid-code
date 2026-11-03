@@ -17,7 +17,12 @@ import type { Config } from "@sid-code/core/config/config.ts";
 import type { StreamEvent, AccumulatedResponse } from "@sid-code/core/llm/types.ts";
 import type { TodoItem } from "@sid-code/core/tool/todo-write.ts";
 import { createAgentTask } from "@sid-code/core/task/agent-task.ts";
-import { getTask } from "@sid-code/core/task/registry.ts";
+import { getTask, registerTask } from "@sid-code/core/task/registry.ts";
+import {
+  SHELL_QUIESCENT_MS,
+  trackShellActivity,
+  __resetBackgroundAwaitForTest,
+} from "@sid-code/core/task/background-await.ts";
 import { __resetForTest as __resetQueueForTest } from "@sid-code/core/query/message-queue-manager.ts";
 
 async function* emptyStream(): AsyncIterable<StreamEvent> {}
@@ -182,6 +187,41 @@ describe("todo_gate 排除后台任务（T2）", () => {
     const b = setup();
     await drain(b.cfg);
     expect(gateRetries(b.events)).toBeGreaterThan(0);
+  });
+
+  // 事故 20261103-130950-00ef059c：后台常驻服务器从不退出，T2 以「等它回报」放行，回报永远不来。
+  // 静默的后台 shell 不算「值得等」，闸门照常续跑。变异自证：把 loop.ts 的
+  // hasAwaitedBackgroundTasks 换回 hasRunningBackgroundTasks，本用例必须变红。
+  test("后台 shell 已静默（常驻服务）→ 不豁免，照常发 todo_gate_retry", async () => {
+    __resetQueueForTest();
+    __resetBackgroundAwaitForTest();
+    const id = "b-resident-server";
+    registerTask({
+      id,
+      type: "local_shell",
+      status: "running",
+      description: "fake server",
+      startTime: Date.now() - 2 * SHELL_QUIESCENT_MS,
+      outputFile: "/dev/null",
+      outputOffset: 0,
+      notified: false,
+      command: "bun run /tmp/fake-glm-server.ts",
+      interrupted: false,
+      isBackgrounded: true,
+    });
+    trackShellActivity(id, 0, Date.now() - SHELL_QUIESCENT_MS - 1_000);
+    try {
+      const a = setup();
+      await drain(a.cfg);
+      expect(gateRetries(a.events)).toBeGreaterThan(0);
+      const shape = a.events.find((e) => e.event === "EndTurnShape");
+      expect(shape?.data.running_background_tasks).toBe(false);
+    } finally {
+      const task = getTask(id);
+      if (task) task.status = "killed";
+      __resetBackgroundAwaitForTest();
+      __resetQueueForTest();
+    }
   });
 });
 
