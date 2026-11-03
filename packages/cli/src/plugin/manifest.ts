@@ -122,7 +122,7 @@ function escapesViaSymlink(root: string, target: string): boolean {
 
 /**
  * 将组件路径声明（string | string[] | undefined）规范化为绝对路径数组。
- * 声明项越界时 push path-escape 并跳过；未声明时走默认目录（不受本校验影响）。
+ * 声明项越界时 push path-escape 并跳过；未声明时走默认目录，同样复核符号链接逃逸。
  */
 function resolveComponentPaths(
   decl: string | string[] | undefined,
@@ -135,7 +135,14 @@ function resolveComponentPaths(
   // 未声明时使用默认目录（仅当默认目录存在）
   if (decl === undefined) {
     const defaultPath = join(pluginPath, defaultDir);
-    return existsSync(defaultPath) ? [defaultPath] : [];
+    if (!existsSync(defaultPath)) return [];
+    // 默认目录同样能逃逸：插件里放一个 `commands -> /etc` 的符号链接即可。
+    // 显式声明路径已由 checkPathsInsidePlugin 复核，这一支不能漏。
+    if (escapesViaSymlink(resolve(pluginPath), defaultPath)) {
+      errors.push({ type: "path-escape", source, path: defaultPath, component });
+      return [];
+    }
+    return [defaultPath];
   }
 
   return checkPathsInsidePlugin(pluginPath, decl, component, source, errors);

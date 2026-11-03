@@ -196,6 +196,18 @@ describe("缺陷 21 - commands/skills/agents 路径逃逸", () => {
     expect(pathEscapes(errors, "commands")).toHaveLength(1);
   });
 
+  test("默认目录是指向外部的符号链接时被拒（未声明 commands）", async () => {
+    // 声明缺省时走 join(pluginPath, "commands")，若该目录本身是指向外部的符号链接，
+    // 只校验显式声明就漏掉了这条同等危险的逃逸路径。
+    const outside = await makeTmpDir();
+    const dir = await makePluginDir({});
+    await symlink(outside, join(dir, "commands"), "dir");
+    const errors: PluginError[] = [];
+    const plugin = await loadPluginFromDirectory(dir, "local", true, errors);
+    expect(plugin!.commandsPaths).toEqual([]);
+    expect(pathEscapes(errors, "commands")).toHaveLength(1);
+  });
+
   test("同名前缀的兄弟目录不被误判为目录内（foo vs foo-evil）", async () => {
     const parent = await makeTmpDir();
     const dir = join(parent, "foo");
