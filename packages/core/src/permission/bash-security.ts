@@ -26,6 +26,7 @@
  */
 
 import { extractHeredocBlocks } from "./shell-structure.ts";
+import { splitShellSubcommands } from "../tool/bash/parser.ts";
 
 /** 校验器命中结果 */
 export interface InjectionFinding {
@@ -300,7 +301,8 @@ export function validateControlCharacters(command: string): InjectionFinding | n
  * 攻击者用 ANSI-C 引号 $'...'、locale 引号 $"..."、空引号拼接 ''-exec、多重引号
  *   """-f" 等方式，把 `-exec`/`-f`/`--flag` 拆散藏过"危险 flag"的正则检测。
  *
- * echo 命令对混淆 flag 安全（但仅限无 shell 操作符的简单 echo）。
+ * echo / printf 的参数不参与命令解析，其带引号参数整体豁免——豁免按**子命令**判定，
+ * 不再因为整条命令里出现 `|&;` 而失效（2026-11-03 会话 3b4f9ca7 复盘 A2）。
  */
 export function validateObfuscatedFlags(
   command: string,
@@ -366,15 +368,50 @@ export function validateObfuscatedFlags(
     };
   }
 
-  // 5. 逐字符扫描：引号外的"空白 + 引号(含 dash 内容)"形态
+  // 5. 逐子命令扫描：引号外的"空白 + 引号(含 dash 内容)"形态
   //    捕获 "-"exec、"-file"、'-'output 等被引号包住的 flag。
+  //
+  // 为什么要先拆子命令（A2）：原来的豁免是「整条命令是 echo 且无 `|&;`」，
+  // 于是 `ls x && echo "---"` 拿不到豁免、`echo "---"; ls` 也拿不到，而 `---` 这种
+  // 分隔符根本不可能是 flag。拆开后 `echo`/`printf` 的参数整段跳过。
+  // 拆分的另一处收益：判定粒度与 bash 的求值单位一致，不会把上一条命令的引号状态
+  // 带进下一条。
+  for (const segment of splitShellSubcommands(command)) {
+    // echo / printf 只把参数写给 stdout，不参与 flag 解析（`printf -- '---\n'` 是惯用法）
+    if (ECHO_LIKE_COMMANDS.has(extractBaseCommand(segment))) continue;
+    // 补一个前导空格：原状态机要求引号前是空白，段首的引号（`cmd && "-exec"`）不能被漏掉
+    const finding = scanQuotedFlag(` ${segment}`);
+    if (finding) return finding;
+  }
+
+  return null;
+}
+
+/** 参数不参与命令名/flag 解析的子命令：其带引号参数整体豁免混淆判定 */
+const ECHO_LIKE_COMMANDS = new Set(["echo", "printf"]);
+
+/**
+ * 引号内「长得像 flag」的判据：`-f` / `-exec` / `--flag` 是，`---` / `--` / `- ` / `-- 标题 --` 不是。
+ *
+ * 后半句是 A2 的根因：`---` 这类分隔符被 bash 拼出来只是个普通字符串参数，不可能是有效
+ * flag，判成混淆只会让只读命令白撞墙（本会话 21 次拒绝全来自这里）。
+ */
+const FLAG_LIKE_RE = /^-{1,2}[A-Za-z0-9]/;
+
+/**
+ * 第 5 段的字符扫描（读原文、保留引号形态）。
+ *
+ * 抽成独立函数是为了让它能按子命令逐段跑：拆分后的每段都是完整命令原文的一段，
+ * 引号状态互不干扰。
+ */
+function scanQuotedFlag(segment: string): InjectionFinding | null {
   let inSingleQuote = false;
   let inDoubleQuote = false;
   let escaped = false;
 
-  for (let i = 0; i < command.length - 1; i++) {
-    const currentChar = command[i];
-    const nextChar = command[i + 1];
+  for (let i = 0; i < segment.length - 1; i++) {
+    const currentChar = segment[i];
+    const nextChar = segment[i + 1];
 
     if (escaped) {
       escaped = false;
@@ -394,16 +431,23 @@ export function validateObfuscatedFlags(
     }
     if (inSingleQuote || inDoubleQuote) continue;
 
-    // 空白后跟引号，且引号内内容以 dash 开头 → 疑似 flag 混淆
+    // 空白后跟引号，且引号内内容能构成 flag → 疑似 flag 混淆
     if (currentChar && nextChar && /\s/.test(currentChar) && /['"`]/.test(nextChar)) {
       const quoteChar = nextChar;
       let j = i + 2;
       let insideQuote = "";
-      while (j < command.length && command[j] !== quoteChar) {
-        insideQuote += command[j];
+      while (j < segment.length && segment[j] !== quoteChar) {
+        insideQuote += segment[j];
         j++;
       }
-      if (insideQuote.startsWith("-")) {
+      if (!insideQuote.startsWith("-")) continue;
+      // bash 的 word 拼接会把引号内外连成一个词：`find . "-"exec rm` 拼出的是 `-exec`。
+      // 只判引号内会漏掉这种形态（文档要求它仍须命中），所以把引号后紧邻的字符一并看。
+      let tail = "";
+      for (let k = j + 1; k < segment.length && !/[\s;&|<>()]/.test(segment[k]!); k++) {
+        tail += segment[k];
+      }
+      if (FLAG_LIKE_RE.test(insideQuote + tail)) {
         return {
           id: "obfuscated-flags",
           severity: "ask",

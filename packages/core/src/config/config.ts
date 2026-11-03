@@ -290,6 +290,20 @@ export interface Config {
    */
   planExecMode?: string;
   skipPermissions: boolean;
+  /**
+   * 本 checker 是否由「主会话处于 skip 档」派生而来（**仅子代理 live config 提供**，
+   * 主 config 上恒为 undefined）。
+   *
+   * 计算点在 `permission/sub-agent-checker.ts` 的 `createLiveSubAgentConfig`：主会话
+   * `permissionMode === "dangerously-skip-permissions"` 且调用方开启 `inheritBypassMode`
+   * 时为 true，并随主会话切档实时变化（与 permissionMode / skipPermissions 同一套 get trap）。
+   *
+   * 为什么需要它（2026-11-03 会话 3b4f9ca7 复盘 A1）：skip 档的子代理归一成 always-allow，
+   * 但 always-allow 的放行在 Step 8，排在 Step 4 路径校验之后——于是主会话对工作区外
+   * 不做任何路径校验，子代理却在同一位置被拒。`inheritedFromSkip` 让 Step 4 只放开
+   * 「工作区外 + 非敏感」这一类，其余（敏感文件、safetyCheck、危险命令）照旧。
+   */
+  inheritedFromSkip?: boolean;
   /** 预授权工具名单（免确认直接执行）。与 toolsWhitelist 不同：这是权限层，不裁剪工具集 */
   allowedTools: string[];
   /** 禁用工具名单（拒绝优先于 allowedTools） */

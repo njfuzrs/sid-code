@@ -120,13 +120,32 @@ export function isKnownSessionMemorySection(title: string): boolean {
  * 构建 Session Memory 更新提示词。
  * 提取代理通过 Forked Agent 模式已经看到完整对话上下文，这里只需告诉它
  * 如何把对话内容沉淀进 .session_memory.md。
+ *
+ * @param currentContent 会话笔记当前内容（已在下方「当前文件内容」原样给出）
+ * @param template 10 section 模板
+ * @param targetFile 本次要编辑的**唯一**文件（绝对路径），写在提示词最前面
+ *
+ * 为什么把绝对路径顶到第一行：实测会话 20261103-114056-3b4f9ca7 里，模型第一次 edit
+ * 给的路径与目标文件**完全不同**（不同目录、不同文件名、不在授权根下），被
+ * `path_mismatch` 拒掉后才从拒绝消息里读到正确路径、第二次改对——一次白跑的编辑。
+ * 提示词原先只在中部说「使用 Edit 工具更新文件」，而主会话上下文里有大量其它 `.md`
+ * 路径（任务书、笔记、计划），模型被其中一条带偏是结构性风险，不是偶发失误。
  */
-export function buildSessionMemoryUpdatePrompt(currentContent: string, template: string): string {
-  return `你是一个会话笔记维护代理。根据当前对话内容，更新会话笔记文件。
+export function buildSessionMemoryUpdatePrompt(
+  currentContent: string,
+  template: string,
+  targetFile: string,
+): string {
+  return `你是一个会话笔记维护代理。本次你只编辑这一个文件（绝对路径）：
+
+${targetFile}
+
+据此更新会话笔记：不要编辑其它任何文件，也不要运行 bash —— 你的全部输入就是本对话，
+不需要再用命令去核实什么。
 
 ## 规则
 
-1. 使用 Edit 工具更新文件，不要重写整个文件。**所有 Edit 调用在同一条消息里并行发出，发完即停止**，
+1. 使用 Edit 工具更新上面那个文件，不要重写整个文件。**所有 Edit 调用在同一条消息里并行发出，发完即停止**，
    不要逐个 section 一轮一轮地改，也不要调用 Edit 以外的工具
 2. 保留模板的 section 结构和斜体描述
 3. 只更新有实际内容变化的 section

@@ -16,7 +16,7 @@
 
 import { createHash } from "node:crypto";
 import { getLogger } from "../debug/logger.ts";
-import { serializeMessageForFingerprint } from "./message-fingerprint.ts";
+import { CHAR_WASTE_SIGNIFICANT, serializeMessageForFingerprint } from "./message-fingerprint.ts";
 
 /**
  * 快速哈希（10.1 性能优化）。
@@ -175,10 +175,12 @@ export interface CacheCheckParams {
 /**
  * 消息改写的显著性阈值：作废比例 ≤ 1% 不归因为 `message_history`。
  *
- * 与字节侧 `prefix_break` 的 `CHAR_WASTE_SIGNIFICANT` 取同一个值，两套检测才能对齐。
- * 低于它的多是尾部 transient reminder 被撤掉，账单掉的那部分主要不是它造成的。
+ * 直接用字节侧 `prefix_break` 的同一个常量（`api/message-fingerprint.ts` 的
+ * `CHAR_WASTE_SIGNIFICANT`），不是「取同一个值」—— 两份字面量只要改了一边就会漂移，
+ * 两套检测对同一请求给出不一致的显著性判定，且这种漂移没有任何报错。
+ * 低于阈值的多是尾部 transient reminder 被撤掉，账单掉的那部分主要不是它造成的。
  */
-const MESSAGE_WASTE_SIGNIFICANT = 0.01;
+const MESSAGE_WASTE_SIGNIFICANT = CHAR_WASTE_SIGNIFICANT;
 
 /** 检测阈值 */
 const DROP_PERCENT_THRESHOLD = 0.05; // 下降 > 5%
@@ -608,23 +610,27 @@ function emitCacheBreakTelemetryFireAndForget(record: CacheBreakRecord): void {
 /**
  * D3 健康度告警：基于最近中断记录，给出可执行的修复建议。
  * 例如"system 提示词频繁变化"→ 建议把易变内容移到 messages 尾部。
+ *
+ * 统计时**排除不可信渠道**（`channelTrust === "untrusted"`）：那些渠道的 cache_read
+ * 是编造的，它的「命中下降」不是缓存行为。混进来会凭空抬高某一类归因的占比，
+ * 把渠道噪声读成本地问题 —— 建议指的修复方向因此是错的。
+ * 全部记录都不可信时不给建议（没有可归因的样本），而不是拿噪声凑一条。
  */
 export function getCacheHealthAdvice(): string[] {
   const advice: string[] = [];
-  if (recentBreaks.length === 0) return advice;
+  const trusted = recentBreaks.filter((b) => b.channelTrust !== "untrusted");
+  if (trusted.length === 0) return advice;
 
-  const systemBreaks = recentBreaks.filter((b) =>
+  const systemBreaks = trusted.filter((b) =>
     b.changes.some((c) => c.includes("System prompt")),
   ).length;
-  const toolBreaks = recentBreaks.filter((b) =>
+  const toolBreaks = trusted.filter((b) =>
     b.changes.some((c) => c.includes("工具变化") || c.includes("工具顺序")),
   ).length;
-  const modelBreaks = recentBreaks.filter((b) =>
-    b.changes.some((c) => c.includes("模型变化")),
-  ).length;
+  const modelBreaks = trusted.filter((b) => b.changes.some((c) => c.includes("模型变化"))).length;
 
   // 阈值：同类中断占比 ≥ 50% 且 ≥ 2 次 → 给出针对性建议
-  const n = recentBreaks.length;
+  const n = trusted.length;
   if (systemBreaks >= 2 && systemBreaks / n >= 0.5) {
     advice.push(
       `检测到 system 提示词频繁变化（${systemBreaks}/${n} 次中断）——` +

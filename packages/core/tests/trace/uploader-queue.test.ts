@@ -155,6 +155,8 @@ describe("processRetryQueue 统计（不再静默丢数据）", () => {
       droppedUnknownType: 0,
       retained: 0,
       markedFailed: 0,
+      backoff: 0,
+      deduped: 0,
       corrupt: 0,
       droppedOverflow: 0,
       remaining: 0,
