@@ -152,8 +152,22 @@ describe("缺陷 11：会话笔记更新提示词的反自指约束", () => {
   test("明确告知指令不是对话的一部分、不得写进笔记", async () => {
     const { buildSessionMemoryUpdatePrompt } =
       await import("@sid-code/core/session-memory/prompts.ts");
-    const p = buildSessionMemoryUpdatePrompt("cur", "tpl");
+    const p = buildSessionMemoryUpdatePrompt("cur", "tpl", "/tmp/session-memory/s.md");
     expect(p).toContain("不是用户对话的一部分");
     expect(p).toContain("note-taking");
+  });
+
+  // C2：目标文件的绝对路径必须出现在提示词里。实测会话 20261103-114056-3b4f9ca7 中，
+  // 模型第一次 edit 给的路径与目标文件完全不同（被 path_mismatch 拒掉后才改对），
+  // 而提示词里原先只有「更新会话笔记文件」这种不指名的说法。
+  test("提示词最前面写死目标文件绝对路径，并明确禁止 bash", async () => {
+    const { buildSessionMemoryUpdatePrompt } =
+      await import("@sid-code/core/session-memory/prompts.ts");
+    const target = "/home/u/.sid-code/projects/p-key/session-memory/sess-1.md";
+    const p = buildSessionMemoryUpdatePrompt("cur", "tpl", target);
+    // 绝对路径必须在正文最开头（第一条规则之前），模型才不会被主会话里其它 .md 带偏
+    expect(p.indexOf(target)).toBeGreaterThan(-1);
+    expect(p.indexOf(target)).toBeLessThan(p.indexOf("## 规则"));
+    expect(p).toContain("不要运行 bash");
   });
 });
