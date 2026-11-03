@@ -19,7 +19,7 @@ import { inferMemoryType, normalizeMemoryDesc } from "../store.ts";
 import { memoryFilename } from "../paths.ts";
 import { MEMORY_LIMITS, type MemoryType } from "../types.ts";
 import { readMemoryFrontmatter, enumerateMemoryFiles } from "../scan.ts";
-import { buildTruncatedIndex } from "../index-budget.ts";
+import { buildTruncatedIndex, truncateIndexDesc } from "../index-budget.ts";
 import { memoryAge, memoryAgeDays } from "../freshness.ts";
 
 const INDEX_FILE = "MEMORY.md";
@@ -92,7 +92,8 @@ export async function rebuildTeamIndex(dir: string): Promise<void> {
       const name = fm.name || basename(rel).replace(/\.md$/, "");
       // 读侧也过归一化：既有旧文件的 frontmatter 里可能已存着 `## 标题`（本次修复前
       // 写入的），重建索引时剥掉，否则旧数据的陈述句标题会一直漏进注入侧索引。
-      const desc = normalizeMemoryDesc(fm.description, "");
+      // C3-A：索引行描述再按 INDEX_DESC_MAX_LEN 截断（与私有 / agent 线共用口径）。
+      const desc = truncateIndexDesc(normalizeMemoryDesc(fm.description, ""));
       heads.push({
         line: `- [${name}](${rel})${desc ? ` — ${desc}` : ""}`,
         mtimeMs: st.mtimeMs,

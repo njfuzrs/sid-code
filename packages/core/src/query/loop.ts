@@ -2060,6 +2060,9 @@ export async function* queryLoop(loopConfig: QueryLoopConfig): AsyncGenerator<Qu
               lastReminderAbsoluteTurn: sessionState.get(LAST_TODO_REMINDER_TURN_KEY) as
                 | number
                 | undefined,
+              // C4：回看最近一个提醒间隔内的窗口，统计「有工具调用」的轮数。
+              // 省略 = 旧行为（不放宽），这里显式传才让「模型在推进」参与判定。
+              recentWindow: TODO_REMINDER_CONFIG.TURNS_BETWEEN_REMINDERS,
             });
             // T5：压缩后补贴只在「清单原文已不在视野里」时才有意义。核实过 microcompact /
             // masking 只改 tool_result、不动 tool_use.input，snip / 截断是整条删——所以只要
@@ -2083,9 +2086,18 @@ export async function* queryLoop(loopConfig: QueryLoopConfig): AsyncGenerator<Qu
               );
             }
             const afterCompact = pendingAfterCompact && !compactReinjectRedundant;
+            // C4：清单恰好一个 in_progress 时，模型大概率正推着那一项 ——
+            // 配合 counts.recentToolUseTurns（最近窗口内有工具调用）把提醒间隔放宽 2 倍。
+            // 会话 3b4f9ca7 的 4 次连发（8/16/24/32 轮）就是这一段：模型在读源码准备
+            // 派子代理，清单没过期，却被每 8 轮催一次。多个 in_progress 或没有 in_progress
+            // 时**不放宽**：那说明清单本身可能已经失真，催更有意义。
+            const inProgressCount = todoState.todos.filter(
+              (t) => t.status === "in_progress",
+            ).length;
             const throttleSaysYes = shouldInjectTodoReminder(counts, {
               turnsSinceWrite: TODO_REMINDER_CONFIG.TURNS_SINCE_WRITE,
               turnsBetweenReminders: TODO_REMINDER_CONFIG.TURNS_BETWEEN_REMINDERS,
+              relaxWhenAdvancing: inProgressCount === 1,
             });
             // ─── P1-4 item 2：条件式封顶（绑真实进展，刻意不是无条件 cap）───
             //
@@ -2108,7 +2120,13 @@ export async function* queryLoop(loopConfig: QueryLoopConfig): AsyncGenerator<Qu
               (throttleSaysYes && todoNagDecision.inject && !isTodoNagDisabled()) ||
               afterCompact
             ) {
-              reminderParts.push(buildTodoReminder(todoState.todos));
+              reminderParts.push(
+                buildTodoReminder(todoState.todos, {
+                  // C4：文案带「距上次更新清单多少轮」，让重复提醒不再是无信息量的重复
+                  // （模块注释里「给文案加轮次等自然变化量」的建议即指此处）。
+                  turnsSinceLastWrite: counts.turnsSinceLastTodoWrite,
+                }),
+              );
               if (todoNagDecision.countedAsNoProgress) {
                 sessionState.set(TODO_BOOKKEEPING_NAG_COUNT_KEY, bookkeepingNagCount + 1);
               }

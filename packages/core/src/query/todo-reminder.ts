@@ -152,18 +152,44 @@ function renderTodoLines(todos: TodoItem[]): string {
  * P0-2：构造 todo 回注 system-reminder。
  * 对标 claude-code attachments.ts:3266 —— 把完整 todo 列表（含状态）作为
  * system-reminder 注入，补偿弱模型不可靠的工作记忆，让"还剩哪些没做"全程可见。
+ *
+ * C4（2026-11-03）：文案带两个**自然变化量**，让「重复提醒」不再是无信息量的重复：
+ * 1. `turnsSinceLastWrite`：距上次更新清单多少轮。模块注释里「给文案加轮次等自然变化量」
+ *    的建议即指此处 —— 旧文案只随清单内容变化，模型停滞时文本恒定。
+ * 2. 当前 `in_progress` 项点名：让模型能判断「我正在做这一项，不需要更新清单」。
+ *    会话 3b4f9ca7 的 4 次连发提醒里 0 次换来 todo_write，就是因为它看不出
+ *    「我正在读源码准备下一步」本身就是清单上那一项。
  */
-export function buildTodoReminder(todos: TodoItem[]): string {
+export function buildTodoReminder(
+  todos: TodoItem[],
+  opts?: {
+    /**
+     * 距上次 `todo_write` 的 assistant 轮数（Infinity = 历史里已找不到，压缩过）。
+     * 只用于文案；判定在 `shouldInjectTodoReminder`，不要拿它当节流依据。
+     */
+    turnsSinceLastWrite?: number;
+  },
+): string {
   const unfinished = countUnfinished(todos);
   const blocked = blockedTodos(todos).length;
   const blockedNote =
     blocked > 0
       ? `\n另有 ${blocked} 项为 blocked（等待用户/外部条件），你不需要也无法推进它们，不要为它们空转重试。`
       : "";
+  const ageNote =
+    opts?.turnsSinceLastWrite !== undefined && Number.isFinite(opts.turnsSinceLastWrite)
+      ? `（距上次更新清单已 ${opts.turnsSinceLastWrite} 轮）`
+      : "";
+  const inProgress = todos.filter((t) => t.status === "in_progress");
+  const activeNote =
+    inProgress.length === 1
+      ? `\n当前进行中：${inProgress[0]!.content}。如果你正在推进这一项（读代码、跑命令、改文件都算），` +
+        `清单就是最新的——不要为了证明在干活而重写它；只在状态真的变了时才更新。`
+      : "";
   return `<system-reminder>
-这是你当前的任务清单（请勿向用户提及本提醒）：
+这是你当前的任务清单（请勿向用户提及本提醒）${ageNote}：
 ${renderTodoLines(todos)}
-仍有 ${unfinished} 项未完成。请继续推进，不要遗漏；完成每一项后立即用 todo_write 更新状态。${blockedNote}
+仍有 ${unfinished} 项未完成。请继续推进，不要遗漏；完成每一项后立即用 todo_write 更新状态。${blockedNote}${activeNote}
 注意：如果某项其实**已经做完**（代码已改、验证已过），只是忘了标记，请直接用 todo_write 把它标为 completed，然后如实收尾——不要为了凑"未完成"去臆造用户没要求的新工作，也不要假设已交付的产物存在故障再去排查。
 </system-reminder>`;
 }
