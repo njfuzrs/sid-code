@@ -1,13 +1,24 @@
 /**
- * 插件发现与加载核心（两层加载策略）
+ * 插件发现与加载核心（只有一层完整加载）
  *
- * - loadAllPluginsCacheOnly：零磁盘扫描偏好，启动关键路径用
- * - loadAllPlugins：完整加载（读 plugin.json、验证目录），REPL 挂载后后台执行
+ * 每次加载都要读 installed.json、逐个读 plugin.json、校验目录，即「完整加载」。
+ * 这里**不存在**零磁盘扫描的 cache-only 路径：
+ * - 组件路径 / hooks / MCP / skills 全部来自 plugin.json，跳过磁盘就拿不到完整结果；
+ * - 内置插件也可能是磁盘上没有的纯定义（builtin.ts），缓存键无法只靠名字判定新鲜度。
  *
- * 加载来源优先级（从低到高，先到者占据插件名）：
- *   1. 内置插件（@builtin，path = "builtin"）
+ * 因此两个导出共用同一个 memoize 实例：
+ * - loadAllPlugins：完整加载，REPL 挂载后后台执行；
+ * - loadAllPluginsCacheOnly：同一实例的兼容别名，5 个组件 loader 与 hooks-cli 仍按旧名 import。
+ * memoize 提供的是「进程内单次执行」保证（并发调用共享同一个 Promise），不是磁盘缓存。
+ * 需要重新加载走 clearAllPluginCaches() → /reload-plugins。
+ *
+ * ⚠️ 曾经按「cache-only vs full」分成两层，但形参从未被读取，两层跑的是同一遍磁盘扫描，
+ * 只在文件头写了不存在的承诺。故意收成一层（缺陷 23），不要再加回一个换汤不换药的形参。
+ *
+ * 加载来源优先级（高 → 低，同名时先放入者占名）：
+ *   1. 会话级插件（@inline，--plugin-dir 指定）
  *   2. 已安装插件（@local，~/.sid-code/plugins/{name}/）
- *   3. 会话级插件（@inline，--plugin-dir 指定）
+ *   3. 内置插件（@builtin，path = "builtin"）
  */
 
 import { existsSync } from "fs";
@@ -134,19 +145,19 @@ async function loadInlinePlugins(errors: PluginError[]): Promise<LoadedPlugin[]>
 }
 
 /**
- * 合并所有插件来源，去重（先到者优先：内置 → 已安装 → 会话级）。
- * 注意优先级反过来理解：内置插件最先放入，后来同名的会被记为 duplicate-name 跳过，
- * 但会话级（inline）应能覆盖内置以便调试 → 顺序为 builtin 在前、已安装其次、inline 最后，
- * 同名时保留先放入者并对后者报 duplicate。为兼顾"inline 可覆盖"，inline 放最前。
+ * 合并所有插件来源，去重：inline > installed > builtin，先放入者占名。
+ * inline 最高，便于 --plugin-dir 调试时覆盖同名内置 / 已安装插件；
+ * 被同名插件顶掉的一方记为 duplicate-name 错误。
+ * 形参顺序与真实优先级一致（缺陷 26：旧签名是 (builtin, installed, inline)，
+ * 与函数体的展开顺序相反，照签名理解会得出反的结论）。
  */
 function mergePluginSources(
-  builtin: LoadedPlugin[],
-  installed: LoadedPlugin[],
   inline: LoadedPlugin[],
+  installed: LoadedPlugin[],
+  builtin: LoadedPlugin[],
   errors: PluginError[],
 ): LoadedPlugin[] {
   const byName = new Map<string, LoadedPlugin>();
-  // inline 优先级最高（调试场景可覆盖内置/已安装），其次已安装，最后内置
   for (const plugin of [...inline, ...installed, ...builtin]) {
     const existing = byName.get(plugin.name);
     if (existing) {
@@ -176,11 +187,8 @@ function applyEnabledState(plugins: LoadedPlugin[]): {
   return { enabled, disabled };
 }
 
-/**
- * 组装插件加载结果（核心流程）
- * @param fullLoad 是否完整加载（当前两种路径共用磁盘扫描，差异保留给未来缓存优化）
- */
-async function assemblePluginLoadResult(_fullLoad: boolean): Promise<PluginLoadResult> {
+/** 组装插件加载结果（核心流程，唯一的加载层） */
+async function assemblePluginLoadResult(): Promise<PluginLoadResult> {
   const errors: PluginError[] = [];
 
   // 1. 读取已安装注册表（用于内置插件的启用覆盖）
@@ -197,8 +205,8 @@ async function assemblePluginLoadResult(_fullLoad: boolean): Promise<PluginLoadR
   const inlinePlugins = await loadInlinePlugins(errors);
   const builtinPlugins = getBuiltinPlugins(builtinOverrides);
 
-  // 3. 合并去重
-  const merged = mergePluginSources(builtinPlugins, installedPlugins, inlinePlugins, errors);
+  // 3. 合并去重（inline > installed > builtin）
+  const merged = mergePluginSources(inlinePlugins, installedPlugins, builtinPlugins, errors);
 
   // 4. 启用/禁用分类
   const { enabled, disabled } = applyEnabledState(merged);
@@ -219,21 +227,12 @@ async function assemblePluginLoadResult(_fullLoad: boolean): Promise<PluginLoadR
 }
 
 /**
- * 缓存加载：用于启动关键路径（getCommands / getAgentDefinitions 等）。
- * 与 loadAllPlugins 共享 memoize slot 语义——首次调用任一即填充。
- */
-export const loadAllPluginsCacheOnly = memoize(async (): Promise<PluginLoadResult> => {
-  return assemblePluginLoadResult(false);
-});
-
-/**
- * 完整加载：可能触发磁盘 I/O（读取 plugin.json、验证目录）。
- * 完成后预热 cache-only 的 memoize，保证两者一致。
+ * 完整加载：读 installed.json、逐个读 plugin.json 并校验目录。
+ * memoize 保证进程内只执行一次（并发调用共享同一个 Promise），
+ * 所以不再需要「完成后预热 cache-only slot」这类跨 slot 同步——两个名字就是同一个实例。
  */
 export const loadAllPlugins = memoize(async (): Promise<PluginLoadResult> => {
-  const result = await assemblePluginLoadResult(true);
-  // 预热 cache-only memoize
-  loadAllPluginsCacheOnly.cache.set(undefined, Promise.resolve(result));
+  const result = await assemblePluginLoadResult();
 
   if (result.errors.length > 0) {
     const log = getLogger();
@@ -245,6 +244,12 @@ export const loadAllPlugins = memoize(async (): Promise<PluginLoadResult> => {
   return result;
 });
 
-// 注册缓存清除（供 clearAllPluginCaches）
+/**
+ * 兼容别名：启动关键路径的组件 loader（loadPluginCommands/Skills/Agents/Mcp/Hooks、hooks-cli）
+ * 仍按旧名 import。它**不是**零磁盘扫描路径，与 loadAllPlugins 是同一个 memoize 实例，
+ * 因此 .cache / .clear 也共享，不存在两个 slot 不一致或 clear 后被旧结果写回的竞态。
+ */
+export const loadAllPluginsCacheOnly = loadAllPlugins;
+
+// 注册缓存清除（供 clearAllPluginCaches）。两个导出是同一引用，只需也只会注册一次。
 registerPluginCache(loadAllPlugins.clear);
-registerPluginCache(loadAllPluginsCacheOnly.clear);
