@@ -33,6 +33,7 @@ import {
   listMarketplaces,
   updateFromMarket,
 } from "../../../plugin/market-operations.ts";
+import { listComponentLoadErrors } from "../../../plugin/component-errors.ts";
 
 /** 带值的 flag（`--market <name>` 或 `--market=<name>`） */
 const VALUE_FLAGS = new Set(["market"]);
@@ -134,6 +135,17 @@ export class PluginCommand implements LocalCommandModule {
     if (result.errors.length > 0) {
       lines.push("", "加载错误:");
       for (const err of result.errors) {
+        lines.push(`  ⚠ ${formatPluginError(err)}`);
+      }
+    }
+
+    // 组件（命令/Skill/Agent）是延迟加载的，失败不会进 result.errors。不在这里补一段，
+    // 用户体感就是「插件装了，命令少了几个，没有任何提示」。只有在这些组件已被加载过
+    // （/plugin 面板、/reload-plugins）时收集器里才有内容，这也是它唯一可能的落点。
+    const componentErrors = listComponentLoadErrors();
+    if (componentErrors.length > 0) {
+      lines.push("", "组件加载失败:");
+      for (const err of componentErrors) {
         lines.push(`  ⚠ ${formatPluginError(err)}`);
       }
     }

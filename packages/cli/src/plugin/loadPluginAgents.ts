@@ -14,6 +14,7 @@ import { parseFrontmatter } from "@sid-code/core/extension/frontmatter.ts";
 import type { CustomAgentDefinition } from "@sid-code/core/agent/custom.ts";
 import { parseListField, parseAgentExtendedFrontmatter } from "@sid-code/core/agent/custom.ts";
 import { registerPluginCache } from "./caches.ts";
+import { recordComponentLoadError } from "./component-errors.ts";
 import { loadAllPluginsCacheOnly } from "./loader.ts";
 import type { LoadedPlugin } from "./types.ts";
 
@@ -39,6 +40,7 @@ async function scanAgentFiles(
   dir: string,
   baseDir: string,
   pluginName: string,
+  source: string,
   out: CustomAgentDefinition[],
 ): Promise<void> {
   if (!existsSync(dir)) return;
@@ -48,6 +50,13 @@ async function scanAgentFiles(
     entries = await readdir(dir, { withFileTypes: true });
   } catch (err: any) {
     getLogger().warn("PLUGIN", `扫描插件 Agent 目录失败 ${dir}: ${err.message}`);
+    // 目录读不了 = 该插件这一整块 Agent 缺失，必须让用户看见
+    recordComponentLoadError({
+      type: "component-load-failed",
+      source,
+      component: "agents",
+      error: `扫描目录 ${dir} 失败: ${err.message}`,
+    });
     return;
   }
 
@@ -59,12 +68,12 @@ async function scanAgentFiles(
       // 子目录模式：优先 AGENT.md / index.md
       const candidate = ["AGENT.md", "index.md"].map((c) => join(fullPath, c)).find(existsSync);
       if (candidate) {
-        await loadAgentFile(candidate, baseDir, pluginName, out);
+        await loadAgentFile(candidate, baseDir, pluginName, source, out);
       } else {
-        await scanAgentFiles(fullPath, baseDir, pluginName, out);
+        await scanAgentFiles(fullPath, baseDir, pluginName, source, out);
       }
     } else if (entry.isFile() && entry.name.endsWith(".md")) {
-      await loadAgentFile(fullPath, baseDir, pluginName, out);
+      await loadAgentFile(fullPath, baseDir, pluginName, source, out);
     }
   }
 }
@@ -73,6 +82,7 @@ async function loadAgentFile(
   filePath: string,
   baseDir: string,
   pluginName: string,
+  source: string,
   out: CustomAgentDefinition[],
 ): Promise<void> {
   try {
@@ -83,6 +93,13 @@ async function loadAgentFile(
     // YAML 原文进 agent prompt。降级方向更宽松，必须拒绝加载而非静默放行。
     if (fmError) {
       getLogger().warn("PLUGIN", `插件 Agent frontmatter 格式错误，已跳过 ${filePath}: ${fmError}`);
+      // 跳过是对的，但不能只剩一行 warn：用户看到的是"这个 Agent 不见了"
+      recordComponentLoadError({
+        type: "component-load-failed",
+        source,
+        component: "agents",
+        error: `${filePath} frontmatter 格式错误，已跳过: ${fmError}`,
+      });
       return;
     }
     const name = getAgentName(filePath, baseDir, pluginName);
@@ -98,6 +115,12 @@ async function loadAgentFile(
     });
   } catch (err: any) {
     getLogger().warn("PLUGIN", `加载插件 Agent 失败 ${filePath}: ${err.message}`);
+    recordComponentLoadError({
+      type: "component-load-failed",
+      source,
+      component: "agents",
+      error: `加载 ${filePath} 失败: ${err.message}`,
+    });
   }
 }
 
@@ -105,7 +128,7 @@ async function loadAgentFile(
 export async function loadAgentsForPlugin(plugin: LoadedPlugin): Promise<CustomAgentDefinition[]> {
   const agents: CustomAgentDefinition[] = [];
   for (const baseDir of plugin.agentsPaths) {
-    await scanAgentFiles(baseDir, baseDir, plugin.name, agents);
+    await scanAgentFiles(baseDir, baseDir, plugin.name, plugin.source, agents);
   }
   return agents;
 }
