@@ -58,11 +58,15 @@ import {
   setCommandAllowedToolsObserver,
   type PermissionDecisionEvent,
 } from "../permission/decision-telemetry.ts";
+import { setConflictEventObserver, type ConflictEvent } from "../session/conflict-analytics.ts";
 import {
   accumulatePermissionDecision,
   emptyPermissionDecisionStats,
+  accumulateConflictEvent,
+  emptyConflictStats,
   EditFirstTryTracker,
   type PermissionDecisionStats,
+  type ConflictStats,
 } from "./decision-metrics.ts";
 import { setCapabilityHealedObserver } from "../llm/capability-heal-telemetry.ts";
 import { getLogger } from "../debug/logger.ts";
@@ -395,6 +399,9 @@ export class TraceCollector {
   private permissionConfig: PermissionConfigShape | undefined;
   private readonly editFirstTry = new EditFirstTryTracker();
 
+  // ── B9（PR-7）：会话级并发冲突累加器（口径见 decision-metrics.ts ConflictStats）──
+  private conflictStats: ConflictStats = emptyConflictStats();
+
   // 缺口分析五类：上下文窗口查询（TokenEstimator 是窗口大小的 SSOT，避免另建静态表漂移）
   private readonly tokenEstimator = new TokenEstimator();
 
@@ -520,6 +527,10 @@ export class TraceCollector {
         retry_ok: e.retryOk,
       });
     });
+    // B9（PR-7）：并发冲突事件同一模式进轨迹——冲突闸门不持有 collector，
+    // 走 conflict-analytics 的模块级观察者。与 hook 同一时机注入，
+    // 保证「采集启用」⇔「冲突进轨迹」。
+    setConflictEventObserver((e) => this.handleConflictEvent(e));
     // 方案 G：命令 allowed-tools 下发与剥离进轨迹（可复算「多少命令声明被丢弃」）
     setCommandAllowedToolsObserver((e) => {
       if (!this.initialized) return;
@@ -687,6 +698,8 @@ export class TraceCollector {
     // B11 / B12 同理：同进程内 /clear 或 resume 开新会话，上个会话的决策与 edit 结论不能串过来
     this.permissionStats = emptyPermissionDecisionStats();
     this.editFirstTry.reset();
+    // B9（PR-7）同理：冲突累加器也不能跨会话串
+    this.conflictStats = emptyConflictStats();
 
     // 修复问题一：-c/--resume 续接同一 trajectory 目录，而非每次恢复都新建。
     // input.resumed_from 是被恢复会话的旧 id；resume 时用它作 trajectory session_id，
@@ -1679,6 +1692,24 @@ export class TraceCollector {
     });
   }
 
+  // ─── 并发冲突（B9 / PR-7）───
+
+  private handleConflictEvent(e: ConflictEvent): void {
+    if (!this.initialized) return;
+    accumulateConflictEvent(this.conflictStats, e);
+    // 逐条落 events.jsonl：会话级累计只够画曲线，排查「哪个文件在撞」要回到单条事件。
+    // 字段名 snake_case 与 PermissionDecision 同风格；filePathHash 已在发射侧脱敏。
+    this.recordCustomEvent("ConflictDetected", {
+      file_path_hash: e.filePathHash,
+      other_session_count: e.otherSessionCount,
+      severity: e.severity,
+      action: e.action,
+      tool: e.tool,
+      // B11：仅弹窗分支有值。缺失 = 没等人（自动放行/block/无头），不落 0
+      ...(e.hitlMs !== undefined ? { hitl_ms: e.hitlMs } : {}),
+    });
+  }
+
   // ─── PostToolUseFailure ───
 
   private handlePostToolUseFailure(input: PostToolUseInput): void {
@@ -2610,6 +2641,7 @@ export class TraceCollector {
           permission: this.permissionStats,
           permission_config: this.permissionConfig,
           edit_first_try: this.editFirstTry.stats(),
+          conflict: this.conflictStats,
           perf: { ...this.perfIndexFields(), gen_p95: m?.gen_p95, gen_n: m?.gen_n },
         }),
       );
@@ -2946,6 +2978,8 @@ export class TraceCollector {
             permission: this.permissionStats,
             permission_config: this.permissionConfig,
             edit_first_try: this.editFirstTry.stats(),
+            // B9（PR-7）：冲突累加同为 collector 自持事实，增量行照给（崩溃会话不丢样本）
+            conflict: this.conflictStats,
             // 增量行同样给：这几项是 collector 自己累计的事实（gen_p95 要 digest，留给权威行）
             perf: this.perfIndexFields(),
           },

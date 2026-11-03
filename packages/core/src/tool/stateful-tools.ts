@@ -16,25 +16,31 @@ import { ReadTool } from "./read.ts";
 import { EditTool } from "./edit.ts";
 import { ReadManyTool } from "./read-many.ts";
 import { WriteTool } from "./write.ts";
+import { NotebookEditTool } from "./notebook-edit.ts";
 
 /**
  * 持有 FileReadTracker 状态的工具名集合。
  * 子代理隔离时据此判断「哪些工具需用独立 tracker 重建、哪些可安全复用父实例」。
+ * PR-6：notebook_edit 加入——它现在也持 tracker（冲突闸门 + 写后回写），
+ * 子代理若复用父实例，回写的是**父** tracker，自己紧接的 edit 会被误判外部修改
+ * （与 F1 bash 当初的问题同型）。
  */
 export const STATEFUL_TOOL_NAMES: ReadonlySet<string> = new Set([
   "read",
   "edit",
   "read_many",
   "write",
+  "notebook_edit",
 ]);
 
 /**
- * 用指定 tracker 构造一组有状态工具（read / edit / read_many / write）。
+ * 用指定 tracker 构造一组有状态工具（read / edit / read_many / write / notebook_edit）。
  *
- * 这四个工具持有 tracker 引用，是「先读后写」校验的状态载体。write 与 edit 共享
- * 同一 tracker：write 写入后回写 tracker（后续 edit 不被"没读过"拒绝），且覆盖
- * 已有文件前做先读后写 + 陈旧检测。grep/glob/ls/bash/web_* 等无 per-session 可变
- * 状态，不在此工厂内——复用单例实例即可，无需重建。
+ * 这五个工具持有 tracker 引用，是「先读后写」校验与并发冲突检测的状态载体。
+ * write 与 edit 共享同一 tracker：write 写入后回写 tracker（后续 edit 不被"没读过"
+ * 拒绝），且覆盖已有文件前做先读后写 + 陈旧检测。notebook_edit 同理（PR-6/B8）。
+ * grep/glob/ls/bash/web_* 等无 per-session 可变状态，不在此工厂内——复用单例
+ * 实例即可，无需重建。
  */
 export function createStatefulTools(
   tracker: FileReadTracker,
@@ -42,5 +48,11 @@ export function createStatefulTools(
 ): Tool[] {
   const readMany = new ReadManyTool(tracker);
   if (isPathHidden) readMany.setPathHiddenFilter(isPathHidden);
-  return [new ReadTool(tracker), new EditTool(tracker), readMany, new WriteTool(tracker)];
+  return [
+    new ReadTool(tracker),
+    new EditTool(tracker),
+    readMany,
+    new WriteTool(tracker),
+    new NotebookEditTool(tracker),
+  ];
 }

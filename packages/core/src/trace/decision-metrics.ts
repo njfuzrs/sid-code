@@ -7,6 +7,7 @@
  */
 
 import type { PermissionDecisionEvent } from "../permission/decision-telemetry.ts";
+import type { ConflictEvent } from "../session/conflict-analytics.ts";
 
 // ─────────────────────────────────────────────────────────────
 // B11 · 权限决策
@@ -169,5 +170,60 @@ export class EditFirstTryTracker {
 
   reset(): void {
     this.first.clear();
+  }
+}
+
+// ─────────────────────────────────────────────────────────────
+// B9 · 并发冲突检测（PR-7）
+// ─────────────────────────────────────────────────────────────
+
+/**
+ * 会话级并发冲突累加器。
+ *
+ * 口径与 `PermissionDecisionStats` 同一套原则：只存**计数**与**原始耗时样本**，
+ * 不存比率（比率不能跨会话合并，样本可以）。northstar 快照按 release 复算时：
+ * - **误报率代理** = `byAction.continue` ÷ `count`（用户在弹窗里裁决"继续"的占比；
+ *   `branch_auto_continue` 是无人裁决的自动放行，A1 契约刻意分开，**不进分子**）；
+ * - **触发率** = `count` ÷ 同期 edit/write/notebook_edit 次数（分母在别处）。
+ *
+ * `hitlWaitMs` 与权限弹窗的 `promptDurationsMs` 是 HITL 等待的两个来源，digest 汇总时
+ * 相加（B11：冲突弹窗的墙钟此前被误归到工具层耗时）。同样封顶、只收弹过窗的样本。
+ */
+export interface ConflictStats {
+  /** 冲突事件总数 = 触发率分子 / 误报率代理分母 */
+  count: number;
+  /** 完整 action 分布（键是 ConflictAction）。误报率代理分子取 `continue`，
+   *  但要能看到 `branch_auto_continue` / `blocked` / `headless_fallback` 各多少，
+   *  否则"误报率降了"分不清是真误报少了还是被自动放行分流了。 */
+  byAction: Record<string, number>;
+  /** 按触发工具分桶（edit / write / notebook_edit） */
+  byTool: Record<string, number>;
+  /** 弹窗等人的墙钟样本（毫秒），最多 MAX_PROMPT_DURATION_SAMPLES 个。
+   *  只来自 conflictHandler 弹窗分支（event.hitlMs 有值的那些）——自动放行 / block /
+   *  无头降级都没有等人，不产生样本。 */
+  hitlWaitMs: number[];
+}
+
+export function emptyConflictStats(): ConflictStats {
+  return {
+    count: 0,
+    byAction: {},
+    byTool: {},
+    hitlWaitMs: [],
+  };
+}
+
+export function accumulateConflictEvent(stats: ConflictStats, e: ConflictEvent): void {
+  stats.count++;
+  stats.byAction[e.action] = (stats.byAction[e.action] ?? 0) + 1;
+  stats.byTool[e.tool] = (stats.byTool[e.tool] ?? 0) + 1;
+  // 只收弹过窗的等待：与 accumulatePermissionDecision 同一条口径——自动决策的
+  // 耗时是微秒级的判定开销，混进来会把「等人要多久」的 p95 压成 0。
+  if (
+    typeof e.hitlMs === "number" &&
+    e.hitlMs >= 0 &&
+    stats.hitlWaitMs.length < MAX_PROMPT_DURATION_SAMPLES
+  ) {
+    stats.hitlWaitMs.push(e.hitlMs);
   }
 }

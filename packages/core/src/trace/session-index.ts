@@ -199,6 +199,24 @@ export interface SessionIndexEntry {
   edit_first_try?: { files: number; first_try_ok: number };
 
   /**
+   * B9（PR-7）：并发冲突检测的会话级累计。键不存在 = 该版本还没接这个埋点；
+   * 接了但本会话零冲突时落 `count: 0` —— 两者必须分得开（与 `permission` 同一条三态规则）。
+   * 只存计数与原始等待样本，不存比率（误报率代理 = continue ÷ count 由消费侧复算，
+   * 比率不能跨会话合并，样本可以）。
+   */
+  conflict?: {
+    /** 冲突事件总数 = 触发率分子 / 误报率代理分母 */
+    count: number;
+    /** 完整 action 分布。误报率代理分子取 `continue`；`branch_auto_continue`
+     *  是无人裁决的自动放行（A1 契约），刻意分开不进分子 */
+    by_action: Record<string, number>;
+    /** 按触发工具分桶（edit / write / notebook_edit） */
+    by_tool: Record<string, number>;
+    /** 弹窗等人的墙钟样本（毫秒，封顶）。digest 的 HITL 汇总与权限弹窗等待相加（B11） */
+    hitl_wait_ms: number[];
+  };
+
+  /**
    * S1 L1：跑过工具后以短文本收尾的 end_turn 次数（digest `EndTurnShape` 口径）。
    * 有值才写：只有跑过 digest 的 SessionEnd 路径给得出；键不存在 = 旧版本行或没跑 digest，不是 0。
    * 分母 `end_turn_n` 一起写死（铁律 3：分母比分子重要）。
@@ -387,6 +405,8 @@ export function buildSessionIndexEntry(
     permission?: import("./decision-metrics.ts").PermissionDecisionStats;
     permission_config?: import("../permission/decision-telemetry.ts").PermissionConfigShape;
     edit_first_try?: import("./decision-metrics.ts").EditFirstTryStats;
+    /** B9（PR-7）：冲突累加器。undefined = collector 没给（不该发生），键整个不落 */
+    conflict?: import("./decision-metrics.ts").ConflictStats;
     /** S1 L1：传了才落盘（见 SessionIndexEntry.short_text_end_turns） */
     short_text_end_turns?: number;
     end_turn_n?: number;
@@ -470,6 +490,16 @@ export function buildSessionIndexEntry(
           edit_first_try: {
             files: extra.edit_first_try.files,
             first_try_ok: extra.edit_first_try.firstTryOk,
+          },
+        }
+      : {}),
+    ...(extra.conflict
+      ? {
+          conflict: {
+            count: extra.conflict.count,
+            by_action: structuredClone(extra.conflict.byAction),
+            by_tool: structuredClone(extra.conflict.byTool),
+            hitl_wait_ms: [...extra.conflict.hitlWaitMs],
           },
         }
       : {}),

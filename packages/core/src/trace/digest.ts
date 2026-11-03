@@ -1366,6 +1366,17 @@ export interface SessionLevelMetrics {
   hitl_wait_n: number;
   hitl_wait_total_ms: number;
   hitl_wait_p95_ms?: number;
+  /**
+   * B9（PR-7）：并发冲突事件计数（来自 events.jsonl 的 `ConflictDetected`）。
+   * `conflict_continue_count` 是误报率代理的分子（用户弹窗裁决"继续"的占比）；
+   * `branch_auto_continue`（无人裁决的自动放行，A1 契约）**刻意不计入** continue，
+   * 否则误报率的分子掺进没问过的样本，指标自欺。键恒落（缺省 0）：
+   * 0 = 本会话真没冲突，与"埋点没生效"靠 ConflictDetected 事件存在性区分。
+   */
+  conflict_count: number;
+  conflict_continue_count: number;
+  conflict_blocked_count: number;
+  conflict_auto_continue_count: number;
   /** 是否触发过四环防线（hypothesis_register / hypothesis_challenge / verify 子代理） */
   defenseTriggered: boolean;
   /** P2-14：session.traj 是否损坏（1/56 实测损坏率此前完全不可见） */
@@ -3685,6 +3696,33 @@ export function renderHuman(d: Digest, opts: RenderOptions = {}): string {
     }
   }
 
+  // ─── B9（PR-7）：并发冲突检测（「更安全」方向的辅助口径）───
+  // 只在真有冲突时打印——恒打一行 "冲突 0 次" 会把"防线没被触发"读成噪声。
+  // 误报率代理 = continue ÷ count：branch_auto_continue 是无人裁决的自动放行（A1 契约），
+  // 单独列出而不并进 continue，否则代理口径的分子掺进没问过的样本。
+  if (d.sessionMetrics && d.sessionMetrics.conflict_count > 0) {
+    const m = d.sessionMetrics;
+    L.push("");
+    L.push(
+      c("bold", "并发冲突:") +
+        ` ${m.conflict_count} 次` +
+        c(
+          "gray",
+          `（弹窗裁决继续 ${m.conflict_continue_count} · block 阻止 ${m.conflict_blocked_count}` +
+            ` · 分支分叉自动放行 ${m.conflict_auto_continue_count}）`,
+        ),
+    );
+    if (m.conflict_continue_count > 0) {
+      L.push(
+        c(
+          "gray",
+          `  误报率代理: continue ${m.conflict_continue_count}/${m.conflict_count}` +
+            ` —— 跨会话曲线看 session-index.jsonl 的 conflict 块`,
+        ),
+      );
+    }
+  }
+
   // ─── S1 L1：疑似静默收尾（只报事实与证据指针，不下结论）───
   // 「跑过工具后用一句短文本 end_turn」可能是正常的完成陈述，也可能是「说了要做却没做」。
   // 这里不替读者判断，只给次数、分母和定位到哪一轮；续跑兑现率单独一行。
@@ -4447,6 +4485,12 @@ export function aggregateSessionMetrics(
   let hitlSamples = 0;
   let hitlPrompts = 0;
   const hitlWaits: number[] = [];
+  // B9（PR-7）：冲突事件计数。byAction 完整分布进 session-index（collector 侧累加器），
+  // digest 这里只出报告用的三个关键数 + 误报率代理分子
+  let conflictCount = 0;
+  let conflictContinue = 0;
+  let conflictBlocked = 0;
+  let conflictAutoContinue = 0;
   let defenseTriggered = false;
   let compactions = 0;
   const gens: number[] = [];
@@ -4496,6 +4540,22 @@ export function aggregateSessionMetrics(
       hitlPrompts++;
       const ms = e.data.duration_ms;
       if (typeof ms === "number" && ms >= 0) hitlWaits.push(ms);
+    }
+
+    // B9（PR-7）：冲突事件计数 + B11：冲突弹窗等待并入同一份 HITL 汇总。
+    // hitl_ms 只在弹窗分支有值（自动放行/block/无头降级都没等人）——与
+    // PermissionDecision 只认 prompted=true 是同一条口径：量"人在犹豫"，不量机器判定。
+    if (e.event === "ConflictDetected") {
+      conflictCount++;
+      const act = e.data.action;
+      if (act === "continue") conflictContinue++;
+      else if (act === "blocked") conflictBlocked++;
+      else if (act === "branch_auto_continue") conflictAutoContinue++;
+      const ms = e.data.hitl_ms;
+      if (typeof ms === "number" && ms >= 0) {
+        hitlPrompts++;
+        hitlWaits.push(ms);
+      }
     }
 
     if (e.event === "PreCompact") compactions++;
@@ -4548,6 +4608,10 @@ export function aggregateSessionMetrics(
     hitl_wait_n: sortedHitl.length,
     hitl_wait_total_ms: sortedHitl.reduce((a, b) => a + b, 0),
     hitl_wait_p95_ms: percentile(sortedHitl, 0.95),
+    conflict_count: conflictCount,
+    conflict_continue_count: conflictContinue,
+    conflict_blocked_count: conflictBlocked,
+    conflict_auto_continue_count: conflictAutoContinue,
     short_text_end_turns: shortTextEndTurns,
     end_turn_n: endTurnN,
     promise_nudge_fired: promiseNudgeFired,

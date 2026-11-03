@@ -1873,9 +1873,10 @@ export async function main(): Promise<void> {
     const { MemoryTool } = await import("@sid-code/core/tool/memory.ts");
     const { createStatefulTools } = await import("@sid-code/core/tool/stateful-tools.ts");
 
-    // 有状态工具（read/edit/read_many/write）经工厂用同一 tracker 构造，
+    // 有状态工具（read/edit/read_many/write/notebook_edit）经工厂用同一 tracker 构造，
     // 与子代理隔离路径（sub-agent.ts）共用工厂，避免构造逻辑漂移。
     // write 已并入工厂（与 edit 共享 tracker 做先读后写 + 写后回写），不再单独注册。
+    // notebook_edit 同理（PR-6/B8：冲突闸门 + 意图声明 + 写后回写都需要 tracker）。
     for (const t of createStatefulTools(fileReadTracker)) toolRegistry.register(t);
     // F1：bash 与 read/edit/write 共享同一 tracker——命令结束后回扫已读文件，
     // 否则 agent 自己 bash 格式化完再 edit 会被误判「外部修改」。
@@ -1922,10 +1923,10 @@ export async function main(): Promise<void> {
     const { AskUserQuestionTool } = await import("@sid-code/core/tool/ask-user-question.ts");
     toolRegistry.register(new AskUserQuestionTool());
 
-    // G11：注册 NotebookEdit 工具（cell 级 .ipynb 编辑，与 Read 的 notebook 支持配套）。
-    // shouldDefer，由 tool_search 按需调出——多数会话不涉及 notebook。
-    const { NotebookEditTool } = await import("@sid-code/core/tool/notebook-edit.ts");
-    toolRegistry.register(new NotebookEditTool());
+    // G11：NotebookEdit 工具（cell 级 .ipynb 编辑，与 Read 的 notebook 支持配套）
+    // 已并入上面的 createStatefulTools 工厂（PR-6/B8：它现在持 tracker 做冲突检测
+    // 与写后回写），不再单独注册——单独 new 会覆盖工厂里带 tracker 的实例。
+    // shouldDefer 属性不变，仍由 tool_search 按需调出。
 
     // G19：注册 think 工具——全仓首个用新泛型 buildTool() 定义的工具。直接传新 Tool，
     // registry.register 在入口经 bridge 归一，验证「新接口直接注册」链路真实可用。
