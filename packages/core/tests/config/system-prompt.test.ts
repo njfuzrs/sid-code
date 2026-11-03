@@ -146,7 +146,10 @@ describe("buildSystemPrompt", () => {
     expect(prompt).toContain("captured when this session started");
   });
 
-  test("P0-1：Git 状态落在 DYNAMIC_BOUNDARY 之前（静态缓存区）", () => {
+  // 2026-10-30 改：gitStatus 从静态区挪到**动态区**（原为 P0-1 的 stable 标记）。
+  // 原因是它含 `git branch --show-current`，进入 worktree 后该值变化 —— 留在静态区
+  // 就是「每进/出一次 worktree 整条前缀作废」。这条断言锁死新契约，防有人按旧结论改回去。
+  test("Git 状态落在 DYNAMIC_BOUNDARY 之后（动态区，branch 随 worktree 变化）", () => {
     const prompt = buildSystemPrompt({
       tools: [],
       workingDir: process.cwd(),
@@ -154,8 +157,8 @@ describe("buildSystemPrompt", () => {
     });
     const idx = prompt.indexOf(DYNAMIC_BOUNDARY);
     expect(idx).toBeGreaterThan(0);
-    expect(prompt.slice(0, idx)).toContain("<git-status>");
-    expect(prompt.slice(idx + DYNAMIC_BOUNDARY.length)).not.toContain("<git-status>");
+    expect(prompt.slice(0, idx)).not.toContain("<git-status>");
+    expect(prompt.slice(idx + DYNAMIC_BOUNDARY.length)).toContain("<git-status>");
   });
 
   test("不请求 Git 状态时不包含", () => {
