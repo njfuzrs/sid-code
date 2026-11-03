@@ -67,9 +67,19 @@ export class CacheCommand implements LocalCommandModule {
       if (breaks.length === 0) {
         lines.push("  （本会话暂无检测到缓存中断）");
       } else {
+        let untrusted = 0;
         for (const b of breaks) {
           const time = new Date(b.ts * 1000).toLocaleTimeString();
-          lines.push(`  [${time}] ${b.model}: ${formatCacheBreakReport(b)}`);
+          // 逐条标注而不是过滤：明细里藏掉记录会让人以为「没断过」。
+          // 但必须标出来 —— 不可信渠道的 cache_read 是编造的，这条「下降」不是缓存行为。
+          if (b.channelTrust === "untrusted") untrusted++;
+          const tag = b.channelTrust === "untrusted" ? " ⚠ 渠道 usage 不可信" : "";
+          lines.push(`  [${time}] ${b.model}: ${formatCacheBreakReport(b)}${tag}`);
+        }
+        if (untrusted > 0) {
+          lines.push(
+            `  另有 ${untrusted} 条走 usage 不可信渠道，未计入下方健康度建议（那些「下降」是渠道编造的数字，不是缓存行为）`,
+          );
         }
       }
       if (advice.length > 0) {

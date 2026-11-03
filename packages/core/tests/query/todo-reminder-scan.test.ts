@@ -15,6 +15,7 @@ import {
   getTodoReminderTurnCounts,
   shouldInjectTodoReminder,
   LAST_TODO_REMINDER_TURN_KEY,
+  TODO_REMINDER_ADVANCE_RELAX_FACTOR,
 } from "@sid-code/core/query/todo-reminder-scan.ts";
 import { TODO_REMINDER_CONFIG } from "@sid-code/core/query/todo-reminder.ts";
 import type { Message } from "@sid-code/core/llm/types.ts";
@@ -207,5 +208,108 @@ describe("结构哨兵：todo 通道保持无去重、无封顶", () => {
     expect(LAST_TODO_REMINDER_TURN_KEY).toBe("lastTodoReminderAbsoluteTurn");
     // 必须是 sessionState.set 而非 state.xxx =
     expect(loopSrc).toContain("sessionState.set(LAST_TODO_REMINDER_TURN_KEY");
+  });
+});
+
+// ────────────────────────────────────────────────────────────────────────────
+// C4（2026-11-03）：模型在推进当前项时放宽提醒间隔
+// ────────────────────────────────────────────────────────────────────────────
+describe("C4：recentToolUseTurns 统计「最近窗口内有没有在干活」", () => {
+  test("不传 recentWindow → 0（旧行为，不放宽）", () => {
+    const msgs = [assistantTodoWrite(), assistantOtherTool(), assistantOtherTool()];
+    const c = getTodoReminderTurnCounts(msgs, { absoluteTurn: 3 });
+    expect(c.recentToolUseTurns).toBe(0);
+  });
+
+  test("窗口内数有工具调用的轮，todo_write 不算「在干活」", () => {
+    const msgs = [
+      assistantTodoWrite(),
+      assistantOtherTool("read"),
+      assistantText(), // 纯文本轮不算
+      assistantOtherTool("grep"),
+      assistantOtherTool("edit"),
+      assistantTodoWrite(), // 最近一次：被判定对象本身，不算推进证据
+    ];
+    // 末尾往前 5 个 assistant 轮：todo_write / edit / grep / text / read
+    const c = getTodoReminderTurnCounts(msgs, { absoluteTurn: 6, recentWindow: 5 });
+    expect(c.recentToolUseTurns).toBe(3);
+  });
+
+  test("窗口之外的旧工具调用不计（只看最近，避免「干过活」永久放宽）", () => {
+    const msgs = [
+      assistantOtherTool("read"),
+      assistantOtherTool("read"),
+      assistantText(),
+      assistantText(),
+      assistantText(),
+    ];
+    const c = getTodoReminderTurnCounts(msgs, { absoluteTurn: 5, recentWindow: 2 });
+    expect(c.recentToolUseTurns).toBe(0);
+  });
+});
+
+describe("C4：relaxWhenAdvancing 把提醒间隔放宽到 2 倍", () => {
+  test("模型在推进 + 清单一个 in_progress：8 轮不放行、16 轮放行", () => {
+    const advancing = {
+      turnsSinceLastTodoWrite: 20,
+      turnsSinceLastReminder: 8,
+      recentToolUseTurns: 3,
+    };
+    expect(shouldInjectTodoReminder(advancing, { ...THRESHOLDS, relaxWhenAdvancing: true })).toBe(
+      false,
+    );
+    expect(
+      shouldInjectTodoReminder(
+        { ...advancing, turnsSinceLastReminder: 16 },
+        { ...THRESHOLDS, relaxWhenAdvancing: true },
+      ),
+    ).toBe(true);
+  });
+
+  test("模型没在推进（无工具调用）：仍按原间隔催 —— 真停滞不能被放宽", () => {
+    const stalled = {
+      turnsSinceLastTodoWrite: 20,
+      turnsSinceLastReminder: 8,
+      recentToolUseTurns: 0,
+    };
+    expect(shouldInjectTodoReminder(stalled, { ...THRESHOLDS, relaxWhenAdvancing: true })).toBe(
+      true,
+    );
+  });
+
+  test("不给 relaxWhenAdvancing（默认）：行为与旧实现一致（即便有工具调用）", () => {
+    const c = { turnsSinceLastTodoWrite: 20, turnsSinceLastReminder: 8, recentToolUseTurns: 99 };
+    expect(shouldInjectTodoReminder(c, THRESHOLDS)).toBe(true);
+  });
+
+  test("放宽后不是永久静音：60 轮持续推进会话仍持续回注（≥3 次）", () => {
+    // 这条守住「放宽」与「静音」的边界：本会话 4 次噪声该减半，但通道不能废掉。
+    const msgs: Message[] = [userText("干个长活"), assistantTodoWrite()];
+    let lastReminderTurn: number | undefined;
+    let injections = 0;
+    for (let turn = 1; turn <= 60; turn++) {
+      msgs.push(assistantOtherTool("read"));
+      const counts = getTodoReminderTurnCounts(msgs, {
+        absoluteTurn: turn,
+        lastReminderAbsoluteTurn: lastReminderTurn,
+        recentWindow: TODO_REMINDER_CONFIG.TURNS_BETWEEN_REMINDERS,
+      });
+      if (
+        shouldInjectTodoReminder(counts, {
+          ...THRESHOLDS,
+          relaxWhenAdvancing: true,
+        })
+      ) {
+        injections++;
+        lastReminderTurn = turn;
+      }
+    }
+    // 16 轮一次 → 60/16 ≈ 3
+    expect(injections).toBeGreaterThanOrEqual(3);
+    expect(injections).toBeLessThanOrEqual(4);
+  });
+
+  test("放宽倍数常量是 2（本方案定的口径）", () => {
+    expect(TODO_REMINDER_ADVANCE_RELAX_FACTOR).toBe(2);
   });
 });

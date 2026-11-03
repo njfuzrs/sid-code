@@ -129,6 +129,8 @@ import {
   armForceExit,
   installTeardownSignalHandlers,
   PIPE_CLOSED_EXIT_CODE,
+  SIGNAL_FORCE_EXIT_MS,
+  telemetryDrainBudgetMs,
   terminalDeathCause,
   watchTerminalOutputErrors,
   type TerminalDeathCause,
@@ -149,9 +151,9 @@ import { buildCommandAnswerMessages, routeCommandResult } from "./ui/command-res
 import { startPreventSleep, stopPreventSleep } from "@sid-code/core/task/prevent-sleep.ts";
 import {
   hasPendingNotifications,
-  hasRunningBackgroundTasks,
   subscribeBackgroundActivity,
 } from "@sid-code/core/task/background-wake.ts";
+import { hasAwaitedBackgroundTasks } from "@sid-code/core/task/background-await.ts";
 import { getSleepLedger } from "@sid-code/shared/utils/sleep-detect.ts";
 import {
   recordSideCall,
@@ -5475,6 +5477,9 @@ export class App {
             : 143;
 
     const onSignal = async (signal: "SIGINT" | "SIGTERM" | "SIGHUP") => {
+      // 遥测排空的预算按**入口时刻**算：1.5s 强退兜底从下面的 armForceExit 就开始走了，
+      // 用更晚的 teardownStart 会算出偏大的剩余时间。
+      const signalStart = Date.now();
       // P0 #3：同步记在一切 await / abort 之前——abort 会唤醒无头主路径，它随时可能先走到 exit。
       this.receivedSignalExitCode = exitCodeOf(signal);
       // 必须在下面 abort() 之前取样：abort 之后 signal.aborted 恒 true，就分不出空闲与忙。
@@ -5512,7 +5517,9 @@ export class App {
       // 兜底退出:无论落盘是否 hang,最多 1.5s 后强制退出。
       // 提前注册(在 await 之前),避免 fireSessionEndEvent 永久挂起时此兜底永远不执行(ASYNC-7)。
       // M3：这是异步挂起的唯一出口（「>2s 第二个信号强退」已删，理由见 signal-teardown.ts 头部）。
-      const disarmForceExit = armForceExit(exitCodeOf(signal), 1500);
+      // M3：这是异步挂起的唯一出口（「>2s 第二个信号强退」已删，理由见 signal-teardown.ts 头部）。
+      // 时长用常量而不是字面量 1500：遥测排空的预算要从同一个上限里扣（见 telemetryDrainBudgetMs）。
+      const disarmForceExit = armForceExit(exitCodeOf(signal), SIGNAL_FORCE_EXIT_MS);
       // 触发 abort 让 LLM 流式请求/工具调用尽快停下
       try {
         this.abortController?.abort();
@@ -5535,6 +5542,31 @@ export class App {
         process.stderr.write(`[signal] SessionEnd hook 失败: ${err?.message ?? err}\n`);
       }
       log.warn("APP", `SessionEnd 收尾退出（${signal}，耗时 ${Date.now() - teardownStart}ms）`);
+      // A（2026-11-02 方案）：信号路径排空遥测。
+      //
+      // 遥测队列只有两个出口：每 5 秒一次的定时刷新，和 runShutdownSequence 的 flush 阶段
+      // （500ms 硬超时）。信号退出两个都赶不上 —— 根 span（只在 SessionEnd 里 end）与最后
+      // 几秒的子 span 留在内存里随进程消失。这里只补「本地落盘」这一件事，不调
+      // runShutdownSequence：它还要跑所有注册的清理函数和 pre-flush 钩子，多长没有保证。
+      //
+      // 预算取剩余时间（SIGNAL_FORCE_EXIT_MS − 已耗时 − 尾部预留），留出后面 log.flush
+      // 的 200ms 与余量；不够就跳过，不挤掉日志。排空失败不抛（丢遥测可接受，挂起不可接受）。
+      const drainBudget = telemetryDrainBudgetMs(Date.now() - signalStart);
+      const drainStart = Date.now();
+      let drained = false;
+      if (drainBudget > 0) {
+        try {
+          const { drainTelemetry } = await import("@sid-code/core/telemetry/index.ts");
+          drained = await drainTelemetry(drainBudget);
+        } catch {
+          /* 丢遥测可接受，挂起不可接受 */
+        }
+      }
+      // 验收口径：`telemetry drained=false` 出现的次数 = 450ms 预算不够用的次数（方案文档 §五）。
+      log.warn(
+        "APP",
+        `遥测排空结束（${signal}，budget=${drainBudget}ms，耗时 ${Date.now() - drainStart}ms，telemetry drained=${drained}）`,
+      );
       // B3：信号退出也结束会话持久化（幂等）
       this.finalizeSessionStore();
       // 清理 crash marker（正常退出不残留）
@@ -8835,7 +8867,9 @@ export class App {
       // 后台任务通知续跑：与 -p / TUI 同源（都走 queryEngine），只是这里的消费方是流式 NDJSON。
       resumeWithNotifications: () => this.queryEngine.resumeWithNotifications(),
       hasPendingNotifications: () => hasPendingNotifications(),
-      hasRunningBackgroundTasks: () => hasRunningBackgroundTasks(),
+      // 「值得等」口径（background-await.ts）：headless 等待循环据此决定要不要为后台任务挂着，
+      // 静默的常驻 shell 不算——否则 stdin 关闭后进程为一个不会退出的服务永远不退。
+      hasRunningBackgroundTasks: () => hasAwaitedBackgroundTasks(),
       subscribeBackgroundActivity: (listener) => subscribeBackgroundActivity(listener),
     };
   }

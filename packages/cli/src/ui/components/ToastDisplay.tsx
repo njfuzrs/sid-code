@@ -38,6 +38,15 @@ export const ToastDisplay: React.FC = () => {
     return <Text color={theme.text.secondary}>{uiState.transientMessage.text}</Text>;
   }
 
+  if (
+    uiState.transientMessage?.type === TransientMessageType.Info &&
+    uiState.transientMessage.text
+  ) {
+    // L1.2：`theme.status` 没有 info 档，需要「信息蓝」时用品牌色 ui.active。
+    // Hint 走 text.secondary 是因为它是"顺带一提"，Info 是"告知一件事"，用品牌蓝点睛。
+    return <Text color={theme.ui.active}>{uiState.transientMessage.text}</Text>;
+  }
+
   if (uiState.showIsExpandableHint) {
     // TO4：阶梯式展开提示——按当前级别提示下一步动作。
     const action =
