@@ -1,5 +1,6 @@
 import renderNodeToOutput, {
 	renderNodeToScreenReaderOutput,
+	renderStats,
 } from './render-node-to-output.js';
 import Output, {type ScreenReuse} from './output.js';
 import {type DOMElement} from './dom.js';
@@ -62,9 +63,14 @@ const renderer = (
 			height: node.yogaNode.getComputedHeight(),
 		});
 
+		const walkedBefore = renderStats.walked;
 		renderNodeToOutput(node, output, {
 			skipStaticElements: true,
 		});
+		renderStats.byRoot.set(
+			node,
+			(renderStats.byRoot.get(node) ?? 0) + renderStats.walked - walkedBefore,
+		);
 
 		let staticOutput;
 
