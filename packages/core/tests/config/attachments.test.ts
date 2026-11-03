@@ -74,9 +74,12 @@ describe("generateGitStatusAttachment", () => {
     expect(attachment).not.toBeNull();
     expect(attachment!.type).toBe("gitStatus");
     expect(attachment!.priority).toBe(PRIORITY.GIT_STATUS);
-    expect(attachment!.cacheStability).toBe("stable");
+    // 必须是 dynamic：这块含 `git branch --show-current`，进 worktree 后返回的是
+    // worktree 自己的分支名（main → worktree-xxx）。留在静态区 = 每次进/出 worktree
+    // 整条 system 前缀作废（2026-10-30 定案，原为 stable）。
+    expect(attachment!.cacheStability).toBe("dynamic");
     expect(attachment!.content).toContain("<git-status>");
-    // 保留稳定部分：branch（会话内极少变）。
+    // 保留分支信息（动态区下每轮刷新，worktree 内也正确）。
     expect(attachment!.content).toContain("Current branch:");
     // 首行仍显式声明"这是启动快照、不会更新"（弱模型的锚点）。
     expect(attachment!.content).toContain("captured when this session started");

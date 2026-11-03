@@ -173,8 +173,39 @@ export enum HookType {
  * 顶层决策类型（老式 decision 字段）
  * CC utils/hooks.ts:525-543：`approve` 等价 allow（放行），`block`/`deny` 阻塞。
  */
-/** ContextManager 自己改写发送前缀的来源（落 prefix_break.cause，见 BeforeModel 的 send_mutation_causes） */
-export type SendMutationCause = "compact" | "masking" | "cleaned" | "cold_clear";
+/**
+ * system prompt 重建的触发源。
+ *
+ * 每调一次 `rebuildSystemPrompt` 就记一条 `system_rebuild:<trigger>`，随
+ * `prefix_break.cause` 落盘。加它的直接动因：轨迹里有一批「`system_static` 断了、
+ * 但前后 BeforeModel 的 `cwd` 没变、窗口里只有 bash / edit / read」的轮次归不了因，
+ * 只能标 `none_local`。有了 trigger，下一次同类断裂能直接读出是哪条路径重建了 prompt。
+ *
+ * `workspace` 曾经是触发源之一（进/出 worktree 重建），现已**删除**：
+ * 工作目录移出静态区后切换不再重建，那条路径不再产生前缀断裂（见
+ * config/system-prompt.ts 的 buildEnvironmentSection）。
+ */
+export type SystemRebuildTrigger =
+  | "claude_md_reload"
+  | "critical_constraints"
+  | "skill_reload"
+  | "language"
+  | "memory_reload"
+  | "session_memory";
+
+/**
+ * ContextManager 自己改写发送前缀的来源（落 prefix_break.cause，见 BeforeModel 的 send_mutation_causes）
+ *
+ * `system_rebuild:*` 与另外四个的区别：前四个是 ContextManager **自己**改写历史
+ * （压缩/遮罩/清理），而它是由上层重建 system prompt 后写入的 —— 类型上并进同一个
+ * union，是因为消费端（落盘与归因）只关心「本轮谁动了前缀」。
+ */
+export type SendMutationCause =
+  | "compact"
+  | "masking"
+  | "cleaned"
+  | "cold_clear"
+  | `system_rebuild:${SystemRebuildTrigger}`;
 
 export type HookDecision = "allow" | "approve" | "deny" | "block" | undefined;
 
