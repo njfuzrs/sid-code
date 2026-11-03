@@ -243,6 +243,19 @@ const dialogState = {
 };
 
 describe("真实布局整帧快照（底部区域）", () => {
+  // 同一条瞬态消息只能出现一行。ToastDisplay（BottomRegion）与 Composer 的状态行
+  // 曾经各渲染一份 uiState.transientMessage，粘贴一次就在输入框上方叠出两行重复提示
+  // （2026-11-03 实测）。快照锁的是「整帧长什么样」，重复行是新增行、未必让旧快照变红，
+  // 所以单独用行计数把这条约定钉死。
+  for (const mode of ["main", "fullscreen"] as const) {
+    test(`${mode}：同一条瞬态消息只渲染一行（不重复叠加）`, async () => {
+      const text = "唯一一条提示-ABC";
+      const frame = await renderLayout(mode, {}, { toast: text });
+      const hits = frame.split("\n").filter((line) => line.includes(text));
+      expect(hits.length).toBe(1);
+    });
+  }
+
   for (const mode of ["main", "fullscreen"] as const) {
     test(`${mode}：瞬态块齐全`, async () => {
       const frame = await renderLayout(mode, transientState, transientSeed);
