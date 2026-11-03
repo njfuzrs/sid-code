@@ -1150,6 +1150,26 @@ export function InputArea({
       </Box>
     ) : null;
 
+  // 输入框高度水位：只升不降，下一轮开始（isLoading 上升沿）才回落。
+  // 主屏帧已溢出视口时任何收缩都会整帧重画全部历史（packages/tui/src/frame/main-screen.ts 文件头）：
+  // 退格删行、Ctrl+U、Esc 清空、关补全菜单让行数变少时，用空行把框撑在最高点。
+  // 回落那一帧用户消息进历史、spinner 出现，帧本来在变高，不会单独造成收缩。
+  // 与 hooks/useHeldRows.ts 同一规则。两个 ref 声明在反向搜索提前 return 之上（hook 顺序铁律）；
+  // 空输入框分支与正常分支都经 padInputRows 取补行数，漏一条就会在那条路径上复发。
+  const inputHeightHighRef = useRef(1);
+  const inputHeightPrevLoadingRef = useRef(isLoading);
+  const padInputRows = (rows: number): number => {
+    if (isLoading && !inputHeightPrevLoadingRef.current) {
+      inputHeightHighRef.current = rows;
+    } else if (rows > inputHeightHighRef.current) {
+      inputHeightHighRef.current = rows;
+    }
+    inputHeightPrevLoadingRef.current = isLoading;
+    return Math.max(0, inputHeightHighRef.current - rows);
+  };
+  const renderPadRows = (n: number) =>
+    Array.from({ length: n }, (_, i) => <Text key={`pad-${i}`}> </Text>);
+
   // 反向搜索模式 UI
   // ⚠️ 这个提前 return 必须放在本组件**所有 hook 之后**：它原本在上面队列/Shell 提示
   // 那两组 useRef/useEffect 之前，Ctrl+R 激活后本次渲染少调 6 个 hook（4 useRef + 2 useEffect），React 抛
@@ -1188,6 +1208,7 @@ export function InputArea({
   if (isEmpty) {
     const currentPrompt = shellModeActive ? SHELL_PROMPT : PROMPT;
     const currentPlaceholder = shellModeActive ? "输入 shell 命令…" : getPlaceholder();
+    const emptyPadRows = padInputRows(1);
 
     return (
       <Box flexDirection="column" width={termWidth}>
@@ -1198,6 +1219,7 @@ export function InputArea({
           {...INPUT_BORDER_PROPS}
           borderColor={inputBorderColor()}
           paddingX={1}
+          flexDirection="column"
         >
           <Text>
             <Text color={theme.ui.active} bold>
@@ -1206,6 +1228,7 @@ export function InputArea({
             <Text inverse> </Text>
             <Text>{currentPlaceholder}</Text>
           </Text>
+          {renderPadRows(emptyPadRows)}
         </Box>
       </Box>
     );
@@ -1245,6 +1268,9 @@ export function InputArea({
   }
   const viewEnd = Math.min(viewStart + MAX_INPUT_LINES, totalVisualLines);
   const visibleLines = visualLines.slice(viewStart, viewEnd);
+
+  // 输入框高度水位（见上方 padInputRows）
+  const inputPadRows = padInputRows(visibleLines.length);
 
   const renderedLines = visibleLines.map((vl, i) => {
     const visualIdx = viewStart + i;
@@ -1333,6 +1359,7 @@ export function InputArea({
         flexDirection="column"
       >
         {renderedLines}
+        {renderPadRows(inputPadRows)}
       </Box>
       {/* P2-2：Vim 动态模式栏（对标 cc 的 -- NORMAL -- / -- INSERT --）。
           仅 vimMode 开启时显示；NORMAL/VISUAL 用品牌色，INSERT 用次要色，一眼可辨当前模式。 */}

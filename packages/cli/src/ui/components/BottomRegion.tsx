@@ -27,6 +27,21 @@ import { ToastDisplay } from "./ToastDisplay.tsx";
 import { ExitWarning } from "./ExitWarning.tsx";
 import { TodoPanel } from "./TodoPanel.tsx";
 import type { OnboardingResult } from "./OnboardingDialog.tsx";
+import { useHeldRows } from "../hooks/useHeldRows.ts";
+
+/**
+ * 状态提示行。出现过就占住一行到下一轮开始（useHeldRows），消失不让主屏帧变矮。
+ * 占位态返回一个空行，留白区的 gap 照常算——只在它出现过之后才有这一行。
+ */
+const StatusMessageRow: React.FC<{ text: string; busy: boolean }> = ({ text, busy }) => {
+  const rows = useHeldRows(text ? 1 : 0, busy);
+  if (rows === 0) return null;
+  return (
+    <Box paddingX={1} minHeight={rows}>
+      {text ? <Text color={theme.status.warning}>{text}</Text> : null}
+    </Box>
+  );
+};
 import type {
   PermissionRequestInfo,
   ShellConfirmRequestInfo,
@@ -227,7 +242,7 @@ export const BottomRegion: React.FC<BottomRegionProps> = ({
           termWidth={termWidth}
           tasksHidden={taskPanelHidden}
         />
-        <ToastDisplay />
+        <ToastDisplay busy={isLoading} />
 
         {/* CM3/CM4：LLM 重试/限流提示（实时倒计时 + 限流升级建议） */}
         <RetryStatus status={retryStatus} />
@@ -237,11 +252,7 @@ export const BottomRegion: React.FC<BottomRegionProps> = ({
 
         {beforeStatus}
 
-        {statusMessage ? (
-          <Box paddingX={1}>
-            <Text color={theme.status.warning}>{statusMessage}</Text>
-          </Box>
-        ) : null}
+        <StatusMessageRow text={statusMessage} busy={isLoading} />
 
         {/* Composer / 权限对话框 / Plan 审批 / 交互式对话框 互斥显示（收口到 DialogSwitch）
             作为留白区最后一块，与上方瞬态块自动隔 1 行 */}
@@ -287,7 +298,7 @@ export const BottomRegion: React.FC<BottomRegionProps> = ({
       </Box>
 
       {/* 输入框下方紧贴：退出警告 + 状态栏，无额外空行 */}
-      <ExitWarning />
+      <ExitWarning busy={isLoading} />
 
       <Footer
         permissionMode={permissionMode}
