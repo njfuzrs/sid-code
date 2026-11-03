@@ -252,11 +252,14 @@ export const Composer: React.FC<ComposerProps> = ({
     return false;
   });
 
-  // 状态行（spinner / 工具完成提示 / 瞬态消息 / 模式指示）出现过就占住一行，到下一轮开始才放掉，
+  // 状态行（spinner / 工具完成提示 / 模式指示）出现过就占住一行，到下一轮开始才放掉，
   // 避免 spinner 结束、工具完成提示 2s 后消失时帧变矮触发主屏整帧重画（见 useHeldRows）。
   // 窄屏下指示器竖排可能多于一行，这里只保底一行：多出的行变化少见，交给帧层重画。
+  //
+  // ⚠️ 判据必须是「这一行真的渲染了什么」，不能拿 uiState.transientMessage 充数：
+  // 瞬态消息由 BottomRegion 的 ToastDisplay 渲染（见下方左侧区域的注释），本行不渲染它。
+  // 拿它当内容会让每次出现 toast 都凭空占一行，输入框上方多一条空行（2026-11-03 快照门禁实测）。
   const statusRowHasContent =
-    !!uiState.transientMessage ||
     showLoadingIndicator ||
     !!streaming.lastToolResult ||
     showRawMarkdownIndicator ||
