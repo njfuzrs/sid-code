@@ -1077,7 +1077,10 @@ async function handleUploadTraces(
   // 排查者看到「处理完成」会认为补传成功了，这比没有输出更糟。
   console.log("正在处理待上传队列...");
   try {
-    const r = await mgr.processRetryQueue();
+    // B1：手动命令传 ignoreBackoff —— 用户显式要传，`.upload-attempts` 的退避窗口
+    // 与 `.upload-failed` 终态都不该挡住它（与 backfill 的同名选项同一口径）。
+    // 自动扫描（startQueueScan）不传，走退避与终态，这是「445MB 会话每 5 分钟重传」的修法。
+    const r = await mgr.processRetryQueue({ ignoreBackoff: true });
     const { UploadManager: UM } = await import("@sid-code/core/trace/uploader.ts");
     console.log(UM.formatQueueResult(r));
     if (r.droppedMissingFile > 0) {
