@@ -35,6 +35,21 @@ const IMAGE_EXTS = new Set([".png", ".jpg", ".jpeg", ".gif", ".webp"]);
 /** 系统命令超时（ms）：剪贴板读取可能涉及大图编码，给足但有上限。 */
 const CLIPBOARD_TIMEOUT_MS = 3000;
 
+/**
+ * 读取失败的原因。两者对用户意味着完全不同的下一步动作，不能合并成一句话：
+ * - `no-image`：工具在，剪贴板里没有图片（用户该去截图 / 复制图片）；
+ * - `no-tool`：剪贴板里有图片也读不出来，系统缺读取工具（用户该去装工具）。
+ */
+export type ClipboardImageFailure = "no-image" | "no-tool";
+
+/** 剪贴板读图结果（区分成功路径与失败原因）。 */
+export type ClipboardImageResult =
+  | { ok: true; path: string }
+  | { ok: false; reason: ClipboardImageFailure };
+
+/** 各平台读取函数的内部结果，含成功态（对外再包成 ClipboardImageResult）。 */
+type ReadOutcome = "ok" | ClipboardImageFailure;
+
 /** 生成一个唯一的临时图片文件路径（.sid-code tmp 下的 pasted-images 子目录）。 */
 function makeTempImagePath(nowMs: number): string {
   const dir = ensureSidTempSubdir("pasted-images");
@@ -43,38 +58,70 @@ function makeTempImagePath(nowMs: number): string {
 }
 
 /**
- * 尝试从系统剪贴板读取图片，落到临时 PNG 文件。成功返回文件路径，无图片/失败返回 null。
+ * 尝试从系统剪贴板读取图片，落到临时 PNG 文件。
+ *
+ * 返回结构化结果而不是裸 `string | null`：**「剪贴板里没有图片」和「系统缺读取工具」
+ * 是两件完全不同的事**，提示文案必须分开（前者用户该去截图/复制图片，后者用户该去装工具）。
+ * 合成一句「剪贴板无图片（或缺 pngpaste/xclip/wl-paste）」在 macOS 上是错的——那里的读取
+ * 工具是系统自带的 osascript，pngpaste 只是可选优化，xclip / wl-paste 更是 Linux 专用
+ * （2026-11-03 用户按提示去装 xclip，装了也用不上）。
+ *
  * nowMs 由调用方传入（便于测试与避免沙箱禁用的时钟 API）。
  */
-export function readClipboardImageToFile(nowMs: number): string | null {
+export function readClipboardImage(nowMs: number): ClipboardImageResult {
   const log = getLogger();
   const plat = platform();
   const outPath = makeTempImagePath(nowMs);
 
   try {
-    if (plat === "darwin") {
-      return readClipboardMacOS(outPath) ? outPath : null;
-    }
-    if (plat === "linux") {
-      return readClipboardLinux(outPath) ? outPath : null;
-    }
-    if (plat === "win32") {
-      return readClipboardWindows(outPath) ? outPath : null;
-    }
+    if (plat === "darwin") return toResult(readClipboardMacOS(outPath), outPath);
+    if (plat === "linux") return toResult(readClipboardLinux(outPath), outPath);
+    if (plat === "win32") return toResult(readClipboardWindows(outPath), outPath);
+    // 其它平台没有任何一条读取通道 —— 这是真的「缺工具」
+    return { ok: false, reason: "no-tool" };
   } catch (e) {
     log.debug("CLIPBOARD_IMG", `读取剪贴板图片失败（忽略）: ${(e as Error)?.message}`);
   }
-  return null;
+  return { ok: false, reason: "no-image" };
+}
+
+/**
+ * 只关心「拿到图没有」的调用方用它。需要给用户分原因提示的用 {@link readClipboardImage}。
+ */
+export function readClipboardImageToFile(nowMs: number): string | null {
+  const result = readClipboardImage(nowMs);
+  return result.ok ? result.path : null;
+}
+
+/**
+ * 失败原因 → 给用户看的一句话。
+ *
+ * 分平台：只有 Linux 的读取工具是「需要用户自己装」的外部命令；macOS 走系统自带的
+ * osascript、Windows 走系统自带的 PowerShell，都不存在「缺工具」这一档。
+ */
+export function clipboardImageFailureHint(reason: ClipboardImageFailure): string {
+  if (reason === "no-tool") {
+    return platform() === "linux"
+      ? "剪贴板读图工具缺失：装 wl-paste（Wayland）或 xclip（X11）后可粘贴截图"
+      : "当前系统无法读取剪贴板图片";
+  }
+  return "剪贴板里没有图片";
+}
+
+function toResult(outcome: ReadOutcome, outPath: string): ClipboardImageResult {
+  return outcome === "ok" ? { ok: true, path: outPath } : { ok: false, reason: outcome };
 }
 
 /** macOS：优先 pngpaste，否则 osascript 提取剪贴板 PNG。落盘成功且非空返回 true。 */
-function readClipboardMacOS(outPath: string): boolean {
+function readClipboardMacOS(outPath: string): ReadOutcome {
   // pngpaste <file>：装了就用，最稳。
   if (commandExists("pngpaste")) {
     const r = spawnSync("pngpaste", [outPath], { timeout: CLIPBOARD_TIMEOUT_MS });
-    if (r.status === 0 && fileHasBytes(outPath)) return true;
+    if (r.status === 0 && fileHasBytes(outPath)) return "ok";
   }
   // osascript 兜底：从剪贴板取 «class PNGf» 写文件。剪贴板无图片时脚本报错 → 返回 false。
+  // ⚠ osascript 是 macOS 系统自带，所以这里永远不可能是「缺工具」——失败只有一种解释：
+  // 剪贴板里没有图片。提示文案据此不要出现 pngpaste 之类的工具名。
   const script = `
     set outFile to (POSIX file "${outPath.replace(/"/g, '\\"')}")
     try
@@ -93,13 +140,18 @@ function readClipboardMacOS(outPath: string): boolean {
     encoding: "utf-8",
   });
   const out = (r.stdout ?? "").trim();
-  return out === "ok" && fileHasBytes(outPath);
+  return out === "ok" && fileHasBytes(outPath) ? "ok" : "no-image";
 }
 
 /** Linux：Wayland wl-paste / X11 xclip，把剪贴板 image/png 写文件。 */
-function readClipboardLinux(outPath: string): boolean {
+function readClipboardLinux(outPath: string): ReadOutcome {
+  const hasWlPaste = commandExists("wl-paste");
+  const hasXclip = commandExists("xclip");
+  // 两个都没有才是真的「缺工具」——这条要指导用户装东西，不能和「剪贴板没图」混为一谈。
+  if (!hasWlPaste && !hasXclip) return "no-tool";
+
   // Wayland
-  if (commandExists("wl-paste")) {
+  if (hasWlPaste) {
     // 先看剪贴板是否含 image/png 类型，避免把文本当图片写进去。
     const types = spawnSync("wl-paste", ["--list-types"], {
       timeout: CLIPBOARD_TIMEOUT_MS,
@@ -112,26 +164,26 @@ function readClipboardLinux(outPath: string): boolean {
       });
       if (r.status === 0 && r.stdout && r.stdout.length > 0) {
         require("node:fs").writeFileSync(outPath, r.stdout);
-        return fileHasBytes(outPath);
+        return fileHasBytes(outPath) ? "ok" : "no-image";
       }
     }
   }
   // X11
-  if (commandExists("xclip")) {
+  if (hasXclip) {
     const r = spawnSync("xclip", ["-selection", "clipboard", "-t", "image/png", "-o"], {
       timeout: CLIPBOARD_TIMEOUT_MS,
       maxBuffer: 32 * 1024 * 1024,
     });
     if (r.status === 0 && r.stdout && r.stdout.length > 0) {
       require("node:fs").writeFileSync(outPath, r.stdout);
-      return fileHasBytes(outPath);
+      return fileHasBytes(outPath) ? "ok" : "no-image";
     }
   }
-  return false;
+  return "no-image";
 }
 
-/** Windows：PowerShell 取剪贴板图片存 PNG。 */
-function readClipboardWindows(outPath: string): boolean {
+/** Windows：PowerShell 取剪贴板图片存 PNG（PowerShell 系统自带，不存在「缺工具」）。 */
+function readClipboardWindows(outPath: string): ReadOutcome {
   const ps = `
     Add-Type -AssemblyName System.Windows.Forms;
     $img = [System.Windows.Forms.Clipboard]::GetImage();
@@ -144,7 +196,7 @@ function readClipboardWindows(outPath: string): boolean {
     timeout: CLIPBOARD_TIMEOUT_MS,
     encoding: "utf-8",
   });
-  return (r.stdout ?? "").trim().endsWith("ok") && fileHasBytes(outPath);
+  return (r.stdout ?? "").trim().endsWith("ok") && fileHasBytes(outPath) ? "ok" : "no-image";
 }
 
 /** 检查命令是否存在（which/where，超时保护）。 */

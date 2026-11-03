@@ -278,20 +278,11 @@ export const Composer: React.FC<ComposerProps> = ({
           alignItems="center"
           flexGrow={1}
         >
-          {/* 瞬态消息优先显示 */}
-          {uiState.transientMessage ? (
-            <Text
-              color={
-                uiState.transientMessage.type === "warning"
-                  ? theme.status.warning
-                  : uiState.transientMessage.type === "hint"
-                    ? theme.text.accent
-                    : theme.text.primary
-              }
-            >
-              {uiState.transientMessage.text}
-            </Text>
-          ) : showLoadingIndicator ? (
+          {/* 瞬态消息统一由 BottomRegion 的 ToastDisplay 渲染。
+              这里曾经也渲染一份 uiState.transientMessage → 同一条消息在输入框上方
+              重复两行（2026-11-03 粘贴提示实测）。且占住本行会把流式 spinner /
+              工具状态顶掉，流式中反而看不到"正在做什么"。 */}
+          {showLoadingIndicator ? (
             <LoadingIndicator
               inline
               streamingState={streaming.streamingState}
