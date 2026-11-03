@@ -78,7 +78,7 @@ import {
 import { stopAppConfigWatcher } from "@sid-code/core/config/app-config.ts";
 import type { ProjectRules } from "@sid-code/core/config/rules.ts";
 import { clearPromptCache } from "@sid-code/core/config/system-prompt.ts";
-import type { LanguagePref } from "@sid-code/core/config/prompt-lang.ts";
+import { type LanguagePref, resolveEffectiveLanguage } from "@sid-code/core/config/prompt-lang.ts";
 import { getLogger, getMemoryMonitor, getSessionMetrics } from "@sid-code/core/debug/index.ts";
 import { QueryEngine } from "@sid-code/core/query/engine.ts";
 import { resetCacheDetection, clearCacheBreaks } from "@sid-code/core/api/cache-detection.ts";
@@ -88,6 +88,8 @@ import { resetCircuitBreaker, type AutoCompactResult } from "@sid-code/core/quer
 import { clearQueue as clearMessageQueue } from "@sid-code/core/query/message-queue-manager.ts";
 import { HookSystem } from "@sid-code/core/hook/system.ts";
 import { ConfigSource } from "@sid-code/core/hook/types.ts";
+// 只用于 rebuildSystemPrompt 的 trigger 参数类型（归因必需项，见该方法注释）
+import type { SystemRebuildTrigger } from "@sid-code/core/hook/types.ts";
 import { pickHookPolicy } from "@sid-code/core/hook/enterprise-policy.ts";
 import {
   SDKQueryEngine,
@@ -2363,9 +2365,27 @@ export class App {
     onWsChange(async (dir: string) => {
       try {
         const newRules = await loadAllCLAUDEmd(dir);
+        // 只有**规则正文真的变了**才重建 system prompt。
+        // worktree 与主仓通常检出同一份 CLAUDE.md（同一 commit），那种情况下重建
+        // 等于白刷一遍完全相同的静态前缀 —— 正是本方案要消除的那笔浪费
+        // （轨迹实测：133 次 system_static 断裂里 104 次紧跟 enter/exit_worktree）。
+        const rulesChanged =
+          !!newRules && newRules.rawContent !== this.currentProjectRules?.rawContent;
         if (newRules) {
           this.applyProjectRules(newRules);
-          await this.rebuildSystemPrompt();
+        }
+        if (rulesChanged) {
+          // 内容变了就必须重建：不重建模型会拿着旧 worktree 的规则干活，
+          // 那比一次前缀作废贵得多。这条路径归因记 claude_md_reload。
+          await this.rebuildSystemPrompt("claude_md_reload");
+        } else {
+          // 规则没变 → **不重建**，静态前缀一个字节都不动。
+          // 但模型仍要知道目录换了：工作目录在动态区，不重建就不会刷新，所以排队
+          // 一条持久块，下一轮随 reminder 注入到消息尾部（见 query/loop.ts 消费点）。
+          const en = resolveEffectiveLanguage(this.config.language) === "en";
+          this.ctxMgr.recordWorkspaceNotice(
+            en ? `Working directory switched to: ${dir}` : `工作目录已切换为：${dir}`,
+          );
         }
       } catch (err) {
         getLogger().warn("APP", `切换工作区后重载项目规则失败: ${err}`);
@@ -3842,7 +3862,7 @@ export class App {
     if (this.criticalConstraints.size === before) return; // 全是重复项，不必重建
     void (async () => {
       try {
-        await this.rebuildSystemPrompt();
+        await this.rebuildSystemPrompt("critical_constraints");
         getLogger().info(
           "APP",
           `用户约束已常驻 system prompt（${this.criticalConstraints.size} 条）—— 压缩不再吞掉"不要做 X"`,
@@ -4546,6 +4566,9 @@ export class App {
         });
         // 走 applySystemPrompt 而非裸 setSystemPrompt：否则已加载的 JIT 子目录规则
         // 会被这次覆盖抹掉且不再补注入（第 11 条）。
+        // 归因与 rebuildSystemPrompt 同口径：watcher 也是「改了静态前缀但 cwd 没动」的来源之一，
+        // 不记账的话这类断裂同样只能标 none_local。
+        this.ctxMgr.recordSendMutationCause("system_rebuild:claude_md_reload");
         this.applySystemPrompt(newPrompt, "CLAUDE.md 变更重建");
         log.info("APP", `系统提示词已重建: ${newPrompt.length} 字符`);
       }
@@ -5189,7 +5212,7 @@ export class App {
         if (newRules) {
           this.applyProjectRules(newRules);
           // rebuildSystemPrompt 读 this.currentProjectRules（applyProjectRules 刚更新）。
-          await this.rebuildSystemPrompt();
+          await this.rebuildSystemPrompt("claude_md_reload");
         }
         log.info("APP", "外部导入已批准，CLAUDE.md 规则已重载");
       } catch (e) {
@@ -5598,10 +5621,20 @@ export class App {
    * 重建系统提示词并写回 ctxMgr（运行时偏好变更后调用，让改动即时生效而非等下次会话）。
    * 与 CLAUDE.md watcher 的重建路径同源（同一 buildSystemPrompt 入参），供 /language 等
    * 影响系统提示词的运行时切换复用。当前项目规则从内存缓存 this.currentProjectRules 取。
+   *
+   * `trigger` 是**归因必需项**，不是可选装饰：重建必然改写静态前缀（整份 system 换掉），
+   * 而轨迹侧只能看到「`system_static` 断了」。不给触发源，那批断裂就只能标 `none_local`，
+   * 永远查不出是谁干的。落盘路径：recordSendMutationCause → `prefix_break.cause`。
+   *
+   * ⚠️ worktree 切换**不在**此列：工作目录移出静态区后，切换不再重建（见
+   * wireWorkspaceRuleReload 的注释）。新增调用点前先问：这次重建真的必须吗？
    */
-  private async rebuildSystemPrompt(): Promise<void> {
+  private async rebuildSystemPrompt(trigger: SystemRebuildTrigger): Promise<void> {
     const log = getLogger();
     try {
+      // 先记账再重建：重建失败时这条 cause 仍在，能解释「为什么这一轮前缀没断」
+      // 之外的相反情况（改了但没断 = 改的都在静态区外），比漏记安全。
+      this.ctxMgr.recordSendMutationCause(`system_rebuild:${trigger}`);
       const { buildSystemPrompt } = await import("@sid-code/core/config/system-prompt.ts");
       const { collectSkillListingEntries } = await import("@sid-code/core/skill/listing.ts");
       // M11：记忆走索引指针路径（memorySystemPrompt），不再用 <memory> 全文摘要。
@@ -5670,8 +5703,9 @@ export class App {
         onSectionTokens: (s) => this.setBaseMemoryTokens(s.memory),
       });
       // 同上：覆盖式重建必须回灌 JIT，否则 /language、/model 一切就丢掉子目录规则（第 11 条）。
-      this.applySystemPrompt(newPrompt, "运行时偏好变更重建");
-      log.info("APP", `系统提示词已重建（运行时偏好变更）: ${newPrompt.length} 字符`);
+      // reason 带上 trigger：日志与轨迹里都能直接看出是五条路径里的哪一条重建了 prompt。
+      this.applySystemPrompt(newPrompt, `system 重建 (${trigger})`);
+      log.info("APP", `系统提示词已重建 (${trigger}): ${newPrompt.length} 字符`);
     } catch (e) {
       log.warn("APP", `重建系统提示词失败（不阻断）: ${(e as Error)?.message}`);
     }
@@ -5755,7 +5789,7 @@ export class App {
       //    cli.ts 接的 onSkillsChanged → unifiedRegistry.invalidateSkillCommands() 会让快照失效。
 
       // 4. 重建 system prompt（skill 摘要 listing 跟着刷新——单一元工具据 manager 实时取）
-      await this.rebuildSystemPrompt();
+      await this.rebuildSystemPrompt("skill_reload");
 
       log.info("SKILL", `Skill 热重载生效（${changedDirs.length} 个目录变更）`);
     } catch (e) {
@@ -5780,7 +5814,7 @@ export class App {
       `切换输出语言: ${this.config.language ?? "(默认)"} → ${lang ?? "(默认)"}${persist ? "（持久化）" : ""}`,
     );
     this.config.language = lang;
-    await this.rebuildSystemPrompt();
+    await this.rebuildSystemPrompt("language");
     if (persist) {
       try {
         const { patchSettingsFile } = require("@sid-code/core/config/settings/index.ts");
@@ -6474,7 +6508,7 @@ export class App {
       // 模板复印件，且会让模型以为「笔记里没记什么」而不是「笔记还没开始记」。
       if (isSessionMemoryEmpty(content)) return;
       this.pendingSessionMemoryContent = content ?? undefined;
-      await this.rebuildSystemPrompt();
+      await this.rebuildSystemPrompt("session_memory");
       log.info(
         "APP",
         `Session Memory 已注入为常驻附件（${content!.length} 字符）—— 压缩丢弃的历史由结构化笔记补偿`,
