@@ -9,7 +9,7 @@
  */
 
 import { describe, test, expect, beforeEach, afterEach } from "bun:test";
-import { mkdtempSync, rmSync } from "node:fs";
+import { existsSync, mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { TelemetryBus } from "@sid-code/core/telemetry/bus.ts";
@@ -18,6 +18,11 @@ import { TokenMeter } from "@sid-code/core/telemetry/metrics/token-meter.ts";
 import { HookSystem } from "@sid-code/core/hook/system.ts";
 import { ATTR } from "@sid-code/core/telemetry/types.ts";
 import type { SpanData, TelemetryExporter } from "@sid-code/core/telemetry/types.ts";
+import {
+  pendingRootSpanPath,
+  recoverPendingRootSpans,
+  type PendingRootSpanMarker,
+} from "@sid-code/core/telemetry/root-span-recovery.ts";
 
 /** 进程原有值（可能是 preload 设的兜底），afterEach 必须还回去而不是 delete */
 const prevConfigDir = process.env.SID_CONFIG_DIR;
@@ -776,5 +781,94 @@ describe("TokenMeter 按 GenAI 规范拆分 token metric", () => {
     const names = ms.map((m) => m.name);
     expect(names).not.toContain("gen_ai.client.inference.usage.cache_read.input_tokens");
     expect(names).not.toContain("gen_ai.client.inference.usage.reasoning.output_tokens");
+  });
+});
+
+// ============================================================
+// §三 P0-2：根 span 的占位标记等「落盘确认」再删（2026-11-02 方案 B）
+// ============================================================
+describe("SessionEnd：删占位标记等导出成功（入队 ≠ 落盘）", () => {
+  function createProbeOn(bus: TelemetryBus, sessionId: string): TelemetryHookProbe {
+    return new TelemetryHookProbe(bus, new TokenMeter(null, () => 0), {
+      model: "glm-5.3",
+      provider: "zhipu",
+      sessionId,
+    });
+  }
+
+  test("只 end() 没导出时标记仍在；导出成功后才删", async () => {
+    const { bus } = createEnabledBus();
+    const probe = createProbeOn(bus, "sess-persist-ok");
+    const hookSystem = new HookSystem();
+    probe.registerHooks(hookSystem);
+
+    await hookSystem.fireSessionStartEvent("startup", { model: "glm-5.3" });
+    const markerPath = pendingRootSpanPath("sess-persist-ok");
+    expect(existsSync(markerPath)).toBe(true);
+
+    await hookSystem.fireSessionEndEvent("exit", { total_cost_usd: 0 });
+    // 关键断言：end() 只是入队（batchSize=100，未达阈值），队列还没被消费 —— 标记必须还在。
+    // 变异自证：把 handleSessionEnd 改回「end() 之后直接 clearPendingRootSpan」，这条变红。
+    expect(existsSync(markerPath)).toBe(true);
+
+    await bus.flush();
+    expect(existsSync(markerPath)).toBe(false);
+  });
+
+  test("导出失败 → 标记留着；下次启动能按同一 spanId 重建（不是永久丢根）", async () => {
+    const failing: TelemetryExporter = {
+      name: "jsonl",
+      durable: true,
+      exportSpans: async () => {
+        throw new Error("磁盘满");
+      },
+      shutdown: async () => {},
+    };
+    const bus = new TelemetryBus({ enabled: true, batchSize: 100, flushIntervalMs: 999_999 });
+    bus.addExporter(failing);
+    const probe = createProbeOn(bus, "sess-persist-fail");
+    const hookSystem = new HookSystem();
+    probe.registerHooks(hookSystem);
+
+    await hookSystem.fireSessionStartEvent("startup", { model: "glm-5.3" });
+    const markerPath = pendingRootSpanPath("sess-persist-fail");
+    const marker = JSON.parse(readFileSync(markerPath, "utf-8")) as PendingRootSpanMarker;
+
+    await hookSystem.fireSessionEndEvent("exit", { total_cost_usd: 0 });
+    await bus.flush();
+
+    expect(existsSync(markerPath)).toBe(true);
+    // 失败的这批已经出队、不会再重试 ⇒ 登记必须摘掉，不能堆到进程退出
+    expect(bus.getPendingPersistenceCount()).toBe(0);
+
+    // 模拟「下次启动」：标记里的 pid 是**本进程**，而 recoverPendingRootSpans 有两个护栏
+    // —— selfPid 相等直接跳过、存活判定为真也跳过。这里两个都按「上次那个进程已经死了」处理。
+    const recovered: SpanData[] = [];
+    const result = recoverPendingRootSpans({
+      enqueue: (s) => recovered.push(s),
+      selfPid: -1,
+      isProcessAlive: () => false,
+      sessionsRoot: join(testHome, "trajectories", "sessions"),
+    });
+
+    expect(result.recovered).toBe(1);
+    expect(recovered[0]!.spanId).toBe(marker.span_id);
+    expect(recovered[0]!.traceId).toBe(marker.trace_id);
+    // 重建成功后才删标记
+    expect(existsSync(markerPath)).toBe(false);
+  });
+
+  test("bus 启用但没有导出器 → 直接删（等不到回调，留着只会让下次启动白扫）", async () => {
+    const bus = new TelemetryBus({ enabled: true, batchSize: 100, flushIntervalMs: 999_999 });
+    const probe = createProbeOn(bus, "sess-no-exporter");
+    const hookSystem = new HookSystem();
+    probe.registerHooks(hookSystem);
+
+    await hookSystem.fireSessionStartEvent("startup", { model: "glm-5.3" });
+    const markerPath = pendingRootSpanPath("sess-no-exporter");
+    await hookSystem.fireSessionEndEvent("exit", { total_cost_usd: 0 });
+
+    expect(existsSync(markerPath)).toBe(false);
+    expect(bus.getPendingPersistenceCount()).toBe(0);
   });
 });
