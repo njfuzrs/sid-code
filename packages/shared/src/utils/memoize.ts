@@ -25,7 +25,13 @@ export function memoize<Args extends unknown[], T>(
   const memoized = ((...args: Args) => {
     const cached = cache.get(undefined);
     if (cached) return cached;
-    const promise = fn(...args);
+    const promise = fn(...args).catch((err: unknown) => {
+      // 失败不缓存：一次磁盘抖动不该让整个会话永久返回同一个失败
+      // 这里引用 promise 自身是安全的——catch 回调异步执行，那时赋值已完成
+      // 相等判断防止误删后来填入的新缓存（如外部预热 / clear 后重入）
+      if (cache.get(undefined) === promise) cache.delete(undefined);
+      throw err;
+    });
     cache.set(undefined, promise);
     return promise;
   }) as Memoized<Args, T>;
