@@ -30,8 +30,14 @@ export interface CompactQualityReport {
   matchedBy: { exact: number; relative: number; basename: number };
 }
 
-/** 覆盖率低于此值告警 */
-const COVERAGE_WARN_THRESHOLD = 0.5;
+/**
+ * 覆盖率低于此值告警。
+ *
+ * 导出给 `trace/digest.ts` 复用：两边各写一个 0.5，任何一侧调阈值都会出现
+ * 「运行时报了但周报不标」（或反过来）—— 与本仓 P1-6/7「压缩决策和压缩执行
+ * 用两套尺子」同型。
+ */
+export const COVERAGE_WARN_THRESHOLD = 0.5;
 
 /**
  * 从被压缩的消息段提取"关键锚点"：

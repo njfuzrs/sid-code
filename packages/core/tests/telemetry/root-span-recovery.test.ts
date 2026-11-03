@@ -380,6 +380,11 @@ describe("标记的写入与清除（正常路径零残留）", () => {
     expect(existsSync(pendingRootSpanPath("sess-clean"))).toBe(true);
 
     await hookSystem.fireSessionEndEvent("exit", { total_cost_usd: 0.01 });
+    // 2026-11-02 契约变更：删标记挂在「**含根的那一批导出成功**」上，不再是 end() 之后立刻删。
+    // end() 只是入队，而信号退出时队列来不及被消费（实测 283/498 会话没有根 span，其中
+    // 276 个以 terminal_closed / abort 结束）。这里先断言「只入队不删」，再 flush 断言删除。
+    expect(existsSync(pendingRootSpanPath("sess-clean"))).toBe(true);
+    await bus.flush();
     expect(existsSync(pendingRootSpanPath("sess-clean"))).toBe(false);
   });
 
@@ -398,8 +403,10 @@ describe("标记的写入与清除（正常路径零残留）", () => {
     expect(existsSync(pendingRootSpanPath("old-traj-id"))).toBe(true);
     expect(existsSync(pendingRootSpanPath("new-process-id"))).toBe(false);
 
-    // 删除也必须用同一个 key，否则正常收尾的 resume 会话会残留标记
+    // 删除也必须用同一个 key，否则正常收尾的 resume 会话会残留标记。
+    // 删的时机是「导出成功」而非 end() 之后（2026-11-02 契约变更，见上一条用例）。
     await hookSystem.fireSessionEndEvent("exit", { total_cost_usd: 0 });
+    await bus.flush();
     expect(existsSync(pendingRootSpanPath("old-traj-id"))).toBe(false);
   });
 

@@ -72,6 +72,16 @@ export interface PermissionDecisionEvent {
   denyKind?: string;
   /** `denyKind === "path_mismatch"` 时的路径形状（只有布尔，不含路径原文） */
   pathMismatch?: PathMismatchShape;
+  /**
+   * 工具入参摘要（`tool/input-summary.ts` 的白名单键 + 截断）。**只进本地轨迹**。
+   *
+   * 目前只有 forked 路径会传：它不写 PreToolUse（见 forked-agent 顶部），
+   * `PermissionDecision` 是它的工具调用唯一留痕 —— 不补这一项的话，「session-memory
+   * fork 被拒的那条 bash 命令是什么」在轨迹里查不到。主循环 / 子代理不传，
+   * 它们的入参已经在 `PreToolUse.input_summary` 里，同一次调用记两遍会让按字段数
+   * 统计的口径翻倍。
+   */
+  inputSummary?: Record<string, unknown>;
 }
 
 let _observer: ((event: PermissionDecisionEvent) => void) | null = null;
