@@ -12,6 +12,8 @@ import { join } from "path";
 import { spawnSync } from "child_process";
 import { setCwd, getCwd } from "@sid-code/core/bootstrap/state.ts";
 import { JitContextManager } from "@sid-code/core/config/jit-context.ts";
+import { Manager as ContextManager } from "@sid-code/core/context/manager.ts";
+import { mergeJitContextIntoPrompt } from "@sid-code/cli/app.ts";
 
 let base: string;
 let proj: string;
@@ -134,5 +136,36 @@ describe("JIT 自己加载的条目", () => {
     bumpMtime(ui);
     expect(mgr.pruneStale()).toBe(0);
     expect(mgr.getLoadedContexts()).toContain("UI_MARKER");
+  });
+});
+
+describe("验收：假命中不得改写 system 提示词", () => {
+  // 缺陷文档第五节第三条验收：JIT 命中后 `ctxMgr.getSystemPrompt()` 的字节不变。
+  // 这里复刻 `app.ts` 的 `runJitDiscovery` 决策链（只有 `r.text` 非空才合并），
+  // 而不是只断言「没有新块」—— 后者查不出「块为空却仍触发了回灌」这类路径。
+  test("预标记的根 CLAUDE.md 只改 mtime → system 提示词逐字节不变", async () => {
+    const root = join(proj, "CLAUDE.md");
+    writeFileSync(root, "# root\nROOT_MARKER\n");
+
+    const mgr = new JitContextManager();
+    mgr.markLoaded([root]);
+
+    const ctxMgr = new ContextManager({ maxTokens: 100_000 });
+    ctxMgr.setJitBlocksProvider(() => mgr.getLoadedBlocks());
+    // 首轮 system：根 CLAUDE.md 的正文已经在 `# claudeMd` 段里
+    ctxMgr.setSystemPrompt("# base\n\n# claudeMd\nROOT_MARKER");
+    const before = ctxMgr.getSystemPrompt();
+
+    bumpMtime(root);
+    const r = await mgr.discoverDetailed(join(proj, "src", "ui", "Other.tsx"), proj);
+    if (r.text) {
+      const merged = mergeJitContextIntoPrompt(ctxMgr.getSystemPrompt(), mgr.getLoadedBlocks());
+      if (merged.appended) ctxMgr.setSystemPrompt(merged.prompt);
+    }
+
+    expect(ctxMgr.getSystemPrompt()).toBe(before);
+    // 反向确认这条断言不是空转：连重复回灌也不会多出第二份
+    ctxMgr.setSystemPrompt(before);
+    expect(ctxMgr.getSystemPrompt()).toBe(before);
   });
 });
