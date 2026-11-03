@@ -12,12 +12,12 @@
 
 import { existsSync } from "fs";
 import { readFile } from "fs/promises";
-import { isAbsolute, join } from "path";
 import { getLogger } from "@sid-code/core/debug/logger.ts";
 import { memoize } from "@sid-code/shared/utils/memoize.ts";
 import type { MCPServerConfig } from "@sid-code/core/config/config.ts";
 import { registerPluginCache } from "./caches.ts";
 import { loadAllPluginsCacheOnly } from "./loader.ts";
+import { resolvePathInsidePlugin } from "./manifest.ts";
 import { addPluginScopeToServers } from "./scope.ts";
 import type { LoadedPlugin, PluginError } from "./types.ts";
 
@@ -93,7 +93,17 @@ export async function loadPluginMcpServers(
 
   let servers: Record<string, MCPServerConfig>;
   if (typeof decl === "string") {
-    const filePath = isAbsolute(decl) ? decl : join(plugin.path, decl);
+    // 与 commands/skills/hooks 同一约束：MCP 配置文件路径也必须在插件目录内（缺陷 21）
+    const filePath = resolvePathInsidePlugin(plugin.path, decl);
+    if (filePath === null) {
+      errors.push({
+        type: "path-escape",
+        source: plugin.source,
+        path: decl,
+        component: "mcp-servers",
+      });
+      return undefined;
+    }
     if (!existsSync(filePath)) {
       errors.push({
         type: "mcp-server-config-invalid",
