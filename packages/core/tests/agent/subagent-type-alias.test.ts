@@ -15,6 +15,7 @@ import { resolveSubAgentTypeParam } from "@sid-code/core/agent/sub-agent-input.t
 import { partitionToolCalls } from "@sid-code/core/query/tool-orchestration.ts";
 import { extractMatchValue } from "@sid-code/core/permission/rules.ts";
 import { Registry } from "@sid-code/core/tool/registry.ts";
+import { validateToolInput } from "@sid-code/core/tool/input-validator.ts";
 import type { Provider } from "@sid-code/core/llm/provider.ts";
 import type { ProviderRegistry } from "@sid-code/core/llm/registry.ts";
 import type { SendParams, StreamEvent } from "@sid-code/core/llm/types.ts";
@@ -147,5 +148,44 @@ describe("权限层与执行层取同一个类型", () => {
     expect(
       extractMatchValue({ toolName: "sub_agent", input: { subagent_type: "explore" } } as any),
     ).toBe("explore");
+  });
+});
+
+// 真实入口：执行器在 execute 之前先过 validateToolInput（zod safeParse）。
+// 首版修复只在 execute 里认别名，单测直接调 execute 全绿；但端到端里 zod 先把未声明的
+// subagent_type 剥掉，execute 拿到的入参已经没有它 → 仍兜底 general-purpose，
+// 而分区读原始入参判成可并发——写类子代理被并行执行（2026-11-03 sc 端到端实测）。
+describe("真实入口：zod 校验不剥离 subagent_type", () => {
+  const tool = new SubAgentTool({} as any, {} as any);
+
+  test("subagent_type 经校验后变成 type，类型不丢", () => {
+    const v = validateToolInput(tool as any, {
+      subagent_type: "explore",
+      description: "d",
+      prompt: "p",
+    });
+    expect(v.ok).toBe(true);
+    const data = (v as { ok: true; data: Record<string, unknown> }).data;
+    expect(data.type).toBe("explore");
+    expect("subagent_type" in data).toBe(false);
+  });
+
+  test("分区判定与执行入参一致：校验后的入参仍判为并发安全", () => {
+    const v = validateToolInput(tool as any, {
+      subagent_type: "explore",
+      description: "d",
+      prompt: "p",
+    });
+    expect(tool.isConcurrencySafe((v as { ok: true; data: unknown }).data)).toBe(true);
+  });
+
+  test("两字段同时出现时保留正式字段 type", () => {
+    const v = validateToolInput(tool as any, {
+      type: "general-purpose",
+      subagent_type: "explore",
+      description: "d",
+      prompt: "p",
+    });
+    expect((v as { ok: true; data: Record<string, unknown> }).data.type).toBe("general-purpose");
   });
 });

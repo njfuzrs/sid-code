@@ -33,6 +33,10 @@ import { getDef, unwrap } from "./nullish-normalize.ts";
 /** 别名 → 协议字段名。只在 schema shape 确实声明了目标键、且未声明别名键时生效。 */
 const ALIASES: ReadonlyArray<{ from: string; to: string }> = [
   { from: "activeForm", to: "active_form" },
+  // sub_agent：模型按 CC 命名写 subagent_type，schema 字段是 type。不在这里改名的话，
+  // zod 会把未声明的 subagent_type 静默剥离，execute 拿不到类型就兜底成 general-purpose，
+  // 而分区读的是原始入参、判成可并发——结果是写类子代理被并行执行（2026-11-03 端到端实测）。
+  { from: "subagent_type", to: "type" },
 ];
 
 /** 一次归一里每个别名对的命中统计 */
