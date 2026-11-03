@@ -239,6 +239,9 @@ export class MemoryCommand implements LocalCommandModule {
           toolSearchDisabled: ctx.config.toolSearch === false,
           // 不再写死 maxTokens：交由 buildSystemPrompt 按模型 contextWindow 的 90% 动态推导
         });
+        // 归因：/memory reload 换掉的是 core 区的记忆索引，静态前缀必然作废。
+        // 不记账的话这类断裂在轨迹里只能标 none_local（与 rebuildSystemPrompt 同口径）。
+        ctx.ctxMgr.recordSendMutationCause("system_rebuild:memory_reload");
         ctx.ctxMgr.setSystemPrompt(newPrompt);
         clearPromptCache();
 
