@@ -7,7 +7,7 @@
  * 清洗管道（依次执行，每层只做一件事，方便排查恢复问题时定位是哪层丢的数据）：
  *   1. migrateLegacyFormats          —— 格式迁移预留点（兼容旧版本消息结构）
  *   2. stripInvalidPermissionModes   —— 清理引用了已下线权限模式的 _meta 字段
- *   3. filterUnresolvedToolUses      —— 过滤有 tool_use 但无对应 tool_result 的调用
+ *   3. filterUnresolvedToolUses      —— 过滤有 tool_use 但**其后**无对应 tool_result 的调用（顺序敏感配对）
  *   4. filterOrphanedThinkingOnlyMessages —— 过滤流式中断残留的纯 thinking assistant 消息
  *   5. filterWhitespaceOnlyAssistantMessages —— 过滤内容被清空后的空白 assistant 消息
  *   6. validateContentBlockIntegrity —— 剔除缺失关键字段（id/name/tool_use_id）的不完整 block
@@ -74,26 +74,69 @@ const stripInvalidPermissionModes: MessageFilter = (messages, ctx) => {
   });
 };
 
-/** 第 3 层：过滤未解析的 tool_use（有 tool_use 但无对应 tool_result）—— 否则 API 报错 */
+/** 第 3 层：过滤未解析的 tool_use（有 tool_use 但无对应 tool_result）—— 否则 API 报错。
+ *
+ *  必须顺序敏感（缺陷 16）：API 的判据是「这个 tool_use **之后**必须出现对应的 tool_result」，
+ *  而不是「这个 id 在整段历史里随便哪儿有结果」。早先这里先把全历史的 tool_result id 收进一个
+ *  Set 再判定，判据退化成集合成员关系，会带来两类漏过滤：
+ *    1. tool_result 排在 tool_use 之前（历史被截断/重排/拼接出的脏数据）——集合判据认为
+ *       「已解析」而保留，API 却按顺序判 400；
+ *    2. 跨轮同 id 复用（--resume 与 compaction 重建出的历史拼接，见
+ *       resume-vs-process-session-id-two-different-values）——前面那轮的 result 会把后面
+ *       那轮尚缺结果的 tool_use 一并「洗白」，缺少结果的那次调用漏过滤后照样 400。
+ *  所以改成一次前向扫描按出现顺序配对：tool_use 入队，遇到 tool_result 就与队中最早的同 id
+ *  tool_use 配对（FIFO：一个 result 消费一次 use，所以同 id 出现 N 次就要 N 个 result 才算全解析），
+ *  扫描结束仍在队列里的才是未解析。配对之后才出现的 result（use 之前无队列项）不回溯认领，
+ *  视为游离，交给第 7 层切除。 */
 const filterUnresolvedToolUses: MessageFilter = (messages, ctx) => {
-  const resolvedToolUseIds = new Set<string>();
-  for (const msg of messages) {
-    for (const block of msg.content) {
-      if (block.type === "tool_result") resolvedToolUseIds.add(block.tool_use_id);
+  // 已出现、尚未配对的 tool_use：记录位置以便回填剔除结果；队列保持出现顺序
+  const pending = new Map<string, Array<{ messageIndex: number; contentIndex: number }>>();
+
+  for (let i = 0; i < messages.length; i++) {
+    const msg = messages[i];
+    if (!msg || !Array.isArray(msg.content)) continue;
+    for (let j = 0; j < msg.content.length; j++) {
+      const block = msg.content[j];
+      if (block.type === "tool_use") {
+        const queue = pending.get(block.id);
+        const entry = { messageIndex: i, contentIndex: j };
+        if (queue) queue.push(entry);
+        else pending.set(block.id, [entry]);
+      } else if (block.type === "tool_result") {
+        const queue = pending.get(block.tool_use_id);
+        if (queue && queue.length > 0) {
+          queue.shift();
+          if (queue.length === 0) pending.delete(block.tool_use_id);
+        }
+        // 队列里没有可配对的 use（result 出现在 use 之前 / use 已被更早的 result 消费完）
+        // → 忽略。这里不删 result：本层职责只是判 unpaired use，游离结果归第 7 层统一切除。
+      }
     }
   }
-  return messages.map((msg) => {
-    if (msg.role !== "assistant") return msg;
-    const filteredContent = msg.content.filter((block) => {
-      if (block.type === "tool_use" && !resolvedToolUseIds.has(block.id)) {
-        ctx.log("未解析tool_use过滤", `丢弃 tool_use id=${block.id} name=${block.name}`);
-        return false;
+
+  if (pending.size === 0) return messages;
+
+  // 未配对的 tool_use 按所在消息聚合，逐块剔除
+  const dropByMessage = new Map<number, Set<number>>();
+  for (const [id, queue] of pending) {
+    for (const { messageIndex, contentIndex } of queue) {
+      const name = (messages[messageIndex].content[contentIndex] as { name: string }).name;
+      ctx.log("未解析tool_use过滤", `丢弃 tool_use id=${id} name=${name}`);
+      let set = dropByMessage.get(messageIndex);
+      if (!set) {
+        set = new Set();
+        dropByMessage.set(messageIndex, set);
       }
-      return true;
-    });
-    return filteredContent.length === msg.content.length
-      ? msg
-      : { ...msg, content: filteredContent };
+      set.add(contentIndex);
+    }
+  }
+
+  return messages.map((msg, i) => {
+    const drop = dropByMessage.get(i);
+    // 只剔 block、不删消息：整条被剔空时返回 content 为空的 assistant，由第 5 层统一丢弃，
+    // 保持各层「只做一件事」的分工，也让日志能指出是哪个 id 没配上。
+    if (!drop) return msg;
+    return { ...msg, content: msg.content.filter((_, idx) => !drop.has(idx)) };
   });
 };
 
@@ -179,20 +222,44 @@ const CLEANUP_PIPELINE: MessageFilter[] = [
   stripDanglingToolResultsFilter,
 ];
 
-/** 从末尾 tool_result 消息反查对应的工具名（在倒数第二条 assistant 消息的 tool_use 里找） */
+/**
+ * 从末尾 tool_result 消息反查对应的工具名：按 tool_use_id 在整段历史里找发出它的 tool_use。
+ *
+ * 不能靠位置（以前取 messages[len-2]，不是 assistant 就返回 []）：位置索引在这个管道里不可靠——
+ * 第 4/5 层会整条过滤 assistant 消息（纯 thinking 残留、被第 3 层/第 6 层剔空），第 6 层还会
+ * 剔掉坏的 tool_use block，清洗后「tool_result 的前一条就是发出它的 assistant」不再成立，
+ * 按位置查会拿到空列表，续接标记里就丢了工具名。
+ *
+ * 从末尾往前扫，每个待查 id 取**最近一次**出现的 tool_use 的 name：跨轮同 id 复用（缺陷 16）
+ * 时，末尾这轮的结果对应的是它之前最近的那次调用，从前往后覆盖会取到旧轮的工具名。
+ * 返回顺序与 resultMsg.content 中 tool_result 的出现顺序一致，且同名工具按结果数重复出现——
+ * 调用方据此判断「是不是每个结果都还能归因」。查不到的 id 不编造，直接跳过。
+ */
 function findToolNamesForResults(messages: Message[], resultMsg: Message): string[] {
-  const prev = messages[messages.length - 2];
-  if (!prev || prev.role !== "assistant") return [];
-  const idToName = new Map<string, string>();
-  for (const block of prev.content) {
-    if (block.type === "tool_use") idToName.set(block.id, block.name);
+  const wantedIds = new Set<string>();
+  for (const block of resultMsg.content) {
+    if (block.type === "tool_result") wantedIds.add(block.tool_use_id);
   }
+  if (wantedIds.size === 0) return [];
+
+  // id 与 name 都是 API 必填字段，缺任何一项的 tool_use 不参与反查（第 6 层会另外剔除它们）
+  const idToName = new Map<string, string>();
+  for (let i = messages.length - 1; i >= 0 && idToName.size < wantedIds.size; i--) {
+    const msg = messages[i];
+    if (msg.role !== "assistant") continue;
+    for (const block of msg.content) {
+      if (block.type !== "tool_use") continue;
+      if (!block.id || !block.name) continue;
+      if (!wantedIds.has(block.id) || idToName.has(block.id)) continue;
+      idToName.set(block.id, block.name);
+    }
+  }
+
   const names: string[] = [];
   for (const block of resultMsg.content) {
-    if (block.type === "tool_result") {
-      const name = idToName.get(block.tool_use_id);
-      if (name) names.push(name);
-    }
+    if (block.type !== "tool_result") continue;
+    const name = idToName.get(block.tool_use_id);
+    if (name) names.push(name);
   }
   return names;
 }

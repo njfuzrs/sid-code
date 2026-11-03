@@ -316,4 +316,165 @@ describe("deserializeMessagesWithInterruptDetection", () => {
     config.delete("manual");
     expect([...PERMISSION_MODE_VALUES].map(String).sort()).toEqual([...config].sort());
   });
+
+  // ─── 缺陷 15：工具名按 tool_use_id 反查，不依赖「倒数第二条」 ───
+
+  test("缺陷 15：发出 tool_use 的 assistant 不在倒数第二条时仍能反查到工具名", () => {
+    // 中间夹一条纯文本 user 消息（跨轮/合并出来的历史形状），
+    // 旧实现只看 messages[len-2] → 不是 assistant → 返回 []。
+    const messages: Message[] = [
+      { role: "user", content: [{ type: "text", text: "先跑个命令" }] },
+      {
+        role: "assistant",
+        content: [
+          { type: "text", text: "执行中" },
+          { type: "tool_use", id: "t1", name: "Bash", input: {} },
+        ],
+      },
+      { role: "user", content: [{ type: "text", text: "顺带一句备注" }] },
+      { role: "user", content: [{ type: "tool_result", tool_use_id: "t1", content: "ok" }] },
+    ];
+    const r = deserializeMessagesWithInterruptDetection(messages);
+    expect(r.turnInterruptionState.kind).toBe("interrupted_turn");
+    if (r.turnInterruptionState.kind === "interrupted_turn") {
+      expect(r.turnInterruptionState.lastToolNames).toEqual(["Bash"]);
+    }
+  });
+
+  test("缺陷 15：多个 id 且 assistant 位置错位时，工具名按 tool_result 顺序全部返回", () => {
+    const messages: Message[] = [
+      { role: "user", content: [{ type: "text", text: "批量读" }] },
+      {
+        role: "assistant",
+        content: [
+          { type: "tool_use", id: "t1", name: "Read", input: {} },
+          { type: "tool_use", id: "t2", name: "Bash", input: {} },
+          { type: "tool_use", id: "t3", name: "Grep", input: {} },
+        ],
+      },
+      { role: "user", content: [{ type: "text", text: "中途插入的文本" }] },
+      { role: "assistant", content: [{ type: "text", text: "结果整理中" }] },
+      {
+        role: "user",
+        content: [
+          // 故意打乱相对顺序：返回顺序应跟随 tool_result，而不是 tool_use 的声明顺序
+          { type: "tool_result", tool_use_id: "t3", content: "grep 结果" },
+          { type: "tool_result", tool_use_id: "t1", content: "文件内容" },
+          { type: "tool_result", tool_use_id: "t2", content: "ok" },
+        ],
+      },
+    ];
+    const r = deserializeMessagesWithInterruptDetection(messages);
+    expect(r.turnInterruptionState.kind).toBe("interrupted_turn");
+    if (r.turnInterruptionState.kind === "interrupted_turn") {
+      expect(r.turnInterruptionState.lastToolNames).toEqual(["Grep", "Read", "Bash"]);
+    }
+  });
+
+  // ─── 缺陷 16：第 3 层必须顺序敏感（按 tool_use 之后是否有 result 配对） ───
+
+  test("缺陷 16：tool_result 排在 tool_use 之前时，该 tool_use 不被集合判据洗白", () => {
+    // 脏历史：结果在前、调用在后。集合判据会认为 t1「已解析」而放行，API 按顺序仍报 400。
+    const messages: Message[] = [
+      {
+        role: "user",
+        content: [{ type: "tool_result", tool_use_id: "t1", content: "早到的结果" }],
+      },
+      {
+        role: "assistant",
+        content: [{ type: "tool_use", id: "t1", name: "Bash", input: {} }],
+      },
+      { role: "assistant", content: [{ type: "text", text: "结束" }] },
+    ];
+    const r = deserializeMessagesWithInterruptDetection(messages);
+    // 旧实现会把 t1 判成已解析（集合里存在）→ 这里会看到一堆 tool_use
+    const toolUseIds = r.messages.flatMap((m) =>
+      m.content.filter((b) => b.type === "tool_use").map((b) => (b as any).id),
+    );
+    expect(toolUseIds).toEqual([]);
+    // 前置的游离 tool_result 由第 7 层切除，出口不变量成立
+    const toolResultIds = r.messages.flatMap((m) =>
+      m.content.filter((b) => b.type === "tool_result").map((b) => (b as any).tool_use_id),
+    );
+    expect(toolResultIds).toEqual([]);
+    expect(checkMessageHistoryIntegrity(r.messages).intact).toBe(true);
+  });
+
+  test("缺陷 16：跨轮同 id 复用时第二个 tool_use 未被上一轮的结果洗白而漏过滤", () => {
+    // 第一轮的 t1 已正常配对；末尾第二轮又用了同 id 且没有 result。
+    // 集合判据只因「历史里存在 t1 的 result」就放行末尾这条 → 漏过滤。
+    const messages: Message[] = [
+      { role: "user", content: [{ type: "text", text: "第一轮" }] },
+      {
+        role: "assistant",
+        content: [{ type: "tool_use", id: "t1", name: "Bash", input: {} }],
+      },
+      { role: "user", content: [{ type: "tool_result", tool_use_id: "t1", content: "ok" }] },
+      { role: "assistant", content: [{ type: "text", text: "第一轮做完" }] },
+      { role: "user", content: [{ type: "text", text: "第二轮" }] },
+      {
+        role: "assistant",
+        content: [{ type: "tool_use", id: "t1", name: "Bash", input: {} }],
+      },
+    ];
+    const r = deserializeMessagesWithInterruptDetection(messages);
+    // 第一个 t1 属于第一轮、其后紧随 result → 保留
+    expect(r.messages[1].role).toBe("assistant");
+    expect(r.messages[1].content.some((b) => b.type === "tool_use" && b.id === "t1")).toBe(true);
+    // 末尾第二个 t1 无 result → 被剔除，整条消息被第 5 层丢弃；全历史只剩一个 tool_use
+    expect(r.messages.filter((m) => m.content.some((b) => b.type === "tool_use")).length).toBe(1);
+    expect(r.messages.length).toBe(4);
+    // 末尾 assistant 整条被丢弃后，历史末尾回到第二轮的 user 文本「第二轮」——
+    // 用户问了但没等到回复，三态判定为 interrupted_prompt（该 user 消息被切出由调用方重挂）。
+    // 关键点是**不再误报「在跑 Bash」**：第二个 tool_use 确实被剔除了。
+    expect(r.turnInterruptionState.kind).toBe("interrupted_prompt");
+  });
+
+  // ─── 回归：正常形状的配对必须原样保留 ───
+
+  test("回归：正常顺序的单工具调用与结果全部保留", () => {
+    const messages: Message[] = [
+      { role: "user", content: [{ type: "text", text: "跑一下" }] },
+      {
+        role: "assistant",
+        content: [{ type: "tool_use", id: "t1", name: "Bash", input: {} }],
+      },
+      { role: "user", content: [{ type: "tool_result", tool_use_id: "t1", content: "ok" }] },
+      { role: "assistant", content: [{ type: "text", text: "完成" }] },
+    ];
+    const r = deserializeMessagesWithInterruptDetection(messages);
+    expect(r.messages.length).toBe(4);
+    expect(checkMessageHistoryIntegrity(r.messages).intact).toBe(true);
+    expect(r.turnInterruptionState.kind).toBe("none");
+  });
+
+  test("回归：正常顺序的并行多工具调用全部保留（同一条 assistant 消息里）", () => {
+    const messages: Message[] = [
+      { role: "user", content: [{ type: "text", text: "并行" }] },
+      {
+        role: "assistant",
+        content: [
+          { type: "tool_use", id: "t1", name: "Read", input: {} },
+          { type: "tool_use", id: "t2", name: "Bash", input: {} },
+          { type: "tool_use", id: "t3", name: "Grep", input: {} },
+        ],
+      },
+      {
+        role: "user",
+        content: [
+          { type: "tool_result", tool_use_id: "t1", content: "a" },
+          { type: "tool_result", tool_use_id: "t2", content: "b" },
+          { type: "tool_result", tool_use_id: "t3", content: "c" },
+        ],
+      },
+      { role: "assistant", content: [{ type: "text", text: "汇总" }] },
+    ];
+    const r = deserializeMessagesWithInterruptDetection(messages);
+    const toolUseIds = r.messages.flatMap((m) =>
+      m.content.filter((b) => b.type === "tool_use").map((b) => (b as any).id),
+    );
+    expect(toolUseIds).toEqual(["t1", "t2", "t3"]);
+    expect(checkMessageHistoryIntegrity(r.messages).intact).toBe(true);
+    expect(r.turnInterruptionState.kind).toBe("none");
+  });
 });
