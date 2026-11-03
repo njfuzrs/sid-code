@@ -2608,6 +2608,21 @@ export async function* queryLoop(loopConfig: QueryLoopConfig): AsyncGenerator<Qu
         sessionState.set("announcedDeferredTools", announced);
       }
 
+      // ─── 工作区切换（enter_worktree / exit_worktree）───
+      // 工作目录已移出 system 静态区（见 config/system-prompt.ts 的 buildEnvironmentSection），
+      // 所以切换**不再重建 prompt** —— 静态前缀一个字节都不动，这是本方案的全部收益来源。
+      // 代价：模型不会自动知道目录变了，会继续按旧目录推相对路径。这条块补的正是这个信息差。
+      //
+      // 必须走持久档而不是 transient：切换事实要长期可见（transient 只活一轮，模型第 3 轮
+      // 就忘了自己在 worktree 里，回头往主仓写文件）。去重由 recordWorkspaceNotice 的
+      // 调用方保证 —— 每次真实切换才记一条，不会逐轮累积。
+      const workspaceNotices = ctxMgr.consumeWorkspaceNotices();
+      for (const notice of workspaceNotices) {
+        persistentReminderParts.push(
+          `<working-directory-change>\n${notice}\n</working-directory-change>`,
+        );
+      }
+
       // ─── 单次注入（P1-a）───
       // 必须只调用一次 injectReminders。原实现调两次（reminderParts 一次、deferred-tools
       // 一次），而每次都前置 → **第二次调用的内容压在第一次前面**，实测偏移

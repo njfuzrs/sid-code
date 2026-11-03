@@ -283,6 +283,26 @@ describe("中断记录环形缓冲 + 健康度建议（D3）", () => {
     expect(getCacheHealthAdvice()).toEqual([]);
   });
 
+  test("不可信渠道的记录不计入健康度建议（它的「下降」是渠道编造的）", () => {
+    // 3 条 untrusted 的 system 变化记录，占比 100% —— 若不排除就会给出「把易变内容移到尾部」的建议，
+    // 但那三条根本不是缓存行为，照着改是改错了方向。
+    for (let i = 0; i < 3; i++) {
+      recordCacheBreak(rec({ channelTrust: "untrusted" }));
+    }
+    expect(getCacheHealthAdvice()).toEqual([]);
+  });
+
+  test("untrusted 与 trusted 混合时，占比只按 trusted 算", () => {
+    // trusted 里只有 1 条 system 变化 + 1 条工具变化 → 各占 50%，都只有 1 次，不足以给建议
+    recordCacheBreak(rec({ channelTrust: "trusted" }));
+    recordCacheBreak(rec({ changes: ["工具变化: +foo"], channelTrust: "trusted" }));
+    // 再塞 4 条 untrusted 的 system 变化，若没排除就会把 system 占比抬到 5/6 ≥ 50% 且 ≥ 2 次
+    for (let i = 0; i < 4; i++) {
+      recordCacheBreak(rec({ channelTrust: "untrusted" }));
+    }
+    expect(getCacheHealthAdvice()).toEqual([]);
+  });
+
   test("clearCacheBreaks 清空", () => {
     recordCacheBreak(rec());
     clearCacheBreaks();

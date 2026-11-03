@@ -345,6 +345,12 @@ export function logPermissionAllow(
     /** 决策所在管线位置（Decision.step）与生效模式（Decision.mode），只进本地轨迹 */
     step?: string;
     mode?: string;
+    /**
+     * 工具入参摘要，**只进本地轨迹**（不进遥测：外发通道的隐私约束见本文件顶部）。
+     * 目前只有 forked 路径需要 —— 它不写 PreToolUse，PermissionDecision 是唯一留痕。
+     * 见 `permission/decision-telemetry.ts` 的 `inputSummary` 与 `tool/input-summary.ts`。
+     */
+    inputSummary?: Record<string, unknown>;
   },
 ): void {
   emit(EVENT_NAMES.PERMISSION_ALLOW, {
@@ -367,6 +373,7 @@ export function logPermissionAllow(
     ...(opts.durationMs !== undefined ? { durationMs: opts.durationMs } : {}),
     ...(opts.step ? { step: opts.step } : {}),
     ...(opts.mode ? { mode: opts.mode } : {}),
+    ...(opts.inputSummary ? { inputSummary: opts.inputSummary } : {}),
   });
 }
 
@@ -406,6 +413,12 @@ export function logPermissionDeny(
     /** forked 拒绝类别与路径形状，只进本地轨迹（不进遥测，外发 schema 不变） */
     denyKind?: string;
     pathMismatch?: PathMismatchShape;
+    /**
+     * 工具入参摘要，**只进本地轨迹**（不进遥测：外发通道的隐私约束见本文件顶部）。
+     * 目前只有 forked 路径需要 —— 它不写 PreToolUse，PermissionDecision 是唯一留痕。
+     * 见 `permission/decision-telemetry.ts` 的 `inputSummary` 与 `tool/input-summary.ts`。
+     */
+    inputSummary?: Record<string, unknown>;
   },
 ): void {
   emit(EVENT_NAMES.PERMISSION_DENY, {
@@ -429,6 +442,7 @@ export function logPermissionDeny(
     ...(opts.mode ? { mode: opts.mode } : {}),
     ...(opts.denyKind ? { denyKind: opts.denyKind } : {}),
     ...(opts.pathMismatch ? { pathMismatch: opts.pathMismatch } : {}),
+    ...(opts.inputSummary ? { inputSummary: opts.inputSummary } : {}),
   });
 }
 

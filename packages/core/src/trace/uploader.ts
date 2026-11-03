@@ -26,6 +26,12 @@ import { backendUrl } from "../identity/endpoints.ts";
 import type { TraceUploaderInterface } from "./collector.ts";
 import { prepareUploadFile } from "./upload-compress.ts";
 import { hasFinalUploadMarker } from "./upload-marker.ts";
+import {
+  clearUploadAttempts,
+  isInBackoff,
+  readUploadFailed,
+  recordUploadFailure,
+} from "./upload-attempts.ts";
 
 // ─── 接口定义 ───
 
@@ -124,8 +130,17 @@ export interface QueueProcessResult {
   droppedUnknownType: number;
   /** 本次上传失败，条目保留待下次重试 */
   retained: number;
-  /** 超过 maxQueueRetries 被标记 failed 并保留供人工排查 */
+  /** 超过 maxQueueRetries、或会话已有 `.upload-failed` 终态，被标记 failed 并保留供人工排查 */
   markedFailed: number;
+  /**
+   * 会话仍在 `.upload-attempts` 的跨进程退避窗口内，本轮不碰（条目原样保留）。
+   *
+   * B1：这一格存在与否决定「补传扫描」与「重试队列」是不是同一套退避——修复前
+   * 队列扫描完全不看 `.upload-attempts`，445MB 会话每 5 分钟重传一轮，累计 400+ 轮。
+   */
+  backoff: number;
+  /** 同一 (session_id, file) 的重复条目被合并掉的数量（保留 attempts 最大的一条） */
+  deduped: number;
   /** JSON 解析失败，原样保留 */
   corrupt: number;
   /** 队列超限按 FIFO 丢弃的最旧条目数 */
@@ -143,6 +158,17 @@ interface QueueEntry {
   attempts: number;
   last_error: string;
   status: "pending" | "failed";
+}
+
+/** `processRetryQueue()` 的选项 */
+export interface ProcessRetryQueueOptions {
+  /**
+   * 无视跨进程退避与终态（`.upload-attempts` / `.upload-failed`）。
+   *
+   * 只有 `--upload-traces` 手动命令传 true：用户显式要传，终态会话也要再试一次。
+   * 与 `backfillPendingSessions` 的同名选项同一口径。默认 false。
+   */
+  ignoreBackoff?: boolean;
 }
 
 /** 文件类型与文件名的映射（处理顺序：traj → raw → events） */
@@ -541,13 +567,20 @@ export class UploadManager implements TraceUploaderInterface {
    * 文件：{outputDir}/.upload_queue.jsonl
    * 进程重启后能恢复未完成的上传
    *
-   * P1-6：去重——同一 (session_id, file) 已在队列且仍 pending 时跳过，
-   * 不追加新行。原先纯 appendFileSync，同一文件反复失败就反复追加，
-   * 队列里同一条目可以有几十份副本。
+   * P1-6：去重——同一 (session_id, file) 已在队列时跳过，不追加新行。
+   * 原先纯 appendFileSync，同一文件反复失败就反复追加，队列里同一条目可以有几十份副本。
+   *
+   * ⚠️ B2：去重**不再区分 status**。旧实现写的是 `entry.status !== "failed"` 才跳过，
+   * 于是一条被判死的记录（attempts 达 maxQueueRetries）不会阻止下一次追加 ——
+   * 每失败一次就再生出一条全新的 pending，`maxQueueRetries` 因此形同无上限。
+   * 实测同一个 (20261022-034121-20f64f92, session.traj) 攒了 9 条（8 条 failed + 1 条 pending）。
+   *
+   * failed 条目不复活是刻意的：要重传就走 `--upload-traces` 手动命令，
+   * 它传 `ignoreBackoff: true`，无视退避与终态。
    */
   private appendToRetryQueue(sessionId: string, fileName: string): void {
     try {
-      // P1-6：去重——检查是否已有同 (session_id, file) 的 pending 条目
+      // P1-6：去重——是否已有同 (session_id, file) 的条目（不论 pending / failed）
       if (existsSync(this.retryQueuePath)) {
         const existing = readFileSync(this.retryQueuePath, "utf-8");
         const key = `${sessionId}\u0000${fileName}`;
@@ -555,8 +588,8 @@ export class UploadManager implements TraceUploaderInterface {
           if (!line.trim()) continue;
           try {
             const entry = JSON.parse(line) as QueueEntry;
-            if (`${entry.session_id}\u0000${entry.file}` === key && entry.status !== "failed") {
-              return; // 已在队列中，跳过
+            if (`${entry.session_id}\u0000${entry.file}` === key) {
+              return; // 已在队列中（含 failed），跳过
             }
           } catch {
             /* 损坏行跳过 */
@@ -589,7 +622,10 @@ export class UploadManager implements TraceUploaderInterface {
    * ⚠️ 返回值不是可选的锦上添花：见 {@link QueueProcessResult} 的注释 ——
    * 静默 `continue` 曾让 1267 条队列条目在「处理完成」这句话下面全部消失。
    */
-  async processRetryQueue(): Promise<QueueProcessResult> {
+  async processRetryQueue(scanOpts: ProcessRetryQueueOptions = {}): Promise<QueueProcessResult> {
+    // 手动路径（`--upload-traces`）无视退避与终态：用户显式要传，与 backfill 的
+    // `ignoreBackoff` 同一口径（upload-attempts.ts 头注释：「手动命令无视退避与终态」）。
+    const ignoreBackoff = scanOpts.ignoreBackoff === true;
     const stats: QueueProcessResult = {
       total: 0,
       uploaded: 0,
@@ -598,6 +634,8 @@ export class UploadManager implements TraceUploaderInterface {
       droppedUnknownType: 0,
       retained: 0,
       markedFailed: 0,
+      backoff: 0,
+      deduped: 0,
       corrupt: 0,
       droppedOverflow: 0,
       remaining: 0,
@@ -617,72 +655,178 @@ export class UploadManager implements TraceUploaderInterface {
     stats.total = lines.length;
     if (lines.length === 0) return stats;
 
+    // B2：先按 (session_id, file) 合并重复条目，再逐条处理。
+    //
+    // 修复前的实测形态：同一个 (20261022-034121-20f64f92, session.traj) 在队列里有 9 条
+    // —— 8 条 attempts=50/status=failed（10-22 到 11-02 一路 append）+ 1 条 attempts=23 的 pending。
+    // 旧去重只看 pending（`entry.status !== "failed"`），于是「已经判死的那条」每失败一次
+    // 就再生出一条全新的 pending，maxQueueRetries=50 形同虚设（累计自动尝试 50×8+23 = 423 轮）。
+    //
+    // 保留 attempts 最大的那条 = 最接近终态的记账：pending 副本不能把已判死的条目拖回重试。
+    // 并列时保留先出现的那条（append 顺序更早）。损坏行不参与合并，原样保留。
+    const merged: Array<{ entry: QueueEntry | null; line: string }> = [];
+    const indexByKey = new Map<string, number>();
+    for (const line of lines) {
+      let entry: QueueEntry | null = null;
+      try {
+        const parsed = JSON.parse(line) as QueueEntry;
+        if (parsed && typeof parsed.session_id === "string" && typeof parsed.file === "string") {
+          entry = parsed;
+        }
+      } catch {
+        /* 走下面的 corrupt 分支，原样保留 */
+      }
+      if (!entry) {
+        merged.push({ entry: null, line });
+        continue;
+      }
+      const key = `${entry.session_id}\u0000${entry.file}`;
+      const seenAt = indexByKey.get(key);
+      if (seenAt === undefined) {
+        indexByKey.set(key, merged.length);
+        merged.push({ entry, line });
+        continue;
+      }
+      stats.deduped++;
+      const prev = merged[seenAt]!;
+      if (prev.entry && entry.attempts > prev.entry.attempts) {
+        merged[seenAt] = { entry, line };
+      }
+    }
+    if (stats.deduped > 0) {
+      getLogger().info(
+        "TRACE",
+        `重试队列合并 ${stats.deduped} 条重复条目（同 session_id+file 只保留 attempts 最大的一条）`,
+      );
+    }
+
     const remaining: string[] = [];
     /** 被丢弃条目的 session_id 聚合，用于一条汇总 warn（逐条打会刷屏 1267 行） */
     const droppedSessions = new Set<string>();
+    /** 本轮有失败条目的会话：结束时不能清它的退避记账 */
+    const sessionsWithFailure = new Set<string>();
+    /** 本轮条目全部成功的会话：结束时清掉 `.upload-attempts` / `.upload-failed` */
+    const sessionsSucceeded = new Set<string>();
+    // 一轮扫描内共用一个 now：`.upload-attempts` 会被本轮的失败记录改写，
+    // 若每次判断都取 Date.now()，同一轮里后处理的文件看到的将是「刚被自己改写过的」记账。
+    const now = Date.now();
 
-    for (const line of lines) {
-      try {
-        const entry = JSON.parse(line) as QueueEntry;
+    for (const item of merged) {
+      const entry = item.entry;
+      if (!entry) {
+        // 解析失败，保留原样
+        stats.corrupt++;
+        remaining.push(item.line);
+        continue;
+      }
 
-        // 超过最大重试次数，保留供人工排查
-        if (entry.status === "failed" || entry.attempts >= this.opts.maxQueueRetries) {
+      // 超过最大重试次数，保留供人工排查。
+      // 手动路径（`--upload-traces`）不受此限：failed 条目不复活，要重传只能靠它，
+      // 与 `.upload-failed` 终态的处置同一口径（见 appendToRetryQueue 的注释）。
+      if (
+        !ignoreBackoff &&
+        (entry.status === "failed" || entry.attempts >= this.opts.maxQueueRetries)
+      ) {
+        remaining.push(JSON.stringify({ ...entry, status: "failed" }));
+        stats.markedFailed++;
+        continue;
+      }
+
+      // 尝试上传
+      const sessionDir = join(this.opts.outputDir, "sessions", entry.session_id);
+      const filePath = join(sessionDir, entry.file);
+
+      if (!existsSync(filePath)) {
+        // 文件不存在 —— 绝大多数是会话目录已被保留策略（默认 365 天 / 10GB，或显式的
+        // maxSessionsRetained）清理掉，队列里剩的是指向空地址的门票。丢弃是对的，但**必须计数 + 告警**：
+        // 这是「本地数据已经没了、云端也没有」的唯一可见信号。
+        stats.droppedMissingFile++;
+        droppedSessions.add(entry.session_id);
+        continue;
+      }
+
+      const fileType = fileNameToType(entry.file);
+      if (!fileType) {
+        stats.droppedUnknownType++;
+        getLogger().warn(
+          "TRACE",
+          `重试队列条目文件名无法识别，已丢弃: ${entry.session_id}/${entry.file}`,
+        );
+        continue;
+      }
+
+      // B1：跨进程退避与终态。必须排在真正上传之前。
+      // 修复前本函数一行都没引用 upload-attempts.ts ——「补传 8 次、退避封顶 48h、
+      // 之后写终态」这套约定在队列侧完全不生效：实测 445MB 的会话每 5 分钟被重传一轮
+      // （35 分钟 7 组失败日志，累计 423 轮尝试）。
+      if (!ignoreBackoff) {
+        if (readUploadFailed(sessionDir)) {
+          // 已达终态：不再自动重试。条目标 failed 保留，供人工排查或 `--upload-traces` 重传。
           remaining.push(JSON.stringify({ ...entry, status: "failed" }));
           stats.markedFailed++;
           continue;
         }
-
-        // 尝试上传
-        const sessionDir = join(this.opts.outputDir, "sessions", entry.session_id);
-        const filePath = join(sessionDir, entry.file);
-
-        if (!existsSync(filePath)) {
-          // 文件不存在 —— 绝大多数是会话目录已被保留策略（默认 365 天 / 10GB，或显式的
-          // maxSessionsRetained）清理掉，队列里剩的是指向空地址的门票。丢弃是对的，但**必须计数 + 告警**：
-          // 这是「本地数据已经没了、云端也没有」的唯一可见信号。
-          stats.droppedMissingFile++;
-          droppedSessions.add(entry.session_id);
+        if (isInBackoff(sessionDir, now)) {
+          // 原样保留且**不递增 attempts** —— 本轮一个字节都没发，不该消耗重试预算。
+          stats.backoff++;
+          remaining.push(JSON.stringify(entry));
           continue;
         }
+      }
 
-        const fileType = fileNameToType(entry.file);
-        if (!fileType) {
-          stats.droppedUnknownType++;
-          getLogger().warn(
-            "TRACE",
-            `重试队列条目文件名无法识别，已丢弃: ${entry.session_id}/${entry.file}`,
-          );
-          continue;
-        }
+      // §6.4：重传 traj 前先据 events.jsonl 校正 cost（历史队列里的 cost=0 会话）
+      if (fileType === "traj") {
+        this.recomputeCostIfNeeded(sessionDir);
+      }
 
-        // §6.4：重传 traj 前先据 events.jsonl 校正 cost（历史队列里的 cost=0 会话）
-        if (fileType === "traj") {
-          this.recomputeCostIfNeeded(sessionDir);
-        }
+      const result = await this.uploadFileWithRetry(filePath, entry.session_id, fileType);
 
-        const result = await this.uploadFileWithRetry(filePath, entry.session_id, fileType);
+      if (result.status === "uploaded" || result.status === "skipped") {
+        // 上传成功，不再保留
+        if (result.status === "uploaded") stats.uploaded++;
+        else stats.skipped++;
+        sessionsSucceeded.add(entry.session_id);
+        continue;
+      }
 
-        if (result.status === "uploaded" || result.status === "skipped") {
-          // 上传成功，不再保留
-          if (result.status === "uploaded") stats.uploaded++;
-          else stats.skipped++;
-          continue;
-        }
-
-        // 仍然失败，更新重试次数
+      // 仍然失败：记进会话目录的跨进程记账，让队列扫描与补传扫描共用同一个失败次数。
+      // 这一步是 B1 的另一半 —— 只读不写的话 `.upload-attempts` 永远停在补传上次写的值，
+      // 队列自己失败多少次都不会推进退避。
+      // 两套计数并存是刻意的：`.upload-attempts` 是跨进程退避（8 次终态），
+      // `entry.attempts` 是这条队列条目自己的预算（maxQueueRetries，默认 50）。
+      const reason = result.reason ?? "";
+      const reachedTerminal = recordUploadFailure(sessionDir, reason || "unknown");
+      sessionsWithFailure.add(entry.session_id);
+      if (reachedTerminal) {
+        // 累计到 MAX_AUTO_ATTEMPTS，`.upload-failed` 已写：条目直接进终态，
+        // 不必再等队列自己的 50 次预算。
+        remaining.push(
+          JSON.stringify({
+            ...entry,
+            attempts: entry.attempts + 1,
+            last_error: reason,
+            status: "failed",
+          }),
+        );
+        stats.markedFailed++;
+      } else {
         stats.retained++;
         remaining.push(
           JSON.stringify({
             ...entry,
             attempts: entry.attempts + 1,
-            last_error: result.reason ?? "",
+            last_error: reason,
           }),
         );
-      } catch {
-        // 解析失败，保留原样
-        stats.corrupt++;
-        remaining.push(line);
       }
+    }
+
+    // 会话级清理：只有「该会话本轮参与过、且本轮全部条目都成功」时才清退避与终态。
+    // 不能每个文件成功就清 —— traj 成功会把 raw 刚记下的失败次数抹掉，
+    // 一个持续失败的会话就能无限循环「失败 → 另一个文件成功清账 → 再失败」。
+    for (const sessionId of sessionsSucceeded) {
+      if (sessionsWithFailure.has(sessionId)) continue;
+      clearUploadAttempts(join(this.opts.outputDir, "sessions", sessionId));
     }
 
     if (stats.droppedMissingFile > 0) {
@@ -727,6 +871,10 @@ export class UploadManager implements TraceUploaderInterface {
       `队列 ${r.total} 条：上传 ${r.uploaded}，服务端已存在 ${r.skipped}，` +
       `因目录已清理丢弃 ${r.droppedMissingFile}，文件名无法识别 ${r.droppedUnknownType}，` +
       `失败待重试 ${r.retained}，超次数标记 failed ${r.markedFailed}，损坏行 ${r.corrupt}` +
+      // B1：退避中跳过的条目必须可见 —— 否则「什么都没传」与「全在退避」在输出上又一次无法区分
+      (r.backoff > 0 ? `，退避中跳过 ${r.backoff}` : "") +
+      // B2：合并掉的重复条目也要点名，它是「队列只增不减」收敛的唯一证据
+      (r.deduped > 0 ? `，合并重复 ${r.deduped}` : "") +
       (r.droppedOverflow > 0 ? `，超限丢弃 ${r.droppedOverflow}` : "") +
       `；剩余 ${r.remaining} 条`
     );
