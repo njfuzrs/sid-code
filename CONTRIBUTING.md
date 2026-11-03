@@ -296,7 +296,9 @@ pending）。现在加 job 只改 `all-checks-passed` 的 `needs` 一行，不�
   做 update（队首 = auto-merge 挂得最早的），已有 PR 在飞就不动。**所以想排队就挂
   auto-merge，不挂就不碰你**。检查红了或冲突的 PR 会被跳过，不卡后面的。
   它需要 secret `PR_AUTO_UPDATE_TOKEN`（fine-grained PAT，仅本仓，Contents + Pull requests
-  读写）：用 `GITHUB_TOKEN` 做 update 时，触发的 CI 会停在「待批准」，等于没省。
+  + Workflows 读写）：用 `GITHUB_TOKEN` 做 update 时，触发的 CI 会停在「待批准」，等于没省。
+  ⚠️ 这个 secret **放在 Environment `pr-auto-update` 里，且该 Environment 只允许 `main`**，
+  不放仓库级——仓库级 secret 能被任何 write 协作者在自己分支的 workflow 里读走。
 - **测试分片**：`ci.yml` 的 test job 按 `bun test --shard` 拆成 ubuntu 3 片 + macOS 2 片，
   两个平台仍各跑全量。macOS 只开 2 片是因为 Free 档 macOS 并发上限 5（账户级共享），
   改分片数前先算「片数 × 同时在跑的 run 数」。

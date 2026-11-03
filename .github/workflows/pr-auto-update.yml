@@ -8,8 +8,17 @@
 # pull_request synchronize 事件，CI run 会进入「需要人批准」状态（GitHub 防递归机制），
 # 队列照样卡在等人点按钮，等于什么都没省。
 # secret `PR_AUTO_UPDATE_TOKEN`：fine-grained PAT，只授权本仓库，
-# Contents: Read and write + Pull requests: Read and write。缺了它本 workflow 直接报红，
+# Contents + Pull requests + Workflows 三项 Read and write。缺了它本 workflow 直接报红，
 # 不静默跳过（静默跳过 = 队列看起来在工作，其实一个都没推）。
+# Workflows 不能省：update-branch 是把 main 合进 PR 分支，main 上只要动过 .github/workflows/，
+# 没有 workflows 权限的令牌推这个 merge 会被 GitHub 拒绝。
+#
+# ⚠️ secret 放在 **Environment `pr-auto-update`** 里，不放仓库级（2026-11-03）：
+# 同仓分支触发的 workflow 能读仓库级 secret，任何 write 协作者推一个分支、写一个打印
+# secret 的 workflow 就能拿走这个 PAT（之后以 owner 身份操作，移出协作者后仍有效）。
+# Environment 配「Deployment branches = Selected branches: main」后，只有 main 上跑的
+# job 能读到它。本 workflow 的触发（push main / schedule / workflow_run / dispatch）
+# 都跑在 main 上，不受影响。`deployment: false` 让它不往部署历史里写记录。
 #
 # ⚠️ 安全边界：PAT 有写权限，所以本 workflow **只 checkout main 上的代码、只跑 main 上的脚本**，
 # 绝不 checkout PR 分支（workflow_run 事件的 head 可能是 PR 分支，这里刻意写死 ref: main）。
@@ -42,6 +51,9 @@ concurrency:
 
 jobs:
   update:
+    environment:
+      name: pr-auto-update
+      deployment: false
     runs-on: ubuntu-latest
     timeout-minutes: 5
     steps:
@@ -62,7 +74,7 @@ jobs:
           GH_REPO: ${{ github.repository }}
         run: |
           if [ -z "$GH_TOKEN" ]; then
-            echo "::error::缺少 secret PR_AUTO_UPDATE_TOKEN（fine-grained PAT，见本文件头注释）"
+            echo "::error::缺少 secret PR_AUTO_UPDATE_TOKEN（应放在 Environment pr-auto-update 里，且该 Environment 只允许 main；见本文件头注释）"
             exit 1
           fi
           bun run scripts/pr-auto-update.ts

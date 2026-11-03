@@ -142,6 +142,13 @@ describe("pr-auto-update.yml 安全边界", () => {
     expect(doc.concurrency["cancel-in-progress"]).toBe(false);
   });
 
+  // 仓库级 secret 能被任何 write 协作者在自己分支的 workflow 里读走；放进只允许 main 的
+  // Environment 才能挡住。job 上漏写 environment，secret 就只能回退到仓库级才读得到——
+  // 那等于把这层保护静默拆掉，而 workflow 照样能跑。
+  test("job 走 Environment pr-auto-update（secret 只对 main 可见）且不建部署记录", () => {
+    expect(doc.jobs.update.environment).toEqual({ name: "pr-auto-update", deployment: false });
+  });
+
   test("写操作走 PAT 而不是 GITHUB_TOKEN（后者触发的 CI 需要人批准，队列照样卡）", () => {
     expect(src).toContain("secrets.PR_AUTO_UPDATE_TOKEN");
     expect(doc.permissions).toEqual({ contents: "read" });
