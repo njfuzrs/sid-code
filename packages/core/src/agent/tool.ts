@@ -28,6 +28,7 @@ import {
   resolveMaxDepth,
 } from "./depth-context.ts";
 import type { SubAgentResult } from "./sub-agent.ts";
+import { resolveSubAgentTypeParam } from "./sub-agent-input.ts";
 import { z } from "zod/v4";
 import { lazySchema } from "../sdk/lazy-schema.ts";
 
@@ -418,9 +419,10 @@ ${typeLines}
    * 现在只读子代理会被正确归入并行队列。
    */
   isConcurrencySafe(input: unknown): boolean {
-    const params = input as { type?: string };
-    if (!params?.type) return false;
-    const def = resolveAgent(params.type);
+    // 类型字段走统一入口：模型写成 subagent_type 时也要认出 explore，否则只读子代理被静默串行
+    const type = resolveSubAgentTypeParam(input);
+    if (!type) return false;
+    const def = resolveAgent(type);
     return def?.readOnly === true;
   }
 
@@ -459,9 +461,11 @@ ${typeLines}
 
     // 对标 cc：type 省略时默认 general-purpose（cc 的默认兜底类型）。
     // 必须在缺参校验之前兜底，否则 type 省略会被误判为"缺必需参数"（schema 已改 optional）。
-    if (!params.type) {
-      params.type = "general-purpose";
-    }
+    // 先做别名归一化（subagent_type → type），再兜底：否则模型按 CC 习惯传 subagent_type 时
+    // 会被兜成 general-purpose，explore 的只读工具边界随之失效（2026-11-03 实测）。
+    // 归一化后删掉别名字段，下游（轨迹、hook、后台任务）只会看到 type 一个名字。
+    params.type = resolveSubAgentTypeParam(params) ?? "general-purpose";
+    delete (params as { subagent_type?: unknown }).subagent_type;
     if (!params.description || !params.prompt) {
       return { output: "错误: 缺少必需参数 (description, prompt)", isError: true };
     }

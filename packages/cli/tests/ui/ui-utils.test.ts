@@ -66,6 +66,13 @@ describe("getToolSummary / getToolDetailFull — sub_agent 命名匹配", () => 
     expect(getToolSummary("sub_agent", { prompt: "只有 prompt" })).not.toBe("");
   });
 
+  // 2026-11-03：模型按 CC 命名传 subagent_type，header 拿不到类型，卡片样式和正常时不一样
+  test("subagent_type 别名也显示类型", () => {
+    const aliased = { subagent_type: "explore", prompt: "找出所有渲染路径的入口文件并总结" };
+    expect(getToolSummary("sub_agent", aliased)).toContain("explore");
+    expect(getToolDetailFull("sub_agent", aliased)).toContain("explore");
+  });
+
   test("历史别名 subagent/agent__/skill__ 仍匹配（不回归）", () => {
     expect(getToolSummary("subagent", input)).toContain("explore");
     expect(getToolSummary("agent__foo", input)).toContain("explore");

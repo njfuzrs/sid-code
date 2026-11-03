@@ -10,6 +10,7 @@
 
 import { minimatch } from "minimatch";
 import type { PermissionRule, PermissionRequest, Decision } from "./types.ts";
+import { resolveSubAgentTypeParam } from "../agent/sub-agent-input.ts";
 import { matchShellRulePattern } from "./shell-rule-matching.ts";
 import { matchPathRule, type PathRuleContext } from "./path-rule-matching.ts";
 import { toInternalToolName } from "../tool/tool-name-aliases.ts";
@@ -46,7 +47,9 @@ export function extractMatchValue(req: PermissionRequest): string {
   const tool = req.toolName.toLowerCase();
 
   if (tool === "sub_agent") {
-    return input?.subagent_type || input?.type || "";
+    // 与执行层同一个取值入口：权限判的类型必须就是实际跑起来的类型。
+    // 旧写法 subagent_type 优先而执行层只读 type，两字段取值不同时可绕过 Agent(type) 规则。
+    return resolveSubAgentTypeParam(input) ?? "";
   }
   if (tool === "web_fetch") {
     const url: string = input?.url || "";
