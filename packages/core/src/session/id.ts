@@ -15,7 +15,7 @@
  * 业界参照：ULID / UUIDv7 / KSUID 均采用「时间前缀 + 随机后缀」（可排序 + 抗碰撞）。
  *
  * 向后兼容：旧的 8 位 hex 会话 id 仍可被加载/匹配——所有消费方按「字符串包含/相等」
- * 而非「定长 8 字符」识别 id（见 session/utils.ts、command/advanced.ts）。
+ * 而非「定长 8 字符」识别 id（见 session/utils.ts、command/commands/ps/ps.ts）。
  */
 
 import { randomUUID } from "node:crypto";

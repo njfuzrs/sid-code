@@ -28,12 +28,13 @@ import { mkdtempSync, rmSync, readFileSync } from "fs";
 import { join } from "path";
 import { tmpdir } from "os";
 
-import { IDECommand } from "@sid-code/cli/command/ide.ts";
+import { IDECommand } from "@sid-code/cli/command/commands/ide/ide.ts";
+import ideCmd from "@sid-code/cli/command/commands/ide/index.ts";
 import { resetIDEIntegration } from "@sid-code/core/ide/integration.ts";
 import { DETECTABLE_IDE_DISPLAY_NAME } from "@sid-code/core/ide/process-tree.ts";
-import type { AppContext } from "@sid-code/cli/command/types.ts";
+import type { CommandContext } from "@sid-code/cli/command/types.ts";
 
-const IDE_COMMAND_SOURCE = join(import.meta.dir, "../../src/command/ide.ts");
+const IDE_COMMAND_SOURCE = join(import.meta.dir, "../../src/command/commands/ide/ide.ts");
 
 let dir: string;
 let savedConfigDir: string | undefined;
@@ -55,15 +56,15 @@ afterEach(() => {
 
 describe("/ide 没有 lockfile 时的提示", () => {
   test("无 lockfile 时的消息不指向已撤掉的 /ide install，且是两条文案之一", async () => {
-    const ctx = { mcpManager: {} } as unknown as AppContext;
-    const result = await new IDECommand().execute("status", ctx);
+    const ctx = { mcpManager: {} } as unknown as CommandContext;
+    const result = await new IDECommand().call("status", ctx);
 
-    expect(result.kind).toBe("message");
-    if (result.kind !== "message") return;
-    expect(result.message).not.toContain("/ide install");
-    expect(result.message).toContain("lockfile");
-    const namedBranch = result.message.includes("正在运行");
-    const genericBranch = result.message.includes("未发现可用 IDE");
+    expect(result.type).toBe("text");
+    if (result.type !== "text") return;
+    expect(result.value).not.toContain("/ide install");
+    expect(result.value).toContain("lockfile");
+    const namedBranch = result.value.includes("正在运行");
+    const genericBranch = result.value.includes("未发现可用 IDE");
     expect(namedBranch || genericBranch).toBe(true);
     // 两条是互斥的：点名了一个 IDE 就不应再说「未发现」
     expect(namedBranch && genericBranch).toBe(false);
@@ -94,9 +95,8 @@ describe("/ide 点名文案的显示名", () => {
 
 describe("/ide 子命令集合", () => {
   test("install 已撤掉，其余三个保留", () => {
-    const cmd = new IDECommand();
-    const names = cmd.subCommands().map((c) => c.name());
+    const names = ideCmd.subCommands!().map((c) => c.name);
     expect(names).toEqual(["status", "connect", "disconnect"]);
-    expect(cmd.argumentHint()).not.toContain("install");
+    expect(ideCmd.argumentHint).not.toContain("install");
   });
 });

@@ -1,14 +1,17 @@
 /**
  * G19：LegacyTool ↔ 新泛型 Tool 桥接适配器
  *
- * 允许用 buildTool() 构建的新版 Tool 注册到现有 Registry（仅接受 LegacyTool）。
- * 这是渐进迁移的关键基础设施——新工具可逐一用新接口写，通过 bridge 注册到产线 registry，
- * 无需等全量迁移完成或改 registry 内部类型。
+ * 允许用 buildTool() 构建的新版 Tool 注册到现有 Registry（内部存储仍是 LegacyTool）。
+ * 这是渐进迁移的关键基础设施——新工具可逐一用新接口写，无需等全量迁移完成或改
+ * registry 内部类型。
  *
+ * 调用方不需要直接用它：`Registry.register()` 在入口识别新 Tool 并调 `toLegacyTool`。
  * 桥接方向：新 Tool → LegacyTool 包装（toLegacyTool）
  * 反向（LegacyTool → Tool）暂不需要——registry 直接消费 LegacyTool。
+ * 引用旧接口的生产文件数降到 0（`scripts/legacy-tool-gate.ts`）时删掉本文件。
  */
 
+import { FileStateCache } from "./file-state-cache.ts";
 import type {
   Tool,
   LegacyTool,
@@ -93,7 +96,11 @@ export function toLegacyTool<Input = unknown, Output = string>(
       signal?: AbortSignal,
       onProgress?: (event: ToolProgressData) => void,
     ): Promise<LegacyToolResult> {
-      // 合成最小化的 ToolUseContext（执行器真正使用的字段只有 abortSignal）
+      // 合成最小化的 ToolUseContext。LegacyTool.execute 只拿得到 signal，其余字段是
+      // **占位值不是真实状态**：tools / messages 为空、permissionMode 恒为 "default"。
+      // 新工具需要真实会话状态时从闭包捕获，不要读这里。
+      // fileStateCache 给一个真实的空实例而非 `null as any`（B2）：后者让类型检查放行、
+      // 运行时第一次 `.get()` 就抛 TypeError；空缓存的语义是「没有已读文件」，读它不会崩。
       const ctx: ToolUseContext = {
         options: {
           tools: [],
@@ -102,7 +109,7 @@ export function toLegacyTool<Input = unknown, Output = string>(
           isNonInteractive: false,
         },
         abortSignal: signal ?? new AbortController().signal,
-        fileStateCache: null as any, // 新工具若需要可自行从闭包捕获
+        fileStateCache: new FileStateCache(),
         messages: [],
         permissionMode: "default",
       };

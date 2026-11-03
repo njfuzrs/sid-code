@@ -2528,10 +2528,14 @@ export class TraceCollector {
         /** @deprecated 用 real_errors（真错误）或 anomalies_count（含假阳性的异常总数）替代 */
         errors: anomaliesCount,
         anomaly_kinds: [...new Set(digest.anomalies.map((a) => a.kind))],
+        // 按判据去重：成对的 L0 事实 + L1 假设只算一个。统计「有多少会话命中某判据」用它，
+        // 不用 anomaly_kinds（后者保留不动，旧脚本按 kind 读）
+        anomaly_criteria: [...new Set(digest.anomalies.map((a) => a.criterion ?? a.kind))],
         anomalies: digest.anomalies.map((a) => ({
           kind: a.kind,
           severity: a.severity,
           layer: a.layer,
+          ...(a.criterion && a.criterion !== a.kind ? { criterion: a.criterion } : {}),
         })),
         top_tools: digest.toolsUsed.slice(0, 8),
         files_edited_count: digest.filesEdited.length,

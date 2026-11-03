@@ -4,13 +4,16 @@
  * Layer 1：静态注册（内置工具 + MCP 工具分开存储）
  * Layer 2：动态过滤与组装（isEnabled + deny rules + 模式裁剪 + prompt cache 排序）
  *
- * 注：本注册表显式以 `LegacyTool` 为元素类型（历史上曾用 `LegacyTool as Tool` 别名
- * 伪装成新接口，掩盖了"实际全跑 LegacyTool"的事实）。现已正名为 LegacyTool——
- * 由此产生的 @deprecated 提示是**正确的迁移信号**：待 25 个工具全部迁移到新版泛型
- * `Tool` 接口后，此处一并升级，deprecation 自然消除。
+ * 注：本注册表内部存储仍以 `LegacyTool` 为元素类型（所有消费方读的是 `name()` / `execute()`）。
+ * 但**注册入口同时接受新版泛型 `Tool`**：`register()` 在入口处经 `tool/bridge.ts` 归一，
+ * 新工具直接 `registry.register(buildTool({...}))`，不需要、也不应该自己调 `toLegacyTool`。
+ * 这样「新工具用新接口写」不再要求作者知道 bridge 的存在，迁移只剩「改工具文件」一件事。
+ * 迁移进度由 `scripts/legacy-tool-gate.ts` 棘轮约束（引用旧接口的生产文件数只降不升），
+ * 降到 0 时把内部存储换成 `Tool`、删掉 `LegacyTool` 与 bridge。
  */
 
-import type { LegacyTool, ToolDescriptionContext } from "./types.ts";
+import type { LegacyTool, Tool, ToolDescriptionContext } from "./types.ts";
+import { toLegacyTool } from "./bridge.ts";
 import type { ToolDefinition } from "../llm/types.ts";
 import { z } from "zod/v4";
 import { getLogger } from "../debug/index.ts";
@@ -106,6 +109,11 @@ export interface AssembleOptions {
   includeDisabled?: boolean;
 }
 
+/** 新版 `Tool` 的 `name` 是字符串属性，`LegacyTool` 的 `name` 是方法 */
+function isNewTool(tool: LegacyTool | Tool<any, any>): tool is Tool<any, any> {
+  return typeof tool.name === "string";
+}
+
 /** simple 模式下可用的工具 */
 const SIMPLE_MODE_TOOLS = new Set(["read", "grep", "glob", "ls", "read_many"]);
 
@@ -196,8 +204,12 @@ export class Registry {
    * 多个 MCP server 提供同名工具（或重复注册）时，保留首个注册的，跳过后续并打 warn。
    * 此前直接 `.set()` 会让后注册的静默覆盖先注册的，工具行为随连接顺序漂移、用户无从察觉。
    * 对标 claude-code assembleToolPool 的 uniqBy 去重 + 冲突告警。
+   *
+   * 接受新版 `Tool`（`name` 是字符串属性）与 `LegacyTool`（`name` 是方法），前者在这里经
+   * bridge 归一。判别用 `typeof name`：两个接口唯一一处形态必然不同、且无法同时满足的成员。
    */
-  register(tool: LegacyTool): void {
+  register(input: LegacyTool | Tool<any, any>): void {
+    const tool = isNewTool(input) ? toLegacyTool(input) : input;
     const name = tool.name();
     // disallowedTools 拒收（见 disallowedNames 注释）：MCP 工具在裁剪之后才异步注册，
     // 不在这里拦就会静默回来。打 info 而非 warn —— 这是用户显式配置的预期行为，不是异常。

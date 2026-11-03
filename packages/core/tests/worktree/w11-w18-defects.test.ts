@@ -325,7 +325,10 @@ describe("W15 冲突检测的键折回主仓相对位置", () => {
 describe("W17 启动恢复与 /worktree 用主仓根", () => {
   it("两个调用点不再用 findGitRoot(process.cwd())", () => {
     const root = join(import.meta.dir, "..", "..", "..", "..");
-    const advanced = readFileSync(join(root, "packages/cli/src/command/advanced.ts"), "utf-8");
+    const advanced = readFileSync(
+      join(root, "packages/cli/src/command/commands/worktree/worktree.ts"),
+      "utf-8",
+    );
     expect(advanced).not.toContain("findGitRoot(process.cwd())");
     expect(advanced).toContain("findGitRootForAgent(process.cwd())");
     const cli = readFileSync(join(root, "packages/cli/src/cli.ts"), "utf-8");

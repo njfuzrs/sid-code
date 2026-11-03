@@ -506,6 +506,9 @@ export const EVENT_ANCHORS: Record<string, DefenseAnchor> = {
   HypothesisToolUsed: { notDefenseReason: "假设工具实际调用，采纳率的分子" },
   ColdCacheClear: { notDefenseReason: "冷缓存清理，成本优化，不针对模型短板" },
   PostCompactReattach: { notDefenseReason: "压缩后重挂上下文，是压缩流程的组成步骤" },
+  CompactQuality: {
+    notDefenseReason: "压缩摘要的锚点覆盖率，观测事件（recommendParams 的样本也取它）",
+  },
   CompactionSkipped: { notDefenseReason: "熔断挡掉的压缩次数，compact_circuit 省下的成本口径" },
   // ─── 防线事件 ───
   CompactionCircuitBreaker: { defenseId: "compact_circuit" },

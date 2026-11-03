@@ -94,6 +94,14 @@ updates:
       # 让 Dependabot 提 PR 只会制造需要手工关掉的噪音。要升就手工连带 overrides 一起改。
       - dependency-name: "react-reconciler"
       - dependency-name: "scheduler"
+      # 2026-11-02 PR #508：SDK 1.0 换到新 API 版本 2026-10-21，请求参数里去掉了 temperature，
+      # 而 packages/eval-framework/core/judge.ts 靠 temperature=0 保证判分确定性。
+      # 迁移要单独评估（含 judge 重新校准），不随常规升级混进来。
+      - dependency-name: "@anthropic-ai/sdk"
+        update-types: ["version-update:semver-major"]
+      # 同一 PR：TS 7 新增测试类型错误，且 tsc-baseline 必须人工 --init 重建，单独开 PR 迁移。
+      - dependency-name: "typescript"
+        update-types: ["version-update:semver-major"]
 
   # ─── workspace 子包：packages/eval-framework ───
   #
@@ -132,6 +140,12 @@ updates:
       rest:
         patterns:
           - "*"
+    ignore:
+      # 理由同主包那两条 ignore（judge.ts 依赖 temperature；TS 7 基线要人工重建）
+      - dependency-name: "@anthropic-ai/sdk"
+        update-types: ["version-update:semver-major"]
+      - dependency-name: "typescript"
+        update-types: ["version-update:semver-major"]
 
   # ─── GitHub Actions ───
   #

@@ -2,7 +2,7 @@
  * 插件 Skills 加载（P0-4：补齐缺失的 loadPluginSkills）
  *
  * 背景（缺口）：manifest.ts 把插件 skills/ 目录解析进了 LoadedPlugin.skillsPaths，
- * command/plugin.ts 也显示"Skill(N 目录)"，但**没有任何 loader 从 skillsPaths 加载 skill**。
+ * command/commands/plugin/plugin.ts 也显示"Skill(N 目录)"，但**没有任何 loader 从 skillsPaths 加载 skill**。
  * 插件系统有 loadPluginCommands / loadPluginAgents / loadPluginHooks / loadPluginMcp，
  * 唯独缺 loadPluginSkills——§18.10 插件带的 skills 加载不进来。
  *
