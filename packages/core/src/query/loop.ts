@@ -211,7 +211,9 @@ import {
   dequeuePendingNotifications,
   evictTerminalTasks,
   hasPendingNotifications,
-  hasRunningBackgroundTasks,
+  hasAwaitedBackgroundTasks,
+  beginMainLoopTurn,
+  endMainLoopTurn,
   markMainTurnCompleted,
   markNotificationsDelivered,
   isTerminalStatus,
@@ -1032,6 +1034,18 @@ export function checkPreRequestBudgetStop(
 }
 
 export async function* queryLoop(loopConfig: QueryLoopConfig): AsyncGenerator<QueryLoopYield> {
+  // 唤醒保证（task/background-await.ts）：收尾时登记仍值得等的后台 shell，它们之后转入静默会
+  // 投一条通知把空闲主循环叫醒。包在最外层而不是 queryLoopBody 的 finally 里：那个 finally 之后
+  // 还有 maxTurns 强制总结轮，登记必须发生在真正空闲之后（事故 20261103-130950-00ef059c）。
+  beginMainLoopTurn();
+  try {
+    yield* queryLoopBody(loopConfig);
+  } finally {
+    endMainLoopTurn();
+  }
+}
+
+async function* queryLoopBody(loopConfig: QueryLoopConfig): AsyncGenerator<QueryLoopYield> {
   const log = getLogger();
   const { config, ctxMgr, toolRegistry, sessionState, hookSystem, thinking, deps } = loopConfig;
 
@@ -4545,7 +4559,7 @@ export async function* queryLoop(loopConfig: QueryLoopConfig): AsyncGenerator<Qu
         let runningBg = false;
         let pendingNotif = false;
         try {
-          runningBg = hasRunningBackgroundTasks();
+          runningBg = hasAwaitedBackgroundTasks();
           pendingNotif = hasPendingNotifications();
         } catch {
           /* 查询失败按「无」处理：只影响 L2 是否触发，不影响收尾 */
@@ -4781,6 +4795,9 @@ export async function* queryLoop(loopConfig: QueryLoopConfig): AsyncGenerator<Qu
             // 实测 15 次有 EndTurnShape 的续跑里 6 次触发时 running_background_tasks=true，
             // 模型的反应是把「等 CI / 等构建」标成 blocked——闸门在逼它对清单撒谎。
             // 后台任务完成时通知会把循环叫醒，那时闸门还会再判一次，所以这里漏拦的代价有界。
+            // ⚠️ 这个「会被叫醒」只对**值得等**的任务成立：runningBg 已排除静默的后台 shell
+            // （常驻服务不会退出，也就不会有完成通知）；收尾时仍值得等的 shell 之后转入静默，
+            // 由 background-await 的唤醒保证补一条通知（事故 20261103-130950-00ef059c）。
             // 写法同下方「只剩 blocked」分支：中性说明 + 按清单签名去重，不消耗续命预算。
             const sig = unfinishedSignature(todoState.todos);
             if (budget.bgWaitSignature !== sig) {
@@ -5730,7 +5747,7 @@ export async function* queryLoop(loopConfig: QueryLoopConfig): AsyncGenerator<Qu
           // 等后台任务的轮次不计入 L2（stall-escalation.ts 判据边界）。查询失败按「无」：退回旧判据，不会多停
           let backgroundRunning = false;
           try {
-            backgroundRunning = hasRunningBackgroundTasks();
+            backgroundRunning = hasAwaitedBackgroundTasks();
           } catch {
             /* 同上 */
           }

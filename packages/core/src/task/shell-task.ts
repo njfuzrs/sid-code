@@ -10,6 +10,14 @@ import { generateTaskId, type LocalShellTaskState, isTerminalStatus } from "./ty
 import { registerTask, updateTask, getTask } from "./registry.ts";
 import { initTaskOutput, getTaskOutputTail, getTaskOutputSize } from "./disk-output.ts";
 import { enqueueTaskNotification } from "./notification.ts";
+import {
+  trackShellActivity,
+  recordShellOutputSize,
+  forgetShellActivity,
+  takeQuiescentWake,
+  shellSilentForMs,
+  describeQuiescentWake,
+} from "./background-await.ts";
 
 /** 获取平台 shell 配置 */
 function getPlatformShell(): { shell: string; args: string[] } {
@@ -382,16 +390,32 @@ export function stepStallCheck(
 
 function startStallWatchdog(taskId: string): void {
   let state: StallState = { lastSize: 0, lastGrowth: Date.now() };
+  // 「值得等」口径的输出活动跟踪（background-await.ts）：与停滞检测共用这一个 5s tick 与同一个字节数
+  trackShellActivity(taskId);
 
   const interval = setInterval(async () => {
     const task = getTask(taskId);
     if (!task || isTerminalStatus(task.status)) {
       clearInterval(interval);
+      forgetShellActivity(taskId);
       return;
     }
 
     try {
       const size = (await getTaskOutputSize(taskId)) ?? 0;
+      recordShellOutputSize(taskId, size);
+      // 唤醒保证：主循环因「有后台任务在跑」放行收尾后，本任务若转入静默（常驻服务 / 挂住），
+      // 它不会再有退出通知——这里补一条，把空闲主循环叫醒重判（事故 20261103-130950-00ef059c）。
+      if (takeQuiescentWake(taskId)) {
+        const display = (task as LocalShellTaskState).command ?? task.description;
+        enqueueTaskNotification({
+          taskId,
+          toolUseId: task.toolUseId,
+          outputFile: task.outputFile,
+          status: "running",
+          summary: describeQuiescentWake(display, shellSilentForMs(taskId)),
+        });
+      }
       // 只有可能报警时才读尾部，避免每 5s 一次无谓 IO
       const mayStall =
         size <= state.lastSize && Date.now() - state.lastGrowth >= STALL_THRESHOLD_MS;
