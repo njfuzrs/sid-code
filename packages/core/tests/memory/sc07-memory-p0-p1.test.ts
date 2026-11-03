@@ -87,13 +87,17 @@ describe("缺陷 1：后台记忆代理 bash 只读判定逐命令校验", () =>
   for (const c of deny) {
     test(`拒绝: ${JSON.stringify(c)}`, () => expect(isReadonlyBash({ command: c })).toBe(false));
   }
-  test("三个代理都走同一判定（提取 / dream 复用提取 / 会话笔记）", () => {
+  test("记忆提取 / dream 走只读 bash 判定；会话笔记代理一律不给 bash", () => {
     const ex = createExtractPermissions(tmp);
     const sm = createSessionMemoryPermissions(join(tmp, "s.md"));
     expect(behaviorOf(ex("bash", { command: "cat x | sh" }))).toBe("deny");
-    expect(behaviorOf(sm("bash", { command: "cat x | sh" }))).toBe("deny");
     expect(behaviorOf(ex("bash", { command: "ls" }))).toBe("allow");
-    expect(behaviorOf(sm("bash", { command: "ls" }))).toBe("allow");
+    // C2：会话笔记代理的输入就是对话本身（提示词里已原样给出当前文件内容），
+    // 没有任何需要命令核实的场景 —— 连只读命令也一律拒，让它直接走 edit。
+    // 实测会话 20261103-114056-3b4f9ca7 里模型先试了一条命令被拒，白跑一轮。
+    expect(behaviorOf(sm("bash", { command: "ls" }))).toBe("deny");
+    expect(behaviorOf(sm("bash", { command: "cat x | sh" }))).toBe("deny");
+    expect(behaviorOf(sm("bash", { command: "cat a | grep b" }))).toBe("deny");
   });
 });
 

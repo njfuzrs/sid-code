@@ -36,6 +36,7 @@ import { ATTR } from "../telemetry/types.ts";
 import { maskedErrorSummary, sanitizedToolName } from "../telemetry/content-tracing.ts";
 import { FileReadTracker } from "../tool/file-read-tracker.ts";
 import { createStatefulTools } from "../tool/stateful-tools.ts";
+import { summarizeToolInput } from "../tool/input-summary.ts";
 
 /** 工具权限控制函数 */
 export type CanUseToolFn = (
@@ -169,8 +170,31 @@ export function buildToolDefinitions(registry: ToolRegistry): ToolDefinition[] {
   return registry.definitions();
 }
 
-/** fork 单次请求的输出上限（session-memory / 记忆提取都是短输出任务） */
-const FORK_MAX_TOKENS = 2048;
+/**
+ * fork 单次请求的输出上限。
+ *
+ * 默认 2048：多数 fork（`/btw`、分类、摘要）输出本来就短，上限给大了只是给失控留空间。
+ *
+ * 但「短输出任务」这个假设对 session-memory 不成立：它要用一次 edit 同时带上
+ * `old_string` + `new_string`，章节一长，入参 JSON 就撞上限。实测会话
+ * 20261103-114056-3b4f9ca7：会话笔记 edit 第 5 轮 output 恰好 2048，入参 JSON 被截断
+ * （`inputLength 775` / `Unterminated string`），**那一整轮 2048 token 全是白烧的**，
+ * 之后拆成两次小 edit 才写成。memory-extract 一次写多个记忆文件同理。
+ * 这是「更准换更省」：单次 fork 的输出预算上限变大，换掉的是截断后必须重来的整轮浪费。
+ *
+ * ⛔ 不要全局提到 8192：其他 fork 的输出本来就短，提高上限没有收益，失控时浪费更多。
+ * 新增 fork 任务时先问一句「它的工具入参里会不会带整段文件内容」，会才加进这张表。
+ */
+const FORK_MAX_TOKENS_DEFAULT = 2048;
+const FORK_MAX_TOKENS_BY_SOURCE: Readonly<Record<string, number>> = {
+  "session-memory-update": 8192,
+  "memory-extract": 8192,
+};
+
+/** 按 querySource 取本次 fork 的输出上限（未登记的任务用默认值） */
+export function forkMaxTokensFor(querySource: string): number {
+  return FORK_MAX_TOKENS_BY_SOURCE[querySource] ?? FORK_MAX_TOKENS_DEFAULT;
+}
 /** C2：同一 (工具, 目标文件) 入参连续被截断几次就放弃本次 fork */
 const MALFORMED_SAME_TARGET_LIMIT = 2;
 
@@ -200,10 +224,14 @@ function sniffFilePath(raw: string): string | undefined {
  * session-memory fork 这样循环 4 次（output_tokens 恰好 2048 ×3），直到 60s 墙钟 abort。
  * 明说「被截断 + 上限多少 + 怎么拆」，模型才有改正的信息。
  */
-function malformedToolResult(m: MalformedToolInput, stopReason: string | null): string {
+function malformedToolResult(
+  m: MalformedToolInput,
+  stopReason: string | null,
+  maxTokens: number,
+): string {
   const truncated = stopReason === "max_tokens" || stopReason === "length";
   const why = truncated
-    ? `你的输出达到了 max_tokens=${FORK_MAX_TOKENS} 上限，工具入参 JSON 被截断（已收到 ${m.inputLength} 字符）`
+    ? `你的输出达到了 max_tokens=${maxTokens} 上限，工具入参 JSON 被截断（已收到 ${m.inputLength} 字符）`
     : `工具入参 JSON 不完整，无法解析（已收到 ${m.inputLength} 字符）`;
   return `${why}，本次 ${m.toolName} 调用未执行。请把改动拆成多次小的 edit（每次只替换一小段），不要一次改写大段内容。`;
 }
@@ -394,6 +422,9 @@ export async function runForkedAgent(
     // S10：fork 的调用链身份，流（漏斗 RequestContext）与流外事件（PermissionDecision）共用
     // 同一个值，离线分析才能把一次 fork 的流和它的工具鉴权配上对。
     const forkAgentId = `fork:${options.querySource}`;
+    // C1：输出上限按任务类型取（大 edit 的 fork 给 8192，其余 2048）。
+    // 循环外取一次而不是每轮算：整个 fork 用同一个上限，截断提示里报的数才对得上。
+    const forkMaxTokens = forkMaxTokensFor(options.querySource);
     /** C2：(工具, 目标文件) → 连续入参截断次数 */
     const malformedStreak = new Map<string, number>();
     while (turns < maxTurns) {
@@ -412,7 +443,7 @@ export async function runForkedAgent(
           model: mainContext.model,
           system: mainContext.systemPrompt,
           messages: conversation,
-          maxTokens: FORK_MAX_TOKENS,
+          maxTokens: forkMaxTokens,
           tools: toolDefs,
           // H8：fork agent 执行窄范围任务（querySource 标注），无独立 effort 旋钮，默认关思考，
           // 与子代理收口口径一致（thinking 是受控旋钮，不放任沿用思考模型服务端默认 enabled）。
@@ -482,7 +513,7 @@ export async function runForkedAgent(
           results.push({
             type: "tool_result",
             tool_use_id: tu.id,
-            content: malformedToolResult(bad, stopReason),
+            content: malformedToolResult(bad, stopReason, forkMaxTokens),
             is_error: true,
           });
           if (n >= MALFORMED_SAME_TARGET_LIMIT) giveUpOnMalformed = true;
@@ -518,6 +549,14 @@ export async function runForkedAgent(
             ...(decision.behavior === "deny" && decision.pathMismatch
               ? { pathMismatch: decision.pathMismatch }
               : {}),
+            // C2-3：forked 路径不写 PreToolUse（不 fire 用户 hook），PermissionDecision
+            // 是它的工具调用唯一留痕。不补这一项，「被拒的是哪条 bash 命令 / 哪个 edit 路径」
+            // 在轨迹里查不到 —— 实测会话里只能从模型事后叙述里猜。
+            // 只进本地轨迹（events.ts 不把它放进 emit payload），口径见 tool/input-summary.ts。
+            ...(() => {
+              const s = summarizeToolInput(tu.input);
+              return s ? { inputSummary: s } : {};
+            })(),
           });
           results.push({
             type: "tool_result",
@@ -534,6 +573,12 @@ export async function runForkedAgent(
           context: "forked",
           reasonType: "other",
           agentId: forkAgentId,
+          // 与 deny 同口径：forked 的每次工具调用都要留下入参摘要，否则「fork 读了哪些
+          // 工作区外文件、改的是哪个文件」在轨迹里只剩一个工具名。
+          ...(() => {
+            const s = summarizeToolInput(tu.input);
+            return s ? { inputSummary: s } : {};
+          })(),
         });
         const tool = statefulMap.get(tu.name) ?? mainContext.toolRegistry.get(tu.name);
         // 缺陷 30：漏斗 1 · 工具在 forked 路径上补齐（与子代理同序：权限通过之后才记 call，
