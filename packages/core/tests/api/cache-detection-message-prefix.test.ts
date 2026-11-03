@@ -121,3 +121,23 @@ describe("序列化与字节侧 prefix_break 同源", () => {
     expect(src).not.toMatch(/function safeStringify\(/);
   });
 });
+
+describe("显著性阈值与字节侧同源", () => {
+  // 两套检测必须判「显著」判得一样。各自写一份 0.01 时，改了一边另一边不跟着变，
+  // 结果是同一请求「字节侧说显著、账单侧说不显著」，而这是无声分歧 —— 不会有任何报错。
+  const read = (p: string) => Bun.file(new URL(p, import.meta.url)).text();
+
+  test("字节侧不再本地定义字面量阈值，而是用共用常量", async () => {
+    const src = await read("../../src/trace/prefix-break-probe.ts");
+    expect(src).toContain("CHAR_WASTE_SIGNIFICANT");
+    // 判据是「本地不再出现字面量定义」，不是「不等于 0.01」—— 后者只拦得住有人写回 0.01，
+    // 写 0.02 就悄悄漂了。
+    expect(src).not.toMatch(/const CHAR_WASTE_SIGNIFICANT\s*=\s*[\d.]+/);
+  });
+
+  test("账单侧不再本地定义字面量阈值，而是用共用常量", async () => {
+    const src = await read("../../src/api/cache-detection.ts");
+    expect(src).toContain("CHAR_WASTE_SIGNIFICANT");
+    expect(src).not.toMatch(/const MESSAGE_WASTE_SIGNIFICANT\s*=\s*[\d.]+/);
+  });
+});
