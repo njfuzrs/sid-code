@@ -31,8 +31,10 @@ import type { SkillManager } from "./manager.ts";
 import { dirname } from "node:path";
 import { getLogger } from "../debug/logger.ts";
 import { scanSkillResources } from "./resources.ts";
+import type { BundledSkillTool } from "./bundled/tool.ts";
 import {
   authorizeSkill,
+  authorizeBundledSkill,
   resolveSkillAsk,
   registerSkillLifecycleHooks,
   normalizeSkillEffort,
@@ -75,6 +77,12 @@ export class SkillMetaTool implements Tool {
   private commandScopedRulesSink?: (rules: string[], trusted: boolean, origin: string) => void;
   /** P0-3：${SESSION_ID} 替换所需的逻辑会话 id（函数形态：resume 后 id 会变，快照会失真） */
   private sessionIdProvider?: () => string;
+  /**
+   * F5-Q5d：bundled skill 兜底分发表（键为小写 skill 名）。bundled 不进 SkillManager
+   * （manager.ts isNameDisabled 注释），此前各自注册成 `skill__<name>` 独立工具；
+   * 并入后 execute 先查 manager、查不到再查这里，执行完全委托 BundledSkillTool.execute。
+   */
+  private bundled = new Map<string, BundledSkillTool>();
 
   constructor(
     manager: SkillManager,
@@ -86,14 +94,30 @@ export class SkillMetaTool implements Tool {
     this.toolRegistry = toolRegistry;
   }
 
+  /**
+   * F5-Q5d：登记 bundled skill（cli.ts 调用，替代此前独立注册的 `skill__<name>` 工具）。
+   * 不再进 toolRegistry 后，app.ts 的 wire 循环够不到它们，checker / hookSystem 由本工具转发。
+   */
+  registerBundled(tool: BundledSkillTool): void {
+    this.bundled.set(tool.skillName().toLowerCase(), tool);
+    if (this.permissionChecker) tool.setPermissionChecker(this.permissionChecker);
+  }
+
   /** P0-2：注入 HookSystem（setter 回填，仿 app.ts wireToolHookSystem） */
   setHookSystem(hookSystem: HookSystem): void {
     this.hookSystem = hookSystem;
   }
 
-  /** P0-3：注入权限检查器（子代理 dontAsk 语义，由主会话回填） */
+  /** P0-3：注入权限检查器（子代理 dontAsk 语义，由主会话回填；同步转发给 bundled） */
   setPermissionChecker(checker: Checker): void {
     this.permissionChecker = checker;
+    for (const t of this.bundled.values()) t.setPermissionChecker(checker);
+  }
+
+  /** F5-Q5d：按名查 bundled（manager 同名优先，故只在 manager 查不到时用） */
+  private findBundled(name: string): BundledSkillTool | undefined {
+    if (this.manager.getSkill(name)) return undefined;
+    return this.bundled.get(name.toLowerCase());
   }
 
   /** M-1：自报需要权限检查器（契约见 tool/types.ts ToolCapabilityFields），wire 时与 setter 对账。 */
@@ -208,15 +232,25 @@ export class SkillMetaTool implements Tool {
   getListingEntries(): import("./budget.ts").SkillListingEntry[] {
     // P1-2/P3-2：只列可 listing 的 skill（排除被 gate 的条件激活 skill）。
     // 条件 skill 激活后由 SkillActivationCoordinator 经 reminder 增量注入，不进静态 system prompt。
-    return this.manager.getListableSkills().map((s) => ({
-      name: s.name,
-      description: s.description,
-      whenToUse: s.whenToUse,
-      // P1-1：只有编译内联（只活在二进制里）的 bundled 享有摘要特权。builtin 目录型 skill
-      // 在磁盘上有完整 SKILL.md，降级后模型可以自己 Read —— 豁免理由对它不成立，
-      // 此前 `|| s.isBuiltin` 让 8 个 builtin 也免于截断，特权面翻倍。
-      isBundled: s.loadedFrom === "bundled",
-    }));
+    const entries: import("./budget.ts").SkillListingEntry[] = this.manager
+      .getListableSkills()
+      .map((s) => ({
+        name: s.name,
+        description: s.description,
+        whenToUse: s.whenToUse,
+        // P1-1：只有编译内联（只活在二进制里）的 bundled 享有摘要特权。builtin 目录型 skill
+        // 在磁盘上有完整 SKILL.md，降级后模型可以自己 Read —— 豁免理由对它不成立，
+        // 此前 `|| s.isBuiltin` 让 8 个 builtin 也免于截断，特权面翻倍。
+        isBundled: s.loadedFrom === "bundled",
+      }));
+    // F5-Q5d：bundled 第一次进 listing（独立工具时代只能从 tools[] 描述里知道它们存在）。
+    // 被禁用的不列（与 BundledSkillTool.isEnabled 同口径）；manager 同名的让位（execute 也是 manager 优先）。
+    for (const t of this.bundled.values()) {
+      if (!t.isEnabled()) continue;
+      if (this.manager.getSkill(t.skillName())) continue;
+      entries.push(t.listingEntry());
+    }
+    return entries;
   }
 
   async execute(input: unknown, signal?: AbortSignal): Promise<ToolResult> {
@@ -232,10 +266,15 @@ export class SkillMetaTool implements Tool {
     // 按名分发（不区分大小写）
     const skill = this.manager.getSkill(skillName);
     if (!skill) {
-      const available = this.manager
-        .getSkills()
-        .filter((s) => !s.disableModelInvocation)
-        .map((s) => s.name);
+      const bundled = this.findBundled(skillName);
+      if (bundled) return this.executeBundled(bundled, userInput, signal);
+      const available = [
+        ...this.manager
+          .getSkills()
+          .filter((s) => !s.disableModelInvocation)
+          .map((s) => s.name),
+        ...[...this.bundled.values()].filter((t) => t.isEnabled()).map((t) => t.skillName()),
+      ];
       return {
         output: `错误：未知 Skill "${skillName}"。可用: ${available.join(", ") || "（无）"}`,
         isError: true,
@@ -334,6 +373,34 @@ export class SkillMetaTool implements Tool {
         }
       }
     }
+  }
+
+  /**
+   * F5-Q5d：bundled skill 兜底分发。
+   * 权限只看统一规则（含兼容别名 `skill__<name>`），不跑敏感属性模型（理由见 authorizeBundledSkill）；
+   * 禁用名单由 BundledSkillTool.execute 自己查（与 slash 路径共享 skillManager.isNameDisabled）。
+   */
+  private async executeBundled(
+    tool: BundledSkillTool,
+    userInput: string,
+    signal?: AbortSignal,
+  ): Promise<ToolResult> {
+    const name = tool.skillName();
+    const auth = authorizeBundledSkill(name, { permissionRules: this.permissionRules });
+    if (auth.decision === "deny") {
+      getLogger().warn("SKILL", `bundled skill "${name}" 被权限拒绝`);
+      return { output: `权限拒绝：${auth.reason ?? name}`, isError: true };
+    }
+    if (auth.decision === "ask") {
+      // resolveSkillAsk 只用到 name；bundled 没有 SkillDefinition，给最小形状
+      const allowed = await resolveSkillAsk({ name } as SkillDefinition, auth.reason ?? "", {
+        checker: this.permissionChecker,
+      });
+      if (!allowed) {
+        return { output: `权限未授予：Skill "${name}" 需确认但未获批准。`, isError: true };
+      }
+    }
+    return tool.execute({ input: userInput }, signal);
   }
 
   /** 激活模式：将 Skill 指令和资源目录作为工具结果返回（注入当前对话上下文） */

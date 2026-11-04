@@ -5,9 +5,9 @@
  * 注入（generateSkillListingAttachment 按 budget.ts 的预算截断）。
  *
  * 两类来源，都用鸭子类型识别，避免本模块反向依赖具体工具类：
- *   - SkillMetaTool.getListingEntries()  —— 磁盘/内置/插件/MCP skill 一次性汇总
- *     （P0-1 后 skill 只有这一个元工具，工具数不随 skill 增长）
- *   - BundledSkillTool.getListingEntry() —— 编译时内置 skill，仍是各自独立工具
+ *   - SkillMetaTool.getListingEntries()  —— 磁盘/内置/插件/MCP skill 一次性汇总，F5-Q5d 起
+ *     也含编译进二进制的 bundled skill（P0-1 后 skill 只有这一个元工具，工具数不随 skill 增长）
+ *   - getListingEntry() 单条来源 —— 目前没有工具实现，保留鸭子类型入口
  */
 
 import type { SkillListingEntry } from "./budget.ts";

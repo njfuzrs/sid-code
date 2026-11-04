@@ -62,7 +62,8 @@ describe("formatNotification — 结果截断阈值", () => {
       summary: "失败",
       error,
     });
-    expect(xml).toContain("<error>");
+    // untrusted 标记与 <result> 同口径：F3 之后 error 承载失败子代理的完整残卷
+    expect(xml).toContain('<error untrusted="true">');
     expect(xml).toContain("已截断");
   });
 

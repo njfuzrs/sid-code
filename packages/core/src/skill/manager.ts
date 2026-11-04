@@ -340,7 +340,8 @@ export class SkillManager {
 
   /**
    * 该名字是否在当前禁用名单里（不要求 manager 里有同名 skill）。
-   * B3：bundled skill 不进 manager，其模型工具 `skill__<name>` 据此与 slash 路径共享禁用态。
+   * B3：bundled skill 不进 manager，其模型调用路径（Skill 元工具兜底分发 → BundledSkillTool）
+   * 据此与 slash 路径共享禁用态。
    */
   isNameDisabled(name: string): boolean {
     return this.disabledNames.has(name.toLowerCase());

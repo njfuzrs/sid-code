@@ -114,7 +114,8 @@ describe("F3 失败残卷投递", () => {
 
     const notifs = dequeuePendingNotifications();
     expect(notifs).toHaveLength(1);
-    expect(notifs[0]!.content).toContain("<error>");
+    // untrusted 标记：残卷含任意工具结果（外部网页 / 仓库文件），与 <result> 同口径
+    expect(notifs[0]!.content).toContain('<error untrusted="true">');
     expect(notifs[0]!.content).toContain("<tool-evidence");
     expect(notifs[0]!.content).toContain("执行出错：LLM 错误（auth_suspect，3 次尝试）");
   });
@@ -125,9 +126,8 @@ describe("F3 失败残卷投递", () => {
 
     const content = dequeuePendingNotifications()[0]!.content;
     const summary = /<summary>([\s\S]*?)<\/summary>/.exec(content)?.[1] ?? "";
-    expect(summary).toBe(
-      'Agent "核查 git 历史" 执行失败: 执行出错：LLM 错误（auth_suspect，3 次尝试）',
-    );
+    // 「执行出错：」前缀被剥掉：summary 模板已经写了「执行失败」，不去重会「失败: 出错：」
+    expect(summary).toBe('Agent "核查 git 历史" 执行失败: LLM 错误（auth_suspect，3 次尝试）');
     // 摘要里不应出现残卷结构（那是 <error> 的职责）
     expect(summary).not.toContain("<partial-result>");
   });
@@ -140,7 +140,7 @@ describe("F3 失败残卷投递", () => {
     expect(content).toContain(
       '<summary>Agent "核查 git 历史" 执行失败: 子代理执行异常: ECONNRESET</summary>',
     );
-    expect(content).toContain("<error>子代理执行异常: ECONNRESET");
+    expect(content).toContain('<error untrusted="true">子代理执行异常: ECONNRESET');
   });
 
   test("超长残卷按 4000 字截断，并附 output-file 指针", async () => {

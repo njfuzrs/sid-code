@@ -119,8 +119,13 @@ function phrase(p: Phrase): Phrase {
  *
  * 不用 `\b`：它对中文这种非 ASCII 字符恒为真，`负载capacity已满` 会被当成命中。
  * 网关文案中英混排是常态，这个边界必须把中文也当「在词内」。
+ *
+ * 2026-11-04（F2 复核）：从私有改为导出。`error-normalize.ts` 的额度标记
+ * （`QUOTA_TAG_MARKERS`）此前用裸 `includes`，`balance` 因此命中了
+ * `load_balancer_unavailable` —— 一次 LB 故障会被记成「账户额度耗尽」并写进
+ * 跨循环共享标记。边界规则只该有一份，所以复用这里，而不是在那边再抄一遍正则。
  */
-function matchesWord(lower: string, word: string): boolean {
+export function matchesWord(lower: string, word: string): boolean {
   const escaped = word.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
   return new RegExp(`(?:^|[^A-Za-z0-9])${escaped}(?:[^A-Za-z0-9]|$)`).test(lower);
 }
