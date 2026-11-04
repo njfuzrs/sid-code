@@ -29,12 +29,18 @@
  *    慢轮次往往正是被中断的那些，漏掉它们会让 p95 系统性偏低，
  *    "看起来变快了"其实是把慢样本筛掉了。这是本文件唯一不可妥协的一条。
  *
- * ## 口径诚实：含 HITL 等待时间
+ * ## 口径诚实：含 HITL 等待时间，且现在能精确扣减
  *
- * `elapsed_ms_since_prompt` 里包含权限确认弹窗的等待 —— 那段等的是人，不是 agent。
- * **刻意不剔除**：剔除需要再引两个事件（弹窗开/关）并保证配对，收益不足、失真风险
- * 更高。改为在发生过确认的轮次上打 `had_hitl: true`，让消费侧自己决定是否排除。
- * 这样口径诚实，且不引入任何配对。
+ * `elapsed_ms_since_prompt` 里包含权限确认弹窗 / fallback 询问等阻塞等人的时段 ——
+ * 那段等的是人，不是 agent。**刻意不从 `elapsed_ms_since_prompt` 里剔除**（端到端口径
+ * 就是"用户回车 → 最终答复"的墙钟，剔除反而失真），而是同时落：
+ *   - `had_hitl: true` —— 让消费侧能**整轮剔除**含人等待的样本；
+ *   - `hitl_wait_ms` —— 让消费侧能**精确扣减**那一段，不必整轮丢弃。
+ *
+ * 两者都从 `human-input-gate` 这一个登记点派生（`readHitlSegmentCount()` /
+ * `humanInputWaitElapsedMs()` 的轮首快照与轮末差值）。**不再有第二个计数来源**：
+ * 此前 `had_hitl` 由 tool-executor 在权限弹窗前手写 `recordHitlPrompt()` 登记，
+ * 只覆盖权限弹窗，fallback 询问与 MCP elicitation 都漏（本方案 F4 的实际触发形态）。
  */
 
 /**
@@ -50,45 +56,11 @@
  */
 
 import type { DoneIncompleteReason, LoopState, QueryDeps } from "./types.ts";
-import type { SessionState } from "../session/state.ts";
+import { humanInputWaitElapsedMs, readHitlSegmentCount } from "./human-input-gate.ts";
 import { recordTurnsHistogram } from "../telemetry/metrics/latency-histograms.ts";
 
 /**
- * HITL（需用户确认的权限弹窗）**累计**次数在 SessionState 上的键。
- *
- * 为什么是累计计数而不是布尔标志：「本轮有没有 HITL」必须由**前后差值**判定。
- * 布尔标志一旦被某轮置真，后续每轮都会被误标成"有 HITL"（同 `LoopState` 上那些
- * 一次性标志位踩过的坑）。计数器 + 轮首快照 + 轮末比较，才能如实回答"本轮有没有"。
- *
- * 挂 SessionState 而非 LoopState：LoopState 每条用户消息重建，而权限确认发生在
- * tool-executor 里、跨用户消息累计，放 LoopState 拿不到。
- */
-export const HITL_PROMPT_COUNT_KEY = "hitlPromptCount";
-
-/** 递增 HITL 计数（tool-executor 在确实弹过窗的路径上调用）。失败静默。 */
-export function recordHitlPrompt(sessionState: SessionState | undefined): void {
-  if (!sessionState) return;
-  try {
-    const prev = sessionState.get(HITL_PROMPT_COUNT_KEY);
-    sessionState.set(HITL_PROMPT_COUNT_KEY, (typeof prev === "number" ? prev : 0) + 1);
-  } catch {
-    /* 观测计数失败绝不影响权限流程 */
-  }
-}
-
-/** 读当前累计 HITL 次数（读不到按 0）。 */
-export function readHitlPromptCount(sessionState: SessionState | undefined): number {
-  if (!sessionState) return 0;
-  try {
-    const v = sessionState.get(HITL_PROMPT_COUNT_KEY);
-    return typeof v === "number" ? v : 0;
-  } catch {
-    return 0;
-  }
-}
-
-/**
- * 设定端到端基准并快照 HITL 计数。
+ * 设定端到端基准，并快照 HITL 的「区段数」与「累计等待毫秒」。
  *
  * **在 queryLoop 入口调用一次**（不是 while 循环里每次迭代）—— 见文件头「一轮的定义」：
  * 基准点是"用户回车那一刻"，而 while 循环的每次迭代只是这条消息内的一次 API 往返。
@@ -97,10 +69,19 @@ export function readHitlPromptCount(sessionState: SessionState | undefined): num
  * queryLoop 调用时重建。这正好满足"第二轮不含第一轮耗时"的要求 —— 但**必须有测试
  * 锁住它**：TTFT 当年就是因为基准设在重试循环之外而虚高数十秒，形态完全一样，
  * 靠"结构上应该没问题"是拦不住回归的。
+ *
+ * **为什么两个基准都从 `human-input-gate` 取**：它是全仓唯一「正在等人」的登记点。
+ * 此前的 `had_hitl` 由 tool-executor 在权限弹窗前手写 `recordHitlPrompt()` 登记到
+ * SessionState，那条路只覆盖权限弹窗 —— fallback 询问（app.ts）与 MCP elicitation
+ * 都会让主循环阻塞等人，却既不计次也不计时，消费侧按 `had_hitl` 剔除样本时剔不掉。
+ * 现在次数（区段数）与时长（累计等待毫秒）同源同步，不再存在第二份口径。
  */
-export function beginTurn(state: LoopState, sessionState: SessionState | undefined): void {
+export function beginTurn(state: LoopState): void {
   state.turnStartedAtMs = Date.now();
-  state.hitlCountAtTurnStart = readHitlPromptCount(sessionState);
+  // 区段数只增不减，用轮首快照与轮末值的差回答「本轮有没有」。
+  // 不用布尔标志：一旦置真，后续每轮都会被误标（同 LoopState 上那些一次性标志位的坑）。
+  state.hitlSegmentAtTurnStart = readHitlSegmentCount();
+  state.humanInputWaitAtTurnStart = humanInputWaitElapsedMs();
   state.turnCompleteEmitted = false;
   state.toolCallsDispatched = 0;
 }
@@ -139,8 +120,17 @@ export interface TurnCompletePayload {
    * 基准缺失时不落该字段（而不是落 0）—— 0 会被读成"0 毫秒"。
    */
   elapsed_ms_since_prompt?: number;
-  /** 本轮是否发生过需用户确认的权限弹窗。消费侧据此决定是否排除含人等待的样本 */
+  /** 本轮是否发生过阻塞等人（权限确认 / fallback 询问 / MCP elicitation）。消费侧据此整轮剔除含人等待的样本 */
   had_hitl: boolean;
+  /**
+   * 本轮累计人工等待（ms），与 `had_hitl` 同源（`human-input-gate` 的累计值差值）。
+   *
+   * `had_hitl` 只能整轮剔除；`hitl_wait_ms` 让消费侧可以**精确扣减**那一段
+   * （`elapsed_ms_since_prompt - hitl_wait_ms`），不必丢掉整个样本 —— 尤其对
+   * 本方案那条 2.85h 的 fallback 等待，整轮剔除等于弃掉一条真实的慢样本。
+   * 有基准时总是落（0 = 本轮没等人，是数据不是缺数据）。
+   */
+  hitl_wait_ms?: number;
   /**
    * 本条用户消息内各 continue 理由的次数（键为 `ContinueReason.type`）。
    * 一次都没 continue（首轮即收尾）时不落字段。口径与 `LoopTransition` 逐条同源
@@ -209,7 +199,6 @@ export function normalizeTurnStopReason(stopReason: string | null | undefined): 
  */
 export function emitTurnComplete(
   state: LoopState,
-  sessionState: SessionState | undefined,
   deps: Pick<QueryDeps, "traceAppendEvent">,
   args: {
     sessionId: string;
@@ -222,8 +211,15 @@ export function emitTurnComplete(
   if (state.turnCompleteEmitted) return;
   state.turnCompleteEmitted = true;
   try {
-    const hitlNow = readHitlPromptCount(sessionState);
-    const hadHitl = hitlNow > (state.hitlCountAtTurnStart ?? hitlNow);
+    // 差值语义：轮首快照与轮末值。两个计数器都只增不减，所以差 = 本轮新增。
+    // 基准缺失（理论上不该发生，beginTurn 必调）时退化为"以当前值为基准"，
+    // 即该轮回答 false —— 宁可漏报一轮，也不要把历史累计算进本轮。
+    const hitlNow = readHitlSegmentCount();
+    const hadHitl = hitlNow > (state.hitlSegmentAtTurnStart ?? hitlNow);
+    // 精确扣减量：本轮新增的人工等待毫秒。与 had_hitl 同源（同一个闸门的累计值），
+    // 所以两个字段不会互相矛盾（有 hitl_wait_ms > 0 必有 had_hitl === true）。
+    const waitNow = humanInputWaitElapsedMs();
+    const hitlWaitMs = Math.max(0, waitNow - (state.humanInputWaitAtTurnStart ?? waitNow));
 
     // P1（turns Histogram）：**必须在下面 traceAppendEvent 的早退之前**记录。
     // metric 与 events.jsonl 是两条独立通道 —— 放到早退之后，任何没接 trace sink 的
@@ -248,6 +244,10 @@ export function emitTurnComplete(
       // 而缺失会被 digest 侧原样跳过（它只收 > 0 的值）。
       ...(typeof startedAt === "number" ? { elapsed_ms_since_prompt: Date.now() - startedAt } : {}),
       had_hitl: hadHitl,
+      // 有基准就落，0 是有意义的值（本轮没等人）而不是缺数据 ——
+      // 消费侧要能直接 `e2e - hitl_wait_ms`，缺字段会逼他们写 `?? 0` 还分不清
+      // "没落盘"和"没等待"。
+      ...(typeof state.humanInputWaitAtTurnStart === "number" ? { hitl_wait_ms: hitlWaitMs } : {}),
       ...(state.continueCounts && Object.keys(state.continueCounts).length > 0
         ? { continue_counts: { ...state.continueCounts } as Record<string, number> }
         : {}),
