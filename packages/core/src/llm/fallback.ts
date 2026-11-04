@@ -42,7 +42,8 @@ import {
   HOST_SLEEP_REOPEN_ABORT_REASON,
 } from "./errors.ts";
 // F1 ①：可中断迭代原语。与手抄版唯一的区别是「离开时一定 return() 源头」。
-import { raceIterate } from "./race-iterate.ts";
+// L1：createAbortRaceInterrupt 统一 add/remove signal listener（正常结束也要移除）。
+import { raceIterate, createAbortRaceInterrupt } from "./race-iterate.ts";
 import {
   classifyFamily,
   normalizeStreamEvent,
@@ -1180,13 +1181,15 @@ export class ModelFallback {
           // 当 SSE 半开（TCP 连接在、服务端不再发 event）时，`for await` 内的 reader.read()
           // 永不 settle，signal?.aborted 检查永远执行不到。通过 race abort，abort 触发时
           // 立即 reject，不等下一个 event。参考模板：openai.ts:1291-1343。
-          const abortPromise: Promise<never> | null = (() => {
-            if (!signal || signal.aborted) return null;
-            return new Promise<never>((_, reject) => {
-              const onAbort = () => reject(new RequestAbortedError("请求已中止（abort race）"));
-              signal.addEventListener("abort", onAbort, { once: true });
-            });
-          })();
+          //
+          // L1（2026-11-04）：用 createAbortRaceInterrupt 统一 add/remove —— `{ once: true }`
+          // 只在 abort 真的发生时移除 listener，正常完成的尝试（绝大多数）会永久留下一个，
+          // 而 AbortSignal 是 EventTarget（没有 MaxListeners 警告），长会话线性累积且完全静默。
+          // dispose 交给 raceIterate 的 onExit：消费方 throw / break 离开时也会执行。
+          const abortInterrupt = createAbortRaceInterrupt(
+            signal,
+            () => new RequestAbortedError("请求已中止（abort race）"),
+          );
 
           // F1 ①（2026-11-04）：改用 raceIterate。它与手抄版只差一件事，但很关键：
           // 消费方 throw（下面 `NormalizedErrorCarrier` 那条）或 break 离开时，
@@ -1195,7 +1198,8 @@ export class ModelFallback {
           // lifecycle 的 clearTimers / releaseSleepObserver / stream_completed 全不跑，
           // idle 定时器 240s 后照样开枪，而那时这次尝试早已被放弃（幽灵 TimeoutFired）。
           for await (const event of raceIterate(stream, {
-            interrupts: abortPromise ? [abortPromise] : [],
+            interrupts: abortInterrupt.interrupt ? [abortInterrupt.interrupt] : [],
+            onExit: abortInterrupt.dispose,
           })) {
             if (signal?.aborted) {
               throw new RequestAbortedError("请求已中止");

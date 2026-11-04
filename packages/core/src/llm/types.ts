@@ -653,6 +653,19 @@ export type StreamTelemetrySignal =
       totalEvents: number;
       elapsedMs: number;
       ttftMs?: number;
+      /**
+       * P3-1（2026-11-04）：本次流是「超时结束」而非真正常结束。
+       *
+       * 何时会出现：超时恰好在「事件已 yield 给消费方、消费方尚未请求下一个」
+       * 的窗口内触发，而消费方随后主动 break —— 此时生成器在 `yield` 处收到 return
+       * completion 直接走 finally，不经过循环体开头的 `if (timeoutError) throw`，
+       * 所以超时错误没有机会抛给消费方。`onTimeout` 已回调、`TimeoutFired` 已发出，
+       * 但流以「正常结束」呈现。
+       *
+       * 消费方据此把「超时结束」与「真正常结束」分开，不必靠时间窗倒推。
+       * 未触发超时时不落该字段（保持既有事件形状不变）。
+       */
+      timedOut?: boolean;
     };
 
 /** 累积的流式响应 */

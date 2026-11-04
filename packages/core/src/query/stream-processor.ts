@@ -19,7 +19,8 @@ import { normalizeToolInput } from "../llm/normalize-tool-input.ts";
 import { resetOnStreamRestart, recordStreamRestart } from "../llm/stream-restart.ts";
 import { classifyRetryBoundary } from "../llm/stream-lifecycle.ts";
 // F1 ①：可中断迭代原语（消费方 break/throw 时保证 return() 源头，让 finally 能跑）。
-import { raceIterate } from "../llm/race-iterate.ts";
+// L1：createAbortRaceInterrupt 统一 add/remove signal listener（正常结束也要移除）。
+import { raceIterate, createAbortRaceInterrupt } from "../llm/race-iterate.ts";
 import { detectUnansweredEndTurn } from "./unanswered-end-turn.ts";
 import { RequestAbortedError, LLMStreamError } from "../llm/errors.ts";
 import { resolveLoopTimeouts, resolveProviderStreamTimeouts } from "../config/network-profile.ts";
@@ -283,24 +284,24 @@ export async function processStream(
     // 通过 race abort（来自 getAbortController），abort 触发时立即 reject。
     const abortCtl = options?.getAbortController?.();
     const abortSignal = abortCtl?.signal;
-    const abortPromise: Promise<never> | null = (() => {
-      if (!abortSignal || abortSignal.aborted) return null;
-      return new Promise<never>((_, reject) => {
-        // 根治（2026-07）：把 signal.reason 一并挂到 RequestAbortedError 上。
-        // 这样即使这个"措辞通用的 abort-race 错误"抢先赢下 Promise.race（真正 hang 死的
-        // iterator.next() 永远不会 resolve），下游 query/loop.ts 仍能从 err.abortReason
-        // 结构性识别出这是"内部超时自愈中断"而非"用户 ESC 取消"，不再依赖错误消息文本。
-        const onAbort = () =>
-          reject(new RequestAbortedError("Stream aborted (abort race)", abortSignal.reason));
-        abortSignal.addEventListener("abort", onAbort, { once: true });
-      });
-    })();
+    // 根治（2026-07）：把 signal.reason 一并挂到 RequestAbortedError 上。
+    // 这样即使这个"措辞通用的 abort-race 错误"抢先赢下 Promise.race（真正 hang 死的
+    // iterator.next() 永远不会 resolve），下游 query/loop.ts 仍能从 err.abortReason
+    // 结构性识别出这是"内部超时自愈中断"而非"用户 ESC 取消"，不再依赖错误消息文本。
+    //
+    // L1（2026-11-04）：用 createAbortRaceInterrupt 统一 add/remove —— 主循环的流
+    // 正常完成时也必须移除 listener（EventTarget 没有 MaxListeners 警告，长会话静默累积）。
+    const abortInterrupt = createAbortRaceInterrupt(
+      abortSignal,
+      () => new RequestAbortedError("Stream aborted (abort race)", abortSignal?.reason),
+    );
 
     // F1 ①：改用 raceIterate（与手抄版同一 race 语义，外加「离开时一定 return() 源头」）。
     // 主循环这里是漏斗流的消费方：它 throw（超时 / 校验失败）时如果不 return()，
     // 漏斗与 provider 的 finally 全都不会跑，`BilledRequest` 与 stall 清理一起丢。
     for await (const event of raceIterate(stream, {
-      interrupts: abortPromise ? [abortPromise] : [],
+      interrupts: abortInterrupt.interrupt ? [abortInterrupt.interrupt] : [],
+      onExit: abortInterrupt.dispose,
     })) {
       lastActivityTime = Date.now();
       // 首个事件到达 → 后续静默改用（更严的）心跳阈值判定。
