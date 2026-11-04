@@ -120,7 +120,8 @@ export interface SystemPromptContext {
   /**
    * 缺口 E：Skill 摘要条目列表。接通此前的死代码 generateSkillListingAttachment——
    * 把"有哪些 skill、何时用"的摘要常驻 system prompt（约 1% 窗口），让模型即使在
-   * skill 工具被 defer 时仍能发现 skill 存在，真正调用时再 tool_search 调出 skill__* 工具。
+   * skill 工具被 defer 时仍能发现 skill 存在。F5-Q5d 起编译进二进制的 bundled skill
+   * 也经 `Skill` 元工具汇总进来（此前它们是独立 `skill__*` 工具，不在这份摘要里）。
    */
   skillEntries?: import("../skill/budget.ts").SkillListingEntry[];
 
@@ -1062,20 +1063,19 @@ function buildToolGuideSection(
 
   // 收集工具自带的使用指南。
   // 指南正文由工具自己提供（属于工具契约，双语化要逐个工具改），这里只本地化包装标题。
-  // 延迟工具的整段指南同样进延迟分区 —— 不做这条则泄漏面从"一行工具名"扩大到
-  // 近 800 字符的完整教程（实测 workflow 的 usageGuide 783 字符）。
   //
   // F5-Q5a（2026-11-04）：**已加载工具不再在这里渲染指南**。toolToDefinition 已把 usageGuide
   // 拼进 tools[].description（registry.ts），这里再渲染一份就是同一段文字发两遍（F3 首调实测
   // 13 段与描述 8-gram 重合 0.85–0.99，约 3.3K tokens/调用）。flash 每臂 5 次 A/B：召回
   // R2 +0.042、S2v +0.033，L3f 覆盖相同；子代理派发略少，opus 未验证（bench_fix 06a §6–§7）。
-  // 延迟工具的指南照旧进延迟分区：它们首轮不在 tools[] 里，这里是唯一能看到的地方。
-  const deferredGuides: string[] = [];
-  for (const tool of deferred) {
-    const rendered = renderToolGuide(tool, isEn, mark);
-    if (rendered) deferredGuides.push(rendered);
-  }
-  const deferredSection = renderDeferredSection(deferredList, deferredGuides, isEn);
+  //
+  // F5-Q5b（2026-11-04）：延迟工具的完整指南也不在这里渲染，延迟分区只留名单行
+  // （此前整段进延迟分区，防的是它泄漏到实时区；现在整段不在 system，这条约束自然满足）。
+  // 模型经 tool_search 激活后，下一轮 loop.ts 重调 activeDefinitions()，该工具经
+  // toolToDefinition 带着「description + 使用指南」进 tools[]（06b §8 实测 workflow 930 字符含指南）。
+  // 这里提前放的那份只服务「要不要激活」的决定，名单行的首句摘要够用；F3 首调实测 4 段约 571 tokens。
+  // MCP 段（buildMcpToolGuideSection）仍渲染延迟工具指南，不在本项范围（06b §7 候选 Q5-f）。
+  const deferredSection = renderDeferredSection(deferredList, [], isEn);
   const deferredPointer = renderDeferredPointer(deferred.length, isEn);
 
   // 2026-08-01：假设纪律那段常驻引导按 hypothesis_register **是否真的注册**决定去留。

@@ -19,7 +19,7 @@
  *    而端到端样本本就比 TTFT 少一个数量级，重复一次就能明显偏移分位数。
  */
 
-import { describe, test, expect, afterEach } from "bun:test";
+import { describe, test, expect, afterEach, beforeEach } from "bun:test";
 import { queryLoop } from "@sid-code/core/query/loop.ts";
 import type { QueryLoopConfig } from "@sid-code/core/query/loop.ts";
 import type { QueryDeps } from "@sid-code/core/query/types.ts";
@@ -31,6 +31,8 @@ import {
 } from "@sid-code/core/query/turn-complete.ts";
 // F4：HITL 的计数与耗时都从闸门派生，测试也用同一个入口模拟「有人在等」。
 import {
+  closeHitlScope,
+  openHitlScope,
   readHitlSegmentCount,
   withHumanInputWait,
   __resetHumanInputGate,
@@ -575,6 +577,10 @@ describe("P1-4 · digest 端到端分位数", () => {
 // ─── F4：模型调用耗时扣除人工等待 ───
 
 describe("F4 · api_duration 扣除人工等待", () => {
+  // 本 describe 里「没有等人时 hitl_wait_ms === 0」这条能否抓住「实现退化成直接取累计值」
+  // 这个变异，取决于此前的累计值是否已清零。加 beforeEach 后不依赖用例执行顺序。
+  beforeEach(() => __resetHumanInputGate());
+
   /**
    * 只关心 AfterModel 载荷：用 Proxy 兜底其他 hook 方法，不为一个断言搭整套 fake。
    * 返回值统一给 `{}`——loop 侧只做 `result.finalOutput?.isBlockingDecision()` 的可选链访问。
@@ -637,5 +643,39 @@ describe("F4 · api_duration 扣除人工等待", () => {
     const after = payloads.at(-1)!;
     expect(after.hitl_wait_ms).toBe(0);
     expect(after.api_duration_ms).toBe(after.api_duration_raw_ms);
+  });
+
+  test("【F4-2】别的 loop scope 的等待不计入本轮 hitl_wait_ms（跨 agent 污染回归锁）", async () => {
+    // 模拟：本轮工具执行期间，另一个 agent（后台子代理）在等用户，主循环自己没等人。
+    // 不带 scope 的实现会把子代理的 60ms 扣进本轮模型耗时 —— 极端情况扣成 0，
+    // 凭空造出「模型耗时 0ms」的假样本，方向与「更快」口径相反。
+    const { payloads, hookSystem } = captureAfterModel();
+    const { loopConfig, events } = setup({
+      responses: [toolUseResp(1), endTurnResp()],
+      depsOverrides: {
+        executeTools: async (content) => {
+          const otherScope = openHitlScope();
+          await withHumanInputWait(() => new Promise((r) => setTimeout(r, 60)), otherScope);
+          closeHitlScope(otherScope);
+          return {
+            results: content
+              .filter(
+                (b): b is Extract<ContentBlock, { type: "tool_use" }> => b.type === "tool_use",
+              )
+              .map((b) => ({ type: "tool_result" as const, tool_use_id: b.id, content: "ok" })),
+          };
+        },
+      },
+    });
+    (loopConfig as any).hookSystem = hookSystem;
+
+    await drain(loopConfig);
+
+    // 本轮自己一秒都没等：别人的等待不该被认领
+    const tc = turnCompletes(events)[0];
+    expect(tc.had_hitl).toBe(false);
+    expect(tc.hitl_wait_ms).toBe(0);
+    // 第二次 AfterModel（无工具执行的那次）同样不该被污染
+    expect(payloads.at(-1)!.hitl_wait_ms).toBe(0);
   });
 });

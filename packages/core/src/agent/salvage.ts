@@ -219,8 +219,8 @@ function describeCall(rec: ToolCallRecord): string {
  * XML **属性值**的最小转义。
  *
  * 只用于 `<evidence call="...">`：调用描述里含命令原文（`bash: grep -n "foo" ...`），
- * 引号会把属性提前闭合、`<` 会让解析器把后面的内容当标签。正文（findings / 工具结果）
- * **刻意不转义**——与既有 `<finding>` 段同口径，内容是给模型读的纯文本，转义反而降低可读性。
+ * 引号会把属性提前闭合、`<` 会让解析器把后面的内容当标签。正文不走这个函数
+ * （全量转义会让工具结果里的代码几乎不可读），正文只做 {@link escapeXmlContent} 的最小处理。
  */
 function escapeXmlAttr(s: string): string {
   return s
@@ -228,6 +228,21 @@ function escapeXmlAttr(s: string): string {
     .replace(/"/g, "&quot;")
     .replace(/</g, "&lt;")
     .replace(/>/g, "&gt;");
+}
+
+/**
+ * 工具结果**正文**的最小转义：只处理会被误认作段边界的闭合序列。
+ *
+ * 为什么需要它（F3 follow-up 实测）：工具结果可能来自 `read` 一个 XML 模板、`grep` 一段
+ * HTML、`bash` 打印本文件自身的源码——正文里出现 `</evidence>` 时会把 `<evidence>` 提前
+ * 闭合，其后的内容甩到段外，模型读到的段边界是错的。
+ *
+ * 为什么不做全量转义（`&` / `<` / `>`）：正文是给模型读的纯文本，全转义会让代码、diff、
+ * XML 片段几乎不可读，换来的是模型很难用上的严格性。与既有 `<finding>` 段同口径，
+ * 只补 `</evidence` / `</tool-evidence` 这一处真正会破坏结构的序列。
+ */
+function escapeXmlContent(s: string): string {
+  return s.replace(/<\/(tool-)?evidence/gi, "&lt;/$1evidence");
 }
 
 /** 单条工具调用在 `.output` 摘要里的关键入参（首参，与 describeCall 同源）。 */
@@ -469,19 +484,6 @@ export function buildSalvageOutput(snap: SalvageSnapshot, opts: BuildSalvageOpti
     parts.push("  </findings>");
   }
 
-  // ③-b 工具证据（F3）：只读核查型子代理的成果全在工具结果里，`findings` 会是空的。
-  // 排在 findings **之后**：有文本结论时它是补充，没有文本时它就是全部成果。
-  // 只列成功结果（收集端已过滤），失败的调用对主代理是"这条没成"，不是成果。
-  if (snap.toolEvidence.length > 0) {
-    parts.push(`  <tool-evidence count="${snap.toolEvidence.length}">`);
-    for (const e of snap.toolEvidence) {
-      parts.push(`    <evidence call="${escapeXmlAttr(e.call)}">`);
-      parts.push(e.content);
-      parts.push("    </evidence>");
-    }
-    parts.push("  </tool-evidence>");
-  }
-
   // ④ 未完成部分：最后停在哪一步。这是"它连编辑阶段都没进去"这类判断的唯一依据。
   parts.push("  <incomplete>");
   parts.push(
@@ -495,6 +497,25 @@ export function buildSalvageOutput(snap: SalvageSnapshot, opts: BuildSalvageOpti
   parts.push("  <next-step>");
   for (const line of suggestNextSteps(snap, opts)) parts.push(`    ${line}`);
   parts.push("  </next-step>");
+
+  // ③-b 工具证据（F3）：只读核查型子代理的成果全在工具结果里，`findings` 会是空的。
+  // 位置：排在 `<next-step>` **之后**，而不是方案 §4.3 写的「findings 之后」。
+  // 理由是通道预算（PR #574 review 实测）：通知的 `<error>` 通道上限 4000 字，6 条 × 800 字
+  // 的证据段共 4800 字；紧跟 findings 时会把 `<incomplete>` / `<next-step>` / `<output-file>`
+  // 整个挤出窗口——实测 5133 字的残卷截到 4000 后这三段全部不可见，其中 `<next-step>`
+  // 恰好含「认证失败→检查凭证」这类可执行指令，而「让模型知道下一步」正是本缺陷要修的东西。
+  // 排在后面时截断先丢证据尾部，关键指令必在前几百字内；完整证据仍在 `.output`
+  //（同一份残卷已由 failAgentTask 写入，通知的截断提示也指向它）。
+  // 只列成功结果（收集端已过滤），失败的调用对主代理是"这条没成"，不是成果。
+  if (snap.toolEvidence.length > 0) {
+    parts.push(`  <tool-evidence count="${snap.toolEvidence.length}">`);
+    for (const e of snap.toolEvidence) {
+      parts.push(`    <evidence call="${escapeXmlAttr(e.call)}">`);
+      parts.push(escapeXmlContent(e.content));
+      parts.push("    </evidence>");
+    }
+    parts.push("  </tool-evidence>");
+  }
 
   if (opts.outputFile) parts.push(`  <output-file>${opts.outputFile}</output-file>`);
   if (opts.parentSessionId)

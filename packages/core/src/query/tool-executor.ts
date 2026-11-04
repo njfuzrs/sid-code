@@ -1137,8 +1137,11 @@ export async function resolveToolPermission(
     // 用户弹窗），用它的 finally 闭合闸门会让闸门常开 —— 那会架空两个看门狗，比多记一个
     // 布尔危险得多。整体包裹的闭合点与 resolvePermission 返回严格配对，异常也安全。
     const { resolvePermission } = await import("../permission/async-decision.ts");
-    const { withHumanInputWait } = await import("./human-input-gate.ts");
-    const result = await withHumanInputWait(() =>
+    const { withHumanInputWait, readHitlScopeFromSession } = await import("./human-input-gate.ts");
+    // F4-2：显式传本轮的 HITL scope。省略会退回「唯一活跃 scope」推断，而有后台子代理
+    // 并发时推断必然失败 —— 权限弹窗（最高频的等人场景）就统计不到了。
+    const hitlScopeId = readHitlScopeFromSession(deps.sessionState);
+    const runPermissionRace = () =>
       resolvePermission(
         {
           toolName: block.name,
@@ -1234,8 +1237,8 @@ export async function resolveToolPermission(
           },
           gracePeriodMs: 200,
         },
-      ),
-    );
+      );
+    const result = await withHumanInputWait(runPermissionRace, hitlScopeId);
 
     recordHitlWaitHistogram(
       Date.now() - hitlStartedAt,

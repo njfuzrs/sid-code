@@ -75,13 +75,18 @@ import { recordTurnsHistogram } from "../telemetry/metrics/latency-histograms.ts
  * SessionState，那条路只覆盖权限弹窗 —— fallback 询问（app.ts）与 MCP elicitation
  * 都会让主循环阻塞等人，却既不计次也不计时，消费侧按 `had_hitl` 剔除样本时剔不掉。
  * 现在次数（区段数）与时长（累计等待毫秒）同源同步，不再存在第二份口径。
+ *
+ * **为什么两个基准都要带 `state.hitlScopeId`**：不带 scope 时读的是**进程级**累计，
+ * 同进程里并发的后台子代理 / forked agent 等人的时间也会被算进本轮（扣减时把别人的
+ * 等待扣掉，极端情况扣成 0，伪造出更快的样本）。带 scope 后只数归属本 loop 的等待；
+ * 无法归属的等待一律落在进程级，不进任何 scope（宁可漏计，不可多计）。
  */
 export function beginTurn(state: LoopState): void {
   state.turnStartedAtMs = Date.now();
   // 区段数只增不减，用轮首快照与轮末值的差回答「本轮有没有」。
   // 不用布尔标志：一旦置真，后续每轮都会被误标（同 LoopState 上那些一次性标志位的坑）。
-  state.hitlSegmentAtTurnStart = readHitlSegmentCount();
-  state.humanInputWaitAtTurnStart = humanInputWaitElapsedMs();
+  state.hitlSegmentAtTurnStart = readHitlSegmentCount(state.hitlScopeId);
+  state.humanInputWaitAtTurnStart = humanInputWaitElapsedMs(state.hitlScopeId);
   state.turnCompleteEmitted = false;
   state.toolCallsDispatched = 0;
 }
@@ -214,11 +219,14 @@ export function emitTurnComplete(
     // 差值语义：轮首快照与轮末值。两个计数器都只增不减，所以差 = 本轮新增。
     // 基准缺失（理论上不该发生，beginTurn 必调）时退化为"以当前值为基准"，
     // 即该轮回答 false —— 宁可漏报一轮，也不要把历史累计算进本轮。
-    const hitlNow = readHitlSegmentCount();
+    //
+    // 两个读数都带 `state.hitlScopeId`：只算归属本 loop 的等待。不带 scope 会把并发的
+    // 后台子代理等人的时间算进本轮 —— 那会让 `e2e - hitl_wait_ms` 扣过头，产出假"更快"。
+    const hitlNow = readHitlSegmentCount(state.hitlScopeId);
     const hadHitl = hitlNow > (state.hitlSegmentAtTurnStart ?? hitlNow);
-    // 精确扣减量：本轮新增的人工等待毫秒。与 had_hitl 同源（同一个闸门的累计值），
+    // 精确扣减量：本轮新增的人工等待毫秒。与 had_hitl 同源（同一个闸门、同一个 scope），
     // 所以两个字段不会互相矛盾（有 hitl_wait_ms > 0 必有 had_hitl === true）。
-    const waitNow = humanInputWaitElapsedMs();
+    const waitNow = humanInputWaitElapsedMs(state.hitlScopeId);
     const hitlWaitMs = Math.max(0, waitNow - (state.humanInputWaitAtTurnStart ?? waitNow));
 
     // P1（turns Histogram）：**必须在下面 traceAppendEvent 的早退之前**记录。

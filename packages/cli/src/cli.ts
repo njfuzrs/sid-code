@@ -2090,8 +2090,8 @@ export async function main(): Promise<void> {
       scanOptions,
     });
 
-    // Bundled Skill 模型调用路径（Gap 1）：把 fork 模式且未禁止模型调用的
-    // Bundled Skill 注册为工具，使 LLM 可自动调用（与磁盘 Skill 的 Skill 元工具对等）。
+    // Bundled Skill 模型调用路径（Gap 1）：fork 模式且未禁止模型调用的 Bundled Skill
+    // 登记到 Skill 元工具，使 LLM 可经 Skill{skill:<name>} 自动调用（与磁盘 Skill 同一入口）。
     // inline 模式语义是注入主对话、不返回结果，不适合做工具，仅保留斜杠命令。
     // 带强副作用的 skill（如 pr-workflow）已在各自定义里
     // 设 disableModelInvocation:true，仅 review(只读) 暴露给模型。
@@ -2105,7 +2105,10 @@ export async function main(): Promise<void> {
         const tool = new BundledSkillTool(cmd, providerRegistry, toolRegistry);
         // B3：与 slash 路径共享禁用名单（启动配置 + 运行时 /skills disable 都经 skillManager）
         tool.setDisabledQuery((name) => skillManager.isNameDisabled(name));
-        toolRegistry.register(tool);
+        // F5-Q5d：并入 Skill 元工具按名兜底分发，不再各自占一个 tools[] 定义
+        //（F3 首调 3 个 skill__* 定义约 398 tokens），bundled 也因此第一次进 skill listing。
+        // 旧权限写法 skill__<name> 由 executor.ts extractSkillRules 作兼容别名识别（bench_fix 06b）。
+        skillMetaTool.registerBundled(tool);
       }
     } catch (err: any) {
       getLogger().debug("SKILL", `Bundled Skill 工具注册失败: ${err?.message ?? String(err)}`);

@@ -213,22 +213,37 @@ export const ERROR_USER_MESSAGES: Record<string, ErrorUserMessage> = {
  * `code` 优先于 `type` 的口径、401/403 的额度窄口全都只有一份实现。
  *
  * 返回 undefined 表示"结构化信息不足"，调用方应回落 inferErrorCode，而不是当成"无错误"。
+ *
+ * ── 2026-11-04（F2 ⑤ 补）：401/403 时把 message 也交给分类器 ──
+ *
+ * 「同源」这条承诺原先是打折的：本函数刻意传 `message: ""`，而 401/403 的额度窄口
+ * 正需要读 message。于是「网关只在 message 里写额度、不给 code」这条路径上，
+ * 漏斗判 `quota_exhausted`、面板仍显示 `auth_failed` —— 同一条裂缝只是变窄，没有消掉。
+ *
+ * 口子精确限制在 401/403：窄口是分类器里唯一读 message 的判据，且它只跑
+ * `matchQuotaLexicon`（额度词条），不会把「文本里的巧合关键词推翻结构化状态码」
+ * 这条原则整体放开；其他状态码仍传空串，文本推断仍只有 `inferErrorCode` 一条路。
+ * 另外 401/403 有 status 时会提前从 `byStatus` 返回，**不会**走到分类器末尾的
+ * `matchErrorLexicon` 兜底，所以传 message 不会让本函数变成第二套文本分类器。
  */
-export function codeFromStructured(statusCode?: number, errorType?: string): string | undefined {
+export function codeFromStructured(
+  statusCode?: number,
+  errorType?: string,
+  message?: string,
+): string | undefined {
   // 两个字段都没有 = 没有结构化信息。显式短路而不是交给分类器：
   // 分类器在没有 message 的情况下只会返回 unrecognized，语义上是同一件事，
   // 但短路让「本函数不发明错误码」这条契约一眼可见。
   if (statusCode === undefined && !errorType) return undefined;
 
+  // 只有 401/403 需要 message（额度窄口）；其余一律空串，保持「只看结构化字段」。
+  const quotaProbe = statusCode === 401 || statusCode === 403 ? (message ?? "") : "";
+
   const verdict = classifyFamily({
     raw: undefined,
     status: statusCode,
     upstreamType: errorType || undefined,
-    // ⚠️ 刻意不传 message：本函数的契约是「只看结构化字段」。把 message 带进来
-    // 等于又开了一条文本推断的路，而那条路已经有了（inferErrorCode 兜底）。
-    // 代价是 401/403 的额度窄口（它要读 message）在这里不生效——provider 层现在会把
-    // 上游 code 传下来（F2 ①），走的是结构化判据，不依赖那个窄口。
-    message: "",
+    message: quotaProbe,
     origin: statusCode !== undefined ? "http" : "network",
     arrival: "stream_event",
     fingerprint: "",

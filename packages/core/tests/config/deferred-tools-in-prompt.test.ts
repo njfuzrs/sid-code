@@ -134,7 +134,7 @@ describe("L1 — toolList 分区与标注", () => {
 describe("L2 — customGuides 同步分区", () => {
   beforeEach(() => clearPromptCache());
 
-  test("延迟工具的整段使用指南进延迟分区，不留在实时区", () => {
+  test("延迟工具的整段使用指南不进 system（F5-Q5b），名单行仍在延迟分区", () => {
     const guide = "这是 workflow 的完整使用指南正文，用于验证整段挪走。";
     const prompt = buildSystemPrompt({
       tools: [
@@ -147,8 +147,9 @@ describe("L2 — customGuides 同步分区", () => {
     expect(liveRegion(prompt)).not.toContain("### read 工具使用指南");
     // 缺这条时泄漏面从"一行工具名"扩大到近 800 字符的完整教程
     expect(liveRegion(prompt)).not.toContain(guide);
-    expect(prompt).toContain(`### workflow 工具使用指南 ${DEFERRED_MARK}`);
-    expect(prompt).toContain(guide);
+    // F5-Q5b：整段指南不再进 system，激活后经 tools[].description 拿到（tool-guide-dedup.test.ts）
+    expect(prompt).not.toContain(guide);
+    expect(prompt).toContain(`- workflow: ${DEFERRED_MARK}`);
   });
 });
 

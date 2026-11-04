@@ -1618,7 +1618,11 @@ export class SubAgent {
                 // F3-3：纯工具轮也写 `.output` 摘要。spawn 路径的交互协议里没有
                 // 「本轮文本」这个概念（ChildProgressMessage 只报 lastActivity），
                 // 不在这里写的话 `.output` 会一直是空文件，task_output / 墓碑读不到东西。
-                // 与进程内路径同一格式（formatToolTurnLine），两步走的一致性是刻意的。
+                // 格式复用 `formatToolTurnLine`，但**粒度与进程内路径不同**：进程内是
+                // 「每轮一行、多工具用 `; ` 连接」（`onTurnEnd` 一次性拿到本轮全部工具），
+                // 这里是「每个工具一行」（协议逐条 `tool_use` 往返，父进程收不到「轮末」信号，
+                // 同一轮的多行会共享轮次号）。不聚合同轮多工具：要等 `progress` 边界才能判定
+                // 轮末，多一层缓冲状态，换来的只是少几行、轮次号不重复，不划算。
                 if (taskId) {
                   const line = formatToolTurnLine(spawnTurn, [
                     {

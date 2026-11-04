@@ -135,12 +135,15 @@ export const HITL_WAIT_METRIC = "sidcode.permission.hitl_wait";
 /**
  * 记录一次 HITL 确认耗时（缺陷 27，20260927 可观测性审计）。
  *
- * 「更安全 ↔ 更快」这个 trade-off 的计价器有两半：介入率（`had_hitl`，已有）与
- * **确认耗时**（此前 metric 通道零埋点 —— `recordHitlPrompt` 只计次不计时）。
+ * 「更安全 ↔ 更快」这个 trade-off 的计价器有两半：介入率（`had_hitl`）与
+ * **确认耗时**（此前 metric 通道零埋点 —— 旧的 `recordHitlPrompt` 只计次不计时，
+ * 该函数已在 F4 删除：HITL 计数改由 `human-input-gate` 统一派生）。
  * trace 层的 `PermissionDecision.duration_ms` 只落本地 events.jsonl，外部后端拿不到分布。
  *
- * 只在**确实弹过窗**的路径上调（主循环 ask 分支），所以分母天然是「弹窗次数」，
- * 与 `had_hitl` 同口径（子代理 / forked 物理上不能弹窗，见缺陷文档 §19.2）。
+ * 只在**确实弹过窗**的路径上调（`resolveToolPermission` 的 needsConfirmation 分支），
+ * 所以分母天然是「权限弹窗次数」。⚠️ 它**不再与 `had_hitl` 同分母**：F4 起 `had_hitl`
+ * 覆盖闸门里的全部阻塞等人（权限弹窗 + 批量路径 + fallback 询问 + elicitation +
+ * ask_user_question + plan 审批），本 metric 仍只覆盖权限弹窗。跨口径比较前先确认分母。
  *
  * @param waitMs  从弹窗到三路竞争出结果的墙钟（含批准 / 拒绝 / 超时 / abort）
  * @param outcome 受控值：allow / deny
