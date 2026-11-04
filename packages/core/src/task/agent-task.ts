@@ -164,11 +164,16 @@ export async function completeAgentTask(
  * 残卷的第一段是子代理自己的 finalText，直接截前 200 字当摘要会和"失败原因"毫无关系
  * （本会话实测：模型看到 `<partial-result>` 在截断点之后）。所以优先取
  * `<interrupted-because>` 那一行；取不到再退回首行。
+ *
+ * 取到的行形如「执行出错：LLM 错误（auth_suspect，3 次尝试）」（`salvage.describeReason`
+ * 的前缀），而 summary 模板已经写了「执行失败」，不剥前缀会读出
+ * 「执行失败: 执行出错：…」这种同一句话说两遍的摘要。
  */
 function summarizeFailure(error: string): string {
   const m = /<interrupted-because>([\s\S]*?)<\/interrupted-because>/.exec(error);
   const line = (m?.[1] ?? error).trim().split("\n")[0]?.trim() ?? "";
-  return line.length > 200 ? `${line.slice(0, 200)}…` : line;
+  const deduped = line.replace(/^执行出错[：:]\s*/, "").trim();
+  return deduped.length > 200 ? `${deduped.slice(0, 200)}…` : deduped;
 }
 
 /**
@@ -223,6 +228,8 @@ export async function failAgentTask(
 
   if (!notify) return;
 
+  // 一次取值：此前在模板里调了两次 `summarizeFailure`（正则跑两遍），且将来改一处容易忘另一处。
+  const failureReason = summarizeFailure(error);
   enqueueTaskNotification({
     taskId,
     toolUseId: task.toolUseId,
@@ -232,7 +239,7 @@ export async function failAgentTask(
     // （NOTIFICATION_ERROR_MAX_CHARS = 4000，超长时 truncateForNotification 附 output-file 指针）。
     // 此前这里只把 `error.slice(0, 200)` 塞进 summary、`error` 字段压根没传，
     // 于是那 4000 字的通道一直空着，模型只能看到断在半句的残卷开头。
-    summary: `Agent "${task.description}" 执行失败${summarizeFailure(error) ? `: ${summarizeFailure(error)}` : ""}`,
+    summary: `Agent "${task.description}" 执行失败${failureReason ? `: ${failureReason}` : ""}`,
     error,
     agentType: task.agentType, // P1-2：供 TUI 取该 agent 的身份色
   });
