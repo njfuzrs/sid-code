@@ -42,6 +42,9 @@ interface DefaultAppLayoutProps extends BottomRegionSharedProps {
   needsOnboarding?: boolean;
 }
 
+/** 全屏高度固定（height=rows），帧不会因瞬态行消失而整帧重画，占位只浪费空间（见 hooks/useHeldRows.ts） */
+const FULLSCREEN_HELD_ROWS = { enabled: false, epoch: 0 } as const;
+
 export const DefaultAppLayout: React.FC<DefaultAppLayoutProps> = ({
   listData,
   streamingText,
@@ -126,6 +129,7 @@ export const DefaultAppLayout: React.FC<DefaultAppLayoutProps> = ({
       {/* 底部固定区域：与 gemini-cli mainControlsRef 对齐（两套布局共享，见 BottomRegion） */}
       <BottomRegion
         {...bottom}
+        heldRows={FULLSCREEN_HELD_ROWS}
         leading={<CopyModeWarning enabled={copyModeEnabled} />}
         beforeStatus={
           // ST8：流式跟随已暂停提示（用户上滚阅读历史时）

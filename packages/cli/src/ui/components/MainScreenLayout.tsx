@@ -11,7 +11,7 @@
  * 底部区域与全屏布局共享 BottomRegion，本文件只保留消息区（Static 历史 + 流式思考/正文）。
  */
 
-import React, { memo } from "react";
+import React, { memo, useMemo } from "react";
 import { Box } from "../render-port/components.ts";
 import { Static } from "../render-port/components.ts";
 import { HistoryItemDisplay } from "./HistoryItemDisplay.tsx";
@@ -65,6 +65,11 @@ export const MainScreenLayout: React.FC<MainScreenLayoutProps> = memo(function M
   // 思考恒折叠为单行摘要（对标 cc）：ThinkingMessage 内部只渲染一行摘要 + 字符数 + 实时计时，
   // 高度稳定、全程零跳动。把全文传给它即可，由它自行折叠。
   const thinkingCollapsed = true;
+  // 瞬态行占位在历史新增一项时放掉（帧本来在变高，放掉不单独造成收缩，见 hooks/useHeldRows.ts）
+  const heldRows = useMemo(
+    () => ({ enabled: true, epoch: staticItems.length }),
+    [staticItems.length],
+  );
 
   return (
     // 根 Box 不设固定高度 / 不 overflow hidden：让内容顺序增长，Static 落 scrollback、动态区在末尾。
@@ -87,7 +92,7 @@ export const MainScreenLayout: React.FC<MainScreenLayoutProps> = memo(function M
           底部区域留白区的最前几块，与其后瞬态块、输入框统一由 gap 隔 1 行（见 BottomRegion）。 */}
       <BottomRegion
         {...bottom}
-        paddingBottom={1}
+        heldRows={heldRows}
         leading={
           <>
             {/* 空会话：欢迎屏（首条消息到达后即随 Static 滚走） */}

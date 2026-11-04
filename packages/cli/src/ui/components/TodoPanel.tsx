@@ -454,8 +454,10 @@ export const TodoPanel = React.memo(function TodoPanel({
   }
 
   // ── 拼装显示 ──
+  // 不带外部 margin：上下间距由 BottomRegion 留白区的 gap={1} 提供。
+  // 曾经 marginTop/marginBottom={1} 与 gap 叠加，面板上下各多 1 行空白（2026-11-04 截图）。
   return (
-    <Box flexDirection="column" paddingLeft={1} marginTop={1} marginBottom={1}>
+    <Box flexDirection="column" paddingLeft={1}>
       {todoSection}
       {hasTodos && hasTasks && <Box height={1} /> /* 分隔间距 */}
       {taskSection}
