@@ -195,28 +195,138 @@ function populateUploadHome(home: string): string {
 }
 
 /**
- * 等本目录的维护子进程跑完。两个用处：
- * - 它还持有锁时，下一轮的子进程会整轮跳过补传；
- * - 它在后台压 200MB 时会和下一轮 empty/large 的启动抢 CPU，把那两组的首帧差值抬高
- *   （实测 large 组 +250ms 假阳性，就是这个原因）。
+ * 宽限期：这一段时间内「结果文件和锁都不出现」就认为本目录这轮压根没起子进程。
  *
- * 完成信号用 `state/maintenance-result.json`：{@link resetUploadState} 每轮先把它删掉，
- * 子进程跑完在 finally 里重写（`maintenance/runner.ts`）。
+ * 没有它会死等满 90s——大数据目录只有第一轮会把三项任务跑完并写水位线，之后每一轮
+ * `dueMaintenanceTasks` 都返回空，`launchMaintenance` 直接返回 false，一个子进程都不会起。
+ * 子进程真起来时（第一轮）会在几秒内建好锁，宽限期不会被用满。
+ */
+const MAINT_CHILD_GRACE_MS = 15_000;
+
+/**
+ * 等本目录的后台维护子进程彻底退出。
+ *
+ * 它 detached + unref（`maintenance/launcher.ts`），TUI 进程退出后仍在跑：扫 300 个会话、
+ * 读 200MB 巨型会话、扫 1500 个轨迹目录。不等它就进下一次启动，子进程会和这次启动抢 CPU，
+ * 把首帧抬高——macOS runner 上实测 +200ms 级假阳性（本文档第一节那些 38.8~293.6ms 的跳变）。
+ *
+ * 完成信号用 `state/maintenance-result.json`：子进程跑完在 finally 里写它再释放锁
+ * （`maintenance/runner.ts`）；锁还在 = 进程还没真正退出，两个都等到才算「彻底结束」。
  *
  * ⚠️ 不要改回「固定 sleep 后判一次锁存在性」。那个写法在慢 runner 上有竞态：
  * 子进程（bun 启动 + 模块加载）还没建锁时这里立刻返回，下一轮启动于是与上一轮的
  * 200MB 压缩重叠。macOS CI 实测该形态 Δframe = 224.6ms / 351.2ms（阈值 150ms），
- * main 与 PR #561 各撞一次；同一份代码本机只有 28.6ms。锁文件只用来做
- * 「结果写完 → 进程真正退出」的收尾确认。
+ * main 与 PR #561 各撞一次；同一份代码本机只有 28.6ms。
+ *
+ * ⚠️ 另一头也要防：调用点可能落在一个「这轮没有子进程」的目录上（见
+ * {@link MAINT_CHILD_GRACE_MS}）。死等 90s 会把 beforeAll 拖垮，所以宽限期过后两者
+ * 都不存在就直接返回；一旦锁出现过，说明子进程确实在跑，就一路等到结果落盘。
  */
 async function waitMaintenanceIdle(home: string): Promise<void> {
   const result = join(home, "state", "maintenance-result.json");
   const lock = join(home, "state", "maintenance.lock");
-  const deadline = performance.now() + 90_000;
-  // 1. 等本轮的维护结果落盘（上一轮的已在 resetUploadState 里删掉）
-  while (!existsSync(result) && performance.now() < deadline) await Bun.sleep(200);
+  const t0 = performance.now();
+  const deadline = t0 + 90_000;
+  // 1. 等本轮的维护结果落盘（补传目录的那份在 resetUploadState 里每轮先删掉）
+  while (!existsSync(result)) {
+    const now = performance.now();
+    if (now >= deadline) break;
+    if (now - t0 > MAINT_CHILD_GRACE_MS && !existsSync(lock)) break;
+    await Bun.sleep(100);
+  }
   // 2. 写结果到进程退出之间还有几行（峰值内存、释放锁），等它彻底结束再进下一轮
   while (existsSync(lock) && performance.now() < deadline) await Bun.sleep(100);
+}
+
+/** `maintenance-result.json` 的摘要（子进程落盘，见 `maintenance/runner.ts` 的 result 组装） */
+interface MaintSummary {
+  startedAt: number;
+  finishedAt: number;
+  tasks: Array<{ name: string; ok: boolean; durationMs: number }>;
+}
+
+/** 读一目录的维护结果；还没有（子进程没跑完 / 这轮没起子进程）时返回 undefined */
+function readMaintSummary(home: string): MaintSummary | undefined {
+  const file = join(home, "state", "maintenance-result.json");
+  if (!existsSync(file)) return undefined;
+  try {
+    const r = JSON.parse(readFileSync(file, "utf-8")) as {
+      startedAt?: unknown;
+      finishedAt?: unknown;
+      tasks?: Record<string, { ok?: boolean; durationMs?: number }>;
+    };
+    if (typeof r.startedAt !== "number" || typeof r.finishedAt !== "number") return undefined;
+    return {
+      startedAt: r.startedAt,
+      finishedAt: r.finishedAt,
+      tasks: Object.entries(r.tasks ?? {}).map(([name, v]) => ({
+        name,
+        ok: v?.ok !== false,
+        durationMs: typeof v?.durationMs === "number" ? v.durationMs : -1,
+      })),
+    };
+  } catch {
+    return undefined;
+  }
+}
+
+/**
+ * 一轮的观测快照。
+ *
+ * 中位数会掩盖方差：macOS 上首帧差值在 38.8~293.6ms 之间跳，只看中位数没法判断是
+ * 「l1 被上一轮的子进程抬高」「l0 冷读慢」还是「每一轮都噪声很大」。这三个假设对应
+ * 三种不同的修法，所以时间线和原始值必须先落到日志里。
+ */
+interface RoundTrace {
+  round: number;
+  /** 本轮的墙钟窗口（相对 beforeAll 起点，ms），用来和 maintenance-result 的时段对时间 */
+  from: number;
+  to: number;
+  /** 三组各自的单次值（ms） */
+  frame: { empty: number; large: number; upload: number };
+  block: { empty: number; large: number; upload: number };
+  /** 本轮开始时大数据目录的维护子进程是否还在跑（true = 这一轮是在被抢 CPU 的环境里测的） */
+  largeBusyAtStart: boolean;
+  /** 本轮结束时是否还在跑（true = 它会一路压到下一轮，正是候选根因 A 的形态） */
+  largeBusyAtEnd: boolean;
+}
+
+/**
+ * 把每轮的原始值与维护子进程时间线打进日志。
+ *
+ * 现有断言只比较中位数，红的时候看不到单轮原始值，也看不到大数据目录那个维护子进程
+ * 什么时候跑的，于是「l1 被跨轮子进程抬高」「l0 冷读慢」「整轮都噪声大」三种根因
+ * 完全分不开，只能靠重跑去猜。这份输出至少能回答「子进程覆盖了哪几轮」。
+ */
+function logRoundTraces(
+  traces: RoundTrace[],
+  largeMaint: MaintSummary | undefined,
+  wallStart: number,
+): void {
+  if (traces.length === 0) return;
+  const cell = (v: number) => Math.round(v);
+  console.log("[gate] 每轮原始值（frame/block，ms）与大目录维护子进程是否在跑：");
+  for (const t of traces) {
+    console.log(
+      `[gate]   轮${t.round} [${rel(t.from)}..+${Math.round(t.to)}] ` +
+        `空 ${cell(t.frame.empty)}/${cell(t.block.empty)} ` +
+        `大 ${cell(t.frame.large)}/${cell(t.block.large)} ` +
+        `传 ${cell(t.frame.upload)}/${cell(t.block.upload)} | ` +
+        `大目录子进程 起=${t.largeBusyAtStart ? "跑" : "闲"} 止=${t.largeBusyAtEnd ? "跑" : "闲"}`,
+    );
+  }
+  if (largeMaint) {
+    const start = largeMaint.startedAt - wallStart;
+    const end = largeMaint.finishedAt - wallStart;
+    const tasks = largeMaint.tasks
+      .map((x) => `${x.name}=${x.durationMs}ms${x.ok ? "" : "(失败)"}`)
+      .join(" ");
+    console.log(
+      `[gate]   大目录维护子进程时段 [${rel(start)}..${rel(end)}] 共 ${largeMaint.finishedAt - largeMaint.startedAt}ms：${tasks}`,
+    );
+  } else {
+    console.log("[gate]   大目录维护子进程：没读到 maintenance-result.json");
+  }
 }
 
 /**
@@ -292,6 +402,12 @@ const maxBlock = (p: Profile) => p.metrics.max_loop_block_before_interactive ?? 
  */
 const spread = (ps: Profile[]) => ps.map((p) => Math.round(firstFrame(p))).join(" / ");
 
+/** 同上，取事件循环最大阻塞那一列 */
+const spreadBlock = (ps: Profile[]) => ps.map((p) => Math.round(maxBlock(p))).join(" / ");
+
+/** 相对 beforeAll 起点的时间戳（ms），日志里用「+1234」而不是绝对毫秒，方便和轮次窗口对时间 */
+const rel = (ms: number) => `${ms >= 0 ? "+" : ""}${Math.round(ms)}`;
+
 // Windows 没有 pty（Bun.Terminal 仅 POSIX）；CI 只跑 ubuntu / macos
 const describeGate = process.platform === "win32" ? describe.skip : describe;
 
@@ -306,7 +422,18 @@ describeGate("大数据启动门禁（首帧与事件循环阻塞不随数据量
   let uploadSessionDir: string;
   /** 三组的单次值：中位数掩盖方差，红的时候要能看出是「一次离群」还是「整组偏移」 */
   let emptyRuns: Profile[] = [];
+  let largeRuns: Profile[] = [];
   let uploadRuns: Profile[] = [];
+  /**
+   * 每轮的时间线与原始值。
+   *
+   * 门禁在 macOS 上红了 5 次、绿了若干次，中位数日志没法区分三种候选根因
+   * （l1 被上一轮的子进程抬高 / l0 冷读 / 整轮噪声）。这一份是它们的判决输入：
+   * 红的时候把「哪一轮、三组各是多少、大目录子进程当时在不在跑」直接打进日志。
+   */
+  let traces: RoundTrace[] = [];
+  /** 大数据目录的维护子进程结果（只有第一轮会起，几轮里读到同一份就说明它没再跑过） */
+  let largeMaint: MaintSummary | undefined;
   /**
    * 收到请求立刻回 502（与 10-22 真实失败同一状态码）。
    *
@@ -339,25 +466,64 @@ describeGate("大数据启动门禁（首帧与事件循环阻塞不随数据量
     });
     uploadSessionDir = populateUploadHome(uploadHome);
     // 先热一次：bun 的转译缓存会让第一次启动整体偏慢，不热的话差值方向会反过来掩盖退化
-    await startOnce(makeHome());
+    const warmHome = makeHome();
+    await startOnce(warmHome);
+    // 热启动也会拉起维护子进程（housekeeping 到期）。它 detached + unref，TUI 退出后仍在跑，
+    // 会和轮 0 抢 CPU —— 所以热启动这一份也要等干净，否则隔离只隔了一半。
+    await waitMaintenanceIdle(warmHome);
+
+    /** 墙钟基准：maintenance-result.json 的 startedAt/finishedAt 是 epoch ms，减它能和轮次窗口对上 */
+    const wallStart = Date.now();
     // 交替各跑 RUNS 次取中位数：单次 first_frame 实测有 ~250ms 的偶发离群（机器抖动），
     // 单次差值会把它当成退化或把退化抵消掉。
     const e: Profile[] = [];
     const l: Profile[] = [];
     const u: Profile[] = [];
     for (let i = 0; i < RUNS; i++) {
-      e.push(await startOnce(emptyHome));
-      l.push(await startOnce(largeHome));
+      const from = Date.now() - wallStart;
+      // 采样必须在等待之前：等完再采样必然是 false，就看不出这一轮原本被测在什么环境里
+      const largeBusyAtStart = existsSync(join(largeHome, "state", "maintenance.lock"));
+
+      // 隔离（本次修复的核心）：从轮 1 起，先把上一轮三个目录拉起的维护子进程全等干净再开始测。
+      //
+      // 子进程是 detached + unref 的（maintenance/launcher.ts），TUI 退出后继续扫 300 个会话、
+      // 读 200MB 巨型会话、扫 1500 个轨迹目录。原来只等 uploadHome（补传那一路），大数据目录
+      // 首轮拉起的那个无人等 —— 它跨轮压在 e1/l1 上，macOS runner 上把首帧差值抬到
+      // 211.9 / 293.6ms（阈值 150）。轮 0 之前没有任何启动（热启动那份已在上面等到），
+      // 三个目录都还没起过子进程，等它们是白等宽限期，所以从轮 1 开始。
+      if (i > 0) {
+        await waitMaintenanceIdle(emptyHome);
+        await waitMaintenanceIdle(largeHome);
+        await waitMaintenanceIdle(uploadHome);
+      }
+
+      const eOne = await startOnce(emptyHome);
+      const lOne = await startOnce(largeHome);
       resetUploadState(uploadHome, uploadSessionDir);
-      u.push(await startOnce(uploadHome));
-      // 最后一轮不等：防空转那条用例要在它跑的过程中观察缓存与请求
-      if (i < RUNS - 1) await waitMaintenanceIdle(uploadHome);
+      const uOne = await startOnce(uploadHome);
+      e.push(eOne);
+      l.push(lOne);
+      u.push(uOne);
+      traces.push({
+        round: i,
+        from,
+        to: Date.now() - wallStart,
+        frame: { empty: firstFrame(eOne), large: firstFrame(lOne), upload: firstFrame(uOne) },
+        block: { empty: maxBlock(eOne), large: maxBlock(lOne), upload: maxBlock(uOne) },
+        largeBusyAtStart,
+        largeBusyAtEnd: existsSync(join(largeHome, "state", "maintenance.lock")),
+      });
+      // 大数据目录只有轮 0 会起子进程（跑完就写水位线，之后 24h 内不再到期），
+      // 所以这里读到的一直是同一份；`?? largeMaint` 防的是「这一轮刚好还没写完」的中间态。
+      largeMaint = readMaintSummary(largeHome) ?? largeMaint;
     }
     emptyRuns = e;
+    largeRuns = l;
     uploadRuns = u;
     empty = medianProfile(e);
     large = medianProfile(l);
     upload = medianProfile(u);
+    logRoundTraces(traces, largeMaint, wallStart);
   }, 400_000);
 
   /**
@@ -390,21 +556,20 @@ describeGate("大数据启动门禁（首帧与事件循环阻塞不随数据量
   // 标定：修复后 +18 ~ +142ms（单次离群已被中位数吸收），C1 变异 +698ms，T1/T2 变异 +353ms。
   test("首帧：大数据比空目录慢不超过 150ms（中位数）", () => {
     const delta = firstFrame(large) - firstFrame(empty);
-    console.log(
-      `[gate] first_frame 空=${firstFrame(empty)} 大=${firstFrame(large)} | max_block 空=${maxBlock(empty)} 大=${maxBlock(large)}`,
-    );
-    expect(delta, `first_frame 空=${firstFrame(empty)}ms 大=${firstFrame(large)}ms`).toBeLessThan(
-      150,
-    );
+    expect(
+      delta,
+      `first_frame 空=[${spread(emptyRuns)}] 大=[${spread(largeRuns)}]（中位数差 ${delta}ms）`,
+    ).toBeLessThan(150);
   });
 
   // 阈值标定（2026-11-01 本机，3 轮中位数）：修复后 max_block 差值 −13 ~ +15ms；
   // 变异自证：C1 全量会话清理放回主线程 +570ms，T1/T2 放回 collector 构造 +300ms。
   test("事件循环最大阻塞：大数据比空目录多不超过 100ms", () => {
     const delta = maxBlock(large) - maxBlock(empty);
-    expect(delta, `max_loop_block 空=${maxBlock(empty)}ms 大=${maxBlock(large)}ms`).toBeLessThan(
-      100,
-    );
+    expect(
+      delta,
+      `max_loop_block 空=[${spreadBlock(emptyRuns)}] 大=[${spreadBlock(largeRuns)}]（中位数差 ${delta}ms）`,
+    ).toBeLessThan(100);
   });
 
   test("绝对兜底：首帧 < 3s", () => {
