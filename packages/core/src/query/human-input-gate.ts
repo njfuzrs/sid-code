@@ -26,10 +26,22 @@ let awaitingCount = 0;
 // 只在计数 0→1 / 1→0 的边沿记时，嵌套段不重复计入。
 let waitStartedAt: number | null = null;
 let waitTotalMs = 0;
+// 「HITL 区段数」：引用计数 0→1 的边沿 +1，即「真正开始阻塞等人」的次数（只增不减）。
+//
+// 存在的理由是**口径单一**：此前「本轮有没有 HITL」由 `tool-executor` 在弹窗前手写
+// `recordHitlPrompt()` 二次登记（挂 SessionState）。那条路只覆盖权限弹窗，fallback 询问
+//（app.ts）与 MCP elicitation 都会阻塞等人却不计数 —— 消费侧想按 `had_hitl` 剔除样本，
+// 恰好剔不掉本会话那条 2.85h 的 fallback 等待。现在改为所有等待都必须经过本闸门，
+// 计数与耗时都从这一个登记点派生，不再存在第二份口径。
+let hitlSegmentCount = 0;
 
 /** 进入"等待用户输入"区段（引用计数 +1）。 */
 export function beginHumanInputWait(): void {
-  if (awaitingCount === 0) waitStartedAt = Date.now();
+  if (awaitingCount === 0) {
+    waitStartedAt = Date.now();
+    // 只在 0→1 边沿计一次「区段」：嵌套 / 并发等待属于同一段，不重复计数。
+    hitlSegmentCount++;
+  }
   awaitingCount++;
 }
 
@@ -54,6 +66,18 @@ export function humanInputWaitElapsedMs(): number {
 /** 当前是否正在阻塞等待用户输入（任一区段未闭合即为 true）。 */
 export function isAwaitingHumanInput(): boolean {
   return awaitingCount > 0;
+}
+
+/**
+ * 进程内累计发生过的「HITL 区段」数（只增不减）。
+ *
+ * 口径是「阻塞等人的**次数**」，不是「弹窗次数」：任何走 `beginHumanInputWait()` 的
+ * 阻塞段都算（权限确认 / fallback 询问 / MCP elicitation / 抢跑权限门）。
+ * 消费方（`TurnComplete.had_hitl`）用轮首快照与轮末值的**差**回答「本轮有没有」——
+ * 不能用布尔标志：一旦置真，后续每轮都会被误标。
+ */
+export function readHitlSegmentCount(): number {
+  return hitlSegmentCount;
 }
 
 /**

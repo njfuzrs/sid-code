@@ -604,8 +604,18 @@ export interface AfterModelInput extends HookInput {
     // ── 整合新增：成本与耗时 ──
     /** 本次 LLM 调用成本（美元） */
     cost_usd?: number;
-    /** 本次 LLM 调用耗时（毫秒） */
+    /** 本次 LLM 调用耗时（毫秒）——**已扣除人工等待**（fallback 询问 / 权限确认） */
     api_duration_ms?: number;
+    /**
+     * 本次 LLM 调用耗时的原始墙钟（毫秒），**未扣除人工等待**。
+     *
+     * 与 `api_duration_ms` 同时落，两个口径都在：`api_duration_ms` 回答"模型花了多久"，
+     * 原始值回答"这段墙钟实际过了多久"。F4 之前只有后者，一条 2.85h 的 fallback 等待
+     * 被当成模型耗时进了端到端分布（p50 被拉到 44300.9s）。
+     */
+    api_duration_raw_ms?: number;
+    /** 本次调用期间阻塞等用户输入的毫秒数（0 = 没等人）。`api_duration_ms + hitl_wait_ms = api_duration_raw_ms` */
+    hitl_wait_ms?: number;
     /** 缓存节省金额（美元） */
     cache_savings_usd?: number;
     /** 首 token 延迟（毫秒），供 telemetry probe 消费 */

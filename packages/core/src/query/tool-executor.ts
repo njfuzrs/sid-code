@@ -39,7 +39,6 @@ import { resolveResultDisplayMode } from "../tool/result-display-mode.ts";
 import type { ToolUseContext } from "../tool/types.ts";
 import { partitionToolCalls, getMaxToolConcurrency } from "./tool-orchestration.ts";
 import { recordEditOutcome } from "./edit-failure-tracker.ts";
-import { recordHitlPrompt } from "./turn-complete.ts";
 import { recordHitlWaitHistogram } from "../telemetry/metrics/latency-histograms.ts";
 import { detectSensitiveData } from "../permission/sensitive.ts";
 import {
@@ -1121,111 +1120,121 @@ export async function resolveToolPermission(
     // 弹确认。这条直接服务北极星里「更安全 ↔ 更快」的 trade-off 判断：
     // 没有它，「HITL 是不是太吵」只能靠感觉争论，改不改默认值也没有依据。
     logPermissionPrompt(block.name);
-    // P1-4：同一时机给端到端口径记一笔 HITL。挂在这里而不是"用户点了按钮之后"——
-    // 端到端耗时要排除的是**等人的那段墙钟**，而墙钟从弹窗那一刻就开始走了，
-    // 无论用户最终批准、拒绝，还是超时/被 abort 掉。按"用户作答"记会漏掉后两类，
-    // 而超时那类恰好是等得最久的（默认 300s），漏掉等于专门漏掉最慢样本。
-    recordHitlPrompt(deps.sessionState);
     // 缺陷 27：确认耗时从弹窗这一刻起算（同上：超时 / abort 样本最慢，不能漏）
     const hitlStartedAt = Date.now();
 
     // 三路竞争：hook / classifier / 用户交互
+    //
+    // F4：整个竞争过程包进 human-input-gate 的等待区段。理由有两条：
+    //   1. **口径单一**：HITL 的计数与耗时统一从闸门派生，不再在这里手写 recordHitlPrompt
+    //      二次登记（那条路只覆盖权限弹窗，fallback 询问 / MCP elicitation 都漏）。
+    //   2. **批量路径也要有闸门**：app.ts 的抢跑路径已用 withHumanInputWait 包住
+    //      resolveToolPermission，而批量路径（executeTools）此前没有 —— 批量弹窗既不算
+    //      HITL 也不让看门狗剔除等待。包在这里，两条路自动同口径。
+    //
+    // 为什么不做成「只在 userDecision 回调内 begin/end」：三路竞争中 hook/classifier
+    // 胜出时，用户路径的 promise 永不 settle（async-decision 只做 resolve-once，不 cancel
+    // 用户弹窗），用它的 finally 闭合闸门会让闸门常开 —— 那会架空两个看门狗，比多记一个
+    // 布尔危险得多。整体包裹的闭合点与 resolvePermission 返回严格配对，异常也安全。
     const { resolvePermission } = await import("../permission/async-decision.ts");
-    const result = await resolvePermission(
-      {
-        toolName: block.name,
-        input: observableInput as Record<string, unknown>,
-        description: desc,
-      },
-      {
-        isInteractive: true,
-        isSubAgent: false,
-        hookDecision: deps.hookSystem
-          ? async () => {
-              try {
-                const hookResult = await deps.hookSystem.firePermissionRequestEvent?.(
-                  block.name,
-                  observableInput as Record<string, unknown>,
-                  deps.config.permissionMode,
-                );
-                if (!hookResult?.finalOutput) return null;
-                if (hookResult.finalOutput.isBlockingDecision()) {
-                  return { allowed: false, reason: hookResult.finalOutput.getEffectiveReason() };
-                }
-                // hook 未阻止 → 不干预，留给其他路径决策
-                return null;
-              } catch (e) {
-                // 静默-6：权限 hook 抛异常时返回 null = 降级到交互确认（非放行），行为安全。
-                // 补 warn 记录异常（不改变降级语义）。
-                log.warn(
-                  "PERMISSION",
-                  `权限 hook 执行异常，降级到交互确认: ${(e as Error)?.message}`,
-                );
-              }
-              return null;
-            }
-          : undefined,
-        // GAP-04：分类器并行预启动。对 Bash 工具，把 LLM 风险分类器作为独立竞争路径
-        // 与 hook / UI 弹窗并行跑，而非在 checker 里同步串行等待。
-        //   - 仅在 speculativeClassifier 开启时激活（默认关闭，保守用户行为不变）；
-        //   - 只对 bash 生效；只放行不拒绝；
-        //   - 安全护栏：checker 因**硬编码危险命令**要求确认时，禁止分类器放行（弹窗兜底不被绕过）；
-        //   - 决策已到达（hook/user 先赢）时，分类器结果被 resolve-once 语义自然丢弃。
-        classifierDecision:
-          block.name === "bash" &&
-          (deps.config as any).speculativeClassifier === true &&
-          !(
-            decision.decisionReason?.type === "dangerousCommand" &&
-            !String((decision.decisionReason as any).pattern ?? "").startsWith("LLM:")
-          )
+    const { withHumanInputWait } = await import("./human-input-gate.ts");
+    const result = await withHumanInputWait(() =>
+      resolvePermission(
+        {
+          toolName: block.name,
+          input: observableInput as Record<string, unknown>,
+          description: desc,
+        },
+        {
+          isInteractive: true,
+          isSubAgent: false,
+          hookDecision: deps.hookSystem
             ? async () => {
                 try {
-                  const classifier = deps.permissionChecker?.getBashClassifier?.();
-                  if (!classifier?.isAvailable()) return null;
-                  if (deps.config.permissionMode === "plan") return null;
-                  const cmd = (observableInput as any)?.command;
-                  if (typeof cmd !== "string" || !cmd) return null;
-                  const res = await classifier.classify({
-                    command: cmd,
-                    cwd: process.cwd(),
-                    description: desc,
-                    signal: deps.getAbortSignal(),
-                  });
-                  if (!res.classifierUnavailable && res.safe) {
-                    log.info("PERMISSION", `分类器并行放行 bash（${res.reason}），跳过弹窗`);
-                    return { allowed: true, reason: `分类器判定安全: ${res.reason}` };
+                  const hookResult = await deps.hookSystem.firePermissionRequestEvent?.(
+                    block.name,
+                    observableInput as Record<string, unknown>,
+                    deps.config.permissionMode,
+                  );
+                  if (!hookResult?.finalOutput) return null;
+                  if (hookResult.finalOutput.isBlockingDecision()) {
+                    return { allowed: false, reason: hookResult.finalOutput.getEffectiveReason() };
                   }
+                  // hook 未阻止 → 不干预，留给其他路径决策
+                  return null;
                 } catch (e) {
+                  // 静默-6：权限 hook 抛异常时返回 null = 降级到交互确认（非放行），行为安全。
+                  // 补 warn 记录异常（不改变降级语义）。
                   log.warn(
                     "PERMISSION",
-                    `分类器并行路径异常（忽略，交回竞争）: ${(e as Error)?.message}`,
+                    `权限 hook 执行异常，降级到交互确认: ${(e as Error)?.message}`,
                   );
                 }
                 return null;
               }
             : undefined,
-        userDecision: (req, resolve) => {
-          // H7：透传本轮 signal，弹窗期间被 abort 时回调侧解除弹窗（按拒绝闭合），杜绝孤儿弹窗。
-          void deps
-            .requestUserConfirmation(
-              desc,
-              permReq,
-              block.name,
-              block.input,
-              deps.getAbortSignal(),
-              block.id,
+          // GAP-04：分类器并行预启动。对 Bash 工具，把 LLM 风险分类器作为独立竞争路径
+          // 与 hook / UI 弹窗并行跑，而非在 checker 里同步串行等待。
+          //   - 仅在 speculativeClassifier 开启时激活（默认关闭，保守用户行为不变）；
+          //   - 只对 bash 生效；只放行不拒绝；
+          //   - 安全护栏：checker 因**硬编码危险命令**要求确认时，禁止分类器放行（弹窗兜底不被绕过）；
+          //   - 决策已到达（hook/user 先赢）时，分类器结果被 resolve-once 语义自然丢弃。
+          classifierDecision:
+            block.name === "bash" &&
+            (deps.config as any).speculativeClassifier === true &&
+            !(
+              decision.decisionReason?.type === "dangerousCommand" &&
+              !String((decision.decisionReason as any).pattern ?? "").startsWith("LLM:")
             )
-            .then((confirmed) => {
-              if (!resolve.isResolved()) {
-                resolve.resolve({
-                  allowed: confirmed,
-                  reason: confirmed ? "用户批准" : "用户拒绝",
-                });
-              }
-            });
+              ? async () => {
+                  try {
+                    const classifier = deps.permissionChecker?.getBashClassifier?.();
+                    if (!classifier?.isAvailable()) return null;
+                    if (deps.config.permissionMode === "plan") return null;
+                    const cmd = (observableInput as any)?.command;
+                    if (typeof cmd !== "string" || !cmd) return null;
+                    const res = await classifier.classify({
+                      command: cmd,
+                      cwd: process.cwd(),
+                      description: desc,
+                      signal: deps.getAbortSignal(),
+                    });
+                    if (!res.classifierUnavailable && res.safe) {
+                      log.info("PERMISSION", `分类器并行放行 bash（${res.reason}），跳过弹窗`);
+                      return { allowed: true, reason: `分类器判定安全: ${res.reason}` };
+                    }
+                  } catch (e) {
+                    log.warn(
+                      "PERMISSION",
+                      `分类器并行路径异常（忽略，交回竞争）: ${(e as Error)?.message}`,
+                    );
+                  }
+                  return null;
+                }
+              : undefined,
+          userDecision: (req, resolve) => {
+            // H7：透传本轮 signal，弹窗期间被 abort 时回调侧解除弹窗（按拒绝闭合），杜绝孤儿弹窗。
+            void deps
+              .requestUserConfirmation(
+                desc,
+                permReq,
+                block.name,
+                block.input,
+                deps.getAbortSignal(),
+                block.id,
+              )
+              .then((confirmed) => {
+                if (!resolve.isResolved()) {
+                  resolve.resolve({
+                    allowed: confirmed,
+                    reason: confirmed ? "用户批准" : "用户拒绝",
+                  });
+                }
+              });
+          },
+          gracePeriodMs: 200,
         },
-        gracePeriodMs: 200,
-      },
+      ),
     );
 
     recordHitlWaitHistogram(

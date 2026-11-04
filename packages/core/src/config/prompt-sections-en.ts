@@ -107,13 +107,12 @@ This applies to **every turn**, not just the first — even when the injected co
 /**
  * 工具使用指南的**语言相关外壳**（英文版）。对应中文版 buildToolGuideSection。
  *
- * 只翻外壳（章节标题、使用原则、任务模式、编排指引），不翻 `toolList` / `customGuides`
- * ——那两块由各工具的 `description()` / `usageGuide()` 提供，属于工具自身契约。
- * 调用方把这两块原样传进来拼装。
+ * 只翻外壳（章节标题、使用原则、任务模式、编排指引），不翻 `toolList`
+ * ——它由各工具的 `description()` 首句提供，属于工具自身契约，调用方原样传进来拼装。
+ * 已加载工具的 `usageGuide()` 只在 tools[].description 里，这里不再重复（F5-Q5a）。
  */
 export function buildToolGuideSectionEn(parts: {
   toolList: string;
-  customGuides: string;
   hypothesisDiscipline: string;
   /**
    * 延迟工具分区（含逐行 `[activate first]` 标注），排在本段末尾。
@@ -157,7 +156,6 @@ When you re-run the same diagnostic command (tsc / test / lint / build) to burn 
 - **Write the full output to disk, then slice it**: \`cmd > /tmp/x.txt 2>&1; wc -l /tmp/x.txt; grep <area> /tmp/x.txt\`. One round then gives you both the total (progress) and the **specific error lines** to work on (action).
 - **Never let \`grep -c\` be your only observation**: a bare count cannot tell you what to change next, it only feeds "let me run it again". If the same command runs twice with no movement in the count, what you are missing is the error *content*, not the count — switch to write-then-slice immediately.
 - **Do batch same-shaped rewrites with a script, and make it report misses**: when replacing a dozen occurrences at once, have the script check the match count for each replacement and print the ones that matched nothing (e.g. \`if n == 0: print("MISS:", ...)\`). A silent missed edit is harder to find than an error.
-${parts.customGuides}
 
 ### Task orchestration
 - **Break down complex tasks first**: use \`todo_write\` to split a complex task into a structured checklist and track progress item by item. Capture new instructions as todo items immediately and mark each \`completed\` as you finish it — do not batch them all up at the end.

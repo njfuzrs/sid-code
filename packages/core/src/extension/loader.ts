@@ -15,7 +15,11 @@ import {
   LEGACY_MANAGED_EXTENSION_ROOT,
   managedSettingsSystemDir,
 } from "../config/paths.ts";
-import { isRestrictedToPluginOnly } from "../config/plugin-only-policy.ts";
+import {
+  isRestrictedToPluginOnly,
+  isSourceAllowedUnderLock,
+} from "../config/plugin-only-policy.ts";
+import type { CustomizationSurface } from "../config/plugin-only-policy.ts";
 import { isPolicyAllowed } from "../config/policy-limits.ts";
 import { getExtensionScanDirs } from "../config/project-bases.ts";
 import type {
@@ -140,8 +144,22 @@ export class ExtensionLoader {
     }
 
     // 合并一批扫描结果进 fileMap（后合并覆盖先合并，记录 override）
+    //
+    // 缺陷 43 接线：这里逐文件复核来源白名单（isSourceAllowedUnderLock）。
+    // 上层 `surfaceLocked` 是**按层跳过**（锁定时整个不扫 user/project），粗粒度且
+    // 依赖「目录布局与来源一一对应」。一旦出现第三种布局（additional dirs、插件 skill
+    // 标成 project、未来 MCP 来源的组件），按层跳过就覆盖不到；按来源过滤能兜住。
+    // 两层叠加后：面锁定时只有 ADMIN_TRUSTED_SOURCES 里的来源能进 fileMap。
+    const surface = type as CustomizationSurface;
     const mergeFiles = (files: ParsedExtensionFile[]) => {
       for (const f of files) {
+        if (!isSourceAllowedUnderLock(surface, f.source)) {
+          errors.push({
+            filePath: f.filePath,
+            message: `${type} 已被企业策略锁定，来源 "${f.source}" 不在受信名单内，已跳过: ${f.filePath}`,
+          });
+          continue;
+        }
         const existing = fileMap.get(f.name);
         if (existing) {
           overrides.push({
@@ -310,15 +328,22 @@ export class ExtensionLoader {
 
   /**
    * P0-4：扫描任意单个目录（供插件 skills 加载复用与 user/project 完全一致的扫描逻辑：
-   * 扁平 .md + 子目录 SKILL.md/AGENT.md/index.md）。source 标记来源（插件传 "project" 语义占位，
-   * 真实 loadedFrom 由调用方覆盖）。
+   * 扁平 .md + 子目录 SKILL.md/AGENT.md/index.md）。
+   *
+   * 缺陷 42：**必须把 errors 一起返回**。此前这里只返回 files，把 `scanDir` 产生的
+   * `ExtensionLoadError[]` 整块丢掉 —— 包括 fail-closed 跳过的畸形 frontmatter。
+   * 插件路径是唯一走这个包装的路径，于是「装了 5 个 skill 只出现 4 个」没有任何提示，
+   * 上层 `PluginLoadResult.errors` 里也拿不到（缺陷 22 的 `component-load-failed`
+   * 本该在这里产生）。调用方要么转成结构化错误，要么显式忽略，不能再由包装层静默吞掉。
+   *
+   * @param source 来源标记。插件组件加载器传 "plugin"（缺陷 41）：它既是企业策略来源
+   *   白名单的判据，也决定 /skills 面板的分组，不能复用 "project"。
    */
   async scanSingleDir(
     dir: string,
     source: ExtensionSource = "project",
-  ): Promise<ParsedExtensionFile[]> {
-    const { files } = await this.scanDir(dir, source);
-    return files;
+  ): Promise<{ files: ParsedExtensionFile[]; errors: ExtensionLoadError[] }> {
+    return this.scanDir(dir, source);
   }
 
   /**

@@ -15,6 +15,33 @@ describe("内置插件注册表", () => {
     }
   });
 
+  // 缺陷 38：同名重复注册必须保留先注册者（与 command/registry.ts、mergePluginSources 一致），
+  // 不能是 last-write-wins 静默覆盖。
+  test("同名重复注册保留先注册者，不做 last-write-wins 覆盖", () => {
+    const first = { name: "test-bp", description: "先注册者" };
+    const second = { name: "test-bp", description: "后注册者" };
+    expect(registerBuiltinPlugin(first)).toBe(true);
+    expect(registerBuiltinPlugin(second)).toBe(false);
+    expect(getBuiltinPluginDefinition("test-bp")?.description).toBe("先注册者");
+  });
+
+  test("重复注册同一对象幂等（不重复告警，也不改内容）", () => {
+    const def = { name: "test-bp", description: "同一个" };
+    expect(registerBuiltinPlugin(def)).toBe(true);
+    expect(registerBuiltinPlugin(def)).toBe(false);
+    expect(getBuiltinPluginDefinition("test-bp")).toBe(def);
+  });
+
+  // 缺陷 40：生产环境无注册者时，这一层必须是「正确的空结果」，而不是报错。
+  // 这条测试同时是能力盘点的口径说明：内置插件层当前恒为空（架构脚手架）。
+  test("无注册时 getBuiltinPlugins 返回空数组（生产环境即此状态）", () => {
+    unregisterBuiltinPlugin("test-bp");
+    unregisterBuiltinPlugin("mac-only");
+    unregisterBuiltinPlugin("default-off");
+    expect(getBuiltinPlugins()).toEqual([]);
+    expect(listBuiltinPluginNames()).toEqual([]);
+  });
+
   test("注册后可被 getBuiltinPlugins 返回", () => {
     registerBuiltinPlugin({ name: "test-bp", description: "测试内置插件", version: "2.0.0" });
     const plugins = getBuiltinPlugins();

@@ -51,12 +51,27 @@ export class SkillsListCommand implements LocalCommandModule {
     const disabled = this.getDisabledSkills();
 
     const lines = ["Skills 列表:"];
+    // 分组维度必须包含插件一档（缺陷 41）：插件 skill 的 loadedFrom 是 "plugin"
+    // （buildNamespacedSkill 设置），source 也是 "plugin"（scanSingleDir 的来源标记）。
+    // 旧实现按 source === "project" 分组、且插件的 source 被硬编码成 project，
+    // 于是插件 skill 全部混进「项目级」—— 用户会去 .sid-code/skills/ 找它们，找不到。
     const builtinSkills = skills.filter((s) => s.loadedFrom === "builtin" || s.isBuiltin);
+    const pluginSkills = skills.filter(
+      (s) => s.loadedFrom === "plugin" || (s.source as string) === "plugin",
+    );
     const userSkills = skills.filter(
-      (s) => s.loadedFrom !== "builtin" && !s.isBuiltin && s.source === "user",
+      (s) =>
+        s.loadedFrom !== "builtin" &&
+        !s.isBuiltin &&
+        s.loadedFrom !== "plugin" &&
+        s.source === "user",
     );
     const projectSkills = skills.filter(
-      (s) => s.loadedFrom !== "builtin" && !s.isBuiltin && s.source === "project",
+      (s) =>
+        s.loadedFrom !== "builtin" &&
+        !s.isBuiltin &&
+        s.loadedFrom !== "plugin" &&
+        s.source === "project",
     );
 
     const renderGroup = (title: string, group: typeof skills) => {
@@ -70,6 +85,7 @@ export class SkillsListCommand implements LocalCommandModule {
     };
 
     renderGroup("内置 (builtin):", builtinSkills);
+    renderGroup("插件 (plugin):", pluginSkills);
     renderGroup("用户级 (~/.sid-code/skills/):", userSkills);
     renderGroup("项目级 (.sid-code/skills/):", projectSkills);
 

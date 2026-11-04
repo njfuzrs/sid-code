@@ -1373,6 +1373,20 @@ export interface SessionLevelMetrics {
   hitl_wait_total_ms: number;
   hitl_wait_p95_ms?: number;
   /**
+   * F4：定时器迟到（`TimerDrift`）事件总数。
+   *
+   * 它回答的是「事件循环有没有真的被占满」——这是排查"看门狗为什么迟到"的第一手证据。
+   */
+  timer_drift_total: number;
+  /**
+   * F4：其中发生在「阻塞等用户输入」期间的数量。
+   *
+   * 必须单列，不能并进总数：等人时宿主定时器补偿 / 事件循环让出都会产生迟到，
+   * 那是正常现象；只有 `total - during_hitl` 才是「事件循环被 IO 占满」的候选证据。
+   * 混成一个数会把真正的性能问题稀释掉（本方案那条 2.85h 的等待就有 40+ 对迟到）。
+   */
+  timer_drift_during_hitl: number;
+  /**
    * B9（PR-7）：并发冲突事件计数（来自 events.jsonl 的 `ConflictDetected`）。
    * `conflict_continue_count` 是误报率代理的分子（用户弹窗裁决"继续"的占比）；
    * `branch_auto_continue`（无人裁决的自动放行，A1 契约）**刻意不计入** continue，
@@ -3719,6 +3733,25 @@ export function renderHuman(d: Digest, opts: RenderOptions = {}): string {
     }
   }
 
+  // ─── F4：定时器迟到（等人期间单列）───
+  //
+  // 只在有时才打印 —— 恒打一行"迟到 0 次"会把"防线没被触发"读成噪声。
+  // 两类必须分开说：等人期间的迟到是宿主定时器补偿 / 事件循环让出的正常现象，
+  // 只有非等人期间的迟到才是「事件循环被 IO 占满」的候选证据（两者修法完全不同）。
+  if (d.sessionMetrics && d.sessionMetrics.timer_drift_total > 0) {
+    const m = d.sessionMetrics;
+    const realDrift = m.timer_drift_total - m.timer_drift_during_hitl;
+    L.push("");
+    L.push(
+      c("bold", "定时器迟到:") +
+        ` 共 ${m.timer_drift_total} 次` +
+        c("gray", `（其中 ${m.timer_drift_during_hitl} 次发生在等人期间，属正常现象）`),
+    );
+    if (realDrift > 0) {
+      L.push(c("gray", `  非等人期间 ${realDrift} 次 —— 这才是「事件循环被 IO 占满」的候选证据`));
+    }
+  }
+
   // ─── B9（PR-7）：并发冲突检测（「更安全」方向的辅助口径）───
   // 只在真有冲突时打印——恒打一行 "冲突 0 次" 会把"防线没被触发"读成噪声。
   // 误报率代理 = continue ÷ count：branch_auto_continue 是无人裁决的自动放行（A1 契约），
@@ -4561,6 +4594,9 @@ export function aggregateSessionMetrics(
   let endTurnN = 0;
   let promiseNudgeFired = 0;
   let promiseNudgeToolUse = 0;
+  // F4：定时器迟到分两类计数 —— 等人期间的迟到是正常现象，只有另一类是候选性能问题。
+  let timerDriftTotal = 0;
+  let timerDriftDuringHitl = 0;
   const shortTextSamples: SessionLevelMetrics["short_text_end_turn_samples"] = [];
 
   /** 四环防线的工具信号，与 `scripts/defense-trigger-rate.ts:32` 同一口径 */
@@ -4595,6 +4631,13 @@ export function aggregateSessionMetrics(
         const at = input?.agent_type ?? e.data.agent_type;
         if (at === "verify") defenseTriggered = true;
       }
+    }
+
+    // F4：定时器迟到按「是否在等人」拆开。等人期间的迟到是正常现象（宿主定时器补偿 /
+    // 事件循环让出），与非等人期间的迟到混成一个数，会把真正的性能问题稀释掉。
+    if (e.event === "TimerDrift") {
+      timerDriftTotal++;
+      if (e.data.during_hitl === true) timerDriftDuringHitl++;
     }
 
     // 缺陷 7：HITL 等待时长。只认 prompted=true —— 规则直放/直拒的 duration 是鉴权开销，
@@ -4684,6 +4727,8 @@ export function aggregateSessionMetrics(
     hitl_wait_n: sortedHitl.length,
     hitl_wait_total_ms: sortedHitl.reduce((a, b) => a + b, 0),
     hitl_wait_p95_ms: percentile(sortedHitl, 0.95),
+    timer_drift_total: timerDriftTotal,
+    timer_drift_during_hitl: timerDriftDuringHitl,
     conflict_count: conflictCount,
     conflict_continue_count: conflictContinue,
     conflict_blocked_count: conflictBlocked,
