@@ -143,7 +143,8 @@ describe("L2 — customGuides 同步分区", () => {
       ],
     });
 
-    expect(liveRegion(prompt)).toContain("### read 工具使用指南");
+    // 已加载工具的指南只在 tools[].description（F5-Q5a），实时区不再有整段指南
+    expect(liveRegion(prompt)).not.toContain("### read 工具使用指南");
     // 缺这条时泄漏面从"一行工具名"扩大到近 800 字符的完整教程
     expect(liveRegion(prompt)).not.toContain(guide);
     expect(prompt).toContain(`### workflow 工具使用指南 ${DEFERRED_MARK}`);
