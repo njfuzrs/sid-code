@@ -2378,6 +2378,13 @@ export class ModelFallback {
     verdict: FamilyVerdict,
   ): void {
     // 额度耗尽 = 账户级事实。用它替换「模型坏了」的证据，并写跨循环共享的账户标记。
+    //
+    // ⚠️ 只认 `quota_exhausted`，不认窄口同样会返回的 `usage_limit_reached` —— 这是
+    // 语义分层，不是漏写（见 `error-normalize.ts::classifyFamily` 窄口注释）：
+    // `usage_limit_reached` 可能是**模型级**配额（`hit your opus limit`），记成
+    // (端点, 凭据) 的账户标记会让「opus 用满」连带拦住同账户还有余量的 sonnet。
+    // 代价是这类失败仍按族判 2 次、且仍写模型嫌疑 —— 那是「计划/模型配额到顶」更接近
+    // 的事实，比误记成账户余额耗尽要轻。
     const accountExhausted =
       verdict.family === "request_suspect" && verdict.reason === "quota_exhausted";
     if (accountExhausted) {

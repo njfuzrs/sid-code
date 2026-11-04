@@ -616,9 +616,12 @@ export class QueryEngine {
       // statusCode / error.type —— 归一成分类码随事件送到 app.ts，让面板不必再从
       // 文本里猜（网关中文限流文案就是猜不出来的那一类，见 LLMStreamError 注释）。
       // 非 LLMStreamError（工具异常等）不带此字段，app.ts 回落 inferErrorCode，行为不变。
+      // 第三个参数只在 401/403 时参与额度窄口（F2 ⑤ 补）：网关可能只在 message 里写
+      // 「额度不足」而不给 code，不给 message 会让面板继续显示「API Key 无效」，
+      // 与漏斗判的 quota_exhausted 不同源。
       const structuredCode =
         err instanceof LLMStreamError
-          ? codeFromStructured(err.statusCode, err.errorType)
+          ? codeFromStructured(err.statusCode, err.errorType, e?.message ?? String(err))
           : undefined;
 
       yield {
