@@ -92,9 +92,9 @@ shared upstream ink), 0 matching sentences, no internal names carried over. Meth
 
 | Item | Status |
 | --- | --- |
-| Codebase | 559k lines of TypeScript (including 234k lines of tests; excludes the parts of the rendering layer still inherited verbatim from upstream ink) |
-| Engineering loop | 15,911 unit tests, 88.0% line coverage on the agent engine; CI runs the full suite on every PR and it must be green to merge |
-| Surface area | 44 built-in tools, MCP client / server, LSP code intelligence, permission gating, observable trajectories |
+| Codebase | 657k lines of TypeScript (including 291k lines of tests; excludes the 7,796 lines of the rendering layer still inherited verbatim from upstream ink) |
+| Engineering loop | 19,237 unit tests, 90.1% line coverage on the agent engine; CI runs the full suite on every PR and it must be green to merge |
+| Surface area | 41 built-in tools, MCP client / server, LSP code intelligence, permission gating, observable trajectories |
 | Evaluation | Separate benchmark [agent-traj-bench](https://github.com/njfuzrs/agent-traj-bench): 39 SWE-bench-style tasks reverse-built from real sessions |
 
 <!--
@@ -104,14 +104,14 @@ shared upstream ink), 0 matching sentences, no internal names carried over. Meth
     cases") came from static scans and didn't match the resume; the 30 eval cases were deleted
     on 2026-09-18 along with the old evals/ suites, so keeping them here would be untrue.
     The first two rows now come from one run of scripts/resume-metrics.ts (`--coverage`)
-    in the docs-research repo (2026-10-12, HEAD=cdb37f58):
-    lines of code  559,229 = 567,027 (production + tests + tooling) − 7,798 (lines in packages/tui/src
-                   that git blame still attributes to the upstream ink import commit 8fd9048d); tests 234,289.
-    unit tests     15,911 as executed by `bun test` (includes generated cases a static grep misses)
-    coverage       88.0% line coverage of packages/core/src (83,564 / 94,973); engine layer only
-    built-in tools length of the `sid-code --dump-tools` array (44, same source as ref/tools.md)
-    Hook event count is no longer in this table: some of the 32 HookEventName members are
-    reserved and not wired yet, so "32" here would read as 32 usable events. See website/ref/hooks.md.
+    in the docs-research repo (2026-11-04, HEAD=7f51a6f9):
+    lines of code  657,241 = 665,037 (production + tests + tooling) − 7,796 (lines in packages/tui/src
+                   that git blame still attributes to the upstream ink import commit 8fd9048d); tests 291,457.
+    unit tests     19,237 as executed by `bun test` (includes generated cases a static grep misses)
+    coverage       90.1% line coverage of packages/core/src (98,039 / 108,844); engine layer only
+    built-in tools length of the `sid-code --dump-tools` array (41, same source as ref/tools.md)
+    Hook event count is no longer in this table: some of the 37 HookEventName members are
+    reserved and not wired yet, so "37" here would read as 37 usable events. See website/ref/hooks.md.
   Keep in sync with website/.vitepress/theme/HomeShowcase.vue and README.md (Chinese).
 -->
 
