@@ -69,6 +69,37 @@ export type StreamValidationReason =
   | "malformed_tool_call" // 工具调用 JSON 解析失败
   | "empty_response"; // 响应为空
 
+/**
+ * 流式 lifecycle 三层超时（idle / content_progress / overall）—— 继承 Error 而非
+ * `RetryableError`，是因为它由 `stream-lifecycle.ts` 抛出、由 `error-normalize.ts`
+ * 以 `presetReason: "timeout"` 归一化（与 RuntimeTimeoutError 同一口径），
+ * 不自己携带重试语义。
+ *
+ * ## 为什么要一个具名错误类（会话 20261103-213816-f5beebde 复盘 F1）
+ *
+ * 改造前 lifecycle 超时是「`break` 出消费循环」，对下游表现为**流正常结束**：
+ * 漏斗那一侧只做空响应校验 —— 有内容就 `markHealthy` + `return`（超时被当成成功），
+ * 没内容才报 `响应为空`（超时被当成一次空响应）。两种都不对，且**没有任何一层
+ * 知道「这是一次超时」**，重试预算与归因全落空。
+ *
+ * 现在超时以本错误结束，漏斗按 transient 族的 timeout 处理，与其它超时同口径。
+ */
+export class StreamLifecycleTimeoutError extends Error {
+  constructor(
+    /** 触发的是哪一层。与 `stream-lifecycle.ts` 的 `StreamTimeoutLayer` 同集合。 */
+    public readonly layer: "idle" | "content_progress" | "overall",
+    /** 该层**实际生效**的阈值（不是 preset 常量——env/per-model 覆盖过的值） */
+    public readonly thresholdMs: number,
+  ) {
+    super(
+      `流式${{ idle: "空闲", content_progress: "内容进展", overall: "整体" }[layer]}超时 ${
+        thresholdMs / 1000
+      }s`,
+    );
+    this.name = "StreamLifecycleTimeoutError";
+  }
+}
+
 /** 用户或系统主动中断请求 */
 /**
  * 流内 `error` 事件抛到上层时的结构化载体（2026-09-06）。
@@ -150,6 +181,13 @@ export const ABORT_REASONS = [
   "team-hard-timeout",
   "stream-heartbeat-timeout",
   "stream-overall-timeout",
+  // F1（2026-11-04）：流式 lifecycle 判定超时 / 被消费方放弃时，取消**本次请求自己的**
+  // per-request controller（与用户 ESC 的会话级 signal 分开，理由见 stream-lifecycle.ts
+  // 「不把外部 signal 交给 lifecycle 早退」的 T7 注释）。
+  // 必须登记：底层 fetch 以这个裸字符串 reject，未登记即孤儿 rejection →
+  // isAbortError 漏判 → process.exit(1)（记忆 esc-abort-reason-crash-coupling）。
+  // 释放路径（消费方 break/throw）沿用同一常量：它同样只是清理，不参与归因。
+  "stream-lifecycle-timeout",
   // 2026-10-17 删除 "agent-stream-overall-timeout" / "agent-stream-heartbeat-timeout"：
   // agent/stream-processor.ts 不再自带超时层（只判死不断流，把漏斗重试判死，事故 20261016-224545），
   // 两个 reason 已无 abort 调用点。别为了「历史上有过」加回来 —— 白名单只登记真实调用点。
@@ -177,6 +215,13 @@ export const ABORT_REASONS = [
 
 /** 并行 Bash 失败级联取消兄弟工具的 abort reason（单一事实源，tool-executor / agent/tool.ts 共用）。 */
 export const SIBLING_BASH_ERROR_ABORT_REASON = "sibling-bash-error" as const;
+
+/**
+ * 流式 lifecycle 取消**本次请求**（per-request controller）时用的 abort reason。
+ * 单一事实源：`stream-lifecycle.ts`（调用方）与三条协议路径（创建 controller 的地方）
+ * 共用，避免字符串各写一份漂移。登记理由见 ABORT_REASONS 内同名条目。
+ */
+export const STREAM_LIFECYCLE_ABORT_REASON = "stream-lifecycle-timeout" as const;
 
 /**
  * 从中断错误 / AbortSignal.reason 里取出字符串 reason。

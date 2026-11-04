@@ -22,6 +22,8 @@ import { updateRateLimitStatus } from "../api/rate-limit.ts";
 import { recordRequestId } from "../api/request-id.ts";
 import { guardOutgoingMessages } from "./protocol-sentinel.ts";
 import { createStreamLifecycle, LIFECYCLE_PRESETS } from "./stream-lifecycle.ts";
+// F1 ①：可中断迭代原语（消费方 break/throw 时保证 return() 源头，让 finally 能跑）。
+import { raceIterate } from "./race-iterate.ts";
 import { resolveProviderStreamTimeouts } from "../config/network-profile.ts";
 import { wrapFetchWithEventLineShim } from "./sse-event-line-shim.ts";
 import { wrapFetchWithKeepAlive } from "./keepalive.ts";
@@ -361,6 +363,14 @@ export class AnthropicProvider implements Provider {
         ? ["token-efficient-tools-2025-02-19"]
         : [];
       const effectiveBetaHeaders = getEffectiveBetaHeaders(neededBetaHeaders);
+      // F1 ③：per-request 取消 controller —— lifecycle 判定超时 / 被消费方放弃时用它
+      // 中断**本次请求**。与外部 signal 合并后交给 SDK：
+      // 外部 signal 仍承载用户 ESC 语义（T7：不交给 lifecycle 做早退），
+      // lifecycle 只 abort 自己这个 controller，两者互不覆盖。
+      const streamCancelCtl = new AbortController();
+      const sdkSignal = signal
+        ? AbortSignal.any([signal, streamCancelCtl.signal])
+        : streamCancelCtl.signal;
       const createStream = () =>
         this.client.messages
           .create(requestParams as any, {
@@ -372,7 +382,7 @@ export class AnthropicProvider implements Provider {
               }),
             },
             // ⭐ 关键：把 signal 透传给 SDK，使 abort() 能真正中断底层 HTTP/TCP 连接。
-            ...(signal ? { signal } : {}),
+            signal: sdkSignal,
           })
           .withResponse();
       // D11 / R12：strict 容量 400 降 strict 重发，其余错误原样交给下面的 catch（见 createWithStrictBudget）。
@@ -554,7 +564,6 @@ export class AnthropicProvider implements Provider {
           }
         },
         onTelemetry: (evt: StreamTelemetrySignal) => {
-          // 遥测事件通过 logger 记录，接入现有可观测性系统
           log.debug("TELEMETRY:ANTHROPIC", `${evt.type}`, evt as any);
           // § 转发到统一的 RetryTelemetry 通道（由 fallback.ts 注入 onStreamTelemetry）
           // 让 stream_stall / idle_timeout / completed 进 events.jsonl，被 trace-digest.ts 消费
@@ -564,6 +573,11 @@ export class AnthropicProvider implements Provider {
             /* 遥测失败不影响主流程 */
           }
         },
+        // F1 ③：lifecycle 判定超时 / 被消费方放弃时，取消**本次请求**（SDK signal 合并
+        // 了它，见上方 `sdkSignal`）。这一步补的正是「三层超时只能报告不能执行」的另一半：
+        // 改造前 onTimeout 里的 `controller.abort()` 依赖 SDK 内部对象，且超时根本不打断
+        // 挂起的 read()，两条路径都收不干净。
+        cancelSource: (reason) => streamCancelCtl.abort(reason),
       });
       const guarded = lifecycle.guard(rawStream as unknown as AsyncIterable<any>);
 
@@ -612,21 +626,13 @@ export class AnthropicProvider implements Provider {
           });
         })();
 
-        const iterator = guarded[Symbol.asyncIterator]();
-        let iterDone = false;
-        while (!iterDone) {
-          if (signal?.aborted) {
-            throw new RequestAbortedError("Request aborted");
-          }
-          const racers: Promise<IteratorResult<any>>[] = [iterator.next()];
-          if (abortPromise) racers.push(abortPromise as any);
-          const iterResult = await Promise.race(racers);
-          if (iterResult.done) {
-            iterDone = true;
-            break;
-          }
-          const event = iterResult.value;
-
+        // F1 ①：改用 raceIterate。消费方 throw（下面的 RequestAbortedError /
+        // 抛给外层的异常）时它会对 `guarded` 调 return()，guarded 是 lifecycle 的
+        // 生成器 —— 于是 lifecycle 的 finally 也会跑（清理定时器 / 释放 sleep observer /
+        // 发 stream_completed / 计费收口）。改造前这一路是断的。
+        for await (const event of raceIterate(guarded, {
+          interrupts: abortPromise ? [abortPromise] : [],
+        })) {
           if (signal?.aborted) {
             throw new RequestAbortedError("Request aborted");
           }

@@ -21,7 +21,31 @@ import {
   LIFECYCLE_PRESETS,
   type StreamTimeoutLayer,
 } from "@sid-code/core/llm/stream-lifecycle.ts";
+import { StreamLifecycleTimeoutError } from "@sid-code/core/llm/errors.ts";
 import type { StreamTelemetrySignal } from "@sid-code/core/llm/types.ts";
+
+/**
+ * F1（2026-11-04）契约变更：lifecycle 超时从「`break` 出消费循环」（对下游表现为
+ * **流正常结束**，有内容时漏斗会把它当成功）改成**抛 `StreamLifecycleTimeoutError`**
+ * （漏斗按 transient/timeout 重试）。
+ *
+ * 本文件里所有「让超时真的触发」的用例因此多了一层 try/catch —— 这是测试前提的同步
+ * 修正，不是放宽断言：各用例原本断言的「哪一层触发 / 只触发一次 / 遥测项 / 快照」
+ * 一条都没删，另外**新增**了「确实以超时错误结束」这条更强的断言。
+ */
+function drainExpectingTimeout<T>(
+  gen: AsyncGenerator<T>,
+): Promise<{ error: unknown; received: T[] }> {
+  return (async () => {
+    const received: T[] = [];
+    try {
+      for await (const ev of gen) received.push(ev);
+      return { error: null, received };
+    } catch (error) {
+      return { error, received };
+    }
+  })();
+}
 
 interface Evt {
   type: string;
@@ -79,10 +103,14 @@ describe("T7 — StreamLifecycle Layer 3 overall timeout（新增层）", () => 
       onTelemetry: (e) => telemetry.push(e),
     });
 
-    const received: Evt[] = [];
-    for await (const ev of lc.guard(neverEnding(20, upstream.signal))) {
-      received.push(ev);
-    }
+    const { error, received } = await drainExpectingTimeout(
+      lc.guard(neverEnding(20, upstream.signal)),
+    );
+    // F1 契约变更：超时以 StreamLifecycleTimeoutError 结束（见文件头说明）。
+    expect(error).toBeInstanceOf(StreamLifecycleTimeoutError);
+    expect((error as StreamLifecycleTimeoutError).layer).toBe("overall");
+    // overall 是绝对上限、不因事件重置：超时前确实有事件流过
+    expect(received.length).toBeGreaterThan(0);
 
     expect(fired[0]).toBe("overall");
     expect(fired.length).toBe(1); // 只触发一次
@@ -136,9 +164,10 @@ describe("T7 — 三层超时优先级", () => {
       onTelemetry: (e) => telemetry.push(e),
     });
 
-    const received: Evt[] = [];
-    for await (const ev of lc.guard(pingOnly(20, 100))) received.push(ev);
+    const { error, received } = await drainExpectingTimeout(lc.guard(pingOnly(20, 100)));
 
+    expect(error).toBeInstanceOf(StreamLifecycleTimeoutError);
+    expect((error as StreamLifecycleTimeoutError).layer).toBe("content_progress");
     expect(fired[0]).toBe("content_progress");
     expect(received.length).toBeLessThan(100); // 提前中断
   }, 15_000);
@@ -169,9 +198,10 @@ describe("T7 — 三层超时优先级", () => {
       onTelemetry: (e) => telemetry.push(e),
     });
 
-    const received: Evt[] = [];
-    for await (const ev of lc.guard(silentAfterOne())) received.push(ev);
+    const { error } = await drainExpectingTimeout(lc.guard(silentAfterOne()));
 
+    expect(error).toBeInstanceOf(StreamLifecycleTimeoutError);
+    expect((error as StreamLifecycleTimeoutError).layer).toBe("idle");
     expect(fired[0]).toBe("idle");
     expect(telemetry.some((e) => e.type === "stream_idle_timeout")).toBe(true);
   }, 15_000);
@@ -197,9 +227,9 @@ describe("T7 — getSnapshot 实时状态", () => {
     expect(before.firstEventAt).toBeNull();
     expect(before.timedOut).toBe(false);
 
-    for await (const _ of lc.guard(pingOnly(20, 100))) {
-      /* drain until content timeout */
-    }
+    const { error } = await drainExpectingTimeout(lc.guard(pingOnly(20, 100)));
+    // F1 契约变更：超时以错误结束（见文件头说明）
+    expect(error).toBeInstanceOf(StreamLifecycleTimeoutError);
 
     const after = lc.getSnapshot();
     expect(after.totalEvents).toBeGreaterThan(0);

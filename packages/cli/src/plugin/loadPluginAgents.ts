@@ -108,7 +108,7 @@ async function loadAgentFile(
       description: (frontmatter.description as string) || (frontmatter.whenToUse as string) || "",
       tools: parseListField(frontmatter.tools),
       prompt: body,
-      source: "user", // 插件 Agent 视为 user 级来源（ExtensionSource 无 plugin 值）
+      source: "user", // 插件 Agent 暂标 user 级来源：/agents 面板的分组判据还没加 plugin 一档（skill 已在缺陷 41 里加）
       filePath,
       // P0-2/P1-1/P1-2/P2-1：消费扩展 frontmatter 字段（与自定义 agent 同源解析）。
       ...parseAgentExtendedFrontmatter(frontmatter, name),

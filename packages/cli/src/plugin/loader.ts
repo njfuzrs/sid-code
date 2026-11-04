@@ -109,7 +109,12 @@ function isInsidePluginsDir(target: string, pluginsDir: string): boolean {
  *   运行时按 manifest.name，两者不一致会让启用/禁用静默失效（缺陷 29）。
  */
 async function loadInstalledPlugins(errors: PluginError[]): Promise<LoadedPlugin[]> {
-  const registry = await readInstalledPlugins();
+  // 缺陷 37：逐条 entry 校验不合格的条目由 readInstalledPlugins 跳过，这里把原因
+  // 转成 PluginLoadResult.errors（generic-error），让 /plugin 面板与 /reload-plugins 可见，
+  // 而不是只在日志里留一行 warn。
+  const registry = await readInstalledPlugins((key, reason) => {
+    errors.push({ type: "generic-error", source: key, error: reason });
+  });
   const plugins: LoadedPlugin[] = [];
   const pluginsDir = getPluginsDir();
 
@@ -242,10 +247,13 @@ async function assemblePluginLoadResult(): Promise<PluginLoadResult> {
   const errors: PluginError[] = [];
 
   // 1. 读取已安装注册表（用于内置插件的启用覆盖）
+  //    缺陷 37：readInstalledPlugins 已逐条校验 entry（不合格的会被跳过），这里的
+  //    `entry.source.endsWith` 仍然显式挡一次非字符串——registry 也可能来自测试注入或
+  //    未来的其它读取路径，而这一行在 assemble 里，抛出去就是整个插件系统不可用。
   const registry = await readInstalledPlugins();
   const builtinOverrides: Record<string, boolean> = {};
   for (const [name, entry] of Object.entries(registry.plugins)) {
-    if (entry.source.endsWith("@builtin")) {
+    if (typeof entry.source === "string" && entry.source.endsWith("@builtin")) {
       builtinOverrides[name] = entry.enabled;
     }
   }

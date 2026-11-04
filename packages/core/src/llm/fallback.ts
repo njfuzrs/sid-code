@@ -41,6 +41,8 @@ import {
   StreamValidationError,
   HOST_SLEEP_REOPEN_ABORT_REASON,
 } from "./errors.ts";
+// F1 ①：可中断迭代原语。与手抄版唯一的区别是「离开时一定 return() 源头」。
+import { raceIterate } from "./race-iterate.ts";
 import {
   classifyFamily,
   normalizeStreamEvent,
@@ -1125,18 +1127,15 @@ export class ModelFallback {
             });
           })();
 
-          const iterator = stream[Symbol.asyncIterator]();
-          let iterDone = false;
-          while (!iterDone) {
-            const racers: Promise<IteratorResult<StreamEvent>>[] = [iterator.next()];
-            if (abortPromise) racers.push(abortPromise as any);
-            const iterResult = await Promise.race(racers);
-            if (iterResult.done) {
-              iterDone = true;
-              break;
-            }
-            const event = iterResult.value;
-
+          // F1 ①（2026-11-04）：改用 raceIterate。它与手抄版只差一件事，但很关键：
+          // 消费方 throw（下面 `NormalizedErrorCarrier` 那条）或 break 离开时，
+          // 它会对 provider 生成器调 return()，provider 内部的 `for await` 会继续
+          // return() lifecycle —— 整条链的 finally 才会执行。改造前这条路是断的：
+          // lifecycle 的 clearTimers / releaseSleepObserver / stream_completed 全不跑，
+          // idle 定时器 240s 后照样开枪，而那时这次尝试早已被放弃（幽灵 TimeoutFired）。
+          for await (const event of raceIterate(stream, {
+            interrupts: abortPromise ? [abortPromise] : [],
+          })) {
             if (signal?.aborted) {
               throw new RequestAbortedError("请求已中止");
             }
