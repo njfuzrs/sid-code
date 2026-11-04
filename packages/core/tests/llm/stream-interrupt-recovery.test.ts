@@ -18,7 +18,11 @@
 import { describe, test, expect } from "bun:test";
 import { ModelFallback } from "@sid-code/core/llm/fallback.ts";
 import { ModelAvailabilityService } from "@sid-code/core/llm/availability.ts";
-import { RequestAbortedError, RetryableError } from "@sid-code/core/llm/errors.ts";
+import {
+  RequestAbortedError,
+  RetryableError,
+  StreamLifecycleTimeoutError,
+} from "@sid-code/core/llm/errors.ts";
 import type { Provider } from "@sid-code/core/llm/provider.ts";
 import type { SendParams, StreamEvent } from "@sid-code/core/llm/types.ts";
 import type { RetryTelemetryEvent } from "@sid-code/core/llm/retry-telemetry.ts";
@@ -510,9 +514,16 @@ describe("T9.1 流式中断 & 恢复", () => {
       });
 
       const events: Array<{ type: string }> = [];
-      for await (const e of lc.guard(stallThenYield())) {
-        events.push(e);
+      // F1 契约变更：超时以 StreamLifecycleTimeoutError 结束（不再静默 break）
+      let caught: unknown = null;
+      try {
+        for await (const e of lc.guard(stallThenYield())) {
+          events.push(e);
+        }
+      } catch (e) {
+        caught = e;
       }
+      expect(caught).toBeInstanceOf(StreamLifecycleTimeoutError);
 
       expect(events.length).toBe(1);
       expect(timeoutLayer!).toBe("idle");
@@ -543,9 +554,16 @@ describe("T9.1 流式中断 & 恢复", () => {
       });
 
       const events: Array<{ type: string }> = [];
-      for await (const e of lc.guard(pingStream())) {
-        events.push(e);
+      // F1 契约变更：超时以 StreamLifecycleTimeoutError 结束（不再静默 break）
+      let caught: unknown = null;
+      try {
+        for await (const e of lc.guard(pingStream())) {
+          events.push(e);
+        }
+      } catch (e) {
+        caught = e;
       }
+      expect(caught).toBeInstanceOf(StreamLifecycleTimeoutError);
 
       // content progress 应先于 idle 触发
       expect(timeoutLayer!).toBe("content_progress");
@@ -577,9 +595,16 @@ describe("T9.1 流式中断 & 恢复", () => {
       });
 
       const events: Array<{ type: string }> = [];
-      for await (const e of lc.guard(neverEndStream())) {
-        events.push(e);
+      // F1 契约变更：超时以 StreamLifecycleTimeoutError 结束（不再静默 break）
+      let caught: unknown = null;
+      try {
+        for await (const e of lc.guard(neverEndStream())) {
+          events.push(e);
+        }
+      } catch (e) {
+        caught = e;
       }
+      expect(caught).toBeInstanceOf(StreamLifecycleTimeoutError);
 
       expect(timeoutLayer!).toBe("overall");
       // 在 100ms 内以每 10ms 一个的速度，应收到约 5-15 个事件

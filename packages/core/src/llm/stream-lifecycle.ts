@@ -34,6 +34,10 @@ import { getLogger } from "../debug/logger.ts";
 import type { StreamTelemetrySignal } from "./types.ts";
 import { DEFAULTS as NETWORK_DEFAULTS } from "../config/network-profile.ts";
 import { recordStreamProgress } from "../trace/stream-observer.ts";
+// F1 ①：可中断迭代原语（消费方 break/throw 时保证 return() 一路传到底）。
+import { raceIterate } from "./race-iterate.ts";
+// F1 ②③：具名超时错误 + per-request 取消的 abort reason。
+import { StreamLifecycleTimeoutError, STREAM_LIFECYCLE_ABORT_REASON } from "./errors.ts";
 // PR9：休眠扣减下沉到流式路径（三层判据统一 `now - start - sleepPause`）。
 import {
   createSleepAwareDeadline,
@@ -41,8 +45,30 @@ import {
   getSleepLedger,
 } from "@sid-code/shared/utils/sleep-detect.ts";
 
-/** 超时层枚举（onTimeout 回调用于区分是哪一层触发） */
-export type StreamTimeoutLayer = "idle" | "content_progress" | "overall";
+/**
+ * 超时层枚举（onTimeout 回调用于区分是哪一层触发）。
+ *
+ * 从 `StreamLifecycleTimeoutError.layer` **派生**而不是各写一份 union：
+ * 新增一层时只改错误类一处，编译期就能发现漏改（手写清单必漂移）。
+ */
+export type StreamTimeoutLayer = StreamLifecycleTimeoutError["layer"];
+
+/**
+ * 进程内活跃的 stream lifecycle 计数（F1 ⑤）。
+ *
+ * 进 `streamLifecycleImpl` +1、`finally` -1。会话空闲时应为 0 —— 不为 0 就是有
+ * 生成器被丢弃且 `finally` 没跑（本会话 10 个泄漏流的形态）。
+ *
+ * 为什么要这个计数器：改造前同类问题**只能靠 warn.log 刷屏（4265 行里 4084 行 stall）
+ * 才被发现**，而刷屏程度取决于会话活了多久，短会话里泄漏完全隐身。
+ * 计数进 `heartbeat.txt` 后，一次心跳就能判死。
+ */
+let activeLifecycleCount = 0;
+
+/** 当前进程内活跃的 lifecycle 生成器数（供 heartbeat.txt 落盘）。 */
+export function getActiveStreamLifecycleCount(): number {
+  return activeLifecycleCount;
+}
 
 export interface StreamLifecycleOptions<T = unknown> {
   /** Layer 1：无任何事件超时（毫秒）。超时后触发 onTimeout("idle") 中断流。必填。 */
@@ -141,6 +167,20 @@ export interface StreamLifecycleOptions<T = unknown> {
   onTelemetry?: (event: StreamTelemetrySignal) => void;
   /** 外部 abort signal，流消费中检查以支持用户中断穿透 */
   signal?: AbortSignal;
+  /**
+   * F1 ③：取消**本次请求**的底层 I/O（abort per-request controller / reader 取消等）。
+   *
+   * 为什么 lifecycle 必须自己持有一个取消句柄：Responses / anthropic 两条路径刻意
+   * **不把外部 signal 交给 lifecycle**（T7：交给它早退会破坏既有 abort 契约，见
+   * anthropic.ts 同名注释），于是三层超时只能「报告」不能「执行」—— 本会话 10 次
+   * `TimeoutFired` 全部开在已经被放弃的尝试上，真正的收尾全靠漏斗层。
+   *
+   * 与 T7 不冲突：外部 signal 仍由消费循环自己处理，本回调只取消「lifecycle 判定
+   * 超时 / 消费方放弃」的那一次请求，用独立的 per-request controller。
+   *
+   * 调用时机：超时触发时一次、被消费方 `return()`/`throw()` 放弃时一次（幂等由本层保证）。
+   */
+  cancelSource?: (reason: string) => void;
 }
 
 /**
@@ -326,6 +366,7 @@ async function* streamLifecycleImpl<T>(
     onTimeout,
     onTelemetry,
     signal,
+    cancelSource,
   } = opts;
   const log = getLogger();
   const providerTag = label.toLowerCase();
@@ -362,10 +403,60 @@ async function* streamLifecycleImpl<T>(
     }
   };
 
-  const fireTimeout = (layer: StreamTimeoutLayer): boolean => {
+  /**
+   * F1 ③：取消本次请求的底层 I/O（幂等）。
+   *
+   * 两个调用点：超时（`fireTimeout`，语义是「立即取消」）与「消费方放弃」
+   *（`finally` 里源还没结束）。真正让挂起的 `reader.read()` 变成 reject 的是
+   * `cancelSource`，不是 `iterator.return()` —— 后者在源头卡死时自己也不会 resolve
+   *（已实测，见 race-iterate.ts 文件头），所以两件事必须都做。
+   */
+  let sourceCancelled = false;
+  const cancelSourceOnce = (): void => {
+    if (sourceCancelled) return;
+    sourceCancelled = true;
+    try {
+      cancelSource?.(STREAM_LIFECYCLE_ABORT_REASON);
+    } catch {
+      /* 取消底层 I/O 失败不影响退出路径 */
+    }
+  };
+
+  /**
+   * F1 ②：超时中断源。
+   *
+   * 改造前 `fireTimeout` 只置 `snapshot.timedOut = true`，而这个标志只在**两次迭代之间**
+   * 被检查（原来的循环开头与 yield 之后各一次）—— 源头 `reader.read()` 不 settle 时
+   * 循环根本出不来，三层超时对 Responses / anthropic 两条路径**只能报告不能执行**。
+   * 这里给迭代 race 提供一个只 reject 的中断源，定时器一开火就打断 `await`。
+   */
+  let rejectTimeoutInterrupt: ((err: unknown) => void) | null = null;
+  const timeoutInterrupt = new Promise<never>((_, reject) => {
+    rejectTimeoutInterrupt = reject;
+  });
+  // 超时可能落在「没有 race 正在等」的时刻（消费方正在处理上一个事件、或已 yield 出去）：
+  // 那时这个 reject 没有任何订阅者 → unhandledRejection → 进程可能被带走。
+  // 挂一个空 catch 只是把它标记为「已处理」，`Promise.race` 对原 promise 的订阅不受影响。
+  void timeoutInterrupt.catch(() => {});
+  /** 已触发的超时错误（供「迭代间隙」的检查点原样抛出，阈值取自真实触发的那一层）。 */
+  let timeoutError: StreamLifecycleTimeoutError | null = null;
+
+  const fireTimeout = (layer: StreamTimeoutLayer, thresholdMs: number): boolean => {
     if (snapshot.timedOut) return false; // 只触发一次：任何一层先触发后，其余层不再回调
     snapshot.timedOut = true;
     snapshot.timeoutLayer = layer;
+    // F1 ④：已被判超时的流不再报「事件间隔 Ns」—— 一个死流的心跳间隔没有任何信息量，
+    // 而它会让 warn.log 被永久刷屏（本会话 4265 行里 4084 行是这种，最大间隔 43933s）。
+    // 这不是用来兜底泄漏的：①②③ 修好后 finally 一定会跑；这是纯粹的语义修正。
+    if (stallTimer) {
+      clearInterval(stallTimer);
+      stallTimer = null;
+    }
+    // F1 ②：打断 await 中的 reader.read()。
+    timeoutError = new StreamLifecycleTimeoutError(layer, thresholdMs);
+    rejectTimeoutInterrupt?.(timeoutError);
+    // F1 ③：超时的语义是「立即取消」，不等 finally —— 源头卡死时 return() 也传不下去。
+    cancelSourceOnce();
     return true;
   };
 
@@ -426,7 +517,7 @@ async function* streamLifecycleImpl<T>(
           arm(remaining);
           return;
         }
-        if (!fireTimeout("idle")) return;
+        if (!fireTimeout("idle", limit)) return;
         log.warn(
           `LLM:${label}`,
           `流式${awaitingFirst ? "首字节" : "空闲"}超时 ${limit / 1000}s，中断`,
@@ -479,7 +570,7 @@ async function* streamLifecycleImpl<T>(
           armContent(remaining);
           return;
         }
-        if (!fireTimeout("content_progress")) return;
+        if (!fireTimeout("content_progress", contentProgressTimeoutMs!)) return;
         log.warn(
           `LLM:${label}`,
           `业务内容进展超时 ${contentProgressTimeoutMs! / 1000}s（可能只有 keep-alive/ping，无实际内容），中断`,
@@ -518,7 +609,7 @@ async function* streamLifecycleImpl<T>(
           armOverall(remaining);
           return;
         }
-        if (!fireTimeout("overall")) return;
+        if (!fireTimeout("overall", overallTimeoutMs!)) return;
         log.warn(
           `LLM:${label}`,
           `流式整体超时 ${overallTimeoutMs! / 1000}s（请求级硬上限），中断`,
@@ -558,14 +649,18 @@ async function* streamLifecycleImpl<T>(
   // T14.6：first-content 只触发一次的幂等标记
   let firstContentFired = false;
 
+  // F1 ③：源是否**正常结束**。消费方 break/throw 导致离开时为 false，
+  // finally 据此决定是否取消底层 I/O（正常收尾不需要取消）。
+  let sourceExhausted = false;
+
   resetIdle();
   resetContentProgress(); // 启动 content progress 计时（未启用时空转）
   startOverall(); // 启动 overall 计时（未启用时空转）
   try {
-    // P0-2 §7.3 修复：与 fallback.ts/stream-processor.ts 同理，将 for-await 改为
-    // 手动迭代 + Promise.race(abortPromise)。当 source（SDK raw stream）半开时，
-    // reader.read() 永不 settle，signal?.aborted / snapshot.timedOut 检查永远执行不到。
-    // 通过 race signal + timedOut，超时/abort 触发时立即退出。
+    // F1 ⑤：活跃 lifecycle 计数（进入 +1，finally -1）。会话空闲时应为 0。
+    activeLifecycleCount++;
+
+    // P0-2 §7.3：signal 早退仍由中断源提供（与改造前同一语义）。
     const abortPromise: Promise<never> | null = (() => {
       if (!signal || signal.aborted) return null;
       return new Promise<never>((_, reject) => {
@@ -574,32 +669,21 @@ async function* streamLifecycleImpl<T>(
       });
     })();
 
-    const iterator = source[Symbol.asyncIterator]();
-    let iterDone = false;
-    while (!iterDone) {
-      if (snapshot.timedOut) break;
-      if (signal?.aborted) break;
-      const racers: Promise<IteratorResult<T>>[] = [iterator.next()];
-      if (abortPromise) racers.push(abortPromise as any);
-      let iterResult: IteratorResult<T>;
-      try {
-        iterResult = await Promise.race(racers);
-      } catch (e) {
-        // 关键：只有"abort race 主动 reject"才静默退出；source 抛出的真实错误
-        // （如 parseSSE 字节级超时、网络错误）必须原样抛出，保持与旧 for-await 一致的语义，
-        // 否则会把超时/错误吞成"流正常结束"。
-        if (signal?.aborted) break;
-        throw e;
-      }
-      if (iterResult.done) {
-        iterDone = true;
-        break;
-      }
-      const event = iterResult.value;
+    // F1 ①②：两个中断源 —— 超时（本轮新增）与外部 signal（既有语义）。
+    // 消费方丢弃本生成器时，raceIterate 的 finally 会 `return()` 源头，
+    // 源头的 finally 也就能执行（改造前这条链一断到底，所有 finally 都不跑）。
+    const interrupts: Promise<never>[] = [timeoutInterrupt];
+    if (abortPromise) interrupts.push(abortPromise);
 
-      if (snapshot.timedOut) break;
-      // signal 纵深防御：流消费中检查 signal，支持用户中断穿透
-      if (signal?.aborted) break;
+    for await (const event of raceIterate(source, { interrupts })) {
+      // 超时若在「事件已取到、尚未处理」之间触发：以带类型的错误结束。
+      // 不 break —— break 对下游表现为「流正常结束」，有内容时漏斗会把它当成功
+      //（`markHealthy` + return），超时被伪装成最不该的一种状态。
+      if (timeoutError) throw timeoutError;
+      // signal 纵深防御：流消费中检查 signal，支持用户中断穿透。
+      // 用 return 而不是 break：break 之后会执行到循环外的 `sourceExhausted = true`，
+      // 把一次主动放弃误记成「源已正常结束」。
+      if (signal?.aborted) return;
       // 漏斗控制事件：只改计时，不算活动、不算进展、不计入 TTFT（见 classifyRetryBoundary）。
       const boundary = classifyRetryBoundary(event);
       if (boundary !== null) {
@@ -661,10 +745,27 @@ async function* streamLifecycleImpl<T>(
       }
       yield event;
     }
+    // 只有源正常结束（for-await 自然退出）才会执行到这一行。
+    // signal abort / 超时 / 消费方 throw 都会跳过它（前两者 return/throw，后者穿到 catch）。
+    sourceExhausted = true;
+  } catch (e) {
+    // 保持改造前的 catch 边界：只有「abort race 主动 reject 且 signal 已 abort」才静默退出；
+    // source 抛出的真实错误（parseSSE 字节级超时、网络错误）与 lifecycle 自己的超时错误
+    // 必须原样抛出，否则会把超时/错误吞成「流正常结束」。
+    if (e instanceof StreamLifecycleTimeoutError) throw e;
+    if (signal?.aborted) return;
+    throw e;
   } finally {
     clearTimers();
     // PR9：释放休眠观测器引用（引用计数归零才真的停 interval）。
     releaseSleepObserver();
+    // F1 ⑤：与 try 开头的 +1 配对。生成器被丢弃且 finally 没跑时这里不会执行 ——
+    // 那正是「活跃计数不为 0」要暴露的泄漏形态。
+    activeLifecycleCount = Math.max(0, activeLifecycleCount - 1);
+    // F1 ③：消费方 break/throw 放弃、而源还没结束时，取消底层 I/O。
+    // 正常结束（sourceExhausted）不取消：请求已经完成，再 abort 只是给一个
+    // 不存在的问题制造噪音。
+    if (!sourceExhausted) cancelSourceOnce();
     const elapsedMs = Date.now() - streamStartTime;
     const ttftMs = snapshot.firstEventAt ? snapshot.firstEventAt - streamStartTime : undefined;
     log.debug(`LLM:${label}`, `流结束`, { totalEvents: snapshot.totalEvents, elapsedMs, ttftMs });

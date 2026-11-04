@@ -11,6 +11,9 @@
 import { describe, expect, test, beforeEach } from "bun:test";
 import { __resetCapabilityCacheForTest } from "@sid-code/core/llm/model-capabilities.ts";
 import { guardedStream } from "@sid-code/core/llm/stream-guard.ts";
+// F1（2026-11-04）契约变更：stream-guard 委托 stream-lifecycle，超时从「流正常结束」
+// 改成抛 StreamLifecycleTimeoutError。本文件「确认开枪」的用例因此要捕获它。
+import { StreamLifecycleTimeoutError } from "@sid-code/core/llm/errors.ts";
 import { filterParamsForModel } from "@sid-code/core/llm/model-capability-filter.ts";
 import { lookupCatalog } from "@sid-code/core/llm/model-params-catalog.ts";
 import { resolveEffortCapability } from "@sid-code/core/llm/effort.ts";
@@ -107,10 +110,17 @@ describe("stream-guard", () => {
     });
 
     const collected: string[] = [];
-    for await (const event of guarded) {
-      collected.push(event);
+    // F1 契约变更：超时以 StreamLifecycleTimeoutError 结束（不再静默 break）
+    let caught: unknown = null;
+    try {
+      for await (const event of guarded) {
+        collected.push(event);
+      }
+    } catch (e) {
+      caught = e;
     }
 
+    expect(caught).toBeInstanceOf(StreamLifecycleTimeoutError);
     expect(collected).toEqual(["first"]);
     expect(timeoutCalled).toBe(true);
     expect(timeoutEvent).not.toBeNull();

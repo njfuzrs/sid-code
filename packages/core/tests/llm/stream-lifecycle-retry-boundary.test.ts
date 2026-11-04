@@ -17,6 +17,10 @@ import {
   classifyRetryBoundary,
   type StreamTimeoutLayer,
 } from "@sid-code/core/llm/stream-lifecycle.ts";
+// F1（2026-11-04）契约变更：lifecycle 超时从「break 出循环（对下游表现为流正常结束）」
+// 改成抛 StreamLifecycleTimeoutError。本文件所有「确认开枪」的用例因此统一在 drain
+// 里捕获它 —— 断言（fired / received / snapshot / ttftCalls）一条没改。
+import { StreamLifecycleTimeoutError } from "@sid-code/core/llm/errors.ts";
 
 type Evt = { type: string; phase?: string; delayMs?: number };
 
@@ -45,8 +49,16 @@ async function drain(
     },
   });
   const received: Evt[] = [];
-  for await (const e of lc.guard(source)) received.push(e);
-  return { fired, received, snapshot: lc.getSnapshot(), ttftCalls };
+  // F1 契约变更：超时现在以 StreamLifecycleTimeoutError 结束，不再静默 break。
+  // drain 统一兜住它，让「确认开枪」的断言口径保持原样（fired / received / snapshot）。
+  let timedOutLayer: StreamTimeoutLayer | null = null;
+  try {
+    for await (const e of lc.guard(source)) received.push(e);
+  } catch (e) {
+    if (!(e instanceof StreamLifecycleTimeoutError)) throw e;
+    timedOutLayer = e.layer;
+  }
+  return { fired, received, snapshot: lc.getSnapshot(), ttftCalls, timedOutLayer };
 }
 
 describe("classifyRetryBoundary", () => {
@@ -182,13 +194,19 @@ describe("新尝试重新起表", () => {
         upstream.abort();
       },
     });
-    for await (const _ of lc.guard(src())) {
-      /* drain */
+    // F1 契约变更：超时以 StreamLifecycleTimeoutError 结束（不再静默 break）
+    let caught: unknown = null;
+    try {
+      for await (const _ of lc.guard(src())) {
+        /* drain */
+      }
+    } catch (e) {
+      caught = e;
     }
+    expect(caught).toBeInstanceOf(StreamLifecycleTimeoutError);
     expect(lcFired).toEqual(["overall"]);
   });
 });
-
 describe("控制事件不污染观测口径", () => {
   test("不计 totalEvents、不触发 TTFT 回调，但原样透传给消费方", async () => {
     async function* src(): AsyncIterable<Evt> {
@@ -233,9 +251,16 @@ describe("负向对照：无控制事件的流（provider 内部用法）行为�
       },
     });
     const t0 = Date.now();
-    for await (const _ of lc.guard(src())) {
-      /* drain */
+    // F1 契约变更：超时以 StreamLifecycleTimeoutError 结束（不再静默 break）
+    let caught: unknown = null;
+    try {
+      for await (const _ of lc.guard(src())) {
+        /* drain */
+      }
+    } catch (e) {
+      caught = e;
     }
+    expect(caught).toBeInstanceOf(StreamLifecycleTimeoutError);
     expect(fired).toEqual(["overall"]);
     expect(Date.now() - t0).toBeLessThan(400);
   });

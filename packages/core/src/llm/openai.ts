@@ -1201,7 +1201,11 @@ export class OpenAIProvider implements Provider {
         modelName: params.model ?? this._model,
       });
       const FETCH_ABSOLUTE_TIMEOUT_MS = streamTimeouts.fetchAbsoluteTimeoutMs;
-      const fetchSignals: AbortSignal[] = [headerTimeoutCtl.signal];
+      // F1 ③：per-request 取消 controller —— lifecycle 判定超时 / 被消费方放弃时用它
+      // 中断**本次请求**。与外部 signal 分开：外部 signal 是用户 ESC 的语义载体
+      //（T7 明确不交给 lifecycle 做早退），两者互不覆盖。
+      const streamCancelCtl = new AbortController();
+      const fetchSignals: AbortSignal[] = [headerTimeoutCtl.signal, streamCancelCtl.signal];
       if (signal) fetchSignals.unshift(signal);
       // PR11（§4.5）：走 makeFetchAbsoluteTimeoutSignal 而非裸 AbortSignal.timeout ——
       // 计时机制完全不变，只是 abort 时补一条 TimeoutFired，让这一层不再隐身。
@@ -1446,6 +1450,10 @@ export class OpenAIProvider implements Provider {
             /* 遥测失败不影响主流程 */
           }
         },
+        // F1 ③：lifecycle 判定超时 / 被消费方放弃时，取消**本次请求**。
+        // 改造前三层超时只能报告不能执行 —— 真正的收尾要靠漏斗层，而漏斗的
+        // 整体超时阈值比这里的 idle/content 更宽，于是中间那几层全是"看着有、实则无"。
+        cancelSource: (reason) => streamCancelCtl.abort(reason),
       });
       // PR12：把渠道别名传进 parseSSE，让字节级两档能吃到 per-model 覆盖。
       for await (const event of lifecycle.guard(
@@ -1699,7 +1707,9 @@ export class OpenAIProvider implements Provider {
       modelName: params.model ?? this._model,
     });
     const FETCH_ABSOLUTE_TIMEOUT_MS = streamTimeouts.fetchAbsoluteTimeoutMs;
-    const fetchSignals: AbortSignal[] = [headerTimeoutCtl.signal];
+    // F1 ③：同 Chat Completions 路径 —— per-request 取消 controller 交给 lifecycle。
+    const streamCancelCtl = new AbortController();
+    const fetchSignals: AbortSignal[] = [headerTimeoutCtl.signal, streamCancelCtl.signal];
     if (signal) fetchSignals.unshift(signal);
     // PR11（§4.5）：同 Chat Completions 路径，留痕但不动计时机制。
     // `path` 维度是必要的：两条路径共用同一个 layer，没有它就分不清
@@ -1889,6 +1899,10 @@ export class OpenAIProvider implements Provider {
             /* 安全 */
           }
         },
+        // F1 ③：lifecycle 判定超时 / 被消费方放弃时，取消**本次请求**。
+        // 本路径的解析器（readSSEEvents）一个定时器都没有，事件级 idle 就是它的档① ——
+        // 若这层只报告不执行，等于整条路径没有任何一层真能打断死流。
+        cancelSource: (reason) => streamCancelCtl.abort(reason),
         // 用 openai-responses.ts 导出的判定函数，不再就地手写第二份。
         //
         // 两处差异是实的、且方向不利：手写这份把 `content_block_start` 也算进展，
