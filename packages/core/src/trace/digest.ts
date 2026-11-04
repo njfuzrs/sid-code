@@ -272,7 +272,9 @@ export interface ProviderDigestStats {
   timedOut: number;
   retried: number;
   /**
-   * 整轮 API 耗时均值（ms）。取自 AfterModelRaw.elapsed_ms（= apiDuration，含握手+生成+重试）。
+   * 整轮 API 耗时均值（ms）。取自 AfterModelRaw.elapsed_ms（= apiDuration，含握手+生成+重试，
+   * **已扣除人工等待** —— F4 起 `api_duration_ms` 不再把等人时段算成模型耗时，
+   * 原始墙钟见同事件的 `api_duration_raw_ms`）。
    * 注意：这不是"网关握手延迟"，渲染时须标注为"整轮耗时"，避免与 ttfb（首字节）混淆（Bug B）。
    */
   avgLatencyMs: number;
@@ -4399,7 +4401,8 @@ export function renderList(all: SessionRef[], opts: RenderOptions = {}): string 
  *   （实测 idx=15 合成 102.3s vs 真实首 token 6.7s），导致 P50/P95 严重虚高、误导排查方向。
  * - **gen（模型生成耗时）**：取自 `RetryTelemetry("stream_completed").elapsedMs`（单次 fetch 从连接到
  *   流结束的纯耗时，自带 provider）。新增此维度让"慢在生成"这一主因显式可见。
- * - **avgLatencyMs（整轮 API 耗时）**：取自 `AfterModelRaw.elapsed_ms`（= apiDuration，含握手+生成+重试）。
+ * - **avgLatencyMs（整轮 API 耗时）**：取自 `AfterModelRaw.elapsed_ms`（= apiDuration，含握手+生成+重试，
+ *   **已扣除人工等待**；原始墙钟在同事件的 `api_duration_raw_ms`）。
  *   渲染时须标注为"整轮耗时"而非"网关握手延迟"，避免与 TTFT 混淆（Bug B）。
  *
  * first_content 事件只带 model 不带 provider，故先扫一遍 AfterModelRaw 建立 model→provider 映射，

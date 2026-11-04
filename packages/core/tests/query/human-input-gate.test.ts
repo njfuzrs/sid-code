@@ -7,10 +7,15 @@
 
 import { describe, test, expect, afterEach } from "bun:test";
 import {
+  activeHitlScopeCount,
   beginHumanInputWait,
+  closeHitlScope,
   endHumanInputWait,
+  humanInputWaitElapsedMs,
   isAwaitingHumanInput,
+  openHitlScope,
   readHitlSegmentCount,
+  resolveHitlScope,
   withHumanInputWait,
   __resetHumanInputGate,
 } from "@sid-code/core/query/human-input-gate.ts";
@@ -91,14 +96,104 @@ describe("human-input-gate", () => {
     expect(readHitlSegmentCount()).toBe(before + 2);
   });
 
-  test("区段计数与耗时同源：嵌套不计时，独立段各计一次", async () => {
-    // 时长仍以引用计数配对为准（嵌套不重复计），但段数也是同一口径 —— 两者不会互相矛盾。
+  test("区段计数与耗时同源：嵌套只算一段，不会因嵌套翻倍", async () => {
+    const before = readHitlSegmentCount();
     await withHumanInputWait(async () => {
       await withHumanInputWait(async () => {
         await new Promise((r) => setTimeout(r, 10));
       });
     });
-    // 区段只 +1；耗时 > 0 且只计一次（无法精确断言时长，只锁"不会因嵌套而翻倍"）
+    // 强断言：嵌套两层也只 +1。此前是 `toBeGreaterThan(0)`，实现退化成「每层 +1」也能绿。
+    expect(readHitlSegmentCount()).toBe(before + 1);
+  });
+
+  test("__resetHumanInputGate 连区段数一起清零（否则用例互相污染）", () => {
+    beginHumanInputWait();
+    endHumanInputWait();
     expect(readHitlSegmentCount()).toBeGreaterThan(0);
+    __resetHumanInputGate();
+    expect(readHitlSegmentCount()).toBe(0);
+  });
+
+  // ─── F4-2：作用域归属 ───
+  //
+  // 锁住「别的 agent 等人的时间不会被扣进我的模型耗时」。归属规则是**宁可漏计，
+  // 不可多计** —— 多计的后果是凭空造出「模型耗时 0ms」的假样本，方向与「更快」相反。
+
+  test("没有活跃 scope 时不猜归属：等待只进进程级累计", async () => {
+    expect(activeHitlScopeCount()).toBe(0);
+    expect(resolveHitlScope()).toBeUndefined();
+    await withHumanInputWait(async () => {
+      await new Promise((r) => setTimeout(r, 10));
+    });
+    // 进程级口径照常（既有消费者不受影响），但没有任何 scope 认领它
+    expect(readHitlSegmentCount()).toBe(1);
+    expect(humanInputWaitElapsedMs()).toBeGreaterThanOrEqual(5);
+  });
+
+  test("唯一活跃 scope 时，未显式传 scope 的等待按推断归属它", async () => {
+    const only = openHitlScope();
+    expect(resolveHitlScope()).toBe(only);
+    await withHumanInputWait(async () => {
+      await new Promise((r) => setTimeout(r, 30));
+    });
+    expect(readHitlSegmentCount(only)).toBe(1);
+    expect(humanInputWaitElapsedMs(only)).toBeGreaterThanOrEqual(20);
+    closeHitlScope(only);
+  });
+
+  test("两个活跃 scope 时推断失败（多 agent 并发不猜）", () => {
+    const a = openHitlScope();
+    const b = openHitlScope();
+    expect(activeHitlScopeCount()).toBe(2);
+    expect(resolveHitlScope()).toBeUndefined();
+    closeHitlScope(a);
+    closeHitlScope(b);
+  });
+
+  test("【污染回归】两个 scope 顺序等待，各自的时长互不含对方", async () => {
+    const a = openHitlScope();
+    const b = openHitlScope();
+    await withHumanInputWait(() => new Promise((r) => setTimeout(r, 40)), a);
+    const aMs = humanInputWaitElapsedMs(a);
+    await withHumanInputWait(() => new Promise((r) => setTimeout(r, 40)), b);
+    const bMs = humanInputWaitElapsedMs(b);
+
+    expect(aMs).toBeGreaterThanOrEqual(30);
+    expect(bMs).toBeGreaterThanOrEqual(30);
+    // 关键断言：若 b 读到的是进程级累计（实现退化），bMs ≈ aMs + 40 会明显超出这个上界。
+    expect(bMs).toBeLessThan(aMs + 20);
+    closeHitlScope(a);
+    closeHitlScope(b);
+  });
+
+  test("【污染回归】重叠等待时，后加入的 scope 一秒都不认领（降级为漏计）", async () => {
+    const a = openHitlScope();
+    const b = openHitlScope();
+    await withHumanInputWait(async () => {
+      // a 已等了一会儿之后，b 才进入等待 —— 后台子代理与主循环重叠的形态
+      await new Promise((r) => setTimeout(r, 30));
+      await withHumanInputWait(() => new Promise((r) => setTimeout(r, 30)), b);
+    }, a);
+
+    // b 只是「加入」，不是发起者：它不该认领任何时长（多计就是从这条路径来的）
+    expect(humanInputWaitElapsedMs(b)).toBe(0);
+    expect(readHitlSegmentCount(b)).toBe(0);
+    // a 只结算冲突之前的那 30ms 左右，不会把 b 的那段也算进来
+    expect(humanInputWaitElapsedMs(a)).toBeLessThan(55);
+    // 进程级累计仍覆盖整段并集（~60ms）—— 既有消费者语义不变
+    expect(humanInputWaitElapsedMs()).toBeGreaterThanOrEqual(40);
+    closeHitlScope(a);
+    closeHitlScope(b);
+  });
+
+  test("closeHitlScope 丢掉该 scope 的累计（loop 退出后不残留）", async () => {
+    const scope = openHitlScope();
+    await withHumanInputWait(() => new Promise((r) => setTimeout(r, 20)), scope);
+    expect(humanInputWaitElapsedMs(scope)).toBeGreaterThan(0);
+    closeHitlScope(scope);
+    expect(humanInputWaitElapsedMs(scope)).toBe(0);
+    expect(readHitlSegmentCount(scope)).toBe(0);
+    expect(activeHitlScopeCount()).toBe(0);
   });
 });

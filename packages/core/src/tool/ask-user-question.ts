@@ -150,7 +150,14 @@ export class AskUserQuestionTool implements Tool {
       };
     }
 
-    const result = await askUserQuestion({ questions: params.questions }, signal);
+    // TS 的收窄不会保留到可能延迟执行的闭包里（`params` 是可变的属性），显式取一份。
+    const questions: AskQuestion[] = params.questions;
+
+    // F4-2：AskUserQuestion 是「阻塞等用户」的典型路径，此前完全没有闸门 —— 等待期间
+    // 既不计 HITL，也不通知看门狗剔除等待（用户长考会被 turn_hard / watchdog 误判成无进展）。
+    // 不显式传 scope：工具 execute 拿不到 loop 的 deps，由闸门用「唯一活跃 scope」推断。
+    const { withHumanInputWait } = await import("../query/human-input-gate.ts");
+    const result = await withHumanInputWait(() => askUserQuestion({ questions }, signal));
 
     if (result.status === "unavailable") {
       // headless/SDK/CI 模式：无交互通道。明确告知模型"无法向用户提问"，

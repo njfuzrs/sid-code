@@ -37,7 +37,13 @@ import { ModelFallback } from "../llm/fallback.ts";
 // 实测可用，但换到 Node ESM 会 ReferenceError。这里只作 getProviderForModel 未注入时的兜底。
 import { AnthropicProvider } from "../llm/anthropic.ts";
 import { OpenAIProvider } from "../llm/openai.ts";
-import { humanInputWaitElapsedMs, isAwaitingHumanInput } from "./human-input-gate.ts";
+import {
+  closeHitlScope,
+  HITL_SCOPE_SESSION_KEY,
+  humanInputWaitElapsedMs,
+  isAwaitingHumanInput,
+  openHitlScope,
+} from "./human-input-gate.ts";
 import { trackRetryBackoff } from "./retry-backoff-window.ts";
 import { setSseDumpContext } from "../llm/sse-chunk-dumper.ts";
 import { takeLastRequestId } from "../api/request-id.ts";
@@ -1038,19 +1044,40 @@ export async function* queryLoop(loopConfig: QueryLoopConfig): AsyncGenerator<Qu
   // 投一条通知把空闲主循环叫醒。包在最外层而不是 queryLoopBody 的 finally 里：那个 finally 之后
   // 还有 maxTurns 强制总结轮，登记必须发生在真正空闲之后（事故 20261103-130950-00ef059c）。
   beginMainLoopTurn();
+  // F4-2：本 loop 的 HITL 归属作用域。包在 generator 的 try/finally 里 —— 无论正常结束、
+  // 异常还是被 `return()`，closeHitlScope 都会执行。忘关会让「唯一活跃 scope」推断永久
+  // 失效（此后所有未显式传 scope 的等待都不归属任何 loop，宁可漏计但也没人拿到数据）。
+  const hitlScopeId = openHitlScope();
   try {
-    yield* queryLoopBody(loopConfig);
+    yield* queryLoopBody(loopConfig, hitlScopeId);
   } finally {
+    closeHitlScope(hitlScopeId);
+    // 上一轮的 scope 不能留在会话状态里：`withHumanInputWait` 的调用点靠它判定归属，
+    // 残留会让下一轮 / resume 后的新 loop 读到过期 id，等待就此记不进任何 scope。
+    try {
+      loopConfig.sessionState?.delete?.(HITL_SCOPE_SESSION_KEY);
+    } catch {
+      /* 观测状态清理失败不影响 loop 收尾 */
+    }
     endMainLoopTurn();
   }
 }
 
-async function* queryLoopBody(loopConfig: QueryLoopConfig): AsyncGenerator<QueryLoopYield> {
+async function* queryLoopBody(
+  loopConfig: QueryLoopConfig,
+  hitlScopeId: string,
+): AsyncGenerator<QueryLoopYield> {
   const log = getLogger();
   const { config, ctxMgr, toolRegistry, sessionState, hookSystem, thinking, deps } = loopConfig;
+  // F4-2：让 tool-executor / app.ts 的 `withHumanInputWait` 调用点能读到本轮的 scope 并
+  // 显式传进来（它们各有独立的 deps，拿不到 queryLoop 内部创建的 LoopState）。
+  // 读不到时闸门退回「唯一活跃 scope」推断，多 agent 并发下会漏计而非多计。
+  sessionState.set(HITL_SCOPE_SESSION_KEY, hitlScopeId);
 
   const loopDetector = new LoopDetector();
   const state: LoopState = createInitialLoopState(config.maxTurns || Infinity);
+  // F4-2：两个 HITL 基准（区段数 / 等待毫秒）都要按 scope 读，见 `beginTurn` 的注释。
+  state.hitlScopeId = hitlScopeId;
   // T6：上一条消息之后用户手动 /compact 过 → 本条消息补置三个重注入标志（见 post-compact-flags.ts）
   if (consumeSessionCompactMark(sessionState, state)) {
     log.info("QUERY_LOOP", "检测到 loop 外的手动压缩，补置压缩后重注入标志");
@@ -3014,10 +3041,12 @@ async function* queryLoopBody(loopConfig: QueryLoopConfig): AsyncGenerator<Query
       const perfHandle = getPerfTimer().start(`llm_request_${state.turnCount}`);
       // F4：本次模型调用的「人工等待」快照。`apiDuration` 必须扣掉这段 —— 它是墙钟，
       // 而等人（fallback 询问 / 权限确认）等的是人，不是模型。
-      // 用进程级累计值而非本循环内自己记账的 humanInputPauseAccumMs：后者只在两个看门狗
-      // tick 时采样，轮次结束得比 tick 快时恒为 0（本方案那条 2.85h 的等待就是这么漏掉的）。
+      // 为什么读 scope 而不是进程级累计值：进程级会把同进程里并发的子代理等人的时间
+      // 也算进来，扣减过头会凭空造出「模型耗时 0ms」的假样本（见 human-input-gate 文件头）。
+      // 也不用本循环自己记账的 humanInputPauseAccumMs：后者只在两个看门狗 tick 时采样，
+      // 轮次结束得比 tick 快时恒为 0（方案那条 2.85h 的等待就是这么漏掉的）。
       // 取快照时点与 perfHandle 同刻，差值才是「本次请求期间新增的等待」。
-      const humanInputWaitAtRequestStart = humanInputWaitElapsedMs();
+      const humanInputWaitAtRequestStart = humanInputWaitElapsedMs(hitlScopeId);
       // TTFT 不在这里自己计：曾用下方 processStream 的可视文本回调计时，纯 tool_use /
       // thinking 轮恒 undefined（2026-10-08 端到端实测 3 轮只有 end_turn 那轮有值）。
       // 改为取 lifecycle 层 first_content 的同一个值（首个任意内容 chunk、每次 fetch 单独计），
@@ -3086,6 +3115,10 @@ async function* queryLoopBody(loopConfig: QueryLoopConfig): AsyncGenerator<Query
         // 几百秒，但两个候选根因（事件循环被 IO 占满 / humanInputPause 扣减）都无法从
         // 现有轨迹分辨——见 stream-observer.ts emitTimerDrift 的说明。
         let turnLastTickAt = Date.now();
+        // F4-2：上一个 tick 结束时的「是否在等人」采样。迟到报的是**上一个 tick 区间**的
+        // 实际间隔，只用「此刻」的状态打标会两头错：等待刚结束的那个 tick 会漏标（把等待
+        // 造成的迟到记成事件循环阻塞），刚开始的那个 tick 会误标。区间语义 = 起止两端取或。
+        let turnAwaitingAtLastTick = isAwaitingHumanInput();
         const turnTimeoutPromise = new Promise<never>((_resolve, reject) => {
           turnTimer = setInterval(() => {
             try {
@@ -3095,6 +3128,10 @@ async function* queryLoopBody(loopConfig: QueryLoopConfig): AsyncGenerator<Query
                 const now = Date.now();
                 const actual = now - turnLastTickAt;
                 turnLastTickAt = now;
+                // 区间语义：本区间起点 / 终点任一端在等人即算（见声明处的注释）。
+                const turnAwaitingNow = isAwaitingHumanInput();
+                const turnDuringHitl = turnAwaitingNow || turnAwaitingAtLastTick;
+                turnAwaitingAtLastTick = turnAwaitingNow;
                 // 休眠剔除：跳跃幅度达阈值即认定系统被挂起，把超出正常 tick 的部分
                 // 计入 sleepPauseAccumMs，从下方 businessElapsedMs 里整体扣掉。
                 // 放在 drift 埋点旁边而非之后：drift 与休眠判据用的是同一个 actual，
@@ -3117,7 +3154,7 @@ async function* queryLoopBody(loopConfig: QueryLoopConfig): AsyncGenerator<Query
                     // F4：等待期内的迟到单独标记。等人时宿主的定时器补偿 / 事件循环让出
                     // 都会让 tick 变慢，它与"事件循环被 IO 占满"是两种完全不同的成因，
                     // 混在一起会把真正的性能问题稀释掉。
-                    during_hitl: isAwaitingHumanInput() ? true : undefined,
+                    during_hitl: turnDuringHitl ? true : undefined,
                     // 缺口7：与 hypothesis 各事件统一轮次口径，让"迟到发生在会话哪一阶段"可跨消息还原。
                     absoluteTurn: sessionState.getAbsoluteTurn(),
                     promptSeq,
@@ -3205,6 +3242,8 @@ async function* queryLoopBody(loopConfig: QueryLoopConfig): AsyncGenerator<Query
         // 累计；共享还保证两条防线对「已扣除多少等待」看法一致，不会一个扣了另一个没扣而口径打架。
         // 定时器迟到实测（见 turn_hard 处同名注释与 stream-observer.ts emitTimerDrift）。
         let watchdogLastTickAt = Date.now();
+        // F4-2：同 turn_hard —— 迟到报的是上一个 tick 区间，用区间两端的等待状态取或。
+        let watchdogAwaitingAtLastTick = isAwaitingHumanInput();
         // P2：静默期半程告警只报一次的门闩（每轮独立，随本轮 watchdog 生命周期）。
         let streamIdleWarned = false;
         const watchdogPromise = new Promise<never>((_resolve, reject) => {
@@ -3217,6 +3256,10 @@ async function* queryLoopBody(loopConfig: QueryLoopConfig): AsyncGenerator<Query
                 const now = Date.now();
                 const actual = now - watchdogLastTickAt;
                 watchdogLastTickAt = now;
+                // 区间语义：本区间起点 / 终点任一端在等人即算（见 turn_hard 处同名注释）。
+                const watchdogAwaitingNow = isAwaitingHumanInput();
+                const watchdogDuringHitl = watchdogAwaitingNow || watchdogAwaitingAtLastTick;
+                watchdogAwaitingAtLastTick = watchdogAwaitingNow;
                 // 休眠剔除（同 turn_hard 处理，共享 sleepPauseAccumMs 天然去重）。
                 // 对 watchdog 尤其关键：本次事故三次强杀全部由 watchdog 判出，
                 // 而三段"无进展"其实全是休眠——剔除后它们不再构成杀流理由。
@@ -3236,7 +3279,7 @@ async function* queryLoopBody(loopConfig: QueryLoopConfig): AsyncGenerator<Query
                     drift_ms: actual - WATCHDOG_CHECK_INTERVAL_MS,
                     sleep_ms: sleptW > 0 ? sleptW : undefined,
                     // F4：同 turn_hard —— 等待期内的迟到不是事件循环阻塞的证据。
-                    during_hitl: isAwaitingHumanInput() ? true : undefined,
+                    during_hitl: watchdogDuringHitl ? true : undefined,
                     // 缺口7：与 hypothesis 各事件统一轮次口径，让"迟到发生在会话哪一阶段"可跨消息还原。
                     absoluteTurn: sessionState.getAbsoluteTurn(),
                     promptSeq,
@@ -3725,7 +3768,10 @@ async function* queryLoopBody(loopConfig: QueryLoopConfig): AsyncGenerator<Query
       // humanInputPauseAccumMs 扣过同一段，唯独上报值没有 —— 于是 digest 的端到端
       // p50 被一条等人样本拉到 44300.9s，看起来"系统慢得离谱"。
       // 原始值不丢：另记 `api_duration_raw_ms`，需要墙钟口径的消费方仍然拿得到。
-      const hitlWaitMs = Math.max(0, humanInputWaitElapsedMs() - humanInputWaitAtRequestStart);
+      const hitlWaitMs = Math.max(
+        0,
+        humanInputWaitElapsedMs(hitlScopeId) - humanInputWaitAtRequestStart,
+      );
       const apiDuration = Math.max(0, apiDurationRaw - hitlWaitMs);
       // P1-2：在清零 timeoutRetryCount 之前捕获"本轮是否发生过重试"，供下方 cache break
       // 归因标注（重连会重发相同前缀，服务端缓存可能已过期/换节点 → 命中脱落）。

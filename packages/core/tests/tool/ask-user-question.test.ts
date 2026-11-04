@@ -17,6 +17,10 @@ import {
   parseAskTimeoutMs,
 } from "@sid-code/core/tool/ask-user-question-bridge.ts";
 import { AskUserQuestionTool } from "@sid-code/core/tool/ask-user-question.ts";
+import {
+  isAwaitingHumanInput,
+  __resetHumanInputGate,
+} from "@sid-code/core/query/human-input-gate.ts";
 
 describe("ask-user-question-bridge", () => {
   beforeEach(() => {
@@ -348,5 +352,38 @@ describe("AskUserQuestion 空闲超时行为（handler 模式模拟）", () => {
 
     expect(result.status).toBe("cancelled");
     expect(elapsed).toBeLessThan(5000); // 确实是超时解除而非挂死
+  });
+});
+
+// ─── F4-2：AskUserQuestion 接进 HITL 闸门 ───
+//
+// 这条路径此前**完全没有闸门**：`had_hitl` / `hitl_wait_ms` 统计不到它，等待期间两个
+// 看门狗也照样按「无进展」判定 —— 用户读完问题再回答，可能被判成流 hang 强杀。
+
+describe("AskUserQuestion · HITL 闸门（F4-2）", () => {
+  beforeEach(() => {
+    setAskUserQuestionHandler(null);
+    __resetHumanInputGate();
+  });
+
+  test("等待用户作答期间闸门打开、结束后闭合", async () => {
+    let during = false;
+    setAskUserQuestionHandler(async () => {
+      // handler 被调用 = 弹窗已弹出 = 正在等用户
+      during = isAwaitingHumanInput();
+      await new Promise((r) => setTimeout(r, 10));
+      return { status: "answered", answers: { "foo?": "A" } };
+    });
+
+    const tool = new AskUserQuestionTool();
+    const result = await tool.execute({
+      questions: [{ question: "foo?", header: "Q", options: [{ label: "A" }, { label: "B" }] }],
+    });
+
+    expect(during).toBe(true);
+    // 成功路径只带 output（isError 只在错误分支出现），断言答案确实回灌
+    expect(result.output).toContain("A");
+    // 结束后必须闭合，否则看门狗被永久架空（比漏计更危险）
+    expect(isAwaitingHumanInput()).toBe(false);
   });
 });
