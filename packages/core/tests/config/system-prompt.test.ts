@@ -70,11 +70,12 @@ describe("buildSystemPrompt", () => {
     expect(prompt).toContain("</tool-guide>");
   });
 
-  test("工具自带 usageGuide 会被包含", () => {
+  test("已加载工具的 usageGuide 不在 system 重复（只在 tools[].description，F5-Q5a）", () => {
     const tools = [makeTool({ name: "bash", desc: "执行命令", guide: "不要用 bash cat 读文件" })];
     const prompt = buildSystemPrompt({ tools });
-    expect(prompt).toContain("bash 工具使用指南");
-    expect(prompt).toContain("不要用 bash cat 读文件");
+    expect(prompt).toContain("bash: 执行命令");
+    expect(prompt).not.toContain("bash 工具使用指南");
+    expect(prompt).not.toContain("不要用 bash cat 读文件");
   });
 
   test("没有 usageGuide 的工具不会生成额外指南", () => {
