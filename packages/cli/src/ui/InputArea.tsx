@@ -70,6 +70,7 @@ import { parseInputForHighlighting, renderHighlightedSegments } from "./utils/in
 import { DEFAULT_TERM_WIDTH } from "./markdown.ts";
 import { getAppConfig, shouldShowHint, markHintShown } from "@sid-code/core/config/app-config.ts";
 import { ARROW_PROMPT } from "./constants/figures.ts";
+import { nextHeldRows, useHeldRowsPolicy, type HeldRowsState } from "./hooks/useHeldRows.ts";
 import { mixToContrast } from "./themes/color-utils.ts";
 
 interface InputAreaProps {
@@ -1150,23 +1151,20 @@ export function InputArea({
       </Box>
     ) : null;
 
-  // 输入框高度水位：只升不降，下一轮开始（isLoading 上升沿）才回落。
+  // 输入框高度水位：只升不降，下一轮开始（isLoading 上升沿）或历史区新增一项时才回落。
   // 主屏帧已溢出视口时任何收缩都会整帧重画全部历史（packages/tui/src/frame/main-screen.ts 文件头）：
   // 退格删行、Ctrl+U、Esc 清空、关补全菜单让行数变少时，用空行把框撑在最高点。
-  // 回落那一帧用户消息进历史、spinner 出现，帧本来在变高，不会单独造成收缩。
-  // 与 hooks/useHeldRows.ts 同一规则。两个 ref 声明在反向搜索提前 return 之上（hook 顺序铁律）；
+  // 回落那一帧帧本来在变高，不会单独造成收缩。全屏布局不占位（policy.enabled=false）。
+  // 与 hooks/useHeldRows.ts 同一规则（nextHeldRows）。hook 声明在反向搜索提前 return 之上（hook 顺序铁律）；
   // 空输入框分支与正常分支都经 padInputRows 取补行数，漏一条就会在那条路径上复发。
-  const inputHeightHighRef = useRef(1);
-  const inputHeightPrevLoadingRef = useRef(isLoading);
-  const padInputRows = (rows: number): number => {
-    if (isLoading && !inputHeightPrevLoadingRef.current) {
-      inputHeightHighRef.current = rows;
-    } else if (rows > inputHeightHighRef.current) {
-      inputHeightHighRef.current = rows;
-    }
-    inputHeightPrevLoadingRef.current = isLoading;
-    return Math.max(0, inputHeightHighRef.current - rows);
-  };
+  const heldRowsPolicy = useHeldRowsPolicy();
+  const inputHeightRef = useRef<HeldRowsState>({
+    held: 1,
+    prevBusy: isLoading,
+    prevEpoch: heldRowsPolicy.epoch,
+  });
+  const padInputRows = (rows: number): number =>
+    Math.max(0, nextHeldRows(inputHeightRef.current, rows, isLoading, heldRowsPolicy) - rows);
   const renderPadRows = (n: number) =>
     Array.from({ length: n }, (_, i) => <Text key={`pad-${i}`}> </Text>);
 
