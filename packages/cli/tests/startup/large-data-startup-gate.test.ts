@@ -315,6 +315,15 @@ function logRoundTraces(
         `大目录子进程 起=${t.largeBusyAtStart ? "跑" : "闲"} 止=${t.largeBusyAtEnd ? "跑" : "闲"}`,
     );
   }
+  // 断言真正吃的口径：同一轮内的配对差值（轮间漂移在减法里消掉，见 pairedDelta 注释）。
+  // 原始值只能回答「哪一轮慢」，配对差值才能回答「大数据目录多做了多少活」。
+  console.log("[gate] 每轮配对差值（同一轮内 被测−空，frame/block，ms）：");
+  for (const t of traces) {
+    console.log(
+      `[gate]   轮${t.round} 大−空 ${cell(t.frame.large - t.frame.empty)}/${cell(t.block.large - t.block.empty)} ` +
+        `传−空 ${cell(t.frame.upload - t.frame.empty)}/${cell(t.block.upload - t.block.empty)}`,
+    );
+  }
   if (largeMaint) {
     const start = largeMaint.startedAt - wallStart;
     const end = largeMaint.finishedAt - wallStart;
@@ -385,6 +394,50 @@ function median(xs: number[]): number {
   return a[Math.floor(a.length / 2)];
 }
 
+type Config = "empty" | "large" | "upload";
+
+/**
+ * 每轮的启动顺序：三轮轮转，让三种配置在「先测 / 中测 / 后测」三个位置上各坐一次。
+ *
+ * ## 为什么不能固定「空 → 大 → 传」
+ *
+ * 轮内漂移是单向的：后测的那次更容易吃到前面启动留下的缓存与负载。固定顺序等于让
+ * 大数据目录永远吃这个亏。2026-11-04 的 macOS 失败里每轮都是「大 > 空」，且后面的轮次
+ * 差值更大（137 / 180 / 193ms），与「同一轮内越晚越慢」的形态吻合 —— 而它不是我们要量的东西。
+ *
+ * 三轮 × 三个位置正好被三种配置各覆盖一次，位置偏差在轮转中被抵消；换成 ABBA 两轮也能
+ * 抵消，但 RUNS=3 时轮转比「偶正反交替」少一种边界情况，且加轮次（RUNS=6/9）依然对称。
+ */
+const ROUND_ORDER: readonly (readonly Config[])[] = [
+  ["empty", "large", "upload"],
+  ["large", "upload", "empty"],
+  ["upload", "empty", "large"],
+];
+
+/**
+ * 逐轮配对差值：同一轮里「被测配置 − 空目录」。
+ *
+ * ## 为什么不能拿两组各自的中位数相减
+ *
+ * 那样两个数来自**不同的轮次**，整机负载的漂移直接进了差值。2026-11-04 的两次 macOS 失败
+ * 就是这种形态：PR #568 空=[552/818/638]、大=[689/998/831]，中位数差 192.9ms；而同一份
+ * main 代码（commit 4ac97563）在另一台 runner 上空目录首帧从 552 跳到 1472、差值 156ms。
+ * 3 轮的单次值方差就有 2~3 倍，各自取中位数还在抖，相减等于拿两份噪声做差。
+ *
+ * 配对之后，轮间的整体漂移（机器变慢 / 邻居抢 CPU）在减法里消失，剩下的才是
+ * 「同一轮内大数据目录多做了多少活」—— 也就是这个门禁真正要量的东西。
+ */
+function pairedDelta(
+  runs: Record<Config, Profile[]>,
+  which: Exclude<Config, "empty">,
+  probe: (p: Profile) => number,
+): number[] {
+  return runs.empty.map((p, i) => probe(runs[which][i]!) - probe(p));
+}
+
+/** 差值数组摊平成一串（失败时看逐轮），与 spread 同款用途 */
+const spreadOf = (xs: number[]) => xs.map((x) => Math.round(x)).join(" / ");
+
 /** 把多次启动收成一个「中位数 Profile」（只保留门禁用到的两个口径） */
 function medianProfile(ps: Profile[]): Profile {
   return {
@@ -417,13 +470,16 @@ describeGate("大数据启动门禁（首帧与事件循环阻塞不随数据量
   let bigSession: string;
   let expiredProbe: string;
   let largeHome: string;
-  let upload: Profile;
   let uploadHome: string;
   let uploadSessionDir: string;
   /** 三组的单次值：中位数掩盖方差，红的时候要能看出是「一次离群」还是「整组偏移」 */
   let emptyRuns: Profile[] = [];
   let largeRuns: Profile[] = [];
   let uploadRuns: Profile[] = [];
+  /** 三组的逐轮样本，配对差值的输入（按轮次索引一一对应） */
+  function runsOf(): Record<Config, Profile[]> {
+    return { empty: emptyRuns, large: largeRuns, upload: uploadRuns };
+  }
   /**
    * 每轮的时间线与原始值。
    *
@@ -474,6 +530,11 @@ describeGate("大数据启动门禁（首帧与事件循环阻塞不随数据量
 
     /** 墙钟基准：maintenance-result.json 的 startedAt/finishedAt 是 epoch ms，减它能和轮次窗口对上 */
     const wallStart = Date.now();
+    const homesByConfig: Record<Config, string> = {
+      empty: emptyHome,
+      large: largeHome,
+      upload: uploadHome,
+    };
     // 交替各跑 RUNS 次取中位数：单次 first_frame 实测有 ~250ms 的偶发离群（机器抖动），
     // 单次差值会把它当成退化或把退化抵消掉。
     const e: Profile[] = [];
@@ -497,10 +558,16 @@ describeGate("大数据启动门禁（首帧与事件循环阻塞不随数据量
         await waitMaintenanceIdle(uploadHome);
       }
 
-      const eOne = await startOnce(emptyHome);
-      const lOne = await startOnce(largeHome);
-      resetUploadState(uploadHome, uploadSessionDir);
-      const uOne = await startOnce(uploadHome);
+      // 顺序轮转：三种配置在三个位置上各占一次（见 ROUND_ORDER 的注释）。
+      // 上传目录的记账清理必须在它启动前做：不清的话只有第一轮真的去补传。
+      const measured = new Map<Config, Profile>();
+      for (const which of ROUND_ORDER[i % ROUND_ORDER.length]!) {
+        if (which === "upload") resetUploadState(uploadHome, uploadSessionDir);
+        measured.set(which, await startOnce(homesByConfig[which]));
+      }
+      const eOne = measured.get("empty")!;
+      const lOne = measured.get("large")!;
+      const uOne = measured.get("upload")!;
       e.push(eOne);
       l.push(lOne);
       u.push(uOne);
@@ -522,7 +589,6 @@ describeGate("大数据启动门禁（首帧与事件循环阻塞不随数据量
     uploadRuns = u;
     empty = medianProfile(e);
     large = medianProfile(l);
-    upload = medianProfile(u);
     logRoundTraces(traces, largeMaint, wallStart);
   }, 400_000);
 
@@ -554,21 +620,31 @@ describeGate("大数据启动门禁（首帧与事件循环阻塞不随数据量
   // 取 max 后几乎看不出来（T1 放回 collector 构造的变异就是这样漏过去的），
   // 所以首帧差值才是「首帧前多做了多少活」的主口径，阈值必须收紧。
   // 标定：修复后 +18 ~ +142ms（单次离群已被中位数吸收），C1 变异 +698ms，T1/T2 变异 +353ms。
-  test("首帧：大数据比空目录慢不超过 150ms（中位数）", () => {
-    const delta = firstFrame(large) - firstFrame(empty);
+  //
+  // 判据口径（2026-11-04）：差值改为**逐轮配对**后的中位数，不再拿两组各自的中位数相减——
+  // 后者两个数来自不同的轮次，轮间整机漂移直接进了差值，macOS runner 因此假红过两次
+  // （PR #568 空 552/818/638、大 689/998/831 → 192.9ms；main 4ac97563 → 156ms）。
+  // 阈值仍是 150ms 未动：这次只换测量口径、不调灵敏度；变异 +353ms / +698ms 依然远高于它。
+  test("首帧：大数据比空目录慢不超过 150ms（逐轮配对差值的中位数）", () => {
+    const deltas = pairedDelta(runsOf(), "large", firstFrame);
+    const delta = median(deltas);
     expect(
       delta,
-      `first_frame 空=[${spread(emptyRuns)}] 大=[${spread(largeRuns)}]（中位数差 ${delta}ms）`,
+      `逐轮 Δframe=[${spreadOf(deltas)}]（中位数 ${delta}ms）；` +
+        `first_frame 空=[${spread(emptyRuns)}] 大=[${spread(largeRuns)}]`,
     ).toBeLessThan(150);
   });
 
   // 阈值标定（2026-11-01 本机，3 轮中位数）：修复后 max_block 差值 −13 ~ +15ms；
   // 变异自证：C1 全量会话清理放回主线程 +570ms，T1/T2 放回 collector 构造 +300ms。
-  test("事件循环最大阻塞：大数据比空目录多不超过 100ms", () => {
-    const delta = maxBlock(large) - maxBlock(empty);
+  // 口径同上：逐轮配对后的中位数。
+  test("事件循环最大阻塞：大数据比空目录多不超过 100ms（逐轮配对差值的中位数）", () => {
+    const deltas = pairedDelta(runsOf(), "large", maxBlock);
+    const delta = median(deltas);
     expect(
       delta,
-      `max_loop_block 空=[${spreadBlock(emptyRuns)}] 大=[${spreadBlock(largeRuns)}]（中位数差 ${delta}ms）`,
+      `逐轮 Δblock=[${spreadOf(deltas)}]（中位数 ${delta}ms）；` +
+        `max_loop_block 空=[${spreadBlock(emptyRuns)}] 大=[${spreadBlock(largeRuns)}]`,
     ).toBeLessThan(100);
   });
 
@@ -592,18 +668,20 @@ describeGate("大数据启动门禁（首帧与事件循环阻塞不随数据量
   // U1–U4：阈值与上面两条同一套（150ms / 100ms）。修复前补传在 SessionStart 里
   // fire-and-forget，gzipSync 200MB 是秒级同步阻塞，落在首帧前后 3s 窗口内。
   test("补传（U1–U4）不在 TUI 主线程：配了上传的大 traj 目录，首帧与最大阻塞不随它增长", () => {
-    const dFrame = firstFrame(upload) - firstFrame(empty);
-    const dBlock = maxBlock(upload) - maxBlock(empty);
-    console.log(
-      `[gate] upload first_frame=${firstFrame(upload)} max_block=${maxBlock(upload)} | Δframe=${dFrame} Δblock=${dBlock}`,
-    );
+    const dFrames = pairedDelta(runsOf(), "upload", firstFrame);
+    const dBlocks = pairedDelta(runsOf(), "upload", maxBlock);
+    const dFrame = median(dFrames);
+    const dBlock = median(dBlocks);
+    console.log(`[gate] upload 逐轮 Δframe=[${spreadOf(dFrames)}] Δblock=[${spreadOf(dBlocks)}]`);
     expect(
       dFrame,
-      `first_frame 空=[${spread(emptyRuns)}] 上传=[${spread(uploadRuns)}]（中位数差 ${dFrame}ms）`,
+      `逐轮 Δframe=[${spreadOf(dFrames)}]（中位数 ${dFrame}ms）；` +
+        `first_frame 空=[${spread(emptyRuns)}] 上传=[${spread(uploadRuns)}]`,
     ).toBeLessThan(150);
     expect(
       dBlock,
-      `max_loop_block 空=${maxBlock(empty)}ms 上传=${maxBlock(upload)}ms`,
+      `逐轮 Δblock=[${spreadOf(dBlocks)}]（中位数 ${dBlock}ms）；` +
+        `max_loop_block 空=[${spreadBlock(emptyRuns)}] 上传=[${spreadBlock(uploadRuns)}]`,
     ).toBeLessThan(100);
   });
 
