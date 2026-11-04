@@ -27,7 +27,7 @@
       "date": "2026-11-05",
       "highlight": "网关额度用尽不再误判成普通报错，可自动切到备用渠道",
       "userFacing": true,
-      "channel": "beta",
+      "channel": "stable",
       "mergedInto": null,
       "covers": null,
       "betaNote": null,
