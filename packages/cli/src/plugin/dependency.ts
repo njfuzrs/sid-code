@@ -95,12 +95,11 @@ export function verifyAndDemote(
   enabled: LoadedPlugin[],
   disabled: LoadedPlugin[],
 ): { enabled: LoadedPlugin[]; disabled: LoadedPlugin[]; errors: PluginError[] } {
-  // 构建「可识别名集合」：name 与 source 都纳入
-  const enabledKeys = new Set<string>();
-  for (const p of enabled) {
-    enabledKeys.add(p.name);
-    enabledKeys.add(p.source);
-  }
+  // 构建「可识别名集合」：name 与 source 都纳入。
+  // 注意这里只维护 knownKeys 一个集合：级联降级由 stillEnabled（按 source）+
+  // changed 固定点驱动，isDependencySatisfied 也只看 enabled/stillEnabled。
+  // 早先还有一个同形状的 enabledKeys 被构造、填充、在降级分支里维护，但从未被读——
+  // 那是重构残骸（缺陷 33），留着只会让人以为级联要靠它。
   const knownKeys = new Set<string>();
   for (const p of [...enabled, ...disabled]) {
     knownKeys.add(p.name);
@@ -122,9 +121,6 @@ export function verifyAndDemote(
         const satisfied = isDependencySatisfied(dep, enabled, stillEnabled);
         if (!satisfied) {
           stillEnabled.delete(p.source);
-          // 从启用键集合中移除该插件的 name/source，触发级联
-          enabledKeys.delete(p.name);
-          enabledKeys.delete(p.source);
           errors.push({
             type: "dependency-unsatisfied",
             source: p.source,

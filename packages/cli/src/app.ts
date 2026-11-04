@@ -4156,8 +4156,23 @@ export class App {
 
     // 加载插件 Hooks（原子注册到 HookSystem，失败不阻塞启动）
     try {
-      const { loadPluginHooks } = await import("./plugin/index.ts");
+      const { loadPluginHooks, registerPluginRuntimeRefresher, refreshActivePlugins } =
+        await import("./plugin/index.ts");
       const pluginHookDiags = await loadPluginHooks(this.hookSystem);
+      // 缺陷 34：/plugin install|enable|disable|uninstall 只清缓存不刷新运行时，
+      // 装完新插件的 hooks 要等重启、禁用掉的 hook 还在跑。operations 是纯生命周期逻辑，
+      // 不知道这些运行时句柄在哪个进程里存在（斜杠命令与 TUI 面板两个调用方，各自能拿到的也不同），
+      // 所以由 app 注册一个闭包，操作完成后统一调它。未注册的进程（headless/CLI 子命令/测试）
+      // 退化为「下次加载生效」的旧行为，不报错。
+      registerPluginRuntimeRefresher(async () => {
+        await refreshActivePlugins({
+          unifiedRegistry: this.unifiedRegistry,
+          toolRegistry: this.toolRegistry,
+          hookSystem: this.hookSystem,
+          mcpManager: this.mcpManager,
+          skillManager: this.skillManager,
+        });
+      });
       // §三.9：插件 hook 诊断与项目层同一出口。cli.ts 打 -p stderr 诊断在 init 之前，
       // 此刻已经过了那一刻，所以 -p 直接写 stderr；交互模式记进启动横幅（runTUI 在 init 之后才取横幅）。
       if (pluginHookDiags.length > 0) {

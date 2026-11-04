@@ -200,12 +200,22 @@ export class PluginCommand implements LocalCommandModule {
     };
   }
 
+  /**
+   * 生命周期操作成功后的文案：运行时已刷新就不再让用户手动敲 /reload-plugins。
+   * 未注册刷新器（headless / CLI 子命令 / 测试）时才保留旧提示。
+   */
+  private successMessage(result: { message: string; runtimeRefreshed?: boolean }): string {
+    return result.runtimeRefreshed
+      ? result.message
+      : `${result.message}\n提示: 运行 /reload-plugins 使其生效`;
+  }
+
   private async install(path: string | undefined, flags: Set<string>): Promise<LocalCommandResult> {
     if (!path) return errorText("用法: /plugin install <name>@<市场> | <本地目录路径> [--no-copy]");
     if (isMarketSpec(path)) return this.wrap(installFromMarket(path), true);
     const result = await installPlugin(path, { copy: !flags.has("no-copy") });
     return result.ok
-      ? { type: "text", value: `${result.message}\n提示: 运行 /reload-plugins 使其生效` }
+      ? { type: "text", value: this.successMessage(result) }
       : errorText(result.error);
   }
 
@@ -219,7 +229,7 @@ export class PluginCommand implements LocalCommandModule {
       force: flags.has("force"),
     });
     return result.ok
-      ? { type: "text", value: `${result.message}\n提示: 运行 /reload-plugins 使其生效` }
+      ? { type: "text", value: this.successMessage(result) }
       : errorText(result.error);
   }
 
@@ -234,7 +244,7 @@ export class PluginCommand implements LocalCommandModule {
       ? await enablePlugin(name)
       : await disablePlugin(name, { force: flags.has("force") });
     return result.ok
-      ? { type: "text", value: `${result.message}\n提示: 运行 /reload-plugins 使其生效` }
+      ? { type: "text", value: this.successMessage(result) }
       : errorText(result.error);
   }
 }

@@ -10,7 +10,7 @@
 
 import { existsSync } from "fs";
 import { cp, rm } from "fs/promises";
-import { join, resolve } from "path";
+import { isAbsolute, join, relative, resolve } from "path";
 import { getLogger } from "@sid-code/core/debug/logger.ts";
 import { loadManifest } from "./manifest.ts";
 import {
@@ -24,16 +24,56 @@ import { buildPluginId } from "./identifier.ts";
 import { clearAllPluginCaches } from "./caches.ts";
 import { resolveDependencyClosure, findReverseDependents } from "./dependency.ts";
 import { loadAllPlugins } from "./loader.ts";
-import type { PluginError } from "./types.ts";
+import type { InstalledPluginEntry, PluginError } from "./types.ts";
 import { formatPluginError } from "./types.ts";
+import { refreshPluginRuntime } from "./runtime-refresh.ts";
 import { evaluatePluginOrigin } from "@sid-code/core/config/plugin-only-policy.ts";
 
 /** 操作结果 */
-export type OperationResult = { ok: true; message: string } | { ok: false; error: string };
+export type OperationResult =
+  | {
+      ok: true;
+      message: string;
+      /**
+       * 操作后是否已把运行时刷新成功（缺陷 34）。
+       * 未注册刷新器（headless / CLI 子命令 / 测试）或刷新失败时为 false，
+       * 命令层据此决定是否提示「运行 /reload-plugins 使其生效」。
+       */
+      runtimeRefreshed?: boolean;
+    }
+  | { ok: false; error: string };
 
 /** 时间戳注入（由调用方提供，因 workflow/纯函数约束不在此处用 Date.now） */
 function nowIso(): string {
   return new Date().toISOString();
+}
+
+/**
+ * target 是否严格位于 dir 之内（不含 dir 本身）。
+ *
+ * 判据用 `path.relative`，不用字符串 `startsWith`：后者没有分隔符边界，
+ * `/plugins` 会命中 `/plugins-backup/foo` 与 `/pluginsEVIL`（缺陷 31，后者是
+ * `uninstall --delete-files` 的 `rm -rf` 目标）。先 resolve 规范化再比，
+ * 防 `plugins/../plugins-backup` 这类写法绕过。
+ */
+function isStrictlyInside(dir: string, target: string): boolean {
+  const rel = relative(resolve(dir), resolve(target));
+  return rel !== "" && !rel.startsWith("..") && !isAbsolute(rel);
+}
+
+/**
+ * 在注册表里找到 id 对应的键：id 可能是键名、插件名或完整 source。
+ * 依赖声明两种写法都支持（见 dependency.ts 的说明），注册表本身按键名索引。
+ */
+function findRegistryKey(
+  registry: { plugins: Record<string, InstalledPluginEntry> },
+  id: string,
+): string | undefined {
+  if (registry.plugins[id]) return id;
+  for (const [key, entry] of Object.entries(registry.plugins)) {
+    if (entry.name === id || entry.source === id) return key;
+  }
+  return undefined;
 }
 
 /**
@@ -104,7 +144,9 @@ export async function installPlugin(
   // 依赖提示（不阻断安装，仅警告）
   const depWarning = await checkDependencies(manifest.name, manifest.dependencies);
   const msg = `已安装 ${manifest.name}@${manifest.version}` + (depWarning ? `\n${depWarning}` : "");
-  return { ok: true, message: msg };
+  // 缺陷 34：清缓存只保证「下次加载」生效；hooks / skills / MCP / 命令都要显式重投影。
+  const runtimeRefreshed = await refreshPluginRuntime();
+  return { ok: true, message: msg, runtimeRefreshed };
 }
 
 /** 检查依赖是否已安装并启用，返回警告字符串（无问题返回空） */
@@ -154,7 +196,10 @@ export async function uninstallPlugin(
   // 删除磁盘目录（仅当目录在 plugins 目录内，避免误删原地引用的开发目录）
   if (options?.deleteFiles) {
     const pluginsDir = getPluginsDir();
-    if (entry.path.startsWith(pluginsDir) && existsSync(entry.path)) {
+    // 缺陷 31：判据必须是「目录边界」，不能是裸字符串前缀。
+    // `startsWith("/…/plugins")` 会放行 `/…/plugins-backup/foo` 与 `/…/pluginsEVIL`——
+    // 前者正是用户备份插件目录时最自然的命名，而这里执行的是 rm -rf（不可逆）。
+    if (isStrictlyInside(pluginsDir, entry.path) && existsSync(entry.path)) {
       try {
         await rm(entry.path, { recursive: true, force: true });
       } catch (err: any) {
@@ -166,7 +211,9 @@ export async function uninstallPlugin(
   await unregisterPlugin(name);
   clearAllPluginCaches();
   log.info("PLUGIN", `已卸载插件: ${name}`);
-  return { ok: true, message: `已卸载 ${name}` };
+  // 缺陷 34：禁用 / 卸载后 hooks 与命令必须立刻从运行时撤掉，而不是等重启
+  const runtimeRefreshed = await refreshPluginRuntime();
+  return { ok: true, message: `已卸载 ${name}`, runtimeRefreshed };
 }
 
 /** 启用插件（含依赖闭包检查） */
@@ -192,8 +239,10 @@ export async function enablePlugin(name: string): Promise<OperationResult> {
   const resolution = await resolveDependencyClosure(
     name,
     async (id) => {
-      const e = registry.plugins[id];
-      if (!e) return null;
+      // 依赖声明允许写插件名或完整 source（name@local），注册表按键名索引 —— 统一走 findRegistryKey
+      const key = findRegistryKey(registry, id);
+      if (!key) return null;
+      const e = registry.plugins[key]!;
       const errors: PluginError[] = [];
       const m = await loadManifest(e.path, errors);
       return { dependencies: m?.dependencies };
@@ -211,9 +260,25 @@ export async function enablePlugin(name: string): Promise<OperationResult> {
     };
   }
 
-  await setPluginEnabled(name, true);
+  // 缺陷 32：closure 是按依赖顺序排好的待启用列表（依赖在前、根在后），必须真的落盘。
+  // 旧实现算完就丢，只 setPluginEnabled(name)，于是「A 依赖已安装但被禁用的 B」会报启用成功，
+  // 而 B 仍禁用；下次加载 verifyAndDemote 发现 A 的依赖不满足，又把 A 静默降级回 disabled ——
+  // 用户看到的是「启用成功、重启后又是禁用」，且没有任何消息解释原因。
+  const enabledDeps: string[] = [];
+  for (const id of resolution.closure) {
+    const key = findRegistryKey(registry, id);
+    if (!key) continue; // 闭包解析已保证能找到；防御性跳过
+    const depEntry = registry.plugins[key]!;
+    if (depEntry.enabled) continue;
+    if (await setPluginEnabled(key, true)) enabledDeps.push(key);
+  }
+
   clearAllPluginCaches();
-  return { ok: true, message: `已启用 ${name}` };
+  // runtimeRefreshed 由 refreshPluginRuntime 返回；依赖列表去掉根（closure 最后一个）后再展示
+  const runtimeRefreshed = await refreshPluginRuntime();
+  const deps = enabledDeps.filter((k) => k !== name);
+  const depNote = deps.length > 0 ? `（同时启用依赖: ${deps.join(", ")}）` : "";
+  return { ok: true, message: `已启用 ${name}${depNote}`, runtimeRefreshed };
 }
 
 /** 禁用插件（含反向依赖警告） */
@@ -244,5 +309,9 @@ export async function disablePlugin(
 
   await setPluginEnabled(name, false);
   clearAllPluginCaches();
-  return { ok: true, message: `已禁用 ${name}` };
+  // 缺陷 34：禁用必须立刻撤掉该插件的 hooks / skills / MCP 工具。
+  // 只清缓存的话，replacePluginHooks 没人调，旧 hook 仍然注册着、仍然会触发 ——
+  // 用户以为禁用了，它还在跑（博客 §11.5 那个 bug 的镜像）。
+  const runtimeRefreshed = await refreshPluginRuntime();
+  return { ok: true, message: `已禁用 ${name}`, runtimeRefreshed };
 }
