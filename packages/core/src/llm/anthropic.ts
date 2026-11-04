@@ -23,7 +23,8 @@ import { recordRequestId } from "../api/request-id.ts";
 import { guardOutgoingMessages } from "./protocol-sentinel.ts";
 import { createStreamLifecycle, LIFECYCLE_PRESETS } from "./stream-lifecycle.ts";
 // F1 ①：可中断迭代原语（消费方 break/throw 时保证 return() 源头，让 finally 能跑）。
-import { raceIterate } from "./race-iterate.ts";
+// L1：createAbortRaceInterrupt 统一 add/remove signal listener（正常结束也要移除）。
+import { raceIterate, createAbortRaceInterrupt } from "./race-iterate.ts";
 import { pickUpstreamTag } from "./upstream-error-body.ts";
 import { makeQuotaScope, type QuotaScope } from "./quota-scope.ts";
 import { resolveProviderStreamTimeouts } from "../config/network-profile.ts";
@@ -632,22 +633,25 @@ export class AnthropicProvider implements Provider {
         // §7.3 修复：与 fallback.ts/stream-processor.ts/stream-lifecycle.ts 同理，
         // `for await` 内 signal?.aborted 检查只在下一个事件到达时执行——SDK signal 透传
         // 虽会中断 fetch，但若 SDK 内部缓冲/未及时释放 reader，guarded 仍可能永不 yield，
-        // 使这层检查形同虚设。补 abortPromise race，abort 触发时不等下一个事件立即退出。
-        const abortPromise: Promise<never> | null = (() => {
-          if (!signal || signal.aborted) return null;
-          return new Promise<never>((_, reject) => {
-            const onAbort = () =>
-              reject(new RequestAbortedError("请求已中止（anthropic consume race）"));
-            signal.addEventListener("abort", onAbort, { once: true });
-          });
-        })();
+        // 使这层检查形同虚设。补 abort race，abort 触发时不等下一个事件立即退出。
+        //
+        // L1（2026-11-04）：用 createAbortRaceInterrupt 统一 add/remove —— 手写的
+        // `{ once: true }` 只在 abort 真的发生时移除 listener，正常完成的请求（绝大多数）
+        // 会永久留下一个，而 AbortSignal 是 EventTarget（没有 MaxListeners 警告），
+        // 长会话线性累积且完全静默。dispose 交给 raceIterate 的 onExit：
+        // 消费方 throw / break 离开时也会执行。
+        const abortInterrupt = createAbortRaceInterrupt(
+          signal,
+          () => new RequestAbortedError("请求已中止（anthropic consume race）"),
+        );
 
         // F1 ①：改用 raceIterate。消费方 throw（下面的 RequestAbortedError /
         // 抛给外层的异常）时它会对 `guarded` 调 return()，guarded 是 lifecycle 的
         // 生成器 —— 于是 lifecycle 的 finally 也会跑（清理定时器 / 释放 sleep observer /
         // 发 stream_completed / 计费收口）。改造前这一路是断的。
         for await (const event of raceIterate(guarded, {
-          interrupts: abortPromise ? [abortPromise] : [],
+          interrupts: abortInterrupt.interrupt ? [abortInterrupt.interrupt] : [],
+          onExit: abortInterrupt.dispose,
         })) {
           if (signal?.aborted) {
             throw new RequestAbortedError("Request aborted");
