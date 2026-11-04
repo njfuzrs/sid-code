@@ -24,6 +24,7 @@ import { describe, test, expect, beforeEach, afterEach } from "bun:test";
 import {
   createStreamLifecycle,
   getActiveStreamLifecycleCount,
+  __resetActiveStreamLifecycleCountForTest,
 } from "@sid-code/core/llm/stream-lifecycle.ts";
 import { raceIterate } from "@sid-code/core/llm/race-iterate.ts";
 import { StreamLifecycleTimeoutError } from "@sid-code/core/llm/errors.ts";
@@ -342,5 +343,31 @@ describe("F1 ⑤ — 活跃 lifecycle 计数", () => {
     }
     expect(duringCount).toBe(baseline + 1);
     expect(getActiveStreamLifecycleCount()).toBe(baseline);
+  });
+
+  test("L3：生成器被丢弃且 finally 未执行时，计数保持 +1（泄漏可观测），reset 可清理", async () => {
+    // 这条用例刻意构造「真泄漏」：启动生成器后丢弃它、不调 return()，finally 永不执行。
+    // 它必须先 reset、结束后再 reset —— 否则 +1 不配对 -1 会永久抬高同进程内
+    // 后续所有 baseline 断言（bun test 默认多文件同进程）。
+    __resetActiveStreamLifecycleCountForTest();
+    expect(getActiveStreamLifecycleCount()).toBe(0);
+
+    const src = async function* (): AsyncGenerator<Evt> {
+      yield { type: "a" };
+      await new Promise(() => {}); // 模拟 reader.read() 永不 settle
+    };
+    const lc = createStreamLifecycle<Evt>({ idleTimeoutMs: 60_000, label: "F1-LEAK" });
+    const gen = lc.guard(src());
+    await gen.next(); // 启动生成器：activeLifecycleCount++（不调 return()）
+
+    // 丢弃 gen：finally 不执行 → 计数保持 +1。这正是 F1 ⑤ 要暴露的形态 ——
+    // 会话空闲时 heartbeat.txt 的 active_stream_lifecycles > 0。
+    expect(getActiveStreamLifecycleCount()).toBe(1);
+
+    // 清理（测试专用 export）：不要让这条故意泄漏污染后续用例。
+    __resetActiveStreamLifecycleCountForTest();
+    expect(getActiveStreamLifecycleCount()).toBe(0);
+    // 保留引用到测试结束，避免生成器在断言前被 GC（GC 不会执行 finally，但显式保留更稳）。
+    void gen;
   });
 });

@@ -35,9 +35,16 @@ import type { StreamTelemetrySignal } from "./types.ts";
 import { DEFAULTS as NETWORK_DEFAULTS } from "../config/network-profile.ts";
 import { recordStreamProgress } from "../trace/stream-observer.ts";
 // F1 ①：可中断迭代原语（消费方 break/throw 时保证 return() 一路传到底）。
-import { raceIterate } from "./race-iterate.ts";
+// L1：createAbortRaceInterrupt 统一 add/remove signal listener。
+import { raceIterate, createAbortRaceInterrupt, type AbortRaceInterrupt } from "./race-iterate.ts";
 // F1 ②③：具名超时错误 + per-request 取消的 abort reason。
-import { StreamLifecycleTimeoutError, STREAM_LIFECYCLE_ABORT_REASON } from "./errors.ts";
+// P3-3：abortReasonOf / isAbortError 用于区分「用户取消」与「lifecycle 超时」。
+import {
+  StreamLifecycleTimeoutError,
+  STREAM_LIFECYCLE_ABORT_REASON,
+  abortReasonOf,
+  isAbortError,
+} from "./errors.ts";
 // PR9：休眠扣减下沉到流式路径（三层判据统一 `now - start - sleepPause`）。
 import {
   createSleepAwareDeadline,
@@ -68,6 +75,17 @@ let activeLifecycleCount = 0;
 /** 当前进程内活跃的 lifecycle 生成器数（供 heartbeat.txt 落盘）。 */
 export function getActiveStreamLifecycleCount(): number {
   return activeLifecycleCount;
+}
+
+/**
+ * L3（2026-11-04）：**仅测试用** —— 把活跃计数归零。
+ *
+ * 为什么需要它：计数器是模块级、进程内的。要写「真泄漏」测试（故意丢弃生成器，
+ * 让 `finally` 不执行）时，+1 不会配对 -1，会**永久抬高** baseline，污染同进程内
+ * 后续所有断言（bun test 默认多文件同进程）。生产代码不应调用本函数。
+ */
+export function __resetActiveStreamLifecycleCountForTest(): void {
+  activeLifecycleCount = 0;
 }
 
 export interface StreamLifecycleOptions<T = unknown> {
@@ -412,11 +430,11 @@ async function* streamLifecycleImpl<T>(
    *（已实测，见 race-iterate.ts 文件头），所以两件事必须都做。
    */
   let sourceCancelled = false;
-  const cancelSourceOnce = (): void => {
+  const cancelSourceOnce = (reason: string = STREAM_LIFECYCLE_ABORT_REASON): void => {
     if (sourceCancelled) return;
     sourceCancelled = true;
     try {
-      cancelSource?.(STREAM_LIFECYCLE_ABORT_REASON);
+      cancelSource?.(reason);
     } catch {
       /* 取消底层 I/O 失败不影响退出路径 */
     }
@@ -656,24 +674,29 @@ async function* streamLifecycleImpl<T>(
   resetIdle();
   resetContentProgress(); // 启动 content progress 计时（未启用时空转）
   startOverall(); // 启动 overall 计时（未启用时空转）
+  // F1 ⑤ / P3-2：活跃 lifecycle 计数（进入 +1，finally -1）。会话空闲时应为 0。
+  //
+  // ++ 放在 try **之前**，与 finally 的 -- 严格配对。改造前用
+  // `Math.max(0, activeLifecycleCount - 1)` 兜底，这会把「多减一次」静默吞掉 ——
+  // 而这是一个泄漏哨兵，掩盖不配对等于让它失去意义。
+  activeLifecycleCount++;
+  /** L1：signal 中断源（含 listener 释放）。try 外声明，finally 统一 dispose。 */
+  let abortInterrupt: AbortRaceInterrupt | null = null;
   try {
-    // F1 ⑤：活跃 lifecycle 计数（进入 +1，finally -1）。会话空闲时应为 0。
-    activeLifecycleCount++;
-
     // P0-2 §7.3：signal 早退仍由中断源提供（与改造前同一语义）。
-    const abortPromise: Promise<never> | null = (() => {
-      if (!signal || signal.aborted) return null;
-      return new Promise<never>((_, reject) => {
-        const onAbort = () => reject(new Error("Stream aborted (lifecycle abort race)"));
-        signal.addEventListener("abort", onAbort, { once: true });
-      });
-    })();
+    // L1：用 createAbortRaceInterrupt 统一 add/remove —— 正常结束也必须移除 listener
+    //（AbortSignal 是 EventTarget 不是 EventEmitter，没有 MaxListeners 警告，
+    // 长会话线性累积且完全静默，只能靠 heap snapshot 看出来）。
+    abortInterrupt = createAbortRaceInterrupt(
+      signal,
+      () => new Error("Stream aborted (lifecycle abort race)"),
+    );
 
     // F1 ①②：两个中断源 —— 超时（本轮新增）与外部 signal（既有语义）。
     // 消费方丢弃本生成器时，raceIterate 的 finally 会 `return()` 源头，
     // 源头的 finally 也就能执行（改造前这条链一断到底，所有 finally 都不跑）。
     const interrupts: Promise<never>[] = [timeoutInterrupt];
-    if (abortPromise) interrupts.push(abortPromise);
+    if (abortInterrupt.interrupt) interrupts.push(abortInterrupt.interrupt);
 
     for await (const event of raceIterate(source, { interrupts })) {
       // 超时若在「事件已取到、尚未处理」之间触发：以带类型的错误结束。
@@ -756,16 +779,34 @@ async function* streamLifecycleImpl<T>(
     if (signal?.aborted) return;
     throw e;
   } finally {
+    // L1：正常结束 / 异常退出都要移除 signal 上的 abort listener。
+    // `{ once: true }` 只在 abort 真的发生时自动移除，正常完成的请求（绝大多数）
+    // 原先会永久留下一个 listener —— EventTarget 没有 MaxListeners 警告，完全静默。
+    abortInterrupt?.dispose();
     clearTimers();
     // PR9：释放休眠观测器引用（引用计数归零才真的停 interval）。
     releaseSleepObserver();
-    // F1 ⑤：与 try 开头的 +1 配对。生成器被丢弃且 finally 没跑时这里不会执行 ——
-    // 那正是「活跃计数不为 0」要暴露的泄漏形态。
-    activeLifecycleCount = Math.max(0, activeLifecycleCount - 1);
+    // F1 ⑤ / P3-2：与 try 前的 +1 严格配对（不再用 Math.max 兜底掩盖不配对）。
+    // 生成器被丢弃且 finally 没跑时这里不会执行 —— 那正是「活跃计数不为 0」要
+    // 暴露的泄漏形态。
+    activeLifecycleCount--;
     // F1 ③：消费方 break/throw 放弃、而源还没结束时，取消底层 I/O。
     // 正常结束（sourceExhausted）不取消：请求已经完成，再 abort 只是给一个
     // 不存在的问题制造噪音。
-    if (!sourceExhausted) cancelSourceOnce();
+    //
+    // P3-3：外部 signal 已 abort 时用它的真实 reason（仅白名单内才采信，否则回落
+    // "user-cancel"），避免把「用户 ESC」标成 "stream-lifecycle-timeout" ——
+    // 后者会让只看 abort reason 的归因把用户取消读成 lifecycle 超时。
+    if (!sourceExhausted) {
+      const externalReason = signal?.aborted ? abortReasonOf(signal.reason) : undefined;
+      cancelSourceOnce(
+        externalReason && isAbortError(externalReason)
+          ? externalReason
+          : signal?.aborted
+            ? "user-cancel"
+            : STREAM_LIFECYCLE_ABORT_REASON,
+      );
+    }
     const elapsedMs = Date.now() - streamStartTime;
     const ttftMs = snapshot.firstEventAt ? snapshot.firstEventAt - streamStartTime : undefined;
     log.debug(`LLM:${label}`, `流结束`, { totalEvents: snapshot.totalEvents, elapsedMs, ttftMs });
@@ -775,6 +816,12 @@ async function* streamLifecycleImpl<T>(
       totalEvents: snapshot.totalEvents,
       elapsedMs,
       ttftMs,
+      // P3-1：超时已触发但消费方在「事件处理中」主动 break 时，超时错误没有机会抛给
+      // 消费方（生成器在 yield 处收到 return completion，直接走 finally，不经过循环体
+      // 开头的 `if (timeoutError) throw`）。此时 onTimeout 已回调、TimeoutFired 已发出，
+      // 但流以「正常结束」呈现 —— 这个字段让下游能把「超时结束」与「真正常结束」分开，
+      // 不必靠时间窗倒推。
+      ...(snapshot.timedOut ? { timedOut: true } : {}),
     });
   }
 }

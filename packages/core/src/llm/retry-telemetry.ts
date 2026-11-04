@@ -223,6 +223,14 @@ export interface RetryTelemetryEvent {
   elapsedMs?: number;
   /** 首 token 延迟（毫秒） */
   ttftMs?: number;
+  /**
+   * P3-1（2026-11-04）：`stream_completed` 专用 —— 本次流是「超时结束」而非真正常结束。
+   *
+   * 超时恰好落在「事件已 yield、消费方尚未请求下一个」的窗口内且消费方随后 break 时，
+   * 超时错误没有机会抛给消费方（生成器在 yield 处收到 return completion 直接走 finally）。
+   * 该字段让「超时结束」与「真正常结束」在轨迹里可区分，不必靠时间窗倒推。
+   */
+  timedOut?: boolean;
 }
 
 // ─── 全局遥测观察者（B4：让子代理侧的重试事件真正落轨迹） ───
