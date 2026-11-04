@@ -129,6 +129,61 @@ def agent_ran(result: dict) -> bool | None:
 AGENT_STARTUP_MARK = "[PERF] startup"
 
 
+def externally_killed(result: dict) -> bool:
+    """True = 这一题**被外部 kill**(result 事件从未发出),不是内部预算耗尽。
+
+    ## 为什么它必须是**独立的一类**,不能混进「上游打断」或「能力失败」
+
+    博客 §9.2 给的判据:
+
+    > 退出状态**缺失或异常** **且** 成本来源标记为「缺失」
+    > → 判定为「被外部 kill」。
+    > **这类样本和"内部限制耗尽"是两类不同的样本,不能混算。**
+
+    本仓的形态要按自己的落点改写(⛔ 不能照抄博客那一条):本批三条的 cost
+    **并不缺**(宿主侧从日志解析,`session-traj-fallback` 给了值),照抄博客
+    判据会**漏掉最该抓的三条**(traj-bench 缺陷 4 的 `T0010`/`T0051`/`T0059`)。
+
+    本仓可用的观测是两格,都来自 `sid_code_agent.populate_context_post_run`:
+
+    | 字段 | 语义 |
+    | --- | --- |
+    | `sid_result_event_missing` | **result 事件从未发出** ⇒ agent 没走自己的终止路径 |
+    | `sid_subtype` | 内部终止形态(`success`/`error_max_turns`/…);缺失 = 没发事件 |
+
+    两条**同时**成立才是「被外部 kill」。任一条单独都不够:
+
+    - 只有 `sid_result_event_missing` ⇒ 可能是 traj 兜底成功但事件丢了;
+    - 只有 `sid_subtype is None` ⇒ 旧 run 里这个键本来就不存在(采集缺失)。
+
+    ## 为什么不额外要求 `exception_type`(三种形态都见过)
+
+    实测样本的 Harbor 侧异常有三种:`AgentTimeoutError`(墙钟超时)、
+    `CancelledError`(取消)、`NonZeroAgentExitCodeError`(exit 137 = SIGKILL)。
+    逐族枚举会漏 —— 与 `llm_fatal` 的片段表同一个坑:换个终止者就换一种措辞。
+
+    ## 正分豁免:解出来的题⛔ 不许摘出分母
+
+    实测 ds41 臂有 2 条 `reward=1.0` 但同样被外部 kill 的样本
+    (`configure-git-webserver` / `large-scale-text-editing`)。把它们摘掉会
+    **抬高**通过率 —— 那是朝对我们有利方向的失真,与 `llm_fatal` 的
+    `_positive_reward` 同一条纪律。
+
+    ## 它进分母的语义
+
+    这类样本**不是**「模型没解出来」,是「它没拿到完整的预算就被墙钟杀了」。
+    保留在分母里会把「被截断的分布」当成能力读数(博客 §9.2:
+    被截断的分布不能论证自己的上限)—— 所以必须**摘出来、单独计数**,
+    不能既算它失败又不说。
+    """
+    md = ((result.get("agent_result") or {}).get("metadata")) or {}
+    if md.get("sid_result_event_missing") is not True:
+        return False
+    if md.get("sid_subtype") is not None:
+        return False
+    return not _positive_reward(result)
+
+
 def agent_started(trial_dir: str) -> bool | None:
     """agent 有没有**走完启动**。**None = 没有 agent 日志,不可判**。
 

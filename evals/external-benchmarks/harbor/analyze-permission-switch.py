@@ -48,8 +48,10 @@ import json, glob, sys, os, collections, statistics
 # 曾经进度脚本与本脚本各写一份(一份还多要求 uv 装上),于是同一题可能
 # 一个报 ✅ 一个报 ⛔ —— 两处判据不一致,而分歧在无人看的时候发生。
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+from arm_health import sid_denials  # noqa: E402
 from verifier_health import (  # noqa: E402
     agent_ran,
+    externally_killed,
     llm_fatal,
     self_reported_success,
     verifier_ran,
@@ -100,6 +102,11 @@ for task in sorted(by_task):
             except Exception: pass
         deny, allow = c.get("deny", 0), c.get("allow", 0)
 
+    # 🔴 计数 / 清单拆成两个键之后,这一格必须走共享归一化:
+    # 覆盖期产物的 `sid_permission_denials` 是 list,直接塞进 md_deny 会与
+    # 审计日志的 int 恒不相等 ⇒ **每一题都报不一致**(一份假红)。
+    md_deny, md_deny_list, md_deny_shape = sid_denials(md)
+
     rows.append(dict(
         task=task, reward=reward, deny=deny, allow=allow,
         subtype=md.get("sid_subtype"), turns=md.get("sid_num_turns"),
@@ -107,7 +114,9 @@ for task in sorted(by_task):
         is_error=md.get("sid_is_error"), cost=(d.get("agent_result") or {}).get("cost_usd"),
         cost_src=md.get("sid_cost_source"),
         req_mode=md.get("sid_permission_mode_requested"),
-        md_deny=md.get("sid_permission_denials"),
+        md_deny=md_deny,
+        md_deny_list=md_deny_list,
+        md_deny_shape=md_deny_shape,
         commit=(md.get("sid_commit") or "")[:12],
         verifier_broken=verifier_broken,
         # ── 规则 ④:agent 到底有没有跑过 ────────────────────────────────────
@@ -118,6 +127,11 @@ for task in sorted(by_task):
         agent_ran=agent_ran(d),
         # 规则 ⑤:跑起来了又被上游打断(与 agent_ran 的「压根没跑」是两种形态)。
         llm_fatal=llm_fatal(d, tdir),
+        # 规则 ⑥(2026-11-04,外部评测缺陷 3):result 事件从未发出 ⇒ 被 Harbor
+        # 硬顶或墙钟超时**外部 kill**。它没走自己的终止路径,不是「模型没解出来」;
+        # 与「上游打断」(重试链耗尽)是两类样本,⛔ 不许合并 —— 成因与修法都不同。
+        # ⚠️ 判据本体在 `verifier_health.externally_killed`,这里只存结果。
+        ext_killed=externally_killed(d),
         # ⚠️ 「自报做完了但判 0 分」——**不进 `excluded()`**,它是真实能力失败,必须计分。
         # 这里只把它标出来,否则它会一直伪装成「一个普通的 0 分」(实测已三棒没人发现)。
         self_reported=self_reported_success(d),
@@ -180,6 +194,10 @@ def excluded(r):
         return "无reward"
     if r["agent_ran"] is False:
         return "agent零API调用(基础设施故障,未碰过题)"
+    # 规则 ⑥(2026-11-04):result 事件从未发出 ⇒ 被 Harbor 硬顶/墙钟外部 kill。
+    # 它没走自己的终止路径,**不是**「模型没解出来」—— 与「上游打断」也分两类。
+    if r["ext_killed"]:
+        return "被外部kill(结果事件缺失,未走自己的终止路径)"
     if r["llm_fatal"]:
         return "上游打断(重试链耗尽,未用完轮预算)"
     return None
@@ -247,11 +265,20 @@ print(f"  requested: {set(r['req_mode'] for r in rows)}")
 # 那正是本仓「门禁绿着失效」那一类。所以先证明**真的比过**,再报一致性。
 # ⚠️ 只在**两边都有值**时比。md_deny=0 vs deny=None(日志缺失)不是"不一致",
 # 那是"没采到" —— 把它算成不一致会造一个假红,而假红会训练人忽略这条判据。
+# 🔴 覆盖期产物(2026-09-25 ~ 2026-11-04)的计数格被 result 事件的清单占了,
+# `arm_health.sid_denials` 把它们归成 `overwritten`。这类题**不是**「旧 run 预期
+# 如此」,是「这个键被另一个语义覆盖了」—— 两者的处置完全不同,⛔ 别混成一句。
+_overwritten = [r["task"] for r in rows if r["md_deny_shape"] == "overwritten"]
+_counted_no_list = [r["task"] for r in rows if r["md_deny_shape"] == "counted"]
 _cmp = [(r["task"], r["md_deny"], r["deny"]) for r in rows
         if r["md_deny"] is not None and r["deny"] is not None]
 _nolog = [r["task"] for r in rows if r["md_deny"] is not None and r["deny"] is None]
+if _overwritten:
+    print(f"  🔴 {len(_overwritten)} 题计数被清单覆盖(覆盖期产物),计数不可判: {_overwritten}")
+if _counted_no_list:
+    print(f"  ⚠️ {len(_counted_no_list)} 题只有计数、无清单键(覆盖前老 run): {_counted_no_list}")
 if not _cmp:
-    print("  ⚠️ metadata 里没有 sid_permission_denials —— 该键未生效(旧 run 预期如此)")
+    print("  ⚠️ metadata 里没有可比对的 sid_permission_denials 计数 —— 该键未生效(旧 run 预期如此)")
 else:
     bad = [c for c in _cmp if c[1] != c[2]]
     print(f"  metadata deny 与实数比对 {len(_cmp)}/{len(rows)} 题；不一致 {len(bad)} 处 {bad if bad else ''}")

@@ -61,6 +61,7 @@ from arm_health import (  # noqa: E402
     normalized_tokens,
     pricing_ratio,
     sid_binary_identity,
+    sid_denials,
     self_reported_success_cc,
     sid_model,
     token_undercount_suspected,
@@ -185,6 +186,8 @@ def collect(run_dir: str) -> dict:
         if this_arm == "cc":
             turns, subtype = cc_turns(td), cc_subtype(td)
             deny, allow = cc_denials(td), None  # cc 无 allow 计数
+            # cc 侧没有「计数 / 清单」两段:它的 deny 来自 result 事件数组长度(自述)。
+            deny_list, deny_shape = None, None
             selfrep = self_reported_success_cc(d, td)
             ttft, api_err = cc_ttft_ms(td), cc_api_error_status(td)
             # 模型名取**观测值**(modelUsage 键),⛔ 不取 config.agent.model_name(意图)
@@ -201,7 +204,13 @@ def collect(run_dir: str) -> dict:
             # 实测踩到:A2 的 `install-windows-3.11`(steps=42、api_calls=21、
             # subtype 为 None)被计进「撞满 40 轮」,让已发表的 13/54 多算一题(真值 12)。
             turns_is_api_calls = md.get("sid_cost_source") == "stream-json-result"
-            deny, allow = md.get("sid_permission_denials"), md.get("sid_permission_allows")
+            # 🔴 权限这一格必须走 `arm_health.sid_denials`:它把「观测计数」与
+            # 「清单」两个语义不同的值归一化,并认得出覆盖期产物(计数被清单占用)。
+            # ⛔ 不许直接 `md.get("sid_permission_denials")` 塞进计数格 ——
+            # 覆盖期那批的值是 `list`/`None`,会被读成「没采到」或写进一个 list
+            # (外部评测缺陷 1,2026-11-04)。
+            deny, deny_list, deny_shape = sid_denials(md)
+            allow = md.get("sid_permission_allows")
             selfrep = self_reported_success(d)
             ttft, api_err = None, None  # sid 侧 TTFT 在 digest 里,不在 result.json
             # ⚠️ 模型名**不在 metadata 里**(实测 19 个键里没有;我初版写
@@ -236,7 +245,13 @@ def collect(run_dir: str) -> dict:
             ),
             "subtype": subtype,
             "self_reported_success": selfrep,
+            # `permission_denials` 是**观测计数**(int)或 None(没采到);
+            # `permission_denials_list` 是「拒的是哪个工具、哪条命令」的清单。
+            # 🔴 两者曾是**同一个键**(第二处写入覆盖第一处)⇒ 零拒绝时计数被写成 None,
+            # 一次成功的换档自证被读成"没采到"。见 `arm_health.sid_denials`。
             "permission_denials": deny,
+            "permission_denials_list": deny_list,
+            "permission_denials_shape": deny_shape,
             "permission_allows": allow,
             # 🔴 必控变量的**观测证据**:两侧都不取 config.agent.model_name(意图)。
             # 没有这一格,「A2 vs A3 同模型」就只有命令行作证 —— 而本仓三个已实测
@@ -367,6 +382,33 @@ def collect(run_dir: str) -> dict:
             "`session-traj-fallback`(result 事件丢了),它**仍可能偏低** ⇒ "
             "本臂成本合计是**下界**。⛔ 与另一臂比成本前先核两侧的这个占比 —— "
             "占比不同时,兜底多的那侧会看起来更省。"
+        )
+
+    # 权限计数被清单覆盖的那批产物(`fa54a325` 2026-09-25 引入、2026-11-04 修复)。
+    # ⛔ 别把 `None` 读成「零拒绝」或「没采到」—— 它是**计数不可判**,
+    # 也不许用清单条数冒充拒绝次数(一条清单可能带 count)。
+    overlapped_deny = [
+        r["task"] for r in rows if r["permission_denials_shape"] == "overwritten"
+    ]
+    if overlapped_deny:
+        caveats.append(
+            f"🔴 权限计数被清单覆盖 {len(overlapped_deny)} 题 {overlapped_deny}:"
+            "这批产物的 `sid_permission_denials` 写的是 result 事件的清单,"
+            "**观测计数不可判** ⇒ ⛔ 别把 None 读成「零拒绝」或「没采到」,"
+            "也别用清单条数冒充拒绝次数(`arm_health.sid_denials` 已把两者拆开)。"
+        )
+
+    # 被外部 kill 的样本(2026-11-04,外部评测缺陷 3):result 事件从未发出 ⇒
+    # 它们没走自己的终止路径,**不是「模型没解出来」**。已由 `classify()` 摘出
+    # 能力分母,但必须**单独计数**:读者要能看到这一臂被墙钟/硬顶杀掉了多少题 ——
+    # 实测两条臂占比 6.2% vs 25.5%(差 4.1 倍),而分数可以被直接并排引用。
+    ext_killed = [r["task"] for r in rows if r["excluded"] == "被外部kill"]
+    if ext_killed:
+        caveats.append(
+            f"🔴 被外部 kill {len(ext_killed)}/{len(rows)} 题 {ext_killed}:"
+            "result 事件从未发出(没走自己的终止路径)⇒ **已摘出能力分母**,"
+            "⛔ 别把这批读成「模型没解出来」;与另一臂比分数前先核两侧的截断率 ——"
+            "占比差几倍时,「谁更强」的结论可能整个反过来。"
         )
 
     if arm == "cc":
