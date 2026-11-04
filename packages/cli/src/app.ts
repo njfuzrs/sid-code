@@ -11277,7 +11277,8 @@ export class App {
             // statusCode/error.type。与 fatal_error 分支同口径，避免只修一边。
             const gapCode =
               err instanceof LLMStreamError
-                ? (codeFromStructured(err.statusCode, err.errorType) ?? inferErrorCode(rawMessage))
+                ? (codeFromStructured(err.statusCode, err.errorType, rawMessage) ??
+                  inferErrorCode(rawMessage))
                 : inferErrorCode(rawMessage);
             const gapMsg = lookupErrorMessage(rawMessage, gapCode);
             pushErrorPanel({

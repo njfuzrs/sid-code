@@ -1,4 +1,5 @@
 import { matchErrorLexicon } from "./error-lexicon.ts";
+import { classifyFamily, type FamilyVerdict } from "./error-normalize.ts";
 
 /**
  * 错误码 → 用户友好文案映射表。
@@ -190,7 +191,7 @@ export const ERROR_USER_MESSAGES: Record<string, ErrorUserMessage> = {
 };
 
 /**
- * 由**结构化**字段（HTTP 状态码 + 上游 error.type）解析分类码 —— 优先于文本推断。
+ * 由**结构化**字段（HTTP 状态码 + 上游 error.type/code）解析分类码 —— 优先于文本推断。
  *
  * 为什么必须有这一层（2026-09-06）：`inferErrorCode` 是关键词匹配，两个方向都会错。
  * 猜不出：网关真实文本「当前分组上游负载已饱和，请稍后再试 (request id: …)」既无
@@ -201,53 +202,66 @@ export const ERROR_USER_MESSAGES: Record<string, ErrorUserMessage> = {
  * 而这两个字段是**上游明确给出的**，不需要猜。取数链路见 llm/errors.ts 的
  * LLMStreamError：流内 error 事件 → throw 时随异常带出 → fatal_error.errorCode → 本函数。
  *
+ * ── 2026-11-04（F2 ⑤）：从「第二套分类」改为复用唯一分类器 ──
+ *
+ * 本函数此前自带一套 `type.includes(...)` + `switch(status)`，与 `classifyFamily`
+ * 平行存在。两套判据已经漂移过：网关的 403 + `pre_consume_token_quota_failed` 在漏斗里
+ * 是 `quota_exhausted`，在这里却是 `auth_failed` —— **同一个错误对用户说是鉴权问题、
+ * 对重试引擎说是额度问题**，用户照着文案去换 key 永远修不好。
+ *
+ * 现在统一走 `classifyFamily`，面板文案与漏斗判的族同源。状态码 → 族的映射、
+ * `code` 优先于 `type` 的口径、401/403 的额度窄口全都只有一份实现。
+ *
  * 返回 undefined 表示"结构化信息不足"，调用方应回落 inferErrorCode，而不是当成"无错误"。
+ *
+ * ── 2026-11-04（F2 ⑤ 补）：401/403 时把 message 也交给分类器 ──
+ *
+ * 「同源」这条承诺原先是打折的：本函数刻意传 `message: ""`，而 401/403 的额度窄口
+ * 正需要读 message。于是「网关只在 message 里写额度、不给 code」这条路径上，
+ * 漏斗判 `quota_exhausted`、面板仍显示 `auth_failed` —— 同一条裂缝只是变窄，没有消掉。
+ *
+ * 口子精确限制在 401/403：窄口是分类器里唯一读 message 的判据，且它只跑
+ * `matchQuotaLexicon`（额度词条），不会把「文本里的巧合关键词推翻结构化状态码」
+ * 这条原则整体放开；其他状态码仍传空串，文本推断仍只有 `inferErrorCode` 一条路。
+ * 另外 401/403 有 status 时会提前从 `byStatus` 返回，**不会**走到分类器末尾的
+ * `matchErrorLexicon` 兜底，所以传 message 不会让本函数变成第二套文本分类器。
  */
-export function codeFromStructured(statusCode?: number, errorType?: string): string | undefined {
-  // error.type 比状态码更具体（同一个 400 可能是 invalid_request 也可能是 content_policy），
-  // 故先判它。空串/未知 type 不算命中，继续往下看状态码。
-  const type = (errorType ?? "").toLowerCase();
-  if (type) {
-    if (type.includes("overloaded")) return "overloaded";
-    if (type.includes("rate_limit")) return "rate_limit";
-    if (type.includes("authentication")) return "auth_failed";
-    if (type.includes("permission")) return "auth_failed";
-    if (type.includes("not_found")) return "model_not_found";
-    if (type.includes("invalid_request")) return "invalid_request";
-    if (type.includes("content_policy") || type.includes("content_filter")) return "content_policy";
-    if (type.includes("insufficient_quota") || type.includes("billing")) return "quota_exhausted";
-    if (type.includes("timeout")) return "timeout";
-    if (type.includes("api_error") || type.includes("server_error")) return "server_error";
-  }
+export function codeFromStructured(
+  statusCode?: number,
+  errorType?: string,
+  message?: string,
+): string | undefined {
+  // 两个字段都没有 = 没有结构化信息。显式短路而不是交给分类器：
+  // 分类器在没有 message 的情况下只会返回 unrecognized，语义上是同一件事，
+  // 但短路让「本函数不发明错误码」这条契约一眼可见。
+  if (statusCode === undefined && !errorType) return undefined;
 
-  switch (statusCode) {
-    case 401:
-    case 403:
-      return "auth_failed";
-    // 402 Payment Required：网关族用它表达余额耗尽（deepseek 已实测欠费走这条）。
-    case 402:
-      return "quota_exhausted";
-    case 404:
-      return "model_not_found";
-    case 408:
-      return "request_timeout";
-    case 409:
-      return "lock_timeout";
-    case 400:
-    case 422:
-      return "invalid_request";
-    case 429:
-      return "rate_limit";
-    case 503:
-    case 529:
-      return "overloaded";
-    case 500:
-    case 502:
-    case 504:
-      return "server_error";
-    default:
-      return undefined;
-  }
+  // 只有 401/403 需要 message（额度窄口）；其余一律空串，保持「只看结构化字段」。
+  const quotaProbe = statusCode === 401 || statusCode === 403 ? (message ?? "") : "";
+
+  const verdict = classifyFamily({
+    raw: undefined,
+    status: statusCode,
+    upstreamType: errorType || undefined,
+    message: quotaProbe,
+    origin: statusCode !== undefined ? "http" : "network",
+    arrival: "stream_event",
+    fingerprint: "",
+  });
+  return verdictToErrorCode(verdict);
+}
+
+/**
+ * `FamilyVerdict` → 错误码。
+ *
+ * `reason` 本身就是错误码词表（`RetryableReason` / `SuspectReason` /
+ * `StreamValidationReason` 三者的并集），只有两个哨兵值不是：
+ * `local_fault`（本地代码 bug，没有对应用户文案）与 `unrecognized`（认不出）。
+ * 两者都返回 undefined，让调用方回落到通用文案——**不要**把哨兵值当错误码传出去。
+ */
+function verdictToErrorCode(v: FamilyVerdict): string | undefined {
+  if (v.reason === "local_fault" || v.reason === "unrecognized") return undefined;
+  return v.reason;
 }
 
 /**

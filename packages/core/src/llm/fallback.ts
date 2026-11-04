@@ -61,7 +61,11 @@ import {
   type GiveUpEvidence,
   type RecoveryAction,
 } from "./recovery-policy.ts";
-import { ModelAvailabilityService } from "./availability.ts";
+import {
+  ModelAvailabilityService,
+  isSharedSignalExemptSource,
+  DEFAULT_QUOTA_EXHAUSTED_MS,
+} from "./availability.ts";
 import { shouldPreserveTransientCooldownProbeSlot } from "./cooldown-probe.ts";
 import { resolveRegistryMaxOutputTokens } from "./model-lookup.ts";
 import { lookupWireModelAlias } from "./wire-model.ts";
@@ -168,6 +172,24 @@ const STREAM_RETRY = {
  *  兜底常量也必须跟着改 —— 否则直接 `new ModelFallback()` 的路径（测试、SDK）
  *  仍是旧的同值形态，而那正是回归会漏掉的地方。 */
 const DEFAULT_STREAM_TIMEOUT_MS = NETWORK_DEFAULTS.fallbackStreamTimeoutMs;
+
+/**
+ * F2 ⑥：额度标记命中时用的**空流占位**。
+ *
+ * 为什么需要它而不是「跳过循环」：`executeWithFallback` 的 try/finally 结构承载着
+ * 定时器与 sleep observer 的清理，跳过整段会漏掉清理；而额度标记的真实语义只是
+ * 「这一发不发出去」，后续的降级 / 询问 / retry_same 出口必须照常走。
+ *
+ * 为什么不用 `this.openStream(...)` 然后不迭代：生产 provider 的 `sendMessageStream`
+ * 是 async generator（调用只构造对象、不执行函数体），但**任何在调用期就有副作用的
+ * 实现**（测试 mock、未来可能的 eager 实现）仍会在 `openStream` 那一刻被调到 ——
+ * 而「不发请求」的判据必须在**调用之前**成立。
+ */
+const EMPTY_STREAM: AsyncIterable<StreamEvent> = {
+  [Symbol.asyncIterator]: () => ({
+    next: async () => ({ done: true as const, value: undefined }),
+  }),
+};
 
 /** max_tokens 溢出恢复：安全余量 */
 const SAFETY_BUFFER = 1_000;
@@ -1061,12 +1083,47 @@ export class ModelFallback {
     const initialParams = ctx.maxTokensOverride
       ? { ...params, maxTokens: ctx.maxTokensOverride }
       : params;
-    let stream: AsyncIterable<StreamEvent> = this.openStream(
-      primaryProvider,
-      initialParams,
-      makeCombinedSignal(),
-      signal,
-    );
+
+    // ═══════════════════════════════════════════════════════════════
+    // F2 ⑥（2026-11-04）：账户级额度耗尽标记 —— 命中就**连流都不建**
+    // ═══════════════════════════════════════════════════════════════
+    //
+    // 额度是**账户级**资源（同一端点 + 同一凭据共用一份余额）。本会话 4 条循环
+    // （主循环 + 3 个并行子代理）各自撞满 3 次才放弃，合计 12 发注定被拒的请求。
+    // 现在只要有一路判定过，同账户的后续请求在这里就停住。
+    //
+    // 位置刻意在 `openStream` **之前**：整个标记的价值就是「这一发根本不该发出去」。
+    // 放到 catch 里就晚了（请求已发出、已被网关计数）；放到循环内也不够——
+    // `openStream` 在循环外调用，而 provider 的 `sendMessageStream` 虽是惰性生成器，
+    // 但任何在调用期就有副作用的实现（mock / 未来的 eager 实现）仍会被调到。
+    const quotaHit = this.quotaExhaustedHit(primaryProvider, perCall.querySource);
+    if (quotaHit) {
+      log.warn(
+        "FALLBACK",
+        `账户额度不足：同一端点与凭据已在 ${Math.ceil(quotaHit.remainingMs / 1000)}s 内` +
+          `被判定额度耗尽（${quotaHit.evidence}），本次请求不再发出`,
+      );
+      this.emitTelemetry(
+        {
+          type: "quota_exhausted_shared",
+          model: params.model,
+          provider: primaryProvider.name(),
+          error: quotaHit.evidence,
+          delayMs: quotaHit.remainingMs,
+        },
+        perCall.agentId,
+      );
+      // 走与「本路自己判出额度耗尽」相同的出口：先记 ctx 供 tryFallback 拼文案，
+      // 再由循环第一次 attempt 直接 break 到 S4 降级 / tryFallback / retry_same 重入。
+      // ⛔ 不调 recordGiveUp：那是「本路撞出来的结论」的记账口，这里是被别人告知的；
+      // 重复记会把「额度耗尽发生了几次」这个计数放大成循环数倍。
+      ctx.lastRetryError = `账户额度不足（同一端点与凭据已判定额度耗尽，本次未发出请求）：${quotaHit.evidence}`;
+      ctx.lastRetryReason = "quota_exhausted";
+    }
+
+    let stream: AsyncIterable<StreamEvent> = quotaHit
+      ? EMPTY_STREAM
+      : this.openStream(primaryProvider, initialParams, makeCombinedSignal(), signal);
 
     // ═══════════════════════════════════════════════════════════════
     // 流式消费（唯一的重试点）
@@ -1113,6 +1170,10 @@ export class ModelFallback {
       // 出口只有 return（成功、转交、降级成功）与 break（放弃 → S4 → fallback）。
       for (let attempt = 0; ; attempt++) {
         try {
+          // F2 ⑥：额度标记命中时不进入任何 attempt —— 直接跳到循环后的
+          // S4 降级 / tryFallback / retry_same 重入出口（清理仍由 finally 保证）。
+          if (attempt === 0 && quotaHit) break;
+
           log.debug("FALLBACK", `流式阶段尝试 ${attempt + 1}/${streamMaxRetries + 1}`);
 
           // P0-2 修复：将 `for await` 改为手动迭代 + Promise.race(abortPromise)。
@@ -1216,6 +1277,9 @@ export class ModelFallback {
           // S2：成功产出是"限流窗口已过"的**最强信号**——比任何 Retry-After 估计都可靠。
           // 不清的话，后续并发路径会守着一段已经作废的冷却白等（把 S2 从"省"变成纯"慢"）。
           this.availability.clearCooldown(params.model);
+          // F2 ⑥：成功同样是「这个账户有钱」的最强信号，比任何 TTL 都可靠。
+          // 不清的话，用户充值后同账户的子代理会继续被拦到 TTL 到期。
+          this.clearQuotaExhausted(primaryProvider);
           return;
         } catch (err) {
           // 用户主动中断（ESC）：立即传播，终止整轮对话
@@ -1451,7 +1515,14 @@ export class ModelFallback {
           ctx.consecutive529 = verdict.reason === "overloaded" ? ctx.consecutive529 + 1 : 0;
 
           if (action.kind === "give_up") {
-            this.recordGiveUp(params.model, action.evidence, normalized, perCall, primaryProvider);
+            this.recordGiveUp(
+              params.model,
+              action.evidence,
+              normalized,
+              perCall,
+              primaryProvider,
+              action.verdict,
+            );
             ctx.lastGiveUp = action.evidence;
             if (action.evidence.reason === "deadline") {
               // S3：「时间不够」与「次数用尽」必须可分辨（修法完全不同：前者调 timeout /
@@ -1727,6 +1798,10 @@ export class ModelFallback {
         "FALLBACK",
         `用户选择重试当前模型 ${params.model}（第 ${(perCall.retrySameUsed ?? 0) + 1} 次）`,
       );
+      // F2 ⑥：用户显式要求「再试一次当前模型」= 放弃共享的额度标记。
+      // 这是方案 §3.3 ⑥ 列的三种清除条件之一：额度可能已被外部充值恢复，
+      // 而用户手动重试正是最可靠的「现在有钱了」信号。
+      this.clearQuotaExhausted(primaryProvider);
       yield { type: "stream_restart", reason: "retry_same" };
       yield* this.executeWithFallback(primaryProvider, params, signal, {
         ...perCallOptions,
@@ -2163,6 +2238,9 @@ export class ModelFallback {
       // force=true：降级流确实产出内容是明确正向信号，强制清除 fallbackModel 可能残留的
       // terminal 态（否则被拉黑的模型即便成功也永远停在 terminal，下轮又被拦）。
       this.availability.markHealthy(fallbackModel, true);
+      // F2 ⑥：降级模型成功产出 = 它所在账户额度可用，一并清掉额度标记
+      // （主备同账户时这条尤其重要：主模型撞空额度后，降级成功说明钱还在）。
+      this.clearQuotaExhausted(fallbackProvider);
     }
   }
 
@@ -2248,11 +2326,48 @@ export class ModelFallback {
   }
 
   /**
+   * F2 ⑥（2026-11-04）：本路径是否被**账户级额度标记**拦住。
+   *
+   * 豁免判据与 `availability.isAvailable` 同源（`isSharedSignalExemptSource`）：
+   * 主线程 / headless 正在等一个用户可见的结果，拦它只会制造「请求没发出去」，
+   * 而且会让「任意一次请求成功即清除标记」这条自愈出口结构性地走不到（死锁）。
+   *
+   * 不实现 `quotaScope` 的 provider 一律放行（fail-open）：拿不到可靠的账户标识时，
+   * 宁可各自撞一次，也不要把两个账户的额度混成一个。
+   */
+  private quotaExhaustedHit(
+    provider: Provider,
+    querySource?: string,
+  ): { evidence: string; remainingMs: number } | undefined {
+    if (isSharedSignalExemptSource(querySource)) return undefined;
+    const scope = provider.quotaScope?.();
+    if (!scope) return undefined;
+    return this.availability.getQuotaExhausted(scope);
+  }
+
+  /**
+   * F2 ⑥：清除该 provider 账户的额度标记。
+   *
+   * 两个真实调用点：**任意一次请求成功**（`markHealthy` 处 —— 成功是「额度可用」的
+   * 最强信号，比任何 TTL 都可靠）、**用户选 retry_same**（显式要求再试一次）。
+   * 换凭据不需要调用：新凭据的指纹不同，天然不命中旧标记。
+   */
+  private clearQuotaExhausted(provider: Provider): void {
+    const scope = provider.quotaScope?.();
+    if (scope) this.availability.clearQuotaExhausted(scope);
+  }
+
+  /**
    * 放弃本模型（本次调用）：写 suspect 证据 + RecoveryGiveUp 遥测。
    *
    * ⛔ 只写**有时效**的嫌疑态，不写永久拉黑：主线程下一次调用照样真实发请求（I4），
    * 并行子代理在 suspect 期内由一路半开探针去验证（S1）。
    * I1-例外（服务端拒绝 / 截止时刻 / 后台 529）不写 suspect：它们不是「模型坏了」的证据。
+   *
+   * F2 ⑥（2026-11-04）：额度耗尽**不写 suspect**、改写成账户级标记。理由是归因：
+   * 余额空了不是「这个模型坏了」，把额度问题记成模型嫌疑会让用户去换模型
+   * （同一个账户下的下一个模型照样没钱），与本仓 `fallback.ts:358-360` 记过的
+   * 「把凭据过期误归因到模型」是同一族错误。
    */
   private recordGiveUp(
     model: string,
@@ -2260,8 +2375,32 @@ export class ModelFallback {
     err: NormalizedLLMError,
     perCall: PerCallOptions,
     provider: Provider,
+    verdict: FamilyVerdict,
   ): void {
+    // 额度耗尽 = 账户级事实。用它替换「模型坏了」的证据，并写跨循环共享的账户标记。
+    //
+    // ⚠️ 只认 `quota_exhausted`，不认窄口同样会返回的 `usage_limit_reached` —— 这是
+    // 语义分层，不是漏写（见 `error-normalize.ts::classifyFamily` 窄口注释）：
+    // `usage_limit_reached` 可能是**模型级**配额（`hit your opus limit`），记成
+    // (端点, 凭据) 的账户标记会让「opus 用满」连带拦住同账户还有余量的 sonnet。
+    // 代价是这类失败仍按族判 2 次、且仍写模型嫌疑 —— 那是「计划/模型配额到顶」更接近
+    // 的事实，比误记成账户余额耗尽要轻。
+    const accountExhausted =
+      verdict.family === "request_suspect" && verdict.reason === "quota_exhausted";
+    if (accountExhausted) {
+      const scope = provider.quotaScope?.();
+      if (scope) {
+        const mark = `${verdict.reason} ×${evidence.attempts}${err.status !== undefined ? ` HTTP ${err.status}` : ""}`;
+        this.availability.markQuotaExhausted(scope, mark);
+        getLogger().info(
+          "FALLBACK",
+          `F2⑥：账户额度耗尽已记入共享标记（端点 ${scope.endpoint || "官方默认"}），` +
+            `同端点 + 同凭据的后续请求将直接快速失败 ${DEFAULT_QUOTA_EXHAUSTED_MS / 1000}s`,
+        );
+      }
+    }
     const notModelEvidence =
+      accountExhausted ||
       evidence.reason === "server_declined" ||
       evidence.reason === "deadline" ||
       evidence.reason === "background_529";

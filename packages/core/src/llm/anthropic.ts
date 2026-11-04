@@ -24,6 +24,8 @@ import { guardOutgoingMessages } from "./protocol-sentinel.ts";
 import { createStreamLifecycle, LIFECYCLE_PRESETS } from "./stream-lifecycle.ts";
 // F1 ①：可中断迭代原语（消费方 break/throw 时保证 return() 源头，让 finally 能跑）。
 import { raceIterate } from "./race-iterate.ts";
+import { pickUpstreamTag } from "./upstream-error-body.ts";
+import { makeQuotaScope, type QuotaScope } from "./quota-scope.ts";
 import { resolveProviderStreamTimeouts } from "../config/network-profile.ts";
 import { wrapFetchWithEventLineShim } from "./sse-event-line-shim.ts";
 import { wrapFetchWithKeepAlive } from "./keepalive.ts";
@@ -145,8 +147,13 @@ function serializeToolResultBlock(
 export class AnthropicProvider implements Provider {
   private client: Anthropic;
   private _model: string;
+  /** F2 ⑥：额度作用域需要的凭据与端点。SDK 的 client 字段是实现细节，自己存一份更稳。 */
+  private _apiKey: string;
+  private _baseURL: string | undefined;
 
   constructor(apiKey: string, model: string, baseURL?: string) {
+    this._apiKey = apiKey;
+    this._baseURL = baseURL;
     this.client = new Anthropic({
       apiKey,
       ...(baseURL && { baseURL }),
@@ -168,6 +175,15 @@ export class AnthropicProvider implements Provider {
 
   name(): string {
     return "anthropic";
+  }
+
+  /**
+   * F2 ⑥（2026-11-04）：账户级额度状态的作用域 =(端点, 凭据指纹)。
+   *
+   * 额度是账户级资源，不是模型级：同一 baseURL + 同一 apiKey 下所有模型共用一份余额。
+   */
+  quotaScope(): QuotaScope {
+    return makeQuotaScope(this._baseURL, this._apiKey);
   }
 
   capabilities(): ProviderCapabilities {
@@ -940,14 +956,20 @@ export class AnthropicProvider implements Provider {
       //
       // 顺带把 `code` 收进来作为次选：这个网关把可用信息放在 `code: "rate_limited"`，
       // 而 `classifyStreamError` 的 `type.includes("rate_limit")` 正好认它。
-      // 优先级 type > code：type 是 Anthropic 官方字段，code 是网关扩展。
-      const pickUpstreamTag = (v: unknown): string | undefined =>
+      //
+      // 2026-11-04（F2 ①）：优先级改为 **code > type**，与 `openai.ts` 和
+      // `upstream-error-body.ts::pickUpstreamTag` 同一口径。理由是网关族的 `type`
+      // 常是无判别力的外壳 —— 本会话的 403 正文是
+      //   `{"error":{"type":"shell_api_error","code":"pre_consume_token_quota_failed"}}`
+      // 旧的 type 优先会拿到 `shell_api_error`（分类器不认）→ 落到 `byStatus(403)`
+      // 的「鉴权可疑」。官方 Anthropic 错误没有 `code` 字段，仍回落到 `type`，
+      // 所以这条改动对官方路径零行为变化。
+      const pickAnyTag = (v: unknown): string | undefined =>
         typeof v === "string" && v.trim() !== "" && v !== "error" ? v : undefined;
-      const upstreamType =
-        pickUpstreamTag(parsedBody?.error?.type) ??
-        pickUpstreamTag(parsedBody?.error?.code) ??
-        pickUpstreamTag(parsedBody?.type) ??
-        undefined;
+      const upstreamType = pickUpstreamTag({
+        type: pickAnyTag(parsedBody?.error?.type) ?? pickAnyTag(parsedBody?.type),
+        code: pickAnyTag(parsedBody?.error?.code) ?? pickAnyTag(parsedBody?.code),
+      });
       const upstreamMessage =
         typeof parsedBody?.error?.message === "string" && parsedBody.error.message.trim() !== ""
           ? parsedBody.error.message

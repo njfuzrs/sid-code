@@ -1401,6 +1401,14 @@ export class TraceCollector {
           },
           content_types: contentBlocks.filter(Boolean).map((b: any) => b.type),
           elapsed_ms: (resp as any).api_duration_ms,
+          // F4：elapsed_ms 是「模型花了多久」（已扣人工等待），这两个字段把口径拆开，
+          // 让离线分析既能精确扣减、也能拿到未扣的原始墙钟。
+          ...(typeof (resp as any).api_duration_raw_ms === "number"
+            ? { api_duration_raw_ms: (resp as any).api_duration_raw_ms }
+            : {}),
+          ...(typeof (resp as any).hitl_wait_ms === "number"
+            ? { hitl_wait_ms: (resp as any).hitl_wait_ms }
+            : {}),
           provider: resp.provider, // T12.4：Provider 维度标记
           // 端点维度：区分同模型不同渠道，供排查 + cost-recompute 按 (model, endpoint) 精确重算
           ...(resp.base_url ? { base_url: resp.base_url } : {}),
@@ -1551,6 +1559,13 @@ export class TraceCollector {
         index: pair.index,
         // P1-3: 填充 elapsed_ms/ttft_ms/content_types（此前恒 null，已在 AfterModelRaw 有值但此处缺失导致复盘误判）
         elapsed_ms: (resp as any).api_duration_ms ?? null,
+        // F4：同 AfterModelRaw —— 耗时口径拆成「模型耗时 / 原始墙钟 / 人工等待」三项。
+        ...(typeof (resp as any).api_duration_raw_ms === "number"
+          ? { api_duration_raw_ms: (resp as any).api_duration_raw_ms }
+          : {}),
+        ...(typeof (resp as any).hitl_wait_ms === "number"
+          ? { hitl_wait_ms: (resp as any).hitl_wait_ms }
+          : {}),
         ttft_ms: (resp as any).ttft_ms ?? null,
         content_types: contentBlocks.filter(Boolean).map((b: any) => b.type),
       },

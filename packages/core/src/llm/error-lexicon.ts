@@ -119,8 +119,13 @@ function phrase(p: Phrase): Phrase {
  *
  * 不用 `\b`：它对中文这种非 ASCII 字符恒为真，`负载capacity已满` 会被当成命中。
  * 网关文案中英混排是常态，这个边界必须把中文也当「在词内」。
+ *
+ * 2026-11-04（F2 复核）：从私有改为导出。`error-normalize.ts` 的额度标记
+ * （`QUOTA_TAG_MARKERS`）此前用裸 `includes`，`balance` 因此命中了
+ * `load_balancer_unavailable` —— 一次 LB 故障会被记成「账户额度耗尽」并写进
+ * 跨循环共享标记。边界规则只该有一份，所以复用这里，而不是在那边再抄一遍正则。
  */
-function matchesWord(lower: string, word: string): boolean {
+export function matchesWord(lower: string, word: string): boolean {
   const escaped = word.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
   return new RegExp(`(?:^|[^A-Za-z0-9])${escaped}(?:[^A-Za-z0-9]|$)`).test(lower);
 }
@@ -133,6 +138,79 @@ function matches(lower: string, p: Phrase): boolean {
 
 function anyOf(lower: string, phrases: readonly Phrase[]): boolean {
   return phrases.some((p) => matches(lower, p));
+}
+
+/**
+ * 「短期限流」的否定语（词表第 1 条）。
+ *
+ * 必须先于用量上限判定：官方原文 `Server is temporarily limiting requests (not your usage limit)`
+ * 含 "usage limit" 子串，但页面写明它与计划配额无关、会自动退避。
+ * 单独抽成常量是因为额度窄口（`matchQuotaLexicon`）也必须复用同一条否定语，
+ * 否则 403 + 这句文案会被判成「额度耗尽」。
+ */
+const SHORT_TERM_RATE_LIMIT_PHRASES: readonly Phrase[] = [
+  phrase({ word: "temporarily limiting" }),
+  phrase({ word: "not your usage limit" }),
+];
+
+/** 用量到顶（词表第 2 条，终端）。 */
+const USAGE_LIMIT_PHRASES: readonly Phrase[] = [
+  phrase({ word: "hit your session limit" }),
+  phrase({ word: "hit your weekly limit" }),
+  phrase({ word: "hit your opus limit" }),
+  phrase({ word: "usage limit" }),
+  phrase({ word: "usage credits required" }),
+  phrase({ text: "用量上限" }),
+  phrase({ text: "额度已用尽" }),
+];
+
+/**
+ * 欠费 / 额度耗尽（词表第 6 条，终端）。
+ *
+ * 2026-11-04（F2）：补「额度不足」「令牌额度」「quota_failed」。
+ * 前两条来自公司网关的真实 403 正文 `{"error":{"message":"令牌[...]额度不足","code":"pre_consume_token_quota_failed"}}`
+ * —— 旧词表只有「额度已用尽」「余额不足」，中文「额度不足」一条都认不出。
+ */
+const QUOTA_EXHAUSTED_PHRASES: readonly Phrase[] = [
+  phrase({ word: "quota" }),
+  // 冗余（`quota` 的英文词边界已覆盖 `pre_consume_token_quota_failed`），显式列出是为了
+  // 让「网关额度码」在词表里可见，不要因为看起来重复就删掉。
+  phrase({ word: "quota_failed" }),
+  phrase({ word: "insufficient_quota" }),
+  phrase({ word: "insufficient balance" }),
+  phrase({ word: "billing" }),
+  phrase({ word: "credit balance" }),
+  phrase({ text: "余额不足" }),
+  phrase({ text: "额度不足" }),
+  phrase({ text: "令牌额度" }),
+  phrase({ text: "欠费" }),
+  phrase({ text: "请充值" }),
+];
+
+/**
+ * 额度类词表查询结果：两个都是 `request_suspect` 族，但文案与遥测原因不同。
+ */
+export type QuotaLexiconCode = "quota_exhausted" | "usage_limit_reached";
+
+/**
+ * **只**查「额度类」词条，不跑状态码数字规则。
+ *
+ * 为什么需要这个专用入口（2026-11-04 F2）：
+ * `classifyFamily` 要在 401/403 上开一个额度窄口（new-api / one-api 这一族网关用 403
+ * 表达额度耗尽），而主词表第 4 条「认证失败」里含 `401` / `403` 的**数字边界**规则 ——
+ * provider 拼出来的 message 必然带着 `HTTP 403` 这三个字符，直接调 `matchErrorLexicon`
+ * 会先返回 `auth_failed`，永远到不了欠费那一条。窄口只采信额度语义，所以走这里。
+ *
+ * 顺序与主词表一致（短期限流否定语 → 用量到顶 → 欠费）。这不是风格问题：
+ * `not your usage limit` 同时命中前两条的判据，顺序反了就把限流判成额度耗尽。
+ */
+export function matchQuotaLexicon(msg: string): QuotaLexiconCode | undefined {
+  if (!msg) return undefined;
+  const lower = msg.toLowerCase();
+  if (anyOf(lower, SHORT_TERM_RATE_LIMIT_PHRASES)) return undefined;
+  if (anyOf(lower, USAGE_LIMIT_PHRASES)) return "usage_limit_reached";
+  if (anyOf(lower, QUOTA_EXHAUSTED_PHRASES)) return "quota_exhausted";
+  return undefined;
 }
 
 /**
@@ -149,27 +227,12 @@ export function matchErrorLexicon(msg: string): LexiconCode | undefined {
   // 官方原文 `Server is temporarily limiting requests (not your usage limit)`
   // 含 "usage limit" 这个子串，但页面写明它与计划配额无关、会自动退避。
   // 判据取整句否定语，比调分支顺序更稳（顺序对时它仍含那个子串）。
-  if (
-    anyOf(lower, [
-      phrase({ word: "temporarily limiting" }),
-      phrase({ word: "not your usage limit" }),
-    ])
-  ) {
+  if (anyOf(lower, SHORT_TERM_RATE_LIMIT_PHRASES)) {
     return "rate_limit";
   }
 
   // ── 2. 用量到顶（终端）。必须在 rate_limit 之前："hit your session limit" 含 "limit" ──
-  if (
-    anyOf(lower, [
-      phrase({ word: "hit your session limit" }),
-      phrase({ word: "hit your weekly limit" }),
-      phrase({ word: "hit your opus limit" }),
-      phrase({ word: "usage limit" }),
-      phrase({ word: "usage credits required" }),
-      phrase({ text: "用量上限" }),
-      phrase({ text: "额度已用尽" }),
-    ])
-  ) {
+  if (anyOf(lower, USAGE_LIMIT_PHRASES)) {
     return "usage_limit_reached";
   }
 
@@ -251,19 +314,7 @@ export function matchErrorLexicon(msg: string): LexiconCode | undefined {
   }
 
   // ── 6. 欠费（终端）。402 与「余额不足」一个都不能漏：重试一万次也是欠费 ──
-  if (
-    anyOf(lower, [
-      phrase({ word: "quota" }),
-      phrase({ word: "insufficient_quota" }),
-      phrase({ word: "insufficient balance" }),
-      phrase({ word: "billing" }),
-      phrase({ word: "credit balance" }),
-      phrase({ text: "余额不足" }),
-      phrase({ text: "欠费" }),
-      phrase({ text: "请充值" }),
-    ]) ||
-    hasBoundaryDigits(lower, "402")
-  ) {
+  if (anyOf(lower, QUOTA_EXHAUSTED_PHRASES) || hasBoundaryDigits(lower, "402")) {
     return "quota_exhausted";
   }
 
