@@ -394,6 +394,7 @@ describe("isAbortError", () => {
       "sibling-bash-error",
       "side-call-timeout",
       "stream-heartbeat-timeout",
+      "stream-lifecycle-timeout",
       "stream-overall-timeout",
       "subagent-session-exit",
       "team-hard-timeout",

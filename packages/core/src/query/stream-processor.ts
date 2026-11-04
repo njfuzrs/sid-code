@@ -18,6 +18,8 @@ import { getLogger } from "../debug/index.ts";
 import { normalizeToolInput } from "../llm/normalize-tool-input.ts";
 import { resetOnStreamRestart, recordStreamRestart } from "../llm/stream-restart.ts";
 import { classifyRetryBoundary } from "../llm/stream-lifecycle.ts";
+// F1 ①：可中断迭代原语（消费方 break/throw 时保证 return() 源头，让 finally 能跑）。
+import { raceIterate } from "../llm/race-iterate.ts";
 import { detectUnansweredEndTurn } from "./unanswered-end-turn.ts";
 import { RequestAbortedError, LLMStreamError } from "../llm/errors.ts";
 import { resolveLoopTimeouts, resolveProviderStreamTimeouts } from "../config/network-profile.ts";
@@ -294,18 +296,12 @@ export async function processStream(
       });
     })();
 
-    const iterator = stream[Symbol.asyncIterator]();
-    let iterDone = false;
-    while (!iterDone) {
-      const racers: Promise<IteratorResult<StreamEvent>>[] = [iterator.next()];
-      if (abortPromise) racers.push(abortPromise as any);
-      const iterResult = await Promise.race(racers);
-      if (iterResult.done) {
-        iterDone = true;
-        break;
-      }
-      const event = iterResult.value;
-
+    // F1 ①：改用 raceIterate（与手抄版同一 race 语义，外加「离开时一定 return() 源头」）。
+    // 主循环这里是漏斗流的消费方：它 throw（超时 / 校验失败）时如果不 return()，
+    // 漏斗与 provider 的 finally 全都不会跑，`BilledRequest` 与 stall 清理一起丢。
+    for await (const event of raceIterate(stream, {
+      interrupts: abortPromise ? [abortPromise] : [],
+    })) {
       lastActivityTime = Date.now();
       // 首个事件到达 → 后续静默改用（更严的）心跳阈值判定。
       // 漏斗控制事件不算「首字节」：它们是本地发出的，不代表上游已开始响应。

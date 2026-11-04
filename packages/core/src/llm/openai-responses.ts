@@ -715,6 +715,22 @@ async function* readSSEEvents(
       if (parsed) yield parsed;
     }
   } finally {
+    // F1 ③：先 cancel 再 releaseLock。
+    //
+    // 只 releaseLock() 不取消，底层 ReadableStream 会继续挂在连接上：lifecycle
+    // 超时后 fetch 被 abort、挂起的 read() reject，生成器能走完 finally —— 但如果
+    // 没有 abort（例如消费方 break），releaseLock 只是把锁还回去，流本身还在读。
+    // cancel() 才是「我不要剩下的数据了」。
+    //
+    // 顺序不能反：releaseLock() 之后 reader 不能再 cancel（会抛 TypeError），
+    // 而 cancel() 之后锁仍持有、可以继续 releaseLock。
+    // 吞错是必要的：已关闭 / 已 errored 的流上 cancel 会 reject，而 finally
+    // 里抛出的异常会盖掉真正的结束原因（本会话的 error 事件就是这么丢的）。
+    try {
+      await reader.cancel().catch(() => {});
+    } catch {
+      /* 取消失败不影响退出 */
+    }
     reader.releaseLock();
   }
 }
