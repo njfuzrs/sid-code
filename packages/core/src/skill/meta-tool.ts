@@ -95,7 +95,7 @@ export class SkillMetaTool implements Tool {
   }
 
   /**
-   * F5-Q5d：登记 bundled skill（cli.ts 在 SID_CODE_Q5BD=1 时调用，替代独立注册 `skill__<name>`）。
+   * F5-Q5d：登记 bundled skill（cli.ts 调用，替代此前独立注册的 `skill__<name>` 工具）。
    * 不再进 toolRegistry 后，app.ts 的 wire 循环够不到它们，checker / hookSystem 由本工具转发。
    */
   registerBundled(tool: BundledSkillTool): void {

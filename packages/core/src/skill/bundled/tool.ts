@@ -6,6 +6,9 @@
  * 这是 sid-code 内部的能力不对等（不是"对标 claude-code"，claude-code 的 /commit
  * 等本身也只是斜杠命令）。
  *
+ * F5-Q5d（2026-11-04）：本类不再注册进 toolRegistry，而是登记到 SkillMetaTool，由元工具按名
+ * 兜底分发（模型调 `Skill{skill:"review"}`）。`name()` 仍返回 `skill__<name>`，只作日志与内部标识。
+ *
  * 本包装器把一个 fork 模式的 Bundled Skill(PromptCommand) 适配为 LegacyTool，
  * 执行路径与 CommandExecutor.executeFork 完全一致（SubAgent.executeCustom +
  * allowedTools 白名单 + timeoutMins 钳制）。

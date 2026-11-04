@@ -120,7 +120,8 @@ export interface SystemPromptContext {
   /**
    * 缺口 E：Skill 摘要条目列表。接通此前的死代码 generateSkillListingAttachment——
    * 把"有哪些 skill、何时用"的摘要常驻 system prompt（约 1% 窗口），让模型即使在
-   * skill 工具被 defer 时仍能发现 skill 存在，真正调用时再 tool_search 调出 skill__* 工具。
+   * skill 工具被 defer 时仍能发现 skill 存在。F5-Q5d 起编译进二进制的 bundled skill
+   * 也经 `Skill` 元工具汇总进来（此前它们是独立 `skill__*` 工具，不在这份摘要里）。
    */
   skillEntries?: import("../skill/budget.ts").SkillListingEntry[];
 
@@ -335,10 +336,6 @@ export function generateCacheKey(ctx: SystemPromptContext): string {
   // Coordinator 模式不在 ctx 里（模块级全局），但它会往 coreParts 追加整段
   // 协调者提示词，属于影响输出的维度，必须进键。
   snapshot.__coordinatorMode = isCoordinatorMode();
-
-  // F5-Q5b+d：环境开关决定延迟工具指南是否进 system，不在 ctx 里，必须进键，
-  // 否则同进程内切换开关（测试、A/B 探针）会命中另一臂的缓存。
-  snapshot.__q5bd = isQ5bdEnabled();
 
   // P1-10：日期不是 ctx 字段，缓存命中路径不会重算 generateDateAttachment。
   // 键不含当天日期时，跨午夜且 TTL 未过期会送出昨天的 <current-date>。
@@ -1043,16 +1040,6 @@ function renderToolGuide(t: Tool, isEn: boolean, deferredMark?: string): string 
     : `\n### ${t.name()} 工具使用指南${mark}\n${guide}`;
 }
 
-/**
- * F5-Q5b+d 的 A/B 开关：`SID_CODE_Q5BD=1` 时同时启用
- *  - Q5-b：延迟工具的完整使用指南不再进 system（只留名单行，激活后经 tools[].description 拿到）；
- *  - Q5-d：bundled skill 不再各自注册成 `skill__<name>` 工具，改由 `Skill` 元工具兜底分发（cli.ts）。
- * flash A/B 通过后改为默认行为并删除本开关（bench_fix 06b）。
- */
-export function isQ5bdEnabled(): boolean {
-  return process.env.SID_CODE_Q5BD === "1";
-}
-
 /** 构建工具使用指南部分 */
 function buildToolGuideSection(
   tools: Tool[],
@@ -1076,26 +1063,19 @@ function buildToolGuideSection(
 
   // 收集工具自带的使用指南。
   // 指南正文由工具自己提供（属于工具契约，双语化要逐个工具改），这里只本地化包装标题。
-  // 延迟工具的整段指南同样进延迟分区 —— 不做这条则泄漏面从"一行工具名"扩大到
-  // 近 800 字符的完整教程（实测 workflow 的 usageGuide 783 字符）。
   //
   // F5-Q5a（2026-11-04）：**已加载工具不再在这里渲染指南**。toolToDefinition 已把 usageGuide
   // 拼进 tools[].description（registry.ts），这里再渲染一份就是同一段文字发两遍（F3 首调实测
   // 13 段与描述 8-gram 重合 0.85–0.99，约 3.3K tokens/调用）。flash 每臂 5 次 A/B：召回
   // R2 +0.042、S2v +0.033，L3f 覆盖相同；子代理派发略少，opus 未验证（bench_fix 06a §6–§7）。
   //
-  // F5-Q5b（A/B 开关，默认关）：延迟工具的完整指南也不再进 system，只留名单行。
+  // F5-Q5b（2026-11-04）：延迟工具的完整指南也不在这里渲染，延迟分区只留名单行
+  // （此前整段进延迟分区，防的是它泄漏到实时区；现在整段不在 system，这条约束自然满足）。
   // 模型经 tool_search 激活后，下一轮 loop.ts 重调 activeDefinitions()，该工具经
   // toolToDefinition 带着「description + 使用指南」进 tools[]（06b §8 实测 workflow 930 字符含指南）。
   // 这里提前放的那份只服务「要不要激活」的决定，名单行的首句摘要够用；F3 首调实测 4 段约 571 tokens。
-  const deferredGuides: string[] = [];
-  if (!isQ5bdEnabled()) {
-    for (const tool of deferred) {
-      const rendered = renderToolGuide(tool, isEn, mark);
-      if (rendered) deferredGuides.push(rendered);
-    }
-  }
-  const deferredSection = renderDeferredSection(deferredList, deferredGuides, isEn);
+  // MCP 段（buildMcpToolGuideSection）仍渲染延迟工具指南，不在本项范围（06b §7 候选 Q5-f）。
+  const deferredSection = renderDeferredSection(deferredList, [], isEn);
   const deferredPointer = renderDeferredPointer(deferred.length, isEn);
 
   // 2026-08-01：假设纪律那段常驻引导按 hypothesis_register **是否真的注册**决定去留。

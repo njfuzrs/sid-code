@@ -8,7 +8,7 @@
  * 本文件锁三件事：
  *  1. 已加载工具的指南不在 system（中英文档都是），一行摘要还在
  *  2. 指南仍在发给模型的 tools[].description 里——删的是重复，不是指南本身
- *  3. 延迟工具的指南照旧留在延迟分区（它们首轮不在 tools[] 里，删了就彻底看不见）
+ *  3. F5-Q5b：延迟工具的指南也不进 system，只留名单行；激活后经 tools[].description 拿到（bench_fix 06b）
  */
 
 import { describe, test, expect, beforeEach } from "bun:test";
@@ -55,53 +55,22 @@ describe("F5-Q5a 工具指南去重", () => {
     expect(def?.description).toContain(BASH_GUIDE);
   });
 
-  test("延迟工具的指南照旧留在延迟分区", () => {
+  test("延迟工具的指南不进 system，名单行带激活标注", () => {
     const prompt = buildSystemPrompt({ tools: tools() });
-    expect(prompt).toContain(`### workflow 工具使用指南 ${DEFERRED_MARK}`);
-    expect(prompt).toContain(WORKFLOW_GUIDE);
+    expect(prompt).not.toContain("### workflow 工具使用指南");
+    expect(prompt).not.toContain(WORKFLOW_GUIDE);
+    expect(prompt).toContain(`- workflow: ${DEFERRED_MARK}`);
   });
 
   test("英文档同样不重复", () => {
     const prompt = buildSystemPrompt({ tools: tools(), preferredLanguage: "en" });
     expect(prompt).not.toContain("### bash usage guide");
     expect(prompt).not.toContain(BASH_GUIDE);
-    expect(prompt).toContain(WORKFLOW_GUIDE);
+    expect(prompt).not.toContain(WORKFLOW_GUIDE);
   });
 });
 
-/**
- * F5-Q5b（A/B 开关 SID_CODE_Q5BD=1）：延迟工具的完整指南也不进 system，只留名单行；
- * 激活后该工具经 activeDefinitions → toolToDefinition 带着指南进 tools[]（bench_fix 06b §2）。
- */
-describe("F5-Q5b 延迟工具指南移出 system（开关）", () => {
-  function withQ5bd<T>(fn: () => T): T {
-    const prev = process.env.SID_CODE_Q5BD;
-    process.env.SID_CODE_Q5BD = "1";
-    try {
-      return fn();
-    } finally {
-      if (prev === undefined) delete process.env.SID_CODE_Q5BD;
-      else process.env.SID_CODE_Q5BD = prev;
-    }
-  }
-
-  test("开关开：延迟分区只剩名单行，整段指南不在（中英文档）", () => {
-    for (const lang of [undefined, "en"] as const) {
-      clearPromptCache();
-      const prompt = withQ5bd(() => buildSystemPrompt({ tools: tools(), preferredLanguage: lang }));
-      expect(prompt).not.toContain(WORKFLOW_GUIDE);
-      expect(prompt).not.toContain("### workflow 工具使用指南");
-      expect(prompt).toContain("- workflow:");
-    }
-  });
-
-  test("开关进缓存键：同进程切换不串臂", () => {
-    const off = buildSystemPrompt({ tools: tools() });
-    const on = withQ5bd(() => buildSystemPrompt({ tools: tools() }));
-    expect(off).toContain(WORKFLOW_GUIDE);
-    expect(on).not.toContain(WORKFLOW_GUIDE);
-  });
-
+describe("F5-Q5b 延迟工具指南移出 system", () => {
   test("激活后的定义带指南——删的是 system 里那份预告，不是指南本身", () => {
     const registry = new Registry();
     registry.register(

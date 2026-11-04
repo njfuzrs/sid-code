@@ -102,8 +102,8 @@ skill 声明了其中任何一个（非空），默认要先过一次 Skill 授�
 | `claude-code-migration` | 把 Claude Code 的配置迁到 sid-code：只 copy 不 move，不删源文件，不静默覆盖 | activate |
 
 另有 `/simplify`、`/verify`、`/review`、`/commit`、`/pr`、`/pr-workflow` 这几个编译进二进制的命令式 skill。
-其中 fork 类且允许模型调用的（`simplify`、`verify`、`review`）还会以 `skill__<名字>` 工具的形式暴露给模型；
-`pr-workflow` 带强副作用，只能手动触发。
+其中 fork 类且允许模型调用的（`simplify`、`verify`、`review`）模型也能调用：和磁盘上的 skill 一样经 `Skill` 工具按名字调用
+（`Skill{skill: "review"}`），也出现在 system prompt 的 skill 摘要里；`pr-workflow` 带强副作用，只能手动触发。
 
 在会话里用 `/skills` 打开面板，看内置、编译进二进制和磁盘上的 skill 及各自来源，再按名字手动触发（如 `/code-review`）。
 插件和 MCP 提供的 skill 目前不在面板里，用斜杠命令补全或 `-d` 日志确认。
@@ -370,14 +370,16 @@ ci-self-heal 看 CI log, 输入与目标场景明确不重叠」——多个 Ski
 - **斜杠命令**：`/skills disable <名字> [--scope user|project]`，写进对应 settings；`/skills enable <名字>` 恢复；
 - **`/skills` 面板**：选中一行按 Enter 切换启用 / 禁用，写进当前作用域的 settings（面板里没有插件、MCP 的 skill，它们用前两种方式）。
 
-后两种在交互会话里**当场生效**：`/<名字>`、模型经 `Skill` 工具的调用、`skill__<名字>` 工具都立刻不可用，不用重启。
+后两种在交互会话里**当场生效**：`/<名字>` 和模型经 `Skill` 工具的调用都立刻不可用，不用重启。
 命令拿不到当前会话的运行时（如独立调用）时会提示「重启会话后生效」。
 
 另外两种手段**不是**禁用，作用范围窄得多：
 
-- `permissions.deny: ["Skill"]` / `["Skill(<名字>)"]`：拒绝经 `Skill` 工具调用的 skill（全部或指定一个）；
-  拦不住 `skill__review` 这类独立工具名，要拦得另写 `permissions.deny: ["skill__review"]`；
-- `--disallowed-tools Skill`：只从模型的工具列表里移除 `Skill` 这一个工具，`skill__<名字>` 工具和你手动 `/名字` 都不受影响。
+- `permissions.deny: ["Skill"]` / `["Skill(<名字>)"]`：拒绝模型经 `Skill` 工具调用的 skill（全部或指定一个），
+  编译进二进制的 `review` / `simplify` / `verify` 也包括在内。旧写法 `skill__<名字>`（如 `deny: ["skill__review"]`）
+  作为 `Skill(<名字>)` 的兼容别名继续有效；
+- `--disallowed-tools Skill`：从模型的工具列表里移除 `Skill` 工具，模型就调不了任何 skill（含编译进二进制的）；你手动 `/名字` 不受影响。
+  `--disallowed-tools skill__review` 这种写法已经没有对应的工具，不再起作用，要只拦一个请用 `disabledSkills` 或 `deny: ["Skill(review)"]`。
 
 ### 改了 SKILL.md 要重启吗
 
