@@ -122,8 +122,13 @@ export function formatNotification(n: TaskNotification): string {
       `  </usage>`,
     );
   } else if (n.error) {
+    // untrusted 标记与上面的 `<result>` 同口径：F3 之后 `error` 承载的是失败子代理的
+    // 完整残卷（含 `<tool-evidence>` —— 任意工具结果，可能是 web_fetch 的外部网页、
+    // 仓库文件、MCP 返回），性质与 `<result>` 完全一样。此前 `<error>` 只放短错误串，
+    // 不需要这个标记；现在需要。通知前缀 `NOT_USER_INPUT_PREAMBLE` 防的是「把事件误读
+    // 成用户授权」，与「执行产出里的指令」正交（见该常量注释），不能互相替代。
     parts.push(
-      `  <error>${truncateForNotification(n.error, NOTIFICATION_ERROR_MAX_CHARS, n.outputFile)}</error>`,
+      `  <error untrusted="true">${truncateForNotification(n.error, NOTIFICATION_ERROR_MAX_CHARS, n.outputFile)}</error>`,
     );
   }
 

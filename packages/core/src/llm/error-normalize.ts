@@ -34,7 +34,12 @@ import {
   type StreamValidationReason,
   type SuspectReason,
 } from "./errors.ts";
-import { isClassifierLexiconCode, matchErrorLexicon, matchQuotaLexicon } from "./error-lexicon.ts";
+import {
+  isClassifierLexiconCode,
+  matchErrorLexicon,
+  matchQuotaLexicon,
+  matchesWord,
+} from "./error-lexicon.ts";
 
 /** 来源：network/http = 来自传输层或上游响应；local = 本地抛出的 JS 异常 */
 export type ErrorOrigin = "network" | "http" | "local";
@@ -363,19 +368,38 @@ function byStatus(status: number): FamilyVerdict {
  *
  * 2026-11-04（F2 ②）：`pre_consume_token_quota_failed`、`insufficient_quota`、
  * `insufficient_balance`、`billing_hard_limit_reached` 这一族都落在这里。
- * 用子串而不是枚举：网关的 code 是各家自造的复合词（`permission_denied_quota`、
- * `pre_consume_token_quota_failed`），枚举必然漏。
+ * 用「词边界 + 片段」而不是枚举：网关的 code 是各家自造的复合词
+ * （`permission_denied_quota`、`pre_consume_token_quota_failed`），枚举必然漏。
  */
 const QUOTA_TAG_MARKERS: readonly string[] = [
   "quota",
+  // 冗余（`quota` 已覆盖）：显式列出是为了让「网关额度码」在名单里可见，
+  // 不要因为看起来重复就删掉。
   "insufficient_quota",
   "billing",
   "balance",
   "credit",
+  // 复数形态要单列：`insufficient_credits` 里 `credit` 后面紧跟 `s`（字母），
+  // 词边界会把它当成同一个词，`credit` 条目因此不命中。
+  "credits",
 ];
 
+/**
+ * 标签里是否出现某个额度 marker —— **词边界**匹配，不是裸子串。
+ *
+ * 2026-11-04（F2 复核）：此前这里用 `t.includes(m)`，`balance` 因此命中了
+ * `load_balancer_unavailable`。一次负载均衡故障被判成 `quota_exhausted`，
+ * 后果不止「按 request_suspect 的 2 次预算重试」——它还会写进账户级共享标记
+ * （`fallback.ts::recordGiveUp`），同账户所有并行循环 60s 内一发不发。
+ * 这个代价是跨循环的连带拒绝，必须收紧。
+ *
+ * 边界规则复用 `error-lexicon.ts::matchesWord`（`_` 当分隔符）：
+ * - 仍命中：`pre_consume_token_quota_failed`、`insufficient_balance`、
+ *   `credit_balance_low`、`permission_denied_quota`
+ * - 不再命中：`load_balancer_unavailable`
+ */
 function looksLikeQuotaTag(t: string): boolean {
-  return QUOTA_TAG_MARKERS.some((m) => t.includes(m));
+  return QUOTA_TAG_MARKERS.some((m) => matchesWord(t, m));
 }
 
 /**
@@ -455,6 +479,15 @@ export function classifyFamily(err: NormalizedLLMError): FamilyVerdict {
   // 例外清单只有两个额度码（quota_exhausted / usage_limit_reached），其余措辞一律
   // 仍按状态码走。为什么必须开这个口子：有些网关只在 message 里写额度、不给 code，
   // 没有它这类网关的额度耗尽永远只能显示成「鉴权可疑」。
+  //
+  // ⚠️ 两个码在这里都算「额度语义」，但**下游的账户级共享标记只认 quota_exhausted**
+  // （`fallback.ts::recordGiveUp`）。这不是漏，是语义分层：
+  // - `quota_exhausted` = 余额/欠费，**账户级**，同账户的每个模型一起没额度；
+  // - `usage_limit_reached` = 会话/周窗口用量到顶，可能是**模型级**的
+  //   （词表里的 `hit your opus limit` 就是 opus 专属）。把它记成 (端点, 凭据) 的
+  //   账户标记，会让「opus 用满」连带拦住同账户还有余量的 sonnet —— 那正是本仓
+  //   反复在修的归因错误，只是方向反了过来。
+  // 所以窄口只负责「这条错误属于什么语义」，跨循环共享只对确属账户级的那个码生效。
   //
   // 判据用 `matchQuotaLexicon` 而不是 `matchErrorLexicon`：后者第 4 条「认证失败」
   // 带 401/403 的**数字边界**规则，而 message 里必然有 "HTTP 403" 这三个字符，

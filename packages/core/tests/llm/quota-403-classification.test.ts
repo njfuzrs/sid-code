@@ -169,6 +169,31 @@ describe("F2 ② — 结构化 code 命中额度类即归 request_suspect / quot
     expect(v.family).toBe("transient");
     expect(v.reason).toBe("server_error");
   });
+
+  test("反例：`load_balancer_unavailable` 不被当成额度 code（词边界，不是裸子串）", () => {
+    // 2026-11-04 复核修复：`QUOTA_TAG_MARKERS` 此前用裸 `includes`，`balance` 命中
+    // `load_balancer_unavailable`（balancer 里含 balance），一次 LB 故障会被判成
+    // quota_exhausted 并写进账户级共享标记，同账户所有并行循环 60s 内一发不发。
+    const v = classifyEvent({
+      message: "load balancer unavailable",
+      statusCode: 502,
+      type: "load_balancer_unavailable",
+    });
+    expect(v.family).toBe("transient");
+    expect(v.reason).toBe("server_error");
+    expect(v.reason).not.toBe("quota_exhausted");
+  });
+
+  test("复数形态 `insufficient_credits` 仍判额度（`credits` 单列的理由）", () => {
+    // 词边界会把 `credit` 后的 `s` 当成同一个词，所以 marker 表里必须另有 `credits`。
+    const v = classifyEvent({
+      message: "x",
+      statusCode: 402,
+      type: "insufficient_credits",
+    });
+    expect(v.family).toBe("request_suspect");
+    expect(v.reason).toBe("quota_exhausted");
+  });
 });
 
 // ════════════════════════════════════════════════════════════════════
@@ -263,6 +288,30 @@ describe("F2 ⑤ — codeFromStructured 复用唯一分类器", () => {
     expect(codeFromStructured(418, "")).toBeUndefined();
     expect(codeFromStructured(undefined, "shell_api_error")).toBeUndefined();
   });
+
+  test("【同源补漏】403 + 只在 message 写额度、无 code → 面板也判 quota_exhausted", () => {
+    // 2026-11-04 复核修复：此前本函数传 `message: ""`，额度窄口拿不到东西，
+    // 于是「网关只在 message 写额度」这条路径上漏斗判额度、面板仍显示「API Key 无效」。
+    // 第三个参数只在 401/403 参与窄口，其余状态码仍只看结构化字段。
+    const realMessage = `LLM 错误: OpenAI Responses API HTTP 403: {"error":{"message":"令牌[sk-***]额度不足","type":"shell_api_error","code":"pre_consume_token_quota_failed"}}`;
+    // 有 code 时走结构化判据（沿用原行为）
+    expect(codeFromStructured(403, "pre_consume_token_quota_failed", realMessage)).toBe(
+      "quota_exhausted",
+    );
+    // 无 code、只有中文额度文案时，靠窄口补上 —— 这是本次修复的那条裂缝
+    expect(codeFromStructured(403, undefined, realMessage)).toBe("quota_exhausted");
+  });
+
+  test("message 参数不会放宽到 401/403 之外，也不会误伤真鉴权", () => {
+    // 边界 ①：非 401/403 一律不读 message，保持「文本推断只有 inferErrorCode 一条路」
+    expect(codeFromStructured(500, undefined, "令牌额度不足")).toBe("server_error");
+    expect(codeFromStructured(400, undefined, "令牌额度不足")).toBe("invalid_request");
+    // 边界 ②：403 但文案是真鉴权 → 仍 auth_failed
+    expect(codeFromStructured(403, undefined, "invalid x-api-key")).toBe("auth_failed");
+    // 边界 ③：401 同理
+    expect(codeFromStructured(401, undefined, "令牌额度不足")).toBe("quota_exhausted");
+    expect(codeFromStructured(401, undefined, "unauthorized")).toBe("auth_failed");
+  });
 });
 
 // ════════════════════════════════════════════════════════════════════
@@ -321,12 +370,14 @@ async function drain(
   fb: ModelFallback,
   provider: any,
   querySource = "agent:builtin",
+  perCall: Record<string, unknown> = {},
 ): Promise<StreamEvent[]> {
   const out: StreamEvent[] = [];
   try {
     for await (const e of fb.executeWithFallback(provider, PARAMS, undefined, {
       querySource,
       switchMode: "auto",
+      ...perCall,
     } as any)) {
       out.push(e);
     }
@@ -447,5 +498,84 @@ describe("F2 ⑥ — 额度耗尽标记按 (端点, 凭据) 跨循环共享", ()
     // 若误用 markSuspect，下一个模型（同账户）会被 suspect 拦一次；
     // 这里直接断言「没有写嫌疑」——额度问题不该让用户去换模型。
     expect(availability.isSuspect(PARAMS.model)).toBe(false);
+  });
+
+  test("用户选 retry_same 清除标记并真实重发（方案 §3.5 验收项）", async () => {
+    const availability = new ModelAvailabilityService();
+    const scope = makeQuotaScope("https://gw.example.com/v1", "sk-test-key");
+    // 预置标记：模拟「同账户已被别的循环判定额度耗尽」—— 此时本路连请求都发不出去。
+    availability.markQuotaExhausted(scope, "seeded by another loop");
+
+    const counts = { stream: 0 };
+    const okProvider: any = {
+      name: () => "gateway",
+      quotaScope: () => scope,
+      sendMessageStream: () => {
+        counts.stream++;
+        return (async function* () {
+          yield {
+            type: "content_block_delta",
+            index: 0,
+            delta: { type: "text_delta", text: "ok" },
+          };
+          yield { type: "message_stop" };
+        })();
+      },
+    };
+    const fb = makeFallback(
+      { onFallbackDecision: async () => ({ action: "retry_same" }) },
+      availability,
+    );
+    const events = await drain(fb, okProvider, "agent:builtin", { switchMode: "ask" });
+
+    // 时序：标记命中 → 不建流 → ask 弹窗选 retry_same → 清标记 → 递归重发 → 这次成功。
+    // 清标记那一行删掉的话，递归进去仍被拦，streams 会是 0、且一路走到「无可用 fallback」。
+    expect(counts.stream).toBe(1);
+    expect(events.some((e) => e.type === "stream_restart" && e.reason === "retry_same")).toBe(true);
+    expect(availability.getQuotaExhausted(scope)).toBeUndefined();
+  });
+
+  test("TTL 到期后标记自动失效（外部充值后唯一不依赖用户的自愈出口）", () => {
+    const availability = new ModelAvailabilityService();
+    const scope = makeQuotaScope("https://gw.example.com/v1", "sk-test-key");
+    // ttlMs=0：立刻到期。这是方案 §3.3 ⑥ 三种清除条件之外的兜底 ——
+    // 标记期内所有请求都被拦，没有它，「任意一次成功即清除」结构性地走不到（死锁）。
+    availability.markQuotaExhausted(scope, "test", 0);
+    expect(availability.getQuotaExhausted(scope)).toBeUndefined();
+  });
+
+  test("续期：重复 mark 把到期时刻往后推（额度没恢复就一直拦）", () => {
+    const availability = new ModelAvailabilityService();
+    const scope = makeQuotaScope("https://gw.example.com/v1", "sk-test-key");
+    availability.markQuotaExhausted(scope, "first", 1_000);
+    const first = availability.getQuotaExhausted(scope);
+    expect(first).toBeDefined();
+
+    availability.markQuotaExhausted(scope, "second", 60_000);
+    const second = availability.getQuotaExhausted(scope);
+    expect(second).toBeDefined();
+    // 续期不是「保留首次的 until」：每次撞出来都要重新计 60s，否则长会话里
+    // 一个已经过期的旧时间戳会让标记提前失效。
+    expect(second!.remainingMs).toBeGreaterThan(first!.remainingMs);
+    expect(second!.evidence).toBe("second");
+  });
+
+  test("usage_limit_reached 不写账户级共享标记（计划/模型级配额，不是账户余额）", async () => {
+    const availability = new ModelAvailabilityService();
+    // 403 + 只在 message 写「usage limit」、不给 code：窄口会采信，结论是 usage_limit_reached。
+    const { provider, counts } = quotaStream({
+      withTag: false,
+      message: "you have hit your usage limit (HTTP 403)",
+    });
+    await drain(makeFallback({}, availability), provider);
+
+    // 仍按 request_suspect 族预算撞（这是窄口的产出，不做跨循环共享）
+    expect(counts.stream).toBeGreaterThan(0);
+    // 但**不写**账户级标记：`hit your opus limit` 这类是模型级配额，
+    // 记成 (端点, 凭据) 会让「opus 用满」连带拦住同账户还有余量的模型。
+    // 这条钉住「两个额度码只有 quota_exhausted 共享」是刻意，不是漏写。
+    expect(
+      availability.getQuotaExhausted(makeQuotaScope("https://gw.example.com/v1", "sk-test-key")),
+    ).toBeUndefined();
   });
 });

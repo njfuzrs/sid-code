@@ -80,6 +80,29 @@ export function authorizeSkill(
 }
 
 /**
+ * F5-Q5d：bundled skill 经 `Skill` 元工具兜底分发时的权限判定。
+ *
+ * 只应用统一权限规则（`Skill(<name>)` / `Skill` / `skill:<name>` / 兼容别名 `skill__<name>`），
+ * **不跑** checkSkillPermission 的敏感属性模型：bundled 随二进制发布、可信（runForkedCommand
+ * 同样传 trusted:true），它的 agent / allowedTools 是我们自己写死的。若套用敏感属性模型，
+ * review / verify 带 agent 字段会走 ask，-p 下直接被拒，等于把它们在无头模式关掉（06b §5 裁决 1）。
+ * fork 子代理内部的每个工具调用仍过 dontAsk subChecker，不受这里影响。
+ */
+export function authorizeBundledSkill(
+  skillName: string,
+  opts: { permissionRules?: PermissionRule } = {},
+): SkillAuthResult {
+  const rules = extractSkillRules(skillName, opts.permissionRules);
+  const hit = (list?: string[]) =>
+    (list ?? []).some((r) => r === "*" || r === skillName || r === `skill:${skillName}`);
+  if (hit(rules.deny)) return { decision: "deny", reason: `Skill "${skillName}" 被权限规则拒绝` };
+  if (hit(rules.ask)) {
+    return { decision: "ask", reason: `Skill "${skillName}" 命中 permissions.ask 规则，需确认` };
+  }
+  return { decision: "allow" };
+}
+
+/**
  * 从统一权限规则（permissions.allow/deny/ask）里抽取 skill 相关规则，
  * 转成 checkSkillPermission 认识的 { allow, deny, ask } 形态。
  *
@@ -88,6 +111,9 @@ export function authorizeSkill(
  *   - "Skill" / "skill" —— 通配全部 skill（无括号）
  *   - "Skill(*)" —— 显式全通配
  *   - "skill:<name>" —— checkSkillPermission 已支持的前缀写法（透传）
+ *   - "skill__<name>" —— 兼容别名（F5-Q5d）。bundled skill 曾各自注册成 `skill__<name>` 独立工具，
+ *     官网 extend/skills.md 教过用户写 `deny: ["skill__review"]` 来拦它。并入 `Skill` 元工具后
+ *     工具名不再是 `skill__review`，不认这个别名，照文档写的 deny 规则会**静默失效**。
  */
 function extractSkillRules(skillName: string, rules?: PermissionRule): SkillPermissionRules {
   if (!rules) return {};
@@ -101,6 +127,11 @@ function extractSkillRules(skillName: string, rules?: PermissionRule): SkillPerm
       const m = rule.match(/^([A-Za-z_]+)(?:\(([^)]*)\))?$/);
       if (m) {
         const tool = m[1].toLowerCase();
+        // F5-Q5d 兼容别名：skill__<name> 等价于 Skill(<name>)（无括号才认，大小写不敏感）
+        if (m[2] === undefined && tool === `skill__${skillName.toLowerCase()}`) {
+          into.push(skillName);
+          continue;
+        }
         if (tool === "skill") {
           const arg = m[2];
           // 无括号 or (*) → 全通配；(name) → 精确名

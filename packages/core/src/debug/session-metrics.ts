@@ -279,6 +279,9 @@ export class SessionMetricsCollector {
             afterModel.llm_request.model,
             usage.inputTokens ?? 0,
             usage.outputTokens ?? 0,
+            // F4：这里要的是「模型花了多久」，所以取扣减后的 api_duration_ms ——
+            // 它已扣除人工等待（等待时长在同事件的 hitl_wait_ms），原始墙钟在 api_duration_raw_ms。
+            // 用原始墙钟会让一条 2.85h 的 fallback 等待把面板均值拉爆（那正是 F4 修的口径）。
             afterModel.llm_response.api_duration_ms ?? 0,
             afterModel.llm_response.cost_usd ?? 0,
             false,

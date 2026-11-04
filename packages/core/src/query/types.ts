@@ -249,7 +249,7 @@ export interface LoopState {
    *
    * 端到端耗时（"用户回车 → 最终答复"，「更快」方向的主口径）的基准点。
    * 由 `queryLoop` 在**入口**调一次 `beginTurn()` 设定（`loop.ts` 的
-   * `beginTurn(state, sessionState)`，**不是** while 每次迭代），`TurnComplete`
+   * `beginTurn(state)`，**不是** while 每次迭代），`TurnComplete`
    * 事件发射时当场用 `Date.now() - turnStartedAtMs` 算差值 —— 不留给消费侧配对。
    *
    * ⚠️ P3-4（2026-09-23）：这段注释此前写「由 queryLoop 在 while 循环顶部每轮**重设**」，
@@ -277,9 +277,19 @@ export interface LoopState {
    */
   turnStartedAtMs?: number;
   /**
+   * F4-2：本 loop 的 HITL 归属作用域 id（由 `queryLoop` 用 `openHitlScope()` 开启，
+   * `finally` 里 `closeHitlScope()` 关闭）。
+   *
+   * 为什么需要它：同进程可能并发多个 agent（主循环 + 后台子代理 / forked agent）。
+   * 不带 scope 读 `humanInputWaitElapsedMs()` 拿到的是**进程级**累计，别的 agent 等人的
+   * 时间会被扣进本轮的模型耗时 —— 极端情况扣成 0，凭空造出「模型耗时 0ms」的假样本，
+   * 方向与「更快」口径相反。带 scope 后只算归属本 loop 的等待；无法归属的一律漏计。
+   */
+  hitlScopeId?: string;
+  /**
    * P1-4 / F4：轮首的「HITL 区段数」快照，轮末与当前值比较得出"本轮有没有等人"。
    *
-   * 数值来自 `human-input-gate.readHitlSegmentCount()`（引用计数 0→1 的边沿 +1）。
+   * 数值来自 `human-input-gate.readHitlSegmentCount(state.hitlScopeId)`（引用计数 0→1 的边沿 +1）。
    * 不用布尔，因为"本轮有没有"必须是**前后差值**而非累计标志：累计标志一旦置真，
    * 后面每轮都会被标成有 HITL。（曾有个 `hadHitlThisTurn` 布尔字段，全仓零置真点，
    * 2026-10-30 T3a 作为死字段删除。）
@@ -289,7 +299,8 @@ export interface LoopState {
    */
   hitlSegmentAtTurnStart?: number;
   /**
-   * P1-4 / F4：轮首的「进程内累计人工等待毫秒」快照（`humanInputWaitElapsedMs()`）。
+   * P1-4 / F4：轮首的「归属本 loop 的累计人工等待毫秒」快照
+   * （`humanInputWaitElapsedMs(state.hitlScopeId)`）。
    * 轮末差值即 `TurnComplete.hitl_wait_ms`，让消费侧能把端到端耗时里的等人时段精确扣掉。
    */
   humanInputWaitAtTurnStart?: number;
