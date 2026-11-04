@@ -270,7 +270,13 @@ function validateMetaShape(value: unknown): MetaValidation {
     for (let i = 0; i < m.phases.length; i++) {
       const p = m.phases[i] as Record<string, unknown>;
       if (typeof p !== "object" || p === null || typeof p.title !== "string") {
-        return { ok: false, error: `meta.phases[${i}] 必须含字符串 title` };
+        // 报错必须给出**正确写法的示例**：只说「必须含字符串 title」时，模型已经写成
+        // 字符串数组了，读到这句话也无法确定该改成什么形态，只能再猜一次
+        // （实测 12 个用过 workflow 的会话里 7 个踩过，见 B2 落地方案）。
+        return {
+          ok: false,
+          error: `meta.phases[${i}] 必须是 \`{ title: "…" }\` 对象（不是字符串），例如 phases: [{ title: "并行审查" }, { title: "汇总清单" }]`,
+        };
       }
     }
   }
