@@ -43,6 +43,9 @@ import { getBuildInfo } from "@sid-code/shared/build-info.ts";
 import { getIdentity, getGitSnapshot } from "../identity/index.ts";
 import { TraceWriter, type RawJsonlEntry, type HookEvent } from "./writer.ts";
 import { buildTrajectory, type RequestResponsePair, type TraceMetadata } from "./builder.ts";
+// F1 ⑤：活跃 stream lifecycle 计数（进程级、无会话耦合）—— 心跳里据此判「生成器泄漏」。
+// 方向是 trace → llm（stream-lifecycle 本来就 import trace/stream-observer），无循环。
+import { getActiveStreamLifecycleCount } from "../llm/stream-lifecycle.ts";
 import {
   EVENT_TS_SEMANTIC,
   PAIR_INDEXED_EVENTS,
@@ -867,6 +870,11 @@ export class TraceCollector {
               session_id: traceSessionId,
               event_loop_lag_ms: lagMs,
               active_request: activeRequest,
+              // F1 ⑤：进程内活跃的 stream lifecycle 数。**会话空闲时应为 0** ——
+              // 不为 0 就是有生成器被丢弃、finally 没跑（本会话 10 个泄漏流的形态）。
+              // 常驻输出（而不是仅在 >0 时输出）：0 本身是有意义的值，
+              // 「读到 0」与「读到字段缺失」必须能区分（后者是老版本 / 别处写的心跳）。
+              active_stream_lifecycles: getActiveStreamLifecycleCount(),
               ...(staleTerminal > 0 ? { stale_terminal_snapshots: staleTerminal } : {}),
               ...(orphanCount > 0 ? { stale_orphan_snapshots: orphanCount } : {}),
               ...(lastState ? { last_known_state: lastState } : {}),
