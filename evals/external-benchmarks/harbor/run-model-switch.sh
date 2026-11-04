@@ -118,6 +118,11 @@ JOBDIR="runs/$JOB"
 source ./taskset-fp.sh
 taskset_fp_gate || exit 2
 
+# run 指纹采集（收尾调用）：方案 §3.4 的必控变量，与题集指纹闸分工不同
+# ——闸判「能不能跑」（阻断），它只采集（不阻断）。理由见 run-fingerprint.sh 头注释。
+# shellcheck disable=SC1091
+source ./run-fingerprint.sh
+
 COMMON=(-d "$DATASET" -m "$HARBOR_MODEL" -n "${SID_MODELSWITCH_N:-6}" -k 1
         --registry-path registry.local.json
         --jobs-dir runs --agent-setup-timeout-multiplier 8
@@ -437,6 +442,11 @@ harbor run "${COMMON[@]}" "${TASK_FILTER[@]+"${TASK_FILTER[@]}"}" \
 RUN_RC=$?
 echo "=== 结束 $(date '+%F %T') rc=$RUN_RC ==="
 taskset_fp_remember || true
+
+# run 指纹（只读旁路，不改 RUN_RC）。network_policy 只能声明：Harbor 不把它写进
+# result.json；本脚本走的是 allowlist 档（registry 里的任务定义 + gateway IP 放通）。
+SID_HARBOR_NETWORK_POLICY="${SID_HARBOR_NETWORK_POLICY:-allowlist}" \
+  run_fingerprint_collect "$JOBDIR"
 
 kill "$MEM_PID" 2>/dev/null || true
 # E1 镜像服务收尾。⚠️ 不用 trap：镜像是 warm 后落盘的，进程停掉不影响下次复用。

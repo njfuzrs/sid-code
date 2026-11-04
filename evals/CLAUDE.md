@@ -90,7 +90,7 @@ skip 必须是 bool `CliFlag` / `permission_mode` 的 choices 不含 skip 名与
 
 ⛔ `n_input_tokens` **绝不能取 `total_tokens_sent`** —— 那是**末次快照值**，
 除以累加的 `total_cost_usd` 得到的是错数。要用累积字段
-`total_cumulative_prompt_tokens`（`external-benchmarks/harbor/sid_code_agent.py:1042-1097`）。
+`total_cumulative_prompt_tokens`（`external-benchmarks/harbor/sid_code_agent.py:1058-1113`）。
 
 ### 1.7 每个数字必须能指到源字段
 
@@ -250,7 +250,7 @@ swe-bench 侧用 `prompt-v1.txt`。**跨链路比较前先 diff 这两份提示�
 | --- | --- |
 | **失效形态** | sid-code 只在**成功**路径发 `is_error: false`；`error_during_execution` 那条事件的键只有 `{duration_ms, errors, num_turns, session_id, subtype, total_cost_usd, type, usage}`。于是 `sid_is_error` 变成 `None` → 下游当"不是错误" → **一个失败的 trial 被记成正常的 0 分**，直接污染分母 |
 | **判据** | `subtype` 在错误路径**一定有**（`error_during_execution` / `error_max_turns` / `error_max_budget_usd`）。`is_error` 有就用，没有从 subtype 推 |
-| **出处** | `sid_code_agent.py:937`（判据），`:993`（`_derive_is_error` 定义） |
+| **出处** | `sid_code_agent.py:953`（判据），`:1020`（`_derive_is_error` 定义） |
 
 ### 3.8 ⛔ 输出格式必须是 `stream-json`，不是 `json`
 
@@ -417,7 +417,7 @@ harbor run -a sid_code_agent:SidCodeAgent \
 | 权限档三个坑（`bypassPermissions` 不合法 / `always-allow` 不够 / 必须布尔 flag） | `external-benchmarks/swe-bench/exec-swebench.sh:106-150` |
 | 113 次拒绝实测与归因 | `exec-swebench.sh:1255-1280` |
 | Harbor 侧权限档（✅ 2026-08-30 已修） | `external-benchmarks/harbor/sid_code_agent.py:303-418` |
-| 产物身份 / ELF 架构 / `is_error` / stock-flow | `sid_code_agent.py:467`、`:630-634`、`:866`、`:971-1026` |
+| 产物身份 / ELF 架构 / `is_error` / stock-flow | `sid_code_agent.py:467`、`:630-634`、`:882`、`:987-1042` |
 | `-n` 与 verifier 坏掉率四轮对照 | `external-benchmarks/harbor/README.md:278-302` |
 | L1/L2 双层门禁与变异自证 | `tests/eval/harbor-agent-contract.test.ts:1-46` |
 | 横评 provider 不对称（⛔ 现存缺陷） | `providers/claude-code.ts:27`、`providers/sid-code-live.ts:28-30` |
