@@ -39,6 +39,7 @@ import {
   SalvageCollector,
   buildSalvageOutput,
   classifySubAgentFailure,
+  formatToolTurnLine,
   type FailureClass,
 } from "./salvage.ts";
 import { getSleepLedger } from "@sid-code/shared/utils/sleep-detect.ts";
@@ -830,6 +831,33 @@ export class SubAgent {
     return this.parentSessionId ? `${this.parentSessionId}-sub-${suffix}` : `subagent-${suffix}`;
   }
 
+  /**
+   * F3-5：把 sidechain 落盘路径记进任务状态，供墓碑指路。
+   *
+   * 为什么墓碑需要它：`.output` 会被驱逐删除（`evictTaskOutput`），sidechain **不会**
+   * （按会话归档，随会话目录保留）。事故本会话里模型读到「清理前未留存到输出内容」，
+   * 以为三个子代理的成果全丢了，于是自己重做了一遍（输入从 81k 涨到 313k），
+   * 而三份 223KB 的完整轨迹一直躺在磁盘上。
+   *
+   * 只在 writer 存在时写（父会话 id 缺失 / 写入失败时 `openSidechain` 返回 undefined，
+   * 此时墓碑退回旧文案，不给出假路径）。写 registry 失败静默：sidechain 是增强能力，
+   * 不能因为它反过来影响子代理主流程。
+   */
+  private recordSidechainPath(
+    taskId: string | undefined,
+    sidechain: SidechainWriter | undefined,
+  ): void {
+    if (!taskId || !sidechain) return;
+    try {
+      const file = sidechain.getFilePath();
+      updateTask<LocalAgentTaskState>(taskId, (t) =>
+        t.sidechainFile === file ? t : { ...t, sidechainFile: file },
+      );
+    } catch {
+      /* 埋点失败不影响子代理执行 */
+    }
+  }
+
   /** 执行子代理任务 */
   async execute(task: SubAgentTask, signal?: AbortSignal): Promise<SubAgentResult> {
     const log = getLogger();
@@ -1404,6 +1432,8 @@ export class SubAgent {
     // （ChildProgressMessage 只报 lastActivity），这部分缺失与残卷同源，属协议限制。
     // 结束状态口径与 executeInner 一致：默认 aborted，只有明确成功/失败才改写。
     const sidechain = this.openSidechain(sidechainMeta?.agentId, sidechainMeta?.parentToolUseId);
+    // F3-5：把路径记进任务状态，供墓碑指路（`.output` 会被删，sidechain 不会）。
+    this.recordSidechainPath(taskId, sidechain);
     let sidechainStatus: "completed" | "failed" | "aborted" = "aborted";
     const sidechainAppend = (
       role: "user" | "assistant" | "tool",
@@ -1564,18 +1594,40 @@ export class SubAgent {
                 // P0-1(b)：喂残卷。只在**执行成功**时记——失败的 write/edit 没有真的改动
                 // 文件，记进"已改动文件清单"就是假信息（与 agentic-loop 只把非 is_error
                 // 的 edit/write 纳入 LSP 诊断作用域同一判据）。
+                // F3：`result` 一并带上——残卷的 `<tool-evidence>` 段靠它（只读核查型
+                // 子代理的成果全在工具结果里），收集端只收非错误结果，与此处判据同源。
                 if (!toolResult.is_error) {
                   try {
                     salvage.recordTurn({
                       turn: spawnTurn,
                       textOutput: "",
-                      tools: [{ name: msg.name, input: msg.input as Record<string, unknown> }],
+                      tools: [
+                        {
+                          name: msg.name,
+                          input: msg.input as Record<string, unknown>,
+                          result: { content: toolResult.content, isError: false },
+                        },
+                      ],
                       tokenCount: spawnTokenCount,
                       toolUseCount: ++spawnToolUseCount,
                     });
                   } catch {
                     /* 残卷收集失败不影响子代理执行 */
                   }
+                }
+                // F3-3：纯工具轮也写 `.output` 摘要。spawn 路径的交互协议里没有
+                // 「本轮文本」这个概念（ChildProgressMessage 只报 lastActivity），
+                // 不在这里写的话 `.output` 会一直是空文件，task_output / 墓碑读不到东西。
+                // 与进程内路径同一格式（formatToolTurnLine），两步走的一致性是刻意的。
+                if (taskId) {
+                  const line = formatToolTurnLine(spawnTurn, [
+                    {
+                      name: msg.name,
+                      input: msg.input as Record<string, unknown>,
+                      result: { content: toolResult.content, isError: toolResult.is_error },
+                    },
+                  ]);
+                  if (line) appendAgentOutput(taskId, line);
                 }
                 sidechainAppend(
                   "tool",
@@ -1820,6 +1872,8 @@ export class SubAgent {
     // P2-10：子代理 sidechain 持久化。仅当父会话 id 与 taskId（作 agentId）都在时启用；
     // 缺任一则 writer 为 undefined，所有写入调用经可选链安全跳过（不影响执行）。
     const sidechain = this.openSidechain(taskId, task._parentToolUseId);
+    // F3-5：把路径记进任务状态，供墓碑指路（`.output` 会被删，sidechain 不会）。
+    this.recordSidechainPath(taskId, sidechain);
     /** P2-10：已持久化到 sidechain 的消息数游标（onTurnEnd 增量落盘用）。 */
     let sidechainCursor = 0;
     /** P2-10：子代理最终结束状态，finally 中据此写 sidechain_end。默认 aborted——
@@ -2055,8 +2109,17 @@ export class SubAgent {
 
           // 实时写输出到磁盘（支持 task_output 增量读取）
           // F5：只写**本轮**新文本。textOutput 在纯工具轮是上一轮残留，用它会把同一句话逐轮重写。
-          if (taskId && info.turnText) {
-            appendAgentOutput(taskId, `[轮次 ${info.turn}] ${info.turnText}\n`);
+          if (taskId) {
+            if (info.turnText) {
+              appendAgentOutput(taskId, `[轮次 ${info.turn}] ${info.turnText}\n`);
+            } else {
+              // F3-3：纯工具轮此前**什么都不写**，`.output` 从头到尾是空文件——本会话三个
+              // 后台子代理每轮都是纯工具调用（sidechain 里 assistant 文本块数为 0），
+              // task_output / read / 墓碑全都读不到任何东西。这里写一行紧凑摘要
+              // （工具名 + 首参 + 结果字节数），全文仍在 sidechain。
+              const line = formatToolTurnLine(info.turn, info.tools);
+              if (line) appendAgentOutput(taskId, line);
+            }
           }
 
           // 最近活动滑动窗口：info.tools 是**本轮**的工具（agentic-loop.ts:710 的

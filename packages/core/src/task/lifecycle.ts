@@ -18,7 +18,7 @@
  * 与 `jit-telemetry.ts` 同款：App 在 collector 就绪后注入一次，模块内统一 emit。
  */
 
-import { closeSync, fstatSync, openSync, readSync, realpathSync } from "fs";
+import { closeSync, existsSync, fstatSync, openSync, readSync, realpathSync } from "fs";
 import { basename, dirname, resolve } from "path";
 import { sidPaths } from "../config/paths.ts";
 import { isTerminalStatus, type TaskState, type TaskStatus } from "./types.ts";
@@ -124,9 +124,24 @@ export interface TaskOutputTombstone {
   tail: string;
   /** 尾部是否被截断（文件比留存窗口大） */
   truncated: boolean;
+  /**
+   * F3-5：该任务的 sidechain transcript 路径（子代理才有）。
+   *
+   * `.output` 会被驱逐删除，sidechain **不会**。事故本会话里模型读到
+   * 「清理前未留存到输出内容」就以为三个子代理的成果全丢了、自己重做了一遍，
+   * 而三份 223KB 的完整轨迹一直躺在磁盘上。墓碑必须给出这个指针。
+   */
+  sidechainFile?: string;
 }
 
 const tombstones = new Map<string, TaskOutputTombstone>();
+
+/** 只有子代理任务带 sidechain 路径；联合类型上没有该字段，用类型守卫读。 */
+function sidechainFileOf(task: TaskState): string | undefined {
+  return "sidechainFile" in task && typeof task.sidechainFile === "string"
+    ? task.sidechainFile
+    : undefined;
+}
 
 /** 同步读文件尾部。驱逐路径是同步的，删除紧随其后，必须在这里当场读完 */
 function readTailSync(filePath: string): { tail: string; truncated: boolean } {
@@ -164,6 +179,13 @@ export function recordTaskOutputTombstone(task: TaskState, reason: TaskEvictReas
     reason,
     tail,
     truncated,
+    // 只在文件确实存在时才记：registry 里记的是「打算写到哪儿」，
+    // 父会话 id 缺失或写入失败时它会是一个不存在的路径。给模型一个假指针
+    // 比不给更糟——它会去读，读到 ENOENT，然后再次以为数据丢了。
+    ...(() => {
+      const file = sidechainFileOf(task);
+      return file && existsSync(file) ? { sidechainFile: file } : {};
+    })(),
   });
   while (tombstones.size > TOMBSTONE_MAX) {
     const oldest = tombstones.keys().next().value;
@@ -254,6 +276,9 @@ export function formatTaskOutputTombstone(
       : t.reason === "cleared"
         ? "会话上下文被清空（/clear）或会话结束时一并清理。"
         : "完成通知送达后已过至少一个回合，按生命周期清理。");
-  if (!t.tail) return `${head}\n清理前未留存到输出内容（输出为空或读取失败）。`;
-  return `${head}\n清理前留存的输出${t.truncated ? `末尾 ${TOMBSTONE_TAIL_BYTES} 字节` : ""}:\n${t.tail}`;
+  // F3-5：sidechain 指针。`.output` 会被删，sidechain 不会——不说这一句，模型会把
+  // 「清理前未留存」读成「成果丢了」，然后自己重做一遍（本会话输入从 81k 涨到 313k）。
+  const sidechainHint = t.sidechainFile ? `\n完整轨迹（不会被清理）: ${t.sidechainFile}` : "";
+  if (!t.tail) return `${head}\n清理前未留存到输出内容（输出为空或读取失败）。${sidechainHint}`;
+  return `${head}\n清理前留存的输出${t.truncated ? `末尾 ${TOMBSTONE_TAIL_BYTES} 字节` : ""}:\n${t.tail}${sidechainHint}`;
 }

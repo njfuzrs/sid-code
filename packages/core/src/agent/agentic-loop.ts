@@ -107,7 +107,22 @@ export interface AgentLoopConfig {
      */
     turnText?: string;
     /** 本轮工具调用信息 */
-    tools: Array<{ name: string; input: Record<string, unknown> }>;
+    tools: Array<{
+      name: string;
+      input: Record<string, unknown>;
+      /**
+       * 本次调用的结果（F3，**可选**：只有真正执行了工具的那条分支才填）。
+       *
+       * 子代理的两条消费方都需要它，而它们此前只能拿到工具名+入参：
+       * - 残卷的 `<tool-evidence>` 段（只读核查型子代理的成果全在工具结果里）；
+       * - 纯工具轮的 `.output` 摘要（此前只写文本轮，纯工具轮的 `.output` 是空文件）。
+       *
+       * 只回传**引用**，不复制内容——调用方按需截断（`salvage.ts` 取前 800 字，
+       * `.output` 摘要只取字节数）。工具结果本来就以字符串形式在上下文里，
+       * 这里多一个引用不增加量级。
+       */
+      result?: { content: string; isError: boolean };
+    }>;
     /** 截至本轮的累计真实 token 数（input + output，来自 totalUsage），供进度面板展示 */
     tokenCount: number;
     /** 截至本轮的累计工具调用次数 */
@@ -1352,10 +1367,23 @@ async function runAgentLoopInner(
         }
       }
 
-      const turnToolInfo = toolUseBlocks.map((b) => ({
-        name: b.type === "tool_use" ? b.name : "",
-        input: b.type === "tool_use" ? (b.input as Record<string, unknown>) : {},
-      }));
+      // F3：把本轮工具结果一并带出 onTurnEnd。残卷的 `<tool-evidence>` 与纯工具轮的
+      // `.output` 摘要都靠它——只读核查型子代理每轮都是纯工具调用，没有这段就是
+      // 「残卷里一条成果都没有」。按 tool_use_id 配对（并发批次下顺序会被重排，
+      // 按数组下标配对会张冠李戴）。
+      const resultByToolUseId = new Map<string, ContentBlock & { type: "tool_result" }>();
+      for (const r of toolResults) {
+        if (r.type === "tool_result") resultByToolUseId.set(r.tool_use_id, r);
+      }
+      const turnToolInfo = toolUseBlocks.map((b) => {
+        if (b.type !== "tool_use") return { name: "", input: {} };
+        const r = resultByToolUseId.get(b.id);
+        return {
+          name: b.name,
+          input: b.input as Record<string, unknown>,
+          ...(r ? { result: { content: r.content, isError: r.is_error === true } } : {}),
+        };
+      });
       config.onTurnEnd?.({
         turn: turns,
         textOutput: lastTextOutput,
