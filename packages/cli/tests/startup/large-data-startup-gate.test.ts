@@ -195,32 +195,47 @@ function populateUploadHome(home: string): string {
 }
 
 /**
+ * 等本目录的维护子进程跑完。两个用处：
+ * - 它还持有锁时，下一轮的子进程会整轮跳过补传；
+ * - 它在后台压 200MB 时会和下一轮 empty/large 的启动抢 CPU，把那两组的首帧差值抬高
+ *   （实测 large 组 +250ms 假阳性，就是这个原因）。
+ *
+ * 完成信号用 `state/maintenance-result.json`：{@link resetUploadState} 每轮先把它删掉，
+ * 子进程跑完在 finally 里重写（`maintenance/runner.ts`）。
+ *
+ * ⚠️ 不要改回「固定 sleep 后判一次锁存在性」。那个写法在慢 runner 上有竞态：
+ * 子进程（bun 启动 + 模块加载）还没建锁时这里立刻返回，下一轮启动于是与上一轮的
+ * 200MB 压缩重叠。macOS CI 实测该形态 Δframe = 224.6ms / 351.2ms（阈值 150ms），
+ * main 与 PR #561 各撞一次；同一份代码本机只有 28.6ms。锁文件只用来做
+ * 「结果写完 → 进程真正退出」的收尾确认。
+ */
+async function waitMaintenanceIdle(home: string): Promise<void> {
+  const result = join(home, "state", "maintenance-result.json");
+  const lock = join(home, "state", "maintenance.lock");
+  const deadline = performance.now() + 90_000;
+  // 1. 等本轮的维护结果落盘（上一轮的已在 resetUploadState 里删掉）
+  while (!existsSync(result) && performance.now() < deadline) await Bun.sleep(200);
+  // 2. 写结果到进程退出之间还有几行（峰值内存、释放锁），等它彻底结束再进下一轮
+  while (existsSync(lock) && performance.now() < deadline) await Bun.sleep(100);
+}
+
+/**
  * 每轮带上传的启动前，把上一轮补传留下的记账清掉，让每一轮都真的去做补传。
  *
  * 不清的话只有第一轮干活：之后压缩缓存命中、`.upload-attempts` 在退避里、trace-upload 的
  * 1h 维护水位线未到期，三轮取中位数会把唯一那轮吸收掉（变异自证时发现门禁空转才加的）。
  * 删的都是本测试在自己 tmp 目录里造出来的产物。
+ *
+ * `maintenance-result.json` 一并删：它是 {@link waitMaintenanceIdle} 的完成信号——
+ * 留着上一轮那份，等待会立刻返回，等于没等。
  */
-/**
- * 等本目录的维护子进程跑完（锁释放）。两个用处：
- * - 它还持有锁时，下一轮的子进程会整轮跳过补传；
- * - 它在后台压 200MB 时会和下一轮 empty/large 的启动抢 CPU，把那两组的首帧差值抬高
- *   （实测 large 组 +250ms 假阳性，就是这个原因）。
- */
-async function waitMaintenanceIdle(home: string): Promise<void> {
-  const lock = join(home, "state", "maintenance.lock");
-  // 子进程在首帧后才 fork，给它一点时间把锁建起来
-  await Bun.sleep(500);
-  const deadline = performance.now() + 90_000;
-  while (existsSync(lock) && performance.now() < deadline) await Bun.sleep(200);
-}
-
 function resetUploadState(home: string, sessionDir: string): void {
   for (const f of [".upload-cache", ".upload-attempts", ".upload-failed", ".cost-recomputed"]) {
     rmSync(join(sessionDir, f), { recursive: true, force: true });
   }
   rmSync(join(sessionDir, ".uploaded"), { force: true });
   rmSync(join(home, "state", "maintenance-watermarks.json"), { force: true });
+  rmSync(join(home, "state", "maintenance-result.json"), { force: true });
   utimesSync(sessionDir, SCANNED, SCANNED);
 }
 
@@ -271,6 +286,12 @@ function medianProfile(ps: Profile[]): Profile {
 const firstFrame = (p: Profile) => p.checkpoints.find((c) => c.name === "first_frame")?.ms ?? NaN;
 const maxBlock = (p: Profile) => p.metrics.max_loop_block_before_interactive ?? NaN;
 
+/**
+ * 把一组测量值摊平成一串。中位数会掩盖方差：失败时要能看出是「单次离群」还是「整组偏移」，
+ * 否则只能靠重跑去猜（macOS CI 那两次 224.6 / 351.2ms 就没法区分）。
+ */
+const spread = (ps: Profile[]) => ps.map((p) => Math.round(firstFrame(p))).join(" / ");
+
 // Windows 没有 pty（Bun.Terminal 仅 POSIX）；CI 只跑 ubuntu / macos
 const describeGate = process.platform === "win32" ? describe.skip : describe;
 
@@ -283,6 +304,9 @@ describeGate("大数据启动门禁（首帧与事件循环阻塞不随数据量
   let upload: Profile;
   let uploadHome: string;
   let uploadSessionDir: string;
+  /** 三组的单次值：中位数掩盖方差，红的时候要能看出是「一次离群」还是「整组偏移」 */
+  let emptyRuns: Profile[] = [];
+  let uploadRuns: Profile[] = [];
   /**
    * 收到请求立刻回 502（与 10-22 真实失败同一状态码）。
    *
@@ -329,6 +353,8 @@ describeGate("大数据启动门禁（首帧与事件循环阻塞不随数据量
       // 最后一轮不等：防空转那条用例要在它跑的过程中观察缓存与请求
       if (i < RUNS - 1) await waitMaintenanceIdle(uploadHome);
     }
+    emptyRuns = e;
+    uploadRuns = u;
     empty = medianProfile(e);
     large = medianProfile(l);
     upload = medianProfile(u);
@@ -408,7 +434,7 @@ describeGate("大数据启动门禁（首帧与事件循环阻塞不随数据量
     );
     expect(
       dFrame,
-      `first_frame 空=${firstFrame(empty)}ms 上传=${firstFrame(upload)}ms`,
+      `first_frame 空=[${spread(emptyRuns)}] 上传=[${spread(uploadRuns)}]（中位数差 ${dFrame}ms）`,
     ).toBeLessThan(150);
     expect(
       dBlock,
