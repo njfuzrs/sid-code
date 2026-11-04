@@ -271,20 +271,28 @@ export interface LoopState {
    *    turnCount、查用 pair index，两套 key 让快照结构性恒 null。所以差值在发事件
    *    的那一刻当场算完落进 data，消费侧只做分位数、不做配对。
    *
-   * 口径诚实说明：这个差值**含 HITL 等待时间**（权限确认弹窗等的是人不是 agent）。
-   * 剔除它需要再引两个事件并保证配对，收益不足、失真风险更高；改为在有权限确认的
-   * 轮次上打 `had_hitl: true`，让消费侧自己决定是否排除。
+   * 口径诚实说明：这个差值**含 HITL 等待时间**（等人不是 agent 在干活）。
+   * 不从端到端里剔除（那会改变"用户回车 → 最终答复"的定义），而是同时落
+   * `had_hitl`（整轮剔除）与 `hitl_wait_ms`（精确扣减），让消费侧自己按需处理。
    */
   turnStartedAtMs?: number;
   /**
-   * P1-4：轮首的 HITL 累计计数快照，轮末与当前值比较得出"本轮有没有"。
+   * P1-4 / F4：轮首的「HITL 区段数」快照，轮末与当前值比较得出"本轮有没有等人"。
    *
-   * 计数由 `tool-executor` 经 `sessionState` 回传（见 `HITL_PROMPT_COUNT_KEY`）。
+   * 数值来自 `human-input-gate.readHitlSegmentCount()`（引用计数 0→1 的边沿 +1）。
    * 不用布尔，因为"本轮有没有"必须是**前后差值**而非累计标志：累计标志一旦置真，
    * 后面每轮都会被标成有 HITL。（曾有个 `hadHitlThisTurn` 布尔字段，全仓零置真点，
    * 2026-10-30 T3a 作为死字段删除。）
+   *
+   * 口径是「阻塞等人的次数」，不是「弹窗次数」—— 权限确认 / fallback 询问 /
+   * MCP elicitation / 抢跑权限门全部经过同一个闸门，不再由 tool-executor 二次登记。
    */
-  hitlCountAtTurnStart?: number;
+  hitlSegmentAtTurnStart?: number;
+  /**
+   * P1-4 / F4：轮首的「进程内累计人工等待毫秒」快照（`humanInputWaitElapsedMs()`）。
+   * 轮末差值即 `TurnComplete.hitl_wait_ms`，让消费侧能把端到端耗时里的等人时段精确扣掉。
+   */
+  humanInputWaitAtTurnStart?: number;
   /**
    * P1-4：本轮的 `TurnComplete` 是否已发射（幂等位）。
    *

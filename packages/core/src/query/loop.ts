@@ -37,7 +37,7 @@ import { ModelFallback } from "../llm/fallback.ts";
 // 实测可用，但换到 Node ESM 会 ReferenceError。这里只作 getProviderForModel 未注入时的兜底。
 import { AnthropicProvider } from "../llm/anthropic.ts";
 import { OpenAIProvider } from "../llm/openai.ts";
-import { isAwaitingHumanInput } from "./human-input-gate.ts";
+import { humanInputWaitElapsedMs, isAwaitingHumanInput } from "./human-input-gate.ts";
 import { trackRetryBackoff } from "./retry-backoff-window.ts";
 import { setSseDumpContext } from "../llm/sse-chunk-dumper.ts";
 import { takeLastRequestId } from "../api/request-id.ts";
@@ -1064,7 +1064,7 @@ async function* queryLoopBody(loopConfig: QueryLoopConfig): AsyncGenerator<Query
   // P1-4：端到端耗时基准 = "用户回车那一刻"，所以设在 queryLoop **入口**，
   // 不是 while 每次迭代（那是本条消息内的一次 API 往返，不是一次答复）。
   // 基准随 LoopState 每条用户消息重建而天然重设 —— 见 turn-complete.ts 文件头铁律 2。
-  beginTurn(state, sessionState);
+  beginTurn(state);
   /**
    * P1-4：本轮结束原因。在语义明确的收尾点显式赋值；未赋值时由下方统一出口按
    * abort signal 判定。刻意不在这里预设 "end_turn" —— 预设成正常值会让所有异常
@@ -1097,7 +1097,7 @@ async function* queryLoopBody(loopConfig: QueryLoopConfig): AsyncGenerator<Query
    */
   const emitTurnCompleteHere = (): void => {
     const abortedNow = deps.getAbortSignal?.()?.aborted === true;
-    emitTurnComplete(state, sessionState, deps, {
+    emitTurnComplete(state, deps, {
       sessionId: sessionState.sessionId,
       absoluteTurn: sessionState.getAbsoluteTurn(),
       promptSeq,
@@ -3012,6 +3012,12 @@ async function* queryLoopBody(loopConfig: QueryLoopConfig): AsyncGenerator<Query
 
       // ─── 处理流式响应 ───
       const perfHandle = getPerfTimer().start(`llm_request_${state.turnCount}`);
+      // F4：本次模型调用的「人工等待」快照。`apiDuration` 必须扣掉这段 —— 它是墙钟，
+      // 而等人（fallback 询问 / 权限确认）等的是人，不是模型。
+      // 用进程级累计值而非本循环内自己记账的 humanInputPauseAccumMs：后者只在两个看门狗
+      // tick 时采样，轮次结束得比 tick 快时恒为 0（本方案那条 2.85h 的等待就是这么漏掉的）。
+      // 取快照时点与 perfHandle 同刻，差值才是「本次请求期间新增的等待」。
+      const humanInputWaitAtRequestStart = humanInputWaitElapsedMs();
       // TTFT 不在这里自己计：曾用下方 processStream 的可视文本回调计时，纯 tool_use /
       // thinking 轮恒 undefined（2026-10-08 端到端实测 3 轮只有 end_turn 那轮有值）。
       // 改为取 lifecycle 层 first_content 的同一个值（首个任意内容 chunk、每次 fetch 单独计），
@@ -3108,6 +3114,10 @@ async function* queryLoopBody(loopConfig: QueryLoopConfig): AsyncGenerator<Query
                     actual_ms: actual,
                     drift_ms: actual - TURN_HARD_CHECK_INTERVAL_MS,
                     sleep_ms: slept > 0 ? slept : undefined,
+                    // F4：等待期内的迟到单独标记。等人时宿主的定时器补偿 / 事件循环让出
+                    // 都会让 tick 变慢，它与"事件循环被 IO 占满"是两种完全不同的成因，
+                    // 混在一起会把真正的性能问题稀释掉。
+                    during_hitl: isAwaitingHumanInput() ? true : undefined,
                     // 缺口7：与 hypothesis 各事件统一轮次口径，让"迟到发生在会话哪一阶段"可跨消息还原。
                     absoluteTurn: sessionState.getAbsoluteTurn(),
                     promptSeq,
@@ -3225,6 +3235,8 @@ async function* queryLoopBody(loopConfig: QueryLoopConfig): AsyncGenerator<Query
                     actual_ms: actual,
                     drift_ms: actual - WATCHDOG_CHECK_INTERVAL_MS,
                     sleep_ms: sleptW > 0 ? sleptW : undefined,
+                    // F4：同 turn_hard —— 等待期内的迟到不是事件循环阻塞的证据。
+                    during_hitl: isAwaitingHumanInput() ? true : undefined,
                     // 缺口7：与 hypothesis 各事件统一轮次口径，让"迟到发生在会话哪一阶段"可跨消息还原。
                     absoluteTurn: sessionState.getAbsoluteTurn(),
                     promptSeq,
@@ -3705,7 +3717,16 @@ async function* queryLoopBody(loopConfig: QueryLoopConfig): AsyncGenerator<Query
         }
         throw err;
       }
-      const apiDuration = perfHandle.end({ model: config.model });
+      const apiDurationRaw = perfHandle.end({ model: config.model });
+      // F4：扣掉本次模型调用期间新增的人工等待。
+      // 为什么必须扣：`perfHandle` 量的是墙钟，而 fallback 询问 / 权限确认会让这段墙钟
+      // 在等人上往前走（本方案实测 index 11 的 elapsed_ms = 10,250,304ms ≈ 2.85h，
+      // 其中 2.8h 是用户在 01:44 才点按钮）。turn_hard / watchdog 早已用
+      // humanInputPauseAccumMs 扣过同一段，唯独上报值没有 —— 于是 digest 的端到端
+      // p50 被一条等人样本拉到 44300.9s，看起来"系统慢得离谱"。
+      // 原始值不丢：另记 `api_duration_raw_ms`，需要墙钟口径的消费方仍然拿得到。
+      const hitlWaitMs = Math.max(0, humanInputWaitElapsedMs() - humanInputWaitAtRequestStart);
+      const apiDuration = Math.max(0, apiDurationRaw - hitlWaitMs);
       // P1-2：在清零 timeoutRetryCount 之前捕获"本轮是否发生过重试"，供下方 cache break
       // 归因标注（重连会重发相同前缀，服务端缓存可能已过期/换节点 → 命中脱落）。
       const turnPrecededByRetry = state.timeoutRetryCount > 0;
@@ -4106,7 +4127,10 @@ async function* queryLoopBody(loopConfig: QueryLoopConfig): AsyncGenerator<Query
               reasoningTokens: (response.usage as any).reasoningTokens,
             },
             cost_usd: thisCost,
+            // F4：模型调用耗时已扣除人工等待；原始墙钟不丢（供需要"含等人"口径的消费方）。
             api_duration_ms: apiDuration,
+            api_duration_raw_ms: apiDurationRaw,
+            hitl_wait_ms: hitlWaitMs,
             cache_savings_usd: cacheSavingsUSD,
             // 首个任意内容 chunk 的 TTFT（与 StreamPhase(first_content) 同值），纯 tool_use 轮也有
             ttft_ms: takeFirstContentTtft(state.turnCount),
