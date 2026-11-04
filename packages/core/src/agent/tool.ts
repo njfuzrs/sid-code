@@ -31,7 +31,10 @@ import type { SubAgentResult } from "./sub-agent.ts";
 import { resolveSubAgentTypeParam } from "./sub-agent-input.ts";
 import { z } from "zod/v4";
 import { lazySchema } from "../sdk/lazy-schema.ts";
-import { emitSubagentIsolationUnused } from "../trace/isolation-telemetry.ts";
+import {
+  emitSubagentIsolationUnused,
+  hasIsolationUnusedTraceSink,
+} from "../trace/isolation-telemetry.ts";
 
 const subAgentSchema = lazySchema(() => {
   // type 用 z.string()（而非 z.enum）：自定义/插件 agent 在本工具注册之后才加载，
@@ -597,7 +600,8 @@ ${typeLines}
     description: string,
     agentType: string,
   ): Promise<
-    { ok: true; cwd: string; cleanup: () => Promise<void> } | { ok: false; error: string }
+    | { ok: true; cwd: string; cleanup: (success: boolean) => Promise<void> }
+    | { ok: false; error: string }
   > {
     const log = getLogger();
     try {
@@ -621,23 +625,34 @@ ${typeLines}
       return {
         ok: true,
         cwd: session.worktreePath,
-        cleanup: async () => {
+        cleanup: async (success: boolean) => {
           // O1 埋点：worktree 建出来却一个改动都没有 = 隔离白建（目录 + git 元数据 + 创建/
           // 清理的全套开销都白付）。判据复用 countChanges —— 与下面 remove() 的「无改动才删」
           // 同源，不另立一套；两套判据必然漂移，事件就会和真实删除行为对不上。
           // 返回 null（git 出错）时不发：宁缺不错，别把「不知道」记成「零改动」。
-          try {
-            const changes = manager.countChanges(session.worktreePath, session.originalHeadCommit);
-            if (changes !== null && changes.changedFiles === 0 && changes.commits === 0) {
-              emitSubagentIsolationUnused({
-                agentType,
-                description,
-                worktreeName: session.worktreeName,
-                lifetimeMs: Date.now() - createdAt,
-              });
+          //
+          // 先问 sink 再测量：countChanges 是同步 git status，埋点关闭时（不启用遥测 /
+          // headless / CI）那次测量是纯白付，不该让每个隔离子代理收尾都多付一次。
+          if (hasIsolationUnusedTraceSink()) {
+            try {
+              const changes = manager.countChanges(
+                session.worktreePath,
+                session.originalHeadCommit,
+              );
+              if (changes !== null && changes.changedFiles === 0 && changes.commits === 0) {
+                emitSubagentIsolationUnused({
+                  agentType,
+                  description,
+                  worktreeName: session.worktreeName,
+                  // 单调时钟缺失（Date.now 可被系统时间回拨）时的下限保护：负的存活时长
+                  // 会让消费侧的均值/分位统计凭空变小。
+                  lifetimeMs: Math.max(0, Date.now() - createdAt),
+                  success,
+                });
+              }
+            } catch {
+              /* 埋点失败不影响下面的清理 */
             }
-          } catch {
-            /* 埋点失败不影响下面的清理 */
           }
           // 无改动则自动删除；有改动则保留（fail-closed，不强删）
           try {
@@ -704,7 +719,9 @@ ${typeLines}
 
     // slot 已持有，此后所有出口（含 worktree 失败 early return / 执行异常）都必须经 finally
     // 释放 slot，否则 slot 泄漏会让后续子代理永久排队饿死。
-    let isolationCleanup: (() => Promise<void>) | null = null;
+    let isolationCleanup: ((success: boolean) => Promise<void>) | null = null;
+    /** 子代理执行是否成功：worktree 埋点的 success 字段要用它区分「只读误用」与「失败尝试」。 */
+    let execSuccess = false;
     /** S13：usage-sink 入账票据；任何出口都要结算（finally 兜底 settle(false)，幂等）。 */
     let usageTicket: UsageSinkTicket | undefined;
     try {
@@ -778,6 +795,10 @@ ${typeLines}
         signal,
       );
 
+      // 子代理执行是否成功：worktree 埋点的 success 字段用它区分「只读任务误用」与
+      // 「任务本来就失败、worktree 只是陪着白建」两种样本。异常出口保持初始值 false。
+      execSuccess = result.success;
+
       // P0-1：把子代理消耗的 token/费用回写主会话
       usageTicket?.settle(this.collectUsage(result, usageTicket));
 
@@ -808,7 +829,7 @@ ${typeLines}
       // G1/G2 修复：释放 slot（有排队者则转移，否则递减 running），任何出口都必经此处。
       SubAgentTool.releaseSlot();
       if (isolationCleanup) {
-        await isolationCleanup();
+        await isolationCleanup(execSuccess);
       }
     }
   }
@@ -902,7 +923,9 @@ ${typeLines}
     // W1：后台路径同样建隔离 worktree。slot 已持有，所以它和前台一样必须在
     // finally 里清理（下方 isolationCleanup），任何出口都不能漏。
     let isolatedCwd: string | undefined = params.cwd;
-    let isolationCleanup: (() => Promise<void>) | null = null;
+    let isolationCleanup: ((success: boolean) => Promise<void>) | null = null;
+    /** 子代理执行是否成功：worktree 埋点的 success 字段要用它区分「只读误用」与「失败尝试」。 */
+    let execSuccess = false;
     /** S13：usage-sink 入账票据；任何出口都要结算（finally 兜底 settle(false)，幂等）。 */
     let usageTicket: UsageSinkTicket | undefined;
     if (params.isolation === "worktree") {
@@ -956,6 +979,9 @@ ${typeLines}
         abortController.signal,
       );
 
+      // 子代理执行是否成功：同 runSync，worktree 埋点用它区分样本来源；异常出口保持 false。
+      execSuccess = result.success;
+
       // P0-1：后台子代理同样要把 usage 回写主会话
       usageTicket?.settle(this.collectUsage(result, usageTicket));
 
@@ -983,7 +1009,7 @@ ${typeLines}
       SubAgentTool.releaseSlot();
       // W1：与前台 runSync 的 finally 同构——无改动则删、有改动则保留。
       if (isolationCleanup) {
-        await isolationCleanup();
+        await isolationCleanup(execSuccess);
       }
     }
   }

@@ -26,6 +26,12 @@
  * 「浪费」= 子代理结束时该 worktree 的 `changedFiles === 0 && commits === 0`。这个判据
  * 直接复用 `WorktreeManager.countChanges`（与 `remove()` 的「无改动才删」同源），不另立
  * 一套——两套判据必然漂移，而漂移会让事件与真实删除行为对不上。
+ *
+ * ## 为什么暴露 `hasIsolationUnusedTraceSink()`
+ *
+ * 判定要在调用方跑一次 `countChanges`（同步 `git status`）。埋点关闭时那次 git status
+ * 是纯白付——不启用遥测的用户、headless / CI 环境都不该为一个不落地的事件多付收尾开销。
+ * 所以把「sink 在不在」变成显式查询，让调用方在**测量之前**短路，而不是测完再发现没人收。
  */
 
 /** 事件名常量 —— 生产侧（agent/tool.ts）与消费侧（轨迹查询 / 后续统计）共用，避免字面量漂移 */
@@ -45,6 +51,18 @@ export function setIsolationUnusedTraceSink(s: IsolationUnusedTraceSink | null):
 }
 
 /**
+ * 埋点是否启用。
+ *
+ * 调用方（`agent/tool.ts` 的 cleanup）在判定「有没有白建」之前要先跑一次
+ * `countChanges`（同步 `git status`）。埋点关闭时那次 git status 是纯白付——
+ * 不启用遥测的用户、headless / CI 环境都不该为一个不落地的事件多付收尾开销。
+ * 所以把「sink 在不在」暴露成显式查询，让调用方在**测量之前**短路。
+ */
+export function hasIsolationUnusedTraceSink(): boolean {
+  return sink !== null;
+}
+
+/**
  * 记录一条「worktree 建了但一个改动都没有」的子代理结束事件。
  *
  * 字段口径服务于后续决策（要不要做更强的约束）：
@@ -52,6 +70,8 @@ export function setIsolationUnusedTraceSink(s: IsolationUnusedTraceSink | null):
  * - `worktree_name`：`agent-<hex>`，可与 `SubagentStart.agent_cwd` 的路径尾段对上
  * - `lifetime_ms`：worktree 从创建到清理存活多久（白付的墙钟量级）
  * - `description`：派活意图（与 `SubagentStart.description` 同源同尺度）
+ * - `success`：本次子代理执行是否成功。没有它，「只读任务误用」与「任务本来就失败、
+ *   worktree 只是陪着白建」两种样本分不开，一周后的占比统计会把失败样本算进分母。
  *
  * 不抛异常：埋点失败不能影响子代理收尾（worktree 清理才是关键路径）。
  */
@@ -60,6 +80,7 @@ export function emitSubagentIsolationUnused(data: {
   description: string;
   worktreeName: string;
   lifetimeMs: number;
+  success: boolean;
 }): void {
   if (!sink) return;
   try {
@@ -68,6 +89,7 @@ export function emitSubagentIsolationUnused(data: {
       description: data.description,
       worktree_name: data.worktreeName,
       lifetime_ms: data.lifetimeMs,
+      success: data.success,
       // 判据命中的前提就是零改动；显式落 0 让消费侧不必依赖「字段缺失 = 0」的约定。
       changed_files: 0,
       commits: 0,
