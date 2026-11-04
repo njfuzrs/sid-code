@@ -391,9 +391,9 @@ ${typeLines}
   usageGuide(): string {
     // 缺口（子代理从不触发）：description() 只回答「sub_agent 是什么、有哪些类型」，
     // 不回答「什么时候该派子代理」。对不会自发编排的弱模型，看得见 ≠ 会用。
-    // usageGuide() 会被系统提示词单独拼成「### sub_agent 工具使用指南」段
-    // （system-prompt.ts:455-460），信号比工具清单里的一行 description 强得多，
-    // 是承载「何时派活」触发引导的官方通道。
+    // usageGuide() 只拼进 tools[].description（registry.ts toolToDefinition），系统提示词不再
+    // 重复渲染（F5-Q5a，2026-11-04）。flash A/B 里只留这一份时子代理派发略少、召回不降；
+    // opus 未验证，若 opus 上派发掉得多，先回看这里（bench_fix 06a §7）。
     return `- **何时该派**：任务能拆成多个相对独立的子方向时优先分治。判据——子方向 ≥ 3 个（如系统排查要过多个模块、审计要查多个维度、要同时搜索多处来源），或单个方向读起来会撑爆主上下文。满足任一条就派子代理，而不是自己一个个串行读。
 - **怎么选类型**：只读探查（搜代码、读模块、定位实现）派 explore；要改文件 / 跑命令派 task；验证某个已有结论是否成立、需要对抗式复核派 verify。拿不准是否要写入就先按只读派 explore，需要写时子代理会反馈、再改派 task。
 - **什么时候传 isolation=worktree**：只有子代理**会改文件**、且需要与主工作区隔离时才传。只读子代理（explore / plan / verify）一律不传——worktree 是真建一个 git 工作树（git worktree add + 复制本地配置），结束时再判改动、无改动才删，纯读任务白付这一整套创建与清理开销。
