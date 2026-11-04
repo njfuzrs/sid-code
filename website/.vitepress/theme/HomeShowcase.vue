@@ -46,13 +46,15 @@
  *   现在四个数全部取自同一个取数脚本的同一次运行：
  *     docs-research 仓 scripts/resume-metrics.ts（`--coverage`，约 4 分钟）
  *
- *     代码行数      55.9 万：生产 + 测试 + 工程脚本，扣掉 packages/tui/src 里仍是上游 ink 原样继承的行
- *                   （2026-10-12 实测 567,027 − 7,798 = 559,229 行，其中测试 234,289 行；HEAD=cdb37f58）
+ *     代码行数      65.7 万：生产 + 测试 + 工程脚本，扣掉 packages/tui/src 里仍是上游 ink 原样继承的行
+ *                   （2026-11-04 实测 665,037 − 7,796 = 657,241 行，其中测试 291,457 行；HEAD=7f51a6f9）
  *                   ⚠ 继承行用 git blame 归到导入提交 8fd9048d 来数；不扣就不能叫「自研」（B9 / T9.2）
- *     单测          `bun test` 实际执行数，含动态生成用例（2026-10-12 实测 15,911）
- *     引擎行覆盖率  packages/core/src 的行覆盖（2026-10-12 实测 88.0% = 83,564 / 94,973）
+ *     单测          `bun test` 实际执行数，含动态生成用例（2026-11-04 实测 19,237）
+ *     引擎行覆盖率  packages/core/src 的行覆盖（2026-11-04 实测 90.1% = 98,039 / 108,844）
  *                   ⚠ 只报引擎层；CLI/TUI 与渲染层覆盖率明显更低，是有意取舍，别换成全仓口径
- *     内置工具数    sid-code --dump-tools 数组长度（44，与 ref/tools.md 同源）
+ *     内置工具数    sid-code --dump-tools 数组长度（41，与 ref/tools.md 同源）
+ *                   ⚠ 2026-11-04 由 44 降为 41：`9d8ca96b` 把 3 个延迟工具改为默认并入基础工具集，
+ *                   不再单独注册。别照抄旧值 44，ref/tools.md 才是运行时真值。
  *   Hook 事件数从能力条撤下：枚举 32 类里有一部分是预留、尚未接线，
  *   放在「量级证据」位置会引出「哪些是空的」。完整清单见 /ref/hooks。
  *
@@ -76,10 +78,10 @@ interface Stat {
   decimals?: number;
 }
 const STATS: Stat[] = [
-  { value: 55.9, suffix: "万", label: "行 TypeScript（含测试）", decimals: 1 },
-  { value: 15911, suffix: "", label: "个单测，全绿才合入" },
-  { value: 88.0, suffix: "%", label: "Agent 引擎行覆盖率", decimals: 1 },
-  { value: 44, suffix: "", label: "个内置工具" },
+  { value: 65.7, suffix: "万", label: "行 TypeScript（含测试）", decimals: 1 },
+  { value: 19237, suffix: "", label: "个单测，全绿才合入" },
+  { value: 90.1, suffix: "%", label: "Agent 引擎行覆盖率", decimals: 1 },
+  { value: 41, suffix: "", label: "个内置工具" },
 ];
 
 /* ── §5 分开回答两类用户 ── */
