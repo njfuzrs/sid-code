@@ -91,17 +91,16 @@ describe("缓存键 — 第 7b 条：工具身份", () => {
     expect(p2).not.toContain("老描述AAA");
   });
 
-  test("同名工具的 usageGuide 变化也要换键（usageGuide 进提示词）", () => {
-    const p1 = buildSystemPrompt({
+  test("同名工具的 usageGuide 变化也要换键", () => {
+    // F5-Q5a 后已加载工具的指南不进提示词文本，但延迟工具的指南仍进；
+    // 键按工具身份（含 guide）区分，两种情况都不能串味。
+    const k1 = generateCacheKey({
       tools: [makeTool({ name: "read", desc: "读文件", guide: "指南AAA" })],
     });
-    const p2 = buildSystemPrompt({
+    const k2 = generateCacheKey({
       tools: [makeTool({ name: "read", desc: "读文件", guide: "指南BBB" })],
     });
-
-    expect(p1).not.toBe(p2);
-    expect(p2).toContain("指南BBB");
-    expect(p2).not.toContain("指南AAA");
+    expect(k1).not.toBe(k2);
   });
 
   test("完全相同的工具集仍命中缓存", () => {

@@ -61,7 +61,41 @@ description: 审查代码质量
     expect(found!.name).toContain(":");
     expect(found!.name).not.toBe("skill-plugin-code-review");
     expect(found!.loadedFrom).toBe("plugin");
+    // 缺陷 41：source 也必须是 plugin，不能标成 project。
+    // 它同时是企业策略的来源判据（ADMIN_TRUSTED_SOURCES 含 plugin、不含 project），
+    // 标成 project 会让「锁定 skills 面」时插件 skill 被当成项目来源拦掉。
+    expect(found!.source).toBe("plugin");
     expect(found!.description).toBe("审查代码质量");
+  });
+
+  // 缺陷 42：扫描层 fail-closed 跳过的文件必须变成 component-load-failed，
+  // 不能只在日志里留一行 warn（用户体感是「装了 5 个 skill 只出现 4 个」）。
+  test("畸形 frontmatter 的 skill 被跳过并记入组件错误清单", async () => {
+    const dir = await makePluginWithSkills(
+      { name: "broken-skill-plugin", version: "1.0.0", description: "带坏 skill 的插件" },
+      {
+        good: `---\nname: good\ndescription: 正常\n---\n内容`,
+        // 缺闭合分隔符 → parseFrontmatter 报 error → scanDir fail-closed 跳过
+        broken: `---\nname: broken\ndescription: 坏的\n正文没有闭合`,
+      },
+    );
+    setInlinePluginDirs([dir]);
+    clearAllPluginCaches();
+
+    const { getPluginSkills } = await import("@sid-code/cli/plugin/loadPluginSkills.ts");
+    const { listComponentLoadErrors, clearComponentLoadErrors } =
+      await import("@sid-code/cli/plugin/component-errors.ts");
+    clearComponentLoadErrors();
+
+    const skills = await getPluginSkills();
+    expect(skills.map((s) => s.name)).toContain("broken-skill-plugin:good");
+    expect(skills.map((s) => s.name)).not.toContain("broken-skill-plugin:broken");
+
+    const errs = listComponentLoadErrors().filter(
+      (e) => e.type === "component-load-failed" && e.component === "skills",
+    );
+    expect(errs.length).toBeGreaterThan(0);
+    expect(errs.some((e) => e.source === "broken-skill-plugin@inline")).toBe(true);
   });
 
   test("多个 skill 目录全部加载", async () => {

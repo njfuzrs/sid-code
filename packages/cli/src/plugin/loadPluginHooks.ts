@@ -13,7 +13,6 @@
 
 import { join } from "node:path";
 import { getLogger } from "@sid-code/core/debug/logger.ts";
-import { memoize } from "@sid-code/shared/utils/memoize.ts";
 import { getSidHome } from "@sid-code/core/config/paths.ts";
 import type { HookSystem } from "@sid-code/core/hook/system.ts";
 import type { HooksConfig } from "@sid-code/core/config/config.ts";
@@ -49,34 +48,66 @@ export function collectPluginHooks(plugin: LoadedPlugin): PluginHookLayer | null
 }
 
 /**
- * 加载所有插件的 Hooks 并原子注册到 HookSystem，返回归一化诊断。
- * memoize 的是"已加载"状态——重复调用不会重复注册（除非 clear 后再调）。
+ * 每个 HookSystem 实例一份「已加载」Promise（缺陷 36）。
  *
- * 注意：memoize key 不含 hookSystem 参数（单 slot），同一进程内 hookSystem 固定。
+ * 旧实现用的是单 slot `memoize`：**第一次调用的 hookSystem 被用于执行，后续调用的
+ * 参数全部被丢掉**。当时靠一句注释维持「同一进程内 hookSystem 固定」这个不变量，
+ * 而它已经不是事实——`grep -rn 'new HookSystem' packages/` 能数出三个实例：
+ * `app.ts`（主实例）、`agent/agent-hooks.ts`（隔离 agent 实例）、`command/hooks-cli.ts`
+ * （临时实例）。后两个目前恰好不走这条路径，所以不是活缺陷；但哪天有人给隔离 agent
+ * 接上插件 hook，第二个实例的 hook 会静默注册到主实例上，而 `loadPluginHooks` 返回成功。
+ *
+ * 改成按实例分槽后，违反前提不再需要断言兜底：每个 HookSystem 拿到的是自己的结果。
+ * 用 WeakMap 而不是 Map：HookSystem 生命周期结束后槽位随之回收，不会钉住实例。
  */
-export const loadPluginHooks = memoize(
-  async (hookSystem: HookSystem): Promise<HookDiagnostic[]> => {
-    const { enabled } = await loadAllPluginsCacheOnly();
+let hookCache = new WeakMap<HookSystem, Promise<HookDiagnostic[]>>();
 
-    const layers: PluginHookLayer[] = [];
-    for (const plugin of enabled) {
-      const layer = collectPluginHooks(plugin);
-      if (layer) layers.push(layer);
-    }
+async function registerPluginHooks(hookSystem: HookSystem): Promise<HookDiagnostic[]> {
+  const { enabled } = await loadAllPluginsCacheOnly();
 
-    // 原子交换
-    const diagnostics = hookSystem.replacePluginHooks(layers);
-    for (const d of diagnostics) {
-      getLogger().warn("PLUGIN", `插件 hook 已跳过 ${d.path}: ${d.message}`);
-    }
+  const layers: PluginHookLayer[] = [];
+  for (const plugin of enabled) {
+    const layer = collectPluginHooks(plugin);
+    if (layer) layers.push(layer);
+  }
 
-    const total = hookSystem.getAllHooks().filter((h) => h.source === "plugin").length;
-    if (total > 0) {
-      getLogger().info("PLUGIN", `注册了 ${total} 个插件 hook`);
-    }
-    // 返回诊断给调用方：启动期由 app 送进启动横幅 / -p stderr（与项目层诊断同一出口），
-    // 原先只进 logger.warn，TUI 接管终端后用户看不到，写错的插件 hook 静默不跑。
-    return diagnostics;
+  // 原子交换
+  const diagnostics = hookSystem.replacePluginHooks(layers);
+  for (const d of diagnostics) {
+    getLogger().warn("PLUGIN", `插件 hook 已跳过 ${d.path}: ${d.message}`);
+  }
+
+  const total = hookSystem.getAllHooks().filter((h) => h.source === "plugin").length;
+  if (total > 0) {
+    getLogger().info("PLUGIN", `注册了 ${total} 个插件 hook`);
+  }
+  // 返回诊断给调用方：启动期由 app 送进启动横幅 / -p stderr（与项目层诊断同一出口），
+  // 原先只进 logger.warn，TUI 接管终端后用户看不到，写错的插件 hook 静默不跑。
+  return diagnostics;
+}
+
+/**
+ * 加载所有插件的 Hooks 并原子注册到 HookSystem，返回归一化诊断。
+ * 同一个 HookSystem 重复调用不会重复注册（返回同一个 Promise）；不同实例各注册各的。
+ * 需要重新加载走 `clearAllPluginCaches()` → `/reload-plugins`（会调用下面的 clear）。
+ */
+export const loadPluginHooks = Object.assign(
+  (hookSystem: HookSystem): Promise<HookDiagnostic[]> => {
+    const cached = hookCache.get(hookSystem);
+    if (cached) return cached;
+    const promise = registerPluginHooks(hookSystem).catch((err: unknown) => {
+      // 失败不缓存：一次磁盘抖动不该让整个会话永久返回同一个失败
+      if (hookCache.get(hookSystem) === promise) hookCache.delete(hookSystem);
+      throw err;
+    });
+    hookCache.set(hookSystem, promise);
+    return promise;
+  },
+  {
+    /** 清空全部实例的缓存（WeakMap 不可遍历，直接换一个新的） */
+    clear: (): void => {
+      hookCache = new WeakMap();
+    },
   },
 );
 

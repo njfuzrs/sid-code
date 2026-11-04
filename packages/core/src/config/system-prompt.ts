@@ -1064,11 +1064,12 @@ function buildToolGuideSection(
   // 指南正文由工具自己提供（属于工具契约，双语化要逐个工具改），这里只本地化包装标题。
   // 延迟工具的整段指南同样进延迟分区 —— 不做这条则泄漏面从"一行工具名"扩大到
   // 近 800 字符的完整教程（实测 workflow 的 usageGuide 783 字符）。
-  const customGuides: string[] = [];
-  for (const tool of live) {
-    const rendered = renderToolGuide(tool, isEn);
-    if (rendered) customGuides.push(rendered);
-  }
+  //
+  // F5-Q5a（2026-11-04）：**已加载工具不再在这里渲染指南**。toolToDefinition 已把 usageGuide
+  // 拼进 tools[].description（registry.ts），这里再渲染一份就是同一段文字发两遍（F3 首调实测
+  // 13 段与描述 8-gram 重合 0.85–0.99，约 3.3K tokens/调用）。flash 每臂 5 次 A/B：召回
+  // R2 +0.042、S2v +0.033，L3f 覆盖相同；子代理派发略少，opus 未验证（bench_fix 06a §6–§7）。
+  // 延迟工具的指南照旧进延迟分区：它们首轮不在 tools[] 里，这里是唯一能看到的地方。
   const deferredGuides: string[] = [];
   for (const tool of deferred) {
     const rendered = renderToolGuide(tool, isEn, mark);
@@ -1099,7 +1100,6 @@ function buildToolGuideSection(
 
     return buildToolGuideSectionEn({
       toolList,
-      customGuides: customGuides.length > 0 ? "\n" + customGuides.join("\n") : "",
       hypothesisDiscipline: hypothesisDisciplineEn,
       deferredSection,
       deferredPointer,
@@ -1151,7 +1151,6 @@ ${deferredPointer}
 - **落盘完整输出再切片**：\`cmd > /tmp/x.txt 2>&1; wc -l /tmp/x.txt; grep <域> /tmp/x.txt\`。这样一轮既拿到总数（进度），又拿到这一批要处理的**具体错误行**（动作）。
 - **禁止只取 \`grep -c\` 计数作为唯一观测**：一个数字无法指导下一步改哪里，只会让你在"再跑一次看看"里空转。同一条命令连着跑两轮而错误数没动，说明你缺的是错误内容不是计数——立刻改成落盘 + 切片。
 - **批量同形改写用脚本一次到位，并自带未匹配报告**：一次替换十几处时，脚本要对每条替换检查匹配数、把没匹配上的显式打印出来（如 \`if n == 0: print("MISS:", ...)\`）。静默漏改比报错更难查。
-${customGuides.length > 0 ? "\n" + customGuides.join("\n") : ""}
 
 ### 任务编排
 - **复杂任务先拆解**: 用 todo_write 工具把复杂任务拆成结构化清单，逐条追踪进度。收到新指令时立即捕捉为 todo 项，完成即标记为 completed，不要攒到最后批量完成
