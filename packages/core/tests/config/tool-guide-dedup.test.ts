@@ -8,7 +8,7 @@
  * 本文件锁三件事：
  *  1. 已加载工具的指南不在 system（中英文档都是），一行摘要还在
  *  2. 指南仍在发给模型的 tools[].description 里——删的是重复，不是指南本身
- *  3. 延迟工具的指南照旧留在延迟分区（它们首轮不在 tools[] 里，删了就彻底看不见）
+ *  3. F5-Q5b：延迟工具的指南也不进 system，只留名单行；激活后经 tools[].description 拿到（bench_fix 06b）
  */
 
 import { describe, test, expect, beforeEach } from "bun:test";
@@ -55,16 +55,30 @@ describe("F5-Q5a 工具指南去重", () => {
     expect(def?.description).toContain(BASH_GUIDE);
   });
 
-  test("延迟工具的指南照旧留在延迟分区", () => {
+  test("延迟工具的指南不进 system，名单行带激活标注", () => {
     const prompt = buildSystemPrompt({ tools: tools() });
-    expect(prompt).toContain(`### workflow 工具使用指南 ${DEFERRED_MARK}`);
-    expect(prompt).toContain(WORKFLOW_GUIDE);
+    expect(prompt).not.toContain("### workflow 工具使用指南");
+    expect(prompt).not.toContain(WORKFLOW_GUIDE);
+    expect(prompt).toContain(`- workflow: ${DEFERRED_MARK}`);
   });
 
   test("英文档同样不重复", () => {
     const prompt = buildSystemPrompt({ tools: tools(), preferredLanguage: "en" });
     expect(prompt).not.toContain("### bash usage guide");
     expect(prompt).not.toContain(BASH_GUIDE);
-    expect(prompt).toContain(WORKFLOW_GUIDE);
+    expect(prompt).not.toContain(WORKFLOW_GUIDE);
+  });
+});
+
+describe("F5-Q5b 延迟工具指南移出 system", () => {
+  test("激活后的定义带指南——删的是 system 里那份预告，不是指南本身", () => {
+    const registry = new Registry();
+    registry.register(
+      makeTool({ name: "workflow", shouldDefer: true, guide: WORKFLOW_GUIDE }) as any,
+    );
+    expect(registry.activeDefinitions().map((d) => d.name)).not.toContain("workflow");
+    registry.activateTool("workflow");
+    const def = registry.activeDefinitions().find((d) => d.name === "workflow");
+    expect(def?.description).toContain(WORKFLOW_GUIDE);
   });
 });

@@ -18,7 +18,7 @@ description: 全部内置工具的名称、用途与入参。表里的名称就�
 
 <!-- AUTO-GEN:START 由 scripts/docs-gen-reference.ts 生成，勿手工编辑 -->
 
-> 共 **44** 个内置工具，由 `--dump-tools` 从运行时注册表导出——
+> 共 **41** 个内置工具，由 `--dump-tools` 从运行时注册表导出——
 > 与发给模型的工具定义同源。表里的名称就是你在权限规则、`--allowed-tools`、
 > 子代理 `tools` 清单、Hook matcher 里要写的字符串。
 
@@ -49,9 +49,6 @@ description: 全部内置工具的名称、用途与入参。表里的名称就�
 | `save_memory` | 保存记忆到持久化存储。用于记录用户偏好、项目约定、重要决策等信息。 | `key` `value` `type` | `scope` |
 | `schedule_wakeup` | 安排在 N 秒后唤醒一次并执行 prompt（动态自定步，一次性）。 | `delay_seconds` `prompt` | `reason` |
 | `send_message` | 向一个后台 Agent 发送消息。 | `to` `message` | `summary` |
-| `skill__review` | 对当前变更或指定 diff 做 code review，输出结构化审查意见 | `input` | — |
-| `skill__simplify` | 审查已修改的代码，检查复用性、质量和效率问题，然后修复发现的问题 | `input` | — |
-| `skill__verify` | 验证代码变更是否按预期工作（运行类型检查、构建、相关测试） | `input` | — |
 | `sub_agent` | 启动一个子代理来执行独立的子任务。子代理有自己独立的上下文，不会污染主对话。 | `description` `prompt` | `type` `run_in_background` `model` `cwd` `fork` `isolation` |
 | `task_create` | 在结构化任务清单中新建一个任务（带 subject/description/status/依赖/owner）。用于跟踪复杂多步工作、给多 agent 派活。注意：这是结构化清单，不是后台任务（后者用 bg_task_l… | `subject` `description` | `active_form` `metadata` |
 | `task_get` | 查询结构化任务清单中某个任务的完整详情：subject/description/status/owner，以及它 blocks（下游）和 blockedBy（上游未完成依赖）。注意：这是结构化清单，不是后台任务（后者用… | `task_id` | — |
