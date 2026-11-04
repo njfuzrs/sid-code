@@ -16,6 +16,10 @@ import {
   formatToolTurnLine,
   type SalvageTurnInfo,
 } from "@sid-code/core/agent/salvage.ts";
+import {
+  truncateForNotification,
+  NOTIFICATION_ERROR_MAX_CHARS,
+} from "@sid-code/core/task/notification.ts";
 
 /** 造一轮「纯工具、无文本」的快照——本缺陷的典型形态。 */
 function toolOnlyTurn(
@@ -123,7 +127,7 @@ describe("F3 残卷工具证据", () => {
     expect(e.content.endsWith("…[截断]")).toBe(true);
   });
 
-  test("`<tool-evidence>` 段排在 findings 之后（有文本时是补充，没文本时是全部）", () => {
+  test("`<tool-evidence>` 排在 findings 之后、`<next-step>` 之后（截断时关键段先入窗口）", () => {
     const c = new SalvageCollector();
     c.recordTurn({
       turn: 1,
@@ -146,12 +150,69 @@ describe("F3 残卷工具证据", () => {
 
     const out = buildSalvageOutput(c.snapshot(), { reason: "error", errorMessage: "boom" });
     const findingsAt = out.indexOf("<findings");
-    const evidenceAt = out.indexOf("<tool-evidence");
     const incompleteAt = out.indexOf("<incomplete>");
+    const nextStepAt = out.indexOf("<next-step>");
+    const evidenceAt = out.indexOf("<tool-evidence");
     expect(findingsAt).toBeGreaterThan(-1);
+    // 仍在 findings 之后（成果顺序不变：结论在前，证据在后）
     expect(evidenceAt).toBeGreaterThan(findingsAt);
-    expect(evidenceAt).toBeLessThan(incompleteAt);
+    // 但排在 incomplete / next-step **之后**：通道截断时先丢证据尾部，不丢「下一步」。
+    // 依据见 salvage.ts 该段的注释（PR #574 review：紧跟 findings 会把两段挤出 4000 字窗口）。
+    expect(evidenceAt).toBeGreaterThan(incompleteAt);
+    expect(evidenceAt).toBeGreaterThan(nextStepAt);
     expect(out).toContain("2 files changed");
+  });
+
+  test("6 条满额证据使残卷超长时，<incomplete> / <next-step> 仍在通知窗口内", () => {
+    const c = new SalvageCollector();
+    for (let i = 1; i <= 6; i++) {
+      c.recordTurn(
+        toolOnlyTurn(
+          i,
+          "bash",
+          { command: `git log --oneline -50 r${i}` },
+          { content: `${i}`.repeat(700), isError: false },
+        ),
+      );
+    }
+    const full = buildSalvageOutput(c.snapshot(), {
+      reason: "error",
+      errorMessage: "LLM 错误（quota_exhausted）",
+      cause: "auth",
+      retryAttempts: 3,
+      outputFile: "/tmp/sess-agent.jsonl",
+    });
+    // 前提：这个形态确实超过通知通道（否则本用例测不到截断行为）
+    expect(Array.from(full).length).toBeGreaterThan(NOTIFICATION_ERROR_MAX_CHARS);
+
+    const sent = truncateForNotification(full, NOTIFICATION_ERROR_MAX_CHARS, "/tmp/agent.output");
+    expect(sent).toContain("<incomplete>");
+    expect(sent).toContain("<next-step>");
+    expect(sent).toContain("认证失败，检查凭证");
+    // 证据被截掉是可接受的：完整残卷在 .output，截断提示给出了指针
+    expect(sent).toContain("已截断");
+    expect(sent).toContain("/tmp/agent.output");
+  });
+
+  test("工具结果正文里的 </evidence> 被转义（不会把段提前闭合）", () => {
+    const c = new SalvageCollector();
+    c.recordTurn(
+      toolOnlyTurn(
+        1,
+        "read",
+        { file_path: "/x/salvage.ts" },
+        {
+          content: 'parts.push("</evidence>");\nparts.push("</tool-evidence>");',
+          isError: false,
+        },
+      ),
+    );
+    const out = buildSalvageOutput(c.snapshot(), { reason: "error" });
+    // 结构自身的闭合各恰好一条；正文里那两个已转义（否则段边界会被提前闭合）
+    expect(out.match(/<\/evidence>/g)?.length).toBe(1);
+    expect(out.match(/<\/tool-evidence>/g)?.length).toBe(1);
+    expect(out).toContain("&lt;/evidence>");
+    expect(out).toContain("&lt;/tool-evidence>");
   });
 
   test("无证据时不输出空段（避免主代理读到空标签）", () => {

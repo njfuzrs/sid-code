@@ -85,7 +85,10 @@ class ReadTool implements LegacyTool {
   }
 }
 
-function run(scripted: Array<() => AsyncIterable<StreamEvent>>) {
+function run(
+  scripted: Array<() => AsyncIterable<StreamEvent>>,
+  overrides: Record<string, unknown> = {},
+) {
   let idx = 0;
   const provider = {
     name: () => "mock",
@@ -112,6 +115,8 @@ function run(scripted: Array<() => AsyncIterable<StreamEvent>>) {
     agentId: "agent-test-1",
     traceAppendEvent: (ev: { event: string; data?: Record<string, unknown> }) =>
       events.push({ event: ev.event, data: ev.data ?? {} }),
+    // 允许调用方补挂 config 字段（如 onTurnEnd），用于观察对外契约
+    ...overrides,
   } as any);
   return { promise, events, read };
 }
@@ -197,5 +202,39 @@ describe("子循环事件通道与停止归因", () => {
     const r = await promise;
     expect(r.stopAction).toBe("unknown_stop_reason");
     expect(r.lastStopReason).toBe("content_filter");
+  });
+});
+
+/**
+ * F3（PR #574 review 补）：`onTurnEnd` 的 `tools[].result` 是失败子代理残卷证据与
+ * 纯工具轮 `.output` 摘要的**唯一数据来源**，此前没有任何测试锁住它。
+ * 它一旦失效，下游只会静默退化成「结果未知」，所有函数级测试仍然全绿。
+ */
+describe("onTurnEnd 带出工具结果（F3 接线）", () => {
+  test("tools[].result 与真实执行一致，文本轮不凭空造 result", async () => {
+    type TurnEnd = {
+      turnText?: string;
+      tools: Array<{ name: string; result?: { content: string; isError: boolean } }>;
+    };
+    const turnEnds: TurnEnd[] = [];
+    const { promise } = run(
+      [
+        () => toolStream("t1", { file_path: "a" }, "tool_use"),
+        () => textStream("完成", "end_turn"),
+      ],
+      { onTurnEnd: (info: TurnEnd) => turnEnds.push(info) },
+    );
+    await promise;
+
+    const toolTurn = turnEnds.find((i) => i.tools.some((t) => t.name === "read"));
+    expect(toolTurn).toBeDefined();
+    const readCall = toolTurn!.tools.find((t) => t.name === "read")!;
+    // ReadTool.execute 返回 "ok"：结果必须真的带出来（缺失时调用方只能写「结果未知」）
+    expect(readCall.result).toEqual({ content: "ok", isError: false });
+
+    // 纯文本轮没有工具：不能凭空造出带 result 的条目
+    const textTurn = turnEnds.find((i) => i.turnText === "完成");
+    expect(textTurn).toBeDefined();
+    expect(textTurn!.tools).toEqual([]);
   });
 });
