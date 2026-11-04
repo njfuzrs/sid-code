@@ -43,6 +43,7 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from verifier_health import (
     agent_ran,
     agent_started,
+    externally_killed,
     llm_fatal,
     verifier_ran,
 )
@@ -54,6 +55,10 @@ DROP_REASONS = (
     "无reward",
     "零调用",
     "启动未完成",
+    # 2026-11-04 新增(外部评测缺陷 3):result 事件从未发出 ⇒ 被 Harbor 硬顶
+    # 或墙钟超时外部 kill。它们没走自己的终止路径,不是「模型没解出来」。
+    # ⛔ 不许与「上游打断」合并:那个是重试链耗尽,这个是进程被杀,成因与修法都不同。
+    "被外部kill",
     "上游打断",
 )
 
@@ -81,6 +86,12 @@ def classify(trial_dir: str) -> tuple[float | None, str | None]:
     # `is False` 而不是 `not`：没有 debug.log 的题（cc 侧）返回 None。
     if agent_started(trial_dir) is False:
         return rew, "启动未完成"
+    # ⚠️ 必须在 `llm_fatal` **之前**：被外部 kill 的样本没有 result 事件,
+    # 它的 `sid_num_turns` 来自 traj 兜底(`session-traj-fallback`,是**步骤数**
+    # 不是 API 轮数),`llm_fatal` 的轮数判据对它们不可比 ⇒ 一律 fail-closed。
+    # 若放在后面,带 sid_errors 的 kill 样本会被误归成「上游打断」。
+    if externally_killed(d):
+        return rew, "被外部kill"
     if llm_fatal(d, trial_dir):
         return rew, "上游打断"
     return rew, None
