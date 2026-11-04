@@ -19,7 +19,7 @@
  *    而端到端样本本就比 TTFT 少一个数量级，重复一次就能明显偏移分位数。
  */
 
-import { describe, test, expect } from "bun:test";
+import { describe, test, expect, afterEach } from "bun:test";
 import { queryLoop } from "@sid-code/core/query/loop.ts";
 import type { QueryLoopConfig } from "@sid-code/core/query/loop.ts";
 import type { QueryDeps } from "@sid-code/core/query/types.ts";
@@ -28,10 +28,13 @@ import {
   beginTurn,
   emitTurnComplete,
   normalizeTurnStopReason,
-  recordHitlPrompt,
-  readHitlPromptCount,
-  HITL_PROMPT_COUNT_KEY,
 } from "@sid-code/core/query/turn-complete.ts";
+// F4：HITL 的计数与耗时都从闸门派生，测试也用同一个入口模拟「有人在等」。
+import {
+  readHitlSegmentCount,
+  withHumanInputWait,
+  __resetHumanInputGate,
+} from "@sid-code/core/query/human-input-gate.ts";
 import { Manager as ContextManager } from "@sid-code/core/context/manager.ts";
 import { Registry as ToolRegistry } from "@sid-code/core/tool/registry.ts";
 import { ModelFallback } from "@sid-code/core/llm/fallback.ts";
@@ -313,58 +316,64 @@ describe("P1-4 · TurnComplete 事件发射", () => {
 
 // ─── HITL 标记 ───
 
-describe("P1-4 · had_hitl 口径", () => {
-  test("无权限确认的轮次 had_hitl === false", async () => {
+describe("P1-4 · had_hitl 口径（F4：从 human-input-gate 派生）", () => {
+  afterEach(() => __resetHumanInputGate());
+
+  test("无人工等待的轮次 had_hitl === false 且 hitl_wait_ms === 0", async () => {
     const { loopConfig, events } = setup({ responses: [endTurnResp()] });
     await drain(loopConfig);
-    expect(turnCompletes(events)[0].had_hitl).toBe(false);
+
+    const tc = turnCompletes(events)[0];
+    expect(tc.had_hitl).toBe(false);
+    // 有基准就落 0：0 = 本轮没等人，是数据不是缺数据（消费侧可直接 e2e - hitl_wait_ms）
+    expect(tc.hitl_wait_ms).toBe(0);
   });
 
-  test("轮内发生过权限弹窗 → had_hitl === true（按前后差值判定，不是累计标志）", async () => {
+  test("轮内阻塞等人 → had_hitl === true，hitl_wait_ms 覆盖那段等待", async () => {
     // 用布尔标志会让"某轮弹过窗"之后的每一轮都被误标成有 HITL，所以实现走
-    // "轮首快照计数 + 轮末比较"。这里在工具执行期间递增计数来模拟弹窗。
-    const shared = new SessionState("test-hitl");
+    // "轮首快照 + 轮末比较"。这里在工具执行期间真进一次闸门并等一小段。
     const { loopConfig, events } = setup({
       responses: [toolUseResp(1), endTurnResp()],
-      sessionState: shared,
       depsOverrides: {
-        executeTools: async (content) => {
-          recordHitlPrompt(shared); // 等价于 tool-executor 里 logPermissionPrompt 那一刻
-          return {
-            results: content
-              .filter(
-                (b): b is Extract<ContentBlock, { type: "tool_use" }> => b.type === "tool_use",
-              )
-              .map((b) => ({ type: "tool_result" as const, tool_use_id: b.id, content: "ok" })),
-          };
-        },
+        executeTools: async (content) =>
+          withHumanInputWait(async () => {
+            await new Promise((r) => setTimeout(r, 60));
+            return {
+              results: content
+                .filter(
+                  (b): b is Extract<ContentBlock, { type: "tool_use" }> => b.type === "tool_use",
+                )
+                .map((b) => ({ type: "tool_result" as const, tool_use_id: b.id, content: "ok" })),
+            };
+          }),
       },
     });
 
     await drain(loopConfig);
 
-    expect(turnCompletes(events)[0].had_hitl).toBe(true);
+    const tc = turnCompletes(events)[0];
+    expect(tc.had_hitl).toBe(true);
+    // 不要卡死成 5000：真等多久取决于机器调度，只断言量级覆盖了那段等待。
+    expect(tc.hitl_wait_ms as number).toBeGreaterThanOrEqual(50);
   });
 
-  test("上一条消息弹过窗、本条没弹 → 本条 had_hitl === false（差值语义的核心）", async () => {
-    const shared = new SessionState("test-hitl-carryover");
-    recordHitlPrompt(shared); // 上一条用户消息里弹过一次
-    expect(readHitlPromptCount(shared)).toBe(1);
+  test("上一条消息等待过、本条没等 → 本条 had_hitl === false（差值语义的核心）", async () => {
+    // 上一条用户消息里等过一次：区段数已 +1，但本轮不该被这个历史值污染。
+    await withHumanInputWait(async () => {});
 
-    const { loopConfig, events } = setup({ responses: [endTurnResp()], sessionState: shared });
+    const { loopConfig, events } = setup({ responses: [endTurnResp()] });
     await drain(loopConfig);
 
-    // 累计计数仍是 1（没清零），但本轮没有新增 → 不该被标成有 HITL
-    expect(readHitlPromptCount(shared)).toBe(1);
     expect(turnCompletes(events)[0].had_hitl).toBe(false);
   });
 
-  test("计数器挂 SessionState 且键名固定（跨用户消息持久）", () => {
-    const ss = new SessionState("test-hitl-key");
-    recordHitlPrompt(ss);
-    recordHitlPrompt(ss);
-    // 直接按键名读到，说明它挂在 SessionState 而不是每条消息重建的 LoopState 上
-    expect(ss.get(HITL_PROMPT_COUNT_KEY)).toBe(2);
+  test("嵌套等待只算一个区段，不重复计数", async () => {
+    // 直接锁闸门语义：只在引用计数 0→1 的边沿 +1，嵌套 begin/end 属于同一段。
+    const before = readHitlSegmentCount();
+    await withHumanInputWait(async () => {
+      await withHumanInputWait(async () => {});
+    });
+    expect(readHitlSegmentCount()).toBe(before + 1);
   });
 });
 
@@ -392,8 +401,7 @@ describe("P1-4 · emitTurnComplete 幂等与降级", () => {
   test("同一 state 重复调用只发一次（防 20+ 出口重复计数）", () => {
     const events: Array<Record<string, unknown>> = [];
     const state = createInitialLoopState(10);
-    const ss = new SessionState("test-idem");
-    beginTurn(state, ss);
+    beginTurn(state);
     const deps = { traceAppendEvent: (ev: any) => events.push(ev) };
     const args = {
       sessionId: "s1",
@@ -403,9 +411,9 @@ describe("P1-4 · emitTurnComplete 幂等与降级", () => {
       toolCallsInTurn: 0,
     };
 
-    emitTurnComplete(state, ss, deps, args);
-    emitTurnComplete(state, ss, deps, args);
-    emitTurnComplete(state, ss, deps, args);
+    emitTurnComplete(state, deps, args);
+    emitTurnComplete(state, deps, args);
+    emitTurnComplete(state, deps, args);
 
     expect(events.length).toBe(1);
   });
@@ -415,7 +423,6 @@ describe("P1-4 · emitTurnComplete 幂等与降级", () => {
     // 悄悄退化成每会话 1 个 —— 比没有埋点更难发现。
     const events: Array<Record<string, unknown>> = [];
     const state = createInitialLoopState(10);
-    const ss = new SessionState("test-reset");
     const deps = { traceAppendEvent: (ev: any) => events.push(ev) };
     const args = {
       sessionId: "s1",
@@ -425,22 +432,20 @@ describe("P1-4 · emitTurnComplete 幂等与降级", () => {
       toolCallsInTurn: 0,
     };
 
-    beginTurn(state, ss);
-    emitTurnComplete(state, ss, deps, args);
-    beginTurn(state, ss); // 新一条用户消息
-    emitTurnComplete(state, ss, deps, args);
+    beginTurn(state);
+    emitTurnComplete(state, deps, args);
+    beginTurn(state); // 新一条用户消息
+    emitTurnComplete(state, deps, args);
 
     expect(events.length).toBe(2);
   });
 
   test("未接 traceAppendEvent 时静默不抛（采集永不阻塞主循环）", () => {
     const state = createInitialLoopState(10);
-    const ss = new SessionState("test-no-sink");
-    beginTurn(state, ss);
+    beginTurn(state);
     expect(() =>
       emitTurnComplete(
         state,
-        ss,
         {},
         {
           sessionId: "s1",
@@ -455,12 +460,10 @@ describe("P1-4 · emitTurnComplete 幂等与降级", () => {
 
   test("traceAppendEvent 抛错时静默吞掉，不影响主循环", () => {
     const state = createInitialLoopState(10);
-    const ss = new SessionState("test-throwing-sink");
-    beginTurn(state, ss);
+    beginTurn(state);
     expect(() =>
       emitTurnComplete(
         state,
-        ss,
         {
           traceAppendEvent: () => {
             throw new Error("磁盘满");
@@ -483,7 +486,6 @@ describe("P1-4 · emitTurnComplete 幂等与降级", () => {
     // 刻意不调 beginTurn → turnStartedAtMs 缺失
     emitTurnComplete(
       state,
-      undefined,
       { traceAppendEvent: (ev: any) => events.push(ev) },
       {
         sessionId: "s1",
@@ -567,5 +569,73 @@ describe("P1-4 · digest 端到端分位数", () => {
     expect(m.ttft_n).toBe(1);
     expect(m.e2e_n).toBe(1);
     expect(m.e2e_p50!).toBeGreaterThanOrEqual(m.ttft_p50!);
+  });
+});
+
+// ─── F4：模型调用耗时扣除人工等待 ───
+
+describe("F4 · api_duration 扣除人工等待", () => {
+  /**
+   * 只关心 AfterModel 载荷：用 Proxy 兜底其他 hook 方法，不为一个断言搭整套 fake。
+   * 返回值统一给 `{}`——loop 侧只做 `result.finalOutput?.isBlockingDecision()` 的可选链访问。
+   */
+  function captureAfterModel(): { payloads: Array<Record<string, any>>; hookSystem: any } {
+    const payloads: Array<Record<string, any>> = [];
+    const hookSystem = new Proxy(
+      {},
+      {
+        get: (_target, prop) => {
+          if (prop === "fireAfterModelEvent") {
+            return async (_input: unknown, output: Record<string, any>) => {
+              payloads.push(output);
+              return {};
+            };
+          }
+          return async () => ({});
+        },
+      },
+    );
+    return { payloads, hookSystem };
+  }
+
+  test("api_duration_ms 扣掉等人时段，api_duration_raw_ms 保留原始墙钟", async () => {
+    // 方案 §5.5 验收：模型调用期间有一段阻塞等人，调用耗时不能把等人的墙钟算进去。
+    const { payloads, hookSystem } = captureAfterModel();
+    const { loopConfig } = setup({
+      responses: [endTurnResp()],
+      depsOverrides: {
+        processStream: async () => {
+          // fallback 询问 / 权限确认同型：等待发生在「模型调用期间」
+          await withHumanInputWait(async () => {
+            await new Promise((r) => setTimeout(r, 120));
+          });
+          return endTurnResp();
+        },
+      },
+    });
+    (loopConfig as any).hookSystem = hookSystem;
+
+    await drain(loopConfig);
+
+    const after = payloads.at(-1)!;
+    expect(typeof after.api_duration_raw_ms).toBe("number");
+    expect(after.hitl_wait_ms as number).toBeGreaterThanOrEqual(100);
+    // 口径自证：raw = 扣减后 + 等待（同一个变量算出，浮点差 < 1ms）
+    expect(
+      Math.abs(after.api_duration_raw_ms - after.api_duration_ms - after.hitl_wait_ms),
+    ).toBeLessThan(1);
+    expect(after.api_duration_ms as number).toBeLessThan(after.api_duration_raw_ms as number);
+  });
+
+  test("没有等人时 api_duration_ms === api_duration_raw_ms 且 hitl_wait_ms === 0", async () => {
+    const { payloads, hookSystem } = captureAfterModel();
+    const { loopConfig } = setup({ responses: [endTurnResp()] });
+    (loopConfig as any).hookSystem = hookSystem;
+
+    await drain(loopConfig);
+
+    const after = payloads.at(-1)!;
+    expect(after.hitl_wait_ms).toBe(0);
+    expect(after.api_duration_ms).toBe(after.api_duration_raw_ms);
   });
 });
