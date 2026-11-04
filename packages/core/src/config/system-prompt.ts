@@ -336,6 +336,10 @@ export function generateCacheKey(ctx: SystemPromptContext): string {
   // 协调者提示词，属于影响输出的维度，必须进键。
   snapshot.__coordinatorMode = isCoordinatorMode();
 
+  // F5-Q5a：环境开关决定 <tool-guide> 是否渲染已加载工具的指南，不在 ctx 里，必须进键，
+  // 否则同进程内切换开关（测试、A/B 探针）会命中另一臂的缓存。
+  snapshot.__toolGuideDedup = isToolGuideDedupEnabled();
+
   // P1-10：日期不是 ctx 字段，缓存命中路径不会重算 generateDateAttachment。
   // 键不含当天日期时，跨午夜且 TTL 未过期会送出昨天的 <current-date>。
   snapshot.__date = new Date().toISOString().split("T")[0];
@@ -1039,6 +1043,15 @@ function renderToolGuide(t: Tool, isEn: boolean, deferredMark?: string): string 
     : `\n### ${t.name()} 工具使用指南${mark}\n${guide}`;
 }
 
+/**
+ * F5-Q5a 的 A/B 开关：`SID_CODE_TOOL_GUIDE_DEDUP=1` 时，已加载工具的使用指南不再在
+ * system `<tool-guide>` 里重复渲染（只保留 tools[].description 里那份）。
+ * 双模型 A/B 通过后改为默认行为并删除本开关（bench_fix 06a）。
+ */
+export function isToolGuideDedupEnabled(): boolean {
+  return process.env.SID_CODE_TOOL_GUIDE_DEDUP === "1";
+}
+
 /** 构建工具使用指南部分 */
 function buildToolGuideSection(
   tools: Tool[],
@@ -1064,10 +1077,17 @@ function buildToolGuideSection(
   // 指南正文由工具自己提供（属于工具契约，双语化要逐个工具改），这里只本地化包装标题。
   // 延迟工具的整段指南同样进延迟分区 —— 不做这条则泄漏面从"一行工具名"扩大到
   // 近 800 字符的完整教程（实测 workflow 的 usageGuide 783 字符）。
+  //
+  // F5-Q5a（A/B 开关，默认关）：已加载工具的 usageGuide 已由 toolToDefinition 拼进
+  // tools[].description（registry.ts:55-58），这里再渲染一份就是同一段文字发两遍
+  // （F3 首调实测 13 段与描述 8-gram 重合 0.85–0.99，合计约 2.4K tokens/调用）。
+  // 开关打开时只留 description 那份；延迟工具的指南不受影响（它们首轮不在 tools[] 里）。
   const customGuides: string[] = [];
-  for (const tool of live) {
-    const rendered = renderToolGuide(tool, isEn);
-    if (rendered) customGuides.push(rendered);
+  if (!isToolGuideDedupEnabled()) {
+    for (const tool of live) {
+      const rendered = renderToolGuide(tool, isEn);
+      if (rendered) customGuides.push(rendered);
+    }
   }
   const deferredGuides: string[] = [];
   for (const tool of deferred) {
