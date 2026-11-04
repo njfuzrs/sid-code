@@ -2098,6 +2098,7 @@ export async function main(): Promise<void> {
     try {
       const { loadBundledSkills } = await import("@sid-code/core/skill/bundled/index.ts");
       const { BundledSkillTool } = await import("@sid-code/core/skill/bundled/tool.ts");
+      const { isQ5bdEnabled } = await import("@sid-code/core/config/system-prompt.ts");
       for (const cmd of loadBundledSkills()) {
         if (cmd.type !== "prompt") continue;
         if (cmd.context !== "fork") continue; // inline 不可包装
@@ -2105,7 +2106,10 @@ export async function main(): Promise<void> {
         const tool = new BundledSkillTool(cmd, providerRegistry, toolRegistry);
         // B3：与 slash 路径共享禁用名单（启动配置 + 运行时 /skills disable 都经 skillManager）
         tool.setDisabledQuery((name) => skillManager.isNameDisabled(name));
-        toolRegistry.register(tool);
+        // F5-Q5d（A/B 开关，默认关）：并入 Skill 元工具按名兜底分发，不再各自占一个 tools[] 定义
+        //（F3 首调 3 个 skill__* 定义约 398 tokens），bundled 也因此第一次进 skill listing。
+        if (isQ5bdEnabled()) skillMetaTool.registerBundled(tool);
+        else toolRegistry.register(tool);
       }
     } catch (err: any) {
       getLogger().debug("SKILL", `Bundled Skill 工具注册失败: ${err?.message ?? String(err)}`);

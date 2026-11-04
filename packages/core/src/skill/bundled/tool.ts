@@ -77,6 +77,24 @@ export class BundledSkillTool implements Tool {
     return `skill__${this.cmd.name}`;
   }
 
+  /** F5-Q5d：skill 本名（不带 `skill__` 前缀），供 `Skill` 元工具按名兜底分发 */
+  skillName(): string {
+    return this.cmd.name;
+  }
+
+  /**
+   * F5-Q5d：skill 摘要 listing 条目。bundled 并入元工具后由 SkillMetaTool.getListingEntries 汇总；
+   * 此前 listing.ts 注释说本类提供 getListingEntry()，实际从未实现，bundled skill 一直不在 listing 里。
+   */
+  listingEntry(): import("../budget.ts").SkillListingEntry {
+    return {
+      name: this.cmd.name,
+      description: this.cmd.description,
+      whenToUse: this.cmd.whenToUse,
+      isBundled: true,
+    };
+  }
+
   /** 被禁用时不进模型 schema（registry 的 isEnabled 过滤） */
   isEnabled(): boolean {
     return !this.isDisabled?.(this.cmd.name);

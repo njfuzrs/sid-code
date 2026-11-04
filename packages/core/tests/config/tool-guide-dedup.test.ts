@@ -68,3 +68,48 @@ describe("F5-Q5a 工具指南去重", () => {
     expect(prompt).toContain(WORKFLOW_GUIDE);
   });
 });
+
+/**
+ * F5-Q5b（A/B 开关 SID_CODE_Q5BD=1）：延迟工具的完整指南也不进 system，只留名单行；
+ * 激活后该工具经 activeDefinitions → toolToDefinition 带着指南进 tools[]（bench_fix 06b §2）。
+ */
+describe("F5-Q5b 延迟工具指南移出 system（开关）", () => {
+  function withQ5bd<T>(fn: () => T): T {
+    const prev = process.env.SID_CODE_Q5BD;
+    process.env.SID_CODE_Q5BD = "1";
+    try {
+      return fn();
+    } finally {
+      if (prev === undefined) delete process.env.SID_CODE_Q5BD;
+      else process.env.SID_CODE_Q5BD = prev;
+    }
+  }
+
+  test("开关开：延迟分区只剩名单行，整段指南不在（中英文档）", () => {
+    for (const lang of [undefined, "en"] as const) {
+      clearPromptCache();
+      const prompt = withQ5bd(() => buildSystemPrompt({ tools: tools(), preferredLanguage: lang }));
+      expect(prompt).not.toContain(WORKFLOW_GUIDE);
+      expect(prompt).not.toContain("### workflow 工具使用指南");
+      expect(prompt).toContain("- workflow:");
+    }
+  });
+
+  test("开关进缓存键：同进程切换不串臂", () => {
+    const off = buildSystemPrompt({ tools: tools() });
+    const on = withQ5bd(() => buildSystemPrompt({ tools: tools() }));
+    expect(off).toContain(WORKFLOW_GUIDE);
+    expect(on).not.toContain(WORKFLOW_GUIDE);
+  });
+
+  test("激活后的定义带指南——删的是 system 里那份预告，不是指南本身", () => {
+    const registry = new Registry();
+    registry.register(
+      makeTool({ name: "workflow", shouldDefer: true, guide: WORKFLOW_GUIDE }) as any,
+    );
+    expect(registry.activeDefinitions().map((d) => d.name)).not.toContain("workflow");
+    registry.activateTool("workflow");
+    const def = registry.activeDefinitions().find((d) => d.name === "workflow");
+    expect(def?.description).toContain(WORKFLOW_GUIDE);
+  });
+});
