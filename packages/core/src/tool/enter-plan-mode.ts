@@ -39,6 +39,12 @@ export class EnterPlanModeTool implements Tool {
   readonly zodSchema = enterPlanModeSchema();
   /** P2-3：模式切换类工具，进入计划模式是一次性状态跃迁，豁免循环检测 */
   readonly exemptFromLoopDetection = true;
+  /**
+   * 声明读执行器注入的 `_agentId`（契约见 `tool/types.ts`）：`execute` 开头据此拒绝
+   * 子代理 / forked 代理进入规划态。漏声明会让它们进得了规划态——这是本字段最危险的
+   * 一个 fail-open 方向，`tests/tool/consumes-agentid-audit.test.ts` 会拦。
+   */
+  readonly consumesAgentId = true as const;
 
   /**
    * 保留卡片、丢弃 `⎿` 正文（header 摘要用一句用户语言说明"进入了计划模式"）。

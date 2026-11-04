@@ -209,13 +209,17 @@ export async function runToolUse(
       ? (event: ToolProgressData) => mode.onProgress!(block.name, block.id, event)
       : undefined;
     const cwdBefore = getCwd();
+    // 按需注入（契约见 tool/types.ts 的 consumesAgentId）：只有声明了「我会读 _agentId」的
+    // 工具才拿得到内部字段。无差别注入会让 StructuredOutput 的严格 schema 校验失败、
+    // 让宽松 schema 捕获脏字段、并把 _agentId 当参数发给 MCP server。
+    const internalFields: Record<string, unknown> = {};
+    if (tool.consumesAgentId) {
+      internalFields._agentId = "sub-agent";
+      // E1：嵌套子代理带上派发它的 tool_use_id（与主循环同口径）
+      if (block.name === "sub_agent") internalFields._parentToolUseId = block.id;
+    }
     const result = await tool.execute(
-      {
-        ...cleanedInput,
-        _agentId: "sub-agent",
-        // E1：嵌套子代理带上派发它的 tool_use_id（与主循环同口径）
-        ...(block.name === "sub_agent" ? { _parentToolUseId: block.id } : {}),
-      },
+      { ...cleanedInput, ...internalFields },
       signal,
       progressCallback,
     );
