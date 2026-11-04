@@ -4,6 +4,7 @@
  */
 
 import type { SendParams, StreamEvent, AccumulatedResponse } from "./types.ts";
+import type { QuotaScope } from "./quota-scope.ts";
 
 /** Provider 支持的能力 */
 export interface ProviderCapabilities {
@@ -31,6 +32,19 @@ export interface Provider {
    * 返回累积好的完整响应，由调用方转换为流式事件序列。
    */
   sendMessageNonStreaming?(params: SendParams, signal?: AbortSignal): Promise<AccumulatedResponse>;
+
+  /**
+   * 账户级额度状态的**作用域**（可选，2026-11-04 F2 ⑥）。
+   *
+   * 额度是账户级资源（同一端点 + 同一凭据共用一份余额），不是模型级属性。
+   * 漏斗判定额度耗尽后按这个作用域记标记，让同账户的其余循环（含并行子代理）
+   * 直接快速失败，不再各自撞 2 次。
+   *
+   * ⛔ 不实现 = 不参与跨循环共享（fail-open）：拿不到可靠的账户标识时，
+   * 宁可各自撞一次，也不要把两个账户的额度混成一个。
+   * 返回的 `credential` 必须是**不可逆指纹**，不得放明文 key（见 quota-scope.ts）。
+   */
+  quotaScope?(): QuotaScope;
 }
 
 /** 默认能力（向后兼容，不强制实现） */

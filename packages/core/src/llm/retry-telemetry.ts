@@ -78,6 +78,16 @@ export interface RetryTelemetryEvent {
      * digest 若把它算进 retry / network_error，「更准」方向的 retry 浪费比会把休眠算成故障。
      */
     | "host_sleep_reopen"
+    /**
+     * F2 ⑥（2026-11-04）：账户级额度耗尽标记**拦下了**本路径的请求。
+     *
+     * 它与 `recovery_give_up` 互补：那个数「谁先撞出来的」，这个数「有多少路因此免于白撞」。
+     * 两者相加 = 一次额度耗尽影响到几条循环，这个分母让「跨循环共享省了多少发请求」可算。
+     * 单独一个类型而不复用 `recovery_give_up`：那条事件的 `giveUpReason` 全是
+     * budget/same_fingerprint 这类**本路自己撞出来的**结论，把「被别人告知」塞进去
+     * 会让「额度耗尽到底发生了几次」这个计数失真。
+     */
+    | "quota_exhausted_shared"
     // 流内诊断事件（由 stream-guard.ts 产生）
     | "stream_stall"
     | "stream_idle_timeout"
