@@ -511,6 +511,12 @@ async function runSummaryRequest(
     "auto-compact",
     timeoutMs,
     async (signal) => {
+      // P2-2（2026-11-04）：per-request 取消 controller —— lifecycle 判定超时 / 被消费方
+      // 放弃时用它中断**本次请求**。lifecycle 的三层超时此前只能「报告」不能「执行」：
+      // idle 30s 判定超时后抛错退出，但底层 fetch 仍在读，要等到 side-call 硬 deadline
+      // 的 signal 才被取消（最坏多挂 30s）。这是 F1 ③ 在 compact 三条路径上的剩余缺口。
+      const cancelCtl = new AbortController();
+      const reqSignal = AbortSignal.any([signal, cancelCtl.signal]);
       // B3（D5）：改走漏斗而非直连——此前 429/523 等可重试错误在这里 1ms 内直接失败，
       // 与"压缩失败会导致上下文溢出"这个高后果场景不匹配。收紧参数：side-call 只值得
       // 轻量重试，不追求"重试到成功"（那是子代理档位），且 deadlineAt 与外层
@@ -531,7 +537,7 @@ async function runSummaryRequest(
             ? { tools: deps.toolSchemas, toolChoice: "none" as const }
             : {}),
         },
-        signal,
+        reqSignal,
         {
           querySource: "compact",
           switchMode: "auto",
@@ -555,7 +561,11 @@ async function runSummaryRequest(
         isContentProgress: (e: any) =>
           e?.type === "content_block_delta" || e?.type === "message_delta",
         label: "SIDE-CALL:auto-compact",
+        // lifecycle 的 signal 仍传**原** signal（外部取消语义），reqSignal 只给漏斗
+        // 用于底层 I/O 取消 —— 否则 cancelSource 自己触发的 abort 会让 lifecycle
+        // 误以为外部取消而提前静默退出。
         signal,
+        cancelSource: (reason) => cancelCtl.abort(reason),
       });
       for await (const event of lifecycle.guard(stream)) {
         // A6 纵深防御：压缩 side-call 检查 signal，防止主循环 abort 后压缩仍挂起

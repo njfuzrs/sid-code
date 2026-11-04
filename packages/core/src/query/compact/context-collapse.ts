@@ -132,6 +132,16 @@ async function summarizeSegment(
     SEGMENT_TIMEOUT_MS,
     async (signal) => {
       const { streamWithResilience } = await import("../../llm/resilient-stream.ts");
+      // P2-2（2026-11-04）：per-request 取消 controller —— lifecycle 判定超时 / 被消费方
+      // 放弃时用它中断**本次请求**。与外部 signal 合并后交给漏斗：
+      // 外部 signal 仍承载 side-call deadline / 用户取消语义，lifecycle 只 abort 自己
+      // 这个 controller，两者互不覆盖。
+      //
+      // 为什么必须补：lifecycle 的三层超时此前只能「报告」不能「执行」—— idle 30s
+      // 判定超时后抛错退出，但底层 fetch 仍在读，要等到 side-call 硬 deadline 的
+      // signal 才被取消（最坏多挂 30s）。这是 F1 ③ 在 compact 三条路径上的剩余缺口。
+      const cancelCtl = new AbortController();
+      const reqSignal = AbortSignal.any([signal, cancelCtl.signal]);
       // B3（D7）：改走漏斗，收紧参数（同 auto-compact/partial-compact，轻量重试、
       // deadlineAt 与本段 45s 硬超时同源，不追求"重试到成功"）。
       const stream = streamWithResilience(
@@ -144,7 +154,7 @@ async function summarizeSegment(
           // H5：分段摘要是压缩任务，关思考（同 auto-compact）。
           thinking: SIDE_CALL_NO_THINK,
         },
-        signal,
+        reqSignal,
         {
           querySource: "compact",
           switchMode: "auto",
@@ -170,7 +180,11 @@ async function summarizeSegment(
         isContentProgress: (e: any) =>
           e?.type === "content_block_delta" || e?.type === "message_delta",
         label: "SIDE-CALL:context-collapse",
+        // lifecycle 的 signal 仍传**原** signal（外部取消语义），reqSignal 只给漏斗
+        // 用于底层 I/O 取消 —— 若把 reqSignal 也交给 lifecycle，cancelSource 自己
+        // 触发的那次 abort 会让 lifecycle 误以为外部取消而提前静默退出。
         signal,
+        cancelSource: (reason) => cancelCtl.abort(reason),
       });
       for await (const event of lifecycle.guard(stream)) {
         // A7 纵深防御：上下文折叠 side-call 检查 signal
