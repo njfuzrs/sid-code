@@ -31,9 +31,15 @@ export async function loadSkillsForPlugin(plugin: LoadedPlugin): Promise<SkillDe
   const out: SkillDefinition[] = [];
 
   for (const dir of plugin.skillsPaths) {
-    let files;
+    let scan: Awaited<ReturnType<ExtensionLoader["scanSingleDir"]>>;
     try {
-      files = await extLoader.scanSingleDir(dir, "project");
+      // 来源标 "plugin"（缺陷 41）：插件 skill 不是项目自带内容。
+      // 此前传 "project" 并在下面把 source 覆盖成 project，后果有三处：
+      //   1. /skills 面板把插件 skill 列进「项目级」，用户去 .sid-code/skills/ 找不到；
+      //   2. 企业策略按来源过滤时（strictPluginOnlyCustomization），插件 skill 会被
+      //      当成不受信的项目来源拦掉 —— 而插件在白名单里（ADMIN_TRUSTED_SOURCES）。
+      //      scanSingleDir 现在返回 errors（缺陷 42），这条路径也要把它交出去。
+      scan = await extLoader.scanSingleDir(dir, "plugin");
     } catch (err: any) {
       log.warn("PLUGIN", `扫描插件 skills 目录失败 ${dir}: ${err?.message ?? String(err)}`);
       // 该目录下的 skill 全部缺失，只留 warn 的话用户只会觉得"skill 少了几个"
@@ -46,12 +52,23 @@ export async function loadSkillsForPlugin(plugin: LoadedPlugin): Promise<SkillDe
       continue;
     }
 
-    for (const file of files) {
+    // 缺陷 42：扫描层 fail-closed 跳过的文件（畸形 frontmatter / 读失败）必须传出去。
+    // scanDir 产生了 ExtensionLoadError[]，旧 scanSingleDir 把它们整块丢掉 ——
+    // 用户体感是「装了 5 个 skill 只出现 4 个，没有任何提示」。
+    // 这里转成 component-load-failed，让 /plugin 面板与 /reload-plugins 能看到
+    // （缺陷 22 里这个错误类型产生点为 0，本路径就是它该被产生的地方之一）。
+    for (const scanError of scan.errors) {
+      recordComponentLoadError({
+        type: "component-load-failed",
+        source: plugin.source,
+        component: "skills",
+        error: scanError.message,
+      });
+    }
+
+    for (const file of scan.files) {
       const skill = skillLoader.buildNamespacedSkill(file, plugin.name, "plugin");
-      if (skill) {
-        skill.source = "project";
-        out.push(skill);
-      }
+      if (skill) out.push(skill);
     }
   }
 

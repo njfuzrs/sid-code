@@ -31,6 +31,7 @@ import type { SubAgentResult } from "./sub-agent.ts";
 import { resolveSubAgentTypeParam } from "./sub-agent-input.ts";
 import { z } from "zod/v4";
 import { lazySchema } from "../sdk/lazy-schema.ts";
+import { emitSubagentIsolationUnused } from "../trace/isolation-telemetry.ts";
 
 const subAgentSchema = lazySchema(() => {
   // type 用 z.string()（而非 z.enum）：自定义/插件 agent 在本工具注册之后才加载，
@@ -69,7 +70,8 @@ const subAgentSchema = lazySchema(() => {
       .enum(["worktree"])
       .optional()
       .describe(
-        "隔离模式。worktree=在独立 Git Worktree 中执行（文件改动不影响主工作区），完成后自动清理无改动的 Worktree。同步与后台模式均支持。",
+        "隔离模式。worktree=在独立 Git Worktree 中执行（文件改动不影响主工作区），完成后自动清理无改动的 Worktree。" +
+          "同步与后台模式均支持。只读任务（不改文件）不要传：worktree 只为写操作隔离，建了不用等于白付创建与清理开销。",
       ),
   });
 });
@@ -382,17 +384,19 @@ ${typeLines}
 派活前请按子任务是否需要写入/执行来选类型：只需搜索分析用 explore，需要改文件或跑命令用 task。
 子代理完成后只返回最终结果。
 设置 run_in_background=true 可以后台执行，立即返回 task_id；完成后会自动以 <task-notification> 通知你——不要用 task_output 等待或轮询，继续做不重叠的工作，或简短告诉用户启动了什么并结束本轮。
-设置 isolation=worktree 可在独立 Git Worktree 中执行（文件改动隔离，与 run_in_background 可同时使用）。`;
+设置 isolation=worktree 可在独立 Git Worktree 中执行（文件改动隔离，与 run_in_background 可同时使用）。
+只读任务（不改文件）不要传 isolation —— worktree 只为写操作隔离，建了不用等于白付创建与清理开销；explore / plan / verify 这类只读子代理一律不传。`;
   }
 
   usageGuide(): string {
     // 缺口（子代理从不触发）：description() 只回答「sub_agent 是什么、有哪些类型」，
     // 不回答「什么时候该派子代理」。对不会自发编排的弱模型，看得见 ≠ 会用。
-    // usageGuide() 会被系统提示词单独拼成「### sub_agent 工具使用指南」段
-    // （system-prompt.ts:455-460），信号比工具清单里的一行 description 强得多，
-    // 是承载「何时派活」触发引导的官方通道。
+    // usageGuide() 只拼进 tools[].description（registry.ts toolToDefinition），系统提示词不再
+    // 重复渲染（F5-Q5a，2026-11-04）。flash A/B 里只留这一份时子代理派发略少、召回不降；
+    // opus 未验证，若 opus 上派发掉得多，先回看这里（bench_fix 06a §7）。
     return `- **何时该派**：任务能拆成多个相对独立的子方向时优先分治。判据——子方向 ≥ 3 个（如系统排查要过多个模块、审计要查多个维度、要同时搜索多处来源），或单个方向读起来会撑爆主上下文。满足任一条就派子代理，而不是自己一个个串行读。
 - **怎么选类型**：只读探查（搜代码、读模块、定位实现）派 explore；要改文件 / 跑命令派 task；验证某个已有结论是否成立、需要对抗式复核派 verify。拿不准是否要写入就先按只读派 explore，需要写时子代理会反馈、再改派 task。
+- **什么时候传 isolation=worktree**：只有子代理**会改文件**、且需要与主工作区隔离时才传。只读子代理（explore / plan / verify）一律不传——worktree 是真建一个 git 工作树（git worktree add + 复制本地配置），结束时再判改动、无改动才删，纯读任务白付这一整套创建与清理开销。
 - **分治 vs 并行只读不是一回事**：并行调 read/grep/glob 只是在同一个上下文里多发几个只读调用，结果都回到主对话；分治是把一整段子任务连同它的上下文交给独立子代理，主对话只收最终结论。方向多、每个方向都重（要读很多文件）时，用分治而不是堆并行 read。
 - **何时不该派（一句话判据：分治的前提是子任务可切开，改动互相影响的不可切）**：
   - **同源错误不要分治**：一处类型/接口/签名收紧引发的连锁报错，哪怕跨几十个文件，也只是一个改动点——改那一处，其余报错集体消失。派多个子代理各改一份互相影响的定义，重复劳动和冲突是必然的。判断方法：先读报错，看它们是否指向同一个定义；是就自己串行改，不要按文件数估算规模。
@@ -591,6 +595,7 @@ ${typeLines}
    */
   private static async setupIsolation(
     description: string,
+    agentType: string,
   ): Promise<
     { ok: true; cwd: string; cleanup: () => Promise<void> } | { ok: false; error: string }
   > {
@@ -605,6 +610,7 @@ ${typeLines}
       const { randomBytes } = await import("crypto");
       const wtName = `agent-${randomBytes(4).toString("hex")}`;
       const manager = new WorktreeManager(gitRoot);
+      const createdAt = Date.now();
       const session = await manager.create(wtName);
       // D14：记录 slug ↔ 任务描述映射，便于事后追溯孤儿 worktree 归属
       log.info("SUBAGENT", `隔离 Worktree ${wtName} ← 任务: ${description}`);
@@ -616,6 +622,23 @@ ${typeLines}
         ok: true,
         cwd: session.worktreePath,
         cleanup: async () => {
+          // O1 埋点：worktree 建出来却一个改动都没有 = 隔离白建（目录 + git 元数据 + 创建/
+          // 清理的全套开销都白付）。判据复用 countChanges —— 与下面 remove() 的「无改动才删」
+          // 同源，不另立一套；两套判据必然漂移，事件就会和真实删除行为对不上。
+          // 返回 null（git 出错）时不发：宁缺不错，别把「不知道」记成「零改动」。
+          try {
+            const changes = manager.countChanges(session.worktreePath, session.originalHeadCommit);
+            if (changes !== null && changes.changedFiles === 0 && changes.commits === 0) {
+              emitSubagentIsolationUnused({
+                agentType,
+                description,
+                worktreeName: session.worktreeName,
+                lifetimeMs: Date.now() - createdAt,
+              });
+            }
+          } catch {
+            /* 埋点失败不影响下面的清理 */
+          }
           // 无改动则自动删除；有改动则保留（fail-closed，不强删）
           try {
             await manager.remove(session, false);
@@ -691,7 +714,7 @@ ${typeLines}
       // 显式 cwd 作为基准目录（worktree 模式会在下方覆盖为隔离工作区路径）
       let isolatedCwd: string | undefined = params.cwd;
       if (params.isolation === "worktree") {
-        const setup = await SubAgentTool.setupIsolation(params.description);
+        const setup = await SubAgentTool.setupIsolation(params.description, params.type);
         if (!setup.ok) return { output: setup.error, isError: true };
         isolatedCwd = setup.cwd;
         isolationCleanup = setup.cleanup;
@@ -883,7 +906,7 @@ ${typeLines}
     /** S13：usage-sink 入账票据；任何出口都要结算（finally 兜底 settle(false)，幂等）。 */
     let usageTicket: UsageSinkTicket | undefined;
     if (params.isolation === "worktree") {
-      const setup = await SubAgentTool.setupIsolation(params.description);
+      const setup = await SubAgentTool.setupIsolation(params.description, params.type);
       if (!setup.ok) {
         // 建不出隔离工作区就**不降级成非隔离执行**：声明 isolation 的 agent 是写类的，
         // 静默改到主仓正是这条缺陷要消灭的后果。让任务失败、原因写进任务面板。

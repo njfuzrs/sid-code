@@ -273,7 +273,7 @@ export function resolveSkillExecutionContext(
  * skill 的 `allowed-tools` 是否来自可信来源（决定是否剥离危险自我授权规则）。
  *
  * 可信：内置（builtin / bundled）、企业托管（managed）、用户级目录（~/.claude/skills、~/.sid-code/skills）。
- * 不可信：项目级目录（随仓库分发）、插件（loadPluginSkills 已标为 project）、MCP。
+ * 不可信：项目级目录（随仓库分发）、插件（loadedFrom 为 plugin，缺陷 41 之前被标成 project）、MCP。
  */
 export function isTrustedSkillSource(
   skill: Pick<SkillDefinition, "source" | "loadedFrom" | "isBuiltin">,
@@ -282,5 +282,7 @@ export function isTrustedSkillSource(
   if (skill.loadedFrom === "builtin" || skill.loadedFrom === "bundled") return true;
   if (skill.loadedFrom === "managed") return true;
   if (skill.loadedFrom === "mcp" || skill.loadedFrom === "plugin") return false;
+  // source 里的 "plugin" 同样不可信（插件组件加载器扫出来的文件）
+  if (skill.source === "plugin") return false;
   return skill.source === "user" || skill.source === "builtin" || skill.source === "managed";
 }

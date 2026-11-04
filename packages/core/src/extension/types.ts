@@ -5,8 +5,19 @@
 
 import type { TrustManager } from "./trust.ts";
 
-/** 扩展来源（managed = 企业策略层，最高优先级，P2-1） */
-export type ExtensionSource = "builtin" | "managed" | "user" | "project";
+/**
+ * 扩展来源（managed = 企业策略层，最高优先级，P2-1）
+ *
+ * `plugin`（缺陷 41）只由插件的组件加载器经 `scanSingleDir(dir, "plugin")` 使用，
+ * 表示「这份文件来自插件、不是项目自带」。它不参与 `scanWithResult` 的层级扫描
+ * （那一层的取值只有 builtin/managed/user/project）。
+ *
+ * 为什么必须单独留一个值而不是复用 "project"：`source` 是企业策略
+ * （strictPluginOnlyCustomization 的来源白名单）的判据字段。插件来源在
+ * ADMIN_TRUSTED_SOURCES 里，项目来源不在 —— 标成 project 会让「锁定 skills 面时
+ * 插件 skill 被当成项目来源拦掉」，而且 /skills 面板会把插件 skill 归进「项目级」。
+ */
+export type ExtensionSource = "builtin" | "managed" | "user" | "project" | "plugin";
 
 /** 扫描到的扩展文件（未解析 frontmatter） */
 export interface ExtensionFile {
