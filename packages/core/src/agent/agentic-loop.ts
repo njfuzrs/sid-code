@@ -39,6 +39,7 @@ import { dispatchRetryTelemetry, type RetryTelemetryEvent } from "../llm/retry-t
 import { resolveLoopTimeouts } from "../config/network-profile.ts";
 import { raceTurnHardTimeout, tapStreamActivity } from "./turn-hard-timeout.ts";
 import { executeTools } from "./tool-executor.ts";
+import { closeHitlScope, openHitlScope } from "../query/human-input-gate.ts";
 import {
   MAX_EMPTY_PARAM_RETRIES,
   detectEmptyParamToolUses,
@@ -374,6 +375,10 @@ export async function runAgentLoop(config: AgentLoopConfig): Promise<AgentLoopRe
   // 一个名下、collect 取另一个名下，诊断永远取不到。无 agentId（旧测试 / 未接线调用方）
   // 时用本循环私有的 id：退化成「主循环」会重新打开互相偷诊断的口子。
   const diagnosticOwner = config.agentId ?? `agent-loop-${++anonymousDiagnosticOwnerSeq}`;
+  // F4-2：子代理 loop 也登记一个 HITL 归属 scope。它自己不消费这个 scope，作用是让闸门的
+  // 「唯一活跃 scope」推断在多 agent 并发时**失败**（返回 undefined）—— 否则后台子代理
+  // 等人的时间会被推断成主循环的，扣进主循环的模型耗时（宁可漏计，不可多计）。
+  const hitlScopeId = openHitlScope();
   try {
     const result = await runAgentLoopInner(config, retryStats, diagnosticOwner);
     // 0 次重试时不写字段：保持"顺利跑完"的结果形状与改造前逐字节一致，
@@ -389,6 +394,7 @@ export async function runAgentLoop(config: AgentLoopConfig): Promise<AgentLoopRe
     result.f1RetryCount = retryStats.f1RetryCount;
     return result;
   } finally {
+    closeHitlScope(hitlScopeId);
     if (config.agentId) cleanupAgentSnapshots(config.agentId);
     // 本循环名下文件的诊断归属转给主循环：否则它们的后续诊断再也没有消费者
     releaseDiagnosticOwner(diagnosticOwner);
