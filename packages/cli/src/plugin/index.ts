@@ -98,3 +98,11 @@ export type { OperationResult } from "./operations.ts";
 // 运行时刷新
 export { refreshActivePlugins } from "./refresh.ts";
 export type { RefreshContext, RefreshResult } from "./refresh.ts";
+
+// 生命周期操作完成后的运行时刷新（app 启动时注册，缺陷 34）
+export {
+  registerPluginRuntimeRefresher,
+  hasPluginRuntimeRefresher,
+  refreshPluginRuntime,
+} from "./runtime-refresh.ts";
+export type { PluginRuntimeRefresher } from "./runtime-refresh.ts";

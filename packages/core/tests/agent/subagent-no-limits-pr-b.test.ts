@@ -7,14 +7,28 @@
  *   S3  —— 已删除的模块不得长回来（timeout-budget / sleep-aware-timer）。
  */
 
-import { describe, test, expect } from "bun:test";
+import { describe, test, expect, afterEach } from "bun:test";
 import { existsSync } from "node:fs";
 import {
   raceTurnHardTimeout,
   TURN_HARD_TIMEOUT_REASON,
 } from "@sid-code/core/agent/turn-hard-timeout.ts";
 import { createAgentTask, abortAllAgentTasks } from "@sid-code/core/task/agent-task.ts";
+import { clearAllTasks } from "@sid-code/core/task/registry.ts";
 import { ABORT_REASONS, SUBAGENT_SESSION_EXIT_REASON } from "@sid-code/core/llm/errors.ts";
+
+/**
+ * 本文件造的后台 agent 任务在 `abortAllAgentTasks` 之后**不会**自己进终态：abort 只发信号
+ * 并摘掉 controller，真正把任务写成 completed / failed 的是子代理执行方的出口（这里没有执行方）。
+ * 生产里会话随即退出，残留无所谓；但 `bun test` 把多个测试文件跑在同一进程里，task registry
+ * 是模块级单例——残留的 running 后台任务让后续任何 `hasAwaitedBackgroundTasks()` /
+ * `getRunningTasks()` 判断恒为 true。
+ *
+ * 2026-11-04 PR #564 实测：本文件与 todo gate / background-await 的用例被分到同一 shard 后，
+ * 6 条用例集体误判「还有后台任务在等回报」，而单独跑它们全绿。清理放在这里而不是散到
+ * 各个受害文件里——污染源只有一个，兜底加在下游会掩盖下一个漏清理的测试。
+ */
+afterEach(() => clearAllTasks());
 
 describe("S2b 单轮硬超时兜底", () => {
   test("run 永不 settle → 到点让出，并以 turn-timeout abort 本轮 signal", async () => {

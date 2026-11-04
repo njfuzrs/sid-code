@@ -322,7 +322,9 @@ const PluginMenu: React.FC<{
     onFeedback("处理中…");
     try {
       const ops = await import("../../plugin/index.ts");
-      let r: { ok: true; message: string } | { ok: false; error: string };
+      let r:
+        | { ok: true; message: string; runtimeRefreshed?: boolean }
+        | { ok: false; error: string };
       if (action === "enable") r = await ops.enablePlugin(name);
       else if (action === "disable") r = await ops.disablePlugin(name);
       else if (action === "uninstall") r = await ops.uninstallPlugin(name);
@@ -333,7 +335,9 @@ const PluginMenu: React.FC<{
       if (!r.ok) {
         onFeedback(`操作失败: ${r.error}`);
       } else {
-        onFeedback(`${r.message.split("\n")[0]}（${RELOAD_HINT}）`);
+        // 缺陷 34：运行时已刷新就不用再让用户手动敲 /reload-plugins（未注册刷新器的场景才提示）
+        const head = r.message.split("\n")[0];
+        onFeedback(r.runtimeRefreshed ? head : `${head}（${RELOAD_HINT}）`);
         await onChanged(action === "uninstall");
       }
     } catch (err: any) {
