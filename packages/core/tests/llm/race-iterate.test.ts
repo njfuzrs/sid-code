@@ -14,7 +14,7 @@
  */
 
 import { describe, test, expect } from "bun:test";
-import { raceIterate } from "@sid-code/core/llm/race-iterate.ts";
+import { raceIterate, createAbortRaceInterrupt } from "@sid-code/core/llm/race-iterate.ts";
 
 /** 带 finally 观测点的源：记录 return 次数与 finally 是否执行。 */
 function makeSource<T>(items: T[], opts: { hangAfter?: boolean; hangInFinally?: boolean } = {}) {
@@ -179,5 +179,224 @@ describe("F1 — raceIterate：离开方式与源头释放", () => {
     }
     expect((caught as Error)?.message).toBe("源自身错误");
     expect(finalized).toBe(1);
+  });
+});
+
+// ═══════════════════════════════════════════════════════════════════
+// L1（2026-11-04）：中断源挂在 signal 上的 listener 必须「离开时一定移除」
+//
+// 缺陷本体：`{ once: true }` 只在 abort **真的发生**时自动注销。请求正常完成
+//（绝大多数请求）时没有一处 removeEventListener，于是每个请求在会话级 signal 上
+// 留下一个永久 listener —— 闭包持有 reject 与错误构造参数。AbortSignal 是
+// EventTarget 不是 EventEmitter，没有 MaxListeners 警告，长会话线性累积且完全静默。
+//
+// 判据就是「当前挂了几个 listener」，而真 EventTarget 不暴露这个数字，所以这里
+// 用一个自己实现的计数 signal，并精确复刻 `{ once: true }` 的自动注销语义。
+// ═══════════════════════════════════════════════════════════════════
+
+interface CountingSignal {
+  signal: AbortSignal;
+  /** 当前仍注册在 signal 上的 abort listener 数 */
+  listenerCount: () => number;
+  /** 触发 abort（按 add 时登记的 once 语义先注销再派发） */
+  abort: () => void;
+}
+
+function makeCountingSignal(): CountingSignal {
+  const listeners = new Map<EventListener, { once: boolean }>();
+  let aborted = false;
+  const signal = {
+    get aborted() {
+      return aborted;
+    },
+    addEventListener(type: string, listener: EventListener, opts?: AddEventListenerOptions) {
+      if (type !== "abort") return;
+      listeners.set(listener, { once: opts?.once ?? false });
+    },
+    removeEventListener(type: string, listener: EventListener) {
+      if (type !== "abort") return;
+      listeners.delete(listener);
+    },
+  } as unknown as AbortSignal;
+
+  return {
+    signal,
+    listenerCount: () => listeners.size,
+    abort() {
+      aborted = true;
+      // 先快照再派发：`{ once: true }` 的语义是「派发前注销」
+      for (const [listener, { once }] of [...listeners]) {
+        if (once) listeners.delete(listener);
+        listener(new Event("abort"));
+      }
+    },
+  };
+}
+
+describe("L1 — createAbortRaceInterrupt：listener 在离开时一定移除", () => {
+  test("正常消费结束：signal 上不留 listener（这就是缺陷本体）", async () => {
+    const counting = makeCountingSignal();
+    const abort = createAbortRaceInterrupt(counting.signal, () => new Error("aborted"));
+    expect(counting.listenerCount()).toBe(1);
+
+    for await (const _v of raceIterate(makeSource([1, 2, 3]).source, {
+      interrupts: abort.interrupt ? [abort.interrupt] : [],
+      onExit: abort.dispose,
+    })) {
+      /* 消费完 */
+    }
+
+    expect(counting.listenerCount()).toBe(0);
+  });
+
+  test("消费方 break 离开：同样移除（不是只有正常结束才管）", async () => {
+    const counting = makeCountingSignal();
+    const abort = createAbortRaceInterrupt(counting.signal, () => new Error("aborted"));
+
+    for await (const v of raceIterate(makeSource([1, 2, 3]).source, {
+      interrupts: abort.interrupt ? [abort.interrupt] : [],
+      onExit: abort.dispose,
+    })) {
+      if (v === 2) break;
+    }
+
+    expect(counting.listenerCount()).toBe(0);
+  });
+
+  test("消费方 throw 离开：同样移除", async () => {
+    const counting = makeCountingSignal();
+    const abort = createAbortRaceInterrupt(counting.signal, () => new Error("aborted"));
+
+    let caught: unknown = null;
+    try {
+      for await (const v of raceIterate(makeSource([1, 2, 3]).source, {
+        interrupts: abort.interrupt ? [abort.interrupt] : [],
+        onExit: abort.dispose,
+      })) {
+        if (v === 2) throw new Error("消费方主动放弃");
+      }
+    } catch (e) {
+      caught = e;
+    }
+
+    expect((caught as Error)?.message).toBe("消费方主动放弃");
+    expect(counting.listenerCount()).toBe(0);
+  });
+
+  test("abort 真的发生：once 语义 + dispose 都不会留下 listener，中断错误原样抛出", async () => {
+    const counting = makeCountingSignal();
+    const abort = createAbortRaceInterrupt(counting.signal, () => new Error("模拟中断"));
+
+    let caught: unknown = null;
+    const consumed = (async () => {
+      try {
+        for await (const v of raceIterate(makeSource([1, 2, 3], { hangAfter: true }).source, {
+          interrupts: abort.interrupt ? [abort.interrupt] : [],
+          onExit: abort.dispose,
+        })) {
+          if (v === 1) counting.abort();
+        }
+      } catch (e) {
+        caught = e;
+      }
+    })();
+    await consumed;
+
+    expect((caught as Error)?.message).toBe("模拟中断");
+    expect(counting.listenerCount()).toBe(0);
+  });
+
+  test("dispose 幂等；未提供 signal 时 interrupt 为 null 且 dispose 是 no-op", () => {
+    const counting = makeCountingSignal();
+    const abort = createAbortRaceInterrupt(counting.signal, () => new Error("aborted"));
+    abort.dispose();
+    abort.dispose();
+    expect(counting.listenerCount()).toBe(0);
+
+    const none = createAbortRaceInterrupt(undefined, () => new Error("aborted"));
+    expect(none.interrupt).toBeNull();
+    expect(() => none.dispose()).not.toThrow();
+  });
+});
+
+// ═══════════════════════════════════════════════════════════════════
+// L2（2026-11-04）：`Promise.race` 每轮给每个中断源附一对 handler
+//
+// 中断源是「永不 resolve、只 reject」的长生命周期 promise，而循环每取一个事件就
+// race 一次。不合并时一个 N 事件的流会在 M 个中断源上各堆 N 个 handler（O(N×M)）
+// —— 每事件多分配 M 个对象的常数开销，长流上累积成 MB 级。
+//
+// 判据不能是 `process.memoryUsage()` 的绝对值（会因 GC 时机在 CI 上抖动），
+// 所以这里数 `then` 被调用了几次：`Promise.race` 对每个参与项必然调一次 `then`。
+// ═══════════════════════════════════════════════════════════════════
+
+interface CountingInterrupt {
+  promise: Promise<never>;
+  /** 被 attach 的 then 次数（每次参与 race 都会 +1） */
+  thenCalls: () => number;
+}
+
+function makeCountingInterrupt(): CountingInterrupt {
+  let thenCalls = 0;
+  const inner = new Promise<never>(() => {});
+  // Proxy 而不是包装成普通 thenable：`Promise.race` 对真 Promise 与 thenable
+  // 的处理路径不同，用 Proxy 保持「它就是一个 Promise」，只旁路计数。
+  const proxy = new Proxy(inner, {
+    get(target, prop, receiver) {
+      if (prop === "then") {
+        return (...args: unknown[]) => {
+          thenCalls++;
+          return (target.then as (...a: unknown[]) => unknown).apply(target, args);
+        };
+      }
+      return Reflect.get(target, prop, receiver);
+    },
+  }) as Promise<never>;
+  return { promise: proxy, thenCalls: () => thenCalls };
+}
+
+describe("L2 — 中断源合并：handler 数不随事件数线性放大", () => {
+  test("M=2 个中断源 + N=20 个事件：每个中断源只在入口被 attach 1 次", async () => {
+    const N = 20;
+    const { source } = makeSource(Array.from({ length: N }, (_, i) => i));
+    const a = makeCountingInterrupt();
+    const b = makeCountingInterrupt();
+
+    const got: number[] = [];
+    for await (const v of raceIterate(source, { interrupts: [a.promise, b.promise] })) got.push(v);
+
+    expect(got).toHaveLength(N);
+    // 不合并时每轮 race 都会给两个中断源各附一对 handler（共 N 次）；
+    // 入口合并后只在入口各 attach 1 次，之后每轮 race 只面对合并后的那一个 promise。
+    expect(a.thenCalls()).toBe(1);
+    expect(b.thenCalls()).toBe(1);
+    expect(a.thenCalls()).toBeLessThan(N);
+  });
+
+  test("合并后中断仍然生效：任一中断源 reject 即结束迭代", async () => {
+    const { source, state } = makeSource([1, 2, 3], { hangAfter: true });
+    // definite assignment（`!`）：赋值在 Promise executor 内，TS 的控制流分析看不到。
+    let rejectB!: (e: unknown) => void;
+    const b = new Promise<never>((_, reject) => {
+      rejectB = reject;
+    });
+    // 与 stream-lifecycle 同样的写法：中断源可能在无人订阅时 reject。
+    void b.catch(() => {});
+    const a = makeCountingInterrupt();
+
+    let caught: unknown = null;
+    const consumed = (async () => {
+      try {
+        for await (const v of raceIterate(source, { interrupts: [a.promise, b] })) {
+          if (v === 1) rejectB(new Error("模拟超时"));
+        }
+      } catch (e) {
+        caught = e;
+      }
+    })();
+    await consumed;
+
+    expect((caught as Error)?.message).toBe("模拟超时");
+    expect(state.returned).toBe(1);
   });
 });
