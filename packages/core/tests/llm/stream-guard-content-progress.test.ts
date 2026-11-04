@@ -14,6 +14,9 @@
 import { describe, test, expect } from "bun:test";
 import { guardedStream } from "@sid-code/core/llm/stream-guard.ts";
 import type { StreamGuardTelemetryEvent } from "@sid-code/core/llm/stream-guard.ts";
+// F1（2026-11-04）契约变更：stream-guard 委托 stream-lifecycle，超时从「流正常结束」
+// 改成抛 StreamLifecycleTimeoutError。本文件「确认开枪」的用例因此要捕获它。
+import { StreamLifecycleTimeoutError } from "@sid-code/core/llm/errors.ts";
 
 interface AnthropicLikeEvent {
   type: string;
@@ -69,9 +72,16 @@ describe("T2 — content progress timeout（ping 不续命）", () => {
     });
 
     const received: AnthropicLikeEvent[] = [];
-    for await (const ev of guarded) {
-      received.push(ev);
+    // F1 契约变更：超时以 StreamLifecycleTimeoutError 结束（不再静默 break）
+    let caught: unknown = null;
+    try {
+      for await (const ev of guarded) {
+        received.push(ev);
+      }
+    } catch (e) {
+      caught = e;
     }
+    expect(caught).toBeInstanceOf(StreamLifecycleTimeoutError);
 
     // content progress timer 先触发（而非 idle）
     expect(timeoutLayer).toBe("content_progress");
@@ -137,9 +147,16 @@ describe("T2 — content progress timeout（ping 不续命）", () => {
     });
 
     const received: AnthropicLikeEvent[] = [];
-    for await (const ev of guarded) {
-      received.push(ev);
+    // F1 契约变更：超时以 StreamLifecycleTimeoutError 结束（不再静默 break）
+    let caught: unknown = null;
+    try {
+      for await (const ev of guarded) {
+        received.push(ev);
+      }
+    } catch (e) {
+      caught = e;
     }
+    expect(caught).toBeInstanceOf(StreamLifecycleTimeoutError);
 
     // idle timeout 触发（100ms 无事件），无 content progress timeout
     expect(telemetry.some((e) => e.type === "stream_idle_timeout")).toBe(true);

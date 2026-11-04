@@ -22,6 +22,9 @@ import { describe, test, expect } from "bun:test";
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import { createStreamLifecycle } from "@sid-code/core/llm/stream-lifecycle.ts";
+// F1（2026-11-04）契约变更：lifecycle 超时从「静默 break」改成抛
+// StreamLifecycleTimeoutError。本文件「确认超时生效」的用例要捕获它。
+import { StreamLifecycleTimeoutError } from "@sid-code/core/llm/errors.ts";
 import { isResponsesContentProgress } from "@sid-code/core/llm/openai-responses.ts";
 import type { StreamEvent, StreamTelemetrySignal } from "@sid-code/core/llm/types.ts";
 
@@ -129,7 +132,14 @@ describe("Responses 路径：行为——只有心跳无内容时 content progre
     }
 
     const seen: StreamEvent[] = [];
-    for await (const ev of lifecycle.guard(keepAliveOnly())) seen.push(ev);
+    // F1 契约变更：超时以 StreamLifecycleTimeoutError 结束（不再静默 break）
+    let caught: unknown = null;
+    try {
+      for await (const ev of lifecycle.guard(keepAliveOnly())) seen.push(ev);
+    } catch (e) {
+      caught = e;
+    }
+    expect(caught).toBeInstanceOf(StreamLifecycleTimeoutError);
 
     const snapshot = lifecycle.getSnapshot();
     expect(snapshot.timedOut).toBe(true);

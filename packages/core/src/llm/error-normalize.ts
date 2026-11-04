@@ -23,6 +23,7 @@
 import {
   RetryableError,
   StreamValidationError,
+  StreamLifecycleTimeoutError,
   getHTTPStatus,
   getNetworkErrorCode,
   isNetworkFailure,
@@ -219,6 +220,11 @@ export function normalizeThrown(
     if (raw.serverInstructedRetry) n.serverRetryHint = true;
   } else if (raw instanceof StreamValidationError) {
     n.validation = raw.reason;
+  } else if (raw instanceof StreamLifecycleTimeoutError) {
+    // F1 ②：lifecycle 三层超时是**本地明确知道的传输层事实**（不是从文案猜的），
+    // 与 RuntimeTimeoutError 同一口径 ⇒ presetReason "timeout" ⇒ transient 族。
+    // 刻意不新增族：超时的重试语义与既有超时完全一致，多一个族只会多一套预算要维护。
+    n.presetReason = "timeout";
   } else if (isRuntimeTimeoutError(raw)) {
     n.presetReason = "timeout";
   }
