@@ -20,7 +20,7 @@
  * fix_type: regression
  */
 
-import { describe, test, expect } from "bun:test";
+import { describe, test, expect, beforeEach, afterEach } from "bun:test";
 import {
   createStreamLifecycle,
   getActiveStreamLifecycleCount,
@@ -28,19 +28,46 @@ import {
 import { raceIterate } from "@sid-code/core/llm/race-iterate.ts";
 import { StreamLifecycleTimeoutError } from "@sid-code/core/llm/errors.ts";
 import { normalizeThrown, classifyFamily } from "@sid-code/core/llm/error-normalize.ts";
-import type { StreamTelemetrySignal } from "@sid-code/core/llm/types.ts";
+// F5：计费收口（`recordBilledRequest`）挂在 provider 的 finally 里 —— 消费方放弃后
+// finally 是否真的执行，只能用真实的 sink 观测来证明，不能靠"providerFinalized === 1"
+// 推断（后者只说明 finally 入口跑到了，不说明计费那一行跑到了）。
+import {
+  recordBilledRequest,
+  addBillingObserver,
+  nextFetchId,
+} from "@sid-code/core/llm/billing-sink.ts";
+import type { BilledRequest } from "@sid-code/core/llm/billing-sink.ts";
+import type { StreamTelemetrySignal, Usage } from "@sid-code/core/llm/types.ts";
 
 interface Evt {
   type: string;
+  /** 流内 error 事件带的 usage（真实链路里 response.failed 会带）。 */
+  usage?: Usage;
 }
 
 const tick = (ms: number) => new Promise((r) => setTimeout(r, ms));
 
 describe("F1 形态 B — 消费方放弃时源头被释放（finally 必须执行）", () => {
+  // 计费 sink 是模块级单例：只注册/反注册本文件自己的 observer，不动全局状态 ——
+  // 同进程内其它测试文件（如 billing-usage-sink-ticket）自带 observer，
+  // 这里调 resetBillingSink() 会连它们一起清掉。
+  let billed: BilledRequest[];
+  let unregisterBillingObserver: () => void;
+  beforeEach(() => {
+    billed = [];
+    unregisterBillingObserver = addBillingObserver((r) => billed.push(r));
+  });
+  afterEach(() => unregisterBillingObserver());
+
   test("漏斗在 error 事件上 throw：provider 与 lifecycle 的 finally 都执行，stall 停止，无幽灵超时", async () => {
+    // 流内 error 事件带的 usage（真实链路里 response.failed 会带，D4 已解析）。
+    const failedUsage: Usage = { inputTokens: 1000, outputTokens: 100 };
     const counters = {
       providerFinalized: 0,
-      lifecycleFinalized: 0, // = stream_completed 次数
+      /** 源头生成器的 finally 次数（≠ lifecycle 的 finally，见下面 streamCompleted）。 */
+      sourceFinalized: 0,
+      /** lifecycle 的 finally 里发出的 stream_completed 次数（设计文档 §1.6 要求恰好一次）。 */
+      streamCompleted: 0,
       stalls: 0,
       timeouts: 0,
       cancelCalled: 0,
@@ -49,10 +76,10 @@ describe("F1 形态 B — 消费方放弃时源头被释放（finally 必须执�
     const source = async function* (): AsyncGenerator<Evt> {
       try {
         yield { type: "content_block_delta" };
-        yield { type: "error" };
+        yield { type: "error", usage: failedUsage };
         await new Promise(() => {});
       } finally {
-        counters.lifecycleFinalized++;
+        counters.sourceFinalized++;
       }
     };
     const lc = createStreamLifecycle<Evt>({
@@ -63,14 +90,29 @@ describe("F1 形态 B — 消费方放弃时源头被释放（finally 必须执�
       onTimeout: () => counters.timeouts++,
       onTelemetry: (e: StreamTelemetrySignal) => {
         if (e.type === "stream_stall") counters.stalls++;
+        if (e.type === "stream_completed") counters.streamCompleted++;
       },
     });
-    // provider 生成器：内部用 for-await 消费 lifecycle（与 openai.ts / anthropic.ts 同构）。
+    // provider 生成器：内部用 for-await 消费 lifecycle（与 openai.ts / anthropic.ts 同构），
+    // finally 里做计费收口 —— 这是 F5「计费恒等式少 11 条」修好的**直接**判据：
+    // 消费方放弃后 finally 必须执行到 recordBilledRequest，而不是只执行到 finally 入口。
+    let accumulatedUsage: Usage | undefined;
     const provider = async function* (): AsyncGenerator<Evt> {
       try {
-        for await (const ev of lc.guard(source())) yield ev;
+        for await (const ev of lc.guard(source())) {
+          if (ev.usage) accumulatedUsage = ev.usage;
+          yield ev;
+        }
       } finally {
         counters.providerFinalized++;
+        recordBilledRequest({
+          fetchId: nextFetchId(),
+          model: "f1-test-model",
+          provider: "openai",
+          usage: accumulatedUsage ?? { inputTokens: 0, outputTokens: 0 },
+          index: 1,
+          accounted: true,
+        });
       }
     };
 
@@ -90,7 +132,16 @@ describe("F1 形态 B — 消费方放弃时源头被释放（finally 必须执�
     // 让微任务跑干：return() 是「发出但不 await」的（见 race-iterate.ts 文件头）。
     await tick(0);
     expect(counters.providerFinalized).toBe(1);
-    expect(counters.lifecycleFinalized).toBe(1);
+    expect(counters.sourceFinalized).toBe(1);
+    // 设计文档 §1.6 第 1 条：stream_completed 恰好一次（不是 0，也不是 2）。
+    // 它由 lifecycle 的 finally 发出，是「lifecycle 真的收尾了」的直接证据；
+    // 与 sourceFinalized（源头生成器的 finally）不是同一件事，不能互相替代。
+    expect(counters.streamCompleted).toBe(1);
+    // 设计文档 §2.3（F5）：「消费方放弃 → provider finally 执行 → 计费写出」。
+    // 这是「计费恒等式少 11 条」修好的**直接**断言；usage 必须等于流内 error 事件
+    // 带的值 —— 写成 0 等于「写了一条但金额丢了」，恒等式对得上而钱还是没记。
+    expect(billed).toHaveLength(1);
+    expect(billed[0]!.usage).toEqual(failedUsage);
 
     const stallsAtAbandon = counters.stalls;
     // 等待明显超过 idle 阈值（120ms）与若干 stall 周期（25ms）。
@@ -247,6 +298,10 @@ describe("F1 形态 A — 源头挂住时超时能真的打断 await", () => {
 });
 
 describe("F1 ⑤ — 活跃 lifecycle 计数", () => {
+  // ⚠️ 计数器是**模块级进程内状态**，同批测试共享。本组用 baseline 相对断言而不是
+  // 绝对值（绝对值会被同进程内其它文件的残留拉偏），并且只构造**能收尾**的形态：
+  // 故意造一个「生成器被丢弃且 finally 永不执行」的泄漏用例，会让 baseline 永久抬高，
+  // 污染同进程内后续所有断言。要测那个形态，先给计数器加测试专用 reset 再写。
   test("正常结束回到基线；流进行中 +1；放弃后也回到基线", async () => {
     const baseline = getActiveStreamLifecycleCount();
 

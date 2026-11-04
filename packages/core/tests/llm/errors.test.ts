@@ -23,6 +23,7 @@ import {
   isSessionTimeoutAbortReason,
   RequestAbortedError,
   ABORT_REASONS,
+  STREAM_LIFECYCLE_ABORT_REASON,
   INTERNAL_TIMEOUT_ABORT_REASONS,
   is401Error,
   is408Error,
@@ -406,6 +407,10 @@ describe("isAbortError", () => {
     for (const r of ABORT_REASONS) {
       expect(isAbortError(r)).toBe(true);
     }
+    // 单一事实源绑定：调用方（stream-lifecycle / 三条协议路径）用的是常量，
+    // 上面的期望数组是手写字面量。两处各写一份时，改常量不改数组不会有任何东西变红 ——
+    // 这条断言把「常量必须登记在表里」变成机械判据。
+    expect(ABORT_REASONS).toContain(STREAM_LIFECYCLE_ABORT_REASON);
   });
 
   test('机械防漂移：src/ 中所有 .abort("字面量") 的 reason 必须已登记 ABORT_REASONS', async () => {
