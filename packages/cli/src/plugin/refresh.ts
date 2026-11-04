@@ -88,7 +88,7 @@ export async function refreshActivePlugins(ctx: RefreshContext): Promise<Refresh
   let hooksRefreshed = false;
   if (ctx.hookSystem) {
     try {
-      // loadPluginHooks 是 memoize 的，clearAllPluginCaches 已清除，这里会重新执行
+      // loadPluginHooks 按 HookSystem 实例缓存（缺陷 36），clearAllPluginCaches 已清空，这里会重新执行
       await loadPluginHooks(ctx.hookSystem);
       hooksRefreshed = true;
     } catch (err: any) {
