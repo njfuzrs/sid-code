@@ -182,6 +182,10 @@ import {
   JIT_EVENT_NAME,
 } from "@sid-code/core/trace/jit-telemetry.ts";
 import {
+  setIsolationUnusedTraceSink,
+  SUBAGENT_ISOLATION_UNUSED_EVENT_NAME,
+} from "@sid-code/core/trace/isolation-telemetry.ts";
+import {
   setFileFreshnessTraceSink,
   FILE_FRESHNESS_EVENT_NAME,
 } from "@sid-code/core/tool/file-read-tracker.ts";
@@ -4614,6 +4618,15 @@ export class App {
     setJitTraceSink(
       traceCollectorInstance
         ? (data) => traceCollectorInstance.recordCustomEvent(JIT_EVENT_NAME, data)
+        : null,
+    );
+    // O1（PR6）：子代理 worktree「建了没用」的埋点，同款模块级 sink（清理点在
+    // agent/tool.ts 的 setupIsolation 闭包里，拿不到 collector）。不接则「只读子代理
+    // 白建 worktree」的发生率恒为 0，PR6 的「先量出多常见再决定要不要加约束」无从谈起。
+    setIsolationUnusedTraceSink(
+      traceCollectorInstance
+        ? (data) =>
+            traceCollectorInstance.recordCustomEvent(SUBAGENT_ISOLATION_UNUSED_EVENT_NAME, data)
         : null,
     );
     // F4：先读后改护栏的拒绝 / bash 回扫埋点，同款模块级 sink（tracker 有 6+ 处创建点）。
