@@ -52,9 +52,19 @@
  */
 
 /** 一次工具调用的极简记录（只留残卷需要的字段）。 */
-interface ToolCallRecord {
+export interface ToolCallRecord {
   name: string;
   input: Record<string, unknown>;
+  /**
+   * 本次调用的结果（F3）。只有**能拿到结果**的路径才填：
+   * - 进程内路径来自 `agentic-loop` 的 `onTurnEnd`（在工具执行之后触发，见该文件 turnToolInfo）；
+   * - spawn 路径由父进程执行工具时直接拿到（`executeToolForChild` 的返回值）。
+   *
+   * 残卷的 `<tool-evidence>` 段与纯工具轮的 `.output` 摘要都靠它——只读核查型子代理
+   * 每轮都是纯工具调用（本会话 3 个子代理的 assistant 文本块数为 0），没有这段
+   * 残卷里就一条成果都没有。
+   */
+  result?: { content: string; isError: boolean };
 }
 
 /**
@@ -89,12 +99,29 @@ export interface SalvageTurnInfo {
   toolUseCount: number;
 }
 
+/**
+ * 一条工具证据：调用描述 + 结果摘要。
+ *
+ * 为什么需要它（F3，会话 20261103-f5beebde 实测）：三个后台子代理每轮都是纯工具调用
+ * （sidechain 里 assistant 文本块数为 0），`findings` 一条都收不到——它们的全部成果
+ * 都在工具结果里（git 输出、文件内容）。残卷不收这一段，主代理拿到的残卷就只有
+ * 「已改动文件 0 个 / 最后一步停在 read」。
+ */
+export interface ToolEvidence {
+  /** `工具名: 关键入参`（与 `lastActivity` 同形态）。 */
+  call: string;
+  /** 结果前 {@link TOOL_EVIDENCE_MAX_CHARS} 字（超出部分在 sidechain，残卷只做摘要）。 */
+  content: string;
+}
+
 /** 已积累的残卷素材（只读视图，供格式化与测试断言）。 */
 export interface SalvageSnapshot {
   /** 已改动文件清单（去重，保持首次改动顺序）。 */
   changedFiles: string[];
   /** 子代理逐轮产出的文本结论（保序，已剔除空串）。 */
   findings: string[];
+  /** 最近若干条**成功**工具结果（保序，最多 {@link TOOL_EVIDENCE_MAX_ITEMS} 条）。 */
+  toolEvidence: ToolEvidence[];
   /** 最后一次工具活动（`工具名(关键入参)` 形态），用于说明"卡在哪一步"。 */
   lastActivity?: string;
   /** 已完成轮次。 */
@@ -115,6 +142,7 @@ export class SalvageCollector {
   private readonly changed: string[] = [];
   private readonly changedSeen = new Set<string>();
   private readonly findings: string[] = [];
+  private readonly evidence: ToolEvidence[] = [];
   private lastActivity?: string;
   private turns = 0;
   private toolUseCount = 0;
@@ -141,6 +169,24 @@ export class SalvageCollector {
         this.changed.push(path);
       }
       this.lastActivity = describeCall(rec);
+      // 工具证据（F3）：只收**成功**结果。失败的调用对只读核查也常是有效信息（"这个路径
+      // 不存在"），但把 error 文本当"成果"交给主代理会让它据此下错结论；失败的证据价值
+      // 远低于成功的，取舍见方案 §4.4。
+      const result = rec.result;
+      if (result && !result.isError) {
+        const content = result.content.trim();
+        if (content !== "") {
+          this.evidence.push({
+            call: describeCall(rec),
+            content:
+              content.length > TOOL_EVIDENCE_MAX_CHARS
+                ? `${content.slice(0, TOOL_EVIDENCE_MAX_CHARS)}…[截断]`
+                : content,
+          });
+          // 只保留最近 N 条：越晚的工具结果越接近最终成果，早期探索的读取会被挤掉。
+          if (this.evidence.length > TOOL_EVIDENCE_MAX_ITEMS) this.evidence.shift();
+        }
+      }
     }
   }
 
@@ -148,6 +194,7 @@ export class SalvageCollector {
     return {
       changedFiles: [...this.changed],
       findings: [...this.findings],
+      toolEvidence: this.evidence.map((e) => ({ ...e })),
       lastActivity: this.lastActivity,
       turns: this.turns,
       toolUseCount: this.toolUseCount,
@@ -166,6 +213,66 @@ function describeCall(rec: ToolCallRecord): string {
     return `${rec.name}: ${short}`;
   }
   return rec.name;
+}
+
+/**
+ * XML **属性值**的最小转义。
+ *
+ * 只用于 `<evidence call="...">`：调用描述里含命令原文（`bash: grep -n "foo" ...`），
+ * 引号会把属性提前闭合、`<` 会让解析器把后面的内容当标签。正文（findings / 工具结果）
+ * **刻意不转义**——与既有 `<finding>` 段同口径，内容是给模型读的纯文本，转义反而降低可读性。
+ */
+function escapeXmlAttr(s: string): string {
+  return s
+    .replace(/&/g, "&amp;")
+    .replace(/"/g, "&quot;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;");
+}
+
+/** 单条工具调用在 `.output` 摘要里的关键入参（首参，与 describeCall 同源）。 */
+function primaryArg(rec: ToolCallRecord): string {
+  const input = rec.input ?? {};
+  const key = input.file_path ?? input.path ?? input.pattern ?? input.command ?? input.query;
+  return typeof key === "string" ? key.trim() : "";
+}
+
+/**
+ * 纯工具轮写 `.output` 的一行摘要（F3-3）。
+ *
+ * ## 为什么需要它
+ *
+ * `.output` 此前只在 `info.turnText` 非空时写（`sub-agent.ts` 的 onTurnEnd）。本会话
+ * 三个后台子代理**每一轮都是纯工具调用**（sidechain 里 assistant 文本块数为 0），
+ * 于是 `.output` 从头到尾是 0 字节：`task_output` 读到空、墓碑的尾部为空、模型
+ * 只能看到「输出为空或读取失败」。它们的成果全在工具结果里，摘要只需回答
+ * 「做了什么、拿到多少」，全文仍在 sidechain。
+ *
+ * ## 为什么写字节数不写结果内容
+ *
+ * `.output` 是给 `task_output` **增量读**的，把工具结果全文写进去会让一次只读核查
+ * 产出几百 KB，也把 sidechain 的职责重复了一份（方案 §4.4 否决项）。
+ *
+ * @returns 一行文本（含结尾换行）；没有可写的工具时返回 `null`。
+ */
+export function formatToolTurnLine(turn: number, tools: readonly ToolCallRecord[]): string | null {
+  const segs: string[] = [];
+  for (const rec of tools) {
+    if (!rec?.name) continue;
+    const arg = primaryArg(rec);
+    const short = arg.length > 80 ? `${arg.slice(0, 80)}…` : arg;
+    const r = rec.result;
+    // 「没有结果」与「结果为空」刻意分开：前者是路径没给结果（如 spawn 协议缺字段），
+    // 后者是工具真的返回了空串（如 grep 无命中），两者对排查的含义完全不同。
+    const outcome =
+      r === undefined
+        ? "结果未知"
+        : r.isError
+          ? "出错"
+          : `${Buffer.byteLength(r.content, "utf8")} 字节`;
+    segs.push(`${rec.name}(${short}) → ${outcome}`);
+  }
+  return segs.length > 0 ? `[轮次 ${turn}] ${segs.join("; ")}\n` : null;
 }
 
 /** 残卷的中断成因——决定文案里"为什么停下"和"建议的下一步"怎么写。 */
@@ -309,6 +416,12 @@ const FINDING_MAX_CHARS = 2000;
 const FINDING_MAX_ITEMS = 6;
 /** 已改动文件清单上限（超出只报计数，避免几百个文件把残卷冲成噪音）。 */
 const CHANGED_FILES_MAX_ITEMS = 50;
+/** 单条工具证据保留的结果字符数。值的取舍见方案 §4.4：800 足够装下一段 git log /
+ *  一个函数定义，再把 6 条一起放进 4000 字的通知 `<error>` 通道仍有余量。 */
+const TOOL_EVIDENCE_MAX_CHARS = 800;
+/** 工具证据最多保留几条。与 {@link FINDING_MAX_ITEMS} 同值：两段是并列的「成果」素材，
+ *  上限不同会让残卷整体体积难以预估。 */
+const TOOL_EVIDENCE_MAX_ITEMS = 6;
 
 /**
  * 把残卷素材拼成交给主代理的结构化文本。
@@ -354,6 +467,19 @@ export function buildSalvageOutput(snap: SalvageSnapshot, opts: BuildSalvageOpti
       parts.push(`    <finding>${short}</finding>`);
     }
     parts.push("  </findings>");
+  }
+
+  // ③-b 工具证据（F3）：只读核查型子代理的成果全在工具结果里，`findings` 会是空的。
+  // 排在 findings **之后**：有文本结论时它是补充，没有文本时它就是全部成果。
+  // 只列成功结果（收集端已过滤），失败的调用对主代理是"这条没成"，不是成果。
+  if (snap.toolEvidence.length > 0) {
+    parts.push(`  <tool-evidence count="${snap.toolEvidence.length}">`);
+    for (const e of snap.toolEvidence) {
+      parts.push(`    <evidence call="${escapeXmlAttr(e.call)}">`);
+      parts.push(e.content);
+      parts.push("    </evidence>");
+    }
+    parts.push("  </tool-evidence>");
   }
 
   // ④ 未完成部分：最后停在哪一步。这是"它连编辑阶段都没进去"这类判断的唯一依据。

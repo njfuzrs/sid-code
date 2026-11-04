@@ -155,6 +155,23 @@ export async function completeAgentTask(
 }
 
 /**
+ * 从失败正文里抽一行「原因」当通知摘要。
+ *
+ * `failAgentTask` 收到的 `error` 可能是两种形态（F3）：
+ * - 子代理失败时是**完整残卷**（`buildSalvageOutput` 的产物，可能有几 KB）；
+ * - 顶层异常兜底时是裸的错误消息。
+ *
+ * 残卷的第一段是子代理自己的 finalText，直接截前 200 字当摘要会和"失败原因"毫无关系
+ * （本会话实测：模型看到 `<partial-result>` 在截断点之后）。所以优先取
+ * `<interrupted-because>` 那一行；取不到再退回首行。
+ */
+function summarizeFailure(error: string): string {
+  const m = /<interrupted-because>([\s\S]*?)<\/interrupted-because>/.exec(error);
+  const line = (m?.[1] ?? error).trim().split("\n")[0]?.trim() ?? "";
+  return line.length > 200 ? `${line.slice(0, 200)}…` : line;
+}
+
+/**
  * 标记 Agent 任务失败。
  *
  * @param notify 是否投递 `<task-notification>`。默认 true（后台子代理）。前台子代理传 false——
@@ -166,6 +183,17 @@ export async function failAgentTask(
   error: string,
   notify: boolean = true,
 ): Promise<void> {
+  // F3-2：残卷写进 `.output`（**必须在 flush 之前**，否则文件里没有它）。
+  // 失败任务此前的 `.output` 只有逐轮文本，纯工具轮连一行都没有；而残卷是失败路径上
+  // 唯一一份完整成果（已改动文件 / 结论 / 工具证据 / 下一步）。写进去之后
+  // `task_output` 能读到它，墓碑的尾部也不再是「清理前未留存到输出内容」。
+  //
+  // 终态保护前置：任务已被 kill（killed 终态）时不追写——`.output` 归 kill 路径收尾，
+  // 这里再写会让同一个文件出现两份语义不同的结尾。
+  const existing = getTask(taskId) as LocalAgentTaskState | undefined;
+  if (existing && !isTerminalStatus(existing.status) && error.trim() !== "") {
+    appendTaskOutput(taskId, `${error}\n`);
+  }
   await flushTaskOutput(taskId);
   activeAgentControllers.delete(taskId);
 
@@ -200,7 +228,12 @@ export async function failAgentTask(
     toolUseId: task.toolUseId,
     outputFile: task.outputFile,
     status: "failed",
-    summary: `Agent "${task.description}" 执行失败: ${error.length > 200 ? error.slice(0, 200) + "…[截断]" : error}`,
+    // F3-1：summary 只留**一行原因**。完整残卷走下面已有的 `<error>` 通道
+    // （NOTIFICATION_ERROR_MAX_CHARS = 4000，超长时 truncateForNotification 附 output-file 指针）。
+    // 此前这里只把 `error.slice(0, 200)` 塞进 summary、`error` 字段压根没传，
+    // 于是那 4000 字的通道一直空着，模型只能看到断在半句的残卷开头。
+    summary: `Agent "${task.description}" 执行失败${summarizeFailure(error) ? `: ${summarizeFailure(error)}` : ""}`,
+    error,
     agentType: task.agentType, // P1-2：供 TUI 取该 agent 的身份色
   });
 }

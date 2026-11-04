@@ -95,6 +95,18 @@ export interface TaskStateBase {
    * "这个任务不曾存在"，模型该查得到。
    */
   dismissed?: boolean;
+  /**
+   * 任务进入终态那一刻的「人工等待累计值」（`humanInputWaitElapsedMs()` 快照）。
+   *
+   * 安全阀（`UNDELIVERED_SAFETY_VALVE_MS`）兜的是「主循环不转了」，而主循环阻塞在
+   * fallback 询问 / 权限弹窗 / MCP elicitation 里也满足「完成通知没送达」——
+   * 那段时间通知是会送达的，只是在等用户作答。所以驱逐判据要把「终态之后新增的
+   * 等待时长」从时钟里扣掉，扣减基线就是本字段。
+   *
+   * 由 `updateTask` 在「非终态 → 终态」的跃迁上写入；缺省（旧任务 / 直接注册成终态）
+   * 视为 0，即不扣等待——与引入本字段之前的行为一致。
+   */
+  hitlWaitAtTerminalMs?: number;
 }
 
 /** Shell 任务状态 */
@@ -126,6 +138,17 @@ export interface LocalAgentTaskState extends TaskStateBase {
    * 隔离 agent 一续跑就直接写主仓（PR #398 review）。
    */
   cwd?: string;
+  /**
+   * 子代理 sidechain transcript 的落盘路径（F3-5）。
+   *
+   * `.output` 会被驱逐删除，sidechain **不会**（它按会话归档，随会话目录保留）。
+   * 墓碑（`formatTaskOutputTombstone`）靠它给出「数据其实还在，去这里找」的指针——
+   * 事故本会话里模型读到「清理前未留存到输出内容」就以为成果丢了，然后自己重做了
+   * 一遍（输入从 81k 涨到 313k）。
+   *
+   * 缺省（父会话 id 缺失 / sidechain 写入失败）时不写，墓碑退回旧文案。
+   */
+  sidechainFile?: string;
 }
 
 /** Workflow 任务状态（Dynamic Workflows M6:后台运行的编排脚本） */

@@ -26,6 +26,21 @@ let awaitingCount = 0;
 // 只在计数 0→1 / 1→0 的边沿记时，嵌套段不重复计入。
 let waitStartedAt: number | null = null;
 let waitTotalMs = 0;
+/** 等待区段结束的订阅者（引用计数归零时触发一次）。 */
+const waitEndListeners = new Set<() => void>();
+
+/**
+ * 订阅「等待用户输入结束」（引用计数 1→0 的边沿）。
+ *
+ * 为什么需要这个订阅：任务安全阀（`task/registry.ts` 的 `UNDELIVERED_SAFETY_VALVE_MS`）
+ * 要把人工等待从时钟里扣掉（等人不是「主循环不转了」），而等待期间它**不能**排定时器
+ * ——截止时刻会随等待同步后移，排了就是每次 tick 都发现「还没到」。所以等待结束这一刻
+ * 必须有人重新唤醒它。与 `task/lifecycle.ts` 的 `onMainTurnCompleted` 同款：
+ * 纯回调注册，本模块不持有任何 timer、不知道调用方是谁。
+ */
+export function onHumanInputWaitEnd(cb: () => void): void {
+  waitEndListeners.add(cb);
+}
 
 /** 进入"等待用户输入"区段（引用计数 +1）。 */
 export function beginHumanInputWait(): void {
@@ -40,6 +55,14 @@ export function endHumanInputWait(): void {
   if (awaitingCount === 0 && waitStartedAt !== null) {
     waitTotalMs += Math.max(0, Date.now() - waitStartedAt);
     waitStartedAt = null;
+    // 回调异常不能影响调用方（取消/结束等待的路径往往是 finally）。
+    for (const cb of waitEndListeners) {
+      try {
+        cb();
+      } catch {
+        /* 监听器异常不影响闸门 */
+      }
+    }
   }
 }
 

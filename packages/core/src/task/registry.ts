@@ -19,6 +19,11 @@ import {
   recordTaskOutputTombstone,
   type TaskEvictReason,
 } from "./lifecycle.ts";
+import {
+  humanInputWaitElapsedMs,
+  isAwaitingHumanInput,
+  onHumanInputWaitEnd,
+} from "../query/human-input-gate.ts";
 import { getLogger } from "../debug/logger.ts";
 
 /** 全局任务存储 */
@@ -52,10 +57,16 @@ function notifyTaskChanged(): void {
 /** 注册新任务 */
 export function registerTask(task: TaskState): void {
   const isNew = !tasks.has(task.id);
-  tasks.set(task.id, task);
+  // 直接注册成终态的任务（adopt 进来的 shell 任务等）也要有 HITL 基线，
+  // 否则安全阀会退回「不扣等待」的旧口径。
+  const stored: TaskState =
+    isTerminalStatus(task.status) && task.hitlWaitAtTerminalMs === undefined
+      ? { ...task, hitlWaitAtTerminalMs: humanInputWaitElapsedMs() }
+      : task;
+  tasks.set(task.id, stored);
   // S16：生命周期事件在 registry 单点发，不在 shell / agent / workflow 的 9 个写点各发一遍
-  if (isNew) emitTaskLifecycle(task, "started");
-  if (isTerminalStatus(task.status)) scheduleSafetyValveWake();
+  if (isNew) emitTaskLifecycle(stored, "started");
+  if (isTerminalStatus(stored.status)) scheduleSafetyValveWake();
   notifyTaskChanged();
 }
 
@@ -63,14 +74,18 @@ export function registerTask(task: TaskState): void {
 export function updateTask<T extends TaskState>(taskId: string, updater: (task: T) => T): void {
   const task = tasks.get(taskId) as T | undefined;
   if (!task) return;
-  const updated = updater(task);
+  let updated = updater(task);
   if (updated !== task) {
-    tasks.set(taskId, updated);
     if (!isTerminalStatus(task.status) && isTerminalStatus(updated.status)) {
+      // 终态跃迁：记下人工等待基线（见 `TaskStateBase.hitlWaitAtTerminalMs` 注释）。
+      // 之后 `evictDecision` 只扣「终态之后新增的那段等待」——终态之前的等待与
+      // 「通知送达是否有希望」无关，扣掉它会让安全阀无谓地提前。
+      updated = { ...updated, hitlWaitAtTerminalMs: humanInputWaitElapsedMs() };
       emitTaskLifecycle(updated, "completed", {
         exit_code: "exitCode" in updated ? (updated.exitCode as number | undefined) : undefined,
       });
     }
+    tasks.set(taskId, updated);
     if (isTerminalStatus(updated.status)) scheduleSafetyValveWake();
     notifyTaskChanged();
   }
@@ -153,6 +168,28 @@ function deliveredTurnPassed(task: TaskState): boolean {
   );
 }
 
+/**
+ * 未送达任务的安全阀截止时刻（F3-6）。
+ *
+ * 基线 = `endTime + UNDELIVERED_SAFETY_VALVE_MS`，再**加上终态之后新增的人工等待时长**。
+ *
+ * 为什么必须扣：安全阀的设计目的是兜「主循环不转了 / print 模式已退出」，而主循环
+ * 阻塞在 fallback 询问、权限弹窗、MCP elicitation 里同样满足「通知没送达」——
+ * 那段时间通知是会送达的，只是在等用户作答。本会话实测：任务 13:52:45 完成，
+ * 主循环当时正卡在 fallback 弹窗里，10 分钟后被 `safety_valve` 驱逐，而用户
+ * 01:44 才作答。等人的时间不该由任务承担。
+ *
+ * 扣减基线是 `hitlWaitAtTerminalMs`（终态跃迁时写下的快照）：终态**之前**的等待
+ * 与「这次通知能不能送达」无关，那段不该扣。快照缺失时按 0 处理 = 旧行为。
+ */
+function undeliveredSafetyDeadline(task: TaskState): number {
+  const end = task.endTime ?? 0;
+  const baseline = task.hitlWaitAtTerminalMs;
+  const waitedSinceTerminal =
+    baseline === undefined ? 0 : Math.max(0, humanInputWaitElapsedMs() - baseline);
+  return end + UNDELIVERED_SAFETY_VALVE_MS + waitedSinceTerminal;
+}
+
 function evictDecision(task: TaskState, now: number): TaskEvictReason | null {
   if (!isTerminalStatus(task.status) || !task.notified) return null;
   const end = task.endTime ?? 0;
@@ -161,7 +198,11 @@ function evictDecision(task: TaskState, now: number): TaskEvictReason | null {
     const deadline = Math.max(end + displayGraceFor(task.status), task.evictAfter ?? 0);
     return deadline <= now ? "delivered_turn_passed" : null;
   }
-  return end + UNDELIVERED_SAFETY_VALVE_MS <= now ? "safety_valve" : null;
+  // 正在等用户输入时一律不驱逐：此时「未送达」是主循环在等用户作答，不是不转了。
+  // 与上面 deadline 的等待扣减同源（扣减让时钟走慢，这里直接停摆），两道都留——
+  // 判据本身要能独立说清「等人不是故障」，不能只靠一个算术恒等式。
+  if (isAwaitingHumanInput()) return null;
+  return undeliveredSafetyDeadline(task) <= now ? "safety_valve" : null;
 }
 
 /** 驱逐一条任务：登记墓碑（须在删文件之前）→ 落事件 → 删磁盘 `.output` 与 registry 条目 */
@@ -280,15 +321,27 @@ onMainTurnCompleted(() => {
 let safetyValveTimer: ReturnType<typeof setTimeout> | null = null;
 let safetyValveAt = Infinity;
 
+/**
+ * 等待人工输入期间的轮询间隔：F3-6 让安全阀截止时刻随等待同步后移（等人不该被驱逐），
+ * 于是这段时间里按 deadline 排表只会「一醒来就发现还没到」。改成定轮询——
+ * 醒来时再看等待是否结束、deadline 是否已到。unref 定时器，代价可忽略。
+ */
+const HITL_WAKE_POLL_MS = 60_000;
+
 function scheduleSafetyValveWake(): void {
   let earliest = Infinity;
+  // 等待期间不按 deadline 排：deadline 与等待同步推进，排表必然空转（见 HITL_WAKE_POLL_MS）。
+  const awaiting = isAwaitingHumanInput();
   for (const task of tasks.values()) {
     if (
       isTerminalStatus(task.status) &&
       task.notified &&
       task.notificationDeliveredTurn === undefined
     ) {
-      earliest = Math.min(earliest, (task.endTime ?? 0) + UNDELIVERED_SAFETY_VALVE_MS);
+      earliest = Math.min(
+        earliest,
+        awaiting ? Date.now() + HITL_WAKE_POLL_MS : undeliveredSafetyDeadline(task),
+      );
     }
   }
   if (earliest === safetyValveAt) return;
@@ -307,6 +360,10 @@ function scheduleSafetyValveWake(): void {
   (timer as { unref?: () => void }).unref?.();
   safetyValveTimer = timer;
 }
+
+// 等待结束时重新排安全阀：等待期间这里刻意不排真实 deadline（见 HITL_WAKE_POLL_MS），
+// 结束这一刻必须重新算一次，否则要等到下一次轮询才会发现「其实早就该驱逐了」。
+onHumanInputWaitEnd(() => scheduleSafetyValveWake());
 
 /** 获取驱逐相关常量（供外部使用） */
 export { EVICT_GRACE_MS, KILLED_DISPLAY_MS, UNDELIVERED_SAFETY_VALVE_MS };
