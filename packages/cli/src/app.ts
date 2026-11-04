@@ -3101,21 +3101,28 @@ export class App {
       // 人机输入闸门：本弹窗阻塞等用户作答期间，通知看门狗（stream-processor 心跳 +
       // loop 无进展）不要把这段静默误判成流 hang 而 abort 掉弹窗（根因B修复，
       // 事故 20260721-142757）。务必用 withHumanInputWait 包裹以保证异常安全闭合。
-      const { withHumanInputWait } = require("@sid-code/core/query/human-input-gate.ts");
-      result = await withHumanInputWait(() =>
-        askUserQuestion(
-          {
-            questions: [
-              {
-                question,
-                header: "备用模型",
-                // 选项可能超过 4 个（availableModels 较多时），askUserQuestion 支持任意数量选项。
-                options,
-              },
-            ],
-          },
-          ctx.signal,
-        ),
+      const {
+        withHumanInputWait,
+        readHitlScopeFromSession,
+      } = require("@sid-code/core/query/human-input-gate.ts");
+      // F4-2：显式传本轮 scope —— fallback 询问是「本轮卡在等人上」的最典型场景，
+      // 靠唯一性推断在有后台子代理并发时会失败（那条 2.85h 的等待不能再漏）。
+      result = await withHumanInputWait(
+        () =>
+          askUserQuestion(
+            {
+              questions: [
+                {
+                  question,
+                  header: "备用模型",
+                  // 选项可能超过 4 个（availableModels 较多时），askUserQuestion 支持任意数量选项。
+                  options,
+                },
+              ],
+            },
+            ctx.signal,
+          ),
+        readHitlScopeFromSession(this.sessionState),
       );
     } catch (err) {
       // 提问本身异常 → auto 兜底（保任务不中断）。
@@ -6736,8 +6743,16 @@ export class App {
             // 弹窗同型，事故 20260721-142757）。用 withHumanInputWait 只包权限确认这一步（不包
             // 工具执行），期间置闸门通知所有看门狗剔除等待时段。异常安全：withHumanInputWait
             // 内部 finally 保证闸门闭合。
-            const { withHumanInputWait } = require("@sid-code/core/query/human-input-gate.ts");
-            const reject = await withHumanInputWait(() => resolveToolPermission(block, tool, deps));
+            const {
+              withHumanInputWait,
+              readHitlScopeFromSession,
+            } = require("@sid-code/core/query/human-input-gate.ts");
+            // F4-2：显式传本轮 HITL scope（同批量路径）。省略会退回唯一性推断，而有后台
+            // 子代理并发时推断必然失败 —— 抢跑这一路的权限弹窗就统计不到了。
+            const reject = await withHumanInputWait(
+              () => resolveToolPermission(block, tool, deps),
+              readHitlScopeFromSession(deps.sessionState),
+            );
             if (reject) return; // 权限未过 → 不抢跑，交回批量路径
             const outcome = await executeSingleTool(block, tool, deps);
             cache.set(block.id, outcome);
@@ -10083,41 +10098,49 @@ export class App {
 
     // 设置 TUI Plan Mode 审批回调
     this.setPlanApprovalCallback(async (planFilePath) => {
-      return this.interactionQueue.run(
-        () =>
-          new Promise<string>((resolve) => {
-            log.info("TUI:PLAN", `显示 Plan 审批对话框: ${planFilePath}`);
-            // 读取计划文件内容
-            let planContent = "";
-            try {
-              planContent = readFileSync(planFilePath, "utf-8");
-            } catch (err: any) {
-              planContent = `(无法读取计划文件: ${err.message})`;
-            }
+      const {
+        withHumanInputWait,
+        readHitlScopeFromSession,
+      } = require("@sid-code/core/query/human-input-gate.ts");
+      // F4-2：plan 审批同样是「阻塞等用户」，此前完全没有闸门 —— 等待期间既不计 HITL，
+      // 也不让看门狗剔除等待（用户读长计划时会被 turn_hard / watchdog 误判成无进展）。
+      const askPlanApproval = () =>
+        this.interactionQueue.run(
+          () =>
+            new Promise<string>((resolve) => {
+              log.info("TUI:PLAN", `显示 Plan 审批对话框: ${planFilePath}`);
+              // 读取计划文件内容
+              let planContent = "";
+              try {
+                planContent = readFileSync(planFilePath, "utf-8");
+              } catch (err: any) {
+                planContent = `(无法读取计划文件: ${err.message})`;
+              }
 
-            // 把计划内容注入到消息滚动区域（用户可滚动查看完整计划）
-            historyIdCounter += 1;
-            const planHistoryItem: import("./ui/types.ts").HistoryItem = {
-              id: historyIdCounter,
-              type: "plan_review",
-              planContent,
-              planFilePath,
-            };
-            const prevHistoryItems = bridge.current.historyItems;
-            updateState({ historyItems: [...prevHistoryItems, planHistoryItem] });
+              // 把计划内容注入到消息滚动区域（用户可滚动查看完整计划）
+              historyIdCounter += 1;
+              const planHistoryItem: import("./ui/types.ts").HistoryItem = {
+                id: historyIdCounter,
+                type: "plan_review",
+                planContent,
+                planFilePath,
+              };
+              const prevHistoryItems = bridge.current.historyItems;
+              updateState({ historyItems: [...prevHistoryItems, planHistoryItem] });
 
-            const wrappedResolve = (decision: string) => {
-              log.info("TUI:PLAN", `Plan 审批响应: ${decision}`);
-              updateState({ planApprovalRequest: null });
-              resolve(decision);
-            };
-            updateState({
-              planApprovalRequest: { planFilePath, planContent, resolve: wrappedResolve },
-            });
-          }),
-        // 排队期间被取消 = 取消审批（不是拒绝，拒绝会带反馈回模型）
-        () => "cancel",
-      );
+              const wrappedResolve = (decision: string) => {
+                log.info("TUI:PLAN", `Plan 审批响应: ${decision}`);
+                updateState({ planApprovalRequest: null });
+                resolve(decision);
+              };
+              updateState({
+                planApprovalRequest: { planFilePath, planContent, resolve: wrappedResolve },
+              });
+            }),
+          // 排队期间被取消 = 取消审批（不是拒绝，拒绝会带反馈回模型）
+          () => "cancel",
+        );
+      return withHumanInputWait(askPlanApproval, readHitlScopeFromSession(this.sessionState));
     });
 
     // 设置并发冲突处理回调（Phase 2.1）
