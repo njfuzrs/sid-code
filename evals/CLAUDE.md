@@ -62,7 +62,7 @@ grep -rn '113 次' evals/ --include='*.sh' --include='*.py' --include='*.ts' --i
 ✅ **已修（2026-08-30，第八棒）**：判据整个换掉了，**门没拆**。现在锁的是四件事 ——
 skip 必须是 bool `CliFlag` / `permission_mode` 的 choices 不含 skip 名与
 `bypassPermissions` / 两档互斥校验存在 / 权限档观测值落 metadata。
-出处：`tests/eval/harbor-agent-contract.test.ts:281`（`权限档是显式的、可观测的`）。
+出处：`tests/eval/harbor-agent-contract.test.ts:393`（`权限档是显式的、可观测的`）。
 
 ### 1.4 「代码在」≠「生效」——判据是**生产调用点**，不是「有没有实现」
 
@@ -90,7 +90,7 @@ skip 必须是 bool `CliFlag` / `permission_mode` 的 choices 不含 skip 名与
 
 ⛔ `n_input_tokens` **绝不能取 `total_tokens_sent`** —— 那是**末次快照值**，
 除以累加的 `total_cost_usd` 得到的是错数。要用累积字段
-`total_cumulative_prompt_tokens`（`external-benchmarks/harbor/sid_code_agent.py:1042-1097`）。
+`total_cumulative_prompt_tokens`（`external-benchmarks/harbor/sid_code_agent.py:1064-1119`）。
 
 ### 1.7 每个数字必须能指到源字段
 
@@ -201,7 +201,7 @@ swe-bench 侧用 `prompt-v1.txt`。**跨链路比较前先 diff 这两份提示�
 | --- | --- |
 | **失效形态** | `build-branch-artifact.sh` 输出目录名 `<branch-slug>-<commit12>` **不含架构**，同一 commit 编 arm64/x64 会互相覆盖。于是「按 commit 匹配」拿到的是「上次编的那个架构」→ 容器里 `exit 127: not found`，而 `build.json` 写着期望的架构 |
 | **判据** | `_elf_arch()` 读 ELF：`x86-64 = 62 (0x3E)`、`AArch64 = 183 (0xB7)` |
-| **出处** | `sid_code_agent.py:467-484` |
+| **出处** | `sid_code_agent.py:470-487` |
 
 ### 3.4 🔴 `-n`（并发）直接决定 verifier 坏掉比例，且**伪装成能力差**
 
@@ -417,7 +417,7 @@ harbor run -a sid_code_agent:SidCodeAgent \
 | 权限档三个坑（`bypassPermissions` 不合法 / `always-allow` 不够 / 必须布尔 flag） | `external-benchmarks/swe-bench/exec-swebench.sh:106-150` |
 | 113 次拒绝实测与归因 | `exec-swebench.sh:1255-1280` |
 | Harbor 侧权限档（✅ 2026-08-30 已修） | `external-benchmarks/harbor/sid_code_agent.py:303-418` |
-| 产物身份 / ELF 架构 / `is_error` / stock-flow | `sid_code_agent.py:467`、`:630-634`、`:866`、`:971-1026` |
+| 产物身份 / ELF 架构 / `is_error` / stock-flow | `sid_code_agent.py:470`、`:630-634`、`:866`、`:970-1046` |
 | `-n` 与 verifier 坏掉率四轮对照 | `external-benchmarks/harbor/README.md:278-302` |
 | L1/L2 双层门禁与变异自证 | `tests/eval/harbor-agent-contract.test.ts:1-46` |
 | 横评 provider 不对称（⛔ 现存缺陷） | `providers/claude-code.ts:27`、`providers/sid-code-live.ts:28-30` |
