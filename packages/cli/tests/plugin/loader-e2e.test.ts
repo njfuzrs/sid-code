@@ -1,5 +1,6 @@
-import { describe, expect, test, afterEach } from "bun:test";
+import { describe, expect, test, beforeEach, afterEach } from "bun:test";
 import { mkdtemp, writeFile, mkdir, rm } from "fs/promises";
+import { existsSync } from "fs";
 import { join } from "path";
 import { tmpdir } from "os";
 import {
@@ -10,8 +11,59 @@ import {
 } from "@sid-code/cli/plugin/loader.ts";
 import { clearAllPluginCaches } from "@sid-code/cli/plugin/caches.ts";
 import { registerBuiltinPlugin, unregisterBuiltinPlugin } from "@sid-code/cli/plugin/builtin.ts";
+import { getPluginsDir, writeInstalledPlugins } from "@sid-code/cli/plugin/installed.ts";
+import type { InstalledPluginEntry } from "@sid-code/cli/plugin/types.ts";
 
 let tmpDirs: string[] = [];
+/** SID_CONFIG_DIR 指向的临时配置根（installed.json 由它派生），不碰真实 ~/.sid-code */
+let configDir: string;
+let prevConfigDir: string | undefined;
+
+beforeEach(async () => {
+  prevConfigDir = process.env.SID_CONFIG_DIR;
+  configDir = await mkdtemp(join(tmpdir(), "sid-plugin-e2e-config-"));
+  process.env.SID_CONFIG_DIR = configDir;
+  clearAllPluginCaches();
+});
+
+/**
+ * 测试里临时创建的「用户插件目录」：默认就在 getPluginsDir() 之内（缺陷 29 之后必须如此），
+ * 传 escape=true 时建在插件目录的兄弟位置，用来验证目录外条目被拒。
+ */
+async function makePluginDirInRegistry(name: string, opts?: { escape?: boolean }): Promise<string> {
+  let dir: string;
+  if (opts?.escape) {
+    dir = await mkdtemp(join(tmpdir(), "sid-plugin-e2e-escaped-"));
+  } else {
+    // plugins 目录本身在全新 SID_CONFIG_DIR 下还不存在，mkdtemp 不会递归创建父目录
+    await mkdir(getPluginsDir(), { recursive: true });
+    dir = await mkdtemp(join(getPluginsDir(), `${name}-`));
+  }
+  tmpDirs.push(dir);
+  await writeFile(
+    join(dir, "plugin.json"),
+    JSON.stringify({ name, version: "1.0.0", description: "installed.json 测试插件" }),
+  );
+  return dir;
+}
+
+/** 写 installed.json（SID_CONFIG_DIR 已重定向到 tmpdir） */
+async function writeRegistry(plugins: Record<string, InstalledPluginEntry>): Promise<void> {
+  await writeInstalledPlugins({ version: 1, plugins });
+  clearAllPluginCaches();
+}
+
+/** 构造注册表条目（默认值都能通过校验，各用例只覆盖要测的字段） */
+function entry(overrides: Partial<InstalledPluginEntry> & { path: string }): InstalledPluginEntry {
+  return {
+    name: "reg-plugin",
+    source: "reg-plugin@local",
+    version: "1.0.0",
+    installedAt: "2026-09-27T00:00:00.000Z",
+    enabled: true,
+    ...overrides,
+  };
+}
 
 async function makePluginDir(
   manifest: object,
@@ -36,6 +88,9 @@ afterEach(async () => {
     await rm(dir, { recursive: true, force: true }).catch(() => {});
   }
   tmpDirs = [];
+  if (prevConfigDir === undefined) delete process.env.SID_CONFIG_DIR;
+  else process.env.SID_CONFIG_DIR = prevConfigDir;
+  await rm(configDir, { recursive: true, force: true }).catch(() => {});
 });
 
 describe("插件加载端到端", () => {
@@ -155,5 +210,134 @@ describe("加载器只有一层（缺陷 23/25/26）", () => {
     } finally {
       unregisterBuiltinPlugin("shadow-me");
     }
+  });
+});
+
+/**
+ * 缺陷 29：installed.json 的 path 与键名都不能无条件信任
+ * 隔离：beforeEach 把 SID_CONFIG_DIR 指向 tmpdir，installed.json 与插件目录都建在临时目录里。
+ */
+describe("installed.json 路径与键名校验（缺陷 29）", () => {
+  test("path 是相对路径 → 不加载，errors 有 generic-error", async () => {
+    const dir = await makePluginDirInRegistry("rel-plugin");
+    const relativePath = join("some", "relative", "plugin-dir");
+    const realDir = join(process.cwd(), relativePath);
+    expect(existsSync(realDir)).toBe(false); // 前提：这个相对路径本来也不存在
+    expect(dir.startsWith(getPluginsDir())).toBe(true);
+    await writeRegistry({
+      "rel-plugin": entry({ name: "rel-plugin", path: relativePath, source: "rel-plugin@local" }),
+    });
+
+    const result = await loadAllPlugins();
+    expect(result.enabled.find((p) => p.name === "rel-plugin")).toBeUndefined();
+    expect(result.disabled.find((p) => p.name === "rel-plugin")).toBeUndefined();
+    const err = result.errors.find((e) => e.type === "generic-error");
+    expect(err).toBeDefined();
+    expect((err as { source: string }).source).toBe("rel-plugin");
+    expect((err as { error: string }).error).toContain("path 必须是绝对路径字符串");
+  });
+
+  test("path 在插件目录之外且无 external:true → path-escape；带 external:true → 正常加载", async () => {
+    const escaped = await makePluginDirInRegistry("outside-plugin", { escape: true });
+    // 前提：这个目录确实在插件目录之外（否则这条用例什么都证明不了）
+    expect(escaped.startsWith(getPluginsDir())).toBe(false);
+
+    await writeRegistry({
+      "outside-plugin": entry({
+        name: "outside-plugin",
+        path: escaped,
+        source: "outside-plugin@local",
+      }),
+    });
+    const rejected = await loadAllPlugins();
+    expect(rejected.enabled.find((p) => p.name === "outside-plugin")).toBeUndefined();
+    const escapeErr = rejected.errors.find((e) => e.type === "path-escape");
+    expect(escapeErr).toBeDefined();
+    expect((escapeErr as { path: string }).path).toBe(escaped);
+    expect((escapeErr as { source: string }).source).toBe("outside-plugin@local");
+
+    // 同一条目加上 external:true（--no-copy 原地引用）→ 放行
+    await writeRegistry({
+      "outside-plugin": entry({
+        name: "outside-plugin",
+        path: escaped,
+        source: "outside-plugin@local",
+        external: true,
+      }),
+    });
+    const accepted = await loadAllPlugins();
+    const loaded = accepted.enabled.find((p) => p.name === "outside-plugin");
+    expect(loaded).toBeDefined();
+    expect(loaded!.path).toBe(escaped);
+    expect(accepted.errors.some((e) => e.type === "path-escape")).toBe(false);
+  });
+
+  test("键名与 plugin.json 的 name 不一致 → 不加载，generic-error 含两个名字", async () => {
+    const dir = await makePluginDirInRegistry("manifest-name");
+    await writeRegistry({
+      // 键名 foo，manifest.name 是 manifest-name
+      foo: entry({ name: "manifest-name", path: dir, source: "foo@local" }),
+    });
+
+    const result = await loadAllPlugins();
+    expect(result.enabled.find((p) => p.name === "manifest-name")).toBeUndefined();
+    expect(result.disabled.find((p) => p.name === "manifest-name")).toBeUndefined();
+    const err = result.errors.find(
+      (e) => e.type === "generic-error" && (e as { error: string }).error.includes("键名"),
+    );
+    expect(err).toBeDefined();
+    expect((err as { error: string }).error).toContain('"foo"');
+    expect((err as { error: string }).error).toContain('"manifest-name"');
+  });
+
+  test("正常条目（目录在插件目录内、键名一致）照常加载", async () => {
+    const dir = await makePluginDirInRegistry("ok-plugin");
+    await writeRegistry({
+      "ok-plugin": entry({ name: "ok-plugin", path: dir, source: "ok-plugin@local" }),
+    });
+
+    const result = await loadAllPlugins();
+    expect(result.enabled.find((p) => p.name === "ok-plugin")).toBeDefined();
+    expect(result.errors).toHaveLength(0);
+  });
+});
+
+/** 缺陷 30：path-not-found 的 component 可选，目录级失败不该归因到某个组件 */
+describe("path-not-found 归因（缺陷 30）", () => {
+  test("formatPluginError：无 component → 插件目录不存在；有 component → 保留原文案", async () => {
+    const { formatPluginError } = await import("@sid-code/cli/plugin/types.ts");
+
+    expect(
+      formatPluginError({ type: "path-not-found", source: "foo@local", path: "/tmp/foo" }),
+    ).toBe("[foo@local] 插件目录不存在: /tmp/foo");
+    expect(
+      formatPluginError({
+        type: "path-not-found",
+        source: "foo@local",
+        path: "/tmp/foo/commands",
+        component: "commands",
+      }),
+    ).toBe("[foo@local] 组件 commands 路径不存在: /tmp/foo/commands");
+  });
+
+  test("loader 两处目录级失败都不带 component", async () => {
+    const missingInstalled = join(getPluginsDir(), "missing-plugin");
+    await writeRegistry({
+      "missing-plugin": entry({ name: "missing-plugin", path: missingInstalled }),
+    });
+    const missingInline = "/nonexistent/plugin/path-defect-30";
+    setInlinePluginDirs([missingInline]);
+
+    const result = await loadAllPlugins();
+    const notFound = result.errors.filter((e) => e.type === "path-not-found") as Array<{
+      path: string;
+      component?: unknown;
+    }>;
+    expect(notFound).toHaveLength(2);
+    for (const err of notFound) {
+      expect(err.component).toBeUndefined();
+    }
+    // 目录本身确实不存在，避免用例变成「因为别的原因报的错」
+    expect(existsSync(missingInstalled)).toBe(false);
   });
 });

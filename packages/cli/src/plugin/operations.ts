@@ -128,7 +128,7 @@ export async function installPlugin(
     }
   }
 
-  // 注册
+  // 注册。copy=false 是显式原地引用：只有带 external: true 的条目才允许 path 落在插件目录之外
   await registerPlugin({
     name: manifest.name,
     path: targetPath,
@@ -136,6 +136,7 @@ export async function installPlugin(
     version: manifest.version,
     installedAt: nowIso(),
     enabled: true,
+    ...(copy ? {} : { external: true }),
   });
 
   clearAllPluginCaches();

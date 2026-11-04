@@ -22,12 +22,12 @@
  */
 
 import { existsSync } from "fs";
-import { resolve } from "path";
+import { isAbsolute, relative, resolve } from "path";
 import { getLogger } from "@sid-code/core/debug/logger.ts";
 import { memoize } from "@sid-code/shared/utils/memoize.ts";
 import { registerPluginCache } from "./caches.ts";
 import type { LoadedPlugin, PluginError, PluginLoadResult } from "./types.ts";
-import { readInstalledPlugins } from "./installed.ts";
+import { getPluginsDir, readInstalledPlugins } from "./installed.ts";
 import { loadPluginFromDirectory } from "./manifest.ts";
 import { getBuiltinPlugins } from "./builtin.ts";
 import { verifyAndDemote } from "./dependency.ts";
@@ -90,19 +90,60 @@ async function checkPluginOrigin(
 }
 
 /**
+ * 判断某个路径是否落在插件根目录之内。
+ * 用 path.relative 而不是裸字符串前缀：`/a/plugins-evil` 以 `/a/plugins` 开头但不是它的子目录。
+ * 空 rel（等于根目录本身）也算不在「之内」——插件必须有自己的目录。
+ */
+function isInsidePluginsDir(target: string, pluginsDir: string): boolean {
+  const rel = relative(resolve(pluginsDir), resolve(target));
+  return rel !== "" && !rel.startsWith("..") && !isAbsolute(rel);
+}
+
+/**
  * 加载已安装插件（从 installed.json + 磁盘目录）
+ *
+ * installed.json 是用户可编辑的 JSON 文件，路径与键名都不能无条件信任：
+ * - path 必须是非空绝对路径字符串，且（除 --no-copy 的 external 条目外）落在插件目录内，
+ *   否则手改一行 JSON 就能让加载器扫描任意目录；
+ * - 键名必须与 plugin.json 的 name 一致：operations 按键名操作注册表，而 builtinOverrides /
+ *   运行时按 manifest.name，两者不一致会让启用/禁用静默失效（缺陷 29）。
  */
 async function loadInstalledPlugins(errors: PluginError[]): Promise<LoadedPlugin[]> {
   const registry = await readInstalledPlugins();
   const plugins: LoadedPlugin[] = [];
+  const pluginsDir = getPluginsDir();
 
-  for (const [, entry] of Object.entries(registry.plugins)) {
+  for (const [key, entry] of Object.entries(registry.plugins)) {
+    // 结构校验用 any 承接：installed.json 来自磁盘，字段可能缺、类型也可能不对
+    const raw = entry as Partial<InstalledPluginEntry> | null;
+    if (
+      raw === null ||
+      typeof raw !== "object" ||
+      typeof raw.path !== "string" ||
+      !isAbsolute(raw.path)
+    ) {
+      errors.push({
+        type: "generic-error",
+        source: key,
+        error: "installed.json 条目无效：path 必须是绝对路径字符串",
+      });
+      continue;
+    }
+    // --no-copy 安装是显式原地引用（entry.external === true），允许在插件目录之外
+    if (entry.external !== true && !isInsidePluginsDir(entry.path, pluginsDir)) {
+      errors.push({
+        type: "path-escape",
+        source: entry.source ?? key,
+        path: entry.path,
+        component: "commands",
+      });
+      continue;
+    }
     if (!existsSync(entry.path)) {
       errors.push({
         type: "path-not-found",
         source: entry.source,
         path: entry.path,
-        component: "commands",
       });
       continue;
     }
@@ -114,6 +155,16 @@ async function loadInstalledPlugins(errors: PluginError[]): Promise<LoadedPlugin
     const sourceKind = entry.market?.name ?? "local";
     const plugin = await loadPluginFromDirectory(entry.path, sourceKind, entry.enabled, errors);
     if (plugin) {
+      // 键名与 manifest.name 不一致时 fail-closed：两处分别按键名/按 name 查表，
+      // 加载进来只会得到「启用/禁用静默失效」的插件，不如直接跳过并报错
+      if (key !== plugin.name) {
+        errors.push({
+          type: "generic-error",
+          source: entry.source ?? key,
+          error: `installed.json 键名 "${key}" 与 plugin.json 的 name "${plugin.name}" 不一致，已跳过`,
+        });
+        continue;
+      }
       // installed.json 中的 enabled 状态优先
       plugin.enabled = entry.enabled;
       if (entry.market) plugin.marketplace = entry.market.name;
@@ -133,7 +184,6 @@ async function loadInlinePlugins(errors: PluginError[]): Promise<LoadedPlugin[]>
         type: "path-not-found",
         source: `${dir}@inline`,
         path: dir,
-        component: "commands",
       });
       continue;
     }
