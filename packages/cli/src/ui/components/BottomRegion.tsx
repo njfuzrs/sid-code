@@ -12,7 +12,11 @@
  * 空块返回 null 不产生节点，也就不产生幻影间距。
  *
  * 间距规范（src/ui/CLAUDE.md L2.2）：瞬态块与输入框由 gap={1} 提供块间恰好 1 行留白，
- * 子组件不带外部 margin；ExitWarning / Footer 紧贴输入框底部（对标 cc，无空行）。
+ * 子组件不带外部 margin（TodoPanel 曾自带 marginTop/Bottom，与 gap 叠成 2 行）；
+ * ExitWarning / Footer 紧贴输入框底部（对标 cc，无空行）。
+ *
+ * 瞬态行占位（hooks/useHeldRows.ts）的策略由布局经 `heldRows` 下发：主屏占住并在历史新增时放掉，
+ * 全屏高度固定、不存在整帧重画，不占位。
  */
 
 import React from "react";
@@ -27,7 +31,7 @@ import { ToastDisplay } from "./ToastDisplay.tsx";
 import { ExitWarning } from "./ExitWarning.tsx";
 import { TodoPanel } from "./TodoPanel.tsx";
 import type { OnboardingResult } from "./OnboardingDialog.tsx";
-import { useHeldRows } from "../hooks/useHeldRows.ts";
+import { HeldRowsContext, useHeldRows, type HeldRowsPolicy } from "../hooks/useHeldRows.ts";
 
 /**
  * 状态提示行。出现过就占住一行到下一轮开始（useHeldRows），消失不让主屏帧变矮。
@@ -158,14 +162,17 @@ interface BottomRegionProps extends BottomRegionSharedProps {
   leading?: React.ReactNode;
   /** 错误面板与状态提示之间的块（布局各自的提示，见文件头） */
   beforeStatus?: React.ReactNode;
-  /** 底部留白行数：主屏 1（动态区与终端底边隔一行）；全屏由根 Box 统一处理，传 0 */
+  /** 底部留白行数：主屏 0（帧写完光标停在下一行，那一行就是与终端底边的间隔）；全屏由根 Box 统一处理，传 0 */
   paddingBottom?: number;
+  /** 瞬态行占位策略（见 hooks/useHeldRows.ts）；缺省 = 占住、只在下一轮开始时放掉 */
+  heldRows?: HeldRowsPolicy;
 }
 
 export const BottomRegion: React.FC<BottomRegionProps> = ({
   leading,
   beforeStatus,
   paddingBottom = 0,
+  heldRows,
   isEmpty,
   termWidth,
   statusMessage,
@@ -223,7 +230,7 @@ export const BottomRegion: React.FC<BottomRegionProps> = ({
 }) => {
   const { taskPanelHidden } = useUIState();
 
-  return (
+  const region = (
     <Box
       flexDirection="column"
       flexShrink={0}
@@ -320,5 +327,10 @@ export const BottomRegion: React.FC<BottomRegionProps> = ({
         termWidth={termWidth}
       />
     </Box>
+  );
+  return heldRows ? (
+    <HeldRowsContext.Provider value={heldRows}>{region}</HeldRowsContext.Provider>
+  ) : (
+    region
   );
 };
