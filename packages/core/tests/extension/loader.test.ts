@@ -225,4 +225,38 @@ description: 测试命令
     const files = await loader.scan("skills", testDir);
     expect(files.find((f) => f.name === "mySkill")).toBeDefined();
   });
+
+  // ── 缺陷 42：scanSingleDir 必须把 scanDir 的 errors 一起返回 ──
+  describe("scanSingleDir", () => {
+    test("返回 files 与 errors（畸形 frontmatter 不再被静默丢弃）", async () => {
+      const dir = join(testDir, "plugin-skills");
+      mkdirSync(dir, { recursive: true });
+      writeFileSync(join(dir, "good.md"), "---\nname: good\ndescription: 正常\n---\n内容");
+      // 缺闭合分隔符 → parseFrontmatter 报 error → fail-closed 跳过并记 error
+      writeFileSync(join(dir, "broken.md"), "---\nname: broken\ndescription: 坏\n正文");
+      writeFileSync(join(dir, "plain.md"), "无 frontmatter");
+
+      const { files, errors } = await loader.scanSingleDir(dir, "plugin");
+
+      expect(files.map((f) => f.name).sort()).toEqual(["good", "plain"]);
+      expect(errors).toHaveLength(1);
+      expect(errors[0]!.filePath).toContain("broken.md");
+      expect(errors[0]!.message).toContain("frontmatter");
+    });
+
+    test("来源标记原样透传（插件传 plugin，不再借 project 占位）", async () => {
+      const dir = join(testDir, "plugin-cmds");
+      mkdirSync(dir, { recursive: true });
+      writeFileSync(join(dir, "x.md"), "内容");
+
+      const { files } = await loader.scanSingleDir(dir, "plugin");
+      expect(files[0]!.source).toBe("plugin");
+    });
+
+    test("目录不存在时返回空 files + 空 errors（不抛）", async () => {
+      const { files, errors } = await loader.scanSingleDir(join(testDir, "nope"), "plugin");
+      expect(files).toEqual([]);
+      expect(errors).toEqual([]);
+    });
+  });
 });
