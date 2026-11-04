@@ -110,7 +110,8 @@ export type PluginError =
       reason: "not-enabled" | "not-found";
     }
   | { type: "plugin-not-found"; source: string; pluginId: string }
-  | { type: "path-not-found"; source: string; path: string; component: PluginComponent }
+  // component 可选：目录级失败（整个插件目录不存在）不带组件归因，只有真正的组件路径缺失才带
+  | { type: "path-not-found"; source: string; path: string; component?: PluginComponent }
   | { type: "path-escape"; source: string; path: string; component: PluginComponent }
   | { type: "duplicate-name"; source: string; existingSource: string }
   | { type: "trust-rejected"; source: string; path: string }
@@ -133,6 +134,14 @@ export interface InstalledPluginEntry {
   /** ISO 时间戳 */
   installedAt: string;
   enabled: boolean;
+  /**
+   * `--no-copy` 原地引用的条目为 true，允许 path 位于插件目录之外；
+   * 缺省视为 false（必须落在插件目录内）。
+   *
+   * 判据只在加载器里用：installed.json 是用户可编辑的文件，没有这个显式标记的条目
+   * 只要 path 跑出 ~/.sid-code/plugins/ 就拒绝加载（否则手改一行 JSON 就能让加载器扫任意目录）。
+   */
+  external?: boolean;
   /**
    * 企业市场来源（P5）。有它 = 从市场装的；没有 = 本地目录装的。
    * strictKnownMarketplaces / strictPluginOnlyCustomization 锁定时，只有带它且 indexUrl
@@ -209,7 +218,10 @@ export function formatPluginError(err: PluginError): string {
     case "plugin-not-found":
       return `[${err.source}] 未找到插件: ${err.pluginId}`;
     case "path-not-found":
-      return `[${err.source}] 组件 ${err.component} 路径不存在: ${err.path}`;
+      // 没有 component = 整个插件目录不存在，归因在插件层而不是某个组件目录
+      return err.component
+        ? `[${err.source}] 组件 ${err.component} 路径不存在: ${err.path}`
+        : `[${err.source}] 插件目录不存在: ${err.path}`;
     case "path-escape":
       return `[${err.source}] 组件 ${err.component} 路径越出插件目录: ${err.path}`;
     case "duplicate-name":

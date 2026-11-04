@@ -153,6 +153,44 @@ function pathVarsFor(ctx: NormalizeContext): Record<string, string> | undefined 
 }
 
 /**
+ * 已被放弃的写法：handler 声明依赖的根目录变量没有来源时必须报错，不能让 shell 展开成空串。
+ *
+ * 缺陷 35：内置插件 `isBuiltin`，没有 pluginRoot，pathVars 里也就没有 PLUGIN_ROOT。
+ * 修之前 loadPluginHooks 把 `${PLUGIN_ROOT}` 无条件替换成 ""，`${PLUGIN_ROOT}/hooks/check.sh`
+ * 变成 `/hooks/check.sh`——一个看起来合法的绝对路径，比直接报错危险得多
+ * （容器里 `/run.sh` 这类路径真实存在，就变成执行非预期脚本）。
+ * 现在不做字符串替换，由 runner 导出环境变量给 shell / exec 展开；没有来源导出 = 展开为空串，
+ * 所以必须在归一化期就拦住。
+ *
+ * 正则同时覆盖 `${VAR}` 与 `$VAR` 两种写法（与 runner 的 expandPathPlaceholders 一致），
+ * 只认这三个变量名，不误伤 `${HOME}` 等其它变量。
+ */
+const PLUGIN_ROOT_VAR_RE =
+  /\$\{(CLAUDE_PLUGIN_ROOT|SID_CODE_PLUGIN_ROOT|PLUGIN_ROOT)\}|\$(CLAUDE_PLUGIN_ROOT|SID_CODE_PLUGIN_ROOT|PLUGIN_ROOT)\b/;
+
+/**
+ * handler 的 command / args 是否引用了当前来源无法提供的根目录变量。
+ * @returns 诊断文案；没有引用到不存在的变量时返回 null
+ *
+ * 可用性口径与 pathVarsFor 一一对应：pluginRoot / skillRoot 任一存在 → CLAUDE_PLUGIN_ROOT 与
+ * SID_CODE_PLUGIN_ROOT 都会导出；PLUGIN_ROOT 只有 pluginRoot 存在时才导出（skill 复用 CC 的变量名）。
+ */
+function missingRootVarMessage(
+  parts: Array<string | undefined>,
+  ctx: NormalizeContext,
+): string | null {
+  const missing = parts.some((p) => !!p && PLUGIN_ROOT_VAR_RE.test(p));
+  if (!missing) return null;
+  const root = ctx.pluginRoot ?? ctx.skillRoot;
+  if (root) return null;
+  return (
+    "使用了 ${PLUGIN_ROOT} / ${CLAUDE_PLUGIN_ROOT}，但当前来源没有插件根目录" +
+    "（内置插件无磁盘路径，也没有 skill 根目录），该变量会被展开成空串，" +
+    "本条已跳过（改成字面路径，或让来源带上磁盘目录）"
+  );
+}
+
+/**
  * 单个 handler → 注册表 HookConfig。返回 null 时已往 diagnostics 里写了原因。
  */
 function convertHandler(
@@ -263,6 +301,18 @@ function convertHandler(
       level: "error",
       path: `${path}.args`,
       message: "args 必须是字符串数组，本条已跳过",
+      source,
+    });
+    return null;
+  }
+  // 缺陷 35：依赖的根目录变量没有来源 → 展开成空串（`/hooks/check.sh`）。宁可报错也不注册一条必坏的 hook。
+  // 放在 args 校验之后：args 形状不对时先报形状错误，一次只给用户一个要改的点。
+  const missingRootVar = missingRootVarMessage([command, ...(args ?? [])], ctx);
+  if (missingRootVar) {
+    diagnostics.push({
+      level: "error",
+      path: `${path}.command`,
+      message: missingRootVar,
       source,
     });
     return null;

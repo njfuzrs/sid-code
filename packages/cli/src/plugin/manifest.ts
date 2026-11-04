@@ -161,7 +161,10 @@ export async function loadPluginFromDirectory(
   enabled: boolean,
   errors: PluginError[],
 ): Promise<LoadedPlugin | null> {
-  const manifest = await loadManifest(pluginPath, errors, `${pluginPath}@${sourceKind}`);
+  // 错误消息的 source 与 LoadedPlugin.source 用同一个构造器（buildPluginId），口径统一：
+  // 原先手拼 `${pluginPath}@${sourceKind}`，分隔符规则散在两处，parsePluginId 换规则时容易只改一边。
+  // 注意这里的 name 位是磁盘路径而不是插件名，路径可含 @，所以 parsePluginId 必须取最后一个 @ 才能反解。
+  const manifest = await loadManifest(pluginPath, errors, buildPluginId(pluginPath, sourceKind));
   if (!manifest) return null;
 
   const source = buildPluginId(manifest.name, sourceKind);
