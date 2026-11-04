@@ -389,6 +389,40 @@ async function startOnce(home: string): Promise<Profile> {
 /** 每种配置的启动次数（取中位数） */
 const RUNS = 3;
 
+/**
+ * 首帧差值阈值（ms），按平台分档：macOS 300，其他（ubuntu / 本机）150。
+ *
+ * ## 为什么必须分档
+ *
+ * 150ms 的标定没变（2026-11-01 本机，3 轮中位数）：修复后 +18~+142ms，C1 变异 +698ms、
+ * T1/T2 变异 +353ms —— 在本机这种噪声水平上信噪比是够的。
+ *
+ * 但 macOS 共享 runner 的时序噪声与阈值**同量级**，判定结果由运气而不是由不变量决定。
+ * 2026-11-04 一天内的实测（同一份 main 代码）：
+ *
+ * ```text
+ * run 41787902045  逐轮 Δframe=[343 / -85 / 671]  中位数 343.3ms
+ * run 41791475745  逐轮 Δframe=[151 /  31 / 214]  中位数 150.7ms（只超 0.7ms）
+ * 同批绝对值：空目录 first_frame 624 / 667 / 772 —— 空目录自己就波动 148ms
+ * ```
+ *
+ * 差值型门禁的分母（空目录）自带 ~150ms 抖动时，再靠「3 轮取中位数」压噪声已经没有余量；
+ * 而 main 上近 40 次 CI 的 12 次 failure 里至少 5 次是这条断言，PR #575 / #578 / #579
+ * 也都踩过 —— 这已经不是偶发，是阈值贴着测量值。
+ *
+ * ## 为什么是 300 而不是「随便放宽」
+ *
+ * macOS 上仍要能检出真实回归：已知变异 T1/T2（collector 构造放回主线程）+353ms、
+ * C1（全量会话清理放回主线程）+698ms，都高于 300ms。代价是 macOS 上 150~300ms 的真实
+ * 回归会漏检——这是为了让门禁在 macOS 上「测得准」而主动放弃的灵敏度，ubuntu 不变。
+ */
+function frameDeltaLimitMs(platform: string): number {
+  return platform === "darwin" ? 300 : 150;
+}
+
+/** 本次进程实际生效的首帧差值阈值 */
+const FRAME_DELTA_LIMIT_MS = frameDeltaLimitMs(process.platform);
+
 function median(xs: number[]): number {
   const a = [...xs].sort((x, y) => x - y);
   return a[Math.floor(a.length / 2)];
@@ -616,6 +650,15 @@ describeGate("大数据启动门禁（首帧与事件循环阻塞不随数据量
     expect(Number.isFinite(maxBlock(large))).toBe(true);
   });
 
+  // 分档本身也要断言：把两档写成同一个数字（或把 "darwin" 拼错）时，macOS 会悄悄退回
+  // 150ms 的老阈值，而所有性能断言在噪声不出来的时候照样全绿 —— 这类退化只有这条能看见。
+  test("首帧阈值确实按平台分档（macOS 300 / 其他 150）", () => {
+    expect(frameDeltaLimitMs("darwin")).toBe(300);
+    expect(frameDeltaLimitMs("linux")).toBe(150);
+    expect(frameDeltaLimitMs("win32")).toBe(150);
+    expect(FRAME_DELTA_LIMIT_MS).toBe(frameDeltaLimitMs(process.platform));
+  });
+
   // max_loop_block 取的是**最大值**：一段 100ms 级的扫描与空目录本来就有的 ~90ms 常数阻塞
   // 取 max 后几乎看不出来（T1 放回 collector 构造的变异就是这样漏过去的），
   // 所以首帧差值才是「首帧前多做了多少活」的主口径，阈值必须收紧。
@@ -624,15 +667,16 @@ describeGate("大数据启动门禁（首帧与事件循环阻塞不随数据量
   // 判据口径（2026-11-04）：差值改为**逐轮配对**后的中位数，不再拿两组各自的中位数相减——
   // 后者两个数来自不同的轮次，轮间整机漂移直接进了差值，macOS runner 因此假红过两次
   // （PR #568 空 552/818/638、大 689/998/831 → 192.9ms；main 4ac97563 → 156ms）。
-  // 阈值仍是 150ms 未动：这次只换测量口径、不调灵敏度；变异 +353ms / +698ms 依然远高于它。
-  test("首帧：大数据比空目录慢不超过 150ms（逐轮配对差值的中位数）", () => {
+  // 阈值（2026-11-04 起按平台分档）：本机 / ubuntu 仍是 150ms，macOS 放宽到 300ms
+  // （依据与代价见 frameDeltaLimitMs 的注释）。变异 +353ms / +698ms 在两档上都仍能检出。
+  test("首帧：大数据比空目录慢不超过平台阈值（逐轮配对差值的中位数）", () => {
     const deltas = pairedDelta(runsOf(), "large", firstFrame);
     const delta = median(deltas);
     expect(
       delta,
-      `逐轮 Δframe=[${spreadOf(deltas)}]（中位数 ${delta}ms）；` +
+      `逐轮 Δframe=[${spreadOf(deltas)}]（中位数 ${delta}ms，阈值 ${FRAME_DELTA_LIMIT_MS}ms）；` +
         `first_frame 空=[${spread(emptyRuns)}] 大=[${spread(largeRuns)}]`,
-    ).toBeLessThan(150);
+    ).toBeLessThan(FRAME_DELTA_LIMIT_MS);
   });
 
   // 阈值标定（2026-11-01 本机，3 轮中位数）：修复后 max_block 差值 −13 ~ +15ms；
@@ -665,7 +709,7 @@ describeGate("大数据启动门禁（首帧与事件循环阻塞不随数据量
     expect(existsSync(bigSession)).toBe(true);
   }, 70_000);
 
-  // U1–U4：阈值与上面两条同一套（150ms / 100ms）。修复前补传在 SessionStart 里
+  // U1–U4：阈值与上面两条同一套（首帧按平台分档，阻塞 100ms）。修复前补传在 SessionStart 里
   // fire-and-forget，gzipSync 200MB 是秒级同步阻塞，落在首帧前后 3s 窗口内。
   test("补传（U1–U4）不在 TUI 主线程：配了上传的大 traj 目录，首帧与最大阻塞不随它增长", () => {
     const dFrames = pairedDelta(runsOf(), "upload", firstFrame);
@@ -675,9 +719,9 @@ describeGate("大数据启动门禁（首帧与事件循环阻塞不随数据量
     console.log(`[gate] upload 逐轮 Δframe=[${spreadOf(dFrames)}] Δblock=[${spreadOf(dBlocks)}]`);
     expect(
       dFrame,
-      `逐轮 Δframe=[${spreadOf(dFrames)}]（中位数 ${dFrame}ms）；` +
+      `逐轮 Δframe=[${spreadOf(dFrames)}]（中位数 ${dFrame}ms，阈值 ${FRAME_DELTA_LIMIT_MS}ms）；` +
         `first_frame 空=[${spread(emptyRuns)}] 上传=[${spread(uploadRuns)}]`,
-    ).toBeLessThan(150);
+    ).toBeLessThan(FRAME_DELTA_LIMIT_MS);
     expect(
       dBlock,
       `逐轮 Δblock=[${spreadOf(dBlocks)}]（中位数 ${dBlock}ms）；` +
