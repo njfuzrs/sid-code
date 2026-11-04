@@ -46,6 +46,16 @@ export interface RaceIterateOptions {
    * 都保持不变。
    */
   interrupts?: ReadonlyArray<Promise<never>>;
+  /**
+   * L1（2026-11-04）：迭代结束（无论正常结束 / 消费方 break / 消费方 throw / 中断 reject）
+   * 时调用一次。用于释放中断源自身的资源（典型：`createAbortRaceInterrupt().dispose`）。
+   *
+   * 为什么不要求调用方自己写 try/finally 包住 `for await`：四处调用点的循环体动辄
+   * 上百行，包一层会把整个函数重排；而漏包一次的后果正是历史缺陷的形态
+   *（`{ once: true }` 只在 abort 时移除，正常完成时永久泄漏）。
+   * 把「离开时一定执行」交给本函数的 finally，与「离开时一定 return() 源头」同源。
+   */
+  onExit?: () => void;
 }
 
 /**
@@ -64,6 +74,19 @@ export async function* raceIterate<T>(
 ): AsyncGenerator<T> {
   const iterator = source[Symbol.asyncIterator]();
   const interrupts = opts.interrupts ?? [];
+  // L2（2026-11-04）：入口把多个中断源合并成**一个** promise。
+  //
+  // `Promise.race` 会给每个参与项附一对 then handler。中断源是「永不 resolve、只 reject」
+  // 的长生命周期 promise，而本函数每取一个事件就 race 一次 —— 不合并时一个 N 事件的流
+  // 会在 M 个中断源上各堆 N 个 handler（O(N×M)）。合并后入口只附 M 个，之后每轮只对
+  // 合并后的那一个附 handler（O(N + M)）。量级不改变功能，但这是「每个事件都多分配
+  // M 个对象」的常数开销，长流上会累积成 MB 级。
+  const interrupt =
+    interrupts.length === 0
+      ? null
+      : interrupts.length === 1
+        ? interrupts[0]!
+        : Promise.race(interrupts);
   // 源已自己结束（done: true）：此时不需要也不应该再调 return() ——
   // 对已完成的迭代器重复收尾虽多为 no-op，但对「带 I/O 副作用的自定义迭代器」
   //（例如 return() 会 cancel 底层流）语义就变成了「正常结束也当成放弃」。
@@ -73,7 +96,7 @@ export async function* raceIterate<T>(
       const next = iterator.next();
       // 没有中断源时不做多余的 Promise.race（race 会多分配一个 promise，
       // 且把 next 的 rejection 多套一层，堆栈不好认）。
-      const result = interrupts.length > 0 ? await Promise.race([next, ...interrupts]) : await next;
+      const result = interrupt ? await Promise.race([next, interrupt]) : await next;
       if (result.done) {
         sourceExhausted = true;
         return;
@@ -93,5 +116,62 @@ export async function* raceIterate<T>(
         /* 同步抛出的 return() 同样不能污染退出路径 */
       }
     }
+    // L1：释放中断源自身的资源。与上面 return() 同理 —— 释放失败不能污染退出路径
+    //（否则会盖掉消费方真正关心的那个异常）。
+    try {
+      opts.onExit?.();
+    } catch {
+      /* 释放失败不影响退出路径 */
+    }
   }
+}
+
+/** 由 AbortSignal 驱动的 raceIterate 中断源（含配套的 listener 释放）。 */
+export interface AbortRaceInterrupt {
+  /** 中断 promise；signal 未提供或已 abort 时为 null（调用方无须再 race）。 */
+  interrupt: Promise<never> | null;
+  /** 移除 signal 上的 listener。正常结束 / 异常退出都必须调用（幂等，可重复调）。 */
+  dispose: () => void;
+}
+
+/**
+ * 创建「AbortSignal → raceIterate 中断源」的配对 add/remove。
+ *
+ * ## 为什么必须配对（L1，2026-11-04）
+ *
+ * `{ once: true }` 只在 **abort 真的发生**时移除 listener。请求正常结束（绝大多数请求）
+ * 时没有一处 `removeEventListener`，于是每个请求在会话级 signal 上留下一个永久 listener：
+ * 闭包持有 `reject` 与错误构造参数，`stream-lifecycle` 那处还持有整个 lifecycle 的定时器
+ * 与状态引用。
+ *
+ * 更糟的是它**完全静默**：`AbortSignal` 是 `EventTarget` 不是 Node 的 `EventEmitter`，
+ * 没有 MaxListeners 警告。长会话（几百次模型调用）线性累积，只能靠 heap snapshot 看出来。
+ *
+ * ## 为什么做成工厂而不是让调用方各写一份
+ *
+ * 四个调用点（`fallback` 流式 / `fallback` 非流式 / `stream-processor` / `stream-lifecycle`）
+ * 的错误类型与措辞各不相同，但「add 之后必须 remove」这件事完全同构。各写一份的结果是
+ * 历史已经证明的：四处都漏了 remove。
+ *
+ * @param signal  外部中断信号；未提供或已 abort 时返回 `interrupt: null`
+ * @param makeError 中断时构造的错误（延迟到 abort 那一刻才调用，与改造前一致）
+ */
+export function createAbortRaceInterrupt(
+  signal: AbortSignal | undefined,
+  makeError: () => Error,
+): AbortRaceInterrupt {
+  if (!signal || signal.aborted) return { interrupt: null, dispose: () => {} };
+  let onAbort: (() => void) | null = null;
+  const interrupt = new Promise<never>((_, reject) => {
+    onAbort = () => reject(makeError());
+    signal.addEventListener("abort", onAbort, { once: true });
+  });
+  return {
+    interrupt,
+    dispose: () => {
+      if (onAbort === null) return;
+      signal.removeEventListener("abort", onAbort);
+      onAbort = null;
+    },
+  };
 }
