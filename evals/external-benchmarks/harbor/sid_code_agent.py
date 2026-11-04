@@ -950,7 +950,18 @@ class SidCodeAgent(BaseInstalledAgent):
                 # 哪条命令」。两者不是同一个数:熔断前的重复拒绝在清单里是一条带 count。
                 # 没有拒绝时字段不出现,这里落 None —— 不能落 [] ,否则「这版还没有这个字段」
                 # 和「确实没被拒」在 metadata 里不可区分。
-                "sid_permission_denials": result.get("permission_denials"),
+                #
+                # 🔴 **键名必须是 `_list` 后缀,⛔ 不许复用 `sid_permission_denials`**
+                # (2026-11-04 修,外部评测缺陷 1)。这个键在上面 `decisions` 那处已经
+                # 被**观测计数(int)**占了(见 `_count_permission_decisions` 那段注释:
+                # 「换档成功的判据是 deny 趋近 0」)。同一个键在两处赋值,而本行所在的
+                # `metadata.update()` **在它之后执行** ⇒ 正常路径上恒把计数覆盖成
+                # `list | None`;最常见的形态(零拒绝)下 `result` 里根本没这个字段,
+                # 于是「审计日志真的采到了、真的是 0 拒绝」被写成 **None**,
+                # 下游一律读成「没采到」—— 一次成功的换档自证看起来像采集失败,
+                # 而且**没有任何东西会报错**。
+                # 两个键回答的是不同问题,与 `requested` / `denials` 拆键同一条纪律。
+                "sid_permission_denials_list": result.get("permission_denials"),
                 "cache_write_tokens": usage.get("cacheCreationInputTokens"),
             }
         )
