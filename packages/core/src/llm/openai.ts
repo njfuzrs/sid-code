@@ -70,6 +70,8 @@ import { recordRequestId } from "../api/request-id.ts";
 import { generateClientRequestId } from "../api/api-log.ts";
 import { estimateTextTokens } from "../context/token.ts";
 import { sanitizeStrings } from "./sanitize-unicode.ts";
+import { parseUpstreamErrorBody, pickUpstreamTag } from "./upstream-error-body.ts";
+import { makeQuotaScope, type QuotaScope } from "./quota-scope.ts";
 import { getKeepAliveFetchOptions } from "./keepalive.ts";
 import {
   serializeToolResultContentForOpenAI,
@@ -251,6 +253,17 @@ export class OpenAIProvider implements Provider {
 
   name(): string {
     return "openai";
+  }
+
+  /**
+   * F2 ⑥（2026-11-04）：账户级额度状态的作用域 =(端点, 凭据指纹)。
+   *
+   * 额度是**账户级**资源，不是模型级：同一 baseURL + 同一 apiKey 下所有模型共用
+   * 一份余额。按这个作用域记「额度耗尽」标记，同账户的并行子代理就能一起快速失败，
+   * 而不是各自再撞 2 次（本会话 4 条循环各白试 3 次的直接原因）。
+   */
+  quotaScope(): QuotaScope {
+    return makeQuotaScope(this.baseURL, this.apiKey);
   }
 
   capabilities(): ProviderCapabilities {
@@ -1274,6 +1287,11 @@ export class OpenAIProvider implements Provider {
           "AUDIT:API",
           `✗ OpenAI HTTP ${response.status} model=${effectiveModel} clientReqId=${clientRequestId} body=${(error ?? "").slice(0, 200)}`,
         );
+        // F2 ①（2026-11-04）：把上游结构化 type/code 解析出来一起传。
+        // 此前只带 message + statusCode，正文里的 `code`（如 `pre_consume_token_quota_failed`）
+        // 被整段丢掉，分类器第一道判据 `byUpstreamType` 永远拿不到东西，
+        // 只能落到 `byStatus(403)` 的「鉴权可疑」。
+        const upstreamTag = pickUpstreamTag(parseUpstreamErrorBody(error));
         yield {
           type: "error",
           // statusCode 必须带上：能力自愈的结构判据（shouldRetryWithoutEffort）看的是
@@ -1281,6 +1299,7 @@ export class OpenAIProvider implements Provider {
           error: {
             message: `OpenAI API 错误: ${response.status} ${error}`,
             statusCode: response.status,
+            ...(upstreamTag && { type: upstreamTag }),
           },
         };
         return;
@@ -1779,11 +1798,16 @@ export class OpenAIProvider implements Provider {
         errorBody,
         effectiveModel,
       );
+      // F2 ①：与 Chat Completions 路径同口径——把上游结构化 type/code 解析出来。
+      // 本会话的 `403 {"error":{"code":"pre_consume_token_quota_failed"}}` 正是这条路径，
+      // 此前只带 message（含「额度不足」但那只是文本），分类器认不出，判成 auth_suspect。
+      const upstreamTag = pickUpstreamTag(parseUpstreamErrorBody(errorBody));
       yield {
         type: "error",
         error: {
           message: `OpenAI Responses API HTTP ${response.status}: ${errorBody.slice(0, 200)}`,
           statusCode: response.status,
+          ...(upstreamTag && { type: upstreamTag }),
         },
       };
       return;
@@ -2170,6 +2194,13 @@ export class OpenAIProvider implements Provider {
         // 用 statusCode + status 两个名字，兼容 errors.ts::extractHTTPStatus 的两种读法。
         (err as any).statusCode = response.status;
         (err as any).status = response.status;
+        // F2 ①：非流式路径同样是 `!response.ok`，也要把上游结构化 type/code 带出去。
+        // 挂在 `.error` 上是因为 `normalizeThrown` 的 `extractUpstreamType` 就从那里读
+        // （SDK 异常的同形位置）。不挂 = 降级路径上游额度码照样丢，白降一次。
+        const upstream = parseUpstreamErrorBody(errText);
+        if (upstream.type !== undefined || upstream.code !== undefined) {
+          (err as any).error = upstream;
+        }
         throw err;
       }
       billable = true;
@@ -2409,6 +2440,11 @@ export class OpenAIProvider implements Provider {
         // 挂状态码：能力自愈的结构判据看 HTTP 码而非措辞（见 sendMessageNonStreaming）
         (err as any).statusCode = response.status;
         (err as any).status = response.status;
+        // F2 ①：同 Chat 非流式路径——把上游结构化 type/code 挂到 `.error`（extractUpstreamType 的读取位置）
+        const upstream = parseUpstreamErrorBody(errText);
+        if (upstream.type !== undefined || upstream.code !== undefined) {
+          (err as any).error = upstream;
+        }
         throw err;
       }
       billable = true;

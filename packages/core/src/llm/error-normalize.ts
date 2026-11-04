@@ -34,7 +34,7 @@ import {
   type StreamValidationReason,
   type SuspectReason,
 } from "./errors.ts";
-import { isClassifierLexiconCode, matchErrorLexicon } from "./error-lexicon.ts";
+import { isClassifierLexiconCode, matchErrorLexicon, matchQuotaLexicon } from "./error-lexicon.ts";
 
 /** 来源：network/http = 来自传输层或上游响应；local = 本地抛出的 JS 异常 */
 export type ErrorOrigin = "network" | "http" | "local";
@@ -155,16 +155,23 @@ function pickTag(v: unknown): string | undefined {
   return typeof v === "string" && v.trim() !== "" && v !== "error" ? v : undefined;
 }
 
-/** SDK 异常（Anthropic / OpenAI APIError）把上游 body 挂在 `.error` 上 */
+/**
+ * SDK 异常（Anthropic / OpenAI APIError）把上游 body 挂在 `.error` 上。
+ *
+ * 2026-11-04（F2）：`code` 优先于 `type`，与 `upstream-error-body.ts::pickUpstreamTag`
+ * 同一口径 —— 网关的 `type` 常是无判别力的外壳（`shell_api_error`），
+ * 具体原因在 `code`（`pre_consume_token_quota_failed`）。官方 API 没有 code 时
+ * 仍回落到 type，两个方向都覆盖。
+ */
 function extractUpstreamType(raw: unknown): string | undefined {
   const r = raw as {
     error?: { type?: unknown; code?: unknown; error?: { type?: unknown; code?: unknown } };
   };
   return (
-    pickTag(r?.error?.error?.type) ??
     pickTag(r?.error?.error?.code) ??
-    pickTag(r?.error?.type) ??
-    pickTag(r?.error?.code)
+    pickTag(r?.error?.error?.type) ??
+    pickTag(r?.error?.code) ??
+    pickTag(r?.error?.type)
   );
 }
 
@@ -351,13 +358,46 @@ function byStatus(status: number): FamilyVerdict {
   }
 }
 
-/** 上游结构化 type（anthropic error.type / openai code）。比状态码更具体，先看它。 */
+/**
+ * 上游结构化标签里表示「额度 / 账户余额」的片段。
+ *
+ * 2026-11-04（F2 ②）：`pre_consume_token_quota_failed`、`insufficient_quota`、
+ * `insufficient_balance`、`billing_hard_limit_reached` 这一族都落在这里。
+ * 用子串而不是枚举：网关的 code 是各家自造的复合词（`permission_denied_quota`、
+ * `pre_consume_token_quota_failed`），枚举必然漏。
+ */
+const QUOTA_TAG_MARKERS: readonly string[] = [
+  "quota",
+  "insufficient_quota",
+  "billing",
+  "balance",
+  "credit",
+];
+
+function looksLikeQuotaTag(t: string): boolean {
+  return QUOTA_TAG_MARKERS.some((m) => t.includes(m));
+}
+
+/**
+ * 上游结构化 type（anthropic error.type / openai code）。比状态码更具体，先看它。
+ *
+ * 顺序是语义，改之前先读这三条：
+ * 1. `overloaded` / `rate_limit` 最具体，先判（它们的 code 也可能含 `quota` 字样，
+ *    但「过载 / 限流」的重试语义与「额度耗尽」相反）；
+ * 2. **额度类必须早于 `authentication` / `permission`** —— `permission_denied_quota`
+ *    这类组合 code 真实存在，额度语义更具体：额度耗尽要用户去充值，鉴权失败要去修凭据，
+ *    两者给用户的下一步动作完全不同；
+ * 3. `content_policy` / `timeout` / `api_error` 是 `error-messages.ts` 的第二套分类
+ *    原本单独认的 type，收敛到唯一分类器后由这里承接（否则面板文案会回退）。
+ */
 function byUpstreamType(type: string): FamilyVerdict | undefined {
   const t = type.toLowerCase();
   if (t.includes("overloaded"))
     return { family: "transient", reason: "overloaded", recognized: true };
   if (t.includes("rate_limit"))
     return { family: "transient", reason: "rate_limit", recognized: true };
+  if (looksLikeQuotaTag(t))
+    return { family: "request_suspect", reason: "quota_exhausted", recognized: true };
   if (t.includes("authentication") || t.includes("permission")) {
     return { family: "auth_suspect", reason: "auth_failed", recognized: true };
   }
@@ -365,6 +405,18 @@ function byUpstreamType(type: string): FamilyVerdict | undefined {
     return { family: "request_suspect", reason: "model_not_found", recognized: true };
   if (t.includes("invalid_request")) {
     return { family: "request_suspect", reason: "invalid_request", recognized: true };
+  }
+  if (t.includes("content_policy") || t.includes("content_filter")) {
+    return { family: "request_suspect", reason: "content_policy", recognized: true };
+  }
+  // `request_timeout` 含 "timeout"，必须先判；两者都是 transient，只是 reason 不同。
+  if (t.includes("request_timeout"))
+    return { family: "transient", reason: "request_timeout", recognized: true };
+  if (t.includes("timeout")) return { family: "transient", reason: "timeout", recognized: true };
+  // `api_error` 用**精确**匹配：网关的 `shell_api_error` 是泛化外壳，不含判别力，
+  // 不能因为子串命中就把它当成 5xx（那会让真鉴权失败少一次凭据刷新）。
+  if (t.includes("server_error") || t === "api_error") {
+    return { family: "transient", reason: "server_error", recognized: true };
   }
   return undefined;
 }
@@ -392,6 +444,26 @@ export function classifyFamily(err: NormalizedLLMError): FamilyVerdict {
     const v = byUpstreamType(err.upstreamType);
     if (v) return withAuthHint(v);
   }
+
+  // ── F2 ③：401 / 403 的额度窄口（2026-11-04）──
+  //
+  // new-api / one-api 这一族网关用 **403 表达额度耗尽**，而 403 的默认语义是
+  // 「鉴权可疑」。此前分类器直接 `byStatus(403)` 定案，正文里的「额度不足」一个字
+  // 都不看，于是 4 条循环各白试 3 次（本会话实证）。
+  //
+  // 这是对「文本里的巧合关键词不该推翻一个结构化状态码」原则的**有边界例外**：
+  // 例外清单只有两个额度码（quota_exhausted / usage_limit_reached），其余措辞一律
+  // 仍按状态码走。为什么必须开这个口子：有些网关只在 message 里写额度、不给 code，
+  // 没有它这类网关的额度耗尽永远只能显示成「鉴权可疑」。
+  //
+  // 判据用 `matchQuotaLexicon` 而不是 `matchErrorLexicon`：后者第 4 条「认证失败」
+  // 带 401/403 的**数字边界**规则，而 message 里必然有 "HTTP 403" 这三个字符，
+  // 直接查整张词表会先返回 auth_failed，窄口永远走不到。
+  if (err.status === 401 || err.status === 403) {
+    const quota = matchQuotaLexicon(err.message);
+    if (quota) return { family: "request_suspect", reason: quota, recognized: true };
+  }
+
   if (err.status !== undefined) return withAuthHint(byStatus(err.status));
   if (err.serverRetryHint === true)
     return { family: "transient", reason: "server_error", recognized: true };

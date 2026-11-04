@@ -14,6 +14,7 @@ import {
   shouldAllowCooldownProbeForReason,
   shouldUseTransientCooldownProbeSlot,
 } from "./cooldown-probe.ts";
+import { type QuotaScope, quotaScopeKey } from "./quota-scope.ts";
 
 /**
  * 模型嫌疑态：某次调用在多次有间隔的尝试后放弃了这个模型。
@@ -37,6 +38,37 @@ export const DEFAULT_SUSPECT_MS = 60_000;
  * 拦它不省任何并发撞击，只会制造「请求没发出去」。
  */
 const SUSPECT_EXEMPT_SOURCES: ReadonlySet<string> = new Set(["main_thread", "headless"]);
+
+/**
+ * 共享信号（模型嫌疑 / 账户额度）是否豁免这个来源（2026-11-04 F2 ⑥）。
+ *
+ * 与 `isAvailable` 同一条口径，抽成导出函数是为了让**额度标记**复用同一份豁免判据：
+ * 额度标记若连主线程也拦，用户充值后重发消息就永远发不出去，
+ * 「任意一次请求成功即清除标记」这条自愈出口就结构性地走不到（死锁）。
+ */
+export function isSharedSignalExemptSource(querySource?: string): boolean {
+  return querySource !== undefined && SUSPECT_EXEMPT_SOURCES.has(querySource);
+}
+
+/**
+ * 账户级额度耗尽标记的默认存活时长。
+ *
+ * 为什么需要 TTL（方案 §3.3 ⑥ 只列了三种清除条件）：那三种都要求「有请求真的发出去并成功」，
+ * 而标记生效期间所有请求都被拦 → 没有成功 → 第三条永远不触发。TTL 是唯一不依赖用户的
+ * 自愈出口：额度被外部充值恢复后，最多等这么久就能重新探测一次。
+ *
+ * 60s 的取舍：够覆盖同一批并发子代理的整段生命周期（它们通常在同一分钟内全部起跑），
+ * 又足够短 —— 探测代价只是一次注定被拒的请求，且失败会立刻续期。
+ */
+export const DEFAULT_QUOTA_EXHAUSTED_MS = 60_000;
+
+/** 一条额度耗尽标记。 */
+interface QuotaExhaustedState {
+  /** 到期时刻（`Date.now()` 轴毫秒） */
+  until: number;
+  /** 判定为额度耗尽时的证据（进日志/遥测，回答「谁在什么时候撞的」） */
+  evidence: string;
+}
 
 /** S2：共享限流冷却记录。 */
 interface RateLimitCooldown {
@@ -121,6 +153,15 @@ export class ModelAvailabilityService {
   /** S2：模型 → 共享限流冷却。与 `suspects` 分开存，因为语义正交：
    *  `suspects` 答"最近有调用在它身上放弃过吗"，本表答"现在该不该缓一缓再发"。 */
   private cooldowns = new Map<string, RateLimitCooldown>();
+  /**
+   * F2 ⑥：账户 → 额度耗尽标记。key 是 `(归一化端点, 凭据指纹)` 的复合串。
+   *
+   * 与 `suspects` / `cooldowns` 都分开存，因为三个维度正交：
+   * `suspects` 是**模型**维度的嫌疑，`cooldowns` 是**模型**维度的限流窗口，
+   * 本表是**账户**维度的余额事实。混进任何一个都会让「换模型」或「换凭据」
+   * 的错误地继承另一份状态 —— 而那正是本仓反复在修的归因错误。
+   */
+  private quotaExhausted = new Map<string, QuotaExhaustedState>();
 
   /**
    * 标记嫌疑：某次调用对该模型放弃了（证据见 `evidence`）。
@@ -359,6 +400,84 @@ export class ModelAvailabilityService {
   /** S2：清除某模型的冷却（该模型成功产出内容时调用——限流窗口已过的最强信号）。 */
   clearCooldown(model: string): void {
     this.cooldowns.delete(model);
+  }
+
+  // ═══════════════════════════════════════════════════════════════════
+  // F2 ⑥：账户级额度耗尽标记（2026-11-04）
+  // ═══════════════════════════════════════════════════════════════════
+  //
+  // ── 它补的是哪个洞 ──
+  //
+  // 额度是账户级状态，但每条循环都要自己撞满预算才知道（本会话 4 条循环各白试 3 次，
+  // 合计 12 发注定被拒的请求）。`suspects` / `cooldowns` 都是**模型**维度的，
+  // 表达不了「这个账户的余额空了，所有模型一起空」。
+  //
+  // ── 为什么不复用 markSuspect ──
+  //
+  // 语义不同，而且方案 §3.3 ⑥ 明确要求「不拉黑模型」：模型本身没问题，
+  // 是账户余额空了。用 suspect 会让「换模型」被误判成「模型坏了」，
+  // 与本仓 `fallback.ts:358-360` 记过的「把凭据过期误归因到模型」是同一族错误。
+  //
+  // ── 清除出口（三条来自方案 + 一条 TTL 兜底）──
+  //
+  // 1. 用户选 retry_same（`fallback.ts` 的 retrySameRequested 分支）；
+  // 2. 换凭据（scope 的 credential 指纹变了，新 key 天然不命中）；
+  // 3. 任意一次请求成功（`markHealthy` 处一并清除）；
+  // 4. TTL（`DEFAULT_QUOTA_EXHAUSTED_MS`）。前三条都要求「有请求真的发出去并成功」，
+  //    而标记生效期间请求都被拦 → 第三条永远不触发。TTL 是唯一不依赖用户的自愈出口。
+
+  /**
+   * 记一条「这个账户额度耗尽了」。
+   *
+   * @param scope `(端点, 凭据指纹)` —— 账户级作用域，见 `quota-scope.ts`
+   * @param evidence 判定证据（进日志/遥测，回答「谁在什么时候撞的」）
+   * @param ttlMs 存活时长；续标时刷新截止时刻（额度没恢复就一直在）
+   */
+  markQuotaExhausted(
+    scope: QuotaScope,
+    evidence: string,
+    ttlMs = DEFAULT_QUOTA_EXHAUSTED_MS,
+  ): void {
+    const now = Date.now();
+    const key = quotaScopeKey(scope);
+    // 顺手清理已过期的记录：额度是短时信号，过期即无意义。不清这张表会随
+    // 「长会话 × 多次换 key」单调增长（模型数有限，但凭据可以换很多次）。
+    for (const [k, v] of this.quotaExhausted) {
+      if (v.until <= now) this.quotaExhausted.delete(k);
+    }
+    this.quotaExhausted.set(key, {
+      until: now + Math.max(0, ttlMs),
+      evidence,
+    });
+  }
+
+  /**
+   * 查这个账户是否已被判定额度耗尽。
+   *
+   * ⚠️ 调用方必须自己判豁免来源（`isSharedSignalExemptSource`）：主线程/headless
+   * 不读这个标记，否则用户充值后重发消息永远发不出去，「请求成功即清除」这条
+   * 自愈出口就结构性地走不到。
+   */
+  getQuotaExhausted(scope: QuotaScope): { evidence: string; remainingMs: number } | undefined {
+    const key = quotaScopeKey(scope);
+    const s = this.quotaExhausted.get(key);
+    if (!s) return undefined;
+    const remainingMs = s.until - Date.now();
+    if (remainingMs <= 0) {
+      // 过期即删，与 liveSuspect / getCooldownRemaining 同一套「读时清理」口径。
+      this.quotaExhausted.delete(key);
+      return undefined;
+    }
+    return { evidence: s.evidence, remainingMs };
+  }
+
+  /**
+   * 清除某账户的额度标记。三个真实调用点：请求成功、用户选 retry_same、测试。
+   *
+   * 幂等：无记录时是空操作。
+   */
+  clearQuotaExhausted(scope: QuotaScope): void {
+    this.quotaExhausted.delete(quotaScopeKey(scope));
   }
 
   /** 从候选模型列表中选择第一个可用的 */
