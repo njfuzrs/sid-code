@@ -283,6 +283,50 @@ def sid_binary_identity(result: dict) -> tuple[str | None, str | None, str | Non
     )
 
 
+def sid_denials(metadata: dict[str, Any] | None) -> tuple[int | None, Any, str]:
+    """sid 侧的权限拒绝 → `(观测计数, 清单, 形态)`。**这一格唯一的取数处。**
+
+    ## 为什么要归一化(2026-11-04,外部评测缺陷 1)
+
+    `sid_code_agent.py` 曾把**两个语义不同的值写进同一个键**
+    `sid_permission_denials`:
+
+      - **观测值**(`int`,来自 `permissions-audit.log` 的 deny 实际条数)——
+        它是「换档生效」的判据:换档成功的形态是它**趋近 0**;
+      - **清单**(`list[dict] | None`,来自 result 事件的 `permission_denials`)——
+        它回答「拒的是哪个工具、哪条命令」,一条带 count 的汇总。
+
+    第二处写入在 `metadata.update()` 里,排在前面之后 ⇒ 正常路径上恒把计数覆盖成
+    `list | None`;而零拒绝时 result 事件里**根本没有这个字段** ⇒ 覆盖值是 `None`。
+    于是「审计日志真的采到了、真的是 0 拒绝」被下游一律读成「没采到」——
+    一次成功的换档自证看起来像采集失败,而且**没有任何东西会报错**。
+
+    修复是把清单挪到 `sid_permission_denials_list`。但**覆盖期的产物已经落盘**
+    (`results/` 归档与旧 run 不能重跑),所以消费侧必须能认三种形态:
+
+    | `sid_permission_denials` | `..._list` | 形态 | 计数可判? |
+    | --- | --- | --- | --- |
+    | `int` | 有 | `counted_list`(新格式) | ✅ |
+    | `int` | 无 | `counted`(覆盖前的老 run) | ✅ |
+    | `list` / `None` | 无 | `overwritten`(覆盖期) | ❌ 被清单占了 |
+
+    ⛔ **不许把 `list` 当计数**(那是拿清单条数冒充拒绝次数,而一条清单可能带 count);
+    ⛔ **也不许把 `None` 当 0**(与本文件「三态,`None` 必须与 `0` 分开」同一条纪律)。
+    """
+    md = metadata or {}
+    raw = md.get("sid_permission_denials")
+    lst = md.get("sid_permission_denials_list")
+    if isinstance(raw, list):
+        # 覆盖期产物:计数被清单覆盖了。计数**不可判**,⛔ 别用 len(raw) 冒充。
+        return None, raw if lst is None else lst, "overwritten"
+    count = raw if isinstance(raw, int) and not isinstance(raw, bool) else None
+    if isinstance(lst, list):
+        return count, lst, "counted_list"
+    if count is not None:
+        return count, None, "counted"
+    return None, None, "missing"
+
+
 def cc_model(trial_dir: str) -> str | None:
     """cc 本轮真正被调用的模型。**None = 没采到**。
 

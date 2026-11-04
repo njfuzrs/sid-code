@@ -37,6 +37,7 @@ sys.path.insert(0, HERE)
 from verifier_health import (  # noqa: E402
     agent_ran,
     agent_started,
+    externally_killed,
     llm_fatal,
     verifier_ran,
 )
@@ -419,6 +420,62 @@ def main() -> int:
         check("⛔ dry-run 没删 tmpdir 里的目录",
               os.path.isdir(os.path.join(job_cls, "regex-log__FAKEabc"))
               and os.path.isdir(os.path.join(job_cls, "build-pmars__FAKEabc")))
+
+        # ── ⑩ 被外部 kill(2026-11-04,外部评测缺陷 3)────────────────────────
+        # 判据:`sid_result_event_missing is True` 且 `sid_subtype is None`
+        # (再加正分豁免)。覆盖「有结果事件 / 无结果事件」两路 + 两种容易误判的
+        # 矛盾形态。⛔ 全部 tmpdir,不读 runs/。
+        print("\n=== ⑩ 被外部 kill:result 事件从未发出 ⇒ 摘出能力分母 ===")
+        job10 = os.path.join(tmp, "j10"); os.makedirs(job10)
+
+        def ext(task, reward, *, missing=True, subtype=None,
+                source="session-traj-fallback"):
+            meta = {"sid_cost_source": source, "sid_num_turns": 96}
+            if missing:
+                meta["sid_result_event_missing"] = True
+            if subtype is not None:
+                meta["sid_subtype"] = subtype
+            return mk_trial(job10, task, reward=reward, tokens=(5000, 200),
+                            debug_log=HEALTHY_LOG, sid_meta=meta)
+
+        t_killed = ext("ext-killed", 0.0)
+        t_killed_missing = ext("ext-killed-cost-missing", 0.0, source="missing")
+        t_solved = ext("ext-solved", 1.0)               # 解出来了,正分豁免
+        t_maxed = ext("ext-maxed", 0.0, subtype="error_max_turns")  # 矛盾形态
+        t_has_result = mk_trial(
+            job10, "has-result", reward=0.0, tokens=(5000, 200),
+            debug_log=HEALTHY_LOG,
+            sid_meta={
+                "sid_cost_source": "stream-json-result",
+                "sid_subtype": "success",
+                "sid_num_turns": 13,
+            },
+        )
+
+        def load10(td):
+            with open(os.path.join(td, "result.json"), encoding="utf-8") as fh:
+                return json.load(fh)
+
+        check("事件缺失 + subtype 缺失 + 0 分 ⇒ 判被外部 kill",
+              externally_killed(load10(t_killed)) is True)
+        check("cost_source=missing + 事件缺失 ⇒ 同样判被外部 kill",
+              externally_killed(load10(t_killed_missing)) is True)
+        check("🔴 事件缺失但 reward=1.0(已解出) ⇒ ⛔ 不摘出分母",
+              externally_killed(load10(t_solved)) is False)
+        check("有 result 事件(stream-json-result + success) ⇒ 不判外部 kill",
+              externally_killed(load10(t_has_result)) is False)
+        check("矛盾形态:事件缺失但 subtype=error_max_turns ⇒ 不判(fail-closed)",
+              externally_killed(load10(t_maxed)) is False)
+
+        rc, s = run(job10)  # dry-run
+        check("classify: 两个真 kill 样本进 drop",
+              set(s.get("drop_tasks") or []) >= {"ext-killed", "ext-killed-cost-missing"},
+              f"{s}")
+        check("classify: 正分 kill 样本与有结果事件的样本仍计分",
+              s.get("keep") == 3, f"{s}")  # ext-solved + has-result + ext-maxed
+        check("⛔ dry-run 没删任何目录",
+              os.path.isdir(os.path.join(job10, "ext-killed__FAKEabc"))
+              and os.path.isdir(os.path.join(job10, "ext-solved__FAKEabc")))
 
         # 反向变异:片段表改空 → 上三行 0 分原文必须翻成 False。
         # 硬拒码路径(402)与「主模型请求失败」不走片段表,必须仍然 True,

@@ -87,7 +87,7 @@ const CITATIONS: { file: string; line: number; anchor: string; what: string }[] 
   },
   {
     file: "evals/external-benchmarks/harbor/sid_code_agent.py",
-    line: 467,
+    line: 470,
     anchor: "_ELF_MACHINE",
     what: "§3.3 按 ELF e_machine 判架构",
   },
@@ -99,7 +99,7 @@ const CITATIONS: { file: string; line: number; anchor: string; what: string }[] 
   },
   {
     file: "evals/external-benchmarks/harbor/sid_code_agent.py",
-    line: 937,
+    line: 942,
     anchor: "_derive_is_error",
     what: "§3.7 判成败用 subtype 不用 is_error",
   },
@@ -111,7 +111,7 @@ const CITATIONS: { file: string; line: number; anchor: string; what: string }[] 
   },
   {
     file: "evals/external-benchmarks/harbor/sid_code_agent.py",
-    line: 1042,
+    line: 1064,
     anchor: "total_cumulative_prompt_tokens",
     what: "§1.6 stock vs flow",
   },
@@ -161,13 +161,13 @@ const CITATIONS: { file: string; line: number; anchor: string; what: string }[] 
   },
   {
     file: "tests/eval/harbor-agent-contract.test.ts",
-    line: 281,
+    line: 393,
     anchor: "权限档是显式的、可观测的",
     what: "§1.3/§4.4 那道门禁的**新判据**(旧判据已于 2026-08-30 换掉,门没拆)",
   },
   {
     file: "evals/external-benchmarks/harbor/sid_code_agent.py",
-    line: 1042,
+    line: 1064,
     anchor: "**flow**",
     what: "§1.6 stock/flow 口径表",
   },
