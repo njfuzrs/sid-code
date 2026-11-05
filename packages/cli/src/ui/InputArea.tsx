@@ -232,7 +232,7 @@ export function InputArea({
 
   // Ctrl+D 二次确认退出（仅输入框为空时;非空时 Ctrl+D 仍是删除光标后字符）。
   // 读 UIState 的 ctrlDPressedOnce 驱动 ExitWarning,onConfirm 调 App 传入的 triggerQuit。
-  const { ctrlDPressedOnce } = useUIState();
+  const { ctrlDPressedOnce, inputEmptyRef } = useUIState();
   const { setCtrlDPressedOnce, showTransientMessage } = useUIActions();
   const { press: pressCtrlD, cancel: cancelCtrlDConfirm } = useExitConfirm({
     pressedOnce: ctrlDPressedOnce,
@@ -241,6 +241,16 @@ export function InputArea({
       onExitRequest?.();
     },
   });
+
+  // ── A1：把「输入框是否为空」同步给 UIState 的可变引用 ──
+  // 消费方是 App 的 Esc 双击门控：那个 handler 在 keypress 事件里跑，闭包会拿到上一帧的
+  // state，所以只能读 ref；而这个值不参与任何渲染，用 state 会让每敲一个字符就重渲整棵树。
+  // 用 useEffect 而不是渲染期赋值：渲染期写 ref 在严格模式的双渲染下虽然幂等，但那是
+  // React 只在「惰性初始化」场景允许的用法，这里没必要踩线。
+  const inputEmpty = tb.isEmpty();
+  useEffect(() => {
+    inputEmptyRef.current = inputEmpty;
+  }, [inputEmpty, inputEmptyRef]);
 
   // 挂载时消费早期输入缓冲（启动期间用户按键）
   const earlyInputConsumed = useRef(false);
@@ -663,6 +673,20 @@ export function InputArea({
     // normal 模式下 hjkl/x/dd 等被状态机消费并阻断普通分发；insert 模式仅拦 Esc，其余放行。
     // 但补全菜单/反向搜索/和弦待决等"子模式"激活时不接管，交还原生流程避免打架。
     if (vimMode && !reverseSearch.state.active && completion.mode === "none" && !chordPending) {
+      // ── A1：normal + 没有待决前缀时把 Esc 放行给上层 ──
+      // vim 消费 Esc 的三处用途都合理（insert→normal、退出 visual、清空 pending），
+      // 但「normal 且没有待决前缀」时按 Esc 本来就是空操作——白吃掉它只会让 vim 用户
+      // 永远收不到「双击 Esc 打开回退」（App 的双击判定在 Low 优先级，靠这里放行才够得到）。
+      // 放行后语义不变：insert 下第一次 Esc 仍被消费（切 normal、不计入双击），
+      // 之后两次才凑成双击。
+      const vs = vimStateRef.current;
+      const vimPendingEmpty =
+        !vs.pending.operator &&
+        !vs.pending.gPrefix &&
+        !vs.pending.findPending &&
+        !vs.pending.textObjectPending &&
+        vs.pending.count === "";
+      if (key.name === "escape" && vs.mode === "normal" && vimPendingEmpty) return false;
       if (handleVimKey(key)) return true;
     }
 

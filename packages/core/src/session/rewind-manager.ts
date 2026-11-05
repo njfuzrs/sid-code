@@ -3,14 +3,14 @@
  *
  * 职责：在每轮用户输入前登记一个「回退点」，记录两样东西：
  *   1. 对话层锚点：本轮用户消息在 ctxMgr.messages 中的下标（回退 = 截断到此下标之前）。
- *   2. 文件层锚点：当前 CheckpointManager 的最新快照 id（回退 = restoreToSnapshot 到此）。
+ *   2. 文件层锚点：本轮**首个**快照的 id（回退 = restoreBeforeSnapshot 到此快照之前）。
  *
  * 用户按 Esc+Esc → UI 列出最近 N 个回退点 → 选中后本管理器执行：
  *   - 仅对话：ctxMgr.setMessages(截断后的消息)。
- *   - 对话+代码：先 restoreToSnapshot 回滚文件，再截断对话。
+ *   - 对话+代码：先 restoreBeforeSnapshot 回滚文件，再截断对话。
  *
  * 设计要点：
- * - 纯数据 + 注入式依赖（ctxMgr 取/设消息、checkpoint 取最新快照 id/恢复），不 import App/UI，
+ * - 纯数据 + 注入式依赖（ctxMgr 取/设消息、checkpoint 取/恢复），不 import App/UI，
  *   便于单测且不与并发编辑的 app.ts/App.tsx 抢占大文件。
  * - 回退点用环形上限（MAX_POINTS）防无限增长；截断后清理落在截断点之后的回退点。
  */
@@ -29,7 +29,11 @@ export interface RewindPoint {
    * ⚠️ N6：这里必须是「本轮自己的快照」，**不是登记时刻的最新快照**。
    *
    * 口径（与 CheckpointManager 单一真相源一致）：快照 sN 存的是「产生 sN 那次工具调用
-   * **之前**」的内容 ⇒ 「回到第 N 轮之前」= `restoreToSnapshot(第 N 轮的首个快照)`。
+   * **之前**」的内容 ⇒ 「回到第 N 轮之前」= `restoreBeforeSnapshot(第 N 轮的首个快照)`。
+   *
+   * ⚠️ 方法名不能写回 `restoreToSnapshot`：那个在 checkpoint 层表示「sN **之后**」，
+   * 与这里的「sN **及之后**」差一格——正是 A1 那个「回滚 0 个文件」缺陷的成因。
+   * 两个语义必须分开命名，否则下一个人还会把二者当成一个。
    *
    * 修之前在 `registerPoint` 里取 `getLatestSnapshotId()`，而 `registerPoint` 跑在
    * **用户输入提交前**、本轮快照还不存在，拿到的是**上一轮**建的快照 ⇒ 回退多撤一整轮
@@ -70,6 +74,13 @@ export interface RewindResult {
   messagesDropped: number;
   /** 文件是否被回滚（受影响文件数；未回滚为 0）。 */
   filesRestored: number;
+  /**
+   * 未能回滚的文件数（写盘失败 / diff 链重建不出内容）。
+   *
+   * 必须有这个数：修之前闭包只返回 `files.length`，`failedFiles` 被直接丢掉——
+   * 一部分文件没回滚，UI 照样显示「已回退」。部分失败显示成成功比明确失败更坏。
+   */
+  filesFailed: number;
   /** 文件回滚是否因无快照/未启用而跳过。 */
   fileRestoreSkipped: boolean;
   /**
@@ -80,14 +91,33 @@ export interface RewindResult {
   conversationUnavailable?: boolean;
 }
 
+/**
+ * 文件回滚结果（由 CheckpointManager.restoreBeforeSnapshot 注入）。
+ *
+ * 为什么不是单个数字：`failedFiles` 是 N4 引入的「部分失败可见」通道，
+ * 把它折叠成一个计数就等于把「哪些文件没回滚」这条排查线索丢了。
+ */
+export interface RewindFileRestoreResult {
+  /** 成功回滚（恢复内容或删除新建文件）的文件数。 */
+  restored: number;
+  /** 未能回滚的文件路径。 */
+  failed: string[];
+}
+
 /** 注入依赖：解耦 ctxMgr / checkpoint 具体实现，便于测试。 */
 export interface RewindDeps {
   /** 取当前对话消息数组（用于登记时算下标、回退时截断）。 */
   getMessages: () => unknown[];
   /** 整体替换对话消息（截断后写回）。 */
   setMessages: (msgs: unknown[]) => void;
-  /** 回滚文件到指定快照，返回受影响文件数（未启用/无快照返回 null）。 */
-  restoreToSnapshot: (snapshotId: string) => Promise<number | null>;
+  /**
+   * 把文件回滚到「指定快照**之前**」（**含该快照本身**），未启用/无快照返回 null。
+   *
+   * ⚠️ 名字不能写回 `restoreToSnapshot`：那个在 CheckpointManager 上的语义是
+   * 「回滚 sN **之后**」，与本层的「sN **及之后**」差一格——A1「仅代码回滚 0 个文件」
+   * 正是两个语义被当成一个用造成的。名字分开，后来的人才不会重新踩。
+   */
+  restoreBeforeSnapshot: (snapshotId: string) => Promise<RewindFileRestoreResult | null>;
   // N6：原有的 `getLatestSnapshotId` 已移除。它此前的唯一用途是在 registerPoint 里取文件锚点，
   // 而那正是缺陷所在（登记时刻本轮快照还不存在，取到的是上一轮的）。锚点改走 attachSnapshot()
   // 回填后它就零调用了——留着等于新造一个「只写不读」的注入项（文档 N8 批评的同一形态）。
@@ -183,8 +213,8 @@ export class RewindManager {
   /**
    * 执行回退到指定点。
    * - conversation：仅截断对话消息到 point.messageIndex。
-   * - code：仅回滚文件到该轮快照，**不动对话**（回退点也全部保留，因为对话没变）。
-   * - conversation-and-code：先 restoreToSnapshot 回滚文件，再截断对话。
+   * - code：仅回滚文件到「该轮首个快照之前」，**不动对话**（回退点也全部保留，因为对话没变）。
+   * - conversation-and-code：先 restoreBeforeSnapshot 回滚文件，再截断对话。
    * 截断对话后清理所有落在该点之后（含该点）的回退点，避免"回退后又能回退到已丢弃的未来"。
    */
   async rewindTo(id: number, mode: RewindMode, nowMs: number): Promise<RewindResult | null> {
@@ -246,6 +276,7 @@ export class RewindManager {
           mode,
           messagesDropped: 0,
           filesRestored: 0,
+          filesFailed: 0,
           fileRestoreSkipped: true,
           conversationUnavailable: true,
         };
@@ -253,12 +284,19 @@ export class RewindManager {
     }
 
     let filesRestored = 0;
+    let filesFailed = 0;
     let fileRestoreSkipped = false;
     if (mode === "code" || mode === "conversation-and-code") {
       if (point.snapshotId) {
-        const n = await this.deps.restoreToSnapshot(point.snapshotId);
-        if (n === null) fileRestoreSkipped = true;
-        else filesRestored = n;
+        // 用 restoreBeforeSnapshot（含锚点快照本身）而不是 restoreToSnapshot（只回滚它之后）：
+        // 锚点是「本轮首个快照」，按「快照存的是改动前内容」的口径，靶心就在这个快照上。
+        const r = await this.deps.restoreBeforeSnapshot(point.snapshotId);
+        if (r === null) {
+          fileRestoreSkipped = true;
+        } else {
+          filesRestored = r.restored;
+          filesFailed = r.failed.length;
+        }
       } else {
         fileRestoreSkipped = true;
       }
@@ -266,7 +304,7 @@ export class RewindManager {
 
     // mode=code：只回滚文件，对话与回退点原样保留（用户要留着上下文继续/重试）。
     if (mode === "code") {
-      return { point, mode, messagesDropped: 0, filesRestored, fileRestoreSkipped };
+      return { point, mode, messagesDropped: 0, filesRestored, filesFailed, fileRestoreSkipped };
     }
 
     // 对话截断：保留 [0, messageIndex) 的消息。
@@ -278,7 +316,7 @@ export class RewindManager {
     // 清理该点及其后的回退点（它们对应的对话已被丢弃）。
     this.points = this.points.filter((p) => p.messageIndex < point.messageIndex);
 
-    return { point, mode, messagesDropped, filesRestored, fileRestoreSkipped };
+    return { point, mode, messagesDropped, filesRestored, filesFailed, fileRestoreSkipped };
   }
 
   /**

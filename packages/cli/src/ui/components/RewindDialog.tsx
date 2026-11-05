@@ -108,6 +108,17 @@ export const RewindDialog: React.FC<RewindDialogProps> = ({
     const modeText = MODE_LABELS[result.mode];
     const touchedCode = result.mode === "code" || result.mode === "conversation-and-code";
     const touchedConversation = result.mode !== "code";
+    // A1：两种「不是成功」的形态都要如实显示，不能渲染成「已回退」：
+    //   - partialFailure：有文件没回滚（写盘失败 / diff 链重建不出内容），磁盘与用户以为的不一致；
+    //   - emptyRestore：锚点上有快照却一个文件都没处理（修复后理论上不会出现）。
+    //     修之前这里渲染成「回滚了 0 个文件」，读起来像成功，实际什么都没做。
+    const partialFailure = touchedCode && !result.fileRestoreSkipped && result.filesFailed > 0;
+    const emptyRestore =
+      touchedCode &&
+      !result.fileRestoreSkipped &&
+      result.filesRestored === 0 &&
+      result.filesFailed === 0;
+    const warn = partialFailure || emptyRestore;
     // N7：对话锚点失效 → 未做任何改动，用警告色说清原因与出路，不显示「已回退」。
     if (result.conversationUnavailable) {
       return (
@@ -137,12 +148,12 @@ export const RewindDialog: React.FC<RewindDialogProps> = ({
       <Box
         flexDirection="column"
         borderStyle="round"
-        borderColor={theme.status.success}
+        borderColor={warn ? theme.status.warning : theme.status.success}
         paddingX={1}
         paddingY={0}
       >
-        <Text bold color={theme.status.success}>
-          已回退（{modeText}）
+        <Text bold color={warn ? theme.status.warning : theme.status.success}>
+          已回退（{modeText}）{partialFailure ? " · 部分失败" : ""}
         </Text>
         <Box marginTop={1} flexDirection="column">
           {touchedConversation && (
@@ -156,7 +167,19 @@ export const RewindDialog: React.FC<RewindDialogProps> = ({
                   : "无文件快照可回滚（未做任何改动）"}
               </Text>
             ) : (
-              <Text color={theme.text.secondary}>回滚了 {result.filesRestored} 个文件</Text>
+              <>
+                {(result.filesRestored > 0 || result.filesFailed > 0) && (
+                  <Text color={theme.text.secondary}>回滚了 {result.filesRestored} 个文件</Text>
+                )}
+                {partialFailure && (
+                  <Text color={theme.status.warning}>
+                    {result.filesFailed} 个文件未能回滚（详见 debug.log）
+                  </Text>
+                )}
+                {emptyRestore && (
+                  <Text color={theme.status.warning}>未回滚任何文件（详见 debug.log）</Text>
+                )}
+              </>
             ))}
         </Box>
         <Box marginTop={1}>
