@@ -70,7 +70,9 @@ todo-fix 清单(派生物,每条都必须回指某条已确认的评估结论)
 
 1. **两类路径分清**:
    - **被评对象的运行时产物**——`~/.sid-code/trajectories/sessions/`(轨迹)、`~/.sid-code/usage-ledger.jsonl`(账本)是 sid-code 运行时写死的**绝对位置**,和执行者是谁、cwd 在哪无关,直接用。
-   - **需在 sid-code 仓库内跑的命令**——`bun scripts/trace-digest.ts`、报告输出目录 `docs/bugfixes/todo/eval/`、以及修复期的 `bun test`/`git stash`/`make build` 全都**相对 sid-code 仓库根**。执行前先确认当前 cwd 就是 sid-code 仓库根(`ls scripts/trace-digest.ts` 能命中);不在则先 `cd` 过去或用仓库绝对路径,别在别的 cwd 下盲跑导致"脚本找不到 / 报告写错地方"。
+   - **需在 sid-code 仓库内跑的命令**——`bun scripts/trace-digest.ts`、修复期的 `bun test` / `make build` 全都**相对 sid-code 仓库根**。执行前先确认当前 cwd 就是 sid-code 仓库根(`ls scripts/trace-digest.ts` 能命中);不在则先 `cd` 过去或用仓库绝对路径,别在别的 cwd 下盲跑导致"脚本找不到 / 评错对象"。
+   - **报告目录不在 sid-code 仓内**——报告、以及跨报告收敛要 grep 的历史报告,都在 sid-code 仓库**同级**的 `docs-research/sid-code/bugfixes/todo/eval/`(已归档的在它的 `done/` 子目录)。**为什么必须单独说**:本仓**没有 `docs/` 目录**(见 CONTRIBUTING.md「注释里的 `docs/xxx.md` 路径指向仓外」一节),旧版 skill 写的 `docs/bugfixes/todo/eval/` 会同时坏两件事:① 跨报告收敛永远 grep 一个空目录,每条发现都被标成「本报告首次记录」——「复发」这个最重要的严重度上调信号永远不触发;② 报告写进 sid-code 工作区变成未跟踪文件,碰上 `git add .` 就把私有分析带进开源仓(2026-11-03 那次评估真踩了,报告最后是手工挪走的)。**定位方法**:先 `ls ../docs-research/sid-code/bugfixes/todo/eval/`;找不到就**问用户**报告该写哪,**不许回退到 sid-code 仓内**。
+   - **对照基线用临时 worktree,不用 `git stash`**——验证「预存在失败」时,从 `origin/main` 建一个临时 worktree 跑同一测试(做法见「铁律 8」后附的命令)。`git stash` 会卷走并行任务的在途工作,本仓真实丢过数据(CLAUDE.md 铁律明令禁止)。
 2. **MEMORY.md 交叉核对是"有则做"的增强,不是硬前提**:铁律第 4 条要查的 `MEMORY.md` 是**这台机器上为 sid-code 维护的项目记忆**。执行者若能读到(如就是本机 Claude Code / sid-code)就核对;读不到(换机器、无该项目记忆)则**跳过并在报告注明"未核对历史记忆,复发性判断置信度下降"**,不要因路径不存在而报错或卡住。
 3. **sid-code 仓库根怎么定位**:优先用用户明示的路径;未明示时,从 `~/.sid-code` 或轨迹里的线索找,或直接问用户"sid-code 仓库在哪"。别假设 cwd 已经在那里。
 
@@ -83,6 +85,10 @@ todo-fix 清单(派生物,每条都必须回指某条已确认的评估结论)
 5. **区分 trace-digest 的已知假阳性**(见下"陷阱"),别把工具的误报当成真缺陷写进报告。
 6. **每条"模型的锅"都要过 harness 桥**(见 Phase 3.5):模型失误/低效不能只记进 §2 就算完,必须回问"harness 本可以拦住/让它更容易做对吗?",能翻译成 harness 改进的进 §3。**这是本 skill 出货的主通道,不是可选项。**
 7. **比对两组计数/index 前,先确认它们数的是不是同一个东西**:trace 里存在多套 index 命名空间(如 collector 的 pair index 跑到 90、queryLoop 的 turnCount 只到 32、StreamPhase 的 obsIndex 用满整场循环),名字都叫 `index`/`turn` 但语义不同。**"某 index 在 N 之后消失/对不上"极易被误判成数据丢失 bug**,下结论前必须先 read 源码确认两边的 index 由谁分配(实证:20260723-140029 差点把"StreamPhase index 32 后消失"写成流事件丢失,核对后才发现是 turnCount vs pair index 两套命名空间——它反而成了真发现的证据)。凡跨事件类型比对计数,这一步不可省。
+8. **根因定位要核到「唯一入口」和「时间戳对齐」两件事**——这是本 skill 里最贵的一条纪律,因为**两处写错的根因会把整个修复方向带偏**:
+   - **分类类问题先找唯一分类器**,把它从上往下的判据顺序走一遍,不要停在第一个"看起来相关"的词表上。实证:20261103-213816-f5beebde 的 403 误判,初稿怪 `error-lexicon.ts` 缺「额度不足」,实际分类走的是 `error-normalize.ts classifyFamily` → `byStatus(403)` → `auth_suspect`,**词表根本没被查到**(状态码在词表之前)。补词表对本会话零效果。
+   - **定时器类问题用「触发时刻 − 每个候选起点」逐个算**,看哪一个与阈值精确吻合。实证:同一会话 10 次 `TimeoutFired`,按初稿的"源头 read 挂住"解释不通;实际是 `unrecognized_error`(放弃尝试)到 `TimeoutFired` 的间隔为 239.998/240.001/240.001/240.000/239.999/240.001/240.002/240.003/240.001/240.002s —— **正好等于 idle 阈值 240s**,证明定时器是从**流被放弃那一刻**起算的(生成器被丢弃、`finally` 未执行),不是在流还活着时开的枪。
+   - 这两步都做完再写根因;只做一步就停,是"找到一个讲得通的位置就收工",会产出看起来严密但修不动问题的方案。
 
 ## 执行流程(半自动:机械首过 + 逐段人工核实)
 
@@ -149,7 +155,18 @@ bun scripts/trace-digest.ts <完整-session-id>
 2. **空壳检测**:改动是真实现还是占位/空函数/TODO?read 关键改动确认有实质逻辑。
 3. **API 真实性**:改动调用的函数/字段/签名是否**真实存在**(read 被调方定位),不是幻觉 API。弱模型高发"调了个不存在的方法还测过了"。
 4. **测试真实驱动目标路径**:新增/改动的测试是否真的走到了目标代码分支(read 测试断言 vs 目标代码,确认不是"测了个假路径"或恒真断言)。
-5. **"测试通过"声称独立复核**:这是**最需警惕的过度声称**。不仅要真跑 `bun test`,若模型声称"某些失败是预先存在、与本次无关",要**独立验证**——`git stash` 改动后在干净树上重跑,确认失败确实预存在(别让真 bug 伪装成"预存在",也别把预存在甩锅给本次改动)。
+5. **"测试通过"声称独立复核**:这是**最需警惕的过度声称**。不仅要真跑 `bun test`,若模型声称"某些失败是预先存在、与本次无关",要**独立验证**——从 `origin/main` 建一个临时 worktree,在那里跑同一个测试文件,确认失败确实预存在(别让真 bug 伪装成"预存在",也别把预存在甩锅给本次改动)。这条同时也满足 CLAUDE.md「判定与我无关须举证」的第 ② 条证据(父仓 main 上单跑能通过)。
+   - **不要用 `git stash` 做这个对照**:它会连并行任务的在途工作一起卷走,本仓真实丢过数据(CLAUDE.md 铁律明令禁止)。
+   - worktree 命令与坑:
+     ```bash
+     cd <sid-code 仓库根>
+     git fetch origin main
+     git worktree add /tmp/eval-baseline-$(date +%s) origin/main
+     cd /tmp/eval-baseline-*/
+     bun install          # 必须:worktree 默认没有自己的 node_modules
+     bun test <同一个测试文件>
+     ```
+     建在 `/tmp` 而不是仓内 `.sid-code/worktrees/`,是为了不触发主仓的「worktree 无改动自动清理」判定;用完 `git worktree remove <路径>` 收掉。
 
 无论哪类,产出都要有**明确可靠性结论 + 逐条核对表 + 值得单独点出的细节**(如"模型正确处理了某个容易漏的边界""某处措辞略超证据但不影响结论")。这些叙述细节不是可选项——它们是"结果为什么可信"的依据。
 
@@ -221,20 +238,22 @@ bun scripts/trace-digest.ts <完整-session-id>
 按 `references/output-template.md` 的结构,把 §0–§4(三段评估结果 + 澄清)写透,落到:
 
 ```text
-docs/bugfixes/todo/eval/<session-id>-eval.md
+<sid-code 仓库同级>/docs-research/sid-code/bugfixes/todo/eval/<session-id>-eval.md
 ```
 
-(目录不存在则创建。统一路径 + 统一结构 → 历次报告可 diff,能看出同一 harness 问题是否复发。)
+(目录不存在则创建。统一路径 + 统一结构 → 历次报告可 diff,能看出同一 harness 问题是否复发。**不要写进 sid-code 仓内** —— 理由见「执行环境约定」,那个目录不存在,而且会把私有分析带进开源仓。)
 
-**跨报告收敛(防同一问题在多份报告里反复出现却从不聚合):** 落盘前,`grep` 一遍 `docs/bugfixes/todo/eval/` 下已有报告,看本次发现是否在历史报告里出现过:
+**跨报告收敛(防同一问题在多份报告里反复出现却从不聚合):** 落盘前,`grep` 一遍历史报告,看本次发现是否在历史报告里出现过。**`eval/` 和 `eval/done/` 两个目录都要扫** —— 已修完的报告归档进 `done/`,只扫 `eval/` 会把「修过了但没修好」的复发项当成首次记录:
 
 ```bash
-# 在 sid-code 仓库根跑;换关键词为本次发现的根因文件/症状
-grep -rl "collector.ts\|account.*落盘\|<本次发现关键词>" docs/bugfixes/todo/eval/ 2>/dev/null
+# EVAL_DIR 相对 sid-code 仓库根(与仓库同级);换关键词为本次发现的根因文件/症状
+EVAL_DIR=../docs-research/sid-code/bugfixes/todo/eval
+grep -rn "collector.ts\|account.*落盘\|<本次发现关键词>" "$EVAL_DIR" "$EVAL_DIR/done" 2>/dev/null
 ```
 
 - **命中历史报告** → 本次报告里显式标注"**跨报告复发**:同类问题已在 `<报告名>` 出现过 N 次",严重度相应上调(反复出现说明没被修 / 修了没生效)。这比单会话统计更能说明系统性。
 - **未命中** → 标为"本报告首次记录"。
+- **结果为空** → 先确认 `$EVAL_DIR` 真的有报告(`ls "$EVAL_DIR"`)。目录不存在时**不要**据此判"首次记录",要如实写"未找到历史报告库,复发性判断置信度下降"。
 
 **此时先停下来把评估结果讲给用户听。** 结果是主交付物,要让用户看到完整的三段分析,而不是直接甩一张 fix 表。
 
@@ -276,7 +295,12 @@ grep -rl "collector.ts\|account.*落盘\|<本次发现关键词>" docs/bugfixes/
   - `anomalies_count`:high+medium **异常**总数(旧 `errors` 语义,**含假阳性**如 watchdog 慢响应 / stuck_loop),仅供参考。
   - `errors`:已弃用,= `anomalies_count` 的别名(向后兼容旧脚本),**别再用它当分诊主键**。
   - 背景:修复前 `errors` 名实不符(叫 errors 实为 anomalies),假阳性灌水把干净会话误选成"高产候选"。实证 20260723-140029:`errors:3` 但真错误只 1(LSP 超时)。慢响应现已降级为 [低]`model_call_slow_response`,不再进 `high_severity_anomalies`。
+- **`timeout_fired` 的条数 ≠ 超时防线生效**(实证锚点 `20261103-213816-f5beebde`):这个计数长期被当成"防线在工作"的正面信号读,但**幽灵触发**会让它变成一个纯噪声的数 —— 消费方收到 `error` 事件后抛错、把 lifecycle 生成器丢在 `yield` 处从不 `return()`,`finally` 永远不执行,idle 定时器于是从**流被放弃那一刻**起算,240s 后照样开枪。那次会话 10 次 `TimeoutFired` **全部**是这种幽灵触发,按旧口径读会得出与事实完全相反的结论。
+  - **核实法**(铁律 8 的时间戳对齐):对每条 `TimeoutFired`,取同 `index` 的尝试终点(`stream_completed` / `AfterModel`),算「fire 时刻 − 终点时刻」。间隔**恰好等于阈值**(实测 239.998~240.003s vs 阈值 240s)就几乎一定是幽灵触发 —— 定时器是从放弃那刻起算的,不是流活着时开的枪。
+  - digest 已有检测器直接报:找 anomaly `timeout_fired_after_attempt_end`(L0 [高]),命中即幽灵,不用自己算。**注意配对的命名空间**(铁律 7):`TimeoutFired.index` 与 `stream_completed.turnIndex` 同空间,`pair_index` / `agent_turn` 是 collector 派生的,**不要拿它们配**。
+- **失败子代理的 output 文件"已清理、未留存" ≠ 数据丢失**(实证锚点同上):`task_output` / `read` 读 `.output` 返回"清理前未留存"时,完整轨迹通常还在 sidechain 里 —— `~/.sid-code/sessions/<project>/<sessionId>-<agentId>.jsonl`(三份 223KB,工具结果都在)。**先去找 sidechain,再判数据丢失**;digest 的 `subagent_execution_outcome` 现在会带 sidechain 路径和失败族(`auth_suspect/same_fingerprint×2、transient×1` 这类),直接从那条读数取,别手工翻目录。
 - **`CACHE_BREAK`(warn.log)**:warn.log 若已标"本地前缀 hash 未变 → 疑为服务端缓存波动,本地不可控",就是**服务端波动,非 sid-code 缺陷**——归因已正确,别再花时间"修缓存"。反是 harness 归因正确的正向样本(可记进 §2.5)。
+- **warn.log 里大比例的 "事件间隔 Ns(stall)" 行**:先看比例再看条数(实测 4265 行里 4084 行是 stall,95.7%)。这种压倒性占比通常意味着**泄漏流**(流已结束但 stall 定时器没停),不是"这条流真的很慢"。digest 的 `leaky_stream_stall`(L0 [高])会给出泄漏流数量与最长存活时长;别把这类行当成 hang 证据写进 §3。
 
 ## 反哺本 skill:发现新陷阱/新纪律就回填(常驻,不是可选项)
 
@@ -291,11 +315,11 @@ cookbook §三 已定"脚本自身的缺陷是一条 harness 发现"——但那
 
 - Phase 0 通过:目标是**唯一、可定位、可评估**的会话(非空参数默认值;完整 id 或能唯一命中的日期前缀均可,hash 后缀需先转成完整 id);空会话/损坏轨迹已按降级策略处理并在报告标注;无指定会话时已做批量分诊选样。
 - 执行环境已厘清:脚本在 sid-code 仓库根跑(cwd 确认过),或已注明用绝对路径;MEMORY.md 读不到时报告已注明"未核对历史记忆"而非卡住。
-- 报告落在 `docs/bugfixes/todo/eval/<session-id>-eval.md`。
+- 报告落在 `<sid-code 仓库同级>/docs-research/sid-code/bugfixes/todo/eval/<session-id>-eval.md`(**不是** sid-code 仓内;见「执行环境约定」)。
 - **§1–§3 三段评估结果写透**:每段有明确结论 + 逐条证据 + 关键细节/正向样本,不是压缩表格。
 - 每条结论带 `file:line` 或实测数据;假设带证伪条件。
 - 凡声称"测试通过"处,报告里有对应 `bun test` 的实跑输出。
-- **若被评会话含代码改动**:结果评估过了 Phase 2 五关(范围/空壳/API 真实性/测试驱动/测试通过独立复核),尤其"预存在失败"经 `git stash` 对照证实。
+- **若被评会话含代码改动**:结果评估过了 Phase 2 五关(范围/空壳/API 真实性/测试驱动/测试通过独立复核),尤其"预存在失败"经**临时 worktree**(从 `origin/main` 建,不是 `git stash`)对照证实。
 - **Phase 3.5 桥接已做**:§2/§3 每条模型失误/低效都有归宿(翻译成 §3 发现,或明确标"已过桥、纯模型问题");成本/效率有基线判读或"无基线"标注。
 - **Phase 4 双路都走**:异常信号反查 + 能力链路探针(经过的链路都查过,未经过的标注);发现同时含**缺陷和优化点**两类(若确实只有一类,说明理由)。
 - Phase 5 跨报告收敛已做:本次发现已 grep 历史报告,复发的已标注。

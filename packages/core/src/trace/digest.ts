@@ -1195,6 +1195,24 @@ export interface SubAgentSpan {
   isolatedPathCalls?: number;
   /** 隔离 span：其中落在主仓、却不在本 worktree 内的调用数（分子） */
   isolatedMainRepoPathCalls?: number;
+  /**
+   * T5：子代理 sidechain jsonl 路径（`SubagentStop.agent_transcript_path`）。
+   *
+   * 失败子代理的完整轨迹在 sidechain 里 —— `tasks/*.output` 被驱逐后，这里是唯一还留着的
+   * 现场。2026-11-03 会话实测：三个失败子代理的 output 全部报「清理前未留存」，
+   * 而 223KB 的完整轨迹一直在 sidechain 里，只是 digest 没告诉人它在哪。
+   * 本地字段，上传时由 `LOCAL_ONLY_EVENT_DATA_FIELDS` 剥掉。
+   */
+  transcriptPath?: string;
+  /**
+   * T5：失败族（`ErrorFamily`）。从漏斗的 `recovery_give_up` 按 agentId 关联 ——
+   * `SubagentStop` 只记「error」，不记为什么 error，于是
+   * `subagent_execution_outcome: 0 成功 / 3 失败` 这条读数无法指导任何行动
+   * （额度耗尽、网关 5xx、模型不认工具，处置完全不同）。
+   */
+  failureFamily?: string;
+  /** T5：放弃原因（`GiveUpReason`，如 same_fingerprint / budget） */
+  failureReason?: string;
 }
 
 /**
@@ -1362,6 +1380,28 @@ export interface SessionLevelMetrics {
    * 那正是"HITL 没被触发过"的诚实表达，不是缺数据。
    */
   e2e_hitl_n: number;
+  /**
+   * T6：**剔除**含 HITL 轮次后的端到端分位数 —— 「agent 自身速度」的干净口径。
+   *
+   * 与上面那组（全部样本）并存而不替代：全部样本回答「用户实际等了多久」，
+   * 这组回答「其中有多少是 agent 花掉的」。两个问题都有用，混成一个数就都不准了
+   * （2026-11-03 会话实测：唯一那条样本含 2.85h 人工等待，P50 变成 44300.9s）。
+   * `e2e_no_hitl_n` 必须一起读 —— 它与 `e2e_n` 是**两个不同的分母**。
+   */
+  e2e_no_hitl_p50?: number;
+  e2e_no_hitl_p95?: number;
+  e2e_no_hitl_p99?: number;
+  e2e_no_hitl_n: number;
+  /**
+   * T6：轮级人工等待合计（`TurnComplete.hitl_wait_ms`，F4 落盘）。
+   *
+   * 与下面 `hitl_wait_total_ms` **不同源、不可相加**：后者是「每次弹窗等了多久」的合计，
+   * 本字段是「每一轮总共等了多久」的合计（一轮可能弹多次、还可能含 fallback 询问）。
+   * 消费侧要做 `e2e - hitl_wait` 的精确扣减时用**本字段**（同一轮口径），别用弹窗级那个。
+   */
+  turn_hitl_wait_total_ms: number;
+  /** T6：带 `hitl_wait_ms` 的轮数（分母；弹窗被中断的轮可能不带该字段） */
+  turn_hitl_wait_n: number;
   /**
    * 缺陷 7：等人确认的墙钟（来自 events.jsonl 的 `PermissionDecision`，`prompted=true`
    * 且带 `duration_ms` 的那些）。`had_hitl` 只是一轮一个布尔，只能整轮剔除；
@@ -1965,7 +2005,7 @@ function countIsolatedPathEscapes(
   return { spans: byAgent.size, absPathCalls, mainRepoPathCalls };
 }
 
-function buildSubAgentSummary(
+export function buildSubAgentSummary(
   events: Array<{ event?: string; data?: Record<string, unknown> }>,
 ): SubAgentSummary | null {
   const starts = events.filter((e) => e.event === "SubagentStart");
@@ -2027,6 +2067,38 @@ function buildSubAgentSummary(
     if (typeof d.elapsed_ms === "number") span.elapsedMs = d.elapsed_ms;
     if (typeof d.output_tokens === "number") span.outputTokens = d.output_tokens;
     if (typeof d.input_tokens === "number") span.inputTokens = d.input_tokens;
+    // T5：sidechain 路径（本地字段，上传剥离）。失败时它是成果的唯一指针。
+    if (typeof d.agent_transcript_path === "string") span.transcriptPath = d.agent_transcript_path;
+  }
+
+  // T5：失败族与原因 —— `SubagentStop` 只记 status=error，为什么 error 要到漏斗的
+  // `recovery_give_up` 里按 agentId 找（那是「这条循环为什么放弃」的唯一出口）。
+  // 同一 agent 可能有多次放弃（不同 index / 不同重试轮），保留最后一条：
+  // 最终导致它结束的是最后一次，前面的中途放弃已被后面的重试覆盖。
+  //
+  // 匹配键是 agentId **精确相等**，所以主循环的 `agentId: "main"` 天然不会串到任何子代理
+  // （子代理 id 形如 `<sessionId>-sub-xxx`）—— 这里不需要额外排除它，那会是一段永不生效的
+  // 冗余代码。变异自证时发现过这一点：删掉 `main` 排除后测试仍然全绿，正说明它没在起作用；
+  // 真正的保证在下面 `giveUpByAgent.get(span.agentId)` 那一行。
+  const giveUpByAgent = new Map<string, { family: string; reason?: string }>();
+  for (const e of events) {
+    if (e.event !== "RetryTelemetry") continue;
+    const d = e.data as any;
+    if (d?.type !== "recovery_give_up") continue;
+    const agentId = typeof d?.agentId === "string" ? d.agentId : "";
+    if (!agentId) continue;
+    giveUpByAgent.set(agentId, {
+      family: String(d?.family ?? "unknown"),
+      ...(typeof d?.giveUpReason === "string" ? { reason: d.giveUpReason } : {}),
+    });
+  }
+  if (giveUpByAgent.size > 0) {
+    for (const span of spans) {
+      const hit = giveUpByAgent.get(span.agentId);
+      if (!hit) continue;
+      span.failureFamily = hit.family;
+      if (hit.reason) span.failureReason = hit.reason;
+    }
   }
 
   // 3. 按 startTs 排序，算相邻间隔 + 判定串行/并行
@@ -2090,6 +2162,298 @@ function buildSubAgentSummary(
     ...(isolation ? { isolation } : {}),
     spans,
   };
+}
+
+// ─────────────────────────── T2：幽灵超时（超时开在已结束的尝试上） ───────────────────────────
+
+/** `RetryTelemetry` 的超时类别（这些才是「这次尝试已经结束」的证据） */
+const ATTEMPT_END_TELEMETRY = new Set(["stream_completed"]);
+
+/**
+ * 一条「幽灵超时」——超时定时器在**该尝试已经结束之后**才开枪。
+ *
+ * ## 为什么值得单列一个检测器
+ *
+ * `TimeoutFired` 的条数长期被当成「超时防线生效」的正面指标读。2026-11-03 会话
+ * `20261103-213816-f5beebde` 实测 10 次全部是幽灵触发：消费方收到 `error` 事件后抛错，
+ * 把 lifecycle 生成器丢在 `yield` 处、从未调用 `return()`，`finally` 永不执行，
+ * idle 定时器于是从**流被放弃那一刻**起算，240s 后照样开枪。
+ * 按旧口径「有 TimeoutFired = 防线在工作」读，会得出与事实相反的结论
+ * （那次会话里防线一次都没真正生效，收尾全靠漏斗层）。
+ */
+export interface GhostTimeoutHit {
+  /** `TimeoutFired.index`（与 `turnIndex` 同空间，见下） */
+  index: number;
+  /** 超时层（idle_timeout / turn_hard_timeout / content_progress_timeout / ...） */
+  layer: string;
+  /** TimeoutFired 自带 agent_id 时透传（子代理路径当前不落该字段） */
+  agentId?: string;
+  /** 开枪时刻 */
+  firedAtMs: number;
+  /** 该尝试的终点事件名（`stream_completed` / `AfterModel`） */
+  endEvent: string;
+  /** 终点时刻 */
+  endedAtMs: number;
+  /** 开枪距终点的间隔 */
+  gapMs: number;
+  /** 定时器阈值（`TimeoutFired.data.threshold_ms`，老轨迹可能没有） */
+  thresholdMs?: number;
+}
+
+type EventLine = { event?: string; timestamp?: string; data?: Record<string, unknown> | null };
+
+/**
+ * 检出「幽灵超时」：`TimeoutFired` 晚于同一尝试的终点，且其后再没有新一代尝试开始。
+ *
+ * ## 匹配键的命名空间（写清楚是因为本仓踩过 index 混用的坑）
+ *
+ * - `TimeoutFired.index` 来自 `emitTimeoutFired(index, …)`，取值是 **turnCount / turnIndex**
+ *   （主循环 `query/loop.ts` 传 `state.turnCount`；provider 侧传 `obsCtx.turnIndex`）。
+ * - `RetryTelemetry(stream_completed)` 落盘时**保留原始 `turnIndex`**，再由 collector 追加
+ *   `pair_index`（主循环）/ `agent_turn`（子代理）作为派生字段 —— 与 TimeoutFired
+ *   **同空间的是 `turnIndex`**，不是 `pair_index`。用派生字段配对会张冠李戴。
+ * - `AfterModel.index` 是主循环 pair index（与 BeforeModel / raw.jsonl 同空间）。
+ *   它只在「同一 index 数值」的意义上作为终点候选，命中时 detail 会标出用的是哪条事件。
+ * - `StreamPhase(fetch_sent)` 只有主循环带 `pair_index`（子代理不补，见 collector
+ *   `streamAttributionFields`），所以「新一代是否已开始」的判据对子代理天然缺失 ——
+ *   那种情况下按「无证据即不判幽灵」处理（保守），不猜。
+ *
+ * ## 判据
+ *
+ * 1. 取该 index 在 fire 之前**最近的一次**尝试终点（`stream_completed` 或 `AfterModel`）；
+ * 2. 若终点与 fire 之间该 index 又出现过 `StreamRestart` / `fetch_sent`，说明这次 fire
+ *    是在**新一代尝试**上开的，不算幽灵（宁可漏报也不误报）；
+ * 3. 否则命中，并给出「间隔」（fire 时刻 − 终点时刻）。
+ *
+ * ## 「间隔 ≈ 阈值」这条证据的真实适用范围（实测修正，别当成命中条件）
+ *
+ * 方案里写的「间隔精确等于 idle 阈值 240s」是相对 `unrecognized_error`（漏斗放弃那一刻）
+ * 算出来的，而 `unrecognized_error` **不带 `turnIndex`**，结构上无法与本函数的 index 配对。
+ * 能配对的终点只有 `stream_completed` 与 `AfterModel`，它们通常**早于**放弃时刻 ——
+ * 实测会话 `20261103-213816-f5beebde` 的 10 条命中，间隔是 78s~211s，**都不是** 240s。
+ *
+ * 所以：命中判据只有「晚于终点」这一条。「间隔 ≈ 阈值」仅在终点恰好等于放弃时刻时出现，
+ * 是加分证据（渲染时由 `thresholdNote` 标注），**不能反过来当命中条件** ——
+ * 把它写进判据会让那 10 条全部漏报，而那正是这个检测器存在的理由。
+ */
+export function detectGhostTimeouts(events: readonly EventLine[]): GhostTimeoutHit[] {
+  type AttemptEnd = { atMs: number; label: string };
+  const endsByIndex = new Map<number, AttemptEnd[]>();
+  const startsByIndex = new Map<number, number[]>();
+
+  const pushEnd = (index: unknown, atMs: number, label: string) => {
+    if (typeof index !== "number" || !Number.isFinite(atMs)) return;
+    const arr = endsByIndex.get(index);
+    if (arr) arr.push({ atMs, label });
+    else endsByIndex.set(index, [{ atMs, label }]);
+  };
+  const pushStart = (index: unknown, atMs: number) => {
+    if (typeof index !== "number" || !Number.isFinite(atMs)) return;
+    const arr = startsByIndex.get(index);
+    if (arr) arr.push(atMs);
+    else startsByIndex.set(index, [atMs]);
+  };
+
+  for (const e of events) {
+    const d = e.data as any;
+    const atMs = e.timestamp ? Date.parse(e.timestamp) : NaN;
+    if (Number.isNaN(atMs)) continue;
+    if (e.event === "RetryTelemetry" && ATTEMPT_END_TELEMETRY.has(String(d?.type ?? ""))) {
+      // 用原始 turnIndex，不用 collector 派生出来的 pair_index / agent_turn（见上方命名空间说明）
+      pushEnd(d?.turnIndex, atMs, "stream_completed");
+    } else if (e.event === "AfterModel") {
+      pushEnd(d?.index, atMs, "AfterModel");
+    } else if (e.event === "StreamRestart") {
+      pushStart(d?.index, atMs);
+    } else if (e.event === "StreamPhase" && d?.phase === "fetch_sent") {
+      pushStart(d?.pair_index, atMs);
+    }
+  }
+
+  const hits: GhostTimeoutHit[] = [];
+  for (const e of events) {
+    if (e.event !== "TimeoutFired") continue;
+    const d = e.data as any;
+    const index = d?.index;
+    if (typeof index !== "number") continue;
+    const firedAtMs = e.timestamp ? Date.parse(e.timestamp) : NaN;
+    if (Number.isNaN(firedAtMs)) continue;
+
+    // fire 之前最近的一次尝试终点
+    let end: AttemptEnd | undefined;
+    for (const cand of endsByIndex.get(index) ?? []) {
+      if (cand.atMs > firedAtMs) continue;
+      if (!end || cand.atMs >= end.atMs) end = cand;
+    }
+    if (!end) continue;
+    // 终点之后又开了新一代尝试 → 这次 fire 打在新尝试上，不判幽灵
+    const restarted = (startsByIndex.get(index) ?? []).some((t) => t > end!.atMs && t <= firedAtMs);
+    if (restarted) continue;
+
+    hits.push({
+      index,
+      layer: String(d?.layer ?? "unknown"),
+      ...(typeof d?.agent_id === "string" ? { agentId: d.agent_id } : {}),
+      firedAtMs,
+      endEvent: end.label,
+      endedAtMs: end.atMs,
+      gapMs: firedAtMs - end.atMs,
+      ...(typeof d?.threshold_ms === "number" ? { thresholdMs: d.threshold_ms } : {}),
+    });
+  }
+  return hits;
+}
+
+/**
+ * 泄漏流判定阈值：一条已经被放弃/结束的流，它的 stall 跨度超过这个值就超出
+ * 「正常的慢响应」能解释的范围。
+ *
+ * 180s 与 lifecycle `overall` 层的默认阈值同量级 —— 同一条流若真活着，
+ * 180s 无任何事件进展早该被 overall 层杀掉。用它当门槛的含义是：
+ * 「本该被杀掉、却还在报 stall」就等于泄漏。
+ */
+const LEAKY_STREAM_SPAN_MS = 180_000;
+
+/**
+ * 一条「泄漏流」——流已经结束（或被放弃），它的 stall 定时器还在继续报。
+ *
+ * ## 为什么需要这个检测器
+ *
+ * `stream_stall` 本来的语义是「这条流已经 N 秒没有事件进展」，是排查 hang 的正面信号。
+ * 但当消费方丢弃生成器、`finally` 不执行时，stall 定时器会一直跑到进程退出：
+ * 2026-11-03 会话 `20261103-213816-f5beebde` 的 `warn.log` 4265 行里 4084 行（95.7%）
+ * 是这种空转的 stall，最大间隔 43933s，把真正有价值的告警淹掉了。
+ * 只看「stall 有几条」会把泄漏读成「这条流很慢」。
+ */
+export interface LeakyStreamHit {
+  agentId?: string;
+  /** 该流的轮次（主循环 = turnCount；子代理 = 10000/20000 号段） */
+  turnIndex: number;
+  /** 该组 stall 事件条数 */
+  stallCount: number;
+  firstStallMs: number;
+  lastStallMs: number;
+  /** 首→末 stall 的存活跨度 */
+  spanMs: number;
+  /** 最后一条 stall 的 gapMs（距上次事件进展的间隔） */
+  lastGapMs?: number;
+  /** 该组最后一条 `stream_completed`；从未完成则 undefined */
+  completedAtMs?: number;
+  /** 命中 frozen_span 时给出：全程冻结的 totalEvents（进度一点没动） */
+  frozenTotalEvents?: number;
+  /**
+   * 命中判据：
+   * - `completed_after`：流已有 `stream_completed`，之后仍在报 stall（直接证据）；
+   * - `frozen_span`：没有「完成之后」的 stall，但整段跨度超过阈值且 `totalEvents`
+   *   全程冻结 —— 这条流从头到尾没有过进展，定时器在空转（间接证据）。
+   *   后者可能同时包含「真僵死流」，两者处置方向一致（都该被 overall 层杀掉）。
+   */
+  criterion: "completed_after" | "frozen_span";
+}
+
+/**
+ * 检出泄漏流：按 `(agentId, turnIndex)` 分组，找出「流已结束但 stall 还在报」的那些。
+ *
+ * 分组键用 `agentId` + `turnIndex` 而不是只用一个：三个并行子代理的 turnIndex
+ * 都是 10001，只按 turnIndex 分组会把三条流合成一条，泄漏数量直接少两个。
+ *
+ * 判据见 {@link LeakyStreamHit.criterion}。两条互补是必要的 —— 实测那次会话 9 条泄漏里，
+ * 8 条靠 `completed_after` 抓到，主循环 index=11 那条**只能**靠 `frozen_span`：
+ * 它在被放弃后一直报到用户重试（2.85h），而重试成功后落的 `stream_completed`
+ * 在最后一条 stall 之后，所以「stall 晚于 completed」对它不成立。
+ */
+export function detectLeakyStreams(events: readonly EventLine[]): LeakyStreamHit[] {
+  interface StreamGroup {
+    agentId?: string;
+    turnIndex: number;
+    stalls: Array<{ atMs: number; gapMs?: number; totalEvents?: number }>;
+    completed: number[];
+  }
+  const groups = new Map<string, StreamGroup>();
+
+  for (const e of events) {
+    if (e.event !== "RetryTelemetry") continue;
+    const d = e.data as any;
+    const type = d?.type;
+    if (type !== "stream_stall" && type !== "stream_completed") continue;
+    const turnIndex = d?.turnIndex;
+    if (typeof turnIndex !== "number") continue;
+    const atMs = e.timestamp ? Date.parse(e.timestamp) : NaN;
+    if (Number.isNaN(atMs)) continue;
+    const agentId = typeof d?.agentId === "string" ? d.agentId : undefined;
+    const key = `${agentId ?? "main"}|${turnIndex}`;
+    let g = groups.get(key);
+    if (!g) {
+      g = { ...(agentId ? { agentId } : {}), turnIndex, stalls: [], completed: [] };
+      groups.set(key, g);
+    }
+    if (type === "stream_stall") {
+      g.stalls.push({
+        atMs,
+        ...(typeof d?.gapMs === "number" ? { gapMs: d.gapMs } : {}),
+        ...(typeof d?.totalEvents === "number" ? { totalEvents: d.totalEvents } : {}),
+      });
+    } else {
+      g.completed.push(atMs);
+    }
+  }
+
+  const hits: LeakyStreamHit[] = [];
+  for (const g of groups.values()) {
+    if (g.stalls.length === 0) continue;
+    const first = g.stalls.reduce((a, b) => (a.atMs <= b.atMs ? a : b));
+    const last = g.stalls.reduce((a, b) => (a.atMs >= b.atMs ? a : b));
+    const spanMs = last.atMs - first.atMs;
+    const lastCompleted = g.completed.length > 0 ? Math.max(...g.completed) : undefined;
+
+    const afterCompleted = lastCompleted !== undefined && last.atMs > lastCompleted;
+    // totalEvents 全程冻结 = 这条流从头到尾没有过一次事件进展
+    const totals = g.stalls.map((s) => s.totalEvents).filter((v): v is number => v !== undefined);
+    const frozen = totals.length > 0 && new Set(totals).size === 1;
+
+    const criterion: LeakyStreamHit["criterion"] | undefined = afterCompleted
+      ? "completed_after"
+      : spanMs > LEAKY_STREAM_SPAN_MS && frozen && g.stalls.length >= 3
+        ? "frozen_span"
+        : undefined;
+    if (!criterion) continue;
+
+    hits.push({
+      ...(g.agentId ? { agentId: g.agentId } : {}),
+      turnIndex: g.turnIndex,
+      stallCount: g.stalls.length,
+      firstStallMs: first.atMs,
+      lastStallMs: last.atMs,
+      spanMs,
+      ...(last.gapMs !== undefined ? { lastGapMs: last.gapMs } : {}),
+      ...(lastCompleted !== undefined ? { completedAtMs: lastCompleted } : {}),
+      ...(criterion === "frozen_span" && totals.length > 0 ? { frozenTotalEvents: totals[0] } : {}),
+      criterion,
+    });
+  }
+  // 存活最久的排前面：最长那条是「泄漏了多久」的主证据
+  return hits.sort((a, b) => b.spanMs - a.spanMs);
+}
+
+/**
+ * 统计 `warn.log` 里 stall 行占全部行的比例。
+ *
+ * 为什么要这个数：泄漏流会把 warn.log 刷成几万行（实测 4265 行里 4084 行是 stall），
+ * 但这件事只有**同时看到分子分母**才成立 —— 单看「stall 4084 条」无法判断
+ * 是「这条流真的很慢」还是「日志被空转行淹没」。
+ * 文件不存在时返回 undefined（老轨迹 / 未开 warn 落盘），不是 0。
+ */
+export function countStallWarnLines(dir: string): { stall: number; total: number } | undefined {
+  const p = join(dir, "warn.log");
+  if (!existsSync(p)) return undefined;
+  try {
+    const lines = readFileSync(p, "utf-8").split("\n");
+    const total = lines.filter((l) => l.trim().length > 0).length;
+    const stall = lines.filter((l) => l.includes("（stall）") || l.includes("(stall)")).length;
+    return { stall, total };
+  } catch {
+    return undefined;
+  }
 }
 
 export function buildDigest(ref: SessionRef, full: boolean, paths: DigestPaths): Digest | null {
@@ -2988,6 +3352,12 @@ export function buildDigest(ref: SessionRef, full: boolean, paths: DigestPaths):
   const timeoutRetry = events.filter((e) => e.event === "TimeoutRetry");
   const timeoutRetryExhausted = events.filter((e) => e.event === "TimeoutRetryExhausted");
   const streamStalls = events.filter((e) => e.event === "StreamStall");
+  // T2：幽灵超时（超时开在已结束的尝试上）。与上面那条 timeout_fired 汇总是两个问题：
+  // 汇总答「哪层开了几枪」，本检测器答「这些枪打在活靶上还是死靶上」。
+  const ghostTimeouts = detectGhostTimeouts(events);
+  // T3：泄漏流（流已结束 / 被放弃，stall 定时器还在报）。数据源是 RetryTelemetry 的
+  // `stream_stall`，与上面那条旧事件 `StreamStall` 不是一回事（见下方使用处的说明）。
+  const leakyStreams = detectLeakyStreams(events);
 
   // 缺口 2 进阶（本次事故指纹）：超时 fire 了却没生效 —— 最高价值信号，单列 high 异常。
   if (timeoutIneffective.length > 0) {
@@ -3043,7 +3413,50 @@ export function buildDigest(ref: SessionRef, full: boolean, paths: DigestPaths):
           mtime: fileMtimeIso(eventsPath),
         },
       ],
-      pointer: `若同 index 无对应 TimeoutIneffective，说明超时正常生效（触发即中断）`,
+      // T1（2026-11-04 会话 f5beebde）：这条 pointer 原来替读者下了「同 index 没有对应的
+      // TimeoutIneffective 就等于超时真生效」的结论。实测那次会话 10 次 TimeoutFired
+      // **全部**是幽灵触发（超时开在已经被放弃的尝试上）—— 按那句读会得出与事实完全
+      // 相反的结论。结论性判断一律交给下面的检测器，这里只留「看哪里」。
+      // （这段注释刻意不复述原句，否则 tests/trace/digest-ghost-timeout-leaky-stream.test.ts
+      //  的源码字面量门禁会被自己的注释命中 —— 那次红过一次。）
+      pointer: `超时是否真的生效看下面 timeout_fired_after_attempt_end 的判定结果 + 同 index 的 TimeoutIneffective`,
+    });
+  }
+
+  // ── T2：幽灵超时（超时开在已结束的尝试上）──
+  //
+  // 与上面那条汇总的关系：汇总只回答「哪层开了几枪」，本检测器回答「这些枪打在活靶上还是死靶上」。
+  // 分开两条而不是合并进汇总，是因为处置方向完全不同：前者是防线在工作，后者是防线在空转，
+  // 且泄漏本身（生成器被丢弃没 return）要用 PR1 的 raceIterate 那条线去修。
+  for (const ghost of ghostTimeouts) {
+    // 强证据：「fire 距终点」几乎正好等于阈值 → 定时器是从**放弃那一刻**起算的，
+    // 不是在流还活着时开的枪。容差 1s 是为了吸收时间戳取整（实测落盘精度到 ms）。
+    const thresholdNote =
+      ghost.thresholdMs !== undefined && Math.abs(ghost.gapMs - ghost.thresholdMs) < 1000
+        ? `；间隔 ≈ 阈值（${Math.round(ghost.thresholdMs / 1000)}s）→ 定时器从放弃那刻起算`
+        : "";
+    anomalies.push({
+      layer: "L0",
+      severity: "high",
+      kind: "timeout_fired_after_attempt_end",
+      detail:
+        `超时开在已结束的尝试上（幽灵触发）: layer=${ghost.layer} index=${ghost.index}` +
+        `${ghost.agentId ? ` agent=${ghost.agentId}` : ""}` +
+        ` —— 该尝试已于 ${ghost.endEvent} 结束，${fmtDuration(ghost.gapMs)} 后才开枪${thresholdNote}`,
+      provenance: [
+        {
+          sourceFile: eventsPath,
+          lineRef:
+            `event=TimeoutFired index=${ghost.index} layer=${ghost.layer}` +
+            ` → 晚于 event=${ghost.endEvent}`,
+          rawValue: `gap_ms=${ghost.gapMs} threshold_ms=${ghost.thresholdMs ?? "?"}`,
+          mtime: fileMtimeIso(eventsPath),
+        },
+      ],
+      pointer:
+        `生成器被消费方丢弃时没有 return() → finally 不执行 → idle 定时器照旧开枪。` +
+        `修法在 llm/race-iterate.ts + stream-lifecycle 的 cancelSource，` +
+        `不要靠调大阈值压掉（它不会消失，只会变少）`,
     });
   }
 
@@ -3091,6 +3504,55 @@ export function buildDigest(ref: SessionRef, full: boolean, paths: DigestPaths):
         pointer: `empty_chunks>0 说明网关在发 keepalive 但无业务内容（路径 A：keepalive 绕过 idle 超时）`,
       });
     }
+  }
+
+  // ── T3：泄漏流（流已结束 / 被放弃，stall 定时器还在报）──
+  //
+  // 与上面 `stream_stall`（旧事件 StreamStall）不是一回事：那条讲的是「这条流这次真的
+  // 卡了很久」，本检测器讲的是「这条流的定时器根本没被清掉」。前者是 hang 线索，
+  // 后者是资源泄漏，处置方向完全不同（前者查网络，后者查生成器有没有被 return）。
+  if (leakyStreams.length > 0) {
+    const longest = leakyStreams[0];
+    const stallWarn = countStallWarnLines(ref.dir);
+    // warn.log 占比只在有 warn.log 且确实被 stall 刷过时给：这是「日志被空转行淹没」
+    // 这个副作用唯一可量的证据，没有它读者只知道「有泄漏」，不知道「泄漏把什么冲掉了」。
+    const warnNote =
+      stallWarn && stallWarn.stall > 0
+        ? `；warn.log ${stallWarn.total} 行里 ${stallWarn.stall} 行是 stall` +
+          `（${((stallWarn.stall / stallWarn.total) * 100).toFixed(1)}%）`
+        : "";
+    const list = leakyStreams
+      .slice(0, 5)
+      .map(
+        (l) =>
+          `${l.agentId ?? "main"}#${l.turnIndex}（${l.stallCount} 条、存活 ${fmtDuration(l.spanMs)}，` +
+          `${l.criterion === "completed_after" ? "流结束后仍在报" : `进度冻结在 ${l.frozenTotalEvents} 个事件`}）`,
+      )
+      .join("、");
+    anomalies.push({
+      layer: "L0",
+      severity: "high",
+      kind: "leaky_stream_stall",
+      detail:
+        `${leakyStreams.length} 条流的 stall 定时器未随流终止而停止` +
+        `（最长 ${fmtDuration(longest.spanMs)}: ${longest.agentId ?? "main"}#${longest.turnIndex}）` +
+        `：${list}${leakyStreams.length > 5 ? " …" : ""}${warnNote}`,
+      provenance: [
+        {
+          sourceFile: eventsPath,
+          lineRef: "event=RetryTelemetry type=stream_stall 按 (agentId, turnIndex) 分组",
+          rawValue: leakyStreams
+            .slice(0, 5)
+            .map((l) => `${l.agentId ?? "main"}#${l.turnIndex}:${l.stallCount}条/${l.spanMs}ms`)
+            .join(" "),
+          mtime: fileMtimeIso(eventsPath),
+        },
+      ],
+      pointer:
+        `生成器被丢弃时没有 return() → lifecycle 的 finally 不执行 → clearInterval 跑不到。` +
+        `修法在 llm/race-iterate.ts 与 stream-lifecycle 的收尾，` +
+        `不是调大 stall 阈值（调大只会让它少报几条，泄漏照旧）`,
+    });
   }
 
   // ── T13.5：Side-call 健康诊断 ──
@@ -3199,6 +3661,36 @@ export function buildDigest(ref: SessionRef, full: boolean, paths: DigestPaths):
 
   const subAgents = buildSubAgentSummary(events);
   if (subAgents && subAgents.total > 0) {
+    // T5：失败原因与 sidechain 路径。
+    // 原来这条只报「3 失败」，读者据此无法决定处置方向 —— 额度耗尽要充值、网关 5xx 要重试、
+    // 模型不认工具要改 prompt，三者修法完全不同。2026-11-03 会话就是三个子代理全失败，
+    // 而 digest 只说「0 成功 / 3 失败」，评估时不得不手工回 raw.jsonl 才看清是额度问题。
+    const failedSpans = subAgents.spans.filter((s) => s.status === "error");
+    const familyCount = new Map<string, number>();
+    for (const s of failedSpans) {
+      if (!s.failureFamily) continue;
+      const key = s.failureReason ? `${s.failureFamily}/${s.failureReason}` : s.failureFamily;
+      familyCount.set(key, (familyCount.get(key) ?? 0) + 1);
+    }
+    const familyNote =
+      familyCount.size > 0
+        ? `；失败原因：${Array.from(familyCount.entries())
+            .map(([k, n]) => `${k}×${n}`)
+            .join("、")}`
+        : // 不写「未知原因」以外的任何猜测：没有 recovery_give_up 就是没有证据，
+          // 而失败族是处置方向的唯一依据，猜错比不写更糟。
+          `；失败原因未记录（无 recovery_give_up，可能是老轨迹或未经漏斗的失败路径）`;
+    // sidechain 是失败子代理成果的唯一指针：`tasks/*.output` 被驱逐后只有它还留着现场。
+    // 只列前 3 个，超过就省略 —— 一行里塞十条绝对路径会盖掉它前后的正文。
+    const transcripts = failedSpans
+      .map((s) => s.transcriptPath)
+      .filter((p): p is string => typeof p === "string" && p.length > 0);
+    const transcriptNote =
+      transcripts.length > 0
+        ? `；sidechain（完整轨迹，驱逐后仍可读）：${transcripts.slice(0, 3).join("、")}` +
+          `${transcripts.length > 3 ? ` …共 ${transcripts.length} 份` : ""}`
+        : "";
+
     // L0 事实：几成几败（客观计数，带出处）
     anomalies.push({
       layer: "L0",
@@ -3206,16 +3698,27 @@ export function buildDigest(ref: SessionRef, full: boolean, paths: DigestPaths):
       kind: "subagent_execution_outcome",
       detail:
         `子代理 ${subAgents.total} 个：${subAgents.succeeded} 成功 / ${subAgents.failed} 失败` +
-        `${subAgents.unknown > 0 ? ` / ${subAgents.unknown} 未知` : ""}（执行模式：${subAgents.concurrency}）`,
+        `${subAgents.unknown > 0 ? ` / ${subAgents.unknown} 未知` : ""}（执行模式：${subAgents.concurrency}）` +
+        (subAgents.failed > 0 ? familyNote + transcriptNote : ""),
       provenance: [
         {
           sourceFile: eventsPath,
-          lineRef: "event=SubagentStart/SubagentStop 配对",
-          rawValue: `total=${subAgents.total} ok=${subAgents.succeeded} fail=${subAgents.failed} mode=${subAgents.concurrency}`,
+          lineRef:
+            "event=SubagentStart/SubagentStop 配对（失败族取同 agentId 的 recovery_give_up）",
+          rawValue:
+            `total=${subAgents.total} ok=${subAgents.succeeded} fail=${subAgents.failed} mode=${subAgents.concurrency}` +
+            (familyCount.size > 0
+              ? ` families=${Array.from(familyCount.entries())
+                  .map(([k, n]) => `${k}:${n}`)
+                  .join(",")}`
+              : ""),
           mtime: fileMtimeIso(eventsPath),
         },
       ],
-      pointer: `raw.jsonl（子代理 tool_result 实际错误文本）`,
+      pointer:
+        transcripts.length > 0
+          ? `失败子代理的成果在 sidechain：${transcripts[0]}`
+          : `raw.jsonl（子代理 tool_result 实际错误文本）`,
     });
 
     // L0 事实 + L1 假设：多个子代理却全串行 —— 串行化根因的直接信号
@@ -3325,7 +3828,14 @@ export function buildDigest(ref: SessionRef, full: boolean, paths: DigestPaths):
   // 全部定级 medium 而非 high：这几项是**过程可疑**而非**确证故障**，
   // 每一项都有合法豁免场景（见 ProcessPathologyStats 各字段注释）。定成 high 会让
   // P1-7 的 WARN 通道被合法长任务刷屏，重演 §8.1 那 29 行噪声的教训。
-  for (const item of describePathology(pathology, ref, eventsPath)) anomalies.push(item);
+  // T7：把幽灵超时 / 泄漏流的索引传下去，让「计费缺口」那条读数能与它们交叉引用 ——
+  // 三者是同一条因果链（生成器被丢弃 → finally 不执行 → 不记账 + 定时器不停），
+  // 分开报会被读成三个独立问题，各派一次排查。
+  for (const item of describePathology(pathology, ref, eventsPath, {
+    ghostIndexes: new Set(ghostTimeouts.map((g) => g.index)),
+    leakyKeys: new Set(leakyStreams.map((l) => `${l.agentId ?? "main"}:${l.turnIndex}`)),
+  }))
+    anomalies.push(item);
   const billingAmount = checkBillingAmountConsistency(events, ledger);
   if (billingAmount) {
     anomalies.push({
@@ -3643,47 +4153,62 @@ export function renderHuman(d: Digest, opts: RenderOptions = {}): string {
 
   // T15.4：Provider 健康摘要
   if (d.providerStats && d.providerStats.length > 0) {
-    L.push("");
-    L.push(c("bold", "Provider 健康:"));
-    for (const ps of d.providerStats) {
-      const successRate =
-        ps.requests > 0
-          ? (((ps.requests - ps.failed - ps.timedOut) / ps.requests) * 100).toFixed(0)
-          : "N/A";
-      // P0-1：TTFT 现取自纯净的 first_content（首内容延迟，不含重试/生成污染）
-      const ttft = ps.ttft_p50 ? ` TTFT(首内容)P50=${(ps.ttft_p50 / 1000).toFixed(1)}s` : "";
-      // P0-1：新增生成耗时分位，让"慢在生成"这一主因显式可见
-      const gen = ps.gen_p50 ? ` 生成P50=${(ps.gen_p50 / 1000).toFixed(1)}s` : "";
-      // Bug B：avgLatencyMs 是整轮 API 耗时（含握手+生成+重试），标注清楚，不是网关握手延迟
-      const roundtrip = ` 整轮均耗:${(ps.avgLatencyMs / 1000).toFixed(1)}s`;
-      const warn = ps.warning ? c("yellow", ` ⚡${ps.warning}`) : "";
-      L.push(
-        `  ${c("cyan", ps.provider.padEnd(12))} 请求:${ps.requests} 成功率:${successRate}%${roundtrip}${ttft}${gen}${warn}`,
-      );
-      // P2-3：命中/未命中分桶 TTFT —— "缓存让首字快了多少"的唯一对照口径。
-      // 文案由 formatTtftBucketLine 统一（四个入口共用，避免措辞各写一遍后漂移）。
-      if (ps.ttftByCache) {
-        const line = formatTtftBucketLine(ps.ttftByCache, ps.ttftBucketDropped, {
-          colorize: (kind, text) => c(kind, text),
-          noDimension: ps.ttftNoDimension,
-          // P2-8：分桶分母与 n 同行。这里的上一行也有个「请求:N」，同样不可与 n 加减。
-          total: ps.ttftSampleTotal,
-        });
-        if (line) L.push(`  ${" ".repeat(12)} └ ${line}`);
-      }
-      // P1（§0.1b）：TTFT/TTFB 按 model 拆行。**上面那行的 provider 级 TTFT 不足够**——
-      // 同一 provider 下不同网关路由的 TTFB 语义不同（一路"模型出字"、一路"网关接单"），
-      // 合成一个数就是本 PR 要消灭的假结论。文案走 formatModelLatencyLine（两入口共用）。
-      if (ps.latencyByModel) {
-        // 按样本数降序：n 大的路由才是这个 provider 的主要延迟来源，排前面
-        const rows = Object.entries(ps.latencyByModel).sort((a, b) => b[1].n - a[1].n);
-        for (const [model, s] of rows) {
-          L.push(
-            `  ${" ".repeat(12)} └ ${formatModelLatencyLine(model, s, {
-              colorize: (kind, text) => c(kind, text),
-            })}`,
-          );
+    const healthGroups = groupProviderHealth(d.providerStats);
+    // 整组都被「零请求」过滤掉时不再打标题 —— 只剩一个空标题比没有更糟
+    if (healthGroups.length > 0) {
+      L.push("");
+      L.push(c("bold", "Provider 健康:"));
+      // 单行渲染（含 TTFT 分桶 / 按 model 的子行）。抽成闭包是因为主行与协议子行
+      // 走的是同一套渲染，抄两遍必然漂移（本文件的既有教训）。
+      const renderRow = (ps: ProviderDigestStats, label: string, indent: string) => {
+        // T4：`N/A` 是老轨迹的正常表达（该 provider 没有请求分母），不能再带一个百分号 ——
+        // 原写法 `成功率:N/A%` 把「没数据」印成了「有一个叫 N/A 的百分比」。
+        const successRate =
+          ps.requests > 0
+            ? `${(((ps.requests - ps.failed - ps.timedOut) / ps.requests) * 100).toFixed(0)}%`
+            : "N/A";
+        // P0-1：TTFT 现取自纯净的 first_content（首内容延迟，不含重试/生成污染）
+        const ttft = ps.ttft_p50 ? ` TTFT(首内容)P50=${(ps.ttft_p50 / 1000).toFixed(1)}s` : "";
+        // P0-1：新增生成耗时分位，让"慢在生成"这一主因显式可见
+        const gen = ps.gen_p50 ? ` 生成P50=${(ps.gen_p50 / 1000).toFixed(1)}s` : "";
+        // Bug B：avgLatencyMs 是整轮 API 耗时（含握手+生成+重试），标注清楚，不是网关握手延迟
+        const roundtrip = ` 整轮均耗:${(ps.avgLatencyMs / 1000).toFixed(1)}s`;
+        const warn = ps.warning ? c("yellow", ` ⚡${ps.warning}`) : "";
+        L.push(
+          `${indent}${c("cyan", label.padEnd(12))} 请求:${ps.requests} 成功率:${successRate}${roundtrip}${ttft}${gen}${warn}`,
+        );
+        // P2-3：命中/未命中分桶 TTFT —— "缓存让首字快了多少"的唯一对照口径。
+        // 文案由 formatTtftBucketLine 统一（四个入口共用，避免措辞各写一遍后漂移）。
+        if (ps.ttftByCache) {
+          const line = formatTtftBucketLine(ps.ttftByCache, ps.ttftBucketDropped, {
+            colorize: (kind, text) => c(kind, text),
+            noDimension: ps.ttftNoDimension,
+            // P2-8：分桶分母与 n 同行。这里的上一行也有个「请求:N」，同样不可与 n 加减。
+            total: ps.ttftSampleTotal,
+          });
+          if (line) L.push(`  ${" ".repeat(12)} └ ${line}`);
         }
+        // P1（§0.1b）：TTFT/TTFB 按 model 拆行。**上面那行的 provider 级 TTFT 不足够**——
+        // 同一 provider 下不同网关路由的 TTFB 语义不同（一路"模型出字"、一路"网关接单"），
+        // 合成一个数就是本 PR 要消灭的假结论。文案走 formatModelLatencyLine（两入口共用）。
+        if (ps.latencyByModel) {
+          // 按样本数降序：n 大的路由才是这个 provider 的主要延迟来源，排前面
+          const rows = Object.entries(ps.latencyByModel).sort((a, b) => b[1].n - a[1].n);
+          for (const [model, s] of rows) {
+            L.push(
+              `  ${" ".repeat(12)} └ ${formatModelLatencyLine(model, s, {
+                colorize: (kind, text) => c(kind, text),
+              })}`,
+            );
+          }
+        }
+      };
+
+      for (const group of healthGroups) {
+        renderRow(group.primary, group.primaryLabel, "  ");
+        // 协议子行缩进 4：视觉上归属上一行，且**数值不做合并** ——
+        // 分位数不可再平均（北极星铁律），把 responses 的 TTFT 并进 openai 的 P50 就是新的假数。
+        for (const sub of group.subs) renderRow(sub.stats, `└ ${sub.label}`, "    ");
       }
     }
   }
@@ -3709,8 +4234,28 @@ export function renderHuman(d: Digest, opts: RenderOptions = {}): string {
     // 只在 >0 时打印 —— 恒打印一行 "含 HITL 0 个" 会把"防线没被触发"读成噪声。
     if (m.e2e_hitl_n > 0) {
       L.push(
-        c("gray", `  其中 ${m.e2e_hitl_n}/${m.e2e_n} 轮含权限确认等待`) +
-          c("gray", " —— 评估 agent 自身速度时应排除这些样本"),
+        c("gray", `  其中 ${m.e2e_hitl_n}/${m.e2e_n} 轮含人工等待（权限确认 / fallback 询问）`),
+      );
+      // T6：**直接给出剔除后的分位数**，而不是让读者自己剔除。
+      // 原来这行只写「评估 agent 自身速度时应排除这些样本」—— 建议是对的，但消费侧
+      // 拿不到剔除后的分位数，这条建议结构上做不到，结果就是谁都不剔。
+      if (m.e2e_no_hitl_n > 0) {
+        L.push(
+          c("bold", "  剔除 HITL 后:") +
+            ` P50=${s(m.e2e_no_hitl_p50)} P95=${s(m.e2e_no_hitl_p95)} P99=${s(m.e2e_no_hitl_p99)}` +
+            c("gray", `  n=${m.e2e_no_hitl_n}（agent 自身速度，与上面的 n 是两个分母）`),
+        );
+      } else {
+        // 不静默省略：每一轮都等过人时「没有干净样本」本身就是要说的事实
+        L.push(c("gray", "  剔除后可评估的样本为 0 —— 每轮都等过人，给不出 agent 自身速度"));
+      }
+    }
+    // T6：轮级人工等待合计。它与下面「等人确认」（弹窗级）不同源、不可相加：
+    // 一轮可能弹多次，也可能弹窗之外还等了 fallback 询问。
+    if (m.turn_hitl_wait_n > 0) {
+      L.push(
+        c("gray", `  轮级人工等待合计: ${s(m.turn_hitl_wait_total_ms)}`) +
+          c("gray", `（${m.turn_hitl_wait_n} 轮带计时，来自 TurnComplete.hitl_wait_ms）`),
       );
     }
     // 缺陷 7：给出「减掉那一段」所需的时长，而不只是「整轮剔除」的计数
@@ -4557,6 +5102,88 @@ export function aggregateProviderStats(
 }
 
 /**
+ * T4：把 lifecycle 的协议标签并回它所属的主 provider。
+ *
+ * ## 问题
+ *
+ * 健康表原先按 `ProviderDigestStats.provider` 逐行输出，而那个字段有两个来源：
+ * - `AfterModelRaw.provider` —— 配置里的 provider 名（`openai`）；
+ * - `RetryTelemetry.provider` —— lifecycle 的 `label.toLowerCase()`（`openai-responses`）。
+ *
+ * 于是一次请求在表里变成两行：`openai 请求:30 成功率:90%` 与
+ * `openai-responses 请求:0 成功率:N/A%`。后者不是独立 provider，也不是数据缺失 ——
+ * 它是同一家的另一条协议路径，而 `requests` 只在 AfterModelRaw 分支累加，所以它恒为 0。
+ * 读表的人会以为「responses 这条路根本没被用过」，实际本会话每条请求都走它。
+ *
+ * ## 做法与边界
+ *
+ * - 只按**已知列表**归并（{@link PROTOCOL_LABEL_MAP}），不做通用 `-` 切分：
+ *   provider 名来自用户配置，`my-gateway` / `glm-4` 里的 `-` 不是协议边界。
+ *   新增协议路径时在这里登记一条即可。
+ * - 请求数为 0 的成员**不输出**：没有分母的行只会制造「这条路没被用过」的错觉。
+ *   代价是「请求 0 次但有超时/失败计数」这类无分母异常不再单列 —— 它们本来也
+ *   无法从成功率看出来，该由 `retry_wasted_tokens` / `timeout_fired` 那条线报。
+ * - 组内数值**不做合并**：分位数不可再平均（北极星铁律 2/3），把 responses 的 TTFT
+ *   并进 openai 的 P50 就是一条新的假结论。同 provider 多协议时各自一行、缩进示归属。
+ */
+const PROTOCOL_LABEL_MAP: Record<string, { base: string; protocol: string }> = {
+  "openai-responses": { base: "openai", protocol: "responses" },
+};
+
+/** 健康表的一组：主行 + 同 provider 下的协议子行 */
+export interface ProviderHealthGroup {
+  /** 主行 stats（组内请求数最大的那个） */
+  primary: ProviderDigestStats;
+  /** 主行显示名：组内唯一成员且有协议时写 `base / protocol`，否则只写 base */
+  primaryLabel: string;
+  /** 协议子行（label 只写协议名，缩进表示归属） */
+  subs: Array<{ label: string; stats: ProviderDigestStats }>;
+}
+
+export function groupProviderHealth(stats: readonly ProviderDigestStats[]): ProviderHealthGroup[] {
+  interface Row {
+    base: string;
+    protocol?: string;
+    stats: ProviderDigestStats;
+  }
+  const byBase = new Map<string, Row[]>();
+  for (const ps of stats) {
+    const mapped = PROTOCOL_LABEL_MAP[ps.provider.toLowerCase()];
+    const base = mapped?.base ?? ps.provider;
+    const row: Row = {
+      base,
+      ...(mapped ? { protocol: mapped.protocol } : {}),
+      stats: ps,
+    };
+    const arr = byBase.get(base);
+    if (arr) arr.push(row);
+    else byBase.set(base, [row]);
+  }
+
+  const groups: ProviderHealthGroup[] = [];
+  for (const [base, rows] of byBase) {
+    const kept = rows.filter((r) => r.stats.requests > 0);
+    if (kept.length === 0) continue;
+    // 无协议的排前面（它是主路径），其余按协议名稳定排序，避免每次跑出来的顺序不同
+    kept.sort((a, b) => {
+      if (!a.protocol && b.protocol) return -1;
+      if (a.protocol && !b.protocol) return 1;
+      return (a.protocol ?? "").localeCompare(b.protocol ?? "");
+    });
+    const [first, ...rest] = kept;
+    const labelOf = (r: Row, alone: boolean) =>
+      r.protocol ? (alone ? `${base} / ${r.protocol}` : r.protocol) : base;
+    groups.push({
+      primary: first.stats,
+      primaryLabel: labelOf(first, kept.length === 1),
+      subs: rest.map((r) => ({ label: labelOf(r, false), stats: r.stats })),
+    });
+  }
+  // 主行请求数降序：先看调用量最大的 provider
+  return groups.sort((a, b) => b.primary.requests - a.primary.requests);
+}
+
+/**
  * P0-2：从 events 派生**会话级**指标，供 session-index 长期留存。
  *
  * 与 `aggregateProviderStats` 共用同一份 TTFT 判据（`StreamPhase("first_content")`
@@ -4577,9 +5204,14 @@ export function aggregateSessionMetrics(
 ): SessionLevelMetrics {
   const ttfts: number[] = [];
   const e2es: number[] = [];
+  // T6：剔除 had_hitl 的那一组 —— 「agent 自身速度」的干净口径
+  const e2esNoHitl: number[] = [];
   let hitlSamples = 0;
   let hitlPrompts = 0;
   const hitlWaits: number[] = [];
+  // T6：轮级人工等待（TurnComplete.hitl_wait_ms），与上面弹窗级的 hitlWaits 不同源
+  let turnHitlTotalMs = 0;
+  let turnHitlN = 0;
   // B9（PR-7）：冲突事件计数。byAction 完整分布进 session-index（collector 侧累加器），
   // digest 这里只出报告用的三个关键数 + 误报率代理分子
   let conflictCount = 0;
@@ -4623,6 +5255,18 @@ export function aggregateSessionMetrics(
         // 含 HITL 的样本单独计数（不剔除）。只在**进了分位数样本的那些轮**上计，
         // 否则分子会包含没进分母的轮，得到 "hitl_n > e2e_n" 这种自相矛盾的数。
         if (e.data.had_hitl === true) hitlSamples++;
+        // T6：不含 HITL 的那一组单独收样本 —— 这是「agent 自身速度」的唯一干净口径。
+        // 原来只给「含 HITL N/M」的计数，消费侧知道要剔除却剔不掉（拿不到剔除后的分位数）。
+        else e2esNoHitl.push(ms);
+      }
+      // T6：轮级人工等待（`TurnComplete.hitl_wait_ms`，F4 落盘）。
+      // 与下面 PermissionDecision 的 `duration_ms` **不同源、不可相加**：那是「某次弹窗等了多久」，
+      // 这是「这一轮总共等了多久」（一轮可能弹多次，还可能含 fallback 询问）。
+      // 两者都留是因为「评估 agent 速度」要的是轮级扣减，而「弹窗体验」要的是单次分布。
+      const turnHitl = e.data.hitl_wait_ms;
+      if (typeof turnHitl === "number" && turnHitl > 0) {
+        turnHitlTotalMs += turnHitl;
+        turnHitlN++;
       }
     }
 
@@ -4715,6 +5359,9 @@ export function aggregateSessionMetrics(
   const sortedHitl = [...hitlWaits].sort((a, b) => a - b);
   const sortedTtfts = [...ttfts].sort((a, b) => a - b);
   const sortedE2es = [...e2es].sort((a, b) => a - b);
+  // T6：剔除 HITL 的那一组。单独排序是因为它是**另一组样本**，不是同一个数组的过滤视图 ——
+  // 两组的分位数要能各自复算（消费侧拿到的是两个独立口径）。
+  const sortedE2esNoHitl = [...e2esNoHitl].sort((a, b) => a - b);
 
   return {
     // 分位数无样本时 percentile 返回 undefined，正是想要的语义（不是 0）
@@ -4726,6 +5373,16 @@ export function aggregateSessionMetrics(
     e2e_p99: percentile(sortedE2es, 0.99),
     e2e_n: sortedE2es.length,
     e2e_hitl_n: hitlSamples,
+    // T6：剔除 HITL 的那一组。样本数必须一起给 —— 它和上面的 e2e_n 是**两个分母**，
+    // 不标 n 会让人以为两条曲线样本量相同（实测同一会话可能是 1 条 vs 30 条）。
+    e2e_no_hitl_p50: percentile(sortedE2esNoHitl, 0.5),
+    e2e_no_hitl_p95: percentile(sortedE2esNoHitl, 0.95),
+    e2e_no_hitl_p99: percentile(sortedE2esNoHitl, 0.99),
+    e2e_no_hitl_n: sortedE2esNoHitl.length,
+    // T6：轮级人工等待合计（TurnComplete.hitl_wait_ms）。与下面 hitl_wait_total_ms
+    // （弹窗级）不同源、不可相加，见字段注释。
+    turn_hitl_wait_total_ms: turnHitlTotalMs,
+    turn_hitl_wait_n: turnHitlN,
     hitl_prompts: hitlPrompts,
     hitl_wait_n: sortedHitl.length,
     hitl_wait_total_ms: sortedHitl.reduce((a, b) => a + b, 0),
@@ -5637,10 +6294,23 @@ const EXIT_TRUNCATION_WINDOW_MS = 10_000;
  *   P1-7 的 WARN 通道被正常长任务刷屏 —— 宁可让人主动查 digest，
  *   也不要把告警训练成噪音（§8.1 那 29 行的教训）。
  */
-function describePathology(
+export function describePathology(
   p: ProcessPathologyStats,
   ref: SessionRef,
   eventsPath: string,
+  /**
+   * T7：幽灵超时 / 泄漏流的索引，用于把「计费缺口」与它们连起来。
+   *
+   * 这两类发现是**同一条因果链**上的两段：生成器被丢弃 → `finally` 不执行 →
+   * `BilledRequest` 不写（缺口）且定时器不停（幽灵超时 / 泄漏流）。
+   * 分开报时读的人会当成两个独立问题，各派一次排查。
+   */
+  crossRefs?: {
+    /** 幽灵超时的 index 集合（`detectGhostTimeouts` 的产出，无 agentId 故只按 index） */
+    ghostIndexes: Set<number>;
+    /** 泄漏流的 `agentId:turnIndex` 集合（`detectLeakyStreams` 的产出） */
+    leakyKeys: Set<string>;
+  },
 ): Anomaly[] {
   const out: Anomaly[] = [];
   const trajFile = join(ref.dir, "session.traj");
@@ -5735,6 +6405,24 @@ function describePathology(
     // 定级 high（其余病态项是 medium）：这不是"过程可疑"，是钱的账对不上 ——
     // 少了是漏记（账单会高于自报），多了是重复上报（去重失效）。两个方向都是确证缺陷。
     const diff = p.billedRequests! - p.billableConnections;
+    // T7：把缺口与 T2/T3 连起来 —— 它们是**同一条因果链的两段**：生成器被丢弃 →
+    // `finally` 不执行 → `BilledRequest` 不写（缺口）且定时器不停（幽灵超时 / 泄漏流）。
+    // 不连起来的话，读者会把「少了 11 条计费」和「10 次幽灵超时」当成两个独立问题各查一遍。
+    // 匹配键：泄漏流用 `agentId:turnIndex`（同空间，见 detectLeakyStreams 注释）；
+    // 幽灵超时只有 index（TimeoutFired 不落 agent_id），所以只按 index 匹配并如实标注 —
+    // 同一 index 号段内可能有多个 agent，不能声称是同一个。
+    const crossRef = (m: { index?: unknown; agentId?: string }): string => {
+      if (!crossRefs) return "";
+      const idx = typeof m.index === "number" ? m.index : undefined;
+      if (idx === undefined) return "";
+      if (crossRefs.leakyKeys.has(`${m.agentId ?? "main"}:${idx}`)) {
+        return "（该流的 stall 定时器未随流终止，见 leaky_stream_stall）";
+      }
+      if (crossRefs.ghostIndexes.has(idx)) {
+        return "（该尝试被放弃且生成器未收尾，见 timeout_fired_after_attempt_end）";
+      }
+      return "";
+    };
     // 点名缺计费事件的建连（最多 5 个），读的人不用自己去配对
     const missingNote = p.unbilledConnections?.length
       ? `；缺计费事件的建连：${p.unbilledConnections
@@ -5744,7 +6432,8 @@ function describePathology(
               `${m.agentId ?? "main"}#${String(m.index)}` +
               (m.msBeforeEnd !== undefined
                 ? `（SessionEnd 前 ${fmtDuration(m.msBeforeEnd)}）`
-                : ""),
+                : "") +
+              crossRef(m),
           )
           .join("、")}${p.unbilledConnections.length > 5 ? " …" : ""}`
       : "";

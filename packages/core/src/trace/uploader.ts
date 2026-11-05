@@ -1147,6 +1147,9 @@ export const LOCAL_ONLY_EVENT_DATA_FIELDS = [
   // SubagentStart 的子代理工作目录（绝对路径）：只供本地判定「工具调用打在哪个目录」，
   // 云端靠 `isolation` 就能按隔离与否分组。
   "agent_cwd",
+  // T5：SubagentStop 的 sidechain 路径（绝对路径，含用户名）。digest 靠它回答「失败子代理
+  // 的成果在哪」，属于纯本地排障信息；云端有 agent_id 就能自己关联，不需要这条路径。
+  "agent_transcript_path",
 ] as const;
 
 const LOCAL_ONLY_NEEDLES = LOCAL_ONLY_EVENT_DATA_FIELDS.map((f) => `"${f}"`);
