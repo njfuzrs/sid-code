@@ -82,6 +82,15 @@ export interface UIState {
   dialogsVisible: boolean;
   /** Ctrl+T 隐藏后台任务面板（仅隐藏 UI，任务照常运行）。默认 false=显示。 */
   taskPanelHidden: boolean;
+  /**
+   * 输入框当前是否为空的**可变引用**（不参与渲染）。
+   *
+   * 用途：App 的 Esc 双击门控要在 keypress handler 里读它——那类闭包会拿到上一帧的
+   * state，所以必须读 ref；而这个值不参与任何渲染，用 state 会让每敲一个字符就重渲整棵树。
+   * 约定：InputArea 在 buffer 变化时写入，App 只读。
+   * ⚠️ 别拿 `App.tsx` 里那个 `isEmpty` 顶替，它的含义是「历史为空且不在流式输出」。
+   */
+  inputEmptyRef: { current: boolean };
 }
 
 /** UI 操作 */
@@ -167,6 +176,8 @@ export const UIStateProvider: React.FC<UIStateProviderProps> = ({ children }) =>
   const [showEscapePrompt, setShowEscapePrompt] = useState(false);
   const [dialogsVisible, setDialogsVisible] = useState(false);
   const [taskPanelHidden, setTaskPanelHidden] = useState(false);
+  // A1：输入框是否为空——用 ref 而不是 state，理由见 UIState.inputEmptyRef 注释。
+  const inputEmptyRef = useRef(true);
 
   // 瞬态消息的到期定时器：新消息覆盖旧消息时必须作废旧定时器，
   // 否则旧定时器会按「上一条」的时长把新消息提前清掉。
@@ -241,6 +252,7 @@ export const UIStateProvider: React.FC<UIStateProviderProps> = ({ children }) =>
       showEscapePrompt,
       dialogsVisible,
       taskPanelHidden,
+      inputEmptyRef,
     }),
     [
       renderMarkdown,
@@ -253,6 +265,7 @@ export const UIStateProvider: React.FC<UIStateProviderProps> = ({ children }) =>
       showEscapePrompt,
       dialogsVisible,
       taskPanelHidden,
+      inputEmptyRef,
     ],
   );
 

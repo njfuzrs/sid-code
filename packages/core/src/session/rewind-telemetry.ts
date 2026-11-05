@@ -16,7 +16,7 @@
  *
  * ## 为什么在入口层埋而不是 CheckpointManager
  *
- * `RewindManager.rewindTo` 内部也会调 `restoreToSnapshot`，埋在 CheckpointManager 会让
+ * `RewindManager.rewindTo` 内部也会调 `restoreBeforeSnapshot`，埋在 CheckpointManager 会让
  * 一次面板回滚记两条；而 `/rewind <n>` 只动对话、根本不经过 checkpoint，会整条漏掉。
  * 所以事件必须落在**用户动作的入口**，一次动作恰好一条。
  *
@@ -46,7 +46,7 @@ export type RewindVia = "dialog" | "rewind_n" | "undo" | "undo_file" | "restore"
  * 结果（闭集）：
  * - ok：确实回滚了东西
  * - nothing：没有可回滚的内容（点不存在 / 没有可撤销修改 / 对话锚点失效）
- * - snapshot_miss：回滚点有快照 id，但 `restoreToSnapshot` 返回 null（D5 的复发计数）
+ * - snapshot_miss：回滚点有快照 id，但 `restoreBeforeSnapshot` 返回 null（D5 的复发计数）
  * - error：执行过程中抛错
  */
 export type RewindOutcome = "ok" | "nothing" | "snapshot_miss" | "error";

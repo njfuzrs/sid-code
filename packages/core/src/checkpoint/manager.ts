@@ -674,6 +674,139 @@ export class CheckpointManager {
   }
 
   /**
+   * 把磁盘恢复到**产生 sN 那次工具调用之前**的状态，即回滚 `[sN, 最新]` 全区间（**含 sN 自己**）。
+   *
+   * 与 `restoreToSnapshot` 的唯一差别就是回滚范围，两个调用方的锚点口径不同且各自都对：
+   *   - `/restore <sN>`：用户明确点的是这个快照，sN 本身要保留 ⇒ 用 `restoreToSnapshot`（sN 之后）。
+   *   - 会话回退（Esc+Esc / `/rewind`）：回退点的文件锚点是「本轮首个快照」，而按单一真相源
+   *     「sN 存的是产生 sN 那次调用**之前**的内容」（见 rebuildContentBeforeSnapshot 注释），
+   *     回到「本轮之前」必须连 sN 一起撤 ⇒ 用本方法。
+   *
+   * 修之前 rewind 借用了 `restoreToSnapshot`，于是 `slice(targetIndex + 1)` 与锚点差了一格：
+   * 本轮只改过一次文件时切出空数组，返回 `files: []`（用户看到「已回退（仅代码）· 回滚了 0 个文件」
+   * 而磁盘没动）；本轮改过多次时则少撤第一次，结果比用户选的位置晚一步，UI 照样显示「已回退」。
+   *
+   * 注意这不是「把 restoreToSnapshot 的范围改一下就完事」：那个语义被 `/restore` 与
+   * p0-undo-restore-semantics 的用例锁着，改它是把 rewind 的需求硬塞给 /restore
+   * （`/restore s3` 会连 s3 自己一起撤，又回到 N5 修过的「多退一步」）。
+   */
+  async restoreBeforeSnapshot(snapshotId: string): Promise<RestoreResult | null> {
+    if (!this.config.enabled) {
+      return null;
+    }
+
+    const log = getLogger();
+    const targetIndex = this.index.snapshots.findIndex((s) => s.id === snapshotId);
+
+    if (targetIndex === -1) {
+      log.warn("CHECKPOINT", `快照不存在: ${snapshotId}`);
+      return null;
+    }
+
+    // 含 sN 自己——这是与 restoreToSnapshot 唯一的范围差别。
+    const snapshotsToRollback = this.index.snapshots.slice(targetIndex);
+    const affectedFiles = new Map<string, { action: "restored" | "deleted" }>();
+    const failedFiles: string[] = [];
+
+    // 按「区间内**最早**条目」判断每个文件在目标时刻的样子。
+    //
+    // 为什么不能照抄 restoreToSnapshot 的「最新条目优先」（它从最新往前、每个文件只看第一次遇到的那条）：
+    // 判断存在性必须用最早那条。设想 b 在 s2 新建（existedBefore=false）、s3 又被 edit
+    // （existedBefore=true, type=diff）：按最新条目会走「写回内容」分支，而 rebuildContentAtSnapshot(b, 目标)
+    // 在目标之前找不到 b 的 full 基点，readFirstFullContentAfter 又会拿到 s2 那条 `content: ""`
+    // ⇒ **写出一个空文件而不是删掉它**，结果里还报 restored、failedFiles 为空（已实测复现，方案文档 P4）。
+    // restoreToSnapshot 的这个缺陷单独修，本方法从设计上避开它。
+    // ⚠️ 区间只在这里定义一次（`snapshotsToRollback`），下面按它遍历。
+    // 先前的写法是从 `targetIndex` 再写一遍 `for (...; i < snapshots.length; ...)`——
+    // 同一个「回滚区间」在两处表达，改一处忘另一处就是下一次「回滚 0 个文件」（变异自证实测抓到的）。
+    const earliestEntry = new Map<string, { file: SnapshotFile; snapshotIndex: number }>();
+    for (let offset = 0; offset < snapshotsToRollback.length; offset++) {
+      for (const file of snapshotsToRollback[offset]!.files) {
+        if (earliestEntry.has(file.filePath)) continue;
+        earliestEntry.set(file.filePath, { file, snapshotIndex: targetIndex + offset });
+      }
+    }
+
+    for (const [filePath, { file, snapshotIndex }] of earliestEntry) {
+      if (!file.existedBefore) {
+        // 目标时刻该文件还不存在（是回滚区间内才新建的）⇒ 删掉它。
+        if (existsSync(filePath)) {
+          try {
+            unlinkSync(filePath);
+            affectedFiles.set(filePath, { action: "deleted" });
+            log.info("CHECKPOINT", `已删除新文件: ${filePath}`);
+          } catch (err: any) {
+            log.warn("CHECKPOINT", `删除文件失败: ${filePath} - ${err.message}`);
+            failedFiles.push(filePath);
+          }
+        }
+        // 文件本来就不在 ⇒ 目标状态就是「不存在」，算达成（与 restoreToSnapshot 同口径：不计入 files）。
+        continue;
+      }
+
+      // existedBefore=true：目标时刻该文件存在，且最早条目存的就是「产生它那次调用之前」的内容。
+      // full 直接解码；diff 则重建——重建目标是**最早条目所在的那个快照**，不是「区间前一格」：
+      // rebuildContentAtSnapshot(f, sK) 得到的正是「产生 sK 那次调用之前」的内容，而
+      // sN..sK-1 之间该文件没有任何条目 ⇒ 这就是目标时刻的内容。
+      let content: FileContent | null = null;
+      if (file.type === "full") {
+        try {
+          content = decodeFullEntry(file);
+        } catch {
+          content = null; // 索引损坏（base64/解压失败）⇒ 计入失败，不静默跳过
+        }
+      } else {
+        content = await this.rebuildContentAtSnapshot(
+          filePath,
+          this.index.snapshots[snapshotIndex].id,
+        );
+      }
+
+      if (content === null) {
+        log.warn(
+          "CHECKPOINT",
+          `无法重建文件在快照 ${snapshotId} 之前的内容，该文件未回滚: ${filePath}`,
+        );
+        failedFiles.push(filePath);
+        continue;
+      }
+
+      try {
+        await Bun.write(filePath, content);
+        affectedFiles.set(filePath, { action: "restored" });
+        log.info("CHECKPOINT", `已恢复文件: ${filePath}`);
+      } catch (err: any) {
+        log.warn("CHECKPOINT", `恢复文件失败: ${filePath} - ${err.message}`);
+        failedFiles.push(filePath);
+      }
+    }
+
+    // 截断 index：sN 及其之后的快照都不再存在（磁盘已回到产生 sN 之前的状态）。
+    // `nextId` 不回退——旧快照 id 仍可能挂在别处（如 file_changes 的 lastSnapshotId），
+    // id 复用会让那些旧锚点误命中新快照。
+    this.index.snapshots = this.index.snapshots.slice(0, targetIndex);
+    await this.saveIndex();
+
+    if (failedFiles.length > 0) {
+      log.warn(
+        "CHECKPOINT",
+        `回退到 ${snapshotId} 之前时有 ${failedFiles.length} 个文件未能回滚（磁盘仍是回滚前的状态）: ${failedFiles.join(", ")}`,
+      );
+    }
+
+    return {
+      targetSnapshotId: snapshotId,
+      snapshotsRolledBack: snapshotsToRollback.length,
+      files: Array.from(affectedFiles.entries()).map(([filePath, { action }]) => ({
+        filePath,
+        action,
+      })),
+      // 与 N4 同口径：调用方据此如实告知「哪些文件没回滚成功」，而不是把部分失败显示成成功。
+      failedFiles,
+    };
+  }
+
+  /**
    * N4：取某文件在 `afterIndex` **之后**的首个 `full` 条目的内容。
    *
    * 用于「该文件在目标快照之后才第一次被改动」这一类：它的 full 基点在目标快照之后，
