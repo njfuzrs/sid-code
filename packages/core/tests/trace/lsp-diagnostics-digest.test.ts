@@ -62,6 +62,67 @@ describe("aggregateLspDiagnosticsStats", () => {
     expect(s.staleVersion).toBe(1);
     expect(s.byAgent).toEqual({ "sub-1": { collects: 1, injected: 1 } });
   });
+
+  // U11（2026-11-05 新鲜度口径）：新字段要能累加，且老会话（事件里没有这些字段）不报错
+  test("U11：新鲜度字段累加正确", () => {
+    const ev = (data: Record<string, unknown>) => ({ event: LSP_DIAGNOSTICS_EVENT_NAME, data });
+    const s = aggregateLspDiagnosticsStats([
+      ev({
+        outcome: "injected",
+        publishes: 10,
+        fresh_by_version: 0,
+        fresh_by_barrier: 8,
+        unverified: 1,
+        baseline: 1,
+        drifted_files: 2,
+        injected_first_publish: 1,
+      }),
+      ev({
+        outcome: "injected",
+        publishes: 5,
+        fresh_by_version: 3,
+        fresh_by_barrier: 0,
+        unverified: 2,
+        baseline: 0,
+        drifted_files: 0,
+        injected_first_publish: 0,
+      }),
+    ])!;
+    expect(s.freshByVersion).toBe(3);
+    expect(s.freshByBarrier).toBe(8);
+    expect(s.unverified).toBe(3);
+    expect(s.baseline).toBe(1);
+    expect(s.driftedFiles).toBe(2);
+    expect(s.injectedFirstPublish).toBe(1);
+    // 恒等式：各类新鲜度之和 = 推送总数（口径自洽，漏一类就会露馅）
+    expect(s.freshByVersion + s.freshByBarrier + s.unverified + s.baseline).toBe(s.publishes);
+  });
+
+  test("U11：老会话的 LspDiagnostics 事件没有新字段 → 记 0，不 NaN、不报错", () => {
+    const s = aggregateLspDiagnosticsStats([
+      {
+        event: LSP_DIAGNOSTICS_EVENT_NAME,
+        // 2026-10-24 版事件的全部字段，没有 fresh_* / unverified / baseline / drifted_files
+        data: {
+          outcome: "injected",
+          injected: 2,
+          carried: 0,
+          omitted_info: 0,
+          publishes: 3,
+          publishes_with_version: 0,
+          stale_syncing: 0,
+          stale_version: 0,
+        },
+      },
+    ])!;
+    expect(s.freshByVersion).toBe(0);
+    expect(s.freshByBarrier).toBe(0);
+    expect(s.unverified).toBe(0);
+    expect(s.baseline).toBe(0);
+    expect(s.driftedFiles).toBe(0);
+    expect(s.injectedFirstPublish).toBe(0);
+    expect(Number.isNaN(s.unverified)).toBe(false);
+  });
 });
 
 describe("接线门禁：LspDiagnostics 必须真正写进轨迹", () => {

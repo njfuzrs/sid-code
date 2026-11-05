@@ -66,9 +66,16 @@ export function registerLSPNotificationHandlers(
 
 /**
  * 将诊断文件列表格式化为人类可读文本（注入系统提示词）。
+ *
+ * 新鲜度标注（2026-11-05）：能**证明**诊断基于最近一次编辑后的内容时，在文件标题行加一句
+ * 「（基于你最近一次编辑后的内容）」。依据是会话 20261105-101209-8d3d3149：诊断其实是**对的**，
+ * 模型仍花了一轮去 `sed -n` 重读文件核实——因为注入文本里没有任何新鲜度信息可依。
+ *
+ * 只在 `fresh_by_version` / `fresh_by_barrier` 时标注：`unverified` 不标注（不说谎），
+ * `baseline` 也不标注（那种文件本就没被编辑过，谈不上「最近一次编辑」）。
  */
 export function formatDiagnostics(
-  files: Array<{ uri: string; diagnostics: Diagnostic[] }>,
+  files: Array<{ uri: string; diagnostics: Diagnostic[]; freshness?: string }>,
 ): string {
   const lines: string[] = [];
   for (const file of files) {
@@ -81,7 +88,9 @@ export function formatDiagnostics(
       /* 保持原样 */
     }
 
-    lines.push(`## ${displayPath}`);
+    const provableFresh =
+      file.freshness === "fresh_by_version" || file.freshness === "fresh_by_barrier";
+    lines.push(`## ${displayPath}${provableFresh ? "（基于你最近一次编辑后的内容）" : ""}`);
     for (const diag of file.diagnostics) {
       const loc = `${diag.range.start.line + 1}:${diag.range.start.character + 1}`;
       const src = diag.source ? ` [${diag.source}]` : "";
