@@ -28,7 +28,12 @@ import { useKeypress, KeypressPriority } from "./contexts/KeypressContext.tsx";
 import { useKeybindings } from "./contexts/KeybindingContext.tsx";
 import { useUIState, useUIActions, TransientMessageType } from "./contexts/UIStateContext.tsx";
 import { useExitConfirm } from "./hooks/useExitConfirm.ts";
-import { useTextBuffer, getVisualLines, getCursorVisualPosition } from "./text-buffer.ts";
+import {
+  useTextBuffer,
+  getVisualLines,
+  getCursorVisualPosition,
+  arrowNavigatesHistory,
+} from "./text-buffer.ts";
 import { useSlashCompletion, type CommandInfo } from "./hooks/useSlashCompletion.ts";
 import { applySlashCompletion, canSubmitSlashCompletionDirectly } from "../command/mid-input.ts";
 import { isMigratedSkillInput } from "../command/migrated-skills.ts";
@@ -70,7 +75,6 @@ import { parseInputForHighlighting, renderHighlightedSegments } from "./utils/in
 import { DEFAULT_TERM_WIDTH } from "./markdown.ts";
 import { getAppConfig, shouldShowHint, markHintShown } from "@sid-code/core/config/app-config.ts";
 import { ARROW_PROMPT } from "./constants/figures.ts";
-import { nextHeldRows, useHeldRowsPolicy, type HeldRowsState } from "./hooks/useHeldRows.ts";
 import { mixToContrast } from "./themes/color-utils.ts";
 
 interface InputAreaProps {
@@ -920,9 +924,10 @@ export function InputArea({
       }
     }
 
-    // 历史记录：
-    // - shell 模式(类 REPL):光标在首行↑ / 末行↓ 时翻历史,否则在多行命令内移光标
-    // - 普通模式:仅单行时 ↑↓ 触发历史,多行时移光标
+    // 历史记录（与 cc 同口径）：光标在首行按 ↑ / 在末行按 ↓ 翻历史，否则在多行内移光标。
+    // 曾经普通模式写成「仅单行时翻历史」：翻到一条多行历史后 lines.length > 1，↑↓ 永远只移光标，
+    // 历史就卡死在这一条上（2026-11-05 用户报告）。history-up/down 把光标放在末行末尾，
+    // 所以翻到多行条目后 ↑ 先逐行上移、到首行再继续翻；↓ 在末行直接翻回。
     if (key.name === "up" && !key.shift) {
       // P2-G6：空输入框 + 队列非空时，↑ 先弹回队尾排队输入编辑（优先于历史检索，对齐 CC）。
       // 队列弹回从"最近排的一条"取，符合"刚敲错想改"的直觉；取出即从队列移除。
@@ -935,9 +940,7 @@ export function InputArea({
         }
         // 弹回返回 null（竞态：队列已被 drain 清空）→ 落回历史检索。
       }
-      const atFirstLine = tb.state.cursorRow === 0;
-      const wantHistory = shellModeActive ? atFirstLine : tb.state.lines.length === 1;
-      if (wantHistory) {
+      if (arrowNavigatesHistory(tb.state, "up")) {
         tb.historyUp();
       } else {
         tb.moveCursor("up");
@@ -945,9 +948,7 @@ export function InputArea({
       return true;
     }
     if (key.name === "down" && !key.shift) {
-      const atLastLine = tb.state.cursorRow === tb.state.lines.length - 1;
-      const wantHistory = shellModeActive ? atLastLine : tb.state.lines.length === 1;
-      if (wantHistory) {
+      if (arrowNavigatesHistory(tb.state, "down")) {
         tb.historyDown();
       } else {
         tb.moveCursor("down");
@@ -1151,22 +1152,10 @@ export function InputArea({
       </Box>
     ) : null;
 
-  // 输入框高度水位：只升不降，下一轮开始（isLoading 上升沿）或历史区新增一项时才回落。
-  // 主屏帧已溢出视口时任何收缩都会整帧重画全部历史（packages/tui/src/frame/main-screen.ts 文件头）：
-  // 退格删行、Ctrl+U、Esc 清空、关补全菜单让行数变少时，用空行把框撑在最高点。
-  // 回落那一帧帧本来在变高，不会单独造成收缩。全屏布局不占位（policy.enabled=false）。
-  // 与 hooks/useHeldRows.ts 同一规则（nextHeldRows）。hook 声明在反向搜索提前 return 之上（hook 顺序铁律）；
-  // 空输入框分支与正常分支都经 padInputRows 取补行数，漏一条就会在那条路径上复发。
-  const heldRowsPolicy = useHeldRowsPolicy();
-  const inputHeightRef = useRef<HeldRowsState>({
-    held: 1,
-    prevBusy: isLoading,
-    prevEpoch: heldRowsPolicy.epoch,
-  });
-  const padInputRows = (rows: number): number =>
-    Math.max(0, nextHeldRows(inputHeightRef.current, rows, isLoading, heldRowsPolicy) - rows);
-  const renderPadRows = (n: number) =>
-    Array.from({ length: n }, (_, i) => <Text key={`pad-${i}`}> </Text>);
+  // 输入框高度随内容实时伸缩，不再占水位（2026-11-05 用户定：删行后框必须跟着变矮）。
+  // 代价：主屏帧已溢出视口时，删行 / Ctrl+U / Esc 清空让框变矮，底座会整帧重画全部历史
+  // （packages/tui/src/frame/main-screen.ts 文件头）。曾经用 nextHeldRows 把框撑在最高点换零重画，
+  // 用户反馈「删了几行框不缩」比偶发整帧重画更难受。瞬态提示行的水位（hooks/useHeldRows.ts）不受影响。
 
   // 反向搜索模式 UI
   // ⚠️ 这个提前 return 必须放在本组件**所有 hook 之后**：它原本在上面队列/Shell 提示
@@ -1206,7 +1195,6 @@ export function InputArea({
   if (isEmpty) {
     const currentPrompt = shellModeActive ? SHELL_PROMPT : PROMPT;
     const currentPlaceholder = shellModeActive ? "输入 shell 命令…" : getPlaceholder();
-    const emptyPadRows = padInputRows(1);
 
     return (
       <Box flexDirection="column" width={termWidth}>
@@ -1226,7 +1214,6 @@ export function InputArea({
             <Text inverse> </Text>
             <Text>{currentPlaceholder}</Text>
           </Text>
-          {renderPadRows(emptyPadRows)}
         </Box>
       </Box>
     );
@@ -1266,9 +1253,6 @@ export function InputArea({
   }
   const viewEnd = Math.min(viewStart + MAX_INPUT_LINES, totalVisualLines);
   const visibleLines = visualLines.slice(viewStart, viewEnd);
-
-  // 输入框高度水位（见上方 padInputRows）
-  const inputPadRows = padInputRows(visibleLines.length);
 
   const renderedLines = visibleLines.map((vl, i) => {
     const visualIdx = viewStart + i;
@@ -1357,7 +1341,6 @@ export function InputArea({
         flexDirection="column"
       >
         {renderedLines}
-        {renderPadRows(inputPadRows)}
       </Box>
       {/* P2-2：Vim 动态模式栏（对标 cc 的 -- NORMAL -- / -- INSERT --）。
           仅 vimMode 开启时显示；NORMAL/VISUAL 用品牌色，INSERT 用次要色，一眼可辨当前模式。 */}

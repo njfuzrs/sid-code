@@ -622,6 +622,17 @@ export function getVisualLines(lines: string[], width: number): VisualLine[] {
 }
 
 /**
+ * ↑/↓ 该翻历史还是在多行内移光标：光标在首行按 ↑、在末行按 ↓ 翻历史（cc 同口径）。
+ * 不能写成「仅单行时翻历史」：翻到一条多行历史后行数 > 1，↑↓ 就只剩移光标，历史卡死在这一条。
+ */
+export function arrowNavigatesHistory(
+  state: Pick<TextBufferState, "lines" | "cursorRow">,
+  dir: "up" | "down",
+): boolean {
+  return dir === "up" ? state.cursorRow === 0 : state.cursorRow === state.lines.length - 1;
+}
+
+/**
  * 计算光标在视觉行中的位置。
  * `visualLines`：调用方已按同一 lines/width 算好的视觉行。两个调用点（useTextBuffer、InputArea）都先算过一遍，
  * 不传就再折一次行，是 O(全文) 的重复工作（5,000 字符时每键约 1.3ms，长会话按键延迟排查线索 C）。
