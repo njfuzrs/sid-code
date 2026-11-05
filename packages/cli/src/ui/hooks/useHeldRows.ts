@@ -15,6 +15,12 @@
  *    代价：放掉的行数比历史新增的行数多时，那一帧仍是一次整帧重画；但这只发生在「本回合确实
  *    出现过瞬态行」之后，且一次就清零，换掉的是持续整个回合的空白。
  *
+ * 3. **空闲时不占**（`releaseWhenIdle`，输入框上方的瞬态块用）：回合已结束，没有「下一帧本来就在变高」
+ *    的时刻可等，占住就是一直挂在最后一条消息与输入框之间的空白，直到用户再发消息
+ *    （2026-11-05 用户截图：空闲时 Ctrl+O 提示 3s 后消失，留下 1 行占位 + 1 行 gap）。
+ *    代价：空闲时这类提示消失那一帧是一次整帧重画。「界面不留空白」优先（用户定），
+ *    且空闲时提示消失是低频事件。输入框内部、输入框下方的退出警告不受影响（高频交互零重画门禁锁着它们）。
+ *
  * 全屏（alt-buffer）布局高度固定、不会整帧重画，占位只浪费空间：`enabled=false` 时直接返回 rows。
  *
  * 用法：组件按当前内容算出 `rows`，用返回值作为最少占用行数（不足的用空行补）。
@@ -46,21 +52,31 @@ export interface HeldRowsState {
   prevEpoch: number;
 }
 
+export interface HeldRowsOptions {
+  /** 空闲（busy=false）时不占位，见文件头第 3 条。输入框上方的瞬态块传 true */
+  releaseWhenIdle?: boolean;
+}
+
 export function nextHeldRows(
   state: HeldRowsState,
   rows: number,
   busy: boolean,
   policy: HeldRowsPolicy,
+  opts: HeldRowsOptions = {},
 ): number {
-  const release = !policy.enabled || (busy && !state.prevBusy) || policy.epoch !== state.prevEpoch;
+  const release =
+    !policy.enabled ||
+    (busy && !state.prevBusy) ||
+    policy.epoch !== state.prevEpoch ||
+    (!!opts.releaseWhenIdle && !busy);
   if (release || rows > state.held) state.held = rows;
   state.prevBusy = busy;
   state.prevEpoch = policy.epoch;
   return state.held;
 }
 
-export function useHeldRows(rows: number, busy: boolean): number {
+export function useHeldRows(rows: number, busy: boolean, opts?: HeldRowsOptions): number {
   const policy = useHeldRowsPolicy();
   const state = useRef<HeldRowsState>({ held: rows, prevBusy: busy, prevEpoch: policy.epoch });
-  return nextHeldRows(state.current, rows, busy, policy);
+  return nextHeldRows(state.current, rows, busy, policy, opts);
 }
