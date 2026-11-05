@@ -72,6 +72,7 @@ FIELDS = (
     "verdict_rule_version",
     "max_turns",
     "budget_usd",
+    "max_duration_ms",
     "network_policy",
     "permission_mode",
     "stall_escalation",
@@ -97,6 +98,7 @@ SOURCES = {
     "verdict_rule_version": "run_fingerprint.py:VERDICT_RULE_VERSION",
     "max_turns": "<trial>/result.json:agent_result.metadata.sid_max_turns",
     "budget_usd": "<trial>/result.json:agent_result.metadata.sid_max_budget_usd",
+    "max_duration_ms": "<trial>/result.json:agent_result.metadata.sid_max_duration_ms",
     "network_policy": "declared",
     "permission_mode": "<trial>/result.json:agent_result.metadata.sid_permission_mode_requested",
     "stall_escalation": "<trial>/result.json:agent_result.metadata.sid_stall_escalation",
@@ -196,6 +198,7 @@ def collect(run_dir: str, declared: dict[str, str]) -> dict[str, object]:
     arch: dict[str, object] = {}
     max_turns: dict[str, object] = {}
     budget: dict[str, object] = {}
+    duration: dict[str, object] = {}
     perm: dict[str, object] = {}
     stall: dict[str, object] = {}
 
@@ -214,6 +217,7 @@ def collect(run_dir: str, declared: dict[str, str]) -> dict[str, object]:
         arch[name] = build.get("arch_actual") if isinstance(build, dict) else None
         max_turns[name] = meta.get("sid_max_turns")
         budget[name] = meta.get("sid_max_budget_usd")
+        duration[name] = meta.get("sid_max_duration_ms")
         perm[name] = meta.get("sid_permission_mode_requested")
         stall[name] = meta.get("sid_stall_escalation")
 
@@ -222,6 +226,7 @@ def collect(run_dir: str, declared: dict[str, str]) -> dict[str, object]:
     put("arch", arch)
     put("max_turns", max_turns)
     put("budget_usd", budget)
+    put("max_duration_ms", duration)
     put("permission_mode", perm)
     put("stall_escalation", stall)
 
