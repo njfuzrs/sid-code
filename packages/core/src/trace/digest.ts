@@ -746,11 +746,19 @@ export function aggregateUnansweredEndTurnStats(
 }
 
 /**
- * LSP 诊断注入口径（2026-10-24）。取数源：`LspDiagnostics` 事件，每次 collect 一条。
+ * LSP 诊断注入口径（2026-10-24 建，2026-11-05 加新鲜度判定）。取数源：`LspDiagnostics`
+ * 事件，每次 collect 一条。
  *
  * 回答此前只能从 raw.jsonl 注入文本反推、且反推不出的四件事：
  * 截断了多少（carried）、有多少轮因只剩 Hint 而不注入（info_only）、
  * 有多少推送基于旧内容被丢弃（stale_*）、子代理收到了多少（byAgent）。
+ *
+ * 2026-11-05 加的新鲜度口径，回答「一条推送到底是不是基于最近一次编辑后的内容」——
+ * 此前 tsls 不带 version，7230 次推送 100% 落在「判断不了」里：
+ * - `freshByBarrier` / `unverified` 互为补集，后者是「判断不了」的直接度量（目标 < 5%）；
+ * - `driftedFiles`：带外修改（bash 的 sed -i、formatter）导致本轮不注入的文件数；
+ * - `injectedFirstPublish`：注入的是新代际第一次推送（可能是不完整的 syntax 快照）的文件数，
+ *   用来判断将来要不要在 collect 前加等待。
  */
 export interface LspDiagnosticsDigestStats {
   /** collect 次数（= 分母：有推送或有 pending 的轮次） */
@@ -768,6 +776,18 @@ export interface LspDiagnosticsDigestStats {
   staleSyncing: number;
   /** 版本号落后、被丢弃的推送 */
   staleVersion: number;
+  /** 带 version 且新鲜 */
+  freshByVersion: number;
+  /** 无 version、越过屏障（+flush 窗口）后到达 */
+  freshByBarrier: number;
+  /** 无 version 且屏障失败/关闭 —— 判断不了，照常注入 */
+  unverified: number;
+  /** 从未被 edit/write 同步过的文件的推送 */
+  baseline: number;
+  /** 判为带外漂移、本轮未注入并已触发重同步的文件数 */
+  driftedFiles: number;
+  /** 注入的文件里，拿的是新代际第一次推送的文件数 */
+  injectedFirstPublish: number;
   /** 子代理侧 collect 次数与注入条数（agent_id → …） */
   byAgent: Record<string, { collects: number; injected: number }>;
 }
@@ -785,6 +805,12 @@ export function aggregateLspDiagnosticsStats(
     publishesWithVersion: 0,
     staleSyncing: 0,
     staleVersion: 0,
+    freshByVersion: 0,
+    freshByBarrier: 0,
+    unverified: 0,
+    baseline: 0,
+    driftedFiles: 0,
+    injectedFirstPublish: 0,
     byAgent: {},
   };
   const num = (v: unknown) => (typeof v === "number" ? v : 0);
@@ -801,6 +827,12 @@ export function aggregateLspDiagnosticsStats(
     out.publishesWithVersion += num(d.publishes_with_version);
     out.staleSyncing += num(d.stale_syncing);
     out.staleVersion += num(d.stale_version);
+    out.freshByVersion += num(d.fresh_by_version);
+    out.freshByBarrier += num(d.fresh_by_barrier);
+    out.unverified += num(d.unverified);
+    out.baseline += num(d.baseline);
+    out.driftedFiles += num(d.drifted_files);
+    out.injectedFirstPublish += num(d.injected_first_publish);
     if (typeof d.agent_id === "string") {
       const a = (out.byAgent[d.agent_id] ??= { collects: 0, injected: 0 });
       a.collects++;
@@ -4574,10 +4606,23 @@ export function renderHuman(d: Digest, opts: RenderOptions = {}): string {
         c(ld.carried > 0 ? "yellow" : "gray", `补发 ${ld.carried}`) +
         c("gray", `  省略 Hint/Info ${ld.omittedInfo}  (${oc})`),
     );
+    // 2026-11-05：新鲜度判定取代了原来那句「带 version N」——它对 tsls 恒等于 0，
+    // 看不出「判断不了」的规模。unverified 占比是本次修复的核心口径（目标 < 5%）。
     L.push(
       c("gray", "  推送: ") +
-        `${ld.publishes} 次（带 version ${ld.publishesWithVersion}）` +
-        c("gray", `  丢弃过时: 同步窗口 ${ld.staleSyncing} / 旧版本 ${ld.staleVersion}`),
+        `${ld.publishes} 次` +
+        c("gray", "  新鲜度: ") +
+        c(
+          ld.unverified > 0 && ld.publishes > 0 && ld.unverified / ld.publishes >= 0.05
+            ? "yellow"
+            : "gray",
+          `version ${ld.freshByVersion} / 屏障 ${ld.freshByBarrier} / 未验证 ${ld.unverified} / 基线 ${ld.baseline}`,
+        ) +
+        c(
+          "gray",
+          `  丢弃过时: 同步窗口 ${ld.staleSyncing} / 旧版本 ${ld.staleVersion}` +
+            (ld.driftedFiles > 0 ? `  漂移 ${ld.driftedFiles}` : ""),
+        ),
     );
     const agents = Object.entries(ld.byAgent);
     if (agents.length > 0) {

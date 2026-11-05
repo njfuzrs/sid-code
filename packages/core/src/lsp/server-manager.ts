@@ -10,14 +10,66 @@
 import { LSPServerInstance } from "./server-instance.ts";
 import type { LSPServerConfig } from "./types.ts";
 import { getLogger } from "../debug/logger.ts";
+import { BarrierGate } from "./barrier.ts";
+import { createHash } from "crypto";
 import { extname } from "path";
+
+/** 文件内容指纹。用于判定「服务器侧内容」与「磁盘内容」是否已经分叉（带外修改） */
+export function contentHash(content: string): string {
+  return createHash("sha1").update(content, "utf-8").digest("hex");
+}
+
+/**
+ * 屏障请求用的 method。
+ *
+ * 为什么选它：tsls / gopls / rust-analyzer 都实现，返回体小、不产生副作用
+ * （`workspace/executeCommand` 有副作用，`$/` 前缀的自定义请求服务器可能不回）。
+ * 实测 tsls 5.1.3 上 6000 行文件的往返 60–130ms。
+ */
+const BARRIER_METHOD = "textDocument/documentSymbol";
+
+/** 读取文件 stat；失败时返回哨兵值（漂移校验会因 mtimeMs 不匹配而多读一次盘，代价可忽略） */
+async function statOrUnknown(filePath: string): Promise<{ mtimeMs: number; size: number }> {
+  try {
+    const { stat } = await import("fs/promises");
+    const st = await stat(filePath);
+    return { mtimeMs: st.mtimeMs, size: st.size };
+  } catch {
+    return { mtimeMs: -1, size: -1 };
+  }
+}
+
+/** 服务器侧该文件的已同步状态 */
+export interface SentFileState {
+  /** 发给服务器的文档版本（didOpen=1，didChange 递增） */
+  version: number;
+  /** 发给服务器内容的指纹（sha1） */
+  hash: string;
+  /** 发出 didChange 时磁盘的 mtimeMs；漂移校验的快路径基准 */
+  mtimeMs: number;
+  /** 发出 didChange 时磁盘的字节数；漂移校验的快路径基准 */
+  size: number;
+}
+
+/** changeFile 的结果 */
+export interface FileSyncResult {
+  /** 本次发给服务器的文档版本；无对应服务器或发送失败时 undefined */
+  version?: number;
+  /**
+   * 屏障：resolve true 表示服务器已按序处理完本次变更**且** flush 窗口已越过，
+   * 之后到达的推送可判为新代际；false 表示失败/该服务器已关闭屏障（降级为 unverified）。
+   */
+  barrier?: Promise<boolean>;
+}
 
 export class LSPServerManager {
   private servers = new Map<string, LSPServerInstance>();
   /** 扩展名 → 服务器名 路由表 */
   private extensionRoutes = new Map<string, string>();
-  /** 已打开文件的版本号（didChange 递增） */
-  private openFiles = new Map<string, number>();
+  /** 已打开文件的已同步状态（版本号 + 内容指纹 + 漂移快路径基准） */
+  private openFiles = new Map<string, SentFileState>();
+  /** 诊断屏障：didChange 之后紧跟一个廉价请求，用来划定「旧代际已排空」 */
+  private barrierGate = new BarrierGate();
 
   /** 初始化所有 LSP 服务器（仅构建路由表，懒启动） */
   async initialize(configs: Record<string, LSPServerConfig>): Promise<void> {
@@ -55,11 +107,15 @@ export class LSPServerManager {
    * 通知 LSP 文件变更（write/edit 工具后调用）。
    * 首次见到文件发送 didOpen，之后发送 didChange。
    *
-   * @returns 本次发给服务器的文档版本；无对应服务器或发送失败时 undefined
+   * 变更发出后立即挂一个**屏障**（`textDocument/documentSymbol`）：
+   * 它的响应到达表示服务器已按序处理完本次变更。屏障 fire-and-forget，不阻塞调用方。
+   * 见 barrier.ts 的注释——为什么「屏障」还不够、还要一个 flush 窗口。
+   *
+   * @returns 版本号 + 屏障 Promise；无对应服务器或发送失败时只返回空对象
    */
-  async changeFile(filePath: string, content: string): Promise<number | undefined> {
+  async changeFile(filePath: string, content: string): Promise<FileSyncResult> {
     const instance = this.getServerForFile(filePath);
-    if (!instance) return undefined; // 无对应 LSP 服务器，静默跳过
+    if (!instance) return {}; // 无对应 LSP 服务器，静默跳过
 
     try {
       await instance.ensureStarted();
@@ -68,28 +124,58 @@ export class LSPServerManager {
       const uri = pathToFileURL(filePath).href;
       const languageId = this.getLanguageId(filePath, instance);
 
-      const existingVersion = this.openFiles.get(filePath);
-      if (existingVersion === undefined) {
+      const sentState: Pick<SentFileState, "hash" | "mtimeMs" | "size"> = {
+        hash: contentHash(content),
+        ...(await statOrUnknown(filePath)),
+      };
+
+      const existing = this.openFiles.get(filePath);
+      let version: number;
+      // 是不是首次打开。**它决定要不要挂屏障**，理由见下方 barrier 处的注释
+      let firstOpen = false;
+      if (existing === undefined) {
         // 首次打开
-        this.openFiles.set(filePath, 1);
+        firstOpen = true;
+        version = 1;
         instance.sendNotification("textDocument/didOpen", {
-          textDocument: { uri, languageId, version: 1, text: content },
+          textDocument: { uri, languageId, version, text: content },
         });
-        return 1;
       } else {
         // 后续变更
-        const version = existingVersion + 1;
-        this.openFiles.set(filePath, version);
+        version = existing.version + 1;
         instance.sendNotification("textDocument/didChange", {
           textDocument: { uri, version },
           contentChanges: [{ text: content }], // 全量同步
         });
-        return version;
       }
+      this.openFiles.set(filePath, { version, ...sentState });
+
+      // 屏障只在 didChange 时挂，**didOpen 不挂**——这不是省一次请求，是正确性要求：
+      //
+      // 屏障窗口的语义是「didChange 之后仍可能推旧内容的诊断，所以这段统一不收」。
+      // 而 didOpen 没有「旧代际」：服务器侧内容就是我们刚发过去的内容，它产生的任何推送
+      // 都基于这份内容。给 didOpen 也开窗口的后果是：文件刚打开时 tsserver 还在加载，
+      // 屏障请求要排队很久，窗口一旦拖长，首次推送被全部丢掉——而 tsls 只在内容变化时
+      // 才重推，于是这个文件**永远拿不到诊断**（比过时更糟）。2026-11-05 e2e E3 实测复现。
+      const barrier = firstOpen
+        ? undefined
+        : this.barrierGate.run(instance.name, () =>
+            instance.sendRequest(
+              BARRIER_METHOD,
+              { textDocument: { uri } },
+              this.barrierGate.timeout,
+            ),
+          );
+      return { version, barrier };
     } catch (err: any) {
       getLogger().debug("LSP", `通知文件变更失败 ${filePath}: ${err.message}`);
-      return undefined;
+      return {};
     }
+  }
+
+  /** 该文件的服务器侧已同步状态（供带外修改漂移校验）；未同步过时 undefined */
+  getSentFileState(filePath: string): SentFileState | undefined {
+    return this.openFiles.get(filePath);
   }
 
   /** 关闭文件 */
@@ -140,7 +226,12 @@ export class LSPServerManager {
     const uri = pathToFileURL(filePath).href;
     const languageId = this.getLanguageId(filePath, instance);
 
-    this.openFiles.set(filePath, 1);
+    // 记下内容指纹：漂移校验要拿它跟磁盘对比，判定「服务器侧内容是否已被带外修改甩开」
+    this.openFiles.set(filePath, {
+      version: 1,
+      hash: contentHash(content),
+      ...(await statOrUnknown(filePath)),
+    });
     instance.sendNotification("textDocument/didOpen", {
       textDocument: { uri, languageId, version: 1, text: content },
     });

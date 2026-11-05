@@ -7,7 +7,7 @@
  * - collectDiagnosticText() 供 Agent 循环每轮注入诊断
  */
 
-import { LSPServerManager } from "./server-manager.ts";
+import { LSPServerManager, contentHash } from "./server-manager.ts";
 import {
   DiagnosticRegistry,
   MAIN_DIAGNOSTIC_OWNER,
@@ -49,7 +49,7 @@ export function setLspDiagnosticsTraceSink(s: LspDiagnosticsTraceSink | null): v
 function emitCollectStats(owner: string, stats: CollectStats): void {
   if (!diagnosticsSink) return;
   // 两次 collect 之间什么都没发生：不写，否则每轮都有一条全 0 的事件
-  if (stats.outcome === "empty" && stats.publishes === 0) return;
+  if (stats.outcome === "empty" && stats.publishes === 0 && stats.driftedFiles === 0) return;
   try {
     diagnosticsSink({
       ...(owner === MAIN_DIAGNOSTIC_OWNER ? {} : { agent_id: owner }),
@@ -64,6 +64,13 @@ function emitCollectStats(owner: string, stats: CollectStats): void {
       publishes_with_version: stats.publishesWithVersion,
       stale_syncing: stats.staleSyncing,
       stale_version: stats.staleVersion,
+      // 2026-11-05：新鲜度判定。`unverified` 是「判断不了」的直接度量（目标 < 5%）
+      fresh_by_version: stats.freshByVersion,
+      fresh_by_barrier: stats.freshByBarrier,
+      unverified: stats.unverified,
+      baseline: stats.baseline,
+      drifted_files: stats.driftedFiles,
+      injected_first_publish: stats.injectedFirstPublish,
     });
   } catch {
     /* 度量不影响注入 */
@@ -231,12 +238,16 @@ export async function notifyFileChanged(filePath: string, content: string): Prom
  * 编辑/写入文件后，把最新内容同步给 LSP 的完整编排（主循环与子代理共用）。
  *
  * 提取自 query/tool-executor.ts 的 notifyLSPFileChange，消除主循环与子代理两套重复实现：
- *   1. beginEdit（**同步，先于任何 await**）：登记归属者，清该文件的旧诊断，进入同步窗口。
+ *   1. beginEdit（**同步，先于任何 await**）：登记归属者，清该文件的旧诊断，开启新编辑代际。
  *      调用方是 fire-and-forget 的，旧实现在 await readFile 之后才清，下一轮 collect
  *      可能抢在前面，把编辑前的诊断注入给模型。
- *   2. changeFile：发 didChange（首次见到文件则 didOpen），让服务器看到最新内容。
- *   3. endEdit（finally）：结束同步窗口，记下发出的版本号。
+ *   2. changeFile：发 didChange（首次见到文件则 didOpen），并挂一个屏障请求。
+ *   3. endEdit（finally）：记下发出的版本号（**不再结束 sync 窗口**，见下）。
  *   4. saveFile：补发 didSave——部分服务器（pylsp、gopls 某些配置）依赖 didSave 触发完整诊断。
+ *
+ * 屏障回调（`passBarrier`）结束编辑同步窗口：`sendNotification` 返回只代表字节写进 stdin，
+ * 服务器此时可能还在推旧内容的诊断（实测 tsls 在 didChange 后仍推旧结果）。屏障响应到达
+ * 再等一个 flush 窗口，才认定旧代际已排空——依据见 barrier.ts 的注释。
  *
  * LSP 未启用时不读盘直接返回。全程 best-effort：任何失败只记 debug 日志，绝不阻断工具执行。
  *
@@ -254,6 +265,7 @@ export async function syncFileToLSP(
   let uri: string | undefined;
   let seq = 0;
   let sentVersion: number | undefined;
+  let barrier: Promise<boolean> | undefined;
   try {
     const { pathToFileURL } = require("url");
     uri = pathToFileURL(filePath).href as string;
@@ -264,11 +276,34 @@ export async function syncFileToLSP(
   try {
     const { readFile } = await import("fs/promises");
     const content = await readFile(filePath, "utf-8");
-    sentVersion = await manager.changeFile(filePath, content);
+    const result = await manager.changeFile(filePath, content);
+    sentVersion = result.version;
+    barrier = result.barrier;
   } catch (e) {
     getLogger().debug("LSP", `文件变更同步失败（不影响工具执行）: ${(e as Error)?.message}`);
   } finally {
     if (registry && uri) registry.endEdit(uri, seq, sentVersion);
+  }
+  // 屏障回调：成功/失败都要回调，否则该文件永远停在 sync 窗口内、诊断永远被丢。
+  //
+  // 没有 barrier 有两种情况，都不能让窗口悬着：
+  // - 首次 didOpen（server-manager 刻意不发屏障，见那里的注释）：没有「旧代际」可言，
+  //   直接判通过；
+  // - 无服务器 / 发送失败：endEdit 收到 sentVersion===undefined 时已经结束了窗口，这里再
+  //   passBarrier 一次是无害的幂等操作（syncSeq 不匹配就直接 return）。
+  if (registry && uri) {
+    const barrierUri = uri;
+    if (barrier) {
+      void barrier.then((ok) => {
+        try {
+          registry.passBarrier(barrierUri, seq, ok);
+        } catch {
+          /* 屏障回调异常不影响工具执行 */
+        }
+      });
+    } else {
+      registry.passBarrier(barrierUri, seq, true);
+    }
   }
   if (sentVersion !== undefined) manager.saveFile(filePath);
 }
@@ -283,6 +318,81 @@ export function releaseDiagnosticOwner(owner: string): void {
 }
 
 /**
+ * 漂移校验用到的文件系统操作（可注入，测试用来验证「没变就不读盘」）。
+ */
+export interface DriftIO {
+  stat(filePath: string): Promise<{ mtimeMs: number; size: number }>;
+  readFile(filePath: string): Promise<string>;
+}
+
+const defaultDriftIO: DriftIO = {
+  stat: async (filePath) => {
+    const { stat } = await import("fs/promises");
+    return stat(filePath);
+  },
+  readFile: async (filePath) => {
+    const { readFile } = await import("fs/promises");
+    return readFile(filePath, "utf-8");
+  },
+};
+
+/**
+ * 带外修改（bash 的 sed -i / formatter / git checkout 等）的漂移校验。
+ *
+ * 为什么只校验「将注入的文件」：全量校验是每轮 O(已打开文件数) 次 stat，长会话里
+ * 打开文件能到上百个，换来的只是对「本来就不会注入的文件」的判定，不值。
+ *
+ * 两级判定，避免每轮都读盘：
+ * 1. stat 比 mtimeMs/size —— 与上次 didChange 时的基准一致 ⇒ 文件没动过，直接放行（**不读盘**）；
+ * 2. 变了才读盘算 sha1，与发给服务器的内容指纹比对。
+ *
+ * @param lookup 取某文件的服务器侧已同步状态（来自 LSPServerManager.getSentFileState）
+ * @param uris 待校验的 file:// URI 列表
+ * @returns 判为漂移的文件：uri → 绝对路径
+ */
+export async function findDriftedFiles(
+  lookup: (filePath: string) => { hash: string; mtimeMs: number; size: number } | undefined,
+  uris: string[],
+  io: DriftIO = defaultDriftIO,
+): Promise<Map<string, string>> {
+  const drifted = new Map<string, string>();
+  if (uris.length === 0) return drifted;
+
+  const { fileURLToPath } = require("url");
+
+  for (const uri of uris) {
+    let filePath: string;
+    try {
+      filePath = fileURLToPath(uri);
+    } catch {
+      continue; // 非 file:// URI（untitled: 等）不参与漂移校验
+    }
+    const sent = lookup(filePath);
+    if (!sent) continue; // 没同步过（如仅被 lsp 工具打开的未编辑文件），无从比对
+
+    try {
+      const st = await io.stat(filePath);
+      // 快路径：mtime 与 size 都没变 ⇒ 内容没变。同一毫秒内改写同长度内容的漏判代价，
+      // 只是这次不判漂移（下一轮编辑会重新同步），不值得为此每轮读盘。
+      if (st.mtimeMs === sent.mtimeMs && st.size === sent.size) continue;
+      const content = await io.readFile(filePath);
+      if (contentHash(content) !== sent.hash) drifted.set(uri, filePath);
+    } catch {
+      // 文件被删/无权限：跳过，交给正常链路（服务器侧诊断照常推送，不额外判过时）
+    }
+  }
+  return drifted;
+}
+
+/** collectDiagnosticText 的依赖注入点（生产代码用默认值，测试用来观测副作用） */
+export interface CollectDiagnosticDeps {
+  /** 漂移校验：默认读 LSPServerManager 的已同步状态 + 真实磁盘 IO */
+  checkDrift?: (uris: string[]) => Promise<Map<string, string>>;
+  /** 漂移文件的重同步动作：默认 syncFileToLSP */
+  resync?: (filePath: string, owner: string) => void;
+}
+
+/**
  * 收集待投递的诊断，格式化为附件文本。
  * 供主循环每轮注入 system-reminder 使用。
  *
@@ -293,16 +403,39 @@ export function releaseDiagnosticOwner(owner: string): void {
  * 每个消费者只拿自己编辑过的文件（归属见 DiagnosticRegistry），主循环还额外拿到
  * 已结束子代理转交的文件、以及只被 lsp 工具打开过的文件在基线之后新出现的诊断。
  *
+ * **2026-11-05 起是 async**：注入前要对候选文件做一次带外修改漂移校验（要 stat/读盘）。
+ * 调用点必须 await——漏了会注入 `[object Promise]`。
+ *
  * @param owner 诊断归属者：主循环传 MAIN_DIAGNOSTIC_OWNER（默认），子代理传自己的 agentId
+ * @param deps 测试注入点（见 CollectDiagnosticDeps）
  * @returns 格式化文本，无可操作诊断时返回 null
  */
-export function collectDiagnosticText(owner: string = MAIN_DIAGNOSTIC_OWNER): string | null {
+export async function collectDiagnosticText(
+  owner: string = MAIN_DIAGNOSTIC_OWNER,
+  deps: CollectDiagnosticDeps = {},
+): Promise<string | null> {
   const registry = getDiagnosticRegistry();
   if (!registry) return null;
 
-  // 严重度过滤在 registry 内、**限流之前**完成：旧实现在这里过滤，Hint 已经占掉了
-  // 30 条名额。评估会话 ce7ea52e 实测 120 次注入里 606 条 Hint 混在 443 条 Error 中。
-  const { files, stats } = registry.collectDiagnostics(owner);
+  // 0. 漂移校验：带外修改过的文件，服务器侧内容已不是磁盘内容，本轮的诊断一律不注入。
+  //    顺手触发一次重同步，把带外修改变成「晚一轮的正确诊断」而不是「这一轮的错误诊断」。
+  const checkDrift =
+    deps.checkDrift ??
+    (async (uris: string[]) => {
+      const manager = getLSPManager();
+      if (!manager) return new Map<string, string>();
+      return findDriftedFiles((p) => manager.getSentFileState(p), uris);
+    });
+  const drifted = await checkDrift(registry.pendingUrisFor(owner));
+  const resync = deps.resync ?? ((filePath: string, o: string) => void syncFileToLSP(filePath, o));
+  for (const [uri, filePath] of drifted) {
+    registry.clearForFile(uri); // 清掉基于旧内容的诊断（连同 delivered/latest）
+    resync(filePath, owner); // 补一次同步，下一轮拿到新内容的诊断
+  }
+
+  // 1. 严重度过滤在 registry 内、**限流之前**完成：旧实现在这里过滤，Hint 已经占掉了
+  //    30 条名额。评估会话 ce7ea52e 实测 120 次注入里 606 条 Hint 混在 443 条 Error 中。
+  const { files, stats } = registry.collectDiagnostics(owner, drifted.size);
   emitCollectStats(owner, stats);
   if (files.length === 0) return null;
 
@@ -311,6 +444,11 @@ export function collectDiagnosticText(owner: string = MAIN_DIAGNOSTIC_OWNER): st
     notes.push(`另有 ${stats.carried} 条 Error/Warning 超出单次上限，将在后续轮次补发`);
   }
   if (stats.omittedInfo > 0) notes.push(`另有 ${stats.omittedInfo} 条提示（Hint/Info）已省略`);
+  if (stats.driftedFiles > 0) {
+    notes.push(
+      `另有 ${stats.driftedFiles} 个文件在你编辑之后被外部改动，其诊断已作废，将在下一轮重新分析`,
+    );
+  }
   const text = formatDiagnostics(files);
   return notes.length > 0 ? `${text}\n（${notes.join("；")}）` : text;
 }

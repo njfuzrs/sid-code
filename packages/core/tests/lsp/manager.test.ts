@@ -73,7 +73,7 @@ describe("collectDiagnosticText 严重度过滤", () => {
       { uri: "file:///a.ts", diagnostics: [diag("提示", "Hint"), diag("信息", "Info")] },
     ]);
 
-    expect(collectDiagnosticText()).toBeNull();
+    expect(await collectDiagnosticText()).toBeNull();
   });
 
   test("含 Error 时注入（含格式化文本）", async () => {
@@ -86,7 +86,7 @@ describe("collectDiagnosticText 严重度过滤", () => {
       { uri: "file:///a.ts", diagnostics: [diag("类型错误", "Error", 3)] },
     ]);
 
-    const text = collectDiagnosticText();
+    const text = await collectDiagnosticText();
     expect(text).not.toBeNull();
     expect(text).toContain("类型错误");
     expect(text).toContain("4:1"); // 1-based
@@ -102,7 +102,7 @@ describe("collectDiagnosticText 严重度过滤", () => {
       { uri: "file:///a.ts", diagnostics: [diag("未使用变量", "Warning")] },
     ]);
 
-    expect(collectDiagnosticText()).not.toBeNull();
+    expect(await collectDiagnosticText()).not.toBeNull();
   });
 
   // 评估会话 ce7ea52e 发现 7：旧实现整批过关后把同文件 Hint 原样带出
@@ -122,7 +122,7 @@ describe("collectDiagnosticText 严重度过滤", () => {
       },
     ]);
 
-    const text = collectDiagnosticText()!;
+    const text = (await collectDiagnosticText())!;
     expect(text).toContain("类型错误");
     expect(text).not.toContain("已弃用");
     expect(text.split("\n").filter((l) => /^\s+(Error|Warning|Hint|Info) \(/.test(l))).toHaveLength(
@@ -143,7 +143,7 @@ describe("collectDiagnosticText 严重度过滤", () => {
       { uri: "file:///b.ts", diagnostics: [diag("b提示", "Hint")] },
     ]);
 
-    const text = collectDiagnosticText()!;
+    const text = (await collectDiagnosticText())!;
     expect(text).toContain("/a.ts");
     expect(text).not.toContain("/b.ts");
     expect(text).toContain("另有 1 条提示");
@@ -157,7 +157,7 @@ describe("collectDiagnosticText 严重度过滤", () => {
     getDiagnosticRegistry()!.registerPending("ts", [
       { uri: "file:///a.ts", diagnostics: [diag("真错误", "Error")] },
     ]);
-    expect(collectDiagnosticText()).not.toContain("已省略");
+    expect(await collectDiagnosticText()).not.toContain("已省略");
   });
 });
 
@@ -172,16 +172,16 @@ describe("clearDiagnosticsForFile", () => {
 
     ownByMain(reg!, uri);
     reg!.registerPending("ts", [{ uri, diagnostics: [diag("err", "Error")] }]);
-    expect(collectDiagnosticText()).not.toBeNull();
+    expect(await collectDiagnosticText()).not.toBeNull();
 
     // 未清除 → 去重过滤（不经编辑同步，直接再推一次同样的诊断）
     reg!.registerPending("ts", [{ uri, diagnostics: [diag("err", "Error")] }]);
-    expect(collectDiagnosticText()).toBeNull();
+    expect(await collectDiagnosticText()).toBeNull();
 
     // 清除后 → 同诊断重新注入
     clearDiagnosticsForFile(filePath);
     reg!.registerPending("ts", [{ uri, diagnostics: [diag("err", "Error")] }]);
-    expect(collectDiagnosticText()).not.toBeNull();
+    expect(await collectDiagnosticText()).not.toBeNull();
   });
 
   test("LSP 未初始化时静默无操作（不抛错）", () => {
@@ -241,9 +241,9 @@ describe("collectDiagnosticText：截断告知 + 归属 + 埋点", () => {
         diagnostics: Array.from({ length: 12 }, (_, i) => diag(`e${i}`, "Error", i)),
       },
     ]);
-    const first = collectDiagnosticText()!;
+    const first = (await collectDiagnosticText())!;
     expect(first).toContain("另有 2 条 Error/Warning 超出单次上限，将在后续轮次补发");
-    const second = collectDiagnosticText()!;
+    const second = (await collectDiagnosticText())!;
     expect(second).toContain("e10");
     expect(second).not.toContain("超出单次上限");
   });
@@ -254,9 +254,9 @@ describe("collectDiagnosticText：截断告知 + 归属 + 埋点", () => {
     const reg = getDiagnosticRegistry()!;
     reg.endEdit("file:///s.ts", reg.beginEdit("file:///s.ts", "agent-x"));
     reg.registerPending("ts", [{ uri: "file:///s.ts", diagnostics: [diag("sub", "Error")] }]);
-    expect(collectDiagnosticText()).toBeNull();
+    expect(await collectDiagnosticText()).toBeNull();
     releaseDiagnosticOwner("agent-x");
-    expect(collectDiagnosticText()).toContain("sub");
+    expect(await collectDiagnosticText()).toContain("sub");
   });
 
   test("每次 collect 写一条 LspDiagnostics：注入、被过滤为空都有记录，子代理带 agent_id", async () => {
@@ -268,14 +268,14 @@ describe("collectDiagnosticText：截断告知 + 归属 + 埋点", () => {
 
     ownByMain(reg, "file:///a.ts");
     reg.registerPending("ts", [{ uri: "file:///a.ts", diagnostics: [diag("only-hint", "Hint")] }]);
-    expect(collectDiagnosticText()).toBeNull();
+    expect(await collectDiagnosticText()).toBeNull();
 
     reg.endEdit("file:///s.ts", reg.beginEdit("file:///s.ts", "agent-y"));
     reg.registerPending("ts", [{ uri: "file:///s.ts", diagnostics: [diag("e", "Error")] }]);
-    expect(collectDiagnosticText("agent-y")).not.toBeNull();
+    expect(await collectDiagnosticText("agent-y")).not.toBeNull();
 
     // 什么都没发生的轮次不写
-    collectDiagnosticText();
+    await collectDiagnosticText();
 
     expect(got).toHaveLength(2);
     expect(got[0]).toMatchObject({ outcome: "info_only", omitted_info: 1, injected: 0 });
@@ -299,14 +299,14 @@ describe("syncFileToLSP：旧诊断必须在第一个 await 之前清掉", () =>
 
       // 与 query/tool-executor 一样不 await：下一轮 collect 可能跑在读盘之前
       const pending = syncFileToLSP(file);
-      expect(collectDiagnosticText()).toBeNull();
+      expect(await collectDiagnosticText()).toBeNull();
       // 同步窗口内到达的推送基于旧内容，丢弃
       reg.registerPending("ts", [{ uri, diagnostics: [diag("during-sync", "Error")] }]);
       await pending;
-      expect(collectDiagnosticText()).toBeNull();
+      expect(await collectDiagnosticText()).toBeNull();
       // 窗口结束后的推送正常投递
       reg.registerPending("ts", [{ uri, diagnostics: [diag("after-sync", "Error")] }]);
-      expect(collectDiagnosticText()).toContain("after-sync");
+      expect(await collectDiagnosticText()).toContain("after-sync");
     } finally {
       rmSync(dir, { recursive: true, force: true });
     }
