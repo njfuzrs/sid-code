@@ -11,6 +11,12 @@
  * 说明：子代理执行器在校验通过后需要**主动注入** _agentId="sub-agent" 防套娃。
  * 因此正确顺序是「先剥离模型可能伪造的内部字段 → 再由执行器注入受控的 _agentId」，
  * stripInternalFields 只负责剥离，注入由调用方在其后完成。
+ *
+ * ⚠️ 注入是**按需**的（2026-11-04 起）：只有自报 `consumesAgentId: true` 的工具
+ * （`enter_plan_mode` / `sub_agent` / `save_memory`）才拿得到 `_agentId` /
+ * `_parentToolUseId`，契约见 `tool/types.ts`。无差别注入会把内部字段漏给
+ * StructuredOutput 的 JSON Schema 校验、workflow 的结果、以及 MCP server 的 arguments。
+ * 本模块的剥离职责不变——它对**所有**工具都生效，防的是模型伪造。
  */
 
 /** 内部字段名单：这些字段只应由 harness 注入，绝不接受模型自行生成 */

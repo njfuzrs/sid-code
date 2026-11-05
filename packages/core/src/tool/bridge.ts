@@ -52,6 +52,7 @@ const FORWARDED_KEYS: Record<ForwardedKey, true> = {
   backfillObservableInput: true,
   exemptFromLoopDetection: true,
   needsPermissionChecker: true,
+  consumesAgentId: true,
   strictPriority: true,
   jitAffectedPaths: true,
   resultDisplayMode: true,

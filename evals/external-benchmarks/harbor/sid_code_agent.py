@@ -822,6 +822,22 @@ class SidCodeAgent(BaseInstalledAgent):
             ),
             # 停滞阶梯档:改变 agent 行为的必控变量,与权限档同理每个 trial 自带
             "sid_stall_escalation": self._stall_mode,
+            # ── 轮数 / 预算上限:run 指纹的两个字段,落到这里才有取数源 ─────────
+            #
+            # `run_fingerprint.py` 要给每次 run 落一份配置指纹(方案 §3.4),而
+            # `max_turns` / `max_budget_usd` 是其中两项**会直接改变分数**的必控变量
+            # —— 40 轮与 120 轮跑出来的 pass@1 不是同一个东西。
+            #
+            # ⚠️ 为什么不在采集脚本里从别处取:Harbor 的 `result.json` 只记
+            # `config.agent.kwargs`(即**显式传的** `--ak`),默认值不落产物。
+            # 实测 `a11-sid` 的 `kwargs` 是 `{}`,而那一轮实际跑的是 40 轮上限 ——
+            # 去产物里找默认值会得到「没有这个字段」,与「这一档没有上限」不可区分。
+            #
+            # 与 `sid_stall_escalation` 同一条纪律:改变 agent 行为的必控变量,
+            # 每个 trial 自带,下游不必信任跑评测那个人的记忆。
+            # 值为 `None` 表示该档未设(不限),这是**有效配置**,不是采集失败。
+            "sid_max_turns": self._resolved_flags.get("max_turns"),
+            "sid_max_budget_usd": self._resolved_flags.get("max_budget_usd"),
         }
         # 观测值:None 表示日志缺失(≠ 零拒绝),所以只在拿到时才写这几格。
         decisions = self._count_permission_decisions()

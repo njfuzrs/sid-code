@@ -99,7 +99,7 @@ const CITATIONS: { file: string; line: number; anchor: string; what: string }[] 
   },
   {
     file: "evals/external-benchmarks/harbor/sid_code_agent.py",
-    line: 942,
+    line: 953,
     anchor: "_derive_is_error",
     what: "§3.7 判成败用 subtype 不用 is_error",
   },
@@ -111,7 +111,7 @@ const CITATIONS: { file: string; line: number; anchor: string; what: string }[] 
   },
   {
     file: "evals/external-benchmarks/harbor/sid_code_agent.py",
-    line: 1064,
+    line: 1080,
     anchor: "total_cumulative_prompt_tokens",
     what: "§1.6 stock vs flow",
   },
@@ -167,7 +167,7 @@ const CITATIONS: { file: string; line: number; anchor: string; what: string }[] 
   },
   {
     file: "evals/external-benchmarks/harbor/sid_code_agent.py",
-    line: 1064,
+    line: 1080,
     anchor: "**flow**",
     what: "§1.6 stock/flow 口径表",
   },

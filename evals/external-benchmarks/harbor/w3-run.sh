@@ -95,6 +95,17 @@ fi
 source ./taskset-fp.sh
 taskset_fp_gate || exit 2
 
+# ── run 指纹采集（收尾时调用，见文件末尾）────────────────────────────────
+#
+# 与题集指纹闸的区别：闸判「能不能跑」（阻断），它只**采集**（不阻断）。
+# 采的是方案 §3.4 的必控变量——模型、二进制 sha、架构、harbor 版本、轮数/预算上限。
+# 接进收尾而不是「跑完手工再跑一下」：`w3-summary.py` 那段注释记着同型教训
+# （digest 工具九棒里零次被执行），一条臂 $36–41，漏采一次就补不回来
+# —— `runs/` 被 gitignore，本机没了就是没了。
+#
+# shellcheck disable=SC1091
+source ./run-fingerprint.sh
+
 # ── 磁盘余量闸（72 题的容器持续吃盘）──────────────────────────────────────
 DISK_FREE_G="$(colima ssh -p swebench -- df -BG /var/lib/docker 2>/dev/null \
   | awk 'NR==2{gsub(/G/,"",$4); print $4}')"
@@ -280,6 +291,12 @@ else: print('UNKNOWN')
     echo "    ⚠️ 汇总失败（不影响已落盘的跑分产物）。手工重跑："
     echo "       python3 w3-summary.py $JOBDIR -o results/"
   fi
+
+  # run 指纹：与上面同一段收尾、同一条「只读旁路」纪律（失败不改 RUN_RC）。
+  # network_policy 只能声明：Harbor 不把它写进 result.json，w3 走的是 allowlist 档
+  # （registry 里的任务定义 + `--allow-agent-host`）。
+  SID_HARBOR_NETWORK_POLICY="${SID_HARBOR_NETWORK_POLICY:-allowlist}" \
+    run_fingerprint_collect "$JOBDIR"
 else
   echo "=== 收尾：无产物，跳过分母核账 ==="
 fi
