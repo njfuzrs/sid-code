@@ -10,7 +10,7 @@
 import { LSPServerInstance } from "./server-instance.ts";
 import type { LSPServerConfig } from "./types.ts";
 import { getLogger } from "../debug/logger.ts";
-import { BarrierGate } from "./barrier.ts";
+import { BarrierGate, isBarrierVerifiedServer } from "./barrier.ts";
 import { createHash } from "crypto";
 import { extname } from "path";
 
@@ -60,6 +60,13 @@ export interface FileSyncResult {
    * 之后到达的推送可判为新代际；false 表示失败/该服务器已关闭屏障（降级为 unverified）。
    */
   barrier?: Promise<boolean>;
+  /**
+   * 本次是否首次 didOpen（没有「旧代际」，因而不发屏障）。
+   *
+   * 调用方据此区分两种「无 barrier」：didOpen（可判通过）与同步失败/未启用屏障
+   * （必须判失败，否则会把服务器侧旧内容的推送标成 fresh）。
+   */
+  firstOpen?: boolean;
 }
 
 export class LSPServerManager {
@@ -157,16 +164,23 @@ export class LSPServerManager {
       // 都基于这份内容。给 didOpen 也开窗口的后果是：文件刚打开时 tsserver 还在加载，
       // 屏障请求要排队很久，窗口一旦拖长，首次推送被全部丢掉——而 tsls 只在内容变化时
       // 才重推，于是这个文件**永远拿不到诊断**（比过时更糟）。2026-11-05 e2e E3 实测复现。
-      const barrier = firstOpen
-        ? undefined
-        : this.barrierGate.run(instance.name, () =>
-            instance.sendRequest(
-              BARRIER_METHOD,
-              { textDocument: { uri } },
-              this.barrierGate.timeout,
-            ),
-          );
-      return { version, barrier };
+      //
+      // 另外，只有**已验证过屏障判据**的服务器才启用（见 barrier.ts 的白名单与实测数字）：
+      // 未验证服务器默认判 unverified，避免 flush 窗口误伤它们的首推。lsp.json 里
+      // `"barrier": true/false` 可显式覆盖（自担风险 / 主动关闭）。
+      const barrierEnabled =
+        instance.config.barrier ?? isBarrierVerifiedServer(instance.config.command);
+      const barrier =
+        firstOpen || !barrierEnabled
+          ? undefined
+          : this.barrierGate.run(instance.name, () =>
+              instance.sendRequest(
+                BARRIER_METHOD,
+                { textDocument: { uri } },
+                this.barrierGate.timeout,
+              ),
+            );
+      return { version, barrier, firstOpen };
     } catch (err: any) {
       getLogger().debug("LSP", `通知文件变更失败 ${filePath}: ${err.message}`);
       return {};

@@ -64,6 +64,8 @@ import {
 } from "./history-adapter.ts";
 import { getLogger } from "@sid-code/core/debug/logger.ts";
 import { getRawVersion } from "@sid-code/shared/version.ts";
+import { shouldShowHint, markHintShown } from "@sid-code/core/config/app-config.ts";
+import { useRewindEscape } from "./hooks/use-rewind-escape.ts";
 
 // ── 向后兼容导出（供 app.ts 过渡期使用） ──
 
@@ -265,6 +267,14 @@ export interface RewindResultInfo {
   mode: RewindUIMode;
   messagesDropped: number;
   filesRestored: number;
+  /**
+   * A1：未能回滚的文件数。
+   *
+   * 必须回显：修之前 app.ts 的注入闭包只回传 `files.length`，把 checkpoint 层 N4 引入的
+   * `failedFiles` 丢了——一部分文件没回滚，面板照样显示「已回退」。部分失败当成成功，
+   * 比明确失败更坏（用户以为文件回去了，实际没有）。
+   */
+  filesFailed: number;
   fileRestoreSkipped: boolean;
   /** N7：对话锚点失效，本次未做任何改动（对话、文件、回退点均保持原样）。 */
   conversationUnavailable?: boolean;
@@ -596,6 +606,15 @@ interface AppProps {
 // ── 流式虚拟 HistoryItem（用于在列表末尾插入流式内容） ──
 const STREAMING_ITEM_ID = -1;
 
+/**
+ * 双击 Esc 引导提示的衰减键与上限（L4-C 渐进衰减）。
+ *
+ * 第一次 Esc 会提示「再按一次 Esc 打开会话回退」。同一会话内只提示一次（教会即可），
+ * 跨会话累计看过 {@link DOUBLE_ESC_HINT_MAX_SHOWS} 次后彻底静默——老手不该被反复唠叨。
+ */
+const DOUBLE_ESC_HINT_KEY = "doubleEscRewind";
+const DOUBLE_ESC_HINT_MAX_SHOWS = 3;
+
 /** 内部 App 组件（在 Provider 内部，可使用 useKeypress） */
 function TUIAppInner({ initialState, callbacks, bridge, alternateBuffer }: AppProps) {
   const { exit } = useApp();
@@ -638,7 +657,7 @@ function TUIAppInner({ initialState, callbacks, bridge, alternateBuffer }: AppPr
     toggleTaskPanel,
     showTransientMessage,
   } = useUIActions();
-  const { ctrlCPressedOnce, expandLevel } = useUIState();
+  const { ctrlCPressedOnce, expandLevel, inputEmptyRef } = useUIState();
   const { matchBinding } = useKeybindings();
 
   // v2：思考折叠状态。两种模式默认折叠成一行（对标 claude-code，思考不占满屏）。
@@ -1097,29 +1116,43 @@ function TUIAppInner({ initialState, callbacks, bridge, alternateBuffer }: AppPr
     return true;
   });
 
-  // P2-1：Esc+Esc 打开会话回退选择器（对标 cc rewind/checkpoint）。
-  // 仅在「空闲 + 无任何面板/请求 + 未在流式/工具执行」时触发——忙时单 Esc 已被上面的
-  // 中断 handler 消费（双击的第一个 Esc 就中断了，不会走到 escape-escape 合成），
-  // 这里只处理真正的空闲态双击。回退管理器无回退点时 RewindDialog 会自渲染空态提示。
-  useKeypress(KeypressPriority.High, (key: Key) => {
-    if (key.name !== "escape-escape") return false;
-    const busy = state.isLoading || state.isStreaming || state.isToolExecuting;
-    if (
-      busy ||
-      state.activeDialog ||
-      state.commandPanel ||
-      state.permissionRequest ||
-      state.shellConfirmRequest ||
-      state.planApprovalRequest ||
-      state.askUserQuestionRequest
-    ) {
-      return false;
-    }
-    // 回退能力未接线（如 headless/bridge 无回调）则不响应，避免开空面板。
-    if (!callbacks.getRewindPoints || !callbacks.onRewind) return false;
+  // ── A1：Esc 双击打开会话回退选择器（对标 cc rewind/checkpoint）────────────────
+  //
+  // 门控与三条派发路径（High 快路径 / Critical 观察者 / Low 慢路径）都在
+  // `hooks/use-rewind-escape.ts` 里。抽成 hook 的理由是**可测**：优先级顺序是这次修复的核心，
+  // 只有真实 KeypressProvider 驱动的测试才能验「谁先消费」；留在组件里就只能靠源码文本断言。
+  // 完整的取舍说明见该 hook 的头注释。
+  const openRewindDialog = useCallback(() => {
     log.info("UI:APP", "Esc+Esc：打开会话回退选择器");
     bridge.update({ activeDialog: "rewind" });
-    return true;
+  }, [bridge, log]);
+
+  // 第一次 Esc 的引导提示（L4-C 渐进衰减）：同一会话只提示一次，跨会话累计看够次数后静默。
+  const doubleEscHintRef = useRef(shouldShowHint(DOUBLE_ESC_HINT_KEY, DOUBLE_ESC_HINT_MAX_SHOWS));
+
+  useRewindEscape({
+    gate: {
+      busy: state.isLoading || state.isStreaming || state.isToolExecuting,
+      panelOpen: Boolean(
+        state.activeDialog ||
+        state.commandPanel ||
+        state.permissionRequest ||
+        state.shellConfirmRequest ||
+        state.planApprovalRequest ||
+        state.askUserQuestionRequest,
+      ),
+      // 回退能力未接线（如 headless/bridge 无回调）则不响应，避免开一个空面板。
+      wired: Boolean(callbacks.getRewindPoints && callbacks.onRewind),
+    },
+    // 必须是函数：keypress handler 的闭包会拿到上一帧 state，只能读 ref 取最新值。
+    isInputEmpty: () => inputEmptyRef.current,
+    onOpen: openRewindDialog,
+    onFirstPress: () => {
+      if (!doubleEscHintRef.current) return;
+      doubleEscHintRef.current = false;
+      markHintShown(DOUBLE_ESC_HINT_KEY);
+      showTransientMessage("再按一次 Esc 打开会话回退", TransientMessageType.Hint);
+    },
   });
 
   // 关闭统一错误面板（对齐项目惯例：走 matchBinding 派发而非组件内硬编码按键判断，

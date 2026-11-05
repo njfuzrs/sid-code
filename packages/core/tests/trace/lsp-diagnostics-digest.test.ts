@@ -76,6 +76,7 @@ describe("aggregateLspDiagnosticsStats", () => {
         baseline: 1,
         drifted_files: 2,
         injected_first_publish: 1,
+        fresh_after_stale: 2,
       }),
       ev({
         outcome: "injected",
@@ -94,6 +95,7 @@ describe("aggregateLspDiagnosticsStats", () => {
     expect(s.baseline).toBe(1);
     expect(s.driftedFiles).toBe(2);
     expect(s.injectedFirstPublish).toBe(1);
+    expect(s.freshAfterStale).toBe(2);
     // 恒等式：各类新鲜度之和 = 推送总数（口径自洽，漏一类就会露馅）
     expect(s.freshByVersion + s.freshByBarrier + s.unverified + s.baseline).toBe(s.publishes);
   });
@@ -121,6 +123,7 @@ describe("aggregateLspDiagnosticsStats", () => {
     expect(s.baseline).toBe(0);
     expect(s.driftedFiles).toBe(0);
     expect(s.injectedFirstPublish).toBe(0);
+    expect(s.freshAfterStale).toBe(0);
     expect(Number.isNaN(s.unverified)).toBe(false);
   });
 });

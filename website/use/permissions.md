@@ -305,18 +305,22 @@ macOS 上 sid-code 还有一道**操作系统级**的硬隔离：[Seatbelt 沙�
 | 进程 | 允许 `process-exec` / `process-fork` / `signal` | 不放行这个，任何命令都跑不起来 |
 | 进程启动 | 允许 `sysctl-read` / `mach-lookup` / `ipc-posix-shm` / `file-ioctl` | libSystem / dyld 初始化必需，缺任一条直接 SIGABRT |
 | 读 | **默认放开**（`allow file-read*`） | 见上面的威胁模型 |
-| **敏感目录** | **显式 deny** `~/.ssh` `~/.gnupg` `~/.aws` `~/.azure` `~/.kube` `~/.config/gh` `~/.docker/config.json` `~/.netrc` `<sid home>` | 拿到就等于拿到长期凭据的位置 |
+| **敏感目录** | **显式 deny** `~/.ssh` `~/.gnupg` `~/.aws` `~/.azure` `~/.kube` `~/.config/gh` `~/Library/Keychains` `~/.docker/config.json` `~/.netrc` `~/.git-credentials` `<sid home>` | 拿到就等于拿到长期凭据的位置 |
 | 快照例外 | `allow file-read* (literal <本会话快照>)` | 内层 shell 的第一条命令就是 `source` 它；不放行会让用户命令一行都不执行 |
-| 写 | **白名单**：`cwd` 子树 + `/private/tmp` + `/private/var/folders` + `/dev/null` `/dev/zero` `/dev/tty` `/dev/fd/*` `/dev/ttys*` + 你配的额外路径 | 写不在白名单里的一律拒绝 |
+| 写 | **白名单**：`cwd` 子树 + `/private/tmp` + `/private/var/folders` + 包管理器缓存（`~/.npm` `~/.bun` `~/.yarn` `~/.pnpm-store` `~/Library/pnpm`）+ `/dev/null` `/dev/zero` `/dev/tty` `/dev/fd/*` `/dev/ttys*` + 你配的额外路径 | 写不在白名单里的一律拒绝。缓存目录放行是为了让 `npm install` / `bun install` 在沙箱里能跑 |
 | 网络 | 三档：`localhost`（默认）/ `all` / `none` | 见下文「能防/不能防」 |
 
-两条实现细节值得知道：
+三条实现细节值得知道：
 
 - **所有写路径都先 `realpath`**。Seatbelt 按真实路径匹配，macOS 上 `/tmp`→`/private/tmp`、
-  `/var`→`/private/var`；不解析就会「明明在 cwd 里却被拒」。路径不存在时该条规则被跳过并告警，
-  而不是原样写进去假装生效。
+  `/var`→`/private/var`；不解析就会「明明在 cwd 里却被拒」。路径不存在时该条规则被跳过
+  ——内置探针路径（敏感目录、缓存目录）不存在属于正常状态，只记 debug；
+  工作区与你自己配的 `sandboxAllowedWritePaths` 不存在会告警，因为那是「配了没生效」。
 - **内层 shell 与外层一致**（不再写死 `/bin/sh`）。按 zsh 抓的环境快照若在 POSIX mode 下
   `source`，读不到文件是**特殊内建致命错误**（`|| true` 救不回来），shell 直接退出。
+- **快照先判可读再 source**（`[ -r <快照> ] && source ... || true`），且 `sandbox-exec`
+  走 `/usr/bin/sandbox-exec` 绝对路径。前者让快照丢失/不可读时命令照常执行（这条与沙箱无关，
+  `$SHELL=/bin/sh` 的用户同样会踩）；后者让启动自检的结论不受 `PATH` 影响。
 
 `~/.ssh`、`~/.gnupg`、`~/.sid-code` 等是**显式 deny** 的——即使权限规则放行了 bash，命令也
 碰不到这些位置。这层防御不依赖应用层判断，是内核强制的。
@@ -341,11 +345,12 @@ macOS 上 sid-code 还有一道**操作系统级**的硬隔离：[Seatbelt 沙�
 | `sandboxNetwork` | `"localhost"` | 网络三档：`"localhost"` / `"all"` / `"none"` |
 | `sandboxAllowedWritePaths` | `[]` | 额外允许写入的目录，支持 `~/` 前缀；不存在则跳过并告警 |
 
-::: warning `enableSandbox` 必须写在用户级 settings，项目级不生效
+::: warning 三个沙箱字段都必须写在用户级 settings，项目级不生效
 项目级 `.sid-code/settings.json` 只叠加 `PROJECT_BEHAVIOR_FIELDS` 白名单里的字段
-（见 `packages/core/src/config/config.ts`），`enableSandbox` 不在其中——
-写进仓库的 settings 会被静默忽略。这是既有设计（沙箱开关属于本机信任决策），
-但你如果照搬一份项目模板配置，会看到「配了却没生效」且没有任何报错。
+（见 `packages/core/src/config/config.ts`），`enableSandbox`、`sandboxNetwork`、
+`sandboxAllowedWritePaths` 都**不在**其中——写进仓库的 settings 会被静默忽略。
+这是既有设计（沙箱策略属于本机信任决策），但你如果照搬一份项目模板配置，
+会看到「配了却没生效」且没有任何报错。
 :::
 
 `sandboxAutoAllowBash` 默认是 `false`，这是改过的（原先默认放行，理由是「开了沙箱就不用再逐条确认」）。
@@ -368,11 +373,15 @@ macOS 上 sid-code 还有一道**操作系统级**的硬隔离：[Seatbelt 沙�
 三者合起来比任一极端好。轨迹里对应一条 `sandbox_init` 事件：
 
 ```json
-{ "enabled": true, "platform": "darwin", "probe_ok": true, "network": "localhost", "write_paths_count": 3 }
+{ "enabled": true, "platform": "darwin", "probe_ok": true, "network": "localhost", "write_paths_count": 5 }
 ```
 
-`probe_ok: false` 时还带 `probe_error`。每条 bash 的 `PostToolUse` 事件里另有
-`sandboxed: true`（成功与失败两条路径都记），分母是 bash 调用数——这是「开了沙箱但实际没隔离」
+`write_paths_count` 是 profile 实际放行的写路径**总条数**，含内置项（工作区、临时目录、
+包管理器缓存），不是「你配了几条」——没配 `sandboxAllowedWritePaths` 时也会 ≥1。
+`probe_ok: false` 时还带 `probe_error`。
+
+每条 bash 的 `PostToolUse` 事件里另有 `sandboxed: true`（成功与失败两条路径都记，
+主子代理两条执行路径都覆盖），分母是 bash 调用数——这是「开了沙箱但实际没隔离」
 能被发现的地方。
 
 ### 能防什么 / 不能防什么
@@ -381,7 +390,7 @@ macOS 上 sid-code 还有一道**操作系统级**的硬隔离：[Seatbelt 沙�
 
 - 命令**写入**工作目录之外的位置（`~/.zshrc`、`~/Library/LaunchAgents` 这类持久化点）
 - 命令读 `~/.ssh`、`~/.gnupg`、`~/.aws`、`~/.azure`、`~/.kube`、`~/.config/gh`、
-  `~/.docker/config.json`、`~/.netrc`、`<sid home>`
+  `~/Library/Keychains`、`~/.docker/config.json`、`~/.netrc`、`~/.git-credentials`、`<sid home>`
 - `sandboxNetwork: "localhost"` 下，命令**直连**外网主机会被拒
 
 **不能防**（沙箱的边界，读之前先看清楚）：
@@ -391,6 +400,9 @@ macOS 上 sid-code 还有一道**操作系统级**的硬隔离：[Seatbelt 沙�
 - **`localhost` 档不等于断网**。本机若开着系统代理（`*_proxy` 环境变量），
   走代理的外网请求**会成功**——代理就在 localhost。这是刻意的取舍（企业环境几乎不可能没代理），
   但意味着「防外发」在配了代理的机器上只剩「不走代理的直连」被拦。
+- **包管理器缓存目录的内容可以被写**。`~/.npm`、`~/.bun`、`~/.yarn`、`~/.pnpm-store`、
+  `~/Library/pnpm` 在写白名单里（不放行的话 `npm install` / `bun install` 在沙箱里直接失败）；
+  缓存本身是包管理器的数据，不在凭据面里。
 - **工作目录内的任意操作**——沙箱允许读写整个 `cwd` 子树，所以 `rm -rf .` 在工作目录内
   沙箱是放行的（这要靠前面的危险命令层拦）
 - **非 macOS 平台**——Linux / Windows 上 `isEnabled()` 返回 false，沙箱不生效

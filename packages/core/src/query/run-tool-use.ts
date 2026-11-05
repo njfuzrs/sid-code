@@ -271,6 +271,9 @@ export async function runToolUse(
       durationMs: elapsed,
       interrupted,
       isMcpTool: block.name.startsWith("mcp__"),
+      // 结构化元数据继续往上传（bash 的 `sandboxed` 靠它落进轨迹）。子代理两条执行
+      // 路径都收口到这个函数，这里漏传等于子代理的沙箱埋点全瞎。
+      toolMeta: result.meta,
       sessionId: mode.sessionId,
       maxResultSizeChars: tool.maxResultSizeChars,
     });

@@ -74,7 +74,7 @@ describe("D5 · Rewind 文件回滚必须跟随逻辑会话 id", () => {
     expect(appSrc).not.toContain("getCheckpointManager(sessionId");
   });
 
-  test("RewindManager 的 restoreToSnapshot 闭包里取的是 getLogicalSessionId()", () => {
+  test("RewindManager 的 restoreBeforeSnapshot 闭包里取的是 getLogicalSessionId()", () => {
     // 定位到 RewindManager 构造那一段（而不是全文搜），避免别处的正确用法把门禁刷绿。
     const start = appSrc.indexOf("new RewindManager({");
     expect(start).toBeGreaterThan(-1);
@@ -82,7 +82,15 @@ describe("D5 · Rewind 文件回滚必须跟随逻辑会话 id", () => {
     expect(end).toBeGreaterThan(start);
     const block = appSrc.slice(start, end);
 
-    expect(block).toContain("restoreToSnapshot");
+    // A1：注入项已从 restoreToSnapshot 改名为 restoreBeforeSnapshot。
+    // 名字分开是刻意的——同一个名字在 checkpoint 层表示「sN 之后」、在 rewind 层表示
+    // 「sN 及之后」，把两个语义混成一个正是「仅代码回滚 0 个文件」的成因。
+    //
+    // 断言只匹配**调用表达式**（带 `cpMgr.` 前缀与 `(`），不匹配注释里的文字：
+    // 源码文本断言的已知局限就是分不清代码与注释，用更长的形态把这个漏洞堵掉。
+    expect(block).toContain("cpMgr.restoreBeforeSnapshot(");
+    // 反向自证：不能再偷偷借回那个「只回滚 sN 之后」的方法（改回去 = 回退少撤一格）。
+    expect(block).not.toContain(".restoreToSnapshot(");
     expect(block).toContain("this.getLogicalSessionId()");
     // 反向自证：这一段里不能再出现「直接把构造期 sessionId 交给 checkpoint」的写法
     expect(block).not.toContain("getCheckpointManager(sessionId");

@@ -51,7 +51,10 @@ function sysWith(event?: string, command?: string): HookSystem {
 
 function makeTool(
   name: string,
-  run: (input: any, signal?: AbortSignal) => Promise<{ output: string; isError?: boolean }>,
+  run: (
+    input: any,
+    signal?: AbortSignal,
+  ) => Promise<{ output: string; isError?: boolean; meta?: Record<string, unknown> }>,
 ) {
   return {
     name: () => name,
@@ -194,6 +197,60 @@ describe("2. 子代理内工具事件 stdin 带 agent_id / agent_type，主循�
     );
     expect(pre[0]).toMatchObject({ ...AGENT, tool_use_id: "tu-9" });
     expect(post[0]).toMatchObject({ ...AGENT, tool_use_id: "tu-9" });
+  });
+});
+
+// ── 2b. 结构化元数据透传（sandboxed 埋点，2026-11-05 review） ──
+
+/**
+ * 子代理两条执行路径（进程内 executeTools / spawn executeToolForChild）都收口到
+ * `run-tool-use.ts` → `runPostToolHooks`。这条路径原来**不传** `LegacyToolResult.meta`，
+ * 于是子代理里 bash 的 `sandboxed` 埋点在成功与失败两条通道上全部丢失 ——
+ * 而子代理复用主 registry 的 BashTool 实例，它确实跑在沙箱里。
+ * 结果是指标分母（bash 调用数）包含子代理、分子不含，系统性偏低。
+ */
+describe("2b. 子代理路径透传 LegacyToolResult.meta 到 tool_response.meta", () => {
+  test("进程内：成功路径的 meta 进 PostToolUse 载荷", async () => {
+    const sys = sysWith();
+    const post = probe(sys, HookEventName.PostToolUse);
+    const tools = registry([
+      makeTool("bash_x", async () => ({ output: "ok", meta: { sandboxed: true } })),
+    ]);
+    await executeTools([use("t1", "bash_x")], tools, undefined, sys, allowAll);
+    expect((post[0] as any).tool_response).toMatchObject({ meta: { sandboxed: true } });
+  });
+
+  test("进程内：失败路径的 meta 进 PostToolUseFailure 载荷", async () => {
+    const sys = sysWith();
+    const fail = probe(sys, HookEventName.PostToolUseFailure);
+    const tools = registry([
+      makeTool("bash_x", async () => ({
+        output: "exit 1",
+        isError: true,
+        meta: { sandboxed: true },
+      })),
+    ]);
+    await executeTools([use("t1", "bash_x")], tools, undefined, sys, allowAll);
+    expect((fail[0] as any).tool_response).toMatchObject({ meta: { sandboxed: true } });
+  });
+
+  test("spawn 路径同样透传", async () => {
+    const sys = sysWith();
+    const post = probe(sys, HookEventName.PostToolUse);
+    const tools = registry([
+      makeTool("bash_x", async () => ({ output: "ok", meta: { sandboxed: true } })),
+    ]);
+    const sub = new SubAgent({} as any, "m", tools, sys);
+    await (sub as any).executeToolForChild("bash_x", {}, tools, undefined, "tu-meta");
+    expect((post[0] as any).tool_response).toMatchObject({ meta: { sandboxed: true } });
+  });
+
+  test("工具没给 meta 时，tool_response 里不凭空造 meta 键", async () => {
+    const sys = sysWith();
+    const post = probe(sys, HookEventName.PostToolUse);
+    const tools = registry([makeTool("echo_x", async () => ({ output: "ok" }))]);
+    await executeTools([use("t1", "echo_x")], tools, undefined, sys, allowAll);
+    expect("meta" in ((post[0] as any).tool_response ?? {})).toBe(false);
   });
 });
 

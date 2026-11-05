@@ -109,14 +109,64 @@ const SANDBOX_DENIAL_STDERR_RE = /operation not permitted|permission denied/i;
  * 读默认放开下仍然要挡住的 home 子目录（相对 `$HOME`）。
  *
  * 选的都是「拿到就等于拿到长期凭据」的位置：SSH/GPG 私钥、云厂商凭据、k8s 配置、
- * GitHub CLI token。**刻意不列入** `~/.npmrc` / `~/.gitconfig` / `~/.config/git`：
+ * GitHub CLI token、钥匙串数据库。
+ *
+ * **刻意不列入** `~/.npmrc` / `~/.gitconfig` / `~/.config/git`：
  * 私有源与提交身份依赖它们，deny 掉会让沙箱里的 `npm install` / `git commit`
  * 直接不可用（A2 用例会验证 `npm config get registry` 在沙箱内仍可读）。
+ *
+ * `Library/Keychains` 是 2026-11-05 review 补的：读放开意味着 keychain 数据库可读，
+ * 而 `(allow mach-lookup)` 又让 securityd 可达（实测沙箱内 `security list-keychains`
+ * 成功），于是「读 keychain 文件」+「问 securityd 要密码」这条链完全不经过
+ * file-read deny。同类 macOS 沙箱实现都显式挡它。
  */
-const SENSITIVE_HOME_DIRS = [".ssh", ".gnupg", ".aws", ".azure", ".kube", ".config/gh"] as const;
+const SENSITIVE_HOME_DIRS = [
+  ".ssh",
+  ".gnupg",
+  ".aws",
+  ".azure",
+  ".kube",
+  ".config/gh",
+  "Library/Keychains",
+] as const;
 
-/** 单文件形态的敏感凭据（相对 `$HOME`，用 `literal` 精确到文件）。 */
-const SENSITIVE_HOME_FILES = [".docker/config.json", ".netrc"] as const;
+/**
+ * 单文件形态的敏感凭据（相对 `$HOME`，用 `literal` 精确到文件）。
+ *
+ * `.git-credentials` 是 `credential.helper store` 的明文凭据文件：仓库的应用层
+ * 口径（`permission/path-validator.ts`、`permission/checker.ts`）早已把它列为敏感文件，
+ * 沙箱层原来漏了 —— 而应用层那条是「bash 命令文本」正则，`base64` / 解释器读取都能绕，
+ * 内核层的 deny 才是兜底。
+ */
+const SENSITIVE_HOME_FILES = [".docker/config.json", ".netrc", ".git-credentials"] as const;
+
+/**
+ * 包管理器缓存目录（相对 `$HOME`），**放行写**。
+ *
+ * 为什么必须放行：`npm install` 要写 `~/.npm/_cacache`、`bun install` 要写
+ * `~/.bun/install/cache`。写白名单不含它们时，沙箱里的 `npm install` / `bun install`
+ * 会以 `operation not permitted` 失败（2026-11-05 本机实测），而「沙箱里跑不了包管理器」
+ * 等于这个特性不可用。放行的只是缓存目录，不是 `~/.npmrc`（凭据）也不在写白名单之外
+ * 扩大任何东西：这些目录本来就只有包管理器在写。
+ *
+ * 只列主流四件套。其它工具的自定义缓存目录由 `sandboxAllowedWritePaths` 补。
+ */
+const PACKAGE_MANAGER_CACHE_DIRS = [
+  ".npm",
+  ".bun",
+  ".yarn",
+  ".pnpm-store",
+  "Library/pnpm",
+] as const;
+
+/**
+ * `sandbox-exec` 的绝对路径。
+ *
+ * 刻意不用 PATH 查找：探针的意义是「确认这台机器上真能跑」，而 PATH 里放一个伪造的
+ * `sandbox-exec` 就能让探针误判 OK（review 时的故障注入正是这么做的）。
+ * 绑绝对路径后，自检结论不再受 PATH 影响。
+ */
+const SANDBOX_EXEC_PATH = "/usr/bin/sandbox-exec";
 
 /**
  * 默认沙箱配置。
@@ -169,6 +219,10 @@ export interface SandboxInitReport {
   probe_ok: boolean;
   probe_error?: string;
   network: SandboxNetworkMode;
+  /**
+   * profile 实际放行的写路径**总条数**（含内置的工作区、临时目录、包管理器缓存）。
+   * 不是「用户配了几条」——没配 `sandboxAllowedWritePaths` 时也 ≥1。
+   */
   write_paths_count: number;
 }
 
@@ -232,10 +286,18 @@ export class SandboxManager {
   private snapshotPath: string | undefined;
   /** profile 生成结果缓存（cwd / 配置 / 快照在会话内不变，避免每条 bash 重算 + 刷 warn） */
   private cachedProfile: string | null = null;
+  /**
+   * 敏感目录/缓存目录按哪个 `$HOME` 展开。
+   *
+   * 生产路径不传，等价于 `homedir()`；测试用它注入一个可控 HOME —— 不能靠改
+   * `process.env.HOME`（Bun 的 `homedir()` 不跟随运行时 env 变化，2026-11-05 实测）。
+   */
+  private homeDir: string;
 
-  constructor(config: SandboxConfig, workspacePath: string) {
+  constructor(config: SandboxConfig, workspacePath: string, opts?: { homeDir?: string }) {
     this.config = config;
     this.workspacePath = workspacePath;
+    this.homeDir = opts?.homeDir ?? homedir();
   }
 
   /** 沙箱是否启用 */
@@ -260,7 +322,13 @@ export class SandboxManager {
     this.cachedProfile = null;
   }
 
-  /** 本次 profile 实际放行的写路径数量（进 `sandbox_init` 事件，便于判断配置是否生效） */
+  /**
+   * 本次 profile 实际放行的写路径数量（进 `sandbox_init` 事件，便于判断配置是否生效）。
+   *
+   * ⚠️ 口径是**总条数**，含内置项（工作区、临时目录、包管理器缓存），不是「用户配了几条」。
+   * 没配任何 `sandboxAllowedWritePaths` 时也会 ≥1（工作区）。读这个数判断配置是否生效时，
+   * 要跟同平台/同配置的基线比，不要当成用户配置项计数。
+   */
   writePathsCount(): number {
     return this.collectWritePaths().length;
   }
@@ -318,7 +386,7 @@ export class SandboxManager {
       "(allow file-read*)",
     ];
 
-    const home = homedir();
+    const home = this.homeDir;
     for (const rel of SENSITIVE_HOME_DIRS) {
       const real = this.realpathForProfile(`${home}/${rel}`, "敏感目录");
       if (real) lines.push(`(deny file-read* (subpath ${seatbeltQuoted(real)}))`);
@@ -374,29 +442,57 @@ export class SandboxManager {
    *
    * 为什么必须 realpath：Seatbelt 按**真实路径**匹配。规则写 `/tmp/x`，
    * 在 `/tmp/x` 下写文件会被拒 —— macOS 上 `/tmp`→`/private/tmp`、`/var`→`/private/var`。
-   * realpath 失败的路径跳过并 warn，而不是原样写进去假装生效。
+   * realpath 失败的路径跳过，而不是原样写进去假装生效。
    */
   private collectWritePaths(): string[] {
     const out: string[] = [];
     const push = (real: string | undefined) => {
       if (real && !out.includes(real)) out.push(real);
     };
-    push(this.realpathForProfile(this.workspacePath, "工作区"));
-    push(this.realpathForProfile("/private/tmp", "临时目录"));
-    // $TMPDIR 在 /private/var/folders 下（如 /private/var/folders/xx/.../T/）。
-    push(this.realpathForProfile("/private/var/folders", "用户临时目录"));
+    push(this.realpathForProfile(this.workspacePath, "工作区", { warnIfMissing: true }));
+    // /private/tmp 与 /private/var/folders 是 macOS 专用。只在 darwin 上解析：
+    // 非 darwin 上它们不存在，解析只会刷两条「路径不存在」误导性 warn，
+    // 还会让 write_paths_count 的口径在平台之间不可比（2026-11-05 review）。
+    if (process.platform === "darwin") {
+      push(this.realpathForProfile("/private/tmp", "临时目录"));
+      // $TMPDIR 在 /private/var/folders 下（如 /private/var/folders/xx/.../T/）。
+      push(this.realpathForProfile("/private/var/folders", "用户临时目录"));
+    }
+    // 包管理器缓存（`npm install` / `bun install` 要写这里）。目录不存在就跳过 ——
+    // 没用过某个包管理器的机器上没有它，这不是配置错误。
+    for (const rel of PACKAGE_MANAGER_CACHE_DIRS) {
+      push(this.realpathForProfile(`${this.homeDir}/${rel}`, "包管理器缓存"));
+    }
+    // 用户显式配的路径不存在，是真的「配了没生效」，必须 warn。
     for (const p of this.config.allowedWritePaths) {
-      push(this.realpathForProfile(p, "allowedWritePaths"));
+      push(this.realpathForProfile(p, "allowedWritePaths", { warnIfMissing: true }));
     }
     return out;
   }
 
-  /** realpath 失败（通常是不存在）时 warn 并返回 undefined —— 不写进 profile 假装生效。 */
-  private realpathForProfile(p: string, label: string): string | undefined {
+  /**
+   * realpath 失败（通常是不存在）时返回 undefined —— 不写进 profile 假装生效。
+   *
+   * `warnIfMissing` 分两档（2026-11-05 review）：
+   * - 内置探针路径（敏感目录/文件、包管理器缓存、临时目录）：不存在是**正常状态**
+   *   （多数用户没有 `.azure`/`.kube`），原来每条刷一条 warn 会让默认启动就出现
+   *   5~10 条「profile 已跳过」，读起来像「防护没生效」，实际是「没有东西要保护」。
+   *   降到 debug。
+   * - 工作区 / `allowedWritePaths`：用户显式依赖的路径，不存在说明「配了没生效」，保留 warn。
+   */
+  private realpathForProfile(
+    p: string,
+    label: string,
+    opts?: { warnIfMissing?: boolean },
+  ): string | undefined {
     try {
       return realpathSync(p);
     } catch {
-      getLogger().warn("SANDBOX", `路径不存在，profile 已跳过 ${label}: ${p}`);
+      if (opts?.warnIfMissing) {
+        getLogger().warn("SANDBOX", `路径不存在，profile 已跳过 ${label}: ${p}`);
+      } else {
+        getLogger().debug("SANDBOX", `路径不存在，无需 deny/放行 ${label}: ${p}`);
+      }
       return undefined;
     }
   }
@@ -413,7 +509,7 @@ export class SandboxManager {
     }
     try {
       const r = spawnSync(
-        "sandbox-exec",
+        SANDBOX_EXEC_PATH,
         ["-p", this.generateSeatbeltProfile(), shell, "-c", "exit 0"],
         {
           encoding: "utf8",
@@ -448,6 +544,6 @@ export class SandboxManager {
     const escapedProfile = profile.replace(/'/g, "'\\''");
     const escapedShell = shell.replace(/'/g, "'\\''");
     const escapedCommand = command.replace(/'/g, "'\\''");
-    return `sandbox-exec -p '${escapedProfile}' '${escapedShell}' -c '${escapedCommand}'`;
+    return `${SANDBOX_EXEC_PATH} -p '${escapedProfile}' '${escapedShell}' -c '${escapedCommand}'`;
   }
 }
