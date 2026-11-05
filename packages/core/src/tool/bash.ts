@@ -591,6 +591,21 @@ export class BashTool implements Tool {
   /** 注入沙箱管理器（macOS Seatbelt） */
   setSandboxManager(manager: import("../permission/sandbox.ts").SandboxManager | null): void {
     this.sandboxManager = manager;
+    // 注入时快照可能还没就绪（cli.ts 在构造后立刻注入），先报一次现值；
+    // initSnapshot 完成时会再报一次，两处合起来覆盖两种时序。
+    this.registerSnapshotToSandbox();
+  }
+
+  /**
+   * 把快照路径告诉沙箱：profile 里要给它一条 literal 读放行。
+   *
+   * 为什么必须做：内层 shell 的第一条命令就是 `source <快照>`，而快照在
+   * `~/.sid-code/shell-snapshots/` 下 —— 恰好被 sid home 的 deny 覆盖。
+   * POSIX mode 的 shell 里 `source` 一个读不了的文件是**特殊内建致命错误**
+   * （`|| true` 救不回来，shell 直接退出），用户命令一行都不会执行。
+   */
+  private registerSnapshotToSandbox(): void {
+    this.sandboxManager?.setSnapshotPath(this.snapshotFilePath);
   }
 
   /** 异步创建 shell 快照（Windows 跳过，失败降级 undefined，永不抛出） */
@@ -602,6 +617,8 @@ export class BashTool implements Tool {
     } catch {
       this.snapshotFilePath = undefined;
     }
+    // 快照就绪 → 立刻让沙箱 profile 放行它（否则第一条命令就死在 source）
+    this.registerSnapshotToSandbox();
   }
 
   name(): string {
@@ -874,7 +891,21 @@ export class BashTool implements Tool {
     onProgress?: (event: import("./types.ts").ToolProgressData) => void,
   ): Promise<ToolResult> {
     const result = await this.executeCommand(input, signal, onProgress);
-    return this.withTrackedFileChanges(input, result);
+    return this.withTrackedFileChanges(input, this.withSandboxMeta(result));
+  }
+
+  /**
+   * 给结果附上「本次调用所处沙箱状态」的元数据（仅供轨迹，不进模型上下文）。
+   *
+   * 口径刻意取 `sandboxManager` 是否**已注入且启用**，而不是「命令真的被 sandbox-exec
+   * 包裹了」：包裹发生在 `executeCommand` 内部，那里有十几个提前 return（缺参数、cwd
+   * 不存在、取消…），逐个标注既啰嗦又必然漏。两者差异只在「没执行命令的早退调用」上，
+   * 而这条指标要回答的是「开了沙箱的会话里 bash 有没有被判到无沙箱路径」
+   * ——降级时 cli.ts 根本不注入 manager，这里自然没有 meta，正是我们要的信号。
+   */
+  private withSandboxMeta(result: ToolResult): ToolResult {
+    if (!this.sandboxManager?.isEnabled()) return result;
+    return { ...result, meta: { ...(result.meta ?? {}), sandboxed: true } };
   }
 
   /**
@@ -931,6 +962,9 @@ export class BashTool implements Tool {
 
     // 确保快照创建完成（首条命令可能赶在快照就绪前；snapshotReady 永不 reject）
     await this.snapshotReady;
+    // 兜底再报一次快照路径：setSandboxManager 与 initSnapshot 谁先谁后不确定，
+    // 两处都报才能覆盖两种时序（setSnapshotPath 值未变时是 no-op）。
+    this.registerSnapshotToSandbox();
 
     log.info(
       "TOOL",
@@ -961,9 +995,11 @@ export class BashTool implements Tool {
 
     // 前台命令：拼接快照注入 + cwd 追踪
     const { commandString: rawCommand, cwdFile } = this.buildCommand(params.command, { trackCwd });
-    // 沙箱包裹（macOS Seatbelt，启用时限制文件系统和网络访问）
+    // 沙箱包裹（macOS Seatbelt，启用时限制文件系统和网络访问）。
+    // 内层 shell 必须与外层一致：写死 /bin/sh 会让按 zsh 抓的快照在 POSIX mode 下
+    // 执行，`source` 失败是致命错误（`|| true` 救不回来），用户命令一行都不执行。
     const commandString = this.sandboxManager?.isEnabled()
-      ? this.sandboxManager.wrapCommand(rawCommand)
+      ? this.sandboxManager.wrapCommand(rawCommand, shell)
       : rawCommand;
 
     // 准备环境变量（如果启用了清理）
@@ -1473,6 +1509,7 @@ export class BashTool implements Tool {
   ): Promise<ToolResult> {
     const { spawnShellTask } = require("../task/index.ts");
     await this.snapshotReady;
+    this.registerSnapshotToSandbox();
     const resolved = this.resolveCwd(params.cwd);
     if ("error" in resolved) return { output: resolved.error, isError: true };
     const { cwd } = resolved;
@@ -1480,8 +1517,10 @@ export class BashTool implements Tool {
     const { commandString: rawTaskCommand } = this.buildCommand(params.command, {
       trackCwd: false,
     });
+    // 内层 shell 与外层一致：shell-task.ts 用同一个 getPlatformShell()，
+    // 写死 /bin/sh 会让 zsh 快照在 POSIX mode 下 source 失败（致命，见 sandbox.ts）。
     const commandString = this.sandboxManager?.isEnabled()
-      ? this.sandboxManager.wrapCommand(rawTaskCommand)
+      ? this.sandboxManager.wrapCommand(rawTaskCommand, getPlatformShell().shell)
       : rawTaskCommand;
 
     const taskState = spawnShellTask({
