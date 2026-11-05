@@ -268,6 +268,15 @@ JOBDIR="runs/$JOB"
 source ./taskset-fp.sh
 taskset_fp_gate || exit 2
 
+# run 指纹采集（收尾调用）：方案 §3.4 的必控变量。
+# ⚠️ 本脚本跑的是 **cc 臂**（`claude_code_agent:ClaudeCodeNpm`），所以
+# `sid_binary_sha256` / `sid_commit` / `sid_arch` / `sid_*` 那几格会落 null ——
+# 这是**如实记录**，不是采集失败：那一臂本来就没有 sid-code 二进制。
+# 仍然值得采：`model_id` / `harbor_version` / `taskset_digest` 三项对跨 agent
+# 对照同样是要核的变量，比对时会如实报「哪些字段两边都没有」。
+# shellcheck disable=SC1091
+source ./run-fingerprint.sh
+
 caffeinate -dimsu harbor run \
   -a claude_code_agent:ClaudeCodeNpm -m anthropic/claude-sonnet-5 \
   -d "$DATASET" "${TASK_FILTER[@]+"${TASK_FILTER[@]}"}" \
@@ -281,6 +290,10 @@ caffeinate -dimsu harbor run \
 RUN_RC=$?
 echo "=== 结束 $(date '+%F %T') rc=$RUN_RC ==="
 taskset_fp_remember || true
+
+# run 指纹（只读旁路，不改 RUN_RC）。cc 臂的 sid_* 字段会落 null —— 如实记录。
+SID_HARBOR_NETWORK_POLICY="${SID_HARBOR_NETWORK_POLICY:-allowlist}" \
+  run_fingerprint_collect "$JOBDIR"
 
 kill "$MEM_PID" 2>/dev/null || true
 # E1 / D2 镜像服务收尾（字节已落盘，停进程不影响下次复用）。
