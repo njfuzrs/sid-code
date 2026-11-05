@@ -123,3 +123,17 @@ describe("C3 失败时回传 runId / script_path", () => {
     expect(joined).toContain(runId ?? "<missing-runId>");
   });
 });
+
+describe("B2：script 描述写清 meta.phases 元素形态", () => {
+  test("describe 给出对象数组形态与示例，不再只有字段名", () => {
+    const schema = makeTool().inputSchema() as {
+      properties: { script: { description: string } };
+    };
+    const desc = schema.properties.script.description;
+    // 模型能看到的说明只有 schema 描述（usageGuide 里没写）。只给字段名时它会猜成
+    // 字符串数组——实测 12 个用过 workflow 的会话里 7 个踩过，首调报错后才改对。
+    expect(desc).toContain("phases?: [{ title, detail? }]");
+    expect(desc).toContain("{ title:");
+    expect(desc).toContain("不能写成字符串数组");
+  });
+});

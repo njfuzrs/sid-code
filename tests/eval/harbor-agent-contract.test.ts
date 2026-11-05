@@ -80,6 +80,103 @@ def dec_name(node):
         return node.attr
     return getattr(node, "id", "")
 
+
+def _is_metadata(node):
+    return isinstance(node, ast.Name) and node.id == "metadata"
+
+
+def _sub_key(node):
+    # metadata["x"] 的下标常量。Python 3.8 的 slice 是 ast.Index(包一层),
+    # 3.9+ 直接是节点 —— 两种都认。
+    s = node.slice
+    if isinstance(s, ast.Constant) and isinstance(s.value, str):
+        return s.value
+    inner = getattr(s, "value", None)
+    if isinstance(inner, ast.Constant) and isinstance(inner.value, str):
+        return inner.value
+    return None
+
+
+def _update_keys(node):
+    # metadata.update({...}) 的键集合;不是这种调用返回 None。
+    if not isinstance(node, ast.Call):
+        return None
+    f = node.func
+    if not (isinstance(f, ast.Attribute) and f.attr == "update" and _is_metadata(f.value)):
+        return None
+    keys = set()
+    for a in node.args:
+        if not isinstance(a, ast.Dict):
+            return set()  # update(别的变量):抠不出键,不参与判定
+        for k in a.keys:
+            if isinstance(k, ast.Constant) and isinstance(k.value, str):
+                keys.add(k.value)
+    return keys
+
+
+def _terminates(stmts):
+    # 这段语句是否必然以 return/raise 结束。只有 if/else 两条都终止才算。
+    if not stmts:
+        return False
+    last = stmts[-1]
+    if isinstance(last, (ast.Return, ast.Raise)):
+        return True
+    if isinstance(last, ast.If):
+        return bool(last.orelse) and _terminates(last.body) and _terminates(last.orelse)
+    return False
+
+
+def _walk_keys(stmts, assigned, updated, overlap):
+    r"""按「是否可能流到后面」累加 metadata 键。
+
+    ⚠️ 这里必须做**简化的路径敏感**,否则这条门禁会误伤合法形态:
+    「if result is None: ... return」那种分支里的赋值**不会**流到后面的
+    「metadata.update()」(分支必然返回),不算覆盖;而
+    「if decisions is not None:」之后代码继续往下走,它的赋值**会**被后面的
+    update 覆盖 —— 那正是要抓的形态(一个键两处写入,后者覆盖前者)。
+    """
+    for st in stmts:
+        if isinstance(st, ast.If):
+            if not _terminates(st.body):
+                _walk_keys(st.body, assigned, updated, overlap)
+            if st.orelse and not _terminates(st.orelse):
+                _walk_keys(st.orelse, assigned, updated, overlap)
+        elif isinstance(st, (ast.For, ast.While)):
+            if not _terminates(st.body):
+                _walk_keys(st.body, assigned, updated, overlap)
+            if st.orelse and not _terminates(st.orelse):
+                _walk_keys(st.orelse, assigned, updated, overlap)
+        elif isinstance(st, ast.Try):
+            for sub in (st.body, st.orelse, st.finalbody):
+                if not _terminates(sub):
+                    _walk_keys(sub, assigned, updated, overlap)
+            for h in st.handlers:
+                if not _terminates(h.body):
+                    _walk_keys(h.body, assigned, updated, overlap)
+        elif isinstance(st, ast.Assign):
+            for t in st.targets:
+                if isinstance(t, ast.Subscript) and _is_metadata(t.value):
+                    k = _sub_key(t)
+                    if k:
+                        assigned.add(k)
+        elif isinstance(st, ast.Expr):
+            upd = _update_keys(st.value)
+            if upd is not None:
+                overlap.update(assigned & upd)
+                updated.update(upd)
+                assigned.update(upd)
+
+
+def metadata_key_facts(fn):
+    assigned, updated, overlap = set(), set(), set()
+    _walk_keys(fn.body, assigned, updated, overlap)
+    return {
+        "assigned": sorted(assigned),
+        "updated": sorted(updated),
+        "overlap": sorted(overlap),
+    }
+
+
 out = {
     "classes": [],
     "bases": [],
@@ -92,6 +189,9 @@ out = {
     # 顶层 import 的模块名(含 from X import ...)。用来对着 pin 的 harbor 版本
     # 核「这些模块真的存在吗」—— 见 L1「import 的模块都在 pin 的版本里」那条。
     "imported_modules": [],
+    # populate_context_post_run 里 metadata 的赋值形态(直接下标 / update)。
+    # 用来拦「一个键两处写入、后者静默覆盖前者」—— 见「权限计数与清单必须分键」。
+    "metadata_keys": None,
 }
 
 for node in ast.walk(tree):
@@ -108,6 +208,9 @@ for node in ast.walk(tree):
             if isinstance(item, (ast.FunctionDef, ast.AsyncFunctionDef)):
                 out["members"].append(item.name)
                 out["decorators"][item.name] = [dec_name(d) for d in item.decorator_list]
+                # 回填方法里的 metadata 赋值形态 —— 拦「一个键两处写入、后者覆盖前者」。
+                if item.name == "populate_context_post_run":
+                    out["metadata_keys"] = metadata_key_facts(item)
             elif isinstance(item, ast.Assign):
                 for t in item.targets:
                     if isinstance(t, ast.Name):
@@ -141,6 +244,11 @@ type L1Facts = {
   string_consts: string[];
   flag_pairs: Record<string, string[]>;
   imported_modules: string[];
+  metadata_keys: {
+    assigned: string[];
+    updated: string[];
+    overlap: string[];
+  } | null;
 };
 
 function runL1(pyFile: string): { code: number; facts: L1Facts | null; stderr: string } {
@@ -337,6 +445,77 @@ describe.if(HAS_PYTHON3)("L1 静态契约(无需 harbor)", () => {
     // 日志缺失要与「零拒绝」区分:后者是换档成功的判据,混在一起会让一次
     // 采集失败伪装成一次成功换档(与成本那处「绝不填 0」同一条纪律)。
     expect(src).toContain("sid_permission_audit_missing");
+  });
+
+  test("权限计数与清单是两个键 —— 同一个 metadata 键不许被两处写入覆盖", () => {
+    // 外部评测缺陷 1（2026-11-04）：`sid_permission_denials` 曾同时承载
+    // 「观测计数(int)」与「清单(list)」。第二处写入在 `metadata.update()` 里、
+    // 排在前面之后 ⇒ 正常路径上恒覆盖；零拒绝时结果是 None ⇒
+    // 「审计日志真的采到了、真的是 0 拒绝」被下游读成「没采到」——
+    // 一次成功的换档自证看起来像采集失败，而**没有任何东西会报错**。
+    //
+    // 判据是**形态**（同一个 metadata 键不在同一条执行路径上被写两次），
+    // 不是「源码里出现过这个词」：原断言 `toContain("sid_permission_denials")`
+    // 在两处写入时照样绿 —— 那正是它当初没拦住这个缺陷的原因。
+    const f = facts!.metadata_keys;
+    expect(f).not.toBeNull();
+    // 抠出空集 ⇒ 门禁绿着失效（空集上断言会通过）。先证明它真看到了东西。
+    expect(f!.assigned.length).toBeGreaterThan(0);
+    expect(f!.updated.length).toBeGreaterThan(0);
+    expect(
+      f!.overlap,
+      `这些 metadata 键既在分支里赋值、又被 metadata.update() 覆盖：${f!.overlap.join(", ")}`,
+    ).toEqual([]);
+    // 两个键各归其位：计数（观测值）走下标赋值，清单走 update。
+    expect(f!.assigned).toContain("sid_permission_denials");
+    expect(f!.updated).toContain("sid_permission_denials_list");
+  });
+
+  test("变异自证：清单键写回同名键 / 删掉清单键 / 回填方法改名 ⇒ 门禁必须翻红", () => {
+    // ① 写回同名键 ⇒ overlap 非空（正是被修的那个缺陷形态）。
+    withMutatedFixture(
+      (src) => {
+        const mutated = src.replace(
+          /"sid_permission_denials_list": result\.get\("permission_denials"\)/,
+          '"sid_permission_denials": result.get("permission_denials")',
+        );
+        expect(mutated, "变异没生效就是假绿").not.toBe(src);
+        return mutated;
+      },
+      (path) => {
+        const m = runL1(path);
+        expect(m.code).toBe(0);
+        expect(m.facts!.metadata_keys!.overlap).toEqual(["sid_permission_denials"]);
+      },
+    );
+
+    // ② 删掉清单键 ⇒ updated 里缺它（清单没落盘，下游再也拿不到「拒的是哪个工具」）。
+    withMutatedFixture(
+      (src) => {
+        const mutated = src.replace(
+          /\n\s*"sid_permission_denials_list": result\.get\("permission_denials"\),/,
+          "",
+        );
+        expect(mutated, "变异没生效就是假绿").not.toBe(src);
+        return mutated;
+      },
+      (path) => {
+        const m = runL1(path);
+        expect(m.code).toBe(0);
+        expect(m.facts!.metadata_keys!.updated).not.toContain("sid_permission_denials_list");
+      },
+    );
+
+    // ③ 把回填方法改名 ⇒ checker 抠出空集（门禁静默失效，必须能被发现）。
+    withMutatedFixture(
+      (src) =>
+        src.replace(/def populate_context_post_run\(/, "def populate_context_post_run_RENAMED("),
+      (path) => {
+        const m = runL1(path);
+        expect(m.code).toBe(0);
+        expect(m.facts!.metadata_keys).toBeNull();
+      },
+    );
   });
 
   test("不声明任何能力(首版全 False,靠基类默认)", () => {
@@ -1024,6 +1203,39 @@ describe.if(HAS_PYTHON3)("L1b 复算脚本的语法与判据单源性", () => {
     }
   });
 
+  test("被外部 kill 判据只有一处定义,且不许与「上游打断」合并", () => {
+    // 外部评测缺陷 3（2026-11-04）：被 Harbor 硬顶 / 墙钟超时杀掉的样本
+    // (`sid_result_event_missing=True` + `sid_subtype=None`)全部进了能力分母。
+    // 两条臂占比实测 6.2% vs 25.5%，差 4.1 倍 —— 而分数被直接并排引用。
+    // 本仓形态与博客判据不同（这批 cost 并不缺），照抄博客会漏掉最该抓的样本。
+    const HEALTH = "verifier_health.py";
+    const health = readFileSync(join(HARBOR_DIR, HEALTH), "utf-8");
+    expect(health).toMatch(/def externally_killed\(/);
+
+    // 判据必须**同时**读这两格 —— 只读任意一格都会误判：
+    //   只读 `sid_result_event_missing` ⇒ 旧 run 里没这个键的样本被漏掉；
+    //   只读 `sid_subtype is None` ⇒ 整个旧 run（键本来就不存在）全被当成 kill。
+    const codeH = codeOnly(health);
+    expect(codeH).toMatch(/sid_result_event_missing/);
+    expect(codeH).toMatch(/sid_subtype/);
+    // 正分豁免：解出来的样本不许摘出分母，否则通过率被**抬高**（朝有利方向失真）。
+    expect(codeH).toMatch(/_positive_reward/);
+
+    // 消费者：自己读 `sid_result_event_missing` 判定的，必须 import 共享判据。
+    // ⚠️ 只认「读」的形态（`.get("sid_result_event_missing")`）：
+    // `sid_code_agent.py` 是**写入方**（`metadata[...] = True`），不是消费者 ——
+    // 因为出现这个词就要求它 import，会造一个假红。
+    for (const f of scripts) {
+      if (f === HEALTH) continue;
+      const code = codeOnly(readFileSync(join(HARBOR_DIR, f), "utf-8"));
+      if (!/\.get\(\s*["']sid_result_event_missing["']\s*\)/.test(code)) continue;
+      expect(
+        /from verifier_health import[^\n]*externally_killed|import verifier_health/.test(code),
+        `${f} 自己读 sid_result_event_missing 却没用共享判据 —— 判据会分叉`,
+      ).toBe(true);
+    }
+  });
+
   test("用 `command not found` 的脚本必须同时有**正向**判据(pytest 结论行)", () => {
     // ## 这条断言的措辞被改过一次,改的理由比断言本身重要
     //
@@ -1220,6 +1432,48 @@ print(json.dumps(out))
     expect(got.mut_rem, "片段表改空 ⇒ Remote end closed 翻 False").toBe(false);
     expect(got.mut_sock, "片段表改空 ⇒ socket closed 翻 False").toBe(false);
     expect(got.mut_402, "片段表改空 ⇒ 402 仍 fatal").toBe(true);
+  });
+
+  test("externally_killed 在有无 result 事件两路上判对(含正分豁免)", () => {
+    // 外部评测缺陷 3（2026-11-04）。CI 不跑 test-w3-classify.py，行为必须在这一层锁住。
+    // ⛔ 全部合成样本，不读 runs/。
+    //
+    // ⚠️ 正分豁免那条是**真实数据里存在**的形态（ds41 臂有 2 条
+    // `reward=1.0` 但同样被外部 kill 的样本）：把它们摘出分母会**抬高**通过率，
+    // 那是朝对我们有利方向的失真 —— 与 `llm_fatal` 的 `_positive_reward` 同一条纪律。
+    const snippet = String.raw`
+import json
+from verifier_health import externally_killed
+
+def sid(missing, subtype, reward, source="session-traj-fallback"):
+    md = {"sid_cost_source": source, "sid_num_turns": 96}
+    if missing is not None:
+        md["sid_result_event_missing"] = missing
+    if subtype is not None:
+        md["sid_subtype"] = subtype
+    return {
+        "agent_result": {"n_input_tokens": 5000, "n_output_tokens": 200, "metadata": md},
+        "verifier_result": {"rewards": {"reward": reward}},
+    }
+
+out = {}
+out["killed"] = externally_killed(sid(True, None, 0.0))
+out["killed_cost_missing"] = externally_killed(sid(True, None, 0.0, "missing"))
+out["solved_by_kill"] = externally_killed(sid(True, None, 1.0))
+out["has_result"] = externally_killed(sid(None, "success", 0.0, "stream-json-result"))
+out["flag_false"] = externally_killed(sid(False, None, 0.0))
+out["subtype_present"] = externally_killed(sid(True, "error_max_turns", 0.0))
+print(json.dumps(out))
+`;
+    const r = runHealth(snippet);
+    expect(r.code, `python 失败:\n${r.err}`).toBe(0);
+    const got = JSON.parse(r.out) as Record<string, boolean>;
+    expect(got.killed, "事件缺失 + subtype 缺失 + 0 分 ⇒ 被外部 kill").toBe(true);
+    expect(got.killed_cost_missing, "cost_source=missing 同样是外部 kill").toBe(true);
+    expect(got.solved_by_kill, "事件缺失但已解出(reward=1) ⇒ ⛔ 不摘出分母").toBe(false);
+    expect(got.has_result, "有 result 事件 ⇒ 不是外部 kill").toBe(false);
+    expect(got.flag_false, "标记为 False ⇒ 不是外部 kill").toBe(false);
+    expect(got.subtype_present, "subtype 存在(矛盾形态)⇒ fail-closed 不判").toBe(false);
   });
 
   test("取数口径:metadata 在 agent_result 下、reward 在 rewards(复数)下", () => {
