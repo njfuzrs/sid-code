@@ -650,6 +650,18 @@ export interface Config {
    * 与敏感重定向检测之后（checker Step 7 的注释写了完整判据）。
    */
   sandboxAutoAllowBash?: boolean;
+  /**
+   * 沙箱网络档位，默认 `localhost`。
+   *
+   * ⚠️ `localhost` **不等于断网**：本机若开着系统代理（`*_proxy`），走代理的外网请求
+   * 会成功（代理就在 localhost）。这是刻意的取舍，见 sandbox.ts 的 SandboxNetworkMode 注释。
+   *
+   * Seatbelt 不支持按域名/按 IP 放行外网（`remote ip` 的 host 只接受 `*` 或 `localhost`），
+   * 所以这里刻意没有「白名单主机列表」——旧 `allowedHosts` 是在为一个不存在的能力写代码。
+   */
+  sandboxNetwork?: "localhost" | "all" | "none";
+  /** 沙箱额外允许写入的目录（展开 `~` 后 realpath；不存在则跳过并 warn） */
+  sandboxAllowedWritePaths?: string[];
 
   // 团队记忆同步（E.11 协作护城河）
   /** 团队记忆同步配置（共享目录模型） */
@@ -1148,6 +1160,8 @@ const SETTINGS_KEY_ALIASES: Record<string, keyof Config> = {
   // 这里显式登记让 YAML 风格配置命中同一 Config 字段（与上面 max_thinking_tokens 同处理）。
   enable_sandbox: "enableSandbox",
   sandbox_auto_allow_bash: "sandboxAutoAllowBash",
+  sandbox_network: "sandboxNetwork",
+  sandbox_allowed_write_paths: "sandboxAllowedWritePaths",
   team_memory: "teamMemory",
   identity: "identity",
   trace: "trace",

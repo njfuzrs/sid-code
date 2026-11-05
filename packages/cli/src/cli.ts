@@ -2754,8 +2754,9 @@ export async function main(): Promise<void> {
 
     // 沙箱初始化（macOS Seatbelt，默认关闭）
     if (config.enableSandbox) {
-      const { SandboxManager, defaultSandboxConfig, prepareSandboxHosts } =
+      const { SandboxManager, defaultSandboxConfig, recordSandboxInit } =
         await import("@sid-code/core/permission/sandbox.ts");
+      const { expandSidHomePath } = await import("@sid-code/core/config/paths.ts");
       // P2-3：autoAllowBashIfSandboxed 默认已翻为 false（沙箱不再等于免确认）。
       // 这里接上 config.sandboxAutoAllowBash 作显式回退通道——不接就等于把新默认值写死，
       // SandboxConfig 里那个字段会变成生产不可达的死旋钮。
@@ -2765,29 +2766,59 @@ export async function main(): Promise<void> {
         ...(config.sandboxAutoAllowBash === undefined
           ? {}
           : { autoAllowBashIfSandboxed: config.sandboxAutoAllowBash }),
+        ...(config.sandboxNetwork === undefined ? {} : { network: config.sandboxNetwork }),
+        ...(config.sandboxAllowedWritePaths === undefined
+          ? {}
+          : { allowedWritePaths: config.sandboxAllowedWritePaths.map(expandSidHomePath) }),
       };
-      // Seatbelt 的 remote ip 只认 IP。主机名必须在生成 profile 之前解析好，
-      // 否则默认的 localhost 白名单是一条匹配不到任何连接的死规则。
-      await prepareSandboxHosts(sandboxConfig.allowedHosts);
+      // 不再有 await：Seatbelt 的 `remote ip` 只接受 `*` 或 `localhost`，
+      // 写 IP 会让 sandbox-exec 直接 exit 65。原实现的 DNS 解析链是在为一个
+      // Seatbelt 不提供的能力写代码，已整体删除（见 sandbox.ts 头注释）。
       const sandboxManager = new SandboxManager(sandboxConfig, process.cwd());
-      permissionChecker.setSandboxManager(sandboxManager);
-      // 注入到 bash 工具（遍历工具注册表找 BashTool）
-      for (const tool of toolRegistry.all()) {
-        const maybeBash = tool as { setSandboxManager?: (m: typeof sandboxManager) => void };
-        if (typeof maybeBash.setSandboxManager === "function") {
-          maybeBash.setSandboxManager(sandboxManager);
+
+      // 启动自检：`enableSandbox: true` 只代表用户想开，不说明这台机器上真能跑。
+      // profile 语法合法不代表进程起得来（缺 sysctl-read / mach-lookup 时 dyld 直接 abort）。
+      // 探针失败 → 降级为无沙箱 + 醒目警告，而不是让每条 bash 都无声失败；
+      // 反过来「静默不隔离」也不接受，两种极端之间选了「能跑 + 说出来」。
+      const probeShell = process.env.SHELL || "/bin/zsh";
+      const probe = sandboxManager.isEnabled()
+        ? sandboxManager.probe(probeShell)
+        : { ok: false, error: `平台 ${process.platform} 没有沙箱实现（仅 macOS Seatbelt）` };
+
+      if (sandboxManager.isEnabled() && probe.ok) {
+        permissionChecker.setSandboxManager(sandboxManager);
+        // 注入到 bash 工具（遍历工具注册表找 BashTool）
+        for (const tool of toolRegistry.all()) {
+          const maybeBash = tool as { setSandboxManager?: (m: typeof sandboxManager) => void };
+          if (typeof maybeBash.setSandboxManager === "function") {
+            maybeBash.setSandboxManager(sandboxManager);
+          }
         }
-      }
-      // 沙箱实现只有 macOS Seatbelt。非 darwin 上 isEnabled() 返回 false、
-      // wrapCommand 原样返回命令，这里不能打「已启用」——那句话会让人以为有隔离。
-      if (sandboxManager.isEnabled()) {
         getLogger().info("CONFIG", "macOS Seatbelt 沙箱已启用");
+      } else if (sandboxManager.isEnabled()) {
+        // 探针失败：**不注入** sandboxManager，命令走无沙箱路径，但必须让人看见。
+        getLogger().warn(
+          "CONFIG",
+          `macOS Seatbelt 沙箱启动自检失败，已降级为无沙箱（命令不会被隔离）: ${probe.error}`,
+        );
       } else {
         getLogger().warn(
           "CONFIG",
           "enableSandbox 已设置，但当前平台没有沙箱实现（仅 macOS Seatbelt），命令不会被隔离",
         );
       }
+
+      // 可观测性：`sandbox_init` 事件。没有它，「开了沙箱的会话里多少条 bash 真进了沙箱」
+      // 在轨迹上分辨不出来（B2 坏了两三个月没人发现，直接原因就是这条链没有分母）。
+      // 落盘通道复用 TraceCollector.recordCustomEvent，由 app.ts 在 collector 就绪后补发。
+      recordSandboxInit({
+        enabled: sandboxManager.isEnabled(),
+        platform: process.platform,
+        probe_ok: probe.ok,
+        ...(probe.error ? { probe_error: probe.error } : {}),
+        network: sandboxConfig.network,
+        write_paths_count: sandboxManager.writePathsCount(),
+      });
     }
 
     profileCheckpoint("init_end");

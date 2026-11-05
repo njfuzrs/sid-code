@@ -18,7 +18,7 @@ settings.json 的全部可配字段、类型与默认值。
 
 <!-- AUTO-GEN:START 由 scripts/docs-gen-reference.ts 生成，勿手工编辑 -->
 
-> 共 **85** 个顶层字段，全部由 `SettingsSchema` 声明（类型/枚举/约束经运行时自省导出）。
+> 共 **87** 个顶层字段，全部由 `SettingsSchema` 声明（类型/枚举/约束经运行时自省导出）。
 > 写了表里没有的顶层键（多半是拼错）不会报错退出，但启动时会提示「未知配置项」并给出最接近的字段名。
 
 配置文件位置：`~/.sid-code/settings.json`（用户级）、`<启动目录>/.sid-code/settings.json`（项目级，优先）、
@@ -89,7 +89,9 @@ settings.json 的全部可配字段、类型与默认值。
 | `provider` | string | — | LLM 提供商（anthropic / openai / ollama 等，决定走哪套协议） |
 | `quota` | object | — | 配额（子键见[下文](#key-quota)） |
 | `respectGitignore` | boolean | — | grep/glob 是否尊重 .gitignore。缺省 true（与 rg 默认行为一致）。 |
+| `sandboxAllowedWritePaths` | array | — | 沙箱额外允许写入的目录（展开 `~` 后 realpath；不存在则跳过并 warn） |
 | `sandboxAutoAllowBash` | boolean | — | 沙箱启用时是否自动放行 bash（少弹窗），默认 **false**。 |
+| `sandboxNetwork` | enum | `localhost` / `all` / `none` | 沙箱网络档位，默认 `localhost`。 |
 | `sanitizeEnv` | boolean | — | 是否在 bash 工具执行时清理环境变量（默认 false） |
 | `search` | object | — | 搜索（子键见[下文](#key-search)） |
 | `searchTimeoutSeconds` | number | >0 | grep/glob 底层 ripgrep 的超时秒数。缺省 20（WSL 60）；优先于环境变量 SID_GREP_TIMEOUT_SECONDS。 |

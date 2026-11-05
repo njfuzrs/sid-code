@@ -298,6 +298,19 @@ export class TraceCollector {
   private readonly recordRawPayloads: boolean;
   private initialized = false;
   /**
+   * SessionStart 之前到达的自定义事件（writer 就绪后补发）。
+   *
+   * 为什么需要：绝大多数 `recordCustomEvent` 调用发生在会话进行中，但有一类埋在
+   * **启动期**就有结论的链路上 —— `sandbox_init` 由 cli.ts 在 App 构造前记录，
+   * 那一刻 collector 还没 `initialized`，事件会被静默丢弃。
+   * 后果不是「少一条日志」：它让「开了沙箱的会话里多少条 bash 真进了沙箱」
+   * 永远没有分母，而 B2（沙箱开启即全挂）坏了两三个月没人发现，直接原因就是这条。
+   *
+   * 上限防内存膨胀；启动期事件本来就极少（目前只有 sandbox_init 一条）。
+   */
+  private pendingCustomEvents: Array<{ event: string; data: Record<string, unknown> }> = [];
+  private static readonly MAX_PENDING_CUSTOM_EVENTS = 200;
+  /**
    * 本会话是否发生过「轮次用尽」（`loop.ts` 的 `yield { kind: "max_turns" }`）。
    * 由 {@link recordMaxTurns} 置位，收尾时用于把 exit_status 落成 `max_turns`
    * 而不是掉进 `user_interrupt` 兜底桶 —— 详见 handleSessionEnd 里那段注释。
@@ -805,6 +818,8 @@ export class TraceCollector {
       recordRawPayloads: this.recordRawPayloads,
     });
     this.initialized = true;
+    // writer 就绪 → 补发 SessionStart 之前排队的自定义事件（`sandbox_init` 走这条）。
+    this.flushPendingCustomEvents();
 
     // 修复问题一续：resume 复用旧目录时，把已存在的历史 pair 数读回，
     // 使本次续接的 index 从历史末尾接续（而非从 1 重号、与已落盘/已上传的历史冲突）。
@@ -1053,10 +1068,22 @@ export class TraceCollector {
 
   /**
    * 记录一条自定义事件到 events.jsonl（P2-3：git 操作度量等运行时事件的通用入口）。
-   * writer 未就绪（SessionStart 之前）或未初始化时静默忽略——度量不阻断主流程。
+   *
+   * writer 未就绪（SessionStart 之前）时**排队而不是丢弃**：启动期就有结论的埋点
+   * （`sandbox_init`）只能在这个窗口上报，丢了就等于该指标没有分母。
+   * 见 `pendingCustomEvents` 的注释。
    */
   recordCustomEvent(event: string, data: Record<string, unknown>): void {
-    if (!this.initialized || !this.writer) return;
+    if (!this.initialized || !this.writer) {
+      if (this.pendingCustomEvents.length < TraceCollector.MAX_PENDING_CUSTOM_EVENTS) {
+        this.pendingCustomEvents.push({ event, data });
+      }
+      return;
+    }
+    this.appendCustomEventNow(event, data);
+  }
+
+  private appendCustomEventNow(event: string, data: Record<string, unknown>): void {
     try {
       this.appendHookEvent({
         event,
@@ -1067,6 +1094,14 @@ export class TraceCollector {
     } catch {
       /* 事件落盘失败静默，不影响主流程 */
     }
+  }
+
+  /** writer 就绪后补发 SessionStart 之前排队的自定义事件（只在 initialized 置位后调一次）。 */
+  private flushPendingCustomEvents(): void {
+    if (this.pendingCustomEvents.length === 0) return;
+    const pending = this.pendingCustomEvents;
+    this.pendingCustomEvents = [];
+    for (const p of pending) this.appendCustomEventNow(p.event, p.data);
   }
 
   // ─── G2：SubagentCost ───
@@ -1692,6 +1727,11 @@ export class TraceCollector {
         ...(toolDurationMs !== undefined ? { duration_ms: toolDurationMs } : {}),
         ...toolAgentField(input),
         ...toolOutputCharsField(input),
+        // B2：这条工具调用是否跑在 macOS Seatbelt 沙箱里（bash 经 result.meta 上报）。
+        // 分母是 bash 调用数（本事件 tool_name === "bash"），分子是本字段为 true 的条数。
+        // 没有它，「开了沙箱的会话里多少条 bash 真进了沙箱」在轨迹上完全看不见
+        // —— 沙箱开启即全挂坏了两三个月没人发现，直接原因就是这条链没有分母。
+        ...(isSandboxedToolResult(input.tool_response) ? { sandboxed: true } : {}),
         // A2：执行期间进度上报次数（只在 >0 时写，见 hook/types.ts progress_events）
         ...(input.progress_events ? { progress_events: input.progress_events } : {}),
       },
@@ -3606,12 +3646,24 @@ function toolOutputCharsField(input: PostToolUseInput): { output_chars?: number 
   return typeof text === "string" ? { output_chars: text.length } : {};
 }
 
+/**
+ * B2：这条工具结果是否由 macOS Seatbelt 沙箱执行。
+ *
+ * 数据源是 `LegacyToolResult.meta`（bash 填充），经 tool-executor 透传到
+ * PostToolUse 的 `tool_response.meta`。刻意不解析 `output` 文本：
+ * 文案改一次口径就会静默归零，而报告照样显示 0。
+ */
+function isSandboxedToolResult(toolResponse: PostToolUseInput["tool_response"]): boolean {
+  const meta = (toolResponse as Record<string, unknown> | undefined)?.meta;
+  if (!meta || typeof meta !== "object") return false;
+  return (meta as Record<string, unknown>).sandboxed === true;
+}
+
 function errorHeadField(input: PostToolUseInput): { error_head?: string } {
   const text = failureText(input);
   if (!text) return {};
   return { error_head: text.length > ERROR_HEAD_MAX ? text.slice(0, ERROR_HEAD_MAX) : text };
 }
-
 /**
  * R3：`metadata.user_prompts` 每条的最大字符数。
  *

@@ -239,6 +239,14 @@ export class HookEventHandler {
       failure_kind?: ToolFailureKind;
       /** tool_error 时工具的原始输出（tool_response.output） */
       tool_output?: unknown;
+      /**
+       * 工具的结构化执行元数据（`LegacyToolResult.meta`），写进 `tool_response.meta`。
+       *
+       * 为什么失败路径也要传：成功与失败各有一条 fire 通道，只在成功路径传会让
+       * 「开了沙箱的会话里多少条 bash 真进了沙箱」的分母丢掉全部失败调用
+       * （2026-11-05 端到端实测：5 次 bash 只有 3 条带 sandboxed，缺的 2 条正是 exit≠0 的）。
+       */
+      tool_meta?: Record<string, unknown>;
       agent?: HookAgentRef;
       progress_events?: number;
     },
@@ -249,8 +257,12 @@ export class HookEventHandler {
       ...agentFields(options?.agent),
       tool_name: toolName,
       tool_input: toolInput,
-      tool_response:
-        options?.tool_output !== undefined ? { error, output: options.tool_output } : { error },
+      tool_response: {
+        ...(options?.tool_output !== undefined
+          ? { error, output: options.tool_output }
+          : { error }),
+        ...(options?.tool_meta ? { meta: options.tool_meta } : {}),
+      },
       sid_failure_kind: kind,
       is_error: true,
       // HC12：CC 的顶层字段（tool_response.error 保留，存量 sid 脚本照常）
