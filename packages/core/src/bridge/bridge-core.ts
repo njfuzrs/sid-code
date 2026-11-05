@@ -24,6 +24,11 @@ import type { BridgeTransport, BridgeInMessage, BridgeOutMessage } from "./types
 import { BoundedUUIDSet } from "./message-dedup.ts";
 import { PermissionProxy } from "./permission-proxy.ts";
 import { formatStatusMessage } from "./bridge-messaging.ts";
+import {
+  BRIDGE_INBOUND_EVENT_NAME,
+  emitBridgeTelemetry,
+  type BridgeTelemetrySink,
+} from "./bridge-telemetry.ts";
 import { getLogger } from "../debug/logger.ts";
 
 export interface BridgeCoreOptions {
@@ -36,6 +41,12 @@ export interface BridgeCoreOptions {
   dedupCapacity?: number;
   /** 权限请求超时（毫秒） */
   permissionTimeoutMs?: number;
+  /**
+   * 桥接事件埋点（可选，由 BridgeRunner 透传）。
+   * 入站消息与权限请求结果是这条链上唯一能回答「远程做了什么」的事实源，
+   * 不注入时静默——测试与无轨迹模式不受影响。
+   */
+  onTelemetry?: BridgeTelemetrySink;
 }
 
 export class BridgeCore {
@@ -44,7 +55,12 @@ export class BridgeCore {
   private permissionProxy: PermissionProxy;
   private onUserMessage: (text: string) => void | Promise<void>;
   private onAbort?: () => void;
+  private readonly onTelemetry?: BridgeTelemetrySink;
   private started = false;
+  /** 去重后的远程用户消息条数（`BridgeSession(stopped).inbound_messages` 的来源） */
+  private inboundMessages = 0;
+  /** 远程中断次数（同上，`aborts`） */
+  private aborts = 0;
   /** 连接关闭时放行。start() 用它确认「紧随握手的拒绝」已经落地。 */
   private closeWaiters: Array<() => void> = [];
   /** connect() 之前挂上的那一次等待。关闭若发生在握手 resolve 之前，它已经放行了。 */
@@ -53,7 +69,12 @@ export class BridgeCore {
   constructor(options: BridgeCoreOptions) {
     this.transport = options.transport;
     this.dedup = new BoundedUUIDSet(options.dedupCapacity ?? 10000);
-    this.permissionProxy = new PermissionProxy(this.transport, options.permissionTimeoutMs);
+    this.onTelemetry = options.onTelemetry;
+    this.permissionProxy = new PermissionProxy(
+      this.transport,
+      options.permissionTimeoutMs,
+      options.onTelemetry,
+    );
     this.onUserMessage = options.onUserMessage;
     this.onAbort = options.onAbort;
   }
@@ -138,6 +159,16 @@ export class BridgeCore {
   }
 
   /**
+   * 会话内累计计数（`BridgeSession(stopped)` 的字段来源）。
+   *
+   * 为什么由 core 数而不是 runner：消息在 core 里去重、abort 在 core 里分发，
+   * runner 再数一遍就得重新实现同一套判定，两处漂移时不会有任何东西变红。
+   */
+  getSessionStats(): { inboundMessages: number; aborts: number } {
+    return { inboundMessages: this.inboundMessages, aborts: this.aborts };
+  }
+
+  /**
    * 这次 start() 里、connect() 之前挂上的关闭等待。
    * 关闭发生在握手 resolve 之前时，返回的 Promise 已经是 resolved。
    */
@@ -173,13 +204,24 @@ export class BridgeCore {
       case "user_message": {
         const text =
           typeof msg.data === "string" ? msg.data : ((msg.data as { text?: string })?.text ?? "");
-        if (text)
+        if (text) {
+          this.inboundMessages++;
+          // 只记长度不记正文：events.jsonl 会上传，正文可能含用户项目里的任意内容。
+          // 与紧随其后的 UserPromptSubmit 按时间 + 长度对账即可。
+          emitBridgeTelemetry(this.onTelemetry, BRIDGE_INBOUND_EVENT_NAME, {
+            kind: "user_message",
+            text_len: text.length,
+          });
           void Promise.resolve(this.onUserMessage(text)).catch((err) => {
             getLogger().error("BRIDGE", `处理远程消息失败: ${err.message}`);
           });
+        }
         break;
       }
       case "permission_response":
+        emitBridgeTelemetry(this.onTelemetry, BRIDGE_INBOUND_EVENT_NAME, {
+          kind: "permission_response",
+        });
         this.permissionProxy.handleResponse(msg);
         break;
       case "control":
@@ -192,10 +234,15 @@ export class BridgeCore {
     const cmd = (msg.data as { command?: string })?.command;
     switch (cmd) {
       case "abort":
+        this.aborts++;
+        emitBridgeTelemetry(this.onTelemetry, BRIDGE_INBOUND_EVENT_NAME, {
+          kind: "control:abort",
+        });
         this.onAbort?.();
         void this.transport.write(formatStatusMessage("aborted"));
         break;
       case "ping":
+        // 心跳刻意不记：每秒级高频、零信息量，记了会把一次远程会话写成几千条噪声。
         void this.transport.write(formatStatusMessage("pong"));
         break;
       default:

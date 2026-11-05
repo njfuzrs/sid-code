@@ -43,6 +43,9 @@ import { getBuildInfo } from "@sid-code/shared/build-info.ts";
 import { getIdentity, getGitSnapshot } from "../identity/index.ts";
 import { TraceWriter, type RawJsonlEntry, type HookEvent } from "./writer.ts";
 import { buildTrajectory, type RequestResponsePair, type TraceMetadata } from "./builder.ts";
+// 远程接管标记：`App.runBridge` 在 init 前置位，这里构造 metadata 时读取。
+// 不能走 SessionStartInput —— 那是对外 hook 契约，加字段要动参考页与用户脚本。
+import { isBridgeSession } from "./session-flags.ts";
 // F1 ⑤：活跃 stream lifecycle 计数（进程级、无会话耦合）—— 心跳里据此判「生成器泄漏」。
 // 方向是 trace → llm（stream-lifecycle 本来就 import trace/stream-observer），无循环。
 import { getActiveStreamLifecycleCount } from "../llm/stream-lifecycle.ts";
@@ -761,6 +764,10 @@ export class TraceCollector {
       has_thinking: false,
       has_sub_agent: false,
       start_source: input.source,
+      // 远程接管标记（--bridge 启动）。放在 metadata 而不是只发事件：
+      // 「这个会话是不是被遥控的」要能不扫事件就筛出来（触发清单 A12）。
+      // /clear 会重建 metadata，所以读进程级标记而不是一次性入参，见 trace/session-flags.ts。
+      ...(isBridgeSession() ? { bridge: true } : {}),
       // /clear 换会话：记录被结束的上一个会话 id，同一终端接连做的几个任务可串起来
       ...(input.source === "clear" && input.parent_session_id
         ? { parent_session_id: input.parent_session_id }

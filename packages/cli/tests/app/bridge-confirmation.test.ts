@@ -15,6 +15,7 @@ import { UnifiedCommandRegistry } from "@sid-code/cli/command/unified-registry.t
 import { defaultConfig } from "@sid-code/core/config/config.ts";
 import type { Config } from "@sid-code/core/config/config.ts";
 import { PermissionChecker } from "@sid-code/core/permission/checker.ts";
+import { setConfirmVia } from "@sid-code/core/permission/decision-telemetry.ts";
 
 let dir: string;
 let prevConfigDir: string | undefined;
@@ -26,6 +27,10 @@ beforeEach(() => {
 });
 
 afterEach(() => {
+  // 这组用例会走生产确认路径（App.requestUserConfirmation 写进程级 confirmVia）。
+  // bun test 同批多文件在一个进程里跑，不复位会让下一个读它的文件（如
+  // trace/decision-metrics 的 B11 门面转发）多出一个不该有的 confirmVia 字段。
+  setConfirmVia(null);
   if (prevConfigDir === undefined) delete process.env.SID_CONFIG_DIR;
   else process.env.SID_CONFIG_DIR = prevConfigDir;
   rmSync(dir, { recursive: true, force: true });

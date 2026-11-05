@@ -4,7 +4,7 @@
 [![CI](https://github.com/njfuzrs/sid-code/actions/workflows/ci.yml/badge.svg)](https://github.com/njfuzrs/sid-code/actions/workflows/ci.yml)
 [![Docs](https://img.shields.io/badge/docs-sid--code.cc-4c8bf5)](https://www.sid-code.cc/)
 [![Platform](https://img.shields.io/badge/platform-macOS%20%7C%20Linux-lightgrey)](#installation)
-[![Bun](https://img.shields.io/badge/Bun-%E2%89%A51.0-000000?logo=bun&logoColor=white)](https://bun.sh)
+[![Bun](https://img.shields.io/badge/Bun-%E2%89%A51.4.2-000000?logo=bun&logoColor=white)](https://bun.sh)
 
 [中文](./README.md) · **English**
 
@@ -41,6 +41,9 @@ sid-code --version    # confirm the version
 sid-code update       # upgrade later
 ```
 
+> ⚠️ `sc` is an alias the installer writes, equivalent to `sid-code --dangerously-skip-permissions`
+> — it skips every permission confirmation. Run `sid-code` directly if you want to approve each step.
+
 Prebuilt binaries cover macOS (arm64 / x64) and Linux (x64 / arm64). If the install
 fails or `PATH` isn't picking it up, see the
 [install guide](https://www.sid-code.cc/start/install).
@@ -55,12 +58,12 @@ $ sc
 › The timeout config in this module isn't taking effect, find out why
 
   Searching for timeout-related code…
-  Reading packages/core/src/tool/bash.ts:55-80
-  Found it: parseEnv reads the env var but never passes it to spawn's timeout param
+  Reading packages/core/src/tool/bash.ts:90-105
+  Found it: resolveTimeoutBounds reads the env var but never passes the cap to spawn's timeout
   Editing packages/core/src/tool/bash.ts
-  Running bun test tests/tool/bash.test.ts  → 12 pass 0 fail
+  Running bun test packages/core/tests/tool/bash-timeout-diagnostics.test.ts → 7 pass 0 fail
 
-  The timeout was ignored because parseEnv's return value was never wired into spawn.
+  The timeout was ignored because the cap was never wired into spawn.
   Fixed, and the unit tests pass.
 ```
 
