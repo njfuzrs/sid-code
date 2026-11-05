@@ -789,6 +789,11 @@ export interface LspDiagnosticsDigestStats {
   unverified: number;
   /** 从未被 edit/write 同步过的文件的推送 */
   baseline: number;
+  /**
+   * 「本代际曾有推送被同步窗口丢弃、之后补到了新鲜推送」的代际数。
+   * 与 `staleSyncing` 对照可判断丢弃的代价是「晚一轮」还是「丢诊断」。
+   */
+  freshAfterStale: number;
   /** 判为带外漂移、本轮未注入并已触发重同步的文件数 */
   driftedFiles: number;
   /** 注入的文件里，拿的是新代际第一次推送的文件数 */
@@ -814,6 +819,7 @@ export function aggregateLspDiagnosticsStats(
     freshByBarrier: 0,
     unverified: 0,
     baseline: 0,
+    freshAfterStale: 0,
     driftedFiles: 0,
     injectedFirstPublish: 0,
     byAgent: {},
@@ -836,6 +842,7 @@ export function aggregateLspDiagnosticsStats(
     out.freshByBarrier += num(d.fresh_by_barrier);
     out.unverified += num(d.unverified);
     out.baseline += num(d.baseline);
+    out.freshAfterStale += num(d.fresh_after_stale);
     out.driftedFiles += num(d.drifted_files);
     out.injectedFirstPublish += num(d.injected_first_publish);
     if (typeof d.agent_id === "string") {
@@ -4709,7 +4716,9 @@ export function renderHuman(d: Digest, opts: RenderOptions = {}): string {
         ) +
         c(
           "gray",
-          `  丢弃过时: 同步窗口 ${ld.staleSyncing} / 旧版本 ${ld.staleVersion}` +
+          `  丢弃过时: 同步窗口 ${ld.staleSyncing}` +
+            (ld.staleSyncing > 0 ? `（其中补到新鲜 ${ld.freshAfterStale}）` : "") +
+            ` / 旧版本 ${ld.staleVersion}` +
             (ld.driftedFiles > 0 ? `  漂移 ${ld.driftedFiles}` : ""),
         ),
     );

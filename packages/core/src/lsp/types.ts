@@ -23,6 +23,14 @@ export interface LSPServerConfig {
   startupTimeout?: number;
   /** 最大崩溃重启次数（默认 3） */
   maxRestarts?: number;
+  /**
+   * 是否启用诊断屏障（didChange 后发 documentSymbol 划代际）。
+   *
+   * 未设置时按 `lsp/barrier.ts` 的已验证服务器白名单判定（默认关闭）：
+   * 屏障判据依赖「通知按序处理」与「flush 窗口能排空旧推送」两个未经验证的前提，
+   * 未验证服务器启用它可能误丢新代际首推。显式 true/false 可覆盖（自担风险）。
+   */
+  barrier?: boolean;
 }
 
 /** LSP 服务器状态 */
