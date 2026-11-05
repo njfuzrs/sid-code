@@ -300,6 +300,16 @@ export interface TraceMetadata {
   budget_exceeded_source?: "budget_rule" | "quota" | "remote";
   start_source?: string;
   end_source?: string;
+  /**
+   * 本会话是 Bridge 远程接管会话（`--bridge` 启动）。
+   *
+   * 触发清单 A12 此前只能靠「管理台截图」证明发生过：轨迹里既没有 bridge 事件，
+   * 也分不出一个会话是不是被遥控的。事件（BridgeSession/BridgeInbound/BridgePermission）
+   * 回答「做了什么」，这个标记回答「是不是」——不扫事件就能筛出遥控会话。
+   * 由 `App.runBridge` 在 init 前置进程级标记、collector 构造 metadata 时读取
+   * （见 `trace/session-flags.ts`），`/clear` 重建 metadata 时同样成立。
+   */
+  bridge?: boolean;
   /** /clear 换会话时被结束的上一个会话 id（start_source="clear" 才有，对齐 CC parentSessionId） */
   parent_session_id?: string;
   /**

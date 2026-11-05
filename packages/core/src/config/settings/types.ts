@@ -531,6 +531,11 @@ export const SettingsSchema = lazySchema(
         enableSandbox: z.boolean().optional(),
         // 缺省 = undefined = 走 SandboxConfig 默认值；显式写才覆盖（回退语义在 cli.ts 构造处）
         sandboxAutoAllowBash: z.boolean().optional(),
+        // 网络档位：localhost（默认）/ all / none。Seatbelt 不支持按域名或按 IP 放行外网，
+        // 所以这里刻意没有「白名单主机列表」这种旋钮（旧 allowedHosts 已删，见 sandbox.ts 头注释）。
+        sandboxNetwork: z.enum(["localhost", "all", "none"]).optional(),
+        // 额外允许写入的目录（展开 ~ 后 realpath；不存在则跳过并 warn）
+        sandboxAllowedWritePaths: z.array(z.string()).optional(),
         speculativeClassifier: z.boolean().optional(),
         outputStyle: z.string().optional(),
         autoDream: z.boolean().optional(),

@@ -1641,13 +1641,18 @@ export async function executeSingleTool(
             failure_kind: interrupted ? "aborted" : "tool_error",
             is_interrupt: interrupted,
             tool_output: hookOutput,
+            // 失败路径同样要带 meta：只在成功路径传会让 sandboxed 的分母丢掉全部失败调用
+            // （2026-11-05 端到端实测：5 次 bash 只有 3 条带 sandboxed，缺的正是 exit≠0 的）。
+            ...(result.meta ? { tool_meta: result.meta } : {}),
             progress_events: progressEvents,
           },
         )
       : await deps.hookSystem.firePostToolUseEvent(
           block.name,
           executedInput as Record<string, unknown>,
-          { output: hookOutput, isError: false },
+          // meta 进 tool_response 而不是 output：前者只喂轨迹/遥测，后者是模型正文，
+          // 往里加字段会污染 prompt（口径见 LegacyToolResult.meta 的注释）。
+          { output: hookOutput, isError: false, ...(result.meta ? { meta: result.meta } : {}) },
           false,
           block.id,
           {

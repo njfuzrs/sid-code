@@ -20,18 +20,14 @@
 import { describe, test, expect, beforeEach, afterEach } from "bun:test";
 import { PermissionChecker } from "../../src/permission/checker.ts";
 import { defaultConfig } from "../../src/config/config.ts";
-import {
-  SandboxManager,
-  defaultSandboxConfig,
-  prepareSandboxHosts,
-} from "../../src/permission/sandbox.ts";
+import { SandboxManager, defaultSandboxConfig } from "../../src/permission/sandbox.ts";
 import { setFlagSettings } from "../../src/config/settings/settings.ts";
 import {
   setRemotePolicyPermissions,
   __resetRemotePolicyPermissionsForTest,
 } from "../../src/config/remote-policy-state.ts";
 import { RuleLoader } from "../../src/permission/rule-loader.ts";
-import { mkdtempSync, rmSync, writeFileSync } from "fs";
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "fs";
 import { tmpdir } from "os";
 import { join } from "path";
 
@@ -255,54 +251,67 @@ describe("P2-3：沙箱自动放行", () => {
   });
 });
 
-describe("Seatbelt profile：路径转义与网络白名单", () => {
-  test("路径里的引号与换行被转义，不能提前闭合 (subpath) 字面量", () => {
-    const sb = new SandboxManager(
-      {
-        ...defaultSandboxConfig(),
-        enabled: true,
-        allowedReadPaths: ['a"b\nc'],
-        allowedWritePaths: ['x"y'],
-      },
-      '/tmp/work "quoted"',
-    );
-    const profile = sb.generateSeatbeltProfile();
+describe("Seatbelt profile：路径转义与网络档位", () => {
+  /**
+   * 用**真实存在**的带引号目录：新实现会对每条写路径做 realpath，路径不存在时
+   * 整条规则被跳过（不写进去假装生效），这样测不到转义。
+   * 转义本身仍然必须成立——值里的 `"` 会提前闭合 `(subpath "...")` 并注入新规则。
+   */
+  test("路径里的引号被转义，不能提前闭合 (subpath) 字面量", () => {
+    const root = mkdtempSync(join(tmpdir(), "sbx-quote-"));
+    const quotedDir = join(root, 'work "quoted"');
+    mkdirSync(quotedDir, { recursive: true });
+    try {
+      const sb = new SandboxManager({ ...defaultSandboxConfig(), enabled: true }, quotedDir);
+      const profile = sb.generateSeatbeltProfile();
 
-    // 每条 (subpath ...) 规则的引号必须成对：值里的 " 被转成 \"，换行被剔除。
-    for (const line of profile.split("\n")) {
-      const m = line.match(/subpath (".*")\)/);
-      if (!m) continue;
-      const inner = m[1].slice(1, -1);
-      // 去掉转义后的引号，剩下的 " 必须是 0 个，否则规则被值截断了
-      expect(inner.replace(/\\"/g, "").includes('"')).toBe(false);
-      expect(inner.includes("\n")).toBe(false);
+      // 每条 (subpath ...) 规则的引号必须成对：值里的 " 被转成 \"，换行被剔除。
+      for (const line of profile.split("\n")) {
+        const m = line.match(/subpath (".*")\)/);
+        if (!m) continue;
+        const inner = m[1].slice(1, -1);
+        // 去掉转义后的引号，剩下的 " 必须是 0 个，否则规则被值截断了
+        expect(inner.replace(/\\"/g, "").includes('"')).toBe(false);
+        expect(inner.includes("\n")).toBe(false);
+      }
+      // 目录名是真实的（realpath 之后），引号被转义成 \" 而不是提前闭合引号
+      expect(profile).toContain("sbx-quote-");
+      expect(profile).toContain('work \\"quoted\\"")');
+    } finally {
+      rmSync(root, { recursive: true, force: true });
     }
-    expect(profile).toContain('(subpath "/tmp/work \\"quoted\\"")');
-    expect(profile).toContain('(subpath "a\\"bc")');
-    expect(profile).toContain('(subpath "x\\"y")');
   });
 
-  test("localhost 解析成 IP 后才写进 remote ip，字面量 localhost 不出现", async () => {
-    await prepareSandboxHosts(["localhost"]);
-    const sb = new SandboxManager(
-      { ...defaultSandboxConfig(), enabled: true, allowedHosts: ["localhost"] },
-      cwd,
-    );
+  /**
+   * 反漂移：这条断言锁的是**修正后**的 Seatbelt 语义。
+   *
+   * 修前这里写的是「localhost 解析成 IP 后才写进 remote ip」——它锁住的正是 D1 那个错误实现。
+   * 实测（2026-11-05，macOS 27.0.1）：`remote ip "127.0.0.1:*"` 会让 sandbox-exec 直接
+   * 报 `host must be * or localhost in network address` 并 exit 65，命令一行都不跑。
+   */
+  test('网络档位 localhost 写成 remote ip "localhost:*"（不解析成 IP）', () => {
+    const sb = new SandboxManager({ ...defaultSandboxConfig(), enabled: true }, cwd);
     const profile = sb.generateSeatbeltProfile();
-    // Seatbelt 的 remote ip 过滤不认主机名，写 "localhost" 等于没放行。
-    expect(profile.includes('remote ip "localhost:*"')).toBe(false);
-    const wroteLoopback =
-      profile.includes('remote ip "127.0.0.1:*"') || profile.includes('remote ip "::1:*"');
-    expect(wroteLoopback).toBe(true);
+    expect(profile).toContain('(allow network* (remote ip "localhost:*"))');
+    // 任何非 localhost / 非 * 的 host 都是非法写法，sandbox-exec 会整份 profile 拒收
+    expect(profile).not.toMatch(/remote ip "(?!localhost:|\*:)/);
   });
 
-  test("IP 字面量不依赖 DNS，原样写入", () => {
-    const sb = new SandboxManager(
-      { ...defaultSandboxConfig(), enabled: true, allowedHosts: ["10.0.0.8"] },
+  test("网络档位 all 写 allow network*，none 一条 network 规则都不写", () => {
+    const all = new SandboxManager(
+      { ...defaultSandboxConfig(), enabled: true, network: "all" },
       cwd,
     );
-    const profile = sb.generateSeatbeltProfile();
-    expect(profile).toContain('(allow network* (remote ip "10.0.0.8:*"))');
+    expect(all.generateSeatbeltProfile()).toContain("(allow network*)");
+    expect(all.generateSeatbeltProfile()).not.toContain("remote ip");
+
+    const none = new SandboxManager(
+      { ...defaultSandboxConfig(), enabled: true, network: "none" },
+      cwd,
+    );
+    const noneProfile = none.generateSeatbeltProfile();
+    expect(noneProfile).not.toContain("(allow network*)");
+    expect(noneProfile).not.toContain("remote ip");
   });
 
   test("非 darwin 上 isEnabled() 为 false：开关打开也不等于隔离", () => {
@@ -312,8 +321,20 @@ describe("Seatbelt profile：路径转义与网络白名单", () => {
     } else {
       expect(sb.isEnabled()).toBe(false);
       // 未启用时 wrapCommand 必须原样返回，不能包一层不存在的 sandbox-exec
-      expect(sb.wrapCommand("echo hi")).toBe("echo hi");
+      expect(sb.wrapCommand("echo hi", "/bin/zsh")).toBe("echo hi");
     }
+  });
+
+  /**
+   * 内层 shell 必须跟随外层：写死 /bin/sh 会让按 zsh 抓的快照在 POSIX mode 下执行，
+   * `source` 读不到文件是致命错误（`|| true` 救不回来），用户命令一行都不执行（D3）。
+   */
+  test("wrapCommand 用传入的 shell 包内层命令（不再写死 /bin/sh）", () => {
+    if (!new SandboxManager(defaultSandboxConfig(), cwd).isEnabled()) return;
+    const sb = new SandboxManager({ ...defaultSandboxConfig(), enabled: true }, cwd);
+    const wrapped = sb.wrapCommand("echo hi", "/bin/zsh");
+    expect(wrapped).toContain("'/bin/zsh' -c");
+    expect(wrapped).not.toContain("/bin/sh -c");
   });
 });
 

@@ -326,6 +326,18 @@ export interface LegacyToolResult {
    */
   mediaBlocks?: import("../llm/types.ts").ToolResultMediaBlock[];
   /**
+   * 结构化执行元数据（不进模型上下文，只供轨迹/遥测消费）。
+   *
+   * 为什么单独开一个字段：`output` 是**模型侧正文**，往里塞元数据会污染 prompt；
+   * 而轨迹侧确实需要「这条命令实际怎么执行的」这类事实。
+   * 已有的 `structuredPatch` / `mediaBlocks` 是同一种范式（透传给 UI，不回传 LLM），
+   * 但它们各自绑定一种具体类型，元数据是开放的键值对，故单列。
+   *
+   * 当前消费方：`bash` 写 `{ sandboxed: boolean }` —— 用来算「开了沙箱的会话里
+   * 多少条 bash 真的进了沙箱」（B2：沙箱开启即全挂时，这条链在轨迹上完全瞎）。
+   */
+  meta?: Record<string, unknown>;
+  /**
    * GAP-06：上下文修改器（LegacyTool 侧对齐新版 Tool.contextModifier）。
    * 工具执行后需要修改运行上下文（如 EnterPlanMode 切换权限模式）时填充。
    * executeTools 在结果收集完毕后，按工具**原始顺序**依次应用，保证并发执行下
