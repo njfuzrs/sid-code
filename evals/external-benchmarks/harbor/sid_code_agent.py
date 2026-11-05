@@ -863,6 +863,9 @@ class SidCodeAgent(BaseInstalledAgent):
             # 值为 `None` 表示该档未设(不限),这是**有效配置**,不是采集失败。
             "sid_max_turns": self._resolved_flags.get("max_turns"),
             "sid_max_budget_usd": self._resolved_flags.get("max_budget_usd"),
+            # T10b 的墙钟预算同理：改变终止形态（`error_max_duration` vs 外部 SIGKILL）的
+            # 必控变量。不落这格，k 轮里哪轮漏传/传错，指纹比对会静默判一致。
+            "sid_max_duration_ms": self._resolved_flags.get("max_duration_ms"),
         }
         # 观测值:None 表示日志缺失(≠ 零拒绝),所以只在拿到时才写这几格。
         decisions = self._count_permission_decisions()
