@@ -142,7 +142,7 @@ describe("RewindManager.dropPoint", () => {
     const mgr = new RewindManager({
       getMessages: () => msgs,
       setMessages: () => {},
-      restoreToSnapshot: async () => null,
+      restoreBeforeSnapshot: async () => null,
     });
     const p1 = mgr.registerPoint("轮1", 1);
     const p2 = mgr.registerPoint("被撤回", 2);

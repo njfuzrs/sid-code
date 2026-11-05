@@ -28,9 +28,9 @@ function makeDeps(initialMsgs: unknown[] = []) {
     setMessages: (m) => {
       messages = [...m];
     },
-    restoreToSnapshot: async (id) => {
+    restoreBeforeSnapshot: async (id) => {
       restoreCalls.push(id);
-      return 2; // 假装回滚了 2 个文件
+      return { restored: 2, failed: [] }; // 假装回滚了 2 个文件
     },
   };
   return {

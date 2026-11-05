@@ -3,7 +3,7 @@
  *
  * 「回滚率」是最直接的返工信号，此前四个入口一条事件都不落。本文件的断言锁两件事：
  *   1. **一次用户动作恰好一条**——埋在 CheckpointManager 层会让一次面板回滚记两条
- *      （rewindTo 内部也调 restoreToSnapshot），埋漏了则 `/rewind <n>` 整条不记；
+ *      （rewindTo 内部也调 restoreBeforeSnapshot），埋漏了则 `/rewind <n>` 整条不记；
  *   2. **空转与未命中要能分辨**：`nothing`（没东西可退）与 `snapshot_miss`
  *      （有快照 id 但恢复返回 null，D5 那个缺陷的复发计数）是两种完全不同的返工信号。
  */
@@ -31,9 +31,12 @@ function makeDeps(initialMsgs: unknown[] = [], opts: { restoreResult?: number | 
     setMessages: (m) => {
       messages = [...m];
     },
-    restoreToSnapshot: async (id) => {
+    restoreBeforeSnapshot: async (id) => {
       restoreCalls.push(id);
-      return opts.restoreResult === undefined ? 2 : opts.restoreResult;
+      const n = opts.restoreResult === undefined ? 2 : opts.restoreResult;
+      // A1：注入项已从 restoreToSnapshot（回滚 sN 之后）改名为 restoreBeforeSnapshot
+      // （回滚 sN 及之后），返回值也从裸数字换成 { restored, failed }。
+      return n === null ? null : { restored: n, failed: [] };
     },
   };
   return { deps, restoreCalls };
@@ -58,7 +61,7 @@ describe("T2 面板回滚（dialog）", () => {
     expect(h.restoreCalls).toHaveLength(0);
   });
 
-  it("mode=code：restoreToSnapshot 被调也只有一条（不因内部调用多记）", async () => {
+  it("mode=code：restoreBeforeSnapshot 被调也只有一条（不因内部调用多记）", async () => {
     const h = makeDeps(["m0"]);
     const mgr = new RewindManager(h.deps);
     mgr.registerPoint("第一轮", 1000);

@@ -16,9 +16,9 @@ function setup(initial: number) {
     setMessages: (m) => {
       msgs = m;
     },
-    restoreToSnapshot: async (id) => {
+    restoreBeforeSnapshot: async (id) => {
       restored.push(id);
-      return 1;
+      return { restored: 1, failed: [] };
     },
   });
   return {
