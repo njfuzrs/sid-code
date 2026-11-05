@@ -182,6 +182,10 @@ import {
   JIT_EVENT_NAME,
 } from "@sid-code/core/trace/jit-telemetry.ts";
 import {
+  setSandboxInitTraceSink,
+  SANDBOX_INIT_EVENT_NAME,
+} from "@sid-code/core/permission/sandbox.ts";
+import {
   setIsolationUnusedTraceSink,
   SUBAGENT_ISOLATION_UNUSED_EVENT_NAME,
 } from "@sid-code/core/trace/isolation-telemetry.ts";
@@ -4625,6 +4629,18 @@ export class App {
     setJitTraceSink(
       traceCollectorInstance
         ? (data) => traceCollectorInstance.recordCustomEvent(JIT_EVENT_NAME, data)
+        : null,
+    );
+    // B2：沙箱初始化进轨迹。cli.ts 的沙箱初始化早于 collector（后者要等 hookSystem），
+    // sandbox.ts 内部先把报告存着，这里注入即补发一次 —— 与上面 JIT 同款延迟接线。
+    // 不接的话「开了沙箱的会话里多少条 bash 真进了沙箱」永远没有分母，
+    // 而 B2 坏了两三个月没人发现，直接原因就是这条链在轨迹上是瞎的。
+    setSandboxInitTraceSink(
+      traceCollectorInstance
+        ? (data) =>
+            traceCollectorInstance.recordCustomEvent(SANDBOX_INIT_EVENT_NAME, {
+              ...data,
+            })
         : null,
     );
     // O1（PR6）：子代理 worktree「建了没用」的埋点，同款模块级 sink（清理点在
