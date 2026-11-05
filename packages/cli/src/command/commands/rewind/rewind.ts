@@ -18,7 +18,17 @@ export class RewindCommand implements LocalCommandModule {
 
     // 向后兼容：`/rewind <n>` 保留「仅回退 n 轮对话」的脚本化快捷路径（不弹面板、不动文件）。
     const n = Math.max(1, parseInt(trimmed) || 1);
-    const removed = ctx.ctxMgr.rewindTurns(n);
+    // G2：抛错也记 error。只记 ok/nothing 会让「回滚失败」的真实形态从分母里消失。
+    let removed: number;
+    try {
+      removed = ctx.ctxMgr.rewindTurns(n);
+    } catch (e) {
+      emitRewind("rewind_n", "error", {
+        requested: n,
+        error_name: (e as Error)?.name ?? "Error",
+      });
+      throw e;
+    }
     if (removed === 0) {
       // G2：空转也要记——「敲了回退但没东西可退」和「回退成功」在返工归因里是两件事
       emitRewind("rewind_n", "nothing", { requested: n, turns_removed: 0 });
