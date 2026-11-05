@@ -1098,7 +1098,13 @@ export class App {
         getMessages: () => this.ctxMgr.getMessages(),
         setMessages: (msgs: unknown[]) =>
           this.ctxMgr.setMessages(msgs as import("@sid-code/core/llm/types.ts").Message[]),
-        restoreToSnapshot: async (snapshotId: string): Promise<number | null> => {
+        // A1：必须是 restoreBeforeSnapshot（回滚「该快照及之后」），不是 restoreToSnapshot
+        // （只回滚「该快照之后」）。锚点是本轮**首个**快照，而按「快照 sN 存的是产生它那次
+        // 调用之前的内容」这条口径，回到本轮之前必须连 sN 自己一起撤。少撤一格的表现是：
+        // 本轮只改过一次文件时切出空区间，UI 显示「回滚了 0 个文件」而磁盘没动。
+        restoreBeforeSnapshot: async (
+          snapshotId: string,
+        ): Promise<{ restored: number; failed: string[] } | null> => {
           // D5：checkpoint 必须跟随**逻辑会话 id**，不能用构造期捕获的 `sessionId`。
           // 构造函数比 restoreSession() 早跑，那时 resumedSessionId 还是 null，闭包一旦
           // 捕获局部变量就把「进程新 id」定死了。而建快照走的是 getLogicalSessionId()
@@ -1109,7 +1115,7 @@ export class App {
           try {
             const { getCheckpointManager } = await import("@sid-code/core/checkpoint/manager.ts");
             const cpMgr = await getCheckpointManager(logicalSessionId, this.config.checkpoint);
-            const result = await cpMgr.restoreToSnapshot(snapshotId);
+            const result = await cpMgr.restoreBeforeSnapshot(snapshotId);
             if (!result) {
               // D5 加重项：此前 `return null` 与「本会话确实没有快照」完全无法区分，
               // 且不打日志——UI 只显示「跳过文件回滚」，排查时没有任何线索。
@@ -1119,7 +1125,12 @@ export class App {
               );
               return null;
             }
-            return result.files?.length ?? 0;
+            // filesFailed 必须一并回传：修之前只返回 files.length，把 N4 引入的
+            // 「部分失败可见」通道在这一层掐断了——一部分文件没回滚，UI 照样显示成功。
+            return {
+              restored: result.files?.length ?? 0,
+              failed: result.failedFiles ?? [],
+            };
           } catch (e) {
             getLogger().warn(
               "REWIND",
@@ -11800,6 +11811,9 @@ export class App {
           mode: result.mode,
           messagesDropped: result.messagesDropped,
           filesRestored: result.filesRestored,
+          // A1：部分失败必须透传到 UI。修之前这一层没有 failedFiles 可传（上游闭包把它丢了），
+          // 于是 checkpoint 层明明记了「哪些文件没回滚」，面板照样显示「已回退」。
+          filesFailed: result.filesFailed,
           fileRestoreSkipped: result.fileRestoreSkipped,
           conversationUnavailable: result.conversationUnavailable,
         };

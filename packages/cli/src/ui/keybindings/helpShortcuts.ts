@@ -42,7 +42,9 @@ export const HELP_ONLY_SHORTCUTS: ReadonlyArray<HelpItem & { group: HelpGroup }>
   { group: "input", key: "Ctrl+Y/Alt+Y", description: "粘回已删文本/更早的" }, // yank / yankPop
   { group: "submit", key: "Enter", description: "发送（输出中则排队）" }, // 裸 Enter → handleSubmit
   { group: "submit", key: "↑", description: "空输入时弹回排队消息" }, // onPopQueuedForEdit
-  { group: "control", key: "Esc Esc", description: "空闲时打开会话回退" }, // App escape-escape
+  // A1：触发条件是「空闲 + 输入框为空」，两条触发路径（同轮 data 的 escape-escape 与人手双击
+  // 的 800ms 时间窗口）同口径；vim 下 normal 模式需没有待决前缀（insert 的第一次 Esc 只切模式）。
+  { group: "control", key: "Esc Esc", description: "空闲且输入为空时打开会话回退" }, // useRewindEscape
   { group: "control", key: "Ctrl+D", description: "删后一字；空输入按两次退出" }, // InputArea Ctrl+D
   { group: "control", key: "?", description: "显示/隐藏本面板" }, // isShortcutsHelpTrigger
   { group: "view", key: "PgUp/PgDn", description: "对话区翻页（全屏）" }, // ScrollableList
