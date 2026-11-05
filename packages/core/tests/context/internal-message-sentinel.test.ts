@@ -7,8 +7,8 @@
  * 三道防线：
  *  1. helper 契约：markInternal / buildInternalMessage 打的标记能被 hasInternalOrigin 识别，
  *     且类型系统限制 origin 只能取白名单内的值。
- *  2. 源码扫描（核心）：扫描 src/ 下所有手写 `origin: "…"` 字面量注入点，断言每个 origin
- *     都已在 INTERNAL_ORIGINS 登记。任何人新增一个未登记的内部 origin → 本测试失败，
+ *  2. 源码扫描（核心）：扫描 src/ 下所有手写 `_meta: { origin: "…" }` 字面量注入点，断言每个
+ *     origin 都已在 INTERNAL_ORIGINS 登记。任何人新增一个未登记的内部 origin → 本测试失败，
  *     强制其先登记到单一事实源。
  *  3. 隐藏行为：带白名单 origin 的消息确实被 history-adapter 判定为隐藏。
  */
@@ -82,6 +82,24 @@ describe("防漂移哨兵：源码扫描所有 origin 注入点", () => {
     return acc;
   }
 
+  /**
+   * 从源码文本里收集「`_meta: { … }` 对象字面量内」的 origin 字面量。
+   *
+   * 为什么不直接扫 `origin: "…"`：`origin` 是通用词，别的领域字段也叫它 ——
+   * `CronTask.origin` 记定时任务来源（cron/types.ts）、`NormalizedLLMError.origin`
+   * 记错误来源（llm/error-normalize.ts 甚至为避开旧正则绕成了先声明变量再写键）。
+   * 2026-11-05 实测：CronTask 新增 origin 字段后，旧正则把三个任务来源
+   * （cron_create / schedule_wakeup / loop）误报成未登记的内部消息 origin。
+   * 判据必须锚定 `_meta: {` 这个真实注入形态，而不是靠「字段名叫 origin」猜。
+   *
+   * `[^{}]*?` 只允许在同一层对象内寻找：跨过 `}` 就说明那是另一个对象了，
+   * 不能把别的对象的 origin 记到 `_meta` 头上。
+   */
+  function collectMetaOrigins(text: string): string[] {
+    const META_ORIGIN = /_meta\s*:\s*\{[^{}]*?\borigin:\s*["']([^"']+)["']/g;
+    return [...text.matchAll(META_ORIGIN)].map((m) => m[1]);
+  }
+
   test('所有手写 `_meta: { origin: "…" }` 的字面量 origin 都已登记到 INTERNAL_ORIGINS', () => {
     // P2-2 分包：生产源码分布在 4 个包，全扫。只扫一个包会让哨兵半瞎且不报错。
     const repoRoot = join(import.meta.dir, "..", "..", "..", "..");
@@ -91,17 +109,12 @@ describe("防漂移哨兵：源码扫描所有 origin 注入点", () => {
     // 防空转：路径指错时会扫到 0 个文件而假绿。
     expect(files.length).toBeGreaterThan(500);
 
-    // 匹配 `origin: "xxx"` / `origin: 'xxx'`（紧跟在 _meta 上下文里的内联来源标记）。
-    // 只关心字符串字面量形式——REATTACH_ORIGIN 等常量引用由 helper/类型系统保证，不在扫描列。
-    const ORIGIN_LITERAL = /origin:\s*["']([^"']+)["']/g;
     // 已知内部来源 = 整条隐藏类 + 专用渲染类。两类都算"已登记"，未登记才算漂移。
     const whitelist = new Set<string>([...INTERNAL_ORIGINS, ...INTERNAL_RENDER_ORIGINS]);
 
     const violations: Array<{ file: string; origin: string }> = [];
     for (const file of files) {
-      const text = readFileSync(file, "utf-8");
-      for (const m of text.matchAll(ORIGIN_LITERAL)) {
-        const origin = m[1];
+      for (const origin of collectMetaOrigins(readFileSync(file, "utf-8"))) {
         if (!whitelist.has(origin)) {
           violations.push({ file: file.replace(`${repoRoot}/`, ""), origin });
         }
@@ -116,6 +129,35 @@ describe("防漂移哨兵：源码扫描所有 origin 注入点", () => {
           `并确认它确实该在 TUI 隐藏；或改用 buildInternalMessage/markInternal 构造。`,
       );
     }
+  });
+
+  // 判据自证：三条一组，前两条证明「不再误报」，第三条证明「没有因此变松」。
+  // 缺了第三组，收窄正则的风险就是"把真注入点也一起漏掉"，而门禁照样全绿。
+  test("不误报：领域字段 origin 不算内部消息 origin", () => {
+    const text = [
+      `const task: CronTask = { id: "x", origin: "cron_create" };`,
+      `const err = { origin: "network", arrival: "thrown" };`,
+      `const msg = { role: "user", _meta: { origin: "compact-summary" } };`,
+    ].join("\n");
+    expect(collectMetaOrigins(text)).toEqual(["compact-summary"]);
+  });
+
+  test("不误报：_meta 对象之后别的对象里的 origin 不算", () => {
+    const text = `const x = { _meta: { foo: 1 }, other: { origin: "not-internal" } };`;
+    expect(collectMetaOrigins(text)).toEqual([]);
+  });
+
+  test("仍能抓到：多行 _meta 对象内的 origin", () => {
+    const text = [
+      "const msg = {",
+      '  role: "user",',
+      "  _meta: {",
+      "    isMeta: true,",
+      '    origin: "promise-nudge",',
+      "  },",
+      "};",
+    ].join("\n");
+    expect(collectMetaOrigins(text)).toEqual(["promise-nudge"]);
   });
 });
 

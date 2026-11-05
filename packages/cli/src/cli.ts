@@ -2907,8 +2907,10 @@ export async function main(): Promise<void> {
       // Cron 调度器：onFire 把 prompt 注入 App 主循环；isLoading 避免 REPL 忙时触发
       const { getScheduler } = await import("@sid-code/core/cron/scheduler.ts");
       const scheduler = getScheduler({
-        onFire: (prompt: string) => {
-          void app.enqueueScheduledPrompt?.(prompt);
+        // G3：task 一并交给 App，宿主据此发 ScheduledInject（含 queue_wait_ms），
+        // 与调度器侧的 ScheduledFire 靠 task_id 配对
+        onFire: (prompt: string, task?: import("@sid-code/core/cron/types.ts").CronTask) => {
+          void app.enqueueScheduledPrompt?.(prompt, task);
         },
         isLoading: () => app.isBusy?.() ?? false,
         sessionId: config.sessionId,

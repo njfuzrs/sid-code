@@ -44,13 +44,25 @@ import { existsSync } from "fs";
 import { readDurableTasks, mutateDurableTasks, durableFilePath } from "./durable-store.ts";
 import { grantDurableTask, revokeDurableTask, isDurableTaskGranted } from "./durable-grants.ts";
 import { getLogger } from "../debug/logger.ts";
+import {
+  SCHEDULED_FIRE_EVENT_NAME,
+  emitScheduledTrace,
+  promptSha12,
+  type ScheduledFireOutcome,
+} from "./cron-telemetry.ts";
 
 /** 到期后因会话忙碌被推迟超过这个时长就告警一次 */
 const OVERDUE_WARN_MS = 5 * 60_000;
 
 export interface SchedulerOptions {
-  /** 触发时执行：把 prompt 注入主循环 */
-  onFire: (prompt: string) => void;
+  /**
+   * 触发时执行：把 prompt 注入主循环。
+   *
+   * G3：第二个参数带完整 task（可选，旧实现忽略即可）。此前只传 prompt 字符串，
+   * 任务 id 在调度器里就丢了，轨迹里分不出「这次到点触发是哪个任务、什么来源」。
+   * 宿主侧据此发 `ScheduledInject`（含 queue_wait_ms），与这里的 `ScheduledFire` 配对。
+   */
+  onFire: (prompt: string, task?: CronTask) => void;
   /** REPL 是否忙（忙时跳过触发） */
   isLoading: () => boolean;
   /** 当前会话 ID（锁协调用） */
@@ -473,10 +485,17 @@ export class Scheduler {
    */
   /** @returns 是否真的触发了（未授权 / 认领失败 / 被别人抢先 = false） */
   private fireOnce(task: CronTask, now: number, keep: boolean, tag: string): boolean {
+    // G3：due_at 必须在状态推进前取——keep 分支会重写 nextFireAt，之后取的就不再是
+    // 「这一次为什么在 now 触发」，lag_ms 会系统性偏小（甚至为 0）。
+    // catch-up 路径没有 nextFireAt，退化成 fireAt；都没有就记 now（lag=0，语义是「没有可比的到期点」）。
+    const rawDue = task.fireAt ?? this.nextFireAt.get(task.id);
+    const dueAt = typeof rawDue === "number" && Number.isFinite(rawDue) ? rawDue : now;
+
     if (task.durable) {
       const origin = this.durableTaskOrigin.get(task.id);
       if (!origin || !isDurableTaskGranted(origin, task)) {
         this.warnUngranted(task, origin);
+        this.emitFireTelemetry(task, "skipped_ungranted", dueAt, now);
         return false;
       }
       let claim: Claim;
@@ -485,10 +504,12 @@ export class Scheduler {
       } catch (err: any) {
         // 认领写盘失败：本轮不触发，下一轮重试（不 fire 是为了不双触发、不丢状态）
         getLogger().error("CRON", `任务 ${task.id} 认领失败，本轮跳过: ${err?.message ?? err}`);
+        this.emitFireTelemetry(task, "claim_failed", dueAt, now);
         return false;
       }
       if (!claim.claimed) {
         this.nextFireAt.delete(task.id);
+        this.emitFireTelemetry(task, "claim_failed", dueAt, now);
         return false;
       }
     }
@@ -496,8 +517,12 @@ export class Scheduler {
     this.inFlight.add(task.id);
     try {
       this.fireTask(task);
+      // 「交给宿主」才算 fired。宿主注入器同步抛错时走下面的 catch，记 fire_error——
+      // 这两种结果在轨迹上必须分开，否则「到点了但没注入」会被算成成功。
+      this.emitFireTelemetry(task, "fired", dueAt, now);
     } catch (err: any) {
       getLogger().error(tag, `任务 ${task.id} 触发失败: ${err?.message ?? err}`);
+      this.emitFireTelemetry(task, "fire_error", dueAt, now);
     } finally {
       this.inFlight.delete(task.id);
     }
@@ -554,14 +579,47 @@ export class Scheduler {
   }
 
   /**
+   * G3：把一次到期触发写进轨迹（`ScheduledFire`）。
+   *
+   * 与 `ScheduledInject` 分开记的理由：一次「到点触发」在源码里是两个时刻，合成一条就
+   * 分不出「调度器晚了」和「会话忙、排队久了」——而后者才是 `warnOverdueWhileBusy`
+   * 一直在 logger 里喊、却从没被量化过的那个问题。
+   *
+   * prompt 只记长度与 sha12，不记原文（`UserPromptSubmit` 已经有了，见 cron-telemetry.ts）。
+   */
+  private emitFireTelemetry(
+    task: CronTask,
+    outcome: ScheduledFireOutcome,
+    dueAt: number,
+    firedAt: number,
+  ): void {
+    emitScheduledTrace(SCHEDULED_FIRE_EVENT_NAME, {
+      task_id: task.id,
+      origin: task.origin ?? "unknown",
+      recurring: task.recurring,
+      durable: task.durable,
+      due_at: dueAt,
+      fired_at: firedAt,
+      lag_ms: Math.max(0, firedAt - dueAt),
+      dispatch: this.opts.daemonMode ? "daemon" : "inject",
+      prompt_len: task.prompt.length,
+      prompt_sha12: promptSha12(task.prompt),
+      outcome,
+    });
+  }
+
+  /**
    * 触发一个任务。守护进程模式优先走 onFireTask（携带完整 task：workspaceDir/allowedTools），
-   * 否则回退 onFire(prompt)（交互式宿主）。
+   * 否则回退 onFire(prompt, task)（交互式宿主）。
+   *
+   * G3：交互路径也把 task 一起交出去——宿主据此发 `ScheduledInject`，
+   * 与调度器侧的 `ScheduledFire` 靠 task_id 配对。旧实现的 `onFire(prompt)` 只忽略第二个参数即可。
    */
   private fireTask(task: CronTask): void {
     if (this.opts.daemonMode && this.opts.onFireTask) {
       this.opts.onFireTask(task);
     } else {
-      this.opts.onFire(task.prompt);
+      this.opts.onFire(task.prompt, task);
     }
   }
 

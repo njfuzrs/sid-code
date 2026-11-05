@@ -178,6 +178,60 @@ describe("防复发哨兵：扫描 tests/ 下所有落盘调用方", () => {
     return acc;
   }
 
+  /**
+   * 剥掉 TS 源码里的注释，只留代码（字符串/模板串原样保留）。
+   *
+   * 为什么必须剥：`used` 的判据是「文件里出现过这个导出名」，而**注释里提到类名
+   * 不等于调用它**。2026-11-05 实测假阳性：`session/rewind-telemetry.test.ts` 文件头
+   * 解释「一次用户动作恰好一条 —— 埋在 CheckpointManager 层会让一次面板回滚记两条」，
+   * 它本身只 new RewindManager（不落盘），却因这行注释被要求声明隔离。
+   * 反向也不能靠改注释措辞来凑绿 —— 那会把「注释被当成调用」这个错误判据留在原处。
+   *
+   * 顺带收紧 `isolated`：原判据的正则同样会命中注释里的 `process.env.SID_CONFIG_DIR`，
+   * 那是**假阴性**（注释里的赋值不隔离任何东西），剥掉注释正好一并修掉。
+   */
+  function stripComments(text: string): string {
+    let out = "";
+    let i = 0;
+    while (i < text.length) {
+      const ch = text[i];
+      const next = text[i + 1];
+      if (ch === "/" && next === "/") {
+        while (i < text.length && text[i] !== "\n") i++;
+        continue;
+      }
+      if (ch === "/" && next === "*") {
+        i += 2;
+        while (i < text.length && !(text[i] === "*" && text[i + 1] === "/")) i++;
+        i += 2;
+        continue;
+      }
+      if (ch === '"' || ch === "'" || ch === "`") {
+        // 字符串原样保留：里面的 `//` 不是注释，且导出名可能出现在断言文案里
+        const quote = ch;
+        out += ch;
+        i++;
+        while (i < text.length) {
+          const c = text[i];
+          out += c;
+          i++;
+          if (c === "\\") {
+            if (i < text.length) {
+              out += text[i];
+              i++;
+            }
+            continue;
+          }
+          if (c === quote) break;
+        }
+        continue;
+      }
+      out += ch;
+      i++;
+    }
+    return out;
+  }
+
   test("每个 import 了落盘类导出的测试文件都声明了隔离", () => {
     // P1-2 分包后测试不再只有一个根：各 package 内 tests/ + 仓库级根 tests/。
     // 这里必须扫**全部**测试根，否则哨兵只覆盖本包，新增的越界调用方在别的包里
@@ -206,7 +260,8 @@ describe("防复发哨兵：扫描 tests/ 下所有落盘调用方", () => {
     let scanned = 0;
 
     for (const file of files) {
-      const text = readFileSync(file, "utf-8");
+      // 注释里提到导出名/环境变量名不算调用，也不算隔离（详见 stripComments 的理由）
+      const text = stripComments(readFileSync(file, "utf-8"));
       const used = WRITING_EXPORTS.find((name) => new RegExp(`\\b${name}\\b`).test(text));
       if (!used) continue;
       scanned++;

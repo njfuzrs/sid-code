@@ -21,16 +21,15 @@
  *
  * ## 覆盖范围
  *
- * 本文件当前只覆盖 bridge 组（T4）。同一方案的 hook / 回滚 / 定时触发三组
- * 由 PR1 补齐时，按同样形态往这里加 describe。
+ * 四组：bridge（T4）/ hook / 回滚 / 定时触发。新增一组时按同样形态往这里加 describe。
  */
 
 import { describe, test, expect } from "bun:test";
-import { readFileSync } from "fs";
+import { readFileSync, readdirSync, statSync } from "node:fs";
+import { join } from "node:path";
 
-function read(rel: string): string {
-  return readFileSync(new URL(rel, import.meta.url), "utf-8");
-}
+const REPO_ROOT = join(import.meta.dir, "../../../..");
+const SRC_ROOTS = [join(REPO_ROOT, "packages/core/src"), join(REPO_ROOT, "packages/cli/src")];
 
 /**
  * 去掉 `//` 与块注释，保留字符串与代码。
@@ -42,6 +41,30 @@ function stripComments(src: string): string {
   return src.replace(/\/\*[\s\S]*?\*\//g, "").replace(/(^|[^:])\/\/[^\n]*/g, "$1");
 }
 
+/** 递归收集 src 下的 .ts 生产源码（排除测试文件——测试里的调用点不算生产路径） */
+function collectSources(dir: string, out: string[] = []): string[] {
+  for (const entry of readdirSync(dir)) {
+    const full = join(dir, entry);
+    if (statSync(full).isDirectory()) collectSources(full, out);
+    else if (entry.endsWith(".ts") && !entry.endsWith(".test.ts")) out.push(full);
+  }
+  return out;
+}
+
+const SOURCES = SRC_ROOTS.flatMap((root) => collectSources(root));
+
+/** 返回包含 needle 的文件（已剥注释）。用相对路径输出，失败时能直接定位 */
+function callSites(needle: string): string[] {
+  return SOURCES.filter((f) => stripComments(readFileSync(f, "utf8")).includes(needle)).map((f) =>
+    f.replace(`${REPO_ROOT}/`, ""),
+  );
+}
+
+/** 读单个生产源码（已剥注释）。路径相对仓库根，失败时能直接定位 */
+function readSource(rel: string): string {
+  return stripComments(readFileSync(join(REPO_ROOT, rel), "utf8"));
+}
+
 /** 生产侧 emit：`emitBridgeTelemetry(<sink>, BRIDGE_X_EVENT_NAME, ...)` */
 function emitPattern(sinkExpr: string, constName: string): RegExp {
   return new RegExp(`emitBridgeTelemetry\\(\\s*${sinkExpr}\\s*,\\s*${constName}\\b`);
@@ -49,16 +72,16 @@ function emitPattern(sinkExpr: string, constName: string): RegExp {
 
 describe("触发事件反死线门禁 · bridge（T4）", () => {
   test("三个事件名常量在单一事实源里定义", () => {
-    const telemetry = stripComments(read("../../src/bridge/bridge-telemetry.ts"));
+    const telemetry = readSource("packages/core/src/bridge/bridge-telemetry.ts");
     expect(telemetry).toContain('BRIDGE_SESSION_EVENT_NAME = "BridgeSession"');
     expect(telemetry).toContain('BRIDGE_INBOUND_EVENT_NAME = "BridgeInbound"');
     expect(telemetry).toContain('BRIDGE_PERMISSION_EVENT_NAME = "BridgePermission"');
   });
 
   test("生产侧 emit 调用点都在非注释代码里（生命周期每个阶段各一处）", () => {
-    const runner = stripComments(read("../../src/bridge/bridge-runner.ts"));
-    const core = stripComments(read("../../src/bridge/bridge-core.ts"));
-    const proxy = stripComments(read("../../src/bridge/permission-proxy.ts"));
+    const runner = readSource("packages/core/src/bridge/bridge-runner.ts");
+    const core = readSource("packages/core/src/bridge/bridge-core.ts");
+    const proxy = readSource("packages/core/src/bridge/permission-proxy.ts");
 
     // 只断言「至少一处」的话，删掉 connected（连上）或 stopped（收尾）仍然会绿 ——
     // 而「接线漏一条」正是这类门禁要防的形态（实测：删掉 connected 的 emit 后
@@ -79,19 +102,18 @@ describe("触发事件反死线门禁 · bridge（T4）", () => {
   });
 
   test("runner 把 sink 透传给 core（core 再传给权限代理）", () => {
-    const runner = stripComments(read("../../src/bridge/bridge-runner.ts"));
+    const runner = readSource("packages/core/src/bridge/bridge-runner.ts");
     // 不透传的话：入站消息与权限结果全部静默丢失，而 runner 自己的三个事件仍然正常
     expect(runner).toMatch(/onTelemetry:\s*deps\.onTelemetry/);
 
-    const core = stripComments(read("../../src/bridge/bridge-core.ts"));
+    const core = readSource("packages/core/src/bridge/bridge-core.ts");
     expect(core).toMatch(
       /new PermissionProxy\(\s*this\.transport,\s*options\.permissionTimeoutMs,\s*options\.onTelemetry,?\s*\)/,
     );
   });
 
   test("app 层把桥接事件接到 collector，并置会话标记", () => {
-    // 本文件在 packages/core/tests/trace/ → ../../.. = packages/
-    const app = stripComments(read("../../../cli/src/app.ts"));
+    const app = readSource("packages/cli/src/app.ts");
 
     // 接线点必须与 recordCustomEvent 在**同一行**：app.ts 里还有别的 onTelemetry
     // 注入（OTel 探针），只断言「文件里出现过 onTelemetry」会被那一处掩盖——
@@ -104,9 +126,59 @@ describe("触发事件反死线门禁 · bridge（T4）", () => {
   });
 
   test("collector 构造 metadata 时读会话标记（/clear 重建也走同一处）", () => {
-    const collector = stripComments(read("../../src/trace/collector.ts"));
+    const collector = readSource("packages/core/src/trace/collector.ts");
     // 只断言 app 设置了标记不够：collector 漏读时标记永远进不了 metadata，
     // 而两者之间没有类型约束，删掉这行不会有任何东西变红。
     expect(collector).toMatch(/isBridgeSession\(\)\s*\?\s*\{\s*bridge:\s*true\s*\}/);
+  });
+});
+
+describe("触发事件反死线门禁 · hook / 回滚 / 定时触发（T5 前三组）", () => {
+  test("HookExecuted 有生产调用点（runner 的 executeHook 唯一咽喉）", () => {
+    const sites = callSites("emitHookTrace(HOOK_EXECUTED_EVENT_NAME");
+    expect(sites.length).toBeGreaterThan(0);
+    // 必须落在 runner 上：挂在调用方会漏掉 streaming / SessionEnd 预算串行两条路径
+    expect(sites.some((s) => s.includes("hook/runner.ts"))).toBe(true);
+  });
+
+  test("HookAsyncCompleted 有生产调用点（async-registry 的后台完成）", () => {
+    const sites = callSites("emitHookTrace(HOOK_ASYNC_COMPLETED_EVENT_NAME");
+    expect(sites.length).toBeGreaterThan(0);
+    expect(sites.some((s) => s.includes("hook/async-registry.ts"))).toBe(true);
+  });
+
+  test("Rewind 在 core 与 CLI 两侧都有调用点", () => {
+    // 用 `emitRewind("` 匹配：定义处是 `export function emitRewind(via: ...`，不会被算成调用
+    const sites = callSites('emitRewind("');
+    expect(sites.some((s) => s.includes("session/rewind-manager.ts"))).toBe(true);
+    // 四个入口里至少覆盖命令层（/rewind /undo /restore）
+    expect(sites.filter((s) => s.includes("command/commands/")).length).toBeGreaterThanOrEqual(3);
+  });
+
+  test("ScheduledFire 有生产调用点（scheduler 的 fireOnce）", () => {
+    const sites = callSites("emitScheduledTrace(SCHEDULED_FIRE_EVENT_NAME");
+    expect(sites.some((s) => s.includes("cron/scheduler.ts"))).toBe(true);
+  });
+
+  test("ScheduledInject 有生产调用点（app 的注入器前）", () => {
+    const sites = callSites("emitScheduledTrace(SCHEDULED_INJECT_EVENT_NAME");
+    expect(sites.some((s) => s.includes("cli/src/app.ts"))).toBe(true);
+  });
+
+  test("app 层三条 sink 接线都在（漏一条 = 那类事件永远是 0 条）", () => {
+    const app = readSource("packages/cli/src/app.ts");
+    expect(app).toContain("setHookTraceSink(");
+    expect(app).toContain("setRewindTraceSink(");
+    expect(app).toContain("setScheduledTraceSink(");
+  });
+
+  test("digest 复用事件名常量，不写裸字面量（否则改一处、消费侧静默归零）", () => {
+    const digest = readSource("packages/core/src/trace/digest.ts");
+    expect(digest).toContain("HOOK_EXECUTED_EVENT_NAME");
+    expect(digest).toContain("REWIND_EVENT_NAME");
+    expect(digest).toContain("SCHEDULED_FIRE_EVENT_NAME");
+    expect(digest).not.toContain('"HookExecuted"');
+    expect(digest).not.toContain('"Rewind"');
+    expect(digest).not.toContain('"ScheduledFire"');
   });
 });

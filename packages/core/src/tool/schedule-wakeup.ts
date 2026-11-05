@@ -95,6 +95,8 @@ export class ScheduleWakeupTool implements Tool {
       recurring: false, // 一次性
       durable: false, // 会话级（动态轮询绑定当前会话）
       fireAt: now + clamped * 1000,
+      // G3：来源进 ScheduledFire 事件，与 /loop、cron_create 区分开
+      origin: "schedule_wakeup",
     };
 
     if (isCronDisabled()) {

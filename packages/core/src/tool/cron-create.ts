@@ -125,6 +125,8 @@ allowed_tools: 无头执行时预授权的工具白名单（仅 durable 任务�
       workspaceDir: process.cwd(),
       // 缺口 C1 §5.3：任务级预授权白名单（缺省=守护进程默认只读）。
       ...(allowedTools ? { allowedTools } : {}),
+      // G3：来源进 ScheduledFire 事件，与 /loop、schedule_wakeup 区分开
+      origin: "cron_create",
     };
 
     // 整体禁用优先于上限检查：禁用时连「已达上限」都不该说，口径要一致。
