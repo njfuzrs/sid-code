@@ -27,6 +27,17 @@ import type { PathMismatchShape } from "../tool/types.ts";
 /** 最终判定。`ask` 不是终态：弹窗之后一定落到 allow / deny 之一，用 `prompted` 表达"问过人" */
 export type PermissionOutcome = "allow" | "deny";
 
+/**
+ * 人工确认实际经由的通道。
+ *
+ * 为什么需要：远程接管（bridge）与 SDK 宿主（`can_use_tool`）的确认，在
+ * `PermissionDecision` 里与 TUI 弹窗长得一模一样（`source=user` + `prompted=true`），
+ * 于是「这条批准是坐在终端前的人点的，还是管理台上远程点的」在轨迹上分不出来 ——
+ * 触发清单 A11/A12 都卡在这里。`PermissionSource` 是**外发遥测**的闭集，不能扩
+ * （扩了要动后端 schema）；这个字段只进本地轨迹。
+ */
+export type ConfirmVia = "tui" | "bridge" | "sdk" | "headless";
+
 export interface PermissionDecisionEvent {
   /** 工具名（本地轨迹，不脱敏；外发通道的脱敏仍由 events.ts 门面负责） */
   tool: string;
@@ -38,6 +49,12 @@ export interface PermissionDecisionEvent {
   prompted: boolean;
   /** 谁做的决定：user / hook / classifier / timeout / rule / other */
   source: string;
+  /**
+   * 人工确认经由哪条通道（`prompted=true` 时才填）。
+   * 取值由 `App.requestUserConfirmation` 按实际走的分支确定：bridge 远程代理 /
+   * SDK `can_use_tool` / TUI 弹窗 / headless 自动决策。
+   */
+  confirmVia?: ConfirmVia;
   /**
    * 命中的规则来源：`PermissionDecisionReason.type`（rule / mode / safetyCheck / …）。
    * 固定枚举，不含规则文本与入参片段。缺省 = 决策没带 reason（checker 的若干早退放行分支）。
@@ -85,6 +102,27 @@ export interface PermissionDecisionEvent {
 }
 
 let _observer: ((event: PermissionDecisionEvent) => void) | null = null;
+
+/**
+ * 本次进程实际会走的确认通道。由 `App.requestUserConfirmation` 在分支内设置。
+ *
+ * 为什么用进程级单值而不是参数透传：四条通道（sdk / bridge / tui / headless）的
+ * 优先级在 App 里是固定的，同一会话内不会逐次变化；而把值带回 core 需要改
+ * `ToolExecutorDeps.requestUserConfirmation` 的返回类型（30+ 处测试实现与三条
+ * 鉴权路径都受影响），代价远大于收益。真正需要逐次区分的只有「prompted 与否」，
+ * 那个由门面函数的 `needsPrompt` 已经给了。
+ */
+let _confirmVia: ConfirmVia | null = null;
+
+/** App 在确定本次确认走哪条通道后调用；测试收尾传 null 复位。 */
+export function setConfirmVia(via: ConfirmVia | null): void {
+  _confirmVia = via;
+}
+
+/** 读当前通道（只对 `prompted=true` 的决策有意义；未设置时为 null）。 */
+export function readConfirmVia(): ConfirmVia | null {
+  return _confirmVia;
+}
 
 /** collector 注入；传 null 解除（测试收尾用） */
 export function setPermissionDecisionObserver(

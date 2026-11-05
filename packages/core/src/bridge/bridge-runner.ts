@@ -20,7 +20,13 @@
 import type { QueryEngineEvent } from "../query/types.ts";
 import { BridgeCore } from "./bridge-core.ts";
 import { createBridgeTransport } from "./transport.ts";
-import { WebSocketBridgeTransport } from "./ws-transport.ts";
+import { WebSocketBridgeTransport, stripTokenQuery } from "./ws-transport.ts";
+import {
+  BRIDGE_SESSION_EVENT_NAME,
+  emitBridgeTelemetry,
+  type BridgeSessionPhase,
+  type BridgeTelemetrySink,
+} from "./bridge-telemetry.ts";
 import {
   formatTextMessage,
   formatToolUseMessage,
@@ -72,6 +78,12 @@ export interface BridgeRunnerDeps {
         }) => Promise<boolean>)
       | null,
   ) => void;
+  /**
+   * 桥接事件埋点（可选）。由 `App.runBridge` 注入 `traceCollector.recordCustomEvent`——
+   * 那里 `await this.init()` 已经跑完，collector 就绪，不需要模块级 sink。
+   * 未注入时全部埋点静默（测试 / 轨迹关闭）。
+   */
+  onTelemetry?: BridgeTelemetrySink;
 }
 
 export interface BridgeRunnerOptions {
@@ -102,9 +114,17 @@ export class BridgeRunner {
   private onPermanentFailureWaiter: ((err: Error) => void) | null = null;
   /** 用户主动退出时拆掉等待，否则未 reject 的 Promise 会把进程留在事件循环里。 */
   private cancelPermanentFailureWaiter: (() => void) | null = null;
+  /** 连接地址（剥 query 后进轨迹；token 可能就写在 query 里） */
+  private readonly url: string;
+  /** 权限请求超时（进 `BridgeSession(connected)`，远程确认慢不慢要能归因到档位） */
+  private readonly permissionTimeoutMs: number;
+  /** 启动成功时刻。null = 从未连上（start 失败时 stop() 不该报 stopped 事件） */
+  private startedAtMs: number | null = null;
 
   constructor(deps: BridgeRunnerDeps, options: BridgeRunnerOptions) {
     this.deps = deps;
+    this.url = options.url;
+    this.permissionTimeoutMs = options.permissionTimeoutMs ?? 60_000;
 
     const transport = createBridgeTransport(options.url, options.authToken);
     // 工厂返回的接口没有永久失败回调；只有 WS 实现有。SSE 之类以后若出现，不订也不该崩。
@@ -123,6 +143,7 @@ export class BridgeRunner {
       permissionTimeoutMs: options.permissionTimeoutMs,
       onUserMessage: (text) => this.enqueue(text),
       onAbort: () => this.deps.abort(),
+      onTelemetry: deps.onTelemetry,
     });
   }
 
@@ -138,19 +159,37 @@ export class BridgeRunner {
     // 「还没失败」，runBridge 先打印「已启动」再退出。等的是 start() 在
     // connect() 之前挂上的那一次关闭，带上限：对端不关时不能把启动挂住。
     await this.core.closeSeenDuringStart(500);
-    const failure = this.consumePermanentFailure();
+    const failure = this.consumePermanentFailure("start_failed");
     if (failure) throw failure;
+    this.startedAtMs = Date.now();
+    emitBridgeTelemetry(this.deps.onTelemetry, BRIDGE_SESSION_EVENT_NAME, {
+      phase: "connected",
+      // 剥 query/hash：token 可能就拼在 --bridge 的 URL 上，而 events.jsonl 会上传。
+      relay_host: stripTokenQuery(this.url),
+      permission_timeout_ms: this.permissionTimeoutMs,
+    });
     getLogger().info("BRIDGE", "Bridge 运行器已启动，等待远程消息");
   }
 
   /**
    * 常驻循环用：永久失败时返回错误，调用方据此非 0 退出。
    * 取走即清，避免 stop() 的清理关连接被当成第二次失败。
+   *
+   * `phase` 由调用时机决定：start() 里取到的是「启动即被拒」（坏 token / 策略拒绝），
+   * 常驻期间取到的是「连上之后被服务端永久关闭」。两者处置不同（看配置 vs 找管理台），
+   * 只靠 close_code 分不够——4001 在两个时机都会出现。
    */
-  consumePermanentFailure(): Error | null {
+  consumePermanentFailure(
+    phase: Extract<BridgeSessionPhase, "start_failed" | "permanent_failure"> = "permanent_failure",
+  ): Error | null {
     const failure = this.permanentFailure;
     if (!failure) return null;
     this.permanentFailure = null;
+    emitBridgeTelemetry(this.deps.onTelemetry, BRIDGE_SESSION_EVENT_NAME, {
+      phase,
+      close_code: failure.code,
+      reason: failure.reason,
+    });
     return new Error(`Bridge 连接被拒绝：${failure.reason}`);
   }
 
@@ -174,6 +213,19 @@ export class BridgeRunner {
     this.cancelPermanentFailureWaiter?.();
     this.deps.setPermissionDelegate(null);
     await this.core.stop();
+    // 只报一次：stop() 会被 runBridge 的 finally 与测试各调一次，重复的 stopped 事件
+    // 会让「一次远程会话」在轨迹里数成两个。startedAtMs 取走即清。
+    if (this.startedAtMs !== null) {
+      const startedAtMs = this.startedAtMs;
+      this.startedAtMs = null;
+      const stats = this.core.getSessionStats();
+      emitBridgeTelemetry(this.deps.onTelemetry, BRIDGE_SESSION_EVENT_NAME, {
+        phase: "stopped",
+        inbound_messages: stats.inboundMessages,
+        aborts: stats.aborts,
+        duration_ms: Date.now() - startedAtMs,
+      });
+    }
   }
 
   /** 是否已连接 */
