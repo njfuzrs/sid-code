@@ -44,6 +44,27 @@ describe("nextHeldRows：释放时机", () => {
     expect(nextHeldRows(s, 0, true, MAIN(0))).toBe(0);
   });
 
+  // 2026-11-05 用户截图：空闲时 Ctrl+O 提示消失后，最后一条消息与输入框之间挂着 2 行空白到下一轮
+  test("releaseWhenIdle：空闲时提示消失即放掉", () => {
+    const s: HeldRowsState = { held: 0, prevBusy: false, prevEpoch: 0 };
+    const idle = { releaseWhenIdle: true };
+    expect(nextHeldRows(s, 1, false, MAIN(0), idle)).toBe(1);
+    expect(nextHeldRows(s, 0, false, MAIN(0), idle)).toBe(0);
+  });
+
+  test("releaseWhenIdle：回合中仍占住（不放宽高频零重画）", () => {
+    const s = fresh();
+    const idle = { releaseWhenIdle: true };
+    nextHeldRows(s, 1, true, MAIN(0), idle);
+    expect(nextHeldRows(s, 0, true, MAIN(0), idle)).toBe(1);
+  });
+
+  test("不传 releaseWhenIdle：空闲时照旧占住（输入框 / 退出警告）", () => {
+    const s: HeldRowsState = { held: 0, prevBusy: false, prevEpoch: 0 };
+    nextHeldRows(s, 1, false, MAIN(0));
+    expect(nextHeldRows(s, 0, false, MAIN(0))).toBe(1);
+  });
+
   test("全屏布局不占位", () => {
     const s = fresh();
     const off = { enabled: false, epoch: 0 };

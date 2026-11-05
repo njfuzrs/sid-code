@@ -225,6 +225,14 @@ async function drive(): Promise<{ bytes: string; sections: Section[] }> {
     await settle(2500);
     section("取消退出提示");
 
+    // 空闲时出现又自己消失的提示（Ctrl+O 展开提示 3s）：消失后不许留空占位（2026-11-05 用户截图）
+    write("\x0f");
+    await settle(400);
+    section("空闲 Ctrl+O 提示");
+    await Bun.sleep(3300);
+    await settle(600);
+    section("空闲提示消失");
+
     await type("再来");
     write("\r");
     await settle(2000, 60_000);
@@ -327,12 +335,26 @@ describe("主屏长会话端到端：高频交互零重画、画面无空白块"
       "关闭补全菜单",
       "Ctrl+C 一次",
       "取消退出提示",
-      "第二轮",
     ]) {
       expect({ action: a, resets: resets[a] }).toEqual({ action: a, resets: 0 });
     }
     // 一轮里只允许低频结构性收缩：TodoPanel 全部完成后收起 + 轮末流式正文并入历史（R5，main 上也有）
     expect(resets["完整一轮"]).toBeLessThanOrEqual(2);
+    // 第二轮允许 1 次：回合结束时状态行（spinner）消失、最终回复并入历史，帧净矮 1 行。
+    // 2026-11-05 之前这里是 0，靠的是状态行把「2s 前就隐藏了的工具完成提示」算成有内容、
+    // 空闲时恒占 1 行空白——用户截图里最后一条消息与输入框之间的空行就是它。
+    // 「界面不留空白」优先于「回合末少一次整帧重画」（用户定），这条重画是每轮至多一次的回合末事件，
+    // 不是高频交互；高频交互仍锁 0（上面的循环）。
+    expect(resets["第二轮"]).toBeLessThanOrEqual(1);
+
+    // 空闲时提示消失后，最后一条消息与输入框之间只剩历史项自带的 1 行留白
+    // （修复前：1 行占位 + 1 行 gap，挂到下一轮开始；Composer 状态行另多 1 行）
+    const idleView = runs.filter((r) => r.action === "空闲提示消失").at(-1)?.view ?? [];
+    const border = idleView.findIndex((l) => /^─{10,}/.test(l));
+    expect(border).toBeGreaterThan(0);
+    let blanks = 0;
+    for (let i = border - 1; i >= 0 && idleView[i] === ""; i--) blanks++;
+    expect({ blanks }, `空闲提示消失后的视口：\n${idleView.join("\n")}`).toEqual({ blanks: 1 });
 
     // 画面：任何一帧视口里都没有空白块
     const worst = runs.reduce((a, b) => (b.run > a.run ? b : a), runs[0]!);

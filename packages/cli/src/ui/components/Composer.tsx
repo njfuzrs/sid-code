@@ -131,11 +131,18 @@ const ShortcutsHint: React.FC<{ expanded: boolean }> = ({ expanded }) => {
 };
 
 /** 工具完成状态（短暂显示） */
-const ToolResultIndicator: React.FC<{
-  lastResult: { toolName: string; isError: boolean; elapsedMs: number } | null;
-}> = ({ lastResult }) => {
-  const [visible, setVisible] = useState(false);
+type LastToolResult = { toolName: string; isError: boolean; elapsedMs: number };
 
+/**
+ * 工具完成提示是否可见：每次 lastResult 换新显示 2s。
+ *
+ * 为什么提到 Composer 里而不是留在 ToolResultIndicator 内部：`lastToolResult` 在 app.ts 里
+ * 从来不会被清空（回合结束也不清），状态行的「有没有内容」判据若用 `!!lastToolResult`，
+ * 提示 2s 后自己隐藏了，判据却永远为真 → 状态行恒占 1 行空白 + gap 1 行 = 输入框上方 2 行空白
+ * （2026-11-05 用户截图），还把权限模式指示一并压住。可见性与判据必须是同一个状态。
+ */
+function useToolResultVisible(lastResult: LastToolResult | null): boolean {
+  const [visible, setVisible] = useState(false);
   useEffect(() => {
     if (lastResult) {
       setVisible(true);
@@ -144,7 +151,13 @@ const ToolResultIndicator: React.FC<{
     }
     setVisible(false);
   }, [lastResult]);
+  return visible && !!lastResult;
+}
 
+const ToolResultIndicator: React.FC<{
+  lastResult: LastToolResult | null;
+  visible: boolean;
+}> = ({ lastResult, visible }) => {
   if (!visible || !lastResult) return null;
 
   const icon = lastResult.isError ? ERROR_MARK : SUCCESS_MARK;
@@ -259,13 +272,16 @@ export const Composer: React.FC<ComposerProps> = ({
   // ⚠️ 判据必须是「这一行真的渲染了什么」，不能拿 uiState.transientMessage 充数：
   // 瞬态消息由 BottomRegion 的 ToastDisplay 渲染（见下方左侧区域的注释），本行不渲染它。
   // 拿它当内容会让每次出现 toast 都凭空占一行，输入框上方多一条空行（2026-11-03 快照门禁实测）。
+  const toolResultVisible = useToolResultVisible(streaming.lastToolResult);
   const statusRowHasContent =
     showLoadingIndicator ||
-    !!streaming.lastToolResult ||
+    toolResultVisible ||
     showRawMarkdownIndicator ||
     (showContextUsage && !showLoadingIndicator) ||
     ["always-allow", "dontAsk", "plan", "deny-write"].includes(config.permissionMode);
-  const statusRowMinHeight = useHeldRows(statusRowHasContent ? 1 : 0, !isIdle);
+  const statusRowMinHeight = useHeldRows(statusRowHasContent ? 1 : 0, !isIdle, {
+    releaseWhenIdle: true,
+  });
 
   // 非空闲时自动关闭帮助
   useEffect(() => {
@@ -316,9 +332,12 @@ export const Composer: React.FC<ComposerProps> = ({
               alignItems={isNarrow ? "flex-start" : "center"}
             >
               {/* 工具完成状态（短暂显示） */}
-              <ToolResultIndicator lastResult={streaming.lastToolResult} />
-              {/* 权限模式指示 */}
-              {!streaming.lastToolResult && (
+              <ToolResultIndicator
+                lastResult={streaming.lastToolResult}
+                visible={toolResultVisible}
+              />
+              {/* 权限模式指示（工具完成提示消失后回来，不再被一个永不清空的 lastToolResult 永久压住） */}
+              {!toolResultVisible && (
                 <ApprovalModeIndicator permissionMode={config.permissionMode} />
               )}
               {showRawMarkdownIndicator && (

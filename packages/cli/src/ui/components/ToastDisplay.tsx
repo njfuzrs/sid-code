@@ -23,7 +23,7 @@ export function shouldShowToast(uiState: ReturnType<typeof useUIState>): boolean
 export const ToastDisplay: React.FC<{ busy?: boolean }> = ({ busy = false }) => {
   const uiState = useUIState();
   const content = toastContent(uiState);
-  const rows = useHeldRows(content ? 1 : 0, busy);
+  const rows = useHeldRows(content ? 1 : 0, busy, { releaseWhenIdle: true });
   if (rows === 0) return null;
   return <Box minHeight={rows}>{content}</Box>;
 };

@@ -143,61 +143,74 @@ async function renderLayout(
   mode: Mode,
   over: Record<string, unknown>,
   seed: { toast?: string; ctrlC?: boolean } = {},
+  streamingOver: {
+    lastToolResult?: { toolName: string; isError: boolean; elapsedMs: number } | null;
+    waitMs?: number;
+    /** 等 waitMs 之后用这份历史重渲一次（模拟回合末最终回复并入历史） */
+    rerenderItems?: HistoryItem[];
+  } = {},
+  items: HistoryItem[] = history,
 ): Promise<string> {
   const props = sharedProps(over) as never;
-  const layout =
-    mode === "fullscreen" ? (
-      <DefaultAppLayout
-        {...(props as object as React.ComponentProps<typeof DefaultAppLayout>)}
-        listData={history}
-        rows={ROWS}
-        estimatedItemHeight={() => 1}
-        copyModeEnabled={false}
-        scrollPercent={100}
-      />
-    ) : (
-      <MainScreenLayout
-        {...(props as object as React.ComponentProps<typeof MainScreenLayout>)}
-        staticItems={history}
-      />
-    );
+  const tree = (items: HistoryItem[]) => {
+    const layout =
+      mode === "fullscreen" ? (
+        <DefaultAppLayout
+          {...(props as object as React.ComponentProps<typeof DefaultAppLayout>)}
+          listData={items}
+          rows={ROWS}
+          estimatedItemHeight={() => 1}
+          copyModeEnabled={false}
+          scrollPercent={100}
+        />
+      ) : (
+        <MainScreenLayout
+          {...(props as object as React.ComponentProps<typeof MainScreenLayout>)}
+          staticItems={items}
+        />
+      );
 
-  const r = render(
-    <TerminalProvider>
-      <KeypressProvider>
-        <MouseProvider mouseEventsEnabled={mode === "fullscreen"}>
-          <ScrollProvider>
-            <OverflowProvider>
-              <SettingsProvider>
-                <UIStateProvider>
-                  <UISeed {...seed} />
-                  <ConfigProvider value={config}>
-                    <SessionProvider value={session}>
-                      <StreamingProvider
-                        streamingState={StreamingState.Idle}
-                        streamingText=""
-                        streamingThinking=""
-                        toolName={null}
-                        toolInput={undefined}
-                        isToolExecuting={false}
-                        lastToolResult={null}
-                        statusMessage=""
-                      >
-                        {layout}
-                      </StreamingProvider>
-                    </SessionProvider>
-                  </ConfigProvider>
-                </UIStateProvider>
-              </SettingsProvider>
-            </OverflowProvider>
-          </ScrollProvider>
-        </MouseProvider>
-      </KeypressProvider>
-    </TerminalProvider>,
-    { columns: COLUMNS, rows: ROWS },
-  );
+    return (
+      <TerminalProvider>
+        <KeypressProvider>
+          <MouseProvider mouseEventsEnabled={mode === "fullscreen"}>
+            <ScrollProvider>
+              <OverflowProvider>
+                <SettingsProvider>
+                  <UIStateProvider>
+                    <UISeed {...seed} />
+                    <ConfigProvider value={config}>
+                      <SessionProvider value={session}>
+                        <StreamingProvider
+                          streamingState={StreamingState.Idle}
+                          streamingText=""
+                          streamingThinking=""
+                          toolName={null}
+                          toolInput={undefined}
+                          isToolExecuting={false}
+                          lastToolResult={streamingOver.lastToolResult ?? null}
+                          statusMessage=""
+                        >
+                          {layout}
+                        </StreamingProvider>
+                      </SessionProvider>
+                    </ConfigProvider>
+                  </UIStateProvider>
+                </SettingsProvider>
+              </OverflowProvider>
+            </ScrollProvider>
+          </MouseProvider>
+        </KeypressProvider>
+      </TerminalProvider>
+    );
+  };
+  const r = render(tree(items), { columns: COLUMNS, rows: ROWS });
   // 让 effect（UISeed、溢出批量更新等）跑完再取帧
-  await new Promise((res) => setTimeout(res, 60));
+  await new Promise((res) => setTimeout(res, streamingOver.waitMs ?? 60));
+  if (streamingOver.rerenderItems) {
+    r.rerender(tree(streamingOver.rerenderItems));
+    await new Promise((res) => setTimeout(res, 60));
+  }
   const frame = r.lastFrame() ?? "";
   r.unmount();
   // 行尾空白随布局填充宽度变化，不属于这次要锁的内容
@@ -280,4 +293,28 @@ describe("真实布局整帧快照（底部区域）", () => {
       expect(frame).toMatchSnapshot();
     });
   }
+
+  // lastToolResult 在 app.ts 里回合结束也不清空。状态行曾用 `!!lastToolResult` 判「有内容」，
+  // 工具完成提示 2s 后自己隐藏了，判据却恒真 → 空闲时输入框上方恒多 1 行空占位 + 1 行 gap
+  // （2026-11-05 用户截图：最后一条消息与输入框之间多出空行）。
+  test("main：工具完成提示过期、回合末回复入历史后，输入框上方不留空占位行", async () => {
+    const finalItems = [...history, { type: "assistant", text: "最终回复" } as HistoryItem];
+    // 对照：从没出现过工具结果、历史里已有最终回复
+    const baseline = await renderLayout("main", {}, {}, {}, finalItems);
+    // 工具完成提示出现 → 2s 后自己隐藏 → 最终回复并入历史（useHeldRows 的释放点）
+    const after = await renderLayout(
+      "main",
+      {},
+      {},
+      {
+        lastToolResult: { toolName: "bash", isError: false, elapsedMs: 10 },
+        waitMs: 2300,
+        rerenderItems: finalItems,
+      },
+    );
+    expect(after).toContain("最终回复");
+    expect(after).not.toContain("bash (");
+    // 画面与从没有过工具结果时完全一致：没有多出的空占位行
+    expect(after).toBe(baseline);
+  }, 10_000);
 });
