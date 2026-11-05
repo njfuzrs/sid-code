@@ -88,6 +88,17 @@ def fingerprint_names(names: list[str]) -> str:
     return f"{len(ts)}:{_sha16(chr(10).join(ts))}"
 
 
+def digest_fingerprint(rows: list[tuple[str, str]]) -> str:
+    """`(name, digest)` 行集 → 第三段指纹。**唯一实现**,不许在别处重算。
+
+    `run_fingerprint.py` 采 run 级指纹时也要这一段。它只拿得到 run 目录的
+    `lock.json`(拿不到 registry —— run 可能是从别的 registry 跑出来的),
+    所以它直接用 `digests_from_lock()` 的行再调这里,而不是自己拼一次哈希。
+    两份实现一旦漂移,「同一题集」这件事就有了两个答案。
+    """
+    return _sha16(chr(10).join(f"{n}\t{d}" for n, d in rows))
+
+
 def compute(
     dataset: str,
     *,
@@ -102,8 +113,7 @@ def compute(
     rows = digests_from_lock(lock_path) if lock_path else None
     if not rows:
         return f"{name_fp}:nolock"
-    digest_fp = _sha16(chr(10).join(f"{n}\t{d}" for n, d in rows))
-    return f"{name_fp}:{digest_fp}"
+    return f"{name_fp}:{digest_fingerprint(rows)}"
 
 
 def compatible(stored: str, now: str) -> bool:

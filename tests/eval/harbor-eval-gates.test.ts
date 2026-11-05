@@ -51,7 +51,14 @@ describe("题集指纹闸覆盖 4/4 跑法脚本", () => {
 
   test("⛔ 别用 run*.sh glob 数覆盖面（它不含 w3-run.sh）", () => {
     // 清单写死：逐个列名。run*.sh 匹配不到 w3-run.sh，数出来会是 3 当 4。
-    const names = readdirSync(HARBOR).filter((n) => n.endsWith(".sh"));
+    //
+    // ⚠️ 2026-11-04：`run-fingerprint.sh` 是**采集库**（被 source 的），不是跑法脚本，
+    // 必须排除 —— 否则「跑法脚本」这个集合的定义就掺进了别的东西，而这条断言
+    // 存在的意义正是把那个集合钉死。它自己的门禁在
+    // `tests/eval/harbor-run-fingerprint.test.ts`。
+    const names = readdirSync(HARBOR).filter(
+      (n) => n.endsWith(".sh") && n !== "run-fingerprint.sh",
+    );
     expect(names.filter((n) => n.startsWith("run")).sort()).toEqual([
       "run-claude-code-contrast.sh",
       "run-model-switch.sh",

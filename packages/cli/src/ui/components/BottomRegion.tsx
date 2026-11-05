@@ -38,7 +38,7 @@ import { HeldRowsContext, useHeldRows, type HeldRowsPolicy } from "../hooks/useH
  * 占位态返回一个空行，留白区的 gap 照常算——只在它出现过之后才有这一行。
  */
 const StatusMessageRow: React.FC<{ text: string; busy: boolean }> = ({ text, busy }) => {
-  const rows = useHeldRows(text ? 1 : 0, busy);
+  const rows = useHeldRows(text ? 1 : 0, busy, { releaseWhenIdle: true });
   if (rows === 0) return null;
   return (
     <Box paddingX={1} minHeight={rows}>
