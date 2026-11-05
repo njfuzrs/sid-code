@@ -87,37 +87,45 @@ const CITATIONS: { file: string; line: number; anchor: string; what: string }[] 
   },
   {
     file: "evals/external-benchmarks/harbor/sid_code_agent.py",
-    line: 470,
+    line: 492,
     anchor: "_ELF_MACHINE",
     what: "§3.3 按 ELF e_machine 判架构",
   },
   {
     file: "evals/external-benchmarks/harbor/sid_code_agent.py",
-    line: 701,
+    line: 730,
     anchor: "artifact-bytes",
     what: "§3.1/§3.2 产物身份与 commit_source",
   },
   {
+    // §3.2 的出处指 `identity_source` 那一格（"读不到时填 unknown"的形态判定），
+    // 与上一条同在一个函数但不同缺陷 —— 不合并，否则改一处会掩盖另一处的漂移。
     file: "evals/external-benchmarks/harbor/sid_code_agent.py",
-    line: 953,
+    line: 756,
+    anchor: "identity_source",
+    what: "§3.2 身份读不到时填 unknown（按形态判，不按真假）",
+  },
+  {
+    file: "evals/external-benchmarks/harbor/sid_code_agent.py",
+    line: 983,
     anchor: "_derive_is_error",
     what: "§3.7 判成败用 subtype 不用 is_error",
   },
   {
     file: "evals/external-benchmarks/harbor/sid_code_agent.py",
-    line: 765,
+    line: 794,
     anchor: "stream-json",
     what: "§3.8 输出格式",
   },
   {
     file: "evals/external-benchmarks/harbor/sid_code_agent.py",
-    line: 1080,
+    line: 1105,
     anchor: "total_cumulative_prompt_tokens",
     what: "§1.6 stock vs flow",
   },
   {
     file: "evals/external-benchmarks/harbor/sid_code_agent.py",
-    line: 750,
+    line: 775,
     anchor: "提示模板**静默失效**",
     what: "§2.3 提示模板静默失效",
   },
@@ -167,7 +175,7 @@ const CITATIONS: { file: string; line: number; anchor: string; what: string }[] 
   },
   {
     file: "evals/external-benchmarks/harbor/sid_code_agent.py",
-    line: 1080,
+    line: 1105,
     anchor: "**flow**",
     what: "§1.6 stock/flow 口径表",
   },

@@ -1076,6 +1076,12 @@ async function* queryLoopBody(
 
   const loopDetector = new LoopDetector();
   const state: LoopState = createInitialLoopState(config.maxTurns || Infinity);
+  // F4-2：两个 HITL 基准（区段数 / 等待毫秒）都要按 scope 读，见 `beginTurn` 的注释。
+  state.hitlScopeId = hitlScopeId;
+  // T6：上一条消息之后用户手动 /compact 过 → 本条消息补置三个重注入标志（见 post-compact-flags.ts）
+  if (consumeSessionCompactMark(sessionState, state)) {
+    log.info("QUERY_LOOP", "检测到 loop 外的手动压缩，补置压缩后重注入标志");
+  }
   // T10b：墙钟总预算 → 绝对截止时刻。基准是**进程启动时刻**，不是本条消息入口 ——
   // 外层硬顶（Harbor 的 agent timeout）本来就是进程级的，若按每条消息重置，
   // 多轮会话会把总时长累加过外层硬顶，等于这条预算不存在。
@@ -1086,12 +1092,6 @@ async function* queryLoopBody(
   if (config.maxDurationMs !== undefined && config.maxDurationMs > 0) {
     const processStartMs = Date.now() - Math.round(process.uptime() * 1000);
     state.deadlineAt = processStartMs + config.maxDurationMs;
-  }
-  // F4-2：两个 HITL 基准（区段数 / 等待毫秒）都要按 scope 读，见 `beginTurn` 的注释。
-  state.hitlScopeId = hitlScopeId;
-  // T6：上一条消息之后用户手动 /compact 过 → 本条消息补置三个重注入标志（见 post-compact-flags.ts）
-  if (consumeSessionCompactMark(sessionState, state)) {
-    log.info("QUERY_LOOP", "检测到 loop 外的手动压缩，补置压缩后重注入标志");
   }
   // 停滞升级阶梯（stall-escalation.ts）。headless 默认不开；settings 读不到按影子处理。
   const stallSwitches = resolveStallSwitches(config.print === true, readStallHardStopSetting());
