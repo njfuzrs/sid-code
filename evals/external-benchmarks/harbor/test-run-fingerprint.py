@@ -59,6 +59,7 @@ def _run_dir(
     arch: str = "x64",
     max_turns: int = 40,
     budget: str | None = "1.8",
+    duration: str | None = "7290000",
     perm: str = "dangerously-skip-permissions",
     stall: str = "off",
     tasks: tuple[tuple[str, str], ...] = (("t1", "sha256:aaa"), ("t2", "sha256:bbb")),
@@ -87,6 +88,7 @@ def _run_dir(
                         "sid_stall_escalation": stall,
                         "sid_max_turns": max_turns,
                         "sid_max_budget_usd": budget,
+                        "sid_max_duration_ms": duration,
                     }
                 }
             },
@@ -107,7 +109,7 @@ def run() -> int:
     try:
         print("① collect：齐全的 run 采到全部字段，missing 为空")
         a = _fp(_run_dir(os.path.join(tmp, "a")), network_policy="allowlist", traj_bench_commit="d" * 40)
-        check("13 个字段全在", len(a["fields"]) == len(R.FIELDS), str(len(a["fields"])))
+        check("14 个字段全在", len(a["fields"]) == len(R.FIELDS), str(len(a["fields"])))
         check("missing 为空", a["missing"] == [], str(a["missing"]))
         check("model_id", a["fields"]["model_id"] == "anthropic/claude-sonnet-5")
         check("harbor_version 取的是 version 而不是整个 dict", a["fields"]["harbor_version"] == "0.22.0")
@@ -137,6 +139,8 @@ def run() -> int:
             "verdict_rule_version": "999",
             "max_turns": 120,
             "budget_usd": "9.9",
+            # T15 两档硬顶的另一档：传错档（4860000 给 2700s 题）就是这个形态
+            "max_duration_ms": "4860000",
             "network_policy": "no-network",
             "permission_mode": "acceptEdits",
             "stall_escalation": "hard",
@@ -186,7 +190,8 @@ def run() -> int:
             {"agent_result": {"metadata": {"sid_binary_sha256": "b" * 64, "sid_commit": "c" * 40,
                                            "sid_permission_mode_requested": "dangerously-skip-permissions",
                                            "sid_stall_escalation": "off", "sid_max_turns": 40,
-                                           "sid_max_budget_usd": None}}},
+                                           "sid_max_budget_usd": None,
+                                           "sid_max_duration_ms": "7290000"}}},
         )
         c = _fp(conflict, network_policy="allowlist", traj_bench_commit="d" * 40)
         check("采集阶段就记下冲突", "sid_binary_sha256" in c["conflicts"], str(c["conflicts"]))

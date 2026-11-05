@@ -175,6 +175,7 @@ describe.if(HAS_PYTHON3)("L1 指纹字段清单的形态（stdlib ast，零依�
       "traj_bench_commit",
       "max_turns",
       "budget_usd",
+      "max_duration_ms",
       "network_policy",
       "permission_mode",
     ]) {
@@ -276,13 +277,15 @@ describe("指纹采集接进 4/4 跑法脚本（工具存在 ≠ 会被执行）
 
 // ─────────────────────────────── agent 侧：两个必控变量必须落 metadata（否则指纹采不到）
 
-describe("sid_code_agent.py 落 max_turns / max_budget_usd 到 metadata", () => {
+describe("sid_code_agent.py 落 max_turns / max_budget_usd / max_duration_ms 到 metadata", () => {
   const code = codeOf(AGENT_PY);
 
-  test("两格都写进 metadata（不是只写注释）", () => {
+  test("三格都写进 metadata（不是只写注释）", () => {
     // §1.4：「代码在」≠「生效」。判据是**生产路径真的会写**，所以看代码行不看注释。
     expect(code).toContain('"sid_max_turns": self._resolved_flags.get("max_turns")');
     expect(code).toContain('"sid_max_budget_usd": self._resolved_flags.get("max_budget_usd")');
+    // T10b 墙钟预算（T15 按两档硬顶分别传）：漏落这格 = k 轮间传错档时指纹静默判一致
+    expect(code).toContain('"sid_max_duration_ms": self._resolved_flags.get("max_duration_ms")');
   });
 
   test("取值来自 _resolved_flags（默认值也拿得到），不是 result 事件", () => {

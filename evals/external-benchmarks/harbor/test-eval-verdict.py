@@ -142,6 +142,7 @@ def make_run(
                         "sid_stall_escalation": stall,
                         "sid_max_turns": max_turns,
                         "sid_max_budget_usd": budget,
+                        "sid_max_duration_ms": "7290000",
                     },
                 },
                 "started_at": "2026-11-05T00:00:00Z",
