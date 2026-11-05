@@ -12,6 +12,14 @@ describe("ScheduleWakeupTool", () => {
     resetScheduler();
   });
 
+  // G3：origin 只在这一个创建入口写。漏了的话轨迹里所有 schedule_wakeup 触发的
+  // ScheduledFire 都会记 unknown，与 /loop、cron_create 分不开。
+  it("创建入口写入 origin=schedule_wakeup", async () => {
+    const tool = new ScheduleWakeupTool();
+    await tool.execute({ delay_seconds: 120, prompt: "x" });
+    expect(getScheduler().listTasks()[0].origin).toBe("schedule_wakeup");
+  });
+
   it("正常延迟创建一次性 fireAt 任务", async () => {
     const tool = new ScheduleWakeupTool();
     const before = Date.now();

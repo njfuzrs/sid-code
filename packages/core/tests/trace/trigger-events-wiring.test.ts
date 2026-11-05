@@ -165,11 +165,14 @@ describe("触发事件反死线门禁 · hook / 回滚 / 定时触发（T5 前�
     expect(sites.some((s) => s.includes("cli/src/app.ts"))).toBe(true);
   });
 
-  test("app 层三条 sink 接线都在（漏一条 = 那类事件永远是 0 条）", () => {
+  test("app 层三条 sink 都接到 collector（接成 null = 那类事件永远是 0 条）", () => {
     const app = readSource("packages/cli/src/app.ts");
-    expect(app).toContain("setHookTraceSink(");
-    expect(app).toContain("setRewindTraceSink(");
-    expect(app).toContain("setScheduledTraceSink(");
+    // 只断言「出现过 setHookTraceSink(」会被 `setHookTraceSink(null)` 通过 ——
+    // 那等于把埋点整个关掉，而门禁照样绿。要求接线表达式里出现 collector 实例，
+    // 与 bridge 组「接线点必须与 recordCustomEvent 同一行」同口径。
+    expect(app).toMatch(/setHookTraceSink\(\s*traceCollectorInstance\b/);
+    expect(app).toMatch(/setRewindTraceSink\(\s*traceCollectorInstance\b/);
+    expect(app).toMatch(/setScheduledTraceSink\(\s*traceCollectorInstance\b/);
   });
 
   test("digest 复用事件名常量，不写裸字面量（否则改一处、消费侧静默归零）", () => {
@@ -180,5 +183,13 @@ describe("触发事件反死线门禁 · hook / 回滚 / 定时触发（T5 前�
     expect(digest).not.toContain('"HookExecuted"');
     expect(digest).not.toContain('"Rewind"');
     expect(digest).not.toContain('"ScheduledFire"');
+  });
+
+  test("「触发计数」只有一个渲染点（两半各自加一节时会渲染出两段同名小节）", () => {
+    const digest = readSource("packages/core/src/trace/digest.ts");
+    // 断言的是「标题字面量只出现一次」：PR #599（远程接管）与 #600（本地触发）曾各自
+    // 渲染一节同名的「触发计数」，一个既有 remote 又有本地操作的会话会看到两段，
+    // 各只有部分字段。两个 PR 单独看都绿，拼起来才是错的。
+    expect(digest.match(/"触发计数:"/g)?.length ?? 0).toBe(1);
   });
 });

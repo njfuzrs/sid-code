@@ -202,4 +202,20 @@ describe("T1 隐私：命令原文与输出不进事件", () => {
     expect(serialized).not.toContain(secret);
     expect(serialized).not.toContain("echo");
   });
+
+  it("hook 的 stdout 内容不进事件（哨兵只出现在输出里）", async () => {
+    // 上一条的哨兵同时出现在 command 里，串行验证「命令原文不进事件」；
+    // 这一条让哨兵**只出现在 stdout**，独立锁住「输出不进事件」——
+    // 将来有人给事件加 stdout 字段时，上一条不会红（command 里本来就没它）。
+    const stdoutSecret = "STDOUT_SENTINEL_5b7c1d";
+    const runner = new HookRunner();
+    await runner.executeHook(
+      { type: "command", name: "stdout-probe", command: `printf '%s\\n' ${stdoutSecret}` },
+      HookEventName.PostToolUse,
+      baseInput(),
+    );
+
+    expect(executed()).toHaveLength(1);
+    expect(JSON.stringify(captured)).not.toContain(stdoutSecret);
+  });
 });
