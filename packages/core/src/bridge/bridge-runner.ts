@@ -21,6 +21,7 @@ import type { QueryEngineEvent } from "../query/types.ts";
 import { BridgeCore } from "./bridge-core.ts";
 import { createBridgeTransport } from "./transport.ts";
 import { WebSocketBridgeTransport, stripTokenQuery } from "./ws-transport.ts";
+import { DEFAULT_PERMISSION_TIMEOUT_MS } from "./types.ts";
 import {
   BRIDGE_SESSION_EVENT_NAME,
   emitBridgeTelemetry,
@@ -124,7 +125,7 @@ export class BridgeRunner {
   constructor(deps: BridgeRunnerDeps, options: BridgeRunnerOptions) {
     this.deps = deps;
     this.url = options.url;
-    this.permissionTimeoutMs = options.permissionTimeoutMs ?? 60_000;
+    this.permissionTimeoutMs = options.permissionTimeoutMs ?? DEFAULT_PERMISSION_TIMEOUT_MS;
 
     const transport = createBridgeTransport(options.url, options.authToken);
     // 工厂返回的接口没有永久失败回调；只有 WS 实现有。SSE 之类以后若出现，不订也不该崩。

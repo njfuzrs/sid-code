@@ -133,4 +133,43 @@ describe("PermissionDecision.confirm_via", () => {
     expect(captured[0]!.prompted).toBe(false);
     expect("confirmVia" in captured[0]!).toBe(false);
   });
+
+  test("SDK 宿主通道 → confirm_via=sdk", async () => {
+    const checker = new PermissionChecker(
+      { ...defaultConfig(), permissionMode: "default" } as Config,
+      undefined,
+      dir,
+    );
+    const app = makeApp("default", checker);
+    // sdkCanUseTool 平时由 runSDK 内部赋值；测试替换该字段，走的是 App 里真实的
+    // requestUserConfirmation sdk 分支（不是手工调 setter）。
+    (app as unknown as { sdkCanUseTool: () => Promise<string> }).sdkCanUseTool = async () =>
+      "allow";
+
+    expect(await ask(app)).toBe(true);
+    expect(recordPromptedAllow().confirmVia).toBe("sdk");
+  });
+
+  test("classifier 抢赢（source≠user）不带该字段——那次并没有人真的被问", async () => {
+    // needsPrompt=true 只说明「进过确认流程」；三路竞争里 classifier 抢先赢了时，
+    // 弹窗并没有人作答。若门面只看 needsPrompt，就会把上一次远程批准的通道写进来。
+    setConfirmVia("bridge");
+    captured = [];
+    logPermissionAllow("bash", { source: "classifier", needsPrompt: true, context: "main" });
+    expect(captured).toHaveLength(1);
+    expect(captured[0]!.prompted).toBe(true);
+    expect("confirmVia" in captured[0]!).toBe(false);
+  });
+
+  test("一次确认只消费一次：连续两条 user 决策，第二条不带 confirmVia", () => {
+    setConfirmVia("tui");
+    captured = [];
+    logPermissionAllow("bash", { source: "user", needsPrompt: true, context: "main" });
+    logPermissionAllow("read", { source: "user", needsPrompt: true, context: "main" });
+    expect(captured).toHaveLength(2);
+    expect(captured[0]!.confirmVia).toBe("tui");
+    // 第二条没有经过 requestUserConfirmation（例如并发的第二次决策），
+    // 不能继承上一条的通道——否则「通道」会变成「上次是谁批的」。
+    expect("confirmVia" in captured[1]!).toBe(false);
+  });
 });
