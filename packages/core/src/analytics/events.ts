@@ -36,7 +36,7 @@ import { PROTECTED_PREFIX } from "./privacy.ts";
 import { asVerified } from "./types.ts";
 import { sanitizeToolName, safeFileExtension, mcpToolDetailsForAnalytics } from "./sanitize.ts";
 import type { DefenseLayer, DefenseOutcome } from "../telemetry/metrics/defense-metrics.ts";
-import { recordPermissionDecision } from "../permission/decision-telemetry.ts";
+import { recordPermissionDecision, readConfirmVia } from "../permission/decision-telemetry.ts";
 import { getPluginMarketplace, type PluginToolOrigin } from "./plugin-attribution.ts";
 
 // ─────────────────────────────────────────────────────────────
@@ -362,11 +362,15 @@ export function logPermissionAllow(
   });
   // B11：同一个出口落进本地轨迹。挂在门面里而非各调用点 —— 见 decision-telemetry.ts 头注释。
   // 不受遥测开关管辖：轨迹是本地数据，不外发。
+  // confirm_via 只在真问过人时才有意义（规则直接放行没人被问）；值是 App 确认回调里
+  // 按实际分支设置的（bridge / sdk / tui / headless），不扩外发遥测字段集。
+  const confirmVia = opts.needsPrompt ? readConfirmVia() : null;
   recordPermissionDecision({
     tool: toolName,
     outcome: "allow",
     prompted: opts.needsPrompt,
     source: opts.source,
+    ...(confirmVia ? { confirmVia } : {}),
     ...(opts.reasonType ? { reasonType: opts.reasonType } : {}),
     context: opts.context,
     ...(opts.agentId ? { agentId: opts.agentId } : {}),
@@ -429,11 +433,14 @@ export function logPermissionDeny(
     ...(opts.reasonType ? { reason_type: v(opts.reasonType) } : {}),
     ...(opts.durationMs !== undefined ? { duration_ms: opts.durationMs } : {}),
   });
+  // 同 allow：confirm_via 只在真问过人时才有意义，值由 App 确认回调按实际分支设置。
+  const confirmVia = opts.needsPrompt ? readConfirmVia() : null;
   recordPermissionDecision({
     tool: toolName,
     outcome: "deny",
     prompted: opts.needsPrompt,
     source: opts.source,
+    ...(confirmVia ? { confirmVia } : {}),
     ...(opts.reasonType ? { reasonType: opts.reasonType } : {}),
     context: opts.context,
     ...(opts.agentId ? { agentId: opts.agentId } : {}),
