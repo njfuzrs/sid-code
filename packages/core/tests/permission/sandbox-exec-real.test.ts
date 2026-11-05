@@ -44,16 +44,24 @@ let sidHome: string;
 let prevSidConfigDir: string | undefined;
 /** A4 用：home 下的探针目录（不在写白名单里），用例自己清 */
 let homeProbe: string;
+/**
+ * A12/A13 会改**全局** cwd。`bun test` 同批多文件跑在同一进程里（CLAUDE.md 的
+ * 测试落盘隔离约定同源），不恢复的话后续文件会读到已删除的 tmpdir。
+ */
+let prevCwd: string;
 
 beforeEach(() => {
   cwd = mkdtempSync(join(tmpdir(), "sbx-real-cwd-"));
   sidHome = mkdtempSync(join(tmpdir(), "sbx-real-home-"));
   homeProbe = join(homedir(), `.sid-sbx-probe-${process.pid}-${Date.now()}`);
   prevSidConfigDir = process.env.SID_CONFIG_DIR;
+  prevCwd = getCwd();
   process.env.SID_CONFIG_DIR = sidHome;
 });
 
 afterEach(() => {
+  // 先恢复全局 cwd，再删目录 —— 顺序反了会把 state 指向一个已不存在的路径。
+  setCwd(prevCwd);
   if (prevSidConfigDir === undefined) delete process.env.SID_CONFIG_DIR;
   else process.env.SID_CONFIG_DIR = prevSidConfigDir;
   rmSync(cwd, { recursive: true, force: true });
@@ -62,7 +70,12 @@ afterEach(() => {
 });
 
 /** 造一个启用中的 manager（默认 network: localhost）。 */
-function manager(opts?: { network?: "localhost" | "all" | "none"; workspace?: string }) {
+function manager(opts?: {
+  network?: "localhost" | "all" | "none";
+  workspace?: string;
+  /** 注入可控 HOME：敏感目录/缓存目录按它展开（见 SandboxManager 的 homeDir 注释） */
+  homeDir?: string;
+}) {
   return new SandboxManager(
     {
       ...defaultSandboxConfig(),
@@ -70,6 +83,7 @@ function manager(opts?: { network?: "localhost" | "all" | "none"; workspace?: st
       ...(opts?.network ? { network: opts.network } : {}),
     },
     opts?.workspace ?? cwd,
+    opts?.homeDir ? { homeDir: opts.homeDir } : undefined,
   );
 }
 
@@ -150,6 +164,60 @@ describe.skipIf(!isDarwin)("B2 端到端：真跑 sandbox-exec", () => {
     expect({ code: r.exitCode, err: r.stderr }).toEqual({ code: 0, err: "" });
   });
 
+  /**
+   * 2026-11-05 review 补的三条边界，用可控 HOME 让规则确定性存在：
+   * - `.npm` / `.bun` 在**写**白名单里（否则沙箱里的 npm/bun install 直接失败）；
+   * - `Library/Keychains` 与 `.git-credentials` 在**读** deny 里（长期凭据面）；
+   * - 同 HOME 的普通文件仍可读（证明 deny 是精确的，没有把整个 HOME 带偏）。
+   *
+   * 两个刻意的选择：
+   * - fakeHome 落在真实 `$HOME` 下而不是 `tmpdir()`：`tmpdir()` 在
+   *   `/private/var/folders`，那是内置写白名单 —— 放那里的话「缓存可写」不修也绿。
+   * - HOME 通过 `SandboxManager` 的 `homeDir` 注入，**不改 `process.env.HOME`**：
+   *   Bun 的 `homedir()` 不跟随运行时 env 变化（实测 profile 仍是真实 HOME），
+   *   改 env 只会得到一条看着在测、实际没测的用例。命令里因此用绝对路径。
+   */
+  test("A2c 包管理器缓存可写，Keychains 与 .git-credentials 被 deny", () => {
+    const fakeHome = join(homedir(), `.sid-sbx-fakehome-${process.pid}-${Date.now()}`);
+    try {
+      mkdirSync(join(fakeHome, ".npm"), { recursive: true });
+      mkdirSync(join(fakeHome, ".bun"), { recursive: true });
+      mkdirSync(join(fakeHome, "Library/Keychains"), { recursive: true });
+      writeFileSync(join(fakeHome, "Library/Keychains/login.keychain-db"), "kc", "utf8");
+      writeFileSync(join(fakeHome, ".git-credentials"), "https://u:p@example.com", "utf8");
+      writeFileSync(join(fakeHome, "notes.md"), "ok", "utf8");
+
+      const sb = manager({ homeDir: fakeHome });
+      const profile = sb.generateSeatbeltProfile();
+      expect(profile).toContain("Keychains");
+      expect(profile).toContain(".git-credentials");
+
+      // 写：包管理器缓存必须可写
+      const npm = runInSandbox(sb, `echo x > '${fakeHome}/.npm/npm-probe' && echo NPM_WRITE_OK`);
+      expect({ code: npm.exitCode, out: npm.stdout.trim() }).toEqual({
+        code: 0,
+        out: "NPM_WRITE_OK",
+      });
+      const bun = runInSandbox(sb, `echo x > '${fakeHome}/.bun/bun-probe' && echo BUN_WRITE_OK`);
+      expect({ code: bun.exitCode, out: bun.stdout.trim() }).toEqual({
+        code: 0,
+        out: "BUN_WRITE_OK",
+      });
+
+      // 读：凭据位置被拒，同 HOME 的普通文件仍可读
+      const kc = runInSandbox(sb, `cat '${fakeHome}/Library/Keychains/login.keychain-db'`);
+      expect(kc.exitCode).not.toBe(0);
+      expect(kc.stderr).toMatch(/Operation not permitted/i);
+      const gc = runInSandbox(sb, `cat '${fakeHome}/.git-credentials'`);
+      expect(gc.exitCode).not.toBe(0);
+      expect(gc.stderr).toMatch(/Operation not permitted/i);
+      const notes = runInSandbox(sb, `cat '${fakeHome}/notes.md'`);
+      expect({ code: notes.exitCode, out: notes.stdout.trim() }).toEqual({ code: 0, out: "ok" });
+    } finally {
+      rmSync(fakeHome, { recursive: true, force: true });
+    }
+  });
+
   // ── A3 工作区可写 ──────────────────────────────────────────────
   test("A3 工作区可写：在 cwd 写文件再读回", () => {
     const r = runInSandbox(manager(), "echo x > f && cat f");
@@ -219,18 +287,57 @@ describe.skipIf(!isDarwin)("B2 端到端：真跑 sandbox-exec", () => {
   /**
    * D3 的**直接**回归：内层 shell 必须跟随外层。
    *
-   * 修前 `wrapCommand` 写死 `/bin/sh -c`。判据不能用「快照可读」那种场景 ——
-   * A6 给快照加了 literal 放行，`/bin/sh` 读到它照样能跑（所以 M3 变异会逃逸）。
-   * 这里刻意**不创建**快照文件：`source` 一个不存在的文件在 POSIX mode 下是
-   * **特殊内建致命错误**，`|| true` 救不回来（2026-11-05 实测：sh → exit 1 且无输出；
-   * zsh → 打印 ok、exit 0）。于是这条用例在「内层是 zsh」时绿、「内层是 sh」时红。
+   * 旧判据是「source 一个不存在的文件：sh 会吞命令、zsh 能继续」。2026-11-05 给
+   * `buildCommand` 加了 `[ -r ]` 预判之后，sh 下也会短路继续 —— 那条判据失去区分度
+   * （两条 shell 都会绿）。改成直接探测：zsh 会设置 `ZSH_VERSION`，sh 不会。
    */
-  test("A6c 内层 shell 必须是 zsh：快照不可读时 sh 会吞掉命令，zsh 能继续", () => {
-    const missing = join(sidHome, "missing-snapshot.sh");
-    // 不 setSnapshotPath、不创建文件：模拟「快照丢了 / 落在 deny 区」
-    const r = runInSandbox(manager(), `source ${missing} 2>/dev/null || true && echo ok`);
-    expect({ code: r.exitCode, out: r.stdout.trim() }).toEqual({ code: 0, out: "ok" });
+  test("A6c 内层 shell 必须是 zsh：用 ZSH_VERSION 直接探测", () => {
+    const r = runInSandbox(manager(), 'echo "inner=${ZSH_VERSION:+zsh}"');
+    expect({ code: r.exitCode, out: r.stdout.trim() }).toEqual({ code: 0, out: "inner=zsh" });
   });
+
+  /**
+   * `buildCommand` 的 `[ -r ]` 预判（2026-11-05 加固）。
+   *
+   * 旧实现是 `source <快照> 2>/dev/null || true`：POSIX mode 下 source 一个读不了的
+   * 文件是特殊内建致命错误，`|| true` 执行不到，shell 直接退出、用户命令一行不跑
+   * （D3 里与沙箱无关的那一半，`$SHELL=/bin/sh` 的用户同样会踩）。
+   *
+   * **必须用 sh 内层测**：zsh 下 `source <missing> || true` 本来就能继续，旧实现也绿，
+   * 没有区分度。这里把 `$SHELL` 临时指到 `/bin/sh`，只有 `[ -r ]` 短路成立时命令才跑完。
+   */
+  test(
+    "A6d 快照丢失时命令不被吞（sh 内层）：[ -r ] 预判让 shell 继续",
+    async () => {
+      const prevShell = process.env.SHELL;
+      process.env.SHELL = "/bin/sh";
+      try {
+        const bash = new BashTool();
+        bash.setSandboxManager(manager());
+        // ⚠️ 必须先等 initSnapshot 完成再改字段：initSnapshot 在构造时异步启动，
+        // 它完成时会写 `snapshotFilePath`（成功=真实快照，失败=undefined），把这里的
+        // 赋值覆盖掉 —— 覆盖成 undefined 就会走「无快照」分支，用例变成假绿
+        // （2026-11-05 变异自证 M4 逃逸后定位）。
+        await (bash as unknown as { snapshotReady: Promise<void> }).snapshotReady;
+        // 模拟会话中快照被删：execute 会把这个路径注册给沙箱，realpath 失败 → 无 literal
+        // 放行；命令串因此走 `[ -r ]` 的短路分支。
+        (bash as unknown as { snapshotFilePath: string }).snapshotFilePath = join(
+          sidHome,
+          "deleted-snapshot.sh",
+        );
+        setCwd(cwd);
+        const r = await bash.execute({ command: "echo survive", description: "快照丢失" });
+        expect(r.isError).toBeFalsy();
+        expect(r.output).toContain("survive");
+      } finally {
+        if (prevShell === undefined) delete process.env.SHELL;
+        else process.env.SHELL = prevShell;
+      }
+    },
+    // 首次 new BashTool 会抓一次 shell 快照（本机实测 ~2s，CI 慢 runner 更久）；
+    // 默认 5s 在全量跑时偶发超时，这条与性能无关，给足预算。
+    15000,
+  );
 
   // ── A7 realpath ───────────────────────────────────────────────
   /**

@@ -792,7 +792,14 @@ export class BashTool implements Tool {
     let cwdFile: string | undefined;
 
     if (this.snapshotFilePath && !isWin) {
-      parts.push(`source ${escapeForShell(this.snapshotFilePath)} 2>/dev/null || true`);
+      const snapshot = escapeForShell(this.snapshotFilePath);
+      // ⚠️ 先判 `[ -r ]` 再 source，不是多余的防御：POSIX mode 的 shell（`/bin/sh`）里
+      // `source` 一个读不了的文件是**特殊内建致命错误**，后面的 `|| true` 根本执行不到，
+      // shell 直接退出、用户命令一行不跑（2026-11-05 D3 实测 exit 1/2 且无输出）。
+      // 加了预判之后，快照丢失/落在 deny 区时 source 被短路，`|| true` 兜成 0，
+      // 后面的 `eval` 照常执行 —— 这条与沙箱无关（`$SHELL=/bin/sh` 的用户同样会踩）。
+      // 分组 `{ ...; }` 是为了让 `|| true` 覆盖整段而不是只覆盖 source。
+      parts.push(`{ [ -r ${snapshot} ] && source ${snapshot} 2>/dev/null; } || true`);
       parts.push(`eval ${escapeForShell(rawCommand)}`);
     } else {
       parts.push(rawCommand);

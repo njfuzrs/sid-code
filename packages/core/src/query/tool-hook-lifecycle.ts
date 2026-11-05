@@ -142,6 +142,16 @@ export async function runPostToolHooks(
     interrupted?: boolean;
     /** 是否 MCP 工具：决定 updatedMCPToolOutput 是否生效 */
     isMcpTool?: boolean;
+    /**
+     * 工具的结构化执行元数据（`LegacyToolResult.meta`），透传进 `tool_response.meta`。
+     *
+     * 为什么子代理路径也要传：主循环的 `tool-executor.ts` 已经传了，这条路径原先没传，
+     * 于是子代理里 bash 的 `sandboxed` 埋点在成功和失败两条通道上**全部丢失** ——
+     * 而子代理复用主 registry 的 BashTool 实例，它确实跑在沙箱里。
+     * 结果是「开了沙箱的会话里多少条 bash 真进了沙箱」在带子代理的会话里系统性偏低
+     * （2026-11-05 review）。
+     */
+    toolMeta?: Record<string, unknown>;
     /** 替换输出的落盘参数（与原输出同一套 processToolResult 截断/落盘） */
     sessionId?: string;
     maxResultSizeChars?: number;
@@ -163,13 +173,18 @@ export async function runPostToolHooks(
             failure_kind: args.interrupted ? "aborted" : "tool_error",
             is_interrupt: !!args.interrupted,
             tool_output: args.output,
+            ...(args.toolMeta ? { tool_meta: args.toolMeta } : {}),
             ...agent,
           },
         )
       : await hookSystem.firePostToolUseEvent(
           args.toolName,
           args.toolInput,
-          { output: args.output, isError: false },
+          {
+            output: args.output,
+            isError: false,
+            ...(args.toolMeta ? { meta: args.toolMeta } : {}),
+          },
           false,
           args.toolUseId,
           { duration_ms: args.durationMs, ...agent },
