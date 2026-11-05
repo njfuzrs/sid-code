@@ -12,6 +12,14 @@ describe("CronCreateTool — allowed_tools 预授权", () => {
     resetScheduler();
   });
 
+  // G3：origin 只在这里写一次（`CronTask` 的创建入口）。漏了的话轨迹里所有
+  // cron_create 触发的 ScheduledFire 都会记 unknown，而「怎么建的」正是要分的三类之一。
+  it("创建入口写入 origin=cron_create", async () => {
+    const tool = new CronCreateTool();
+    await tool.execute({ cron: "*/5 * * * *", prompt: "x" });
+    expect(getScheduler().listTasks()[0].origin).toBe("cron_create");
+  });
+
   it("声明的 allowed_tools 透传到任务对象", async () => {
     const tool = new CronCreateTool();
     const res = await tool.execute({

@@ -330,4 +330,46 @@ describe("防复发哨兵：扫描 tests/ 下所有落盘调用方", () => {
       );
     }
   });
+
+  /**
+   * 判据自证：`stripComments` 是 `used` / `isolated` 两个判定的前置。它坏掉时门禁
+   * **照样全绿**——只是变宽（把注释当调用 → 误报，逼人加无意义的隔离声明）或变窄
+   * （把真调用一起剥掉 → 漏报，真实落盘调用方从门禁里消失）。所以它自己也要有断言。
+   *
+   * 三条一组：注释不算调用、注释不算隔离、真代码与字符串原样保留。
+   */
+  describe("stripComments 判据自证", () => {
+    test("注释里提到导出名不算调用它", () => {
+      const src = [
+        "// 这里的 CheckpointManager 只是解释为什么不用它",
+        "/* createSnapshot 同理 */",
+        "export const x = 1;",
+      ].join("\n");
+      const code = stripComments(src);
+      expect(code).not.toContain("CheckpointManager");
+      expect(code).not.toContain("createSnapshot");
+      expect(code).toContain("export const x = 1;");
+    });
+
+    test("注释里写 process.env.SID_CONFIG_DIR 不算声明了隔离", () => {
+      const src = ["// 测试应设 process.env.SID_CONFIG_DIR 指向 tmpdir", "const a = 1;"].join("\n");
+      const code = stripComments(src);
+      expect(code).not.toContain("SID_CONFIG_DIR");
+      expect(code).toContain("const a = 1;");
+    });
+
+    test("真代码与字符串里的名字原样保留（收窄不能把真调用一起剥掉）", () => {
+      const src = [
+        'const mgr = new CheckpointManager("x");',
+        'const marker = "process.env.SID_CONFIG_DIR";',
+        'const url = "http://example.com"; // 行尾注释被剥',
+      ].join("\n");
+      const code = stripComments(src);
+      expect(code).toContain("new CheckpointManager");
+      expect(code).toContain("SID_CONFIG_DIR");
+      // 字符串里的 `//` 不是注释开头：URL 必须完整保留（否则 http:// 之后的代码全被当注释吃掉）
+      expect(code).toContain("http://example.com");
+      expect(code).not.toContain("行尾注释被剥");
+    });
+  });
 });

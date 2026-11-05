@@ -114,7 +114,7 @@ bash 的 `ls` 被 hook 拦截了。根据工具使用原则，列目录本来就
 
 ### 每次执行都进本地轨迹
 
-每次用户 hook 执行都会在本地轨迹 `events.jsonl` 里留一条 `HookExecuted`：包含事件名、hook 类型（`command` / `url` / `prompt` / `agent`）、来源（user / project / plugin / skill / policy）、耗时、退出码与结论（`success` / `blocking` / `error` / `timeout` / `async_started`）。异步 hook 在后台跑完后追加一条 `HookAsyncCompleted`，与 `HookExecuted` 靠 `run_id` 配对。
+每次用户 hook 执行都会在本地轨迹 `events.jsonl` 里留一条 `HookExecuted`：包含事件名、hook 类型（`command` / `url` / `prompt` / `agent`）、来源（`user` / `local` / `global` / `project` / `plugin` / `managed`，即 `ConfigSource` 的取值）、耗时、退出码与结论（`success` / `blocking` / `error` / `timeout` / `async_started`）。异步 hook 在后台跑完后追加一条 `HookAsyncCompleted`，与 `HookExecuted` 靠 `run_id` 配对。
 
 **不含命令原文、stdout、stderr**——轨迹会被上传到企业后端，命令里可能拼着 token、输出里可能含任意文件内容。没有 `name` 的 hook 用命令摘要代替标识。runtime 类型的 hook（轨迹与遥测自己注册的）不记，避免产生「记录 hook 的 hook」的噪声。
 

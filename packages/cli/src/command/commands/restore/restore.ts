@@ -71,7 +71,15 @@ export class RestoreCommand implements LocalCommandModule {
       type: "confirm",
       message: lines.join("\n"),
       onConfirm: async () => {
-        const result = await cpMgr.restoreToSnapshot(snapshotId);
+        // G2：抛错也要记 error。磁盘错 / 索引损坏走的是抛错路径，原先只有「返回 null」
+        // 才记一条，于是回滚的真实失败在轨迹里整条缺失，成功率的分母偏向非失败路径。
+        const result = await cpMgr.restoreToSnapshot(snapshotId).catch((e: unknown) => {
+          emitRewind("restore", "error", {
+            snapshot_id: snapshotId,
+            error_name: (e as Error)?.name ?? "Error",
+          });
+          throw e;
+        });
         if (result) {
           emitRewind("restore", "ok", {
             snapshot_id: snapshotId,

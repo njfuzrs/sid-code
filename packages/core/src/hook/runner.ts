@@ -312,7 +312,14 @@ export class HookRunner {
     }
     try {
       const result = await this.executeHookInner(hookConfig, eventName, input, runId);
-      this.emitExecutedTelemetry(hookConfig, eventName, input, result, runId);
+      // 埋点是旁路：字段派生也可能抛错（例如配置缺 command 时 sha12(undefined)），
+      // 不能把一个「本该返回 error 结果的 hook」变成「抛异常给调用方」——
+      // hook-telemetry.ts 头注释承诺的是「埋点绝不影响 hook 结论」。
+      try {
+        this.emitExecutedTelemetry(hookConfig, eventName, input, result, runId);
+      } catch (e) {
+        getLogger().debug("HOOK", `hook 轨迹埋点失败（已忽略）: ${e}`);
+      }
       return result;
     } finally {
       if (hasLifecycleListeners) {
@@ -1373,8 +1380,19 @@ function describeHookId(hookConfig: HookConfig): string {
   }
 }
 
+/**
+ * sha256 前 12 位。
+ *
+ * 埋点是尽力而为的旁路：调用点传的是 `HookConfig` 上的字符串字段（类型必填，但
+ * `HookSystem.registerHook` 是公开 API，配置也可能来自脚本），哈希算不出来时退化成
+ * 固定占位，绝不把异常抛回 hook 执行链——与 `rewind-telemetry.ts` 的同名函数同口径。
+ */
 function sha12(text: string): string {
-  return createHash("sha256").update(text).digest("hex").slice(0, 12);
+  try {
+    return createHash("sha256").update(text).digest("hex").slice(0, 12);
+  } catch {
+    return "unavailable";
+  }
 }
 
 function hostOfUrl(raw: string): string {

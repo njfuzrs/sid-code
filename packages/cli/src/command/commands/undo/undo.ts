@@ -14,7 +14,15 @@ export class UndoCommand implements LocalCommandModule {
 
     // 如果指定了文件路径，回滚单个文件
     if (trimmed) {
-      const result = await cpMgr.undoFile(trimmed);
+      // G2：抛错也要记 error，不能只记「返回 null」。磁盘错 / 索引损坏这类**真实失败**
+      // 走的是抛错路径，只记空转会让「回滚成功率」的分母偏向非失败路径。
+      const result = await cpMgr.undoFile(trimmed).catch((e: unknown) => {
+        emitRewind("undo_file", "error", {
+          path_sha12: sha12(trimmed),
+          error_name: (e as Error)?.name ?? "Error",
+        });
+        throw e;
+      });
       if (result) {
         // G2：只记路径摘要不记原文——路径是用户项目结构，与 PostToolUse 里的路径同级敏感，
         // 而回滚统计只需要「撤销的是同一个文件吗」，不需要它是哪个文件（见 rewind-telemetry.ts）
@@ -36,7 +44,11 @@ export class UndoCommand implements LocalCommandModule {
     }
 
     // 回滚最近一次快照（可能包含多个文件）
-    const result = await cpMgr.undo();
+    const result = await cpMgr.undo().catch((e: unknown) => {
+      // G2：同上，抛错也是「回滚失败」的一种，不能从分母里消失
+      emitRewind("undo", "error", { error_name: (e as Error)?.name ?? "Error" });
+      throw e;
+    });
     if (result) {
       emitRewind("undo", "ok", {
         snapshot_id: result.snapshotId,

@@ -24,6 +24,14 @@ afterEach(() => {
 const text = (r: { type: string; value?: string }) => r.value ?? "";
 
 describe("/loop 间隔解析", () => {
+  // G3：origin 只在这一个创建入口写。漏了的话轨迹里所有 /loop 触发的 ScheduledFire
+  // 都会记 unknown —— /loop 是分钟级、wakeup 是一次性，两者混起来延迟指标就没意义。
+  test("创建入口写入 origin=loop", async () => {
+    const mod = await loadCmd();
+    await mod.call("5m 检查构建", CTX);
+    expect(getScheduler().listTasks()[0].origin).toBe("loop");
+  });
+
   test("尾随 every：/loop review PRs every 2 hours → 2 小时循环 cron，任务正文不含 every", async () => {
     const mod = await loadCmd();
     const r = await mod.call("review PRs every 2 hours", CTX);

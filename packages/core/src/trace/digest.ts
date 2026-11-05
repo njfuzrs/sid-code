@@ -24,7 +24,11 @@ import { dirname, isAbsolute, join, normalize, sep } from "node:path";
 // 另一处静默归零」的风险——digest 是最容易漏改的消费方（它不 import 生产模块）。
 import { HOOK_EXECUTED_EVENT_NAME } from "../hook/hook-telemetry.ts";
 import { REWIND_EVENT_NAME } from "../session/rewind-telemetry.ts";
-import { SCHEDULED_FIRE_EVENT_NAME } from "../cron/cron-telemetry.ts";
+import { SCHEDULED_FIRE_EVENT_NAME, SCHEDULED_INJECT_EVENT_NAME } from "../cron/cron-telemetry.ts";
+import {
+  BRIDGE_INBOUND_EVENT_NAME,
+  BRIDGE_SESSION_EVENT_NAME,
+} from "../bridge/bridge-telemetry.ts";
 import { splitIsolatedWorktreePath } from "../bootstrap/cwd-context.ts";
 import { applyLedgerPathOverride } from "../telemetry/usage-ledger.ts";
 import { getSidHome } from "../config/paths.ts";
@@ -604,41 +608,6 @@ export function aggregateStrictDegradeStats(
 }
 
 /**
- * 「触发计数」——本会话里由**外部动作**触发的事件条数（观测缺口方案 T5）。
- *
- * 只加计数、不加结论判定：hook 拦了几次、回滚了几次、远程遥控收了几条消息，
- * 这些数字本身就是触发清单 A1/A2/A4/A12 的证据列；「算不算异常」留给读的人。
- *
- * 本 PR 只落 bridge 部分（T4）。其余三组（hook_runs / rewinds / scheduled_fires）
- * 由同一方案的另一半补齐时往这里加字段，口径不变。
- */
-export interface TriggerCountsStats {
-  /** 远程入站用户消息条数（`BridgeInbound` 且 `kind=user_message`，已去重） */
-  bridgeInbound: number;
-}
-
-/**
- * 聚合触发计数。**没有任何 bridge 事件时返回 undefined**（与其它 section 同一约定）：
- * 普通本地会话不该凭空多出一节「bridge_inbound: 0」——那会把「没被遥控过」
- * 与「这套埋点还没上线/没接线」混成同一个数。
- */
-export function aggregateTriggerCountsStats(
-  events: Array<{ event?: string; data?: Record<string, unknown> }>,
-): TriggerCountsStats | undefined {
-  let sawBridge = false;
-  let bridgeInbound = 0;
-  for (const e of events) {
-    if (e.event === "BridgeSession") {
-      sawBridge = true;
-    } else if (e.event === "BridgeInbound") {
-      sawBridge = true;
-      if (e.data?.kind === "user_message") bridgeInbound++;
-    }
-  }
-  return sawBridge ? { bridgeInbound } : undefined;
-}
-
-/**
  * 发现 5（2026-10-21）：「stop_reason 与 content 不一致」次数。取数源 `StopReasonMismatch` 事件
  * （主循环 F2 fall-through 每次一条）。warn.log 按 (provider, model) 只告警首次，计数只在这里。
  * 根因修掉后目标恒为 0；非 0 = 某个协议族又出现偏差，按 byModel 定位。
@@ -855,20 +824,31 @@ export function aggregateLspDiagnosticsStats(
 }
 
 /**
- * 观测缺口 PR1：触发计数（hook 执行 / 用户回滚 / 定时到点）。
+ * 观测缺口：触发计数（hook 执行 / 用户回滚 / 定时到点 / 远程接管）。
  *
  * 只报计数与分位数，**不下结论**——「hook 拦了 3 次」是好是坏要靠读的人结合场景判断，
- * 这里给的是此前完全没有的分母（A1/A2/A4 只能靠截图证明发生过）。
+ * 这里给的是此前完全没有的分母（A1/A2/A4/A12 只能靠截图证明发生过）。
  *
- * 四类事件全无时整节省略：老会话说的是「当时还没有这个埋点」，输出一个全 0 的节会让它
+ * 这几类事件全无时整节省略：老会话说的是「当时还没有这个埋点」，输出一个全 0 的节会让它
  * 看起来像「用了但没发生」，那是最糟的一种数据噪声。
+ *
+ * 2026-11-05：原 `TriggerCountsStats`（远程接管那一半，PR #599）并入本结构。两个 PR
+ * 各自加了一节**同名**的「触发计数」，一个既有远程接管又有本地触发的会话会渲染出两段
+ * 同名小节、各只有部分字段——读的人无法判断哪段是完整的。现在只有一份取数源
+ * （events.jsonl）与一个渲染点。
  */
 export interface TriggerDigestStats {
   /** HookExecuted 条数（runtime hook 在生产侧已过滤，不会产生噪声） */
   hookRuns: number;
   /** outcome=blocking 的 hook 条数（exit 2 拦下工具的那类） */
   hookBlocks: number;
-  /** hook 执行耗时 p95（ms）。样本少于 5 时不给：一次 800ms 的 hook 不叫 p95 */
+  /**
+   * 同步 hook 执行耗时 p95（ms）。样本少于 5 时不给：一次 800ms 的 hook 不叫 p95。
+   *
+   * **排除 outcome=async_started**：那条的 duration 只是「启动并交给 registry」的耗时，
+   * 真实执行在后台（由 `HookAsyncCompleted` 单独记）。混进来会把 p95 系统性拉低，
+   * 让「hook 很快」这个结论在 async hook 用得越多时越假。
+   */
   hookP95Ms?: number;
   /** Rewind 按 via（dialog / rewind_n / undo / undo_file / restore）分桶 */
   rewinds: Record<string, number>;
@@ -876,8 +856,19 @@ export interface TriggerDigestStats {
   scheduledFires: number;
   /** ScheduledFire 里 outcome!=fired 的条数（未授权 / 认领失败 / 注入抛错） */
   scheduledSkipped: number;
+  /** ScheduledInject 条数（宿主真正调用注入器的次数，与 `scheduledFires` 对账） */
+  scheduledInjects: number;
   /** 「到期 → 调度器触发」的延迟 p95（ms）。样本少于 5 时不给 */
   scheduledLagP95Ms?: number;
+  /**
+   * 「到点 → 真正注入」的排队等待 p95（ms），**只统计 queued=true 的样本**。
+   *
+   * 与 `scheduledLagP95Ms` 是两段不同的延迟：前者是会话忙导致调度器推迟到点触发，
+   * 后者是提示词入了队列、等 REPL 空闲。合成一个数就分不出该修哪一段。
+   */
+  scheduledQueueWaitP95Ms?: number;
+  /** 远程入站用户消息条数（`BridgeInbound` 且 `kind=user_message`，生产侧已去重） */
+  bridgeInbound: number;
 }
 
 /** p95 的最小样本数：低于它报分位数等于报某一次的具体值 */
@@ -892,9 +883,12 @@ export function aggregateTriggerStats(
     rewinds: {},
     scheduledFires: 0,
     scheduledSkipped: 0,
+    scheduledInjects: 0,
+    bridgeInbound: 0,
   };
   const hookDurations: number[] = [];
   const scheduledLags: number[] = [];
+  const scheduledQueueWaits: number[] = [];
   let sawAny = false;
 
   for (const e of events) {
@@ -903,7 +897,10 @@ export function aggregateTriggerStats(
       sawAny = true;
       out.hookRuns++;
       if (d.outcome === "blocking") out.hookBlocks++;
-      if (typeof d.duration_ms === "number") hookDurations.push(d.duration_ms);
+      // async 的 duration 只覆盖「启动」那一段，进 p95 会把分布拉低（见字段注释）
+      if (d.outcome !== "async_started" && typeof d.duration_ms === "number") {
+        hookDurations.push(d.duration_ms);
+      }
     } else if (e.event === REWIND_EVENT_NAME) {
       sawAny = true;
       const via = typeof d.via === "string" && d.via ? d.via : "unknown";
@@ -916,18 +913,35 @@ export function aggregateTriggerStats(
       } else {
         out.scheduledSkipped++;
       }
+    } else if (e.event === SCHEDULED_INJECT_EVENT_NAME) {
+      sawAny = true;
+      out.scheduledInjects++;
+      // 只统计真的排过队的样本：queued=false 的等待恒为 ~0，混进来会把 p95 稀释成 0
+      if (d.queued === true && typeof d.queue_wait_ms === "number") {
+        scheduledQueueWaits.push(d.queue_wait_ms);
+      }
+    } else if (e.event === BRIDGE_INBOUND_EVENT_NAME) {
+      sawAny = true;
+      if (d.kind === "user_message") out.bridgeInbound++;
+    } else if (e.event === BRIDGE_SESSION_EVENT_NAME) {
+      // 连上但没收到消息也要出节：那是「被遥控过」的证据，只是 inbound=0
+      sawAny = true;
     }
   }
 
   if (!sawAny) return undefined;
-  if (hookDurations.length >= TRIGGER_P95_MIN_SAMPLES) {
-    hookDurations.sort((a, b) => a - b);
-    out.hookP95Ms = percentile(hookDurations, 0.95);
-  }
-  if (scheduledLags.length >= TRIGGER_P95_MIN_SAMPLES) {
-    scheduledLags.sort((a, b) => a - b);
-    out.scheduledLagP95Ms = percentile(scheduledLags, 0.95);
-  }
+
+  const p95 = (samples: number[]): number | undefined => {
+    if (samples.length < TRIGGER_P95_MIN_SAMPLES) return undefined;
+    samples.sort((a, b) => a - b);
+    return percentile(samples, 0.95);
+  };
+  const hookP95 = p95(hookDurations);
+  if (hookP95 !== undefined) out.hookP95Ms = hookP95;
+  const lagP95 = p95(scheduledLags);
+  if (lagP95 !== undefined) out.scheduledLagP95Ms = lagP95;
+  const queueWaitP95 = p95(scheduledQueueWaits);
+  if (queueWaitP95 !== undefined) out.scheduledQueueWaitP95Ms = queueWaitP95;
   return out;
 }
 
@@ -1476,11 +1490,6 @@ export interface Digest {
   thinkingLeak?: ThinkingLeakStats;
   /** R11：strict 工具降级汇总。无 StrictToolDegraded 事件时 undefined。 */
   strictDegrade?: StrictDegradeStats;
-  /**
-   * 触发计数（观测缺口方案 T5）。本 PR 只落 bridge 部分；
-   * 没有任何 bridge 事件时 undefined（普通本地会话不凭空多一节 0）。
-   */
-  triggerCounts?: TriggerCountsStats;
   /** 发现 5：stop_reason 与 content 不一致次数。无 StopReasonMismatch 事件时 undefined。 */
   stopReasonMismatch?: StopReasonMismatchStats;
   /** 2026-10-29：停止归因（incomplete_reason / F1 / 子循环 stop_action）。全无时 undefined。 */
@@ -1490,8 +1499,8 @@ export interface Digest {
   /** 2026-10-24：LSP 诊断注入口径。无 LspDiagnostics 事件（老会话 / 没用 LSP）时 undefined。 */
   lspDiagnostics?: LspDiagnosticsDigestStats;
   /**
-   * 观测缺口 PR1：触发计数（hook 执行 / 回滚 / 定时到点）。
-   * 三组事件全无时 undefined（老会话 / 这三个功能都没被用）。
+   * 观测缺口：触发计数（hook 执行 / 回滚 / 定时到点 / 远程接管）。
+   * 这几类事件全无时 undefined（老会话 / 这些功能都没被用）。
    */
   trigger?: TriggerDigestStats;
   /**
@@ -4071,7 +4080,6 @@ export function buildDigest(ref: SessionRef, full: boolean, paths: DigestPaths):
   // ── PR-5：思考关闭泄漏率（主循环 / 非主循环分开，分母 = 意图关的 fetch）──
   const thinkingLeak = aggregateThinkingLeakStats(events);
   const strictDegrade = aggregateStrictDegradeStats(events);
-  const triggerCounts = aggregateTriggerCountsStats(events);
   const stopReasonMismatch = aggregateStopReasonMismatchStats(events);
   const stopAttribution = aggregateStopAttributionStats(events);
   const unansweredEndTurn = aggregateUnansweredEndTurnStats(events);
@@ -4135,7 +4143,6 @@ export function buildDigest(ref: SessionRef, full: boolean, paths: DigestPaths):
     continuePaths: continuePaths ?? undefined,
     thinkingLeak,
     strictDegrade,
-    triggerCounts,
     stopReasonMismatch,
     ...(stopAttribution ? { stopAttribution } : {}),
     unansweredEndTurn,
@@ -4731,8 +4738,9 @@ export function renderHuman(d: Digest, opts: RenderOptions = {}): string {
     }
   }
 
-  // 观测缺口 PR1：触发计数（hook 执行 / 回滚 / 定时到点）。
-  // 只报事实、不下结论——这些数字此前完全没有分母（触发清单 A1/A2/A4 只能靠截图证明发生过）。
+  // 观测缺口：触发计数（hook 执行 / 回滚 / 定时到点 / 远程接管）。
+  // 只报事实、不下结论——这些数字此前完全没有分母（触发清单 A1/A2/A4/A12 只能靠截图证明发生过）。
+  // 一节渲染全部四组：PR1 与 PR2 曾各自加了一节同名的「触发计数」，见 TriggerDigestStats 注释。
   if (d.trigger) {
     const t = d.trigger;
     const rewinds = Object.entries(t.rewinds)
@@ -4749,12 +4757,21 @@ export function renderHuman(d: Digest, opts: RenderOptions = {}): string {
     L.push(c("gray", "  回滚: ") + (rewinds || "0 次"));
     L.push(
       c("gray", "  定时: ") +
-        `到点注入 ${t.scheduledFires} 次` +
+        `到点 ${t.scheduledFires} 次` +
+        (t.scheduledInjects > 0 ? c("gray", `  注入 ${t.scheduledInjects} 次`) : "") +
         (t.scheduledSkipped > 0 ? c("yellow", `  跳过 ${t.scheduledSkipped}`) : "") +
         (t.scheduledLagP95Ms !== undefined
           ? c("gray", `  lag p95 ${fmtDuration(t.scheduledLagP95Ms)}`)
+          : "") +
+        (t.scheduledQueueWaitP95Ms !== undefined
+          ? c("gray", `  排队 p95 ${fmtDuration(t.scheduledQueueWaitP95Ms)}`)
           : ""),
     );
+    // 只在真的收过远程消息时显示：连上但没消息的会话也有 BridgeSession，
+    // 但「远程接管」这个数会恒为 0，不该在每节都占一行。
+    if (t.bridgeInbound > 0) {
+      L.push(c("gray", "  远程接管: ") + `入站消息 ${t.bridgeInbound} 条`);
+    }
   }
 
   // R11：strict 降级。目标恒为 0，出现即标黄。
@@ -4838,15 +4855,6 @@ export function renderHuman(d: Digest, opts: RenderOptions = {}): string {
           ? c("gray", "  学到的上限: ") + learned.map(([k, v]) => `${k}=${v}`).join(", ")
           : ""),
     );
-  }
-
-  // 触发计数（观测缺口方案 T5）：只报数、不作结论判定 —— 数字本身就是
-  // 触发清单 A12 的证据列。本 PR 先落 bridge 部分（T4 的远程接管），
-  // 其余三组（hook / 回滚 / 定时触发）由同一方案的另一半补齐后往同一个结构里加字段。
-  if (d.triggerCounts) {
-    const tc = d.triggerCounts;
-    L.push("");
-    L.push(c("bold", "触发计数:") + " " + c("gray", `bridge_inbound=${tc.bridgeInbound}`));
   }
 
   // PR-5 / R1 / R5 / R10：思考关闭泄漏。只在有「设置关」或未埋点 / 老口径记录时出现；泄漏 > 0 标红。
