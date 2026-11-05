@@ -604,6 +604,41 @@ export function aggregateStrictDegradeStats(
 }
 
 /**
+ * 「触发计数」——本会话里由**外部动作**触发的事件条数（观测缺口方案 T5）。
+ *
+ * 只加计数、不加结论判定：hook 拦了几次、回滚了几次、远程遥控收了几条消息，
+ * 这些数字本身就是触发清单 A1/A2/A4/A12 的证据列；「算不算异常」留给读的人。
+ *
+ * 本 PR 只落 bridge 部分（T4）。其余三组（hook_runs / rewinds / scheduled_fires）
+ * 由同一方案的另一半补齐时往这里加字段，口径不变。
+ */
+export interface TriggerCountsStats {
+  /** 远程入站用户消息条数（`BridgeInbound` 且 `kind=user_message`，已去重） */
+  bridgeInbound: number;
+}
+
+/**
+ * 聚合触发计数。**没有任何 bridge 事件时返回 undefined**（与其它 section 同一约定）：
+ * 普通本地会话不该凭空多出一节「bridge_inbound: 0」——那会把「没被遥控过」
+ * 与「这套埋点还没上线/没接线」混成同一个数。
+ */
+export function aggregateTriggerCountsStats(
+  events: Array<{ event?: string; data?: Record<string, unknown> }>,
+): TriggerCountsStats | undefined {
+  let sawBridge = false;
+  let bridgeInbound = 0;
+  for (const e of events) {
+    if (e.event === "BridgeSession") {
+      sawBridge = true;
+    } else if (e.event === "BridgeInbound") {
+      sawBridge = true;
+      if (e.data?.kind === "user_message") bridgeInbound++;
+    }
+  }
+  return sawBridge ? { bridgeInbound } : undefined;
+}
+
+/**
  * 发现 5（2026-10-21）：「stop_reason 与 content 不一致」次数。取数源 `StopReasonMismatch` 事件
  * （主循环 F2 fall-through 每次一条）。warn.log 按 (provider, model) 只告警首次，计数只在这里。
  * 根因修掉后目标恒为 0；非 0 = 某个协议族又出现偏差，按 byModel 定位。
@@ -1402,6 +1437,11 @@ export interface Digest {
   thinkingLeak?: ThinkingLeakStats;
   /** R11：strict 工具降级汇总。无 StrictToolDegraded 事件时 undefined。 */
   strictDegrade?: StrictDegradeStats;
+  /**
+   * 触发计数（观测缺口方案 T5）。本 PR 只落 bridge 部分；
+   * 没有任何 bridge 事件时 undefined（普通本地会话不凭空多一节 0）。
+   */
+  triggerCounts?: TriggerCountsStats;
   /** 发现 5：stop_reason 与 content 不一致次数。无 StopReasonMismatch 事件时 undefined。 */
   stopReasonMismatch?: StopReasonMismatchStats;
   /** 2026-10-29：停止归因（incomplete_reason / F1 / 子循环 stop_action）。全无时 undefined。 */
@@ -3992,6 +4032,7 @@ export function buildDigest(ref: SessionRef, full: boolean, paths: DigestPaths):
   // ── PR-5：思考关闭泄漏率（主循环 / 非主循环分开，分母 = 意图关的 fetch）──
   const thinkingLeak = aggregateThinkingLeakStats(events);
   const strictDegrade = aggregateStrictDegradeStats(events);
+  const triggerCounts = aggregateTriggerCountsStats(events);
   const stopReasonMismatch = aggregateStopReasonMismatchStats(events);
   const stopAttribution = aggregateStopAttributionStats(events);
   const unansweredEndTurn = aggregateUnansweredEndTurnStats(events);
@@ -4055,6 +4096,7 @@ export function buildDigest(ref: SessionRef, full: boolean, paths: DigestPaths):
     continuePaths: continuePaths ?? undefined,
     thinkingLeak,
     strictDegrade,
+    triggerCounts,
     stopReasonMismatch,
     ...(stopAttribution ? { stopAttribution } : {}),
     unansweredEndTurn,
@@ -4742,6 +4784,15 @@ export function renderHuman(d: Digest, opts: RenderOptions = {}): string {
           ? c("gray", "  学到的上限: ") + learned.map(([k, v]) => `${k}=${v}`).join(", ")
           : ""),
     );
+  }
+
+  // 触发计数（观测缺口方案 T5）：只报数、不作结论判定 —— 数字本身就是
+  // 触发清单 A12 的证据列。本 PR 先落 bridge 部分（T4 的远程接管），
+  // 其余三组（hook / 回滚 / 定时触发）由同一方案的另一半补齐后往同一个结构里加字段。
+  if (d.triggerCounts) {
+    const tc = d.triggerCounts;
+    L.push("");
+    L.push(c("bold", "触发计数:") + " " + c("gray", `bridge_inbound=${tc.bridgeInbound}`));
   }
 
   // PR-5 / R1 / R5 / R10：思考关闭泄漏。只在有「设置关」或未埋点 / 老口径记录时出现；泄漏 > 0 标红。

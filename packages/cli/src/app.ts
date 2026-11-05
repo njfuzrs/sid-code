@@ -125,6 +125,12 @@ import {
 } from "@sid-code/core/llm/errors.ts";
 import * as CrashMarker from "@sid-code/core/trace/crash-marker.ts";
 import * as PidManager from "@sid-code/core/trace/pid-manager.ts";
+// 远程接管会话标记：必须在 init() 之前置位（SessionStart 的 metadata 在 init 里构造），
+// 见 trace/session-flags.ts 的注释。
+import { setBridgeSessionFlag } from "@sid-code/core/trace/session-flags.ts";
+// 人工确认通道（bridge / sdk / tui / headless）：记进本地轨迹的 PermissionDecision.confirm_via。
+// 只进本地轨迹，不扩外发遥测的 PermissionSource 闭集。
+import { setConfirmVia } from "@sid-code/core/permission/decision-telemetry.ts";
 import {
   armForceExit,
   installTeardownSignalHandlers,
@@ -6893,6 +6899,9 @@ export class App {
     // 宿主超时 / 断开 / 回 error / 本轮被 interrupt，sendRequest 都会 reject：一律按拒绝闭合，
     // 与「-p 无人可问时 fail-closed」同一口径，只是多了一个可以问的人。
     if (this.sdkCanUseTool) {
+      // 通道按实际走的分支确定（不按配置推断）：这里返回的每个结果都会落到
+      // PermissionDecision.confirm_via，远程批准与宿主批准因此能分开统计。
+      setConfirmVia("sdk");
       try {
         const behavior = await this.sdkCanUseTool(
           toolName || req?.toolName || "",
@@ -6926,6 +6935,9 @@ export class App {
       }) => Promise<boolean | null>;
     } | null;
     if (bridgeChecker?.hasBridgePermissionDelegate?.() && bridgeChecker.requestBridgePermission) {
+      // 远程接管：这条路径的 allow/deny 也是「人工确认」，但人在管理台。
+      // 不设置的话它与 TUI 弹窗在轨迹里完全同名（source=user + prompted=true）。
+      setConfirmVia("bridge");
       const allowed = await bridgeChecker.requestBridgePermission({
         toolName: toolName || req?.toolName || "",
         toolInput: toolInput ?? req?.input,
@@ -6937,6 +6949,7 @@ export class App {
 
     // TUI 模式：使用注入的回调
     if (this.tuiConfirmCallback) {
+      setConfirmVia("tui");
       // 计算与该工具相关的不可达规则（对标 cc Unreachable Rules），失败不阻断
       const shadowedRules = this.collectShadowedRulesForUI(toolName);
       // H7：透传 signal，弹窗期间被 abort 时 TUI 回调侧解除弹窗（按"no"闭合）。
@@ -6962,6 +6975,9 @@ export class App {
     }
 
     // headless 模式：根据权限模式自动决策
+    // 通道留在 headless：这条分支不是「没人可问」，而是「按档位自动答」——
+    // 与 TUI 弹窗分开统计，才能看出 headless 的确认是不是全靠 always-allow 兜的。
+    setConfirmVia("headless");
     return this.config.permissionMode === "always-allow";
   }
 
@@ -8874,6 +8890,9 @@ export class App {
     authToken?: string;
     permissionTimeoutMs?: number;
   }): Promise<void> {
+    // 必须在 init() 之前置位：SessionStart 的 metadata 在 init 里构造，
+    // 晚一步这个会话就不会带 metadata.bridge（见 trace/session-flags.ts）。
+    setBridgeSessionFlag(true);
     await this.init();
 
     const { BridgeRunner } = await import("@sid-code/core/bridge/bridge-runner.ts");
@@ -8896,6 +8915,9 @@ export class App {
           } | null;
           checker?.setBridgePermissionDelegate?.(delegate);
         },
+        // 桥接事件直接进本地轨迹。此处 init() 已跑完、collector 就绪，
+        // 不需要 hook/skill 那套模块级 sink（见 bridge/bridge-telemetry.ts 头注释）。
+        onTelemetry: (name, data) => this.traceCollector?.recordCustomEvent(name, data),
       },
       options,
     );
@@ -8939,6 +8961,9 @@ export class App {
       process.stderr.write(`\n${message}\n`);
       log.error("BRIDGE", message);
     } finally {
+      // 复位进程级标记：bridge 会话退出后（或测试复用同一进程时），
+      // 后续会话不该继续被标成「被遥控」。
+      setBridgeSessionFlag(false);
       await runner.stop().catch(() => {});
       this.abortController = null;
       this.mcpManager?.closeAll();
