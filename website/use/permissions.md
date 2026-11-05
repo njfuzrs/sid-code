@@ -291,30 +291,46 @@ macOS 上 sid-code 还有一道**操作系统级**的硬隔离：[Seatbelt 沙�
 ### 沙箱 profile 长什么样
 
 沙箱用 macOS 自带的 `sandbox-exec` 生成一份 Seatbelt profile（`packages/core/src/permission/sandbox.ts`），
-把每条 bash 命令包进 `sandbox-exec -p '<profile>' /bin/sh -c '<command>'`。profile 默认
-`(deny default)`（默认全拒）后逐项放行，允许/禁止的路径：
+把每条 bash 命令包进 `sandbox-exec -p '<profile>' <你的 shell> -c '<command>'`。profile 默认
+`(deny default)`（默认全拒）后逐项放行。
+
+**威胁模型是「读放开 + 敏感目录拒绝、写白名单、网络三档」**：防的是把秘钥读出来、
+写到工作区外（`~/.zshrc`、`~/Library/LaunchAgents`）、把数据外发这三件事。
+「工作区外普通文件不可读」**不是**这层能提供的保证——那需要在 `(deny default)` 下
+枚举进程启动所需的全部读路径，而 macOS 11+ 的系统库在 dyld 共享缓存里、每个大版本
+都会变，枚举维护不住（历史实现就死在这里：开启沙箱后连 `/bin/echo hi` 都 SIGABRT）。
 
 | 类别 | profile 规则 | 说明 |
 | --- | --- | --- |
-| 进程 | 允许 `process-exec` / `process-fork` | 不放行这个，任何命令都跑不起来 |
-| 工作目录 | 允许读写 `cwd` 子树 | 这是你让它改的代码所在 |
-| 系统工具链 | 只读 `/usr/lib` `/usr/bin` `/usr/local` `/Library/Developer` `/Applications/Xcode.app` | 跑编译/解释器需要 |
-| 临时目录 | 读写 `/tmp` `/private/tmp` | 命令临时文件 |
-| 家目录工具 | 只读 `~/.bun` `~/.nvm` `~/.npm` `~/.cargo` | 运行包管理器需要 |
-| **敏感目录** | **显式 deny** `~/.ssh` `~/.gnupg` `~/.sid-code` | SSH 密钥、GPG、sid-code 自身配置与轨迹 |
-| 网络 | 只放行 `localhost`（profile 里写的是它解析出的 IP，如 `127.0.0.1:*`） | 防 bash 命令外发数据；主机名解析失败时该主机被丢弃并告警 |
+| 进程 | 允许 `process-exec` / `process-fork` / `signal` | 不放行这个，任何命令都跑不起来 |
+| 进程启动 | 允许 `sysctl-read` / `mach-lookup` / `ipc-posix-shm` / `file-ioctl` | libSystem / dyld 初始化必需，缺任一条直接 SIGABRT |
+| 读 | **默认放开**（`allow file-read*`） | 见上面的威胁模型 |
+| **敏感目录** | **显式 deny** `~/.ssh` `~/.gnupg` `~/.aws` `~/.azure` `~/.kube` `~/.config/gh` `~/.docker/config.json` `~/.netrc` `<sid home>` | 拿到就等于拿到长期凭据的位置 |
+| 快照例外 | `allow file-read* (literal <本会话快照>)` | 内层 shell 的第一条命令就是 `source` 它；不放行会让用户命令一行都不执行 |
+| 写 | **白名单**：`cwd` 子树 + `/private/tmp` + `/private/var/folders` + `/dev/null` `/dev/zero` `/dev/tty` `/dev/fd/*` `/dev/ttys*` + 你配的额外路径 | 写不在白名单里的一律拒绝 |
+| 网络 | 三档：`localhost`（默认）/ `all` / `none` | 见下文「能防/不能防」 |
 
-`~/.ssh`、`~/.gnupg`、`~/.sid-code` 是**显式 deny** 的——即使权限规则放行了 bash，命令也
-碰不到这三处。这层防御不依赖应用层判断，是内核强制的。
+两条实现细节值得知道：
+
+- **所有写路径都先 `realpath`**。Seatbelt 按真实路径匹配，macOS 上 `/tmp`→`/private/tmp`、
+  `/var`→`/private/var`；不解析就会「明明在 cwd 里却被拒」。路径不存在时该条规则被跳过并告警，
+  而不是原样写进去假装生效。
+- **内层 shell 与外层一致**（不再写死 `/bin/sh`）。按 zsh 抓的环境快照若在 POSIX mode 下
+  `source`，读不到文件是**特殊内建致命错误**（`|| true` 救不回来），shell 直接退出。
+
+`~/.ssh`、`~/.gnupg`、`~/.sid-code` 等是**显式 deny** 的——即使权限规则放行了 bash，命令也
+碰不到这些位置。这层防御不依赖应用层判断，是内核强制的。
 
 ### 怎么开
 
-settings.json 里只有两个字段（定义在 `packages/core/src/config/config.ts`，CLI 在 `packages/cli/src/cli.ts` 构造沙箱时消费）：
+写在**用户级** `~/.sid-code/settings.json`（或企业 managed-settings.json）：
 
 ```json
 {
   "enableSandbox": true,
-  "sandboxAutoAllowBash": false
+  "sandboxAutoAllowBash": false,
+  "sandboxNetwork": "localhost",
+  "sandboxAllowedWritePaths": ["~/.cache/my-tool"]
 }
 ```
 
@@ -322,8 +338,15 @@ settings.json 里只有两个字段（定义在 `packages/core/src/config/config
 | --- | --- | --- |
 | `enableSandbox` | `false` | 总开关，开=bash 命令进沙箱 |
 | `sandboxAutoAllowBash` | `false` | 沙箱启用时是否自动放行 bash（少弹窗），要显式写 `true` 才生效 |
+| `sandboxNetwork` | `"localhost"` | 网络三档：`"localhost"` / `"all"` / `"none"` |
+| `sandboxAllowedWritePaths` | `[]` | 额外允许写入的目录，支持 `~/` 前缀；不存在则跳过并告警 |
 
-额外读写目录与网络白名单目前**不能从 settings.json 配**，profile 用上表的内置默认值。
+::: warning `enableSandbox` 必须写在用户级 settings，项目级不生效
+项目级 `.sid-code/settings.json` 只叠加 `PROJECT_BEHAVIOR_FIELDS` 白名单里的字段
+（见 `packages/core/src/config/config.ts`），`enableSandbox` 不在其中——
+写进仓库的 settings 会被静默忽略。这是既有设计（沙箱开关属于本机信任决策），
+但你如果照搬一份项目模板配置，会看到「配了却没生效」且没有任何报错。
+:::
 
 `sandboxAutoAllowBash` 默认是 `false`，这是改过的（原先默认放行，理由是「开了沙箱就不用再逐条确认」）。
 改的原因是那个理由的前提不成立：profile 放开了整个工作目录的写权限，
@@ -333,21 +356,48 @@ settings.json 里只有两个字段（定义在 `packages/core/src/config/config
 即使打开自动放行，两条边界不变：危险命令拦截与敏感重定向检测在它**之前**，照样生效；
 `plan` / `deny-write` 两个只读模式不会因为沙箱被打穿。
 
+### 启动自检：开了但不能用会说出来
+
+启动时会用**真实生成的 profile** 跑一条 `sandbox-exec -p <profile> <shell> -c 'exit 0'`（约 10ms，只跑一次）：
+
+- 通过 → 日志打 `macOS Seatbelt 沙箱已启用`；
+- 失败 → **降级为无沙箱** + 醒目警告（含 sandbox-exec 的 stderr 首行），bash 照常可用。
+
+为什么降级而不是拒绝启动：沙箱是用户显式打开的，静默不隔离是最坏结果；
+但让整个 CLI 起不来、所有 bash 都失败（历史上正是这个状态）也不对。降级 + 警告 + 轨迹可查，
+三者合起来比任一极端好。轨迹里对应一条 `sandbox_init` 事件：
+
+```json
+{ "enabled": true, "platform": "darwin", "probe_ok": true, "network": "localhost", "write_paths_count": 3 }
+```
+
+`probe_ok: false` 时还带 `probe_error`。每条 bash 的 `PostToolUse` 事件里另有
+`sandboxed: true`（成功与失败两条路径都记），分母是 bash 调用数——这是「开了沙箱但实际没隔离」
+能被发现的地方。
+
 ### 能防什么 / 不能防什么
 
 **能防**（内核级，应用层绕不过）：
 
-- 命令读写工作目录外的文件（上表放行的系统目录与临时目录除外）
-- 命令读 `~/.ssh`、`~/.gnupg`、`~/.sid-code`
-- 命令发网络请求到 `localhost` 之外的主机
+- 命令**写入**工作目录之外的位置（`~/.zshrc`、`~/Library/LaunchAgents` 这类持久化点）
+- 命令读 `~/.ssh`、`~/.gnupg`、`~/.aws`、`~/.azure`、`~/.kube`、`~/.config/gh`、
+  `~/.docker/config.json`、`~/.netrc`、`<sid home>`
+- `sandboxNetwork: "localhost"` 下，命令**直连**外网主机会被拒
 
-**不能防**（沙箱的边界）：
+**不能防**（沙箱的边界，读之前先看清楚）：
 
+- **工作区外的普通文件仍然可读**。读是默认放开的（见上面威胁模型），只有上表列出的
+  敏感位置被 deny。所以 `cat ~/Documents/notes.md` 在沙箱里是成功的。
+- **`localhost` 档不等于断网**。本机若开着系统代理（`*_proxy` 环境变量），
+  走代理的外网请求**会成功**——代理就在 localhost。这是刻意的取舍（企业环境几乎不可能没代理），
+  但意味着「防外发」在配了代理的机器上只剩「不走代理的直连」被拦。
 - **工作目录内的任意操作**——沙箱允许读写整个 `cwd` 子树，所以 `rm -rf .` 在工作目录内
   沙箱是放行的（这要靠前面的危险命令层拦）
 - **非 macOS 平台**——Linux / Windows 上 `isEnabled()` 返回 false，沙箱不生效
 - **非 bash 工具的写操作**——沙箱只包 bash 命令；`edit`/`write` 工具走的是应用层路径校验，
   不经 sandbox-exec
+- **按域名放行外网**——Seatbelt 的 `remote ip` 只接受 `*` 或 `localhost`，做不到「只允许
+  api.example.com」。需要这一档得用「本地过滤代理」方案（独立特性，当前未实现）
 
 所以沙箱是「bash 命令的操作系统级兜底」，不是「全工具的隔离」。和前面的应用层规则是
 **互补**而非替代：应用层管「该不该调」，沙箱管「调了之后内核允不允许」。
