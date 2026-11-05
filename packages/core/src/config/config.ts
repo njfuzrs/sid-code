@@ -358,6 +358,26 @@ export interface Config {
   print: boolean;
   outputFormat: string;
   maxTurns: number;
+  /**
+   * 墙钟总预算（毫秒，T10b）。0/undefined = 不限。
+   *
+   * ## 为什么需要它：`maxTurns` 与 `--max-budget-usd` 都挡不住「时间先到」
+   *
+   * 2026-11-05 从 agent-traj-bench 归档 run 包解出三条样本（T0010 / T0051 / T0059）的原始
+   * `session.traj` 后定论：它们的主循环轮次是 **110 / 108 / 100**（均 < `max_turns=120`），
+   * 成本 $0.877–$1.174（均 < `--max-budget-usd 1.8`）。**两个预算都没被触及**，
+   * 三条都是被 Harbor 的墙钟硬顶（`task.toml` agent timeout × 3）从外部 SIGKILL 的，
+   * 于是 `result` 事件从未发出、`subtype=None`、下游只能记成 `AgentTimeoutError`。
+   *
+   * 这正是 `evals/CLAUDE.md` §3.10 那条纪律：**两层超时互相掩蔽，修一层只是换了杀手**。
+   * 真正该动的是「两层之间交换还剩多少时间这个事实」—— 由调用方（Harbor 适配器）
+   * 把外层硬顶减去收尾余量后传进来，agent 在到点前自己走强制总结出口，
+   * 产出 `error_max_duration` 而不是被外部杀掉。
+   *
+   * ⚠️ **口径**：这是**进程级**预算，基准是进程启动时刻（不是每条用户消息重置）。
+   * 与 `maxTurns`（每条消息重置）刻意不同：外层硬顶本来就是进程级的。
+   */
+  maxDurationMs?: number;
   /** stream-json/json 模式下输出全量消息数组（而非仅最终消息） */
   verbose?: boolean;
   /** 结构化输出的 JSON Schema 约束（--json-schema 文件解析后注入） */
