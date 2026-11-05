@@ -1,3 +1,4 @@
+import { emitRewind } from "@sid-code/core/session/rewind-telemetry.ts";
 import { errorText } from "../../result.ts";
 import type { CommandContext, LocalCommandModule, LocalCommandResult } from "../../types.ts";
 
@@ -19,6 +20,8 @@ export class RestoreCommand implements LocalCommandModule {
     // 获取快照详情
     const snapshot = cpMgr.getSnapshotDetail(snapshotId);
     if (!snapshot) {
+      // G2：失败与空转也记——只在成功时记会让「回滚成功率」的分母只剩成功路径
+      emitRewind("restore", "nothing", { snapshot_id: snapshotId, reason: "not_found" });
       return errorText(`快照不存在: ${snapshotId}`);
     }
 
@@ -28,6 +31,7 @@ export class RestoreCommand implements LocalCommandModule {
     const snapshotsToRollback = allSnapshots.slice(targetIndex + 1);
 
     if (snapshotsToRollback.length === 0) {
+      emitRewind("restore", "nothing", { snapshot_id: snapshotId, reason: "already_latest" });
       return { type: "text", value: `快照 ${snapshotId} 已经是最新状态，无需恢复` };
     }
 
@@ -69,6 +73,11 @@ export class RestoreCommand implements LocalCommandModule {
       onConfirm: async () => {
         const result = await cpMgr.restoreToSnapshot(snapshotId);
         if (result) {
+          emitRewind("restore", "ok", {
+            snapshot_id: snapshotId,
+            files_restored: result.files.length,
+            snapshots_rolled_back: result.snapshotsRolledBack,
+          });
           const fileActions = result.files
             .map((f) => `  ${f.filePath}: ${f.action === "deleted" ? "已删除" : "已恢复"}`)
             .join("\n");
@@ -77,6 +86,7 @@ export class RestoreCommand implements LocalCommandModule {
             value: `已恢复到快照 ${result.targetSnapshotId}，回滚了 ${result.snapshotsRolledBack} 个快照:\n${fileActions}`,
           };
         }
+        emitRewind("restore", "error", { snapshot_id: snapshotId });
         return errorText("恢复失败");
       },
     };

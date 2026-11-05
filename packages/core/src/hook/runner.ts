@@ -4,6 +4,7 @@
  */
 
 import { spawn } from "bun";
+import { createHash } from "node:crypto";
 import {
   HookEventName,
   type HookConfig,
@@ -17,6 +18,7 @@ import {
   type HookExecutionResult,
   resolveHookTimeoutMs,
 } from "./types.ts";
+import { HOOK_EXECUTED_EVENT_NAME, emitHookTrace, getHookConfigSource } from "./hook-telemetry.ts";
 import { getLogger } from "../debug/logger.ts";
 import { sanitizeStrings } from "../llm/sanitize-unicode.ts";
 import { recordSideCall } from "../trace/side-call-sink.ts";
@@ -300,23 +302,82 @@ export class HookRunner {
     eventName: HookEventName,
     input: HookInput,
   ): Promise<HookExecutionResult> {
-    if (this.lifecycleListeners.size === 0) {
-      return this.executeHookInner(hookConfig, eventName, input);
-    }
-    // 每次执行一个独立 id：同一 hook 可能并发跑（两次并行工具调用），按 config 去配对会串
+    // 每次执行一个独立 id：同一 hook 可能并发跑（两次并行工具调用），按 config 去配对会串。
+    // G1：**无条件**生成（原先只在有 lifecycle 监听时才生成）——headless 没有监听者，
+    // 埋点拿不到 run_id 就没法与 AsyncHookCompleted 配对，一条异步 hook 会在轨迹里断成两截。
     const runId = `hook-run-${++hookRunSeq}`;
-    this.emitLifecycle({ phase: "start", runId, hookConfig, eventName });
-    try {
-      return await this.executeHookInner(hookConfig, eventName, input);
-    } finally {
-      this.emitLifecycle({ phase: "end", runId, hookConfig, eventName });
+    const hasLifecycleListeners = this.lifecycleListeners.size > 0;
+    if (hasLifecycleListeners) {
+      this.emitLifecycle({ phase: "start", runId, hookConfig, eventName });
     }
+    try {
+      const result = await this.executeHookInner(hookConfig, eventName, input, runId);
+      this.emitExecutedTelemetry(hookConfig, eventName, input, result, runId);
+      return result;
+    } finally {
+      if (hasLifecycleListeners) {
+        this.emitLifecycle({ phase: "end", runId, hookConfig, eventName });
+      }
+    }
+  }
+
+  /**
+   * G1：把一次 hook 执行写进轨迹（`HookExecuted`）。
+   *
+   * 只在这一处埋，理由同 executeHook 上的注释：并行 / 串行 / SessionEnd 预算串行 / streaming
+   * 四条路径都经过它，挂在调用方漏一条就是一类事件永远不记。
+   *
+   * runtime hook 不记：它是轨迹 / 遥测自己（collector 每个事件注册一个），记了会每次工具调用
+   * 多出十几条噪声，还会形成「记录 hook 的 hook」。
+   */
+  private emitExecutedTelemetry(
+    hookConfig: HookConfig,
+    eventName: HookEventName,
+    input: HookInput,
+    result: HookExecutionResult,
+    runId: string,
+  ): void {
+    if (hookConfig.type === "runtime") return;
+
+    const data: Record<string, unknown> = {
+      run_id: runId,
+      event_name: eventName,
+      hook_type: hookConfig.type,
+      hook_id: describeHookId(hookConfig),
+      outcome: describeHookOutcome(result),
+      duration_ms: result.duration,
+    };
+    const source = getHookConfigSource(hookConfig);
+    if (source) data.source = source;
+    if (typeof result.exitCode === "number") data.exit_code = result.exitCode;
+    const toolName = (input as { tool_name?: unknown }).tool_name;
+    if (typeof toolName === "string") data.tool_name = toolName;
+
+    // decision 只记 normalized 闭集：HookOutput 的 decision 还可能是 approve / block，
+    // 与 permissionDecision 的 allow / deny / ask 是两套词表，混着记会让消费侧分桶炸开。
+    const rawDecision =
+      (result.output?.hookSpecificOutput as { permissionDecision?: unknown } | undefined)
+        ?.permissionDecision ?? result.output?.decision;
+    const decision =
+      rawDecision === "approve"
+        ? "allow"
+        : rawDecision === "block"
+          ? "deny"
+          : typeof rawDecision === "string"
+            ? rawDecision
+            : undefined;
+    if (decision === "allow" || decision === "deny" || decision === "ask") {
+      data.decision = decision;
+    }
+
+    emitHookTrace(HOOK_EXECUTED_EVENT_NAME, data);
   }
 
   private async executeHookInner(
     hookConfig: HookConfig,
     eventName: HookEventName,
     input: HookInput,
+    runId: string,
   ): Promise<HookExecutionResult> {
     const startTime = Date.now();
 
@@ -332,7 +393,9 @@ export class HookRunner {
           return await this.executeAgentHook(hookConfig, eventName, input, startTime);
         case "command":
         default:
-          return await this.executeCommandHook(hookConfig, eventName, input, startTime);
+          // G1：只有 command hook 走异步后台模式，runId 需要透传给 AsyncHookRegistry，
+          // 让后台完成事件能与这里的 HookExecuted 配对（否则一条异步 hook 在轨迹里断成两截）。
+          return await this.executeCommandHook(hookConfig, eventName, input, startTime, runId);
       }
     } catch (error) {
       const duration = Date.now() - startTime;
@@ -441,6 +504,7 @@ export class HookRunner {
     eventName: HookEventName,
     input: HookInput,
     startTime: number,
+    runId: string,
   ): Promise<HookExecutionResult> {
     if (!hookConfig.command) {
       return {
@@ -506,7 +570,8 @@ export class HookRunner {
     // asyncRewake 模式下若后台进程 exit 2，其 stderr 会在下一轮循环开始时作为 system-reminder 回灌给模型。
     if (hookConfig.async === true && this.asyncRegistry) {
       const hookName = hookConfig.name ?? command.slice(0, 40);
-      const asyncId = this.asyncRegistry.register(hookName);
+      // G1：runId 一并登记，后台完成时用它发 HookAsyncCompleted 与本次 HookExecuted 配对
+      const asyncId = this.asyncRegistry.register(hookName, runId);
       const registry = this.asyncRegistry;
       const supportsRewake = hookConfig.asyncRewake === true;
 
@@ -1280,4 +1345,61 @@ export class HookRunner {
     }
     return text;
   }
+}
+
+// ============================================================
+// G1：轨迹事件的字段派生
+// ============================================================
+
+/**
+ * hook 的稳定标识。
+ *
+ * 有 name 用 name；没有就用配置内容的 sha256 前 12 位——command 里可能拼着 token，
+ * prompt 里可能含用户路径，都不能原文进轨迹（events.jsonl 会被上传，见 hook-telemetry.ts）。
+ * url 只取 host：path / query 同样可能带凭据（`?token=`）与内网拓扑。
+ */
+function describeHookId(hookConfig: HookConfig): string {
+  if (hookConfig.name) return hookConfig.name;
+  switch (hookConfig.type) {
+    case "command":
+      return `cmd:${sha12(hookConfig.command)}`;
+    case "url":
+      return `url:${hostOfUrl(hookConfig.url)}`;
+    case "prompt":
+    case "agent":
+      return `${hookConfig.type}:${sha12(hookConfig.prompt ?? "")}`;
+    default:
+      return "unknown";
+  }
+}
+
+function sha12(text: string): string {
+  return createHash("sha256").update(text).digest("hex").slice(0, 12);
+}
+
+function hostOfUrl(raw: string): string {
+  try {
+    return new URL(raw).host || sha12(raw);
+  } catch {
+    return sha12(raw);
+  }
+}
+
+/**
+ * 执行结果的归一化结论。
+ *
+ * 顺序有讲究：`async_started` 优先于 exitCode 0——异步 hook 的「立即返回 success」
+ * 只说明启动了，后台进程的成败要等 `HookAsyncCompleted` 才见分晓。
+ * timeout 靠 error 文案判定：三种 hook 的超时文案不同（`Hook 超时` / `URL Hook 超时` /
+ * `Runtime hook 超时`），且结果结构里没有专门的 timedOut 标记，只能文案匹配。
+ */
+function describeHookOutcome(
+  result: HookExecutionResult,
+): "success" | "blocking" | "error" | "timeout" | "async_started" {
+  if (result.async) return "async_started";
+  if (result.exitCode === EXIT_BLOCKING) return "blocking";
+  if (!result.success) {
+    return /超时|timeout/i.test(result.error?.message ?? "") ? "timeout" : "error";
+  }
+  return "success";
 }

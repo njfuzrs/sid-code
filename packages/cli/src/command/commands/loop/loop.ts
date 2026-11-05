@@ -126,6 +126,8 @@ const mod: LocalCommandModule = {
         createdAt: Date.now(),
         recurring: true,
         durable: false,
+        // G3：来源进 ScheduledFire 事件，用来分「这条到点触发是 loop 还是 cron_create」
+        origin: "loop" as const,
       };
       if (!scheduler.addSessionTask(task)) {
         return {

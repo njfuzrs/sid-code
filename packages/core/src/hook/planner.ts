@@ -7,6 +7,7 @@ import type { HookRegistry, HookRegistryEntry } from "./registry.ts";
 import { toInternalToolName, toCcToolName } from "../tool/tool-name-aliases.ts";
 import { getHookKey, type HookExecutionPlan, type HookEventName } from "./types.ts";
 import { getLogger } from "../debug/logger.ts";
+import { setHookConfigSource } from "./hook-telemetry.ts";
 
 /** 匹配上下文 */
 export interface HookEventContext {
@@ -40,6 +41,13 @@ export class HookPlanner {
 
     // 提取配置
     const hookConfigs = deduped.map((e) => e.config);
+
+    // G1：runner 只拿到 HookConfig、拿不到 HookRegistryEntry.source，而轨迹要回答
+    // 「这条 hook 来自 user / project / plugin / skill / policy」。在唯一产生 entries 的地方
+    // 按 config 引用登记一次（WeakMap，不改 HookConfig 类型、不污染用户配置对象），
+    // 一次覆盖并行 / 串行 / SessionEnd / streaming 全部执行路径——挂在 event-handler 的
+    // 调用方上要写四处，漏一处那一类路径就永远记不到 source。
+    for (const entry of deduped) setHookConfigSource(entry.config, entry.source);
 
     // 任一 definition 标记 sequential=true → 整体串行
     const sequential = deduped.some((e) => e.sequential === true);

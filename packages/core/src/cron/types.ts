@@ -39,6 +39,15 @@ export interface CronTask {
    * 空数组或缺省 = 不额外放行（默认只读）。
    */
   allowedTools?: string[];
+  /**
+   * 任务来源（G3 埋点用，不参与调度语义）。
+   *
+   * 为什么需要：`ScheduledFire` 要能回答「这条到点触发是 /loop、cron_create 还是
+   * schedule_wakeup 建的」——三者的预期频率与延迟容忍度完全不同（loop 是分钟级、
+   * wakeup 是一次性）。缺省（旧的 durable 任务从盘上读出来，没有这个字段）记 `unknown`，
+   * 不回填：回填只能靠猜，猜错会让来源分布整体失真。
+   */
+  origin?: "loop" | "cron_create" | "schedule_wakeup";
 }
 
 /** 调度器默认配置 */
