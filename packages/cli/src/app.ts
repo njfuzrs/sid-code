@@ -214,6 +214,13 @@ import {
   setSkillInvocationSink,
   SKILL_INVOKED_EVENT_NAME,
 } from "@sid-code/core/skill/telemetry.ts";
+import { setHookTraceSink } from "@sid-code/core/hook/hook-telemetry.ts";
+import { setRewindTraceSink, REWIND_EVENT_NAME } from "@sid-code/core/session/rewind-telemetry.ts";
+import {
+  setScheduledTraceSink,
+  emitScheduledTrace,
+  SCHEDULED_INJECT_EVENT_NAME,
+} from "@sid-code/core/cron/cron-telemetry.ts";
 import {
   setGitOperationObserver,
   resetGitOperationStats,
@@ -222,6 +229,20 @@ import {
 import { withSideCallDeadline } from "@sid-code/core/llm/side-call-timeout.ts";
 import { resolveSideCallTimeouts } from "@sid-code/core/config/network-profile.ts";
 import { InteractionQueue } from "./ui/interaction-queue.ts";
+
+/**
+ * Cron 忙时排队的一条待注入提示词（G3）。
+ *
+ * 原先队列是 `string[]`，任务 id 在 onFire 处就丢了——轨迹里只能看到「多了一条
+ * UserPromptSubmit」，分不出它来自哪个定时任务，也量不出「到点后排队等了多久」。
+ */
+interface ScheduledPromptItem {
+  prompt: string;
+  /** 触发它的任务 id；缺省表示调用方没传（如测试直接调 enqueueScheduledPrompt） */
+  taskId?: string;
+  /** onFire 被调用的时刻（ms），用于算 queue_wait_ms */
+  firedAt: number;
+}
 
 /**
  * 展开用户输入中的 @path 引用为文件内容。
@@ -983,7 +1004,7 @@ export class App {
   /** TUI 注入的提示词提交器（Cron 触发时把 prompt 注入主循环） */
   private promptInjector: ((text: string) => Promise<void>) | null = null;
   /** Cron 在 REPL 忙时触发的待处理提示词队列 */
-  private scheduledPromptQueue: string[] = [];
+  private scheduledPromptQueue: ScheduledPromptItem[] = [];
   /**
    * Session Memory 句柄（Step 0）：在压缩前持续维护结构化会话笔记，
    * autoCompact 优先用它做摘要。doInit 中接线；未启用时为 null，autoCompact 回退 LLM 摘要。
@@ -4689,6 +4710,32 @@ export class App {
         ? (data) => traceCollectorInstance.recordCustomEvent(SKILL_INVOKED_EVENT_NAME, data)
         : null,
     );
+    // G1（观测缺口 PR1）：用户 hook 的每次执行进轨迹（HookExecuted / HookAsyncCompleted）。
+    // 生产点在 core 的 HookRunner 里，拿不到 collector；hook 还有 buildAgentHookSystem 建的
+    // 隔离实例，挂在 HookSystem 上的监听看不到它，所以必须走模块级 sink 才能一次覆盖所有实例。
+    // 不接的话「hook 拦了多少次、慢 hook 拖了多少时间」没有分母，A2/A3 只能靠截图证明。
+    setHookTraceSink(
+      traceCollectorInstance
+        ? (event, data) => traceCollectorInstance.recordCustomEvent(event, data)
+        : null,
+    );
+    // G2（观测缺口 PR1）：回滚进轨迹（Rewind）。生产点一半在 core 的 RewindManager、
+    // 一半在 CLI 命令层（/rewind /undo /restore），都拿不到 collector。
+    // 不接则「回滚率」这个最直接的返工信号没有分子，只剩 state/command-usage.json 里的命令计数。
+    setRewindTraceSink(
+      traceCollectorInstance
+        ? (data) => traceCollectorInstance.recordCustomEvent(REWIND_EVENT_NAME, data)
+        : null,
+    );
+    // G3（观测缺口 PR1）：定时任务到点触发进轨迹（ScheduledFire 在 core 的 Scheduler 里发，
+    // 这里接的是宿主侧的 ScheduledInject）。scheduler 在 cli.ts 启动、早于 collector，
+    // 但 cron 最小粒度 1 分钟、wakeup 钳制 ≥60s，实际不会在 collector 就绪前触发；
+    // 真发生则静默丢（补发会让 lag/等待语义失真）。
+    setScheduledTraceSink(
+      traceCollectorInstance
+        ? (event, data) => traceCollectorInstance.recordCustomEvent(event, data)
+        : null,
+    );
     // S16：后台任务 started/completed/delivered/evicted 进轨迹，同款模块级 sink
     // （终态写点散在 shell/agent/workflow 9 处，拿不到 collector）。不接则 S3 的
     // 「evicted 早于 delivered」计数无从统计，按回合驱逐的修复就没有验收曲线。
@@ -7831,13 +7878,35 @@ export class App {
   /**
    * Cron 触发：把调度的 prompt 注入主循环。
    * REPL 忙时（busy 或无注入器）先入队，待空闲再冲刷，避免污染当前轮上下文。
+   *
+   * G3：task 一并传入（可选）——任务 id 进 `ScheduledInject` 事件，与调度器侧的
+   * `ScheduledFire` 靠 task_id 配对；`firedAt` 取 onFire 被调用的时刻，用于算 queue_wait_ms。
    */
-  async enqueueScheduledPrompt(prompt: string): Promise<void> {
+  async enqueueScheduledPrompt(prompt: string, task?: { id: string }): Promise<void> {
+    const item: ScheduledPromptItem = { prompt, taskId: task?.id, firedAt: Date.now() };
     if (this.busy || !this.promptInjector) {
-      this.scheduledPromptQueue.push(prompt);
+      this.scheduledPromptQueue.push(item);
       return;
     }
-    await this.promptInjector(prompt);
+    await this.injectScheduledPrompt(item, false);
+  }
+
+  /**
+   * G3：真正把一条调度 prompt 交给注入器，并在调用前发 `ScheduledInject`。
+   *
+   * 事件放在「即将调用」这一点而不是入队时：入队到注入之间的等待正是要量的东西
+   * （`queue_wait_ms`）。注入器抛错时这条已经发过了，重入队后下次 flush 会作为一次
+   * **新的尝试**再发一条——同一轮 flush 内不会重复发。
+   */
+  private async injectScheduledPrompt(item: ScheduledPromptItem, queued: boolean): Promise<void> {
+    const injector = this.promptInjector;
+    if (!injector) return;
+    emitScheduledTrace(SCHEDULED_INJECT_EVENT_NAME, {
+      task_id: item.taskId ?? "unknown",
+      queue_wait_ms: Math.max(0, Date.now() - item.firedAt),
+      queued,
+    });
+    await injector(item.prompt);
   }
 
   /** 冲刷忙时积压的调度提示词（空闲时调用） */
@@ -7850,9 +7919,9 @@ export class App {
     const pending = this.scheduledPromptQueue.splice(0);
     const log = getLogger();
     for (let i = 0; i < pending.length; i++) {
-      const p = pending[i];
+      const item = pending[i];
       try {
-        await this.promptInjector(p);
+        await this.injectScheduledPrompt(item, true);
       } catch (e) {
         // 把失败的这条 + 尚未处理的剩余 prompt 放回队首，避免丢失；下次 flush 重试。
         this.scheduledPromptQueue.unshift(...pending.slice(i));

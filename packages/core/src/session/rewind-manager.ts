@@ -15,6 +15,8 @@
  * - 回退点用环形上限（MAX_POINTS）防无限增长；截断后清理落在截断点之后的回退点。
  */
 
+import { emitRewind } from "./rewind-telemetry.ts";
+
 /** 单个回退点。 */
 export interface RewindPoint {
   /** 自增 id（从 1 开始，稳定标识，供 UI 选中）。 */
@@ -218,8 +220,50 @@ export class RewindManager {
   async rewindTo(id: number, mode: RewindMode, nowMs: number): Promise<RewindResult | null> {
     void nowMs;
     const point = this.getPoint(id);
-    if (!point) return null;
+    if (!point) {
+      // G2：点不存在也要记——「点了没反应」与「回退成功」是两件事。
+      // 只在成功时记会让「回滚率」的分母系统性偏向成功路径。
+      emitRewind("dialog", "nothing", { mode });
+      return null;
+    }
 
+    try {
+      const result = await this.rewindToInner(point, mode);
+      this.emitDialogRewind(result);
+      return result;
+    } catch (error) {
+      // 只记错误类型名、不记 message：message 可能拼着快照路径（隐私约束见 rewind-telemetry.ts）
+      emitRewind("dialog", "error", {
+        mode,
+        point_id: point.id,
+        error_name: (error as Error)?.name ?? "Error",
+      });
+      throw error;
+    }
+  }
+
+  /** G2：面板回滚的埋点出口。一次动作恰好一条，outcome 判定见 rewind-telemetry.ts 的闭集。 */
+  private emitDialogRewind(result: RewindResult): void {
+    // snapshot_miss 专指「有快照 id 但恢复没命中」——D5 修过的缺陷形态，此前只在 debug.log 里，
+    // 进轨迹后能数出复发。没有快照（快照 id 为空）只回滚对话是正常路径，不算 miss。
+    const snapshotMiss = result.fileRestoreSkipped && Boolean(result.point.snapshotId);
+    const outcome = snapshotMiss
+      ? "snapshot_miss"
+      : result.filesRestored === 0 && result.messagesDropped === 0
+        ? "nothing"
+        : "ok";
+    emitRewind("dialog", outcome, {
+      mode: result.mode,
+      point_id: result.point.id,
+      messages_dropped: result.messagesDropped,
+      files_restored: result.filesRestored,
+      file_restore_skipped: result.fileRestoreSkipped,
+      conversation_unavailable: result.conversationUnavailable === true,
+      has_snapshot: Boolean(result.point.snapshotId),
+    });
+  }
+
+  private async rewindToInner(point: RewindPoint, mode: RewindMode): Promise<RewindResult> {
     // N7：涉及对话的回退，先校验对话锚点还有效。越界判据是兜底——即便某条改写消息数组的
     // 路径没通知 onMessagesCompacted，下标超出当前长度也足以说明坐标系已变。
     // 失效时整次操作不执行（连文件也不回滚）：「对话+代码」只做一半会让两者错位，

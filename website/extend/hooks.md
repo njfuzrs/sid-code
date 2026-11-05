@@ -112,6 +112,14 @@ bash 的 `ls` 被 hook 拦截了。根据工具使用原则，列目录本来就
 
 想输出结构化 JSON（`decision` / `hookSpecificOutput` 等）就写到 **stdout**。stderr 里的内容只当文本，即使恰好是 JSON 也不会被解析。`exit 2` 一律阻断，stdout 的 JSON 写了 `"decision": "allow"` 也翻不过来。
 
+### 每次执行都进本地轨迹
+
+每次用户 hook 执行都会在本地轨迹 `events.jsonl` 里留一条 `HookExecuted`：包含事件名、hook 类型（`command` / `url` / `prompt` / `agent`）、来源（user / project / plugin / skill / policy）、耗时、退出码与结论（`success` / `blocking` / `error` / `timeout` / `async_started`）。异步 hook 在后台跑完后追加一条 `HookAsyncCompleted`，与 `HookExecuted` 靠 `run_id` 配对。
+
+**不含命令原文、stdout、stderr**——轨迹会被上传到企业后端，命令里可能拼着 token、输出里可能含任意文件内容。没有 `name` 的 hook 用命令摘要代替标识。runtime 类型的 hook（轨迹与遥测自己注册的）不记，避免产生「记录 hook 的 hook」的噪声。
+
+这条埋点让「hook 拦了多少次、慢 hook 拖了多少时间」从截图证据变成可统计的数字，`/trace` 的 digest 里也能直接看到。
+
 ## 场景二：改完文件自动做点什么
 
 `PostToolUse` 在工具**成功**返回后触发，**不能阻断**，适合格式化、打日志、发通知。

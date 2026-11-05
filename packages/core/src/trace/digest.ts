@@ -20,6 +20,11 @@
 
 import { readFileSync, readdirSync, existsSync, statSync } from "node:fs";
 import { dirname, isAbsolute, join, normalize, sep } from "node:path";
+// 观测缺口 PR1：触发计数的事件名与生产侧共用常量。写成字面量会有「改了一处、
+// 另一处静默归零」的风险——digest 是最容易漏改的消费方（它不 import 生产模块）。
+import { HOOK_EXECUTED_EVENT_NAME } from "../hook/hook-telemetry.ts";
+import { REWIND_EVENT_NAME } from "../session/rewind-telemetry.ts";
+import { SCHEDULED_FIRE_EVENT_NAME } from "../cron/cron-telemetry.ts";
 import { splitIsolatedWorktreePath } from "../bootstrap/cwd-context.ts";
 import { applyLedgerPathOverride } from "../telemetry/usage-ledger.ts";
 import { getSidHome } from "../config/paths.ts";
@@ -842,6 +847,83 @@ export function aggregateLspDiagnosticsStats(
   return out.collects > 0 ? out : undefined;
 }
 
+/**
+ * 观测缺口 PR1：触发计数（hook 执行 / 用户回滚 / 定时到点）。
+ *
+ * 只报计数与分位数，**不下结论**——「hook 拦了 3 次」是好是坏要靠读的人结合场景判断，
+ * 这里给的是此前完全没有的分母（A1/A2/A4 只能靠截图证明发生过）。
+ *
+ * 四类事件全无时整节省略：老会话说的是「当时还没有这个埋点」，输出一个全 0 的节会让它
+ * 看起来像「用了但没发生」，那是最糟的一种数据噪声。
+ */
+export interface TriggerDigestStats {
+  /** HookExecuted 条数（runtime hook 在生产侧已过滤，不会产生噪声） */
+  hookRuns: number;
+  /** outcome=blocking 的 hook 条数（exit 2 拦下工具的那类） */
+  hookBlocks: number;
+  /** hook 执行耗时 p95（ms）。样本少于 5 时不给：一次 800ms 的 hook 不叫 p95 */
+  hookP95Ms?: number;
+  /** Rewind 按 via（dialog / rewind_n / undo / undo_file / restore）分桶 */
+  rewinds: Record<string, number>;
+  /** ScheduledFire 里 outcome=fired 的条数（真正交给宿主的次数） */
+  scheduledFires: number;
+  /** ScheduledFire 里 outcome!=fired 的条数（未授权 / 认领失败 / 注入抛错） */
+  scheduledSkipped: number;
+  /** 「到期 → 调度器触发」的延迟 p95（ms）。样本少于 5 时不给 */
+  scheduledLagP95Ms?: number;
+}
+
+/** p95 的最小样本数：低于它报分位数等于报某一次的具体值 */
+const TRIGGER_P95_MIN_SAMPLES = 5;
+
+export function aggregateTriggerStats(
+  events: Array<{ event?: string; data?: Record<string, unknown> }>,
+): TriggerDigestStats | undefined {
+  const out: TriggerDigestStats = {
+    hookRuns: 0,
+    hookBlocks: 0,
+    rewinds: {},
+    scheduledFires: 0,
+    scheduledSkipped: 0,
+  };
+  const hookDurations: number[] = [];
+  const scheduledLags: number[] = [];
+  let sawAny = false;
+
+  for (const e of events) {
+    const d = (e.data ?? {}) as Record<string, unknown>;
+    if (e.event === HOOK_EXECUTED_EVENT_NAME) {
+      sawAny = true;
+      out.hookRuns++;
+      if (d.outcome === "blocking") out.hookBlocks++;
+      if (typeof d.duration_ms === "number") hookDurations.push(d.duration_ms);
+    } else if (e.event === REWIND_EVENT_NAME) {
+      sawAny = true;
+      const via = typeof d.via === "string" && d.via ? d.via : "unknown";
+      out.rewinds[via] = (out.rewinds[via] ?? 0) + 1;
+    } else if (e.event === SCHEDULED_FIRE_EVENT_NAME) {
+      sawAny = true;
+      if (d.outcome === "fired") {
+        out.scheduledFires++;
+        if (typeof d.lag_ms === "number") scheduledLags.push(d.lag_ms);
+      } else {
+        out.scheduledSkipped++;
+      }
+    }
+  }
+
+  if (!sawAny) return undefined;
+  if (hookDurations.length >= TRIGGER_P95_MIN_SAMPLES) {
+    hookDurations.sort((a, b) => a - b);
+    out.hookP95Ms = percentile(hookDurations, 0.95);
+  }
+  if (scheduledLags.length >= TRIGGER_P95_MIN_SAMPLES) {
+    scheduledLags.sort((a, b) => a - b);
+    out.scheduledLagP95Ms = percentile(scheduledLags, 0.95);
+  }
+  return out;
+}
+
 export interface RecoveryDigestStats {
   /** 以失败结束的调用数（recovery_give_up 条数） */
   giveUps: number;
@@ -1400,6 +1482,11 @@ export interface Digest {
   unansweredEndTurn?: UnansweredEndTurnStats;
   /** 2026-10-24：LSP 诊断注入口径。无 LspDiagnostics 事件（老会话 / 没用 LSP）时 undefined。 */
   lspDiagnostics?: LspDiagnosticsDigestStats;
+  /**
+   * 观测缺口 PR1：触发计数（hook 执行 / 回滚 / 定时到点）。
+   * 三组事件全无时 undefined（老会话 / 这三个功能都没被用）。
+   */
+  trigger?: TriggerDigestStats;
   /**
    * P1-8：过程病态度量（6 项）。始终产出（不像上面几项那样依赖专用事件）——
    * 六项全部从 traj + 通用事件派生，"全部健康"本身就是有意义的结论，
@@ -3982,6 +4069,7 @@ export function buildDigest(ref: SessionRef, full: boolean, paths: DigestPaths):
   const stopAttribution = aggregateStopAttributionStats(events);
   const unansweredEndTurn = aggregateUnansweredEndTurnStats(events);
   const lspDiagnostics = aggregateLspDiagnosticsStats(events);
+  const trigger = aggregateTriggerStats(events);
 
   return {
     sessionId: ref.id,
@@ -4045,6 +4133,7 @@ export function buildDigest(ref: SessionRef, full: boolean, paths: DigestPaths):
     ...(stopAttribution ? { stopAttribution } : {}),
     unansweredEndTurn,
     lspDiagnostics,
+    ...(trigger ? { trigger } : {}),
     pathology,
     // P0-2：始终产出（不像 jit/todo 那样依赖专用事件）—— 样本为 0 时 n=0 是有意义的
     // 结论（"这个会话没有 TTFT 样本"），整节消失则无法区分"没样本"与"该版本没接线"
@@ -4631,6 +4720,32 @@ export function renderHuman(d: Digest, opts: RenderOptions = {}): string {
           agents.map(([k, v]) => `${k} 注入 ${v.injected}/${v.collects} 次`).join(", "),
       );
     }
+  }
+
+  // 观测缺口 PR1：触发计数（hook 执行 / 回滚 / 定时到点）。
+  // 只报事实、不下结论——这些数字此前完全没有分母（触发清单 A1/A2/A4 只能靠截图证明发生过）。
+  if (d.trigger) {
+    const t = d.trigger;
+    const rewinds = Object.entries(t.rewinds)
+      .map(([k, v]) => `${k}×${v}`)
+      .join(", ");
+    L.push("");
+    L.push(c("bold", "触发计数:"));
+    L.push(
+      c("gray", "  hook: ") +
+        `执行 ${t.hookRuns} 次` +
+        (t.hookBlocks > 0 ? c("yellow", `  拦截 ${t.hookBlocks}`) : c("gray", "  拦截 0")) +
+        (t.hookP95Ms !== undefined ? c("gray", `  p95 ${fmtDuration(t.hookP95Ms)}`) : ""),
+    );
+    L.push(c("gray", "  回滚: ") + (rewinds || "0 次"));
+    L.push(
+      c("gray", "  定时: ") +
+        `到点注入 ${t.scheduledFires} 次` +
+        (t.scheduledSkipped > 0 ? c("yellow", `  跳过 ${t.scheduledSkipped}`) : "") +
+        (t.scheduledLagP95Ms !== undefined
+          ? c("gray", `  lag p95 ${fmtDuration(t.scheduledLagP95Ms)}`)
+          : ""),
+    );
   }
 
   // R11：strict 降级。目标恒为 0，出现即标黄。

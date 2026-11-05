@@ -1,3 +1,4 @@
+import { emitRewind } from "@sid-code/core/session/rewind-telemetry.ts";
 import type { CommandContext, LocalCommandModule, LocalCommandResult } from "../../types.ts";
 
 // B2：原 `/mcp` 命令类 MCPCommand 已删除（死代码，从未 new/register）。
@@ -19,8 +20,11 @@ export class RewindCommand implements LocalCommandModule {
     const n = Math.max(1, parseInt(trimmed) || 1);
     const removed = ctx.ctxMgr.rewindTurns(n);
     if (removed === 0) {
+      // G2：空转也要记——「敲了回退但没东西可退」和「回退成功」在返工归因里是两件事
+      emitRewind("rewind_n", "nothing", { requested: n, turns_removed: 0 });
       return { type: "text", value: "没有可回退的对话" };
     }
+    emitRewind("rewind_n", "ok", { requested: n, turns_removed: removed });
     return {
       type: "text",
       value: `已回退 ${removed} 轮对话，当前共 ${ctx.ctxMgr.getTurnCount()} 轮`,
