@@ -111,6 +111,77 @@ for i,s in enumerate(o['trajectory']):
 # 时间戳相同/相近 = 并行 fan-out(合法),非空转
 ```
 
+### 单会话:按 (agentId, turnIndex) 统计 stall 存活期(判「泄漏流」,区分「流很慢」)
+
+> 用途:`warn.log` 里成百上千条「事件间隔 Ns(stall)」时,判断是**这条流真的很慢**(正常,有上限)还是**定时器没随流停止**(泄漏,会一直报到进程退出)。判据:`gapMs` 单调增长且 `totalEvents` 全程不变 = 流早已没有任何事件进展,定时器在空转。
+> 实证锚点 `20261103-213816-f5beebde`:`warn.log` 4265 行里 4084 行是 stall(95.7%),9 条流一直报到会话快照时刻,最长 `gapMs=44016166`(12.2h)、`totalEvents` 恒为 2。
+
+```bash
+cd ~/.sid-code/trajectories/sessions/<session-id>
+python3 -c "
+import json,collections
+g=collections.defaultdict(lambda:{'n':0,'first':None,'last':None,'gaps':[],'tot':set()})
+for line in open('events.jsonl'):
+    line=line.strip()
+    if not line: continue
+    try: o=json.loads(line)
+    except: continue
+    if o.get('event')!='RetryTelemetry': continue
+    d=o.get('data') or {}
+    if d.get('type')!='stream_stall': continue
+    ti=d.get('turnIndex')
+    if not isinstance(ti,int): continue
+    k=(d.get('agentId') or 'main', ti)
+    s=g[k]; s['n']+=1
+    s['first']=s['first'] or o['timestamp']; s['last']=o['timestamp']
+    s['gaps'].append(d.get('gapMs')); s['tot'].add(d.get('totalEvents'))
+for (a,t),s in sorted(g.items(), key=lambda kv:-kv[1]['n']):
+    print(f'{a}#{t} stall={s[\"n\"]} first={s[\"first\"]} last={s[\"last\"]} last_gap={s[\"gaps\"][-1]} totalEvents={sorted(x for x in s[\"tot\"] if x is not None)}')
+"
+# 判读:last_gap 远超 overall 阈值(默认 180s)且 totalEvents 只有单一取值 → 泄漏流
+# digest 已内置同口径检测器:找 anomaly `leaky_stream_stall`(L0 [高]),不用手算
+```
+
+### 单会话:`TimeoutFired` 与「尝试终点」的时间戳对齐(判「幽灵超时」)
+
+> 用途:回答「这些超时是真打断了活的流,还是在已经结束的尝试上空转」。做法 = 对每条 `TimeoutFired`,取同 `index` 的尝试终点(`stream_completed` 或 `AfterModel`),算间隔。
+> **配对命名空间**(铁律 7):`TimeoutFired.index` 与 `RetryTelemetry.stream_completed.turnIndex` 同空间;`pair_index` / `agent_turn` 是 collector 派生的,**不要拿它们配**。
+> 实证锚点 `20261103-213816-f5beebde`:10 次 `TimeoutFired` 与 `unrecognized_error`(漏斗放弃)的间隔为 239.998~240.003s,**恰好等于 idle 阈值 240s** —— 定时器是从「流被放弃那一刻」起算的。
+
+```bash
+cd ~/.sid-code/trajectories/sessions/<session-id>
+python3 -c "
+import json,collections
+from datetime import datetime
+def ms(ts):
+    return datetime.strptime(ts,'%Y-%m-%dT%H:%M:%S.%fZ').timestamp()*1000
+ends=collections.defaultdict(list)   # index -> [(ms,label)]
+fired=[]
+for line in open('events.jsonl'):
+    line=line.strip()
+    if not line: continue
+    try: o=json.loads(line)
+    except: continue
+    ev=o.get('event'); d=o.get('data') or {}
+    if ev=='RetryTelemetry' and d.get('type')=='stream_completed' and isinstance(d.get('turnIndex'),int):
+        ends[d['turnIndex']].append((ms(o['timestamp']),'stream_completed'))
+    elif ev=='AfterModel' and isinstance(d.get('index'),int):
+        ends[d['index']].append((ms(o['timestamp']),'AfterModel'))
+    elif ev=='TimeoutFired' and isinstance(d.get('index'),int):
+        fired.append((ms(o['timestamp']), o['timestamp'], d['index'], d.get('layer'), d.get('threshold_ms')))
+for tms,ts,idx,layer,thr in fired:
+    prior=[e for e in ends.get(idx,[]) if e[0]<=tms]
+    if not prior:
+        print(f'{ts} index={idx} layer={layer} 无终点(可能是真超时)'); continue
+    at,label=max(prior)
+    gap=tms-at
+    flag='  <== 间隔≈阈值,幽灵触发' if thr and abs(gap-thr)<1000 else ''
+    print(f'{ts} index={idx} layer={layer} 终点={label} gap={gap:.0f}ms thr={thr}{flag}')
+"
+# 判读:gap 远大于 0 且≈阈值的那些,是在**已结束的尝试**上开的枪
+# digest 已内置同口径检测器:找 anomaly `timeout_fired_after_attempt_end`(L0 [高])
+```
+
 ### 成本/账本:某会话是否入账本
 
 ```bash

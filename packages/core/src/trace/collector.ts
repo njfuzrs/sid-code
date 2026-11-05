@@ -1940,6 +1940,13 @@ export class TraceCollector {
         ...(typeof stopInput.f1_retry_count === "number"
           ? { f1_retry_count: stopInput.f1_retry_count }
           : {}),
+        // T5：子代理 sidechain 路径 —— 失败后「成果在哪」的唯一指针。
+        // 它由 `sub-agent.ts` 的 `subagentStopCcFields()` 只在文件真的落盘时提供（写失败会
+        // ENOENT，不能报一个不存在的路径）。绝对路径含用户名 → 与 agent_cwd 同口径，
+        // 进 `LOCAL_ONLY_EVENT_DATA_FIELDS`，上传前剥掉。
+        ...(typeof stopInput.agent_transcript_path === "string"
+          ? { agent_transcript_path: stopInput.agent_transcript_path }
+          : {}),
         status:
           stopInput.success === true
             ? "completed"
