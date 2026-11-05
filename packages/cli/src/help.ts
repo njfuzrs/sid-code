@@ -86,6 +86,8 @@ MCP:
 
 限制控制:
   --max-budget-usd <amount>   花费上限（美元，超限终止；与 quota.costLimit 取更严的）
+  --max-duration-ms <ms>      墙钟总预算（毫秒，到点前走强制总结出口，result subtype=error_max_duration；
+                              与 --max-turns / --max-budget-usd 正交：那两者数轮次与美元，这条数墙钟）
 
 IDE:
   --ide                       启动即自动连接 IDE（等价 SID_CODE_AUTO_CONNECT_IDE=true）

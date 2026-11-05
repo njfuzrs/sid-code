@@ -208,7 +208,20 @@ export type DoneIncompleteReason =
   /** server tool 暂停（pause_turn）：本仓未实现续接，如实收尾 */
   | "pause_turn"
   /** 有内容但 stopReason 未识别（含 `tool_use` 却无 tool_use 块） */
-  | "unknown_stop_reason";
+  | "unknown_stop_reason"
+  /**
+   * 墙钟总预算（`--max-duration-ms`）耗尽，T10b。
+   *
+   * ⚠️ **与 `timeout_retry_exhausted` 是两件事**：后者是「单次调用的重试次数用完」，
+   * 这条是「整个进程的总时长预算用完」。前者调 `maxTimeoutRetries`，后者调
+   * `--max-duration-ms`（或查外层硬顶给得够不够）—— 混成一个的话，
+   * 看到这条的人会去调重试次数，而真凶是外层墙钟。
+   *
+   * 存在的理由见 `Config.maxDurationMs` 的注释：轮数预算与美元预算都挡不住
+   * 「外层硬顶先到」，而那种形态下 `result` 事件根本发不出来（被 SIGKILL），
+   * 下游只能记成 `AgentTimeoutError`、与「能力不足」不可区分。
+   */
+  | "max_duration";
 
 // ─── 循环继续原因 ───
 
@@ -756,6 +769,21 @@ export interface LoopState {
    * 由 gate-exhaustion.ts `emitGateExhausted` 唯一写入，随 `TurnComplete.gates_exhausted` 落盘。
    */
   gatesExhausted?: string[];
+  /**
+   * 墙钟总预算的**绝对截止时刻**（epoch ms，T10b）。undefined = 不限。
+   *
+   * 由 `queryLoop` 入口从 `config.maxDurationMs` 算出（基准是**进程启动时刻**，
+   * 不是每条用户消息 —— 外层硬顶本来就是进程级的，见 `Config.maxDurationMs`）。
+   *
+   * ⚠️ **与 `maxTurns` 是两个正交预算，不要合并**：`maxTurns` 数的是「迭代了几次」，
+   * 这条数的是「墙上过了多久」。实测三条样本轮次 99–110（< `maxTurns=120`）、
+   * 成本 $0.88–1.17（< `--max-budget-usd 1.8`），**两个预算都没触及**，
+   * 却被外层 8100s 硬顶从外部 SIGKILL —— 那正是这条要挡的形态。
+   *
+   * 到点后与 `stallStopRequested` / `maxTurns` 共用同一个强制总结出口，
+   * 产出 `incompleteReason = "max_duration"` → SDK `error_max_duration`。
+   */
+  deadlineAt?: number;
   /**
    * 本轮「不是正常说完」的原因——`yield done.incompleteReason` 与 `TurnComplete.incomplete_reason`
    * 的**唯一写入点**。出口处先写 state 再从 state 派生 done，finally 里的 TurnComplete 读同一处；

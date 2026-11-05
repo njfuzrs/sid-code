@@ -486,6 +486,14 @@ export const INCOMPLETE_ANCHORS: Record<DoneIncompleteReason, DefenseAnchor> = {
     notDefenseReason:
       "如实收尾的出口分类：不改变循环走向，只防 SDK 把未识别 stop_reason 当 success",
   },
+  max_duration: {
+    // T10b：`--max-duration-ms` 是**用户设定的预算**，到点停止是预期行为，不是补模型短板。
+    // 它与 `max_turns` 同性质，只是数的东西不同（墙钟 vs 迭代次数）。
+    // ⛔ 不要因为「它救了三条被 SIGKILL 的样本」就把它登记成防线：那三条的成因是
+    // 外层硬顶没和内层交换剩余时间，修的是**仪器**，不是模型能力。
+    notDefenseReason:
+      "预算耗尽的如实收尾出口（与 max_turns 同性质）：到点是预期终止，不补模型短板；它的价值是让终止可归因为「时间不够」而不是「被外部杀」",
+  },
 };
 
 /**

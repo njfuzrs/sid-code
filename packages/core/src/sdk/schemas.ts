@@ -168,10 +168,13 @@ export const SDKResultErrorSchema = lazySchema(() =>
   z.object({
     type: z.literal("result"),
     // error_stalled：停滞升级阶梯 L2 叫停（只在 headless 显式 opt-in 时出现，见 query/stall-escalation.ts）
+    // error_max_duration：墙钟总预算（--max-duration-ms）耗尽（T10b）。与 error_max_turns
+    // 同为「预算用尽」，但修法相反（一个调轮数、一个查外层硬顶给得够不够），所以必须是两个值。
     subtype: z.enum([
       "error_during_execution",
       "error_max_turns",
       "error_max_budget_usd",
+      "error_max_duration",
       "error_stalled",
     ]),
     errors: z.array(z.string()),

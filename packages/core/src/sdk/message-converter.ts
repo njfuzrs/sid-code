@@ -37,6 +37,10 @@ function incompleteReasonMessage(reason: DoneIncompleteReason): string {
       return "请求被中断";
     case "stalled":
       return "任务停滞（反复改动又改回 / 重复操作无新进展），已由 harness 暂停";
+    case "max_duration":
+      // T10b：措辞刻意不提「轮次」也不提「预算金额」—— 它们分属另外两个预算，
+      // 混说会把人引向调一个与真凶无关的参数（§3.10「两层超时互相掩蔽」）。
+      return "本次运行的时间预算已用尽，已停止并请求强制总结";
     case "context_window_exhausted":
       return "上下文反复撞到模型窗口上限且压缩无法腾出空间，已停止";
     case "empty_param_exhausted":
@@ -178,9 +182,15 @@ export function convertToSDKMessage(
       if (event.incompleteReason) {
         return {
           type: "result",
-          // 停滞单列 subtype：调用方要区分「出错了」和「卡住了被叫停」，后者换个提示词重跑有意义
+          // 停滞单列 subtype：调用方要区分「出错了」和「卡住了被叫停」，后者换个提示词重跑有意义。
+          // T10b 同理：墙钟预算耗尽要单列 —— 它和「轮数用尽」修法不同（查外层硬顶给得够不够，
+          // 不是调 --max-turns），混进 error_during_execution 会让归因回到「能力不足」。
           subtype:
-            event.incompleteReason === "stalled" ? "error_stalled" : "error_during_execution",
+            event.incompleteReason === "stalled"
+              ? "error_stalled"
+              : event.incompleteReason === "max_duration"
+                ? "error_max_duration"
+                : "error_during_execution",
           errors: [incompleteReasonMessage(event.incompleteReason)],
           duration_ms: nowOf(ctx) - ctx.startTime,
           num_turns: event.turns,
