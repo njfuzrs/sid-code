@@ -70,6 +70,24 @@ describe("M0 sandbox — meta 解析与校验", () => {
     expect(r.ok).toBe(false);
   });
 
+  test("phases 写成字符串数组 → 报错，且文案给出正确写法示例（B2）", () => {
+    // 实测形态：模型把 phases 写成 ['并行审查', '汇总清单']，首调报错后第二次才改成
+    // [{ title: … }]。只说「必须含字符串 title」时模型只能再猜一次形态，
+    // 示例是这条报错的全部价值（12 个用过 workflow 的会话里 7 个踩过）。
+    const src = `export const meta = {
+      name: 'wf',
+      description: 'd',
+      phases: ['并行审查', '汇总清单'],
+    }`;
+    const r = parseAndValidateMeta(src);
+    expect(r.ok).toBe(false);
+    if (!r.ok) {
+      expect(r.error).toContain("phases[0]");
+      expect(r.error).toContain("{ title:");
+      expect(r.error).toContain("不是字符串");
+    }
+  });
+
   test("meta 含函数调用(非纯字面量)→ 报错", () => {
     const src = `export const meta = { name: makeName(), description: 'x' }`;
     const r = parseAndValidateMeta(src);

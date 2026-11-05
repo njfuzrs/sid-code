@@ -54,7 +54,7 @@ const workflowSchema = lazySchema(() =>
         .string()
         .optional()
         .describe(
-          "自包含的 workflow JS 脚本。必须以 `export const meta = { name, description, phases }` 开头(纯字面量),随后用 agent()/parallel()/pipeline()/phase()/log()/args/budget 编写。纯 JavaScript,不能含 TypeScript 类型标注。",
+          '自包含的 workflow JS 脚本。必须以 `export const meta = { name, description, phases?: [{ title, detail? }] }` 开头(纯字面量;phases 是可选的**对象数组**,每项形如 `{ title: "并行审查" }`,不能写成字符串数组),随后用 agent()/parallel()/pipeline()/phase()/log()/args/budget 编写。纯 JavaScript,不能含 TypeScript 类型标注。',
         ),
       script_path: z
         .string()

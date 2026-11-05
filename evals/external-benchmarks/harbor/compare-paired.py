@@ -32,6 +32,7 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from verifier_health import (  # noqa: E402
     agent_ran,
     agent_started,
+    externally_killed,
     llm_fatal,
     verifier_ran,
 )
@@ -61,6 +62,10 @@ def load(run):
         # 用 `not` 会把整个对照侧一起排除掉。
         elif agent_started(td) is False:
             excl = "启动未完成"
+        # 被外部 kill(result 事件从未发出)与「上游打断」是两类样本:
+        # 前者是进程被墙钟/硬顶杀掉,后者是重试链耗尽。⛔ 不许合并。
+        elif externally_killed(d):
+            excl = "被外部kill"
         elif llm_fatal(d, td):
             excl = "上游打断"
         else:
