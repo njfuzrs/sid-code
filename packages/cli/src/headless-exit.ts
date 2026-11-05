@@ -39,6 +39,11 @@ export function headlessIncomplete(
 ): boolean {
   if (!i.incompleteReason) return false;
   if (i.sessionTimedOut && i.incompleteReason === "aborted") return false;
+  // `max_duration`（T10b）：墙钟预算耗尽。与 `error_max_turns` 同属**预算用尽** ——
+  // 两者都由调用方显式设定上限、到点即止是预期终止，不是异常。所以沿用 max_turns 的
+  // 既有约定（结论走 result 的 subtype，退出码不计失败），否则「轮数用尽」退 0、
+  // 「时间用尽」退 1，同一次运行会因为撞哪个预算而被下游判成两种结局。
+  if (i.incompleteReason === "max_duration") return false;
   return true;
 }
 

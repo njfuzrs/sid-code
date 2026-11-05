@@ -173,6 +173,15 @@ export type TurnStopReason =
   | "abort"
   /** 达到 maxTurns 硬停 */
   | "max_turns"
+  /**
+   * 墙钟总预算（`--max-duration-ms`）耗尽，T10b。
+   *
+   * ⚠️ 与 `max_turns` **是两个正交预算**：这条数的是「墙上过了多久」，不是「迭代了几次」。
+   * 实测 T0010 / T0051 / T0059 三条样本轮次 99–110（< 120）、成本 $0.88–1.17（< $1.8），
+   * 两个预算都没触及却被外层 8100s 硬顶 SIGKILL —— 那种形态下 `result` 事件发不出来，
+   * 下游只能记成 `AgentTimeoutError`，与「能力不足」不可区分。
+   */
+  | "max_duration"
   /** 停滞升级阶梯 L2 由 harness 结束本轮（stall-escalation.ts） */
   | "stalled"
   /** 抛错终止（含超时重试耗尽） */

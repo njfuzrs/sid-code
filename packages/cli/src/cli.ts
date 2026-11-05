@@ -399,6 +399,12 @@ function parseCLIArgs(): CLIArgs {
         // 花费上限美元（P1-9）：映射到 config.costLimit，超限终止。
         // 交互模式与 -p 都生效；与 quota.costLimit 取更严的那个（B18）。
         "max-budget-usd": { type: "string" },
+        // 墙钟总预算（T10b）：映射到 config.maxDurationMs。到点前走强制总结出口，
+        // 产出 `error_max_duration`。存在的理由是 `--max-turns` 与 `--max-budget-usd`
+        // 都挡不住「外层硬顶先到」——实测三条样本轮次 99–110（< 120）、成本 $0.88–1.17
+        // （< 1.8），两个预算都没触及，却被 Harbor 的 8100s 墙钟从外部 SIGKILL。
+        // 详见 config.ts 该字段的注释与 `evals/CLAUDE.md` §3.10。
+        "max-duration-ms": { type: "string" },
         // IDE 自动连接（A-4 子集）：等价于 SID_CODE_AUTO_CONNECT_IDE=true / config.ide.autoConnect。
         ide: { type: "boolean" },
         // 禁用所有斜杠命令（P1-8）：headless/受限场景下关闭 / 命令入口。
@@ -619,6 +625,20 @@ function parseCLIArgs(): CLIArgs {
     costLimit = n;
   }
 
+  // max-duration-ms（T10b）：正整数。语义见 Config.maxDurationMs ——
+  // 它挡的是「外层墙钟先到」，而 `--max-turns` / `--max-budget-usd` 都挡不住那一类。
+  let maxDurationMs: number | undefined;
+  if (values["max-duration-ms"] !== undefined) {
+    const n = Number(values["max-duration-ms"]);
+    if (!Number.isSafeInteger(n) || n <= 0) {
+      console.error(
+        `错误: --max-duration-ms 必须是正整数（毫秒），收到: "${values["max-duration-ms"]}"`,
+      );
+      process.exit(1);
+    }
+    maxDurationMs = n;
+  }
+
   // append-system-prompt-file（P1-4）：读文件内容，与 --append-system-prompt 合并。
   let appendSystemPrompt: string | undefined = values["append-system-prompt"];
   if (values["append-system-prompt-file"] !== undefined) {
@@ -814,6 +834,9 @@ function parseCLIArgs(): CLIArgs {
     allowedDirectories: values["add-dir"] as string[] | undefined,
     // P1-9 花费上限美元（已校验为正数）。
     costLimit: costLimit,
+    // T10b 墙钟总预算（已校验为正整数）。见 Config.maxDurationMs 的注释：
+    // 它挡的是「外层硬顶先到」，而 maxTurns 与 costLimit 都挡不住那一类。
+    maxDurationMs: maxDurationMs,
     // A-4 子集：--ide 显式开启 IDE 自动连接。
     ide: values.ide === true ? { autoConnect: true } : undefined,
     // P1-8 禁用斜杠命令。

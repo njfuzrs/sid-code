@@ -310,6 +310,20 @@ export class TraceCollector {
    * 单向置位；source 只记录是哪一层停的，推断本身不读它。
    */
   private hitBudgetExceeded = false;
+  /**
+   * 本会话是否因墙钟总预算（`--max-duration-ms`，T10b）耗尽而结束。
+   * 由 {@link recordMaxDuration} 置位。与 hitMaxTurns 同型：收尾时用来
+   * 把 exit_status 落成 `max_duration`，而不是掉进 `user_interrupt`。
+   *
+   * ⛔ **不置这一位就会重犯 max_turns 当年的错**：`max_duration` 走的是
+   * `done.incompleteReason` + return，收尾 reason 落 `exit`，而此刻最后一次
+   * `stop_reason` 是 `tool_use`（模型正想调下一个工具）—— 于是它会被归到
+   * `user_interrupt`，**而没有任何人中断过**。两件事的处置完全不同
+   * （一个查中断源、一个查外层硬顶给得够不够）。
+   *
+   * 单向置位、不重置：一个会话里只要撞过一次墙钟，这个事实就成立。
+   */
+  private hitMaxDuration = false;
   /** B26：本轮以 StructuredOutput 交付收尾（{@link recordStructuredOutputDelivered}），收尾归 end_turn */
   private hitStructuredOutputDelivered = false;
   private budgetExceededSource: "budget_rule" | "quota" | "remote" | undefined;
@@ -689,9 +703,10 @@ export class TraceCollector {
     // P1-2：新会话不与上个会话的前缀比对（否则首轮会被记成一次巨大断裂）
     this.prefixTracker.reset();
     this.currentPair = null;
-    // 撞顶 / 预算硬停标志随会话重置：上个会话的收尾事实不能漏到这个会话。
+    // 撞顶 / 预算硬停 / 墙钟耗尽标志随会话重置：上个会话的收尾事实不能漏到这个会话。
     this.hitMaxTurns = false;
     this.hitBudgetExceeded = false;
+    this.hitMaxDuration = false;
     this.hitStructuredOutputDelivered = false;
     this.budgetExceededSource = undefined;
 
@@ -2166,9 +2181,14 @@ export class TraceCollector {
         ? "max_turns"
         : this.hitBudgetExceeded
           ? "budget_exceeded"
-          : lastPair?.stop_reason === "end_turn" || this.hitStructuredOutputDelivered
-            ? "end_turn"
-            : "user_interrupt";
+          : // T10b：墙钟预算耗尽。排在 budget_exceeded 之后 —— 两者同时成立时
+            // 预算硬停更具体（它带 source，能说清是哪一层停的）；而 max_turns
+            // 排在更前面，理由见上面那段注释（撞顶是更具体的控制流事实）。
+            this.hitMaxDuration
+            ? "max_duration"
+            : lastPair?.stop_reason === "end_turn" || this.hitStructuredOutputDelivered
+              ? "end_turn"
+              : "user_interrupt";
       if (this.hitBudgetExceeded && this.budgetExceededSource) {
         this.metadata.budget_exceeded_source = this.budgetExceededSource;
       }
@@ -3238,6 +3258,21 @@ export class TraceCollector {
   recordBudgetExceeded(source: "budget_rule" | "quota" | "remote"): void {
     this.hitBudgetExceeded = true;
     this.budgetExceededSource = source;
+  }
+
+  /**
+   * 记录「本轮因墙钟总预算耗尽而结束」（`--max-duration-ms`，T10b）。
+   * 由 `engine.ts` 在收到带 `incompleteReason: "max_duration"` 的 `done` 时调用。
+   *
+   * 与 {@link recordMaxTurns} / {@link recordBudgetExceeded} 同一条理由：
+   * 墙钟预算何时耗尽**只存在于 loop 的控制流里**，collector 只订 hook，
+   * 从 SessionEnd 的 `reason=exit` + 末轮 `stop_reason` 推不出来 ——
+   * 那两条路径上末轮 stop_reason 都是 `tool_use`，必然掉进 `user_interrupt` 兜底桶。
+   *
+   * 不检查 `initialized`，理由同 recordMaxTurns：置一个布尔位不写文件。
+   */
+  recordMaxDuration(): void {
+    this.hitMaxDuration = true;
   }
 
   /**

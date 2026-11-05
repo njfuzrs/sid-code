@@ -518,6 +518,86 @@ describe.if(HAS_PYTHON3)("L1 静态契约(无需 harbor)", () => {
     );
   });
 
+  test("墙钟预算旋钮必须透传：`--max-duration-ms` 的 CliFlag 形态（T10b）", () => {
+    // ## 为什么这条旋钮必须存在，且必须由适配器透传
+    //
+    // 2026-11-05 从归档 run 包解出 T0010 / T0051 / T0059 三条样本的**原始**
+    // `session.traj` 后定论：主循环轮次 **110 / 108 / 100**（均 < `max_turns=120`）、
+    // 成本 $0.877–$1.174（均 < `--max-budget-usd 1.8`）—— **两个预算都没触及**，
+    // 三条都是被 Harbor 的 agent 硬顶（2700×3=8100s / 1800×3=5400s）从外部 SIGKILL 的。
+    // 那种形态下 `result` 事件发不出来、`subtype=None`，下游只能记成
+    // `AgentTimeoutError`，与「能力不足」在数据上不可区分（`evals/CLAUDE.md` §3.10）。
+    //
+    // 没有这条旋钮，sid-code 侧就不知道自己还剩多少时间，"到点前干净收尾"不可能发生。
+    const src = readFileSync(AGENT_PY, "utf-8");
+    const flag = /CliFlag\(\s*\n\s*"max_duration_ms",[\s\S]*?\n\s*\)/.exec(src)?.[0] ?? "";
+    expect(flag, "max_duration_ms 的 CliFlag 不见了 —— 墙钟预算无法透传进容器").not.toBe("");
+
+    // ① cli 名必须与 sid-code 侧 `cli.ts` 声明的完全一致。
+    //    拼错一个字符不会报错：sid-code 的 parseArgs 会把未知 flag 当位置参数，
+    //    于是**这条预算永远不生效，而命令看起来完全正确**（同 `--permission-mode`
+    //    那个静默失效坑的形态）。
+    expect(flag).toContain('cli="--max-duration-ms"');
+
+    // ② type 必须是 `str` 而不是 `int`：Harbor 的 `build_cli_flags` 对非 bool 一律
+    //    输出 `--flag value`，两种写法都能工作；但值是毫秒数，会超过某些平台的
+    //    int 边界场景，且 sid-code 侧 parseArgs 声明的是 string。改成 int 属于
+    //    「看起来更严格、实际引入了新的解析路径」——没实测过就不要改。
+    expect(flag).toMatch(/type="str"/);
+
+    // ③ env_fallback 必须存在：跑批脚本（`t8-rerun.py` 等）用 `--ak` 传值是一条路，
+    //    宿主 export 是另一条。缺了 fallback，只有内置了该参数的那一个脚本能用它。
+    expect(flag).toContain("env_fallback=");
+
+    // ④ 默认必须**不设**（`default=None` / 不写）：一旦给一个默认值，
+    //    所有历史 run 的行为都会被改变，基线不再可比（§3.4 指纹）。
+    //    ⚠️ 判据是「没有 default=」，不是「default=None」——
+    //    `CliFlag` 的默认就是 None，写一遍只是把默认值抄一次（同 §README 对
+    //    `SUPPORTS_X = False` 的处理）。
+    expect(flag).not.toMatch(/\bdefault=/);
+  });
+
+  test("变异自证：改 cli 名 / 删 env_fallback / 删整个 CliFlag ⇒ 上面那条门禁必须翻红", () => {
+    // §4.3 的四类变异里取三类（第四类「语法整体坏掉」由 L1 的 `code === 0` 承担）。
+    // 只断言 happy path 的测试无法区分「逻辑对」与「checker 恒返 ok」。
+    const cases: Array<[string, (src: string) => string]> = [
+      [
+        "改 cli 名（拼错一个字符 = 静默失效）",
+        (src) => src.replace('cli="--max-duration-ms"', 'cli="--max-duration-ms-typo"'),
+      ],
+      [
+        "删 env_fallback",
+        (src) => src.replace(/\n\s*env_fallback="SID_HARBOR_MAX_DURATION_MS",/, ""),
+      ],
+      [
+        "删整个 CliFlag 块（抠出空集）",
+        (src) => src.replace(/CliFlag\(\s*\n\s*"max_duration_ms",[\s\S]*?\n\s*\),\n/, ""),
+      ],
+    ];
+    for (const [label, mutate] of cases) {
+      withMutatedFixture(
+        (src) => {
+          const mutated = mutate(src);
+          expect(mutated, `${label}：变异没生效就是假绿`).not.toBe(src);
+          return mutated;
+        },
+        (path) => {
+          const m = runL1(path);
+          expect(m.code, `${label}：L1 本身必须仍然能解析（否则红的原因指错地方）`).toBe(0);
+          const mutatedSrc = readFileSync(path, "utf-8");
+          const flag =
+            /CliFlag\(\s*\n\s*"max_duration_ms",[\s\S]*?\n\s*\)/.exec(mutatedSrc)?.[0] ?? "";
+          // 三类的判据各不同：① 块还在但 cli 名错；② 块还在但缺 fallback；③ 块整个没了。
+          const violated =
+            flag === "" ||
+            !flag.includes('cli="--max-duration-ms"') ||
+            !flag.includes("env_fallback=");
+          expect(violated, `${label}：门禁没拦住`).toBe(true);
+        },
+      );
+    }
+  });
+
   test("不声明任何能力(首版全 False,靠基类默认)", () => {
     // 打开任何一项都意味着有人声明了 resume/handoff/atif ——
     // 声明了但不可靠会让多步任务**静默走错分支**,所以这里锁成「一个都不写」。

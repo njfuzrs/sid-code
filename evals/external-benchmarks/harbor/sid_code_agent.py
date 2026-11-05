@@ -330,6 +330,31 @@ class SidCodeAgent(BaseInstalledAgent):
             type="str",
             env_fallback="SID_HARBOR_MAX_BUDGET_USD",
         ),
+        # 墙钟总预算（T10b）。超限以 `subtype: "error_max_duration"` **干净终止**。
+        #
+        # ## 它挡的是另外两个预算都挡不住的那一类
+        #
+        # 2026-11-05 从归档 run 包解出 T0010 / T0051 / T0059 的原始 `session.traj` 后定论：
+        # 主循环轮次 **110 / 108 / 100**（均 < `max_turns=120`）、成本 $0.877–$1.174
+        # （均 < `--max-budget-usd 1.8`）—— **两个预算都没触及**，三条都是被 Harbor 的
+        # agent 硬顶（`task.toml` 的 `timeout_sec × --agent-timeout-multiplier`）从外部
+        # SIGKILL 的。那种形态下 `result` 事件发不出来、`subtype=None`，下游只能记成
+        # `AgentTimeoutError`，与「能力不足」在数据上不可区分（`evals/CLAUDE.md` §3.10）。
+        #
+        # ## ⚠️ 值必须由**调用方**传，适配器不自己算
+        #
+        # Harbor 的 `_compute_agent_timeout_sec()` 在 `harbor/trial/trial.py` 里，
+        # agent 实例拿不到那个数；自己按「一分钟猜一个」算等于造第二个事实源。
+        # 所以由跑批脚本显式传 `--ak max_duration_ms=<硬顶 × 0.9>`：
+        # 留 10% 给强制总结轮 + SessionEnd 落盘，否则到点即收尾会**再撞一次硬顶**，
+        # 又回到「修了一层只是换了个杀手」（§3.10 原话）。
+        # 不传 = 不限（与历史 run 逐字等价，基线可比性不受影响）。
+        CliFlag(
+            "max_duration_ms",
+            cli="--max-duration-ms",
+            type="str",
+            env_fallback="SID_HARBOR_MAX_DURATION_MS",
+        ),
     ]
 
     #: 停滞升级阶梯(`packages/core/src/query/stall-escalation.ts`)的评测档。

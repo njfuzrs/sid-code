@@ -544,6 +544,15 @@ export class QueryEngine {
         if (event.kind === "max_turns") {
           this.deps.traceCollector?.recordMaxTurns?.();
         }
+        // 墙钟预算耗尽（T10b）：与 max_turns 同一理由、同一位置。
+        // ⛔ 判据必须是 loop 在 done 上显式声明的 incompleteReason，**不能从
+        // `stop_reason !== "end_turn"` 反推** —— 那正是 max_turns / budget 两次
+        // 误记成 user_interrupt 的成因（见 collector.ts handleSessionEnd 那段注释）。
+        // 漏了这一条，`--max-duration-ms` 到点收尾的会话会重新掉进 `user_interrupt`
+        // 兜底桶：排查时看到的是「用户中断」，真相却是「时间预算用完」。
+        if (event.kind === "done" && event.incompleteReason === "max_duration") {
+          this.deps.traceCollector?.recordMaxDuration?.();
+        }
         // 预算硬停：与 max_turns 同一理由埋在这里——collector 只订 hook，
         // 从 hook 里看不出「预算停了」和「用户中断」的区别，唯一能区分的是
         // loop 在 done 上显式声明的 budgetExceeded。不在 done 的 return 之前

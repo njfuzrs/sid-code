@@ -1076,6 +1076,17 @@ async function* queryLoopBody(
 
   const loopDetector = new LoopDetector();
   const state: LoopState = createInitialLoopState(config.maxTurns || Infinity);
+  // T10b：墙钟总预算 → 绝对截止时刻。基准是**进程启动时刻**，不是本条消息入口 ——
+  // 外层硬顶（Harbor 的 agent timeout）本来就是进程级的，若按每条消息重置，
+  // 多轮会话会把总时长累加过外层硬顶，等于这条预算不存在。
+  //
+  // `process.uptime()` 反推进程启动时刻：比在模块加载时存一个常量更准
+  // （模块加载晚于进程启动，差的那几十毫秒在 8100s 的量级上无所谓，
+  // 但反推让「本函数被调用多次」时算出的 deadlineAt 严格一致）。
+  if (config.maxDurationMs !== undefined && config.maxDurationMs > 0) {
+    const processStartMs = Date.now() - Math.round(process.uptime() * 1000);
+    state.deadlineAt = processStartMs + config.maxDurationMs;
+  }
   // F4-2：两个 HITL 基准（区段数 / 等待毫秒）都要按 scope 读，见 `beginTurn` 的注释。
   state.hitlScopeId = hitlScopeId;
   // T6：上一条消息之后用户手动 /compact 过 → 本条消息补置三个重注入标志（见 post-compact-flags.ts）
@@ -1110,10 +1121,13 @@ async function* queryLoopBody(
    * 没有 return）才可能落到 try 外的总结段。
    */
   let exitedViaReturn = false;
-  // L2 真停与 maxTurns 共用同一个强制总结出口（§5 决策 1 第 1 条：不新造机制）
+  // L2 真停 / 墙钟预算 / maxTurns 共用同一个强制总结出口（§5 决策 1 第 1 条：不新造机制；
+  // T10b 同样遵守 —— 新增预算是加判据，不是加第二条收尾路径）
   const willRunForcedSummary = (): boolean =>
     !exitedViaReturn &&
-    (state.turnCount >= state.maxTurns || state.stallStopRequested === true) &&
+    (state.turnCount >= state.maxTurns ||
+      state.stallStopRequested === true ||
+      state.incompleteReason === "max_duration") &&
     !deps.getAbortSignal?.()?.aborted;
   /**
    * P1-4：发射本轮 `TurnComplete`（幂等，重复调用只生效一次）。
@@ -1135,11 +1149,15 @@ async function* queryLoopBody(
           : // 与收尾处 stalledExit 同口径：同时撞 maxTurns 时事件走 max_turns，stopReason 也得是 max_turns
             state.stallStopRequested && state.turnCount < state.maxTurns
             ? "stalled"
-            : state.turnCount >= state.maxTurns
-              ? "max_turns"
-              : // 既没走正常收尾、也没 abort、也没到上限 —— 抛错穿透 finally 的形态。
-                // 归 error 而非 other：这是唯一能观测到"异常穿透"的位置。
-                "error"),
+            : // T10b：墙钟预算耗尽。与 max_turns 同为「预算用尽」而非异常，
+              // 但两者修法不同（一个调轮数、一个查外层硬顶），所以必须是两个值。
+              state.incompleteReason === "max_duration" && state.turnCount < state.maxTurns
+              ? "max_duration"
+              : state.turnCount >= state.maxTurns
+                ? "max_turns"
+                : // 既没走正常收尾、也没 abort、也没到上限 —— 抛错穿透 finally 的形态。
+                  // 归 error 而非 other：这是唯一能观测到"异常穿透"的位置。
+                  "error"),
       toolCallsInTurn: state.toolCallsDispatched ?? 0,
     });
   };
@@ -1364,6 +1382,26 @@ async function* queryLoopBody(
   let modelRespondedSinceTurnMark = false;
   try {
     while (state.turnCount < state.maxTurns) {
+      // ─── T10b：墙钟总预算到点，交还给下面的强制总结出口 ───
+      //
+      // ⚠️ **与 `maxTurns` 是两个正交预算**，不能互相替代：轮数预算数的是
+      // 「迭代了几次」，这条数的是「墙上过了多久」。实测三条样本轮次 99–110
+      // （< 120）、成本 $0.88–1.17（< $1.8），两个预算都没触及就被外层 8100s
+      // 硬顶 SIGKILL —— 那种形态下 `result` 事件根本发不出来，
+      // 下游只能记成 `AgentTimeoutError`，与「能力不足」不可区分。
+      //
+      // 检查点放在「本轮任何工作之前」：放在 `turnCount++` 之后会让这一轮
+      // 白占一格预算却什么都没换到，而下一条消息的 `num_turns` 就会多出一个
+      // 与事实不符的数（那正是 `num_turns_without_model_interaction` 要解释的形态，
+      // 不该由这条新预算去制造）。
+      if (state.deadlineAt !== undefined && Date.now() >= state.deadlineAt) {
+        log.warn(
+          "QUERY_LOOP",
+          `墙钟总预算 ${config.maxDurationMs}ms 已用尽（第 ${state.turnCount} 轮开始前），走强制总结出口`,
+        );
+        state.incompleteReason = "max_duration";
+        break;
+      }
       state.turnCount++;
       // 缺口7：与消息内 turnCount 严格同点推进会话累计轮次。两者必须同点自增，
       // 否则 absoluteTurn 会漂移——漂移的绝对轮次比没有绝对轮次更糟（前者会被当真）。
@@ -6624,16 +6662,25 @@ async function* queryLoopBody(
   // 把它当结果丢给用户体验很差。这里追加一轮不带工具的调用，逼模型输出结构化总结。
   // 用 deps.sendWithRetry/processStream（而非直连 provider）保持与 loop.ts 其余部分
   // 一致的可测试性；调用失败不阻断收尾（降级为下面按 turnCount 正常提示 max_turns）。
-  // 停滞 L2 与 maxTurns 共用本出口，只有提示文本按触发原因区分。
+  // 停滞 L2 / 墙钟预算 / maxTurns 共用本出口，只有提示文本按触发原因区分。
   const stalledExit = state.stallStopRequested === true && state.turnCount < state.maxTurns;
+  // T10b：墙钟预算耗尽（while 顶部的检查点已写入 incompleteReason，这里只读不写 ——
+  // 与该字段「唯一写入点」的约定一致，避免两处各写一份而分叉）。
+  const deadlineExit =
+    state.incompleteReason === "max_duration" && state.turnCount < state.maxTurns;
   // 与其它出口同一写入点：下方 emitTurnCompleteHere 读 state.incompleteReason
   if (stalledExit) state.incompleteReason = "stalled";
-  if ((state.turnCount >= state.maxTurns || stalledExit) && !deps.getAbortSignal?.()?.aborted) {
+  if (
+    (state.turnCount >= state.maxTurns || stalledExit || deadlineExit) &&
+    !deps.getAbortSignal?.()?.aborted
+  ) {
     log.info(
       "QUERY_LOOP",
       stalledExit
         ? "停滞升级 L2：请求强制总结（现状 / 卡点 / 可选方案）"
-        : `P1-1：达到最大轮次 ${state.maxTurns}，请求强制总结`,
+        : deadlineExit
+          ? `T10b：墙钟总预算 ${config.maxDurationMs}ms 已用尽（第 ${state.turnCount} 轮后），请求强制总结`
+          : `P1-1：达到最大轮次 ${state.maxTurns}，请求强制总结`,
     );
     ctxMgr.addMessage({
       role: "user",
@@ -6642,7 +6689,11 @@ async function* queryLoopBody(
           type: "text",
           text: stalledExit
             ? buildStallSummaryPrompt(deps.getGoalState?.()?.objective)
-            : "你已达到最大轮次限制，无法继续调用工具。请立即总结你目前为止的所有发现和已完成的工作，以及尚未完成的部分，用结构化格式（列表/表格）呈现。不要再调用任何工具。",
+            : deadlineExit
+              ? // 与 maxTurns 版提示同构，但**不谎称是轮数**：说「时间预算」，
+                // 否则模型会以为自己还能再跑几轮、总结里写「下一轮继续」。
+                "本次运行的时间预算已用尽，无法继续调用工具。请立即总结你目前为止的所有发现和已完成的工作，以及尚未完成的部分，用结构化格式（列表/表格）呈现。不要再调用任何工具。"
+              : "你已达到最大轮次限制，无法继续调用工具。请立即总结你目前为止的所有发现和已完成的工作，以及尚未完成的部分，用结构化格式（列表/表格）呈现。不要再调用任何工具。",
         },
       ],
     });
