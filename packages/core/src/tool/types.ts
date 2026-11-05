@@ -142,6 +142,41 @@ export interface ToolCapabilityFields<Input = unknown> {
   needsPermissionChecker?: boolean;
 
   /**
+   * 工具自报「我会读执行器注入的 `_agentId`」，执行器据此**按需注入**。
+   *
+   * ## 为什么从「无差别注入」改成「按需注入」
+   *
+   * `_agentId`（取值 `sub-agent` / `forked-agent`）是 harness 内部字段，历史上两条子代理
+   * 执行路径（`query/run-tool-use.ts`、`agent/forked-agent.ts`）把它**无条件**塞进每一次
+   * 工具入参。真实消费者只有三个（`enter_plan_mode` 防套娃、`sub_agent` 兜底、
+   * `save_memory` 区分写入来源），其余工具收到的都是噪声，而噪声会从三条出口漏出去：
+   *
+   *   - `StructuredOutput` 在 `execute` 里拿 workflow 的 JSON Schema **再校验一遍**入参，
+   *     严格 schema（`additionalProperties: false`）必定报「不允许的额外字段 _agentId」。
+   *     子代理改不掉这个字段（它由执行器注入），只能一直重试到 `maxRetries`，
+   *     workflow 拿到 `null`；
+   *   - 宽松 schema 校验通过，脏字段被当结果捕获，直接进 workflow 的返回值；
+   *   - MCP 工具把入参原样作为 `arguments` 发给外部 server（`mcp/manager.ts`）。
+   *
+   * 改成声明式后，只有声明了本字段的工具才拿得到 `_agentId`；`StructuredOutput`、
+   * 全部 MCP 工具、以及以后新增的任何工具默认都拿不到。
+   *
+   * ## 契约
+   *
+   * - 类型是 `true` 而非 `boolean`：本字段只有「声明」一种含义，写成 `false` 无法表达
+   *   「我读了但不要注入」这种语义，直接编译报错更清楚。
+   * - 声明者**必须真的读它**，并为「拿不到」准备安全默认。漏声明是 fail-open
+   *   （工具收不到字段 → 把自己当成主会话）：`enter_plan_mode` 漏了会放子代理进规划态，
+   *   `sub_agent` 漏了会少一道防套娃兜底。故
+   *   `tests/tool/consumes-agentid-audit.test.ts` 做双向对账：源码里读 `_agentId` 的
+   *   工具必须在清单里、清单里的工具必须真的声明——任一侧新增/遗漏都会让 CI 变红。
+   * - `_parentToolUseId` 与 `_agentId` 同批注入（只给声明者）。它当前唯一的消费者是
+   *   `sub_agent`，所以没有独立声明字段：若将来出现「只读 `_parentToolUseId`」的工具，
+   *   先想清楚它为什么不需要 `_agentId`，再决定要不要把两者拆开。
+   */
+  consumesAgentId?: true;
+
+  /**
    * D11：单请求 strict 工具超过上游上限（Anthropic 20 个）时，谁先保住 strict。
    *
    * 数值越大越优先，未声明为 0。只在超限时起作用，不影响「发不发 strict」本身。

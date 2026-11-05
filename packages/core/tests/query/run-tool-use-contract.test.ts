@@ -237,7 +237,7 @@ describe("收口前 spawn 路径漏掉的 4 处，现与进程内路径一致", 
     expect(r.content).toContain("fail-closed");
   });
 
-  test("模型伪造的内部字段被剥离，_agentId 由执行器注入", async () => {
+  test("模型伪造的内部字段被剥离，声明了 consumesAgentId 的工具拿到受控注入值", async () => {
     const seen: any[] = [];
     const reg = new Registry();
     reg.register({
@@ -245,6 +245,9 @@ describe("收口前 spawn 路径漏掉的 4 处，现与进程内路径一致", 
       description: () => "e",
       inputSchema: () => ({ type: "object", properties: {} }),
       readOnly: () => true,
+      // 2026-11-04 起注入是按需的（契约见 tool/types.ts 的 consumesAgentId）：
+      // 只有自报读取该字段的工具才拿得到，故这里必须声明，否则测不到注入。
+      consumesAgentId: true,
       execute: async (input: any) => {
         seen.push(input);
         return { output: "ok" };
@@ -258,7 +261,35 @@ describe("收口前 spawn 路径漏掉的 4 处，现与进程内路径一致", 
       undefined,
       "tu-e",
     );
+    // 模型伪造的值被剥离、换成执行器受控值；伪造的 _parentToolUseId 不被透传
     expect(seen[0]._agentId).toBe("sub-agent");
+    expect("_parentToolUseId" in seen[0]).toBe(false);
+    expect(seen[0].a).toBe(1);
+  });
+
+  test("未声明 consumesAgentId 的工具：模型伪造的字段被剥离，执行器也不注入", async () => {
+    const seen: any[] = [];
+    const reg = new Registry();
+    reg.register({
+      name: () => "plain",
+      description: () => "p",
+      inputSchema: () => ({ type: "object", properties: {} }),
+      readOnly: () => true,
+      execute: async (input: any) => {
+        seen.push(input);
+        return { output: "ok" };
+      },
+    } as any);
+    const sub = new SubAgent({} as any, "m", reg);
+    await (sub as any).executeToolForChild(
+      "plain",
+      { a: 1, _agentId: "forged" },
+      reg,
+      undefined,
+      "tu-p",
+    );
+    // 内部字段不是公共契约：没声明就一个都不该看到（这是 StructuredOutput / MCP 不再被污染的前提）
+    expect("_agentId" in seen[0]).toBe(false);
     expect("_parentToolUseId" in seen[0]).toBe(false);
     expect(seen[0].a).toBe(1);
   });

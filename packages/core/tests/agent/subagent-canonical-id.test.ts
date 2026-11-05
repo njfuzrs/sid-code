@@ -195,7 +195,7 @@ describe("E1：_parentToolUseId 由执行器注入、不接受模型伪造", () 
     expect("_parentToolUseId" in cleaned).toBe(false);
   });
 
-  function capturingTool(name: string) {
+  function capturingTool(name: string, consumesAgentId = false) {
     const seen: any[] = [];
     return {
       seen,
@@ -205,6 +205,9 @@ describe("E1：_parentToolUseId 由执行器注入、不接受模型伪造", () 
         inputSchema: () => ({ type: "object", properties: {} }),
         readOnly: () => true,
         isConcurrencySafe: () => true,
+        // 2026-11-04 起内部字段改为按需注入（契约见 tool/types.ts 的 consumesAgentId）：
+        // 真实的 sub_agent 工具已声明该字段，这里的假工具必须同形，否则测不到注入。
+        ...(consumesAgentId ? { consumesAgentId: true } : {}),
         execute: async (input: any) => {
           seen.push(input);
           return { output: "ok" };
@@ -214,7 +217,7 @@ describe("E1：_parentToolUseId 由执行器注入、不接受模型伪造", () 
   }
 
   test("子代理侧执行器：sub_agent 拿到真实 tool_use id（伪造值被覆盖），其它工具不注入", async () => {
-    const sub = capturingTool("sub_agent");
+    const sub = capturingTool("sub_agent", true);
     const other = capturingTool("read_x");
     const reg = new Registry();
     reg.register(sub.tool as any);
