@@ -22,10 +22,11 @@ function diag(message: string, severity: DiagnosticSeverity = "Error", line = 0)
   };
 }
 
-/** 模拟一次完整的编辑同步（beginEdit → didChange 已发出 → endEdit） */
+/** 模拟一次完整的编辑同步（beginEdit → didChange 已发出 → 屏障已越过 → endEdit） */
 function edited(reg: DiagnosticRegistry, uri: string, owner = MAIN, version?: number): void {
   const seq = reg.beginEdit(uri, owner);
   reg.endEdit(uri, seq, version);
+  reg.passBarrier(uri, seq, true);
 }
 
 const A = "file:///a.ts";
@@ -294,14 +295,17 @@ describe("缺陷 6：编辑同步窗口与版本闸门——不注入基于旧�
     expect(stats.publishesWithVersion).toBe(2);
   });
 
-  test("并发编辑：只有最后一次 beginEdit 对应的 endEdit 能结束同步窗口", () => {
+  test("并发编辑：只有最后一次 beginEdit 对应的屏障能结束同步窗口", () => {
     const reg = new DiagnosticRegistry();
     const s1 = reg.beginEdit(A, MAIN);
     const s2 = reg.beginEdit(A, MAIN);
-    reg.endEdit(A, s1, 2); // 先完成的旧编辑
+    // 旧代际的屏障到得晚：不能结束新代际的窗口（否则新代际的旧内容推送会被收下）
+    reg.passBarrier(A, s1, true);
     reg.registerPending("ts", [{ uri: A, diagnostics: [diag("between")] }]);
     expect(reg.collectDiagnostics(MAIN).stats.staleSyncing).toBe(1);
+    // 新代际的屏障到了才放行
     reg.endEdit(A, s2, 3);
+    reg.passBarrier(A, s2, true);
     reg.registerPending("ts", [{ uri: A, diagnostics: [diag("after")] }]);
     expect(reg.collectDiagnostics(MAIN).files[0]!.diagnostics[0]!.message).toBe("after");
   });

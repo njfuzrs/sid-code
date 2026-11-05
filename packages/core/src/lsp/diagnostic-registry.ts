@@ -43,19 +43,53 @@ export type PublishedDiagnosticFile = DiagnosticFile & { version?: number | null
 interface DocState {
   /** 最近一次编辑该文件的消费者（主循环 / 某个子代理）。诊断只投递给它。 */
   owner: string;
-  /** beginEdit 之后、didChange 发出之前为 true：这段时间到达的诊断必然基于旧内容 */
+  /**
+   * 同步窗口：`beginEdit` 起到「服务器确认处理完本次变更」为止。
+   *
+   * 语义在 2026-11-05 被**延长**过：此前到 `endEdit`（didChange 发出）为止，
+   * 但 `sendNotification` 返回只代表字节写进了 stdin，不代表服务器算完；实测
+   * tsls 在这之后仍会推旧内容的诊断。现在由屏障回调 `passBarrier` 收尾。
+   */
   syncing: boolean;
-  /** 同一文件可能被并发编辑，只有最后一次 beginEdit 对应的 endEdit 才能结束 syncing */
+  /**
+   * 编辑代际：每次 beginEdit +1，同时充当「同一文件并发编辑」的配对序号。
+   * 屏障回调带着它回来，代际不匹配说明是旧代际的屏障到得晚，不能结束新代际的窗口。
+   */
   syncSeq: number;
   /** 最近一次发给服务器的文档版本（didOpen=1，didChange 递增） */
   sentVersion?: number;
+  /** 屏障已通过的代际（= 通过时的 syncSeq）。与 syncSeq 相等才说明**当前代际**已越过屏障 */
+  barrierEpoch: number;
+  /** 当前代际的屏障失败（超时 / 报错 / 该服务器已关闭屏障）→ 推送只能判 unverified */
+  barrierFailed: boolean;
+  /** 当前代际是否已收到过推送（用于区分 `fresh_first` 与后续推送） */
+  freshPublishSeen: boolean;
 }
+
+/** 一条推送的新鲜度判定（进轨迹；决定注入文本是否带「基于最近一次编辑」标注） */
+export type FreshnessVerdict =
+  /** 带 version，且不落后于已发出版本 */
+  | "fresh_by_version"
+  /** 无 version，但已越过屏障（+flush 窗口） */
+  | "fresh_by_barrier"
+  /** 编辑同步窗口内到达，被丢弃 */
+  | "stale_syncing"
+  /** 版本号落后，被丢弃 */
+  | "stale_version"
+  /** 无 version，且屏障失败/已关闭 —— 判断不了，照常注入（退化为修复前行为） */
+  | "unverified"
+  /** 从未被 edit/write 同步过的文件：没有编辑代际可言 */
+  | "baseline";
 
 interface PendingEntry {
   /** 该 uri 的最新全量快照 */
   diagnostics: Diagnostic[];
   /** 本快照里的 Hint/Info 是否已计入过「已省略」——快照因补发留在 pending 时不重复计数 */
   infoCounted: boolean;
+  /** 本快照的新鲜度判定 */
+  freshness: FreshnessVerdict;
+  /** 本快照是否为新代际的第一次推送（用于 collect 侧的 `injected_first_publish`） */
+  firstOfEpoch: boolean;
 }
 
 /** 两次 collect 之间的推送计数（按归属者记，未归属的文件记到主循环名下） */
@@ -66,10 +100,27 @@ interface PublishCounters {
   staleSyncing: number;
   /** 版本号落后于已发出版本、被丢弃的推送 */
   staleVersion: number;
+  /** 带 version 且新鲜 */
+  freshByVersion: number;
+  /** 无 version、越过屏障后到达 */
+  freshByBarrier: number;
+  /** 无 version 且屏障失败/关闭（判断不了，照常注入） */
+  unverified: number;
+  /** 从未被 edit/write 同步过的文件的推送 */
+  baseline: number;
 }
 
 function emptyCounters(): PublishCounters {
-  return { publishes: 0, publishesWithVersion: 0, staleSyncing: 0, staleVersion: 0 };
+  return {
+    publishes: 0,
+    publishesWithVersion: 0,
+    staleSyncing: 0,
+    staleVersion: 0,
+    freshByVersion: 0,
+    freshByBarrier: 0,
+    unverified: 0,
+    baseline: 0,
+  };
 }
 
 /** 一次 collect 的结果分类（进轨迹，用来区分「没注入」的成因） */
@@ -99,11 +150,23 @@ export interface CollectStats extends PublishCounters {
   carried: number;
   /** 本次新计入的 Hint/Info 条数（不注入，只告知） */
   omittedInfo: number;
+  /**
+   * 判为「带外漂移」、本轮未注入并已触发重同步的文件数。
+   * 由 manager 在 collect 前填——registry 保持纯内存、不读盘。
+   */
+  driftedFiles: number;
+  /** 注入的文件里，拿的是新代际第一次推送的文件数（fresh_first 的度量，见设计方案 §3.2） */
+  injectedFirstPublish: number;
 }
 
 export interface CollectResult {
-  files: DiagnosticFile[];
+  files: CollectedDiagnosticFile[];
   stats: CollectStats;
+}
+
+/** collect 输出的文件：比 DiagnosticFile 多一个新鲜度判定，供注入文本决定是否加标注 */
+export interface CollectedDiagnosticFile extends DiagnosticFile {
+  freshness: FreshnessVerdict;
 }
 
 export class DiagnosticRegistry {
@@ -164,30 +227,67 @@ export class DiagnosticRegistry {
    * 模型刚把 `React.useRef` 改成 `useRef`，注入仍报 `'useRef' is declared but never read`，
    * 模型回 "the LSP diagnostic is likely stale" 并多花一轮重读文件）。
    *
-   * 做三件事：登记归属者；清掉该文件的 pending / delivered / latest；进入 syncing 态——
-   * 直到 didChange 发出前到达的推送都基于旧内容，一律丢弃。
+   * 做三件事：登记归属者；清掉该文件的 pending / delivered / latest；开启新的编辑代际
+   * （`syncing = true`）——本代际的屏障越过之前到达的推送都可能是旧内容的，一律丢弃。
    *
-   * @returns 本次编辑序号，交给 endEdit 配对
+   * @returns 本次编辑的代际号，交给 endEdit / passBarrier 配对
    */
   beginEdit(uri: string, owner: string): number {
     const prev = this.docs.get(uri);
     const syncSeq = (prev?.syncSeq ?? 0) + 1;
-    this.docs.set(uri, { owner, syncing: true, syncSeq, sentVersion: prev?.sentVersion });
+    this.docs.set(uri, {
+      owner,
+      syncing: true,
+      syncSeq,
+      sentVersion: prev?.sentVersion,
+      // 新代际的屏障尚未越过：barrierEpoch 停在旧值，与 syncSeq 不等即可
+      barrierEpoch: prev?.barrierEpoch ?? 0,
+      barrierFailed: false,
+      freshPublishSeen: false,
+    });
     this.clearForFile(uri);
     return syncSeq;
   }
 
   /**
-   * 编辑结束：didChange（或 didOpen）已发出，或同步失败。必须在 finally 里调用，
-   * 否则该文件永远停在 syncing 态、诊断永远被丢弃。
+   * 编辑结束（didChange 已发出 / 同步失败）。必须在 finally 里调用。
+   *
+   * **不再结束 syncing**：`sendNotification` 返回只代表字节写进了 stdin，服务器此时可能
+   * 还没算完，甚至还在推旧内容的诊断。窗口的收尾交给屏障回调 `passBarrier`。
+   *
+   * 唯一例外是**本次没发出去**（`sentVersion === undefined`：无对应服务器 / 发送失败）——
+   * 那就不会有屏障到来，必须在此结束窗口，否则该文件永远不出诊断。
    *
    * @param sentVersion 本次发给服务器的文档版本；同步失败时不传
    */
   endEdit(uri: string, syncSeq: number, sentVersion?: number): void {
     const doc = this.docs.get(uri);
     if (!doc || doc.syncSeq !== syncSeq) return; // 已有更新的编辑在途，由它来结束
+    if (sentVersion === undefined) {
+      doc.syncing = false; // 没发出任何变更，等不来屏障了
+      return;
+    }
+    doc.sentVersion = sentVersion;
+  }
+
+  /**
+   * 屏障越过（或失败）：结束本代际的编辑同步窗口。
+   *
+   * @param epoch 发起屏障时的代际号。与当前 `syncSeq` 不等说明这是**旧代际**的屏障
+   *   到得晚（并发编辑常见），不能拿它结束新代际的窗口——否则新代际的旧内容推送会被
+   *   当成新诊断收下，正是本次要修的缺陷。
+   * @param ok 屏障是否成功（服务器已按序处理完本次变更且 flush 窗口已越过）
+   */
+  passBarrier(uri: string, epoch: number, ok: boolean): void {
+    const doc = this.docs.get(uri);
+    if (!doc || doc.syncSeq !== epoch) return;
     doc.syncing = false;
-    if (sentVersion !== undefined) doc.sentVersion = sentVersion;
+    if (ok) {
+      doc.barrierEpoch = epoch;
+    } else {
+      // 屏障失败：本代际的推送无法证明新鲜，降级为 unverified 但照常注入（退化为修复前行为）
+      doc.barrierFailed = true;
+    }
   }
 
   /**
@@ -208,8 +308,32 @@ export class DiagnosticRegistry {
       target.publishesWithVersion += c.publishesWithVersion;
       target.staleSyncing += c.staleSyncing;
       target.staleVersion += c.staleVersion;
+      target.freshByVersion += c.freshByVersion;
+      target.freshByBarrier += c.freshByBarrier;
+      target.unverified += c.unverified;
+      target.baseline += c.baseline;
       this.counters.delete(owner);
     }
+  }
+
+  /**
+   * 判定一条推送的新鲜度。
+   *
+   * 顺序上 **version 优先于屏障**：带 version 的服务器（gopls / rust-analyzer）本来就有
+   * 精确判据，屏障对它们只是冗余；无 version 的（tsls 5.x）才落到屏障判据。
+   *
+   * 调用前提：调用方已经过了 `syncing` 与「version 落后」两道丢弃闸门。
+   */
+  private classify(doc: DocState | undefined, version: number | undefined): FreshnessVerdict {
+    if (!doc) return "baseline";
+    if (version !== undefined && doc.sentVersion !== undefined) {
+      // 落后的情况已在 registerPending 里丢弃；走到这里说明版本不落后
+      return version >= doc.sentVersion ? "fresh_by_version" : "unverified";
+    }
+    // 无 version：屏障已越过当前代际才可证新鲜
+    if (doc.barrierEpoch === doc.syncSeq) return "fresh_by_barrier";
+    // 屏障失败/关闭：无从判断
+    return "unverified";
   }
 
   /** 登记服务器推送的诊断（由 LSP 通知处理器调用） */
@@ -231,6 +355,16 @@ export class DiagnosticRegistry {
         continue;
       }
 
+      const freshness = this.classify(doc, version);
+      if (freshness === "fresh_by_version") counters.freshByVersion++;
+      else if (freshness === "fresh_by_barrier") counters.freshByBarrier++;
+      else if (freshness === "baseline") counters.baseline++;
+      else counters.unverified++;
+
+      // 本代际第一次有效推送？——用来区分「收集到的是不是新内容的第一次（可能不完整的）快照」
+      const firstOfEpoch = doc !== undefined && !doc.freshPublishSeen;
+      if (doc) doc.freshPublishSeen = true;
+
       // 空数组也覆盖（表示"错误已清空"），这样 peek 到的永远是当前真实状态
       this.latest.set(file.uri, file.diagnostics);
       if (!doc && !this.baselined.has(file.uri)) {
@@ -240,7 +374,12 @@ export class DiagnosticRegistry {
         if (base.length > 0) this.markDelivered(file.uri, base);
       } else {
         // 按 uri 覆盖：同一轮内先报错后修好，只留修好后的状态
-        this.pending.set(file.uri, { diagnostics: file.diagnostics, infoCounted: false });
+        this.pending.set(file.uri, {
+          diagnostics: file.diagnostics,
+          infoCounted: false,
+          freshness,
+          firstOfEpoch,
+        });
       }
 
       // 唤醒等待者（在覆盖 latest **之后**，确保被唤醒者立刻 peek 就能拿到刚到的诊断）
@@ -260,6 +399,20 @@ export class DiagnosticRegistry {
   /** 该 uri 是否**曾经**收到过 publishDiagnostics（空数组也算，表示"服务器说这文件没问题"） */
   hasPublishedFor(uri: string): boolean {
     return this.latest.has(uri);
+  }
+
+  /**
+   * 某归属者名下**待投递**的文件 uri 列表（只读快照，不消费）。
+   *
+   * 供 manager 在 collect 之前做带外修改漂移校验：只有可能被注入的文件才值得花
+   * stat/读盘去校验（见 manager.findDriftedFiles 的注释）。
+   */
+  pendingUrisFor(owner: string): string[] {
+    const uris: string[] = [];
+    for (const uri of this.pending.keys()) {
+      if ((this.docs.get(uri)?.owner ?? MAIN_DIAGNOSTIC_OWNER) === owner) uris.push(uri);
+    }
+    return uris;
   }
 
   /**
@@ -339,7 +492,7 @@ export class DiagnosticRegistry {
    * 3. 超限的部分留在 pending 待后续轮次补发，并计入 `carried` 告知模型。
    *    旧实现把整批 pending 清空，被截掉的部分要等该文件再被编辑才会重新出现。
    */
-  collectDiagnostics(owner: string): CollectResult {
+  collectDiagnostics(owner: string, driftedFiles = 0): CollectResult {
     const counters = this.counters.get(owner) ?? emptyCounters();
     this.counters.delete(owner);
 
@@ -399,10 +552,13 @@ export class DiagnosticRegistry {
     const byUri = new Map<string, Diagnostic[]>();
     for (const { uri } of scope) byUri.set(uri, []);
     for (const c of picked) byUri.get(c.uri)!.push(c.diag);
-    const files: DiagnosticFile[] = [];
+    const files: CollectedDiagnosticFile[] = [];
+    let injectedFirstPublish = 0;
     for (const [uri, diagnostics] of byUri) {
       if (diagnostics.length === 0) continue;
-      files.push({ uri, diagnostics });
+      const entry = this.pending.get(uri);
+      files.push({ uri, diagnostics, freshness: entry?.freshness ?? "unverified" });
+      if (entry?.firstOfEpoch) injectedFirstPublish++;
       this.markDelivered(uri, diagnostics);
     }
 
@@ -436,6 +592,9 @@ export class DiagnosticRegistry {
         injected: picked.length,
         carried,
         omittedInfo,
+        // 漂移校验在 manager 里做（registry 保持纯内存、不读盘），结果由调用方传入
+        driftedFiles,
+        injectedFirstPublish,
       },
     };
   }

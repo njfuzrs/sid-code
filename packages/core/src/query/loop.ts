@@ -1979,7 +1979,9 @@ async function* queryLoopBody(
       // 纯只读会话不会被诊断噪音打扰。
       {
         const hasEditCapability = !!(toolRegistry.get("edit") || toolRegistry.get("write"));
-        const diagnosticText = hasEditCapability ? collectDiagnosticText() : null;
+        // 2026-11-05 起是 async：注入前要对候选文件做带外修改（bash/formatter）漂移校验，
+        // 判漂移的文件本轮不注入并触发重同步。**必须 await**，漏了会注入 [object Promise]。
+        const diagnosticText = hasEditCapability ? await collectDiagnosticText() : null;
         if (diagnosticText) {
           // 显式带围栏（P0-a）：injectReminders 有兜底包裹，但这里自己带上让意图显式化。
           // 尤其重要的是**别再用 `#` markdown 标题开头**——原文案 `# LSP 诊断…` 与用户

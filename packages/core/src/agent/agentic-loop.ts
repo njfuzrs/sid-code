@@ -644,7 +644,8 @@ async function runAgentLoopInner(
     if (hasEditCapability && editedFiles.size > 0) {
       try {
         const { collectDiagnosticText } = await import("../lsp/manager.ts");
-        const diagnosticText = collectDiagnosticText(diagnosticOwner);
+        // 2026-11-05 起是 async（注入前做带外修改漂移校验），**必须 await**
+        const diagnosticText = await collectDiagnosticText(diagnosticOwner);
         if (diagnosticText) {
           ctxMgr.addMessage({
             role: "user",
