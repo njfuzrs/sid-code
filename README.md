@@ -4,15 +4,16 @@
 [![CI](https://github.com/njfuzrs/sid-code/actions/workflows/ci.yml/badge.svg)](https://github.com/njfuzrs/sid-code/actions/workflows/ci.yml)
 [![文档](https://img.shields.io/badge/%E6%96%87%E6%A1%A3-sid--code.cc-4c8bf5)](https://www.sid-code.cc/)
 [![平台](https://img.shields.io/badge/%E5%B9%B3%E5%8F%B0-macOS%20%7C%20Linux-lightgrey)](#安装)
-[![Bun](https://img.shields.io/badge/Bun-%E2%89%A51.0-000000?logo=bun&logoColor=white)](https://bun.sh)
+[![Bun](https://img.shields.io/badge/Bun-%E2%89%A51.4.2-000000?logo=bun&logoColor=white)](https://bun.sh)
 
 **中文** · [English](./README.en.md)
 
 **跑在终端的 coding agent。** 你用中文说要干什么，它读你的代码、改文件、跑命令，
 然后用真实的编译和测试结果证明改对了没有。
 
-TypeScript + Bun 编写，终端渲染底座以 MIT 的 ink 为起点重写（`packages/tui`，来源见 NOTICE），编译成单文件二进制分发——下载一个文件就能跑，
-不需要装 Node、不需要 `npm install`。
+TypeScript + Bun 编写，编译成单文件二进制分发——下载一个文件就能跑，
+不需要装 Node、不需要 `npm install`。终端渲染底座以 MIT 的 ink 为起点重写
+（`packages/tui`，来源见 NOTICE）。
 
 - 📖 **官方文档：** https://www.sid-code.cc/
 - 📄 **更新日志：** https://www.sid-code.cc/changelog
@@ -26,6 +27,8 @@ TypeScript + Bun 编写，终端渲染底座以 MIT 的 ink 为起点重写（`p
 curl -fsSL https://www.sid-code.cc/releases/sid-code/install.sh | bash
 ```
 
+预编译二进制覆盖 macOS（arm64 / x64）与 Linux（x64 / arm64）。
+
 装完直接用：
 
 ```bash
@@ -33,6 +36,9 @@ sc                    # 启动（推荐）
 sid-code --version    # 确认版本
 sid-code update       # 以后升级到最新版
 ```
+
+> ⚠️ `sc` 是安装脚本写入的别名，等价于 `sid-code --dangerously-skip-permissions`
+> ——跳过全部权限确认。想让每一步都逐条确认，直接跑 `sid-code`。
 
 装不上或 PATH 没生效，见[安装文档](https://www.sid-code.cc/start/install)。
 
@@ -46,12 +52,12 @@ $ sc
 › 这个模块的超时配置不生效，查一下为什么
 
   搜索 timeout 相关实现…
-  读取 packages/core/src/tool/bash.ts:55-80
-  定位到：parseEnv 读了环境变量但没传给 spawn 的 timeout 参数
+  读取 packages/core/src/tool/bash.ts:90-105
+  定位到：resolveTimeoutBounds 读了环境变量，但上限没有传给 spawn 的 timeout
   修改 packages/core/src/tool/bash.ts
-  运行 bun test tests/tool/bash.test.ts  → 12 pass 0 fail
+  运行 bun test packages/core/tests/tool/bash-timeout-diagnostics.test.ts → 7 pass 0 fail
 
-  超时没生效的原因是 parseEnv 的返回值没接到 spawn 上。已修复并跑过单测。
+  超时没生效的原因是上限值没接到 spawn 上。已修复并跑过单测。
 ```
 
 每一步都在终端里可见，随时按 <kbd>Esc</kbd> 打断。
@@ -63,9 +69,9 @@ Claude Code 的主要能力面这里都有（agentic loop、工具调用、权�
 
 | 能力 | 说明 |
 | --- | --- |
-| **深度贴合企业环境** | 内部网关计费、MCP 接入、团队默认配置分发，面向企业内网基建设计。装上就接得上你公司已有的那套东西 |
-| **模型任你换，harness 整套可改** | 改一行配置换模型（Anthropic / OpenAI / Ollama 三族，OpenAI 族含 Chat Completions 与 Responses 两种；自动降级），写一个文件加扩展（Hook、Skill、子代理、MCP），提一个 PR 改内核（41 个内置工具、上下文工程、主循环全部开源） |
-| **数据全部自主** | 会话轨迹、评测结果、成本账本都留在自己的基础设施里，sid-code 不向维护者回传任何会话内容。模型请求发往你选的 provider，它是否用于训练取决于该 provider 的政策。逐条出网见[隐私与数据流向](https://www.sid-code.cc/use/privacy) |
+| **深度贴合企业环境** | 内部网关计费、MCP 接入、团队默认配置分发，面向企业内网基建设计；装上就接得上你公司已有的那套东西 |
+| **模型任你换，harness 整套可改** | 改一行配置换模型（Anthropic / OpenAI / Ollama 三族，OpenAI 族含 Chat Completions 与 Responses 两种，自动降级）；写一个文件加扩展（Hook、Skill、子代理、MCP）；提一个 PR 改内核（41 个内置工具、上下文工程、主循环全部开源） |
+| **数据全部自主** | 会话轨迹、评测结果、成本账本都留在自己的基础设施里，sid-code 不向维护者回传任何会话内容；模型请求只发往你选的 provider，是否用于训练取决于该 provider 的政策。逐条出网见[隐私与数据流向](https://www.sid-code.cc/use/privacy) |
 | **每一分钱、每一步决策都查得到** | 耗时、成本、决策全留轨迹，默认就开着；发布前跑评测防回退。它同时是我们按版本复算「更快 / 更省 / 更少返工 / 更安全」的唯一度量来源 |
 
 用过 Claude Code 的话迁移成本几乎为零，见[迁移指南](https://www.sid-code.cc/team/migrate)。
@@ -105,7 +111,7 @@ Claude Code 的主要能力面这里都有（agentic loop、工具调用、权�
 
 | 命令 | 指向 | 用途 |
 | --- | --- | --- |
-| `sc` / `sid-code` | `~/.local/bin/sid-code`（线上下载版） | 对照线上行为 |
+| `sc` / `sid-code` | 线上安装版（`~/.local/bin/sid-code`） | 对照线上行为 |
 | `sc-dev` / `sid-code-dev` | 仓库根构建产物 | **验证本地改动** |
 
 ```bash
@@ -127,7 +133,8 @@ bun run website:dev      # 本地预览 http://localhost:5173
 bun run website:build    # 构建（死链检测在此生效）
 ```
 
-更多约定见 [CLAUDE.md](./CLAUDE.md)。
+贡献流程、PR 必须通过的门禁清单、仓库约定见 [CONTRIBUTING.md](./CONTRIBUTING.md)；
+AI agent 在本仓工作的约定见 [CLAUDE.md](./CLAUDE.md)。
 
 ## 许可
 
