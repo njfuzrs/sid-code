@@ -36,7 +36,7 @@ import { PROTECTED_PREFIX } from "./privacy.ts";
 import { asVerified } from "./types.ts";
 import { sanitizeToolName, safeFileExtension, mcpToolDetailsForAnalytics } from "./sanitize.ts";
 import type { DefenseLayer, DefenseOutcome } from "../telemetry/metrics/defense-metrics.ts";
-import { recordPermissionDecision, readConfirmVia } from "../permission/decision-telemetry.ts";
+import { recordPermissionDecision, consumeConfirmVia } from "../permission/decision-telemetry.ts";
 import { getPluginMarketplace, type PluginToolOrigin } from "./plugin-attribution.ts";
 
 // ─────────────────────────────────────────────────────────────
@@ -362,9 +362,11 @@ export function logPermissionAllow(
   });
   // B11：同一个出口落进本地轨迹。挂在门面里而非各调用点 —— 见 decision-telemetry.ts 头注释。
   // 不受遥测开关管辖：轨迹是本地数据，不外发。
-  // confirm_via 只在真问过人时才有意义（规则直接放行没人被问）；值是 App 确认回调里
-  // 按实际分支设置的（bridge / sdk / tui / headless），不扩外发遥测字段集。
-  const confirmVia = opts.needsPrompt ? readConfirmVia() : null;
+  // confirm_via 只在**真有人被问**时才有意义，判据是「经过确认流程 + 最终由 user 作答」
+  // 两个条件：`needsPrompt` 单独不够 —— 三路竞争里 classifier / hook 可能抢先赢了，
+  // 那次并没有人真的被问（见 tool-executor 的记录点注释），它们的 source 不是 user。
+  // consume 而非 read：一次确认只对应一条决策，否则值会串到后续「没人被问」的决策上。
+  const confirmVia = opts.needsPrompt && opts.source === "user" ? consumeConfirmVia() : null;
   recordPermissionDecision({
     tool: toolName,
     outcome: "allow",
@@ -433,8 +435,8 @@ export function logPermissionDeny(
     ...(opts.reasonType ? { reason_type: v(opts.reasonType) } : {}),
     ...(opts.durationMs !== undefined ? { duration_ms: opts.durationMs } : {}),
   });
-  // 同 allow：confirm_via 只在真问过人时才有意义，值由 App 确认回调按实际分支设置。
-  const confirmVia = opts.needsPrompt ? readConfirmVia() : null;
+  // 同 allow：两个条件缺一不可（prompted + source=user），consume 保证一次确认只对应一条决策。
+  const confirmVia = opts.needsPrompt && opts.source === "user" ? consumeConfirmVia() : null;
   recordPermissionDecision({
     tool: toolName,
     outcome: "deny",

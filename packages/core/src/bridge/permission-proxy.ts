@@ -10,7 +10,12 @@
  * - 超时自动拒绝（默认 60 秒，安全默认）
  */
 
-import type { BridgeTransport, BridgeInMessage, BridgePermissionRequest } from "./types.ts";
+import {
+  DEFAULT_PERMISSION_TIMEOUT_MS,
+  type BridgeTransport,
+  type BridgeInMessage,
+  type BridgePermissionRequest,
+} from "./types.ts";
 import { formatStatusMessage } from "./bridge-messaging.ts";
 import {
   BRIDGE_PERMISSION_EVENT_NAME,
@@ -40,7 +45,7 @@ export class PermissionProxy {
 
   constructor(
     transport: BridgeTransport,
-    timeoutMs: number = 60_000,
+    timeoutMs: number = DEFAULT_PERMISSION_TIMEOUT_MS,
     onTelemetry?: BridgeTelemetrySink,
   ) {
     this.transport = transport;
@@ -93,11 +98,13 @@ export class PermissionProxy {
           clearTimeout(timer);
           this.pendingRequests.delete(requestId);
           getLogger().error("BRIDGE", `权限请求发送失败: ${err.message}`);
-          // 发送失败也是一次「远程没批」：与远程明确拒绝共用 deny，
-          // wait_ms 通常个位数——它和用户在管理台上想了 30 秒才拒绝，靠这个数分得开。
+          // 发送失败的结果同样是「没批」，但成因与远程明确拒绝不同：请求根本没送到
+          // 管理台。`decision` 保持三分集不变，用 `delivery` 标出这一种——否则
+          // 「远程拒绝率」的分子会混进运维故障，而两者处置完全不同。
           emitBridgeTelemetry(this.onTelemetry, BRIDGE_PERMISSION_EVENT_NAME, {
             tool_name: request.toolName,
             decision: "deny",
+            delivery: "write_failed",
             wait_ms: Date.now() - startedAtMs,
           });
           resolve(false);

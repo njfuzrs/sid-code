@@ -118,6 +118,9 @@ function startServer(opts: {
   closeOnAuth?: { code: number; reason: string };
   replyAuthOk?: boolean;
 }) {
+  // 保存最近一条服务端连接：permanent_failure 用例要在 start() 成功返回**之后**
+  // 再主动关闭（start() 内部的 closeSeenDuringStart(500) 会把更早的关闭判成 start_failed）。
+  let active: { close: (code?: number, reason?: string) => void } | null = null;
   const server = Bun.serve({
     port: 0,
     fetch(req, srv) {
@@ -125,6 +128,9 @@ function startServer(opts: {
       return new Response("expected websocket", { status: 400 });
     },
     websocket: {
+      open(ws) {
+        active = ws;
+      },
       message(ws, message) {
         let type: string | undefined;
         try {
@@ -144,7 +150,11 @@ function startServer(opts: {
     },
   });
   servers.push(server);
-  return server;
+  return {
+    port: server.port,
+    /** 服务端主动关闭当前连接（模拟管理台踢人 / admin_disconnect） */
+    closeActive: (code: number, reason: string) => active?.close(code, reason),
+  };
 }
 
 function runnerWith(
@@ -306,6 +316,22 @@ describe("PermissionProxy · BridgePermission", () => {
     expect(ev[0]!.data.decision).toBe("timeout");
     expect(ev[0]!.data.wait_ms as number).toBeGreaterThanOrEqual(20);
   });
+
+  test("请求发送失败 → deny + delivery=write_failed（不和远程拒绝混成一个数）", async () => {
+    const capture = collector();
+    const transport = new MockTransport();
+    // 传输层直接抛错：请求根本没送到管理台。结果仍是 deny，但成因是链路故障。
+    transport.write = async () => {
+      throw new Error("socket closed");
+    };
+    const proxy = new PermissionProxy(transport, 5_000, capture.sink);
+
+    expect(await proxy.requestPermission(REQ)).toBe(false);
+    const ev = capture.events.filter((e) => e.name === BRIDGE_PERMISSION_EVENT_NAME);
+    expect(ev).toHaveLength(1);
+    expect(ev[0]!.data.decision).toBe("deny");
+    expect(ev[0]!.data.delivery).toBe("write_failed");
+  });
 });
 
 describe("BridgeRunner · BridgeSession", () => {
@@ -374,5 +400,34 @@ describe("BridgeRunner · BridgeSession", () => {
         (e) => e.name === BRIDGE_SESSION_EVENT_NAME && e.data.phase === "stopped",
       ),
     ).toBe(false);
+  });
+
+  test("连上后被服务端永久关闭（4001）→ permanent_failure，stop 仍报 stopped", async () => {
+    const capture = collector();
+    const server = startServer({ replyAuthOk: true });
+    const runner = runnerWith(`ws://127.0.0.1:${server.port}/bridge/ws`, capture);
+
+    await runner.start();
+    // start() 已返回（closeSeenDuringStart 的 500ms 窗口已过），这次关闭属于常驻期失败：
+    // 与「启动即被拒」处置不同（找管理台 vs 看配置），所以相位必须分开。
+    server.closeActive(4001, "admin_disconnect");
+
+    // 常驻失败以 **resolve(Error)** 交付（runBridge 用 .then(failure => reject(failure))），
+    // 不是 reject —— 断言得按真实契约写。
+    const failure = await runner.waitForPermanentFailure();
+    expect(failure.message).toMatch(/Bridge 连接被拒绝/);
+    await runner.stop();
+
+    const failed = capture.events.filter(
+      (e) => e.name === BRIDGE_SESSION_EVENT_NAME && e.data.phase === "permanent_failure",
+    );
+    expect(failed).toHaveLength(1);
+    expect(failed[0]!.data.close_code).toBe(4001);
+
+    // 连上过 → 收尾必须报 stopped（与 start_failed 用例的分界就在 startedAtMs）
+    const stopped = capture.events.filter(
+      (e) => e.name === BRIDGE_SESSION_EVENT_NAME && e.data.phase === "stopped",
+    );
+    expect(stopped).toHaveLength(1);
   });
 });

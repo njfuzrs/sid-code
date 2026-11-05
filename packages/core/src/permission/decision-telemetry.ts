@@ -104,13 +104,21 @@ export interface PermissionDecisionEvent {
 let _observer: ((event: PermissionDecisionEvent) => void) | null = null;
 
 /**
- * 本次进程实际会走的确认通道。由 `App.requestUserConfirmation` 在分支内设置。
+ * 本次确认实际经由的通道。由 `App.requestUserConfirmation` 在分支内设置。
  *
  * 为什么用进程级单值而不是参数透传：四条通道（sdk / bridge / tui / headless）的
- * 优先级在 App 里是固定的，同一会话内不会逐次变化；而把值带回 core 需要改
+ * 优先级在 App 里是固定的；而把值带回 core 需要改
  * `ToolExecutorDeps.requestUserConfirmation` 的返回类型（30+ 处测试实现与三条
- * 鉴权路径都受影响），代价远大于收益。真正需要逐次区分的只有「prompted 与否」，
- * 那个由门面函数的 `needsPrompt` 已经给了。
+ * 鉴权路径都受影响），代价远大于收益。
+ *
+ * ⚠️ 单值是 **sticky** 的，所以消费侧有两条硬约束，缺一条都会把口径记错：
+ *
+ * - **只在 `source === "user"` 时消费**：`needsPrompt=true` 的决策可能是
+ *   classifier / hook 在弹窗期间抢先赢了（见 `tool-executor.ts` 的记录点注释），
+ *   那次并**没有人真的被问**。它们的 `source` 不是 `user`，不该带这个字段；
+ * - **消费即清**（`consumeConfirmVia`）：一次确认只对应一条决策。否则上一次的值
+ *   会串到下一次「没人被问」的决策上——同进程多会话 / 测试复用同一进程时，
+ *   这正是拿一次远程批准去污染后续本地决策的形态。
  */
 let _confirmVia: ConfirmVia | null = null;
 
@@ -119,9 +127,16 @@ export function setConfirmVia(via: ConfirmVia | null): void {
   _confirmVia = via;
 }
 
-/** 读当前通道（只对 `prompted=true` 的决策有意义；未设置时为 null）。 */
-export function readConfirmVia(): ConfirmVia | null {
-  return _confirmVia;
+/**
+ * 取走当前通道并清空——一次确认只消费一次。
+ *
+ * 只应由「确实问过用户」的那条决策调用，判据是 `source === "user"`
+ * （`needsPrompt` 单独不够，见上面的注释）。
+ */
+export function consumeConfirmVia(): ConfirmVia | null {
+  const via = _confirmVia;
+  _confirmVia = null;
+  return via;
 }
 
 /** collector 注入；传 null 解除（测试收尾用） */

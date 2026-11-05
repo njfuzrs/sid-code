@@ -8920,40 +8920,46 @@ export class App {
     // 必须在 init() 之前置位：SessionStart 的 metadata 在 init 里构造，
     // 晚一步这个会话就不会带 metadata.bridge（见 trace/session-flags.ts）。
     setBridgeSessionFlag(true);
-    await this.init();
-
-    const { BridgeRunner } = await import("@sid-code/core/bridge/bridge-runner.ts");
     const log = getLogger();
 
-    const runner = new BridgeRunner(
-      {
-        // 远端发来的 `/xxx` 与 -p 同一分发入口（submitHeadlessInput）
-        submitMessage: (input: string) => this.submitHeadlessInput(input),
-        // 远程会话空闲时到达的后台任务通知也续跑一轮（与 TUI / headless 同源）。
-        resumeWithNotifications: () => this.queryEngine.resumeWithNotifications(),
-        hasPendingNotifications: () => hasPendingNotifications(),
-        setStreamTextCallback: (cb) => this.queryEngine.setStreamTextCallback(cb),
-        abort: () => this.abortController?.abort(),
-        setPermissionDelegate: (delegate) => {
-          // PermissionChecker 的方法。其它 Checker 实现没有 Bridge 代理时不注入——
-          // 不要 (checker as any)，缺方法就保持本地确认。
-          const checker = this.permissionChecker as {
-            setBridgePermissionDelegate?: (d: typeof delegate) => void;
-          } | null;
-          checker?.setBridgePermissionDelegate?.(delegate);
-        },
-        // 桥接事件直接进本地轨迹。此处 init() 已跑完、collector 就绪，
-        // 不需要 hook/skill 那套模块级 sink（见 bridge/bridge-telemetry.ts 头注释）。
-        onTelemetry: (name, data) => this.traceCollector?.recordCustomEvent(name, data),
-      },
-      options,
-    );
-
-    this.abortController = new AbortController();
-
+    // 复位必须覆盖 init / 构造失败：进程级标记一旦残留，同进程后续会话的 metadata
+    // 会被错标成 bridge 会话（测试复用同一进程时先撞上的是这条路径）。
+    // runner 用可空变量，让 finally 在 init() 抛错时也能安全收尾。
+    let runner: import("@sid-code/core/bridge/bridge-runner.ts").BridgeRunner | null = null;
     let exitCode = 0;
     try {
-      await runner.start();
+      await this.init();
+
+      const { BridgeRunner } = await import("@sid-code/core/bridge/bridge-runner.ts");
+      // 构造后立刻赋给非空局部变量：finally 需要一个可空引用覆盖「构造前就抛错」的
+      // 路径，而 try 内部不必反复判空。
+      const bridgeRunner = new BridgeRunner(
+        {
+          // 远端发来的 `/xxx` 与 -p 同一分发入口（submitHeadlessInput）
+          submitMessage: (input: string) => this.submitHeadlessInput(input),
+          // 远程会话空闲时到达的后台任务通知也续跑一轮（与 TUI / headless 同源）。
+          resumeWithNotifications: () => this.queryEngine.resumeWithNotifications(),
+          hasPendingNotifications: () => hasPendingNotifications(),
+          setStreamTextCallback: (cb) => this.queryEngine.setStreamTextCallback(cb),
+          abort: () => this.abortController?.abort(),
+          setPermissionDelegate: (delegate) => {
+            // PermissionChecker 的方法。其它 Checker 实现没有 Bridge 代理时不注入——
+            // 不要 (checker as any)，缺方法就保持本地确认。
+            const checker = this.permissionChecker as {
+              setBridgePermissionDelegate?: (d: typeof delegate) => void;
+            } | null;
+            checker?.setBridgePermissionDelegate?.(delegate);
+          },
+          // 桥接事件直接进本地轨迹。此处 init() 已跑完、collector 就绪，
+          // 不需要 hook/skill 那套模块级 sink（见 bridge/bridge-telemetry.ts 头注释）。
+          onTelemetry: (name, data) => this.traceCollector?.recordCustomEvent(name, data),
+        },
+        options,
+      );
+      runner = bridgeRunner;
+
+      this.abortController = new AbortController();
+      await bridgeRunner.start();
       // 成功提示也要剥 query/hash。token 若被写进 --bridge URL，
       // 准入拒绝已经不回显，这里原样打印会在连上之后再漏一次。
       const { stripTokenQuery } = await import("@sid-code/core/bridge/ws-transport.ts");
@@ -8971,7 +8977,7 @@ export class App {
         };
         process.once("SIGINT", shutdown);
         process.once("SIGTERM", shutdown);
-        void runner.waitForPermanentFailure().then(
+        void bridgeRunner.waitForPermanentFailure().then(
           (failure) => {
             process.off("SIGINT", shutdown);
             process.off("SIGTERM", shutdown);
@@ -8991,7 +8997,8 @@ export class App {
       // 复位进程级标记：bridge 会话退出后（或测试复用同一进程时），
       // 后续会话不该继续被标成「被遥控」。
       setBridgeSessionFlag(false);
-      await runner.stop().catch(() => {});
+      // runner 可能为 null（init / 构造阶段就抛错），此时没有连接要拆。
+      await runner?.stop().catch(() => {});
       this.abortController = null;
       this.mcpManager?.closeAll();
       const { runShutdownSequence } = await import("@sid-code/shared/utils/graceful-shutdown.ts");

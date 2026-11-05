@@ -54,6 +54,15 @@ export type BridgeInboundKind = "user_message" | "permission_response" | "contro
 export type BridgePermissionDecision = "allow" | "deny" | "timeout";
 
 /**
+ * `BridgePermission.delivery` 闭集（可选字段，只有异常投递才出现）。
+ *
+ * `write_failed` = 请求**根本没送到**管理台（传输层发送失败）。此时 `decision` 仍是
+ * `deny`（结果确实是不允许），但成因是链路故障而不是远程用户拒绝——两者处置完全不同，
+ * 混进同一个 `deny` 会让「远程拒绝率」把断线算成用户意图。缺省（字段不存在）= 正常送达。
+ */
+export type BridgePermissionDelivery = "write_failed";
+
+/**
  * 埋点写入通道（由 BridgeRunner 注入，最终指向 `TraceCollector.recordCustomEvent`）。
  * 第一个参数是事件名——与 `recordCustomEvent(event, data)` 的签名对齐，注入处无需再包一层。
  */

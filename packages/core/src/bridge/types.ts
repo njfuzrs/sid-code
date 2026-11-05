@@ -3,6 +3,15 @@
  * 对标 Claude Code 的 Bridge 子系统（云端中继 / 远程控制）
  */
 
+/**
+ * 远程权限确认的默认超时（毫秒）。
+ *
+ * `BridgeRunner` 的事件字段（`BridgeSession.connected.permission_timeout_ms`）与
+ * `PermissionProxy` 的实际计时共用这一个值：两处各自写 `60_000` 时，改了一处就会出现
+ * 「轨迹里记的档位」与「真正生效的等待时间」不一致，而没有任何东西会变红。
+ */
+export const DEFAULT_PERMISSION_TIMEOUT_MS = 60_000;
+
 /** Bridge 输出消息（发送给远程客户端） */
 export interface BridgeOutMessage {
   type: "text" | "tool_use" | "tool_result" | "status" | "permission_request";

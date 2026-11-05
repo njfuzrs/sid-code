@@ -86,6 +86,9 @@ describe("触发事件反死线门禁 · bridge（T4）", () => {
     // 只断言「至少一处」的话，删掉 connected（连上）或 stopped（收尾）仍然会绿 ——
     // 而「接线漏一条」正是这类门禁要防的形态（实测：删掉 connected 的 emit 后
     // 旧断言照样通过）。三处 = connected + 永久失败（按时机传 phase）+ stopped。
+    //
+    // ⚠️ 这是**棘轮**：将来新增第四个生命周期相位（如 reconnect）时，必须同步更新
+    // 这个数字并确认新事件的接线，而不是把断言放宽成「至少一处」。
     const sessionEmits = runner.match(
       /emitBridgeTelemetry\(\s*this\.deps\.onTelemetry,\s*BRIDGE_SESSION_EVENT_NAME\b/g,
     );
@@ -95,7 +98,11 @@ describe("触发事件反死线门禁 · bridge（T4）", () => {
     // 永久失败那一处按调用时机传 phase：start_failed 与 permanent_failure 都必须在生产侧用到，
     // 否则「启动即被拒」和「连上后被踢」会被记成同一个数。
     expect(runner).toContain('consumePermanentFailure("start_failed")');
-    expect(runner).toContain('"permanent_failure"');
+    // 只断言 `"permanent_failure"` 字面量存在是不够的：`consumePermanentFailure` 的
+    // **默认参数值**本身就满足它——把 waitForPermanentFailure 里的真实调用删掉，
+    // 旧断言仍然全绿（实测）。所以断言函数体内确实有取走失败的调用点：
+    // 「连上后被踢」这条事件是靠它发出来的。
+    expect(runner).toMatch(/waitForPermanentFailure\(\)[\s\S]{0,400}?consumePermanentFailure\(\)/);
 
     expect(core).toMatch(emitPattern("this\\.onTelemetry", "BRIDGE_INBOUND_EVENT_NAME"));
     expect(proxy).toMatch(emitPattern("this\\.onTelemetry", "BRIDGE_PERMISSION_EVENT_NAME"));
