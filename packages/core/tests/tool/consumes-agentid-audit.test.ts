@@ -23,8 +23,8 @@
  *      防「有人顺手改回无条件注入」而前面两张网看不出来（工具侧声明还在，注入却照旧）。
  */
 
-import { describe, test, expect } from "bun:test";
-import { mkdtempSync, readdirSync, readFileSync } from "node:fs";
+import { describe, test, expect, beforeAll, afterAll } from "bun:test";
+import { mkdtempSync, readdirSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
@@ -36,6 +36,33 @@ import { SubAgentTool } from "@sid-code/core/agent/tool.ts";
 import { PlanModeManager } from "@sid-code/core/plan/state.ts";
 import { ProviderRegistry } from "@sid-code/core/llm/registry.ts";
 import { Registry as ToolRegistry } from "@sid-code/core/tool/registry.ts";
+
+/**
+ * 落盘隔离：本文件实例化 `MemoryStore`（构造即落盘类，写
+ * `~/.sid-code/projects/<项目哈希>/memory/`）。虽然下面构造实例时传了 tmpdir 派生路径，
+ * 但 `no-real-path-writes.test.ts` 的判据是「文本里真的碰了 `process.env.SID_CONFIG_DIR`」——
+ * 注释里提到变量名不算隔离。这里显式设一遍，同时也防未来有人把显式路径改成默认构造。
+ *
+ * 必须存/恢复原值，不要无条件 delete：`bun test` 同批多文件共进程，
+ * 直接删会把 preload 的兜底一起抹掉，后续文件静默写真实 home。
+ */
+const savedConfigDir = process.env.SID_CONFIG_DIR;
+let configDir: string;
+
+beforeAll(() => {
+  configDir = mkdtempSync(join(tmpdir(), "sid-audit-config-"));
+  process.env.SID_CONFIG_DIR = configDir;
+});
+
+afterAll(() => {
+  if (savedConfigDir === undefined) delete process.env.SID_CONFIG_DIR;
+  else process.env.SID_CONFIG_DIR = savedConfigDir;
+  try {
+    rmSync(configDir, { recursive: true, force: true });
+  } catch {
+    /* 清理失败不影响判定 */
+  }
+});
 
 const REPO_ROOT = join(import.meta.dir, "..", "..", "..", "..");
 const TOOL_SRC_DIRS = [
