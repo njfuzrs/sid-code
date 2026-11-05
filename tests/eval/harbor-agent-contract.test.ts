@@ -1113,9 +1113,17 @@ describe.if(HAS_PYTHON3)("L1 静态契约(无需 harbor)", () => {
 describe.if(HAS_PYTHON3)("L1b 复算脚本的语法与判据单源性", () => {
   const HARBOR_DIR = join(import.meta.dir, "..", "..", "evals", "external-benchmarks", "harbor");
 
-  /** 目录里所有 .py(不含 agent 本体 —— 它由上面那 27 条覆盖)。 */
+  /**
+   * 目录里所有 .py(不含 agent 本体 —— 它由上面那 27 条覆盖；也不含 `test-*.py`)。
+   *
+   * ⚠️ 排除 `test-*.py` 的理由：本门禁守的是「**消费判据的生产脚本**自己数 token
+   * 判 agent 跑没跑」。测试文件里的 `n_input_tokens` / `n_output_tokens` 是**造产物**
+   * 的 fixture —— 不写这两个字段，`agent_ran` 就判不出来，样本根本造不出来；
+   * 那是被造的数据，不是「自己数 token」。
+   * 2026-11-05 实测：T12 新增的两个 `test-*.py` 让本门禁误报（判据守错了对象）。
+   */
   const scripts = readdirSync(HARBOR_DIR)
-    .filter((f) => f.endsWith(".py") && f !== "sid_code_agent.py")
+    .filter((f) => f.endsWith(".py") && f !== "sid_code_agent.py" && !f.startsWith("test-"))
     .sort();
 
   /**
