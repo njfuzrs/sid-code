@@ -135,6 +135,13 @@ export class MemoryTool implements Tool {
   /** zod schema：执行器据此做运行时校验，registry 据此生成 LLM 定义 */
   readonly zodSchema = memorySchema();
 
+  /**
+   * 声明读执行器注入的 `_agentId`（契约见 `tool/types.ts`）：`writeVia` 用它区分写入来源
+   * 是主会话 / forked 代理 / 子代理。漏声明会让所有来源都记成 `main`，遥测里的来源分布
+   * 从此失真（不报错，只是数字变错——属于静默失败）。
+   */
+  readonly consumesAgentId = true as const;
+
   constructor(store: MemoryStore, agentType?: string) {
     this.store = store;
     this.agentType = agentType;

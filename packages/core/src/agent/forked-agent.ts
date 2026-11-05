@@ -633,9 +633,14 @@ export async function runForkedAgent(
             });
             continue;
           }
-          // 注入 _agentId 标记，防止分叉代理调用 enter_plan_mode 形成套娃
+          // 注入 _agentId 标记，防止分叉代理调用 enter_plan_mode 形成套娃。
+          // 只给自报 consumesAgentId 的工具注入（契约见 tool/types.ts）：无差别注入会把内部
+          // 字段漏给 StructuredOutput 的 schema 校验与 MCP server 的 arguments。
           const res = await tool.execute(
-            { ...(validation.data as Record<string, unknown>), _agentId: "forked-agent" },
+            {
+              ...(validation.data as Record<string, unknown>),
+              ...(tool.consumesAgentId ? { _agentId: "forked-agent" } : {}),
+            },
             signal,
           );
           const elapsed = Date.now() - toolStartedAt;

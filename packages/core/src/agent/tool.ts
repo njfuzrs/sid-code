@@ -335,6 +335,13 @@ export class SubAgentTool implements Tool {
   /** M-1：自报需要权限检查器（契约见 tool/types.ts ToolCapabilityFields），wire 时与 setter 对账。 */
   readonly needsPermissionChecker = true;
 
+  /**
+   * 声明读执行器注入的 `_agentId`（契约见 `tool/types.ts`）：`execute` 里除 ALS 深度外
+   * 仍保留它做防套娃兜底（纵深防御，不依赖单点）。`_parentToolUseId` 与它同批注入，
+   * 用于给 SubagentStart 带 parent_tool_use_id。漏声明会少一道兜底。
+   */
+  readonly consumesAgentId = true as const;
+
   /** 注入子代理错误回调（推入统一错误面板）。主会话 TUI 就绪后调用。 */
   private onErrorCallback?: (message: string) => void;
   setErrorCallback(cb: (message: string) => void): void {
