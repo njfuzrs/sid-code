@@ -13,7 +13,11 @@ import { join } from "path";
 import { tmpdir } from "os";
 import { render } from "@sid-code/cli/ui/render-port/testing.ts";
 import { Text } from "@sid-code/cli/ui/render-port/components.ts";
-import { textBufferReducer as reduce, createInitialState } from "@sid-code/cli/ui/text-buffer.ts";
+import {
+  textBufferReducer as reduce,
+  createInitialState,
+  arrowNavigatesHistory,
+} from "@sid-code/cli/ui/text-buffer.ts";
 import { registerPaste, expandPastedRefs, clearPastes } from "@sid-code/cli/ui/pasted-contents.ts";
 import { useInputHistoryStore } from "@sid-code/cli/ui/hooks/useInputHistoryStore.ts";
 import { getProjectRoot, setProjectRoot } from "@sid-code/core/bootstrap/state.ts";
@@ -130,5 +134,38 @@ describe("useInputHistoryStore.projectHistory", () => {
     const { lastFrame } = render(<Harness />);
     expect(lastFrame()).toContain("P=p1-新,p1-旧|");
     expect(lastFrame()).toContain("A=p1-新,p2-输入,/model,p1-旧");
+  });
+});
+
+describe("↑/↓ 翻历史遇到多行条目不卡死", () => {
+  // 按 InputArea 的 ↑/↓ 分支模拟一次按键：首行 ↑ / 末行 ↓ 翻历史，否则移光标
+  const press = (s: ReturnType<typeof createInitialState>, dir: "up" | "down") =>
+    arrowNavigatesHistory(s, dir)
+      ? reduce(s, { type: dir === "up" ? "history-up" : "history-down" })
+      : reduce(s, { type: "move", direction: dir });
+
+  test("↑ 穿过多行条目继续翻到更早的历史，↓ 能翻回来", () => {
+    let s = createInitialState("", ["单行最新", "第一行\n第二行\n第三行", "最早一条"]);
+    s = press(s, "up");
+    expect(s.lines).toEqual(["单行最新"]);
+    s = press(s, "up");
+    expect(s.lines).toEqual(["第一行", "第二行", "第三行"]);
+    // 光标落在末行：再按 ↑ 先在条目内上移两行，再翻到更早一条（修复前永远只移光标）
+    for (let i = 0; i < 3; i++) s = press(s, "up");
+    expect(s.lines).toEqual(["最早一条"]);
+    // ↓：翻回多行条目（光标在末行）→ 再 ↓ 直接翻回更新的一条
+    s = press(s, "down");
+    expect(s.lines).toEqual(["第一行", "第二行", "第三行"]);
+    s = press(s, "down");
+    expect(s.lines).toEqual(["单行最新"]);
+    s = press(s, "down");
+    expect(s.lines).toEqual([""]);
+  });
+
+  test("自己正在编辑的多行内容：光标在中间行时 ↑↓ 只移光标，不误翻历史", () => {
+    let s = createInitialState("a\nb\nc", ["历史"]);
+    s = { ...s, cursorRow: 1, cursorCol: 0 };
+    expect(arrowNavigatesHistory(s, "up")).toBe(false);
+    expect(arrowNavigatesHistory(s, "down")).toBe(false);
   });
 });
