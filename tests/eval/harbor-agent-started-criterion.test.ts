@@ -44,6 +44,11 @@ const ANALYZE = join(HARBOR, "analyze-model-switch.py");
  *  debug.log ⇒ None）**整条臂的产物全删掉**。实测那个变异下 `runs/ccrun-n6`
  *  被判成 10/10 全部非能力失败。 */
 const W3CLS = join(HARBOR, "w3-classify.py");
+/** 逐题结局的唯一取数处（2026-11-05 起）。`compare-paired.py` 与 `eval-verdict.py`
+ *  都经由它消费 `agent_started` —— 判据的实际消费方从「每个脚本各自 import」
+ *  变成一个中介模块 import 一次。门禁必须跟着指向新位置，否则它守的是一个
+ *  已经不再直接消费判据的文件（那正是 §4.4「判据写错的门禁」的形态）。 */
+const OUTCOMES = join(HARBOR, "trial_outcomes.py");
 
 const read = (p: string) => readFileSync(p, "utf8");
 
@@ -166,7 +171,7 @@ describe("agent_started：三态语义（None 与 False 必须分开）", () => 
 
 describe("消费侧：两个脚本都接上了，且用 `is False` 而非 `not`", () => {
   for (const [label, path] of [
-    ["compare-paired.py", PAIRED],
+    ["trial_outcomes.py", OUTCOMES],
     ["analyze-model-switch.py", ANALYZE],
     ["w3-classify.py", W3CLS],
   ] as const) {
@@ -208,10 +213,20 @@ describe("消费侧：两个脚本都接上了，且用 `is False` 而非 `not`"
     expect(codeOf(W3CLS)).toMatch(/return\s+3/);
   });
 
-  test("compare-paired 把它作为独立排除原因，不与「零调用」合并", () => {
+  test("trial_outcomes 把它作为独立排除原因，不与「零调用」合并", () => {
     // 合并的话，两种故障的下一步动作会被混成一个：零调用查上游失败率，
     // 启动未完成查 agent 卡在哪一步。
-    expect(codeOf(PAIRED)).toContain("启动未完成");
+    expect(codeOf(OUTCOMES)).toContain("启动未完成");
+  });
+
+  test("compare-paired.py 经由 trial_outcomes 取数，不自己重写判据", () => {
+    // 判据搬家（2026-11-05）后它不再是直接消费方，但**更不许**自己再写一份：
+    // 两个脚本对同一题给出不同答案，是本仓 §0 那个坑的形态。
+    const code = codeOf(PAIRED);
+    expect(code).toContain("import trial_outcomes");
+    expect(code).toContain("trial_outcomes as O");
+    expect(code).not.toContain("agent_started");
+    expect(code).not.toContain("启动未完成");
   });
 
   test("analyze-model-switch 把它并入 excluded 集（否则并排段仍会报「对称」）", () => {
