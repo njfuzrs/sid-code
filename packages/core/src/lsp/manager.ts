@@ -71,6 +71,7 @@ function emitCollectStats(owner: string, stats: CollectStats): void {
       baseline: stats.baseline,
       drifted_files: stats.driftedFiles,
       injected_first_publish: stats.injectedFirstPublish,
+      fresh_after_stale: stats.freshAfterStale,
     });
   } catch {
     /* 度量不影响注入 */
@@ -234,6 +235,12 @@ export async function notifyFileChanged(filePath: string, content: string): Prom
   await manager.changeFile(filePath, content);
 }
 
+/** syncFileToLSP 的依赖注入点（生产代码不传，测试用来把 manager/registry 换成 fake） */
+export interface SyncFileToLSPDeps {
+  manager?: LSPServerManager;
+  registry?: DiagnosticRegistry;
+}
+
 /**
  * 编辑/写入文件后，把最新内容同步给 LSP 的完整编排（主循环与子代理共用）。
  *
@@ -253,19 +260,23 @@ export async function notifyFileChanged(filePath: string, content: string): Prom
  *
  * @param filePath 被编辑/写入的文件绝对路径
  * @param owner 诊断归属者：主循环传 MAIN_DIAGNOSTIC_OWNER（默认），子代理传自己的 agentId
+ * @param deps 测试注入点（见 SyncFileToLSPDeps）
  */
 export async function syncFileToLSP(
   filePath: string,
   owner: string = MAIN_DIAGNOSTIC_OWNER,
+  deps: SyncFileToLSPDeps = {},
 ): Promise<void> {
   if (!filePath) return;
-  const manager = getLSPManager();
-  const registry = getDiagnosticRegistry();
+  const manager = deps.manager ?? getLSPManager();
+  const registry = deps.registry ?? getDiagnosticRegistry();
   if (!manager) return; // LSP 未启用，避免无谓读盘
   let uri: string | undefined;
   let seq = 0;
   let sentVersion: number | undefined;
   let barrier: Promise<boolean> | undefined;
+  /** 本次 changeFile 是否首次 didOpen（无屏障，且没有「旧代际」可言） */
+  let firstOpen = false;
   try {
     const { pathToFileURL } = require("url");
     uri = pathToFileURL(filePath).href as string;
@@ -279,6 +290,7 @@ export async function syncFileToLSP(
     const result = await manager.changeFile(filePath, content);
     sentVersion = result.version;
     barrier = result.barrier;
+    firstOpen = result.firstOpen === true;
   } catch (e) {
     getLogger().debug("LSP", `文件变更同步失败（不影响工具执行）: ${(e as Error)?.message}`);
   } finally {
@@ -286,11 +298,14 @@ export async function syncFileToLSP(
   }
   // 屏障回调：成功/失败都要回调，否则该文件永远停在 sync 窗口内、诊断永远被丢。
   //
-  // 没有 barrier 有两种情况，都不能让窗口悬着：
-  // - 首次 didOpen（server-manager 刻意不发屏障，见那里的注释）：没有「旧代际」可言，
-  //   直接判通过；
-  // - 无服务器 / 发送失败：endEdit 收到 sentVersion===undefined 时已经结束了窗口，这里再
-  //   passBarrier 一次是无害的幂等操作（syncSeq 不匹配就直接 return）。
+  // 三条分支必须分开判，含糊合并会制造「假新鲜」：
+  // - 有 barrier：等它 resolve（成功 = 服务器已处理完 + flush 已越过）；
+  // - 无 barrier + firstOpen（didOpen，server-manager 刻意不发屏障）：没有「旧代际」，
+  //   服务器侧内容就是刚发过去的内容，直接判通过；
+  // - 无 barrier 且非首次打开：本次变更**没有真正同步成功**（读盘失败 / 服务器启动失败 /
+  //   无对应服务器 / 该服务器未验证屏障）。此时不能判 true——那会把服务器基于旧内容的
+  //   推送标成 fresh（带 version 时甚至会被 version 判据「证实」），正好是本次要修的形态。
+  //   判 false 结束窗口即可；`endEdit` 已置 `syncFailed`，后续推送会落到 unverified。
   if (registry && uri) {
     const barrierUri = uri;
     if (barrier) {
@@ -301,8 +316,10 @@ export async function syncFileToLSP(
           /* 屏障回调异常不影响工具执行 */
         }
       });
-    } else {
+    } else if (firstOpen) {
       registry.passBarrier(barrierUri, seq, true);
+    } else {
+      registry.passBarrier(barrierUri, seq, false);
     }
   }
   if (sentVersion !== undefined) manager.saveFile(filePath);
