@@ -13,12 +13,8 @@ import type { SessionState } from "../session/state.ts";
 import type { Config } from "../config/config.ts";
 import { Registry as ToolRegistry } from "../tool/registry.ts";
 import { getLogger } from "../debug/index.ts";
-import {
-  isAbortError,
-  abortReasonOf,
-  errorMessageOf,
-  SIBLING_BASH_ERROR_ABORT_REASON,
-} from "../llm/errors.ts";
+import { isAbortError, abortReasonOf, errorMessageOf } from "../llm/errors.ts";
+import { isReadOnlyIgnoringCd } from "../tool/bash/read-only-validation.ts";
 import { processToolResult } from "../tool/result-storage.ts";
 import { validateToolInput, buildSchemaNotSentHint } from "../tool/input-validator.ts";
 import {
@@ -102,6 +98,15 @@ class QueueSkippedError extends Error {
   }
 }
 
+/**
+ * GAP-02 串行级联判据：这条 Bash 是否「不改任何东西」（只读命令，`cd` 前缀不算改动）。
+ * 拿不到命令串时按写类处理——宁可多拦一条，不让写操作在失败后继续。
+ */
+function isReadOnlyBashBlock(block: ToolUseBlock): boolean {
+  const command = (block.input as { command?: unknown } | undefined)?.command;
+  return typeof command === "string" && isReadOnlyIgnoringCd(command);
+}
+
 /** withConcurrencyLimit 可选行为钩子 */
 interface ConcurrencyLimitOptions {
   /** 某个任务 reject 时回调（在结果写入 results 之后触发） */
@@ -114,8 +119,8 @@ interface ConcurrencyLimitOptions {
   /**
    * 每次**启动**排队任务前检查；返回 true 即不再启动（占位为 QueueSkippedError）。
    *
-   * stopOnReject 只在任务 reject 时才问——而 Bash 级联取消是在一个**正常返回**（fulfilled、
-   * is_error）的结果上触发的，原先队列里没启动的任务照样一个个启动，拿着已 abort 的 signal 去跑。
+   * stopOnReject 只在任务 reject 时才问——父信号（用户 ESC / 上游）在某个任务**正常返回**之后
+   * 才 abort 时，没有任何 reject 会去问它，队列里没启动的任务会拿着已 abort 的 signal 一个个启动。
    */
   shouldStopLaunching?: () => boolean;
 }
@@ -522,9 +527,9 @@ export async function executeTools(
   /**
    * 增量呈现：单工具结果落地即上报（唯一出口，幂等）。
    *
-   * 为什么把它做成「唯一出口」而不是在各处零散调 deps.onToolSettled：本函数有 7 条
-   * 会往 resultMap 写结果的路径（工具不存在 / 权限拒绝 / 并行完成 / 并行 bash 级联取消 /
-   * 并行异常兜底 / 串行完成 / 串行 bash 跳过），零散调用必然漏（漏一条 = 那个工具的卡片
+   * 为什么把它做成「唯一出口」而不是在各处零散调 deps.onToolSettled：本函数有 6 条
+   * 会往 resultMap 写结果的路径（工具不存在 / 权限拒绝 / 并行完成 / 并行异常兜底 /
+   * 串行完成 / 串行写类 bash 跳过；并行 bash 级联取消 2026-11-06 已删），零散调用必然漏（漏一条 = 那个工具的卡片
    * 永远停在 Executing，比不做更糟）。统一走 settle()，靠 reported 集合去重，新增结果
    * 路径时只要走 settle 就自动获得增量呈现。
    *
@@ -689,10 +694,17 @@ export async function executeTools(
     idx: number;
     modifier: (ctx: ToolUseContext) => ToolUseContext;
   }> = [];
-  // GAP-02（串行 Bash 级联）：一旦某个 Bash 命令失败，同一轮内后续 Bash 工具跳过执行。
-  // 覆盖文档核心场景：[mkdir /tmp/x, cd /tmp/x && make, ls /tmp/x/bin]——写类 bash 属非并发安全，
-  // 走串行批次，第一个失败后后两个（依赖它）必然失败，跳过它们消除噪音、减少模型误判。
-  // 仅 Bash 触发、仅跳过 Bash（其他工具相互独立，照常执行）。
+  // GAP-02（串行 Bash 级联）：同一轮里一条**会改东西**的 Bash 失败后，跳过后续**会改东西**的 Bash。
+  //
+  // 它防的是这一种形态：[cd build 或 git checkout x（失败）, rm -rf dist/*]——前一条没把状态
+  // 带到预期位置，后一条写操作落在错的目录/分支上，而且后一条是不会自己报错的。
+  //
+  // 触发与跳过两端都按 isReadOnlyIgnoringCd 判（只读 + 切目录不算「改东西」），不是任何非 0
+  // 退出码都算：2026-11-06 全量轨迹扫描，旧口径（任一 Bash is_error → 跳过其后全部 Bash）
+  // 在 23 个会话里跳了 25 次，失败方无一是写操作——全是 `cd X && ls 预期不存在的路径`、
+  // grep 无匹配这类诊断命令按设计返回非 0；被跳过的也全是互不依赖的只读命令，模型下一轮
+  // 原样重跑，净多一次往返。cd 前缀让这些命令判不成只读、落进串行批次，是放大器。
+  // 只读的后续命令照常跑：它们不会落错地方，失败了也会自己报错给模型看。
   let bashCascadeTripped = false;
 
   // 逐批次执行：并发安全批次并行（信号量限流），非并发安全批次串行
@@ -710,8 +722,14 @@ export async function executeTools(
             `并行工具 ${batch.items.length} 个超过并发上限 ${MAX_TOOL_CONCURRENCY}，超出部分排队`,
           );
         }
-        // G20 + GAP-02：sibling-abort controller。
-        // 触发条件：abort 错误 OR Bash 工具 is_error（级联取消兄弟工具）。
+        // G20：sibling-abort controller，触发条件只有 abort 错误（用户 ESC / 上游）。
+        //
+        // ⚠️ 这里**刻意没有** Bash 失败级联（2026-11-06 删除）：进并行批次的 Bash 都是
+        // isConcurrencySafe = 只读命令，只读命令失败不可能让兄弟「落错地方」，取消它们只会
+        // 让模型下一轮重发。实测 13 次级联取消（10 个 bash + 3 个 read），失败方全是只读诊断
+        // （wc 某个文件不存在、which 没找到 tmux、git log 范围写错）。cc 的 StreamingToolExecutor
+        // 有同名机制，但它是流式执行器、只读与写可以同时在飞；本仓的批次划分已经把写类 Bash
+        // 隔到串行批次，那里的依赖链防护见下方 bashCascadeTripped。别加回来。
         const { controller: siblingController, dispose: disposeSibling } =
           createLinkedAbortController(deps.getAbortSignal());
         try {
@@ -733,21 +751,6 @@ export async function executeTools(
                 ? Promise.resolve(precomputed)
                 : executeSingleTool(block, tool, deps, sig);
               return exec.then((outcome) => {
-                // GAP-02：Bash 工具执行失败（is_error）时**立即**联动取消兄弟——
-                // 在 thunk 内触发（而非批次 settle 后），才能真正取消仍在跑/未启动的兄弟。
-                // Bash 有隐式依赖链（mkdir 失败 → 后续 cd 无意义），必然失败的结果是噪音。
-                // Read/WebFetch 等工具失败不级联（它们相互独立）。
-                if (
-                  block.name === "bash" &&
-                  (outcome.block as any).is_error &&
-                  !siblingController.signal.aborted
-                ) {
-                  log.info(
-                    "TOOL",
-                    "Bash 失败级联：联动取消其余兄弟工具（sibling-abort-bash-error）",
-                  );
-                  siblingController.abort(SIBLING_BASH_ERROR_ABORT_REASON);
-                }
                 // 增量呈现的**关键位置**：在 thunk 内、该工具自己 settle 的那一刻上报，
                 // 而不是等 withConcurrencyLimit 返回后的收集循环——那个循环在
                 // `await Promise.all(workers)` 之后，已经是"最慢的兄弟也跑完了"，
@@ -762,28 +765,22 @@ export async function executeTools(
             MAX_TOOL_CONCURRENCY,
             {
               stopOnReject: (reason) => {
-                // abort（用户 ESC / 上游）或 bash 级联 abort 均停止启动后续排队任务
+                // abort（用户 ESC / 上游）停止启动后续排队任务，并联动取消在跑的兄弟
                 if (isAbortError(reason) && !siblingController.signal.aborted) {
                   log.info("TOOL", "并发工具中断：联动取消其余兄弟工具（sibling-abort）");
                   siblingController.abort(abortReasonOf(reason) ?? reason);
                   return true;
                 }
-                // bash 级联已在 thunk 内 abort：一旦子信号被 bash-error abort，也停止启动队列
                 return siblingController.signal.aborted;
               },
               shouldStopLaunching: () => siblingController.signal.aborted,
             },
           );
-          // abort 优先：任一工具被**用户/上游** abort 取消，立即向上抛（bash 级联 abort 不向上抛）。
+          // abort 优先：任一工具被用户/上游 abort 取消，立即向上抛（loop.ts 补 cancel result 收尾）。
           for (const r of batchResults) {
             if (r.status === "rejected" && isAbortError(r.reason)) {
-              // 必须用 abortReasonOf：被取消的 fetch 以**裸字符串** reason reject，
-              // 原先的 `.reason ?? .message` 对字符串取到 undefined，级联取消会被误当成用户中断向上抛。
-              if (abortReasonOf(r.reason) !== SIBLING_BASH_ERROR_ABORT_REASON) {
-                for (const it of batch.items)
-                  closeUnstarted(it.block, "工具未执行：本批次已被中断");
-                throw r.reason;
-              }
+              for (const it of batch.items) closeUnstarted(it.block, "工具未执行：本批次已被中断");
+              throw r.reason;
             }
           }
           for (let i = 0; i < batchResults.length; i++) {
@@ -794,39 +791,21 @@ export async function executeTools(
               // 导致 permissionMode 切换等副作用应用两遍。
             } else {
               const { block: failBlock, idx: failIdx } = batch.items[i];
-              // GAP-02：被 bash 级联取消的兄弟（中断 reason = sibling-bash-error，或 withConcurrencyLimit
-              // 因级联停止启动队列留下的占位）→ 返回明确的"已取消"tool_result，而非泛化异常，
-              // 让模型理解是级联取消非工具本身出错。占位用结构化标记识别，不再匹配错误文案子串。
-              const isBashCascade =
-                abortReasonOf(r.reason) === SIBLING_BASH_ERROR_ABORT_REASON ||
-                (r.reason instanceof QueueSkippedError &&
-                  abortReasonOf(siblingController.signal.reason) ===
-                    SIBLING_BASH_ERROR_ABORT_REASON);
               // 队列占位 = 工具没开始执行，需要替它给 PreToolUse 收尾；真正执行过的工具
               // 抛出中断错误时，executeSingleTool 已经自己收过尾（closeUnstarted 靠 started 去重）。
               if (r.reason instanceof QueueSkippedError) {
                 closeUnstarted(failBlock, "工具未执行：同批次已中断，跳过未启动的并发任务");
               }
-              if (isBashCascade) {
-                log.info("TOOL", `并行工具 ${failBlock.name} 因兄弟 Bash 失败被级联取消`);
-                settle(failIdx, {
-                  type: "tool_result",
-                  tool_use_id: failBlock.id,
-                  content: `已取消：同批次中先行的 Bash 命令执行失败，为避免依赖链上的无效执行，本工具未运行。`,
-                  is_error: true,
-                });
-              } else {
-                log.error(
-                  "TOOL",
-                  `并行工具 ${failBlock.name} 异常未被内部捕获: ${errorMessageOf(r.reason)}`,
-                );
-                settle(failIdx, {
-                  type: "tool_result",
-                  tool_use_id: failBlock.id,
-                  content: `工具执行异常: ${errorMessageOf(r.reason)}`,
-                  is_error: true,
-                });
-              }
+              log.error(
+                "TOOL",
+                `并行工具 ${failBlock.name} 异常未被内部捕获: ${errorMessageOf(r.reason)}`,
+              );
+              settle(failIdx, {
+                type: "tool_result",
+                tool_use_id: failBlock.id,
+                content: `工具执行异常: ${errorMessageOf(r.reason)}`,
+                is_error: true,
+              });
             }
           }
         } finally {
@@ -835,14 +814,17 @@ export async function executeTools(
       } else {
         // 串行批次：逐个执行
         for (const { block, tool, idx } of batch.items) {
-          // GAP-02：串行 Bash 级联——前序 Bash 已失败时，跳过后续 Bash（依赖链无意义）。
-          if (bashCascadeTripped && block.name === "bash") {
-            log.info("TOOL", `串行 Bash 级联：跳过 ${block.name}（同轮先行 Bash 命令已失败）`);
-            closeUnstarted(block, "工具未执行：同轮先行的 Bash 命令执行失败，级联跳过");
+          // GAP-02：串行 Bash 级联——前序写类 Bash 已失败时，跳过后续写类 Bash（判据见 bashCascadeTripped）。
+          if (bashCascadeTripped && block.name === "bash" && !isReadOnlyBashBlock(block)) {
+            log.info(
+              "TOOL",
+              `串行 Bash 级联：跳过 ${block.name}（同轮先行的写类 Bash 命令已失败）`,
+            );
+            closeUnstarted(block, "工具未执行：同轮先行的写类 Bash 命令执行失败，级联跳过");
             settle(idx, {
               type: "tool_result",
               tool_use_id: block.id,
-              content: `已取消：同一轮中先行的 Bash 命令执行失败，后续 Bash 命令通常依赖其结果，为避免无效执行已跳过。如需强制执行请单独重试。`,
+              content: `已取消：同一轮中先行的一条会修改状态的 Bash 命令执行失败，本命令同样会修改状态，可能落在错误的目录/分支上，因此未执行。请先处理前一条的失败，确认无依赖后再单独重试。`,
               is_error: true,
             });
             continue;
@@ -857,10 +839,15 @@ export async function executeTools(
           if (outcome.contextModifier) {
             contextModifiers.push({ idx, modifier: outcome.contextModifier });
           }
-          // GAP-02：Bash 命令失败 → 触发同轮后续 Bash 级联跳过。
-          if (block.name === "bash" && (outcome.block as any).is_error) {
+          // GAP-02：写类 Bash 失败 → 触发同轮后续写类 Bash 级联跳过。只读/切目录的失败不触发：
+          // 它们按设计会返回非 0（grep 无匹配、ls 预期不存在的路径），不会让后续命令落错地方。
+          if (
+            block.name === "bash" &&
+            (outcome.block as any).is_error &&
+            !isReadOnlyBashBlock(block)
+          ) {
             bashCascadeTripped = true;
-            log.info("TOOL", `Bash 命令失败，触发同轮串行 Bash 级联跳过`);
+            log.info("TOOL", `写类 Bash 命令失败，触发同轮串行写类 Bash 级联跳过`);
           }
         }
       }

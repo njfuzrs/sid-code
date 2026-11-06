@@ -4,7 +4,7 @@
  * 每组用例对应一个经源码或数据确认的缺陷，断言的都是**外部可观察结果**（模型收到的
  * tool_result、hook 收到的事件、漏斗埋点、快照对象），不断言实现细节：
  *
- *   1. 并行批次 Bash 失败级联取消兄弟 → 兄弟原先拿到「工具执行异常: undefined」（实测复现）
+ *   1. 并行批次 Bash 失败 → 兄弟照常执行（2026-11-06 起不再级联；原先曾拿到「工具执行异常: undefined」）
  *   2. 串行级联跳过 / 中断时未启动的工具 → PreToolUse 没有 Post* 收尾（轨迹 7/23,654 悬空）
  *   3. 工具执行中被 abort 后自己返回 isError → 原先记 tool_error（遥测 aborted 恒 0）
  *   4. 主循环 PreToolUse hook 阻止 → 原先不进漏斗 1（hook_blocked 恒 0）
@@ -34,7 +34,6 @@ import {
   describeAbortReason,
   errorMessageOf,
   isAbortError,
-  SIBLING_BASH_ERROR_ABORT_REASON,
 } from "@sid-code/core/llm/errors.ts";
 
 // ─── 脚手架 ──────────────────────────────────────────────
@@ -56,13 +55,6 @@ function makeTool(
     execute: exec,
   };
 }
-
-/** 收到 abort 后以 signal.reason 原样 reject——被取消的 fetch / SDK Promise 的真实形态 */
-const rejectsOnAbort: Exec = (_i, signal) =>
-  new Promise((_, reject) => {
-    if (signal?.aborted) return reject(signal.reason);
-    signal?.addEventListener("abort", () => reject(signal.reason), { once: true });
-  });
 
 interface Log {
   pre: string[];
@@ -178,38 +170,37 @@ beforeEach(() => {
 afterEach(() => __resetAnalyticsForTest());
 const failures = () => analytics.filter((e) => e.name === "tool_failure").map((e) => e.meta);
 
-// ─── 1. 并行 Bash 级联取消 ─────────────────────────────────
+// ─── 1. 并行批次 Bash 失败不再级联 ─────────────────────────────
 
-describe("1. 并行批次 Bash 失败 → 兄弟得到级联取消文案，而不是「工具执行异常: undefined」", () => {
-  test("在跑的兄弟（以裸字符串 reason reject）", async () => {
+// 2026-11-06：并行批次里的 Bash 都是只读命令，失败不可能让兄弟「落错地方」。旧实现把兄弟
+// 全部取消，实测 13 次全是只读诊断失败（wc 文件不存在 / which 没找到），模型下一轮原样重发。
+describe("1. 并行批次 Bash 失败 → 兄弟照常执行完（不级联取消）", () => {
+  test("在跑的兄弟拿到自己的真实结果", async () => {
     const tools = [
       makeTool("bash", async () => {
         await new Promise((r) => setTimeout(r, 5));
         return { output: "exit 1", isError: true };
       }),
-      makeTool("web_fetch", rejectsOnAbort),
+      makeTool("web_fetch", async (_i, signal) => {
+        await new Promise((r) => setTimeout(r, 20));
+        return { output: signal?.aborted ? "被取消" : "fetched" };
+      }),
     ];
     const log = emptyLog();
     const { results } = await executeTools(
-      [use("b1", "bash", { command: "false" }), use("w1", "web_fetch")],
+      [use("b1", "bash", { command: "wc -l missing.ts" }), use("w1", "web_fetch")],
       makeDeps(tools, log),
     );
     await flush();
 
-    const sib = resultOf(results, "w1");
-    expect(sib.is_error).toBe(true);
-    expect(String(sib.content)).not.toContain("undefined");
-    expect(String(sib.content)).toContain("先行的 Bash");
-    // 级联取消是中断，不是工具自身的异常
-    expect(failures().find((f) => f.failure_kind === "exception")).toBeUndefined();
-    expect(failures().some((f) => f.failure_kind === "aborted")).toBe(true);
+    expect(resultOf(results, "w1").content).toBe("fetched");
+    expect(resultOf(results, "w1").is_error).toBeFalsy();
+    expect(failures().some((f) => f.failure_kind === "aborted")).toBe(false);
     expectEveryPreClosed(log);
   });
 
-  test("排队未启动的兄弟不再启动，且 PreToolUse 收尾为 skipped", async () => {
-    // 默认并发上限 10（SID_TOOL_MAX_CONCURRENT 未设）：bash + 11 个 grep →
-    // bash 与 g1..g9 同时启动，g10 / g11 在队列里。bash 立即失败、grep 慢，
-    // 所以 bash 那个 worker 出队时级联已触发 —— g10 / g11 必然被跳过，时序确定。
+  test("排队中的兄弟照常启动（超过并发上限的部分也不被跳过）", async () => {
+    // 默认并发上限 10：bash + 11 个 grep，g10 / g11 在队列里，bash 立即失败。
     expect(process.env.SID_TOOL_MAX_CONCURRENT ?? "").toBe("");
     let started = 0;
     const tools = [
@@ -222,17 +213,15 @@ describe("1. 并行批次 Bash 失败 → 兄弟得到级联取消文案，而�
     ];
     const log = emptyLog();
     const blocks = [
-      use("b1", "bash"),
+      use("b1", "bash", { command: "which tmux" }),
       ...Array.from({ length: 11 }, (_, k) => use(`g${k + 1}`, "grep")),
     ];
     const { results } = await executeTools(blocks, makeDeps(tools, log));
     await flush();
 
-    expect(started).toBe(9);
-    for (const id of ["g10", "g11"]) {
-      expect(String(resultOf(results, id).content)).toContain("先行的 Bash");
-      expect(log.failure.find((f) => f.id === id)?.kind).toBe("skipped");
-    }
+    expect(started).toBe(11);
+    for (const id of ["g10", "g11"]) expect(resultOf(results, id).content).toBe("hit");
+    expect(log.failure.some((f) => f.kind === "skipped")).toBe(false);
     expectEveryPreClosed(log);
   });
 });
@@ -241,12 +230,12 @@ describe("1. 并行批次 Bash 失败 → 兄弟得到级联取消文案，而�
 
 describe("2. PreToolUse 已 fire 但工具没执行 → 必须收尾（kind=skipped，只为配对）", () => {
   test("串行 Bash 级联跳过（轨迹里 5 个悬空 Pre 的真实形态）", async () => {
-    let ran = 0;
+    const ran: string[] = [];
     const tools = [
       makeTool(
         "bash",
         async (i) => {
-          ran++;
+          ran.push(i.command);
           return i.command === "make" ? { output: "exit 2", isError: true } : { output: "ok" };
         },
         { concurrent: false },
@@ -254,13 +243,13 @@ describe("2. PreToolUse 已 fire 但工具没执行 → 必须收尾（kind=skip
     ];
     const log = emptyLog();
     const { results } = await executeTools(
-      [use("b1", "bash", { command: "make" }), use("b2", "bash", { command: "ls bin" })],
+      [use("b1", "bash", { command: "make" }), use("b2", "bash", { command: "rm -rf dist" })],
       makeDeps(tools, log),
     );
     await flush();
 
-    expect(ran).toBe(1);
-    expect(String(resultOf(results, "b2").content)).toContain("同一轮中先行的 Bash");
+    expect(ran).toEqual(["make"]);
+    expect(String(resultOf(results, "b2").content)).toContain("会修改状态的 Bash");
     const skipped = log.failure.find((f) => f.id === "b2");
     expect(skipped?.kind).toBe("skipped");
     expectEveryPreClosed(log);
@@ -294,6 +283,96 @@ describe("2. PreToolUse 已 fire 但工具没执行 → 必须收尾（kind=skip
     expect(isAbortError(thrown)).toBe(true);
     expect(log.failure.find((f) => f.id === "e1")?.kind).toBe("aborted");
     expect(log.failure.find((f) => f.id === "w1")?.kind).toBe("skipped");
+    expectEveryPreClosed(log);
+  });
+});
+
+// ─── 2b. 串行级联判据：只有写类 Bash 失败才触发，只跳过写类 Bash ──────────────
+
+describe("2b. 串行 Bash 级联只在「写类失败 → 写类后续」之间生效", () => {
+  const runSerial = async (cmds: Array<[string, boolean]>) => {
+    const ran: string[] = [];
+    const fail = new Map(cmds);
+    const tools = [
+      makeTool(
+        "bash",
+        async (i) => {
+          ran.push(i.command);
+          return fail.get(i.command) ? { output: "exit 1", isError: true } : { output: "ok" };
+        },
+        { concurrent: false },
+      ),
+    ];
+    const log = emptyLog();
+    const { results } = await executeTools(
+      cmds.map(([c], k) => use(`b${k + 1}`, "bash", { command: c })),
+      makeDeps(tools, log),
+    );
+    await flush();
+    expectEveryPreClosed(log);
+    return { ran, results };
+  };
+
+  test("轨迹原形：cd 前缀的只读诊断失败（ls 预期不存在的路径）不跳过后续 grep", async () => {
+    // 20261104-105914-8e89e13c messages[103]：第一条按设计 exit 1，第二条与之无关却被跳过
+    const a = `cd /repo && echo "=== 新位置 ===" && ls -la "new.md" && ls "old.md" 2>&1`;
+    const b = `cd /repo && grep -n "todo/x\\|../todo/x" "new.md" | head -5; echo "--- 无输出 ---"`;
+    const { ran, results } = await runSerial([
+      [a, true],
+      [b, false],
+    ]);
+    expect(ran).toEqual([a, b]);
+    expect(resultOf(results, "b2").content).toBe("ok");
+  });
+
+  test("写类失败后，只读后续照常跑（它们不会落错地方，失败也会自己报错）", async () => {
+    const { ran } = await runSerial([
+      ["git checkout feat/x", true],
+      ["cd /repo && git status --short", false],
+      ["ls dist", false],
+    ]);
+    expect(ran).toEqual(["git checkout feat/x", "cd /repo && git status --short", "ls dist"]);
+  });
+
+  test("写类失败后，后续写类仍被跳过（cd 失败 → rm 不能落到错的目录）", async () => {
+    const { ran, results } = await runSerial([
+      ["cd build && make", true],
+      ["ls bin", false],
+      ["rm -rf dist/*", false],
+    ]);
+    expect(ran).toEqual(["cd build && make", "ls bin"]);
+    expect(String(resultOf(results, "b3").content)).toContain("已取消");
+  });
+
+  test("只读失败不会「延迟触发」：它之后的写类照常跑", async () => {
+    const { ran } = await runSerial([
+      ["grep -n nothing f.ts", true],
+      ["mkdir -p out", false],
+    ]);
+    expect(ran).toEqual(["grep -n nothing f.ts", "mkdir -p out"]);
+  });
+
+  test("拿不到命令串的 Bash 按写类处理（宁可多拦一条）", async () => {
+    let ran = 0;
+    const tools = [
+      makeTool(
+        "bash",
+        async () => {
+          ran++;
+          return { output: "exit 1", isError: true };
+        },
+        { concurrent: false },
+      ),
+    ];
+    const log = emptyLog();
+    // 两条都没有 command 字段：第一条失败按写类触发，第二条按写类被跳过
+    const { results } = await executeTools(
+      [use("b1", "bash"), use("b2", "bash")],
+      makeDeps(tools, log),
+    );
+    await flush();
+    expect(ran).toBe(1);
+    expect(String(resultOf(results, "b2").content)).toContain("已取消");
     expectEveryPreClosed(log);
   });
 });
@@ -525,24 +604,20 @@ describe("8. resolveToolPermission 里 PreToolUse 抛异常 → 不再二次 fir
 describe("中断 reason 工具函数", () => {
   test("abortReasonOf：裸字符串 / .reason / 嵌套 reason / message", () => {
     expect(abortReasonOf("user-cancel")).toBe("user-cancel");
-    expect(abortReasonOf({ reason: SIBLING_BASH_ERROR_ABORT_REASON })).toBe("sibling-bash-error");
+    expect(abortReasonOf({ reason: "midturn-preempt" })).toBe("midturn-preempt");
     expect(abortReasonOf({ reason: { reason: "turn-timeout" } })).toBe("turn-timeout");
     expect(abortReasonOf(new Error("x"))).toBe("x");
     expect(abortReasonOf(undefined)).toBeUndefined();
   });
 
-  test("sibling-bash-error 被识别为中断（原名未登记，isAbortError=false）", () => {
-    expect(isAbortError(SIBLING_BASH_ERROR_ABORT_REASON)).toBe(true);
-  });
-
   test("describeAbortReason 不把非用户成因说成「用户取消」", () => {
     expect(describeAbortReason("user-cancel")).toBe("用户取消");
-    expect(describeAbortReason(SIBLING_BASH_ERROR_ABORT_REASON)).not.toContain("用户");
+    expect(describeAbortReason("race-settled")).not.toContain("用户");
     expect(describeAbortReason("turn-timeout")).toContain("超时");
   });
 
   test("errorMessageOf：非 Error 抛出值不产出 undefined", () => {
-    expect(errorMessageOf("sibling-bash-error")).toBe("sibling-bash-error");
+    expect(errorMessageOf("race-settled")).toBe("race-settled");
     expect(errorMessageOf(new Error("boom"))).toBe("boom");
     expect(errorMessageOf(42)).toBe("42");
   });
