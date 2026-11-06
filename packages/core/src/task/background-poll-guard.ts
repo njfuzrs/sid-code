@@ -25,8 +25,16 @@ import { isTerminalStatus, type TaskState } from "./types.ts";
 
 export { BACKGROUND_RECEIPT_NOTICE } from "./background-receipt.ts";
 
-/** 拦截命中的形态（进 `BackgroundPollIntercepted` 事件，F2 按 kind 归因） */
-export type BackgroundPollKind = "read_output" | "bash_tasks_dir" | "blocking_wait";
+/**
+ * 拦截命中的形态（进 `BackgroundPollIntercepted` 事件，F2 按 kind 归因）。
+ *
+ * `status_poll`：`bg_task_list` 在后台任务状态与上次查询完全相同时重复调用。
+ * 事故 20261106-101611-d0a96bc1：后台全量测试运行期间主代理 6 分钟内 71 次
+ * `bg_task_list({status:"all"})`（中位间隔 4.3s，每轮输入约 24.6 万 token），最后自己
+ * `task_stop` 杀掉了测试。前三种形态都拦住了，唯独漏了这个入口；循环检测的同参拦截
+ * 又因默认关闭而不在场。
+ */
+export type BackgroundPollKind = "read_output" | "bash_tasks_dir" | "blocking_wait" | "status_poll";
 
 export type BackgroundPollCheck =
   | { intercept: false }
@@ -40,7 +48,14 @@ export interface BackgroundPollContext {
   tasksDir: string;
   /** 用户主目录，用于识别 `~/...` 与 `$HOME/...` 形式 */
   home: string;
+  /** 全部后台任务（含终态），`bg_task_list` 的状态签名按它算——与工具自身 `isPanelTask` 同口径 */
+  allBackgroundTasks: () => TaskState[];
+  /** 上一次**放行执行**的 `bg_task_list` 的状态签名（null = 本进程还没查过） */
+  taskListMemo: { last: string | null };
 }
+
+/** 进程级记忆：主循环只有一条，`bg_task_list` 的拦截只接主循环（见 tool-executor 的 Q1 段） */
+const defaultTaskListMemo: { last: string | null } = { last: null };
 
 export function defaultBackgroundPollContext(): BackgroundPollContext {
   return {
@@ -49,7 +64,46 @@ export function defaultBackgroundPollContext(): BackgroundPollContext {
       getAllTasks().filter((t) => t.isBackgrounded && !isTerminalStatus(t.status)),
     tasksDir: sidPaths.tasks(),
     home: homedir(),
+    allBackgroundTasks: () => getAllTasks().filter((t) => t.isBackgrounded === true),
+    taskListMemo: defaultTaskListMemo,
   };
+}
+
+/** 测试复位 */
+export function __resetBackgroundPollGuardForTest(): void {
+  defaultTaskListMemo.last = null;
+}
+
+/**
+ * `bg_task_list` 的状态签名：过滤条件 + 每个后台任务的 id 与状态。
+ *
+ * 刻意不含耗时、进度 token 数：它们每次调用都在变，算进来签名就永远不相等，拦截形同虚设
+ * （71 次调用里返回体唯一变化的就是 `<duration>`）。子代理的工具调用数算进来——那是
+ * 「真的有进展」的信号，模型据此判断是否值得再看一眼是正当的。
+ */
+function taskListSignature(statusFilter: string, tasks: TaskState[]): string {
+  const parts = tasks
+    .map((t) => {
+      const tools = (t as { progress?: { toolUseCount?: number } }).progress?.toolUseCount;
+      return `${t.id}:${t.status}${tools !== undefined ? `:${tools}` : ""}`;
+    })
+    .sort();
+  return `${statusFilter}|${parts.join(",")}`;
+}
+
+/** 状态未变时的回执：把当前状态带上，模型不会因拦截丢信息（压缩后再问也能拿到答案） */
+function statusPollText(running: TaskState[], now = Date.now()): string {
+  const items = running
+    .map(
+      (t) =>
+        `${t.id}（${t.description.slice(0, 60)}，已运行 ${Math.round((now - t.startTime) / 1000)}s）`,
+    )
+    .join("；");
+  return (
+    `后台任务状态与上次查询相同，本次调用未执行：${items} 仍在运行。` +
+    `完成时会自动以 <task-notification> 把结果送给你，不需要反复查询。` +
+    `可以继续做不依赖它的工作，或告诉用户已启动什么后结束本轮。`
+  );
 }
 
 function isRunning(task: TaskState | undefined): task is TaskState {
@@ -154,6 +208,25 @@ export function checkBackgroundPoll(
     const id = typeof params.task_id === "string" ? params.task_id : "";
     if (!id || !isRunning(ctx.getTask(id))) return { intercept: false };
     return { intercept: true, kind: "blocking_wait", taskIds: [id], output: interceptText([id]) };
+  }
+
+  if (toolName === "bg_task_list") {
+    // 第一次查询、或状态有任何变化 → 放行（看一眼当前有哪些任务是正当的）；
+    // 有运行中任务且状态与上次放行时完全相同 → 拦。不按次数拦：两次之间状态变了就是新信息。
+    const statusFilter = typeof params.status === "string" ? params.status : "all";
+    const sig = taskListSignature(statusFilter, ctx.allBackgroundTasks());
+    const running = ctx.runningBackgroundTasks();
+    if (running.length > 0 && ctx.taskListMemo.last === sig) {
+      return {
+        intercept: true,
+        kind: "status_poll",
+        taskIds: running.map((t) => t.id),
+        output: statusPollText(running),
+      };
+    }
+    // 放行即将执行：记下这次模型看到的状态
+    ctx.taskListMemo.last = sig;
+    return { intercept: false };
   }
 
   return { intercept: false };

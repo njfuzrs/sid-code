@@ -23,6 +23,7 @@ import {
   isDiffContent,
   getFilenameFromInput,
   extractTaskOutputDisplay,
+  extractTaskListDisplay,
 } from "./ui-utils.ts";
 // 直接复用产生端的 origin 常量,而非在此重复字符串字面量——避免"注入端打了 origin、
 // 隐藏端白名单漏登记"的漂移(compact-reattach 泄漏正是此类接线遗漏)。
@@ -511,7 +512,9 @@ export function buildCompletedToolCall(
       ? ""
       : toolName === "task_output" && !isError
         ? extractTaskOutputDisplay(block.content)
-        : block.content,
+        : toolName === "bg_task_list" && !isError
+          ? extractTaskListDisplay(block.content)
+          : block.content,
     isError,
     // isDiff 判定喂原始 content：置空后再判会恒为 false，但 summary 档的工具本就不产 diff，
     // 这里保持用原文判定是为了「档位与 diff 判定解耦」——将来若有产 diff 的 summary 工具，

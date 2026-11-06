@@ -145,7 +145,13 @@ describe("LSP header 摘要 —— 各操作形态", () => {
 import { TaskOutputTool } from "@sid-code/core/tool/task-output.ts";
 import { TaskStopTool } from "@sid-code/core/tool/task-stop.ts";
 import { registerTask, clearAllTasks } from "@sid-code/core/task/index.ts";
-import { extractTaskOutputDisplay, getResultSummary } from "@sid-code/cli/ui/ui-utils.ts";
+import {
+  extractTaskOutputDisplay,
+  extractTaskListDisplay,
+  getResultSummary,
+} from "@sid-code/cli/ui/ui-utils.ts";
+import { TaskListTool } from "@sid-code/core/tool/task-list.ts";
+import { buildCompletedToolCall } from "@sid-code/cli/ui/history-adapter.ts";
 
 describe("后台任务工具 header：用任务描述区分并行调用", () => {
   test("4 个不同 task_id 的 task_output header 非空且互不相同", () => {
@@ -199,5 +205,50 @@ describe("后台任务工具 header：用任务描述区分并行调用", () => 
     expect(getResultSummary("task_output", content)).toBe("已读取结果 · 3 行");
     // 旧会话 JSON 形态：原样返回（不吞内容）
     expect(extractTaskOutputDisplay('{"task_id":"x"}')).toBe('{"task_id":"x"}');
+  });
+});
+
+describe("bg_task_list：标签块不上屏（事故 20261106-101611-d0a96bc1）", () => {
+  test("header 有摘要，⎿ 正文是「描述 · 状态 · 耗时」，结果摘要报运行中个数", async () => {
+    const name = new TaskListTool().name();
+    expect(getToolSummary(name, { status: "all" })).toBe("查看后台任务");
+    expect(getToolSummary(name, { status: "running" })).toBe("查看后台任务 · running");
+
+    clearAllTasks();
+    registerTask({
+      id: "snh2czqxk",
+      type: "local_shell",
+      status: "running",
+      description: "bun test 2>&1 | tail -60",
+      startTime: Date.now() - 5000,
+      outputFile: "/dev/null",
+      outputOffset: 0,
+      notified: false,
+      command: "bun test 2>&1 | tail -60",
+      interrupted: false,
+      isBackgrounded: true,
+    } as any);
+    // 喂真实工具输出，不手写标签块
+    const { output } = await new TaskListTool().execute({ status: "all" });
+    clearAllTasks();
+    expect(output).toContain("<task-list>");
+
+    const shown = extractTaskListDisplay(output);
+    expect(shown).not.toContain("<");
+    expect(shown).toMatch(/^bun test 2>&1 \| tail -60 · 运行中 · \d+\.\ds$/);
+    expect(getResultSummary(name, output)).toBe("1 个运行中");
+
+    // 真实翻卡路径：⎿ 正文不含标签块（只测纯函数会漏掉 history-adapter 没接线）
+    const card = buildCompletedToolCall(
+      { type: "tool_result", tool_use_id: "c1", content: output } as any,
+      name,
+    );
+    expect(String(card.resultDisplay?.content)).not.toContain("<task-list>");
+    expect(card.resultSummary).toBe("1 个运行中");
+  });
+
+  test("非标签块（空列表 / 拦截回执）原样展示，不给假摘要", () => {
+    expect(extractTaskListDisplay("当前没有后台任务")).toBe("当前没有后台任务");
+    expect(getResultSummary("bg_task_list", "当前没有后台任务")).toBe("");
   });
 });

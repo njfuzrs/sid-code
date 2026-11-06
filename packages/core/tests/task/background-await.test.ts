@@ -14,6 +14,7 @@ import {
   trackShellActivity,
   recordShellOutputSize,
   isAwaitedBackgroundTask,
+  outputBufferedUntilExit,
   hasAwaitedBackgroundTasks,
   beginMainLoopTurn,
   endMainLoopTurn,
@@ -140,4 +141,33 @@ describe("真实 shell 任务端到端：常驻服务不会让空闲主循环永
     expect(await waitForBackgroundNotification()).toBe("idle");
     expect(getTask(task.id)?.status).toBe("running");
   }, 15_000);
+});
+
+describe("outputBufferedUntilExit：管道末段读到 EOF 才输出的命令（事故 20261106-101611-d0a96bc1）", () => {
+  test("`… | tail -60` 等 → true", () => {
+    expect(
+      outputBufferedUntilExit("bun test --test-name-pattern '^(?!.*\\[slow\\])' 2>&1 | tail -60"),
+    ).toBe(true);
+    expect(outputBufferedUntilExit("make build 2>&1 | /usr/bin/tail -n 20")).toBe(true);
+    expect(outputBufferedUntilExit("grep -r x . | sort")).toBe(true);
+    expect(outputBufferedUntilExit("cat a | wc -l; echo done")).toBe(true);
+  });
+  test("流式 / 非管道 / || → false", () => {
+    expect(outputBufferedUntilExit("bun test")).toBe(false);
+    expect(outputBufferedUntilExit("tail -f log.txt")).toBe(false);
+    expect(outputBufferedUntilExit("bun run server 2>&1 | tail -f")).toBe(false);
+    expect(outputBufferedUntilExit("bun run server | tail -F -n 5")).toBe(false);
+    expect(outputBufferedUntilExit("cmd | tail --follow")).toBe(false);
+    expect(outputBufferedUntilExit("bun run server | tee log")).toBe(false);
+    expect(outputBufferedUntilExit("make || tail x")).toBe(false);
+  });
+});
+
+test("isAwaitedBackgroundTask：`… | tail -60` 静默再久也算值得等（它退出时必有完成通知）", () => {
+  const t = { ...shellTask("buf"), command: "bun test 2>&1 | tail -60" };
+  trackShellActivity("buf", 0, T0);
+  expect(isAwaitedBackgroundTask(t, T0 + SHELL_QUIESCENT_MS * 10)).toBe(true);
+  // 对照：同样静默的常驻服务不算
+  trackShellActivity("srv", 0, T0);
+  expect(isAwaitedBackgroundTask(shellTask("srv"), T0 + SHELL_QUIESCENT_MS)).toBe(false);
 });

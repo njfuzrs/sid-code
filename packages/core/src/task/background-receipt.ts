@@ -9,5 +9,5 @@
  */
 export const BACKGROUND_RECEIPT_NOTICE =
   "完成后会以 <task-notification> 自动通知你。运行期间不要 read / ls / tail / cat 它的 output_file 或 tasks 目录，" +
-  "也不要用 task_output / bg_task_get 阻塞等待或轮询（运行中这类调用会被拦截）；继续做不依赖它的工作，" +
+  "也不要用 task_output / bg_task_get 阻塞等待、或反复 bg_task_list 轮询（运行中这类调用会被拦截）；继续做不依赖它的工作，" +
   "或简短告诉用户启动了什么并结束本轮。用户问进度时，如实说任务仍在运行、完成后会自动送达。";
