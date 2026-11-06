@@ -754,6 +754,18 @@ export function logMemoryWrite(opts: {
     looksSnapshot: boolean;
   };
   hintCount: number;
+  /**
+   * 本次是否新建 key（PR-A / A3）。只有 project / global 路径能判定 ——
+   * `MemoryStore.set()` 内部把 `resolveMemoryKey` 解析后的真实 key 与已有条目比对；
+   * team / agent 两条线走各自的 store，无法给出同口径的判据，所以不传 → 事件里不带该字段
+   * （它们也就不进「新建写入平均挤掉几条」的分母，不会稀释口径）。
+   */
+  isNewKey?: boolean;
+  /**
+   * 本次写入触发的满额淘汰条数（PR-A / A3）。`0` = 未触发或未满额；
+   * 恒为 `1` 说明满额用户在每次写入都在挤掉一条记忆（正是 D2 事故的形态）。
+   */
+  evictedCount?: number;
 }): void {
   const needsWhy = opts.type === "feedback" || opts.type === "project";
   emit(EVENT_NAMES.MEMORY_WRITE, {
@@ -766,6 +778,8 @@ export function logMemoryWrite(opts: {
     relative_date: opts.quality.relativeDate !== null,
     looks_snapshot: opts.quality.looksSnapshot,
     hint_count: opts.hintCount,
+    ...(opts.isNewKey !== undefined ? { is_new_key: opts.isNewKey } : {}),
+    ...(opts.evictedCount !== undefined ? { evicted_count: opts.evictedCount } : {}),
   });
 }
 
@@ -782,6 +796,8 @@ export type MemoryGuardKind =
   | "scope_denied"
   | "scope_type_confusion"
   | "evicted_to_archive"
+  /** PR-A（D2）：删除一条记忆后，把当初被它挤走的记忆从 archive/ 回填 */
+  | "restored_from_archive"
   | "empty_archived"
   | "shadowed"
   /** 横向剖析 T3：索引已截断时后台代理想新建 key 被拒（主模型路径不受此限） */

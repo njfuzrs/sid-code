@@ -10,7 +10,7 @@ export class MemoryCommand implements LocalCommandModule {
       return { type: "dialog", dialog: "memory" };
     }
 
-    const { MemoryStore } = await import("@sid-code/core/memory/store.ts");
+    const { MemoryStore, formatEvictionNotice } = await import("@sid-code/core/memory/store.ts");
     const store = new MemoryStore(process.cwd());
     await store.load();
 
@@ -126,8 +126,12 @@ export class MemoryCommand implements LocalCommandModule {
         if (!key || !value) {
           return errorText("用法: /memory set <key> <value> [--global]");
         }
-        await store.set(key, value, scope);
-        return { type: "text", value: `记忆已保存: [${scope}] ${key} = ${value}` };
+        // PR-A（A2）：满额淘汰的代价必须在命令输出里可见 —— 与 save_memory 工具同文案。
+        const result = await store.set(key, value, scope);
+        return {
+          type: "text",
+          value: `记忆已保存: [${scope}] ${key} = ${value}` + formatEvictionNotice(result.evicted),
+        };
       }
 
       case "get": {
