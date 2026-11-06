@@ -8,6 +8,10 @@ const lsp: UnifiedCommand = {
   description: "LSP 代码智能管理",
   argumentHint: "[status|reload]",
   source: "builtin",
+  // 只放状态查询（A2 档，D13）：reload 会 reinitializeLSP 重启全部语言服务器，
+  // 而且无头形态本来就不启动 LSP（/lsp status 的文案已说明），放它没有收益只有副作用。
+  // 无参放行：主命令缺省即 status。`ls` 是 status 的别名，一并放。
+  headless: { subcommands: ["status", "ls"] },
   outputPanel: true,
   subCommands: () => [
     {

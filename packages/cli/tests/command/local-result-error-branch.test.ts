@@ -98,6 +98,7 @@ describe("无头：error 结果翻成 kind:error（退出码非 0 的唯一来�
     const r = await resolveHeadlessSlash("/boom", {
       commands: [localCmd("boom", errorText("炸了"))],
       executor: new CommandExecutor(CTX),
+      mode: "p",
     });
     expect(r).toEqual({ kind: "error", message: "错误: 炸了" });
   });
@@ -106,6 +107,7 @@ describe("无头：error 结果翻成 kind:error（退出码非 0 的唯一来�
     const r = await resolveHeadlessSlash("/ok", {
       commands: [localCmd("ok", { type: "text", value: "好了" })],
       executor: new CommandExecutor(CTX),
+      mode: "p",
     });
     expect(r).toEqual({ kind: "output", text: "好了", displayCommand: "/ok" });
   });
