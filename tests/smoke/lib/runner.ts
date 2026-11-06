@@ -1,0 +1,296 @@
+/**
+ * G2 运行器：在隔离环境里用真实入口跑一个回放用例，然后断言轨迹与产物。
+ *
+ * 隔离做法（每条都是踩过或实测过的）：
+ * - `env -i` 起子进程，只放白名单变量。宿主的 TERM_PROGRAM / CLAUDE_* / 代理变量都不进来。
+ * - `HOME` 指向临时目录，`SID_CONFIG_DIR` 指向另一个临时目录。跑完断言假 HOME 下
+ *   **没有** `.sid-code/`：有就说明某个落盘点没跟随 `SID_CONFIG_DIR`（P-3 的长期防线）。
+ * - 模型价格写死在 settings.json 里（用户手写价是定价解析的第 2 优先级），
+ *   CI 上没有网关价格缓存也算出同一个数，A7 预算熔断才是确定性的。
+ * - 不看退出码，除非用例显式声明：无头下命令失败曾一律退 0（无头斜杠命令方案 D2）。
+ */
+import {
+  existsSync,
+  mkdtempSync,
+  mkdirSync,
+  readFileSync,
+  readdirSync,
+  realpathSync,
+  rmSync,
+  writeFileSync,
+} from "node:fs";
+import { tmpdir } from "node:os";
+import { dirname, join, resolve } from "node:path";
+import { checkEventExpect, checkFileExpect, parseEvents } from "./assert.ts";
+import { findOutOfRootPaths, substituteCaseRoot } from "./fixture.ts";
+import type { RunOutput, SmokeCase } from "./types.ts";
+
+export const REPO_ROOT = resolve(import.meta.dir, "../../..");
+export const CASES_DIR = resolve(import.meta.dir, "../cases");
+const SOURCE_ENTRY = join(REPO_ROOT, "packages/cli/src/entrypoints/bootstrap.ts");
+
+export const SMOKE_MODEL = "smoke-replay";
+const CASE_TIMEOUT_MS = 60_000;
+
+/** 怎么启动 sid-code：构建产物（默认，测的是「装好的东西」）或源码入口（变异复跑用，免去每次 make build）。 */
+export type Launcher = { kind: "binary"; path: string } | { kind: "source" };
+
+export interface CaseResult {
+  id: string;
+  status: "pass" | "fail" | "skip";
+  reason?: string;
+  failures: string[];
+  durationMs: number;
+  /** 失败时保留的工作目录，方便直接翻轨迹 */
+  workDir?: string;
+}
+
+export interface LoadedCase {
+  def: SmokeCase;
+  dir: string;
+  replayPath: string;
+}
+
+export async function loadCases(filter?: string[]): Promise<LoadedCase[]> {
+  const ids = readdirSync(CASES_DIR, { withFileTypes: true })
+    .filter((d) => d.isDirectory())
+    .map((d) => d.name)
+    .sort();
+  const out: LoadedCase[] = [];
+  for (const id of ids) {
+    if (filter && filter.length > 0 && !filter.includes(id)) continue;
+    const dir = join(CASES_DIR, id);
+    const mod = await import(join(dir, "case.ts"));
+    const def: SmokeCase = mod.default;
+    if (def.id !== id) throw new Error(`用例目录 ${id} 的 case.ts 声明 id=${def.id}，两者必须一致`);
+    out.push({ def, dir, replayPath: join(dir, "replay.jsonl") });
+  }
+  return out;
+}
+
+function launcherArgv(l: Launcher): string[] {
+  return l.kind === "binary" ? [l.path] : [process.execPath, SOURCE_ENTRY];
+}
+
+/** 子进程只拿到这些变量。PATH 保留 bun 与系统目录，hook 命令和 git 需要它。 */
+function isolatedEnv(
+  home: string,
+  configDir: string,
+  replayFile: string,
+  extra?: Record<string, string>,
+) {
+  const bunDir = dirname(process.execPath);
+  return {
+    PATH: `${bunDir}:/usr/local/bin:/usr/bin:/bin`,
+    HOME: home,
+    TMPDIR: tmpdir(),
+    LANG: "en_US.UTF-8",
+    TERM: "dumb",
+    SID_CONFIG_DIR: configDir,
+    SID_CODE_REPLAY_FILE: replayFile,
+    SID_CODE_DISABLE_NONESSENTIAL_TRAFFIC: "1",
+    SID_CODE_DISABLE_TELEMETRY: "1",
+    // 后台记忆提取在 end_turn 后起跑，退出前 drainPending(5_000) 会等满 5s
+    // （2026-11-07 实测：同一夹具开着 5.3s、关掉 0.27s）。它不是 G2 要测的东西；
+    // 将来要守护记忆提取，单独写用例并在该用例的 env 里打开。
+    SID_CODE_AUTO_MEMORY: "0",
+    ...extra,
+  };
+}
+
+/**
+ * 预置维护水位线，让所有维护任务判为「未到期」，启动时就不会拉起 detached 维护子进程。
+ *
+ * 不预置的后果（2026-11-07 实测）：子进程 `unref` 后比主进程活得久，A7 这种 0.4s 就退出的
+ * 用例，运行器删完临时目录之后它又把 state/maintenance-*.json 写回来，留下孤儿目录。
+ * 维护任务本身不是 G2 要测的东西，所以在源头不让它起，而不是等它跑完。
+ */
+function seedMaintenanceWatermarks(configDir: string) {
+  const now = Date.now();
+  const stateDir = join(configDir, "state");
+  mkdirSync(stateDir, { recursive: true });
+  const tasks = Object.fromEntries(
+    ["session-cleanup", "trace-prune", "trace-upload", "worktree-gc", "housekeeping"].map((t) => [
+      t,
+      now,
+    ]),
+  );
+  writeFileSync(join(stateDir, "maintenance-watermarks.json"), JSON.stringify({ tasks }));
+  writeFileSync(join(configDir, ".last-cleanup"), String(now));
+}
+
+function smokeSettings() {
+  return {
+    model: SMOKE_MODEL,
+    availableModels: [
+      {
+        name: SMOKE_MODEL,
+        provider: "replay",
+        apiKey: "smoke-not-a-key",
+        pricing: { input: 1, output: 1 },
+      },
+    ],
+  };
+}
+
+export async function runCase(
+  c: LoadedCase,
+  launcher: Launcher,
+  /** keep：通过也保留工作目录；keepOnFail（缺省 true）：失败时保留供排查。变异复跑里失败是预期结果，传 false */
+  opts: { keep?: boolean; keepOnFail?: boolean } = {},
+): Promise<CaseResult> {
+  const keepOnFail = opts.keepOnFail ?? true;
+  const { def } = c;
+  const started = performance.now();
+  if (def.platforms && !def.platforms.includes(process.platform)) {
+    return {
+      id: def.id,
+      status: "skip",
+      reason: `仅在 ${def.platforms.join("/")} 上运行，当前 ${process.platform}`,
+      failures: [],
+      durationMs: 0,
+    };
+  }
+
+  // realpath：macOS 的 /var → /private/var，轨迹与工具入参里记的是真实路径
+  const root = realpathSync(mkdtempSync(join(tmpdir(), `sid-smoke-${def.id}-`)));
+  const repo = join(root, "repo");
+  const home = join(root, "home");
+  const configDir = join(root, "config");
+  const failures: string[] = [];
+
+  try {
+    for (const d of [repo, home, configDir]) mkdirSync(d, { recursive: true });
+    for (const [rel, content] of Object.entries(def.repo)) {
+      const p = join(repo, rel);
+      mkdirSync(dirname(p), { recursive: true });
+      writeFileSync(p, content);
+    }
+    Bun.spawnSync(["git", "init", "-q"], { cwd: repo });
+    writeFileSync(join(configDir, "settings.json"), JSON.stringify(smokeSettings(), null, 2));
+    seedMaintenanceWatermarks(configDir);
+
+    const replay = substituteCaseRoot(readFileSync(c.replayPath, "utf8"), repo);
+    const outOfRoot = findOutOfRootPaths(replay, repo);
+    if (outOfRoot.length > 0) {
+      // 拒绝执行：回放里的工具是真跑的，越界路径会读写用例目录之外的文件
+      return {
+        id: def.id,
+        status: "fail",
+        failures: ["夹具含用例根目录之外的路径，拒绝执行：", ...outOfRoot],
+        durationMs: performance.now() - started,
+      };
+    }
+    const replayFile = join(root, "replay.jsonl");
+    writeFileSync(replayFile, replay);
+
+    const proc = Bun.spawn(
+      [
+        ...launcherArgv(launcher),
+        "--dangerously-skip-permissions",
+        "--output-format",
+        "json",
+        ...def.argv,
+      ],
+      {
+        cwd: repo,
+        env: isolatedEnv(home, configDir, replayFile, def.env),
+        stdin: "ignore",
+        stdout: "pipe",
+        stderr: "pipe",
+      },
+    );
+    const timer = setTimeout(() => proc.kill("SIGKILL"), CASE_TIMEOUT_MS);
+    const [stdoutText, stderrText, exitCode] = await Promise.all([
+      new Response(proc.stdout).text(),
+      new Response(proc.stderr).text(),
+      proc.exited,
+    ]);
+    clearTimeout(timer);
+
+    let stdout: unknown = null;
+    try {
+      stdout = JSON.parse(stdoutText);
+    } catch {
+      failures.push(
+        `stdout 不是合法 JSON（exit=${exitCode}）：${stdoutText.slice(0, 300)}\nstderr 末尾：${stderrText.slice(-500)}`,
+      );
+    }
+
+    const sessionId = (stdout as any)?.session_id;
+    const eventsPath = sessionId
+      ? join(configDir, "trajectories/sessions", sessionId, "events.jsonl")
+      : null;
+    if (stdout !== null && (!eventsPath || !existsSync(eventsPath))) {
+      failures.push(`找不到本次会话的轨迹（session_id=${sessionId ?? "缺失"}）`);
+    }
+    const events =
+      eventsPath && existsSync(eventsPath) ? parseEvents(readFileSync(eventsPath, "utf8")) : [];
+
+    for (const exp of def.expect.events ?? []) {
+      const f = checkEventExpect(events, exp);
+      if (f) failures.push(f);
+    }
+    const readRepoFile = (rel: string) => {
+      const p = join(repo, rel);
+      return existsSync(p) ? readFileSync(p, "utf8") : null;
+    };
+    for (const exp of def.expect.files ?? []) {
+      const f = checkFileExpect(readRepoFile, exp);
+      if (f) failures.push(f);
+    }
+    if (def.expect.exitCode !== undefined && exitCode !== def.expect.exitCode) {
+      failures.push(`退出码期望 ${def.expect.exitCode}，实际 ${exitCode}`);
+    }
+    if (def.expect.output) {
+      const out: RunOutput = { exitCode, stdout, stderr: stderrText };
+      const f = def.expect.output(out);
+      if (f) failures.push(f);
+    }
+    // P-3 长期防线：所有落盘都必须跟随 SID_CONFIG_DIR
+    if (existsSync(join(home, ".sid-code"))) {
+      const leaked = Bun.spawnSync(["find", join(home, ".sid-code"), "-type", "f"])
+        .stdout.toString()
+        .trim();
+      failures.push(
+        `有文件写进了 $HOME/.sid-code（没跟随 SID_CONFIG_DIR）：\n${leaked.split("\n").slice(0, 10).join("\n")}`,
+      );
+    }
+
+    return {
+      id: def.id,
+      status: failures.length === 0 ? "pass" : "fail",
+      failures,
+      durationMs: performance.now() - started,
+      workDir: (failures.length > 0 && keepOnFail) || opts.keep ? root : undefined,
+    };
+  } finally {
+    // 只删本次 mkdtemp 出来的目录；失败时按 keepOnFail 决定是否保留供排查
+    const keep = opts.keep || (failures.length > 0 && keepOnFail);
+    if (!keep) rmSync(root, { recursive: true, force: true });
+  }
+}
+
+/** 写进 $GITHUB_STEP_SUMMARY 的表格：job 绿的时候 skip 也要看得见。 */
+export function renderSummary(results: CaseResult[], title: string): string {
+  const icon = { pass: "✅", fail: "❌", skip: "⏭️" } as const;
+  const rows = results.map(
+    (r) =>
+      `| ${r.id} | ${icon[r.status]} ${r.status} | ${(r.durationMs / 1000).toFixed(1)}s | ${(
+        r.reason ??
+        r.failures[0] ??
+        ""
+      )
+        .replace(/\|/g, "\\|")
+        .replace(/\n/g, " ")
+        .slice(0, 160)} |`,
+  );
+  return [
+    `### ${title}`,
+    "",
+    "| 用例 | 结果 | 耗时 | 说明 |",
+    "| --- | --- | --- | --- |",
+    ...rows,
+    "",
+  ].join("\n");
+}

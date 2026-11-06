@@ -64,6 +64,7 @@
   - **选测会漏掉的一类：跨域源码字面量断言**。不少测试直接 `readFileSync` 别的包/域的源码断言字面量（如 `packages/core/tests/llm/quota-effective-limit.test.ts` 读 `cli/src`），`affected-tests` 按目录名映射选不到它们。删/改字段名、参数名、字符串常量时，推送前先 `grep -rnF '<旧字面量>' tests packages/*/tests`，命中的文件一并跑。
 - **改了参考页数据源要重新生成官网参考页**：动过 `packages/cli/src/help.ts`、`packages/cli/src/cli.ts`、`packages/core/src/tool/`、`packages/cli/src/command/`、`packages/core/src/config/`、`packages/core/src/hook/` 之后，跑 `bun run docs:gen-reference`，把 `website/ref/` 与 `website/public/llms.txt` 一并提交。pre-commit 有 `--check` 拦漂移。
 - **新增门禁或回归测试必做变异自证**：先把被测代码改坏，确认对应断言变红，再恢复。恒绿的门禁比没有门禁更危险。看它**报了什么**，不只看退出码。
+- **G2 无头回放冒烟**（`tests/smoke/`，#618）：改了 hook / 预算 / 结构化输出 / 工具执行链，推送前跑 `make build && bun run smoke`，动了某用例 `mutations` 指向的文件再跑 `bun run smoke:mutate`。用例的 `expect` 只能从人工核过的轨迹里抄，**不许从实现或自己跑出的结果反推**；改已有用例的 `expect` 需要人工加 `expect-reviewed` 标签，**agent 不得给自己的 PR 加这个标签**。
 - **修缺陷前先回源码核实诊断**：审计/缺陷文档给的根因和行号可能已经过期，照着文档改等于修一个不存在的 bug。
 - **长任务增量提交**：大文件重写拆成多次小 Edit，每完成一个可验证的单元就提交。请求体上限或 API 错误中断会话时，没提交的进度只能留在会话导出里。
 

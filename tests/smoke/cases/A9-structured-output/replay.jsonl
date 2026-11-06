@@ -1,0 +1,3 @@
+{"index":1,"response":{"content":[{"type":"tool_use","id":"toolu_smoke_1","name":"StructuredOutput","input":{"scripts":["build"],"extra":1}}],"stop_reason":"tool_use"},"usage":{"input_tokens":100,"output_tokens":10}}
+{"index":2,"response":{"content":[{"type":"tool_use","id":"toolu_smoke_2","name":"StructuredOutput","input":{"scripts":["build","test"],"_agentId":"forged"}}],"stop_reason":"tool_use"},"usage":{"input_tokens":100,"output_tokens":10}}
+{"index":3,"response":{"content":[{"type":"text","text":"done"}],"stop_reason":"end_turn"},"usage":{"input_tokens":100,"output_tokens":10}}
