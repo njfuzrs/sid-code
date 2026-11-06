@@ -275,6 +275,31 @@ export interface CommandContext {
 // 命令基础属性（所有命令共享）
 // ============================================================
 
+/**
+ * 无头形态的标识（与三种运行形态一一对应）。
+ *
+ * - `p`：`-p "<input>"` 单轮文本/JSON。压完即退出，结果随进程销毁；
+ * - `stream-json`：`--input-format stream-json`（或 `--output-format stream-json`）多轮，
+ *   同一进程内后续轮能读到本轮的副作用；
+ * - `bridge`：Bridge 远程接管，长驻，同进程多轮。
+ */
+export type HeadlessModality = "p" | "stream-json" | "bridge";
+
+/**
+ * `headless` 的细粒度放行声明：形态（`modes`）+ 子命令（`subcommands`）两个维度。
+ *
+ * 两个维度都是**白名单、fail-closed**：给了 `modes` 就只放这些形态，给了 `subcommands`
+ * 就只放参数首词命中的调用。任一维度不满足即拒绝。不给某个维度 = 不限制该维度。
+ *
+ * `subcommands` 只按**参数首词**判定：命令自己的 `subCommands()` 声明不是判定依据
+ * （`/cron` `/hooks` 这类用 switch 解析参数的命令没有 `subCommands`）。无参调用始终放行——
+ * 无参是查看状态/用法，不构成写操作；若命令无参返回 `dialog`，分发层会明确报错（非 0）。
+ */
+export interface HeadlessAllowlist {
+  modes?: HeadlessModality[];
+  subcommands?: string[];
+}
+
 export interface CommandBase {
   // === 身份标识 ===
   name: string; // 命令名（唯一标识，如 "compact"）
@@ -304,8 +329,13 @@ export interface CommandBase {
    * builtin 默认拒绝——它们多是交互或管理类（`/model` 选择器、`/plugin`、`/permissions`），
    * 依赖 TUI 回调，无头下要么无意义要么半失效。builtin 里真正「只是展开提示词」的（`/init`）
    * 显式标 `true`。判定实现只有一处：`command/headless-dispatch.ts` 的 `headlessRefusal`。
+   *
+   * `true` = 三种形态、全部子命令放行。需要更细的放行粒度时声明 `HeadlessAllowlist`：
+   * 形态（`modes`）与子命令（`subcommands`）两个维度，任一维度不满足即拒绝（fail-closed）。
+   * 放行粒度默认是**顶层命令**——声明 `true` 会连带放开它的写子命令（如 `/cron delete`），
+   * 所以「只读子命令有价值、写子命令不该放」的命令必须用 `subcommands` 收窄（D13）。
    */
-  headless?: boolean;
+  headless?: boolean | HeadlessAllowlist;
 
   // === 来源追踪 ===
   source?: CommandSource; // 来源标记
