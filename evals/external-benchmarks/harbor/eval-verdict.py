@@ -60,6 +60,11 @@ r"""L2 判定器：把一次评测 run 判成方案 §5.2 的四种结论之一�
 }
 ```
 
+- **分档基线**：agent-traj-bench 一轮 = 按 `task.toml` 硬顶分两档各跑一次 harbor
+  （`max_duration_ms` 与题子集都不同，`t15-baseline.py` 文件头）。这时基线给
+  `"fingerprints": [<t1800 档 doc>, <t2700 档 doc>]`（与 `fingerprint` 二选一）：
+  当前每个 run 必须与其中**恰好一档** VALID（被测二进制照常豁免），每一档都必须被匹配到，
+  且所有当前 run 的二进制 sha / commit 必须相同（一次 L2 只测一个版本）。
 - `per_task` 的值是**逐次 reward**（k 次），不是均值。S 由「k 次全为 1.0」复算，
   ⛔ 不读 `noise.stable_set` 当唯一来源 —— 声明值与复算不一致时判 INVALID
   （基线被手改的形态是「声明的 S 比实际小」，那会把阻断阈值悄悄放宽）。
@@ -267,6 +272,14 @@ def validate_baseline(doc: object) -> list[str]:
     if m is not None and (not isinstance(m, int) or isinstance(m, bool) or m < 1):
         problems.append(f"noise.m={m!r} 不是正整数")
 
+    if "fingerprint" in doc and "fingerprints" in doc:
+        problems.append("fingerprint 与 fingerprints 只能给一个（单档 / 分档）")
+    fps = doc.get("fingerprints")
+    if fps is not None and (
+        not isinstance(fps, list) or not fps or not all(isinstance(f, dict) for f in fps)
+    ):
+        problems.append("fingerprints 必须是非空的指纹对象列表")
+
     return problems
 
 
@@ -304,6 +317,74 @@ def current_fingerprint(
                 f"字段 {cmp['differing_fields']}"
             ]
     return docs[0], []
+
+
+def match_tiered_fingerprints(
+    base_fps: list[dict[str, Any]], run_dirs: list[str], declared: dict[str, str]
+) -> tuple[dict[str, Any] | None, list[str]]:
+    """分档基线：每个当前 run 找与之 VALID 的那一档。第二个返回值非空即 INVALID。
+
+    返回的汇总 doc 与单档 `compare()` 的结果同形（`verdict` / `differing_fields` /
+    `under_test_diffs` …），多一个 `per_run` 记每个 run 对上了哪一档。
+    """
+    per_run: list[dict[str, Any]] = []
+    problems: list[str] = []
+    matched: set[int] = set()
+    shas: set[tuple[object, object]] = set()
+    under_test_diffs: list[dict[str, object]] = []
+    for run_dir in run_dirs:
+        try:
+            cur = run_fingerprint.collect(run_dir, declared)
+        except (OSError, ValueError) as exc:
+            return None, [f"指纹采集失败 {run_dir}: {exc}"]
+        if cur.get("n_trials") == 0:
+            return None, [f"{run_dir} 下没有任何 trial（判据：有 result.json）"]
+        f = cur.get("fields") or {}
+        shas.add((f.get("sid_binary_sha256"), f.get("sid_commit")))
+        cmps = []
+        for i, base in enumerate(base_fps):
+            try:
+                cmps.append((i, run_fingerprint.compare(base, cur, under_test=UNDER_TEST_FIELDS)))
+            except ValueError as exc:
+                return None, [f"指纹比对失败：{exc}"]
+        valid = [(i, c) for i, c in cmps if c["verdict"] == "VALID"]
+        if len(valid) == 1:
+            i, c = valid[0]
+            matched.add(i)
+            under_test_diffs = under_test_diffs or c["under_test_diffs"]
+            per_run.append({"run_dir": run_dir, "tier": i, "verdict": "VALID"})
+            continue
+        if len(valid) > 1:
+            problems.append(f"{run_dir} 同时与基线第 {[i for i, _ in valid]} 档 VALID —— 分档不可区分")
+            per_run.append({"run_dir": run_dir, "tier": None, "verdict": "AMBIGUOUS"})
+            continue
+        # 没有一档对得上：报差异最少的那一档，便于定位
+        i, c = min(cmps, key=lambda ic: len(ic[1]["differing_fields"]) + len(ic[1]["both_missing"]))
+        problems.append(
+            f"{run_dir} 与基线任何一档都不一致；最接近第 {i} 档（{c['verdict']}）："
+            f"字段 {c['differing_fields']}"
+            + (f"；两边都没采到 {c['both_missing']}" if c["both_missing"] else "")
+        )
+        per_run.append({"run_dir": run_dir, "tier": i, "verdict": c["verdict"],
+                        "differing_fields": c["differing_fields"]})
+    if len(shas) > 1:
+        problems.append(f"当前 run 之间被测二进制不一致 {sorted(map(str, shas))} —— 一次 L2 只测一个版本")
+    missing = sorted(set(range(len(base_fps))) - matched)
+    if not problems and missing:
+        problems.append(f"基线第 {missing} 档没有对应的当前 run —— 这一轮没跑全")
+    differing = sorted({fld for r in per_run for fld in r.get("differing_fields", [])})
+    summary = {
+        "verdict": "VALID" if not problems else "INVALID",
+        "differing_fields": differing,
+        "diffs": [],
+        "both_missing": [],
+        "under_test": list(UNDER_TEST_FIELDS),
+        "under_test_diffs": under_test_diffs,
+        "tiers": len(base_fps),
+        "per_run": per_run,
+        "verdict_rule_version": VERDICT_RULE_VERSION,
+    }
+    return summary, problems
 
 
 def _current_cache(outcomes: dict[str, O.Outcome], run_dirs: list[str]) -> dict[str, Any] | None:
@@ -431,6 +512,8 @@ def evaluate(
         "schema_version": BASELINE_SCHEMA_VERSION,
         "baseline_run": (baseline.get("fingerprint") or {}).get("run_dir")
         if isinstance(baseline.get("fingerprint"), dict)
+        else [f.get("run_dir") for f in baseline["fingerprints"] if isinstance(f, dict)]
+        if isinstance(baseline.get("fingerprints"), list)
         else None,
         "current_runs": list(current_run_dirs),
         "invalid_reasons": [],
@@ -473,8 +556,18 @@ def evaluate(
         return doc
 
     # ── 3. 指纹：不一致的两次结果不能比（§3.4）──
-    cur_fp, fp_problems = current_fingerprint(current_run_dirs, declared)
-    if fp_problems:
+    if isinstance(baseline.get("fingerprints"), list):
+        summary, tier_problems = match_tiered_fingerprints(
+            baseline["fingerprints"], current_run_dirs, declared
+        )
+        doc["fingerprint"] = summary
+        invalid.extend(f"指纹：{p}" for p in tier_problems)
+        cur_fp, fp_problems = None, []
+    else:
+        cur_fp, fp_problems = current_fingerprint(current_run_dirs, declared)
+    if cur_fp is None and not fp_problems:
+        pass  # 分档路径已在上面判完
+    elif fp_problems:
         invalid.extend(f"指纹：{p}" for p in fp_problems)
     else:
         base_fp = baseline.get("fingerprint")
@@ -746,9 +839,14 @@ def render(doc: dict[str, Any]) -> str:
     if isinstance(paired, dict):
         lines.append(
             f"  全集配对: n={paired['n']}  ↑{paired['up']} / ↓{paired['down']}"
-            f"  净{'回退' if paired['net_regression'] else '变化'} "
-            f"{paired['down'] - paired['up']:+d}"
-            f"（McNemar 单侧 p={paired['mcnemar_one_sided_p']:.4f}"
+            # 只报一个方向、恒为非负：此前写「净变化 {down-up:+d}」，↑4/↓0 时打印
+            # 「净变化 -4」，读起来像退了 4 题（T20 dry-run 实测）。
+            + (
+                f"  净回退 {paired['down'] - paired['up']}"
+                if paired["net_regression"]
+                else f"  净改善 {paired['up'] - paired['down']}"
+            )
+            + f"（McNemar 单侧 p={paired['mcnemar_one_sided_p']:.4f}"
             f"{'，显著' if paired['p_lt_0_05'] else ''}）"
         )
 
