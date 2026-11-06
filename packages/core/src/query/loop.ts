@@ -158,6 +158,7 @@ import {
   observeStallTurn,
   buildStallSummaryPrompt,
   buildStallGateHandoffMessage,
+  isDeliveryActionCommand,
   STALL_GATE_OSCILLATION_THRESHOLD,
   type StallTurnObservation,
 } from "./stall-escalation.ts";
@@ -6963,6 +6964,7 @@ async function collectStallObservation(
   const mutatedFiles: StallTurnObservation["mutatedFiles"] = [];
   const bashOutputs: string[] = [];
   let ranMutatingBash = false;
+  let deliveryAction = false;
   for (const b of toolBlocks) {
     if (b.type !== "tool_use") continue;
     const r = resultMap.get(b.id);
@@ -6978,6 +6980,9 @@ async function collectStallObservation(
     } else if (b.name === "bash") {
       const cmd = b.input?.command;
       if (typeof cmd === "string" && !isReadonlyProbeCommand(cmd)) ranMutatingBash = true;
+      // 交付 / 验证轮不计入 L2（2026-11-06 抽检：5 条误伤全落在收尾阶段）。失败的不算——
+      // commit 被 hook 拦住、门禁没跑起来都不产生新信息，不该把停滞窗口排掉。
+      if (!failed && typeof cmd === "string" && isDeliveryActionCommand(cmd)) deliveryAction = true;
       bashOutputs.push(
         r && r.type === "tool_result"
           ? typeof r.content === "string"
@@ -6992,7 +6997,7 @@ async function collectStallObservation(
   const rehashedFiles = ranMutatingBash
     ? [...trackedFiles].map((p) => ({ path: p, content: read(p) }))
     : [];
-  return { mutatedFiles, bashOutputs, rehashedFiles };
+  return { mutatedFiles, bashOutputs, rehashedFiles, deliveryAction };
 }
 
 function emitStallEscalationEvent(

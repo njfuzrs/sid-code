@@ -67,10 +67,14 @@ afterEach(() => {
 
 async function* emptyStream(): AsyncIterable<StreamEvent> {}
 
-function fetchResp(turn: number, editFile?: string): AccumulatedResponse {
+function fetchResp(turn: number, editFile?: string, bashCmd?: string): AccumulatedResponse {
   // 每 3 轮换一个 URL：同指纹连续 3 次 + 同返回值 ⇒ 该指纹上报一次空转
   const url = `https://example.test/p${Math.floor(turn / 3)}`;
-  const content: any[] = [{ type: "tool_use", id: `t${turn}`, name: "web_fetch", input: { url } }];
+  const content: any[] = [
+    bashCmd
+      ? { type: "tool_use", id: `t${turn}`, name: "bash", input: { command: bashCmd } }
+      : { type: "tool_use", id: `t${turn}`, name: "web_fetch", input: { url } },
+  ];
   // 可选：同一轮再带一个 edit（每轮改一个**新文件**——成功时每轮都是新工作区状态）
   if (editFile) {
     content.push({
@@ -113,6 +117,8 @@ async function run(opts: {
   /** 每轮额外对一个新文件发 edit：ok = 成功落盘，fail = 工具返回 is_error */
   edit?: "ok" | "fail";
   editDir?: string;
+  /** 每轮改为发一条固定 bash 命令（用于交付 / 轮询两类接线断言） */
+  bash?: string;
 }): Promise<RunResult> {
   const ctxMgr = new ContextManager({ maxTokens: 200000 });
   ctxMgr.setSystemPrompt("test");
@@ -122,6 +128,8 @@ async function run(opts: {
   const remindersPerCall: string[][] = [];
   let lastSentHasStallPrompt = false;
   let llmCalls = 0;
+  /** bash 场景下交替返回「全绿 / 有失败」，制造绿点回归信号（L1 需要 ≥3 个信号） */
+  let toolCallSeq = 0;
   // 用真工厂造 goal：手写字段漏了 tokensUsed 会让 buildGoalReminder 抛 TypeError（测试脚手架自己错）
   let goal: GoalState | undefined = opts.goal ? createGoal("把问题彻底搞定") : undefined;
 
@@ -149,7 +157,7 @@ async function run(opts: {
         editFile = join(opts.editDir, `f${turn}.ts`);
         writeFileSync(editFile, `content-${turn}`); // 文件真实存在、内容各不相同
       }
-      return fetchResp(turn, editFile);
+      return fetchResp(turn, editFile, opts.bash);
     },
     executeTools: async (content: any[]) => ({
       results: content
@@ -157,7 +165,14 @@ async function run(opts: {
         .map((b) => ({
           type: "tool_result" as const,
           tool_use_id: b.id,
-          content: b.name === "edit" ? "edit 结果" : "同一份页面内容",
+          content:
+            b.name === "edit"
+              ? "edit 结果"
+              : b.name === "bash"
+                ? toolCallSeq++ % 2
+                  ? " 5 pass\n 0 fail\n"
+                  : " 4 pass\n 1 fail\n"
+                : "同一份页面内容",
           ...(b.name === "edit" && opts.edit === "fail" ? { is_error: true } : {}),
         })),
     }),
@@ -448,5 +463,20 @@ describe("进展判据：只有成功落盘的 edit 才算新工作区状态", (
     expect(stallEvents(r)).toHaveLength(0);
     // 没被打扰 ⇒ 一路跑到兜底
     expect(r.llmCalls).toBeGreaterThan(SAFETY_CALLS);
+  });
+});
+
+describe("交付 / 验证轮不计入 L2（2026-11-06 抽检：5 条误伤全在收尾阶段）", () => {
+  test("L1 后一直跑 bun test：交付轮不计入轮数，L2 不触发", async () => {
+    const r = await run({ bash: "bun test ./packages/core/tests/query/stall-escalation.test.ts" });
+    const ev = stallEvents(r);
+    expect(ev.filter((e) => e.level === 1)).toHaveLength(1);
+    expect(ev.filter((e) => e.level === 2)).toHaveLength(0);
+  });
+
+  test("对照：同样轮数在轮询 gh pr view，L2 照常触发（轮询不算交付）", async () => {
+    const r = await run({ bash: "gh pr view 1 --json state" });
+    const ev = stallEvents(r);
+    expect(ev.filter((e) => e.level === 2).length).toBeGreaterThan(0);
   });
 });
