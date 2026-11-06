@@ -13,6 +13,7 @@ import { join } from "path";
 import {
   checkBackgroundPoll,
   defaultBackgroundPollContext,
+  __resetBackgroundPollGuardForTest,
   type BackgroundPollContext,
 } from "@sid-code/core/task/background-poll-guard.ts";
 import type { TaskState, TaskStatus } from "@sid-code/core/task/types.ts";
@@ -42,6 +43,8 @@ function ctxWith(tasks: TaskState[], tasksDir?: string): BackgroundPollContext {
       tasks.filter((t) => t.status === "running" || t.status === "pending"),
     tasksDir: tasksDir ?? join(root, "home", ".sid-code", "tasks"),
     home: join(root, "home"),
+    allBackgroundTasks: () => tasks,
+    taskListMemo: { last: null },
   };
 }
 
@@ -208,6 +211,62 @@ describe("task_output / bg_task_get", () => {
       expect(r.intercept).toBe(false);
     });
   }
+});
+
+describe("bg_task_list（事故 20261106-101611-d0a96bc1：71 次同参轮询）", () => {
+  test("第一次放行；状态不变再查 → 拦，回执带运行中任务与「不需要反复查询」", () => {
+    const ctx = ctxWith([task("snh2czqxk", "running")]);
+    expect(checkBackgroundPoll("bg_task_list", { status: "all" }, ctx).intercept).toBe(false);
+    const r = checkBackgroundPoll("bg_task_list", { status: "all" }, ctx);
+    expect(r.intercept).toBe(true);
+    if (r.intercept) {
+      expect(r.kind).toBe("status_poll");
+      expect(r.taskIds).toEqual(["snh2czqxk"]);
+      expect(r.output).toContain("snh2czqxk");
+      expect(r.output).toContain("不需要反复查询");
+    }
+    // 之后一直拦
+    expect(checkBackgroundPoll("bg_task_list", {}, ctx).intercept).toBe(true);
+  });
+
+  test("状态变了（任务结束 / 新任务）→ 放行一次", () => {
+    const a = task("a1", "running");
+    const tasks = [a];
+    const ctx = ctxWith(tasks);
+    checkBackgroundPoll("bg_task_list", {}, ctx);
+    expect(checkBackgroundPoll("bg_task_list", {}, ctx).intercept).toBe(true);
+    tasks.push(task("b2", "running"));
+    expect(checkBackgroundPoll("bg_task_list", {}, ctx).intercept).toBe(false);
+    expect(checkBackgroundPoll("bg_task_list", {}, ctx).intercept).toBe(true);
+    (a as any).status = "completed";
+    expect(checkBackgroundPoll("bg_task_list", {}, ctx).intercept).toBe(false);
+  });
+
+  test("子代理工具调用数前进 → 算新信息，放行", () => {
+    const a = task("a1", "running") as any;
+    a.progress = { toolUseCount: 3, tokenCount: 100 };
+    const ctx = ctxWith([a]);
+    checkBackgroundPoll("bg_task_list", {}, ctx);
+    a.progress = { toolUseCount: 3, tokenCount: 999 }; // token 数变化不算
+    expect(checkBackgroundPoll("bg_task_list", {}, ctx).intercept).toBe(true);
+    a.progress = { toolUseCount: 4, tokenCount: 999 };
+    expect(checkBackgroundPoll("bg_task_list", {}, ctx).intercept).toBe(false);
+  });
+
+  test("换过滤条件 → 放行；没有运行中任务 → 永远放行", () => {
+    const ctx = ctxWith([task("a1", "running")]);
+    checkBackgroundPoll("bg_task_list", { status: "all" }, ctx);
+    expect(checkBackgroundPoll("bg_task_list", { status: "running" }, ctx).intercept).toBe(false);
+    const idle = ctxWith([task("a1", "completed")]);
+    for (let i = 0; i < 3; i++) {
+      expect(checkBackgroundPoll("bg_task_list", {}, idle).intercept).toBe(false);
+    }
+  });
+
+  test("默认上下文的记忆可复位", () => {
+    __resetBackgroundPollGuardForTest();
+    expect(defaultBackgroundPollContext().taskListMemo.last).toBeNull();
+  });
 });
 
 test("其它工具一律放", () => {

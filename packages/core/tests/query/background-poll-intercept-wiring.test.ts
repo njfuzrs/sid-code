@@ -11,7 +11,10 @@ import { join } from "path";
 import type { ToolUseBlock } from "@sid-code/core/llm/types.ts";
 import { executeTools, type ToolExecutorDeps } from "@sid-code/core/query/tool-executor.ts";
 import { registerTask, clearAllTasks } from "@sid-code/core/task/index.ts";
-import { setBackgroundPollSink } from "@sid-code/core/task/background-poll-guard.ts";
+import {
+  setBackgroundPollSink,
+  __resetBackgroundPollGuardForTest,
+} from "@sid-code/core/task/background-poll-guard.ts";
 import { sidPaths } from "@sid-code/core/config/paths.ts";
 import type { LocalAgentTaskState } from "@sid-code/core/task/types.ts";
 
@@ -35,7 +38,9 @@ function makeTool(name: string) {
 }
 
 function makeDeps(): ToolExecutorDeps {
-  const byName = new Map(["read", "bash", "task_output"].map((n) => [n, makeTool(n)]));
+  const byName = new Map(
+    ["read", "bash", "task_output", "bg_task_list"].map((n) => [n, makeTool(n)]),
+  );
   return {
     config: { checkpoint: { enabled: false } } as any,
     toolRegistry: {
@@ -105,6 +110,7 @@ beforeEach(() => {
   pre = [];
   post = [];
   setBackgroundPollSink((d) => events.push(d));
+  __resetBackgroundPollGuardForTest();
 });
 
 afterEach(() => {
@@ -151,5 +157,19 @@ describe("executeSingleTool 接线", () => {
     );
     expect(calls.sort()).toEqual(["bash", "read", "task_output"]);
     expect(events).toEqual([]);
+  });
+
+  test("bg_task_list：第一次执行，状态不变的第二次不执行（20261106-101611-d0a96bc1）", async () => {
+    registerTask(agentTask("bgA", "running"));
+    const r1 = await executeTools([use("w1", "bg_task_list", { status: "all" })], makeDeps());
+    const r2 = await executeTools([use("w2", "bg_task_list", { status: "all" })], makeDeps());
+    for (let i = 0; i < 5; i++) await new Promise((r) => setTimeout(r, 0));
+    expect(calls).toEqual(["bg_task_list"]);
+    const b2 = r2.results.find((b) => b.type === "tool_result") as any;
+    expect(b2.is_error).toBe(false);
+    expect(String(b2.content)).toContain("与上次查询相同");
+    expect(events.map((e) => [e.tool_use_id, e.kind])).toEqual([["w2", "status_poll"]]);
+    expect(r1.results.some((b: any) => String(b.content).includes("真的执行了"))).toBe(true);
+    expect(post.sort()).toEqual(pre.sort());
   });
 });

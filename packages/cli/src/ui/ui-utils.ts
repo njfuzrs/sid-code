@@ -205,6 +205,11 @@ export function getToolSummary(name: string, input: unknown): string {
   if (lower === "task_output" || lower === "bg_task_get" || lower === "task_stop") {
     return taskToolSummary(lower, inp);
   }
+  // bg_task_list：此前没有分支，header 恒为光秃秃的 `⏺ bg_task_list`（20261106-101611-d0a96bc1）
+  if (lower === "bg_task_list") {
+    const status = typeof inp?.status === "string" && inp.status !== "all" ? inp.status : "";
+    return status ? `查看后台任务 · ${status}` : "查看后台任务";
+  }
   if (isSubAgentToolName(lower)) {
     const agentType = resolveSubAgentTypeParam(inp) ?? "";
     const prompt = inp?.prompt || inp?.task || "";
@@ -253,6 +258,70 @@ export function extractTaskOutputDisplay(content: string): string {
     return content.slice(start, end).trim();
   }
   return content;
+}
+
+interface TaskListEntry {
+  id: string;
+  status: string;
+  description: string;
+  duration: string;
+}
+
+/** 解析 bg_task_list 的 `<task-list>` 标签块；不是这个形态（空列表文案、拦截回执）返回 null */
+function parseTaskList(content: string): TaskListEntry[] | null {
+  if (!content.includes("<task-list>")) return null;
+  const entries: TaskListEntry[] = [];
+  const re = /<task id="([^"]*)" type="[^"]*" status="([^"]*)">([\s\S]*?)<\/task>/g;
+  for (let m = re.exec(content); m; m = re.exec(content)) {
+    const body = m[3]!;
+    entries.push({
+      id: m[1]!,
+      status: m[2]!,
+      description: flattenWhitespace(
+        /<description>([\s\S]*?)<\/description>/.exec(body)?.[1] ?? "",
+      ),
+      duration: (/<duration>([^<]*)<\/duration>/.exec(body)?.[1] ?? "").replace(
+        /\s*\(运行中\)$/,
+        "",
+      ),
+    });
+  }
+  return entries;
+}
+
+const TASK_STATUS_LABEL: Record<string, string> = {
+  running: "运行中",
+  pending: "等待中",
+  completed: "已完成",
+  failed: "失败",
+  killed: "已停止",
+};
+
+/**
+ * bg_task_list 结果的**展示正文**：每个任务一行「描述 · 状态 · 耗时」，标签块不上屏。
+ *
+ * 给模型的仍是完整标签块；这里只决定用户看什么（同 task_output 的 extractTaskOutputDisplay）。
+ * 此前整段 `<task-list>` XML 原样进 ⎿ 树枝区（20261106-101611-d0a96bc1，71 张同样的卡片）。
+ * 匹配不到标签（「当前没有后台任务」、轮询拦截回执）原样返回——那些本来就是给人读的句子。
+ */
+export function extractTaskListDisplay(content: string): string {
+  const entries = parseTaskList(content);
+  if (!entries) return content;
+  return entries
+    .map((e) => {
+      const desc = truncateSummaryByWidth(e.description || e.id, THINK_SUMMARY_MAX_COLS);
+      const status = TASK_STATUS_LABEL[e.status] ?? e.status;
+      return [desc, status, e.duration].filter(Boolean).join(" · ");
+    })
+    .join("\n");
+}
+
+/** bg_task_list 结果摘要：「N 个运行中」，没有运行中的报总数 */
+function taskListResultSummary(content: string): string {
+  const entries = parseTaskList(content);
+  if (!entries) return "";
+  const running = entries.filter((e) => e.status === "running" || e.status === "pending").length;
+  return running > 0 ? `${running} 个运行中` : `${entries.length} 个任务`;
 }
 
 /**
@@ -372,6 +441,8 @@ export function getResultSummary(name: string, content: string, isError?: boolea
     const lines = body ? body.split("\n").length : 0;
     return status && status !== "running" ? `已读取结果 · ${lines} 行` : `当前进度 · ${lines} 行`;
   }
+  // bg_task_list：「N 字符」量的是标签块长度；用户关心的是有几个在跑
+  if (lower === "bg_task_list") return taskListResultSummary(content);
   return `${content.length} 字符`;
 }
 

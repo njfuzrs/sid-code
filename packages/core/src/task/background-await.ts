@@ -85,13 +85,51 @@ export function shellSilentForMs(taskId: string, now = Date.now()): number {
   return a ? Math.max(0, now - a.lastGrowth) : 0;
 }
 
+/** 读完上游全部输入才吐结果的命令：放在管道末尾时，整条命令退出前不会有任何输出 */
+const BUFFER_UNTIL_EOF_COMMANDS = new Set(["tail", "sort", "wc", "tac"]);
+
+/**
+ * 命令的输出是否**按结构**必然憋到退出才出现（`bun test 2>&1 | tail -60` 这类）。
+ *
+ * 事故 20261106-101611-d0a96bc1：后台全量测试 `… | tail -60` 跑了 7 分钟，前 60s 后就被
+ * 静默口径判成「不会回报」——于是 todo 闸门 T2 不再放行、强推模型续跑（02:49:30
+ * `running_background_tasks=false` → `todo_gate_retry`），模型无事可做，6 分钟里 71 次
+ * `bg_task_list`，最后自己 `task_stop` 杀掉了测试。这类命令静默是**预期**的，它退出时照常
+ * 有完成通知，不是常驻服务。
+ *
+ * 与文件头「不按命令文本识别常驻服务」不冲突：那里拒绝的是**猜**「哪些命令不会退出」（词表
+ * 列不全）；这里识别的是 shell 语义上确定的事实——末段是读到 EOF 才输出的命令。漏判的后果
+ * 只是退回静默口径（今天的行为），不会多出新的死等。
+ * `tail -f/-F/--follow` 是流式的，不在此列。
+ */
+export function outputBufferedUntilExit(command: string): boolean {
+  // 只看最后一段管道；`||` 先替换掉，免得被当成管道切开
+  const segments = command.replace(/\|\|/g, "\u0000").split("|");
+  if (segments.length < 2) return false;
+  const last = segments[segments.length - 1]!.split(/[;&\u0000]/)[0]!.trim();
+  const words = last.split(/\s+/).filter(Boolean);
+  const name = words[0]?.split("/").pop();
+  if (!name || !BUFFER_UNTIL_EOF_COMMANDS.has(name)) return false;
+  if (
+    name === "tail" &&
+    words.some((w) => /^-[^-]*[fF]/.test(w) || w === "--follow" || w.startsWith("--follow="))
+  ) {
+    return false;
+  }
+  return true;
+}
+
 /**
  * 这个任务是否「值得等」：运行中的后台任务里，排除已静默的 shell。
  * 子代理 / workflow 一律值得等——它们的终态必然入队通知（agent-task / workflow-task）。
+ * 输出按结构憋到退出的 shell（见 `outputBufferedUntilExit`）不受静默口径影响。
  */
 export function isAwaitedBackgroundTask(task: TaskState, now = Date.now()): boolean {
   if (task.status !== "running" || !isPanelTask(task)) return false;
-  if (isShellTask(task)) return shellSilentForMs(task.id, now) < SHELL_QUIESCENT_MS;
+  if (isShellTask(task)) {
+    if (outputBufferedUntilExit(task.command ?? "")) return true;
+    return shellSilentForMs(task.id, now) < SHELL_QUIESCENT_MS;
+  }
   return true;
 }
 
