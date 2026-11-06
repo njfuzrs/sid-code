@@ -12,7 +12,8 @@ import type {
   PermissionResult,
   ToolUseContext,
 } from "./types.ts";
-import type { MemoryStore } from "../memory/store.ts";
+import type { MemoryStore, MemorySetResult } from "../memory/store.ts";
+import { formatEvictionNotice } from "../memory/store.ts";
 import { MEMORY_TYPES, type MemoryType } from "../memory/types.ts";
 import { getLogger } from "../debug/logger.ts";
 import { getSharedSecretRedactHook } from "../llm/hooks/secret-redact.ts";
@@ -316,7 +317,9 @@ export class MemoryTool implements Tool {
     }
 
     try {
-      await this.store.set(key, value, scope, { type });
+      // PR-A（A2）：`set()` 现在回传淘汰明细 —— 满额时这次写入的真实代价
+      // 必须出现在工具结果里，模型同一轮就能看到并决定删掉临时记忆。
+      const result = await this.store.set(key, value, scope, { type });
 
       log.info("TOOL", `✓ 记忆已保存 [${scope}] ${key}`);
 
@@ -324,7 +327,8 @@ export class MemoryTool implements Tool {
       return {
         output:
           `记忆已保存到${scopeLabel}范围:\n键: ${key}\n值: ${preview(value)}` +
-          reportWrite(key, value, type, scope, via),
+          reportWrite(key, value, type, scope, via, result) +
+          formatEvictionNotice(result.evicted),
       };
     } catch (err: any) {
       return { output: `保存记忆失败: ${err.message}`, isError: true };
@@ -353,6 +357,10 @@ function writeVia(agentId: string | undefined): "main" | "forked" | "subagent" {
  * 旧实现只有 project/global 分支调提示，team/agent 存完直接 return——
  * 会同步给全体协作者的 team 记忆反而一道格式闸都没有。
  * 埋点与提示用**同一次** assess 结果：提示说了什么，曲线上就记了什么，两边不会各算各的。
+ *
+ * PR-A（A3）：project/global 路径额外传入 `set()` 结果，据此上报 `is_new_key` /
+ * `evicted_count`。team/agent 两条线走各自的 store，给不出同口径的「是否新建」判据，
+ * 所以不传 → 事件里不带这两个字段（也就不进「新建写入平均挤掉几条」的分母）。
  */
 function reportWrite(
   key: string,
@@ -360,10 +368,18 @@ function reportWrite(
   type: MemoryType,
   scope: string,
   via: "main" | "forked" | "subagent",
+  result?: Pick<MemorySetResult, "isNewKey" | "evicted">,
 ): string {
   const q = assessMemoryWrite(key, value);
   const hints = memoryWriteHints(value, type, key);
-  logMemoryWrite({ scope, type, via, quality: q, hintCount: hints.length });
+  logMemoryWrite({
+    scope,
+    type,
+    via,
+    quality: q,
+    hintCount: hints.length,
+    ...(result ? { isNewKey: result.isNewKey, evictedCount: result.evicted.length } : {}),
+  });
   return hints.length > 0
     ? `\n\n⚠️ 写入质量提示（已保存，可选修正）:\n- ${hints.join("\n- ")}`
     : "";

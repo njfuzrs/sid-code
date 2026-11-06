@@ -100,13 +100,20 @@ export const MEMORY_LIMITS = {
   /**
    * 单个 scope（global / project 各自计）在磁盘上保留的记忆条数上限。
    *
-   * 超限时**归档而非删除**：最旧的条目移到 `archive/` 子目录并 `log.warn` 点名
+   * 超限时**归档而非删除**：价值最低的条目移到 `archive/` 子目录并 `log.warn` 点名
    * （P0-2）。旧实现在这里直接 `unlink`，且异常被 `catch {}` 吞掉——
    * 成功不报、失败也不报，用户数据静默消失。
    *
-   * 排序键是 `updatedAt`，而它只在 `set()` 时更新 ⇒ 这是 LWU（least-recently-**written**）
-   * 而非 LRU：「写下来之后一直有用、但没人改过」的记忆在这个口径下恒为「最旧」。
-   * 正是因为淘汰口径与价值无关，所以只能归档、不能删。
+   * 排序键（PR-A，2026-11-06）：**淘汰顺序 = 索引保留顺序的逆序**，与 `writeIndex`
+   * 的 `indexTypeRank`（user → feedback → project → reference）同一套口径，
+   * 再按 `.read-stats.json` 的 `readCount` 升序、最后才按 `updatedAt` 升序。
+   * 旧实现只看 `updatedAt`（LWU，而非 LRU），于是「写下来之后一直有用、只是没人改过」
+   * 的记忆恒为「最旧」先被挤走 —— 2026-11-06 的事故里 5 条 user 记忆就是这样丢的，
+   * 而索引恰恰认为 user 最该保留，两套口径互相矛盾。
+   *
+   * 归档仍然保留（不删）：排序再准也只是启发式，判断它「有没有价值」的资格不够，
+   * 只够资格「移出索引」。删除造成淘汰的那条记忆时，`delete()` 会按
+   * `archive/.evictions.jsonl` 账本把被挤走的记忆回填（PR-A / D2）。
    */
   STORE_MAX_ENTRIES: 200,
   /** 单次召回最多返回的记忆数 */
