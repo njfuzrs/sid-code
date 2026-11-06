@@ -31,6 +31,8 @@
     "changelog:curate": "bun run scripts/changelog-curate.ts",
     "changelog:check": "bun run scripts/changelog-curate.ts --check",
     "install-hooks": "sh scripts/install-git-hooks.sh",
+    "smoke": "bun run scripts/smoke/run.ts",
+    "smoke:mutate": "bun run scripts/smoke/mutate.ts",
     "verify:agent-note": "bun run scripts/verify-agent-note.ts",
     "verify:doc-claims": "bun run scripts/verify-doc-claims.ts",
     "catalog:coverage": "bun run scripts/catalog-coverage.ts",
