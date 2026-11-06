@@ -9,6 +9,7 @@
  */
 
 import type { Provider, ProviderCapabilities } from "./provider.ts";
+import { StreamValidationError } from "./errors.ts";
 import type {
   SendParams,
   StreamEvent,
@@ -1574,6 +1575,11 @@ export class OpenAIProvider implements Provider {
       // `getHTTPStatus` 会遍历 cause 链读 `.status`/`.statusCode`/`.response.status`，
       // 所以这里把 SDK 的 `err.status` 原样带上就够，不必自己解析 body。
       //
+      // T16b：流完整性校验失败（StreamValidationError）**原样抛出**，不转 error 事件。
+      // 转成事件只剩 message，分类器认不出 `no_finish_reason`，会落进「unrecognized」
+      // 并被同指纹封顶；抛出时 fallback 走 normalizeThrown → validation → transient 已识别。
+      // fallback 对「事件 / 抛出」两种到达形态走同一个 decideRecovery（I3），这里不新增出口。
+      if (err instanceof StreamValidationError) throw err;
       // 不置 streamLevel 是刻意的：这个 catch 同时接住纯网络异常（ECONNRESET 等），
       // 而 `classifyStreamError` 的兜底是"无法归类即按 server_error 重试"——
       // 无脑置位会把确定性故障也拖进整轮退避。statusCode 本身已是无歧义判据。
@@ -3350,6 +3356,32 @@ export class OpenAIProvider implements Provider {
           had_finish_reason: pendingFinishReason !== null,
           model: this._model,
         });
+      }
+      // T16b（2026-11-06）：「只有思考、没有正文/工具调用、也没有 finish_reason」= 上游截断，不是收尾。
+      //
+      // 实证（T15 R3 的 T0007 / T0018，deepseek-v4.1-flash 经 harbor 网关）：上游 stall 97–138s 后
+      // 直接发 `[DONE]`，此前只下发过 reasoning_content。此前这里照常 finishStream →
+      // stop_reason=null → 主循环落「未知停止原因」分支直接结束本轮，agent 停在半句思考上，
+      // 整题被记成 error_during_execution。
+      //
+      // 判据刻意收窄到三条同时成立，避免把「某些网关从不发 finish_reason」的正常回答也拉去重试：
+      // 一个完整回答必然有正文或工具调用；只剩思考说明模型还没开始作答。
+      // 改成抛 StreamValidationError("no_finish_reason") → transient 族 → 走 fallback 的流重试。
+      if (
+        pendingFinishReason === null &&
+        reasoningContent.length > 0 &&
+        textBlockIndex === -1 &&
+        toolCalls.size === 0
+      ) {
+        dbg(`stream ended with thinking only and no finish_reason (done=${sawDone}) → retryable`);
+        getLogger().warn(
+          "LLM:OPENAI",
+          `流结束但只收到思考内容、没有 finish_reason（done=${sawDone}，chunks=${totalChunks}），判定为上游截断，按可重试错误处理`,
+        );
+        throw new StreamValidationError(
+          "流结束但没有 finish_reason，且只收到思考内容（疑似上游截断 mid-stream）",
+          "no_finish_reason",
+        );
       }
       for (const ev of finishStream()) yield ev;
     } catch (err) {
