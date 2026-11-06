@@ -33,6 +33,8 @@ import { buildTruncatedIndex, indexTypeRank, truncateIndexDesc } from "./index-b
 import { selectIndexArchiveCandidates, type IndexArchiveCandidate } from "./index-archive.ts";
 // C3-C：归档判据要用「这条记忆被 Read 过几次」——读统计是本地旁路文件，不写进记忆本身。
 import { READ_STATS_FILE, readMemoryReadStats } from "./read-stats.ts";
+// PR-A（D2）：满额淘汰的因果账本 —— 删除「造成淘汰的那条记忆」时据此回填。
+import { appendEvictionRecord, readEvictionRecords } from "./eviction-log.ts";
 // P1-6：记忆目录枚举口径（递归 + skip 名单）的单一事实源，与提取/dream manifest 共用。
 import { enumerateMemoryFiles, readFrontmatterFields, readMemoryFrontmatter } from "./scan.ts";
 // P1-12 指标 ③：防线触发计数（遮蔽 / 写空归档 / 超限归档）。
@@ -55,6 +57,51 @@ export interface MemoryEntry {
 interface LegacyMemoryData {
   version: string;
   entries: Record<string, MemoryEntry>;
+}
+
+/**
+ * 一次满额淘汰（PR-A / D2）：被挤走的那条记忆，以及它在 `archive/` 里的落点。
+ *
+ * 结构化返回而不是只打日志：调用方（`save_memory` 工具与 `/memory set`）要把它
+ * 展示给模型和用户 —— 淘汰是写入的**真实代价**，此前三方都看不见（D4）。
+ */
+export interface MemoryEviction {
+  /** 被挤走的记忆 key */
+  key: string;
+  /** 记忆类型（用于在提示里标注 user / reference，帮助判断价值） */
+  type?: MemoryType;
+  /** 归档后的文件名（相对 `archive/`，可能带 `-N` 后缀） */
+  archivedAs: string;
+}
+
+/** `set()` 的返回值：淘汰明细 + 本次是否新建了 key（遥测 `is_new_key` 的取数源）。 */
+export interface MemorySetResult {
+  /** 本次写入触发的满额淘汰（按淘汰顺序；空数组 = 未触发或未满额） */
+  evicted: MemoryEviction[];
+  /**
+   * 本次是否新建了 key（而不是更新已有条目）。
+   *
+   * 必须在 `set()` 内部判定：`resolveMemoryKey` 会把「文件名当 key 传」解析成真实 key，
+   * 外部先查一次 `get()` 会在这种 S9 路径上把更新误判成新建，污染遥测分母。
+   */
+  isNewKey: boolean;
+}
+
+/**
+ * 拼「这次写入挤掉了谁」的用户可见提示（PR-A / D4）。
+ *
+ * 放在 store 而不是工具里：`save_memory` 与 `/memory set` 两条路径必须说**同一句话**，
+ * 各写一份文案迟早漂移成两套口径。工具路径会把它追加在保存成功的输出后面，
+ * 模型在同一轮就能看到代价并自行决定删掉临时记忆（删掉后 A4 会自动回填）。
+ */
+export function formatEvictionNotice(evicted: readonly MemoryEviction[]): string {
+  if (evicted.length === 0) return "";
+  const lines = evicted.map((e) => `- ${e.key}（${e.type ?? "未标注类型"}）`);
+  return (
+    `\n\n⚠️ 记忆已达上限 ${MEMORY_LIMITS.STORE_MAX_ENTRIES} 条：` +
+    `这次写入把下列记忆移到了 archive/（未删除）：\n${lines.join("\n")}\n` +
+    `如果这次保存只是本会话临时用，请删掉它，被移走的记忆会自动放回。`
+  );
 }
 
 const LEGACY_FILE = "memories.json";
@@ -1035,13 +1082,19 @@ export class MemoryStore {
     return this.shadowedFiles;
   }
 
-  /** 设置记忆（key-value，向后兼容签名） */
+  /**
+   * 设置记忆（key-value，向后兼容签名）。
+   *
+   * PR-A：返回值从 `void` 改为 `MemorySetResult` —— 满额淘汰是这次写入的**真实代价**，
+   * 调用方（`save_memory` / `/memory set`）要能把它展示给模型和用户（D4），
+   * 而 `isNewKey` 是遥测「每次新建写入平均挤掉几条」的分母来源（A3）。
+   */
   async set(
     key: string,
     value: string,
     scope: "global" | "project" = "project",
     opts?: { type?: MemoryType; description?: string },
-  ): Promise<void> {
+  ): Promise<MemorySetResult> {
     await this.load();
     const log = getLogger();
 
@@ -1053,13 +1106,17 @@ export class MemoryStore {
     const entries = scope === "global" ? this.globalEntries : this.projectEntries;
     const files = scope === "global" ? this.globalFiles : this.projectFiles;
     const dir = scope === "global" ? this.globalDir : this.projectDir;
-    if (!dir) return;
+    if (!dir) return { evicted: [], isNewKey: false };
 
     // S9 路径 A：模型常把文件名（`project_x`）当 key 传进来，先精确查、未命中按真实文件名反查
     key = resolveMemoryKey(key, entries, files);
 
     const now = Date.now();
     const existing = entries.get(key);
+    // 遥测 `is_new_key` 的取数源（A3）：必须在 set 之前取，否则永远是 false。
+    // 用 resolveMemoryKey 之后的 key 判：S9 路径下「文件名当 key 传」会被解析回真实 key，
+    // 外部再查一次 get() 会把这种更新误判成新建。
+    const isNewKey = !existing;
     const entry: MemoryEntry = {
       key,
       value,
@@ -1133,7 +1190,7 @@ export class MemoryStore {
 
     await Bun.write(join(dir, filename), serializeMemoryFile(entry));
 
-    // ─── P0-2：超过上限时**归档**最旧条目，不再静默删除 ───
+    // ─── P0-2 + PR-A（D3）：超过上限时归档**价值最低**的条目，不再只按 LWU ───
     //
     // 旧实现在这里 `unlink` + `catch { /* ignore */ }`：真删、无备份、无告警，
     // 连失败都不报（同函数截断 value 时反倒会 log.warn）。三个理由让它必须改：
@@ -1147,8 +1204,30 @@ export class MemoryStore {
     //
     // 归档目标 `archive/` 是 `scan.ts` 的 `SKIP_DIRS` 成员，所以归档过的文件
     // 既不再进索引、也不再被扫描计数，但**字节还在**、用户能自己捞回来。
+    //
+    // PR-A 把排序键换成「淘汰顺序 = 索引保留顺序的逆序」（三级排序，见下）：
+    // 索引认为最该保留的（user → feedback → project → reference），淘汰时最后才动；
+    // `reference` 里再先挑**从未被 Read 过**的；最后才轮到 LWU。
+    // 这正是 2026-11-06 事故的成因：旧排序把 5 条 user 真实记忆先挤了出去，
+    // 而索引（S9 的 `indexTypeRank`）恰恰认为 user 最该保留 —— 两套口径互相矛盾。
+    const evicted: MemoryEviction[] = [];
     if (entries.size > MEMORY_LIMITS.STORE_MAX_ENTRIES) {
-      const sorted = [...entries.values()].sort((a, b) => a.updatedAt - b.updatedAt);
+      const readStats = readMemoryReadStats(dir);
+      // 元组按字典序比较：类型（逆序）→ 读次数（升序）→ 写入时间（升序）
+      const victimRank = (e: MemoryEntry): [number, number, number] => [
+        -indexTypeRank(e.type),
+        readStats[files.get(e.key) ?? ""]?.readCount ?? 0,
+        e.updatedAt,
+      ];
+      const sorted = [...entries.values()]
+        // 永不淘汰本次刚写的这条：否则写入路径会把自己刚落的文件 rename 进 archive/，
+        // 用户看到「保存成功」而文件已经不在原处，比挤掉一条旧记忆更糟。
+        .filter((e) => e.key !== key)
+        .sort((a, b) => {
+          const ra = victimRank(a);
+          const rb = victimRank(b);
+          return ra[0] - rb[0] || ra[1] - rb[1] || ra[2] - rb[2];
+        });
       const toRemove = sorted.slice(0, entries.size - MEMORY_LIMITS.STORE_MAX_ENTRIES);
       for (const old of toRemove) {
         const fn = files.get(old.key);
@@ -1158,13 +1237,25 @@ export class MemoryStore {
             "MEMORY",
             archived
               ? `记忆条数超过 ${MEMORY_LIMITS.STORE_MAX_ENTRIES}（scope=${scope}），` +
-                  `已归档最旧的一条: ${old.key} → archive/${archived}（未删除，可人工恢复）`
+                  `已归档价值最低的一条: ${old.key}（${old.type ?? "未标注类型"}）→ ` +
+                  `archive/${archived}（未删除；删掉造成淘汰的 ${key} 可自动放回）`
               : `记忆条数超过 ${MEMORY_LIMITS.STORE_MAX_ENTRIES}（scope=${scope}），` +
                   `归档 ${old.key}（${fn}）失败——该文件保留在原处，仅从索引移除`,
           );
           // P1-12 指标 ③：驱逐计数。P0-2 之前这条路径是**完全静默**的 unlink，
           // 「记忆被淘汰了多少条」在轨迹里查不到；现在归档了，但没有计数一样查不到。
           logMemoryGuard({ kind: "evicted_to_archive", via: "store", scope });
+          if (archived) {
+            evicted.push({ key: old.key, type: old.type, archivedAs: archived });
+            // PR-A（D2）：只有**归档成功**才记账 —— 归档失败时文件还在原目录，
+            // 没有「回填」可做（archive/ 里没有它），记了只会让 delete 空跑。
+            appendEvictionRecord(dir, {
+              evictedKey: old.key,
+              archivedAs: archived,
+              evictedBy: key,
+              at: Date.now(),
+            });
+          }
         }
         entries.delete(old.key);
         files.delete(old.key);
@@ -1190,6 +1281,7 @@ export class MemoryStore {
     invalidateMemoryCaches();
     this.loadedGeneration = memoryWriteGeneration;
     log.debug("MEMORY", `记忆已保存: [${scope}] ${key}`);
+    return { evicted, isNewKey };
   }
 
   /** 获取记忆（项目优先于全局） */
@@ -1202,7 +1294,13 @@ export class MemoryStore {
     );
   }
 
-  /** 删除记忆 */
+  /**
+   * 删除记忆。
+   *
+   * PR-A（D2）：删除成功后查满额淘汰账本，把「当初被这条记忆挤走」的记忆回填。
+   * 删除是用户/模型对「这条其实不该写」的纠正，纠正必须能撤销那次写入的副作用 ——
+   * 否则删掉临时记忆只是删掉了新数据，被它挤走的真实记忆仍留在 `archive/`（等于丢失）。
+   */
   async delete(key: string, scope?: "global" | "project"): Promise<boolean> {
     await this.load();
     let deleted = false;
@@ -1211,6 +1309,7 @@ export class MemoryStore {
       entries: Map<string, MemoryEntry>,
       files: Map<string, string>,
       dir: string | null,
+      scopeName: "global" | "project",
     ) => {
       // S9：精确命中优先——`x` 与 `project_x` 并存时 `delete("project_x")` 只删后者
       const k = resolveMemoryKey(key, entries, files);
@@ -1225,15 +1324,18 @@ export class MemoryStore {
       }
       entries.delete(k);
       files.delete(k);
+      // 回填必须发生在重建索引**之前**：回填会往 entries/files 里加条目，
+      // 索引要一次写全 —— 否则文件回到原处了，MEMORY.md 里仍没有它，模型还是看不见。
+      await this.restoreEvictedBy(dir, entries, files, scopeName, k);
       await this.writeIndex(dir, entries);
       deleted = true;
     };
 
     if (!scope || scope === "project") {
-      await tryDelete(this.projectEntries, this.projectFiles, this.projectDir);
+      await tryDelete(this.projectEntries, this.projectFiles, this.projectDir, "project");
     }
     if (!scope || scope === "global") {
-      await tryDelete(this.globalEntries, this.globalFiles, this.globalDir);
+      await tryDelete(this.globalEntries, this.globalFiles, this.globalDir, "global");
     }
     if (deleted) {
       // P1-11：删除同样要推进代数——否则别的实例缓存里那条已被 unlink 的记忆还在，
@@ -1242,6 +1344,80 @@ export class MemoryStore {
       this.loadedGeneration = memoryWriteGeneration;
     }
     return deleted;
+  }
+
+  /**
+   * PR-A（D2）：把「被 `deletedKey` 挤走」的记忆从 `archive/` 搬回记忆目录。
+   *
+   * 只撤销这一条因果：账本里 `evictedBy === deletedKey` 的记录。
+   * 不做「删任意一条就恢复最近被淘汰的一条」—— 那会恢复与本次删除无关的记忆，
+   * 用户无法预期（方案 §4 已否决）。
+   *
+   * 四条安全约束：
+   * 1. **容量没放开就不搬**（`entries.size >= STORE_MAX_ENTRIES` 即停）：回填不能把上限撑破；
+   *    一次 delete 通常只空出一个位置。
+   * 2. **目标重名就跳过并 warn，绝不覆盖**：覆盖等于在这条「不删数据」的路径上又删一次。
+   * 3. **归档文件不在就跳过**：账本是 append-only 的，已被人工捞回 / 重复删除的第二次匹配
+   *    会自然失效（不需要改历史行）。
+   * 4. **先解析成功再 rename**：空正文 / frontmatter 损坏的文件搬回去也只会是孤儿。
+   */
+  private async restoreEvictedBy(
+    dir: string,
+    entries: Map<string, MemoryEntry>,
+    files: Map<string, string>,
+    scope: "global" | "project",
+    deletedKey: string,
+  ): Promise<number> {
+    const records = readEvictionRecords(dir).filter((r) => r.evictedBy === deletedKey);
+    if (records.length === 0) return 0;
+    const log = getLogger();
+    let restored = 0;
+    for (const rec of records) {
+      if (entries.size >= MEMORY_LIMITS.STORE_MAX_ENTRIES) break;
+      // 同名 key 已被重新写入（删之前先写了一条同名的新记忆）：不覆盖新的那条
+      if (entries.has(rec.evictedKey)) continue;
+      const archivePath = join(dir, "archive", rec.archivedAs);
+      if (!existsSync(archivePath)) continue;
+      const target = join(dir, rec.archivedAs);
+      if (existsSync(target)) {
+        log.warn(
+          "MEMORY",
+          `回填跳过：被 ${deletedKey} 挤走的 ${rec.evictedKey} 目标文件 ${rec.archivedAs} 已存在，` +
+            `归档文件保持原样（未覆盖）`,
+        );
+        continue;
+      }
+      let entry: MemoryEntry | null = null;
+      try {
+        const text = await Bun.file(archivePath).text();
+        entry = parseMemoryFile(text, rec.archivedAs, scope, Date.now());
+      } catch {
+        entry = null;
+      }
+      if (!entry) {
+        log.warn(
+          "MEMORY",
+          `回填跳过：archive/${rec.archivedAs} 解析不出有效记忆（空正文或 frontmatter 损坏）`,
+        );
+        continue;
+      }
+      try {
+        await rename(archivePath, target);
+      } catch {
+        continue;
+      }
+      entries.set(entry.key, entry);
+      files.set(entry.key, rec.archivedAs);
+      restored++;
+      log.warn(
+        "MEMORY",
+        `已回填被 ${deletedKey} 挤走的记忆: ${rec.evictedKey}（${entry.type ?? "未标注类型"}）→ ` +
+          `${rec.archivedAs}（scope=${scope}）`,
+      );
+      // 上线后的轨迹信号（方案 §5.5）：恒为 0 说明这条防线没接上。
+      logMemoryGuard({ kind: "restored_from_archive", via: "delete", scope });
+    }
+    return restored;
   }
 
   /** 列出所有记忆（合并，项目覆盖全局） */

@@ -78,6 +78,8 @@
 | ④ 编辑一次成功率 | 首次 edit 即成功的比例（**单位：文件 × 会话**，分母 = 真实执行过 edit 的文件数，不含 write） | ✅ `session-index.edit_first_try` → northstar `edit_first_try_rate` |
 | 结果 / 归因 | 人工介入率 / 返工率、**exit status 分布**（end_turn / 中断 / 错误） | ✅ `metadata.exit_status` |
 | | 子代理成败与串并行判定 —— 消灭「全部 SUCCESS」类误判 | ✅ `SubAgentSummary`（`concurrency: serial/parallel/mixed`） |
+| | **记忆满额淘汰代价** = 每次**新建**写入平均挤掉几条旧记忆。满额用户恒为 1 就是「写一条丢一条」（2026-11-06 事故形态：连写 5 条临时记忆挤走 5 条 user 真实记忆） | ✅ `memory_write.is_new_key` / `.evicted_count`（分母 = `is_new_key === true` 的 `memory_write` 条数，写死；两字段只覆盖 project/global 路径）。PR-A 后淘汰按价值排序（reference 优先、从未被 Read 优先、最后才 LWU），`user` 类被挤走的占比应为 0 —— 该拆分需先在 `memory_guard(evicted_to_archive)` 上补 `memory_type`，⚠️ 暂未采集 |
+| | **淘汰回填触发数** —— 删除造成淘汰的那条记忆后，被挤走的记忆是否真的回到索引 | ✅ `memory_guard.guard_kind = restored_from_archive`（PR-A）。恒为 0 = 回填防线没接上 |
 
 **hallucination rate（<5%）刻意不追**：在 coding agent 上没有可复算的 grounded 分母，
 追它只会得到一个自己定义、自己达标的数字。它的位置由 ② 与 ③ 顶上。
