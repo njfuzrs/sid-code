@@ -7,7 +7,10 @@
  */
 
 import { describe, test, expect, beforeEach, afterEach, beforeAll, afterAll } from "bun:test";
-import { getBashAffectedFiles } from "@sid-code/core/checkpoint/bash-affected-files.ts";
+import {
+  getBashAffectedFiles,
+  GIT_SUBPROCESS_TIMEOUT_MS,
+} from "@sid-code/core/checkpoint/bash-affected-files.ts";
 import { CheckpointManager } from "@sid-code/core/checkpoint/manager.ts";
 import { mkdirSync, rmSync, existsSync, writeFileSync, unlinkSync, mkdtempSync } from "fs";
 import { join } from "path";
@@ -261,4 +264,52 @@ describe("P2-1 git clean 未跟踪文件进快照", () => {
     expect(entry!.type).toBe("full");
     expect(entry!.content).toBe("new\n"); // 原始内容已捕获，可用于回滚
   });
+});
+
+/**
+ * 「git 卡住」的现场证据：2026-11-06 `test (macos-latest, 1/2)` 里
+ * 「git reset --hard 走工作区级快照」这条用例 5000.77ms 超时（撞 bun 默认 5s）。
+ * 根因不是用例写错，而是 getGitWorkingSetFiles / getGitCleanTargets 调 git 时没有
+ * timeout——慢 runner 上 git 偶发卡住，调用方（bash 工具执行前的快照）就跟着无限等。
+ *
+ * 这里用「假 git + 长睡」把卡住确定性复现：没有 timeout 时本用例会一直挂到自身的
+ * 显式超时；有 timeout 时 ~3s 返回空集。
+ *
+ * 为什么要断言「耗时 ≥ timeout - 500」：只断言返回空集是不够的——git 不存在、PATH 没
+ * 生效同样会返回空集，那样这个用例恒绿却什么都没验证。
+ */
+describe("git 子进程必须有耗时上限（防 bash 调用被一起挂住）", () => {
+  let binDir: string;
+  let hangDir: string;
+  let prevPath: string | undefined;
+
+  beforeEach(() => {
+    binDir = mkdtempSync(join(tmpdir(), "fake-git-bin-"));
+    // exec 让 sh 被 sleep 顶替：超时发来的 SIGTERM 直接命中 sleep，不留孤儿进程
+    writeFileSync(join(binDir, "git"), "#!/bin/sh\nexec sleep 30\n", { mode: 0o755 });
+    hangDir = mkdtempSync(join(tmpdir(), "bash-snap-hang-"));
+    prevPath = process.env.PATH;
+    process.env.PATH = `${binDir}:${prevPath ?? ""}`;
+  });
+
+  afterEach(() => {
+    // 存/恢复原值：bun test 同批多文件跑在同一进程里，delete 会把外层 env 一起抹掉
+    if (prevPath === undefined) delete process.env.PATH;
+    else process.env.PATH = prevPath;
+    rmSync(binDir, { recursive: true, force: true });
+    rmSync(hangDir, { recursive: true, force: true });
+  });
+
+  test("git 卡住时按 timeout 降级为空集，不抛错、不无限等待", async () => {
+    const startedAt = Date.now();
+    const files = await getBashAffectedFiles("git reset --hard HEAD~1", hangDir);
+    const elapsed = Date.now() - startedAt;
+
+    expect(files).toEqual([]);
+    // 假 git 睡 30s：跑不到 timeout 说明 timeout 没生效（用例会挂到自身超时）
+    expect(elapsed).toBeGreaterThanOrEqual(GIT_SUBPROCESS_TIMEOUT_MS - 500);
+    // 上界卡在「不到两次 timeout 之和」：两条 git diff 是并行发起的，
+    // 串行会让总耗时翻倍到 2×timeout，那时这条断言变红。
+    expect(elapsed).toBeLessThan(GIT_SUBPROCESS_TIMEOUT_MS + 2500);
+  }, 15_000);
 });
