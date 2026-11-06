@@ -39,7 +39,12 @@
  */
 
 import { describe, test, expect } from "bun:test";
-import { classifyFamily, normalizeStreamEvent } from "@sid-code/core/llm/error-normalize.ts";
+import {
+  classifyFamily,
+  normalizeStreamEvent,
+  normalizeThrown,
+} from "@sid-code/core/llm/error-normalize.ts";
+import { StreamValidationError } from "@sid-code/core/llm/errors.ts";
 import { parseResponsesBody } from "@sid-code/core/llm/openai-responses.ts";
 import { replayFixture, type ProtocolFamily, type ReplayResult } from "./replay-collect.ts";
 
@@ -398,6 +403,30 @@ describe("协议专属 · OpenAI 族 finish_reason 映射", () => {
     expect(r.stopReason).not.toBe("end_turn");
     // 错误前的部分文本仍保留
     expect(r.text).toBe("start");
+  });
+
+  test("T16b：只有思考、无 finish_reason 就结束 → 抛可重试的 no_finish_reason，不当正常收尾", async () => {
+    // T15 R3 的 T0007 / T0018：上游 stall 后直接 [DONE]，此前只下发过 reasoning_content。
+    // 修前：finishStream 发 stop_reason=null → 主循环「未知停止原因」直接结束本轮。
+    let thrown: unknown = null;
+    try {
+      await replayFixture("deepseek-thinking-only-no-finish.json", "openai-chat");
+    } catch (e) {
+      thrown = e;
+    }
+    expect(thrown).toBeInstanceOf(StreamValidationError);
+    expect((thrown as StreamValidationError).reason).toBe("no_finish_reason");
+    // 分类器必须把它判成 transient（否则 fallback 不会重开流）
+    const v = classifyFamily(normalizeThrown(thrown));
+    expect(v.family).toBe("transient");
+    expect(v.reason).toBe("no_finish_reason");
+  });
+
+  test("T16b 反例：有正文但网关不发 finish_reason → 照常收尾，不重试", async () => {
+    // 判据刻意收窄：有正文 = 回答完整，只是网关不按约定发 finish_reason。拉去重试会白烧钱。
+    const r = await replayFixture("deepseek-reasoning-cache.json", "openai-chat");
+    expect(r.errorMessage).toBeNull();
+    expect(r.text).toBe("42");
   });
 
   test("DeepSeek reasoning_content 作为思考透传，不混入正文", async () => {

@@ -17,7 +17,7 @@ import {
   FOREGROUND_SOURCES,
 } from "@sid-code/core/llm/fallback.ts";
 import { ModelAvailabilityService } from "@sid-code/core/llm/availability.ts";
-import { RequestAbortedError } from "@sid-code/core/llm/errors.ts";
+import { RequestAbortedError, StreamValidationError } from "@sid-code/core/llm/errors.ts";
 import type { Provider } from "@sid-code/core/llm/provider.ts";
 import type { SendParams, StreamEvent } from "@sid-code/core/llm/types.ts";
 import type { RetryTelemetryEvent } from "@sid-code/core/llm/retry-telemetry.ts";
@@ -199,6 +199,46 @@ describe("ModelFallback", () => {
     const hasStop = events.some((e) => e.type === "message_stop");
     // 要么有错误事件，要么有 message_stop（来自重试）
     expect(hasError || hasStop).toBe(true);
+  });
+
+  // === T16b：只有思考就断流 → 重开流，不把半句思考当成本轮结果 ===
+  test("T16b：首次 attempt 抛 no_finish_reason（只有思考）→ 重开流并拿到第二次的完整回答", async () => {
+    let calls = 0;
+    const flaky: Provider = {
+      name: () => "mock",
+      async *sendMessageStream(): AsyncIterable<StreamEvent> {
+        calls++;
+        if (calls === 1) {
+          // 形态与 openai.ts 收尾判据一致：思考块已下发，随后流以 [DONE] 结束、无 finish_reason
+          yield {
+            type: "content_block_start",
+            index: 0,
+            content_block: { type: "text", text: "" },
+            _raw_block: { type: "thinking" },
+          } as StreamEvent;
+          yield {
+            type: "content_block_delta",
+            index: 0,
+            delta: { type: "text_delta", text: "让我继续分析" },
+          };
+          throw new StreamValidationError(
+            "流结束但没有 finish_reason，且只收到思考内容",
+            "no_finish_reason",
+          );
+        }
+        for await (const e of successProvider().sendMessageStream(defaultParams)) yield e;
+      },
+    };
+    const fallback = new ModelFallback({ retryBackoffBaseMs: 1, retryBackoffMaxMs: 5 });
+    const events = await collectEvents(fallback.executeWithFallback(flaky, defaultParams));
+
+    expect(calls).toBe(2);
+    expect(events.some((e) => e.type === "stream_restart")).toBe(true);
+    expect(events.some((e) => e.type === "error")).toBe(false);
+    const stop = events.find((e) => e.type === "message_delta") as
+      | { delta: { stop_reason: string | null } }
+      | undefined;
+    expect(stop?.delta.stop_reason).toBe("end_turn");
   });
 
   // === fallback 空响应校验（事故复盘 session 20260708-102143）===

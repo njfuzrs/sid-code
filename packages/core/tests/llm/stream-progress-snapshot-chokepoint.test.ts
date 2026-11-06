@@ -140,10 +140,13 @@ describe("P0-1 · openai Chat Completions：慢流的进展被写进快照", () 
 
   test("持续吐 reasoning_content 的慢流：lastContentProgressAt 被真实推进", async () => {
     // 每块都带 reasoning_content —— 这正是 GLM/DeepSeek 思考阶段的形态。
-    const chunks = Array.from({ length: 6 }, (_, i) => ({
+    const chunks: object[] = Array.from({ length: 6 }, (_, i) => ({
       id: "x",
       choices: [{ index: 0, delta: { reasoning_content: `思考${i}` } }],
     }));
+    // 收尾帧：带 finish_reason 正常结束。不加的话「只有思考 + 无 finish_reason」会被
+    // openai.ts 判成上游截断（T16b）并抛可重试错误 —— 那是另一条路径，本用例只测进展采样。
+    chunks.push({ id: "x", choices: [{ index: 0, delta: {}, finish_reason: "stop" }] });
     globalThis.fetch = (async () =>
       new Response(slowSseStream(chunks, 15), {
         status: 200,

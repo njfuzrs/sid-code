@@ -1,0 +1,34 @@
+{
+  "provider": "deepseek",
+  "scenario": "thinking-only-no-finish",
+  "description": "DeepSeek — 只下发 reasoning_content、无正文/工具、无 finish_reason 就 [DONE]（T15 R3 T0007/T0018 的截断形态）",
+  "model": "deepseek-reasoner",
+  "request": {
+    "model": "deepseek-reasoner",
+    "url": "https://api.deepseek.com/v1/chat/completions"
+  },
+  "response": {
+    "status": 200,
+    "headers": {
+      "content-type": "text/event-stream"
+    },
+    "chunks": [
+      {
+        "data": "data: {\"id\": \"chatcmpl-fixture\", \"object\": \"chat.completion.chunk\", \"model\": \"deepseek-reasoner\", \"choices\": [{\"index\": 0, \"delta\": {\"role\": \"assistant\", \"content\": \"\"}, \"finish_reason\": null}]}\n\n",
+        "delayMs": 0
+      },
+      {
+        "data": "data: {\"id\": \"chatcmpl-fixture\", \"object\": \"chat.completion.chunk\", \"model\": \"deepseek-reasoner\", \"choices\": [{\"index\": 0, \"delta\": {\"reasoning_content\": \"让我继续分析\"}, \"finish_reason\": null}]}\n\n",
+        "delayMs": 0
+      },
+      {
+        "data": "data: {\"id\": \"chatcmpl-fixture\", \"object\": \"chat.completion.chunk\", \"model\": \"deepseek-reasoner\", \"choices\": [{\"index\": 0, \"delta\": {\"reasoning_content\": \"参考实现……\"}, \"finish_reason\": null}]}\n\n",
+        "delayMs": 0
+      },
+      {
+        "data": "data: [DONE]\n\n",
+        "delayMs": 0
+      }
+    ]
+  }
+}
