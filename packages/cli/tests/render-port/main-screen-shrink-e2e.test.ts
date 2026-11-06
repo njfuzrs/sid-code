@@ -147,7 +147,11 @@ async function drive(): Promise<{ bytes: string; sections: Section[] }> {
       SID_CODE_LLM_PROVIDER: "openai",
       SID_CODE_LLM_BASE_URL: `http://127.0.0.1:${server.port}/v1`,
       SID_CODE_LLM_MODEL: "mock",
-      OPENAI_API_KEY: "sk-shrink-e2e",
+      // 必须 ≥ 20 字符且不命中 core/config/schema.ts 的 PLACEHOLDER_PATTERNS：
+      // 原来的 "sk-shrink-e2e"（13 字符）会触发「API Key 长度过短」启动警告，而启动警告
+      // 晚于下面的 settle(1500) 出现时，回车会被它拿去关警告而不是提交（Notifications.tsx
+      // 的按键语义），第一轮从未开始 —— 2026-11-04~05 macOS CI 上 8 次失败全是这个形态。
+      OPENAI_API_KEY: "sk-shrink-e2e-0123456789abcdef",
       TERM: "xterm-256color",
       TERM_PROGRAM: "",
     },
@@ -179,6 +183,26 @@ async function drive(): Promise<{ bytes: string; sections: Section[] }> {
     }
   };
   const write = (s: string) => proc.terminal!.write(s);
+  /**
+   * 启动警告会吞掉下一个非插入键：`Notifications.tsx` 的按键语义是「回车只关警告、不提交」。
+   * 2026-11-04~05 macOS CI 上 8 次失败的形态就是它——警告晚于下面的 `settle(1500)` 出现，
+   * 回车被拿去关警告，第一轮从未开始（画面：提示词留在输入框 + 「按任意键关闭」）。
+   * 在这里提前断言，让同类问题报「启动警告未预期出现」，而不是 90s 后报「没有第 30 条总结」。
+   *
+   * 两处都查：本机复现（把 TUI 启动延迟 3s）时警告落在「完整一轮」段，
+   * 只查「启动」段会漏掉它。
+   */
+  const assertNoStartupWarning = (at: string) => {
+    // 主屏是逐帧增量输出，纯文本可能被光标定位序列切开，先去掉 CSI 再匹配
+    const plain = all.replace(/\x1b\[[0-9;?]*[A-Za-z]/g, "");
+    if (plain.includes("按任意键关闭")) {
+      throw new Error(
+        `「${at}」阶段出现启动警告「按任意键关闭」：它会吞掉下一个回车，提示词不会提交。\n` +
+          `该测试的 OPENAI_API_KEY 必须 ≥ 20 字符且不命中 PLACEHOLDER_PATTERNS。\n` +
+          `最近输出：\n${plain.slice(-1500)}`,
+      );
+    }
+  };
   const type = async (s: string) => {
     for (const ch of s) {
       write(ch);
@@ -192,11 +216,13 @@ async function drive(): Promise<{ bytes: string; sections: Section[] }> {
     write("\x15");
     await settle();
     section("启动");
+    assertNoStartupWarning("启动");
 
     await type("请做一个三步的小任务");
     write("\r");
     await settle(2000, 90_000);
     section("完整一轮");
+    assertNoStartupWarning("完整一轮");
 
     await type("abc");
     write("\x1b\r"); // Alt+Enter 换行
