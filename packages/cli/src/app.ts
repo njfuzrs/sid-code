@@ -208,6 +208,7 @@ import {
   setEditFailureReminderSink,
   EDIT_FAILURE_REMINDER_EVENT_NAME,
 } from "@sid-code/core/query/edit-failure-tracker.ts";
+import { setEditMatchSink, EDIT_LENIENT_MATCH_EVENT_NAME } from "@sid-code/core/tool/edit.ts";
 import {
   setSkillTraceSink,
   SKILL_DEGRADATION_EVENT_NAME,
@@ -4759,6 +4760,13 @@ export class App {
     setEditFailureReminderSink(
       traceCollectorInstance
         ? (data) => traceCollectorInstance.recordCustomEvent(EDIT_FAILURE_REMINDER_EVENT_NAME, data)
+        : null,
+    );
+    // T3 宽进命中的可观测口径：归一化/灵活/正则/模糊命中成功替换时发一条，
+    // 带策略、命中行与相似度。不接则「43 次宽进命中改对没有」仍然无法从轨迹上抽样核对。
+    setEditMatchSink(
+      traceCollectorInstance
+        ? (data) => traceCollectorInstance.recordCustomEvent(EDIT_LENIENT_MATCH_EVENT_NAME, data)
         : null,
     );
     // G2：子代理成本进轨迹。usage-sink 在工具注册时就建好了，那时 collector 还不在，同款延迟接线。

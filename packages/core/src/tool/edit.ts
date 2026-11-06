@@ -16,7 +16,7 @@ import { getLogger } from "../debug/logger.ts";
 import { detectOmissionPlaceholders, isDocumentFile, isPythonFile } from "./omission-detector.ts";
 import { coerceSemanticBoolean } from "@sid-code/shared/utils/semantic-boolean.ts";
 import { mkdirSync, existsSync } from "fs";
-import { dirname, basename } from "path";
+import { dirname, basename, extname } from "path";
 import { normalizeToolPath, formatPathNotFoundError } from "./path-utils.ts";
 import { pickPaths } from "./jit-affected-paths.ts";
 import { buildStructuredPatch } from "./diff-output.ts";
@@ -35,7 +35,7 @@ const editSchema = lazySchema(() =>
 
 // ─── 内部类型 ────────────────────────────────────────────────────────────────
 
-type MatchStrategy = "exact" | "flexible" | "regex" | "fuzzy";
+type MatchStrategy = "exact" | "normalized" | "flexible" | "regex" | "fuzzy";
 
 /**
  * 可编辑文件大小上限（字节）。edit 需把整个文件载入内存做字符串替换，
@@ -47,6 +47,17 @@ interface ReplacementResult {
   newContent: string;
   occurrences: number;
   strategy: MatchStrategy | "none";
+  /** 命中块的起止行（1-based，含端点）。拿不到位置的策略省略。 */
+  matchStartLine?: number;
+  matchEndLine?: number;
+  /** 仅模糊匹配：1 - 加权编辑距离/长度，越大越像。 */
+  similarity?: number;
+}
+
+/** 字符偏移 → 1-based 行号（offset 落在首字符之前时按第 1 行算）。 */
+function lineOfOffset(text: string, offset: number): number {
+  if (offset <= 0) return 1;
+  return text.slice(0, offset).split("\n").length;
 }
 
 // ─── 辅助函数 ────────────────────────────────────────────────────────────────
@@ -123,6 +134,8 @@ function tryFlexibleMatch(
   const N = searchLinesStripped.length;
 
   let occurrences = 0;
+  // 首个命中块的起始行索引（0-based）：事件要能回到 messages 里核对改的是不是那一处。
+  let firstMatchIndex = -1;
   let i = 0;
   while (i <= sourceLines.length - N) {
     const window = sourceLines.slice(i, i + N);
@@ -130,6 +143,7 @@ function tryFlexibleMatch(
     const isMatch = windowStripped.every((l, idx) => l === searchLinesStripped[idx]);
 
     if (isMatch) {
+      if (firstMatchIndex === -1) firstMatchIndex = i;
       occurrences++;
       if (!replaceAll && occurrences > 1) {
         // 多处匹配但未设 replace_all
@@ -150,6 +164,9 @@ function tryFlexibleMatch(
     newContent: restoreTrailingNewline(content, sourceLines.join("")),
     occurrences,
     strategy: "flexible",
+    ...(firstMatchIndex >= 0
+      ? { matchStartLine: firstMatchIndex + 1, matchEndLine: firstMatchIndex + N }
+      : {}),
   };
 }
 
@@ -171,8 +188,9 @@ function tryRegexMatch(
 
   const pattern = `^([ \t]*)${tokens.map(escapeRegex).join("\\s*")}`;
   const globalRegex = new RegExp(pattern, "gm");
-  const matches = content.match(globalRegex);
-  if (!matches) return null;
+  // 用 matchAll 而不是 match：事件要报首个命中所在行，match 只给字符串不给 index。
+  const matches = [...content.matchAll(globalRegex)];
+  if (matches.length === 0) return null;
 
   const occurrences = matches.length;
   if (!replaceAll && occurrences > 1) {
@@ -185,10 +203,14 @@ function tryRegexMatch(
     applyIndentation(replaceLines, indent || "").join("\n"),
   );
 
+  // 正则 pattern 不含换行，命中块固定是单行。
+  const firstLine = lineOfOffset(content, matches[0]!.index ?? 0);
   return {
     newContent: restoreTrailingNewline(content, newContent),
     occurrences,
     strategy: "regex",
+    matchStartLine: firstLine,
+    matchEndLine: firstLine,
   };
 }
 
@@ -282,13 +304,17 @@ function tryFuzzyMatch(
 
   if (selected.length === 0) return null;
 
+  // 事件要报「命中的是哪一块、像到什么程度」，必须在 sort（原地改顺序）之前取。
+  const bestMatch = selected[0]!;
+  const bestIndex = bestMatch.index;
+  const similarity = 1 - bestMatch.score;
+
   // 歧义守卫：单处替换时，若存在另一处不重叠候选且分数与最优接近，
   // 说明 old_string 可能命中了错误的相似块（模糊匹配最危险的静默错位）。
   // 此时宁可拒绝、让模型提供更精确的 old_string，也不赌一个可能改错地方的替换。
   if (!replaceAll) {
-    const best = selected[0];
-    const runnerUp = candidates.find((c) => Math.abs(c.index - best.index) >= N);
-    if (runnerUp && runnerUp.score - best.score < FUZZY_AMBIGUITY_MARGIN) {
+    const runnerUp = candidates.find((c) => Math.abs(c.index - bestIndex) >= N);
+    if (runnerUp && runnerUp.score - bestMatch.score < FUZZY_AMBIGUITY_MARGIN) {
       // 用 occurrences=-1 作为"模糊歧义"信号，上层据此报专门的错误
       return { newContent: content, occurrences: -1, strategy: "fuzzy" };
     }
@@ -313,6 +339,9 @@ function tryFuzzyMatch(
     newContent: restoreTrailingNewline(content, sourceLines.join("")),
     occurrences: selected.length,
     strategy: "fuzzy",
+    matchStartLine: bestIndex + 1,
+    matchEndLine: bestIndex + N,
+    similarity,
   };
 }
 
@@ -330,6 +359,38 @@ function normalizeQuotes(str: string): string {
   return str
     .replace(/[\u201C\u201D]/g, '"') // curly double quotes -> "
     .replace(/[\u2018\u2019]/g, "'"); // curly single quotes -> '
+}
+
+// ─── EditLenientMatch 事件（宽进命中的可观测口径） ───────────────────────────
+
+/**
+ * 归一化 / 灵活 / 正则 / 模糊命中成功替换时发一条事件。
+ *
+ * 为什么需要它：这四条降级路径此前只有 tool_result 里一句「使用模糊匹配」，既没有命中
+ * 位置也没有相似度，「3,880 次成功 edit 里那 43 次宽进到底改对没有」无法从轨迹上抽样核对。
+ *
+ * 只放可聚合的量：不记 old_string / new_string / 文件路径原文——原文已经在 messages
+ * 里，重复落盘只是放大轨迹体积；`file_ext` 足够回答「哪类文件最容易触发宽进」。
+ * 走模块级 sink 而不是穿 `traceAppendEvent`：调用方是 EditTool（主循环与子代理共用），
+ * 不持有 collector（同 edit-failure-tracker 的写法）。
+ */
+export const EDIT_LENIENT_MATCH_EVENT_NAME = "EditLenientMatch";
+
+type EditMatchSink = (data: Record<string, unknown>) => void;
+let editMatchSink: EditMatchSink | null = null;
+
+/** 注入/清除事件通道（App 在 collector 就绪后调用；测试收尾传 null 复位） */
+export function setEditMatchSink(s: EditMatchSink | null): void {
+  editMatchSink = s;
+}
+
+function emitEditLenientMatch(data: Record<string, unknown>): void {
+  if (!editMatchSink) return;
+  try {
+    editMatchSink({ ...data, ts: Date.now() });
+  } catch {
+    /* 埋点失败不影响工具结果 */
+  }
 }
 
 // ─── 主替换函数 ───────────────────────────────────────────────────────────────
@@ -358,7 +419,16 @@ function calculateReplacement(
       // 长度不变 → 偏移直接映射回原串
       const actualOld = normalizedContent.slice(idx, idx + quotedSearch.length);
       const origExact = tryExactMatch(normalizedContent, actualOld, normalizedReplace, replaceAll);
-      if (origExact && origExact.occurrences > 0) return origExact;
+      if (origExact && origExact.occurrences > 0) {
+        return {
+          ...origExact,
+          // 归一化命中单独成策略：未读文件守卫仍与 exact 同权（见下方 deferUnreadCheck），
+          // 但事件层必须能把它和真正的精确命中分开统计。
+          strategy: "normalized",
+          matchStartLine: lineOfOffset(normalizedContent, idx),
+          matchEndLine: lineOfOffset(normalizedContent, idx + quotedSearch.length - 1),
+        };
+      }
     }
   }
 
@@ -644,8 +714,10 @@ export class EditTool implements Tool {
       // 未读文件的延后判定：只认精确命中（含 1:1 引号规范化，它也报 exact）。
       // 必须排在下面「歧义 / 未命中 / 多处」报错之前——否则未读文件会拿到近似匹配的
       // 诊断信息，暗示它"差一点就能改"，而真正该做的是先 read。
+      // normalized 与 exact 同权：它是同一段原文的字符级归一（长度不变），不是近似匹配，
+      // 所以不改变「未读文件只能精确改」的边界；事件层再把它和 exact 分开统计。
       if (deferUnreadCheck && this.tracker) {
-        if (result.strategy !== "exact") {
+        if (result.strategy !== "exact" && result.strategy !== "normalized") {
           return {
             output: `错误: ${this.tracker.rejectUnread(filePath, "edit", result.strategy)}`,
             isError: true,
@@ -741,6 +813,26 @@ export class EditTool implements Tool {
         }
       }
 
+      // 宽进命中进事件（T3）：只记可聚合量，不记 old/new 原文与文件路径
+      //（原文已在 messages 里，重复落盘只放大轨迹体积；file_ext 足够回答「哪类文件最容易触发」）。
+      // exact 不记——它是绝大多数，分母从 tool_use 计数取即可。
+      if (result.strategy !== "exact") {
+        emitEditLenientMatch({
+          strategy: result.strategy,
+          file_ext: extname(filePath).replace(/^\./, ""),
+          old_len: oldString.length,
+          occurrences: result.occurrences,
+          replace_all: replaceAll,
+          ...(result.matchStartLine !== undefined
+            ? { match_start_line: result.matchStartLine }
+            : {}),
+          ...(result.matchEndLine !== undefined ? { match_end_line: result.matchEndLine } : {}),
+          ...(result.similarity !== undefined
+            ? { similarity: Number(result.similarity.toFixed(4)) }
+            : {}),
+        });
+      }
+
       const strategyNote =
         result.strategy !== "exact" ? `，使用${this.strategyLabel(result.strategy)}匹配` : "";
       log.info("TOOL", `✓ 编辑 ${filePath} 完成 (${result.occurrences}处${strategyNote})`);
@@ -761,6 +853,7 @@ export class EditTool implements Tool {
 
   private strategyLabel(strategy: MatchStrategy | "none"): string {
     const labels: Record<string, string> = {
+      normalized: "归一化",
       flexible: "灵活",
       regex: "正则",
       fuzzy: "模糊",
