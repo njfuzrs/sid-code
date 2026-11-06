@@ -90,16 +90,19 @@ const READ_ONLY_COMMANDS = new Set([
  * 语义完全不同。把整个 config 子命令判只读会让写操作（含 `core.hooksPath` 劫持）被自动放行，
  * 违反「NEVER 更新 git config」安全协议（对齐 CC）。config 的只读判定改由 isReadOnlyGitConfig
  * 按 flag 细分（见下）。
+ *
+ * ⚠️ **有写形态的子命令也不能整条放进这张表**：`stash` / `branch` / `tag` / `remote` / `reflog`
+ * 都既有读形态又有写形态（裸 `git stash` = push、`git branch <name>` = 新建分支、
+ * `git tag <name>` = 新建 tag、`git remote add` = 配远端、`git reflog expire` = 删 reflog）。
+ * 按子命令名整体放行会让这些写操作在 default 模式下**不经确认直接执行**，
+ * 而 prompt 红线 RL-001 明写禁止 `git stash`。它们的只读判定改由
+ * isReadOnlyGitStash / Branch / Tag / Remote / Reflog 按参数细分（见下）。
  */
 const READ_ONLY_GIT_SUBCOMMANDS = new Set([
   "status",
   "log",
   "diff",
   "show",
-  "branch",
-  "remote",
-  "tag",
-  "stash",
   "describe",
   "shortlog",
   "blame",
@@ -108,7 +111,6 @@ const READ_ONLY_GIT_SUBCOMMANDS = new Set([
   "cat-file",
   "rev-parse",
   "rev-list",
-  "reflog",
   "name-rev",
   "for-each-ref",
   "merge-base",
@@ -187,6 +189,363 @@ export function isReadOnlyGitConfig(args: string[]): boolean {
   //   `git config`（0 位置参数，通常配 --list 才有意义，裸跑无效）→ 视为只读。
   return positional.length <= 1;
 }
+
+/**
+ * shell 的 fd 复制记号（`2>&1`、`>&2`、`1>&2`）。
+ *
+ * parser 会把它们原样留在 args 里（`git branch -a 2>&1` → `["branch","-a","2>&1"]`），
+ * 它不是 flag 也不是位置参数。不滤掉就会被「没有列表开关却带位置参数 = 新建分支」这类
+ * 规则当成位置参数，把纯读命令误判成写。原型回放里这一条造成了 6 次误判。
+ */
+const FD_DUPLICATION_TOKEN = /^\d*>&\d+$/;
+
+function stripFdDuplicationTokens(args: string[]): string[] {
+  return args.filter((a) => !FD_DUPLICATION_TOKEN.test(a));
+}
+
+/** 从 `--flag=value` 里取 flag 名（短选项粘连值如 `-n5` 不在此列，各判定自行处理）。 */
+function flagName(token: string): string {
+  const eq = token.indexOf("=");
+  return eq > 0 ? token.slice(0, eq) : token;
+}
+
+/**
+ * `git stash` 的只读形态（B1）。
+ *
+ * 读：动词是 `list` / `show`（后者可带 diff 显示选项和一个 `stash@{n}`）。
+ * 写：裸 `git stash`（等于 `push`，会改工作区）、`push` / `pop` / `apply` / `save` / `drop` /
+ *     `clear` / `branch` 等其余动词、无动词却带 flag（`git stash -u` 仍是 push）、
+ *     白名单外的 flag。
+ *
+ * 未知 flag 判写是刻意的保守方向：多弹一次确认，而不是把带未知副作用的形态放行。
+ */
+export function isReadOnlyGitStash(args: string[]): boolean {
+  const tokens = stripFdDuplicationTokens(args);
+  let verb: string | null = null;
+  const positional: string[] = [];
+  for (let i = 0; i < tokens.length; i++) {
+    const a = tokens[i]!;
+    if (a === "--") {
+      positional.push(...tokens.slice(i + 1));
+      break;
+    }
+    if (a.startsWith("-") && a !== "-") {
+      const name = flagName(a);
+      if (!STASH_READ_FLAGS.has(name)) return false;
+      // 带值选项：`--format='%gd'` 用 = 形式；`--format '%gd'` 是两个 token
+      if (STASH_READ_VALUE_FLAGS.has(name) && !a.includes("=")) i++;
+      continue;
+    }
+    if (verb === null) verb = a;
+    else positional.push(a);
+  }
+  if (verb === null) return false;
+  if (!STASH_READ_VERBS.has(verb)) return false;
+  // 动词后最多一个位置参数：`git stash show stash@{0}`
+  return positional.length <= 1;
+}
+
+/** `git stash list` / `show` 可接受的显示类选项——它们只影响输出，不改仓库状态。 */
+const STASH_READ_VERBS = new Set(["list", "show"]);
+const STASH_READ_FLAGS = new Set([
+  // list 的 log 选项
+  "--oneline",
+  "--format",
+  "--pretty",
+  "--date",
+  "--skip",
+  "-n",
+  "--max-count",
+  // show 的 diff 选项
+  "-p",
+  "--patch",
+  "--stat",
+  "--numstat",
+  "--shortstat",
+  "--summary",
+  "--raw",
+  "--binary",
+  "--name-only",
+  "--name-status",
+  "--include-untracked",
+  "-u",
+  "--only-untracked",
+  "--unified",
+  "-U",
+  "--no-color",
+  "--color",
+  "--no-ext-diff",
+]);
+const STASH_READ_VALUE_FLAGS = new Set([
+  "--format",
+  "--pretty",
+  "--date",
+  "--skip",
+  "-n",
+  "--max-count",
+  "--unified",
+  "-U",
+]);
+
+/**
+ * `git branch` 的只读形态（B1）。
+ *
+ * 读：只有列表/显示类 flag（`-a` `-r` `-v` `-vv` `--list` `-l` `--show-current` `--contains`
+ *     `--merged` `--points-at` `--sort` …）；带 `--list`/`-l` 时位置参数视为匹配模式。
+ * 写：出现 `-m/-M/-c/-C/-d/-D/-f/-u/--set-upstream-to/--unset-upstream/-t/--track/
+ *     --no-track/--edit-description`，或**没有列表开关却带位置参数**——那是新建分支
+ *     （`git branch feat/x`）。
+ *
+ * `--contains` / `--merged` 等的值可以省略（省略时默认 HEAD）。规则：下一个 token 不以
+ * `-` 开头才当作值吞掉。不吞的话 `git branch --contains feat/x` 里的 `feat/x` 会被当成
+ * 新建分支误判为写；硬吞的话 `git branch --contains -a` 会把 `-a` 吃掉。
+ */
+export function isReadOnlyGitBranch(args: string[]): boolean {
+  const tokens = stripFdDuplicationTokens(args);
+  let listMode = false;
+  const positional: string[] = [];
+  for (let i = 0; i < tokens.length; i++) {
+    const a = tokens[i]!;
+    if (a === "--") {
+      positional.push(...tokens.slice(i + 1));
+      break;
+    }
+    if (a.startsWith("-") && a !== "-") {
+      const name = flagName(a);
+      if (BRANCH_WRITE_FLAGS.has(name)) return false;
+      if (!BRANCH_READ_FLAGS.has(name)) return false; // 未知 flag → 写（保守）
+      if (name === "--list" || name === "-l") listMode = true;
+      if (BRANCH_OPTIONAL_VALUE_FLAGS.has(name) && !a.includes("=")) {
+        const next = tokens[i + 1];
+        if (next !== undefined && !next.startsWith("-")) i++;
+      }
+      continue;
+    }
+    positional.push(a);
+  }
+  if (positional.length === 0) return true;
+  // 有位置参数：只有列表模式才是「模式匹配」，否则是新建分支
+  return listMode;
+}
+
+/** `git branch` 的写形态 flag——命中即写，不看其余参数。 */
+const BRANCH_WRITE_FLAGS = new Set([
+  "-m",
+  "-M",
+  "--move",
+  "-c",
+  "-C",
+  "--copy",
+  "-d",
+  "-D",
+  "--delete",
+  "-f",
+  "--force",
+  "-u",
+  "--set-upstream-to",
+  "--unset-upstream",
+  "-t",
+  "--track",
+  "--no-track",
+  "--edit-description",
+]);
+/** `git branch` 的只读 flag。`-l` 按现代 git 的 `--list` 处理（旧版意思是建 reflog，见方案 R2）。 */
+const BRANCH_READ_FLAGS = new Set([
+  "-a",
+  "--all",
+  "-r",
+  "--remotes",
+  "-v",
+  "--verbose",
+  "-vv",
+  "-l",
+  "--list",
+  "--show-current",
+  "--contains",
+  "--no-contains",
+  "--merged",
+  "--no-merged",
+  "--points-at",
+  "--format",
+  "--sort",
+  "--color",
+  "--no-color",
+  "--column",
+  "--no-column",
+  "--abbrev",
+  "-i",
+  "--ignore-case",
+]);
+/** 值可省略的读 flag：只有下一个 token 不以 `-` 开头时才当值吞掉。 */
+const BRANCH_OPTIONAL_VALUE_FLAGS = new Set([
+  "--contains",
+  "--no-contains",
+  "--merged",
+  "--no-merged",
+  "--points-at",
+  "--format",
+  "--sort",
+  "--color",
+  "--no-color",
+  "--column",
+  "--abbrev",
+]);
+
+/**
+ * `git tag` 的只读形态（B1）。
+ *
+ * 读：无参数；带 `-l`/`--list` 时位置参数视为匹配模式；`-n` `--contains` `--merged`
+ *     `--points-at` `--sort` `--format` `--color` `--column` 等显示选项；`-v`/`--verify`
+ *     （校验签名，位置参数是待校验的 tag 名）。
+ * 写：`-a/-s/-u/-m/-F/-d/-f/-e`，或**没有 `-l`/`-v` 却带位置参数**——那是新建 tag
+ *     （`git tag v1.0`）。
+ */
+export function isReadOnlyGitTag(args: string[]): boolean {
+  const tokens = stripFdDuplicationTokens(args);
+  let listMode = false;
+  let verifyMode = false;
+  const positional: string[] = [];
+  for (let i = 0; i < tokens.length; i++) {
+    const a = tokens[i]!;
+    if (a === "--") {
+      positional.push(...tokens.slice(i + 1));
+      break;
+    }
+    if (a.startsWith("-") && a !== "-") {
+      // `-n5` 是 git 对 `-n` 的粘连数字写法（`git tag -n5` 列 5 行），等价于 `-n`
+      const name = /^-n\d+$/.test(a) ? "-n" : flagName(a);
+      if (TAG_WRITE_FLAGS.has(name)) return false;
+      if (!TAG_READ_FLAGS.has(name)) return false; // 未知 flag → 写（保守）
+      if (name === "--list" || name === "-l") listMode = true;
+      if (name === "--verify" || name === "-v") verifyMode = true;
+      if (TAG_OPTIONAL_VALUE_FLAGS.has(name) && !a.includes("=")) {
+        const next = tokens[i + 1];
+        if (next !== undefined && !next.startsWith("-")) i++;
+      }
+      continue;
+    }
+    positional.push(a);
+  }
+  if (positional.length === 0) return true;
+  // 有位置参数：列表模式是匹配模式，verify 模式是待校验 tag 名；否则是新建 tag
+  return listMode || verifyMode;
+}
+
+/** `git tag` 的写形态 flag。 */
+const TAG_WRITE_FLAGS = new Set([
+  "-a",
+  "--annotate",
+  "-s",
+  "--sign",
+  "-u",
+  "--local-user",
+  "-m",
+  "--message",
+  "-F",
+  "--file",
+  "-d",
+  "--delete",
+  "-f",
+  "--force",
+  "-e",
+  "--edit",
+]);
+const TAG_READ_FLAGS = new Set([
+  "-l",
+  "--list",
+  "-n",
+  "--contains",
+  "--no-contains",
+  "--merged",
+  "--no-merged",
+  "--points-at",
+  "--sort",
+  "--format",
+  "--color",
+  "--no-color",
+  "--column",
+  "--no-column",
+  "-v",
+  "--verify",
+  "-i",
+  "--ignore-case",
+]);
+/** 值可省略的读 flag（见 isReadOnlyGitBranch 同名集合的注释）。`-n` 只在粘连形式带值。 */
+const TAG_OPTIONAL_VALUE_FLAGS = new Set([
+  "--contains",
+  "--no-contains",
+  "--merged",
+  "--no-merged",
+  "--points-at",
+  "--sort",
+  "--format",
+  "--color",
+  "--no-color",
+  "--column",
+]);
+
+/**
+ * `git remote` 的只读形态（B1）。
+ *
+ * 读：无参数、`-v`/`--verbose`、动词 `show` 与 `get-url`（`show` 会联网但只读本地状态，
+ *     与现状一致，见方案 R3）。
+ * 写：`add` / `remove`/`rm` / `rename` / `set-url` / `set-head` / `set-branches` / `prune` /
+ *     `update` 及任何未知动词。
+ */
+export function isReadOnlyGitRemote(args: string[]): boolean {
+  const tokens = stripFdDuplicationTokens(args);
+  const positional: string[] = [];
+  for (const a of tokens) {
+    if (a === "-v" || a === "--verbose") continue;
+    if (a.startsWith("-")) return false; // 未知 flag → 写（保守）
+    positional.push(a);
+  }
+  if (positional.length === 0) return true;
+  return REMOTE_READ_VERBS.has(positional[0]!);
+}
+
+const REMOTE_READ_VERBS = new Set(["show", "get-url"]);
+
+/**
+ * `git reflog` 的只读形态（B1）。
+ *
+ * 读：无参数、纯 flag（`-12`、`-n 5`、`--all` 都是 log 显示选项）、动词 `show`。
+ * 写：`expire`、`delete` 及其他动词（它们会删 reflog / 改引用日志）。
+ *
+ * 这里不设 flag 白名单：reflog 的写只能由动词触发，flag 本身写不了仓库。
+ */
+export function isReadOnlyGitReflog(args: string[]): boolean {
+  const tokens = stripFdDuplicationTokens(args);
+  const positional: string[] = [];
+  for (let i = 0; i < tokens.length; i++) {
+    const a = tokens[i]!;
+    if (a === "--") {
+      positional.push(...tokens.slice(i + 1));
+      break;
+    }
+    if (a.startsWith("-") && a !== "-") {
+      // `-n 5` / `--max-count 5` 的值不是位置参数，吞掉
+      const name = flagName(a);
+      if (REFLOG_VALUE_FLAGS.has(name) && !a.includes("=")) i++;
+      continue;
+    }
+    positional.push(a);
+  }
+  if (positional.length === 0) return true;
+  return positional[0] === "show";
+}
+
+/** `git reflog` 里带值、但值不是位置参数的 log 选项。 */
+const REFLOG_VALUE_FLAGS = new Set([
+  "-n",
+  "--max-count",
+  "--skip",
+  "--format",
+  "--pretty",
+  "--date",
+  "--since",
+  "--until",
+]);
 
 /**
  * 「安全」的 git 全局选项——出现在子命令之前、本身无副作用、剥离后不改变只读语义。
@@ -476,14 +835,37 @@ function isReadOnlyImpl(command: string, ignoreCd: boolean): boolean {
       if (subCmd === "--version" || subCmd === "--help" || subCmd === "-v" || subCmd === "-h")
         continue;
       if (DANGEROUS_GIT_SUBCOMMANDS.has(subCmd)) return false;
+      // diff / log / show 等子命令都接受 --output=<file>，把结果写进文件。
+      // 检查放在所有子命令分支**之前**：下面的细分子命令走 continue，写在后面会被跳过。
+      if (gitArgs.some((a) => a === "--output" || a.startsWith("--output="))) return false;
       // P0-1：git config 按 flag 细分读写（写操作含 core.hooksPath 劫持不可判只读）
       if (subCmd === "config") {
         if (!isReadOnlyGitConfig(gitArgs.slice(1))) return false;
         continue;
       }
+      // B1：这五个子命令都有写形态，按参数细分读写（见各自函数注释）。
+      // 判不准时落确认，不落放行。
+      if (subCmd === "stash") {
+        if (!isReadOnlyGitStash(gitArgs.slice(1))) return false;
+        continue;
+      }
+      if (subCmd === "branch") {
+        if (!isReadOnlyGitBranch(gitArgs.slice(1))) return false;
+        continue;
+      }
+      if (subCmd === "tag") {
+        if (!isReadOnlyGitTag(gitArgs.slice(1))) return false;
+        continue;
+      }
+      if (subCmd === "remote") {
+        if (!isReadOnlyGitRemote(gitArgs.slice(1))) return false;
+        continue;
+      }
+      if (subCmd === "reflog") {
+        if (!isReadOnlyGitReflog(gitArgs.slice(1))) return false;
+        continue;
+      }
       if (!READ_ONLY_GIT_SUBCOMMANDS.has(subCmd)) return false; // 未知子命令默认非只读
-      // diff / log / show 都接受 --output=<file>，把结果写进文件
-      if (gitArgs.some((a) => a === "--output" || a.startsWith("--output="))) return false;
       continue;
     }
 
