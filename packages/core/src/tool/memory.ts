@@ -170,7 +170,7 @@ export class MemoryTool implements Tool {
   }
 
   usageGuide(): string {
-    return `- 当用户明确说"记住..."、"以后都..."、"我偏好..."时，使用此工具保存
+    return `- 当用户要求**跨会话**记住（以后都... / 我偏好... / 下次...）时使用；只说"记住"要看内容在未来会话里是否仍有用
 - 发现用户的编码风格偏好、项目约定、重要决策时，主动保存为记忆
 - 记忆会持久化到磁盘，下次对话时自动加载
 - 项目记忆优先于全局记忆
@@ -178,8 +178,9 @@ export class MemoryTool implements Tool {
 - agent 范围：仅子代理内可用——沉淀「这一类子代理」跨会话复用的领域经验（常见坑、领域约定、有效方法），下次同类型子代理开工时自动注入
 - type 必填：user / feedback / project / reference；类型填 type，不要填进 scope
 - feedback / project 正文用行首的 Why: 与 How to apply: 两行写明理由与用法
-- 不要主动保存临时信息或已在 CLAUDE.md 中的内容
-- 不适合保存：会话状态、进度/PR 状态快照、敏感数据（API Key 等）`;
+- 不要保存只在本会话内用的临时信息（口令、暗号、样例值、上下文复述测试），即使用户说了"记住"
+- 用户说"不要写入记忆 / 不要调用工具"时，一律不保存
+- 不适合保存：会话状态、进度/PR 状态快照、敏感数据（API Key 等）、已在 CLAUDE.md 中的内容`;
   }
 
   inputSchema(): Record<string, unknown> {

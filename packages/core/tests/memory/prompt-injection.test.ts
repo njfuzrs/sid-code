@@ -26,6 +26,23 @@ describe("buildMemoryInstructions", () => {
     const instr = buildMemoryInstructions();
     expect(instr).toContain("API Key");
   });
+
+  /**
+   * PR-B（B1）：判据必须区分「跨会话持久」与「本会话临时」。
+   *
+   * 原事故（docs-research/sid-code/bugfixes/todo/20261106-记忆写入-临时内容误存与满额驱逐真实记忆-修复方案.md §1）：
+   * 旧提示只有一句无条件的「用户明确要求"记住…"」，模型把测试用暗号也当成持久化指令，
+   * 连写 5 条，在满额状态下把 5 条真实记忆挤进 archive/。
+   *
+   * 三条断言缺一不可：正向收紧到跨会话、反向列出临时内容类目、显式服从「不要写入」。
+   * 只删其中一条都会让判据回退一半（比如只留正向，模型仍会为「记住这轮口令」找理由）。
+   */
+  test("B1：判据区分跨会话持久与本会话临时", () => {
+    const instr = buildMemoryInstructions();
+    expect(instr).toContain("跨会话"); // 正向：只认跨会话
+    expect(instr).toContain("只在本会话内使用的临时内容"); // 反向：临时内容类目
+    expect(instr).toContain("不要写入记忆"); // 显式禁止优先
+  });
 });
 
 describe("buildMemorySystemPrompt", () => {

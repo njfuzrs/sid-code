@@ -37,4 +37,18 @@ describe("buildExtractPrompt — 与权限层同口径", () => {
   test("现有记忆清单始终注入", () => {
     expect(buildExtractPrompt(MANIFEST)).toContain(MANIFEST);
   });
+
+  /**
+   * PR-B（B3）：后台提取必须与主提示同一套「临时内容」判据。
+   *
+   * 只改主提示是不够的：主路径不存的临时内容，后台提取下一轮会把它补存回来，
+   * 事故只是延后一轮发生。两处断言的锚点字面量刻意与
+   * `tests/memory/prompt-injection.test.ts` 的 B1 用例保持一致 ——
+   * 只改一边就会有一处变红。
+   */
+  test("B3：与主提示同一套判据（临时内容 + 显式禁止）", () => {
+    const prompt = buildExtractPrompt(MANIFEST);
+    expect(prompt).toContain("只在本会话内使用的临时内容");
+    expect(prompt).toContain("不要写入记忆");
+  });
 });
