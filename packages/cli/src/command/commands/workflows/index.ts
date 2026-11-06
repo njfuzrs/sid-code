@@ -14,6 +14,7 @@ const workflows: UnifiedCommand = {
   description: "查看动态工作流 run（无参列出；带 runId 看详情）",
   argumentHint: "[runId|taskId]",
   source: "builtin",
+  headless: true,
   outputPanel: true,
   userInvocable: true,
   immediate: true,

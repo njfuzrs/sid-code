@@ -9,6 +9,7 @@ const trace: UnifiedCommand = {
     "排查会话：把当前 / 指定会话轨迹嚼碎成结构化摘要（--health 健康看板，--cache 缓存视图）",
   argumentHint: "[<id>] [--list] [--full] [--health] [--cache [--days N]] [--prune-index N]",
   source: "builtin",
+  headless: true,
   outputPanel: true,
   load: () => import("./trace.ts").then((m) => new m.TraceCommand()),
 };

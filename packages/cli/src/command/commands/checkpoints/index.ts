@@ -7,6 +7,7 @@ const checkpoints: UnifiedCommand = {
   aliases: ["cp"],
   description: "查看快照历史",
   source: "builtin",
+  headless: true,
   outputPanel: true,
   load: () => import("./checkpoints.ts").then((m) => new m.CheckpointsCommand()),
 };

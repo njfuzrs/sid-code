@@ -7,6 +7,7 @@ const cost: UnifiedCommand = {
   aliases: [],
   description: "显示 token 用量和费用",
   source: "builtin",
+  headless: true,
   immediate: true,
   outputPanel: true,
   load: () => import("./cost.ts").then((m) => new m.CostCommand()),

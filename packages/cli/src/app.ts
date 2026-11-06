@@ -8539,33 +8539,23 @@ export class App {
     const { CommandExecutor } = await import("./command/executor.ts");
     const { buildMcpPromptCommands } = await import("./command/mcp-prompt-commands.ts");
 
-    const cmdCtx: import("./command/types.ts").CommandContext = {
+    const { buildHeadlessCommandContext } = await import("./command/headless-command-context.ts");
+    // 注入表住在这个函数里（app 与门禁测试共用），不要在这里另写一份字段列表：
+    // 手抄一份会随字段增删静默过期，让「放行命令不碰未注入字段」的门禁恒绿。
+    const cmdCtx = buildHeadlessCommandContext({
       ctxMgr: this.ctxMgr,
       toolRegistry: this.toolRegistry,
       cwd: process.cwd(),
       config: this.config,
-      // 逻辑会话 id（resume 时是被恢复会话 id），**不是**本进程新 id。
-      // 轨迹目录名就是它：collector 的 traceSessionId = resumed_from ?? input.session_id
-      // （见 core/src/trace/collector.ts 的 SessionStart），会话 jsonl 同口径。
-      // 传空串的后果按命令分裂：/trace /perf /insights 定位不到当前会话（回退 latest 或
-      // 报「未找到会话」），/export /bug /status /fork 直接把 id 丢了（`?? "-"` 挡不住空串）。
+      // 逻辑会话 id（resume 时是被恢复会话 id），**不是**本进程新 id。语义见函数内注释。
       sessionId: this.getLogicalSessionId(),
       checkpointSessionId: this.getLogicalSessionId(),
       provider: this.provider,
-      // fork 型 skill / 自定义命令靠它起子代理；缺了 executor 会静默退回 inline
       providerRegistry: this.providerRegistry,
       mcpManager: this.mcpManager,
       setModel: (m, persist) => this.applyPrimaryModelSwitch(m, { persist, clearTerminal: true }),
       sessionState: this.sessionState,
-      // fork 子代理跟随本轮中断信号（会话硬顶 / SDK interrupt / Bridge abort）
-      beginForkedRun: () => ({
-        signal: this.abortController?.signal ?? new AbortController().signal,
-        end: () => {},
-      }),
-      // 自定义命令模板里的 `!{shell}` 与 skill 的 ask 决策走同一条确认通道：
-      // SDK 宿主 can_use_tool / Bridge 远端 / 否则按 permissionMode（default 即 fail-closed 拒绝）
-      confirmShellCommands: (commands) =>
-        this.requestUserConfirmation(`执行命令模板中的 shell：${commands.join("; ")}`),
+      abortSignal: () => this.abortController?.signal ?? new AbortController().signal,
       requestUserConfirmation: (desc: string) => this.requestUserConfirmation(desc),
       permissionRules: this.getRawPermissionRules(),
       permissionChecker: this.permissionChecker,
@@ -8575,7 +8565,7 @@ export class App {
       traceCollector: this.traceCollector ?? undefined,
       fileReadTracker: this.fileReadTracker ?? undefined,
       sessionDir: this.resolveSessionDir(),
-    };
+    });
     const executor = new CommandExecutor(cmdCtx);
     try {
       const commands = await registry.getCommands(

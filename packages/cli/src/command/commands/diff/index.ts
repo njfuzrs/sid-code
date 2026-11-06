@@ -7,6 +7,7 @@ const diffCmd: UnifiedCommand = {
   description: "显示当前工作区 git diff（--staged 看已暂存改动）",
   argumentHint: "[--staged|--cached]",
   source: "builtin",
+  headless: true,
   outputPanel: true,
   userInvocable: true,
   immediate: true,

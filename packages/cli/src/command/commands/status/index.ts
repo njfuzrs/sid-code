@@ -15,6 +15,7 @@ const status: UnifiedCommand = {
   aliases: [],
   description: "显示会话状态概览（模型/目录/token/provider/skills）",
   source: "builtin",
+  headless: true,
   outputPanel: true,
   userInvocable: true,
   immediate: true,

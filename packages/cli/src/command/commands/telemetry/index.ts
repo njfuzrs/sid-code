@@ -7,6 +7,7 @@ const telemetry: UnifiedCommand = {
   aliases: ["tele"],
   description: "显示当前会话遥测摘要（Span 树 + Metric 汇总）",
   source: "builtin",
+  headless: true,
   outputPanel: true,
   load: () => import("./telemetry.ts").then((m) => new m.TelemetryCommand()),
 };

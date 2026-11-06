@@ -7,6 +7,7 @@ const ps: UnifiedCommand = {
   aliases: ["tasks"],
   description: "列出后台任务和活跃会话",
   source: "builtin",
+  headless: true,
   outputPanel: true,
   load: () => import("./ps.ts").then((m) => new m.PsCommand()),
 };
