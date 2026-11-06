@@ -90,6 +90,8 @@ def make_run(
     digests: dict[str, str] | None = None,
     no_startup: set[str] | None = None,
     cache: bool = False,
+    max_duration_ms: str = "7290000",
+    verifier_stdout: str = "1 passed in 0.10s\n",
 ) -> str:
     """造一个结构上等同 Harbor job 目录的 fixture。
 
@@ -142,7 +144,7 @@ def make_run(
                         "sid_stall_escalation": stall,
                         "sid_max_turns": max_turns,
                         "sid_max_budget_usd": budget,
-                        "sid_max_duration_ms": "7290000",
+                        "sid_max_duration_ms": max_duration_ms,
                     },
                 },
                 "started_at": "2026-11-05T00:00:00Z",
@@ -150,7 +152,7 @@ def make_run(
             },
         )
         # verifier_ran 的判据：stdout 里有 pytest 结论行
-        _write_text(os.path.join(td, "verifier", "stdout.txt"), "1 passed in 0.10s\n")
+        _write_text(os.path.join(td, "verifier", "stdout.txt"), verifier_stdout)
         # ⚠️ 必须写这个文件：不写时 agent_started 返回 **None**（不可判），
         # 而不是 False（启动未完成）—— 两者在排除判据里处置完全不同。
         _write_text(
@@ -801,6 +803,108 @@ def test_under_test() -> None:
               str(doc["fingerprint"] and doc["fingerprint"]["differing_fields"]))
 
 
+SCORE_PY_LINE = (
+    '{"reward": 1.0, "f2p": 1.0, "p2p": 1.0, "error_code": 0, '
+    '"f2p_n_required": 1.0, "f2p_n_seen": 1.0}\n'
+)
+
+
+def test_traj_bench_verifier_line() -> None:
+    """traj-bench 的 verifier stdout 只有 score.py 的一行结论 JSON，不是 pytest 结论行。
+
+    修这条之前：每一题都被判「verifier未判分」⇒ infra 100% ⇒ v0.2.1 计分集永远 INVALID。
+    """
+    print("\n=== ⑭ traj-bench verifier：score.py 结论行算判分 ===")
+    import verifier_health as VH
+
+    with tempfile.TemporaryDirectory() as tmp:
+        def vr(text: str) -> bool:
+            td = os.path.join(tmp, f"t{abs(hash(text))}")
+            _write_text(os.path.join(td, "verifier", "test-stdout.txt"), text)
+            return VH.verifier_ran(td)
+
+        check("score.py 结论行 → 判分了", vr(SCORE_PY_LINE))
+        check("error_code≠0 也算判分（判的是 0）",
+              vr('{"reward": 0.0, "f2p": 0.0, "p2p": 0.0, "error_code": 4}\n'))
+        check("空 stdout（判分超时被杀）→ 没判分", not vr(""))
+        check("缺 error_code 键 → 不认", not vr('{"reward": 1.0, "f2p": 1.0, "p2p": 1.0}\n'))
+        check("reward 是 bool → 不认", not vr('{"reward": true, "f2p": 1, "p2p": 1, "error_code": 0}\n'))
+        check("日志里只出现 \"reward\" 子串 → 不认", not vr('writing "reward": 1.0 to reward.json\n'))
+        check("pytest 结论行仍然认", vr("3 passed in 0.5s\n"))
+
+    with tempfile.TemporaryDirectory() as tmp:
+        base = _s8_baseline(tmp, verifier_stdout=SCORE_PY_LINE)
+        same = {f"T{i:02d}": 1.0 for i in range(1, 9)}
+        same.update({f"T{i:02d}": 0.0 for i in range(9, 11)})
+        cur = make_current(tmp, same, verifier_stdout=SCORE_PY_LINE)
+        doc = _verdict(base, [cur])
+        check("traj-bench 形态 run → PASS（不再 infra 100%）", doc["verdict"] == "PASS",
+              str(doc["invalid_reasons"]))
+
+
+def _tiered_baseline(tmp: str) -> dict:
+    """两档基线：T01–T04 在 t1800 档，T05–T10 在 t2700 档（与 t15-baseline 的分法同形）。"""
+    lo = {f"T{i:02d}": 1.0 for i in range(1, 5)}
+    hi = {f"T{i:02d}": 1.0 for i in range(5, 11)}
+    fp_lo = R.collect(make_run(os.path.join(tmp, "b-lo"), lo, max_duration_ms="4860000"), DECLARED)
+    fp_hi = R.collect(make_run(os.path.join(tmp, "b-hi"), hi), DECLARED)
+    per_task = {f"T{i:02d}": [1.0, 1.0, 1.0] for i in range(1, 9)}
+    per_task.update({f"T{i:02d}": [0.0, 0.0, 0.0] for i in range(9, 11)})
+    return {"schema_version": 1, "fingerprints": [fp_lo, fp_hi], "per_task": per_task,
+            "infra_fault": {}, "noise": {"epsilon": 0.10}}
+
+
+def test_tiered_fingerprints() -> None:
+    """traj-bench 一轮 = 两档各一次 harbor run，max_duration_ms 与题子集都不同。
+
+    修这条之前：两档合并时互相比对 ⇒「补跑的 run 之间指纹不一致」⇒ 永远 INVALID。
+    """
+    print("\n=== ⑮ 分档基线：每个 run 对上恰好一档 ===")
+    lo = {f"T{i:02d}": 1.0 for i in range(1, 5)}
+    hi = {f"T{i:02d}": 1.0 for i in range(5, 9)}
+    hi.update({f"T{i:02d}": 0.0 for i in range(9, 11)})
+
+    with tempfile.TemporaryDirectory() as tmp:
+        base = _tiered_baseline(tmp)
+        c_lo = make_current(tmp, lo, name="c-lo", sha="b" * 64, max_duration_ms="4860000")
+        c_hi = make_current(tmp, hi, name="c-hi", sha="b" * 64)
+        doc = _verdict(base, [c_lo, c_hi])
+        check("两档、新二进制、结果相同 → PASS", doc["verdict"] == "PASS", str(doc["invalid_reasons"]))
+        check("  每个 run 对上一档", sorted(r["tier"] for r in doc["fingerprint"]["per_run"]) == [0, 1],
+              str(doc["fingerprint"]))
+
+    with tempfile.TemporaryDirectory() as tmp:
+        base = _tiered_baseline(tmp)
+        c_lo = make_current(tmp, lo, name="c-lo", max_duration_ms="4860000")
+        doc = _verdict(base, [c_lo])
+        check("只跑了一档 → INVALID（没跑全）", doc["verdict"] == "INVALID"
+              and any("没有对应的当前 run" in r or "尚未跑" in r for r in doc["invalid_reasons"]),
+              str(doc["invalid_reasons"]))
+
+    with tempfile.TemporaryDirectory() as tmp:
+        base = _tiered_baseline(tmp)
+        c_lo = make_current(tmp, lo, name="c-lo", max_duration_ms="4860000", model="deepseek/x")
+        c_hi = make_current(tmp, hi, name="c-hi", model="deepseek/x")
+        doc = _verdict(base, [c_lo, c_hi])
+        check("两档都换了模型 → INVALID，点名 model_id", doc["verdict"] == "INVALID"
+              and "model_id" in doc["fingerprint"]["differing_fields"], str(doc["fingerprint"]))
+
+    with tempfile.TemporaryDirectory() as tmp:
+        base = _tiered_baseline(tmp)
+        c_lo = make_current(tmp, lo, name="c-lo", sha="b" * 64, max_duration_ms="4860000")
+        c_hi = make_current(tmp, hi, name="c-hi", sha="c" * 64)
+        doc = _verdict(base, [c_lo, c_hi])
+        check("两档二进制不同 → INVALID（一次 L2 只测一个版本）", doc["verdict"] == "INVALID"
+              and any("被测二进制不一致" in r for r in doc["invalid_reasons"]), str(doc["invalid_reasons"]))
+
+    with tempfile.TemporaryDirectory() as tmp:
+        base = _tiered_baseline(tmp)
+        base["fingerprint"] = base["fingerprints"][0]
+        doc = _verdict(base, [make_current(tmp, lo)])
+        check("fingerprint 与 fingerprints 同时给 → 基线不自洽", doc["verdict"] == "INVALID"
+              and any("只能给一个" in r for r in doc["invalid_reasons"]), str(doc["invalid_reasons"]))
+
+
 def main() -> int:
     print("=" * 64)
     print("  eval-verdict.py 正向断言 + P2 验收 6 组 + 变异自证")
@@ -818,6 +922,8 @@ def main() -> int:
     test_cache_and_cost_warn()
     test_missing_cost_is_not_zero()
     test_under_test()
+    test_traj_bench_verifier_line()
+    test_tiered_fingerprints()
     test_mutations()
     print("\n" + "=" * 64)
     print(f"  通过 {PASS} / 失败 {FAIL}")

@@ -14,7 +14,7 @@
 
 | 函数 | 问题 | 取数源 |
 | --- | --- | --- |
-| `verifier_ran` | **verifier** 判分了没有 | `verifier/*stdout*` 的 pytest 结论行 |
+| `verifier_ran` | **verifier** 判分了没有 | `verifier/*stdout*` 的 pytest 结论行，或 traj-bench `score.py` 的结论 JSON 行 |
 | `agent_ran` | **agent** 发出过调用没有 | `agent_result` 的 in/out token 数 |
 | `agent_started` | **agent** 走完启动没有 | `agent/sid-home/debug.log` |
 
@@ -30,6 +30,13 @@ metadata 整份缺失时 `agent_ran` 只能返回 `None`(采集缺失,不可判)
 
 `verifier/*stdout*` 里出现 pytest 的结论行(`N passed` / `N failed`)⟺ 判分发生了。
 
+agent-traj-bench 的 verifier 不是 pytest:`test.sh` 跑 bun test,再由 `score.py` 汇总,
+stdout 只有一行结论 JSON(`{"reward": …, "f2p": …, "p2p": …, "error_code": …}`)。
+这一行同样是**结果**而不是过程 —— score.py 只有算完分才打印它,error_code≠0(例如
+XML 缺失)也照样打印,那仍是「判分发生了、判的是 0」。判分超时被杀时 stdout 为空 ⇒ False。
+2026-11-06 之前缺这一条:traj-bench 的每一题都被判成「verifier未判分」,L2 判定器
+对 v0.2.1 计分集一律给 infra 100% ⇒ INVALID(T20 dry-run 实测)。
+
 ⛔ **不用 `uv: command not found` 当判据**(初版踩过):那是**某一种坏法的症状**。
 `polyglot-c-py` 的 verifier 是在下载 uv 的中途被超时杀掉的,日志停在
 `downloading uv 0.7.13`,那句 `command not found` 压根没来得及打印 ——
@@ -43,6 +50,7 @@ metadata 整份缺失时 `agent_ran` 只能返回 `None`(采集缺失,不可判)
 from __future__ import annotations
 
 import glob
+import json
 import os
 import re
 
@@ -50,9 +58,31 @@ import re
 #: "1 passed, 2 failed" 等形态。⚠️ 改这个正则等于改所有脚本的判据。
 PYTEST_CONCLUSION = re.compile(r"\d+ (?:passed|failed)")
 
+#: traj-bench `score.py` 结论行必须同时带的键(test.sh 规则 7 写死的三个 + error_code)。
+#: 判据是「整行是 JSON 对象且四键齐全、reward 是数」,不是子串 —— 日志里别处出现的
+#: `"reward"` 字样不能让一题被判成「判分了」。
+SCORE_PY_KEYS = ("reward", "f2p", "p2p", "error_code")
+
+
+def _score_py_concluded(text: str) -> bool:
+    for line in text.splitlines():
+        line = line.strip()
+        if not (line.startswith("{") and line.endswith("}")):
+            continue
+        try:
+            obj = json.loads(line)
+        except ValueError:
+            continue
+        if not isinstance(obj, dict) or not all(k in obj for k in SCORE_PY_KEYS):
+            continue
+        rw = obj["reward"]
+        if isinstance(rw, (int, float)) and not isinstance(rw, bool):
+            return True
+    return False
+
 
 def verifier_ran(trial_dir: str) -> bool:
-    """True = 这一题的 verifier 真的判分了(stdout 里有 pytest 结论行)。
+    """True = 这一题的 verifier 真的判分了(stdout 里有 pytest 结论行,或 score.py 结论行)。
 
     没有 stdout 文件 → False(算没跑成,而不是当成跑成了):
     「没采到」与「跑成了」在数据上不可区分时,一律按坏的算 —— 与本仓
@@ -60,10 +90,11 @@ def verifier_ran(trial_dir: str) -> bool:
     """
     for cand in glob.glob(os.path.join(trial_dir, "verifier", "*stdout*")):
         try:
-            if PYTEST_CONCLUSION.search(open(cand, errors="replace").read()):
-                return True
+            text = open(cand, errors="replace").read()
         except OSError:
-            pass
+            continue
+        if PYTEST_CONCLUSION.search(text) or _score_py_concluded(text):
+            return True
     return False
 
 
