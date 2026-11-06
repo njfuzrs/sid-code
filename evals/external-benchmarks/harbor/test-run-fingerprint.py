@@ -254,6 +254,28 @@ def run() -> int:
               base["fields"]["taskset_digest"].endswith(T.digest_fingerprint(rows)) or True)
         # 真校验：同一组行，两处算法必须给出同一个串
         check("同一组行两处结果相同", T.digest_fingerprint(rows) == T.digest_fingerprint(sorted(rows)))
+
+        print("\n⑭ under_test：被测变量只豁免「值不同」，不豁免缺失")
+        import copy
+        b2 = copy.deepcopy(base)
+        c2 = copy.deepcopy(base)
+        c2["fields"]["sid_binary_sha256"] = "f" * 64
+        strict = R.compare(b2, c2)
+        check("缺省（严格）：sha 不同 → INVALID", strict["verdict"] == "INVALID")
+        ut = R.compare(b2, c2, under_test=("sid_binary_sha256",))
+        check("under_test=sha：sha 不同 → 不进 diffs", "sid_binary_sha256" not in ut["differing_fields"])
+        check("  且记进 under_test_diffs",
+              [d["field"] for d in ut["under_test_diffs"]] == ["sid_binary_sha256"])
+        c3 = copy.deepcopy(base)
+        c3["fields"]["sid_binary_sha256"] = None
+        miss = R.compare(b2, c3, under_test=("sid_binary_sha256",))
+        check("under_test=sha：当前侧缺 sha → 仍 INVALID（单边缺失）",
+              miss["verdict"] == "INVALID" and "sid_binary_sha256" in miss["differing_fields"])
+        try:
+            R.compare(b2, c2, under_test=("no_such_field",))
+            check("under_test 未知键要被拒绝", False, "没抛")
+        except ValueError:
+            check("under_test 未知键要被拒绝", True)
     finally:
         shutil.rmtree(tmp, ignore_errors=True)
     print(f"\n{'=' * 60}\n  通过 {PASS} / 失败 {FAIL}")

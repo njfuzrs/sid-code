@@ -11,7 +11,7 @@ r"""L2 判定器：把一次评测 run 判成方案 §5.2 的四种结论之一�
 
 | 结论 | 条件 | 动作 |
 | --- | --- | --- |
-| `INVALID` | 指纹非 VALID / 任一题没跑 / infra 故障率 > 10% / 外部阻断 / 基线不自洽 | 不出结论，不放行 |
+| `INVALID` | 指纹非 VALID（被测的二进制 sha / commit 除外）/ 任一题没跑 / infra 故障率 > 10% / 外部阻断 / 基线不自洽 | 不出结论，不放行 |
 | `REGRESSION` | 稳定必过子集 S′ 中失败题数 ≥ m′（\|S′\|<6 时改用通过率 < 50% 兜底） | 阻断 promote |
 | `WARN` | S′ 有失败但 < m′ / 全集配对净回退 > 0 / 缓存下降 >10pp / 成本上涨 >30% | 放行，人工复核 |
 | `PASS` | 以上都不满足 | 放行 |
@@ -128,6 +128,11 @@ EPSILON_FLOOR = Fraction(1, 10)
 
 #: 显著性水平 α（双侧 5% 的单侧用法：零假设误拦率 ≤ 5%）。
 ALPHA = Fraction(1, 20)
+
+#: 被测变量：L2 比的就是「新二进制 vs 基线」，这两项不同是前提，不是配置漂移。
+#: 只豁免「值不同」，两边仍必须采到（`run_fingerprint.compare` 的 `under_test`）。
+#: ⛔ 别往里加别的字段 —— 模型、题集、预算任一变了，结果就不能比。
+UNDER_TEST_FIELDS = ("sid_binary_sha256", "sid_commit")
 
 #: 退出码：放行 0 / 阻断 2 / 无效 3（与 `run_fingerprint.py` 的 EXIT 风格一致）。
 EXIT = {"PASS": 0, "WARN": 0, "REGRESSION": 2, "INVALID": 3}
@@ -477,7 +482,7 @@ def evaluate(
             invalid.append("指纹：基线缺 fingerprint —— **无法证明可比，不等于通过**")
         else:
             try:
-                cmp = run_fingerprint.compare(base_fp, cur_fp)
+                cmp = run_fingerprint.compare(base_fp, cur_fp, under_test=UNDER_TEST_FIELDS)
             except ValueError as exc:
                 invalid.append(f"指纹比对失败：{exc}")
             else:

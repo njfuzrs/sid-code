@@ -359,15 +359,16 @@ def test_six_acceptance_cases() -> None:
                 str(doc["warn_signals"]),
             )
 
-        # ③ 指纹不同 → INVALID
+        # ③ 指纹不同（被测变量之外的字段）→ INVALID
+        #   ⚠️ 不能拿二进制 sha 造这一组：L2 比的就是新二进制，sha 不同是前提（见 test_under_test）。
         with tempfile.TemporaryDirectory() as t3:
             base = _s8_baseline(t3)
             rewards = {f"T{i:02d}": 1.0 for i in range(1, 11)}
-            cur = make_current(t3, rewards, sha="b" * 64)
+            cur = make_current(t3, rewards, model="deepseek/deepseek-v4.1-flash")
             doc = _verdict(base, [cur])
             check("③ 指纹不同 → INVALID", doc["verdict"] == "INVALID", doc["verdict"])
             check(
-                "  点名 sid_binary_sha256", "sid_binary_sha256" in doc["fingerprint"]["differing_fields"],
+                "  点名 model_id", "model_id" in doc["fingerprint"]["differing_fields"],
                 str(doc["fingerprint"]),
             )
             check(
@@ -757,6 +758,49 @@ def test_mutations() -> None:
         check("变异 4（语法坏掉）→ import 抛 SyntaxError", raised)
 
 
+def test_under_test() -> None:
+    """被测变量（二进制 sha / commit）不同 ≠ 指纹漂移；但两边仍必须采到。
+
+    修这条之前：`compare()` 全字段严格相等 ⇒ 每个新 beta 都 INVALID，L2 永远出不了结论。
+    """
+    print("\n=== ⑬ 被测变量：新二进制不判 INVALID ===")
+    same = {f"T{i:02d}": 1.0 for i in range(1, 9)}
+    same.update({f"T{i:02d}": 0.0 for i in range(9, 11)})
+    with tempfile.TemporaryDirectory() as tmp:
+        base = _s8_baseline(tmp)
+        cur = make_current(tmp, same, sha="b" * 64, commit="d" * 40)
+        doc = _verdict(base, [cur])
+        check("新二进制 + 结果相同 → PASS", doc["verdict"] == "PASS", str(doc["invalid_reasons"]))
+        check("  fingerprint VALID", doc["fingerprint"]["verdict"] == "VALID", str(doc["fingerprint"]))
+        ut = {d["field"] for d in doc["fingerprint"]["under_test_diffs"]}
+        check("  under_test_diffs 记下 sha 与 commit", ut == {"sid_binary_sha256", "sid_commit"}, str(ut))
+
+    with tempfile.TemporaryDirectory() as tmp:
+        base = _s8_baseline(tmp)
+        rewards = {f"T{i:02d}": (0.0 if i in (1, 2, 3) else 1.0) for i in range(1, 9)}
+        rewards.update({f"T{i:02d}": 0.0 for i in range(9, 11)})
+        cur = make_current(tmp, rewards, sha="b" * 64)
+        doc = _verdict(base, [cur])
+        check("新二进制 + S 掉 3 题 → REGRESSION（闸门真能拦）",
+              doc["verdict"] == "REGRESSION", doc["verdict"])
+
+    with tempfile.TemporaryDirectory() as tmp:
+        base = _s8_baseline(tmp)
+        cur = make_current(tmp, same, sha=None)
+        doc = _verdict(base, [cur])
+        check("当前侧没采到 sha → 仍 INVALID（说不清测的是哪一版）",
+              doc["verdict"] == "INVALID", doc["verdict"])
+
+    with tempfile.TemporaryDirectory() as tmp:
+        base = _s8_baseline(tmp)
+        cur = make_current(tmp, same, sha="b" * 64, model="deepseek/deepseek-v4.1-flash")
+        doc = _verdict(base, [cur])
+        check("新二进制 + 换模型 → INVALID，只点名 model_id",
+              doc["verdict"] == "INVALID"
+              and doc["fingerprint"]["differing_fields"] == ["model_id"],
+              str(doc["fingerprint"] and doc["fingerprint"]["differing_fields"]))
+
+
 def main() -> int:
     print("=" * 64)
     print("  eval-verdict.py 正向断言 + P2 验收 6 组 + 变异自证")
@@ -773,6 +817,7 @@ def main() -> int:
     test_epsilon_default()
     test_cache_and_cost_warn()
     test_missing_cost_is_not_zero()
+    test_under_test()
     test_mutations()
     print("\n" + "=" * 64)
     print(f"  通过 {PASS} / 失败 {FAIL}")
