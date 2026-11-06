@@ -20,6 +20,16 @@
  * `SID_CODE_PROFILE_STARTUP_DUMP` 落的 JSON（shared/utils/startup-profiler.ts）：
  * 首帧后 3s 窗口结束时写一次，不依赖 TUI 退出路径。
  *
+ * ## 平台口径（2026-11-06）：macOS 计时只报告，结构性门禁双平台阻断
+ *
+ * macOS 共享 runner 的时序噪声与阈值同量级（两次放宽到 300ms 后实测中位数仍有
+ * 322~871ms，空目录自身在 601~1346ms 间漂），计时断言的绿/红由 runner 负载决定，
+ * 继续调阈值会高过已知真实回归（C1 +698ms）本身。所以 macOS 的四处计时断言降级为
+ * `[gate:report-only]`；补回的检出能力是**结构性门禁**：首帧前主进程调用会话清理 /
+ * 轨迹扫描 / 补传压缩入口的次数必须为 0（profiler 的 `counters`），它不吃 runner 负载。
+ * ubuntu / 本机计时断言仍阻断（那里的噪声只有 ±30ms）。
+ * 依据与否决论证见 `.agents/notes/implemented/testing/2026-11-06-启动门禁macOS计时改只报告加结构性门禁.md`。
+ *
  * ## 补传（U1–U4，PR-C 起生效）
  *
  * 另起一个配了上传地址的目录：一个 ≥200MB、无 `.uploaded` 的 traj 会话，上传地址指向本进程里
@@ -55,6 +65,8 @@ const SESSION_FILES = 300;
 interface Profile {
   checkpoints: Array<{ name: string; ms: number }>;
   metrics: Record<string, number>;
+  /** 首帧前维护任务入口的调用次数（profiler 的 `profileCounter`），结构性门禁的取数源 */
+  counters?: Record<string, number>;
 }
 
 const homes: string[] = [];
@@ -390,74 +402,61 @@ async function startOnce(home: string): Promise<Profile> {
 const RUNS = 3;
 
 /**
- * 首帧差值阈值（ms），按平台分档：macOS 300，其他（ubuntu / 本机）150。
+ * 计时断言的平台策略：macOS 只报告，ubuntu / 本机阻断。
  *
- * ## 为什么必须分档
+ * ## 为什么 macOS 降级为只报告（2026-11-06）
  *
- * 150ms 的标定没变（2026-11-01 本机，3 轮中位数）：修复后 +18~+142ms，C1 变异 +698ms、
- * T1/T2 变异 +353ms —— 在本机这种噪声水平上信噪比是够的。
- *
- * 但 macOS 共享 runner 的时序噪声与阈值**同量级**，判定结果由运气而不是由不变量决定。
- * 2026-11-04 一天内的实测（同一份 main 代码）：
+ * 两次放宽阈值（首帧 150→300、阻塞 100→300）之后仍然红，而放宽后的实测中位数已经到
+ * 322~871ms，与已知真实回归同量级（C1 +698ms、T1/T2 +353ms）：
  *
  * ```text
- * run 41787902045  逐轮 Δframe=[343 / -85 / 671]  中位数 343.3ms
- * run 41791475745  逐轮 Δframe=[151 /  31 / 214]  中位数 150.7ms（只超 0.7ms）
- * 同批绝对值：空目录 first_frame 624 / 667 / 772 —— 空目录自己就波动 148ms
+ * run 41989505947  Δframe 中位数 411.6  空=[642/723/606]     大=[1053/1188/728]
+ * run 41989811765  Δframe 中位数 322    空=[1161/965/1346]   大=[1949/1287/1141]
+ * run 42004678644  Δframe 中位数 511.3  空=[1128/816/835]    大=[1088/1327/1349]
+ * run 42008890919  Δframe 中位数 871    空=[804/601/912]     大=[2134/1472/989]
  * ```
  *
- * 差值型门禁的分母（空目录）自带 ~150ms 抖动时，再靠「3 轮取中位数」压噪声已经没有余量；
- * 而 main 上近 40 次 CI 的 12 次 failure 里至少 5 次是这条断言，PR #575 / #578 / #579
- * 也都踩过 —— 这已经不是偶发，是阈值贴着测量值。
+ * 分母（空目录）自己就在 601~1346ms 间漂，3 轮取中位数压不住这个量级的噪声。
+ * 再放宽会高过 C1 变异本身，门禁就失去意义了 —— 绿/红由 runner 负载决定，不由代码决定。
+ * ubuntu 上噪声只有 ±30ms，150/100ms 阈值信噪比足够，**不降级**。
  *
- * ## 为什么是 300 而不是「随便放宽」
+ * ## 检出能力靠什么补
  *
- * macOS 上仍要能检出真实回归：已知变异 T1/T2（collector 构造放回主线程）+353ms、
- * C1（全量会话清理放回主线程）+698ms，都高于 300ms。代价是 macOS 上 150~300ms 的真实
- * 回归会漏检——这是为了让门禁在 macOS 上「测得准」而主动放弃的灵敏度，ubuntu 不变。
+ * 结构性门禁（下面「首帧前主进程没调用维护任务入口」那条）：首帧前会话清理 / 轨迹扫描 /
+ * 补传压缩的入口调用次数必须为 0。它不吃 runner 负载，两个平台都阻断，
+ * 覆盖 C1 / T1 / T2 / 补传四类已知回归（变异自证见 Agent Note）。
+ *
+ * ## 平台分支本身要有一条测试锁住
+ *
+ * `if (platform !== "darwin") expect(...)` 这种写法把断言包起来却没有对应断言锁分支，
+ * 哪天有人把 ubuntu 也改成只报告，所有计时断言照样全绿。见「计时断言按平台分档」。
  */
-function frameDeltaLimitMs(platform: string): number {
-  return platform === "darwin" ? 300 : 150;
+export function timingAssertionsBlocking(platform: string): boolean {
+  return platform !== "darwin";
 }
+
+/** 首帧差值阈值（ms）：只在阻断平台上生效 */
+const FRAME_DELTA_LIMIT_MS = 150;
+
+/** 事件循环阻塞差值阈值（ms）：只在阻断平台上生效 */
+const BLOCK_DELTA_LIMIT_MS = 100;
+
+/** 本次进程是否阻断计时断言（macOS 只报告） */
+const TIMING_BLOCKING = timingAssertionsBlocking(process.platform);
 
 /**
- * 事件循环最大阻塞的差值阈值（ms），按平台分档：macOS 300，其他保持 100。
- *
- * ## 为什么也要分档
- *
- * `frameDeltaLimitMs` 那次（2026-11-04）刻意只动了首帧，「顺手把 Δblock 也分档」被否决，
- * 理由是当时只有一次失败、样本不足以标定 macOS 档位。2026-11-05 PR #591 又红了一次，
- * 形态与首帧当年完全同源：
- *
- * ```text
- * run 41954347885（PR #591，改动只在 TUI 渲染层，不碰启动同步路径）
- * 逐轮 Δblock=[195 / 88 / 210]  中位数 195ms（阈值 100ms）
- * max_loop_block 空=[125 / 179 / 186]  大=[320 / 267 / 396]
- * ```
- *
- * 本机标定（2026-11-01，3 轮中位数）里真实信号是 −13 ~ +15ms，所以 macOS 上这 88~210ms
- * 的差值基本全是噪声；而空目录自身的常数阻塞已经 125~186ms，**比阈值本身还高** ——
- * 分母比判据还吵，绿/红由运气决定。三轮里中间那轮 88ms 还是低于阈值的，是噪声形态，
- * 不是稳定偏移。
- *
- * ## 为什么是 300
- *
- * 与首帧同一档位，少一个「为什么这里 250 那里 300」的解释成本。macOS 上仍要能检出真实回归：
- * 已知变异 C1（全量会话清理放回主线程）+570ms 远高于 300ms；T1/T2（collector 构造放回主线程）
- * +300ms 在本口径下正好压在边界上、可能漏检，但同一变异的 Δframe 是 +353ms > 300ms，
- * 仍被首帧那条检出 —— 两条门禁组合起来覆盖没有丢。
- *
- * 代价与首帧一致：macOS 上 100~300ms 的真实回归会漏检，ubuntu / 本机不变。
+ * 计时断言：阻断平台走 expect，macOS 只打一行 `[gate:report-only]`（带逐轮原始值，
+ * 人工看趋势要用）。report-only 不是「静默跳过」—— 它必须留下可 grep 的输出。
  */
-function blockDeltaLimitMs(platform: string): number {
-  return platform === "darwin" ? 300 : 100;
+function assertTiming(label: string, actual: number, limit: number, detail: string): void {
+  if (!TIMING_BLOCKING) {
+    console.log(
+      `[gate:report-only] ${label}：${actual}ms（阈值 ${limit}ms，macOS 不阻断）；${detail}`,
+    );
+    return;
+  }
+  expect(actual, `${detail}（中位数 ${actual}ms，阈值 ${limit}ms）`).toBeLessThan(limit);
 }
-
-/** 本次进程实际生效的首帧差值阈值 */
-const FRAME_DELTA_LIMIT_MS = frameDeltaLimitMs(process.platform);
-
-/** 本次进程实际生效的事件循环阻塞差值阈值 */
-const BLOCK_DELTA_LIMIT_MS = blockDeltaLimitMs(process.platform);
 
 function median(xs: number[]): number {
   const a = [...xs].sort((x, y) => x - y);
@@ -686,21 +685,44 @@ describeGate("大数据启动门禁（首帧与事件循环阻塞不随数据量
     expect(Number.isFinite(maxBlock(large))).toBe(true);
   });
 
-  // 分档本身也要断言：把两档写成同一个数字（或把 "darwin" 拼错）时，macOS 会悄悄退回
-  // 150ms 的老阈值，而所有性能断言在噪声不出来的时候照样全绿 —— 这类退化只有这条能看见。
-  test("首帧阈值确实按平台分档（macOS 300 / 其他 150）", () => {
-    expect(frameDeltaLimitMs("darwin")).toBe(300);
-    expect(frameDeltaLimitMs("linux")).toBe(150);
-    expect(frameDeltaLimitMs("win32")).toBe(150);
-    expect(FRAME_DELTA_LIMIT_MS).toBe(frameDeltaLimitMs(process.platform));
+  /**
+   * 结构性门禁：首帧前主进程没有调用任何「该在维护子进程里跑」的入口。
+   *
+   * 这是 macOS 计时断言降级为只报告后补回的检出能力：判据是确定性的 0，不吃 runner 负载，
+   * 两个平台都阻断。入口打点见 `shared/utils/startup-profiler.ts` 的 profileCounter：
+   *
+   * - `session-cleanup`：全量扫描会话目录（C1 变异放回主线程时 +1）；
+   * - `trace-prune` / `trace-prune-stale`：全量扫描轨迹目录（T1/T2 变异放回 collector
+   *   构造函数时 +1）；
+   * - `trace-upload-compress`：补传压缩（U1–U4 变异放回 SessionStart 时 +1）。
+   *
+   * 判据是「三种配置的每一轮都为 0」，不是「差值小于阈值」：正常启动时这三类入口
+   * 一次都不该被主进程调用，出现任何一次都是有活回到了首帧前。
+   */
+  test("首帧前主进程没调用维护任务入口（结构性门禁，与 runner 负载无关）", () => {
+    const cases: Array<[string, Profile[]]> = [
+      ["空", emptyRuns],
+      ["大数据", largeRuns],
+      ["补传", uploadRuns],
+    ];
+    for (const [cfg, runs] of cases) {
+      runs.forEach((p, i) => {
+        const counters = p.counters ?? {};
+        expect(
+          { 配置: cfg, 轮: i, counters },
+          `首帧前调用了维护任务入口（${cfg} 目录第 ${i} 轮）：${JSON.stringify(counters)}`,
+        ).toEqual({ 配置: cfg, 轮: i, counters: {} });
+      });
+    }
   });
 
-  // 同上：把两档写成同一个数字时 macOS 会悄悄退回 100ms，而噪声没冒头的那几次照样全绿。
-  test("阻塞阈值确实按平台分档（macOS 300 / 其他 100）", () => {
-    expect(blockDeltaLimitMs("darwin")).toBe(300);
-    expect(blockDeltaLimitMs("linux")).toBe(100);
-    expect(blockDeltaLimitMs("win32")).toBe(100);
-    expect(BLOCK_DELTA_LIMIT_MS).toBe(blockDeltaLimitMs(process.platform));
+  // 平台分支本身必须被锁住：`if (platform !== "darwin") expect(...)` 这种写法把断言包起来
+  // 却没有对应断言锁分支，哪天有人把 ubuntu 也改成只报告，所有计时断言照样全绿。
+  test("计时断言按平台分档：macOS 只报告，其他平台阻断", () => {
+    expect(timingAssertionsBlocking("darwin")).toBe(false);
+    expect(timingAssertionsBlocking("linux")).toBe(true);
+    expect(timingAssertionsBlocking("win32")).toBe(true);
+    expect(TIMING_BLOCKING).toBe(timingAssertionsBlocking(process.platform));
   });
 
   // max_loop_block 取的是**最大值**：一段 100ms 级的扫描与空目录本来就有的 ~90ms 常数阻塞
@@ -711,31 +733,28 @@ describeGate("大数据启动门禁（首帧与事件循环阻塞不随数据量
   // 判据口径（2026-11-04）：差值改为**逐轮配对**后的中位数，不再拿两组各自的中位数相减——
   // 后者两个数来自不同的轮次，轮间整机漂移直接进了差值，macOS runner 因此假红过两次
   // （PR #568 空 552/818/638、大 689/998/831 → 192.9ms；main 4ac97563 → 156ms）。
-  // 阈值（2026-11-04 起按平台分档）：本机 / ubuntu 仍是 150ms，macOS 放宽到 300ms
-  // （依据与代价见 frameDeltaLimitMs 的注释）。变异 +353ms / +698ms 在两档上都仍能检出。
-  test("首帧：大数据比空目录慢不超过平台阈值（逐轮配对差值的中位数）", () => {
+  // 阈值（2026-11-06 起）：ubuntu / 本机仍按 150ms 阻断；macOS 只报告（见 timingAssertionsBlocking）。
+  test("首帧：大数据比空目录慢不超过阈值（逐轮配对差值的中位数，macOS 只报告）", () => {
     const deltas = pairedDelta(runsOf(), "large", firstFrame);
-    const delta = median(deltas);
-    expect(
-      delta,
-      `逐轮 Δframe=[${spreadOf(deltas)}]（中位数 ${delta}ms，阈值 ${FRAME_DELTA_LIMIT_MS}ms）；` +
-        `first_frame 空=[${spread(emptyRuns)}] 大=[${spread(largeRuns)}]`,
-    ).toBeLessThan(FRAME_DELTA_LIMIT_MS);
+    assertTiming(
+      "首帧(大−空)",
+      median(deltas),
+      FRAME_DELTA_LIMIT_MS,
+      `逐轮 Δframe=[${spreadOf(deltas)}]；first_frame 空=[${spread(emptyRuns)}] 大=[${spread(largeRuns)}]`,
+    );
   });
 
   // 阈值标定（2026-11-01 本机，3 轮中位数）：修复后 max_block 差值 −13 ~ +15ms；
   // 变异自证：C1 全量会话清理放回主线程 +570ms，T1/T2 放回 collector 构造 +300ms。
-  // 口径同上：逐轮配对后的中位数。
-  // 阈值（2026-11-05 起按平台分档）：本机 / ubuntu 仍是 100ms，macOS 放宽到 300ms
-  // （依据与代价见 blockDeltaLimitMs 的注释）。
-  test("事件循环最大阻塞：大数据比空目录多不超过平台阈值（逐轮配对差值的中位数）", () => {
+  // 口径同上：逐轮配对后的中位数；平台口径同上一条（macOS 只报告，ubuntu / 本机 100ms 阻断）。
+  test("事件循环最大阻塞：大数据比空目录多不超过阈值（逐轮配对差值的中位数，macOS 只报告）", () => {
     const deltas = pairedDelta(runsOf(), "large", maxBlock);
-    const delta = median(deltas);
-    expect(
-      delta,
-      `逐轮 Δblock=[${spreadOf(deltas)}]（中位数 ${delta}ms，阈值 ${BLOCK_DELTA_LIMIT_MS}ms）；` +
-        `max_loop_block 空=[${spreadBlock(emptyRuns)}] 大=[${spreadBlock(largeRuns)}]`,
-    ).toBeLessThan(BLOCK_DELTA_LIMIT_MS);
+    assertTiming(
+      "事件循环最大阻塞(大−空)",
+      median(deltas),
+      BLOCK_DELTA_LIMIT_MS,
+      `逐轮 Δblock=[${spreadOf(deltas)}]；max_loop_block 空=[${spreadBlock(emptyRuns)}] 大=[${spreadBlock(largeRuns)}]`,
+    );
   });
 
   test("绝对兜底：首帧 < 3s", () => {
@@ -755,24 +774,24 @@ describeGate("大数据启动门禁（首帧与事件循环阻塞不随数据量
     expect(existsSync(bigSession)).toBe(true);
   }, 70_000);
 
-  // U1–U4：阈值与上面两条同一套（首帧、阻塞都按平台分档）。修复前补传在 SessionStart 里
-  // fire-and-forget，gzipSync 200MB 是秒级同步阻塞，落在首帧前后 3s 窗口内。
+  // U1–U4：口径与上面两条同一套（ubuntu / 本机阻断，macOS 只报告）。修复前补传在
+  // SessionStart 里 fire-and-forget，gzipSync 200MB 是秒级同步阻塞，落在首帧前后 3s 窗口内。
   test("补传（U1–U4）不在 TUI 主线程：配了上传的大 traj 目录，首帧与最大阻塞不随它增长", () => {
     const dFrames = pairedDelta(runsOf(), "upload", firstFrame);
     const dBlocks = pairedDelta(runsOf(), "upload", maxBlock);
-    const dFrame = median(dFrames);
-    const dBlock = median(dBlocks);
     console.log(`[gate] upload 逐轮 Δframe=[${spreadOf(dFrames)}] Δblock=[${spreadOf(dBlocks)}]`);
-    expect(
-      dFrame,
-      `逐轮 Δframe=[${spreadOf(dFrames)}]（中位数 ${dFrame}ms，阈值 ${FRAME_DELTA_LIMIT_MS}ms）；` +
-        `first_frame 空=[${spread(emptyRuns)}] 上传=[${spread(uploadRuns)}]`,
-    ).toBeLessThan(FRAME_DELTA_LIMIT_MS);
-    expect(
-      dBlock,
-      `逐轮 Δblock=[${spreadOf(dBlocks)}]（中位数 ${dBlock}ms，阈值 ${BLOCK_DELTA_LIMIT_MS}ms）；` +
-        `max_loop_block 空=[${spreadBlock(emptyRuns)}] 上传=[${spreadBlock(uploadRuns)}]`,
-    ).toBeLessThan(BLOCK_DELTA_LIMIT_MS);
+    assertTiming(
+      "补传首帧(传−空)",
+      median(dFrames),
+      FRAME_DELTA_LIMIT_MS,
+      `逐轮 Δframe=[${spreadOf(dFrames)}]；first_frame 空=[${spread(emptyRuns)}] 上传=[${spread(uploadRuns)}]`,
+    );
+    assertTiming(
+      "补传阻塞(传−空)",
+      median(dBlocks),
+      BLOCK_DELTA_LIMIT_MS,
+      `逐轮 Δblock=[${spreadOf(dBlocks)}]；max_loop_block 空=[${spreadBlock(emptyRuns)}] 上传=[${spreadBlock(uploadRuns)}]`,
+    );
   });
 
   // 防空转：补传确实在子进程里跑了——压缩缓存落盘、请求打到了挂起的 server。

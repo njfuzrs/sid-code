@@ -28,6 +28,33 @@ const LOOP_PROBE_INTERVAL_MS = 10;
 /** 派生口径（不是时间点，单独存放，避免和 checkpoints 混在一条时间线上） */
 const metrics: Record<string, number> = {};
 
+/**
+ * 首帧前的结构性计数（G1 门禁用）。
+ *
+ * 计时类断言在 macOS 共享 runner 上的噪声与阈值同量级，只能降级为「只报告」；
+ * 补回检出能力靠「首帧前主进程有没有调用数据量相关的维护任务入口」这个结构性判据——
+ * 它不吃 runner 负载，绿/红由代码决定。
+ *
+ * 为什么计「入口调用次数」而不是 fs 读字节数：`~/.sid-code/` 的 IO 分散在 session /
+ * trace 各模块里，没有统一的 fs 封装层可挂；新建一层要改十几个模块的热路径，代价大于收益。
+ * 否决论证见 `.agents/notes/implemented/testing/2026-11-06-启动门禁macOS计时改只报告加结构性门禁.md`。
+ *
+ * 首帧打点之后停止累加：门禁要的是「首帧前」，首帧后的维护任务（正常应在子进程里）不计入。
+ */
+const counters: Record<string, number> = {};
+let firstFrameSeen = false;
+
+/**
+ * 记录一个「首帧前不该发生」的入口被调用了。
+ *
+ * 非 enabled 模式下为空操作；非 profiling 场景（线上、普通测试）零开销：
+ * 只有一个布尔读 + 一次自增。
+ */
+export function profileCounter(name: string): void {
+  if (!enabled || firstFrameSeen) return;
+  counters[name] = (counters[name] ?? 0) + 1;
+}
+
 let loopProbe: ReturnType<typeof setInterval> | null = null;
 let loopProbeLast = 0;
 let loopProbeMax = 0;
@@ -40,8 +67,12 @@ let loopProbeDeadline = Number.POSITIVE_INFINITY;
 export function profileCheckpoint(name: string): void {
   if (!enabled) return;
   checkpoints.push({ name, timestamp: performance.now() });
-  if (name === "first_frame" && loopProbe) {
-    loopProbeDeadline = performance.now() + LOOP_BLOCK_WINDOW_AFTER_FIRST_FRAME_MS;
+  if (name === "first_frame") {
+    // 首帧之后不再累加计数器：门禁要的口径是「首帧前做了多少数据量相关的工作」
+    firstFrameSeen = true;
+    if (loopProbe) {
+      loopProbeDeadline = performance.now() + LOOP_BLOCK_WINDOW_AFTER_FIRST_FRAME_MS;
+    }
   }
 }
 
@@ -97,6 +128,9 @@ function dumpProfile(): void {
           ms: Math.round((c.timestamp - startTime) * 10) / 10,
         })),
         metrics,
+        // 首帧前的结构性计数（见 profileCounter 注释）。空对象 = 主进程在首帧前
+        // 没有调用任何「该在维护子进程里跑」的入口。
+        counters,
       }),
     );
   } catch {

@@ -5,6 +5,7 @@
 
 import { join } from "path";
 import { existsSync, unlinkSync, rmSync, statSync, readdirSync } from "fs";
+import { profileCounter } from "@sid-code/shared/utils/startup-profiler.ts";
 import type { Config } from "../config/config.ts";
 import type { SessionFileEntry } from "./utils.ts";
 import { getAllSessionFiles, isDeletableExcludeReason } from "./utils.ts";
@@ -423,6 +424,9 @@ export async function cleanupExpiredSessions(
     scanner?: "full" | "light";
   } = {},
 ): Promise<CleanupResult> {
+  // 结构性门禁用（G1）：全量扫描会话目录的入口。首帧前主进程调用它 = 把耗时随数据量
+  // 增长的工作放回了 TUI 主线程，启动门禁会红（口径见 shared/utils/startup-profiler.ts）。
+  profileCounter("session-cleanup");
   const log = getLogger();
 
   if (!retentionConfig.enabled) {
