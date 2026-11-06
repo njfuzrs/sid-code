@@ -13,6 +13,7 @@ const perf: UnifiedCommand = {
   description: "查看本机性能数据：本会话卡在哪一段，近 N 天变快还是变慢",
   argumentHint: "[--days N] [--by-version] [--json] [session-id|latest]",
   source: "builtin",
+  headless: true,
   outputPanel: true,
   userInvocable: true,
   immediate: true,

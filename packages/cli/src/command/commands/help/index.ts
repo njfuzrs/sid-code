@@ -7,6 +7,7 @@ const help: UnifiedCommand = {
   aliases: ["h", "?"],
   description: "显示帮助信息",
   source: "builtin",
+  headless: true,
   outputPanel: true,
   load: () => import("./help.ts").then((m) => new m.HelpCommand()),
 };

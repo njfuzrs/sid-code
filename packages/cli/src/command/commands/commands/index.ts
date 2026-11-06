@@ -7,6 +7,7 @@ const commandsCmd: UnifiedCommand = {
   aliases: ["cmds"],
   description: "列出所有自定义命令",
   source: "builtin",
+  headless: true,
   outputPanel: true,
   load: () => import("./commands.ts").then((m) => new m.CommandsListCommand()),
 };

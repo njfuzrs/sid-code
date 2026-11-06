@@ -13,6 +13,7 @@ const whoami: UnifiedCommand = {
   description: "查看企业登录状态（--verify 向服务端核验）",
   argumentHint: "[--verify]",
   source: "builtin",
+  headless: true,
   outputPanel: true,
   userInvocable: true,
   immediate: true,

@@ -7,6 +7,7 @@ const stats: UnifiedCommand = {
   aliases: [],
   description: "显示当前会话统计信息",
   source: "builtin",
+  headless: true,
   immediate: true,
   outputPanel: true,
   load: () => import("./stats.ts").then((m) => new m.StatsCommand()),

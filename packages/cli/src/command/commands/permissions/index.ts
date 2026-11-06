@@ -7,6 +7,7 @@ const permissions: UnifiedCommand = {
   aliases: ["perms"],
   description: "查看当前权限规则和模式",
   source: "builtin",
+  headless: true,
   outputPanel: true,
   load: () => import("./permissions.ts").then((m) => new m.PermissionsCommand()),
 };

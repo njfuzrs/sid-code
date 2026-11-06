@@ -7,6 +7,7 @@ const plan: UnifiedCommand = {
   aliases: [],
   description: "进入计划模式（先规划后执行）",
   source: "builtin",
+  headless: true,
   load: () => import("./plan.ts").then((m) => new m.PlanCommand()),
 };
 

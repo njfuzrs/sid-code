@@ -36,44 +36,89 @@ import { join } from "node:path";
 
 const cliSrc = join(import.meta.dir, "..", "..", "src");
 const appSrc = readFileSync(join(cliSrc, "app.ts"), "utf-8");
+/**
+ * T3 把无头 cmdCtx 的字面量从 app.ts 搬到了 `command/headless-command-context.ts`
+ * ——app 与「放行命令不碰未注入字段」门禁（`command/headless-allowed-commands.test.ts`）
+ * 共用同一份注入表，手抄两份会静默过期。
+ *
+ * 构造点因此从「app.ts 两处字面量」变成三个位置：TUI 字面量（app.ts）+ 无头调用点传参
+ * （app.ts）+ 无头构造函数（新模块）。扫描面随之扩展——**不是放松断言**：三个位置
+ * 都必须是逻辑 id，任一处写空串或进程 id 都会红。
+ */
+const headlessCtxSrc = readFileSync(
+  join(cliSrc, "command", "headless-command-context.ts"),
+  "utf-8",
+);
 
-/** 切出 app.ts 里全部 cmdCtx 字面量块（两处：无头 resolveHeadlessSlash / TUI onSlashCommand）。 */
-function cmdCtxBlocks(src: string): string[] {
+/** TUI 侧 cmdCtx 字面量（app.ts 的 onSlashCommand）。 */
+function tuiCmdCtxBlocks(src: string): string[] {
   const re =
     /const cmdCtx: import\("\.\/command\/types\.ts"\)\.CommandContext = \{[\s\S]*?\n\s*\};/g;
   return [...src.matchAll(re)].map((m) => m[0]);
 }
 
-const blocks = cmdCtxBlocks(appSrc);
+/** app.ts 里调用无头构造函数的传参块。 */
+function headlessCallSiteBlocks(src: string): string[] {
+  const re = /buildHeadlessCommandContext\(\{[\s\S]*?\n\s*\}\);/g;
+  return [...src.matchAll(re)].map((m) => m[0]);
+}
 
-describe("门禁 · app.ts 扫描面", () => {
+/** 无头构造函数的返回字面量（无头注入表的唯一事实源）。 */
+function headlessCtxBlocks(src: string): string[] {
+  const re = /export function buildHeadlessCommandContext\([\s\S]*?\n\s*return \{[\s\S]*?\n\s*\};/g;
+  return [...src.matchAll(re)].map((m) => m[0]);
+}
+
+const tuiBlocks = tuiCmdCtxBlocks(appSrc);
+const callSiteBlocks = headlessCallSiteBlocks(appSrc);
+const headlessBlocks = headlessCtxBlocks(headlessCtxSrc);
+
+describe("门禁 · 扫描面", () => {
   test("扫描面非空（防止路径漂移让门禁退化成绿灯）", () => {
     expect(appSrc.length).toBeGreaterThan(100_000);
+    expect(headlessCtxSrc.length).toBeGreaterThan(1_000);
   });
 
-  test("恰好两处 cmdCtx（无头 / TUI）；新增构造点必须一并纳入本门禁", () => {
-    // 若将来多出第三处，这里会红并提醒作者确认它的口径——而不是让它静默绕过。
-    expect(blocks).toHaveLength(2);
+  test("构造点恰好三个：TUI 字面量 + 无头调用点 + 无头构造函数；新增必须一并纳入本门禁", () => {
+    // 若将来多出第四处，这里会红并提醒作者确认它的口径——而不是让它静默绕过。
+    expect(tuiBlocks).toHaveLength(1);
+    expect(callSiteBlocks).toHaveLength(1);
+    expect(headlessBlocks).toHaveLength(1);
   });
 });
 
-describe("cmdCtx.sessionId 必须是逻辑会话 id", () => {
-  test("两处都注入 this.getLogicalSessionId()", () => {
-    for (const block of blocks) {
+describe("sessionId 必须是逻辑会话 id", () => {
+  test("TUI cmdCtx 注入 this.getLogicalSessionId()", () => {
+    for (const block of tuiBlocks) {
       expect(block).toContain("sessionId: this.getLogicalSessionId(),");
     }
   });
 
-  test("两处都不再是空串（缺陷本体）", () => {
-    for (const block of blocks) {
-      expect(block).not.toContain('sessionId: ""');
+  test("app.ts 的无头调用点把逻辑 id 传进去（两个字段都是）", () => {
+    for (const block of callSiteBlocks) {
+      expect(block).toContain("sessionId: this.getLogicalSessionId(),");
+      expect(block).toContain("checkpointSessionId: this.getLogicalSessionId(),");
     }
-    // 全文件一起锁：空串形态只可能出现在 cmdCtx 构造里，别处不该有。
-    expect(appSrc).not.toContain('sessionId: ""');
   });
 
-  test("两处都不是进程 id（照「该用进程 id」的表改会引入 resume 选错会话）", () => {
-    for (const block of blocks) {
+  test("无头构造函数原样透传 deps 的两个 id（不在模块内二次取值）", () => {
+    for (const block of headlessBlocks) {
+      expect(block).toContain("sessionId: deps.sessionId,");
+      expect(block).toContain("checkpointSessionId: deps.checkpointSessionId,");
+    }
+  });
+
+  test("三个位置都不再是空串（缺陷本体）", () => {
+    for (const block of [...tuiBlocks, ...callSiteBlocks, ...headlessBlocks]) {
+      expect(block).not.toContain('sessionId: ""');
+    }
+    // 整份文件一起锁：空串形态只可能出现在 ctx 构造里，别处不该有。
+    expect(appSrc).not.toContain('sessionId: ""');
+    expect(headlessCtxSrc).not.toContain('sessionId: ""');
+  });
+
+  test("都不是进程 id（照「该用进程 id」的表改会引入 resume 选错会话）", () => {
+    for (const block of [...tuiBlocks, ...callSiteBlocks]) {
       expect(block).not.toContain("sessionId: this.sessionState.sessionId");
     }
   });

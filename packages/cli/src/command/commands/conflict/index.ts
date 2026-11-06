@@ -6,6 +6,7 @@ const conflict: UnifiedCommand = {
   aliases: ["cl"],
   description: "显示并发冲突状态（活跃的文件意图）",
   source: "builtin",
+  headless: true,
   outputPanel: true,
   userInvocable: true,
   immediate: true,

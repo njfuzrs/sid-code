@@ -7,6 +7,7 @@ const config: UnifiedCommand = {
   aliases: ["settings"],
   description: "显示当前配置",
   source: "builtin",
+  headless: true,
   outputPanel: true,
   load: () => import("./config.ts").then((m) => new m.ConfigCommand()),
 };

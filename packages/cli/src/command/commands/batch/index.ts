@@ -15,6 +15,7 @@ const batch: UnifiedCommand = {
   description: "把任务分解为独立单元、各自 worktree 并行执行（经 Workflow 编排）",
   argumentHint: "<要批量处理的任务>",
   source: "builtin",
+  headless: true,
   userInvocable: true,
   immediate: true,
   load: () => import("./batch.ts").then((m) => m.default),

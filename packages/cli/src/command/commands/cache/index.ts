@@ -8,6 +8,7 @@ const cache: UnifiedCommand = {
   description: "显示缓存命中率 / 省钱长期统计",
   argumentHint: "[--period day|week|month] [--model <name>] [--breaks] [--history] [--prune <N>]",
   source: "builtin",
+  headless: true,
   outputPanel: true,
   load: () => import("./cache.ts").then((m) => new m.CacheCommand()),
 };
