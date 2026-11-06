@@ -421,11 +421,11 @@ export interface PreToolUseInput extends HookInput, HookAgentFields {
 /**
  * Q7：工具失败成因。
  *
- * - `aborted`：工具**开始执行后**被 signal 中断（用户 ESC / 看门狗 / 同批 Bash 失败联动取消）。
+ * - `aborted`：工具**开始执行后**被 signal 中断（用户 ESC / 看门狗 / 单轮硬超时）。
  *   不论工具是自己捕获后返回 isError、还是抛出中断错误，都归这一类。它送达用户 hook 且
  *   `is_interrupt: true`（CC 语义）。原先 bash 自己收尾返回 isError，被记成 tool_error，
  *   用户按 ESC 也算进「工具不可靠」的分母（遥测 4.5 个月 aborted=0，而轨迹里有真实 ESC）。
- * - `skipped`：PreToolUse 已经 fire、但工具**根本没开始执行**（同轮先行 Bash 失败的级联跳过、
+ * - `skipped`：PreToolUse 已经 fire、但工具**根本没开始执行**（同轮先行写类 Bash 失败的级联跳过、
  *   并发队列被中断后未启动的任务、批次被用户中断时还没轮到的工具）。只送 runtime hook——
  *   它的唯一用途是给 PreToolUse 配对收尾，用户 hook 在 CC 里也看不到这种情形。
  */
