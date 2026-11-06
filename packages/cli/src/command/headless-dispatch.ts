@@ -17,6 +17,7 @@
  * 正是「死接线零报错」那一类。宁可明确拒绝，也不让 CI 拿到一个假成功。
  */
 
+import type { HeadlessAllowlist, HeadlessModality } from "@sid-code/core/command-contract/types.ts";
 import type { CommandExecutionResult, UnifiedCommand } from "./types.ts";
 import { parseSlashCommand } from "./parser.ts";
 
@@ -59,10 +60,57 @@ const CLI_ALTERNATIVES: Readonly<Record<string, string>> = {
  * 命令能否在无头下执行。返回 null = 放行；否则返回给用户看的拒绝原因。
  *
  * 判定口径的**唯一实现**（契约字段 `CommandBase.headless` 的注释指向这里）。
+ *
+ * 声明形态三态：
+ * - `true`：三形态、全部子命令放行（`/init` 与 A 档只读命令）；
+ * - 结构体 `{ modes?, subcommands? }`：白名单，任一维度不满足即拒绝（fail-closed）；
+ * - 缺省：按来源判——非 builtin（提示词模板）放行，builtin 拒绝。
  */
-function headlessRefusal(cmd: UnifiedCommand, typedName: string): string | null {
-  const allowed = cmd.headless ?? (cmd.source ?? "builtin") !== "builtin";
-  if (allowed) return null;
+function headlessRefusal(
+  cmd: UnifiedCommand,
+  typedName: string,
+  gateCtx: HeadlessGateContext,
+): string | null {
+  const decl = cmd.headless;
+  const gate: boolean | HeadlessAllowlist =
+    decl === undefined ? (cmd.source ?? "builtin") !== "builtin" : decl;
+  if (gate === true) return null;
+  if (gate !== false) {
+    // 形态维度：`modes` 给了就只放这些形态。T6 的 /compact、/loop 靠它区分
+    // 「-p 单轮拒绝、长驻形态放行」——判定依据是形态，不是「第几轮」。
+    if (gate.modes && !gate.modes.includes(gateCtx.mode)) {
+      return `/${typedName} 在${MODALITY_LABEL[gateCtx.mode]}形态下不可用（仅支持：${gate.modes
+        .map((m) => MODALITY_LABEL[m])
+        .join(" / ")}）。`;
+    }
+    // 子命令维度：按参数首词判（命令自己的 subCommands() 不是判定依据——/cron /hooks
+    // 用 switch 解析参数，没有 subCommands 声明）。无参调用始终放行：它是查看状态/用法，
+    // 不构成写操作；无参返回 dialog 的命令由分发层明确报错（非 0），不是假成功。
+    const sub = firstArgWord(gateCtx.args);
+    if (gate.subcommands && sub && !gate.subcommands.includes(sub)) {
+      return `/${typedName} ${sub} 在无头模式下不可用（该命令只放行子命令：${gate.subcommands.join(
+        " / ",
+      )}）。`;
+    }
+    return null;
+  }
+  return refusalText(cmd, typedName);
+}
+
+/** 无头形态 → 拒绝文案里的可读标签。 */
+const MODALITY_LABEL: Readonly<Record<HeadlessModality, string>> = {
+  p: "-p 单轮",
+  "stream-json": "stream-json 多轮",
+  bridge: "Bridge 长驻",
+};
+
+/** 取参数首词（子命令名）；无参返回空串。 */
+function firstArgWord(args: string): string {
+  return args.trim().split(/\s+/).filter(Boolean)[0] ?? "";
+}
+
+/** 整条命令被拒绝时的文案（交互 / 管理类 builtin）。 */
+function refusalText(cmd: UnifiedCommand, typedName: string): string {
   if (cmd.name === "reload-plugins") {
     return "/reload-plugins 在无头模式下不需要：每次启动都会重新加载插件。";
   }
@@ -72,15 +120,56 @@ function headlessRefusal(cmd: UnifiedCommand, typedName: string): string | null 
 }
 
 /**
+ * 判定上下文：本次输入所处的无头形态 + 斜杠命令之后的原始参数（子命令判定用）。
+ *
+ * `mode` 做成显式参数而不是读全局：形态判定错了会让「按形态放行」的命令静默走错分支，
+ * 所以由调用方（App）传入、测试直接构造。
+ *
+ * 刻意**不 export**：生产侧只有本文件的 `headlessRefusal` 一个消费点，导出它就多一个
+ * 零生产调用的符号（命令体系门禁 G1 会拦，实测 8→9）。
+ */
+interface HeadlessGateContext {
+  mode: HeadlessModality;
+  /** `parseSlashCommand().args`：斜杠命令名之后的原始参数字符串。 */
+  args: string;
+}
+
+/**
+ * 由配置与进程级 Bridge 标记推断当前无头形态。
+ *
+ * 三个调用方（`-p` 文本/JSON、stream-json、Bridge）走同一个 `submitHeadlessInput`，
+ * 形态信号都已存在：bridge 是进程级标记（`trace/session-flags.ts`），stream-json 看
+ * input/output 格式任一命中（与 `runHeadless` 选择 SDK 路径的判据同源），
+ * `-p` 文本/JSON 是剩下的兜底。
+ *
+ * 抽成纯函数是为了可单测：这段判错会让 T6 的「`-p` 拒绝、长驻放行」整体走反。
+ */
+export function resolveHeadlessModality(signals: {
+  inputFormat?: string;
+  outputFormat?: string;
+  bridge: boolean;
+}): HeadlessModality {
+  // Bridge 优先：桥接会话的输出不走 stdout 的 stream-json 通道，两个格式字段对它无意义。
+  if (signals.bridge) return "bridge";
+  if (signals.inputFormat === "stream-json" || signals.outputFormat === "stream-json") {
+    return "stream-json";
+  }
+  return "p";
+}
+
+/**
  * 解析并（在放行时）执行一条无头输入。
  *
  * @param disableSlashCommands `--disable-slash-commands`：为 true 时一律原样提交，与 TUI 同口径。
+ * @param mode 当前无头形态。**必填**：给默认值会让「按形态放行」的命令（T6 的 /compact、/loop）
+ *   在调用方忘传时静默走错分支——那正是「声明的放行粒度与实现不符」最隐蔽的一种。
  */
 export async function resolveHeadlessSlash(
   input: string,
   opts: {
     commands: UnifiedCommand[];
     executor: HeadlessExecutor;
+    mode: HeadlessModality;
     disableSlashCommands?: boolean;
   },
 ): Promise<HeadlessSlashOutcome> {
@@ -92,7 +181,10 @@ export async function resolveHeadlessSlash(
   // 门控看顶层命令：`/plugin install x` 的叶子是 legacy 适配出的子命令，不带来源与门控字段。
   const top = opts.executor.findCommand(parsed.commandName, opts.commands);
   if (top) {
-    const refusal = headlessRefusal(top, parsed.commandName);
+    const refusal = headlessRefusal(top, parsed.commandName, {
+      mode: opts.mode,
+      args: parsed.args,
+    });
     if (refusal) return { kind: "error", message: refusal };
   }
 

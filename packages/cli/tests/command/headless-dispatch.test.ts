@@ -15,9 +15,11 @@
 import { describe, test, expect } from "bun:test";
 import { CommandExecutor } from "@sid-code/cli/command/executor.ts";
 import {
+  resolveHeadlessModality,
   resolveHeadlessSlash,
   type HeadlessSlashOutcome,
 } from "@sid-code/cli/command/headless-dispatch.ts";
+import type { HeadlessAllowlist, HeadlessModality } from "@sid-code/core/command-contract/types.ts";
 import type {
   CommandContext,
   CommandExecutionResult,
@@ -43,7 +45,7 @@ function localCmd(
     name: string;
     aliases?: string[];
     source?: UnifiedCommand["source"];
-    headless?: boolean;
+    headless?: boolean | HeadlessAllowlist;
   },
   result: LocalCommandResult = { type: "text", value: "已执行" },
   onLoad?: () => void,
@@ -60,10 +62,17 @@ function localCmd(
   } as UnifiedCommand;
 }
 
-const run = (input: string, commands: UnifiedCommand[], disable = false) =>
+/** 默认按 `-p` 单轮形态跑；按形态放行的用例显式传 mode。 */
+const run = (
+  input: string,
+  commands: UnifiedCommand[],
+  disable = false,
+  mode: HeadlessModality = "p",
+) =>
   resolveHeadlessSlash(input, {
     commands,
     executor: new CommandExecutor(CTX),
+    mode,
     disableSlashCommands: disable,
   });
 
@@ -215,8 +224,100 @@ describe("mapExecutionResult：每个结果类型都有确定去向", () => {
         findCommand: () => undefined,
         executeSlashCommand: async () => result,
       };
-      const r = await resolveHeadlessSlash("/x", { commands: [], executor });
+      const r = await resolveHeadlessSlash("/x", { commands: [], executor, mode: "p" });
       expect(r.kind).toBe(kind);
     });
   }
+});
+
+describe("headless 结构体：形态维度（modes）", () => {
+  const streamOnly = () => localCmd({ name: "long-run", headless: { modes: ["stream-json"] } });
+
+  test("-p 单轮形态拒绝，文案说明支持的形态", async () => {
+    const r = await run("/long-run", [streamOnly()], false, "p");
+    expect(r.kind).toBe("error");
+    const msg = (r as { message: string }).message;
+    expect(msg).toContain("-p 单轮");
+    expect(msg).toContain("仅支持：stream-json 多轮");
+  });
+
+  test("stream-json 形态放行", async () => {
+    expect((await run("/long-run", [streamOnly()], false, "stream-json")).kind).toBe("output");
+  });
+
+  test("bridge 形态仍拒绝（白名单只给了 stream-json）", async () => {
+    expect((await run("/long-run", [streamOnly()], false, "bridge")).kind).toBe("error");
+  });
+
+  test("modes 缺省 = 三种形态都放行", async () => {
+    for (const mode of ["p", "stream-json", "bridge"] as const) {
+      const cmd = localCmd({ name: "all-modes", headless: { subcommands: ["list"] } });
+      expect((await run("/all-modes list", [cmd], false, mode)).kind).toBe("output");
+    }
+  });
+});
+
+describe("headless 结构体：子命令维度（subcommands）", () => {
+  const scoped = () => localCmd({ name: "scoped", headless: { subcommands: ["list"] } });
+
+  test("白名单内的子命令放行", async () => {
+    expect((await run("/scoped list", [scoped()])).kind).toBe("output");
+  });
+
+  test("白名单外的子命令拒绝，文案说明只放了哪些", async () => {
+    const r = await run("/scoped delete x", [scoped()]);
+    expect(r.kind).toBe("error");
+    const msg = (r as { message: string }).message;
+    expect(msg).toContain("/scoped delete");
+    expect(msg).toContain("只放行子命令：list");
+  });
+
+  test("无参调用始终放行（查看状态/用法，不构成写操作）", async () => {
+    expect((await run("/scoped", [scoped()])).kind).toBe("output");
+  });
+
+  test("两个维度都要满足：任一不满足即拒绝", async () => {
+    const both = () =>
+      localCmd({ name: "both", headless: { modes: ["stream-json"], subcommands: ["list"] } });
+    expect((await run("/both list", [both()])).kind).toBe("error"); // 形态不符
+    expect((await run("/both delete x", [both()], false, "stream-json")).kind).toBe("error"); // 子命令不符
+    expect((await run("/both list", [both()], false, "stream-json")).kind).toBe("output");
+  });
+
+  test("空对象等价 true（不限制任何维度）", async () => {
+    expect((await run("/empty delete x", [localCmd({ name: "empty", headless: {} })])).kind).toBe(
+      "output",
+    );
+  });
+});
+
+describe("resolveHeadlessModality：形态判定信号", () => {
+  test("Bridge 优先于 stream-json 格式字段", () => {
+    expect(
+      resolveHeadlessModality({
+        inputFormat: "stream-json",
+        outputFormat: "stream-json",
+        bridge: true,
+      }),
+    ).toBe("bridge");
+  });
+
+  test("input-format stream-json → 多轮", () => {
+    expect(resolveHeadlessModality({ inputFormat: "stream-json", bridge: false })).toBe(
+      "stream-json",
+    );
+  });
+
+  test("output-format stream-json → 多轮（与 input 任一命中即多轮）", () => {
+    expect(resolveHeadlessModality({ outputFormat: "stream-json", bridge: false })).toBe(
+      "stream-json",
+    );
+  });
+
+  test("两者都不是 → -p 单轮（text/json 输出都算单轮）", () => {
+    expect(resolveHeadlessModality({ bridge: false })).toBe("p");
+    expect(
+      resolveHeadlessModality({ inputFormat: "text", outputFormat: "json", bridge: false }),
+    ).toBe("p");
+  });
 });
