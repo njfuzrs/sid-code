@@ -14,6 +14,7 @@ import {
   hashContent,
   workspaceStateHash,
   buildStallL1Message,
+  isDeliveryActionCommand,
   STALL_WINDOW_TURNS,
   STALL_L2_AFTER_L1_TURNS,
   type StallState,
@@ -408,6 +409,73 @@ describe("升级阶梯（2d）：L1 → L2", () => {
   });
 });
 
+describe("交付 / 验证轮（2026-11-06 影子抽检：5 条误伤全在收尾阶段）", () => {
+  test("识别交付 / 验证命令", () => {
+    for (const cmd of [
+      "git commit -F - <<'SIDEOF'\nfix: x\nSIDEOF",
+      "cd /repo && git push -u origin HEAD:fix/x",
+      "gh pr create --base main --head fix/x --title 'x'",
+      "gh pr merge 622 --auto --merge",
+      "bun test ./packages/core/tests/query/stall-escalation.test.ts",
+      "bun run format:check",
+      "bun run lint",
+      "bun run typecheck:gate",
+      "bun run affected-tests:run",
+      "make build",
+    ]) {
+      expect(isDeliveryActionCommand(cmd)).toBe(true);
+    }
+  });
+
+  test("轮询类命令不算交付（那才是 L2 该抓的）", () => {
+    for (const cmd of [
+      "gh pr view 621 --json state,mergeable,statusCheckRollup",
+      "gh pr checks 564",
+      "gh run view 42000675369 --log-failed",
+      "gh run rerun 41764350472 --failed",
+      "gh api repos/o/r/actions/runs/1 -q '.status'",
+      "tail -20 /Users/x/.sid-code/tasks/s1ty4q8b8.output",
+      "bg_task_list",
+    ]) {
+      expect(isDeliveryActionCommand(cmd)).toBe(false);
+    }
+  });
+
+  test("heredoc 正文里的 git commit 不算执行（只看首行）", () => {
+    expect(isDeliveryActionCommand("cat > /tmp/x.md <<'EOF'\n用 git commit 提交\nEOF")).toBe(false);
+  });
+
+  test("交付轮不计入 L2：L1 后连跑 3K 轮门禁也不升", () => {
+    const s = createStallState(0);
+    idle(s, STALL_WINDOW_TURNS, { unchangedReports: 1 }, true); // L1
+    expect(s.l1Turn).toBeDefined();
+    expect(idle(s, STALL_L2_AFTER_L1_TURNS * 3, { deliveryAction: true }, true).level).toBe(0);
+    expect(s.l2Count).toBe(0);
+    expect(s.deliveryTurns).toBe(STALL_L2_AFTER_L1_TURNS * 3);
+    // 交付结束后的普通轮从零开始数满 K 轮才升（交付轮不预支）
+    expect(idle(s, STALL_L2_AFTER_L1_TURNS - 1, {}, true).level).toBe(0);
+    expect(idle(s, 1, {}, true).level).toBe(2);
+  });
+
+  test("交付轮照样推进 L1（L1 只是一句提示，不排除）", () => {
+    const s = createStallState(0);
+    expect(
+      idle(s, STALL_WINDOW_TURNS, { unchangedReports: 1, deliveryAction: true }, true).level,
+    ).toBe(1);
+  });
+
+  test("交付轮本身不触发 L2：轮数与信号都够也不升", () => {
+    const s = createStallState(0);
+    idle(s, STALL_WINDOW_TURNS, { unchangedReports: 1 }, true); // L1
+    idle(s, STALL_L2_AFTER_L1_TURNS - 1, {}, true);
+    expect(
+      observeStallTurn(s, turn({ unchangedReports: 1, deliveryAction: true }), true).level,
+    ).toBe(0);
+    // 下一个普通轮：信号仍在，升
+    expect(observeStallTurn(s, turn(), true).level).toBe(2);
+  });
+});
+
 describe("文案", () => {
   test("L1 文案点出绿点位置；没见过绿则明说", () => {
     const s = createStallState(0);
@@ -420,6 +488,7 @@ describe("文案", () => {
       toolTurns: 20,
       l2Count: 0,
       bgWaitTurns: 0,
+      deliveryTurns: 0,
     };
     expect(buildStallL1Message(s, sig)).toContain("还没有观察到一次全绿");
     s.lastGreen = { turn: 7, stateHash: "abcdef0123456789" };

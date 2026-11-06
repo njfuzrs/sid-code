@@ -27,6 +27,13 @@
  *   命中在 29 轮轮询全量 bun test 的那一段，测试跑完后任务正常交付——那次真停就是误伤。
  *   这类轮次照样推进 L1 与停滞窗口（L1 只是一句提示，误发代价低），只是不计入 L2 的「L1 后满 K 轮」，
  *   本身也不触发 L2。等待轮数随事件落 `bgWaitTurns`，影子数据能复算排除前后的差。
+ * - **交付 / 验证阶段的轮次不计入 L2**（2026-11-06 抽检 18 条影子样本：5 条误伤全部落在
+ *   「代码改完 → 跑门禁 / commit / push / 建 PR / 标记文档」阶段）。这类轮次工作区天然不再变化，
+ *   但每轮都在产生新信息，不是原地打转。判据只看**成功执行**的 bash 命令：`git commit|push`、
+ *   `gh pr create|merge`、`bun test`、`bun run format|lint|typecheck|build|affected-tests`、`make build`。
+ *   **不含 `gh pr view|checks` / `gh run view|rerun|list` / `gh api` / `tail .output`**——那些是轮询形态，
+ *   恰恰是 L2 该抓的。同 `bgWaitTurns`：照样推进 L1，只是不计入 L2 轮数、自身不触发 L2；
+ *   轮数随事件落 `deliveryTurns`，影子数据能复算排除前后的差。
  * - **默认影子**：L2 只落 `StallEscalation{level:2, acted:false}`，不真停；`stallHardStop`
  *   打开才真停（D3 按影子期抽检结论再决定默认值）。
  * - **只开在交互主循环**：headless 默认整套不开（评测基线可比性依赖行为不变），子代理走
@@ -115,6 +122,8 @@ export interface StallState {
   l2Count: number;
   /** 本消息内有运行中后台任务的工具轮数（不计入 L2 的轮数要求） */
   bgWaitTurns: number;
+  /** 本消息内落在交付 / 验证阶段的工具轮数（不计入 L2 的轮数要求） */
+  deliveryTurns: number;
 }
 
 export function createStallState(currentOscillations: number): StallState {
@@ -131,6 +140,7 @@ export function createStallState(currentOscillations: number): StallState {
     oscillationsInPrompt: 0,
     l2Count: 0,
     bgWaitTurns: 0,
+    deliveryTurns: 0,
   };
 }
 
@@ -167,6 +177,20 @@ export function parseTestVerdict(output: string): boolean | undefined {
   return p > 0 ? true : undefined;
 }
 
+/**
+ * 交付 / 验证动作的命令判据（判据边界见文件头）。
+ *
+ * 只看**首行**：heredoc 正文里出现的 `git commit` 是文档内容，不是执行
+ * （`git commit -F - <<'SIDEOF'` 的正文在后续行）。轮询类命令刻意不在列表里——
+ * `gh pr view|checks` / `gh run view|rerun|list` / `gh api` / `tail .output` 正是 L2 该抓的形态。
+ */
+export function isDeliveryActionCommand(command: string): boolean {
+  const firstLine = command.split("\n", 1)[0] ?? "";
+  return /(?:^|[\s;&|])(?:git\s+(?:commit|push)|gh\s+pr\s+(?:create|merge)|bun\s+test|bun\s+run\s+(?:format(?::check)?|lint|typecheck|build|affected-tests)|make\s+build)(?=[\s:]|$)/.test(
+    firstLine,
+  );
+}
+
 // ─── 每个工具轮的观测 ───
 
 export interface StallTurnObservation {
@@ -185,6 +209,11 @@ export interface StallTurnObservation {
   oscillations: number;
   /** 本轮结束时是否有运行中的后台任务（缺省视为没有） */
   backgroundRunning?: boolean;
+  /**
+   * 本轮是否成功执行了交付 / 验证动作（commit / push / 建 PR / 合并 / 跑门禁）。
+   * 判据见文件头「判据边界」，轮询类命令（`gh pr view` / `gh run view` / `tail .output`）不算。
+   */
+  deliveryAction?: boolean;
 }
 
 export type StallDecision =
@@ -202,6 +231,7 @@ export interface StallSignals {
   toolTurns: number;
   l2Count: number;
   bgWaitTurns: number;
+  deliveryTurns: number;
 }
 
 function signalsOf(s: StallState): StallSignals {
@@ -215,12 +245,13 @@ function signalsOf(s: StallState): StallSignals {
     toolTurns: s.toolTurns,
     l2Count: s.l2Count,
     bgWaitTurns: s.bgWaitTurns,
+    deliveryTurns: s.deliveryTurns,
   };
 }
 
-/** 计入 L2 轮数要求的工具轮（扣掉等后台任务的轮次）。 */
+/** 计入 L2 轮数要求的工具轮（扣掉等后台任务与交付 / 验证阶段的轮次）。 */
 function l2Turns(s: StallState): number {
-  return s.toolTurns - s.bgWaitTurns;
+  return s.toolTurns - s.bgWaitTurns - s.deliveryTurns;
 }
 
 /** L2 只认的确证信号总量（2b 振荡 + 空转）。hash 回退 / 绿点回归不在其中。 */
@@ -240,6 +271,7 @@ export function observeStallTurn(
 ): StallDecision {
   s.toolTurns++;
   if (obs.backgroundRunning) s.bgWaitTurns++;
+  if (obs.deliveryAction) s.deliveryTurns++;
   s.unchangedReports += obs.unchangedReports;
   s.oscillationsInPrompt += Math.max(0, obs.oscillations - s.lastOscillationsObserved);
   s.lastOscillationsObserved = obs.oscillations;
@@ -296,6 +328,8 @@ export function observeStallTurn(
   }
 
   // ── L2：只能从 L1 升上来，只认确证信号；等后台任务的轮次既不计数也不触发 ──
+  // 交付 / 验证轮不在这里早退：它们已从 l2Turns 扣掉，不可能成为「第一个凑满 K 轮」的轮次。
+  // 单独再写一条早退只会制造两处事实源，且测试锁不住（2026-11-06 变异自证发现的）。
   if (obs.backgroundRunning) return { level: 0 };
   const base = s.l2Base!;
   const need = STALL_L2_AFTER_L1_TURNS * 2 ** s.l2Count;
