@@ -6,6 +6,7 @@ import { describe, test, expect } from "bun:test";
 import { ProviderRegistry } from "@sid-code/core/llm/registry.ts";
 import type { Config } from "@sid-code/core/config/config.ts";
 import { defaultConfig } from "@sid-code/core/config/config.ts";
+import { credentialFingerprint } from "@sid-code/core/llm/quota-scope.ts";
 import type { SendParams, StreamEvent } from "@sid-code/core/llm/types.ts";
 
 /** 创建测试用 Config */
@@ -363,5 +364,58 @@ describe("F4：getProviderForModelName 按模型名解析 per-model 连接配置
     const viaType = registry.getProviderForSubAgent("default");
     const viaName = registry.getProviderForModelName("ali-deepseek-v4-flash");
     expect(viaName).toBe(viaType); // 同一缓存实例
+  });
+});
+
+/**
+ * 缓存键的凭据维度（2026-11-05 A8 实测缺陷，见
+ * docs-research/sid-code/bugfixes/todo/20261105-Provider缓存键缺凭据维度-同baseURL多账户串用.md）。
+ *
+ * 为什么这组断言必须存在：`getProviderFor` 把 apiKey 传进构造器后就被实例长期持有，
+ * 而缓存键原先只有 `providerName:baseURL`。配置层明确支持「一条 availableModels 一凭据」，
+ * 所以「同端点、不同账户」是合法配置 —— 缓存键少一个维度，第二个账户的请求会带着第一个
+ * 账户的 key 发出去。现象是「降级没生效」（401），或更隐蔽的「成功但记到别人账上」。
+ */
+describe("F1：Provider 缓存键必须含凭据维度", () => {
+  const ENDPOINT = "https://gw.example.com/v1";
+
+  test("T1：同 provider + 同 baseURL + 不同 apiKey → 不同实例，各自持有自己的凭据", () => {
+    const registry = new ProviderRegistry(testConfig());
+    const a = registry.getProviderFor("openai", "sk-account-A", ENDPOINT);
+    const b = registry.getProviderFor("openai", "sk-account-B", ENDPOINT);
+
+    expect(a).not.toBe(b);
+    // 用公开的 quotaScope() 验证实例真正捕获的凭据，不读私有字段。
+    expect(a.quotaScope?.().credential).toBe(credentialFingerprint("sk-account-A"));
+    expect(b.quotaScope?.().credential).toBe(credentialFingerprint("sk-account-B"));
+  });
+
+  test("T2：同 provider + 同 baseURL + 同 apiKey → 复用同一实例（回归：缓存仍然生效）", () => {
+    const registry = new ProviderRegistry(testConfig());
+    const a = registry.getProviderFor("openai", "sk-account-A", ENDPOINT);
+    const b = registry.getProviderFor("openai", "sk-account-A", ENDPOINT);
+
+    expect(a).toBe(b);
+  });
+
+  test("T3：空凭据（ollama）同 provider + baseURL 仍复用同一实例（行为不变）", () => {
+    const registry = new ProviderRegistry(testConfig({ provider: "ollama" }));
+    const endpoint = "http://localhost:11434/v1";
+    const a = registry.getProviderFor("ollama", "", endpoint);
+    const b = registry.getProviderFor("ollama", "", endpoint);
+
+    expect(a).toBe(b);
+  });
+
+  test("T4：缓存键不得含明文凭据（防回归：挡住改成明文键）", () => {
+    const registry = new ProviderRegistry(testConfig());
+    const canary = "sk-PROBE-LEAK-CANARY";
+    registry.getProviderFor("openai", canary, ENDPOINT);
+
+    const keys = [...(registry as unknown as { cache: Map<string, unknown> }).cache.keys()];
+    expect(keys.length).toBeGreaterThan(0);
+    for (const key of keys) {
+      expect(key).not.toContain(canary);
+    }
   });
 });
