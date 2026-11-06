@@ -251,8 +251,18 @@ def collect(run_dir: str, declared: dict[str, str]) -> dict[str, object]:
 # ───────────────────────────────────────────────────────────────── 比对
 
 
-def compare(base: dict[str, object], cur: dict[str, object]) -> dict[str, object]:
+def compare(
+    base: dict[str, object],
+    cur: dict[str, object],
+    *,
+    under_test: tuple[str, ...] = (),
+) -> dict[str, object]:
     """两份指纹 → 逐字段差异。**任何一项不同都判 INVALID 并指名道姓。**
+
+    `under_test` 是**被测变量**：L2 发版闸拿新二进制比基线，二进制 sha / commit
+    必然不同 —— 那正是要测的东西，不是配置漂移。这些字段的「值不同」不进 `diffs`，
+    改记在 `under_test_diffs`；但**仍要求两边都采到**（单边缺失 / 两边都缺照常判），
+    否则裁决说不清测的是哪一版。缺省为空 = 全字段严格相等（T11/T16 的用法不变）。
 
     返回 `verdict` ∈ {VALID, INCOMPLETE, INVALID}：
 
@@ -273,7 +283,12 @@ def compare(base: dict[str, object], cur: dict[str, object]) -> dict[str, object
             "请把它加进 run_fingerprint.FIELDS（白名单，见 evals/CLAUDE.md §4.5）。"
         )
 
+    unknown_ut = sorted(set(under_test) - set(FIELDS))
+    if unknown_ut:
+        raise ValueError(f"under_test 里有 FIELDS 之外的键 {unknown_ut}")
+
     diffs: list[dict[str, object]] = []
+    under_test_diffs: list[dict[str, object]] = []
     both_missing: list[str] = []
 
     for name in FIELDS:
@@ -283,7 +298,8 @@ def compare(base: dict[str, object], cur: dict[str, object]) -> dict[str, object
         elif bv is None or cv is None:
             diffs.append({"field": name, "base": bv, "current": cv, "kind": "单边缺失"})
         elif bv != cv:
-            diffs.append({"field": name, "base": bv, "current": cv, "kind": "值不同"})
+            entry = {"field": name, "base": bv, "current": cv, "kind": "值不同"}
+            (under_test_diffs if name in under_test else diffs).append(entry)
 
     # run 内部冲突：这个 run 自己就不是一个整体，无论和谁比都不能出结论。
     for side, doc in (("base", base), ("current", cur)):
@@ -304,6 +320,8 @@ def compare(base: dict[str, object], cur: dict[str, object]) -> dict[str, object
         "differing_fields": sorted({d["field"] for d in diffs}),
         "diffs": diffs,
         "both_missing": both_missing,
+        "under_test": list(under_test),
+        "under_test_diffs": under_test_diffs,
         "base_run": base.get("run_dir"),
         "current_run": cur.get("run_dir"),
         "verdict_rule_version": VERDICT_RULE_VERSION,
