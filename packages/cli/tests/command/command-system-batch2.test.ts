@@ -190,7 +190,9 @@ describe("D13 local-jsx 每条出口都 resolve", () => {
       async () => {
         throw new Error("x");
       },
-      { type: "error", message: "命令执行失败: x" },
+      // 执行引擎的 error message 是**完整展示文本**（含「错误: 」前缀）：
+      // TUI 与无头两侧都直接输出它，不再二次加前缀（缺陷 D2 的契约变更）。
+      { type: "error", message: "错误: 命令执行失败: x" },
     ],
     ["D 返回 null 且不调 onDone", async () => null, { type: "skip" }],
   ];

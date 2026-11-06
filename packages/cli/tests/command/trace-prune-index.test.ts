@@ -91,8 +91,11 @@ describe("/trace --prune-index", () => {
       test(arg, async () => {
         seed(4);
         const res = await new TraceCommand().call(arg, ctx);
-        expect((res as { value: string }).value).toStartWith("错误: ");
-        expect((res as { value: string }).value).toContain("--prune-index 需要一个非负整数");
+        // errorText() 返回 { type: "error", message }（缺陷 D2：失败要能被无头识别为非 0），
+        // 文本仍是「错误: …」——变的只有类型，断言随之从 .value 改到 .message。
+        expect(res.type).toBe("error");
+        expect((res as { message: string }).message).toStartWith("错误: ");
+        expect((res as { message: string }).message).toContain("--prune-index 需要一个非负整数");
         // 参数校验失败必须零副作用
         expect(readFileSync(indexPath, "utf-8").trim().split("\n")).toHaveLength(4);
       });

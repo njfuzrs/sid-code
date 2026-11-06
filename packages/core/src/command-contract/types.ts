@@ -377,6 +377,14 @@ export type LocalCommandResult =
   | { type: "skip" } // 静默完成
   | { type: "clear" } // 清空对话
   | { type: "quit"; message?: string } // 退出程序
+  /**
+   * 业务失败（参数错 / 状态不符 / 资源不足），与 `text` 的区别是**无头下退出码非 0**。
+   *
+   * `message` 是**完整展示文本，含「错误: 」前缀**——与 `CommandExecutionResult.error.message`
+   * 同口径（TUI 与无头两侧都直接输出它，不再二次加前缀）。命令侧统一用
+   * `packages/cli/src/command/result.ts` 的 `errorText()` 构造，文本与收口前逐字一致。
+   */
+  | { type: "error"; message: string }
   | { type: "dialog"; dialog: DialogType } // 打开交互式对话框
   | {
       type: "submit_prompt";

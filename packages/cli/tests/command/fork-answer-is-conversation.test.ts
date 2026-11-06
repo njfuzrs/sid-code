@@ -203,7 +203,9 @@ describe("beginForkedRun：开跑前回显，结束必收尾", () => {
     const r = await withSubAgent(log, b, "ok", () =>
       new CommandExecutor(ctx).executeSlashCommand("/interview", [forkPromptCmd()]),
     );
-    expect(r).toEqual({ type: "error", message: "已取消 /interview" });
+    // error message 是**完整展示文本**（含「错误: 」前缀）：TUI 与无头两侧都直接输出它，
+    // 不再二次加前缀（缺陷 D2 的契约变更，文本与收口前一致）。
+    expect(r).toEqual({ type: "error", message: "错误: 已取消 /interview" });
     expect(log.at(-1)).toBe("end");
   });
 

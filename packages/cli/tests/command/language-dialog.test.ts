@@ -114,7 +114,9 @@ describe("/language 交互面板", () => {
     const { ctx, rec } = createCtx();
     const result = await new LanguageCommand().call("klingon", ctx);
 
-    expect((result as { value: string }).value).toStartWith("错误: ");
+    // errorText() 返回 { type: "error", message }（缺陷 D2），文本仍是「错误: …」
+    expect(result.type).toBe("error");
+    expect((result as { message: string }).message).toStartWith("错误: ");
     expect(rec.calls).toBe(0);
   });
 
