@@ -27,6 +27,23 @@ import { getLogger } from "../debug/logger.ts";
 
 const execFileAsync = promisify(execFile);
 
+/**
+ * git 子进程的耗时上限。
+ *
+ * 为什么必须有：checkpoint 的文件集提取在**每次破坏性 bash 执行前**同步等待
+ * （`query/tool-executor.ts` 的 bash 分支），而 `git diff` / `git clean --dry-run` 在异常
+ * 环境（超大仓库、慢盘、被安全软件挂起）里可能长时间不返回。没有上限时这次 bash 调用会
+ * 一起挂住；CI 上的表现是测试撞 bun 的 5s 默认超时（2026-11-06 `test (macos-latest, 1/2)`
+ * 实测 5000.77ms 超时）。
+ *
+ * 超时后由调用点既有的 catch 吞掉并降级为空集，符合本模块「提取失败不阻断」的设计，
+ * 代价只是这一次少了快照保护——比让 bash 卡住好。
+ *
+ * 3s 的取值依据：`git diff --name-only` 在本仓/千文件仓库实测个位数到两位数毫秒，
+ * 3s 已覆盖冷启动与慢盘；再大就失去「不挂住」的意义。
+ */
+export const GIT_SUBPROCESS_TIMEOUT_MS = 3000;
+
 /** 判断命令是否为「范围性破坏」——影响整个工作区、无法逐文件静态提取 */
 function isWorkspaceWideDestruction(command: string): boolean {
   return (
@@ -46,17 +63,25 @@ async function getGitWorkingSetFiles(cwd: string): Promise<string[]> {
   const files = new Set<string>();
   const collect = async (args: string[]) => {
     try {
-      const { stdout } = await execFileAsync("git", args, { cwd, encoding: "utf-8" });
+      const { stdout } = await execFileAsync("git", args, {
+        cwd,
+        encoding: "utf-8",
+        timeout: GIT_SUBPROCESS_TIMEOUT_MS,
+      });
       for (const line of stdout.split("\n")) {
         const rel = line.trim();
         if (rel) files.add(path.isAbsolute(rel) ? rel : path.resolve(cwd, rel));
       }
     } catch {
-      /* 非 git 仓库 / git 不可用 → 空集，不阻断 */
+      /* 非 git 仓库 / git 不可用 / 超时被杀 → 空集，不阻断 */
     }
   };
-  await collect(["diff", "--name-only"]);
-  await collect(["diff", "--cached", "--name-only"]);
+  // 已修改与已暂存互不依赖：并行让最坏耗时等于单条 timeout，而不是两条之和
+  // （串行时两次都卡住就是 2×timeout，仍可能把调用方的等待预算撑爆）。
+  await Promise.all([
+    collect(["diff", "--name-only"]),
+    collect(["diff", "--cached", "--name-only"]),
+  ]);
   return [...files];
 }
 
@@ -98,6 +123,7 @@ async function getGitCleanTargets(command: string, cwd: string): Promise<string[
     const { stdout } = await execFileAsync("git", cleanArgs, {
       cwd,
       encoding: "utf-8",
+      timeout: GIT_SUBPROCESS_TIMEOUT_MS,
       // ⚠️ 必须强制英文 + 关 quotepath：
       //   - git 会按 locale 本地化输出（中文环境下是「将删除 xxx」），
       //     不锁 LC_ALL 则解析正则全部失配 → 未跟踪文件静默不进快照（回退不了还以为保护了）。
