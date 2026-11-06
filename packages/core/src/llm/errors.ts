@@ -206,15 +206,9 @@ export const ABORT_REASONS = [
   // 休眠前建的连接基本已死，等 OS 报错要 43–69s（半开连接甚至不报）。登记理由同上：
   // 底层 fetch 以该裸字符串 reject，未登记即孤儿 rejection。
   "host-sleep-reopen",
-  // 并行批次里 Bash 失败 → 联动取消同批兄弟（query/tool-executor.ts）。原名 "sibling_bash_error"
-  // 从未登记：兄弟工具以这个裸字符串 reject 时 isAbortError=false，被当成普通异常，模型拿到的是
-  // 「工具执行异常: undefined」，专门写的级联取消文案一次都走不到（2026-10-24 实测复现）。
-  // 改成 kebab-case 也是为了让下方哨兵测试的字面量扫描能看见它——旧名带下划线，扫描正则漏掉了。
-  "sibling-bash-error",
+  // "sibling-bash-error"（并行批次 Bash 失败联动取消兄弟）2026-11-06 随该机制一并移除：
+  // 进并行批次的 Bash 都是只读命令，级联取消在那里没有任何可防的依赖链，见 query/tool-executor.ts。
 ] as const;
-
-/** 并行 Bash 失败级联取消兄弟工具的 abort reason（单一事实源，tool-executor / agent/tool.ts 共用）。 */
-export const SIBLING_BASH_ERROR_ABORT_REASON = "sibling-bash-error" as const;
 
 /**
  * 流式 lifecycle 取消**本次请求**（per-request controller）时用的 abort reason。
@@ -252,7 +246,6 @@ export function abortReasonOf(errOrReason: unknown): string | undefined {
  */
 export function describeAbortReason(reason: unknown): string {
   const r = abortReasonOf(reason);
-  if (r === SIBLING_BASH_ERROR_ABORT_REASON) return "同批次中先行的 Bash 命令执行失败，联动取消";
   if (r === "user-cancel") return "用户取消";
   if (r === "midturn-preempt") return "用户中途改向";
   if (isInternalTimeoutAbortReason(r)) return `内部超时中断（${r}）`;

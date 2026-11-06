@@ -415,6 +415,29 @@ const CONDITIONAL_COMMANDS: Record<string, (args: string[]) => boolean> = {
  * 检查命令是否为只读
  */
 export function isReadOnlyCommand(command: string): boolean {
+  return isReadOnlyImpl(command, false);
+}
+
+/** 只改 shell 自身工作目录、不碰文件系统的内建 */
+const DIRECTORY_BUILTINS = new Set(["cd", "pushd", "popd"]);
+
+/**
+ * 「除了切目录之外是否只读」：把 `cd` / `pushd` / `popd` 视为无副作用，其余判据与
+ * {@link isReadOnlyCommand} 完全相同。
+ *
+ * ⚠️ **只给 Bash 失败级联用**（query/tool-executor.ts），不许拿去做权限放行或并发判定：
+ * - 权限：`cd <恶意目录> && git status` 能借目录里的 git 配置/钩子执行代码（cc 的
+ *   readOnlyValidation 为此单独拦 cd+git），放行要走 isReadOnlyCommand 的严格口径；
+ * - 并发 / cwd 追踪：bash.ts 对只读命令跳过 `pwd -P` 写回，`cd X && ls` 若被判只读，
+ *   cd 就不再跨命令持久化。
+ * 级联只需要回答「这条失败的命令有没有可能让后面的写操作落错地方」，`cd` 失败恰好
+ * 不会改任何文件，所以这里放宽是安全的。
+ */
+export function isReadOnlyIgnoringCd(command: string): boolean {
+  return isReadOnlyImpl(command, true);
+}
+
+function isReadOnlyImpl(command: string, ignoreCd: boolean): boolean {
   if (!command.trim()) return true;
 
   const ast = parseBashCommand(command);
@@ -429,6 +452,7 @@ export function isReadOnlyCommand(command: string): boolean {
 
   for (const { command: cmd, args } of simpleCommands) {
     if (!cmd) return false;
+    if (ignoreCd && DIRECTORY_BUILTINS.has(cmd)) continue;
 
     // 条件命令特殊处理
     if (cmd in CONDITIONAL_COMMANDS) {
