@@ -8541,7 +8541,12 @@ export class App {
       toolRegistry: this.toolRegistry,
       cwd: process.cwd(),
       config: this.config,
-      sessionId: "",
+      // 逻辑会话 id（resume 时是被恢复会话 id），**不是**本进程新 id。
+      // 轨迹目录名就是它：collector 的 traceSessionId = resumed_from ?? input.session_id
+      // （见 core/src/trace/collector.ts 的 SessionStart），会话 jsonl 同口径。
+      // 传空串的后果按命令分裂：/trace /perf /insights 定位不到当前会话（回退 latest 或
+      // 报「未找到会话」），/export /bug /status /fork 直接把 id 丢了（`?? "-"` 挡不住空串）。
+      sessionId: this.getLogicalSessionId(),
       checkpointSessionId: this.getLogicalSessionId(),
       provider: this.provider,
       // fork 型 skill / 自定义命令靠它起子代理；缺了 executor 会静默退回 inline
@@ -11508,7 +11513,10 @@ export class App {
           toolRegistry: this.toolRegistry,
           cwd: process.cwd(),
           config: this.config,
-          sessionId: "",
+          // 与 checkpoint 同口径：逻辑会话 id（resume 时是被恢复会话 id）。
+          // 轨迹目录 sessions/<id>/ 与会话 jsonl 都按它归属，/trace /perf /insights
+          // 靠它定位当前会话，/export /bug /status /fork 靠它带出正确 id。
+          sessionId: this.getLogicalSessionId(),
           // checkpoint 跟随逻辑会话 id，使 `-c` 恢复后 /undo 够得到 resume 之前的检查点。
           checkpointSessionId: this.getLogicalSessionId(),
           provider: this.provider,
