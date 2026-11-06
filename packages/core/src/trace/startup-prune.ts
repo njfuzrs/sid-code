@@ -12,6 +12,7 @@
 
 import { existsSync, readdirSync, readFileSync, rmSync, statSync } from "node:fs";
 import { join } from "node:path";
+import { profileCounter } from "@sid-code/shared/utils/startup-profiler.ts";
 import { getLogger } from "../debug/logger.ts";
 import { listActiveSessions } from "../session/concurrent.ts";
 import { hasFinalUploadMarker } from "./upload-marker.ts";
@@ -83,6 +84,9 @@ export function resolveTracePruneOptions(
  * `session-summary.json` 一起消失，曲线不能依赖原始轨迹活着。
  */
 export function pruneOldTraceSessions(opts: TracePruneOptions): void {
+  // 结构性门禁用（G1）：轨迹目录全量扫描的入口。首帧前主进程调用它 = 把耗时随目录数
+  // 增长的工作放回了 TUI 主线程（2026-11-01 之前就在 TraceCollector 构造函数里）。
+  profileCounter("trace-prune");
   try {
     const sessionsDir = join(opts.outputDir, "sessions");
     if (!existsSync(sessionsDir)) return;
@@ -183,6 +187,9 @@ export function pruneOldTraceSessions(opts: TracePruneOptions): void {
  * 一个已经空了整天的目录不可能还是"正在初始化"。
  */
 export function pruneStaleBlankTraceSessions(outputDir: string): StaleBlankPruneResult {
+  // 结构性门禁用（G1）：同 trace-prune，空壳清理也要扫全部轨迹目录。
+  // 与 trace-prune 分开计：两者由维护子进程一起调，但回归形态可能只放回其中一个。
+  profileCounter("trace-prune-stale");
   /** "未开工"事件白名单：只出现这些 = 会话从未真正开始工作 */
   const IDLE_ONLY_EVENTS = new Set(["SessionStart", "SessionEnd", "GatewayPricingSync"]);
   /** 除 events.jsonl / warn.log / heartbeat.txt 外，任何文件存在即视为有数据，保留 */
