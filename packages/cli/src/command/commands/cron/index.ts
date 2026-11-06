@@ -10,6 +10,9 @@ const cron: UnifiedCommand = {
   description: "管理定时任务（列出 / 删除）",
   argumentHint: "[list|delete <id>]",
   source: "builtin",
+  // 只放 list（A2 档，D13）：delete/rm 会删 durable 任务并写盘，无头脚本不该静默动它。
+  // 无参放行（缺省即 list）。写子命令的价值由 CLI / TUI 承担。
+  headless: { subcommands: ["list"] },
   outputPanel: true,
   load: () => import("./cron.ts").then((m) => new m.CronCommand()),
 };

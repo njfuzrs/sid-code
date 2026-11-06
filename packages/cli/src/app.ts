@@ -126,8 +126,9 @@ import {
 import * as CrashMarker from "@sid-code/core/trace/crash-marker.ts";
 import * as PidManager from "@sid-code/core/trace/pid-manager.ts";
 // 远程接管会话标记：必须在 init() 之前置位（SessionStart 的 metadata 在 init 里构造），
-// 见 trace/session-flags.ts 的注释。
-import { setBridgeSessionFlag } from "@sid-code/core/trace/session-flags.ts";
+// 见 trace/session-flags.ts 的注释。无头斜杠命令的形态判定也读它（Bridge 与 -p/stream-json
+// 走同一个 submitHeadlessInput，形态决定「按形态放行」的命令是否可用）。
+import { isBridgeSession, setBridgeSessionFlag } from "@sid-code/core/trace/session-flags.ts";
 // 人工确认通道（bridge / sdk / tui / headless）：记进本地轨迹的 PermissionDecision.confirm_via。
 // 只进本地轨迹，不扩外发遥测的 PermissionSource 闭集。
 import { setConfirmVia } from "@sid-code/core/permission/decision-telemetry.ts";
@@ -8535,7 +8536,8 @@ export class App {
     input: string,
   ): Promise<import("./command/headless-dispatch.ts").HeadlessSlashOutcome> {
     const registry = this.unifiedRegistry;
-    const { resolveHeadlessSlash } = await import("./command/headless-dispatch.ts");
+    const { resolveHeadlessModality, resolveHeadlessSlash } =
+      await import("./command/headless-dispatch.ts");
     const { CommandExecutor } = await import("./command/executor.ts");
     const { buildMcpPromptCommands } = await import("./command/mcp-prompt-commands.ts");
 
@@ -8575,6 +8577,13 @@ export class App {
       return await resolveHeadlessSlash(input, {
         commands,
         executor,
+        // 三形态共用本入口，按形态放行的命令（T6 的 /compact、/loop）靠这一项区分。
+        // 信号源与 runHeadless 选择 SDK 路径、runBridge 置进程级标记同源。
+        mode: resolveHeadlessModality({
+          inputFormat: this.config.inputFormat,
+          outputFormat: this.config.outputFormat,
+          bridge: isBridgeSession(),
+        }),
         disableSlashCommands: this.config.disableSlashCommands,
       });
     } catch (err: any) {
