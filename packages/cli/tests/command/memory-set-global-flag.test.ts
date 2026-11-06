@@ -89,7 +89,9 @@ describe("/memory set --global 解析", () => {
   test("value 仅剩 flag 时报用法错误，不再静默存空 value（修复点 ②）", async () => {
     // 修复前：!value 检查在剥离前，"--global" 非空通过检查，replace 后存入空串
     const result = await new MemoryCommand().call("set key6 --global", {} as never);
-    expect((result as { value: string }).value).toStartWith("错误: ");
+    // errorText() 返回 { type: "error", message }（缺陷 D2），文本仍是「错误: …」
+    expect(result.type).toBe("error");
+    expect((result as { message: string }).message).toStartWith("错误: ");
 
     // 且真的没落盘
     const { MemoryStore } = await import("@sid-code/core/memory/store.ts");

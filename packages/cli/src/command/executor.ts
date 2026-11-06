@@ -58,6 +58,20 @@ export interface ExecutorCallbacks {
   setToolJSX?: (jsx: ReactNode | null) => void;
 }
 
+/**
+ * 执行引擎侧的命令失败（解析失败 / 门控拒绝 / 执行异常）。
+ *
+ * `message` 统一带「错误: 」前缀：`CommandExecutionResult.error.message` 的契约是
+ * **完整展示文本**——TUI（`app.ts` 的 `case "error"`）与无头（`mapExecutionResult` 的
+ * `case "error"`）两侧都直接输出它，不再二次加前缀。命令侧的 `errorText()` 同口径。
+ *
+ * 为什么要统一：前缀原来是 TUI 单侧加的（`错误: ${result.message}`），无头直传
+ * 裸 message——同一条失败在两边文本不同。收进 message 后两侧逐字一致。
+ */
+function commandError(message: string): CommandExecutionResult {
+  return { type: "error", message: `错误: ${message}` };
+}
+
 export class CommandExecutor {
   constructor(
     private ctx: CommandContext,
@@ -72,7 +86,7 @@ export class CommandExecutor {
     const parsed = parseSlashCommand(input);
     if (!parsed) {
       logCommandRejected("parse_error");
-      return { type: "error", message: "命令格式: /command [args]" };
+      return commandError("命令格式: /command [args]");
     }
 
     const cmd = this.findCommand(parsed.commandName, commands);
@@ -82,7 +96,7 @@ export class CommandExecutor {
       const migrated = getMigratedSkillHint(parsed.commandName);
       if (migrated) {
         logCommandRejected("unknown_command");
-        return { type: "error", message: migrated };
+        return commandError(migrated);
       }
       // 像命令名（仅字母数字连字符）→ 报未知命令；否则当作普通文本。
       //
@@ -97,7 +111,7 @@ export class CommandExecutor {
         // 这是功能缺口的一手信号。刻意**不上报用户输入的那个名字**：它是自由文本，
         // 可能含路径或私有名称。要看具体名字请查本地日志。
         logCommandRejected("unknown_command");
-        return { type: "error", message: `未知命令: /${parsed.commandName}` };
+        return commandError(`未知命令: /${parsed.commandName}`);
       }
       return { type: "passthrough", value: input };
     }
@@ -142,10 +156,7 @@ export class CommandExecutor {
     // 用户可调用性检查
     if (cmd.userInvocable === false) {
       logCommandRejected("not_user_invocable");
-      return {
-        type: "error",
-        message: "此命令只能由模型调用，不支持手动触发",
-      };
+      return commandError("此命令只能由模型调用，不支持手动触发");
     }
 
     // 启用性检查（兜底）：UnifiedCommandRegistry.getCommands 已按 isEnabled 过滤，
@@ -154,10 +165,7 @@ export class CommandExecutor {
     //（未触发的条件 skill 不可调用）——漏掉这层就能按名直呼绕过条件。
     if (cmd.isEnabled && !cmd.isEnabled()) {
       logCommandRejected("disabled");
-      return {
-        type: "error",
-        message: `/${cmd.name} 当前不可用（已禁用，或为尚未触发的条件激活 Skill）`,
-      };
+      return commandError(`/${cmd.name} 当前不可用（已禁用，或为尚未触发的条件激活 Skill）`);
     }
 
     return null;
@@ -273,6 +281,11 @@ export class CommandExecutor {
       }
       case "compact":
         return { type: "compact", summary: result.summary };
+      case "error":
+        // message 已是完整展示文本（含「错误: 」前缀，见 command/result.ts errorText）：
+        // TUI 与无头两侧都直接输出它，这里不再二次加前缀。无头下 mapExecutionResult
+        // 把它翻成 fatal_error，退出码非 0（缺陷 D2 的修复点）。
+        return { type: "error", message: result.message };
       case "clear":
         return { type: "clear" };
       case "quit":
@@ -345,10 +358,7 @@ export class CommandExecutor {
           if (!doneWasCalled) {
             doneWasCalled = true;
             this.callbacks.setToolJSX?.(null);
-            resolve({
-              type: "error",
-              message: `命令执行失败: ${e instanceof Error ? e.message : String(e)}`,
-            });
+            resolve(commandError(`命令执行失败: ${e instanceof Error ? e.message : String(e)}`));
           }
         });
     });
@@ -371,14 +381,14 @@ export class CommandExecutor {
         await import("@sid-code/core/skill/executor.ts");
       const auth = authorizeSkill(skill, { permissionRules: this.ctx.permissionRules });
       if (auth.decision === "deny") {
-        return { type: "error", message: `权限拒绝：${auth.reason ?? skill.name}` };
+        return commandError(`权限拒绝：${auth.reason ?? skill.name}`);
       }
       if (auth.decision === "ask") {
         const allowed = await resolveSkillAsk(skill, auth.reason ?? "", {
           confirm: this.ctx.requestUserConfirmation,
         });
         if (!allowed) {
-          return { type: "error", message: `已取消：Skill "${skill.name}" 未获批准。` };
+          return commandError(`已取消：Skill "${skill.name}" 未获批准。`);
         }
       }
       hookScope = cmd.context === "fork" ? newSkillHookScope() : undefined;
@@ -410,10 +420,9 @@ export class CommandExecutor {
           );
           const out = r.finalOutput;
           if (out?.isBlockingDecision() || out?.shouldStopExecution()) {
-            return {
-              type: "error",
-              message: `UserPromptExpansion hook 拦截了 /${cmd.name}：${out.getEffectiveReason()}`,
-            };
+            return commandError(
+              `UserPromptExpansion hook 拦截了 /${cmd.name}：${out.getEffectiveReason()}`,
+            );
           }
           const extra = out?.getAdditionalContext();
           if (extra) prompt = `${prompt}\n\n<system-reminder>\n${extra}\n</system-reminder>`;
@@ -545,7 +554,7 @@ export class CommandExecutor {
         run?.end();
       }
       if (run?.signal.aborted) {
-        return { type: "error", message: `已取消 /${cmd.name}` };
+        return commandError(`已取消 /${cmd.name}`);
       }
 
       return {
@@ -554,10 +563,7 @@ export class CommandExecutor {
         conversational: true,
       };
     } catch (e: any) {
-      return {
-        type: "error",
-        message: `fork 执行失败: ${e?.message ?? String(e)}`,
-      };
+      return commandError(`fork 执行失败: ${e?.message ?? String(e)}`);
     }
   }
 }

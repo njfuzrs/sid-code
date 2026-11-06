@@ -56,9 +56,10 @@ export async function handlePluginCommand(
     if (reports) await flushEventReporting();
   }
   // CLI 下没有 /reload-plugins 这一步：下次启动 sid-code 即重新加载，把 TUI 专用提示换掉
-  // 迁移前的 kind: "error" 现在是带「错误: 」前缀的文本（见 command/result.ts errorText）
-  const raw = result.type === "text" ? result.value : "";
-  const isError = raw.startsWith("错误: ");
+  // 失败态由结果的**类型**判定，不再 parse「错误: 」文本前缀——`LocalCommandResult` 已有
+  // `error` 分支（缺陷 D2），文本前缀只是展示形态，拿它当判据会在文案调整时静默失效。
+  const isError = result.type === "error";
+  const raw = result.type === "error" ? result.message : result.type === "text" ? result.value : "";
   const message = (isError ? raw.slice("错误: ".length) : raw).replace(
     /提示: 运行 \/reload-plugins 使其生效/g,
     "提示: 下次启动 sid-code 时生效（已在运行的 TUI 会话里执行 /reload-plugins）",

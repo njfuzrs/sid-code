@@ -3785,7 +3785,10 @@ export class App {
       }
 
       case "error":
-        presentCommandResult(commandInput, `错误: ${result.message ?? ""}`, { isError: true });
+        // message 已是完整展示文本（含「错误: 」前缀）——命令侧 `errorText()` 与执行引擎的
+        // `commandError()` 同口径，这里不再二次加前缀（否则会出现「错误: 错误: …」）。
+        // 文本与收口前逐字一致，变的是**渲染样式**：走 isError，状态栏带 ✗ 且停留更久。
+        presentCommandResult(commandInput, result.message ?? "", { isError: true });
         break;
 
       case "skip":
