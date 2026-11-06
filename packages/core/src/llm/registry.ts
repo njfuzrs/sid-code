@@ -7,6 +7,7 @@ import type { Provider } from "./provider.ts";
 import type { Config, ModelConfig } from "../config/config.ts";
 import { getLogger } from "../debug/logger.ts";
 import { ModelAvailabilityService } from "./availability.ts";
+import { credentialFingerprint } from "./quota-scope.ts";
 import { TokenEstimator } from "./token-estimator.ts";
 import { resolveWireModel, buildWireModelAliasMap } from "./wire-model.ts";
 import { buildModelCompatMap } from "./model-compat.ts";
@@ -38,7 +39,15 @@ export interface SubAgentModelMap {
 export class ProviderRegistry {
   private config: Config;
   private subAgentModels: SubAgentModelMap;
-  /** 缓存：key = "providerName:baseURL" */
+  /**
+   * 缓存：key = "providerName:baseURL:凭据指纹"。
+   *
+   * 凭据维度不可省：provider 在构造时把 apiKey 捕获成实例字段（请求时 `Authorization`
+   * 直接用它），而配置层允许 `availableModels` 每条自带 `api_key`（同端点多账户）。
+   * 键里只有 provider + baseURL 时，同端点的第二个账户会命中第一个账户的实例，
+   * 用别人的 key 发请求 —— 轻则 401（表现为「降级没生效」），重则请求成功但计到别人账上。
+   * 指纹口径与 `quotaScope` 同源（`credentialFingerprint`，不可逆），不含明文。
+   */
   private cache = new Map<string, Provider>();
   /** 模型可用性服务 */
   public availability: ModelAvailabilityService;
@@ -98,7 +107,10 @@ export class ProviderRegistry {
 
   /** 获取指定配置的 Provider（带缓存） */
   getProviderFor(providerName: string, apiKey: string, baseURL?: string): Provider {
-    const cacheKey = `${providerName}:${baseURL || ""}`;
+    // 键必须覆盖构造时被实例捕获的连接身份：provider / 端点 / 凭据。
+    // 只按 baseURL 区分会让同端点下的第二个账户复用第一个账户的 key（A8 实测：
+    // 主模型 401 后降级仍带主模型的 key，表现为「降级没生效」）。
+    const cacheKey = `${providerName}:${baseURL || ""}:${credentialFingerprint(apiKey)}`;
 
     const cached = this.cache.get(cacheKey);
     if (cached) return cached;
