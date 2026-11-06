@@ -51,6 +51,11 @@ export interface RunOutput {
   stderr: string;
 }
 
+export interface SettingsContext {
+  defaults: Record<string, unknown>;
+  refusedBaseURL: string;
+}
+
 export interface SmokeCase {
   /** `<台账编号>-<半边短名>`，必须与用例目录名一致 */
   id: string;
@@ -66,6 +71,12 @@ export interface SmokeCase {
   argv: string[];
   /** 额外环境变量（运行器已设好隔离用的那一组，这里只放用例特有的） */
   env?: Record<string, string>;
+  /**
+   * 覆盖写进隔离配置目录的 settings.json。缺省是单个 replay 模型（`ctx.defaults`）。
+   * `ctx.refusedBaseURL` 是一个刚确认没人监听的本地地址，连上去必然被拒，
+   * 用来确定性地构造「主模型失败」（A8 降级链）。
+   */
+  settings?: (ctx: SettingsContext) => Record<string, unknown>;
   expect: {
     events?: EventExpect[];
     files?: FileExpect[];

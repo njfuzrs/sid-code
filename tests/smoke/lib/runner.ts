@@ -119,6 +119,20 @@ function seedMaintenanceWatermarks(configDir: string) {
   writeFileSync(join(configDir, ".last-cleanup"), String(now));
 }
 
+/**
+ * 拿一个确定没人监听的本地端口：让系统分配一个空闲端口，记下后立即关闭。
+ *
+ * 不写死 9 之类的端口：CI 机器上它不一定是「拒绝连接」（可能被丢包，变成超时重试）。
+ * 关闭到子进程连接之间有极短的竞态窗口，被别的进程抢占的概率可以忽略；
+ * 真被抢了，用例会因为没触发降级而红，不会静默通过。
+ */
+function refusedBaseURL(): string {
+  const server = Bun.listen({ hostname: "127.0.0.1", port: 0, socket: { data() {} } });
+  const port = server.port;
+  server.stop(true);
+  return `http://127.0.0.1:${port}/v1`;
+}
+
 function smokeSettings() {
   return {
     model: SMOKE_MODEL,
@@ -167,7 +181,11 @@ export async function runCase(
       writeFileSync(p, content);
     }
     Bun.spawnSync(["git", "init", "-q"], { cwd: repo });
-    writeFileSync(join(configDir, "settings.json"), JSON.stringify(smokeSettings(), null, 2));
+    const defaults = smokeSettings();
+    const settings = def.settings
+      ? def.settings({ defaults, refusedBaseURL: refusedBaseURL() })
+      : defaults;
+    writeFileSync(join(configDir, "settings.json"), JSON.stringify(settings, null, 2));
     seedMaintenanceWatermarks(configDir);
 
     const replay = substituteCaseRoot(readFileSync(c.replayPath, "utf8"), repo);
