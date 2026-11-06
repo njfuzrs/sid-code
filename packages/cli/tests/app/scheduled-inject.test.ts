@@ -62,6 +62,11 @@ const injects = () => captured.filter((c) => c.event === SCHEDULED_INJECT_EVENT_
 
 describe("T3 ScheduledInject", () => {
   it("空闲直接注入：queued=false，queue_wait_ms≈0", async () => {
+    // 冻结时钟：`firedAt` 在 enqueue 时取、注入前再取一次 `Date.now()`（app.ts 的
+    // injectScheduledPrompt），真实时钟下两次取值跨过 1ms 边界就得 1，`toBe(0)` 随机红
+    // （2026-11-05 CI 上 ubuntu 3 次 / macOS 2 次）。空闲直接注入时 0 或 1ms 都正确，
+    // 修的是测试的时序依赖，生产代码不动；afterEach 已复位系统时钟。
+    setSystemTime(new Date("2026-01-01T00:00:00Z"));
     const app = makeApp();
     const injected: string[] = [];
     (app as any).busy = false;
