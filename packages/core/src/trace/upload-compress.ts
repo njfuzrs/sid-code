@@ -34,6 +34,7 @@ import {
   writeFileSync,
 } from "node:fs";
 import { basename, join } from "node:path";
+import { profileCounter } from "@sid-code/shared/utils/startup-profiler.ts";
 import { redactHomeDir } from "./redact-home.ts";
 import { preservingDirMtime } from "./upload-attempts.ts";
 
@@ -131,6 +132,9 @@ export async function prepareUploadFile(
   srcPath: string,
   opts: PrepareOptions,
 ): Promise<PreparedUpload> {
+  // 结构性门禁用（G1）：补传压缩的入口。它同步 stat / 读整份 traj（缓存未命中时），
+  // 首帧前在主进程调用就是把启动阻塞做了回来（U1–U4 之前就在 SessionStart 里）。
+  profileCounter("trace-upload-compress");
   const st = statSync(srcPath);
   const strip = !!opts.stripLocalOnly;
   const needsTransform = opts.redactHomeDir || strip;
