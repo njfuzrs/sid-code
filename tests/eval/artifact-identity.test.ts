@@ -537,7 +537,7 @@ describe("G2 发布通道门禁", () => {
     expect(r.reasons.join(" ")).toContain("分支包");
   });
 
-  test("promote：在 main 上 → 放行；祖先关系测不出来 → 放行但明说没验证", () => {
+  test("promote：在 main 上 → 放行", () => {
     expect(
       judgePromote({
         info: parseBuildInfoLine(line({ origin: "release" })),
@@ -545,15 +545,43 @@ describe("G2 发布通道门禁", () => {
         version: "0.1.602",
       }).ok,
     ).toBe(true);
-    // null = 取不到 main 或那个 commit 不在本地。放行（发版机之外的环境是常态），
-    // 但**必须留一句"没验证"** —— 否则一个没跑的检查会显示成绿灯。
+  });
+
+  test("promote：祖先关系测不出来 → **拒**（无法验证不等于通过，X3-03(b)）", () => {
+    // 变异自证：把这一支改回 ok: true → 这条红。
+    // null = 取不到 main，或那个 commit 不在本地对象库。这是「判据没跑」，
+    // 不是「它不在 main 上」—— 但两者都不能写 latest.txt。
     const r = judgePromote({
       info: parseBuildInfoLine(line({ origin: "release" })),
       isAncestorOfMain: null,
       version: "0.1.602",
     });
-    expect(r.ok).toBe(true);
-    expect(r.reasons.join(" ")).toContain("未验证");
+    expect(r.ok).toBe(false);
+    // unverified 让调用方区分「没跑」与「判负」：只有前者允许被
+    // release.sh --promote-unverified 显式放行。
+    expect(r.unverified).toBe(true);
+    expect(r.reasons.join(" ")).toContain("无法验证");
+    expect(r.reasons.join(" ")).toContain("压根没跑");
+  });
+
+  test("promote：两种拒绝可区分（分支包不带 unverified 标记）", () => {
+    const branchPkg = judgePromote({
+      info: parseBuildInfoLine(line({ branch: "feat-x", origin: "release" })),
+      isAncestorOfMain: false,
+      version: "0.1.602",
+    });
+    const unmeasurable = judgePromote({
+      info: parseBuildInfoLine(line({ origin: "release" })),
+      isAncestorOfMain: null,
+      version: "0.1.602",
+    });
+    expect(branchPkg.ok).toBe(false);
+    expect(branchPkg.unverified).toBeUndefined();
+    expect(unmeasurable.ok).toBe(false);
+    expect(unmeasurable.unverified).toBe(true);
+    // 两者的 reason 必须说清是哪种，不能都只给一句「拒绝」
+    expect(branchPkg.reasons.join(" ")).toContain("分支包");
+    expect(unmeasurable.reasons.join(" ")).not.toContain("分支包");
   });
 
   // ── pickMainRef：G2 问哪个 ref ────────────────────────────────────────────
@@ -580,17 +608,19 @@ describe("G2 发布通道门禁", () => {
     expect(r.degraded).toBe(true);
   });
 
-  test("pickMainRef：两个都取不到 → degraded，交给 judgePromote 报「未验证」", () => {
+  test("pickMainRef：两个都取不到 → degraded，judgePromote 判「无法验证」拒绝", () => {
     const r = pickMainRef(probeWith({}));
     expect(r.degraded).toBe(true);
-    // 此时调用方的 revParse 会落到 null，judgePromote 放行但明说没验证 —— 不是绿灯
+    // 此时调用方的 revParse 会落到 null —— judgePromote 必须**拒**（unverified），
+    // 不是「放行但明说没验证」：后者在日志里和通过只差一行，而行为完全一样。
     const j = judgePromote({
       info: parseBuildInfoLine(line({ origin: "release" })),
       isAncestorOfMain: null,
       version: "0.1.603",
     });
-    expect(j.ok).toBe(true);
-    expect(j.reasons.join(" ")).toContain("未验证");
+    expect(j.ok).toBe(false);
+    expect(j.unverified).toBe(true);
+    expect(j.reasons.join(" ")).toContain("无法验证");
   });
 });
 

@@ -135,6 +135,23 @@ git merge-base --is-ancestor v<version> main && echo OK
 上面这条命令保留作人肉复核，但**不再是唯一防线**：一条靠人记得跑的核验，
 在忘记跑的那一次恰好是最需要它的那一次。
 
+**两条判据「没能跑」都算拒绝，不是放行**（2026-11-07，X3-03）：tag 缺失、
+或取不到 main / 产物 commit 不在本地对象库（祖先关系测不出）时，`--promote`
+一律非 0 退出、`latest.txt` 不动 —— 先 `git fetch origin main --tags` 再重跑。
+改之前这两种情况只打一行 ⚠️ 然后照常写 `latest.txt`，「没量到」和「量到是通过」
+在日志里只差一个图标，而行为完全一样。
+
+确需在**拿不到远端**的发版机上促升时，加显式 `--promote-unverified`：
+它只放行这两条「没跑」的判据，并在终端日志与 GitHub Release 正文留痕；
+「产物是分支包」这类**判负**永远不放行（CLI 用 `__PROMOTE_UNVERIFIED__` 标记区分两者）。
+
+**回滚的完整性检查与 promote 是同一份实现**（`scripts/lib/targets.sh` 的
+`release_dir_check_cmd`）：按平台清单逐个点名，清单含 `linux-x64-baseline`。
+两边各写一份的结局已经发生过一次 —— `rollback.sh` 漏掉 baseline（5 vs 4），
+只缺 baseline 的版本目录被它判「产物齐全（4 个平台）」并回滚过去，
+而 baseline 是评测容器（qemu）显式取用的那一档。
+现在两边 `source` 同一份清单，`rollback.sh` 的日志数量也从清单派生。
+
 **发版后 `git status` 会多出 `northstar/`**：那是 `release.sh` 设计上就要求入库的指标快照（见 `scripts/release.sh` 中 northstar 一节），**不是脏数据**，跟 bump 一起提交进同一个 PR。
 
 **上传凭据**：SSH 信息读自 `scripts/deploy.env`（不入库，见 `deploy.env.example` 模板）。
@@ -155,6 +172,9 @@ git merge-base --is-ancestor v<version> main && echo OK
 ./scripts/release.sh --promote 0.1.601     # 稳定通道指过去
                                            # 快车道：紧跟 --upload 就跑，不必等（无时长门禁）
                                            # 泡制道：先装 beta 用一段时间再跑（高风险改动）
+./scripts/release.sh --promote 0.1.601 --promote-unverified
+                                           # 拿不到远端/没有 tag 的离线发版机：显式放弃祖先校验
+                                           #（日志与 Release 正文留痕；正常路径不要用）
 ./scripts/rollback.sh                      # 看两个通道现指向谁 + 有哪些版本可回
 ./scripts/rollback.sh 0.1.600              # 稳定通道回指旧版（秒级）
 ./scripts/rollback.sh 0.1.600 --channel beta

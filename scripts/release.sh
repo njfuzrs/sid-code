@@ -5,6 +5,9 @@
 #   ./scripts/release.sh                        # 门禁(bun test)+bump 版本号+构建 4 目标并打包到 dist/release/
 #   ./scripts/release.sh --upload                # 打包后上传到服务器（发到 beta 通道，见下方「发布通道」）
 #   ./scripts/release.sh --promote <version>     # 把 stable 通道指向某个已上传版本（纯指针，不构建）
+#   ./scripts/release.sh --promote <ver> --promote-unverified
+#                                                # 促升时允许「判据没能验证」放行（无远端/无 tag 的
+#                                                #   离线发版机；日志与 Release 正文留痕，正常路径不要用）
 #   ./scripts/release.sh --upload --beta-fix --beta-note "修复 xxx"
 #                                                # beta 修复号轻量发布：自动写最小 curated，不交互（见下方「一修一号」）
 #   ./scripts/release.sh --no-bump               # 复用当前版本号，不再 bump（上次已 bump 过、重跑时用）
@@ -223,39 +226,14 @@ esac
 # ripgrep 版本号从 fetch-ripgrep.ts 的 DEFAULT_RG_VERSION 读取（唯一事实源，避免两处硬编码漂移）
 RG_VERSION="$(bun run "$SCRIPT_DIR/fetch-ripgrep.ts" --print-version)"
 
-# bun-<os>-<arch> target → 打包命名用的 <os>-<arch>
+# 发布平台清单与「版本目录完整性检查」命令的**唯一事实源**（rollback.sh 也 source
+# 同一份）。清单本身、「为什么有一条 linux-x64-baseline」的论证、以及完整性检查的
+# 实现都在那个文件里；这里只加载。
 #
-# ## 为什么有一条 `linux-x64-baseline`
-#
-# Bun 默认编译的 x64 产物**要求 AVX2 等较新指令**，在 qemu-x86_64 下一启动就
-# `Illegal instruction (core dumped)`（进程 exit 132 = 128+SIGILL）。
-# 而 SWE-bench 官方 per-instance 镜像**只发布 amd64**，
-# 所以 arm64 机器上跑评测必须走 qemu —— 常规 x64 产物在那里一题都跑不了。
-#
-# ⚠️ 这个失败形态在评测里会**伪装成 agent 能力差**，而且伪装得很好：
-# qemu 的 core dump 掉在工作目录里被 `git add -A` 收走，于是「patch」是两个
-# core 文件的二进制 diff，`patch_bytes` 看着还挺正常
-# （详见方案文档 `01-coding-agent评测集全景与sid-code接入方案.md` §附录 ZZ.2 第 4 条）。
-#
-# `bun-linux-x64-baseline` 编出来的产物在同一 qemu 容器里 `--version` 与
-# `--self-check` 全过（含内嵌 ripgrep 可执行）。
-#
-# 体积代价实测是**负的**：baseline 104.7M vs 常规 105.6M（少 0.9M，2026-08-25 实测，
-# bun 1.3.14）—— 所以「多一个 target 会让发布变重」这个直觉在这里不成立，
-# 不要拿体积当理由把它删掉。
-#
-# 且**不影响原生 x64 用户**：那条常规 `linux-x64` 仍在，
-# `install-template.sh` 只按 `uname` 拼 `linux-x64` / `linux-arm64`，
-# 永远不会拼出 `-baseline` —— 它是**给评测显式取用的**（见
-# `evals/external-benchmarks/swe-bench/exec-swebench.sh` 的 `artifact_for()` 查找路径 ②，
-# 那条路径在这个 target 加进来之前指向一个**没有任何东西会产出的文件**）。
-TARGETS=(
-    "bun-darwin-arm64:darwin-arm64"
-    "bun-darwin-x64:darwin-x64"
-    "bun-linux-x64:linux-x64"
-    "bun-linux-x64-baseline:linux-x64-baseline"
-    "bun-linux-arm64:linux-arm64"
-)
+# ⚠️ 不要再往本脚本里复制一份清单：曾经复制过（rollback.sh 的 PLATFORMS 漏了
+# baseline），而复制那天不会有任何东西变红。判据只有一份实现，漂移才不可能发生。
+# shellcheck source=lib/targets.sh
+. "$SCRIPT_DIR/lib/targets.sh"
 
 DO_UPLOAD=false
 DO_UPLOAD_TEAM_DEFAULTS=false
@@ -269,6 +247,9 @@ ALLOW_DIRTY=false
 NO_COMMIT=false
 DO_PROMOTE=false
 PROMOTE_VERSION=""
+# --promote 的显式逃生口：允许「判据没能跑」（tag 缺失 / 祖先关系测不出）放行。
+# 默认关闭 —— 没量到就写 latest.txt，等于一个没做的检查显示成绿灯（X3-03）。
+PROMOTE_UNVERIFIED=false
 DO_ARCHIVE_EXISTING=false
 DO_PUBLISH_MANIFEST=false
 DO_AUDIT_ARCHIVE=false
@@ -285,6 +266,7 @@ while [ $# -gt 0 ]; do
             shift 2
             ;;
         --no-bump) DO_BUMP=false; shift ;;
+        --promote-unverified) PROMOTE_UNVERIFIED=true; shift ;;
         --beta-fix) BETA_FIX=true; shift ;;
         --beta-note)
             BETA_NOTE="${2:-}"
@@ -317,6 +299,12 @@ done
 
 if [ "$BETA_FIX" = true ] && [ "$DO_PROMOTE" = true ]; then
     echo "错误: --beta-fix 与 --promote 不能同时使用（beta 修复号发到 beta，促升是另一步）"; exit 1
+fi
+
+# --promote-unverified 放宽的只是促升门禁；单独出现说明调用方以为它能影响别的路径，
+# 那种「以为生效了其实没有」的开关比没有开关更危险。
+if [ "$PROMOTE_UNVERIFIED" = true ] && [ "$DO_PROMOTE" != true ]; then
+    echo "错误: --promote-unverified 只能与 --promote 一起使用（它放宽的是促升门禁）"; exit 1
 fi
 
 info()  { echo "  $*"; }
@@ -387,7 +375,7 @@ run_scp() {
 #
 # 成功判据只认脚本最后一行 `__ARCHIVE_OK__ <ver>` —— 它在**整目录回读 + sha256sum -c +
 # .sha256 逐字比对**之后才打印。ssh 返回 0 不够：ossutil cp 遇到已存在对象是 skip 且返回 0。
-ARCHIVE_PLATFORMS="$(for t in "${TARGETS[@]}"; do printf '%s ' "${t#*:}"; done)"
+ARCHIVE_PLATFORMS="$(release_platforms | tr '\n' ' ')"
 ARCHIVE_PLATFORMS="${ARCHIVE_PLATFORMS% }"
 
 archive_remote() { # <version> <original|rebuilt>
@@ -625,10 +613,15 @@ trap on_exit EXIT
 #
 # 四道前置校验，缺一个这条命令就可能把 latest.txt 指到一个装不上或不该发的版本：
 #   ① 版本目录在服务器上存在；
-#   ② 目录内 4 个平台的 tarball 与 .sha256 都在（半成品目录也可能存在）；
+#   ② 目录内每个平台的 tarball 与 .sha256 都在（半成品目录也可能存在）；
 #   ③ 服务器端 sha256 复核通过（与上传时同一套判据，防"传上去之后坏了"）。
 #   ④ 产物 commit 在 main 上（G2）—— 拦「把一个分支包 promote 成稳定版」。
-#      ①②③ 全过而 ④ 不过是**完全可能**的：一个分支包也可以四平台齐全、sha256 全对。
+#      ①②③ 全过而 ④ 不过是**完全可能**的：一个分支包也可以平台齐全、sha256 全对。
+#
+# ④ 的两条通道（字节判据 / tag 判据）都是**判据没能跑就不许写 latest.txt**：
+# 从 warn 改成 fail 之前，「没量到」和「量到是通过」在日志里的区别只有一行 ⚠️，
+# 而脚本行为完全一样（X3-03）。确需在拿不到远端的发版机上促升，用显式
+# --promote-unverified 放弃这条校验 —— 放弃必须是一次命令行上可见的声明。
 #
 # 促升前的 CUJ 人工验收清单是 B1 的范围（本批不做），这里只在开头提醒一句 ——
 # 提醒不是门禁，写死一道"清单已勾"的机械检查需要先有清单这个载体。
@@ -639,6 +632,9 @@ if [ "$DO_PROMOTE" = true ]; then
     echo "  ⓘ 促升前应已完成人工验收（beta 通道实际使用过）。"
     echo "    本命令只挪指针，不重新构建 —— 用户装到的字节与 beta 期被测的完全一致。"
     echo ""
+    if [ "$PROMOTE_UNVERIFIED" = true ]; then
+        warn "--promote-unverified 已启用：本次促升允许「判据没能验证」放行，日志与 Release 正文会留痕"
+    fi
 
     _promote_remote_dir="${DEPLOY_PATH}/${PROMOTE_VERSION}"
 
@@ -646,19 +642,11 @@ if [ "$DO_PROMOTE" = true ]; then
     # 已被淘汰的版本是合法操作；回暖失败（归档里也没有）才落到下面的 __NO_DIR__。
     warm_remote "$PROMOTE_VERSION" || warn "从归档回暖 v${PROMOTE_VERSION} 失败（继续走目录检查）"
 
-    # ① + ② 目录存在且产物齐全（按 TARGETS 的平台清单逐个点名，不数文件个数：
-    # 数个数会被残留的 .part / 旧命名文件糊弄过去）
-    _check_cmd="set -e
-[ -d '${_promote_remote_dir}' ] || { echo __NO_DIR__; exit 0; }
-cd '${_promote_remote_dir}'
-_missing=''
-for p in $(for t in "${TARGETS[@]}"; do echo "${t#*:}"; done | tr '\n' ' '); do
-    f=\"sid-code-${PROMOTE_VERSION}-\$p.tar.gz\"
-    [ -f \"\$f\" ] || _missing=\"\$_missing \$f\"
-    [ -f \"\$f.sha256\" ] || _missing=\"\$_missing \$f.sha256\"
-done
-if [ -n \"\$_missing\" ]; then echo \"__MISSING__\$_missing\"; exit 0; fi
-echo __COMPLETE__"
+    # ① + ② 目录存在且产物齐全。判据是**按平台逐个点名**，不数文件个数（数个数会被
+    # 残留的 .part / 旧命名文件糊弄过去）；实现与 rollback.sh 的同一段检查共用
+    # `lib/targets.sh` 里的 `release_dir_check_cmd` —— 两边各写一份的结局就是漂移
+    # （rollback.sh 曾漏掉 linux-x64-baseline，5 vs 4，见 X3-04）。
+    _check_cmd="$(release_dir_check_cmd "$_promote_remote_dir" "$PROMOTE_VERSION")"
     _check_out="$(run_ssh "${DEPLOY_SSH_USER}@${DEPLOY_SSH_HOST}" "$_check_cmd" 2>&1)" \
         || fail "无法检查服务器上的 v${PROMOTE_VERSION}：${_check_out}"
     case "$_check_out" in
@@ -731,8 +719,20 @@ echo __SHA_OK__"
     fi
     if [ -n "$_promote_pkg" ]; then
         info "促升门禁：读产物字节里的 commit（$(basename "$_promote_pkg")）..."
-        bun run "$SCRIPT_DIR/artifact-identity.ts" promote-gate "$_promote_pkg" "$PROMOTE_VERSION" ||
-            fail "促升门禁未通过 —— latest.txt 未改动（稳定通道保持原样）"
+        # 捕获输出而不是 `|| fail`：这里要区分**两种**拒绝 ——「判据没跑」（unverified）
+        # 与「判据判负」（分支包 / 身份不符）。只有前者允许被 --promote-unverified 放行；
+        # 后者在任何情况下都不放行，否则 flag 会连带放过真正的分支包。
+        _promote_gate_out="$(bun run "$SCRIPT_DIR/artifact-identity.ts" promote-gate "$_promote_pkg" "$PROMOTE_VERSION" 2>&1)" \
+            && _promote_gate_rc=0 || _promote_gate_rc=$?
+        if [ -n "$_promote_gate_out" ]; then printf '%s\n' "$_promote_gate_out" >&2; fi
+        if [ "$_promote_gate_rc" -ne 0 ]; then
+            if [ "$PROMOTE_UNVERIFIED" = true ] &&
+                printf '%s\n' "$_promote_gate_out" | grep -q '__PROMOTE_UNVERIFIED__'; then
+                warn "祖先关系**未验证即放行**（--promote-unverified，日志留痕）"
+            else
+                fail "促升门禁未通过 —— latest.txt 未改动（稳定通道保持原样）"
+            fi
+        fi
     else
         info "本地没有 v${PROMOTE_VERSION} 的产物，退化到 **tag 判据**（弱：不是读字节）"
         # 这里也必须问 origin/main 而不是本地 main，理由与字节判据那条完全相同：
@@ -744,8 +744,16 @@ echo __SHA_OK__"
             warn "取不到 origin/main，退化到**本地 main**（弱判据：可能含未推送/未合并的提交）"
         }
         if ! git rev-parse -q --verify "refs/tags/v${PROMOTE_VERSION}" >/dev/null 2>&1; then
-            warn "本地没有 tag v${PROMOTE_VERSION} —— **这一条没能校验**（不是通过）。"
-            warn "  先 git fetch --tags，或在发版机上跑这条命令。"
+            # 「这一条没能校验」曾经只是 warn，脚本随后照常写 latest.txt —— 自我描述诚实，
+            # 行为却是按通过处理（X3-03(a)）。promote 是写稳定通道的唯一入口，
+            # 先 fetch 再重跑的成本远低于放错一版，所以默认 fail。
+            if [ "$PROMOTE_UNVERIFIED" = true ]; then
+                warn "本地没有 tag v${PROMOTE_VERSION} —— tag 判据**未验证即放行**（--promote-unverified，日志留痕）"
+            else
+                fail "本地没有 tag v${PROMOTE_VERSION} —— tag 判据无法验证，拒绝促升（latest.txt 未改动）。
+  补救：git fetch origin main --tags 后重跑。
+  确需在拿不到远端的发版机上促升：加 --promote-unverified 显式放弃这条校验（日志留痕）。"
+            fi
         elif git merge-base --is-ancestor "v${PROMOTE_VERSION}" "$_promote_main_ref" 2>/dev/null; then
             ok "tag v${PROMOTE_VERSION} 在 ${_promote_main_ref} 上（tag 判据，非字节判据）"
         else
@@ -820,7 +828,11 @@ ${_merge_out}"
 
     # ⑧ GitHub Release：目标版本改为正式 + Latest（区间内被跳过的号保持 pre-release）
     if command -v gh >/dev/null 2>&1; then
-        bun run "$ROOT/scripts/github-release.ts" "$PROMOTE_VERSION" --promote \
+        # --unverified 只影响正文里那行留痕：放弃门禁这件事需要有**仓库之外**的证据
+        # （终端日志会滚掉、不进仓库；Release 正文是当时的公开记录）。
+        _gh_promote_args=("$PROMOTE_VERSION" --promote)
+        if [ "$PROMOTE_UNVERIFIED" = true ]; then _gh_promote_args+=(--unverified); fi
+        bun run "$ROOT/scripts/github-release.ts" "${_gh_promote_args[@]}" \
             || warn "GitHub Release 改正式失败（不影响稳定通道）：可手动补跑 bun run scripts/github-release.ts ${PROMOTE_VERSION} --promote"
     else
         warn "未装 gh CLI，跳过 Release 改正式（可稍后补跑 bun run scripts/github-release.ts ${PROMOTE_VERSION} --promote）"

@@ -766,7 +766,14 @@ describe("release.sh：一修一号（T1 促升合并 / T2 通道标记 / T3 bet
   });
 
   test("T2：--promote 调 github-release.ts --promote，且只作用于目标版本", () => {
-    expect(promoteSeg).toMatch(/github-release\.ts["']?\s+"\$PROMOTE_VERSION"\s+--promote/);
+    // 2026-11-07（X3-03）：传参改成数组，以便 --promote-unverified 时追加 --unverified。
+    // 契约没变：数组第一个元素仍是**目标版本**（不是 $VERSION），--promote 恒在。
+    expect(promoteSeg).toMatch(/_gh_promote_args=\("\$PROMOTE_VERSION" --promote\)/);
+    expect(promoteSeg).toMatch(/github-release\.ts["']?\s+"\$\{_gh_promote_args\[@\]\}"/);
+    // --unverified 只在显式放弃校验时追加，默认路径不许带上
+    expect(promoteSeg).toMatch(
+      /if \[ "\$PROMOTE_UNVERIFIED" = true \]; then _gh_promote_args\+=\(--unverified\); fi/,
+    );
     const GH = readFileSync(join(ROOT, "scripts/github-release.ts"), "utf8");
     expect(GH).toMatch(/"--prerelease=false",\s*"--latest"/);
     // 只 edit 目标 tag：promote 分支里只出现一个 release edit
@@ -841,6 +848,12 @@ describe("github-release.ts：通道标记正文（T2）", () => {
       covers: ["0.1.607", "0.1.608", "0.1.609"],
     });
     expect(merged).toContain("v0.1.607、v0.1.608");
+    // 显式放弃祖先校验的留痕（release.sh --promote-unverified 透传 --unverified）：
+    // 放弃需要有仓库之外的记录，否则事后复盘只能靠终端滚屏。
+    expect(renderReleaseBody(e)).not.toContain("--promote-unverified");
+    const unverified = renderReleaseBody(e, { unverified: true });
+    expect(unverified).toContain("--promote-unverified");
+    expect(unverified).toContain("未能完成");
   });
 });
 

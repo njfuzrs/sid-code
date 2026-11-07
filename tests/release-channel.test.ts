@@ -514,6 +514,125 @@ describe("A3 rollback.sh：出事时能照着跑，且不做多余的事", () =>
   });
 });
 
+// ─────────────────────────────────────────────────────────────────────────────
+// X3-04 / X3-03（2026-11-07）：发布/回滚判据上的两条「假绿」
+// ─────────────────────────────────────────────────────────────────────────────
+
+describe("X3-04 平台清单：release.sh 与 rollback.sh 共用唯一事实源", () => {
+  const TARGETS_SH = join(ROOT, "scripts/lib/targets.sh");
+
+  /** 从共享清单取平台名。测试不自己抄一份 —— 抄一份就重现了被修的那个缺陷。 */
+  function platformsFromShared(): string[] {
+    const r = spawnSync("bash", ["-c", `source "${TARGETS_SH}"; release_platforms`], {
+      encoding: "utf8",
+    });
+    expect(r.status).toBe(0);
+    return (r.stdout ?? "").split("\n").filter(Boolean);
+  }
+
+  /** 在本地执行 release_dir_check_cmd 生成的远端脚本（不连服务器）。 */
+  function runDirCheck(dir: string, ver: string): string {
+    const gen = spawnSync(
+      "bash",
+      ["-c", `source "${TARGETS_SH}"\nrelease_dir_check_cmd "$1" "$2"`, "bash", dir, ver],
+      { encoding: "utf8" },
+    );
+    expect(gen.status).toBe(0);
+    const r = spawnSync("bash", ["-c", gen.stdout], { encoding: "utf8" });
+    return `${r.stdout ?? ""}${r.stderr ?? ""}`;
+  }
+
+  test("清单含 linux-x64-baseline，两个脚本都 source 它（不再各写一份）", () => {
+    // 变异自证：从 lib/targets.sh 删掉 baseline 那条 → 这条红（它同时是下面
+    // 「缺 baseline 必拒」用例的前提）。
+    const platforms = platformsFromShared();
+    expect(platforms).toContain("linux-x64-baseline");
+    expect(platforms.length).toBe(5);
+    expect(RELEASE_SH).toContain('"$SCRIPT_DIR/lib/targets.sh"');
+    expect(ROLLBACK_SH).toContain('"$SCRIPT_DIR/lib/targets.sh"');
+    // rollback.sh 曾经硬编码 4 个平台（漏 baseline），而它上方注释写着
+    // 「判据与 release.sh --promote 一致」。这条断言防它退回去。
+    expect(ROLLBACK_SH).not.toMatch(/^PLATFORMS=/m);
+  });
+
+  test("真跑：5 平台齐全 → __COMPLETE__；缺 baseline → __MISSING__ 并点名", () => {
+    const ver = "9.9.9";
+    const root = mkdtempSync(join(tmpdir(), "sid-targets-"));
+    const dir = join(root, ver);
+    mkdirSync(dir, { recursive: true });
+    try {
+      for (const p of platformsFromShared()) {
+        const t = `sid-code-${ver}-${p}.tar.gz`;
+        writeFileSync(join(dir, t), `tar ${p}`);
+        writeFileSync(join(dir, `${t}.sha256`), `deadbeef  ${t}\n`);
+      }
+      expect(runDirCheck(dir, ver)).toContain("__COMPLETE__");
+
+      // 只缺 baseline 的 tarball —— 这正是 rollback.sh 当年判「产物齐全（4 个平台）」
+      // 并回滚过去的那个形态。判据是「按平台点名」，所以必须点名到该文件。
+      rmSync(join(dir, `sid-code-${ver}-linux-x64-baseline.tar.gz`));
+      const missing = runDirCheck(dir, ver);
+      expect(missing).toContain("__MISSING__");
+      expect(missing).toContain(`sid-code-${ver}-linux-x64-baseline.tar.gz`);
+
+      // 三条哨兵都要能分出来（目录不存在不能退化成 __MISSING__）
+      expect(runDirCheck(join(root, "nope"), ver)).toContain("__NO_DIR__");
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+});
+
+describe("X3-03 promote：判据没能跑 ≠ 通过", () => {
+  /** 从 release.sh 抠出 tag 判据那段**真实分支**执行（不是手抄副本）。 */
+  function tagGateBlock(): string {
+    const start = RELEASE_SH.indexOf(
+      '        if ! git rev-parse -q --verify "refs/tags/v${PROMOTE_VERSION}"',
+    );
+    expect(start).toBeGreaterThan(-1);
+    const end = RELEASE_SH.indexOf("\n        fi\n", start);
+    expect(end).toBeGreaterThan(start);
+    return RELEASE_SH.slice(start, end + "\n        fi\n".length);
+  }
+
+  function runTagGate(unverified: boolean) {
+    const dir = mkdtempSync(join(tmpdir(), "sid-taggate-"));
+    try {
+      const init = spawnSync("git", ["init", "-q"], { cwd: dir, encoding: "utf8" });
+      expect(init.status).toBe(0);
+      // 空仓库：没有 origin/main、没有 tag —— 「两条判据都没法跑」的最坏形态。
+      const script = `set -euo pipefail
+PROMOTE_VERSION=9.9.9
+PROMOTE_UNVERIFIED=${unverified}
+fail() { echo "  ❌ $*" >&2; exit 1; }
+warn() { echo "  ⚠️  $*" >&2; }
+ok()   { echo "  ✅ $*"; }
+info() { echo "  $*"; }
+${tagGateBlock()}
+echo __PASSED__`;
+      const r = spawnSync("bash", ["-c", script], { cwd: dir, encoding: "utf8" });
+      return { status: r.status, out: `${r.stdout ?? ""}${r.stderr ?? ""}` };
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  }
+
+  test("无 tag（且拿不到 origin/main）→ 非 0 退出，并说清是「无法验证」", () => {
+    // 变异自证：把 release.sh 那一支改回 warn → 这条红（status 会变成 0）。
+    const r = runTagGate(false);
+    expect(r.status).not.toBe(0);
+    expect(r.out).toContain("tag 判据无法验证");
+    expect(r.out).toContain("拒绝促升");
+  });
+
+  test("--promote-unverified 是显式声明：放行，且输出里留痕", () => {
+    const r = runTagGate(true);
+    expect(r.status).toBe(0);
+    expect(r.out).toContain("未验证即放行");
+    expect(r.out).toContain("__PASSED__");
+  });
+});
+
 describe("A2/A3 文档与脚本自洽（改了一处不许漏另一处）", () => {
   test("install.sh --help 列出了 SID_CODE_CHANNEL", () => {
     expect(INSTALL_SH).toMatch(/SID_CODE_CHANNEL\s+发布通道/);
