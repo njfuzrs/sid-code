@@ -37,8 +37,11 @@
 import { mkdir, writeFile, copyFile, chmod } from "node:fs/promises";
 import { existsSync, statSync } from "node:fs";
 import { join, dirname } from "node:path";
+import { fileURLToPath } from "node:url";
 
-const ROOT = join(dirname(new URL(import.meta.url).pathname), "..");
+// ⚠️ 必须走 fileURLToPath：`new URL(...).pathname` 是 percent-encoded 的，
+// 仓库路径含空格 / 非 ASCII 时 ROOT 指向不存在的目录，下载产物会落到错误路径或直接失败（X3-09）。
+const ROOT = join(dirname(fileURLToPath(import.meta.url)), "..");
 /**
  * vendor 根目录。
  *
