@@ -185,6 +185,7 @@ L1 视觉原子    字形、颜色、主题                          ← 最小�
 | 错误 | `ErrorMessage` | `✘` + `theme.status.error` |
 | 命令 | `CommandMessage` | 命令专用样式（多行报告不在这里，见 L4-H） |
 | 计划评审 | `PlanReviewMessage` | 评审专用样式 |
+| 定时唤醒 | `ScheduledPromptMessage` | `›` 前缀 + `theme.text.secondary`；「定时唤醒 · 任务 id · prompt 首行」单行 |
 
 - **区分手段优先级**：字形 / 缩进 > 颜色。user 与 assistant 靠 `>` vs `⏺` 字形 + 缩进区分，不是靠左右对齐或背景色。
 - 新增消息语义 → 新建专用组件，定义它的字形 + 缩进 + 色彩，登记到上表。

@@ -24,6 +24,12 @@ import { ThinkingManager } from "../llm/thinking.ts";
 import { SessionState } from "../session/state.ts";
 import { getLogger, getSessionMetrics } from "../debug/index.ts";
 import { queryLoop, injectPendingNotifications } from "./loop.ts";
+import {
+  buildScheduledMessageMeta,
+  normalizeScheduledOrigin,
+  toHookSourceFields,
+  withScheduledPromptHeader,
+} from "./scheduled-prompt.ts";
 import { extractHookContext, formatHookContextReminder } from "../hook/context-inject.ts";
 import { currentProjectSessionDir } from "../session/store.ts";
 import { join } from "node:path";
@@ -239,10 +245,38 @@ export class QueryEngine {
        * 渲染触发命令本身（此字段值，如 `/commit`），提示词内容仅 LLM 可见。
        */
       displayCommand?: string;
+      /**
+       * 定时任务注入来源标记：`schedule_wakeup` / `/loop` / `cron_create` 到点后，
+       * 宿主把任务里存的 prompt 当一次用户输入跑完整轮——但它不是用户新敲的消息。
+       * 设此值时三处同时生效（见 query/scheduled-prompt.ts）：
+       * - user 消息打 `_meta.origin = "scheduled-prompt"`，TUI 渲染成「定时唤醒」专用项；
+       * - 喂给模型的文本首行加来源头（模型不必再猜「这条哪来的」）；
+       * - `UserPromptSubmit` hook 载荷带 `source: "scheduled"`，hook 可按来源分流。
+       *
+       * 与 `displayCommand` 互斥：同时给以 `displayCommand` 优先并记 warn。
+       */
+      scheduled?: { taskId: string; origin?: string };
     },
   ): AsyncGenerator<QueryEngineEvent> {
     const log = getLogger();
     const { config, ctxMgr, hookSystem, sessionStore } = this.deps;
+
+    // F3：归一化注入来源。斜杠命令展开优先——两者都表示「这条 user 消息不是人手敲的」，
+    // 同时出现说明调用方接线错了；保留一条 warn 而不是静默挑一个，否则以后排查时
+    // 只能看到「_meta 只有命令来源」，查不出另一半信息被吞了。
+    if (options?.scheduled && options.displayCommand) {
+      log.warn(
+        "ENGINE",
+        "submitMessage 同时收到 displayCommand 与 scheduled，按 displayCommand 处理（两者互斥）",
+      );
+    }
+    const scheduled =
+      options?.scheduled && !options.displayCommand
+        ? {
+            taskId: options.scheduled.taskId,
+            origin: normalizeScheduledOrigin(options.scheduled.origin),
+          }
+        : undefined;
 
     log.info("ENGINE", `用户输入:${userInput.slice(0, 200)}${userInput.length > 200 ? "..." : ""}`);
 
@@ -276,7 +310,11 @@ export class QueryEngine {
       );
     }
     if (hookSystem) {
-      const hookResult = await hookSystem.fireUserPromptSubmitEvent(userInput);
+      const hookResult = await hookSystem.fireUserPromptSubmitEvent(
+        userInput,
+        // F3：来源走结构化字段（不拼进 prompt 文本），hook 拿到的 prompt 仍是原文
+        scheduled ? toHookSourceFields(scheduled) : undefined,
+      );
       if (hookResult.finalOutput?.isBlockingDecision()) {
         // G4：UserPromptSubmit 阻塞语义——直接 return 使原 prompt 不进入模型上下文
         // （等价 CC exit2 的"擦除原 prompt"），只反馈阻塞原因。此处 return 前用户消息
@@ -320,16 +358,24 @@ export class QueryEngine {
     // ─── 添加用户消息 ───
     // B2：API 调用前先持久化 user 消息（对标 claude-code：进程中途被 kill 也可 resume）。
     // 持久化失败绝不能阻断主流程，故 try/catch 吞掉异常。
+    //
+    // F3：定时任务注入的 prompt 在前面拼一行来源头。**拼在 hook 之后**——hook 拿到的
+    // 必须是原始 prompt（用户可能按文本匹配做审计/注入），不能让前缀干扰它。
+    const modelInput = scheduled
+      ? withScheduledPromptHeader(cleanedInput, scheduled, config.language)
+      : cleanedInput;
     const userMessage = {
       role: "user" as const,
       content: [
-        { type: "text" as const, text: cleanedInput },
+        { type: "text" as const, text: modelInput },
         // hook 上下文：每段一个独立 text block（history-adapter 按 <system-reminder> 前缀隐藏）
         ...hookReminders.map((text) => ({ type: "text" as const, text })),
       ],
-      // 斜杠命令展开：打来源标记，history-adapter 据此把这条 user 消息渲染为
-      // 「命令历史项」（只显示 /commit 触发命令），而非把整段展开提示词当 `> ...`
-      // 用户输入泄漏到屏幕。标记只影响展示，不影响喂给 LLM 的内容。
+      // 来源标记（三选一，互斥）：
+      // - 斜杠命令展开：history-adapter 只渲染触发命令（如 /commit），展开提示词仅 LLM 可见；
+      // - 定时任务注入：渲染成「定时唤醒」专用项（不整条隐藏——用户需要知道刚才那轮是唤醒
+      //   触发的，否则会看到 agent 在没人说话时自己开始干活）；
+      // - 其余：普通用户消息。
       ...(options?.displayCommand
         ? {
             _meta: {
@@ -337,7 +383,9 @@ export class QueryEngine {
               displayCommand: options.displayCommand,
             },
           }
-        : {}),
+        : scheduled
+          ? { _meta: buildScheduledMessageMeta(scheduled) }
+          : {}),
     };
     try {
       // P2-G7：per-message 上下文（cwd/gitBranch/permissionMode）。实时读取（分支尤其不能用启动

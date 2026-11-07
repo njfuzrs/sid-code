@@ -286,13 +286,26 @@ export class HookEventHandler {
     );
   }
 
-  /** UserPromptSubmit 事件 */
-  async fireUserPromptSubmitEvent(prompt: string): Promise<AggregatedHookResult> {
+  /**
+   * UserPromptSubmit 事件。
+   *
+   * `meta` 是 F3 加的增量参数：定时任务注入的 prompt 也走本事件（它确实是一条喂给模型的
+   * prompt，用户的 hook 可能靠它做审计/注入），但载荷要能区分来源。不传时行为与改动前
+   * 完全一致——`source` 缺省就是 `"user"`。
+   */
+  async fireUserPromptSubmitEvent(
+    prompt: string,
+    meta?: import("./types.ts").UserPromptSubmitSourceMeta,
+  ): Promise<AggregatedHookResult> {
     // 新一轮：换 prompt_id，本轮之后的所有事件共用它
     this.promptId = crypto.randomUUID();
     const input: UserPromptSubmitInput = {
       ...this.createBaseInput(HookEventName.UserPromptSubmit),
       prompt,
+      // 来源字段由 query/scheduled-prompt.ts 的 toHookSourceFields 生成（snake_case，
+      // 与 tool_name / duration_ms 的既有风格一致）。不传 meta 时字段整个不出现，
+      // 老 hook 读到的载荷与改动前逐字节相同。
+      ...(meta ?? {}),
     };
     return this.executeHooks(HookEventName.UserPromptSubmit, input);
   }

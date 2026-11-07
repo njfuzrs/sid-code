@@ -46,6 +46,7 @@ import { grantDurableTask, revokeDurableTask, isDurableTaskGranted } from "./dur
 import { getLogger } from "../debug/logger.ts";
 import {
   SCHEDULED_FIRE_EVENT_NAME,
+  SCHEDULED_REPLACE_EVENT_NAME,
   emitScheduledTrace,
   promptSha12,
   type ScheduledFireOutcome,
@@ -159,6 +160,71 @@ export class Scheduler {
     this.nextFireAt.delete(task.id); // 重新计算
     return true;
   }
+
+  /**
+   * 用新任务**替换**本会话里所有同 origin 的会话级一次性任务，返回被替换的 id。
+   *
+   * 为什么只按 origin 而不是按调用方传的 key：`schedule_wakeup` 的语义（工具描述、
+   * 系统提示词、`/loop` 动态模式的引导文案）本来就是「单链」——醒来检查、没达成再安排
+   * 下一次。并存多个唤醒没有任何合法用途，只会在会话空闲后连环触发：2026-11-07 会话
+   * `20261107-095213-ff96d1f2` 一轮内调了 5 次，产生 5 个并存任务，目标达成后仍多跑了
+   * 4 轮完整主循环（每个都带着 ~300 条消息的上下文）。
+   *
+   * 只匹配 `!recurring && !durable` 的同 origin 任务：`/loop` 的固定间隔任务（recurring）
+   * 与 `cron_create` 建的任务不能被误伤，它们有各自的显式 id 与撤销通道。
+   *
+   * 原子性：先删后加在同一个同步函数里完成，`check()` 也是同步的，不会交错。
+   * 上限判定排除即将被替换的任务——否则 50 个积压时连「替换」都做不了。
+   */
+  replaceSessionTasksByOrigin(task: CronTask): { ok: boolean; replaced: string[] } {
+    const origin = task.origin;
+    // origin 缺省（旧任务 / 从盘上读出来的 durable 任务）时不替换任何任务。
+    // ⛔ 不能直接写 `t.origin === origin`：那会把所有同样缺 origin 的任务当成同 origin，
+    // 一次调用就清掉别人建的任务。
+    const victims = origin
+      ? [...this.sessionTasks.values()]
+          .filter((t) => t.origin === origin && !t.recurring && !t.durable && t.id !== task.id)
+          .map((t) => t.id)
+      : [];
+    if (this.sessionTasks.size - victims.length >= this.sessionCap()) {
+      return { ok: false, replaced: [] };
+    }
+    for (const id of victims) {
+      this.sessionTasks.delete(id);
+      this.nextFireAt.delete(id);
+      this.overdueWarned.delete(id);
+      // F2：宿主侧积压队列里可能还躺着这条已 fire 的唤醒，注入前用它判过期
+      this.supersededIds.add(id);
+    }
+    this.sessionTasks.set(task.id, task);
+    this.nextFireAt.delete(task.id);
+    if (victims.length > 0) {
+      emitScheduledTrace(SCHEDULED_REPLACE_EVENT_NAME, {
+        task_id: task.id,
+        origin: origin ?? "unknown",
+        replaced: victims,
+        replaced_count: victims.length,
+      });
+    }
+    return { ok: true, replaced: victims };
+  }
+
+  /**
+   * 这条会话级任务是否已被同一会话里更新的唤醒替换掉（F2）。
+   *
+   * 覆盖 F1 到不了的那个窗口：旧唤醒已经 fire、进了宿主的 `scheduledPromptQueue`，
+   * 之后才被新唤醒替换——这时它已经不在 `sessionTasks` 里，F1 删不到它，只能靠
+   * 「记住被删过的 id」在注入前拦一道。进程级、不落盘（重启后队列本来就是空的）。
+   *
+   * 命中后**不删除**记录：同一条可能在注入器抛错后被重新入队，下次 flush 还要再判一次，
+   * 删了就会把过期唤醒放进去。一个会话内唤醒次数是几十量级，内存可以忽略。
+   */
+  isSuperseded(taskId: string): boolean {
+    return this.supersededIds.has(taskId);
+  }
+
+  /** 被替换掉的会话级任务 id（F2 注入前判过期用），见 isSuperseded */
+  private supersededIds = new Set<string>();
 
   /**
    * 添加持久任务：先落盘，成功才进内存。

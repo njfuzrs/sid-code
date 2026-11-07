@@ -55,6 +55,8 @@ export class ScheduleWakeupTool implements Tool {
 
 - delay_seconds 会被钳制到 [60, 3600]（1 分钟 ~ 1 小时）。
 - 触发一次后自动删除；要继续轮询请在唤醒后再次调用。
+- **本会话同时只保留一个待触发的唤醒，再次调用会替换前一个**（不会叠加）。
+  因此不需要手动 cron_delete 上一次的唤醒。
 - 固定节奏的循环任务请改用 cron_create。
 
 取舍提示：prompt 缓存 TTL 约 5 分钟。睡过 300s 会付一次缓存 miss，
@@ -107,7 +109,10 @@ export class ScheduleWakeupTool implements Tool {
     }
 
     // 与 cron_create / /loop 共用会话级上限（守卫在 scheduler.addSessionTask）。
-    if (!getScheduler().addSessionTask(task)) {
+    // 单链语义：同一会话同时只保留一个待触发的唤醒，新的替换旧的。并存多个唤醒
+    // 没有合法用途，只会在会话空闲后连环触发（2026-11-07 实测一轮 5 次调用 → 4 轮空跑）。
+    const { ok, replaced } = getScheduler().replaceSessionTasksByOrigin(task);
+    if (!ok) {
       return {
         output: `已达定时任务上限 (${MAX_SESSION_CRON_JOBS})，请先用 cron_delete 删除不需要的任务`,
         isError: true,
@@ -118,9 +123,17 @@ export class ScheduleWakeupTool implements Tool {
       clamped !== Math.round(params.delay_seconds)
         ? `（已从 ${Math.round(params.delay_seconds)}s 钳制到 ${clamped}s）`
         : "";
+    // 告诉模型旧唤醒已经没了：否则它可能去 cron_delete 一个不存在的 id，
+    // 或者以为还有一个在排队而重复安排。
+    const replacedNote =
+      replaced.length > 0 ? `（已替换此前未触发的唤醒 ${replaced.join("、")}）` : "";
     const reasonNote = params.reason ? `\n理由: ${params.reason}` : "";
+    // 最后一行是「目标达成后剩下的那一个唤醒」的缓解（本期不做自动撤销，见方案 §6.3）：
+    // F1 只能把多余唤醒压到最多 1 个，剩下的这一个要靠模型自己撤。
     return {
-      output: `已安排 ${clamped}s 后唤醒一次${clampNote}，ID: ${task.id}${reasonNote}`,
+      output:
+        `已安排 ${clamped}s 后唤醒一次${clampNote}，ID: ${task.id}${replacedNote}${reasonNote}\n` +
+        `目标达成后若不再需要，用 cron_delete ${task.id} 取消。`,
     };
   }
 }
