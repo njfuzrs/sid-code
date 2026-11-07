@@ -27,6 +27,22 @@ export function parseEvents(jsonl: string): TraceEvent[] {
   return out;
 }
 
+/** 取 `raw.jsonl` 里带 `request` 的行（响应行没有它），按顺序返回 `request` 字段。半行同样跳过。 */
+export function parseRawRequests(jsonl: string): unknown[] {
+  const out: unknown[] = [];
+  for (const line of jsonl.split("\n")) {
+    const t = line.trim();
+    if (!t) continue;
+    try {
+      const obj = JSON.parse(t);
+      if (obj && obj.request !== undefined) out.push(obj.request);
+    } catch {
+      // 同 parseEvents：漏掉的请求会让依赖它的断言失败，不会被吞成通过
+    }
+  }
+  return out;
+}
+
 function fieldOf(e: TraceEvent, key: string): unknown {
   if (e.data && key in e.data) return e.data[key];
   return e[key];
