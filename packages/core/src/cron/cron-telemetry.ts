@@ -3,7 +3,9 @@
  *
  * ## 为什么需要这个模块
  *
- * `/loop` 到点触发后，轨迹里只多一条 `UserPromptSubmit`——**内容与人手敲的无法区分**。
+ * 定时任务到点触发后，轨迹里原先只多一条 `UserPromptSubmit`——**内容与人手敲的无法区分**。
+ * （现在 `UserPromptSubmit` 已带 `source` 字段可直接区分，见 engine.ts；`ScheduledInject`
+ * 仍然保留，用于量 `queue_wait_ms` 这段排队等待。）
  * 而「到点了但会话一直忙，30 分钟后才真正执行」这种情况（`scheduler.ts` 的
  * `warnOverdueWhileBusy` 就是为它加的）只进 logger，量不出来。
  *
@@ -34,6 +36,26 @@ export const SCHEDULED_FIRE_EVENT_NAME = "ScheduledFire";
 
 /** 注入事件名（宿主侧，紧邻 UserPromptSubmit） */
 export const SCHEDULED_INJECT_EVENT_NAME = "ScheduledInject";
+
+/**
+ * 唤醒被替换事件名（调度器侧）。
+ *
+ * `schedule_wakeup` 是单链语义：同一会话同时只保留一个待触发的唤醒，新的替换旧的
+ * （见 `Scheduler.replaceSessionTasksByOrigin`）。不记这条的话，「替换」这个动作在轨迹上
+ * 完全不可见——只能从「5 次 create、1 次 fire」反推，而那既可能来自替换，也可能来自手动
+ * cron_delete。只在真的替换了至少一个任务时发。
+ */
+export const SCHEDULED_REPLACE_EVENT_NAME = "ScheduledReplace";
+
+/**
+ * 注入结论（闭集）：
+ * - injected：真的交给了注入器（默认值，老轨迹没有这个字段，读时按它处理）
+ * - dropped_superseded：这条唤醒在排队期间已被同一个会话里更新的唤醒替换，丢弃不注入
+ *
+ * 为什么必须区分：`ScheduledInject` 的语义是「宿主真正调用注入器的次数」，与
+ * `ScheduledFire` 对账用。把丢弃的事件也算成注入，对账就永远差几条，而且差得无从归因。
+ */
+export type ScheduledInjectOutcome = "injected" | "dropped_superseded";
 
 /**
  * 触发结论（闭集）：

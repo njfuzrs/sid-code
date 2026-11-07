@@ -856,8 +856,16 @@ export interface TriggerDigestStats {
   scheduledFires: number;
   /** ScheduledFire 里 outcome!=fired 的条数（未授权 / 认领失败 / 注入抛错） */
   scheduledSkipped: number;
-  /** ScheduledInject 条数（宿主真正调用注入器的次数，与 `scheduledFires` 对账） */
+  /** ScheduledInject 里 outcome=injected 的条数（宿主真正调用注入器的次数，与 `scheduledFires` 对账） */
   scheduledInjects: number;
+  /**
+   * ScheduledInject 里 outcome=dropped_superseded 的条数（唤醒在排队期间被更新的唤醒替换）。
+   *
+   * 单独计而不并入 `scheduledInjects`：后者是「与 `scheduledFires` 对账」的分母，
+   * 把丢弃也算成注入会让对账永远差几条，且差得无从归因。
+   * 老轨迹没有 `outcome` 字段，按 `injected` 处理——那时还没有丢弃逻辑。
+   */
+  scheduledDropped: number;
   /** 「到期 → 调度器触发」的延迟 p95（ms）。样本少于 5 时不给 */
   scheduledLagP95Ms?: number;
   /**
@@ -884,6 +892,7 @@ export function aggregateTriggerStats(
     scheduledFires: 0,
     scheduledSkipped: 0,
     scheduledInjects: 0,
+    scheduledDropped: 0,
     bridgeInbound: 0,
   };
   const hookDurations: number[] = [];
@@ -915,10 +924,17 @@ export function aggregateTriggerStats(
       }
     } else if (e.event === SCHEDULED_INJECT_EVENT_NAME) {
       sawAny = true;
-      out.scheduledInjects++;
-      // 只统计真的排过队的样本：queued=false 的等待恒为 ~0，混进来会把 p95 稀释成 0
-      if (d.queued === true && typeof d.queue_wait_ms === "number") {
-        scheduledQueueWaits.push(d.queue_wait_ms);
+      // F2：被更新唤醒替换掉的这条是「决定不注入」，因此不进 `scheduledInjects`——
+      // 那个字段的语义是「真正调用了注入器的次数」，与 `scheduledFires` 对账用。
+      // 老轨迹没有 outcome 字段，按 injected 处理（那时还没有丢弃逻辑）。
+      if (d.outcome === "dropped_superseded") {
+        out.scheduledDropped++;
+      } else {
+        out.scheduledInjects++;
+        // 只统计真的排过队的样本：queued=false 的等待恒为 ~0，混进来会把 p95 稀释成 0
+        if (d.queued === true && typeof d.queue_wait_ms === "number") {
+          scheduledQueueWaits.push(d.queue_wait_ms);
+        }
       }
     } else if (e.event === BRIDGE_INBOUND_EVENT_NAME) {
       sawAny = true;
@@ -4759,6 +4775,7 @@ export function renderHuman(d: Digest, opts: RenderOptions = {}): string {
       c("gray", "  定时: ") +
         `到点 ${t.scheduledFires} 次` +
         (t.scheduledInjects > 0 ? c("gray", `  注入 ${t.scheduledInjects} 次`) : "") +
+        (t.scheduledDropped > 0 ? c("gray", `  丢弃(已被替换) ${t.scheduledDropped}`) : "") +
         (t.scheduledSkipped > 0 ? c("yellow", `  跳过 ${t.scheduledSkipped}`) : "") +
         (t.scheduledLagP95Ms !== undefined
           ? c("gray", `  lag p95 ${fmtDuration(t.scheduledLagP95Ms)}`)

@@ -222,7 +222,11 @@ import {
   setScheduledTraceSink,
   emitScheduledTrace,
   SCHEDULED_INJECT_EVENT_NAME,
+  type ScheduledInjectOutcome,
 } from "@sid-code/core/cron/cron-telemetry.ts";
+import { getScheduler } from "@sid-code/core/cron/scheduler.ts";
+import type { CronTask } from "@sid-code/core/cron/types.ts";
+import { normalizeScheduledOrigin } from "@sid-code/core/query/scheduled-prompt.ts";
 import {
   setGitOperationObserver,
   resetGitOperationStats,
@@ -242,6 +246,11 @@ interface ScheduledPromptItem {
   prompt: string;
   /** 触发它的任务 id；缺省表示调用方没传（如测试直接调 enqueueScheduledPrompt） */
   taskId?: string;
+  /**
+   * 任务来源（F3）：决定注入时要不要判过期（只对 schedule_wakeup 做，见 F2），
+   * 以及 TUI 渲染成哪种「定时唤醒」标签。缺省按 unknown 处理。
+   */
+  origin?: CronTask["origin"];
   /** onFire 被调用的时刻（ms），用于算 queue_wait_ms */
   firedAt: number;
 }
@@ -1004,7 +1013,12 @@ export class App {
   /** 是否正在处理一轮对话（Cron 调度器据此避免 REPL 忙时触发） */
   private busy = false;
   /** TUI 注入的提示词提交器（Cron 触发时把 prompt 注入主循环） */
-  private promptInjector: ((text: string) => Promise<void>) | null = null;
+  private promptInjector:
+    | ((
+        text: string,
+        source?: import("@sid-code/core/query/scheduled-prompt.ts").ScheduledPromptSource,
+      ) => Promise<void>)
+    | null = null;
   /** Cron 在 REPL 忙时触发的待处理提示词队列 */
   private scheduledPromptQueue: ScheduledPromptItem[] = [];
   /**
@@ -7881,7 +7895,12 @@ export class App {
   }
 
   /** TUI 注入提示词提交器（Cron 触发时把 prompt 注入主循环） */
-  setPromptInjector(injector: (text: string) => Promise<void>): void {
+  setPromptInjector(
+    injector: (
+      text: string,
+      source?: import("@sid-code/core/query/scheduled-prompt.ts").ScheduledPromptSource,
+    ) => Promise<void>,
+  ): void {
     this.promptInjector = injector;
     // 注入器就绪后，立即冲刷忙时积压的调度提示词
     void this.flushScheduledPrompts();
@@ -7893,9 +7912,18 @@ export class App {
    *
    * G3：task 一并传入（可选）——任务 id 进 `ScheduledInject` 事件，与调度器侧的
    * `ScheduledFire` 靠 task_id 配对；`firedAt` 取 onFire 被调用的时刻，用于算 queue_wait_ms。
+   * F3：`origin` 决定渲染标签，也决定要不要在注入前判过期（只对 schedule_wakeup）。
    */
-  async enqueueScheduledPrompt(prompt: string, task?: { id: string }): Promise<void> {
-    const item: ScheduledPromptItem = { prompt, taskId: task?.id, firedAt: Date.now() };
+  async enqueueScheduledPrompt(
+    prompt: string,
+    task?: { id: string; origin?: CronTask["origin"] },
+  ): Promise<void> {
+    const item: ScheduledPromptItem = {
+      prompt,
+      taskId: task?.id,
+      origin: task?.origin,
+      firedAt: Date.now(),
+    };
     if (this.busy || !this.promptInjector) {
       this.scheduledPromptQueue.push(item);
       return;
@@ -7909,16 +7937,47 @@ export class App {
    * 事件放在「即将调用」这一点而不是入队时：入队到注入之间的等待正是要量的东西
    * （`queue_wait_ms`）。注入器抛错时这条已经发过了，重入队后下次 flush 会作为一次
    * **新的尝试**再发一条——同一轮 flush 内不会重复发。
+   *
+   * F2：注入前先问调度器「这条还算数吗」。覆盖 F1 到不了的那个窗口——旧唤醒已经 fire、
+   * 进了本队列，之后才被更新的唤醒替换（这时它已不在 SessionTasks 里，F1 删不到）。
+   * 判据来自调度器的事实（这个 id 被替换过），而不是宿主自己推断「排在后面的更新」：
+   * 两条唤醒可能因 lag 不同而乱序进队。只对 schedule_wakeup 生效：`/loop` 的固定间隔
+   * 任务与 `cron_create` 任务本来就允许并存。
    */
   private async injectScheduledPrompt(item: ScheduledPromptItem, queued: boolean): Promise<void> {
     const injector = this.promptInjector;
     if (!injector) return;
+    if (
+      item.origin === "schedule_wakeup" &&
+      item.taskId &&
+      getScheduler().isSuperseded(item.taskId)
+    ) {
+      emitScheduledTrace(SCHEDULED_INJECT_EVENT_NAME, {
+        task_id: item.taskId,
+        queue_wait_ms: Math.max(0, Date.now() - item.firedAt),
+        queued,
+        // 与 `injected` 分开：digest 用 ScheduledInject 的次数与 ScheduledFire 对账，
+        // 把丢弃也算成注入会让对账永远差几条，且差得无从归因。
+        outcome: "dropped_superseded" satisfies ScheduledInjectOutcome,
+      });
+      getLogger().info("CRON", `丢弃已被替换的定时唤醒 ${item.taskId}（不注入主循环）`);
+      return;
+    }
     emitScheduledTrace(SCHEDULED_INJECT_EVENT_NAME, {
       task_id: item.taskId ?? "unknown",
       queue_wait_ms: Math.max(0, Date.now() - item.firedAt),
       queued,
+      outcome: "injected" satisfies ScheduledInjectOutcome,
     });
-    await injector(item.prompt);
+    await injector(
+      item.prompt,
+      item.taskId || item.origin
+        ? {
+            taskId: item.taskId ?? "unknown",
+            origin: normalizeScheduledOrigin(item.origin),
+          }
+        : undefined,
+    );
   }
 
   /** 冲刷忙时积压的调度提示词（空闲时调用） */
@@ -10486,6 +10545,7 @@ export class App {
     const tuiAgentLoop = async (
       source: string | { kind: "notifications" },
       displayCommand?: string,
+      scheduled?: import("@sid-code/core/query/scheduled-prompt.ts").ScheduledPromptSource,
     ) => {
       const userInput = typeof source === "string" ? source : "";
       const fromNotifications = typeof source !== "string";
@@ -10557,9 +10617,20 @@ export class App {
       let optimisticHistoryItems = prevHistoryItems;
       if (!fromNotifications) {
         historyIdCounter += 1;
+        // 乐观项必须与 syncDisplay 重建后的类型一致：否则 user_message_added 触发重建前，
+        // 定时唤醒会先闪一下 `> …` 普通用户消息（用户看到的就是「凭空冒出一条我输入的话」）。
         const optimisticUserItem: import("./ui/types.ts").HistoryItem = displayCommand
           ? { id: historyIdCounter, type: "command", input: displayCommand, output: null }
-          : { id: historyIdCounter, type: "user", text: optimisticUserText };
+          : scheduled
+            ? {
+                id: historyIdCounter,
+                type: "scheduled",
+                taskId: scheduled.taskId,
+                origin: scheduled.origin,
+                // 落盘时首行是引擎拼的来源头，渲染层要展示的是**原始 prompt**的首行
+                preview: userInput,
+              }
+            : { id: historyIdCounter, type: "user", text: optimisticUserText };
         optimisticHistoryItems = [...prevHistoryItems, optimisticUserItem];
       }
 
@@ -10676,10 +10747,11 @@ export class App {
         this.syncPlanModeFromPermissionMode();
         const events = fromNotifications
           ? this.queryEngine.resumeWithNotifications()
-          : this.queryEngine.submitMessage(
-              userInput,
-              displayCommand ? { displayCommand } : undefined,
-            );
+          : this.queryEngine.submitMessage(userInput, {
+              ...(displayCommand ? { displayCommand } : {}),
+              // F3：定时注入来源——引擎据此打 _meta、拼来源头、给 hook 载荷带 source
+              ...(scheduled ? { scheduled } : {}),
+            });
         // 通知已被别处消费时 resume 一个事件都不产出：这不是异常中断，循环后单独放行。
         let sawEvent = false;
         for await (const event of events) {
@@ -11140,9 +11212,10 @@ export class App {
     };
 
     // 注册提示词注入器：Cron 触发时，把调度 prompt 当作一次用户输入跑完整循环
-    this.setPromptInjector(async (text: string) => {
+    this.setPromptInjector(async (text, source) => {
       this.abortController = new AbortController();
-      await tuiAgentLoop(text);
+      // F3：来源一路带到 submitMessage（打 _meta、拼来源头、给 hook 载荷带 source）
+      await tuiAgentLoop(text, undefined, source);
     });
 
     /**

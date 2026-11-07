@@ -1254,7 +1254,7 @@ function buildSchedulingSection(language?: LanguagePref, schedulingDeferred = fa
 ${activationNote}
 - **一次性提醒**（「3 点提醒我看部署」「45 分钟后检查 CI」）→ 用 \`cron_create\`，cron 表达式定到那个具体时刻，配 \`recurring=false\`（触发一次后自删）。45 分钟后这类相对短延迟也可用 \`schedule_wakeup(delaySeconds)\`。
 - **固定间隔重复**（「每 5 分钟查一次」「每天 9 点巡检」）→ 用 \`cron_create\`，\`recurring=true\`。跨会话存活再加 \`durable=true\`。
-- **自适应轮询**（「跑到 CI 过为止」「等部署好了告诉我」这类不定期检查）→ 每轮检查后用 \`schedule_wakeup\` 自选下次延迟（钳制 60~3600 秒），目标达成后停止安排，不要无限轮询。
+- **自适应轮询**（「跑到 CI 过为止」「等部署好了告诉我」这类不定期检查）→ 每轮检查后用 \`schedule_wakeup\` 自选下次延迟（钳制 60~3600 秒）。**本会话同时只保留一个待触发的唤醒，再次调用会替换前一个**（不需要手动撤销上一次）；目标达成后停止安排，并用 \`cron_delete\` 撤掉剩下的那个唤醒。
 - **查看/取消**：用 \`cron_list\` / \`cron_delete\`。
 
 注意：

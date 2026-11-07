@@ -28,6 +28,7 @@ import { ThinkingMessage } from "./messages/ThinkingMessage.tsx";
 import { ErrorMessage } from "./messages/ErrorMessage.tsx";
 import { PlanReviewMessage } from "./messages/PlanReviewMessage.tsx";
 import { TaskNotificationMessage } from "./messages/TaskNotificationMessage.tsx";
+import { ScheduledPromptMessage } from "./messages/ScheduledPromptMessage.tsx";
 import { AppHeader } from "./AppHeader.tsx";
 import { theme } from "../semantic-colors.ts";
 import { ARROW_PROMPT, WARNING_MARK, THINKING_MARK } from "../constants/figures.ts";
@@ -292,6 +293,18 @@ export const HistoryItemDisplay: React.FC<HistoryItemDisplayProps> = ({
             terminalWidth={width}
           />
         </Box>
+      );
+
+    case "scheduled":
+      // 定时任务注入的 prompt（不是用户敲的）。组件自带 marginBottom，不再外包 Box，
+      // 否则与其它项的 1 行留白叠成 2 行（L2.2：统一只用一个 marginBottom）。
+      return (
+        <ScheduledPromptMessage
+          taskId={item.taskId}
+          origin={item.origin}
+          preview={item.preview}
+          width={width}
+        />
       );
 
     default:
