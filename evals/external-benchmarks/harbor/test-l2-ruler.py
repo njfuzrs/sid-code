@@ -83,7 +83,8 @@ def build_env(binary):
     return env
 
 def elf_arch(binary):
-    return Path(binary).read_text().strip() or None
+    lines = Path(binary).read_text(errors="replace").splitlines()
+    return (lines[0].strip() if lines else "") or None
 
 def gate_binary(binary):
     return ["原闸I 不该被调用"], None
@@ -125,7 +126,7 @@ for i, t in enumerate(tasks):
         reward = 1.0 - reward
     p2p = 0.0 if (mode == "p2p_bad" and i == 0) else 1.0
     res = dict(verifier_result=dict(rewards=dict(reward=reward, p2p=p2p)), exception_info=None,
-        agent_result=dict(cost_usd=0.25 if i else None, metadata=dict(sid_binary_sha256="b" * 64, sid_commit="c" * 40)))
+        agent_result=dict(cost_usd=0.25 if i else None, metadata=dict(sid_binary_sha256=os.environ.get("FAKE_HARBOR_SHA", "b" * 64), sid_commit="c" * 40)))
     with open(os.path.join(td, "result.json"), "w") as fh:
         json.dump(res, fh)
 '''
@@ -269,5 +270,16 @@ def run_tests(root: str) -> None:
     check("零产物 → 红（空集不当通过）", bool(red), str(red))
 
 
+def make_fixture(root: str) -> int:
+    """给 `tests/eval/release-gate.test.ts` 用：在 root 下造假尺子仓 + 假 harbor，
+    stdout 打一行 JSON。两边共用同一份假件，避免 TS 测试再抄一份会漂移的 stub。"""
+    os.makedirs(root, exist_ok=True)
+    repo, head = make_ruler(root)
+    print(json.dumps(dict(repo=repo, head=head, bindir=make_bin_dir(root))))
+    return 0
+
+
 if __name__ == "__main__":
+    if len(sys.argv) == 3 and sys.argv[1] == "--make-fixture":
+        sys.exit(make_fixture(sys.argv[2]))
     sys.exit(main())
