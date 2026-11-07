@@ -76,16 +76,18 @@ describe("createAndSaveSnapshot", () => {
     if (platform() === "win32") return;
     const shell = process.env.SHELL || "/bin/bash";
     const result = await createAndSaveSnapshot(shell);
-    // 真实 shell 应成功创建（CI 中 shell 存在）
-    if (result) {
-      expect(existsSync(result)).toBe(true);
-      const content = readFileSync(result, "utf8");
-      // 快照应包含标志性注释
-      expect(content).toContain("sid-code shell snapshot");
-      expect(content).toContain("unalias -a");
-      // PATH 注入
-      expect(content).toContain("export PATH=");
-    }
+    // 真实 shell 必须成功创建（CI 与开发机都有 POSIX shell）。
+    // 原先整段断言包在 `if (result)` 里：创建失败返回 undefined 时一条断言都不跑，照样绿
+    // （2026-11-07 G1 变异抽样：函数开头直接 return undefined、把 shell 换成不存在的路径，
+    // 两种改坏都没让它变红）。降级返回 undefined 的语义由下一条用例单独守。
+    expect(result).toBeString();
+    expect(existsSync(result!)).toBe(true);
+    const content = readFileSync(result!, "utf8");
+    // 快照应包含标志性注释
+    expect(content).toContain("sid-code shell snapshot");
+    expect(content).toContain("unalias -a");
+    // PATH 注入
+    expect(content).toContain("export PATH=");
   });
 
   it("不存在的 shell 路径 → 降级 undefined，不抛出", async () => {
