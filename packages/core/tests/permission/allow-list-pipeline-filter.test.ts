@@ -151,6 +151,15 @@ describe("必须仍拒：放宽不能带进任何写 / 执行 / 任意读", () =
   test("过滤器在首段（不在 `|` 之后）：不算过滤器", async () => {
     expect((await judge(`tail -5 /etc/passwd | bun test x`)).allowed).toBe(false);
   });
+
+  // 上一条用例的首段带文件操作数（/etc/passwd），isPipelineFilterStage 本身就返回 false，
+  // 根本走不到「是否在 | 之后」的位置判定。2026-11-07 G1 变异抽样把 checker.ts 的
+  // `s > 0 && isPipelineFilterStage(stage)` 改成去掉 `s > 0`，它照样绿。
+  // 这里用一个**本身就是纯过滤器**的首段（无文件操作数，读 stdin），只有位置规则能拦它。
+  test("首段是纯过滤器形态（无文件操作数）：仍不算过滤器，位置规则单独生效", async () => {
+    expect(isPipelineFilterStage("tail -5")).toBe(true);
+    expect((await judge(`tail -5 | bun test x`)).allowed).toBe(false);
+  });
 });
 
 describe("sudo 按程序位置判", () => {
