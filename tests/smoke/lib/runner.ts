@@ -23,7 +23,7 @@ import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { checkEventExpect, checkFileExpect, parseEvents, parseRawRequests } from "./assert.ts";
 import { findOutOfRootPaths, substituteCaseRoot } from "./fixture.ts";
-import type { DaemonStep, RunOutput, SmokeCase } from "./types.ts";
+import type { DaemonStep, PrintStep, RunOutput, SmokeCase, StepOutput } from "./types.ts";
 
 export const REPO_ROOT = resolve(import.meta.dir, "../../..");
 export const CASES_DIR = resolve(import.meta.dir, "../cases");
@@ -147,6 +147,28 @@ function smokeSettings() {
   };
 }
 
+type StepDirs = { repo: string; home: string; configDir: string; root: string };
+type StepResult = { output: StepOutput; failure: string | null };
+
+/** 步骤夹具：占位符替换 + 越界校验，与主夹具同一套规则 */
+function prepareStepFixture(
+  rel: string,
+  caseDir: string,
+  dirs: StepDirs,
+  kind: StepOutput["kind"],
+): { file: string } | { failure: string } {
+  const fixture = substituteCaseRoot(readFileSync(join(caseDir, rel), "utf8"), dirs.repo);
+  const outOfRoot = findOutOfRootPaths(fixture, dirs.repo);
+  if (outOfRoot.length > 0) {
+    return {
+      failure: [`${kind} 步骤夹具含用例根目录之外的路径，拒绝执行：`, ...outOfRoot].join("\n"),
+    };
+  }
+  const file = join(dirs.root, `${kind}-${rel}`);
+  writeFileSync(file, fixture);
+  return { file };
+}
+
 const DAEMON_STOP_GRACE_MS = 5_000;
 
 /** JSC 的 RegExp.source 会把中文转成 \\uXXXX，失败信息里还原成原文 */
@@ -159,15 +181,12 @@ async function runDaemonStep(
   step: DaemonStep,
   caseDir: string,
   launcher: Launcher,
-  dirs: { repo: string; home: string; configDir: string; root: string },
-): Promise<string | null> {
-  const fixture = substituteCaseRoot(readFileSync(join(caseDir, step.replay), "utf8"), dirs.repo);
-  const outOfRoot = findOutOfRootPaths(fixture, dirs.repo);
-  if (outOfRoot.length > 0) {
-    return ["daemon 步骤夹具含用例根目录之外的路径，拒绝执行：", ...outOfRoot].join("\n");
-  }
-  const replayFile = join(dirs.root, `daemon-${step.replay}`);
-  writeFileSync(replayFile, fixture);
+  dirs: StepDirs,
+): Promise<StepResult> {
+  const fixture = prepareStepFixture(step.replay, caseDir, dirs, "daemon");
+  if ("failure" in fixture)
+    return { output: { kind: "daemon", exitCode: -1, stderr: "" }, failure: fixture.failure };
+  const replayFile = fixture.file;
   step.prepare?.({ repoRoot: dirs.repo, configDir: dirs.configDir });
 
   const logPath = join(dirs.configDir, "logs/daemon.log");
@@ -202,14 +221,53 @@ async function runDaemonStep(
   const killer = setTimeout(() => proc.kill("SIGKILL"), DAEMON_STOP_GRACE_MS);
   const exitCode = await proc.exited;
   clearTimeout(killer);
-  if (hit) return null;
   const [out, err] = await Promise.all([stdoutP, stderrP]);
+  const output: StepOutput = { kind: "daemon", exitCode, stderr: err };
+  if (hit) return { output, failure: null };
   const log = existsSync(logPath) ? readFileSync(logPath, "utf8") : "（无 daemon.log）";
-  return (
+  const failure =
     `daemon 步骤 ${step.timeoutMs}ms 内 daemon.log 未出现 /${readableSource(step.until)}/` +
     `（${diedOnItsOwn ? `daemon 提前退出 exit=${exitCode}` : "超时后已停止"}）\n` +
-    `daemon.log 末尾：${log.slice(-800)}\nstdout/stderr 末尾：${(out + err).slice(-500)}`
+    `daemon.log 末尾：${log.slice(-800)}\nstdout/stderr 末尾：${(out + err).slice(-500)}`;
+  return { output, failure };
+}
+
+/** 再跑一次 `-p`（同一隔离环境）。进程正常结束即算步骤成功，判据交给断言 */
+async function runPrintStep(
+  step: PrintStep,
+  caseDir: string,
+  launcher: Launcher,
+  dirs: StepDirs,
+  extraEnv?: Record<string, string>,
+): Promise<StepResult> {
+  const fixture = prepareStepFixture(step.replay, caseDir, dirs, "print");
+  if ("failure" in fixture)
+    return { output: { kind: "print", exitCode: -1, stderr: "" }, failure: fixture.failure };
+  step.prepare?.({ repoRoot: dirs.repo, configDir: dirs.configDir });
+  const proc = Bun.spawn(
+    [
+      ...launcherArgv(launcher),
+      "--dangerously-skip-permissions",
+      "--output-format",
+      "json",
+      ...step.argv,
+    ],
+    {
+      cwd: dirs.repo,
+      env: isolatedEnv(dirs.home, dirs.configDir, fixture.file, extraEnv),
+      stdin: "ignore",
+      stdout: "pipe",
+      stderr: "pipe",
+    },
   );
+  const timer = setTimeout(() => proc.kill("SIGKILL"), CASE_TIMEOUT_MS);
+  const [, err, exitCode] = await Promise.all([
+    new Response(proc.stdout).text(),
+    new Response(proc.stderr).text(),
+    proc.exited,
+  ]);
+  clearTimeout(timer);
+  return { output: { kind: "print", exitCode, stderr: err }, failure: null };
 }
 
 export async function runCase(
@@ -309,9 +367,15 @@ export async function runCase(
       );
     }
 
+    const steps: StepOutput[] = [];
     for (const step of def.after ?? []) {
-      const f = await runDaemonStep(step, c.dir, launcher, { repo, home, configDir, root });
-      if (f) failures.push(f);
+      const dirs = { repo, home, configDir, root };
+      const r =
+        step.kind === "daemon"
+          ? await runDaemonStep(step, c.dir, launcher, dirs)
+          : await runPrintStep(step, c.dir, launcher, dirs, def.env);
+      steps.push(r.output);
+      if (r.failure) failures.push(r.failure);
     }
 
     const sessionId = (stdout as any)?.session_id;
@@ -352,6 +416,7 @@ export async function runCase(
         requests,
         configDir,
         homeDir: home,
+        steps,
       };
       const f = def.expect.output(out);
       if (f) failures.push(f);
