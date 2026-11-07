@@ -40,6 +40,14 @@
  * 4. **`src/` 有 3 个目录没有对应 tests/**：`bootstrap` / `command-contract` / `coordinator`。
  *    改到它们回退跑整个 core 包，而不是输出空集——空集会让选测「全绿但什么都没测」。
  *
+ * 5. **兜底方向是「全量」，不是「零测试」**（X3-01，2026-11-07 翻转）：
+ *    原先「所有规则都不命中」就 `return []`，于是映射清单漏一个文件的结果是
+ *    **零测试且全绿**——最典型的受害者是根目录那些被测试读取的文件
+ *    （`.bun-version` 决定跑测试的运行时本身，却和 `LICENSE` 同档）。
+ *    现在只有 `NO_TEST_PATHS` 里显式登记、并被机械断言守住「零读取者」的路径
+ *    才返回 `[]`，其余一律 `"full"`。漏登记的代价从「静默漏测」变成「多跑一次全量」，
+ *    方向反了过来。
+ *
  * ## 输出形态
  *
  * 默认打印一行可执行的命令（外加 `#` 开头的判定说明），供 `eval "$(...)"` 消费。
@@ -122,6 +130,93 @@ const ROOT_TEST_AREAS: Array<{ when: RegExp; run: string }> = [
   { when: /^scripts\/plugins-pack\.ts$/, run: "./plugins/" },
 ];
 
+/**
+ * 被测试**真实读取**的仓库根文件/目录 → 精确测试目标。
+ *
+ * 为什么不能一律走全量：改一句 `README.md` 就跑 127s，门禁贵到一定程度人就会绕过它。
+ * 为什么不能落进 `NO_TEST_PATHS`：判据是「有没有测试读它」，不是「它看起来像文档」。
+ * `.bun-version` 最典型——它决定跑测试的运行时本身，按「改了它任意测试行为都可能变」
+ * 的收录判据只能走全量。
+ *
+ * 每一条的来源都是 `grep -rnF '"<路径>"' tests packages/<pkg>/tests` 的真实命中，
+ * 并由 `tests/scripts/affected-tests.test.ts` 的「被读文件必须映射到非空目标」守着重算。
+ */
+const ROOT_FILE_TESTS: Array<{ when: RegExp; run: MapResult }> = [
+  // 运行时时版本：不是「某个测试读它」，而是它决定所有测试跑在哪个 bun 上
+  { when: /^\.bun-version$/, run: "full" },
+  // 两份 agent/贡献者约定：`tests/build-target-naming.test.ts` 读构建目标命名段，
+  // `tests/release-channel.test.ts` 断言发布口径出现在 CLAUDE.md 里
+  {
+    when: /^CLAUDE\.md$/,
+    run: ["./tests/build-target-naming.test.ts", "./tests/release-channel.test.ts"],
+  },
+  // bun 版本钉住说明与发布流程契约
+  {
+    when: /^CONTRIBUTING\.md$/,
+    run: ["./tests/build/bun-version-pin.test.ts", "./tests/release-flow-contract.test.ts"],
+  },
+  // changelog 生成器与发布流程契约都读它
+  {
+    when: /^CHANGELOG\.md$/,
+    run: ["./tests/website/changelog-integration.test.ts", "./tests/release-flow-contract.test.ts"],
+  },
+  // .gitignore 的排除条目是「落盘隔离」「vendor 定位」「pr-batch 路径派生」三组门禁的事实源
+  {
+    when: /^\.gitignore$/,
+    run: [
+      "./tests/scripts/pr-batch-path-derivation.test.ts",
+      "./tests/build/vendor-location.test.ts",
+    ],
+  },
+  // 已入库的 Agent Note 由这条测试遍历校验形态
+  { when: /^\.agents\//, run: ["./tests/build/agent-note-gate.test.ts"] },
+  // .pr-batch 的入库文件清单由路径派生测试读，plan.json 由 fork 接线测试读
+  {
+    when: /^\.pr-batch\//,
+    run: [
+      "./tests/scripts/pr-batch-path-derivation.test.ts",
+      "./tests/scripts/pr-batch-fork-wiring.test.ts",
+    ],
+  },
+  // 发版产物快照：northstar 聚合与发布流程契约相关
+  {
+    when: /^northstar\//,
+    run: ["./tests/scripts/northstar-snapshot.test.ts", "./tests/release-flow-contract.test.ts"],
+  },
+  // 仓库门面文档：没有测试读其内容，但改它属于仓库级改动，跑根套件（38 文件、秒级）
+  { when: /^README\.md$/, run: ["./tests/"] },
+];
+
+/**
+ * 确认**没有任何测试读取**的仓库根路径 —— 只有它们返回 `[]`（零测试）。
+ *
+ * 准入判据是机械的，由 `tests/scripts/affected-tests.test.ts` 执行：
+ *
+ *     grep -rlF '"<路径>"' tests packages/<pkg>/tests   → 零命中
+ *     （排除判据自身的测试文件，它必然提到白名单项）
+ *
+ * 任何一条命中都说明有测试在读它，必须改成 `ROOT_FILE_TESTS` 的精确映射或走全量。
+ * 2026-11-07 用这条判据实测，下面每一项都是零读取者。
+ */
+export const NO_TEST_PATHS: string[] = [
+  "LICENSE",
+  "NOTICE",
+  "README.en.md",
+  "CODE_OF_CONDUCT.md",
+  "SECURITY.md",
+  ".mailmap",
+  ".git-blame-ignore-revs",
+  ".editorconfig",
+  ".gitattributes",
+  // 团队 skill 目录：测试里出现的 `.claude/skills` 全是 tmpdir 里自造的路径，不读仓库这份
+  ".claude/skills/",
+];
+
+/** 路径是否被显式登记为「零测试读取」。 */
+function isNoTestPath(p: string): boolean {
+  return NO_TEST_PATHS.some((n) => p === n || (n.endsWith("/") && p.startsWith(n)));
+}
+
 export type MapResult = string[] | "full";
 
 /** 单个路径 → 要跑的测试目标（带 ./ 前缀）。返回 "full" 表示必须全量。 */
@@ -162,13 +257,20 @@ export function mapPathToTests(p: string): MapResult {
   for (const area of ROOT_TEST_AREAS) {
     if (area.when.test(p)) return [area.run];
   }
+  for (const f of ROOT_FILE_TESTS) {
+    if (f.when.test(p)) return f.run;
+  }
   // scripts/ 与 tests/ 自身：跑仓库级套件
   if (p.startsWith("scripts/") || p.startsWith("tests/")) return ["./tests/"];
   // .github/workflows：由 release-flow-contract 与 slow-test-suite-split 守（都在根 tests/）
   if (p.startsWith(".github/")) return ["./tests/"];
+  // 白名单：确认没有任何测试读取它，改它才真的不用跑单测
+  if (isNoTestPath(p)) return [];
 
-  // 文档、LICENSE、.editorconfig 等：不触发单测
-  return [];
+  // ── 兜底：全量 ───────────────────────────────────────────────────────
+  // 方向必须是「宁可多跑」。返回 [] 意味着「改了它零测试且全绿」——清单漏一个文件
+  // 就静默失效（X3-01）。返回 "full" 时漏登记的代价只是多跑一次，而且看得出原因。
+  return "full";
 }
 
 /**
@@ -234,7 +336,10 @@ export function decide(changed: string[]): Verdict {
   if (targets.size === 0) {
     return {
       decision: "none",
-      reason: changed.length === 0 ? "无改动" : "改动不涉及任何被测代码（文档 / 配置 / 资源）",
+      reason:
+        changed.length === 0
+          ? "无改动"
+          : "改动全部落在 NO_TEST_PATHS 白名单内（已机械确认没有任何测试读取）",
       targets: [],
       command: "true",
       changedCount: changed.length,

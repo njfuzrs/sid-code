@@ -35,8 +35,21 @@ fi
 # 为什么值得跑：VitePress 的死链检测就是构建门禁（config.ts 的 ignoreDeadLinks: false），
 # 这是**免费的第四道机制**（§4.5.4）——不另造断链检查脚本，改错内链构建即失败。
 # 同时也拦 Vue 编译错误：参考页描述里的裸 `<xxx>` 会被当成未闭合标签（已实测撞到）。
-if ! git diff --quiet HEAD~1 HEAD -- 'website/' 2>/dev/null || ! git diff --quiet -- 'website/' 2>/dev/null; then
-  echo "[pre-push] 检测到 website/ 变动，跑站点构建（死链检测 = 构建门禁）..."
+#
+# ⚠️ 推送区间必须从 stdin 读（X3-02）：git 只通过 stdin 把「这次推哪些 ref」告诉 hook。
+# 原先用 `git diff HEAD~1 HEAD` 只看最后一个提交 —— 分支上第 2 个提交改了 website/、
+# 后面几个只改 packages/ 时构建不会跑，也不会说跳过，死链就这样推上去了。
+# 判定逻辑抽在 push-scope.sh 里，可在 tmpdir 仓库单独跑测试。
+_push_scope_sh="$(git rev-parse --show-toplevel 2>/dev/null)/scripts/git-hooks/push-scope.sh"
+if [ -f "$_push_scope_sh" ]; then
+  _push_paths=$(sh "$_push_scope_sh" 2>/dev/null) || _push_paths="__UNKNOWN__"
+else
+  # 旧 checkout 里没有这个脚本（分支比它早）：判不出范围，按「跑」处理。
+  _push_paths="__UNKNOWN__"
+fi
+
+if printf '%s\n' "$_push_paths" | grep -qE '^(website/|__UNKNOWN__$)'; then
+  echo "[pre-push] 检测到 website/ 变动（或判不出推送范围），跑站点构建（死链检测 = 构建门禁）..."
   if ! bun run website:build >/tmp/sid-website-build.log 2>&1; then
     echo "[pre-push] ❌ 站点构建失败，push 中止。常见原因："
     echo "    · 死链：sidebar/正文引用了不存在的页面（ignoreDeadLinks: false 刻意如此）"
@@ -45,6 +58,9 @@ if ! git diff --quiet HEAD~1 HEAD -- 'website/' 2>/dev/null || ! git diff --quie
     exit 1
   fi
   echo "[pre-push] ✅ 站点构建通过（无死链）"
+else
+  # 跳过必须说出来：静默跳过看起来和「检查通过」一样，X3-02 就是被这种静默放过的。
+  echo "[pre-push] 本次推送不含 website/ 改动，跳过站点构建"
 fi
 
 # P0-3：北极星指标生成块的陈旧检测
@@ -67,7 +83,11 @@ fi
 if [ -f "scripts/northstar-snapshot.ts" ]; then
   # 只扫本仓库内**确实含生成块**的文件。找不到块的文件由脚本自己判为"不拦"
   #（见 checkStaleness 注释：找不到就拦会在无关文件上误报，人会直接卸掉 hook）。
-  _ns_files=$(grep -rl "NORTHSTAR:BEGIN" --include="*.md" . 2>/dev/null | grep -v node_modules || true)
+  #
+  # 只扫**已追踪**文件（X3-02 附带项）：原先 `grep -rl … .` 会扫遍整个工作区，
+  # 包括别人尚未提交的在途 md。那些文件不会随本次 push 上去，却能让你的 push 被拦 ——
+  # 假红，代价是人开始习惯 `--no-verify`。`git grep` 只搜索引里的文件，正好是这个口径。
+  _ns_files=$(git grep -l "NORTHSTAR:BEGIN" -- '*.md' 2>/dev/null || true)
   if [ -n "$_ns_files" ]; then
     echo "[pre-push] 检查北极星生成块新鲜度（阈值 30 天）..."
     _ns_stale=0
