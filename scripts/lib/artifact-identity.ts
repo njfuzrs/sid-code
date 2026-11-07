@@ -500,6 +500,87 @@ export interface ReleaseGateResult {
 }
 
 /**
+ * 第一个**带构建身份发出去**的版本。
+ *
+ * 取数命令（2026-11-06 核）：
+ *
+ *   git tag --contains d2eb0ac6 --list 'v*' | sort -V | head -1   # → v0.1.608
+ *
+ * `--list 'v*'` 不能省：不加它会先排出 `plugin/compliance@1.0.0` 这类 tag。
+ *
+ * 用途：`judgePromote` 判「无身份的产物该不该拒」。构建身份由 `d2eb0ac6`
+ * （2026-08-26，当时 `package.json` = 0.1.601）引入，此后经 `release.sh` 的产物
+ * 都带 `SID_CODE_BUILD_INFO`（构建循环里的 define）。所以：
+ *   · 版本 < 0.1.608 且无身份 → 可能是机制上线前的历史产物（回滚老版本是合法操作），
+ *     放行并**明说没量到**；
+ *   · 版本 ≥ 0.1.608 且无身份 → 只可能是手工塞进版本目录的字节，拒。
+ */
+export const FIRST_IDENTITY_RELEASE_VERSION = "0.1.608";
+
+/**
+ * 比较两个 `x.y.z` 版本号（允许前导 `v`）。任一侧不是三段数字时返回 `null` ——
+ * 调用方必须据此降级（拒绝或明说没量到），**不要猜一个方向**。
+ */
+export function compareVersion(a: string, b: string): number | null {
+  type Triple = [number, number, number];
+  const parse = (v: string): Triple | null => {
+    const m = v
+      .trim()
+      .replace(/^v/, "")
+      .match(/^(\d+)\.(\d+)\.(\d+)$/);
+    if (!m) return null;
+    return [Number(m[1]), Number(m[2]), Number(m[3])];
+  };
+  const pa = parse(a);
+  const pb = parse(b);
+  if (!pa || !pb) return null;
+  for (let i = 0; i < 3; i++) {
+    if (pa[i] !== pb[i]) return pa[i] > pb[i] ? 1 : -1;
+  }
+  return 0;
+}
+
+/**
+ * 「构建时工作区脏」判据 —— `judgeReleaseUpload` 与 `judgePromote` **共用这一份实现**。
+ *
+ * 抽出来的直接原因是 X3-06：promote 此前完全不查 dirty（与 origin 一样），
+ * 于是同一个产物「--upload 被拦、手工放回目录再 --promote 就过了」。
+ * 判据写两份必然漂移，而漂移不会报错 —— 松的那一侧就是绕过路径。
+ */
+function dirtyReasons(info: BuildInfo, artifactName: string): string[] {
+  const reasons: string[] = [];
+  // dirty：宽松，但**要真的解析脏文件清单**，不能只看布尔位。
+  // 只看布尔位的话只有两个选择：要么恒拦（误拦每次发版），
+  // 要么不检查（漏掉「真的带着未提交代码发版」这个形态）。
+  if (info.dirty === true) {
+    const files = (info.dirty_files ?? "")
+      .split("+")
+      .map((s) => s.trim())
+      .filter(Boolean);
+    if (files.length === 0) {
+      reasons.push(
+        `${artifactName}: dirty=true 但没记 dirty_files —— ` +
+          "无法区分「bump 造成的脏」与「带着未提交代码发版」，拒绝",
+      );
+    } else {
+      // 白名单 = bump 提交会收进历史的那批文件（见 RELEASE_COMMIT_PATHS 的注释）。
+      // 判的是「这些脏改动有没有 git 引用能重建」，不是「工作区有没有脏」。
+      const unexpected = files.filter((f) => !RELEASE_COMMIT_PATHS.includes(f));
+      if (unexpected.length > 0) {
+        reasons.push(
+          `${artifactName}: 构建时工作区有未提交改动（不在发布提交清单里的：` +
+            `${unexpected.join(", ")}）—— 这些改动进了产物但没进任何 commit，` +
+            "发布出去就没有任何 git 引用能重建它",
+        );
+      }
+    }
+  } else if (info.dirty === "unknown") {
+    reasons.push(`${artifactName}: 没记 dirty —— 不能替它断言"构建时工作区只有 bump 那一处脏"`);
+  }
+  return reasons;
+}
+
+/**
  * G2 上传前：`dist/release/<ver>/` 里的产物必须是**发布流程编的**。
  *
  * ## ⚠️ 两条判据按直觉写会 100% 误拦每一次真实发版
@@ -551,34 +632,8 @@ export function judgeReleaseUpload(input: {
     );
   }
 
-  // dirty：宽松，但**要真的解析脏文件清单**，不能只看布尔位。
-  // 只看布尔位的话只有两个选择：要么恒拦（误拦每次发版），
-  // 要么不检查（漏掉「真的带着未提交代码发版」这个形态）。
-  if (info.dirty === true) {
-    const files = (info.dirty_files ?? "")
-      .split("+")
-      .map((s) => s.trim())
-      .filter(Boolean);
-    if (files.length === 0) {
-      reasons.push(
-        `${artifactName}: dirty=true 但没记 dirty_files —— ` +
-          "无法区分「bump 造成的脏」与「带着未提交代码发版」，拒绝",
-      );
-    } else {
-      // 白名单 = bump 提交会收进历史的那批文件（见 RELEASE_COMMIT_PATHS 的注释）。
-      // 判的是「这些脏改动有没有 git 引用能重建」，不是「工作区有没有脏」。
-      const unexpected = files.filter((f) => !RELEASE_COMMIT_PATHS.includes(f));
-      if (unexpected.length > 0) {
-        reasons.push(
-          `${artifactName}: 构建时工作区有未提交改动（不在发布提交清单里的：` +
-            `${unexpected.join(", ")}）—— 这些改动进了产物但没进任何 commit，` +
-            "发布出去就没有任何 git 引用能重建它",
-        );
-      }
-    }
-  } else if (info.dirty === "unknown") {
-    reasons.push(`${artifactName}: 没记 dirty —— 不能替它断言"构建时工作区只有 bump 那一处脏"`);
-  }
+  // dirty：与 judgePromote 共用同一份实现（抽出来就是为了不让两侧漂移，见 dirtyReasons）
+  reasons.push(...dirtyReasons(info, artifactName));
 
   // commit：必须等于 tag 所指提交的**父**提交。
   if (expectedCommit === null) {
@@ -624,22 +679,29 @@ export function pickMainRef(probe: Pick<GitProbe, "revParse">): {
   if (probe.revParse("origin/main") !== null) return { ref: "origin/main", degraded: false };
   if (probe.revParse("main") !== null) return { ref: "main", degraded: true };
   // 两个都取不到：仍返回 origin/main，让调用方的 revParse 检查落到 null 分支，
-  // judgePromote 会以 unverified=true **拒绝**（不是放行）并说明「这一条压根没跑」；
-  // 只有 release.sh --promote-unverified 这个显式声明才允许放行。
+  // judgePromote 会因 isAncestorOfMain=null **拒**（「没量到」不是「量到了且没问题」），
+  // 且带 unverified=true：只有 release.sh --promote-unverified 这个显式声明才允许放行。
   return { ref: "origin/main", degraded: true };
 }
 
 /**
- * `--promote` 前：目标版本的产物 commit 必须是 main 的祖先。
+ * `--promote` 前：产物必须是**发布流程编的**，且它的 commit 是 main 的祖先。
  *
- * 拦的是「把一个分支包 promote 成稳定版」。这条把 `CLAUDE.md` 里那句人工核验
- * （`git merge-base --is-ancestor v<version> main`）变成机械断言。
+ * 拦两件事：
+ *   1. 手工编 / 手工塞进版本目录的字节被促升成稳定版 —— origin、dirty、无身份三条判据，
+ *      与 `judgeReleaseUpload` **同一实现**。promote 是写 `latest.txt`（全量放量）的唯一
+ *      入口，判据不得比上游松（X3-06）。
+ *   2. 把一个分支包 promote 成稳定版（祖先判据）。
  *
  * ⚠️ `merge-base --is-ancestor` 是**自反的**（实测：一个提交是它自己的祖先，返回 0），
  * 这正是这里要的语义 —— tag 就在 main 上时也该通过。
  *
  * ⚠️ 传进来的 `isAncestorOfMain` 必须是对 `pickMainRef()` 选出的 ref 求的值，
  * 不是对本地 `main` —— 见 `pickMainRef` 的文件注释。
+ *
+ * ⚠️ `isAncestorOfMain === null` 是**拒**，不是放行：它只说明这一条没量到，而一份要进
+ * 稳定通道的字节不能靠「没人量过」通过（X3-03(b)）。取不到 main 时先 fetch 再重试，
+ * 这是可恢复的；放错稳定版不是。
  */
 export function judgePromote(input: {
   info: BuildInfo;
@@ -647,15 +709,55 @@ export function judgePromote(input: {
   version: string;
 }): ReleaseGateResult {
   const { info, isAncestorOfMain, version } = input;
+
+  // 无身份的产物：判据只能按版本号分，因为两条出路的后果完全相反。
+  // 旧行为对所有无身份产物一律放行，理由写的是「发布于本机制上线之前」——
+  // 但豁免对新旧版本不做区分，于是新版本出现无身份产物（只可能是手工塞的）也被放过去。
   if (info.identity_source === "none") {
+    const cmp = compareVersion(version, FIRST_IDENTITY_RELEASE_VERSION);
+    if (cmp === null) {
+      return {
+        ok: false,
+        reasons: [
+          `v${version} 不是可解析的 x.y.z 版本号 —— 无法判断它该不该带构建身份，拒绝促升。`,
+        ],
+      };
+    }
+    if (cmp >= 0) {
+      return {
+        ok: false,
+        reasons: [
+          `v${version} 的产物不含构建身份 —— 而 v${FIRST_IDENTITY_RELEASE_VERSION} 起，` +
+            "所有经 release.sh 的产物都带 SID_CODE_BUILD_INFO。",
+          "→ 这一份只可能是手工塞进版本目录的字节：用 release.sh 重新构建并 --upload，或先查清它的来源。",
+          "（发布于身份机制上线之前的历史版本才允许无身份，边界见 FIRST_IDENTITY_RELEASE_VERSION。）",
+        ],
+      };
+    }
+    // 机制上线前的历史产物：本来就无身份可查。拒掉等于「老版本永远不能再 promote」，
+    // 而回滚到老版本是合法操作。
     return {
       ok: true,
       reasons: [
-        `v${version} 的产物不含构建身份（发布于本机制上线之前）—— ` +
-          "无法校验它是否在 main 上。放行，但这一条没量到。",
+        `v${version} 早于首个带身份的发布版本 v${FIRST_IDENTITY_RELEASE_VERSION}，` +
+          "无身份是历史事实 —— 身份判据与祖先判据都无从校验。放行，但**这一条没量到**。",
       ],
     };
   }
+
+  const reasons: string[] = [];
+
+  // 身份判据与 upload 侧同一实现。这两条此前在 promote 侧完全缺失，于是
+  // 「--upload 被 G2 拦下 → 手工把产物放回 dist/release/<ver>/ → --promote」
+  // 是一条不需要任何技巧的绕过路径。
+  if (info.origin !== "release") {
+    reasons.push(
+      `v${version} 的产物 origin=${info.origin}，发布产物必须是 release ——` +
+        "手工编的包（local）或源码直跑（source）不许上稳定通道",
+    );
+  }
+  reasons.push(...dirtyReasons(info, `v${version} 的产物`));
+
   if (isAncestorOfMain === null) {
     // 「没量到」不等于「量到是通过」。判据没跑却返回 ok: true，等于一个没做的检查
     // 显示成绿灯 —— 这正是本模块通篇在消灭的形态（2026-11-07，X3-03(b)）。
@@ -664,9 +766,11 @@ export function judgePromote(input: {
       ok: false,
       unverified: true,
       reasons: [
-        `v${version} 的产物编自 ${info.commit.slice(0, 12)}，但**无法验证它是不是 main 的祖先**` +
-          "（取不到 main，或该 commit 不在本地对象库）—— 这不是「它不在 main 上」，是这一条压根没跑。",
-        "→ 先 git fetch origin main。确需在拿不到远端的发版机上促升时用 --promote-unverified 显式放行（日志留痕）。",
+        ...reasons,
+        `取不到 main 或 ${info.commit.slice(0, 12)} 不在本地对象库 —— **祖先关系无法验证**。` +
+          "「没量到」不是「量到了且没问题」，不能据此放行一份要进稳定通道的字节。",
+        "→ 先 git fetch origin main（产物 commit 不在对象库时还要 fetch 它所在的 ref），再重试。",
+        "→ 确需在拿不到远端的发版机上促升时，用 --promote-unverified 显式放行（日志与 Release 正文留痕）。",
       ],
     };
   }
@@ -674,13 +778,14 @@ export function judgePromote(input: {
     return {
       ok: false,
       reasons: [
+        ...reasons,
         `v${version} 的产物编自 ${info.commit.slice(0, 12)}（${info.branch}），` +
           "**它不是 main 的祖先** —— 这是个分支包，不能促升成稳定版。",
         "→ 先把那条分支合进 main，再重新发一版。",
       ],
     };
   }
-  return { ok: true, reasons: [] };
+  return { ok: reasons.length === 0, reasons };
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
