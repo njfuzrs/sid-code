@@ -1002,7 +1002,11 @@ export class SubAgent {
       result = await runInSpanScope(agentId, () =>
         runWithHookAgent(hookScope, () =>
           withIncrementedDepth(async () => {
-            if (this.shouldUseSpawn() && !task.cwd) {
+            // T1（06H1）：forkMessages 存在时强制进程内模式——spawn 的父子协议里没有这个
+            // 字段（ParentInitMessage 只有 user_prompt），走 spawn 会把继承的父对话整段
+            // 丢掉，且调用方从结果上看不出差别。与 task.cwd 存在时强制进程内同一写法：
+            // 都是「这个上下文跨不了进程，必须在本进程内用」。
+            if (this.shouldUseSpawn() && !task.cwd && !task.forkMessages?.length) {
               try {
                 const spawned = await this.executeSpawned(task, signal, taskId, agentDefinition);
                 log.info("SUBAGENT", `[${task.type}] spawn 模式完成`);
