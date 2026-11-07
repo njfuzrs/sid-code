@@ -64,8 +64,8 @@ sc-dev            # 启动开发版（注意是 sc-dev，不是 sc）
 make build
 
 # 2. 提交功能代码（工作区必须干净，否则 release.sh 会拒绝）
-#    ⚠️ 含 changelog/curated/v<下一个版本>.json —— 缺了 release.sh 会交互确认一次，
-#    非交互环境（管道 / CI）会降级为 warn 直接过，于是官网那一版没有变更说明。
+#    ⚠️ 含 changelog/curated/v<下一个版本>.json —— 缺了 release.sh 会交互确认一次；
+#    非交互环境（agent / 管道 / CI）**直接拒绝**，放弃文案必须显式写 --allow-no-curated。
 #    先跑 `bun run changelog:curate` 起草并过目；纯内部版本写 userFacing:false 即可。
 git add <改动文件>
 git commit -m "feat: ..."
@@ -238,7 +238,7 @@ bun run changelog:curate 0.1.601    # 指定版本 / 补跑
 bun run changelog:check             # 不调 LLM，只校验已入库的全部文案
 ```
 
-产出 `changelog/curated/v<version>.json` → **读一遍**（脚本会把条目打印到终端）→ 需要就直接改 JSON → commit。发版前 release.sh 会检查该文件是否存在，缺了会交互确认一次（放在构建**之前**，此刻补还来得及）。
+产出 `changelog/curated/v<version>.json` → **读一遍**（脚本会把条目打印到终端）→ 需要就直接改 JSON → commit。发版前 release.sh 会检查该文件是否存在，缺了在交互终端里确认一次、非交互环境直接拒绝（放弃文案要显式写 `--allow-no-curated`；检查放在构建**之前**，此刻补还来得及）。
 
 ⚠ **五条禁令**，破了就是数据错乱、内容失真或每次 commit 都红：
 
