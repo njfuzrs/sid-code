@@ -845,6 +845,20 @@ export class ReadTool implements Tool {
           // 落旁路文件而非回写 frontmatter，理由见 memory/read-stats.ts 头注释。
           const { recordMemoryRead } = await import("../memory/read-stats.ts");
           await recordMemoryRead(filePath, hit);
+
+          // T2-1：读到一条记忆时，把年龄**前置**到正文之前（对齐 CC 的
+          // `memoryFileFreshnessPrefix`）。只对单条记忆加 —— MEMORY.md 索引里每行
+          // 已经有 ⏳（`annotateIndexAges`），再叠一条全局警告只是噪声。
+          //
+          // 三条口径与 recall.ts 保持一致：用 `buildFreshnessWarning`（1 天为界）、
+          // 用 `<system-reminder>` 包裹（让模型当系统提示而不是文件内容）、
+          // 只在成功路径加（读失败时正文都没拿到，提醒没有意义）。
+          // 异常不能影响读取结果：赋值放在最后一步，抛错时 output 保持原样。
+          if (!hit.isIndex) {
+            const { buildFreshnessWarning } = await import("../memory/freshness.ts");
+            const warning = buildFreshnessWarning(mtime);
+            if (warning) output = `<system-reminder>${warning}</system-reminder>\n\n${output}`;
+          }
         }
       } catch {
         /* 埋点失败静默 */
