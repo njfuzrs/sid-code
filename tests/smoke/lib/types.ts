@@ -57,6 +57,8 @@ export interface RunOutput {
   requests: unknown[];
   /** 隔离配置目录（`SID_CONFIG_DIR`）。断言启动后的 settings.json / state 用，如 A10 迁移链 */
   configDir: string;
+  /** 假 HOME。断言「沙箱外写入没有落盘」这类家目录状态用（B2） */
+  homeDir: string;
 }
 
 export interface SettingsContext {
@@ -97,6 +99,11 @@ export interface SmokeCase {
   platforms?: NodeJS.Platform[];
   /** 用例仓初始文件（相对路径 → 内容）。会在临时目录里 `git init` */
   repo: Record<string, string>;
+  /**
+   * 假 HOME 里的初始文件（相对假 HOME）。用于「沙箱拦住 ~/.ssh」这类需要家目录内容的用例（B2）。
+   * 运行器的 P-3 断言只看 `$HOME/.sid-code`，这里预置的文件不触发它；也不许往这里放 `.sid-code/`。
+   */
+  home?: Record<string, string>;
   /** 传给 sid-code 的参数；`--dangerously-skip-permissions` 与 `--output-format json` 由运行器补 */
   argv: string[];
   /** 额外环境变量（运行器已设好隔离用的那一组，这里只放用例特有的） */
