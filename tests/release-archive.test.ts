@@ -220,8 +220,12 @@ describe("release.sh 接线契约", () => {
     const fn = RELEASE_SH.slice(RELEASE_SH.indexOf("archive_remote() {"));
     const body = fn.slice(0, fn.indexOf("\n}\n"));
     expect(body).toMatch(/grep -qx "__ARCHIVE_OK__ \$\{ver\}" <<<"\$out" \|\| return 1/);
-    // 归档脚本要的平台必须来自 TARGETS（唯一事实源），不能另写一份
-    expect(RELEASE_SH).toMatch(/ARCHIVE_PLATFORMS="\$\(for t in "\$\{TARGETS\[@\]\}"/);
+    // 归档脚本要的平台必须来自唯一事实源（scripts/lib/targets.sh 的 TARGETS），不能另写一份。
+    // 2026-11-07（X3-04）起改为经 release_platforms 派生 —— 与本文件另一条「平台清单只写一份」
+    // 的守护同源：那条断言 lib 里的 TARGETS，这条断言 release.sh 不再自己列平台。
+    expect(RELEASE_SH).toContain(`ARCHIVE_PLATFORMS="$(release_platforms | tr '\\n' ' ')"`);
+    const TARGETS_SH = readFileSync(join(ROOT, "scripts/lib/targets.sh"), "utf8");
+    expect(TARGETS_SH).toMatch(/for t in "\$\{TARGETS\[@\]\}"; do/);
   });
 
   test("--archive-existing 一律标 original，并在构建之前退出", () => {
@@ -351,8 +355,10 @@ describe("B46 P3 回暖接线契约（与恢复清理同 PR 上线）", () => {
   test("--promote：回暖在目录检查之前", () => {
     const seg = RELEASE_SH.slice(RELEASE_SH.indexOf('if [ "$DO_PROMOTE" = true ]; then'));
     const iWarm = seg.indexOf('warm_remote "$PROMOTE_VERSION"');
-    // 锚在代码行上，不锚注释：注释里也提到了 __NO_DIR__
-    const iCheck = seg.indexOf("echo __NO_DIR__");
+    // 锚在代码行上，不锚注释：注释里也提到了 __NO_DIR__。
+    // 2026-11-07（X3-04）：检查命令改由 lib/targets.sh 的 release_dir_check_cmd 生成，
+    // 字面 echo __NO_DIR__ 已不在 promote 段里，锚点随之改成该调用。
+    const iCheck = seg.indexOf('release_dir_check_cmd "$_promote_remote_dir"');
     expect(iWarm).toBeGreaterThan(-1);
     expect(iCheck).toBeGreaterThan(iWarm);
   });
