@@ -6,7 +6,7 @@
  * 真正跑用例的是 scripts/smoke/run.ts（不进 bun test，见专项 M2）。
  */
 import { describe, expect, test } from "bun:test";
-import { checkEventExpect, checkFileExpect, parseEvents } from "./lib/assert.ts";
+import { checkEventExpect, checkFileExpect, parseEvents, parseRawRequests } from "./lib/assert.ts";
 import { findOutOfRootPaths, substituteCaseRoot } from "./lib/fixture.ts";
 
 const ROOT = "/tmp/sid-smoke-x/repo";
@@ -102,6 +102,18 @@ describe("checkEventExpect", () => {
     expect(
       checkEventExpect(events, { event: "PostToolUse", where: { is_error: true } }),
     ).not.toBeNull();
+  });
+});
+
+describe("parseRawRequests", () => {
+  test("只取带 request 的行，按顺序；响应行与半行跳过", () => {
+    const jsonl = [
+      JSON.stringify({ request: { system: "s1" } }),
+      JSON.stringify({ response: { content: [] } }),
+      JSON.stringify({ request: { system: "s2" } }),
+      "{半行",
+    ].join("\n");
+    expect(parseRawRequests(jsonl)).toEqual([{ system: "s1" }, { system: "s2" }]);
   });
 });
 
