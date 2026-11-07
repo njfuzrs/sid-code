@@ -806,6 +806,10 @@ export class TraceCollector {
       total_tokens_sent: 0,
       total_tokens_received: 0,
       total_cumulative_prompt_tokens: 0,
+      // 跨 provider 归一化的累计 prompt（flow）。与 total_cumulative_prompt_tokens 的差别
+      // 只在 Anthropic：后者的每轮增量是原始 `input_tokens`（未命中余量），比真实输入少
+      // 一个缓存量。新字段每轮用 normalizeCacheUsage().promptTotal 累加，跨 provider 可比。
+      prompt_total: 0,
       total_cache_read_tokens: 0,
       total_cache_creation_tokens: 0,
       total_cost_usd: 0,
@@ -1535,6 +1539,22 @@ export class TraceCollector {
     this.metadata.total_tokens_received += outputTokens;
     // DISP-1：累计 prompt（flow），与累计 cost 口径可比
     this.metadata.total_cumulative_prompt_tokens += inputTokens;
+    // 计量与成本方案 T1（第一步）：新增 `prompt_total`，每轮按归一化口径累加。
+    // 为什么不直接改上面那行：`total_cumulative_prompt_tokens` 已流进存量看板与 digest 判据，
+    // 且历史数据是 provider 原始口径（Anthropic = 未命中余量），改值会让新旧数据不可比。
+    // 新字段从本版本起才是「跨 provider 一致」的：Anthropic = 未命中+命中+写入，
+    // OpenAI 族 = prompt_tokens 全量。provider 缺失时与 computeContextUsage 同款兜底（D6）。
+    this.metadata.prompt_total =
+      (this.metadata.prompt_total ?? 0) +
+      normalizeCacheUsage(
+        {
+          inputTokens,
+          outputTokens,
+          cacheReadInputTokens: cacheRead,
+          cacheCreationInputTokens: cacheCreate,
+        },
+        resp.provider || inferProviderByModelName(input.llm_request.model),
+      ).promptTotal;
     this.metadata.total_cache_read_tokens += cacheRead;
     this.metadata.total_cache_creation_tokens += cacheCreate;
     this.metadata.total_api_calls += 1;
@@ -2165,6 +2185,9 @@ export class TraceCollector {
         this.metadata.total_tokens_received = s.total_tokens_received;
       if (s.total_cumulative_prompt_tokens !== undefined)
         this.metadata.total_cumulative_prompt_tokens = s.total_cumulative_prompt_tokens;
+      // 归一化 flow（口径见 hook/types.ts 的 prompt_total）。SessionState 是权威值；
+      // 上面采集器自己的累加只用于「SessionEnd 没来」的崩溃会话。
+      if (s.prompt_total !== undefined) this.metadata.prompt_total = s.prompt_total;
       if (s.total_cache_read_tokens !== undefined)
         this.metadata.total_cache_read_tokens = s.total_cache_read_tokens;
       if (s.total_cache_creation_tokens !== undefined)

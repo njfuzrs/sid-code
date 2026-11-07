@@ -739,6 +739,17 @@ export interface SessionEndInput extends HookInput {
     total_tokens_received?: number;
     /** DISP-1：累计输入 prompt token（flow 口径，与累计 cost 可比） */
     total_cumulative_prompt_tokens?: number;
+    /**
+     * 累计输入 prompt token（flow，**跨 provider 归一化**）。
+     *
+     * 与 `total_cumulative_prompt_tokens` 的唯一差别是 Anthropic 口径：后者的每轮增量是
+     * provider 原始 `input_tokens`（未命中余量），比真实输入少一个缓存量；本字段每轮用
+     * `normalizeCacheUsage(usage, provider).promptTotal` 累加，Anthropic = 未命中+命中+写入，
+     * OpenAI 族 = prompt_tokens 全量，因此**跨 provider / 跨会话可比**。
+     *
+     * 需要 `total_cost_usd ÷ prompt_total` 或跨会话 token 聚合时读它；旧字段保留给存量看板。
+     */
+    prompt_total?: number;
     total_cache_read_tokens?: number;
     total_cache_creation_tokens?: number;
     total_cost_usd?: number;
