@@ -23,7 +23,7 @@ import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { checkEventExpect, checkFileExpect, parseEvents, parseRawRequests } from "./assert.ts";
 import { findOutOfRootPaths, substituteCaseRoot } from "./fixture.ts";
-import type { RunOutput, SmokeCase } from "./types.ts";
+import type { DaemonStep, RunOutput, SmokeCase } from "./types.ts";
 
 export const REPO_ROOT = resolve(import.meta.dir, "../../..");
 export const CASES_DIR = resolve(import.meta.dir, "../cases");
@@ -147,6 +147,71 @@ function smokeSettings() {
   };
 }
 
+const DAEMON_STOP_GRACE_MS = 5_000;
+
+/** JSC 的 RegExp.source 会把中文转成 \\uXXXX，失败信息里还原成原文 */
+function readableSource(re: RegExp): string {
+  return re.source.replace(/\\u([0-9a-fA-F]{4})/g, (_, h) => String.fromCharCode(parseInt(h, 16)));
+}
+
+/** 返回 null 表示步骤本身正常结束（判据交给断言），否则返回失败描述 */
+async function runDaemonStep(
+  step: DaemonStep,
+  caseDir: string,
+  launcher: Launcher,
+  dirs: { repo: string; home: string; configDir: string; root: string },
+): Promise<string | null> {
+  const fixture = substituteCaseRoot(readFileSync(join(caseDir, step.replay), "utf8"), dirs.repo);
+  const outOfRoot = findOutOfRootPaths(fixture, dirs.repo);
+  if (outOfRoot.length > 0) {
+    return ["daemon 步骤夹具含用例根目录之外的路径，拒绝执行：", ...outOfRoot].join("\n");
+  }
+  const replayFile = join(dirs.root, `daemon-${step.replay}`);
+  writeFileSync(replayFile, fixture);
+  step.prepare?.({ repoRoot: dirs.repo, configDir: dirs.configDir });
+
+  const logPath = join(dirs.configDir, "logs/daemon.log");
+  const proc = Bun.spawn(
+    [...launcherArgv(launcher), "daemon", "start", "--interval", String(step.intervalMs)],
+    {
+      cwd: dirs.repo,
+      // job 子进程继承 daemon 的 env，所以 SID_CODE_REPLAY_FILE 指向的是 job 的夹具
+      env: isolatedEnv(dirs.home, dirs.configDir, replayFile),
+      stdin: "ignore",
+      stdout: "pipe",
+      stderr: "pipe",
+    },
+  );
+  const stdoutP = new Response(proc.stdout).text();
+  const stderrP = new Response(proc.stderr).text();
+  const deadline = Date.now() + step.timeoutMs;
+  let hit = false;
+  let exitedEarly = false;
+  void proc.exited.then(() => (exitedEarly = true));
+  while (Date.now() < deadline && !exitedEarly) {
+    if (existsSync(logPath) && step.until.test(readFileSync(logPath, "utf8"))) {
+      hit = true;
+      break;
+    }
+    await Bun.sleep(100);
+  }
+  // 必须在发信号之前取：停机后 proc.exited 也会把它置 true，事后读会把「超时被停」误报成「提前退出」
+  const diedOnItsOwn = exitedEarly;
+  // 无论成败都停：SIGTERM 走优雅停机（释放锁、注销会话），宽限后 SIGKILL
+  if (!diedOnItsOwn) proc.kill("SIGTERM");
+  const killer = setTimeout(() => proc.kill("SIGKILL"), DAEMON_STOP_GRACE_MS);
+  const exitCode = await proc.exited;
+  clearTimeout(killer);
+  if (hit) return null;
+  const [out, err] = await Promise.all([stdoutP, stderrP]);
+  const log = existsSync(logPath) ? readFileSync(logPath, "utf8") : "（无 daemon.log）";
+  return (
+    `daemon 步骤 ${step.timeoutMs}ms 内 daemon.log 未出现 /${readableSource(step.until)}/` +
+    `（${diedOnItsOwn ? `daemon 提前退出 exit=${exitCode}` : "超时后已停止"}）\n` +
+    `daemon.log 末尾：${log.slice(-800)}\nstdout/stderr 末尾：${(out + err).slice(-500)}`
+  );
+}
+
 export async function runCase(
   c: LoadedCase,
   launcher: Launcher,
@@ -233,6 +298,11 @@ export async function runCase(
       failures.push(
         `stdout 不是合法 JSON（exit=${exitCode}）：${stdoutText.slice(0, 300)}\nstderr 末尾：${stderrText.slice(-500)}`,
       );
+    }
+
+    for (const step of def.after ?? []) {
+      const f = await runDaemonStep(step, c.dir, launcher, { repo, home, configDir, root });
+      if (f) failures.push(f);
     }
 
     const sessionId = (stdout as any)?.session_id;

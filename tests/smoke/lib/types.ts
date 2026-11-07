@@ -66,6 +66,26 @@ export interface SettingsContext {
   repoRoot: string;
 }
 
+/**
+ * 主 `-p` 跑完之后，在**同一隔离环境**（同一用例仓、配置目录、假 HOME）里起 `daemon start`。
+ *
+ * 为 A5 加的最小多步能力：daemon 是常驻进程，不能像 `-p` 那样等它自己退出。
+ * 运行器轮询 `daemon.log` 直到 `until` 命中（就绪/完成探针，不用固定 sleep），
+ * 然后 SIGTERM，宽限后 SIGKILL。无论成败都会停掉，不留常驻进程。
+ */
+export interface DaemonStep {
+  kind: "daemon";
+  /** daemon fork 出的 headless job 用的回放夹具，相对用例目录；同样做 `${CASE_ROOT}` 替换与越界校验 */
+  replay: string;
+  /** `--interval`（ms） */
+  intervalMs: number;
+  /** 起 daemon 前对磁盘状态的准备（如把任务 createdAt 往前拨，让启动 catch-up 确定性触发） */
+  prepare?: (ctx: { repoRoot: string; configDir: string }) => void;
+  /** `daemon.log` 出现此正则即停 daemon；超时也停，结果交给断言判 */
+  until: RegExp;
+  timeoutMs: number;
+}
+
 export interface SmokeCase {
   /** `<台账编号>-<半边短名>`，必须与用例目录名一致 */
   id: string;
@@ -96,4 +116,6 @@ export interface SmokeCase {
     output?: (out: RunOutput) => string | null;
   };
   mutations: Mutation[];
+  /** 主运行之后按序执行的步骤。断言在全部步骤结束后统一执行 */
+  after?: DaemonStep[];
 }
