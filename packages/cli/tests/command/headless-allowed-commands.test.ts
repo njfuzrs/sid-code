@@ -17,7 +17,7 @@
  *
  * ## T4b：两级放行粒度
  *
- * - A 档 22 个 + `/init`：`headless: true`（三形态、全部子命令）；
+ * - A 档 22 个 + T8 放行的 `/btw` + `/init`：`headless: true`（三形态、全部子命令）；
  * - A2 档 4 个：`headless: { subcommands: [...] }`，只放只读子命令（D13）。
  *   它们的**写子命令必须仍被拒绝**——整条放行会连带放开 `/cron delete`、`/worktree clean`、
  *   `/hooks enable`、`/lsp reload`，那是「更好用」换「更安全」（方案 §五.6 明确不接受）。
@@ -46,10 +46,13 @@ import { SessionState } from "@sid-code/core/session/state.ts";
 import { Registry } from "@sid-code/core/tool/registry.ts";
 
 /**
- * A 档 22 个命令 + 门禁用的**典型参数**。
+ * A 档 22 个命令 + T8 放行的 `/btw`，以及门禁用的**典型参数**。
  *
  * 混合型 5 个（permissions / config / help / stats / commands）无参会返回 `dialog`，
  * 这是方案 §八.3 拍板接受的形态，所以这里一律给带参形态；无参安全性由下面另一组用例锁。
+ *
+ * `/btw` 用无参探针：空问题分支直接返回用法文本，不碰任何 ctx、**不调 LLM**
+ * （带参探针会真的 fork 一次模型调用，门禁不允许有这种副作用）。
  *
  * 加命令时必须同步加这里——`清单 = 真实命令表` 的断言会红，这是刻意的：
  * 放宽一个命令的可见面，必须同时在行为门禁里覆盖它。
@@ -77,6 +80,8 @@ const A_TIER_PROBES: Array<{ name: string; args: string }> = [
   { name: "help", args: "cost" },
   { name: "stats", args: "text" },
   { name: "commands", args: "list" },
+  // T8：只读旁路问答。无参 → 用法文本（不调 LLM），是门禁安全探针。
+  { name: "btw", args: "" },
 ];
 
 /**
@@ -228,7 +233,7 @@ async function runProbe(probe: { name: string; args: string }): Promise<{
 }
 
 describe("放行清单 = 真实命令表里声明 headless 的内置命令", () => {
-  test("headless:true 的清单 = A 档 22 + B 档 6 + /init，多一个少一个都红", () => {
+  test("headless:true 的清单 = A 档 22 + /btw + B 档 6 + /init，多一个少一个都红", () => {
     const declaredTrue = COMMANDS.filter(
       (c) => (c.source ?? "builtin") === "builtin" && c.headless === true,
     )
@@ -262,7 +267,7 @@ describe("放行清单 = 真实命令表里声明 headless 的内置命令", () 
   });
 });
 
-describe("放行真的生效：resolveHeadlessSlash 不再拒绝 A 档 22 + B 档 6 个命令", () => {
+describe("放行真的生效：resolveHeadlessSlash 不再拒绝 A 档 22 + /btw + B 档 6 个命令", () => {
   for (const probe of [...A_TIER_PROBES, ...B_TIER_PROBES]) {
     test(`/${probe.name}`, async () => {
       const input = probe.args ? `/${probe.name} ${probe.args}` : `/${probe.name}`;
