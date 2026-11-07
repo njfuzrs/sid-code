@@ -22,6 +22,8 @@ import { parse as parseYaml } from "yaml";
 
 const ROOT = join(import.meta.dir, "..");
 const RELEASE_SH = readFileSync(join(ROOT, "scripts/release.sh"), "utf8");
+/** 远端 sha256 校验的共享实现（--upload 落地前校验 与 --promote 复核共用一份）。 */
+const REMOTE_SHA_SH = readFileSync(join(ROOT, "scripts/lib/remote-sha.sh"), "utf8");
 
 /** 取某段代码在文件中的首次出现位置；找不到则 -1。用于顺序断言。 */
 function posOf(needle: string): number {
@@ -96,7 +98,11 @@ describe("release.sh：上传原子性（缺陷③）", () => {
   });
 
   test("落地前在服务器端校验 sha256", () => {
-    expect(RELEASE_SH).toMatch(/sha256sum -c|shasum -a 256 -c/);
+    // 校验动作搬到了 scripts/lib/remote-sha.sh（--upload 落地前校验 与 --promote 复核
+    // 共用同一份实现，见 X3-05）。release.sh 里断的是「确实调了那段共享脚本」，
+    // 命令本身在库里断 —— 两侧各写一份正是这个缺陷的成因。
+    expect(RELEASE_SH).toMatch(/remote_sha_verify_script/);
+    expect(REMOTE_SHA_SH).toMatch(/sha256sum -c|shasum -a 256 -c/);
   });
 
   test("失败时清理远端半成品目录", () => {
