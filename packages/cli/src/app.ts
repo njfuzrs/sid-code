@@ -3875,6 +3875,11 @@ export class App {
           rejection_count: e.rejectionCount,
           ...(e.meta?.source ? { decision_source: e.meta.source } : {}),
           ...(e.meta?.feedbackChars !== undefined ? { feedback_chars: e.meta.feedbackChars } : {}),
+          // 重入规划态时是否撞上旧计划。分母是全部 enter 类跃迁，所以 false 也落盘——
+          // 只有分子没有分母时，「撞上过几次」算不出比例，会被读成「从没发生过」。
+          ...(e.meta?.stalePlanFound !== undefined
+            ? { stale_plan_found: e.meta.stalePlanFound }
+            : {}),
         });
       });
     }

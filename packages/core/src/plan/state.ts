@@ -16,8 +16,17 @@
  * S6-T07/T08 (ADR-028): 增加 fidelity 追踪 — plan 步骤解析 + actual tool call 对齐.
  */
 
-import { resolve } from "path";
-import { mkdirSync, existsSync, openSync, closeSync, statSync, unlinkSync, readFileSync } from "fs";
+import { join, resolve } from "path";
+import {
+  mkdirSync,
+  existsSync,
+  openSync,
+  closeSync,
+  statSync,
+  unlinkSync,
+  readFileSync,
+  readdirSync,
+} from "fs";
 import { createHash } from "crypto";
 import { formatPlanTime, resolvePlanProject, sanitizePlanTopic } from "./slug.ts";
 import { sidPaths } from "../config/paths.ts";
@@ -64,6 +73,13 @@ export interface PlanTransitionMeta {
   source?: "tui" | "headless" | "tool" | "permission_mode" | "command";
   /** 用户修改意见的字符数（只记长度，不落正文） */
   feedbackChars?: number;
+  /**
+   * 本次进入规划态时，同项目下是否已存在一份**非空**旧计划（仅 enter 类跃迁填）。
+   *
+   * 只记布尔、不记路径：路径里带项目名与主题，进轨迹没有必要。false 也必须落盘——
+   * 「重入撞上旧计划的次数」的分母是**全部 enter**，缺了 false 这一半就算不出比例。
+   */
+  stalePlanFound?: boolean;
 }
 
 /** ADR-028: plan markdown 解析后的单步 */
@@ -213,6 +229,13 @@ export type PlanEntrySource = "tool" | "permission_mode";
 export class PlanModeManager {
   private state: PlanModeState = "inactive";
   private planFilePath: string | null = null;
+  /**
+   * 本次进入规划态时发现的「上一份非空计划」路径（没有则为 null）。
+   *
+   * 只在 enter() 判定一次，用于把过期引导交给 enter_plan_mode 的 tool_result；
+   * 退出时清空——它描述的是「刚进入时磁盘上有什么」，退出后不再有意义。
+   */
+  private stalePlanPath: string | null = null;
   private rejectionCount = 0;
   private readonly maxRejections = 5;
   private listeners: PlanModeListener[] = [];
@@ -300,7 +323,16 @@ export class PlanModeManager {
     this.planFileUpdates = [];
     this.prePlanMode =
       currentPermissionMode && currentPermissionMode !== "plan" ? currentPermissionMode : null;
-    this.planFilePath = this.reservePlanFile(topic);
+    // 重入规划态：先看「进入之前」同项目下有没有非空旧计划。
+    // 判据不能用「文件存在」——reservePlanFile 会 O_EXCL 占一个空占位，进入后「存在」恒真。
+    // 旧计划可能是上个任务留下的污染源，也可能是本任务未写完的计划，两种处置相反，
+    // 所以这里只记下来交给提示词引导模型自己判断，**不自动删、不自动复用**。
+    const project = resolvePlanProject(getCwd());
+    const previousPlan = this.findLatestPlanWithContent(project);
+    this.planFilePath = this.reservePlanFile(topic, project);
+    // reservePlanFile 兜底（只读 FS / 占位失败）可能返回一个已存在的路径；
+    // 与本次要写的路径相同时，那份文件就是本次的落点，不算「旧计划」。
+    this.stalePlanPath = previousPlan && previousPlan !== this.planFilePath ? previousPlan : null;
     this.emit({
       from,
       to: this.state,
@@ -309,7 +341,7 @@ export class PlanModeManager {
       executingBefore,
       executingAfter: false,
       rejectionCount: 0,
-      meta: { source },
+      meta: { source, stalePlanFound: this.stalePlanPath !== null },
     });
     return true;
   }
@@ -478,6 +510,7 @@ export class PlanModeManager {
     this.actualArgValues = [];
     this.executing = false;
     this.planFilePath = null;
+    this.stalePlanPath = null;
     this.entrySource = null;
     this.lastOutcome = outcome;
     // 占位文件从没被写入过 → 回收。有内容的计划文件是用户的决策记录，一律保留。
@@ -518,6 +551,15 @@ export class PlanModeManager {
   }
   getPlanFilePath(): string | null {
     return this.planFilePath;
+  }
+
+  /**
+   * 本次进入规划态时发现的「上一份非空计划」路径（没有则为 null）。
+   * 只用于 `enter_plan_mode` 的进入引导：模型需要先判断旧计划还作不作数，
+   * 再决定覆盖重写还是在它基础上改。判定完成后不再变化（不会逐轮提醒）。
+   */
+  getStalePlanPath(): string | null {
+    return this.stalePlanPath;
   }
   getRejectionCount(): number {
     return this.rejectionCount;
@@ -926,8 +968,8 @@ export class PlanModeManager {
    * 不要求先 read）；exitPlan 回收从未写入的占位；startup-housekeeping 回收崩溃遗留的
    * 空占位。占位失败（只读文件系统等）退回只算路径，行为同从前。
    */
-  private reservePlanFile(topic?: string): string {
-    const project = resolvePlanProject(getCwd());
+  private reservePlanFile(topic?: string, projectName?: string): string {
+    const project = projectName ?? resolvePlanProject(getCwd());
     const dir = sidPaths.plansForProject(project);
     try {
       mkdirSync(dir, { recursive: true });
@@ -963,6 +1005,44 @@ export class PlanModeManager {
     } catch {
       return false;
     }
+  }
+
+  /**
+   * 同项目计划目录下**最近一份非空** `.md`（没有则 null）。
+   *
+   * 判据刻意是「非空」而不是「存在」：`reservePlanFile` 进入时就 O_EXCL 占了一个 0 字节
+   * 占位文件，从此「文件存在」恒真，用它判断旧计划会把本次自己的占位也算进去。
+   * 取 mtime 最新的一份而不是全部：模型只需要知道自己「最可能误当成本次计划」的那份。
+   *
+   * 已知取舍：同项目下**其它并行会话正在写**的计划也会被算进来（都落在同一个目录）。
+   * 这里不试图按 session 过滤——计划文件名里没有 session 标识，硬猜只会引入假阴性
+   * （漏掉真正该提示的那份）；提示词是让人判判断而不是自动处置，误报的代价只是多读一份文件。
+   */
+  private findLatestPlanWithContent(project: string): string | null {
+    const dir = sidPaths.plansForProject(project);
+    let names: string[];
+    try {
+      names = readdirSync(dir);
+    } catch {
+      // 目录不存在 = 从没进过规划态，这是常态而不是异常
+      return null;
+    }
+    let latest: { path: string; mtimeMs: number } | null = null;
+    for (const name of names) {
+      if (!name.endsWith(".md")) continue;
+      const path = join(dir, name);
+      // 用 hasPlanContent 而不是 size>0：口径必须与 enter-plan-mode 的 planExists 一致，
+      // 「只有空白字符」在这两处都得算「没写」——否则一份 Ctrl-S 留下的空壳会被当旧计划提示。
+      if (!PlanModeManager.hasPlanContent(path)) continue;
+      try {
+        const st = statSync(path);
+        if (!st.isFile()) continue;
+        if (!latest || st.mtimeMs > latest.mtimeMs) latest = { path, mtimeMs: st.mtimeMs };
+      } catch {
+        // 单个文件 stat 失败（并发删除 / 权限）不影响其余候选
+      }
+    }
+    return latest?.path ?? null;
   }
 
   /** 0 字节的占位文件才删；任何有内容的计划文件都是用户资产，不碰 */
