@@ -11,7 +11,15 @@
  */
 import { describe, test, expect } from "bun:test";
 import { z } from "zod/v4";
-import { normalizeStrictNulls } from "@sid-code/core/tool/nullish-normalize.ts";
+import { normalizeStrictNulls as normalizeNullsRaw } from "@sid-code/core/tool/nullish-normalize.ts";
+
+/**
+ * 只取归一后的值。本文件锁的是「哪些 null 会摘 / 不会摘」的既有边界，形状与原断言一致；
+ * `hits` 的断言集中在 tool-input-coerced.test.ts（事件取数源与路径聚合）。
+ */
+function normalizeStrictNulls(schema: unknown, input: unknown): unknown {
+  return normalizeNullsRaw(schema, input).value;
+}
 
 describe("normalizeStrictNulls", () => {
   describe("optional 字段的 null → 摘掉（等价于未提供）", () => {

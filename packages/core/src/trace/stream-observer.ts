@@ -1605,3 +1605,36 @@ export function emitToolInputAliasApplied(data: {
     /* 可观测性不影响正常流程 */
   }
 }
+
+// ─── ToolInputCoerced 事件（参数归一两层的度量） ───
+
+/**
+ * 工具入参在校验前被归一时发一条（`nullish-normalize`、`numeric-coerce` 两层）。
+ *
+ * 为什么要单独一类事件：这两层此前**静默成功**——模型传的 `null` / `"117"` 被
+ * 悄悄改成 `undefined` / `117`，轨迹上不留任何痕迹（剖析 5.3 ⑤）。于是三个问题
+ * 都答不了：哪一层在替模型擦屁股、哪个字段最常被归一、归一之后是不是反而改错了。
+ *
+ * - `layer`：`nullish`（optional 字段的 null 摘除）/ `numeric`（数字形态字符串转 number）
+ * - `field`：字段路径（`offset` / `cfg.n` / `items[].source`）；**不记参数值**
+ * - `count`：本次调用里该字段的归一次数（数组元素的同名路径累加）
+ */
+export function emitToolInputCoerced(data: {
+  tool: string;
+  layer: "numeric" | "nullish";
+  field: string;
+  count: number;
+}): void {
+  try {
+    if (_eventWriter && _sessionId) {
+      _eventWriter({
+        event: "ToolInputCoerced",
+        session_id: _sessionId,
+        timestamp: new Date().toISOString(),
+        data: { ...data },
+      });
+    }
+  } catch {
+    /* 可观测性不影响正常流程 */
+  }
+}

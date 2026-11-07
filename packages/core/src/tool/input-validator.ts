@@ -15,7 +15,7 @@ import type { LegacyTool } from "./types.ts";
 import { normalizeStrictNulls } from "./nullish-normalize.ts";
 import { normalizeNumericStrings } from "./numeric-coerce.ts";
 import { normalizeInputAliases } from "./input-alias.ts";
-import { emitToolInputAliasApplied } from "../trace/stream-observer.ts";
+import { emitToolInputAliasApplied, emitToolInputCoerced } from "../trace/stream-observer.ts";
 
 /** 校验结果 */
 export type ToolInputValidation = { ok: true; data: unknown } | { ok: false; message: string };
@@ -78,22 +78,32 @@ export function validateToolInput(tool: LegacyTool, input: unknown): ToolInputVa
   for (const hit of aliased.hits) {
     emitToolInputAliasApplied({ tool: tool.name(), ...hit });
   }
-  const nullNormalized = normalizeStrictNulls(schema, aliased.value);
+
+  // 两个归一层都是**静默成功**的，事件是它们在轨迹上唯一的存在形式（剖析 5.3 ⑤）：
+  // 不发就答不了「哪一层在替模型擦屁股、哪个字段最常被归一」。只记路径与次数，
+  // 不记参数值——值已经在 messages 里，事件只放能聚合的量。
+  const nullish = normalizeStrictNulls(schema, aliased.value);
+  for (const hit of nullish.hits) {
+    emitToolInputCoerced({ tool: tool.name(), layer: "nullish", ...hit });
+  }
 
   // 数字形态字符串回填：模型逐 token 生成 JSON 时会偶发给 number 字段多打一对引号
   // （实测 read offset:"117, 130" / "1,1"，schema 明确写了 type:number 仍然发生）。
   // `"117"`→117 是无损无歧义的转换，判成硬失败等于白烧一轮往返；只接受能确定
   // 模型意图的形态，`""`/`null`/`true`/`[]` 一律放回让 zod 报错（详见 numeric-coerce.ts）。
-  const normalized = normalizeNumericStrings(schema, nullNormalized);
+  const numeric = normalizeNumericStrings(schema, nullish.value);
+  for (const hit of numeric.hits) {
+    emitToolInputCoerced({ tool: tool.name(), layer: "numeric", ...hit });
+  }
 
-  const result = schema.safeParse(normalized);
+  const result = schema.safeParse(numeric.value);
   if (result.success) {
     return { ok: true, data: result.data };
   }
 
-  // 传入 normalized（而非原始 input）：它是真正交给 safeParse 的那份，
+  // 传入 numeric.value（而非原始 input）：它是真正交给 safeParse 的那份，
   // issue.path 与它一一对应；用原始 input 会在归一改过结构时错位。
-  return { ok: false, message: formatZodError(tool.name(), result.error, normalized) };
+  return { ok: false, message: formatZodError(tool.name(), result.error, numeric.value) };
 }
 
 /**
