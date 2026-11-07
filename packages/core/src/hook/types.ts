@@ -786,6 +786,16 @@ export interface SubagentStartInput extends HookInput {
   /** 工作目录落在隔离 worktree（`<主仓>/.sid-code/worktrees/<name>`）内时为 "worktree"。
    *  轨迹按它筛出隔离子代理，不必再回父会话 raw.jsonl 找派发入参。 */
   isolation?: "worktree";
+  /** 委派形态：isolated=普通隔离子代理；fork=继承父对话尾部（`sub_agent` 的 `fork` 参数，
+   *  **与 `forked-agent.ts` 的后台辅助任务无关**，后者的 `caller: agent:fork` /
+   *  `agent_id: fork:*` 是记忆类任务）；team=swarm 团队成员。
+   *  此前「这次委派是隔离还是 fork」在轨迹里答不上来——fork 只有一行日志。 */
+  delegation_mode?: "isolated" | "fork" | "team";
+  /** fork 时：从父对话尾部继承的消息条数（= forkMessages.length）。非 fork 缺省 */
+  inherited_messages?: number;
+  /** fork 时：父对话总消息条数。与 inherited_messages 之差 = 未继承的前缀条数，
+   *  用于判断这次 fork 实际带过来多少上下文（继承的是尾部窗口，不是全部）。 */
+  parent_messages?: number;
 }
 
 /** SubagentStop 输入（携带子代理实际用量，供遥测单独计费 / 按 model 分类） */
@@ -805,6 +815,11 @@ export interface SubagentStopInput extends HookInput {
   provider?: string;
   /** 子代理是否成功结束 */
   success?: boolean;
+  /** 结束状态：completed=正常完成；failed=执行失败；aborted=被中止（可恢复）。
+   *  与 `success` 布尔相比能区分「失败」与「被中止」——本地 40 条非 completed 的
+   *  sidechain 里 13 条是 aborted，但在事件里与 error 同形。**保留 `success` 不动**，
+   *  避免打断已有分析脚本；新口径按需逐步迁移。 */
+  end_status?: "completed" | "failed" | "aborted";
   /** 子代理执行轮次 */
   turns?: number;
   /** 子代理工具调用次数 */

@@ -447,6 +447,12 @@ export class HookEventHandler {
       legacyAgentId?: string;
       agentCwd?: string;
       isolation?: "worktree";
+      /** 委派形态（isolated / fork / team），见 SubagentStartInput.delegation_mode */
+      delegationMode?: "isolated" | "fork" | "team";
+      /** fork 时继承的父对话消息条数 */
+      inheritedMessages?: number;
+      /** fork 时父对话总消息条数 */
+      parentMessages?: number;
     },
   ): Promise<AggregatedHookResult> {
     const input: SubagentStartInput = {
@@ -461,6 +467,11 @@ export class HookEventHandler {
       ...(extra?.provider ? { provider: extra.provider } : {}),
       ...(extra?.agentCwd ? { agent_cwd: extra.agentCwd } : {}),
       ...(extra?.isolation ? { isolation: extra.isolation } : {}),
+      ...(extra?.delegationMode ? { delegation_mode: extra.delegationMode } : {}),
+      ...(extra?.inheritedMessages !== undefined
+        ? { inherited_messages: extra.inheritedMessages }
+        : {}),
+      ...(extra?.parentMessages !== undefined ? { parent_messages: extra.parentMessages } : {}),
     };
     return this.executeHooks(HookEventName.SubagentStart, input);
   }

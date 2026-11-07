@@ -221,6 +221,10 @@ export interface SubAgentTask {
    *  与子代理事件按键精确关联。由 query/tool-executor 注入、tool.ts 透传；swarm / workflow
    *  路径没有对应的父工具调用，缺省即可。 */
   _parentToolUseId?: string;
+  /** fork 时父对话的总消息条数（内部使用）。`forkMessages` 只是父对话的**尾部窗口**，
+   *  光有继承条数看不出「这次 fork 带过来多少、漏掉多少前缀」，两个数一起进轨迹才答得上。
+   *  由 tool.ts runSync 在调用 mainContextProvider() 时顺手记下。 */
+  _forkParentMessageCount?: number;
 }
 
 /** 计算子代理轮次上限。调用级 maxTurns 优先于 Agent 定义默认值；两者都未声明时无上限。
@@ -301,6 +305,13 @@ export interface SubAgentResult {
    * `success=false` 只说得出「没成功」，这组字段说得出「为什么停」。
    */
   stopAttribution?: SubAgentStopAttribution;
+  /**
+   * T3：结束状态，与 sidechain_end 的 status 同一个值（completed / failed / aborted）。
+   * `success` 布尔区分不出「执行失败」与「被中止」——本地 40 条非 completed 的 sidechain
+   * 里 13 条是 aborted，但在事件里与 error 同形。由各执行路径在 return 时按 sidechainStatus
+   * 填；catch 等拿不到该变量的出口由 execute() 按 signal.aborted 兜底推导。
+   */
+  endStatus?: "completed" | "failed" | "aborted";
 }
 
 /** SubagentStart 的工作目录 / 隔离字段（无绑定目录时为空对象，事件形状不变）。 */
@@ -922,6 +933,17 @@ export class SubAgent {
     // 身份从 ALS 取（team.ts 的 withTeamMember 注入），不靠调用方自报。
     // 非团队上下文（普通子代理）不注册——否则 /ps 会被所有子代理刷屏。
     const teamCtx = getTeamMemberContext();
+    // T3：委派形态进轨迹。此前「这次委派是隔离还是 fork」只有 fork 时的一行日志，
+    // 事后无法从轨迹回答，也就统计不出 fork 到底被用了几次（T7 的判据依赖这个数）。
+    // team 优先：swarm 成员走 execute()，但不会被传 forkMessages。
+    // ⚠️ 命名边界：这里的 fork 指 `sub_agent` 的 `fork` 参数，**与 `forked-agent.ts`
+    // 的后台辅助任务无关**（后者的 `caller: agent:fork` / `agent_id: fork:*` 是记忆类任务）。
+    const forkMessageCount = task.forkMessages?.length ?? 0;
+    const delegationMode: "isolated" | "fork" | "team" = teamCtx
+      ? "team"
+      : forkMessageCount > 0
+        ? "fork"
+        : "isolated";
     const teammateSessionId = teamCtx ? `teammate-${teamCtx.teamName}-${teamCtx.memberName}` : null;
     if (teamCtx && teammateSessionId) {
       registerSession({
@@ -947,6 +969,17 @@ export class SubAgent {
           description: task.description,
           parentToolUseId: task._parentToolUseId,
           legacyAgentId,
+          delegationMode,
+          // fork 的两个计数只在 fork 时带：非 fork 的 inherited_messages 恒为 0、
+          // parent_messages 恒缺省，写进轨迹只会让「fork 用了几次」的筛选多一层噪音。
+          ...(delegationMode === "fork"
+            ? {
+                inheritedMessages: forkMessageCount,
+                ...(task._forkParentMessageCount !== undefined
+                  ? { parentMessages: task._forkParentMessageCount }
+                  : {}),
+              }
+            : {}),
           ...subAgentCwdFields(task.cwd),
         })
         .catch((err) => log.error("HOOK", `subagent_start hook 失败: ${err.message}`));
@@ -1033,6 +1066,11 @@ export class SubAgent {
           usage: r?.usage,
           duration_ms: Date.now() - startedAt,
           ...(r?.stopAttribution ?? {}),
+          // T3：结束状态与 sidechain_end 同值（执行路径在 return 时填）。
+          // catch 出口拿不到 sidechainStatus，按 signal.aborted 兜底推导 —— 与
+          // classifySubAgentFailure 的 parentAborted 判据同源，不会造出第三个口径。
+          end_status:
+            r?.endStatus ?? (r?.success ? "completed" : signal?.aborted ? "aborted" : "failed"),
           ...subagentStopCcFields(hookScope),
         })
         .catch((err) => log.error("HOOK", `subagent_stop hook 失败: ${err.message}`));
@@ -1078,6 +1116,10 @@ export class SubAgent {
         ?.fireSubagentStartEvent(customAgentId, "custom", this.parentSessionId, {
           description: task.userPrompt?.slice(0, 120),
           legacyAgentId: legacyCustomAgentId,
+          // custom 路径（skill / 命令 / 自定义 agent）不接 forkMessages 也不在
+          // withTeamMember 里跑，形态恒为 isolated。写死而不是留空：轨迹里
+          // 「缺字段」和「真的是 isolated」必须能区分，否则统计分母又回到猜。
+          delegationMode: "isolated",
           ...subAgentCwdFields(task.cwd),
         })
         .catch((err) => log.error("HOOK", `subagent_start hook 失败: ${err.message}`));
@@ -1126,6 +1168,10 @@ export class SubAgent {
                 ...customDone.stopAttribution,
               }
             : {}),
+          // T3：与 execute() 同口径，end_status 与 sidechain_end 同值
+          end_status:
+            customDone?.endStatus ??
+            (customDone?.success ? "completed" : signal?.aborted ? "aborted" : "failed"),
           ...subagentStopCcFields(hookScope),
         })
         .catch((err) => log.error("HOOK", `subagent_stop hook 失败: ${err.message}`));
@@ -1764,6 +1810,7 @@ export class SubAgent {
             usage: spawnUsage,
             turns: snap.turns,
             toolUseCount: snap.toolUseCount,
+            endStatus: sidechainStatus,
           };
         }
         const exitCode = subprocess.exitCode;
@@ -1778,6 +1825,7 @@ export class SubAgent {
           usage: spawnUsage,
           turns: snap.turns,
           toolUseCount: snap.toolUseCount,
+          endStatus: sidechainStatus,
         };
       }
 
@@ -1789,7 +1837,9 @@ export class SubAgent {
         recordLastAssistantMessage(result.output);
       }
       sidechainStatus = result.success ? "completed" : "failed";
-      return result;
+      // T3：spawn 的结果由子进程构造，endStatus 只能由父进程这一层补——否则
+      // 这条路径的 SubagentStop 会缺 end_status，而它恰好是默认执行路径。
+      return { ...result, endStatus: sidechainStatus };
     } finally {
       // N3：无论成功/失败/抛出，都写 sidechain_end 收尾（恢复扫描据此过滤已结束的 sidechain）。
       try {
@@ -2235,6 +2285,8 @@ export class SubAgent {
           model: activeModel,
           provider: activeProvider.name(),
           stopAttribution: stopAttributionOf(loopResult),
+          // T3：与 sidechain_end 的 status 同值，不另算一套，避免两条轨迹自相矛盾
+          endStatus: sidechainStatus,
         };
       } else {
         // ── P0-1(b)：超时/失败分支**不得替换** finalOutput，改为交回结构化残卷 ──
@@ -2282,6 +2334,8 @@ export class SubAgent {
           model: activeModel,
           provider: activeProvider.name(),
           stopAttribution: stopAttributionOf(loopResult),
+          // T3：与 sidechain_end 的 status 同值，不另算一套，避免两条轨迹自相矛盾
+          endStatus: sidechainStatus,
         };
       }
     } catch (err: any) {
@@ -2511,6 +2565,8 @@ export class SubAgent {
           model: activeModel,
           provider: activeProvider.name(),
           stopAttribution: stopAttributionOf(loopResult),
+          // T3：与 sidechain_end 的 status 同值，不另算一套，避免两条轨迹自相矛盾
+          endStatus: sidechainStatus,
         };
       } else {
         // P0-1(b)：与内置路径同口径交回残卷，不再把 finalOutput 替换成一句"超时"。
@@ -2545,6 +2601,8 @@ export class SubAgent {
           model: activeModel,
           provider: activeProvider.name(),
           stopAttribution: stopAttributionOf(loopResult),
+          // T3：与 sidechain_end 的 status 同值，不另算一套，避免两条轨迹自相矛盾
+          endStatus: sidechainStatus,
         };
       }
     } catch (err: any) {
