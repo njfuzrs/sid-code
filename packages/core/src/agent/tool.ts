@@ -763,10 +763,14 @@ ${typeLines}
       let forkMessages:
         | { role: string; content: import("../llm/types.ts").ContentBlock[] }[]
         | undefined;
+      // T3：父对话总条数要单独记——forkMessages 只是尾部窗口（buildForkMessages 会裁剪），
+      // 只有继承条数看不出「这次 fork 漏掉了多少前缀」。轨迹里两个数一起才能判断继承是否够用。
+      let forkParentMessageCount: number | undefined;
       if (params.fork && this.mainContextProvider) {
         const { buildForkMessages } = await import("./fork.ts");
         const parentMessages = this.mainContextProvider();
         forkMessages = buildForkMessages(parentMessages, params.prompt) as typeof forkMessages;
+        forkParentMessageCount = parentMessages.length;
         log.info(
           "SUBAGENT",
           `[fork] 继承主对话 ${parentMessages.length} 条消息，构建 ${forkMessages!.length} 条 fork 消息`,
@@ -779,6 +783,8 @@ ${typeLines}
           description: params.description,
           prompt: params.prompt,
           forkMessages,
+          // T3：与 forkMessages 成对进轨迹，说明继承的只是父对话尾部窗口
+          _forkParentMessageCount: forkParentMessageCount,
           cwd: isolatedCwd, // B7: 经 withAgentCwd 隔离，并发安全
           model: params.model, // P2-15: 每次调用可覆盖模型
           // 前台子代理不上「后台任务」面板：它的结果已由下方 return 作为 tool_result 返回、

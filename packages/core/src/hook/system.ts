@@ -431,6 +431,12 @@ export class HookSystem {
       parentToolUseId?: string;
       /** E1：旧形态 agent_id（过渡期保留） */
       legacyAgentId?: string;
+      /** 委派形态（isolated / fork / team），见 SubagentStartInput.delegation_mode */
+      delegationMode?: "isolated" | "fork" | "team";
+      /** fork 时继承的父对话消息条数 */
+      inheritedMessages?: number;
+      /** fork 时父对话总消息条数 */
+      parentMessages?: number;
     },
   ): Promise<AggregatedHookResult> {
     return this.eventHandler.fireSubagentStartEvent(agentId, agentType, parentSessionId, extra);

@@ -1944,6 +1944,18 @@ export class TraceCollector {
         // 而「它的工作目录是哪」任何事件都没有 —— 子代理工具调用打在哪个目录无从判定。
         ...(input.isolation ? { isolation: input.isolation } : {}),
         ...(input.agent_cwd ? { agent_cwd: input.agent_cwd } : {}),
+        // T3：委派形态。此前 fork 只有一行日志，「这次委派是隔离还是 fork」
+        // 在轨迹里答不上来，也没法统计 fork 被用了几次（T7 的去留判据依赖它）。
+        // 命名边界：delegation_mode=fork 指 sub_agent 的 fork 参数，
+        // 与 forked-agent.ts 的后台辅助任务（caller: agent:fork）无关。
+        ...(input.delegation_mode ? { delegation_mode: input.delegation_mode } : {}),
+        // fork 的两个计数只在 fork 时出现：非 fork 写 0 会让「fork 用了几次」多一层噪音
+        ...(typeof input.inherited_messages === "number"
+          ? { inherited_messages: input.inherited_messages }
+          : {}),
+        ...(typeof input.parent_messages === "number"
+          ? { parent_messages: input.parent_messages }
+          : {}),
       },
     });
   }
@@ -1987,6 +1999,11 @@ export class TraceCollector {
         ...(typeof stopInput.f1_retry_count === "number"
           ? { f1_retry_count: stopInput.f1_retry_count }
           : {}),
+        // T3：结束状态与 sidechain_end 同值（completed / failed / aborted）。
+        // 与下面旧的 status 并存——status 只有 completed/error/unknown，分不出「失败」
+        // 与「被中止」（本地 13/40 是 aborted 却与 error 同形）；旧字段保留不动，
+        // 已有按 status 统计的脚本口径不变。
+        ...(stopInput.end_status ? { end_status: stopInput.end_status } : {}),
         // T5：子代理 sidechain 路径 —— 失败后「成果在哪」的唯一指针。
         // 它由 `sub-agent.ts` 的 `subagentStopCcFields()` 只在文件真的落盘时提供（写失败会
         // ENOENT，不能报一个不存在的路径）。绝对路径含用户名 → 与 agent_cwd 同口径，
