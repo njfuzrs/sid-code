@@ -79,9 +79,10 @@ function headlessRefusal(
     // 形态维度：`modes` 给了就只放这些形态。T6 的 /compact、/loop 靠它区分
     // 「-p 单轮拒绝、长驻形态放行」——判定依据是形态，不是「第几轮」。
     if (gate.modes && !gate.modes.includes(gateCtx.mode)) {
-      return `/${typedName} 在${MODALITY_LABEL[gateCtx.mode]}形态下不可用（仅支持：${gate.modes
-        .map((m) => MODALITY_LABEL[m])
-        .join(" / ")}）。`;
+      const allowed = gate.modes.map((m) => MODALITY_LABEL[m]).join(" / ");
+      const base = `/${typedName} 在${MODALITY_LABEL[gateCtx.mode]}形态下不可用（仅支持：${allowed}）。`;
+      // 命令自带理由时才追加：否则用户会把「该形态下这件事没有收益」误读成权限限制。
+      return gate.reason ? `${base}\n${gate.reason}` : base;
     }
     // 子命令维度：按参数首词判（命令自己的 subCommands() 不是判定依据——/cron /hooks
     // 用 switch 解析参数，没有 subCommands 声明）。无参调用始终放行：它是查看状态/用法，
@@ -139,21 +140,22 @@ interface HeadlessGateContext {
  *
  * 三个调用方（`-p` 文本/JSON、stream-json、Bridge）走同一个 `submitHeadlessInput`，
  * 形态信号都已存在：bridge 是进程级标记（`trace/session-flags.ts`），stream-json 看
- * input/output 格式任一命中（与 `runHeadless` 选择 SDK 路径的判据同源），
- * `-p` 文本/JSON 是剩下的兜底。
+ * **输入**格式，`-p` 文本/JSON 是剩下的兜底。
+ *
+ * ⚠️ `--output-format stream-json` **不算多轮**（T6 修正 T4b 的口径）：`runHeadlessSDK`
+ * 只在 `inputFormat === "stream-json"` 时把 `process.stdin` 交给 StructuredIO，否则喂一个
+ * 已结束的空流——那条路径跑完初始 prompt 就 EOF 退出，只是输出是流式。把它判成多轮会让
+ * T6 的 `/compact`（-p 下净亏、只在有后续轮时才有收益）在单轮里被放行。
  *
  * 抽成纯函数是为了可单测：这段判错会让 T6 的「`-p` 拒绝、长驻放行」整体走反。
  */
 export function resolveHeadlessModality(signals: {
   inputFormat?: string;
-  outputFormat?: string;
   bridge: boolean;
 }): HeadlessModality {
-  // Bridge 优先：桥接会话的输出不走 stdout 的 stream-json 通道，两个格式字段对它无意义。
+  // Bridge 优先：桥接会话的输出不走 stdout 的 stream-json 通道，输出格式字段对它无意义。
   if (signals.bridge) return "bridge";
-  if (signals.inputFormat === "stream-json" || signals.outputFormat === "stream-json") {
-    return "stream-json";
-  }
+  if (signals.inputFormat === "stream-json") return "stream-json";
   return "p";
 }
 
