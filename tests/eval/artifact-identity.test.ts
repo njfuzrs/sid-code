@@ -31,6 +31,7 @@ import { parseBuildInfoLine } from "@sid-code/shared/build-info.ts";
 import {
   BUILD_INPUT_PATHS,
   EXIT_CODE,
+  FIRST_IDENTITY_RELEASE_VERSION,
   RELEASE_COMMIT_PATHS,
   assessArtifact,
   judgePromote,
@@ -537,7 +538,7 @@ describe("G2 发布通道门禁", () => {
     expect(r.reasons.join(" ")).toContain("分支包");
   });
 
-  test("promote：在 main 上 → 放行；祖先关系测不出来 → 放行但明说没验证", () => {
+  test("promote：在 main 上 → 放行；祖先关系测不出来 → 拒（没量到 ≠ 通过）", () => {
     expect(
       judgePromote({
         info: parseBuildInfoLine(line({ origin: "release" })),
@@ -545,15 +546,16 @@ describe("G2 发布通道门禁", () => {
         version: "0.1.602",
       }).ok,
     ).toBe(true);
-    // null = 取不到 main 或那个 commit 不在本地。放行（发版机之外的环境是常态），
-    // 但**必须留一句"没验证"** —— 否则一个没跑的检查会显示成绿灯。
+    // null = 取不到 main，或那个 commit 不在本地对象库。**拒**（X3-03(b)）：
+    // 一份要进稳定通道的字节不能靠「没人量过」通过。先 fetch 再重试是可恢复的，
+    // 放错稳定版不是。变异自证：把这一支改回 ok: true → 这条红。
     const r = judgePromote({
       info: parseBuildInfoLine(line({ origin: "release" })),
       isAncestorOfMain: null,
       version: "0.1.602",
     });
-    expect(r.ok).toBe(true);
-    expect(r.reasons.join(" ")).toContain("未验证");
+    expect(r.ok).toBe(false);
+    expect(r.reasons.join(" ")).toContain("无法验证");
   });
 
   // ── pickMainRef：G2 问哪个 ref ────────────────────────────────────────────
@@ -580,17 +582,127 @@ describe("G2 发布通道门禁", () => {
     expect(r.degraded).toBe(true);
   });
 
-  test("pickMainRef：两个都取不到 → degraded，交给 judgePromote 报「未验证」", () => {
+  test("pickMainRef：两个都取不到 → degraded，judgePromote 据此拒绝", () => {
     const r = pickMainRef(probeWith({}));
     expect(r.degraded).toBe(true);
-    // 此时调用方的 revParse 会落到 null，judgePromote 放行但明说没验证 —— 不是绿灯
+    // 此时调用方的 revParse 会落到 null，judgePromote **拒** —— 「没量到」不是绿灯
     const j = judgePromote({
       info: parseBuildInfoLine(line({ origin: "release" })),
       isAncestorOfMain: null,
       version: "0.1.603",
     });
-    expect(j.ok).toBe(true);
-    expect(j.reasons.join(" ")).toContain("未验证");
+    expect(j.ok).toBe(false);
+    expect(j.reasons.join(" ")).toContain("无法验证");
+  });
+
+  // ── X3-06：promote 不得比 upload 松 ──────────────────────────────────────
+  //
+  // 以下三条判据此前在 promote 侧**全部缺失**，于是
+  // 「--upload 被 G2 拦下 → 手工把产物放回 dist/release/<ver>/ → --promote」
+  // 不需要任何技巧就能绕过，而 promote 正是写 latest.txt（全量放量）的唯一入口。
+
+  test("promote：origin=local 的手工包 → 拒", () => {
+    // 变异自证：把 origin 判据从 judgePromote 删掉 → 这条红
+    const r = judgePromote({
+      info: parseBuildInfoLine(line({ origin: "local" })),
+      isAncestorOfMain: true,
+      version: "0.1.610",
+    });
+    expect(r.ok).toBe(false);
+    expect(r.reasons.join(" ")).toContain("origin=local");
+  });
+
+  test("promote：带着未提交代码（dirty 不在发布提交清单）→ 拒", () => {
+    // 变异自证：把 dirtyReasons 从 judgePromote 删掉 → 这条红
+    const r = judgePromote({
+      info: parseBuildInfoLine(
+        line({
+          origin: "release",
+          dirty: "true",
+          dirty_files: "package.json+packages/core/src/x.ts",
+        }),
+      ),
+      isAncestorOfMain: true,
+      version: "0.1.610",
+    });
+    expect(r.ok).toBe(false);
+    expect(r.reasons.join(" ")).toContain("packages/core/src/x.ts");
+  });
+
+  test("promote：dirty 只有发布提交清单里的文件 → 放行（不误拦真实发版）", () => {
+    // 成对断言：只有「拒」那条时，把 dirty 判据写成恒拒也能过 —— 那就变成误拦训练人绕过。
+    const r = judgePromote({
+      info: parseBuildInfoLine(
+        line({ origin: "release", dirty: "true", dirty_files: "package.json" }),
+      ),
+      isAncestorOfMain: true,
+      version: "0.1.610",
+    });
+    expect(r.ok).toBe(true);
+  });
+
+  test("promote：dirty 没记 → 拒（不能替它断言工作区干净）", () => {
+    const r = judgePromote({
+      info: parseBuildInfoLine(line({ origin: "release", dirty: "unknown" })),
+      isAncestorOfMain: true,
+      version: "0.1.610",
+    });
+    expect(r.ok).toBe(false);
+  });
+
+  test("promote：无身份 + 首个带身份版本起 → 拒（只可能是手工塞的）", () => {
+    // 边界值来源见 FIRST_IDENTITY_RELEASE_VERSION。
+    // 变异自证：把版本边界判断删掉（回到「无身份一律放行」）→ 这条红
+    for (const v of [FIRST_IDENTITY_RELEASE_VERSION, "0.1.610"]) {
+      const r = judgePromote({ info: parseBuildInfoLine(""), isAncestorOfMain: null, version: v });
+      expect(r.ok).toBe(false);
+      expect(r.reasons.join(" ")).toContain("不含构建身份");
+    }
+  });
+
+  test("promote：无身份 + 早于首个带身份版本 → 放行但明说没量到（回滚老版本是合法操作）", () => {
+    const r = judgePromote({
+      info: parseBuildInfoLine(""),
+      isAncestorOfMain: null,
+      version: "0.1.607",
+    });
+    expect(r.ok).toBe(true);
+    expect(r.reasons.join(" ")).toContain("没量到");
+  });
+
+  test("promote：版本号不可解析 + 无身份 → 拒（不猜方向）", () => {
+    const r = judgePromote({
+      info: parseBuildInfoLine(""),
+      isAncestorOfMain: null,
+      version: "not-a-version",
+    });
+    expect(r.ok).toBe(false);
+  });
+
+  test("集合不变量：同一组身份输入，upload 判拒的 promote 也必须判拒", () => {
+    // 结构性断言：不逐个枚举判据，而是要求「promote 不松于 upload」。
+    // 将来 upload 加判据时 promote 漏了，会在这里红，而不是等到线上被绕过。
+    // `commit == v<ver>^` 那条排除在外：promote 用「祖先判据 + 同版本唯一产物」覆盖其意图。
+    const inputs = [
+      line({ origin: "release", dirty: "false" }), // 全绿
+      line({ origin: "release", dirty: "true", dirty_files: "package.json" }), // bump 造成的脏
+      line({ origin: "release", dirty: "true" }), // dirty=true 但没记清单
+      line({ origin: "release", dirty: "true", dirty_files: "package.json+src/x.ts" }),
+      line({ origin: "release", dirty: "unknown" }),
+      line({ origin: "local", dirty: "false" }),
+      line({ origin: "ci", dirty: "false" }),
+      line({ origin: "source", dirty: "false" }),
+      "", // 无身份
+    ];
+    const offenders: string[] = [];
+    for (const raw of inputs) {
+      const info = parseBuildInfoLine(raw);
+      // expectedCommit 传产物自己的 commit，让 upload 侧的 commit 判据恒过 —— 只比身份判据
+      const upload = judgeReleaseUpload({ info, expectedCommit: info.commit, artifactName: NAME });
+      const promote = judgePromote({ info, isAncestorOfMain: true, version: "0.1.610" });
+      if (!upload.ok && promote.ok) offenders.push(raw || "(无身份)");
+    }
+    expect(offenders).toEqual([]);
   });
 });
 

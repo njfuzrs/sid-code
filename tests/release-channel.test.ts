@@ -165,8 +165,11 @@ describe("A2 release.sh：--upload 只写 beta，promote 才动 stable", () => {
     const seg = RELEASE_SH.slice(RELEASE_SH.indexOf('if [ "$DO_PROMOTE" = true ]; then'));
     expect(seg).toContain("__NO_DIR__");
     expect(seg).toContain("__MISSING__");
-    // sha256 复核也要有：上传时校验过不代表此刻还好（磁盘/传输/人为改动）
-    expect(seg).toContain("__SHA_OK__");
+    // sha256 复核也要有：上传时校验过不代表此刻还好（磁盘/传输/人为改动）。
+    // 远端脚本与判定搬到了 scripts/lib/remote-sha.sh（--upload 与 --promote 共用一份，
+    // 见 X3-05），所以这里断的是「promote 段确实调了共享校验」，而不是段内还留着标记串。
+    expect(seg).toMatch(/remote_sha_verify_script/);
+    expect(seg).toMatch(/judge_remote_sha_output/);
   });
 
   test("promote 不重新构建、不重新上传产物（纯指针操作）", () => {
