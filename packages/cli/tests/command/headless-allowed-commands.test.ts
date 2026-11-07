@@ -1,5 +1,5 @@
 /**
- * 无头放行门禁（方案 T3+T4，T4b 扩子命令/形态两个维度）。
+ * 无头放行门禁（方案 T3+T4，T4b 扩子命令/形态两个维度，T5 扩 B 档 6 个命令）。
  *
  * ## 这份门禁防什么
  *
@@ -80,6 +80,29 @@ const A_TIER_PROBES: Array<{ name: string; args: string }> = [
 ];
 
 /**
+ * T5：B 档 6 个命令（补注入后放行）的**典型参数**。
+ *
+ * 与 A 档同一套判据：不产出 dialog/confirm/clear/quit、不碰注入表外字段。
+ * 它们无参时的 dialog 行为由下面 `B_DIALOG_ON_NO_ARGS` 单独锁（与 A 档混合型同构）。
+ */
+const B_TIER_PROBES: Array<{ name: string; args: string }> = [
+  { name: "effort", args: "high" },
+  { name: "think", args: "on" },
+  { name: "language", args: "status" },
+  { name: "model", args: "list" },
+  { name: "goal", args: "status" },
+  { name: "memory", args: "auto status" },
+];
+
+/**
+ * B 档无参返回 `dialog` 的命令：与 A 档混合型同样属于**设计好的 fail-closed**
+ * （无头下分发层把它翻成非 0 的明确报错）。
+ *
+ * `goal` 不在其中——无参等价 `status`，返回 text（合法的只读查询）。
+ */
+const B_DIALOG_ON_NO_ARGS = ["effort", "think", "language", "model", "memory"];
+
+/**
  * A2 档 4 个：`headless: { subcommands: [...] }`，只放只读子命令（D13）。
  *
  * `allowed` 是白名单内的调用形态（含无参——无参是查看状态/用法，判定上始终放行）；
@@ -108,19 +131,25 @@ const MIXED_DIALOG_ON_NO_ARGS = ["permissions", "config", "help", "stats", "comm
 /**
  * 「访问了注入表外的字段，但属于明确诚实降级」的白名单。
  *
- * `/status` 读 `ctx.getEffortState`（`status.ts`），该字段无头未注入，但命令里有
- * `if (effort)` 降级，不会假成功。**只有这种形态才允许登记**；`?.()` + 报成功的一律不放。
+ * **只有这种形态才允许登记**：命令里先 `if (!ctx.xxx)` 再返回「当前环境不支持…」。
+ * `?.()` + 报成功的一律不放。
+ *
+ * T5 之后 `/status` 的 `getEffortState` 条目已删除——该字段现在真的被注入了
+ * （`/effort` 需要它），`/status` 不再走降级分支。这条白名单的「过期也红」正是
+ * 为了逼出这类清理：留着它会让「字段已注入」这件事没人发现。
  */
-const DEGRADATION_ALLOWLIST: Record<string, string[]> = {
-  status: ["getEffortState"],
-};
+const DEGRADATION_ALLOWLIST: Record<string, string[]> = {};
 
-/** 无头 cmdCtx 用真实核心类实例构造：薄桩会让命令崩在桩上，把「桩不完整」误报成命令问题。 */
 const config = defaultConfig();
 config.provider = "gate-test";
 config.model = "gate-model";
 
-const CTX = buildHeadlessCommandContext({
+/**
+ * 构造入参（不是构造结果）：T5 的「字段真的被命令用到」用例要在同一份注入面上
+ * 换掉一两个字段做探针，必须从 deps 出发；从 CTX（CommandContext）展开会因类型
+ * 面不同而报错，也会丢掉「这个用例到底覆盖了哪几个 deps」的直观性。
+ */
+const HEADLESS_DEPS = {
   ctxMgr: new Manager({ maxTokens: 200_000 }),
   toolRegistry: new Registry(),
   cwd: process.cwd(),
@@ -141,7 +170,29 @@ const CTX = buildHeadlessCommandContext({
     setAllEnabled: () => {},
     getHookName: () => "",
   } as never,
-});
+  // ── T5：B 档 6 个命令的注入面 ──
+  // 本门禁只关心「键存在」（Proxy 探测的判据），命令内部行为由各命令自己的单测覆盖。
+  // getEffortState/getThinkingState 返回 undefined：effort/think 会跳过能力门控分支，
+  // 探针照样跑通；生产路径由 App 返回真实结构。
+  getEffortState: (() => undefined) as never,
+  setEffort: () => {},
+  getThinkingState: (() => undefined) as never,
+  setThinking: () => {},
+  setLanguage: () => {},
+  setFallbackModel: () => {},
+  setSubAgentModel: () => {},
+  getGoalState: () => null,
+  setGoalState: () => {},
+  updateGoalState: () => {},
+  setAutoMemory: () => {},
+  getAutoMemoryState: () => ({ enabled: true, source: "default" as const }),
+  setExternalImportsApproved: () => {},
+  getExternalImportsState: () => ({ approved: undefined }),
+  notify: () => {},
+};
+
+/** 无头 cmdCtx 用真实核心类实例构造：薄桩会让命令崩在桩上，把「桩不完整」误报成命令问题。 */
+const CTX = buildHeadlessCommandContext(HEADLESS_DEPS);
 
 const COMMANDS = await loadBuiltinCommands();
 
@@ -163,14 +214,19 @@ async function runProbe(probe: { name: string; args: string }): Promise<{
 }
 
 describe("放行清单 = 真实命令表里声明 headless 的内置命令", () => {
-  test("headless:true 的清单 = A 档 22 个 + /init，多一个少一个都红", () => {
+  test("headless:true 的清单 = A 档 22 + B 档 6 + /init，多一个少一个都红", () => {
     const declaredTrue = COMMANDS.filter(
       (c) => (c.source ?? "builtin") === "builtin" && c.headless === true,
     )
       .map((c) => c.name)
       .sort();
     // /init 早于本方案放行（init/index.ts），一并纳入，避免出现「声明了但没人覆盖行为」的命令。
-    expect(declaredTrue).toEqual([...A_TIER_PROBES.map((p) => p.name), "init"].sort());
+    expect(declaredTrue).toEqual(
+      [...A_TIER_PROBES, ...B_TIER_PROBES]
+        .map((p) => p.name)
+        .concat("init")
+        .sort(),
+    );
   });
 
   test("结构体声明（A2 档）的清单 = 4 个，且每个都真的收窄了", () => {
@@ -190,8 +246,8 @@ describe("放行清单 = 真实命令表里声明 headless 的内置命令", () 
   });
 });
 
-describe("放行真的生效：resolveHeadlessSlash 不再拒绝 A 档 22 个命令", () => {
-  for (const probe of A_TIER_PROBES) {
+describe("放行真的生效：resolveHeadlessSlash 不再拒绝 A 档 22 + B 档 6 个命令", () => {
+  for (const probe of [...A_TIER_PROBES, ...B_TIER_PROBES]) {
     test(`/${probe.name}`, async () => {
       const input = probe.args ? `/${probe.name} ${probe.args}` : `/${probe.name}`;
       const outcome = await resolveHeadlessSlash(input, {
@@ -205,7 +261,7 @@ describe("放行真的生效：resolveHeadlessSlash 不再拒绝 A 档 22 个命
 });
 
 describe("放行后在无头 cmdCtx 下的行为：不产出交互请求、不碰未注入字段", () => {
-  for (const probe of A_TIER_PROBES) {
+  for (const probe of [...A_TIER_PROBES, ...B_TIER_PROBES]) {
     test(`/${probe.name}`, async () => {
       const { result, missing } = await runProbe(probe);
       // ① dialog / confirm / clear 需要人在场；quit 会退 0 假装成功（D9）。四者都不许出现。
@@ -214,6 +270,60 @@ describe("放行后在无头 cmdCtx 下的行为：不产出交互请求、不�
       expect(missing).toEqual(DEGRADATION_ALLOWLIST[probe.name] ?? []);
     });
   }
+});
+
+describe("T5：无头下新接线的字段真的被命令用到（不是「补上就完事」）", () => {
+  test("/goal <完成条件> 走 setGoalState + notify（评估者=主模型的提示进 stderr 通道）", async () => {
+    const calls: string[] = [];
+    const goalCtx = buildHeadlessCommandContext({
+      ...HEADLESS_DEPS,
+      getGoalState: () => null,
+      setGoalState: (goal) => calls.push(goal ? "set" : "clear"),
+      updateGoalState: () => calls.push("update"),
+      notify: (text) => calls.push(`notify:${text.slice(0, 6)}`),
+    });
+    const result = await new CommandExecutor(goalCtx).executeSlashCommand(
+      "/goal 完成 T5",
+      COMMANDS,
+    );
+    // 结果必须是提示词展开（交给模型跑），而不是 dialog/quit 这类无头下会失败或假成功的类型
+    expect(result.type).toBe("submit_prompt");
+    // 三个回调里至少 setGoalState 与 notify 真的被调到（config.goal 未配 → 评估者回退主模型）
+    expect(calls).toContain("set");
+    expect(calls.some((c) => c.startsWith("notify:"))).toBe(true);
+  });
+
+  test("/effort high 调 setEffort（不是可选链跳过）", async () => {
+    const calls: string[] = [];
+    const effortCtx = buildHeadlessCommandContext({
+      ...HEADLESS_DEPS,
+      getEffortState: () => undefined as never,
+      setEffort: (level, persist) => calls.push(`${String(level)}:${String(persist)}`),
+    });
+    const result = await new CommandExecutor(effortCtx).executeSlashCommand(
+      "/effort high",
+      COMMANDS,
+    );
+    expect(result.type).toBe("message");
+    expect(calls).toEqual(["high:false"]);
+  });
+
+  test("/memory auto on 调 setAutoMemory（不是「运行环境未接线」）", async () => {
+    const calls: boolean[] = [];
+    const memCtx = buildHeadlessCommandContext({
+      ...HEADLESS_DEPS,
+      getAutoMemoryState: () => ({ enabled: false, source: "settings" }),
+      setAutoMemory: async (enabled) => {
+        calls.push(enabled);
+      },
+    });
+    const result = await new CommandExecutor(memCtx).executeSlashCommand(
+      "/memory auto on",
+      COMMANDS,
+    );
+    expect(result.type).toBe("message");
+    expect(calls).toEqual([true]);
+  });
 });
 
 describe("A2 档：只放行只读子命令", () => {
@@ -279,11 +389,16 @@ describe("A2 档放行的只读子命令：不产出交互请求、不碰未注�
   }
 });
 
-describe("混合型命令无参仍是安全失败（dialog，不是 quit/clear）", () => {
-  for (const name of MIXED_DIALOG_ON_NO_ARGS) {
+describe("混合型与 B 档命令无参仍是安全失败（dialog，不是 quit/clear）", () => {
+  for (const name of [...MIXED_DIALOG_ON_NO_ARGS, ...B_DIALOG_ON_NO_ARGS]) {
     test(`/${name}`, async () => {
       const { result } = await runProbe({ name, args: "" });
       expect(result.type).toBe("dialog");
     });
   }
+
+  test("/goal 无参等价 status：text（只读查询），不是 dialog", async () => {
+    const { result } = await runProbe({ name: "goal", args: "" });
+    expect(result.type).toBe("message");
+  });
 });

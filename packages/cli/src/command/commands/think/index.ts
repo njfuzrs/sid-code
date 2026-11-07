@@ -12,6 +12,9 @@ const think: UnifiedCommand = {
   description: "显示或切换思考开关（on/off/auto）",
   argumentHint: "on|off|auto",
   source: "builtin",
+  // T5：无头 cmdCtx 已注入 getThinkingState/setThinking（写 runtimeThinking，queryLoop
+  // 下一轮经 getThinkingSetting 读到）。无参返回 dialog = 明确失败非 0。
+  headless: true,
   immediate: true,
   load: () => import("./think.ts").then((m) => m.default),
 };
