@@ -58,15 +58,18 @@ const TODO_WRITE_TOOL_NAME = "todo_write";
 /** 一次扫描的产出：两个"距今多少个 assistant 轮"的计数。 */
 export interface TodoReminderTurnCounts {
   /**
-   * 距最近一次 `todo_write` 调用过了多少个 assistant 轮。
+   * 距最近一次 `todo_write` 调用过了多少个 assistant 轮（**单位：assistant 消息条数**）。
    * 历史里从未出现过 `todo_write` → `Infinity`（"久到不可考"，语义上必然到期）。
+   *
+   * 2026-11-07（T4）：原名 `assistantMsgsSinceTodoWrite`。改名是因为它和下面的
+   * `absTurnsSinceReminder` 用了两种单位，读事件的人无法从名字看出差别。
    */
-  turnsSinceLastTodoWrite: number;
+  assistantMsgsSinceTodoWrite: number;
   /**
-   * 距最近一次 todo reminder 注入过了多少轮（按 absoluteTurn 相减）。
+   * 距最近一次 todo reminder 注入过了多少轮（**单位：absoluteTurn 差值**，不是消息条数）。
    * 从未注入过 → `Infinity`。
    */
-  turnsSinceLastReminder: number;
+  absTurnsSinceReminder: number;
   /**
    * 最近 `recentWindow` 个 assistant 轮里，含**工具调用**（且不是 `todo_write`）的轮数。
    *
@@ -105,7 +108,7 @@ function hasAnyToolUse(msg: Message): boolean {
 /**
  * 倒序扫描消息历史，现算节流计数（纯函数，无副作用）。
  *
- * `turnsSinceLastTodoWrite` 的计法与对标一致：数"最近一次 `todo_write` 之后又出现了多少个
+ * `assistantMsgsSinceTodoWrite` 的计法与对标一致：数"最近一次 `todo_write` 之后又出现了多少个
  * assistant 轮"。含 `todo_write` 的那一轮本身不计（它就是基准点，距离为 0）。
  *
  * `recentToolUseTurns` 是 C4 新增的「模型在不在干活」信号：数最近 `recentWindow`
@@ -127,7 +130,7 @@ export function getTodoReminderTurnCounts(
   },
 ): TodoReminderTurnCounts {
   let assistantTurnsSeen = 0;
-  let turnsSinceLastTodoWrite = Number.POSITIVE_INFINITY;
+  let assistantMsgsSinceTodoWrite = Number.POSITIVE_INFINITY;
   let recentToolUseTurns = 0;
   const window = opts.recentWindow ?? 0;
 
@@ -138,8 +141,8 @@ export function getTodoReminderTurnCounts(
     if (isTodoWrite) {
       // 只认**最近**一次：更早的 todo_write 不再影响距离，也仍在窗口内被排除在
       // 「工具调用」计数之外（它不是「在干活」的证据，是我们要判定的对象本身）。
-      if (turnsSinceLastTodoWrite === Number.POSITIVE_INFINITY) {
-        turnsSinceLastTodoWrite = assistantTurnsSeen;
+      if (assistantMsgsSinceTodoWrite === Number.POSITIVE_INFINITY) {
+        assistantMsgsSinceTodoWrite = assistantTurnsSeen;
       }
     } else if (assistantTurnsSeen < window && hasAnyToolUse(msg)) {
       recentToolUseTurns++;
@@ -148,17 +151,17 @@ export function getTodoReminderTurnCounts(
   }
 
   const last = opts.lastReminderAbsoluteTurn;
-  const turnsSinceLastReminder =
+  const absTurnsSinceReminder =
     last === undefined ? Number.POSITIVE_INFINITY : Math.max(0, opts.absoluteTurn - last);
 
-  return { turnsSinceLastTodoWrite, turnsSinceLastReminder, recentToolUseTurns };
+  return { assistantMsgsSinceTodoWrite, absTurnsSinceReminder, recentToolUseTurns };
 }
 
 /**
  * 纯节流判定 —— **无去重、无封顶**（对标 `attachments.ts:3288-3291`）。
  *
  * ```ts
- * if (turnsSinceLastTodoWrite >= 10 && turnsSinceLastReminder >= 10) { inject }
+ * if (assistantMsgsSinceTodoWrite >= 10 && absTurnsSinceReminder >= 10) { inject }
  * ```
  *
  * 两个条件是 **AND**：既要"模型确实有一阵没碰清单了"，又要"上次提醒也隔了一阵"。
@@ -200,8 +203,8 @@ export function shouldInjectTodoReminder(
     ? thresholds.turnsBetweenReminders * TODO_REMINDER_ADVANCE_RELAX_FACTOR
     : thresholds.turnsBetweenReminders;
   return (
-    counts.turnsSinceLastTodoWrite >= thresholds.turnsSinceWrite &&
-    counts.turnsSinceLastReminder >= between
+    counts.assistantMsgsSinceTodoWrite >= thresholds.turnsSinceWrite &&
+    counts.absTurnsSinceReminder >= between
   );
 }
 
@@ -223,11 +226,12 @@ export const TODO_REMINDER_ADVANCE_RELAX_FACTOR = 2;
  * `Infinity`（压缩把它删掉了 / 从未写过）一律判不冗余，保住信息丢失兜底。
  */
 export function isPostCompactTodoReinjectRedundant(
-  turnsSinceLastTodoWrite: number,
+  assistantMsgsSinceTodoWrite: number,
   turnsSinceWriteThreshold: number,
 ): boolean {
   return (
-    Number.isFinite(turnsSinceLastTodoWrite) && turnsSinceLastTodoWrite < turnsSinceWriteThreshold
+    Number.isFinite(assistantMsgsSinceTodoWrite) &&
+    assistantMsgsSinceTodoWrite < turnsSinceWriteThreshold
   );
 }
 

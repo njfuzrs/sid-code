@@ -411,8 +411,8 @@ describe("埋点语义：todo 通道在无进展态不上报 nagCount/cap", () =
     );
     expect(todoNags.length).toBeGreaterThan(0);
     // 新字段在
-    expect(todoNags[0].data).toHaveProperty("turnsSinceLastTodoWrite");
-    expect(todoNags[0].data).toHaveProperty("turnsSinceLastReminder");
+    expect(todoNags[0].data).toHaveProperty("assistantMsgsSinceTodoWrite");
+    expect(todoNags[0].data).toHaveProperty("absTurnsSinceReminder");
     // 旧封顶语义已不适用于本通道（留着会让离线分析以为还有封顶行为）
     expect(todoNags[0].data.nagCount).toBeUndefined();
     expect(todoNags[0].data.cap).toBeUndefined();

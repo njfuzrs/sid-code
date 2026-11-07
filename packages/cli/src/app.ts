@@ -8289,6 +8289,34 @@ export class App {
   }
 
   /**
+   * /goal 的三个命令回调（TUI 与无头共用一份实现）。
+   *
+   * T5 之前这三段内联在 TUI 的 cmdCtx 里；无头放行 /goal 后要再来一遍，而「写入后
+   * persistGoalState 落会话 JSONL」这类细节手抄两份迟早在一边漂移（goal 状态丢了
+   * resume 就恢复不出来，属于静默损失）。所以抽成方法，updateState 只有 TUI 传
+   * （推 goalDisplay 到状态栏），无头不传。
+   */
+  private goalCommandHooks(
+    updateState?: (patch: Partial<import("./ui/App.tsx").TUIState>) => void,
+  ) {
+    return {
+      getGoalState: () => this.goalState,
+      setGoalState: (goal: import("@sid-code/core/goal/state.ts").GoalState | null) => {
+        this.goalState = goal;
+        this.persistGoalState();
+        updateState?.({ goalDisplay: this.buildGoalDisplay() });
+      },
+      updateGoalState: (updater: (g: import("@sid-code/core/goal/state.ts").GoalState) => void) => {
+        if (this.goalState) {
+          updater(this.goalState);
+          this.persistGoalState();
+          updateState?.({ goalDisplay: this.buildGoalDisplay() });
+        }
+      },
+    };
+  }
+
+  /**
    * 把 config._validationDiagnostics（loadConfig 阶段产出）转成 TUI 启动横幅列表。
    * _needsOnboarding 为真时返回空数组——避免和 OnboardingDialog 重复提示同一件事
    * （比如 API Key 未设置，onboarding 已经在引导了）。
@@ -8564,6 +8592,24 @@ export class App {
       providerRegistry: this.providerRegistry,
       mcpManager: this.mcpManager,
       setModel: (m, persist) => this.applyPrimaryModelSwitch(m, { persist, clearTerminal: true }),
+      // ── T5：B 档 6 个命令的注入面，与 TUI cmdCtx 调的是同一批 App 方法 ──
+      // 搬一份实现而不是另写：无头与 TUI 的差异只在「有没有状态栏」，
+      // runtime/config 的写入路径完全共用（否则两处迟早在 persist/落盘细节上漂移）。
+      getEffortState: () => this.getEffortState(),
+      setEffort: (level, persist) => this.setEffortRuntime(level, persist),
+      getThinkingState: () => this.getThinkingState(),
+      setThinking: (setting, persist) => this.setThinkingRuntime(setting, persist),
+      setLanguage: (lang, persist) => this.setLanguageRuntime(lang, persist),
+      setFallbackModel: (m, persist) => this.setFallbackModelRuntime(m, persist),
+      setSubAgentModel: (type, m, persist) => this.setSubAgentModelRuntime(type, m, persist),
+      // /goal 的三个回调与 TUI 共用一份实现（updateState 只在 TUI 传，见 goalCommandHooks）
+      ...this.goalCommandHooks(),
+      setAutoMemory: (enabled, persist) => this.setAutoMemoryRuntime(enabled, persist),
+      getAutoMemoryState: () => this.getAutoMemoryState(),
+      setExternalImportsApproved: (approved) => this.applyExternalImportDecision(approved),
+      getExternalImportsState: () => this.getExternalImportsState(),
+      // 无头无状态栏：命令层一次性提示进 stderr（stdout 是结果通道，不能混入提示）
+      notify: (text) => process.stderr.write(`[命令提示] ${text}\n`),
       sessionState: this.sessionState,
       abortSignal: () => this.abortController?.signal ?? new AbortController().signal,
       requestUserConfirmation: (desc: string) => this.requestUserConfirmation(desc),
@@ -11622,20 +11668,9 @@ export class App {
           unifiedRegistry: this.unifiedRegistry,
           // §18.10：/reload-plugins 刷新插件 skills 需要主 manager（原子替换 plugin 来源）
           skillManager: this.skillManager,
-          // /goal：目标驱动持续执行——命令层读写 goalState 的三个回调
-          getGoalState: () => this.goalState,
-          setGoalState: (goal) => {
-            this.goalState = goal;
-            this.persistGoalState();
-            updateState({ goalDisplay: this.buildGoalDisplay() });
-          },
-          updateGoalState: (updater) => {
-            if (this.goalState) {
-              updater(this.goalState);
-              this.persistGoalState();
-              updateState({ goalDisplay: this.buildGoalDisplay() });
-            }
-          },
+          // /goal：目标驱动持续执行——命令层读写 goalState 的三个回调。
+          // 与无头 cmdCtx 共用一份实现（T5），updateState 只在 TUI 传。
+          ...this.goalCommandHooks(updateState),
           traceCollector: this.traceCollector ?? undefined,
           // §12 P2-4 复审：手动 /compact 的压缩后收尾要用它们做文件重注入与质量报告落盘，
           // 与自动压缩共用 query/compact/post-compact.ts。漏传会让手动压缩后模型"忘掉"刚读的文件。

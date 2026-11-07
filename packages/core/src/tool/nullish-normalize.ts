@@ -153,23 +153,60 @@ function acceptsNullExplicitly(schema: unknown): boolean {
 }
 
 /**
+ * 一次归一里每个字段的命中统计。
+ *
+ * 只记字段路径与次数，**不记参数值**：值已经在 messages 里，重复落盘只放大轨迹体积，
+ * 而「哪个字段最常被归一」用路径聚合就够了（与 `ToolInputAliasApplied` 同口径）。
+ */
+export interface CoerceHit {
+  /** 字段路径：`pages` / `cfg.n` / `items[].source`（根字段本身命中记为 `(root)`） */
+  field: string;
+  /** 命中次数（数组里同一路径的多个元素累加） */
+  count: number;
+}
+
+/** 字段路径拼接：object 层级用 `.` 分隔，数组元素路径由调用方拼成 `field[]` */
+function joinPath(base: string, key: string): string {
+  return base.length === 0 ? key : `${base}.${key}`;
+}
+
+function bump(stats: Map<string, number>, field: string): void {
+  const key = field.length === 0 ? "(root)" : field;
+  stats.set(key, (stats.get(key) ?? 0) + 1);
+}
+
+/**
  * 把 input 里「optional 且未显式 nullable」字段上的 null 归一成 undefined。
  *
  * 纯函数：不修改传入的 input，有改动时返回浅拷贝（无改动则原样返回同一引用，
  * 便于调用方判断是否发生归一）。任何非预期结构一律原样返回，保证这一层
  * 永不成为新的失败源。
  *
+ * 返回 `{ value, hits }` 而不是裸值：`hits` 是 `ToolInputCoerced` 事件的取数源
+ * （哪个字段被摘掉了几次），形状与 `normalizeInputAliases` 的 `{ value, hits }` 对齐。
+ *
  * @param schema 工具的原始 zod schema（`tool.zodSchema`）
  * @param input 模型给出的原始入参
  */
-export function normalizeStrictNulls(schema: unknown, input: unknown): unknown {
-  return normalizeValue(schema, input, 0);
+export function normalizeStrictNulls(
+  schema: unknown,
+  input: unknown,
+): { value: unknown; hits: CoerceHit[] } {
+  const stats = new Map<string, number>();
+  const value = normalizeValue(schema, input, 0, "", stats);
+  return { value, hits: [...stats].map(([field, count]) => ({ field, count })) };
 }
 
 /** 递归深度上限——与 unwrap 同理，防御异常嵌套 */
 const MAX_RECURSE_DEPTH = 16;
 
-function normalizeValue(schema: unknown, value: unknown, depth: number): unknown {
+function normalizeValue(
+  schema: unknown,
+  value: unknown,
+  depth: number,
+  path: string,
+  stats: Map<string, number>,
+): unknown {
   if (depth > MAX_RECURSE_DEPTH) return value;
 
   const { inner } = unwrap(schema);
@@ -200,6 +237,7 @@ function normalizeValue(schema: unknown, value: unknown, depth: number): unknown
         if (isOptional && !acceptsNullExplicitly(fieldSchema)) {
           // 直接跳过该 key（而非写 undefined）：语义等价于"未提供"，
           // 且避免 `hasOwnProperty` 为 true 干扰下游对"字段是否出现"的判断。
+          bump(stats, joinPath(path, key));
           changed = true;
           continue;
         }
@@ -207,7 +245,7 @@ function normalizeValue(schema: unknown, value: unknown, depth: number): unknown
         continue;
       }
 
-      const normalized = normalizeValue(fieldSchema, raw, depth + 1);
+      const normalized = normalizeValue(fieldSchema, raw, depth + 1, joinPath(path, key), stats);
       if (normalized !== raw) changed = true;
       result[key] = normalized;
     }
@@ -218,9 +256,12 @@ function normalizeValue(schema: unknown, value: unknown, depth: number): unknown
   // ── array：对每个元素递归（元素 schema 统一） ──
   if (def.type === "array" && def.element !== undefined) {
     if (!Array.isArray(value)) return value;
+    // 元素路径统一记 `field[]`：同一数组里的多个元素命中聚合成同一条统计
+    //（下标对「哪个字段最常被归一」没有增量，却会让事件条数随数组长度膨胀）
+    const itemPath = path.length === 0 ? "[]" : `${path}[]`;
     let changed = false;
     const result = value.map((item) => {
-      const normalized = normalizeValue(def.element, item, depth + 1);
+      const normalized = normalizeValue(def.element, item, depth + 1, itemPath, stats);
       if (normalized !== item) changed = true;
       return normalized;
     });
@@ -230,11 +271,12 @@ function normalizeValue(schema: unknown, value: unknown, depth: number): unknown
   // ── tuple：按位置对应各自的 schema ──
   if (def.type === "tuple" && Array.isArray(def.items)) {
     if (!Array.isArray(value)) return value;
+    const itemPath = path.length === 0 ? "[]" : `${path}[]`;
     let changed = false;
     const result = value.map((item, i) => {
       const itemSchema = def.items?.[i];
       if (itemSchema === undefined) return item;
-      const normalized = normalizeValue(itemSchema, item, depth + 1);
+      const normalized = normalizeValue(itemSchema, item, depth + 1, itemPath, stats);
       if (normalized !== item) changed = true;
       return normalized;
     });

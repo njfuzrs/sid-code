@@ -835,14 +835,28 @@ function emitNagInjectedEvent(
     afterCompact?: boolean;
     // ─── todo 通道字段 ───
     // 记两个扫描出来的"距今多少轮"，供事后核对阈值是否过紧/过松。
-    // `Infinity` 不是合法 JSON，故由调用方归一化为 -1（= 从未发生过）。
     //
     // 2026-08-01 改无状态扫描时 nagCount/cap 概念一度不存在；P1-4 item 2 又把它们带回来了，
     // 但语义**与 work-log 不同**：这里的 cap 是**条件式**的，只在"有真实副作用进展却不更新
     // 清单"时计数（催记账），无进展时永不封顶（催干活=主功能，见 decideTodoNagInjection）。
     // 两条通道复用同名字段但判据不同，分析 events.jsonl 时必须结合 kind 区分。
-    turnsSinceLastTodoWrite?: number;
-    turnsSinceLastReminder?: number;
+    //
+    // 2026-11-07（T4）：两个字段改名，把单位写进名字。原先 `-1` 同时表示
+    // 「从未发生」与「被压缩删掉」，离线分析无法区分，`toHaveProperty` 之外的
+    // 判断只能整条丢弃（digest 的 `.filter(n => n >= 0)`）。
+    /** 距上次 todo_write 过了多少条 assistant 消息。`null` = 历史里找不到，原因见下。 */
+    assistantMsgsSinceTodoWrite?: number | null;
+    /** 距上次 todo 提醒过了多少轮（absoluteTurn 差值）。`null` = 从未注入过。 */
+    absTurnsSinceReminder?: number | null;
+    /**
+     * `assistantMsgsSinceTodoWrite` 为 `null` 时的原因。
+     * - `never`：本会话从未写过清单
+     * - `compacted_away`：写过，但压缩把那段历史整条删掉了
+     *
+     * 判定依据是 `LAST_TODO_WRITE_VERSION_KEY`（SessionState，跨用户消息 + 跨压缩持久）。
+     * 只有为 `null` 时才出现——字段在/不在本身携带信息。
+     */
+    todoWriteDistanceReason?: "never" | "compacted_away";
   },
 ): void {
   if (!deps.traceAppendEvent) return;
@@ -2136,7 +2150,7 @@ async function* queryLoopBody(
             // 我们把注入锚点放在 SessionState，它**不会**被压缩清掉——所以"压缩后自动重注"这个
             // 属性拿不到，仍需显式置位兜住（loop 内 7 处 + 手动 /compact 经会话标记补置，
             // 统一走 post-compact-flags.ts）：压缩把 todo 清单从上下文里抹掉后，
-            // `turnsSinceLastReminder` 可能还没到期，此时不强制重注，清单就在模型视野里永久消失。
+            // `absTurnsSinceReminder` 可能还没到期，此时不强制重注，清单就在模型视野里永久消失。
             const counts = getTodoReminderTurnCounts(cleanedMessages, {
               absoluteTurn: sessionState.getAbsoluteTurn(),
               lastReminderAbsoluteTurn: sessionState.get(LAST_TODO_REMINDER_TURN_KEY) as
@@ -2158,13 +2172,13 @@ async function* queryLoopBody(
             const compactReinjectRedundant =
               pendingAfterCompact &&
               isPostCompactTodoReinjectRedundant(
-                counts.turnsSinceLastTodoWrite,
+                counts.assistantMsgsSinceTodoWrite,
                 TODO_REMINDER_CONFIG.TURNS_SINCE_WRITE,
               );
             if (compactReinjectRedundant) {
               log.info(
                 "QUERY_LOOP",
-                `T5：压缩后跳过 todo 重注入——最近一次 todo_write 仍在视野内（距今 ${counts.turnsSinceLastTodoWrite} 轮）`,
+                `T5：压缩后跳过 todo 重注入——最近一次 todo_write 仍在视野内（距今 ${counts.assistantMsgsSinceTodoWrite} 轮）`,
               );
             }
             const afterCompact = pendingAfterCompact && !compactReinjectRedundant;
@@ -2206,7 +2220,7 @@ async function* queryLoopBody(
                 buildTodoReminder(todoState.todos, {
                   // C4：文案带「距上次更新清单多少轮」，让重复提醒不再是无信息量的重复
                   // （模块注释里「给文案加轮次等自然变化量」的建议即指此处）。
-                  turnsSinceLastWrite: counts.turnsSinceLastTodoWrite,
+                  turnsSinceLastWrite: counts.assistantMsgsSinceTodoWrite,
                 }),
               );
               if (todoNagDecision.countedAsNoProgress) {
@@ -2218,7 +2232,7 @@ async function* queryLoopBody(
               log.info(
                 "QUERY_LOOP",
                 `P0-2：回注 todo 清单（${countUnfinished(todoState.todos)} 项未完成，` +
-                  `距上次 todo_write ${counts.turnsSinceLastTodoWrite} 轮）`,
+                  `距上次 todo_write ${counts.assistantMsgsSinceTodoWrite} 轮）`,
               );
               // 埋点语义随之改变（方案 §8.3 已点破）：不再有 nagCount/cap 概念，
               // 改记两个扫描出来的距离，用于事后核对阈值是否过紧/过松。
@@ -2242,12 +2256,23 @@ async function* queryLoopBody(
                       countedAsNoProgress: true,
                     }
                   : {}),
-                turnsSinceLastTodoWrite: Number.isFinite(counts.turnsSinceLastTodoWrite)
-                  ? counts.turnsSinceLastTodoWrite
-                  : -1,
-                turnsSinceLastReminder: Number.isFinite(counts.turnsSinceLastReminder)
-                  ? counts.turnsSinceLastReminder
-                  : -1,
+                assistantMsgsSinceTodoWrite: Number.isFinite(counts.assistantMsgsSinceTodoWrite)
+                  ? counts.assistantMsgsSinceTodoWrite
+                  : null,
+                absTurnsSinceReminder: Number.isFinite(counts.absTurnsSinceReminder)
+                  ? counts.absTurnsSinceReminder
+                  : null,
+                // T4：`null` 的两种来源必须可区分。判定依据是 SessionState 的
+                // LAST_TODO_WRITE_VERSION_KEY（跨用户消息 + 跨压缩持久）：有值说明本会话
+                // 写过清单，只是那段历史被压缩删掉了；无值才是真的从没写过。
+                ...(Number.isFinite(counts.assistantMsgsSinceTodoWrite)
+                  ? {}
+                  : {
+                      todoWriteDistanceReason:
+                        sessionState.get(LAST_TODO_WRITE_VERSION_KEY) !== undefined
+                          ? "compacted_away"
+                          : "never",
+                    }),
               });
             }
           }

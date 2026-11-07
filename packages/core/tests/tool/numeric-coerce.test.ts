@@ -12,9 +12,17 @@
 
 import { describe, test, expect } from "bun:test";
 import { z } from "zod/v4";
-import { normalizeNumericStrings } from "@sid-code/core/tool/numeric-coerce.ts";
+import { normalizeNumericStrings as normalizeNumericRaw } from "@sid-code/core/tool/numeric-coerce.ts";
 import { validateToolInput } from "@sid-code/core/tool/input-validator.ts";
 import type { LegacyTool } from "@sid-code/core/tool/types.ts";
+
+/**
+ * 只取归一后的值。本文件锁的是「哪些值会被转 / 不会被转」的既有边界，形状与原断言一致；
+ * `hits` 的断言集中在 tool-input-coerced.test.ts（事件取数源与路径聚合）。
+ */
+function normalizeNumericStrings(schema: unknown, input: unknown): unknown {
+  return normalizeNumericRaw(schema, input).value;
+}
 
 /** read 工具的真实 schema 形状（offset/limit 是 number，pages 是 string） */
 const readLike = z.object({

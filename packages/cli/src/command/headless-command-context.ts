@@ -50,6 +50,36 @@ interface HeadlessCommandContextDeps {
   providerRegistry?: CommandContext["providerRegistry"];
   mcpManager?: CommandContext["mcpManager"];
   setModel?: CommandContext["setModel"];
+  /**
+   * T5：B 档命令（effort / think / language / model 的 fallback/sub / goal / memory）的注入面。
+   *
+   * 这 6 个命令此前是「可放行但必须先补注入」——`ctx.setEffort?.()` 在无头 cmdCtx 里
+   * 不存在，可选链静默跳过后命令仍报「已切换」，正是 D6 说的假成功。补注入即放行的前提。
+   *
+   * 全部**必填**（可传 undefined 但键必须在）：漏搬一个字段应当是类型错误，
+   * 而不是运行时静默降级回假成功。
+   */
+  getEffortState: CommandContext["getEffortState"];
+  setEffort: CommandContext["setEffort"];
+  getThinkingState: CommandContext["getThinkingState"];
+  setThinking: CommandContext["setThinking"];
+  setLanguage: CommandContext["setLanguage"];
+  setFallbackModel: CommandContext["setFallbackModel"];
+  setSubAgentModel: CommandContext["setSubAgentModel"];
+  getGoalState: CommandContext["getGoalState"];
+  setGoalState: CommandContext["setGoalState"];
+  updateGoalState: CommandContext["updateGoalState"];
+  setAutoMemory: CommandContext["setAutoMemory"];
+  getAutoMemoryState: CommandContext["getAutoMemoryState"];
+  setExternalImportsApproved: CommandContext["setExternalImportsApproved"];
+  getExternalImportsState: CommandContext["getExternalImportsState"];
+  /**
+   * 命令层一次性提示（/goal 的「当前评估者是主模型」提示）。
+   *
+   * 无头下没有状态栏，映射到 **stderr**：stdout 是答案/结果通道，混进提示会破坏下游解析
+   * （与剪贴板 OSC52 不进无头 stdout 同一条理由）。
+   */
+  notify: CommandContext["notify"];
   sessionState: CommandContext["sessionState"];
   /** fork 子代理跟随本轮中断信号（会话硬顶 / SDK interrupt / Bridge abort）。 */
   abortSignal?: () => AbortSignal;
@@ -82,6 +112,26 @@ export function buildHeadlessCommandContext(deps: HeadlessCommandContextDeps): C
     providerRegistry: deps.providerRegistry,
     mcpManager: deps.mcpManager,
     setModel: deps.setModel,
+    // T5：B 档 6 个命令的注入面。这些字段在无头下**真实生效**（不是"补上就不报错"）：
+    // runtimeEffort/runtimeThinking 经 queryEngine 的 getEffortSetting/getThinkingSetting 每轮读、
+    // config.language 走 rebuildSystemPrompt、fallback/subAgentModels 改的是同一份 config，
+    // goalState 经 queryEngine 的 getGoalState 参与 Goal Gate。逐项证据见 Agent Note。
+    getEffortState: deps.getEffortState,
+    setEffort: deps.setEffort,
+    getThinkingState: deps.getThinkingState,
+    setThinking: deps.setThinking,
+    setLanguage: deps.setLanguage,
+    setFallbackModel: deps.setFallbackModel,
+    setSubAgentModel: deps.setSubAgentModel,
+    getGoalState: deps.getGoalState,
+    setGoalState: deps.setGoalState,
+    updateGoalState: deps.updateGoalState,
+    setAutoMemory: deps.setAutoMemory,
+    getAutoMemoryState: deps.getAutoMemoryState,
+    setExternalImportsApproved: deps.setExternalImportsApproved,
+    getExternalImportsState: deps.getExternalImportsState,
+    // 无头无状态栏：一次性提示走 stderr（stdout 是结果通道，见 deps 上的注释）
+    notify: deps.notify,
     sessionState: deps.sessionState,
     // fork 子代理跟随本轮中断信号（会话硬顶 / SDK interrupt / Bridge abort）
     beginForkedRun: () => ({
