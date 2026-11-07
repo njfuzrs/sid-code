@@ -250,6 +250,16 @@ jobs:
       - name: 构建 + 产物自检
         run: make build
 
+      # G2 无头回放冒烟（tests/smoke/，#618）：用上一步刚构建的 ./sid-code 跑 -p + replay，
+      # 断言轨迹与产物。单例约 0.3s，不调模型、不联网。
+      # 只在每个平台的 shard 1 跑：用例与分片无关，跑一遍就够，不重复占 runner。
+      # continue-on-error：转正前先观察 2 周（专项 M2 验收：0 次非代码原因的红），
+      # 期间红了只在 step summary 和日志里看得见，不阻断合并。转正时删掉这一行。
+      - name: G2 无头回放冒烟
+        if: matrix.shard == 1
+        continue-on-error: true
+        run: bun run smoke
+
   # lint 门禁独立成 job：oxlint 65ms 跑完全仓，没必要占矩阵里两个平台的 slot，
   # 也不该被 9000+ 单测的时长拖着一起等。规则集与豁免理由见 .oxlintrc.json。
   lint:

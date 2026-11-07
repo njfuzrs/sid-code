@@ -381,6 +381,20 @@ describe("CI 门禁存在（全量单测前移到 PR 阶段）", () => {
     expect(CI).toMatch(/run:\s*make build\s*$/m);
   });
 
+  // G2 无头回放冒烟（#618）跑的是 `make build` 刚产出的 ./sid-code。两种不报红的失效：
+  //   ① 这一步被删掉或改名，冒烟静默不跑，汇聚门照绿；
+  //   ② 挪到 make build 之前，`bun run smoke` 找不到二进制就退 2，而 continue-on-error
+  //      期间这个红不阻断，同样等于没跑。
+  // 所以解析 YAML 断言：test job 里有 `bun run smoke` 这一步，且排在 `make build` 之后。
+  test("G2 无头回放冒烟在 test job 里、且排在 make build 之后", () => {
+    const doc = parseYaml(CI) as { jobs: Record<string, { steps?: Array<{ run?: string }> }> };
+    const runs = (doc.jobs.test?.steps ?? []).map((s) => (s.run ?? "").trim());
+    const build = runs.indexOf("make build");
+    const smoke = runs.indexOf("bun run smoke");
+    expect(build).toBeGreaterThanOrEqual(0);
+    expect(smoke).toBeGreaterThan(build);
+  });
+
   // 2026-08-15 实测事故（PR #31）：stacked PR 的 base 从「PR A 的分支」被 GitHub 自动
   // 改成 main 时，发出的是 pull_request 的 `edited` action。而 types 的**默认值**是
   // `[opened, synchronize, reopened]`，不含 `edited` —— 于是 base 合规之后 CI 依然不跑，
