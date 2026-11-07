@@ -245,6 +245,15 @@ export async function runCase(
       mkdirSync(dirname(p), { recursive: true });
       writeFileSync(p, content);
     }
+    for (const [rel, content] of Object.entries(def.home ?? {})) {
+      // 预置到 .sid-code 下会让 P-3 断言误报（或掩盖真泄漏），直接拒绝
+      if (rel === ".sid-code" || rel.startsWith(".sid-code/")) {
+        throw new Error(`用例 ${def.id} 的 home 不能预置 .sid-code/（P-3 断言的检查对象）`);
+      }
+      const p = join(home, rel);
+      mkdirSync(dirname(p), { recursive: true });
+      writeFileSync(p, content);
+    }
     Bun.spawnSync(["git", "init", "-q"], { cwd: repo });
     const defaults = smokeSettings();
     const settings = def.settings
@@ -336,7 +345,14 @@ export async function runCase(
         : null;
       const requests =
         rawPath && existsSync(rawPath) ? parseRawRequests(readFileSync(rawPath, "utf8")) : [];
-      const out: RunOutput = { exitCode, stdout, stderr: stderrText, requests, configDir };
+      const out: RunOutput = {
+        exitCode,
+        stdout,
+        stderr: stderrText,
+        requests,
+        configDir,
+        homeDir: home,
+      };
       const f = def.expect.output(out);
       if (f) failures.push(f);
     }
