@@ -455,6 +455,8 @@ ${typeLines}
       isolation?: "worktree";
       model?: string;
       cwd?: string;
+      /** fork 模式：继承当前对话的最近上下文。仅同步模式支持（T1 起由下方判断强制）。 */
+      fork?: boolean;
       _agentId?: string;
       /** E1：派发本次子代理的 tool_use_id（执行器注入，见 internal-fields.ts） */
       _parentToolUseId?: string;
@@ -523,6 +525,21 @@ ${typeLines}
       if (params.isolation === undefined && def.isolation === "worktree") {
         params.isolation = "worktree";
       }
+    }
+
+    // T1（06H1）：fork 只能同步跑。后台路径（runAsync → executeInBackground → SubAgent.execute）
+    // 从不传 forkMessages，spawn 的父子协议里也没有这个字段（ParentInitMessage 只有
+    // user_prompt）。此前这个组合会被静默丢掉 fork、退化成空白上下文起步，调用方从结果上
+    // 看不出差别——后台占本地委派 47%，这类静默降级最容易在真实使用里被当成"fork 没效果"。
+    // 判断必须放在 def.background 合并之后：frontmatter 声明 background: true 的 agent 类型
+    // 不显式传 run_in_background 也会走后台，放在前面会漏掉这一类。
+    if (params.fork && params.run_in_background) {
+      return {
+        output:
+          "错误: fork 只支持同步模式。后台子代理不继承父对话上下文（fork 的消息不会跨任务传递）。" +
+          "要后台运行请去掉 fork，并在 prompt 里写清背景；要继承上下文请去掉 run_in_background。",
+        isError: true,
+      };
     }
 
     // 后台执行模式
@@ -713,6 +730,19 @@ ${typeLines}
     onProgress?: (event: import("../tool/types.ts").ToolProgressData) => void,
   ): Promise<ToolResult> {
     const log = getLogger();
+
+    // T2（06H1）：fork 需要主对话上下文提供者（setMainContextProvider）。此前未注入时
+    // 静默退化成「空白上下文起步」—— 调用方拿到的仍是一次"成功"的 fork，看不出区别。
+    // 嵌入方（SDK / eval / 自建 App）最容易踩这条：CLI 经 App 构造器注入，不触发。
+    // 放在 acquireSlot 之前：确定性报错不需要占用并发 slot，也不建 worktree。
+    if (params.fork && !this.mainContextProvider) {
+      return {
+        output:
+          "错误: fork 模式需要父会话注入主对话上下文（setMainContextProvider），当前调用方未注入。" +
+          "请去掉 fork 并在 prompt 里写清背景，或改用同步模式。",
+        isError: true,
+      };
+    }
 
     // 并发控制（G1/G5 修复）：超上限时排队等待 slot 而非拒绝；占位在 worktree 创建等
     // await 操作之前完成，消除 gate 检查与占位之间的 TOCTOU 竞态。等待期间被 abort 则抛出。
