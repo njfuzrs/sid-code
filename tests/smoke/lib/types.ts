@@ -55,6 +55,8 @@ export interface RunOutput {
    * 只证明序列化结果，证明不了产出它的加载逻辑没变（总纲 §3.3「G2 的能力边界」）。
    */
   requests: unknown[];
+  /** 隔离配置目录（`SID_CONFIG_DIR`）。断言启动后的 settings.json / state 用，如 A10 迁移链 */
+  configDir: string;
 }
 
 export interface SettingsContext {

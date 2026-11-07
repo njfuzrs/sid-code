@@ -266,7 +266,7 @@ export async function runCase(
         : null;
       const requests =
         rawPath && existsSync(rawPath) ? parseRawRequests(readFileSync(rawPath, "utf8")) : [];
-      const out: RunOutput = { exitCode, stdout, stderr: stderrText, requests };
+      const out: RunOutput = { exitCode, stdout, stderr: stderrText, requests, configDir };
       const f = def.expect.output(out);
       if (f) failures.push(f);
     }
