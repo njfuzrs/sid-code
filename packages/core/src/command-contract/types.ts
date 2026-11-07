@@ -279,9 +279,13 @@ export interface CommandContext {
  * 无头形态的标识（与三种运行形态一一对应）。
  *
  * - `p`：`-p "<input>"` 单轮文本/JSON。压完即退出，结果随进程销毁；
- * - `stream-json`：`--input-format stream-json`（或 `--output-format stream-json`）多轮，
- *   同一进程内后续轮能读到本轮的副作用；
+ * - `stream-json`：`--input-format stream-json` 多轮——**只看输入格式**。stdin 是宿主的
+ *   NDJSON 命令通道，同一进程内后续轮能读到本轮的副作用；
  * - `bridge`：Bridge 远程接管，长驻，同进程多轮。
+ *
+ * ⚠️ 只有 `--output-format stream-json`（输入是文本 prompt 或空）**不算多轮**：那条路径的
+ * stdin 是已结束的空流（`app.ts` 的 `runHeadlessSDK`），跑完初始 prompt 就退出。它只是
+ * 输出形态是流式，轮次仍是一轮。
  */
 export type HeadlessModality = "p" | "stream-json" | "bridge";
 
@@ -298,6 +302,14 @@ export type HeadlessModality = "p" | "stream-json" | "bridge";
 export interface HeadlessAllowlist {
   modes?: HeadlessModality[];
   subcommands?: string[];
+  /**
+   * 形态不满足时追加给用户看的解释（**只进拒绝文案，不参与判定**）。
+   *
+   * `/compact` 用它说明「-p 单轮压完即退出，只会多付一次摘要费」：不给理由时，用户只看到
+   * 「仅支持 stream-json / Bridge」，会误以为这是权限或实现限制，而实际是该形态下这件事
+   * 本身没有收益（见方案的 /compact 专项）。子命令维度不用它——那里的拒绝文案已经列了白名单。
+   */
+  reason?: string;
 }
 
 export interface CommandBase {
