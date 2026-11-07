@@ -1197,6 +1197,26 @@ export interface TodoDigestStats {
  * "这次比上次更病态了吗"可比较，不是给会话盖章。误报的代价（多看一眼）
  * 远低于漏报（几十分钟白烧），所以阈值刻意偏敏感，但都留了豁免条件（见各字段注释）。
  */
+/**
+ * 计费缺口被判为「退出截断」的依据（T7，2026-11-07）。
+ *
+ * 复核 19 个报 `billing_identity_broken` 的会话，缺口的退出形态分三类，
+ * 旧判据（「SessionEnd 前 10 秒」）只覆盖了第三类中的一部分：
+ *
+ * - `after_session_end`：fork 在 SessionEnd **之后**才建连（5 个）。旧判据要求
+ *   `msBeforeEnd >= 0`，这类被算成「计费链漏记」。
+ * - `no_session_end`：会话没有 SessionEnd（被强杀 / 终端关闭）（4 个）。
+ * - `within_window`：建连紧贴 SessionEnd。窗口从 10 秒放宽到 60 秒 ——
+ *   实测退出截断样本落在 7–22 秒，而真正的「会话中段漏记」是 5 分钟起步
+ *   （既有用例 `digest-harness-actions-not-faults` 的 T3b2 就是 300 秒），两个量级之间取 60 秒。
+ *
+ * ⚠️ 曾试过第四条「建连之后到会话结束再无任何计费事件」，**已否决**：它把
+ * 「建连后 5 分钟才结束、期间恰好没有别的模型调用」也判成退出截断，而那是真漏记。
+ * 没有 agent 维度的事件可用来区分（`AfterModelRaw` 全库 0 条带 agent_id），
+ * 一条更宽的语义判据在这里只会把真缺陷一起放过。
+ */
+export type BillingGapExitKind = "after_session_end" | "no_session_end" | "within_window";
+
 export interface ProcessPathologyStats {
   /**
    * 轮询占比 = 状态查询类调用 / 全部工具调用。
@@ -1343,9 +1363,23 @@ export interface ProcessPathologyStats {
   /**
    * 恒等式不成立且计费事件偏少时，没有对应计费事件的建连（按 `agent_id:index` 多重集配对）。
    * `msBeforeEnd` = SessionEnd 时刻 − 建连时刻；任一侧时间戳缺失为 undefined。
+   *
+   * `exitTruncatedBy` 是判为「退出截断」的依据（T7，2026-11-07）；undefined = 不能归于退出截断。
+   * 四种依据见 `classifyBillingGap`。
    */
-  unbilledConnections?: Array<{ index: unknown; agentId?: string; msBeforeEnd?: number }>;
-  /** 全部缺口都是 SessionEnd 前 10 秒内建的连接：进程退出截断了流，不是计费链漏记 */
+  unbilledConnections?: Array<{
+    index: unknown;
+    agentId?: string;
+    msBeforeEnd?: number;
+    exitTruncatedBy?: BillingGapExitKind;
+  }>;
+  /**
+   * 全部缺口都能归于「退出截断」：进程在流读完前退了，不是计费链漏记。
+   *
+   * ⚠️ T7 之前这里只有「SessionEnd 前 10 秒」一条判据，实测把三类真实样本漏在外面：
+   * fork 在 SessionEnd **之后**建连（5 个）、结束后 10.5–13.7 秒建连（3 个）、
+   * 根本没有 SessionEnd（2 个）。放宽成四种判定后它们都归入退出截断。
+   */
   billingExitTruncated?: boolean;
 }
 
@@ -2818,7 +2852,11 @@ export function buildDigest(ref: SessionRef, full: boolean, paths: DigestPaths):
   const events = readJsonl<{ event?: string; timestamp?: string; data?: Record<string, unknown> }>(
     eventsPath,
   );
-  const errors = readJsonl<{ event?: string; data?: Record<string, unknown> }>(errorsPath);
+  const errors = readJsonl<{
+    event?: string;
+    timestamp?: string;
+    data?: Record<string, unknown>;
+  }>(errorsPath);
   // 被权限层拒绝的 tool_use_id。只认结构化的 PermissionDenied 事件，不按 content 的
   // 「权限拒绝:」文案判：文案是给人看的，改一次措辞判据就静默归零（见 llm/types.ts
   // permissionDenied 字段注释）。2026-11-02 本地实测：157 条带该前缀的权限拒绝里 156 条有这个事件。
@@ -2828,11 +2866,28 @@ export function buildDigest(ref: SessionRef, full: boolean, paths: DigestPaths):
     const tid = (e.data as Record<string, unknown> | undefined)?.tool_use_id;
     if (typeof tid === "string" && tid) deniedToolUseIds.add(tid);
   }
+  // 执行侧已收尾的 tool_use_id（PostToolUse / PostToolUseFailure）。
+  //
+  // 2026-11-07（T5）：用它区分「工具没执行」和「执行了但轨迹没记上结果」——
+  // 这两件事在 `_orphan` 上长得一模一样。events.jsonl 由工具执行链直接写，
+  // traj 由 collect 时的增量切片拼，是两条独立的落盘路径；events 有收尾而 traj
+  // 没有 tool_result，只可能是后者丢了。
+  // 本地实测：77 个报 tool_use_without_result 的会话里，全部孤儿的 action 都能
+  // 在 events 里找到同 tool_use_id 的收尾事件（0 个例外）。
+  const postToolUseIds = new Set<string>();
+  for (const e of events) {
+    if (e.event !== "PostToolUse" && e.event !== "PostToolUseFailure") continue;
+    const tid = (e.data as Record<string, unknown> | undefined)?.tool_use_id;
+    if (typeof tid === "string" && tid) postToolUseIds.add(tid);
+  }
 
   // ── 工具序列 + 错误/孤儿检测 ──
   const toolSequence: ToolStep[] = [];
   const thinkingHighlights: string[] = [];
   let orphanCount = 0;
+  // 孤儿里「events.jsonl 有同 tool_use_id 的收尾事件」的个数。
+  // 与 orphanCount 相等时，缺 tool_result 的解释就只剩「轨迹记录器丢了这一轮」（见 T5 注释）。
+  let orphanWithRecordedResult = 0;
   let toolErrorCount = 0;
   // 权限层拒绝单独计：它是 harness 的决定，不是工具执行失败。2026-11-02 本地实测
   // 578 条 is_error 里 157 条（27%）是权限拒绝，35 个会话的 real_errors 只因它而 > 0。
@@ -2863,6 +2918,11 @@ export function buildDigest(ref: SessionRef, full: boolean, paths: DigestPaths):
       if (s._orphan) {
         orphanCount++;
         if (last) last.orphan = true;
+        // T5：孤儿自己带 tool_use_id（builder 造 orphan observation 时写入），
+        // 拿它去 events 里查收尾事件。查得到 = 工具执行过、结果没进轨迹。
+        if (typeof s.tool_use_id === "string" && postToolUseIds.has(s.tool_use_id)) {
+          orphanWithRecordedResult++;
+        }
       }
       if (s.is_error) {
         if (typeof s.tool_use_id === "string" && deniedToolUseIds.has(s.tool_use_id)) {
@@ -2907,26 +2967,63 @@ export function buildDigest(ref: SessionRef, full: boolean, paths: DigestPaths):
     const trailingOnlyOrphans = !sawObservationAfterOrphan;
     const orphansExplainedByMaxTurns = exitStatus === "max_turns" && trailingOnlyOrphans;
 
+    // T5（2026-11-07）：另外两种同样不是「崩溃 / 协议违规」的形态。
+    //
+    // ① 尾部孤儿 + 会话被中断：结果没机会回灌，是中断的必然结果。
+    // ② 孤儿全部能在 events.jsonl 找到收尾事件：工具**执行过**，是轨迹记录器把这一轮的
+    //    tool_result 丢了（根因是 `computeNewMessages` 按条数切增量，重试 / 压缩后会切出空，
+    //    见 collector.ts 同名方法）。复核里这一类的 pointer 该指向采集侧，不是 protocol-violations。
+    //
+    // 两种都不发 `hypothesis_crash_or_violation`：那条假设的证伪条件在数据里已经成立，
+    // 再带着更低的严重度发出来只会把排查引向一个不存在的协议缺陷。
+    const orphansExplainedByInterrupt =
+      trailingOnlyOrphans && INTERRUPT_EXIT_STATUSES.has(exitStatus);
+    const orphansExplainedByRecordedResult = orphanWithRecordedResult === orphanCount;
+    // 中断、maxTurns 都优先于「记录器丢了」：尾部孤儿即使 events 有收尾，最准确的解释仍是
+    // 「被中断 / 撞上限、没回灌」。这条顺序反了会让 maxTurns 的 kind 被改写成记录器问题。
+    const recordLost =
+      orphansExplainedByRecordedResult &&
+      !orphansExplainedByInterrupt &&
+      !orphansExplainedByMaxTurns;
+
+    const orphanSeverity = orphansExplainedByMaxTurns
+      ? "low"
+      : orphansExplainedByInterrupt
+        ? "low"
+        : recordLost
+          ? "medium"
+          : "high";
+
     // L0:tool_use 无对应 tool_result 是可数的客观事实。
     // ⚠️ 计数照旧保留（它是事实），降级只改**判读**：严重度 + 措辞。
     anomalies.push({
       layer: "L0",
-      severity: orphansExplainedByMaxTurns ? "low" : "high",
-      kind: "tool_use_without_result",
+      severity: orphanSeverity,
+      // 「记录器丢了结果」是另一件事，换个 kind 让按 kind 的统计能分开
+      kind: recordLost ? "trajectory_tool_result_lost" : "tool_use_without_result",
       detail: orphansExplainedByMaxTurns
         ? `末轮 ${orphanCount} 个 tool_use 的结果因撞上 maxTurns 被丢弃（已执行，非协议违规）`
-        : `${orphanCount} 个 tool_use 在轨迹中无对应 tool_result`,
+        : orphansExplainedByInterrupt
+          ? `会话以 ${exitStatus} 收尾时尾部有 ${orphanCount} 个 tool_use 的结果没回灌（中断的结果，不是崩溃）`
+          : recordLost
+            ? `${orphanCount} 个 tool_use 在轨迹中无 tool_result，但 events.jsonl 里有同 tool_use_id 的收尾事件 —— 工具执行了，是轨迹记录器丢了这一轮的结果`
+            : `${orphanCount} 个 tool_use 在轨迹中无对应 tool_result`,
       provenance: [
         {
           sourceFile: join(ref.dir, "session.traj"),
           lineRef: "trajectory[].observation 缺失",
-          rawValue: `orphanCount=${orphanCount} exit_status=${exitStatus} trailingOnly=${trailingOnlyOrphans}`,
+          rawValue:
+            `orphanCount=${orphanCount} exit_status=${exitStatus} trailingOnly=${trailingOnlyOrphans}` +
+            ` recordedResult=${orphanWithRecordedResult}/${orphanCount}`,
           mtime: fileMtimeIso(ref.trajPath),
         },
       ],
-      pointer: orphansExplainedByMaxTurns
-        ? `events.jsonl 的 PreToolUse/PostToolUse（核它们确实执行过）`
-        : `protocol-violations/ 目录 + messages.json`,
+      pointer:
+        orphansExplainedByMaxTurns || orphansExplainedByInterrupt
+          ? `events.jsonl 的 PreToolUse/PostToolUse（核它们确实执行过）`
+          : recordLost
+            ? `packages/core/src/trace/collector.ts 的 computeNewMessages（增量按条数切，重试/压缩后会切出空）`
+            : `protocol-violations/ 目录 + messages.json`,
     });
     // L1:由它推断"中途崩溃/协议违规",配证伪条件。
     // 这正是 fdb47f30 缺的那条:末个 tool_use 在等响应时会话停住,自然没有 tool_result——
@@ -2936,7 +3033,11 @@ export function buildDigest(ref: SessionRef, full: boolean, paths: DigestPaths):
     // 那条证伪条件（"它是末次调用且其后正在等模型响应"）在这里**已经被数据满足了** ——
     // 既然证伪条件成立，假设就该被推翻，而不是带着更低的严重度继续报。
     // 只降级会让同一个错结论换个层级继续误导排查（这是交接文档点名的坑）。
-    if (!orphansExplainedByMaxTurns) {
+    if (
+      !orphansExplainedByMaxTurns &&
+      !orphansExplainedByInterrupt &&
+      !orphansExplainedByRecordedResult
+    ) {
       anomalies.push({
         layer: "L1",
         severity: "medium",
@@ -3394,25 +3495,84 @@ export function buildDigest(ref: SessionRef, full: boolean, paths: DigestPaths):
   }
 
   // 检测 errors.jsonl 中的错误记录
+  //
+  // T7（2026-11-07）：区分「已由重试恢复的瞬时错误」和「会话最终失败」。
+  // 本地 53 条错误记录里 44 条带 context.willRetry，其中 26 条在同 index 之后又出现了
+  // AfterModelRaw —— 请求确实重试成功了。这些不是「会话出过错」，是重试机制正常工作的
+  // 证据；和真正被吞掉的错误算成同一件事，会让这个检测器退化成「凡有重试就报警」。
+  //
+  // 判据只用结构化字段：`willRetry=true` 说明当时还会重试，**同 index 之后真的出现了**
+  // AfterModelRaw 才叫恢复。只看 willRetry 会把「打算重试但最终失败」的算成恢复
+  // （本地 18 条就是这种，它们必须继续报）。
   if (errors.length > 0) {
-    anomalies.push({
-      layer: "L0",
-      severity: "high",
-      kind: "errors_jsonl_has_entries",
-      detail: `errors.jsonl 包含 ${errors.length} 条错误记录`,
-      provenance: [
-        {
-          sourceFile: errorsPath,
-          lineRef: `${errors.length} entries`,
-          rawValue: errors
-            .slice(0, 3)
-            .map((e) => truncate(String((e.data as any)?.error ?? ""), 80))
-            .join(" | "),
-          mtime: fileMtimeIso(errorsPath),
-        },
-      ],
-      pointer: errorsPath,
-    });
+    const recovered: typeof errors = [];
+    const unresolved: typeof errors = [];
+    for (const e of errors) {
+      const data = e.data as any;
+      const ctx = data?.context ?? {};
+      const idx = data?.index;
+      const ts = e.timestamp ? Date.parse(e.timestamp) : NaN;
+      const recoveredByRetry =
+        ctx.willRetry === true &&
+        typeof idx === "number" &&
+        !Number.isNaN(ts) &&
+        events.some(
+          (x) =>
+            x.event === "AfterModelRaw" &&
+            (x.data as any)?.index === idx &&
+            Date.parse(x.timestamp ?? "") > ts,
+        );
+      (recoveredByRetry ? recovered : unresolved).push(e);
+    }
+    if (unresolved.length > 0) {
+      anomalies.push({
+        layer: "L0",
+        severity: "high",
+        kind: "errors_jsonl_has_entries",
+        detail:
+          `errors.jsonl 有 ${unresolved.length} 条未恢复的错误记录` +
+          (recovered.length > 0
+            ? `（另有 ${recovered.length} 条瞬时错误已被重试恢复，见 errors_jsonl_recovered）`
+            : ""),
+        provenance: [
+          {
+            sourceFile: errorsPath,
+            lineRef: `${unresolved.length} unresolved / ${errors.length} entries`,
+            rawValue: unresolved
+              .slice(0, 3)
+              .map((e) => truncate(String((e.data as any)?.error ?? ""), 80))
+              .join(" | "),
+            mtime: fileMtimeIso(errorsPath),
+          },
+        ],
+        pointer: errorsPath,
+      });
+    }
+    if (recovered.length > 0) {
+      const kinds = new Map<string, number>();
+      for (const e of recovered) {
+        const k = String((e.data as any)?.context?.kind ?? "unknown");
+        kinds.set(k, (kinds.get(k) ?? 0) + 1);
+      }
+      anomalies.push({
+        layer: "L0",
+        severity: "low",
+        kind: "errors_jsonl_recovered",
+        detail:
+          `${recovered.length} 条瞬时错误已由重试恢复（` +
+          [...kinds.entries()].map(([k, n]) => `${k} ${n}`).join("、") +
+          `），不是会话级故障`,
+        provenance: [
+          {
+            sourceFile: errorsPath,
+            lineRef: "context.willRetry=true 且同 index 之后有 AfterModelRaw",
+            rawValue: `${recovered.length} recovered / ${errors.length} entries`,
+            mtime: fileMtimeIso(errorsPath),
+          },
+        ],
+        pointer: errorsPath,
+      });
+    }
   }
 
   // 检测 SessionEnd 缺失（进程可能被强杀或 hang）
@@ -6479,18 +6639,15 @@ export function computeProcessPathology(
         index: d?.index,
         agentId: typeof d?.agent_id === "string" ? d.agent_id : undefined,
         msBeforeEnd: Number.isNaN(t) || Number.isNaN(sessionEndMs) ? undefined : sessionEndMs - t,
+        exitTruncatedBy: Number.isNaN(t) ? undefined : classifyBillingGap(t, sessionEndMs),
       });
     }
     unbilledConnections = missing;
-    // 全部缺口都是 SessionEnd 前 EXIT_TRUNCATION_WINDOW_MS 内建的连接 → 退出截断
+    // 全部缺口都能归因到「退出形态」→ 退出截断，不是计费链漏记。
+    // 只要有一个缺口解释不了（会话中段真漏记），整条仍报 high —— 不能因为同会话里
+    // 另几个缺口是退出造成的，就把真漏记一起降级。
     billingExitTruncated =
-      missing.length > 0 &&
-      missing.every(
-        (m) =>
-          m.msBeforeEnd !== undefined &&
-          m.msBeforeEnd >= 0 &&
-          m.msBeforeEnd <= EXIT_TRUNCATION_WINDOW_MS,
-      );
+      missing.length > 0 && missing.every((m) => m.exitTruncatedBy !== undefined);
   }
 
   return {
@@ -6529,10 +6686,54 @@ export function computeProcessPathology(
 }
 
 /**
- * 计费缺口判为「退出截断」的时间窗：没有计费事件的建连全部发生在 SessionEnd 前这么久以内。
- * 10 秒取自复核样本（建连后 7–8 秒关终端）留的余量，没有更多实测依据。
+ * 「中断类」退出状态：会话是被用户 / 终端 / 环境叫停的，不是自己跑完的。
+ *
+ * 这类退出下，收尾时在途的 tool_use / BeforeModel 没有结果回灌是**必然**的，
+ * 不该判成「中途崩溃 / 协议违规」（T5 的孤儿分流用，与 T3 的在途模型调用同源）。
+ *
+ * `unknown` 一并归入：builder 对「已收尾但没有显式 exit_status」的历史形态写 `unknown`
+ *（builder.ts 的 exitStatus 推断），它可能是一轮都没跑就关了，也可能被强杀 ——
+ * 两种都不足以支撑「协议违规」这个结论。
  */
-const EXIT_TRUNCATION_WINDOW_MS = 10_000;
+const INTERRUPT_EXIT_STATUSES: ReadonlySet<string> = new Set([
+  "abort",
+  "user_interrupt",
+  "terminal_closed",
+  "unknown",
+]);
+
+/**
+ * 计费缺口判为「退出截断」的时间窗：没有计费事件的建连全部发生在 SessionEnd 前这么久以内。
+ * 10 秒取自复核样本（建连后 7–8 秒关终端）留的余量；T7 复核 19 个会话后放宽到 60 秒 ——
+ * 实测退出截断样本落在 7–22 秒，而真正的「会话中段漏记」是 5 分钟起步，两个量级之间取中点。
+ *
+ * T7 之后它只是三条判据之一（`within_window`），不再是唯一兜底 —— 见 `classifyBillingGap`。
+ */
+const EXIT_TRUNCATION_WINDOW_MS = 60_000;
+
+/**
+ * 判定一次「没有计费事件的建连」是否属于退出截断（T7，2026-11-07）。
+ *
+ * 三类判据的由来见 `BillingGapExitKind` 的注释。顺序有讲究：
+ * 先判时间轴关系（SessionEnd 之后 / 没有 SessionEnd），最后才用时间窗兜底 ——
+ * 反过来会把「SessionEnd 后建连」误判成窗口内。
+ */
+function classifyBillingGap(
+  connectMs: number,
+  sessionEndMs: number,
+): BillingGapExitKind | undefined {
+  if (Number.isNaN(sessionEndMs)) return "no_session_end";
+  if (connectMs > sessionEndMs) return "after_session_end";
+  if (sessionEndMs - connectMs <= EXIT_TRUNCATION_WINDOW_MS) return "within_window";
+  return undefined;
+}
+
+/** 各判定依据在 detail 里的一句话解释（读的人不用回源码查枚举含义） */
+const BILLING_GAP_EXIT_LABEL: Readonly<Record<BillingGapExitKind, string>> = {
+  after_session_end: "SessionEnd 之后才建连",
+  no_session_end: "没有 SessionEnd",
+  within_window: `SessionEnd 前 ${EXIT_TRUNCATION_WINDOW_MS / 1000} 秒内建连`,
+};
 
 /**
  * P1-8：把病态判定转成 anomaly，让指标进入既有的告警/落盘通道。
@@ -6677,18 +6878,24 @@ export function describePathology(
       }
       return "";
     };
-    // 点名缺计费事件的建连（最多 5 个），读的人不用自己去配对
+    // 点名缺计费事件的建连（最多 5 个），读的人不用自己去配对。
+    // T7：同时写出每个缺口的退出判据 —— 只说「SessionEnd 前 ?」读者无从判断是退出造成的
+    // 还是真漏记（`fmtDuration` 对负值返回 "?"，而负值恰恰是「SessionEnd 之后建连」）。
     const missingNote = p.unbilledConnections?.length
       ? `；缺计费事件的建连：${p.unbilledConnections
           .slice(0, 5)
-          .map(
-            (m) =>
-              `${m.agentId ?? "main"}#${String(m.index)}` +
-              (m.msBeforeEnd !== undefined
-                ? `（SessionEnd 前 ${fmtDuration(m.msBeforeEnd)}）`
-                : "") +
-              crossRef(m),
-          )
+          .map((m) => {
+            const when =
+              m.msBeforeEnd === undefined
+                ? "SessionEnd 缺失"
+                : m.msBeforeEnd >= 0
+                  ? `SessionEnd 前 ${fmtDuration(m.msBeforeEnd)}`
+                  : `SessionEnd 后 ${fmtDuration(-m.msBeforeEnd)}`;
+            const why = m.exitTruncatedBy
+              ? `，${BILLING_GAP_EXIT_LABEL[m.exitTruncatedBy]}`
+              : "，无法归因退出";
+            return `${m.agentId ?? "main"}#${String(m.index)}（${when}${why}）${crossRef(m)}`;
+          })
           .join("、")}${p.unbilledConnections.length > 5 ? " …" : ""}`
       : "";
     out.push({
@@ -6701,8 +6908,10 @@ export function describePathology(
         `计费恒等式不成立：可计费建连 ${p.billableConnections} 次，计费事件 ${p.billedRequests} 条` +
         (p.abortedBilledRequests ? `（含收尾补记 aborted ${p.abortedBilledRequests} 条）` : "") +
         (p.billingExitTruncated
-          ? `（少 ${-diff} 条，全部是会话结束前 ${EXIT_TRUNCATION_WINDOW_MS / 1000} 秒内建的连接 = 退出截断，不是计费链漏记）`
-          : `（${diff < 0 ? `少 ${-diff} 条 = 有调用链的钱没记上` : `多 ${diff} 条 = 同一 fetch 被重复计费`}）`) +
+          ? `（少 ${-diff} 条，缺口全部落在会话收尾阶段 = 退出截断，不是计费链漏记）`
+          : diff < 0
+            ? `（少 ${-diff} 条 = 有调用链的钱没记上）`
+            : `（多 ${diff} 条 = 建连事件缺失或重复计费）`) +
         missingNote,
       provenance: [
         {
