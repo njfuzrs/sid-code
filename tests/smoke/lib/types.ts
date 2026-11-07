@@ -49,11 +49,19 @@ export interface RunOutput {
   exitCode: number;
   stdout: unknown;
   stderr: string;
+  /**
+   * 本次会话 `raw.jsonl` 里每条请求的 `request` 字段（按发出顺序）。
+   * 断言 system / messages 等「最终序列化结果」用，如 A13 团队记忆注入。
+   * 只证明序列化结果，证明不了产出它的加载逻辑没变（总纲 §3.3「G2 的能力边界」）。
+   */
+  requests: unknown[];
 }
 
 export interface SettingsContext {
   defaults: Record<string, unknown>;
   refusedBaseURL: string;
+  /** 本次用例仓的绝对路径（realpath 后）。配置里需要绝对路径时用它，如团队记忆共享目录 */
+  repoRoot: string;
 }
 
 export interface SmokeCase {
