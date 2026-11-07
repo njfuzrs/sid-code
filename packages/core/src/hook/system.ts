@@ -316,8 +316,11 @@ export class HookSystem {
     );
   }
 
-  async fireUserPromptSubmitEvent(prompt: string): Promise<AggregatedHookResult> {
-    return this.eventHandler.fireUserPromptSubmitEvent(prompt);
+  async fireUserPromptSubmitEvent(
+    prompt: string,
+    meta?: import("./types.ts").UserPromptSubmitSourceMeta,
+  ): Promise<AggregatedHookResult> {
+    return this.eventHandler.fireUserPromptSubmitEvent(prompt, meta);
   }
 
   async fireAfterAgentEvent(prompt: string, promptResponse: string): Promise<AggregatedHookResult> {

@@ -218,7 +218,7 @@ You have in-session scheduling tools that turn "run this later", "repeat on an i
 ${activationNote}
 - **One-shot reminder** ("remind me at 3 to check the deploy", "check CI in 45 minutes") → \`cron_create\` with a cron expression pinned to that moment and \`recurring=false\` (it self-deletes after firing). For short relative delays like 45 minutes, \`schedule_wakeup(delaySeconds)\` also works.
 - **Fixed interval** ("check every 5 minutes", "sweep daily at 9") → \`cron_create\` with \`recurring=true\`. Add \`durable=true\` to survive across sessions.
-- **Adaptive polling** ("keep going until CI is green", "tell me when the deploy is done") → after each check, pick the next delay yourself with \`schedule_wakeup\` (clamped to 60–3600 seconds). Stop scheduling once the goal is met; never poll forever.
+- **Adaptive polling** ("keep going until CI is green", "tell me when the deploy is done") → after each check, pick the next delay yourself with \`schedule_wakeup\` (clamped to 60–3600 seconds). **Only one pending wakeup survives per session — calling it again replaces the previous one**, so you never need to cancel the last one manually. Stop scheduling once the goal is met, and \`cron_delete\` the remaining wakeup.
 - **Inspect / cancel**: \`cron_list\` / \`cron_delete\`.
 
 Notes:

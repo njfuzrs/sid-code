@@ -146,6 +146,35 @@ describe("aggregateTriggerStats · 定时", () => {
     ];
     expect(aggregateTriggerStats(evs)!.scheduledQueueWaitP95Ms).toBeUndefined();
   });
+
+  it("T-F2-4 被替换丢弃的不算注入；老轨迹（无 outcome）按注入算", () => {
+    // F2：dropped_superseded 是「决定不注入」，不能进 scheduledInjects——
+    // 那个字段与 scheduledFires 对账，混进去对账就永远差几条，且差得无从归因。
+    // 老轨迹没有 outcome 字段，按 injected 处理（那时还没有丢弃逻辑）。
+    const evs = [
+      inject({
+        task_id: "dropped",
+        outcome: "dropped_superseded",
+        queued: true,
+        queue_wait_ms: 5000,
+      }),
+      inject({ task_id: "legacy", queued: true, queue_wait_ms: 60_000 }),
+    ];
+    const s = aggregateTriggerStats(evs)!;
+    expect(s.scheduledInjects).toBe(1);
+    expect(s.scheduledDropped).toBe(1);
+    // 排队样本只含老格式那条（丢弃的那条不该污染排队时长）
+    expect(s.scheduledQueueWaitP95Ms).toBeUndefined(); // 样本数 1 < 5
+    const many = aggregateTriggerStats([
+      ...Array.from({ length: 5 }, () =>
+        inject({ queued: true, queue_wait_ms: 60_000, outcome: "dropped_superseded" }),
+      ),
+      ...Array.from({ length: 5 }, () => inject({ queued: true, queue_wait_ms: 10_000 })),
+    ])!;
+    expect(many.scheduledDropped).toBe(5);
+    expect(many.scheduledInjects).toBe(5);
+    expect(many.scheduledQueueWaitP95Ms).toBe(10_000);
+  });
 });
 
 describe("aggregateTriggerStats · 远程接管", () => {

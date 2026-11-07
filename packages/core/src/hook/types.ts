@@ -478,6 +478,35 @@ export interface PostToolUseInput extends HookInput, HookAgentFields {
 /** UserPromptSubmit 输入 */
 export interface UserPromptSubmitInput extends HookInput {
   prompt: string;
+  /**
+   * 这条 prompt 的来源（增量字段，缺省 `"user"`）。
+   *
+   * 定时任务（`schedule_wakeup` / `/loop` / `cron_create`）到点后也是走
+   * `engine.submitMessage` 跑完整一轮，所以同样会触发本事件——它确实是一条喂给模型的
+   * prompt，用户的 hook 可能依赖它做审计/注入，不能因为来源不同就不发。
+   * 区别在于载荷带 `source: "scheduled"`，hook 自己决定要不要分流处理
+   * （旧 hook 不读这个字段，行为与改动前完全一致）。
+   *
+   * ⚠️ `prompt` 始终是**原始 prompt**，不带引擎拼的来源头——用户 hook 按文本匹配时
+   * 不能被前缀干扰（来源信息只走结构化字段）。
+   */
+  source?: "user" | "scheduled";
+  /** source="scheduled" 时触发它的定时任务 id */
+  scheduled_task_id?: string;
+  /** source="scheduled" 时任务来源：loop / cron_create / schedule_wakeup / unknown */
+  scheduled_origin?: string;
+}
+
+/**
+ * 定时注入来源的叙述（引擎传给 hook 系统的第二个参数）。
+ *
+ * 字段名用 snake_case 与既有 hook 载荷一致（`tool_name` / `duration_ms` 都是这个风格）；
+ * 生产端在 `query/scheduled-prompt.ts` 的 `toHookSourceFields`，engine 与测试共用。
+ */
+export interface UserPromptSubmitSourceMeta {
+  source: "user" | "scheduled";
+  scheduled_task_id?: string;
+  scheduled_origin?: string;
 }
 
 /** AfterAgent 输入 */

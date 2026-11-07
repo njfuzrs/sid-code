@@ -234,6 +234,25 @@ export type HistoryItemCommand = HistoryItemBase & {
   isError?: boolean;
 };
 
+/**
+ * 定时任务注入的 prompt（`schedule_wakeup` / `/loop` / `cron_create` 到点）。
+ *
+ * 为什么单列一个类型而不是复用 `user`：这条消息**不是用户敲的**。改动前它渲染成
+ * `> …`，用户看到的是「没人说话，agent 自己开始干活」——那比多显示一行更吓人。
+ * 走专用渲染（`›` 字形 + 次级色 + 任务 id）后，两个通道都能区分（字形 + 颜色）。
+ *
+ * 也**不隐藏**（不放进 `INTERNAL_ORIGINS`）：用户需要知道刚才那一轮是唤醒触发的。
+ */
+export type HistoryItemScheduled = HistoryItemBase & {
+  type: "scheduled";
+  /** 触发它的定时任务 id */
+  taskId: string;
+  /** 任务来源：loop / cron_create / schedule_wakeup / unknown */
+  origin: string;
+  /** 展示用预览（原始 prompt 首行；不含引擎拼的来源头） */
+  preview: string;
+};
+
 /** AppHeader（消息列表顶部，随消息滚动） */
 export type HistoryItemAppHeader = HistoryItemBase & {
   type: "app_header";
@@ -295,6 +314,7 @@ export type HistoryItemWithoutId =
   | HistoryItemStats
   | HistoryItemQuit
   | HistoryItemCommand
+  | HistoryItemScheduled
   | HistoryItemAppHeader
   | HistoryItemPlanReview
   | HistoryItemTaskNotification;

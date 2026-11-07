@@ -64,6 +64,12 @@ export const INTERNAL_RENDER_ORIGINS = [
   "task-notification",
   /** 斜杠命令展开 → 只显示触发命令本身，提示词正文不进 TUI */
   "command-expansion",
+  /**
+   * 定时任务注入的 prompt（schedule_wakeup / /loop / cron_create 到点）→ 专用的
+   * 「定时唤醒」行。**刻意不放进 INTERNAL_ORIGINS**：用户需要知道「刚才这一轮是唤醒
+   * 触发的」，否则会看到 agent 在没人说话时自己开始干活，那比多显示一行更吓人。
+   */
+  "scheduled-prompt",
 ] as const;
 
 /** 内部消息来源类型（含整条隐藏 + 专用渲染两类，从单一事实源派生）。 */

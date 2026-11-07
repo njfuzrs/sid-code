@@ -28,6 +28,10 @@ import {
 // 直接复用产生端的 origin 常量,而非在此重复字符串字面量——避免"注入端打了 origin、
 // 隐藏端白名单漏登记"的漂移(compact-reattach 泄漏正是此类接线遗漏)。
 import { hasInternalOrigin as hasInternalOriginImpl } from "@sid-code/core/context/internal-message.ts";
+import {
+  normalizeScheduledOrigin,
+  stripScheduledPromptHeader,
+} from "@sid-code/core/query/scheduled-prompt.ts";
 
 /**
  * 构建主屏 Static 模式的历史项数组（ADR-040）。
@@ -422,6 +426,35 @@ export function messagesToHistoryItemsWithMap(
       pushRemainingBlocks(
         rawMsg,
         rawMsg.content.filter((b) => b.type !== "text"),
+        items,
+        toolNameMap,
+        pendingToolCalls,
+      );
+      continue;
+    }
+
+    // 定时任务注入的 prompt（schedule_wakeup / /loop / cron_create 到点）：这条不是用户
+    // 敲的，不能渲染成 `> …`——否则屏幕上会出现「没人说话，agent 自己开始干活」，
+    // 用户的第一反应是「这根本不是我输入的」。改渲染为专用的「定时唤醒」行。
+    // 也**不整条隐藏**（不在 INTERNAL_ORIGINS）：用户需要知道刚才那一轮是唤醒触发的。
+    if (rawMsg._meta?.origin === "scheduled-prompt") {
+      const meta = rawMsg._meta;
+      const taskId = typeof meta.scheduledTaskId === "string" ? meta.scheduledTaskId : "";
+      const origin = normalizeScheduledOrigin(
+        typeof meta.scheduledOrigin === "string" ? meta.scheduledOrigin : undefined,
+      );
+      // 只吃 prompt 那一条 text（首行是引擎拼的来源头，剥掉才是原始 prompt）；
+      // hook reminder 等兄弟块交回正常渲染路径——与 command-expansion 同口径，
+      // 不做无条件 continue（那条注释记过：会把 tool_result 一起丢掉，末尾挂"执行中"气泡）。
+      const promptBlock = rawMsg.content.find((b) => b.type === "text");
+      if (promptBlock && promptBlock.type === "text") {
+        const body = stripScheduledPromptHeader(promptBlock.text, { taskId, origin });
+        // 首行做预览：整段 prompt 可能很长，消息流里只留一行，详情由模型回复体现
+        items.push({ type: "scheduled", taskId, origin, preview: body.split("\n")[0] ?? "" });
+      }
+      pushRemainingBlocks(
+        rawMsg,
+        rawMsg.content.filter((b) => b !== promptBlock),
         items,
         toolNameMap,
         pendingToolCalls,
