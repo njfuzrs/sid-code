@@ -21,7 +21,7 @@ import {
 } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
-import { checkEventExpect, checkFileExpect, parseEvents } from "./assert.ts";
+import { checkEventExpect, checkFileExpect, parseEvents, parseRawRequests } from "./assert.ts";
 import { findOutOfRootPaths, substituteCaseRoot } from "./fixture.ts";
 import type { RunOutput, SmokeCase } from "./types.ts";
 
@@ -183,7 +183,7 @@ export async function runCase(
     Bun.spawnSync(["git", "init", "-q"], { cwd: repo });
     const defaults = smokeSettings();
     const settings = def.settings
-      ? def.settings({ defaults, refusedBaseURL: refusedBaseURL() })
+      ? def.settings({ defaults, refusedBaseURL: refusedBaseURL(), repoRoot: repo })
       : defaults;
     writeFileSync(join(configDir, "settings.json"), JSON.stringify(settings, null, 2));
     seedMaintenanceWatermarks(configDir);
@@ -261,7 +261,12 @@ export async function runCase(
       failures.push(`退出码期望 ${def.expect.exitCode}，实际 ${exitCode}`);
     }
     if (def.expect.output) {
-      const out: RunOutput = { exitCode, stdout, stderr: stderrText };
+      const rawPath = sessionId
+        ? join(configDir, "trajectories/sessions", sessionId, "raw.jsonl")
+        : null;
+      const requests =
+        rawPath && existsSync(rawPath) ? parseRawRequests(readFileSync(rawPath, "utf8")) : [];
+      const out: RunOutput = { exitCode, stdout, stderr: stderrText, requests };
       const f = def.expect.output(out);
       if (f) failures.push(f);
     }

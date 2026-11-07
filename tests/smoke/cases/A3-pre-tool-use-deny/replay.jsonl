@@ -1,0 +1,3 @@
+{"index":1,"response":{"content":[{"type":"tool_use","id":"toolu_smoke_1","name":"bash","input":{"command":"ls -la ${CASE_ROOT}"}}],"stop_reason":"tool_use"},"usage":{"input_tokens":100,"output_tokens":10}}
+{"index":2,"response":{"content":[{"type":"tool_use","id":"toolu_smoke_2","name":"bash","input":{"command":"rm -f trash.txt && ls -la","description":"删除测试临时文件 trash.txt 并确认结果"}}],"stop_reason":"tool_use"},"usage":{"input_tokens":100,"output_tokens":10}}
+{"index":3,"response":{"content":[{"type":"text","text":"删除未执行：被项目 hook 拦截。"}],"stop_reason":"end_turn"},"usage":{"input_tokens":100,"output_tokens":10}}
