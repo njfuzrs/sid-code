@@ -252,6 +252,19 @@ export class TraceCollector {
   private currentPair: Partial<RequestResponsePair> | null = null;
   private prevMessageCount: number = 0;
   /**
+   * T6（2026-11-07）：游标**只在 pair 落盘后推进**，不在请求发出时推进。
+   *
+   * 原来 `computeNewMessages` 一被调用就把 `prevMessageCount` 推进到本轮条数，而它在
+   * `handleBeforeModel`（请求**发出前**）调用。于是失败重试时：
+   * 第一次请求推进到 81 → 重试的第二次请求 messages 仍是 81 条 → `slice(81)` 切出空 →
+   * 而落盘的恰恰是第二次的 pair → **整轮 tool_result 不进轨迹**，digest 只能报成
+   * 「tool_use 无结果」并把排查引向不存在的协议缺陷（样本 `0d3ddd0e` 的 index 41：
+   * 两条 request_sent 记录 + 一条 new_messages=0 的完整 pair）。
+   *
+   * 压缩场景不需要在这里额外兜：`handlePreCompact` 已经把游标重置为 0（自动压缩同样
+   * 触发 PreCompact hook），下一轮自然按全量记。
+   */
+  /**
    * P1-2：前缀断裂定位追踪器。
    *
    * 必须在这里做（而非离线分析 raw.jsonl）：raw.jsonl 只在 index==1 存完整
@@ -1585,6 +1598,11 @@ export class TraceCollector {
     }
 
     this.pairs.push(pair);
+    // T6（2026-11-07）：增量游标在 pair **落盘后**才推进（见 computeNewMessages 注释）。
+    // 用 pair 自己带的 raw_messages 长度，而不是外面那次请求的变量 —— 落盘的这一轮才是
+    // 「已经记进轨迹」的那一轮，重试没落盘就不该推进。
+    const committedCount = (pair.request.raw_messages as unknown[] | undefined)?.length;
+    if (typeof committedCount === "number") this.prevMessageCount = committedCount;
     this.currentPair = null;
 
     // 追加 raw.jsonl（不写入 raw_messages，仅内存持有）
@@ -2962,20 +2980,20 @@ export class TraceCollector {
 
   computeNewMessages(messages: unknown[]): unknown[] {
     if (this.pairs.length === 0 && this.prevMessageCount === 0) {
-      // 首次请求，全部都是新的
-      this.prevMessageCount = messages.length;
+      // 首次请求，全部都是新的。
+      // ⚠️ 游标**不在这里推进**（T6，2026-11-07）：本方法在 handleBeforeModel（请求**发出前**）
+      // 调用，推进后一旦请求失败重试，第二次请求拿同样的 messages 会切出空增量，而落盘的
+      // 恰恰是第二次的 pair —— 整轮 tool_result 不进轨迹。推进在 pair 落盘处做。
       return messages;
     }
 
     if (messages.length < this.prevMessageCount) {
-      // 压缩发生了：messages 被截断重组，旧计数失效，视为全量
-      this.prevMessageCount = messages.length;
+      // 压缩发生了：messages 被截断重组，旧计数失效，视为全量。
+      // 注：正常路径下 handlePreCompact 已把游标重置为 0，这里兜的是「压缩事件没到达」的情形。
       return messages;
     }
 
-    const newMsgs = messages.slice(this.prevMessageCount);
-    this.prevMessageCount = messages.length;
-    return newMsgs;
+    return messages.slice(this.prevMessageCount);
   }
 
   // ─── 辅助：重建 session.traj ───
