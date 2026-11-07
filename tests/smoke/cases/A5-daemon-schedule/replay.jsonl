@@ -1,0 +1,2 @@
+{"index":1,"response":{"content":[{"type":"tool_use","id":"toolu_smoke_1","name":"cron_create","input":{"cron":"* * * * *","prompt":"列出 package.json 的依赖名","recurring":false,"durable":true}}],"stop_reason":"tool_use"},"usage":{"input_tokens":100,"output_tokens":10}}
+{"index":2,"response":{"content":[{"type":"text","text":"已创建一次性 durable 任务。"}],"stop_reason":"end_turn"},"usage":{"input_tokens":100,"output_tokens":10}}
