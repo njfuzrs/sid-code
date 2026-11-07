@@ -7,6 +7,9 @@
  *   bun run scripts/github-release.ts 0.1.601 --create --force  # 已存在则覆盖正文
  *   bun run scripts/github-release.ts 0.1.601 --create --prerelease  # beta 通道：建成 pre-release
  *   bun run scripts/github-release.ts 0.1.601 --promote   # 促升：改成正式 + Latest，正文换成稳定版说明
+ *   bun run scripts/github-release.ts 0.1.601 --promote --unverified
+ *                                                        # 同上，正文追加一行「本次促升显式放弃了祖先校验」
+ *                                                        #   （由 release.sh --promote-unverified 透传）
  *
  * ── 通道标记（T2，2026-10-09）──
  *   `--upload` 只把版本发到 beta 通道，但以前这里建的是**正式** Release
@@ -98,7 +101,7 @@ function loadCurated(version: string, dir: string = CURATED_DIR): CuratedEntry |
  */
 export function renderReleaseBody(
   entry: CuratedEntry,
-  opts: { prerelease?: boolean; covers?: string[] } = {},
+  opts: { prerelease?: boolean; covers?: string[]; unverified?: boolean } = {},
 ): string {
   const out: string[] = [];
 
@@ -136,6 +139,17 @@ export function renderReleaseBody(
     "sid-code update   # 已安装过则直接升级",
     "```",
   );
+
+  // 显式放弃门禁的留痕（`release.sh --promote-unverified`）。
+  // 为什么落在 Release 正文而不是只写日志：终端日志会滚掉、也不进仓库，
+  // 而「当时这条校验是被主动放弃的」需要有仓库之外的记录，否则事后复盘只能靠人记得。
+  if (opts.unverified) {
+    out.push(
+      "",
+      "> 注：本次促升时「产物 commit 在 main 上」的自动校验未能完成（离线环境显式放弃，" +
+        "`--promote-unverified`）。",
+    );
+  }
 
   return out.join("\n");
 }
@@ -185,7 +199,7 @@ function main(): void {
   const version = argv.find((a) => /^\d+\.\d+\.\d+$/.test(a));
   if (!version) {
     console.error(
-      "用法: bun run scripts/github-release.ts <version> [--create [--prerelease] [--force] | --promote]",
+      "用法: bun run scripts/github-release.ts <version> [--create [--prerelease] [--force] | --promote [--unverified]]",
     );
     console.error("  不加 --create 只打印正文（干跑），不碰 GitHub。");
     process.exit(1);
@@ -194,6 +208,9 @@ function main(): void {
   const force = argv.includes("--force");
   const prerelease = argv.includes("--prerelease");
   const promote = argv.includes("--promote");
+  // 仅对 --promote 有意义：正文追加一行「本次促升显式放弃了祖先校验」的留痕。
+  // 由 release.sh --promote-unverified 透传（见那里的说明）。
+  const unverified = argv.includes("--unverified");
   const tag = `v${version}`;
 
   // 促升：正文优先取稳定版说明（多版本合并稿），没有即快车道，用原 curated
@@ -209,6 +226,7 @@ function main(): void {
   const body = renderReleaseBody(entry, {
     prerelease: prerelease && !promote,
     covers,
+    unverified: promote && unverified,
   });
 
   if (promote) {

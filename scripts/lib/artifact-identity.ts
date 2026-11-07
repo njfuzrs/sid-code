@@ -489,6 +489,14 @@ export const EXIT_CODE: Record<ArtifactVerdict, number> = {
 export interface ReleaseGateResult {
   ok: boolean;
   reasons: string[];
+  /**
+   * 判据**没能跑**（而不是跑了判负）。
+   *
+   * 调用方只在显式逃生口（`release.sh --promote-unverified`）下才允许对这一种拒绝
+   * 放行；「分支包」这类判负永远不放行。没有这个字段时，flag 只能靠匹配 reason 文本
+   * 区分两者 —— 改一句文案就会静默失效。
+   */
+  unverified?: boolean;
 }
 
 /**
@@ -671,7 +679,8 @@ export function pickMainRef(probe: Pick<GitProbe, "revParse">): {
   if (probe.revParse("origin/main") !== null) return { ref: "origin/main", degraded: false };
   if (probe.revParse("main") !== null) return { ref: "main", degraded: true };
   // 两个都取不到：仍返回 origin/main，让调用方的 revParse 检查落到 null 分支，
-  // judgePromote 会因 isAncestorOfMain=null **拒**（「没量到」不是「量到了且没问题」）。
+  // judgePromote 会因 isAncestorOfMain=null **拒**（「没量到」不是「量到了且没问题」），
+  // 且带 unverified=true：只有 release.sh --promote-unverified 这个显式声明才允许放行。
   return { ref: "origin/main", degraded: true };
 }
 
@@ -750,13 +759,18 @@ export function judgePromote(input: {
   reasons.push(...dirtyReasons(info, `v${version} 的产物`));
 
   if (isAncestorOfMain === null) {
+    // 「没量到」不等于「量到是通过」。判据没跑却返回 ok: true，等于一个没做的检查
+    // 显示成绿灯 —— 这正是本模块通篇在消灭的形态（2026-11-07，X3-03(b)）。
+    // 调用方要能区分两种拒绝：unverified=true 是「这一条没跑」，false 是「判负」。
     return {
       ok: false,
+      unverified: true,
       reasons: [
         ...reasons,
         `取不到 main 或 ${info.commit.slice(0, 12)} 不在本地对象库 —— **祖先关系无法验证**。` +
           "「没量到」不是「量到了且没问题」，不能据此放行一份要进稳定通道的字节。",
         "→ 先 git fetch origin main（产物 commit 不在对象库时还要 fetch 它所在的 ref），再重试。",
+        "→ 确需在拿不到远端的发版机上促升时，用 --promote-unverified 显式放行（日志与 Release 正文留痕）。",
       ],
     };
   }
