@@ -61,11 +61,35 @@ export interface RunOutput {
   homeDir: string;
   /** `after` 各步骤的结果（与 `after` 同序）。主运行的 stdout/stderr/exitCode 在上面 */
   steps: StepOutput[];
+  /** 各桩服务收到的请求，按到达顺序 */
+  services: Record<string, ServiceHit[]>;
+}
+
+/**
+ * 用例级桩服务（A11 策略下发、A12 bridge）。运行器在进程内 `Bun.serve({ port: 0 })` 起，
+ * 只绑 127.0.0.1；用例结束无论成败都 `stop(true)`。
+ *
+ * 与总纲 §3.3 草案的两处差别（都是因为服务跑在运行器进程内）：
+ * - 不需要「就绪探针」：`Bun.serve` 返回时端口已在监听；
+ * - 地址不走环境变量，而是经 `SettingsContext.services` / `env` 回调交给用例，
+ *   因为 A11 要写进 settings.json 的 `backend.url`，环境变量注入不到那里。
+ */
+export interface ServiceDef {
+  handler: (req: Request) => Response | Promise<Response>;
+}
+
+/** 桩服务收到的一次请求。只记方法、路径、是否带 Authorization，不记 token 本身 */
+export interface ServiceHit {
+  method: string;
+  path: string;
+  auth: boolean;
 }
 
 export interface SettingsContext {
   defaults: Record<string, unknown>;
   refusedBaseURL: string;
+  /** 各桩服务的根地址，如 `http://127.0.0.1:53696` */
+  services: Record<string, string>;
   /** 本次用例仓的绝对路径（realpath 后）。配置里需要绝对路径时用它，如团队记忆共享目录 */
   repoRoot: string;
 }
@@ -128,6 +152,12 @@ export interface SmokeCase {
    * 运行器的 P-3 断言只看 `$HOME/.sid-code`，这里预置的文件不触发它；也不许往这里放 `.sid-code/`。
    */
   home?: Record<string, string>;
+  /**
+   * 隔离配置目录（`SID_CONFIG_DIR`）里的初始文件，如设备凭据 `device-credential.json`（A11）。
+   * `settings.json` 请用 `settings` 字段，这里写会被拒绝。
+   */
+  config?: Record<string, string>;
+  services?: Record<string, ServiceDef>;
   /** 传给 sid-code 的参数；`--dangerously-skip-permissions` 与 `--output-format json` 由运行器补 */
   argv: string[];
   /** 额外环境变量（运行器已设好隔离用的那一组，这里只放用例特有的） */
