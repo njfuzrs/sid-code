@@ -22,9 +22,10 @@
  * 快照式断言在漂移时只会告诉你"快照不一致"，不会告诉你"选测已经开始漏测了"。
  */
 import { describe, expect, test } from "bun:test";
+import { spawnSync } from "node:child_process";
 import { existsSync, readFileSync, readdirSync } from "node:fs";
 import { join } from "node:path";
-import { decide, mapPathToTests } from "../../scripts/affected-tests.ts";
+import { NO_TEST_PATHS, decide, mapPathToTests } from "../../scripts/affected-tests.ts";
 import { computeChangeScope, parseArgs } from "../../scripts/change-scope.ts";
 
 const ROOT = join(import.meta.dir, "../..");
@@ -177,10 +178,26 @@ describe("逃逸阀：仓库级改动必须走全量", () => {
 });
 
 describe("空集与无测试改动：必须能区分「不用跑」和「漏了」", () => {
-  test("纯文档改动 → none，命令是 true（显式的「无需跑」而非静默空集）", () => {
-    const v = decide(["CLAUDE.md", "README.md", "CONTRIBUTING.md", "NOTICE"]);
+  test("白名单内的无读取者文档 → none，命令是 true（显式的「无需跑」而非静默空集）", () => {
+    const v = decide(["LICENSE", "README.en.md", "SECURITY.md", "CODE_OF_CONDUCT.md"]);
     expect(v.decision).toBe("none");
     expect(v.command).toBe("true");
+  });
+
+  test("被测试读取的根文件不再判 none（X3-01：它们原先和 LICENSE 同档）", () => {
+    // 逐条对应 X3-01 点名的「确有测试读取、却判零测试」的路径。
+    // 变异自证：把兜底改回 `return []`，这一条与下一组全红。
+    for (const p of [
+      ".bun-version",
+      "CLAUDE.md",
+      "CONTRIBUTING.md",
+      "CHANGELOG.md",
+      ".gitignore",
+      ".agents/notes/README.md",
+      "README.md",
+    ]) {
+      expect(mapPathToTests(p), `${p} 被判成零测试`).not.toEqual([]);
+    }
   });
 
   test("但 website/ 下的文档**要**触发（它是从源码生成的，有反漂移门禁守着）", () => {
@@ -198,6 +215,93 @@ describe("空集与无测试改动：必须能区分「不用跑」和「漏了�
     const v = decide(["packages/core/src/telemetry/a.ts"]);
     expect(v.decision).toBe("selective");
     expect(v.targets.length).toBeGreaterThan(0);
+  });
+});
+
+describe("兜底方向：清单漏一个文件的后果是「多跑全量」，不是「零测试」（X3-01）", () => {
+  test("未登记的未知路径 → full（兜底是「跑」，不是「跳过」）", () => {
+    // 这一条就是 X3-01 的变异哨兵：把 mapPathToTests 末尾改回 `return []` 它必红。
+    expect(mapPathToTests("docs/some-unknown-note.md")).toBe("full");
+    expect(mapPathToTests("unknown-dir/file.txt")).toBe("full");
+    // 前缀相同但不是白名单项（`LICENSE-extra` 不是 `LICENSE`）也必须全量
+    expect(mapPathToTests("LICENSE-extra")).toBe("full");
+  });
+
+  test("真实 git ls-files 里，判空集的路径全部能指到 NO_TEST_PATHS", () => {
+    // 守的是「清单完整性」：兜底改成 full 之后，空集只可能来自白名单；
+    // 这条把「白名单项写得过宽」也钉住（例如误写 `README` 前缀会吞掉 README.md）。
+    const files = spawnSync("git", ["ls-files"], {
+      cwd: ROOT,
+      encoding: "utf8",
+      maxBuffer: 64 * 1024 * 1024,
+    })
+      .stdout.split("\n")
+      .filter(Boolean);
+    expect(files.length).toBeGreaterThan(1000);
+    const unexplained = files.filter((f) => {
+      const r = mapPathToTests(f);
+      if (!Array.isArray(r) || r.length > 0) return false;
+      return !NO_TEST_PATHS.some((n) => f === n || (n.endsWith("/") && f.startsWith(n)));
+    });
+    expect(unexplained).toEqual([]);
+  });
+
+  test("白名单里的每一项都必须真的返回空集（写错前缀 = 白名单静默失效）", () => {
+    // 变异自证：往 NO_TEST_PATHS 加 "CLAUDE.md"（它会被 ROOT_FILE_TESTS 先命中），
+    // 这条立刻变红——白名单项写了却不生效，是最难发现的一类空转。
+    for (const item of NO_TEST_PATHS) {
+      expect(mapPathToTests(item), `${item} 在白名单里但不返回空集`).toEqual([]);
+    }
+  });
+
+  test("白名单准入判据：没有任何测试读取白名单里的路径", () => {
+    // 判据是可执行的，与 scripts/affected-tests.ts 的注释一一对应：
+    //   grep -rlF '"<路径>"' tests packages/<pkg>/tests   → 零命中
+    // 排除判据自身的测试文件（它必然提到白名单项）。
+    const SELF = "tests/scripts/affected-tests.test.ts";
+    const testRoots = [
+      "tests",
+      ...readdirSync(join(ROOT, "packages")).map((p) => `packages/${p}/tests`),
+    ].filter((d) => existsSync(join(ROOT, d)));
+
+    const offenders: string[] = [];
+    for (const item of NO_TEST_PATHS) {
+      for (const dir of testRoots) {
+        const r = spawnSync("grep", ["-rlF", "--", `"${item}"`, dir], {
+          cwd: ROOT,
+          encoding: "utf8",
+        });
+        const hits = (r.stdout ?? "")
+          .split("\n")
+          .filter(Boolean)
+          .filter((f) => f !== SELF);
+        if (hits.length > 0) offenders.push(`${item} ← ${hits.join(", ")}`);
+      }
+    }
+    expect(offenders).toEqual([]);
+  });
+
+  test("根文件映射的目标必须真实存在（映射指向不存在的路径会让 bun test 退出码 1）", () => {
+    const samples = [
+      ".bun-version",
+      "CLAUDE.md",
+      "CONTRIBUTING.md",
+      "CHANGELOG.md",
+      ".gitignore",
+      ".agents/notes/README.md",
+      ".pr-batch/plan.json",
+      "northstar/v0.1.601.json",
+      "README.md",
+    ];
+    const missing: string[] = [];
+    for (const s of samples) {
+      const r = mapPathToTests(s);
+      if (r === "full") continue;
+      for (const t of r) {
+        if (!existsSync(join(ROOT, toRepoPath(t)))) missing.push(`${s} → ${t}`);
+      }
+    }
+    expect(missing).toEqual([]);
   });
 });
 
