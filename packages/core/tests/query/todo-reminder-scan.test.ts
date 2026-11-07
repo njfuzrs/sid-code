@@ -53,15 +53,15 @@ describe("getTodoReminderTurnCounts：倒序扫描正确性", () => {
   test("历史里从未出现 todo_write → Infinity（语义上必然到期）", () => {
     const msgs = [userText(), assistantText(), assistantOtherTool()];
     const c = getTodoReminderTurnCounts(msgs, { absoluteTurn: 3 });
-    expect(c.turnsSinceLastTodoWrite).toBe(Number.POSITIVE_INFINITY);
+    expect(c.assistantMsgsSinceTodoWrite).toBe(Number.POSITIVE_INFINITY);
     // 从未注入过 reminder 同样是 Infinity
-    expect(c.turnsSinceLastReminder).toBe(Number.POSITIVE_INFINITY);
+    expect(c.absTurnsSinceReminder).toBe(Number.POSITIVE_INFINITY);
   });
 
   test("最后一条就是 todo_write → 距离 0（含它那轮本身不计）", () => {
     const msgs = [userText(), assistantTodoWrite()];
     const c = getTodoReminderTurnCounts(msgs, { absoluteTurn: 2 });
-    expect(c.turnsSinceLastTodoWrite).toBe(0);
+    expect(c.assistantMsgsSinceTodoWrite).toBe(0);
   });
 
   test("只数 assistant 轮，user 消息与 tool_result 不计入距离", () => {
@@ -75,13 +75,13 @@ describe("getTodoReminderTurnCounts：倒序扫描正确性", () => {
       assistantText(),
     ];
     const c = getTodoReminderTurnCounts(msgs, { absoluteTurn: 10 });
-    expect(c.turnsSinceLastTodoWrite).toBe(3);
+    expect(c.assistantMsgsSinceTodoWrite).toBe(3);
   });
 
   test("别的工具调用不被误认成 todo_write", () => {
     const msgs = [assistantTodoWrite(), assistantOtherTool("read"), assistantOtherTool("edit")];
     const c = getTodoReminderTurnCounts(msgs, { absoluteTurn: 5 });
-    expect(c.turnsSinceLastTodoWrite).toBe(2);
+    expect(c.assistantMsgsSinceTodoWrite).toBe(2);
   });
 
   test("取**最近**一次 todo_write，不是最早那次", () => {
@@ -93,22 +93,22 @@ describe("getTodoReminderTurnCounts：倒序扫描正确性", () => {
       assistantText(),
     ];
     const c = getTodoReminderTurnCounts(msgs, { absoluteTurn: 9 });
-    expect(c.turnsSinceLastTodoWrite).toBe(1);
+    expect(c.assistantMsgsSinceTodoWrite).toBe(1);
   });
 
-  test("turnsSinceLastReminder 按 absoluteTurn 相减，且不为负", () => {
+  test("absTurnsSinceReminder 按 absoluteTurn 相减，且不为负", () => {
     const c = getTodoReminderTurnCounts([], { absoluteTurn: 20, lastReminderAbsoluteTurn: 12 });
-    expect(c.turnsSinceLastReminder).toBe(8);
+    expect(c.absTurnsSinceReminder).toBe(8);
     // 防御：锚点比当前轮还大（理论上不该发生）时钳到 0，不产出负距离
     const weird = getTodoReminderTurnCounts([], { absoluteTurn: 5, lastReminderAbsoluteTurn: 99 });
-    expect(weird.turnsSinceLastReminder).toBe(0);
+    expect(weird.absTurnsSinceReminder).toBe(0);
   });
 
   test("压缩掉 todo_write 后，扫描自动算出「很久没写清单」", () => {
     // 模拟压缩：历史里 todo_write 的 tool_use 块已被删除
     const compacted = [userText("[对话摘要]"), assistantText(), assistantText()];
     const c = getTodoReminderTurnCounts(compacted, { absoluteTurn: 30 });
-    expect(c.turnsSinceLastTodoWrite).toBe(Number.POSITIVE_INFINITY);
+    expect(c.assistantMsgsSinceTodoWrite).toBe(Number.POSITIVE_INFINITY);
     // → 阈值判定必然放行（这就是"压缩后自动重注"的来源）
     expect(shouldInjectTodoReminder(c, THRESHOLDS)).toBe(true);
   });
@@ -116,24 +116,24 @@ describe("getTodoReminderTurnCounts：倒序扫描正确性", () => {
 
 describe("shouldInjectTodoReminder：两条件 AND 的纯节流", () => {
   test("两个距离都到期 → 注入", () => {
-    const c = { turnsSinceLastTodoWrite: 8, turnsSinceLastReminder: 8 };
+    const c = { assistantMsgsSinceTodoWrite: 8, absTurnsSinceReminder: 8 };
     expect(shouldInjectTodoReminder(c, THRESHOLDS)).toBe(true);
   });
 
   test("刚写过清单（距离 0）→ 不注入，避免刚写完就催", () => {
-    const c = { turnsSinceLastTodoWrite: 0, turnsSinceLastReminder: 999 };
+    const c = { assistantMsgsSinceTodoWrite: 0, absTurnsSinceReminder: 999 };
     expect(shouldInjectTodoReminder(c, THRESHOLDS)).toBe(false);
   });
 
   test("刚提醒过 → 不注入（防每轮刷屏）", () => {
-    const c = { turnsSinceLastTodoWrite: 999, turnsSinceLastReminder: 1 };
+    const c = { assistantMsgsSinceTodoWrite: 999, absTurnsSinceReminder: 1 };
     expect(shouldInjectTodoReminder(c, THRESHOLDS)).toBe(false);
   });
 
   test("TURNS_SINCE_WRITE 真正参与判定（旧实现里它是死常量，从未被引用）", () => {
     // 距上次 reminder 很久，但模型刚写过清单 → 必须不注入。
     // 若哪天有人把这个条件去掉，这条会红。
-    const justWrote = { turnsSinceLastTodoWrite: 1, turnsSinceLastReminder: 999 };
+    const justWrote = { assistantMsgsSinceTodoWrite: 1, absTurnsSinceReminder: 999 };
     expect(shouldInjectTodoReminder(justWrote, THRESHOLDS)).toBe(false);
   });
 });
@@ -251,8 +251,8 @@ describe("C4：recentToolUseTurns 统计「最近窗口内有没有在干活」"
 describe("C4：relaxWhenAdvancing 把提醒间隔放宽到 2 倍", () => {
   test("模型在推进 + 清单一个 in_progress：8 轮不放行、16 轮放行", () => {
     const advancing = {
-      turnsSinceLastTodoWrite: 20,
-      turnsSinceLastReminder: 8,
+      assistantMsgsSinceTodoWrite: 20,
+      absTurnsSinceReminder: 8,
       recentToolUseTurns: 3,
     };
     expect(shouldInjectTodoReminder(advancing, { ...THRESHOLDS, relaxWhenAdvancing: true })).toBe(
@@ -260,7 +260,7 @@ describe("C4：relaxWhenAdvancing 把提醒间隔放宽到 2 倍", () => {
     );
     expect(
       shouldInjectTodoReminder(
-        { ...advancing, turnsSinceLastReminder: 16 },
+        { ...advancing, absTurnsSinceReminder: 16 },
         { ...THRESHOLDS, relaxWhenAdvancing: true },
       ),
     ).toBe(true);
@@ -268,8 +268,8 @@ describe("C4：relaxWhenAdvancing 把提醒间隔放宽到 2 倍", () => {
 
   test("模型没在推进（无工具调用）：仍按原间隔催 —— 真停滞不能被放宽", () => {
     const stalled = {
-      turnsSinceLastTodoWrite: 20,
-      turnsSinceLastReminder: 8,
+      assistantMsgsSinceTodoWrite: 20,
+      absTurnsSinceReminder: 8,
       recentToolUseTurns: 0,
     };
     expect(shouldInjectTodoReminder(stalled, { ...THRESHOLDS, relaxWhenAdvancing: true })).toBe(
@@ -278,7 +278,7 @@ describe("C4：relaxWhenAdvancing 把提醒间隔放宽到 2 倍", () => {
   });
 
   test("不给 relaxWhenAdvancing（默认）：行为与旧实现一致（即便有工具调用）", () => {
-    const c = { turnsSinceLastTodoWrite: 20, turnsSinceLastReminder: 8, recentToolUseTurns: 99 };
+    const c = { assistantMsgsSinceTodoWrite: 20, absTurnsSinceReminder: 8, recentToolUseTurns: 99 };
     expect(shouldInjectTodoReminder(c, THRESHOLDS)).toBe(true);
   });
 
