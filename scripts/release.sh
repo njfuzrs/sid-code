@@ -10,6 +10,8 @@
 #   ./scripts/release.sh --no-bump               # 复用当前版本号，不再 bump（上次已 bump 过、重跑时用）
 #   ./scripts/release.sh --skip-test             # 跳过发布前 bun test 门禁（不推荐，仅救急）
 #   ./scripts/release.sh --allow-dirty           # 允许工作区有未提交改动（默认拒绝，见下方门禁说明）
+#   ./scripts/release.sh --allow-no-curated      # 允许缺用户视角文案（changelog/curated/）；默认缺了就拒绝，
+#                                                # 非交互环境（agent / CI / </dev/null）不再降级为 warn 放行
 #   ./scripts/release.sh --no-commit             # 不自动提交 bump（tag 会与版本号错位，仅特殊情况）
 #   ./scripts/release.sh --upload-team-defaults <file>  # 单独上传团队默认配置（不打版本号）
 #   ./scripts/release.sh --upload-ripgrep <dir> <version>  # 单独上传预编译 ripgrep 二进制（不打版本号）
@@ -266,6 +268,7 @@ RIPGREP_VERSION=""
 DO_BUMP=true
 DO_TEST=true
 ALLOW_DIRTY=false
+ALLOW_NO_CURATED=false
 NO_COMMIT=false
 DO_PROMOTE=false
 PROMOTE_VERSION=""
@@ -293,6 +296,7 @@ while [ $# -gt 0 ]; do
             ;;
         --skip-test) DO_TEST=false; shift ;;
         --allow-dirty) ALLOW_DIRTY=true; shift ;;
+        --allow-no-curated) ALLOW_NO_CURATED=true; shift ;;
         --no-commit) NO_COMMIT=true; shift ;;
         --archive-existing) DO_ARCHIVE_EXISTING=true; shift ;;
         --publish-manifest) DO_PUBLISH_MANIFEST=true; shift ;;
@@ -1030,7 +1034,13 @@ elif [ ! -f "$ROOT/$_CURATED_FILE" ]; then
     info "    bun run changelog:curate $VERSION   # 生成后过目，需要就直接改 JSON"
     info "    git add $_CURATED_FILE && git commit"
     info "然后重跑本脚本（加 --no-bump 复用已 bump 的 v${VERSION}）。"
-    if [ -t 0 ] && [ -e /dev/tty ]; then
+    # 判据分支的顺序有讲究：**显式 flag 优先于 tty 探测**。
+    # 放行必须是一个命令行上看得见的声明；由「有没有 tty」这个环境事实替人做决定，
+    # 就是这条缺陷（X3-08）的形态 —— agent / 自动化 / `</dev/null` 调用天生没有 tty，
+    # 于是它们从来走不到确认门，而日志里只有一行 warn，看起来像是合理的降级。
+    if [ "$ALLOW_NO_CURATED" = true ]; then
+        warn "已显式放弃 v${VERSION} 的用户文案（--allow-no-curated）：官网 /changelog 本版无变更说明"
+    elif [ -t 0 ] && [ -e /dev/tty ]; then
         printf "  不写文案，继续发布？(y/N) "
         read -r _ans </dev/tty || _ans=""
         case "$_ans" in
@@ -1038,8 +1048,19 @@ elif [ ! -f "$ROOT/$_CURATED_FILE" ]; then
             *) fail "已取消。补完 curated 文案后重跑（--no-bump 复用 v${VERSION}）。" ;;
         esac
     else
-        # 非交互（CI / 管道）下不能卡住等输入，降级为 warn 继续
-        warn "非交互环境，跳过确认，继续发布"
+        # 非交互（agent / 自动化 / CI / `</dev/null`）下不能卡住等输入，但也**不放行**：
+        # 「缺文案照样发」这个决定必须由人显式做出，不能由调用环境替人做。
+        # 与同文件「稳定版合并稿确认」同一判据（那里注释写明「与缺 curated 降级 warn 刻意相反」，
+        # 现在两边一致了）。
+        #
+        # 刻意**不**改成「/dev/tty 存在就从 /dev/tty 读」：agent 或自动化进程常常有
+        # /dev/tty 设备节点但没人应答，`read </dev/tty` 会一直挂住 —— 把假绿换成挂死，
+        # 对被无人值守的发布链更糟。
+        info "两条出路："
+        info "  1) 补文案后重跑：bun run changelog:curate $VERSION → 过目 → git add/commit"
+        info "     然后 ./scripts/release.sh --no-bump（复用已 bump 的 v${VERSION}）"
+        info "  2) 显式放弃本版用户文案：./scripts/release.sh --allow-no-curated"
+        fail "非交互环境缺 ${_CURATED_FILE}，拒绝静默放行（--allow-no-curated 才放弃文案）";
     fi
     echo ""
 else

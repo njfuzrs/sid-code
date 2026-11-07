@@ -30,6 +30,7 @@
 import { readFileSync, readdirSync, statSync } from "node:fs";
 import { join, relative } from "node:path";
 import { spawnSync } from "node:child_process";
+import { fileURLToPath } from "node:url";
 
 /** lifecycle 闭集：提案 → 已落地 / 已否决。三格缺一不可，`rejected/` 是最有价值的一格。 */
 export const LIFECYCLES = ["proposed", "implemented", "rejected"] as const;
@@ -170,9 +171,25 @@ function walkMarkdown(dir: string, acc: string[] = []): string[] {
   return acc;
 }
 
-/** 门禁路径：只看**已追踪**的文件 —— 未 add 的草稿不该拦住别人的提交。 */
+/**
+ * 门禁路径：只看**已追踪**的文件 —— 未 add 的草稿不该拦住别人的提交。
+ *
+ * ⚠️ 这里**必须**把 git 失败当成错误抛出去，不能 `?? ""` 兜底成空数组。
+ * 空数组往下走会打印「0 份 Agent Note 形态合规」并 exit 0 —— 门禁静默变成空转，
+ * 而 pre-commit 只看退出码，于是整条链路无人知晓地失效。
+ * 触发条件曾经很现实：cwd 来自未解码的 `URL.pathname`，仓库路径含空格或非 ASCII
+ * 时那个目录根本不存在，git 直接失败（X3-09）。
+ */
 function trackedNotes(root: string): string[] {
   const r = spawnSync("git", ["ls-files", ".agents/notes/"], { cwd: root, encoding: "utf8" });
+  if (r.error) {
+    throw new Error(`git ls-files 执行失败（cwd=${root}）：${r.error.message}`);
+  }
+  if (r.status !== 0) {
+    throw new Error(
+      `git ls-files 退出码 ${r.status}（cwd=${root}）：${(r.stderr ?? "").trim() || "无 stderr"}`,
+    );
+  }
   return (r.stdout ?? "")
     .split("\n")
     .map((s) => s.trim())
@@ -189,7 +206,11 @@ function main(): void {
   const argv = process.argv.slice(2);
   const asJson = argv.includes("--json");
   const dirIdx = argv.indexOf("--dir");
-  const root = new URL("..", import.meta.url).pathname;
+  // ⚠️ 必须走 fileURLToPath，不能直接用 `new URL(...).pathname`：后者是 percent-encoded 的
+  // （空格 → `%20`，非 ASCII 被编码），仓库路径含这类字符时 root 指向一个**不存在的目录**，
+  // git 在它上面执行必失败 → trackedNotes 返回空数组 → 打印「0 份合规」并 exit 0。
+  // 开源后外部贡献者的 clone 路径不可控，不能默认「路径里没有空格」（X3-09）。
+  const root = fileURLToPath(new URL("..", import.meta.url));
 
   let files: string[];
   let toDisplay: (f: string) => string;
@@ -235,4 +256,16 @@ function main(): void {
 }
 
 // 直接执行时才跑主流程；被测试 import 时只取纯函数。
-if (import.meta.main) main();
+//
+// ⚠️ 顶层必须捕获并 exit 1：trackedNotes 的 git 失败是个**门禁失效**信号，
+// 让它冒泡成未捕获异常虽然也会非 0 退出，但打印的是 bun 的堆栈，
+// 读日志的人会以为是脚本崩了而不是「这道门禁没跑成」。pre-commit 只看退出码，
+// 但人要能一眼看出是缺环境还是 Note 不合规。
+if (import.meta.main) {
+  try {
+    main();
+  } catch (err) {
+    console.error(`verify-agent-note 失败：${err instanceof Error ? err.message : String(err)}`);
+    process.exit(1);
+  }
+}
