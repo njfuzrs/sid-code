@@ -91,6 +91,10 @@
     "website/.vitepress/data/changelog.json",
     "evals/_reports/**",
     "evals/external-benchmarks/harbor/results/**",
+    //   harbor/baselines/*.json  ← build-l2-baseline.py（`json.dumps(indent=2)`，T20）
+    //     L2 发版闸的基线文档。与 results/ 同理：它必须能由生成器从 run 目录原样复现
+    //     （重跑基线要花钱），被 formatter 折一次短数组，下次重新生成就是一次假 diff。
+    "evals/external-benchmarks/harbor/baselines/**",
     "packages/core/tests/fixtures/vcr/**",
     //   text-vectors.json  ← B9 / T2.1 生成的冻结向量（生成脚本已删除，不能重生成）
     "packages/tui/tests/fixtures/text-vectors.json",
