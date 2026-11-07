@@ -179,12 +179,18 @@ describe("buildDigest 异常检测", () => {
   });
 
   it("孤儿 tool_use → L0 客观计数 + L1 崩溃假设(带证伪条件)", () => {
+    // 2026-11-07（T5）：这个用例原先用「尾部孤儿 + user_interrupt」。T5 把「尾部 + 中断」
+    // 单独判为 low —— 中断时结果没回灌是必然的，不是崩溃（见 digest-detector-precision-t5-t7
+    // 的同名用例）。原形态已不再走 L1 分支，换成一个 T5 之后仍无法解释的形态：
+    // 中段孤儿（后面还有正常 observation）+ 正常收尾 + events 里没有它的收尾事件。
     writeSession("orphan01", {
       trajectory: [
         { message_type: "action", tool_name: "read", tool_input: {} },
         { message_type: "observation", content: "[not found]", _orphan: true },
+        { message_type: "action", tool_name: "bash", tool_input: { command: "ls" } },
+        { message_type: "observation", content: "ok" },
       ],
-      metadata: { exit_status: "user_interrupt" },
+      metadata: { exit_status: "end_turn" },
     });
     const all = listSessions(paths);
     const d = buildDigest(all[0], false, paths)!;
