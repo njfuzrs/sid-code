@@ -236,6 +236,17 @@ export class BridgeRunner {
 
   // ─── 内部方法 ───
 
+  /**
+   * 本地注入一条消息（T6）：给 cron / `/loop` / `schedule_wakeup` 的定时触发用。
+   *
+   * 与远端消息走**同一条队列**、同样串行执行，输出同样转发给远端——本地定时任务与远端
+   * 操作员看到的是同一个会话，另起一条消费链必然与这一条漂移（谁先谁后、错误怎么报）。
+   * 停止后是 no-op（`enqueue` 已判 stopped）：进程正在退出时不该再开一轮。
+   */
+  injectLocalMessage(text: string): void {
+    this.enqueue(text);
+  }
+
   /** 远程消息入队并触发串行处理 */
   private enqueue(text: string): void {
     if (this.stopped) return;

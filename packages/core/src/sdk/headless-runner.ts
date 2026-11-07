@@ -216,6 +216,17 @@ export async function* runHeadlessStreaming(
     idleTimeoutMs?: number;
     /** 空闲超时触发时回调（调用方记日志 / 决定退出码） */
     onIdleTimeout?: () => void;
+    /**
+     * 注入通道就绪回调：拿到「把一条 prompt 投进本会话主循环」的注入器。
+     *
+     * 给**定时触发**用（cron / `/loop` / `schedule_wakeup`）：宿主侧（App）把它注册成
+     * `promptInjector`，到点的任务才真正被执行，而不是只入队等人认领。
+     * 不传 = 本形态不提供定时执行能力（`-p` 单轮压完即退，注册了也没有下一次触发）。
+     *
+     * 注入的 prompt 走与宿主消息**同一条** commandQueue（`priority: "next"`），因此
+     * 天然串行：正在跑的一轮不会被打断，注入的轮次在它之后执行，结果同样流式写出。
+     */
+    onInjectorReady?: (inject: (text: string) => void) => void;
   } = {},
   handlers: HeadlessControlHandlers = {},
 ): AsyncGenerator<StdoutMessage> {
@@ -266,6 +277,16 @@ export async function* runHeadlessStreaming(
       notify();
     }
   })();
+
+  // 注入通道（T6）：把「投一条 prompt 进本会话」的闭包交给宿主，由 App 注册成 promptInjector，
+  // 定时任务（cron / `/loop` / schedule_wakeup）到点才真的被执行。
+  // 走与宿主消息同一条 commandQueue 的 next 优先级：不打断正在跑的一轮，排在它后面执行；
+  // notify() 让空闲等待中的主循环立刻醒来——少了这一步，注入的 prompt 只会躺在队列里，
+  // 而 stdin 若已 EOF，主循环会在「队列非空」的复查里错过唤醒，看起来就是「任务没反应」。
+  options.onInjectorReady?.((text) => {
+    commandQueue.enqueue({ mode: "prompt", value: text, priority: "next" });
+    notify();
+  });
 
   const bg = backgroundOf(engine);
   try {
@@ -403,6 +424,8 @@ export async function runHeadless(
     controlHandlers?: HeadlessControlHandlers;
     /** stream-json 下 stdin 空闲上限（缺陷 7）。0 / 不传 = 不设上限 */
     idleTimeoutMs?: number;
+    /** 注入通道就绪回调（T6）：见 runHeadlessStreaming 的同名字段 */
+    onInjectorReady?: (inject: (text: string) => void) => void;
   },
 ): Promise<HeadlessRunOutcome> {
   const { outputFormat, verbose, initialPrompt } = options;
@@ -435,6 +458,7 @@ export async function runHeadless(
         onIdleTimeout: () => {
           idleTimedOut = true;
         },
+        onInjectorReady: options.onInjectorReady,
       },
       options.controlHandlers,
     )) {

@@ -292,11 +292,10 @@ describe("headless 结构体：子命令维度（subcommands）", () => {
 });
 
 describe("resolveHeadlessModality：形态判定信号", () => {
-  test("Bridge 优先于 stream-json 格式字段", () => {
+  test("Bridge 优先于 stream-json 输入格式", () => {
     expect(
       resolveHeadlessModality({
         inputFormat: "stream-json",
-        outputFormat: "stream-json",
         bridge: true,
       }),
     ).toBe("bridge");
@@ -308,16 +307,14 @@ describe("resolveHeadlessModality：形态判定信号", () => {
     );
   });
 
-  test("output-format stream-json → 多轮（与 input 任一命中即多轮）", () => {
-    expect(resolveHeadlessModality({ outputFormat: "stream-json", bridge: false })).toBe(
-      "stream-json",
-    );
+  test("只有 `--output-format stream-json` 不算多轮：判定只看输入格式（T6 修正 T4b）", () => {
+    // T4b 原本「input/output 任一命中即多轮」。这条路径的 stdin 是已结束的空流
+    // （app.ts 的 sdkInput），跑完初始 prompt 就退出——输出是流式，轮次仍是单轮。
+    // 判成多轮会让 /compact（-p 下净亏）在单轮里被放行，所以判定入参已不再含 outputFormat。
+    expect(resolveHeadlessModality({ inputFormat: "text", bridge: false })).toBe("p");
   });
 
   test("两者都不是 → -p 单轮（text/json 输出都算单轮）", () => {
     expect(resolveHeadlessModality({ bridge: false })).toBe("p");
-    expect(
-      resolveHeadlessModality({ inputFormat: "text", outputFormat: "json", bridge: false }),
-    ).toBe("p");
   });
 });
