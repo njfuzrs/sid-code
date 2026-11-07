@@ -6188,11 +6188,20 @@ export function aggregateTodoStats(
     advanceGaps.push(advanceTurns[i]! - advanceTurns[i - 1]!);
   }
 
-  // 停滞深度：回注时"距上次 todo_write"的最大值。埋点里 Infinity 被写成 -1
-  // （"从未写过清单"），那不是距离，要排除掉才不会把最大值算成 -1。
+  // 停滞深度：回注时"距上次 todo_write"的最大值。
+  //
+  // 2026-11-07（T4）：字段改名 + `-1` → `null`。历史事件仍用旧字段名
+  // （`turnsSinceLastTodoWrite`）且用 `-1` 表示"从未写过"，读取侧两者都认：
+  // 新字段优先、旧字段兜底，`null` / 负数整体排除。
+  // ⚠ 必须先判 `null` 再转数字——`num(null)` 会得到 0（`Number(null) === 0`），
+  // 直接喂进去会把"从未写过"算成"距离 0"，正是 T4 要消掉的歧义。
   const sinceWrites = todoNags
-    .map((e) => num(e.data!.turnsSinceLastTodoWrite))
-    .filter((n) => n >= 0);
+    .map((e) => {
+      const v = e.data!.assistantMsgsSinceTodoWrite ?? e.data!.turnsSinceLastTodoWrite;
+      if (v === null || v === undefined) return null;
+      return typeof v === "number" ? v : num(v);
+    })
+    .filter((n): n is number => n !== null && n >= 0);
 
   return {
     advances: advanced.length,
