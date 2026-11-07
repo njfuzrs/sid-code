@@ -58,7 +58,8 @@
     "eval:lint-arch": "bun run scripts/eval/lint-architecture.ts",
     "eval:archive-evidence": "bun run evals/scripts/archive-evidence.ts",
     "eval:check-evidence": "bun run scripts/eval/check-evidence-due.ts",
-    "eval:budget": "bun run scripts/eval/eval-budget.ts"
+    "eval:budget": "bun run scripts/eval/eval-budget.ts",
+    "eval:release-gate": "bash scripts/eval/release-gate.sh"
   },
   "dependencies": {
     "@alcalzone/ansi-tokenize": "^0.3.1",

@@ -1,0 +1,301 @@
+{
+  "schema_version": 1,
+  "fingerprints": [
+    {
+      "schema_version": 1,
+      "run_dir": "reports/t15-baseline/round1/t1800/2026-11-05__17-02-41",
+      "n_trials": 8,
+      "fields": {
+        "model_id": "openai/origin-deepseek-v4-1-flash",
+        "sid_binary_sha256": "108524537aa864ea9dfdd9ba8a3538d937307e4fa31864b9320e12c05daab323",
+        "sid_commit": "e71b7b00b10f9443c6cf10a31062b2c0f83e871e",
+        "arch": "arm64",
+        "harbor_version": "0.22.0",
+        "taskset_digest": "8:b131a0c10085c64d:4d65f82cfd8224d6",
+        "traj_bench_commit": "5bbd97404f53d452cc4d42323581b5c432f2b138",
+        "verdict_rule_version": "1",
+        "max_turns": 120,
+        "budget_usd": "1.8",
+        "max_duration_ms": "4860000",
+        "network_policy": "allowlist",
+        "permission_mode": "dangerously-skip-permissions",
+        "stall_escalation": "off"
+      },
+      "sources": {
+        "model_id": "config.json:agents[0].model_name",
+        "sid_binary_sha256": "<trial>/result.json:agent_result.metadata.sid_binary_sha256",
+        "sid_commit": "<trial>/result.json:agent_result.metadata.sid_commit",
+        "arch": "<trial>/agent/sid-code-build.json:arch_actual",
+        "harbor_version": "lock.json:harbor",
+        "taskset_digest": "lock.json:trials[].task.{name,digest} → taskset_fp.digest_fingerprint",
+        "traj_bench_commit": "declared",
+        "verdict_rule_version": "run_fingerprint.py:VERDICT_RULE_VERSION",
+        "max_turns": "<trial>/result.json:agent_result.metadata.sid_max_turns",
+        "budget_usd": "<trial>/result.json:agent_result.metadata.sid_max_budget_usd",
+        "max_duration_ms": "<trial>/result.json:agent_result.metadata.sid_max_duration_ms",
+        "network_policy": "declared",
+        "permission_mode": "<trial>/result.json:agent_result.metadata.sid_permission_mode_requested",
+        "stall_escalation": "<trial>/result.json:agent_result.metadata.sid_stall_escalation"
+      },
+      "declared": {
+        "traj_bench_commit": "5bbd97404f53d452cc4d42323581b5c432f2b138",
+        "network_policy": "allowlist"
+      },
+      "missing": [],
+      "conflicts": {}
+    },
+    {
+      "schema_version": 1,
+      "run_dir": "reports/t15-baseline/round1/t2700/2026-11-05__17-28-22",
+      "n_trials": 24,
+      "fields": {
+        "model_id": "openai/origin-deepseek-v4-1-flash",
+        "sid_binary_sha256": "108524537aa864ea9dfdd9ba8a3538d937307e4fa31864b9320e12c05daab323",
+        "sid_commit": "e71b7b00b10f9443c6cf10a31062b2c0f83e871e",
+        "arch": "arm64",
+        "harbor_version": "0.22.0",
+        "taskset_digest": "24:3231a708b360653a:47b4d3cf393a72da",
+        "traj_bench_commit": "5bbd97404f53d452cc4d42323581b5c432f2b138",
+        "verdict_rule_version": "1",
+        "max_turns": 120,
+        "budget_usd": "1.8",
+        "max_duration_ms": "7290000",
+        "network_policy": "allowlist",
+        "permission_mode": "dangerously-skip-permissions",
+        "stall_escalation": "off"
+      },
+      "sources": {
+        "model_id": "config.json:agents[0].model_name",
+        "sid_binary_sha256": "<trial>/result.json:agent_result.metadata.sid_binary_sha256",
+        "sid_commit": "<trial>/result.json:agent_result.metadata.sid_commit",
+        "arch": "<trial>/agent/sid-code-build.json:arch_actual",
+        "harbor_version": "lock.json:harbor",
+        "taskset_digest": "lock.json:trials[].task.{name,digest} → taskset_fp.digest_fingerprint",
+        "traj_bench_commit": "declared",
+        "verdict_rule_version": "run_fingerprint.py:VERDICT_RULE_VERSION",
+        "max_turns": "<trial>/result.json:agent_result.metadata.sid_max_turns",
+        "budget_usd": "<trial>/result.json:agent_result.metadata.sid_max_budget_usd",
+        "max_duration_ms": "<trial>/result.json:agent_result.metadata.sid_max_duration_ms",
+        "network_policy": "declared",
+        "permission_mode": "<trial>/result.json:agent_result.metadata.sid_permission_mode_requested",
+        "stall_escalation": "<trial>/result.json:agent_result.metadata.sid_stall_escalation"
+      },
+      "declared": {
+        "traj_bench_commit": "5bbd97404f53d452cc4d42323581b5c432f2b138",
+        "network_policy": "allowlist"
+      },
+      "missing": [],
+      "conflicts": {}
+    }
+  ],
+  "per_task": {
+    "T0002": [
+      0.0,
+      0.0,
+      0.0
+    ],
+    "T0003": [
+      0.0,
+      0.0,
+      0.0
+    ],
+    "T0007": [
+      0.0,
+      0.0,
+      0.0
+    ],
+    "T0008": [
+      0.0,
+      0.0,
+      0.0
+    ],
+    "T0010": [
+      0.0,
+      1.0,
+      0.0
+    ],
+    "T0011": [
+      0.0,
+      0.0,
+      0.0
+    ],
+    "T0013": [
+      0.0,
+      0.0,
+      0.0
+    ],
+    "T0014": [
+      0.0,
+      0.0,
+      0.0
+    ],
+    "T0018": [
+      0.0,
+      0.0,
+      0.0
+    ],
+    "T0020": [
+      0.0,
+      0.0,
+      0.0
+    ],
+    "T0022": [
+      0.0,
+      0.0,
+      0.0
+    ],
+    "T0024": [
+      0.0,
+      0.0,
+      0.0
+    ],
+    "T0028": [
+      0.0,
+      0.0,
+      0.0
+    ],
+    "T0029": [
+      0.0,
+      0.0,
+      0.0
+    ],
+    "T0031": [
+      0.0,
+      0.0,
+      0.0
+    ],
+    "T0033": [
+      0.0,
+      0.0,
+      0.0
+    ],
+    "T0036": [
+      0.0,
+      0.0,
+      0.0
+    ],
+    "T0038": [
+      0.0,
+      0.0,
+      0.0
+    ],
+    "T0039": [
+      0.0,
+      0.0,
+      0.0
+    ],
+    "T0040": [
+      1.0,
+      1.0,
+      1.0
+    ],
+    "T0042": [
+      0.0,
+      0.0,
+      0.0
+    ],
+    "T0045": [
+      1.0,
+      1.0,
+      0.0
+    ],
+    "T0047": [
+      1.0,
+      0.0,
+      0.0
+    ],
+    "T0049": [
+      0.0,
+      0.0,
+      0.0
+    ],
+    "T0050": [
+      1.0,
+      1.0,
+      1.0
+    ],
+    "T0051": [
+      0.0,
+      0.0,
+      0.0
+    ],
+    "T0054": [
+      0.0,
+      0.0,
+      0.0
+    ],
+    "T0055": [
+      0.0,
+      0.0,
+      0.0
+    ],
+    "T0059": [
+      1.0,
+      1.0,
+      1.0
+    ],
+    "T0062": [
+      0.0,
+      1.0,
+      1.0
+    ],
+    "T0063": [
+      0.0,
+      0.0,
+      0.0
+    ],
+    "T0064": [
+      0.0,
+      0.0,
+      0.0
+    ]
+  },
+  "infra_fault": {},
+  "noise": {
+    "stable_set": [
+      "T0040",
+      "T0050",
+      "T0059"
+    ],
+    "epsilon": 0.1,
+    "m": 2
+  },
+  "cost": {
+    "per_run_usd": 6.346144,
+    "total_usd": 19.038433,
+    "per_round_usd": [
+      8.385278,
+      4.889285,
+      5.76387
+    ]
+  },
+  "cache": {
+    "hit_rate_by_family": {
+      "openai": 0.9602173994481887
+    }
+  },
+  "provenance": {
+    "built_by": "evals/external-benchmarks/harbor/build-l2-baseline.py",
+    "frozen_by": "T17 2026-11-06（方案 §5.2 冻结值）",
+    "k": 3,
+    "rounds": [
+      [
+        "reports/t15-baseline/round1/t1800/2026-11-05__17-02-41",
+        "reports/t15-baseline/round1/t2700/2026-11-05__17-28-22"
+      ],
+      [
+        "reports/t15-baseline/round2/t1800/2026-11-05__18-55-22",
+        "reports/t15-baseline/round2/t2700/2026-11-05__19-26-30"
+      ],
+      [
+        "reports/t15-baseline/round3/t1800/2026-11-05__20-44-06",
+        "reports/t15-baseline/round3/t2700/2026-11-05__21-23-03"
+      ]
+    ],
+    "excluded_samples": {},
+    "declared": {
+      "network_policy": "allowlist",
+      "traj_bench_commit": "5bbd97404f53d452cc4d42323581b5c432f2b138"
+    }
+  }
+}
