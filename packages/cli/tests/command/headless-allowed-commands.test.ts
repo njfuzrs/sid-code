@@ -121,6 +121,20 @@ const A2_TIER_PROBES: Array<{ name: string; allowed: string[]; denied: string[] 
 ];
 
 /**
+ * T6：价值依赖形态的 2 个命令（`modes` 收窄，不是子命令收窄）。
+ *
+ * 判定依据是形态而不是「第几轮」：`-p` 单轮压完/建完即随进程退出销毁，没有后续轮消费
+ * 副作用；stream-json / Bridge 长驻才有。`reason` 是给用户看的解释，不参与判定。
+ *
+ * 探针一律用**无参**形态：`/compact` 在空 ctxMgr 下返回「对话历史太短」（不调 LLM），
+ * `/loop` 无参只列出当前任务（不往 scheduler 里塞任务）——门禁不该有副作用。
+ */
+const T6_MODALITY_PROBES: Array<{ name: string; reasonKeyword: string }> = [
+  { name: "compact", reasonKeyword: "没有后续轮" },
+  { name: "loop", reasonKeyword: "进程一退就丢" },
+];
+
+/**
  * 无参返回 `dialog` 的混合型命令（方案 A 档「混合型」分组）。
  *
  * 无参 dialog 是设计好的 fail-closed：`headless-dispatch` 把它翻成非 0 的明确报错。
@@ -229,14 +243,16 @@ describe("放行清单 = 真实命令表里声明 headless 的内置命令", () 
     );
   });
 
-  test("结构体声明（A2 档）的清单 = 4 个，且每个都真的收窄了", () => {
+  test("结构体声明的清单 = A2 档 4 + T6 形态档 2，且每个都真的收窄了", () => {
     const scoped = COMMANDS.filter(
       (c) =>
         (c.source ?? "builtin") === "builtin" &&
         typeof c.headless === "object" &&
         c.headless !== null,
     );
-    expect(scoped.map((c) => c.name).sort()).toEqual(A2_TIER_PROBES.map((p) => p.name).sort());
+    expect(scoped.map((c) => c.name).sort()).toEqual(
+      [...A2_TIER_PROBES, ...T6_MODALITY_PROBES].map((p) => p.name).sort(),
+    );
     for (const cmd of scoped) {
       const decl = cmd.headless as HeadlessAllowlist;
       // 空对象等价 `true`：看起来像受限声明，其实三形态全子命令都放行。这是
@@ -369,6 +385,53 @@ describe("A2 档：只放行只读子命令", () => {
       mode: "p",
     });
     expect(outcome.kind).toBe("error");
+  });
+});
+
+describe("T6：价值依赖形态的命令（-p 单轮拒绝、长驻放行）", () => {
+  for (const probe of T6_MODALITY_PROBES) {
+    const input = `/${probe.name}`;
+
+    test(`/${probe.name} 在 -p 单轮被拒绝，且说明支持形态与原因`, async () => {
+      const outcome = await resolveHeadlessSlash(input, {
+        commands: COMMANDS,
+        executor: new CommandExecutor(CTX),
+        mode: "p",
+      });
+      expect(outcome.kind).toBe("error");
+      const message = (outcome as { message: string }).message;
+      // ① 告诉用户哪些形态可用；② 说明为什么——不说原因，用户会把「该形态下没有收益」
+      // 误读成权限或实现限制。
+      expect(message).toContain("仅支持：stream-json 多轮 / Bridge 长驻");
+      expect(message).toContain(probe.reasonKeyword);
+    });
+
+    for (const mode of ["stream-json", "bridge"] as const) {
+      test(`/${probe.name} 在 ${mode} 形态放行`, async () => {
+        const outcome = await resolveHeadlessSlash(input, {
+          commands: COMMANDS,
+          executor: new CommandExecutor(CTX),
+          mode,
+        });
+        expect(outcome.kind).not.toBe("error");
+      });
+    }
+
+    test(`/${probe.name} 放行后不产出交互请求、不碰注入表外字段`, async () => {
+      const { result, missing } = await runProbe({ name: probe.name, args: "" });
+      expect(["dialog", "confirm", "clear", "quit"]).not.toContain(result.type);
+      expect(missing).toEqual(DEGRADATION_ALLOWLIST[probe.name] ?? []);
+    });
+  }
+
+  test('modes 声明必须恰好是长驻两形态：加回 "p" 就等于放行净亏/哑操作场景', () => {
+    for (const probe of T6_MODALITY_PROBES) {
+      const cmd = COMMANDS.find((c) => c.name === probe.name);
+      expect(cmd?.headless).toEqual({
+        modes: ["stream-json", "bridge"],
+        reason: expect.any(String),
+      });
+    }
   });
 });
 

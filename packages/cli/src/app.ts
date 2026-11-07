@@ -8691,10 +8691,9 @@ export class App {
         commands,
         executor,
         // 三形态共用本入口，按形态放行的命令（T6 的 /compact、/loop）靠这一项区分。
-        // 信号源与 runHeadless 选择 SDK 路径、runBridge 置进程级标记同源。
+        // 只看 inputFormat：`--output-format stream-json` 单轮也是单轮（见 resolveHeadlessModality）。
         mode: resolveHeadlessModality({
           inputFormat: this.config.inputFormat,
-          outputFormat: this.config.outputFormat,
           bridge: isBridgeSession(),
         }),
         disableSlashCommands: this.config.disableSlashCommands,
@@ -9080,6 +9079,10 @@ export class App {
 
       this.abortController = new AbortController();
       await bridgeRunner.start();
+      // T6：Bridge 是长驻形态，注册定时任务注入器——cron / `/loop` / schedule_wakeup 到点
+      // 触发的 prompt 才真的被执行。注入走 BridgeRunner 自己的队列（与远端消息同一条、串行），
+      // 不另起消费链：两条链谁先谁后、错误怎么报必然漂移。
+      this.setPromptInjector(async (text) => bridgeRunner.injectLocalMessage(text));
       // 成功提示也要剥 query/hash。token 若被写进 --bridge URL，
       // 准入拒绝已经不回显，这里原样打印会在连上之后再漏一次。
       const { stripTokenQuery } = await import("@sid-code/core/bridge/ws-transport.ts");
@@ -9295,6 +9298,12 @@ export class App {
         // 缺陷 7：stdin 空闲上限。默认 0（关闭）——与 maxSessionDurationMs 同一「保活优先」
         // 取向：宿主两轮之间空闲多久是它的自由。CI / 批处理要兜底时显式开。
         idleTimeoutMs: readSdkIdleTimeoutMs(),
+        // T6：stream-json 多轮才有「后续轮」这件事，把定时注入通道交给 App——cron /
+        // `/loop` / schedule_wakeup 到点的 prompt 走主循环的 commandQueue，与宿主消息
+        // 同队列串行执行（不打断正在跑的一轮），输出照常流式写 stdout。
+        onInjectorReady: (inject) => {
+          this.setPromptInjector(async (text) => inject(text));
+        },
       });
       budgetExceeded = outcome.budgetExceeded;
       sdkIncomplete = outcome.incomplete;
