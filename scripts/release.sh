@@ -9,6 +9,7 @@
 #                                                # beta 修复号轻量发布：自动写最小 curated，不交互（见下方「一修一号」）
 #   ./scripts/release.sh --no-bump               # 复用当前版本号，不再 bump（上次已 bump 过、重跑时用）
 #   ./scripts/release.sh --skip-test             # 跳过发布前 bun test 门禁（不推荐，仅救急）
+#   ./scripts/release.sh --skip-remote-sha       # 服务器缺 sha256sum/shasum 时显式放弃远端校验（默认拒绝）
 #   ./scripts/release.sh --allow-dirty           # 允许工作区有未提交改动（默认拒绝，见下方门禁说明）
 #   ./scripts/release.sh --allow-no-curated      # 允许缺用户视角文案（changelog/curated/）；默认缺了就拒绝，
 #                                                # 非交互环境（agent / CI / </dev/null）不再降级为 warn 放行
@@ -270,6 +271,10 @@ DO_TEST=true
 ALLOW_DIRTY=false
 ALLOW_NO_CURATED=false
 NO_COMMIT=false
+# 远端 sha256 校验「缺工具」的显式逃生口（X3-05）。默认关：服务器缺 sha256sum/shasum
+# 时远程校验做不了，那**不是通过**，必须让人先装 coreutils；确实装不了才用这个 flag
+# 把「本次发布没有完整性校验」这件事写到命令行上，而不是让调用环境静默决定。
+SKIP_REMOTE_SHA=false
 DO_PROMOTE=false
 PROMOTE_VERSION=""
 DO_ARCHIVE_EXISTING=false
@@ -297,6 +302,7 @@ while [ $# -gt 0 ]; do
         --skip-test) DO_TEST=false; shift ;;
         --allow-dirty) ALLOW_DIRTY=true; shift ;;
         --allow-no-curated) ALLOW_NO_CURATED=true; shift ;;
+        --skip-remote-sha) SKIP_REMOTE_SHA=true; shift ;;
         --no-commit) NO_COMMIT=true; shift ;;
         --archive-existing) DO_ARCHIVE_EXISTING=true; shift ;;
         --publish-manifest) DO_PUBLISH_MANIFEST=true; shift ;;
@@ -327,6 +333,11 @@ info()  { echo "  $*"; }
 ok()    { echo "  ✅ $*"; }
 warn()  { echo "  ⚠️  $*" >&2; }
 fail()  { echo "  ❌ $*" >&2; exit 1; }
+
+# 远端 sha256 校验的唯一实现（--upload 落地前校验 与 --promote 促升前复核 共用）。
+# 源文件只定义函数；它依赖上面四个日志函数，所以必须在它们之后 source。
+# shellcheck source=lib/remote-sha.sh
+source "$SCRIPT_DIR/lib/remote-sha.sh"
 
 sha256_of() {
     if command -v sha256sum >/dev/null 2>&1; then
@@ -680,27 +691,15 @@ echo __COMPLETE__"
             ;;
     esac
 
-    # ③ sha256 复核（与上传路径同一套写法与降级判据）
+    # ③ sha256 复核（与上传路径共用 scripts/lib/remote-sha.sh —— 同一段远端脚本、
+    #    同一套判定。两份各写一遍时，「服务器缺 sha 工具」在其中一处被放过、另一处
+    #    拦住，而两边都不会报错，正是 X3-05 的形态）
     info "服务器端复核 sha256 ..."
-    _promote_verify_cmd="cd '${_promote_remote_dir}' || exit 1
-for s in *.sha256; do
-    [ -e \"\$s\" ] || continue
-    if command -v sha256sum >/dev/null 2>&1; then
-        sha256sum -c \"\$s\" >/dev/null 2>&1 || { echo \"校验失败: \$s\"; exit 1; }
-    elif command -v shasum >/dev/null 2>&1; then
-        shasum -a 256 -c \"\$s\" >/dev/null 2>&1 || { echo \"校验失败: \$s\"; exit 1; }
-    else
-        echo \"__NO_SHA_TOOL__\"; exit 0
-    fi
-done
-echo __SHA_OK__"
+    _promote_verify_cmd="$(remote_sha_verify_script "$_promote_remote_dir")"
     _promote_verify_out="$(run_ssh "${DEPLOY_SSH_USER}@${DEPLOY_SSH_HOST}" "$_promote_verify_cmd" 2>&1)" \
         || fail "促升前 sha256 复核失败，latest.txt 未改动：${_promote_verify_out}"
-    case "$_promote_verify_out" in
-        *__SHA_OK__*)      ok "sha256 复核通过" ;;
-        *__NO_SHA_TOOL__*) warn "服务器上没有 sha256sum/shasum，跳过复核" ;;
-        *)                 fail "sha256 复核输出异常：${_promote_verify_out}" ;;
-    esac
+    # 失败即 fail 退出；此处的指针还没写，所以语义仍是「latest.txt 未改动」
+    judge_remote_sha_output "$_promote_verify_out" "复核"
 
     # ④ G2 促升门禁：被促升的那份字节必须编自 **main 上的** commit。
     #
@@ -873,7 +872,11 @@ if [ "$DO_UPLOAD_RIPGREP" = true ]; then
             continue
         fi
         SHA="$(sha256_of "$f")"
-        echo "$SHA" > "${f}.sha256"
+        # 格式与 tarball 的 .sha256 一致（`<hash>  <文件名>`）。裸 hash 在
+        # `sha256sum -c` 下会报格式错误：消费方 scripts/fetch-ripgrep.ts 按空白切分
+        # 取第一段，两种格式都能读（向后兼容），但将来 rg 文件若被版本目录的
+        # `for s in *.sha256; … -c` 扫到，裸 hash 就是一条假红。
+        echo "$SHA  rg-${plat}" > "${f}.sha256"
         info "上传 rg-${plat} ..."
         run_scp "$f" "${DEPLOY_SSH_USER}@${DEPLOY_SSH_HOST}:${RG_REMOTE_DIR}/rg-${plat}"
         run_scp "${f}.sha256" "${DEPLOY_SSH_USER}@${DEPLOY_SSH_HOST}:${RG_REMOTE_DIR}/rg-${plat}.sha256"
@@ -1448,29 +1451,16 @@ if [ "$DO_UPLOAD" = true ]; then
 
     # ─── 落地前校验：在服务器上比对 sha256，挡住传输过程中的静默损坏 ───
     # 本地生成过 .sha256，但此前从没在服务器侧验过——传坏了要等用户安装时才发现。
+    # 判定与 --promote 的复核共用 scripts/lib/remote-sha.sh：服务器缺 sha 工具时**不是通过**
+    # （X3-05），要么装一次 coreutils，要么用 --skip-remote-sha 显式放弃并留痕。
+    # 第三个参数是失败时先跑的清理钩子 —— 不清理的话远端会留下半成品目录。
     info "服务器端校验 sha256 ..."
-    _verify_cmd="cd '${_remote_staging}' || exit 1
-for s in *.sha256; do
-    [ -e \"\$s\" ] || continue
-    if command -v sha256sum >/dev/null 2>&1; then
-        sha256sum -c \"\$s\" >/dev/null 2>&1 || { echo \"校验失败: \$s\"; exit 1; }
-    elif command -v shasum >/dev/null 2>&1; then
-        shasum -a 256 -c \"\$s\" >/dev/null 2>&1 || { echo \"校验失败: \$s\"; exit 1; }
-    else
-        echo \"__NO_SHA_TOOL__\"; exit 0
-    fi
-done
-echo __SHA_OK__"
+    _verify_cmd="$(remote_sha_verify_script "$_remote_staging")"
     _verify_out="$(run_ssh "${DEPLOY_SSH_USER}@${DEPLOY_SSH_HOST}" "$_verify_cmd" 2>&1)" || {
         _cleanup_remote_staging
         fail "服务器端 sha256 校验失败（产物可能在传输中损坏）：${_verify_out}"
     }
-    case "$_verify_out" in
-        *__SHA_OK__*)        ok "sha256 校验通过（${#TARGETS[@]} 个平台产物）" ;;
-        *__NO_SHA_TOOL__*)   warn "服务器上没有 sha256sum/shasum，跳过落地前校验" ;;
-        *)                   _cleanup_remote_staging
-                             fail "服务器端 sha256 校验输出异常：${_verify_out}" ;;
-    esac
+    judge_remote_sha_output "$_verify_out" "落地前校验（${#TARGETS[@]} 个平台产物）" _cleanup_remote_staging
 
     # ─── 原子切换：旧目录先挪走，新目录 mv 到位，成功后再删旧 ───
     info "原子切换到 ${DEPLOY_PATH}/${VERSION} ..."
