@@ -39,13 +39,13 @@ function advance(opts: {
 }
 
 /** 造一条 todo 通道的回注事件 */
-function nag(opts: { turnsSinceLastTodoWrite: number; afterCompact?: boolean }): Ev {
+function nag(opts: { assistantMsgsSinceTodoWrite: number | null; afterCompact?: boolean }): Ev {
   return {
     event: "NoProgressNagInjected",
     data: {
       kind: "todo",
-      turnsSinceLastTodoWrite: opts.turnsSinceLastTodoWrite,
-      turnsSinceLastReminder: 8,
+      assistantMsgsSinceTodoWrite: opts.assistantMsgsSinceTodoWrite,
+      absTurnsSinceReminder: 8,
       afterCompact: opts.afterCompact ?? false,
     },
   };
@@ -94,7 +94,7 @@ describe("口径 2：只有坏信号时仍要出节", () => {
   });
 
   it("只有回注、零推进 → 出节（正是缺陷现场的形态：建完清单再不碰）", () => {
-    const s = aggregateTodoStats([nag({ turnsSinceLastTodoWrite: 30 })]);
+    const s = aggregateTodoStats([nag({ assistantMsgsSinceTodoWrite: 30 })]);
     expect(s!.advances).toBe(0);
     expect(s!.reminders).toBe(1);
     expect(s!.maxTurnsSinceWrite).toBe(30);
@@ -162,28 +162,42 @@ describe("口径 4：推进间隔按 absoluteTurn，跨消息不算负数", () =
   });
 });
 
-describe("口径 5：停滞深度排除 -1 哨兵值", () => {
-  it("-1（埋点里代表 Infinity=从未写过清单）不参与最大值", () => {
-    // loop.ts 把 Infinity 写成 -1。若不排除，Math.max 会把最大停滞算成 -1，
+describe("口径 5：停滞深度排除 null / 旧 -1 哨兵值", () => {
+  it("null（历史里找不到 todo_write）不参与最大值", () => {
+    // 2026-11-07（T4）：埋点从 `-1` 改成 `null`，两种原因（never / compacted_away）
+    // 由 todoWriteDistanceReason 区分。若不排除，`num(null)` 会得到 0，最大值算成 0，
     // 反而显示得比真实情况"更健康"。
     const s = aggregateTodoStats([
-      nag({ turnsSinceLastTodoWrite: -1 }),
-      nag({ turnsSinceLastTodoWrite: 14 }),
-      nag({ turnsSinceLastTodoWrite: 8 }),
+      nag({ assistantMsgsSinceTodoWrite: null }),
+      nag({ assistantMsgsSinceTodoWrite: 14 }),
+      nag({ assistantMsgsSinceTodoWrite: 8 }),
     ])!;
     expect(s.maxTurnsSinceWrite).toBe(14);
   });
 
-  it("全是 -1 → undefined（没有可用的停滞距离）", () => {
-    const s = aggregateTodoStats([nag({ turnsSinceLastTodoWrite: -1 })])!;
+  it("全是 null → undefined（没有可用的停滞距离）", () => {
+    const s = aggregateTodoStats([nag({ assistantMsgsSinceTodoWrite: null })])!;
     expect(s.maxTurnsSinceWrite).toBeUndefined();
+  });
+
+  it("历史事件仍是旧字段名 + -1，读取侧照常兼容（T4 兼容期）", () => {
+    // 兼容期：新事件写 assistantMsgsSinceTodoWrite，历史轨迹里是
+    // turnsSinceLastTodoWrite + -1。digest 两种都认，否则旧数据整段失效。
+    const legacy = (v: number): Ev => ({
+      event: "NoProgressNagInjected",
+      data: { kind: "todo", turnsSinceLastTodoWrite: v, turnsSinceLastReminder: 8 },
+    });
+    const s = aggregateTodoStats([legacy(-1), legacy(14), legacy(8)])!;
+    expect(s.maxTurnsSinceWrite).toBe(14);
+    const onlyNever = aggregateTodoStats([legacy(-1)])!;
+    expect(onlyNever.maxTurnsSinceWrite).toBeUndefined();
   });
 
   it("压缩旁路回注单独计数（它不受阈值管辖，混算会高估通道活跃度）", () => {
     const s = aggregateTodoStats([
-      nag({ turnsSinceLastTodoWrite: 10 }),
-      nag({ turnsSinceLastTodoWrite: 2, afterCompact: true }),
-      nag({ turnsSinceLastTodoWrite: 9 }),
+      nag({ assistantMsgsSinceTodoWrite: 10 }),
+      nag({ assistantMsgsSinceTodoWrite: 2, afterCompact: true }),
+      nag({ assistantMsgsSinceTodoWrite: 9 }),
     ])!;
     expect(s.reminders).toBe(3);
     expect(s.remindersAfterCompact).toBe(1);
@@ -197,9 +211,9 @@ describe("缺陷现场回归：18 项全 pending、整场只推进 1 次", () =>
     // 或靠 progress 文件被写过几次来反推。
     const s = aggregateTodoStats([
       advance({ writeVersion: 1, total: 18, completed: 0, absoluteTurn: 3 }),
-      nag({ turnsSinceLastTodoWrite: 11 }),
-      nag({ turnsSinceLastTodoWrite: 19 }),
-      nag({ turnsSinceLastTodoWrite: 27 }),
+      nag({ assistantMsgsSinceTodoWrite: 11 }),
+      nag({ assistantMsgsSinceTodoWrite: 19 }),
+      nag({ assistantMsgsSinceTodoWrite: 27 }),
       gateRetry(),
       gateRetry(),
     ])!;

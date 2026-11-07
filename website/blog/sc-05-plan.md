@@ -1768,8 +1768,8 @@ export const TODO_REMINDER_CONFIG = {
   TURNS_BETWEEN_REMINDERS: 10,
 } as const
 
-if (turnsSinceLastTodoWrite >= TODO_REMINDER_CONFIG.TURNS_SINCE_WRITE &&
-    turnsSinceLastReminder  >= TODO_REMINDER_CONFIG.TURNS_BETWEEN_REMINDERS) {
+if (assistantMsgsSinceTodoWrite >= TODO_REMINDER_CONFIG.TURNS_SINCE_WRITE &&
+    absTurnsSinceReminder     >= TODO_REMINDER_CONFIG.TURNS_BETWEEN_REMINDERS) {
   return [{ type: 'todo_reminder', content: todos, itemCount: todos.length }]
 }
 ```
