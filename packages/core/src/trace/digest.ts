@@ -129,6 +129,12 @@ export interface TrajMeta {
   total_tokens_received?: number;
   /** 累计 prompt（flow）。`total_tokens_sent` 是末轮快照（stock），两者不可混用 */
   total_cumulative_prompt_tokens?: number;
+  /**
+   * 累计 prompt（flow，**跨 provider 归一化**）。
+   * 与 `total_cumulative_prompt_tokens` 的差别只在 Anthropic（后者少一个缓存量）。
+   * 本字段上线前的轨迹没有它 → undefined，读侧退回 flow 原始口径。
+   */
+  prompt_total?: number;
   total_cache_read_tokens?: number;
   total_reasoning_tokens?: number;
   /** 旁路调用（fork / 标题 / 摘要等）的独立账，不含在 total_cost_usd 里 */
@@ -1486,6 +1492,11 @@ export interface Digest {
    * 老轨迹没有该字段时为 undefined，渲染退回 tokensSent 并显式标「末轮」。
    */
   tokensSentCumulative?: number;
+  /**
+   * 累计 prompt（flow，**跨 provider 归一化**）。与 `tokensSentCumulative` 的差别只在
+   * Anthropic（后者少一个缓存量）。本字段上线前的轨迹为 undefined，读侧退回旧口径。
+   */
+  promptTotal?: number;
   tokensReceived: number;
   /** 主循环缓存命中 token 累计；与 tokensSentCumulative 相除即缓存命中率 */
   cacheReadTokens?: number;
@@ -4275,6 +4286,8 @@ export function buildDigest(ref: SessionRef, full: boolean, paths: DigestPaths):
     costSource,
     tokensSent,
     tokensSentCumulative: meta.total_cumulative_prompt_tokens,
+    // 归一化 flow；老轨迹没有该字段 → undefined，读侧退回 tokensSentCumulative
+    promptTotal: meta.prompt_total,
     tokensReceived: meta.total_tokens_received ?? traj.info?.model_stats?.tokens_received ?? 0,
     cacheReadTokens: meta.total_cache_read_tokens,
     reasoningTokens: meta.total_reasoning_tokens,

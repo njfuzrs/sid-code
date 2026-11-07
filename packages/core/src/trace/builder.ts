@@ -197,6 +197,16 @@ export interface TraceMetadata {
    * 此字段与 cost 同为 flow，用于"花了多少钱 ↔ 累计喂了多少 token"的可比对照。
    */
   total_cumulative_prompt_tokens: number;
+  /**
+   * 累计输入 prompt token（flow，**跨 provider 归一化**）。
+   *
+   * 与上面 `total_cumulative_prompt_tokens` 的差别只在 Anthropic：后者的每轮增量是 provider
+   * 原始 `input_tokens`（未命中余量），本字段每轮用
+   * `normalizeCacheUsage(usage, provider).promptTotal` 累加（未命中+命中+写入），
+   * OpenAI 族则等于 prompt_tokens 全量 —— 因此跨 provider / 跨会话可比。
+   * 缺省（本字段上线前的轨迹）为 undefined，读侧退回 `total_cumulative_prompt_tokens`。
+   */
+  prompt_total?: number;
   total_cache_read_tokens: number;
   total_cache_creation_tokens: number;
   total_cost_usd: number;
@@ -487,6 +497,13 @@ export interface TrajectoryMetaOutput {
    * 切勿用 total_cost_usd / total_tokens_sent（stock÷flow 会得到错误单价）。
    */
   total_cumulative_prompt_tokens: number;
+  /**
+   * 累计输入 prompt token（flow，**跨 provider 归一化**）：每轮
+   * `normalizeCacheUsage(usage, provider).promptTotal` 累加。
+   * 与 `total_cumulative_prompt_tokens` 的差别只在 Anthropic（后者少一个缓存量），
+   * 需要跨 provider / 跨会话可比时读本字段。本字段上线前的轨迹为 undefined。
+   */
+  prompt_total?: number;
   total_cost_usd: number;
   /**
    * S13（20261016 方案 PR-8）：`total_cost_usd` 的统计范围 —— 同名字段在一个会话里会换口径，必须随值落盘。
@@ -1060,6 +1077,8 @@ export function buildTrajectory(
     total_tokens: tokensSent + tokensReceived,
     // §6.3：累计 prompt（flow），与 total_cost_usd 同口径，供外部做可比单价除法
     total_cumulative_prompt_tokens: metadata.total_cumulative_prompt_tokens,
+    // 归一化 flow；老 metadata（本字段上线前）没有 → 落 0，读侧据 undefined/0 退回旧字段
+    prompt_total: metadata.prompt_total ?? 0,
     total_cost_usd: metadata.total_cost_usd,
     ...(metadata.cost_scope ? { cost_scope: metadata.cost_scope } : {}),
     // G2：无子代理的会话不落这两个字段（形状不变）

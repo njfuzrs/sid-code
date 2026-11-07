@@ -8213,6 +8213,10 @@ export class App {
       total_tokens_sent: totalUsage.inputTokens,
       total_tokens_received: totalUsage.outputTokens,
       total_cumulative_prompt_tokens: this.sessionState.getCumulativePromptTokens(),
+      // 同口径但**跨 provider 归一化**（每轮 normalizeCacheUsage().promptTotal 累加）。
+      // total_cumulative_prompt_tokens 是 provider 原始口径：Anthropic 的每轮增量只有未命中
+      // 余量，跨 provider / 跨会话相加会系统性偏小。与 cost 做除法或跨会话聚合读这个字段。
+      prompt_total: this.sessionState.getNormalizedCacheUsage().promptTotal,
       total_cache_read_tokens: totalUsage.cacheReadInputTokens ?? 0,
       total_cache_creation_tokens: totalUsage.cacheCreationInputTokens ?? 0,
       total_cost_usd: this.sessionState.totalCostUSD,
