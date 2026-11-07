@@ -201,6 +201,9 @@ function main(argv: string[]): number {
     const r = judgePromote({ info, isAncestorOfMain: isAncestor, version });
     for (const reason of r.reasons) console.error(`     ${reason}`);
     if (!r.ok) {
+      // 机器可读标记：release.sh 只在 `--promote-unverified` 下才允许对这一种拒绝放行
+      // （「判据没跑」≠「判据判负」）。没有这个标记，flag 会连带放行真正的分支包。
+      if (r.unverified) console.error("  __PROMOTE_UNVERIFIED__");
       console.error(`  ⛔ promote 门禁未通过（v${version}）`);
       return 2;
     }

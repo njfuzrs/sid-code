@@ -165,8 +165,12 @@ export class EnterPlanModeTool implements Tool {
     // 判据是「有内容」。从前用 existsSync，而 enter() 每次都生成新路径，这个分支实际永远为 false。
     const { PlanModeManager } = await import("../plan/state.ts");
     const planExists = PlanModeManager.hasPlanContent(planPath);
+    // 重入规划态时磁盘上可能还留着上一份非空计划：它既可能是本任务的延续，
+    // 也可能是上个任务留下的污染源。这里把路径交给引导文案，由模型先判断再决定覆盖还是沿用；
+    // 判据与取值都在 enter() 里算好（见 PlanModeManager.getStalePlanPath）。
+    const stalePlanPath = this.planManager.getStalePlanPath();
     const { buildPlanModePrompt } = await import("../plan/prompt.ts");
-    const base = buildPlanModePrompt(planPath || "", planExists);
+    const base = buildPlanModePrompt(planPath || "", planExists, stalePlanPath);
     return {
       output: topicLooksEmpty ? `${base}\n\n注意：${WORKTREE_CONFUSION_HINT}` : base,
     };

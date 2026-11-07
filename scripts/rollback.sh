@@ -190,7 +190,12 @@ if [ "$TARGET_VERSION" = "$CUR_POINTER_VALUE" ]; then
     exit 0
 fi
 
-PLATFORMS="darwin-arm64 darwin-x64 linux-x64 linux-arm64"
+# 平台清单与完整性检查命令来自**唯一事实源**（与 release.sh --promote 同一份实现，
+# 见 scripts/lib/targets.sh）。上面那句「判据与 release.sh --promote 一致」曾经只是
+# 一句注释，而这里硬编码的平台清单已经漏了 linux-x64-baseline（5 vs 4，X3-04）——
+# 判据复制一份就必然分叉，注释拦不住，共享文件能。
+# shellcheck source=lib/targets.sh
+. "$SCRIPT_DIR/lib/targets.sh"
 
 # ─── 回暖（B46 P3）：服务器没有该版本目录 → 从 OSS 归档拉回 + sha256 校验后原子落位 ───
 #
@@ -209,17 +214,7 @@ else
     warn "回暖脚本上传失败（继续走目录检查）"
 fi
 
-_check_cmd="set -e
-[ -d '${DEPLOY_PATH}/${TARGET_VERSION}' ] || { echo __NO_DIR__; exit 0; }
-cd '${DEPLOY_PATH}/${TARGET_VERSION}'
-_missing=''
-for p in ${PLATFORMS}; do
-    f=\"sid-code-${TARGET_VERSION}-\$p.tar.gz\"
-    [ -f \"\$f\" ] || _missing=\"\$_missing \$f\"
-    [ -f \"\$f.sha256\" ] || _missing=\"\$_missing \$f.sha256\"
-done
-if [ -n \"\$_missing\" ]; then echo \"__MISSING__\$_missing\"; exit 0; fi
-echo __COMPLETE__"
+_check_cmd="$(release_dir_check_cmd "${DEPLOY_PATH}/${TARGET_VERSION}" "${TARGET_VERSION}")"
 
 _check_out="$(run_ssh "$REMOTE" "$_check_cmd" 2>&1)" || fail "无法检查 v${TARGET_VERSION}：${_check_out}"
 case "$_check_out" in
@@ -230,7 +225,8 @@ case "$_check_out" in
         fail "v${TARGET_VERSION} 产物不完整，拒绝回滚到它（缺：${_check_out#*__MISSING__}）"
         ;;
     *__COMPLETE__*)
-        ok "v${TARGET_VERSION} 产物齐全（4 个平台）"
+        # 平台数量从清单派生：写死「4 个」时清单已经变成 5，日志却还在自报 4（X3-04）。
+        ok "v${TARGET_VERSION} 产物齐全（${#TARGETS[@]} 个平台）"
         ;;
     *)
         fail "产物完整性检查输出异常：${_check_out}"

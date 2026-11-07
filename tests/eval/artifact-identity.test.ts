@@ -555,7 +555,30 @@ describe("G2 发布通道门禁", () => {
       version: "0.1.602",
     });
     expect(r.ok).toBe(false);
+    // unverified 让调用方区分「没跑」与「判负」：只有前者允许被
+    // release.sh --promote-unverified 显式放行（本次新增的显式逃生口）。
+    expect(r.unverified).toBe(true);
     expect(r.reasons.join(" ")).toContain("无法验证");
+  });
+
+  test("promote：两种拒绝可区分（分支包不带 unverified 标记）", () => {
+    const branchPkg = judgePromote({
+      info: parseBuildInfoLine(line({ branch: "feat-x", origin: "release" })),
+      isAncestorOfMain: false,
+      version: "0.1.602",
+    });
+    const unmeasurable = judgePromote({
+      info: parseBuildInfoLine(line({ origin: "release" })),
+      isAncestorOfMain: null,
+      version: "0.1.602",
+    });
+    expect(branchPkg.ok).toBe(false);
+    expect(branchPkg.unverified).toBeUndefined();
+    expect(unmeasurable.ok).toBe(false);
+    expect(unmeasurable.unverified).toBe(true);
+    // 两者的 reason 必须说清是哪种，不能都只给一句「拒绝」
+    expect(branchPkg.reasons.join(" ")).toContain("分支包");
+    expect(unmeasurable.reasons.join(" ")).not.toContain("分支包");
   });
 
   // ── pickMainRef：G2 问哪个 ref ────────────────────────────────────────────
@@ -585,13 +608,15 @@ describe("G2 发布通道门禁", () => {
   test("pickMainRef：两个都取不到 → degraded，judgePromote 据此拒绝", () => {
     const r = pickMainRef(probeWith({}));
     expect(r.degraded).toBe(true);
-    // 此时调用方的 revParse 会落到 null，judgePromote **拒** —— 「没量到」不是绿灯
+    // 此时调用方的 revParse 会落到 null，judgePromote **拒** —— 「没量到」不是绿灯；
+    // 且带 unverified=true：只有显式 --promote-unverified 才允许放行。
     const j = judgePromote({
       info: parseBuildInfoLine(line({ origin: "release" })),
       isAncestorOfMain: null,
       version: "0.1.603",
     });
     expect(j.ok).toBe(false);
+    expect(j.unverified).toBe(true);
     expect(j.reasons.join(" ")).toContain("无法验证");
   });
 

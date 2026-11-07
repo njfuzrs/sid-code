@@ -13,8 +13,15 @@
  *
  * @param planFilePath 计划文件路径
  * @param planExists 计划文件是否已存在
+ * @param stalePlanPath 同项目下发现的「上一份非空计划」路径；没有则 null/缺省。
+ *   只用于重入时的一次性过期引导：判据必须是**进入之前**已有的非空文件，
+ *   `planExists` 用的是本次占位文件，进入后它恒存在但为空，不能拿它判旧计划。
  */
-export function buildPlanModePrompt(planFilePath: string, planExists: boolean): string {
+export function buildPlanModePrompt(
+  planFilePath: string,
+  planExists: boolean,
+  stalePlanPath?: string | null,
+): string {
   return `## 计划模式已激活
 
 你当前处于计划模式。用户希望你先制定方案再执行——你**绝对不能**进行任何编辑
@@ -35,7 +42,27 @@ ${
     : `尚无计划文件。请使用 write 工具在 ${planFilePath} 创建计划。`
 }
 注意：这是你唯一允许编辑的文件。
+${
+  stalePlanPath
+    ? `
+## ⚠️ 上一份计划还留在磁盘上（先判断它作不作数）
 
+这个项目下已有一份**非空**旧计划：${stalePlanPath}
+
+它可能是上一个任务留下的（与本次无关），也可能是你这次要接着做的事。**不要默认它就是当前任务的计划——**
+目录里有文件不等于那是本次任务的计划，直接接着改会把上一个任务的假设带进本次方案。
+写本次计划之前，按三步处理：
+
+1. 用 read 读它，看它讲的是哪个任务；
+2. 判断它与当前任务的关系（无关 / 同一件事的延续 / 部分重叠）；
+3. 二选一：
+   - **无关**：直接用 write 覆盖重写 ${planFilePath}，不要在那份旧计划上继续改；
+   - **相关**：把仍然有效的部分搬进 ${planFilePath}，并删掉已经过时的段落——不要把过期内容带进新计划。
+
+处理完这一次就不必再提，按下面的工作流程继续。
+`
+    : ""
+}
 ## 工作流程
 
 ### 阶段 1：理解需求
