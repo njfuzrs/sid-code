@@ -76,6 +76,8 @@
  * 所以只对「解包后确实是 number 类型」的字段动手。
  */
 
+import type { CoerceHit } from "./nullish-normalize.ts";
+
 /** zod v4 内部 def 的鸭子类型视图（与 nullish-normalize.ts 保持同一套访问路径） */
 interface ZodDefLike {
   type?: string;
@@ -171,10 +173,24 @@ function parseIntendedNumber(raw: string): number | undefined {
 const MAX_RECURSE_DEPTH = 16;
 
 /**
+ * 一次归一里每个字段的命中统计。
+ *
+ * 只记字段路径与次数，**不记参数值**：值已经在 messages 里，重复落盘只放大轨迹体积，
+ * 而「哪个字段最常被归一」用路径聚合就够了（与 `ToolInputAliasApplied` 同口径）。
+ *
+ * 与 `nullish-normalize.ts` 的 `CoerceHit` 是同一个类型：两层归一的统计形状一致，
+ * 事件消费方不必区分来源层。
+ */
+export type { CoerceHit } from "./nullish-normalize.ts";
+
+/**
  * 把 input 里「schema 声明为 number 而模型传了数字形态字符串」的字段归一成 number。
  *
  * 纯函数：不修改传入的 input，有改动时返回浅拷贝（无改动则原样返回同一引用）。
  * 任何非预期结构一律原样返回，保证这一层永不成为新的失败源。
+ *
+ * 返回 `{ value, hits }` 而不是裸值：`hits` 是 `ToolInputCoerced` 事件的取数源
+ * （哪个字段被归一了几次），形状与 `normalizeInputAliases` 的 `{ value, hits }` 对齐。
  *
  * 递归范围与 `nullish-normalize.ts` 一致（object.properties / array.items /
  * tuple.items），union / record 不下钻——union 无法确定模型走哪个分支，
@@ -183,11 +199,32 @@ const MAX_RECURSE_DEPTH = 16;
  * @param schema 工具的原始 zod schema（`tool.zodSchema`）
  * @param input 模型给出的原始入参（通常已过 normalizeStrictNulls）
  */
-export function normalizeNumericStrings(schema: unknown, input: unknown): unknown {
-  return normalizeValue(schema, input, 0);
+export function normalizeNumericStrings(
+  schema: unknown,
+  input: unknown,
+): { value: unknown; hits: CoerceHit[] } {
+  const stats = new Map<string, number>();
+  const value = normalizeValue(schema, input, 0, "", stats);
+  return { value, hits: [...stats].map(([field, count]) => ({ field, count })) };
 }
 
-function normalizeValue(schema: unknown, value: unknown, depth: number): unknown {
+/** 字段路径拼接：object 层级用 `.` 分隔，数组元素路径由调用方拼成 `field[]` */
+function joinPath(base: string, key: string): string {
+  return base.length === 0 ? key : `${base}.${key}`;
+}
+
+function bump(stats: Map<string, number>, field: string): void {
+  const key = field.length === 0 ? "(root)" : field;
+  stats.set(key, (stats.get(key) ?? 0) + 1);
+}
+
+function normalizeValue(
+  schema: unknown,
+  value: unknown,
+  depth: number,
+  path: string,
+  stats: Map<string, number>,
+): unknown {
   if (depth > MAX_RECURSE_DEPTH) return value;
 
   const inner = unwrapToInner(schema);
@@ -207,7 +244,9 @@ function normalizeValue(schema: unknown, value: unknown, depth: number): unknown
   if (def.type === "number") {
     if (typeof value !== "string") return value;
     const parsed = parseIntendedNumber(value);
-    return parsed === undefined ? value : parsed;
+    if (parsed === undefined) return value;
+    bump(stats, path);
+    return parsed;
   }
 
   // ── object：逐字段递归 ──
@@ -225,7 +264,7 @@ function normalizeValue(schema: unknown, value: unknown, depth: number): unknown
         result[key] = raw;
         continue;
       }
-      const normalized = normalizeValue(fieldSchema, raw, depth + 1);
+      const normalized = normalizeValue(fieldSchema, raw, depth + 1, joinPath(path, key), stats);
       if (normalized !== raw) changed = true;
       result[key] = normalized;
     }
@@ -236,9 +275,12 @@ function normalizeValue(schema: unknown, value: unknown, depth: number): unknown
   // ── array：对每个元素递归（元素 schema 统一） ──
   if (def.type === "array" && def.element !== undefined) {
     if (!Array.isArray(value)) return value;
+    // 元素路径统一记 `field[]`：同一数组里的多个元素命中聚合成同一条统计
+    //（下标对「哪个字段最常被归一」没有增量，却会让事件条数随数组长度膨胀）
+    const itemPath = path.length === 0 ? "[]" : `${path}[]`;
     let changed = false;
     const result = value.map((item) => {
-      const normalized = normalizeValue(def.element, item, depth + 1);
+      const normalized = normalizeValue(def.element, item, depth + 1, itemPath, stats);
       if (normalized !== item) changed = true;
       return normalized;
     });
@@ -248,11 +290,12 @@ function normalizeValue(schema: unknown, value: unknown, depth: number): unknown
   // ── tuple：按位置对应各自的 schema ──
   if (def.type === "tuple" && Array.isArray(def.items)) {
     if (!Array.isArray(value)) return value;
+    const itemPath = path.length === 0 ? "[]" : `${path}[]`;
     let changed = false;
     const result = value.map((item, i) => {
       const itemSchema = def.items?.[i];
       if (itemSchema === undefined) return item;
-      const normalized = normalizeValue(itemSchema, item, depth + 1);
+      const normalized = normalizeValue(itemSchema, item, depth + 1, itemPath, stats);
       if (normalized !== item) changed = true;
       return normalized;
     });
