@@ -1,5 +1,6 @@
 import type { LocalCommandModule } from "../../types.ts";
 import type { Message } from "@sid-code/core/llm/types.ts";
+import { errorText } from "../../result.ts";
 
 /**
  * /btw（Side Question）命令实现（按需加载）
@@ -77,14 +78,13 @@ const mod: LocalCommandModule = {
       // 取 forked agent 最后一条 assistant 消息的文本作为答案。
       const answer = extractAnswer(result.messages);
       if (!answer) {
-        return { type: "text", value: "（旁路提问未返回内容，可能上下文不足或已超时）" };
+        // 调了 LLM 却没拿到答案 = 业务失败：走 errorText，无头下退出码非 0
+        // （此前返回 text，CI 拿到的是假成功，见缺陷 D2 的口径）。
+        return errorText("旁路提问未返回内容，可能上下文不足或已超时");
       }
       return { type: "text", value: answer };
     } catch (err) {
-      return {
-        type: "text",
-        value: `旁路提问失败: ${(err as Error)?.message ?? String(err)}`,
-      };
+      return errorText(`旁路提问失败: ${(err as Error)?.message ?? String(err)}`);
     }
   },
 };

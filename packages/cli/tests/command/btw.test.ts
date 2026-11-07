@@ -54,6 +54,8 @@ describe("/btw 命令定义", () => {
     expect(btwDef.disableModelInvocation).toBeUndefined();
     // D10：requiresArgs 回填的另一半——补全列表要能告诉用户该填什么
     expect(btwDef.argumentHint).toBe("你的问题");
+    // T8：无头三形态放行（只读问答，依赖的字段全部已注入；失败走 errorText 退非 0）
+    expect(btwDef.headless).toBe(true);
   });
 });
 
@@ -74,6 +76,27 @@ describe("/btw 命令执行", () => {
     const result = await mod.call("这是什么类型?", ctx);
     expect(result.type).toBe("text");
     expect((result as { value: string }).value).toContain("上下文");
+  });
+
+  test("forked agent 没产出文本 → error（无头下退非 0，不是假成功）", async () => {
+    const mod = await loadBtw();
+    // 完整但空文本的事件序列：forked agent 正常结束（不触发漏斗重试），
+    // extractAnswer 因文本为空返回 null → errorText。
+    const provider = mockProvider([
+      [
+        { type: "content_block_start", index: 0, content_block: { type: "text", text: "" } },
+        { type: "content_block_stop", index: 0 },
+        { type: "message_delta", delta: { stop_reason: "end_turn" }, usage: { outputTokens: 1 } },
+      ],
+    ]);
+    const ctx = makeCtx(provider, [
+      { role: "user", content: [{ type: "text", text: "之前的对话" }] },
+    ]);
+    const result = await mod.call("这个问题没有答案", ctx);
+    expect(result.type).toBe("error");
+    // T2 口径：error.message 是完整展示文本（含「错误: 」前缀）
+    expect((result as { message: string }).message).toContain("错误: ");
+    expect((result as { message: string }).message).toContain("未返回内容");
   });
 
   test("基于上下文回答，返回 forked agent 的文本答案", async () => {
