@@ -59,6 +59,8 @@ export interface RunOutput {
   configDir: string;
   /** 假 HOME。断言「沙箱外写入没有落盘」这类家目录状态用（B2） */
   homeDir: string;
+  /** `after` 各步骤的结果（与 `after` 同序）。主运行的 stdout/stderr/exitCode 在上面 */
+  steps: StepOutput[];
 }
 
 export interface SettingsContext {
@@ -86,6 +88,28 @@ export interface DaemonStep {
   /** `daemon.log` 出现此正则即停 daemon；超时也停，结果交给断言判 */
   until: RegExp;
   timeoutMs: number;
+}
+
+/**
+ * 主 `-p` 跑完之后，在同一隔离环境里再跑一次 `-p`（「重启」）。
+ * 为 A10「删掉已补入的键，重启后不再加回」加：判据跨两次进程，单次运行看不到。
+ */
+export interface PrintStep {
+  kind: "print";
+  /** 这次运行的回放夹具，相对用例目录；同样做 `${CASE_ROOT}` 替换与越界校验 */
+  replay: string;
+  argv: string[];
+  /** 运行前对磁盘状态的准备（如手动删掉 settings.json 里的某个键） */
+  prepare?: (ctx: { repoRoot: string; configDir: string }) => void;
+}
+
+export type AfterStep = DaemonStep | PrintStep;
+
+/** 每个 `after` 步骤的进程结果，按顺序。daemon 步骤的 stderr 是 daemon 自己的输出 */
+export interface StepOutput {
+  kind: AfterStep["kind"];
+  exitCode: number;
+  stderr: string;
 }
 
 export interface SmokeCase {
@@ -124,5 +148,5 @@ export interface SmokeCase {
   };
   mutations: Mutation[];
   /** 主运行之后按序执行的步骤。断言在全部步骤结束后统一执行 */
-  after?: DaemonStep[];
+  after?: AfterStep[];
 }
