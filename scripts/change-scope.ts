@@ -96,9 +96,18 @@ export function parseArgs(argv: string[]): { base: string; head: string } {
     if (argv[i] === "--base") base = argv[++i] ?? "";
     else if (argv[i] === "--head") head = argv[++i] ?? "HEAD";
   }
+  // `AFFECTED_TESTS_BASE`：给**间接调用**留的注入点（X3-15）。
+  //
+  // 为什么需要它：`bun run affected-tests:run` 的 base 只能来自 package.json 里写死的
+  // 命令行，测试没法在不改 package.json 的前提下验证「base 解析失败时接线是否非 0 退出」
+  // —— 而那正是这条接线唯一的失效形态。有了环境变量，测试可以真跑整条 `bun run` 链路
+  // 并注入一个不存在的 base。优先级：`--base` > 环境变量 > 约定主干。
+  //
+  // 只认这一个环境变量，不扩散成通用配置：它唯一的用途是把选测的 base 指到别的 ref。
+  const envBase = (process.env.AFFECTED_TESTS_BASE ?? "").trim();
   // 唯一的默认值是本仓的约定主干。它必须真的能解析（下面 rev-parse 会验），
   // 解析不了就报错——不再往 main / master / HEAD~1 之类降级兜底。
-  return { base: base || "origin/main", head };
+  return { base: base || envBase || "origin/main", head };
 }
 
 /** 计算改动范围。base 解析失败会抛，调用方负责给出可操作的错误信息。 */

@@ -504,7 +504,17 @@ export function buildSnapshot(opts: BuildOptions = {}): NorthstarSnapshot {
   }
 
   // ── 底座 ──
-  const defenseCount = index.filter((e) => e.defense_triggered === true).length;
+  //
+  // X3-16：防线触发率的分母**限定在审计核查类任务**（`northstar/README.md` 的规定），
+  // 不是全部会话。拿 `index.length` 当分母时，曲线量的是**会话构成**：某个周期多跑了
+  // 一批非审计会话，分母膨胀、触发率下降，而防线本身一行没改。`n` 同理必须是审计行数 ——
+  // 虚报的 n 会让这个数绕过 `MIN_SAMPLES_FOR_CONCLUSION`（同 `traj_corrupt_rate` 的教训）。
+  //
+  // `is_audit` 是三态：键不存在 = 未检测（headless 增量行 / 没跑完的会话），
+  // 排除出分母。把"不知道"算成"非审计"会让分母悄悄膨胀，正是本缺陷的形态。
+  const auditDetected = index.filter((e) => typeof e.is_audit === "boolean");
+  const auditSessions = auditDetected.filter((e) => e.is_audit === true);
+  const defenseCount = auditSessions.filter((e) => e.defense_triggered === true).length;
 
   // P2-14：损坏率的分母是**做过损坏检测的行**，不是索引全部行。
   //
@@ -652,10 +662,13 @@ export function buildSnapshot(opts: BuildOptions = {}): NorthstarSnapshot {
       conflict_sessions_with_field: withConflict.length,
     },
     foundation: {
+      // 口径变了 source 串必须跟着变（仓库硬规矩）：旧串 `${IDX}:defense_triggered`
+      // 读起来像"数了全部会话里的 true"，而分母已收窄到审计核查类会话。
+      // 断点说明：`northstar/v*.json` 里早于本口径的该指标不能和新值画在一条曲线上。
       defense_trigger_rate: metric(
-        index.length > 0 ? defenseCount / index.length : null,
-        index.length,
-        `${IDX}:defense_triggered`,
+        auditSessions.length > 0 ? defenseCount / auditSessions.length : null,
+        auditSessions.length,
+        `${IDX}:defense_triggered ÷ is_audit（仅已检测行 · 分母=审计核查类会话）`,
         "ratio",
       ),
       // 口径变了 source 串必须跟着变（仓库硬规矩）：旧串 `session-index.jsonl:traj_corrupt`

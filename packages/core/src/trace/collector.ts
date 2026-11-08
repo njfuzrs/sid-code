@@ -2794,6 +2794,9 @@ export class TraceCollector {
           ttft: { p50: m?.ttft_p50, p95: m?.ttft_p95, n: m?.ttft_n },
           e2e: { p50: m?.e2e_p50, p95: m?.e2e_p95, n: m?.e2e_n },
           defense_triggered: m?.defenseTriggered,
+          // X3-16：防线触发率的**分母**口径，与分子同源（都来自本次 digest）。
+          // `m` 为 undefined 时是 undefined = 未检测，键不落盘；增量路径根本不传。
+          is_audit: m?.isAudit,
           // S1 L1：只有本路径跑过 digest，增量路径不给（缺失 ≠ 0）
           short_text_end_turns: m?.short_text_end_turns,
           end_turn_n: m?.end_turn_n,
