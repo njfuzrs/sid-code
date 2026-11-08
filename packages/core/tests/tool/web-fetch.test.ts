@@ -4,10 +4,16 @@
  */
 
 import { describe, test, expect, mock, beforeEach } from "bun:test";
-import { WebFetchTool, __clearWebFetchCache } from "@sid-code/core/tool/web-fetch.ts";
+import {
+  WebFetchTool,
+  __clearWebFetchCache,
+  MAX_CONTENT_LENGTH,
+} from "@sid-code/core/tool/web-fetch.ts";
 import {
   getSharedWebFetchExtractor,
   __resetWebFetchExtractor,
+  EXTRACT_INPUT_MAX_CHARS,
+  SAFE_FALLBACK_CHARS,
 } from "@sid-code/core/tool/web-fetch-extract.ts";
 
 // 内容缓存、主机限流、提炼器单例均为模块级全局，会跨测试泄漏
@@ -636,5 +642,25 @@ describe("WebFetchTool - 隔离提炼（防 prompt 注入）", () => {
       expect(r.output).toContain("已由独立小模型隔离提炼");
       expect(r.output).not.toContain(INJECTION);
     }
+  });
+});
+
+/**
+ * T39（Harness 厚薄归位专项，2026-11-08）：usageGuide 曾写「超过 50000 字符截断」，
+ * 常量早已是 100000，而且模型实际收到的是提炼结果或 2000 字符的降级片段——三条路径上
+ * 那句话都不对。usageGuide 会拼进 tools[].description，模型按它决定要不要分页、换来源。
+ */
+describe("usageGuide 的字符上限与代码同源", () => {
+  const guide = new WebFetchTool().usageGuide();
+  const fmt = (n: number) => n.toLocaleString("en-US");
+
+  test("写出的三个上限就是三个常量", () => {
+    expect(guide).toContain(`前 ${fmt(MAX_CONTENT_LENGTH)} 字符`);
+    expect(guide).toContain(`前 ${fmt(EXTRACT_INPUT_MAX_CHARS)} 字符`);
+    expect(guide).toContain(`前 ${fmt(SAFE_FALLBACK_CHARS)} 字符`);
+  });
+
+  test("不再出现过期的 50000", () => {
+    expect(guide).not.toMatch(/50,?000/);
   });
 });

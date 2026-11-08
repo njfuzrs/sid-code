@@ -49,6 +49,14 @@ export interface PermissionRequest {
   toolName: string;
   input: unknown;
   description?: string;
+  /**
+   * 发起这次鉴权的工具调用 id（模型给的 `tool_use.id`）。B19：权限审计与轨迹
+   * `PermissionDecision` 的共同键——此前两边没有任何共同 id，只能按 ±1s + 工具名相邻配对，
+   * 并发工具调用会错配。放在请求上而不是 `PermissionCheckOptions` 上：包装型 checker
+   * （swarm escalate 等）原样透传 `req` 却丢 options，放这里结构上不会被半路丢掉。
+   * 不参与任何判定（规则匹配、会话记忆键都不读它）。
+   */
+  toolUseId?: string;
 }
 
 /**
@@ -67,6 +75,17 @@ export interface PermissionCheckOptions {
   auditSource?: string;
 }
 
+/** 确认弹窗终局（见 `Checker.auditConfirmationOutcome`） */
+export interface ConfirmationOutcome {
+  allowed: boolean;
+  /** 三路竞争的胜出方：user / hook / classifier / timeout / auto */
+  source: string;
+  /** 终局给出的理由（如「用户拒绝」「权限决策超时」） */
+  reason?: string;
+  /** 弹窗前那次 check 的成因（「为什么要问」） */
+  decisionReason?: PermissionDecisionReason;
+}
+
 /** 权限检查器接口 */
 export interface Checker {
   check(
@@ -77,6 +96,12 @@ export interface Checker {
   ): Promise<Decision>;
   /** 记住会话内权限决策（可选） */
   rememberDecision?(req: PermissionRequest, allowed: boolean): void;
+  /**
+   * 把一次确认弹窗（ask）的终局写进权限审计（可选）。B20：`check()` 返回 needsConfirmation
+   * 时审计里什么都不写，人工批准 / 拒绝、hook 裁决、超时拒绝此前一条都不落盘。
+   * 由上层在三路竞争出结果后调用；**只写审计，不改任何决策状态**。
+   */
+  auditConfirmationOutcome?(req: PermissionRequest, outcome: ConfirmationOutcome): void;
   /**
    * 记录一次「用户在确认弹窗里拒绝」（可选）。
    *
@@ -145,7 +170,27 @@ export interface AuditEntry {
   decision: "allow" | "deny";
   reason?: string; // 拒绝原因
   severity?: string; // 危险级别
-  user_confirmed?: boolean; // 是否用户确认
+  /**
+   * 这条决策是否由**人**作答（批准、拒绝都算，结论看 `decision`）。
+   * 只有确认弹窗的终局行（带 `confirm_source`）才可能是 true；hook allow / yesMode
+   * 等自动放行写 false。B20：此前人工结论根本不落审计，这个字段全量恒为 false。
+   */
+  user_confirmed?: boolean;
+  /**
+   * B19：本进程会话 id（`bootstrap/state.ts` 的 `getSessionId()`，即 `config.sessionId`）。
+   * 由 `AuditLogger` 写入时统一盖章。resume 会话的轨迹目录用的是被恢复会话的旧 id，
+   * 新进程 id 记在该轨迹 SessionStart 的 `process_session_id` 上，按它 join。
+   */
+  session_id?: string;
+  /** B19：工具调用 id，与轨迹 `PermissionDecision.tool_use_id` 同值，两边按它 join */
+  tool_use_id?: string;
+  /**
+   * B20：确认弹窗（ask）的终局由谁作出。只出现在 ask 终局行上：
+   * user（人点的）/ hook（PermissionRequest hook）/ classifier（并行分类器）/
+   * timeout（超时自动拒）/ auto（无交互通道自动拒）。
+   * 同一个 tool_use_id 之前那行（若有）是「为什么要问」，这一行是「问的结果」。
+   */
+  confirm_source?: string;
   /** 决策原因链 */
   decisionReason?: PermissionDecisionReason;
   /** 危险命令判定来源：hardcoded（硬编码正则）/ llm（LLM 分类器）/ both（两者都命中） */

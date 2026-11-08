@@ -53,6 +53,7 @@ import {
   structuredErrorCode,
   type PermissionSource,
 } from "../analytics/events.ts";
+import { guardOf, autoClassifierOf } from "../permission/decision-telemetry.ts";
 
 /**
  * GAP-06：executeSingleTool 内部返回载体——在标准 tool_result ContentBlock 之外，
@@ -1079,6 +1080,8 @@ export async function resolveToolPermission(
     description: (observableInput as any)?.description
       ? `${block.name}: ${(observableInput as any).description}`
       : `${block.name}: ${JSON.stringify(observableInput).slice(0, 120)}`,
+    // B19：审计行盖这个 id，与轨迹 PermissionDecision.tool_use_id 同值
+    toolUseId: block.id,
   };
   const decision = await deps.permissionChecker.check(permReq, tool, undefined, {
     hookPermissionDecision,
@@ -1096,6 +1099,7 @@ export async function resolveToolPermission(
       reasonType: decision.decisionReason?.type,
       step: decision.step,
       mode: decision.mode,
+      toolUseId: block.id,
     });
     return null;
   }
@@ -1234,6 +1238,20 @@ export async function resolveToolPermission(
       normalizePermissionSource(result.source),
     );
 
+    // B20：ask 的终局落审计（人工批准 / 拒绝、hook 裁决、超时）。此前 check() 判 ask 时
+    // 审计里什么都不写，于是人工结论在审计里一条都没有、user_confirmed 全量恒 false。
+    // 只写审计：denial tracking 与会话记忆另有入口，这里不重复记。
+    try {
+      deps.permissionChecker.auditConfirmationOutcome?.(permReq, {
+        allowed: result.decision.allowed,
+        source: result.source,
+        reason: result.decision.reason,
+        decisionReason: decision.decisionReason,
+      });
+    } catch (e) {
+      log.warn("PERMISSION", `确认终局写审计失败（忽略）: ${(e as Error)?.message}`);
+    }
+
     if (!result.decision.allowed) {
       log.info("PERMISSION", `权限拒绝(${result.source}): ${block.name}`);
       // 负收益防线审计发现 1：ask 路径的记账入口。此前 ask 被拒（用户点拒绝 / hook 拒 /
@@ -1257,6 +1275,9 @@ export async function resolveToolPermission(
         reasonType: decision.decisionReason?.type,
         step: decision.step,
         mode: decision.mode,
+        toolUseId: block.id,
+        guard: guardOf(decision),
+        autoClassifier: autoClassifierOf(decision),
       });
       const denyContent = `${result.source === "user" ? "用户" : result.source === "timeout" ? "超时" : result.source}拒绝执行工具 "${block.name}"`;
       // B33：PermissionDenied hook 接线（此前 15 个预留事件之一，有 fire 方法无调用点）。
@@ -1293,6 +1314,9 @@ export async function resolveToolPermission(
       reasonType: decision.decisionReason?.type,
       step: decision.step,
       mode: decision.mode,
+      toolUseId: block.id,
+      guard: guardOf(decision),
+      autoClassifier: autoClassifierOf(decision),
     });
     return null;
   }
@@ -1319,6 +1343,9 @@ export async function resolveToolPermission(
     reasonType: decision.decisionReason?.type,
     step: decision.step,
     mode: decision.mode,
+    toolUseId: block.id,
+    // headless 把 A2 / A6 的危险确认落成拒绝时，靠它分开是哪道闸门（step 都是 headless:2）
+    guard: guardOf(decision),
   });
   // B33：规则直拒同样 fire PermissionDenied。headless 把 ask 自动拒（reasonType="other"）
   // 记作 auto，deny 规则命中记作 rule —— 两者处置相反，hook 侧需要能分开。
