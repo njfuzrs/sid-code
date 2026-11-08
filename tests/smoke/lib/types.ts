@@ -168,6 +168,19 @@ export interface SmokeCase {
    * 无头下需确认的操作会被判拒（`PermissionDecision.step="headless:*"`），工具不执行。
    */
   realPermissions?: boolean;
+  /**
+   * 置上时主运行改走 stream-json 多轮：运行器以
+   * `-p --input-format stream-json --output-format stream-json --verbose` 启动，
+   * 按序写入每条 user 消息，**等到上一条的 `result` 再写下一条**，全部写完后关 stdin。
+   *
+   * 为什么要逐条等：一次性写满 stdin 时，空闲前到达的连续 prompt 会被命令队列合并成一轮
+   * （`CommandQueue.dequeueBatch`），`/compact` 会被拼进普通提问里当文本发给模型
+   * （2026-11-08 探针实测：4 条输入只出 2 个 result）。真实宿主是一问一答，逐条等才对得上。
+   *
+   * 此时 `RunOutput.stdout` 是 stdout 每行解析后的消息数组（不是单个 JSON 对象），
+   * 会话 id 取自首条带 `session_id` 的 `result`。`argv` 只放额外参数。
+   */
+  streamInput?: string[];
   /** 额外环境变量（运行器已设好隔离用的那一组，这里只放用例特有的） */
   env?: Record<string, string>;
   /**

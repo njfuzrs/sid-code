@@ -1,0 +1,4 @@
+{"index":1,"response":{"content":[{"type":"text","text":"答复一：第一轮的回答。"}],"stop_reason":"end_turn"},"usage":{"input_tokens":100,"output_tokens":10}}
+{"index":2,"response":{"content":[{"type":"text","text":"答复二：第二轮的回答。"}],"stop_reason":"end_turn"},"usage":{"input_tokens":100,"output_tokens":10}}
+{"index":3,"response":{"content":[{"type":"text","text":"答复三：第三轮的回答。"}],"stop_reason":"end_turn"},"usage":{"input_tokens":100,"output_tokens":10}}
+{"index":4,"response":{"content":[{"type":"text","text":"用户问了三个问题，助手逐一作答。"}],"stop_reason":"end_turn"},"usage":{"input_tokens":100,"output_tokens":10}}
