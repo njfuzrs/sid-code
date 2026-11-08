@@ -113,9 +113,12 @@ describe("release.sh：上传原子性（缺陷③）", () => {
   // beta.txt（latest.txt 改由 --promote 独占），所以判据对象跟着换 ——
   // **不变量本身没变**：通道指针必须在版本目录完整就位之后才写，否则指针会在一段时间里
   // 指向一个只上传了一半的目录。谁是那个指针是另一件事。
+  //
+  // 2026-11-08（X3-13）：写指针统一收进 write_pointer（scp + 回读自证），判据对象
+  // 再从「run_scp … beta.txt」换成「write_pointer beta.txt」——不变量依旧没变。
   test("通道指针在版本目录切换之后才上传（指向的版本必须已完整）", () => {
     const swapPos = posOf("原子切换到");
-    const pointerPos = posOf('beta.txt" "${DEPLOY_SSH_USER}');
+    const pointerPos = posOf("write_pointer beta.txt");
     expect(swapPos).toBeGreaterThan(0);
     expect(pointerPos).toBeGreaterThan(swapPos);
   });
@@ -796,7 +799,9 @@ describe("release.sh：一修一号（T1 促升合并 / T2 通道标记 / T3 bet
 
   test("T1：promote 合并稿在写 latest.txt **之前**，非交互直接拒绝", () => {
     const mergePos = promoteSeg.indexOf('changelog-stable.ts" merge');
-    const writePos = promoteSeg.indexOf('DEPLOY_PATH}/latest.txt" \\');
+    // X3-13 起写指针统一走 write_pointer（scp + 回读自证），判据对象跟着换 ——
+    // 不变量没变：合并稿没被确认就不许写稳定通道指针。
+    const writePos = promoteSeg.indexOf("write_pointer latest.txt");
     expect(mergePos).toBeGreaterThan(0);
     expect(writePos).toBeGreaterThan(mergePos);
     const confirm = promoteSeg.slice(mergePos, writePos);

@@ -54,10 +54,10 @@ make build            # 构建开发版二进制（不改版本号）
 ### 贡献者不需要任何 LLM API key
 
 `evals/` 目录、`packages/eval-framework/` 依赖真实模型调用，但这**不是**外部贡献者
-提 PR 的门槛。提 PR 之前必须跑的八道 CI 门禁（见下一节）全部不需要 LLM：
+提 PR 的门槛。提 PR 之前必须跑的九道 CI 门禁（见下一节）全部不需要 LLM：
 `bun test` / `make build` / `bun run lint` / `bun run format:check` /
 `bun run lint:boundary` / `bun run lint:command-system` / `bun run lint:legacy-tool` /
-`bun run typecheck:gate`
+`bun run typecheck:gate` / `bun run website:build`（这一条要先 `bun install --cwd website`）
 都是本地静态检查或跑固定断言，没有一处调真实模型。
 
 评测（`.github/workflows/eval-*.yml`）是维护者职责，需要仓库配好
@@ -268,7 +268,7 @@ PR 数本身有固定成本（分支、CI 一轮、review 的上下文切换、�
 ### 必需检查只有一个：`all-checks-passed`
 
 ruleset `protect-main` 只绑这**一个**汇聚检查（`ci.yml` 的 `all-checks-passed` job），
-它自己不跑任何测试，只把 `test` / `lint` 的结论收成一条。
+它自己不跑任何测试，只把 `test` / `lint` / `website` 的结论收成一条。
 
 **为什么要这层间接**：原先绑的是 `test (ubuntu-latest)` / `test (macos-latest)` /
 `lint` 三个具体 job 名，于是分支保护与 workflow 内部结构耦合。已经因此踩过两次，
@@ -327,7 +327,7 @@ merge_queue 规则返回 `422 Invalid rule 'merge_queue'`，2026-08-19 实测）
 
 ## 提 PR 之前必须跑的门禁
 
-CI（`.github/workflows/ci.yml`）有 **两个 job、八道门禁**，本地全部可跑：
+CI（`.github/workflows/ci.yml`）有 **三个 job、九道门禁**，本地全部可跑：
 
 ```bash
 # test job
@@ -341,10 +341,14 @@ bun run lint:boundary    # 包边界扫描，动了跨包导入必跑
 bun run lint:command-system  # 命令体系门禁：死导出棘轮 + 旧命令体系只减不增
 bun run lint:legacy-tool     # 工具接口棘轮：引用旧接口 LegacyTool 的生产文件数只减不增
 bun run typecheck:gate   # 类型检查棘轮：只拦新增错误（存量在 scripts/tsc-baseline.json）
+
+# website job（CI 侧的死链兜底，X3-12；website/ 有自己的依赖与锁文件）
+bun install --cwd website --frozen-lockfile   # 首次或 lock 变动后
+bun run website:build                        # VitePress 构建，死链即失败
 ```
 
-**八条都跑绿，CI 基本不会红。** 只跑前两条是不够的 —— lint job 是独立的，
-排版或跨包导入不合规照样拦。
+**九条都跑绿，CI 基本不会红。** 只跑前两条是不够的 —— lint / website 是独立的
+job，排版、跨包导入或站点死链不合规照样拦。
 
 ### 开发过程中用选择性测试，最后一次再跑全量
 
@@ -378,9 +382,11 @@ bun run affected-tests:run   # 执行选出来的最小测试集
 | hook | 门禁 |
 | --- | --- |
 | pre-commit | oxlint + oxfmt + `docs:gen-reference --check`（参考页反漂移）+ Agent Note 形态校验 |
-| pre-push | `holdout/real-tasks` 永封校验、website 站点构建（死链检测）、北极星生成块陈旧检测（30 天） |
+| pre-push | `holdout/real-tasks` 永封校验、website 站点构建（死链检测，CI 有等价 job）、北极星生成块陈旧检测（30 天） |
 
-没装 hook 的话，参考页漂移和站点死链会一路带到 PR 里才被发现。
+没装 hook 的话，参考页漂移和站点死链要等到 PR 的 CI 才红 —— 两处在 CI 都有兜底
+（前者 `tests/website/gen-reference.test.ts`，后者 `website` job），所以**不会漏**，
+只是反馈更晚、还得再推一次。
 **clone 之后第一件事就是 `bun run install-hooks`。**
 
 几个容易踩的点：
