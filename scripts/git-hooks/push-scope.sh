@@ -24,8 +24,8 @@
 #
 # ## 为什么不内联在 pre-push.sh 里
 #
-# pre-push.sh 是被 `cp` 到 `.git/hooks/` 的快照（X3-11 未修前如此），内联的
-# 判定逻辑没法在 tmpdir 仓库里单独跑测试。抽成独立脚本后，测试可以直接对
+# pre-push.sh 通过 hooks 目录里的 shim 转发执行（X3-11），内联的判定逻辑没法在
+# tmpdir 仓库里单独跑测试。抽成独立脚本后，测试可以直接对
 # 「多提交 push」「新分支」「远端被更新过」这几种输入求值。
 #
 # 环境变量 `PUSH_SCOPE_BASE_REF` 覆盖新分支求差的基线（默认 `origin/main`），
