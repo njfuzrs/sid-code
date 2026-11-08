@@ -44,7 +44,10 @@ on:
     #
     # 代价是改标题/正文这类纯文本编辑也会触发一次 CI。这个代价是刻意接受的：
     # 一次多余的 run 是几分钟 runner 时间，而一个卡死的 PR 要靠人发现 + 人干预。
-    types: [opened, synchronize, reopened, edited]
+    #
+    # `labeled` / `unlabeled`：G2 用例期望守卫（lint job 末步）读 PR 标签 `expect-reviewed`。
+    # 不加这两项，人加完标签后检查不会重跑，PR 停在红的那次结论上，只能再推一次空提交。
+    types: [opened, synchronize, reopened, edited, labeled, unlabeled]
   push:
     branches: [main]
   # 合并队列。队列把「各自绿、合起来红」这一类失败挪到合并**之前**：
@@ -304,6 +307,19 @@ jobs:
 
       - name: oxlint
         run: bun run lint
+
+      # G2 用例期望守卫（质量防线分层专项总纲 §3.4，#618）：
+      #   ① 同一 PR 既改某用例的夹具又改它的期望 → 红（标签也不放）；
+      #   ② 改已有用例的期望 → 红，直到人加 `expect-reviewed` 标签（agent 不得自己加）。
+      # 只在 pull_request 上跑：push 到 main 时 PR 已经合了，再拦没有意义。
+      # 比较对象是合并提交的两个父（HEAD^1 = base 分支，HEAD = 合并结果），所以要 fetch 两层。
+      - name: G2 用例期望守卫
+        if: github.event_name == 'pull_request'
+        env:
+          PR_LABELS: ${{ toJSON(github.event.pull_request.labels.*.name) }}
+        run: |
+          git fetch --no-tags --depth=2 origin "$GITHUB_SHA"
+          bun run scripts/smoke/expect-guard.ts --base HEAD^1 --head HEAD
 
       # P2-1：格式门禁。与 oxlint 同 job（都是几百毫秒的静态检查，见下方同款理由）。
       #
