@@ -8,9 +8,10 @@
 #   4. 证据层差集闸（本机有 harbor/runs/ 才跑；CI runner 上没有 runs/ ⇒ 禁止挂 CI）
 #
 # 安装：
-#   bun run scripts/install-git-hooks.sh
-# 或手动：
-#   cp scripts/git-hooks/pre-push.sh .git/hooks/pre-push && chmod +x .git/hooks/pre-push
+#   bun run install-hooks
+# 它写一个固定内容的 shim 到 hooks 目录（core.hooksPath 优先），每次执行都现取本文件，
+# 所以**本文件更新后无需重装**（X3-11）。不要再用 cp 手动装：
+# 副本与源文件各走各的，git pull 拉到本文件的改动后本地仍执行旧副本，且没有任何提示。
 
 # 题面泄露检测链已于 2026-09-18 随 holdout 题面 yaml 整条下线。
 # 保护对象没了，留一条 rc=0 空跑的门禁比没有更糟。

@@ -231,18 +231,42 @@ jobs:
       # 同类事故已有前科（2026-08-03 遥测落盘污染，见 CLAUDE.md「测试约定」）。
       # 放在测试**之后**跑，才能抓到测试自己的副作用。
       #
-      # 只看**已追踪**文件（--porcelain 的前两列非 `??`）：测试产生的临时文件属于
-      # untracked，不该让 CI 变红 —— 那会把这道门禁变成噪音源，最后被人加 `|| true` 绕过。
+      # 两类污染都要拦，缺一不可（X3-10）：
+      #
+      #   · 已追踪文件被改（`git status --porcelain -uno` 非空）：上面那类事故。
+      #   · **未忽略的新建文件**（`git status --porcelain -uall` 里的 `??`）：同样缺落盘隔离。
+      #     原先写成 `--untracked-files=no` 跳过这一半，理由是「临时文件属于 untracked，
+      #     不该让 CI 变红」。那个理由不成立：`--porcelain` **本来就不列 .gitignore 里的文件**，
+      #     所以能出现在 `??` 里的都是「没被忽略、又被测试新建在仓库里」的东西 ——
+      #     正是 `git add .` 会一起提交进去的那种污染。而新建文件型污染是本仓的主要形态
+      #     （CLAUDE.md「测试约定」、`.gitignore` 里那批 `.sid-code` 排除条目都是为它而加）。
+      #
+      # 口径与 `scripts/release.sh` 的发布前洁净门禁一致：那边用裸 `git status --porcelain`
+      # （默认 `-unormal`，会把未追踪文件列成目录），这里用 `-uall` 是为了让报错**点名具体文件**
+      # 而不是一个目录，便于定位是谁漏了落盘隔离。两处语境不同，刻意不合并成一份实现。
+      #
+      # 切阻断前已在干净 worktree 跑过一次全量：`Ran 20068 tests across 1416 files` 之后
+      # `git status --porcelain -uall` 的 `??` 为零，存量不欠账。
       - name: 单测未污染工作区
         run: |
-          dirty="$(git status --porcelain --untracked-files=no)"
-          if [ -n "$dirty" ]; then
+          tracked="$(git status --porcelain --untracked-files=no)"
+          untracked="$(git ls-files --others --exclude-standard)"
+          rc=0
+          if [ -n "$tracked" ]; then
             echo "::error::单测改动了被 git 追踪的文件（测试缺少落盘隔离，见 CLAUDE.md「测试约定」）"
-            echo "$dirty"
+            printf '%s\n' "$tracked"
             git diff --stat
-            exit 1
+            rc=1
           fi
-          echo "✅ 已追踪文件无改动，单测无落盘副作用"
+          if [ -n "$untracked" ]; then
+            echo "::error::单测在仓库里新建了未被 .gitignore 忽略的文件（测试缺少落盘隔离，或产物该登记进 .gitignore）"
+            printf '%s\n' "$untracked"
+            rc=1
+          fi
+          if [ "$rc" -ne 0 ]; then
+            exit "$rc"
+          fi
+          echo "✅ 工作区无副作用（已追踪文件无改动，未忽略的新建文件为零）"
 
       # make build 不动版本号，CI 里跑它不会让 package.json 变脏。
       # 末尾的 ./sid-code --self-check 会断言关键修复已内联 + 内置 skill 已嵌入

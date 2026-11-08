@@ -15,8 +15,10 @@
  * 断言的是**结构性属性**（顺序、trap 存在、参数存在），不是文案——文案会随时改写，
  * 而这些结构一旦退回去，上面四个缺陷立刻复活，且失败现场都极难归因。
  */
-import { describe, expect, test } from "bun:test";
-import { readFileSync, readdirSync } from "node:fs";
+import { afterEach, describe, expect, test } from "bun:test";
+import { spawnSync } from "node:child_process";
+import { mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { parse as parseYaml } from "yaml";
 
@@ -603,6 +605,139 @@ describe("CI 门禁存在（全量单测前移到 PR 阶段）", () => {
       // 断言表达式而非布尔：写死 true/false 都会让 merge_group 走错分支。
       expect(String(cancel)).toContain("merge_group");
     });
+  });
+});
+
+// ============================================================================
+// CI「单测未污染工作区」的口径（X3-10）
+//
+// 为什么是**行为测试**而不是源码文本断言：这条门禁要防的是「测试在仓库里新建了
+// 未被 .gitignore 忽略的文件」——那是 `git add .` 会一起提交的污染，也是本仓
+// 的主要污染形态（CLAUDE.md「测试约定」、.gitignore 里那批 .sid-code 排除条目）。
+// 旧口径 `--untracked-files=no` 看不见它；而任何
+// `expect(CI).toContain("--untracked-files=all")` 型断言只能证明"作者写过那段"，
+// 不能证明"新建文件时它真的会红"（X3-14 / X3-15 同一教训）。
+//
+// 所以把 step 的 run 脚本从 ci.yml 里抠出来，在 tmpdir 的真 git 仓库里跑，
+// 用与 GitHub Actions 相同的 shell 形态（bash -e）。脚本读不到就抛错，
+// 「step 被改名/删掉」也会红。
+//
+// 变异自证：把脚本改回只查 `--untracked-files=no`，
+// 「新建未忽略文件」与「同时有忽略项与未忽略项」两条用例必红。
+// ============================================================================
+describe("CI 洁净门禁看得见未忽略的新建文件（X3-10）", () => {
+  interface CleanRepo {
+    dir: string;
+    git: (...args: string[]) => string;
+    write: (rel: string, body: string) => void;
+  }
+
+  const createdDirs: string[] = [];
+
+  afterEach(() => {
+    for (const d of createdDirs.splice(0)) rmSync(d, { recursive: true, force: true });
+  });
+
+  function makeRepo(): CleanRepo {
+    const dir = mkdtempSync(join(tmpdir(), "ci-clean-"));
+    createdDirs.push(dir);
+    const git = (...args: string[]): string => {
+      const res = spawnSync("git", args, {
+        cwd: dir,
+        encoding: "utf8",
+        env: {
+          ...process.env,
+          GIT_AUTHOR_NAME: "t",
+          GIT_AUTHOR_EMAIL: "t@example.com",
+          GIT_COMMITTER_NAME: "t",
+          GIT_COMMITTER_EMAIL: "t@example.com",
+          // 环境里可能有全局 excludesFile / hooksPath，会让 tmpdir 仓库行为不可控
+          GIT_CONFIG_GLOBAL: "/dev/null",
+          GIT_CONFIG_SYSTEM: "/dev/null",
+        },
+      });
+      if (res.status !== 0) throw new Error(`git ${args.join(" ")} 失败：${res.stderr}`);
+      return (res.stdout ?? "").trim();
+    };
+    git("init", "-q", "-b", "main");
+    const write = (rel: string, body: string): void => {
+      const p = join(dir, rel);
+      mkdirSync(join(p, ".."), { recursive: true });
+      writeFileSync(p, body);
+    };
+    write("README.md", "base\n");
+    git("add", "-A");
+    git("commit", "-q", "-m", "base");
+    return { dir, git, write };
+  }
+
+  /** ci.yml 里「单测未污染工作区」这一步的**真实** run 脚本。 */
+  function cleanStepScript(): string {
+    const doc = parseYaml(readFileSync(join(ROOT, ".github/workflows/ci.yml"), "utf8")) as {
+      jobs: Record<string, { steps?: Array<{ name?: string; run?: string }> }>;
+    };
+    const step = (doc.jobs.test?.steps ?? []).find((s) => s.name === "单测未污染工作区");
+    if (!step?.run) throw new Error("ci.yml 的 test job 里找不到「单测未污染工作区」step");
+    return step.run;
+  }
+
+  /** 用与 GitHub Actions 相同的 shell 形态（bash -e -o pipefail）跑那一步。 */
+  function runClean(dir: string): { status: number; out: string } {
+    const res = spawnSync("bash", ["-eo", "pipefail", "-c", cleanStepScript()], {
+      cwd: dir,
+      encoding: "utf8",
+    });
+    return { status: res.status ?? -1, out: `${res.stdout ?? ""}${res.stderr ?? ""}` };
+  }
+
+  test("干净仓库 → 通过", () => {
+    const { dir } = makeRepo();
+    const r = runClean(dir);
+    expect(r.out).toContain("工作区无副作用");
+    expect(r.status).toBe(0);
+  });
+
+  test("测试新建了未忽略文件 → 拦住，并点名该文件", () => {
+    const { dir, write } = makeRepo();
+    write("leaked-by-test.txt", "测试没做落盘隔离\n");
+    const r = runClean(dir);
+    expect(r.status).not.toBe(0);
+    expect(r.out).toContain("未被 .gitignore 忽略");
+    expect(r.out).toContain("leaked-by-test.txt");
+  });
+
+  test("测试改动了已追踪文件 → 拦住，报错说明是已追踪", () => {
+    const { dir, write, git } = makeRepo();
+    write("README.md", "被测试改脏\n");
+    git("add", "README.md");
+    const r = runClean(dir);
+    expect(r.status).not.toBe(0);
+    expect(r.out).toContain("被 git 追踪的文件");
+  });
+
+  // 这条守住旧注释里那个**正确**的顾虑：临时文件不该让 CI 变红。
+  // 它靠的是 .gitignore（--porcelain 本就不列忽略项），而不是靠门禁闭眼。
+  test("被 .gitignore 忽略的新建文件 → 不算污染", () => {
+    const { dir, write, git } = makeRepo();
+    write(".gitignore", "*.log\n");
+    git("add", ".gitignore");
+    git("commit", "-q", "-m", "忽略日志");
+    write("debug.log", "临时文件\n");
+    const r = runClean(dir);
+    expect(r.status).toBe(0);
+  });
+
+  test("同时有忽略项与未忽略项 → 只报未忽略的那个", () => {
+    const { dir, write, git } = makeRepo();
+    write(".gitignore", "*.log\n");
+    git("add", ".gitignore");
+    git("commit", "-q", "-m", "忽略日志");
+    write("debug.log", "忽略\n");
+    write("leaked.txt", "未忽略\n");
+    const r = runClean(dir);
+    expect(r.status).not.toBe(0);
+    expect(r.out).toContain("leaked.txt");
+    expect(r.out).not.toContain("debug.log");
   });
 });
 
