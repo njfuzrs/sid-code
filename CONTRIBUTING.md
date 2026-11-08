@@ -54,7 +54,7 @@ make build            # 构建开发版二进制（不改版本号）
 ### 贡献者不需要任何 LLM API key
 
 `evals/` 目录、`packages/eval-framework/` 依赖真实模型调用，但这**不是**外部贡献者
-提 PR 的门槛。提 PR 之前必须跑的九道 CI 门禁（见下一节）全部不需要 LLM：
+提 PR 的门槛。提 PR 之前必须跑的九道 CI 门禁（见下一节，另有一道只在 PR 上跑的 G2 用例期望守卫）全部不需要 LLM：
 `bun test` / `make build` / `bun run lint` / `bun run format:check` /
 `bun run lint:boundary` / `bun run lint:command-system` / `bun run lint:legacy-tool` /
 `bun run typecheck:gate` / `bun run website:build`（这一条要先 `bun install --cwd website`）
@@ -341,6 +341,7 @@ bun run lint:boundary    # 包边界扫描，动了跨包导入必跑
 bun run lint:command-system  # 命令体系门禁：死导出棘轮 + 旧命令体系只减不增
 bun run lint:legacy-tool     # 工具接口棘轮：引用旧接口 LegacyTool 的生产文件数只减不增
 bun run typecheck:gate   # 类型检查棘轮：只拦新增错误（存量在 scripts/tsc-baseline.json）
+bun run scripts/smoke/expect-guard.ts  # G2 用例期望守卫（CI 只在 PR 上跑，见下方说明）
 
 # website job（CI 侧的死链兜底，X3-12；website/ 有自己的依赖与锁文件）
 bun install --cwd website --frozen-lockfile   # 首次或 lock 变动后
@@ -349,6 +350,14 @@ bun run website:build                        # VitePress 构建，死链即失�
 
 **九条都跑绿，CI 基本不会红。** 只跑前两条是不够的 —— lint / website 是独立的
 job，排版、跨包导入或站点死链不合规照样拦。
+
+**G2 用例期望守卫**（`tests/smoke/cases/`，#618）只在 pull_request 上跑，两条规则：
+① 同一个 PR 既改了某个已有用例的夹具（`replay.jsonl` 等）又改了它的 `case.ts` 期望 → 红，
+带标签也不放（刷新夹具只许改夹具，期望该改就单开 PR、带 Agent Note）；
+② 改了已有用例的期望（含删除用例）→ 红，直到**人**看过 diff 后加 `expect-reviewed` 标签。
+新增用例不受限制；只改注释、排版或 `mutations` 配方不算改期望。
+这条只能做到「可见」而不是「强制」：agent 与维护者用同一个账号，技术上也能自己加标签，
+约束落在 PR timeline 可追查 + CLAUDE.md 明文禁止 agent 给自己的 PR 加。
 
 ### 开发过程中用选择性测试，最后一次再跑全量
 

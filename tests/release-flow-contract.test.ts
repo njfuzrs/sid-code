@@ -1072,3 +1072,36 @@ describe("积压清单只读（T5）", () => {
     expect(line).not.toMatch(/run_ssh|ssh /);
   });
 });
+
+// ── G2 用例期望守卫（2026-11-08，质量防线分层专项总纲 §3.4，#618）──
+// 守卫读 PR 标签 `expect-reviewed`。两种静默失效都不报红：
+//   · 步骤被删 / 被挪出 pull_request 条件：改期望的 PR 不再被拦，PR 页面照样全绿；
+//   · types 漏了 labeled：人加完标签检查不重跑，PR 停在红的那次结论上。
+describe("ci.yml：G2 用例期望守卫接线", () => {
+  const CI = readFileSync(join(ROOT, ".github/workflows/ci.yml"), "utf8");
+  const doc = () =>
+    parseYaml(CI) as {
+      jobs: Record<
+        string,
+        {
+          steps?: Array<{ name?: string; if?: string; run?: string; env?: Record<string, string> }>;
+        }
+      >;
+    } & Record<string, unknown>;
+
+  test("lint job 有守卫步骤，只在 pull_request 上跑，且读 PR 标签", () => {
+    const step = (doc().jobs.lint?.steps ?? []).find((s) =>
+      (s.run ?? "").includes("scripts/smoke/expect-guard.ts"),
+    );
+    expect(step).toBeDefined();
+    expect(step!.if).toContain("pull_request");
+    expect(step!.env?.PR_LABELS).toContain("github.event.pull_request.labels");
+  });
+
+  test("pull_request.types 含 labeled / unlabeled（否则加标签后检查不重跑）", () => {
+    const d = doc();
+    const on = (d.on ?? d[true as unknown as string]) as Record<string, { types?: string[] }>;
+    expect(on.pull_request?.types).toContain("labeled");
+    expect(on.pull_request?.types).toContain("unlabeled");
+  });
+});
