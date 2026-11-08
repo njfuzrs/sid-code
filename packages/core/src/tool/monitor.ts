@@ -1,0 +1,287 @@
+/**
+ * MonitorTool（M1：按行事件监控外部状态）
+ *
+ * 对标 claude-code 的 `Monitor`。与 `bash run_in_background` 的分工：
+ * - **只要一次通知**（「CI 全绿告诉我」）→ bash 后台 + `wait_until_seconds`，命令写成
+ *   条件满足就退出的循环；
+ * - **每次发生都要通知**（「每个检查完成告诉我」「日志里每出现 ERROR 告诉我」）→ 本工具。
+ *
+ * stdout 每一行（经 200ms 批处理）是一条通知；进程退出或期限到即结束，终态必回报。
+ * 模型挂上之后应当 `end_turn`——等待期前台零请求，这正是事故会话 7dd98bf5 / 9e3a681d
+ * 反复前台轮询 96 / 106 次 `gh pr checks` 要收口的行为。
+ *
+ * ## 权限
+ *
+ * `command` 走 bash **同一条**权限管线（见 `permission/checker.ts` 的 monitor → bash
+ * 等效请求）：`Bash(gh pr checks:*)` 这类规则对 monitor 同样生效，deny 规则同样拦。
+ * 本工具的 `checkPermissions` 只补工具自身的判定，二者叠加而非替代。
+ *
+ * ## 为什么 resultDisplayMode = "summary"
+ *
+ * 工具结果正文（下面 `execute` 返回的那段）是**给模型的收尾指令**，不是给用户看的。
+ * 原样展示会把「不需要查询状态，也不需要 sleep」这类提示词漏到屏幕上（`todo_write`
+ * 泄漏 1053 字符提示词的同类问题）。TUI 只显示 header 摘要一行。
+ */
+
+import type { PermissionResult, Tool, ToolResult, ToolUseContext } from "./types.ts";
+import { z } from "zod/v4";
+import { lazySchema } from "../sdk/lazy-schema.ts";
+import { getCwd } from "../bootstrap/state.ts";
+import { getLogger } from "../debug/logger.ts";
+import {
+  MAX_CONCURRENT_MONITORS,
+  MAX_MONITOR_TIMEOUT_MS,
+  MIN_MONITOR_TIMEOUT_MS,
+  DEFAULT_MONITOR_TIMEOUT_MS,
+  countRunningMonitors,
+  spawnMonitorTask,
+  isMonitorTask,
+} from "../task/index.ts";
+import { getRunningTasks } from "../task/registry.ts";
+import { registerWait, findWaitBySubject, extractWaitSubjects } from "../task/wait-registry.ts";
+import { isReadOnlyCommand, isDestructiveCommand } from "./bash/read-only-validation.ts";
+
+const monitorSchema = lazySchema(() =>
+  z.object({
+    description: z
+      .string()
+      .min(1)
+      .max(80)
+      .describe("监控对象的短描述，出现在每条通知里（如「PR #662 CI」而不是「watching」）"),
+    command: z
+      .string()
+      .min(1)
+      .describe(
+        "shell 脚本：stdout 每行一个事件，进程退出即监控结束。只打你要据此行动的行；管道每段都要逐行刷新（grep --line-buffered / awk fflush），不要用 head。",
+      ),
+    timeout_ms: z
+      .number()
+      .describe(
+        `硬期限（毫秒），默认 ${DEFAULT_MONITOR_TIMEOUT_MS}，下限 ${MIN_MONITOR_TIMEOUT_MS}、上限 ${MAX_MONITOR_TIMEOUT_MS}（超过即钳制）。到期必回报并结束。`,
+      )
+      .optional(),
+  }),
+);
+
+type MonitorInput = {
+  description?: unknown;
+  command?: unknown;
+  timeout_ms?: unknown;
+};
+
+/** 本地时钟 HH:MM:SS（工具结果里的「最晚几点结束」按用户本地时区显示） */
+function formatClockWithSeconds(ts: number): string {
+  const d = new Date(ts);
+  return `${String(d.getHours()).padStart(2, "0")}:${String(d.getMinutes()).padStart(2, "0")}:${String(
+    d.getSeconds(),
+  ).padStart(2, "0")}`;
+}
+
+/** 从命令里抽取被监控对象的签名（S2 用）：`gh pr checks 662` → `gh:pr:662` */
+function extractMonitorSubjects(command: string): string[] {
+  const out = new Set<string>(extractWaitSubjects(command));
+  for (const m of command.matchAll(/\bgh\s+pr\s+(?:checks|view|status)\s+(\d+)/gi))
+    out.add(`gh:pr:${m[1]}`);
+  for (const m of command.matchAll(/\bgh\s+run\s+(?:view|watch)\s+(\d+)/gi))
+    out.add(`gh:run:${m[1]}`);
+  return [...out];
+}
+
+/** 当前运行中的 monitor 简要清单（并发上限错误里列给模型，它才知道该 task_stop 谁） */
+function listRunningMonitorBrief(): string {
+  return getRunningTasks()
+    .filter(isMonitorTask)
+    .map((t) => `${t.id}（${t.description}）`)
+    .join("、");
+}
+
+export class MonitorTool implements Tool<MonitorInput, string> {
+  readonly zodSchema = monitorSchema();
+  /**
+   * 延迟加载：与 `schedule_wakeup` 同档（长尾、低频）。关键词覆盖中英文常见说法，
+   * 让 `tool_search` 在「等 CI」「watch」「监控」这类描述下都能把它调出来。
+   */
+  readonly shouldDefer = true;
+  readonly searchHint = "monitor watch wait ci poll stream events 监控 等待 轮询 事件";
+  /**
+   * 结果正文是给模型的收尾指令（见文件头注释），TUI 只留 header 摘要。
+   * 错误路径照常展示（`resultDisplayMode` 的硬约束：hidden/summary 不吞错误）。
+   */
+  readonly resultDisplayMode = "summary" as const;
+
+  /** 新版 Tool 接口：name 是字符串属性（旧接口才是 name() 方法）。 */
+  readonly name = "monitor";
+
+  description(): string {
+    return `按行事件监控外部状态：后台脚本的 stdout 每行 → 一条通知，进程退出或期限到必有终态回报。
+
+**先选对工具**：
+- 只要一次通知（「CI 全绿 / 构建完了告诉我」）→ bash + run_in_background=true + wait_until_seconds，命令写成条件满足就退出的循环；
+- 每次发生都要通知（「每个检查完成告诉我」「日志里每出现 ERROR 告诉我」）→ 本工具。
+
+**stdout 就是事件流**：只打你要据此行动的行；管道每一段都要逐行刷新（grep --line-buffered、awk 里 fflush()；head 不能用）。
+
+**沉默不等于成功**：过滤条件必须覆盖所有终态，失败 / 取消 / 超时都要打出来。0 条事件到期时系统会提示你检查过滤条件。
+
+**轮询间隔**：远端 API ≥ 30 秒，本地检查 0.5–1 秒；单次请求失败不要让脚本退出（|| true）。
+
+**挂上之后**：不要再手动查询同一个状态；没有别的事就告诉用户在等什么，然后结束本轮。事件已经展示给用户，收到事件时不需要复述，没有需要做的事就直接结束本轮。
+
+示例（PR CI 逐项结束才打一行，全部结束后打 ALL_DONE 并退出）：
+\`\`\`bash
+pr=662; interval=45; prev=""
+while true; do
+  s=$(gh pr checks "$pr" --json name,bucket 2>/dev/null) || { sleep "$interval"; continue; }
+  cur=$(jq -r '.[] | select(.bucket!="pending") | "\\(.name): \\(.bucket)"' <<<"$s" | sort)
+  comm -13 <(printf '%s\\n' "$prev") <(printf '%s\\n' "$cur")
+  prev="$cur"
+  if jq -e 'length>0 and all(.bucket!="pending")' <<<"$s" >/dev/null; then
+    if jq -e 'all(.bucket=="pass" or .bucket=="skipping")' <<<"$s" >/dev/null; then echo "ALL_DONE: pass"; exit 0; fi
+    echo "ALL_DONE: fail"; exit 1
+  fi
+  sleep "$interval"
+done
+\`\`\`
+
+示例（等本地服务就绪，成功后退出的 until 写法）：
+\`\`\`bash
+until curl -sf localhost:3000/health >/dev/null; do sleep 1; done; echo "service ready"
+\`\`\``;
+  }
+
+  inputSchema(): Record<string, unknown> {
+    return z.toJSONSchema(monitorSchema()) as Record<string, unknown>;
+  }
+
+  /**
+   * 工具级权限：与 bash 的 `checkPermissions` **同一套判定**（只读放行 / 破坏性要求
+   * 确认 / 其余 passthrough）。命令规则的完整匹配在 checker 里经 monitor → bash
+   * 等效请求完成，这里只补工具自身这一层。
+   */
+  async checkPermissions(input: MonitorInput, _context: ToolUseContext): Promise<PermissionResult> {
+    const command = (input as { command?: unknown })?.command;
+    if (typeof command !== "string" || command.length === 0) return { behavior: "passthrough" };
+    if (isReadOnlyCommand(command)) return { behavior: "allow" };
+    if (isDestructiveCommand(command)) {
+      return {
+        behavior: "ask",
+        message: `监控脚本含破坏性命令，需要确认: ${command.slice(0, 80)}`,
+      };
+    }
+    return { behavior: "passthrough" };
+  }
+
+  /** 只读语义上不可判定（脚本可能做任何事）；并发安全为 false，不与其它工具并行 */
+  isReadOnly(): boolean {
+    return false;
+  }
+
+  isConcurrencySafe(): boolean {
+    return false;
+  }
+
+  isEnabled(): boolean {
+    return true;
+  }
+
+  async call(input: MonitorInput): Promise<ToolResult<string>> {
+    const params = input ?? {};
+
+    const description = typeof params.description === "string" ? params.description.trim() : "";
+    const command = typeof params.command === "string" ? params.command : "";
+
+    if (!description) {
+      return {
+        data: "错误: 缺少必需参数 description（监控对象的短描述，如「PR #662 CI」）",
+        isError: true,
+      };
+    }
+    if (description.length > 80) {
+      return {
+        data: `错误: description 超过 80 字符（当前 ${description.length}）`,
+        isError: true,
+      };
+    }
+    if (!command.trim()) {
+      return {
+        data: "错误: 缺少必需参数 command（stdout 每行一个事件的 shell 脚本）",
+        isError: true,
+      };
+    }
+
+    // timeout_ms：不传用默认；0 / 负数 / 非有限数拒绝（T-M1-2）
+    let timeoutMs = DEFAULT_MONITOR_TIMEOUT_MS;
+    if (params.timeout_ms !== undefined) {
+      const raw = params.timeout_ms;
+      if (typeof raw !== "number" || !Number.isFinite(raw)) {
+        return { data: "错误: timeout_ms 必须是有限数字（毫秒）", isError: true };
+      }
+      if (raw <= 0) {
+        return {
+          data: `错误: timeout_ms 必须大于 0（收到 ${raw}）。省略该参数时默认 ${DEFAULT_MONITOR_TIMEOUT_MS}ms。`,
+          isError: true,
+        };
+      }
+      timeoutMs = raw;
+    }
+    let clampNote = "";
+    if (timeoutMs < MIN_MONITOR_TIMEOUT_MS) {
+      clampNote = `（已从 ${Math.round(timeoutMs)}ms 钳制到下限 ${MIN_MONITOR_TIMEOUT_MS}ms）`;
+      timeoutMs = MIN_MONITOR_TIMEOUT_MS;
+    } else if (timeoutMs > MAX_MONITOR_TIMEOUT_MS) {
+      clampNote = `（已从 ${Math.round(timeoutMs)}ms 钳制到上限 ${MAX_MONITOR_TIMEOUT_MS}ms）`;
+      timeoutMs = MAX_MONITOR_TIMEOUT_MS;
+    }
+
+    // 并发上限：每个 monitor 都是一个常驻进程 + 一个潜在的通知源，4 个已覆盖
+    // 「CI + 部署 + 日志 + 一个备用」。第 5 个直接拒绝并列出是谁在占位。
+    if (countRunningMonitors() >= MAX_CONCURRENT_MONITORS) {
+      return {
+        data: `错误: 同时运行的 monitor 已达上限 ${MAX_CONCURRENT_MONITORS} 个（当前：${listRunningMonitorBrief()}）。请先用 task_stop 停掉不需要的监控。`,
+        isError: true,
+      };
+    }
+
+    // 同一被监控对象的提示（T-M1-15）：允许启动，但要点破已有同对象监控，
+    // 否则模型会为了「保险」再挂一个，两路事件重复叫醒主循环。
+    const subjects = extractMonitorSubjects(command);
+    const duplicate = subjects
+      .map((s) => findWaitBySubject(s))
+      .find((w) => w !== undefined && w.kind === "monitor");
+    const duplicateNote = duplicate
+      ? `\n注意：已有监控 ${duplicate.id}（${duplicate.description}）在盯同一个对象，两路事件会分别通知。`
+      : "";
+
+    const taskState = spawnMonitorTask({
+      description,
+      command,
+      timeoutMs,
+      cwd: getCwd(),
+    });
+
+    // 登记为等待源（deadline 承诺）：todo 闸门 T2 据此放行、静默判据不误杀。
+    registerWait({
+      id: taskState.id,
+      kind: "monitor",
+      promise: { kind: "deadline", deadlineAt: taskState.deadlineAt },
+      description,
+      registeredAt: taskState.startTime,
+      subjects,
+    });
+
+    getLogger().info(
+      "TOOL",
+      `monitor ${taskState.id} 启动：${description}（期限 ${timeoutMs}ms，并发 ${countRunningMonitors()}/${MAX_CONCURRENT_MONITORS}）`,
+    );
+
+    const endAt = formatClockWithSeconds(taskState.deadlineAt);
+    const minutes = Math.round(timeoutMs / 60_000);
+    return {
+      data:
+        `已启动监控 ${taskState.id}（${description}），最晚 ${endAt} 结束（${minutes} 分钟期限）${clampNote}。\n` +
+        `每条输出会作为通知送达，期间不需要查询状态，也不需要 sleep。\n` +
+        `可以继续做不依赖它的工作；没有别的事就告诉用户在等什么，然后结束本轮。\n` +
+        `提前停止：task_stop ${taskState.id}${duplicateNote}`,
+    };
+  }
+}

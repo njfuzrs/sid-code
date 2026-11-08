@@ -18,7 +18,7 @@ description: 全部内置工具的名称、用途与入参。表里的名称就�
 
 <!-- AUTO-GEN:START 由 scripts/docs-gen-reference.ts 生成，勿手工编辑 -->
 
-> 共 **41** 个内置工具，由 `--dump-tools` 从运行时注册表导出——
+> 共 **42** 个内置工具，由 `--dump-tools` 从运行时注册表导出——
 > 与发给模型的工具定义同源。表里的名称就是你在权限规则、`--allowed-tools`、
 > 子代理 `tools` 清单、Hook matcher 里要写的字符串。
 
@@ -43,6 +43,7 @@ description: 全部内置工具的名称、用途与入参。表里的名称就�
 | `grep` | 在文件中搜索匹配正则表达式的内容。基于 ripgrep 构建，支持三种输出模式：files_with_matches（默认，最省 token）、content（显示匹配行和上下文）、count（显示匹配数）。 | `pattern` | `path` `output_mode` `case_insensitive` `glob` `type` `context` `before_context` `after_context` `head_limit` `offset` `max_matches_per_file` `fixed_strings` `multiline` `total_max_matches` |
 | `ls` | 列举目录的直接子项（非递归）。目录优先，同类按字母升序，显示文件大小与符号链接。 | `dir_path` | `ignore` |
 | `lsp` | 与 Language Server Protocol（LSP）服务器交互，获取精确的代码智能信息：跳转定义、查找引用、悬停类型/文档、文件符号列表、全工作区符号搜索、查找实现、调用层级、以及获取确定性代码修复建议（co… | `operation` `file_path` | `line` `character` `query` |
+| `monitor` | 按行事件监控外部状态：后台脚本的 stdout 每行 → 一条通知，进程退出或期限到必有终态回报。 | `description` `command` | `timeout_ms` |
 | `notebook_edit` | 编辑 Jupyter Notebook（.ipynb）的单个 cell。支持替换、插入新 cell、删除 cell。 | `notebook_path` `edit_mode` `new_source` | `cell_id` `cell_type` |
 | `read` | 读取文件内容。支持指定行偏移和限制来读取大文件的部分内容。默认最多读取 2000 行，超出时会提示如何继续读取。 | `file_path` | `offset` `limit` `pages` |
 | `read_many` | 批量读取多个文件。通过 glob 模式匹配文件，一次性读取并拼接内容，大幅减少调用次数。 | `pattern` | `exclude` `path` |

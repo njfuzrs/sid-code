@@ -52,6 +52,24 @@ export interface TaskNotification {
   status: TaskStatus;
   summary: string;
   /**
+   * 监控事件正文（仅 monitor 的逐行事件通知带）。
+   *
+   * 为什么单列一个 XML 段而不是塞进 `<summary>`：summary 是**一行**（TUI 摘要行 +
+   * 模型快速判断用），事件正文可能是多行（200ms 批处理窗口合并 / 持续限流合并）。
+   * 混在一起会让 TUI 的折叠路径失去判据（无法区分「多行摘要」与「多行事件」）。
+   *
+   * 只在 `status === "running"` 的事件通知上出现；终态通知用 summary 说明结果，
+   * 不带 event（终态的原因不需要逐行复述，`.output` 里有全文）。
+   */
+  event?: string;
+  /**
+   * 事件来源描述（monitor 的 `description`，如「PR #662 CI」），仅事件通知带。
+   *
+   * TUI 把摘要行渲染成 `<description> · <event 首行>`（§5.7.4）。**不进 XML**：
+   * XML 里 summary 已经写成「监控事件：PR #662 CI」，再带一份 description 是重复。
+   */
+  description?: string;
+  /**
    * P1-2：子代理类型（如 explore / 自定义 agent 名）。仅用于 TUI 取该 agent 的
    * 身份色渲染通知行——**不进 XML**（模型不需要，进了反而是噪音）。
    */
@@ -107,6 +125,14 @@ export function formatNotification(n: TaskNotification): string {
     `  <status>${n.status}</status>`,
     `  <summary>${n.summary}</summary>`,
   );
+
+  // 监控事件：单独一段，不并进 summary（见 TaskNotification.event 的注释）。
+  // 事件正文来自**被监控进程的 stdout**，属外部不可信数据，与 `<result>` 同口径
+  // 用 untrusted 标记；内容里的 XML 字面量不会破坏渲染——TUI 走结构化快照，
+  // 不解析这段文本（见 StructuredNotification 的注释）。
+  if (n.event !== undefined) {
+    parts.push(`  <event untrusted="true">${n.event}</event>`);
+  }
 
   if (n.result) {
     const { output, totalToolUseCount, totalTokens, usage } = n.result;
@@ -167,6 +193,14 @@ export interface StructuredNotification {
   result?: string;
   /** P1-2：子代理类型，供 TUI 取该 agent 的身份色（frontmatter color > 哈希分配）。 */
   agentType?: string;
+  /**
+   * 监控事件正文（逐行事件通知带，见 `TaskNotification.event`）。
+   *
+   * TUI 消费它渲染 `<description> · <event 首行>` 与 `⎿` 折叠区，**不解析 XML 文本**。
+   */
+  event?: string;
+  /** 事件来源描述（`TaskNotification.description`），TUI 摘要行的前缀。 */
+  description?: string;
 }
 
 /** 出队结果：注入 LLM 的 XML 文本 + 供 TUI 渲染的结构化快照。 */
@@ -198,6 +232,10 @@ function toStructured(n: TaskNotification): StructuredNotification {
     // completed 走 result.output，failed/killed 走 error（与 formatNotification 的分支一致）。
     result: n.result ? n.result.output : n.error,
     agentType: n.agentType,
+    // 监控事件：结构化字段与 XML 同源（`enqueueTaskNotification` 一次构造），
+    // TUI 因此不必解析 `<event>` 文本（含 XML 字面量也不会破坏渲染）。
+    ...(n.event !== undefined ? { event: n.event } : {}),
+    ...(n.description !== undefined ? { description: n.description } : {}),
   };
 }
 

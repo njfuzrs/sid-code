@@ -175,8 +175,10 @@ function compactSummaryText(tasks: TaskDisplayInfo[]): string {
   let agent = 0;
   let workflow = 0;
   let wakeup = 0;
+  let monitor = 0;
   for (const t of tasks) {
     if (t.kind === "wakeup") wakeup += 1;
+    else if (t.kind === "monitor") monitor += 1;
     else if (t.type === "local_shell") shell += 1;
     else if (t.type === "local_agent") agent += 1;
     else if (t.type === "local_workflow") workflow += 1;
@@ -185,6 +187,7 @@ function compactSummaryText(tasks: TaskDisplayInfo[]): string {
   if (shell) parts.push(`${shell} shell`);
   if (agent) parts.push(`${agent} agent`);
   if (workflow) parts.push(`${workflow} workflow`);
+  if (monitor) parts.push(`${monitor} 监控`);
   if (wakeup) parts.push(`${wakeup} 唤醒`);
   return parts.length > 0 ? `后台：${parts.join(" · ")}` : "";
 }
@@ -247,6 +250,81 @@ const WakeupRow = React.memo(function WakeupRow({
           <Text color={theme.ui.active}>[WK] </Text>
           <Text color={theme.text.secondary}>
             {truncate(task.description, Math.max(10, maxContentLen - 26))}
+          </Text>
+        </Text>
+      </Box>
+      <Box flexShrink={0}>
+        <Text color={urgent ? theme.status.warning : theme.text.secondary}>{statsText}</Text>
+      </Box>
+    </Box>
+  );
+});
+
+/**
+ * monitor 行（`MO`，§5.7.3）。
+ *
+ * 与 shell 的 TaskRow 有三处不同，所以单独一个组件：
+ * 1. 统计列是「`N 事件 · 剩 Xm`」——用户关心「什么时候结束 / 收到几条」，
+ *    不是「跑了多久」（耗时对监控没有意义，它本来就是长跑）；
+ * 2. 剩余 < 2 分钟统计列改 warning 色（克制点睛，只点统计列）；
+ * 3. **没有 `⎿` 活动行**：默认不显示最新事件（§5.7.2 去重原则——事件只在消息流里出现，
+ *    面板再显示一遍就是同一句话在正上方重复）。
+ *
+ * 运行中订阅 250ms 动画（与 shell 一致地旋转），a11y 下用静态 `◐` 但仍每分钟刷新「剩 Xm」
+ * ——那不是动画，是数字本身在变（T-T1-9）。
+ */
+const MonitorRow = React.memo(function MonitorRow({
+  task,
+  maxContentLen,
+}: {
+  task: TaskDisplayInfo;
+  maxContentLen: number;
+}) {
+  const isRunning = task.status === "running";
+  const isFailed = task.status === "failed";
+  const isKilled = task.status === "killed";
+  const a11y = useIsAccessibilityEnabled();
+  const animate = isRunning && !a11y;
+  // 运行中 250ms 取帧（旋转）；静态时也订阅 60s 刷新剩余时间。
+  const [tickRef, tickTime] = useAnimationFrame(animate ? 250 : isRunning ? 60_000 : null);
+  void tickTime;
+
+  const spinnerFrame = animate
+    ? TASK_SPINNER_FRAMES[Math.floor(tickTime / 250) % TASK_SPINNER_FRAMES.length]
+    : TODO_IN_PROGRESS;
+  const statusIcon = isRunning
+    ? spinnerFrame
+    : isFailed
+      ? ERROR_MARK
+      : isKilled
+        ? TASK_KILLED_MARK
+        : TODO_COMPLETED;
+  const statusColor = isRunning
+    ? theme.ui.active
+    : isFailed
+      ? theme.status.error
+      : isKilled
+        ? theme.status.warning
+        : theme.status.success;
+
+  const remainingMs = (task.deadlineAt ?? task.startTime) - Date.now();
+  const urgent = isRunning && remainingMs < 2 * 60_000;
+  const statsText = isRunning
+    ? `${task.eventCount ?? 0} 事件 · 剩 ${formatRemaining(remainingMs)}`
+    : `${task.eventCount ?? 0} 事件`;
+
+  return (
+    <Box flexDirection="row">
+      <Box width={2} flexShrink={0} ref={tickRef}>
+        <Text color={statusColor} bold={isRunning}>
+          {statusIcon}
+        </Text>
+      </Box>
+      <Box flexGrow={1} flexShrink={1}>
+        <Text wrap="truncate">
+          <Text color={theme.ui.active}>[MO] </Text>
+          <Text color={isRunning ? theme.text.primary : theme.text.secondary}>
+            {truncate(task.description, Math.max(10, maxContentLen - 30))}
           </Text>
         </Text>
       </Box>
@@ -528,6 +606,8 @@ export const TodoPanel = React.memo(function TodoPanel({
           visibleTasks.map((task) =>
             task.kind === "wakeup" ? (
               <WakeupRow key={task.id} task={task} maxContentLen={maxContentLen} />
+            ) : task.kind === "monitor" ? (
+              <MonitorRow key={task.id} task={task} maxContentLen={maxContentLen} />
             ) : (
               <TaskRow key={task.id} task={task} maxContentLen={maxContentLen} />
             ),

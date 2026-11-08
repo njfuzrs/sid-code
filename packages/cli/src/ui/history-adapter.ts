@@ -134,6 +134,8 @@ function tryParseTaskNotifications(msg: Message): {
       result?: string;
       outputFile?: string;
       agentType?: string;
+      event?: string;
+      description?: string;
     };
     const raw = msg._meta.notif as StructuredNotif | StructuredNotif[] | undefined;
     const notifList: StructuredNotif[] = Array.isArray(raw)
@@ -164,6 +166,11 @@ function tryParseTaskNotifications(msg: Message): {
           ...(notif.outputFile ? { outputFile: notif.outputFile } : {}),
           // P1-2：agentType 只在结构化路径可得（XML 里刻意不带），用于身份色渲染。
           ...(notif.agentType ? { agentType: notif.agentType } : {}),
+          // 监控事件：TUI 摘要行渲染成 `<description> · <event 首行>`（§5.7.4）。
+          // 走结构化字段而不是解析 XML——事件正文来自被监控进程的 stdout，
+          // 含 `</task-notification>` 字面量也不会破坏渲染。
+          ...(notif.event !== undefined ? { event: notif.event } : {}),
+          ...(notif.description !== undefined ? { description: notif.description } : {}),
         })),
         remaining: nonTextBlocks.length > 0 ? nonTextBlocks : null,
       };

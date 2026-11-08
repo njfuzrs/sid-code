@@ -189,6 +189,13 @@ export function getToolSummary(name: string, input: unknown): string {
       ? `新建任务 · ${truncateSummaryByWidth(subject, THINK_SUMMARY_MAX_COLS)}`
       : "新建任务";
   }
+  // monitor：summary 档下 ⎿ 正文（给模型的收尾指令）被丢弃，header 必须自己说清楚
+  // 在监控什么。用模型写的 description（如「PR #662 CI」）而不是脚本原文——
+  // 后者可能很长，且用户读「在盯什么」比读命令更直接（§5.7.4）。
+  if (lower === "monitor") {
+    const desc = flattenWhitespace(inp?.description || "");
+    return desc ? `监控 · ${truncateSummaryByWidth(desc, THINK_SUMMARY_MAX_COLS)}` : "监控外部状态";
+  }
   if (lower === "task_update") {
     // 更新语义多样（改状态 / 认领 / 加依赖 / 删除），header 点名**本次改了什么**，
     // 而不是笼统一句"已更新"——后者与光秃秃的工具名信息量相同。

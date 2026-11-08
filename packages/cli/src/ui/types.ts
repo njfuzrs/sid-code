@@ -287,6 +287,16 @@ export type HistoryItemTaskNotification = HistoryItemBase & {
   /** 完整输出落盘文件路径（供「展开看完整」指引） */
   outputFile?: string;
   /**
+   * 监控事件正文（monitor 的逐行事件通知带，§5.7.4）。
+   *
+   * TUI 把摘要行渲染成 `<description> · <event 首行>`，多行进 `⎿` 折叠区。
+   * 与 `result` 分开：result 是「结论」（终态才有），event 是「发生过什么」
+   * （运行中也持续产生），两者在渲染上语义不同。
+   */
+  event?: string;
+  /** 事件来源描述（monitor 的 `description`），摘要行前缀。 */
+  description?: string;
+  /**
    * P1-2：子代理类型（如 explore / 自定义 agent 名）。用于给摘要行的 agent 名标一个
    * 稳定的身份色（frontmatter 声明色优先，否则按类型哈希分配），多代理并行时便于区分。
    * 缺省则不着色，保持原样。

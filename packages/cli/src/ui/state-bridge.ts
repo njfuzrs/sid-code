@@ -10,6 +10,7 @@ import {
   isAgentTask,
   isShellTask,
   isWorkflowTask,
+  isMonitorTask,
   onTaskChanged,
   offTaskChanged,
 } from "@sid-code/core/task/index.ts";
@@ -162,6 +163,14 @@ export class StateBridge extends EventEmitter {
       }
       if (isShellTask(t)) {
         info.command = t.command;
+      }
+      if (isMonitorTask(t)) {
+        // monitor 是真进程（走 registry），但呈现与 shell 不同：面板要的是
+        // 「已收到几条事件 · 还剩多久」，不是耗时（§5.7.3）。
+        info.kind = "monitor";
+        info.command = t.command;
+        info.eventCount = t.eventCount;
+        info.deadlineAt = t.deadlineAt;
       }
       if (isWorkflowTask(t)) {
         // workflow 任务:用 agentType 槽位展示 workflow 名,进度展示 agent 调用数 + 当前 phase

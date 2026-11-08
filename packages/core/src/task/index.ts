@@ -9,6 +9,7 @@ export {
   type LocalShellTaskState,
   type LocalAgentTaskState,
   type LocalWorkflowTaskState,
+  type LocalMonitorTaskState,
   type AgentProgress,
   type AgentTaskResult,
   type ToolActivity,
@@ -18,6 +19,7 @@ export {
   isShellTask,
   isAgentTask,
   isWorkflowTask,
+  isMonitorTask,
   generateTaskId,
 } from "./types.ts";
 
@@ -135,6 +137,26 @@ export {
 export { spawnShellTask, adoptRunningProcessAsTask, killShellTask } from "./shell-task.ts";
 
 export {
+  type MonitorGateDecision,
+  LineSplitter,
+  MonitorRateGate,
+  MAX_EVENT_LINE_CHARS,
+  EVENT_BATCH_MS,
+  BURST_WINDOW_MS,
+  BURST_LINE_LIMIT,
+  PER_MINUTE_NOTIFY_LIMIT,
+  TOTAL_NOTIFY_LIMIT,
+  MAX_CONCURRENT_MONITORS,
+  MIN_MONITOR_TIMEOUT_MS,
+  MAX_MONITOR_TIMEOUT_MS,
+  DEFAULT_MONITOR_TIMEOUT_MS,
+  spawnMonitorTask,
+  killMonitorTask,
+  countRunningMonitors,
+  truncateEventLine,
+} from "./monitor-task.ts";
+
+export {
   createAgentTask,
   updateAgentProgress,
   appendAgentOutput,
@@ -155,13 +177,14 @@ export {
 } from "./workflow-task.ts";
 
 import { getRunningTasks } from "./registry.ts";
-import { isPanelTask, isShellTask, isAgentTask, isWorkflowTask } from "./types.ts";
+import { isPanelTask, isShellTask, isAgentTask, isWorkflowTask, isMonitorTask } from "./types.ts";
 import { killShellTask } from "./shell-task.ts";
 import { killAgentTask } from "./agent-task.ts";
 import { killWorkflowTask } from "./workflow-task.ts";
+import { killMonitorTask } from "./monitor-task.ts";
 
 /**
- * 终止所有正在运行的后台任务（Shell / Agent / Workflow），返回被终止的任务数。
+ * 终止所有正在运行的后台任务（Shell / Agent / Workflow / Monitor），返回被终止的任务数。
  * 供 Ctrl+F「终止全部后台代理」双击确认使用。按各任务类型分派到对应 kill 函数
  * （幂等：已终态任务被 getRunningTasks 过滤掉，不会重复 kill）。
  *
@@ -175,6 +198,8 @@ export function killAllRunningTasks(): number {
     if (isShellTask(task)) killShellTask(task.id);
     else if (isAgentTask(task)) killAgentTask(task.id);
     else if (isWorkflowTask(task)) killWorkflowTask(task.id);
+    // monitor 走自己的 kill：终态文案要说清「是 task_stop 停的」而不是「到期」
+    else if (isMonitorTask(task)) killMonitorTask(task.id);
   }
   return running.length;
 }
@@ -184,4 +209,34 @@ export function killAllRunningTasks(): number {
  *  按下去却杀 0 个"的不一致。 */
 export function hasRunningTasks(): boolean {
   return getRunningTasks().filter(isPanelTask).length > 0;
+}
+
+/**
+ * Ctrl+F 二次确认文案里的类型计数（§5.7.6）。
+ *
+ * 为什么要点破类型：`终止全部后台任务` 在只有 1 个 shell 时是清楚的，但等待期常见
+ * 组合是「1 个 monitor + 1 个 shell」——monitor 被停意味着放弃等 CI，代价和停一个
+ * shell 不一样。列出计数让用户在按下第二次之前看见自己将放弃什么。
+ *
+ * 唤醒**不在**这里：它不是进程（`getRunningTasks` 里没有它），取消唤醒走对话或
+ * cron_delete，与 Ctrl+F 无关。
+ */
+export function describeRunningTasksForKillAll(): string {
+  const running = getRunningTasks().filter(isPanelTask);
+  let shell = 0;
+  let agent = 0;
+  let workflow = 0;
+  let monitor = 0;
+  for (const task of running) {
+    if (isMonitorTask(task)) monitor += 1;
+    else if (isShellTask(task)) shell += 1;
+    else if (isAgentTask(task)) agent += 1;
+    else if (isWorkflowTask(task)) workflow += 1;
+  }
+  const parts: string[] = [];
+  if (monitor) parts.push(`${monitor} 个监控`);
+  if (shell) parts.push(`${shell} 个 shell`);
+  if (agent) parts.push(`${agent} 个 agent`);
+  if (workflow) parts.push(`${workflow} 个 workflow`);
+  return parts.join("、");
 }

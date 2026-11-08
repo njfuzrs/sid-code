@@ -45,6 +45,8 @@ import { TaskCreateTool } from "@sid-code/core/tool/structured-task-create.ts";
 import { TaskUpdateTool } from "@sid-code/core/tool/structured-task-update.ts";
 import { EnterPlanModeTool } from "@sid-code/core/tool/enter-plan-mode.ts";
 import { ExitPlanModeTool } from "@sid-code/core/tool/exit-plan-mode.ts";
+import { MonitorTool } from "@sid-code/core/tool/monitor.ts";
+import { toLegacyTool } from "@sid-code/core/tool/bridge.ts";
 import { PlanModeManager } from "@sid-code/core/plan/state.ts";
 import { Registry as ToolRegistry } from "@sid-code/core/tool/registry.ts";
 
@@ -83,6 +85,10 @@ const EXPECTED_SUMMARY = [
   "exit_plan_mode", // output 把整份计划正文又带一遍（权威呈现是 PlanReviewMessage）
   "task_create", // output 是裸 JSON；本仓库无常驻面板呈现结构化清单 → 不能 hidden
   "task_update",
+  // monitor：output 是给模型的收尾指令（「不需要查询状态」「结束本轮」），
+  // 原样展示会把提示词漏到屏幕上。用户侧信息由 header 摘要
+  // （「监控 · PR #662 CI」）+ 后续事件行承担（§5.7.4）。
+  "monitor",
 ].sort();
 
 /**
@@ -103,6 +109,9 @@ function makeInstances() {
     new TaskUpdateTool(),
     new EnterPlanModeTool(planManager),
     new ExitPlanModeTool(planManager),
+    // monitor 是新版 Tool 接口（应写新接口）；本审计消费 LegacyTool 形态，
+    // 经 bridge 归一——与 registry.register 的真实路径一致。
+    toLegacyTool(new MonitorTool()),
   ];
 }
 
@@ -132,9 +141,17 @@ function scanSourceForDisplayModeTools(): Map<string, string> {
       if (!constMatch && !fnMatch) continue;
       const mode = constMatch ? constMatch[1] : "function";
       const nameRegex = /name\s*\(\s*\)\s*:?\s*(?:string\s*)?\{\s*return\s*["'`]([^"'`]+)["'`]/g;
+      // 新版 Tool 接口：name 是**字符串属性**（`readonly name = "monitor"` / `name: "x"`），
+      // 上面的旧式方法正则抓不到。漏掉的后果是「新工具声明了档位、审计却认为没人声明」
+      // ——正是本审计要防的静默失效，所以两种形态都扫。
+      const propNameRegex = /(?<![A-Za-z0-9_$])name\s*=\s*["'`]([^"'`]+)["'`]/g;
       let m: RegExpExecArray | null;
       let matched = false;
       while ((m = nameRegex.exec(src)) !== null) {
+        found.set(m[1], mode);
+        matched = true;
+      }
+      while ((m = propNameRegex.exec(src)) !== null) {
         found.set(m[1], mode);
         matched = true;
       }
@@ -224,6 +241,7 @@ describe("工具结果呈现档位对账审计", () => {
       exit_plan_mode: { summary: "先加字段再接线" },
       task_create: { subject: "补齐 header 摘要" },
       task_update: { task_id: "1", status: "completed" },
+      monitor: { description: "PR #662 CI", command: "gh pr checks 662", timeout_ms: 600_000 },
     };
     for (const name of EXPECTED_SUMMARY) {
       const summary = getToolSummary(name, samples[name] ?? {});

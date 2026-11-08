@@ -24,6 +24,10 @@ const ALL_AGENT_DISALLOWED_TOOLS = new Set([
   "save_memory", // 记忆管理是主代理的职责
   "task_output", // 子代理不应读取其他任务输出
   "task_stop", // 子代理不应终止其他任务
+  // monitor 的生命周期（最长 30 分钟）远长于子代理（多数几十秒到几分钟）：子代理一结束，
+  // 它挂的监控就没有事件消费者，只能空转到期限，期间每条事件都在叫醒一个已经收尾的回合。
+  // 需要等外部状态的事交给主代理（§5.4.6）。
+  "monitor",
   // 注: todo_write 曾因全局单实例并发写污染主会话被一律禁用; P1-2 已改为每个进程内子代理在
   // buildIsolatedToolRegistry 拿独立 TodoWriteTool 实例 (spawn 路径本就是独立子进程),
   // 污染根因消除, 恢复子代理 todo 追踪能力对齐 CC per-agent 命名空间, 故不再禁用。

@@ -18,6 +18,7 @@ import {
   dismissTerminalTasks,
   hasDismissableTasks,
   hasPendingEviction,
+  describeRunningTasksForKillAll,
 } from "@sid-code/core/task/index.ts";
 import {
   KeypressProvider,
@@ -588,9 +589,16 @@ export interface TaskDisplayInfo {
    *
    * PR 3 会加 `"monitor"`（monitor 是真进程，走 registry，但呈现也与 shell 不同）。
    */
-  kind?: "wakeup";
+  kind?: "wakeup" | "monitor";
   agentType?: string;
   command?: string;
+  /** 监控已投递的事件数（仅 `kind === "monitor"`，面板统计列用） */
+  eventCount?: number;
+  /**
+   * monitor 的硬期限（ms，仅 `kind === "monitor"`）。
+   * 与 `dueAt` 同理由：存绝对时刻，面板每分钟重渲时现算「剩 Xm」。
+   */
+  deadlineAt?: number;
   progress?: { toolUseCount: number; tokenCount: number };
   /** 当前/最近一次活动文案（如「读取 src/foo.ts」），运行中实时展示 */
   lastActivity?: string;
@@ -1013,9 +1021,17 @@ function TUIAppInner({ initialState, callbacks, bridge, alternateBuffer }: AppPr
       showTransientMessage(`已终止 ${n} 个后台任务`, TransientMessageType.Info);
       return true;
     }
-    // 首击：提示 + 开 3s 窗口
+    // 首击：提示 + 开 3s 窗口。文案列出类型计数（§5.7.6）：等待期常见组合是
+    // 「1 个监控 + 1 个 shell」，monitor 被停意味着放弃等 CI，代价与停 shell 不同，
+    // 用户按下第二次之前该看见自己将放弃什么。唤醒不在范围内（它不是进程）。
     killAllConfirmRef.current = true;
-    showTransientMessage("再按一次 Ctrl+F 终止全部后台任务（3s 内）", TransientMessageType.Warning);
+    const summary = describeRunningTasksForKillAll();
+    showTransientMessage(
+      summary
+        ? `再按一次 Ctrl+F 终止 ${summary}（3s 内）`
+        : "再按一次 Ctrl+F 终止全部后台任务（3s 内）",
+      TransientMessageType.Warning,
+    );
     if (killAllTimerRef.current) clearTimeout(killAllTimerRef.current);
     killAllTimerRef.current = setTimeout(() => {
       killAllConfirmRef.current = false;
