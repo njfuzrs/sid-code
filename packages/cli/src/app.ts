@@ -8922,14 +8922,14 @@ export class App {
         if (lastAssistant) turnText = collectTurnAssistantText([lastAssistant]);
       }
       const traceOutputDir = this.config.trace?.outputDir ?? sidPaths.trajectories();
+      // 用逻辑 id 而不是进程 id：resume（-c / --resume）时轨迹续写进被恢复会话的目录
+      // （collector 的 traceSessionId = resumed_from），`--resume <id>` 也只认逻辑 id。
+      // 原先用 sessionState.sessionId（进程新 id），-c 之后 trajectory_path 指向一个
+      // 不存在的目录、session_id 拿去 --resume 报「未找到会话」，两样都静默错（X4）。
+      const outputSessionId = this.getLogicalSessionId();
       const result: Record<string, unknown> = {
-        session_id: this.sessionState.sessionId,
-        trajectory_path: join(
-          traceOutputDir,
-          "sessions",
-          this.sessionState.sessionId,
-          "session.traj",
-        ),
+        session_id: outputSessionId,
+        trajectory_path: join(traceOutputDir, "sessions", outputSessionId, "session.traj"),
         role: "assistant",
         content: turnText.blocks,
         result: turnText.text,
