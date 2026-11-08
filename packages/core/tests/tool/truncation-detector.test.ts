@@ -180,3 +180,46 @@ function render() {
     expect(detectTruncation(content, "/a.ts").isTruncated).toBe(false);
   });
 });
+
+/**
+ * T3（Harness 厚薄归位专项，2026-11-08）：末行引号判据曾是「三种引号总数为奇数」，
+ * 注释里的英文撇号、双引号串里的撇号、docstring 收尾、YAML 裸值都会被判成截断，
+ * 合法的覆盖写入被拒。正反两组必须同时成立：放过合法末行，**不放过真截断**。
+ */
+describe("truncation-detector — 末行引号：撇号与注释不算未闭合（T3）", () => {
+  const py = "def f(x):\n    return x + 1\n".repeat(30);
+  const js = "const a = 1\n".repeat(60);
+
+  it.each([
+    ["py 注释里的撇号", py + "# it's done\n", "a.py"],
+    ["js 行注释里的撇号", js + "// don't touch\n", "a.ts"],
+    ["行内注释里的撇号", py + "x = 1  # it's fine\n", "a.py"],
+    ["双引号串里的撇号", py + 'print("it\'s done")\n', "a.py"],
+    ["sql 的 -- 注释", "select 1;\n".repeat(60) + "-- user's table\n", "a.sql"],
+    ["同行闭合的块注释", js + "/* it's ok */ foo()\n", "a.ts"],
+    // 下面三条注释里是**孤立引号**而非两侧带字母的撇号：撇号规则兜不住，只能靠注释识别
+    ["# 注释里的孤立引号", py + 'x = 1  # strip the trailing " from input\n', "a.py"],
+    ["// 注释里的孤立引号", js + "// matches a leading ' or a backslash\n", "a.ts"],
+    ["sql -- 注释里的孤立引号", "select 1;\n".repeat(60) + "-- quote char is '\n", "a.sql"],
+    ["docstring 收尾（单行看不出开关）", py + '"""\n', "a.py"],
+    ["YAML 裸值里的撇号", "k: v\n".repeat(150) + "description: Don't do this\n", "a.yaml"],
+    ["多行模板串的收尾反引号", js + "const s = `\nabc\n`\n", "a.js"],
+  ])("%s → 不报截断", (_name, content, file) => {
+    expect(detectTruncation(content, file).isTruncated).toBe(false);
+  });
+
+  it.each([
+    ["双引号串没闭合", py + 'x = "hello wor\n', "a.py"],
+    ["单引号串没闭合", py + "x = 'hello wor\n", "a.py"],
+    ["模板串没闭合", js + "const s = `abc\n", "a.js"],
+    ["f 前缀串没闭合（f' 不是撇号）", py + "x = f'value {y\n", "a.py"],
+    ["没闭合的串里带撇号", py + "x = \"it's cut\n", "a.py"],
+    ["串里的 # 不是注释", js + 'x = "color #fff\n', "a.ts"],
+    ["串里的 // 不是注释", js + 'const u = "https://example.com/a\n', "a.ts"],
+    ["shell 的 --flag 不是注释", "echo a\n".repeat(80) + 'git commit --message "wip\n', "a.sh"],
+  ])("%s → 仍然报截断", (_name, content, file) => {
+    const r = detectTruncation(content, file);
+    expect(r.isTruncated).toBe(true);
+    expect(r.reason).toContain("字符串字面量");
+  });
+});
