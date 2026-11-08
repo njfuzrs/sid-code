@@ -1,5 +1,6 @@
 import type { LocalCommandModule, LocalCommandResult } from "../../types.ts";
 import type { CommandContext } from "../../types.ts";
+import { errorText } from "../../result.ts";
 import { resolvePricing, effectivePricing } from "@sid-code/core/api/cost-tracker.ts";
 import { getRegistryEntries } from "@sid-code/core/llm/model-registry.ts";
 import { getGatewayCacheMeta, getAllGatewayEntries } from "@sid-code/core/llm/gateway-pricing.ts";
@@ -104,10 +105,8 @@ const mod: LocalCommandModule = {
       const { persist, rest } = stripPersist(tokens);
       if (rest.length === 0) {
         // 只给了 -p 没给模型名：提示用法（避免把 "-p" 当模型名去查找报错）。
-        return {
-          type: "text",
-          value: `错误: 缺少模型名\n用法: /model <name> [-p]\n\n${buildHelp()}`,
-        };
+        // 业务失败走 error（不是 text）：无头下才会翻成非 0（D2/D3 口径）。
+        return errorText(`缺少模型名\n用法: /model <name> [-p]\n\n${buildHelp()}`);
       }
       return switchModel(rest[0], persist, ctx);
     }
@@ -128,7 +127,10 @@ const mod: LocalCommandModule = {
   },
 };
 
-/** 校验模型名在 availableModels 中；不在则返回错误文本，否则返回 null。 */
+/**
+ * 校验模型名在 availableModels 中；不在则返回错误正文（**不含「错误: 」前缀**——
+ * 前缀由 `errorText()` 统一加，调用方一律 `errorText(err)` 包一层），否则返回 null。
+ */
 function validateModelName(modelName: string, ctx: CommandContext): string | null {
   if (ctx.config.availableModels.length === 0) return null; // 未配置列表时不校验
   const found = ctx.config.availableModels.some((m) => m.name === modelName);
@@ -141,17 +143,17 @@ function validateModelName(modelName: string, ctx: CommandContext): string | nul
     (m) => m.name.toLowerCase() === modelName.toLowerCase(),
   );
   if (caseHit) {
-    return `错误: 模型 "${modelName}" 不在可用模型列表中\n\n模型名区分大小写，你要找的可能是: ${caseHit.name}\n\n使用 /model list 查看详细信息`;
+    return `模型 "${modelName}" 不在可用模型列表中\n\n模型名区分大小写，你要找的可能是: ${caseHit.name}\n\n使用 /model list 查看详细信息`;
   }
 
   const available = ctx.config.availableModels.map((m) => `  - ${m.name}`).join("\n");
-  return `错误: 模型 "${modelName}" 不在可用模型列表中\n\n可用模型:\n${available}\n\n使用 /model list 查看详细信息`;
+  return `模型 "${modelName}" 不在可用模型列表中\n\n可用模型:\n${available}\n\n使用 /model list 查看详细信息`;
 }
 
 /** 切换主模型。 */
 function switchModel(modelName: string, persist: boolean, ctx: CommandContext): LocalCommandResult {
   const err = validateModelName(modelName, ctx);
-  if (err) return { type: "text", value: err };
+  if (err) return errorText(err);
 
   ctx.setModel?.(modelName, persist);
   return {
@@ -182,7 +184,7 @@ function switchFallback(rawArgs: string[], ctx: CommandContext): LocalCommandRes
 
   const modelName = rest[0];
   const err = validateModelName(modelName, ctx);
-  if (err) return { type: "text", value: err };
+  if (err) return errorText(err);
 
   // 额外校验：fallback 目标必须有 provider（否则运行时无法构建降级 provider）。
   const fb = ctx.config.availableModels.find((m) => m.name === modelName);
@@ -219,13 +221,12 @@ function switchSubAgent(rawArgs: string[], ctx: CommandContext): LocalCommandRes
   if (rest[0] === "clear" || rest[0] === "none") {
     const type = rest[1];
     if (!type) {
-      return {
-        type: "text",
-        value: `错误: 缺少子代理类型\n用法: /model sub clear <type>\n合法类型: ${subagentTypes().join(" / ")}`,
-      };
+      return errorText(
+        `缺少子代理类型\n用法: /model sub clear <type>\n合法类型: ${subagentTypes().join(" / ")}`,
+      );
     }
     if (!isValidSubAgentType(type)) {
-      return { type: "text", value: buildInvalidTypeError(type) };
+      return errorText(buildInvalidTypeError(type));
     }
     ctx.setSubAgentModel?.(type, undefined, persist);
     return {
@@ -238,16 +239,15 @@ function switchSubAgent(rawArgs: string[], ctx: CommandContext): LocalCommandRes
   const type = rest[0];
   const modelName = rest[1];
   if (!isValidSubAgentType(type)) {
-    return { type: "text", value: buildInvalidTypeError(type) };
+    return errorText(buildInvalidTypeError(type));
   }
   if (!modelName) {
-    return {
-      type: "text",
-      value: `错误: 缺少模型名\n用法: /model sub ${type} <name> [-p]\n\n${buildSubAgentUsage(ctx)}`,
-    };
+    return errorText(
+      `缺少模型名\n用法: /model sub ${type} <name> [-p]\n\n${buildSubAgentUsage(ctx)}`,
+    );
   }
   const err = validateModelName(modelName, ctx);
-  if (err) return { type: "text", value: err };
+  if (err) return errorText(err);
 
   ctx.setSubAgentModel?.(type, modelName, persist);
   return {
@@ -263,8 +263,9 @@ function isValidSubAgentType(type: string): boolean {
 function buildInvalidTypeError(type: string): string {
   // 「按职责单独指定」那行从实际类型列表派生（去掉 default），不再写死 5 个内置名——
   // 否则用户自定义 agent 出现在「合法类型」里却不出现在说明里，看起来像半支持。
+  // 返回**不含前缀**的正文：前缀由 errorText() 统一加（见 validateModelName 的注释）。
   const others = subagentTypes().filter((t) => t !== "default");
-  return `错误: 无效的子代理类型 "${type}"\n合法类型: ${subagentTypes().join(" / ")}\n\n说明:\n  · default —— 兜底，所有未单独指定的子代理类型都用它\n  · ${others.join("/")} —— 按职责单独指定`;
+  return `无效的子代理类型 "${type}"\n合法类型: ${subagentTypes().join(" / ")}\n\n说明:\n  · default —— 兜底，所有未单独指定的子代理类型都用它\n  · ${others.join("/")} —— 按职责单独指定`;
 }
 
 /**
