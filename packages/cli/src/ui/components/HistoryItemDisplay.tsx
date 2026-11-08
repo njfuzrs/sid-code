@@ -290,6 +290,8 @@ export const HistoryItemDisplay: React.FC<HistoryItemDisplayProps> = ({
             status={item.status}
             result={item.result}
             agentType={item.agentType}
+            event={item.event}
+            description={item.description}
             terminalWidth={width}
           />
         </Box>

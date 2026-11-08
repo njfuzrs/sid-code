@@ -37,6 +37,7 @@ export const CC_TO_INTERNAL_TOOL_NAME: Readonly<Record<string, string>> = {
   CronDelete: "cron_delete",
   CronList: "cron_list",
   ScheduleWakeup: "schedule_wakeup",
+  Monitor: "monitor",
   SendMessage: "send_message",
   ToolSearch: "tool_search",
   LSP: "lsp",

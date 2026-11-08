@@ -33,6 +33,16 @@ interface TaskNotificationMessageProps {
    * 否则按类型哈希分配），多代理并行时用颜色区分是哪个 agent 回来的。缺省则不加标签。
    */
   agentType?: string;
+  /**
+   * 监控事件正文（monitor 的逐行事件通知带，§5.7.4）。
+   *
+   * 有值时摘要行改用 `<description> · <event 首行>`，bullet 用 `theme.text.secondary`
+   * ——事件不是终态，不该用状态色（绿/红/黄只在「结束 / 失败 / 到期」时出现）。
+   * 多行事件的其余行进 `⎿` 折叠区（复用同一个 SlicingMaxSizedBox，不新增组件）。
+   */
+  event?: string;
+  /** 事件来源描述（monitor 的 `description`），摘要行前缀。 */
+  description?: string;
   terminalWidth: number;
 }
 
@@ -61,6 +71,8 @@ export const TaskNotificationMessage: React.FC<TaskNotificationMessageProps> = (
   status,
   result,
   agentType,
+  event,
+  description,
   terminalWidth,
 }) => {
   // 与工具结果共享同一套 ctrl+o 阶梯展开语义：折叠档基线 = DEFAULT_MAX_LINES，
@@ -68,24 +80,51 @@ export const TaskNotificationMessage: React.FC<TaskNotificationMessageProps> = (
   const effectiveMaxLines = useExpandedMaxLines(DEFAULT_MAX_LINES);
   const maxColumnWidth = Math.max(terminalWidth - WRAP_WIDTH_PADDING, 20);
 
+  // 监控事件：摘要行 = `<description> · <event 首行>`，其余行进 ⎿ 折叠区（§5.7.4）。
+  // bullet 用次要色——事件不是终态，不用绿/红/黄（那三色只属于「结束 / 失败 / 到期」）。
+  const isEvent = event !== undefined;
+  const eventLines = isEvent ? event.split("\n") : [];
+  const eventFirstLine = eventLines[0] ?? "";
+  const eventRest = eventLines.slice(1).join("\n");
+  const displaySummary = isEvent
+    ? description
+      ? `${description} · ${eventFirstLine}`
+      : eventFirstLine
+    : summary;
+
   return (
     <Box width={terminalWidth} flexDirection="column">
       {/* 摘要行：状态色 bullet + 摘要文本（对标工具 header） */}
       <Box flexDirection="row">
         <Box flexShrink={0} width={2}>
-          <Text color={statusColor(status)}>{BULLET}</Text>
+          <Text color={isEvent ? theme.text.secondary : statusColor(status)}>{BULLET}</Text>
         </Box>
         <Box flexGrow={1}>
           {/* P1-2：agent 身份色只点在类型标签上（克制点睛，不给整行上色）。 */}
           {agentType ? <Text color={getAgentInkColor(agentType)}>{`${agentType} `}</Text> : null}
-          <Text wrap="wrap" color={theme.text.primary}>
-            {summary}
+          <Text wrap="wrap" color={isEvent ? theme.text.secondary : theme.text.primary}>
+            {displaySummary}
           </Text>
         </Box>
       </Box>
 
-      {/* 结果正文：树枝缩进 + 折叠（复用 SlicingMaxSizedBox，与工具结果一致） */}
-      {result ? (
+      {/* 多行事件的其余行 / 终态结论：树枝缩进 + 折叠（复用 SlicingMaxSizedBox） */}
+      {isEvent && eventRest ? (
+        <Box flexDirection="row">
+          <Box flexShrink={0}>
+            <Text color={theme.text.secondary}>{`  ${TREE_BRANCH} `}</Text>
+          </Box>
+          <Box flexDirection="column" flexGrow={1}>
+            <SlicingMaxSizedBox
+              text={eventRest}
+              maxLines={effectiveMaxLines}
+              overflowDirection="bottom"
+              maxColumnWidth={Math.max(1, maxColumnWidth - 4)}
+              color={theme.text.secondary}
+            />
+          </Box>
+        </Box>
+      ) : !isEvent && result ? (
         <Box flexDirection="row">
           <Box flexShrink={0}>
             <Text color={theme.text.secondary}>{`  ${TREE_BRANCH} `}</Text>

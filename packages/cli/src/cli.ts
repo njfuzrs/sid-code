@@ -2003,6 +2003,12 @@ export async function main(): Promise<void> {
     toolRegistry.register(new TaskGetTool());
     toolRegistry.register(new SendMessageTool(providerRegistry, toolRegistry));
 
+    // 注册 monitor 工具（M1：按行事件监控外部状态，等待期前台零请求）。
+    // 延迟加载（shouldDefer），由 tool_search 按需调出；子代理侧由 tool-filter 的
+    // ALL_AGENT_DISALLOWED_TOOLS 硬禁（子代理生命周期短于 monitor 期限）。
+    const { MonitorTool } = await import("@sid-code/core/tool/monitor.ts");
+    toolRegistry.register(new MonitorTool());
+
     // 注册结构化任务清单工具（带依赖/owner 的持久化 TODO：task_create/task_update/task_get/task_list）
     // 对标 claude-code TaskCreate/TaskUpdate/TaskGet/TaskList，服务多 agent 派活。
     const { TaskCreateTool } = await import("@sid-code/core/tool/structured-task-create.ts");

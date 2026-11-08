@@ -1159,7 +1159,7 @@ export class PermissionChecker implements Checker {
     // Step 2: 危险命令拦截（硬编码 25 种模式 + 结构性注入防护 + 复合命令拆分 + 重定向检测 + LLM 风险分类）
     //   ⚠️ checkDangerousCommand 已为 async（内含 LLM 分类器调用），调用点必须 await——
     //   否则返回的 Promise 恒为 truthy，危险命令检测会被错误短路。
-    if (req.toolName === "bash") {
+    if (isCommandSemanticsRequest(req)) {
       const dangerResult = await this.checkDangerousCommand(req);
       if (dangerResult) return dangerResult;
     }
@@ -1412,7 +1412,7 @@ export class PermissionChecker implements Checker {
     const safetyTargets: string[] =
       WRITE_TOOLS.has(req.toolName) && filePath
         ? [filePath]
-        : req.toolName === "bash"
+        : isCommandSemanticsRequest(req)
           ? await this.resolveBashWriteTargets(req)
           : [];
     // 多个写目标取**最严格**的命中，与 safetyCheck() 内部对解析链的取法同一理由：
@@ -1472,7 +1472,7 @@ export class PermissionChecker implements Checker {
     // ② `autoAllowBashIfSandboxed` 默认改 false（见 sandbox.ts defaultSandboxConfig）。
     //    危险命令（Step 2）与重定向（P1-4）已在此步之前拦住，所以剩下被自动放行的是
     //    「非危险但也没人看过」的任意 bash。让「少弹窗」变成显式 opt-in。
-    if (req.toolName === "bash" && this.sandboxManager?.shouldAutoAllowBash()) {
+    if (isCommandSemanticsRequest(req) && this.sandboxManager?.shouldAutoAllowBash()) {
       // ① 模式硬约束优先：plan / deny-write 是代码级只读，沙箱不构成放行理由
       if (this.config.permissionMode === "plan") {
         return this.checkPlanMode(req, filePath, resource);
@@ -1544,7 +1544,7 @@ export class PermissionChecker implements Checker {
       }
       // P1-3：cwd 内的文件系统 bash 命令（mkdir/touch/cp/sed）也自动放行。
       // rm/rmdir/mv 已从白名单拿掉——`rm -rf .` 的 `.` 在工作区内，修前会被放行。
-      if (req.toolName === "bash") {
+      if (isCommandSemanticsRequest(req)) {
         const command = (req.input as { command?: string })?.command ?? "";
         if (command && this.canAutoAllowFsCommandInAcceptEdits(command)) {
           log.info(
@@ -2467,15 +2467,17 @@ export class PermissionChecker implements Checker {
     const askRules = { deny: [], allow: [], ask: this.rules.ask };
     const pathCtx = this.buildPathRuleContext(req);
 
-    if (req.toolName !== "bash") {
+    if (!isCommandSemanticsRequest(req)) {
       return checkRules(askRules, req, pathCtx);
     }
 
+    // monitor 的 command 按 bash 规则名匹配（§5.4.6：`Bash(gh pr checks:*)` 同样生效）
+    const ruleReq = commandRuleRequest(req);
     // 与 deny 同口径：逐「等价执行形态」匹配（见 checkDenyRules 注释与 shell-command-variants.ts）
     const command = (req.input as { command?: string })?.command ?? "";
     for (const variant of expandShellCommand(command).variants) {
       const subReq: PermissionRequest = {
-        ...req,
+        ...ruleReq,
         input: { ...(req.input as object), command: variant },
       };
       const subDecision = checkRules(askRules, subReq, pathCtx);
@@ -2564,10 +2566,12 @@ export class PermissionChecker implements Checker {
     const denyRules = { deny: this.rules.deny, allow: [], ask: [] };
     const pathCtx = this.buildPathRuleContext(req);
 
-    // 非 bash：保持原整条匹配语义（文件类工具走路径前缀解析）
-    if (req.toolName !== "bash") {
+    // 非命令语义工具：保持原整条匹配语义（文件类工具走路径前缀解析）
+    if (!isCommandSemanticsRequest(req)) {
       return checkRules(denyRules, req, pathCtx);
     }
+    // monitor 的 command 按 bash 规则名匹配：deny 规则 `Bash(curl *)` 对它同样拦
+    const ruleReq = commandRuleRequest(req);
 
     const command = (req.input as { command?: string })?.command ?? "";
 
@@ -2580,7 +2584,7 @@ export class PermissionChecker implements Checker {
     // （2026-10-24 实测 always-allow 下放行）。展开只用于「拦」，allow 不用（见模块头注释）。
     for (const variant of expandShellCommand(command).variants) {
       const subReq: PermissionRequest = {
-        ...req,
+        ...ruleReq,
         input: { ...(req.input as object), command: variant },
       };
       const subDecision = checkRules(denyRules, subReq, pathCtx);
@@ -2621,17 +2625,19 @@ export class PermissionChecker implements Checker {
     const allowRules = { deny: [], allow, ask: [] };
     const pathCtx = this.buildPathRuleContext(req);
 
-    // 非 bash：保持原整条匹配语义（文件类工具走路径前缀解析）
-    if (req.toolName !== "bash") {
+    // 非命令语义工具：保持原整条匹配语义（文件类工具走路径前缀解析）
+    if (!isCommandSemanticsRequest(req)) {
       return checkRules(allowRules, req, pathCtx);
     }
+    // monitor 的 command 按 bash 规则名匹配：allow 规则 `Bash(gh pr checks:*)` 同样放行
+    const ruleReq = commandRuleRequest(req);
 
     const command = (req.input as { command?: string })?.command ?? "";
     const subCommands = splitCompoundCommand(command);
 
     // 单命令（无 &&/||/;/| 复合）：等价于原逻辑，直接整条匹配
     if (subCommands.length <= 1) {
-      return checkRules(allowRules, req, pathCtx);
+      return checkRules(allowRules, ruleReq, pathCtx);
     }
 
     // 复合命令：至少一段命中 allow，其余每段要么命中 allow，要么是「管道下游纯过滤器」
@@ -2649,7 +2655,7 @@ export class PermissionChecker implements Checker {
     const structureTrusted = flatCount === subCommands.length;
     const matchesAllow = (sub: string): boolean => {
       const subReq: PermissionRequest = {
-        ...req,
+        ...ruleReq,
         input: { ...(req.input as object), command: sub },
       };
       return checkRules(allowRules, subReq, pathCtx)?.allowed === true;
@@ -2830,4 +2836,34 @@ export class PermissionChecker implements Checker {
       this.config.print === true || (this.config.maxTurns !== undefined && this.config.maxTurns > 0)
     );
   }
+}
+
+/**
+ * 「命令语义」工具判定：bash 本身 + monitor 的 command（M1，§5.4.6）。
+ *
+ * monitor 的 `command` 是 shell 脚本，必须走 **bash 同一条权限管线**：命令规则
+ * `Bash(gh pr checks:*)` 对它同样生效、deny 规则同样拦、危险命令 / safetyCheck /
+ * 沙箱策略全部复用。不另开口子，也不在工具侧复制一套规则匹配——复制必然漂移，
+ * 本仓「两套尺子」的教训已多次（`isAwaitedBackgroundTask` 与 wait-registry 那次）。
+ *
+ * 判据要求 input 上确有非空 `command`：monitor 的 schema 校验失败时 checker 仍可能
+ * 被调用，此时按「非命令工具」处理，落到后续步骤给出正常的参数错误。
+ */
+function isCommandSemanticsRequest(req: PermissionRequest): boolean {
+  if (req.toolName === "bash") return true;
+  if (req.toolName !== "monitor") return false;
+  const command = (req.input as { command?: unknown } | undefined)?.command;
+  return typeof command === "string" && command.length > 0;
+}
+
+/**
+ * 规则匹配视角的请求：monitor 的 command 必须按 **bash** 的规则名匹配。
+ *
+ * `checkRules` 用 `req.toolName` 与规则名（归一到内部名）比较，而 monitor 的 toolName
+ * 是 `monitor` —— 规则 `Bash(gh pr checks:*)` 就永远命中不了。这里只**为匹配**把名字换成
+ * `bash`：执行视图、审计视图（`PermissionDecision.tool_name`）仍是原始的 `monitor`，
+ * 两者不混淆（§5.4.6 要求审计能区分来源）。
+ */
+function commandRuleRequest(req: PermissionRequest): PermissionRequest {
+  return req.toolName === "monitor" ? { ...req, toolName: "bash" } : req;
 }

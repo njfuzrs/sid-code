@@ -6,7 +6,7 @@
 import { randomBytes } from "crypto";
 
 /** 任务类型 */
-export type TaskType = "local_shell" | "local_agent" | "local_workflow";
+export type TaskType = "local_shell" | "local_agent" | "local_workflow" | "local_monitor";
 
 /** 任务状态机：pending → running → completed | failed | killed */
 export type TaskStatus = "pending" | "running" | "completed" | "failed" | "killed";
@@ -171,8 +171,40 @@ export interface LocalWorkflowTaskState extends TaskStateBase {
   progress?: AgentProgress;
 }
 
+/**
+ * Monitor 任务状态（M1：按行事件监控外部状态）。
+ *
+ * 与 shell 任务的关键差异（这三点决定了它必须单列一个类型，而不是复用 `local_shell`）：
+ * 1. **有硬期限**：`deadlineAt` 是承诺（`registerWait` 的 deadline 源），到期由 harness
+ *    自己的定时器 kill + 通知，不依赖子进程配合。普通后台 shell 没有这个承诺。
+ * 2. **stdout 是事件流**：每一行都会变成一条通知，所以父进程持有 pipe 而不是直接把
+ *    stdout 交给文件描述符（`local_shell` 是 `stdio: [ignore, outFd, outFd]`）。
+ * 3. **不进 `isAwaitedBackgroundTask` 的静默判据**：`isShellTask` 为假，60s 静默不会
+ *    把它判成「不值得等」——它有期限，期限就是它的承诺。
+ */
+export interface LocalMonitorTaskState extends TaskStateBase {
+  type: "local_monitor";
+  /** 展示/通知用的原始命令（面板 Ctrl+O 展开时看） */
+  command: string;
+  /** 硬期限（墙钟毫秒）。到期由 harness 定时器 kill + 发 killed 通知。 */
+  deadlineAt: number;
+  /** 已投递的事件通知条数（面板统计列 + bg_task_list 的进展签名） */
+  eventCount: number;
+  /** 非正常结束的原因（到期 / 事件过密 / 累计过多），终态通知据此选文案 */
+  stopReason?: "timeout" | "rate_burst" | "rate_total";
+  /** 被限流合并掉的原始行数（事件过密判定用，只进通知，不上面板） */
+  mergedLineCount?: number;
+  /** 恒为 true：monitor 进后台面板（见 `isPanelTask`）。与 shell 一样显式声明，
+   *  不用「有 outputFile 就算后台」这种推断——那会让前台路径漏标时静默漏上面板。 */
+  isBackgrounded: boolean;
+}
+
 /** 联合类型 */
-export type TaskState = LocalShellTaskState | LocalAgentTaskState | LocalWorkflowTaskState;
+export type TaskState =
+  | LocalShellTaskState
+  | LocalAgentTaskState
+  | LocalWorkflowTaskState
+  | LocalMonitorTaskState;
 
 /**
  * 面板/后台可见性的**唯一闸门**（对标 claude-code `isPanelAgentTask`）。
@@ -225,11 +257,25 @@ export function isWorkflowTask(task: TaskState): task is LocalWorkflowTaskState 
   return task.type === "local_workflow";
 }
 
+/**
+ * monitor 任务守卫。
+ *
+ * ⚠️ 刻意**不**让 `isShellTask` 覆盖它：monitor 有硬期限，不走「60s 静默判成不值得等」
+ * 的 shell 语义（见 `wait-registry.ts` 的派生分支）。任何按类型分派 kill / 通知的地方
+ * 都要单独处理它，不能因为「它也是 spawn 子进程」就套 shell 的路径。
+ */
+export function isMonitorTask(task: TaskState): task is LocalMonitorTaskState {
+  return task.type === "local_monitor";
+}
+
 /** Task ID 生成：类型前缀 + 8 位随机字符 */
 const TASK_ID_PREFIXES: Record<TaskType, string> = {
   local_shell: "s",
   local_agent: "a",
   local_workflow: "w",
+  // m 前缀：与 shell(s)/agent(a)/workflow(w) 一致的单字母风格。monitor 事件通知里
+  // 模型会看到这个 id（`task_stop m7k2`），短前缀比 `mon_` 更省 token。
+  local_monitor: "m",
 };
 
 const ID_ALPHABET = "0123456789abcdefghijklmnopqrstuvwxyz";

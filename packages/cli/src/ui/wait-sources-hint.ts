@@ -25,7 +25,7 @@ export interface WaitSourcesHint {
 }
 
 export function deriveWaitSourcesHint(opts: {
-  /** 面板数据源（已含唤醒行，见 state-bridge） */
+  /** 面板数据源（已含唤醒行与 monitor 行，见 state-bridge） */
   tasks: TaskDisplayInfo[];
   /** `Ctrl+T` 是否把面板藏起来了（useUIState 的 taskPanelHidden） */
   panelHidden: boolean;
@@ -34,9 +34,15 @@ export function deriveWaitSourcesHint(opts: {
 }): WaitSourcesHint | null {
   if (!opts.panelHidden) return null;
   const wakeups = opts.tasks.filter((t) => t.kind === "wakeup").length;
-  if (wakeups === 0) return null;
+  // 只数**运行中**的 monitor：终态行马上会被驱逐，用户不需要为「一个已经结束的监控」
+  // 去按 Ctrl+T 看一眼。
+  const monitors = opts.tasks.filter((t) => t.kind === "monitor" && t.status === "running").length;
+  if (wakeups === 0 && monitors === 0) return null;
+  const parts: string[] = [];
+  if (monitors > 0) parts.push(`${monitors} 个监控`);
+  if (wakeups > 0) parts.push(`${wakeups} 个唤醒等待中`);
   return {
-    counts: `${wakeups} 个唤醒等待中`,
+    counts: parts.join(" · "),
     toggle: opts.toggleDisplay ?? "Ctrl+T",
   };
 }
