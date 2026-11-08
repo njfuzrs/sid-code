@@ -14,11 +14,25 @@ import { getLogger } from "../debug/logger.ts";
 import { z } from "zod/v4";
 import { lazySchema } from "../sdk/lazy-schema.ts";
 import { isPreapprovedHost } from "./web-fetch-preapproved.ts";
-import { getSharedWebFetchExtractor, SAFE_FALLBACK_CHARS } from "./web-fetch-extract.ts";
+import {
+  EXTRACT_INPUT_MAX_CHARS,
+  getSharedWebFetchExtractor,
+  SAFE_FALLBACK_CHARS,
+} from "./web-fetch-extract.ts";
 import { classifyUrlProvenance } from "./url-provenance.ts";
 
 const FETCH_TIMEOUT_MS = 10000;
-const MAX_CONTENT_LENGTH = 100000; // 从 50000 提升到 100000
+/**
+ * 抓取正文的外层截断上限（字符）。曾是 50000，提升到 100000 时 usageGuide 没跟着改，
+ * 模型看到的一直是「超过 50000 截断」（台账 T39，2026-11-08）。usageGuide 现在直接引用
+ * 本常量与提炼层的两个上限，改数字不用再记得改文案。
+ */
+export const MAX_CONTENT_LENGTH = 100000;
+
+/** usageGuide 里的字符数写法：100000 → "100,000" */
+function fmtChars(n: number): string {
+  return n.toLocaleString("en-US");
+}
 
 /** 每主机限流：每分钟最多 10 次请求 */
 const RATE_LIMIT_PER_HOST = 10;
@@ -348,7 +362,8 @@ export class WebFetchTool implements Tool {
     return `- 用于查阅在线文档、API 参考、GitHub 文件等
 - 仅支持 http/https，不支持 ftp 等其他协议
 - GitHub blob URL 会自动转换为 raw URL
-- 内容超过 50000 字符时自动截断
+- 正文先截到前 ${fmtChars(MAX_CONTENT_LENGTH)} 字符，再交独立小模型按 prompt 提炼（只读前 ${fmtChars(EXTRACT_INPUT_MAX_CHARS)} 字符），返回的是提炼结果而非原文
+- 提炼不可用时只返回前 ${fmtChars(SAFE_FALLBACK_CHARS)} 字符的原文片段，并标注未经隔离
 - 不能访问需要登录的页面`;
   }
 
