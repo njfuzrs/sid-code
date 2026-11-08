@@ -27,35 +27,13 @@
 import { readFileSync, existsSync } from "node:fs";
 import { join } from "node:path";
 import { resolvePaths, listSessions } from "@sid-code/core/trace/digest.ts";
+// X3-16：分类判据只有一份，长在 trace/ 下 —— 写入侧（digest → session-index.is_audit）
+// 与本脚本共用它。各写一份就必然漂移，而漂移的那天不会有任何东西变红
+// （这正是 X3-16 的形态：snapshot 拿全部会话当分母，本脚本却按审计类算）。
+import { isAuditTaskPrompt } from "@sid-code/core/trace/audit-task.ts";
 
 /** 防线相关工具名（sub_agent 的 verify 类型单独看 tool_input） */
 const HYP_TOOLS = new Set(["hypothesis_register", "hypothesis_challenge"]);
-
-/** 审计核查类任务的关键词（命中即算，启发式口径） */
-const AUDIT_KEYWORDS = [
-  "检查",
-  "核查",
-  "审计",
-  "是否落地",
-  "落地实现",
-  "是否实现",
-  "对照",
-  "对比检查",
-  "排查",
-  "根因",
-  "缺口",
-  "验收",
-  "复核",
-  "核实",
-  "有没有落地",
-  "是否存在",
-  "audit",
-  "verify",
-  "review",
-  "check whether",
-  "double check",
-  "double-check",
-];
 
 interface SessionStat {
   id: string;
@@ -110,12 +88,7 @@ function scanSession(dir: string, id: string): SessionStat | null {
       // 只用首个用户 prompt 判定任务类型（后续追问不改变任务性质）
       if (!stat.promptHead) {
         stat.promptHead = data.prompt.slice(0, 120).replace(/\s+/g, " ");
-        const lower = data.prompt.toLowerCase();
-        stat.isAudit = AUDIT_KEYWORDS.some((kw) =>
-          kw === kw.toLowerCase() && /[a-z]/.test(kw)
-            ? lower.includes(kw)
-            : data.prompt.includes(kw),
-        );
+        stat.isAudit = isAuditTaskPrompt(data.prompt);
       }
     } else if (kind === "PreToolUse") {
       const tn = data.tool_name;

@@ -91,7 +91,7 @@
 
 | 指标 | 状态 / 取数源 |
 | --- | --- |
-| **防线触发率** —— 分母限定在「审计核查类任务」，全量任务的分母会把信号稀释掉 | ✅ `scripts/defense-trigger-rate.ts`（实测审计类任务 0% 触发，即「防线全在、调用全 0」） |
+| **防线触发率** —— 分母限定在「审计核查类任务」，全量任务的分母会把信号稀释掉 | ✅ `session-index.jsonl:defense_triggered ÷ is_audit`（仅已检测行；`is_audit` 由写入侧按首个 prompt 判定，判据在 `packages/core/src/trace/audit-task.ts`）。抽查用 `scripts/defense-trigger-rate.ts --list-audit`（实测审计类任务 0% 触发，即「防线全在、调用全 0」）。⚠️ 2026-11-08 前的快照分母是全部会话，与该口径不可直接连线 |
 | **HITL 介入率**（分工具 / 分规则）与确认耗时 —— 它同时是「更安全 ↔ 更快」这个 trade-off 的计价器 | ✅ `PermissionDecision` 事件 + `session-index.permission`（分母 = 权限决策数）；⚠️ 确认耗时只在交互会话真弹窗时有样本，headless 恒 n=0 |
 | **权限规则匹配正确率**（该拦的拦住、不该拦的别拦） | ⚠️ 只有**规则命中率**（`permission.rule_hits` ÷ 决策数）与按 reason 分桶；「正确」需要标注真值，轨迹给不出，仍靠单测 / e2e 断言 |
 | **policy e2e 拦截验证**、fail-closed 路径触发计数 | ⚠️ 有 e2e 断言，无长期趋势 |

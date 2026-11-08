@@ -23,7 +23,16 @@
  */
 import { describe, expect, test } from "bun:test";
 import { spawnSync } from "node:child_process";
-import { existsSync, readFileSync, readdirSync } from "node:fs";
+import {
+  chmodSync,
+  existsSync,
+  mkdtempSync,
+  readFileSync,
+  readdirSync,
+  rmSync,
+  writeFileSync,
+} from "node:fs";
+import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { NO_TEST_PATHS, decide, mapPathToTests } from "../../scripts/affected-tests.ts";
 import { computeChangeScope, parseArgs } from "../../scripts/change-scope.ts";
@@ -314,6 +323,56 @@ describe("与 package.json 的接线（反漂移）", () => {
 
   test("affected-tests:run 过滤掉 # 注释行，否则 eval 会把说明当命令跑", () => {
     expect(PKG.scripts["affected-tests:run"]).toContain("grep -v '^#'");
+  });
+
+  /**
+   * X3-15：接线不能吞掉脚本的退出码。
+   *
+   * 旧写法 `eval "$(bun run scripts/affected-tests.ts | grep -v '^#')"` 里，
+   * 命令替换丢弃内部退出码：base 解析失败时 stdout 为空，`eval ""` 返回 0 ——
+   * **零测试、exit 0**，和「没有改动」长得一模一样。影响所有改动、不限文件类型。
+   *
+   * 这两条是行为断言（真跑整条 `sh -c` 接线），不是文本断言：
+   * 文本断言（`toContain("affected-tests.ts")`）在旧写法下也是绿的，它证明不了接线有效。
+   */
+  test("base 解析失败时，整条接线必须非 0 退出（不能「零测试然后全绿」）", () => {
+    const r = spawnSync("sh", ["-c", PKG.scripts["affected-tests:run"]], {
+      cwd: ROOT,
+      encoding: "utf8",
+      // 注入不存在的 base：这是 X3-15 唯一的失效形态，而接线层原先把它吞掉了。
+      env: { ...process.env, AFFECTED_TESTS_BASE: "no-such-ref-zzz-for-x3-15" },
+    });
+    // 变异自证：把 package.json 那行改回 `eval "$(... | grep -v '^#')"`，本条必红。
+    expect(r.status, `接线退出码应为非 0，实际 ${r.status}\nstderr: ${r.stderr}`).not.toBe(0);
+    // 不只是非 0：失败原因要能被人看见（否则「非 0 但没说为什么」仍然难归因）。
+    expect(r.stderr).toContain("no-such-ref-zzz-for-x3-15");
+  });
+
+  test("base 正常时接线会把脚本输出当命令执行（正常路径没被串联弄坏）", () => {
+    // 为什么用 stub `bun` 而不是真跑：真跑会真的执行选出的 `bun test …`
+    // （工作区有未提交改动时必然选出非空集），一条单测变成几十秒的选测。
+    // stub 只验证**接线**这一段：脚本输出经 grep 过滤后被 eval 执行。
+    const bin = mkdtempSync(join(tmpdir(), "x3-15-bin-"));
+    try {
+      const fakeBun = join(bin, "bun");
+      writeFileSync(
+        fakeBun,
+        ["#!/bin/sh", "echo '# 判定：none —— stub'", "echo 'echo __EVAL_RAN__'", "exit 0"].join(
+          "\n",
+        ),
+      );
+      chmodSync(fakeBun, 0o755);
+      const r = spawnSync("sh", ["-c", PKG.scripts["affected-tests:run"]], {
+        cwd: ROOT,
+        encoding: "utf8",
+        env: { ...process.env, PATH: `${bin}:${process.env.PATH ?? ""}` },
+      });
+      expect(r.status, `接线应成功\nstderr: ${r.stderr}`).toBe(0);
+      // 脚本输出被真的 eval 了（注释行被 grep 滤掉，剩下那行命令被执行）
+      expect(r.stdout).toContain("__EVAL_RAN__");
+    } finally {
+      rmSync(bin, { recursive: true, force: true });
+    }
   });
 
   test("生成的命令与 test 脚本同口径地排除慢标记", () => {

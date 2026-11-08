@@ -63,6 +63,10 @@ import {
   type ModelLatencyStats,
 } from "./latency-by-model.ts";
 import { createProviderResolver, resolveEventProvider } from "./provider-resolver.ts";
+// X3-16：审计核查类任务的分类判据收在 trace/ 下的共享模块里 —— 写入侧（本文件算
+// is_audit）与读取侧（northstar-snapshot / defense-trigger-rate）必须是同一份判据，
+// 各写一份就必然漂移（纪律同 TTFT 的谓词只有一份）。
+import { isAuditTaskPrompt } from "./audit-task.ts";
 import { calculateUSDCost, resolvePricing } from "../api/cost-tracker.ts";
 
 // ─────────────────────────── 路径 ───────────────────────────
@@ -1677,6 +1681,18 @@ export interface SessionLevelMetrics {
   conflict_auto_continue_count: number;
   /** 是否触发过四环防线（hypothesis_register / hypothesis_challenge / verify 子代理） */
   defenseTriggered: boolean;
+  /**
+   * X3-16：本会话是否属于「审计核查类任务」—— 防线触发率指标的**分母口径**。
+   *
+   * 判据是首个 `UserPromptSubmit` 的关键词命中（见 `audit-task.ts`），与
+   * `defenseTriggered` 分开存：`defense_triggered` 是分子，`is_audit` 是分母。
+   * 不落这个字段的话，消费侧只能拿"全部会话"当分母，曲线量的是会话构成而不是防线。
+   *
+   * **三态**：`true` / `false` 是「看过首个 prompt 且判过」，键不存在是**未检测**
+   * （没跑完的会话、headless 增量行）。消费侧必须把未检测排除出分母 ——
+   * 与 `traj_corrupt` 的三态是同一条理由。
+   */
+  isAudit?: boolean;
   /** P2-14：session.traj 是否损坏（1/56 实测损坏率此前完全不可见） */
   trajCorrupt: boolean;
   /** 上下文压缩次数 */
@@ -5637,6 +5653,14 @@ export function aggregateSessionMetrics(
   let conflictBlocked = 0;
   let conflictAutoContinue = 0;
   let defenseTriggered = false;
+  // X3-16：防线触发率的**分母口径**。只认首个 UserPromptSubmit，算出结论后不再改
+  // （后续追问不改变任务性质）。
+  //
+  // 三态而不是两态：`undefined` = **没看到首个 prompt**（没跑完的会话、headless 增量行的
+  // 上游），与 `false`（看过且判为非审计）是两个不同的事实。消费侧必须能把
+  // 「未检测」排除出分母，否则会话构成会悄悄改变曲线 —— 这与 `traj_corrupt` 的三态
+  // 是同一条理由（那个字段的教训写在 `SessionIndexEntry.traj_corrupt` 的注释里）。
+  let isAudit: boolean | undefined;
   let compactions = 0;
   // T3：压缩摘要质量。`compactQualityN` 只数 totalAnchors>0 的样本 —— 无锚点样本
   // coverage 恒 1，混进来会把塌陷样本洗白（见 SessionLevelMetrics 字段注释）。
@@ -5685,6 +5709,16 @@ export function aggregateSessionMetrics(
       if (typeof turnHitl === "number" && turnHitl > 0) {
         turnHitlTotalMs += turnHitl;
         turnHitlN++;
+      }
+    }
+
+    // X3-16：防线触发率的分母口径 —— 只看**首个**用户 prompt（后续追问不改变任务性质）。
+    // 与下面 PreToolUse 的 `defenseTriggered`（分子）在同一次扫描里算出来，
+    // 保证两个字段一定来自同一遍事件流，不会出现"分子读了全量、分母只读了增量"这种错配。
+    if (e.event === "UserPromptSubmit" && isAudit === undefined) {
+      const prompt = e.data.prompt;
+      if (typeof prompt === "string" && prompt.trim()) {
+        isAudit = isAuditTaskPrompt(prompt);
       }
     }
 
@@ -5817,6 +5851,9 @@ export function aggregateSessionMetrics(
     promise_nudge_tool_use: promiseNudgeToolUse,
     short_text_end_turn_samples: shortTextSamples,
     defenseTriggered,
+    // 有结论才写键：`undefined` = 没看到首个 prompt（不是「非审计」）。
+    // 消费侧按「未检测」把它排除出分母 —— 对齐 `traj_corrupt` 的三态处理。
+    ...(isAudit !== undefined ? { isAudit } : {}),
     trajCorrupt: opts.trajCorrupt,
     compactions,
     compact_quality_n: compactQualityN,

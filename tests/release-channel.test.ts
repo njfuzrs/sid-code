@@ -166,8 +166,9 @@ describe("A2 release.sh：--upload 只写 beta，promote 才动 stable", () => {
 
   test("promote 前校验版本目录存在与产物齐全（半成品目录也是「存在」的）", () => {
     const seg = RELEASE_SH.slice(RELEASE_SH.indexOf('if [ "$DO_PROMOTE" = true ]; then'));
-    expect(seg).toContain("__NO_DIR__");
-    expect(seg).toContain("__MISSING__");
+    // 断「调了共享实现」而不是「段内还有标记串」：标记串可能留在注释或死代码里，
+    // 而检查根本没接上（X3-14）。哨兵分派本身的行为断言见下面 X3-14 的 describe。
+    expect(seg).toMatch(/release_dir_check_cmd/);
     // sha256 复核也要有：上传时校验过不代表此刻还好（磁盘/传输/人为改动）。
     // 远端脚本与判定搬到了 scripts/lib/remote-sha.sh（--upload 与 --promote 共用一份，
     // 见 X3-05），所以这里断的是「promote 段确实调了共享校验」，而不是段内还留着标记串。
@@ -487,8 +488,10 @@ describe("A3 rollback.sh：出事时能照着跑，且不做多余的事", () =>
   });
 
   test("回滚前校验目标版本产物齐全（不然是从一个坏版本换到另一个装不上的版本）", () => {
-    expect(ROLLBACK_SH).toContain("__NO_DIR__");
-    expect(ROLLBACK_SH).toContain("__MISSING__");
+    // 同 promote 段：断「调了共享实现」，不数标记串。X3-14 的教训是
+    // `toContain("__MISSING__")` 在清单写错（5→4）、写成空串时同样是绿的 ——
+    // 它只能证明作者写过那段文字。哨兵分派的行为断言见 X3-14 的 describe。
+    expect(ROLLBACK_SH).toMatch(/release_dir_check_cmd/);
   });
 
   test("写完指针要回读自证（scp 成功不等于内容对）", () => {
@@ -587,6 +590,97 @@ describe("X3-04 平台清单：release.sh 与 rollback.sh 共用唯一事实源"
       rmSync(root, { recursive: true, force: true });
     }
   });
+});
+
+/**
+ * X3-14（2026-11-08）：完整性检查的断言必须是**行为**，不是标记串。
+ *
+ * 原来的断言是 `expect(ROLLBACK_SH).toContain("__MISSING__")` 这类文本匹配
+ * （`tests/release-channel.test.ts:484-485`）。它只能证明「作者写过这段文字」：
+ * 把 `PLATFORMS` 从 5 个写成 4 个、写成空串（循环零次、恒判齐全），
+ * 那两条断言照样是绿的 —— 缺陷就是这样活下来的。
+ *
+ * 这里的做法：从两个脚本里抠出 `case "$_check_out" in … esac` 这一段**真实实现**
+ * （不手抄副本，抄的副本在被测代码改动时不会跟着变），stub 掉 `fail` / `ok`，
+ * 对三种哨兵真跑，断言退出码与输出。平台数从 `lib/targets.sh` 派生，不写死。
+ */
+describe("X3-14 完整性检查的哨兵分派：真跑分支，不数标记串", () => {
+  const TARGETS_SH = join(ROOT, "scripts/lib/targets.sh");
+
+  /** 从脚本里抠出 `case "$_check_out" in … esac` 段（按 trim 后匹配 esac，容忍缩进）。 */
+  function extractCheckDispatch(src: string, label: string): string {
+    const lines = src.split("\n");
+    const start = lines.findIndex((l) => l.includes('case "$_check_out" in'));
+    expect(start, `${label} 里找不到 case "$_check_out" 分派段`).toBeGreaterThan(-1);
+    const end = lines.findIndex((l, i) => i > start && l.trim() === "esac");
+    expect(end, `${label} 的哨兵分派段没有 esac`).toBeGreaterThan(start);
+    return lines.slice(start, end + 1).join("\n");
+  }
+
+  function sharedPlatforms(): string[] {
+    const r = spawnSync("bash", ["-c", `source "${TARGETS_SH}"; release_platforms`], {
+      encoding: "utf8",
+    });
+    expect(r.status).toBe(0);
+    return (r.stdout ?? "").split("\n").filter(Boolean);
+  }
+
+  /** 用 stub 的 fail/ok 跑分派段：`fail` 退出 1 并打 `FAIL:`，`ok` 打 `OK:`。 */
+  function runDispatch(src: string, label: string, checkOut: string) {
+    const block = extractCheckDispatch(src, label);
+    const prelude = [
+      'fail() { echo "FAIL:$*"; exit 1; }',
+      'ok() { echo "OK:$*"; }',
+      "PROMOTE_VERSION=9.9.9",
+      "TARGET_VERSION=9.9.9",
+      "_promote_remote_dir=/srv/sid-code/9.9.9",
+      `TARGETS=(${sharedPlatforms().join(" ")})`,
+      `_check_out=${JSON.stringify(checkOut)}`,
+    ].join("\n");
+    const r = spawnSync("bash", ["-c", `${prelude}\n${block}`], { encoding: "utf8" });
+    return { status: r.status ?? -1, out: `${r.stdout ?? ""}${r.stderr ?? ""}` };
+  }
+
+  for (const [label, src] of [
+    ["release.sh", RELEASE_SH],
+    ["rollback.sh", ROLLBACK_SH],
+  ] as const) {
+    test(`${label}：目录不存在 → 拒绝，且说明是目录缺失`, () => {
+      const r = runDispatch(src, label, "__NO_DIR__");
+      expect(r.status).not.toBe(0);
+      expect(r.out).toContain("FAIL:");
+      // 拒绝路径不能同时报成功：`__MISSING__` 与 `__COMPLETE__` 都含子串关系，
+      // case 分支写错时最先露出的就是这种双报。
+      expect(r.out).not.toContain("OK:");
+      expect(r.out).toContain("版本目录");
+    });
+
+    test(`${label}：缺产物 → 拒绝，并点名缺的那个文件`, () => {
+      // baseline 正是 rollback.sh 当年漏掉的那一档（X3-04 的 5 vs 4）。
+      const missing = "sid-code-9.9.9-linux-x64-baseline.tar.gz";
+      const r = runDispatch(src, label, `__MISSING__ ${missing}`);
+      expect(r.status).not.toBe(0);
+      expect(r.out).toContain("FAIL:");
+      expect(r.out).toContain("不完整");
+      // 必须点名到文件，而不是只说"不完整" —— 人要知道去补哪个产物。
+      expect(r.out).toContain(missing);
+    });
+
+    test(`${label}：齐全 → 成功，平台数从共享清单派生`, () => {
+      const r = runDispatch(src, label, "__COMPLETE__");
+      expect(r.status).toBe(0);
+      expect(r.out).toContain("OK:");
+      // 变异自证：把 case 段里的 `${#TARGETS[@]}` 改成字面量 `4`，本条必红。
+      expect(r.out).toContain(`（${sharedPlatforms().length} 个平台）`);
+    });
+
+    test(`${label}：无法识别的输出 → 拒绝（不能当成功）`, () => {
+      const r = runDispatch(src, label, "something unexpected");
+      expect(r.status).not.toBe(0);
+      expect(r.out).toContain("FAIL:");
+      expect(r.out).toContain("输出异常");
+    });
+  }
 });
 
 describe("X3-03 promote：判据没能跑 ≠ 通过", () => {
