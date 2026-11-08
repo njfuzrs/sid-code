@@ -406,6 +406,18 @@ describe("CI 门禁存在（全量单测前移到 PR 阶段）", () => {
     expect(smoke).toBeGreaterThan(build);
   });
 
+  // G4 TUI e2e（#618 M5）与 G2 是两步：`bun run smoke` 缺省只跑 G2，G4 用例只有
+  // `bun run smoke:tui` 会跑。删掉这一步不会有任何东西变红（G2 那步照绿），所以同样锁住
+  // 「存在且排在 make build 之后」。
+  test("G4 TUI e2e 在 test job 里、且排在 make build 之后", () => {
+    const doc = parseYaml(CI) as { jobs: Record<string, { steps?: Array<{ run?: string }> }> };
+    const runs = (doc.jobs.test?.steps ?? []).map((s) => (s.run ?? "").trim());
+    const build = runs.indexOf("make build");
+    const tui = runs.indexOf("bun run smoke:tui");
+    expect(build).toBeGreaterThanOrEqual(0);
+    expect(tui).toBeGreaterThan(build);
+  });
+
   // 2026-08-15 实测事故（PR #31）：stacked PR 的 base 从「PR A 的分支」被 GitHub 自动
   // 改成 main 时，发出的是 pull_request 的 `edited` action。而 types 的**默认值**是
   // `[opened, synchronize, reopened]`，不含 `edited` —— 于是 base 合规之后 CI 依然不跑，
