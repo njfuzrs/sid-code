@@ -77,6 +77,11 @@ import {
 } from "@sid-code/core/config/settings/change-detector.ts";
 import { stopAppConfigWatcher } from "@sid-code/core/config/app-config.ts";
 import type { ProjectRules } from "@sid-code/core/config/rules.ts";
+import {
+  PROJECT_RULES_PERMISSION_EVENT_NAME,
+  RULES_PERMISSION_VALUE_MAX,
+  resolveRulesPermissionMode,
+} from "@sid-code/core/config/rules-security.ts";
 import { clearPromptCache } from "@sid-code/core/config/system-prompt.ts";
 import { type LanguagePref, resolveEffectiveLanguage } from "@sid-code/core/config/prompt-lang.ts";
 import { getLogger, getMemoryMonitor, getSessionMetrics } from "@sid-code/core/debug/index.ts";
@@ -925,6 +930,11 @@ export class App {
   private _retryTelemetryWriter: ((event: RetryTelemetryEvent) => void) | null = null;
   /** /debug 命令用：轨迹采集器实例（doInit 后赋值） */
   private traceCollector: import("@sid-code/core/trace/collector.ts").TraceCollector | null = null;
+  /**
+   * B23：collector 建好之前产生的 `ProjectRulesPermission` 事件。启动时的 applyProjectRules
+   * 早于 initTraceCollector，不缓存的话「仓库 CLAUDE.md 想在启动时改权限档」这条恰好最该留痕的记录会丢。
+   */
+  private pendingProjectRulesPermissionEvents: Record<string, unknown>[] = [];
   /** §2.1：共享 FileReadTracker，autoCompact 后用于恢复最近访问文件。 */
   private fileReadTracker:
     | import("@sid-code/core/tool/file-read-tracker.ts").FileReadTracker
@@ -2443,7 +2453,7 @@ export class App {
         const rulesChanged =
           !!newRules && newRules.rawContent !== this.currentProjectRules?.rawContent;
         if (newRules) {
-          this.applyProjectRules(newRules);
+          this.applyProjectRules(newRules, "worktree");
         }
         if (rulesChanged) {
           // 内容变了就必须重建：不重建模型会拿着旧 worktree 的规则干活，
@@ -4328,7 +4338,7 @@ export class App {
         const projectRules = await loadAllCLAUDEmd(process.cwd());
         if (projectRules) {
           log.debug("APP", `加载 CLAUDE.md 规则 (${projectRules.rawContent.length} 字符)`);
-          this.applyProjectRules(projectRules);
+          this.applyProjectRules(projectRules, "startup");
 
           // G11：指令加载完成 → 触发 InstructionsLoaded hook（CLAUDE.md / rules 进入上下文时）
           try {
@@ -4598,7 +4608,7 @@ export class App {
       // 2. 重新加载并应用规则
       const newRules = await loadAllCLAUDEmd(process.cwd());
       if (newRules) {
-        this.applyProjectRules(newRules);
+        this.applyProjectRules(newRules, "reload");
         // 3. 重建系统提示词
         const { buildSystemPrompt } = await import("@sid-code/core/config/system-prompt.ts");
         const { collectSkillListingEntries } = await import("@sid-code/core/skill/listing.ts");
@@ -4686,6 +4696,13 @@ export class App {
       await import("@sid-code/core/query/init-helpers.ts");
     const traceCollectorInstance = await initTraceCollector(this.config, this.hookSystem);
     this.traceCollector = traceCollectorInstance;
+    // B23：启动时 CLAUDE.md 的权限段在 collector 建好之前就处理完了，补发缓存的事件
+    if (traceCollectorInstance) {
+      for (const data of this.pendingProjectRulesPermissionEvents) {
+        traceCollectorInstance.recordCustomEvent(PROJECT_RULES_PERMISSION_EVENT_NAME, data);
+      }
+    }
+    this.pendingProjectRulesPermissionEvents = [];
     // §3.1/§3.3：将 traceCollector 注入 QueryEngine，用于异常路径持久化
     if (traceCollectorInstance && this.queryEngine) {
       (this.queryEngine as any).deps.traceCollector = traceCollectorInstance;
@@ -5375,7 +5392,7 @@ export class App {
         }
         const newRules = await loadAllCLAUDEmd(process.cwd());
         if (newRules) {
-          this.applyProjectRules(newRules);
+          this.applyProjectRules(newRules, "import");
           // rebuildSystemPrompt 读 this.currentProjectRules（applyProjectRules 刚更新）。
           await this.rebuildSystemPrompt("claude_md_reload");
         }
@@ -6020,7 +6037,19 @@ export class App {
     }
   }
 
-  private applyProjectRules(rules: ProjectRules): void {
+  /** B23：CLAUDE.md 权限段被采纳 / 剔除的轨迹事件；collector 未就绪时先缓存 */
+  private recordProjectRulesPermissionEvent(data: Record<string, unknown>): void {
+    if (this.traceCollector) {
+      this.traceCollector.recordCustomEvent(PROJECT_RULES_PERMISSION_EVENT_NAME, data);
+    } else if (this.pendingProjectRulesPermissionEvents.length < 32) {
+      this.pendingProjectRulesPermissionEvents.push(data);
+    }
+  }
+
+  private applyProjectRules(
+    rules: ProjectRules,
+    trigger: "startup" | "reload" | "worktree" | "import",
+  ): void {
     const log = getLogger();
 
     // 缓存当前项目规则，供运行时重建系统提示词（/language 等）复用。
@@ -6047,10 +6076,46 @@ export class App {
       );
     }
 
-    // 权限模式（仅当命令行未指定时才覆盖）
-    if (rules.permissionMode && this.config.permissionMode === "default") {
-      this.config.permissionMode = rules.permissionMode;
-      log.info("APP", `CLAUDE.md 权限模式: ${rules.permissionMode}`);
+    // 权限模式：只采纳可信层（managed / 用户级）的合法取值，且只在默认档时生效。
+    // 项目侧来源已在 loadAllCLAUDEmd 合并前剔除（B6），这里补取值校验与企业策略（rules-security.ts）。
+    // 采纳与剔除都打轨迹事件（B23）：此前档位被改只有一条 log.info，轨迹里查不到「谁、何时改的」。
+    for (const f of rules.ignoredSecurityFields ?? []) {
+      this.recordProjectRulesPermissionEvent({
+        field: f.field,
+        action: "ignored",
+        reason: "untrusted_layer",
+        layer: f.layer ?? "unknown",
+        value: f.value.slice(0, RULES_PERMISSION_VALUE_MAX),
+        trigger,
+      });
+    }
+    const modeResolution = resolveRulesPermissionMode(
+      rules.permissionMode,
+      this.config.permissionMode,
+    );
+    if (modeResolution.kind === "apply") {
+      const from = this.config.permissionMode;
+      this.config.permissionMode = modeResolution.mode;
+      log.info("APP", `CLAUDE.md 权限模式: ${modeResolution.mode}`);
+      this.recordProjectRulesPermissionEvent({
+        field: "permissionMode",
+        action: "applied",
+        from,
+        to: modeResolution.mode,
+        trigger,
+      });
+    } else if (modeResolution.kind === "ignore") {
+      log.warn(
+        "APP",
+        `已忽略 CLAUDE.md 权限模式 "${rules.permissionMode}"（${modeResolution.reason}）`,
+      );
+      this.recordProjectRulesPermissionEvent({
+        field: "permissionMode",
+        action: "ignored",
+        reason: modeResolution.reason,
+        value: (rules.permissionMode ?? "").slice(0, RULES_PERMISSION_VALUE_MAX),
+        trigger,
+      });
     }
 
     // 模型选择（仅当命令行未指定时才覆盖）
