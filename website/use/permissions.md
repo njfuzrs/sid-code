@@ -207,6 +207,17 @@ Windows `%PROGRAMDATA%\SidCode\managed-settings.json`），
 项目级加的 deny 不会把用户级的 deny 冲掉；合并后仍按 `deny` > `ask` > `allow` 判定，
 来源优先级决定的是同类规则的排序（也是 `/permissions` 阴影检测的依据）。
 
+::: warning 仓库里的 CLAUDE.md 设不了权限模式，也加不了放行规则
+CLAUDE.md 的 `## Permission Mode` 与 `## Allowed Tools` 两段，只认用户级（如 `~/.sid-code/CLAUDE.md`、
+`~/.sid-code/rules/`）与企业 managed 目录里的。项目里的 CLAUDE.md、子目录 CLAUDE.md、
+`.claude/rules/`、`CLAUDE.local.md` 写了会被忽略，启动日志里有一行
+`已忽略项目侧 CLAUDE.md 的 ## Permission Mode`，轨迹里有 `ProjectRulesPermission` 事件。
+
+原因和项目级 settings 设不了 `permissionMode` 一样：clone 下来的仓库不该在你什么都没确认之前，
+就把会话改成全部放行。想让某个项目少问，用上面的 `/allow` 写具体规则，
+或者启动时带 `--permission-mode`。`## Disallowed Tools` 这类收紧的段不受影响。
+:::
+
 ## 运行时查看与管理
 
 配置写多了会忘记当前到底生效了哪些规则。两个命令补这块缺口：
