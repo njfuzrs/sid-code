@@ -205,7 +205,9 @@ describe("release.sh 接线契约", () => {
     const iSwap = upload.indexOf('ok "v${VERSION} 目录已完整就位"');
     const iArch = upload.indexOf('archive_remote "$VERSION" original');
     const iInstall = upload.indexOf('run_scp "$RELEASE_DIR/install.sh"');
-    const iBeta = upload.indexOf('run_scp "$RELEASE_DIR/beta.txt"');
+    // X3-13 起写指针统一走 write_pointer（scp + 回读自证），判据对象跟着换；不变量不变：
+    // beta.txt 必须在归档之后才写（否则指针会指向一个还没归档的版本）。
+    const iBeta = upload.indexOf("write_pointer beta.txt");
     expect(iSwap).toBeGreaterThan(-1);
     expect(iArch).toBeGreaterThan(iSwap);
     expect(iInstall).toBeGreaterThan(iArch);
