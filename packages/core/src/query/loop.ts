@@ -147,7 +147,8 @@ import {
   blockedTodos,
   blockedSignature,
   unfinishedSignature,
-  buildTodoBackgroundWaitMessage,
+  buildTodoWaitSourcesMessage,
+  WAIT_SOURCES_REMINDER_KEY,
   advanceTodoGateBudget,
   TODO_GATE_BUDGET_KEY,
   type TodoGateBudget,
@@ -219,6 +220,9 @@ import {
   evictTerminalTasks,
   hasPendingNotifications,
   hasAwaitedBackgroundTasks,
+  hasPromisedWait,
+  listWaits,
+  drainWaitNotices,
   beginMainLoopTurn,
   endMainLoopTurn,
   markMainTurnCompleted,
@@ -1270,6 +1274,10 @@ async function* queryLoopBody(
       prevTurnHadToolUse: boolean;
       runningBackgroundTasks: boolean;
       pendingNotifications: boolean;
+      /** W2：收尾那一刻**有效等待源**的条数（`listWaits().length`）。与
+       *  `running_background_tasks` 并列而不替换：旧口径保持可用，新口径能回答
+       *  「闸门为什么因为一个唤醒 / monitor 放行了」。 */
+      promisedWaits: number;
     },
   ): void => {
     try {
@@ -1298,6 +1306,9 @@ async function* queryLoopBody(
           prompt_readonly_count: state.promptReadonlyCount ?? 0,
           running_background_tasks: facts.runningBackgroundTasks,
           pending_notifications: facts.pendingNotifications,
+          // W2：与上两行并列，不替换旧口径——旧查询保持可用，新增这一条才能回答
+          // 「闸门为什么因为一个唤醒 / monitor 放行了」
+          promised_waits: facts.promisedWaits,
         },
       });
     } catch {
@@ -1858,6 +1869,24 @@ async function* queryLoopBody(
       // 2026-07-29 实测事故：所有片段一律前置时，真实 /commit 指令被顶到 user message 的
       // 40% 偏移，模型第一眼看到的是工具列表和 MCP 说明，转而抓记忆索引标题当用户意图。
       const reminderParts: string[] = [];
+      // W3：唤醒被**确定信号**作废时，用户必须看到一行（#642 §6.3 否决自动撤销的核心担忧
+      // 就是「轮询静默中断、用户以为还在等」）。撤销发生在 todo_write 的工具执行链里，
+      // 那里拿不到 yield，所以先入队、在这里取走。系统行只给用户看，不进 ctxMgr。
+      for (const notice of drainWaitNotices()) {
+        yield {
+          kind: "system",
+          level: "info",
+          text: `已取消定时唤醒 ${notice.taskId}（${notice.reason}）`,
+        };
+      }
+      // W2：T2 放行时写下的「正在等待…」清单。放行意味着上一轮已收尾，这次请求是
+      // 通知轮或用户轮（新的 queryLoop），所以从 SessionState 取；取完即清，
+      // 同一组等待源只注入一次（签名在写入侧判）。
+      const pendingWaitSources = sessionState.get(WAIT_SOURCES_REMINDER_KEY) as string | undefined;
+      if (pendingWaitSources) {
+        sessionState.set(WAIT_SOURCES_REMINDER_KEY, undefined);
+        reminderParts.push(pendingWaitSources);
+      }
       // persistent 档：「只播一次」的内容（MCP 说明 / 延迟工具增量 / skill listing / IDE 增量）。
       // 由去重集合保证只出现一次，所以必须写进 ctxMgr 历史、之后每轮原样重放——
       // 走 transient 的话第 2 轮就从请求里消失：前缀在最后一条消息上少一整块，
@@ -4712,9 +4741,12 @@ async function* queryLoopBody(
         // 后台任务 / 待投递通知是 L2 的结构排除项，也一并进事实，让「为什么没拦」可复算。
         let runningBg = false;
         let pendingNotif = false;
+        let promisedWaits = 0;
         try {
           runningBg = hasAwaitedBackgroundTasks();
           pendingNotif = hasPendingNotifications();
+          // W2：新口径（含显式声明的 deadline 类等待源），与旧口径并列落事实
+          promisedWaits = listWaits().length;
         } catch {
           /* 查询失败按「无」处理：只影响 L2 是否触发，不影响收尾 */
         }
@@ -4731,6 +4763,7 @@ async function* queryLoopBody(
           prevTurnHadToolUse: prevResponseHadToolUse,
           runningBackgroundTasks: runningBg,
           pendingNotifications: pendingNotif,
+          promisedWaits,
         });
         // AfterAgent hook
         //
@@ -4903,7 +4936,10 @@ async function* queryLoopBody(
         // 放在 todo gate 之前：两者都只在「本轮无工具调用」时到达，而本形态的续跑更具体。
         const promiseDecision = decidePromiseNudge(endTurnShape, {
           nudgeCount: state.promiseNudgeCount ?? 0,
-          runningBackgroundTasks: runningBg,
+          // W2：从「有运行中的后台任务」改问「有带承诺的等待源」。旧的五类后台任务在新判据下
+          // 结论不变（hasPromisedWait 是超集），新判据多认出 schedule_wakeup / wait_until
+          // ——「已经安排好了回报，别再催我」本来就该按承诺判，而不是按线程状态判。
+          runningBackgroundTasks: hasPromisedWait(),
           pendingNotifications: pendingNotif,
           disabled: isPromiseNudgeDisabled(),
         });
@@ -4944,27 +4980,38 @@ async function* queryLoopBody(
           // 预算挂 SessionState、按完成数复位（2026-10-06）：旧实现挂 LoopState，
           // 每条用户消息归零 + 每次 todo_write（哪怕只改措辞）归零，同一份停滞清单可被无限次拦截。
           const budget = todoState ? getTodoGateBudget(sessionState, todoState.todos) : null;
-          if (todoState && budget && unfinished > 0 && (runningBg || pendingNotif)) {
-            // T2（进度清单第五部分）：有运行中的后台任务 / 待投递通知时**不续跑**。
+          if (todoState && budget && unfinished > 0 && (promisedWaits > 0 || pendingNotif)) {
+            // T2（进度清单第五部分）：有**带承诺的等待源** / 待投递通知时**不续跑**。
             // 实测 15 次有 EndTurnShape 的续跑里 6 次触发时 running_background_tasks=true，
             // 模型的反应是把「等 CI / 等构建」标成 blocked——闸门在逼它对清单撒谎。
-            // 后台任务完成时通知会把循环叫醒，那时闸门还会再判一次，所以这里漏拦的代价有界。
-            // ⚠️ 这个「会被叫醒」只对**值得等**的任务成立：runningBg 已排除静默的后台 shell
+            // 等待源回报时通知会把循环叫醒，那时闸门还会再判一次，所以这里漏拦的代价有界。
+            // ⚠️ 这个「会被叫醒」只对**有承诺**的源成立：promisedWaits 已排除静默的后台 shell
             // （常驻服务不会退出，也就不会有完成通知）；收尾时仍值得等的 shell 之后转入静默，
             // 由 background-await 的唤醒保证补一条通知（事故 20261103-130950-00ef059c）。
-            // 写法同下方「只剩 blocked」分支：中性说明 + 按清单签名去重，不消耗续命预算。
-            const sig = unfinishedSignature(todoState.todos);
+            //
+            // W2 之前这里判 `runningBg || pendingNotif`，看不到调度器里的唤醒——模型排了
+            // schedule_wakeup 再收尾就会被判「没人会回来」，被推回前台空转上百次查询
+            // （20261108-112620-7dd98bf5）。hasPromisedWait 是 hasAwaitedBackgroundTasks 的超集，
+            // 旧的五类后台任务在新判据下结论完全相同（回归主断言 T-W2-1）。
+            const activeWaits = listWaits();
+            // 签名 = 未完成项签名 ⊕ 等待源 id 集合：等待源集合不变时同一提示只注入一次
+            const sig = `${unfinishedSignature(todoState.todos)}\u0001${activeWaits
+              .map((w) => w.id)
+              .sort()
+              .join(",")}`;
             if (budget.bgWaitSignature !== sig) {
               budget.bgWaitSignature = sig;
               log.info(
                 "QUERY_LOOP",
-                `P0-3：end_turn 放行——仍有 ${unfinished} 项未完成，但有后台任务运行中/通知待投递，等其回报`,
+                `P0-3：end_turn 放行——仍有 ${unfinished} 项未完成，但有 ${activeWaits.length} 个等待源 / 通知待投递，等其回报`,
               );
-              yield {
-                kind: "system",
-                level: "info",
-                text: buildTodoBackgroundWaitMessage(unfinished),
-              };
+              // W2：改成**给模型**的 system-reminder（下一轮请求注入），并删掉原来那行只进
+              // TUI 瞬态状态条的 `yield {kind:"system"}`——模型看不到的说明等于没写，
+              // 而用户侧等待源已在面板逐行可见，状态条再写一遍就是第二份（§5.7.2 去重）。
+              sessionState.set(
+                WAIT_SOURCES_REMINDER_KEY,
+                buildTodoWaitSourcesMessage(unfinished, activeWaits),
+              );
             }
           } else if (todoState && budget && unfinished > 0) {
             // 误判自愈信号：本轮"有实质产出"（写了一段实质文字，如输出了完整报告）却试图收尾。
@@ -5901,7 +5948,9 @@ async function* queryLoopBody(
           // 等后台任务的轮次不计入 L2（stall-escalation.ts 判据边界）。查询失败按「无」：退回旧判据，不会多停
           let backgroundRunning = false;
           try {
-            backgroundRunning = hasAwaitedBackgroundTasks();
+            // W2：改问「有带承诺的等待源」——等 CI 的轮次本来就不该被算成停滞，
+            // 而唤醒 / wait_until 在旧判据下看不到（会造成「等待中强停」）。
+            backgroundRunning = hasPromisedWait();
           } catch {
             /* 同上 */
           }

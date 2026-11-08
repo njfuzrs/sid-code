@@ -48,14 +48,28 @@ export const SCHEDULED_INJECT_EVENT_NAME = "ScheduledInject";
 export const SCHEDULED_REPLACE_EVENT_NAME = "ScheduledReplace";
 
 /**
+ * 唤醒被**确定信号**作废事件名（W3 的 S1 / S2）。
+ *
+ * 与 `ScheduledReplace`（F2：被更新的唤醒替换）分开：那是「同一件事又排了一次」，
+ * 这是「这件事已经不需要再等了」。两者都让唤醒不注入，但原因完全不同——
+ * 混成一条之后，「僵尸唤醒还剩多少」无法从轨迹上归因（#642 §6.3）。
+ *
+ * `signal` 是闭集：`todo_cleared`（S1 清单清零）/ `subject_terminal`（S2 被等对象已终态）。
+ */
+export const SCHEDULED_INVALIDATED_EVENT_NAME = "ScheduledInvalidated";
+
+/**
  * 注入结论（闭集）：
  * - injected：真的交给了注入器（默认值，老轨迹没有这个字段，读时按它处理）
  * - dropped_superseded：这条唤醒在排队期间已被同一个会话里更新的唤醒替换，丢弃不注入
+ * - dropped_invalidated：这条唤醒在排队期间被**确定信号**作废（S1 清单清零 / S2 被等对象已终态），
+ *   丢弃不注入。与上一条分开的理由同上：都是「不注入」，但一个是「换成新的了」、
+ *   一个是「不需要了」，混在一起之后「僵尸唤醒还剩多少」无法归因。
  *
  * 为什么必须区分：`ScheduledInject` 的语义是「宿主真正调用注入器的次数」，与
  * `ScheduledFire` 对账用。把丢弃的事件也算成注入，对账就永远差几条，而且差得无从归因。
  */
-export type ScheduledInjectOutcome = "injected" | "dropped_superseded";
+export type ScheduledInjectOutcome = "injected" | "dropped_superseded" | "dropped_invalidated";
 
 /**
  * 触发结论（闭集）：
