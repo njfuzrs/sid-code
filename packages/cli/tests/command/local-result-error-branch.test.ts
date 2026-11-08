@@ -17,7 +17,7 @@
  */
 
 import { describe, test, expect } from "bun:test";
-import { readFileSync } from "fs";
+import { readFileSync, readdirSync } from "fs";
 import { join, dirname } from "path";
 import { fileURLToPath } from "url";
 import { CommandExecutor } from "@sid-code/cli/command/executor.ts";
@@ -127,5 +127,29 @@ describe("反漂移：前缀只在一个地方加", () => {
     const src = stripComments(readSrc("packages/cli/src/command/plugin-cli.ts"));
     expect(src).not.toContain('startsWith("错误: ")');
     expect(src).toContain('const isError = result.type === "error"');
+  });
+
+  /**
+   * 命令侧不得手写前缀（2026-11-08 补）：`{ type: "text", value: "错误: …" }` 在无头下
+   * 走 `message` → `output` → 退 **0**，CI 只能 parse stdout 才知道失败（D2/D3）。
+   * 这类残留真实发生过：think / effort / model / statusline / vim 五个命令在 T5 放行后
+   * 仍留着 11 处手写前缀，参数错误一律退 0。唯一构造口径是 `errorText()`。
+   */
+  test("命令侧不得手写「错误: 」前缀：失败一律经 errorText() 构造", () => {
+    const offenders: string[] = [];
+    const walk = (dir: string): void => {
+      for (const ent of readdirSync(dir, { withFileTypes: true })) {
+        const p = join(dir, ent.name);
+        if (ent.isDirectory()) {
+          walk(p);
+        } else if (ent.name.endsWith(".ts")) {
+          // 剥注释再扫：注释里合法地写着「错误: 」
+          const src = stripComments(readFileSync(p, "utf-8"));
+          if (/value:\s*[`"']错误: /.test(src)) offenders.push(p);
+        }
+      }
+    };
+    walk(join(REPO, "packages/cli/src/command/commands"));
+    expect(offenders).toEqual([]);
   });
 });

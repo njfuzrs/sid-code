@@ -49,10 +49,16 @@ function makeCtx(overrides: Record<string, unknown> = {}): { ctx: CommandContext
   return { ctx, calls };
 }
 
-/** 取命令的文本输出（非 text 类型结果返回空串，断言自然失败而非崩在类型上） */
+/**
+ * 取命令的文本输出（text 取 value、error 取 message；其余类型返回空串，
+ * 断言自然失败而非崩在类型上）。错误分支自 2026-11-08 起统一走 `error`（D2/D3 收口），
+ * 只认 `text` 的旧辅助函数会把「拒绝」读成空串，让「被拒绝」的断言假绿。
+ */
 const text = async (args: string, ctx: CommandContext): Promise<string> => {
   const r = await mod.call(args, ctx);
-  return r.type === "text" ? String(r.value ?? "") : "";
+  if (r.type === "text") return String(r.value ?? "");
+  if (r.type === "error") return String(r.message ?? "");
+  return "";
 };
 
 describe("/model sub：类型列表与 agent registry 对齐", () => {

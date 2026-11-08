@@ -104,6 +104,34 @@ export {
   SHELL_QUIESCENT_MS,
 } from "./background-await.ts";
 
+// 等待登记表（W1）：显式声明的等待源 + 回报承诺。所有「有东西在等就别催 / 别退」的
+// 判断统一走 hasPromisedWait（它是 hasAwaitedBackgroundTasks 的超集）。
+export {
+  type ReportPromise,
+  type WaitSource,
+  type WaitSourceKind,
+  type WaitReleaseReason,
+  type WaitNotice,
+  type WaitTraceSink,
+  DEADLINE_GRACE_MS,
+  registerWait,
+  releaseWait,
+  releaseAllWaits,
+  listWaits,
+  hasPromisedWait,
+  findWaitBySubject,
+  isWaitInvalidated,
+  invalidateWakeups,
+  extractWaitSubjects,
+  describeWaitSource,
+  drainWaitNotices,
+  setWaitTraceSink,
+  setWakeupRegistrationEnabled,
+  __setMonoClockForTest,
+  __clearWaitNoticesForTest,
+  __resetWaitRegistryForTest,
+} from "./wait-registry.ts";
+
 export { spawnShellTask, adoptRunningProcessAsTask, killShellTask } from "./shell-task.ts";
 
 export {

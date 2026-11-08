@@ -5,6 +5,7 @@
 
 import type { LegacyTool as Tool, LegacyToolResult as ToolResult } from "./types.ts";
 import { getScheduler } from "../cron/scheduler.ts";
+import { releaseWait } from "../task/wait-registry.ts";
 import { z } from "zod/v4";
 import { lazySchema } from "../sdk/lazy-schema.ts";
 
@@ -39,6 +40,11 @@ export class CronDeleteTool implements Tool {
     }
 
     const ok = getScheduler().removeTask(params.id);
+    if (ok) {
+      // W3：会话级唤醒若登记过等待源，用户取消时同步释放——否则 todo 闸门会为一条
+      // 已经不会触发的唤醒继续放行（回执说「已删除」、闸门却还当它在等）。
+      releaseWait(params.id, "cancelled");
+    }
     return ok
       ? { output: `已删除定时任务 ${params.id}` }
       : { output: `任务 ${params.id} 不存在`, isError: true };

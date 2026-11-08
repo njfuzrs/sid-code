@@ -1,4 +1,5 @@
 import type { LocalCommandModule, LocalCommandResult, CommandContext } from "../../types.ts";
+import { errorText } from "../../result.ts";
 
 /**
  * /statusline 命令实现（按需加载）。P1-5。
@@ -57,7 +58,8 @@ const mod: LocalCommandModule = {
     // 设置脚本命令。去掉用户可能加的成对引号（一层）。
     const command = stripOuterQuotes(body);
     if (!command) {
-      return { type: "text", value: "错误: 脚本命令为空。用法: /statusline <命令> [-p]" };
+      // 业务失败走 error（不是 text）：无头下才会翻成非 0（D2/D3 口径）。
+      return errorText("脚本命令为空。用法: /statusline <命令> [-p]");
     }
     ctx.setStatusLine({ type: "command", command }, persist);
     const suffix = persist
