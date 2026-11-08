@@ -79,6 +79,14 @@ interface FooterProps {
   /** 发布通道覆盖（仅测试注入；缺省读当前进程的真实通道） */
   releaseChannel?: "stable" | "beta" | "dev";
   termWidth?: number;
+  /**
+   * `Ctrl+T` 隐藏后台面板时的等待源提示（§5.7.6）。
+   *
+   * 面板一藏，用户就看不见里面还挂着什么；唤醒尤其隐蔽——它到点会**自己**叫醒 agent。
+   * 传 null / 省略时不渲染这一行（面板可见或无等待源），保证默认布局逐字节不变。
+   * 由 `deriveWaitSourcesHint`（`ui/wait-sources-hint.ts`）算好，判据不在组件里重写。
+   */
+  waitSourcesHint?: import("../wait-sources-hint.ts").WaitSourcesHint | null;
 }
 
 /** 区内分隔符宽度（" · " = 前后空格 + 点 = 3 列）。 */
@@ -478,6 +486,19 @@ export const Footer = React.memo(function Footer(props: FooterProps) {
   // 内容盒 flexShrink={0}：fitRow 已按实测宽度保证放得下，不允许 Yoga 再压缩误触截断。
   return (
     <Box flexDirection="column" paddingX={1} width="100%">
+      {/* 行0·等待源提示（仅 Ctrl+T 隐藏面板且有唤醒时出，§5.7.6）。
+          放在行1 之前而不是并进去：两行状态栏已排满，插进去会把 model 挤到第二屏；
+          而且它是「临时提醒」不是「常驻计量」，语义上不属于行1/行2 的任何一段。 */}
+      {props.waitSourcesHint ? (
+        <Box flexWrap="nowrap" overflow="hidden" justifyContent="flex-start">
+          <Box flexShrink={0}>
+            <Text color={theme.status.warning}>{props.waitSourcesHint.counts}</Text>
+            <Text color={dim}>{" · "}</Text>
+            <Text color={theme.ui.active}>{props.waitSourcesHint.toggle}</Text>
+          </Box>
+        </Box>
+      ) : null}
+
       {/* 行1·会话/运行态（左对齐） */}
       <Box flexWrap="nowrap" overflow="hidden" justifyContent="flex-start">
         <Box flexShrink={0}>{row1Nodes}</Box>

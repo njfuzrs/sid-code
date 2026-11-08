@@ -60,6 +60,8 @@ import type { SessionState } from "@sid-code/core/session/state.ts";
 import type { Usage } from "@sid-code/core/llm/types.ts";
 import type { TodoItem } from "@sid-code/core/tool/todo-write.ts";
 import { useUIState } from "../contexts/UIStateContext.tsx";
+import { useKeybindings } from "../contexts/KeybindingContext.tsx";
+import { deriveWaitSourcesHint } from "../wait-sources-hint.ts";
 import { theme } from "../semantic-colors.ts";
 
 /** 两套布局都要传给底部区域的数据（布局的 props 在此基础上加消息区自己的字段）。 */
@@ -229,6 +231,15 @@ export const BottomRegion: React.FC<BottomRegionProps> = ({
   startupWarnings,
 }) => {
   const { taskPanelHidden } = useUIState();
+  // 面板藏起来之后，「还有唤醒挂着」这件事在屏幕上就只剩这里能看见（§5.7.6）。
+  // 判据三条（面板隐藏 / 有唤醒 / 零等待源不出）都在纯函数里，组件只负责喂数据。
+  // 键位显示名走运行时绑定表：用户把 Ctrl+T 改掉后这里跟着变。
+  const { bindingFor } = useKeybindings();
+  const waitSourcesHint = deriveWaitSourcesHint({
+    tasks,
+    panelHidden: taskPanelHidden,
+    toggleDisplay: bindingFor("app:toggleTaskPanel")?.display,
+  });
 
   const region = (
     <Box
@@ -325,6 +336,7 @@ export const BottomRegion: React.FC<BottomRegionProps> = ({
         model={model}
         scrollPercent={scrollPercent}
         termWidth={termWidth}
+        waitSourcesHint={waitSourcesHint}
       />
     </Box>
   );

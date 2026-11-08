@@ -44,6 +44,7 @@ import { existsSync } from "fs";
 import { readDurableTasks, mutateDurableTasks, durableFilePath } from "./durable-store.ts";
 import { grantDurableTask, revokeDurableTask, isDurableTaskGranted } from "./durable-grants.ts";
 import { getLogger } from "../debug/logger.ts";
+import { notifyTaskChanged } from "../task/registry.ts";
 import {
   SCHEDULED_FIRE_EVENT_NAME,
   SCHEDULED_REPLACE_EVENT_NAME,
@@ -158,6 +159,9 @@ export class Scheduler {
     if (this.sessionTasks.size >= this.sessionCap()) return false;
     this.sessionTasks.set(task.id, task);
     this.nextFireAt.delete(task.id); // 重新计算
+    // 唤醒进后台任务面板（§5.7.1）：调度器增删会话级任务时不自带任何 UI 通知，
+    // 不主动播报的话面板上的 WK 行要等下一次 registry 变更才出现（T-T1-3）。
+    if (task.origin === "schedule_wakeup") notifyTaskChanged();
     return true;
   }
 
@@ -198,6 +202,9 @@ export class Scheduler {
     }
     this.sessionTasks.set(task.id, task);
     this.nextFireAt.delete(task.id);
+    // 替换 = 旧行消失 + 新行出现（T-T1-3）。调度器不播报的话，面板上会同时留着旧 WK 行，
+    // 或干脆一行都不出现，等下一次无关的 registry 变更才对齐。
+    if (task.origin === "schedule_wakeup") notifyTaskChanged();
     if (victims.length > 0) {
       emitScheduledTrace(SCHEDULED_REPLACE_EVENT_NAME, {
         task_id: task.id,
@@ -236,6 +243,23 @@ export class Scheduler {
    */
   getSessionTask(taskId: string): CronTask | undefined {
     return this.sessionTasks.get(taskId);
+  }
+
+  /**
+   * 列出本会话挂着的**定时唤醒**（面板 `WK` 行的数据源，§5.7.3）。
+   *
+   * 只读内存、不做 `refreshDurable()`：面板每次任务变更都会调它，跟着 `listTasks()`
+   * 每轮读盘不可接受。durable 任务也不该进这个口径——唤醒恒为会话级一次性任务
+   * （`schedule_wakeup` 建的），durable 任务由 daemon / 别的会话驱动。
+   *
+   * 只取 `origin === "schedule_wakeup"`：`/loop` 与 `cron_create` 建的任务**不进面板**，
+   * 它们是用户显式要求的固定节奏，已有 `/loop`、`/cron list` 两个出口；混进「等待态」
+   * 会让人以为 agent 在等它们。
+   */
+  listSessionWakeups(): CronTask[] {
+    return [...this.sessionTasks.values()].filter(
+      (t) => t.origin === "schedule_wakeup" && !t.recurring && !t.durable,
+    );
   }
 
   /**
@@ -279,6 +303,9 @@ export class Scheduler {
    */
   removeTask(taskId: string): boolean {
     let removed = false;
+    // 判据必须在删除前取：删完之后 sessionTasks 里查不到这条，判不出它是不是唤醒。
+    // 只看会话级——schedule_wakeup 建的任务 durable 恒为 false。
+    const wasWakeup = this.sessionTasks.get(taskId)?.origin === "schedule_wakeup";
     if (this.sessionTasks.delete(taskId)) removed = true;
 
     const origins = new Set<string>();
@@ -300,6 +327,9 @@ export class Scheduler {
     this.durableTasks.delete(taskId);
     this.durableTaskOrigin.delete(taskId);
     this.nextFireAt.delete(taskId);
+    // cron_delete / W3 作废都走这里：面板上的 WK 行要即刻消失、不走 30s 驱逐（T-T1-4）。
+    // 判据用「删除前这条是不是唤醒」——事后查不到它了。
+    if (wasWakeup) notifyTaskChanged();
     return removed;
   }
 
@@ -620,6 +650,10 @@ export class Scheduler {
     } else {
       this.sessionTasks.delete(task.id);
       this.nextFireAt.delete(task.id);
+      // 唤醒到点注入后**即刻**从面板消失，不留终态行（T-T1-4 / MUT-14）：
+      // 注入那一刻消息流已出「定时唤醒 · …」那一行，再留一个终态条就是重复。
+      // 这里也是「最后一次能判出它是唤醒」的位置——任务已从 sessionTasks 删掉了。
+      if (task.origin === "schedule_wakeup") notifyTaskChanged();
     }
     return true;
   }
@@ -787,4 +821,16 @@ export function resetScheduler(): void {
   if (instance) instance.stop();
   instance = null;
   instanceIsFallback = false;
+}
+
+/**
+ * 只读地看一眼当前实例，**不创建**（没有就返回 null）。
+ *
+ * 面板数据源用它：`getScheduler()` 无参调用在未初始化时会造一个 onFire 为空的兜底实例
+ * 并打一条 warn——TUI 只是想读一读「有没有挂着的唤醒」，不该有「顺手创建了调度器」的副作用。
+ * （兜底实例本身也有害：它之后会被真实实例替换，替换时容器里的会话任务要迁移，
+ * 平白多一条生命周期。）
+ */
+export function peekScheduler(): Scheduler | null {
+  return instance;
 }
