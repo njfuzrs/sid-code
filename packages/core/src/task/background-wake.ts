@@ -18,7 +18,7 @@ import { subscribeQueue } from "../query/message-queue-manager.ts";
 import { hasPendingNotifications } from "./notification.ts";
 import { onTaskChanged, offTaskChanged, getRunningTasks } from "./registry.ts";
 import { isPanelTask } from "./types.ts";
-import { hasAwaitedBackgroundTasks } from "./background-await.ts";
+import { hasPromisedWait } from "./wait-registry.ts";
 
 /**
  * 队列里是否有待投递的后台任务通知。
@@ -88,9 +88,10 @@ export function waitForBackgroundNotification(
   const evaluate = (): BackgroundWaitOutcome | null => {
     if (signal?.aborted) return "aborted";
     if (hasPendingNotifications()) return "notification";
-    // 「值得等」口径（background-await.ts）：静默的后台 shell（常驻服务）不会回报，为它挂着就是
-    // 永远等下去。收尾时仍值得等的 shell 转入静默会投一条通知，所以这里不会错过「刚静默」的那一刻。
-    if (!hasAwaitedBackgroundTasks()) return "idle";
+    // 「值得等」口径（wait-registry.ts 的 hasPromisedWait）：它是 background-await 的静默判据
+    // 的超集——普通后台 shell 的结论逐字节不变，额外认出显式声明了期限的等待源
+    // （wait_until / monitor / schedule_wakeup）。为「没有承诺的东西」挂着就是永远等下去。
+    if (!hasPromisedWait()) return "idle";
     return null;
   };
   const immediate = evaluate();

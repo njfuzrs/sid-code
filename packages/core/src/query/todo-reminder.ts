@@ -12,6 +12,7 @@
 
 import type { TodoItem } from "../tool/todo-write.ts";
 import type { UnansweredShape } from "../llm/types.ts";
+import type { WaitSource } from "../task/wait-registry.ts";
 
 /**
  * P0-2：todo 回注节流配置。
@@ -26,6 +27,14 @@ export const TODO_REMINDER_CONFIG = {
 
 /** P0-3：end_turn 完成度硬校验的最大软续命次数 */
 export const MAX_TODO_GATE_RETRIES = 3;
+
+/**
+ * W2：T2 放行时那条「正在等待…」reminder 挂在 SessionState 上的键。
+ *
+ * 为什么不能放 LoopState：放行意味着**本轮收尾**，下一次请求是通知轮或用户轮——那是
+ * 一次新的 `queryLoop`，LoopState 每次重建（同 `S1_PROMPT_CARRY_KEY` 的理由）。
+ */
+export const WAIT_SOURCES_REMINDER_KEY = "waitSourcesReminder";
 
 /**
  * P0-3 误判自愈阈值：续命耗尽时，若"有实质产出却不翻状态位"的次数 ≥ 此值，
@@ -345,9 +354,44 @@ export function unfinishedSignature(todos: TodoItem[]): string {
     .join("\u0000");
 }
 
-/** 有后台任务在跑时的收尾说明（T2）：中性措辞，不催模型、不报错 */
-export function buildTodoBackgroundWaitMessage(unfinished: number): string {
-  return `清单还有 ${unfinished} 项未完成，正在等待后台任务回报，完成后会继续推进。`;
+/**
+ * W2：T2 放行时给模型的等待源清单。
+ *
+ * 旧实现（`buildTodoBackgroundWaitMessage`）只 `yield {kind:"system", level:"info"}`，
+ * **只进 TUI 瞬态状态条、模型看不到**（回源码核过：`app.ts` 的 `case "system"` 把它写进
+ * `system:transient`，本轮 done 时清除，不进 ctxMgr）。于是模型不知道 harness 为什么放行、
+ * 也不知道要等什么，只能在原地反复查询状态。
+ *
+ * 改成一条真正给模型的 `<system-reminder>`：列出每个等待源与它最晚什么时候回报。
+ * 按「未完成项签名 ⊕ 等待源 id 集合」去重，同一组等待源只注入一次（见 loop.ts 的 T2 分支）。
+ */
+export function buildTodoWaitSourcesMessage(unfinished: number, waits: WaitSource[]): string {
+  const lines = waits.map((w) => `- ${describeWaitLine(w)}`);
+  return (
+    `<system-reminder>\n清单还有 ${unfinished} 项未完成，正在等待：\n${lines.join("\n")}\n` +
+    `等待期间不需要查询状态，结果会以通知送达。\n</system-reminder>`
+  );
+}
+
+/** 单个等待源的描述行：承诺类型不同，措辞不同（deadline 给时刻，其余给触发条件） */
+function describeWaitLine(w: WaitSource): string {
+  const label = {
+    agent: "子代理",
+    workflow: "workflow",
+    shell: "后台命令",
+    monitor: "监控",
+    wakeup: "定时唤醒",
+  }[w.kind];
+  const head = `${label} ${w.id}（${w.description}）`;
+  if (w.promise.kind === "deadline")
+    return `${head}，最晚 ${formatClock(w.promise.deadlineAt)} 前回报`;
+  if (w.promise.kind === "terminal") return `${head}，结束即通知`;
+  return `${head}，退出或转入静默时通知`;
+}
+
+function formatClock(at: number): string {
+  const d = new Date(at);
+  return `${String(d.getHours()).padStart(2, "0")}:${String(d.getMinutes()).padStart(2, "0")}`;
 }
 
 export function blockedSignature(todos: TodoItem[]): string {

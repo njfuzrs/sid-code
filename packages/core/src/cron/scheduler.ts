@@ -227,6 +227,18 @@ export class Scheduler {
   private supersededIds = new Set<string>();
 
   /**
+   * 取一条**会话级**任务（只看内存，不 refresh 磁盘）。
+   *
+   * 为什么单独开这个口子：等待登记表每次 `listWaits()` 都要问「这个唤醒还在吗」，
+   * 而 `listWaits()` 落在收尾闸门、停滞阶梯、空闲等待这些热路径上，跟着 `listTasks()`
+   * 每轮读盘不可接受。等待登记表只关心 `schedule_wakeup` 建的会话级任务
+   * （durable 任务不登记为等待源），所以这里刻意不外溢到 durable。
+   */
+  getSessionTask(taskId: string): CronTask | undefined {
+    return this.sessionTasks.get(taskId);
+  }
+
+  /**
    * 添加持久任务：先落盘，成功才进内存。
    * 返回 false = 达上限（未写盘）；写盘失败抛错（调用方必须如实报告，不能回「已持久化」）。
    *
