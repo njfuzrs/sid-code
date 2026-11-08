@@ -1,0 +1,4 @@
+{"index":1,"response":{"content":[{"type":"tool_use","id":"toolu_smoke_1","name":"bash","input":{"command":"git remote add origin https://example.invalid/r.git"}}],"stop_reason":"tool_use"},"usage":{"input_tokens":100,"output_tokens":10}}
+{"index":2,"response":{"content":[{"type":"tool_use","id":"toolu_smoke_2","name":"bash","input":{"command":"git stash -u"}}],"stop_reason":"tool_use"},"usage":{"input_tokens":100,"output_tokens":10}}
+{"index":3,"response":{"content":[{"type":"tool_use","id":"toolu_smoke_3","name":"bash","input":{"command":"git branch --show-current"}}],"stop_reason":"tool_use"},"usage":{"input_tokens":100,"output_tokens":10}}
+{"index":4,"response":{"content":[{"type":"text","text":"两条写操作需要确认，未执行。"}],"stop_reason":"end_turn"},"usage":{"input_tokens":100,"output_tokens":10}}
