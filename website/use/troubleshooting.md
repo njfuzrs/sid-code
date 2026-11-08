@@ -261,7 +261,9 @@ SID_CODE_DEBUG=1 sid-code
 SSE 层面的问题（流式响应异常、卡住不动）用 `SID_CODE_DEBUG_SSE=1`。
 
 权限决策有独立的审计日志：`~/.sid-code/logs/permissions-audit.log`。
-"它为什么没问我就改了"这类问题在这里能查到每一条决策的依据。
+"它为什么没问我就改了"这类问题在这里能查到每一条决策的依据。每条带 `tool_use_id`，
+和会话轨迹里同一次工具调用的 id 相同，可以直接对上。被拒的操作和你确认过的操作另存在
+`permissions-audit-retained.log`，保留时间比主日志长得多。
 
 ### 报 bug 之前
 
