@@ -222,7 +222,8 @@ describe("P1-6 手动 /compact 的 context_compact 埋点", () => {
     const ctx = makeCtx(buildMessages(8), failing);
 
     const result = await compactMod.call("0.5", ctx);
-    expect((result as any).value).toContain("压缩未执行");
+    // 失败分支已改 error 类型（D3）：无头下退非 0，文本仍在 message 里（含「错误: 」前缀）
+    expect((result as any).message).toContain("压缩未执行");
 
     const compacts = only(events, "context_compact");
     expect(compacts.length).toBe(1);
@@ -261,7 +262,8 @@ describe("P1-6 手动 /compact 的 context_compact_skipped 埋点", () => {
     const ctx = makeCtx(buildMessages(8), makeMockProvider(), { lockFree: false });
 
     const result = await compactMod.call("", ctx);
-    expect((result as any).value).toContain("已有压缩流程在进行中");
+    // 失败分支已改 error 类型（D3），文本在 message 里
+    expect((result as any).message).toContain("已有压缩流程在进行中");
 
     const skipped = only(events, "context_compact_skipped");
     expect(skipped.length).toBe(1);
@@ -283,7 +285,8 @@ describe("P1-6 手动 /compact 的 context_compact_skipped 埋点", () => {
     };
 
     const result = await compactMod.call("", ctx);
-    expect((result as any).value).toContain("hook 阻止");
+    // 失败分支已改 error 类型（D3），文本在 message 里
+    expect((result as any).message).toContain("hook 阻止");
 
     const skipped = only(events, "context_compact_skipped");
     expect(skipped.length).toBe(1);

@@ -1,4 +1,5 @@
 import type { LocalCommandModule, LocalCommandResult, CommandContext } from "../../types.ts";
+import { errorText } from "../../result.ts";
 import { getThinkingEnvOverride, type ThinkingSetting } from "@sid-code/core/llm/effort.ts";
 import {
   thinkingLabelForSetting,
@@ -50,7 +51,9 @@ const mod: LocalCommandModule = {
     else if (norm === "off" || norm === "false" || norm === "0") setting = "off";
     else if (norm === "auto" || norm === "unset") setting = undefined;
     else {
-      return { type: "text", value: `错误: 无效参数 "${arg}"\n可选: on / off / auto` };
+      // 业务失败走 error（不是 text）：无头下 mapExecutionResult 才会翻成非 0，
+      // CI 不必 parse stdout 文案就能知道命令没生效（D2/D3 的口径）。
+      return errorText(`无效参数 "${arg}"\n可选: on / off / auto`);
     }
 
     ctx.setThinking?.(setting, persist);

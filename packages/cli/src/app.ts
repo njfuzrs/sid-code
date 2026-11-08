@@ -224,6 +224,13 @@ import {
   SCHEDULED_INJECT_EVENT_NAME,
   type ScheduledInjectOutcome,
 } from "@sid-code/core/cron/cron-telemetry.ts";
+import {
+  isWaitInvalidated,
+  releaseAllWaits,
+  releaseWait,
+  setWaitTraceSink,
+  setWakeupRegistrationEnabled,
+} from "@sid-code/core/task/wait-registry.ts";
 import { getScheduler } from "@sid-code/core/cron/scheduler.ts";
 import type { CronTask } from "@sid-code/core/cron/types.ts";
 import { normalizeScheduledOrigin } from "@sid-code/core/query/scheduled-prompt.ts";
@@ -3333,6 +3340,9 @@ export class App {
     } catch (err: any) {
       log.warn("HOOK", `SessionEnd(clear) 失败（不阻断 /clear）: ${err?.message ?? err}`);
     }
+    // W1：旧会话结束 → 等待登记表全部释放（并发 WaitReleased{reason:"session_end"} 便于对账）。
+    // /clear 起的是**新会话**，旧会话的等待承诺在新进程状态里没有执行者，不能继承（§6.8）。
+    releaseAllWaits("session_end");
     this.hookSystem.cleanupAsyncHooks();
     // jsonl 落 session_end + 账本落旧会话终值行（upsert，按旧 sessionId 一行）
     this.finalizeSessionStore();
@@ -4756,6 +4766,13 @@ export class App {
     // 但 cron 最小粒度 1 分钟、wakeup 钳制 ≥60s，实际不会在 collector 就绪前触发；
     // 真发生则静默丢（补发会让 lag/等待语义失真）。
     setScheduledTraceSink(
+      traceCollectorInstance
+        ? (event, data) => traceCollectorInstance.recordCustomEvent(event, data)
+        : null,
+    );
+    // W1：等待登记表的 WaitRegistered / WaitReleased 进轨迹（core 拿不到 collector，同款 sink）。
+    // 不接则 §9.8 的 promise_violations / zombie_wakeups 两个口径都取不到数。
+    setWaitTraceSink(
       traceCollectorInstance
         ? (event, data) => traceCollectorInstance.recordCustomEvent(event, data)
         : null,
@@ -7907,6 +7924,9 @@ export class App {
     ) => Promise<void>,
   ): void {
     this.promptInjector = injector;
+    // W1：注入通道就绪 = `schedule_wakeup` 到点真的会被执行，它才可以登记为等待源。
+    // 无头 `-p` 单轮不注册注入器，那里登记唤醒只会让闸门为一个永远不会来的唤醒放行（§5.2.4）。
+    setWakeupRegistrationEnabled(true);
     // 注入器就绪后，立即冲刷忙时积压的调度提示词
     void this.flushScheduledPrompts();
   }
@@ -7968,12 +7988,30 @@ export class App {
       getLogger().info("CRON", `丢弃已被替换的定时唤醒 ${item.taskId}（不注入主循环）`);
       return;
     }
+    // W3 §5.3.4：排队窗口里的第二次再确认——唤醒在忙时排队期间，清单可能已经清零（S1）
+    // 或被等对象已经终态（S2）。这条与上面的 isSuperseded 并列：一个是「换成新的了」，
+    // 一个是「不需要了」，两者都让唤醒不注入，但轨迹上必须分开记（否则僵尸唤醒无法归因）。
+    if (item.origin === "schedule_wakeup" && item.taskId && isWaitInvalidated(item.taskId)) {
+      emitScheduledTrace(SCHEDULED_INJECT_EVENT_NAME, {
+        task_id: item.taskId,
+        queue_wait_ms: Math.max(0, Date.now() - item.firedAt),
+        queued,
+        outcome: "dropped_invalidated" satisfies ScheduledInjectOutcome,
+      });
+      getLogger().info(
+        "CRON",
+        `丢弃已失效的定时唤醒 ${item.taskId}（清单已清零 / 被等对象已终态）`,
+      );
+      return;
+    }
     emitScheduledTrace(SCHEDULED_INJECT_EVENT_NAME, {
       task_id: item.taskId ?? "unknown",
       queue_wait_ms: Math.max(0, Date.now() - item.firedAt),
       queued,
       outcome: "injected" satisfies ScheduledInjectOutcome,
     });
+    // W3：唤醒注入即回报兑现——从等待登记表释放（否则闸门会继续为一个已经兑现的承诺放行）
+    if (item.taskId) releaseWait(item.taskId, "terminal");
     await injector(
       item.prompt,
       item.taskId || item.origin
