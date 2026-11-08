@@ -109,8 +109,9 @@ describe("P0-1 手动 /compact 兜底 no-op 不得谎报成功（新版命令）
 
     const result = await compactMod.call("", ctx);
 
-    expect(result.type).toBe("text");
-    const value = (result as any).value as string;
+    // 失败分支已改 error 类型（D3）：无头下退非 0，文本在 message 里（含「错误: 」前缀）
+    expect(result.type).toBe("error");
+    const value = (result as any).message as string;
     expect(value).toContain("压缩未生效");
     expect(value).toContain("no_split_point");
     expect(value).not.toContain("已压缩");
@@ -121,17 +122,19 @@ describe("P0-1 手动 /compact 兜底 no-op 不得谎报成功（新版命令）
   test("invalid_result_rolled_back → 同型如实报失败", async () => {
     const ctx = makeCtx(buildMessages(8), { noopReason: "invalid_result_rolled_back" });
     const result = await compactMod.call("", ctx);
-    expect((result as any).value).toContain("压缩未生效");
-    expect((result as any).value).toContain("invalid_result_rolled_back");
-    expect((result as any).value).not.toContain("已压缩");
+    expect(result.type).toBe("error");
+    expect((result as any).message).toContain("压缩未生效");
+    expect((result as any).message).toContain("invalid_result_rolled_back");
+    expect((result as any).message).not.toContain("已压缩");
   });
 
   test("no_reduction → 同型如实报失败", async () => {
     const ctx = makeCtx(buildMessages(8), { noopReason: "no_reduction" });
     const result = await compactMod.call("", ctx);
-    expect((result as any).value).toContain("压缩未生效");
-    expect((result as any).value).toContain("no_reduction");
-    expect((result as any).value).not.toContain("已压缩");
+    expect(result.type).toBe("error");
+    expect((result as any).message).toContain("压缩未生效");
+    expect((result as any).message).toContain("no_reduction");
+    expect((result as any).message).not.toContain("已压缩");
   });
 
   test("no-op 时不得 fire PostCompact hook（hook 语义是「压缩已完成」）", async () => {

@@ -173,8 +173,10 @@ describe("P0-1 /compact 参数分流", () => {
     };
 
     const result = await compactMod.call("", ctx);
-    expect((result as any).value).toContain("hook 阻止");
-    expect((result as any).value).toContain("正在处理关键任务");
+    // 失败分支已改 error 类型（D3）：无头下退非 0，文本在 message 里
+    expect(result.type).toBe("error");
+    expect((result as any).message).toContain("hook 阻止");
+    expect((result as any).message).toContain("正在处理关键任务");
     // 被阻止 → 未调用 provider
     expect(captured.length).toBe(0);
   });
