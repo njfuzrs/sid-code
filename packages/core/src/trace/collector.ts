@@ -1799,6 +1799,10 @@ export class TraceCollector {
       source: e.source,
       ...(e.reasonType ? { reason_type: e.reasonType } : {}),
       execution_context: e.context,
+      // T4：人工确认实际经由的通道（tui / bridge / sdk / headless）。只有真问过人的决策才有。
+      // 此前 decision-telemetry 与 events.ts 都带上了 confirmVia，唯独这里没映射——
+      // 单测只断言到观察者入参，events.jsonl 里恒无 confirm_via（2026-11-08 G2 探针实测）。
+      ...(e.confirmVia ? { confirm_via: e.confirmVia } : {}),
       // S10：fork / 子代理身份（与 StreamPhase.agent_id 同值）。主循环无此字段，形状不变
       ...(e.agentId ? { agent_id: e.agentId } : {}),
       ...(e.durationMs !== undefined ? { duration_ms: e.durationMs } : {}),
