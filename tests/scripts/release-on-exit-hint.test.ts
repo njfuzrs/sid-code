@@ -96,6 +96,11 @@ describe("release.sh on_exit：失败后的重跑提示与真实状态一致", (
   test("两个状态位在真实执行点被置位（不是只声明不赋值）", () => {
     // 置位必须分别紧跟在 bump 提交成功、beta.txt 写成功之后，否则 on_exit 永远走旧分支
     expect(RELEASE_SH).toMatch(/git commit -q -m "bump \$\{TAG\}"[\s\S]{0,600}BUMP_COMMITTED=true/);
-    expect(RELEASE_SH).toMatch(/\/beta\.txt"\n\s*BETA_PUBLISHED=true/);
+    // X3-13 起 beta 指针走 write_pointer（scp + 回读自证），不再是 `scp "$RELEASE_DIR/beta.txt"`。
+    // 不变量不变：置位必须发生在**真实写入之后**（含回读不符那条分支里的置位，它是「已对外」语义），
+    // 只声明不赋值时 on_exit 会一直走「可以重跑」那条错误提示。
+    const betaWrite = RELEASE_SH.indexOf('write_pointer beta.txt "$VERSION"');
+    expect(betaWrite).toBeGreaterThan(-1);
+    expect(RELEASE_SH.slice(betaWrite, betaWrite + 600)).toContain("BETA_PUBLISHED=true");
   });
 });

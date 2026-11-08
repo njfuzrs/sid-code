@@ -31,13 +31,15 @@ bun run format:check  →
 bun run lint:boundary →
 ```
 
-CI 有两个 job、五道门禁，上面五条本地全跑绿基本就不会红：
+CI 有三个 job、九道门禁（完整清单见 CONTRIBUTING.md「提 PR 之前必须跑的门禁」），
+下面几条本地全跑绿基本就不会红：
 
 - [ ] `bun test` 全绿（0 fail）
 - [ ] `make build` 成功（末尾 `--self-check` 通过）
 - [ ] `bun run lint` 通过（oxlint）
 - [ ] `bun run format:check` 通过（红了跑 `bun run format` 再 `git add`）
 - [ ] `bun run lint:boundary` 通过（动了跨包导入必跑）
+- [ ] 动过 `website/` 或参考页数据源时 `bun run website:build` 通过（死链即失败）
 - [ ] 带了覆盖本次改动的测试（bug 修复要有能复现原问题的用例）
 - [ ] 用 `sc-dev` 实际跑过（**不是 `sc`**，那是线上版，验证不到本地改动）
 
