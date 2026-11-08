@@ -42,7 +42,7 @@ const EXTRACT_MAX_TOKENS = 2048;
  * 喂给小模型的正文上限（字符）。超出则截断——小模型上下文有限，且过长正文会拉高
  * 提炼延迟与成本。取 60000 是权衡：覆盖绝大多数文档页，又不至于逼近小模型窗口上限。
  */
-const EXTRACT_INPUT_MAX_CHARS = 60_000;
+export const EXTRACT_INPUT_MAX_CHARS = 60_000;
 
 /**
  * 提炼失败时允许回落给主模型的原文上限（字符）。
