@@ -160,6 +160,12 @@ export interface SmokeCase {
   services?: Record<string, ServiceDef>;
   /** 传给 sid-code 的参数；`--dangerously-skip-permissions` 与 `--output-format json` 由运行器补 */
   argv: string[];
+  /**
+   * 置 true 时运行器**不**补 `--dangerously-skip-permissions`，走真实权限默认档。
+   * 为 X2 加：要守的正是「default 档下写形态不被自动放行」，跳过权限就什么也测不到。
+   * 无头下需确认的操作会被判拒（`PermissionDecision.step="headless:*"`），工具不执行。
+   */
+  realPermissions?: boolean;
   /** 额外环境变量（运行器已设好隔离用的那一组，这里只放用例特有的） */
   env?: Record<string, string>;
   /**

@@ -378,7 +378,7 @@ export async function runCase(
     const proc = Bun.spawn(
       [
         ...launcherArgv(launcher),
-        "--dangerously-skip-permissions",
+        ...(def.realPermissions ? [] : ["--dangerously-skip-permissions"]),
         "--output-format",
         "json",
         ...def.argv,

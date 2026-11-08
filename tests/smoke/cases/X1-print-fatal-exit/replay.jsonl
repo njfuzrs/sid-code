@@ -1,0 +1,1 @@
+{"index":1,"response":{"content":[{"type":"tool_use","id":"toolu_smoke_1","name":"bash","input":{"command":"echo hi"}}],"stop_reason":"tool_use"},"usage":{"input_tokens":100,"output_tokens":10}}
