@@ -17,12 +17,19 @@
 import type { LegacyTool as Tool, LegacyToolResult as ToolResult } from "./types.ts";
 import { getScheduler } from "../cron/scheduler.ts";
 import { type CronTask, MAX_SESSION_CRON_JOBS, isCronDisabled } from "../cron/types.ts";
+import { extractWaitSubjects, registerWait, releaseWait } from "../task/wait-registry.ts";
 import { randomBytes } from "crypto";
 import { z } from "zod/v4";
 import { lazySchema } from "../sdk/lazy-schema.ts";
 
 function shortId(): string {
   return randomBytes(4).toString("hex");
+}
+
+/** 唤醒描述：prompt 首行截断（进 TUI 面板与等待源 reminder，全文没意义） */
+function firstLine(text: string, maxLen: number): string {
+  const line = text.split("\n")[0]!.trim();
+  return line.length > maxLen ? `${line.slice(0, maxLen)}…` : line;
 }
 
 /** 延迟下限/上限（秒） */
@@ -118,6 +125,19 @@ export class ScheduleWakeupTool implements Tool {
         isError: true,
       };
     }
+
+    // W3：唤醒登记为等待源（有回报承诺的 deadline 源）。
+    // 被替换的旧唤醒同步释放——它已经不会再叫醒任何人，继续留在登记表里会让 todo 闸门
+    // 为一个不存在的中断放行（F2 的另一半：调度器删了任务，登记表也必须知道）。
+    for (const oldId of replaced) releaseWait(oldId, "superseded");
+    registerWait({
+      id: task.id,
+      kind: "wakeup",
+      promise: { kind: "deadline", deadlineAt: task.fireAt! },
+      description: firstLine(params.prompt, 60),
+      registeredAt: now,
+      subjects: extractWaitSubjects(params.prompt),
+    });
 
     const clampNote =
       clamped !== Math.round(params.delay_seconds)
