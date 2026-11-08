@@ -99,6 +99,52 @@ export interface PermissionDecisionEvent {
    * 统计的口径翻倍。
    */
   inputSummary?: Record<string, unknown>;
+  /**
+   * B19：工具调用 id（`tool_use.id`），与权限审计行的 `tool_use_id` 同值。
+   * 此前 6.8 万条 PermissionDecision 一条都不带，只能按「紧随 PreToolUse」的相邻关系配对，
+   * 并发工具调用会错配。只进本地轨迹（遥测 payload 不加，外发 schema 不变）。
+   */
+  toolUseId?: string;
+  /**
+   * B20：危险确认是哪道结构性闸门触发的（`guardOf(decision)`，固定枚举）。
+   * A2 注入校验器与 A6 展开超限在 `step` 上都是 `2`、`reasonType` 都是 dangerousCommand，
+   * 此前在轨迹里不可分，校验器名只在审计 reason 文本里。只取固定标签，不取命令片段。
+   */
+  guard?: string;
+  /**
+   * A9：auto 档分类器没有放行、回退人工时的成因（absent / safety-guard / unsafe /
+   * unavailable / error）。取自 `Decision.metadata.autoClassifier`，只有 auto 档的 ask 才有。
+   */
+  autoClassifier?: string;
+}
+
+/**
+ * 从决策里取「哪道结构性闸门」的固定标签。只认两类有闭集来源的模式：
+ * - 注入校验器：`pattern = "injection:<id>"`，id 来自 `bash-security.ts` 的校验器表；
+ * - 展开超限：`pattern = "展开超限"`。
+ * 其余 dangerousCommand 的 pattern 可能是 LLM 分类器的自由文本（`LLM:...`），一律不取。
+ * headless / dontAsk 把 ask 落成 deny 时会覆盖 decisionReason，标签由 checker 搬到
+ * `metadata.guard`（见 checker.ts `guardMetadata`），这里优先读它。
+ */
+export function guardOf(decision: {
+  decisionReason?: { type?: string; pattern?: unknown } | null;
+  metadata?: Record<string, unknown>;
+}): string | undefined {
+  const carried = decision.metadata?.guard;
+  if (typeof carried === "string") return carried;
+  const r = decision.decisionReason;
+  if (!r || r.type !== "dangerousCommand" || typeof r.pattern !== "string") return undefined;
+  if (r.pattern === "展开超限") return "expansion-limit";
+  const m = /^injection:([a-z0-9-]+)$/.exec(r.pattern);
+  return m ? `injection:${m[1]}` : undefined;
+}
+
+/** 取 `Decision.metadata.autoClassifier`（A9）；非字符串一律视为没有 */
+export function autoClassifierOf(decision: {
+  metadata?: Record<string, unknown>;
+}): string | undefined {
+  const v = decision.metadata?.autoClassifier;
+  return typeof v === "string" ? v : undefined;
 }
 
 let _observer: ((event: PermissionDecisionEvent) => void) | null = null;

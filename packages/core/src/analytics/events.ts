@@ -351,6 +351,13 @@ export function logPermissionAllow(
      * 见 `permission/decision-telemetry.ts` 的 `inputSummary` 与 `tool/input-summary.ts`。
      */
     inputSummary?: Record<string, unknown>;
+    /**
+     * B19 / B20 / A9：工具调用 id、结构性闸门标签、auto 分类器回退成因。**只进本地轨迹**，
+     * 不进遥测 payload（外发 schema 不变）。口径见 `permission/decision-telemetry.ts`。
+     */
+    toolUseId?: string;
+    guard?: string;
+    autoClassifier?: string;
   },
 ): void {
   emit(EVENT_NAMES.PERMISSION_ALLOW, {
@@ -380,6 +387,9 @@ export function logPermissionAllow(
     ...(opts.step ? { step: opts.step } : {}),
     ...(opts.mode ? { mode: opts.mode } : {}),
     ...(opts.inputSummary ? { inputSummary: opts.inputSummary } : {}),
+    ...(opts.toolUseId ? { toolUseId: opts.toolUseId } : {}),
+    ...(opts.guard ? { guard: opts.guard } : {}),
+    ...(opts.autoClassifier ? { autoClassifier: opts.autoClassifier } : {}),
   });
 }
 
@@ -425,6 +435,13 @@ export function logPermissionDeny(
      * 见 `permission/decision-telemetry.ts` 的 `inputSummary` 与 `tool/input-summary.ts`。
      */
     inputSummary?: Record<string, unknown>;
+    /**
+     * B19 / B20 / A9：工具调用 id、结构性闸门标签、auto 分类器回退成因。**只进本地轨迹**，
+     * 不进遥测 payload（外发 schema 不变）。口径见 `permission/decision-telemetry.ts`。
+     */
+    toolUseId?: string;
+    guard?: string;
+    autoClassifier?: string;
   },
 ): void {
   emit(EVENT_NAMES.PERMISSION_DENY, {
@@ -452,6 +469,9 @@ export function logPermissionDeny(
     ...(opts.denyKind ? { denyKind: opts.denyKind } : {}),
     ...(opts.pathMismatch ? { pathMismatch: opts.pathMismatch } : {}),
     ...(opts.inputSummary ? { inputSummary: opts.inputSummary } : {}),
+    ...(opts.toolUseId ? { toolUseId: opts.toolUseId } : {}),
+    ...(opts.guard ? { guard: opts.guard } : {}),
+    ...(opts.autoClassifier ? { autoClassifier: opts.autoClassifier } : {}),
   });
 }
 

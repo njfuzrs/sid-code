@@ -544,6 +544,11 @@ export async function runForkedAgent(
             context: "forked",
             reasonType: "other",
             agentId: forkAgentId,
+            // B19 / B20：forked 的裁决来自调用方注入的 canUseTool，不经 PermissionChecker，
+            // 没有管线 step / mode 可取。step 记固定位置标签 "forked"（「在 forked 闸门判的」
+            // 是事实），mode **不填**——填主会话的模式等于编造，这条路根本不看模式。
+            step: "forked",
+            toolUseId: tu.id,
             ...(decision.behavior === "deny" && decision.denyKind
               ? { denyKind: decision.denyKind }
               : {}),
@@ -574,6 +579,9 @@ export async function runForkedAgent(
           context: "forked",
           reasonType: "other",
           agentId: forkAgentId,
+          // 同 deny：固定位置标签，mode 不填（理由见 deny 分支注释）
+          step: "forked",
+          toolUseId: tu.id,
           // 与 deny 同口径：forked 的每次工具调用都要留下入参摘要，否则「fork 读了哪些
           // 工作区外文件、改的是哪个文件」在轨迹里只剩一个工具名。
           ...(() => {
