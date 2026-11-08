@@ -168,16 +168,85 @@ function checkAbruptEnding(content: string, filePath: string): string | undefine
   }
 
   // 通用: 最后一行以未闭合的字符串字面量结尾
-  if (/["'`][^"'`]*$/.test(lastLine) && !lastLine.endsWith(";") && !lastLine.endsWith(",")) {
-    // 额外检查：引号数量必须是奇数（真正未闭合）
-    const quotes = (lastLine.match(/["'`]/g) || []).length;
-    if (quotes % 2 !== 0) {
-      return "末尾有未闭合的字符串字面量，内容可能被截断";
-    }
+  //
+  // 曾经的判据是「末行三种引号的**总数**为奇数」（T3，2026-11-08 修）。它把注释里的英文撇号
+  //（`# it's done`、`// don't touch`）、双引号串里的撇号（`print("it's done")`）、
+  // 收尾的 docstring（`"""`）、YAML 裸值（`description: Don't`）都判成截断，
+  // 合法的覆盖写入被拒，模型被引去「分段写」。现在按引号类型逐字符走状态机，见 findUnclosedQuote。
+  if (!lastLine.endsWith(";") && !lastLine.endsWith(",") && findUnclosedQuote(lastLine, ext)) {
+    return "末尾有未闭合的字符串字面量，内容可能被截断";
   }
 
   // 通用: 最后一行以逗号结尾（暗示还有后续项）且 overall 括号不平衡 ≥ 1
   // 这单独不足以判定，所以不加（留给括号平衡策略）
 
   return undefined;
+}
+
+/** `--` 是行注释的语言（其余语言里 `--` 多半是自减或命令行参数，不能当注释） */
+const DASH_COMMENT_EXTENSIONS = new Set([".sql", ".lua", ".hs", ".elm"]);
+
+/** Python 字符串前缀：`f'…'`、`rb'…'` 里紧贴字母的引号是真定界符，不是撇号 */
+const PY_STRING_PREFIX_RE = /^(?:[rbuf]|[rf][rb]|[rb][rf])$/i;
+
+const LETTER_RE = /\p{L}/u;
+
+/**
+ * 单行里有没有「真正没闭合」的字符串，有则返回它的开引号。
+ *
+ * 只看一行，所以凡是**单行判断不了开还是关**的形态一律不报（检测器的原则是宁可漏报不误杀）：
+ * - 三引号 `"""` / `'''`：可能是 docstring 的开头，也可能是结尾；
+ * - 行首就是反引号（`` ` ``、`` `).trim() ``）：多半是多行模板串的收尾。
+ *
+ * 不当作字符串定界符的：
+ * - 行注释之后的全部内容：`//`；行首或空白后的 `#`；`.sql` 等语言里行首或空白后的 `--`；
+ * - 同行闭合的 `/* … *\/` 块注释（不闭合则其后全是注释）；
+ * - 两侧都是字母的英文撇号（`it's`、`don't`），但 Python 字符串前缀（`f'`、`rb'`）除外。
+ */
+function findUnclosedQuote(line: string, ext: string): string | undefined {
+  let open: string | null = null;
+  let openAt = -1;
+
+  for (let i = 0; i < line.length; i++) {
+    const ch = line[i];
+
+    if (ch === "\\") {
+      i++;
+      continue;
+    }
+
+    if (open) {
+      if (ch === open) open = null;
+      continue;
+    }
+
+    const prev = i > 0 ? line[i - 1] : "";
+    const atWordStart = prev === "" || /\s/.test(prev);
+
+    if (ch === "/" && line[i + 1] === "/") break;
+    if (ch === "/" && line[i + 1] === "*") {
+      const end = line.indexOf("*/", i + 2);
+      if (end === -1) break;
+      i = end + 1;
+      continue;
+    }
+    if (ch === "#" && atWordStart) break;
+    if (ch === "-" && line[i + 1] === "-" && atWordStart && DASH_COMMENT_EXTENSIONS.has(ext)) break;
+
+    if (ch !== '"' && ch !== "'" && ch !== "`") continue;
+
+    if ((ch === '"' || ch === "'") && line[i + 1] === ch && line[i + 2] === ch) return undefined;
+
+    if (ch === "'" && LETTER_RE.test(prev) && LETTER_RE.test(line[i + 1] ?? "")) {
+      const word = /\p{L}+$/u.exec(line.slice(0, i))?.[0] ?? "";
+      if (!PY_STRING_PREFIX_RE.test(word)) continue;
+    }
+
+    open = ch;
+    openAt = i;
+  }
+
+  if (!open) return undefined;
+  if (open === "`" && openAt === 0) return undefined;
+  return open;
 }
