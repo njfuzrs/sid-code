@@ -119,6 +119,10 @@ describe("TodoPanel — 终态字形区分（双通道，非仅靠颜色）", ()
 });
 
 describe("TodoPanel — compactMode 单行摘要（附4：窄终端不整区隐藏）", () => {
+  // 2026-11-08（PR 2 / §5.7.6 T-T1-8）**契约变更**：摘要从「逐个列 agentType」改成
+  // 「按类型计数」（`后台：2 agent · 1 唤醒`），与 CC 的 `getPillLabel` 同构。
+  // 理由：任务一多，逐个列名会把单行撑爆，而后半截正好是用户最想看的类型；计数为 0
+  // 的类型省略。此前的「逐个列名」不是需求，只是实现顺手写成的样子。
   const NARROW_WIDTH = 59; // < 60 触发 compactMode；maxContentLen = max(20, 59-16) = 43
 
   test("窄终端不再整区消失：至少能看到是什么任务在跑", () => {
@@ -128,10 +132,10 @@ describe("TodoPanel — compactMode 单行摘要（附4：窄终端不整区隐�
     const frame = lastFrame() ?? "";
     // 标题行计数此前就有，摘要是新增的
     expect(frame).toContain("1 运行中");
-    expect(frame).toContain("explore"); // 此前 compactMode 下这里应为空
+    expect(frame).toContain("后台：1 agent"); // 此前 compactMode 下这里应为空
   });
 
-  test("多任务并行时摘要逐个列出，而非只给一个数字", () => {
+  test("多任务并行时按类型计数，而非逐个列名（防单行撑爆）", () => {
     const { lastFrame } = render(
       <TodoPanel
         todos={[]}
@@ -143,29 +147,28 @@ describe("TodoPanel — compactMode 单行摘要（附4：窄终端不整区隐�
       />,
     );
     const frame = lastFrame() ?? "";
-    expect(frame).toContain("explore");
-    expect(frame).toContain("verify");
+    expect(frame).toContain("后台：2 agent");
+    // 具体名字不再进摘要——窄屏下列名会把单行撑爆，用户要看名字可以放宽终端
+    expect(frame).not.toContain("verify");
   });
 
-  test("摘要只用极简标签，不带完整描述（保持单行、不拖出长文本）", () => {
+  test("摘要不带完整描述（保持单行、不拖出长文本）", () => {
     const { lastFrame } = render(
       <TodoPanel todos={[]} tasks={[runningTask()]} termWidth={NARROW_WIDTH} />,
     );
     const frame = lastFrame() ?? "";
-    expect(frame).toContain("explore");
+    expect(frame).toContain("后台：1 agent");
     expect(frame).not.toContain("验证缺口1 FileReadTracker隔离"); // 完整 description 不应出现
   });
 
-  test("摘要与 …+N 截断提示视口一致：只反映 visibleTasks，被截断的不出现在摘要里", () => {
+  test("摘要只反映 visibleTasks：被视口截断的任务不计数，与 …+N 一致", () => {
     // 6 个全部 running：windowed = running.slice 无效（无 terminal），visibleTasks = 前 5 个
     const many = Array.from({ length: 6 }, (_, i) =>
       runningTask({ id: `t${i}`, agentType: `a${i}` }),
     );
     const { lastFrame } = render(<TodoPanel todos={[]} tasks={many} termWidth={NARROW_WIDTH} />);
     const frame = lastFrame() ?? "";
-    expect(frame).toContain("a0");
-    expect(frame).toContain("a4");
-    expect(frame).not.toContain("a5"); // 第 6 个被视口截断，不应出现在摘要里
+    expect(frame).toContain("后台：5 agent"); // 只数视口内的 5 个
     expect(frame).toContain("…+1"); // 附1 的截断提示不受本次改动影响
   });
 
