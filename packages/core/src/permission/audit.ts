@@ -12,11 +12,36 @@
  * 判据是「审计日志的读者是谁」：出问题时查的是**最近**的权限决策，翻半年前的第 9 代
  * 从未发生过。保留 1 代（当前 + 上一代）足够覆盖「刚轮转完就要查上一段」这个唯一
  * 真实场景，总量上限也从 110MB 收到 20MB。
+ *
+ * ── B21：拒绝与人工终局另存一份（2026-11-08）──
+ *
+ * 主日志 98.4% 是 allow（本机两代 34,387 行 / 12.3MB 里 deny 469 行），按体积轮转时
+ * 大量 allow 噪声把旧 deny 一起挤出去：两代合计只覆盖约 11.5 天。而回头查的恰恰是
+ * deny 与人工确认。所以每条 `decision=deny` 或带 `confirm_source` 的行**再追加**一份到
+ * `permissions-audit-retained.log`（5MB × 1 代，最坏 10MB）。按本机 deny 约 58KB/天，
+ * 一代能装约三个月。主日志的格式、路径、轮转都不变，既有读取脚本不受影响。
+ *
+ * ── B19：会话键 ──
+ *
+ * 每行写入时盖上本进程会话 id（`session_id`）。调用点不必各自记得传：审计调用点有十几个，
+ * 逐个补等于下一个新分支一定漏。
  */
 
 import { appendFileSync, existsSync, statSync, renameSync, mkdirSync, unlinkSync } from "fs";
 import { sidPaths } from "../config/paths.ts";
+import { getSessionId } from "../bootstrap/state.ts";
 import type { AuditEntry } from "./types.ts";
+
+/** B21：这条审计行是否进保留日志——拒绝，或确认弹窗的终局（含人工批准） */
+export function isRetainedAuditEntry(entry: AuditEntry): boolean {
+  if (entry.source === "policy-probe") return false;
+  return entry.decision === "deny" || entry.confirm_source !== undefined;
+}
+
+/** 保留日志路径：与主日志同目录，`x.log` → `x-retained.log` */
+export function retainedAuditPath(logPath: string): string {
+  return logPath.endsWith(".log") ? `${logPath.slice(0, -4)}-retained.log` : `${logPath}-retained`;
+}
 
 export class AuditLogger {
   private logPath: string;
@@ -28,6 +53,9 @@ export class AuditLogger {
    * 改之前先想清楚「谁会去读第 N 代」——找不出读者的代数就是纯占盘。
    */
   private maxFiles = 1;
+  /** B21 保留日志：只存 deny 与确认终局，量小，5MB 一代约够三个月 */
+  private retainedPath: string;
+  private retainedMaxSize = 5 * 1024 * 1024;
 
   constructor(logPath?: string) {
     const logsDir = sidPaths.logs();
@@ -35,23 +63,37 @@ export class AuditLogger {
       mkdirSync(logsDir, { recursive: true });
     }
     this.logPath = logPath || sidPaths.log("permissions-audit.log");
+    this.retainedPath = retainedAuditPath(this.logPath);
   }
 
   /** 写入审计日志条目 */
   log(entry: AuditEntry): void {
     try {
-      const line = JSON.stringify(entry) + "\n";
+      // B19：会话键在写入口统一盖章；调用方显式给了就不覆盖
+      let sessionId: string | undefined;
+      try {
+        sessionId = getSessionId() || undefined;
+      } catch {
+        sessionId = undefined;
+      }
+      const stamped: AuditEntry =
+        entry.session_id || !sessionId ? entry : { ...entry, session_id: sessionId };
+      const line = JSON.stringify(stamped) + "\n";
       appendFileSync(this.logPath, line);
+      this.rotateIfNeeded(this.logPath, this.maxSize);
 
-      // 检查是否需要轮转
-      if (existsSync(this.logPath)) {
-        const stats = statSync(this.logPath);
-        if (stats.size > this.maxSize) {
-          this.rotate();
-        }
+      if (isRetainedAuditEntry(stamped)) {
+        appendFileSync(this.retainedPath, line);
+        this.rotateIfNeeded(this.retainedPath, this.retainedMaxSize);
       }
     } catch {
       // 审计日志写入失败不应影响主流程
+    }
+  }
+
+  private rotateIfNeeded(path: string, limit: number): void {
+    if (existsSync(path) && statSync(path).size > limit) {
+      this.rotate(path);
     }
   }
 
@@ -67,13 +109,13 @@ export class AuditLogger {
    *    后，盘上早先产生的 `.2`~`.10` 不会被新逻辑的重命名循环碰到 —— 不主动清就是
    *    改了配置却回收不了空间。扫描上限设 10（原 maxFiles 值），够覆盖历史产物。
    */
-  private rotate(): void {
+  private rotate(logPath: string = this.logPath): void {
     /** 历史遗留代数的扫描上限：原实现的 maxFiles 是 10，不会有比这更旧的代数 */
     const LEGACY_MAX_GENERATION = 10;
     try {
       // 1. 删掉超出保留上限的代数（含历史遗留的 .maxFiles+1 ... .10）
       for (let i = this.maxFiles; i <= LEGACY_MAX_GENERATION; i++) {
-        const stale = `${this.logPath}.${i}`;
+        const stale = `${logPath}.${i}`;
         if (existsSync(stale)) {
           try {
             unlinkSync(stale);
@@ -85,15 +127,15 @@ export class AuditLogger {
 
       // 2. 依次把 .i 重命名为 .i+1（maxFiles=1 时这个循环不执行）
       for (let i = this.maxFiles - 1; i >= 1; i--) {
-        const old = `${this.logPath}.${i}`;
-        const next = `${this.logPath}.${i + 1}`;
+        const old = `${logPath}.${i}`;
+        const next = `${logPath}.${i + 1}`;
         if (existsSync(old)) {
           renameSync(old, next);
         }
       }
 
       // 3. 当前文件变为 .1
-      renameSync(this.logPath, `${this.logPath}.1`);
+      renameSync(logPath, `${logPath}.1`);
     } catch {
       // 轮转失败不影响主流程
     }

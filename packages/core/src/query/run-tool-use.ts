@@ -61,6 +61,7 @@ import {
   logToolSuccess,
   logToolFailure,
 } from "../analytics/events.ts";
+import { guardOf } from "../permission/decision-telemetry.ts";
 
 /** 中断后未执行工具的占位结果文案（N 进 N 出；未 fire PreToolUse，故不补 Failure） */
 export const SUBAGENT_ABORTED_TOOL_RESULT = "工具未执行：子代理已被中断";
@@ -354,6 +355,8 @@ async function checkPermission(
   const common = {
     needsPrompt: false,
     ...(mode.agentId ? { agentId: mode.agentId } : {}),
+    // B19：与权限审计行同一个 tool_use_id，两边按它 join
+    toolUseId: block.id,
   };
 
   if (permissionChecker) {
@@ -363,6 +366,7 @@ async function checkPermission(
       toolName: block.name,
       input: observableInput,
       description: `${block.name}: ${JSON.stringify(observableInput).slice(0, 120)}`,
+      toolUseId: block.id,
     };
     const decision = await permissionChecker.check(permReq, tool, undefined, {
       hookPermissionDecision: ctx.hookPermissionDecision,
@@ -371,6 +375,7 @@ async function checkPermission(
       reasonType: decision.decisionReason?.type,
       step: decision.step,
       mode: decision.mode,
+      guard: guardOf(decision),
     };
     if (!decision.allowed) {
       const reason = decision.reason || "子代理不允许此操作";

@@ -13,7 +13,9 @@
 
 import { resolveSubAgentTypeParam } from "../agent/sub-agent-input.ts";
 import type {
+  AuditEntry,
   Checker,
+  ConfirmationOutcome,
   Decision,
   PermissionRequest,
   PermissionRule,
@@ -564,6 +566,38 @@ export class PermissionChecker implements Checker {
   }
 
   /**
+   * 权限审计的唯一写入口。B19：给每行盖上 `tool_use_id`（取自 `req.toolUseId`）；
+   * 会话键由 `AuditLogger` 统一盖。所有审计行都必须经过这里——直接调
+   * `this.auditLogger.log` 会漏键（`audit-trace-keys.test.ts` 有静态哨兵拦）。
+   */
+  private audit(req: PermissionRequest, entry: AuditEntry): void {
+    this.auditLogger.log(
+      req.toolUseId && !entry.tool_use_id ? { ...entry, tool_use_id: req.toolUseId } : entry,
+    );
+  }
+
+  /**
+   * B20：确认弹窗终局落审计。`check()` 判 needsConfirmation 时自己不写审计（结论还没出），
+   * 于是人工批准 / 拒绝、hook 裁决、超时拒绝此前一条都不落盘，`user_confirmed` 全量恒 false。
+   * 只写审计，不动 denial tracking / 会话记忆——那两件事调用方另有入口（recordUserDenial /
+   * rememberDecision），这里再记一次会让计数翻倍。
+   */
+  auditConfirmationOutcome(req: PermissionRequest, outcome: ConfirmationOutcome): void {
+    const resource = extractFilePath(req) || (req.input as any)?.command || "";
+    this.audit(req, {
+      timestamp: new Date().toISOString(),
+      type: "tool_use",
+      tool: req.toolName,
+      resource,
+      decision: outcome.allowed ? "allow" : "deny",
+      reason: outcome.reason,
+      decisionReason: outcome.decisionReason,
+      user_confirmed: outcome.source === "user",
+      confirm_source: outcome.source,
+    });
+  }
+
+  /**
    * 构造熔断决策（两个调用点共用：hard deny 路径与 ask 后处理路径）。
    *
    * 熔断落地为 needsConfirmation 而非 deny：目的是把"模型在死循环"这件事暴露给用户，
@@ -598,7 +632,7 @@ export class PermissionChecker implements Checker {
         totalDenials: this.denialTracking.totalDenials,
       },
     };
-    this.auditLogger.log({
+    this.audit(req, {
       timestamp: new Date().toISOString(),
       type: "tool_use",
       tool: req.toolName,
@@ -1227,7 +1261,7 @@ export class PermissionChecker implements Checker {
                 pathResult.sensitiveFile ? "敏感文件" : "工作目录边界"
               }，但命中用户显式 allow 规则)`,
             );
-            this.auditLogger.log({
+            this.audit(req, {
               timestamp: new Date().toISOString(),
               type: "tool_use",
               tool: req.toolName,
@@ -1641,7 +1675,7 @@ export class PermissionChecker implements Checker {
       blocked.reason || "",
       resource,
     );
-    this.auditLogger.log({
+    this.audit(req, {
       timestamp: new Date().toISOString(),
       type: "tool_use",
       tool: req.toolName,
@@ -1677,7 +1711,7 @@ export class PermissionChecker implements Checker {
       const userDeny = this.checkUserDenyUnderSkip(req, resource, options);
       if (userDeny) return userDeny;
       log.info("PERMISSION", `${req.toolName}(${resource.slice(0, 80)}) → 允许(skipPermissions)`);
-      this.auditLogger.log({
+      this.audit(req, {
         timestamp: new Date().toISOString(),
         type: "tool_use",
         tool: req.toolName,
@@ -1735,7 +1769,7 @@ export class PermissionChecker implements Checker {
           `${req.toolName}(${resource.slice(0, 80)}) → 允许(PreToolUse hook permissionDecision:allow)`,
         );
         this.denialTracking = recordSuccess(this.denialTracking, req.toolName, resource);
-        this.auditLogger.log({
+        this.audit(req, {
           timestamp: new Date().toISOString(),
           type: "tool_use",
           tool: req.toolName,
@@ -1765,12 +1799,24 @@ export class PermissionChecker implements Checker {
           "PERMISSION",
           `${req.toolName}(${resource.slice(0, 80)}) → 拒绝(PreToolUse hook ask，但无交互通道)`,
         );
-        return {
+        const hookAskDenied: Decision = {
           allowed: false,
           reason: "PreToolUse hook 要求确认，但当前为非交互模式，自动拒绝",
           decisionReason: { type: "other", reason: "PreToolUse hook ask (non-interactive)" },
           step: "hook-ask",
         };
+        // B20 / A5：此前直接 return，审计里没有这一行（trace 有 step=hook-ask）
+        this.audit(req, {
+          timestamp: new Date().toISOString(),
+          type: "tool_use",
+          tool: req.toolName,
+          resource,
+          decision: "deny",
+          reason: hookAskDenied.reason,
+          decisionReason: hookAskDenied.decisionReason,
+          ...(options?.auditSource ? { source: options.auditSource } : {}),
+        });
+        return hookAskDenied;
       }
       log.info(
         "PERMISSION",
@@ -1788,7 +1834,7 @@ export class PermissionChecker implements Checker {
     // allow → 重置 denial tracking
     if (result.allowed) {
       this.denialTracking = recordSuccess(this.denialTracking, req.toolName, resource);
-      this.auditLogger.log({
+      this.audit(req, {
         timestamp: new Date().toISOString(),
         type: "tool_use",
         tool: req.toolName,
@@ -1836,7 +1882,7 @@ export class PermissionChecker implements Checker {
         result.reason || "",
         resource,
       );
-      this.auditLogger.log({
+      this.audit(req, {
         timestamp: new Date().toISOString(),
         type: "tool_use",
         tool: req.toolName,
@@ -1866,7 +1912,7 @@ export class PermissionChecker implements Checker {
           `${req.toolName}(${resource.slice(0, 80)}) → 允许(yesMode 自动批准普通 ask)`,
         );
         this.denialTracking = recordSuccess(this.denialTracking, req.toolName, resource);
-        this.auditLogger.log({
+        this.audit(req, {
           timestamp: new Date().toISOString(),
           type: "tool_use",
           tool: req.toolName,
@@ -1886,6 +1932,10 @@ export class PermissionChecker implements Checker {
 
     // auto 模式：分类器判安全则自动批准，否则落到交互确认（needsConfirmation）
     if (this.config.permissionMode === "auto") {
+      // A9 标记：auto 档没有放行、回退人工确认时，记下回退成因（固定枚举）。
+      // 此前「分类器判不安全」「分类器挂了」「护栏禁止分类器」三种回退在审计与轨迹里长得一样，
+      // 分类器质量问题与配置问题无从区分。只进 metadata，不改决策。
+      let autoFallback: "absent" | "safety-guard" | "unsafe" | "unavailable" | "error" = "absent";
       const toolClassifier = this.getToolClassifier();
       if (toolClassifier?.isAvailable()) {
         try {
@@ -1909,6 +1959,7 @@ export class PermissionChecker implements Checker {
               "PERMISSION",
               `${req.toolName}(${resource.slice(0, 80)}) → auto 不放行危险确认(${result.decisionReason?.type})`,
             );
+            autoFallback = "safety-guard";
           } else {
             const classifyResult = await toolClassifier.classify({
               toolName: req.toolName,
@@ -1922,7 +1973,7 @@ export class PermissionChecker implements Checker {
                 `${req.toolName}(${resource.slice(0, 80)}) → 允许(auto 模式分类器批准: ${classifyResult.reason})`,
               );
               this.denialTracking = recordSuccess(this.denialTracking, req.toolName, resource);
-              this.auditLogger.log({
+              this.audit(req, {
                 timestamp: new Date().toISOString(),
                 type: "tool_use",
                 tool: req.toolName,
@@ -1937,6 +1988,7 @@ export class PermissionChecker implements Checker {
               };
             }
             // 分类器判不安全或不可用：落到下方正常确认流程（needsConfirmation）
+            autoFallback = classifyResult.classifierUnavailable ? "unavailable" : "unsafe";
             log.info(
               "PERMISSION",
               `${req.toolName} → auto 模式分类器未放行(${classifyResult.reason})，回退人工确认`,
@@ -1944,9 +1996,11 @@ export class PermissionChecker implements Checker {
           }
         } catch (err: any) {
           log.warn("PERMISSION", `auto 模式分类器异常(${err.message})，回退人工确认`);
+          autoFallback = "error";
         }
       }
       // 分类器不可用或未放行 → 返回 needsConfirmation，让上层三路竞争/用户弹窗处理
+      result = { ...result, metadata: { ...result.metadata, autoClassifier: autoFallback } };
     }
 
     // dontAsk 模式：ask → deny（绝不弹窗，对齐 Claude Code 语义）
@@ -1967,7 +2021,7 @@ export class PermissionChecker implements Checker {
         decisionReason: { type: "mode", mode: "dontAsk" },
         step: "dontAsk",
       };
-      this.auditLogger.log({
+      this.audit(req, {
         timestamp: new Date().toISOString(),
         type: "tool_use",
         tool: req.toolName,
@@ -2038,7 +2092,7 @@ export class PermissionChecker implements Checker {
         // 成因步骤沿用阶段一（「为什么要问」），headless 只是把 ask 落成 deny
         step: `headless:${result.step ?? "?"}`,
       };
-      this.auditLogger.log({
+      this.audit(req, {
         timestamp: new Date().toISOString(),
         type: "tool_use",
         tool: req.toolName,
@@ -2476,7 +2530,7 @@ export class PermissionChecker implements Checker {
       denied.reason || "",
       resource,
     );
-    this.auditLogger.log({
+    this.audit(req, {
       timestamp: new Date().toISOString(),
       type: "tool_use",
       tool: req.toolName,
