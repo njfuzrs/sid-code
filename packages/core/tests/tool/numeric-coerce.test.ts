@@ -60,6 +60,9 @@ describe("normalizeNumericStrings", () => {
       ["科学计数", "1e3", 1000],
       ["连字符区间取起点", "117-130", 117],
       ["全角逗号区间", "117，130", 117],
+      // B25：前导符号随首个数保留，不能被当分隔符切掉（修复前 "-5-3" → 5）
+      ["负数区间保留符号", "-5-3", -5],
+      ["负数区间保留符号（逗号）", "-3, 5", -3],
     ])("%s: %p → %p", (_name, raw, expected) => {
       const out = normalizeNumericStrings(readLike, { file_path: "/a", offset: raw }) as {
         offset: unknown;
@@ -76,6 +79,11 @@ describe("normalizeNumericStrings", () => {
       ["纯空白", "   "],
       ["非数字", "abc"],
       ["半截垃圾（不是区间）", "117, abc"],
+      // B25：除前导符号外不许有空段（修复前切完 filter 掉空段，"1,,2" → 1）
+      ["中间空段（逗号）", "1,,2"],
+      ["中间空段（连字符）", "3--5"],
+      ["尾部分隔符", "117,"],
+      ["只有符号", "-"],
       ["十六进制", "0x1f"],
       ["Infinity 字面量", "Infinity"],
       ["NaN 字面量", "NaN"],
