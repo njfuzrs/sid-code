@@ -459,7 +459,7 @@ fi
 
 核过的实际配置，共 **6 个 workflow + 2 个 git hook**：
 
-**CI（`ci.yml`，2 个 job + 1 个汇聚门 = 5 道检查）**
+**CI（`ci.yml`，3 个 job + 1 个汇聚门 = 9 道检查）**
 
 | job | 检查 | 干什么 |
 | --- | --- | --- |
@@ -469,6 +469,10 @@ fi
 | `lint`（ubuntu） | `oxlint` | 正确性 lint |
 | | `oxfmt --check` | 排版 |
 | | 包边界扫描 | 分层依赖不许倒流 |
+| | 命令体系门禁 | 死导出棘轮 + 旧命令体系只减不增 |
+| | 工具接口棘轮 | 引用旧接口 `LegacyTool` 的生产文件只降不升 |
+| | `typecheck:gate` | 类型检查只拦新增（存量在 baseline 里） |
+| `website`（ubuntu） | `website:build` | VitePress 构建，**死链即失败**（X3-12 补的 CI 兜底，见下） |
 | `all-checks-passed` | —— | 汇聚，唯一的必需检查 |
 
 > 💡 **「单测未污染工作区」这道检查值得单独说**，因为它防的东西非常隐蔽：
@@ -485,6 +489,7 @@ fi
 | `judge-calibration` | 定期 | 校准判分器本身准不准 | 它测的是尺子，不是被测对象 |
 | `provider-daily-canary` | 每天 | 探活各个模型接口 | 上游挂了不是我们的 bug |
 | `northstar-weekly` | 每周 | 指标趋势 | **CI 上没有真实用量数据**（见下） |
+| `pr-auto-update` | push main / CI 完成 / 每 15 分钟 | strict 下给队首挂了 auto-merge 的 PR 做 update-branch | 它维护的是合并队列，不是代码质量 |
 
 > ⚠️ `eval-pr-smoke`（P0 冒烟）已于 2026-09-18 随旧题集 `general/` 整条下线。
 > 新集重建 smoke 时，5 条锚点 case 的选取标准见 git 历史 `evals/_meta/smoke-cases.yaml` 头部注释。
@@ -500,10 +505,10 @@ fi
 
 | hook | 门禁 | 预算 |
 | --- | --- | --- |
-| **pre-commit** | ① 评测数据污染扫描 ② holdout 回归护栏 ③ `oxlint`（只查 staged） ④ `oxfmt --check` ⑤ Agent Note 形态校验 ⑥ 参考页对账（**仅数据源变动时**） ⑦ 叙述覆盖度（告警模式） ⑧ 源码裸 NUL 字节检查 | 几百 ms |
-| **pre-push** | ① holdout 永封校验 ② 站点构建（死链检测） ③ 指标生成块陈旧检测（30 天） | 几秒 |
+| **pre-commit** | ① 参考页对账（**仅数据源变动时**） ② 叙述覆盖度（阻断模式，命令注册表 / 指南页变动时） ③ 源码裸 NUL 字节 ④ SKILL.md 改动 → holdout 回归提示 ⑤ `oxlint`（只查 staged） ⑥ `oxfmt --check`（只查 staged） ⑦ 包边界扫描（`packages/*/src` 变动时） ⑧ Agent Note 形态校验 | 几百 ms |
+| **pre-push** | ① holdout 永封校验 ② 站点构建（死链检测，`website/` 变动时；**CI 有等价 job**） ③ 指标生成块陈旧检测（30 天，刻意只放本地） ④ 证据层差集闸（本机有 `harbor/runs/` 才跑） | 几秒 |
 
-注意 pre-commit 的 ③④ 都写着「只查 staged」——这是**把预算控制在几百毫秒的关键手段**：
+注意 pre-commit 的 ⑤⑥ 都写着「只查 staged」——这是**把预算控制在几百毫秒的关键手段**：
 全仓 lint 是秒级，staged 文件通常只有几个，是毫秒级。
 
 > 💡 **一个免费门禁的漂亮例子**：pre-push 的「站点构建」这一条，
@@ -3385,7 +3390,7 @@ git checkout v<版本号>
 | --- | --- |
 | 自动化脚本 | **103 个 / 31,200 行**（`.ts` 89 / `.sh` 14） |
 | CI workflow | **6 个**（1 个是门禁，5 个是定时/报告） |
-| CI 必需检查 | **1 个**（汇聚门），背后 2 个 job × 双平台矩阵 |
+| CI 必需检查 | **1 个**（汇聚门），背后 3 个 job（test 双平台矩阵 / lint / website） |
 | git hook | **2 个**（pre-commit 8 项 / pre-push 4 项） |
 | 全量测试 | **127.5s**（早期未优化时 202.87s） |
 | 选择性测试 | **0.19s – 14.5s** |

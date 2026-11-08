@@ -353,7 +353,9 @@ describe("release.sh 契约", () => {
     const after = (s: string) => RELEASE_SH.indexOf(s, start);
     const manifest = after("publish_manifest &&");
     const audit = after("audit_archive smoke");
-    const beta = after('run_scp "$RELEASE_DIR/beta.txt"');
+    // X3-13 起写指针统一走 write_pointer（scp + 回读自证），判据对象跟着换；顺序不变量不变：
+    // 审计不过就不许写 beta 指针（否则坏状态已经对外，再拦也没用）。
+    const beta = after("write_pointer beta.txt");
     expect(manifest).toBeGreaterThan(start);
     expect(audit).toBeGreaterThan(manifest);
     expect(beta).toBeGreaterThan(audit);

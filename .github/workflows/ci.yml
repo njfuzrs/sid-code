@@ -345,6 +345,54 @@ jobs:
       - name: 类型检查（只拦新增）
         run: bun run typecheck:gate
 
+  # ── 站点构建（死链检测）的服务端兜底（X3-12）────────────────────────────────
+  #
+  # 站点构建原先只挂在 pre-push，而那是**一条可被绕过的路**：`--no-verify` 直接跳过，
+  # 本仓其余 hook 检查在 CI 都有等价物（参考页对账 → tests/website/gen-reference.test.ts，
+  # oxlint / oxfmt → lint job，Agent Note 形态 → tests/build/agent-note-gate.test.ts），
+  # 只有死链检测没有。而 VitePress 的 `ignoreDeadLinks: false`（website/.vitepress/config.ts）
+  # 是死链**唯一**的机械判据 —— 缺兜底时，一次 --no-verify 就能把断链推上 main，
+  # 而 PR 页面全是绿的。补上这个 job 之后，「能绕过」只剩「全部绕过」，那有 PR diff 兜着。
+  #
+  # 为什么每次都跑、不做 paths 过滤：本 job 与 test 矩阵**并行**，而并行 job 只在超过
+  # 最长 job 时才拉长总墙钟 —— test 单平台约 8 分钟，这里实测「两次 install + 构建」
+  # 本机 20s（CI 冷启动更久，仍远低于 test）。边际成本接近零，换来的是不必在 CI 里
+  # 再维护一份「哪些改动算触及站点」的判据：判漏一类文件就是一个**新的静默失效**
+  # （参考页数据源在 4 个包的 src/ 与全部 website/*.md 里，见 pre-commit 同名注释），
+  # 那正是本缺陷要消灭的形态，不值得拿正确性去换那点 runner 时间。
+  #
+  # 为什么单独一个 job 而不是塞进 lint：lint 是纯静态检查（几百毫秒），塞进构建会让它
+  # 多出两次 install、反馈变慢；分开还便于给站点单独调 timeout 与看耗时。
+  #
+  # ⚠️ 加 job 必须同步 `all-checks-passed` 的 needs（tests/release-flow-contract.test.ts
+  # 会机械拦漏登记 —— 漏了就是一个绕过分支保护的后门，而 PR 页面一片绿）。
+  website:
+    runs-on: ubuntu-latest
+    # 本机 20s；CI 冷启动 + 两次 install 留足余量
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Setup Bun
+        uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2.2.0
+        with:
+          bun-version-file: .bun-version
+
+      # 根 workspace：bun run website:build 本身只是 `bun run --cwd website build`，
+      # 但仓库根的脚本与 workspace 包解析依赖根 node_modules 已安装。
+      - name: Install deps（根）
+        run: bun install --frozen-lockfile
+
+      # website/ 有自己的 package.json + bun.lock（VitePress 只装在这一侧），**必须单独装**。
+      # 少这一步的失败形态是 `vitepress: command not found`，而不是死链检测失效。
+      - name: Install deps（website）
+        run: bun install --cwd website --frozen-lockfile
+
+      # 死链检测不是单独一步：它是构建的一部分（ignoreDeadLinks: false），
+      # 改错内链构建即失败。这是「一个动作顺带守住多条不变量」的样本，不另写链接检查脚本。
+      - name: Build website（含死链检测）
+        run: bun run website:build
+
   # ── 汇聚门（2026-08-19 接入，抄 langfuse pipeline.yml 的 all-checks-passed）──────────
   #
   # 它自己不跑任何检查，只把上面所有 job 的结论收成**一个**必需检查。
@@ -367,7 +415,7 @@ jobs:
   #     macOS 一条测试都没跑，汇聚门却是绿的。白名单下没见过的取值一律拒绝（fail-closed）。
   all-checks-passed:
     # 加 job 只改这一行，不动分支保护
-    needs: [test, lint]
+    needs: [test, lint, website]
     if: always()
     runs-on: ubuntu-latest
     timeout-minutes: 5
@@ -386,4 +434,8 @@ jobs:
   # 参考页反漂移与叙述覆盖度**在这里有兜底**：test job 的全量 bun test 含
   # tests/website/gen-reference.test.ts，它会跑 `docs-gen-reference.ts --check` 与
   # `--coverage-strict`，所以本地 --no-verify 绕过 pre-commit 也合不进 main。
-  # pre-commit 只是让同一道门在提交时就红。站点构建（死链检查）只在 pre-push。
+  # pre-commit 只是让同一道门在提交时就红。
+  #
+  # 站点构建（死链检测）同理在 `website` job 里有兜底（X3-12）：pre-push 那份
+  # 依然保留 —— 它让问题在推送时就暴露，而 CI 这份负责「--no-verify 也躲不过」。
+  # 两层不是重复：hook 是**早反馈**，CI 是**绕不过**，缺了后者就等于没有门禁。
