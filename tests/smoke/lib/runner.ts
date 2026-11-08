@@ -192,7 +192,10 @@ async function runDaemonStep(
 ): Promise<StepResult> {
   const fixture = prepareStepFixture(step.replay, caseDir, dirs, "daemon");
   if ("failure" in fixture)
-    return { output: { kind: "daemon", exitCode: -1, stderr: "" }, failure: fixture.failure };
+    return {
+      output: { kind: "daemon", exitCode: -1, stderr: "", stdout: "" },
+      failure: fixture.failure,
+    };
   const replayFile = fixture.file;
   step.prepare?.({ repoRoot: dirs.repo, configDir: dirs.configDir });
 
@@ -229,7 +232,7 @@ async function runDaemonStep(
   const exitCode = await proc.exited;
   clearTimeout(killer);
   const [out, err] = await Promise.all([stdoutP, stderrP]);
-  const output: StepOutput = { kind: "daemon", exitCode, stderr: err };
+  const output: StepOutput = { kind: "daemon", exitCode, stderr: err, stdout: "" };
   if (hit) return { output, failure: null };
   const log = existsSync(logPath) ? readFileSync(logPath, "utf8") : "（无 daemon.log）";
   const failure =
@@ -249,7 +252,10 @@ async function runPrintStep(
 ): Promise<StepResult> {
   const fixture = prepareStepFixture(step.replay, caseDir, dirs, "print");
   if ("failure" in fixture)
-    return { output: { kind: "print", exitCode: -1, stderr: "" }, failure: fixture.failure };
+    return {
+      output: { kind: "print", exitCode: -1, stderr: "", stdout: "" },
+      failure: fixture.failure,
+    };
   step.prepare?.({ repoRoot: dirs.repo, configDir: dirs.configDir });
   const proc = Bun.spawn(
     [
@@ -268,13 +274,13 @@ async function runPrintStep(
     },
   );
   const timer = setTimeout(() => proc.kill("SIGKILL"), CASE_TIMEOUT_MS);
-  const [, err, exitCode] = await Promise.all([
+  const [out, err, exitCode] = await Promise.all([
     new Response(proc.stdout).text(),
     new Response(proc.stderr).text(),
     proc.exited,
   ]);
   clearTimeout(timer);
-  return { output: { kind: "print", exitCode, stderr: err }, failure: null };
+  return { output: { kind: "print", exitCode, stderr: err, stdout: out }, failure: null };
 }
 
 /** stdout 逐行解析；非 JSON 行（如混入的日志）跳过 */

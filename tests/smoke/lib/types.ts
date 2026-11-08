@@ -134,6 +134,8 @@ export interface StepOutput {
   kind: AfterStep["kind"];
   exitCode: number;
   stderr: string;
+  /** print 步骤的 stdout（`--output-format json`，未解析）；daemon 步骤恒为空串 */
+  stdout: string;
 }
 
 export interface SmokeCase {
