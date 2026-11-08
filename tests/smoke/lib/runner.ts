@@ -23,7 +23,14 @@ import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { checkEventExpect, checkFileExpect, parseEvents, parseRawRequests } from "./assert.ts";
 import { findOutOfRootPaths, substituteCaseRoot } from "./fixture.ts";
-import type { DaemonStep, PrintStep, RunOutput, SmokeCase, StepOutput } from "./types.ts";
+import type {
+  DaemonStep,
+  PrintStep,
+  RunOutput,
+  ServiceHit,
+  SmokeCase,
+  StepOutput,
+} from "./types.ts";
 
 export const REPO_ROOT = resolve(import.meta.dir, "../../..");
 export const CASES_DIR = resolve(import.meta.dir, "../cases");
@@ -295,9 +302,38 @@ export async function runCase(
   const home = join(root, "home");
   const configDir = join(root, "config");
   const failures: string[] = [];
+  const servers: ReturnType<typeof Bun.serve>[] = [];
+  const serviceUrls: Record<string, string> = {};
+  const serviceHits: Record<string, ServiceHit[]> = {};
 
   try {
     for (const d of [repo, home, configDir]) mkdirSync(d, { recursive: true });
+    for (const [name, svc] of Object.entries(def.services ?? {})) {
+      const hits: ServiceHit[] = [];
+      serviceHits[name] = hits;
+      const server = Bun.serve({
+        port: 0,
+        hostname: "127.0.0.1",
+        fetch: (req) => {
+          hits.push({
+            method: req.method,
+            path: new URL(req.url).pathname,
+            auth: req.headers.has("authorization"),
+          });
+          return svc.handler(req);
+        },
+      });
+      servers.push(server);
+      serviceUrls[name] = `http://127.0.0.1:${server.port}`;
+    }
+    for (const [rel, content] of Object.entries(def.config ?? {})) {
+      if (rel === "settings.json") {
+        throw new Error(`用例 ${def.id} 的 config 不能写 settings.json，请用 settings 字段`);
+      }
+      const p = join(configDir, rel);
+      mkdirSync(dirname(p), { recursive: true });
+      writeFileSync(p, content, { mode: 0o600 });
+    }
     for (const [rel, content] of Object.entries(def.repo)) {
       const p = join(repo, rel);
       mkdirSync(dirname(p), { recursive: true });
@@ -315,7 +351,12 @@ export async function runCase(
     Bun.spawnSync(["git", "init", "-q"], { cwd: repo });
     const defaults = smokeSettings();
     const settings = def.settings
-      ? def.settings({ defaults, refusedBaseURL: refusedBaseURL(), repoRoot: repo })
+      ? def.settings({
+          defaults,
+          refusedBaseURL: refusedBaseURL(),
+          repoRoot: repo,
+          services: serviceUrls,
+        })
       : defaults;
     writeFileSync(join(configDir, "settings.json"), JSON.stringify(settings, null, 2));
     seedMaintenanceWatermarks(configDir);
@@ -417,6 +458,7 @@ export async function runCase(
         configDir,
         homeDir: home,
         steps,
+        services: serviceHits,
       };
       const f = def.expect.output(out);
       if (f) failures.push(f);
@@ -439,6 +481,8 @@ export async function runCase(
       workDir: (failures.length > 0 && keepOnFail) || opts.keep ? root : undefined,
     };
   } finally {
+    // 桩服务无论成败都关，先于删目录（服务不读写目录，但别让端口挂到下一个用例）
+    for (const server of servers) server.stop(true);
     // 只删本次 mkdtemp 出来的目录；失败时按 keepOnFail 决定是否保留供排查
     const keep = opts.keep || (failures.length > 0 && keepOnFail);
     if (!keep) rmSync(root, { recursive: true, force: true });
