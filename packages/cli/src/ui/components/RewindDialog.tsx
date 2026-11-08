@@ -7,7 +7,7 @@
  *     - 仅对话：截断对话到该轮之前（不动文件）。
  *     - 对话+代码：额外把文件回滚到该轮登记时的快照（无快照则自动降级为仅对话）。
  *
- * Esc：阶段 2 退回阶段 1；阶段 1 关闭面板。
+ * Esc：阶段 2 退回阶段 1；阶段 1 与结果页关闭面板。
  * 回退执行后短暂回显结果（丢弃多少消息 / 回滚多少文件）再关闭。
  */
 
@@ -69,7 +69,12 @@ export const RewindDialog: React.FC<RewindDialogProps> = ({
   useKeypress(KeypressPriority.Critical, (key: Key) => {
     if (busy) return true; // 回退执行中吞键，防重入
     if (key.name === "escape") {
-      if (selectedPoint) {
+      // 判断顺序必须与下方渲染顺序一致（结果页 → 阶段 2 → 阶段 1）。
+      // 曾先判 selectedPoint：结果页里 selectedPoint 仍非空，第一次 Esc 只把它清掉、画面不变，
+      // 要按第二次才关——面板上写的是「Esc 关闭」（2026-11-08 G4 用例 A1-dialog 发现）。
+      if (result) {
+        onClose();
+      } else if (selectedPoint) {
         // 阶段 2 → 退回阶段 1
         setSelectedPoint(null);
       } else {

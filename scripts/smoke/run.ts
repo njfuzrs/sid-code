@@ -1,13 +1,14 @@
 #!/usr/bin/env bun
 /**
- * G2 无头回放冒烟：跑 tests/smoke/cases/ 下的用例。
+ * G2 无头回放冒烟 / G4 TUI e2e：跑 tests/smoke/cases/ 下的用例。
  *
  * 用法：
- *   bun run scripts/smoke/run.ts                     # 跑全部，用仓库根的构建产物 ./sid-code
+ *   bun run scripts/smoke/run.ts                     # 跑全部 G2 用例，用仓库根的构建产物 ./sid-code
  *   bun run scripts/smoke/run.ts A2-post-tool-use    # 只跑指定用例
  *   bun run scripts/smoke/run.ts --source            # 用源码入口（免 make build，开发期用）
  *   bun run scripts/smoke/run.ts --binary <path>     # 指定二进制
  *   bun run scripts/smoke/run.ts --keep              # 通过的用例也保留工作目录
+ *   bun run scripts/smoke/run.ts --layer G4          # 只跑 G4（TUI e2e，PTY 驱动），即 bun run smoke:tui
  *
  * 退出码：有 fail 即 1。skip 不算失败，但会出现在汇总表里。
  * 设了 GITHUB_STEP_SUMMARY 时把汇总表追加进去。
@@ -17,6 +18,7 @@ import { join } from "node:path";
 import { parseArgs } from "node:util";
 import {
   REPO_ROOT,
+  caseLayer,
   loadCases,
   renderSummary,
   runCase,
@@ -30,9 +32,16 @@ const { values, positionals } = parseArgs({
     source: { type: "boolean", default: false },
     binary: { type: "string" },
     keep: { type: "boolean", default: false },
+    // 缺省只跑 G2：G4（TUI）有自己的稳定期，混跑会让它的抖动污染 G2 的转正判据。
+    // 按名字指定用例时不按层过滤（指名即意图）。
+    layer: { type: "string", default: "G2" },
   },
   allowPositionals: true,
 });
+if (values.layer !== "G2" && values.layer !== "G4") {
+  console.error(`--layer 只能是 G2 或 G4，收到 ${values.layer}`);
+  process.exit(2);
+}
 
 let launcher: Launcher;
 if (values.source) {
@@ -46,12 +55,14 @@ if (values.source) {
   launcher = { kind: "binary", path };
 }
 
-const cases = await loadCases(positionals);
+const cases = (await loadCases(positionals)).filter(
+  (c) => positionals.length > 0 || caseLayer(c.def) === values.layer,
+);
 if (cases.length === 0) {
   console.error(
     positionals.length
       ? `没有匹配的用例：${positionals.join(", ")}`
-      : "tests/smoke/cases/ 下没有用例",
+      : `tests/smoke/cases/ 下没有 ${values.layer} 用例`,
   );
   process.exit(2);
 }
@@ -77,7 +88,12 @@ console.log(
 if (process.env.GITHUB_STEP_SUMMARY) {
   appendFileSync(
     process.env.GITHUB_STEP_SUMMARY,
-    renderSummary(results, `G2 无头回放冒烟（${process.platform}）`) + "\n",
+    renderSummary(
+      results,
+      values.layer === "G4"
+        ? `G4 TUI e2e（${process.platform}）`
+        : `G2 无头回放冒烟（${process.platform}）`,
+    ) + "\n",
   );
 }
 process.exit(fail > 0 ? 1 : 0);

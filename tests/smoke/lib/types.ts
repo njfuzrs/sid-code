@@ -63,6 +63,8 @@ export interface RunOutput {
   steps: StepOutput[];
   /** 各桩服务收到的请求，按到达顺序 */
   services: Record<string, ServiceHit[]>;
+  /** G4：主运行最后一帧视口文本（去色、按行拼接）；非 TUI 用例为空串 */
+  screen: string;
   /** bridge 模式下 CLI 发给桩中继的帧（已解析，按到达顺序，不含首帧 auth）；其余模式为空数组 */
   bridgeFrames: Array<{ type?: string; id?: string; data?: unknown }>;
 }
@@ -150,6 +152,24 @@ export interface PrintStep {
 
 export type AfterStep = DaemonStep | PrintStep;
 
+/**
+ * G4 TUI 剧本的一步。运行器（tests/smoke/lib/tui.ts）逐步执行，任一步失败即停。
+ *
+ * - `type`：把文字写进 PTY，并等它回显到屏幕上（防止紧跟的回车早于最后几个字符到达）；
+ * - `key`：送一个按键（名字见 tui.ts 的 `KEYS`）；
+ * - `wait`：等屏幕视口出现某文本（字符串去空白后比子串，正则按原文），超时即失败。
+ *   **这是 G4 的屏幕断言**：剧本里写的每个 `wait` 都是期望的一部分，改它要过 expect-guard；
+ * - `pause`：固定等待。只用于「时间本身就是被测对象」（如 Esc 双击要像人手那样隔开两击），
+ *   其余同步一律用 `wait`，不许用它凑时序。
+ *
+ * 剧本走完后运行器自动用两次 Ctrl+C 退出，并把「退出不挂」当作每个 G4 用例的隐含断言。
+ */
+export type TuiStep =
+  | { kind: "type"; text: string }
+  | { kind: "key"; key: "enter" | "esc" | "ctrl-c" | "up" | "down" | "tab" }
+  | { kind: "wait"; screen: string | RegExp; timeoutMs?: number; label?: string }
+  | { kind: "pause"; ms: number };
+
 /** 每个 `after` 步骤的进程结果，按顺序。daemon 步骤的 stderr 是 daemon 自己的输出 */
 export interface StepOutput {
   kind: AfterStep["kind"];
@@ -204,6 +224,15 @@ export interface SmokeCase {
   streamInput?: string[];
   /** 置上时主运行改走 `--bridge` 长驻模式（见 `BridgeStub`）。`argv` 只放额外参数 */
   bridge?: BridgeStub;
+  /**
+   * 置上时这是一个 **G4** 用例：主运行在 PTY 里起交互 TUI，按剧本送按键、等屏幕（见 `TuiStep`）。
+   * `argv` 只放额外参数（运行器不补 `-p` / `--output-format`）。
+   *
+   * 默认的 `bun run smoke` **不跑** G4 用例，要 `bun run smoke:tui`：两层的稳定期分开记
+   * （G2 观察期到 2026-11-21，G4 自己要连续 20 次全绿才转必需，总纲 §4 M5），
+   * 混在一起跑会让 G4 的抖动污染 G2 的转正判据。
+   */
+  tui?: TuiStep[];
   /** 额外环境变量（运行器已设好隔离用的那一组，这里只放用例特有的） */
   env?: Record<string, string>;
   /**

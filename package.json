@@ -33,6 +33,7 @@
     "install-hooks": "sh scripts/install-git-hooks.sh",
     "smoke": "bun run scripts/smoke/run.ts",
     "smoke:mutate": "bun run scripts/smoke/mutate.ts",
+    "smoke:tui": "bun run scripts/smoke/run.ts --layer G4",
     "verify:agent-note": "bun run scripts/verify-agent-note.ts",
     "verify:doc-claims": "bun run scripts/verify-doc-claims.ts",
     "trace:integrity": "bun run scripts/trace-integrity.ts",
