@@ -287,6 +287,16 @@ jobs:
         continue-on-error: true
         run: bun run smoke
 
+      # G4 TUI e2e（tests/smoke/ 里带 tui 剧本的用例，#618 M5）：同一个 ./sid-code 在 PTY 里起
+      # 交互 TUI，按剧本送按键、等屏幕（@xterm/headless 还原），断言轨迹与产物。单例约 1.3s。
+      # 与 G2 分成两步：两层的稳定期分开记（G2 观察到 2026-11-21；G4 要 CI 连续 20 次全绿
+      # 才转必需，专项 M5 验收），混在一步里 G4 的抖动会污染 G2 的转正判据。
+      # continue-on-error 理由同上，转正时删。
+      - name: G4 TUI e2e
+        if: matrix.shard == 1
+        continue-on-error: true
+        run: bun run smoke:tui
+
   # lint 门禁独立成 job：oxlint 65ms 跑完全仓，没必要占矩阵里两个平台的 slot，
   # 也不该被 9000+ 单测的时长拖着一起等。规则集与豁免理由见 .oxlintrc.json。
   lint:
