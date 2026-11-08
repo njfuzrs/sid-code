@@ -64,7 +64,8 @@ describe("/vim 命令", () => {
     const mod = await loadVim();
     const h = makeCtx(false);
     const r = await mod.call("xyz", h.ctx);
-    expect(r).toEqual({ type: "text", value: expect.stringContaining("无效参数") });
+    // 失败分支已改 error 类型（D2/D3 口径）：无头下退非 0，文本在 message 里
+    expect(r).toEqual({ type: "error", message: expect.stringContaining("无效参数") });
     expect(h.calls.length).toBe(0);
   });
 

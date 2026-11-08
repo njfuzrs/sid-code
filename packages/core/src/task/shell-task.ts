@@ -293,7 +293,19 @@ export function adoptRunningProcessAsTask(opts: {
 }
 
 /** 终止 Shell 任务 */
-export function killShellTask(taskId: string): void {
+export function killShellTask(
+  taskId: string,
+  opts?: {
+    /**
+     * 覆盖终态通知的 summary。
+     *
+     * `wait_until_seconds` 的期限到要写明「等待期限到（N 秒），条件未满足」——只说
+     * 「命令已被终止」模型分不清是「我不该等」还是「等够了没等到」，会立刻重排一次
+     * 同样的等待。其余 kill 路径不传，保持原文案。
+     */
+    summary?: string;
+  },
+): void {
   const child = activeProcesses.get(taskId);
   if (child?.pid) {
     if (platform() === "win32") {
@@ -345,7 +357,7 @@ export function killShellTask(taskId: string): void {
     toolUseId: task.toolUseId,
     outputFile: task.outputFile,
     status: "killed",
-    summary: `命令 "${(task.command ?? task.description).slice(0, 60)}" 已被终止`,
+    summary: opts?.summary ?? `命令 "${(task.command ?? task.description).slice(0, 60)}" 已被终止`,
   });
 }
 

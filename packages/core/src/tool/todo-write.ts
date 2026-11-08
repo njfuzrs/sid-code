@@ -9,8 +9,14 @@
  */
 
 import type { LegacyTool as Tool, LegacyToolResult as ToolResult } from "./types.ts";
+import { invalidateWakeups } from "../task/wait-registry.ts";
 import { z } from "zod/v4";
 import { lazySchema } from "../sdk/lazy-schema.ts";
+
+/** 未完成项数（pending / in_progress）——S1 的判据与 todo-reminder 的 countUnfinished 同源 */
+function countUnfinishedItems(todos: TodoItem[]): number {
+  return todos.filter((t) => t.status === "pending" || t.status === "in_progress").length;
+}
 
 const todoWriteSchema = lazySchema(() =>
   z.object({
@@ -677,6 +683,9 @@ print("Hello World")
 
     // 保存旧状态
     const oldTodos = [...this.currentTodos];
+    // W3 S1：写入前的未完成项数。用 lastWrittenTodos（事实快照，不受 allDone 清空影响），
+    // 不能用 currentTodos——全部完成那次它已经被置空，永远算不出「之前 > 0」。
+    const unfinishedBefore = countUnfinishedItems(this.lastWrittenTodos);
 
     // 校验通过、即将更新状态 → 记一次成功写入（P0-2 回注判定用）
     this.writeVersion++;
@@ -685,6 +694,18 @@ print("Hello World")
     this.currentTodos = allDone ? [] : todos;
     // 事实语义快照：不受 allDone 清空影响，供进度落盘取终态（见字段注释 / 发现 4a）
     this.lastWrittenTodos = todos;
+
+    // ─── W3 S1：清单从「有未完成项」变成「全部完成」→ 撤销本会话挂着的唤醒 ───
+    //
+    // #642 §6.3 否决自动撤销的理由是「harness 判断不了目标达成」，这个判断仍然成立。
+    // 这里判的不是「目标」，是 harness **确定知道**的事实：模型自己写的清单清零了。
+    // 误杀只可能发生在「模型清空了清单但其实还想等」——那时错的是清单本身，
+    // 正确的修法是它重新写清单，而不是 harness 替它保留一个唤醒。
+    //
+    // 两个前提都必要：之前 > 0（从未写过清单的会话不该触发，T-W3-6）且现在 === 0。
+    if (unfinishedBefore > 0 && countUnfinishedItems(todos) === 0) {
+      invalidateWakeups("todo_cleared", { reasonText: "任务清单已全部完成" });
+    }
 
     // 空列表检测（全部完成 → 清空清单）
     //

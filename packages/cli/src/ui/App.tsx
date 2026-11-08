@@ -578,6 +578,17 @@ export interface TaskDisplayInfo {
   type: string;
   status: string;
   description: string;
+  /**
+   * 行类型：缺省 = 真后台任务（shell / agent / workflow）。
+   *
+   * `"wakeup"` = 定时唤醒（`schedule_wakeup` 挂的那一条）。它不是进程、没有输出文件，
+   * 数据源是调度器的 `sessionTasks` 而不是 task registry（见 `state-bridge.ts` 的
+   * `updateTasks`）。单列一个字段而不是复用 `type`：后者决定图标前缀（AG/SH/WF），
+   * 而唤醒要的是一套不同的生命周期（无终态行、注入即消失）。
+   *
+   * PR 3 会加 `"monitor"`（monitor 是真进程，走 registry，但呈现也与 shell 不同）。
+   */
+  kind?: "wakeup";
   agentType?: string;
   command?: string;
   progress?: { toolUseCount: number; tokenCount: number };
@@ -593,6 +604,13 @@ export interface TaskDisplayInfo {
   endTime?: number;
   /** 耗时快照（ms）。终态展示用；运行中前端用 startTime 实时计算覆盖。 */
   durationMs: number;
+  /**
+   * 唤醒的计划触发时刻（ms）。仅 `kind === "wakeup"` 有值。
+   *
+   * 用绝对时间戳而不是「还剩多少毫秒」：面板每分钟重渲一次「剩 Xm」，
+   * 存相对值会在每次刷新后过期，越看越不准。
+   */
+  dueAt?: number;
 }
 
 interface AppProps {

@@ -68,6 +68,13 @@ const bashSchema = lazySchema(() =>
       .describe(
         "是否以后台任务模式运行（通过 Task 系统管理，返回 task_id，完成后通知；用 task_output 查询输出）",
       ),
+    wait_until_seconds: z
+      .number()
+      .optional()
+      .describe(
+        "【只在 run_in_background=true 时有意义】声明「这是一次等待」：最多等这么多秒，期间不适用 60s 静默判据" +
+          "（静默不代表不会回报）。到期仍在跑会被终止并通知。会被钳制到 [60, 3600]。",
+      ),
   }),
 );
 
@@ -80,6 +87,15 @@ const TIMEOUT_FLOOR_MS = 1000;
 const FACTORY_DEFAULT_TIMEOUT_MS = 120000;
 /** 出厂上限（未配 env 时）：10 分钟。 */
 const FACTORY_MAX_TIMEOUT_MS = 600000;
+
+/**
+ * `wait_until_seconds` 的钳制区间（秒）。
+ *
+ * 下限 60s 与 `schedule_wakeup` 一致（避免高频空转）；上限 3600s 同理——超过 1 小时的等待
+ * 应该用 cron 或唤醒，而不是挂一个后台命令。
+ */
+const MIN_WAIT_UNTIL_S = 60;
+const MAX_WAIT_UNTIL_S = 3600;
 
 /**
  * 解析 bash 超时的默认值与上限，支持 env 覆盖（对齐 CC 的
@@ -898,7 +914,29 @@ export class BashTool implements Tool {
     onProgress?: (event: import("./types.ts").ToolProgressData) => void,
   ): Promise<ToolResult> {
     const result = await this.executeCommand(input, signal, onProgress);
-    return this.withTrackedFileChanges(input, this.withSandboxMeta(result));
+    return this.withTrackedFileChanges(
+      input,
+      this.withSandboxMeta(this.withWaitUntilNotice(input, result)),
+    );
+  }
+
+  /**
+   * `wait_until_seconds` 只在后台有意义：前台命令本来就会等到退出或超时，再声明一个期限
+   * 没有可执行语义。**忽略但不能静默**——模型以为等待被登记了，闸门就会放行，结果主循环
+   * 在没有任何回报承诺的情况下收尾。静默失效是这里最坏的形态。
+   */
+  private withWaitUntilNotice(input: unknown, result: ToolResult): ToolResult {
+    const params = input as {
+      wait_until_seconds?: unknown;
+      run_in_background?: boolean;
+      is_background?: boolean;
+    };
+    if (params?.wait_until_seconds === undefined) return result;
+    if (params.run_in_background || params.is_background) return result;
+    return {
+      ...result,
+      output: `${result.output}\n[注意] wait_until_seconds 只在 run_in_background=true 时生效，本次前台执行已忽略它（前台命令本来就等到退出）。`,
+    };
   }
 
   /**
@@ -951,6 +989,7 @@ export class BashTool implements Tool {
       cwd?: string;
       is_background?: boolean;
       run_in_background?: boolean;
+      wait_until_seconds?: number;
     };
 
     if (!params.command) {
@@ -1511,6 +1550,7 @@ export class BashTool implements Tool {
     params: {
       command: string;
       cwd?: string;
+      wait_until_seconds?: number;
     },
     signal?: AbortSignal,
   ): Promise<ToolResult> {
@@ -1537,6 +1577,12 @@ export class BashTool implements Tool {
       signal,
     });
 
+    const waitNote = this.registerWaitUntil(
+      taskState.id,
+      params.command,
+      params.wait_until_seconds,
+    );
+
     return {
       output: JSON.stringify({
         task_id: taskState.id,
@@ -1544,8 +1590,59 @@ export class BashTool implements Tool {
         output_file: taskState.outputFile,
         // F3：同 sub_agent 后台启动返回——明说不要轮询（20261019 轨迹 shell 任务也被 task_output 阻塞满 600s）
         // Q1：去掉运行期间读 output_file 的许可，与子代理 / Ctrl+B 回执共用同一常量。
-        message: `命令已作为后台任务启动 (task_id: ${taskState.id})。${BACKGROUND_RECEIPT_NOTICE}`,
+        message: `命令已作为后台任务启动 (task_id: ${taskState.id})。${BACKGROUND_RECEIPT_NOTICE}${waitNote}`,
       }),
     };
+  }
+
+  /**
+   * W1.3：`wait_until_seconds`——「这是一次等待」的显式声明。
+   *
+   * 为什么需要（G3）：CC 的分流规则是「只要一次通知就用后台 Bash + 会自己退出的循环」，
+   * 而这条路在本仓被 60s 静默判据堵死——`until curl …; do sleep 5; done` 静默 60s 后
+   * 就被判成「不会回报」，todo 闸门不再放行、headless 不再为它挂。声明期限之后，
+   * harness 不必靠静默猜：期限内一直算「值得等」，到期由自己的定时器 kill + 通知。
+   *
+   * 不带这个参数的后台 bash 行为**与改动前完全相同**。
+   */
+  private registerWaitUntil(
+    taskId: string,
+    command: string,
+    rawSeconds: number | undefined,
+  ): string {
+    if (typeof rawSeconds !== "number" || !Number.isFinite(rawSeconds)) return "";
+    const clamped = Math.min(MAX_WAIT_UNTIL_S, Math.max(MIN_WAIT_UNTIL_S, Math.round(rawSeconds)));
+    // 惰性 require：bash.ts 对 task 模块一贯如此（见 background-receipt.ts 的注释）
+    const task = require("../task/index.ts") as typeof import("../task/index.ts");
+    const registered = task.registerWait({
+      id: taskId,
+      kind: "shell",
+      promise: { kind: "deadline", deadlineAt: Date.now() + clamped * 1000 },
+      description: command.slice(0, 60),
+      registeredAt: Date.now(),
+    });
+    if (!registered) return "";
+
+    const timer = setTimeout(() => {
+      const t = task.getTask(taskId);
+      if (!t || t.status !== "running") return;
+      // 期限就是回报：kill + 终态通知由 harness 自己执行，不依赖子进程配合
+      task.killShellTask(taskId, {
+        summary: `等待期限到（${clamped} 秒），条件未满足，已停止命令 "${command.slice(0, 60)}"`,
+      });
+    }, clamped * 1000);
+    // 不阻止进程退出：等待由主循环的活跃度承载，进程要退出时不应该被这个定时器拖住
+    if (typeof (timer as { unref?: () => void }).unref === "function") {
+      (timer as { unref: () => void }).unref();
+    }
+
+    const clampNote =
+      clamped !== Math.round(rawSeconds)
+        ? `（已从 ${Math.round(rawSeconds)}s 钳制到 ${clamped}s）`
+        : "";
+    return (
+      `\n已声明这是一次等待：最多等 ${clamped}s${clampNote}，期间不按「静默」判定；` +
+      `到期仍在跑会被终止并以通知告知（不需要你轮询）。`
+    );
   }
 }
