@@ -1,4 +1,5 @@
 import type { LocalCommandModule, LocalCommandResult, CommandContext } from "../../types.ts";
+import { errorText } from "../../result.ts";
 
 /**
  * /vim 命令实现（按需加载）
@@ -32,10 +33,8 @@ const mod: LocalCommandModule = {
       const current = ctx.getVimMode?.() ?? false;
       target = !current;
     } else {
-      return {
-        type: "text",
-        value: `错误: 无效参数 "${rest[0]}"\n用法: /vim [on|off] [-p]（无参 = 切换）`,
-      };
+      // 业务失败走 error（不是 text）：无头下才会翻成非 0（D2/D3 口径）。
+      return errorText(`无效参数 "${rest[0]}"\n用法: /vim [on|off] [-p]（无参 = 切换）`);
     }
 
     ctx.setVimMode(target, persist);

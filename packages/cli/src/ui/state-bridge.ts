@@ -13,6 +13,37 @@ import {
   onTaskChanged,
   offTaskChanged,
 } from "@sid-code/core/task/index.ts";
+import { peekScheduler } from "@sid-code/core/cron/scheduler.ts";
+
+/**
+ * 定时唤醒 → 面板行（`WK`，§5.7.3）。
+ *
+ * 唤醒**不在** task registry：它是调度器里的一条 `CronTask`（没有进程、没有 outputFile），
+ * 所以只能从这里合进来。三条约束：
+ *
+ * 1. **只取 `schedule_wakeup` 的会话级一次性任务**（判据在 `listSessionWakeups()` 里）：
+ *    `/loop` 与 `cron_create` 有各自的出口，进「等待态」面板会让人以为 agent 在等它们。
+ * 2. **用 `peekScheduler()` 而不是 `getScheduler()`**：后者未初始化时会造一个 onFire 为空的
+ *    兜底实例——面板刷新不该有「顺手创建了调度器」这种副作用。
+ * 3. **status 用 `"waiting"`**，不是 `"running"`：唤醒没在干活，它在等。混进 running 会让
+ *    标题的「N 运行中」虚高，也会让它去订阅 250ms 旋转动画（设计要求是静态 `○`）。
+ */
+function wakeupDisplayInfos(): TaskDisplayInfo[] {
+  const wakeups = peekScheduler()?.listSessionWakeups() ?? [];
+  return wakeups
+    .filter((t) => typeof t.fireAt === "number")
+    .map((t) => ({
+      id: t.id,
+      type: "wakeup",
+      kind: "wakeup",
+      status: "waiting",
+      // 描述用 prompt 首行：面板一行放不下整段 prompt，完整内容在安排那一刻的工具卡片里。
+      description: t.prompt.split("\n")[0]!.trim(),
+      startTime: t.createdAt,
+      durationMs: 0,
+      dueAt: t.fireAt,
+    }));
+}
 
 /**
  * 流式合帧窗口。32ms ≈ 30fps：逐字输出肉眼看不出差别，而 flash 类模型
@@ -145,7 +176,10 @@ export class StateBridge extends EventEmitter {
       }
       return info;
     });
-    this.update({ tasks: taskInfos });
+    // 定时唤醒不在 task registry，单独合成一行（`WK`，§5.7.3）。排在真实任务之后：
+    // 面板排序（running → 唤醒 → 终态）由 TodoPanel 按 kind/status 重排，
+    // 这里只保证「两路数据源都进来了」。
+    this.update({ tasks: [...taskInfos, ...wakeupDisplayInfos()] });
   }
 }
 

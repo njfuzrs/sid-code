@@ -57,32 +57,36 @@ const grepSchema = lazySchema(() =>
           "注意：ripgrep 无 'tsx'/'jsx' 类型——'ts' 已包含 *.tsx，'js' 已包含 *.jsx；" +
           "要精确只搜 .tsx 请用 glob='*.tsx'",
       ),
-    context: z.coerce
+    // 数字字段一律 `z.number()`，不用 `z.coerce`（B25，2026-11-08）。模型多打一对引号的
+    // `"5"` 由 validateToolInput 的数字归一层（tool/numeric-coerce.ts）转成 5，null 由
+    // nullish-normalize 摘掉；coerce 剩下的唯一作用是把归一层**故意放回**的 `""` / `true` /
+    // `[]` 静默变成 0 / 1 / 0——`head_limit:""` 就这样成了「不限条数」，契约被放宽。
+    context: z
       .number()
       .int()
       .min(0)
       .optional()
       .describe("显示匹配行前后的上下文行数（-C 参数），仅 output_mode=content 时有效"),
-    before_context: z.coerce
+    before_context: z
       .number()
       .int()
       .min(0)
       .optional()
       .describe("显示匹配行之前的行数（-B 参数），仅 output_mode=content 时有效"),
-    after_context: z.coerce
+    after_context: z
       .number()
       .int()
       .min(0)
       .optional()
       .describe("显示匹配行之后的行数（-A 参数），仅 output_mode=content 时有效"),
-    head_limit: z.coerce
+    head_limit: z
       .number()
       .int()
       .min(0)
       .optional()
       .describe("输出结果数上限，默认 250；显式传 0 表示无限制。替代旧的 total_max_matches"),
-    offset: z.coerce.number().int().min(0).optional().describe("分页偏移量（从 0 开始），默认 0"),
-    max_matches_per_file: z.coerce
+    offset: z.number().int().min(0).optional().describe("分页偏移量（从 0 开始），默认 0"),
+    max_matches_per_file: z
       .number()
       .int()
       .min(0)
@@ -97,7 +101,7 @@ const grepSchema = lazySchema(() =>
       .optional()
       .describe("启用多行匹配模式（rg --multiline），允许 pattern 跨行匹配"),
     // 向后兼容：total_max_matches 作为 head_limit 别名
-    total_max_matches: z.coerce
+    total_max_matches: z
       .number()
       .int()
       .min(0)

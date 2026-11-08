@@ -1,4 +1,5 @@
-import type { LocalCommandModule, CommandContext } from "../../types.ts";
+import type { LocalCommandModule, LocalCommandResult, CommandContext } from "../../types.ts";
+import { errorText } from "../../result.ts";
 import { mergeInstructions } from "@sid-code/core/query/compact/merge-instructions.ts";
 // P1-6 漏斗 3：手动 /compact 的压缩埋点。
 //
@@ -48,13 +49,17 @@ const mod: LocalCommandModule = {
       // 与 auto 路径同口径（auto-compact.ts 的 messages.length <= 4 分支）：
       // 「触发了但没压成」必须分型上报，否则它会藏进正常路径。
       logContextCompactSkipped("too_few_messages");
+      // 这一档刻意**仍是 text**（不是 errorText）：没有可压缩的东西不等于命令失败，
+      // 脚本按退出码判「压缩是否发生」会误判成异常。真正的失败（hook 阻止 / 摘要失败 /
+      // no-op 兜底）才走 error 退非 0。
       return { type: "text", value: "对话历史太短，无需压缩" };
     }
 
     // §6 压缩互斥锁：避免与自动压缩竞态
     if (!ctx.ctxMgr.acquireCompactLock()) {
       logContextCompactSkipped("lock_held");
-      return { type: "text", value: "已有压缩流程在进行中，请稍后再试" };
+      // 业务失败走 error（不是 text）：无头下才会翻成非 0（D2/D3 口径）。
+      return errorText("已有压缩流程在进行中，请稍后再试");
     }
 
     try {
@@ -65,10 +70,8 @@ const mod: LocalCommandModule = {
         const pre = await ctx.hookSystem?.firePreCompactEvent("manual");
         if (pre?.finalOutput?.isBlockingDecision()) {
           logContextCompactSkipped("hook_blocked");
-          return {
-            type: "text",
-            value: `压缩被 hook 阻止：${pre.finalOutput.getEffectiveReason()}`,
-          };
+          // 业务失败走 error（不是 text）：无头下才会翻成非 0（D2/D3 口径）。
+          return errorText(`压缩被 hook 阻止：${pre.finalOutput.getEffectiveReason()}`);
         }
         hookInstructions = pre?.finalOutput?.getAdditionalContext?.();
       } catch {
@@ -152,7 +155,7 @@ async function runPartial(
     successPrefix: (compactedCount: number, savedTokens: number, after: number) => string;
     fallbackOnFailure?: boolean;
   },
-): Promise<{ type: "text"; value: string }> {
+): Promise<LocalCommandResult> {
   const { partialCompact } = await import("@sid-code/core/query/compact/index.ts");
   // 摘要模型按 summarize 类型解析（用户配了 subAgentModels.summarize 就用它，否则即主模型）。
   const compactModel = ctx.providerRegistry?.getModelForSubAgent("summarize") ?? ctx.config.model;
@@ -186,7 +189,8 @@ async function runPartial(
       tokensBefore: opts.tokensBefore,
       tokensAfter: ctx.ctxMgr.estimateTokens(),
     });
-    return { type: "text", value: `压缩未执行：${result.reason ?? "未知原因"}` };
+    // 业务失败走 error（不是 text）：无头下才会翻成非 0（D2/D3 口径）。
+    return errorText(`压缩未执行：${result.reason ?? "未知原因"}`);
   }
 
   ctx.ctxMgr.setMessages(result.messages);
@@ -288,7 +292,7 @@ function runLocalTruncationFallback(
   ctx: CommandContext,
   before: number,
   tokensBefore: number,
-): { type: "text"; value: string } {
+): LocalCommandResult {
   const messages = ctx.ctxMgr.getMessages();
   const summaryText = messages
     .map((m) => {
@@ -315,13 +319,12 @@ function runLocalTruncationFallback(
   if (!outcome.success) {
     // no-op：消息一字未动，不得宣告「已压缩」（P0-1）。此时也不 fire PostCompact——
     // hook 语义是「压缩已完成」，收到的却是 before===after，与谎报文案同型。
-    return {
-      type: "text",
-      value:
-        `压缩未生效：${outcome.reason ?? "no_reduction"}` +
+    // 业务失败走 error（不是 text）：无头下才会翻成非 0（D2/D3 口径）。
+    return errorText(
+      `压缩未生效：${outcome.reason ?? "no_reduction"}` +
         `（LLM 摘要失败，本地截断兜底也未压动），${before} 条消息未变。` +
         `建议 /clear 或检查会话历史是否异常`,
-    };
+    );
   }
   markSessionCompacted(ctx.sessionState);
   // fire-and-forget PostCompact（兜底路径不 await，避免阻断返回）

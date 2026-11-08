@@ -43,8 +43,18 @@ export function offTaskChanged(callback: TaskChangeCallback): void {
   changeListeners.delete(callback);
 }
 
-/** 通知所有监听器任务已变更 */
-function notifyTaskChanged(): void {
+/**
+ * 通知所有监听器任务已变更。
+ *
+ * 导出给 cron 调度器用（`cron/scheduler.ts`）：定时唤醒**不在**这个 registry 里
+ * （它是 `CronTask`，没有进程、没有 outputFile），但它和后台 shell / 子代理同处
+ * 「后台任务」面板的一行（§5.7.1「不新开区域」）。调度器增删会话级唤醒时若不发这个通知，
+ * 面板上的 `WK` 行就要等到下一次 registry 变更才刷新——「安排后不出现、注入后不消失」，
+ * 恰是 T-T1-3/T-T1-4 要锁的两个行为。
+ *
+ * 语义是「面板数据可能变了，请重算」，不限于 registry 自己的 Map。
+ */
+export function notifyTaskChanged(): void {
   for (const cb of changeListeners) {
     try {
       cb();

@@ -162,16 +162,100 @@ const TodoRow = React.memo(function TodoRow({
 });
 
 /**
- * compactMode 摘要用的极简任务标签（附4）：不带 TaskRow 那种 `AG `/`SH `/`WF ` 前缀，
- * 只取最省宽度的核心信息（agentType / 固定短词），供窄终端下的单行摘要拼接。
+ * compactMode 摘要：按类型计数（§5.7.6「窄终端折叠文案」）。
+ *
+ * 此前是逐个列出各任务的 agentType（`explore, verify`），任务一多就撑爆单行、还会
+ * 与 `…+N` 的截断提示重复表达「有几条」。对齐 CC 的 `getPillLabel` 改成计数式：
+ * 屏幕不够时用户真正需要的是「有几类、各几条」，具体叫什么名字可以 Ctrl+T / 放宽终端再看。
+ *
+ * 各类计数为 0 时省略——不写 `0 监控`，那只是把空白填满。
  */
-function compactTaskLabel(task: TaskDisplayInfo): string {
-  if (task.type === "local_agent") return task.agentType || "agent";
-  if (task.type === "local_shell") return "shell";
-  if (task.type === "local_workflow")
-    return task.agentType?.replace(/^workflow:/, "") || "workflow";
-  return task.type;
+function compactSummaryText(tasks: TaskDisplayInfo[]): string {
+  let shell = 0;
+  let agent = 0;
+  let workflow = 0;
+  let wakeup = 0;
+  for (const t of tasks) {
+    if (t.kind === "wakeup") wakeup += 1;
+    else if (t.type === "local_shell") shell += 1;
+    else if (t.type === "local_agent") agent += 1;
+    else if (t.type === "local_workflow") workflow += 1;
+  }
+  const parts: string[] = [];
+  if (shell) parts.push(`${shell} shell`);
+  if (agent) parts.push(`${agent} agent`);
+  if (workflow) parts.push(`${workflow} workflow`);
+  if (wakeup) parts.push(`${wakeup} 唤醒`);
+  return parts.length > 0 ? `后台：${parts.join(" · ")}` : "";
 }
+
+/** 本地时钟 HH:MM（唤醒的「几点触发」按用户本地时区显示，不做 UTC 换算） */
+function formatClock(ts: number): string {
+  const d = new Date(ts);
+  return `${String(d.getHours()).padStart(2, "0")}:${String(d.getMinutes()).padStart(2, "0")}`;
+}
+
+/**
+ * 剩余时长：只给到分钟（`剩 8m`），不显示秒。
+ *
+ * 为什么不到秒：① 这个数字每分钟才刷新一次，精确到秒就是骗人；
+ * ② 用户关心的是「大概还要多久」，不是倒计时精确值。
+ */
+function formatRemaining(ms: number): string {
+  if (ms <= 0) return "即将触发";
+  const minutes = Math.ceil(ms / 60_000);
+  if (minutes < 60) return `${minutes}m`;
+  const h = Math.floor(minutes / 60);
+  const m = minutes % 60;
+  return m > 0 ? `${h}h ${m}m` : `${h}h`;
+}
+
+/**
+ * 定时唤醒行（`WK`，§5.7.3）。
+ *
+ * 与 TaskRow 的区别是**三个语义都不一样**，所以不复用同一个组件：
+ * 1. 字形 `○` 空心且**不旋转**——「在等」不等于「在跑」（L1.1 同族递进：○◐ 靠填充度区分）；
+ * 2. 统计列是「HH:MM 触发 · 剩 Xm」而不是耗时——用户关心「什么时候结束」；
+ * 3. **没有终态行**：到点注入即从面板消失（消息流那一刻已出「定时唤醒 · …」），
+ *    所以这里不存在 completed / failed 分支。
+ */
+const WakeupRow = React.memo(function WakeupRow({
+  task,
+  maxContentLen,
+}: {
+  task: TaskDisplayInfo;
+  maxContentLen: number;
+}) {
+  // 每分钟重渲一次刷新「剩 Xm」。**a11y 下也订阅**——这不是动画，是数字本身在变；
+  // 屏幕阅读器读到「剩 8m」之后应该在 7m 时更新，而不是一直停在旧值（T-T1-9）。
+  const [tickRef, tickTime] = useAnimationFrame(60_000);
+  void tickTime;
+
+  const dueAt = task.dueAt ?? task.startTime;
+  const remainingMs = dueAt - Date.now();
+  // < 2 分钟才给 warning 色：紧迫度本来已由数字表达，颜色只是点睛（L1.2「克制点睛」）
+  const urgent = remainingMs < 2 * 60_000;
+  const statsText = `${formatClock(dueAt)} 触发 · 剩 ${formatRemaining(remainingMs)}`;
+
+  return (
+    <Box flexDirection="row">
+      <Box width={2} flexShrink={0} ref={tickRef}>
+        <Text color={theme.ui.active}>{TODO_PENDING}</Text>
+      </Box>
+      <Box flexGrow={1} flexShrink={1}>
+        <Text wrap="truncate">
+          <Text color={theme.ui.active}>[WK] </Text>
+          <Text color={theme.text.secondary}>
+            {truncate(task.description, Math.max(10, maxContentLen - 26))}
+          </Text>
+        </Text>
+      </Box>
+      <Box flexShrink={0}>
+        <Text color={urgent ? theme.status.warning : theme.text.secondary}>{statsText}</Text>
+      </Box>
+    </Box>
+  );
+});
 
 /**
  * 单条后台任务渲染。
@@ -402,21 +486,27 @@ export const TodoPanel = React.memo(function TodoPanel({
   let taskSection: React.ReactNode = null;
   if (hasTasks) {
     const running = tasks.filter((t) => t.status === "running");
-    const terminal = tasks.filter((t) => t.status !== "running");
+    const wakeups = tasks.filter((t) => t.kind === "wakeup");
+    const terminal = tasks.filter((t) => t.status !== "running" && t.kind !== "wakeup");
+    // 排序：在跑 → 在等 → 终态（§5.7.3）。唤醒排 running 之后是因为它「没在干活」，
+    // 排终态之前是因为它还没结束——用户上来第一眼要看到「什么还在进行」。
     // 终态只留最近 3 条 + 总渲染上限 5 条：面板是常驻区，不能被历史任务挤满。
     // 但截断必须**可见**（本仓库「无静默截断」原则，L3.3 折叠规范）——此前两处 slice
     // 都不给任何提示，用户看到的是"任务凭空少了"，与问题四「面板不消失」叠加后更困惑：
     // 分不清一条任务是被驱逐了、被划掉了，还是仅仅被挤出可视窗口。
-    const windowed = [...running, ...terminal.slice(-3)];
+    // 唤醒行**计入** 5 行上限（T-T1-7）——它占的是一行真实的屏幕高度。
+    const windowed = [...running, ...wakeups, ...terminal.slice(-3)];
     const visibleTasks = windowed.slice(0, 5);
     const hiddenTaskCount = tasks.length - visibleTasks.length;
 
-    const allTerminal = running.length === 0 && tasks.length > 0;
+    // 「全部完成」的判据要排除唤醒行：唤醒没有终态，不算「已完成」。
+    // 混进去会让「只挂着一个唤醒」的面板显示成「1 已完成」（错），也会误触发 Ctrl+X 提示。
+    const allTerminal = running.length === 0 && wakeups.length === 0 && tasks.length > 0;
     // compactMode 摘要（附4）：此前 `!compactMode` 直接砍掉全部任务行，窄终端下用户
     // 只看到一个数字（"有计数、无内容"），不知道具体是什么任务在跑。退化成一行摘要
     // 而不是整区消失——与 cc 的降级哲学一致（屏幕不够时 collapse 成一行计数，
     // 而不是整块隐藏，见 `UI.tsx:469-503`）。
-    const compactSummaryText = compactMode ? visibleTasks.map(compactTaskLabel).join(", ") : "";
+    const compactText = compactMode ? compactSummaryText(visibleTasks) : "";
 
     taskSection = (
       <Box flexDirection="column">
@@ -427,18 +517,25 @@ export const TodoPanel = React.memo(function TodoPanel({
           </Text>
           <Box flexGrow={1} />
           {running.length > 0 && <Text color={theme.ui.active}>{`${running.length} 运行中`}</Text>}
+          {wakeups.length > 0 && (
+            <Text color={theme.text.secondary}>{`  ${wakeups.length} 等待中`}</Text>
+          )}
           {allTerminal && <Text color={theme.status.success}>{`${tasks.length} 已完成`}</Text>}
           {/* 截断提示：与任务清单区的 `…+N` 同格式，用户一眼看出"还有 N 条没显示" */}
           {hiddenTaskCount > 0 && <Text>{`  …+${hiddenTaskCount}`}</Text>}
         </Box>
         {!compactMode &&
-          visibleTasks.map((task) => (
-            <TaskRow key={task.id} task={task} maxContentLen={maxContentLen} />
-          ))}
-        {compactMode && compactSummaryText && (
+          visibleTasks.map((task) =>
+            task.kind === "wakeup" ? (
+              <WakeupRow key={task.id} task={task} maxContentLen={maxContentLen} />
+            ) : (
+              <TaskRow key={task.id} task={task} maxContentLen={maxContentLen} />
+            ),
+          )}
+        {compactMode && compactText && (
           <Box flexDirection="row" paddingLeft={2}>
             <Text color={theme.text.secondary}>{`${TREE_BRANCH} `}</Text>
-            <Text color={theme.text.secondary}>{truncate(compactSummaryText, maxContentLen)}</Text>
+            <Text color={theme.text.secondary}>{truncate(compactText, maxContentLen)}</Text>
           </Box>
         )}
         {/* 划掉提示（渐进衰减）：面板全是终态条目时，告知用户有手动出口，

@@ -35,6 +35,21 @@
  *   验收时看的是：修复后 `max_pending_wakeups ≤ 1` 且 `stale = 0`——单链之后只可能剩
  *   「目标达成后最后一个 create」那一次，它按判据本就不算 stale，单独看 max_pending 即可。
  *
+ * ## F1 之后：`ScheduledReplace` 必须参与推演
+ *
+ * 上面两套判据与 `max_pending` 都隐含一个旧实现假设：**每个 create 都会走到一次 fire**。
+ * F1（单链替换）打破了这个假设——被替换的任务永不 fire，于是裸计数会把修复后的会话判错：
+ *
+ * - `max_pending` 只做 `create +1 / fire −1`，替换不减 → 修复后必然算到 ≥2，而真实峰值是 1。
+ *   §5.4 的验收项「修复后 `max_pending_wakeups ≤ 1`」因此**永远无法通过**。
+ * - `stale` 按「fire 对应的 create 序号」配对 → 被替换的那个 create 仍占序号，让后面
+ *   唯一一次正常 fire 被判成多余。2026-11-08 会话 `20261108-112039-9e3a681d` 实测：
+ *   真实是 `create(5b7e7729) → Replace(5e6b9688 替换它) → fire(5e6b9688)`，无多余唤醒，
+ *   而裸序号判据给出 `stale=1`、`max_pending=2`。
+ *
+ * 修法：把 `ScheduledReplace.replaced_count` 从「有效 create 序列」与 pending 里减掉，
+ * 即只统计**仍然可能 fire 的** create。旧会话没有这个事件，数字逐字不变。
+ *
  * ⚠️ `stale` 的前提是「create 与 fire 一一对应」。若有 `cron_delete` 手动撤销，
  * 配对会错位、结论偏保守（少报），用 `wakeup_deleted` 可以看出来有没有这种情况。
  *
@@ -73,6 +88,17 @@ export interface WakeupAudit {
 
 type Ev = { event?: string; data?: Record<string, unknown> };
 
+/**
+ * `ScheduledReplace` 这次替换掉了几个任务（非数字/负数一律按 0）。
+ *
+ * 顺序前提：`ScheduledReplace` 由 `Scheduler.replaceSessionTasksByOrigin` 在**工具返回之前**
+ * 发出，因此它在 events.jsonl 里必然排在对应的 `PostToolUse(schedule_wakeup)` 之前。
+ * 先减后加，峰值不会被新任务的 +1 顶高（2026-11-08 会话实测这个顺序）。
+ */
+function replacedCountOf(d: Record<string, unknown>): number {
+  return typeof d.replaced_count === "number" && d.replaced_count > 0 ? d.replaced_count : 0;
+}
+
 /** 从 events.jsonl 的文本解析出审计结果（纯函数，供脚本与单测共用） */
 export function auditEvents(session: string, events: Ev[]): WakeupAudit {
   // create 与 fire 各自按行序（= 时间序）收集：events.jsonl 是追加写的
@@ -97,29 +123,35 @@ export function auditEvents(session: string, events: Ev[]): WakeupAudit {
         fires.push(d.task_id);
       }
     } else if (e.event === "ScheduledReplace") {
-      if (typeof d.replaced_count === "number") replaced += d.replaced_count;
+      // 与另外三处推演同一口径：非数字/负数按 0 计。这里若照抄裸 `typeof number`，
+      // 一条脏数据就能让 `wakeup_replaced` 变成负数——它是「被替换任务数之和」，
+      // 负值没有任何解释，只会让合集对比失真。
+      replaced += replacedCountOf(d);
     } else if (e.event === "ScheduledInject") {
       if (d.outcome === "dropped_superseded") dropped++;
     }
   }
 
   // ── 字面判据：fire 之前（自上次 fire / 会话开始以来）有没有 create ──
-  // 需要在遍历中同步推进，这里重放一遍，用「create 序号」当计数器。
+  // 需要在遍历中同步推进，这里重放一遍，用「有效 create 序号」当计数器。
   let staleLiteral = 0;
   {
-    let createSeq = 0; // 已经过的 create 数
+    let createSeq = 0; // 仍然可能 fire 的 create 数（被替换的不算，见文件头）
     let seenFire = 0; // 已经过的 fire 数
-    let lastFireCreateSeq = -1; // 上一次 fire 时刻的 create 数
+    let lastFireCreateSeq = -1; // 上一次 fire 时刻的有效 create 数
     for (const e of events) {
       const d = (e.data ?? {}) as Record<string, unknown>;
       if (e.event === "PostToolUse" && d.tool_name === "schedule_wakeup" && d.is_error !== true) {
         createSeq++;
+      } else if (e.event === "ScheduledReplace") {
+        // 被替换的任务永不 fire，从有效序列里剔除；clamp 到 0 防止坏数据把后续判据带偏
+        createSeq = Math.max(0, createSeq - replacedCountOf(d));
       } else if (
         e.event === "ScheduledFire" &&
         d.origin === "schedule_wakeup" &&
         d.outcome === "fired"
       ) {
-        // 「与上一次 fire（或会话开始）之间没有 create」⇔ 两次 fire 之间的 create 数没变
+        // 「与上一次 fire（或会话开始）之间没有 create」⇔ 两次 fire 之间的有效 create 数没变
         if (seenFire > 0 && createSeq === lastFireCreateSeq) staleLiteral++;
         lastFireCreateSeq = createSeq;
         seenFire++;
@@ -128,7 +160,8 @@ export function auditEvents(session: string, events: Ev[]): WakeupAudit {
   }
 
   // ── 实际判据：fire 对应的 create 不是最近一次 create ──
-  // create 与 fire 按时间序一一配对（旧实现每个 create 恰好 fire 一次）。
+  // create 与 fire 按时间序一一配对（旧实现每个 create 恰好 fire 一次；F1 之后被替换的
+  // create 要先从序列里剔除，否则它占的序号会把后面唯一一次正常 fire 判成多余）。
   let stale = 0;
   {
     let createSeq = 0;
@@ -137,6 +170,8 @@ export function auditEvents(session: string, events: Ev[]): WakeupAudit {
       const d = (e.data ?? {}) as Record<string, unknown>;
       if (e.event === "PostToolUse" && d.tool_name === "schedule_wakeup" && d.is_error !== true) {
         createSeq++;
+      } else if (e.event === "ScheduledReplace") {
+        createSeq = Math.max(0, createSeq - replacedCountOf(d));
       } else if (
         e.event === "ScheduledFire" &&
         d.origin === "schedule_wakeup" &&
@@ -149,7 +184,8 @@ export function auditEvents(session: string, events: Ev[]): WakeupAudit {
     }
   }
 
-  // ── 峰值：create +1 / fire −1，同一时刻按行序（create 先于 fire 不会同刻）──
+  // ── 峰值：create +1 / fire −1 / 替换 −replaced_count ──
+  // 替换不减会让修复后的会话必然算到 ≥2（真实峰值 1），§5.4 的验收项就永远过不了。
   let pending = 0;
   let maxPending = 0;
   for (const e of events) {
@@ -157,6 +193,8 @@ export function auditEvents(session: string, events: Ev[]): WakeupAudit {
     if (e.event === "PostToolUse" && d.tool_name === "schedule_wakeup" && d.is_error !== true) {
       pending++;
       if (pending > maxPending) maxPending = pending;
+    } else if (e.event === "ScheduledReplace") {
+      pending = Math.max(0, pending - replacedCountOf(d));
     } else if (
       e.event === "ScheduledFire" &&
       d.origin === "schedule_wakeup" &&

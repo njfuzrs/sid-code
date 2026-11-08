@@ -23,9 +23,11 @@
  *
  * 是模型先违约，但**能不能自救是 harness 的责任**。`"117"` 到 117 是无损、
  * 无歧义的转换，把它判成硬失败纯属自伤：我们既能明确知道模型想要什么，
- * 又拒绝执行。同一个仓库里 `grep.offset` 用的是 `z.coerce.number()`
- * （见 `grep.ts:84`）——**同名同语义的字段，两个工具行为相反**：
+ * 又拒绝执行。同一个仓库里 `grep.offset` 当时用的是 `z.coerce.number()`
+ * ——**同名同语义的字段，两个工具行为相反**：
  * grep 收到 `"5"` 正常工作，read 收到 `"5"` 报错。这个不一致本身就是缺陷。
+ * （2026-11-08 起 grep 的数字字段也改回 `z.number()`，`"5"` 由本层统一归一，
+ * 见下文「为什么不直接改成 coerce」第 2 条与 grep.ts 的注释。）
  *
  * ## 为什么不直接把工具的 zod 改成 `z.coerce.number()`
  *
@@ -51,7 +53,8 @@
  *
  *   接受: "117" → 117 | " 117 " → 117 | "-3" → -3 | "1.5" → 1.5 | "1e3" → 1000
  *   接受: "117, 130" → 117   ← 区间形态取首个数（见下）
- *   拒绝: "" | "abc" | "1,,2" | "0x1f" | "Infinity" | "NaN" | null | true | [] | {}
+ *   接受: "-5-3" → -5        ← 前导符号随首个数保留（字段有 min(0) 时由 zod 拒）
+ *   拒绝: "" | "abc" | "1,,2" | "3--5" | "0x1f" | "Infinity" | "NaN" | null | true | [] | {}
  *
  * **为什么拒绝 `""` / `null` / `true` / `[]`**：它们不含「模型想表达哪个数字」
  * 的信息，转换等于替模型编一个值——那就变成了 coerce 的静默污染。让 zod 报错，
@@ -160,12 +163,19 @@ function parseIntendedNumber(raw: string): number | undefined {
   // 区间形态：按逗号或连字符切，要求**每一段**都是干净的数字才认。
   // 要求全段合法（而非只看第一段）是为了拒掉 "117, abc" 这类半截垃圾——
   // 那种输入说明模型在写别的东西，不该被我们当区间解释。
-  // 连字符切分前先剥掉可能的前导负号，避免 "-3-5" 被切出空段。
-  const parts = trimmed.split(/\s*[,，]\s*|\s*-\s*/).filter((p) => p.length > 0);
+  //
+  // 前导符号先剥下来、取完首数再贴回去：否则 "-5-3" 会被切出一个空首段。
+  // 此前的写法是切完再 `filter` 掉空段——它**把负号一起丢了**（"-5-3" → 5，
+  // 而同值写成 -5 会被 grep 的 `min(0)` 拒），还顺带把 "1,,2"、"3--5" 中间的
+  // 空段吞掉当成合法区间（B25，2026-11-08 探针实测）。现在除前导符号外不许有空段：
+  // 判不准就原样放回让 zod 报错，不替模型编一个更宽的值。
+  const sign = trimmed[0] === "-" || trimmed[0] === "+" ? trimmed[0] : "";
+  const body = trimmed.slice(sign.length);
+  const parts = body.split(/\s*[,，]\s*|\s*-\s*/);
   if (parts.length < 2) return undefined;
   if (!parts.every((p) => DECIMAL_NUMBER_RE.test(p))) return undefined;
 
-  const first = Number(parts[0]);
+  const first = Number(sign + parts[0]);
   return Number.isFinite(first) ? first : undefined;
 }
 
@@ -240,7 +250,9 @@ function normalizeValue(
   //
   // 注：`z.coerce.number()` 的 def.type 也是 "number"（额外带 `coerce: true`），
   // 会被这一格认出来——这没有坏处：coerce 字段收到 `"117, 130"` 本来会 FAIL，
-  // 经归一成 117 后正常工作，与非 coerce 字段行为一致（如 grep.offset）。
+  // 经归一成 117 后正常工作，与非 coerce 字段行为一致。
+  // 但本层放回的 `""` 到了 coerce 字段会被 zod 转成 0——所以内置工具一律写
+  // `z.number()`，不要再引入 coerce（grep 的 B25 就是这么来的）。
   if (def.type === "number") {
     if (typeof value !== "string") return value;
     const parsed = parseIntendedNumber(value);
