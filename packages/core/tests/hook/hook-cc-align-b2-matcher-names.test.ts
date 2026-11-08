@@ -23,7 +23,15 @@ import { matchRule } from "@sid-code/core/permission/rules.ts";
 
 const SRC = join(import.meta.dir, "../../src");
 
-/** 从源码里扫出所有 `name() { return "xxx" }` 的工具名（与 registry 实际注册同源） */
+/**
+ * 从源码里扫出所有工具名（与 registry 实际注册同源）。
+ *
+ * 两种接口形态都要扫：
+ * - 旧式 `LegacyTool`：`name(): string { return "xxx" }`（方法）
+ * - 新版 `Tool`：`readonly name = "xxx"`（字符串属性）
+ * 只扫一种的后果是「新接口工具的别名进不了对账」——漏掉时本测试仍全绿，
+ * 恰是它要防的静默失效（monitor 迁到新接口后实测踩到）。
+ */
 function scanToolNames(): Set<string> {
   const names = new Set<string>();
   const files = [
@@ -35,6 +43,8 @@ function scanToolNames(): Set<string> {
   for (const f of files) {
     const text = readFileSync(f, "utf8");
     for (const m of text.matchAll(/name\(\)[^{]*\{\s*return "([a-z_]+)"/g)) names.add(m[1]!);
+    // 新版接口：`readonly name = "xxx"`（加词界防 `functionName =` 之类误匹配）
+    for (const m of text.matchAll(/(?<![A-Za-z0-9_$])name\s*=\s*"([a-z_]+)"/g)) names.add(m[1]!);
   }
   return names;
 }

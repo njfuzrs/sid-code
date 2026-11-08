@@ -20,6 +20,7 @@ import { render } from "@sid-code/cli/ui/render-port/testing.ts";
 import stripAnsi from "strip-ansi";
 import { TaskNotificationMessage } from "@sid-code/cli/ui/components/messages/TaskNotificationMessage.tsx";
 import { TodoPanel } from "@sid-code/cli/ui/components/TodoPanel.tsx";
+import { BULLET } from "@sid-code/cli/ui/constants/figures.ts";
 import { UIStateProvider } from "@sid-code/cli/ui/contexts/UIStateContext.tsx";
 import { AccessibilityProvider } from "@sid-code/cli/ui/accessibility/AccessibilityContext.tsx";
 import { deriveWaitSourcesHint } from "@sid-code/cli/ui/wait-sources-hint.ts";
@@ -103,7 +104,9 @@ describe("事件通知渲染（T-M1-10）", () => {
   test("bullet 用次要色（事件不是终态，不用绿/红/黄）", () => {
     const { frame } = renderEvent({ event: "lint: pass" });
     const line = frame.split("\n").find((l) => l.includes("PR #662 CI · lint: pass")) ?? "";
-    expect(line).toContain("⏺");
+    // 用 BULLET 常量而不是字面量 `⏺`：字形随平台变（darwin ⏺ / 其它 ●，
+    // 见 constants/figures.ts），写死会在 CI（ubuntu）上红。
+    expect(line).toContain(BULLET);
   });
 
   test("40 列 + CJK：不把事件文本折成两行（截断而非折行）", () => {
