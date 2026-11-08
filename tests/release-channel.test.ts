@@ -148,12 +148,15 @@ describe("A2 release.sh：--upload 只写 beta，promote 才动 stable", () => {
   // 而发布日志看起来与从前一模一样（版本号一致、上传成功、冒烟通过）。
   test("上传段不再上传 latest.txt", () => {
     const uploadSeg = RELEASE_SH.slice(RELEASE_SH.indexOf('if [ "$DO_UPLOAD" = true ]; then'));
+    // 两种退化形态都要拦：直接 scp（旧写法）与写指针（X3-13 之后唯一的写入口）。
+    // 只拦前者会变成一条假绿断言 —— 现在写指针根本不经过 `run_scp … latest.txt`。
     expect(uploadSeg).not.toMatch(/run_scp\s+"\$RELEASE_DIR\/latest\.txt"/);
+    expect(uploadSeg).not.toMatch(/write_pointer\s+latest\.txt/);
   });
 
-  test("上传段上传 beta.txt", () => {
+  test("上传段上传 beta.txt（X3-13 起统一走 write_pointer，含回读自证）", () => {
     const uploadSeg = RELEASE_SH.slice(RELEASE_SH.indexOf('if [ "$DO_UPLOAD" = true ]; then'));
-    expect(uploadSeg).toMatch(/run_scp\s+"\$RELEASE_DIR\/beta\.txt"/);
+    expect(uploadSeg).toMatch(/write_pointer\s+beta\.txt\s+"\$VERSION"/);
   });
 
   test("--promote 参数存在且需要版本号（不给就报错，不静默用当前版本）", () => {
@@ -176,10 +179,10 @@ describe("A2 release.sh：--upload 只写 beta，promote 才动 stable", () => {
   test("promote 不重新构建、不重新上传产物（纯指针操作）", () => {
     const start = RELEASE_SH.indexOf('if [ "$DO_PROMOTE" = true ]; then');
     const seg = RELEASE_SH.slice(start, RELEASE_SH.indexOf("单独上传团队默认配置", start));
-    // 它只 scp 一个临时文件（指针内容），不碰 $VERSION_DIR 里的任何产物
+    // 它只写一个指针文件（X3-13 起统一走 write_pointer，含回读自证），不碰 $VERSION_DIR 里的任何产物
     expect(seg).not.toContain("bun build");
     expect(seg).not.toContain("$VERSION_DIR");
-    expect(seg).toMatch(/run_scp "\$_promote_tmp"/);
+    expect(seg).toMatch(/write_pointer latest\.txt "\$PROMOTE_VERSION"/);
   });
 
   test("promote 是独立模式：走完就 exit，不落进构建流程", () => {
@@ -727,6 +730,143 @@ echo __PASSED__`;
     expect(r.status).toBe(0);
     expect(r.out).toContain("未验证即放行");
     expect(r.out).toContain("__PASSED__");
+  });
+});
+
+describe("X3-13 指针写入必须回读自证（write_pointer）", () => {
+  /**
+   * 从 release.sh 抠出 `write_pointer` 的**真实函数体**，配 stub 的 run_scp / run_ssh 执行。
+   *
+   * 为什么不满足于 `expect(RELEASE_SH).toContain("_readback")`：那种断言只能证明
+   * 「作者写过这几个字」。回读写了却不比较、比较了却比错对象、或者在 `set -o pipefail`
+   * 下让 ssh 读失败直接触发 set -e 退出（跳过「回读不符」这条可读的失败路径）——
+   * 这些都含有 `_readback` 字样，却都不生效。
+   */
+  function writePointerSource(): string {
+    const start = RELEASE_SH.indexOf("write_pointer() {");
+    expect(start).toBeGreaterThan(-1);
+    const end = RELEASE_SH.indexOf("\n}\n", start);
+    expect(end).toBeGreaterThan(start);
+    return RELEASE_SH.slice(start, end + "\n}\n".length);
+  }
+
+  interface Scenario {
+    /** scp 返回非 0（指针大概率未改动） */
+    scpFails?: boolean;
+    /** 远端 cat 读失败（ssh 挂了 / 权限没了） */
+    sshFails?: boolean;
+    /** 远端 cat 出来的内容，用来模拟「传上去了但内容不对」 */
+    remote?: string;
+  }
+
+  /**
+   * 两种调用形态，区别是 set -e 在函数体内生不生效：
+   *   · guarded —— `write_pointer … || rc=$?`，真实调用点的形态。函数体处于 `||` 的
+   *     条件上下文，set -e 免疫，任何内部失败都不会让脚本崩。
+   *   · bare —— 子 shell 里裸调用，set -e 生效。用来守住 write_pointer **自身**对
+   *     「回读读失败」的处理，这一层只有裸调用才看得见（见 `|| true` 的注释）。
+   */
+  function runWritePointer(scenario: Scenario, call: "guarded" | "bare" = "guarded") {
+    const invoke =
+      call === "guarded"
+        ? `rc=0
+write_pointer latest.txt 0.1.2 || rc=$?
+printf 'RC=%s\\n' "$rc"`
+        : `set +e
+( set -e; write_pointer latest.txt 0.1.2 )
+rc=$?
+printf 'RC=%s\\n' "$rc"`;
+    const dir = mkdtempSync(join(tmpdir(), "sid-writepointer-"));
+    try {
+      const script = join(dir, "run.sh");
+      writeFileSync(
+        script,
+        `#!/bin/bash
+set -euo pipefail
+DEPLOY_SSH_USER=deploy
+DEPLOY_SSH_HOST=example.com
+DEPLOY_PATH=/srv/releases
+SCP_FAILS=${scenario.scpFails ? "true" : "false"}
+SSH_FAILS=${scenario.sshFails ? "true" : "false"}
+REMOTE_CONTENT=${JSON.stringify(scenario.remote ?? "0.1.2")}
+warn() { printf 'WARN: %s\\n' "$*" >&2; }
+fail() { printf 'FAIL: %s\\n' "$*" >&2; exit 1; }
+run_scp() {
+  if [ "$SCP_FAILS" = true ]; then return 1; fi
+  return 0
+}
+run_ssh() {
+  if [ "$SSH_FAILS" = true ]; then return 1; fi
+  printf '%s\\n' "$REMOTE_CONTENT"
+}
+${writePointerSource()}
+${invoke}
+`,
+      );
+      const r = spawnSync("bash", [script], { cwd: dir, encoding: "utf8" });
+      return { status: r.status, out: `${r.stdout ?? ""}${r.stderr ?? ""}` };
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  }
+
+  test("写入且回读一致 → 0（happy path 不能被自己的回读判红）", () => {
+    const r = runWritePointer({ remote: "0.1.2" });
+    expect(r.out).toContain("RC=0");
+    expect(r.out).not.toContain("回读校验失败");
+  });
+
+  test("scp 成功但内容不对 → 返回码 2，且消息里写明实际值与期望值", () => {
+    // 变异自证：删掉 write_pointer 里的回读比较块 → 这条变 RC=0 而红
+    const r = runWritePointer({ remote: "0.0.9" });
+    expect(r.out).toContain("RC=2");
+    expect(r.out).toContain("回读校验失败");
+    expect(r.out).toContain("'0.0.9'");
+    expect(r.out).toContain("'0.1.2'");
+  });
+
+  test("scp 失败 → 返回码 1（指针大概率仍是旧值，与「已写坏」区分开）", () => {
+    const r = runWritePointer({ scpFails: true });
+    expect(r.out).toContain("RC=1");
+  });
+
+  test("真实调用形态下 ssh 读失败 → 返回码 2（不能当成「读到空串」就放行）", () => {
+    // 读不到内容时必须判为「回读不符」。若把它当成空串与期望值比完直接放行，
+    // 就是「没量到当成通过」—— 与 X3-03 同一种失效形态。
+    const r = runWritePointer({ sshFails: true });
+    expect(r.out).toContain("RC=2");
+    expect(r.out).toContain("回读校验失败");
+  });
+
+  test("裸调用（set -e 生效）时 ssh 读失败 → 仍是返回码 2，而不是被静默杀掉", () => {
+    // 这一条才是守 write_pointer 里那个 `|| true` 的：函数体里的赋值语句在 set -e
+    // 生效时失败会让脚本直接退出（无消息、无返回码可判），失败形态退化成「发布脚本
+    // 毫无上下文地崩掉」。
+    // 变异自证：删掉回读那行的 `|| true` → 这里 rc 变 1、且没有「回读校验失败」，红。
+    const r = runWritePointer({ sshFails: true }, "bare");
+    expect(r.out).toContain("RC=2");
+    expect(r.out).toContain("回读校验失败");
+  });
+
+  test("release.sh 里没有绕过 write_pointer 的直接指针写入", () => {
+    // 新增第三条指针（或有人图省事贴回一行 run_scp）时，这条先红。
+    expect(RELEASE_SH).not.toMatch(/run_scp\s+[^\n]*\/(latest|beta)\.txt/);
+  });
+
+  test("两条写通道都走 write_pointer（promote→latest，upload→beta）", () => {
+    expect(RELEASE_SH).toContain('write_pointer latest.txt "$PROMOTE_VERSION"');
+    expect(RELEASE_SH).toContain('write_pointer beta.txt "$VERSION"');
+  });
+
+  test("beta 回读不符时先置 BETA_PUBLISHED 再 fail（否则 on_exit 会提示「可重跑」）", () => {
+    // 失败语义必须反过来：scp 已经把字节写出去过，指针此刻可能指向空串 = 已对外。
+    // 调换这两行的顺序不会有任何测试变红（除非就是这一条），而它会让人误以为可以重跑。
+    const uploadSeg = RELEASE_SH.slice(RELEASE_SH.indexOf('if [ "$DO_UPLOAD" = true ]; then'));
+    const flagIdx = uploadSeg.indexOf("BETA_PUBLISHED=true");
+    const failIdx = uploadSeg.indexOf("beta.txt 已写入但回读不符");
+    expect(flagIdx).toBeGreaterThan(-1);
+    expect(failIdx).toBeGreaterThan(-1);
+    expect(flagIdx).toBeLessThan(failIdx);
   });
 });
 

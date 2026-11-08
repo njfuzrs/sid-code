@@ -382,6 +382,61 @@ run_scp() {
     fi
 }
 
+# ─── 通道指针写入 + 回读自证（X3-13）────────────────────────────────────────
+#
+# 用法：write_pointer <文件名> <版本号>
+#   latest.txt —— 稳定通道（只有 --promote 会写）
+#   beta.txt   —— 抢先通道（--upload 每次都写）
+#
+# ## 为什么写完必须回读
+#
+# scp 的退出码只说明「传输这一步没报错」，不说明**内容是想要的**：本地临时文件写错
+# （版本号变量为空、写成了别的版本）它照样成功传上去。而指针内容一旦变成空串，
+# 后果是**全部用户的 install.sh 在解析版本号那一步失败**——一个没有任何报错的坏发布。
+# rollback.sh 早就带这一步（`:265` 起，理由与这里完全相同），而 release.sh 的两条
+# 主写通道此前都没有：promote 写的是稳定通道、影响面最大，反而只看了 scp 退出码
+# 就直接打印「稳定通道已指向 v…」。
+#
+# ## 为什么抽成函数（而不是在两处各贴一遍）
+#
+# 各写一遍的结局是其中一处迟早被改漏（或新增第三条指针时忘掉回读），而漏掉时的
+# 形态是**日志全绿**。函数化之后，「写指针」只有一个落点，测试可以对它做行为断言
+# （tests/release-channel.test.ts 用 stub 的 run_scp / run_ssh 跑三种场景）。
+#
+# ## 返回码（调用点据此区分失败语义，消息由调用点拼）
+#
+#   0 —— 写入且回读一致
+#   1 —— scp 失败：指针大概率仍是旧值，「重跑」是安全选项
+#   2 —— scp 成功但回读不符：字节**可能已经写坏**，「人工检查」才是安全选项
+#
+# 回读用 `tr -d '[:space:]'` 去掉两端空白/换行（写入时带了换行，远端 cat 会原样返回）。
+#
+# 末尾那个 `|| true` 是给**裸调用**留的：`set -o pipefail` 下 ssh 读失败会让整条管道非 0，
+# 而赋值语句非 0 在 set -e 生效时会直接退出脚本 —— 那就跳过了下面「回读不符」这条
+# 可读的失败路径，失败形态退化成「发布脚本毫无上下文地崩掉」。
+# 注意它现在**不是承重的**：两个调用点都写成 `write_pointer … || rc=$?`，函数体因此
+# 处于 `||` 的条件上下文、set -e 本就免疫。保留是因为这个函数会被第三个调用点复用
+# （rollback.sh 计划迁过来），裸调用迟早出现，而那时它才是唯一守住可读失败路径的东西。
+# tests/release-channel.test.ts 有一条「裸调用」用例专门守住这一层。
+write_pointer() {
+    _wp_file="$1"
+    _wp_ver="$2"
+    _wp_tmp="$(mktemp)"
+    printf '%s\n' "$_wp_ver" > "$_wp_tmp"
+    if ! run_scp "$_wp_tmp" "${DEPLOY_SSH_USER}@${DEPLOY_SSH_HOST}:${DEPLOY_PATH}/${_wp_file}"; then
+        rm -f "$_wp_tmp"
+        return 1
+    fi
+    rm -f "$_wp_tmp"
+    _wp_readback="$(run_ssh "${DEPLOY_SSH_USER}@${DEPLOY_SSH_HOST}" \
+        "cat '${DEPLOY_PATH}/${_wp_file}' 2>/dev/null || true" 2>/dev/null | tr -d '[:space:]' || true)"
+    if [ "$_wp_readback" = "$_wp_ver" ]; then
+        return 0
+    fi
+    warn "回读校验失败：${_wp_file} 现在是 '${_wp_readback}'，期望 '${_wp_ver}'"
+    return 2
+}
+
 # ─── 归档到 OSS（B46 P1）────────────────────────────────────────────────────
 #
 # 服务器版本目录只是热缓存，OSS（sid-code-releases，私有 + 版本控制 + 发布凭据无删除权）
@@ -801,13 +856,21 @@ ${_merge_out}"
         fi
     fi
 
-    # 写指针：本地生成再 scp，与 --upload 路径同一套写法（不用 ssh echo 重定向，
-    # 那样引号层数一多就容易在远端 shell 里被吃掉）
-    _promote_tmp="$(mktemp)"
-    echo "$PROMOTE_VERSION" > "$_promote_tmp"
-    run_scp "$_promote_tmp" "${DEPLOY_SSH_USER}@${DEPLOY_SSH_HOST}:${DEPLOY_PATH}/latest.txt" \
-        || { rm -f "$_promote_tmp"; fail "写 latest.txt 失败（稳定通道保持在 v${_prev_latest:-未知}）"; }
-    rm -f "$_promote_tmp"
+    # 写指针（含回读自证，见 write_pointer 的注释）
+    #
+    # 回读不符与 scp 失败必须分开说：前者意味着稳定通道**可能已经被写坏**，
+    # 此时的正确动作是立刻人工核服务器（必要时 rollback），而不是「重跑一次」——
+    # 重跑虽然通常能覆盖正确值，但也会掩盖「为什么会写错」这件事。
+    _wp_rc=0
+    write_pointer latest.txt "$PROMOTE_VERSION" || _wp_rc=$?
+    case "$_wp_rc" in
+        0) ;;
+        1) fail "写 latest.txt 失败（稳定通道保持在 v${_prev_latest:-未知}）" ;;
+        *)
+            fail "latest.txt 已写入但回读不符 —— 稳定通道可能已坏，**不要**当作成功或直接重跑。
+  请立即人工检查服务器 ${DEPLOY_PATH}/latest.txt${_prev_latest:+，必要时 ./scripts/rollback.sh ${_prev_latest}}"
+            ;;
+    esac
 
     echo ""
     ok "稳定通道已指向 v${PROMOTE_VERSION}${_prev_latest:+（原为 v${_prev_latest}）}"
@@ -1542,7 +1605,23 @@ fi"
     audit_archive smoke \
         || fail "归档审计未通过 —— beta.txt 未改动（v${VERSION} 已归档、目录已在服务器上；修复后 --no-bump --upload 重跑，或先单独跑 --audit-archive 排查）"
 
-    run_scp "$RELEASE_DIR/beta.txt" "${DEPLOY_SSH_USER}@${DEPLOY_SSH_HOST}:${DEPLOY_PATH}/beta.txt"
+    # 写指针（含回读自证，见 write_pointer 的注释）
+    #
+    # 回读不符时 BETA_PUBLISHED 必须**先**置 true 再 fail：scp 已经把字节写出去过，
+    # 指针此刻可能指向空串或别的版本 = 版本已对外。on_exit 据这个标志打印
+    # 「不要重跑或撤 bump」，而「可 --no-bump 重跑」正是相反的误导 —— 重跑会盖掉
+    # 「指针为什么写坏」这件事，也可能让坏状态多暴露一段时间。
+    _wp_rc=0
+    write_pointer beta.txt "$VERSION" || _wp_rc=$?
+    case "$_wp_rc" in
+        0) ;;
+        1) fail "写 beta.txt 失败 —— 本次不算发布（v${VERSION} 已归档、目录已在服务器上，无指针指向它；修复后 --no-bump --upload 重跑）" ;;
+        *)
+            BETA_PUBLISHED=true
+            fail "beta.txt 已写入但回读不符 —— 版本可能已对外，**不要**直接重跑。
+  请立即人工检查服务器 ${DEPLOY_PATH}/beta.txt 并修正"
+            ;;
+    esac
     BETA_PUBLISHED=true
     ok "beta 通道已指向 v${VERSION}（稳定通道未改动，需 --promote 显式促升）"
 
