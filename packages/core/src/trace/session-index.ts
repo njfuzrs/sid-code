@@ -112,10 +112,29 @@ export interface SessionIndexEntry {
    * verify 子代理）。
    *
    * 存 bool 而非计数：防线触发率的分母是**会话数**（见
-   * `scripts/defense-trigger-rate.ts`），存计数会诱使消费侧拿调用次数当分子，
+   * `scripts/northstar-snapshot.ts`），存计数会诱使消费侧拿调用次数当分子，
    * 那是另一个口径。
+   *
+   * ⚠️ `defense_triggered` 是**分子**；分母是下面的 `is_audit`。两个字段必须一起读，
+   * 拿 `index.length` 当分母会把会话构成的变化算成防线退步（X3-16）。
    */
   defense_triggered: boolean;
+
+  /**
+   * X3-16：本会话是否属于「审计核查类任务」—— 防线触发率的**分母口径**。
+   *
+   * 为什么需要它：`northstar/README.md` 规定分母限定在审计核查类任务，
+   * 但这份索引原先没有任务类型字段，于是 snapshot 只能拿全部会话当分母 ——
+   * 曲线量的是会话构成（某周期多跑一批非审计会话，触发率就下降，而防线一行没改），
+   * 且 `n` 虚报会绕过样本不足护栏。分类判据见 `audit-task.ts`。
+   *
+   * **三态**（与 `traj_corrupt` 同一条理由，处理方式也刻意一致）：
+   * - `true` / `false`：跑过 digest，看过首个用户 prompt 且判过；
+   * - 键不存在：**未检测**（headless 增量行、没跑完的会话）。
+   *
+   * 消费侧必须把未检测的行排除出分母 —— 把"不知道"算成"非审计"会让分母悄悄膨胀。
+   */
+  is_audit?: boolean;
 
   /**
    * P2-14：本会话的 `session.traj` 是否损坏。
@@ -395,6 +414,11 @@ export function buildSessionIndexEntry(
     e2e?: { p50?: number; p95?: number; n?: number };
     defense_triggered?: boolean;
     /**
+     * 传 `undefined`（或整个不传）= **未检测**（增量路径没跑 digest），字段不落盘。
+     * 只有真的看过首个用户 prompt 才传 boolean —— 见 `SessionIndexEntry.is_audit`。
+     */
+    is_audit?: boolean;
+    /**
      * 传 `undefined`（或整个不传）= **没跑损坏检测**，字段不落盘。
      * 只有真的检测过才传 boolean —— 见 `SessionIndexEntry.traj_corrupt` 的三态说明。
      */
@@ -448,6 +472,9 @@ export function buildSessionIndexEntry(
     pathological: Array.isArray(summary.pathological) ? (summary.pathological as string[]) : [],
     compactions: num(extra.compactions),
     defense_triggered: extra.defense_triggered === true,
+    // is_audit 与 traj_corrupt 同款「有值才写」：增量路径没跑 digest，不能替它
+    // 下「非审计」的结论（那会让分母悄悄膨胀，X3-16）。
+    ...(typeof extra.is_audit === "boolean" ? { is_audit: extra.is_audit } : {}),
     ...(extra.short_text_end_turns !== undefined
       ? { short_text_end_turns: extra.short_text_end_turns, end_turn_n: extra.end_turn_n ?? 0 }
       : {}),

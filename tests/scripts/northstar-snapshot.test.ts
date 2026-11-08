@@ -79,6 +79,9 @@ function idx(over: Partial<SessionIndexEntry> = {}): SessionIndexEntry {
     pathological: [],
     compactions: 0,
     defense_triggered: false,
+    // X3-16：防线触发率的分母是「审计核查类会话」。默认造**已检测的审计行**，
+    // 要造非审计行 / 未检测行请显式覆盖（见下面 X3-16 的 describe）。
+    is_audit: true,
     traj_corrupt: false,
     // 默认造「有终态、跑过 digest 的权威行」，所以带 detected_by ——
     // 它才是"已检测"的判据。不带就等价于修复前那种谎报 false 的存量行，
@@ -318,6 +321,8 @@ describe("P2-14 · 轨迹损坏率分母排除未检测行", () => {
       exit_status: "incomplete",
       traj_corrupt: undefined,
       traj_corrupt_detected_by: undefined,
+      // X3-16：增量行也没跑 digest，同样看不到首个 prompt → is_audit 未检测
+      is_audit: undefined,
     });
 
   /** 修复前的存量行形态：有 false 但说不出是谁检的 */
@@ -407,6 +412,77 @@ describe("P2-14 · 轨迹损坏率分母排除未检测行", () => {
     const text = renderSnapshot(snap([idx(), incrementalRow("c1")], []));
     expect(text).toContain("排除未检测 1 行");
     expect(text).toContain("从未跑过损坏检测");
+  });
+});
+
+// ─── X3-16：防线触发率的分母限定在审计核查类会话 ───
+
+/**
+ * 这组锁的是「分母比分子重要」那条铁律的一个具体形态：
+ *
+ * 旧口径拿 `index.length`（全部会话）当分母，于是曲线量的是**会话构成** ——
+ * 某个周期多跑了一批非审计会话，分母膨胀、触发率下降，而防线一行没改。
+ * 同时 `n` 也虚报成全部会话数，绕过 `MIN_SAMPLES_FOR_CONCLUSION` 的样本护栏。
+ *
+ * 判据是首个用户 prompt 的关键词命中（`packages/core/src/trace/audit-task.ts`），
+ * 由写入侧算好落进 `session-index.is_audit`（三态，见 `SessionIndexEntry`）。
+ */
+describe("X3-16 · 防线触发率分母排除非审计与未检测行", () => {
+  test("非审计行不进分母：1 触发 + 3 审计 + 6 非审计 → 1/3 而非 1/9", () => {
+    const s = snap(
+      [
+        idx({ session_id: "hit", defense_triggered: true }),
+        idx({ session_id: "a1" }),
+        idx({ session_id: "a2" }),
+        ...Array.from({ length: 6 }, (_, i) => idx({ session_id: `non${i}`, is_audit: false })),
+      ],
+      [],
+    );
+    expect(s.foundation.defense_trigger_rate.value).toBeCloseTo(1 / 3, 9);
+    expect(s.foundation.defense_trigger_rate.n).toBe(3);
+    // 变异自证：把分母改回 `index.length`，本条必红（会变成 1/9、n=9）。
+    expect(s.foundation.defense_trigger_rate.n).not.toBe(9);
+  });
+
+  test("未检测行（is_audit 键不存在）既不进分子也不进分母", () => {
+    const s = snap(
+      [
+        idx({ session_id: "hit", defense_triggered: true }),
+        // 没跑完的会话 / headless 增量行：看不到首个 prompt，不能替它下结论
+        idx({ session_id: "undetected", is_audit: undefined, defense_triggered: true }),
+      ],
+      [],
+    );
+    expect(s.foundation.defense_trigger_rate.n).toBe(1);
+    expect(s.foundation.defense_trigger_rate.value).toBeCloseTo(1, 9);
+  });
+
+  test("全是未检测行时触发率为 null，绝不落 0%", () => {
+    // 0% 会被读成"审计任务里防线一次没触发"（正是这条指标要报警的结论），
+    // 而真相是"还不知道"。两个结论在行动上是相反的。
+    const s = snap([idx({ is_audit: undefined })], []);
+    expect(s.foundation.defense_trigger_rate.value).toBeNull();
+    expect(s.foundation.defense_trigger_rate.n).toBe(0);
+  });
+
+  test("n 不虚报：分母是审计行数，不是索引全部行数", () => {
+    // 这条是样本护栏的前提：虚报的 n 会让两个实际只有个位数样本的快照
+    // 之间算出几十个百分点的"改善"（同 traj_corrupt_rate 的教训）。
+    const s = snap(
+      [
+        idx({ session_id: "a1" }),
+        ...Array.from({ length: 30 }, (_, i) => idx({ session_id: `non${i}`, is_audit: false })),
+      ],
+      [],
+    );
+    expect(s.foundation.defense_trigger_rate.n).toBe(1);
+    expect(s.foundation.defense_trigger_rate.n).toBeLessThan(MIN_SAMPLES_FOR_CONCLUSION);
+  });
+
+  test("source 串如实反映新口径（分母=审计核查类会话）", () => {
+    const src = snap([idx()], []).foundation.defense_trigger_rate.source;
+    expect(src).toContain("is_audit");
+    expect(src).toContain("审计");
   });
 });
 

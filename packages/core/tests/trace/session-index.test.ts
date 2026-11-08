@@ -171,11 +171,41 @@ describe("buildSessionIndexEntry 字段映射", () => {
   });
 
   test("defense_triggered 缺省为 false，不是 undefined", () => {
-    // 防线没触发就是没触发：这个语义下 undefined 与 false 是同一件事
-    //（触发率的分母是全部会话），所以恒落 boolean。
-    // ⚠ traj_corrupt **刻意不同** —— 见下面那一组三态测试。
+    // 防线没触发就是没触发：这个语义下 undefined 与 false 是同一件事，所以恒落 boolean。
+    // ⚠ 分母（`is_audit`）与 `traj_corrupt` **刻意不同** —— 见下面两组三态测试。
     const e = buildSessionIndexEntry({ session_id: "s1" }, { ts: 1 });
     expect(e.defense_triggered).toBe(false);
+  });
+
+  /**
+   * X3-16：`is_audit` 是防线触发率的**分母口径**，必须是三态。
+   *
+   * 两态会把「没跑过 digest、没看到首个 prompt」压成「非审计」，于是分母悄悄膨胀 ——
+   * 曲线量的是会话构成而不是防线。这与 `traj_corrupt` 的教训同源，
+   * 但方向相反：那个字段怕把「未检测」压成「未损坏」，这个字段怕把「未检测」压成「非审计」。
+   */
+  describe("is_audit 三态：未检测 ≠ 已判定为非审计", () => {
+    test("没传 is_audit → 键整个不落盘（未检测，不是 false）", () => {
+      const e = buildSessionIndexEntry({ session_id: "s1" }, { ts: 1 });
+      expect("is_audit" in e).toBe(false);
+    });
+
+    test("传 false → 落 false（看过首个 prompt，判为非审计）", () => {
+      const e = buildSessionIndexEntry({ session_id: "s1" }, { ts: 1, is_audit: false });
+      expect(e.is_audit).toBe(false);
+      expect("is_audit" in e).toBe(true);
+    });
+
+    test("传 true → 落 true（审计核查类，进分母）", () => {
+      const e = buildSessionIndexEntry({ session_id: "s1" }, { ts: 1, is_audit: true });
+      expect(e.is_audit).toBe(true);
+    });
+
+    test("JSON 序列化后未检测行的键真的消失（消费侧读的是落盘字节）", () => {
+      const e = buildSessionIndexEntry({ session_id: "s1" }, { ts: 1 });
+      const back = JSON.parse(JSON.stringify(e)) as Record<string, unknown>;
+      expect("is_audit" in back).toBe(false);
+    });
   });
 
   /**
