@@ -123,10 +123,15 @@ export interface PermissionDecisionEvent {
  * - 注入校验器：`pattern = "injection:<id>"`，id 来自 `bash-security.ts` 的校验器表；
  * - 展开超限：`pattern = "展开超限"`。
  * 其余 dangerousCommand 的 pattern 可能是 LLM 分类器的自由文本（`LLM:...`），一律不取。
+ * headless / dontAsk 把 ask 落成 deny 时会覆盖 decisionReason，标签由 checker 搬到
+ * `metadata.guard`（见 checker.ts `guardMetadata`），这里优先读它。
  */
 export function guardOf(decision: {
   decisionReason?: { type?: string; pattern?: unknown } | null;
+  metadata?: Record<string, unknown>;
 }): string | undefined {
+  const carried = decision.metadata?.guard;
+  if (typeof carried === "string") return carried;
   const r = decision.decisionReason;
   if (!r || r.type !== "dangerousCommand" || typeof r.pattern !== "string") return undefined;
   if (r.pattern === "展开超限") return "expansion-limit";

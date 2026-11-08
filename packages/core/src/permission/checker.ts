@@ -46,6 +46,7 @@ import {
 import { detectStructuredCriticalDanger, type DangerousFinding } from "./dangerous-command.ts";
 import { isToolNameListed } from "../tool/tool-name-aliases.ts";
 import { checkInjectionPatterns } from "./bash-security.ts";
+import { guardOf } from "./decision-telemetry.ts";
 import { PathValidator, normalizeCaseForComparison } from "./path-validator.ts";
 import { SAFETY_PROTECTED_PATHS, stripWorktreeContainerPrefix } from "./safety-protected-paths.ts";
 import {
@@ -240,6 +241,16 @@ function extractMemoryResource(req: PermissionRequest): string {
     return `${pathVal}\0${pattern}`;
   }
   return extractMatchValue(req);
+}
+
+/**
+ * B20：把阶段一危险确认的闸门标签（`guardOf`：A2 注入校验器 / A6 展开超限）搬进 metadata。
+ * headless / dontAsk 会用新的 decisionReason 覆盖阶段一成因，不搬就在轨迹上丢掉了。
+ * 只进 metadata，不影响任何判定。
+ */
+function guardMetadata(phaseOne: Decision): { metadata?: Record<string, unknown> } {
+  const guard = guardOf(phaseOne);
+  return guard ? { metadata: { guard } } : {};
 }
 
 /**
@@ -2020,6 +2031,8 @@ export class PermissionChecker implements Checker {
         reason: `dontAsk 模式下自动拒绝: ${result.reason}`,
         decisionReason: { type: "mode", mode: "dontAsk" },
         step: "dontAsk",
+        // 同 headless：decisionReason 被换成 mode，闸门标签另行保留（子代理多走这一支）
+        ...guardMetadata(result),
       };
       this.audit(req, {
         timestamp: new Date().toISOString(),
@@ -2091,6 +2104,9 @@ export class PermissionChecker implements Checker {
         },
         // 成因步骤沿用阶段一（「为什么要问」），headless 只是把 ask 落成 deny
         step: `headless:${result.step ?? "?"}`,
+        // B20：decisionReason 被换成 type=other，阶段一的危险确认成因（A2 注入校验器 /
+        // A6 展开超限）随之丢失。把闭集标签带到 metadata，轨迹 guard 字段才取得到。
+        ...guardMetadata(result),
       };
       this.audit(req, {
         timestamp: new Date().toISOString(),
