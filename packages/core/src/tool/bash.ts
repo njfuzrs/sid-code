@@ -1504,6 +1504,16 @@ export class BashTool implements Tool {
               // 而那正是最需要告知的场合（否则后续每条命令都 spawn ENOENT）。
               return { output: withCwdNotice(note, cwdState) };
             }
+            // E1：非 0 退出码但语义上不是坏消息时，把说明放在**首行**。
+            //
+            // 为什么位置要紧：模型读结果的第一眼决定它要不要重试或改道。
+            // `gh pr checks` 退出码 8 = 有检查 pending，是等待中的正常状态；此前它被包成
+            // 「命令执行失败（退出码 8）」，模型据此反复重查、甚至去修一个不存在的缺陷（G8）。
+            // 与上面 `message` 的分工见 command-semantics.ts 里 header 字段的注释。
+            if (exitCode !== 0 && interp.header) {
+              const body = output === "(命令无输出)" ? "" : `\n${output}`;
+              return { output: withCwdNotice(`${interp.header}${body}`, cwdState) };
+            }
             return { output: withCwdNotice(output, cwdState) };
           } catch (err) {
             // 已转后台时，pump/exited 阶段的异常记为任务失败（对齐 spawnShellTask 的

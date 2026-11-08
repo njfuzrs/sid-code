@@ -19,6 +19,17 @@ export interface CommandResultInterpretation {
   isError: boolean;
   /** 非错误但有特殊语义时的提示信息（如 "无匹配"），供输出附注 */
   message?: string;
+  /**
+   * 放在结果**首行**的语义说明。
+   *
+   * 与 `message` 的区别是位置：`message` 追加在输出末尾当附注，适合「无匹配」这种
+   * 读过正文才知道含义的场合；`header` 放在最前，适合「这个非 0 退出码不是坏消息」
+   * 这种**必须先纠正模型判断**的场合——模型读结果的第一眼决定它要不要重试。
+   *
+   * 目前只有 `gh pr checks` 退出码 8（pending）用它：CI 未完成是等待中的正常状态，
+   * 报成失败会诱导模型「换个办法再查」或去修一个不存在的缺陷（G8）。
+   */
+  header?: string;
 }
 
 /**
@@ -52,8 +63,40 @@ const LOOKUP_SEMANTIC: CommandSemantic = (exitCode) => ({
   message: exitCode === 1 ? "未找到命令" : undefined,
 });
 
+/**
+ * gh 语义（E1）：只认 `gh pr checks`，退出码 8 = 有检查 pending（**不是**命令错误）。
+ *
+ * 依据 gh 2.97.0 的 `gh pr checks --help`：
+ *
+ * ```
+ * Additional exit codes:
+ * 	8: Checks pending
+ * ```
+ *
+ * 这条说明由 `exit-code-semantics.test.ts` 的 T-E1-4 快照守着 —— gh 改语义时测试红，
+ * 提示回头复核本表，而不是静默地把 pending 报成失败或反过来。
+ *
+ * 为什么退出码 1（有检查失败）**不**特殊处理：它确实该报错，模型需要知道 CI 红了。
+ * 为什么只认 `pr checks` 不认 `gh pr view`：实测触发会话 `20261108-112620-7dd98bf5`
+ * 里 44 条退出码 8 **全部**来自 `gh pr checks`，`gh pr view` 一次都没有（它不查 checks
+ * 就不返回 8）。按想象扩表会让「哪些命令有这个退出码」失去轨迹依据。
+ *
+ * 匹配靠 `extractExitCodeCommand` 取**最后一个简单命令**，所以
+ * `cd x && gh pr checks 1` 命中，`gh pr checks 1 | head`（退出码属于 head）不命中。
+ */
+const GH_SEMANTIC: CommandSemantic = (exitCode, args) => {
+  if (args[0] === "pr" && args[1] === "checks" && exitCode === 8) {
+    return {
+      isError: false,
+      header: "检查未全部完成（gh 退出码 8 = pending，不是命令错误）",
+    };
+  }
+  return DEFAULT_SEMANTIC(exitCode, args);
+};
+
 /** 命令专属语义表 */
 const COMMAND_SEMANTICS: Map<string, CommandSemantic> = new Map([
+  ["gh", GH_SEMANTIC],
   ["grep", GREP_SEMANTIC],
   ["egrep", GREP_SEMANTIC],
   ["fgrep", GREP_SEMANTIC],

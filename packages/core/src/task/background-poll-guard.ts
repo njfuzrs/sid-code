@@ -33,8 +33,19 @@ export { BACKGROUND_RECEIPT_NOTICE } from "./background-receipt.ts";
  * `bg_task_list({status:"all"})`（中位间隔 4.3s，每轮输入约 24.6 万 token），最后自己
  * `task_stop` 杀掉了测试。前三种形态都拦住了，唯独漏了这个入口；循环检测的同参拦截
  * 又因默认关闭而不在场。
+ *
+ * `external_status_poll`：P1（`status-poll-guard.ts`）拦下的「等待期前台查外部状态」——
+ * `gh pr view` / `gh pr checks` 这类。它与 `status_poll` 是**同一类空转的两个入口**
+ * （一个查内部后台任务、一个查外部世界），所以共用本事件：F2 的取数源是
+ * 「§1.1 计数减去本事件命中的 tool_use_id」，两类都要从同一个分母里扣，
+ * 分成两个事件反而要在两处扣、还可能漏扣一处。kind 已能区分，归因不受影响。
  */
-export type BackgroundPollKind = "read_output" | "bash_tasks_dir" | "blocking_wait" | "status_poll";
+export type BackgroundPollKind =
+  | "read_output"
+  | "bash_tasks_dir"
+  | "blocking_wait"
+  | "status_poll"
+  | "external_status_poll";
 
 export type BackgroundPollCheck =
   | { intercept: false }
@@ -250,6 +261,14 @@ export function emitBackgroundPollIntercepted(data: {
   tool_use_id: string;
   kind: BackgroundPollKind;
   task_ids: string[];
+  /**
+   * 外部状态查询的签名（`gh:pr:662` 这类）。
+   *
+   * 只有 `external_status_poll` 会带：Q1 的三种形态拦的是后台任务，本来就有 task_ids；
+   * P1 拦的是一次查询，能标识它的是「查的是哪个对象」。两者都塞进 task_ids 会让
+   * 「被拦了几次任务」这类统计混进查询，归因时得再拆一次。
+   */
+  subject?: string;
 }): void {
   if (!sink) return;
   try {

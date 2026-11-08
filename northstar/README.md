@@ -72,7 +72,7 @@
 | --- | --- | --- |
 | ① 过程病态率 | retry 浪费比 / 白建连接、backtrack、步数比、**空转**（最长「重复调用且返回值不变」段） | ✅ `retryWastedRatio` / `extraConnections` / `maxUnchangedObservationRun`（≥3 判病态） |
 | | **continue 路径收敛**：同一 continue 理由的连续游程是否超出该路径封顶；退化门（unanswered / empty_param / context_window）耗尽后是否仍被闸门续命。两项**恒为 0**，非 0 即某条路径没封住。分母 = 带 `continue_counts` 的 `TurnComplete` 条数（2026-10-24 起） | ✅ `TurnComplete.continue_counts` / `max_continue_streak` / `gates_exhausted` + `GateExhausted` → digest `continuePaths.overCapPrompts` / `continuedAfterChainEnd` |
-| ② 工具层 | 工具调用成功 / 失败率 | ✅ `PostToolUse.is_error` |
+| ② 工具层 | 工具调用成功 / 失败率 | ✅ `PostToolUse.is_error`。⚠️ **2026-11-08 分子口径变更（PR 4 / E1）**：`bash` 的退出码语义表收了 `gh pr checks` 退出码 8（= 有检查 pending，不是命令错误），这类调用从 `is_error=true` 翻成 `false`。**跨 0.1.614 前后不可直接连线**——曲线会整体下移一截，那是口径变化不是进步。实测影响面：事故会话 `20261108-112620-7dd98bf5` 86 次 `gh pr checks` 里 44 次退出码 8（51%）。判据在 `packages/core/src/tool/bash/command-semantics.ts` 的 `GH_SEMANTIC`，回归在 `packages/core/tests/tool/exit-code-semantics.test.ts` |
 | | **tool selection accuracy**（选对工具的比例，<90% 说明工具太多或描述差）、**tool retry rate**（同一步失败重试率） | ❌ 均未派生 |
 | ③ eval 通过率 | 回归套件通过率，每次发布都跑 | ✅ `evals/` |
 | ④ 编辑一次成功率 | 首次 edit 即成功的比例（**单位：文件 × 会话**，分母 = 真实执行过 edit 的文件数，不含 write） | ✅ `session-index.edit_first_try` → northstar `edit_first_try_rate` |
