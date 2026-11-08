@@ -302,8 +302,17 @@ macOS 上旧的 `/etc/sid-code/<type>/` 仍会扫描以兼容已有部署，命�
 
 ### 审计日志
 
-权限决策写 `~/.sid-code/logs/permissions-audit.log`，超过 10MB 自动轮转
-（`packages/core/src/permission/audit.ts`）。每条记录时间戳、工具名、资源、决策、原因。
+权限决策写 `~/.sid-code/logs/permissions-audit.log`，超过 10MB 自动轮转、保留 1 代
+（`packages/core/src/permission/audit.ts`）。每条记录时间戳、工具名、资源、决策、原因，
+以及会话 id（`session_id`）和工具调用 id（`tool_use_id`）。`tool_use_id` 与会话轨迹
+`events.jsonl` 里 `PermissionDecision` / `PreToolUse` 的同名字段是同一个值，按它就能把
+一条审计记录对到轨迹里的那次工具调用。
+
+需要确认的操作，确认结束后会再记一条「终局」：`confirm_source` 写谁做的决定
+（`user` / `hook` / `classifier` / `timeout`），`user_confirmed: true` 表示由人作答。
+
+主日志里绝大多数是自动放行，按体积轮转时会把旧的拒绝记录一起挤掉。所以**拒绝和确认终局
+另存一份** `permissions-audit-retained.log`（5MB 轮转、保留 1 代），按日常用量能留几个月。
 
 即使是 `--dangerously-skip-permissions` 放行的操作也会留一条
 `reason: "skipPermissions"` 的记录（`checker.ts`）——绕过检查不等于绕过审计。

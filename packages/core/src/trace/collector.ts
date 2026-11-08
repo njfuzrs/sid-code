@@ -1826,6 +1826,12 @@ export class TraceCollector {
       // 同一次调用记两遍只会让「按字段数统计」的口径翻倍。
       // 隐私：与 PreToolUse 同一条口径，上传前由 LOCAL_ONLY_EVENT_DATA_FIELDS 剥掉。
       ...(e.inputSummary ? { input_summary: e.inputSummary } : {}),
+      // B19：与权限审计行的 tool_use_id 同值，两边按它 join（此前只能靠相邻关系配对）
+      ...(e.toolUseId ? { tool_use_id: e.toolUseId } : {}),
+      // B20：A2 注入校验器名 / A6 展开超限（step 都是 2，此前不可分）。固定标签，不含命令片段
+      ...(e.guard ? { guard: e.guard } : {}),
+      // A9：auto 档分类器回退人工的成因
+      ...(e.autoClassifier ? { auto_classifier: e.autoClassifier } : {}),
     });
   }
 

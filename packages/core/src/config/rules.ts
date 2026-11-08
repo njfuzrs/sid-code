@@ -23,6 +23,7 @@ import { sidHomePath, getClaudeHome } from "./paths.ts";
 import { clearPromptCache } from "./system-prompt.ts";
 import { getOriginalCwd } from "../bootstrap/state.ts";
 import { getAncestorChain, getCheckoutRoot } from "./project-bases.ts";
+import { stripUntrustedSecurityFields, type IgnoredRuleField } from "./rules-security.ts";
 
 /**
  * CLAUDE.md 文件名候选列表（对标 Claude Code）。
@@ -214,6 +215,11 @@ export interface ProjectRules {
   loadedPaths?: string[];
   /** 规则层级（用于调试与优先级展示） */
   layer?: "managed" | "user" | "userRulesDir" | "project" | "subdir" | "rulesDir" | "local";
+  /**
+   * 合并时因来源不可信被剔除的 `## Permission Mode` / `## Allowed Tools`（B6 / B9）。
+   * 只挂在 loadAllCLAUDEmd 的结果上，供 app.ts 打轨迹事件与告警。口径见 rules-security.ts。
+   */
+  ignoredSecurityFields?: IgnoredRuleField[];
 }
 
 /**
@@ -1198,16 +1204,30 @@ export async function loadAllCLAUDEmd(
   const preFiltered = new Set<ProjectRules>(chainRulesByDir.values());
 
   let merged: ProjectRules | null = null;
+  const ignoredSecurityFields: IgnoredRuleField[] = [];
   for (const r of ordered) {
     if (!r) continue;
     // frontmatter paths 条件过滤：只作用于**尚未逐文件过滤**的条目——
     // 单文件条目（managed / global / local）与规则目录条目（*RulesDirRules 每文件独立成项，
     // 不预先合并）。与 §2 的逐文件过滤互补，覆盖全部来源、无遗漏也无重复。
     if (!preFiltered.has(r) && !keepInScope(r)) continue;
-    merged = merged ? mergeProjectRules(merged, r) : r;
+    // B6 / B9：项目侧来源的权限模式与工具白名单在**合并之前**剔除。必须在这里而不是 app.ts：
+    // 合并后 permissionMode 只剩「最后写它的那层」的值，层级信息已经丢了。
+    const safe = stripUntrustedSecurityFields(r, ignoredSecurityFields);
+    merged = merged ? mergeProjectRules(merged, safe) : safe;
   }
 
   if (merged) {
+    if (ignoredSecurityFields.length > 0) {
+      merged.ignoredSecurityFields = ignoredSecurityFields;
+      for (const f of ignoredSecurityFields) {
+        log.warn(
+          "RULES",
+          `已忽略项目侧 CLAUDE.md 的 ${f.field === "permissionMode" ? "## Permission Mode" : "## Allowed Tools"}` +
+            `（layer=${f.layer ?? "unknown"}，${f.sourcePath}）：只认用户级与企业级来源`,
+        );
+      }
+    }
     // loadedPaths 挂到结果上，供 app.ts 做 JIT 预标记（单一事实源，替代此前
     // 「findCLAUDEmdChain + 全局路径」的近似估算——那个漏掉子目录文件，导致 JIT 二次注入）。
     merged.loadedPaths = loadedPaths;

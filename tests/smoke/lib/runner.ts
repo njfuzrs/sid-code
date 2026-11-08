@@ -23,6 +23,7 @@ import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { checkEventExpect, checkFileExpect, parseEvents, parseRawRequests } from "./assert.ts";
 import { findOutOfRootPaths, substituteCaseRoot } from "./fixture.ts";
+import { driveTui } from "./tui.ts";
 import type {
   BridgeStub,
   DaemonStep,
@@ -57,6 +58,11 @@ export interface LoadedCase {
   def: SmokeCase;
   dir: string;
   replayPath: string;
+}
+
+/** 用例所在防线层：带 `tui` 剧本的是 G4，其余是 G2 */
+export function caseLayer(def: SmokeCase): "G2" | "G4" {
+  return def.tui ? "G4" : "G2";
 }
 
 export async function loadCases(filter?: string[]): Promise<LoadedCase[]> {
@@ -140,6 +146,16 @@ function refusedBaseURL(): string {
   server.stop(true);
   return `http://127.0.0.1:${port}/v1`;
 }
+
+/**
+ * G4 用例的 settings 额外显式写出的键。
+ *
+ * 团队默认配置补全（backfill-team-defaults.ts）会把模板里的 `subAgentModels` / `fallbackModel`
+ * 补进来，它们引用的 deepseek-* 不在 `availableModels` 里，TUI 启动就弹「按任意键关闭」警告，
+ * 吞掉剧本的第一个按键（2026-11-08 探针实测）。显式写出即算「已表态」，补全不再碰它们。
+ * 只给 G4 加：G2 的 A10 迁移链用例断言的正是补全结果，改公共缺省会改掉它们的输入。
+ */
+const TUI_QUIET_SETTINGS = { subAgentModels: {}, fallbackModel: "" };
 
 function smokeSettings() {
   return {
@@ -485,7 +501,7 @@ export async function runCase(
       writeFileSync(p, content);
     }
     Bun.spawnSync(["git", "init", "-q"], { cwd: repo });
-    const defaults = smokeSettings();
+    const defaults = def.tui ? { ...smokeSettings(), ...TUI_QUIET_SETTINGS } : smokeSettings();
     const settings = def.settings
       ? def.settings({
           defaults,
@@ -527,36 +543,59 @@ export async function runCase(
       ? ["--bridge", bridge.url, "--bridge-token", "smoke-bridge-token", "--bridge-insecure"]
       : stream
         ? ["-p", "--input-format", "stream-json", "--output-format", "stream-json", "--verbose"]
-        : ["--output-format", "json"];
-    const proc = Bun.spawn(
-      [
-        ...launcherArgv(launcher),
-        ...(def.realPermissions ? [] : ["--dangerously-skip-permissions"]),
-        ...modeArgv,
-        ...def.argv,
-      ],
-      {
+        : def.tui
+          ? []
+          : ["--output-format", "json"];
+    const mainArgv = [
+      ...launcherArgv(launcher),
+      ...(def.realPermissions ? [] : ["--dangerously-skip-permissions"]),
+      ...modeArgv,
+      ...def.argv,
+    ];
+    let stdoutText = "";
+    let stderrText = "";
+    let exitCode: number;
+    let screen = "";
+    if (def.tui) {
+      // 交互 TUI 要一个像样的终端类型；其余隔离变量不变（宿主的 TERM_PROGRAM 等本来就不进来）
+      const r = await driveTui(mainArgv, {
+        cwd: repo,
+        env: isolatedEnv(home, configDir, replayFile, { TERM: "xterm-256color", ...def.env }),
+        steps: def.tui,
+        timeoutMs: CASE_TIMEOUT_MS,
+      });
+      exitCode = r.exitCode;
+      screen = r.screen;
+      if (r.failure) failures.push(r.failure);
+    } else {
+      const proc = Bun.spawn(mainArgv, {
         cwd: repo,
         env: isolatedEnv(home, configDir, replayFile, def.env),
         stdin: stream ? "pipe" : "ignore",
         stdout: "pipe",
         stderr: "pipe",
-      },
-    );
-    const timer = setTimeout(() => proc.kill("SIGKILL"), CASE_TIMEOUT_MS);
-    bridge?.onDone(() => proc.kill("SIGTERM"));
-    const stdoutPromise = stream
-      ? driveStreamInput(proc, def.streamInput!)
-      : new Response(proc.stdout).text();
-    const [stdoutText, stderrText, exitCode] = await Promise.all([
-      stdoutPromise,
-      new Response(proc.stderr).text(),
-      proc.exited,
-    ]);
-    clearTimeout(timer);
+      });
+      const timer = setTimeout(() => proc.kill("SIGKILL"), CASE_TIMEOUT_MS);
+      bridge?.onDone(() => proc.kill("SIGTERM"));
+      const stdoutPromise = stream
+        ? driveStreamInput(proc, def.streamInput!)
+        : new Response(proc.stdout).text();
+      [stdoutText, stderrText, exitCode] = await Promise.all([
+        stdoutPromise,
+        new Response(proc.stderr).text(),
+        proc.exited,
+      ]);
+      clearTimeout(timer);
+    }
 
     let stdout: unknown = null;
-    if (bridge) {
+    if (def.tui) {
+      // TUI 没有结构化 stdout：与 bridge 同法，隔离配置里的会话目录只会有这一个
+      const sessDir = join(configDir, "trajectories/sessions");
+      const ids = existsSync(sessDir) ? readdirSync(sessDir) : [];
+      if (ids.length !== 1) failures.push(`TUI 会话目录应恰 1 个，实际 ${ids.length} 个`);
+      stdout = { session_id: ids[0] };
+    } else if (bridge) {
       // bridge 没有结构化 stdout：会话目录在隔离配置里只会有这一个
       const sessDir = join(configDir, "trajectories/sessions");
       const ids = existsSync(sessDir) ? readdirSync(sessDir) : [];
@@ -640,6 +679,7 @@ export async function runCase(
         steps,
         services: serviceHits,
         bridgeFrames,
+        screen,
       };
       const f = def.expect.output(out);
       if (f) failures.push(f);
