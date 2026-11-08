@@ -108,9 +108,14 @@ describe("P2-20：阈值与离线 digest 同源（两套尺子会让曲线对不
     expect(digestSrc).not.toMatch(/const\s+UNCHANGED_OBSERVATION_THRESHOLD\s*=/);
   });
 
-  it("运行时告警不做任何干预（埋点里 intervened 恒为 false）", () => {
+  it("运行时告警不做任何干预（intervened 只能来自 P1 守卫的真实拦截，本阀不硬编码）", () => {
     const loopSrc = readFileSync(join(import.meta.dir, "../../src/query/loop.ts"), "utf-8");
     expect(loopSrc).toContain('event: "UnchangedObservationRun"');
-    expect(loopSrc).toContain("intervened: false");
+    // 契约变更（2026-11-08，PR 4 / P1）：`intervened` 此前恒为 false（本阀只报不拦）。
+    // 现在它有真值来源——等待期状态查询守卫（status-poll-guard）真的拦过才算 true。
+    // 本测试守的意图不变：**本阀自己不做任何干预**。所以断言的是「值必须来自外部事实」，
+    // 而不是硬编码 true。硬编码 true 会让埋点从「记录事实」变成「自作主张」。
+    expect(loopSrc).toContain("consumeStatusPollIntervened(b.id)");
+    expect(loopSrc).not.toContain("intervened: true");
   });
 });

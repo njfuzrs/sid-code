@@ -1,0 +1,227 @@
+[
+  {
+    "command": "cd /repo/wt && gh pr merge 662 --auto --merge 2>&1 | tail -5 && gh pr view 662 --json number,title,state,autoMergeRequest --jq '{n:.number,t:.title,s:.state,auto:(.autoMergeRequest.enabledAt??\"未挂\")}'",
+    "exitCode": 1,
+    "ts": "2026-11-08T03:51:04.041Z"
+  },
+  {
+    "command": "cd /repo/wt && gh pr view 662 --json state,mergedAt,mergeCommit --jq '.state, (.mergedAt // \"未合并\"), (.mergeCommit.oid // \"-\")' && echo \"=== checks ===\" && gh pr checks 662 2>&1",
+    "exitCode": 8,
+    "ts": "2026-11-08T03:55:23.324Z"
+  },
+  {
+    "command": "cd /repo/wt && gh pr view 662 --json state,mergedAt,mergeCommit --jq '.state, (.mergedAt // \"未合并\"), (.mergeCommit.oid // \"-\")' && echo \"=== checks ===\" && gh pr checks 662 2>&1",
+    "exitCode": 8,
+    "ts": "2026-11-08T03:56:20.940Z"
+  },
+  {
+    "command": "cd /repo/wt && gh pr view 662 --json state,mergedAt,mergeCommit --jq '.state, (.mergedAt // \"未合并\"), (.mergeCommit.oid // \"-\")' && echo \"=== checks ===\" && gh pr checks 662 2>&1",
+    "exitCode": 8,
+    "ts": "2026-11-08T03:56:29.141Z"
+  },
+  {
+    "command": "cd /repo/wt && gh pr view 662 --json state,mergedAt,mergeCommit --jq '.state, (.mergedAt // \"未合并\"), (.mergeCommit.oid // \"-\")' && echo \"=== checks ===\" && gh pr checks 662 2>&1",
+    "exitCode": 8,
+    "ts": "2026-11-08T03:56:41.799Z"
+  },
+  {
+    "command": "cd /repo/wt && gh pr view 662 --json state,mergedAt,mergeCommit --jq '.state, (.mergedAt // \"未合并\"), (.mergeCommit.oid // \"-\")' && echo \"=== checks ===\" && gh pr checks 662 2>&1",
+    "exitCode": 8,
+    "ts": "2026-11-08T03:56:51.045Z"
+  },
+  {
+    "command": "cd /repo/wt && gh pr view 662 --json state,mergedAt,mergeCommit --jq '.state, (.mergedAt // \"未合并\"), (.mergeCommit.oid // \"-\")' && echo \"=== checks ===\" && gh pr checks 662 2>&1",
+    "exitCode": 8,
+    "ts": "2026-11-08T03:56:57.963Z"
+  },
+  {
+    "command": "cd /repo/wt && gh pr view 662 --json state,mergedAt,mergeCommit --jq '.state, (.mergedAt // \"未合并\"), (.mergeCommit.oid // \"-\")' && echo \"=== checks ===\" && gh pr checks 662 2>&1",
+    "exitCode": 8,
+    "ts": "2026-11-08T03:57:12.746Z"
+  },
+  {
+    "command": "cd /repo/wt && gh pr view 662 --json state,mergedAt,mergeCommit --jq '.state, (.mergedAt // \"未合并\"), (.mergeCommit.oid // \"-\")' && echo \"=== checks ===\" && gh pr checks 662 2>&1",
+    "exitCode": 8,
+    "ts": "2026-11-08T03:57:18.778Z"
+  },
+  {
+    "command": "cd /repo/wt && gh pr view 662 --json state,mergedAt,mergeCommit --jq '.state, (.mergedAt // \"未合并\"), (.mergeCommit.oid // \"-\")' && echo \"=== checks ===\" && gh pr checks 662 2>&1",
+    "exitCode": 8,
+    "ts": "2026-11-08T03:57:34.333Z"
+  },
+  {
+    "command": "cd /repo/wt && gh pr view 662 --json state,mergedAt,mergeCommit --jq '.state, (.mergedAt // \"未合并\"), (.mergeCommit.oid // \"-\")' && echo \"=== checks ===\" && gh pr checks 662 2>&1",
+    "exitCode": 8,
+    "ts": "2026-11-08T03:57:41.526Z"
+  },
+  {
+    "command": "cd /repo/wt && gh pr view 662 --json state,mergedAt,mergeCommit --jq '.state, (.mergedAt // \"未合并\"), (.mergeCommit.oid // \"-\")' && echo \"=== checks ===\" && gh pr checks 662 2>&1",
+    "exitCode": 8,
+    "ts": "2026-11-08T03:57:48.552Z"
+  },
+  {
+    "command": "cd /repo/wt && gh pr view 662 --json state,mergedAt,mergeCommit --jq '.state, (.mergedAt // \"未合并\"), (.mergeCommit.oid // \"-\")' && echo \"=== checks ===\" && gh pr checks 662 2>&1",
+    "exitCode": 8,
+    "ts": "2026-11-08T03:57:55.497Z"
+  },
+  {
+    "command": "cd /repo/wt && gh pr view 662 --json state,mergedAt,mergeCommit --jq '.state, (.mergedAt // \"未合并\"), (.mergeCommit.oid // \"-\")' && echo \"=== checks ===\" && gh pr checks 662 2>&1",
+    "exitCode": 8,
+    "ts": "2026-11-08T03:58:07.376Z"
+  },
+  {
+    "command": "cd /repo/wt && gh pr view 662 --json state,mergedAt,mergeCommit --jq '.state, (.mergedAt // \"未合并\"), (.mergeCommit.oid // \"-\")' && echo \"=== checks ===\" && gh pr checks 662 2>&1",
+    "exitCode": 8,
+    "ts": "2026-11-08T03:58:40.557Z"
+  },
+  {
+    "command": "cd /repo/wt && gh pr view 662 --json state,mergedAt,mergeCommit --jq '.state, (.mergedAt // \"未合并\"), (.mergeCommit.oid // \"-\")' && echo \"=== checks ===\" && gh pr checks 662 2>&1",
+    "exitCode": 8,
+    "ts": "2026-11-08T03:58:47.768Z"
+  },
+  {
+    "command": "cd /repo/wt && gh pr view 662 --json state,mergedAt,mergeCommit --jq '.state, (.mergedAt // \"未合并\"), (.mergeCommit.oid // \"-\")' && echo \"=== checks ===\" && gh pr checks 662 2>&1",
+    "exitCode": 8,
+    "ts": "2026-11-08T03:58:54.467Z"
+  },
+  {
+    "command": "cd /repo/wt && gh pr view 662 --json state,mergedAt,mergeCommit --jq '.state, (.mergedAt // \"未合并\"), (.mergeCommit.oid // \"-\")' && echo \"=== checks ===\" && gh pr checks 662 2>&1",
+    "exitCode": 8,
+    "ts": "2026-11-08T03:59:01.877Z"
+  },
+  {
+    "command": "cd /repo/wt && gh pr view 662 --json state,mergedAt,mergeCommit --jq '.state, (.mergedAt // \"未合并\"), (.mergeCommit.oid // \"-\")' && echo \"=== checks ===\" && gh pr checks 662 2>&1",
+    "exitCode": 8,
+    "ts": "2026-11-08T03:59:14.580Z"
+  },
+  {
+    "command": "cd /repo/wt && gh pr view 662 --json state,mergedAt,mergeCommit --jq '.state, (.mergedAt // \"未合并\"), (.mergeCommit.oid // \"-\")' && echo \"=== checks ===\" && gh pr checks 662 2>&1",
+    "exitCode": 8,
+    "ts": "2026-11-08T04:00:02.894Z"
+  },
+  {
+    "command": "cd /repo/wt && gh pr view 662 --json state,mergedAt,mergeCommit --jq '.state, (.mergedAt // \"未合并\"), (.mergeCommit.oid // \"-\")' && echo \"=== checks ===\" && gh pr checks 662 2>&1",
+    "exitCode": 8,
+    "ts": "2026-11-08T04:00:14.542Z"
+  },
+  {
+    "command": "cd /repo/wt && gh pr view 662 --json state,mergedAt,mergeCommit --jq '.state, (.mergedAt // \"未合并\"), (.mergeCommit.oid // \"-\")' && echo \"=== checks ===\" && gh pr checks 662 2>&1",
+    "exitCode": 8,
+    "ts": "2026-11-08T04:00:22.335Z"
+  },
+  {
+    "command": "cd /repo/wt && gh pr view 662 --json state,mergedAt,mergeCommit --jq '.state, (.mergedAt // \"未合并\"), (.mergeCommit.oid // \"-\")' && echo \"=== checks ===\" && gh pr checks 662 2>&1",
+    "exitCode": 8,
+    "ts": "2026-11-08T04:01:12.614Z"
+  },
+  {
+    "command": "cd /repo/wt && gh pr view 662 --json state,mergedAt,mergeCommit --jq '.state, (.mergedAt // \"未合并\"), (.mergeCommit.oid // \"-\")' && echo \"=== checks ===\" && gh pr checks 662 2>&1",
+    "exitCode": 8,
+    "ts": "2026-11-08T04:01:20.170Z"
+  },
+  {
+    "command": "cd /repo/wt && gh pr view 662 --json state,mergedAt,mergeCommit --jq '.state, (.mergedAt // \"未合并\"), (.mergeCommit.oid // \"-\")' && echo \"=== checks ===\" && gh pr checks 662 2>&1",
+    "exitCode": 8,
+    "ts": "2026-11-08T04:01:35.913Z"
+  },
+  {
+    "command": "cd /repo/wt && gh pr view 662 --json state,mergedAt,mergeCommit --jq '.state, (.mergedAt // \"未合并\"), (.mergeCommit.oid // \"-\")' && echo \"=== checks ===\" && gh pr checks 662 2>&1",
+    "exitCode": 8,
+    "ts": "2026-11-08T04:01:58.725Z"
+  },
+  {
+    "command": "cd /repo/wt && gh pr view 662 --json state,mergedAt,mergeCommit --jq '.state, (.mergedAt // \"未合并\"), (.mergeCommit.oid // \"-\")' && echo \"=== checks ===\" && gh pr checks 662 2>&1",
+    "exitCode": 8,
+    "ts": "2026-11-08T04:02:05.632Z"
+  },
+  {
+    "command": "cd /repo/wt && gh pr view 662 --json state,mergedAt,mergeCommit --jq '.state, (.mergedAt // \"未合并\"), (.mergeCommit.oid // \"-\")' && echo \"=== checks ===\" && gh pr checks 662 2>&1",
+    "exitCode": 8,
+    "ts": "2026-11-08T04:02:21.252Z"
+  },
+  {
+    "command": "cd /repo/wt && gh pr view 662 --json state,mergedAt,mergeCommit --jq '.state, (.mergedAt // \"未合并\"), (.mergeCommit.oid // \"-\")' && echo \"=== checks ===\" && gh pr checks 662 2>&1",
+    "exitCode": 8,
+    "ts": "2026-11-08T04:02:29.468Z"
+  },
+  {
+    "command": "cd /repo/wt && gh pr view 662 --json state,mergedAt,mergeCommit --jq '.state, (.mergedAt // \"未合并\"), (.mergeCommit.oid // \"-\")' && echo \"=== checks ===\" && gh pr checks 662 2>&1",
+    "exitCode": 8,
+    "ts": "2026-11-08T04:02:37.882Z"
+  },
+  {
+    "command": "cd /repo/wt && gh pr view 662 --json state,mergedAt,mergeCommit --jq '.state, (.mergedAt // \"未合并\"), (.mergeCommit.oid // \"-\")' && echo \"=== checks ===\" && gh pr checks 662 2>&1",
+    "exitCode": 8,
+    "ts": "2026-11-08T04:02:46.304Z"
+  },
+  {
+    "command": "cd /repo/wt && gh pr view 662 --json state,mergedAt,mergeCommit --jq '.state, (.mergedAt // \"未合并\"), (.mergeCommit.oid // \"-\")' && echo \"=== checks ===\" && gh pr checks 662 2>&1",
+    "exitCode": 8,
+    "ts": "2026-11-08T04:02:53.992Z"
+  },
+  {
+    "command": "cd /repo/wt && gh pr view 662 --json state,mergedAt,mergeCommit --jq '.state, (.mergedAt // \"未合并\"), (.mergeCommit.oid // \"-\")' && echo \"=== checks ===\" && gh pr checks 662 2>&1",
+    "exitCode": 8,
+    "ts": "2026-11-08T04:03:03.708Z"
+  },
+  {
+    "command": "cd /repo/wt && gh pr view 662 --json state,mergedAt,mergeCommit --jq '.state, (.mergedAt // \"未合并\"), (.mergeCommit.oid // \"-\")' && echo \"=== checks ===\" && gh pr checks 662 2>&1",
+    "exitCode": 8,
+    "ts": "2026-11-08T04:03:12.497Z"
+  },
+  {
+    "command": "cd /repo/wt && gh pr view 662 --json state,mergedAt,mergeCommit --jq '.state, (.mergedAt // \"未合并\"), (.mergeCommit.oid // \"-\")' && echo \"=== checks ===\" && gh pr checks 662 2>&1",
+    "exitCode": 8,
+    "ts": "2026-11-08T04:03:20.345Z"
+  },
+  {
+    "command": "cd /repo/wt && gh pr view 662 --json state,mergedAt,mergeCommit --jq '.state, (.mergedAt // \"未合并\"), (.mergeCommit.oid // \"-\")' && echo \"=== checks ===\" && gh pr checks 662 2>&1",
+    "exitCode": 8,
+    "ts": "2026-11-08T04:03:27.586Z"
+  },
+  {
+    "command": "cd /repo/wt && gh pr view 662 --json state,mergedAt,mergeCommit --jq '.state, (.mergedAt // \"未合并\"), (.mergeCommit.oid // \"-\")' && echo \"=== checks ===\" && gh pr checks 662 2>&1",
+    "exitCode": 8,
+    "ts": "2026-11-08T04:03:34.544Z"
+  },
+  {
+    "command": "cd /repo/wt && gh pr view 662 --json state,mergedAt,mergeCommit --jq '.state, (.mergedAt // \"未合并\"), (.mergeCommit.oid // \"-\")' && echo \"=== checks ===\" && gh pr checks 662 2>&1",
+    "exitCode": 8,
+    "ts": "2026-11-08T04:03:41.899Z"
+  },
+  {
+    "command": "cd /repo/wt && gh pr view 662 --json state,mergedAt,mergeCommit --jq '.state, (.mergedAt // \"未合并\"), (.mergeCommit.oid // \"-\")' && echo \"=== checks ===\" && gh pr checks 662 2>&1",
+    "exitCode": 8,
+    "ts": "2026-11-08T04:03:49.166Z"
+  },
+  {
+    "command": "cd /repo/wt && gh pr view 662 --json state,mergedAt,mergeCommit --jq '.state, (.mergedAt // \"未合并\"), (.mergeCommit.oid // \"-\")' && echo \"=== checks ===\" && gh pr checks 662 2>&1",
+    "exitCode": 8,
+    "ts": "2026-11-08T04:03:56.567Z"
+  },
+  {
+    "command": "cd /repo/wt && gh pr view 662 --json state,mergedAt,mergeCommit --jq '.state, (.mergedAt // \"未合并\"), (.mergeCommit.oid // \"-\")' && echo \"=== checks ===\" && gh pr checks 662 2>&1",
+    "exitCode": 8,
+    "ts": "2026-11-08T04:04:03.902Z"
+  },
+  {
+    "command": "cd /repo/wt && gh pr view 662 --json state,mergedAt,mergeCommit --jq '.state, (.mergedAt // \"未合并\"), (.mergeCommit.oid // \"-\")' && echo \"=== checks ===\" && gh pr checks 662 2>&1",
+    "exitCode": 8,
+    "ts": "2026-11-08T04:04:10.782Z"
+  },
+  {
+    "command": "cd /repo/wt && gh pr view 662 --json state,mergedAt,mergeCommit --jq '.state, (.mergedAt // \"未合并\"), (.mergeCommit.oid // \"-\")' && echo \"=== checks ===\" && gh pr checks 662 2>&1",
+    "exitCode": 8,
+    "ts": "2026-11-08T04:04:18.351Z"
+  },
+  {
+    "command": "cd /repo/wt && gh pr view 662 --json state,mergedAt,mergeCommit --jq '.state, (.mergedAt // \"未合并\"), (.mergeCommit.oid // \"-\")' && echo \"=== checks ===\" && gh pr checks 662 2>&1",
+    "exitCode": 8,
+    "ts": "2026-11-08T04:04:25.873Z"
+  },
+  {
+    "command": "cd /repo/wt && gh pr view 662 --json state,mergedAt,mergeCommit --jq '.state, (.mergedAt // \"未合并\"), (.mergeCommit.oid // \"-\")' && echo \"=== checks ===\" && gh pr checks 662 2>&1",
+    "exitCode": 8,
+    "ts": "2026-11-08T04:04:32.688Z"
+  }
+]

@@ -228,6 +228,8 @@ import {
   markMainTurnCompleted,
   markNotificationsDelivered,
   isTerminalStatus,
+  // P1：等待期状态查询守卫拦下的调用，供下面 UnchangedObservationRun 的 intervened 埋点消费
+  consumeStatusPollIntervened,
 } from "../task/index.ts";
 import { buildInternalMessage, hasInternalOrigin } from "../context/internal-message.ts";
 import {
@@ -6105,11 +6107,16 @@ async function* queryLoopBody(
               });
               if (unchanged.shouldReport) {
                 state.unchangedReportsInPrompt = (state.unchangedReportsInPrompt ?? 0) + 1;
+                // P1（status-poll-guard）拦下的调用在本轮里也走这条观测链：被拦的那次
+                // 返回值是「结果与上次相同」的回执，与之前几次的观测文本不同，所以通常
+                // 不会凑满阈值。但一旦凑满（模型确实在空转），`intervened` 要如实记 true ——
+                // 这是本仓第一次有「真的拦住了」的数据，之前只报不拦恒为 false。
+                const intervened = consumeStatusPollIntervened(b.id);
                 log.warn(
                   "QUERY_LOOP",
                   `同参同返回值空转：\`${unchanged.tool}\` 连续 ${unchanged.run} 次入参与返回值` +
                     `完全相同（阈值 ${UNCHANGED_OBSERVATION_THRESHOLD}），重复劳动未产出新信息。` +
-                    `本阀只告警不干预`,
+                    `${intervened ? "已由等待期状态查询守卫拦截" : "本阀只告警不干预"}`,
                 );
                 if (deps.traceAppendEvent) {
                   try {
@@ -6124,7 +6131,7 @@ async function* queryLoopBody(
                         threshold: UNCHANGED_OBSERVATION_THRESHOLD,
                         // 与离线 digest 的 observationEntropyPathological 同口径同阈值，
                         // 可直接对照「运行时报过几次」与「周报判了几个病态会话」。
-                        intervened: false,
+                        intervened,
                       },
                     });
                   } catch {

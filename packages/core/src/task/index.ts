@@ -136,6 +136,31 @@ export {
 
 export { spawnShellTask, adoptRunningProcessAsTask, killShellTask } from "./shell-task.ts";
 
+// 等待期外部状态查询守卫（P1）：判「在等 + 只读状态查询 + 结果没变」三条同时成立才拦。
+// 与 Q1 的 background-poll-guard 是同一类空转的两个入口，判据不同所以分模块。
+export {
+  type StatusPollMemo,
+  type StatusPollContext,
+  type StatusPollCheck,
+  STATUS_POLL_PROBE_INTERVAL_MS,
+  STATUS_POLL_BLOCK_AFTER_SAME,
+  STATUS_POLL_INTERCEPT_KIND,
+  checkStatusQueryPoll,
+  recordStatusQueryResult,
+  markStatusPollIntervened,
+  consumeStatusPollIntervened,
+  defaultStatusPollContext,
+  __resetStatusPollGuardForTest,
+} from "./status-poll-guard.ts";
+
+export {
+  type StatusQueryKind,
+  type StatusQueryMatch,
+  matchStatusQuery,
+  normalizeStatusOutput,
+  summarizeStatusOutput,
+} from "./status-query-commands.ts";
+
 export {
   type MonitorGateDecision,
   LineSplitter,

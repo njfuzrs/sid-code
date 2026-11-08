@@ -41,6 +41,13 @@ import {
   checkBackgroundPoll,
   emitBackgroundPollIntercepted,
 } from "../task/background-poll-guard.ts";
+// P1：等待期前台外部状态查询的拦截（与上面的 Q1 是同一条主循环入口，判据不同）
+import {
+  checkStatusQueryPoll,
+  recordStatusQueryResult,
+  markStatusPollIntervened,
+  STATUS_POLL_INTERCEPT_KIND,
+} from "../task/status-poll-guard.ts";
 // P0-1 漏斗 1/2：工具与权限埋点。必须走 analytics/events.ts 门面，不直接调 logEvent——
 // 门面强制脱敏工具名与文件路径，业务侧拿不到裸传接口（见该文件顶部的三条硬约束）。
 import {
@@ -1573,6 +1580,51 @@ export async function executeSingleTool(
     };
   }
 
+  // P1：等待期「查外部状态」——有等待源 + 命令是只读状态查询 + 结果与上次相同 → 不执行。
+  // 与上面 Q1 同一位置、同一收尾方式，区别只在判据（Q1 看后台任务在跑，P1 看等待源 + 输出签名）。
+  // 放在 Q1 之后：Q1 命中的（看后台任务输出文件）不该再被当成外部状态查询解释一遍。
+  const statusPoll = checkStatusQueryPoll(block.name, executedInput);
+  if (statusPoll.intercept) {
+    log.info("TOOL", `P1：拦截等待期外部状态查询 ${block.name}（${statusPoll.subject}）`);
+    emitBackgroundPollIntercepted({
+      tool_name: block.name,
+      tool_use_id: block.id,
+      kind: STATUS_POLL_INTERCEPT_KIND,
+      task_ids: [],
+      subject: statusPoll.subject,
+    });
+    // 供 loop 的 `UnchangedObservationRun.intervened`：这是本仓第一次有「真的拦住了」的数据，
+    // 之前那道阀只报不拦，intervened 恒 false（见 query/unchanged-observation.ts 头注释）。
+    markStatusPollIntervened(block.id);
+    const elapsedMs = Date.now() - toolStartedAt;
+    try {
+      await deps.hookSystem?.firePostToolUseEvent?.(
+        block.name,
+        executedInput as Record<string, unknown>,
+        { output: statusPoll.output, isError: false },
+        false,
+        block.id,
+        { duration_ms: elapsedMs },
+      );
+    } catch (e: any) {
+      log.warn("HOOK", `PostToolUse（状态查询拦截）执行异常（忽略）: ${e?.message ?? e}`);
+    }
+    logToolSuccess(block.name, {
+      durationMs: elapsedMs,
+      outputSize: statusPoll.output.length,
+      filePath: efFilePath,
+    });
+    return {
+      block: {
+        type: "tool_result",
+        tool_use_id: block.id,
+        content: statusPoll.output,
+        is_error: false,
+      },
+      elapsedMs,
+    };
+  }
+
   const execSignal = signalOverride ?? deps.getAbortSignal();
   const startTime = Date.now();
 
@@ -1734,6 +1786,24 @@ export async function executeSingleTool(
     // hook 改参告知前置到结果最前（模型先看到"参数被改过"，再读结果，避免按旧参数误判）
     if (hookModifiedNotice) {
       finalOutput = hookModifiedNotice + "\n\n" + finalOutput;
+    }
+
+    // P1：等待期外部状态查询的记忆与提示（只在**真的执行了**之后记，被拦的那次不更新）。
+    //
+    // 为什么必须记：判据第 3 条「结果与上次相同」要拿「上次放行时的归一化输出」来比，
+    // 而那份数据只在这里产生。首次观察到相同时给一句提示（提示只给一次），
+    // 让模型在还没被拦之前就知道「这东西没变，别每 12 秒问一遍」。
+    try {
+      if (!result.isError) {
+        const cmd = (executedInput as { command?: unknown } | undefined)?.command;
+        if (typeof cmd === "string") {
+          const pollHint = recordStatusQueryResult(cmd, String(result.output ?? ""));
+          if (pollHint) finalOutput = finalOutput + "\n\n" + pollHint;
+        }
+      }
+    } catch (e: any) {
+      // 记忆失败只影响下一次能不能拦，绝不能影响本次工具结果。
+      log.warn("TOOL", `P1 状态查询记忆异常（忽略）: ${e?.message ?? e}`);
     }
 
     // LSP 文件变更通知（write/edit 工具后异步投递，不阻塞工具返回）
