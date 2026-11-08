@@ -63,6 +63,27 @@ export interface RunOutput {
   steps: StepOutput[];
   /** 各桩服务收到的请求，按到达顺序 */
   services: Record<string, ServiceHit[]>;
+  /** bridge 模式下 CLI 发给桩中继的帧（已解析，按到达顺序，不含首帧 auth）；其余模式为空数组 */
+  bridgeFrames: Array<{ type?: string; id?: string; data?: unknown }>;
+}
+
+/**
+ * A12：主运行改走 `--bridge` 长驻模式，运行器在进程内起 WebSocket 桩中继（只绑 127.0.0.1）。
+ *
+ * 剧本（2026-11-08 构建产物探针跑通的那条链）：
+ *   CLI 首帧 `{type:"auth",token}` → 桩回 `auth_ok` → 桩发第 1 条 `user_message`
+ *   → CLI 需要确认时发 `permission_request` → 桩按 `permission` 回 `permission_response{allowed}`
+ *   → CLI 发 `status{status:"turn_complete"}` → 桩发下一条；发完最后一条后 SIGTERM。
+ *
+ * 首次连接某端点需要人工准入（无头下 fail-closed 拒绝），运行器预置
+ * `state/trusted-bridge-urls.json` 绕过；`--bridge-insecure` 放行明文 ws://。
+ * 进程以 SIGTERM 收尾，退出码恒为 143，用例不要断言 `exitCode`。
+ */
+export interface BridgeStub {
+  /** 依次发送的 user_message 文本 */
+  messages: string[];
+  /** 收到 permission_request 时的答复：allow / deny，或不答（让 CLI 超时） */
+  permission: "allow" | "deny" | "ignore";
 }
 
 /**
@@ -181,6 +202,8 @@ export interface SmokeCase {
    * 会话 id 取自首条带 `session_id` 的 `result`。`argv` 只放额外参数。
    */
   streamInput?: string[];
+  /** 置上时主运行改走 `--bridge` 长驻模式（见 `BridgeStub`）。`argv` 只放额外参数 */
+  bridge?: BridgeStub;
   /** 额外环境变量（运行器已设好隔离用的那一组，这里只放用例特有的） */
   env?: Record<string, string>;
   /**

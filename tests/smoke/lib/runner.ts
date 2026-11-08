@@ -24,6 +24,7 @@ import { dirname, join, resolve } from "node:path";
 import { checkEventExpect, checkFileExpect, parseEvents, parseRawRequests } from "./assert.ts";
 import { findOutOfRootPaths, substituteCaseRoot } from "./fixture.ts";
 import type {
+  BridgeStub,
   DaemonStep,
   PrintStep,
   RunOutput,
@@ -283,6 +284,68 @@ async function runPrintStep(
   return { output: { kind: "print", exitCode, stderr: err, stdout: out }, failure: null };
 }
 
+/**
+ * A12 桩中继：按 `BridgeStub` 剧本应答。帧形态取自 `core/src/bridge/{ws-transport,bridge-core,
+ * permission-proxy}.ts`：入向 `{type, id, data}`，`user_message.data.text`、
+ * `permission_response.id` 回填请求 id、`data.allowed`。
+ */
+function startBridgeStub(stub: BridgeStub, frames: RunOutput["bridgeFrames"]) {
+  let sent = 0;
+  let finished = false;
+  let done: (() => void) | null = null;
+  const sendNext = (ws: { send: (s: string) => void }) => {
+    if (sent >= stub.messages.length) {
+      finished = true;
+      done?.();
+      return;
+    }
+    const text = stub.messages[sent++]!;
+    ws.send(JSON.stringify({ type: "user_message", id: `smoke-u${sent}`, data: { text } }));
+  };
+  const server = Bun.serve({
+    port: 0,
+    hostname: "127.0.0.1",
+    fetch: (req, srv) =>
+      srv.upgrade(req) ? undefined : new Response("websocket only", { status: 400 }),
+    websocket: {
+      message(ws, raw) {
+        let m: { type?: string; id?: string; data?: any };
+        try {
+          m = JSON.parse(String(raw));
+        } catch {
+          return;
+        }
+        if (m.type === "auth") {
+          ws.send(JSON.stringify({ type: "auth_ok" }));
+          sendNext(ws);
+          return;
+        }
+        frames.push(m);
+        if (m.type === "permission_request" && stub.permission !== "ignore") {
+          ws.send(
+            JSON.stringify({
+              type: "permission_response",
+              id: m.id,
+              data: { allowed: stub.permission === "allow" },
+            }),
+          );
+        } else if (m.type === "status" && m.data?.status === "turn_complete") {
+          sendNext(ws);
+        }
+      },
+    },
+  });
+  return {
+    server,
+    url: `ws://127.0.0.1:${server.port}`,
+    onDone: (cb: () => void) => {
+      done = cb;
+    },
+    finished: () => finished,
+    sent: () => sent,
+  };
+}
+
 /** stdout 逐行解析；非 JSON 行（如混入的日志）跳过 */
 function parseJsonLines(text: string): unknown[] {
   const out: unknown[] = [];
@@ -449,13 +512,27 @@ export async function runCase(
     writeFileSync(replayFile, replay);
 
     const stream = def.streamInput !== undefined;
+    const bridgeFrames: RunOutput["bridgeFrames"] = [];
+    const bridge = def.bridge ? startBridgeStub(def.bridge, bridgeFrames) : null;
+    if (bridge) {
+      servers.push(bridge.server);
+      // 首次连接需人工准入；无头下拒绝。键与 normalizeBridgeUrl 同口径（无尾斜杠、小写）
+      mkdirSync(join(configDir, "state"), { recursive: true });
+      writeFileSync(
+        join(configDir, "state", "trusted-bridge-urls.json"),
+        JSON.stringify({ [bridge.url]: { confirmedAt: new Date().toISOString() } }),
+      );
+    }
+    const modeArgv = bridge
+      ? ["--bridge", bridge.url, "--bridge-token", "smoke-bridge-token", "--bridge-insecure"]
+      : stream
+        ? ["-p", "--input-format", "stream-json", "--output-format", "stream-json", "--verbose"]
+        : ["--output-format", "json"];
     const proc = Bun.spawn(
       [
         ...launcherArgv(launcher),
         ...(def.realPermissions ? [] : ["--dangerously-skip-permissions"]),
-        ...(stream
-          ? ["-p", "--input-format", "stream-json", "--output-format", "stream-json", "--verbose"]
-          : ["--output-format", "json"]),
+        ...modeArgv,
         ...def.argv,
       ],
       {
@@ -467,6 +544,7 @@ export async function runCase(
       },
     );
     const timer = setTimeout(() => proc.kill("SIGKILL"), CASE_TIMEOUT_MS);
+    bridge?.onDone(() => proc.kill("SIGTERM"));
     const stdoutPromise = stream
       ? driveStreamInput(proc, def.streamInput!)
       : new Response(proc.stdout).text();
@@ -478,7 +556,17 @@ export async function runCase(
     clearTimeout(timer);
 
     let stdout: unknown = null;
-    if (stream) {
+    if (bridge) {
+      // bridge 没有结构化 stdout：会话目录在隔离配置里只会有这一个
+      const sessDir = join(configDir, "trajectories/sessions");
+      const ids = existsSync(sessDir) ? readdirSync(sessDir) : [];
+      if (ids.length !== 1) failures.push(`bridge 会话目录应恰 1 个，实际 ${ids.length} 个`);
+      if (!bridge.finished())
+        failures.push(
+          `bridge 剧本没走完（已发 ${bridge.sent()}/${def.bridge!.messages.length} 条，exit=${exitCode}）\nstderr 末尾：${stderrText.slice(-500)}`,
+        );
+      stdout = { session_id: ids[0] };
+    } else if (stream) {
       const messages = parseJsonLines(stdoutText);
       const results = messages.filter((m) => (m as { type?: unknown }).type === "result");
       if (results.length !== def.streamInput!.length) {
@@ -551,6 +639,7 @@ export async function runCase(
         homeDir: home,
         steps,
         services: serviceHits,
+        bridgeFrames,
       };
       const f = def.expect.output(out);
       if (f) failures.push(f);
