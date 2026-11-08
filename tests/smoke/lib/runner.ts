@@ -277,6 +277,73 @@ async function runPrintStep(
   return { output: { kind: "print", exitCode, stderr: err }, failure: null };
 }
 
+/** stdout 逐行解析；非 JSON 行（如混入的日志）跳过 */
+function parseJsonLines(text: string): unknown[] {
+  const out: unknown[] = [];
+  for (const line of text.split("\n")) {
+    if (!line.trim()) continue;
+    try {
+      out.push(JSON.parse(line));
+    } catch {
+      /* 跳过 */
+    }
+  }
+  return out;
+}
+
+/**
+ * stream-json 多轮：逐条写 user 消息，等到第 i 条 `result` 再写第 i+1 条，最后关 stdin。
+ * 进程提前退出时不再等（剩余消息不写），由调用方按 result 条数判失败。返回 stdout 全文。
+ */
+async function driveStreamInput(
+  proc: Bun.Subprocess<"pipe", "pipe", "pipe">,
+  inputs: string[],
+): Promise<string> {
+  let text = "";
+  let results = 0;
+  let exited = false;
+  // 用对象装回调：闭包里赋值的 `let` 在 TS 控制流分析下会被收窄成 null，调用处报不可调用
+  const waiter: { wake: (() => void) | null } = { wake: null };
+  const reader = (async () => {
+    const dec = new TextDecoder();
+    let buf = "";
+    const r = proc.stdout.getReader();
+    for (;;) {
+      const { value: chunk, done } = await r.read();
+      if (done) break;
+      const piece = dec.decode(chunk, { stream: true });
+      text += piece;
+      buf += piece;
+      let i: number;
+      while ((i = buf.indexOf("\n")) >= 0) {
+        const line = buf.slice(0, i);
+        buf = buf.slice(i + 1);
+        if (line.includes('"type":"result"')) {
+          results++;
+          waiter.wake?.();
+        }
+      }
+    }
+  })();
+  void proc.exited.then(() => {
+    exited = true;
+    waiter.wake?.();
+  });
+  for (let i = 0; i < inputs.length; i++) {
+    if (exited) break;
+    proc.stdin.write(
+      JSON.stringify({ type: "user", message: { role: "user", content: inputs[i] } }) + "\n",
+    );
+    proc.stdin.flush();
+    while (results <= i && !exited) {
+      await new Promise<void>((r) => (waiter.wake = r));
+    }
+  }
+  if (!exited) proc.stdin.end();
+  await reader;
+  return text;
+}
+
 export async function runCase(
   c: LoadedCase,
   launcher: Launcher,
@@ -375,37 +442,56 @@ export async function runCase(
     const replayFile = join(root, "replay.jsonl");
     writeFileSync(replayFile, replay);
 
+    const stream = def.streamInput !== undefined;
     const proc = Bun.spawn(
       [
         ...launcherArgv(launcher),
         ...(def.realPermissions ? [] : ["--dangerously-skip-permissions"]),
-        "--output-format",
-        "json",
+        ...(stream
+          ? ["-p", "--input-format", "stream-json", "--output-format", "stream-json", "--verbose"]
+          : ["--output-format", "json"]),
         ...def.argv,
       ],
       {
         cwd: repo,
         env: isolatedEnv(home, configDir, replayFile, def.env),
-        stdin: "ignore",
+        stdin: stream ? "pipe" : "ignore",
         stdout: "pipe",
         stderr: "pipe",
       },
     );
     const timer = setTimeout(() => proc.kill("SIGKILL"), CASE_TIMEOUT_MS);
+    const stdoutPromise = stream
+      ? driveStreamInput(proc, def.streamInput!)
+      : new Response(proc.stdout).text();
     const [stdoutText, stderrText, exitCode] = await Promise.all([
-      new Response(proc.stdout).text(),
+      stdoutPromise,
       new Response(proc.stderr).text(),
       proc.exited,
     ]);
     clearTimeout(timer);
 
     let stdout: unknown = null;
-    try {
-      stdout = JSON.parse(stdoutText);
-    } catch {
-      failures.push(
-        `stdout 不是合法 JSON（exit=${exitCode}）：${stdoutText.slice(0, 300)}\nstderr 末尾：${stderrText.slice(-500)}`,
-      );
+    if (stream) {
+      const messages = parseJsonLines(stdoutText);
+      const results = messages.filter((m) => (m as { type?: unknown }).type === "result");
+      if (results.length !== def.streamInput!.length) {
+        failures.push(
+          `stream-json 输入 ${def.streamInput!.length} 条，result 只有 ${results.length} 条（exit=${exitCode}）\nstderr 末尾：${stderrText.slice(-500)}`,
+        );
+      }
+      // 运行器后续按 stdout.session_id 找轨迹；数组本身交给断言
+      stdout = Object.assign(messages, {
+        session_id: (results.find((r) => (r as any).session_id) as any)?.session_id,
+      });
+    } else {
+      try {
+        stdout = JSON.parse(stdoutText);
+      } catch {
+        failures.push(
+          `stdout 不是合法 JSON（exit=${exitCode}）：${stdoutText.slice(0, 300)}\nstderr 末尾：${stderrText.slice(-500)}`,
+        );
+      }
     }
 
     const steps: StepOutput[] = [];
