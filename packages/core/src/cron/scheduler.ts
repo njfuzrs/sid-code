@@ -234,6 +234,28 @@ export class Scheduler {
   private supersededIds = new Set<string>();
 
   /**
+   * 唤醒已触发（fire）的时刻（D10）：id → `Date.now()` 基准的时间戳。
+   *
+   * 为什么记在调度器而不是等待登记表：fire 是调度器的事实（`fireOnce` 在这里把任务
+   * 从 `sessionTasks` 删掉），而等待登记表已经反向依赖本模块（`getScheduler`）。
+   * 把「触发过」也记在本模块，等待表查一次即可——与 `isSuperseded` 同一形状，
+   * 不引入新的顶层循环依赖。
+   *
+   * 为什么需要它：触发到注入之间有一段窗口（宿主忙时 prompt 在
+   * `scheduledPromptQueue` 里排队）。这段窗口里调度器账上已经没有这条任务，
+   * 但它是「马上就要叫醒主循环」的等待源，不能判成「没人会回来」。
+   *
+   * 命中后**不删除**记录：一次会话里的唤醒是几十量级，内存可忽略；
+   * 删了会让「fire 之后、注入之前」的判定重新落空调度器。
+   */
+  private firedWakeupAt = new Map<string, number>();
+
+  /** 唤醒已触发的时刻（`Date.now()` 基准，D10）；从未触发 / 不是唤醒时为 `undefined`。 */
+  getWakeupFiredAt(taskId: string): number | undefined {
+    return this.firedWakeupAt.get(taskId);
+  }
+
+  /**
    * 取一条**会话级**任务（只看内存，不 refresh 磁盘）。
    *
    * 为什么单独开这个口子：等待登记表每次 `listWaits()` 都要问「这个唤醒还在吗」，
@@ -728,6 +750,14 @@ export class Scheduler {
    * 与调度器侧的 `ScheduledFire` 靠 task_id 配对。旧实现的 `onFire(prompt)` 只忽略第二个参数即可。
    */
   private fireTask(task: CronTask): void {
+    // D10：唤醒「触发」这一刻，调度器账上就再没有它了（`fireOnce` 随后的 else 分支
+    // 把它从 `sessionTasks` 删掉），但宿主的 `scheduledPromptQueue` 里可能还排着这条
+    // prompt 等注入。记下触发时刻，等待登记表据此把这段窗口算作「仍在等待」——
+    // 少了这一笔，todo 闸门会把「马上就会注入」误判成「没人会回来」并强推（9e3a681d 的形态）。
+    //
+    // 必须在 `onFire` **之前**记：宿主注入器是同步调用链，注入成功后立刻
+    // `releaseWait(terminal)`；标记晚于它，这条登记已经从等待表消失了，记也无处可查。
+    if (task.origin === "schedule_wakeup") this.firedWakeupAt.set(task.id, Date.now());
     if (this.opts.daemonMode && this.opts.onFireTask) {
       this.opts.onFireTask(task);
     } else {

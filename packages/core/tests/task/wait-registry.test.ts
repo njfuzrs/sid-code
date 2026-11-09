@@ -716,3 +716,126 @@ describe("D4 期限型等待源终态释放", () => {
     expect(await pending).toBe("idle");
   });
 });
+
+// ── D10：唤醒已触发、在宿主队列里等注入时仍算等待源（#674） ──
+//
+// 现象：唤醒到点触发（`fireOnce` 把它从调度器的 `sessionTasks` 删掉），宿主此刻正忙，
+// prompt 进 `scheduledPromptQueue` 等注入。这段窗口里旧判据要求 `getSessionTask()` 存在，
+// 于是 `hasPromisedWait()` 为 false → todo 闸门判「没人会回来」照样强推（9e3a681d 的形态）。
+// 实测 R9：`queued wakeup counted: false invalidated: false`。
+describe("D10 唤醒已触发、待注入", () => {
+  /**
+   * 起一条已到期的唤醒并接管调度器单例（onFire 记录被触发的 prompt）。
+   * 用真实 Scheduler 触发路径（`check()` → `fireOnce` → `fireTask`），
+   * 不用 `sessionTasks.delete` 模拟——后者测不出「触发与删除是同一次 check 内」的时序。
+   */
+  function armWakeup(id: string, subjects?: string[]): string[] {
+    const fired: string[] = [];
+    resetScheduler();
+    getScheduler({
+      onFire: (p) => fired.push(p),
+      isLoading: () => false,
+      sessionId: "t",
+      workspaceDir: tmpHome,
+    });
+    const fireAt = Date.now() - 1; // 已到期，check() 会立刻触发
+    addWakeupTask(id, fireAt);
+    registerWait({
+      id,
+      kind: "wakeup",
+      promise: { kind: "deadline", deadlineAt: fireAt },
+      description: `检查 PR #662 的 CI 状态 ${id}`,
+      registeredAt: Date.now(),
+      ...(subjects ? { subjects } : {}),
+    });
+    return fired;
+  }
+
+  test("T-D10-1（R9 迁入）触发后到注入前仍是等待源；注入后释放", () => {
+    setWakeupRegistrationEnabled(true);
+    const fired = armWakeup("wk-fired");
+
+    expect(hasPromisedWait()).toBe(true); // 触发前
+    (getScheduler() as any).check(); // 真实触发路径
+    expect(fired).toHaveLength(1); // 确实交给宿主了
+    // 触发即从调度器删除——旧判据在这一步之后必然返回 false
+    expect(getScheduler().getSessionTask("wk-fired")).toBeUndefined();
+
+    // ← 修复点：fire 了但还没注入，仍是「马上会叫醒主循环」的等待源
+    expect(hasPromisedWait()).toBe(true);
+
+    // 注入路径（app.ts 的 injectScheduledPrompt 就是这一句）
+    releaseWait("wk-fired", "terminal");
+    expect(hasPromisedWait()).toBe(false);
+  });
+
+  test("T-D10-2 触发后 30s 内没注入也没丢弃：判违约、发 failed 通知、不再算等待源", () => {
+    let mono = 0;
+    __setMonoClockForTest(() => mono);
+    const events: Array<{ event: string; data: Record<string, unknown> }> = [];
+    setWaitTraceSink((event, data) => events.push({ event, data }));
+    setWakeupRegistrationEnabled(true);
+
+    armWakeup("wk-lost");
+    (getScheduler() as any).check();
+    expect(hasPromisedWait()).toBe(true);
+
+    // 注入路径坏掉：过了宽限还没被注入或丢弃。不兜底的话无头 / stream-json 的
+    // 等待循环会永远等一个不会来的回报，进程不退出。
+    mono = DEADLINE_GRACE_MS + 1;
+    expect(hasPromisedWait()).toBe(false);
+
+    const released = events.find(
+      (e) => e.event === "WaitReleased" && e.data.id === "wk-lost" && e.data.late === true,
+    );
+    expect(released?.data.reason).toBe("expired");
+    expect(isWaitInvalidated("wk-lost")).toBe(true);
+    const notes = dequeuePendingNotifications();
+    expect(notes).toHaveLength(1);
+    expect(notes[0]!.structured?.summary).toContain("注入路径失效");
+  });
+
+  test("T-D10-3（与 D8 交互）已 fired 的唤醒被 S2 撤销：不再算等待源", () => {
+    setWakeupRegistrationEnabled(true);
+    armWakeup("wk-s2", ["gh:pr:662"]);
+    (getScheduler() as any).check();
+    expect(hasPromisedWait()).toBe(true);
+
+    const victims = invalidateWakeups("subject_terminal", {
+      subject: "gh:pr:662",
+      reasonText: "被等对象已终态",
+    });
+    expect(victims).toEqual(["wk-s2"]);
+    expect(hasPromisedWait()).toBe(false);
+    expect(isWaitInvalidated("wk-s2")).toBe(true);
+  });
+
+  test("T-D10-4 未触发的唤醒被 cron_delete 删除后立即失效（fired 分支不误放行）", () => {
+    setWakeupRegistrationEnabled(true);
+    armWakeup("wk-live"); // 只登记，不 check()：保持「未触发」
+    expect(hasPromisedWait()).toBe(true);
+
+    getScheduler().removeTask("wk-live");
+    // 未触发 → 仍按调度器的账判，不能因为「登记过」就永远算等待源
+    expect(hasPromisedWait()).toBe(false);
+  });
+
+  test("T-D10-5 同 id 重新登记：旧的触发记录不会把新唤醒当成「已在等注入」", async () => {
+    setWakeupRegistrationEnabled(true);
+    armWakeup("wk-reuse");
+    (getScheduler() as any).check();
+    expect(hasPromisedWait()).toBe(true);
+
+    // 时间前进后重新登记同 id（真实场景 id 随机、撞不上，这里只验判据不被旧记录污染）：
+    // 新登记的唤醒还没触发，调度器里也没有它 → 不能算等待源。
+    await new Promise((r) => setTimeout(r, 2));
+    registerWait({
+      id: "wk-reuse",
+      kind: "wakeup",
+      promise: { kind: "deadline", deadlineAt: Date.now() + 600_000 },
+      description: "重新登记的唤醒",
+      registeredAt: Date.now(),
+    });
+    expect(hasPromisedWait()).toBe(false);
+  });
+});
