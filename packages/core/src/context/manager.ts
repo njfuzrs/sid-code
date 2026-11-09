@@ -1986,6 +1986,12 @@ export class Manager {
     percentOfTrigger: number;
     /** 当前压缩档位（UI 变色应据此，而非硬编码百分比） */
     level: CompactionLevel;
+    /**
+     * estimateTokens 是否已被至少一次真实 usage 校准（isCalibrated 的直读）。
+     * false = 当前百分比是纯字符启发式估算（会话尚未发过请求），UI 可据此加「~」前缀，
+     * 提示用户这是估值而非实测；首条消息后 recordActualTokens 校准即为 true。
+     */
+    calibrated: boolean;
   } {
     const used = this.estimateTokens(toolCount);
     const t = this.getCompactionThresholds();
@@ -1997,6 +2003,7 @@ export class Manager {
       triggerPercentOfWindow: Math.round((trigger / this.maxTokens) * 100),
       percentOfTrigger: Math.round((used / trigger) * 100),
       level: this.getCompactionLevel(toolCount),
+      calibrated: this.calibrated,
     };
   }
 

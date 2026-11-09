@@ -9,6 +9,9 @@
  */
 
 import { describe, test, expect, beforeEach, afterEach } from "bun:test";
+import { mkdtempSync, rmSync } from "fs";
+import { join } from "path";
+import { tmpdir } from "os";
 import {
   __resetWaitRegistryForTest,
   __setMonoClockForTest,
@@ -30,17 +33,50 @@ import {
   SHELL_QUIESCENT_MS,
   trackShellActivity,
 } from "../../src/task/background-await.ts";
-import { clearAllTasks, registerTask } from "../../src/task/registry.ts";
+import { waitForBackgroundNotification } from "../../src/task/background-wake.ts";
+import {
+  clearAllTasks,
+  getTask,
+  offTaskChanged,
+  onTaskChanged,
+  registerTask,
+  updateTask,
+} from "../../src/task/registry.ts";
+import { dequeuePendingNotifications } from "../../src/task/notification.ts";
+import { __clearActiveMonitorsForTest } from "../../src/task/monitor-task.ts";
+import { MonitorTool } from "../../src/tool/monitor.ts";
+import { BashTool } from "../../src/tool/bash.ts";
 import { resetScheduler, getScheduler } from "../../src/cron/scheduler.ts";
 import { hasAwaitedBackgroundTasks } from "../../src/task/background-await.ts";
 import type { CronTask } from "../../src/cron/types.ts";
-import type {
-  LocalAgentTaskState,
-  LocalShellTaskState,
-  LocalWorkflowTaskState,
+import {
+  isTerminalStatus,
+  type LocalAgentTaskState,
+  type LocalShellTaskState,
+  type LocalWorkflowTaskState,
 } from "../../src/task/types.ts";
 
 const T0 = 1_700_000_000_000;
+
+/** D4 的真实入口用例会起真实子进程，落盘目录要重定向（见 beforeEach） */
+let originalConfigDir: string | undefined;
+let tmpHome = "";
+
+/** 等一个任务进终态（真实子进程用）。超时直接失败，不要静默挂到 jest 默认超时。 */
+function waitForTaskTerminal(id: string, timeoutMs = 4000): Promise<void> {
+  return new Promise((resolve, reject) => {
+    const start = Date.now();
+    const tick = () => {
+      const task = getTask(id);
+      if (task && isTerminalStatus(task.status)) return resolve();
+      if (Date.now() - start > timeoutMs) {
+        return reject(new Error(`任务 ${id} 未在 ${timeoutMs}ms 内进终态`));
+      }
+      setTimeout(tick, 20);
+    };
+    tick();
+  });
+}
 
 function shellTask(id: string, overrides: Partial<LocalShellTaskState> = {}): LocalShellTaskState {
   return {
@@ -114,6 +150,11 @@ function addWakeupTask(
 }
 
 beforeEach(() => {
+  // D4 的真实入口用例会经 MonitorTool / BashTool 起真实子进程 → 写 tasks 目录。
+  // 按 CONTRIBUTING「测试约定」把落盘目标重定向到 tmpdir；存/恢复原值，不要无条件 delete。
+  originalConfigDir = process.env.SID_CONFIG_DIR;
+  tmpHome = mkdtempSync(join(tmpdir(), "sid-wait-registry-"));
+  process.env.SID_CONFIG_DIR = tmpHome;
   __resetWaitRegistryForTest();
   __resetBackgroundAwaitForTest();
   // task registry 是模块级单例：不清会把上一个用例的 running 任务带进来，
@@ -124,10 +165,15 @@ beforeEach(() => {
 });
 
 afterEach(() => {
+  __clearActiveMonitorsForTest();
   __resetWaitRegistryForTest();
   __resetBackgroundAwaitForTest();
   clearAllTasks();
+  dequeuePendingNotifications();
   resetScheduler();
+  if (originalConfigDir === undefined) delete process.env.SID_CONFIG_DIR;
+  else process.env.SID_CONFIG_DIR = originalConfigDir;
+  rmSync(tmpHome, { recursive: true, force: true });
 });
 
 describe("W1 等待登记表", () => {
@@ -498,5 +544,175 @@ describe("W3 唤醒登记与确定信号失效", () => {
     expect(extractWaitSubjects("看 pull/662 合并")).toContain("gh:pr:662");
     expect(extractWaitSubjects("等 run 12345678 结束")).toContain("gh:run:12345678");
     expect(extractWaitSubjects("随便等着")).toEqual([]);
+  });
+});
+
+// ── D4：期限型等待源正常结束后不释放（#674 #683） ──
+//
+// 现象：`wait_until` 后台 shell / monitor 在期限前正常结束（退出 0、通知已送达），
+// 等待登记项却还在；期限 + 30s 后只要有人调 `listWaits()`（T2 闸门、P1 拦截、
+// 无头等待循环每轮都调），就会发 `WaitReleased{reason:"expired", late:true}`
+// 并往队列塞一条 failed：「期限已过仍未收到任何回报（承诺被违背）」。
+describe("D4 期限型等待源终态释放", () => {
+  function traceEvents(): Array<{ event: string; data: Record<string, unknown> }> {
+    const events: Array<{ event: string; data: Record<string, unknown> }> = [];
+    setWaitTraceSink((event, data) => events.push({ event, data }));
+    return events;
+  }
+
+  function deadlineWait(id: string, description: string): void {
+    registerWait({
+      id,
+      kind: "shell",
+      promise: { kind: "deadline", deadlineAt: Date.now() + 600_000 },
+      description,
+      registeredAt: Date.now(),
+    });
+  }
+
+  test("T-D4-1（R1 迁入）正常结束的 deadline 源：终态即释放，期限+宽限后无 late 与假 failed 通知", () => {
+    let mono = 0;
+    __setMonoClockForTest(() => mono);
+    const events = traceEvents();
+
+    registerTask(shellTask("b1", { command: "until curl", description: "until curl" }));
+    registerWait({
+      id: "b1",
+      kind: "shell",
+      promise: { kind: "deadline", deadlineAt: Date.now() + 600_000 },
+      description: "until curl",
+      registeredAt: Date.now(),
+    });
+    // 命令 20s 后正常退出：终态但**还没被驱逐**（驱逐要「已送达 + 过一个回合 + 30s」）
+    updateTask("b1", (t) => ({ ...t, status: "completed", endTime: Date.now(), notified: true }));
+    // 退出通知已经送达模型，从队列里取走
+    dequeuePendingNotifications();
+
+    // 用户离开超过「期限 + 宽限」后再发消息：主循环第一件事就是问「还有等待源吗」
+    mono = 600_000 + DEADLINE_GRACE_MS + 1;
+    expect(hasPromisedWait()).toBe(false);
+
+    const released = events.filter((e) => e.event === "WaitReleased" && e.data.id === "b1");
+    expect(released.filter((e) => e.data.late === true)).toHaveLength(0);
+    expect(released.map((e) => e.data.reason)).toEqual(["terminal"]);
+    expect(dequeuePendingNotifications()).toHaveLength(0);
+  });
+
+  test("T-D4-2 释放发生在终态时刻，不等下一次查询（held_ms 记真实持有时长）", () => {
+    const events = traceEvents();
+    registerTask(shellTask("quick"));
+    deadlineWait("quick", "一秒就结束的等待");
+
+    updateTask("quick", (t) => ({ ...t, status: "completed", notified: true }));
+
+    // 关键：这里**没有**调用 listWaits / hasPromisedWait。
+    // 释放由 registry 的终态跃迁驱动，而不是「下次有人问」。
+    const released = events.filter((e) => e.event === "WaitReleased" && e.data.id === "quick");
+    expect(released).toHaveLength(1);
+    expect(released[0]!.data.reason).toBe("terminal");
+    // 登记到终态是同步发生的，持有时长不可能到秒级
+    expect(released[0]!.data.held_ms as number).toBeLessThan(1_000);
+  });
+
+  test("T-D4-3 sweep 兜底：登记项对上已终态任务时按 terminal 释放，不算违约", () => {
+    let mono = 0;
+    __setMonoClockForTest(() => mono);
+    const events = traceEvents();
+
+    // 任务注册时就是终态 → 不会有「终态跃迁」通知，订阅链路帮不上；这正是 sweep 的兜底场景
+    registerTask(shellTask("stale", { status: "completed" }));
+    deadlineWait("stale", "已经结束但登记还在");
+    mono = 600_000 + DEADLINE_GRACE_MS + 1;
+
+    expect(hasPromisedWait()).toBe(false);
+    const released = events.filter((e) => e.event === "WaitReleased" && e.data.id === "stale");
+    expect(released.map((e) => e.data.reason)).toEqual(["terminal"]);
+    expect(released.some((e) => e.data.late === true)).toBe(false);
+    expect(dequeuePendingNotifications()).toHaveLength(0);
+  });
+
+  test("T-D4-4 真实入口：monitor 正常结束后期限+宽限不误报", async () => {
+    let mono = 0;
+    __setMonoClockForTest(() => mono);
+    const events = traceEvents();
+
+    const tool = new MonitorTool();
+    const result = await tool.call({ description: "一次就结束", command: "echo ok; exit 0" });
+    expect(result.isError).toBeFalsy();
+    const id = listWaits().find((w) => w.kind === "monitor")?.id;
+    expect(id).toBeDefined();
+
+    await waitForTaskTerminal(id!);
+    // monitor 自己的完成通知已经送达模型
+    dequeuePendingNotifications();
+    expect(getTask(id!)?.status).toBe("completed");
+    // 登记项随终态释放，不必等驱逐
+    expect(listWaits().some((w) => w.id === id)).toBe(false);
+
+    // 期限 + 宽限之后再问一次（用户离开后回来发消息的形态）。
+    // 按真实 deadlineAt 算，不写死 60s：monitor 默认期限是 300s，写死会落不到期限之后。
+    const deadlineAt = (getTask(id!) as { deadlineAt: number }).deadlineAt;
+    mono = deadlineAt - Date.now() + DEADLINE_GRACE_MS + 1_000;
+    expect(hasPromisedWait()).toBe(false);
+    const late = events.filter(
+      (e) => e.event === "WaitReleased" && e.data.id === id && e.data.late === true,
+    );
+    expect(late).toHaveLength(0);
+    expect(dequeuePendingNotifications()).toHaveLength(0);
+  });
+
+  test("T-D4-5 真实入口：wait_until 后台命令正常结束后同样释放", async () => {
+    let mono = 0;
+    __setMonoClockForTest(() => mono);
+    const events = traceEvents();
+
+    const bash = new BashTool();
+    const result = await bash.execute({
+      command: "true",
+      run_in_background: true,
+      wait_until_seconds: 60,
+    });
+    const parsed = JSON.parse(result.output) as { task_id: string };
+    const id = parsed.task_id;
+    expect(listWaits().find((w) => w.id === id)?.promise.kind).toBe("deadline");
+
+    await waitForTaskTerminal(id);
+    dequeuePendingNotifications();
+    expect(listWaits().some((w) => w.id === id)).toBe(false);
+
+    mono = 60_000 + DEADLINE_GRACE_MS + 1;
+    expect(hasPromisedWait()).toBe(false);
+    const late = events.filter(
+      (e) => e.event === "WaitReleased" && e.data.id === id && e.data.late === true,
+    );
+    expect(late).toHaveLength(0);
+    expect(dequeuePendingNotifications()).toHaveLength(0);
+  });
+
+  test("T-D4-6 无头等待不多挂：终态后立即 resolve idle，订阅方能看到释放后的最终状态", async () => {
+    registerTask(shellTask("m1"));
+    registerWait({
+      id: "m1",
+      kind: "monitor",
+      promise: { kind: "deadline", deadlineAt: Date.now() + 600_000 },
+      description: "盯 CI",
+      registeredAt: Date.now(),
+    });
+
+    // 先挂起：有承诺 → 立即判定不成立，走订阅等下一次任务变更
+    const pending = waitForBackgroundNotification();
+
+    // 排在 wait-registry 的终态释放监听器之后注册，记录每一次重判看到的口径
+    const observed: boolean[] = [];
+    const probe = () => observed.push(hasPromisedWait());
+    onTaskChanged(probe);
+    updateTask("m1", (t) => ({ ...t, status: "completed", notified: true }));
+    offTaskChanged(probe);
+
+    // 释放发生在终态跃迁的同一同步段；补的 notifyTaskChanged 让订阅方再看到一次
+    // **释放后**的状态。少了这一补，需要在释放前评估的那一方要等下一次任务变更才重判（D4 修复第 4 条）。
+    expect(observed.length).toBeGreaterThanOrEqual(2);
+    expect(observed[observed.length - 1]).toBe(false);
+    expect(await pending).toBe("idle");
   });
 });

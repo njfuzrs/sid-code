@@ -148,6 +148,37 @@ export function deriveContextColor(
   return defaultColor;
 }
 
+/**
+ * 上下文占用列派生（改动 1/4）。
+ *
+ * 显示条件从「已发过请求（usage 非零）」解耦为「估算有值（contextPercent > 0）」：
+ * 打开 TUI / 刚 /clear 时 usage 全零但常驻开销（system prompt + 工具 schema）已在，
+ * 估算值就是用户想看的「初始占用」——原条件把它整个藏掉，是本列在会话开始前不可见的原因。
+ * contextPercent 归零（估算本身为 0，如空 system prompt + 零工具的极端配置）时返回 null。
+ *
+ * ~ 前缀（改动 4）：未经真实 usage 校准（contextEstimated）时给百分比加 `~`，
+ * 区分「纯字符启发式估值」与「已校准实测」——首条消息后 recordActualTokens 校准，
+ * 前缀消失、数值可能跳变，用户能看出那是校准而不是凭空涨的。
+ * `~` 只前缀 used 百分比：触发点由窗口算出（确定值），不参与估算标记。
+ */
+export function deriveContext(input: {
+  contextPercent: number;
+  contextTriggerPercent?: number;
+  contextLevel?: "none" | "soft" | "hard" | "emergency";
+  contextEstimated?: boolean;
+  defaultColor: Color;
+}): { text: string; color: Color } | null {
+  const { contextPercent, contextTriggerPercent, contextLevel, contextEstimated, defaultColor } =
+    input;
+  if (contextPercent <= 0) return null;
+  const prefix = contextEstimated ? "~" : "";
+  const text =
+    contextTriggerPercent && contextTriggerPercent > 0
+      ? `${prefix}${contextPercent}%/${contextTriggerPercent}%`
+      : `${prefix}${contextPercent}%`;
+  return { text, color: deriveContextColor(contextPercent, defaultColor, contextLevel) };
+}
+
 /** 费用 → 文本 + 语义色（≥95% 红 / ≥80% 黄）。DeepSeek 用 ≈$ 标注估算。 */
 export function deriveCost(
   costUSD: number,
@@ -412,6 +443,8 @@ export interface StatusLineInput {
   scrollPercent?: number;
   /** 10.3：会话累计缓存节省金额（美元） */
   cacheSavingsUSD?: number;
+  /** true = contextPercent 未经真实 usage 校准（Footer 显示 ~ 前缀） */
+  contextEstimated?: boolean;
   /**
    * 会话累计 API 调用次数（`SessionState.getTotalRequests()`）。
    * 省略 → 视为 0 → 该列不渲染（旧调用方/测试不必改）。
@@ -444,6 +477,7 @@ export function useStatusLineData(input: StatusLineInput): StatusLineData {
     contextPercent,
     contextTriggerPercent,
     contextLevel,
+    contextEstimated,
     model,
     scrollPercent,
     cacheSavingsUSD,
@@ -476,19 +510,15 @@ export function useStatusLineData(input: StatusLineInput): StatusLineData {
       cache: deriveCacheMetrics(usage, model, config.availableModels),
       cacheSavings: deriveCacheSavings(cacheSavingsUSD ?? 0),
       cost: deriveCost(costUSD, costLimit, model),
-      // 没有任何用户交互（API 调用）时不显示上下文占用，避免系统开销造成虚假百分比
-      context:
-        usage.inputTokens === 0 && usage.outputTokens === 0
-          ? null
-          : {
-              // P1-2：带上触发点锚（「17%/82%」）。只显示前一个数字时，用户无从判断
-              // 「17% 算不算高、离压缩还有多远」——这正是本次事故用户困惑的直接来源。
-              text:
-                contextTriggerPercent && contextTriggerPercent > 0
-                  ? `${contextPercent}%/${contextTriggerPercent}%`
-                  : `${contextPercent}%`,
-              color: deriveContextColor(contextPercent, itemColor, contextLevel),
-            },
+      // 显示条件与 usage 解耦（deriveContext）：估算有值即显示——打开 TUI / 刚 /clear 时
+      // usage 全零但常驻开销（system prompt + 工具 schema）已在，那正是用户要看的初始占用。
+      context: deriveContext({
+        contextPercent,
+        contextTriggerPercent,
+        contextLevel,
+        contextEstimated,
+        defaultColor: itemColor,
+      }),
       model,
       scroll: showScroll ? { text: `↑${scrollPercent}%` } : null,
       effort: deriveEffort(config.effortDisplay, itemColor),
@@ -514,6 +544,7 @@ export function useStatusLineData(input: StatusLineInput): StatusLineData {
     contextPercent,
     contextTriggerPercent,
     contextLevel,
+    contextEstimated,
     model,
     scrollPercent,
     cacheSavingsUSD,

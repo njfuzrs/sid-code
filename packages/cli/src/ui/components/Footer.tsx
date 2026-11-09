@@ -64,6 +64,8 @@ interface FooterProps {
   contextTriggerPercent?: number;
   /** P1-5：真实压缩档位，变色据此（与 getCompactionLevel 同源） */
   contextLevel?: "none" | "soft" | "hard" | "emergency";
+  /** true = 未经真实 usage 校准的估算，显示 `~` 前缀（见 deriveContext） */
+  contextEstimated?: boolean;
   model: string;
   scrollPercent?: number;
   /** 10.3：会话累计缓存节省金额（美元） */

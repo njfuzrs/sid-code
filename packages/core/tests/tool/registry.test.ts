@@ -222,3 +222,83 @@ describe("Registry.removeByNames（disallowedTools 裁剪）", () => {
     expect(reg.definitions().map((d) => d.name)).toEqual(["read"]);
   });
 });
+
+/**
+ * onChange 工具池变更广播。
+ *
+ * 消费方（app.ts）用它刷新 setToolSchemaTokens + 推送 TUI 上下文占用——工具池是
+ * 异步变化的（MCP 连上后循环 register 几十个工具、断开重连整批换），快照只在
+ * 启动时算一次的话估算持续偏低。这里锁三条契约：变更真的广播、去抖（同一同步
+ * 批次只广播一次）、无变更的操作不广播。
+ */
+describe("Registry.onChange 工具池变更广播", () => {
+  // 微任务去抖：断言前先让 queueMicrotask 跑干
+  const flush = () => new Promise((r) => setTimeout(r, 0));
+
+  test("register 后广播（MCP 异步连接的路径）", async () => {
+    const reg = new Registry();
+    let fired = 0;
+    reg.onChange(() => {
+      fired++;
+    });
+    reg.register(new MockTool("mcp__srv__tool"));
+    expect(fired).toBe(0); // 微任务去抖：同步批内不立即触发
+    await flush();
+    expect(fired).toBe(1);
+  });
+
+  test("同一同步批次注册 N 个工具只广播一次（去抖）", async () => {
+    const reg = new Registry();
+    let fired = 0;
+    reg.onChange(() => {
+      fired++;
+    });
+    // 模拟 MCP 连上后 onToolsRefresh 的循环注册
+    for (let i = 0; i < 30; i++) reg.register(new MockTool(`mcp__srv__t${i}`));
+    await flush();
+    expect(fired).toBe(1);
+  });
+
+  test("removeByPrefix 移除后广播，无命中不广播（断开重连整批换）", async () => {
+    const reg = new Registry();
+    reg.register(new MockTool("mcp__a__x"));
+    await flush();
+    let fired = 0;
+    reg.onChange(() => {
+      fired++;
+    });
+    // 前缀无命中 → 不广播
+    reg.removeByPrefix("mcp__none__");
+    await flush();
+    expect(fired).toBe(0);
+    // 有命中 → 广播
+    reg.removeByPrefix("mcp__a__");
+    await flush();
+    expect(fired).toBe(1);
+  });
+
+  test("重复注册被拒（先到先得）不广播：拒收不是变更", async () => {
+    const reg = new Registry();
+    reg.register(new MockTool("read"));
+    await flush();
+    let fired = 0;
+    reg.onChange(() => {
+      fired++;
+    });
+    reg.register(new MockTool("read"));
+    await flush();
+    expect(fired).toBe(0);
+  });
+
+  test("取消订阅后不再广播", async () => {
+    const reg = new Registry();
+    let fired = 0;
+    const off = reg.onChange(() => {
+      fired++;
+    });
+    off();
+    reg.register(new MockTool("read"));
+    await flush();
+    expect(fired).toBe(0);
+  });
+});

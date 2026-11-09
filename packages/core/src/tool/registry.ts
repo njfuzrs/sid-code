@@ -120,6 +120,10 @@ const SIMPLE_MODE_TOOLS = new Set(["read", "grep", "glob", "ls", "read_many"]);
 export class Registry {
   private builtInTools = new Map<string, LegacyTool>();
   private mcpTools = new Map<string, LegacyTool>();
+  /** 工具池变更监听器（见 onChange） */
+  private changeListeners: Array<() => void> = [];
+  /** 微任务去抖旗标：同一批变更（如 MCP 连上后循环 register 几十个工具）只广播一次 */
+  private changeNotifyScheduled = false;
   /** 延迟加载工具集合（预留给 ToolSearch） */
   private deferredTools = new Set<string>();
   /**
@@ -223,6 +227,49 @@ export class Registry {
       return;
     }
     target.set(name, tool);
+    this.scheduleChangeNotify();
+  }
+
+  /**
+   * 订阅工具池变更（注册 / 移除工具后触发）。
+   *
+   * 动机：工具 schema 是上下文常驻开销的一部分（ContextManager.estimateTokens 以
+   * setToolSchemaTokens 注入的快照参与估算），而工具池是异步变化的——MCP server
+   * 启动后异步连接、断开重连都会整批增删工具。快照只在启动时算一次的话，MCP 连上后
+   * 估算持续偏低（schema 少算、compact 触发过晚），TUI 状态栏的上下文占用也停在旧值。
+   *
+   * 与 UnifiedCommandRegistry.onCommandsChanged 同构：由**唯一持有变更事实的一方**
+   * （本注册表）广播，消费侧订阅，而不是在每个变更点各自记得刷新。
+   *
+   * 广播经微任务去抖（scheduleChangeNotify）：MCP 连上后循环 register 几十个工具
+   * 是同一同步批次，订阅方的重算（序列化全部工具定义估算 token，O(工具数)）只跑一次。
+   *
+   * @returns 取消订阅函数
+   */
+  onChange(listener: () => void): () => void {
+    this.changeListeners.push(listener);
+    return () => {
+      this.changeListeners = this.changeListeners.filter((l) => l !== listener);
+    };
+  }
+
+  /** 调度一次变更广播（微任务去抖）。只应在**实际改变了工具集合**的路径调用。 */
+  private scheduleChangeNotify(): void {
+    if (this.changeNotifyScheduled) return;
+    this.changeNotifyScheduled = true;
+    queueMicrotask(() => {
+      this.changeNotifyScheduled = false;
+      for (const listener of this.changeListeners) {
+        try {
+          listener();
+        } catch (err) {
+          getLogger().debug(
+            "TOOL",
+            `工具池变更监听器异常（忽略）: ${err instanceof Error ? err.message : String(err)}`,
+          );
+        }
+      }
+    });
   }
 
   /**
@@ -372,12 +419,20 @@ export class Registry {
 
   /** 移除名称以指定前缀开头的所有工具 */
   removeByPrefix(prefix: string): void {
+    let changed = false;
     for (const name of this.builtInTools.keys()) {
-      if (name.startsWith(prefix)) this.builtInTools.delete(name);
+      if (name.startsWith(prefix)) {
+        this.builtInTools.delete(name);
+        changed = true;
+      }
     }
     for (const name of this.mcpTools.keys()) {
-      if (name.startsWith(prefix)) this.mcpTools.delete(name);
+      if (name.startsWith(prefix)) {
+        this.mcpTools.delete(name);
+        changed = true;
+      }
     }
+    if (changed) this.scheduleChangeNotify();
   }
 
   /**
@@ -407,6 +462,7 @@ export class Registry {
         removed.push(name);
       }
     }
+    if (removed.length > 0) this.scheduleChangeNotify();
     return removed;
   }
 
@@ -475,6 +531,7 @@ export class Registry {
         removed.push(real);
       }
     }
+    if (removed.length > 0) this.scheduleChangeNotify();
     return removed;
   }
 
