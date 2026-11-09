@@ -1993,7 +1993,18 @@ export class Manager {
      */
     calibrated: boolean;
   } {
-    const used = this.estimateTokens(toolCount);
+    // 与 getCompactionLevel **同源**扣掉本地已释放量（2026-11-09 修正）。
+    //
+    // 此前这里直接 `estimateTokens(toolCount)`，而 getCompactionLevel 会减去
+    // `tokenFreedTracker.getTotalFreed()` —— 同一份估算，决策扣了账、展示没扣。
+    // tokenFreedTracker 记的正是「发送副本已经瘦掉、但全量历史里还在」的部分：
+    // masking（`manager.ts` 的 applyStickyMasking）、大输出清理（KEEP_RECENT_OUTPUTS）、
+    // 冷缓存清理，三者都对 API usage 不可见。不扣的后果是状态栏与 /context 恒按
+    // 膨胀历史计价，长会话实测虚高 1.9–2.7 倍（3 个会话：1,162,927→438,012 等）。
+    const used = Math.max(
+      0,
+      this.estimateTokens(toolCount) - this.tokenFreedTracker.getTotalFreed(),
+    );
     const t = this.getCompactionThresholds();
     const trigger = Math.max(1, t.compactionTriggerUsed); // 防 0 除
     return {
@@ -2089,6 +2100,13 @@ export class Manager {
         }
       }
     }
+
+    // 展示口径与 getContextUsageForDisplay / getCompactionLevel 同源：扣掉本地已释放量。
+    // tokenFreedTracker 的三类记账来源（coldCacheClear / cleanedMessages / masking）释放的
+    // 都是 tool_result 内容，故从该分类里扣；扣不下就不扣（分类不得为负——宁可 total 略高于
+    // 决策口径，也不在这里造一个自相矛盾的负值分类）。
+    const freed = this.tokenFreedTracker.getTotalFreed();
+    toolResult -= Math.min(freed, toolResult);
 
     // 校准：与 estimateTokens 一致，收到真实 usage 后各分类同比缩放
     const factor = this.calibrated ? this.calibrationFactor : 1;

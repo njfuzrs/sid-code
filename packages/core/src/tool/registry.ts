@@ -631,6 +631,10 @@ export class Registry {
     if (!tool) return false;
     if (!this.isToolDeferred(tool)) return false; // 本就可见，无需激活
     this.activatedTools.add(toolName);
+    // 激活改变了「实际发送的工具集合」——本工具从此进 activeDefinitions()，
+    // 它的 schema 开始真实占用上下文。订阅方（app.ts）据此重算 toolSchemaTokens +
+    // 推送状态栏占用；漏了这一步，估算会停在对延迟工具的排除口径上，持续偏低。
+    this.scheduleChangeNotify();
     return true;
   }
 

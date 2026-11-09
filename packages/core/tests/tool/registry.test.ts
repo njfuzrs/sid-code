@@ -301,4 +301,42 @@ describe("Registry.onChange 工具池变更广播", () => {
     await flush();
     expect(fired).toBe(0);
   });
+
+  /**
+   * 激活延迟工具也是「实际发送的工具集合」变了：该工具从此刻起进 activeDefinitions()，
+   * 它的 schema 开始真实占用上下文。漏了这次广播，消费方（app.ts 的
+   * refreshToolSchemaTokens）会停在对延迟工具的**排除**口径上，估算持续偏低。
+   */
+  test("activateTool 激活延迟工具后广播（激活会改变实际发送的工具集）", async () => {
+    const reg = new Registry();
+    // MCP 前缀默认延迟（registry.ts 的 isToolDeferred）
+    reg.register(new MockTool("mcp__srv__tool"));
+    await flush();
+
+    let fired = 0;
+    reg.onChange(() => {
+      fired++;
+    });
+    expect(reg.activateTool("mcp__srv__tool")).toBe(true);
+    expect(fired).toBe(0); // 微任务去抖
+    await flush();
+    expect(fired).toBe(1);
+    // 激活后该工具真的进了「实际发送」集合——广播的事实依据
+    expect(reg.activeDefinitions().map((d) => d.name)).toContain("mcp__srv__tool");
+  });
+
+  test("activateTool 对未注册 / 本就可见的工具返回 false 且不广播（无变更不广播）", async () => {
+    const reg = new Registry();
+    reg.register(new MockTool("read")); // 内置工具，非延迟
+    await flush();
+
+    let fired = 0;
+    reg.onChange(() => {
+      fired++;
+    });
+    expect(reg.activateTool("not_registered")).toBe(false);
+    expect(reg.activateTool("read")).toBe(false); // 本就可见，激活是 no-op
+    await flush();
+    expect(fired).toBe(0);
+  });
 });
