@@ -17,9 +17,11 @@ import { tmpdir } from "os";
 import {
   BURST_LINE_LIMIT,
   LineSplitter,
+  MAX_BURST_FLUSH_LINES,
   MAX_EVENT_LINE_CHARS,
   MAX_FINAL_FLUSH_LINES,
   MonitorRateGate,
+  NOTIFY_WINDOW_MS,
   PER_MINUTE_NOTIFY_LIMIT,
   TOTAL_NOTIFY_LIMIT,
   __clearActiveMonitorsForTest,
@@ -31,6 +33,7 @@ import type { MonitorGateLimits } from "../../src/task/monitor-task.ts";
 import { clearAllTasks, getTask } from "../../src/task/registry.ts";
 import { dequeuePendingNotifications } from "../../src/task/notification.ts";
 import type { LocalMonitorTaskState } from "../../src/task/types.ts";
+import { TaskStopTool } from "../../src/tool/task-stop.ts";
 
 let originalConfigDir: string | undefined;
 let tmpHome = "";
@@ -323,5 +326,191 @@ describe("spawnMonitorTask（真实子进程）", () => {
       return text.includes("x".repeat(3000)) ? text : undefined;
     });
     expect(content.length).toBeGreaterThan(3000);
+  });
+});
+
+/**
+ * D3：暂存行没有定时冲刷；到期、限流停止、`task_stop` 都会丢掉缓冲与暂存行。
+ *
+ * 三个修复点各自被独立的断言锁住，互不覆盖：
+ * 1. 窗口定时器 —— 暂存行不必等下一行到达；
+ * 2. `finalizeAndDrain` 四出口共用 —— 终态前一定先冲刷（到期 / task_stop 各一条）；
+ * 3. 突发阀截断 —— 触发那一批的行也收进冲刷，且只带最后 N 行。
+ */
+describe("D3：暂存行冲刷与终态出口收敛", () => {
+  test("flushDeferred：窗口重置时把暂存行合成一条送出，并开始新窗口", () => {
+    const gate = new MonitorRateGate({ perMinuteNotifyLimit: 1 });
+    const t0 = 1_000_000;
+    expect(gate.admit(["a"], t0).action).toBe("emit");
+    expect(gate.admit(["b"], t0 + 1).action).toBe("defer");
+    expect(gate.admit(["c"], t0 + 2).action).toBe("defer");
+    expect(gate.deferredCount).toBe(2);
+
+    // 窗口还没到：返回 null，调用方应重挂而不是丢弃
+    expect(gate.flushDeferred(t0 + 30_000)).toBeNull();
+    expect(gate.deferredCount).toBe(2);
+
+    // 窗口已重置：暂存行作为一条新事件送出
+    const decided = gate.flushDeferred(t0 + NOTIFY_WINDOW_MS)!;
+    expect(decided.action).toBe("emit");
+    expect(decided.event).toBe("b\nc");
+    expect(gate.deferredCount).toBe(0);
+
+    // 新窗口已记账：紧接着的一批会被继续暂存（证明窗口真的重置了）
+    expect(gate.admit(["d"], t0 + NOTIFY_WINDOW_MS + 1).action).toBe("defer");
+  });
+
+  test("flushDeferred：没有暂存行时返回 null（无定时器可挂）", () => {
+    const gate = new MonitorRateGate();
+    expect(gate.flushDeferred(1_000_000)).toBeNull();
+  });
+
+  test("msUntilWindowReset：无暂存返回 null；有暂存返回窗口剩余时间", () => {
+    const gate = new MonitorRateGate({ perMinuteNotifyLimit: 1 });
+    const t0 = 1_000_000;
+    expect(gate.msUntilWindowReset(t0)).toBeNull();
+    expect(gate.admit(["a"], t0).action).toBe("emit");
+    expect(gate.admit(["b"], t0 + 1).action).toBe("defer");
+    expect(gate.msUntilWindowReset(t0 + 20_000)).toBe(NOTIFY_WINDOW_MS - 20_000);
+  });
+
+  test(`drainAll 指定 maxLines：突发阀只带最后 ${MAX_BURST_FLUSH_LINES} 行`, () => {
+    const gate = new MonitorRateGate();
+    const lines = Array.from({ length: 100 }, (_, i) => `l${i + 1}`);
+    const event = gate.drainAll(lines, MAX_BURST_FLUSH_LINES)!;
+    const parts = event.split("\n");
+    expect(parts[0]).toContain(`前 ${100 - MAX_BURST_FLUSH_LINES} 行已省略`);
+    expect(parts[0]).toContain(".output");
+    expect(parts).toHaveLength(MAX_BURST_FLUSH_LINES + 1);
+    expect(parts).toContain("l100"); // 保尾：汇总行在最后
+    expect(parts).not.toContain(`l${100 - MAX_BURST_FLUSH_LINES}`); // 前段被省略
+  });
+
+  test("到期时暂存行在终态通知之前以事件送达（D3 / R3）", async () => {
+    // 7 行 × 0.3s 用满每分钟 6 条通知的持续阀，err7 被暂存；之后脚本沉默到期限。
+    // 修复前：err7 随 ctl 一起丢掉（R3 实测）。修复后：到期冲刷先送出 err7，再写终态。
+    const task = spawn({
+      command: `for i in 1 2 3 4 5 6 7; do echo "err$i"; sleep 0.3; done; sleep 5; exit 0`,
+      timeoutMs: 3_500,
+    });
+    await waitFor(() => {
+      const status = getTask(task.id)?.status;
+      return status && status !== "running" ? status : undefined;
+    }, 15_000);
+
+    const notifs = takeNotifications();
+    const eventIdx = notifs.findIndex((n) => n.event?.includes("err7") === true);
+    const terminalIdx = notifs.findIndex((n) => n.status !== "running");
+    expect(
+      notifs
+        .filter((n) => n.event !== undefined)
+        .map((n) => n.event!)
+        .join("\n"),
+    ).toContain("err7");
+    expect(eventIdx).toBeGreaterThan(-1);
+    expect(terminalIdx).toBeGreaterThan(-1);
+    // 事件先于终态：先给现场（哪个分片失败），再说结束
+    expect(eventIdx).toBeLessThan(terminalIdx);
+  }, 20_000);
+
+  test("暂存行在窗口重置时自动冲刷，不等下一行也不等退出（D3 修复 1）", async () => {
+    // perMinuteLimit=1、窗口 300ms：err1 投递后 err2 被暂存，此后脚本沉默 5s。
+    // 没有窗口定时器时 err2 只能等进程退出（5s 后）才被送出，那时任务已是终态。
+    const task = spawn({
+      command: `echo err1; sleep 0.25; echo err2; sleep 5`,
+      timeoutMs: 10_000,
+      gateLimits: { perMinuteNotifyLimit: 1, notifyWindowMs: 300 },
+    });
+    const collected: string[] = [];
+    await waitFor(() => {
+      for (const n of takeNotifications()) if (n.event !== undefined) collected.push(n.event);
+      return collected.join("\n").includes("err2") ? true : undefined;
+    }, 6_000);
+
+    expect(collected.join("\n")).toContain("err2");
+    // 关键：任务仍在运行——err2 是窗口冲刷送出的，不是退出 / 到期冲刷
+    expect(getTask(task.id)?.status).toBe("running");
+  }, 15_000);
+
+  test("task_stop 把暂存行一起冲刷出去，且事件先于终态通知（D3 修复 2）", async () => {
+    const task = spawn({
+      command: `for i in 1 2 3 4 5 6 7; do echo "err$i"; sleep 0.3; done; sleep 30`,
+      timeoutMs: 60_000,
+    });
+    // 等持续阀用满（6 条事件到达），再留 350ms 让 err7 进入批处理缓冲并被 defer
+    const seen: string[] = [];
+    await waitFor(() => {
+      for (const n of takeNotifications()) if (n.event !== undefined) seen.push(n.event);
+      return seen.length >= PER_MINUTE_NOTIFY_LIMIT ? true : undefined;
+    }, 8_000);
+    await new Promise((r) => setTimeout(r, 350));
+
+    const result = await new TaskStopTool().execute({ task_id: task.id });
+    expect((result as { isError?: boolean }).isError).toBeFalsy();
+    expect(getTask(task.id)?.status).toBe("killed");
+
+    const notifs = takeNotifications();
+    const eventIdx = notifs.findIndex((n) => n.event?.includes("err7") === true);
+    const terminalIdx = notifs.findIndex((n) => n.status === "killed");
+    expect(
+      notifs
+        .filter((n) => n.event !== undefined)
+        .map((n) => n.event!)
+        .join("\n"),
+    ).toContain("err7");
+    expect(eventIdx).toBeGreaterThan(-1);
+    expect(terminalIdx).toBeGreaterThan(-1);
+    expect(eventIdx).toBeLessThan(terminalIdx);
+  }, 20_000);
+
+  test("突发阀停止：触发那一批的行也进冲刷，只带最后 N 行并注明省略（D3 修复 3）", async () => {
+    // printf 一次写出 100 行（远小于 PIPE_BUF，一次 write 原子到达）：
+    // 修复前 recordLine 在 `pendingLines.push(...lines)` 之前 return，整批行凭空消失；
+    // 修复后本批行全部进缓冲，再由 drainAll(…, MAX_BURST_FLUSH_LINES) 保尾截断。
+    const task = spawn({
+      command: `printf '%s\\n' $(seq 1 100); sleep 5`,
+      timeoutMs: 20_000,
+    });
+    await waitFor(() => {
+      const status = getTask(task.id)?.status;
+      return status && status !== "running" ? status : undefined;
+    }, 10_000);
+
+    const notifs = takeNotifications();
+    expect(notifs.find((n) => n.status === "killed")?.summary).toContain("事件过密");
+    const event = notifs
+      .filter((n) => n.event !== undefined)
+      .map((n) => n.event!)
+      .join("\n");
+    const lines = event.split("\n");
+    expect(lines[0]).toContain(`前 ${100 - MAX_BURST_FLUSH_LINES} 行已省略`);
+    expect(lines[0]).toContain(".output");
+    expect(lines).toContain("100");
+    expect(lines).toContain(String(100 - MAX_BURST_FLUSH_LINES + 1));
+    expect(lines).not.toContain(String(100 - MAX_BURST_FLUSH_LINES));
+  }, 20_000);
+
+  test("终态出口收敛守卫：ctl.finalized = true 只允许在 finalizeAndDrain 一处（D3）", () => {
+    // D2 / D3 的根因就是四个出口各写各的 finalized = true，「终态前把剩下的行送出去」
+    // 只有 close 一处写了。这条守卫防第五个出口又漏掉冲刷——断言读源码文本，不读注释。
+    const src = readFileSync(new URL("../../src/task/monitor-task.ts", import.meta.url), "utf8");
+    const stripped = src.replace(/\/\*[\s\S]*?\*\//g, "").replace(/\/\/[^\n]*/g, "");
+
+    /** 向上找最近的函数声明名（够用即可：本文件没有嵌套函数声明） */
+    const enclosingFunction = (index: number): string | null => {
+      const before = stripped.slice(0, index);
+      const matches = [...before.matchAll(/(?:export\s+)?function\s+([A-Za-z0-9_]+)\s*\(/g)];
+      return matches.length > 0 ? matches[matches.length - 1]![1]! : null;
+    };
+    const sites = [...stripped.matchAll(/ctl\.finalized\s*=\s*true/g)].map((m) =>
+      enclosingFunction(m.index!),
+    );
+
+    // 唯一允许的例外是测试辅助 `__clearActiveMonitorsForTest`（它置位是为了阻止
+    // 孤儿进程的 close 回调在下一个测试文件里入队通知）
+    expect(
+      sites.filter((n) => n !== "finalizeAndDrain" && n !== "__clearActiveMonitorsForTest"),
+    ).toEqual([]);
+    expect(sites.filter((n) => n === "finalizeAndDrain")).toHaveLength(1);
   });
 });
