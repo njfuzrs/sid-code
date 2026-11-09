@@ -503,7 +503,12 @@ describe("D14 原始输出：首行说明不破坏 P1 的归一化", () => {
     writeFileSync(ghPath, `#!/bin/sh\nprintf '%s\\n' '${checksJson}'\nexit 8\n`, "utf8");
     chmodSync(ghPath, 0o755);
 
-    const cmd = "gh pr checks 662 --json name,status,conclusion";
+    // ⚠️ PATH 前置必须写在**命令内部**，不能只改 process.env.PATH：
+    // 实测 CI runner 上真 gh 存在，且 BashTool 的登录 shell 快照会重置 PATH
+    // （失败形态：`gh: To use GitHub CLI in a GitHub Actions workflow, set the GH_TOKEN...`，
+    // 退出码 4 → 断言拿不到 header）。export 在 P1 的无害命令白名单里，
+    // 最后一段仍是 gh pr checks，matchStatusQuery 照常命中。
+    const cmd = `export PATH="${binDir}:$PATH"; gh pr checks 662 --json name,status,conclusion`;
     // 判据 1：真实 monitor 在等（命令族与查询同族），保证这条查询本该被拦
     addMonitor("m1", { subjects: ["gh:pr:662"], commandFamilies: ["gh_pr_checks"] });
 
