@@ -14,9 +14,16 @@
  *
  * ## 三条判据同时成立才拦（§5.5.1）
  *
- * 1. **有等待源**：`hasPromisedWait()`。没有等待源时同一命令查 100 次也全放行，行为与改动前
- *    逐字节一致。这是本判据与 2026-07-14 那份否决（工具循环检测默认关闭）的根本区别：
- *    那份否决的场景是**没有任何依据判断模型在等**，这里模型自己挂了 monitor / 唤醒。
+ * 1. **模型显式声明了在等外部状态**：`hasDeclaredExternalWait()`（D12）。没有它时同一命令查
+ *    100 次也全放行，行为与改动前逐字节一致。这是本判据与 2026-07-14 那份否决
+ *    （工具循环检测默认关闭）的根本区别：那份否决的场景是**没有任何依据判断模型在等**，
+ *    这里模型自己挂了 monitor / 唤醒 / `wait_until`。
+ *
+ *    ⚠️ 刻意**不是** `hasPromisedWait()`：后者还包含派生的子代理 / workflow / 普通后台 shell，
+ *    它们承诺的是「**自己**结束时会回报」，不是「查询的那个**外部对象**变化时会回报」。
+ *    拿它当前提，模型起一个无关的 `bun test` 之后就再也查不到 PR 状态（D12 / R10）。
+ *    T2 闸门问「有没有东西在等」（要宽），P1 问「模型是否声明了在等外部状态」（要窄），
+ *    两个问题不该共用一个函数。
  * 2. **命令是外部状态查询且不含写操作**：见 `status-query-commands.ts` 的命令表。
  * 3. **结果与上次相同**：同一签名的归一化输出等于上次**实际执行**时的值。
  *
@@ -43,7 +50,8 @@
 import {
   describeWaitSource,
   findWaitBySubject,
-  hasPromisedWait as defaultHasPromisedWait,
+  hasDeclaredExternalWait as defaultHasDeclaredExternalWait,
+  isDeclaredExternalWait,
   listWaits as defaultListWaits,
   type WaitSource,
 } from "./wait-registry.ts";
@@ -87,8 +95,14 @@ export interface StatusPollMemo {
 }
 
 export interface StatusPollContext {
-  /** 当前是否有带承诺的等待源（判据 1） */
-  hasPromisedWait: () => boolean;
+  /**
+   * 判据 1：**模型是否显式声明了在等外部状态**（D12）。
+   *
+   * 刻意不是 `hasPromisedWait`：后者含派生的子代理 / workflow / 普通后台 shell，
+   * 它们承诺的是「自己结束时会回报」，不是「查询的那个外部对象变化时会回报」。
+   * 两个问题不该共用一个函数（T2 闸门要宽，P1 要窄）。
+   */
+  hasDeclaredExternalWait: () => boolean;
   /** 当前等待源清单（回执里引用 monitor / 期限） */
   listWaits: () => WaitSource[];
   memo: StatusPollMemo;
@@ -113,7 +127,7 @@ const INTERVENED_ID_CAP = 256;
 
 export function defaultStatusPollContext(): StatusPollContext {
   return {
-    hasPromisedWait: () => defaultHasPromisedWait(),
+    hasDeclaredExternalWait: () => defaultHasDeclaredExternalWait(),
     listWaits: () => defaultListWaits(),
     memo: defaultMemo,
     now: () => Date.now(),
@@ -160,11 +174,52 @@ export type StatusPollCheck =
     };
 
 /**
+ * 回执与首次提示共用的「谁在等、等着的是什么」说明（D12 第 2/3 条）。
+ *
+ * 两处过去各写一份，且都在找不到盯本对象的等待源时 `?? waits[0]` 退回第一个，
+ * 于是拿一个**无关的**后台 shell 说「状态变化会以通知送达」——模型信了，不再查，
+ * 而没有任何东西在盯它问的那个对象（D12 的事故 R10）。这个函数只认
+ * **模型自己声明**的等待源（monitor / 唤醒 / wait_until），永不引用子代理或普通 shell。
+ *
+ * 措辞必须区分 monitor 与定时器（D12 第 2 条）：只有 monitor 会「在状态变化时通知」，
+ * 唤醒与 wait_until 只是定时器，期间状态可能变化。
+ */
+export function describeWaitRelation(subject: string, waits: WaitSource[]): string {
+  const declared = waits.filter(isDeclaredExternalWait);
+  const deadlineText = (w: WaitSource): string =>
+    w.promise.kind === "deadline"
+      ? `，最晚 ${formatClock(w.promise.deadlineAt)} 前会回报`
+      : "，结束时会回报";
+
+  // 只有 monitor 才「盯对象」。唤醒 / wait_until 的 subjects 只是顺手从 prompt 里抽到的
+  // 实体，它们本身不观察任何东西——拿 subjects 命中就说「盯了这个对象」正是 D12 的同款错误。
+  const coveringMonitor = declared.find(
+    (w) => w.kind === "monitor" && w.subjects?.includes(subject),
+  );
+  if (coveringMonitor) {
+    return `${describeWaitSource(coveringMonitor)}${deadlineText(coveringMonitor)}；状态变化会以通知送达，不需要再查。`;
+  }
+
+  // 有定时器类等待（唤醒 / wait_until）：到点才会再看，期间状态可能变化
+  const timer = declared.find((w) => w.kind !== "monitor");
+  if (timer) {
+    return `${describeWaitSource(timer)}${deadlineText(timer)}；它只是一个定时器，到点才会再看，期间状态可能变化，不要反复查询。`;
+  }
+
+  // 只剩「盯别的对象的 monitor」：如实说它不盯这个对象，绝不 fallback 成「状态变化会通知」
+  const otherMonitor = declared.find((w) => w.kind === "monitor");
+  if (otherMonitor) {
+    return `${describeWaitSource(otherMonitor)}${deadlineText(otherMonitor)}；它不盯这个对象，状态变化不会自动送达，不要反复查询。`;
+  }
+  return "当前没有盯这个对象的等待源，状态变化不会自动送达；不要反复查询。";
+}
+
+/**
  * 拦截后的回执正文。
  *
  * 三个要素缺一不可（§5.5.4）：
  * 1. **上次的状态摘要** —— 模型不因被拦而丢信息，压缩后再问也拿得到答案；
- * 2. **谁在等、最晚什么时候** —— 引用具体的 monitor / 唤醒，不是泛泛的「稍等」；
+ * 2. **谁在等、最晚什么时候** —— 见 `describeWaitRelation`（不引用无关等待源）；
  * 3. **上次查询时间** —— 让模型自己判断这个结论有多旧（§6.5 第 10 条）。
  */
 function buildReceipt(opts: {
@@ -175,18 +230,10 @@ function buildReceipt(opts: {
 }): string {
   const { kind, subject, entry, waits } = opts;
   const summary = summarizeStatusOutput(kind, entry.last);
-  const waiter = waits.find((w) => w.subjects?.includes(subject)) ?? waits[0];
-  const who = waiter
-    ? `${describeWaitSource(waiter)}${
-        waiter.promise.kind === "deadline"
-          ? `，最晚 ${formatClock(waiter.promise.deadlineAt)} 前会回报`
-          : "，结束时会回报"
-      }；状态变化会以通知送达。`
-    : "有等待源会在状态变化时通知。";
 
   return [
     `本次未执行：结果与上次查询相同（${subject}：${summary || "无输出"}）。`,
-    who,
+    describeWaitRelation(subject, waits),
     `上次查询于 ${entry.lastExecutedLabel}。`,
     "没有别的事就告诉用户在等什么，然后结束本轮；不要反复查询。",
   ].join("\n");
@@ -213,19 +260,35 @@ export function checkStatusQueryPoll(
   const matched = matchStatusQuery(command);
   if (!matched) return { intercept: false };
 
-  // 判据 1：没有等待源 → 与改动前完全一致（T-P1-4：同命令同结果 100 次全部放行）
-  if (!ctx.hasPromisedWait()) return { intercept: false };
+  // 判据 1：没有**模型显式声明**的等待 → 与改动前完全一致。
+  //
+  // D12：这里刻意不是 `hasPromisedWait()`。后者含派生的子代理 / workflow / 普通后台 shell，
+  // 它们承诺的是「自己结束时会回报」，不是「你查的那个外部对象变化时会回报」。
+  // 拿它当前提的后果（实测 R10）：模型起了一个无关的 `bun test`，之后连查 `gh pr view`
+  // 被拦，回执还说「状态变化会以通知送达」—— 没有任何东西在盯 PR。
+  // 无等待源时同命令同结果 100 次仍全部放行（T-P1-4）。
+  if (!ctx.hasDeclaredExternalWait()) return { intercept: false };
 
   const entry = ctx.memo.entries.get(matched.signature);
   if (!entry) return { intercept: false };
 
   // 探测间隔：距上次实际执行超过阈值就放行一次，避免「拦住就永远看不到变化」。
   //
-  // ⚠️ 这条**只对「没有 monitor 盯着同一对象」的等待源**生效。理由见下面 `covered` 的注释：
-  // monitor 会在状态变化时主动通知，所以它盯着的时候拦到底是对的（方案 §6.5 第 10 条
-  // 「不可能长期发生」正是以 monitor 在场为前提）；而没有 monitor 时，「拦住就永远看不到变化」
-  // 是真实缺口，必须留一个探测窗口把它变成有界。
-  const covered = ctx.listWaits().some((w) => w.subjects?.includes(matched.subject));
+  // 只有 **monitor 且命令族命中** 才算「被覆盖」（D13）：monitor 会在它报告的那类字段
+  // 变化时主动通知，此时拦到底是安全的；而它不报告的字段（如 monitor 只跑
+  // `gh pr checks`，模型在查 `gh pr view --json reviewDecision`）没有通知通道，
+  // 必须留探测窗口，否则 review 通过、冲突出现模型都看不到。
+  //
+  // 旧实现只看 `subjects`（对象粒度）：覆盖了对象 ≠ 覆盖了字段（D13）。
+  // 扫不出命令族（自定义脚本）→ `commandFamilies` 为空 → 视为不覆盖（保守方向）。
+  const covered = ctx
+    .listWaits()
+    .some(
+      (w) =>
+        w.kind === "monitor" &&
+        w.subjects?.includes(matched.subject) === true &&
+        w.commandFamilies?.includes(matched.family) === true,
+    );
   if (!covered && ctx.now() - entry.lastExecutedAt >= STATUS_POLL_PROBE_INTERVAL_MS) {
     return { intercept: false };
   }
@@ -277,11 +340,10 @@ export function recordStatusQueryResult(
     });
     // 第一次相同：放行，但明确告诉模型「这结果没变，别再问了」。
     // 只提示一次（sameRun === 2 这一次），之后就走拦截，不必每轮都念一遍。
+    // 文案与回执共用 `describeWaitRelation`（D12 第 3 条）：两处过去各写一份，
+    // 且都 fallback 到第一个等待源，会拿无关的普通后台 shell 说「正在盯着」（R10 的同款错误）。
     if (sameRun === 2) {
-      const waits = ctx.listWaits();
-      const waiter = waits.find((w) => w.subjects?.includes(matched.subject)) ?? waits[0];
-      const who = waiter ? describeWaitSource(waiter) : "等待源";
-      return `[等待中] 结果与上次相同。${who}正在盯着，状态变化时会通知你，不需要再查。`;
+      return `[等待中] 结果与上次相同。${describeWaitRelation(matched.subject, ctx.listWaits())}`;
     }
     return undefined;
   }

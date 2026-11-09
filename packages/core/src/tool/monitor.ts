@@ -39,6 +39,7 @@ import {
 } from "../task/index.ts";
 import { getRunningTasks } from "../task/registry.ts";
 import { registerWait, findWaitBySubject, extractWaitSubjects } from "../task/wait-registry.ts";
+import { extractStatusQueryFamilies } from "../task/status-query-commands.ts";
 import { isReadOnlyCommand, isDestructiveCommand } from "./bash/read-only-validation.ts";
 
 const monitorSchema = lazySchema(() =>
@@ -262,6 +263,9 @@ until curl -sf localhost:3000/health >/dev/null; do sleep 1; done; echo "service
     });
 
     // 登记为等待源（deadline 承诺）：todo 闸门 T2 据此放行、静默判据不误杀。
+    // `commandFamilies` 是 D13 的字段级覆盖依据：P1 只有在「monitor 脚本里也出现
+    // 同一命令族」时才认为这条查询被覆盖、可以拦到底；扫不出（自定义脚本）则为空数组，
+    // P1 会把它当「不覆盖」，回到 120s 探测窗口。
     registerWait({
       id: taskState.id,
       kind: "monitor",
@@ -269,6 +273,7 @@ until curl -sf localhost:3000/health >/dev/null; do sleep 1; done; echo "service
       description,
       registeredAt: taskState.startTime,
       subjects,
+      commandFamilies: extractStatusQueryFamilies(command),
     });
 
     getLogger().info(

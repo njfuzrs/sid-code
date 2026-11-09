@@ -1512,7 +1512,17 @@ export class BashTool implements Tool {
             // 与上面 `message` 的分工见 command-semantics.ts 里 header 字段的注释。
             if (exitCode !== 0 && interp.header) {
               const body = output === "(命令无输出)" ? "" : `\n${output}`;
-              return { output: withCwdNotice(`${interp.header}${body}`, cwdState) };
+              return {
+                output: withCwdNotice(`${interp.header}${body}`, cwdState),
+                // D14：P1 的「结果没变」判据要的是**加工前**的原始输出。
+                //
+                // 首行说明会破坏 `gh pr checks` 的 TSV 形态（首行只有一列），
+                // P1 拿加工后的正文做归一化会退回通用路径，拦截回执里的状态摘要
+                // 从「1 项 pass，2 项 pending」退化成首行截断（实测 R7）。
+                // meta 不进模型上下文，只供轨迹/遥测/判据消费（见 LegacyToolResult.meta）。
+                // 只在 header 非空时填：范围极小，正常路径不增加任何体积。
+                meta: { rawOutput: output },
+              };
             }
             return { output: withCwdNotice(output, cwdState) };
           } catch (err) {

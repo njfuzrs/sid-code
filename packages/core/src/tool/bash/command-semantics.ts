@@ -37,6 +37,15 @@ export interface CommandResultInterpretation {
  */
 type CommandSemantic = (exitCode: number, args: string[]) => CommandResultInterpretation;
 
+/**
+ * `gh pr checks` 退出码 8（有检查 pending）的首行说明（E1）。
+ *
+ * 导出而不是各写一份：P1 的 TSV 归一化要能剥掉它（D14 的第二道防线），
+ * 两处必须**逐字相等**——各写一份字面量，改文案时必然只改一处，
+ * 另一处静默失效（表现是拦截回执里的状态摘要退化成首行截断）。
+ */
+export const GH_CHECKS_PENDING_HEADER = "检查未全部完成（gh 退出码 8 = pending，不是命令错误）";
+
 /** 默认语义：仅退出码 0 为成功 */
 const DEFAULT_SEMANTIC: CommandSemantic = (exitCode) => ({
   isError: exitCode !== 0,
@@ -88,7 +97,7 @@ const GH_SEMANTIC: CommandSemantic = (exitCode, args) => {
   if (args[0] === "pr" && args[1] === "checks" && exitCode === 8) {
     return {
       isError: false,
-      header: "检查未全部完成（gh 退出码 8 = pending，不是命令错误）",
+      header: GH_CHECKS_PENDING_HEADER,
     };
   }
   return DEFAULT_SEMANTIC(exitCode, args);

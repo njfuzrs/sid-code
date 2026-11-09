@@ -1797,7 +1797,15 @@ export async function executeSingleTool(
       if (!result.isError) {
         const cmd = (executedInput as { command?: unknown } | undefined)?.command;
         if (typeof cmd === "string") {
-          const pollHint = recordStatusQueryResult(cmd, String(result.output ?? ""));
+          // D14：优先用加语义 header **之前**的原始输出。
+          //
+          // E1 把「检查未全部完成（gh 退出码 8 …）」拼在 `gh pr checks` 结果的首行，
+          // 而 P1 的 TSV 归一化要求每行至少两列 —— 拿加工后的正文会让整段退回通用路径，
+          // 拦截回执里的状态摘要从「1 项 pass，2 项 pending」退化成首行截断（实测 R7）。
+          // `meta.rawOutput` 只在 bash 真的加了 header 时存在；其余路径沿用 result.output。
+          const rawMeta = result.meta?.rawOutput;
+          const pollInput = typeof rawMeta === "string" ? rawMeta : String(result.output ?? "");
+          const pollHint = recordStatusQueryResult(cmd, pollInput);
           if (pollHint) finalOutput = finalOutput + "\n\n" + pollHint;
         }
       }

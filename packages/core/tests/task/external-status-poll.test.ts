@@ -46,6 +46,10 @@ function monitorWait(subjects: string[], deadlineAt = T0 + 600_000): WaitSource 
     description: "PR #662 CI",
     registeredAt: T0,
     subjects,
+    // D13：覆盖判定从「对象粒度」收紧到「命令族粒度」。这个夹具代表一台**真的**
+    // 盯 gh:pr 的 monitor（脚本里扫得出 gh pr 查询），按新增的可选字段补齐语义；
+    // 各条用例的断言逐字未动。
+    commandFamilies: ["gh_pr_checks", "gh_pr_view"],
   };
 }
 
@@ -70,7 +74,7 @@ function makeCtx(
 ) {
   const clockState = opts.clock ?? { now: T0 };
   const ctx: StatusPollContext = {
-    hasPromisedWait: () => opts.hasWait ?? true,
+    hasDeclaredExternalWait: () => opts.hasWait ?? true,
     listWaits: () => opts.waits ?? [monitorWait(["gh:pr:662"])],
     memo: { entries: new Map() },
     now: () => clockState.now,
@@ -184,7 +188,7 @@ describe("P1 判据：三条同时成立才拦", () => {
     const state = { hasWait: true };
     const clockState = { now: T0 };
     const ctx: StatusPollContext = {
-      hasPromisedWait: () => state.hasWait,
+      hasDeclaredExternalWait: () => state.hasWait,
       listWaits: () => [monitorWait(["gh:pr:662"])],
       memo: { entries: new Map() },
       now: () => clockState.now,
@@ -358,7 +362,7 @@ describe("P1 真实轨迹回放（T-P1-11）", () => {
     // 状态变化时主动通知 —— 这时探测窗口是「拦住就永远看不到变化」的唯一出口。
     const clockState = { now: T0 };
     const ctx: StatusPollContext = {
-      hasPromisedWait: () => true,
+      hasDeclaredExternalWait: () => true,
       listWaits: () => [wakeupWait()], // 唤醒没有 subjects，覆盖不到 gh:pr:662
       memo: { entries: new Map() },
       now: () => clockState.now,
@@ -377,7 +381,7 @@ describe("P1 真实轨迹回放（T-P1-11）", () => {
   test("有 monitor 覆盖时不吃探测窗口（monitor 会在变化时通知，拦到底是安全的）", () => {
     const clockState = { now: T0 };
     const ctx: StatusPollContext = {
-      hasPromisedWait: () => true,
+      hasDeclaredExternalWait: () => true,
       listWaits: () => [monitorWait(["gh:pr:662"])],
       memo: { entries: new Map() },
       now: () => clockState.now,
