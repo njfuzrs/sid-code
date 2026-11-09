@@ -31,12 +31,38 @@ import {
   extractSimpleCommands,
   extractRedirectTargets,
 } from "../tool/bash/parser.ts";
+import { GH_CHECKS_PENDING_HEADER } from "../tool/bash/command-semantics.ts";
 
 /** 命中命令表时告诉调用方「这是哪一类查询」，归一化与状态摘要按它分派 */
 export type StatusQueryKind = "gh_pr" | "gh_run" | "glab_mr" | "glab_ci" | "k8s" | "http";
 
+/**
+ * 命令**族**：比 `kind` 细一级，同族才意味着输出覆盖同一批字段（D13）。
+ *
+ * 为什么不能只到 `kind`：`gh pr checks 662` 与 `gh pr view 662 --json reviewDecision`
+ * 都是 `gh_pr`，但前者只报告检查项，后者报告 reviewDecision / mergeable ——
+ * 拿 `kind` 判「monitor 覆盖了这条查询」会让模型在 monitor 期间看不到它不报告的字段
+ * （D13 的事故形态：review 通过了、冲突出现了，模型一直看不到）。
+ *
+ * 新增规则时**必须**同时给 family：漏给会让 `covered` 判不出覆盖（保守方向，只会多放行）。
+ */
+export type StatusQueryFamily =
+  | "gh_pr_checks"
+  | "gh_pr_view"
+  | "gh_pr_status"
+  | "gh_run_view"
+  | "gh_run_watch"
+  | "gh_run_list"
+  | "glab_mr_view"
+  | "glab_ci_status"
+  | "k8s_rollout_status"
+  | "k8s_get"
+  | "http_status";
+
 export interface StatusQueryMatch {
   kind: StatusQueryKind;
+  /** 命令族（D13 的覆盖判定用）：同族才认为 monitor 的报告覆盖了这条查询 */
+  family: StatusQueryFamily;
   /**
    * 被查询对象的签名，如 `gh:pr:662`。
    *
@@ -60,6 +86,8 @@ export interface StatusQueryMatch {
 interface RuleMatch {
   /** subject 的尾部（PR 号 / run id / 资源名 / host+path） */
   tail: string;
+  /** 命令族（D13）：同一 subject 下不同族的查询输出覆盖不同字段 */
+  family: StatusQueryFamily;
 }
 
 type Rule = {
@@ -102,9 +130,13 @@ const RULES: Rule[] = [
       if (args[0] !== "pr") return null;
       const sub = args[1];
       if (!sub || !["checks", "view", "status"].includes(sub)) return null;
+      // 命令族按子命令区分（D13）：`gh pr checks` 只报告检查项，`gh pr view --json X`
+      // 报告的是 X —— 拿「都是 gh_pr」判覆盖会让模型看不到 monitor 不报告的字段。
+      const family: StatusQueryFamily =
+        sub === "checks" ? "gh_pr_checks" : sub === "view" ? "gh_pr_view" : "gh_pr_status";
       // `gh pr status` 没有编号，按「当前分支的 PR」计一个固定签名
       const n = firstPositional(args, 2);
-      return { tail: n && /^\d+$/.test(n) ? n : "current" };
+      return { tail: n && /^\d+$/.test(n) ? n : "current", family };
     },
   },
   {
@@ -115,11 +147,14 @@ const RULES: Rule[] = [
       const sub = args[1];
       if (sub === "view" || sub === "watch") {
         const n = firstPositional(args, 2);
-        return n && /^\d+$/.test(n) ? { tail: n } : { tail: "current" };
+        return {
+          tail: n && /^\d+$/.test(n) ? n : "current",
+          family: sub === "view" ? "gh_run_view" : "gh_run_watch",
+        };
       }
       if (sub === "list") {
         const n = firstPositional(args, 2);
-        return { tail: n ? `list:${n}` : "list" };
+        return { tail: n ? `list:${n}` : "list", family: "gh_run_list" };
       }
       return null;
     },
@@ -130,13 +165,16 @@ const RULES: Rule[] = [
     match: (args) => {
       if (args[0] !== "mr" || args[1] !== "view") return null;
       const n = firstPositional(args, 2);
-      return { tail: n && /^\d+$/.test(n) ? n : "current" };
+      return { tail: n && /^\d+$/.test(n) ? n : "current", family: "glab_mr_view" };
     },
   },
   {
     command: "glab",
     kind: "glab_ci",
-    match: (args) => (args[0] === "ci" && args[1] === "status" ? { tail: "status" } : null),
+    match: (args) =>
+      args[0] === "ci" && args[1] === "status"
+        ? { tail: "status", family: "glab_ci_status" }
+        : null,
   },
   {
     command: "kubectl",
@@ -155,7 +193,7 @@ const RULES: Rule[] = [
       // kubectl rollout status <resource> / kubectl get pods [name]
       if (args[0] === "rollout" && args[1] === "status") {
         const r = firstPositional(args, 2);
-        return { tail: `rollout:${r ?? "all"}` };
+        return { tail: `rollout:${r ?? "all"}`, family: "k8s_rollout_status" };
       }
       if (args[0] === "get") {
         const r = firstPositional(args, 1);
@@ -163,7 +201,7 @@ const RULES: Rule[] = [
         // 只认 pods 一类状态查询；`kubectl get svc` 这类拿配置的不算
         if (!/^(pods?|po|deploy|deployment|deployments|sts|statefulset|statefulsets)$/.test(r))
           return null;
-        return { tail: `get:${r}` };
+        return { tail: `get:${r}`, family: "k8s_get" };
       }
       return null;
     },
@@ -176,7 +214,7 @@ const RULES: Rule[] = [
       for (const a of args) {
         if (a.startsWith("-")) continue;
         const m = /^(https?:\/\/[^\s'"]+?)(?:\/(health|healthz|readyz|livez|status))\/?$/.exec(a);
-        if (m) return { tail: `${m[1]}/${m[2]}` };
+        if (m) return { tail: `${m[1]}/${m[2]}`, family: "http_status" };
       }
       return null;
     },
@@ -280,9 +318,49 @@ export function matchStatusQuery(command: string): StatusQueryMatch | null {
   const subject = `${subjectPrefix(hit.kind)}${hit.tail}`;
   return {
     kind: hit.kind,
+    family: hit.family,
     subject,
     signature: `${subject}\x1f${last.command} ${last.args.join(" ")}`.trim(),
   };
+}
+
+/**
+ * 从 monitor 脚本里扫出它覆盖的命令族（D13）。
+ *
+ * 为什么需要单独一个函数：`matchStatusQuery` 只认**单行、单条**状态查询
+ * （`flattenCommand` 见到换行直接放弃），而 monitor 的 command 是一个 shell 脚本，
+ * 查询通常裹在 `s=$(gh pr checks "$pr" --json ...)` 或 `do ... done` 循环里。
+ *
+ * 扫描口径刻意**保守**（扫不出 = 视为不覆盖 = 回到 120s 探测窗口）：
+ * 宁可多放行几次（多花几次工具调用），也不要把没覆盖的查询当成覆盖了而拦到底。
+ * 候选片段按「整行 → 命令替换内部 → shell 分隔符切开」三层生成；
+ * 引号内的 `|` 会被误切，但那只多出候选片段、不会造出假命中。
+ */
+export function extractStatusQueryFamilies(script: string): StatusQueryFamily[] {
+  const families = new Set<StatusQueryFamily>();
+  for (const line of script.split("\n")) {
+    for (const candidate of statusQueryCandidates(line)) {
+      const m = matchStatusQuery(candidate);
+      if (m) families.add(m.family);
+    }
+  }
+  return [...families];
+}
+
+/** 一行脚本里可能藏状态查询的片段（见 `extractStatusQueryFamilies` 的注释） */
+function statusQueryCandidates(line: string): string[] {
+  const out = new Set<string>();
+  const push = (s: string): void => {
+    const t = s.trim();
+    if (t) out.add(t);
+  };
+  push(line);
+  // 命令替换：真实 monitor 脚本几乎都写成 `s=$(gh pr checks ...)` / 反引号形态
+  for (const m of line.matchAll(/\$\(([^()]*)\)/g)) push(m[1] ?? "");
+  for (const m of line.matchAll(/`([^`]*)`/g)) push(m[1] ?? "");
+  // shell 分隔符：`;` / `&` / `|`（含 `&&` / `||`）
+  for (const seg of line.split(/[;&|]+/)) push(seg);
+  return [...out];
 }
 
 /** 命令表命中结果：kind 决定归一化策略，tail 拼成 subject */
@@ -356,9 +434,16 @@ function stableJson(text: string): string | null {
  *
  * 只保留 name 与 bucket 两列——耗时与 URL 每行都在变，而它们不携带状态信息。
  * 不是 TSV 形态时返回 null（交给通用路径）。
+ *
+ * D14 的第二道防线：E1 会把「检查未全部完成（gh 退出码 8 …）」拼在**首行**，
+ * 首行只有一列 → 旧实现整段判为「不是 TSV」退回通用归一化，状态摘要随之退化成首行截断。
+ * 这里先剥掉与 `GH_CHECKS_PENDING_HEADER` 完全相等的首行。
+ * 与 tool-executor 读 `meta.rawOutput` 是「两道都留」：任一道失效，另一道仍能兜住。
  */
 function normalizeChecksTsv(text: string): string | null {
   const lines = text.split("\n").filter((l) => l.trim() !== "");
+  if (lines.length === 0) return null;
+  if (lines[0]?.trim() === GH_CHECKS_PENDING_HEADER) lines.shift();
   if (lines.length === 0) return null;
   const rows: string[] = [];
   for (const line of lines) {

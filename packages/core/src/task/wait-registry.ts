@@ -51,6 +51,7 @@ import {
   type TaskStatus,
 } from "./types.ts";
 import { getScheduler } from "../cron/scheduler.ts";
+import type { StatusQueryFamily } from "./status-query-commands.ts";
 import { emitScheduledTrace, SCHEDULED_INVALIDATED_EVENT_NAME } from "../cron/cron-telemetry.ts";
 import { enqueueTaskNotification } from "./notification.ts";
 import { getLogger } from "../debug/logger.ts";
@@ -73,6 +74,17 @@ export interface WaitSource {
   registeredAt: number;
   /** 等待对象的签名（S2 用）：monitor 的命令归一化后的关键实体，如 "gh:pr:662" */
   subjects?: string[];
+  /**
+   * monitor 脚本里出现的**命令族**（D13 的字段级覆盖判定用）。
+   *
+   * 为什么 subjects 不够：`gh:pr:662` 是对象粒度，而 monitor 实际只报告脚本里
+   * 那几类查询的字段。`gh pr checks 662` 的 monitor 看不到 `reviewDecision`，
+   * 拿「覆盖了对象」当「覆盖了字段」会让模型在 monitor 期间一直看不到字段变化。
+   *
+   * 空数组 / undefined = 扫不出（脚本里是自定义命令）→ **视为不覆盖**，
+   * 回到 120s 探测窗口。方向是宁可多放行几次，不可拦住一个没被覆盖的查询。
+   */
+  commandFamilies?: StatusQueryFamily[];
 }
 
 /** 释放原因（闭集）：进 `WaitReleased` 事件，也是「为什么不再算了」的唯一口径 */
@@ -385,6 +397,31 @@ export function listWaits(now = Date.now()): WaitSource[] {
 /** 是否有带承诺的等待源——「有东西在等就别催 / 别退」类判断统一走这里（W2） */
 export function hasPromisedWait(now = Date.now()): boolean {
   return listWaits(now).length > 0;
+}
+
+/**
+ * 这个等待源是不是**模型自己显式声明**的等待（D12 的判据 1 口径）。
+ *
+ * 与 `hasPromisedWait` 的差别是本函数回答的问题更窄：那边问「有没有东西在等」
+ * （todo 闸门 T2 要宽，任何等待都算），这边问「模型是否声明了在等**外部状态**」。
+ *
+ * 为什么必须分开：派生出来的子代理 / workflow / 普通后台 shell 承诺的是
+ * 「**自己**结束时会回报」，不是「查询的那个**外部对象**状态变化时会回报」。
+ * 拿 `hasPromisedWait` 当 P1 拦截的前提，会让模型起一个无关的 `bun test` 之后
+ * 就再也查不到 PR 状态（D12 事故 R10）。
+ *
+ * 算「显式声明」的三类：monitor（盯对象）、唤醒（定时器）、`wait_until` 后台命令（期限）。
+ */
+export function isDeclaredExternalWait(src: WaitSource): boolean {
+  if (src.kind === "monitor" || src.kind === "wakeup") return true;
+  // 普通后台 shell 走派生分支，promise 是 exit_or_quiescent；
+  // 只有显式带 wait_until_seconds 的才是 deadline（bash.ts 的 registerWaitUntil）
+  return src.kind === "shell" && src.promise.kind === "deadline";
+}
+
+/** 有没有**模型显式声明**的等待源（D12 放宽不了、也收紧不得的那一条判据） */
+export function hasDeclaredExternalWait(now = Date.now()): boolean {
+  return listWaits(now).some(isDeclaredExternalWait);
 }
 
 /** 按等待对象签名找等待源（S2 / PR 3 的 monitor 用）。 */
