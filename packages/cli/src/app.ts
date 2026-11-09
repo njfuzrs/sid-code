@@ -10,6 +10,7 @@ import type {
   ToolUseBlock,
   StreamEvent,
   AccumulatedResponse,
+  ToolDefinition,
 } from "@sid-code/core/llm/types.ts";
 import type { Config } from "@sid-code/core/config/config.ts";
 import type { Checker } from "@sid-code/core/permission/types.ts";
@@ -808,6 +809,28 @@ export function mergeJitContextIntoPrompt(
 // 不能反过来（放在 app.ts 让 sub-agent.ts 去 import）：那会形成
 // app → sub-agent → app 的循环依赖。
 export { collectJitAccessedPaths, resolveJitPathExtractor };
+
+/**
+ * 估算常驻工具 schema 时该用哪个工具集（EST-4 的口径选择，单一事实源）。
+ *
+ * **必须是「实际会发出去的那一份」，不是全量工具池**（2026-11-09 修正）。
+ * 此前 `refreshToolSchemaTokens` 直接用 `definitions()`，而 tool-search 下真实进请求的是
+ * `activeDefinitions()`（`loop.ts` 的 toolDefs 选择）——本机实测：内置工具全量 41 个估
+ * 14,616 tokens，实际首轮只发 24 个（10,773）；再叠加全部延迟的 MCP 工具（context7 /
+ * playwright / chrome-devtools / lark-mcp / master-mcp 实测合计 24,941 tokens，一个都不发），
+ * 打开 TUI 时状态栏的常驻占用就虚高约 1.4–2 倍。
+ *
+ * 判据只认**配置层的 `toolSearch === false`**（该档首轮真发全量 definitions），不认运行时
+ * 定档结果——与 `config/deferred-tool-view.ts` 的 `isStaticallyDeferred` 同一约束：
+ * 运行时态进静态口径必然漂移。`activeDefinitions()` 内部已按 `isToolDeferred` 过滤
+ * （shouldDefer、mcp__ 前缀、已被 tool_search 激活），这里不重复一套判定。
+ */
+export function selectResidentToolDefinitions(
+  registry: ToolRegistry,
+  toolSearch: Config["toolSearch"],
+): ToolDefinition[] {
+  return toolSearch === false ? registry.definitions() : registry.activeDefinitions();
+}
 
 export class App {
   private config: Config;
@@ -2004,10 +2027,23 @@ export class App {
    *
    * §12 P0-1 完整版：同时把 MCP 工具（mcp__ 前缀）的 schema token 单独记账注入，
    * 供 /context 把「工具定义」拆成内置/MCP 两类——MCP 是上下文膨胀主因，用户需要看清它的占比。
+   *
+   * ⚠️ **口径必须是「实际会发出去的工具集」，不是全量工具池**（2026-11-09 修正）。
+   * 这里此前用 `definitions()`（全量），而 tool-search 下真正进请求的是
+   * `activeDefinitions()`（`loop.ts` 的 toolDefs 选择）。本机实测：内置工具全量 41 个
+   * 估 14,616 tokens，实际首轮只发 24 个（10,773）；再叠加全部延迟的 MCP 工具
+   * （context7/playwright/chrome-devtools/lark-mcp/master-mcp 实测合计 24,941 tokens），
+   * 一个都不发却全额计入常驻开销 → 打开 TUI 时状态栏的初始占用虚高约 1.4–2 倍
+   * （3 个长会话实测 2.66× / 3.2× / 1.93× 的另一半成因即全量历史，见 ContextManager）。
+   *
+   * 判据只认**配置层的 `toolSearch === false`**（此时首轮真发全量 definitions），
+   * 不认运行时定档结果——与 `config/deferred-tool-view.ts` 的
+   * `isStaticallyDeferred` 保持同一约束（运行时态进了静态口径就会漂移）。
    */
   refreshToolSchemaTokens(): void {
     try {
-      const defs = this.toolRegistry.definitions();
+      // 口径选择见 selectResidentToolDefinitions：必须是「实际会发出去的那一份」。
+      const defs = selectResidentToolDefinitions(this.toolRegistry, this.config.toolSearch);
       const estimator = new TokenEstimator();
       this.ctxMgr.setToolSchemaTokens(estimator.estimateTools(defs));
       // MCP 工具按 mcp__ 前缀识别（与 ToolRegistry 的分桶口径一致，见 registry.ts:180）
