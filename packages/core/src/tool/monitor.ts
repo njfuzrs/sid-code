@@ -40,6 +40,7 @@ import {
 import { getRunningTasks } from "../task/registry.ts";
 import { registerWait, findWaitBySubject, extractWaitSubjects } from "../task/wait-registry.ts";
 import { extractStatusQueryFamilies } from "../task/status-query-commands.ts";
+import { formatClockWithSeconds } from "../task/monitor-text.ts";
 import { isReadOnlyCommand, isDestructiveCommand } from "./bash/read-only-validation.ts";
 
 const monitorSchema = lazySchema(() =>
@@ -69,14 +70,6 @@ type MonitorInput = {
   command?: unknown;
   timeout_ms?: unknown;
 };
-
-/** 本地时钟 HH:MM:SS（工具结果里的「最晚几点结束」按用户本地时区显示） */
-function formatClockWithSeconds(ts: number): string {
-  const d = new Date(ts);
-  return `${String(d.getHours()).padStart(2, "0")}:${String(d.getMinutes()).padStart(2, "0")}:${String(
-    d.getSeconds(),
-  ).padStart(2, "0")}`;
-}
 
 /** 从命令里抽取被监控对象的签名（S2 用）：`gh pr checks 662` → `gh:pr:662` */
 function extractMonitorSubjects(command: string): string[] {

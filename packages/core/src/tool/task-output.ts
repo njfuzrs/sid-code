@@ -15,6 +15,7 @@ import {
   getTaskOutputDelta,
   isShellTask,
   isAgentTask,
+  isMonitorTask,
   graceDeadlineFor,
   claimResultDelivery,
   withdrawTaskNotification,
@@ -22,6 +23,7 @@ import {
   NOTIFICATION_OUTPUT_MAX_CHARS,
   truncateForNotification,
 } from "../task/index.ts";
+import { formatClockWithSeconds } from "../task/monitor-text.ts";
 import { getLogger } from "../debug/logger.ts";
 import { z } from "zod/v4";
 import { lazySchema } from "../sdk/lazy-schema.ts";
@@ -177,6 +179,12 @@ export class TaskOutputTool implements Tool {
       if (currentTask.exitCode !== undefined) {
         parts.push(`  <exit-code>${currentTask.exitCode}</exit-code>`);
       }
+    }
+    // monitor（D17）：`eventCount` 与 `bg_task_list` 的进展签名是同一个字段，
+    // 模型看到「又多了 2 条」时不必先读 `.output` 才知道发生了什么。
+    if (isMonitorTask(currentTask)) {
+      parts.push(`  <deadline>${formatClockWithSeconds(currentTask.deadlineAt)}</deadline>`);
+      parts.push(`  <event-count>${currentTask.eventCount}</event-count>`);
     }
     const agentResult = isAgentTask(currentTask) ? currentTask.result : undefined;
     if (isAgentTask(currentTask)) {

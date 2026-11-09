@@ -1,7 +1,7 @@
 /**
- * monitor 通知文案的唯一来源。
+ * monitor 展示文案与格式的唯一来源。
  *
- * 这三处文案原来分散在 `monitor-task.ts` 的 `admit` / `drainAll` / 终态函数里，
+ * 通知文案原来分散在 `monitor-task.ts` 的 `admit` / `drainAll` / 终态函数里，
  * 已经漂移过一次（D18）：
  *
  * 1. 限流合并后的「…另有 N 条」让模型以为还有 N 条**没收到**，实际那些行已经
@@ -12,7 +12,18 @@
  * 两个单位必须写死在这里并在所有出口复用：
  * - **条** = 投递的通知数（每条都叫醒主循环一次，是「更省」方向的口径）；
  * - **行** = 脚本 stdout 的输出行数（模型据此判断过滤条件是否覆盖了终态）。
+ *
+ * 时钟格式也在这里（D17）：`monitor` 工具结果与 `bg_task_list` / `bg_task_get` /
+ * `task_output` 的 `<deadline>` 必须是同一个本地时钟口径，复制三份就会再漂移一次。
  */
+
+/** 本地时钟 HH:MM:SS：monitor 的「最晚几点结束」按用户本地时区显示，不做 UTC 换算 */
+export function formatClockWithSeconds(ts: number): string {
+  const d = new Date(ts);
+  return `${String(d.getHours()).padStart(2, "0")}:${String(d.getMinutes()).padStart(2, "0")}:${String(
+    d.getSeconds(),
+  ).padStart(2, "0")}`;
+}
 
 /** 限流合并提示：暂存行已全部并入正文，只是延迟送达（不是「还有 N 条没给你」） */
 export function formatDeferredMergeNotice(deferredCount: number): string {

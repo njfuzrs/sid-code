@@ -27,6 +27,7 @@ import { Text } from "../render-port/components.ts";
 import { useAnimationFrame } from "../render-port/hooks.ts";
 import { useKeybindings } from "../contexts/KeybindingContext.tsx";
 import { shouldShowHint, markHintShown } from "@sid-code/core/config/app-config.ts";
+import { isTerminalStatus, type TaskStatus } from "@sid-code/core/task/index.ts";
 import type { TodoItem } from "@sid-code/core/tool/todo-write.ts";
 import type { TaskDisplayInfo } from "../App.tsx";
 import { theme } from "../semantic-colors.ts";
@@ -177,6 +178,11 @@ function compactSummaryText(tasks: TaskDisplayInfo[]): string {
   let wakeup = 0;
   let monitor = 0;
   for (const t of tasks) {
+    // 摘要是「屏幕放不下时仍告诉用户一共有什么」，口径必须是**全量**而不是视口里的那 5 行
+    // （D16：此前调用方传 visibleTasks，被 slice(0,5) 挤出去的任务直接从摘要里消失）。
+    // 终态任务不计——摘要说的是「还在后台的」；过滤放在这里而不是调用方，
+    // 下一个调用点就不会再传错集合。
+    if (isTerminalStatus(t.status as TaskStatus)) continue;
     if (t.kind === "wakeup") wakeup += 1;
     else if (t.kind === "monitor") monitor += 1;
     else if (t.type === "local_shell") shell += 1;
@@ -584,7 +590,12 @@ export const TodoPanel = React.memo(function TodoPanel({
     // 只看到一个数字（"有计数、无内容"），不知道具体是什么任务在跑。退化成一行摘要
     // 而不是整区消失——与 cc 的降级哲学一致（屏幕不够时 collapse 成一行计数，
     // 而不是整块隐藏，见 `UI.tsx:469-503`）。
-    const compactText = compactMode ? compactSummaryText(visibleTasks) : "";
+    //
+    // 传**全量 `tasks`**，不是 `visibleTasks`（D16）：摘要的语义是「屏幕放不下时仍告诉
+    // 用户一共有什么」，用视口里那 5 行统计会让被 slice 挤出去的任务凭空消失
+    // （50 列下 3 monitor + 1 唤醒 + 2 shell 时，摘要只剩「2 shell · 2 监控」）。
+    // 终态不计入摘要，过滤在 `compactSummaryText` 内部——调用方不必记住这条口径。
+    const compactText = compactMode ? compactSummaryText(tasks) : "";
 
     taskSection = (
       <Box flexDirection="column">

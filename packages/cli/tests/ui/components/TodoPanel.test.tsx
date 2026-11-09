@@ -10,7 +10,9 @@
 import { test, expect, describe } from "bun:test";
 import React from "react";
 import { render } from "@sid-code/cli/ui/render-port/testing.ts";
+import stripAnsi from "strip-ansi";
 import { TodoPanel } from "@sid-code/cli/ui/components/TodoPanel.tsx";
+import { TREE_BRANCH } from "@sid-code/cli/ui/constants/figures.ts";
 import type { TaskDisplayInfo } from "@sid-code/cli/ui/App.tsx";
 
 const TERM_WIDTH = 100;
@@ -161,15 +163,80 @@ describe("TodoPanel — compactMode 单行摘要（附4：窄终端不整区隐�
     expect(frame).not.toContain("验证缺口1 FileReadTracker隔离"); // 完整 description 不应出现
   });
 
-  test("摘要只反映 visibleTasks：被视口截断的任务不计数，与 …+N 一致", () => {
-    // 6 个全部 running：windowed = running.slice 无效（无 terminal），visibleTasks = 前 5 个
+  test("摘要按全量统计：被视口截断的任务仍计入（D16 契约变更）", () => {
+    // 6 个全部 running：视口只渲染前 5 个，但摘要说的是「一共有多少」，必须是 6。
+    // 2026-11-09（D16）：此前断言「后台：5 agent」——用屏幕放得下的那部分统计，
+    // 被 slice 挤出去的任务从摘要里消失，恰好违背摘要「屏幕放不下时仍告诉用户有什么」的语义。
     const many = Array.from({ length: 6 }, (_, i) =>
       runningTask({ id: `t${i}`, agentType: `a${i}` }),
     );
     const { lastFrame } = render(<TodoPanel todos={[]} tasks={many} termWidth={NARROW_WIDTH} />);
     const frame = lastFrame() ?? "";
-    expect(frame).toContain("后台：5 agent"); // 只数视口内的 5 个
-    expect(frame).toContain("…+1"); // 附1 的截断提示不受本次改动影响
+    expect(frame).toContain("后台：6 agent"); // 全量，不是视口内的 5 个
+    expect(frame).toContain("…+1"); // 视口截断提示不变
+  });
+
+  test("D16：被挤出视口的唤醒仍进摘要，终态任务不计入", () => {
+    // 排序是 running → wakeup → terminal.slice(-3)，视口只有 5 行：
+    // visible = 2 shell + 3 monitor，唤醒是第 6 条被挤出——旧实现里摘要就没有「1 唤醒」。
+    // 3 个终态任务同时验证「摘要是「还在后台的」」：它们占了 tasks 但不应出现在摘要里。
+    const shells: TaskDisplayInfo[] = [0, 1].map((i) => ({
+      id: `s${i}`,
+      type: "local_shell",
+      status: "running",
+      description: `跑测试 ${i}`,
+      command: "bun test",
+      startTime: Date.now() - 5_000,
+      durationMs: 1_000,
+    }));
+    const monitors: TaskDisplayInfo[] = [0, 1, 2].map((i) => ({
+      id: `m${i}`,
+      type: "local_monitor",
+      kind: "monitor",
+      status: "running",
+      description: `监控 CI ${i}`,
+      command: "gh pr checks",
+      startTime: Date.now() - 5_000,
+      durationMs: 1_000,
+      eventCount: 1,
+      deadlineAt: Date.now() + 60_000,
+    }));
+    const wakeup: TaskDisplayInfo = {
+      id: "w1",
+      type: "wakeup",
+      kind: "wakeup",
+      status: "waiting",
+      description: "再查一次 CI",
+      startTime: Date.now() - 1_000,
+      durationMs: 0,
+      dueAt: Date.now() + 600_000,
+    };
+    const done: TaskDisplayInfo[] = ["completed", "failed", "killed"].map((status, i) => ({
+      id: `d${i}`,
+      type: "local_agent",
+      status,
+      description: `已结束 ${i}`,
+      agentType: "explore",
+      startTime: Date.now() - 30_000,
+      endTime: Date.now(),
+      durationMs: 30_000,
+    }));
+    const frame =
+      render(
+        <TodoPanel
+          todos={[]}
+          tasks={[...shells, ...monitors, ...done, wakeup]}
+          termWidth={NARROW_WIDTH}
+        />,
+      ).lastFrame() ?? "";
+    // 精确断言整行文本（T-T1-8）：只断言「含」会漏掉少一个计数的情况——
+    // 旧实现里正是「1 唤醒」整段消失，仍然含「后台：」前缀。
+    const summaryLine = stripAnsi(frame)
+      .split("\n")
+      .find((l) => l.includes("后台："));
+    // 用 TREE_BRANCH 常量而不是字面量 `⎿`：字形随平台变（见 constants/figures.ts），
+    // 写死会在 CI（ubuntu）上红。
+    expect(summaryLine?.trim()).toBe(`${TREE_BRANCH} 后台：2 shell · 3 监控 · 1 唤醒`);
   });
 
   test("shell / workflow 任务类型的摘要标签", () => {
