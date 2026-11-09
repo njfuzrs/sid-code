@@ -97,6 +97,19 @@ interface WaitEntry {
   src: WaitSource;
   /** 单调时钟下的期限（`monoNow()` 基准）；`src.promise.deadlineAt` 只用于展示 */
   deadlineMono?: number;
+  /**
+   * 唤醒已从调度器触发（fire）的单调时刻（D10）；未触发为 `undefined`。
+   *
+   * 为什么需要它：唤醒到点触发时调度器**同一次 `check()` 内**就把它从 `sessionTasks`
+   * 删掉（`Scheduler.fireOnce`），而宿主此刻可能正忙，prompt 还在
+   * `scheduledPromptQueue` 里排队等注入。这段窗口里「调度器里已经没有它」不等于
+   * 「已经回报」——它恰恰是「马上就会被注入」的那个状态。旧判据只看调度器的账，
+   * 把这一整段判成「没有等待源」，todo 闸门据此强推（重演 9e3a681d 的形态）。
+   *
+   * 同时它也是注入路径坏掉时的兜底基准：`firedMono + DEADLINE_GRACE_MS` 内既没
+   * 被注入也没被丢弃，说明这条唤醒丢了，交给 `sweepExpiredWaits` 按违约处理。
+   */
+  firedMono?: number;
 }
 
 /** 显式登记表：只存 registry 里没有的东西（期限 / subjects / wakeup） */
@@ -344,10 +357,18 @@ export function findWaitBySubject(subject: string, now = Date.now()): WaitSource
 function isExplicitWaitValid(entry: WaitEntry, now: number): boolean {
   const { src } = entry;
   if (src.kind === "wakeup") {
-    // 唤醒不在 task registry，在调度器：任务还在 + 没被替换（F2）
     const scheduler = getScheduler();
-    if (!scheduler.getSessionTask(src.id)) return false;
+    // 被更新的唤醒替换（F2）：无论是否已触发都不再算数
     if (scheduler.isSuperseded(src.id)) return false;
+    // D10：已触发（fire）、但还没被注入或丢弃 —— 这仍是等待源。
+    // 触发那一下调度器就把任务从 `sessionTasks` 删了，而宿主的注入走异步链
+    // （忙时排在 `scheduledPromptQueue` 里）。旧判据只看调度器的账，把这一整段
+    // 判成「没人会回来」，闸门据此强推（重演 9e3a681d）。
+    // 释放交给注入路径（`injectScheduledPrompt` 的 releaseWait(terminal)），
+    // 注入路径坏掉时由 `sweepExpiredWaits` 的宽限兜底。
+    if (wakeupFiredMono(entry) !== undefined) return true;
+    // 还没触发：任务必须还在调度器里（cron_delete 删掉后要立刻失效）
+    if (!scheduler.getSessionTask(src.id)) return false;
   } else {
     // monitor / wait_until shell 都是 task registry 里的任务
     const task = getTask(src.id);
@@ -360,6 +381,29 @@ function isExplicitWaitValid(entry: WaitEntry, now: number): boolean {
   }
   // exit_or_quiescent 的显式登记目前没有（普通 shell 走派生），保守放行
   return true;
+}
+
+/**
+ * 这条唤醒「已触发」的单调时刻（D10）；没触发过返回 `undefined`。
+ *
+ * 只看 `registeredAt` 之后记录的那次触发：同 id 被复用（重新登记）时，调度器里留着
+ * 的旧记录不能把一条**新**唤醒误判成「已经在等注入」。
+ */
+function wakeupFiredMono(entry: WaitEntry): number | undefined {
+  if (entry.src.kind !== "wakeup") return undefined;
+  const firedAt = getScheduler().getWakeupFiredAt(entry.src.id);
+  if (firedAt === undefined || firedAt < entry.src.registeredAt) return undefined;
+  return (entry.firedMono ??= monoFromWallClock(firedAt));
+}
+
+/**
+ * 把调度器记的墙钟时刻（`Date.now()` 基准）换算到单调时钟（D10）。
+ *
+ * 判据统一用单调时钟是文件头的硬约定（系统校时不能把「还剩 5 分钟」变成负数或几小时）。
+ * 墙钟回拨时差值钳成 0 = 视作「刚刚触发」，兜底窗口从最早时刻起算，不会提前误判违约。
+ */
+function monoFromWallClock(wallClockMs: number): number {
+  return monoNow() - Math.max(0, Date.now() - wallClockMs);
 }
 
 /** 从 task registry 派生的等待源。没有承诺的任务返回 undefined（不算等待）。 */
@@ -403,19 +447,42 @@ function deriveWait(task: TaskState, now: number): WaitSource | undefined {
  * 正常路径下**零触发**（期限到了由 harness 自己的定时器 kill 并通知）。触发了就是 bug
  * （子进程被外部 SIGKILL 没触发 exit、调度器挂了），§9.8 的 `promise_violations` 单列。
  *
- * 只对进程类（shell / monitor）做：唤醒的到期由调度器与注入路径负责，它 fire 后
- * 就从 `sessionTasks` 里消失，在这里判「过期」会把一次正常触发误报成承诺违背。
+ * 唤醒分两种（D10）：
+ * - **还没触发**：到期由调度器 fire 负责，在这里判「过期」会把一次正常触发误报成违约，跳过；
+ * - **已触发、还没注入**：注入路径（`injectScheduledPrompt` 或注入前判过期丢弃）必须在
+ *   `DEADLINE_GRACE_MS` 内把它消化掉。超了说明注入路径坏了（prompt 丢了 / 宿主卡死），
+ *   不兜底会让无头 / stream-json 的等待循环永远等一个不会来的回报，进程不退出。
  */
 function sweepExpiredWaits(): void {
   const nowMono = monoNow();
   for (const [id, entry] of [...explicitWaits]) {
-    if (entry.src.kind === "wakeup") continue;
-    if (entry.src.promise.kind !== "deadline" || entry.deadlineMono === undefined) continue;
-    if (nowMono < entry.deadlineMono + DEADLINE_GRACE_MS) continue;
+    let expiredAtMono: number;
+    if (entry.src.kind === "wakeup") {
+      // 已被撤销（S1/S2）或被新唤醒替换（F2）：注入路径本就不该再注入它，
+      // 释放由各自路径负责。走到这里说明有漏网（如丢弃分支提前 return 没释放），
+      // 补一次释放即可——**不能**判违约，那不是「注入路径坏了」，是「本来就不该注入」。
+      if (invalidatedIds.has(id)) {
+        releaseWait(id, "invalidated");
+        continue;
+      }
+      if (getScheduler().isSuperseded(id)) {
+        releaseWait(id, "superseded");
+        continue;
+      }
+      const firedMono = wakeupFiredMono(entry);
+      // 未触发：不是本函数的管辖范围（见上方注释）
+      if (firedMono === undefined) continue;
+      expiredAtMono = firedMono;
+    } else {
+      if (entry.src.promise.kind !== "deadline" || entry.deadlineMono === undefined) continue;
+      expiredAtMono = entry.deadlineMono;
+    }
+    if (nowMono < expiredAtMono + DEADLINE_GRACE_MS) continue;
 
     // 期限虽已过，但任务早就进了终态（退出通知已送达）——这是正常回报，不是承诺违背。
     // 必须先判这一条：驱逐要「已送达 + 过一个回合 + 30s」，经常晚于「期限 + 宽限」，
     // 否则正常结束的源会被本函数抢先判违约，往队列里塞一条假 failed 通知（D4）。
+    // 唤醒不在 task registry，`getTask` 恒为 undefined，不影响这条判定。
     const task = getTask(id);
     if (task && isTerminalStatus(task.status)) {
       releaseWait(id, "terminal");
@@ -433,14 +500,19 @@ function sweepExpiredWaits(): void {
     });
     getLogger().warn(
       "TASK",
-      `等待源 ${id}（${entry.src.description}）期限已过 ${DEADLINE_GRACE_MS / 1000}s 宽限仍未回报，判为承诺违背`,
+      entry.src.kind === "wakeup"
+        ? `唤醒 ${id}（${entry.src.description}）已触发但 ${DEADLINE_GRACE_MS / 1000}s 内没有被注入或丢弃，判为注入路径失效`
+        : `等待源 ${id}（${entry.src.description}）期限已过 ${DEADLINE_GRACE_MS / 1000}s 宽限仍未回报，判为承诺违背`,
     );
     enqueueTaskNotification({
       taskId: id,
       toolUseId: task?.toolUseId,
       outputFile: task?.outputFile ?? "",
       status: "failed",
-      summary: `等待「${entry.src.description}」的期限已过仍未收到任何回报（承诺被违背）。请确认它是否还在运行，必要时重新安排。`,
+      summary:
+        entry.src.kind === "wakeup"
+          ? `定时唤醒「${entry.src.description}」已触发但没能送达主循环（注入路径失效）。请按它原本要检查的状态自行确认一次。`
+          : `等待「${entry.src.description}」的期限已过仍未收到任何回报（承诺被违背）。请确认它是否还在运行，必要时重新安排。`,
     });
   }
 }
