@@ -1472,7 +1472,15 @@ export class PermissionChecker implements Checker {
     // ② `autoAllowBashIfSandboxed` 默认改 false（见 sandbox.ts defaultSandboxConfig）。
     //    危险命令（Step 2）与重定向（P1-4）已在此步之前拦住，所以剩下被自动放行的是
     //    「非危险但也没人看过」的任意 bash。让「少弹窗」变成显式 opt-in。
-    if (isCommandSemanticsRequest(req) && this.sandboxManager?.shouldAutoAllowBash()) {
+    //
+    // ③ 只放行 bash（D5）：这一步的正当性还依赖「命令**真的会在沙箱里跑**」——
+    //    bash.ts 的两处执行都用 sandboxManager.wrapCommand 包裹。monitor 的子进程是
+    //    裸 spawn（monitor-task.ts），没有任何沙箱约束；此前条件写的是
+    //    isCommandSemanticsRequest(req)，把带 command 的 monitor 也算进来，等于对一个
+    //    不在沙箱里的进程宣称「沙箱保护下自动放行」——决策日志声称了一个不存在的保护。
+    //    monitor 仍走后面的规则匹配（commandRuleRequest 把规则名归一成 bash），
+    //    只是不再享受这一步；行为等价于「沙箱关闭」时的 monitor。
+    if (req.toolName === "bash" && this.sandboxManager?.shouldAutoAllowBash()) {
       // ① 模式硬约束优先：plan / deny-write 是代码级只读，沙箱不构成放行理由
       if (this.config.permissionMode === "plan") {
         return this.checkPlanMode(req, filePath, resource);
