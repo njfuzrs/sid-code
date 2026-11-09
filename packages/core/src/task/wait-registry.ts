@@ -39,9 +39,16 @@
  */
 
 import { performance } from "node:perf_hooks";
-import { getTask, getRunningTasks } from "./registry.ts";
+import { getTask, getRunningTasks, notifyTaskChanged, onTaskChanged } from "./registry.ts";
 import { isAwaitedBackgroundTask } from "./background-await.ts";
-import { isAgentTask, isPanelTask, isShellTask, isWorkflowTask, type TaskState } from "./types.ts";
+import {
+  isAgentTask,
+  isPanelTask,
+  isShellTask,
+  isTerminalStatus,
+  isWorkflowTask,
+  type TaskState,
+} from "./types.ts";
 import { getScheduler } from "../cron/scheduler.ts";
 import { emitScheduledTrace, SCHEDULED_INVALIDATED_EVENT_NAME } from "../cron/cron-telemetry.ts";
 import { enqueueTaskNotification } from "./notification.ts";
@@ -223,6 +230,37 @@ export function releaseWait(id: string, reason: WaitReleaseReason): boolean {
   return true;
 }
 
+/**
+ * 终态即释放（D4）：任务进终态的那一刻就释放对应的等待登记。
+ *
+ * 只在 `listWaits` 里判「任务还在不在 registry」不够：终态但**还没被驱逐**的任务
+ * （驱逐要「已送达 + 过一个回合 + 30s」）会一直挂在登记表里，等到期限 + 宽限就被
+ * `sweepExpiredWaits` 判成「承诺违背」，往队列里塞一条假 failed 通知把模型叫醒。
+ * 也不该等「下次有人问」才释放：那样 `WaitReleased.held_ms` 记的是查询时刻，不是真实持有时长。
+ *
+ * 订阅 `onTaskChanged` 而不是在每个任务写点各调一次（registry / shell / monitor 有 9 处写点）：
+ * 与 TUI 刷新、`background-wake` 共用同一个事实源，不会漏。
+ *
+ * **释放后必须补一次 `notifyTaskChanged()`**：`releaseWait` 本身不通知订阅方。本回调在
+ * `updateTask` 的通知链里执行，`background-wake` 的那次重判看到的登记项还没释放
+ * （`hasPromisedWait()` 仍为 true）；不补通知，无头等待循环要等下一次任务变更才重判，
+ * 进程会多挂到那时。补一次让所有订阅方在「登记已释放」的最终状态上重算一遍。
+ * 重入只有一层：内层再跑时已无待释放项，不再补通知。
+ */
+function releaseTerminalWaits(): void {
+  let released = 0;
+  for (const id of [...explicitWaits.keys()]) {
+    const entry = explicitWaits.get(id);
+    // 唤醒不在 task registry 里（它在调度器），不进这条链路
+    if (!entry || entry.src.kind === "wakeup") continue;
+    const task = getTask(id);
+    if (task && isTerminalStatus(task.status) && releaseWait(id, "terminal")) released++;
+  }
+  if (released > 0) notifyTaskChanged();
+}
+
+onTaskChanged(releaseTerminalWaits);
+
 /** 会话结束：全部释放（并发 `WaitReleased{reason:"session_end"}`，便于对账）。 */
 export function releaseAllWaits(reason: WaitReleaseReason = "session_end"): number {
   const ids = [...explicitWaits.keys()];
@@ -275,7 +313,12 @@ export function listWaits(now = Date.now()): WaitSource[] {
     // 进程类任务已经终态：正常回报（退出通知）已经发生过，补一条 WaitReleased{terminal}
     // 让事件对账完整。唤醒不走这里——它 fire 后也会从 sessionTasks 消失，但「fire 了还没注入」
     // 不等于「已回报」，那一段由注入路径释放（§5.3.4）。
-    if (entry.src.kind !== "wakeup" && !getTask(id)) releaseWait(id, "terminal");
+    // 「终态但还没被驱逐」也算（D4）：`getTask` 只回答「在不在表里」，驱逐要等
+    // 「已送达 + 过一个回合 + 30s」，这一段空窗正是 sweep 误判「承诺违背」的地方。
+    if (entry.src.kind !== "wakeup") {
+      const task = getTask(id);
+      if (!task || isTerminalStatus(task.status)) releaseWait(id, "terminal");
+    }
   }
 
   for (const task of getRunningTasks()) {
@@ -370,6 +413,15 @@ function sweepExpiredWaits(): void {
     if (entry.src.promise.kind !== "deadline" || entry.deadlineMono === undefined) continue;
     if (nowMono < entry.deadlineMono + DEADLINE_GRACE_MS) continue;
 
+    // 期限虽已过，但任务早就进了终态（退出通知已送达）——这是正常回报，不是承诺违背。
+    // 必须先判这一条：驱逐要「已送达 + 过一个回合 + 30s」，经常晚于「期限 + 宽限」，
+    // 否则正常结束的源会被本函数抢先判违约，往队列里塞一条假 failed 通知（D4）。
+    const task = getTask(id);
+    if (task && isTerminalStatus(task.status)) {
+      releaseWait(id, "terminal");
+      continue;
+    }
+
     explicitWaits.delete(id);
     invalidatedIds.add(id);
     emitWaitTrace("WaitReleased", {
@@ -383,7 +435,6 @@ function sweepExpiredWaits(): void {
       "TASK",
       `等待源 ${id}（${entry.src.description}）期限已过 ${DEADLINE_GRACE_MS / 1000}s 宽限仍未回报，判为承诺违背`,
     );
-    const task = getTask(id);
     enqueueTaskNotification({
       taskId: id,
       toolUseId: task?.toolUseId,
