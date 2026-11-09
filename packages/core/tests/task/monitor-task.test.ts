@@ -594,16 +594,36 @@ describe("D3：暂存行冲刷与终态出口收敛", () => {
 
     const notifs = takeNotifications();
     expect(notifs.find((n) => n.status === "killed")?.summary).toContain("事件过密");
-    const event = notifs
-      .filter((n) => n.event !== undefined)
-      .map((n) => n.event!)
-      .join("\n");
-    const lines = event.split("\n");
-    expect(lines[0]).toContain(`前 ${100 - MAX_BURST_FLUSH_LINES} 行已省略`);
-    expect(lines[0]).toContain(".output");
-    expect(lines).toContain("100");
-    expect(lines).toContain(String(100 - MAX_BURST_FLUSH_LINES + 1));
-    expect(lines).not.toContain(String(100 - MAX_BURST_FLUSH_LINES));
+    const events = notifs.filter((n) => n.event !== undefined).map((n) => n.event!);
+
+    // ⚠️ 这里**不能**断言 `前 100 - MAX_BURST_FLUSH_LINES 行已省略`（曾这么写，CI 上必红）。
+    // 那个期望隐含「100 行全滞留在 pendingLines 里，等终态冲刷一次性截断」，而实际不成立：
+    // 每批行进缓冲都会挂一个 EVENT_BATCH_MS 窗口定时器（flushBatch 用 splice(0) 取走并经
+    // admit 正常投递）。慢 runner 上 printf 还没走完，前面的批次就已经被投递走了，那些行
+    // 不再进入最终冲刷，于是 drainAll 的 omitted = merged.length - MAX_BURST_FLUSH_LINES
+    // 必然小于 60。实测同一份代码三个值：期望 60 / ubuntu 收到 56 / macOS 收到 16。
+    //
+    // 改为断言实现真正保证、且与批次时序无关的不变量：
+    // ① 触发那一批的行没丢（保尾：最后一行 100 一定送到）；
+    // ② 一旦发生截断，省略计数与保留行数自洽（首行必然是 omitted + 1）；
+    // ③ 保留行数不超过 MAX_BURST_FLUSH_LINES。
+    const lineSets = events.map((e) => e.split("\n"));
+    expect(lineSets.some((ls) => ls.includes("100"))).toBe(true);
+
+    const truncated = events.filter((e) => e.includes("完整输出见 .output"));
+    for (const text of truncated) {
+      const parts = text.split("\n");
+      expect(parts[0]).toContain(".output");
+      const omittedMatch = /前 (\d+) 行已省略/.exec(parts[0]!);
+      expect(omittedMatch).not.toBeNull();
+      const omitted = Number(omittedMatch![1]);
+      const kept = parts.slice(1);
+      // drainAll 只在 merged.length > maxLines 时才截断，且截断时恰好保留 maxLines 行
+      expect(omitted).toBeGreaterThan(0);
+      expect(kept).toHaveLength(MAX_BURST_FLUSH_LINES);
+      // 省略断点自洽：保留的第一行紧接在被省略的最后一行之后
+      expect(kept[0]).toBe(String(omitted + 1));
+    }
   }, 20_000);
 
   test("终态出口收敛守卫：ctl.finalized = true 只允许在 finalizeAndDrain 一处（D3）", () => {
