@@ -27,6 +27,13 @@ import type { TodoItem } from "@sid-code/core/tool/todo-write.ts";
 export interface GateRunResult {
   /** 本轮 yield 出的 `{kind:"system"}` 文案（断言「没有旧瞬态状态条」用） */
   systemTexts: string[];
+  /**
+   * 完整的 system 事件（含 `persistent` / `level`）。
+   *
+   * D9 的要害是「常驻还是瞬态」——只看文案分不出，`persistent` 字段才是
+   * `app.ts` 走历史区还是 `system:transient` 状态条的分水岭。
+   */
+  systemEvents: Array<{ text: string; level?: string; persistent?: boolean }>;
   /** 真正调了几次模型（T2 放行 = 1，被续命 = 1 + MAX_TODO_GATE_RETRIES） */
   llmCalls: number;
   /** 每次请求实际发给模型的 messages（含 reminder 注入后的形态） */
@@ -94,6 +101,7 @@ export function makeGateHarness(opts: GateHarnessOptions): GateHarness {
 
       const requests: Message[][] = [];
       const systemTexts: string[] = [];
+      const systemEvents: Array<{ text: string; level?: string; persistent?: boolean }> = [];
       let llmCalls = 0;
 
       const deps: QueryDeps = {
@@ -123,9 +131,17 @@ export function makeGateHarness(opts: GateHarnessOptions): GateHarness {
       };
 
       for await (const ev of queryLoop(loopConfig)) {
-        if (ev.kind === "system" && "text" in ev) systemTexts.push((ev as { text: string }).text);
+        if (ev.kind === "system" && "text" in ev) {
+          const e = ev as { text: string; level?: string; persistent?: boolean };
+          systemTexts.push(e.text);
+          systemEvents.push({
+            text: e.text,
+            ...(e.level !== undefined ? { level: e.level } : {}),
+            ...(e.persistent !== undefined ? { persistent: e.persistent } : {}),
+          });
+        }
       }
-      return { systemTexts, llmCalls, requests };
+      return { systemTexts, systemEvents, llmCalls, requests };
     },
   };
 }
