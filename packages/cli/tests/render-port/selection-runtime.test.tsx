@@ -307,6 +307,13 @@ describe("M4 超链接命中与打开", () => {
       ).toEqual(["https://x.test/2"]);
       expect((await clicks(async (c) => c.send(press(1), release(1)))).opened).toEqual([]);
     },
+    // 用例内串行 6 次 clicks()，每次都要等满 500ms 连击窗口（还叠加 mount/teardown），
+    // 固有成本就在 4~5s 量级，贴着 bun 默认 5000ms 上限。2026-11-07 CI 实测 5009.75ms 超时，
+    // 而同文件其它用例失败在 751ms / 8xx ms（有显式余量），只有这一条越界。
+    //
+    // 给显式超时而不是拆用例：拆开会把共享 setup（mountAlt + 两个链接）重复 6 次，
+    // 墙钟反而更贵；这里的预算等的不是某个异步事件，而是固定次数的连击窗口。
+    30_000,
   );
 
   test.if(ISOLATED)("M4: TERM_PROGRAM=vscode 不开（xterm.js 自己会开）", async () => {

@@ -209,6 +209,40 @@ async function drive(): Promise<{ bytes: string; sections: Section[] }> {
       await Bun.sleep(60);
     }
   };
+  /** 取 `from` 之后的输出、去掉 CSI 后的纯文本（主屏是增量 diff，不去 CSI 匹配不到整句） */
+  const plainSince = (from: number) => all.slice(from).replace(/\x1b\[[0-9;?]*[A-Za-z]/g, "");
+  /**
+   * 提交输入，并**确认回车真的被受理**，没受理就重发。
+   *
+   * 为什么不能 `type()` 完直接 `write("\r")`：macOS 慢 runner 上回车会落进 TUI 尚未就绪 /
+   * 瞬时 UI 事件的窗口而被丢弃，而这类丢键**没有任何可观测报错**。2026-11-07 CI 上就是
+   * 这样：28.5s 后「第 30 条总结」断言失败，回看画面才发现提示词还留在输入框、一轮都没开始
+   * （`[shrink-e2e] resets` 显示该段零整帧重画）。
+   *
+   * 判据不猜「输入框是否就绪」，直接看**提交的后果**：轮次开始的信号是否出现。
+   * 没出现就再发一次回车 —— 它是幂等的：输入框已被清空时按回车不会提交任何内容，
+   * 所以「第一发其实成功了、只是渲染慢」这种情况重发也无副作用。
+   *
+   * ⚠️ 不要在 `type()` 后补固定 sleep：那只是把同一个赌局换个地方下注，
+   * 而且正是四节 4.1 列出的病因（固定等待预算按本地快机器标定）。
+   */
+  const submit = async (prompt: string, started: () => boolean) => {
+    await type(prompt);
+    const deadline = performance.now() + 15_000;
+    while (!started() && performance.now() < deadline) {
+      write("\r");
+      // 给这一发回车一个受理窗口：轮询而非固定等待，信号一出现立刻走
+      const tick = performance.now() + 500;
+      while (!started() && performance.now() < tick) await Bun.sleep(50);
+    }
+    if (!started()) {
+      throw new Error(
+        `回车提交后 15s 内没看到轮次开始的信号（提示词「${prompt}」）。\n` +
+          `这通常是回车被 TUI 的瞬时事件吞掉了（启动警告 / 未就绪窗口），\n` +
+          `最近输出：\n${plainSince(Math.max(0, all.length - 2000)).slice(-1500)}`,
+      );
+    }
+  };
   try {
     await settle(1500, 30_000);
     write(" ");
@@ -218,8 +252,9 @@ async function drive(): Promise<{ bytes: string; sections: Section[] }> {
     section("启动");
     assertNoStartupWarning("启动");
 
-    await type("请做一个三步的小任务");
-    write("\r");
+    const round1From = all.length;
+    // 第一轮开始的信号：SCRIPT[0] 是 todo_write(todos(0))，面板里会出现「读代码」
+    await submit("请做一个三步的小任务", () => plainSince(round1From).includes("读代码"));
     await settle(2000, 90_000);
     section("完整一轮");
     assertNoStartupWarning("完整一轮");
@@ -261,8 +296,9 @@ async function drive(): Promise<{ bytes: string; sections: Section[] }> {
     await settle(600);
     section("空闲提示消失");
 
-    await type("再来");
-    write("\r");
+    const round2From = all.length;
+    // 第二轮的 SCRIPT[4] 是兜底 `{ text: "完成。" }`
+    await submit("再来", () => plainSince(round2From).includes("完成。"));
     await settle(2000, 60_000);
     section("第二轮");
   } finally {
