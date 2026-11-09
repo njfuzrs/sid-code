@@ -1987,6 +1987,16 @@ export class App {
     // EST-4：注入工具定义的真实 schema token 数，替代 ContextManager 内 toolCount×80 粗估，
     // 避免 schema 大/工具多时低估上下文占用、compact 触发过晚。
     this.refreshToolSchemaTokens();
+
+    // 工具池变化（MCP 异步连接 / 断开重连 / 启动期裁剪）后刷新 schema tokens 并推送上下文占用。
+    // refreshToolSchemaTokens 此前全仓只在这里调用一次：MCP 连上后 schema tokens 停在启动瞬间的
+    // 快照，估算持续偏低（compact 触发过晚）、TUI 状态栏的上下文占用也停在旧值。
+    // 广播经微任务去抖（Registry.onChange），MCP 连上后一批几十个注册只重算一次。
+    // 无头模式 tuiStateUpdater 为 null，只刷新 schema tokens（compact 决策仍受益），不推 UI。
+    this.toolRegistry.onChange(() => {
+      this.refreshToolSchemaTokens();
+      this.tuiStateUpdater?.(this.contextDisplayState());
+    });
   }
 
   /**
@@ -3697,7 +3707,9 @@ export class App {
         // 两条 /clear 入口共用一个实现（见 clearConversation 注释）
         await this.clearConversation();
         resetSyncState();
-        updateState(getConversationClearedPatch());
+        // /clear 只清消息历史，system prompt + 工具 schema 的常驻开销还在：上下文三件
+        // 用当前估算覆盖 patch 里的哨兵 0，让状态栏回落到「初始占用」而不是整列消失。
+        updateState({ ...getConversationClearedPatch(), ...this.contextDisplayState() });
         break;
 
       case "quit":
@@ -9518,12 +9530,15 @@ export class App {
     contextPercent: number;
     contextTriggerPercent: number;
     contextLevel: "none" | "soft" | "hard" | "emergency";
+    /** true = 纯启发式估算（尚未经真实 usage 校准），Footer 显示 ~ 前缀 */
+    contextEstimated: boolean;
   } {
     const u = this.ctxMgr.getContextUsageForDisplay(this.toolRegistry.size());
     return {
       contextPercent: u.percentOfWindow,
       contextTriggerPercent: u.triggerPercentOfWindow,
       contextLevel: u.level,
+      contextEstimated: !u.calibrated,
     };
   }
 

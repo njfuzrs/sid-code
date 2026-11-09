@@ -118,6 +118,8 @@ export interface BottomRegionSharedProps {
   contextTriggerPercent?: number;
   /** P1-5：真实压缩档位（Footer 变色据此） */
   contextLevel?: "none" | "soft" | "hard" | "emergency";
+  /** true = 未经真实 usage 校准的估算，Footer 显示 `~` 前缀 */
+  contextEstimated?: boolean;
   model: string;
   /** 滚动位置百分比，只有全屏虚拟滚动有；主屏不传 → Footer 不渲染该列 */
   scrollPercent?: number;
@@ -209,6 +211,7 @@ export const BottomRegion: React.FC<BottomRegionProps> = ({
   contextPercent,
   contextTriggerPercent,
   contextLevel,
+  contextEstimated,
   model,
   scrollPercent,
   activeDialog,
@@ -333,6 +336,7 @@ export const BottomRegion: React.FC<BottomRegionProps> = ({
         contextPercent={contextPercent}
         contextTriggerPercent={contextTriggerPercent}
         contextLevel={contextLevel}
+        contextEstimated={contextEstimated}
         model={model}
         scrollPercent={scrollPercent}
         termWidth={termWidth}

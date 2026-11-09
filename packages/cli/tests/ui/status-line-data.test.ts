@@ -11,6 +11,7 @@ import {
   shortenPath,
   derivePermission,
   deriveContextColor,
+  deriveContext,
   deriveCost,
   deriveCacheMetrics,
   deriveWorktree,
@@ -75,6 +76,51 @@ describe("LY1 — deriveContextColor", () => {
     // ≤60 默认
     expect(deriveContextColor(60, def)).toBe(def);
     expect(deriveContextColor(50, def)).toBe(def);
+  });
+});
+
+describe("LY1 — deriveContext", () => {
+  const def = "#010101" as const;
+
+  test("显示条件与 usage 解耦：估算有值即显示（打开 TUI / 刚 /clear 时 usage 全零但常驻开销已在）", () => {
+    const r = deriveContext({ contextPercent: 9, defaultColor: def });
+    expect(r).not.toBeNull();
+    expect(r!.text).toBe("9%");
+  });
+
+  test("contextPercent 归零 → null（估算本身为 0 的极端配置才隐藏）", () => {
+    expect(deriveContext({ contextPercent: 0, defaultColor: def })).toBeNull();
+  });
+
+  test("带触发点 → 「X%/Y%」双口径", () => {
+    const r = deriveContext({ contextPercent: 17, contextTriggerPercent: 82, defaultColor: def });
+    expect(r!.text).toBe("17%/82%");
+  });
+
+  test("contextEstimated=true → ~ 前缀（纯启发式估算，未校准）", () => {
+    const r = deriveContext({
+      contextPercent: 9,
+      contextTriggerPercent: 82,
+      contextEstimated: true,
+      defaultColor: def,
+    });
+    expect(r!.text).toBe("~9%/82%");
+  });
+
+  test("contextEstimated 缺省 → 无前缀（已校准口径，兼容既有调用方）", () => {
+    const r = deriveContext({ contextPercent: 9, contextTriggerPercent: 82, defaultColor: def });
+    expect(r!.text).toBe("9%/82%");
+  });
+
+  test("档位变色与 ~ 前缀并存（level 优先于百分比阈值）", () => {
+    const r = deriveContext({
+      contextPercent: 30,
+      contextLevel: "soft",
+      contextEstimated: true,
+      defaultColor: def,
+    });
+    expect(r!.text).toBe("~30%");
+    expect(r!.color).toBe(theme.status.warning);
   });
 });
 
