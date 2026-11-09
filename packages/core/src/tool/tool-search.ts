@@ -152,11 +152,20 @@ export class ToolSearchTool implements Tool {
     const activated: string[] = [];
     const alreadyVisible: string[] = [];
     const notFound: string[] = [];
+    const disabled: string[] = [];
+    // isEnabled=false 的工具（企业策略关闭 / 运行环境不可用）不能经本工具激活：
+    // registry 已把它挡出 schema，这里再回「已激活」是假信息。复用 enabled() 的既有
+    // 过滤判据，不在这里另写一份 isEnabled 逻辑（两份判据会漂移）。
+    const enabledNames = new Set(this.registry.enabled().map((t) => t.name()));
 
     for (const name of names) {
       const tool = this.registry.get(name);
       if (!tool) {
         notFound.push(name);
+        continue;
+      }
+      if (!enabledNames.has(name)) {
+        disabled.push(name);
         continue;
       }
       // activateTool 返回 false 有两种情况：未注册（上面已拦）或本就可见
@@ -170,6 +179,7 @@ export class ToolSearchTool implements Tool {
     log.info("TOOL_SEARCH", `select 激活: ${activated.join(", ") || "(无)"}`, {
       alreadyVisible,
       notFound,
+      disabled,
     });
 
     const lines: string[] = [];
@@ -182,6 +192,9 @@ export class ToolSearchTool implements Tool {
     }
     if (alreadyVisible.length > 0) {
       lines.push(`以下工具本就可用，无需激活：${alreadyVisible.join(", ")}`);
+    }
+    if (disabled.length > 0) {
+      lines.push(`以下工具已被策略禁用，无法激活：${disabled.join(", ")}`);
     }
     if (notFound.length > 0) {
       lines.push(`未找到以下工具：${notFound.join(", ")}`);

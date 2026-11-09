@@ -25,7 +25,10 @@
  * - 持续超限**合并而不丢弃**：CI 分片结束这类事件丢一条就漏一个失败分片；
  * - 总量上限兜底：过滤器写宽了（比如每行都打）迟早撞上。
  *
- * 阈值放在本文件的常量里，后续可被 `settings.monitor.*` 覆盖（企业 policy 可收紧）。
+ * 阈值放在本文件的常量里，作为**默认值与不可突破的上限**：`settings.monitor.*`
+ * 只能在运行时把它们收紧（`getMaxConcurrentMonitors` / `getMaxMonitorTimeoutMs`
+ * 取 `min`，解析在 `config/monitor-policy.ts`）。配置不允许把突发阀、总量阀调没——
+ * 那些阀不是 monitor 生命周期阈值，也没有对应的配置项。
  */
 
 import { spawn } from "child_process";
@@ -40,6 +43,7 @@ import {
   formatOmittedLinesNotice,
 } from "./monitor-text.ts";
 import { getLogger } from "../debug/logger.ts";
+import { getMonitorPolicySettings } from "../config/monitor-policy.ts";
 
 /** 单行事件最大字符数：超过即截断（`.output` 里保留完整原文） */
 export const MAX_EVENT_LINE_CHARS = 2_000;
@@ -94,6 +98,42 @@ export const EXIT_DRAIN_GRACE_MS = 400;
 export const MIN_MONITOR_TIMEOUT_MS = 1_000;
 export const MAX_MONITOR_TIMEOUT_MS = 1_800_000;
 export const DEFAULT_MONITOR_TIMEOUT_MS = 300_000;
+
+/**
+ * 运行时生效的并发上限 = `min(代码常量, settings.monitor.maxConcurrent)`。
+ *
+ * 常量是默认值也是**不可突破的上限**：配置写 99 不会把上限放宽到 99（否则管理员
+ * 一次误配就能把「每个 monitor 都是常驻进程 + 通知源」的成本约束调没）。
+ * 缺省不配 = 常量。最小值钳到 1：schema 已拒绝 0 / 负数，这里再兜一层，
+ * 避免手改文件或未来 schema 放宽时出现「上限 0 = monitor 全不可用但不报错」。
+ */
+export function getMaxConcurrentMonitors(): number {
+  const configured = getMonitorPolicySettings().maxConcurrent;
+  if (configured === undefined) return MAX_CONCURRENT_MONITORS;
+  return Math.max(1, Math.min(MAX_CONCURRENT_MONITORS, configured));
+}
+
+/**
+ * 运行时生效的期限上限 = `min(代码常量, settings.monitor.maxTimeoutMs)`。
+ *
+ * 下限钳到 `MIN_MONITOR_TIMEOUT_MS`：配置比最小值还小没有意义（工具层还会按
+ * schema 下限再抬回去），钳到下限让「上限 ≥ 下限」这个不变量始终成立。
+ */
+export function getMaxMonitorTimeoutMs(): number {
+  const configured = getMonitorPolicySettings().maxTimeoutMs;
+  if (configured === undefined) return MAX_MONITOR_TIMEOUT_MS;
+  return Math.max(MIN_MONITOR_TIMEOUT_MS, Math.min(MAX_MONITOR_TIMEOUT_MS, configured));
+}
+
+/**
+ * 未传 `timeout_ms` 时的默认期限 = `min(DEFAULT, 生效上限)`。
+ *
+ * 只钳上限不钳下限：默认值本身就在 [MIN, MAX] 内，配置收紧上限后默认值必须跟着降，
+ * 否则会出现「默认 300s、上限 60s」这种自相矛盾的说明文案。
+ */
+export function getDefaultMonitorTimeoutMs(): number {
+  return Math.min(DEFAULT_MONITOR_TIMEOUT_MS, getMaxMonitorTimeoutMs());
+}
 
 /** 失败通知里 stderr 尾巴的字符数：monitor 脚本最常见的失败都在 stderr 里 */
 const STDERR_TAIL_CHARS = 500;

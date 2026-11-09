@@ -29,14 +29,17 @@ import { lazySchema } from "../sdk/lazy-schema.ts";
 import { getCwd } from "../bootstrap/state.ts";
 import { getLogger } from "../debug/logger.ts";
 import {
-  MAX_CONCURRENT_MONITORS,
   MAX_MONITOR_TIMEOUT_MS,
   MIN_MONITOR_TIMEOUT_MS,
   DEFAULT_MONITOR_TIMEOUT_MS,
+  getMaxConcurrentMonitors,
+  getMaxMonitorTimeoutMs,
+  getDefaultMonitorTimeoutMs,
   countRunningMonitors,
   spawnMonitorTask,
   isMonitorTask,
 } from "../task/index.ts";
+import { getMonitorPolicySettings } from "../config/monitor-policy.ts";
 import { getRunningTasks } from "../task/registry.ts";
 import {
   registerWait,
@@ -64,7 +67,7 @@ const monitorSchema = lazySchema(() =>
     timeout_ms: z
       .number()
       .describe(
-        `硬期限（毫秒），默认 ${DEFAULT_MONITOR_TIMEOUT_MS}，下限 ${MIN_MONITOR_TIMEOUT_MS}、上限 ${MAX_MONITOR_TIMEOUT_MS}（超过即钳制）。到期必回报并结束。`,
+        `硬期限（毫秒），默认 ${DEFAULT_MONITOR_TIMEOUT_MS}，下限 ${MIN_MONITOR_TIMEOUT_MS}、上限 ${MAX_MONITOR_TIMEOUT_MS}（超过即钳制；企业策略可用 settings.monitor.maxTimeoutMs 收紧上限）。到期必回报并结束。`,
       )
       .optional(),
   }),
@@ -128,6 +131,8 @@ export class MonitorTool implements Tool<MonitorInput, string> {
 
 **挂上之后**：不要再手动查询同一个状态；没有别的事就告诉用户在等什么，然后结束本轮。事件已经展示给用户，收到事件时不需要复述，没有需要做的事就直接结束本轮。
 
+**企业管控**：\`settings.monitor\` 可关闭本工具或收紧并发 / 期限上限（只收紧、不放宽），只对本轮之后新启动的监控生效，已在运行的监控不受影响。
+
 示例（PR CI 逐项结束才打一行，全部结束后打 ALL_DONE 并退出）：
 \`\`\`bash
 pr=662; interval=45; prev=""
@@ -182,11 +187,21 @@ until curl -sf localhost:3000/health >/dev/null; do sleep 1; done; echo "service
   }
 
   isEnabled(): boolean {
-    return true;
+    return getMonitorPolicySettings().enabled;
   }
 
   async call(input: MonitorInput): Promise<ToolResult<string>> {
     const params = input ?? {};
+
+    // 企业策略关闭（settings.monitor.enabled=false）：正常路径是 isEnabled() 把工具挡出
+    // schema 与 tool_search，但模型凭历史上下文按名直调仍会到执行层（与 bundled skill 的
+    // isEnabled 同形态：挡 schema 不等于执行层不可达），所以这里再拦一次并说明原因。
+    if (!getMonitorPolicySettings().enabled) {
+      return {
+        data: "错误: monitor 已被企业策略禁用（settings.monitor.enabled=false）。请改用 bash + run_in_background + wait_until_seconds 等待。",
+        isError: true,
+      };
+    }
 
     const description = typeof params.description === "string" ? params.description.trim() : "";
     const command = typeof params.command === "string" ? params.command : "";
@@ -210,8 +225,12 @@ until curl -sf localhost:3000/health >/dev/null; do sleep 1; done; echo "service
       };
     }
 
-    // timeout_ms：不传用默认；0 / 负数 / 非有限数拒绝（T-M1-2）
-    let timeoutMs = DEFAULT_MONITOR_TIMEOUT_MS;
+    // timeout_ms：不传用默认（受企业上限约束）；0 / 负数 / 非有限数拒绝（T-M1-2）。
+    // 上限取 `min(代码常量, settings.monitor.maxTimeoutMs)`：配置只能收紧，
+    // 写 300000 而企业上限 60000 时钳到 60s 并在结果里注明（FIX-7 验收）。
+    const effectiveMaxTimeoutMs = getMaxMonitorTimeoutMs();
+    const effectiveDefaultTimeoutMs = getDefaultMonitorTimeoutMs();
+    let timeoutMs = effectiveDefaultTimeoutMs;
     if (params.timeout_ms !== undefined) {
       const raw = params.timeout_ms;
       if (typeof raw !== "number" || !Number.isFinite(raw)) {
@@ -219,7 +238,7 @@ until curl -sf localhost:3000/health >/dev/null; do sleep 1; done; echo "service
       }
       if (raw <= 0) {
         return {
-          data: `错误: timeout_ms 必须大于 0（收到 ${raw}）。省略该参数时默认 ${DEFAULT_MONITOR_TIMEOUT_MS}ms。`,
+          data: `错误: timeout_ms 必须大于 0（收到 ${raw}）。省略该参数时默认 ${effectiveDefaultTimeoutMs}ms。`,
           isError: true,
         };
       }
@@ -229,16 +248,18 @@ until curl -sf localhost:3000/health >/dev/null; do sleep 1; done; echo "service
     if (timeoutMs < MIN_MONITOR_TIMEOUT_MS) {
       clampNote = `（已从 ${Math.round(timeoutMs)}ms 钳制到下限 ${MIN_MONITOR_TIMEOUT_MS}ms）`;
       timeoutMs = MIN_MONITOR_TIMEOUT_MS;
-    } else if (timeoutMs > MAX_MONITOR_TIMEOUT_MS) {
-      clampNote = `（已从 ${Math.round(timeoutMs)}ms 钳制到上限 ${MAX_MONITOR_TIMEOUT_MS}ms）`;
-      timeoutMs = MAX_MONITOR_TIMEOUT_MS;
+    } else if (timeoutMs > effectiveMaxTimeoutMs) {
+      clampNote = `（已从 ${Math.round(timeoutMs)}ms 钳制到上限 ${effectiveMaxTimeoutMs}ms）`;
+      timeoutMs = effectiveMaxTimeoutMs;
     }
 
-    // 并发上限：每个 monitor 都是一个常驻进程 + 一个潜在的通知源，4 个已覆盖
-    // 「CI + 部署 + 日志 + 一个备用」。第 5 个直接拒绝并列出是谁在占位。
-    if (countRunningMonitors() >= MAX_CONCURRENT_MONITORS) {
+    // 并发上限：每个 monitor 都是一个常驻进程 + 一个潜在的通知源，默认 4 个已覆盖
+    // 「CI + 部署 + 日志 + 一个备用」。第 N+1 个直接拒绝并列出是谁在占位。
+    // N = `min(代码常量, settings.monitor.maxConcurrent)`，只收紧不放宽。
+    const effectiveMaxConcurrent = getMaxConcurrentMonitors();
+    if (countRunningMonitors() >= effectiveMaxConcurrent) {
       return {
-        data: `错误: 同时运行的 monitor 已达上限 ${MAX_CONCURRENT_MONITORS} 个（当前：${listRunningMonitorBrief()}）。请先用 task_stop 停掉不需要的监控。`,
+        data: `错误: 同时运行的 monitor 已达上限 ${effectiveMaxConcurrent} 个（当前：${listRunningMonitorBrief()}）。请先用 task_stop 停掉不需要的监控。`,
         isError: true,
       };
     }
@@ -276,7 +297,7 @@ until curl -sf localhost:3000/health >/dev/null; do sleep 1; done; echo "service
 
     getLogger().info(
       "TOOL",
-      `monitor ${taskState.id} 启动：${description}（期限 ${timeoutMs}ms，并发 ${countRunningMonitors()}/${MAX_CONCURRENT_MONITORS}）`,
+      `monitor ${taskState.id} 启动：${description}（期限 ${timeoutMs}ms，并发 ${countRunningMonitors()}/${effectiveMaxConcurrent}）`,
     );
 
     const endAt = formatClockWithSeconds(taskState.deadlineAt);
