@@ -52,6 +52,14 @@ export const PER_MINUTE_NOTIFY_LIMIT = 6;
 /** 总量阀：单个 monitor 累计投递的通知条数上限 */
 export const TOTAL_NOTIFY_LIMIT = 60;
 
+/**
+ * 退出冲刷一条事件最多带多少行。
+ *
+ * 为什么需要上限：脚本退出前可能一次性吐出整段日志，一条通知正文无界会撑爆上下文。
+ * 为什么**保尾不保头**：要的是失败分片与 `ALL_DONE` 汇总行，它们在输出的最后。
+ */
+export const MAX_FINAL_FLUSH_LINES = 200;
+
 /** 同一会话同时运行的 monitor 上限 */
 export const MAX_CONCURRENT_MONITORS = 4;
 
@@ -132,6 +140,17 @@ export interface MonitorGateDecision {
 }
 
 /**
+ * 限流阈值覆盖（仅测试用）。
+ *
+ * 生产路径一律用上面的常量；测试要验「总量阀已满时退出仍能送出剩余行」，
+ * 真跑 60 条通知不现实（持续阀每分钟只放 6 条），所以允许注入更小的阈值。
+ */
+export interface MonitorGateLimits {
+  perMinuteNotifyLimit?: number;
+  totalNotifyLimit?: number;
+}
+
+/**
  * monitor 事件限流器（纯逻辑，便于单测）。
  *
  * 三个计数窗口刻意分开：
@@ -150,6 +169,13 @@ export class MonitorRateGate {
   private deferred: string[] = [];
   /** 累计投递的通知数 */
   private totalNotified = 0;
+  private readonly perMinuteLimit: number;
+  private readonly totalLimit: number;
+
+  constructor(limits: MonitorGateLimits = {}) {
+    this.perMinuteLimit = limits.perMinuteNotifyLimit ?? PER_MINUTE_NOTIFY_LIMIT;
+    this.totalLimit = limits.totalNotifyLimit ?? TOTAL_NOTIFY_LIMIT;
+  }
 
   /** 记一行到达；返回是否触发突发阀 */
   recordLine(now: number): boolean {
@@ -176,14 +202,14 @@ export class MonitorRateGate {
    * @param now   当前墙钟（测试可注入）
    */
   admit(lines: string[], now: number): MonitorGateDecision {
-    if (this.totalNotified >= TOTAL_NOTIFY_LIMIT) {
+    if (this.totalNotified >= this.totalLimit) {
       return { action: "stop", reason: "rate_total" };
     }
     if (now - this.notifyWindowStart >= 60_000) {
       this.notifyWindowStart = now;
       this.notifyInWindow = 0;
     }
-    if (this.notifyInWindow >= PER_MINUTE_NOTIFY_LIMIT) {
+    if (this.notifyInWindow >= this.perMinuteLimit) {
       // 持续超限：**合并**进下一条，不丢（CI 分片结束丢一条就漏一个失败分片）
       this.deferred.push(...lines);
       return { action: "defer" };
@@ -200,11 +226,27 @@ export class MonitorRateGate {
     return { action: "emit", event };
   }
 
-  /** 取出暂存行（进程退出前调用，保证不丢） */
-  takeDeferred(): string[] {
-    const out = this.deferred;
+  /**
+   * 进程退出前的最终冲刷：暂存行与本批行合成一条事件，**不受任何限流阀约束**。
+   *
+   * 为什么退出路径不该限流：限流阀限制的是「叫醒主循环的频率」，而进程退出时无论如何
+   * 都要发一条终态通知把主循环叫醒。这条事件与终态通知会合进同一条注入消息
+   * （`_meta.notif` 数组），不会多叫醒一轮——继续走 `admit` 只会在持续阀 / 总量阀
+   * 已满时把这批行静默丢掉，而它们往往正是失败分片与 `ALL_DONE` 汇总行（D2）。
+   *
+   * @param lines 本批行（调用方已把残行、批处理缓冲按输出顺序拼好）
+   * @returns 事件正文；没有可投递的行时返回 null
+   */
+  drainAll(lines: string[]): string | null {
+    const merged = this.deferred.length > 0 ? [...this.deferred, ...lines] : lines;
     this.deferred = [];
-    return out;
+    if (merged.length === 0) return null;
+
+    // 保尾不保头：汇总行在最后，被省略的行去 `.output` 里看
+    const omitted = merged.length - MAX_FINAL_FLUSH_LINES;
+    const kept = omitted > 0 ? merged.slice(omitted) : merged;
+    const body = kept.join("\n");
+    return omitted > 0 ? `…前 ${omitted} 行已省略，完整输出见 .output\n${body}` : body;
   }
 }
 
@@ -247,6 +289,8 @@ export function spawnMonitorTask(opts: {
   timeoutMs: number;
   cwd: string;
   toolUseId?: string;
+  /** 测试钩子：收紧限流阈值（生产调用方不要传）；见 `MonitorGateLimits` */
+  __gateLimitsForTest?: MonitorGateLimits;
 }): LocalMonitorTaskState {
   const taskId = generateTaskId("local_monitor");
   // `.output` 落盘失败（只读目录 / 磁盘满）**不得**影响事件投递（T-M1-12）：
@@ -299,7 +343,7 @@ export function spawnMonitorTask(opts: {
     finalized: false,
     deadlineTimer: null,
     batchTimer: null,
-    gate: new MonitorRateGate(),
+    gate: new MonitorRateGate(opts.__gateLimitsForTest),
     splitter: new LineSplitter(),
     pendingLines: [],
     stderrTail: "",
@@ -397,25 +441,27 @@ export function spawnMonitorTask(opts: {
 
     // 退出前把残行、批处理缓冲与限流暂存都投递掉——不丢事件是限流设计的硬约束。
     // pendingLines 里可能已经有 stdout `end` 冲进来的残行，必须一起带上（否则丢最后一行）。
+    //
+    // 这里**不走 admit**：持续阀 / 总量阀已满时 admit 会返回 defer / stop，把这批行
+    // 连同 ctl 一起丢掉（D2：脚本退出前的失败分片与 `ALL_DONE` 汇总行就是这样消失的）。
+    // 退出路径改用 drainAll——它和下面的终态通知同批入队，会合进同一条注入消息
+    // （`_meta.notif` 数组），不会多叫醒一轮，所以「退出不限流」不增加请求数。
     const rest = ctl.splitter.flush();
     if (rest !== null) ctl.pendingLines.push(rest);
-    const lines = [...ctl.gate.takeDeferred(), ...ctl.pendingLines.splice(0)];
-    if (lines.length > 0) {
-      const decision = ctl.gate.admit(lines, Date.now());
-      if (decision.action === "emit") {
-        updateTask<LocalMonitorTaskState>(taskId, (t) =>
-          isTerminalStatus(t.status) ? t : { ...t, eventCount: t.eventCount + 1 },
-        );
-        enqueueTaskNotification({
-          taskId,
-          toolUseId: opts.toolUseId,
-          outputFile,
-          status: "running",
-          summary: `监控事件：${opts.description}`,
-          event: decision.event,
-          description: opts.description,
-        });
-      }
+    const event = ctl.gate.drainAll(ctl.pendingLines.splice(0));
+    if (event !== null) {
+      updateTask<LocalMonitorTaskState>(taskId, (t) =>
+        isTerminalStatus(t.status) ? t : { ...t, eventCount: t.eventCount + 1 },
+      );
+      enqueueTaskNotification({
+        taskId,
+        toolUseId: opts.toolUseId,
+        outputFile,
+        status: "running",
+        summary: `监控事件：${opts.description}`,
+        event,
+        description: opts.description,
+      });
     }
 
     finalizeMonitorExit({
