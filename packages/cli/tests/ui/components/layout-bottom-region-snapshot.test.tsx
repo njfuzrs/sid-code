@@ -139,13 +139,49 @@ function UISeed({ toast, ctrlC }: { toast?: string; ctrlC?: boolean }) {
 
 type Mode = "fullscreen" | "main";
 
+/**
+ * 轮询到帧满足条件再取帧。
+ *
+ * effect 类等待一律用它，不用固定 sleep —— 固定值只能按最快的机器标定，
+ * 慢 runner 上不够就红，而它红的时候看起来像业务坏了。
+ *
+ * 超时不抛错、只返回：后面那条显式 `expect` 才是判据，它报「缺了什么」比
+ * 「轮询超时」有用。这与隔壁 PluginsDialog 测试的 `waitFor` 同口径。
+ */
+async function waitForFrame(
+  r: { lastFrame: () => string | undefined },
+  cond: (frame: string) => boolean,
+  ms = 2000,
+): Promise<void> {
+  const start = Date.now();
+  // 先让出一拍，给 effect（UISeed 播种、溢出批量更新）一个执行窗口，再判条件 —— 否则
+  // 「首帧恰好已含目标文本」的用例会立刻返回，等于没等。
+  await new Promise((res) => setTimeout(res, 16));
+  while (!cond(r.lastFrame() ?? "")) {
+    if (Date.now() - start > ms) return;
+    await new Promise((res) => setTimeout(res, 16));
+  }
+}
+
 async function renderLayout(
   mode: Mode,
   over: Record<string, unknown>,
   seed: { toast?: string; ctrlC?: boolean } = {},
   streamingOver: {
     lastToolResult?: { toolName: string; isError: boolean; elapsedMs: number } | null;
+    /**
+     * 语义等待（ms）：时间本身是被测对象的场景必须真的等满。
+     * 例：「工具完成提示 2s 后自己隐藏」等的是那个 TTL 到期，不是 effect 落地。
+     */
     waitMs?: number;
+    /**
+     * 取帧前要轮询到的条件（帧文本满足即返回）。
+     *
+     * effect 类等待一律用它，不用固定 sleep：UISeed 的 toast / Ctrl+C 播种到进入渲染树
+     * 是一条异步 effect 链，60ms 在慢 runner 上不够（2026-11-07 CI 上「瞬态块齐全」
+     * 因此假红，见 docs-research 的《20261107-CI时序flake与失败归因-全量排查》3.4）。
+     */
+    until?: (frame: string) => boolean;
     /** 等 waitMs 之后用这份历史重渲一次（模拟回合末最终回复并入历史） */
     rerenderItems?: HistoryItem[];
   } = {},
@@ -205,12 +241,15 @@ async function renderLayout(
     );
   };
   const r = render(tree(items), { columns: COLUMNS, rows: ROWS });
-  // 让 effect（UISeed、溢出批量更新等）跑完再取帧
-  await new Promise((res) => setTimeout(res, streamingOver.waitMs ?? 60));
+  // 语义等待先行（时间本身是被测对象的场景），再用轮询等 effect 落地。
+  // 顺序不能反：TTL 类的等待必须有真实时长，而 effect 类等待只需要「条件成立」。
+  if (streamingOver.waitMs !== undefined) {
+    await new Promise((res) => setTimeout(res, streamingOver.waitMs));
+  }
   if (streamingOver.rerenderItems) {
     r.rerender(tree(streamingOver.rerenderItems));
-    await new Promise((res) => setTimeout(res, 60));
   }
+  if (streamingOver.until) await waitForFrame(r, streamingOver.until);
   const frame = r.lastFrame() ?? "";
   r.unmount();
   // 行尾空白随布局填充宽度变化，不属于这次要锁的内容
@@ -263,7 +302,15 @@ describe("真实布局整帧快照（底部区域）", () => {
   for (const mode of ["main", "fullscreen"] as const) {
     test(`${mode}：同一条瞬态消息只渲染一行（不重复叠加）`, async () => {
       const text = "唯一一条提示-ABC";
-      const frame = await renderLayout(mode, {}, { toast: text });
+      // toast 由 UISeed 在 useEffect 里播种，轮询到它真的进帧再取
+      const frame = await renderLayout(
+        mode,
+        {},
+        { toast: text },
+        {
+          until: (f) => f.includes(text),
+        },
+      );
       const hits = frame.split("\n").filter((line) => line.includes(text));
       expect(hits.length).toBe(1);
     });
@@ -271,7 +318,11 @@ describe("真实布局整帧快照（底部区域）", () => {
 
   for (const mode of ["main", "fullscreen"] as const) {
     test(`${mode}：瞬态块齐全`, async () => {
-      const frame = await renderLayout(mode, transientState, transientSeed);
+      // UISeed 的 toast / Ctrl+C 播种 + 溢出批量更新都在 effect 链上，
+      // 轮询到场景摆齐再取帧（固定 60ms 在慢 runner 上不够，2026-11-07 假红过）
+      const frame = await renderLayout(mode, transientState, transientSeed, {
+        until: (f) => f.includes("Toast 警告") && f.includes("Ctrl+C"),
+      });
       // 先确认场景真的摆出来了，避免快照锁住一张「什么都没渲染」的空帧
       for (const s of [
         "跑门禁",
@@ -288,7 +339,14 @@ describe("真实布局整帧快照（底部区域）", () => {
     });
 
     test(`${mode}：对话框打开`, async () => {
-      const frame = await renderLayout(mode, dialogState);
+      const frame = await renderLayout(
+        mode,
+        dialogState,
+        {},
+        {
+          until: (f) => f.includes("第四行"),
+        },
+      );
       expect(frame).toContain("第四行");
       expect(frame).toMatchSnapshot();
     });
@@ -300,7 +358,13 @@ describe("真实布局整帧快照（底部区域）", () => {
   test("main：工具完成提示过期、回合末回复入历史后，输入框上方不留空占位行", async () => {
     const finalItems = [...history, { type: "assistant", text: "最终回复" } as HistoryItem];
     // 对照：从没出现过工具结果、历史里已有最终回复
-    const baseline = await renderLayout("main", {}, {}, {}, finalItems);
+    const baseline = await renderLayout(
+      "main",
+      {},
+      {},
+      { until: (f) => f.includes("最终回复") },
+      finalItems,
+    );
     // 工具完成提示出现 → 2s 后自己隐藏 → 最终回复并入历史（useHeldRows 的释放点）
     const after = await renderLayout(
       "main",
@@ -308,8 +372,11 @@ describe("真实布局整帧快照（底部区域）", () => {
       {},
       {
         lastToolResult: { toolName: "bash", isError: false, elapsedMs: 10 },
+        // 语义等待：等的是「提示 2s 后自己隐藏」那个 TTL 到期，必须真的等满
         waitMs: 2300,
         rerenderItems: finalItems,
+        // 重渲后轮询到「最终回复入历史 + bash 提示已消失」再取帧
+        until: (f) => f.includes("最终回复") && !f.includes("bash ("),
       },
     );
     expect(after).toContain("最终回复");

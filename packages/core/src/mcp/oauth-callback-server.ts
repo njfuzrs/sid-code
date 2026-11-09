@@ -115,7 +115,7 @@ export async function startCallbackServer(configuredPort?: number): Promise<Call
   /** 本次等待期间被忽略的 state 不匹配回调数（超时报错时带上，便于调用方归因） */
   let stateMismatches = 0;
 
-  const close = () => {
+  const close = (reason = "OAuth 回调服务器已关闭") => {
     if (closed) return;
     closed = true;
     if (server) {
@@ -124,6 +124,18 @@ export async function startCallbackServer(configuredPort?: number): Promise<Call
       server.close();
       server = null;
     }
+    // 结算在途的 waitForCode：否则它的 setTimeout 会在 close 之后仍然 fire，
+    // reject 一个没人接的 Promise，被 bun 归因到当时正在跑的**另一条测试**上。
+    //
+    // 2026-11-07 CI 的完整链路：oauth 用例的 fetch 抛 Malformed_HTTP_Response → 测试
+    // 立即失败、p 从未被 await → afterEach 调 close() 却只关 server → 5s 定时器到点
+    // reject → bun 把这个迟到错误算在当时正在跑的 sandbox-exec A6d 上（它只跑了 3.74ms
+    // 就「失败」，失败原因是 OAuth 超时文案）。
+    //
+    // 生产上的收益同样成立：关服后不该有挂着的 Promise 等到超时才结算。
+    const current = pending;
+    pending = undefined;
+    current?.reject(new Error(reason));
   };
 
   const reply = (res: import("node:http").ServerResponse, status: number, html: string) => {
@@ -205,9 +217,11 @@ export async function startCallbackServer(configuredPort?: number): Promise<Call
   });
 
   server.on("error", (err: NodeJS.ErrnoException) => {
-    close();
+    // 先取走 pending 再 close：close 里也会结算 pending，但那条路径的文案是通用的
+    // 「已关闭」，这里能给出真实的 errno 原因（关闭顺序反了会让归因变模糊）。
     const current = pending;
     pending = undefined;
+    close();
     current?.reject(new Error(`OAuth 回调服务器错误: ${err.message}`));
   });
 
@@ -228,7 +242,7 @@ export async function startCallbackServer(configuredPort?: number): Promise<Call
       signal?: AbortSignal,
       issuer?: IssuerCheck,
     ): Promise<string> {
-      return new Promise((resolve, reject) => {
+      const p = new Promise<string>((resolve, reject) => {
         let timer: ReturnType<typeof setTimeout> | undefined;
         let onAbort: (() => void) | undefined;
         const cleanup = () => {
@@ -279,6 +293,13 @@ export async function startCallbackServer(configuredPort?: number): Promise<Call
           signal.addEventListener("abort", onAbort, { once: true });
         }
       });
+      // 防跨用例串扰：调用方可能因为**前面的步骤先抛错**而来不及 await 它
+      // （2026-11-07 CI：oauth 用例的 fetch 抛 Malformed_HTTP_Response → 测试立即失败 →
+      // p 没人接 → 定时器/close 结算变成 unhandled rejection，被 bun 归因到另一条测试）。
+      // 这个 no-op handler 只让运行时不再报 unhandled —— 真正 await 它的人照样收到
+      // rejection（Promise 允许多个 handler，彼此不干扰）。
+      p.catch(() => {});
+      return p;
     },
     close,
   };

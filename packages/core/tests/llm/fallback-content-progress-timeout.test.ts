@@ -131,16 +131,22 @@ function successProvider(): Provider {
 describe("fallback 流超时：感知内容进展", () => {
   // ─── ① 正向：慢但一直有进展的流不被杀 ───
   test("总时长远超阈值、但块间隔小于阈值的健康流 → 不被掐断，完整跑完", async () => {
-    // 8 块 × 40ms ≈ 320ms 总时长，是 100ms 阈值的 3 倍多；
-    // 但任意相邻两块间隔 40ms < 100ms → 感知进展的实现必须放行。
+    // 总时长 32 块 × 10ms = 320ms，是 100ms 阈值的 3.2 倍（不续命必被杀，测试才有验证力）；
+    // 而任意相邻两块间隔 10ms 只有阈值的 1/10 → 感知进展的实现必须放行。
+    //
+    // ⚠️ 为什么不是「8 块 × 10ms」或「阈值提到 500ms」这两种直觉改法：它们都会让
+    // 总时长**低于**阈值（80ms < 100ms / 320ms < 500ms），于是连「不感知进展」的旧实现
+    // 也不会超时 —— 测试恒绿、验证力归零。慢 runner 上这块本来的病因是「40ms 间隔被
+    // 调度延迟到 >100ms」（余量仅 2.5x），所以要放大的是**间隔余量**，同时必须保住
+    // 「总时长 > 阈值」这个前提。块数翻倍 + 间隔缩小正好两全（320ms 不变，余量 2.5x → 10x）。
     const fallback = new ModelFallback({ streamTimeoutMs: 100 });
     const events = await collectEvents(
-      fallback.executeWithFallback(slowButHealthyProvider(8, 40), defaultParams),
+      fallback.executeWithFallback(slowButHealthyProvider(32, 10), defaultParams),
     );
 
-    // 全部 8 个 delta 都到齐，且正常收尾
+    // 全部 32 个 delta 都到齐，且正常收尾
     const deltas = events.filter((e) => e.type === "content_block_delta");
-    expect(deltas.length).toBe(8);
+    expect(deltas.length).toBe(32);
     expect(events.some((e) => e.type === "message_stop")).toBe(true);
     // 关键：没有发生重开 —— 有 stream_restart 就说明流被杀过一次
     expect(events.some((e) => e.type === "stream_restart")).toBe(false);

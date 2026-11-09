@@ -258,13 +258,48 @@ function handle(interval: number | undefined, calls: { n: number }, written: str
 }
 
 /**
- * 模拟 n 个 end_turn，每轮等在途 fork 跑完。
- * ⚠️ 不能用 drainPending 等：drain 就是「会话收尾」，会触发积压补跑。
+ * 等某一轮的 fork 计数达到期望值，然后把微任务链排干。
+ *
+ * 为什么「计数到了」还不够：`pending = null` 在 `start()` 的 `.finally` 里，排在
+ * `runFork` 返回、去重、打事件、`appendSystemMessage` 之后。这几步全是同步或微任务，
+ * 所以再让出一个宏任务就能确定排干 —— 不吃机器快慢（固定 sleep 才会）。
  */
-async function turns(h: ReturnType<typeof handle>, n: number): Promise<void> {
+async function waitForRuns(calls: { n: number }, want: number, ms = 10_000): Promise<void> {
+  const deadline = Date.now() + ms;
+  while (calls.n < want && Date.now() < deadline) {
+    await new Promise((r) => setTimeout(r, 5));
+  }
+  await new Promise((r) => setTimeout(r, 0));
+}
+
+/**
+ * 模拟 n 个 end_turn，每轮等到「在途 fork 跑完」再进入下一轮。
+ *
+ * ## 为什么不能固定 sleep
+ *
+ * `executeExtract` 是 fire-and-forget（生产语义：extractor.ts 的 `void start(seq, false)`，
+ * 注释明写「不 await」），所以 `await h.executeExtract()` 只等到「调度完成」，不等提取跑完。
+ * 原先用 `setTimeout(5)` 近似这个等待 —— 慢 runner 上（CI 同批 700 个文件共享一个事件循环）
+ * 5ms 经常不够，下一轮就撞上 `pending` 被记成 skipped/in_flight，于是
+ * 「4 个 end_turn 只跑 3 次」，看起来像业务回归。
+ *
+ * ## 为什么也不能用 drainPending
+ *
+ * drain 是「会话收尾」语义，会触发积压补跑（`backlog && !pending → start(seq, true)`），
+ * 直接把 interval 用例的期望值改掉。原注释这条是对的，保留。
+ *
+ * @param runsByRound 第 round 轮结束时应有的累计 fork 次数。interval=1 时每轮 +1（默认）；
+ *   interval=N 时只有 N 的倍数轮才 +1，被跳过的轮次不变。
+ */
+async function turns(
+  h: ReturnType<typeof handle>,
+  n: number,
+  calls: { n: number },
+  runsByRound: (round: number) => number = (round) => round,
+): Promise<void> {
   for (let i = 0; i < n; i++) {
     await h.executeExtract();
-    await new Promise((r) => setTimeout(r, 5));
+    await waitForRuns(calls, runsByRound(i + 1));
   }
 }
 
@@ -272,7 +307,7 @@ describe("T2 抽取节流", () => {
   test("interval 缺省 = 每个 end_turn 都跑，收尾不补跑（行为不变）", async () => {
     const calls = { n: 0 };
     const h = handle(undefined, calls);
-    await turns(h, 4);
+    await turns(h, 4, calls);
     expect(calls.n).toBe(4);
     await h.drainPending(1000);
     expect(calls.n).toBe(4);
@@ -282,7 +317,7 @@ describe("T2 抽取节流", () => {
     const seen = captureEvents();
     const calls = { n: 0 };
     const h = handle(3, calls, ["k"]);
-    await turns(h, 6);
+    await turns(h, 6, calls, (round) => Math.floor(round / 3));
     expect(calls.n).toBe(2);
     const ev = seen.filter((e) => e.name === "memory_extract").map((e) => e.meta);
     const skipped = ev.filter((m) => m.extract_outcome === "skipped");
@@ -297,7 +332,7 @@ describe("T2 抽取节流", () => {
     const seen = captureEvents();
     const calls = { n: 0 };
     const h = handle(3, calls);
-    await turns(h, 4); // 第 3 轮跑、第 4 轮积压
+    await turns(h, 4, calls, (round) => Math.floor(round / 3)); // 第 3 轮跑、第 4 轮积压
     expect(calls.n).toBe(1);
     await h.drainPending(1000);
     expect(calls.n).toBe(2);
@@ -310,7 +345,7 @@ describe("T2 抽取节流", () => {
   test("会话只有 1 个 end_turn、interval=5：收尾仍抽一次", async () => {
     const calls = { n: 0 };
     const h = handle(5, calls);
-    await turns(h, 1);
+    await turns(h, 1, calls, () => 0); // 第 1 轮被节流，不跑 fork
     expect(calls.n).toBe(0);
     await h.drainPending(1000);
     expect(calls.n).toBe(1);
