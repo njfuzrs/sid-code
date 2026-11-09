@@ -34,6 +34,11 @@ import { generateTaskId, type LocalMonitorTaskState, isTerminalStatus } from "./
 import { registerTask, updateTask, getTask, getRunningTasks } from "./registry.ts";
 import { initTaskOutput, type DiskTaskOutput } from "./disk-output.ts";
 import { enqueueTaskNotification } from "./notification.ts";
+import {
+  formatDeferredMergeNotice,
+  formatDeliverySummary,
+  formatOmittedLinesNotice,
+} from "./monitor-text.ts";
 import { getLogger } from "../debug/logger.ts";
 
 /** 单行事件最大字符数：超过即截断（`.output` 里保留完整原文） */
@@ -74,6 +79,16 @@ export const MAX_BURST_FLUSH_LINES = 40;
 
 /** 同一会话同时运行的 monitor 上限 */
 export const MAX_CONCURRENT_MONITORS = 4;
+
+/**
+ * 父进程退出后等待 stdio 排空的宽限（与 `tool/bash.ts` 的 `PIPE_DRAIN_GRACE_MS` 同值同义）。
+ *
+ * `close` 要等**所有** stdio 流关闭。孙进程继承了 stdout 管道的写端，管道不关，
+ * `close` 永远不触发——`sleep 60 & exit 0` 实测 1.5s 后任务仍是 running（D15）。
+ * 所以 `exit` 到达后给 stdio 一个有界宽限：宽限内 `close` 到了走原路径（残行仍能带上，
+ * T-M1-9）；宽限到了还没到，就按「脚本结束 = 监控结束」清掉进程组再收尾。
+ */
+export const EXIT_DRAIN_GRACE_MS = 400;
 
 /** 期限边界（M1 schema）：下界 1s，上界 1800s（1_800_000 之上的入参被钳制） */
 export const MIN_MONITOR_TIMEOUT_MS = 1_000;
@@ -247,8 +262,12 @@ export class MonitorRateGate {
     this.notifyInWindow += 1;
     this.totalNotified += 1;
 
+    // 暂存行的提示放在**末尾**：`TaskNotificationMessage` 只取事件首行作摘要，
+    // 放末尾不会污染摘要行；而且措辞说的是「以上含」，本来就得在行后（D18）。
     const event =
-      deferredCount > 0 ? `${merged.join("\n")}\n…另有 ${deferredCount} 条` : merged.join("\n");
+      deferredCount > 0
+        ? `${merged.join("\n")}\n${formatDeferredMergeNotice(deferredCount)}`
+        : merged.join("\n");
     return { action: "emit", event };
   }
 
@@ -307,7 +326,7 @@ export class MonitorRateGate {
     const omitted = merged.length - maxLines;
     const kept = omitted > 0 ? merged.slice(omitted) : merged;
     const body = kept.join("\n");
-    return omitted > 0 ? `…前 ${omitted} 行已省略，完整输出见 .output\n${body}` : body;
+    return omitted > 0 ? `${formatOmittedLinesNotice(omitted)}\n${body}` : body;
   }
 }
 
@@ -317,7 +336,7 @@ export class MonitorRateGate {
 interface ActiveMonitor {
   pid?: number;
   kill(signal?: any): unknown;
-  /** 终态已写入（防止 exit 事件与期限定时器各发一条通知） */
+  /** 终态已写入（防止 exit 宽限、close、期限定时器各发一条通知） */
   finalized: boolean;
   /** 期限定时器 */
   deadlineTimer: NodeJS.Timeout | null;
@@ -325,9 +344,13 @@ interface ActiveMonitor {
   batchTimer: NodeJS.Timeout | null;
   /** 持续阀窗口重置时的暂存行冲刷定时器（见 `scheduleDeferredFlush`） */
   deferredTimer: NodeJS.Timeout | null;
+  /** `exit` 到达后的 stdio 排空宽限（见 `EXIT_DRAIN_GRACE_MS`） */
+  exitDrainTimer: NodeJS.Timeout | null;
   gate: MonitorRateGate;
   splitter: LineSplitter;
   pendingLines: string[];
+  /** 脚本 stdout 的累计输出行数（含被限流合并 / 冲刷截断的行），终态文案据此给「输出共 M 行」 */
+  outputLines: number;
   stderrTail: string;
 }
 
@@ -382,6 +405,7 @@ export function spawnMonitorTask(opts: {
     command: opts.command,
     deadlineAt,
     eventCount: 0,
+    outputLines: 0,
     isBackgrounded: true,
   };
 
@@ -405,9 +429,11 @@ export function spawnMonitorTask(opts: {
     deadlineTimer: null,
     batchTimer: null,
     deferredTimer: null,
+    exitDrainTimer: null,
     gate: new MonitorRateGate(opts.__gateLimitsForTest),
     splitter: new LineSplitter(),
     pendingLines: [],
+    outputLines: 0,
     stderrTail: "",
   };
   activeMonitors.set(taskId, ctl);
@@ -477,6 +503,9 @@ export function spawnMonitorTask(opts: {
 
   const pushLines = (lines: string[]): void => {
     if (isFinalized(ctl)) return;
+    // 输出行数在这里累计（D18）：限流合并、冲刷截断都不影响它，终态文案的
+    // 「输出共 M 行」必须等于脚本真实打过多少行，而不是投递了几条通知。
+    ctl.outputLines += lines.length;
     // 突发阀按**原始行**逐条计（批处理窗口会掩盖真实行数）——这里只关心次数，
     // 不关心内容，故按长度循环。
     for (let i = 0; i < lines.length; i++) {
@@ -523,6 +552,29 @@ export function spawnMonitorTask(opts: {
   // `printf abc`（无换行）的残行还在 stdout 缓冲里 —— exit 里把 finalized 置位后，
   // 随后到达的 stdout `end` 会被短路，最后一个事件就丢了（实测 T-M1-9 失败）。
   // close 在进程退出且所有 stdio 流关闭后触发，此时 data/end 都已处理完。
+  //
+  // 但 close 有一个它自己关不掉的前提：**所有**写端都关闭。孙进程继承了 stdout
+  // 管道的写端（`sleep 60 & exit 0`），父 shell 早已退出，close 却要等到孙进程结束
+  // 甚至永远不来（D15 / R8：1.5s 后仍是 running）。所以另听 `exit`：给它一个有界
+  // 宽限，宽限内 close 到了走原路径；没到就按「脚本结束 = 监控结束」清进程组再收尾。
+  child.on("exit", (code, signal) => {
+    if (isFinalized(ctl)) return;
+    // 已经有一个在跑（exit 理论上只触发一次，防重复挂）
+    if (ctl.exitDrainTimer !== null) return;
+    ctl.exitDrainTimer = setTimeout(() => {
+      ctl.exitDrainTimer = null;
+      // 宽限内 close 到了：stdout/stderr 已排空，交给 close 的常规出口（残行不丢）
+      if (isFinalized(ctl)) return;
+      // close 迟迟不到 = 孙进程占着管道写端。先清进程组（否则它继续跑、继续占并发名额），
+      // 再销毁流：`destroy` 之后的 data 不再到达，剩余内容以已缓冲的为准（取舍见 D15）。
+      killMonitorProcessGroup(ctl);
+      child.stdout?.destroy();
+      child.stderr?.destroy();
+      finalizeAndDrain(taskId, ctl, { kind: "exit", code, signal, stderrTail: ctl.stderrTail });
+    }, EXIT_DRAIN_GRACE_MS);
+    ctl.exitDrainTimer.unref?.();
+  });
+
   child.on("close", (code, signal) => {
     finalizeAndDrain(taskId, ctl, { kind: "exit", code, signal, stderrTail: ctl.stderrTail });
   });
@@ -579,14 +631,16 @@ function killMonitorProcessGroup(ctl: ActiveMonitor): void {
   }
 }
 
-/** 清掉 monitor 的三类定时器（期限 / 200ms 批处理 / 持续阀窗口冲刷） */
+/** 清掉 monitor 的四类定时器（期限 / 200ms 批处理 / 持续阀窗口冲刷 / exit 排空宽限） */
 function clearMonitorTimers(ctl: ActiveMonitor): void {
   if (ctl.deadlineTimer) clearTimeout(ctl.deadlineTimer);
   if (ctl.batchTimer) clearTimeout(ctl.batchTimer);
   if (ctl.deferredTimer) clearTimeout(ctl.deferredTimer);
+  if (ctl.exitDrainTimer) clearTimeout(ctl.exitDrainTimer);
   ctl.deadlineTimer = null;
   ctl.batchTimer = null;
   ctl.deferredTimer = null;
+  ctl.exitDrainTimer = null;
 }
 
 /** 投递一条事件通知并累加已投递事件数（面板统计列 + `bg_task_list` 进展签名） */
@@ -633,7 +687,11 @@ function finalizeAndDrain(
 
   // 1) 冲刷：残行 + 200ms 批处理缓冲 + 持续阀暂存，按输出顺序合成一条事件
   const rest = ctl.splitter.flush();
-  if (rest !== null) ctl.pendingLines.push(rest);
+  if (rest !== null) {
+    ctl.pendingLines.push(rest);
+    // 残行（`printf abc` 无换行）也是脚本的一行输出，不能漏计（D18）
+    ctl.outputLines += 1;
+  }
   // 突发阀停止说明行太多：只带最后 MAX_BURST_FLUSH_LINES 行（汇总行在最后），其余去 .output 看
   const maxLines =
     outcome.kind === "stop" && outcome.reason === "rate_burst"
@@ -645,6 +703,9 @@ function finalizeAndDrain(
   // 2) 再置位、清定时器（四处手写的 finalized = true 收成这一处）
   ctl.finalized = true;
   clearMonitorTimers(ctl);
+
+  // 输出行数写进任务状态：终态文案从 task 读，四个出口不必各抄一份计数（D18）
+  updateTask<LocalMonitorTaskState>(taskId, (t) => ({ ...t, outputLines: ctl.outputLines }));
 
   // 3) 写终态
   switch (outcome.kind) {
@@ -712,7 +773,7 @@ function finalizeMonitorExit(opts: {
   const ok = opts.code === 0 && opts.signal === null;
   const stderrTail = opts.stderrTail.trim();
   const summary = ok
-    ? `监控结束：${task.description}（共 ${task.eventCount} 条事件，退出码 0）`
+    ? `监控结束：${task.description}（${formatDeliverySummary(task.eventCount, task.outputLines)}，退出码 0）`
     : `监控异常退出：${task.description}（退出码 ${opts.code ?? "null"}${
         opts.signal ? `，信号 ${opts.signal}` : ""
       }${stderrTail ? `，stderr 末尾：${stderrTail}` : ""}）`;
@@ -768,9 +829,9 @@ function finalizeMonitorStop(
   const elapsedMin = Math.max(1, Math.round((Date.now() - task.startTime) / 60_000));
   const summary =
     reason === "timeout"
-      ? `监控到期：${description}（${elapsedMin} 分钟内 ${task.eventCount} 条事件）。${
+      ? `监控到期：${description}（${elapsedMin} 分钟内${formatDeliverySummary(task.eventCount, task.outputLines)}）。${
           task.eventCount === 0
-            ? "0 条事件请检查过滤条件是否覆盖了失败状态"
+            ? "未投递任何通知，请检查过滤条件是否覆盖了失败状态"
             : "若仍需等待请重新启动"
         }`
       : reason === "rate_burst"
@@ -805,7 +866,7 @@ function finalizeMonitorKill(taskId: string): void {
     toolUseId: task.toolUseId,
     outputFile: task.outputFile,
     status: "killed",
-    summary: `监控已停止（task_stop）：${task.description}（共 ${task.eventCount} 条事件）`,
+    summary: `监控已停止（task_stop）：${task.description}（${formatDeliverySummary(task.eventCount, task.outputLines)}）`,
   });
 }
 

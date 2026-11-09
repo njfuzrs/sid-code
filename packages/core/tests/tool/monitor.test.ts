@@ -64,6 +64,7 @@ function fakeMonitor(id: string): LocalMonitorTaskState {
     command: "true",
     deadlineAt: Date.now() + 60_000,
     eventCount: 0,
+    outputLines: 0,
     isBackgrounded: true,
   };
   registerTask(task);
