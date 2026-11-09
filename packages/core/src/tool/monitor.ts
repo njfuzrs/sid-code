@@ -38,7 +38,12 @@ import {
   isMonitorTask,
 } from "../task/index.ts";
 import { getRunningTasks } from "../task/registry.ts";
-import { registerWait, findWaitBySubject, extractWaitSubjects } from "../task/wait-registry.ts";
+import {
+  registerWait,
+  findWaitBySubject,
+  extractWaitSubjects,
+  isWakeupRegistrationEnabled,
+} from "../task/wait-registry.ts";
 import { extractStatusQueryFamilies } from "../task/status-query-commands.ts";
 import { isReadOnlyCommand, isDestructiveCommand } from "./bash/read-only-validation.ts";
 
@@ -283,11 +288,20 @@ until curl -sf localhost:3000/health >/dev/null; do sleep 1; done; echo "service
 
     const endAt = formatClockWithSeconds(taskState.deadlineAt);
     const minutes = Math.round(timeoutMs / 60_000);
+    // D19：宿主没有 prompt 注入通道（`-p` / SDK 单轮）时，进程会一直等到监控结束才退。
+    // 模型不知道这一点时会反向补偿——「既然我不在，那我自己轮询」，正好是本次要收口的
+    // 前台空转。文案不出现「无头」字样：stream-json 有注入通道、同样会等到结束后再输出，
+    // 那句话对它的语义也成立，只是不是「-p」。
+    // 判据复用 wait-registry 的既有开关，不新增「无头」标志（两个事实源必然漂移）。
+    const waitUntilEndNote = isWakeupRegistrationEnabled()
+      ? ""
+      : `当前宿主在监控结束前不会退出：结束本轮后进程会继续等待，监控结束时才输出并退出，期间不需要轮询。\n`;
     return {
       data:
         `已启动监控 ${taskState.id}（${description}），最晚 ${endAt} 结束（${minutes} 分钟期限）${clampNote}。\n` +
         `每条输出会作为通知送达，期间不需要查询状态，也不需要 sleep。\n` +
         `可以继续做不依赖它的工作；没有别的事就告诉用户在等什么，然后结束本轮。\n` +
+        `${waitUntilEndNote}` +
         `提前停止：task_stop ${taskState.id}${duplicateNote}`,
     };
   }

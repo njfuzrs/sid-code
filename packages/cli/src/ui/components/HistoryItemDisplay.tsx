@@ -291,6 +291,7 @@ export const HistoryItemDisplay: React.FC<HistoryItemDisplayProps> = ({
             result={item.result}
             agentType={item.agentType}
             event={item.event}
+            eventCount={item.eventCount}
             description={item.description}
             terminalWidth={width}
           />

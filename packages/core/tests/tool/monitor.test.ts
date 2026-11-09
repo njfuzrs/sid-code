@@ -23,7 +23,11 @@ import {
 } from "../../src/task/monitor-task.ts";
 import { clearAllTasks, registerTask } from "../../src/task/registry.ts";
 import { dequeuePendingNotifications } from "../../src/task/notification.ts";
-import { __resetWaitRegistryForTest, listWaits } from "../../src/task/wait-registry.ts";
+import {
+  __resetWaitRegistryForTest,
+  listWaits,
+  setWakeupRegistrationEnabled,
+} from "../../src/task/wait-registry.ts";
 import { filterToolsForAgent } from "../../src/agent/tool-filter.ts";
 import { toLegacyTool } from "../../src/tool/bridge.ts";
 import type { LocalMonitorTaskState } from "../../src/task/types.ts";
@@ -135,6 +139,45 @@ describe("MonitorTool 启动返回（T-M1-1）", () => {
     });
     expect(second.isError).toBeFalsy();
     expect(second.data).toContain("已有监控");
+  });
+});
+
+// D19：宿主没有 prompt 注入通道（`-p` / SDK 单轮）时进程会等到监控结束才退。
+// 不告诉模型这一点，它会反向补偿——「反正我不在，那我自己轮询」，正好是要收口的前台空转。
+describe("MonitorTool 的宿主等待语义（D19）", () => {
+  const HOST_WAIT_SENTENCE = "当前宿主在监控结束前不会退出";
+
+  test("无注入通道（-p / SDK 单轮）：结果里写明进程会等到监控结束", async () => {
+    // beforeEach 的 __resetWaitRegistryForTest 已把开关复位为 false（= 没有注入通道）
+    const r = await tool.call({
+      description: "PR #662 CI",
+      command: "echo ready",
+      timeout_ms: 60_000,
+    });
+    expect(r.isError).toBeFalsy();
+    expect(r.data).toContain(HOST_WAIT_SENTENCE);
+  });
+
+  test("有注入通道（交互式 TUI / stream-json）：不出现这句", async () => {
+    setWakeupRegistrationEnabled(true);
+    const r = await tool.call({
+      description: "PR #662 CI",
+      command: "echo ready",
+      timeout_ms: 60_000,
+    });
+    expect(r.isError).toBeFalsy();
+    expect(r.data).not.toContain(HOST_WAIT_SENTENCE);
+  });
+
+  test("两种宿主的通用收尾指令都在（不接受状态查询、结束本轮）", async () => {
+    const off = await tool.call({ description: "a", command: "echo ready", timeout_ms: 60_000 });
+    setWakeupRegistrationEnabled(true);
+    const on = await tool.call({ description: "b", command: "echo ready", timeout_ms: 60_000 });
+    for (const r of [off, on]) {
+      expect(r.isError).toBeFalsy();
+      expect(r.data).toContain("不需要查询状态");
+      expect(r.data).toContain("结束本轮");
+    }
   });
 });
 

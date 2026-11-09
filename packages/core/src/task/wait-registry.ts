@@ -347,6 +347,18 @@ export function setWakeupRegistrationEnabled(enabled: boolean): void {
   wakeupRegistrationEnabled = enabled;
 }
 
+/**
+ * 宿主有没有 prompt 注入通道（只读，D19）。
+ *
+ * 同一个事实的第二个消费方：monitor 用它判断「本轮结束后进程会不会一直等到监控结束」。
+ * 没有注入通道（`-p` / SDK 单轮）时进程会等，有通道（交互式 TUI / stream-json）时不会。
+ * **不新增全局状态**——这里只是把已有的开关读出来，避免 monitor 侧再造一个「无头」标志
+ * 与之漂移。
+ */
+export function isWakeupRegistrationEnabled(): boolean {
+  return wakeupRegistrationEnabled;
+}
+
 // ── 查询 ──
 
 /**

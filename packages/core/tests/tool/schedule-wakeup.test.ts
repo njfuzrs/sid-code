@@ -80,4 +80,24 @@ describe("ScheduleWakeupTool", () => {
     });
     expect(res.output).toContain("等构建约 3 分钟");
   });
+
+  // D19：等外部状态的首选是 monitor，本工具只负责「到某个时间点再做一件事」。
+  // 旧描述拿「跑到 CI 过为止」当典型用法，正是方案 §5.4 要收口的那条次优路径——
+  // 模型照着它会把前台轮询换成 N 次唤醒，等待语义没有变好。
+  describe("D19 工具描述指向 monitor", () => {
+    it("描述里出现 monitor（引导到正确工具）", () => {
+      expect(new ScheduleWakeupTool().description()).toContain("monitor");
+    });
+
+    it("描述不再出现「跑到 CI 过为止」的旧典型用法", () => {
+      expect(new ScheduleWakeupTool().description()).not.toContain("跑到 CI 过为止");
+    });
+
+    it("保留三段既有取舍说明（钳制 / 单链替换 / 缓存 TTL）", () => {
+      const desc = new ScheduleWakeupTool().description();
+      expect(desc).toContain("[60, 3600]");
+      expect(desc).toContain("替换前一个");
+      expect(desc).toContain("缓存 TTL");
+    });
+  });
 });

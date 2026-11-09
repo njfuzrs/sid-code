@@ -99,6 +99,46 @@ function extractNotificationTag(block: string, tag: string): string | undefined 
 }
 
 /**
+ * 同一条消息内、同一个 monitor 的**相邻**事件通知聚合成一项（D20 / T-M1-24）。
+ *
+ * 为什么不逐条渲染：monitor 的限流上限是每分钟 6 条，主循环忙时（正在跑一个长工具）
+ * 积压的事件会在回合边界一次性注入。逐条 map 就是同一个 monitor 在历史区刷 N 行
+ * `<description> · <首行>`，把屏幕占满。方案 §5.7.4 要求合成一项「<description> · N 条事件」，
+ * 其下 `⎿` 逐行列出事件正文。
+ *
+ * 三条边界，都必须在这里守住（测试逐条断言）：
+ * 1. **只聚合相邻的**：中间夹了别的通知（另一个 monitor 的事件、终态通知）就断开分组。
+ *    跨组聚合会让「A 的事件 / B 的终态 / A 的事件」变成一项 A，时间顺序被抹掉。
+ * 2. **不同 taskId 不聚合**：它们描述的是不同的被监控对象，合并后用户分不清谁是谁。
+ * 3. **终态通知（无 event）不参与**：它的语义是「结束了、结论是什么」，与「发生过什么」
+ *    不是一回事，且摘要行渲染路径也不同（结果正文 vs 事件正文）。
+ *
+ * 只构造**新的**渲染项，不修改传入对象——`_meta.notif` 是模型可见的结构化数据，
+ * 这条链路上只允许读。
+ */
+function aggregateEventNotifications<T extends { taskId?: string; event?: string }>(
+  notifs: T[],
+): T[] {
+  const out: T[] = [];
+  for (const notif of notifs) {
+    const prev = out[out.length - 1];
+    if (notif.event !== undefined && prev?.event !== undefined && prev.taskId === notif.taskId) {
+      // 合并成一条多行事件 + 计数；eventCount 从 2 起（单条事件不带这个字段，
+      // 渲染路径与合并前逐字一致）
+      const merged = {
+        ...prev,
+        event: `${prev.event}\n${notif.event}`,
+      } as T & { eventCount?: number };
+      merged.eventCount = ((prev as T & { eventCount?: number }).eventCount ?? 1) + 1;
+      out[out.length - 1] = merged;
+      continue;
+    }
+    out.push(notif);
+  }
+  return out;
+}
+
+/**
  * 尝试把一条 user 消息中的「后台任务通知」块解析为专用历史项。
  *
  * 背景：后台子代理/shell 完成后，<task-notification> XML 被当作 user 文本消息注入对话。
@@ -136,6 +176,8 @@ function tryParseTaskNotifications(msg: Message): {
       agentType?: string;
       event?: string;
       description?: string;
+      /** D20：由本函数聚合产生，`_meta.notif` 里**不会有**这个字段 */
+      eventCount?: number;
     };
     const raw = msg._meta.notif as StructuredNotif | StructuredNotif[] | undefined;
     const notifList: StructuredNotif[] = Array.isArray(raw)
@@ -156,8 +198,11 @@ function tryParseTaskNotifications(msg: Message): {
     // 修复：只吃掉通知**文本**块，其余 blocks 原样交还调用方走正常渲染路径（与通用路径一致）。
     const nonTextBlocks = msg.content.filter((b) => b.type !== "text");
     if (notifList.length > 0) {
+      // D20：同一消息里同一个 monitor 的相邻事件先合并，再逐项构造历史项。
+      // 模型可见的 `_meta.notif` 原样不动——这里只影响渲染项。
+      const renderList = aggregateEventNotifications(notifList);
       return {
-        notifications: notifList.map((notif) => ({
+        notifications: renderList.map((notif) => ({
           type: "task_notification" as const,
           taskId: notif.taskId ?? "",
           status: notif.status ?? "",
@@ -170,6 +215,7 @@ function tryParseTaskNotifications(msg: Message): {
           // 走结构化字段而不是解析 XML——事件正文来自被监控进程的 stdout，
           // 含 `</task-notification>` 字面量也不会破坏渲染。
           ...(notif.event !== undefined ? { event: notif.event } : {}),
+          ...(notif.eventCount !== undefined ? { eventCount: notif.eventCount } : {}),
           ...(notif.description !== undefined ? { description: notif.description } : {}),
         })),
         remaining: nonTextBlocks.length > 0 ? nonTextBlocks : null,

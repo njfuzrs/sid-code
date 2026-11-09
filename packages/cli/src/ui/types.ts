@@ -294,6 +294,18 @@ export type HistoryItemTaskNotification = HistoryItemBase & {
    * （运行中也持续产生），两者在渲染上语义不同。
    */
   event?: string;
+  /**
+   * 聚合的事件条数（D20 / T-M1-24）。
+   *
+   * 只在 `event` 由**同一条消息内相邻的 N（>1）条同 monitor 事件**合并而来时存在。
+   * 单条事件的项不带这个字段（渲染路径与合并前逐字一致，不会因为加了这个字段而改变
+   * 既有单事件用例的输出）。
+   *
+   * 为什么要合并：monitor 的限流上限是每分钟 6 条，主循环忙时积压的事件会一次性注入，
+   * 不合并就是同一个 monitor 在历史区刷屏 N 行。合并只发生在**渲染层**，
+   * `_meta.notif` 里模型可见的结构化数据一条不动。
+   */
+  eventCount?: number;
   /** 事件来源描述（monitor 的 `description`），摘要行前缀。 */
   description?: string;
   /**

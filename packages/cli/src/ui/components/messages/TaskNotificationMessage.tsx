@@ -41,6 +41,14 @@ interface TaskNotificationMessageProps {
    * 多行事件的其余行进 `⎿` 折叠区（复用同一个 SlicingMaxSizedBox，不新增组件）。
    */
   event?: string;
+  /**
+   * 聚合的事件条数（D20）。`> 1` 时才由 `history-adapter` 打上，表示 `event` 是
+   * 同一条消息内相邻多条事件拼接成的多行文本。
+   *
+   * 渲染差异：摘要行改说「<description> · N 条事件」，事件正文**全部**进 `⎿` 折叠区。
+   * 单条事件（缺省）保持原样——首行在摘要行，其余行进 `⎿`。
+   */
+  eventCount?: number;
   /** 事件来源描述（monitor 的 `description`），摘要行前缀。 */
   description?: string;
   terminalWidth: number;
@@ -72,6 +80,7 @@ export const TaskNotificationMessage: React.FC<TaskNotificationMessageProps> = (
   result,
   agentType,
   event,
+  eventCount,
   description,
   terminalWidth,
 }) => {
@@ -86,11 +95,17 @@ export const TaskNotificationMessage: React.FC<TaskNotificationMessageProps> = (
   const eventLines = isEvent ? event.split("\n") : [];
   const eventFirstLine = eventLines[0] ?? "";
   const eventRest = eventLines.slice(1).join("\n");
+  // 聚合档（D20）：摘要行只说「N 条事件」，**全部**事件行进 ⎿——首行不再占摘要位，
+  // 否则「3 条事件」与其中一条的具体内容会同时出现在摘要行，自相矛盾。
+  const isAggregated = isEvent && eventCount !== undefined && eventCount > 1;
   const displaySummary = isEvent
-    ? description
-      ? `${description} · ${eventFirstLine}`
-      : eventFirstLine
+    ? isAggregated
+      ? `${description ? `${description} · ` : ""}${eventCount} 条事件`
+      : description
+        ? `${description} · ${eventFirstLine}`
+        : eventFirstLine
     : summary;
+  const eventBody = isAggregated ? event : eventRest;
 
   return (
     <Box width={terminalWidth} flexDirection="column">
@@ -109,14 +124,14 @@ export const TaskNotificationMessage: React.FC<TaskNotificationMessageProps> = (
       </Box>
 
       {/* 多行事件的其余行 / 终态结论：树枝缩进 + 折叠（复用 SlicingMaxSizedBox） */}
-      {isEvent && eventRest ? (
+      {isEvent && eventBody ? (
         <Box flexDirection="row">
           <Box flexShrink={0}>
             <Text color={theme.text.secondary}>{`  ${TREE_BRANCH} `}</Text>
           </Box>
           <Box flexDirection="column" flexGrow={1}>
             <SlicingMaxSizedBox
-              text={eventRest}
+              text={eventBody}
               maxLines={effectiveMaxLines}
               overflowDirection="bottom"
               maxColumnWidth={Math.max(1, maxColumnWidth - 4)}

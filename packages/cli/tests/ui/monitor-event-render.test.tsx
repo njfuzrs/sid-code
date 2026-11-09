@@ -44,7 +44,12 @@ const TERM_WIDTH = 100;
 const NARROW_WIDTH = 40;
 
 /** 渲染一条事件通知 */
-function renderEvent(opts: { event: string; description?: string; terminalWidth?: number }): {
+function renderEvent(opts: {
+  event: string;
+  description?: string;
+  terminalWidth?: number;
+  eventCount?: number;
+}): {
   raw: string;
   frame: string;
 } {
@@ -54,6 +59,7 @@ function renderEvent(opts: { event: string; description?: string; terminalWidth?
         summary="监控事件：PR #662 CI"
         status="running"
         event={opts.event}
+        {...(opts.eventCount !== undefined ? { eventCount: opts.eventCount } : {})}
         description={opts.description ?? "PR #662 CI"}
         terminalWidth={opts.terminalWidth ?? TERM_WIDTH}
       />
@@ -120,6 +126,49 @@ describe("事件通知渲染（T-M1-10）", () => {
     const { frame } = renderEvent({ event: "lint: pass" });
     // 用户消息的渲染特征是行首 `>`；事件行必须走 ⏺/⎿ 这一套（§2.4 的病灶）
     expect(frame.split("\n").some((l) => l.trimStart().startsWith("> "))).toBe(false);
+  });
+});
+
+// D20 / T-M1-24：忙时积压的多条事件合成一项，摘要行说「N 条事件」，其下 ⎿ 逐行列出。
+// 不合并就是同一个 monitor 在历史区刷 N 行（限流上限每分钟 6 条）。
+describe("聚合事件渲染（D20 / T-M1-24）", () => {
+  const threeEvents = "test (1/3): pass\ntest (2/3): pass\ntest (3/3): fail";
+
+  test("eventCount=3：摘要行「<description> · 3 条事件」，三行正文都在 ⎿ 区", () => {
+    const { frame } = renderEvent({ event: threeEvents, eventCount: 3 });
+    const summaryLines = frame.split("\n").filter((l) => l.includes("PR #662 CI ·"));
+    expect(summaryLines).toHaveLength(1);
+    expect(summaryLines[0]).toContain("3 条事件");
+    // 聚合档摘要行不夹带任何一条事件正文（否则与「3 条事件」自相矛盾）
+    expect(summaryLines[0]).not.toContain("test (1/3)");
+    // 三行事件全在 ⎿ 折叠区（首行不再占摘要位）
+    expect(frame).toContain("⎿");
+    for (const line of threeEvents.split("\n")) expect(frame).toContain(line);
+  });
+
+  test("eventCount=1（缺省）仍走单条路径：首行在摘要，其余入 ⎿", () => {
+    const { frame } = renderEvent({ event: threeEvents, eventCount: 1 });
+    const summaryLines = frame.split("\n").filter((l) => l.includes("PR #662 CI ·"));
+    expect(summaryLines).toHaveLength(1);
+    expect(summaryLines[0]).toContain("test (1/3): pass");
+    expect(frame).not.toContain("3 条事件");
+  });
+
+  test("聚合档 bullet 仍是次要色（事件不是终态）", () => {
+    const { frame } = renderEvent({ event: threeEvents, eventCount: 3 });
+    const line = frame.split("\n").find((l) => l.includes("3 条事件")) ?? "";
+    expect(line).toContain(BULLET);
+  });
+
+  test("40 列 + CJK：聚合摘要行不折成两行", () => {
+    const { frame } = renderEvent({
+      event: "测试分片 ubuntu-latest 3/3 通过\n覆盖率报告已上传",
+      eventCount: 2,
+      terminalWidth: NARROW_WIDTH,
+    });
+    const summaryLines = frame.split("\n").filter((l) => l.includes("PR #662 CI ·"));
+    expect(summaryLines).toHaveLength(1);
+    expect(summaryLines[0]).toContain("2 条事件");
   });
 });
 

@@ -1088,6 +1088,142 @@ describe("后台任务通知（<task-notification>）→ task_notification 历�
       expect(items[0].taskId).toBe("empty1");
     }
   });
+
+  // ─── D20 / T-M1-24：忙时积压的多条 monitor 事件合成一项 ───
+  // 主循环忙时，同一 monitor 的事件会一次性注入。逐条 map 就是 N 行刷屏，
+  // 方案 §5.7.4 要求合成「<description> · N 条事件」+ 逐行 ⎿。
+  describe("D20 事件聚合（T-M1-24）", () => {
+    /** 造一条只含 monitor 事件通知的消息（事件全部来自同一个 monitor） */
+    function eventMsg(
+      events: Array<{ taskId: string; event: string; description?: string }>,
+    ): Message {
+      return {
+        role: "user",
+        content: [{ type: "text", text: "<task-notification>…</task-notification>" }],
+        _meta: {
+          origin: "task-notification",
+          isMeta: true,
+          notif: events.map((e) => ({
+            taskId: e.taskId,
+            status: "running",
+            summary: "监控事件",
+            event: e.event,
+            ...(e.description !== undefined ? { description: e.description } : {}),
+          })),
+        },
+      };
+    }
+
+    test("同一 monitor 的 3 条相邻事件 → 一项，eventCount=3，事件按行拼接", () => {
+      const items = messagesToHistoryItems([
+        eventMsg([
+          { taskId: "m1", event: "test (1/3): pass", description: "PR #662 CI" },
+          { taskId: "m1", event: "test (2/3): pass", description: "PR #662 CI" },
+          { taskId: "m1", event: "test (3/3): fail", description: "PR #662 CI" },
+        ]),
+      ]);
+      const notifs = items.filter((i) => i.type === "task_notification");
+      expect(notifs).toHaveLength(1);
+      if (notifs[0].type === "task_notification") {
+        expect(notifs[0].eventCount).toBe(3);
+        expect(notifs[0].event).toBe("test (1/3): pass\ntest (2/3): pass\ntest (3/3): fail");
+        expect(notifs[0].description).toBe("PR #662 CI");
+      }
+    });
+
+    test("单条事件不带 eventCount（渲染路径与合并前一致）", () => {
+      const items = messagesToHistoryItems([
+        eventMsg([{ taskId: "m1", event: "lint: pass", description: "PR #662 CI" }]),
+      ]);
+      const notifs = items.filter((i) => i.type === "task_notification");
+      expect(notifs).toHaveLength(1);
+      if (notifs[0].type === "task_notification") {
+        expect(notifs[0].eventCount).toBeUndefined();
+        expect(notifs[0].event).toBe("lint: pass");
+      }
+    });
+
+    test("不同 monitor 的事件不聚合（各自独立一项）", () => {
+      const items = messagesToHistoryItems([
+        eventMsg([
+          { taskId: "m1", event: "A1", description: "CI" },
+          { taskId: "m2", event: "B1", description: "部署" },
+        ]),
+      ]);
+      const notifs = items.filter((i) => i.type === "task_notification");
+      expect(notifs).toHaveLength(2);
+      if (notifs[0].type === "task_notification" && notifs[1].type === "task_notification") {
+        expect(notifs[0].taskId).toBe("m1");
+        expect(notifs[1].taskId).toBe("m2");
+        expect(notifs[0].eventCount).toBeUndefined();
+        expect(notifs[1].eventCount).toBeUndefined();
+      }
+    });
+
+    test("不相邻的同 monitor 事件不跨组聚合（中间夹了别的任务）", () => {
+      const items = messagesToHistoryItems([
+        eventMsg([
+          { taskId: "m1", event: "A1", description: "CI" },
+          { taskId: "m2", event: "B1", description: "部署" },
+          { taskId: "m1", event: "A2", description: "CI" },
+        ]),
+      ]);
+      const notifs = items.filter((i) => i.type === "task_notification");
+      expect(notifs).toHaveLength(3);
+      expect(
+        notifs.every((n) => n.type === "task_notification" && n.eventCount === undefined),
+      ).toBe(true);
+    });
+
+    test("事件与终态混合：终态不参与聚合，单列在事件项之后", () => {
+      const msg: Message = {
+        role: "user",
+        content: [{ type: "text", text: "<task-notification>…</task-notification>" }],
+        _meta: {
+          origin: "task-notification",
+          isMeta: true,
+          notif: [
+            { taskId: "m1", status: "running", summary: "事件", event: "A1", description: "CI" },
+            { taskId: "m1", status: "running", summary: "事件", event: "A2", description: "CI" },
+            {
+              taskId: "m1",
+              status: "completed",
+              summary: "监控结束",
+              result: "共投递 2 条通知",
+              description: "CI",
+            },
+          ],
+        },
+      };
+      const notifs = messagesToHistoryItems([msg]).filter((i) => i.type === "task_notification");
+      expect(notifs).toHaveLength(2);
+      if (notifs[0].type === "task_notification" && notifs[1].type === "task_notification") {
+        expect(notifs[0].eventCount).toBe(2);
+        expect(notifs[0].event).toBe("A1\nA2");
+        // 终态项：走 result 渲染，不带 event / eventCount
+        expect(notifs[1].status).toBe("completed");
+        expect(notifs[1].event).toBeUndefined();
+        expect(notifs[1].eventCount).toBeUndefined();
+        expect(notifs[1].result).toBe("共投递 2 条通知");
+      }
+    });
+
+    test("只改渲染：_meta.notif 里的模型可见数据一条不动", () => {
+      const original = [
+        { taskId: "m1", status: "running", summary: "事件", event: "A1", description: "CI" },
+        { taskId: "m1", status: "running", summary: "事件", event: "A2", description: "CI" },
+      ];
+      const snapshot = JSON.parse(JSON.stringify(original));
+      const msg: Message = {
+        role: "user",
+        content: [{ type: "text", text: "<task-notification>…</task-notification>" }],
+        _meta: { origin: "task-notification", isMeta: true, notif: original },
+      };
+      messagesToHistoryItems([msg]);
+      // 渲染项可以合并，但注入给模型的结构化快照必须原样（不含 eventCount、事件未被拼接）
+      expect(original).toEqual(snapshot);
+    });
+  });
 });
 
 describe("持久 reminder 块（只播一次档，写进历史）不进 TUI", () => {
