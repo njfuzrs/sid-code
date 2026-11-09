@@ -38,8 +38,14 @@ import {
   isMonitorTask,
 } from "../task/index.ts";
 import { getRunningTasks } from "../task/registry.ts";
-import { registerWait, findWaitBySubject, extractWaitSubjects } from "../task/wait-registry.ts";
+import {
+  registerWait,
+  findWaitBySubject,
+  extractWaitSubjects,
+  isWakeupRegistrationEnabled,
+} from "../task/wait-registry.ts";
 import { extractStatusQueryFamilies } from "../task/status-query-commands.ts";
+import { formatClockWithSeconds } from "../task/monitor-text.ts";
 import { isReadOnlyCommand, isDestructiveCommand } from "./bash/read-only-validation.ts";
 
 const monitorSchema = lazySchema(() =>
@@ -69,14 +75,6 @@ type MonitorInput = {
   command?: unknown;
   timeout_ms?: unknown;
 };
-
-/** 本地时钟 HH:MM:SS（工具结果里的「最晚几点结束」按用户本地时区显示） */
-function formatClockWithSeconds(ts: number): string {
-  const d = new Date(ts);
-  return `${String(d.getHours()).padStart(2, "0")}:${String(d.getMinutes()).padStart(2, "0")}:${String(
-    d.getSeconds(),
-  ).padStart(2, "0")}`;
-}
 
 /** 从命令里抽取被监控对象的签名（S2 用）：`gh pr checks 662` → `gh:pr:662` */
 function extractMonitorSubjects(command: string): string[] {
@@ -283,11 +281,20 @@ until curl -sf localhost:3000/health >/dev/null; do sleep 1; done; echo "service
 
     const endAt = formatClockWithSeconds(taskState.deadlineAt);
     const minutes = Math.round(timeoutMs / 60_000);
+    // D19（方案 §10.3）：无头形态（`-p` 单轮）没有 prompt 注入通道，事件没法在回合边界
+    // 叫醒主循环，进程只能等到 monitor 结束再退出。不写这句时模型会按交互式的习惯
+    // 说完「已启动，我先做别的」就收尾，用户拿到一个跑完即退的进程、看不到结果。
+    // 判据复用唤醒登记的同一个事实（有没有注入通道），不另加「headless」全局标志；
+    // stream-json 也有注入通道、同样等到结束，所以文案不绑定「无头」字样。
+    const waitNote = isWakeupRegistrationEnabled()
+      ? ""
+      : "当前宿主在监控结束前不会退出，请等到监控结束后再收尾。\n";
     return {
       data:
         `已启动监控 ${taskState.id}（${description}），最晚 ${endAt} 结束（${minutes} 分钟期限）${clampNote}。\n` +
         `每条输出会作为通知送达，期间不需要查询状态，也不需要 sleep。\n` +
         `可以继续做不依赖它的工作；没有别的事就告诉用户在等什么，然后结束本轮。\n` +
+        waitNote +
         `提前停止：task_stop ${taskState.id}${duplicateNote}`,
     };
   }

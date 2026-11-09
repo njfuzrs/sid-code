@@ -99,6 +99,83 @@ function extractNotificationTag(block: string, tag: string): string | undefined 
 }
 
 /**
+ * `_meta.notif` 里的结构化通知快照（query/loop.ts 注入，TUI 侧直接消费）。
+ *
+ * 兼容单个对象与数组两种形态：现在注入数组（一条消息聚合多通知），
+ * 旧会话 resume 可能是单个对象（早期实现）。
+ */
+type StructuredNotif = {
+  taskId?: string;
+  status?: string;
+  summary?: string;
+  result?: string;
+  outputFile?: string;
+  agentType?: string;
+  event?: string;
+  description?: string;
+};
+
+/**
+ * 单条结构化通知 → 历史项。
+ *
+ * 聚合与不聚合共用这一份字段映射，避免两条路径各自拼字段而漂移
+ * （agentType / description 都是「只有一处记得带」就会丢的隐式契约）。
+ */
+function notificationToItem(notif: StructuredNotif, eventCount?: number): HistoryItemWithoutId {
+  return {
+    type: "task_notification",
+    taskId: notif.taskId ?? "",
+    status: notif.status ?? "",
+    summary: notif.summary ?? "",
+    ...(notif.result ? { result: notif.result } : {}),
+    ...(notif.outputFile ? { outputFile: notif.outputFile } : {}),
+    // P1-2：agentType 只在结构化路径可得（XML 里刻意不带），用于身份色渲染。
+    ...(notif.agentType ? { agentType: notif.agentType } : {}),
+    // 监控事件：TUI 摘要行渲染成 `<description> · <event 首行>`（§5.7.4）。
+    // 走结构化字段而不是解析 XML——事件正文来自被监控进程的 stdout，
+    // 含 `</task-notification>` 字面量也不会破坏渲染。
+    ...(notif.event !== undefined ? { event: notif.event } : {}),
+    ...(notif.description !== undefined ? { description: notif.description } : {}),
+    ...(eventCount !== undefined && eventCount > 1 ? { eventCount } : {}),
+  };
+}
+
+/**
+ * D20（方案 §5.7.4 / T-M1-24）：同一消息内、同 taskId 且**相邻**的事件通知合成一项。
+ *
+ * 主循环忙时事件在队列里攒着、一次性注入，TUI 里原本是 3 个独立历史项
+ * （每条一行 `<description> · <首行>`），同一个 monitor 一多就把历史区刷屏。
+ * 合成后摘要行为 `<description> · N 条事件`，事件正文逐行进 `⎿`。
+ *
+ * 只聚合相邻的：终态通知（无 `event`）不参与聚合，必须独立成项——
+ * 「事件 → 终态 → 事件」的先后顺序不能被重排吞掉终态。不同 taskId 也不聚合。
+ * **只改渲染**：`_meta.notif` 里模型可见的结构化数据一条不动。
+ */
+function aggregateEventNotifications(notifs: StructuredNotif[]): HistoryItemWithoutId[] {
+  const items: HistoryItemWithoutId[] = [];
+  let i = 0;
+  while (i < notifs.length) {
+    const head = notifs[i]!;
+    if (head.event === undefined) {
+      items.push(notificationToItem(head));
+      i += 1;
+      continue;
+    }
+    const events = [head.event];
+    let next = i + 1;
+    while (next < notifs.length) {
+      const candidate = notifs[next]!;
+      if (candidate.event === undefined || candidate.taskId !== head.taskId) break;
+      events.push(candidate.event);
+      next += 1;
+    }
+    items.push(notificationToItem({ ...head, event: events.join("\n") }, events.length));
+    i = next;
+  }
+  return items;
+}
+
+/**
  * 尝试把一条 user 消息中的「后台任务通知」块解析为专用历史项。
  *
  * 背景：后台子代理/shell 完成后，<task-notification> XML 被当作 user 文本消息注入对话。
@@ -127,16 +204,7 @@ function tryParseTaskNotifications(msg: Message): {
     //
     // 兼容单个对象与数组两种形态：query/loop 现注入数组（一条消息聚合多通知）；
     // 旧会话 resume 可能是单个对象（早期实现）。两者都遍历渲染，不丢任何一条。
-    type StructuredNotif = {
-      taskId?: string;
-      status?: string;
-      summary?: string;
-      result?: string;
-      outputFile?: string;
-      agentType?: string;
-      event?: string;
-      description?: string;
-    };
+    // 类型定义已上移到模块级 `StructuredNotif`——聚合函数也要用它。
     const raw = msg._meta.notif as StructuredNotif | StructuredNotif[] | undefined;
     const notifList: StructuredNotif[] = Array.isArray(raw)
       ? raw
@@ -157,21 +225,9 @@ function tryParseTaskNotifications(msg: Message): {
     const nonTextBlocks = msg.content.filter((b) => b.type !== "text");
     if (notifList.length > 0) {
       return {
-        notifications: notifList.map((notif) => ({
-          type: "task_notification" as const,
-          taskId: notif.taskId ?? "",
-          status: notif.status ?? "",
-          summary: notif.summary ?? "",
-          ...(notif.result ? { result: notif.result } : {}),
-          ...(notif.outputFile ? { outputFile: notif.outputFile } : {}),
-          // P1-2：agentType 只在结构化路径可得（XML 里刻意不带），用于身份色渲染。
-          ...(notif.agentType ? { agentType: notif.agentType } : {}),
-          // 监控事件：TUI 摘要行渲染成 `<description> · <event 首行>`（§5.7.4）。
-          // 走结构化字段而不是解析 XML——事件正文来自被监控进程的 stdout，
-          // 含 `</task-notification>` 字面量也不会破坏渲染。
-          ...(notif.event !== undefined ? { event: notif.event } : {}),
-          ...(notif.description !== undefined ? { description: notif.description } : {}),
-        })),
+        // D20：同一消息里同 monitor 的相邻事件合成一项（终态仍独立），
+        // 否则一条消息攒了 3 条事件就在历史区刷出 3 行。
+        notifications: aggregateEventNotifications(notifList),
         remaining: nonTextBlocks.length > 0 ? nonTextBlocks : null,
       };
     }

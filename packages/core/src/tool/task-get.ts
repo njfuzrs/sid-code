@@ -5,7 +5,14 @@
 
 import type { LegacyTool as Tool, LegacyToolResult as ToolResult } from "./types.ts";
 // P1-3：isTerminalStatus 供阻塞等待判定"任务是否已进终态"。
-import { getTask, isAgentTask, isShellTask, isTerminalStatus } from "../task/index.ts";
+import {
+  getTask,
+  isAgentTask,
+  isShellTask,
+  isMonitorTask,
+  isTerminalStatus,
+} from "../task/index.ts";
+import { formatClockWithSeconds } from "../task/monitor-text.ts";
 import { z } from "zod/v4";
 import { lazySchema } from "../sdk/lazy-schema.ts";
 
@@ -194,6 +201,15 @@ export class TaskGetTool implements Tool {
       if (task.interrupted) {
         lines.push(`  <interrupted>true</interrupted>`);
       }
+    }
+
+    // monitor（D17）：通用字段答不出「最晚几点结束、已经报了几条」，模型只能去读
+    // `.output` 文件。`command` 的截断长度与 shell 同（500），因为它和 shell 一样
+    // 是用户可见的原始命令。
+    if (isMonitorTask(task)) {
+      lines.push(`  <command>${task.command.slice(0, 500)}</command>`);
+      lines.push(`  <deadline>${formatClockWithSeconds(task.deadlineAt)}</deadline>`);
+      lines.push(`  <event-count>${task.eventCount}</event-count>`);
     }
 
     lines.push("</task>");

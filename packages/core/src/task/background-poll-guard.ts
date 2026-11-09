@@ -21,7 +21,7 @@ import { realpathSync } from "fs";
 import { sidPaths } from "../config/paths.ts";
 import { getAllTasks, getTask } from "./registry.ts";
 import { taskIdFromOutputPath } from "./lifecycle.ts";
-import { isTerminalStatus, type TaskState } from "./types.ts";
+import { isMonitorTask, isTerminalStatus, type TaskState } from "./types.ts";
 
 export { BACKGROUND_RECEIPT_NOTICE } from "./background-receipt.ts";
 
@@ -91,12 +91,19 @@ export function __resetBackgroundPollGuardForTest(): void {
  * 刻意不含耗时、进度 token 数：它们每次调用都在变，算进来签名就永远不相等，拦截形同虚设
  * （71 次调用里返回体唯一变化的就是 `<duration>`）。子代理的工具调用数算进来——那是
  * 「真的有进展」的信号，模型据此判断是否值得再看一眼是正当的。
+ *
+ * monitor 同理算 `eventCount`（D17，方案 §5.4.10「monitor 的已投递事件数算作进展」）：
+ * 脚本又报了几条事件是模型真正需要知道的新信息，只拼 id/status 会让第二次查询
+ * 在「收到 2 条新事件」的情况下仍被当成「状态与上次相同」拦掉。
  */
 function taskListSignature(statusFilter: string, tasks: TaskState[]): string {
   const parts = tasks
     .map((t) => {
       const tools = (t as { progress?: { toolUseCount?: number } }).progress?.toolUseCount;
-      return `${t.id}:${t.status}${tools !== undefined ? `:${tools}` : ""}`;
+      const events = isMonitorTask(t) ? t.eventCount : undefined;
+      return `${t.id}:${t.status}${tools !== undefined ? `:${tools}` : ""}${
+        events !== undefined ? `:ev${events}` : ""
+      }`;
     })
     .sort();
   return `${statusFilter}|${parts.join(",")}`;

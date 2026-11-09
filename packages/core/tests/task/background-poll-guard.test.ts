@@ -35,6 +35,25 @@ function task(id: string, status: TaskStatus): TaskState {
   } as unknown as TaskState;
 }
 
+/** D17：monitor 的进展信号是 `eventCount`，不是 `progress.toolUseCount`。 */
+function monitorTask(id: string, eventCount: number, status: TaskStatus = "running"): TaskState {
+  return {
+    id,
+    type: "local_monitor",
+    status,
+    description: `监控 ${id}`,
+    startTime: Date.now(),
+    outputFile: join(root, "home", ".sid-code", "tasks", `${id}.output`),
+    outputOffset: 0,
+    notified: false,
+    command: "gh pr checks",
+    deadlineAt: Date.now() + 60_000,
+    eventCount,
+    outputLines: 0,
+    isBackgrounded: true,
+  } as unknown as TaskState;
+}
+
 function ctxWith(tasks: TaskState[], tasksDir?: string): BackgroundPollContext {
   const byId = new Map(tasks.map((t) => [t.id, t]));
   return {
@@ -251,6 +270,18 @@ describe("bg_task_list（事故 20261106-101611-d0a96bc1：71 次同参轮询）
     expect(checkBackgroundPoll("bg_task_list", {}, ctx).intercept).toBe(true);
     a.progress = { toolUseCount: 4, tokenCount: 999 };
     expect(checkBackgroundPoll("bg_task_list", {}, ctx).intercept).toBe(false);
+  });
+
+  test("D17：monitor 事件数前进 → 算新信息，放行；不变仍拦", () => {
+    // 方案 §5.4.10「monitor 的已投递事件数算作进展」。此前签名只拼 id/status，
+    // 同一个 monitor 从 0 条收到 2 条新事件后，第二次查询仍被当成「状态相同」拦掉。
+    const m = monitorTask("m1", 0);
+    const ctx = ctxWith([m]);
+    expect(checkBackgroundPoll("bg_task_list", {}, ctx).intercept).toBe(false); // 第一次放行
+    expect(checkBackgroundPoll("bg_task_list", {}, ctx).intercept).toBe(true); // 事件数不变 → 拦
+    (m as { eventCount: number }).eventCount = 2;
+    expect(checkBackgroundPoll("bg_task_list", {}, ctx).intercept).toBe(false); // 收到 2 条新事件 → 放行
+    expect(checkBackgroundPoll("bg_task_list", {}, ctx).intercept).toBe(true); // 再次不变 → 拦
   });
 
   test("换过滤条件 → 放行；没有运行中任务 → 永远放行", () => {

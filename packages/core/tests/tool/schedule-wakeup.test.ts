@@ -81,3 +81,17 @@ describe("ScheduleWakeupTool", () => {
     expect(res.output).toContain("等构建约 3 分钟");
   });
 });
+
+describe("D19：描述把外部状态引导到 monitor", () => {
+  it("描述指向 monitor，且不再把「跑到 CI 过为止」当典型用法", () => {
+    // 背景（方案 §5.4 表）：旧描述写「典型用法：『跑到 CI 过为止』——每次唤醒检查状态」，
+    // 直接引导模型走已被方案认定为次优的路径（monitor 能按行推送事件，不必猜间隔）。
+    const description = new ScheduleWakeupTool().description();
+    expect(description).toContain("monitor");
+    expect(description).not.toContain("跑到 CI 过为止");
+    // 保留原有三段取舍（延迟钳制 / 单链替换 / 缓存 TTL），不给模型少信息
+    expect(description).toContain("[60, 3600]");
+    expect(description).toContain("只保留一个待触发的唤醒");
+    expect(description).toContain("缓存 TTL");
+  });
+});

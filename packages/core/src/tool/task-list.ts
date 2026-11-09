@@ -4,7 +4,14 @@
  */
 
 import type { LegacyTool as Tool, LegacyToolResult as ToolResult } from "./types.ts";
-import { getAllTasks, isPanelTask, isAgentTask, isShellTask } from "../task/index.ts";
+import {
+  getAllTasks,
+  isPanelTask,
+  isAgentTask,
+  isShellTask,
+  isMonitorTask,
+} from "../task/index.ts";
+import { formatClockWithSeconds } from "../task/monitor-text.ts";
 import { z } from "zod/v4";
 import { lazySchema } from "../sdk/lazy-schema.ts";
 
@@ -104,6 +111,14 @@ export class TaskListTool implements Tool {
         if (task.exitCode !== undefined) {
           lines.push(`    <exit_code>${task.exitCode}</exit_code>`);
         }
+      }
+
+      // monitor（D17）：只给通用字段时，模型想知道「最晚几点结束、已经报了几条」
+      // 得去读 `.output` 文件。`eventCount` 同时是状态签名的进展信号（见
+      // `background-poll-guard.ts` 的 `taskListSignature`），两处口径一致。
+      if (isMonitorTask(task)) {
+        lines.push(`    <deadline>${formatClockWithSeconds(task.deadlineAt)}</deadline>`);
+        lines.push(`    <event-count>${task.eventCount}</event-count>`);
       }
 
       lines.push(`  </task>`);

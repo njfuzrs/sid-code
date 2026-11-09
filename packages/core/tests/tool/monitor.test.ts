@@ -23,7 +23,11 @@ import {
 } from "../../src/task/monitor-task.ts";
 import { clearAllTasks, registerTask } from "../../src/task/registry.ts";
 import { dequeuePendingNotifications } from "../../src/task/notification.ts";
-import { __resetWaitRegistryForTest, listWaits } from "../../src/task/wait-registry.ts";
+import {
+  __resetWaitRegistryForTest,
+  listWaits,
+  setWakeupRegistrationEnabled,
+} from "../../src/task/wait-registry.ts";
 import { filterToolsForAgent } from "../../src/agent/tool-filter.ts";
 import { toLegacyTool } from "../../src/tool/bridge.ts";
 import type { LocalMonitorTaskState } from "../../src/task/types.ts";
@@ -157,5 +161,30 @@ describe("子代理工具过滤（T-M1-18）", () => {
       const kept = filterToolsForAgent(all, { isBuiltIn: true, builtInType });
       expect(kept.map((t) => t.name())).not.toContain("monitor");
     }
+  });
+});
+
+describe("D19：无头形态提示「监控结束前不会退出」", () => {
+  // 判据复用唤醒登记的同一个事实：有没有 prompt 注入通道。`-p` 单轮没有通道，
+  // 进程只能等到 monitor 结束再退出（方案 §10.3）；交互式 / stream-json 有通道，
+  // 事件能在回合边界叫醒主循环，不需要这句话。
+  test("没有注入通道 → 结果含该句；有注入通道 → 不含", async () => {
+    setWakeupRegistrationEnabled(false);
+    const headless = await tool.call({
+      description: "无头形态",
+      command: "echo ready",
+      timeout_ms: 60_000,
+    });
+    expect(headless.isError).toBeFalsy();
+    expect(headless.data).toContain("当前宿主在监控结束前不会退出");
+
+    setWakeupRegistrationEnabled(true);
+    const interactive = await tool.call({
+      description: "交互形态",
+      command: "echo ready",
+      timeout_ms: 60_000,
+    });
+    expect(interactive.isError).toBeFalsy();
+    expect(interactive.data).not.toContain("当前宿主在监控结束前不会退出");
   });
 });

@@ -347,6 +347,17 @@ export function setWakeupRegistrationEnabled(enabled: boolean): void {
   wakeupRegistrationEnabled = enabled;
 }
 
+/**
+ * 当前宿主是否具备 prompt 注入通道（只读）。
+ *
+ * 反过来也是「宿主会不会等到等待源结束」的判据：没有注入通道（`-p` 单轮这类无头形态）
+ * 就没有事件投递入口，进程只能等 monitor 跑完再退出（方案 §10.3）。
+ * 只暴露读取，不新增全局状态——写入仍然只有 `setWakeupRegistrationEnabled` 一处。
+ */
+export function isWakeupRegistrationEnabled(): boolean {
+  return wakeupRegistrationEnabled;
+}
+
 // ── 查询 ──
 
 /**
