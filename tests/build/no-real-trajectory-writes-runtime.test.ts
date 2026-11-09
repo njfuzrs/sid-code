@@ -78,11 +78,41 @@ const SCOPE = [
   "packages/core/tests/checkpoint/",
 ] as const;
 
+/**
+ * 从子进程输出里挑出能归因的行。
+ *
+ * 为什么必须挑而不是全量打印：一次 `bun test` 要打几千行，全塞进 CI 日志后真正有用的
+ * 那几行会被淹掉 —— 这道门禁原先的毛病正是「14.5s 只换到一行 exit 1」，补输出时
+ * 别走到另一个极端。抓 `(fail)` 与 `error:` 两类，它们合起来足以定位是哪条用例、
+ * 因为什么断言红的。
+ *
+ * 一个可归因行都没有时（子进程被信号杀死、bun 自身崩溃）退化成尾部若干行：
+ * 那时「没有任何线索」比「线索不精确」更糟。
+ */
+function childFailureHints(stdout: string, stderr: string): string {
+  const lines = `${stdout}\n${stderr}`.split("\n");
+  const picked = lines.filter((l) => /^\(fail\)/.test(l.trim()) || /^error:/.test(l.trim()));
+  if (picked.length === 0) {
+    return `子进程输出里没有 (fail)/error: 行（可能被信号杀死或 bun 自身崩溃），尾部 30 行：\n${lines
+      .slice(-30)
+      .join("\n")}`;
+  }
+  const shown = picked.slice(0, 40).map((l) => `  ${l.trimEnd()}`);
+  const more = picked.length > 40 ? `\n  …另有 ${picked.length - 40} 行未显示` : "";
+  return `失败用例 / 错误（共 ${picked.length} 行）：\n${shown.join("\n")}${more}`;
+}
+
 /** 在指定 HOME 下跑一批测试，返回那个假家目录里出现的 `.sid-code/` 子路径。 */
 async function runWithFakeHome(
   targets: string[],
   opts: { allowRealHome?: boolean } = {},
-): Promise<{ leaked: string[]; exitCode: number; fakeHome: string }> {
+): Promise<{
+  leaked: string[];
+  exitCode: number;
+  fakeHome: string;
+  stdout: string;
+  stderr: string;
+}> {
   const fakeHome = mkdtempSync(join(tmpdir(), "sid-runtime-gate-home-"));
   const proc = Bun.spawn(["bun", "test", ...targets], {
     cwd: REPO_ROOT,
@@ -102,25 +132,38 @@ async function runWithFakeHome(
       SID_TEST_ALLOW_REAL_HOME: opts.allowRealHome ? "1" : (undefined as unknown as string),
     },
   });
-  const exitCode = await proc.exited;
+
+  // ⚠️ 两个管道必须读干，不能只 await proc.exited。两个理由：
+  //   ① 死锁：`bun test` 一次要打几百 KB，pipe 缓冲（~64KB）满了之后子进程阻塞在
+  //      write 上、永远退不出去，`proc.exited` 也就永远不 resolve —— 门禁挂到 CI 超时。
+  //   ② 归因：不读输出时，失败只能报「exit 1」，看不到是哪条用例红的（2026-11-07
+  //      CI 上就是这样：14.5s 换一行零线索的断言失败）。
+  const [stdout, stderr, exitCode] = await Promise.all([
+    new Response(proc.stdout as ReadableStream).text(),
+    new Response(proc.stderr as ReadableStream).text(),
+    proc.exited,
+  ]);
 
   const sidDir = join(fakeHome, ".sid-code");
   const leaked: string[] = [];
   if (existsSync(sidDir)) {
     for (const entry of readdirSync(sidDir)) leaked.push(entry);
   }
-  return { leaked, exitCode, fakeHome };
+  return { leaked, exitCode, fakeHome, stdout, stderr };
 }
 
 describe("运行时落盘门禁：受检测试不得写真实家目录的长留 sink", () => {
   test("受检目录跑完，假家目录里不出现 trajectories/ 或 session-index.jsonl", async () => {
-    const { leaked, exitCode, fakeHome } = await runWithFakeHome([...SCOPE]);
+    const { leaked, exitCode, fakeHome, stdout, stderr } = await runWithFakeHome([...SCOPE]);
     try {
       // 先确认被测测试真的跑起来了。子进程若因为路径写错、bun 参数变化而一个测试都没跑，
       // 假家目录自然干干净净 —— 门禁会静默变成永远通过，正是它要防的那种假绿。
+      //
+      // 失败时必须带上子进程的失败行：原先只有一句「exit 1」，CI 上 14.5s 换到零线索，
+      // 而且 SCOPE 里的任何一条 flake（如 memory/ 下的抽取节流用例）都会放大成这里的红。
       expect(
         exitCode,
-        `受检测试子进程退出码 ${exitCode}（非 0）。先修那边的失败，否则本门禁的结论不可信。`,
+        `受检测试子进程退出码 ${exitCode}（非 0）。先修那边的失败，否则本门禁的结论不可信。\n${childFailureHints(stdout, stderr)}`,
       ).toBe(0);
 
       // 不只看 trajectories/：`trace/` 下的落盘已不止那一个 sink。
