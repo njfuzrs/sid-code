@@ -240,6 +240,18 @@ export interface CompactSummaryMessageOptions {
   recentMessagesPreserved?: boolean;
   /** 被完整保留的近期消息条数（用于提示文案，可选） */
   preservedCount?: number;
+  /**
+   * 压缩时的「当前等待」行（T-W1-7，由 `describeCurrentWaits()` 生成）。
+   *
+   * 为什么必须进摘要消息：压缩把对话换成摘要后，模型看不到「我在等 monitor m7 盯 PR #662」。
+   * 登记表在进程内不受影响、`hasPromisedWait()` 照常为真，但**模型的认知**变了——
+   * 它可能重复起一个盯同一对象的 monitor，或在 `task_stop` 前不知道自己还在等什么。
+   *
+   * 无等待源时调用方传 `undefined`（`describeCurrentWaits()` 返回 null），摘要里就不出现这一行：
+   * 绝大多数压缩发生在没有等待源的场景，恒加一行反而会把「没有等待」也写成显式信号，
+   * 白白多占一点前缀。
+   */
+  waitLine?: string;
 }
 
 /**
@@ -258,6 +270,13 @@ export function getCompactUserSummaryMessage(
   const formattedSummary = formatCompactSummary(summary);
 
   let base = `以下是对之前对话的结构化摘要（之前的会话因上下文超限被压缩，本摘要覆盖较早的对话部分）：\n\n${formattedSummary}`;
+
+  // T-W1-7：压缩时还有等待源 → 把「当前等待」写进摘要正文。
+  // 位置在摘要之后、其它提示之前：它属于「此刻的事实」，与转录路径/保留消息这类
+  // 操作性提示不是一类。无等待源时不出现（见 waitLine 字段的注释）。
+  if (options.waitLine) {
+    base += `\n\n${options.waitLine}`;
+  }
 
   if (options.transcriptPath) {
     base += `\n\n如果你需要压缩前的具体细节（例如确切的代码片段、错误信息或你之前生成的内容），可以读取完整转录文件：${options.transcriptPath}`;

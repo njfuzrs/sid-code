@@ -27,6 +27,9 @@ import { SIDE_CALL_TIMEOUT_REASON } from "../../llm/errors.ts";
 import { createStreamLifecycle, LIFECYCLE_PRESETS } from "../../llm/stream-lifecycle.ts";
 import { resolveSideCallTimeouts } from "../../config/network-profile.ts";
 import { checkMessageHistoryIntegrity } from "../../agent/message-invariants.ts";
+// T-W1-7：压缩摘要要带上「当前等待」，否则压缩后模型不知道自己还在等什么。
+// 标签文案复用 wait-registry 的 describeWaitSource（面板 / reminder / 回执共用那一份）。
+import { describeCurrentWaits } from "../../task/wait-registry.ts";
 import {
   buildPartialCompactUserPrompt,
   PARTIAL_COMPACT_SYSTEM_PROMPT,
@@ -244,9 +247,21 @@ export async function partialCompact(
   }
 
   // 组装：前段摘要（user + assistant ack）+ 保留段原文
+  //
+  // T-W1-7：压缩把对话换成摘要后，模型不再看得到「我在等 monitor m7 盯 PR #662」——
+  // 登记表在进程内不受影响（`hasPromisedWait()` 照常为真），但模型的认知变了，它可能
+  // 重复起一个盯同一对象的 monitor。有等待源时在摘要正文补一行「当前等待」；
+  // 没有就不写这一行（绝大多数压缩发生在没有等待源的场景）。只读 `listWaits()`，
+  // 不改登记表：压缩前后 `listWaits()` 结果相同是验收项之一。
+  const waitLine = describeCurrentWaits();
   const summaryMsg: Message = {
     role: "user",
-    content: [{ type: "text", text: `${PARTIAL_COMPACT_PREFIX}\n${trimmed}` }],
+    content: [
+      {
+        type: "text",
+        text: `${PARTIAL_COMPACT_PREFIX}\n${trimmed}${waitLine ? `\n\n${waitLine}` : ""}`,
+      },
+    ],
     _meta: { origin: "compact-summary" },
   };
   const ackMsg: Message = {
