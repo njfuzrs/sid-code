@@ -13,9 +13,18 @@ import { invalidateWakeups } from "../task/wait-registry.ts";
 import { z } from "zod/v4";
 import { lazySchema } from "../sdk/lazy-schema.ts";
 
-/** 未完成项数（pending / in_progress）——S1 的判据与 todo-reminder 的 countUnfinished 同源 */
-function countUnfinishedItems(todos: TodoItem[]): number {
-  return todos.filter((t) => t.status === "pending" || t.status === "in_progress").length;
+/**
+ * 未完成项数（**非 completed 都算**）——S1「清单是否真的清零」的判据。
+ *
+ * ⚠️ 不要退回「只数 pending / in_progress」的口径。那与 `todo-reminder` 的
+ * `countUnfinished` 同源，但那是**催办**口径（blocked 项模型推不动，不该被 todo 闸门
+ * 反复强推，所以不算未完成）；S1 问的是另一个问题——模型这边的事**做完没有**。
+ * `blocked` 的定义恰恰是「下一步动作的主语是用户 / 外部系统」，事没做完，只是推不动：
+ * 把它算成已完成会让「提完 PR、等 CI」这个 `todo_write` 工具描述亲自教会的正确用法
+ * 撤销掉模型刚排好的唤醒（D7，实测 R5 `wakeup after blocked: false`）。
+ */
+function countOpenItems(todos: TodoItem[]): number {
+  return todos.filter((t) => t.status !== "completed").length;
 }
 
 const todoWriteSchema = lazySchema(() =>
@@ -221,9 +230,34 @@ function sanitizeTodoSnapshot(raw: unknown[]): TodoItem[] {
   return out;
 }
 
+export interface TodoWriteToolOptions {
+  /**
+   * 写清单时是否允许撤销本会话挂着的定时唤醒（W3 的 S1）。
+   *
+   * 默认 `false`。`buildIsolatedToolRegistry` 给每个子代理构造**独立实例**
+   * （`agent/sub-agent.ts`），它的清单与主会话无关——清零时若能撤销唤醒，就会误杀主会话
+   * 正当的等待（D6，实测 R4 `main wakeup still scheduled: false`）。隔离了清单，
+   * 却没隔离副作用，因为 `invalidateWakeups` 动的是**进程级全局状态**
+   * （`wait-registry.ts` 的 explicitWaits + 全局调度器），不区分调用方是谁。
+   *
+   * 只有主会话注册点（`cli/src/cli.ts`）该传 `true`。
+   *
+   * 为什么默认 `false` 而不是 `true`：以后新增的隔离实例忘了传参时，退回到「不撤销」——
+   * 最坏是少撤销一次，回到改动前的行为；反过来默认 `true` 则每个新实例都重演 D6。
+   */
+  invalidatesWakeups?: boolean;
+}
+
 export class TodoWriteTool implements Tool {
   /** zod schema：执行器据此做运行时校验，registry 据此生成 LLM 定义 */
   readonly zodSchema = todoWriteSchema();
+
+  /** 见 `TodoWriteToolOptions.invalidatesWakeups`：只有主会话实例有资格撤销唤醒 */
+  private readonly invalidatesWakeups: boolean;
+
+  constructor(options: TodoWriteToolOptions = {}) {
+    this.invalidatesWakeups = options.invalidatesWakeups === true;
+  }
 
   /** P2-3：状态管理类工具，清单内容随进展自然变化、连续更新是正当行为，豁免循环检测 */
   readonly exemptFromLoopDetection = true;
@@ -683,9 +717,10 @@ print("Hello World")
 
     // 保存旧状态
     const oldTodos = [...this.currentTodos];
-    // W3 S1：写入前的未完成项数。用 lastWrittenTodos（事实快照，不受 allDone 清空影响），
-    // 不能用 currentTodos——全部完成那次它已经被置空，永远算不出「之前 > 0」。
-    const unfinishedBefore = countUnfinishedItems(this.lastWrittenTodos);
+    // W3 S1：写入前的**未完成项数**（非 completed 都算）。用 lastWrittenTodos（事实快照，
+    // 不受 allDone 清空影响），不能用 currentTodos——全部完成那次它已经被置空，
+    // 永远算不出「之前 > 0」。
+    const unfinishedBefore = countOpenItems(this.lastWrittenTodos);
 
     // 校验通过、即将更新状态 → 记一次成功写入（P0-2 回注判定用）
     this.writeVersion++;
@@ -702,9 +737,19 @@ print("Hello World")
     // 误杀只可能发生在「模型清空了清单但其实还想等」——那时错的是清单本身，
     // 正确的修法是它重新写清单，而不是 harness 替它保留一个唤醒。
     //
-    // 两个前提都必要：之前 > 0（从未写过清单的会话不该触发，T-W3-6）且现在 === 0。
-    if (unfinishedBefore > 0 && countUnfinishedItems(todos) === 0) {
-      invalidateWakeups("todo_cleared", { reasonText: "任务清单已全部完成" });
+    // 两个前提都必要：之前 > 0（从未写过清单的会话不该触发，T-W3-6）且现在**所有项都
+    // completed**（`allDone`）。第二个前提不能用「没有 pending / in_progress」——
+    // blocked 语义是「等用户 / 外部系统」，事没做完（D7：实测 R5 就是「提完 PR、等 CI」
+    // 被撤销了刚排好的唤醒）。空清单（`[]`）同样不算清零，它什么都没说。
+    //
+    // D6：撤销动作作用于**进程级全局状态**（wait-registry 的 explicitWaits + 全局调度器），
+    // 不区分调用方是主会话还是子代理——清单隔离了，副作用没有。所以资格由构造选项决定：
+    // 只有主会话注册点传 `invalidatesWakeups: true`，子代理的独立实例（默认 false）不许碰。
+    let invalidatedWakeupIds: string[] = [];
+    if (this.invalidatesWakeups && unfinishedBefore > 0 && allDone) {
+      invalidatedWakeupIds = invalidateWakeups("todo_cleared", {
+        reasonText: "任务清单已全部完成",
+      });
     }
 
     // 空列表检测（全部完成 → 清空清单）
@@ -725,7 +770,15 @@ print("Hello World")
         output:
           "所有任务已完成，清单已清空。\n" +
           "若执行结果**尚未**告知用户，请汇总后告知；若你在本轮/上一轮**已经完整输出过**结论（这次只是回头补标记），" +
-          "则**不要重复输出**，一句话收尾即可。\n\n旧任务列表:\n" +
+          "则**不要重复输出**，一句话收尾即可。\n\n" +
+          // 撤销是全局副作用，模型看不到 TUI 那条系统行（D9），所以在这里告诉它一次：
+          // 同轮内「清零 → 又写回新清单」的实测形态（8a3b2af5 5→0→9）里，模型不知道
+          // 唤醒已经没了，会以为还会被叫醒。给了这句，它自己就能决定要不要重排。
+          (invalidatedWakeupIds.length > 0
+            ? `⚠️ 本会话挂着的定时唤醒（${invalidatedWakeupIds.join("、")}）已随清单清零撤销。` +
+              `若你仍需在被叫醒时检查外部状态，请重新调用 schedule_wakeup。\n\n`
+            : "") +
+          "旧任务列表:\n" +
           formatTodoList(oldTodos),
       };
     }

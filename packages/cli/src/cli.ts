@@ -1939,8 +1939,11 @@ export async function main(): Promise<void> {
     toolRegistry.register(new ExitPlanModeTool(planManager));
 
     // 注册 TodoWrite 工具（执行阶段进度追踪，防 Plan Mode 套娃）
+    // `invalidatesWakeups: true` 只给**主会话**：清单清零时撤销本会话挂着的唤醒（W3 的 S1）
+    // 是进程级副作用，子代理那些独立实例（`agent/sub-agent.ts` 默认 false）不许碰——
+    // 否则子代理把自己的清单做完，就把主会话正在等的唤醒撤销了（D6）。
     const { TodoWriteTool } = await import("@sid-code/core/tool/todo-write.ts");
-    toolRegistry.register(new TodoWriteTool());
+    toolRegistry.register(new TodoWriteTool({ invalidatesWakeups: true }));
 
     // 注册结构化提问工具（对标 cc AskUserQuestion）：模型遇关键岔路口时向用户抛
     // 选择题、收集决策。alwaysLoad 首轮常驻可见（内置流程如 /commit 刚需，避免模型
