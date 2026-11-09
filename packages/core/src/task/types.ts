@@ -188,8 +188,16 @@ export interface LocalMonitorTaskState extends TaskStateBase {
   command: string;
   /** 硬期限（墙钟毫秒）。到期由 harness 定时器 kill + 发 killed 通知。 */
   deadlineAt: number;
-  /** 已投递的事件通知条数（面板统计列 + bg_task_list 的进展签名） */
+  /** 已投递的事件通知条数（面板统计列 + `bg_task_list` 的进展签名） */
   eventCount: number;
+  /**
+   * 脚本 stdout 的累计输出行数（含被限流合并、终态冲刷截断的行）。
+   *
+   * 与 `eventCount` **不是一回事**：后者是通知条数（每条都叫醒主循环一次），
+   * 前者是脚本真实打了多少行。终态文案写「共投递 N 条通知，输出共 M 行」，
+   * 两个数字各自带单位，模型才不会把「6 条」读成「脚本只输出了 6 行」（D18）。
+   */
+  outputLines: number;
   /** 非正常结束的原因（到期 / 事件过密 / 累计过多），终态通知据此选文案 */
   stopReason?: "timeout" | "rate_burst" | "rate_total";
   /** 被限流合并掉的原始行数（事件过密判定用，只进通知，不上面板） */

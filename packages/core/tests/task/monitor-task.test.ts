@@ -135,7 +135,10 @@ describe("MonitorRateGate（限流纯逻辑）", () => {
     expect(decided.event).toContain("e6");
     expect(decided.event).toContain("e7");
     expect(decided.event).toContain("e8");
-    expect(decided.event).toContain("…另有 2 条");
+    // D18：暂存行已全部在正文里，提示必须说「以上含…因限流延迟」而不是「另有」——
+    // 后者会让模型以为还有 N 条没收到，于是继续等 / 再查一遍。
+    expect(decided.event).toContain("以上含 2 行因限流延迟，非实时");
+    expect(decided.event).not.toContain("另有");
   });
 
   test("总量阀：累计超过上限后返回 stop（T-M1 总量）", () => {
@@ -182,10 +185,11 @@ describe("MonitorRateGate（限流纯逻辑）", () => {
 });
 
 describe("spawnMonitorTask（真实子进程）", () => {
-  test("退出码 0 且无输出 → completed「共 0 条事件」（T-M1-5）", async () => {
+  test("退出码 0 且无输出 → completed「共投递 0 条通知，输出共 0 行」（T-M1-5 / D18）", async () => {
     const task = spawn({ command: "true" });
     const notif = await waitFor(() => takeNotifications().find((n) => n.status === "completed"));
-    expect(notif.summary).toContain("共 0 条事件");
+    // D18：两个数字各带单位——「条」是通知数（叫醒主循环几次），「行」是脚本输出行数
+    expect(notif.summary).toContain("共投递 0 条通知，输出共 0 行");
     expect(notif.summary).toContain("退出码 0");
     expect(getTask(task.id)?.status).toBe("completed");
   });
@@ -262,11 +266,13 @@ describe("spawnMonitorTask（真实子进程）", () => {
     expect(notif.summary).toContain("收窄过滤条件");
   });
 
-  test("期限到 → killed，summary 含「0 条事件」与「过滤条件」（T-M1-6）", async () => {
+  test("期限到 → killed，summary 含投递摘要与「过滤条件」（T-M1-6 / D18）", async () => {
     spawn({ command: "while true; do sleep 0.2; done", timeoutMs: 400 });
     const notif = await waitFor(() => takeNotifications().find((n) => n.status === "killed"));
     expect(notif.summary).toContain("监控到期");
-    expect(notif.summary).toContain("0 条事件");
+    // D18：0 条是「通知」数，不是「行」数——措辞必须点明单位
+    expect(notif.summary).toContain("共投递 0 条通知，输出共 0 行");
+    expect(notif.summary).toContain("未投递任何通知");
     expect(notif.summary).toContain("过滤条件");
   });
 
@@ -327,6 +333,116 @@ describe("spawnMonitorTask（真实子进程）", () => {
     });
     expect(content.length).toBeGreaterThan(3000);
   });
+});
+
+/**
+ * D15：父进程退出即终态。
+ *
+ * `close` 要等**所有** stdio 流关闭；孙进程继承了 stdout 写端时它永远不来，于是
+ * 父进程早已退出的 monitor 仍显示 running（R8 实测 1.5s 后仍是 running），
+ * 期间占着并发名额、继续算等待源。修复是给 `exit` 一个与 bash 同值的有界排空宽限。
+ */
+describe("D15：父进程退出即终态（孙进程占着 stdout 也不等）", () => {
+  test("R8 迁入：`sleep 4 & echo started; exit 0` → 1.5s 内终态，事件含 started", async () => {
+    const task = spawn({ command: "sleep 4 & echo started; exit 0", timeoutMs: 20_000 });
+    const status = await waitFor(() => {
+      const s = getTask(task.id)?.status;
+      return s && s !== "running" ? s : undefined;
+    }, 1_500);
+    expect(status).toBe("completed");
+
+    const notifs = takeNotifications();
+    expect(
+      notifs
+        .filter((n) => n.event !== undefined)
+        .map((n) => n.event!)
+        .join("\n"),
+    ).toContain("started");
+    // 终态只发一条：exit 宽限与随后到达的 close 靠 finalized 互斥
+    expect(notifs.filter((n) => n.status !== "running")).toHaveLength(1);
+  }, 10_000);
+
+  test("孙进程被清理：`sleep 60 & echo child=$!; exit 0` → 终态后孙进程已不存在", async () => {
+    const task = spawn({ command: 'sleep 60 & echo "child=$!"; exit 0', timeoutMs: 20_000 });
+    await waitFor(() => {
+      const s = getTask(task.id)?.status;
+      return s && s !== "running" ? s : undefined;
+    }, 3_000);
+
+    const text = takeNotifications()
+      .filter((n) => n.event !== undefined)
+      .map((n) => n.event!)
+      .join("\n");
+    const childPid = Number(/child=(\d+)/.exec(text)?.[1]);
+    expect(Number.isInteger(childPid)).toBe(true);
+
+    // SIGKILL 之后由 init 接管回收，给一点余量轮询 ESRCH
+    const gone = await waitFor(() => {
+      try {
+        process.kill(childPid, 0);
+        return undefined;
+      } catch {
+        return true;
+      }
+    }, 3_000);
+    expect(gone).toBe(true);
+  }, 15_000);
+
+  test("T-M1-7 还原方案原文场景：`sleep 60 & exit 0` 不等孙进程", async () => {
+    // 原用例（父进程自己也睡 60s、靠 killMonitorTask 收尾）保留在上面，测的是
+    // 「kill 能清孙进程」；这条测的是方案原文要求：「父进程退出即终态」。
+    const task = spawn({ command: "sleep 60 & exit 0", timeoutMs: 20_000 });
+    const status = await waitFor(() => {
+      const s = getTask(task.id)?.status;
+      return s && s !== "running" ? s : undefined;
+    }, 1_500);
+    expect(status).toBe("completed");
+  }, 10_000);
+});
+
+/**
+ * D18：文案的事实与单位。
+ *
+ * 「…另有 N 条」让人以为还有 N 条没收到（其实全在正文里）；「共 N 条事件」的 N
+ * 是通知数，不是脚本输出行数。三处文案收在 `monitor-text.ts`，这里锁住两个方向：
+ * 措辞不再出现「另有」，单位分别写成「条通知」与「行」。
+ */
+describe("D18：限流文案与终态单位", () => {
+  test("限流合并提示在末行，不污染事件首行摘要", () => {
+    const gate = new MonitorRateGate({ perMinuteNotifyLimit: 1 });
+    const t0 = 1_000_000;
+    expect(gate.admit(["first"], t0).action).toBe("emit");
+    expect(gate.admit(["b"], t0 + 1).action).toBe("defer");
+    expect(gate.admit(["c"], t0 + 2).action).toBe("defer");
+    const decided = gate.admit(["d"], t0 + NOTIFY_WINDOW_MS);
+    expect(decided.action).toBe("emit");
+    const lines = decided.event!.split("\n");
+    // TUI 摘要只取事件首行，提示放末尾才不污染摘要
+    expect(lines[0]).toBe("b");
+    expect(lines[lines.length - 1]).toBe("（以上含 2 行因限流延迟，非实时）");
+  });
+
+  test("终态摘要单位：「共投递 N 条通知，输出共 M 行」，M 等于脚本实际行数", async () => {
+    const task = spawn({ command: "echo a; echo b; echo c", timeoutMs: 10_000 });
+    await waitFor(() => {
+      const s = getTask(task.id)?.status;
+      return s && s !== "running" ? s : undefined;
+    }, 5_000);
+
+    const terminal = takeNotifications().find((n) => n.status !== "running");
+    expect(terminal?.summary).toContain("共投递 1 条通知");
+    expect(terminal?.summary).toContain("输出共 3 行");
+  }, 15_000);
+
+  test("task_stop 终态同样带两个单位（D18）", async () => {
+    const task = spawn({ command: "echo one; sleep 30", timeoutMs: 60_000 });
+    await waitFor(() => takeNotifications().find((n) => n.event !== undefined), 5_000);
+    await new TaskStopTool().execute({ task_id: task.id });
+    const terminal = takeNotifications().find((n) => n.status === "killed");
+    expect(terminal?.summary).toContain("共投递");
+    expect(terminal?.summary).toContain("条通知");
+    expect(terminal?.summary).toContain("输出共");
+  }, 15_000);
 });
 
 /**
