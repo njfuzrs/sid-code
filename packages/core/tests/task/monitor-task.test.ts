@@ -596,21 +596,29 @@ describe("D3：暂存行冲刷与终态出口收敛", () => {
     expect(notifs.find((n) => n.status === "killed")?.summary).toContain("事件过密");
     const events = notifs.filter((n) => n.event !== undefined).map((n) => n.event!);
 
-    // ⚠️ 这里**不能**断言 `前 100 - MAX_BURST_FLUSH_LINES 行已省略`（曾这么写，CI 上必红）。
-    // 那个期望隐含「100 行全滞留在 pendingLines 里，等终态冲刷一次性截断」，而实际不成立：
-    // 每批行进缓冲都会挂一个 EVENT_BATCH_MS 窗口定时器（flushBatch 用 splice(0) 取走并经
-    // admit 正常投递）。慢 runner 上 printf 还没走完，前面的批次就已经被投递走了，那些行
-    // 不再进入最终冲刷，于是 drainAll 的 omitted = merged.length - MAX_BURST_FLUSH_LINES
-    // 必然小于 60。实测同一份代码三个值：期望 60 / ubuntu 收到 56 / macOS 收到 16。
+    // ⚠️ 这里断言的是「与到达时序无关」的不变量，**不要**写死任何具体行号。
     //
-    // 改为断言实现真正保证、且与批次时序无关的不变量：
-    // ① 触发那一批的行没丢（保尾：最后一行 100 一定送到）；
-    // ② 一旦发生截断，省略计数与保留行数自洽（首行必然是 omitted + 1）；
-    // ③ 保留行数不超过 MAX_BURST_FLUSH_LINES。
-    const lineSets = events.map((e) => e.split("\n"));
-    expect(lineSets.some((ls) => ls.includes("100"))).toBe(true);
-
+    // 两种不确定性，写死数字必然在某个 runner 上红：
+    //
+    // 1. 滞留行数不定。每批行进缓冲都会挂一个 EVENT_BATCH_MS 窗口定时器，flushBatch 用
+    //    splice(0) 取走并经 admit 正常投递。慢 runner 上 printf 还没走完，前面几批就已经
+    //    投递走了，那些行不再进最终冲刷 —— omitted 会小于 60（实测 60 / 56 / 16 三种）。
+    // 2. 最后一行不一定到。stdout 的 data 回调不保证一次收全 100 行；突发阀在某个 chunk
+    //    就触发后，`finalized` 会让后续 chunk 在 pushLines 开头被短路丢弃（`monitor-task.ts`
+    //    的 `isFinalized` 早退）。触发之后到达的行本来就该丢 —— 进程随即被 kill。
+    //
+    // 所以「100 一定在」「省略恰好 60 行」都不成立。真正成立的是结构不变量：
+    // ① 触发时缓冲里必然超过 MAX_BURST_FLUSH_LINES 行（触发需要累计 BURST_LINE_LIMIT + 1
+    //    次 recordLine，而循环内 i 未达阈值的行都还没 push，触发分支补入整批 lines，
+    //    故 merged.length ≥ BURST_LINE_LIMIT + 1 > MAX_BURST_FLUSH_LINES）→ 必然截断；
+    // ② 截断后省略计数与保留行数自洽：保留恰好 MAX_BURST_FLUSH_LINES 行，首行是 omitted + 1；
+    // ③ 保尾而非保头：保留的行号严格递增，且末行 > BURST_LINE_LIMIT（送到的是靠后的行）。
+    //
+    // 第 ③ 条是「D3 修复 3」的验证力所在：若 recordLine 在 push 之前 return（修复前的形态），
+    // 触发那一批根本没进缓冲，保留的行会变成更早的批次内容、断点自洽也破坏。
     const truncated = events.filter((e) => e.includes("完整输出见 .output"));
+    expect(truncated.length).toBeGreaterThan(0);
+
     for (const text of truncated) {
       const parts = text.split("\n");
       expect(parts[0]).toContain(".output");
@@ -618,11 +626,17 @@ describe("D3：暂存行冲刷与终态出口收敛", () => {
       expect(omittedMatch).not.toBeNull();
       const omitted = Number(omittedMatch![1]);
       const kept = parts.slice(1);
-      // drainAll 只在 merged.length > maxLines 时才截断，且截断时恰好保留 maxLines 行
+
+      // ① 必然截断：触发时 merged.length 至少 BURST_LINE_LIMIT + 1 行
       expect(omitted).toBeGreaterThan(0);
+      // ② 截断时恰好保留 maxLines 行，且断点自洽
       expect(kept).toHaveLength(MAX_BURST_FLUSH_LINES);
-      // 省略断点自洽：保留的第一行紧接在被省略的最后一行之后
       expect(kept[0]).toBe(String(omitted + 1));
+      // ③ 保尾：行号连续递增，末行越过突发阈值（说明送到的是靠后的行，不是开头那批）
+      const keptNums = kept.map((l) => Number(l));
+      expect(keptNums.every((n) => Number.isInteger(n))).toBe(true);
+      expect(keptNums[keptNums.length - 1]!).toBe(omitted + MAX_BURST_FLUSH_LINES);
+      expect(keptNums[keptNums.length - 1]!).toBeGreaterThan(BURST_LINE_LIMIT);
     }
   }, 20_000);
 
