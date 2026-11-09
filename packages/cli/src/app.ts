@@ -165,7 +165,7 @@ import {
   hasPendingNotifications,
   subscribeBackgroundActivity,
 } from "@sid-code/core/task/background-wake.ts";
-import { hasAwaitedBackgroundTasks } from "@sid-code/core/task/background-await.ts";
+import { hasPromisedWait } from "@sid-code/core/task/wait-registry.ts";
 import { getSleepLedger } from "@sid-code/shared/utils/sleep-detect.ts";
 import {
   recordSideCall,
@@ -9285,9 +9285,12 @@ export class App {
       // 后台任务通知续跑：与 -p / TUI 同源（都走 queryEngine），只是这里的消费方是流式 NDJSON。
       resumeWithNotifications: () => this.queryEngine.resumeWithNotifications(),
       hasPendingNotifications: () => hasPendingNotifications(),
-      // 「值得等」口径（background-await.ts）：headless 等待循环据此决定要不要为后台任务挂着，
-      // 静默的常驻 shell 不算——否则 stdin 关闭后进程为一个不会退出的服务永远不退。
-      hasRunningBackgroundTasks: () => hasAwaitedBackgroundTasks(),
+      // 「值得等」口径（wait-registry.ts 的 hasPromisedWait，D11）：headless 等待循环据此决定
+      // 要不要为后台任务挂着。它是 background-await 判据的**超集**——静默的常驻 shell 仍不算
+      // （派生分支逐字复用 isAwaitedBackgroundTask，20261103 事故的修复不能回退），但显式声明了
+      // 回报承诺的等待源（wait_until / monitor / schedule_wakeup）算。旧判据看不见它们：
+      // `wait_until` 等 CI 静默 60s 后进程就直接收尾退出，后台 shell 被带走。
+      hasRunningBackgroundTasks: () => hasPromisedWait(),
       subscribeBackgroundActivity: (listener) => subscribeBackgroundActivity(listener),
     };
   }
