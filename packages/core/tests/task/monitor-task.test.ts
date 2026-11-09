@@ -18,6 +18,7 @@ import {
   BURST_LINE_LIMIT,
   LineSplitter,
   MAX_EVENT_LINE_CHARS,
+  MAX_FINAL_FLUSH_LINES,
   MonitorRateGate,
   PER_MINUTE_NOTIFY_LIMIT,
   TOTAL_NOTIFY_LIMIT,
@@ -26,6 +27,7 @@ import {
   spawnMonitorTask,
   truncateEventLine,
 } from "../../src/task/monitor-task.ts";
+import type { MonitorGateLimits } from "../../src/task/monitor-task.ts";
 import { clearAllTasks, getTask } from "../../src/task/registry.ts";
 import { dequeuePendingNotifications } from "../../src/task/notification.ts";
 import type { LocalMonitorTaskState } from "../../src/task/types.ts";
@@ -69,12 +71,14 @@ function spawn(opts: {
   command: string;
   timeoutMs?: number;
   description?: string;
+  gateLimits?: MonitorGateLimits;
 }): LocalMonitorTaskState {
   return spawnMonitorTask({
     description: opts.description ?? "测试监控",
     command: opts.command,
     timeoutMs: opts.timeoutMs ?? 10_000,
     cwd: tmpHome,
+    __gateLimitsForTest: opts.gateLimits,
   });
 }
 
@@ -142,6 +146,36 @@ describe("MonitorRateGate（限流纯逻辑）", () => {
     expect(decided.action).toBe("stop");
     expect(decided.reason).toBe("rate_total");
   });
+
+  test("drainAll：暂存行与本批行合成一条，不受持续阀限制（D2）", () => {
+    const gate = new MonitorRateGate({ perMinuteNotifyLimit: 1 });
+    const t0 = 1_000_000;
+    expect(gate.admit(["a"], t0).action).toBe("emit");
+    expect(gate.admit(["b"], t0 + 1).action).toBe("defer");
+    // 退出冲刷不走 admit：deferred 与本批按输出顺序拼成一条事件
+    expect(gate.drainAll(["c"])).toBe("b\nc");
+    expect(gate.drainAll([])).toBeNull();
+  });
+
+  test("drainAll：总量阀已满时仍送出剩余行（D2）", () => {
+    const gate = new MonitorRateGate({ totalNotifyLimit: 1 });
+    const t0 = 1_000_000;
+    expect(gate.admit(["a"], t0).action).toBe("emit");
+    expect(gate.admit(["b"], t0 + 1).action).toBe("stop");
+    expect(gate.drainAll(["b"])).toBe("b");
+  });
+
+  test(`drainAll：超过 ${MAX_FINAL_FLUSH_LINES} 行时保尾不保头并注明省略行数`, () => {
+    const gate = new MonitorRateGate();
+    const lines = Array.from({ length: MAX_FINAL_FLUSH_LINES + 5 }, (_, i) => `l${i}`);
+    const event = gate.drainAll(lines)!;
+    const parts = event.split("\n");
+    expect(parts[0]).toContain("前 5 行已省略");
+    expect(parts[0]).toContain(".output");
+    expect(parts).toHaveLength(MAX_FINAL_FLUSH_LINES + 1);
+    expect(parts).toContain(`l${MAX_FINAL_FLUSH_LINES + 4}`); // 汇总行（最后一行）在
+    expect(parts).not.toContain("l0");
+  });
 });
 
 describe("spawnMonitorTask（真实子进程）", () => {
@@ -174,6 +208,47 @@ describe("spawnMonitorTask（真实子进程）", () => {
     expect(first.summary).toBe("监控事件：测试监控");
     expect(first.description).toBe("测试监控");
   });
+
+  test("退出时持续阀已满：最后一批行（含 ALL_DONE 汇总）仍以事件送达（D2 / R2）", async () => {
+    // 7 行 pass 每 0.3s 一条正好用满每分钟 6 条通知的持续阀，check8 / ALL_DONE
+    // 在退出前瞬间输出——修复前它们被 admit 判成 defer 后随 ctl 一起丢掉。
+    const task = spawn({
+      command: `for i in 1 2 3 4 5 6 7; do echo "check$i: pass"; sleep 0.3; done; echo "check8: fail"; echo "ALL_DONE: fail"; exit 1`,
+      timeoutMs: 20_000,
+    });
+    // 轮询任务状态而不是取通知：takeNotifications 会把事件先取走，看不到「终态前的最后一批」
+    await waitFor(() => {
+      const status = getTask(task.id)?.status;
+      return status && status !== "running" ? status : undefined;
+    }, 15_000);
+
+    const notifs = takeNotifications();
+    const events = notifs.filter((n) => n.event !== undefined).map((n) => n.event!);
+    const text = events.join("\n");
+    expect(text).toContain("check8: fail");
+    expect(text).toContain("ALL_DONE: fail");
+    // 6 条正常通知 + 1 条退出冲刷：退出路径不额外叫醒一轮
+    expect(events.length).toBeLessThanOrEqual(PER_MINUTE_NOTIFY_LIMIT + 1);
+    expect(notifs.find((n) => n.status !== "running")?.status).toBe("failed");
+  }, 20_000);
+
+  test("退出时总量阀已满：剩余行仍以事件送达（D2）", async () => {
+    const task = spawn({
+      command: `echo a; sleep 1; echo LAST; exit 0`,
+      timeoutMs: 20_000,
+      gateLimits: { totalNotifyLimit: 1 },
+    });
+    await waitFor(() => {
+      const status = getTask(task.id)?.status;
+      return status && status !== "running" ? status : undefined;
+    }, 10_000);
+
+    const notifs = takeNotifications();
+    const events = notifs.filter((n) => n.event !== undefined).map((n) => n.event!);
+    // 修复前 close 回调仍走 admit：累计通知数已达上限 → stop → LAST 被丢
+    expect(events.join("\n")).toContain("LAST");
+    expect(notifs.find((n) => n.status !== "running")?.status).toBe("completed");
+  }, 15_000);
 
   test(`10 秒内 ${BURST_LINE_LIMIT + 1} 行 → 停止并通知「事件过密」（T-M1-11）`, async () => {
     spawn({
