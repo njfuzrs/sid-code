@@ -211,10 +211,15 @@ export function getConversationClearedPatch(): Partial<TUIState> {
     // 清零，会出现「token/cost 已归零、轮次还在数」的自相矛盾。
     totalRequests: 0,
     discardedRequests: 0,
+    // 上下文三件的哨兵值（调用点会立即 merge contextDisplayState() 覆盖为
+    // 「常驻开销估算」——/clear 只清消息历史，system prompt + 工具 schema 还在，
+    // 状态栏应回落到初始占用而非隐藏；哨兵仅兜底未来新增的不 merge 调用点）。
     contextPercent: 0,
     // P1-2/P1-5：0 / "none" 表示"上游还没推送过"，Footer 会退回只显示 contextPercent
     contextTriggerPercent: 0,
     contextLevel: "none",
+    // 估算标记哨兵：false = 校准值（/clear 不清 calibrationFactor，口径校准跨会话有效）
+    contextEstimated: false,
     statusMessage: "",
     lastToolResult: null,
     streamingText: "",

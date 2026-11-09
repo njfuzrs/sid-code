@@ -430,6 +430,14 @@ export interface TUIState {
    * 变色时机与实际风险脱节。改为直读档位后两者恒同源。
    */
   contextLevel: "none" | "soft" | "hard" | "emergency";
+  /**
+   * true = contextPercent 是纯启发式估算（尚未经真实 usage 校准），Footer 显示 `~` 前缀。
+   *
+   * 会话没发过请求时（刚打开 / 刚 /clear），estimateTokens 只有字符启发式没有校准系数，
+   * 误差可能 ±20%；首条消息后 recordActualTokens 校准，此标志翻 false。让「估值」与
+   * 「实测」在状态栏上可区分，避免用户把开屏的估算占用当成精确值。
+   */
+  contextEstimated: boolean;
   permissionMode: string;
   /** 是否处于计划模式（用于 TUI 状态标签显示） */
   isPlanMode: boolean;
@@ -1649,6 +1657,7 @@ function TUIAppInner({ initialState, callbacks, bridge, alternateBuffer }: AppPr
               contextPercent={state.contextPercent}
               contextTriggerPercent={state.contextTriggerPercent}
               contextLevel={state.contextLevel}
+              contextEstimated={state.contextEstimated}
               model={state.model}
               scrollPercent={scrollPercent}
               activeDialog={state.activeDialog}
@@ -1714,6 +1723,7 @@ function TUIAppInner({ initialState, callbacks, bridge, alternateBuffer }: AppPr
               contextPercent={state.contextPercent}
               contextTriggerPercent={state.contextTriggerPercent}
               contextLevel={state.contextLevel}
+              contextEstimated={state.contextEstimated}
               model={state.model}
               activeDialog={state.activeDialog}
               needsOnboarding={state.needsOnboarding}
