@@ -26,6 +26,7 @@ import {
 } from "@sid-code/core/query/todo-reminder.ts";
 import { clearAllTasks, registerTask } from "@sid-code/core/task/registry.ts";
 import { __resetWaitRegistryForTest, registerWait } from "@sid-code/core/task/wait-registry.ts";
+import { TodoWriteTool } from "@sid-code/core/tool/todo-write.ts";
 import {
   __resetBackgroundAwaitForTest,
   SHELL_QUIESCENT_MS,
@@ -194,6 +195,43 @@ describe("T2 闸门：带承诺的等待源 → 放行", () => {
     expect(injected).toContain("盯 PR #662 CI");
     // 第二次没有再写 reminder（同一组等待源只注入一次）
     expect(h.sessionState.get(WAIT_SOURCES_REMINDER_KEY)).toBeUndefined();
+  });
+
+  test("T-W2-4 等待期 todo_write 把项标 blocked：T2 仍放行", async () => {
+    // 等待源先存在（monitor 盯 PR #662）：这是「等待期」的定义
+    const deadlineAt = Date.now() + 300_000;
+    monitorTask("m-blocked", "盯 PR #662 CI", deadlineAt);
+    registerWait({
+      id: "m-blocked",
+      kind: "monitor",
+      promise: { kind: "deadline", deadlineAt },
+      description: "盯 PR #662 CI",
+      registeredAt: Date.now(),
+    });
+
+    // 等待期主会话写清单：把「等 CI」标成 blocked——这正是 todo_write 工具描述教的
+    // 用法（blocked = 等外部系统），也是实测里模型的自然写法。D7 修复后 blocked
+    // 算「还有事没做完」，不触发 S1；本用例锁住它同时**不改变 T2 的放行结论**。
+    const main = new TodoWriteTool({ invalidatesWakeups: true });
+    await main.execute({
+      todos: [
+        { content: "改文档", active_form: "改文档", status: "completed" },
+        { content: "等 CI 绿了合入", active_form: "等 CI", status: "blocked" },
+        { content: "回归验证", active_form: "回归验证", status: "in_progress" },
+      ],
+    });
+
+    const h = makeGateHarness({ todos: main.getTodos() });
+    const { llmCalls, systemTexts } = await h.run();
+
+    // 放行 = 一次模型调用就收尾；被拦会续命 1 + MAX_TODO_GATE_RETRIES 次
+    expect(llmCalls).toBe(1);
+    expect(systemTexts.join("\n")).not.toContain("继续推进");
+    // 清单里确实还有未完成项（blocked + in_progress），放行来自「有带承诺的等待源」
+    expect(main.getTodos().filter((t) => t.status !== "completed")).toHaveLength(2);
+    const pending = h.sessionState.get(WAIT_SOURCES_REMINDER_KEY) as string | undefined;
+    expect(pending).toContain("正在等待");
+    expect(pending).toContain("盯 PR #662 CI");
   });
 });
 

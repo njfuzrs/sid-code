@@ -223,6 +223,8 @@ import {
   hasPromisedWait,
   listWaits,
   drainWaitNotices,
+  invalidateWakeupsForDeliveredTask,
+  type WaitNotice,
   beginMainLoopTurn,
   endMainLoopTurn,
   markMainTurnCompleted,
@@ -1874,11 +1876,18 @@ async function* queryLoopBody(
       // W3：唤醒被**确定信号**作废时，用户必须看到一行（#642 §6.3 否决自动撤销的核心担忧
       // 就是「轮询静默中断、用户以为还在等」）。撤销发生在 todo_write 的工具执行链里，
       // 那里拿不到 yield，所以先入队、在这里取走。系统行只给用户看，不进 ctxMgr。
-      for (const notice of drainWaitNotices()) {
+      //
+      // D9：必须 persistent。旧实现走 `system:transient`——同一轮 `done` 就把它清掉，
+      // 用户回神时既看不到撤销、也不知道自己在等的唤醒已经没了，正好落回 #642 担心的
+      // 那个形态。文案带 prompt 预览（只给 id 认不出撤的是哪一条），同一轮多条撤销
+      // 合成一行，避免历史区刷屏。
+      const waitNotices = drainWaitNotices();
+      if (waitNotices.length > 0) {
         yield {
           kind: "system",
           level: "info",
-          text: `已取消定时唤醒 ${notice.taskId}（${notice.reason}）`,
+          persistent: true,
+          text: formatWaitInvalidationNotice(waitNotices),
         };
       }
       // W2：T2 放行时写下的「正在等待…」清单。放行意味着上一轮已收尾，这次请求是
@@ -7189,6 +7198,24 @@ async function recoverFromLoop(
 }
 
 /**
+ * 唤醒撤销提示的文案（D9）。
+ *
+ * 单条：`已取消定时唤醒 <id>（<prompt 预览>）：<原因>`
+ * 多条：`已取消 N 条定时唤醒：<id>（…）：<原因>；<id>（…）：<原因>`
+ *
+ * 为什么不只写 id：用户看到「已取消定时唤醒 wk-3f2a」认不出撤的是哪一条等待；
+ * prompt 预览（登记时已截到首行 60 字，这里再收 30）是他唯一能对上号的线索。
+ * 为什么同一轮合成一行：一次清单清零 / 一次 S2 命中可能在同轮撤掉多条，
+ * 逐条 yield 会把历史区刷成几行同形提示（D9 的验收要求「合成一行」）。
+ */
+function formatWaitInvalidationNotice(notices: WaitNotice[]): string {
+  const one = (n: WaitNotice) =>
+    `${n.taskId}${n.promptPreview ? `（${n.promptPreview}）` : ""}：${n.reason}`;
+  if (notices.length === 1) return `已取消定时唤醒 ${one(notices[0]!)}`;
+  return `已取消 ${notices.length} 条定时唤醒：${notices.map(one).join("；")}`;
+}
+
+/**
  * 出队全部待投递的后台任务通知，合成一条 user 消息注入上下文并落盘。返回注入条数。
  *
  * 两个调用点：queryLoop 每轮开头（通知在轮中到达）、QueryEngine.resumeWithNotifications
@@ -7232,6 +7259,16 @@ export function injectPendingNotifications(
       .filter((n) => n.structured && isTerminalStatus(n.structured.status))
       .map((n) => n.structured!.taskId),
   );
+  // D8：S2 的「通知已投递」这一半在这里兑现——`markNotificationsDelivered` 是通知
+  // **真正进模型上下文**的唯一汇合点，也是方案 S2 判据里「通知已投递」的字面含义。
+  // subject 在等待登记项被终态释放时已搬到快照（见 wait-registry.releaseWait），
+  // 这里只判「成功终态 + subjects 命中」：monitor 的 failed / killed（到期 / task_stop）
+  // 都不是「被等对象已终态」，不撤销。
+  for (const n of notifications) {
+    const st = n.structured;
+    if (!st) continue;
+    invalidateWakeupsForDeliveredTask(st.taskId, st.status);
+  }
   try {
     sessionStore?.appendMessage(message);
   } catch {

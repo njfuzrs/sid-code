@@ -124,6 +124,7 @@ export {
   findWaitBySubject,
   isWaitInvalidated,
   invalidateWakeups,
+  invalidateWakeupsForDeliveredTask,
   extractWaitSubjects,
   describeWaitSource,
   drainWaitNotices,

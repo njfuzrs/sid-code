@@ -48,6 +48,7 @@ import {
   isTerminalStatus,
   isWorkflowTask,
   type TaskState,
+  type TaskStatus,
 } from "./types.ts";
 import { getScheduler } from "../cron/scheduler.ts";
 import { emitScheduledTrace, SCHEDULED_INVALIDATED_EVENT_NAME } from "../cron/cron-telemetry.ts";
@@ -126,6 +127,27 @@ const explicitWaits = new Map<string, WaitEntry>();
 const invalidatedIds = new Set<string>();
 
 /**
+ * 终态 monitor 的 subjects 快照（D8/S2）：等通知**送达**之后再判要不要撤销唤醒。
+ *
+ * 为什么需要搬一份：subjects 只存在登记项里，而 `releaseWait` 会把它删掉。终态释放
+ * （D4）发生在任务进终态那一刻，比「通知进模型上下文」早一段；到送达时就再也读不到
+ * subjects 了。所以释放时把登记项自己的 subjects 搬到这张表——来源仍唯一（登记项），
+ * 这里只是一次短命的中转，送达即删。
+ *
+ * 有界性：通知可能永远不送达（如 `task_output` 抢先认领结果、队列里的通知被撤回），
+ * 残项由 `TERMINAL_SUBJECT_TTL_MS` 兜底清理，不在会话生命周期里累积。
+ */
+const terminalMonitorSubjects = new Map<string, { subjects: string[]; at: number }>();
+
+/**
+ * 终态 monitor 的 subject 快照保留多久（D8）。
+ *
+ * 正常路径是「任务终态 → 通知入队 → 下一个可注入点送达」，一个回合内；5 分钟是
+ * 「通知被别的通道认领、永远不会走送达路径」时的兜底上限，不是等待语义的一部分。
+ */
+const TERMINAL_SUBJECT_TTL_MS = 5 * 60_000;
+
+/**
  * 唤醒是否登记取决于「宿主有没有注入通道」。
  *
  * 无头（`-p` / SDK 单轮）下 `promptInjector` 不注册，`schedule_wakeup` 永远等不到触发——
@@ -155,6 +177,13 @@ export interface WaitNotice {
   kind: "wakeup_invalidated";
   taskId: string;
   reason: string;
+  /**
+   * 被撤唤醒的 prompt 预览（首行前 30 字，D9）。
+   *
+   * 只给用户看 id 认不出撤的是哪一条等待——「已取消定时唤醒 wk-3f2a」对用户是噪音，
+   * 「（检查 PR #662 的 CI 是否绿了…）」才是他能对上号的那条。
+   */
+  promptPreview?: string;
 }
 
 const pendingNotices: WaitNotice[] = [];
@@ -234,6 +263,14 @@ export function releaseWait(id: string, reason: WaitReleaseReason): boolean {
   if (!entry) return false;
   explicitWaits.delete(id);
   if (reason === "invalidated" || reason === "expired") invalidatedIds.add(id);
+  // D8/S2：终态释放是 subjects 的**唯一**读取窗口（登记项马上就没了）。S2 要求
+  // 「被等对象成功终态 **且通知已送达**」，而送达点在注入侧、比这里晚一段，
+  // 所以把登记项自带的 subjects 搬到待送达快照，送达时再判
+  // （见 `invalidateWakeupsForDeliveredTask`）。不另存第二份权威数据：
+  // 这里只是同一次搬移，送达即删。
+  if (reason === "terminal" && entry.src.kind === "monitor" && entry.src.subjects?.length) {
+    terminalMonitorSubjects.set(id, { subjects: entry.src.subjects, at: Date.now() });
+  }
   emitWaitTrace("WaitReleased", {
     id,
     kind: entry.src.kind,
@@ -278,6 +315,8 @@ onTaskChanged(releaseTerminalWaits);
 export function releaseAllWaits(reason: WaitReleaseReason = "session_end"): number {
   const ids = [...explicitWaits.keys()];
   for (const id of ids) releaseWait(id, reason);
+  // 待送达快照描述的是「这个会话里还有通知要送达」，会话结束就没人消费了
+  terminalMonitorSubjects.clear();
   return ids.length;
 }
 
@@ -455,6 +494,13 @@ function deriveWait(task: TaskState, now: number): WaitSource | undefined {
  */
 function sweepExpiredWaits(): void {
   const nowMono = monoNow();
+  // 终态 monitor 的 subject 快照有界：通知可能永远不走送达路径（被 task_output 抢先
+  // 认领会撤回队列里的通知），这些残项不能被无限保留。清在这里而不是定时器里，
+  // 与承诺过期兜底同源：主循环只要还在问「有等待源吗」就会顺手清理。
+  const wallNow = Date.now();
+  for (const [id, snap] of [...terminalMonitorSubjects]) {
+    if (wallNow - snap.at >= TERMINAL_SUBJECT_TTL_MS) terminalMonitorSubjects.delete(id);
+  }
   for (const [id, entry] of [...explicitWaits]) {
     let expiredAtMono: number;
     if (entry.src.kind === "wakeup") {
@@ -536,19 +582,70 @@ export function invalidateWakeups(
   opts: { subject?: string; reasonText: string },
 ): string[] {
   const scheduler = getScheduler();
-  const victims: string[] = [];
+  const victims: Array<{ id: string; promptPreview?: string }> = [];
   for (const [id, entry] of [...explicitWaits]) {
     if (entry.src.kind !== "wakeup") continue;
     if (signal === "subject_terminal") {
       if (!opts.subject || !entry.src.subjects?.includes(opts.subject)) continue;
     }
     scheduler.removeTask(id);
+    // releaseWait 之后登记项就没了，预览必须在释放前取（D9）
+    const promptPreview = previewOf(entry.src.description);
     releaseWait(id, "invalidated");
     emitScheduledTrace(SCHEDULED_INVALIDATED_EVENT_NAME, { task_id: id, signal });
-    victims.push(id);
+    victims.push({ id, promptPreview });
   }
-  for (const id of victims) {
-    pendingNotices.push({ kind: "wakeup_invalidated", taskId: id, reason: opts.reasonText });
+  for (const v of victims) {
+    pendingNotices.push({
+      kind: "wakeup_invalidated",
+      taskId: v.id,
+      reason: opts.reasonText,
+      ...(v.promptPreview ? { promptPreview: v.promptPreview } : {}),
+    });
+  }
+  return victims.map((v) => v.id);
+}
+
+/** 提示文案里的 prompt 预览：登记时已截到首行 60 字，这里再收到 30（D9 的「前 30 字」）。 */
+function previewOf(description: string): string | undefined {
+  const line = description.trim();
+  if (!line) return undefined;
+  return line.length > 30 ? `${line.slice(0, 30)}…` : line;
+}
+
+/**
+ * 一条终态通知**已送达模型**：若它对应的 monitor 是成功终态（exit 0），
+ * 按登记项带过来的 subjects 撤销本会话挂着的唤醒（S2）。
+ *
+ * 为什么由送达侧驱动，而不是在 `releaseWait(terminal)` 里直接撤销：S2 的判据是
+ * 「被等对象已成功终态 **且通知已投递**」（方案 §6 第 ⑩ 行）。通知还没进上下文就撤销，
+ * 等于在模型没看到结果时拿走它的兜底唤醒——一旦投递链路出问题（D2/D3 的形态），
+ * 模型既不知道结果、也不会再被叫醒，这正是 #642 否决自动撤销时担心的那种静默中断。
+ *
+ * 为什么 subjects 要经快照：见 `terminalMonitorSubjects` 的注释（登记项在终态释放时消失）。
+ *
+ * @returns 被撤销的唤醒 id（failed / killed / 无 subject 快照均为空）
+ */
+export function invalidateWakeupsForDeliveredTask(taskId: string, status: TaskStatus): string[] {
+  const snapshot = terminalMonitorSubjects.get(taskId);
+  // 不是 monitor、或 subjects 为空：这条通知与 S2 无关
+  if (!snapshot) return [];
+  // 非终态通知**不消费快照**：monitor 的每条事件都是 `running`，它与终态通知会进同一批
+  // （实测：`[{taskId, status:"running"}, {taskId, status:"completed"}]`）。先到的事件
+  // 如果把快照吃掉，紧跟的终态通知就判不出 S2 —— 这个顺序缺陷实测让 R6 一直绿不了。
+  if (!isTerminalStatus(status)) return [];
+  // 一次送达只判一次：无论结果如何都删快照，重复调用是 no-op
+  terminalMonitorSubjects.delete(taskId);
+  // killed（到期 / task_stop）与 failed 不是「对象已成功终态」，不撤销
+  if (status !== "completed") return [];
+  const victims: string[] = [];
+  for (const subject of snapshot.subjects) {
+    victims.push(
+      ...invalidateWakeups("subject_terminal", {
+        subject,
+        reasonText: `监控 ${taskId} 已完成（${subject}）`,
+      }),
+    );
   }
   return victims;
 }
@@ -584,6 +681,7 @@ export function __resetWaitRegistryForTest(): void {
   explicitWaits.clear();
   invalidatedIds.clear();
   pendingNotices.length = 0;
+  terminalMonitorSubjects.clear();
   wakeupRegistrationEnabled = false;
   traceSink = null;
   monoNowImpl = () => performance.now();
