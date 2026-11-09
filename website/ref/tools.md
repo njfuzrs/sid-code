@@ -55,7 +55,7 @@ description: 全部内置工具的名称、用途与入参。表里的名称就�
 | `task_get` | 查询结构化任务清单中某个任务的完整详情：subject/description/status/owner，以及它 blocks（下游）和 blockedBy（上游未完成依赖）。注意：这是结构化清单，不是后台任务（后者用… | `task_id` | — |
 | `task_list` | 列出结构化任务清单中的所有任务，含 id/subject/status/owner 及被哪些上游任务阻塞（blockedBy）。用于查看可开工任务（pending、无 owner、未被阻塞）与整体进度。注意：这是结构化… | — | `status` |
 | `task_output` | 查看后台任务的当前进度，或回看已完成任务的结果。 | `task_id` | `block` `timeout` |
-| `task_stop` | 终止一个正在运行的后台任务（Shell 命令、Agent 或 Workflow）。 | `task_id` | — |
+| `task_stop` | 终止一个正在运行的后台任务（Shell 命令、Agent、Workflow 或 Monitor）。 | `task_id` | — |
 | `task_update` | 更新结构化任务清单中的一个任务：改 status（含 deleted 删除）/subject/description/owner，或用 add_blocks/add_blocked_by 建立依赖关系。开始工作时置 i… | `task_id` | `status` `subject` `description` `active_form` `owner` `metadata` `add_blocks` `add_blocked_by` |
 | `team_create` | [实验特性，当前未启用] 多代理团队协作。需设 SID_ENABLE_AGENT_TEAMS=1 才可用。 | `team_name` `members` | `shared_tasks` |
 | `team_message` | 给同团队的其他成员或团队负责人（leader）发消息。仅在你作为团队成员执行任务时可用。 | `to` `message` | `kind` |
