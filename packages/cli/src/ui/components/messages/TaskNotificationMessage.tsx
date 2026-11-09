@@ -43,6 +43,13 @@ interface TaskNotificationMessageProps {
   event?: string;
   /** 事件来源描述（monitor 的 `description`），摘要行前缀。 */
   description?: string;
+  /**
+   * 聚合了几条事件通知（D20，方案 §5.7.4）。
+   *
+   * `> 1` 时摘要行渲染成 `<description> · N 条事件`，事件正文**全部**逐行进 `⎿`
+   * （首行不再占摘要行——摘要行已被计数占用）。缺省 / 1 走原来的单条事件路径。
+   */
+  eventCount?: number;
   terminalWidth: number;
 }
 
@@ -73,6 +80,7 @@ export const TaskNotificationMessage: React.FC<TaskNotificationMessageProps> = (
   agentType,
   event,
   description,
+  eventCount,
   terminalWidth,
 }) => {
   // 与工具结果共享同一套 ctrl+o 阶梯展开语义：折叠档基线 = DEFAULT_MAX_LINES，
@@ -84,13 +92,20 @@ export const TaskNotificationMessage: React.FC<TaskNotificationMessageProps> = (
   // bullet 用次要色——事件不是终态，不用绿/红/黄（那三色只属于「结束 / 失败 / 到期」）。
   const isEvent = event !== undefined;
   const eventLines = isEvent ? event.split("\n") : [];
+  // D20：聚合后的多项事件用「N 条事件」占摘要行，正文**全部**逐行进 ⎿；
+  // 单条事件保持原样（首行在摘要，其余进 ⎿），不改变 T-M1-10 的既有渲染。
+  const aggregated = (eventCount ?? 1) > 1;
   const eventFirstLine = eventLines[0] ?? "";
   const eventRest = eventLines.slice(1).join("\n");
-  const displaySummary = isEvent
-    ? description
-      ? `${description} · ${eventFirstLine}`
-      : eventFirstLine
-    : summary;
+  const displaySummary = !isEvent
+    ? summary
+    : aggregated
+      ? `${description ? `${description} · ` : ""}${eventCount} 条事件`
+      : description
+        ? `${description} · ${eventFirstLine}`
+        : eventFirstLine;
+  // ⎿ 折叠区正文：聚合时是全部事件行（逐行），单条时是首行之后的剩余行。
+  const branchText = aggregated ? eventLines.join("\n") : eventRest;
 
   return (
     <Box width={terminalWidth} flexDirection="column">
@@ -109,14 +124,14 @@ export const TaskNotificationMessage: React.FC<TaskNotificationMessageProps> = (
       </Box>
 
       {/* 多行事件的其余行 / 终态结论：树枝缩进 + 折叠（复用 SlicingMaxSizedBox） */}
-      {isEvent && eventRest ? (
+      {isEvent && branchText ? (
         <Box flexDirection="row">
           <Box flexShrink={0}>
             <Text color={theme.text.secondary}>{`  ${TREE_BRANCH} `}</Text>
           </Box>
           <Box flexDirection="column" flexGrow={1}>
             <SlicingMaxSizedBox
-              text={eventRest}
+              text={branchText}
               maxLines={effectiveMaxLines}
               overflowDirection="bottom"
               maxColumnWidth={Math.max(1, maxColumnWidth - 4)}

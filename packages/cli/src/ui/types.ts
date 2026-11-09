@@ -297,6 +297,15 @@ export type HistoryItemTaskNotification = HistoryItemBase & {
   /** 事件来源描述（monitor 的 `description`），摘要行前缀。 */
   description?: string;
   /**
+   * 本条历史项里聚合了几条件事件通知（D20，方案 §5.7.4）。
+   *
+   * 主循环忙时同一个 monitor 可能连续投递多条事件，`history-adapter` 按 taskId
+   * 把相邻事件合成一项：摘要行渲染成 `<description> · N 条事件`，事件正文逐行进 `⎿`。
+   * 缺省 / 1 = 单条事件，走原来的「首行做摘要、其余进 ⎿」路径。
+   * **只影响渲染**：`_meta.notif` 里模型可见的结构化数据一条不动。
+   */
+  eventCount?: number;
+  /**
    * P1-2：子代理类型（如 explore / 自定义 agent 名）。用于给摘要行的 agent 名标一个
    * 稳定的身份色（frontmatter 声明色优先，否则按类型哈希分配），多代理并行时便于区分。
    * 缺省则不着色，保持原样。
