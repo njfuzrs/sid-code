@@ -474,7 +474,10 @@ describe("W3 唤醒登记与确定信号失效", () => {
       registeredAt: Date.now(),
     });
 
-    const tool = new TodoWriteTool();
+    // D6 后 S1 是**主会话专属**副作用：只有主会话注册的实例（cli.ts）传
+    // invalidatesWakeups: true，子代理的独立实例默认不撤销。本用例测的是 S1 本身
+    // 仍然有效，所以按主会话实例构造——断言方向一个字没改。
+    const tool = new TodoWriteTool({ invalidatesWakeups: true });
     // T-W3-6：从未 todo_write 的会话，S1 没有「之前 > 0」的前提，唤醒仍在
     expect(listWaits().some((w) => w.id === "wk-s1")).toBe(true);
 
