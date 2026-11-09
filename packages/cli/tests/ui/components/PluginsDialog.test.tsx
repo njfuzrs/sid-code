@@ -197,17 +197,28 @@ describe("面板整帧", () => {
       expect(list).toContain("已启用");
 
       await ui.press("\r");
+      await waitFor(() => ui.frame().includes("查看详情"));
       expect(ui.frame()).toContain("查看详情");
 
       await ui.press("\r");
       await waitFor(() => ui.frame().includes("路径:"));
       expect(ui.frame()).toContain(`路径: ${pluginDir}`);
 
+      // 每一步都必须轮询到目标帧出现，不能「等 100ms 然后立即断言」。
+      //
+      // press 的固定等待只保证按键被**分发**：Esc 还要先过 ESC_TIMEOUT(50ms) 的判窗
+      // （KeypressContext 用它区分单独 Esc 与转义序列），100ms 里有一半被它吃掉，
+      // 剩下的才留给 React 重渲染 —— 慢 runner 上不够，CI 假红过 3 次
+      // （见 docs-research 的《20261107-CI时序flake与失败归因-全量排查》3.4）。
+      // 同文件其它断言早就是 waitFor，只有这几处是「固定等待 + 立即断言」。
       await ui.press("\x1b");
+      await waitFor(() => ui.frame().includes("查看详情"));
       expect(ui.frame()).toContain("查看详情");
       await ui.press("\x1b");
+      await waitFor(() => ui.frame().includes("Enter 管理"));
       expect(ui.frame()).toContain("Enter 管理");
       await ui.press("\x1b");
+      await waitFor(() => closed);
       expect(closed).toBe(true);
     } finally {
       ui.unmount();
