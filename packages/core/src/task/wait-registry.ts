@@ -724,6 +724,38 @@ export function describeWaitSource(src: WaitSource): string {
   return `${label} ${src.id}（${src.description}）`;
 }
 
+/**
+ * 压缩摘要里的一行「当前等待」（T-W1-7）。
+ *
+ * 为什么要它：压缩会把对话换成摘要，模型从此看不到「我在等 monitor m7 盯 PR #662」。
+ * 登记表在进程内、不受压缩影响（`listWaits()` 照常返回），但**模型的认知**受影响：
+ * 压缩后它可能重复起一个盯同一对象的 monitor，或在 `task_stop` 前不知道自己还在等什么。
+ * 所以压缩摘要生成时把当前等待源写进摘要正文——一次性的，不是每轮前缀，无缓存副作用。
+ *
+ * 标签复用 `describeWaitSource`（面板 / reminder / 回执三处共用的那一个），
+ * 这里只补「最晚什么时候回报」的后半句，不新增第四份标签文案。
+ *
+ * @returns 一行文本；没有等待源时返回 `null`，调用方据此不输出这一行
+ */
+export function describeCurrentWaits(now = Date.now()): string | null {
+  const waits = listWaits(now);
+  if (waits.length === 0) return null;
+  return `当前等待：${waits.map((w) => `${describeWaitSource(w)}${promiseTail(w)}`).join("；")}`;
+}
+
+/** 承诺的「什么时候回报」后缀（压缩摘要用；措辞与 todo-reminder 的等待行同形） */
+function promiseTail(w: WaitSource): string {
+  if (w.promise.kind === "deadline") {
+    const d = new Date(w.promise.deadlineAt);
+    const clock = [d.getHours(), d.getMinutes(), d.getSeconds()]
+      .map((n) => String(n).padStart(2, "0"))
+      .join(":");
+    return `，最晚 ${clock}`;
+  }
+  if (w.promise.kind === "terminal") return "，结束即通知";
+  return "，退出或转入静默时通知";
+}
+
 /** 测试复位 */
 export function __resetWaitRegistryForTest(): void {
   explicitWaits.clear();

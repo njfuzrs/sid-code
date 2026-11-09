@@ -25,6 +25,9 @@ import { isPromptTooLongError } from "./reactive-compact.ts";
 // P0-1 漏斗 3：上下文压缩埋点。tokens_before/after 是「更省」这条北极星唯一
 // 能直接量出来的信号之一；skip 分型让「触发了但没压成」不再藏进正常路径。
 import { logContextCompact, logContextCompactSkipped } from "../analytics/events.ts";
+// T-W1-7：压缩后的摘要要带上「当前等待」，否则模型压缩完就不知道自己还在等什么。
+// 标签文案复用 wait-registry 的 describeWaitSource（面板 / reminder / 回执共用那一份）。
+import { describeCurrentWaits } from "../task/wait-registry.ts";
 
 /** G17：摘要请求 PTL 截头重试的最大次数（每次截掉更多最早消息，达到上限后降级简单截断） */
 const MAX_PTL_RETRIES = 4;
@@ -392,10 +395,14 @@ async function doAutoCompact(
     if (summaryBody) {
       // Layer 2：post-compact 消息重组——剥离 analysis 草稿、追加静默续接 +
       // 保留消息提示 + 转录路径提示，让模型压缩后无缝续接而非"断片"。
+      // T-W1-7：若此刻还有等待源（monitor / 唤醒 / 期限 shell），把「当前等待」写进摘要正文——
+      // 压缩把对话换成摘要后，模型否则不知道自己还在等什么，可能重复起一个盯同一对象的 monitor。
+      // 只读 listWaits()，不改登记表：压缩前后 listWaits() 结果相同是验收项之一。
       const formattedSummary = getCompactUserSummaryMessage(summary, {
         suppressFollowUpQuestions: true,
         transcriptPath: deps.ctxMgr.getTranscriptPath(),
         recentMessagesPreserved: true,
+        waitLine: describeCurrentWaits() ?? undefined,
       });
       // §2.1 / §4.3：构造文件恢复 + 决策点重注入消息，随摘要一起注入
       const extraReattach = await buildExtraReattach(deps, toSummarize);
