@@ -18,7 +18,7 @@ settings.json 的全部可配字段、类型与默认值。
 
 <!-- AUTO-GEN:START 由 scripts/docs-gen-reference.ts 生成，勿手工编辑 -->
 
-> 共 **87** 个顶层字段，全部由 `SettingsSchema` 声明（类型/枚举/约束经运行时自省导出）。
+> 共 **88** 个顶层字段，全部由 `SettingsSchema` 声明（类型/枚举/约束经运行时自省导出）。
 > 写了表里没有的顶层键（多半是拼错）不会报错退出，但启动时会提示「未知配置项」并给出最接近的字段名。
 
 配置文件位置：`~/.sid-code/settings.json`（用户级）、`<启动目录>/.sid-code/settings.json`（项目级，优先）、
@@ -78,6 +78,7 @@ settings.json 的全部可配字段、类型与默认值。
 | `mcpServers` | object | — | MCP 服务器 |
 | `memoryExtractInterval` | number | 整数 >0 | 记忆横向剖析 T2：后台记忆提取节流——每 N 个 end_turn 才跑一次（缺省 1 = 每轮都跑）。 优先级：env SID_CODE_MEMORY_EXTRACT_INTERVAL > settings memoryExtractInterval > 1。 被节流的轮次在会话收尾补跑一次，不会整段会话都不抽。 |
 | `model` | string | — | 主模型名（须在 availableModels 中；/model 可运行时切换） |
+| `monitor` | object | — | monitor 工具的企业管控。缺省 = 现状（enabled true，数值上限不生效）。 只允许收紧、不允许放宽：数值与代码常量取 min，enabled 跨来源取 &&（任一来源 false 即关闭）。（子键见[下文](#key-monitor)） |
 | `network` | object | — | 网络超时/重试配置（统一单套保活优先默认值）（子键见[下文](#key-network)） |
 | `officialMarketplace` | boolean | — | 是否默认注册官方市场 sid-code（缺省 true，对齐 CC 首次启动自动注册官方市场） |
 | `openaiKey` | string | — | OpenAI 兼容端点的 API 密钥（provider=openai/ollama 等；env OPENAI_API_KEY 优先） |
@@ -195,6 +196,14 @@ settings.json 的全部可配字段、类型与默认值。
 |---|---|---|
 | `deniedServers` | McpPolicyEntry[] | — |
 | `allowedServers` | McpPolicyEntry[] | — |
+
+### `monitor` {#key-monitor}
+
+| 子键 | 类型 | 说明 |
+|---|---|---|
+| `enabled` | boolean | false = 工具不出现在工具列表（tool_search 也搜不到）；缺省 true |
+| `maxConcurrent` | number 整数 >0 | 同时运行的 monitor 上限；运行时取 min(本值, 代码常量)，只收紧不放宽 |
+| `maxTimeoutMs` | number 整数 >0 | 单个 monitor 的期限上限（毫秒）；运行时取 min(本值, 代码常量)，只收紧不放宽 |
 
 ### `network` {#key-network}
 

@@ -348,6 +348,30 @@ const GitSettingsSchema = lazySchema(() =>
     .passthrough(),
 );
 
+/**
+ * monitor 工具的企业管控。
+ *
+ * monitor 是一类新的长时间运行 shell：每个实例都可能常驻并持续叫醒主循环。
+ * 企业需要能在不禁用整个 bash 的前提下收口它，也需要能把并发 / 期限调得比
+ * 内置默认更紧。缺省 = 现状（enabled 为 true，数值上限不生效）。
+ *
+ * 只允许收紧、不允许放宽：数值运行时与代码常量取 min，enabled 跨来源取 &&。
+ * 跨来源读取与收紧语义在 config/monitor-policy.ts；代码常量与运行时钳制在
+ * task/monitor-task.ts（常量是上限，配置不能放宽）。
+ */
+const MonitorSettingsSchema = lazySchema(() =>
+  z
+    .object({
+      /** false = 工具不出现在工具列表（tool_search 也搜不到）；缺省 true */
+      enabled: z.boolean().optional(),
+      /** 同时运行的 monitor 上限；运行时取 min(本值, 代码常量)，只收紧不放宽 */
+      maxConcurrent: z.number().int().positive().optional(),
+      /** 单个 monitor 的期限上限（毫秒）；运行时取 min(本值, 代码常量)，只收紧不放宽 */
+      maxTimeoutMs: z.number().int().positive().optional(),
+    })
+    .passthrough(),
+);
+
 /** 可自定义状态栏 Schema（对标 claude-code statusLine）
  *  type=command：spawn 用户脚本，会话数据经 stdin 传 JSON，脚本 stdout 即状态栏内容。 */
 const StatusLineSchema = lazySchema(() =>
@@ -465,6 +489,10 @@ export const SettingsSchema = lazySchema(
 
         // Git 集成配置（commit / PR 归因，P3-1）
         git: GitSettingsSchema().optional(),
+
+        // monitor 工具的企业管控。缺省 = 现状（enabled true，数值上限不生效）。
+        // 只允许收紧、不允许放宽：数值与代码常量取 min，enabled 跨来源取 &&（任一来源 false 即关闭）。
+        monitor: MonitorSettingsSchema().optional(),
 
         // M1 身份注入（可注入，非登录）。项目级不可覆盖——见 SECURITY_SENSITIVE_FIELDS。
         identity: IdentitySettingsSchema().optional(),
