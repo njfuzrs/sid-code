@@ -191,6 +191,66 @@ describe("runHeadless stream-json", () => {
     expect(user.uuid).toBe("X");
     expect("merged_uuids" in user).toBe(false);
   });
+
+  /**
+   * PR-4 回归：连发的斜杠命令不能被合并进普通提问。
+   *
+   * 合并会把两条独立输入拼成一次 `submitMessage`，而无头分发只看得到整串的第一段：
+   * 命令在前 → 提问被吞成命令参数；命令在后 → 整串当普通提问、命令不执行。
+   * 这里断言引擎收到的是**两次独立**的 submitMessage，而不是一条带 `\n\n` 的拼接串。
+   *
+   * 直接预置队列而不写 stdin：读泵与主循环是并发的，真实连发有时会在第一条被取走之后
+   * 第二条才入队，那样即使没修也可能通过——那种用例是假守护（同「缺陷 9」用例的理由）。
+   * 入队形态与 pump 完全一致：mode=prompt、priority=next，workload / isMeta 都不设。
+   */
+  for (const seq of [
+    ["帮我看下 README", "/compact"],
+    ["/compact", "帮我看下 README"],
+  ]) {
+    test(`斜杠命令不参与合并：${JSON.stringify(seq)}`, async () => {
+      const input = new PassThrough();
+      const output = new PassThrough();
+      const io = new StructuredIO(input, output);
+      const queue = new CommandQueue();
+      const calls: string[] = [];
+      const usage: Usage = { inputTokens: 5, outputTokens: 7 };
+      const driver = {
+        async *submitMessage(prompt: string) {
+          calls.push(prompt);
+          yield {
+            kind: "assistant_message",
+            message: { role: "assistant", content: [{ type: "text", text: "回复" }] },
+          } as QueryEngineEvent;
+          yield { kind: "done", turns: 1 } as QueryEngineEvent;
+        },
+        getUsage: () => usage,
+        getCostUsd: () => 0,
+        getMessages: () => [],
+        listTools: () => [],
+        getApiDurationMs: () => 0,
+      } as SDKQueryEngineDriver;
+      for (const value of seq) {
+        queue.enqueue({ mode: "prompt", value, priority: "next" });
+      }
+      input.end();
+      const engine = new SDKQueryEngine(
+        { cwd: "/tmp", sessionId: "s-slash", model: "m", now: () => 0, uuid: () => "u" },
+        driver,
+      );
+      const collected = collect(output);
+      await runHeadless(engine, {
+        outputFormat: "stream-json",
+        structuredIO: io,
+        commandQueue: queue,
+      });
+      output.end();
+
+      const lines = await collected;
+      expect(calls).toEqual(seq);
+      // 每一轮各自出结果，不是一条拼接串的单一结果
+      expect(lines.filter((l) => l.type === "result").length).toBe(2);
+    });
+  }
 });
 
 describe("runHeadless text/json", () => {

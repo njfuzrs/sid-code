@@ -36,6 +36,24 @@ const PRIORITY_ORDER: Record<QueuedCommand["priority"], number> = {
   later: 2,
 };
 
+/**
+ * 该条输入是否必须独占一轮（不能被批量合并）。
+ *
+ * 以 `/` 开头的输入到无头分发入口会被 `parseSlashCommand` 当成斜杠命令解析，
+ * 而合并会把两条独立输入拼成一次 `submitMessage` —— 分发只看得到拼接整串的**第一段**：
+ * - 命令在前：整串被解析成命令，后面的普通提问成了它的参数被吞掉；
+ * - 命令在后：第一段不是命令，整串（含命令文本）当普通提问发给模型，命令不执行。
+ * 两种顺序都错，所以合并的两侧都要排除。
+ *
+ * `/tmp/x` 这类真实路径一并排除：它同样要经过分发器区分「未知命令 / 路径 passthrough」，
+ * 合并会绕过那次判定，让路径变成前一条提问的一部分。
+ *
+ * 判据与 `parseSlashCommand` 对齐：先 trim 再判首字符，`  /model opus` 也算命令。
+ */
+function mustStandalone(cmd: QueuedCommand): boolean {
+  return cmd.value.trimStart().startsWith("/");
+}
+
 export class CommandQueue {
   private queue: QueuedCommand[] = [];
 
@@ -97,6 +115,9 @@ export class CommandQueue {
     return (
       next !== undefined &&
       next.mode === "prompt" &&
+      // 两侧都要排除：只判 next 会漏掉「head 是命令、后续提问被并进来」这一半。
+      !mustStandalone(head) &&
+      !mustStandalone(next) &&
       next.workload === head.workload &&
       next.isMeta === head.isMeta
     );
