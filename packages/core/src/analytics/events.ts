@@ -38,6 +38,7 @@ import { sanitizeToolName, safeFileExtension, mcpToolDetailsForAnalytics } from 
 import type { DefenseLayer, DefenseOutcome } from "../telemetry/metrics/defense-metrics.ts";
 import { recordPermissionDecision, consumeConfirmVia } from "../permission/decision-telemetry.ts";
 import { getPluginMarketplace, type PluginToolOrigin } from "./plugin-attribution.ts";
+import { emitMemoryGuard } from "../query/guidance-events.ts";
 
 // ─────────────────────────────────────────────────────────────
 // 事件名单一事实源
@@ -875,6 +876,9 @@ export function logMemoryGuard(opts: {
     guard_via: v(opts.via),
     ...(opts.scope !== undefined ? { memory_scope: v(opts.scope) } : {}),
   });
+  // HB-4（B18）：analytics 是外发漏斗、默认可被隐私级别关掉；本地轨迹另留一份，
+  // 「记忆拒写发生在哪个会话的哪一步」才能和其它事件对齐。值都是闭集标签。
+  emitMemoryGuard(opts);
 }
 
 // ─────────────────────────────────────────────────────────────

@@ -14,6 +14,7 @@ import type {
 import type { FileReadTracker } from "./file-read-tracker.ts";
 import { getLogger } from "../debug/logger.ts";
 import { detectOmissionPlaceholders, isDocumentFile, isPythonFile } from "./omission-detector.ts";
+import { emitOmissionRejected } from "../query/guidance-events.ts";
 import { coerceSemanticBoolean } from "@sid-code/shared/utils/semantic-boolean.ts";
 import { mkdirSync, existsSync } from "fs";
 import { dirname, basename, extname } from "path";
@@ -617,6 +618,12 @@ export class EditTool implements Tool {
     if (!isDoc && newString.split("\n").length > 10) {
       const omissions = detectOmissionPlaceholders(newString, false, isPythonFile(filePath));
       if (omissions.length > 0) {
+        emitOmissionRejected({
+          tool_name: "edit",
+          file_path: filePath,
+          patterns: omissions.map((m) => m.pattern),
+          match_count: omissions.length,
+        });
         const details = omissions.map((m) => `  行 ${m.line}: ${m.text}`).join("\n");
         return {
           output: `错误: new_string 中检测到省略占位符，请提供完整代码:\n${details}\n\n请重新生成完整的替换内容。`,
