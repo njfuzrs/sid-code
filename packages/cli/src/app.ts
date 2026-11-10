@@ -5065,7 +5065,7 @@ export class App {
             `清理 ${reap.reaped.length} 个孤儿 monitor 进程组（宿主已退出）:`,
             ...reap.reaped.map(
               (r) =>
-                `  ${r.meta.task_id} pgid=${r.meta.pgid} 成员 ${r.members.join(",")}，宿主 PID ${r.meta.host_pid}，命令 ${r.meta.command}`,
+                `  ${r.meta.task_id} pgid=${r.meta.pgid} 成员 ${r.members.join(",")}，宿主 PID ${r.meta.host_pid}（会话 ${r.meta.session_id ?? "-"}），命令 ${r.meta.command}`,
             ),
           ].join("\n"),
         );

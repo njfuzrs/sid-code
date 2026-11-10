@@ -39,6 +39,7 @@ import {
 import { clearAllTasks, getTask, registerTask } from "../../src/task/registry.ts";
 import { dequeuePendingNotifications } from "../../src/task/notification.ts";
 import { sidPaths } from "../../src/config/paths.ts";
+import { getCurrentSessionId, setCurrentSessionId } from "../../src/task/session-task-store.ts";
 import type { LocalShellTaskState } from "../../src/task/types.ts";
 
 const isWin = process.platform === "win32";
@@ -321,9 +322,28 @@ describe.skipIf(isWin)("spawnMonitorTask 的元数据生命周期", () => {
     expect(m.host_pid).toBe(process.pid);
     expect(Number.isInteger(m.pgid) && m.pgid > 1).toBe(true);
     expect(Date.parse(m.spawned_at)).toBeGreaterThan(0);
+    // 未注入会话 id（单测环境）时省略该字段，而不是写空串
+    expect("session_id" in m).toBe(false);
 
     killMonitorTask(task.id);
     expect(existsSync(file)).toBe(false);
+  });
+
+  test("注入了会话 id 时写进元数据（只供清理日志定位是哪个会话漏的）", () => {
+    const prev = getCurrentSessionId();
+    setCurrentSessionId("20261110-000000-meta0001");
+    try {
+      const task = spawnMonitorTask({
+        description: "session id",
+        command: "sleep 30",
+        timeoutMs: 60_000,
+        cwd: tmpHome,
+      });
+      const m = JSON.parse(readFileSync(metaFileOf(task.id), "utf-8")) as MonitorProcessMeta;
+      expect(m.session_id).toBe("20261110-000000-meta0001");
+    } finally {
+      setCurrentSessionId(prev);
+    }
   });
 
   test("脚本自然结束 → 终态后元数据删除", async () => {

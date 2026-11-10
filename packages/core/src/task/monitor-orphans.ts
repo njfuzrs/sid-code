@@ -56,6 +56,7 @@ import { platform } from "node:os";
 import { spawnSync } from "node:child_process";
 import { sidPaths } from "../config/paths.ts";
 import { isPidReused, PID_REUSE_TOLERANCE_MS } from "../trace/pid-manager.ts";
+import { getCurrentSessionId } from "./session-task-store.ts";
 
 /**
  * 元数据文件后缀。
@@ -82,6 +83,12 @@ export interface MonitorProcessMeta {
    * 必是复用（与 `PidManager.isPidReused` 同一条判据）。
    */
   host_recorded_at: string;
+  /**
+   * 宿主会话 id（cli.ts 启动时注入 `setCurrentSessionId`；未注入时省略）。
+   * 只用于清理日志里「是哪个会话漏的」，**不参与任何判据**：宿主死活与进程组身份
+   * 都按 pid + 启动时刻判，会话 id 回答不了「这个 pid 现在还是不是它」。
+   */
+  session_id?: string;
   /** monitor 命令（截断），只用于清理日志，不参与任何判据 */
   command: string;
 }
@@ -139,6 +146,7 @@ export function writeMonitorMeta(opts: {
       spawned_at: opts.spawnedAt !== undefined ? new Date(opts.spawnedAt).toISOString() : now,
       host_pid: process.pid,
       host_recorded_at: now,
+      ...(getCurrentSessionId() ? { session_id: getCurrentSessionId() } : {}),
       command: opts.command.slice(0, COMMAND_PREVIEW_CHARS),
     };
     writeFileSync(metaPath(opts.taskId, dir), JSON.stringify(meta));
