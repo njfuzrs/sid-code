@@ -394,8 +394,7 @@ describe("CI 门禁存在（全量单测前移到 PR 阶段）", () => {
 
   // G2 无头回放冒烟（#618）跑的是 `make build` 刚产出的 ./sid-code。两种不报红的失效：
   //   ① 这一步被删掉或改名，冒烟静默不跑，汇聚门照绿；
-  //   ② 挪到 make build 之前，`bun run smoke` 找不到二进制就退 2，而 continue-on-error
-  //      期间这个红不阻断，同样等于没跑。
+  //   ② 挪到 make build 之前，`bun run smoke` 找不到二进制就退 2，等于没跑。
   // 所以解析 YAML 断言：test job 里有 `bun run smoke` 这一步，且排在 `make build` 之后。
   test("G2 无头回放冒烟在 test job 里、且排在 make build 之后", () => {
     const doc = parseYaml(CI) as { jobs: Record<string, { steps?: Array<{ run?: string }> }> };
@@ -416,6 +415,26 @@ describe("CI 门禁存在（全量单测前移到 PR 阶段）", () => {
     const tui = runs.indexOf("bun run smoke:tui");
     expect(build).toBeGreaterThanOrEqual(0);
     expect(tui).toBeGreaterThan(build);
+  });
+
+  // 2026-11-10 G2/G4 转阻断（专项 M2/M5）。`continue-on-error` 加回去的话 job 恒绿、汇聚门恒绿，
+  // 而且 jobs API 的步骤结论在真失败时也是 success（2026-11-09 run 42594411659 实证），
+  // 红只剩日志里看得见——冒烟又退回「只报告」，没有任何东西会提示。步骤级和 job 级都要锁：
+  // 写在 test job 上同样吞掉这两步的红。要降级（总纲 §6「G4 退回非必需」）就改这条断言，
+  // 让降级在 diff 里看得见。
+  test("G2/G4 冒烟是阻断检查：步骤与 test job 都不带 continue-on-error", () => {
+    type Step = { run?: string; "continue-on-error"?: unknown };
+    const doc = parseYaml(CI) as {
+      jobs: Record<string, { "continue-on-error"?: unknown; steps?: Step[] }>;
+    };
+    const job = doc.jobs.test;
+    expect(job).toBeDefined();
+    expect(job!["continue-on-error"]).toBeUndefined();
+    for (const cmd of ["bun run smoke", "bun run smoke:tui"]) {
+      const step = (job!.steps ?? []).find((s) => (s.run ?? "").trim() === cmd);
+      expect(step, cmd).toBeDefined();
+      expect(step!["continue-on-error"], cmd).toBeUndefined();
+    }
   });
 
   // 2026-08-15 实测事故（PR #31）：stacked PR 的 base 从「PR A 的分支」被 GitHub 自动

@@ -11,6 +11,7 @@ Date: 2026-11-07
 - `if: matrix.shard == 1`：每个平台（ubuntu / macOS）各跑一次。用例与单测分片无关，每个分片都跑只会重复占用 runner。
 - `continue-on-error: true`：转正前观察 2 周（专项 M2 验收：0 次非代码原因的红）。观察期内红了只在日志和 step summary 里看得见，不阻断合并。转正 = 删掉这一行，不用改 ruleset，test job 本来就在 `all-checks-passed` 的 `needs` 里。
 - `tests/release-flow-contract.test.ts` 加一条反漂移断言：解析 YAML，要求 test job 里有 `bun run smoke` 这一步，且排在 `make build` 之后。
+- **后续（2026-11-10）**：已转阻断，`continue-on-error` 已删，转正依据见 `2026-11-10-G2与G4冒烟转为阻断检查.md`。
 
 ## 放弃了什么（以及为什么不选）
 
