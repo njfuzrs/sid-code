@@ -121,7 +121,7 @@ description: 在管理台给组织、团队或单台设备下发企业策略：�
 
 **`disabledModes` 的 9 个有效值**：`default`、`manual`、`always-allow`、`deny-write`、`acceptEdits`、`plan`、`dontAsk`、`auto`、`dangerously-skip-permissions`。
 
-**`disableBypassPermissionsMode` 是最该配的一项**。不配它，`--dangerously-skip-permissions` 会跳过全部检查，上面所有约束都有一个总开关（见[企业 policy 与安全边界](/team/policy#能力边界-如实说)第 1 条）。
+**`disableBypassPermissionsMode` 是最该配的一项**。不配它，`--dangerously-skip-permissions` 会跳过危险命令拦截、敏感文件保护、路径校验与 safetyCheck——上面靠这些静态防护层成立的约束就都有了总开关（deny 规则、`disallowedTools` 和会话内拒绝例外，它们在 skip 档下仍然生效，见[企业 policy 与安全边界](/team/policy#能力边界-如实说)第 1 条）。
 
 ### 限制插件来源
 

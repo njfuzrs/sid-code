@@ -9,7 +9,7 @@ description: 八种权限模式怎么选、allow/deny/ask 规则怎么写，以�
 
 - 按场景选对权限模式，不再被每一步打断，也不至于让它乱改代码
 - 写出精确的 `allow` / `deny` / `ask` 规则（含 bash 通配、路径前缀、MCP、子代理）
-- 知道 `--dangerously-skip-permissions` 跳过了哪些层（答案：全部，只留审计）
+- 知道 `--dangerously-skip-permissions` 跳过了哪些层（答案：系统认定的危险；人写下的拒绝仍然生效）
 - 看懂 `→ 需确认(危险命令: …)` 这类日志，判断是规则拦的还是安全层拦的
 
 完整字段类型与默认值不在这页，去[settings.json 字段](/ref/settings)查；
@@ -74,7 +74,7 @@ sid-code --dangerously-skip-permissions
 | `always-allow` | 全部允许 | 跳过规则与模式确认，安全层仍生效 | 一次性批量任务，你会盯着看 |
 | `deny-write` | 禁止写入 | 只读；写操作直接拒绝，不给确认机会 | 只让它分析、绝不许改 |
 | `dontAsk` | 静默拒绝 | 该问的一律当拒绝，不弹窗 | 无头脚本里不想挂住 |
-| `dangerously-skip-permissions` | 跳过权限(危险) | 最宽档，跳过全部检查（含危险命令拦截），只留审计记录。与 `-y` / `--yes` 不同——后者只自动批准普通的需确认操作，危险命令仍拦 | 容器 / 一次性沙箱 |
+| `dangerously-skip-permissions` | 跳过权限(危险) | 最宽档，跳过系统认定的危险（危险命令拦截、敏感文件保护、路径校验、safetyCheck），但 `deny` 规则、`disallowedTools` 和会话内拒绝仍生效，审计照记。与 `-y` / `--yes` 不同——后者只自动批准普通的需确认操作，危险命令仍拦 | 容器 / 一次性沙箱 |
 
 <kbd>Shift+Tab</kbd> 在会话里循环切换，实测顺序：
 
@@ -442,7 +442,7 @@ macOS 上 sid-code 还有一道**操作系统级**的硬隔离：[Seatbelt 沙�
 
 这是和权限规则**平行的一层**，位置在规则之前，所以 `allow` 规则和 `always-allow`
 模式都绕不过去。以下均在 `allow: ["Bash(*)"]` + `always-allow` 下实测仍被拦。
-**`--dangerously-skip-permissions` 例外**，它连这一层也跳过，见本节末尾的 danger 框：
+**`--dangerously-skip-permissions` 例外**，它连这一层也跳过（但 `deny` 规则与 `disallowedTools` 仍然生效），见本节末尾的 danger 框：
 
 | 命令 | 结果 |
 | --- | --- |
@@ -475,9 +475,13 @@ read(...) → 拒绝(路径验证: 敏感文件（凭证类，默认拒绝）: �
 同一层还有系统目录保护（`/etc/`、`/proc/`、`/sys/`、`/dev/`…）和 symlink 逃逸解析。
 
 ::: danger --dangerously-skip-permissions 的真实边界
-它跳过**全部检查**，包括上面的危险命令拦截、敏感文件保护和路径校验，只留一条审计记录。
-`rm -rf /` 在它下面不会被拦。唯一能约束它的是企业策略 `disableBypassPermissionsMode`
-（禁用后带这个参数启动会直接报错退出）。
+它跳过**系统认定的危险**：上面的危险命令拦截、敏感文件保护、路径校验和 safetyCheck 都不再检查，
+`rm -rf /` 在它下面不会被拦，只留一条审计记录。
+但它**压不过人写下的拒绝**：`deny` 规则（含企业策略下发的）、`disallowedTools`、以及会话里点过的
+「拒绝并记住」照常生效（`checker.ts` 的 `checkUserDenyUnderSkip`）——企业 `deny` 了 `Bash(curl *)`
+的话，带这个参数 `curl` 一样被拒。
+想让整个档位不可用，靠企业策略 `disableBypassPermissionsMode`（禁用后带这个参数启动会直接报错退出）；
+它管的是「能不能用这一档」，不是「`deny` 规则生不生效」。
 `-y` / `--yes` 不一样：它只自动批准普通的需确认操作，危险命令触发的确认仍然拦截。
 `sc` 这个别名就等价于带上 `--dangerously-skip-permissions`，所以**别在重要仓库里用 `sc`**。
 判断标准：这个目录里的东西全丢了你能不能接受。不能，就别用。

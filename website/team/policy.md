@@ -321,10 +321,19 @@ macOS 上旧的 `/etc/sid-code/<type>/` 仍会扫描以兼容已有部署，命�
 
 这几条是当前**做不到**的，别按"已经管住了"来规划：
 
-**1. `--dangerously-skip-permissions` 确实绕过全部静态防护层。**
-`check()` 在进入检查链之前就早退放行（`checker.ts`）。实测在企业
-deny 了 `Bash(curl *)` 的前提下，加这个参数后 `curl` 和 `rm -rf /` 都直接放行。
-唯一的对策就是 `disableBypassPermissionsMode: "disable"`——**这条不配，上面所有约束都有一个总开关**。
+**1. `--dangerously-skip-permissions` 仍跳过「系统认定的危险」这三层。**
+危险命令（`rm -rf /` 这类 `critical` 级）拦截、敏感文件与路径校验、safetyCheck
+在 skip 档下都不再检查——这是这一档本来的语义（无人值守、用户自负），
+所以加这个参数后 `rm -rf /` 仍然放行。
+
+但它**压不过人写下的拒绝**：各来源的 deny 规则（含本页下发的企业 deny）、
+`disallowedTools`、会话里点过的「拒绝并记住」照常生效。`check()` 在早退放行之前先过这三项
+（`checker.ts` 的 `checkUserDenyUnderSkip`，命中时 `step` 记
+`skip-deny-rule` / `skip-disallowed` / `skip-memory-deny`），所以企业 deny 了
+`Bash(curl *)` 时，加这个参数 `curl` 照样被拒。
+
+`disableBypassPermissionsMode: "disable"` 仍然是唯一能让**整个档位不可用**的开关，
+但它不再是「deny 规则能否生效」的前提——deny 不靠它。
 
 （对比：`--yes` 不走这条早退路径，仍然完整检查危险命令。）
 
