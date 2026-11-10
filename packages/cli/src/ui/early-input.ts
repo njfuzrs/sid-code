@@ -118,10 +118,15 @@ export function stopCapturingEarlyInput(): void {
 /**
  * 消费缓冲的早期输入并停止捕获
  * REPL 就绪后调用此函数
+ *
+ * 去掉首尾空白再交出（与 CC 的 consumeEarlyInput 同口径）。启动期间按的回车只转成换行回填、
+ * 不提交，所以「等界面时顺手按了一下回车」会留下一个 "\n"：输入框不再是空的，占位提示消失、
+ * 光标停在第二行，↑ 召回历史、双击 Esc 打开回退这些「空输入框才生效」的交互全部失灵，
+ * 用户还看不出为什么（2026-11-10 PTY 实测）。夹在文字中间的换行保留。
  */
 export function consumeEarlyInput(): string {
   stopCapturing();
-  const result = buffer;
+  const result = buffer.trim();
   buffer = "";
   return result;
 }

@@ -31,11 +31,12 @@ bun run format:check  →
 bun run lint:boundary →
 ```
 
-CI 有三个 job、九道门禁（完整清单见 CONTRIBUTING.md「提 PR 之前必须跑的门禁」），
+CI 有三个 job、十一道门禁（完整清单见 CONTRIBUTING.md「提 PR 之前必须跑的门禁」），
 下面几条本地全跑绿基本就不会红：
 
 - [ ] `bun test` 全绿（0 fail）
 - [ ] `make build` 成功（末尾 `--self-check` 通过）
+- [ ] `bun run smoke` 与 `bun run smoke:tui` 通过（用上一步的 `./sid-code`，阻断合并）
 - [ ] `bun run lint` 通过（oxlint）
 - [ ] `bun run format:check` 通过（红了跑 `bun run format` 再 `git add`）
 - [ ] `bun run lint:boundary` 通过（动了跨包导入必跑）
