@@ -274,14 +274,14 @@ async function runPrintStep(
       failure: fixture.failure,
     };
   step.prepare?.({ repoRoot: dirs.repo, configDir: dirs.configDir });
+  // 显式按 outputFormat 构造，不靠「argv 里再传一次让后者覆盖」——那种写法只在
+  // parseArgs 的"重复选项取最后一个"语义下成立，读代码看不出来。
+  const formatArgv =
+    step.outputFormat === "stream-json"
+      ? ["--output-format", "stream-json", "--verbose"]
+      : ["--output-format", "json"];
   const proc = Bun.spawn(
-    [
-      ...launcherArgv(launcher),
-      "--dangerously-skip-permissions",
-      "--output-format",
-      "json",
-      ...step.argv,
-    ],
+    [...launcherArgv(launcher), "--dangerously-skip-permissions", ...formatArgv, ...step.argv],
     {
       cwd: dirs.repo,
       env: isolatedEnv(dirs.home, dirs.configDir, fixture.file, extraEnv),

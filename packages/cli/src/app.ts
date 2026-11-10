@@ -9402,7 +9402,11 @@ export class App {
     const engine = new SDKQueryEngine(
       {
         cwd: process.cwd(),
-        sessionId: this.sessionState.sessionId,
+        // 逻辑会话 id，不是本进程新 id。引擎拿它填 system/init、每条 user/assistant 与
+        // 全部 result 的 session_id，宿主再拿这个 id 去 `--resume`。resume 时 SessionStore
+        // 实际续写的是**被恢复会话**、轨迹也落在 `sessions/<被恢复 id>/`，用进程 id 交出去
+        // 就是 X4/#666 同型缺陷：宿主 `--resume <它>` 报「未找到会话」exit 1，静默不可用。
+        sessionId: this.getLogicalSessionId(),
         model: this.config.model,
         // 缺陷 6：maxTurns / 花费上限 / systemPrompt / jsonSchema 不再传给 SDK 引擎——
         // 它从不读这四个字段。真实执行点：queryLoop + QuotaManager（effectiveCostLimit，

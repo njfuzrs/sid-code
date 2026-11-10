@@ -1944,7 +1944,7 @@ export async function executeSingleTool(
  * 把三路竞争的 DecisionSource 映射到埋点的 PermissionSource。
  *
  * 为什么要显式映射而不是直接透传：两个类型**不等价**——DecisionSource 有 "auto"
- * （非交互/子代理场景的自动决策），PermissionSource 有 "rule"（规则直接放行/拒绝，
+ * （三路都没接上时的框架兜底），PermissionSource 有 "rule"（规则直接放行/拒绝，
  * 不经三路竞争）。直接 as 转换会在未来任一侧加成员时静默产出一个下游聚合脚本
  * 不认识的值，而遥测字段的错值是静默的：聚合出来的图看着正常，只是少了一类。
  *
