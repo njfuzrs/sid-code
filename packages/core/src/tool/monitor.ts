@@ -106,6 +106,12 @@ export class MonitorTool implements Tool<MonitorInput, string> {
   readonly shouldDefer = true;
   readonly searchHint = "monitor watch wait ci poll stream events 监控 等待 轮询 事件";
   /**
+   * D6：何时该用（一句话）。刻意不写选择边界细节（与 bash 后台的分工、轮询间隔、
+   * 沉默不等于成功）——那些在 <waiting-capability> 专属段（FIX-3），两段按「专属段讲深度、
+   * 速查段讲广度」分工，tests/tool/deferred-guidance.test.ts 有断言机械拦住重复。
+   */
+  readonly guidance = "要盯外部状态的行级事件流（stdout 每行一条通知）时用。";
+  /**
    * 结果正文是给模型的收尾指令（见文件头注释），TUI 只留 header 摘要。
    * 错误路径照常展示（`resultDisplayMode` 的硬约束：hidden/summary 不吞错误）。
    */

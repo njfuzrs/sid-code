@@ -19,6 +19,7 @@ export class CronDeleteTool implements Tool {
   readonly zodSchema = cronDeleteSchema();
   /** 长尾工具：定时调度低频使用，延迟加载，由 tool_search 按需调出 */
   readonly shouldDefer = true;
+  readonly guidance = "取消不再需要的定时任务（含已达成目标后撤掉剩余轮询）时用。";
   readonly searchHint = "cron schedule delete cancel 定时 调度 删除 取消";
 
   name(): string {

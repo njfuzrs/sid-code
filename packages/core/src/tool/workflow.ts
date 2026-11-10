@@ -163,6 +163,8 @@ export class WorkflowTool implements Tool {
   readonly zodSchema = workflowSchema();
   /** 延迟工具:默认不进首轮上下文,由 tool_search 按需调出(opt-in 门控) */
   readonly shouldDefer = true;
+  readonly guidance =
+    "跑一段确定性多 agent 编排脚本（穷尽 fan-out / 对抗校验 / 单上下文装不下的规模）时用；一次性派几个子代理用 sub_agent 就够。";
   readonly searchHint =
     "workflow orchestrate multi-agent fan-out parallel pipeline 编排 工作流 多代理 并行 扇出 审计 迁移";
 

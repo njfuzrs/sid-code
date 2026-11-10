@@ -28,6 +28,7 @@ export class TaskListTool implements Tool {
   readonly zodSchema = taskListSchema();
   /** 长尾工具：仅在有后台任务时使用，延迟加载，由 tool_search 按需调出 */
   readonly shouldDefer = true;
+  readonly guidance = "列出全部后台任务及状态，盘点在途工作 / 找某个任务的 task_id 时用。";
   readonly searchHint = "background task list status 后台 任务 列出 状态 bg_task_list";
   /**
    * P2-3：任务管理类工具，状态查询连续调用是正当行为而非循环，豁免循环检测。

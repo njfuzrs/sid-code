@@ -21,6 +21,8 @@ const taskListSchema = lazySchema(() =>
 export class StructuredTaskListTool implements Tool {
   readonly zodSchema = taskListSchema();
   readonly shouldDefer = true;
+  readonly guidance =
+    "列出结构化任务清单的全部条目与状态（含谁被谁阻塞）时用；后台任务列表是 bg_task_list。";
   readonly searchHint = "structured task list all status owner 结构化 任务 清单 列出 状态 依赖";
   readonly exemptFromLoopDetection = true;
 
