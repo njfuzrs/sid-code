@@ -218,6 +218,13 @@ async function runPartial(
   });
 
   const after = ctx.ctxMgr.messageCount();
+  // P1-4a / D10：手动压缩的落盘通知（第四条压缩入口）。
+  // 本路径走 partialCompact → setMessages，既不经 compactWithSummary 也不经压缩管道，
+  // 此前整条链路不通知观察者 —— 会话 JSONL 无 `context_compact` 记录，且观察者同时
+  // 承载的「会话摘要 / rewind 锚点失效 / Session Memory 常驻注入」三件事一起丢失
+  // （2026-11-10 分诊：本机两次 manual 压缩的会话 JSONL 记录为 0、summaries/ 无文件）。
+  // 放在收尾**之后**：removedCount 取实际净减少，文件重注入的条数不会被算成「压掉了」。
+  ctx.ctxMgr.recordManualCompaction(result.summary ?? "", opts.before);
   // 手动压缩主路径成功（LLM 摘要，语义无损）。tokensAfter 必须在 runManualPostCompact
   // **之后**取：收尾会做文件重注入，重注入的 token 也算进压缩后的真实占用。
   // 在收尾前取会系统性低估 tokens_after，把「省了多少」算多——这正是「值有区分度」

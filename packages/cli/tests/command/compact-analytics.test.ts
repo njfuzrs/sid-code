@@ -70,7 +70,11 @@ function makeMockProvider() {
 /** mock ctxMgr：token 估算随消息条数变化，使 tokens_before > tokens_after 可被观测 */
 function makeCtx(messages: Message[], provider: any, opts: { lockFree?: boolean } = {}) {
   let msgs = messages;
+  /** P1-4a / D10：手动压缩落盘出口的调用记录（真实实现转调 sessionStore / saveSummary） */
+  const manualCompactions: Array<{ summary: string; messageCountBefore: number }> = [];
   const ctxMgr = {
+    /** 供测试断言：落盘出口被调用了几次、参数是什么 */
+    manualCompactions,
     messageCount: () => msgs.length,
     estimateTokens: () => msgs.length * 10,
     acquireCompactLock: () => opts.lockFree !== false,
@@ -78,6 +82,9 @@ function makeCtx(messages: Message[], provider: any, opts: { lockFree?: boolean 
     getMessages: () => msgs,
     setMessages: (m: Message[]) => {
       msgs = m;
+    },
+    recordManualCompaction: (summary: string, messageCountBefore: number) => {
+      manualCompactions.push({ summary, messageCountBefore });
     },
     compactWithSummary: (summary: string) => {
       const before = msgs.length;
@@ -145,6 +152,17 @@ describe("P1-6 手动 /compact 的 context_compact 埋点", () => {
     expect(meta.tokens_before as number).toBeGreaterThan(0);
     expect(meta.tokens_after as number).toBeLessThan(meta.tokens_before as number);
     expect(meta.messages_before).toBe(16);
+
+    // P1-4a / D10：成功后必须通知落盘出口（会话 JSONL 的 context_compact / 会话摘要 /
+    // rewind 锚点失效 / Session Memory 常驻注入都挂在同一个 observer 上）。
+    // 此前这条路径一次都不调，实测本机 manual 压缩会话 JSONL 记录为 0、summaries/ 无文件。
+    const persisted = (ctx.ctxMgr as any).manualCompactions as Array<{
+      summary: string;
+      messageCountBefore: number;
+    }>;
+    expect(persisted.length).toBe(1);
+    expect(persisted[0]!.messageCountBefore).toBe(16);
+    expect(persisted[0]!.summary).toContain("摘要内容");
   });
 
   test("focus 压缩成功 → 同样上报 manual/summarized（三种参数模式共用一条链路）", async () => {
@@ -231,6 +249,8 @@ describe("P1-6 手动 /compact 的 context_compact 埋点", () => {
     // 一个 token 都没省：before === after 是这一档的特征
     const meta = compacts[0]!.meta as any;
     expect(meta.tokens_after).toBe(meta.tokens_before);
+    // 失败不落盘：没压动就写 context_compact 记录，会宣告一次没发生的压缩
+    expect((ctx.ctxMgr as any).manualCompactions.length).toBe(0);
   });
 });
 
