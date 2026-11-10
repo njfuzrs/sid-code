@@ -1,6 +1,7 @@
 ---
 Status: implemented
 Date: 2026-11-10
+Source: monitor 实测暴露的退出泄漏与审计口径缺陷——修复与验收方案（2026-11-09）
 ---
 # 系统提示新增 `<waiting-capability>`，把「每次发生都要通知」映射到 monitor（FIX-3：D4）
 
