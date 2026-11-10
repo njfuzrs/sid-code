@@ -345,7 +345,8 @@ export class Manager {
    *
    * D10：此前只有 compactWithSummary 一条路径回调，另外两条（emergencyTruncate、
    * 渐进式压缩管道）不回调 ⇒ 磁盘 `context_compact` 记录恒为 0。现三条都回调，
-   * 统一经 notifyCompacted() 这一处出口。
+   * 统一经 notifyCompacted() 这一处出口。2026-11-10 补上第四条：手动 `/compact`
+   * （partialCompact → setMessages）此前整条路径不通知，见 recordManualCompaction。
    */
   private compactObserver?: (
     summary: string,
@@ -1475,6 +1476,34 @@ export class Manager {
     this.notifyCompacted(summary, messageCountBefore - this.messages.length, {
       source: "pipeline",
       summaryIsRestorable: false,
+    });
+  }
+
+  /**
+   * D10 / P1-4a：手动 `/compact` 成功后的落盘通知（第四条压缩入口）。
+   *
+   * **为什么必须有这个出口**：手动 `/compact` 走的是
+   * `partialCompact` → `setMessages`，既不经 `compactWithSummary` 也不经压缩管道，
+   * 此前整条路径不通知观察者。后果不止「少一条诊断记录」——观察者（app.ts
+   * `onContextCompacted`）同时是会话摘要的写入端、rewind 锚点失效与 Session Memory
+   * 常驻注入的触发点，手动压缩把这四件事一起漏掉了（2026-11-10 分诊，实测本机两次
+   * manual 压缩对应的会话 JSONL `context_compact` 记录为 0、`summaries/` 无文件）。
+   *
+   * 与 `recordPipelineCompaction` 的区别只在 meta：
+   * - 手动压缩产出的是**历史内容摘要**（`partialCompact` 的 LLM 摘要），可作恢复用
+   *   会话摘要 ⇒ `summaryIsRestorable=true`；
+   * - 管道压缩产出的是步骤描述（「snipCompact: 裁剪 8 条」），不得覆盖会话摘要 ⇒ false。
+   *
+   * removedCount 交给 notifyCompacted 用「实际净减少」判定（`<= 0` 不落盘），
+   * 调用方只需传压缩前的消息数，不要自己算——自己算就会在重注入存在时记错账。
+   *
+   * @param summary 摘要正文（`partialCompact` 的 `result.summary`）
+   * @param messageCountBefore 压缩前的消息数
+   */
+  recordManualCompaction(summary: string, messageCountBefore: number): void {
+    this.notifyCompacted(summary, messageCountBefore - this.messages.length, {
+      source: "summary",
+      summaryIsRestorable: true,
     });
   }
 

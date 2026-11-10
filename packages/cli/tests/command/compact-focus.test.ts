@@ -72,6 +72,9 @@ function makeCtx(messages: Message[], provider: any) {
       };
     },
     getTranscriptPath: () => undefined,
+    // P1-4a / D10：手动压缩成功后通知落盘出口（真实实现转调 sessionStore / saveSummary）。
+    // 本文件不测落盘，空实现即可 —— 缺了它命令会当场 TypeError。
+    recordManualCompaction: () => {},
     // §12 P2-4 复审：压缩后收尾（runPostCompact）会调它把最近读过的文件重注入
     appendReattachMessages: (m: Message[]) => {
       msgs = [...msgs, ...m];
