@@ -377,17 +377,19 @@ describe("指标口径", () => {
         request: { new_messages: [{ role: "user", content: xml }] },
       });
     const raw = [
+      // 真实渲染带 untrusted 属性（packages/core/src/task/notification.ts）。
+      // 原夹具手写成无属性的 <event>，与真实格式漂移，导致线上恒 0 而单测全绿（D2）。
       notif(
         "2026-01-01T00:00:10.000Z",
-        "<task-notification><task-id>m1</task-id><event>check1: pass</event></task-notification>",
+        '<task-notification><task-id>m1</task-id><event untrusted="true">check1: pass</event></task-notification>',
       ),
       notif(
         "2026-01-01T00:00:20.000Z",
-        "<task-notification><task-id>m1</task-id><event>check1: pass</event></task-notification>",
+        '<task-notification><task-id>m1</task-id><event untrusted="true">check1: pass</event></task-notification>',
       ),
       notif(
         "2026-01-01T00:00:20.000Z",
-        "<task-notification><task-id>m1</task-id><event>check2: fail</event></task-notification>",
+        '<task-notification><task-id>m1</task-id><event untrusted="true">check2: fail</event></task-notification>',
       ),
       // 无 <event> 的终态通知不计数
       notif(
@@ -403,6 +405,131 @@ describe("指标口径", () => {
     const a = auditEvents({ ...base, raw });
     // check1 重复两次只算一次；check2 算一次；无 <event> 的不算；窗口外的 late 不算
     expect(a.monitor_events).toBe(2);
+  });
+
+  test('D2：<event untrusted="true"> 与无属性 <event> 两种形式都计数', () => {
+    const notif = (ts: string, xml: string) =>
+      JSON.stringify({
+        timestamp: ts,
+        request: { new_messages: [{ role: "user", content: xml }] },
+      });
+    const raw = [
+      notif(
+        "2026-01-01T00:00:10.000Z",
+        '<task-notification><task-id>m1</task-id><event untrusted="true">a</event></task-notification>',
+      ),
+      notif(
+        "2026-01-01T00:00:11.000Z",
+        "<task-notification><task-id>m1</task-id><event>b</event></task-notification>",
+      ),
+      // <events> 不是 <event>：前缀相同的别的标签不能被误认
+      notif(
+        "2026-01-01T00:00:12.000Z",
+        "<task-notification><task-id>m1</task-id><events>c</events></task-notification>",
+      ),
+    ].join("\n");
+    expect(auditEvents({ ...base, raw }).monitor_events).toBe(2);
+  });
+
+  test("D2：用真实渲染函数产出的通知必须被计数（防夹具再次与生产格式漂移）", async () => {
+    const { formatNotification } = await import("../../packages/core/src/task/notification.ts");
+    const xml = formatNotification({
+      taskId: "m1",
+      outputFile: "/tmp/m1.log",
+      status: "running",
+      summary: "s",
+      event: "tick-1",
+    });
+    const raw = JSON.stringify({
+      timestamp: "2026-01-01T00:00:10.000Z",
+      request: { new_messages: [{ role: "user", content: xml }] },
+    });
+    expect(auditEvents({ ...base, raw }).monitor_events).toBe(1);
+  });
+
+  test("没读 raw 时 monitor_events 为 null（输出 n/a），不是 0", () => {
+    expect(auditEvents(base).monitor_events).toBeNull();
+    expect(auditEvents({ ...base, raw: "" }).monitor_events).toBe(0);
+  });
+});
+
+describe("D3：monitor 收尾事件晚于 WaitReleased 落盘", () => {
+  // 形态照抄 20261109-223949-b177b927：WaitReleased 后 3s 才 delivered，
+  // 收尾那条 tick-5 的 raw 落盘还要再晚 2ms（它是「带着通知发出的下一轮请求」的快照）。
+  const notif = (ts: string, id: string, ev: string) =>
+    JSON.stringify({
+      timestamp: ts,
+      request: {
+        new_messages: [
+          {
+            role: "user",
+            content: `<task-notification><task-id>${id}</task-id><event untrusted="true">${ev}</event></task-notification>`,
+          },
+        ],
+      },
+    });
+  const events: Ev[] = [
+    {
+      event: "WaitRegistered",
+      timestamp: "2026-01-01T00:00:00.000Z",
+      data: { id: "m1", kind: "monitor" },
+    },
+    {
+      event: "WaitReleased",
+      timestamp: "2026-01-01T00:00:05.000Z",
+      data: { id: "m1", kind: "monitor", reason: "terminal" },
+    },
+    {
+      event: "TaskLifecycle",
+      timestamp: "2026-01-01T00:00:08.000Z",
+      data: { task_id: "m1", task_type: "local_monitor", phase: "delivered" },
+    },
+    // 窗口外的另一个 monitor：它的投递时刻不能把窗口拉长（必须按 task_id 关联）
+    {
+      event: "TaskLifecycle",
+      timestamp: "2026-01-01T01:00:00.000Z",
+      data: { task_id: "other", task_type: "local_monitor", phase: "delivered" },
+    },
+  ];
+  const raw = [
+    notif("2026-01-01T00:00:03.000Z", "m1", "tick-1"),
+    notif("2026-01-01T00:00:08.002Z", "m1", "tick-5"),
+    notif("2026-01-01T01:00:00.002Z", "other", "unrelated"),
+  ].join("\n");
+
+  test("窗口终点延到该 monitor 的 delivered，收尾事件计入", () => {
+    const a = auditEvents({ session: "s", events, raw });
+    expect(a.window_end).toBe("2026-01-01T00:00:08.000Z");
+    expect(a.monitor_events).toBe(2);
+  });
+
+  test("不相干 monitor 的 delivered 不延伸窗口、其事件不计入", () => {
+    const a = auditEvents({ session: "s", events, raw });
+    expect(a.window_end).not.toBe("2026-01-01T01:00:00.000Z");
+  });
+
+  test("没有 monitor 的窗口（只有 shell 等待源）终点语义不变", () => {
+    const a = auditEvents({
+      session: "s",
+      events: [
+        {
+          event: "WaitRegistered",
+          timestamp: "2026-01-01T00:00:00.000Z",
+          data: { id: "b1", kind: "shell" },
+        },
+        {
+          event: "WaitReleased",
+          timestamp: "2026-01-01T00:00:05.000Z",
+          data: { id: "b1", reason: "terminal" },
+        },
+        {
+          event: "TaskLifecycle",
+          timestamp: "2026-01-01T00:00:08.000Z",
+          data: { task_id: "b1", task_type: "local_bash", phase: "delivered" },
+        },
+      ],
+    });
+    expect(a.window_end).toBe("2026-01-01T00:00:05.000Z");
   });
 });
 
