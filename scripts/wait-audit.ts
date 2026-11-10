@@ -49,7 +49,7 @@
  * | `zombie_wakeups` | `ScheduledInject{outcome:injected}` 晚于其前最后一次 `EndTurnShape` 的次数 | events.jsonl |
  * | `gate_retry_while_waiting` | 窗口内 `LoopTransition{type:todo_gate_retry}` 次数 | events.jsonl |
  * | `exit8_errors` | 窗口内 `gh pr checks` 退出码 8 且 `is_error=true` 的次数 | traj 的 observation |
- * | `monitor_events` | 窗口内 monitor 事件通知数（含 `<event>` 的 `<task-notification>`，按 task_id+事件去重） | raw.jsonl |
+ * | `monitor_events` | 窗口内 monitor 事件通知数（含 `<event …>` 的 `<task-notification>`，按 task_id+事件去重；窗口内注册的 monitor 按 task_id 归属，不卡终点时刻） | raw.jsonl；未读 raw 时输出 `n/a` |
  * | `promise_violations` | `WaitReleased{late:true}` 次数（方案 §9.8「非 0 即 bug」） | events.jsonl |
  * | `late_while_terminal` | 判定违约时任务**已处终态**的次数（D4 的直接观测量，§5.4 选口径 ②） | `TaskLifecycle{phase:completed}` × `WaitReleased{late:true}` 按 id 关联 |
  *
@@ -106,7 +106,8 @@ export interface WaitAudit {
   zombie_wakeups: number;
   gate_retry_while_waiting: number;
   exit8_errors: number;
-  monitor_events: number;
+  /** `null` = 没读 raw.jsonl（不是「没有事件」），人类可读输出里显示为 `n/a` */
+  monitor_events: number | null;
   promise_violations: number;
   late_while_terminal: number;
   /** 窗口起止（ISO）。`none` 时为 null —— 输出里保留，便于人工复核分母 */
@@ -190,16 +191,42 @@ function inferLegacyWindow(events: Ev[], traj: TrajRow[]): { start: string; end:
   return { start, end: closeTurn?.timestamp ?? lastActivity };
 }
 
-/** 新会话窗口：首个 WaitRegistered → 该批等待源的最后一个 WaitReleased */
-function inferRegistryWindow(events: Ev[]): { start: string; end: string } | null {
+/**
+ * 新会话窗口：首个 WaitRegistered → 该批等待源的最后一个 WaitReleased；
+ * 窗口内有 monitor 时，终点再延到**这些 monitor 自己**的最后一次 `delivered`。
+ *
+ * 为什么要延（D3）：monitor 终态时 WaitReleased **立即**发出，但收尾那一批事件通知
+ * 要等**下一轮**才投递给模型（实测 20261109-223949-b177b927：WaitReleased 14:40:01.468，
+ * delivered 14:40:04.447，tick-5 落盘 14:40:04.449）。卡在 WaitReleased 会把收尾事件
+ * （含 `ALL_DONE` 这类结论行）结构性地排除在窗口外。
+ *
+ * ⚠️ 必须按 task_id 关联：不带 id 取「最后一个 local_monitor delivered」会把窗口外
+ * 别的 monitor 的投递时刻拉进来。只认窗口内注册的 monitor（返回的 monitorIds）。
+ */
+function inferRegistryWindow(
+  events: Ev[],
+): { start: string; end: string; monitorIds: Set<string> } | null {
   const reg = events.find((e) => e.event === "WaitRegistered" && typeof e.timestamp === "string");
   if (!reg?.timestamp) return null;
-  let end = reg.timestamp;
+  let released = reg.timestamp;
   for (const e of events) {
     if (e.event !== "WaitReleased" || typeof e.timestamp !== "string") continue;
-    if (e.timestamp >= reg.timestamp && e.timestamp > end) end = e.timestamp;
+    if (e.timestamp >= reg.timestamp && e.timestamp > released) released = e.timestamp;
   }
-  return { start: reg.timestamp, end };
+  const monitorIds = new Set<string>();
+  for (const e of events) {
+    if (e.event !== "WaitRegistered" || e.data?.kind !== "monitor") continue;
+    if (!inWindow(e.timestamp, reg.timestamp, released)) continue;
+    if (typeof e.data?.id === "string") monitorIds.add(e.data.id);
+  }
+  let end = released;
+  for (const e of events) {
+    if (e.event !== "TaskLifecycle" || typeof e.timestamp !== "string") continue;
+    if (e.data?.phase !== "delivered" || e.data?.task_type !== "local_monitor") continue;
+    if (typeof e.data?.task_id !== "string" || !monitorIds.has(e.data.task_id)) continue;
+    if (e.timestamp > end) end = e.timestamp;
+  }
+  return { start: reg.timestamp, end, monitorIds };
 }
 
 /** 按 tool_use_id 把 action 与 observation 配对（traj 里两者是相邻条目，不保证顺序） */
@@ -212,8 +239,26 @@ function pairObservations(traj: TrajRow[]): Map<string, TrajRow> {
   return out;
 }
 
-/** 窗口内 monitor 事件通知数：`<task-notification>` 且含 `<event>`，按 task_id + 事件正文去重 */
-function countMonitorEvents(raw: string, start: string, end: string): number {
+// 真实渲染带 untrusted 属性（packages/core/src/task/notification.ts：`<event untrusted="true">`）。
+// D2：原先写死 `b.includes("<event>")`，与真实格式不符，monitor_events 在所有真实轨迹上恒为 0
+// 而手写夹具（无属性形式）全绿。两种形式都认，属性内容不限。
+const EVENT_OPEN_RE = /<event(?:\s[^>]*)?>/;
+const EVENT_BODY_RE = /<event(?:\s[^>]*)?>([\s\S]*?)<\/event>/;
+
+/**
+ * 窗口内 monitor 事件通知数：`<task-notification>` 且含 `<event …>`，按 task_id + 事件正文去重。
+ *
+ * `monitorIds` 非空时（wait-registry 窗口），属于这些 monitor 的通知**只卡起点不卡终点**：
+ * 收尾那一批的 raw 落盘晚于 `delivered` 事件本身（实测晚 2ms，raw 是「带着通知发出的
+ * 下一轮请求」的快照），按时刻卡终点仍会漏掉最后一条（D3）。task_id 本身就把归属限定
+ * 在这几个 monitor 的生命周期内；之后的请求重放历史里的同一条通知，由去重兜住。
+ */
+function countMonitorEvents(
+  raw: string,
+  start: string,
+  end: string,
+  monitorIds: Set<string> = new Set(),
+): number {
   const seen = new Set<string>();
   for (const line of raw.split("\n")) {
     const t = line.trim();
@@ -224,12 +269,13 @@ function countMonitorEvents(raw: string, start: string, end: string): number {
     } catch {
       continue;
     }
-    if (typeof ts !== "string" || !inWindow(ts, start, end)) continue;
+    if (typeof ts !== "string" || ts < start) continue;
     const blocks = t.match(/<task-notification>[\s\S]*?<\/task-notification>/g) ?? [];
     for (const b of blocks) {
-      if (!b.includes("<event>")) continue;
+      if (!EVENT_OPEN_RE.test(b)) continue;
       const id = /<task-id>([^<]*)<\/task-id>/.exec(b)?.[1] ?? "";
-      const event = /<event>([\s\S]*?)<\/event>/.exec(b)?.[1] ?? b;
+      if (!monitorIds.has(id) && !inWindow(ts, start, end)) continue;
+      const event = EVENT_BODY_RE.exec(b)?.[1] ?? b;
       seen.add(`${id}\u0000${event}`);
     }
   }
@@ -243,12 +289,15 @@ export function auditEvents(input: AuditInput): WaitAudit {
 
   // ── 窗口：显式 > WaitRegistry > 老会话回退 ──
   let window: { start: string; end: string } | null = null;
+  let monitorIds = new Set<string>();
   let basis: WindowBasis = "none";
   if (input.windowStart && input.windowEnd) {
     window = { start: input.windowStart, end: input.windowEnd };
     basis = "explicit";
   } else if (events.length > 0 && events.some((e) => e.event === "WaitRegistered")) {
-    window = inferRegistryWindow(events);
+    const reg = inferRegistryWindow(events);
+    window = reg;
+    if (reg) monitorIds = reg.monitorIds;
     basis = "wait-registry";
   } else {
     window = inferLegacyWindow(events, traj);
@@ -356,7 +405,12 @@ export function auditEvents(input: AuditInput): WaitAudit {
     zombie_wakeups: zombieWakeups,
     gate_retry_while_waiting: gateRetry,
     exit8_errors: exit8,
-    monitor_events: input.raw && active ? countMonitorEvents(input.raw, start, end) : 0,
+    monitor_events:
+      input.raw === undefined
+        ? null
+        : active
+          ? countMonitorEvents(input.raw, start, end, monitorIds)
+          : 0,
     promise_violations: promiseViolations,
     late_while_terminal: lateWhileTerminal,
     window_start: window?.start ?? null,
@@ -465,7 +519,13 @@ function main(): void {
     return;
   }
 
-  const sum = (k: keyof WaitAudit) => results.reduce((n, r) => n + (r[k] as number), 0);
+  const sum = (k: keyof WaitAudit) =>
+    results.reduce((n, r) => n + ((r[k] as number | null) ?? 0), 0);
+  // 没读 raw 时 monitor_ev 显示 n/a：输出 0 会被读成「没有事件」（D2 风险段，同一误解已发生过一次）
+  const fmtMonitor = (v: number | null) => (v === null ? "n/a" : String(v));
+  const monitorTotal = results.some((r) => r.monitor_events !== null)
+    ? String(sum("monitor_events"))
+    : "n/a";
   for (const r of results) {
     console.log(
       `${r.session}: windows=${r.wait_windows} basis=${r.window_basis} ` +
@@ -473,7 +533,7 @@ function main(): void {
         `fg_polls=${r.fg_status_polls} gh=${r.gh_queries} polls/min=${r.polls_per_min} ` +
         `req=${r.window_requests} tok=${r.window_input_tokens} ` +
         `zombie=${r.zombie_wakeups} gate_retry=${r.gate_retry_while_waiting} ` +
-        `exit8=${r.exit8_errors} monitor_ev=${r.monitor_events} ` +
+        `exit8=${r.exit8_errors} monitor_ev=${fmtMonitor(r.monitor_events)} ` +
         `violations=${r.promise_violations}(late_terminal=${r.late_while_terminal})`,
     );
   }
@@ -482,7 +542,7 @@ function main(): void {
       `合计 ${results.length} 个会话: fg_polls=${sum("fg_status_polls")} gh=${sum("gh_queries")} ` +
         `req=${sum("window_requests")} tok=${sum("window_input_tokens")} ` +
         `zombie=${sum("zombie_wakeups")} gate_retry=${sum("gate_retry_while_waiting")} ` +
-        `exit8=${sum("exit8_errors")} monitor_ev=${sum("monitor_events")} ` +
+        `exit8=${sum("exit8_errors")} monitor_ev=${monitorTotal} ` +
         `violations=${sum("promise_violations")}(late_terminal=${sum("late_while_terminal")})`,
     );
   }
