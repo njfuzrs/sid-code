@@ -135,6 +135,19 @@ export interface DaemonStep {
   /** `daemon.log` 出现此正则即停 daemon；超时也停，结果交给断言判 */
   until: RegExp;
   timeoutMs: number;
+  /** 追加给 `daemon start` 的参数（如 `--webhook`） */
+  argv?: string[];
+  /** 额外环境变量（如 `SID_CODE_WEBHOOK_SECRET`）。job 子进程继承 daemon 的 env，同样拿得到 */
+  env?: Record<string, string>;
+  /**
+   * daemon.log 出现 `ready` 之后执行一次 `run`，再继续等 `until`。为 B1 加：webhook 要等端口
+   * 真的在监听（`webhook 源已启动`）才能投递，用固定 sleep 等会在慢机器上假失败。
+   * `run` 抛错或返回字符串 = 步骤失败。
+   */
+  trigger?: {
+    ready: RegExp;
+    run: (ctx: { repoRoot: string; configDir: string; homeDir: string }) => Promise<string | null>;
+  };
 }
 
 /**

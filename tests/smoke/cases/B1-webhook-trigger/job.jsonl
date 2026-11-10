@@ -1,0 +1,1 @@
+{"index":1,"response":{"content":[{"type":"text","text":"审查完成：a.txt 新增一行，无问题。"}],"stop_reason":"end_turn"},"usage":{"input_tokens":100,"output_tokens":10}}
