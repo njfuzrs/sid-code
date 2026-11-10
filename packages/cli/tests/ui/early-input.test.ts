@@ -32,10 +32,26 @@ describe("early-input", () => {
   });
 
   test("方向键整段跳过，不留下 [A；回车转换为换行", () => {
-    appendEarlyInputData("\x1b[A\r");
-    expect(consumeEarlyInput()).toBe("\n");
+    appendEarlyInputData("a\x1b[A\rb");
+    expect(consumeEarlyInput()).toBe("a\nb");
     appendEarlyInputData("x\x1b[1;5Cy\x1bOPz");
     expect(consumeEarlyInput()).toBe("xyz");
+  });
+
+  // 等界面时顺手按了一下回车：不 trim 的话回填进输入框的是 "\n"，输入框不再为空，
+  // 占位提示消失、光标落在第二行，↑ 历史 / 双击 Esc 回退等「空输入框才生效」的交互失灵。
+  test("启动期间只按了回车：回填为空，不留空行", () => {
+    appendEarlyInputData("\r");
+    expect(consumeEarlyInput()).toBe("");
+    appendEarlyInputData("\r\r \t");
+    expect(consumeEarlyInput()).toBe("");
+  });
+
+  test("文字后跟回车：去掉首尾空白，中间的换行保留", () => {
+    appendEarlyInputData("\r改一下 a.ts\r");
+    expect(consumeEarlyInput()).toBe("改一下 a.ts");
+    appendEarlyInputData("第一行\r第二行\r");
+    expect(consumeEarlyInput()).toBe("第一行\n第二行");
   });
 
   test("退格删除最后一个字符（按码点）", () => {
