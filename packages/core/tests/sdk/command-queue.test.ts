@@ -145,3 +145,70 @@ describe("CommandQueue 批量合并", () => {
     expect(q.size()).toBe(1);
   });
 });
+
+/**
+ * stream-json 输入路径下每条 user 消息都入队为 mode=prompt、priority=next，
+ * workload / isMeta 都不设，于是「三项判据」恒真——任意两条连续 prompt 都会合并。
+ * 合并把两条独立输入拼成一次 submitMessage，无头分发只看得到整串的第一段：
+ * 命令在前就吞掉提问，命令在后就整串当提问、命令不执行。两种顺序都要守。
+ */
+describe("CommandQueue：斜杠命令不参与批量合并", () => {
+  test("命令在前：后续提问不被吞成命令参数", () => {
+    const q = new CommandQueue();
+    q.enqueue(prompt("/compact"));
+    q.enqueue(prompt("帮我看下 README"));
+    expect(q.dequeueBatch()?.value).toBe("/compact");
+    expect(q.dequeueBatch()?.value).toBe("帮我看下 README");
+  });
+
+  test("命令在后：不被并进前一条提问", () => {
+    const q = new CommandQueue();
+    q.enqueue(prompt("帮我看下 README"));
+    q.enqueue(prompt("/compact"));
+    expect(q.dequeueBatch()?.value).toBe("帮我看下 README");
+    expect(q.dequeueBatch()?.value).toBe("/compact");
+  });
+
+  test("命令夹在中间：三段各自成轮（head 与 next 两侧都判）", () => {
+    const q = new CommandQueue();
+    q.enqueue(prompt("a", { workload: "w" }));
+    q.enqueue(prompt("/compact", { workload: "w" }));
+    q.enqueue(prompt("b", { workload: "w" }));
+    expect(q.dequeueBatch()?.value).toBe("a");
+    expect(q.dequeueBatch()?.value).toBe("/compact");
+    expect(q.dequeueBatch()?.value).toBe("b");
+  });
+
+  test("前导空白的命令同样独占（与 parseSlashCommand 的 trim 口径一致）", () => {
+    const q = new CommandQueue();
+    q.enqueue(prompt("  /model opus"));
+    q.enqueue(prompt("普通提问"));
+    expect(q.dequeueBatch()?.value).toBe("  /model opus");
+    expect(q.dequeueBatch()?.value).toBe("普通提问");
+  });
+
+  test("两条连续命令不合并", () => {
+    const q = new CommandQueue();
+    q.enqueue(prompt("/compact"));
+    q.enqueue(prompt("/model opus"));
+    expect(q.dequeueBatch()?.value).toBe("/compact");
+    expect(q.dequeueBatch()?.value).toBe("/model opus");
+  });
+
+  test("/tmp 这类真实路径也独占（判据是首字符，不查注册表）", () => {
+    const q = new CommandQueue();
+    q.enqueue(prompt("看看这个文件"));
+    q.enqueue(prompt("/tmp/a.txt"));
+    expect(q.dequeueBatch()?.value).toBe("看看这个文件");
+    expect(q.dequeueBatch()?.value).toBe("/tmp/a.txt");
+  });
+
+  test("独占不破坏其后的正常合并", () => {
+    const q = new CommandQueue();
+    q.enqueue(prompt("/model opus", { workload: "w" }));
+    q.enqueue(prompt("a", { workload: "w" }));
+    q.enqueue(prompt("b", { workload: "w" }));
+    expect(q.dequeueBatch()?.value).toBe("/model opus");
+    expect(q.dequeueBatch()?.value).toBe("a\n\nb");
+  });
+});
