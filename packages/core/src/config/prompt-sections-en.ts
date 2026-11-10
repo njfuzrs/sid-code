@@ -232,8 +232,18 @@ ${activationNote}
 </waiting-capability>`;
 }
 
-/** 定时与轮询能力（英文版）。对应中文版 buildSchedulingSection。 */
-export function buildSchedulingSectionEn(schedulingDeferred = false): string {
+/**
+ * 定时与轮询能力（英文版）。对应中文版 buildSchedulingSection。
+ *
+ * N1：本段只覆盖没有可流式观测对象的时间意图；「等外部状态」统一由
+ * <waiting-capability> 映射（monitor 被策略关闭时退回后台 bash + wait_until）。
+ * 两个分支共用 `- **Waiting on external state**` 开头，反矛盾门禁按它识别
+ * 唯一允许提 CI / deploy 的行。
+ */
+export function buildSchedulingSectionEn(
+  schedulingDeferred = false,
+  monitorAvailable = false,
+): string {
   // 见中文版 buildSchedulingSection 的 L3 注释：这段是"主动命令模型调用延迟工具"的形态，
   // 修法是改措辞而非删段。
   const activationNote = schedulingDeferred
@@ -242,14 +252,20 @@ export function buildSchedulingSectionEn(schedulingDeferred = false): string {
   const mapVerb = schedulingDeferred
     ? "activate the matching tool first and then map onto the calls below — do not just verbally agree"
     : "map it onto these tools — do not just verbally agree";
+  // 两个分支共用 `- **Waiting on external state**` 开头：反矛盾门禁按它识别
+  // 唯一允许提 CI / deploy 的行（见中文版的同名注释）。
+  const externalWaitExit = monitorAvailable
+    ? `- **Waiting on external state** ("tell me when CI is green", "ping me when the build finishes") → pick the tool from \`<waiting-capability>\` (background bash + \`wait_until_seconds\`, or \`monitor\`); do not poll with wakeups.`
+    : `- **Waiting on external state** ("tell me when CI is green", "ping me when the build finishes") → background bash + \`run_in_background=true\` + \`wait_until_seconds\` (a loop that exits once the condition holds), then end the turn; do not poll with wakeups.`;
   return `
 <scheduling-capability>
 ## Scheduling and polling
-You have in-session scheduling tools that turn "run this later", "repeat on an interval", and "keep going until a condition holds" into real behaviour. When the user expresses timing intent in natural language, ${mapVerb}:
+You have in-session scheduling tools that turn "run this later", "repeat on an interval", and "periodic re-checks" into real behaviour. When the user expresses timing intent in natural language, ${mapVerb}:
 ${activationNote}
-- **One-shot reminder** ("remind me at 3 to check the deploy", "check CI in 45 minutes") → \`cron_create\` with a cron expression pinned to that moment and \`recurring=false\` (it self-deletes after firing). For short relative delays like 45 minutes, \`schedule_wakeup(delaySeconds)\` also works.
+- **One-shot reminder** ("remind me at 3 about the meeting", "remind me in 45 minutes") → \`cron_create\` with a cron expression pinned to that moment and \`recurring=false\` (it self-deletes after firing). For short relative delays like 45 minutes, \`schedule_wakeup(delaySeconds)\` also works.
 - **Fixed interval** ("check every 5 minutes", "sweep daily at 9") → \`cron_create\` with \`recurring=true\`. Add \`durable=true\` to survive across sessions.
-- **Adaptive polling** ("keep going until CI is green", "tell me when the deploy is done") → after each check, pick the next delay yourself with \`schedule_wakeup\` (clamped to 60–3600 seconds). **Only one pending wakeup survives per session — calling it again replaces the previous one**, so you never need to cancel the last one manually. Stop scheduling once the goal is met, and \`cron_delete\` the remaining wakeup.
+- **Timed re-checks** ("take another look in half an hour", "see if there are new comments every so often" — checks with no streamable external signal) → pick the next delay yourself with \`schedule_wakeup\` (clamped to 60–3600 seconds). **Only one pending wakeup survives per session — calling it again replaces the previous one**, so you never need to cancel the last one manually. Stop scheduling once the goal is met, and \`cron_delete\` the remaining wakeup.
+${externalWaitExit}
 - **Inspect / cancel**: \`cron_list\` / \`cron_delete\`.
 
 Notes:
