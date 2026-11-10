@@ -17,6 +17,11 @@
  * C) **夹具回归**：两条基线会话（7dd98bf5 / 9e3a681d）必须复现方案 §2.3 的数字 ——
  *    这是 L2 的验收第一关，改了脚本口径而这里没红，说明断言写漏了。
  *
+ * D) **N7 度量盲区**（本文件末尾那一组）：宽口径 `fg_status_polls_any` 不随匹配实现变、
+ *    无等待源的轮询必须绕开 `active` 短路被数出来、`probe_spin_requests` 跟着生产白名单走。
+ *    这一组的断言刻意写成「按当时实现」的形式（`matchStatusQuery(...) ? 1 : 0`），
+ *    因为 N3/N5 合入后生产函数的匹配面会变大 —— 写死 0 会在那天变成假红。
+ *
  * ⚠️ 夹具是**裁剪版**：`events.jsonl` 只留审计字段，`session.traj` 只留
  * `message_type/timestamp/tool_name/tool_input.command/is_error/tool_use_id`，
  * observation 的 content 只保留「退出码 N」（判断 exit8 的唯一依据）。原会话的对话正文
@@ -26,7 +31,9 @@
 import { describe, test, expect } from "bun:test";
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
-import { auditEvents, type AuditInput } from "../../scripts/wait-audit.ts";
+import { auditEvents, includedInAll, type AuditInput } from "../../scripts/wait-audit.ts";
+import { matchStatusQuery } from "@sid-code/core/task/status-query-commands.ts";
+import { isReadonlyProbeCommand } from "@sid-code/core/query/repeated-readonly-guard.ts";
 
 type Ev = { event?: string; timestamp?: string; data?: Record<string, unknown> };
 type TrajRow = NonNullable<AuditInput["traj"]>[number];
@@ -601,5 +608,202 @@ describe("夹具回归：两条基线会话必须复现方案 §2.3", () => {
     expect(a.zombie_wakeups).toBe(1);
     expect(a.gate_retry_while_waiting).toBe(0);
     expect(a.exit8_errors).toBe(0);
+  });
+});
+
+describe("N7：宽口径与未等待统计（度量盲区）", () => {
+  /** for 循环形态：N3 修之前 matchStatusQuery 认不出（2026-11-10 实测），修之后自动跟随 */
+  const LOOP_CMD =
+    'cd /x && for pr in 694 696 697; do echo "=== PR $pr ==="; gh pr view $pr --json statusCheckRollup; done';
+
+  /** 一次 bash 调用（可选后台）；后台标记在真实 traj 的 tool_input 里 */
+  function bashAction(ts: string, command: string, background = false): TrajRow {
+    return {
+      message_type: "action",
+      timestamp: ts,
+      tool_name: "bash",
+      tool_input: background ? { command, run_in_background: true } : { command },
+      tool_use_id: `t-${ts}`,
+    };
+  }
+
+  test("for 循环形态：fg_status_polls_any 计入，fg_status_polls 按当时实现计（不许比实现快）", () => {
+    const a = auditEvents({
+      session: "s",
+      traj: [bashPoll("2026-01-01T00:00:10.000Z", LOOP_CMD)],
+      windowStart: "2026-01-01T00:00:00.000Z",
+      windowEnd: "2026-01-01T00:01:00.000Z",
+    });
+    // 宽口径只认命令族：循环、管道、gh api 形态都算 —— 它才是能比修复前后的分母
+    expect(a.fg_status_polls_any).toBe(1);
+    // 窄口径必须跟着生产函数走：N3 修完它会变 1，这里写死 0 会在那天变成假红
+    expect(a.fg_status_polls).toBe(matchStatusQuery(LOOP_CMD) ? 1 : 0);
+  });
+
+  test("无等待源的连续查询：绕开 active 短路计入 unwaited_*（N8 的分母）", () => {
+    const ts = ["00:02:00", "00:02:08", "00:02:16", "00:02:24", "00:02:32", "00:02:40"];
+    const a = auditEvents({
+      session: "s",
+      events: [billed("2026-01-01T00:02:00.000Z", 100), billed("2026-01-01T00:02:24.000Z", 200)],
+      traj: ts.map((t) => bashPoll(`2026-01-01T${t}.000Z`, "gh pr checks 701 2>&1 | head -10")),
+    });
+    // 这个会话什么都没挂：老实现 active=false → 前台查询全部记 0，N8 的空转在审计里永远看不见
+    expect(a.wait_windows).toBe(0);
+    expect(a.window_basis).toBe("none");
+    expect(a.unwaited_status_polls).toBe(6);
+    expect(a.unwaited_longest_run).toBe(6);
+    expect(a.unwaited_longest_run_start).toBe("2026-01-01T00:02:00.000Z");
+    expect(a.unwaited_longest_run_end).toBe("2026-01-01T00:02:40.000Z");
+    // 段内请求数单独算：这 6 次查询落在 2 条 BilledRequest 的时间范围内
+    expect(a.unwaited_longest_run_requests).toBe(2);
+  });
+
+  test("连续段在间隔 ≥ 60s 处断开（恰好 60s 也算断开）", () => {
+    const a = auditEvents({
+      session: "s",
+      traj: [
+        bashPoll("2026-01-01T00:00:00.000Z"),
+        bashPoll("2026-01-01T00:00:08.000Z"),
+        bashPoll("2026-01-01T00:00:16.000Z"),
+        // 距上一条正好 60s：阈值是「< 60s 才同段」，所以这里另起一段
+        bashPoll("2026-01-01T00:01:16.000Z"),
+        bashPoll("2026-01-01T00:01:24.000Z"),
+      ],
+    });
+    expect(a.unwaited_status_polls).toBe(5);
+    expect(a.unwaited_longest_run).toBe(3);
+    expect(a.unwaited_longest_run_start).toBe("2026-01-01T00:00:00.000Z");
+    expect(a.unwaited_longest_run_end).toBe("2026-01-01T00:00:16.000Z");
+  });
+
+  test("有窗口的会话：窗口内算 fg_status_polls_any，窗口外的算 unwaited_*", () => {
+    const a = auditEvents({
+      session: "s",
+      events: [
+        {
+          event: "WaitRegistered",
+          timestamp: "2026-01-01T00:00:00.000Z",
+          data: { id: "m1", kind: "monitor" },
+        },
+        {
+          event: "WaitReleased",
+          timestamp: "2026-01-01T00:01:00.000Z",
+          data: { id: "m1", reason: "terminal" },
+        },
+      ],
+      traj: [
+        bashPoll("2026-01-01T00:00:10.000Z", "gh pr checks 701"),
+        bashPoll("2026-01-01T00:02:00.000Z", "gh pr view 701 --json state"),
+        bashPoll("2026-01-01T00:02:10.000Z", "gh pr view 701 --json state"),
+      ],
+    });
+    expect(a.fg_status_polls_any).toBe(1);
+    expect(a.unwaited_status_polls).toBe(2);
+    expect(a.unwaited_longest_run).toBe(2);
+  });
+
+  test("后台 bash 不计入新字段（「前台」语义）；旧字段口径保持原样", () => {
+    const inWindow = auditEvents({
+      session: "s",
+      traj: [bashAction("2026-01-01T00:00:10.000Z", "gh pr checks 701 --watch", true)],
+      windowStart: "2026-01-01T00:00:00.000Z",
+      windowEnd: "2026-01-01T00:01:00.000Z",
+    });
+    expect(inWindow.fg_status_polls_any).toBe(0);
+    // 旧字段是两条基线会话的历史对账口径，不参与前后台判定（改了会让 96/106 整体平移）
+    expect(inWindow.gh_queries).toBe(1);
+
+    // 无窗口的后台轮询同样不算「未等待期的前台空转」——它正是 harness 想引导的方向
+    const noWindow = auditEvents({
+      session: "s",
+      traj: [bashAction("2026-01-01T00:00:10.000Z", "gh pr checks 701 --watch", true)],
+    });
+    expect(noWindow.unwaited_status_polls).toBe(0);
+    expect(noWindow.unwaited_longest_run).toBe(0);
+  });
+
+  test("宽口径覆盖 glab / kubectl / curl 与 gh 三个子命令，不把 gh auth / git 算进来", () => {
+    const hits = [
+      "glab ci status",
+      "kubectl get pods -n prod",
+      "curl -s https://ci.example.com/status",
+      "gh run view 123",
+      "gh api repos/o/r/commits/abc/check-runs",
+    ];
+    const misses = ["git status --short", "ls -la", "gh auth status", "npm run build"];
+    const a = auditEvents({
+      session: "s",
+      traj: [
+        ...hits.map((c, i) => bashPoll(`2026-01-01T00:00:0${i}.000Z`, c)),
+        ...misses.map((c, i) => bashPoll(`2026-01-01T00:00:1${i}.000Z`, c)),
+      ],
+    });
+    expect(a.unwaited_status_polls).toBe(hits.length);
+    // 5 条命中都在 0–4 秒内，构成一段；misses 不进段（宽口径是「命令族」不是「有状态」）
+    expect(a.unwaited_longest_run).toBe(hits.length);
+  });
+
+  test("probe_spin_requests：工具调用全是只读探查的请求才计入", () => {
+    const req = (blocks: Array<Record<string, unknown>>) =>
+      JSON.stringify({
+        timestamp: "2026-01-01T00:00:00.000Z",
+        usage: { input_tokens: 1 },
+        response: {
+          content: blocks.map((b, i) => ({ type: "tool_use", id: `u${i}`, ...b })),
+        },
+      });
+    const raw = [
+      // 单条只读 bash → 计
+      req([{ name: "bash", input: { command: "git status --short" } }]),
+      // read 家族是纯只读检查 → 计
+      req([{ name: "read", input: { file_path: "/a" } }]),
+      // 同请求里还有写工具 → 这个请求有产出，不计
+      req([
+        { name: "bash", input: { command: "git status --short" } },
+        { name: "edit", input: { file_path: "/a" } },
+      ]),
+      // think 不探查任何外部状态，不算只读探查（刻意的保守口径）
+      req([{ name: "think", input: {} }]),
+      // 纯文本请求（没有工具调用）不是「只读探查请求」
+      JSON.stringify({
+        timestamp: "2026-01-01T00:00:04.000Z",
+        response: { content: [{ type: "text", text: "hi" }] },
+      }),
+    ].join("\n");
+    expect(auditEvents({ session: "s", traj: [], raw }).probe_spin_requests).toBe(2);
+  });
+
+  test("probe_spin_requests 的只读探查口径复用生产函数（N5 修完自动覆盖 rev-parse）", () => {
+    const REV = "git rev-parse --abbrev-ref HEAD";
+    const raw = JSON.stringify({
+      timestamp: "2026-01-01T00:00:00.000Z",
+      response: {
+        content: [{ type: "tool_use", id: "u1", name: "bash", input: { command: REV } }],
+      },
+    });
+    // 断言写成「与生产白名单一致」而不是写死 0：N5 把 rev-parse 纳入后这里自动变 1，
+    // 写死就会在那天变成假红（口径本来就是要跟着生产函数走）
+    const expected = isReadonlyProbeCommand(REV) ? 1 : 0;
+    expect(auditEvents({ session: "s", traj: [], raw }).probe_spin_requests).toBe(expected);
+  });
+
+  test("probe_spin_requests 未读 raw 时为 null（--with-raw 才算）", () => {
+    expect(auditEvents({ session: "s", traj: [] }).probe_spin_requests).toBeNull();
+  });
+
+  test("--all 收录判据：无窗口但有未等待查询的会话必须被收录（否则 N8 的分子看不见）", () => {
+    const spinning = auditEvents({
+      session: "s",
+      traj: [bashPoll("2026-01-01T00:00:10.000Z")],
+    });
+    expect(spinning.wait_windows).toBe(0);
+    expect(includedInAll(spinning)).toBe(true);
+
+    // 既没窗口、也没查过外部状态：不进结果，否则会把等待窗口的平均值拉低
+    const quiet = auditEvents({
+      session: "s",
+      traj: [bashPoll("2026-01-01T00:00:10.000Z", "git status --short")],
+    });
+    expect(includedInAll(quiet)).toBe(false);
   });
 });
