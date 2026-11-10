@@ -6,6 +6,7 @@
  * 真正跑用例的是 scripts/smoke/run.ts（不进 bun test，见专项 M2）。
  */
 import { describe, expect, test } from "bun:test";
+import { join } from "node:path";
 import { checkEventExpect, checkFileExpect, parseEvents, parseRawRequests } from "./lib/assert.ts";
 import { findOutOfRootPaths, substituteCaseRoot } from "./lib/fixture.ts";
 import { isCI, renderSummary, runCase } from "./lib/runner.ts";
@@ -226,4 +227,36 @@ describe("runCase：localOnly 在 CI 上 skip 并带原因", () => {
       else process.env.CI = prev;
     }
   });
+});
+
+describe("runCase：用例自定义代码抛错收成失败，不让 run.ts 整体崩", () => {
+  // 真跑一次最小用例（源码入口 + A7 的夹具），让 expect.output 抛错：不收的话异常冒出 runCase，
+  // run.ts 后面的用例全不跑、step summary 写不出。起一个子进程（~1s），是这个文件唯一的例外
+  test("expect.output 抛错 → status=fail 且带原因，不抛出 runCase", async () => {
+    const a7 = join(import.meta.dir, "cases/A7-budget-exceeded");
+    const r = await runCase(
+      {
+        def: {
+          id: "Z-throws",
+          ledger: "Z",
+          feature: "z",
+          kind: "guard",
+          repo: {},
+          argv: ["-p", "x"],
+          expect: {
+            output: () => {
+              throw new Error("故意抛");
+            },
+          },
+          mutations: [],
+        },
+        dir: a7,
+        replayPath: join(a7, "replay.jsonl"),
+      },
+      { kind: "source" },
+      { keepOnFail: false },
+    );
+    expect(r.status).toBe("fail");
+    expect(r.failures.some((f) => f.includes("expect.output 抛错：故意抛"))).toBe(true);
+  }, 30_000);
 });

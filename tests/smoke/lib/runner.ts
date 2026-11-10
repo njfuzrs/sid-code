@@ -223,15 +223,30 @@ async function runDaemonStep(
       failure: fixture.failure,
     };
   const replayFile = fixture.file;
-  step.prepare?.({ repoRoot: dirs.repo, configDir: dirs.configDir });
+  // prepare 抛错（如 B1 探到端口被占）收成步骤失败：不收的话异常冒出 runCase，run.ts 整体崩、后面的用例都不跑
+  try {
+    step.prepare?.({ repoRoot: dirs.repo, configDir: dirs.configDir });
+  } catch (e) {
+    return {
+      output: { kind: "daemon", exitCode: -1, stderr: "", stdout: "" },
+      failure: `daemon 步骤的 prepare 失败：${e instanceof Error ? e.message : String(e)}`,
+    };
+  }
 
   const logPath = join(dirs.configDir, "logs/daemon.log");
   const proc = Bun.spawn(
-    [...launcherArgv(launcher), "daemon", "start", "--interval", String(step.intervalMs)],
+    [
+      ...launcherArgv(launcher),
+      "daemon",
+      "start",
+      "--interval",
+      String(step.intervalMs),
+      ...(step.argv ?? []),
+    ],
     {
       cwd: dirs.repo,
       // job 子进程继承 daemon 的 env，所以 SID_CODE_REPLAY_FILE 指向的是 job 的夹具
-      env: isolatedEnv(dirs.home, dirs.configDir, replayFile),
+      env: isolatedEnv(dirs.home, dirs.configDir, replayFile, step.env),
       stdin: "ignore",
       stdout: "pipe",
       stderr: "pipe",
@@ -242,9 +257,26 @@ async function runDaemonStep(
   const deadline = Date.now() + step.timeoutMs;
   let hit = false;
   let exitedEarly = false;
+  let triggered = !step.trigger;
+  let triggerFailure: string | null = null;
   void proc.exited.then(() => (exitedEarly = true));
   while (Date.now() < deadline && !exitedEarly) {
-    if (existsSync(logPath) && step.until.test(readFileSync(logPath, "utf8"))) {
+    const log = existsSync(logPath) ? readFileSync(logPath, "utf8") : "";
+    if (!triggered && step.trigger!.ready.test(log)) {
+      triggered = true;
+      try {
+        triggerFailure = await step.trigger!.run({
+          repoRoot: dirs.repo,
+          configDir: dirs.configDir,
+          homeDir: dirs.home,
+        });
+      } catch (e) {
+        triggerFailure = `trigger 抛错：${e instanceof Error ? e.message : String(e)}`;
+      }
+      if (triggerFailure) break;
+      continue;
+    }
+    if (triggered && step.until.test(log)) {
       hit = true;
       break;
     }
@@ -261,6 +293,16 @@ async function runDaemonStep(
   const output: StepOutput = { kind: "daemon", exitCode, stderr: err, stdout: "" };
   if (hit) return { output, failure: null };
   const log = existsSync(logPath) ? readFileSync(logPath, "utf8") : "（无 daemon.log）";
+  if (triggerFailure)
+    return {
+      output,
+      failure: `daemon 步骤的 trigger 失败：${triggerFailure}\ndaemon.log 末尾：${log.slice(-800)}`,
+    };
+  if (!triggered)
+    return {
+      output,
+      failure: `daemon 步骤 ${step.timeoutMs}ms 内 daemon.log 未出现就绪行 /${readableSource(step.trigger!.ready)}/，没有触发\ndaemon.log 末尾：${log.slice(-800)}`,
+    };
   const failure =
     `daemon 步骤 ${step.timeoutMs}ms 内 daemon.log 未出现 /${readableSource(step.until)}/` +
     `（${diedOnItsOwn ? `daemon 提前退出 exit=${exitCode}` : "超时后已停止"}）\n` +
@@ -699,8 +741,14 @@ export async function runCase(
         bridgeFrames,
         screen,
       };
-      const f = def.expect.output(out);
-      if (f) failures.push(f);
+      // 自定义断言抛错（如前置步骤失败、daemon.log 根本没生成）收成失败，不让异常冒出 runCase：
+      // 冒出去 run.ts 整体崩，后面的用例全不跑，step summary 也写不出来
+      try {
+        const f = def.expect.output(out);
+        if (f) failures.push(f);
+      } catch (e) {
+        failures.push(`expect.output 抛错：${e instanceof Error ? e.message : String(e)}`);
+      }
     }
     // P-3 长期防线：所有落盘都必须跟随 SID_CONFIG_DIR
     if (existsSync(join(home, ".sid-code"))) {
