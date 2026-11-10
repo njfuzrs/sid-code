@@ -26,7 +26,8 @@
  * | `D1b-sigkill` | D1-b 的 SIGKILL / OOM 路径（第 2 层启动扫描） | FAIL |
  * | `D2D3-audit` | D2 + D3（`wait-audit` 的 `monitor_ev` 口径） | FAIL |
  * | `D1b-orphan-scan-negative` | D1-b 第 2 层的**反向**用例：多会话不误杀 | PASS（无判据意义，见下） |
- * | `D4-discovery` | D4（模型是否自然发现 monitor） | FAIL（大概率） |
+ * | `D4-discovery` | D4（模型是否自然发现 monitor） | FAIL（大概率；FIX-0 实测 3/3 PASS，天花板已满） |
+ * | `D4-discovery-checks` | D4 的强场景：逐项检查结果（前台轮询的重灾区），判据只认实际调用 | FIX-3 采的修复前基线 |
  *
  * ⚠️ `D1b-orphan-scan-negative` 在启动扫描实现之前**恒 PASS**（没有扫描 → 自然不误杀）。
  * 它证明的是「没有误杀」，「该杀的杀了」由 `D1b-sigkill` 第 2 步负责，两条必须成对看。
@@ -72,7 +73,8 @@ export type CaseName =
   | "D1b-sigkill"
   | "D2D3-audit"
   | "D1b-orphan-scan-negative"
-  | "D4-discovery";
+  | "D4-discovery"
+  | "D4-discovery-checks";
 
 export const ALL_CASES: readonly CaseName[] = [
   "D1b-signal",
@@ -80,6 +82,7 @@ export const ALL_CASES: readonly CaseName[] = [
   "D2D3-audit",
   "D1b-orphan-scan-negative",
   "D4-discovery",
+  "D4-discovery-checks",
 ] as const;
 
 export interface Assertion {
@@ -499,7 +502,18 @@ function resolveBinary(explicit?: string): string {
  * reuseDir：同一个 case 内多次启动传**同一个目录**（孤儿元数据落在 SID_CONFIG_DIR 派生的
  * `sidPaths.tasks()`，换目录 = 启动扫描看不到，见文件头硬口径 2）。
  */
-function startHeadless(prompt: string, reuseDir?: string): HeadlessSession {
+/**
+ * @param cwd 会话工作目录。缺省为仓库根（D1/D2 系列 case 与发现性无关，沿用历史行为）。
+ *   ⚠️ 发现性 case（D4-*）必须传一个**非 git 目录**：仓库根的 git 快照会把当前分支名 /
+ *   最近提交写进系统提示，分支名形如 `fix/monitor-...` 时模型会把它读成「该用 monitor」
+ *   的提示（FIX-3 实测：20261110-140743-a17f940f 的思考里原话「分支名是 fix/monitor-waiting-capability，
+ *   提示用 monitor 工具」），修复前基线因此被污染。
+ */
+function startHeadless(
+  prompt: string,
+  reuseDir?: string,
+  cwd: string = REPO_ROOT,
+): HeadlessSession {
   const dir = reuseDir ?? mkdtempSync(join(tmpdir(), "sid-verify-"));
   // 不带 settings.json 会没有 provider，模型调用直接失败——表现成难归因的 INVALID
   const src = join(SID_HOME, "settings.json");
@@ -511,7 +525,7 @@ function startHeadless(prompt: string, reuseDir?: string): HeadlessSession {
     ["-p", "--dangerously-skip-permissions", prompt],
     {
       // 构建产物在仓库根；spawn 用绝对路径二进制 + 绝对 cwd，脚本从任意 cwd 跑都成立
-      cwd: REPO_ROOT,
+      cwd,
       env: { ...process.env, SID_CONFIG_DIR: dir },
       stdio: ["ignore", "pipe", "pipe"],
     },
@@ -553,6 +567,11 @@ function startHeadless(prompt: string, reuseDir?: string): HeadlessSession {
     hasExited,
     waitExit: (timeoutMs: number) => waitFor(hasExited, timeoutMs, 200),
   };
+}
+
+/** 发现性 case 的工作目录：tmpdir 下新建的空目录（tmpdir 不在任何 git 仓库里） */
+function makeNonGitWorkspace(): string {
+  return mkdtempSync(join(tmpdir(), "sid-verify-ws-"));
 }
 
 /** 每行间隔 ≥ EVENT_BATCH_MS 的 5 行脚本：让「收尾事件」的时序可复现（D3 的成因） */
@@ -945,7 +964,8 @@ async function runD4Discovery(): Promise<CaseBody> {
   const writer = spawn("bash", [writerScript], { stdio: "ignore", detached: true });
   writer.unref();
   const writerPid = writer.pid;
-  const s = startHeadless(`盯一下 ${logPath}，每出现一行就告诉我`, dir);
+  // 工作目录与配置目录分开且都不在 git 仓库里：防分支名 / 提交信息泄漏提示（见 startHeadless 注释）
+  const s = startHeadless(`盯一下 ${logPath}，每出现一行就告诉我`, dir, makeNonGitWorkspace());
   try {
     const wrote = await waitFor(() => existsSync(logPath) && statSync(logPath).size > 0, 20_000);
     if (!wrote) {
@@ -1000,6 +1020,135 @@ async function runD4Discovery(): Promise<CaseBody> {
   }
 }
 
+/** `D4-discovery-checks` 的 CI 模拟脚本：四项检查依次结束，第三项 fail（纯函数，单测锁形态） */
+export function buildChecksSimScript(statusPath: string, stepSec = 15): string {
+  const names = ["lint", "unit", "e2e", "build"];
+  const finals = ["pass", "pass", "fail", "pass"];
+  const states: string[] = [];
+  for (let done = 0; done <= names.length; done++) {
+    states.push(
+      JSON.stringify(names.map((name, i) => ({ name, status: i < done ? finals[i] : "pending" }))),
+    );
+  }
+  const q = (x: string): string => `'${x.replace(/'/g, "'\\''")}'`;
+  const lines = ["#!/bin/bash", `f=${q(statusPath)}`];
+  states.forEach((st, i) => {
+    lines.push(`printf '%s\\n' ${q(st)} > "$f.tmp" && mv "$f.tmp" "$f"`);
+    lines.push(`sleep ${i === states.length - 1 ? 60 : stepSec}`);
+  });
+  return lines.join("\n") + "\n";
+}
+
+/**
+ * 统计一次会话里「前台轮询」的形态：读同一个目标文件的工具调用次数（bash / read 都算）。
+ *
+ * 只用于 `D4-discovery-checks` 的 detail，不参与判定——它回答「没用 monitor 时模型拿什么扛的」，
+ * 修复前后对比时这个数字比 PASS/FAIL 更能看出行为差异。
+ */
+export function countForegroundPolls(traj: TrajStep[], target: string): number {
+  let n = 0;
+  for (const step of traj) {
+    if (step.message_type === "observation") continue;
+    if (step.tool_name !== "bash" && step.tool_name !== "read") continue;
+    const input = JSON.stringify(step.tool_input ?? {});
+    if (input.includes(target)) n++;
+  }
+  return n;
+}
+
+/**
+ * D4 的强场景：逐项检查结果（FIX-3 新增）。
+ *
+ * ## 为什么要第二个 case
+ *
+ * FIX-0 实测 `D4-discovery`（「盯文件，每出现一行就告诉我」）修复前就 3/3 命中：
+ * 「每出现一行」几乎是 monitor 描述的原话，又是工具名单里唯一像「监控」的名字，
+ * 天花板已经打满，证明不了引导段有没有用。真实轨迹里的缺口在另一处——
+ * 802 次 `gh pr checks` / `gh run watch` 前台轮询，即「每个检查结束都告诉我」。
+ *
+ * 所以这里换成 CI 形态：一个 JSON 状态文件，四项检查依次从 pending 变成 pass/fail，
+ * prompt 用用户的说法（「每个检查跑完告诉我结果」），不出现「监控 / 盯 / 每出现一行」。
+ *
+ * ## 判据只认实际调用
+ *
+ * `D4-discovery` 的「文本提到」是弱命中；这里**只认 monitorCalled**（events 的
+ * `PreToolUse{tool_name:"monitor"}` 或 traj 的 action），否则「想到了但用 sleep 循环扛」
+ * 也会判 PASS。前台轮询次数写进 detail 供前后对比。
+ *
+ * 不依赖 gh 网络与真实 PR 状态，理由同 `D4-discovery`。
+ */
+async function runD4DiscoveryChecks(): Promise<CaseBody> {
+  const token = makeToken("checks");
+  const dir = mkdtempSync(join(tmpdir(), "sid-verify-checks-"));
+  const statusPath = join(dir, `${token}-checks.json`);
+  const writerScript = join(dir, "ci-sim.sh");
+  // 四项检查依次结束（约 15s 一项），第三项失败——「沉默不等于成功」也在场景里。
+  // 每个状态先写 .tmp 再 mv，避免模型读到半截 JSON。
+  writeFileSync(writerScript, buildChecksSimScript(statusPath), { mode: 0o755 });
+  const writer = spawn("bash", [writerScript], { stdio: "ignore", detached: true });
+  writer.unref();
+  const writerPid = writer.pid;
+  const s = startHeadless(
+    `本地 CI 正在跑，四项检查的状态写在 ${statusPath}（JSON 数组，每项 name/status，status 会从 pending 变成 pass 或 fail）。` +
+      `每个检查跑完都告诉我它的结果，全部结束后给我一个总结。`,
+    dir,
+    makeNonGitWorkspace(),
+  );
+  try {
+    const wrote = await waitFor(() => existsSync(statusPath), 20_000);
+    if (!wrote) {
+      return {
+        case: "D4-discovery-checks",
+        verdict: "INVALID",
+        detail: "状态文件没有写入，场景不成立（CI 模拟脚本没跑起来）",
+        assertions: [],
+      };
+    }
+    // 四项检查约 60s 跑完；留足模型收尾时间，最多 150s 后主动收尾
+    const exited = await s.waitExit(150_000);
+    if (!exited) {
+      try {
+        process.kill(s.pid, "SIGTERM");
+      } catch {
+        /* 已退出 */
+      }
+      await s.waitExit(10_000);
+    }
+    await Bun.sleep(500);
+    const sessionDir = s.sessionDir();
+    if (!sessionDir) {
+      return {
+        case: "D4-discovery-checks",
+        verdict: "INVALID",
+        detail: "会话目录不存在（会话没起来）",
+        assertions: [],
+      };
+    }
+    const traj = readTraj(sessionDir);
+    const signal = analyzeDiscovery(readEvents(sessionDir), traj);
+    const polls = countForegroundPolls(traj, statusPath);
+    const assertions: Assertion[] = [
+      {
+        name: "实际调用 monitor（只认调用，提到 / 搜过不算）",
+        pass: signal.monitorCalled,
+        detail: `called=${signal.monitorCalled} searched=${signal.searched} mentioned=${signal.mentioned} foreground_polls=${polls}`,
+      },
+    ];
+    return {
+      case: "D4-discovery-checks",
+      verdict: verdictOf(assertions),
+      detail: signal.monitorCalled
+        ? `模型调用了 monitor（前台读状态文件 ${polls} 次）`
+        : `模型没调用 monitor，前台读状态文件 ${polls} 次${signal.searched || signal.mentioned ? "（想到了但没用）" : ""}`,
+      assertions,
+      session: basename(sessionDir),
+    };
+  } finally {
+    cleanup(s.pid, token);
+    if (writerPid) killTree(writerPid);
+  }
+}
+
 async function runCase(name: CaseName): Promise<CaseBody> {
   switch (name) {
     case "D1b-signal":
@@ -1012,6 +1161,8 @@ async function runCase(name: CaseName): Promise<CaseBody> {
       return runD1bOrphanScanNegative();
     case "D4-discovery":
       return runD4Discovery();
+    case "D4-discovery-checks":
+      return runD4DiscoveryChecks();
   }
 }
 

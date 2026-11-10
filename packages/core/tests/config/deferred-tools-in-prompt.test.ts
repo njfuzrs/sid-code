@@ -417,3 +417,71 @@ describe("判据单元 — isStaticallyDeferred / partitionByDeferral", () => {
     expect(deferred.map((t) => t.name())).toEqual(["b", "d"]);
   });
 });
+
+describe("FIX-3 / D4 — <waiting-capability>（monitor 的意图映射）", () => {
+  beforeEach(() => clearPromptCache());
+
+  function waitingSection(prompt: string): string {
+    const i = prompt.indexOf("<waiting-capability>");
+    const j = prompt.indexOf("</waiting-capability>");
+    return i === -1 || j === -1 ? "" : prompt.slice(i, j);
+  }
+
+  test("monitor 延迟时：出现该段 + 激活说明，并区分一次通知 / 每次通知", () => {
+    const prompt = buildSystemPrompt({
+      tools: [makeTool({ name: "bash" }), makeTool({ name: "monitor", shouldDefer: true })],
+    });
+    const sec = waitingSection(prompt);
+    expect(sec).not.toBe("");
+    // 不直呼未加载的名字：必须先给 tool_search 激活路径（与 L3 同一事故形态）
+    expect(sec).toContain("select:monitor");
+    expect(sec).toContain("尚未加载");
+    // 选择边界是这段存在的理由：只要一次 → bash 后台；每次都要 → monitor
+    expect(sec).toContain("run_in_background=true");
+    expect(sec).toContain("wait_until_seconds");
+    expect(sec).toContain("每次发生都要通知");
+    // 与 schedule_wakeup 的分工（方案 §D4 修复要点）
+    expect(sec).toContain("schedule_wakeup");
+  });
+
+  test("monitor 未注册时不注入（精简模式不平白多一段）", () => {
+    const prompt = buildSystemPrompt({ tools: [makeTool({ name: "bash" })] });
+    expect(prompt).not.toContain("<waiting-capability>");
+  });
+
+  test("不延迟时（toolSearch=false）不出现激活说明", () => {
+    const prompt = buildSystemPrompt({
+      tools: [makeTool({ name: "monitor", shouldDefer: true })],
+      toolSearchDisabled: true,
+    });
+    const sec = waitingSection(prompt);
+    expect(sec).not.toBe("");
+    expect(sec).not.toContain("select:monitor");
+  });
+
+  test("en 档同样带激活说明与选择边界", () => {
+    const prompt = buildSystemPrompt({
+      tools: [makeTool({ name: "monitor", shouldDefer: true })],
+      preferredLanguage: "en",
+    });
+    const sec = waitingSection(prompt);
+    expect(sec).toContain("select:monitor");
+    expect(sec).toContain("A notification every time it happens");
+    expect(sec).toContain("run_in_background=true");
+    expect(sec).not.toContain("每次发生都要通知");
+  });
+
+  test("段落控制在 10 行内容以内（每会话常驻成本，方案 §D4 风险段）", () => {
+    for (const lang of [undefined, "en"] as const) {
+      const prompt = buildSystemPrompt({
+        tools: [makeTool({ name: "monitor", shouldDefer: true })],
+        preferredLanguage: lang,
+      });
+      const lines = waitingSection(prompt)
+        .split("\n")
+        .filter((l) => l.trim().length > 0);
+      // 标签行 + 标题 + 导语 + 激活说明 + 4 条要点 = 8
+      expect(lines.length).toBeLessThanOrEqual(10);
+    }
+  });
+});

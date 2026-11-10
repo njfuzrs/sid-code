@@ -65,6 +65,7 @@ import {
   buildContextManagementSectionEn,
   buildSubagentResultBoundarySectionEn,
   buildSchedulingSectionEn,
+  buildWaitingSectionEn,
   buildToolGuideSectionEn,
 } from "./prompt-sections-en.ts";
 
@@ -454,6 +455,18 @@ export function buildSystemPrompt(ctx: SystemPromptContext): string {
     // 不在本轮 schema 里的名字（L3，本次事故的最强形态）。
     coreParts.push(
       buildSchedulingSection(ctx.preferredLanguage, isStaticallyDeferred(cronCreateTool, deferral)),
+    );
+  }
+
+  // 等待外部状态引导（FIX-3 / D4）：仅在 monitor 已注册且未被企业策略关闭时注入。
+  // ctx.tools 来自 registry.enabled()，settings.monitor.enabled=false 时 monitor 已被
+  // isEnabled 滤掉，这里按名查找即同时满足「已注册」与「策略允许」两个门禁。
+  // 为什么要这段：monitor 是延迟工具，首轮只有名字可见；有意图映射的 schedule_wakeup
+  // 历史上自然调用 18 次，没有映射的 monitor 0 次（方案 20261109 §D4）。
+  const monitorTool = ctx.tools.find((t) => t.name() === "monitor");
+  if (monitorTool) {
+    coreParts.push(
+      buildWaitingSection(ctx.preferredLanguage, isStaticallyDeferred(monitorTool, deferral)),
     );
   }
 
@@ -1262,6 +1275,30 @@ ${activationNote}
 - 这些任务只在当前会话存活（durable 任务在持锁会话内驱动）；关掉会话即停，不要向用户承诺无人值守的后台执行。
 - 触发只在 REPL 空闲时发生，忙时排队。
 </scheduling-capability>`;
+}
+
+/**
+ * 等待外部状态引导（FIX-3 / D4：让「每次发生都要通知」的意图映射到 monitor）。
+ *
+ * 只写**选择边界**（一次通知 vs 每次通知、与 schedule_wakeup 的分工），不复述 monitor
+ * 工具描述里的脚本写法——那部分激活后经 tools[].description 拿到，写两遍是常驻成本。
+ * 措辞形态与 buildSchedulingSection 一致：延迟时先说「需激活」，不直呼未加载的名字。
+ */
+function buildWaitingSection(language?: LanguagePref, monitorDeferred = false): string {
+  if (language === "en") return buildWaitingSectionEn(monitorDeferred);
+  const activationNote = monitorDeferred
+    ? `\n⚠️ \`monitor\` **尚未加载**到本轮上下文：使用前先用 \`tool_search\` 激活（\`select:monitor\`），激活后再调用。**不要直接调用未激活的名字**。\n`
+    : "";
+  return `
+<waiting-capability>
+## 等待外部状态
+用户要你「等某件事」时（CI、构建、部署、日志、文件变化），先分清要几次通知，再选工具，不要用前台 sleep 循环或反复手动查询扛：
+${activationNote}
+- **只要一次通知**（「CI 全绿了告诉我」「构建完了叫我」）→ bash + \`run_in_background=true\` + \`wait_until_seconds\`，命令写成条件满足就退出的循环。
+- **每次发生都要通知**（「每个 check 结束告诉我」「日志里每出现 ERROR 告诉我」）→ \`monitor\`：脚本的每行 stdout 是一条事件，结束或到期必有终态回报。过滤条件要覆盖失败 / 取消 / 超时，沉默不等于成功。
+- **挂上之后**不要再手动查同一个状态；没有别的事就告诉用户在等什么，然后结束本轮，事件会把你叫醒。
+- **同一件事不要同时挂 monitor 又排 \`schedule_wakeup\`**：两者都会叫醒主循环，事件重复。定时复查用调度工具，事件驱动用 monitor，二选一。
+</waiting-capability>`;
 }
 
 /**

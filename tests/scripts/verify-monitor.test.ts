@@ -24,6 +24,8 @@ import { describe, expect, test } from "bun:test";
 import {
   ALL_CASES,
   analyzeDiscovery,
+  buildChecksSimScript,
+  countForegroundPolls,
   filterMonitorPids,
   findOrphanCleanupLog,
   makeToken,
@@ -440,5 +442,43 @@ describe("makeToken · 唯一定位标记", () => {
 
   test("同一 tag 不同时刻不撞（并行 case 互不干扰）", () => {
     expect(makeToken("x", 1)).not.toBe(makeToken("x", 2));
+  });
+});
+
+describe("D4-discovery-checks · CI 模拟与前台轮询计数（FIX-3）", () => {
+  test("模拟脚本写 5 个状态：全 pending → 四项依次结束，第三项 e2e 是 fail", () => {
+    const script = buildChecksSimScript("/tmp/x'y.json", 1);
+    const states = [...script.matchAll(/printf '%s\\n' '(\[.*?\])'/g)].map((m) =>
+      JSON.parse(m[1]!),
+    );
+    expect(states).toHaveLength(5);
+    expect(states[0].every((c: { status: string }) => c.status === "pending")).toBe(true);
+    expect(states[4].map((c: { status: string }) => c.status)).toEqual([
+      "pass",
+      "pass",
+      "fail",
+      "pass",
+    ]);
+    // 路径里的单引号必须转义，否则 bash 脚本语法错 → 状态文件不出现 → case 恒 INVALID
+    expect(script).toContain(`f='/tmp/x'\\''y.json'`);
+    // 原子替换：模型永远读不到半截 JSON
+    expect(script).toContain('mv "$f.tmp" "$f"');
+  });
+
+  test("前台轮询只数 assistant 侧 bash/read 且参数里含目标路径", () => {
+    const target = "/tmp/VERIFY1checks-checks.json";
+    const traj: TrajStep[] = [
+      { message_type: "action", tool_name: "bash", tool_input: { command: `cat ${target}` } },
+      { message_type: "action", tool_name: "read", tool_input: { file_path: target } },
+      { message_type: "observation", tool_name: "bash", tool_input: { command: `cat ${target}` } },
+      { message_type: "action", tool_name: "bash", tool_input: { command: "ls /tmp" } },
+      { message_type: "action", tool_name: "monitor", tool_input: { command: `tail ${target}` } },
+    ];
+    expect(countForegroundPolls(traj, target)).toBe(2);
+  });
+
+  test("D4-discovery-checks 在 ALL_CASES 里，可被 --case 选中", () => {
+    expect(ALL_CASES).toContain("D4-discovery-checks");
+    expect(parseArgs(["--case", "D4-discovery-checks"]).cases).toEqual(["D4-discovery-checks"]);
   });
 });
