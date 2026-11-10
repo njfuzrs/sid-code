@@ -44,6 +44,7 @@ import {
 } from "./monitor-text.ts";
 import { getLogger } from "../debug/logger.ts";
 import { getMonitorPolicySettings } from "../config/monitor-policy.ts";
+import { removeMonitorMeta, writeMonitorMeta } from "./monitor-orphans.ts";
 
 /** 单行事件最大字符数：超过即截断（`.output` 里保留完整原文） */
 export const MAX_EVENT_LINE_CHARS = 2_000;
@@ -459,6 +460,8 @@ export function spawnMonitorTask(opts: {
     // detached（仅 POSIX）→ 进程组组长，kill(-pid) 才能清掉 `sleep 60 &` 类孙进程
     detached: platform() !== "win32",
   });
+  // spawn 返回之后取：它一定不早于子进程真实启动时刻，是孤儿扫描做身份核对的上界
+  const spawnedAt = Date.now();
 
   registerTask(taskState);
 
@@ -477,6 +480,13 @@ export function spawnMonitorTask(opts: {
     stderrTail: "",
   };
   activeMonitors.set(taskId, ctl);
+
+  // D1-b 第 2 层：宿主被 SIGKILL / OOM 时退出清理一行都跑不到，detached 的子进程会被
+  // launchd 收养永久泄漏。落一份元数据，让下次启动的扫描能认出并清掉它（monitor-orphans.ts）。
+  // 终态时由 finalizeAndDrain 删除；写失败只失去这层兜底，不影响 monitor 本身。
+  if (child.pid) {
+    writeMonitorMeta({ taskId, pgid: child.pid, command: opts.command, spawnedAt });
+  }
 
   const appendOutput = (text: string): void => {
     try {
@@ -769,6 +779,8 @@ function finalizeAndDrain(
   }
 
   activeMonitors.delete(taskId);
+  // 进程已由本宿主收尾（四个出口都走这里），孤儿兜底的元数据不再需要
+  removeMonitorMeta(taskId);
 }
 
 /**
@@ -799,6 +811,21 @@ export function killMonitorTask(taskId: string): void {
   // ctl 已不在（进程已退出并被 close 清理，或活跃表被测试重置）：任务还没终态时补一条，
   // 不能只依赖 ctl——原实现的兜底分支就是为此保留的
   finalizeMonitorKill(taskId);
+}
+
+/**
+ * 终止全部运行中的 monitor，返回终止个数。
+ *
+ * 给 `process.on("exit")` 这道最后兜底用（D1）：它覆盖无头 `-p` / stream-json 的正常结束、
+ * 预算硬停、运行时异常等所有走 `process.exit` 的路径。只杀 monitor、不杀后台 shell——
+ * monitor 的唯一用途是给宿主投递事件，宿主一走它就只剩泄漏；而无头正常结束时还在跑的
+ * 后台 shell 多半是模型有意留下的常驻服务（`background-await.ts` 判「静默」放行收尾的那一类），
+ * 一并杀掉会改变 `-p` 的既有语义。交互退出 / 信号 / 崩溃走的是 `killAllRunningTasks`。
+ */
+export function killAllRunningMonitors(): number {
+  const running = getRunningTasks().filter((t) => t.type === "local_monitor");
+  for (const task of running) killMonitorTask(task.id);
+  return running.length;
 }
 
 /** 进程退出（正常 / 异常）的终态写入 */
@@ -912,7 +939,8 @@ function finalizeMonitorKill(taskId: string): void {
 
 /** 测试辅助：清空活跃表（不 kill 进程；仅供 `__reset` 用） */
 export function __clearActiveMonitorsForTest(): void {
-  for (const ctl of activeMonitors.values()) {
+  for (const [taskId, ctl] of activeMonitors) {
+    removeMonitorMeta(taskId);
     clearMonitorTimers(ctl);
     // 必须真的 kill 进程组，不能只清表：孤儿进程会在**下一个测试文件**跑的时候才退出，
     // 它 close 回调里的通知会污染那边「等自己的通知」的断言（实测：tool 文件先跑、
