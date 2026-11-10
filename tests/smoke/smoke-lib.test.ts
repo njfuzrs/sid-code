@@ -8,7 +8,7 @@
 import { describe, expect, test } from "bun:test";
 import { checkEventExpect, checkFileExpect, parseEvents, parseRawRequests } from "./lib/assert.ts";
 import { findOutOfRootPaths, substituteCaseRoot } from "./lib/fixture.ts";
-import { renderSummary } from "./lib/runner.ts";
+import { isCI, renderSummary, runCase } from "./lib/runner.ts";
 
 const ROOT = "/tmp/sid-smoke-x/repo";
 
@@ -176,5 +176,54 @@ describe("renderSummary", () => {
     expect(rows.filter((l) => l.startsWith("| A1-dialog |"))).toHaveLength(1);
     expect(row("A1-dialog")).toContain("a \\| b");
     expect(md).not.toContain("最后一帧 ----\n");
+  });
+});
+
+// A4-loop-tui 的「仅本机」标记靠它判 CI。判错的两种方向都不报红：CI 上误判成本机 → 一例 30–96s
+// 的用例进了 PR 门禁、还可能超时；本机误判成 CI → 每周调度里它永远 skip，保鲜静默失效。
+describe("isCI", () => {
+  test("GitHub Actions 的 CI=true 判为 CI", () => {
+    expect(isCI({ CI: "true" })).toBe(true);
+    expect(isCI({ CI: "1" })).toBe(true);
+  });
+  test("未设、空串、false、0 判为本机", () => {
+    expect(isCI({})).toBe(false);
+    expect(isCI({ CI: "" })).toBe(false);
+    expect(isCI({ CI: "false" })).toBe(false);
+    expect(isCI({ CI: " FALSE " })).toBe(false);
+    expect(isCI({ CI: "0" })).toBe(false);
+  });
+});
+
+describe("runCase：localOnly 在 CI 上 skip 并带原因", () => {
+  // 只走到提前返回的分支，不起子进程；process.env.CI 存/恢复原值（CONTRIBUTING 测试约定第 1 条）
+  test("CI=true → skip，原因以「仅本机运行」开头且带用例自己的说明", async () => {
+    const prev = process.env.CI;
+    process.env.CI = "true";
+    try {
+      const r = await runCase(
+        {
+          def: {
+            id: "Z-local",
+            ledger: "Z",
+            feature: "z",
+            kind: "guard",
+            localOnly: "太慢",
+            repo: {},
+            argv: [],
+            expect: {},
+            mutations: [],
+          },
+          dir: "/nonexistent",
+          replayPath: "/nonexistent/replay.jsonl",
+        },
+        { kind: "source" },
+      );
+      expect(r.status).toBe("skip");
+      expect(r.reason).toBe("仅本机运行：太慢");
+    } finally {
+      if (prev === undefined) delete process.env.CI;
+      else process.env.CI = prev;
+    }
   });
 });
