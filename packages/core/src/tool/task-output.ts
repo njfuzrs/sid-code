@@ -50,6 +50,8 @@ export class TaskOutputTool implements Tool {
   readonly zodSchema = taskOutputSchema();
   /** 长尾工具：仅在有后台任务时使用，延迟加载，由 tool_search 按需调出 */
   readonly shouldDefer = true;
+  readonly guidance =
+    "回看后台任务当前进度或已完成任务的输出时用；完成会自动通知，不要用它轮询等待。";
   readonly searchHint = "background task output result 后台 任务 输出 结果";
   /**
    * P2-3：任务管理类工具，连续查询**不同** task 的输出是正当推进而非循环，豁免循环检测。

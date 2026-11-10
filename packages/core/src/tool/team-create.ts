@@ -68,6 +68,8 @@ export class TeamCreateTool implements Tool {
   readonly zodSchema = teamCreateSchema();
   /** 长尾工具：多代理协作低频使用，延迟加载，由 tool_search 按需调出 */
   readonly shouldDefer = true;
+  readonly guidance =
+    "创建多代理团队（成员各自领任务并行/隔离执行）时用；一次性分治用 sub_agent 并行调用就够了，不必建团队。";
   readonly searchHint = "team swarm multi-agent collaboration 团队 多代理 协作";
   /** 权限检查器（子代理 dontAsk 语义，由主会话注入） */
   private permissionChecker?: import("../permission/types.ts").Checker;

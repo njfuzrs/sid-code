@@ -50,6 +50,8 @@ export class TeamMessageTool implements Tool {
   readonly zodSchema = teamMessageSchema();
   /** 长尾工具：仅团队成员场景使用，延迟加载，由 tool_search 按需调出 */
   readonly shouldDefer = true;
+  readonly guidance =
+    "给同团队的其他成员或团队负责人发消息（协调/同步进度）时用；后台 Agent 用 send_message，不是这个。";
   readonly searchHint = "team message teammate peer mailbox 团队 成员 消息 通信 协商";
   /** 分派/通信类工具：每次发给不同对象、内容天然不同，豁免循环检测（与 send_message 同款） */
   readonly exemptFromLoopDetection = true;

@@ -18,6 +18,8 @@ const taskGetSchema = lazySchema(() =>
 export class StructuredTaskGetTool implements Tool {
   readonly zodSchema = taskGetSchema();
   readonly shouldDefer = true;
+  readonly guidance =
+    "查结构化清单里某条任务的详情 / 上下游依赖时用（后台任务用 bg_task_get，不是这个）。";
   readonly searchHint = "structured task list get detail blockedBy 结构化 任务 清单 查询 详情 依赖";
   readonly exemptFromLoopDetection = true;
 

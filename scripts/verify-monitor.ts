@@ -74,7 +74,9 @@ export type CaseName =
   | "D2D3-audit"
   | "D1b-orphan-scan-negative"
   | "D4-discovery"
-  | "D4-discovery-checks";
+  | "D4-discovery-checks"
+  | "D6-guidance-task-output"
+  | "D6-guidance-workflow";
 
 export const ALL_CASES: readonly CaseName[] = [
   "D1b-signal",
@@ -83,6 +85,8 @@ export const ALL_CASES: readonly CaseName[] = [
   "D1b-orphan-scan-negative",
   "D4-discovery",
   "D4-discovery-checks",
+  "D6-guidance-task-output",
+  "D6-guidance-workflow",
 ] as const;
 
 export interface Assertion {
@@ -263,44 +267,54 @@ export function parseWaitAuditOutput(stdout: string): {
 }
 
 export interface DiscoverySignal {
-  /** 轨迹里真的调用了 monitor 工具 */
-  monitorCalled: boolean;
-  /** tool_search 的 query 里搜过 monitor（`select:monitor` 等） */
+  /** 轨迹里真的调用了目标工具 */
+  called: boolean;
+  /** tool_search 的 query 里搜过目标工具（`select:<target>` 等） */
   searched: boolean;
-  /** assistant 文本（含思考）提到过 monitor —— 弱命中：想到了，但不确定用没用 */
+  /** assistant 文本（含思考）提到过目标工具 —— 弱命中：想到了，但不确定用没用 */
   mentioned: boolean;
 }
 
 /**
- * D4 的判据：模型有没有把 monitor 纳入候选集。
+ * D4/D6 的判据：模型有没有把目标工具纳入候选集。
+ *
+ * target 缺省 "monitor"（D4 的两个 case）。FIX-5 的 D6-guidance 场景测试
+ * （task_output / workflow）传各自工具名——判据同 D4-discovery：调用 /
+ * tool_search 搜过 / 回复提到，任一即命中。
  *
  * 为什么要读 session.traj 而不是 events：events 的 `PreToolUse` 只有 `tool_name` / `tool_use_id`，
- * **没有 query 与工具参数**——「搜过 monitor」只能从 traj 的 `tool_input` 读。
+ * **没有 query 与工具参数**——「搜过」只能从 traj 的 `tool_input` 读。
  *
  * ⚠️ 只看 assistant 侧文本（content / thought / action），跳过 observation：
- * observation 里可能带工具返回的文本，把它算成「模型提到 monitor」会假阳性。
+ * observation 里可能带工具返回的文本，把它算成「模型提到」会假阳性。
  */
-export function analyzeDiscovery(events: TraceEvent[], traj: TrajStep[]): DiscoverySignal {
-  let monitorCalled = false;
+export function analyzeDiscovery(
+  events: TraceEvent[],
+  traj: TrajStep[],
+  target = "monitor",
+): DiscoverySignal {
+  // 工具名是 [a-z0-9_]，转小写后做子串匹配即可（called 是全等，searched/mentioned 是包含）
+  const needle = target.toLowerCase();
+  let called = false;
   for (const e of events) {
     const name = e.data?.tool_name;
-    if (typeof name === "string" && name === "monitor") monitorCalled = true;
+    if (typeof name === "string" && name === target) called = true;
   }
   let searched = false;
   let mentioned = false;
   for (const step of traj) {
     if (step.message_type === "observation") continue;
-    if (step.tool_name === "monitor") monitorCalled = true;
+    if (step.tool_name === target) called = true;
     if (step.tool_name === "tool_search") {
       const q = step.tool_input?.query;
-      if (typeof q === "string" && /monitor/i.test(q)) searched = true;
+      if (typeof q === "string" && q.toLowerCase().includes(needle)) searched = true;
     }
     const text = [step.content, step.thought, step.action]
       .filter((x): x is string => typeof x === "string")
       .join("\n");
-    if (/monitor/i.test(text)) mentioned = true;
+    if (text.toLowerCase().includes(needle)) mentioned = true;
   }
-  return { monitorCalled, searched, mentioned };
+  return { called, searched, mentioned };
 }
 
 /** 从启动日志（audit.log / debug.log / stderr）里找孤儿 monitor 清理记录 */
@@ -997,19 +1011,19 @@ async function runD4Discovery(): Promise<CaseBody> {
       };
     }
     const signal = analyzeDiscovery(readEvents(sessionDir), readTraj(sessionDir));
-    const hit = signal.monitorCalled || signal.searched || signal.mentioned;
+    const hit = signal.called || signal.searched || signal.mentioned;
     const assertions: Assertion[] = [
       {
         name: "命中 monitor：调用 / tool_search 搜过 / 回复里提到",
         pass: hit,
-        detail: `called=${signal.monitorCalled} searched=${signal.searched} mentioned=${signal.mentioned}`,
+        detail: `called=${signal.called} searched=${signal.searched} mentioned=${signal.mentioned}`,
       },
     ];
     return {
       case: "D4-discovery",
       verdict: verdictOf(assertions),
       detail: hit
-        ? `模型把 monitor 纳入候选集（${signal.monitorCalled ? "实际调用" : signal.searched ? "tool_search 搜过" : "文本提到"}）`
+        ? `模型把 monitor 纳入候选集（${signal.called ? "实际调用" : signal.searched ? "tool_search 搜过" : "文本提到"}）`
         : "模型完全没提 monitor（用了前台轮询 / bash 后台），发现性引导未生效",
       assertions,
       session: basename(sessionDir),
@@ -1071,7 +1085,7 @@ export function countForegroundPolls(traj: TrajStep[], target: string): number {
  *
  * ## 判据只认实际调用
  *
- * `D4-discovery` 的「文本提到」是弱命中；这里**只认 monitorCalled**（events 的
+ * `D4-discovery` 的「文本提到」是弱命中；这里**只认 called**（events 的
  * `PreToolUse{tool_name:"monitor"}` 或 traj 的 action），否则「想到了但用 sleep 循环扛」
  * 也会判 PASS。前台轮询次数写进 detail 供前后对比。
  *
@@ -1130,14 +1144,14 @@ async function runD4DiscoveryChecks(): Promise<CaseBody> {
     const assertions: Assertion[] = [
       {
         name: "实际调用 monitor（只认调用，提到 / 搜过不算）",
-        pass: signal.monitorCalled,
-        detail: `called=${signal.monitorCalled} searched=${signal.searched} mentioned=${signal.mentioned} foreground_polls=${polls}`,
+        pass: signal.called,
+        detail: `called=${signal.called} searched=${signal.searched} mentioned=${signal.mentioned} foreground_polls=${polls}`,
       },
     ];
     return {
       case: "D4-discovery-checks",
       verdict: verdictOf(assertions),
-      detail: signal.monitorCalled
+      detail: signal.called
         ? `模型调用了 monitor（前台读状态文件 ${polls} 次）`
         : `模型没调用 monitor，前台读状态文件 ${polls} 次${signal.searched || signal.mentioned ? "（想到了但没用）" : ""}`,
       assertions,
@@ -1147,6 +1161,85 @@ async function runD4DiscoveryChecks(): Promise<CaseBody> {
     cleanup(s.pid, token);
     if (writerPid) killTree(writerPid);
   }
+}
+
+/**
+ * D6 的场景测试（FIX-5）：guidance 速查段把「何时该用」映射到延迟工具。
+ *
+ * 与 D4 系列同构：prompt 用自然语言表达意图、**不出现工具名**（测的是意图映射，
+ * 不是复读），判据 = analyzeDiscovery 的三档命中（调用 / tool_search 搜过 / 回复提到），
+ * 任一即 PASS。方案 §D6 验收指定 task_output 与 workflow 各一条。
+ *
+ * 工作目录必须是非 git 目录（同 D4 系列）：仓库根的 git 快照会把分支名写进系统提示，
+ * 分支名含 "task"/"workflow" 字样时会污染发现性判据（FIX-3 实测的分支名泄漏形态）。
+ */
+async function runD6Guidance(
+  caseName: "D6-guidance-task-output" | "D6-guidance-workflow",
+  target: string,
+  prompt: string,
+): Promise<CaseBody> {
+  const token = makeToken("d6");
+  const dir = mkdtempSync(join(tmpdir(), "sid-verify-d6-"));
+  const s = startHeadless(prompt, dir, makeNonGitWorkspace());
+  try {
+    const exited = await s.waitExit(150_000);
+    if (!exited) {
+      try {
+        process.kill(s.pid, "SIGTERM");
+      } catch {
+        /* 已退出 */
+      }
+      await s.waitExit(10_000);
+    }
+    await Bun.sleep(500);
+    const sessionDir = s.sessionDir();
+    if (!sessionDir) {
+      return {
+        case: caseName,
+        verdict: "INVALID",
+        detail: "会话目录不存在（会话没起来）",
+        assertions: [],
+      };
+    }
+    const signal = analyzeDiscovery(readEvents(sessionDir), readTraj(sessionDir), target);
+    const hit = signal.called || signal.searched || signal.mentioned;
+    const assertions: Assertion[] = [
+      {
+        name: `命中 ${target}：调用 / tool_search 搜过 / 回复里提到`,
+        pass: hit,
+        detail: `called=${signal.called} searched=${signal.searched} mentioned=${signal.mentioned}`,
+      },
+    ];
+    return {
+      case: caseName,
+      verdict: verdictOf(assertions),
+      detail: hit
+        ? `guidance 把意图映射到了 ${target}（${signal.called ? "实际调用" : signal.searched ? "tool_search 搜过" : "文本提到"}）`
+        : `模型完全没提 ${target}，速查段未把该意图映射过去`,
+      assertions,
+      session: basename(sessionDir),
+    };
+  } finally {
+    cleanup(s.pid, token);
+  }
+}
+
+/** D6 的 task_output 场景：后台跑命令 + 自然语言「回看输出」（不出现工具名） */
+async function runD6GuidanceTaskOutput(): Promise<CaseBody> {
+  const token = makeToken("taskout");
+  const cmd = `for i in $(seq 1 10); do echo ${token}-$i; sleep 1; done`;
+  const prompt =
+    `在后台跑这个命令（run_in_background=true）：${cmd}。` +
+    `跑起来之后，回看它目前已经输出的内容并告诉我。`;
+  return runD6Guidance("D6-guidance-task-output", "task_output", prompt);
+}
+
+/** D6 的 workflow 场景：自然语言表达「大规模穷尽编排」意图（不出现工具名） */
+async function runD6GuidanceWorkflow(): Promise<CaseBody> {
+  const prompt =
+    "我有一件单轮对话装不下的穷尽检查要派给很多个子代理并行做、每路结果都要逐路收集汇总成一张表。" +
+    "这种规模的编排你会用什么工具来做？先别真跑，说明你的做法，并把要用的工具激活好。";
+  return runD6Guidance("D6-guidance-workflow", "workflow", prompt);
 }
 
 async function runCase(name: CaseName): Promise<CaseBody> {
@@ -1163,6 +1256,10 @@ async function runCase(name: CaseName): Promise<CaseBody> {
       return runD4Discovery();
     case "D4-discovery-checks":
       return runD4DiscoveryChecks();
+    case "D6-guidance-task-output":
+      return runD6GuidanceTaskOutput();
+    case "D6-guidance-workflow":
+      return runD6GuidanceWorkflow();
   }
 }
 

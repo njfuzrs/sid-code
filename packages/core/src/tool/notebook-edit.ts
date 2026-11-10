@@ -123,6 +123,8 @@ export class NotebookEditTool implements Tool {
 
   searchHint = "edit jupyter notebook cell ipynb";
   shouldDefer = true; // 延迟加载（ToolSearch 按需调出）
+  // D6：guidance 是「何时该用」的意图映射（.ipynb 场景），与 searchHint（关键词）互补
+  guidance = "编辑 Jupyter Notebook（.ipynb）的单个 cell 时用；普通文本/代码文件用 edit。";
 
   description(): string {
     return "编辑 Jupyter Notebook（.ipynb）的单个 cell。支持替换、插入新 cell、删除 cell。";

@@ -23,6 +23,11 @@ interface Tool {
   shouldDefer?: boolean;
   /** 强制首轮可见（`shouldDefer` 的反向豁免） */
   alwaysLoad?: boolean;
+  /**
+   * 何时该用（一句话意图映射），D6：进 <deferred-tools-guidance> 速查段。
+   * shouldDefer 工具由 tests/tool/deferred-guidance.test.ts 门禁保证 100% 声明。
+   */
+  guidance?: string;
 }
 import {
   isCoordinatorMode,
@@ -66,6 +71,7 @@ import {
   buildSubagentResultBoundarySectionEn,
   buildSchedulingSectionEn,
   buildWaitingSectionEn,
+  buildDeferredToolsGuidanceSectionEn,
   buildToolGuideSectionEn,
 } from "./prompt-sections-en.ts";
 
@@ -469,6 +475,17 @@ export function buildSystemPrompt(ctx: SystemPromptContext): string {
       buildWaitingSection(ctx.preferredLanguage, isStaticallyDeferred(monitorTool, deferral)),
     );
   }
+
+  // 延迟工具速查段（FIX-5 / D6）：所有延迟工具的「何时该用」一句话映射。
+  // 判据与上面的专门段同一口径（isStaticallyDeferred，静态配置），无延迟工具时返回空串。
+  // 有专门段的工具（cron / monitor）也在速查段里保留一行——门禁按「全部内置 shouldDefer
+  // 工具」收口，专门段删除时该工具自动回落到这里，不会零引导。
+  const deferredGuidance = buildDeferredToolsGuidanceSection(
+    ctx.preferredLanguage,
+    ctx.tools,
+    deferral,
+  );
+  if (deferredGuidance) coreParts.push(deferredGuidance);
 
   // Coordinator 模式（子 Agent 生态）：开启后把主循环角色从"执行者"切为"协调者"，
   // 注入编排工作流提示词。worker 工具名从当前活跃的非协调类工具派生，
@@ -1299,6 +1316,46 @@ ${activationNote}
 - **挂上之后**不要再手动查同一个状态；没有别的事就告诉用户在等什么，然后结束本轮，事件会把你叫醒。
 - **同一件事不要同时挂 monitor 又排 \`schedule_wakeup\`**：两者都会叫醒主循环，事件重复。定时复查用调度工具，事件驱动用 monitor，二选一。
 </waiting-capability>`;
+}
+
+/**
+ * 延迟工具速查段（FIX-5 / D6）：所有延迟工具的「何时该用」一句话映射。
+ *
+ * 背景：延迟加载的契约原先只覆盖「名字可见」（<available-deferred-tools> 只列名），
+ * 「知道何时用」靠逐能力手写段落——补了 cron（<scheduling-capability>）、monitor
+ * （<waiting-capability>），其余 15 个内置延迟工具零引导。有引导的 schedule_wakeup
+ * 自然调用 18 次、无引导的 monitor 0 次（方案 20261109 §D6）。本段汇总工具自报的
+ * guidance 字段（tool/types.ts），100% 覆盖率由 tests/tool/deferred-guidance.test.ts
+ * 门禁守住——下一个新增延迟工具漏写 guidance 时 CI 红，而不是静默复现可发现性缺口。
+ *
+ * 与专门段的分工：cron / monitor 的深度引导保留在各自段落；本段每个工具只一行，
+ * **含 monitor / cron**（专门段讲深度、速查段讲广度；专门段哪天删除时该工具自动
+ * 回落到这里，不会零引导）。与 <waiting-capability> 不重复由单测机械拦住
+ * （monitor 行不含选择边界细节）。
+ *
+ * 判据用 partitionByDeferral（isStaticallyDeferred，静态配置），与延迟分区同一口径：
+ * 本段落在 DYNAMIC_BOUNDARY 之前的静态前缀里，读运行时态 = prompt cache 前缀击穿
+ * （见 deferred-tool-view.ts 文件头约束）。无延迟工具（如 toolSearch:false）时
+ * deferred 组为空，本段自然不出现。
+ */
+function buildDeferredToolsGuidanceSection(
+  language: LanguagePref | undefined,
+  tools: Tool[],
+  deferral: DeferralJudgeOptions,
+): string {
+  const lines = partitionByDeferral(tools, deferral)
+    .deferred.filter((t) => typeof t.guidance === "string" && t.guidance.trim().length > 0)
+    // 按名称排序：注册顺序变化不改变段落内容，保 prompt cache 前缀稳定
+    .sort((a, b) => (a.name() < b.name() ? -1 : 1))
+    .map((t) => `- \`${t.name()}\`: ${t.guidance!.trim()}`);
+  if (lines.length === 0) return "";
+  if (language === "en") return buildDeferredToolsGuidanceSectionEn(lines);
+  return `
+<deferred-tools-guidance>
+## 延迟工具速查——何时该用哪个
+下列工具默认不在首轮上下文。需要时先用 \`tool_search\` 激活（\`select:<工具名>\`），激活后按用途选用：
+${lines.join("\n")}
+</deferred-tools-guidance>`;
 }
 
 /**

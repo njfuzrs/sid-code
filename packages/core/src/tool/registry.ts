@@ -761,4 +761,31 @@ export class Registry {
     }
     return [...names].sort();
   }
+
+  /**
+   * 当前启用且延迟的工具实例列表（D6 / FIX-5 新增公开入口）。
+   *
+   * 判定与 deferredToolNames() 同一口径（isCurrentlyEnabled + isToolDeferred），
+   * 只是返回实例而不是名字。存在理由：这两个判定都是 private，门禁测试
+   * （tests/tool/deferred-guidance.test.ts）与系统提示的 <deferred-tools-guidance>
+   * 段都要遍历「当前延迟且启用」的工具，没有公开入口就只能复制判定逻辑（必然漂移）
+   * 或把 private 放开。
+   *
+   * 注意与 deferredToolNames() 的口径差异：本方法不并入 deferredTools 运行时名单
+   * 里「尚未注册的名字」（那是 deferredToolNames 的 deferredSize 口径），只返回
+   * 真实注册的工具实例——guidance 段只关心有实例可读 guidance 的工具。
+   */
+  getEnabledDeferredTools(): LegacyTool[] {
+    const seen = new Set<string>();
+    const out: LegacyTool[] = [];
+    for (const t of this.all()) {
+      const name = t.name();
+      if (seen.has(name)) continue;
+      if (this.isCurrentlyEnabled(t) && this.isToolDeferred(t)) {
+        seen.add(name);
+        out.push(t);
+      }
+    }
+    return out;
+  }
 }

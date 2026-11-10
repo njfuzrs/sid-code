@@ -264,9 +264,9 @@ describe("analyzeDiscovery · D4 的发现性判据", () => {
     { event: "PreToolUse", data: { tool_name: "monitor", tool_use_id: "t2" } },
   ];
 
-  test("events 里出现 tool_name=monitor 即命中 monitorCalled", () => {
+  test("events 里出现 tool_name=monitor 即命中 called", () => {
     const signal = analyzeDiscovery(eventsWithMonitor, []);
-    expect(signal.monitorCalled).toBe(true);
+    expect(signal.called).toBe(true);
   });
 
   test("tool_search 的 query 含 monitor → searched（events 里读不到 query，只能看 traj）", () => {
@@ -279,7 +279,7 @@ describe("analyzeDiscovery · D4 的发现性判据", () => {
       },
     ];
     expect(analyzeDiscovery([], traj)).toEqual({
-      monitorCalled: false,
+      called: false,
       searched: true,
       mentioned: false,
     });
@@ -295,7 +295,7 @@ describe("analyzeDiscovery · D4 的发现性判据", () => {
       },
     ];
     expect(analyzeDiscovery([], traj)).toEqual({
-      monitorCalled: false,
+      called: false,
       searched: false,
       mentioned: true,
     });
@@ -309,7 +309,7 @@ describe("analyzeDiscovery · D4 的发现性判据", () => {
       },
     ];
     expect(analyzeDiscovery([], traj)).toEqual({
-      monitorCalled: false,
+      called: false,
       searched: false,
       mentioned: false,
     });
@@ -326,13 +326,13 @@ describe("analyzeDiscovery · D4 的发现性判据", () => {
       { message_type: "observation", content: "line-1" },
     ];
     expect(analyzeDiscovery([], traj)).toEqual({
-      monitorCalled: false,
+      called: false,
       searched: false,
       mentioned: false,
     });
   });
 
-  test("traj 里直接调用 monitor 也命中 monitorCalled（不依赖 events）", () => {
+  test("traj 里直接调用 monitor 也命中 called（不依赖 events）", () => {
     const traj: TrajStep[] = [
       {
         message_type: "action",
@@ -341,7 +341,55 @@ describe("analyzeDiscovery · D4 的发现性判据", () => {
         content: "",
       },
     ];
-    expect(analyzeDiscovery([], traj).monitorCalled).toBe(true);
+    expect(analyzeDiscovery([], traj).called).toBe(true);
+  });
+
+  // ── D6（FIX-5）：target 参数化的发现性判据（task_output / workflow 场景） ──
+
+  test("target=task_output：tool_search 搜过即命中 searched（D6 场景判据）", () => {
+    const traj: TrajStep[] = [
+      {
+        message_type: "action",
+        tool_name: "tool_search",
+        tool_input: { query: "select:task_output", max_results: 3 },
+        content: "回看后台输出用这个。",
+      },
+    ];
+    expect(analyzeDiscovery([], traj, "task_output")).toEqual({
+      called: false,
+      searched: true,
+      mentioned: false,
+    });
+  });
+
+  test("target=workflow：回复提到即命中 mentioned（弱命中档）", () => {
+    const traj: TrajStep[] = [
+      {
+        message_type: "action",
+        tool_name: undefined,
+        action: "final_answer",
+        content: "这种规模用 workflow 编排脚本最合适。",
+      },
+    ];
+    expect(analyzeDiscovery([], traj, "workflow")).toEqual({
+      called: false,
+      searched: false,
+      mentioned: true,
+    });
+  });
+
+  test("target 不串扰：搜 task_output 不误命中 workflow 的判据", () => {
+    const traj: TrajStep[] = [
+      {
+        message_type: "action",
+        tool_name: "tool_search",
+        tool_input: { query: "select:task_output" },
+        content: "",
+      },
+    ];
+    // called 是全等匹配（tool_name === target），搜过 task_output 不算 workflow 命中
+    expect(analyzeDiscovery([], traj, "task_output").called).toBe(false);
+    expect(analyzeDiscovery([], traj, "workflow").searched).toBe(false);
   });
 });
 
