@@ -32,7 +32,7 @@ const { values, positionals } = parseArgs({
     source: { type: "boolean", default: false },
     binary: { type: "string" },
     keep: { type: "boolean", default: false },
-    // 缺省只跑 G2：G4（TUI）有自己的稳定期，混跑会让它的抖动污染 G2 的转正判据。
+    // 缺省只跑 G2：G4（TUI）时序敏感，分开跑红了能直接归因到层（CI 上也是两步）。
     // 按名字指定用例时不按层过滤（指名即意图）。
     layer: { type: "string", default: "G2" },
   },
