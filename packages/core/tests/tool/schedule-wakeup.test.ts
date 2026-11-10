@@ -95,3 +95,24 @@ describe("D19：描述把外部状态引导到 monitor", () => {
     expect(description).toContain("缓存 TTL");
   });
 });
+
+describe("N2：排完唤醒要结束本轮（否则唤醒永远排队）", () => {
+  // 缺陷形态（20261109-160803-fbb02831）：两次排完唤醒，**下一个动作**都是继续前台查 CI
+  // （1.5s / 1.3s 后）。唤醒只在本轮结束、会话空闲后注入，模型留在本轮轮询就把自己排的
+  // 唤醒堵在队列里——第二个唤醒晚了 383s（`ScheduledFire.lag_ms = 383270`）。
+  // 旧返回文案只有「已安排」+「目标达成后用 cron_delete 取消」，没有一句说这件事。
+  it("返回文案说明唤醒只在本轮结束后触发，并要求结束本轮", async () => {
+    const tool = new ScheduleWakeupTool();
+    const res = await tool.execute({ delay_seconds: 120, prompt: "检查 CI" });
+    expect(res.output).toContain("本轮结束");
+    expect(res.output).toContain("结束本轮");
+    // 原有两条信息不能丢：模型要靠它决定要不要撤掉多余的唤醒
+    expect(res.output).toContain("cron_delete");
+  });
+
+  it("工具描述写明唤醒只在本轮结束后触发（描述在首次选工具时就要看到）", () => {
+    const description = new ScheduleWakeupTool().description();
+    expect(description).toContain("本轮结束");
+    expect(description).toContain("结束本轮");
+  });
+});
