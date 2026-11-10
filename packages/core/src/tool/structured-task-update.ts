@@ -38,6 +38,8 @@ const taskUpdateSchema = lazySchema(() =>
 export class TaskUpdateTool implements Tool {
   readonly zodSchema = taskUpdateSchema();
   readonly shouldDefer = true;
+  readonly guidance =
+    "更新结构化清单里某条任务的状态/负责人，或补依赖关系时用；todo_write 只管会话内清单，跨会话追踪用它。";
   readonly searchHint =
     "structured task list update status owner blocks 结构化 任务 清单 更新 状态 依赖 删除";
   readonly exemptFromLoopDetection = true;

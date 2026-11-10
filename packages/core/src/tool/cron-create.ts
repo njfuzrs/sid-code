@@ -55,6 +55,8 @@ export class CronCreateTool implements Tool {
   readonly zodSchema = cronCreateSchema();
   /** 长尾工具：定时调度低频使用，延迟加载，由 tool_search 按需调出 */
   readonly shouldDefer = true;
+  readonly guidance =
+    "用户用自然语言表达时间意图时用（「3 点提醒我」「每 5 分钟查一次」）：一次性或固定间隔的定时任务都建在这。";
   readonly searchHint = "cron schedule timer recurring reminder 定时 调度 计划任务 提醒";
 
   name(): string {

@@ -201,6 +201,20 @@ Sub-agent (\`sub_agent\`) output comes back into your context as a \`<task-notif
 </subagent-result-policy>`;
 }
 
+/**
+ * 延迟工具速查段（英文版）。对应中文版 buildDeferredToolsGuidanceSection（FIX-5 / D6）。
+ * lines 由中文版函数按名称排序后生成（guidance 文案本身是中文——本仓语言规则允许
+ * 代码标识符/工具文案保持原文，en 档只翻译框架措辞）。
+ */
+export function buildDeferredToolsGuidanceSectionEn(lines: string[]): string {
+  return `
+<deferred-tools-guidance>
+## Deferred tools at a glance — when to use which
+The tools below are not in the first turn's context by default. Activate one with \`tool_search\` first (\`select:<tool_name>\`), then pick by usage:
+${lines.join("\n")}
+</deferred-tools-guidance>`;
+}
+
 /** 等待外部状态引导（英文版）。对应中文版 buildWaitingSection（FIX-3 / D4）。 */
 export function buildWaitingSectionEn(monitorDeferred = false): string {
   const activationNote = monitorDeferred

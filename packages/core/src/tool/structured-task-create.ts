@@ -27,6 +27,8 @@ const taskCreateSchema = lazySchema(() =>
 export class TaskCreateTool implements Tool {
   readonly zodSchema = taskCreateSchema();
   readonly shouldDefer = true;
+  readonly guidance =
+    "在结构化任务清单里新建一条任务（带依赖/负责人）时用；想说的清单有多条、要跨轮追踪进度就用它。";
   readonly searchHint = "structured task list create 结构化 任务 清单 新建 create todo 依赖";
   /** 任务清单维护类工具，连续 create 是正当行为，豁免循环检测 */
   readonly exemptFromLoopDetection = true;

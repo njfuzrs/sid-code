@@ -56,6 +56,8 @@ export class TaskGetTool implements Tool {
   readonly zodSchema = taskGetSchema();
   /** 长尾工具：仅在有后台任务时使用，延迟加载，由 tool_search 按需调出 */
   readonly shouldDefer = true;
+  readonly guidance =
+    "查单个后台任务（Shell/Agent/Workflow）的状态与输出明细时用；任务完成会自动通知，不要用它等待。";
   readonly searchHint = "background task get detail 后台 任务 详情 查询 bg_task_get";
   /**
    * 任务管理类工具，连续查询**不同**后台任务状态是正当轮询而非循环，豁免循环检测。

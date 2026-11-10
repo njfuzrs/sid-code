@@ -48,6 +48,8 @@ export class ScheduleWakeupTool implements Tool {
   readonly zodSchema = scheduleWakeupSchema();
   /** 长尾工具：动态轮询低频使用，延迟加载，由 tool_search 按需调出 */
   readonly shouldDefer = true;
+  readonly guidance =
+    "要等一段不确定的时长后回来再看（自适应轮询）时用：每轮检查后自选下次延迟；一次性的固定提醒用 cron_create。";
   readonly searchHint =
     "schedule wakeup poll delay dynamic interval 唤醒 轮询 延迟 自定步 等待 稍后";
 

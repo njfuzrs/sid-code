@@ -61,6 +61,22 @@ export interface ToolCapabilityFields<Input = unknown> {
   /** 标记为延迟加载——默认不进 LLM 上下文（由 ToolSearch 按需调出） */
   shouldDefer?: boolean;
 
+  /**
+   * 何时该用（一句话意图映射），用于系统提示的 <deferred-tools-guidance> 段。
+   *
+   * D6（方案 20261109）：延迟加载的契约原先只覆盖「名字可见」（deferredToolNames），
+   * 不覆盖「知道何时用」——有引导的 schedule_wakeup 自然调用 18 次、无引导的 monitor
+   * 0 次。本字段让每个延迟工具在自身定义处自报「何时用」，由
+   * tests/tool/deferred-guidance.test.ts 门禁保证 shouldDefer 工具 100% 覆盖
+   * （漏报 = CI 红，而不是静默复现可发现性缺口）。
+   *
+   * - 只写「什么时候选它」一句话；参数细节归 description（激活后才可见，写两遍是常驻成本）。
+   * - 已有专门引导段的工具（cron 系见 system-prompt 的 DEDICATED_GUIDANCE_SECTIONS）
+   *   仍需声明本字段：门禁按「全部内置 shouldDefer 工具」收口，专门段哪天删除时它自动进速查段。
+   * - MCP 工具（mcp__ 前缀）按前缀规则延迟、由 server 动态注册，无本字段落点，不进门禁。
+   */
+  guidance?: string;
+
   /** 强制不进延迟加载（ToolSearch 启用时仍首轮可见） */
   alwaysLoad?: boolean;
 

@@ -44,6 +44,7 @@ type ForwardedKey = keyof ToolCapabilityFields | "isDestructive";
 const FORWARDED_KEYS: Record<ForwardedKey, true> = {
   zodSchema: true,
   searchHint: true,
+  guidance: true,
   shouldDefer: true,
   alwaysLoad: true,
   interruptBehavior: true,
