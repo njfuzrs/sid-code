@@ -35,6 +35,7 @@
     "smoke:mutate": "bun run scripts/smoke/mutate.ts",
     "smoke:tui": "bun run scripts/smoke/run.ts --layer G4",
     "verify:agent-note": "bun run scripts/verify-agent-note.ts",
+    "verify:monitor": "bun run scripts/verify-monitor.ts",
     "verify:doc-claims": "bun run scripts/verify-doc-claims.ts",
     "trace:integrity": "bun run scripts/trace-integrity.ts",
     "catalog:coverage": "bun run scripts/catalog-coverage.ts",
