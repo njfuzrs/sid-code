@@ -11,12 +11,18 @@
  * 如果 hook/classifier 在宽限期内先返回则优先采纳，减少误触。
  *
  * resolve-once 语义：第一个到达的决策生效，后续忽略。
+ *
+ * 兜底 fail-closed：三路**都没接上**时立即拒绝，不白等满超时。判据是
+ * 「有没有路径可等」而不是 isInteractive —— 后者只决定 user 路径启不启动。
  */
 
 import type { Decision } from "./types.ts";
 import { getLogger } from "../debug/logger.ts";
 
-/** 决策来源 */
+/**
+ * 决策来源。
+ * - `auto`：三路都没接上时的框架兜底（立即 fail-closed），不是「非交互」的别名。
+ */
 export type DecisionSource = "hook" | "classifier" | "user" | "timeout" | "auto";
 
 /** 决策结果（带来源） */
@@ -71,9 +77,17 @@ export async function resolvePermission(
   const timeoutMs = options.timeoutMs ?? (options.isSubAgent ? 5000 : 300_000);
   const gracePeriodMs = options.gracePeriodMs ?? 200;
 
+  // 用户路径是否真的会启动。三处判据（grace 初始化 / Race 3 / 兜底）必须同源：
+  // 只判 `options.userDecision` 会让「传了 userDecision 但 isInteractive=false」的
+  // 情形 grace 计时器空转、兜底又误以为有路可等，最后白等满超时（默认 5 分钟）。
+  const userDecisionPath =
+    options.userDecision && options.isInteractive && !options.isSubAgent
+      ? options.userDecision
+      : null;
+
   return new Promise<DecisionResult>((outerResolve) => {
     let resolved = false;
-    let graceExpired = !options.userDecision; // 无用户路径时 grace 立即过期
+    let graceExpired = !userDecisionPath; // 无用户路径时 grace 立即过期
     const startTime = Date.now();
 
     const finish = (result: DecisionResult) => {
@@ -83,7 +97,7 @@ export async function resolvePermission(
     };
 
     // Grace period timer
-    if (options.userDecision && gracePeriodMs > 0) {
+    if (userDecisionPath && gracePeriodMs > 0) {
       setTimeout(() => {
         graceExpired = true;
       }, gracePeriodMs);
@@ -122,7 +136,7 @@ export async function resolvePermission(
     }
 
     // Race 3: User 路径
-    if (options.userDecision && options.isInteractive && !options.isSubAgent) {
+    if (userDecisionPath) {
       const userResolve: UserResolve = {
         resolve(decision: Decision, alwaysAllow?: boolean) {
           if (resolved) return;
@@ -146,7 +160,7 @@ export async function resolvePermission(
           return resolved;
         },
       };
-      options.userDecision(req, userResolve);
+      userDecisionPath(req, userResolve);
     }
 
     // Timeout fallback
@@ -159,54 +173,22 @@ export async function resolvePermission(
       });
     }, timeoutMs);
 
-    // 非交互且无 hook/classifier → 立即 deny
-    if (!options.isInteractive && !options.hookDecision && !options.classifierDecision) {
+    // 兜底：三路都没接上时立即 fail-closed，不白等超时。
+    //
+    // 判据刻意**不是** isInteractive —— 它只决定 user 路径启不启动，
+    // 「有没有路可等」才是会不会挂满超时的根源。典型形态：调用方传了
+    // isInteractive=true 却没接 userDecision，旧判据不成立，只能等满
+    // 300s 才超时拒绝（交互式会话就这么被卡住 5 分钟）。
+    //
+    // 非交互场景的 ask 到不了这里：checker 在非交互模式下已经把 ask 落成
+    // deny（`checker.ts` 的 `isNonInteractive()` 分支），返回的决策不带
+    // needsConfirmation，调用方根本不会启动三路竞争。这里保留兜底只为
+    // 框架自身的 fail-closed 语义（任何一路都没接时不许静默挂起）。
+    if (!userDecisionPath && !options.hookDecision && !options.classifierDecision) {
       finish({
-        decision: { allowed: false, reason: "非交互模式，无自动决策路径" },
+        decision: { allowed: false, reason: "无任何权限决策路径，立即拒绝" },
         source: "auto",
       });
     }
   });
-}
-
-// ── 保留旧 API 兼容（PermissionResolver 类） ──
-
-/**
- * @deprecated 使用 resolvePermission() 替代
- */
-export class PermissionResolver {
-  private resolved = false;
-  private resolveCallback: ((result: DecisionResult) => void) | null = null;
-
-  waitForDecision(): Promise<DecisionResult> {
-    return new Promise((resolve) => {
-      this.resolveCallback = resolve;
-    });
-  }
-
-  resolve(decision: Decision, source: DecisionSource, alwaysAllow?: boolean): boolean {
-    if (this.resolved) return false;
-    this.resolved = true;
-    this.resolveCallback?.({ decision, source, alwaysAllow });
-    return true;
-  }
-
-  isResolved(): boolean {
-    return this.resolved;
-  }
-
-  cancel(reason: string): void {
-    if (this.resolved) return;
-    this.resolved = true;
-    this.resolveCallback?.({
-      decision: { allowed: false, reason },
-      source: "timeout",
-    });
-  }
-}
-
-/** 生成唯一决策 ID */
-let decisionCounter = 0;
-export function createDecisionId(): string {
-  return `perm_${++decisionCounter}_${Date.now()}`;
 }

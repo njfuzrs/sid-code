@@ -27,7 +27,12 @@ import { persistTeamTasks, loadTeamTasks, claimNextTeamTask } from "../task/team
 import { getLogger } from "../debug/logger.ts";
 import type { ProviderRegistry } from "../llm/registry.ts";
 import { Registry as ToolRegistry } from "../tool/registry.ts";
-import type { Checker, PermissionRequest, Decision } from "../permission/types.ts";
+import type {
+  Checker,
+  PermissionRequest,
+  PermissionCheckOptions,
+  Decision,
+} from "../permission/types.ts";
 /**
  * P3-2：teammate 显示模式（对齐 CC teammateMode 的 tmux / in-process 两态）。
  *
@@ -251,16 +256,24 @@ export class TeamManager {
    * 逻辑：底层 checker(dontAsk 语义) 判定 deny 时直接拒绝；
    * 判定 needsConfirmation(ask) 时不直接 deny，而是通过 PermissionSync 转发给 leader 裁决。
    * leader allow → 放行；leader deny → 拒绝。
+   *
+   * 包装器是 `Checker` 接口的一层**透传**，不是收窄：入参（尤其是第 4 个 `options`）
+   * 与出参的元数据都要原样穿过，否则上层看到的就是一个和底层不一致的 checker。
    */
   private createEscalateChecker(baseChecker: Checker, teammateName: string): Checker {
     const permSync = this.permissionSync;
-    return {
+    const checker: Checker = {
       async check(
         req: PermissionRequest,
         tool?: unknown,
         toolContext?: unknown,
+        options?: PermissionCheckOptions,
       ): Promise<Decision> {
-        const decision = await baseChecker.check(req, tool, toolContext);
+        // B33：`options` 必须透传。它装着 PreToolUse hook 的 permissionDecision
+        // （allow / ask），底层 checker 在管线末尾消费它。包装器只声明三个形参时，
+        // 这个决策在 swarm 子代理上整体失效：hook ask 本该拦下的操作会被底层直接放行
+        // （连 leader 都不会问，因为底层返回 allowed），hook allow 本该放行的却转去问 leader。
+        const decision = await baseChecker.check(req, tool, toolContext, options);
 
         // 直接允许或直接拒绝(非 ask) → 照常
         if (decision.allowed) return decision;
@@ -273,13 +286,42 @@ export class TeamManager {
           description:
             req.description || `${req.toolName}: ${JSON.stringify(req.input).slice(0, 120)}`,
         });
+        const leaderAllowed = verdict === "allow" || verdict === "allow-always";
+        const leaderReason = leaderAllowed ? `leader 批准 (${verdict})` : "leader 拒绝";
 
-        if (verdict === "allow" || verdict === "allow-always") {
-          return { allowed: true, reason: `leader 批准 (${verdict})` };
+        // B20/B33：leader 裁决是 swarm 侧的「确认弹窗终局」，必须落审计。
+        // 修前包装器只实现 check，既不转发底层的 auditConfirmationOutcome，也不在裁决后
+        // 自己记一行 —— 审计里永远没有 leader 这一档，`confirm_source` 取不到值。
+        // 只写审计、不改决策状态，与该方法的契约一致。
+        try {
+          baseChecker.auditConfirmationOutcome?.(req, {
+            allowed: leaderAllowed,
+            source: "leader",
+            reason: leaderReason,
+            decisionReason: decision.decisionReason,
+          });
+        } catch {
+          /* 审计失败不影响执行（与 tool-executor 的 B20 调用处同口径） */
         }
-        return { allowed: false, reason: decision.reason || "leader 拒绝" };
+
+        // 保留底层决策的 mode / decisionReason（回答「为什么要问 leader」）；
+        // needsConfirmation 必须清掉——上层看到它仍为 true 会继续走确认/降级分支，
+        // 等于把 leader 已经给出的结论覆盖掉。
+        const { needsConfirmation: _needsConfirmation, ...rest } = decision;
+        return leaderAllowed
+          ? { ...rest, allowed: true, reason: leaderReason, step: "leader-allow" }
+          : { ...rest, allowed: false, reason: leaderReason, step: "leader-deny" };
       },
     };
+
+    // 包装器只实现 check 会把底层的可选能力整体遮住。其中 auditConfirmationOutcome
+    // 是上层在确认终局后要调的入口（如 tool-executor 的三路竞争后），必须转发；
+    // 其余可选方法当前没有经包装器调用的上层，保持不转发以免夹带行为变化。
+    if (baseChecker.auditConfirmationOutcome) {
+      checker.auditConfirmationOutcome = (req, outcome) =>
+        baseChecker.auditConfirmationOutcome!(req, outcome);
+    }
+    return checker;
   }
 
   // ============================================================
