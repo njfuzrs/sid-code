@@ -637,38 +637,40 @@ async function runAgentLoopInner(
     // 每轮开始前的回调（SendMessage 注入等）
     config.onBeforeTurn?.(turns);
 
+    // 本轮 harness 注入片段。**只进发送副本，不写回 ctxMgr**——见
+    // query/reminder-inject.ts「不变量 3」。
+    //
+    // 这两段（LSP 诊断、todo 回注）此前都走 `ctxMgr.addMessage({role:"user"})`，
+    // 是子代理侧唯一两处绕开该不变量的点（主循环同内容都走 reminderParts）。
+    // 破坏的后果不是"模型分不清谁在说话"（围栏一直都在，压缩侧 isInternalTextBlock
+    // 也兜住了），而是**历史只增不减**：主循环同一份诊断下一轮就撤掉，子代理这条
+    // 永久留在历史里，之后每轮随 getCleanedMessages() 重发给模型，直到被压缩裁掉。
+    // 诊断的累积速度由编辑频率决定，todo 回注由节流窗口决定。
+    //
+    // 现在收集成片段，发送前经一次 injectReminders 注入成带 `transient` 标记的 block。
+    // 围栏仍然必须自己带（见各段注释）——injectReminders 的兜底不是免写围栏的理由。
+    const reminderParts: string[] = [];
+
     // LSP 诊断注入（子代理侧补齐，对标主循环 query/loop.ts 的 G1）。
-    // 上一轮若编辑过文件，此处收集本子代理名下文件的实时诊断注入为 user 消息，让子代理感知
-    // 自己编辑引入的类型/语法错误。归属 = agentId，与 agent/tool-executor 的 syncFileToLSP 同值。
-    // ctxMgr.addMessage 会自动合并连续同角色消息，注入 user 消息不破坏角色交替。
+    // 上一轮若编辑过文件，此处收集本子代理名下文件的实时诊断，让子代理感知自己编辑
+    // 引入的类型/语法错误。归属 = agentId，与 agent/tool-executor 的 syncFileToLSP 同值。
     if (hasEditCapability && editedFiles.size > 0) {
       try {
         const { collectDiagnosticText } = await import("../lsp/manager.ts");
         // 2026-11-05 起是 async（注入前做带外修改漂移校验），**必须 await**
         const diagnosticText = await collectDiagnosticText(diagnosticOwner);
         if (diagnosticText) {
-          ctxMgr.addMessage({
-            role: "user",
-            content: [
-              {
-                type: "text",
-                // 必须带 <system-reminder> 围栏 + 「非用户输入」声明，且**绝不能用 `#`
-                // markdown 标题开头**（对齐 query/loop.ts 的主循环文案）。原文案
-                // `# LSP 诊断…` 与用户 prompt 的 `# Commit:` 形态完全混同，是
-                // 2026-07-29 那次"模型分不清谁在说话"的三处裸注入之一。
-                //
-                // 子代理这一处比主循环更需要围栏：它走 ctxMgr.addMessage({role:"user"})，
-                // 注入的是一条**真正的 user 消息**，形态上与用户输入无法区分；主循环走
-                // reminderParts 通道，至少还有 injectReminders 的兜底包裹。
-                text:
-                  `<system-reminder>\n` +
-                  `LSP 诊断（来自语言服务器的实时反馈，非用户输入）：\n\n${diagnosticText}\n\n` +
-                  `以上是语言服务器对你刚编辑文件的实时分析结果。请关注其中的 Error / Warning，` +
-                  `在后续工作中修复这些问题；若与当前任务无关可暂不处理，但不要无视真实的类型/语法错误。\n` +
-                  `</system-reminder>`,
-              },
-            ],
-          });
+          // 必须带 <system-reminder> 围栏 + 「非用户输入」声明，且**绝不能用 `#`
+          // markdown 标题开头**（对齐 query/loop.ts 的主循环文案）。原文案
+          // `# LSP 诊断…` 与用户 prompt 的 `# Commit:` 形态完全混同，是
+          // 2026-07-29 那次"模型分不清谁在说话"的三处裸注入之一。
+          reminderParts.push(
+            `<system-reminder>\n` +
+              `LSP 诊断（来自语言服务器的实时反馈，非用户输入）：\n\n${diagnosticText}\n\n` +
+              `以上是语言服务器对你刚编辑文件的实时分析结果。请关注其中的 Error / Warning，` +
+              `在后续工作中修复这些问题；若与当前任务无关可暂不处理，但不要无视真实的类型/语法错误。\n` +
+              `</system-reminder>`,
+          );
           log.info("AGENT_LOOP", "注入 LSP 诊断反馈（子代理）");
         }
       } catch {
@@ -688,13 +690,8 @@ async function runAgentLoopInner(
     if (todosForReminder && countUnfinished(todosForReminder) > 0) {
       const turnsSinceReminder = turns - lastTodoReminderTurn;
       if (turnsSinceReminder >= TODO_REMINDER_CONFIG.TURNS_BETWEEN_REMINDERS) {
-        ctxMgr.addMessage({
-          role: "user",
-          // buildTodoReminder 自带 <system-reminder> 围栏与「请勿向用户提及」声明。
-          // 与上面 LSP 那段同理：子代理走 addMessage({role:"user"})，注入的是一条真正的
-          // user 消息，围栏是它与用户输入唯一的区分手段，不能省。
-          content: [{ type: "text", text: buildTodoReminder(todosForReminder) }],
-        });
+        // buildTodoReminder 自带 <system-reminder> 围栏与「请勿向用户提及」声明。
+        reminderParts.push(buildTodoReminder(todosForReminder));
         lastTodoReminderTurn = turns;
         log.info(
           "AGENT_LOOP",
@@ -772,8 +769,9 @@ async function runAgentLoopInner(
         ) {
           messagesForSend = sendCopy;
         } else {
-          // 末条不是 user（理论上发送前总是 user）：降级为 transient，不让副本与历史分叉
-          messagesForSend = injectReminders(messagesForSend, { ambient: [announcement] });
+          // 末条不是 user（理论上发送前总是 user）：降级为 transient，不让副本与历史分叉。
+          // 排到最前：延迟工具清单是「本轮起可用的新能力」，比诊断 / todo 回注更该先读到。
+          reminderParts.unshift(announcement);
         }
         log.info(
           "AGENT_LOOP",
@@ -782,6 +780,24 @@ async function runAgentLoopInner(
       }
       for (const n of added) announcedDeferredTools.add(n);
       for (const n of vanished) announcedDeferredTools.delete(n);
+    }
+
+    // 本轮 transient reminder 一次性注入（诊断 / todo 回注 / deferred 降级播报）。
+    //
+    // **必须只调一次**：injectReminders 内部按 critical→用户块→ambient 的顺序 splice，
+    // 调两次会让第二组整体压在第一组之前（全仓同一条约定，见 query/loop.ts 的
+    // 「必须只调用一次」注释）。所以上面 deferred 的降级路径也改成往 reminderParts
+    // 里塞，而不是自己调一次 injectReminders。
+    //
+    // 注入产物带 `transient: true`，只在本次发送副本里存在，不写回 ctxMgr——
+    // 这正是上面 reminderParts 收集段省下的那笔历史债。下一轮 getCleanedMessages()
+    // 重新取历史时，这些块已经不在，不会随历史逐轮重发。
+    //
+    // 位置在 deferred 处理之后、sendParams 之前：persistent 块先写进发送副本，
+    // injectReminders 会把 ambient 排在它之后（reminder-inject 的排序约定），
+    // 不会把下一轮要撤掉的 transient 块夹在持久前缀中间造成断裂。
+    if (reminderParts.length > 0) {
+      messagesForSend = injectReminders(messagesForSend, { ambient: reminderParts });
     }
 
     const sendParams: SendParams = {
