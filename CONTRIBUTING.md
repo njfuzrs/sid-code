@@ -528,6 +528,25 @@ pre-commit hook 有 `--check` 门禁会拦住这种漂移（未装 hook 先跑 `
 > 直接写你真实的 `~/.sid-code/`。**新增含 `tests/` 的包时，必须一起加一份
 > `bunfig.toml` 指回根预载文件**（门禁见 `tests/build/test-isolation-preload-wiring.test.ts`）。
 
+### 防线分层：这个改动的回归该由哪层守
+
+PR 模板里有一行「本改动的回归由哪一层守」。按下面的顺序问，**停在第一个「是」**：
+
+| 问题 | 层 | 落在哪 |
+| --- | --- | --- |
+| 不跑模型、不起进程就能判对错？ | **G1** 单测 | 各包 `tests/` |
+| 给定模型响应之后，行为是确定的吗？（hook 触不触发、预算熔不熔断、权限拦不拦、轨迹记不记） | **G2** 无头回放冒烟 | `tests/smoke/cases/`，`bun run smoke` |
+| 要模型「自己选择」走某条路，但判据是开关型的？ | **G3** 真模型冒烟 | 维护者本机，贡献者不用管 |
+| 判据在屏幕上或键盘交互里？（Esc+Esc、对话框、退出不挂） | **G4** TUI e2e | `tests/smoke/cases/`（带 `tui` 剧本），`bun run smoke:tui` |
+| 判据是「做得好不好」，只能看通过率？ | **G5** 评测 | `evals/`，维护者职责 |
+
+一个功能通常拆成两半：harness 那一半（模型说了 X 之后 sid-code 做对没有）是确定性的，放 G2；
+模型那一半（模型会不会说 X）放 G3。**已经有单测守住的不重复造 G2**，只有「跨多个模块按真实顺序
+串起来才会出错」的那段才值得一个冒烟用例。
+
+修 bug 时多写一句「之前为什么没拦住」：这是复盘里「本该在哪层被拦住」的原始数据。
+纯文档、排版改动写「不需要：<原因>」即可——这一行是让人在写代码前想一下，不是门禁，没有检查会拦它。
+
 ---
 
 ## 提交与 PR
@@ -568,6 +587,8 @@ PR 要求：
 
 lifecycle 与 class 都是**闭集**，模板在 `.agents/notes/_template.md`，
 完整格式与理由在 `.agents/notes/README.md`。
+方案出自私有文档库时，frontmatter 可以加一行 `Source: <文档标题>（yyyy-mm-dd）`，**不写路径**
+（私有路径进开源仓点不开）。
 
 判断卡不住时问一句：**半年后有人问"当时为什么这么定"，答案在哪？**
 只在你脑子里 → 需要一份 Note；代码里一目了然（改拼写、提取变量）→ 不需要。
@@ -578,6 +599,10 @@ lifecycle 与 class 都是**闭集**，模板在 `.agents/notes/_template.md`，
 
 `rejected/` 那一格别省。**否决论证是最贵的资产**：它防的是下一个人（或下一个 agent）
 重新提议同一件事，然后把整套论证重做一遍。
+
+另有一道**只报告**的提醒（`scripts/note-reminder.ts`，CI lint job）：PR 改了
+`packages/core/src/{query,tool,permission,hook,llm,context}/` 却没有 `.agents/notes/` 改动时，
+checks 页上会出现一条 warning 注解。它永远不会让 CI 变红；平凡改动忽略即可。
 
 门禁只查形态（`bun run verify:agent-note`，pre-commit 在 staged 含 `.agents/notes/**` 时触发）：
 路径、闭集、frontmatter 的 `Status` 与所在目录一致、三段都在且非空。

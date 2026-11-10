@@ -329,6 +329,16 @@ jobs:
           git fetch --no-tags --depth=2 origin "$GITHUB_SHA"
           bun run scripts/smoke/expect-guard.ts --base HEAD^1 --head HEAD
 
+      # Agent Note 缺失提醒（质量防线分层专项总纲 §3.6，M6）：改了 core 的
+      # query/tool/permission/hook/llm/context 却没带 `.agents/notes/` 改动 → `::warning::` 注解 + step summary。
+      # **只报告不阻断**：脚本恒退 0，这一步再加 continue-on-error 双保险——「非平凡」要语义判断，
+      # 做成阻断会逼人写空 Note 过闸。不发 PR 评论：那要给 job 加写权限，fork PR 上也发不出去。
+      # 依赖上一步 fetch 好的两层历史（HEAD^1）。
+      - name: Agent Note 缺失提醒（只报告）
+        if: github.event_name == 'pull_request'
+        continue-on-error: true
+        run: bun run scripts/note-reminder.ts --base HEAD^1 --head HEAD
+
       # P2-1：格式门禁。与 oxlint 同 job（都是几百毫秒的静态检查，见下方同款理由）。
       #
       # 为什么服务端也要有：pre-commit 装在本地且能被 --no-verify 跳过，而 formatter
