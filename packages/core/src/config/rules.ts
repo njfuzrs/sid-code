@@ -759,9 +759,18 @@ function isWithinDir(dir: string, root: string): boolean {
   return rel === "" || (!rel.startsWith("..") && !rel.startsWith(sep) && !/^[A-Za-z]:/.test(rel));
 }
 
-/** 查找全局 CLAUDE.md */
+/**
+ * 查找全局 CLAUDE.md（用户级）。
+ *
+ * 第一候选必须走 `getClaudeHome()`，不能写 `join(homedir(), ".claude")`：后者不认
+ * `CLAUDE_CONFIG_DIR`，配置目录被重定向（`CLAUDE_CONFIG_DIR` / `SID_CONFIG_DIR` 做隔离、
+ * CI、多账号）时仍去读真实 HOME 的那份。而这一层是 `user`（可信层）——它能设
+ * `## Permission Mode` 与 `## Allowed Tools`，等于重定向的隔离意图被一份"本该读不到的文件"
+ * 抬了权限档（2026-11-10 实测：重定向到 tmp 后仍返回 `/Users/<user>/.claude/CLAUDE.md`）。
+ * 同层的 `userRulesDirs()` 早就是 `getClaudeHome()` 口径，这里对齐，两条用户级读取路径不允许再分叉。
+ */
 export function findGlobalCLAUDEmd(): string | null {
-  const globalPath = join(homedir(), ".claude", "CLAUDE.md");
+  const globalPath = join(getClaudeHome(), "CLAUDE.md");
   if (existsSync(globalPath)) return globalPath;
   // 也检查 sid-code 自己的配置目录
   const sidCodePath = sidHomePath("CLAUDE.md");

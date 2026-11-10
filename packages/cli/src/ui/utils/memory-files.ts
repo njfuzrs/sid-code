@@ -6,9 +6,9 @@
  */
 
 import { statSync, readFileSync } from "fs";
-import { join } from "path";
+import { join, relative, isAbsolute, sep } from "path";
 import { homedir } from "os";
-import { sidHomePath } from "@sid-code/core/config/paths.ts";
+import { getClaudeHome, sidHomePath } from "@sid-code/core/config/paths.ts";
 
 export type MemoryScope = "project" | "user";
 
@@ -65,6 +65,17 @@ function probe(absPath: string, displayPath: string, scope: MemoryScope): Memory
 }
 
 /**
+ * 展示用路径：能缩成 `~/…` 就缩，否则原样返回。
+ *
+ * 为什么不能写死 `~/.claude/CLAUDE.md`：配置目录被重定向后（`CLAUDE_CONFIG_DIR` /
+ * `SID_CONFIG_DIR`），真实路径不在家目录下，写死字面量会让面板指向一个并未被读取的文件。
+ */
+function displayPathOf(absPath: string): string {
+  const rel = relative(homedir(), absPath);
+  return rel.startsWith("..") || isAbsolute(rel) ? absPath : `~/${rel.split(sep).join("/")}`;
+}
+
+/**
  * 发现所有存在的 CLAUDE.md 记忆文件。
  * 项目级在前、用户级在后；同一路径去重（绝对路径）。
  */
@@ -85,8 +96,14 @@ export function discoverMemoryFiles(cwd: string): MemoryFileInfo[] {
   }
 
   // 用户级：~/.claude/CLAUDE.md 与 sid-code home 下的 CLAUDE.md
-  add(probe(join(homedir(), ".claude", "CLAUDE.md"), "~/.claude/CLAUDE.md", "user"));
-  add(probe(sidHomePath("CLAUDE.md"), "~/.sid-code/CLAUDE.md", "user"));
+  //
+  // 路径必须走 getClaudeHome() / sidHomePath()，与 config/rules.ts 的 findGlobalCLAUDEmd
+  // 同源：写 `join(homedir(), ".claude")` 会无视 CLAUDE_CONFIG_DIR 重定向，
+  // 面板展示的就不是实际被加载的那份文件（2026-11-10 对齐）。
+  const claudeMdPath = join(getClaudeHome(), "CLAUDE.md");
+  add(probe(claudeMdPath, displayPathOf(claudeMdPath), "user"));
+  const sidMdPath = sidHomePath("CLAUDE.md");
+  add(probe(sidMdPath, displayPathOf(sidMdPath), "user"));
 
   return found;
 }
