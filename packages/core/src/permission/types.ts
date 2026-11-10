@@ -187,7 +187,8 @@ export interface AuditEntry {
   /**
    * B20：确认弹窗（ask）的终局由谁作出。只出现在 ask 终局行上：
    * user（人点的）/ hook（PermissionRequest hook）/ classifier（并行分类器）/
-   * timeout（超时自动拒）/ auto（无交互通道自动拒）。
+   * timeout（超时自动拒）/ auto（无交互通道自动拒）/
+   * leader（swarm teammate 的请求经 PermissionSync 转给 leader 裁决）。
    * 同一个 tool_use_id 之前那行（若有）是「为什么要问」，这一行是「问的结果」。
    */
   confirm_source?: string;
