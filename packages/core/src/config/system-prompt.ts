@@ -459,8 +459,16 @@ export function buildSystemPrompt(ctx: SystemPromptContext): string {
     // 门禁保持"cron_create 已注册"不变（删段会丢能力可发现性），但要把
     // "这些工具需先激活"的事实一起给模型 —— 否则这一段就是在命令它调一个
     // 不在本轮 schema 里的名字（L3，本次事故的最强形态）。
+    // monitor 是否可用决定「等外部状态」的让出句指向 <waiting-capability> 还是后台 bash
+    // 兜底：waiting 段在 monitor 未注册（或企业策略关闭）时不注入，让出句不能指向一个
+    // 不存在的段落。判据与下面 waiting 段的注入条件同一口径（按名查找）。
+    const monitorAvailable = ctx.tools.some((t) => t.name() === "monitor");
     coreParts.push(
-      buildSchedulingSection(ctx.preferredLanguage, isStaticallyDeferred(cronCreateTool, deferral)),
+      buildSchedulingSection(
+        ctx.preferredLanguage,
+        isStaticallyDeferred(cronCreateTool, deferral),
+        monitorAvailable,
+      ),
     );
   }
 
@@ -1263,9 +1271,19 @@ function buildSubagentResultBoundarySection(language?: LanguagePref): string {
 /**
  * 调度能力引导（缺口 A：让模型把自然语言时间请求映射到调度工具）。
  * 仅在 cron 调度工具可用时注入，避免精简模式平白多一段 prompt。
+ *
+ * N1（docs-research 20261110 §N1）：本段只覆盖**没有可流式观测对象**的时间意图
+ * （到点提醒 / 固定间隔 / 定期复查）。「等 CI / 构建 / 部署这类外部状态」统一由
+ * <waiting-capability> 映射——历史上本段的「自适应轮询（『跑到 CI 过为止』）」与
+ * waiting 段的「只要一次通知」把同一意图映射到两个工具，模型只能靠措辞命中猜一个。
+ * monitor 被策略关闭时 <waiting-capability> 整段不注入，本段保留一个不依赖它的兜底出口。
  */
-function buildSchedulingSection(language?: LanguagePref, schedulingDeferred = false): string {
-  if (language === "en") return buildSchedulingSectionEn(schedulingDeferred);
+function buildSchedulingSection(
+  language?: LanguagePref,
+  schedulingDeferred = false,
+  monitorAvailable = false,
+): string {
+  if (language === "en") return buildSchedulingSectionEn(schedulingDeferred, monitorAvailable);
   // L3：这一段是同类 bug 的**最强形态** —— 它不是被动列名，而是**主动命令**模型
   // "主动映射到下列工具，不要只是口头答应"，而它推荐的四个工具（cron_create /
   // schedule_wakeup / cron_list / cron_delete）全部声明 shouldDefer=true。
@@ -1277,14 +1295,22 @@ function buildSchedulingSection(language?: LanguagePref, schedulingDeferred = fa
   const mapVerb = schedulingDeferred
     ? "先激活对应工具、再映射到下列调用，不要只是口头答应"
     : "主动映射到下列工具，不要只是口头答应";
+  // 「等外部状态」的出口按 monitor 是否可用二选一：<waiting-capability> 只在 monitor
+  // 已注册时注入（见 buildSystemPrompt 的门禁），让出句不能指向一个不存在的段落。
+  // 两个分支共用 `- **等外部状态**` 开头，反矛盾门禁按它识别「唯一允许提 CI/部署 的行」
+  // （tests/config/scheduling-waiting-no-contradiction.test.ts）。
+  const externalWaitExit = monitorAvailable
+    ? `- **等外部状态**（「CI 全绿了告诉我」「构建完了叫我」这类）→ 按 \`<waiting-capability>\` 选工具（后台 bash + \`wait_until_seconds\`，或 \`monitor\`）；不要用唤醒轮询。`
+    : `- **等外部状态**（「CI 全绿了告诉我」「构建完了叫我」这类）→ 用后台 bash + \`run_in_background=true\` + \`wait_until_seconds\`（命令写成条件满足就退出的循环），然后结束本轮；不要用唤醒轮询。`;
   return `
 <scheduling-capability>
 ## 定时与轮询能力
-你有一套会话内调度工具，可把「未来某时执行」「按间隔重复」「跑到某条件满足为止」的请求落地。当用户用自然语言表达时间意图时，${mapVerb}：
+你有一套会话内调度工具，可把「到点执行」「按间隔重复」「定期复查」这类请求落地。当用户用自然语言表达时间意图时，${mapVerb}：
 ${activationNote}
-- **一次性提醒**（「3 点提醒我看部署」「45 分钟后检查 CI」）→ 用 \`cron_create\`，cron 表达式定到那个具体时刻，配 \`recurring=false\`（触发一次后自删）。45 分钟后这类相对短延迟也可用 \`schedule_wakeup(delaySeconds)\`。
+- **一次性提醒**（「3 点提醒我开会」「45 分钟后提醒我复查」）→ 用 \`cron_create\`，cron 表达式定到那个具体时刻，配 \`recurring=false\`（触发一次后自删）。45 分钟后这类相对短延迟也可用 \`schedule_wakeup(delaySeconds)\`。
 - **固定间隔重复**（「每 5 分钟查一次」「每天 9 点巡检」）→ 用 \`cron_create\`，\`recurring=true\`。跨会话存活再加 \`durable=true\`。
-- **自适应轮询**（「跑到 CI 过为止」「等部署好了告诉我」这类不定期检查）→ 每轮检查后用 \`schedule_wakeup\` 自选下次延迟（钳制 60~3600 秒）。**本会话同时只保留一个待触发的唤醒，再次调用会替换前一个**（不需要手动撤销上一次）；目标达成后停止安排，并用 \`cron_delete\` 撤掉剩下的那个唤醒。
+- **定时复查**（「半小时后再看一眼」「每隔一阵看看有没有新评论」这类没有可流式观测对象的检查）→ 用 \`schedule_wakeup\` 自选下次延迟（钳制 60~3600 秒）。**本会话同时只保留一个待触发的唤醒，再次调用会替换前一个**（不需要手动撤销上一次）；目标达成后停止安排，并用 \`cron_delete\` 撤掉剩下的那个唤醒。
+${externalWaitExit}
 - **查看/取消**：用 \`cron_list\` / \`cron_delete\`。
 
 注意：
