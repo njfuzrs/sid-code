@@ -346,6 +346,19 @@ export class MonitorRateGate {
   }
 
   /**
+   * 最近一次 `drainAll` 截断丢弃的行数（D5 的 MonitorEvent.dropped 取值口径）。
+   *
+   * 从入参与出参的行数差取值（方案 D5）：`merged.length - kept.length`。
+   * 200ms 批合并不经过这里，天然不会被算成 dropped。
+   */
+  private lastDrainDropped = 0;
+
+  /** 最近一次 `drainAll` 丢弃的行数（测试与 MonitorEvent.dropped 用） */
+  get drainDropped(): number {
+    return this.lastDrainDropped;
+  }
+
+  /**
    * 进程退出前的最终冲刷：暂存行与本批行合成一条事件，**不受任何限流阀约束**。
    *
    * 为什么退出路径不该限流：限流阀限制的是「叫醒主循环的频率」，而进程退出时无论如何
@@ -361,11 +374,15 @@ export class MonitorRateGate {
   drainAll(lines: string[], maxLines = MAX_FINAL_FLUSH_LINES): string | null {
     const merged = this.deferred.length > 0 ? [...this.deferred, ...lines] : lines;
     this.deferred = [];
-    if (merged.length === 0) return null;
+    if (merged.length === 0) {
+      this.lastDrainDropped = 0;
+      return null;
+    }
 
     // 保尾不保头：汇总行在最后，被省略的行去 `.output` 里看
     const omitted = merged.length - maxLines;
     const kept = omitted > 0 ? merged.slice(omitted) : merged;
+    this.lastDrainDropped = omitted > 0 ? omitted : 0;
     const body = kept.join("\n");
     return omitted > 0 ? `${formatOmittedLinesNotice(omitted)}\n${body}` : body;
   }
@@ -693,8 +710,55 @@ function clearMonitorTimers(ctl: ActiveMonitor): void {
   ctl.exitDrainTimer = null;
 }
 
-/** 投递一条事件通知并累加已投递事件数（面板统计列 + `bg_task_list` 进展签名） */
-function enqueueMonitorEvent(taskId: string, event: string): void {
+/** monitor 事件进轨迹的 sink 载荷（D5）。字段按**投递的事件正文**计（批处理合并后的结果） */
+export interface MonitorEventTraceData {
+  /** 索引签名：sink 接到的是 recordCustomEvent 的 Record<string, unknown>，没有它类型不兼容 */
+  [key: string]: unknown;
+  task_id: string;
+  /** 本任务内第几条投递（从 1 起，连续） */
+  seq: number;
+  /** 事件正文字符数 */
+  chars: number;
+  /** 事件正文行数（含 harness 注入的合并/省略提示行——投了什么就记什么） */
+  lines: number;
+  /**
+   * 被截断丢弃的行数：只在终态冲刷按 MAX_FINAL/BURST_FLUSH_LINES 截断时非零。
+   * ⚠️ 200ms 批合并**不计**——合并行完整保留在正文里，一行没丢；把合并算 dropped
+   * 会让几乎所有事件 dropped>0，指标失效。
+   */
+  dropped: number;
+}
+
+/**
+ * monitor 事件进轨迹的模块级 sink（D5）。
+ *
+ * 产生点在 `enqueueMonitorEvent`（core 任务层，拿不到 trace collector），与
+ * `setTaskLifecycleSink` / `setWaitTraceSink` 同款：宿主在 collector 就绪后接线
+ * （app.ts），未接线时静默跳过（单测 / 无轨迹会话照常）。
+ * 有了它，monitor 事件的审计口径不再依赖解析 raw.jsonl（2~3MB/会话、默认不读）——
+ * D2 的「monitor_ev 恒为 0」正是文本口径漂移出来的。
+ */
+export type MonitorEventSink = (data: MonitorEventTraceData) => void;
+
+/** MonitorEvent 轨迹事件名（wait-audit 的 D5 主口径按它取数） */
+export const MONITOR_EVENT_NAME = "MonitorEvent";
+
+let monitorEventSink: MonitorEventSink | null = null;
+
+/** 接线 / 摘除 monitor 事件 sink（app.ts 在 trace collector 就绪后调用） */
+export function setMonitorEventSink(s: MonitorEventSink | null): void {
+  monitorEventSink = s;
+}
+
+/**
+ * 投递一条事件通知并累加已投递事件数（面板统计列 + `bg_task_list` 进展签名），
+ * 并经模块级 sink 落一条 MonitorEvent 轨迹事件（D5，未接线时静默跳过）。
+ *
+ * seq 取 updateTask 之后的 `eventCount`（本条的投递序号）：updateTask 同步执行，
+ * 随后读 getTask 拿到的就是含本条的计数；任务已终态时 updateTask 是 no-op，
+ * seq 会停在终态前的值（终态后不应再有投递，`finalized` 守卫已挡）。
+ */
+function enqueueMonitorEvent(taskId: string, event: string, dropped = 0): void {
   const task = getTask(taskId) as LocalMonitorTaskState | undefined;
   if (!task) return;
   updateTask<LocalMonitorTaskState>(taskId, (t) =>
@@ -709,6 +773,18 @@ function enqueueMonitorEvent(taskId: string, event: string): void {
     event,
     description: task.description,
   });
+  if (monitorEventSink) {
+    const after = getTask(taskId) as LocalMonitorTaskState | undefined;
+    if (after) {
+      monitorEventSink({
+        task_id: taskId,
+        seq: after.eventCount,
+        chars: event.length,
+        lines: event.split("\n").length,
+        dropped,
+      });
+    }
+  }
 }
 
 /**
@@ -748,7 +824,9 @@ function finalizeAndDrain(
       ? MAX_BURST_FLUSH_LINES
       : MAX_FINAL_FLUSH_LINES;
   const event = ctl.gate.drainAll(ctl.pendingLines.splice(0), maxLines);
-  if (event !== null) enqueueMonitorEvent(taskId, event);
+  // dropped 只计终态冲刷被截断丢弃的行（drainDropped 的口径见 MonitorRateGate）；
+  // 批处理 / 持续阀合并的行完整保留在正文里，不算丢弃（D5）
+  if (event !== null) enqueueMonitorEvent(taskId, event, ctl.gate.drainDropped);
 
   // 2) 再置位、清定时器（四处手写的 finalized = true 收成这一处）
   ctl.finalized = true;

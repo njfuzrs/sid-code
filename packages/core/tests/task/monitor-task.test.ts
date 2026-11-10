@@ -26,8 +26,10 @@ import {
   TOTAL_NOTIFY_LIMIT,
   __clearActiveMonitorsForTest,
   killMonitorTask,
+  setMonitorEventSink,
   spawnMonitorTask,
   truncateEventLine,
+  type MonitorEventTraceData,
 } from "../../src/task/monitor-task.ts";
 import type { MonitorGateLimits } from "../../src/task/monitor-task.ts";
 import { clearAllTasks, getTask } from "../../src/task/registry.ts";
@@ -662,5 +664,99 @@ describe("D3：暂存行冲刷与终态出口收敛", () => {
       sites.filter((n) => n !== "finalizeAndDrain" && n !== "__clearActiveMonitorsForTest"),
     ).toEqual([]);
     expect(sites.filter((n) => n === "finalizeAndDrain")).toHaveLength(1);
+  });
+});
+
+describe("D5：monitor 事件的 MonitorEvent 轨迹 sink", () => {
+  test("sink 收到每条投递：seq 连续、chars/lines 按投递正文计、dropped=0（批合并不算丢弃）", async () => {
+    const seen: MonitorEventTraceData[] = [];
+    setMonitorEventSink((d) => seen.push(d));
+    try {
+      // 3 行、间隔 0.25s（> EVENT_BATCH_MS 200ms）→ 3 条独立投递；0 退出码走 close 正常出口
+      const t = spawn({
+        command: "echo ev-a; sleep 0.25; echo ev-b; sleep 0.25; echo ev-c",
+        timeoutMs: 10_000,
+      });
+      await waitFor(() => {
+        const task = getTask(t.id) as LocalMonitorTaskState;
+        return task.status !== "running" ? task : undefined;
+      });
+      expect(seen.length).toBe(3);
+      expect(seen.map((d) => d.seq)).toEqual([1, 2, 3]);
+      expect(seen.every((d) => d.task_id === t.id)).toBe(true);
+      expect(seen.map((d) => d.chars)).toEqual([4, 4, 4]); // "ev-a" 等 4 字符
+      expect(seen.map((d) => d.lines)).toEqual([1, 1, 1]);
+      // 批处理 / 正常投递没有截断，dropped 全 0
+      expect(seen.every((d) => d.dropped === 0)).toBe(true);
+    } finally {
+      setMonitorEventSink(null);
+    }
+  });
+
+  test("未接线时静默跳过：投递照常，不抛错", async () => {
+    // 不 setMonitorEventSink（= null），spawn + 投递链路必须原样工作
+    const t = spawn({ command: "echo solo; sleep 0.3; echo done", timeoutMs: 10_000 });
+    await waitFor(() => {
+      const task = getTask(t.id) as LocalMonitorTaskState;
+      return task.status !== "running" ? task : undefined;
+    });
+    const task = getTask(t.id) as LocalMonitorTaskState;
+    expect(task.eventCount).toBeGreaterThanOrEqual(1); // 投递没被 sink 破坏
+  });
+
+  test("终态冲刷截断时 dropped > 0：drainDropped = 入参行数 − 保留行数", () => {
+    const gate = new MonitorRateGate();
+    // 205 行 > MAX_FINAL_FLUSH_LINES(200)：只保尾 200 行，dropped=5
+    const lines = Array.from({ length: 205 }, (_, i) => `line-${i}`);
+    const event = gate.drainAll(lines)!;
+    expect(gate.drainDropped).toBe(5);
+    expect(event).toContain("前 5 行已省略");
+    // 不截断的冲刷：dropped 回 0
+    gate.drainAll(["x"]);
+    expect(gate.drainDropped).toBe(0);
+    // 空冲刷同样清零
+    gate.drainAll([]);
+    expect(gate.drainDropped).toBe(0);
+  });
+
+  test("drainAll 的 dropped 经 sink 传出：突发阀停止路径的终态事件带 dropped>0（端到端）", async () => {
+    const seen: MonitorEventTraceData[] = [];
+    setMonitorEventSink((d) => seen.push(d));
+    try {
+      // 突发阀：10s 内超过 40 行 → rate_burst 停止，终态冲刷按 MAX_BURST_FLUSH_LINES(40) 截断。
+      const totalLines = 60;
+      const t = spawn({
+        command: `for i in $(seq 1 ${totalLines}); do echo burst-$i; done; sleep 0.5`,
+        timeoutMs: 10_000,
+      });
+      await waitFor(() => {
+        const task = getTask(t.id) as LocalMonitorTaskState;
+        return task.status !== "running" ? task : undefined;
+      });
+      // 突发阀停止只产生一条终态冲刷事件；终态冲刷只保尾 40 行。
+      //
+      // ⚠️ dropped **不能**写死 20：突发阀在累计超 40 行时立即停止任务并 kill 子进程，
+      // 子进程那 60 行的循环根本跑不完，实际打出 41~60 行中的某一个数（取决于调度）。
+      // 所以 dropped = 实际行数 - 40 是 1~20 之间的不确定值（实测 3 与 20 都出现过），
+      // 写死定值会变成 40% 概率的假失败。这里锁「截断确实发生且经 sink 传出」（> 0），
+      // 上限 20 是 60 行全打出时的理论最大值——去掉 enqueueMonitorEvent 的 dropped 传参
+      // 会让 dropped 恒 0，断言照样会红，变异自证不受影响。
+      const mine = seen.filter((d) => d.task_id === t.id);
+      expect(mine.length).toBe(1);
+      expect(mine[0]!.dropped).toBeGreaterThan(0);
+      expect(mine[0]!.dropped).toBeLessThanOrEqual(totalLines - MAX_BURST_FLUSH_LINES);
+      expect(mine[0]!.lines).toBe(41); // 40 行 + 1 行截断提示
+      expect(mine[0]!.seq).toBe(1);
+    } finally {
+      setMonitorEventSink(null);
+    }
+  });
+
+  test("变异自证占位：去掉 enqueueMonitorEvent 里的 sink 调用 → 上面两条端到端用例必须红", () => {
+    // 变异自证在 PR 验收时手工执行（改坏源码 → 重跑本 describe → 确认红 → 恢复），
+    // 这里锁定调用点存在：sink 调用不在 enqueueMonitorEvent 里，D5 整体失效
+    const src = readFileSync(new URL("../../src/task/monitor-task.ts", import.meta.url), "utf8");
+    const enqueue = src.split("function enqueueMonitorEvent")[1] ?? "";
+    expect(enqueue.includes("monitorEventSink(")).toBe(true);
   });
 });

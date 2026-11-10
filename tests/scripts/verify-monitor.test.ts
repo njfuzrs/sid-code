@@ -25,6 +25,7 @@ import {
   ALL_CASES,
   analyzeDiscovery,
   buildChecksSimScript,
+  collectMonitorEvents,
   countForegroundPolls,
   filterMonitorPids,
   findOrphanCleanupLog,
@@ -528,5 +529,46 @@ describe("D4-discovery-checks · CI 模拟与前台轮询计数（FIX-3）", () 
   test("D4-discovery-checks 在 ALL_CASES 里，可被 --case 选中", () => {
     expect(ALL_CASES).toContain("D4-discovery-checks");
     expect(parseArgs(["--case", "D4-discovery-checks"]).cases).toEqual(["D4-discovery-checks"]);
+  });
+});
+
+describe("collectMonitorEvents · D5-events 的断言取数", () => {
+  const mon = (seq: number, taskId = "m1", dropped = 0): TraceEvent => ({
+    event: "MonitorEvent",
+    timestamp: `2026-01-01T00:00:0${seq}.000Z`,
+    data: { task_id: taskId, seq, chars: 10, lines: 1, dropped },
+  });
+
+  test("seq / task_id / dropped 按落盘顺序收集", () => {
+    const out = collectMonitorEvents([
+      mon(1),
+      { event: "TaskLifecycle", timestamp: "t", data: { phase: "started" } },
+      mon(2, "m1", 3), // 突发阀截断的那条：dropped>0
+      mon(3),
+    ]);
+    expect(out.count).toBe(3);
+    expect(out.seqs).toEqual([1, 2, 3]);
+    expect(out.taskIds).toEqual(["m1"]);
+    expect(out.droppedCount).toBe(1);
+  });
+
+  test("多个 monitor 的 task_id 都收集；非 MonitorEvent 事件不参与", () => {
+    const out = collectMonitorEvents([mon(1, "m1"), mon(1, "m2")]);
+    expect(out.count).toBe(2);
+    expect(out.taskIds).toEqual(["m1", "m2"]);
+  });
+
+  test("没有 MonitorEvent（D5 未实现）→ count=0，不抛错", () => {
+    const out = collectMonitorEvents([
+      { event: "WaitRegistered", timestamp: "t", data: { kind: "monitor" } },
+    ]);
+    expect(out.count).toBe(0);
+    expect(out.seqs).toEqual([]);
+    expect(out.taskIds).toEqual([]);
+  });
+
+  test("D5-events 在 ALL_CASES 里，可被 --case 选中", () => {
+    expect(ALL_CASES).toContain("D5-events");
+    expect(parseArgs(["--case", "D5-events"]).cases).toEqual(["D5-events"]);
   });
 });
