@@ -28,6 +28,7 @@
  * | `D1b-orphan-scan-negative` | D1-b 第 2 层的**反向**用例：多会话不误杀 | PASS（无判据意义，见下） |
  * | `D4-discovery` | D4（模型是否自然发现 monitor） | FAIL（大概率；FIX-0 实测 3/3 PASS，天花板已满） |
  * | `D4-discovery-checks` | D4 的强场景：逐项检查结果（前台轮询的重灾区），判据只认实际调用 | FIX-3 采的修复前基线 |
+ * | `D5-events` | D5（events.jsonl 的 MonitorEvent 条数 / seq 连续 / task_id 一致） | FAIL（D5 前 MonitorEvent 恒 0 条） |
  *
  * ⚠️ `D1b-orphan-scan-negative` 在启动扫描实现之前**恒 PASS**（没有扫描 → 自然不误杀）。
  * 它证明的是「没有误杀」，「该杀的杀了」由 `D1b-sigkill` 第 2 步负责，两条必须成对看。
@@ -74,7 +75,8 @@ export type CaseName =
   | "D2D3-audit"
   | "D1b-orphan-scan-negative"
   | "D4-discovery"
-  | "D4-discovery-checks";
+  | "D4-discovery-checks"
+  | "D5-events";
 
 export const ALL_CASES: readonly CaseName[] = [
   "D1b-signal",
@@ -83,6 +85,7 @@ export const ALL_CASES: readonly CaseName[] = [
   "D1b-orphan-scan-negative",
   "D4-discovery",
   "D4-discovery-checks",
+  "D5-events",
 ] as const;
 
 export interface Assertion {
@@ -939,6 +942,105 @@ async function runD2D3Audit(): Promise<CaseBody> {
 }
 
 /**
+ * D5：events.jsonl 里的 MonitorEvent 是否齐全、seq 是否连续。
+ *
+ * 与 D2D3-audit 同款会话（5 行、每行间隔 ≥ EVENT_BATCH_MS），断言全部从
+ * events.jsonl 读——这是 D5 的点：monitor 事件的审计口径不再依赖解析 raw.jsonl。
+ */
+export interface MonitorEventCollection {
+  /** MonitorEvent 的条数 */
+  count: number;
+  /** 按落盘顺序的 seq 值 */
+  seqs: number[];
+  /** 出现过的 task_id（去重） */
+  taskIds: string[];
+  /** dropped > 0 的条数（限流截断的现场计数，D5 验收第 2 条用） */
+  droppedCount: number;
+}
+
+/** 收集 events.jsonl 里的 MonitorEvent（seq / task_id / dropped），供 D5-events 断言 */
+export function collectMonitorEvents(events: TraceEvent[]): MonitorEventCollection {
+  const seqs: number[] = [];
+  const taskIds = new Set<string>();
+  let droppedCount = 0;
+  for (const e of events) {
+    if (e.event !== "MonitorEvent") continue;
+    const seq = e.data?.seq;
+    const taskId = e.data?.task_id;
+    if (typeof seq === "number") seqs.push(seq);
+    if (typeof taskId === "string") taskIds.add(taskId);
+    if (typeof e.data?.dropped === "number" && e.data.dropped > 0) droppedCount++;
+  }
+  return { count: seqs.length, seqs, taskIds: [...taskIds], droppedCount };
+}
+
+async function runD5Events(): Promise<CaseBody> {
+  const token = makeToken("d5ev");
+  const lines = 5;
+  const cmd = buildTickScript(token, lines, 0.5);
+  const prompt =
+    `用 tool_search 的 select:monitor 激活 monitor 工具，然后调用 monitor 监控这个脚本` +
+    `（timeout_ms 设 60000）：${cmd}`;
+  const s = startHeadless(prompt);
+  try {
+    const dir = await waitMonitorRegistered(s);
+    if (!dir) {
+      return {
+        case: "D5-events",
+        verdict: "INVALID",
+        detail: "90s 内等不到 WaitRegistered（monitor 没挂上，模型行为波动）",
+        assertions: [],
+        session: s.sessionId() ?? undefined,
+      };
+    }
+    const sessionId = basename(dir);
+    await s.waitExit(180_000);
+    await Bun.sleep(1_000); // 等 events 落盘 flush
+    const scan = scanMonitorEvents(readEvents(dir));
+    if (!scan.completed) {
+      return {
+        case: "D5-events",
+        verdict: "INVALID",
+        detail: "monitor 没有跑到终态（会话被中断 / 模型没挂上），事件数断言无意义",
+        assertions: [],
+        session: sessionId,
+      };
+    }
+    const collected = collectMonitorEvents(readEvents(dir));
+    // seq 连续 = 从 1 起逐一递增（1,2,…,count）；中间断号说明丢事件或计数错
+    const seqContiguous = collected.seqs.every((v, i) => v === i + 1);
+    const assertions: Assertion[] = [
+      {
+        name: `MonitorEvent 条数 === ${lines}（批处理后的投递数）`,
+        pass: collected.count === lines,
+        detail: `实际 ${collected.count} 条（D5 未接线 → 0；批合并 → 少于 ${lines}）`,
+      },
+      {
+        name: `seq 连续（1..${lines}）`,
+        pass: collected.count === lines && seqContiguous,
+        detail: `实际 seq=[${collected.seqs.join(",")}]`,
+      },
+      {
+        name: "task_id 一致（单个 monitor，单一 task_id）",
+        pass: collected.count === lines && collected.taskIds.length === 1,
+        detail: `实际 task_id=[${collected.taskIds.join(",")}]`,
+      },
+    ];
+    return {
+      case: "D5-events",
+      verdict: verdictOf(assertions),
+      detail: assertions.every((a) => a.pass)
+        ? `MonitorEvent ${collected.count} 条、seq 连续、task_id 一致`
+        : `MonitorEvent 口径不对（${collected.count} 条 / seq=[${collected.seqs.join(",")}]），D5 未生效`,
+      assertions,
+      session: sessionId,
+    };
+  } finally {
+    cleanup(s.pid, token);
+  }
+}
+
+/**
  * D4：模型能不能**自然发现** monitor。
  *
  * prompt 刻意不提 monitor（「盯一下文件，每出现一行就告诉我」），同时后台每 2 秒写一行，
@@ -1163,6 +1265,8 @@ async function runCase(name: CaseName): Promise<CaseBody> {
       return runD4Discovery();
     case "D4-discovery-checks":
       return runD4DiscoveryChecks();
+    case "D5-events":
+      return runD5Events();
   }
 }
 

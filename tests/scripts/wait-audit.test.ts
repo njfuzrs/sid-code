@@ -368,7 +368,7 @@ describe("指标口径", () => {
     expect(a.exit8_errors).toBe(1);
   });
 
-  test("monitor_events：窗口内、按 task_id + 事件正文去重", () => {
+  test("monitor_events_raw（交叉校验口径）：窗口内、按 task_id + 事件正文去重", () => {
     // 真实 raw.jsonl 每行都是一个 JSON（请求快照），task-notification 嵌在消息正文里。
     // 这里照这个形态造数据：把 XML 塞进 JSON 字符串，而不是让 XML 单独成行。
     const notif = (ts: string, xml: string) =>
@@ -404,7 +404,7 @@ describe("指标口径", () => {
     ].join("\n");
     const a = auditEvents({ ...base, raw });
     // check1 重复两次只算一次；check2 算一次；无 <event> 的不算；窗口外的 late 不算
-    expect(a.monitor_events).toBe(2);
+    expect(a.monitor_events_raw).toBe(2);
   });
 
   test('D2：<event untrusted="true"> 与无属性 <event> 两种形式都计数', () => {
@@ -428,7 +428,7 @@ describe("指标口径", () => {
         "<task-notification><task-id>m1</task-id><events>c</events></task-notification>",
       ),
     ].join("\n");
-    expect(auditEvents({ ...base, raw }).monitor_events).toBe(2);
+    expect(auditEvents({ ...base, raw }).monitor_events_raw).toBe(2);
   });
 
   test("D2：用真实渲染函数产出的通知必须被计数（防夹具再次与生产格式漂移）", async () => {
@@ -444,12 +444,14 @@ describe("指标口径", () => {
       timestamp: "2026-01-01T00:00:10.000Z",
       request: { new_messages: [{ role: "user", content: xml }] },
     });
-    expect(auditEvents({ ...base, raw }).monitor_events).toBe(1);
+    expect(auditEvents({ ...base, raw }).monitor_events_raw).toBe(1);
   });
 
-  test("没读 raw 时 monitor_events 为 null（输出 n/a），不是 0", () => {
-    expect(auditEvents(base).monitor_events).toBeNull();
-    expect(auditEvents({ ...base, raw: "" }).monitor_events).toBe(0);
+  test("没读 raw 时 monitor_events_raw 为 null；主口径 monitor_events 不依赖 raw（D5）", () => {
+    expect(auditEvents(base).monitor_events_raw).toBeNull();
+    expect(auditEvents({ ...base, raw: "" }).monitor_events_raw).toBe(0);
+    // D5：主口径永远有值（老轨迹恒 0，靠 raw 交叉校验分辨）
+    expect(auditEvents(base).monitor_events).toBe(0);
   });
 });
 
@@ -500,7 +502,39 @@ describe("D3：monitor 收尾事件晚于 WaitReleased 落盘", () => {
   test("窗口终点延到该 monitor 的 delivered，收尾事件计入", () => {
     const a = auditEvents({ session: "s", events, raw });
     expect(a.window_end).toBe("2026-01-01T00:00:08.000Z");
+    expect(a.monitor_events_raw).toBe(2);
+  });
+
+  test("D5 主口径：MonitorEvent 按 task_id 归属窗口内注册的 monitor，只卡起点不卡终点", () => {
+    // 同一份 events 加上 MonitorEvent：tick-1 窗口内、tick-5 在 WaitReleased 之后
+    // （delivered 时刻 00:00:08 之后 2ms）——task_id 归属下两条都计
+    const withMonitorEvents: Ev[] = [
+      ...events,
+      {
+        event: "MonitorEvent",
+        timestamp: "2026-01-01T00:00:03.000Z",
+        data: { task_id: "m1", seq: 1, chars: 6, lines: 1, dropped: 0 },
+      },
+      {
+        event: "MonitorEvent",
+        timestamp: "2026-01-01T00:00:08.002Z",
+        data: { task_id: "m1", seq: 2, chars: 6, lines: 1, dropped: 0 },
+      },
+      // 窗口外另一个 monitor 的 MonitorEvent 不计（按 task_id 归属）
+      {
+        event: "MonitorEvent",
+        timestamp: "2026-01-01T01:00:00.002Z",
+        data: { task_id: "other", seq: 1, chars: 9, lines: 1, dropped: 0 },
+      },
+    ];
+    const a = auditEvents({ session: "s", events: withMonitorEvents, raw });
     expect(a.monitor_events).toBe(2);
+  });
+
+  test("D5 主口径：老轨迹（无 MonitorEvent）恒 0，靠 raw 交叉校验分辨", () => {
+    const a = auditEvents({ session: "s", events, raw });
+    expect(a.monitor_events).toBe(0);
+    expect(a.monitor_events_raw).toBe(2);
   });
 
   test("不相干 monitor 的 delivered 不延伸窗口、其事件不计入", () => {

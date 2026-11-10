@@ -184,6 +184,10 @@ export {
   killAllRunningMonitors,
   countRunningMonitors,
   truncateEventLine,
+  setMonitorEventSink,
+  MONITOR_EVENT_NAME,
+  type MonitorEventSink,
+  type MonitorEventTraceData,
 } from "./monitor-task.ts";
 
 export {

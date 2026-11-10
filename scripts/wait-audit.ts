@@ -49,7 +49,7 @@
  * | `zombie_wakeups` | `ScheduledInject{outcome:injected}` 晚于其前最后一次 `EndTurnShape` 的次数 | events.jsonl |
  * | `gate_retry_while_waiting` | 窗口内 `LoopTransition{type:todo_gate_retry}` 次数 | events.jsonl |
  * | `exit8_errors` | 窗口内 `gh pr checks` 退出码 8 且 `is_error=true` 的次数 | traj 的 observation |
- * | `monitor_events` | 窗口内 monitor 事件通知数（含 `<event …>` 的 `<task-notification>`，按 task_id+事件去重；窗口内注册的 monitor 按 task_id 归属，不卡终点时刻） | raw.jsonl；未读 raw 时输出 `n/a` |
+ * | `monitor_events` | 窗口内 monitor 投递的事件数。**D5 起主口径读 events.jsonl**（`MonitorEvent` 条数，按 task_id 归属窗口内注册的 monitor，只卡起点不卡终点，与 raw 口径同规则） | events.jsonl；`--with-raw` 时另跑 raw 解析做交叉校验（`monitor_events_raw`），两者不一致打印 ⚠ 警告 |
  * | `promise_violations` | `WaitReleased{late:true}` 次数（方案 §9.8「非 0 即 bug」） | events.jsonl |
  * | `late_while_terminal` | 判定违约时任务**已处终态**的次数（D4 的直接观测量，§5.4 选口径 ②） | `TaskLifecycle{phase:completed}` × `WaitReleased{late:true}` 按 id 关联 |
  *
@@ -75,6 +75,7 @@ import { existsSync, readFileSync, readdirSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
 import { matchStatusQuery } from "@sid-code/core/task/status-query-commands.ts";
+import { MONITOR_EVENT_NAME } from "@sid-code/core/task/monitor-task.ts";
 
 /** 老会话窗口终点的收尾宽限（见文件头「窗口」第 2 条，从两条基线会话标定） */
 const LEGACY_CLOSE_GRACE_MS = 120_000;
@@ -106,8 +107,16 @@ export interface WaitAudit {
   zombie_wakeups: number;
   gate_retry_while_waiting: number;
   exit8_errors: number;
-  /** `null` = 没读 raw.jsonl（不是「没有事件」），人类可读输出里显示为 `n/a` */
-  monitor_events: number | null;
+  /**
+   * 窗口内 monitor 投递的事件数（D5 起主口径）：events.jsonl 里 `MonitorEvent` 条数。
+   * 老版本轨迹（D5 合入前）没有该事件，恒为 0 —— 交叉校验会给出 ⚠，以 raw 口径为准。
+   */
+  monitor_events: number;
+  /**
+   * raw.jsonl 解析口径的 monitor 事件数（交叉校验用）。`null` = 没读 raw。
+   * 与主口径不一致时输出 ⚠（老轨迹 / 埋点丢事件两种成因，靠它分辨）。
+   */
+  monitor_events_raw: number | null;
   promise_violations: number;
   late_while_terminal: number;
   /** 窗口起止（ISO）。`none` 时为 null —— 输出里保留，便于人工复核分母 */
@@ -246,7 +255,42 @@ const EVENT_OPEN_RE = /<event(?:\s[^>]*)?>/;
 const EVENT_BODY_RE = /<event(?:\s[^>]*)?>([\s\S]*?)<\/event>/;
 
 /**
+ * 窗口内 monitor 投递的事件数（D5 主口径）：events.jsonl 里 `MonitorEvent` 的条数。
+ *
+ * 归属规则与 raw 口径一致：`monitorIds` 非空时（wait-registry 窗口）按 task_id 归属
+ * 窗口内注册的 monitor，**只卡起点不卡终点**（收尾那一批的落盘晚于 delivered，
+ * 卡终点会漏最后一条，D3）；monitorIds 为空（老会话回退 / 显式窗口）时按时间窗卡。
+ *
+ * 老版本轨迹（D5 合入前）没有 MonitorEvent 事件，返回 0——交叉校验（`--with-raw`）
+ * 会把它与 raw 口径对出来，分辨「老轨迹」与「埋点丢事件」。
+ */
+function countMonitorEventsFromEvents(
+  events: Ev[],
+  start: string,
+  end: string,
+  monitorIds: Set<string> = new Set(),
+): number {
+  let n = 0;
+  for (const e of events) {
+    if (e.event !== MONITOR_EVENT_NAME || typeof e.timestamp !== "string") continue;
+    if (e.timestamp < start) continue;
+    const id = e.data?.task_id;
+    if (typeof id !== "string") continue;
+    if (monitorIds.size > 0) {
+      if (monitorIds.has(id)) n++;
+    } else if (inWindow(e.timestamp, start, end)) {
+      n++;
+    }
+  }
+  return n;
+}
+
+/**
  * 窗口内 monitor 事件通知数：`<task-notification>` 且含 `<event …>`，按 task_id + 事件正文去重。
+ *
+ * D5 起降级为**交叉校验口径**（主口径读 events.jsonl 的 MonitorEvent，见
+ * countMonitorEventsFromEvents）：文本解析会漂（D2 的 `monitor_ev` 恒为 0 就是这么来的），
+ * 保留它是为了在 raw 与 events 两个口径间对账。
  *
  * `monitorIds` 非空时（wait-registry 窗口），属于这些 monitor 的通知**只卡起点不卡终点**：
  * 收尾那一批的 raw 落盘晚于 `delivered` 事件本身（实测晚 2ms，raw 是「带着通知发出的
@@ -405,7 +449,8 @@ export function auditEvents(input: AuditInput): WaitAudit {
     zombie_wakeups: zombieWakeups,
     gate_retry_while_waiting: gateRetry,
     exit8_errors: exit8,
-    monitor_events:
+    monitor_events: active ? countMonitorEventsFromEvents(events, start, end, monitorIds) : 0,
+    monitor_events_raw:
       input.raw === undefined
         ? null
         : active
@@ -521,11 +566,13 @@ function main(): void {
 
   const sum = (k: keyof WaitAudit) =>
     results.reduce((n, r) => n + ((r[k] as number | null) ?? 0), 0);
-  // 没读 raw 时 monitor_ev 显示 n/a：输出 0 会被读成「没有事件」（D2 风险段，同一误解已发生过一次）
-  const fmtMonitor = (v: number | null) => (v === null ? "n/a" : String(v));
-  const monitorTotal = results.some((r) => r.monitor_events !== null)
-    ? String(sum("monitor_events"))
-    : "n/a";
+  // D5 起 monitor_ev 读 events.jsonl（永远有值，不再依赖 --with-raw）；raw 口径只在
+  // --with-raw 时显示做交叉校验，两者不一致加 ⚠：老轨迹（D5 前无 MonitorEvent 事件）
+  // 与埋点丢事件两种成因靠它分辨
+  const fmtRaw = (r: WaitAudit) =>
+    r.monitor_events_raw === null ? "" : ` raw=${r.monitor_events_raw}`;
+  const mismatch = (r: WaitAudit) =>
+    r.monitor_events_raw !== null && r.monitor_events_raw !== r.monitor_events ? " ⚠" : "";
   for (const r of results) {
     console.log(
       `${r.session}: windows=${r.wait_windows} basis=${r.window_basis} ` +
@@ -533,16 +580,19 @@ function main(): void {
         `fg_polls=${r.fg_status_polls} gh=${r.gh_queries} polls/min=${r.polls_per_min} ` +
         `req=${r.window_requests} tok=${r.window_input_tokens} ` +
         `zombie=${r.zombie_wakeups} gate_retry=${r.gate_retry_while_waiting} ` +
-        `exit8=${r.exit8_errors} monitor_ev=${fmtMonitor(r.monitor_events)} ` +
+        `exit8=${r.exit8_errors} monitor_ev=${r.monitor_events}${fmtRaw(r)}${mismatch(r)} ` +
         `violations=${r.promise_violations}(late_terminal=${r.late_while_terminal})`,
     );
   }
   if (results.length > 1) {
+    const rawTotal = results.some((r) => r.monitor_events_raw !== null)
+      ? String(sum("monitor_events_raw"))
+      : "n/a";
     console.log(
       `合计 ${results.length} 个会话: fg_polls=${sum("fg_status_polls")} gh=${sum("gh_queries")} ` +
         `req=${sum("window_requests")} tok=${sum("window_input_tokens")} ` +
         `zombie=${sum("zombie_wakeups")} gate_retry=${sum("gate_retry_while_waiting")} ` +
-        `exit8=${sum("exit8_errors")} monitor_ev=${monitorTotal} ` +
+        `exit8=${sum("exit8_errors")} monitor_ev=${sum("monitor_events")} raw=${rawTotal} ` +
         `violations=${sum("promise_violations")}(late_terminal=${sum("late_while_terminal")})`,
     );
   }

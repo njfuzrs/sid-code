@@ -241,6 +241,8 @@ import {
   killAllRunningMonitors,
   killAllRunningTasks,
   reapOrphanMonitors,
+  setMonitorEventSink,
+  MONITOR_EVENT_NAME,
 } from "@sid-code/core/task/index.ts";
 import { getScheduler } from "@sid-code/core/cron/scheduler.ts";
 import type { CronTask } from "@sid-code/core/cron/types.ts";
@@ -4855,6 +4857,15 @@ export class App {
     setTaskLifecycleSink(
       traceCollectorInstance
         ? (data) => traceCollectorInstance.recordCustomEvent(TASK_LIFECYCLE_EVENT_NAME, data)
+        : null,
+    );
+    // D5：monitor 的每条投递事件进轨迹（seq/chars/lines/dropped）。产生点在 core 任务层
+    // 的 enqueueMonitorEvent，拿不到 collector，同款模块级 sink。不接则 monitor 事件的
+    // 审计口径只能靠解析 raw.jsonl（2~3MB/会话、默认不读），D2 的「monitor_ev 恒为 0」
+    // 正是文本口径漂移出来的。
+    setMonitorEventSink(
+      traceCollectorInstance
+        ? (data) => traceCollectorInstance.recordCustomEvent(MONITOR_EVENT_NAME, data)
         : null,
     );
     // Q1：后台任务轮询拦截进轨迹。F2 判据「实际执行的轮询 = 尝试数 − 本事件命中的 tool_use_id」，
