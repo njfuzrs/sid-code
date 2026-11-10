@@ -579,6 +579,10 @@ lifecycle 与 class 都是**闭集**，模板在 `.agents/notes/_template.md`，
 `rejected/` 那一格别省。**否决论证是最贵的资产**：它防的是下一个人（或下一个 agent）
 重新提议同一件事，然后把整套论证重做一遍。
 
+另有一道**只报告**的提醒（`scripts/note-reminder.ts`，CI lint job）：PR 改了
+`packages/core/src/{query,tool,permission,hook,llm,context}/` 却没有 `.agents/notes/` 改动时，
+checks 页上会出现一条 warning 注解。它永远不会让 CI 变红；平凡改动忽略即可。
+
 门禁只查形态（`bun run verify:agent-note`，pre-commit 在 staged 含 `.agents/notes/**` 时触发）：
 路径、闭集、frontmatter 的 `Status` 与所在目录一致、三段都在且非空。
 **内容不查，"该写没写"也不拦** —— 那需要语义判断，交 review。
