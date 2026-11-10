@@ -1,0 +1,2 @@
+{"index":1,"response":{"content":[{"type":"tool_use","id":"toolu_smoke_1","name":"bash","input":{"command":"git status --short","description":"查看 git 状态"}}],"stop_reason":"tool_use"},"usage":{"input_tokens":100,"output_tokens":10}}
+{"index":2,"response":{"content":[{"type":"text","text":"循环检查完成：工作区干净。"}],"stop_reason":"end_turn"},"usage":{"input_tokens":100,"output_tokens":10}}

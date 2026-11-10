@@ -196,6 +196,19 @@ export interface SmokeCase {
   kind: SmokeKind;
   /** 不在列表里的平台输出 skip + 原因，而不是静默不跑 */
   platforms?: NodeJS.Platform[];
+  /**
+   * 置上时这是一个**仅本机**用例：CI（环境变量 `CI` 非空）上输出 skip，原因就是这段文字，
+   * 进 step summary（总纲 §3.3 第 7 条：skip 也要看得见）；本机 `smoke` / `smoke:mutate` 照常跑。
+   *
+   * 为 A4-loop-tui 加（后续规划 §6 裁决 2）：真等一次 cron 触发要 30–96s，放进 PR 门禁
+   * 会吃掉 G2+G4 CI 时长上限的约 1/3。写清「为什么 CI 不守」，别只写「太慢」。
+   */
+  localOnly?: string;
+  /**
+   * 覆盖单例总超时（缺省 60s，运行器的 `CASE_TIMEOUT_MS`）。只给时间本身是被测对象的用例用，
+   * 如 A4-loop-tui 要等一次真实的 cron 触发。
+   */
+  timeoutMs?: number;
   /** 用例仓初始文件（相对路径 → 内容）。会在临时目录里 `git init` */
   repo: Record<string, string>;
   /**
