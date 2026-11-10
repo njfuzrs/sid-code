@@ -67,6 +67,16 @@ describe("filterMonitorPids · 从 ps 输出里挑 monitor 子进程", () => {
     expect(out).toEqual([81001]);
   });
 
+  test("排除 --binary 指向任意文件名的宿主（按 argv 形态，不靠二进制名）", () => {
+    // FIX-1 端到端变异自证实测：`sid-code-mutC -p` 不匹配二进制名正则，宿主被算成
+    // 「monitor 仍存活」，D1b-orphan-scan-negative 的误杀断言因此假通过
+    const hosts = [
+      psLine(90011, `/tmp/fix1-mut/sid-code-mutC -p --dangerously-skip-permissions ${TOKEN}`),
+      psLine(90012, `/opt/build/my-agent -p --dangerously-skip-permissions 监控 ${TOKEN}`),
+    ];
+    expect(filterMonitorPids([monitor, ...hosts].join("\n"), TOKEN)).toEqual([81001]);
+  });
+
   test("排除 bun / node 直跑源码的宿主形态", () => {
     const lines = [
       monitor,

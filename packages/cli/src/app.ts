@@ -237,6 +237,11 @@ import {
   setWaitTraceSink,
   setWakeupRegistrationEnabled,
 } from "@sid-code/core/task/wait-registry.ts";
+import {
+  killAllRunningMonitors,
+  killAllRunningTasks,
+  reapOrphanMonitors,
+} from "@sid-code/core/task/index.ts";
 import { getScheduler } from "@sid-code/core/cron/scheduler.ts";
 import type { CronTask } from "@sid-code/core/cron/types.ts";
 import { normalizeScheduledOrigin } from "@sid-code/core/query/scheduled-prompt.ts";
@@ -3750,6 +3755,8 @@ export class App {
 
       case "quit":
         presentCommandResult(commandInput, result.message ?? "再见！");
+        // D1：同步终止后台任务，必须先于下面的 SessionEnd——终态事件要在会话结束前落盘。
+        this.terminateBackgroundTasksOnExit("quit");
         // D3-4：/quit 退出前必须 fireSessionEndEvent，保证 transcript 落盘（纪律不变量第 1 条）。
         void (async () => {
           try {
@@ -5045,6 +5052,35 @@ export class App {
       /* 诊断失败不影响启动 */
     }
 
+    // D1-b 第 2 层：上一个宿主被 SIGKILL / OOM 杀掉时退出清理一行都没跑，它的 monitor 子进程
+    // （detached）被 launchd 收养后永久泄漏。按 spawn 时落的元数据清掉「宿主已死 + 进程组身份
+    // 核对通过」的那些；宿主还活着的（多开会话）一律不动。判据与已知限制见 monitor-orphans.ts。
+    // 没有元数据文件时只有一次 readdir，不起 ps。
+    try {
+      const reap = reapOrphanMonitors();
+      if (reap.reaped.length > 0) {
+        log.warn(
+          "DIAG",
+          [
+            `清理 ${reap.reaped.length} 个孤儿 monitor 进程组（宿主已退出）:`,
+            ...reap.reaped.map(
+              (r) =>
+                `  ${r.meta.task_id} pgid=${r.meta.pgid} 成员 ${r.members.join(",")}，宿主 PID ${r.meta.host_pid}（会话 ${r.meta.session_id ?? "-"}），命令 ${r.meta.command}`,
+            ),
+          ].join("\n"),
+        );
+      }
+      const mismatched = reap.dropped.filter((d) => d.reason === "identity_mismatch");
+      if (mismatched.length > 0) {
+        log.warn(
+          "DIAG",
+          `跳过 ${mismatched.length} 个 monitor 元数据：进程组身份核对不上（pid 疑似已被复用），未发信号: ${mismatched.map((d) => d.taskId).join(", ")}`,
+        );
+      }
+    } catch {
+      /* 诊断失败不影响启动 */
+    }
+
     // 心跳残留诊断：检测有心跳无 crash.json 的会话 → 疑似 hang/僵尸
     try {
       const stale = PidManager.scanStaleHeartbeats();
@@ -5688,6 +5724,32 @@ export class App {
   private receivedSignalExitCode: number | null = null;
   /** TUI 渲染实例的停渲染入口（runTUI 挂载后设置；headless 恒为 null） */
   private detachTuiForShutdown: (() => void) | null = null;
+  /**
+   * 退出路径同步终止全部后台任务（D1 / D1-b 第 1 层）。
+   *
+   * monitor 与后台 shell 都是 `detached` 的进程组组长，宿主退出**不会**连带杀死它们：
+   * 不清理就被 launchd 收养（PPID=1）永久泄漏，且 TaskLifecycle 永远停在 started
+   * （实测会话 20261109-223954-77ece4e5：`/quit` 后 `tail -F` 进程 86522 一直存活）。
+   * `killAllRunningTasks` 按类型分派，monitor 走 killMonitorTask → finalizeAndDrain，
+   * **同步**落 TaskLifecycle{completed,killed} + WaitReleased{terminal}，所以必须排在
+   * SessionEnd 之前，且不能 await（信号路径只有 1.5s 强退预算）。
+   *
+   * 不会落 `delivered`：终态通知只是入队，投递要等下一轮，而进程马上 exit。
+   * 只杀后台任务（isPanelTask）：前台子代理属于当前这一轮，中断它的出口是 ESC。
+   *
+   * 调用点：`/quit`（case "quit"）/ TUI 正常退出（Ctrl+D、两次 Ctrl+C）/ 信号（onSignal）/
+   * 崩溃兜底（emergencySessionEnd）——漏掉任一处，对应的退出路径就会泄漏。
+   * `process.on("exit")` 是最后一道，只杀 monitor（理由见 killAllRunningMonitors）。
+   */
+  private terminateBackgroundTasksOnExit(path: "quit" | "tui_exit" | "signal" | "crash"): void {
+    try {
+      const n = killAllRunningTasks();
+      if (n > 0) getLogger().warn("APP", `退出路径（${path}）终止 ${n} 个后台任务`);
+    } catch {
+      /* 清理失败不阻断退出 */
+    }
+  }
+
   private registerSignalHandlers(): void {
     if (this.signalHandlersRegistered) return;
     this.signalHandlersRegistered = true;
@@ -5748,6 +5810,9 @@ export class App {
       // M3：这是异步挂起的唯一出口（「>2s 第二个信号强退」已删，理由见 signal-teardown.ts 头部）。
       // 时长用常量而不是字面量 1500：遥测排空的预算要从同一个上限里扣（见 telemetryDrainBudgetMs）。
       const disarmForceExit = armForceExit(exitCodeOf(signal), SIGNAL_FORCE_EXIT_MS);
+      // D1-b：同步终止后台任务（毫秒级，不占强退预算）。必须在 abort 之前——abort 会唤醒
+      // 无头主路径，它随时可能先走到 process.exit；SIGHUP（关终端 / SSH 断连）也走这里。
+      this.terminateBackgroundTasksOnExit("signal");
       // 触发 abort 让 LLM 流式请求/工具调用尽快停下
       try {
         this.abortController?.abort();
@@ -5869,6 +5934,14 @@ export class App {
     // 兜底：任何走到 process.exit 的路径都删本进程的 PID 文件（幂等、同步）。
     // SIGHUP 默认处置不触发 `exit` 事件 —— 所以上面改 `on` 是这条兜底生效的前提。
     process.on("exit", () => {
+      // D1 最后一道：覆盖无头正常结束 / 预算硬停 / 运行时异常等所有走 process.exit 的路径。
+      // 只杀 monitor（理由见 killAllRunningMonitors）。必须单独 try：与下面的 PID 文件清理
+      // 同在一个 handler，未捕获异常会跳过 removeByPid。
+      try {
+        killAllRunningMonitors();
+      } catch {
+        /* ignore */
+      }
       PidManager.removeByPid(process.pid);
     });
   }
@@ -8731,6 +8804,9 @@ export class App {
     } catch {
       /* 文件系统可能已不可用 */
     }
+
+    // D1-b：崩溃兜底也终止后台任务（同步）。排在 crash.json 之后：OOM 前的最后一搏先保诊断。
+    this.terminateBackgroundTasksOnExit("crash");
 
     // B3：崩溃兜底也结束会话持久化（best-effort，幂等）
     this.finalizeSessionStore();
@@ -12293,6 +12369,9 @@ export class App {
     // 这条路径的 forceExitTimer 是 5s（不是信号路径的 1.5s），所以这里的 1.2s race
     // 上限并非硬约束。但上传要 10s 量级，硬等会让用户按完退出还要干等十几秒 ——
     // 不划算，交给下次启动补传（backfill.ts）。落盘实测 ~30ms，1.2s 对它绰绰有余。
+    //
+    // D1：这条路径不经过 `/quit` 的 case 分支，同样要在 SessionEnd 之前终止后台任务。
+    this.terminateBackgroundTasksOnExit("tui_exit");
     this.traceCollector?.setUploadBudgetMs?.(0);
     // SessionEnd hook 卡死时不拖死退出:
     // hook 可能跑用户自定义命令而长时间无响应,不能让它永久阻塞退出。
