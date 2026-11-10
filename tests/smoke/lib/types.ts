@@ -145,6 +145,14 @@ export interface PrintStep {
   kind: "print";
   /** 这次运行的回放夹具，相对用例目录；同样做 `${CASE_ROOT}` 替换与越界校验 */
   replay: string;
+  /**
+   * 输出格式，缺省 `json`（运行器补 `--output-format json`）。
+   *
+   * 置 `stream-json` 时补 `--output-format stream-json --verbose`，`StepOutput.stdout`
+   * 就是未解析的 NDJSON 原文，断言自己切行。为 X4 加：要守的是「resume 后 stream-json
+   * 的 `result.session_id`」，而 stream-json 是独立于 json 的一条输出路径。
+   */
+  outputFormat?: "json" | "stream-json";
   argv: string[];
   /** 运行前对磁盘状态的准备（如手动删掉 settings.json 里的某个键） */
   prepare?: (ctx: { repoRoot: string; configDir: string }) => void;
