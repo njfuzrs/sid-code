@@ -164,7 +164,10 @@ describe("P1 判据：三条同时成立才拦", () => {
       "gh pr merge 662 --auto --merge 2>&1 | tail -5 && gh pr checks 662",
       "git push origin main && gh pr checks 662",
       "gh pr checks 662 > /tmp/out.txt",
-      "gh pr checks 662 | head -10", // 最后一段是 head，不匹配（与 §5.6 同一判据）
+      // N3 之后 `| head` 是合法查询形态；这里换成同样「末端过滤但会写文件」的 tee，
+      // 守住「只要有一段不认识/可能写操作就放行」这条判据
+      "gh pr checks 662 | tee /tmp/out.log",
+      "gh pr checks 662 | sort -o /tmp/sorted.txt",
     ]) {
       recordStatusQueryResult(cmd, CHECKS_PENDING, ctx);
       recordStatusQueryResult(cmd, CHECKS_PENDING, ctx);
@@ -295,8 +298,11 @@ describe("P1 命令表匹配（只读 + 查外部状态）", () => {
       "curl -s http://svc:8080/api/users",
       "gh pr checks 662 --help", // 查文档不是查状态
       "gh pr checks 662 --version",
-      "gh pr checks 662 | head -10", // 最后一段是 head
-      "gh pr checks 662; echo done", // 最后一段是 echo
+      // N3 之后 `| head` / `| jq` / `| grep` 是合法查询形态（见 status-query-shapes.test.ts），
+      // 这里换成会写文件的 tee 与 `tail -f`（持续跟随），守住「纯过滤才算」的边界
+      "gh pr checks 662 | tee /tmp/x.log",
+      "gh pr checks 662 | tail -f",
+      "gh pr checks 662; echo done", // 最后一段是 echo（仍是表外形态）
     ]) {
       expect(matchStatusQuery(cmd)).toBeNull();
     }
