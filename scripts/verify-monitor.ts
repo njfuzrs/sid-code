@@ -29,6 +29,7 @@
  * | `D4-discovery` | D4（模型是否自然发现 monitor） | FAIL（大概率；FIX-0 实测 3/3 PASS，天花板已满） |
  * | `D4-discovery-checks` | D4 的强场景：逐项检查结果（前台轮询的重灾区），判据只认实际调用 | FIX-3 采的修复前基线 |
  * | `D5-events` | D5（events.jsonl 的 MonitorEvent 条数 / seq 连续 / task_id 一致） | FAIL（D5 前 MonitorEvent 恒 0 条） |
+ * | `N2-wakeup-then-end` | N2（排了唤醒之后是否结束本轮；只给 schedule_wakeup，monitor 关闭） | FAIL（修复前模型排完唤醒继续前台查 CI） |
  *
  * ⚠️ `D1b-orphan-scan-negative` 在启动扫描实现之前**恒 PASS**（没有扫描 → 自然不误杀）。
  * 它证明的是「没有误杀」，「该杀的杀了」由 `D1b-sigkill` 第 2 步负责，两条必须成对看。
@@ -78,7 +79,8 @@ export type CaseName =
   | "D4-discovery-checks"
   | "D5-events"
   | "D6-guidance-task-output"
-  | "D6-guidance-workflow";
+  | "D6-guidance-workflow"
+  | "N2-wakeup-then-end";
 
 export const ALL_CASES: readonly CaseName[] = [
   "D1b-signal",
@@ -90,6 +92,7 @@ export const ALL_CASES: readonly CaseName[] = [
   "D5-events",
   "D6-guidance-task-output",
   "D6-guidance-workflow",
+  "N2-wakeup-then-end",
 ] as const;
 
 export interface Assertion {
@@ -1344,6 +1347,183 @@ async function runD6GuidanceWorkflow(): Promise<CaseBody> {
   return runD6Guidance("D6-guidance-workflow", "workflow", prompt);
 }
 
+/**
+ * N2 的判据事实：排了唤醒之后，本轮里还前台读了几次状态。
+ *
+ * ## 为什么只看「第一个唤醒 → 第一个 EndTurnShape」这一段
+ *
+ * N2 的缺陷形态是「排完唤醒，**下一个动作**继续前台查」。唤醒之后可能还有第二轮
+ * （唤醒到点注入），那一轮的轮询属于「等唤醒是否有效」，不是本条要测的东西。
+ *
+ * ## 计数口径
+ *
+ * - 只算 `bash` / `read`（模型查状态的两种主要形态），且 `input_summary` 里出现目标路径；
+ * - `run_in_background === true` 不算前台（后台命令正是正确出路）；
+ * - `wakeup_called=false` 时返回全 0 —— 调用方据此判 FAIL（模型压根没走等待原语）。
+ */
+export interface WakeupTurnFacts {
+  wakeupCalled: boolean;
+  /** 排完唤醒到本轮结束之间，前台读目标文件的次数 */
+  foregroundPolls: number;
+  /** 同区间内的工具调用总数（区分「收尾了」与「根本没动」） */
+  toolsInWindow: number;
+}
+
+export function analyzeWakeupTurn(events: TraceEvent[], target: string): WakeupTurnFacts {
+  let wakeIdx = -1;
+  for (let i = 0; i < events.length; i++) {
+    const e = events[i]!;
+    if (e.event === "PreToolUse" && e.data?.tool_name === "schedule_wakeup") {
+      wakeIdx = i;
+      break;
+    }
+  }
+  if (wakeIdx < 0) return { wakeupCalled: false, foregroundPolls: 0, toolsInWindow: 0 };
+
+  let endIdx = events.length;
+  for (let i = wakeIdx + 1; i < events.length; i++) {
+    if (events[i]!.event === "EndTurnShape") {
+      endIdx = i;
+      break;
+    }
+  }
+
+  let foregroundPolls = 0;
+  let toolsInWindow = 0;
+  for (let i = wakeIdx + 1; i < endIdx; i++) {
+    const e = events[i]!;
+    if (e.event !== "PreToolUse") continue;
+    toolsInWindow++;
+    const name = e.data?.tool_name;
+    if (name !== "bash" && name !== "read") continue;
+    const summary = (e.data?.input_summary ?? {}) as Record<string, unknown>;
+    if (summary.run_in_background === true) continue;
+    if (!JSON.stringify(summary).includes(target)) continue;
+    foregroundPolls++;
+  }
+  return { wakeupCalled: true, foregroundPolls, toolsInWindow };
+}
+
+/**
+ * 把 `settings.monitor.enabled=false` 写进 case 的临时配置目录。
+ *
+ * 为什么必须关 monitor：N2 测的是 `schedule_wakeup` 的文案。monitor 同时可用时模型可能
+ * 直接选 monitor（§1.3.1 B 组实测），那条路径命中说明不了 N2 有没有用。
+ *
+ * `startHeadless` 见到目录里已有 settings.json 就不再从真实配置复制，所以这里先写。
+ * settings.json 含 provider 凭据：只在进程内读改写进 tmpdir，不打印、不落日志。
+ */
+function writeMonitorDisabledSettings(dir: string): boolean {
+  const src = join(SID_HOME, "settings.json");
+  if (!existsSync(src)) return false;
+  try {
+    const raw = JSON.parse(readFileSync(src, "utf8")) as Record<string, unknown>;
+    const prev =
+      typeof raw.monitor === "object" && raw.monitor !== null
+        ? (raw.monitor as Record<string, unknown>)
+        : {};
+    raw.monitor = { ...prev, enabled: false };
+    writeFileSync(join(dir, "settings.json"), JSON.stringify(raw, null, 2));
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * N2：排了唤醒之后，模型会不会留在本轮继续前台轮询（G3，真模型）。
+ *
+ * ## 修复前基线（2026-11-10 实测，`20261110-223939-be69eca7`）
+ *
+ * prompt 说「等 4 个检查全部通过后告诉我结果」，模型的动作是前台 bash 循环
+ * （`for i in $(seq 1 60); do cat …; sleep 2; done`，timeout 180s）——**零等待原语**。
+ * `events.jsonl` 里只有两条 `PreToolUse{tool_name:"bash"}`，没有任何 `WaitRegistered`。
+ *
+ * ## 判据（两条都要过）
+ *
+ * 1. 真的排了唤醒 —— 没排说明文案没把模型引到等待原语上；
+ * 2. 排完之后到本轮结束之间，前台读状态文件 ≤ 2 次。
+ *
+ * ⚠️ 样本量：3 次只能证伪不能证实（#722 的教训）。每次跑的结果都要如实记录。
+ */
+async function runN2WakeupThenEnd(): Promise<CaseBody> {
+  const token = makeToken("n2wake");
+  const dir = mkdtempSync(join(tmpdir(), "sid-verify-n2-"));
+  if (!writeMonitorDisabledSettings(dir)) {
+    return {
+      case: "N2-wakeup-then-end",
+      verdict: "INVALID",
+      detail: `读不到 ${join(SID_HOME, "settings.json")}，无法关闭 monitor（场景不成立）`,
+      assertions: [],
+    };
+  }
+
+  const statusPath = join(dir, `${token}-checks.json`);
+  const writerScript = join(dir, "ci-sim.sh");
+  // 每项 8s：模型需要在这段时间里自己决定「排唤醒 + 收尾」，太快会看不出差别
+  writeFileSync(writerScript, buildChecksSimScript(statusPath, 8), { mode: 0o755 });
+  const writer = spawn("bash", [writerScript], { stdio: "ignore", detached: true });
+  writer.unref();
+  const writerPid = writer.pid;
+
+  const prompt =
+    `本地 CI 正在跑，四项检查的状态写在 ${statusPath}` +
+    `（JSON 数组，每项 name/status，status 会从 pending 变成 pass 或 fail）。` +
+    `等 4 个检查全部通过后告诉我结果。`;
+  const s = startHeadless(prompt, dir, makeNonGitWorkspace());
+  try {
+    const wrote = await waitFor(() => existsSync(statusPath), 20_000);
+    if (!wrote) {
+      return {
+        case: "N2-wakeup-then-end",
+        verdict: "INVALID",
+        detail: "状态文件没有写入，场景不成立（CI 模拟脚本没跑起来）",
+        assertions: [],
+      };
+    }
+    // 只等第一轮收尾：唤醒到点后可能还有第二轮，那不是本 case 的观察对象
+    await waitFor(() => {
+      const sd = s.sessionDir();
+      return sd ? readEvents(sd).some((e) => e.event === "EndTurnShape") : false;
+    }, 180_000);
+    await Bun.sleep(500);
+    const sessionDir = s.sessionDir();
+    if (!sessionDir) {
+      return {
+        case: "N2-wakeup-then-end",
+        verdict: "INVALID",
+        detail: "会话目录不存在（会话没起来）",
+        assertions: [],
+      };
+    }
+    const facts = analyzeWakeupTurn(readEvents(sessionDir), statusPath);
+    const assertions: Assertion[] = [
+      {
+        name: "排了唤醒（schedule_wakeup 被调用）",
+        pass: facts.wakeupCalled,
+        detail: `wakeup_called=${facts.wakeupCalled}`,
+      },
+      {
+        name: "排完之后到本轮结束：前台读状态 ≤ 2 次",
+        pass: facts.wakeupCalled && facts.foregroundPolls <= 2,
+        detail: `foreground_polls=${facts.foregroundPolls} tools_in_window=${facts.toolsInWindow}`,
+      },
+    ];
+    return {
+      case: "N2-wakeup-then-end",
+      verdict: verdictOf(assertions),
+      detail: facts.wakeupCalled
+        ? `排了唤醒；之后到本轮结束前台读状态 ${facts.foregroundPolls} 次（窗口内工具 ${facts.toolsInWindow} 次）`
+        : "模型没排唤醒：文案没把它引到等待原语（修复前基线是前台 bash 循环）",
+      assertions,
+      session: basename(sessionDir),
+    };
+  } finally {
+    cleanup(s.pid, token);
+    if (writerPid) killTree(writerPid);
+  }
+}
+
 async function runCase(name: CaseName): Promise<CaseBody> {
   switch (name) {
     case "D1b-signal":
@@ -1364,6 +1544,8 @@ async function runCase(name: CaseName): Promise<CaseBody> {
       return runD6GuidanceTaskOutput();
     case "D6-guidance-workflow":
       return runD6GuidanceWorkflow();
+    case "N2-wakeup-then-end":
+      return runN2WakeupThenEnd();
   }
 }
 
