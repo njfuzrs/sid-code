@@ -156,6 +156,31 @@ describe("Agent Note：闭集与文档同步", () => {
     for (const c of CLASSES) expect(readme).toContain(c);
   });
 
+  // 质量防线专项 M6（§3.6）：方案来源写在可选的 `Source:` 里。它不进校验，但校验器的 frontmatter
+  // 正则一旦改成「只许 Status/Date」，带来源的 Note 会全部报红、人就会删掉这一行——锁住「允许」。
+  test("frontmatter 带可选的 Source: 不报红", () => {
+    const withSource = GOOD_TEXT.replace(
+      "Date: 2026-08-19\n",
+      "Date: 2026-08-19\nSource: 质量防线分层专项·后续规划（2026-11-09）\n",
+    );
+    expect(withSource).toContain("Source:");
+    expect(checkNote(GOOD_PATH, withSource)).toEqual([]);
+  });
+
+  test("模板保留 Source: 行，README 与 CONTRIBUTING 都说明了「不写路径」", () => {
+    expect(readFileSync(join(NOTES_DIR, "_template.md"), "utf8")).toMatch(/^Source: /m);
+    expect(readFileSync(join(NOTES_DIR, "README.md"), "utf8")).toContain("**不写路径**");
+    expect(readFileSync(join(ROOT, "CONTRIBUTING.md"), "utf8")).toContain("Source: <文档标题>");
+  });
+
+  // PR 模板的「回归由哪一层守」是 M6 左移的落点；删掉它，逃逸分析就少了写代码前的那一问
+  test("PR 模板有「本改动的回归由哪一层守」一节，指向的 CONTRIBUTING 小节存在", () => {
+    const tpl = readFileSync(join(ROOT, ".github/pull_request_template.md"), "utf8");
+    expect(tpl).toContain("## 本改动的回归由哪一层守");
+    expect(tpl).toContain("CONTRIBUTING.md「防线分层」");
+    expect(readFileSync(join(ROOT, "CONTRIBUTING.md"), "utf8")).toContain("### 防线分层：");
+  });
+
   test("模板文件存在且自身满足三段结构", () => {
     const tpl = join(NOTES_DIR, "_template.md");
     expect(existsSync(tpl)).toBe(true);
