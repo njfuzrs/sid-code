@@ -5,6 +5,7 @@
  * 被替换的内容可持久化到磁盘（可恢复）。
  */
 
+import { emitToolResultCleared } from "../guidance-events.ts";
 import type { Message, ContentBlock } from "../../llm/types.ts";
 import { getLogger } from "../../debug/index.ts";
 
@@ -57,6 +58,7 @@ export function applyToolResultBudget(
   let totalTokensUsed = 0;
   let truncatedCount = 0;
   let savedChars = 0;
+  const clearedToolUseIds: string[] = [];
 
   const cutoff = Math.max(0, messages.length - opts.preserveRecentCount);
 
@@ -78,6 +80,7 @@ export function applyToolResultBudget(
       if (estimatedTokens > opts.maxTokensPerResult) {
         savedChars += contentChars - BUDGET_PLACEHOLDER(contentChars).length;
         truncatedCount++;
+        clearedToolUseIds.push(b.tool_use_id);
         return { ...b, content: BUDGET_PLACEHOLDER(contentChars) };
       }
 
@@ -86,6 +89,7 @@ export function applyToolResultBudget(
       if (totalTokensUsed > opts.totalBudget) {
         savedChars += contentChars - BUDGET_PLACEHOLDER(contentChars).length;
         truncatedCount++;
+        clearedToolUseIds.push(b.tool_use_id);
         return { ...b, content: BUDGET_PLACEHOLDER(contentChars) };
       }
 
@@ -97,6 +101,14 @@ export function applyToolResultBudget(
 
   if (truncatedCount > 0) {
     log.info("TOOL_BUDGET", `截断了 ${truncatedCount} 个工具结果，节省 ${savedChars} 字符`);
+    // HB-4：占位文案「如需完整内容请重新执行工具」会诱发重跑（01 §2.2），
+    // 后效指标要靠被清的 tool_use_id 回到 PreToolUse 取签名。入队与 hard 管线两个入口都经过这里。
+    emitToolResultCleared({
+      stage: "tool_result_budget",
+      cleared: truncatedCount,
+      saved_chars: savedChars,
+      tool_use_ids: clearedToolUseIds,
+    });
   }
 
   return { messages: result, truncatedCount, savedChars };
