@@ -736,6 +736,25 @@ export class PermissionChecker implements Checker {
   // 属"用户级授权"，与"项目配置自动扩大白名单"（security.ts:39 禁止）性质不同——
   // 前者是用户显式操作、仅本会话生效，后者是不可信配置自动放大，故此处可做。
 
+  /**
+   * 运行期补入预授权规则（Step 12 放行）。
+   *
+   * 为什么需要显式同步：`preApproved` 在构造函数里从 `config.allowedTools` 快照一次，
+   * 之后对 config 的写入它一概看不见。而 CLAUDE.md 的 `## Allowed Tools` 由 app 层
+   * 在 checker 构造**之后**才追加进 config（`app.ts` `applyProjectRules`，
+   * 时序：`cli.ts` 构造 checker → `app.init()` → `doInit` 加载 CLAUDE.md），
+   * 于是用户级 CLAUDE.md 写的白名单一条都不生效（B32，2026-11-10 实测
+   * `preApproved=[]`、`allowed=false step=14`）。
+   *
+   * 用 Set 承接：热重载 / 切 worktree 会带着同一份名单反复走到这里，天然幂等。
+   */
+  addPreApprovedRules(rules: readonly string[]): void {
+    for (const raw of rules) {
+      const rule = raw.trim();
+      if (rule) this.preApproved.add(rule);
+    }
+  }
+
   /** 运行时新增允许访问的目录（当前会话生效，去重） */
   addAllowedDirectory(dir: string): void {
     this.pathValidator.addAllowedDirectory(dir);

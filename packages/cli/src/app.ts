@@ -6105,7 +6105,17 @@ export class App {
 
     // 工具白名单（合并，不覆盖命令行配置）
     if (rules.allowedTools?.length) {
-      this.config.allowedTools = [...this.config.allowedTools, ...rules.allowedTools];
+      // 去重：热重载 / 切 worktree / 导入审批都会重走这里，同一份名单原先每触发一次就往
+      // config 里追加一遍，数组只增不减（`/permissions` 的计数、Step 12 的每次展开都跟着涨）。
+      this.config.allowedTools = [...new Set([...this.config.allowedTools, ...rules.allowedTools])];
+      // 必须显式同步给 checker：它的 `preApproved` 是构造函数里的快照，只看得到构造**之前**
+      // 写进 config 的那批（CLI `--allowed-tools` / settings）。CLAUDE.md 在 checker 构造
+      // 之后才加载（cli.ts 建 checker → app.init → doInit），不补这一步，用户级
+      // `## Allowed Tools` 一条都不生效（B32，2026-11-10 实测 allowed=false step=14）。
+      const checker = this.permissionChecker as {
+        addPreApprovedRules?: (rules: readonly string[]) => void;
+      } | null;
+      checker?.addPreApprovedRules?.(rules.allowedTools);
       log.info("APP", `CLAUDE.md 工具白名单: ${rules.allowedTools.join(", ")}`);
     }
 
