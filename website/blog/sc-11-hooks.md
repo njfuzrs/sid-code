@@ -2321,11 +2321,11 @@ const timeoutMs = options.timeoutMs ?? (options.isSubAgent ? 5000 : 300_000);
 finish({ decision: { allowed: false, reason: "权限决策超时" }, source: "timeout" });
 ```
 
-以及非交互且无自动路径时**立即** deny：
+以及三路都没接上时**立即** deny（判据是「有没有路径可等」，不是交互态）：
 
 ```typescript
-if (!options.isInteractive && !options.hookDecision && !options.classifierDecision) {
-  finish({ decision: { allowed: false, reason: "非交互模式，无自动决策路径" }, source: "auto" });
+if (!userDecisionPath && !options.hookDecision && !options.classifierDecision) {
+  finish({ decision: { allowed: false, reason: "无任何权限决策路径，立即拒绝" }, source: "auto" });
 }
 ```
 
