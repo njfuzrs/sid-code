@@ -41,6 +41,15 @@ const SOURCE_ENTRY = join(REPO_ROOT, "packages/cli/src/entrypoints/bootstrap.ts"
 export const SMOKE_MODEL = "smoke-replay";
 const CASE_TIMEOUT_MS = 60_000;
 
+/**
+ * 是否在 CI 上。GitHub Actions 恒设 `CI=true`；其余 CI 也普遍设这个变量。
+ * 只认非空且不是 "false"/"0"，免得本机 `CI=0 bun run smoke` 被误判。
+ */
+export function isCI(env: Record<string, string | undefined> = process.env): boolean {
+  const v = env.CI?.trim().toLowerCase();
+  return !!v && v !== "false" && v !== "0";
+}
+
 /** 怎么启动 sid-code：构建产物（默认，测的是「装好的东西」）或源码入口（变异复跑用，免去每次 make build）。 */
 export type Launcher = { kind: "binary"; path: string } | { kind: "source" };
 
@@ -447,6 +456,15 @@ export async function runCase(
       durationMs: 0,
     };
   }
+  if (def.localOnly && isCI()) {
+    return {
+      id: def.id,
+      status: "skip",
+      reason: `仅本机运行：${def.localOnly}`,
+      failures: [],
+      durationMs: 0,
+    };
+  }
 
   // realpath：macOS 的 /var → /private/var，轨迹与工具入参里记的是真实路径
   const root = realpathSync(mkdtempSync(join(tmpdir(), `sid-smoke-${def.id}-`)));
@@ -562,7 +580,7 @@ export async function runCase(
         cwd: repo,
         env: isolatedEnv(home, configDir, replayFile, { TERM: "xterm-256color", ...def.env }),
         steps: def.tui,
-        timeoutMs: CASE_TIMEOUT_MS,
+        timeoutMs: def.timeoutMs ?? CASE_TIMEOUT_MS,
       });
       exitCode = r.exitCode;
       screen = r.screen;
