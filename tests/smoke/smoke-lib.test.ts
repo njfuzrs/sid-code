@@ -1,5 +1,5 @@
 /**
- * G2 运行器自身的单测：夹具占位符替换、越界路径拦截、轨迹断言。
+ * G2 运行器自身的单测：夹具占位符替换、越界路径拦截、轨迹断言、step summary 表格。
  *
  * 这几段是「门禁的门禁」：越界拦截失效 = 回放会去改用例目录外的真实文件；
  * 断言计数写错 = 用例恒绿。所以单独用纯函数测，不起子进程。
@@ -8,6 +8,7 @@
 import { describe, expect, test } from "bun:test";
 import { checkEventExpect, checkFileExpect, parseEvents, parseRawRequests } from "./lib/assert.ts";
 import { findOutOfRootPaths, substituteCaseRoot } from "./lib/fixture.ts";
+import { renderSummary } from "./lib/runner.ts";
 
 const ROOT = "/tmp/sid-smoke-x/repo";
 
@@ -128,5 +129,52 @@ describe("checkFileExpect", () => {
     expect(checkFileExpect(read, { path: "b.txt", contains: "x" })).toContain("不存在");
     expect(checkFileExpect(read, { path: "b.txt", absent: true })).toBeNull();
     expect(checkFileExpect(read, { path: "a.txt", absent: true })).toContain("期望不存在");
+  });
+});
+
+// 专项 M2 验收④「step summary 能看到每例 pass/fail/skip」靠的就是这张表。job 绿的时候
+// skip 只在这里看得见；G4 的失败信息带多行「最后一帧」，不压成一行会把 markdown 表格撑坏。
+describe("renderSummary", () => {
+  const md = renderSummary(
+    [
+      { id: "A2-ok", status: "pass", failures: [], durationMs: 400 },
+      {
+        id: "B2-seatbelt",
+        status: "skip",
+        reason: "仅在 darwin 上运行，当前 linux",
+        failures: [],
+        durationMs: 0,
+      },
+      {
+        id: "A1-dialog",
+        status: "fail",
+        failures: ["「改文件的一轮结束」超时\n---- 最后一帧 ----\n > a | b", "第二条"],
+        durationMs: 21_400,
+      },
+    ],
+    "G4 TUI e2e（linux）",
+  );
+  const rows = md.split("\n");
+  const row = (id: string) => rows.find((l) => l.startsWith(`| ${id} |`)) ?? "";
+
+  test("标题与表头", () => {
+    expect(rows[0]).toBe("### G4 TUI e2e（linux）");
+    expect(md).toContain("| 用例 | 结果 | 耗时 | 说明 |");
+  });
+
+  test("三种状态各一行，skip 带原因、fail 带第一条失败", () => {
+    expect(row("A2-ok")).toBe("| A2-ok | ✅ pass | 0.4s |  |");
+    expect(row("B2-seatbelt")).toContain("⏭️ skip");
+    expect(row("B2-seatbelt")).toContain("仅在 darwin 上运行");
+    expect(row("A1-dialog")).toContain("❌ fail");
+    expect(row("A1-dialog")).toContain("21.4s");
+    expect(row("A1-dialog")).toContain("「改文件的一轮结束」超时");
+    expect(row("A1-dialog")).not.toContain("第二条");
+  });
+
+  test("多行失败信息压成一行、竖线转义，不撑坏表格", () => {
+    expect(rows.filter((l) => l.startsWith("| A1-dialog |"))).toHaveLength(1);
+    expect(row("A1-dialog")).toContain("a \\| b");
+    expect(md).not.toContain("最后一帧 ----\n");
   });
 });

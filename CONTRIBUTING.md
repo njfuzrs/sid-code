@@ -54,8 +54,9 @@ make build            # 构建开发版二进制（不改版本号）
 ### 贡献者不需要任何 LLM API key
 
 `evals/` 目录、`packages/eval-framework/` 依赖真实模型调用，但这**不是**外部贡献者
-提 PR 的门槛。提 PR 之前必须跑的九道 CI 门禁（见下一节，另有一道只在 PR 上跑的 G2 用例期望守卫）全部不需要 LLM：
-`bun test` / `make build` / `bun run lint` / `bun run format:check` /
+提 PR 的门槛。提 PR 之前必须跑的十一道 CI 门禁（见下一节，另有一道只在 PR 上跑的 G2 用例期望守卫）全部不需要 LLM：
+`bun test` / `make build` / `bun run smoke` / `bun run smoke:tui`（两道冒烟走录制回放）/
+`bun run lint` / `bun run format:check` /
 `bun run lint:boundary` / `bun run lint:command-system` / `bun run lint:legacy-tool` /
 `bun run typecheck:gate` / `bun run website:build`（这一条要先 `bun install --cwd website`）
 都是本地静态检查或跑固定断言，没有一处调真实模型。
@@ -327,12 +328,14 @@ merge_queue 规则返回 `422 Invalid rule 'merge_queue'`，2026-08-19 实测）
 
 ## 提 PR 之前必须跑的门禁
 
-CI（`.github/workflows/ci.yml`）有 **三个 job、九道门禁**，本地全部可跑：
+CI（`.github/workflows/ci.yml`）有 **三个 job、十一道门禁**，本地全部可跑：
 
 ```bash
 # test job
 bun test                 # 全量单测，必须 0 fail
 make build               # 构建 + 产物自检，必须成功
+bun run smoke            # G2 无头回放冒烟：用上一步的 ./sid-code 跑回放用例，不调模型
+bun run smoke:tui        # G4 TUI e2e：同一个二进制在 PTY 里走交互剧本
 
 # lint job
 bun run lint             # oxlint，只开 correctness 档
@@ -348,8 +351,9 @@ bun install --cwd website --frozen-lockfile   # 首次或 lock 变动后
 bun run website:build                        # VitePress 构建，死链即失败
 ```
 
-**九条都跑绿，CI 基本不会红。** 只跑前两条是不够的 —— lint / website 是独立的
-job，排版、跨包导入或站点死链不合规照样拦。
+**十一条都跑绿，CI 基本不会红。** 只跑前两条是不够的 —— 两道冒烟用的是 `make build`
+刚产出的二进制（CI 只在每个平台的 shard 1 跑，2026-11-10 起阻断合并）；lint / website
+是独立的 job，排版、跨包导入或站点死链不合规照样拦。
 
 **G2 用例期望守卫**（`tests/smoke/cases/`，#618）只在 pull_request 上跑，两条规则：
 ① 同一个 PR 既改了某个已有用例的夹具（`replay.jsonl` 等）又改了它的 `case.ts` 期望 → 红，

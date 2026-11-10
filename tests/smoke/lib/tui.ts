@@ -4,8 +4,9 @@
  * 设计取舍（专项总纲 §3.5，2026-11-08 构建产物探针跑通后定稿）：
  * - 驱动用 `Bun.spawn({ terminal })`（Bun 1.4.2 原生 PTY），不引 node-pty；屏幕用 `@xterm/headless`
  *   把字节流还原成网格，断言「人看到的文字」而不是字节——字节级基线归 term-bench，两层不重叠。
- * - **禁止固定 sleep 同步**：每一步都是「等屏幕出现某文本，超时报错」。唯一的例外是 `pause`，
- *   只用于时间本身就是被测对象的场景（Esc 双击的两击间隔要像人手，见 use-rewind-escape.ts）。
+ * - **禁止固定 sleep 同步**：每一步都是「等屏幕出现某文本，超时报错」。例外只有两处，都是时间本身
+ *   就是被测对象的场景：剧本里的 `pause`（Esc 双击的两击间隔要像人手，见 use-rewind-escape.ts），
+ *   和 `type` 回显之后的 `TYPE_SETTLE_MS`（见下方常量）。
  * - 屏幕匹配只看**视口**（不含 scrollback），并去掉全部空白：主屏按列宽硬折行，
  *   一段中文可能被拆在两行，按原文匹配会因为折行位置假失败。
  * - 出现「按任意键关闭」立即判失败：启动警告会吞掉下一个按键（Notifications.tsx 的按键语义），
@@ -21,6 +22,19 @@ export const TUI_COLS = 100;
 export const TUI_ROWS = 30;
 const DEFAULT_WAIT_MS = 20_000;
 const STARTUP_WARNING = "按任意键关闭";
+
+/**
+ * `type` 看到回显之后、交给下一步之前再等的时间，必须明显大于 TUI 的 `FAST_RETURN_TIMEOUT`
+ * （`KeypressContext.tsx`，30ms）：回车距上一个可插入按键不超过这个窗口，就被当成粘贴里的换行
+ * （转 Shift+Enter），这一轮不提交。
+ *
+ * 只「等回显」不够：TUI 先处理文字、再渲染回显，运行器每 50ms 轮询一次屏幕。TUI 处理文字时若被
+ * 拖慢 20ms 以上，回显出现到下一次轮询之间就剩不到 30ms，紧跟的回车落进窗口。2026-11-09 macOS
+ * CI（run 42594411659）A1-dialog 就是这样红的：最后一帧输入框里是「提示词 + 一个空行」，没提交。
+ * 回显之后再等这段时间，「处理文字 → 处理回车」的间隔就恒大于它，与 runner 快慢无关。
+ * 下限由 `tests/smoke/tui-driver.test.ts` 读源码锁住（≥ 2 × FAST_RETURN_TIMEOUT）。
+ */
+export const TYPE_SETTLE_MS = 100;
 
 /** 按键名 → 写进 PTY 的字节。回车是 `\r`：TUI 进 raw 模式后收到的就是 0x0d */
 export const KEYS = {
@@ -129,6 +143,8 @@ export async function driveTui(
         send(step.text);
         // 打完字先确认输入框收到了，再交给下一步（通常是回车）：否则回车可能早于最后几个字符
         failure = await waitFor(step.text, DEFAULT_WAIT_MS, `${label}（回显）`);
+        // 再等过「快速回车」窗口，否则紧跟的回车会被当成换行（见 TYPE_SETTLE_MS）
+        if (!failure) await Bun.sleep(TYPE_SETTLE_MS);
       } else if (step.kind === "key") {
         send(KEYS[step.key]);
       } else if (step.kind === "pause") {
