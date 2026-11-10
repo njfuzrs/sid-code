@@ -280,21 +280,19 @@ jobs:
       # G2 无头回放冒烟（tests/smoke/，#618）：用上一步刚构建的 ./sid-code 跑 -p + replay，
       # 断言轨迹与产物。单例约 0.3s，不调模型、不联网。
       # 只在每个平台的 shard 1 跑：用例与分片无关，跑一遍就够，不重复占 runner。
-      # continue-on-error：转正前先观察 2 周（专项 M2 验收：0 次非代码原因的红），
-      # 期间红了只在 step summary 和日志里看得见，不阻断合并。转正时删掉这一行。
+      # 阻断（2026-11-10 转正，专项 M2）：观察期 394 个 shard 1 作业 0 失败。红了就是红，
+      # 别加回 continue-on-error——那样 jobs API 的步骤结论在真失败时也是 success，红只剩日志里看得见。
+      # 时长超上限时按总纲 §6 的顺序处理（先拆 shard，再降 G4），不靠放宽这一步。
       - name: G2 无头回放冒烟
         if: matrix.shard == 1
-        continue-on-error: true
         run: bun run smoke
 
       # G4 TUI e2e（tests/smoke/ 里带 tui 剧本的用例，#618 M5）：同一个 ./sid-code 在 PTY 里起
       # 交互 TUI，按剧本送按键、等屏幕（@xterm/headless 还原），断言轨迹与产物。单例约 1.3s。
-      # 与 G2 分成两步：两层的稳定期分开记（G2 观察到 2026-11-21；G4 要 CI 连续 20 次全绿
-      # 才转必需，专项 M5 验收），混在一步里 G4 的抖动会污染 G2 的转正判据。
-      # continue-on-error 理由同上，转正时删。
+      # 与 G2 分成两步：失败归因到层（G4 时序敏感，红了先看是不是它），也让总纲 §6 的
+      # 「G4 退回非必需」只动这一步。阻断（2026-11-10 转必需，专项 M5）。
       - name: G4 TUI e2e
         if: matrix.shard == 1
-        continue-on-error: true
         run: bun run smoke:tui
 
   # lint 门禁独立成 job：oxlint 65ms 跑完全仓，没必要占矩阵里两个平台的 slot，
