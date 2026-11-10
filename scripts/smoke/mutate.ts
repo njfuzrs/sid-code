@@ -17,12 +17,23 @@
  * 用法：
  *   bun run scripts/smoke/mutate.ts                  # 全部用例
  *   bun run scripts/smoke/mutate.ts A2-post-tool-use # 指定用例
+ *   bun run scripts/smoke/mutate.ts --json out.json  # 另写一份结构化结果（每周复跑报告用，scripts/smoke/weekly.ts）
  */
 import { readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
+import { parseArgs } from "node:util";
 import { REPO_ROOT, loadCases, runCase } from "../../tests/smoke/lib/runner.ts";
 
-type Outcome = "killed" | "survived" | "stale";
+export type Outcome = "killed" | "survived" | "stale";
+
+/** `--json` 写出的一行。skip 的用例（平台不符 / 仅本机却在 CI）也记一行，报告里要看得见 */
+export interface MutationRow {
+  id: string;
+  file: string;
+  why: string;
+  outcome: Outcome | "skipped";
+  detail: string;
+}
 
 function countOccurrences(haystack: string, needle: string): number {
   let n = 0;
@@ -36,20 +47,33 @@ function isDirty(rel: string): boolean {
   return r.stdout.toString().trim() !== "";
 }
 
-const cases = await loadCases(Bun.argv.slice(2));
-const rows: Array<{ id: string; file: string; why: string; outcome: Outcome; detail: string }> = [];
+const { values: opts, positionals } = parseArgs({
+  args: Bun.argv.slice(2),
+  options: { json: { type: "string" } },
+  allowPositionals: true,
+});
+const cases = await loadCases(positionals);
+const rows: MutationRow[] = [];
 
 for (const c of cases) {
   // 先确认未变异时是绿的：基线不绿，变红就证明不了任何事
   const baseline = await runCase(c, { kind: "source" });
   if (baseline.status === "skip") {
     console.log(`[SKIP] ${c.def.id}：${baseline.reason}`);
+    rows.push({
+      id: c.def.id,
+      file: "",
+      why: "",
+      outcome: "skipped",
+      detail: baseline.reason ?? "",
+    });
     continue;
   }
   if (baseline.status !== "pass") {
     console.error(
       `[ABORT] ${c.def.id} 未变异时就不通过，先修用例：\n  ${baseline.failures.join("\n  ")}`,
     );
+    if (opts.json) writeFileSync(opts.json, JSON.stringify({ aborted: c.def.id, rows }, null, 2));
     process.exit(2);
   }
 
@@ -71,6 +95,7 @@ for (const c of cases) {
       console.error(
         `[ABORT] ${m.file} 有未提交改动，变异后无法确定还原到哪个版本。提交或换个干净的工作区再跑`,
       );
+      if (opts.json) writeFileSync(opts.json, JSON.stringify({ aborted: c.def.id, rows }, null, 2));
       process.exit(2);
     }
     writeFileSync(abs, original.replace(m.find, m.replace));
@@ -91,9 +116,12 @@ for (const c of cases) {
 }
 
 for (const r of rows) {
+  if (r.outcome === "skipped") continue;
   const tag = { killed: "KILLED  ", survived: "SURVIVED", stale: "STALE   " }[r.outcome];
   console.log(`[${tag}] ${r.id} · ${r.file}\n    变异：${r.why}\n    ${r.detail}`);
 }
-const bad = rows.filter((r) => r.outcome !== "killed").length;
-console.log(`\n${rows.length} 条变异：${rows.length - bad} killed，${bad} 未杀死或已陈旧`);
+const ran = rows.filter((r) => r.outcome !== "skipped");
+const bad = ran.filter((r) => r.outcome !== "killed").length;
+console.log(`\n${ran.length} 条变异：${ran.length - bad} killed，${bad} 未杀死或已陈旧`);
+if (opts.json) writeFileSync(opts.json, JSON.stringify({ aborted: null, rows }, null, 2));
 process.exit(bad > 0 ? 1 : 0);
