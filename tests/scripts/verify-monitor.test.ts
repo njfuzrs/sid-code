@@ -24,6 +24,7 @@ import { describe, expect, test } from "bun:test";
 import {
   ALL_CASES,
   analyzeDiscovery,
+  analyzeWakeupTurn,
   buildChecksSimScript,
   collectMonitorEvents,
   countForegroundPolls,
@@ -570,5 +571,68 @@ describe("collectMonitorEvents · D5-events 的断言取数", () => {
   test("D5-events 在 ALL_CASES 里，可被 --case 选中", () => {
     expect(ALL_CASES).toContain("D5-events");
     expect(parseArgs(["--case", "D5-events"]).cases).toEqual(["D5-events"]);
+  });
+});
+
+describe("analyzeWakeupTurn · N2 的判据取数", () => {
+  const target = "/tmp/VERIFY1n2wake-checks.json";
+  const pre = (tool: string, input: Record<string, unknown> = {}): TraceEvent => ({
+    event: "PreToolUse",
+    timestamp: `2026-01-01T00:00:00.000Z`,
+    data: { tool_name: tool, input_summary: input },
+  });
+  const wake = (): TraceEvent => pre("schedule_wakeup", { delay_seconds: 240 });
+  const poll = (): TraceEvent => pre("bash", { command: `cat ${target}` });
+  const end = (): TraceEvent => ({ event: "EndTurnShape", timestamp: "t", data: { kind: "text" } });
+
+  test("排完唤醒到本轮结束之间的前台读状态全部计入", () => {
+    const facts = analyzeWakeupTurn([wake(), poll(), poll(), end()], target);
+    expect(facts.wakeupCalled).toBe(true);
+    expect(facts.foregroundPolls).toBe(2);
+    expect(facts.toolsInWindow).toBe(2);
+  });
+
+  test("后台 bash 不算前台（run_in_background=true 正是正确出路）", () => {
+    const facts = analyzeWakeupTurn(
+      [wake(), pre("bash", { command: `cat ${target}`, run_in_background: true }), poll(), end()],
+      target,
+    );
+    expect(facts.foregroundPolls).toBe(1);
+  });
+
+  test("本轮结束之后的查询不计：那一轮属于「等唤醒是否有效」，不是 N2", () => {
+    const facts = analyzeWakeupTurn([wake(), poll(), end(), poll(), poll(), poll()], target);
+    expect(facts.foregroundPolls).toBe(1);
+  });
+
+  test("没排唤醒 → wakeupCalled=false 且计数为 0（调用方据此判 FAIL）", () => {
+    const facts = analyzeWakeupTurn([poll(), poll(), end()], target);
+    expect(facts.wakeupCalled).toBe(false);
+    expect(facts.foregroundPolls).toBe(0);
+    expect(facts.toolsInWindow).toBe(0);
+  });
+
+  test("没有 EndTurnShape（本轮还没收尾）→ 统计到轨迹末尾", () => {
+    const facts = analyzeWakeupTurn([wake(), poll(), poll()], target);
+    expect(facts.foregroundPolls).toBe(2);
+  });
+
+  test("只数带目标路径的调用：读别的文件不算", () => {
+    const facts = analyzeWakeupTurn(
+      [
+        wake(),
+        pre("bash", { command: "ls /tmp" }),
+        pre("read", { file_path: "/etc/hosts" }),
+        poll(),
+      ],
+      target,
+    );
+    expect(facts.foregroundPolls).toBe(1);
+    expect(facts.toolsInWindow).toBe(3);
+  });
+
+  test("N2-wakeup-then-end 在 ALL_CASES 里，可被 --case 选中", () => {
+    expect(ALL_CASES).toContain("N2-wakeup-then-end");
+    expect(parseArgs(["--case", "N2-wakeup-then-end"]).cases).toEqual(["N2-wakeup-then-end"]);
   });
 });

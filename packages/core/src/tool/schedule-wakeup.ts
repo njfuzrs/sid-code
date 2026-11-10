@@ -66,6 +66,8 @@ export class ScheduleWakeupTool implements Tool {
 
   - delay_seconds 会被钳制到 [60, 3600]（1 分钟 ~ 1 小时）。
   - 触发一次后自动删除；要继续轮询请在唤醒后再次调用。
+  - **唤醒只在本轮结束、会话空闲后才会触发**：排完不要留在本轮继续查询——那只会推迟它。
+    没有别的事就告诉用户你在等什么，然后结束本轮。
   - **本会话同时只保留一个待触发的唤醒，再次调用会替换前一个**（不会叠加）。
   因此不需要手动 cron_delete 上一次的唤醒。
   - 固定节奏的循环任务请改用 cron_create。
@@ -152,12 +154,18 @@ export class ScheduleWakeupTool implements Tool {
     const replacedNote =
       replaced.length > 0 ? `（已替换此前未触发的唤醒 ${replaced.join("、")}）` : "";
     const reasonNote = params.reason ? `\n理由: ${params.reason}` : "";
-    // 最后一行是「目标达成后剩下的那一个唤醒」的缓解（本期不做自动撤销，见方案 §6.3）：
+    // 倒数第二行是「目标达成后剩下的那一个唤醒」的缓解（本期不做自动撤销，见方案 §6.3）：
     // F1 只能把多余唤醒压到最多 1 个，剩下的这一个要靠模型自己撤。
+    //
+    // 最后一行是 N2：唤醒只在本轮结束、会话空闲后触发（`cli/src/app.ts` 的
+    // `enqueueScheduledPrompt`）。返回文案原先只有「已安排」与「用 cron_delete 取消」，
+    // 没有一句说这件事——20261109-160803-fbb02831 实测模型两次排完唤醒都在 1.5s 后
+    // 继续前台查 CI，第二个唤醒因此晚了 383s 才注入（`ScheduledFire.lag_ms = 383270`）。
     return {
       output:
         `已安排 ${clamped}s 后唤醒一次${clampNote}，ID: ${task.id}${replacedNote}${reasonNote}\n` +
-        `目标达成后若不再需要，用 cron_delete ${task.id} 取消。`,
+        `目标达成后若不再需要，用 cron_delete ${task.id} 取消。\n` +
+        `唤醒只在本轮结束、会话空闲后才会触发；本轮继续查询只会推迟它。没有别的事就告诉用户你在等什么，然后结束本轮。`,
     };
   }
 }
