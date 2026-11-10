@@ -724,20 +724,29 @@ describe("D5：monitor 事件的 MonitorEvent 轨迹 sink", () => {
     setMonitorEventSink((d) => seen.push(d));
     try {
       // 突发阀：10s 内超过 40 行 → rate_burst 停止，终态冲刷按 MAX_BURST_FLUSH_LINES(40) 截断。
-      // 41 行 + 终态冲刷前的输出行 → dropped = 总行数 - 40 > 0
+      const totalLines = 60;
       const t = spawn({
-        command: `for i in $(seq 1 60); do echo burst-$i; done; sleep 0.5`,
+        command: `for i in $(seq 1 ${totalLines}); do echo burst-$i; done; sleep 0.5`,
         timeoutMs: 10_000,
       });
       await waitFor(() => {
         const task = getTask(t.id) as LocalMonitorTaskState;
         return task.status !== "running" ? task : undefined;
       });
-      // 突发阀停止只产生一条终态冲刷事件；60 行只保尾 40，dropped=20
-      expect(seen.length).toBe(1);
-      expect(seen[0]!.dropped).toBe(20);
-      expect(seen[0]!.lines).toBe(41); // 40 行 + 1 行截断提示
-      expect(seen[0]!.seq).toBe(1);
+      // 突发阀停止只产生一条终态冲刷事件；终态冲刷只保尾 40 行。
+      //
+      // ⚠️ dropped **不能**写死 20：突发阀在累计超 40 行时立即停止任务并 kill 子进程，
+      // 子进程那 60 行的循环根本跑不完，实际打出 41~60 行中的某一个数（取决于调度）。
+      // 所以 dropped = 实际行数 - 40 是 1~20 之间的不确定值（实测 3 与 20 都出现过），
+      // 写死定值会变成 40% 概率的假失败。这里锁「截断确实发生且经 sink 传出」（> 0），
+      // 上限 20 是 60 行全打出时的理论最大值——去掉 enqueueMonitorEvent 的 dropped 传参
+      // 会让 dropped 恒 0，断言照样会红，变异自证不受影响。
+      const mine = seen.filter((d) => d.task_id === t.id);
+      expect(mine.length).toBe(1);
+      expect(mine[0]!.dropped).toBeGreaterThan(0);
+      expect(mine[0]!.dropped).toBeLessThanOrEqual(totalLines - MAX_BURST_FLUSH_LINES);
+      expect(mine[0]!.lines).toBe(41); // 40 行 + 1 行截断提示
+      expect(mine[0]!.seq).toBe(1);
     } finally {
       setMonitorEventSink(null);
     }

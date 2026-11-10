@@ -58,7 +58,7 @@ monitor 的每条投递事件进轨迹：`packages/core/src/task/monitor-task.ts
     `lines=[1,1,1]`、`dropped` 全 0（批合并不算丢弃）✅
   - 未接线（sink=null）→ 投递照常、不抛错 ✅
   - 纯逻辑：205 行 drainAll → `drainDropped=5`；不截断 / 空冲刷 → 0 ✅
-  - 端到端：突发阀路径（60 行）→ sink 收到 1 条终态事件，`dropped=20`、
+  - 端到端：突发阀路径（60 行循环）→ sink 收到 1 条终态事件，`dropped ∈ (0, 20]`、
     `lines=41`（40 行 + 截断提示行）✅
 - **变异自证**：把 `if (monitorEventSink)` 短路成 `if (false)` → 两条端到端用例
   变红（`2 fail`），恢复后 40 pass 全绿（2026-11-10 本机实测输出）。
