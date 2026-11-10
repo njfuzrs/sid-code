@@ -150,6 +150,16 @@ const REPO_ROOT = join(import.meta.dir, "..");
 // 会话被算成 monitor 子进程（单测里专门有一条覆盖这个形态）。
 const HOST_HEADLESS_RE = /(sid-code(-dev)?|sc(-dev)?)\s+-p\b/;
 const BUN_SOURCE_RE = /(bun|node)\s+.*entrypoints\/bootstrap\.ts\s/;
+/**
+ * 按 argv 形态排除宿主：`startHeadless` 起宿主固定带 `-p --dangerously-skip-permissions`，
+ * monitor 子进程（`zsh -c <脚本>`）的命令行永远不含这一段。
+ *
+ * ⚠️ 只靠上面的二进制名正则不够：`--binary` 可以指向任意文件名。FIX-1 做端到端变异自证时
+ * 用 `--binary /tmp/…/sid-code-mutC`，`sid-code-mutC -p` 不匹配 HOST_HEADLESS_RE，A 的宿主
+ * （argv 带 token）被算成「A 的 monitor 子进程仍存活」——monitor 其实已被误杀，
+ * 这条断言假通过，只靠 events 那条断言才判出 FAIL（2026-11-10 实测）。
+ */
+const HOST_ARGV_RE = /\s-p\s+--dangerously-skip-permissions\b/;
 
 /**
  * 「启动扫描清理了孤儿 monitor」的日志匹配。
@@ -172,14 +182,16 @@ export function makeToken(tag: string, now = Date.now()): string {
  *
  * 三条过滤规则（都踩过）：
  * 1. 只留命令行含 token 的行——monitor 子进程是 `bash -c "<含 token 的脚本>"`；
- * 2. 排除无头宿主（见 HOST_HEADLESS_RE / BUN_SOURCE_RE）；
+ * 2. 排除无头宿主（见 HOST_HEADLESS_RE / BUN_SOURCE_RE / HOST_ARGV_RE）；
  * 3. 首列必须是数字 pid。
  */
 export function filterMonitorPids(psOutput: string, token: string): number[] {
   const pids: number[] = [];
   for (const line of psOutput.split("\n")) {
     if (!line.trim() || !line.includes(token)) continue;
-    if (HOST_HEADLESS_RE.test(line) || BUN_SOURCE_RE.test(line)) continue;
+    if (HOST_HEADLESS_RE.test(line) || BUN_SOURCE_RE.test(line) || HOST_ARGV_RE.test(line)) {
+      continue;
+    }
     const m = /^\s*(\d+)\s+\S/.exec(line);
     if (!m) continue;
     const pid = Number(m[1]);

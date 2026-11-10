@@ -181,9 +181,23 @@ export {
   getDefaultMonitorTimeoutMs,
   spawnMonitorTask,
   killMonitorTask,
+  killAllRunningMonitors,
   countRunningMonitors,
   truncateEventLine,
 } from "./monitor-task.ts";
+
+export {
+  MONITOR_META_SUFFIX,
+  writeMonitorMeta,
+  removeMonitorMeta,
+  reapOrphanMonitors,
+  classifyMonitorMeta,
+  parsePsPgidTable,
+  type MonitorProcessMeta,
+  type OrphanReapReport,
+  type OrphanVerdict,
+  type PsRow,
+} from "./monitor-orphans.ts";
 
 export {
   createAgentTask,
