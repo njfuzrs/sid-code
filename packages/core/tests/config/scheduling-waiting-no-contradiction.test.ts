@@ -52,9 +52,14 @@ function promptOf(opts: { monitor: boolean; en: boolean }): string {
 function sectionOf(prompt: string, tag: string): string {
   const open = `<${tag}>`;
   const close = `</${tag}>`;
-  const start = prompt.indexOf(open);
-  const end = prompt.indexOf(close);
-  expect(start).toBeGreaterThanOrEqual(0);
+  // 段落标签独占一行。不能裸 indexOf：monitor 注册时 scheduling 段的让出句里含
+  // `<waiting-capability>` 字面量（行内、后面跟反引号），裸 indexOf 会把 waiting 段的
+  // 切片起点落到 scheduling 段中间，于是「waiting 段含 wait_until_seconds」被 scheduling
+  // 段自己的 wait_until_seconds 满足掉——一条恒绿断言。
+  const m = new RegExp(`^${open}$`, "m").exec(prompt);
+  expect(m).not.toBeNull();
+  const start = m!.index;
+  const end = prompt.indexOf(close, start);
   expect(end).toBeGreaterThan(start);
   return prompt.slice(start, end + close.length);
 }
@@ -98,7 +103,10 @@ for (const monitor of [true, false]) {
         if (monitor) {
           expect(exitLine).toContain("<waiting-capability>");
           // 指向的段落必须真的注入，且它仍把「CI 全绿」映射到后台等待。
-          expect(sectionOf(prompt, "waiting-capability")).toContain("wait_until_seconds");
+          // 导语那一行是「切片起点确实落在 waiting 段」的锚点（防止上面的路径问题复发）。
+          const waitSec = sectionOf(prompt, "waiting-capability");
+          expect(waitSec).toContain(en ? "## Waiting on external state" : "## 等待外部状态");
+          expect(waitSec).toContain("wait_until_seconds");
         } else {
           expect(exitLine).not.toContain("<waiting-capability>");
           expect(exitLine).toContain("run_in_background=true");
