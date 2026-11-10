@@ -121,6 +121,17 @@ function flattenText(messages: Array<{ role: string; content: ContentBlock[] }>)
     .join("\n");
 }
 
+/**
+ * 把**每一次实际发出**的 messages 拼成一段文本。
+ *
+ * 2026-11-10（P1）后，todo 回注与 LSP 诊断改走 transient reminder 通道：只进发送副本，
+ * 不写回 ctxMgr（`query/reminder-inject.ts` 不变量 3）。于是「回注发生过」只能从
+ * `calls`（provider 收到的 SendParams）里看，`result.messages` 里永远看不到它。
+ */
+function flattenSentText(calls: SendParams[]): string {
+  return calls.map((c) => flattenText(c.messages as any)).join("\n");
+}
+
 /** 计数某段文字在历史里出现了几次（回注/拦截各注入一条，按次数断言更精确）。 */
 function countOccurrences(haystack: string, needle: string): number {
   let n = 0;
@@ -200,7 +211,9 @@ describe("P1-3 — 子代理 end_turn 完成度门禁", () => {
     expect(calls.length).toBe(1);
     const history = flattenText(result.messages as any);
     expect(history).not.toContain("检测到你试图结束本轮对话");
-    expect(history).not.toContain("这是你当前的任务清单");
+    // 回注走 transient 通道后历史里永远不会有它，只断言 history 会变成恒真。
+    // 要证明「没注入」必须看实际发出去的东西。
+    expect(flattenSentText(calls)).not.toContain("这是你当前的任务清单");
   });
 
   test("子代理补完清单后即可正常收尾（拦截是可解的，不是死循环）", async () => {
@@ -243,7 +256,7 @@ describe("P1-3 — 子代理 todo 清单周期性回注", () => {
     // 最后一轮标完收尾。用工具轮而不是空文本轮，避免撞上「未答复」类防御。
     const totalToolTurns = TODO_REMINDER_CONFIG.TURNS_BETWEEN_REMINDERS + 1;
     let turn = 0;
-    const { provider } = makeProvider([
+    const { provider, calls } = makeProvider([
       () => {
         turn++;
         if (turn <= totalToolTurns) {
@@ -269,17 +282,20 @@ describe("P1-3 — 子代理 todo 清单周期性回注", () => {
     const result = await runAgentLoop(baseConfig(provider, registry));
 
     expect(result.success).toBe(true);
-    const history = flattenText(result.messages as any);
-    // 回注文案来自主循环共用的 buildTodoReminder
-    expect(history).toContain("这是你当前的任务清单");
-    expect(history).toContain("改 A 文件");
+    // 回注文案来自主循环共用的 buildTodoReminder。
+    // 2026-11-10（P1）起它走 transient reminder 通道：只进发送副本，不写回 ctxMgr。
+    // 断言位置随之从 result.messages 移到实际发出的 calls —— 留在历史里会恒红。
+    const sent = flattenSentText(calls);
+    expect(sent).toContain("这是你当前的任务清单");
+    expect(sent).toContain("改 A 文件");
+    expect(flattenText(result.messages as any)).not.toContain("这是你当前的任务清单");
   });
 
   test("回注受节流约束：前几轮不注入（不每轮刷屏烧 token）", async () => {
     const { registry } = await makeRegistryWithTodos(TWO_UNFINISHED);
     // 只跑 2 轮工具就收尾，远小于 TURNS_BETWEEN_REMINDERS(8) → 不该回注
     let turn = 0;
-    const { provider } = makeProvider([
+    const { provider, calls } = makeProvider([
       () => {
         turn++;
         if (turn <= 2) {
@@ -297,7 +313,8 @@ describe("P1-3 — 子代理 todo 清单周期性回注", () => {
 
     const history = flattenText(result.messages as any);
     // 节流期内不回注；但 end_turn 门禁照样拦（两道机制互不替代）
-    expect(history).not.toContain("这是你当前的任务清单");
+    // 回注走 transient 通道后历史里恒不含，恒真断言挡不住「节流失效」——看发送副本。
+    expect(flattenSentText(calls)).not.toContain("这是你当前的任务清单");
     expect(history).toContain("检测到你试图结束本轮对话");
   });
 });
