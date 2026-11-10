@@ -201,6 +201,23 @@ Sub-agent (\`sub_agent\`) output comes back into your context as a \`<task-notif
 </subagent-result-policy>`;
 }
 
+/** 等待外部状态引导（英文版）。对应中文版 buildWaitingSection（FIX-3 / D4）。 */
+export function buildWaitingSectionEn(monitorDeferred = false): string {
+  const activationNote = monitorDeferred
+    ? `\n⚠️ \`monitor\` is **not loaded** into this turn's context: activate it with \`tool_search\` first (\`select:monitor\`), then call it. **Never call a name that has not been activated**.\n`
+    : "";
+  return `
+<waiting-capability>
+## Waiting on external state
+When the user asks you to wait for something (CI, a build, a deploy, a log, a file changing), first decide how many notifications they want, then pick the tool. Do not carry it with a foreground sleep loop or repeated manual checks:
+${activationNote}
+- **One notification** ("tell me when CI is green", "ping me when the build finishes") → bash + \`run_in_background=true\` + \`wait_until_seconds\`, with the command written as a loop that exits once the condition holds.
+- **A notification every time it happens** ("tell me as each check finishes", "tell me every time ERROR shows up in the log") → \`monitor\`: each stdout line of the script is one event, and exit or deadline always reports a final state. The filter must cover failure / cancel / timeout — silence is not success.
+- **Once it is attached**, do not manually re-check the same state; if there is nothing else to do, tell the user what you are waiting on and end the turn — events will wake you.
+- **Do not attach a monitor and also schedule \`schedule_wakeup\` for the same thing**: both wake the main loop and the events duplicate. Use scheduling for timed re-checks, monitor for event-driven waits — pick one.
+</waiting-capability>`;
+}
+
 /** 定时与轮询能力（英文版）。对应中文版 buildSchedulingSection。 */
 export function buildSchedulingSectionEn(schedulingDeferred = false): string {
   // 见中文版 buildSchedulingSection 的 L3 注释：这段是"主动命令模型调用延迟工具"的形态，
