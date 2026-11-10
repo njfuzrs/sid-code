@@ -53,6 +53,8 @@ export type StatusQueryFamily =
   | "gh_run_view"
   | "gh_run_watch"
   | "gh_run_list"
+  | "gh_api_checks"
+  | "gh_api_runs"
   | "glab_mr_view"
   | "glab_ci_status"
   | "k8s_rollout_status"
@@ -88,6 +90,14 @@ interface RuleMatch {
   tail: string;
   /** 命令族（D13）：同一 subject 下不同族的查询输出覆盖不同字段 */
   family: StatusQueryFamily;
+  /**
+   * subject 前缀的覆盖值（默认由 `kind` 决定）。
+   *
+   * 只有 `gh api` 需要它：同一条 `gh` 命令按路径分成 `gh:commit:<ref>` 与 `gh:run:<id>`
+   * 两种 subject，一个 `kind` 给不出两个前缀。命名与 `wait-registry` 的 subjects 保持同一套，
+   * 否则回执里说的对象与 monitor 盯的对象对不上（S2 撤销会失配）。
+   */
+  prefix?: string;
 }
 
 type Rule = {
@@ -112,6 +122,63 @@ function firstPositional(args: string[], from: number): string | null {
     return a;
   }
   return null;
+}
+
+/**
+ * `gh api` 的**只读 GET** 路径；带写标志时返回 null。
+ *
+ * 判据按「写标标志存在即拒绝」的**白名单方向**：`-f` / `-F` / `--field` / `--raw-field` /
+ * `--input` 会让 gh 把请求变成 POST/PATCH/PUT（GH CLI 的隐式方法推导），所以一律不算状态查询。
+ * `-X POST` / `--method=DELETE` 同理。`-q` / `--jq` / `-H` 只影响输出与请求头，放行。
+ *
+ * 路径取**第一个非 flag 位置参数**。`gh api repos/… -q '.x'` 这种「路径在前、查询串在后」
+ * 的真实写法能正确取到；反过来把 `-q` 写在路径前会取到查询串 → 路径匹配不上 → 放行（宁漏不误）。
+ */
+function ghApiGetPath(args: string[]): string | null {
+  if (args[0] !== "api") return null;
+
+  const WRITE_FLAGS = new Set(["-f", "-F", "--field", "--raw-field", "--input", "--method", "-X"]);
+  /**
+   * 带**取值**的只读 flag：它们的值不是位置参数。
+   *
+   * 刻意不用 `firstPositional`：那个函数对「分开写的 flag 值」是跳过不了的
+   * （`-X GET repos/…` 会把 `GET` 当位置参数），对 gh pr/run 那些子命令无妨——它们的
+   * 子命令位置固定；但 `gh api` 的路径就是第一个位置参数，必须精确。
+   */
+  const VALUE_FLAGS = new Set(["-q", "--jq", "-H", "--header", "-t", "--template", "--cache"]);
+
+  let path: string | null = null;
+  for (let i = 1; i < args.length; i++) {
+    const a = args[i]!;
+    if (a === "-X" || a === "--method") {
+      const v = args[i + 1];
+      if (v === undefined || v.toUpperCase() !== "GET") return null;
+      i++;
+      continue;
+    }
+    if (a.startsWith("--method=")) {
+      if (a.slice("--method=".length).toUpperCase() !== "GET") return null;
+      continue;
+    }
+    if (a.startsWith("-X") && a.length > 2) {
+      if (a.slice(2).toUpperCase() !== "GET") return null;
+      continue;
+    }
+    if (a.startsWith("--field=") || a.startsWith("--raw-field=") || a.startsWith("--input=")) {
+      return null;
+    }
+    if (WRITE_FLAGS.has(a)) return null;
+    if (a.startsWith("-")) {
+      if (VALUE_FLAGS.has(a)) i++; // 跳过它的值
+      continue;
+    }
+    if (path === null) path = a;
+  }
+
+  if (!path) return null;
+  // `?per_page=100` 这类查询串不影响端点语义，但会让路径正则失配
+  const stripped = path.split("?")[0] ?? "";
+  return stripped === "" ? null : stripped;
 }
 
 /**
@@ -157,6 +224,37 @@ const RULES: Rule[] = [
         return { tail: n ? `list:${n}` : "list", family: "gh_run_list" };
       }
       return null;
+    },
+  },
+  {
+    command: "gh",
+    kind: "gh_pr",
+    // `gh api …/commits/<ref>/check-runs`：CI 状态的另一条主路径。
+    //
+    // 为什么必须单开一条规则：962011a6 一个会话里 32 次 `gh api …/check-runs`，
+    // 全量 954 会话 175 次 / 29 会话，**一次都识别不了**（原命令表只有 `gh pr|run` 子命令）。
+    // 模型从 `gh pr checks` 切到 `gh api` 的动机很直接：后者能拿到逐 job 的 status/conclusion。
+    match: (args) => {
+      const path = ghApiGetPath(args);
+      if (!path) return null;
+      const m =
+        /^repos\/[^/]+\/[^/]+\/commits\/(.+)\/(check-runs|check-suites|status|statuses)$/.exec(
+          path,
+        );
+      if (!m) return null;
+      return { tail: m[1]!, family: "gh_api_checks", prefix: "gh:commit:" };
+    },
+  },
+  {
+    command: "gh",
+    kind: "gh_run",
+    // `gh api …/actions/runs[/<id>][/jobs]`：与 `gh run view` 同一批对象，但输出是 REST JSON。
+    match: (args) => {
+      const path = ghApiGetPath(args);
+      if (!path) return null;
+      const m = /^repos\/[^/]+\/[^/]+\/actions\/runs(?:\/(\d+))?(?:\/jobs)?$/.exec(path);
+      if (!m) return null;
+      return { tail: m[1] ?? "list", family: "gh_api_runs", prefix: "gh:run:" };
     },
   },
   {
@@ -235,6 +333,8 @@ function flattenCommand(command: string): string | null {
  *
  * `sleep` 在列：真实轨迹里有 `sleep 30; gh pr view 662 ...` 这种写法，它没有副作用。
  * `echo` / `printf` 在列：两条会话里高频出现 `echo "=== checks ==="` 这类分隔符。
+ * `date` 在列：轮询时给结果打时间戳（`sleep 30; date '+%H:%M:%S'; gh pr view …`），
+ * 只读且无副作用；不在表里会让整条命令因为「有一段不认识」而被放行。
  */
 const HARMLESS_COMMANDS = new Set([
   "cd",
@@ -246,6 +346,7 @@ const HARMLESS_COMMANDS = new Set([
   "false",
   ":",
   "sleep",
+  "date",
   "set",
   "export",
   "wait",
@@ -259,17 +360,248 @@ function hasHelpOrVersionFlag(args: string[]): boolean {
   return args.some((a) => a === "--help" || a === "-h" || a === "--version" || a === "--");
 }
 
+/** `extractSimpleCommands` 的元素（一段简单命令） */
+type SimpleSegment = { command: string; args: string[] };
+
+/**
+ * 纯过滤命令：只对 stdin 做**一次性**过滤/格式化，不读文件树、不写文件。
+ *
+ * 为什么允许它们出现在查询之后：`gh pr checks 701 2>&1 | head -20` 是模型最常用的写法
+ * （全量 954 会话里这类管道 530 次），原实现只看最后一段，把整条命令判成 `head` 而放行。
+ *
+ * 判据仍是「宁可漏，不可误伤」，所以每一项都排掉了自己会写/会持续等的形态：
+ * - `tail -f` / `-F` / `--follow`：持续跟随，不是「查一次」，拦它没有意义；
+ * - `sort -o <file>`：会写文件；
+ * - `awk` 的程序体可以 `print > "f"`，参数里出现 `>` 或 gawk 的 `-i`（include）一律不算纯过滤。
+ *   这会误伤 `awk '$1>2'`（比较运算符）—— 少拦一次，安全方向。
+ */
+function isReadonlyFilter(seg: SimpleSegment): boolean {
+  if (!seg.command) return false;
+  const { command, args } = seg;
+  switch (command) {
+    case "head":
+      return true;
+    case "tail":
+      return !args.some((a) => a === "-f" || a === "-F" || a === "--follow" || a === "--retry");
+    case "jq":
+    case "grep":
+    case "wc":
+    case "cut":
+      return true;
+    case "sort":
+      return !args.some(
+        (a) => a === "-o" || a === "--output" || a.startsWith("-o=") || a.startsWith("--output="),
+      );
+    case "awk":
+      return !args.some((a) => a === "-i" || a.startsWith("--include") || a.includes(">"));
+    default:
+      return false;
+  }
+}
+
+/**
+ * 一段命令是否是状态查询。
+ *
+ * 剥 fd 复制记号：触发会话里 44 条退出码 8 的命令**全部**带 `2>&1`。parser 把记号原样留在
+ * args 里，不剥掉的话 `gh pr checks 2>&1`（无 PR 号形态）会把 "2>&1" 当位置参数。
+ */
+function hitSegment(seg: SimpleSegment): QueryHit | null {
+  if (!seg.command) return null;
+  const args = seg.args.filter((a) => !FD_DUPLICATION.test(a));
+  if (hasHelpOrVersionFlag(args)) return null;
+  return matchQuery(seg.command, args);
+}
+
+/** 循环头命令（shell 的三种循环） */
+const LOOP_HEADS = new Set(["for", "while", "until"]);
+
+/** 从一段简单命令列表里识别出的循环结构 */
+interface LoopStructure {
+  /** 循环头（`for pr in …` / `while …` / `until …`） */
+  head: SimpleSegment;
+  /** 循环体（已剥离 `do` 前缀）；一条循环体段都没有时为 null */
+  body: SimpleSegment[] | null;
+  /** 循环外其余段（`cd …` / `sleep …`） */
+  outside: SimpleSegment[];
+}
+
+/**
+ * 识别「单条、非嵌套」的循环，并把它从段列表里拆出来。
+ *
+ * 为什么在这里拆、而不去改 `parser.ts` 加 `for_statement` 节点：parser 是权限判定的上游
+ * （`isReadOnlyCommand` / `extractPathsFromCommand` / checkpoint 共用），新增节点类型要同步
+ * 每一处 switch，风险与收益不成比例；而这里只回答「是不是状态查询」，扁平段列表已经够用
+ * （实测 parser 把 `for pr in 694 696 697; do gh …; done` 拆成
+ * `for …` / `do gh …` / `done` 三段，`do` 粘在循环体首段前面）。
+ *
+ * 返回 null 的情形都走「宁漏不误」：没有循环头、循环不完整、多个/嵌套循环。
+ */
+function findLoop(simple: SimpleSegment[]): LoopStructure | null {
+  const heads: number[] = [];
+  for (let i = 0; i < simple.length; i++) {
+    if (LOOP_HEADS.has(simple[i]!.command)) heads.push(i);
+  }
+  if (heads.length === 0) return null;
+  // 多条或嵌套循环：段列表看不出层级，判不出循环体的边界 → 放弃
+  if (heads.length > 1) return null;
+
+  const start = heads[0]!;
+  let end = -1;
+  for (let i = start + 1; i < simple.length; i++) {
+    if (simple[i]!.command === "done") {
+      end = i;
+      break;
+    }
+  }
+  if (end < 0) return null;
+
+  const body: SimpleSegment[] = [];
+  for (let i = start + 1; i < end; i++) {
+    const seg = simple[i]!;
+    if (seg.command === "do") {
+      // `do` 只允许出现在循环体开头；出现在中间说明结构不是我们理解的那样
+      if (i !== start + 1) return { head: simple[start]!, body: null, outside: [] };
+      if (seg.args.length === 0) continue;
+      body.push({ command: seg.args[0]!, args: seg.args.slice(1) });
+      continue;
+    }
+    if (!seg.command) continue;
+    body.push(seg);
+  }
+
+  const outside = [...simple.slice(0, start), ...simple.slice(end + 1)];
+  return { head: simple[start]!, body, outside };
+}
+
+/** `for <var> in <values…>` 的变量名与列表；不是这个形态（含非字面量列表）时返回 null */
+function forLiteralValues(head: SimpleSegment): { name: string; values: string[] } | null {
+  if (head.command !== "for") return null;
+  const [name, keyword, ...values] = head.args;
+  if (!name || !/^[A-Za-z_][A-Za-z0-9_]*$/.test(name)) return null;
+  if (keyword !== "in" || values.length === 0) return null;
+  if (!values.every((v) => /^\d+$/.test(v))) return null; // 非全数字 → 交回调用方退化
+  return { name, values };
+}
+
+/** 把 `$var` / `${var}` 替换成具体值（`$prx` 不能被 `$pr` 命中） */
+function substituteLoopVariable(args: string[], name: string, value: string): string[] {
+  const re = new RegExp(`\\$(?:${name}\\b|\\{${name}\\})`, "g");
+  return args.map((a) => a.replace(re, value));
+}
+
+/** 循环命中的查询：subject 尾部与签名主体 */
+interface LoopSubject {
+  tail: string;
+  /** 签名里的命令部分（同一查询的稳定形态，与列表顺序无关） */
+  bodies: string[];
+}
+
+/**
+ * 循环的 subject 尾部与签名主体。
+ *
+ * - `for pr in 694 696 697` 这类**全数字字面量**列表：把循环变量替换成每个值分别匹配，
+ *   subject 用排序去重后的 `694,696,697`；列表顺序不同 → 同一 subject、同一签名。
+ * - 其余（`for pr in $(gh pr list …)`、while/until）：尾部落成 `multi`。
+ *   **刻意不是 `current`**：`gh pr view $pr` 在列表未知时的 `tail` 会是 "current"，
+ *   那会和「查当前分支的 PR」撞同一个 subject，回执就会说错对象。
+ */
+function loopSubject(
+  loop: LoopStructure,
+  hits: Array<{ seg: SimpleSegment; hit: QueryHit }>,
+): LoopSubject {
+  const literal = forLiteralValues(loop.head);
+  if (literal && loop.body) {
+    const values = [...new Set(literal.values)].sort();
+    let ok = true;
+    const tails: string[] = [];
+    const bodies: string[] = [];
+    for (const value of values) {
+      for (const { seg } of hits) {
+        const substituted = substituteLoopVariable(seg.args, literal.name, value);
+        const hit = matchQuery(seg.command, substituted);
+        if (!hit || !/^\d+$/.test(hit.tail)) {
+          ok = false;
+          break;
+        }
+        tails.push(hit.tail);
+        bodies.push(`${seg.command} ${substituted.join(" ")}`.trim());
+      }
+      if (!ok) break;
+    }
+    if (ok) {
+      const unique = [...new Set(tails)].sort();
+      return { tail: unique.join(","), bodies };
+    }
+  }
+
+  // 非字面量列表 / while / until：保留循环体原文做签名（变量名不变才同签名）
+  const tails = hits.map((h) => h.hit.tail);
+  const allNumeric = tails.length > 0 && tails.every((t) => /^\d+$/.test(t));
+  const tail = allNumeric ? [...new Set(tails)].sort().join(",") : "multi";
+  const bodies = hits.map(({ seg }) => `${seg.command} ${seg.args.join(" ")}`.trim());
+  return { tail, bodies };
+}
+
+/**
+ * 循环体展开后的匹配。
+ *
+ * 安全边界与单条命令完全一致：循环体里出现**任何**不认识/可能写操作的段 → null。
+ * 循环头与 `done` 视为无害 —— `until gh pr checks 1; do sleep 30; done` 的循环头是一条
+ * 查询，但它表达的是「等这条命令成功」而不是轮询，拦它没有意义（也不该拦）。
+ */
+function matchLoopQuery(loop: LoopStructure): StatusQueryMatch | null {
+  // 循环外：`cd …` / `sleep …` 这类，必须无害
+  for (const seg of loop.outside) {
+    if (!seg.command) return null;
+    if (HARMLESS_COMMANDS.has(seg.command)) continue;
+    return null;
+  }
+  if (!loop.body || loop.body.length === 0) return null;
+
+  const hits: Array<{ seg: SimpleSegment; hit: QueryHit }> = [];
+  for (const seg of loop.body) {
+    if (!seg.command) return null;
+    const hit = hitSegment(seg);
+    if (hit) {
+      hits.push({ seg, hit });
+      continue;
+    }
+    if (HARMLESS_COMMANDS.has(seg.command)) continue;
+    // 循环体里的只读过滤管道：`for n in 579 578 577; do … gh pr checks $n | head -40; … done`
+    // 是真实轨迹里的形态（7dd98bf5 系会话）。过滤段刻意**不进签名**：它只截断输出，
+    // 不改变「查的是哪个对象」；同一循环的两种 head 行数会共享 memo，最坏是少拦一次。
+    if (isReadonlyFilter(seg)) continue;
+    return null; // 循环体里有不认识/写操作的命令（`gh pr merge $pr`、`bun test`）→ 放行
+  }
+  if (hits.length === 0) return null;
+
+  // 循环体里多条查询必须在同一 kind + family：不同族的输出形态不同，合并成一个签名会互相污染
+  const first = hits[0]!.hit;
+  for (const { hit } of hits) {
+    if (hit.kind !== first.kind || hit.family !== first.family) return null;
+  }
+
+  const { tail, bodies } = loopSubject(loop, hits);
+  const subject = `${first.prefix ?? subjectPrefix(first.kind)}${tail}`;
+  return {
+    kind: first.kind,
+    family: first.family,
+    subject,
+    signature: `${subject}\x1f${bodies.join("; ")}`.trim(),
+  };
+}
+
 /**
  * 这条 bash 命令是不是「查外部状态」。
  *
  * 三条同时成立才命中：
- * 1. **最后一段简单命令**命中命令表（`a && gh pr checks 1` 取 `gh pr checks`；
- *    `gh pr checks 1 | head` 取出的是 `head`，不匹配 —— 与 §5.6 退出码语义表同一判据，
- *    因为退出码与输出来自最后一段）。
- * 2. **整条命令不含写操作**：除最后一段外，其余每段都必须是「命中查询表」或
- *    `HARMLESS_COMMANDS`；有任何一个不认识的就放行（`gh pr checks 1 && gh pr merge 1`、
+ * 1. **查询段**命中命令表。查询段默认是最后一段（`a && gh pr checks 1`）；
+ *    最后一段是纯过滤命令（`head` / `jq` / `grep` …）时向前找最后一个命中的段
+ *    （`gh pr checks 1 | head` 的查询段是 `gh pr checks 1`）。
+ * 2. **整条命令不含写操作**：其余每段都必须是「命中查询表」、纯过滤命令（只允许在查询段之后）
+ *    或 `HARMLESS_COMMANDS`；有任何一个不认识的就放行（`gh pr checks 1 && gh pr merge 1`、
  *    `git push` 这类都会被这一条挡掉）。
- * 3. 没有写重定向（`> file`）、命令是单行。
+ * 3. 没有写重定向（`> file`）、命令是单行；复合命令里的循环按循环体展开（见 `findLoop`）。
  *
  * ⚠️ **为什么不直接复用 `isReadOnlyCommand`**：那个函数是给**权限放行**用的，白名单刻意窄
  * （`gh` 只认 `issue`/`pr`/`repo` 三组，`curl` 恒判非只读）。拿它做本判据会把
@@ -295,32 +627,55 @@ export function matchStatusQuery(command: string): StatusQueryMatch | null {
   const redirects = extractRedirectTargets(ast).filter((t) => t !== "/dev/null");
   if (redirects.length > 0) return null;
 
-  const last = simple[simple.length - 1];
-  if (!last?.command) return null;
-  // `gh pr checks --help` 是查文档不是查状态（真实会话里出现过，误拦会让模型拿不到用法）
-  if (hasHelpOrVersionFlag(last.args)) return null;
+  // 循环（`for … do gh … done`）：整条交给循环展开，不再走「最后一段」判据
+  const loop = findLoop(simple);
+  if (loop) return matchLoopQuery(loop);
 
-  // 触发会话里 44 条退出码 8 的命令**全部**带 `2>&1`。parser 把 fd 复制记号原样留在
-  // args 里，不剥掉的话 `gh pr checks 2>&1`（无 PR 号形态）会把 "2>&1" 当位置参数。
-  const args = last.args.filter((a) => !FD_DUPLICATION.test(a));
-  const hit = matchQuery(last.command, args);
-  if (!hit) return null;
+  // 选查询段：默认最后一段；最后一段是纯过滤命令时向前跳过连续过滤段
+  const lastIdx = simple.length - 1;
+  let queryIdx = lastIdx;
+  let hit = hitSegment(simple[lastIdx]!);
+  if (!hit) {
+    if (!isReadonlyFilter(simple[lastIdx]!)) return null;
+    let j = lastIdx - 1;
+    while (j >= 0 && isReadonlyFilter(simple[j]!)) j--;
+    if (j < 0) return null;
+    hit = hitSegment(simple[j]!);
+    if (!hit) return null;
+    queryIdx = j;
+  }
 
-  // 判据 2：其余每一段都必须无害或本身也是查询
-  for (let i = 0; i < simple.length - 1; i++) {
+  // 判据 2：其余每一段都必须无害 / 本身也是查询 / 纯过滤
+  //
+  // 纯过滤命令**不限定位置**：962011a6 的主流写法是
+  // `gh api …/check-runs | head -10; echo '=== PR ==='; gh pr view 701 …` ——
+  // 第一个 `head` 属于前一个子命令的管道末端，位置在查询段之前。
+  // 只允许「查询段之后」会把这类最常见写法全部漏掉（实测该会话 27/34 条）。
+  // 安全性不变：`isReadonlyFilter` 只认不写文件、不持续跟随的一次性过滤命令。
+  for (let i = 0; i < simple.length; i++) {
+    if (i === queryIdx) continue;
     const seg = simple[i]!;
     if (!seg.command) return null;
     if (HARMLESS_COMMANDS.has(seg.command)) continue;
-    if (matchQuery(seg.command, seg.args)) continue;
+    if (isReadonlyFilter(seg)) continue;
+    if (i < queryIdx && hitSegment(seg)) continue; // 之前也可以是查询（`gh pr status && gh pr checks 1`）
     return null; // 有不认识的一段 → 可能有写操作，放行
   }
 
-  const subject = `${subjectPrefix(hit.kind)}${hit.tail}`;
+  const subject = `${hit.prefix ?? subjectPrefix(hit.kind)}${hit.tail}`;
+  // 签名里带上整条复合命令（除无害段）：过滤段与前置查询都会改变输出形态，
+  // 混用同一个 memo 会互相污染（`| head -10` 的输出与 `| jq …` 的不是一回事）。
+  // 无害段（`cd` / `echo` / `sleep`）刻意不计入 —— 轮询时它们常变，查询语义没变。
+  const sigParts: string[] = [];
+  for (const seg of simple) {
+    if (!seg.command || HARMLESS_COMMANDS.has(seg.command)) continue;
+    sigParts.push(`${seg.command} ${seg.args.join(" ")}`.trim());
+  }
   return {
     kind: hit.kind,
     family: hit.family,
     subject,
-    signature: `${subject}\x1f${last.command} ${last.args.join(" ")}`.trim(),
+    signature: `${subject}\x1f${sigParts.join("; ")}`.trim(),
   };
 }
 
@@ -400,7 +755,14 @@ function isVolatileKey(k: string): boolean {
   return (
     k === "url" ||
     k === "link" ||
+    // camelCase（`gh pr view --json`）与 GitHub REST 的 snake_case（`gh api`）两种形态都要盖住。
+    // `_at` / `_url` 这两条是 N3 扩到 `gh api` 之后补的：`check_runs[]` 里
+    // `started_at` / `completed_at` / `details_url` 每次都在变，不剥掉的话
+    // gh api 查询的签名永远不相等，拦截形同虚设（拦不到，也不会误拦）。
     k.endsWith("At") || // startedAt / completedAt / createdAt / mergedAt / updatedAt
+    k.endsWith("_at") || // started_at / completed_at / created_at / updated_at
+    k.endsWith("Url") || // htmlUrl / detailsUrl
+    k.endsWith("_url") || // html_url / details_url / target_url
     k.startsWith("duration") ||
     k.startsWith("elapsed")
   );
