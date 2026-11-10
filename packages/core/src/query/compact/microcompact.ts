@@ -23,6 +23,7 @@
  * claude-code 的 COMPACTABLE_TOOLS 对 shell 一律清空，这里是有意比它更保守。
  */
 
+import { emitToolResultCleared } from "../guidance-events.ts";
 import type { Message, ContentBlock } from "../../llm/types.ts";
 import { getLogger } from "../../debug/index.ts";
 import { isReadOnlyCommand } from "../../tool/bash/read-only-validation.ts";
@@ -263,5 +264,12 @@ export function microcompactMessages(
   });
 
   log.info("MICROCOMPACT", `压缩了 ${plan.length} 个工具结果，节省 ${savedChars} 字符`);
+  // HB-4：同 tool_result_budget。冷缓存清理（applyColdCacheClear）不走这里，它有自己的 ColdCacheClear
+  emitToolResultCleared({
+    stage: "microcompact",
+    cleared: plan.length,
+    saved_chars: savedChars,
+    tool_use_ids: plan.map((p) => p.toolUseId),
+  });
   return { messages: result, compactedCount: plan.length, savedChars };
 }

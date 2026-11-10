@@ -37,6 +37,7 @@ import { partitionToolCalls, getMaxToolConcurrency } from "./tool-orchestration.
 import { recordEditOutcome } from "./edit-failure-tracker.ts";
 import { recordHitlWaitHistogram } from "../telemetry/metrics/latency-histograms.ts";
 import { detectSensitiveData } from "../permission/sensitive.ts";
+import { emitCredentialInContext } from "./guidance-events.ts";
 import {
   checkBackgroundPoll,
   emitBackgroundPollIntercepted,
@@ -576,6 +577,12 @@ export async function executeTools(
             `工具输出含 ${hits.length} 处凭证形态数据（${kinds}），已进入上下文。` +
               `若为真实凭证，建议轮换；检查是否有工具在回读密钥文件。`,
           );
+          // HB-4（B18）：此前只有 logger，轨迹里看不到「哪次调用把凭证带进了上下文」
+          emitCredentialInContext({
+            tool_use_id: typeof id === "string" ? id : undefined,
+            hit_count: hits.length,
+            kinds: hits.map((h) => h.type),
+          });
         }
       }
     } catch {
