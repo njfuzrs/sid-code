@@ -20,6 +20,7 @@ import {
   SAFE_FALLBACK_CHARS,
 } from "./web-fetch-extract.ts";
 import { classifyUrlProvenance } from "./url-provenance.ts";
+import { emitWebFetchModelUrl } from "../query/guidance-events.ts";
 
 const FETCH_TIMEOUT_MS = 10000;
 /**
@@ -343,6 +344,8 @@ export class WebFetchTool implements Tool {
           "TOOL",
           `web_fetch 需确认（URL 非用户提及且非预授权域名）: ${parsed.origin}${parsed.pathname}`,
         );
+        // HB-4（B18）：外泄尝试的轨迹留痕。只记 origin，路径与查询串可能就是外泄载荷
+        emitWebFetchModelUrl({ origin: parsed.origin });
       } catch {
         /* URL 解析失败：交给 passthrough / execute 阶段的 SSRF 校验处理 */
       }

@@ -907,6 +907,42 @@ function emitColdCacheClearEvent(
 }
 
 /**
+ * HB-4：注册表外两条周期性回注（P12 上下文压力、P14 Goal 状态）落成结构化事件。
+ *
+ * 两条此前都只往 reminderParts 里推、不留任何事件，轨迹上只能靠 raw.jsonl 的文案子串反推。
+ * P12 会把模型引去调 todo_write（01 §3.1），是 todo 系列 A/B 的混杂因素：不记就分不开
+ * 「todo_write 是 todo_gate 逼出来的」还是「被压力提醒引出来的」。
+ * `reason` 区分强注入（升档 / 首轮 / 压缩后）与周期重述，后者是去重 A/B 的对象。
+ */
+function emitReminderInjectedEvent(
+  deps: QueryDeps,
+  sessionId: string,
+  event: "ContextPressureReminder" | "GoalReminderInjected",
+  data: Record<string, unknown>,
+): void {
+  if (!deps.traceAppendEvent) return;
+  try {
+    if (event === "ContextPressureReminder") {
+      deps.traceAppendEvent({
+        event: "ContextPressureReminder",
+        session_id: sessionId,
+        timestamp: new Date().toISOString(),
+        data,
+      });
+    } else {
+      deps.traceAppendEvent({
+        event: "GoalReminderInjected",
+        session_id: sessionId,
+        timestamp: new Date().toISOString(),
+        data,
+      });
+    }
+  } catch {
+    /* trace 写入失败不阻断主循环 */
+  }
+}
+
+/**
  * 把一次 todo 清单推进（`writeVersion` 增长）落成结构化 trace 事件。
  *
  * 为什么必须补这个埋点（方案 §8.3）：`writeVersion` 的增长节奏是**唯一能直接量"todo 实时性"
@@ -1939,6 +1975,12 @@ async function* queryLoopBody(
             if (pressureReminder) {
               reminderParts.push(pressureReminder);
               state.lastContextPressureReminderTurn = state.turnCount;
+              emitReminderInjectedEvent(deps, sessionState.sessionId, "ContextPressureReminder", {
+                level,
+                reason: changed ? "level_changed" : "periodic",
+                usage_percent: Math.round(usagePercent),
+                turn: state.turnCount,
+              });
             }
           }
         }
@@ -2579,10 +2621,21 @@ async function* queryLoopBody(
             turnsSinceGoalReminder >= effectiveGoalConfig.reminderInterval ||
             state.goalReminderPendingAfterCompact;
           if (shouldInject) {
+            const goalReason =
+              goal.turnsUsed === 1
+                ? "first_turn"
+                : state.goalReminderPendingAfterCompact
+                  ? "after_compact"
+                  : "periodic";
             reminderParts.push(buildGoalReminder(goal));
             state.lastGoalReminderTurn = state.turnCount;
             state.goalReminderPendingAfterCompact = false;
             log.info("QUERY_LOOP", `Goal 状态回注（第 ${goal.turnsUsed} 轮）`);
+            emitReminderInjectedEvent(deps, sessionState.sessionId, "GoalReminderInjected", {
+              reason: goalReason,
+              goal_turns_used: goal.turnsUsed,
+              turn: state.turnCount,
+            });
           }
         }
       }

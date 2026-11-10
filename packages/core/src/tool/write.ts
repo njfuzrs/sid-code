@@ -13,6 +13,7 @@ import { dirname, basename } from "path";
 import { mkdirSync, existsSync, statSync } from "fs";
 import { getLogger } from "../debug/logger.ts";
 import { detectOmissionPlaceholders, isDocumentFile, isPythonFile } from "./omission-detector.ts";
+import { emitOmissionRejected } from "../query/guidance-events.ts";
 import { detectTruncation } from "./truncation-detector.ts";
 import { normalizeToolPath } from "./path-utils.ts";
 import { pickPaths } from "./jit-affected-paths.ts";
@@ -148,6 +149,13 @@ export class WriteTool implements Tool {
       isPythonFile(filePath),
     );
     if (omissions.length > 0) {
+      // HB-4（T8）：误拒率此前只能从 tool_result 文案反推（11 月 90 处，混着非拒绝场景）
+      emitOmissionRejected({
+        tool_name: "write",
+        file_path: filePath,
+        patterns: omissions.map((m) => m.pattern),
+        match_count: omissions.length,
+      });
       const details = omissions.map((m) => `  行 ${m.line}: ${m.text}`).join("\n");
       return {
         output: `错误: 检测到省略占位符，请提供完整代码而非省略标记:\n${details}\n\n请重新生成完整的文件内容。`,

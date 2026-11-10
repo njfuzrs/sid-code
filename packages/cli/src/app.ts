@@ -216,6 +216,7 @@ import {
   EDIT_FAILURE_REMINDER_EVENT_NAME,
 } from "@sid-code/core/query/edit-failure-tracker.ts";
 import { setEditMatchSink, EDIT_LENIENT_MATCH_EVENT_NAME } from "@sid-code/core/tool/edit.ts";
+import { setGuidanceEventSink } from "@sid-code/core/query/guidance-events.ts";
 import {
   setSkillTraceSink,
   SKILL_DEGRADATION_EVENT_NAME,
@@ -4887,6 +4888,13 @@ export class App {
     setEditMatchSink(
       traceCollectorInstance
         ? (data) => traceCollectorInstance.recordCustomEvent(EDIT_LENIENT_MATCH_EVENT_NAME, data)
+        : null,
+    );
+    // HB-4：注册表外引导规则与边界检查（省略占位拒写 / 压缩清理占位 / 凭证进上下文 /
+    // web_fetch 自造 URL / 记忆闸门）此前只写 logger，同款延迟接线进轨迹。
+    setGuidanceEventSink(
+      traceCollectorInstance
+        ? (event, data) => traceCollectorInstance.recordCustomEvent(event, data)
         : null,
     );
     // G2：子代理成本进轨迹。usage-sink 在工具注册时就建好了，那时 collector 还不在，同款延迟接线。

@@ -445,6 +445,53 @@ export const DEFENSES = {
     triage: "active",
     retireWhen: "按模型拆开后某模型 EditFailureReminder 长期为 0，只对该模型关",
   },
+  // ─── HB-4（2026-11-10）：注册表外规则补事件后登记 ───
+  context_pressure_reminder: {
+    assumption: "上下文临近压缩时模型不知道要把结论落盘，压缩后丢细节（P12）",
+    incident: "unknown",
+    cap: {
+      kind: "constant",
+      module: "context-pressure.ts",
+      name: "CONTEXT_PRESSURE_REMINDER_INTERVAL",
+    },
+    gate: null,
+    authorizedByUser: false,
+    endTurnChain: false,
+    toggle: NO_TOGGLE,
+    metricSource: { event: "ContextPressureReminder" },
+    // 11-10 补事件前：11 月 dev 轨迹文案「上下文使用率」114 处，已有触发
+    triage: "active",
+    retireWhen: "A/B：关闭后压缩后丢结论的返工率不升（文案引导 todo_write，与 todo 系列一起评）",
+  },
+  goal_reminder: {
+    assumption: "/goal 长程推进中模型丢失目标意识（P14，对标 Codex continuation）",
+    incident: "unknown",
+    cap: {
+      kind: "none",
+      reason: "用户授权：goal 激活期间按 reminderInterval 周期回注，无总次数上限",
+    },
+    gate: null,
+    authorizedByUser: false,
+    endTurnChain: false,
+    toggle: { none: "随用户 /goal 开启；间隔由 goal 配置 reminderInterval 决定" },
+    metricSource: { event: "GoalReminderInjected" },
+    triage: "B",
+    precondition: "UserPromptSubmit 以 /goal 开头的条数 > 0",
+    retireWhen: "A/B：回注间隔放宽（4 → 8 轮）后 goal 达成率不降",
+  },
+  omission_reject: {
+    assumption: "模型写代码时用 `// ... existing code` 一类占位偷懒省略（T8）",
+    incident: "unknown",
+    cap: { kind: "none", reason: "每次命中都拒绝，没有注入可封顶" },
+    gate: null,
+    authorizedByUser: false,
+    endTurnChain: false,
+    // 规则本身无总开关；SID_ENABLE_BARE_ELLIPSIS_CHECK 只开裸符号子规则，不能写成本防线的开关
+    toggle: { none: "无总开关，常开（裸符号子规则另由 SID_ENABLE_BARE_ELLIPSIS_CHECK 开启）" },
+    metricSource: { event: "OmissionRejected" },
+    triage: "active",
+    retireWhen: "误拒率（命中落在字符串 / 注释里）抽检高于真阳性时收窄规则表，不整体拆",
+  },
 } as const satisfies Record<string, DefenseDef>;
 
 export type DefenseId = keyof typeof DEFENSES;
@@ -533,6 +580,25 @@ export const EVENT_ANCHORS: Record<string, DefenseAnchor> = {
   HypothesisGuideInjected: { defenseId: "hypothesis_guide" },
   StopReasonMismatch: { defenseId: "stop_reason_mismatch" },
   EditFailureReminder: { defenseId: "edit_failure_reminder" },
+  ContextPressureReminder: { defenseId: "context_pressure_reminder" },
+  GoalReminderInjected: { defenseId: "goal_reminder" },
+  OmissionRejected: { defenseId: "omission_reject" },
+  // ─── HB-4 边界侧 / 环境侧观测（guidance-events.ts）───
+  ToolResultCleared: {
+    notDefenseReason:
+      "环境硬上限（C1/C2 压缩管线清理旧工具结果）的观测事件；它的后效（清理后同签名重跑）是 ⑯ 占位文案 A/B 的量尺",
+  },
+  CredentialInContext: {
+    notDefenseReason:
+      "B18 边界侧观测：只检测不改写（tool-executor 注释有理由），记的是凭证进了上下文",
+  },
+  WebFetchModelUrl: {
+    notDefenseReason: "B18 边界侧观测：URL 来源闸门交确认的留痕，决策本身由 PermissionDecision 记",
+  },
+  MemoryGuard: {
+    notDefenseReason:
+      "B18 边界侧观测：记忆写入闸门（拒写 secret / scope 越权）是边界规则，不补模型短板",
+  },
 };
 
 /** `ContinueReason["type"]` 全集（报告列顺序 = 锚点表声明顺序） */
