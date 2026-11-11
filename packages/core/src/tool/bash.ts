@@ -45,7 +45,7 @@ import { createAndSaveSnapshot, escapeForShell } from "./bash/shell-snapshot.ts"
 import { z } from "zod/v4";
 import { lazySchema } from "../sdk/lazy-schema.ts";
 import { bashWriteTargets } from "./jit-affected-paths.ts";
-import type { FileReadTracker, BashChangedFile } from "./file-read-tracker.ts";
+import type { FileReadTracker, BashChangedFile, BashMtimeSnapshot } from "./file-read-tracker.ts";
 import { BACKGROUND_RECEIPT_NOTICE } from "../task/background-receipt.ts";
 
 /** Bash 工具输入 schema —— 运行时校验 + JSON Schema 生成的唯一真相源 */
@@ -545,31 +545,68 @@ function withCwdNotice(
   return output;
 }
 
-/** 回扫清单在结果里最多列多少个路径（再多只给计数，避免一次大规模格式化灌满上下文） */
+/** 回扫清单在结果里最多列多少个路径（每类各自计数，避免一次大规模格式化灌满上下文） */
 const MAX_LISTED_CHANGED_FILES = 10;
 
+/** 把一类改动渲染成「标题 + 清单 + 下一步」的一段；清单按上限截断 */
+function renderChangedFileBlock(
+  header: string,
+  lead: string,
+  files: BashChangedFile[],
+  advice: string,
+): string {
+  const shown = files
+    .slice(0, MAX_LISTED_CHANGED_FILES)
+    .map((c) => (c.deleted ? `  - ${c.path}（已删除）` : `  - ${c.path}`));
+  const more =
+    files.length > MAX_LISTED_CHANGED_FILES
+      ? `\n  …另有 ${files.length - MAX_LISTED_CHANGED_FILES} 个`
+      : "";
+  return `${header}${lead}\n${shown.join("\n")}${more}\n${advice}`;
+}
+
 /**
- * F1：已读文件被本次命令改动的告知（追加到 tool_result 末尾）。
+ * F1 + CG-4：已读文件变动的告知（追加到 tool_result 末尾）。
  *
  * 与 cwdChangeNotice 同款理由落在 tool_result：零 cache 影响、只在真变了时出现一次、
  * 位置正好是模型此刻在读的地方。文案必须给出两工具不同的下一步——edit 可直接继续，
  * write 要先重读（见 FileReadTracker.ReadRecord.changedByBash）。
+ *
+ * **必须分成两类**（CG-4）：改造前所有变化都写成「被本命令修改」，而实际上
+ * 「读取之后、命令之前」被外部改的那些也被算了进来——模型跑一条 `cat`/`grep` 却看到
+ * 「你刚改了这些文件」，于是质疑「我没改它」。这不只是措辞问题：模型会为一次不存在
+ * 的改动去重新 read 甚至回滚，白烧轮次。归因分开之后，「本命令改动」才配得上
+ * 「你上下文里的内容已过期」这句指令。
  */
 export function trackedFilesChangedNotice(changed: BashChangedFile[]): string {
   if (changed.length === 0) return "";
-  const shown = changed
-    .slice(0, MAX_LISTED_CHANGED_FILES)
-    .map((c) => (c.deleted ? `  - ${c.path}（已删除）` : `  - ${c.path}`));
-  const more =
-    changed.length > MAX_LISTED_CHANGED_FILES
-      ? `\n  …另有 ${changed.length - MAX_LISTED_CHANGED_FILES} 个`
-      : "";
-  return (
-    `\n[已读文件被本命令修改] 以下你读过的文件刚被这条命令改动（如格式化 / sed -i）：\n` +
-    `${shown.join("\n")}${more}\n` +
-    `你上下文里的内容已过期。edit 可直接继续（以磁盘最新内容匹配 old_string，匹配不到再 read）；` +
-    `write 整文件覆盖前须先重新 read。`
-  );
+  const byCommand = changed.filter((c) => c.attribution === "command");
+  const byExternal = changed.filter((c) => c.attribution === "external");
+
+  const blocks: string[] = [];
+  if (byCommand.length > 0) {
+    blocks.push(
+      renderChangedFileBlock(
+        `\n[已读文件被本命令修改] 以下你读过的文件刚被这条命令改动（如格式化 / sed -i）：\n`,
+        "",
+        byCommand,
+        `你上下文里的内容已过期。edit 可直接继续（以磁盘最新内容匹配 old_string，匹配不到再 read）；` +
+          `write 整文件覆盖前须先重新 read。\n` +
+          `（归因说明：命令运行期间若有其他进程同时改了同一文件，也会列在这里。）`,
+      ),
+    );
+  }
+  if (byExternal.length > 0) {
+    blocks.push(
+      renderChangedFileBlock(
+        `\n[已读文件在本次命令前已被外部修改] 以下你读过的文件在本次命令开始执行前就变了，不是这条命令改的：\n`,
+        "",
+        byExternal,
+        `你上下文里的内容已过期。重新 read 后基于最新内容再改，避免覆盖他人的改动。`,
+      ),
+    );
+  }
+  return blocks.join("\n");
 }
 
 export class BashTool implements Tool {
@@ -920,6 +957,11 @@ export class BashTool implements Tool {
     signal?: AbortSignal,
     onProgress?: (event: import("./types.ts").ToolProgressData) => void,
   ): Promise<ToolResult> {
+    // CG-4：命令开始执行前拍一份已读文件 mtime 快照，作为「这条命令改了谁」的归因基准。
+    // 拍在这里而不是 executeCommand 内部：那里有十几个提前 return（缺参数 / cwd 不存在 /
+    // 取消…），逐个补快照必然漏。唯一的时序代价是首条命令 `await snapshotReady` 的等待
+    // 窗口（构造期就在建 shell 快照）——那时模型还没读过文件，tracker 是空的，无影响。
+    const snapshot = this.beginBashTracking(input);
     const result = await this.executeCommand(input, signal, onProgress);
     return this.withTrackedFileChanges(
       input,
@@ -927,6 +969,7 @@ export class BashTool implements Tool {
         input,
         this.withSandboxMeta(this.withWaitUntilNotice(input, result)),
       ),
+      snapshot,
     );
   }
 
@@ -1018,11 +1061,40 @@ export class BashTool implements Tool {
   }
 
   /**
-   * F1：命令结束后回扫已读文件。失败 / 超时 / 取消也扫——命令可能已改了一半文件。
+   * CG-4：命令开始前给已读文件拍 mtime 快照（归因基准）。
+   *
+   * 跳过条件与 `withTrackedFileChanges` 逐条对齐——两处判定必须同源，否则会出现
+   * 「拍了快照但从不回扫」（白扫一遍文件）或「回扫了却没有基准」（退回全算本命令）。
+   */
+  private beginBashTracking(input: unknown): BashMtimeSnapshot | undefined {
+    if (!this.tracker) return undefined;
+    const params = input as {
+      command?: string;
+      run_in_background?: boolean;
+      is_background?: boolean;
+    };
+    if (!params?.command || params.run_in_background || params.is_background) return undefined;
+    if (isReadOnlyCommand(params.command)) return undefined;
+    try {
+      return this.tracker.beginBashExecution();
+    } catch {
+      // 拍快照失败不影响命令执行：退回改造前口径（全算本命令），至少不丢告知
+      return undefined;
+    }
+  }
+
+  /**
+   * F1 + CG-4：命令结束后回扫已读文件。失败 / 超时 / 取消也扫——命令可能已改了一半文件。
    * 跳过：只读命令（不会写盘）、后台命令（此刻还没跑完，其改动之后仍按外部修改拦截）。
    * Ctrl+B 转后台的命令此时 output 为空，回扫也只会看到已发生的改动，无害。
+   *
+   * `snapshot` 是 `beginBashTracking` 拍下的执行前基准；为 undefined 时退回改造前口径。
    */
-  private withTrackedFileChanges(input: unknown, result: ToolResult): ToolResult {
+  private withTrackedFileChanges(
+    input: unknown,
+    result: ToolResult,
+    snapshot?: BashMtimeSnapshot,
+  ): ToolResult {
     if (!this.tracker) return result;
     const params = input as {
       command?: string;
@@ -1033,7 +1105,7 @@ export class BashTool implements Tool {
     if (isReadOnlyCommand(params.command)) return result;
     let notice = "";
     try {
-      notice = trackedFilesChangedNotice(this.tracker.noteBashExecution());
+      notice = trackedFilesChangedNotice(this.tracker.noteBashExecution(snapshot));
     } catch {
       // 回扫失败不影响命令结果本身
     }

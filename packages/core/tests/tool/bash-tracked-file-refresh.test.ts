@@ -259,10 +259,148 @@ describe("trackedFilesChangedNotice", () => {
     expect(trackedFilesChangedNotice([])).toBe("");
   });
   test("超过 10 个只列前 10 个并给计数", () => {
-    const list = Array.from({ length: 13 }, (_, i) => ({ path: `/p/${i}`, deleted: false }));
+    const list = Array.from({ length: 13 }, (_, i) => ({
+      path: `/p/${i}`,
+      deleted: false,
+      attribution: "command" as const,
+    }));
     const s = trackedFilesChangedNotice(list);
     expect(s).toContain("/p/9");
     expect(s).not.toContain("/p/10\n");
     expect(s).toContain("另有 3 个");
+  });
+
+  // CG-4：两类归因必须分开呈现。改造前所有变化都写成「被本命令修改」，
+  // 模型跑一条 cat 却看到「你刚改了这些文件」，于是质疑「我没改它」。
+  test("external 归因不会混进「本命令修改」段", () => {
+    const s = trackedFilesChangedNotice([
+      { path: "/p/cmd.ts", deleted: false, attribution: "command" },
+      { path: "/p/ext.ts", deleted: false, attribution: "external" },
+    ]);
+    const cmdIdx = s.indexOf("[已读文件被本命令修改]");
+    const extIdx = s.indexOf("[已读文件在本次命令前已被外部修改]");
+    expect(cmdIdx).toBeGreaterThanOrEqual(0);
+    expect(extIdx).toBeGreaterThan(cmdIdx);
+    // 本命令段里只能出现 cmd.ts，外部段里只能出现 ext.ts
+    expect(s.slice(cmdIdx, extIdx)).toContain("/p/cmd.ts");
+    expect(s.slice(cmdIdx, extIdx)).not.toContain("/p/ext.ts");
+    expect(s.slice(extIdx)).toContain("/p/ext.ts");
+  });
+
+  test("只有 external 时不出现「本命令修改」", () => {
+    const s = trackedFilesChangedNotice([
+      { path: "/p/ext.ts", deleted: false, attribution: "external" },
+    ]);
+    expect(s).toContain("[已读文件在本次命令前已被外部修改]");
+    expect(s).not.toContain("[已读文件被本命令修改]");
+  });
+});
+
+/**
+ * CG-4：bash 改动归因修正（后续规划 §2.3）
+ *
+ * 两个根因，各自对应一组用例：
+ *  1. **部分读取没有内容指纹**（`file-read-tracker.ts` 里 `content = isPartialView ? null : …`）：
+ *     `noteBashExecution` 只能按 mtime 判「变了」，于是 `touch` 也算本命令改的。
+ *  2. **执行前没有快照**：读取之后、命令之前的外部改动被算到这条命令头上。
+ *     现场形态是一条 `cat`/`grep` 被告知「你刚改了这些文件」。
+ */
+describe("CG-4 bash 改动归因", () => {
+  test.skipIf(isWin)("部分读取后 touch（只改 mtime 不改内容）不报变更", async () => {
+    const { dir, bash, read } = setup();
+    const f = join(dir, "partial-touch.ts");
+    writeFileSync(f, "l1\nl2\nl3\n");
+    // offset>1 ⇒ isPartialView ⇒ 改造前 content 恒为 null，只能按 mtime 判
+    await read.execute({ file_path: f, offset: 2 });
+    await tick();
+    const r = await bash.execute({ command: `touch ${JSON.stringify(f)}` });
+    expect(r.output).not.toContain("[已读文件被本命令修改]");
+    expect(r.output).not.toContain("[已读文件在本次命令前已被外部修改]");
+  });
+
+  test.skipIf(isWin)("部分读取后 bash 真改内容仍要报（收窄归因不放宽护栏）", async () => {
+    const { dir, bash, read, edit } = setup();
+    const f = join(dir, "partial-real.ts");
+    writeFileSync(f, "l1\nl2\nl3\n");
+    await read.execute({ file_path: f, offset: 2 });
+    await tick();
+    const r = await bash.execute({ command: `perl -pi -e 's/l2/L2/' ${JSON.stringify(f)}` });
+    expect(r.output).toContain("[已读文件被本命令修改]");
+    expect(r.output).toContain(f);
+    // 回扫刷新了快照 ⇒ edit 不被误拦
+    expect(
+      (await edit.execute({ file_path: f, old_string: "L2", new_string: "L2x" })).isError,
+    ).toBeFalsy();
+  });
+
+  test.skipIf(isWin)(
+    "读取后被外部改动、随后跑一条无关命令：归因为外部修改，不算本命令",
+    async () => {
+      const { dir, bash, read } = setup();
+      const f = join(dir, "ext-before.ts");
+      writeFileSync(f, "v=1\n");
+      await read.execute({ file_path: f });
+      await tick();
+      writeFileSync(f, "v=2\n"); // 模拟 IDE 在命令之前保存
+      const r = await bash.execute({ command: `touch ${JSON.stringify(join(dir, "unrelated"))}` });
+      expect(r.output).toContain("[已读文件在本次命令前已被外部修改]");
+      expect(r.output).not.toContain("[已读文件被本命令修改]");
+      expect(r.output).toContain(f);
+    },
+  );
+
+  test.skipIf(isWin)("同一批结果里两类归因分开列出", async () => {
+    const { dir, bash, read } = setup();
+    const byCommand = join(dir, "by-command.ts");
+    const byExternal = join(dir, "by-external.ts");
+    writeFileSync(byCommand, "a=1\n");
+    writeFileSync(byExternal, "b=1\n");
+    await read.execute({ file_path: byCommand });
+    await read.execute({ file_path: byExternal });
+    await tick();
+    writeFileSync(byExternal, "b=2\n"); // 命令前的外部改动
+    const r = await bash.execute({
+      command: `perl -pi -e 's/a=1/a=9/' ${JSON.stringify(byCommand)}`,
+    });
+    const cmdIdx = r.output.indexOf("[已读文件被本命令修改]");
+    const extIdx = r.output.indexOf("[已读文件在本次命令前已被外部修改]");
+    expect(cmdIdx).toBeGreaterThanOrEqual(0);
+    expect(extIdx).toBeGreaterThan(cmdIdx);
+    expect(r.output.slice(cmdIdx, extIdx)).toContain(byCommand);
+    expect(r.output.slice(extIdx)).toContain(byExternal);
+  });
+
+  test.skipIf(isWin)("外部归因也刷快照：随后 edit 不被误判为外部修改", async () => {
+    const { dir, bash, read, edit } = setup();
+    const f = join(dir, "ext-absorb.ts");
+    writeFileSync(f, "k=1\n");
+    await read.execute({ file_path: f });
+    await tick();
+    writeFileSync(f, "k=2\n");
+    await bash.execute({ command: `touch ${JSON.stringify(join(dir, "noop"))}` });
+    // 归因纠正不改变「已吸收」这个事实：模型视图过期，但磁盘内容已对齐
+    expect(
+      (await edit.execute({ file_path: f, old_string: "k=2", new_string: "k=3" })).isError,
+    ).toBeFalsy();
+    expect(readFileSync(f, "utf-8")).toBe("k=3\n");
+  });
+
+  test.skipIf(isWin)("埋点把外部归因单独计数（files_external）", async () => {
+    const events: Record<string, unknown>[] = [];
+    setFileFreshnessTraceSink((d) => events.push(d));
+    const { dir, bash, read } = setup();
+    const f = join(dir, "trace.ts");
+    writeFileSync(f, "t=1\n");
+    await read.execute({ file_path: f });
+    await tick();
+    writeFileSync(f, "t=2\n");
+    await bash.execute({ command: `touch ${JSON.stringify(join(dir, "noop"))}` });
+    expect(events).toHaveLength(1);
+    expect(events[0]).toMatchObject({
+      tool: "bash",
+      files_changed: 0,
+      files_deleted: 0,
+      files_external: 1,
+    });
   });
 });
