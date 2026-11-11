@@ -6,23 +6,23 @@
  * 最需要回退保护的操作。这里为破坏性 bash 命令做执行前快照的文件集提取。
  *
  * 分层：
- *   - 精确可提取：rm <file> / git checkout <file> / mv <src> <dst>——从 AST 提取显式路径。
+ *   - 精确可提取：与权限侧**共用** `writeTargetsFromExpansion`（B8/L5，2026-11-11）。
+ *     修前这里是第二套提取器，`perl -pi` / 解释器 / `find -delete` 在两侧识别结果不一致。
  *   - 范围性破坏（无法逐文件提取）：git reset --hard / checkout . / clean -fd——
  *     改用「工作区级轻量快照」：git diff --name-only + git diff --cached --name-only 的文件集。
  *
- * 触发条件收敛：只对破坏性命令（matchGitDanger 命中，或 rm/mv 等文件破坏命令）做提取，
- * 不是所有 bash 都快照，避免每条命令都 IO。
+ * 触发条件：范围性破坏先判；其余命令直接跑共享提取器，**提不到目标就不建快照**
+ * （纯函数解析、不 IO，所以不需要「命令文本里有没有 rm|mv|cp」那类正则预筛）。
  */
 
 import { execFile } from "node:child_process";
 import { promisify } from "node:util";
 import * as path from "node:path";
+import { parseBashCommand, extractSimpleCommands } from "../tool/bash/parser.ts";
 import {
-  parseBashCommand,
-  extractSimpleCommands,
-  extractRedirectTargets,
-} from "../tool/bash/parser.ts";
-import { matchGitDanger } from "../permission/git-danger-patterns.ts";
+  expandShellCommand,
+  writeTargetsFromExpansion,
+} from "../permission/shell-command-variants.ts";
 import { getLogger } from "../debug/logger.ts";
 
 const execFileAsync = promisify(execFile);
@@ -174,94 +174,29 @@ async function listFilesRecursive(dir: string, depth = 0): Promise<string[]> {
 }
 
 /**
- * 从单条 bash 命令的 AST 提取精确的受影响文件路径。
- * 只处理 rm / git checkout <file> / git restore <file> / mv 等显式路径命令。
+ * 从单条 bash 命令提取精确的受影响文件路径。
+ *
+ * 2026-11-11（B8/L5）：改为复用 `writeTargetsFromExpansion`——与 safetyCheck **同一份**
+ * 实现。修前这里是第二套提取器（bash parser + 命令白名单），实测 `perl -pi` 在安全侧
+ * 能识别、在这里不能，`mv` 源则反过来；解释器 / `find -delete` 两侧都看不见。
+ *
+ * checkpoint 自己仍要过滤两类候选：
+ * - 含变量 / 命令替换 / 通配符的路径静态不可知，收进来会写坏 index；
+ * - `.` / `..` 是目录本身，范围性破坏已由 workspace-wide 快照兜底，不在这里逐文件建。
  */
 function extractExplicitPaths(command: string, cwd: string): string[] {
-  const files: string[] = [];
-  let ast: ReturnType<typeof parseBashCommand>;
-  let simpleCommands: Array<{ command: string; args: string[] }>;
-  try {
-    ast = parseBashCommand(command);
-    simpleCommands = extractSimpleCommands(ast);
-  } catch {
-    return files;
+  const files = new Set<string>();
+  for (const target of writeTargetsFromExpansion(expandShellCommand(command))) {
+    if (!isStaticPath(target)) continue;
+    if (target === "." || target === ".." || target === "./") continue;
+    files.add(path.isAbsolute(target) ? target : path.resolve(cwd, target));
   }
+  return [...files];
+}
 
-  const resolve = (tok: string) => (path.isAbsolute(tok) ? tok : path.resolve(cwd, tok));
-  // 变量拼接 / 命令替换 / 通配符的路径无法静态确定，收进来会写坏 index——一律跳过（保守）。
-  const isStatic = (tok: string) => !!tok && !/[$`*?~\[\]{}]/.test(tok);
-
-  // P0-B1：`>`/`>>` 重定向目标（echo x > f、cmd >> log）——parser 已能提取。
-  try {
-    for (const target of extractRedirectTargets(ast)) {
-      if (isStatic(target)) files.push(resolve(target));
-    }
-  } catch {
-    /* 重定向提取失败不阻断其余提取 */
-  }
-
-  for (const { command: cmd, args } of simpleCommands) {
-    if (cmd === "rm") {
-      // rm [-flags] file...：取所有非 flag 参数
-      for (const a of args) {
-        if (!a || a.startsWith("-") || !isStatic(a)) continue;
-        files.push(resolve(a));
-      }
-    } else if (cmd === "mv" || cmd === "cp") {
-      // mv/cp src... dst：源与目标都可能被破坏/覆盖，全收
-      for (const a of args) {
-        if (!a || a.startsWith("-") || !isStatic(a)) continue;
-        files.push(resolve(a));
-      }
-    } else if (cmd === "tee") {
-      // tee [-a] file...：写入目标文件（含 -a 追加）
-      for (const a of args) {
-        if (!a || a.startsWith("-") || !isStatic(a)) continue;
-        files.push(resolve(a));
-      }
-    } else if (cmd === "sed") {
-      // sed [flags] SCRIPT FILE...：仅在带 -i（原地编辑）时提取目标文件。
-      const hasInplace = args.some(
-        (a) => a === "-i" || a.startsWith("-i") || a === "--in-place" || a.startsWith("--in-place"),
-      );
-      if (hasInplace) {
-        // 结构=flags + 脚本 + 文件...。脚本是第一个非 flag token（形如 's/a/b/'、'1d'），
-        // 跳过它，其余非 flag token 视为文件。`-e <script>` 形式也一并跳过其后紧邻的脚本。
-        let scriptSeen = false;
-        for (let i = 0; i < args.length; i++) {
-          const a = args[i];
-          if (!a) continue;
-          if (a === "-e" || a === "-f") {
-            i++;
-            scriptSeen = true;
-            continue;
-          } // 脚本作为独立参数
-          if (a.startsWith("-")) continue;
-          if (!scriptSeen) {
-            scriptSeen = true;
-            continue;
-          } // 第一个非 flag = 内联脚本，跳过
-          if (!isStatic(a)) continue;
-          files.push(resolve(a));
-        }
-      }
-    } else if (cmd === "git") {
-      const sub = args[0];
-      if (sub === "checkout" || sub === "restore") {
-        // git checkout/restore <file>（非 "." —— "." 走范围性快照）
-        for (let i = 1; i < args.length; i++) {
-          const a = args[i];
-          if (!a || a.startsWith("-") || a === "." || !isStatic(a)) continue;
-          // 跳过 <commit>/<branch>：checkout 的第一个非 flag 参数可能是分支名。
-          // 保守起见：只收看起来像路径的（含 / 或 . 或存在后缀）——难精确，
-          // 但范围性破坏已由 workspace-wide 兜底，这里只做尽力而为。
-          files.push(resolve(a));
-        }
-      }
-    }
-  }
-  return files;
+/** 变量拼接 / 命令替换 / 通配符的路径无法静态确定，收进来会写坏 index——一律跳过（保守）。 */
+function isStaticPath(token: string): boolean {
+  return !!token && !/[$`*?~\[\]{}]/.test(token);
 }
 
 /**
@@ -273,18 +208,6 @@ function extractExplicitPaths(command: string, cwd: string): string[] {
  */
 export async function getBashAffectedFiles(command: string, cwd: string): Promise<string[]> {
   if (!command?.trim()) return [];
-
-  const isDestructiveGit = matchGitDanger(command) !== null;
-  const isFileDestruction = /\b(rm|mv|cp)\b/.test(command);
-  // P0-B1：非破坏性但仍会改文件的命令——原地编辑（sed -i）、写入（tee）、重定向（> >>）。
-  // 这些此前是 checkpoint 盲区：/undo 够不到用 bash 改的文件。
-  const isFileMutation =
-    /\bsed\b[^;&|\n]*\s-i\b/.test(command) ||
-    /\btee\b/.test(command) ||
-    /(^|[^0-9<>])>>?[^&]/.test(command);
-
-  // 触发条件收敛：既不破坏也不改文件的命令不快照
-  if (!isDestructiveGit && !isFileDestruction && !isFileMutation) return [];
 
   try {
     // 范围性破坏 → 工作区级快照
@@ -298,7 +221,13 @@ export async function getBashAffectedFiles(command: string, cwd: string): Promis
       }
       return workingSet;
     }
-    // 精确路径提取
+    // 精确路径：与 safetyCheck 共用同一份提取（B8/L5）。
+    //
+    // 修前这里用「命令文本里出现 rm|mv|cp / `sed -i` / tee / 重定向」的正则做预筛——
+    // 那是与 safetyCheck 平行的**第二套口径**：`perl -pi` 在安全侧能识别、在这里不能，
+    // 解释器与 `find -delete` 两侧都看不见，改一处永远不会修另一处。
+    // 现在由提取结果自己决定要不要快照（提不到目标 = 空集 = 不建快照），
+    // 代价是每条 bash 多一次纯函数解析（不 IO），换来两套口径不再漂移。
     return extractExplicitPaths(command, cwd);
   } catch (err: any) {
     getLogger().warn("CHECKPOINT", `bash 受影响文件提取失败（不阻断）: ${err?.message}`);
